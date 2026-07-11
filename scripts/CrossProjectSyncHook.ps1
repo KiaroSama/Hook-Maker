@@ -189,8 +189,11 @@ function Get-EligibleFiles {
         [Parameter(Mandatory = $true)]$Defaults
     )
 
-    $extensions = @(Get-PropertyValue -Primary $RouteConfig -Secondary $ProfileConfig -Tertiary $Defaults -Name 'includeExtensions' -Fallback @()) |
-        ForEach-Object { ([string]$_).ToLowerInvariant() }
+    # Outer @() around the whole pipeline: a single-element includeExtensions
+    # would otherwise collapse to a scalar string, and $extensions.Count then
+    # throws under Set-StrictMode 2.0.
+    $extensions = @(@(Get-PropertyValue -Primary $RouteConfig -Secondary $ProfileConfig -Tertiary $Defaults -Name 'includeExtensions' -Fallback @()) |
+        ForEach-Object { ([string]$_).ToLowerInvariant() })
     $excludePatterns = @(Get-PropertyValue -Primary $RouteConfig -Secondary $ProfileConfig -Tertiary $Defaults -Name 'excludePatterns' -Fallback @())
     $maxFileBytes = [int64](Get-PropertyValue -Primary $RouteConfig -Secondary $ProfileConfig -Tertiary $Defaults -Name 'maxFileBytes' -Fallback 2097152L)
 
