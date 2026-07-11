@@ -1,9 +1,10 @@
-# Cross-Project Sync Hooks
+# Hook Maker
 
-Keep the `.ai` knowledge directories of related projects in sync through Claude Code and
-Codex CLI lifecycle hooks. When a source project's knowledge changes, the hook stages the
-changed files inside the destination project and asks the agent to review and import what is
-durable — before it starts the user's task.
+Build, install, and manage Claude Code / Codex CLI hooks — including a ready-made
+cross-project knowledge sync: it keeps the `.ai` knowledge directories of related projects
+in sync. When a source project's knowledge changes, the hook stages the changed files inside
+the destination project and asks the agent to review and import what is durable — before it
+starts the user's task.
 
 ## Layout
 
@@ -28,7 +29,7 @@ durable — before it starts the user's task.
 Double-clicking `run.ps1` opens the wizard in a Windows Terminal window when `wt.exe` is
 available; otherwise it runs in the current console with the best available PowerShell.
 
-Menu options: `1` sync group, `2` install a custom hook from `hooks/`, `3` show profiles,
+Menu options: `1` sync group, `2` create or install a custom hook, `3` show profiles,
 `4` validate. `0` goes back, `exit` quits.
 
 For a sync group choose option `1`, enter each project root path (finish with `done`), review
@@ -72,9 +73,17 @@ Global install is still available for scripting: `scripts/Install-Hook.ps1` with
 
 ## Writing your own hooks
 
-The `.ai` sync is just one hook. A hook is a script in `hooks/` that reads a JSON event from
-**stdin** and, optionally, prints a JSON response to **stdout**. Minimal example
-(`hooks\MyHook.ps1`):
+The easiest path is launcher menu option `2` -> **Create a new hook**: name it, pick a
+template, answer one or two questions, and a working `.ps1` lands in `hooks/` (optionally
+installed right away). Templates:
+
+1. **Context note** — injects a fixed note (your text) into every session/prompt.
+2. **Prompt guard** — blocks prompts containing your forbidden words.
+3. **Tool logger** — appends every tool call to a log file next to the hook.
+4. **Empty skeleton** — a commented template for your own logic.
+
+Under the hood, a hook is just a script in `hooks/` that reads a JSON event from **stdin**
+and, optionally, prints a JSON response to **stdout**. Minimal example (`hooks\MyHook.ps1`):
 
 ```powershell
 $e = [Console]::In.ReadToEnd() | ConvertFrom-Json

@@ -1,4 +1,4 @@
-# Launcher for the cross-project sync wizard.
+# Hook Maker launcher.
 # Host priority: Windows Terminal > PowerShell 7 (pwsh) > Windows PowerShell.
 # - Double-clicked (not already inside Windows Terminal): opens the wizard in a
 #   new Windows Terminal window when wt.exe is available.
@@ -63,7 +63,8 @@ if (-not $insideWindowsTerminal -and $wt) {
         $quoted = foreach ($arg in $shellArgs) {
             if ($arg -match '\s') { '"' + $arg + '"' } else { $arg }
         }
-        Start-Process -FilePath $wt.Source -ArgumentList (@($shell) + $quoted)
+        $wtArgs = 'new-tab --title "Hook Maker" ' + $shell + ' ' + ($quoted -join ' ')
+        Start-Process -FilePath $wt.Source -ArgumentList $wtArgs
         exit 0
     }
     catch {

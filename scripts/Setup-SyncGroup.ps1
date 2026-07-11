@@ -43,6 +43,7 @@ $C = @{
     Aqua       = "$Esc[38;5;159m"
     Amber      = "$Esc[38;5;214m"
     Mint       = "$Esc[38;5;121m"
+    TitleBar   = "$Esc[38;2;255;50;115m"
     Title      = "$Esc[1m$Esc[38;2;255;50;115m"
     Input      = "$Esc[1m$Esc[38;2;68;221;255m"
     Summary    = "$Esc[1m$Esc[38;2;170;255;82m"
@@ -703,14 +704,230 @@ function Invoke-CreateGroup {
 }
 
 # -------------------------------------------------- custom hook flow (2) ----
-function Invoke-InstallCustomHook {
+# Shared tail of both custom-hook paths: ask target projects, confirm, install.
+function Invoke-InstallHookTargets {
+    param(
+        [Parameter(Mandatory = $true)][string]$HookPath,
+        [Parameter(Mandatory = $true)]$Events
+    )
+
+    $hookName = Split-Path -Leaf $HookPath
+
+    $targets = Read-ProjectList -MinimumCount 1
+    if ($null -eq $targets) {
+        Write-NoteLine 'Returning to main menu.'
+        return
+    }
+
+    # ---- summary ----
+    Write-PhaseHeader 'Summary' $C.Summary '-'
+    Write-Field 'hook script' $HookPath $C.LightBlue
+    Write-Field 'events' (@($Events) -join ', ')
+    Write-Field 'install' 'per project: .claude\settings.local.json + .codex\hooks.json'
+    Write-MenuTitle 'Target projects:'
+    for ($i = 0; $i -lt $targets.Count; $i++) {
+        Write-MenuLine ($i + 1) $targets[$i].Name $targets[$i].Root
+    }
+
+    # ---- confirm ----
+    Write-PhaseHeader 'Confirm' $C.Confirm '-'
+    $confirm = Read-YesNo (New-QuestionPrompt 'Start now?' 'y/n' 'y') $true 'start custom hook install'
+    if ($confirm -ne $true) {
+        Write-NoteLine 'Canceled. Nothing was changed.'
+        Write-Log 'INFO' 'CUSTOM' 'User declined at confirmation; no changes applied.'
+        return
+    }
+
+    # ---- apply ----
+    Write-PhaseHeader 'Applying Changes' $C.Process '-'
+    foreach ($target in $targets) {
+        $installOutput = & $InstallScript -CustomHook $HookPath -Events @($Events) -TargetProject $target.Root *>&1
+        foreach ($line in @($installOutput)) {
+            Write-Log 'INFO' 'INSTALL' ([string]$line)
+        }
+        Write-Host ('  ' + (Get-Painted '+ hook installed in' $C.Green) + ' ' + (Get-Painted $target.Name $C.Bold) + '  ' + (Get-Painted $target.Root $C.Gray))
+    }
+
+    Write-PhaseHeader 'Completed' $C.Done '='
+    Write-Host (Get-Painted ('  ' + $hookName + ' installed for: ' + (@($Events) -join ', ')) $C.White)
+    Write-Host (Get-Painted '  Restart the Claude/Codex clients and review /hooks inside each project.' $C.White)
+    Write-NoteLine '  Codex: run /hooks in each project and trust the new command before it runs.'
+    if ($null -ne $script:LogPath) {
+        Write-Host (Get-Painted ('  Log: ' + $script:LogPath) $C.Dim)
+    }
+    Write-Log 'INFO' 'DONE' ('Custom hook installed: ' + $HookPath + ' | events=' + (@($Events) -join ',') + ' | projects=' + $targets.Count)
+}
+
+# Guided hook creation: pick a template, answer one or two questions, get a
+# working .ps1 in hooks\ (optionally installed right away).
+function Invoke-CreateHook {
+    Write-Log 'INFO' 'CUSTOM' 'Guided hook creation started.'
+    Write-PhaseHeader 'Create a New Hook' $C.Input '-'
+
+    $nameExample = Get-ExampleText 'MyContextHook'
+    $namePrompt = New-QuestionPrompt 'Hook name' ('letters, digits and dashes; example: ' + $nameExample) $null
+    $hookName = $null
+    while ($null -eq $hookName) {
+        $value = Read-Answer $namePrompt 'new hook name'
+        if ($value -eq '0') {
+            Write-NoteLine 'Returning to main menu.'
+            return
+        }
+        if ($value -notmatch '^[A-Za-z][A-Za-z0-9-]*$') {
+            Write-ErrorLine 'Use only letters, digits and dashes, starting with a letter.'
+            continue
+        }
+        $candidatePath = Join-Path $HooksDir ($value + '.ps1')
+        if (Test-Path -LiteralPath $candidatePath -PathType Leaf) {
+            Write-ErrorLine ('A hook with this name already exists: ' + $candidatePath)
+            continue
+        }
+        $hookName = $value
+    }
+    $hookPath = Join-Path $HooksDir ($hookName + '.ps1')
+
+    Write-MenuTitle 'Template:'
+    Write-MenuLine 1 'Context note' '(injects a fixed note into every session/prompt)'
+    Write-MenuLine 2 'Prompt guard' '(blocks prompts containing forbidden words)'
+    Write-MenuLine 3 'Tool logger' '(logs every tool call to a file)'
+    Write-MenuLine 4 'Empty skeleton' '(commented template for your own logic)'
+
+    $templatePrompt = New-QuestionPrompt 'Select a template' $null '1'
+    $template = $null
+    while ($null -eq $template) {
+        $value = Read-Answer $templatePrompt 'hook template'
+        if ($value -eq '0') {
+            Write-NoteLine 'Returning to main menu.'
+            return
+        }
+        if ($value -eq '') {
+            $value = '1'
+        }
+        if ($value -match '^[1-4]$') {
+            $template = $value
+        }
+        else {
+            Write-ErrorLine 'Enter 1, 2, 3 or 4.'
+        }
+    }
+
+    $defaultEvents = @('SessionStart', 'UserPromptSubmit')
+    $body = ''
+    switch ($template) {
+        '1' {
+            $messagePrompt = New-QuestionPrompt 'Context note text' ('shown to the agent on every matched event; example: ' + (Get-ExampleText 'Always answer in Persian.')) $null
+            $message = ''
+            while ($message -eq '') {
+                $message = Read-Answer $messagePrompt 'context note text'
+                if ($message -eq '0') {
+                    Write-NoteLine 'Returning to main menu.'
+                    return
+                }
+                if ($message -eq '') {
+                    Write-ErrorLine 'This value cannot be empty. Try again.'
+                }
+            }
+            $escaped = $message.Replace("'", "''")
+            $body = @"
+# $hookName - injects a fixed context note into every matched event.
+# Generated by Hook Maker. Edit freely; reinstall is not needed after edits.
+`$hookInput = [Console]::In.ReadToEnd() | ConvertFrom-Json
+`$note = '$escaped'
+@{ hookSpecificOutput = @{ hookEventName = `$hookInput.hook_event_name; additionalContext = `$note } } |
+    ConvertTo-Json -Depth 5 -Compress
+exit 0
+"@
+        }
+        '2' {
+            $defaultEvents = @('UserPromptSubmit')
+            $wordsPrompt = New-QuestionPrompt 'Forbidden words' ('comma separated; example: ' + (Get-ExampleText 'password,api key')) $null
+            $words = @()
+            while ($words.Count -eq 0) {
+                $raw = Read-Answer $wordsPrompt 'forbidden words'
+                if ($raw -eq '0') {
+                    Write-NoteLine 'Returning to main menu.'
+                    return
+                }
+                $words = @($raw.Split(',') | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne '' })
+                if ($words.Count -eq 0) {
+                    Write-ErrorLine 'Enter at least one word.'
+                }
+            }
+            $wordList = (@($words | ForEach-Object { "'" + $_.Replace("'", "''") + "'" })) -join ', '
+            $body = @"
+# $hookName - blocks prompts that contain forbidden words (UserPromptSubmit).
+# Generated by Hook Maker. Edit the list freely; reinstall is not needed after edits.
+`$hookInput = [Console]::In.ReadToEnd() | ConvertFrom-Json
+`$forbidden = @($wordList)
+`$prompt = ''
+if (`$null -ne `$hookInput.PSObject.Properties['prompt']) { `$prompt = [string]`$hookInput.prompt }
+elseif (`$null -ne `$hookInput.PSObject.Properties['user_prompt']) { `$prompt = [string]`$hookInput.user_prompt }
+foreach (`$word in `$forbidden) {
+    if (`$prompt -match [regex]::Escape(`$word)) {
+        @{ decision = 'block'; reason = ('Prompt contains a forbidden word: ' + `$word) } | ConvertTo-Json -Compress
+        exit 0
+    }
+}
+exit 0
+"@
+        }
+        '3' {
+            $defaultEvents = @('PreToolUse')
+            $body = @"
+# $hookName - appends one line per tool call to a log file next to this hook.
+# Generated by Hook Maker. Edit freely; reinstall is not needed after edits.
+`$hookInput = [Console]::In.ReadToEnd() | ConvertFrom-Json
+`$logFile = Join-Path (Split-Path -Parent `$MyInvocation.MyCommand.Path) '$hookName.log'
+`$toolName = ''
+if (`$null -ne `$hookInput.PSObject.Properties['tool_name']) { `$toolName = [string]`$hookInput.tool_name }
+`$line = '[' + [DateTime]::UtcNow.ToString('yyyy-MM-dd HH:mm:ss') + ' UTC] ' + `$hookInput.hook_event_name + ' ' + `$toolName + ' cwd=' + `$hookInput.cwd
+[System.IO.File]::AppendAllText(`$logFile, `$line + "``r``n", [System.Text.UTF8Encoding]::new(`$false))
+exit 0
+"@
+        }
+        '4' {
+            $body = @"
+# $hookName - custom hook skeleton. Generated by Hook Maker.
+# The client sends ONE JSON event on stdin. Common fields:
+#   hook_event_name, session_id, cwd
+# Event-specific fields:
+#   UserPromptSubmit: prompt   |   PreToolUse/PostToolUse: tool_name, tool_input
+`$hookInput = [Console]::In.ReadToEnd() | ConvertFrom-Json
+
+# TODO: your logic here.
+
+# Stay silent:
+exit 0
+
+# Or inject context for the agent (SessionStart / UserPromptSubmit):
+# @{ hookSpecificOutput = @{ hookEventName = `$hookInput.hook_event_name; additionalContext = 'note' } } |
+#     ConvertTo-Json -Depth 5 -Compress
+# exit 0
+"@
+        }
+    }
+
+    [System.IO.File]::WriteAllText($hookPath, $body.Replace("`n", "`r`n"), $Utf8NoBom)
+    Write-Host ('  ' + (Get-Painted '+ created' $C.Green) + ' ' + (Get-Painted $hookPath $C.LightBlue))
+    Write-Field 'default events' ($defaultEvents -join ', ')
+    Write-Log 'INFO' 'CUSTOM' ('Hook created: ' + $hookPath + ' | template=' + $template)
+
+    $install = Read-YesNo (New-QuestionPrompt 'Install it into projects now?' 'y/n' 'y') $true 'install created hook'
+    if ($install -ne $true) {
+        Write-NoteLine ('Skipped. Install later via menu option 2 -> install existing hook.')
+        return
+    }
+    Invoke-InstallHookTargets -HookPath $hookPath -Events $defaultEvents
+}
+
+function Invoke-InstallExistingHook {
     Write-Log 'INFO' 'CUSTOM' 'Custom hook install started.'
     Write-PhaseHeader 'Install Custom Hook' $C.Input '-'
 
     $hookFiles = @(Get-ChildItem -LiteralPath $HooksDir -Filter '*.ps1' -File -ErrorAction SilentlyContinue | Sort-Object Name)
     if ($hookFiles.Count -eq 0) {
         Write-ErrorLine ('No hook scripts found in: ' + $HooksDir)
-        Write-NoteLine 'Add a .ps1 hook there first. The README shows a minimal skeleton.'
+        Write-NoteLine 'Create one first (menu option 2 -> create a new hook).'
         return
     }
 
@@ -794,49 +1011,32 @@ function Invoke-InstallCustomHook {
         }
     }
 
-    $targets = Read-ProjectList -MinimumCount 1
-    if ($null -eq $targets) {
-        Write-NoteLine 'Returning to main menu.'
-        return
-    }
+    Invoke-InstallHookTargets -HookPath $selectedHook.FullName -Events $events
+}
 
-    # ---- summary ----
-    Write-PhaseHeader 'Summary' $C.Summary '-'
-    Write-Field 'hook script' $selectedHook.FullName $C.LightBlue
-    Write-Field 'events' ($events -join ', ')
-    Write-Field 'install' 'per project: .claude\settings.local.json + .codex\hooks.json'
-    Write-MenuTitle 'Target projects:'
-    for ($i = 0; $i -lt $targets.Count; $i++) {
-        Write-MenuLine ($i + 1) $targets[$i].Name $targets[$i].Root
-    }
+# Sub-menu for option 2: create a new hook or install an existing one.
+function Invoke-CustomHookMenu {
+    Write-PhaseHeader 'Custom Hooks' $C.Input '-'
+    Write-MenuTitle 'Custom hooks:'
+    Write-MenuLine 1 'Create a new hook' '(guided templates: context note, prompt guard, tool logger, skeleton)'
+    Write-MenuLine 2 'Install an existing hook' '(any .ps1 already in hooks\)'
 
-    # ---- confirm ----
-    Write-PhaseHeader 'Confirm' $C.Confirm '-'
-    $confirm = Read-YesNo (New-QuestionPrompt 'Start now?' 'y/n' 'y') $true 'start custom hook install'
-    if ($confirm -ne $true) {
-        Write-NoteLine 'Canceled. Nothing was changed.'
-        Write-Log 'INFO' 'CUSTOM' 'User declined at confirmation; no changes applied.'
-        return
-    }
-
-    # ---- apply ----
-    Write-PhaseHeader 'Applying Changes' $C.Process '-'
-    foreach ($target in $targets) {
-        $installOutput = & $InstallScript -CustomHook $selectedHook.FullName -Events $events -TargetProject $target.Root *>&1
-        foreach ($line in @($installOutput)) {
-            Write-Log 'INFO' 'INSTALL' ([string]$line)
+    $prompt = New-QuestionPrompt 'Select an option' $null '1'
+    while ($true) {
+        $value = Read-Answer $prompt 'custom hook menu'
+        if ($value -eq '0') {
+            Write-NoteLine 'Returning to main menu.'
+            return
         }
-        Write-Host ('  ' + (Get-Painted '+ hook installed in' $C.Green) + ' ' + (Get-Painted $target.Name $C.Bold) + '  ' + (Get-Painted $target.Root $C.Gray))
+        if ($value -eq '') {
+            $value = '1'
+        }
+        switch ($value) {
+            '1' { Invoke-CreateHook; return }
+            '2' { Invoke-InstallExistingHook; return }
+            default { Write-ErrorLine 'Enter 1, 2 or 0.' }
+        }
     }
-
-    Write-PhaseHeader 'Completed' $C.Done '='
-    Write-Host (Get-Painted ('  ' + $selectedHook.Name + ' installed for: ' + ($events -join ', ')) $C.White)
-    Write-Host (Get-Painted '  Restart the Claude/Codex clients and review /hooks inside each project.' $C.White)
-    Write-NoteLine '  Codex: run /hooks in each project and trust the new command before it runs.'
-    if ($null -ne $script:LogPath) {
-        Write-Host (Get-Painted ('  Log: ' + $script:LogPath) $C.Dim)
-    }
-    Write-Log 'INFO' 'DONE' ('Custom hook installed: ' + $selectedHook.FullName + ' | events=' + ($events -join ',') + ' | projects=' + $targets.Count)
 }
 
 # ------------------------------------------------------- info flows (3/4) ----
@@ -902,13 +1102,27 @@ function Invoke-Validate {
 }
 
 # ------------------------------------------------------------- main menu ----
+# Startup banner, printed once: centered bold title over a full-width bar,
+# followed by the log-file note.
+function Show-Banner {
+    $title = 'Hook Maker'
+    $width = Get-TermWidth
+    $pad = [Math]::Max(0, [int](($width - $title.Length) / 2))
+    Write-Host ((' ' * $pad) + (Get-Painted $title $C.Title))
+    Write-Host (Get-Painted ('=' * $width) $C.TitleBar)
+    if ($null -ne $script:LogPath) {
+        Write-NoteLine ('Logging to: ' + $script:LogPath)
+    }
+    else {
+        Write-NoteLine 'Logging to: (logging is disabled)'
+    }
+}
+
 function Show-MainMenu {
-    Write-PhaseHeader 'CROSS-PROJECT SYNC WIZARD' $C.Title '='
-    Write-Host (Get-Painted '  Keeps the .ai knowledge of multiple projects in sync via agent hooks.' $C.Dim)
     Write-Host ''
     Write-MenuTitle 'Main menu:'
     Write-MenuLine 1 'Create or update a sync group'
-    Write-MenuLine 2 'Install a custom hook' '(from the hooks\ folder)'
+    Write-MenuLine 2 'Create or install a custom hook' '(hooks\ folder)'
     Write-MenuLine 3 'Show configured profiles'
     Write-MenuLine 4 'Validate configuration'
 }
@@ -928,6 +1142,7 @@ Write-Log 'INFO' 'STARTUP' ('PowerShell: ' + $PSVersionTable.PSVersion.ToString(
 Write-Log 'INFO' 'STARTUP' ('NoInstall: ' + [bool]$NoInstall)
 
 try {
+    Show-Banner
     :menu while ($true) {
         $script:QuestionNumber = 0
         Show-MainMenu
@@ -939,7 +1154,7 @@ try {
             }
             switch ($choice) {
                 '1' { Invoke-CreateGroup; Wait-MenuReturn; continue menu }
-                '2' { Invoke-InstallCustomHook; Wait-MenuReturn; continue menu }
+                '2' { Invoke-CustomHookMenu; Wait-MenuReturn; continue menu }
                 '3' { Show-Profiles; Wait-MenuReturn; continue menu }
                 '4' { Invoke-Validate; Wait-MenuReturn; continue menu }
                 '0' { break menu }
