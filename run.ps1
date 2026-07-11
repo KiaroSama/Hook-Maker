@@ -56,7 +56,37 @@ if ($ScriptArgs) {
 $shellArgs = @('-NoLogo', '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $wizardPath) + $forwarded
 
 # Prefer a Windows Terminal window unless we are already inside one.
-$insideWindowsTerminal = -not [string]::IsNullOrEmpty($env:WT_SESSION)
+# WT_SESSION is only set when Windows Terminal itself spawned this process. When a
+# double-clicked script is merely HOSTED in Windows Terminal (the Windows 11
+# "default terminal application" delegation), WT_SESSION is empty - so also check
+# who owns the console window, otherwise a second terminal window would open.
+function Test-HostedInWindowsTerminal {
+    if (-not [string]::IsNullOrEmpty($env:WT_SESSION)) {
+        return $true
+    }
+    try {
+        Add-Type -Namespace HookMaker -Name ConsoleUtil -MemberDefinition @'
+[DllImport("kernel32.dll")] public static extern System.IntPtr GetConsoleWindow();
+[DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(System.IntPtr hWnd, out uint pid);
+'@ -ErrorAction Stop
+        $consoleWindow = [HookMaker.ConsoleUtil]::GetConsoleWindow()
+        if ($consoleWindow -eq [IntPtr]::Zero) {
+            return $false
+        }
+        $consolePid = 0
+        [void][HookMaker.ConsoleUtil]::GetWindowThreadProcessId($consoleWindow, [ref]$consolePid)
+        if ($consolePid -eq 0) {
+            return $false
+        }
+        $owner = Get-Process -Id $consolePid -ErrorAction Stop
+        return ($owner.ProcessName -match 'WindowsTerminal|OpenConsole')
+    }
+    catch {
+        return $false
+    }
+}
+
+$insideWindowsTerminal = Test-HostedInWindowsTerminal
 $wt = Get-Command wt.exe -ErrorAction SilentlyContinue
 if (-not $insideWindowsTerminal -and $wt) {
     try {
