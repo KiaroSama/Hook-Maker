@@ -1,17 +1,26 @@
-# GitSyncCheck - warns the agent when the current project is out of sync with
-# its git remote (GitHub etc.). Intended for the SessionStart event.
+# GitSyncCheck - tells the agent when the current project is out of sync with
+# its git remote (GitHub etc.): uncommitted changes, unpushed/unpulled commits,
+# or a branch without an upstream. Silent for in-sync and non-git projects.
 #
-# Behavior (silent unless something needs attention):
-# - Not a git repository, or no remote configured -> exit silently.
-# - Fetches the upstream quietly (skipped when offline; then compares against
-#   the last known remote state).
-# - Reports: uncommitted local changes, commits ahead of the remote (unpushed),
-#   commits behind the remote (unpulled), or a missing upstream branch.
+# Events:
+# - SessionStart / UserPromptSubmit: injects the status as additional context.
+# - Stop / SubagentStop: asks the agent (once, with a cooldown) to decide
+#   whether to push/pull before finishing. Never loops: a stop that was already
+#   continued by a hook (stop_hook_active) is left alone.
 #
-# Install via the Hook Maker menu: option 2 -> install existing hook -> SessionStart.
+# Optional .env next to this script (copy .env.example):
+#   COOLDOWN_MINUTES  minimum minutes between Stop reminders per project (default 30)
 
 Set-StrictMode -Version 2.0
 $ErrorActionPreference = 'Stop'
+
+function Get-Field {
+    param($Obj, [string]$Name)
+    if ($null -ne $Obj -and $null -ne $Obj.PSObject.Properties[$Name] -and $null -ne $Obj.$Name) {
+        return $Obj.$Name
+    }
+    return $null
+}
 
 $hookInput = $null
 try {
@@ -25,14 +34,66 @@ if ($null -eq $hookInput) {
     exit 0
 }
 
-$cwd = ''
-if ($null -ne $hookInput.PSObject.Properties['cwd'] -and $null -ne $hookInput.cwd) {
-    $cwd = [string]$hookInput.cwd
-}
+$cwd = [string](Get-Field $hookInput 'cwd')
 if ([string]::IsNullOrWhiteSpace($cwd) -or -not (Test-Path -LiteralPath $cwd -PathType Container)) {
     exit 0
 }
+$eventName = [string](Get-Field $hookInput 'hook_event_name')
+if ([string]::IsNullOrWhiteSpace($eventName)) {
+    $eventName = 'SessionStart'
+}
+$isStopEvent = ($eventName -eq 'Stop' -or $eventName -eq 'SubagentStop')
 
+# Never loop: if this stop was already continued by a hook, stay silent.
+if ($isStopEvent -and (Get-Field $hookInput 'stop_hook_active') -eq $true) {
+    exit 0
+}
+
+# ---- optional .env ----
+$config = @{}
+$envPath = Join-Path $PSScriptRoot '.env'
+if (Test-Path -LiteralPath $envPath -PathType Leaf) {
+    foreach ($line in [System.IO.File]::ReadAllLines($envPath)) {
+        $trimmed = $line.Trim()
+        if ($trimmed -eq '' -or $trimmed.StartsWith('#')) { continue }
+        $separator = $trimmed.IndexOf('=')
+        if ($separator -gt 0) {
+            $config[$trimmed.Substring(0, $separator).Trim()] = $trimmed.Substring($separator + 1).Trim()
+        }
+    }
+}
+$cooldownMinutes = 30
+if ($config.ContainsKey('COOLDOWN_MINUTES')) {
+    try { $cooldownMinutes = [int]$config['COOLDOWN_MINUTES'] } catch { }
+}
+
+# ---- Stop cooldown state (per project) ----
+function Get-ShortHash {
+    param([string]$Text)
+    $sha = [System.Security.Cryptography.SHA256]::Create()
+    try {
+        return ([System.BitConverter]::ToString($sha.ComputeHash([System.Text.Encoding]::UTF8.GetBytes($Text)))).Replace('-', '').ToLowerInvariant().Substring(0, 10)
+    }
+    finally {
+        $sha.Dispose()
+    }
+}
+$statePath = $null
+if ($isStopEvent) {
+    $stateDir = Join-Path $env:LOCALAPPDATA 'HookMaker\state'
+    $statePath = Join-Path $stateDir ('GitSyncCheck-' + (Get-ShortHash $cwd.ToLowerInvariant()) + '.txt')
+    if (Test-Path -LiteralPath $statePath -PathType Leaf) {
+        try {
+            $last = [DateTime]::Parse([System.IO.File]::ReadAllText($statePath).Trim(), [System.Globalization.CultureInfo]::InvariantCulture, [System.Globalization.DateTimeStyles]::RoundtripKind)
+            if (([DateTime]::UtcNow - $last.ToUniversalTime()).TotalMinutes -lt $cooldownMinutes) {
+                exit 0
+            }
+        }
+        catch { }
+    }
+}
+
+# ---- git inspection ----
 function Invoke-Git {
     param([Parameter(Mandatory = $true)][string[]]$GitArgs)
 
@@ -43,8 +104,6 @@ function Invoke-Git {
 if ($null -eq (Get-Command git -ErrorAction SilentlyContinue)) {
     exit 0
 }
-
-# Inside a git work tree with at least one remote?
 $inRepo = Invoke-Git @('rev-parse', '--is-inside-work-tree')
 if (-not $inRepo.Ok -or [string]$inRepo.Output[0] -ne 'true') {
     exit 0
@@ -62,7 +121,6 @@ if (-not $fetch.Ok) {
     [void]$findings.Add('The remote could not be fetched (offline?); comparison uses the last known remote state.')
 }
 
-# Uncommitted local changes (tracked + untracked).
 $status = Invoke-Git @('status', '--porcelain')
 if ($status.Ok) {
     $dirtyCount = @($status.Output | Where-Object { $_ }).Count
@@ -71,7 +129,6 @@ if ($status.Ok) {
     }
 }
 
-# Ahead/behind relative to the upstream branch.
 $branch = Invoke-Git @('rev-parse', '--abbrev-ref', 'HEAD')
 $branchName = ''
 if ($branch.Ok) {
@@ -105,11 +162,18 @@ if ($findings.Count -eq 0) {
     exit 0
 }
 
-$eventName = 'SessionStart'
-if ($null -ne $hookInput.PSObject.Properties['hook_event_name'] -and $null -ne $hookInput.hook_event_name) {
-    $eventName = [string]$hookInput.hook_event_name
+$message = 'GIT SYNC STATUS (' + $cwd + "):`n- " + ($findings.ToArray() -join "`n- ")
+
+if ($isStopEvent) {
+    if ($null -ne $statePath) {
+        New-Item -ItemType Directory -Path (Split-Path -Parent $statePath) -Force | Out-Null
+        [System.IO.File]::WriteAllText($statePath, [DateTime]::UtcNow.ToString('o'))
+    }
+    $reason = $message + "`nAt your discretion: commit/push/pull now if this task's result should be synced; otherwise finish - this reminder respects a cooldown."
+    @{ decision = 'block'; reason = $reason } | ConvertTo-Json -Compress
+    exit 0
 }
-$message = "GIT SYNC STATUS (" + $cwd + "):`n- " + ($findings.ToArray() -join "`n- ")
+
 @{ hookSpecificOutput = @{ hookEventName = $eventName; additionalContext = $message } } |
     ConvertTo-Json -Depth 5 -Compress
 exit 0

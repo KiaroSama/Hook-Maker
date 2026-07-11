@@ -381,6 +381,52 @@ function Set-ObjectProperty {
     }
 }
 
+# Simple KEY=VALUE .env parser ('#' comments allowed). Returns a hashtable.
+function Read-EnvFile {
+    param([Parameter(Mandatory = $true)][string]$Path)
+
+    $values = @{}
+    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
+        return $values
+    }
+    foreach ($line in [System.IO.File]::ReadAllLines($Path)) {
+        $trimmed = $line.Trim()
+        if ($trimmed -eq '' -or $trimmed.StartsWith('#')) { continue }
+        $separator = $trimmed.IndexOf('=')
+        if ($separator -gt 0) {
+            $values[$trimmed.Substring(0, $separator).Trim()] = $trimmed.Substring($separator + 1).Trim()
+        }
+    }
+    return $values
+}
+
+# Hooks live one folder per hook: hooks\<Name>\<Name>.ps1 (+ .env/.env.example).
+# Loose .ps1 files directly in hooks\ are still accepted for compatibility.
+function Get-HookEntries {
+    $entries = New-Object System.Collections.Generic.List[object]
+    foreach ($dir in @(Get-ChildItem -LiteralPath $HooksDir -Directory -ErrorAction SilentlyContinue | Sort-Object Name)) {
+        $script = Join-Path $dir.FullName ($dir.Name + '.ps1')
+        if (-not (Test-Path -LiteralPath $script -PathType Leaf)) {
+            $firstScript = @(Get-ChildItem -LiteralPath $dir.FullName -Filter '*.ps1' -File -ErrorAction SilentlyContinue | Sort-Object Name) | Select-Object -First 1
+            if ($null -eq $firstScript) { continue }
+            $script = $firstScript.FullName
+        }
+        [void]$entries.Add([pscustomobject]@{
+            Name       = $dir.Name
+            ScriptPath = $script
+            EnvPath    = (Join-Path $dir.FullName '.env')
+        })
+    }
+    foreach ($file in @(Get-ChildItem -LiteralPath $HooksDir -Filter '*.ps1' -File -ErrorAction SilentlyContinue | Sort-Object Name)) {
+        [void]$entries.Add([pscustomobject]@{
+            Name       = $file.BaseName
+            ScriptPath = $file.FullName
+            EnvPath    = ''
+        })
+    }
+    return $entries.ToArray()
+}
+
 # ----------------------------------------------------------- input phase ----
 # Collects project root paths. Returns an array, or $null when the user backs out.
 function Read-ProjectList {
@@ -566,6 +612,33 @@ function Invoke-CreateGroup {
         $events = @($config.defaults.events)
     }
 
+    # Optional config mode: hooks\CrossProjectSyncHook\.env can predefine the
+    # group's project paths (SYNC_PROJECTS) so nothing has to be typed.
+    $configProjects = @()
+    $engineEnv = Read-EnvFile (Join-Path $HooksDir 'CrossProjectSyncHook\.env')
+    if ($engineEnv.ContainsKey('SYNC_PROJECTS') -and $engineEnv['SYNC_PROJECTS'] -ne '') {
+        foreach ($path in @($engineEnv['SYNC_PROJECTS'].Split(';') | ForEach-Object { $_.Trim().Trim('"') } | Where-Object { $_ -ne '' })) {
+            try {
+                $root = Normalize-Path $path
+            }
+            catch {
+                Write-NoteLine ('Ignoring invalid path in SYNC_PROJECTS: ' + $path)
+                continue
+            }
+            if (-not (Test-Path -LiteralPath $root -PathType Container)) {
+                Write-NoteLine ('Ignoring missing directory in SYNC_PROJECTS: ' + $root)
+                continue
+            }
+            $aiPath = Join-Path $root '.ai'
+            $configProjects += [pscustomobject][ordered]@{
+                Name     = Split-Path -Leaf $root
+                Root     = $root
+                AiPath   = $aiPath
+                AiExists = (Test-Path -LiteralPath $aiPath -PathType Container)
+            }
+        }
+    }
+
     # Stage machine: project entry (0) <-> confirm (1). Back at confirm returns
     # to project entry; back at project entry returns to the main menu.
     $projects = $null
@@ -574,9 +647,21 @@ function Invoke-CreateGroup {
     $stage = 0
     while ($true) {
         if ($stage -eq 0) {
-            $projects = Read-ProjectList -MinimumCount 2 -ShowAiNote
+            $projects = $null
+            if ($configProjects.Count -ge 2) {
+                $useConfig = Read-YesNo (New-QuestionPrompt 'Use the project paths from the config?' ($configProjects.Count.ToString() + ' path(s) in hooks\CrossProjectSyncHook\.env') 'y') $true 'use sync config'
+                if ($null -eq $useConfig) {
+                    return
+                }
+                if ($useConfig -eq $true) {
+                    $projects = @($configProjects)
+                }
+            }
             if ($null -eq $projects) {
-                return
+                $projects = Read-ProjectList -MinimumCount 2 -ShowAiNote
+                if ($null -eq $projects) {
+                    return
+                }
             }
             $groupProfile = New-GroupProfile -Projects $projects
             $routeCount = @($groupProfile.routes).Count
@@ -794,52 +879,12 @@ exit 0
 
 function Get-HookBody-GitSync {
     param([string]$HookName)
-    return @"
-# $HookName - warns the agent when the project is out of sync with its git
-# remote (uncommitted changes, unpushed/unpulled commits, missing upstream).
-# Generated by Hook Maker for SessionStart. Silent for in-sync / non-git dirs.
-Set-StrictMode -Version 2.0
-`$ErrorActionPreference = 'Stop'
-`$hookInput = `$null
-try { `$raw = [Console]::In.ReadToEnd(); if (-not [string]::IsNullOrWhiteSpace(`$raw)) { `$hookInput = `$raw | ConvertFrom-Json } } catch { }
-if (`$null -eq `$hookInput) { exit 0 }
-`$cwd = ''
-if (`$null -ne `$hookInput.PSObject.Properties['cwd'] -and `$null -ne `$hookInput.cwd) { `$cwd = [string]`$hookInput.cwd }
-if ([string]::IsNullOrWhiteSpace(`$cwd) -or -not (Test-Path -LiteralPath `$cwd -PathType Container)) { exit 0 }
-if (`$null -eq (Get-Command git -ErrorAction SilentlyContinue)) { exit 0 }
-function Invoke-Git { param([string[]]`$GitArgs) `$o = & git -C `$cwd @GitArgs 2>`$null; return [pscustomobject]@{ Ok = (`$LASTEXITCODE -eq 0); Output = @(`$o) } }
-`$inRepo = Invoke-Git @('rev-parse', '--is-inside-work-tree')
-if (-not `$inRepo.Ok -or [string]`$inRepo.Output[0] -ne 'true') { exit 0 }
-`$remotes = Invoke-Git @('remote')
-if (-not `$remotes.Ok -or @(`$remotes.Output | Where-Object { `$_ }).Count -eq 0) { exit 0 }
-`$findings = New-Object System.Collections.Generic.List[string]
-`$fetch = Invoke-Git @('fetch', '--quiet')
-if (-not `$fetch.Ok) { [void]`$findings.Add('The remote could not be fetched (offline?); using the last known remote state.') }
-`$status = Invoke-Git @('status', '--porcelain')
-if (`$status.Ok) { `$n = @(`$status.Output | Where-Object { `$_ }).Count; if (`$n -gt 0) { [void]`$findings.Add('There are ' + `$n + ' uncommitted change(s) in the working tree.') } }
-`$branch = Invoke-Git @('rev-parse', '--abbrev-ref', 'HEAD'); `$branchName = ''
-if (`$branch.Ok) { `$branchName = [string]`$branch.Output[0] }
-`$upstream = Invoke-Git @('rev-parse', '--abbrev-ref', '--symbolic-full-name', '@{upstream}')
-if (`$upstream.Ok) {
-    `$upstreamName = [string]`$upstream.Output[0]
-    `$counts = Invoke-Git @('rev-list', '--left-right', '--count', (`$upstreamName + '...HEAD'))
-    if (`$counts.Ok -and `$counts.Output.Count -gt 0) {
-        `$parts = ([string]`$counts.Output[0]) -split '\s+'
-        if (`$parts.Count -ge 2) {
-            `$behind = [int]`$parts[0]; `$ahead = [int]`$parts[1]
-            if (`$behind -gt 0) { [void]`$findings.Add('Branch ' + `$branchName + ' is ' + `$behind + ' commit(s) BEHIND ' + `$upstreamName + ' (pull needed).') }
-            if (`$ahead -gt 0) { [void]`$findings.Add('Branch ' + `$branchName + ' is ' + `$ahead + ' commit(s) AHEAD of ' + `$upstreamName + ' (push needed).') }
-        }
-    }
-}
-elseif (`$branchName -ne '' -and `$branchName -ne 'HEAD') { [void]`$findings.Add('Branch ' + `$branchName + ' has no upstream branch configured (never pushed?).') }
-if (`$findings.Count -eq 0) { exit 0 }
-`$eventName = 'SessionStart'
-if (`$null -ne `$hookInput.PSObject.Properties['hook_event_name'] -and `$null -ne `$hookInput.hook_event_name) { `$eventName = [string]`$hookInput.hook_event_name }
-`$message = "GIT SYNC STATUS (" + `$cwd + "):``n- " + (`$findings.ToArray() -join "``n- ")
-@{ hookSpecificOutput = @{ hookEventName = `$eventName; additionalContext = `$message } } | ConvertTo-Json -Depth 5 -Compress
-exit 0
-"@
+
+    # Reuse the shipped GitSyncCheck hook verbatim (renamed) so the template
+    # never drifts from the maintained implementation.
+    $shipped = Join-Path $HooksDir 'GitSyncCheck\GitSyncCheck.ps1'
+    $content = [System.IO.File]::ReadAllText($shipped)
+    return $content.Replace('GitSyncCheck', $HookName).Replace("`r`n", "`n")
 }
 
 # The five guided templates. Details=$true means one question is asked.
@@ -934,8 +979,8 @@ function Invoke-CreateHook {
                     Write-ErrorLine 'Use only letters, digits and dashes, starting with a letter.'
                     break
                 }
-                if (Test-Path -LiteralPath (Join-Path $HooksDir ($value + '.ps1')) -PathType Leaf) {
-                    Write-ErrorLine ('A hook with this name already exists: ' + (Join-Path $HooksDir ($value + '.ps1')))
+                if (Test-Path -LiteralPath (Join-Path $HooksDir $value)) {
+                    Write-ErrorLine ('A hook with this name already exists: ' + (Join-Path $HooksDir $value))
                     break
                 }
                 $hookName = $value
@@ -1003,8 +1048,10 @@ function Invoke-CreateHook {
                 }
             }
             3 {
-                # Build + write the file, then ask whether to install now.
-                $hookPath = Join-Path $HooksDir ($hookName + '.ps1')
+                # Build + write the hook folder (script + .env.example), then
+                # ask whether to install now.
+                $hookFolder = Join-Path $HooksDir $hookName
+                $hookPath = Join-Path $hookFolder ($hookName + '.ps1')
                 switch ($template.Key) {
                     '1' { $body = Get-HookBody-ContextNote -HookName $hookName -Message $details }
                     '2' { $body = Get-HookBody-PromptGuard -HookName $hookName -Words @($details.Split(',')) }
@@ -1012,8 +1059,17 @@ function Invoke-CreateHook {
                     '4' { $body = Get-HookBody-GitSync -HookName $hookName }
                     '5' { $body = Get-HookBody-Skeleton -HookName $hookName }
                 }
+                New-Item -ItemType Directory -Path $hookFolder -Force | Out-Null
                 [System.IO.File]::WriteAllText($hookPath, $body.Replace("`n", "`r`n"), $Utf8NoBom)
+                $envExample = '# ' + $hookName + " configuration.`n" +
+                    "# Copy this file to `".env`" (same folder) and edit. `".env`" is git-ignored.`n`n" +
+                    "# Events to register on (comma separated).`n" +
+                    'EVENTS=' + ($template.DefaultEvents -join ',') + "`n`n" +
+                    "# Project roots for config-based install from the Hook Maker menu (semicolon separated).`n" +
+                    "TARGET_PROJECTS=`n"
+                [System.IO.File]::WriteAllText((Join-Path $hookFolder '.env.example'), $envExample.Replace("`n", "`r`n"), $Utf8NoBom)
                 Write-Host ('  ' + (Get-Painted '+ created' $C.Green) + ' ' + (Get-Painted $hookPath $C.LightBlue))
+                Write-Host ('  ' + (Get-Painted '+ created' $C.Green) + ' ' + (Get-Painted (Join-Path $hookFolder '.env.example') $C.LightBlue))
                 Write-Field 'template' $template.Label
                 Write-Field 'default events' ($template.DefaultEvents -join ', ')
                 Write-Log 'INFO' 'CUSTOM' ('Hook created: ' + $hookPath + ' | template=' + $template.Key)
@@ -1037,14 +1093,14 @@ function Invoke-CreateHook {
     }
 }
 
-# Install an existing hooks\*.ps1 as a stage machine.
+# Install an existing hook (one folder per hook) as a stage machine.
 function Invoke-InstallExistingHook {
     Write-Log 'INFO' 'CUSTOM' 'Custom hook install started.'
     Write-PhaseHeader 'Install an Existing Hook' $C.Input '-'
 
-    $hookFiles = @(Get-ChildItem -LiteralPath $HooksDir -Filter '*.ps1' -File -ErrorAction SilentlyContinue | Sort-Object Name)
+    $hookFiles = @(Get-HookEntries)
     if ($hookFiles.Count -eq 0) {
-        Write-ErrorLine ('No hook scripts found in: ' + $HooksDir)
+        Write-ErrorLine ('No hooks found in: ' + $HooksDir)
         Write-NoteLine 'Create one first (menu option 2 -> create a new hook).'
         return 'back'
     }
@@ -1061,7 +1117,7 @@ function Invoke-InstallExistingHook {
                 Write-MenuTitle 'Available hooks (hooks\):'
                 for ($i = 0; $i -lt $hookFiles.Count; $i++) {
                     $suffix = ''
-                    if ($hookFiles[$i].Name -eq 'CrossProjectSyncHook.ps1') {
+                    if ($hookFiles[$i].Name -eq 'CrossProjectSyncHook') {
                         $suffix = '(sync engine - normally configured via option 1)'
                     }
                     Write-MenuLine ($i + 1) $hookFiles[$i].Name $suffix
@@ -1128,7 +1184,7 @@ function Invoke-InstallExistingHook {
             }
             2 {
                 # Targets + confirm + install
-                $result = Invoke-CustomHookTargets -HookPath $selectedHook.FullName -Events $events
+                $result = Invoke-CustomHookTargets -HookPath $selectedHook.ScriptPath -Events $events
                 if ($result -eq 'back') {
                     $stage = 1
                     break
@@ -1136,6 +1192,121 @@ function Invoke-InstallExistingHook {
                 return 'done'
             }
         }
+    }
+}
+
+# Install an existing hook using its .env (EVENTS + TARGET_PROJECTS): no
+# questions besides the hook selection and one confirm.
+function Invoke-InstallHookFromConfig {
+    Write-Log 'INFO' 'CUSTOM' 'Config-based hook install started.'
+    Write-PhaseHeader 'Install From Config (.env)' $C.Input '-'
+
+    $hookFiles = @(Get-HookEntries | Where-Object { $_.EnvPath -ne '' })
+    if ($hookFiles.Count -eq 0) {
+        Write-ErrorLine ('No hooks found in: ' + $HooksDir)
+        return 'back'
+    }
+
+    while ($true) {
+        Write-MenuTitle 'Available hooks (hooks\):'
+        for ($i = 0; $i -lt $hookFiles.Count; $i++) {
+            $suffix = '(no .env yet)'
+            if (Test-Path -LiteralPath $hookFiles[$i].EnvPath -PathType Leaf) {
+                $suffix = '(.env found)'
+            }
+            Write-MenuLine ($i + 1) $hookFiles[$i].Name $suffix
+        }
+        $value = Read-Answer (New-QuestionPrompt 'Select a hook' $null '1') 'select hook for config install'
+        if ($value -eq '0') {
+            return 'back'
+        }
+        if ($value -eq '') {
+            $value = '1'
+        }
+        $index = 0
+        if (-not ([int]::TryParse($value, [ref]$index) -and $index -ge 1 -and $index -le $hookFiles.Count)) {
+            Write-ErrorLine ('Enter a number between 1 and ' + $hookFiles.Count + '.')
+            continue
+        }
+        $hook = $hookFiles[$index - 1]
+
+        if (-not (Test-Path -LiteralPath $hook.EnvPath -PathType Leaf)) {
+            Write-ErrorLine ('No .env found for ' + $hook.Name + '.')
+            Write-NoteLine ('Copy ' + (Join-Path (Split-Path -Parent $hook.EnvPath) '.env.example') + ' to .env and fill TARGET_PROJECTS.')
+            continue
+        }
+        $envValues = Read-EnvFile $hook.EnvPath
+
+        $events = @('SessionStart', 'UserPromptSubmit')
+        if ($envValues.ContainsKey('EVENTS') -and $envValues['EVENTS'] -ne '') {
+            $events = @($envValues['EVENTS'].Split(',') | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne '' })
+        }
+        $targetsRaw = ''
+        if ($envValues.ContainsKey('TARGET_PROJECTS')) {
+            $targetsRaw = $envValues['TARGET_PROJECTS']
+        }
+        $targetPaths = @($targetsRaw.Split(';') | ForEach-Object { $_.Trim().Trim('"') } | Where-Object { $_ -ne '' })
+        if ($targetPaths.Count -eq 0) {
+            Write-ErrorLine ('TARGET_PROJECTS is empty in ' + $hook.EnvPath + '.')
+            Write-NoteLine 'Fill it with semicolon-separated project roots and retry.'
+            continue
+        }
+        $targets = New-Object System.Collections.Generic.List[object]
+        $invalid = $false
+        foreach ($path in $targetPaths) {
+            try {
+                $root = Normalize-Path $path
+            }
+            catch {
+                Write-ErrorLine ('Invalid path in TARGET_PROJECTS: ' + $path)
+                $invalid = $true
+                break
+            }
+            if (-not (Test-Path -LiteralPath $root -PathType Container)) {
+                Write-ErrorLine ('Directory not found (from TARGET_PROJECTS): ' + $root)
+                $invalid = $true
+                break
+            }
+            [void]$targets.Add([pscustomobject]@{ Name = (Split-Path -Leaf $root); Root = $root })
+        }
+        if ($invalid) {
+            continue
+        }
+
+        # ---- summary + confirm ----
+        Write-PhaseHeader 'Summary' $C.Summary '-'
+        Write-Field 'hook script' $hook.ScriptPath $C.LightBlue
+        Write-Field 'config' $hook.EnvPath $C.LightBlue
+        Write-Field 'events' ($events -join ', ')
+        Write-Field 'install' 'per project: .claude\settings.local.json + .codex\hooks.json'
+        Write-MenuTitle 'Target projects (from .env):'
+        for ($i = 0; $i -lt $targets.Count; $i++) {
+            Write-MenuLine ($i + 1) $targets[$i].Name $targets[$i].Root
+        }
+        Write-PhaseHeader 'Confirm' $C.Confirm '-'
+        $confirm = Read-YesNo (New-QuestionPrompt 'Start now?' 'y/n' 'y') $true 'start config install'
+        if ($null -eq $confirm) {
+            continue
+        }
+        if ($confirm -ne $true) {
+            Write-NoteLine 'Canceled. Nothing was installed.'
+            return 'done'
+        }
+
+        Write-PhaseHeader 'Applying Changes' $C.Process '-'
+        foreach ($target in $targets) {
+            $installOutput = & $InstallScript -CustomHook $hook.ScriptPath -Events @($events) -TargetProject $target.Root *>&1
+            foreach ($line in @($installOutput)) {
+                Write-Log 'INFO' 'INSTALL' ([string]$line)
+            }
+            Write-Host ('  ' + (Get-Painted '+ hook installed in' $C.Green) + ' ' + (Get-Painted $target.Name $C.Bold) + '  ' + (Get-Painted $target.Root $C.Gray))
+        }
+        Write-PhaseHeader 'Completed' $C.Done '='
+        Write-Host (Get-Painted ('  ' + $hook.Name + ' installed for: ' + ($events -join ', ')) $C.White)
+        Write-Host (Get-Painted '  Restart the Claude/Codex clients and review /hooks inside each project.' $C.White)
+        Write-NoteLine '  Codex: run /hooks in each project and trust the new command before it runs.'
+        Write-Log 'INFO' 'DONE' ('Config install: ' + $hook.ScriptPath + ' | events=' + ($events -join ',') + ' | projects=' + $targets.Count)
+        return 'done'
     }
 }
 
@@ -1148,7 +1319,8 @@ function Invoke-CustomHookMenu {
         Write-PhaseHeader 'Custom Hooks' $C.Input '-'
         Write-MenuTitle 'Custom hooks:'
         Write-MenuLine 1 'Create a new hook' '(guided templates)'
-        Write-MenuLine 2 'Install an existing hook' '(any .ps1 already in hooks\)'
+        Write-MenuLine 2 'Install an existing hook' '(interactive questions)'
+        Write-MenuLine 3 'Install from config' '(reads the hook''s .env - no questions)'
         $value = Read-Answer (New-QuestionPrompt 'Select an option' $null '1') 'custom hook menu'
         if ($value -eq '0') {
             return
@@ -1159,7 +1331,8 @@ function Invoke-CustomHookMenu {
         switch ($value) {
             '1' { if ((Invoke-CreateHook) -eq 'done') { return } }
             '2' { if ((Invoke-InstallExistingHook) -eq 'done') { return } }
-            default { Write-ErrorLine 'Enter 1, 2 or 0.' }
+            '3' { if ((Invoke-InstallHookFromConfig) -eq 'done') { return } }
+            default { Write-ErrorLine 'Enter 1, 2, 3 or 0.' }
         }
     }
 }
