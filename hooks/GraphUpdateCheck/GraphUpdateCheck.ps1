@@ -136,6 +136,6 @@ if ($workTime -le $graphTime.AddMinutes(2)) {
 New-Item -ItemType Directory -Path $stateDir -Force | Out-Null
 [System.IO.File]::WriteAllText($statePath, [DateTime]::UtcNow.ToString('o'))
 
-$reason = 'GRAPH UPDATE CHECK: graphify-out/graph.json predates the latest project changes. Decide for yourself: if this task changed code structure (files, functions, relationships), run: graphify update .  (AST-only, no API cost). If the changes were trivial, docs-only, or config-only, finish now without updating - this reminder returns after future changes.'
+$reason = 'GRAPH UPDATE CHECK: graphify-out/graph.json predates the latest project changes. Per the graphify rule, decide for yourself: if this task changed code structure (files, functions, cross-file relationships), run: graphify update .  (AST-only, no API cost). Do NOT update for tiny edits, documentation-only changes, or one-file fixes - in that case finish now; this reminder returns after future changes.'
 @{ decision = 'block'; reason = $reason } | ConvertTo-Json -Compress
 exit 0

@@ -148,6 +148,6 @@ if ($reasonWhy -eq '') {
 New-Item -ItemType Directory -Path $stateDir -Force | Out-Null
 [System.IO.File]::WriteAllText($statePath, [DateTime]::UtcNow.ToString('o'))
 
-$reason = 'AI MEMORY CHECK: the task is ending but ' + $reasonWhy + '. Per the memory policy: if this task produced durable, reusable knowledge, update .ai/memory.md first and then ONLY the specialized files that gained value (LESSON.md, REFERENCE.md, COMMANDS.md, ...). If nothing reusable was learned, finish now without updating - this reminder respects a cooldown.'
+$reason = 'AI MEMORY CHECK: the task is ending but ' + $reasonWhy + '. Per the AI Context Memory Policy, memory updates follow MEANINGFUL work only, in this order: (1) update .ai/memory.md first (index/router), (2) update ONLY the specialized files that gained reusable value (LESSON.md, REFERENCE.md, COMMANDS.md, DECISIONS.md, ...), (3) never duplicate a lesson across files - full detail in the best file, links elsewhere. Keep entries factual and deduplicated. If this task was trivial or produced nothing reusable, finish now WITHOUT updating - this reminder respects a cooldown.'
 @{ decision = 'block'; reason = $reason } | ConvertTo-Json -Compress
 exit 0
