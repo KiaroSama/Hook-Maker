@@ -433,9 +433,6 @@ function Invoke-CreateGroup {
         $null -ne $config.defaults.PSObject.Properties['events'] -and $null -ne $config.defaults.events) {
         $events = @($config.defaults.events)
     }
-    $claudeSettings = Join-Path $HOME '.claude\settings.json'
-    $codexHooks = Join-Path $HOME '.codex\hooks.json'
-
     # ---- summary ----
     Write-PhaseHeader 'Summary' $C.Summary '-'
     for ($i = 0; $i -lt $projects.Count; $i++) {
@@ -453,9 +450,9 @@ function Invoke-CreateGroup {
         Write-Setting 'Hook install' 'skipped (-NoInstall)' $C.Amber
     }
     else {
-        Write-Setting 'Hook install' 'Claude + Codex'
-        Write-Setting 'Claude settings' $claudeSettings $C.Path
-        Write-Setting 'Codex hooks' $codexHooks $C.Path
+        Write-Setting 'Hook install' 'per project (local scope), Claude + Codex'
+        Write-Setting 'Claude' 'each <project>\.claude\settings.local.json' $C.Path
+        Write-Setting 'Codex' 'each <project>\.codex\hooks.json' $C.Path
     }
     Write-Host ''
     Write-Host ($C.Dim + '  Routes:' + $C.Reset)
@@ -534,18 +531,22 @@ function Invoke-CreateGroup {
         Write-Log 'INFO' 'INSTALL' 'Hook install skipped by -NoInstall.'
     }
     else {
-        $installOutput = & $InstallScript -Profile $groupProfile.id -ConfigPath $ConfigPath *>&1
-        foreach ($line in @($installOutput)) {
-            Write-Host ('    ' + $C.Dim + [string]$line + $C.Reset)
-            Write-Log 'INFO' 'INSTALL' ([string]$line)
+        # Install the hook locally in each project, not in the user's home settings,
+        # so only these projects carry the hook and nothing else on the machine is touched.
+        foreach ($project in $projects) {
+            $installOutput = & $InstallScript -Profile $groupProfile.id -ConfigPath $ConfigPath -TargetProject $project.Root *>&1
+            foreach ($line in @($installOutput)) {
+                Write-Log 'INFO' 'INSTALL' ([string]$line)
+            }
+            Write-Host ('  ' + $C.Green + '+ hook installed in ' + $C.Reset + $C.Value + $project.Name + $C.Reset + $C.Dim + '  ' + $project.Root + $C.Reset)
         }
-        Write-Host ('  ' + $C.Green + '+ hook installed for profile ' + $C.Reset + $C.Aqua + $groupProfile.id + $C.Reset)
     }
 
     $stopwatch.Stop()
     Write-PhaseHeader 'Completed' $C.Done '='
-    Write-Host ('  ' + $C.Value + 'Restart the Claude/Codex clients and review /hooks.' + $C.Reset)
+    Write-Host ('  ' + $C.Value + 'Restart the Claude/Codex clients and review /hooks inside each project.' + $C.Reset)
     Write-Host ('  ' + $C.Value + 'Opening any of these projects now reviews the other projects'' knowledge first.' + $C.Reset)
+    Write-Host ('  ' + $C.Dim + 'Codex: run /hooks in each project and trust the new command before it runs.' + $C.Reset)
     if ($null -ne $script:LogPath) {
         Write-Host ('  ' + $C.Dim + 'Log: ' + $script:LogPath + $C.Reset)
     }

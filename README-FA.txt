@@ -9,7 +9,7 @@ run.ps1 را اجرا کن (خودش PowerShell 7 را ترجیح می‌دهد)
 1. مسیر ریشه هر پروژه را یکی‌یکی وارد کن. دستورها: done پایان، undo حذف آخرین مورد، cancel انصراف.
 2. حداقل دو پروژه لازم است؛ مسیر تکراری، ناموجود یا تو در تو رد می‌شود.
 3. خلاصه نمایش داده می‌شود و Enter (پیش‌فرض Y) اجرا را شروع می‌کند.
-4. ویزارد پوشه .ai هر پروژه را در صورت نبودن می‌سازد، یک profile تمام‌مسیره (هر پروژه مقصدِ همه پروژه‌های دیگر) در sync-hooks.json می‌نویسد، کانفیگ را اعتبارسنجی می‌کند و hook همان profile را برای Claude و Codex نصب می‌کند.
+4. ویزارد پوشه .ai هر پروژه را در صورت نبودن می‌سازد، یک profile تمام‌مسیره (هر پروژه مقصدِ همه پروژه‌های دیگر) در sync-hooks.json می‌نویسد، کانفیگ را اعتبارسنجی می‌کند و hook را «داخل خودِ هر پروژه» نصب می‌کند (نه سراسری).
 
 نکته‌های ویزارد:
 - شناسه profile از هش مسیرهای مرتب‌شده ساخته می‌شود؛ اجرای دوباره با همان مسیرها همان profile را به‌روزرسانی می‌کند و وضعیت sync حفظ می‌شود.
@@ -17,11 +17,38 @@ run.ps1 را اجرا کن (خودش PowerShell 7 را ترجیح می‌دهد)
 - سوییچ -NoInstall فقط کانفیگ را می‌نویسد و نصب hook را انجام نمی‌دهد.
 - گزینه 2 منو profileهای موجود را نشان می‌دهد و گزینه 3 کانفیگ را اعتبارسنجی می‌کند.
 
+هوک کجا نصب می‌شود و کانفیگش را از کجا می‌خواند (سطح پروژه)
+
+نصب به‌صورت «داخل پروژه» است، نه سراسری:
+- Claude آن را از <پروژه>\.claude\settings.local.json می‌خواند (این فایل خودکار git-ignore می‌شود؛ چون دستور شامل مسیر مطلق ماشین توست و نباید commit شود).
+- Codex آن را از <پروژه>\.codex\hooks.json می‌خواند (فقط بعد از trust با دستور /hooks داخل همان پروژه بارگذاری می‌شود).
+- هر دو entry به همان موتور scripts\CrossProjectSyncHook.ps1 و همان فایل مسیریابی sync-hooks.json (با سوییچ -ConfigPath) اشاره می‌کنند. پس «کدام پروژه‌ها سینک شوند» را فقط sync-hooks.json تعیین می‌کند؛ فایل تنظیمات پروژه فقط «محل ثبت هوک» است.
+- نصب سراسری هم برای اسکریپت‌نویسی باقی مانده: scripts\Install-Hook.ps1 بدون سوییچ -TargetProject روی ~/.claude/settings.json و ~/.codex/hooks.json می‌نویسد.
+
 فرمت hook در Claude و Codex
 
-- Claude Code: تنظیمات در ~/.claude/settings.json زیر کلید hooks نوشته می‌شود؛ timeout بر حسب ثانیه است و matcher رویداد SessionStart مقادیر startup|resume|clear|compact را می‌پذیرد.
-- Codex CLI: به‌صورت رسمی از hooks پشتیبانی می‌کند و فایل ~/.codex/hooks.json با همان ساختار {"hooks": {...}} خوانده می‌شود. فیلد commandWindows مخصوص ویندوز و رسمی است. بعد از نصب حتماً داخل Codex دستور /hooks را بزن و hook جدید را trust کن، وگرنه اجرا نمی‌شود.
+- Claude Code: زیر کلید hooks؛ timeout بر حسب ثانیه است و matcher رویداد SessionStart مقادیر startup|resume|clear|compact را می‌پذیرد.
+- Codex CLI: رسمی از hooks پشتیبانی می‌کند، فایل hooks.json با همان ساختار {"hooks": {...}}. فیلد commandWindows مخصوص ویندوز و رسمی است. بعد از نصب حتماً /hooks را بزن و hook را trust کن.
 - منبعی که پوشه .ai خالی دارد، بی‌صدا baseline می‌شود و بسته بازبینی خالی نمی‌سازد.
+
+ساخت هوک دلخواه
+
+سینک .ai فقط یکی از هوک‌هاست. هر هوک یک اسکریپت است که یک JSON از stdin می‌خواند و در صورت نیاز یک JSON روی stdout چاپ می‌کند. نمونه‌ی حداقلی (scripts\MyHook.ps1):
+
+  $e = [Console]::In.ReadToEnd() | ConvertFrom-Json
+  # $e.hook_event_name و $e.cwd و $e.session_id و فیلدهای رویداد (مثل $e.prompt) در دسترس‌اند.
+  exit 0                       # اگر حرفی نداری
+  # یا برای تزریق context:
+  @{ hookSpecificOutput = @{ hookEventName = $e.hook_event_name; additionalContext = 'متن' } } |
+      ConvertTo-Json -Depth 5 -Compress
+
+سپس در <پروژه>\.claude\settings.local.json (و/یا <پروژه>\.codex\hooks.json) زیر رویداد دلخواه (SessionStart، UserPromptSubmit، PreToolUse، PostToolUse، Stop و ...) با همان ساختاری که این ابزار می‌نویسد ثبتش کن. اگر کانفیگ خواست، مثل sync-hooks.json یک JSON جدا کنارش بگذار. برای الگو، scripts\Test-Engine.ps1 نشان می‌دهد چطور یک هوک را انتها-به-انتها اجرا و تست کنی.
+
+اجرای تست موتور
+
+  pwsh -NoLogo -NoProfile -File .\scripts\Test-Engine.ps1
+
+۱۸ assertion (چرخه‌ی بازبینی/ack، منبع خالی، پروژه‌ی نامرتبط، تک/چند پسوند) که هم زیر pwsh و هم زیر PowerShell 5.1 سبز می‌شوند.
 
 مفاهیم اصلی
 
