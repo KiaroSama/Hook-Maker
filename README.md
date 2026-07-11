@@ -12,7 +12,7 @@ starts the user's task.
 | --- | --- |
 | `run.ps1` | The launcher — the only script in the root. Host priority: Windows Terminal, then PowerShell 7, then Windows PowerShell. |
 | `sync-hooks.json` | All profiles and routes. No project paths are hard-coded in the scripts. |
-| `hooks/` | All hooks live here: the sync engine (`CrossProjectSyncHook.ps1`) plus any custom hooks you add. |
+| `hooks/` | All hooks live here: the sync engine (`CrossProjectSyncHook.ps1`), the ready-made `GitSyncCheck.ps1`, plus any custom hooks you add. |
 | `scripts/Setup-SyncGroup.ps1` | Interactive wizard: sync groups, custom hook installs, profile listing, validation. |
 | `scripts/Install-Hook.ps1` | Writes a hook command into a project's `.claude/settings.local.json` + `.codex/hooks.json` (or, with no `-TargetProject`, the global `~/.claude` + `~/.codex`). Supports `-CustomHook <path>`. |
 | `scripts/Validate-Config.ps1` | Validates `sync-hooks.json`. |
@@ -81,6 +81,11 @@ installed right away). Templates:
 2. **Prompt guard** — blocks prompts containing your forbidden words.
 3. **Tool logger** — appends every tool call to a log file next to the hook.
 4. **Empty skeleton** — a commented template for your own logic.
+
+A ready-made example ships in `hooks/GitSyncCheck.ps1`: install it on `SessionStart` (menu
+option `2` -> install existing hook) and, whenever you open a project that is out of sync with
+its git remote — uncommitted changes, unpushed or unpulled commits, or a branch that was never
+pushed — the agent is told about it before starting. In-sync and non-git projects stay silent.
 
 Under the hood, a hook is just a script in `hooks/` that reads a JSON event from **stdin**
 and, optionally, prints a JSON response to **stdout**. Minimal example (`hooks\MyHook.ps1`):
