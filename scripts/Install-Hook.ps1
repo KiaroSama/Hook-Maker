@@ -2,6 +2,9 @@ param(
     [string]$Profile,
     [string[]]$Events = @('SessionStart', 'UserPromptSubmit'),
     [string]$ConfigPath,
+    # When set, install into this project's local settings instead of the user's
+    # home directory: <project>/.claude/settings.local.json + <project>/.codex/hooks.json.
+    [string]$TargetProject,
     [switch]$ClaudeOnly,
     [switch]$CodexOnly
 )
@@ -18,8 +21,19 @@ else {
     $ConfigPath = [System.IO.Path]::GetFullPath([Environment]::ExpandEnvironmentVariables($ConfigPath))
 }
 
-$ClaudeSettings = Join-Path $HOME '.claude\settings.json'
-$CodexHooks = Join-Path $HOME '.codex\hooks.json'
+if (-not [string]::IsNullOrWhiteSpace($TargetProject)) {
+    $projectRoot = [System.IO.Path]::GetFullPath([Environment]::ExpandEnvironmentVariables($TargetProject))
+    # settings.local.json (not settings.json): the command holds a machine-specific
+    # absolute path, so it must stay out of source control.
+    $ClaudeSettings = Join-Path $projectRoot '.claude\settings.local.json'
+    $CodexHooks = Join-Path $projectRoot '.codex\hooks.json'
+    $ScopeLabel = 'project'
+}
+else {
+    $ClaudeSettings = Join-Path $HOME '.claude\settings.json'
+    $CodexHooks = Join-Path $HOME '.codex\hooks.json'
+    $ScopeLabel = 'global'
+}
 $Timestamp = (Get-Date).ToString('yyyyMMdd-HHmmss')
 
 function Read-OrCreateJsonObject {
@@ -126,7 +140,7 @@ if (-not $CodexOnly) {
     }
     Backup-File $ClaudeSettings
     Write-JsonFile -Value $claude -Path $ClaudeSettings
-    Write-Host "Claude hook installed in: $ClaudeSettings"
+    Write-Host "Claude hook ($ScopeLabel) installed in: $ClaudeSettings"
 }
 
 if (-not $ClaudeOnly) {
@@ -150,7 +164,7 @@ if (-not $ClaudeOnly) {
     }
     Backup-File $CodexHooks
     Write-JsonFile -Value $codex -Path $CodexHooks
-    Write-Host "Codex hook installed in: $CodexHooks"
+    Write-Host "Codex hook ($ScopeLabel) installed in: $CodexHooks"
 }
 
 Write-Host 'Restart the clients and review /hooks. Codex may require trusting the new command.'
