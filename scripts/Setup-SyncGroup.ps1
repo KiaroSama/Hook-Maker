@@ -14,10 +14,11 @@ try {
 catch { }
 
 $ScriptRoot = $PSScriptRoot
+$ToolRoot = Split-Path -Parent $ScriptRoot
 $InstallScript = Join-Path $ScriptRoot 'Install-Hook.ps1'
 $ValidateScript = Join-Path $ScriptRoot 'Validate-Config.ps1'
 if ([string]::IsNullOrWhiteSpace($ConfigPath)) {
-    $ConfigPath = Join-Path $ScriptRoot 'sync-hooks.json'
+    $ConfigPath = Join-Path $ToolRoot 'sync-hooks.json'
 }
 else {
     $ConfigPath = [System.IO.Path]::GetFullPath([Environment]::ExpandEnvironmentVariables($ConfigPath))
@@ -104,7 +105,7 @@ $script:EmptyReads = 0
 
 function Initialize-Log {
     try {
-        $logDir = Join-Path $ScriptRoot 'logs'
+        $logDir = Join-Path $ToolRoot 'logs'
         if (-not (Test-Path -LiteralPath $logDir -PathType Container)) {
             New-Item -ItemType Directory -Path $logDir -Force | Out-Null
         }

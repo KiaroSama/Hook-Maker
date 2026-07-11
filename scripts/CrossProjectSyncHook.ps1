@@ -16,8 +16,9 @@ $OutputEncoding = $Utf8NoBom
 
 $HookScriptPath = [System.IO.Path]::GetFullPath($MyInvocation.MyCommand.Path)
 $ScriptRoot = Split-Path -Parent $HookScriptPath
+$ToolRoot = Split-Path -Parent $ScriptRoot
 if ([string]::IsNullOrWhiteSpace($ConfigPath)) {
-    $ConfigPath = Join-Path $ScriptRoot 'sync-hooks.json'
+    $ConfigPath = Join-Path $ToolRoot 'sync-hooks.json'
 }
 else {
     $ConfigPath = [System.IO.Path]::GetFullPath([Environment]::ExpandEnvironmentVariables($ConfigPath))
