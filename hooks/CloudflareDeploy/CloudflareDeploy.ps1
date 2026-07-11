@@ -120,6 +120,6 @@ if ($null -ne (Get-Command git -ErrorAction SilentlyContinue)) {
 New-Item -ItemType Directory -Path $stateDir -Force | Out-Null
 [System.IO.File]::WriteAllText($statePath, [DateTime]::UtcNow.ToString('o'))
 
-$reason = 'CLOUDFLARE DEPLOY CHECK: this project deploys to Cloudflare Workers (' + $wranglerConfig + ' found). Decide for yourself: if the finished task should go live, verify the change works and deploy with: ' + $deployCommand + '  If it is not deploy-worthy (partial work, experiments, docs), finish now - this reminder respects a cooldown.'
+$reason = 'CLOUDFLARE DEPLOY CHECK: this project deploys to Cloudflare Workers (' + $wranglerConfig + ' found). Decide for yourself: if the finished task should go live, run the release checks first (tests/build pass, docs match, no secrets or local-only files staged) and then deploy with: ' + $deployCommand + '  If it is not deploy-worthy (partial work, experiments, docs-only), finish now - this reminder respects a cooldown.'
 @{ decision = 'block'; reason = $reason } | ConvertTo-Json -Compress
 exit 0
