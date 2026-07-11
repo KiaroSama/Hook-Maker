@@ -9,11 +9,11 @@ durable — before it starts the user's task.
 
 | Path | Purpose |
 | --- | --- |
-| `run.ps1` | The launcher — the only script in the root. Starts the wizard (prefers PowerShell 7). |
+| `run.ps1` | The launcher — the only script in the root. Host priority: Windows Terminal, then PowerShell 7, then Windows PowerShell. |
 | `sync-hooks.json` | All profiles and routes. No project paths are hard-coded in the scripts. |
-| `scripts/Setup-SyncGroup.ps1` | Interactive wizard: builds a full-mesh sync group from a list of project paths, then installs the hook. |
-| `scripts/CrossProjectSyncHook.ps1` | Hook engine: change detection (quick fingerprint + SHA-256), staging, review message, acknowledgement. |
-| `scripts/Install-Hook.ps1` | Writes the hook command into a project's `.claude/settings.local.json` + `.codex/hooks.json` (or, with no `-TargetProject`, the global `~/.claude` + `~/.codex`). |
+| `hooks/` | All hooks live here: the sync engine (`CrossProjectSyncHook.ps1`) plus any custom hooks you add. |
+| `scripts/Setup-SyncGroup.ps1` | Interactive wizard: sync groups, custom hook installs, profile listing, validation. |
+| `scripts/Install-Hook.ps1` | Writes a hook command into a project's `.claude/settings.local.json` + `.codex/hooks.json` (or, with no `-TargetProject`, the global `~/.claude` + `~/.codex`). Supports `-CustomHook <path>`. |
 | `scripts/Validate-Config.ps1` | Validates `sync-hooks.json`. |
 | `scripts/Test-Engine.ps1` | Self-contained engine smoke test (18 assertions, runs under pwsh and PowerShell 5.1). |
 | `examples/` | Profile templates. |
@@ -25,8 +25,14 @@ durable — before it starts the user's task.
 .\run.ps1
 ```
 
-Choose option `1`, enter each project root path (finish with `done`), review the summary and
-confirm (Enter = yes). The wizard:
+Double-clicking `run.ps1` opens the wizard in a Windows Terminal window when `wt.exe` is
+available; otherwise it runs in the current console with the best available PowerShell.
+
+Menu options: `1` sync group, `2` install a custom hook from `hooks/`, `3` show profiles,
+`4` validate. `0` goes back, `exit` quits.
+
+For a sync group choose option `1`, enter each project root path (finish with `done`), review
+the summary and confirm (Enter = yes). The wizard:
 
 1. Creates missing `.ai` directories.
 2. Writes a full-mesh profile — every project becomes a sync destination of every other.
@@ -45,9 +51,11 @@ The wizard installs the hook **per project** (local scope):
   holds a machine-specific absolute path, so it must not be committed).
 - Codex reads it from `<project>/.codex/hooks.json` (loads only after you trust it via `/hooks`).
 
-Both entries point at the same engine (`scripts/CrossProjectSyncHook.ps1`) and the same routing
+Both entries point at the same engine (`hooks/CrossProjectSyncHook.ps1`) and the same routing
 file (`sync-hooks.json`, passed via `-ConfigPath`). So *which projects sync* is decided entirely
 by `sync-hooks.json`; the per-project settings file only decides *where the hook is registered*.
+If a settings file already has other content, it is preserved: the installer merges the hook in
+(deduplicated by exact command) and writes a timestamped backup first.
 
 Global install is still available for scripting: `scripts/Install-Hook.ps1` with no
 `-TargetProject` writes to `~/.claude/settings.json` and `~/.codex/hooks.json` instead.
@@ -64,9 +72,9 @@ Global install is still available for scripting: `scripts/Install-Hook.ps1` with
 
 ## Writing your own hooks
 
-The `.ai` sync is just one hook. A hook is a script that reads a JSON event from **stdin** and,
-optionally, prints a JSON response to **stdout**; you register it under an event in the same
-settings files. Minimal example (`scripts\MyHook.ps1`):
+The `.ai` sync is just one hook. A hook is a script in `hooks/` that reads a JSON event from
+**stdin** and, optionally, prints a JSON response to **stdout**. Minimal example
+(`hooks\MyHook.ps1`):
 
 ```powershell
 $e = [Console]::In.ReadToEnd() | ConvertFrom-Json
@@ -78,12 +86,16 @@ exit 0
     ConvertTo-Json -Depth 5 -Compress
 ```
 
-Register it in `<project>/.claude/settings.local.json` (and/or `<project>/.codex/hooks.json`)
-under the event you want — `SessionStart`, `UserPromptSubmit`, `PreToolUse`, `PostToolUse`,
-`Stop`, etc. — using the same `{ "hooks": { "<Event>": [ { "hooks": [ { "type": "command",
-"command": "..." } ] } ] } }` shape this tool writes. Give it its own config file next to
-`sync-hooks.json` if it needs configuration. Run the engine test as a template for how to drive
-a hook end-to-end: `pwsh -File scripts\Test-Engine.ps1`.
+Drop the file into `hooks/` and use launcher menu option `2` — it lists every `.ps1` there,
+asks for the events (`SessionStart`, `UserPromptSubmit`, `PreToolUse`, `PostToolUse`, `Stop`,
+or a custom list) and the target projects, then installs it into each project's settings.
+Give it its own config file next to `sync-hooks.json` if it needs configuration.
+
+Manual install without the wizard:
+
+```powershell
+.\scripts\Install-Hook.ps1 -CustomHook .\hooks\MyHook.ps1 -Events SessionStart,UserPromptSubmit -TargetProject "<projectRoot>"
+```
 
 ## Notes
 
@@ -92,4 +104,8 @@ a hook end-to-end: `pwsh -File scripts\Test-Engine.ps1`.
 - Each wizard execution writes a log to `logs/` (`Setup-SyncGroup_YYYY-MM-DD_HH-mm-ss_UTC.log`).
 - `scripts\Setup-SyncGroup.ps1 -NoInstall` updates only the configuration without installing hooks.
 - Run the engine smoke test with `pwsh -File scripts\Test-Engine.ps1` (works under PowerShell 5.1 too).
-- Persian guide: `README-FA.txt`.
+- Persian guide: `README-FA.md`.
+
+## License
+
+Proprietary — all rights reserved. See `LICENSE`.
