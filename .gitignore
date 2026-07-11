@@ -12,4 +12,5 @@ graphify-out/
 
 # Runtime logs and config backups
 logs/
+*.log
 *.backup-*
