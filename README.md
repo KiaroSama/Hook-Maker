@@ -10,15 +10,39 @@ starts the user's task.
 
 | Path | Purpose |
 | --- | --- |
-| `run.ps1` | The launcher — the only script in the root. Host priority: Windows Terminal, then PowerShell 7, then Windows PowerShell. |
-| `sync-hooks.json` | All profiles and routes. No project paths are hard-coded in the scripts. |
-| `hooks/` | All hooks live here: the sync engine (`CrossProjectSyncHook.ps1`), the ready-made `GitSyncCheck.ps1`, plus any custom hooks you add. |
-| `scripts/Setup-SyncGroup.ps1` | Interactive wizard: sync groups, custom hook installs, profile listing, validation. |
+| `run.ps1` | The launcher — the only script in the root. Runs the wizard in the current terminal (PowerShell 7 first). |
+| `sync-hooks.json` | All sync profiles and routes. No project paths are hard-coded in the scripts. |
+| `hooks/<Name>/` | One folder per hook: `<Name>.ps1` + `.env.example` (tracked) + `.env` (your local copy, git-ignored). |
+| `scripts/Setup-SyncGroup.ps1` | Interactive wizard: sync groups, hook creation/installs, profile listing, validation. |
 | `scripts/Install-Hook.ps1` | Writes a hook command into a project's `.claude/settings.local.json` + `.codex/hooks.json` (or, with no `-TargetProject`, the global `~/.claude` + `~/.codex`). Supports `-CustomHook <path>`. |
 | `scripts/Validate-Config.ps1` | Validates `sync-hooks.json`. |
 | `scripts/Test-Engine.ps1` | Self-contained engine smoke test (18 assertions, runs under pwsh and PowerShell 5.1). |
-| `examples/` | Profile templates. |
 | `logs/` | Wizard execution logs (created on demand, not committed). |
+
+## Shipped hooks
+
+| Hook | Runs | What it does |
+| --- | --- | --- |
+| `CrossProjectSyncHook` | pre-task (SessionStart, UserPromptSubmit) | The sync engine: stages changed `.ai` knowledge from related projects for review. |
+| `GitSyncCheck` | pre-task + post-task (Stop) | Reports uncommitted/unpushed/unpulled work; on Stop asks the AI to decide whether to sync now. |
+| `AiMemoryCheck` | post-task (Stop) | If `.ai/memory.md` is older than the latest work, asks the AI to update the memory per the policy — or finish if nothing durable was learned. |
+| `GraphUpdateCheck` | post-task (Stop) | If `graphify-out/graph.json` is stale, asks the AI to decide whether `graphify update .` is warranted. |
+| `CloudflareDeploy` | post-task (Stop) | In Workers projects (wrangler config present), asks the AI to deploy when the result should go live. |
+| `SkillsCheck` | pre-task (SessionStart) | Compact Skill Policy reminder listing the copied skills, the `.ai/SKILLS.md` record, and the library. |
+| `McpUsageCheck` | pre-task (SessionStart) | Compact reminder to consider MCP servers/tools (docs lookup, browser, DB) when they materially help. |
+
+All advisory hooks are token-efficient by design: they stay **silent** unless a deterministic
+signal fires (staleness, wrangler config, out-of-sync git), they respect a per-project
+**cooldown**, they never loop (`stop_hook_active` guard), and the decision always stays with
+the AI — every reminder explicitly allows finishing without action.
+
+## Hook configs (.env)
+
+Each hook folder ships a tracked `.env.example`. Copy it to `.env` (git-ignored) and fill in
+your local values — most importantly `TARGET_PROJECTS` (semicolon-separated project roots) and
+`EVENTS`. Then use menu `2 -> 3` (*Install from config*) and the wizard installs the hook into
+all listed projects **without asking any questions**. The sync engine's `.env` supports
+`SYNC_PROJECTS`, which menu option `1` offers to use instead of asking for paths.
 
 ## Quick start
 
