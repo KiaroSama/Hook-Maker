@@ -12,7 +12,7 @@ $ErrorActionPreference = 'Stop'
 $Utf8NoBom = [System.Text.UTF8Encoding]::new($false)
 $HookScript = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot 'CrossProjectSyncHook.ps1'))
 if ([string]::IsNullOrWhiteSpace($ConfigPath)) {
-    $ConfigPath = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot 'sync-hooks.json'))
+    $ConfigPath = [System.IO.Path]::GetFullPath((Join-Path (Split-Path -Parent $PSScriptRoot) 'sync-hooks.json'))
 }
 else {
     $ConfigPath = [System.IO.Path]::GetFullPath([Environment]::ExpandEnvironmentVariables($ConfigPath))

@@ -41,7 +41,7 @@ source -> destination
 
 ب) برای هر profile یک hook جدا نصب کن:
 
-powershell.exe -ExecutionPolicy Bypass -File ".\Install-Hook.ps1" -Profile "telegram-bots-ai"
+powershell.exe -ExecutionPolicy Bypass -File ".\scripts\Install-Hook.ps1" -Profile "telegram-bots-ai"
 
 سپس برای profile بعدی همان دستور را با id دیگر اجرا کن.
 
@@ -140,23 +140,23 @@ baseline:
 
 نصب همه profileها با یک hook
 
-powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File ".\Install-Hook.ps1"
+powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File ".\scripts\Install-Hook.ps1"
 
 نصب فقط یک profile
 
-powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File ".\Install-Hook.ps1" -Profile "telegram-bots-ai"
+powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File ".\scripts\Install-Hook.ps1" -Profile "telegram-bots-ai"
 
 فقط Claude
 
-powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File ".\Install-Hook.ps1" -ClaudeOnly
+powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File ".\scripts\Install-Hook.ps1" -ClaudeOnly
 
 فقط Codex
 
-powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File ".\Install-Hook.ps1" -CodexOnly
+powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File ".\scripts\Install-Hook.ps1" -CodexOnly
 
 اعتبارسنجی کانفیگ
 
-powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File ".\Validate-Config.ps1"
+powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File ".\scripts\Validate-Config.ps1"
 
 بعد از تغییر id یک profile یا route، وضعیت قبلی دیگر به آن وصل نیست و route به‌عنوان یک route جدید شناخته می‌شود. بنابراین idها را پس از شروع استفاده ثابت نگه دار.
 

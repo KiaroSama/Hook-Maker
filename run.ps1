@@ -25,9 +25,9 @@ if (-not $scriptDir -or -not (Test-Path -LiteralPath $scriptDir)) {
     exit 1
 }
 
-$wizardPath = Join-Path $scriptDir 'Setup-SyncGroup.ps1'
+$wizardPath = Join-Path $scriptDir 'scripts\Setup-SyncGroup.ps1'
 if (-not (Test-Path -LiteralPath $wizardPath -PathType Leaf)) {
-    Write-Host "Setup-SyncGroup.ps1 was not found next to run.ps1. Expected at: $wizardPath" -ForegroundColor Red
+    Write-Host "The wizard script was not found. Expected at: $wizardPath" -ForegroundColor Red
     exit 1
 }
 

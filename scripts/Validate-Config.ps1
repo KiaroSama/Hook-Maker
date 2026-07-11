@@ -1,5 +1,5 @@
 param(
-    [string]$ConfigPath = (Join-Path $PSScriptRoot 'sync-hooks.json')
+    [string]$ConfigPath = (Join-Path (Split-Path -Parent $PSScriptRoot) 'sync-hooks.json')
 )
 
 Set-StrictMode -Version 2.0

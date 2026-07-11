@@ -5,17 +5,18 @@ Codex CLI lifecycle hooks. When a source project's knowledge changes, the hook s
 changed files inside the destination project and asks the agent to review and import what is
 durable — before it starts the user's task.
 
-## Components
+## Layout
 
-| File | Purpose |
+| Path | Purpose |
 | --- | --- |
-| `CrossProjectSyncHook.ps1` | Hook engine: change detection (quick fingerprint + SHA-256), staging, review message, acknowledgement. |
-| `Setup-SyncGroup.ps1` | Interactive wizard: builds a full-mesh sync group from a list of project paths, then installs the hook. |
-| `run.ps1` | Launcher for the wizard (prefers PowerShell 7, falls back to Windows PowerShell). |
-| `Install-Hook.ps1` | Writes the hook command into `~/.claude/settings.json` and `~/.codex/hooks.json`. |
-| `Validate-Config.ps1` | Validates `sync-hooks.json`. |
+| `run.ps1` | The launcher — the only script in the root. Starts the wizard (prefers PowerShell 7). |
 | `sync-hooks.json` | All profiles and routes. No project paths are hard-coded in the scripts. |
+| `scripts/Setup-SyncGroup.ps1` | Interactive wizard: builds a full-mesh sync group from a list of project paths, then installs the hook. |
+| `scripts/CrossProjectSyncHook.ps1` | Hook engine: change detection (quick fingerprint + SHA-256), staging, review message, acknowledgement. |
+| `scripts/Install-Hook.ps1` | Writes the hook command into `~/.claude/settings.json` and `~/.codex/hooks.json`. |
+| `scripts/Validate-Config.ps1` | Validates `sync-hooks.json`. |
 | `examples/` | Profile templates. |
+| `logs/` | Wizard execution logs (created on demand, not committed). |
 
 ## Quick start
 
@@ -49,5 +50,5 @@ sorted project roots), so existing sync state is preserved.
 - Codex requires trusting new hooks: run `/hooks` inside Codex after installing.
 - Restart clients after installing — hooks load at session start.
 - Each wizard execution writes a log to `logs/` (`Setup-SyncGroup_YYYY-MM-DD_HH-mm-ss_UTC.log`).
-- `Setup-SyncGroup.ps1 -NoInstall` updates only the configuration without touching client settings.
+- `scripts\Setup-SyncGroup.ps1 -NoInstall` updates only the configuration without touching client settings.
 - Persian guide: `README-FA.txt`.
