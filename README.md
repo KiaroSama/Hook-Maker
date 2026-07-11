@@ -74,18 +74,21 @@ Global install is still available for scripting: `scripts/Install-Hook.ps1` with
 ## Writing your own hooks
 
 The easiest path is launcher menu option `2` -> **Create a new hook**: name it, pick a
-template, answer one or two questions, and a working `.ps1` lands in `hooks/` (optionally
+template, answer at most one question, and a working `.ps1` lands in `hooks/` (optionally
 installed right away). Templates:
 
 1. **Context note** — injects a fixed note (your text) into every session/prompt.
 2. **Prompt guard** — blocks prompts containing your forbidden words.
 3. **Tool logger** — appends every tool call to a log file next to the hook.
-4. **Empty skeleton** — a commented template for your own logic.
+4. **Git sync check** — warns when the project is out of sync with its git remote (uncommitted
+   changes, unpushed/unpulled commits, or a branch that was never pushed); silent for in-sync
+   and non-git projects, and falls back to the last fetched state when offline.
+5. **Empty skeleton** — a commented template for your own logic.
 
-A ready-made example ships in `hooks/GitSyncCheck.ps1`: install it on `SessionStart` (menu
-option `2` -> install existing hook) and, whenever you open a project that is out of sync with
-its git remote — uncommitted changes, unpushed or unpulled commits, or a branch that was never
-pushed — the agent is told about it before starting. In-sync and non-git projects stay silent.
+Template 4 is also shipped ready-made as `hooks/GitSyncCheck.ps1` if you prefer to install it
+directly (menu option `2` -> install an existing hook).
+
+In the wizard, `0` steps back one question and `exit` quits; the menus never pause for Enter.
 
 Under the hood, a hook is just a script in `hooks/` that reads a JSON event from **stdin**
 and, optionally, prints a JSON response to **stdout**. Minimal example (`hooks\MyHook.ps1`):
