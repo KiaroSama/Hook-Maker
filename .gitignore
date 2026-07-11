@@ -1,0 +1,15 @@
+/.ai/
+/secrets.md
+/explain-AI.md
+/.claude/
+/.codex/
+graphify-out/
+.ignoreme
+**/.ignoreme
+
+# Runtime sync state (created inside each destination project's .ai directory)
+.cross-project-sync/
+
+# Runtime logs and config backups
+logs/
+*.backup-*

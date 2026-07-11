@@ -1,0 +1,39 @@
+{
+  "id": "telegram-bots-ai",
+  "name": "Telegram bot AI knowledge bridge",
+  "enabled": true,
+  "routes": [
+    {
+      "id": "ad-timer-to-godverify",
+      "enabled": true,
+      "source": {
+        "name": "Ad Timer Bot",
+        "root": "G:\\Program Files\\Portable\\Scripts\\Telegram Bot\\Ad Timer Bot",
+        "directory": ".ai",
+        "aliases": []
+      },
+      "destination": {
+        "name": "GodVerify Payment Bot",
+        "root": "G:\\Program Files\\Portable\\Scripts\\Telegram Bot\\GodVerify Payment Bot",
+        "directory": ".ai",
+        "aliases": []
+      }
+    },
+    {
+      "id": "godverify-to-ad-timer",
+      "enabled": true,
+      "source": {
+        "name": "GodVerify Payment Bot",
+        "root": "G:\\Program Files\\Portable\\Scripts\\Telegram Bot\\GodVerify Payment Bot",
+        "directory": ".ai",
+        "aliases": []
+      },
+      "destination": {
+        "name": "Ad Timer Bot",
+        "root": "G:\\Program Files\\Portable\\Scripts\\Telegram Bot\\Ad Timer Bot",
+        "directory": ".ai",
+        "aliases": []
+      }
+    }
+  ]
+}

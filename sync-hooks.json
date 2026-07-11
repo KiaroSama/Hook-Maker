@@ -1,0 +1,110 @@
+{
+  "version": 2,
+  "defaults": {
+    "events": [
+      "SessionStart",
+      "UserPromptSubmit"
+    ],
+    "initialSyncMode": "review",
+    "maxFileBytes": 2097152,
+    "includeExtensions": [
+      ".md",
+      ".txt",
+      ".json",
+      ".jsonc",
+      ".yaml",
+      ".yml",
+      ".toml",
+      ".ini",
+      ".cfg",
+      ".xml",
+      ".csv",
+      ".ps1",
+      ".py",
+      ".js",
+      ".ts",
+      ".mjs",
+      ".cjs",
+      ".sh"
+    ],
+    "excludePatterns": [
+      ".cross-project-sync/*",
+      "*/.cross-project-sync/*",
+      ".git/*",
+      "*/.git/*",
+      "node_modules/*",
+      "*/node_modules/*",
+      "logs/*",
+      "*/logs/*",
+      "cache/*",
+      "*/cache/*",
+      "tmp/*",
+      "*/tmp/*",
+      "temp/*",
+      "*/temp/*",
+      "graph/*",
+      "*/graph/*",
+      "indexes/*",
+      "*/indexes/*",
+      "artifacts/*",
+      "*/artifacts/*",
+      "*.log",
+      "*.tmp",
+      "*.bak",
+      ".env",
+      ".env.*",
+      "*/.env",
+      "*/.env.*",
+      "secrets.*",
+      "*/secrets.*",
+      "*credentials*.json",
+      "*credential*.json",
+      "*tokens*.json",
+      "*token*.json",
+      "Thumbs.db",
+      "*/Thumbs.db",
+      ".DS_Store",
+      "*/.DS_Store"
+    ],
+    "reviewInstructions": [
+      "Import only durable, relevant, reusable knowledge.",
+      "Destination rules and project facts always take precedence.",
+      "Deduplicate and adapt instead of copying files wholesale.",
+      "Never transfer secrets, credentials, environment-specific values, logs, generated indexes, temporary task status, or unrelated project facts."
+    ]
+  },
+  "profiles": [
+    {
+      "id": "example-sync-profile",
+      "name": "Editable sync profile",
+      "enabled": false,
+      "events": [
+        "SessionStart",
+        "UserPromptSubmit"
+      ],
+      "initialSyncMode": "review",
+      "reviewInstructions": [
+        "Only import information relevant to this destination.",
+        "Preserve destination-specific architecture, naming, and constraints."
+      ],
+      "routes": [
+        {
+          "id": "project-a-to-project-b",
+          "enabled": true,
+          "source": {
+            "name": "Project A",
+            "root": "D:\\Projects\\Project A",
+            "directory": ".ai",
+            "aliases": []
+          },
+          "destination": {
+            "name": "Project B",
+            "root": "D:\\Projects\\Project B",
+            "directory": ".ai",
+            "aliases": []
+          }
+        }
+      ]
+    }
+  ]
+}

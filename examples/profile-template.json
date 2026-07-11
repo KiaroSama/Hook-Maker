@@ -1,0 +1,48 @@
+{
+  "id": "my-profile-id",
+  "name": "My independent sync hook",
+  "enabled": true,
+  "events": [
+    "SessionStart",
+    "UserPromptSubmit"
+  ],
+  "initialSyncMode": "review",
+  "reviewInstructions": [
+    "Only import information relevant to this destination.",
+    "Preserve destination-specific architecture and naming."
+  ],
+  "routes": [
+    {
+      "id": "project-a-to-project-b",
+      "enabled": true,
+      "source": {
+        "name": "Project A",
+        "root": "D:\\Projects\\Project A",
+        "directory": ".ai",
+        "aliases": []
+      },
+      "destination": {
+        "name": "Project B",
+        "root": "D:\\Projects\\Project B",
+        "directory": ".ai",
+        "aliases": []
+      }
+    },
+    {
+      "id": "project-b-to-project-a",
+      "enabled": true,
+      "source": {
+        "name": "Project B",
+        "root": "D:\\Projects\\Project B",
+        "directory": ".ai",
+        "aliases": []
+      },
+      "destination": {
+        "name": "Project A",
+        "root": "D:\\Projects\\Project A",
+        "directory": ".ai",
+        "aliases": []
+      }
+    }
+  ]
+}
