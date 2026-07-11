@@ -5,6 +5,9 @@ param(
     # When set, install into this project's local settings instead of the user's
     # home directory: <project>/.claude/settings.local.json + <project>/.codex/hooks.json.
     [string]$TargetProject,
+    # Path to a standalone hook script (from the hooks/ folder). Installs it plain,
+    # without the sync engine's -ConfigPath/-Profile arguments.
+    [string]$CustomHook,
     [switch]$ClaudeOnly,
     [switch]$CodexOnly
 )
@@ -13,9 +16,22 @@ Set-StrictMode -Version 2.0
 $ErrorActionPreference = 'Stop'
 
 $Utf8NoBom = [System.Text.UTF8Encoding]::new($false)
-$HookScript = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot 'CrossProjectSyncHook.ps1'))
+$ToolRoot = Split-Path -Parent $PSScriptRoot
+
+if (-not [string]::IsNullOrWhiteSpace($CustomHook)) {
+    if (-not [string]::IsNullOrWhiteSpace($Profile)) {
+        throw '-CustomHook and -Profile cannot be combined.'
+    }
+    $HookScript = [System.IO.Path]::GetFullPath([Environment]::ExpandEnvironmentVariables($CustomHook))
+    if (-not (Test-Path -LiteralPath $HookScript -PathType Leaf)) {
+        throw "Custom hook script not found: $HookScript"
+    }
+}
+else {
+    $HookScript = [System.IO.Path]::GetFullPath((Join-Path $ToolRoot 'hooks\CrossProjectSyncHook.ps1'))
+}
 if ([string]::IsNullOrWhiteSpace($ConfigPath)) {
-    $ConfigPath = [System.IO.Path]::GetFullPath((Join-Path (Split-Path -Parent $PSScriptRoot) 'sync-hooks.json'))
+    $ConfigPath = [System.IO.Path]::GetFullPath((Join-Path $ToolRoot 'sync-hooks.json'))
 }
 else {
     $ConfigPath = [System.IO.Path]::GetFullPath([Environment]::ExpandEnvironmentVariables($ConfigPath))
@@ -114,16 +130,24 @@ function Add-HookGroup {
     }
 }
 
-$arguments = '-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "' + $HookScript + '" -ConfigPath "' + $ConfigPath + '"'
-if (-not [string]::IsNullOrWhiteSpace($Profile)) {
-    $arguments += ' -Profile "' + $Profile + '"'
+if (-not [string]::IsNullOrWhiteSpace($CustomHook)) {
+    # Custom hooks receive only the hook event on stdin; no extra arguments.
+    $windowsCommand = 'powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "' + $HookScript + '"'
+    $portableCommand = 'pwsh -NoLogo -NoProfile -NonInteractive -File "' + $HookScript + '"'
+    $status = 'Running custom hook: ' + (Split-Path -Leaf $HookScript)
 }
-$windowsCommand = 'powershell.exe ' + $arguments
-$portableCommand = 'pwsh -NoLogo -NoProfile -NonInteractive -File "' + $HookScript + '" -ConfigPath "' + $ConfigPath + '"'
-if (-not [string]::IsNullOrWhiteSpace($Profile)) {
-    $portableCommand += ' -Profile "' + $Profile + '"'
+else {
+    $arguments = '-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "' + $HookScript + '" -ConfigPath "' + $ConfigPath + '"'
+    if (-not [string]::IsNullOrWhiteSpace($Profile)) {
+        $arguments += ' -Profile "' + $Profile + '"'
+    }
+    $windowsCommand = 'powershell.exe ' + $arguments
+    $portableCommand = 'pwsh -NoLogo -NoProfile -NonInteractive -File "' + $HookScript + '" -ConfigPath "' + $ConfigPath + '"'
+    if (-not [string]::IsNullOrWhiteSpace($Profile)) {
+        $portableCommand += ' -Profile "' + $Profile + '"'
+    }
+    $status = if ([string]::IsNullOrWhiteSpace($Profile)) { 'Checking configured project sync hooks' } else { 'Checking sync profile: ' + $Profile }
 }
-$status = if ([string]::IsNullOrWhiteSpace($Profile)) { 'Checking configured project sync hooks' } else { 'Checking sync profile: ' + $Profile }
 
 if (-not $CodexOnly) {
     $claude = Read-OrCreateJsonObject $ClaudeSettings

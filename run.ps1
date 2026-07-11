@@ -1,7 +1,11 @@
 # Launcher for the cross-project sync wizard.
-# - Resolves paths relative to its own location, so it works from any CWD.
-# - Prefers PowerShell 7 (pwsh); falls back to Windows PowerShell.
-# - Propagates the wizard's exit code.
+# Host priority: Windows Terminal > PowerShell 7 (pwsh) > Windows PowerShell.
+# - Double-clicked (not already inside Windows Terminal): opens the wizard in a
+#   new Windows Terminal window when wt.exe is available.
+# - Already inside Windows Terminal (WT_SESSION set) or wt.exe missing: runs the
+#   wizard in the current console with the best available PowerShell.
+# - Resolves paths relative to its own location; propagates the wizard exit code
+#   when running in place.
 
 param(
     [Parameter(ValueFromRemainingArguments = $true)]
@@ -31,15 +35,16 @@ if (-not (Test-Path -LiteralPath $wizardPath -PathType Leaf)) {
     exit 1
 }
 
-$exe = $null
+# Best available PowerShell: 7 (pwsh) first, then Windows PowerShell.
+$shell = $null
 if (Get-Command pwsh -ErrorAction SilentlyContinue) {
-    $exe = 'pwsh'
+    $shell = 'pwsh'
 }
 elseif (Get-Command powershell.exe -ErrorAction SilentlyContinue) {
-    $exe = 'powershell.exe'
+    $shell = 'powershell.exe'
 }
 
-if (-not $exe) {
+if (-not $shell) {
     Write-Host 'Neither pwsh nor powershell.exe was found in PATH.' -ForegroundColor Red
     exit 9009
 }
@@ -48,7 +53,24 @@ $forwarded = @()
 if ($ScriptArgs) {
     $forwarded = @($ScriptArgs)
 }
+$shellArgs = @('-NoLogo', '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $wizardPath) + $forwarded
 
-& $exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File $wizardPath @forwarded
+# Prefer a Windows Terminal window unless we are already inside one.
+$insideWindowsTerminal = -not [string]::IsNullOrEmpty($env:WT_SESSION)
+$wt = Get-Command wt.exe -ErrorAction SilentlyContinue
+if (-not $insideWindowsTerminal -and $wt) {
+    try {
+        $quoted = foreach ($arg in $shellArgs) {
+            if ($arg -match '\s') { '"' + $arg + '"' } else { $arg }
+        }
+        Start-Process -FilePath $wt.Source -ArgumentList (@($shell) + $quoted)
+        exit 0
+    }
+    catch {
+        Write-Host "Windows Terminal could not be started ($($_.Exception.Message)); continuing in the current console." -ForegroundColor Yellow
+    }
+}
+
+& $shell @shellArgs
 $exitCode = if ($null -ne $LASTEXITCODE) { $LASTEXITCODE } else { 0 }
 exit $exitCode

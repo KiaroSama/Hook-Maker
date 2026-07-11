@@ -15,6 +15,7 @@ catch { }
 
 $ScriptRoot = $PSScriptRoot
 $ToolRoot = Split-Path -Parent $ScriptRoot
+$HooksDir = Join-Path $ToolRoot 'hooks'
 $InstallScript = Join-Path $ScriptRoot 'Install-Hook.ps1'
 $ValidateScript = Join-Path $ScriptRoot 'Validate-Config.ps1'
 if ([string]::IsNullOrWhiteSpace($ConfigPath)) {
@@ -27,28 +28,32 @@ else {
 # ---------------------------------------------------------------- colors ----
 $Esc = [char]27
 $C = @{
-    Reset   = "$Esc[0m"
-    Red     = "$Esc[91m"
-    Green   = "$Esc[92m"
-    Yellow  = "$Esc[93m"
-    Dim     = "$Esc[38;5;250m"
-    Gray    = "$Esc[38;5;252m"
-    Title   = "$Esc[1m$Esc[38;2;255;50;115m"
-    Input   = "$Esc[1m$Esc[38;2;68;221;255m"
-    Summary = "$Esc[1m$Esc[38;2;170;255;82m"
-    Confirm = "$Esc[1m$Esc[38;2;255;155;60m"
-    Process = "$Esc[1m$Esc[38;2;80;255;205m"
-    Done    = "$Esc[1m$Esc[38;2;145;255;95m"
-    Label   = "$Esc[1m$Esc[38;2;110;210;255m"
-    Value   = "$Esc[38;2;245;245;245m"
-    Path    = "$Esc[38;2;70;255;210m"
-    True    = "$Esc[1m$Esc[38;2;95;255;120m"
-    False   = "$Esc[1m$Esc[38;2;255;95;95m"
-    Key     = "$Esc[38;5;154m"
-    Num     = "$Esc[38;5;209m"
-    Aqua    = "$Esc[38;5;159m"
-    Amber   = "$Esc[38;5;214m"
-    Mint    = "$Esc[38;5;121m"
+    Reset      = "$Esc[0m"
+    Bold       = "$Esc[1m"
+    Red        = "$Esc[91m"
+    Green      = "$Esc[92m"
+    White      = "$Esc[97m"
+    Gray       = "$Esc[38;5;252m"
+    Dim        = "$Esc[38;5;250m"
+    LightBlue  = "$Esc[38;5;117m"
+    HintYellow = "$Esc[38;5;221m"
+    NoteYellow = "$Esc[38;5;227m"
+    BackPrompt = "$Esc[38;5;166m"
+    ExitPrompt = "$Esc[38;5;32m"
+    Aqua       = "$Esc[38;5;159m"
+    Amber      = "$Esc[38;5;214m"
+    Mint       = "$Esc[38;5;121m"
+    Title      = "$Esc[1m$Esc[38;2;255;50;115m"
+    Input      = "$Esc[1m$Esc[38;2;68;221;255m"
+    Summary    = "$Esc[1m$Esc[38;2;170;255;82m"
+    Confirm    = "$Esc[1m$Esc[38;2;255;155;60m"
+    Process    = "$Esc[1m$Esc[38;2;80;255;205m"
+    Done       = "$Esc[1m$Esc[38;2;145;255;95m"
+}
+
+function Get-Painted {
+    param([Parameter(Mandatory = $true)][AllowEmptyString()][string]$Text, [Parameter(Mandatory = $true)][string]$Color)
+    return $Color + $Text + $C.Reset
 }
 
 function Get-TermWidth {
@@ -76,27 +81,94 @@ function Write-PhaseHeader {
     Write-Host ($Color + ($Char * $width) + $C.Reset)
 }
 
-function Write-Setting {
+# Field line: gray "label:" + colored value (FFmWiz field_text).
+function Write-Field {
     param(
         [Parameter(Mandatory = $true)][string]$Name,
-        [Parameter(Mandatory = $true)][string]$Value,
+        [Parameter(Mandatory = $true)][AllowEmptyString()][string]$Value,
         [string]$ValueColor = ''
     )
 
     if ([string]::IsNullOrEmpty($ValueColor)) {
-        $ValueColor = $C.Value
+        $ValueColor = $C.White
     }
-    Write-Host ('  ' + $C.Label + $Name + ':' + $C.Reset + ' ' + $ValueColor + $Value + $C.Reset)
+    Write-Host ('  ' + (Get-Painted ($Name + ':') $C.Gray) + ' ' + (Get-Painted $Value $ValueColor))
+}
+
+# Numbered menu option: sky-blue "N." + bold label (FFmWiz selection_menu_line).
+function Write-MenuLine {
+    param([Parameter(Mandatory = $true)][int]$Number, [Parameter(Mandatory = $true)][string]$Label, [string]$Suffix = '')
+
+    $line = '  ' + (Get-Painted ($Number.ToString() + '.') $C.LightBlue) + ' ' + (Get-Painted $Label $C.Bold)
+    if ($Suffix) {
+        $line += ' ' + (Get-Painted $Suffix $C.Gray)
+    }
+    Write-Host $line
+}
+
+function Write-MenuTitle {
+    param([Parameter(Mandatory = $true)][string]$Text)
+    Write-Host (Get-Painted $Text ($C.Bold + $C.LightBlue))
 }
 
 function Write-ErrorLine {
     param([Parameter(Mandatory = $true)][string]$Message)
-    Write-Host ('  ' + $C.Red + 'x ' + $Message + $C.Reset)
+    Write-Host (Get-Painted $Message $C.Red)
 }
 
-function Write-WarnLine {
+function Write-NoteLine {
     param([Parameter(Mandatory = $true)][string]$Message)
-    Write-Host ('  ' + $C.Yellow + '! ' + $Message + $C.Reset)
+    Write-Host (Get-Painted $Message $C.NoteYellow)
+}
+
+# "{back=0, quit=exit}" suffix with FFmWiz's per-part colors.
+function Get-BackText {
+    param([string]$Spec = 'back=0, quit=exit')
+
+    $parts = New-Object System.Collections.Generic.List[string]
+    foreach ($part in $Spec.Split(',')) {
+        $part = $part.Trim()
+        if ($part -match 'back') {
+            [void]$parts.Add((Get-Painted $part $C.BackPrompt))
+        }
+        elseif ($part -match 'exit|quit') {
+            [void]$parts.Add((Get-Painted $part $C.ExitPrompt))
+        }
+        else {
+            [void]$parts.Add((Get-Painted $part $C.White))
+        }
+    }
+    return (Get-Painted '{' $C.White) + ($parts.ToArray() -join (Get-Painted ', ' $C.White)) + (Get-Painted '}' $C.White)
+}
+
+# Question prompt: "\nN. Title (hint) [default] {back=0, quit=exit}: " (FFmWiz question_prompt).
+$script:QuestionNumber = 0
+function New-QuestionPrompt {
+    param(
+        [Parameter(Mandatory = $true)][string]$Title,
+        [string]$Details,
+        [string]$Default,
+        [string]$Back = 'back=0, quit=exit'
+    )
+
+    $script:QuestionNumber++
+    $prompt = "`n" + (Get-Painted ($script:QuestionNumber.ToString() + '. ' + $Title) $C.Bold)
+    if (-not [string]::IsNullOrEmpty($Details)) {
+        $prompt += ' (' + (Get-Painted $Details $C.HintYellow) + ')'
+    }
+    if (-not [string]::IsNullOrEmpty($Default)) {
+        $prompt += ' ' + (Get-Painted ('[' + $Default + ']') $C.Green)
+    }
+    if (-not [string]::IsNullOrEmpty($Back)) {
+        $prompt += ' ' + (Get-BackText $Back)
+    }
+    return $prompt + ': '
+}
+
+function Get-ExampleText {
+    param([Parameter(Mandatory = $true)][string]$Text)
+    # Example values keep their own color inside hints (FFmWiz example_text).
+    return (Get-Painted $Text $C.LightBlue) + $C.HintYellow
 }
 
 # --------------------------------------------------------------- logging ----
@@ -122,7 +194,7 @@ function Initialize-Log {
     }
     catch {
         $script:LogPath = $null
-        Write-Host ($C.Yellow + 'Warning: file logging is unavailable: ' + $_.Exception.Message + $C.Reset)
+        Write-NoteLine ('Warning: file logging is unavailable: ' + $_.Exception.Message)
     }
 }
 
@@ -143,16 +215,22 @@ function Write-Log {
     catch { }
 }
 
-# --------------------------------------------------------------- helpers ----
-function Read-InputLine {
-    param([Parameter(Mandatory = $true)][string]$Prompt)
+# ----------------------------------------------------------------- input ----
+# Reads one answer. Logs it like FFmWiz ("User input: prompt=...; value=...").
+# 'exit'/'quit' aborts the wizard; '0' is returned for the caller's back handling.
+function Read-Answer {
+    param(
+        [Parameter(Mandatory = $true)][string]$Prompt,
+        [Parameter(Mandatory = $true)][string]$LogLabel
+    )
 
     Write-Host -NoNewline $Prompt
     $line = Read-Host
     if ($null -eq $line) {
         throw 'Input stream ended unexpectedly.'
     }
-    if ([string]::IsNullOrWhiteSpace($line)) {
+    $value = $line.Trim().Trim('"').Trim("'")
+    if ([string]::IsNullOrWhiteSpace($value)) {
         $script:EmptyReads++
         if ($script:EmptyReads -gt 200) {
             throw 'Too many consecutive empty inputs; aborting.'
@@ -161,9 +239,58 @@ function Read-InputLine {
     else {
         $script:EmptyReads = 0
     }
-    return $line
+
+    $lower = $value.ToLowerInvariant()
+    $action = 'answer'
+    if ($lower -eq 'exit' -or $lower -eq 'quit') {
+        $action = 'quit'
+    }
+    elseif ($value -eq '0') {
+        $action = 'back'
+    }
+    $defaultUsed = 'no'
+    if ($value -eq '') {
+        $defaultUsed = 'yes'
+    }
+    Write-Log 'DEBUG' 'INPUT' ('User input: prompt=' + $LogLabel + "; value='" + $value + "'; default_used=" + $defaultUsed + '; action=' + $action)
+
+    if ($action -eq 'quit') {
+        throw 'WIZ:EXIT'
+    }
+    return $value
 }
 
+# y/n question; Enter = default; returns $null when the user backs out with 0.
+function Read-YesNo {
+    param(
+        [Parameter(Mandatory = $true)][string]$Prompt,
+        [Parameter(Mandatory = $true)][bool]$Default,
+        [Parameter(Mandatory = $true)][string]$LogLabel
+    )
+
+    $defaultText = 'n'
+    if ($Default) {
+        $defaultText = 'y'
+    }
+    while ($true) {
+        $value = (Read-Answer $Prompt $LogLabel).ToLowerInvariant()
+        if ($value -eq '0') {
+            return $null
+        }
+        if ($value -eq '') {
+            return $Default
+        }
+        if ($value -eq 'y' -or $value -eq 'yes') {
+            return $true
+        }
+        if ($value -eq 'n' -or $value -eq 'no') {
+            return $false
+        }
+        Write-ErrorLine ('Enter only y or n. Default on Enter: ' + $defaultText)
+    }
+}
+
+# --------------------------------------------------------------- helpers ----
 function Normalize-Path {
     param([Parameter(Mandatory = $true)][string]$Path)
 
@@ -186,7 +313,7 @@ function Test-PathInside {
 }
 
 function Get-StringHash {
-    param([Parameter(Mandatory = $true)][string]$Text)
+    param([Parameter(Mandatory = $true)][AllowEmptyString()][string]$Text)
 
     $sha256 = [System.Security.Cryptography.SHA256]::Create()
     try {
@@ -254,43 +381,50 @@ function Set-ObjectProperty {
 }
 
 # ----------------------------------------------------------- input phase ----
+# Collects project root paths. Returns an array, or $null when the user backs out.
 function Read-ProjectList {
+    param(
+        [int]$MinimumCount = 2,
+        [switch]$ShowAiNote
+    )
+
     Write-PhaseHeader 'Add Projects' $C.Input '-'
-    Write-Host ($C.Dim + '  Enter each project root path, one per line (at least 2 projects).' + $C.Reset)
-    Write-Host ($C.Dim + '  Commands: ' + $C.Key + 'done' + $C.Dim + ' = finish   ' + $C.Key + 'undo' + $C.Dim + ' = remove last   ' + $C.Key + 'cancel' + $C.Dim + ' = back to menu' + $C.Reset)
-    Write-Host ''
+    Write-MenuTitle 'Target projects:'
+    Write-Host (Get-Painted ('  Enter each project root path, one per line (at least ' + $MinimumCount + ').') $C.Gray)
+
+    $example = Get-ExampleText 'G:\Projects\My Bot'
+    $prompt = New-QuestionPrompt 'Project root path' ('done=finish, undo=remove last; example: ' + $example) $null
 
     $projects = New-Object System.Collections.Generic.List[object]
     while ($true) {
-        $prompt = '  ' + $C.Num + '[' + ($projects.Count + 1) + ']' + $C.Reset + ' ' + $C.Aqua + 'project path>' + $C.Reset + ' '
-        $raw = Read-InputLine $prompt
-        $value = $raw.Trim().Trim('"').Trim("'")
+        $value = Read-Answer $prompt 'project root path'
+        if ($value -eq '0') {
+            Write-Log 'INFO' 'INPUT' 'User backed out of project entry.'
+            return $null
+        }
         if ([string]::IsNullOrWhiteSpace($value)) {
+            Write-ErrorLine 'This value cannot be empty. Enter a path, or done to finish.'
             continue
         }
         $lower = $value.ToLowerInvariant()
 
-        if ($lower -eq 'cancel') {
-            Write-Log 'INFO' 'INPUT' 'User canceled project entry.'
-            return $null
-        }
         if ($lower -eq 'undo') {
             if ($projects.Count -gt 0) {
                 $removed = $projects[$projects.Count - 1]
                 $projects.RemoveAt($projects.Count - 1)
-                Write-Host ('  ' + $C.Dim + '- removed ' + $removed.Name + '  ' + $removed.Root + $C.Reset)
+                Write-Host ('  ' + (Get-Painted ('- removed ' + $removed.Name + '  ' + $removed.Root) $C.Dim))
                 Write-Log 'INFO' 'INPUT' ('Removed project: ' + $removed.Root)
             }
             else {
-                Write-WarnLine 'Nothing to undo.'
+                Write-NoteLine 'Nothing to undo.'
             }
             continue
         }
         if ($lower -eq 'done') {
-            if ($projects.Count -ge 2) {
+            if ($projects.Count -ge $MinimumCount) {
                 break
             }
-            Write-ErrorLine ('At least 2 projects are required (currently ' + $projects.Count + ').')
+            Write-ErrorLine ('At least ' + $MinimumCount + ' project(s) required (currently ' + $projects.Count + ').')
             continue
         }
 
@@ -316,7 +450,7 @@ function Read-ProjectList {
             }
         }
         if ($isDuplicate) {
-            Write-WarnLine ('Already added: ' + $root)
+            Write-NoteLine ('Already added: ' + $root)
             Write-Log 'WARNING' 'INPUT' ('Duplicate rejected: ' + $root)
             continue
         }
@@ -343,13 +477,19 @@ function Read-ProjectList {
         }
         [void]$projects.Add($entry)
 
-        $aiNote = if ($entry.AiExists) { $C.Mint + ' (.ai exists)' } else { $C.Amber + ' (.ai will be created)' }
-        Write-Host ('  ' + $C.Green + '+ added ' + $C.Reset + $C.Value + $entry.Name + $C.Reset + $C.Dim + '  ' + $entry.Root + $C.Reset + $aiNote + $C.Reset)
+        $note = ''
+        if ($ShowAiNote) {
+            if ($entry.AiExists) {
+                $note = ' ' + (Get-Painted '(.ai exists)' $C.Mint)
+            }
+            else {
+                $note = ' ' + (Get-Painted '(.ai will be created)' $C.Amber)
+            }
+        }
+        Write-Host ('  ' + (Get-Painted '+ added' $C.Green) + ' ' + (Get-Painted $entry.Name $C.Bold) + '  ' + (Get-Painted $entry.Root $C.Gray) + $note)
         Write-Log 'INFO' 'INPUT' ('Added project: ' + $root + ' | aiExists=' + $entry.AiExists)
     }
 
-    # ToArray instead of @(): wrapping a generic List with @() fails on some
-    # PowerShell hosts with "Argument types do not match".
     return $projects.ToArray()
 }
 
@@ -408,7 +548,7 @@ function New-GroupProfile {
     }
 }
 
-# ------------------------------------------------------------- main flow ----
+# --------------------------------------------------- sync group flow (1) ----
 function Invoke-CreateGroup {
     Write-Log 'INFO' 'GROUP' 'Create/update sync group started.'
 
@@ -419,9 +559,9 @@ function Invoke-CreateGroup {
         return
     }
 
-    $projects = Read-ProjectList
+    $projects = Read-ProjectList -MinimumCount 2 -ShowAiNote
     if ($null -eq $projects) {
-        Write-Host ($C.Dim + '  Canceled.' + $C.Reset)
+        Write-NoteLine 'Returning to main menu.'
         return
     }
 
@@ -433,38 +573,44 @@ function Invoke-CreateGroup {
         $null -ne $config.defaults.PSObject.Properties['events'] -and $null -ne $config.defaults.events) {
         $events = @($config.defaults.events)
     }
+
     # ---- summary ----
     Write-PhaseHeader 'Summary' $C.Summary '-'
+    Write-MenuTitle 'Sync group:'
     for ($i = 0; $i -lt $projects.Count; $i++) {
         $project = $projects[$i]
-        $aiNote = if ($project.AiExists) { $C.Mint + '.ai exists' } else { $C.Amber + '.ai will be created' }
-        Write-Host ('  ' + $C.Num + '[' + ($i + 1) + ']' + $C.Reset + ' ' + $C.Value + $project.Name + $C.Reset + '  ' + $C.Path + $project.Root + $C.Reset + '  ' + $aiNote + $C.Reset)
+        $note = '(.ai will be created)'
+        $noteColor = $C.Amber
+        if ($project.AiExists) {
+            $note = '(.ai exists)'
+            $noteColor = $C.Mint
+        }
+        Write-MenuLine ($i + 1) $project.Name ($project.Root + '  ')
+        Write-Host ('     ' + (Get-Painted $note $noteColor))
     }
     Write-Host ''
-    Write-Setting 'Profile id' $groupProfile.id $C.Aqua
-    Write-Setting 'Profile name' $groupProfile.name
-    Write-Setting 'Routes' ([string]$routeCount + ' (full mesh)')
-    Write-Setting 'Events' ($events -join ', ')
-    Write-Setting 'Config file' $ConfigPath $C.Path
+    Write-Field 'profile id' $groupProfile.id $C.Aqua
+    Write-Field 'profile name' $groupProfile.name
+    Write-Field 'routes' ($routeCount.ToString() + ' (full mesh)')
+    Write-Field 'events' ($events -join ', ')
+    Write-Field 'config file' $ConfigPath $C.LightBlue
     if ($NoInstall) {
-        Write-Setting 'Hook install' 'skipped (-NoInstall)' $C.Amber
+        Write-Field 'hook install' 'skipped (-NoInstall)' $C.Amber
     }
     else {
-        Write-Setting 'Hook install' 'per project (local scope), Claude + Codex'
-        Write-Setting 'Claude' 'each <project>\.claude\settings.local.json' $C.Path
-        Write-Setting 'Codex' 'each <project>\.codex\hooks.json' $C.Path
+        Write-Field 'hook install' 'per project: .claude\settings.local.json + .codex\hooks.json'
     }
     Write-Host ''
-    Write-Host ($C.Dim + '  Routes:' + $C.Reset)
+    Write-Host (Get-Painted '  Routes:' $C.Gray)
     foreach ($route in @($groupProfile.routes)) {
-        Write-Host ('    ' + $C.Dim + $route.source.name + ' -> ' + $route.destination.name + $C.Reset)
+        Write-Host ('    ' + (Get-Painted ($route.source.name + ' -> ' + $route.destination.name) $C.Dim))
     }
 
     # ---- confirm ----
     Write-PhaseHeader 'Confirm' $C.Confirm '-'
-    $answer = (Read-InputLine ('  Start? [' + $C.Key + 'Y' + $C.Reset + '/n] ' + $C.Dim + '(Enter = Y)' + $C.Reset + ' > ')).Trim().ToLowerInvariant()
-    if ($answer -ne '' -and $answer -ne 'y' -and $answer -ne 'yes') {
-        Write-Host ($C.Dim + '  Canceled. Nothing was changed.' + $C.Reset)
+    $confirm = Read-YesNo (New-QuestionPrompt 'Start now?' 'y/n' 'y') $true 'start sync group'
+    if ($confirm -ne $true) {
+        Write-NoteLine 'Canceled. Nothing was changed.'
         Write-Log 'INFO' 'GROUP' 'User declined at confirmation; no changes applied.'
         return
     }
@@ -477,11 +623,11 @@ function Invoke-CreateGroup {
     foreach ($project in $projects) {
         if (-not $project.AiExists) {
             New-Item -ItemType Directory -Path $project.AiPath -Force | Out-Null
-            Write-Host ('  ' + $C.Green + '+ created ' + $C.Reset + $C.Path + $project.AiPath + $C.Reset)
+            Write-Host ('  ' + (Get-Painted '+ created' $C.Green) + ' ' + (Get-Painted $project.AiPath $C.LightBlue))
             Write-Log 'INFO' 'CONFIG' ('Created knowledge directory: ' + $project.AiPath)
         }
         else {
-            Write-Host ('  ' + $C.Dim + '= exists  ' + $project.AiPath + $C.Reset)
+            Write-Host ('  ' + (Get-Painted ('= exists  ' + $project.AiPath) $C.Dim))
             Write-Log 'DEBUG' 'CONFIG' ('Knowledge directory exists: ' + $project.AiPath)
         }
     }
@@ -515,19 +661,22 @@ function Invoke-CreateGroup {
         Write-Log 'INFO' 'CONFIG' ('Config backup created: ' + $backupPath)
     }
     Write-JsonFileAtomic -Value $config -Path $ConfigPath
-    $action = if ($replaced) { 'updated' } else { 'added' }
-    Write-Host ('  ' + $C.Green + '+ profile ' + $action + ' ' + $C.Reset + $C.Aqua + $groupProfile.id + $C.Reset + $C.Dim + ' (' + $routeCount + ' routes)' + $C.Reset)
+    $action = 'added'
+    if ($replaced) {
+        $action = 'updated'
+    }
+    Write-Host ('  ' + (Get-Painted ('+ profile ' + $action) $C.Green) + ' ' + (Get-Painted $groupProfile.id $C.Aqua) + (Get-Painted (' (' + $routeCount + ' routes)') $C.Dim))
     Write-Log 'INFO' 'CONFIG' ('Profile ' + $action + ': ' + $groupProfile.id + ' | routes=' + $routeCount + ' | config=' + $ConfigPath)
 
     $validateOutput = & $ValidateScript -ConfigPath $ConfigPath *>&1
     foreach ($line in @($validateOutput)) {
         Write-Log 'DEBUG' 'VALIDATE' ([string]$line)
     }
-    Write-Host ('  ' + $C.Green + '+ configuration validated' + $C.Reset)
+    Write-Host ('  ' + (Get-Painted '+ configuration validated' $C.Green))
     Write-Log 'INFO' 'VALIDATE' 'Configuration validated after write.'
 
     if ($NoInstall) {
-        Write-Host ('  ' + $C.Amber + '! hook install skipped (-NoInstall)' + $C.Reset)
+        Write-NoteLine '  hook install skipped (-NoInstall)'
         Write-Log 'INFO' 'INSTALL' 'Hook install skipped by -NoInstall.'
     }
     else {
@@ -538,26 +687,164 @@ function Invoke-CreateGroup {
             foreach ($line in @($installOutput)) {
                 Write-Log 'INFO' 'INSTALL' ([string]$line)
             }
-            Write-Host ('  ' + $C.Green + '+ hook installed in ' + $C.Reset + $C.Value + $project.Name + $C.Reset + $C.Dim + '  ' + $project.Root + $C.Reset)
+            Write-Host ('  ' + (Get-Painted '+ hook installed in' $C.Green) + ' ' + (Get-Painted $project.Name $C.Bold) + '  ' + (Get-Painted $project.Root $C.Gray))
         }
     }
 
     $stopwatch.Stop()
     Write-PhaseHeader 'Completed' $C.Done '='
-    Write-Host ('  ' + $C.Value + 'Restart the Claude/Codex clients and review /hooks inside each project.' + $C.Reset)
-    Write-Host ('  ' + $C.Value + 'Opening any of these projects now reviews the other projects'' knowledge first.' + $C.Reset)
-    Write-Host ('  ' + $C.Dim + 'Codex: run /hooks in each project and trust the new command before it runs.' + $C.Reset)
+    Write-Host (Get-Painted '  Restart the Claude/Codex clients and review /hooks inside each project.' $C.White)
+    Write-Host (Get-Painted '  Opening any of these projects now reviews the other projects'' knowledge first.' $C.White)
+    Write-NoteLine '  Codex: run /hooks in each project and trust the new command before it runs.'
     if ($null -ne $script:LogPath) {
-        Write-Host ('  ' + $C.Dim + 'Log: ' + $script:LogPath + $C.Reset)
+        Write-Host (Get-Painted ('  Log: ' + $script:LogPath) $C.Dim)
     }
     Write-Log 'INFO' 'DONE' ('Sync group applied: ' + $groupProfile.id + ' | durationMs=' + $stopwatch.ElapsedMilliseconds)
 }
 
+# -------------------------------------------------- custom hook flow (2) ----
+function Invoke-InstallCustomHook {
+    Write-Log 'INFO' 'CUSTOM' 'Custom hook install started.'
+    Write-PhaseHeader 'Install Custom Hook' $C.Input '-'
+
+    $hookFiles = @(Get-ChildItem -LiteralPath $HooksDir -Filter '*.ps1' -File -ErrorAction SilentlyContinue | Sort-Object Name)
+    if ($hookFiles.Count -eq 0) {
+        Write-ErrorLine ('No hook scripts found in: ' + $HooksDir)
+        Write-NoteLine 'Add a .ps1 hook there first. The README shows a minimal skeleton.'
+        return
+    }
+
+    Write-MenuTitle 'Available hooks (hooks\):'
+    for ($i = 0; $i -lt $hookFiles.Count; $i++) {
+        $suffix = ''
+        if ($hookFiles[$i].Name -eq 'CrossProjectSyncHook.ps1') {
+            $suffix = '(sync engine - normally configured via option 1)'
+        }
+        Write-MenuLine ($i + 1) $hookFiles[$i].Name $suffix
+    }
+
+    $hookPrompt = New-QuestionPrompt 'Select a hook' $null '1'
+    $selectedHook = $null
+    while ($true) {
+        $value = Read-Answer $hookPrompt 'select custom hook'
+        if ($value -eq '0') {
+            Write-NoteLine 'Returning to main menu.'
+            return
+        }
+        if ($value -eq '') {
+            $value = '1'
+        }
+        $index = 0
+        if ([int]::TryParse($value, [ref]$index) -and $index -ge 1 -and $index -le $hookFiles.Count) {
+            $selectedHook = $hookFiles[$index - 1]
+            break
+        }
+        Write-ErrorLine ('Enter a number between 1 and ' + $hookFiles.Count + '.')
+    }
+
+    Write-MenuTitle 'Events:'
+    Write-MenuLine 1 'SessionStart + UserPromptSubmit' '(context hooks - recommended)'
+    Write-MenuLine 2 'SessionStart'
+    Write-MenuLine 3 'UserPromptSubmit'
+    Write-MenuLine 4 'Custom list' '(e.g. PreToolUse,PostToolUse,Stop)'
+
+    $eventsPrompt = New-QuestionPrompt 'Select events' $null '1'
+    $knownEvents = @('SessionStart', 'UserPromptSubmit', 'PreToolUse', 'PostToolUse', 'Stop', 'SubagentStop', 'PreCompact', 'SessionEnd', 'Notification', 'PermissionRequest', 'PostCompact', 'SubagentStart')
+    $events = $null
+    while ($null -eq $events) {
+        $value = Read-Answer $eventsPrompt 'select events'
+        if ($value -eq '0') {
+            Write-NoteLine 'Returning to main menu.'
+            return
+        }
+        if ($value -eq '') {
+            $value = '1'
+        }
+        switch ($value) {
+            '1' { $events = @('SessionStart', 'UserPromptSubmit') }
+            '2' { $events = @('SessionStart') }
+            '3' { $events = @('UserPromptSubmit') }
+            '4' {
+                $example = Get-ExampleText 'PreToolUse,PostToolUse'
+                $listPrompt = New-QuestionPrompt 'Event names' ('comma separated; example: ' + $example) $null
+                while ($null -eq $events) {
+                    $raw = Read-Answer $listPrompt 'custom event list'
+                    if ($raw -eq '0') {
+                        Write-NoteLine 'Returning to main menu.'
+                        return
+                    }
+                    $candidates = @($raw.Split(',') | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne '' })
+                    if ($candidates.Count -eq 0) {
+                        Write-ErrorLine 'Enter at least one event name.'
+                        continue
+                    }
+                    $invalid = @($candidates | Where-Object { $_ -notmatch '^[A-Za-z]+$' })
+                    if ($invalid.Count -gt 0) {
+                        Write-ErrorLine ('Invalid event name(s): ' + ($invalid -join ', '))
+                        continue
+                    }
+                    $unknown = @($candidates | Where-Object { $knownEvents -notcontains $_ })
+                    if ($unknown.Count -gt 0) {
+                        Write-NoteLine ('Not a known event (installing anyway): ' + ($unknown -join ', '))
+                    }
+                    $events = $candidates
+                }
+            }
+            default { Write-ErrorLine 'Enter 1, 2, 3 or 4.' }
+        }
+    }
+
+    $targets = Read-ProjectList -MinimumCount 1
+    if ($null -eq $targets) {
+        Write-NoteLine 'Returning to main menu.'
+        return
+    }
+
+    # ---- summary ----
+    Write-PhaseHeader 'Summary' $C.Summary '-'
+    Write-Field 'hook script' $selectedHook.FullName $C.LightBlue
+    Write-Field 'events' ($events -join ', ')
+    Write-Field 'install' 'per project: .claude\settings.local.json + .codex\hooks.json'
+    Write-MenuTitle 'Target projects:'
+    for ($i = 0; $i -lt $targets.Count; $i++) {
+        Write-MenuLine ($i + 1) $targets[$i].Name $targets[$i].Root
+    }
+
+    # ---- confirm ----
+    Write-PhaseHeader 'Confirm' $C.Confirm '-'
+    $confirm = Read-YesNo (New-QuestionPrompt 'Start now?' 'y/n' 'y') $true 'start custom hook install'
+    if ($confirm -ne $true) {
+        Write-NoteLine 'Canceled. Nothing was changed.'
+        Write-Log 'INFO' 'CUSTOM' 'User declined at confirmation; no changes applied.'
+        return
+    }
+
+    # ---- apply ----
+    Write-PhaseHeader 'Applying Changes' $C.Process '-'
+    foreach ($target in $targets) {
+        $installOutput = & $InstallScript -CustomHook $selectedHook.FullName -Events $events -TargetProject $target.Root *>&1
+        foreach ($line in @($installOutput)) {
+            Write-Log 'INFO' 'INSTALL' ([string]$line)
+        }
+        Write-Host ('  ' + (Get-Painted '+ hook installed in' $C.Green) + ' ' + (Get-Painted $target.Name $C.Bold) + '  ' + (Get-Painted $target.Root $C.Gray))
+    }
+
+    Write-PhaseHeader 'Completed' $C.Done '='
+    Write-Host (Get-Painted ('  ' + $selectedHook.Name + ' installed for: ' + ($events -join ', ')) $C.White)
+    Write-Host (Get-Painted '  Restart the Claude/Codex clients and review /hooks inside each project.' $C.White)
+    Write-NoteLine '  Codex: run /hooks in each project and trust the new command before it runs.'
+    if ($null -ne $script:LogPath) {
+        Write-Host (Get-Painted ('  Log: ' + $script:LogPath) $C.Dim)
+    }
+    Write-Log 'INFO' 'DONE' ('Custom hook installed: ' + $selectedHook.FullName + ' | events=' + ($events -join ',') + ' | projects=' + $targets.Count)
+}
+
+# ------------------------------------------------------- info flows (3/4) ----
 function Show-Profiles {
     Write-PhaseHeader 'Configured Profiles' $C.Input '-'
     $config = Read-JsonFile $ConfigPath
     if ($null -eq $config -or $null -eq $config.PSObject.Properties['profiles'] -or $null -eq $config.profiles -or @($config.profiles).Count -eq 0) {
-        Write-Host ($C.Dim + '  No profiles configured.' + $C.Reset)
+        Write-NoteLine '  No profiles configured.'
         Write-Log 'INFO' 'MENU' 'Listed profiles: none.'
         return
     }
@@ -574,22 +861,25 @@ function Show-Profiles {
         if ($null -ne $profileConfig.PSObject.Properties['enabled']) {
             $enabled = [bool]$profileConfig.enabled
         }
-        $stateText = if ($enabled) { $C['True'] + 'enabled' } else { $C['False'] + 'disabled' }
+        $stateText = Get-Painted 'disabled' $C.Red
+        if ($enabled) {
+            $stateText = Get-Painted 'enabled' $C.Green
+        }
         $routes = @()
         if ($null -ne $profileConfig.PSObject.Properties['routes'] -and $null -ne $profileConfig.routes) {
             $routes = @($profileConfig.routes)
         }
-        Write-Host ('  ' + $C.Aqua + $id + $C.Reset + '  ' + $C.Gray + $name + $C.Reset + '  ' + $stateText + $C.Reset + $C.Dim + '  (' + $routes.Count + ' routes)' + $C.Reset)
+        Write-Host ('  ' + (Get-Painted $id $C.Aqua) + '  ' + (Get-Painted $name $C.Gray) + '  ' + $stateText + (Get-Painted ('  (' + $routes.Count + ' routes)') $C.Dim))
         foreach ($route in $routes) {
             $sourceName = ''
             $destinationName = ''
             if ($null -ne $route.PSObject.Properties['source'] -and $null -ne $route.source) {
-                $sourceName = if ($null -ne $route.source.PSObject.Properties['name']) { [string]$route.source.name } else { [string]$route.source.root }
+                if ($null -ne $route.source.PSObject.Properties['name']) { $sourceName = [string]$route.source.name } else { $sourceName = [string]$route.source.root }
             }
             if ($null -ne $route.PSObject.Properties['destination'] -and $null -ne $route.destination) {
-                $destinationName = if ($null -ne $route.destination.PSObject.Properties['name']) { [string]$route.destination.name } else { [string]$route.destination.root }
+                if ($null -ne $route.destination.PSObject.Properties['name']) { $destinationName = [string]$route.destination.name } else { $destinationName = [string]$route.destination.root }
             }
-            Write-Host ('      ' + $C.Dim + $sourceName + ' -> ' + $destinationName + $C.Reset)
+            Write-Host ('      ' + (Get-Painted ($sourceName + ' -> ' + $destinationName) $C.Dim))
         }
     }
     Write-Log 'INFO' 'MENU' ('Listed profiles: ' + @($config.profiles).Count)
@@ -600,7 +890,7 @@ function Invoke-Validate {
     try {
         $output = & $ValidateScript -ConfigPath $ConfigPath *>&1
         foreach ($line in @($output)) {
-            Write-Host ('  ' + $C.Green + [string]$line + $C.Reset)
+            Write-Host ('  ' + (Get-Painted ([string]$line) $C.Green))
             Write-Log 'DEBUG' 'VALIDATE' ([string]$line)
         }
         Write-Log 'INFO' 'VALIDATE' 'Configuration valid.'
@@ -611,19 +901,20 @@ function Invoke-Validate {
     }
 }
 
+# ------------------------------------------------------------- main menu ----
 function Show-MainMenu {
     Write-PhaseHeader 'CROSS-PROJECT SYNC WIZARD' $C.Title '='
-    Write-Host ($C.Dim + '  Keeps the .ai knowledge of multiple projects in sync via agent hooks.' + $C.Reset)
+    Write-Host (Get-Painted '  Keeps the .ai knowledge of multiple projects in sync via agent hooks.' $C.Dim)
     Write-Host ''
-    Write-Host ('  ' + $C.Num + '[1]' + $C.Reset + ' ' + $C.Value + 'Create or update a sync group' + $C.Reset)
-    Write-Host ('  ' + $C.Num + '[2]' + $C.Reset + ' ' + $C.Value + 'Show configured profiles' + $C.Reset)
-    Write-Host ('  ' + $C.Num + '[3]' + $C.Reset + ' ' + $C.Value + 'Validate configuration' + $C.Reset)
-    Write-Host ('  ' + $C.Num + '[0]' + $C.Reset + ' ' + $C.Value + 'Exit' + $C.Reset)
-    Write-Host ''
+    Write-MenuTitle 'Main menu:'
+    Write-MenuLine 1 'Create or update a sync group'
+    Write-MenuLine 2 'Install a custom hook' '(from the hooks\ folder)'
+    Write-MenuLine 3 'Show configured profiles'
+    Write-MenuLine 4 'Validate configuration'
 }
 
 function Wait-MenuReturn {
-    $null = Read-InputLine ($C.Dim + '  press Enter to return to the menu... ' + $C.Reset)
+    $null = Read-Answer ("`n" + (Get-Painted 'press Enter to return to the menu...' $C.Dim) + ' ') 'return to menu'
 }
 
 # ----------------------------------------------------------------- entry ----
@@ -631,34 +922,40 @@ Initialize-Log
 Write-Log 'INFO' 'STARTUP' ('Execution id: ' + [guid]::NewGuid().ToString())
 Write-Log 'INFO' 'STARTUP' ('Script: ' + $PSCommandPath)
 Write-Log 'INFO' 'STARTUP' ('Config: ' + $ConfigPath)
+Write-Log 'INFO' 'STARTUP' ('Hooks dir: ' + $HooksDir)
 Write-Log 'INFO' 'STARTUP' ('OS: ' + [Environment]::OSVersion.VersionString)
 Write-Log 'INFO' 'STARTUP' ('PowerShell: ' + $PSVersionTable.PSVersion.ToString())
 Write-Log 'INFO' 'STARTUP' ('NoInstall: ' + [bool]$NoInstall)
 
 try {
-    $redraw = $true
     :menu while ($true) {
-        if ($redraw) {
-            Show-MainMenu
-            $redraw = $false
-        }
-        $choice = (Read-InputLine ('  ' + $C.Aqua + 'select>' + $C.Reset + ' ')).Trim()
-        switch ($choice) {
-            '1' { Invoke-CreateGroup; Wait-MenuReturn; $redraw = $true }
-            '2' { Show-Profiles; Wait-MenuReturn; $redraw = $true }
-            '3' { Invoke-Validate; Wait-MenuReturn; $redraw = $true }
-            '0' { break menu }
-            default {
-                if ($choice -ne '') {
-                    Write-WarnLine 'Enter 1, 2, 3 or 0.'
-                }
+        $script:QuestionNumber = 0
+        Show-MainMenu
+        $menuPrompt = New-QuestionPrompt 'Select an option' $null '1' 'quit=exit'
+        while ($true) {
+            $choice = Read-Answer $menuPrompt 'main menu'
+            if ($choice -eq '') {
+                $choice = '1'
+            }
+            switch ($choice) {
+                '1' { Invoke-CreateGroup; Wait-MenuReturn; continue menu }
+                '2' { Invoke-InstallCustomHook; Wait-MenuReturn; continue menu }
+                '3' { Show-Profiles; Wait-MenuReturn; continue menu }
+                '4' { Invoke-Validate; Wait-MenuReturn; continue menu }
+                '0' { break menu }
+                default { Write-ErrorLine 'Enter 1, 2, 3, 4 or 0.' }
             }
         }
     }
 }
 catch {
+    if ($_.Exception.Message -eq 'WIZ:EXIT') {
+        Write-NoteLine 'Exiting.'
+        Write-Log 'INFO' 'DONE' 'User quit the wizard.'
+        exit 0
+    }
     Write-ErrorLine ('Fatal error: ' + $_.Exception.Message)
-    Write-Host ($C.Dim + $_.ScriptStackTrace + $C.Reset)
+    Write-Host (Get-Painted $_.ScriptStackTrace $C.Dim)
     Write-Log 'CRITICAL' 'ERROR' ('Fatal: ' + $_.Exception.ToString() + ' | at: ' + $_.ScriptStackTrace)
     exit 1
 }
