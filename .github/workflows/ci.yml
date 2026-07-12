@@ -44,3 +44,10 @@ jobs:
       - name: Engine smoke test (Windows PowerShell 5.1)
         shell: powershell
         run: .\scripts\Test-Engine.ps1
+
+      # Offline GitHub-hook suite: mocks git state and gh via a PATH shim, so it
+      # needs no network or account. It internally exercises Windows PowerShell
+      # 5.1 too, so one pwsh run covers both hosts.
+      - name: GitHub hooks test suite
+        shell: pwsh
+        run: .\scripts\Test-GitHubHooks.ps1
