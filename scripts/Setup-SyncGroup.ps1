@@ -427,6 +427,50 @@ function Get-HookEntries {
     return $entries.ToArray()
 }
 
+# Asks which client(s) the hook is installed for. Returns 'Both', 'Claude',
+# 'Codex', or $null when the user backs out.
+function Read-ClientChoice {
+    while ($true) {
+        Write-MenuTitle 'Client:'
+        Write-MenuLine 1 'Both' '(Claude + Codex)'
+        Write-MenuLine 2 'Claude only' '(.claude\settings.local.json)'
+        Write-MenuLine 3 'Codex only' '(.codex\hooks.json)'
+        $value = Read-Answer (New-QuestionPrompt 'Select the client' $null '1') 'select client'
+        if ($value -eq '0') {
+            return $null
+        }
+        if ($value -eq '') {
+            $value = '1'
+        }
+        switch ($value) {
+            '1' { return 'Both' }
+            '2' { return 'Claude' }
+            '3' { return 'Codex' }
+            default { Write-ErrorLine 'Enter 1, 2, 3 or 0.' }
+        }
+    }
+}
+
+# Maps a client choice to Install-Hook.ps1 switches (empty array = both).
+function Get-ClientInstallArgs {
+    param([string]$Clients)
+    switch ($Clients) {
+        'Claude' { return @('-ClaudeOnly') }
+        'Codex' { return @('-CodexOnly') }
+        default { return @() }
+    }
+}
+
+# Human-readable "where does it land" label for summaries.
+function Get-ClientInstallLabel {
+    param([string]$Clients)
+    switch ($Clients) {
+        'Claude' { return 'per project: .claude\settings.local.json (Claude only)' }
+        'Codex' { return 'per project: .codex\hooks.json (Codex only)' }
+        default { return 'per project: .claude\settings.local.json + .codex\hooks.json' }
+    }
+}
+
 # ----------------------------------------------------------- input phase ----
 # Collects project root paths. Returns an array, or $null when the user backs out.
 function Read-ProjectList {
@@ -639,10 +683,11 @@ function Invoke-CreateGroup {
         }
     }
 
-    # Stage machine: project entry (0) <-> confirm (1). Back at confirm returns
-    # to project entry; back at project entry returns to the main menu.
+    # Stage machine: project entry (0) <-> client (1) <-> confirm (2). Back steps
+    # one stage; back at project entry returns to the main menu.
     $projects = $null
     $groupProfile = $null
+    $clients = 'Both'
     $routeCount = 0
     $stage = 0
     while ($true) {
@@ -668,8 +713,18 @@ function Invoke-CreateGroup {
             $stage = 1
             continue
         }
+        if ($stage -eq 1) {
+            # Which client(s) gets the sync hook (Claude / Codex / both).
+            $clients = Read-ClientChoice
+            if ($null -eq $clients) {
+                $stage = 0
+                continue
+            }
+            $stage = 2
+            continue
+        }
 
-        # stage 1: summary + confirm
+        # stage 2: summary + confirm
         Write-PhaseHeader 'Summary' $C.Summary '-'
         Write-MenuTitle 'Sync group:'
         for ($i = 0; $i -lt $projects.Count; $i++) {
@@ -693,7 +748,8 @@ function Invoke-CreateGroup {
             Write-Field 'hook install' 'skipped (-NoInstall)' $C.Amber
         }
         else {
-            Write-Field 'hook install' 'per project: .claude\settings.local.json + .codex\hooks.json'
+            Write-Field 'client' $clients
+            Write-Field 'hook install' (Get-ClientInstallLabel $clients)
         }
         Write-Host ''
         Write-Host (Get-Painted '  Routes:' $C.Gray)
@@ -704,7 +760,7 @@ function Invoke-CreateGroup {
         Write-PhaseHeader 'Confirm' $C.Confirm '-'
         $confirm = Read-YesNo (New-QuestionPrompt 'Start now?' 'y/n' 'y') $true 'start sync group'
         if ($null -eq $confirm) {
-            $stage = 0
+            $stage = 1
             continue
         }
         if ($confirm -ne $true) {
@@ -782,8 +838,9 @@ function Invoke-CreateGroup {
     else {
         # Install the hook locally in each project, not in the user's home settings,
         # so only these projects carry the hook and nothing else on the machine is touched.
+        $clientArgs = @(Get-ClientInstallArgs $clients)
         foreach ($project in $projects) {
-            $installOutput = & $InstallScript -Profile $groupProfile.id -ConfigPath $ConfigPath -TargetProject $project.Root *>&1
+            $installOutput = & $InstallScript -Profile $groupProfile.id -ConfigPath $ConfigPath -TargetProject $project.Root @clientArgs *>&1
             foreach ($line in @($installOutput)) {
                 Write-Log 'INFO' 'INSTALL' ([string]$line)
             }
@@ -906,22 +963,34 @@ function Invoke-CustomHookTargets {
 
     $hookName = Split-Path -Leaf $HookPath
     $stage = 0
+    $clients = $null
     $targets = $null
     while ($true) {
         if ($stage -eq 0) {
-            $targets = Read-ProjectList -MinimumCount 1
-            if ($null -eq $targets) {
+            # Which client(s) gets this hook (Claude / Codex / both).
+            $clients = Read-ClientChoice
+            if ($null -eq $clients) {
                 return 'back'
             }
             $stage = 1
             continue
         }
+        if ($stage -eq 1) {
+            $targets = Read-ProjectList -MinimumCount 1
+            if ($null -eq $targets) {
+                $stage = 0
+                continue
+            }
+            $stage = 2
+            continue
+        }
 
-        # stage 1: confirm
+        # stage 2: confirm
         Write-PhaseHeader 'Summary' $C.Summary '-'
         Write-Field 'hook script' $HookPath $C.LightBlue
         Write-Field 'events' (@($Events) -join ', ')
-        Write-Field 'install' 'per project: .claude\settings.local.json + .codex\hooks.json'
+        Write-Field 'client' $clients
+        Write-Field 'install' (Get-ClientInstallLabel $clients)
         Write-MenuTitle 'Target projects:'
         for ($i = 0; $i -lt $targets.Count; $i++) {
             Write-MenuLine ($i + 1) $targets[$i].Name $targets[$i].Root
@@ -929,7 +998,7 @@ function Invoke-CustomHookTargets {
         Write-PhaseHeader 'Confirm' $C.Confirm '-'
         $confirm = Read-YesNo (New-QuestionPrompt 'Start now?' 'y/n' 'y') $true 'start custom hook install'
         if ($null -eq $confirm) {
-            $stage = 0
+            $stage = 1
             continue
         }
         if ($confirm -ne $true) {
@@ -939,8 +1008,9 @@ function Invoke-CustomHookTargets {
         }
 
         Write-PhaseHeader 'Applying Changes' $C.Process '-'
+        $clientArgs = @(Get-ClientInstallArgs $clients)
         foreach ($target in $targets) {
-            $installOutput = & $InstallScript -CustomHook $HookPath -Events @($Events) -TargetProject $target.Root *>&1
+            $installOutput = & $InstallScript -CustomHook $HookPath -Events @($Events) -TargetProject $target.Root @clientArgs *>&1
             foreach ($line in @($installOutput)) {
                 Write-Log 'INFO' 'INSTALL' ([string]$line)
             }
@@ -950,7 +1020,7 @@ function Invoke-CustomHookTargets {
         Write-Host (Get-Painted ('  ' + $hookName + ' installed for: ' + (@($Events) -join ', ')) $C.White)
         Write-Host (Get-Painted '  Restart the Claude/Codex clients and review /hooks inside each project.' $C.White)
         Write-NoteLine '  Codex: run /hooks in each project and trust the new command before it runs.'
-        Write-Log 'INFO' 'DONE' ('Custom hook installed: ' + $HookPath + ' | events=' + (@($Events) -join ',') + ' | projects=' + $targets.Count)
+        Write-Log 'INFO' 'DONE' ('Custom hook installed: ' + $HookPath + ' | events=' + (@($Events) -join ',') + ' | clients=' + $clients + ' | projects=' + $targets.Count)
         return 'done'
     }
 }
@@ -1066,7 +1136,9 @@ function Invoke-CreateHook {
                     "# Events to register on (comma separated).`n" +
                     'EVENTS=' + ($template.DefaultEvents -join ',') + "`n`n" +
                     "# Project roots for config-based install from the Hook Maker menu (semicolon separated).`n" +
-                    "TARGET_PROJECTS=`n"
+                    "TARGET_PROJECTS=`n`n" +
+                    "# Which client(s) to install for from the Hook Maker menu: Both, Claude, or Codex.`n" +
+                    "CLIENTS=Both`n"
                 [System.IO.File]::WriteAllText((Join-Path $hookFolder '.env.example'), $envExample.Replace("`n", "`r`n"), $Utf8NoBom)
                 Write-Host ('  ' + (Get-Painted '+ created' $C.Green) + ' ' + (Get-Painted $hookPath $C.LightBlue))
                 Write-Host ('  ' + (Get-Painted '+ created' $C.Green) + ' ' + (Get-Painted (Join-Path $hookFolder '.env.example') $C.LightBlue))
@@ -1241,6 +1313,15 @@ function Invoke-InstallHookFromConfig {
         if ($envValues.ContainsKey('EVENTS') -and $envValues['EVENTS'] -ne '') {
             $events = @($envValues['EVENTS'].Split(',') | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne '' })
         }
+        $clients = 'Both'
+        if ($envValues.ContainsKey('CLIENTS') -and $envValues['CLIENTS'] -ne '') {
+            switch ($envValues['CLIENTS'].Trim().ToLowerInvariant()) {
+                'claude' { $clients = 'Claude' }
+                'codex' { $clients = 'Codex' }
+                'both' { $clients = 'Both' }
+                default { Write-NoteLine ('Unknown CLIENTS value "' + $envValues['CLIENTS'] + '" - installing for both.') }
+            }
+        }
         $targetsRaw = ''
         if ($envValues.ContainsKey('TARGET_PROJECTS')) {
             $targetsRaw = $envValues['TARGET_PROJECTS']
@@ -1278,7 +1359,8 @@ function Invoke-InstallHookFromConfig {
         Write-Field 'hook script' $hook.ScriptPath $C.LightBlue
         Write-Field 'config' $hook.EnvPath $C.LightBlue
         Write-Field 'events' ($events -join ', ')
-        Write-Field 'install' 'per project: .claude\settings.local.json + .codex\hooks.json'
+        Write-Field 'client' $clients
+        Write-Field 'install' (Get-ClientInstallLabel $clients)
         Write-MenuTitle 'Target projects (from .env):'
         for ($i = 0; $i -lt $targets.Count; $i++) {
             Write-MenuLine ($i + 1) $targets[$i].Name $targets[$i].Root
@@ -1294,18 +1376,19 @@ function Invoke-InstallHookFromConfig {
         }
 
         Write-PhaseHeader 'Applying Changes' $C.Process '-'
+        $clientArgs = @(Get-ClientInstallArgs $clients)
         foreach ($target in $targets) {
-            $installOutput = & $InstallScript -CustomHook $hook.ScriptPath -Events @($events) -TargetProject $target.Root *>&1
+            $installOutput = & $InstallScript -CustomHook $hook.ScriptPath -Events @($events) -TargetProject $target.Root @clientArgs *>&1
             foreach ($line in @($installOutput)) {
                 Write-Log 'INFO' 'INSTALL' ([string]$line)
             }
             Write-Host ('  ' + (Get-Painted '+ hook installed in' $C.Green) + ' ' + (Get-Painted $target.Name $C.Bold) + '  ' + (Get-Painted $target.Root $C.Gray))
         }
         Write-PhaseHeader 'Completed' $C.Done '='
-        Write-Host (Get-Painted ('  ' + $hook.Name + ' installed for: ' + ($events -join ', ')) $C.White)
+        Write-Host (Get-Painted ('  ' + $hook.Name + ' installed for: ' + ($events -join ', ') + ' (' + $clients + ')') $C.White)
         Write-Host (Get-Painted '  Restart the Claude/Codex clients and review /hooks inside each project.' $C.White)
         Write-NoteLine '  Codex: run /hooks in each project and trust the new command before it runs.'
-        Write-Log 'INFO' 'DONE' ('Config install: ' + $hook.ScriptPath + ' | events=' + ($events -join ',') + ' | projects=' + $targets.Count)
+        Write-Log 'INFO' 'DONE' ('Config install: ' + $hook.ScriptPath + ' | events=' + ($events -join ',') + ' | clients=' + $clients + ' | projects=' + $targets.Count)
         return 'done'
     }
 }
