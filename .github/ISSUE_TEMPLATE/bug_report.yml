@@ -1,0 +1,75 @@
+name: Bug report
+description: Report a problem with Hook Maker
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the report. **Never paste real project paths, tokens, or `.env` contents.**
+        Redact any local paths or secrets before submitting.
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: Describe the bug and what you expected instead.
+      placeholder: When I run ..., I get ... but I expected ...
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - Launcher (run.ps1)
+        - Sync group wizard
+        - Custom hook creator
+        - Custom hook installer (interactive or from .env)
+        - A hook at runtime (SessionStart / UserPromptSubmit / Stop)
+        - Config validation
+        - Other
+    validations:
+      required: true
+  - type: input
+    id: hook
+    attributes:
+      label: Hook name (if applicable)
+      placeholder: e.g. GitSyncCheck, AiMemoryCheck, CrossProjectSyncHook
+  - type: dropdown
+    id: client
+    attributes:
+      label: Client
+      options:
+        - Claude Code
+        - Codex CLI
+        - Both
+        - Neither (wizard/scripts only)
+    validations:
+      required: true
+  - type: textarea
+    id: command
+    attributes:
+      label: Command run
+      description: The exact command or menu path taken, with local paths redacted.
+      render: shell
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Error output / log excerpt
+      description: Full error output, or the relevant lines from logs\*.log (redact local paths).
+      render: shell
+  - type: input
+    id: pwsh
+    attributes:
+      label: PowerShell version
+      placeholder: e.g. 7.4.6 (pwsh) or 5.1.19041 (Windows PowerShell)
+    validations:
+      required: true
+  - type: input
+    id: os
+    attributes:
+      label: Operating system
+      placeholder: e.g. Windows 11
+    validations:
+      required: true
