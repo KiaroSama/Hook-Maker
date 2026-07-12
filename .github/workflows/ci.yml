@@ -1,0 +1,46 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate sync-hooks.json
+        shell: pwsh
+        run: .\scripts\Validate-Config.ps1
+
+      - name: Parse-check all PowerShell scripts
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $failed = $false
+          Get-ChildItem -Recurse -Filter *.ps1 | ForEach-Object {
+            $parseErrors = $null
+            [System.Management.Automation.Language.Parser]::ParseFile($_.FullName, [ref]$null, [ref]$parseErrors) | Out-Null
+            if ($parseErrors) {
+              $failed = $true
+              foreach ($e in $parseErrors) {
+                Write-Error "$($_.FullName):$($e.Extent.StartLineNumber): $($e.Message)"
+              }
+            }
+          }
+          if ($failed) { exit 1 }
+
+      # The engine must work under both hosts: Claude Code's installed command
+      # uses powershell.exe (5.1), Codex's uses pwsh (7).
+      - name: Engine smoke test (PowerShell 7)
+        shell: pwsh
+        run: .\scripts\Test-Engine.ps1
+
+      - name: Engine smoke test (Windows PowerShell 5.1)
+        shell: powershell
+        run: .\scripts\Test-Engine.ps1
