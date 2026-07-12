@@ -25,6 +25,8 @@ else {
     $ConfigPath = [System.IO.Path]::GetFullPath([Environment]::ExpandEnvironmentVariables($ConfigPath))
 }
 
+. (Join-Path $ScriptRoot '..\_hooklib.ps1')
+
 function Normalize-Path {
     param([Parameter(Mandatory = $true)][string]$Path)
 
@@ -48,38 +50,6 @@ function Test-PathInside {
 
     $prefix = $parentPath + [System.IO.Path]::DirectorySeparatorChar
     return $candidatePath.StartsWith($prefix, [System.StringComparison]::OrdinalIgnoreCase)
-}
-
-function Read-JsonFile {
-    param([Parameter(Mandatory = $true)][string]$Path)
-
-    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
-        return $null
-    }
-
-    $raw = [System.IO.File]::ReadAllText($Path, [System.Text.Encoding]::UTF8)
-    if ([string]::IsNullOrWhiteSpace($raw)) {
-        return $null
-    }
-
-    return ($raw | ConvertFrom-Json)
-}
-
-function Write-JsonFileAtomic {
-    param(
-        [Parameter(Mandatory = $true)]$Value,
-        [Parameter(Mandatory = $true)][string]$Path
-    )
-
-    $directory = Split-Path -Parent $Path
-    if (-not (Test-Path -LiteralPath $directory -PathType Container)) {
-        New-Item -ItemType Directory -Path $directory -Force | Out-Null
-    }
-
-    $temporaryPath = $Path + '.tmp'
-    $json = $Value | ConvertTo-Json -Depth 50
-    [System.IO.File]::WriteAllText($temporaryPath, $json, $Utf8NoBom)
-    Move-Item -LiteralPath $temporaryPath -Destination $Path -Force
 }
 
 function Set-ObjectProperty {

@@ -14,22 +14,9 @@
 Set-StrictMode -Version 2.0
 $ErrorActionPreference = 'Stop'
 
-function Get-Field {
-    param($Obj, [string]$Name)
-    if ($null -ne $Obj -and $null -ne $Obj.PSObject.Properties[$Name] -and $null -ne $Obj.$Name) {
-        return $Obj.$Name
-    }
-    return $null
-}
+. (Join-Path $PSScriptRoot '..\_hooklib.ps1')
 
-$hookInput = $null
-try {
-    $raw = [Console]::In.ReadToEnd()
-    if (-not [string]::IsNullOrWhiteSpace($raw)) {
-        $hookInput = $raw | ConvertFrom-Json
-    }
-}
-catch { }
+$hookInput = Read-HookInput
 if ($null -eq $hookInput) {
     exit 0
 }
@@ -55,18 +42,7 @@ if ($null -eq $wranglerConfig) {
 }
 
 # ---- optional .env ----
-$config = @{}
-$envPath = Join-Path $PSScriptRoot '.env'
-if (Test-Path -LiteralPath $envPath -PathType Leaf) {
-    foreach ($line in [System.IO.File]::ReadAllLines($envPath)) {
-        $trimmed = $line.Trim()
-        if ($trimmed -eq '' -or $trimmed.StartsWith('#')) { continue }
-        $separator = $trimmed.IndexOf('=')
-        if ($separator -gt 0) {
-            $config[$trimmed.Substring(0, $separator).Trim()] = $trimmed.Substring($separator + 1).Trim()
-        }
-    }
-}
+$config = Read-HookEnv (Join-Path $PSScriptRoot '.env')
 $cooldownMinutes = 30
 if ($config.ContainsKey('COOLDOWN_MINUTES')) {
     try { $cooldownMinutes = [int]$config['COOLDOWN_MINUTES'] } catch { }
@@ -77,16 +53,6 @@ if ($config.ContainsKey('DEPLOY_COMMAND') -and $config['DEPLOY_COMMAND'] -ne '')
 }
 
 # ---- cooldown (per project) ----
-function Get-ShortHash {
-    param([string]$Text)
-    $sha = [System.Security.Cryptography.SHA256]::Create()
-    try {
-        return ([System.BitConverter]::ToString($sha.ComputeHash([System.Text.Encoding]::UTF8.GetBytes($Text)))).Replace('-', '').ToLowerInvariant().Substring(0, 10)
-    }
-    finally {
-        $sha.Dispose()
-    }
-}
 $stateDir = Join-Path $env:LOCALAPPDATA 'HookMaker\state'
 $statePath = Join-Path $stateDir ('CloudflareDeploy-' + (Get-ShortHash $cwd.ToLowerInvariant()) + '.txt')
 $lastFire = [DateTime]::MinValue

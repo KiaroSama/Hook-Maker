@@ -22,22 +22,9 @@
 Set-StrictMode -Version 2.0
 $ErrorActionPreference = 'Stop'
 
-function Get-Field {
-    param($Obj, [string]$Name)
-    if ($null -ne $Obj -and $null -ne $Obj.PSObject.Properties[$Name] -and $null -ne $Obj.$Name) {
-        return $Obj.$Name
-    }
-    return $null
-}
+. (Join-Path $PSScriptRoot '..\_hooklib.ps1')
 
-$hookInput = $null
-try {
-    $raw = [Console]::In.ReadToEnd()
-    if (-not [string]::IsNullOrWhiteSpace($raw)) {
-        $hookInput = $raw | ConvertFrom-Json
-    }
-}
-catch { }
+$hookInput = Read-HookInput
 if ($null -eq $hookInput) {
     exit 0
 }
@@ -97,18 +84,7 @@ $sha7 = $sha
 if ($sha7.Length -gt 7) { $sha7 = $sha7.Substring(0, 7) }
 
 # ---- optional .env ----
-$config = @{}
-$envPath = Join-Path $PSScriptRoot '.env'
-if (Test-Path -LiteralPath $envPath -PathType Leaf) {
-    foreach ($line in [System.IO.File]::ReadAllLines($envPath)) {
-        $trimmed = $line.Trim()
-        if ($trimmed -eq '' -or $trimmed.StartsWith('#')) { continue }
-        $separator = $trimmed.IndexOf('=')
-        if ($separator -gt 0) {
-            $config[$trimmed.Substring(0, $separator).Trim()] = $trimmed.Substring($separator + 1).Trim()
-        }
-    }
-}
+$config = Read-HookEnv (Join-Path $PSScriptRoot '.env')
 $pendingCooldown = 3
 if ($config.ContainsKey('PENDING_COOLDOWN_MINUTES')) {
     try { $pendingCooldown = [int]$config['PENDING_COOLDOWN_MINUTES'] } catch { }
@@ -119,16 +95,6 @@ if ($config.ContainsKey('FAILURE_COOLDOWN_MINUTES')) {
 }
 
 # ---- per-repo state: sha / outcome / timestamp ----
-function Get-ShortHash {
-    param([string]$Text)
-    $sha256 = [System.Security.Cryptography.SHA256]::Create()
-    try {
-        return ([System.BitConverter]::ToString($sha256.ComputeHash([System.Text.Encoding]::UTF8.GetBytes($Text)))).Replace('-', '').ToLowerInvariant().Substring(0, 10)
-    }
-    finally {
-        $sha256.Dispose()
-    }
-}
 $stateDir = Join-Path $env:LOCALAPPDATA 'HookMaker\state'
 $statePath = Join-Path $stateDir ('CiStatusCheck-' + (Get-ShortHash ($cwd.ToLowerInvariant() + '|' + $repoSlug.ToLowerInvariant())) + '.txt')
 $stateSha = ''
