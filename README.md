@@ -17,6 +17,7 @@ starts the user's task.
 | `scripts/Install-Hook.ps1` | Writes a hook command into a project's `.claude/settings.local.json` + `.codex/hooks.json` (or, with no `-TargetProject`, the global `~/.claude` + `~/.codex`). Supports `-CustomHook <path>`. |
 | `scripts/Validate-Config.ps1` | Validates `sync-hooks.json`. |
 | `scripts/Test-Engine.ps1` | Self-contained engine smoke test (18 assertions, runs under pwsh and PowerShell 5.1). |
+| `scripts/Test-GitHubHooks.ps1` | Offline test suite for the GitHub hooks (47 assertions; mocks git state and `gh`, no network/account). |
 | `logs/` | Wizard execution logs (created on demand, not committed). |
 
 ## Shipped hooks
@@ -31,11 +32,16 @@ starts the user's task.
 | `SkillsCheck` | pre-task (SessionStart) | Compact Skill Policy reminder listing the copied skills, the `.ai/SKILLS.md` record, and the library. |
 | `McpUsageCheck` | pre-task (SessionStart) | Compact reminder to consider MCP servers/tools (docs lookup, browser, DB) when they materially help. |
 | `LargeFileCheck` | pre-task + post-task (Stop) | Pre-task: reminds to prefer small, multi-part files (split by responsibility, ~500-800 lines = split signal). Post-task: scans for oversized source files and asks the AI whether a split is safe and worthwhile. |
+| `DependabotCheck` | pre-task (SessionStart) | In a GitHub repo, reports pending pull requests from the verified `app/dependabot` author (with exact head SHA, classification, merge/check state) so they are reviewed before unrelated work. Detection only — never merges. |
+| `CiStatusCheck` | post-task (Stop) | After a push, blocks "done" until the GitHub checks for the **exact** pushed commit are verified; distinguishes pending / failed / infra-flaky and points at the failed job. |
+| `GithubBaselineCheck` | pre-task (SessionStart) | Checks the `.github` automation baseline against the project's real structure (CI workflow, `dependabot.yml` coverage per ecosystem/dir, optional CodeQL) and reports concrete gaps. |
 
 All advisory hooks are token-efficient by design: they stay **silent** unless a deterministic
-signal fires (staleness, wrangler config, out-of-sync git), they respect a per-project
-**cooldown**, they never loop (`stop_hook_active` guard), and the decision always stays with
-the AI — every reminder explicitly allows finishing without action.
+signal fires (staleness, wrangler config, out-of-sync git, pending Dependabot PR, unverified
+push), they respect a per-project **cooldown/fingerprint**, they never loop (`stop_hook_active`
+guard), and the decision always stays with the AI — every reminder explicitly allows finishing
+without action. The GitHub hooks degrade safely (silent, never a false "all clear") when git,
+a remote, `gh`, authentication, or network access is missing.
 
 ## Hook configs (.env)
 
