@@ -18,6 +18,7 @@ $ToolRoot = Split-Path -Parent $ScriptRoot
 $HooksDir = Join-Path $ToolRoot 'hooks'
 $InstallScript = Join-Path $ScriptRoot 'Install-Hook.ps1'
 $ValidateScript = Join-Path $ScriptRoot 'Validate-Config.ps1'
+. (Join-Path $ToolRoot 'hooks\_hooklib.ps1')
 if ([string]::IsNullOrWhiteSpace($ConfigPath)) {
     $ConfigPath = Join-Path $ToolRoot 'sync-hooks.json'
 }
@@ -122,25 +123,11 @@ function Write-NoteLine {
     Write-Host (Get-Painted $Message $C.NoteYellow)
 }
 
-# "{back=0, quit=exit}" suffix with FFmWiz's per-part colors.
-function Get-BackText {
-    param([string]$Spec = 'back=0, quit=exit')
-
-    $parts = New-Object System.Collections.Generic.List[string]
-    foreach ($part in $Spec.Split(',')) {
-        $part = $part.Trim()
-        if ($part -match 'back') {
-            [void]$parts.Add((Get-Painted $part $C.BackPrompt))
-        }
-        elseif ($part -match 'exit|quit') {
-            [void]$parts.Add((Get-Painted $part $C.ExitPrompt))
-        }
-        else {
-            [void]$parts.Add((Get-Painted $part $C.White))
-        }
-    }
-    return (Get-Painted '{' $C.White) + ($parts.ToArray() -join (Get-Painted ', ' $C.White)) + (Get-Painted '}' $C.White)
-}
+# Precomputed prompt suffixes - the two specs never vary, so colorize each once
+# instead of splitting + regex-matching a spec string on every prompt render.
+# Full: normal prompts (back one step + quit). Quit-only: the main menu (no back).
+$script:BackTextFull = (Get-Painted '{' $C.White) + (Get-Painted 'back=0' $C.BackPrompt) + (Get-Painted ', ' $C.White) + (Get-Painted 'quit=exit' $C.ExitPrompt) + (Get-Painted '}' $C.White)
+$script:BackTextQuit = (Get-Painted '{' $C.White) + (Get-Painted 'quit=exit' $C.ExitPrompt) + (Get-Painted '}' $C.White)
 
 # Question prompt: "\nN. Title (hint) [default] {back=0, quit=exit}: " (FFmWiz question_prompt).
 $script:QuestionNumber = 0
@@ -149,7 +136,7 @@ function New-QuestionPrompt {
         [Parameter(Mandatory = $true)][string]$Title,
         [string]$Details,
         [string]$Default,
-        [string]$Back = 'back=0, quit=exit'
+        [switch]$QuitOnly   # main menu: show {quit=exit} (there is no step to go back to)
     )
 
     $script:QuestionNumber++
@@ -160,10 +147,8 @@ function New-QuestionPrompt {
     if (-not [string]::IsNullOrEmpty($Default)) {
         $prompt += ' ' + (Get-Painted ('[' + $Default + ']') $C.Green)
     }
-    if (-not [string]::IsNullOrEmpty($Back)) {
-        $prompt += ' ' + (Get-BackText $Back)
-    }
-    return $prompt + ': '
+    $suffix = if ($QuitOnly) { $script:BackTextQuit } else { $script:BackTextFull }
+    return $prompt + ' ' + $suffix + ': '
 }
 
 function Get-ExampleText {
@@ -313,20 +298,6 @@ function Test-PathInside {
     return $Candidate.StartsWith($prefix, [System.StringComparison]::OrdinalIgnoreCase)
 }
 
-function Get-StringHash {
-    param([Parameter(Mandatory = $true)][AllowEmptyString()][string]$Text)
-
-    $sha256 = [System.Security.Cryptography.SHA256]::Create()
-    try {
-        $bytes = [System.Text.Encoding]::UTF8.GetBytes($Text)
-        $hash = $sha256.ComputeHash($bytes)
-        return ([System.BitConverter]::ToString($hash)).Replace('-', '').ToLowerInvariant()
-    }
-    finally {
-        $sha256.Dispose()
-    }
-}
-
 function Get-Slug {
     param([Parameter(Mandatory = $true)][string]$Name)
 
@@ -335,35 +306,6 @@ function Get-Slug {
         $slug = 'project'
     }
     return $slug
-}
-
-function Read-JsonFile {
-    param([Parameter(Mandatory = $true)][string]$Path)
-
-    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
-        return $null
-    }
-    $raw = [System.IO.File]::ReadAllText($Path, [System.Text.Encoding]::UTF8)
-    if ([string]::IsNullOrWhiteSpace($raw)) {
-        return $null
-    }
-    return ($raw | ConvertFrom-Json)
-}
-
-function Write-JsonFileAtomic {
-    param(
-        [Parameter(Mandatory = $true)]$Value,
-        [Parameter(Mandatory = $true)][string]$Path
-    )
-
-    $directory = Split-Path -Parent $Path
-    if (-not (Test-Path -LiteralPath $directory -PathType Container)) {
-        New-Item -ItemType Directory -Path $directory -Force | Out-Null
-    }
-    $temporaryPath = $Path + '.tmp'
-    $json = $Value | ConvertTo-Json -Depth 50
-    [System.IO.File]::WriteAllText($temporaryPath, $json, $Utf8NoBom)
-    Move-Item -LiteralPath $temporaryPath -Destination $Path -Force
 }
 
 function Set-ObjectProperty {
@@ -417,7 +359,7 @@ function Get-HookEntries {
             EnvPath    = (Join-Path $dir.FullName '.env')
         })
     }
-    foreach ($file in @(Get-ChildItem -LiteralPath $HooksDir -Filter '*.ps1' -File -ErrorAction SilentlyContinue | Sort-Object Name)) {
+    foreach ($file in @(Get-ChildItem -LiteralPath $HooksDir -Filter '*.ps1' -File -ErrorAction SilentlyContinue | Where-Object { -not $_.BaseName.StartsWith('_') } | Sort-Object Name)) {
         [void]$entries.Add([pscustomobject]@{
             Name       = $file.BaseName
             ScriptPath = $file.FullName
@@ -589,7 +531,7 @@ function New-GroupProfile {
     param([Parameter(Mandatory = $true)]$Projects)
 
     $canonical = (@($Projects | ForEach-Object { $_.Root.ToLowerInvariant() }) | Sort-Object) -join '|'
-    $profileId = 'sync-group-' + (Get-StringHash -Text $canonical).Substring(0, 10)
+    $profileId = 'sync-group-' + (Get-ShortHash -Text $canonical)
 
     # Deterministic slugs: assign in sorted-root order so re-runs keep the same route ids.
     $slugMap = @{}
@@ -1523,7 +1465,7 @@ try {
     :menu while ($true) {
         $script:QuestionNumber = 0
         Show-MainMenu
-        $menuPrompt = New-QuestionPrompt 'Select an option' $null '1' 'quit=exit'
+        $menuPrompt = New-QuestionPrompt 'Select an option' $null '1' -QuitOnly
         while ($true) {
             $choice = Read-Answer $menuPrompt 'main menu'
             if ($choice -eq '') {

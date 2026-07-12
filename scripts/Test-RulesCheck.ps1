@@ -178,9 +178,11 @@ try {
     # =====================================================================
     Write-Host '--- .env GLOBAL_RULES_DIR override + 5.1 host ---' -ForegroundColor Cyan
     # Copy the hook so the test's .env never touches the real hook folder.
+    # The hook dot-sources ..\_hooklib.ps1, so place the lib one level up.
     $hookCopyDir = Join-Path $Work 'hookcopy'
     New-Item -ItemType Directory -Path $hookCopyDir -Force | Out-Null
     Copy-Item $Hook (Join-Path $hookCopyDir 'RulesCheck.ps1')
+    Copy-Item (Join-Path (Split-Path -Parent $Hook) '..\_hooklib.ps1') (Join-Path $Work '_hooklib.ps1')
     $customRules = Join-Path $Work 'customrules'
     New-RuleFile $customRules 'special.md'
     [System.IO.File]::WriteAllText((Join-Path $hookCopyDir '.env'), "GLOBAL_RULES_DIR=$customRules`r`n")

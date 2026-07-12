@@ -1,0 +1,88 @@
+# Shared helpers for Hook Maker's shipped hooks. Each hook dot-sources this
+# once ( . (Join-Path $PSScriptRoot '..\_hooklib.ps1') ) so the identical
+# stdin / .env / hash / JSON boilerplate lives in exactly one place. The
+# underscore prefix keeps it out of the wizard's hook discovery
+# (Get-HookEntries skips '_'-prefixed names). StrictMode 2.0 clean; every
+# function is self-contained so it works from any host or scope.
+
+# Field accessor tolerant of a missing property or a $null value.
+function Get-Field {
+    param($Obj, [string]$Name)
+    if ($null -ne $Obj -and $null -ne $Obj.PSObject.Properties[$Name] -and $null -ne $Obj.$Name) {
+        return $Obj.$Name
+    }
+    return $null
+}
+
+# Reads the hook event JSON from stdin. Returns the parsed object, or $null on
+# empty / non-JSON input (the caller then exits silently).
+function Read-HookInput {
+    try {
+        $raw = [Console]::In.ReadToEnd()
+        if (-not [string]::IsNullOrWhiteSpace($raw)) {
+            return ($raw | ConvertFrom-Json)
+        }
+    }
+    catch { }
+    return $null
+}
+
+# Parses a KEY=VALUE .env file ('#' comments allowed). Returns a hashtable;
+# empty when the file is absent or blank.
+function Read-HookEnv {
+    param([string]$Path)
+    $values = @{}
+    if ([string]::IsNullOrWhiteSpace($Path) -or -not (Test-Path -LiteralPath $Path -PathType Leaf)) {
+        return $values
+    }
+    foreach ($line in [System.IO.File]::ReadAllLines($Path)) {
+        $trimmed = $line.Trim()
+        if ($trimmed -eq '' -or $trimmed.StartsWith('#')) { continue }
+        $separator = $trimmed.IndexOf('=')
+        if ($separator -gt 0) {
+            $values[$trimmed.Substring(0, $separator).Trim()] = $trimmed.Substring($separator + 1).Trim()
+        }
+    }
+    return $values
+}
+
+# 10-char lowercase hex SHA-256 prefix — stable per-project state file keys.
+function Get-ShortHash {
+    param([string]$Text)
+    $sha = [System.Security.Cryptography.SHA256]::Create()
+    try {
+        return ([System.BitConverter]::ToString($sha.ComputeHash([System.Text.Encoding]::UTF8.GetBytes($Text)))).Replace('-', '').ToLowerInvariant().Substring(0, 10)
+    }
+    finally {
+        $sha.Dispose()
+    }
+}
+
+# Reads a JSON file into an object, or $null when absent / blank.
+function Read-JsonFile {
+    param([Parameter(Mandatory = $true)][string]$Path)
+    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
+        return $null
+    }
+    $raw = [System.IO.File]::ReadAllText($Path, [System.Text.Encoding]::UTF8)
+    if ([string]::IsNullOrWhiteSpace($raw)) {
+        return $null
+    }
+    return ($raw | ConvertFrom-Json)
+}
+
+# Writes an object as UTF-8 (no BOM) JSON via a temp file + atomic move.
+function Write-JsonFileAtomic {
+    param(
+        [Parameter(Mandatory = $true)]$Value,
+        [Parameter(Mandatory = $true)][string]$Path
+    )
+    $directory = Split-Path -Parent $Path
+    if (-not (Test-Path -LiteralPath $directory -PathType Container)) {
+        New-Item -ItemType Directory -Path $directory -Force | Out-Null
+    }
+    $temporaryPath = $Path + '.tmp'
+    $json = $Value | ConvertTo-Json -Depth 50
+    [System.IO.File]::WriteAllText($temporaryPath, $json, [System.Text.UTF8Encoding]::new($false))
+    Move-Item -LiteralPath $temporaryPath -Destination $Path -Force
+}

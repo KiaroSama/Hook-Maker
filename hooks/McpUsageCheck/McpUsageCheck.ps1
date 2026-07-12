@@ -8,22 +8,9 @@
 Set-StrictMode -Version 2.0
 $ErrorActionPreference = 'Stop'
 
-function Get-Field {
-    param($Obj, [string]$Name)
-    if ($null -ne $Obj -and $null -ne $Obj.PSObject.Properties[$Name] -and $null -ne $Obj.$Name) {
-        return $Obj.$Name
-    }
-    return $null
-}
+. (Join-Path $PSScriptRoot '..\_hooklib.ps1')
 
-$hookInput = $null
-try {
-    $raw = [Console]::In.ReadToEnd()
-    if (-not [string]::IsNullOrWhiteSpace($raw)) {
-        $hookInput = $raw | ConvertFrom-Json
-    }
-}
-catch { }
+$hookInput = Read-HookInput
 if ($null -eq $hookInput) {
     exit 0
 }

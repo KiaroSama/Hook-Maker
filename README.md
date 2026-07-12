@@ -13,6 +13,7 @@ starts the user's task.
 | `run.ps1` | The launcher — the only script in the root. Runs the wizard in the current terminal (PowerShell 7 first). |
 | `sync-hooks.json` | All sync profiles and routes. No project paths are hard-coded in the scripts. |
 | `hooks/<Name>/` | One folder per hook: `<Name>.ps1` + `.env.example` (tracked) + `.env` (your local copy, git-ignored). |
+| `hooks/_hooklib.ps1` | Shared helpers (stdin/`.env`/hash/JSON) the shipped hooks dot-source; the `_` prefix keeps it out of the hook picker. |
 | `scripts/Setup-SyncGroup.ps1` | Interactive wizard: sync groups, hook creation/installs, profile listing, validation. |
 | `scripts/Install-Hook.ps1` | Writes a hook command into a project's `.claude/settings.local.json` + `.codex/hooks.json` (or, with no `-TargetProject`, the global `~/.claude` + `~/.codex`). Supports `-CustomHook <path>`. |
 | `scripts/Validate-Config.ps1` | Validates `sync-hooks.json`. |
