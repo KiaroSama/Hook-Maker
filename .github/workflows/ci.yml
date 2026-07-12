@@ -51,3 +51,9 @@ jobs:
       - name: GitHub hooks test suite
         shell: pwsh
         run: .\scripts\Test-GitHubHooks.ps1
+
+      # RulesCheck hook + per-client (-ClaudeOnly/-CodexOnly) install targeting.
+      # Offline: fake home/state dirs via env vars, no network.
+      - name: RulesCheck and client-targeting test suite
+        shell: pwsh
+        run: .\scripts\Test-RulesCheck.ps1

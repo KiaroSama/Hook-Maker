@@ -18,6 +18,7 @@ starts the user's task.
 | `scripts/Validate-Config.ps1` | Validates `sync-hooks.json`. |
 | `scripts/Test-Engine.ps1` | Self-contained engine smoke test (18 assertions, runs under pwsh and PowerShell 5.1). |
 | `scripts/Test-GitHubHooks.ps1` | Offline test suite for the GitHub hooks (47 assertions; mocks git state and `gh`, no network/account). |
+| `scripts/Test-RulesCheck.ps1` | Offline test suite for the RulesCheck hook and per-client install targeting (28 assertions). |
 | `logs/` | Wizard execution logs (created on demand, not committed). |
 
 ## Shipped hooks
@@ -35,6 +36,7 @@ starts the user's task.
 | `DependabotCheck` | pre-task (SessionStart) | In a GitHub repo, reports pending pull requests from the verified `app/dependabot` author (with exact head SHA, classification, merge/check state) so they are reviewed before unrelated work. Detection only — never merges. |
 | `CiStatusCheck` | post-task (Stop) | After a push, blocks "done" until the GitHub checks for the **exact** pushed commit are verified; distinguishes pending / failed / infra-flaky and points at the failed job. |
 | `GithubBaselineCheck` | pre-task (SessionStart) | Checks the `.github` automation baseline against the project's real structure (CI workflow, `dependabot.yml` coverage per ecosystem/dir, optional CodeQL) and reports concrete gaps. |
+| `RulesCheck` | pre-task (SessionStart, UserPromptSubmit) | Verifies the configured rules were read before the task starts: the **global** rules directory (`~\.claude\rules` / `~\.codex\rules`) plus the current project's **local** rules directory (`<project>\.claude\rules` / `<project>\.codex\rules`). First check lists all rules files; afterwards it stays silent until a rules file is added/changed/removed, then reports exactly what moved. Detects the running client automatically (Claude Code exports `CLAUDE_PROJECT_DIR` on hook processes; Codex does not). |
 
 All advisory hooks are token-efficient by design: they stay **silent** unless a deterministic
 signal fires (staleness, wrangler config, out-of-sync git, pending Dependabot PR, unverified
@@ -46,10 +48,19 @@ a remote, `gh`, authentication, or network access is missing.
 ## Hook configs (.env)
 
 Each hook folder ships a tracked `.env.example`. Copy it to `.env` (git-ignored) and fill in
-your local values — most importantly `TARGET_PROJECTS` (semicolon-separated project roots) and
-`EVENTS`. Then use menu `2 -> 3` (*Install from config*) and the wizard installs the hook into
-all listed projects **without asking any questions**. The sync engine's `.env` supports
-`SYNC_PROJECTS`, which menu option `1` offers to use instead of asking for paths.
+your local values — most importantly `TARGET_PROJECTS` (semicolon-separated project roots),
+`EVENTS`, and `CLIENTS` (`Both`, `Claude`, or `Codex`). Then use menu `2 -> 3` (*Install from
+config*) and the wizard installs the hook into all listed projects **without asking any
+questions**. The sync engine's `.env` supports `SYNC_PROJECTS`, which menu option `1` offers
+to use instead of asking for paths.
+
+## Claude / Codex / both
+
+Every hook can be installed for either client or both. The interactive flows (menu `1`, menu
+`2 -> 1/2`) ask **Client: 1 Both, 2 Claude only, 3 Codex only** before the target projects;
+config-based installs read the same choice from the hook's `CLIENTS` key. Claude entries land
+in `.claude/settings.local.json`, Codex entries in `.codex/hooks.json` — a Claude-only install
+never touches the Codex file and vice versa.
 
 ## Quick start
 
