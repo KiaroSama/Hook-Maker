@@ -96,11 +96,11 @@ try {
     Check 'Claude-only leaves codex untouched' (-not (Test-Path (Join-Path $t '.codex\hooks.json')) -and -not (Test-Path (Join-Path $t '.codex')))
     # Self-contained install: the command points at a runtime copy INSIDE the
     # project, named with the friendly hyphenated hook name.
-    Check 'command points at the project-local copy' ($j2 -like '*hooks\\HookMaker\\Ai-Memory-Check\\Ai-Memory-Check.ps1*')
+    Check 'command points at the project-local copy' ($j2 -like '*hooks\\Hook-Maker\\Ai-Memory-Check\\Ai-Memory-Check.ps1*')
     Check 'command does not reference the tool folder' ($j2 -notlike '*Hook Maker*')
-    Check 'runtime copy of the hook exists' (Test-Path (Join-Path $t '.claude\hooks\HookMaker\Ai-Memory-Check\Ai-Memory-Check.ps1'))
-    Check 'runtime copy of _hooklib exists' (Test-Path (Join-Path $t '.claude\hooks\HookMaker\_hooklib.ps1'))
-    Check 'runtime copy has no .env.example' (-not (Test-Path (Join-Path $t '.claude\hooks\HookMaker\Ai-Memory-Check\.env.example')))
+    Check 'runtime copy of the hook exists' (Test-Path (Join-Path $t '.claude\hooks\Hook-Maker\Ai-Memory-Check\Ai-Memory-Check.ps1'))
+    Check 'runtime copy of _hooklib exists' (Test-Path (Join-Path $t '.claude\hooks\Hook-Maker\_hooklib.ps1'))
+    Check 'runtime copy has no .env.example' (-not (Test-Path (Join-Path $t '.claude\hooks\Hook-Maker\Ai-Memory-Check\.env.example')))
 
     # =====================================================================
     Write-Host '--- sync group with a real install (both clients) ---' -ForegroundColor Cyan
@@ -119,10 +119,10 @@ try {
         Check "$name command points at engine + this profile" ($jc -match 'Cross-Project-\.ai-Knowledge-Sync\.ps1' -and $jc -match [regex]::Escape($profId3))
         # Self-contained: engine + lib + routing config copied into BOTH clients,
         # the engine folder/script under the friendly name.
-        $eng = 'hooks\HookMaker\Cross-Project-.ai-Knowledge-Sync\Cross-Project-.ai-Knowledge-Sync.ps1'
-        $engCfg = 'hooks\HookMaker\Cross-Project-.ai-Knowledge-Sync\sync-hooks.json'
+        $eng = 'hooks\Hook-Maker\Cross-Project-.ai-Knowledge-Sync\Cross-Project-.ai-Knowledge-Sync.ps1'
+        $engCfg = 'hooks\Hook-Maker\Cross-Project-.ai-Knowledge-Sync\sync-hooks.json'
         Check "$name command uses the local engine copy" ($jc -like ('*' + $eng.Replace('\', '\\') + '*') -and $jc -notlike '*Hook Maker*')
-        Check "$name claude runtime copy complete" ((Test-Path (Join-Path $proj (Join-Path '.claude' $eng))) -and (Test-Path (Join-Path $proj '.claude\hooks\HookMaker\_hooklib.ps1')) -and (Test-Path (Join-Path $proj (Join-Path '.claude' $engCfg))))
+        Check "$name claude runtime copy complete" ((Test-Path (Join-Path $proj (Join-Path '.claude' $eng))) -and (Test-Path (Join-Path $proj '.claude\hooks\Hook-Maker\_hooklib.ps1')) -and (Test-Path (Join-Path $proj (Join-Path '.claude' $engCfg))))
         Check "$name codex runtime copy complete" ((Test-Path (Join-Path $proj (Join-Path '.codex' $eng))) -and (Test-Path (Join-Path $proj (Join-Path '.codex' $engCfg))))
         # The copied engine must actually RUN from inside the project with the
         # copied config: fire it once via stdin and require a clean exit.
@@ -144,10 +144,10 @@ try {
     $r = Invoke-Wizard -Config $cfg4 -Answers @('1', '1', '2,3,4', '1', '2', '1', $m, 'done', '', '0')
     Check 'exit 0' ($r.Exit -eq 0)
     Check 'no stderr' ($r.Err -eq '')
-    $installedFolders = @(Get-ChildItem -LiteralPath (Join-Path $m '.claude\hooks\HookMaker') -Directory -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Name)
+    $installedFolders = @(Get-ChildItem -LiteralPath (Join-Path $m '.claude\hooks\Hook-Maker') -Directory -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Name)
     Check 'three distinct hooks installed in one pass' ($installedFolders.Count -eq 3)
     Check 'each installed under its own friendly folder' ($installedFolders -notcontains 'Cross-Project-.ai-Knowledge-Sync' -and (@($installedFolders | Where-Object { $_ -match '-' }).Count -eq 3))
-    $codexFolders = @(Get-ChildItem -LiteralPath (Join-Path $m '.codex\hooks\HookMaker') -Directory -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Name)
+    $codexFolders = @(Get-ChildItem -LiteralPath (Join-Path $m '.codex\hooks\Hook-Maker') -Directory -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Name)
     Check 'batch honored client=Both (codex got all three too)' ($codexFolders.Count -eq 3)
     Check 'summary lists all three (3 event lines)' (([regex]::Matches($r.Out, 'events:')).Count -ge 3)
 
