@@ -674,6 +674,7 @@ function Invoke-CreateGroup {
                 $stage = 0
                 continue
             }
+            Write-Log 'INFO' 'GROUP' ('Client target selected: ' + $clients)
             $stage = 2
             continue
         }
@@ -724,7 +725,14 @@ function Invoke-CreateGroup {
         }
         break
     }
-    Write-Log 'INFO' 'GROUP' ('Confirmed. Applying profile ' + $groupProfile.id + ' with ' + $routeCount + ' routes.')
+    $installScope = if ($NoInstall) { 'skipped (-NoInstall)' } else { $clients }
+    Write-Log 'INFO' 'GROUP' ('Confirmed. profile=' + $groupProfile.id + ' | name="' + $groupProfile.name + '" | projects=' + $projects.Count + ' | routes=' + $routeCount + ' (full mesh) | events=' + ($events -join ',') + ' | client=' + $installScope + ' | config=' + $ConfigPath)
+    foreach ($project in $projects) {
+        Write-Log 'DEBUG' 'GROUP' ('Project: ' + $project.Name + ' | root=' + $project.Root + ' | aiExists=' + $project.AiExists)
+    }
+    foreach ($route in @($groupProfile.routes)) {
+        Write-Log 'DEBUG' 'GROUP' ('Route ' + $route.id + ': ' + $route.source.name + ' -> ' + $route.destination.name + ' | src=' + $route.source.root + ' | dst=' + $route.destination.root)
+    }
 
     # ---- apply ----
     $stopwatch = [System.Diagnostics.Stopwatch]::StartNew()
@@ -794,6 +802,7 @@ function Invoke-CreateGroup {
         # so only these projects carry the hook and nothing else on the machine is touched.
         $clientArgs = Get-ClientInstallArgs $clients
         foreach ($project in $projects) {
+            Write-Log 'INFO' 'INSTALL' ('Installing engine hook -> ' + $project.Name + ' | root=' + $project.Root + ' | profile=' + $groupProfile.id + ' | client=' + $clients + ' | events=' + ($events -join ','))
             $installOutput = & $InstallScript -Profile $groupProfile.id -ConfigPath $ConfigPath -TargetProject $project.Root @clientArgs *>&1
             foreach ($line in @($installOutput)) {
                 Write-Log 'INFO' 'INSTALL' ([string]$line)
@@ -810,7 +819,8 @@ function Invoke-CreateGroup {
     if ($null -ne $script:LogPath) {
         Write-Host (Get-Painted ('  Log: ' + $script:LogPath) $C.Dim)
     }
-    Write-Log 'INFO' 'DONE' ('Sync group applied: ' + $groupProfile.id + ' | durationMs=' + $stopwatch.ElapsedMilliseconds)
+    $installSummary = if ($NoInstall) { 'not installed (-NoInstall)' } else { $clients + ' in ' + $projects.Count + ' project(s)' }
+    Write-Log 'INFO' 'DONE' ('Sync group applied: ' + $groupProfile.id + ' | routes=' + $routeCount + ' | events=' + ($events -join ',') + ' | install=' + $installSummary + ' | durationMs=' + $stopwatch.ElapsedMilliseconds)
 }
 
 # -------------------------------------------------- custom hook flow (2) ----
@@ -1362,19 +1372,22 @@ function Invoke-CustomHookMenu {
     while ($true) {
         Write-PhaseHeader 'Create or Install a Hook' $C.Input '-'
         Write-MenuTitle 'Options:'
-        Write-MenuLine 1 'Create a new hook' '(guided templates)'
-        Write-MenuLine 2 'Install an existing hook' '(sync group + hooks\ - interactive)'
+        Write-MenuLine 1 'Install an existing hook' '(sync group + hooks\ - interactive)'
+        Write-MenuLine 2 'Create a new hook' '(guided templates)'
         Write-MenuLine 3 'Install from config' '(reads the hook''s .env - no questions)'
         $value = Read-Answer (New-QuestionPrompt 'Select an option' $null '1') 'custom hook menu'
         if ($value -eq '0') {
+            Write-Log 'INFO' 'MENU' 'Create-or-install sub-menu -> 0. Back'
             return
         }
         if ($value -eq '') {
             $value = '1'
         }
+        $subAction = @{ '1' = 'Install an existing hook'; '2' = 'Create a new hook'; '3' = 'Install from config' }[$value]
+        if ($subAction) { Write-Log 'INFO' 'MENU' ('Create-or-install sub-menu -> ' + $value + '. ' + $subAction) }
         switch ($value) {
-            '1' { if ((Invoke-CreateHook) -eq 'done') { return } }
-            '2' { if ((Invoke-InstallExistingHook) -eq 'done') { return } }
+            '1' { if ((Invoke-InstallExistingHook) -eq 'done') { return } }
+            '2' { if ((Invoke-CreateHook) -eq 'done') { return } }
             '3' { if ((Invoke-InstallHookFromConfig) -eq 'done') { return } }
             default { Write-ErrorLine 'Enter 1, 2, 3 or 0.' }
         }
@@ -1489,6 +1502,8 @@ try {
             if ($choice -eq '') {
                 $choice = '1'
             }
+            $mainAction = @{ '1' = 'Create or install a hook'; '2' = 'Show configured profiles'; '3' = 'Validate configuration'; '0' = 'Exit' }[$choice]
+            if ($mainAction) { Write-Log 'INFO' 'MENU' ('Main menu -> ' + $choice + '. ' + $mainAction) }
             switch ($choice) {
                 '1' { Invoke-CustomHookMenu; continue menu }
                 '2' { Show-Profiles; continue menu }
