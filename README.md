@@ -11,7 +11,7 @@ starts the user's task.
 | Path | Purpose |
 | --- | --- |
 | `run.ps1` | The launcher — the only script in the root. Runs the wizard in the current terminal (PowerShell 7 first). |
-| `sync-hooks.sample.json` | The tracked sample config (what CI validates). |
+| `sync-hooks.example.json` | The tracked example config (what CI validates). |
 | `sync-hooks.json` | Your real profiles and routes — **machine-local and git-ignored** (it holds your project paths). Auto-created from the sample on the first wizard run. |
 | `hooks/<Name>/` | One folder per hook: `<Name>.ps1` + `.env.example` (tracked) + `.env` (your local copy, git-ignored). |
 | `hooks/_hooklib.ps1` | Shared helpers (stdin/`.env`/hash/JSON) the shipped hooks dot-source; the `_` prefix keeps it out of the hook picker. |
@@ -78,9 +78,15 @@ Main menu: `1` **Create or install a hook** (opens a sub-menu: create a new hook
 existing one, or install from config), `2` show configured profiles, `3` validate. `0` goes back,
 `exit` quits.
 
+Under **Install an existing hook**, each hook shows a colored `[pre-task]`/`[post-task]` tag and a
+one-line description, and you can **install several at once** with a comma list (e.g. `2,4,5`) —
+choose the same events/client/projects for all or configure each, then a summary lists exactly
+what will be installed.
+
 The **sync group** now lives inside `1` → **Install an existing hook** as list item `1`
-("Create or update a sync group"). Choose it, enter each project root path (finish with `done`),
-pick the client, review the summary and confirm (Enter = yes). The wizard:
+("Create or update a sync group"; it can't be combined with other hooks in one comma list). Choose
+it, enter each project root path (finish with `done`), pick the client, review the summary and
+confirm (Enter = yes). The wizard:
 
 1. Creates missing `.ai` directories.
 2. Writes a full-mesh profile — every project becomes a sync destination of every other.
@@ -99,11 +105,14 @@ Every install **copies the hook runtime into the target itself** (Kiro-style): t
 shared `_hooklib.ps1`, its `.env` (if present) and — for the sync engine — a copy of the routing
 config land in
 
-- `<project>/.claude/hooks/HookMaker/…` for Claude (registered in
+- `<project>/.claude/hooks/HookMaker/<Friendly-Name>/` for Claude (registered in
   `<project>/.claude/settings.local.json`, auto-gitignored — the command holds a machine-specific
   absolute path), and
-- `<project>/.codex/hooks/HookMaker/…` for Codex (registered in `<project>/.codex/hooks.json`;
-  loads only after you trust it via `/hooks`),
+- `<project>/.codex/hooks/HookMaker/<Friendly-Name>/` for Codex (registered in
+  `<project>/.codex/hooks.json`; loads only after you trust it via `/hooks`),
+
+where `<Friendly-Name>` is the hook's readable, hyphenated name (e.g. the sync engine lands in
+`HookMaker/Cross-Project-.ai-Knowledge-Sync/`, `McpUsageCheck` in `HookMaker/Mcp-Usage-Check/`),
 
 and the registered command points at that copy. **Moving, renaming, or deleting the Hook Maker
 folder never breaks an installed hook.** The flip side: copies do not auto-update — after

@@ -86,3 +86,20 @@ function Write-JsonFileAtomic {
     [System.IO.File]::WriteAllText($temporaryPath, $json, [System.Text.UTF8Encoding]::new($false))
     Move-Item -LiteralPath $temporaryPath -Destination $Path -Force
 }
+
+# Friendly, hyphen-separated hook name used for BOTH the menu display and the
+# installed runtime folder/script names, so a copy is easy to identify. A few
+# hooks get a nicer explicit label; everything else is its PascalCase name
+# split on word boundaries and joined with '-' (McpUsageCheck -> Mcp-Usage-Check).
+$script:HookFriendlyOverrides = @{
+    CrossProjectSyncHook = 'Cross-Project-.ai-Knowledge-Sync'
+}
+function Get-HookFriendlyName {
+    param([Parameter(Mandatory = $true)][string]$Name)
+    if ($script:HookFriendlyOverrides.ContainsKey($Name)) {
+        return $script:HookFriendlyOverrides[$Name]
+    }
+    $hyphenated = [System.Text.RegularExpressions.Regex]::Replace($Name, '([A-Z]+)([A-Z][a-z])', '$1-$2')
+    $hyphenated = [System.Text.RegularExpressions.Regex]::Replace($hyphenated, '([a-z0-9])([A-Z])', '$1-$2')
+    return $hyphenated
+}

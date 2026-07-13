@@ -157,36 +157,54 @@ function Get-ExampleText {
     return (Get-Painted $Text $C.LightBlue) + $C.HintYellow
 }
 
-# Display name for a hook: split PascalCase into words (AiMemoryCheck ->
-# "Ai Memory Check"). The folder/script name is unchanged; this is display only.
-function Format-HookName {
-    param([Parameter(Mandatory = $true)][string]$Name)
-    $spaced = [System.Text.RegularExpressions.Regex]::Replace($Name, '([A-Z]+)([A-Z][a-z])', '$1 $2')
-    $spaced = [System.Text.RegularExpressions.Regex]::Replace($spaced, '([a-z0-9])([A-Z])', '$1 $2')
-    return $spaced
+# Per-hook menu metadata: when it runs (pre / post / pre+post) and a one-line
+# description. Unknown/custom hooks get a blank entry. (Get-HookFriendlyName,
+# which turns the internal name into the hyphenated display name, lives in
+# _hooklib.ps1 so the installer shares it.)
+$script:HookMeta = @{
+    CrossProjectSyncHook = @{ When = 'pre';  Text = 'the sync engine - normally set up via the sync group above' }
+    AiMemoryCheck        = @{ When = 'post'; Text = 'reminds to update .ai memory when it is stale' }
+    CiStatusCheck        = @{ When = 'post'; Text = 'verifies GitHub checks of the exact pushed commit' }
+    CloudflareDeploy     = @{ When = 'post'; Text = 'suggests deploying in Cloudflare Workers projects' }
+    DependabotCheck      = @{ When = 'pre';  Text = 'reports pending Dependabot pull requests' }
+    GithubBaselineCheck  = @{ When = 'pre';  Text = 'checks the .github CI/dependabot baseline' }
+    GitSyncCheck         = @{ When = 'both'; Text = 'warns when out of sync with the git remote' }
+    GraphUpdateCheck     = @{ When = 'post'; Text = 'suggests graphify update when the graph is stale' }
+    LargeFileCheck       = @{ When = 'both'; Text = 'small-files policy + oversized-file scan' }
+    McpUsageCheck        = @{ When = 'pre';  Text = 'reminder to consider MCP servers/tools' }
+    RulesCheck           = @{ When = 'pre';  Text = 'checks global + project rules were read' }
+    SkillsCheck          = @{ When = 'pre';  Text = 'skill-policy reminder with the copied skills' }
 }
-
-# One-line menu descriptions for the shipped hooks (unknown hooks get none).
-$script:HookDescriptions = @{
-    CrossProjectSyncHook = '(the sync engine - normally set up via the sync group above)'
-    AiMemoryCheck        = '(post-task: reminds to update .ai memory when it is stale)'
-    CiStatusCheck        = '(post-task: verifies GitHub checks of the exact pushed commit)'
-    CloudflareDeploy     = '(post-task: suggests deploying in Cloudflare Workers projects)'
-    DependabotCheck      = '(pre-task: reports pending Dependabot pull requests)'
-    GithubBaselineCheck  = '(pre-task: checks the .github CI/dependabot baseline)'
-    GitSyncCheck         = '(pre+post-task: warns when out of sync with the git remote)'
-    GraphUpdateCheck     = '(post-task: suggests graphify update when the graph is stale)'
-    LargeFileCheck       = '(pre+post-task: small-files policy + oversized-file scan)'
-    McpUsageCheck        = '(pre-task: reminder to consider MCP servers/tools)'
-    RulesCheck           = '(pre-task: checks global + project rules were read)'
-    SkillsCheck          = '(pre-task: skill-policy reminder with the copied skills)'
-}
-function Get-HookDescription {
+# The "[pre-task]" / "[post-task]" tag, colored by phase (a different color than
+# the description, FFmWiz-style, so timing reads at a glance).
+function Get-HookTimingTag {
     param([Parameter(Mandatory = $true)][string]$Name)
-    if ($script:HookDescriptions.ContainsKey($Name)) {
-        return $script:HookDescriptions[$Name]
+    if (-not $script:HookMeta.ContainsKey($Name)) { return '' }
+    switch ($script:HookMeta[$Name].When) {
+        'pre'  { return (Get-Painted '[pre-task]' $C.Mint) }
+        'post' { return (Get-Painted '[post-task]' $C.Amber) }
+        'both' { return (Get-Painted '[pre+post-task]' $C.Aqua) }
+        default { return '' }
+    }
+}
+function Get-HookDescriptionText {
+    param([Parameter(Mandatory = $true)][string]$Name)
+    if ($script:HookMeta.ContainsKey($Name)) {
+        return $script:HookMeta[$Name].Text
     }
     return ''
+}
+# A hook menu line: "N. Friendly-Name  [timing]  description" with the timing
+# tag and the description each in their own color for readability.
+function Write-HookMenuLine {
+    param([int]$Number, [string]$Name, [string]$ExtraSuffix = '')
+    $line = '  ' + (Get-Painted ($Number.ToString() + '.') $C.LightBlue) + ' ' + (Get-Painted (Get-HookFriendlyName $Name) $C.Bold)
+    $tag = Get-HookTimingTag $Name
+    if ($tag -ne '') { $line += '  ' + $tag }
+    $desc = Get-HookDescriptionText $Name
+    if ($desc -ne '') { $line += '  ' + (Get-Painted $desc $C.HintYellow) }
+    if ($ExtraSuffix -ne '') { $line += ' ' + (Get-Painted $ExtraSuffix $C.Gray) }
+    Write-Host $line
 }
 
 # --------------------------------------------------------------- logging ----
@@ -1152,7 +1170,69 @@ function Invoke-CreateHook {
     }
 }
 
-# Install an existing hook (one folder per hook) as a stage machine.
+# Reads an event selection (or a custom list). Returns an events array, or
+# $null when the user backs out.
+function Read-EventSelection {
+    param([string]$TitleSuffix = '')
+    $knownEvents = @('SessionStart', 'UserPromptSubmit', 'PreToolUse', 'PostToolUse', 'Stop', 'SubagentStop', 'PreCompact', 'SessionEnd', 'Notification', 'PermissionRequest', 'PostCompact', 'SubagentStart')
+    while ($true) {
+        Write-MenuTitle ('Events' + $TitleSuffix + ':')
+        Write-MenuLine 1 'SessionStart + UserPromptSubmit' '(context hooks - recommended)'
+        Write-MenuLine 2 'SessionStart'
+        Write-MenuLine 3 'UserPromptSubmit'
+        Write-MenuLine 4 'Custom list' '(e.g. PreToolUse,PostToolUse,Stop)'
+        $value = Read-Answer (New-QuestionPrompt 'Select events' $null '1') 'select events'
+        if ($value -eq '0') { return $null }
+        if ($value -eq '') { $value = '1' }
+        switch ($value) {
+            '1' { return @('SessionStart', 'UserPromptSubmit') }
+            '2' { return @('SessionStart') }
+            '3' { return @('UserPromptSubmit') }
+            '4' {
+                $raw = Read-Answer (New-QuestionPrompt 'Event names' ('comma separated; example: ' + (Get-ExampleText 'PreToolUse,PostToolUse')) $null) 'custom event list'
+                if ($raw -eq '0') { continue }
+                $candidates = @($raw.Split(',') | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne '' })
+                if ($candidates.Count -eq 0) { Write-ErrorLine 'Enter at least one event name.'; continue }
+                $invalid = @($candidates | Where-Object { $_ -notmatch '^[A-Za-z]+$' })
+                if ($invalid.Count -gt 0) { Write-ErrorLine ('Invalid event name(s): ' + ($invalid -join ', ')); continue }
+                $unknown = @($candidates | Where-Object { $knownEvents -notcontains $_ })
+                if ($unknown.Count -gt 0) { Write-NoteLine ('Not a known event (installing anyway): ' + ($unknown -join ', ')) }
+                return $candidates
+            }
+            default { Write-ErrorLine 'Enter 1, 2, 3 or 4.' }
+        }
+    }
+}
+
+# Gathers events + client + target projects for one hook as a mini stage machine
+# (back steps one). Returns an object, or $null when backed out of the first step.
+function Read-HookConfig {
+    param([string]$TitleSuffix = '')
+    $events = $null; $clients = $null; $stage = 0
+    while ($true) {
+        switch ($stage) {
+            0 {
+                $events = Read-EventSelection $TitleSuffix
+                if ($null -eq $events) { return $null }
+                $stage = 1
+            }
+            1 {
+                $clients = Read-ClientChoice
+                if ($null -eq $clients) { $stage = 0; break }
+                $stage = 2
+            }
+            2 {
+                $targets = Read-ProjectList -MinimumCount 1
+                if ($null -eq $targets) { $stage = 1; break }
+                return [pscustomobject]@{ Events = @($events); Clients = $clients; Targets = @($targets) }
+            }
+        }
+    }
+}
+
+# Install one or more existing hooks. A comma list (e.g. 2,4,5) selects several
+# at once; for a batch you choose the SAME settings for all or configure each
+# separately, then a precise summary lists every hook's events/client/projects.
 function Invoke-InstallExistingHook {
     Write-Log 'INFO' 'CUSTOM' 'Custom hook install started.'
     Write-PhaseHeader 'Install an Existing Hook' $C.Input '-'
@@ -1164,95 +1244,115 @@ function Invoke-InstallExistingHook {
         return 'back'
     }
 
-    $knownEvents = @('SessionStart', 'UserPromptSubmit', 'PreToolUse', 'PostToolUse', 'Stop', 'SubagentStop', 'PreCompact', 'SessionEnd', 'Notification', 'PermissionRequest', 'PostCompact', 'SubagentStart')
-    $selectedHook = $null
-    $events = $null
-    $stage = 0
-
     while ($true) {
-        switch ($stage) {
-            0 {
-                # Select hook. Item 1 is the cross-project sync group (its own
-                # multi-project wizard); items 2..N+1 are the hooks in hooks\.
-                Write-MenuTitle 'Available hooks (hooks\):'
-                Write-MenuLine 1 'Create or update a sync group' '(cross-project .ai knowledge sync)'
-                for ($i = 0; $i -lt $hookFiles.Count; $i++) {
-                    Write-MenuLine ($i + 2) (Format-HookName $hookFiles[$i].Name) (Get-HookDescription $hookFiles[$i].Name)
-                }
-                $value = Read-Answer (New-QuestionPrompt 'Select a hook' $null '1') 'select custom hook'
-                if ($value -eq '0') {
-                    return 'back'
-                }
-                if ($value -eq '') {
-                    $value = '1'
-                }
-                $index = 0
-                if ([int]::TryParse($value, [ref]$index) -and $index -ge 1 -and $index -le ($hookFiles.Count + 1)) {
-                    if ($index -eq 1) {
-                        Invoke-CreateGroup
-                        return 'done'
-                    }
-                    $selectedHook = $hookFiles[$index - 2]
-                    $stage = 1
-                }
-                else {
-                    Write-ErrorLine ('Enter a number between 1 and ' + ($hookFiles.Count + 1) + '.')
-                }
+        # ---- selection: a single number, or a comma list ----
+        Write-MenuTitle 'Available hooks (hooks\):'
+        Write-Host ('  ' + (Get-Painted '1.' $C.LightBlue) + ' ' + (Get-Painted 'Create or update a sync group' $C.Bold) + '  ' + (Get-Painted '[pre-task]' $C.Mint) + '  ' + (Get-Painted 'cross-project .ai knowledge sync' $C.HintYellow))
+        for ($i = 0; $i -lt $hookFiles.Count; $i++) {
+            Write-HookMenuLine ($i + 2) $hookFiles[$i].Name
+        }
+        Write-NoteLine '  Tip: install several at once with commas, e.g. 2,4,5'
+        $value = Read-Answer (New-QuestionPrompt 'Select a hook (or a comma list)' $null '1') 'select custom hook'
+        if ($value -eq '0') { return 'back' }
+        if ($value -eq '') { $value = '1' }
+
+        $indices = New-Object System.Collections.Generic.List[int]
+        $bad = $false
+        foreach ($tok in @($value.Split(',') | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne '' })) {
+            $idx = 0
+            if ([int]::TryParse($tok, [ref]$idx) -and $idx -ge 1 -and $idx -le ($hookFiles.Count + 1)) {
+                if (-not $indices.Contains($idx)) { [void]$indices.Add($idx) }
             }
-            1 {
-                # Select events
-                Write-MenuTitle 'Events:'
-                Write-MenuLine 1 'SessionStart + UserPromptSubmit' '(context hooks - recommended)'
-                Write-MenuLine 2 'SessionStart'
-                Write-MenuLine 3 'UserPromptSubmit'
-                Write-MenuLine 4 'Custom list' '(e.g. PreToolUse,PostToolUse,Stop)'
-                $value = Read-Answer (New-QuestionPrompt 'Select events' $null '1') 'select events'
-                if ($value -eq '0') {
-                    $stage = 0
-                    break
-                }
-                if ($value -eq '') {
-                    $value = '1'
-                }
-                switch ($value) {
-                    '1' { $events = @('SessionStart', 'UserPromptSubmit'); $stage = 2 }
-                    '2' { $events = @('SessionStart'); $stage = 2 }
-                    '3' { $events = @('UserPromptSubmit'); $stage = 2 }
-                    '4' {
-                        $raw = Read-Answer (New-QuestionPrompt 'Event names' ('comma separated; example: ' + (Get-ExampleText 'PreToolUse,PostToolUse')) $null) 'custom event list'
-                        if ($raw -eq '0') {
-                            break
-                        }
-                        $candidates = @($raw.Split(',') | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne '' })
-                        if ($candidates.Count -eq 0) {
-                            Write-ErrorLine 'Enter at least one event name.'
-                            break
-                        }
-                        $invalid = @($candidates | Where-Object { $_ -notmatch '^[A-Za-z]+$' })
-                        if ($invalid.Count -gt 0) {
-                            Write-ErrorLine ('Invalid event name(s): ' + ($invalid -join ', '))
-                            break
-                        }
-                        $unknown = @($candidates | Where-Object { $knownEvents -notcontains $_ })
-                        if ($unknown.Count -gt 0) {
-                            Write-NoteLine ('Not a known event (installing anyway): ' + ($unknown -join ', '))
-                        }
-                        $events = $candidates
-                        $stage = 2
-                    }
-                    default { Write-ErrorLine 'Enter 1, 2, 3 or 4.' }
-                }
+            else { $bad = $true }
+        }
+        if ($bad -or $indices.Count -eq 0) {
+            Write-ErrorLine ('Enter number(s) between 1 and ' + ($hookFiles.Count + 1) + ', separated by commas.')
+            continue
+        }
+        # The sync group (item 1) is its own multi-project flow; not batchable.
+        if ($indices.Contains(1)) {
+            if ($indices.Count -gt 1) {
+                Write-ErrorLine 'The sync group (1) can''t be combined with other hooks; select it on its own.'
+                continue
             }
-            2 {
-                # Targets + confirm + install
-                $result = Invoke-CustomHookTargets -HookPath $selectedHook.ScriptPath -Events $events
-                if ($result -eq 'back') {
-                    $stage = 1
-                    break
+            Invoke-CreateGroup
+            return 'done'
+        }
+        $selected = @($indices | ForEach-Object { $hookFiles[$_ - 2] })
+        Write-Log 'INFO' 'CUSTOM' ('Selected ' + $selected.Count + ' hook(s): ' + (($selected | ForEach-Object { $_.Name }) -join ', '))
+
+        # ---- gather config (same for all, or per hook) ----
+        $plans = $null
+        if ($selected.Count -eq 1) {
+            $cfg = Read-HookConfig
+            if ($null -eq $cfg) { continue }
+            $plans = @([pscustomobject]@{ Hook = $selected[0]; Config = $cfg })
+        }
+        else {
+            Write-MenuTitle ('Configuring ' + $selected.Count + ' hooks: ' + (($selected | ForEach-Object { Get-HookFriendlyName $_.Name }) -join ', '))
+            Write-MenuLine 1 'Same events / client / projects for all' '(one set of answers)'
+            Write-MenuLine 2 'Configure each hook separately' '(ask per hook)'
+            $mode = Read-Answer (New-QuestionPrompt 'How should they be configured?' $null '1') 'multi-hook config mode'
+            if ($mode -eq '0') { continue }
+            if ($mode -eq '') { $mode = '1' }
+            if ($mode -eq '1') {
+                $cfg = Read-HookConfig ' (all selected hooks)'
+                if ($null -eq $cfg) { continue }
+                $plans = @($selected | ForEach-Object { [pscustomobject]@{ Hook = $_; Config = $cfg } })
+            }
+            elseif ($mode -eq '2') {
+                $collected = New-Object System.Collections.Generic.List[object]
+                $aborted = $false
+                foreach ($h in $selected) {
+                    $cfg = Read-HookConfig (' for ' + (Get-HookFriendlyName $h.Name))
+                    if ($null -eq $cfg) { $aborted = $true; break }
+                    [void]$collected.Add([pscustomobject]@{ Hook = $h; Config = $cfg })
                 }
-                return 'done'
+                if ($aborted) { continue }
+                $plans = $collected.ToArray()
+            }
+            else {
+                Write-ErrorLine 'Enter 1, 2 or 0.'
+                continue
             }
         }
+
+        # ---- summary ----
+        Write-PhaseHeader 'Summary' $C.Summary '-'
+        for ($i = 0; $i -lt $plans.Count; $i++) {
+            $plan = $plans[$i]
+            Write-MenuLine ($i + 1) (Get-HookFriendlyName $plan.Hook.Name)
+            Write-Field '     events' ($plan.Config.Events -join ', ')
+            Write-Field '     client' $plan.Config.Clients
+            Write-Field '     projects' (@($plan.Config.Targets | ForEach-Object { $_.Name }) -join ', ')
+        }
+        Write-Host ''
+        Write-Field 'install' 'self-contained copy per project (.claude/.codex hooks\HookMaker\<name>\)'
+        Write-PhaseHeader 'Confirm' $C.Confirm '-'
+        $confirm = Read-YesNo (New-QuestionPrompt 'Start now?' 'y/n' 'y') $true 'start multi hook install'
+        if ($null -eq $confirm) { continue }
+        if ($confirm -ne $true) {
+            Write-NoteLine 'Canceled. Nothing was installed.'
+            Write-Log 'INFO' 'CUSTOM' 'User declined at confirmation; no install.'
+            return 'done'
+        }
+
+        # ---- install ----
+        Write-PhaseHeader 'Applying Changes' $C.Process '-'
+        foreach ($plan in $plans) {
+            $clientArgs = Get-ClientInstallArgs $plan.Config.Clients
+            foreach ($target in $plan.Config.Targets) {
+                $installOutput = & $InstallScript -CustomHook $plan.Hook.ScriptPath -Events @($plan.Config.Events) -TargetProject $target.Root @clientArgs *>&1
+                foreach ($line in @($installOutput)) { Write-Log 'INFO' 'INSTALL' ([string]$line) }
+                Write-Host ('  ' + (Get-Painted '+ installed' $C.Green) + ' ' + (Get-Painted (Get-HookFriendlyName $plan.Hook.Name) $C.Bold) + ' -> ' + (Get-Painted $target.Name $C.Bold) + '  ' + (Get-Painted ('(' + $plan.Config.Clients + ', ' + ($plan.Config.Events -join '+') + ')') $C.Gray))
+            }
+            Write-Log 'INFO' 'INSTALL' ('Installed ' + $plan.Hook.Name + ' | client=' + $plan.Config.Clients + ' | events=' + ($plan.Config.Events -join ',') + ' | projects=' + $plan.Config.Targets.Count)
+        }
+        Write-PhaseHeader 'Completed' $C.Done '='
+        Write-Host (Get-Painted ('  Installed ' + $plans.Count + ' hook(s). Restart the Claude/Codex clients and review /hooks inside each project.') $C.White)
+        Write-NoteLine '  Codex: run /hooks in each project and trust the new command before it runs.'
+        Write-Log 'INFO' 'DONE' ('Multi-hook install complete: ' + $plans.Count + ' hook(s).')
+        return 'done'
     }
 }
 
@@ -1275,8 +1375,7 @@ function Invoke-InstallHookFromConfig {
             if (Test-Path -LiteralPath $hookFiles[$i].EnvPath -PathType Leaf) {
                 $envState = '(.env found)'
             }
-            $suffix = ((Get-HookDescription $hookFiles[$i].Name) + ' ' + $envState).Trim()
-            Write-MenuLine ($i + 1) (Format-HookName $hookFiles[$i].Name) $suffix
+            Write-HookMenuLine ($i + 1) $hookFiles[$i].Name $envState
         }
         $value = Read-Answer (New-QuestionPrompt 'Select a hook' $null '1') 'select hook for config install'
         if ($value -eq '0') {
@@ -1506,12 +1605,12 @@ Initialize-Log
 Write-Log 'INFO' 'STARTUP' ('Execution id: ' + [guid]::NewGuid().ToString())
 Write-Log 'INFO' 'STARTUP' ('Script: ' + $PSCommandPath)
 # The real config is machine-local (git-ignored); seed it from the tracked
-# sample on first run so a fresh clone works out of the box.
+# example on first run so a fresh clone works out of the box.
 if (-not (Test-Path -LiteralPath $ConfigPath -PathType Leaf)) {
-    $samplePath = Join-Path $ToolRoot 'sync-hooks.sample.json'
-    if (Test-Path -LiteralPath $samplePath -PathType Leaf) {
-        Copy-Item -LiteralPath $samplePath -Destination $ConfigPath -Force
-        Write-Log 'INFO' 'STARTUP' ('Config seeded from sample: ' + $samplePath + ' -> ' + $ConfigPath)
+    $examplePath = Join-Path $ToolRoot 'sync-hooks.example.json'
+    if (Test-Path -LiteralPath $examplePath -PathType Leaf) {
+        Copy-Item -LiteralPath $examplePath -Destination $ConfigPath -Force
+        Write-Log 'INFO' 'STARTUP' ('Config seeded from example: ' + $examplePath + ' -> ' + $ConfigPath)
     }
 }
 Write-Log 'INFO' 'STARTUP' ('Config: ' + $ConfigPath)
