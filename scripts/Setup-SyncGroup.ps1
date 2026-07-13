@@ -166,6 +166,29 @@ function Format-HookName {
     return $spaced
 }
 
+# One-line menu descriptions for the shipped hooks (unknown hooks get none).
+$script:HookDescriptions = @{
+    CrossProjectSyncHook = '(the sync engine - normally set up via the sync group above)'
+    AiMemoryCheck        = '(post-task: reminds to update .ai memory when it is stale)'
+    CiStatusCheck        = '(post-task: verifies GitHub checks of the exact pushed commit)'
+    CloudflareDeploy     = '(post-task: suggests deploying in Cloudflare Workers projects)'
+    DependabotCheck      = '(pre-task: reports pending Dependabot pull requests)'
+    GithubBaselineCheck  = '(pre-task: checks the .github CI/dependabot baseline)'
+    GitSyncCheck         = '(pre+post-task: warns when out of sync with the git remote)'
+    GraphUpdateCheck     = '(post-task: suggests graphify update when the graph is stale)'
+    LargeFileCheck       = '(pre+post-task: small-files policy + oversized-file scan)'
+    McpUsageCheck        = '(pre-task: reminder to consider MCP servers/tools)'
+    RulesCheck           = '(pre-task: checks global + project rules were read)'
+    SkillsCheck          = '(pre-task: skill-policy reminder with the copied skills)'
+}
+function Get-HookDescription {
+    param([Parameter(Mandatory = $true)][string]$Name)
+    if ($script:HookDescriptions.ContainsKey($Name)) {
+        return $script:HookDescriptions[$Name]
+    }
+    return ''
+}
+
 # --------------------------------------------------------------- logging ----
 $script:LogPath = $null
 $script:EmptyReads = 0
@@ -1154,11 +1177,7 @@ function Invoke-InstallExistingHook {
                 Write-MenuTitle 'Available hooks (hooks\):'
                 Write-MenuLine 1 'Create or update a sync group' '(cross-project .ai knowledge sync)'
                 for ($i = 0; $i -lt $hookFiles.Count; $i++) {
-                    $suffix = ''
-                    if ($hookFiles[$i].Name -eq 'CrossProjectSyncHook') {
-                        $suffix = '(sync engine - normally configured via the sync group above)'
-                    }
-                    Write-MenuLine ($i + 2) (Format-HookName $hookFiles[$i].Name) $suffix
+                    Write-MenuLine ($i + 2) (Format-HookName $hookFiles[$i].Name) (Get-HookDescription $hookFiles[$i].Name)
                 }
                 $value = Read-Answer (New-QuestionPrompt 'Select a hook' $null '1') 'select custom hook'
                 if ($value -eq '0') {
@@ -1252,10 +1271,11 @@ function Invoke-InstallHookFromConfig {
     while ($true) {
         Write-MenuTitle 'Available hooks (hooks\):'
         for ($i = 0; $i -lt $hookFiles.Count; $i++) {
-            $suffix = '(no .env yet)'
+            $envState = '(no .env yet)'
             if (Test-Path -LiteralPath $hookFiles[$i].EnvPath -PathType Leaf) {
-                $suffix = '(.env found)'
+                $envState = '(.env found)'
             }
+            $suffix = ((Get-HookDescription $hookFiles[$i].Name) + ' ' + $envState).Trim()
             Write-MenuLine ($i + 1) (Format-HookName $hookFiles[$i].Name) $suffix
         }
         $value = Read-Answer (New-QuestionPrompt 'Select a hook' $null '1') 'select hook for config install'
@@ -1485,6 +1505,15 @@ function Show-MainMenu {
 Initialize-Log
 Write-Log 'INFO' 'STARTUP' ('Execution id: ' + [guid]::NewGuid().ToString())
 Write-Log 'INFO' 'STARTUP' ('Script: ' + $PSCommandPath)
+# The real config is machine-local (git-ignored); seed it from the tracked
+# sample on first run so a fresh clone works out of the box.
+if (-not (Test-Path -LiteralPath $ConfigPath -PathType Leaf)) {
+    $samplePath = Join-Path $ToolRoot 'sync-hooks.sample.json'
+    if (Test-Path -LiteralPath $samplePath -PathType Leaf) {
+        Copy-Item -LiteralPath $samplePath -Destination $ConfigPath -Force
+        Write-Log 'INFO' 'STARTUP' ('Config seeded from sample: ' + $samplePath + ' -> ' + $ConfigPath)
+    }
+}
 Write-Log 'INFO' 'STARTUP' ('Config: ' + $ConfigPath)
 Write-Log 'INFO' 'STARTUP' ('Hooks dir: ' + $HooksDir)
 Write-Log 'INFO' 'STARTUP' ('OS: ' + [Environment]::OSVersion.VersionString)
