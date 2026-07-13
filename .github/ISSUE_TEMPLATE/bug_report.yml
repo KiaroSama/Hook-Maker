@@ -33,7 +33,7 @@ body:
     id: hook
     attributes:
       label: Hook name (if applicable)
-      placeholder: e.g. GitSyncCheck, AiMemoryCheck, CrossProjectSyncHook
+      placeholder: e.g. Git-Sync-Check, Ai-Memory-Check, Cross-Project-.ai-Knowledge-Sync
   - type: dropdown
     id: client
     attributes:
