@@ -20,6 +20,7 @@ starts the user's task.
 | `scripts/Test-Engine.ps1` | Self-contained engine smoke test (18 assertions, runs under pwsh and PowerShell 5.1). |
 | `scripts/Test-GitHubHooks.ps1` | Offline test suite for the GitHub hooks (47 assertions; mocks git state and `gh`, no network/account). |
 | `scripts/Test-RulesCheck.ps1` | Offline test suite for the RulesCheck hook and per-client install targeting (28 assertions). |
+| `scripts/Test-Wizard.ps1` | Drives the interactive wizard end-to-end via stdin (menu, hook listing, client targeting, real installs) against temp projects (27 assertions). |
 | `logs/` | Wizard execution logs (created on demand, not committed). |
 
 ## Shipped hooks
@@ -52,16 +53,16 @@ Each hook folder ships a tracked `.env.example`. Copy it to `.env` (git-ignored)
 your local values — most importantly `TARGET_PROJECTS` (semicolon-separated project roots),
 `EVENTS`, and `CLIENTS` (`Both`, `Claude`, or `Codex`). Then use menu `2 -> 3` (*Install from
 config*) and the wizard installs the hook into all listed projects **without asking any
-questions**. The sync engine's `.env` supports `SYNC_PROJECTS`, which menu option `1` offers
+questions**. The sync engine's `.env` supports `SYNC_PROJECTS`, which the sync-group flow offers
 to use instead of asking for paths.
 
 ## Claude / Codex / both
 
-Every hook can be installed for either client or both. The interactive flows (menu `1`, menu
-`2 -> 1/2`) ask **Client: 1 Both, 2 Claude only, 3 Codex only** before the target projects;
-config-based installs read the same choice from the hook's `CLIENTS` key. Claude entries land
-in `.claude/settings.local.json`, Codex entries in `.codex/hooks.json` — a Claude-only install
-never touches the Codex file and vice versa.
+Every hook can be installed for either client or both. The interactive flows (the sync group and
+**Install an existing hook**) ask **Client: 1 Both, 2 Claude only, 3 Codex only** before the
+target projects; config-based installs read the same choice from the hook's `CLIENTS` key. Claude
+entries land in `.claude/settings.local.json`, Codex entries in `.codex/hooks.json` — a
+Claude-only install never touches the Codex file and vice versa.
 
 ## Quick start
 
@@ -72,11 +73,13 @@ never touches the Codex file and vice versa.
 Double-clicking `run.ps1` opens the wizard in a Windows Terminal window when `wt.exe` is
 available; otherwise it runs in the current console with the best available PowerShell.
 
-Menu options: `1` sync group, `2` create or install a custom hook, `3` show profiles,
-`4` validate. `0` goes back, `exit` quits.
+Main menu: `1` **Create or install a hook** (opens a sub-menu: create a new hook, install an
+existing one, or install from config), `2` show configured profiles, `3` validate. `0` goes back,
+`exit` quits.
 
-For a sync group choose option `1`, enter each project root path (finish with `done`), review
-the summary and confirm (Enter = yes). The wizard:
+The **sync group** now lives inside `1` → **Install an existing hook** as list item `1`
+("Create or update a sync group"). Choose it, enter each project root path (finish with `done`),
+pick the client, review the summary and confirm (Enter = yes). The wizard:
 
 1. Creates missing `.ai` directories.
 2. Writes a full-mesh profile — every project becomes a sync destination of every other.
@@ -116,7 +119,7 @@ Global install is still available for scripting: `scripts/Install-Hook.ps1` with
 
 ## Writing your own hooks
 
-The easiest path is launcher menu option `2` -> **Create a new hook**: name it, pick a
+The easiest path is launcher menu `1` -> **Create a new hook**: name it, pick a
 template, answer at most one question, and a working `.ps1` lands in `hooks/` (optionally
 installed right away). Templates:
 
@@ -129,7 +132,7 @@ installed right away). Templates:
 5. **Empty skeleton** — a commented template for your own logic.
 
 Template 4 is also shipped ready-made as `hooks/GitSyncCheck.ps1` if you prefer to install it
-directly (menu option `2` -> install an existing hook).
+directly (menu `1` -> install an existing hook).
 
 In the wizard, `0` steps back one question and `exit` quits; the menus never pause for Enter.
 
@@ -146,9 +149,9 @@ exit 0
     ConvertTo-Json -Depth 5 -Compress
 ```
 
-Drop the file into `hooks/` and use launcher menu option `2` — it lists every `.ps1` there,
+Drop the file into `hooks/` and use launcher menu `1` — it lists every `.ps1` there,
 asks for the events (`SessionStart`, `UserPromptSubmit`, `PreToolUse`, `PostToolUse`, `Stop`,
-or a custom list) and the target projects, then installs it into each project's settings.
+or a custom list), the client, and the target projects, then installs it into each project's settings.
 Give it its own config file next to `sync-hooks.json` if it needs configuration.
 
 Manual install without the wizard:

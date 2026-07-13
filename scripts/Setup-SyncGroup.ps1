@@ -157,6 +157,15 @@ function Get-ExampleText {
     return (Get-Painted $Text $C.LightBlue) + $C.HintYellow
 }
 
+# Display name for a hook: split PascalCase into words (AiMemoryCheck ->
+# "Ai Memory Check"). The folder/script name is unchanged; this is display only.
+function Format-HookName {
+    param([Parameter(Mandatory = $true)][string]$Name)
+    $spaced = [System.Text.RegularExpressions.Regex]::Replace($Name, '([A-Z]+)([A-Z][a-z])', '$1 $2')
+    $spaced = [System.Text.RegularExpressions.Regex]::Replace($spaced, '([a-z0-9])([A-Z])', '$1 $2')
+    return $spaced
+}
+
 # --------------------------------------------------------------- logging ----
 $script:LogPath = $null
 $script:EmptyReads = 0
@@ -393,13 +402,16 @@ function Read-ClientChoice {
     }
 }
 
-# Maps a client choice to Install-Hook.ps1 switches (empty array = both).
+# Maps a client choice to an Install-Hook.ps1 splat (empty hashtable = both).
+# MUST be a hashtable, not an array: splatting @('-ClaudeOnly') mis-binds the
+# bare "-ClaudeOnly" string as a positional value onto Install-Hook's first
+# positional parameter ($Profile), which then collides with -CustomHook.
 function Get-ClientInstallArgs {
     param([string]$Clients)
     switch ($Clients) {
-        'Claude' { return @('-ClaudeOnly') }
-        'Codex' { return @('-CodexOnly') }
-        default { return @() }
+        'Claude' { return @{ ClaudeOnly = $true } }
+        'Codex' { return @{ CodexOnly = $true } }
+        default { return @{} }
     }
 }
 
@@ -780,7 +792,7 @@ function Invoke-CreateGroup {
     else {
         # Install the hook locally in each project, not in the user's home settings,
         # so only these projects carry the hook and nothing else on the machine is touched.
-        $clientArgs = @(Get-ClientInstallArgs $clients)
+        $clientArgs = Get-ClientInstallArgs $clients
         foreach ($project in $projects) {
             $installOutput = & $InstallScript -Profile $groupProfile.id -ConfigPath $ConfigPath -TargetProject $project.Root @clientArgs *>&1
             foreach ($line in @($installOutput)) {
@@ -950,7 +962,7 @@ function Invoke-CustomHookTargets {
         }
 
         Write-PhaseHeader 'Applying Changes' $C.Process '-'
-        $clientArgs = @(Get-ClientInstallArgs $clients)
+        $clientArgs = Get-ClientInstallArgs $clients
         foreach ($target in $targets) {
             $installOutput = & $InstallScript -CustomHook $HookPath -Events @($Events) -TargetProject $target.Root @clientArgs *>&1
             foreach ($line in @($installOutput)) {
@@ -1094,7 +1106,7 @@ function Invoke-CreateHook {
                     break
                 }
                 if ($install -ne $true) {
-                    Write-NoteLine ('Saved in hooks\. Install later via menu option 2 -> install an existing hook.')
+                    Write-NoteLine ('Saved in hooks\. Install it later via "Install an existing hook".')
                     return 'done'
                 }
                 $result = Invoke-CustomHookTargets -HookPath $hookPath -Events $template.DefaultEvents
@@ -1115,7 +1127,7 @@ function Invoke-InstallExistingHook {
     $hookFiles = @(Get-HookEntries)
     if ($hookFiles.Count -eq 0) {
         Write-ErrorLine ('No hooks found in: ' + $HooksDir)
-        Write-NoteLine 'Create one first (menu option 2 -> create a new hook).'
+        Write-NoteLine 'Create one first ("Create a new hook").'
         return 'back'
     }
 
@@ -1127,14 +1139,16 @@ function Invoke-InstallExistingHook {
     while ($true) {
         switch ($stage) {
             0 {
-                # Select hook
+                # Select hook. Item 1 is the cross-project sync group (its own
+                # multi-project wizard); items 2..N+1 are the hooks in hooks\.
                 Write-MenuTitle 'Available hooks (hooks\):'
+                Write-MenuLine 1 'Create or update a sync group' '(cross-project .ai knowledge sync)'
                 for ($i = 0; $i -lt $hookFiles.Count; $i++) {
                     $suffix = ''
                     if ($hookFiles[$i].Name -eq 'CrossProjectSyncHook') {
-                        $suffix = '(sync engine - normally configured via option 1)'
+                        $suffix = '(sync engine - normally configured via the sync group above)'
                     }
-                    Write-MenuLine ($i + 1) $hookFiles[$i].Name $suffix
+                    Write-MenuLine ($i + 2) (Format-HookName $hookFiles[$i].Name) $suffix
                 }
                 $value = Read-Answer (New-QuestionPrompt 'Select a hook' $null '1') 'select custom hook'
                 if ($value -eq '0') {
@@ -1144,12 +1158,16 @@ function Invoke-InstallExistingHook {
                     $value = '1'
                 }
                 $index = 0
-                if ([int]::TryParse($value, [ref]$index) -and $index -ge 1 -and $index -le $hookFiles.Count) {
-                    $selectedHook = $hookFiles[$index - 1]
+                if ([int]::TryParse($value, [ref]$index) -and $index -ge 1 -and $index -le ($hookFiles.Count + 1)) {
+                    if ($index -eq 1) {
+                        Invoke-CreateGroup
+                        return 'done'
+                    }
+                    $selectedHook = $hookFiles[$index - 2]
                     $stage = 1
                 }
                 else {
-                    Write-ErrorLine ('Enter a number between 1 and ' + $hookFiles.Count + '.')
+                    Write-ErrorLine ('Enter a number between 1 and ' + ($hookFiles.Count + 1) + '.')
                 }
             }
             1 {
@@ -1228,7 +1246,7 @@ function Invoke-InstallHookFromConfig {
             if (Test-Path -LiteralPath $hookFiles[$i].EnvPath -PathType Leaf) {
                 $suffix = '(.env found)'
             }
-            Write-MenuLine ($i + 1) $hookFiles[$i].Name $suffix
+            Write-MenuLine ($i + 1) (Format-HookName $hookFiles[$i].Name) $suffix
         }
         $value = Read-Answer (New-QuestionPrompt 'Select a hook' $null '1') 'select hook for config install'
         if ($value -eq '0') {
@@ -1318,7 +1336,7 @@ function Invoke-InstallHookFromConfig {
         }
 
         Write-PhaseHeader 'Applying Changes' $C.Process '-'
-        $clientArgs = @(Get-ClientInstallArgs $clients)
+        $clientArgs = Get-ClientInstallArgs $clients
         foreach ($target in $targets) {
             $installOutput = & $InstallScript -CustomHook $hook.ScriptPath -Events @($events) -TargetProject $target.Root @clientArgs *>&1
             foreach ($line in @($installOutput)) {
@@ -1335,16 +1353,17 @@ function Invoke-InstallHookFromConfig {
     }
 }
 
-# Sub-menu for option 2: create a new hook or install an existing one.
+# The "Create or install a hook" sub-menu: create a new hook, install an
+# existing one (the sync group is item 1 of that list), or install from config.
 # Loops so that backing out of a sub-flow returns HERE (one step), not to the
 # main menu. Returns 'done' after a completed sub-flow, or when the user backs
 # out of this sub-menu.
 function Invoke-CustomHookMenu {
     while ($true) {
-        Write-PhaseHeader 'Custom Hooks' $C.Input '-'
-        Write-MenuTitle 'Custom hooks:'
+        Write-PhaseHeader 'Create or Install a Hook' $C.Input '-'
+        Write-MenuTitle 'Options:'
         Write-MenuLine 1 'Create a new hook' '(guided templates)'
-        Write-MenuLine 2 'Install an existing hook' '(interactive questions)'
+        Write-MenuLine 2 'Install an existing hook' '(sync group + hooks\ - interactive)'
         Write-MenuLine 3 'Install from config' '(reads the hook''s .env - no questions)'
         $value = Read-Answer (New-QuestionPrompt 'Select an option' $null '1') 'custom hook menu'
         if ($value -eq '0') {
@@ -1362,7 +1381,7 @@ function Invoke-CustomHookMenu {
     }
 }
 
-# ------------------------------------------------------- info flows (3/4) ----
+# ------------------------------------------------------- info flows (2/3) ----
 function Show-Profiles {
     Write-PhaseHeader 'Configured Profiles' $C.Input '-'
     $config = Read-JsonFile $ConfigPath
@@ -1444,10 +1463,9 @@ function Show-Banner {
 function Show-MainMenu {
     Write-Host ''
     Write-MenuTitle 'Main menu:'
-    Write-MenuLine 1 'Create or update a sync group'
-    Write-MenuLine 2 'Create or install a custom hook' '(hooks\ folder)'
-    Write-MenuLine 3 'Show configured profiles'
-    Write-MenuLine 4 'Validate configuration'
+    Write-MenuLine 1 'Create or install a hook' '(sync group + hooks\ folder)'
+    Write-MenuLine 2 'Show configured profiles'
+    Write-MenuLine 3 'Validate configuration'
 }
 
 # ----------------------------------------------------------------- entry ----
@@ -1472,12 +1490,11 @@ try {
                 $choice = '1'
             }
             switch ($choice) {
-                '1' { Invoke-CreateGroup; continue menu }
-                '2' { Invoke-CustomHookMenu; continue menu }
-                '3' { Show-Profiles; continue menu }
-                '4' { Invoke-Validate; continue menu }
+                '1' { Invoke-CustomHookMenu; continue menu }
+                '2' { Show-Profiles; continue menu }
+                '3' { Invoke-Validate; continue menu }
                 '0' { break menu }
-                default { Write-ErrorLine 'Enter 1, 2, 3, 4 or 0.' }
+                default { Write-ErrorLine 'Enter 1, 2, 3 or 0.' }
             }
         }
     }
