@@ -194,8 +194,9 @@ function Get-HookDescriptionText {
     }
     return ''
 }
-# The " | " separator between menu-line parts (muted, so the parts stand out).
-$script:MenuSep = "$Esc[38;5;240m | $($C.Reset)"
+# The " | " separator between menu-line parts (a light gray - visible, but
+# still quieter than the parts it divides).
+$script:MenuSep = "$Esc[38;5;248m | $($C.Reset)"
 
 # A hook menu line: "N. Friendly-Name | [timing] | description", each part in
 # its own color and separated by a pipe for readability.
