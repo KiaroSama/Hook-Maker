@@ -57,3 +57,9 @@ jobs:
       - name: RulesCheck and client-targeting test suite
         shell: pwsh
         run: .\scripts\Test-RulesCheck.ps1
+
+      # Drives the interactive wizard end-to-end via stdin (menu structure, hook
+      # listing, client splat, real Install-Hook writes) against temp projects.
+      - name: Wizard functional test suite
+        shell: pwsh
+        run: .\scripts\Test-Wizard.ps1
