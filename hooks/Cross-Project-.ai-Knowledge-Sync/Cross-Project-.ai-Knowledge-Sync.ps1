@@ -16,7 +16,7 @@ $OutputEncoding = $Utf8NoBom
 
 $HookScriptPath = [System.IO.Path]::GetFullPath($MyInvocation.MyCommand.Path)
 $ScriptRoot = Split-Path -Parent $HookScriptPath
-# This script lives in hooks\CrossProjectSyncHook\, two levels below the tool root.
+# This script lives in hooks\<hook-folder>\, two levels below the tool root.
 $ToolRoot = Split-Path -Parent (Split-Path -Parent $ScriptRoot)
 if ([string]::IsNullOrWhiteSpace($ConfigPath)) {
     $ConfigPath = Join-Path $ToolRoot 'sync-hooks.json'

@@ -17,7 +17,7 @@ Set-StrictMode -Version 2.0
 $ErrorActionPreference = 'Stop'
 
 $ScriptRoot = $PSScriptRoot
-$Hook = Join-Path (Split-Path -Parent $ScriptRoot) 'hooks\RulesCheck\RulesCheck.ps1'
+$Hook = Join-Path (Split-Path -Parent $ScriptRoot) 'hooks\Rules-Check\Rules-Check.ps1'
 $InstallScript = Join-Path $ScriptRoot 'Install-Hook.ps1'
 foreach ($required in @($Hook, $InstallScript)) {
     if (-not (Test-Path -LiteralPath $required -PathType Leaf)) {
@@ -181,13 +181,13 @@ try {
     # The hook dot-sources ..\_hooklib.ps1, so place the lib one level up.
     $hookCopyDir = Join-Path $Work 'hookcopy'
     New-Item -ItemType Directory -Path $hookCopyDir -Force | Out-Null
-    Copy-Item $Hook (Join-Path $hookCopyDir 'RulesCheck.ps1')
+    Copy-Item $Hook (Join-Path $hookCopyDir 'Rules-Check.ps1')
     Copy-Item (Join-Path (Split-Path -Parent $Hook) '..\_hooklib.ps1') (Join-Path $Work '_hooklib.ps1')
     $customRules = Join-Path $Work 'customrules'
     New-RuleFile $customRules 'special.md'
     [System.IO.File]::WriteAllText((Join-Path $hookCopyDir '.env'), "GLOBAL_RULES_DIR=$customRules`r`n")
     $proj3 = Join-Path $Work 'proj3'; New-Item -ItemType Directory -Path $proj3 -Force | Out-Null
-    $r = Fire -Cwd $proj3 -HookPath (Join-Path $hookCopyDir 'RulesCheck.ps1')
+    $r = Fire -Cwd $proj3 -HookPath (Join-Path $hookCopyDir 'Rules-Check.ps1')
     Check '.env GLOBAL_RULES_DIR override is used' ($r.Out -like '*special.md*' -and $r.Out -notlike '*alpha.md*') $r.Out
 
     $proj4 = Join-Path $Work 'proj4'; New-Item -ItemType Directory -Path $proj4 -Force | Out-Null
@@ -225,17 +225,18 @@ try {
     $r = Fire -Cwd $tgtProj -HookPath (Join-Path $tgtC '.claude\hooks\HookMaker\Rules-Check\Rules-Check.ps1')
     Check 'runtime copy runs standalone (dot-source resolves)' ($r.Exit -eq 0 -and $r.Err -eq '' -and $r.Out -like '*copyrun.md*') $r.Out
 
-    # Migration: a stale registration under the OLD internal-name path
-    # (RulesCheck\RulesCheck.ps1) must be pruned on re-install, not left behind.
-    # Regression for the comma-precedence bug that mangled the legacy leaf marker
-    # so Remove-StaleHandlers matched nothing when the command changed.
+    # Migration: a stale registration whose command CHANGED (here: an old
+    # tool-folder path) must be pruned on re-install, not left behind next to the
+    # new project-local one. Regression for the comma-precedence bug that mangled
+    # the leaf marker so Remove-StaleHandlers matched nothing on a command change.
+    # (Add-HookGroup's exact-command dedup can't catch this - the path differs.)
     $tgtMig = Join-Path $Work 'tgt-mig'; New-Item -ItemType Directory -Path (Join-Path $tgtMig '.claude') -Force | Out-Null
-    $legacyCmd = 'powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "' + (Join-Path $tgtMig '.claude\hooks\HookMaker\RulesCheck\RulesCheck.ps1') + '"'
+    $legacyCmd = 'powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "G:\Old Tool Folder\hooks\Rules-Check\Rules-Check.ps1"'
     $legacyJson = @{ hooks = @{ SessionStart = @(@{ matcher = 'startup|resume|clear|compact'; hooks = @(@{ type = 'command'; command = $legacyCmd; timeout = 60 }) }) } } | ConvertTo-Json -Depth 10
     [System.IO.File]::WriteAllText((Join-Path $tgtMig '.claude\settings.local.json'), $legacyJson, (New-Object System.Text.UTF8Encoding $false))
     & $InstallScript -CustomHook $Hook -Events @('SessionStart') -TargetProject $tgtMig -ClaudeOnly *> $null
     $migJson = [System.IO.File]::ReadAllText((Join-Path $tgtMig '.claude\settings.local.json'))
-    Check 'legacy internal-name registration pruned on migration' (([regex]::Matches($migJson, '\\RulesCheck\\RulesCheck\.ps1')).Count -eq 0)
+    Check 'stale changed-path registration pruned on migration' ($migJson -notlike '*Old Tool Folder*')
     Check 'friendly registration present exactly once' (([regex]::Matches($migJson, 'Rules-Check\.ps1')).Count -eq 1)
 }
 finally {
