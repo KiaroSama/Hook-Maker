@@ -59,8 +59,8 @@ try {
     Write-Host '--- menu structure + listing + sync-group create (-NoInstall) ---' -ForegroundColor Cyan
     $cfg1 = Join-Path $Work 'cfg1.json'; New-Config $cfg1
     $a = New-Proj 'A1'; $b = New-Proj 'B1'
-    # main 1 -> sub 2 (install existing) -> item 1 (sync group) -> A,B,done -> client Both -> start
-    $r = Invoke-Wizard -Config $cfg1 -NoInstall -Answers @('1', '2', '1', $a, $b, 'done', '1', '', '0')
+    # main 1 -> sub 1 (install existing) -> item 1 (sync group) -> A,B,done -> client Both -> start
+    $r = Invoke-Wizard -Config $cfg1 -NoInstall -Answers @('1', '1', '1', $a, $b, 'done', '1', '', '0')
     Check 'exit 0' ($r.Exit -eq 0)
     Check 'no stderr' ($r.Err -eq '')
     Check 'main menu merged (Create or install a hook)' ($r.Out -match '1\. Create or install a hook')
@@ -80,8 +80,8 @@ try {
     Write-Host '--- install a real hook (list offset + Claude-only targeting) ---' -ForegroundColor Cyan
     $cfg2 = Join-Path $Work 'cfg2.json'; New-Config $cfg2
     $t = New-Proj 'T2'
-    # main 1 -> sub 2 -> item 2 (first real hook = AiMemoryCheck) -> events SessionStart -> client Claude -> target -> done -> start
-    $r = Invoke-Wizard -Config $cfg2 -Answers @('1', '2', '2', '2', '2', $t, 'done', '', '0')
+    # main 1 -> sub 1 (install existing) -> item 2 (first real hook = AiMemoryCheck) -> events SessionStart -> client Claude -> target -> done -> start
+    $r = Invoke-Wizard -Config $cfg2 -Answers @('1', '1', '2', '2', '2', $t, 'done', '', '0')
     Check 'exit 0' ($r.Exit -eq 0)
     Check 'no stderr' ($r.Err -eq '')
     $claude2 = Join-Path $t '.claude\settings.local.json'
@@ -95,7 +95,7 @@ try {
     Write-Host '--- sync group with a real install (both clients) ---' -ForegroundColor Cyan
     $cfg3 = Join-Path $Work 'cfg3.json'; New-Config $cfg3
     $a3 = New-Proj 'A3'; $b3 = New-Proj 'B3'
-    $r = Invoke-Wizard -Config $cfg3 -Answers @('1', '2', '1', $a3, $b3, 'done', '1', '', '0')
+    $r = Invoke-Wizard -Config $cfg3 -Answers @('1', '1', '1', $a3, $b3, 'done', '1', '', '0')
     Check 'exit 0' ($r.Exit -eq 0)
     Check 'no stderr' ($r.Err -eq '')
     $profId3 = (@((Get-Content $cfg3 -Raw | ConvertFrom-Json).profiles)[0]).id
