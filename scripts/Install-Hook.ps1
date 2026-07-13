@@ -68,20 +68,33 @@ $Timestamp = (Get-Date).ToString('yyyyMMdd-HHmmss')
 
 # Installs are SELF-CONTAINED: the hook runtime (script, shared _hooklib.ps1,
 # its .env, and - for the sync engine - the routing config) is COPIED into the
-# scope's client folder (<scope>\.claude|.codex\hooks\HookMaker\<Friendly-Name>\),
+# scope's client folder (<scope>\.claude|.codex\hooks\Hook-Maker\<Friendly-Name>\),
 # and the registered command points at that copy. Moving or deleting the Hook
 # Maker folder never breaks an installed hook; re-run the install to refresh.
 # The copy's folder + script use the friendly hyphenated name for easy ID.
 function Copy-HookRuntime {
     param([Parameter(Mandatory = $true)][string]$ClientDir)
 
-    $runtimeRoot = Join-Path $ClientDir 'hooks\HookMaker'
+    $runtimeRoot = Join-Path $ClientDir 'hooks\Hook-Maker'
     New-Item -ItemType Directory -Path $runtimeRoot -Force | Out-Null
-    # _hooklib is shared by every hook in this scope; it sits at the HookMaker
+    # _hooklib is shared by every hook in this scope; it sits at the Hook-Maker
     # root so each copied script's "..\_hooklib.ps1" dot-source resolves.
     $hookLib = Join-Path $ToolRoot 'hooks\_hooklib.ps1'
     if (Test-Path -LiteralPath $hookLib -PathType Leaf) {
         Copy-Item -LiteralPath $hookLib -Destination $runtimeRoot -Force
+    }
+
+    # Migrate this hook out of a legacy 'HookMaker' folder (older, un-hyphenated
+    # runtime root). Only remove THIS hook's subfolder so other hooks still
+    # registered there keep working; drop the whole legacy root once it holds no
+    # more hook subfolders.
+    $legacyRoot = Join-Path $ClientDir 'hooks\HookMaker'
+    if ((Test-Path -LiteralPath $legacyRoot) -and -not [string]::Equals($legacyRoot, $runtimeRoot, [System.StringComparison]::OrdinalIgnoreCase)) {
+        $legacyHookDir = Join-Path $legacyRoot $FriendlyName
+        if (Test-Path -LiteralPath $legacyHookDir) { Remove-Item -LiteralPath $legacyHookDir -Recurse -Force }
+        if (@(Get-ChildItem -LiteralPath $legacyRoot -Directory -ErrorAction SilentlyContinue).Count -eq 0) {
+            Remove-Item -LiteralPath $legacyRoot -Recurse -Force
+        }
     }
 
     # Clean this hook's own folder (fresh copy) and any legacy internal-name

@@ -213,7 +213,7 @@ try {
     Check 'default -> both clients written' ($claudeJson -ne '' -and (Test-Path (Join-Path $tgtC '.codex\hooks.json')))
     Check 'installed command points at Rules-Check' ($claudeJson -like '*Rules-Check.ps1*')
     # The copy folder + script use the friendly hyphenated name (Rules-Check).
-    Check 'install is self-contained (local runtime copy)' (($claudeJson -like '*hooks\\HookMaker\\Rules-Check\\Rules-Check.ps1*') -and (Test-Path (Join-Path $tgtC '.claude\hooks\HookMaker\Rules-Check\Rules-Check.ps1')) -and (Test-Path (Join-Path $tgtC '.claude\hooks\HookMaker\_hooklib.ps1')))
+    Check 'install is self-contained (local runtime copy)' (($claudeJson -like '*hooks\\Hook-Maker\\Rules-Check\\Rules-Check.ps1*') -and (Test-Path (Join-Path $tgtC '.claude\hooks\Hook-Maker\Rules-Check\Rules-Check.ps1')) -and (Test-Path (Join-Path $tgtC '.claude\hooks\Hook-Maker\_hooklib.ps1')))
     # Re-install must REPLACE the old registration, not duplicate it.
     & $InstallScript -CustomHook $Hook -Events @('SessionStart') -TargetProject $tgtC *> $null
     $claudeJson2 = [System.IO.File]::ReadAllText((Join-Path $tgtC '.claude\settings.local.json'))
@@ -222,7 +222,7 @@ try {
     # The runtime copy must run standalone: fire it with a rules dir present.
     New-RuleFile (Join-Path $FakeHome '.claude\rules') 'copyrun.md'
     $tgtProj = Join-Path $Work 'tgt-run'; New-Item -ItemType Directory -Path $tgtProj -Force | Out-Null
-    $r = Fire -Cwd $tgtProj -HookPath (Join-Path $tgtC '.claude\hooks\HookMaker\Rules-Check\Rules-Check.ps1')
+    $r = Fire -Cwd $tgtProj -HookPath (Join-Path $tgtC '.claude\hooks\Hook-Maker\Rules-Check\Rules-Check.ps1')
     Check 'runtime copy runs standalone (dot-source resolves)' ($r.Exit -eq 0 -and $r.Err -eq '' -and $r.Out -like '*copyrun.md*') $r.Out
 
     # Migration: a stale registration whose command CHANGED (here: an old

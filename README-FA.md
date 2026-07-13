@@ -72,12 +72,12 @@
 
 هر نصب، **رانتایم هوک را داخل خود مقصد کپی می‌کند** (شبیه هوک‌های `.kiro`): اسکریپت هوک، `_hooklib.ps1` مشترک، `.env` آن (اگر باشد) و — برای موتور سینک — یک کپی از کانفیگ مسیریابی:
 
-- برای Claude در `<پروژه>\.claude\hooks\HookMaker\` (ثبت در `<پروژه>\.claude\settings.local.json` — خودکار git-ignore، چون دستور مسیر مطلق ماشین توست).
-- برای Codex در `<پروژه>\.codex\hooks\HookMaker\` (ثبت در `<پروژه>\.codex\hooks.json`؛ فقط بعد از trust با `/hooks` بارگذاری می‌شود).
+- برای Claude در `<پروژه>\.claude\hooks\Hook-Maker\` (ثبت در `<پروژه>\.claude\settings.local.json` — خودکار git-ignore، چون دستور مسیر مطلق ماشین توست).
+- برای Codex در `<پروژه>\.codex\hooks\Hook-Maker\` (ثبت در `<پروژه>\.codex\hooks.json`؛ فقط بعد از trust با `/hooks` بارگذاری می‌شود).
 
 دستور ثبت‌شده به همان کپی داخل پروژه اشاره می‌کند؛ پس **جابه‌جایی، تغییر نام یا حذف پوشه‌ی Hook Maker هیچ هوک نصب‌شده‌ای را نمی‌شکند**. روی دیگر سکه: کپی‌ها خودکار به‌روز نمی‌شوند — بعد از تغییر یک هوک، `.env` آن یا گروه سینک، نصب (یا گروه سینک) را دوباره اجرا کن تا کپی‌ها تازه شوند؛ نصب مجدد ثبتِ قبلیِ همان هوک را **جایگزین** می‌کند (حتی ثبت قدیمی که به پوشه‌ی ابزار اشاره می‌کرد)، نه تکرار. محتوای دیگرِ فایل تنظیمات دست نمی‌خورد و قبل از نوشتن backup تاریخ‌دار ساخته می‌شود.
 
-نصب سراسری هم همین‌طور است: `scripts\Install-Hook.ps1` بدون `-TargetProject` در `~\.claude\hooks\HookMaker\` و `~\.codex\hooks\HookMaker\` کپی و در `settings.json`/`hooks.json` سراسری ثبت می‌کند.
+نصب سراسری هم همین‌طور است: `scripts\Install-Hook.ps1` بدون `-TargetProject` در `~\.claude\hooks\Hook-Maker\` و `~\.codex\hooks\Hook-Maker\` کپی و در `settings.json`/`hooks.json` سراسری ثبت می‌کند.
 
 ## فرمت hook در Claude و Codex
 

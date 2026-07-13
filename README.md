@@ -92,7 +92,7 @@ confirm (Enter = yes). The wizard:
 2. Writes a full-mesh profile — every project becomes a sync destination of every other.
 3. Validates the configuration.
 4. Installs the hook **inside each project** as a self-contained runtime copy
-   (`.claude/hooks/HookMaker/` + `settings.local.json` for Claude, `.codex/hooks/HookMaker/` +
+   (`.claude/hooks/Hook-Maker/` + `settings.local.json` for Claude, `.codex/hooks/Hook-Maker/` +
    `hooks.json` for Codex) — not in your global settings, so only these projects carry it, and
    nothing depends on where the Hook Maker folder lives.
 
@@ -105,14 +105,14 @@ Every install **copies the hook runtime into the target itself** (Kiro-style): t
 shared `_hooklib.ps1`, its `.env` (if present) and — for the sync engine — a copy of the routing
 config land in
 
-- `<project>/.claude/hooks/HookMaker/<Friendly-Name>/` for Claude (registered in
+- `<project>/.claude/hooks/Hook-Maker/<Friendly-Name>/` for Claude (registered in
   `<project>/.claude/settings.local.json`, auto-gitignored — the command holds a machine-specific
   absolute path), and
-- `<project>/.codex/hooks/HookMaker/<Friendly-Name>/` for Codex (registered in
+- `<project>/.codex/hooks/Hook-Maker/<Friendly-Name>/` for Codex (registered in
   `<project>/.codex/hooks.json`; loads only after you trust it via `/hooks`),
 
 where `<Friendly-Name>` is the hook's readable, hyphenated name (e.g. the sync engine lands in
-`HookMaker/Cross-Project-.ai-Knowledge-Sync/`, `Mcp-Usage-Check` in `HookMaker/Mcp-Usage-Check/`),
+`Hook-Maker/Cross-Project-.ai-Knowledge-Sync/`, `Mcp-Usage-Check` in `Hook-Maker/Mcp-Usage-Check/`),
 
 and the registered command points at that copy. **Moving, renaming, or deleting the Hook Maker
 folder never breaks an installed hook.** The flip side: copies do not auto-update — after
@@ -122,7 +122,7 @@ pointed into the tool folder) instead of duplicating it. Other content in the se
 preserved, and a timestamped backup is written first.
 
 Global install works the same way: `scripts/Install-Hook.ps1` with no `-TargetProject` copies to
-`~/.claude/hooks/HookMaker/` + `~/.codex/hooks/HookMaker/` and registers in
+`~/.claude/hooks/Hook-Maker/` + `~/.codex/hooks/Hook-Maker/` and registers in
 `~/.claude/settings.json` and `~/.codex/hooks.json`.
 
 ## How syncing works
