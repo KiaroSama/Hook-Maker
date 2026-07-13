@@ -19,5 +19,5 @@ logs/
 .env
 
 # The real routing config is machine-local (it holds your project paths).
-# It is auto-created from sync-hooks.sample.json on first wizard run.
+# It is auto-created from sync-hooks.example.json on first wizard run.
 /sync-hooks.json

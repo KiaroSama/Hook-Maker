@@ -211,18 +211,32 @@ try {
     $claudeJson = ''
     if (Test-Path (Join-Path $tgtC '.claude\settings.local.json')) { $claudeJson = [System.IO.File]::ReadAllText((Join-Path $tgtC '.claude\settings.local.json')) }
     Check 'default -> both clients written' ($claudeJson -ne '' -and (Test-Path (Join-Path $tgtC '.codex\hooks.json')))
-    Check 'installed command points at RulesCheck' ($claudeJson -like '*RulesCheck.ps1*')
-    Check 'install is self-contained (local runtime copy)' (($claudeJson -like '*hooks\\HookMaker\\RulesCheck\\RulesCheck.ps1*') -and (Test-Path (Join-Path $tgtC '.claude\hooks\HookMaker\RulesCheck\RulesCheck.ps1')) -and (Test-Path (Join-Path $tgtC '.claude\hooks\HookMaker\_hooklib.ps1')))
+    Check 'installed command points at Rules-Check' ($claudeJson -like '*Rules-Check.ps1*')
+    # The copy folder + script use the friendly hyphenated name (Rules-Check).
+    Check 'install is self-contained (local runtime copy)' (($claudeJson -like '*hooks\\HookMaker\\Rules-Check\\Rules-Check.ps1*') -and (Test-Path (Join-Path $tgtC '.claude\hooks\HookMaker\Rules-Check\Rules-Check.ps1')) -and (Test-Path (Join-Path $tgtC '.claude\hooks\HookMaker\_hooklib.ps1')))
     # Re-install must REPLACE the old registration, not duplicate it.
     & $InstallScript -CustomHook $Hook -Events @('SessionStart') -TargetProject $tgtC *> $null
     $claudeJson2 = [System.IO.File]::ReadAllText((Join-Path $tgtC '.claude\settings.local.json'))
-    $occurrences = ([regex]::Matches($claudeJson2, 'RulesCheck\.ps1')).Count
+    $occurrences = ([regex]::Matches($claudeJson2, 'Rules-Check\.ps1')).Count
     Check 're-install replaces instead of duplicating' ($occurrences -eq 1)
     # The runtime copy must run standalone: fire it with a rules dir present.
     New-RuleFile (Join-Path $FakeHome '.claude\rules') 'copyrun.md'
     $tgtProj = Join-Path $Work 'tgt-run'; New-Item -ItemType Directory -Path $tgtProj -Force | Out-Null
-    $r = Fire -Cwd $tgtProj -HookPath (Join-Path $tgtC '.claude\hooks\HookMaker\RulesCheck\RulesCheck.ps1')
+    $r = Fire -Cwd $tgtProj -HookPath (Join-Path $tgtC '.claude\hooks\HookMaker\Rules-Check\Rules-Check.ps1')
     Check 'runtime copy runs standalone (dot-source resolves)' ($r.Exit -eq 0 -and $r.Err -eq '' -and $r.Out -like '*copyrun.md*') $r.Out
+
+    # Migration: a stale registration under the OLD internal-name path
+    # (RulesCheck\RulesCheck.ps1) must be pruned on re-install, not left behind.
+    # Regression for the comma-precedence bug that mangled the legacy leaf marker
+    # so Remove-StaleHandlers matched nothing when the command changed.
+    $tgtMig = Join-Path $Work 'tgt-mig'; New-Item -ItemType Directory -Path (Join-Path $tgtMig '.claude') -Force | Out-Null
+    $legacyCmd = 'powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "' + (Join-Path $tgtMig '.claude\hooks\HookMaker\RulesCheck\RulesCheck.ps1') + '"'
+    $legacyJson = @{ hooks = @{ SessionStart = @(@{ matcher = 'startup|resume|clear|compact'; hooks = @(@{ type = 'command'; command = $legacyCmd; timeout = 60 }) }) } } | ConvertTo-Json -Depth 10
+    [System.IO.File]::WriteAllText((Join-Path $tgtMig '.claude\settings.local.json'), $legacyJson, (New-Object System.Text.UTF8Encoding $false))
+    & $InstallScript -CustomHook $Hook -Events @('SessionStart') -TargetProject $tgtMig -ClaudeOnly *> $null
+    $migJson = [System.IO.File]::ReadAllText((Join-Path $tgtMig '.claude\settings.local.json'))
+    Check 'legacy internal-name registration pruned on migration' (([regex]::Matches($migJson, '\\RulesCheck\\RulesCheck\.ps1')).Count -eq 0)
+    Check 'friendly registration present exactly once' (([regex]::Matches($migJson, 'Rules-Check\.ps1')).Count -eq 1)
 }
 finally {
     $env:USERPROFILE = $SavedUserProfile

@@ -66,9 +66,11 @@ try {
     Check 'main menu merged (Create or install a hook)' ($r.Out -match '1\. Create or install a hook')
     Check 'no separate top-level sync-group option' ($r.Out -notmatch '1\. Create or update a sync group\s*\r?\n\s*2\. Show')
     Check 'sync group is list item 1' ($r.Out -match '1\. Create or update a sync group')
-    Check 'hook names are spaced' ($r.Out -match 'Ai Memory Check' -and $r.Out -match 'Rules Check')
+    Check 'hook names are hyphenated' ($r.Out -match 'Ai-Memory-Check' -and $r.Out -match 'Rules-Check')
     Check 'names not glued together' ($r.Out -notmatch 'AiMemoryCheck')
-    Check 'listing shows short descriptions' ($r.Out -match 'post-task: reminds to update \.ai memory' -and $r.Out -match 'pre-task: checks global \+ project rules')
+    Check 'engine shows the friendly name' ($r.Out -match 'Cross-Project-\.ai-Knowledge-Sync')
+    Check 'listing shows timing tags' ($r.Out -match '\[post-task\]' -and $r.Out -match '\[pre-task\]')
+    Check 'listing shows short descriptions' ($r.Out -match 'reminds to update \.ai memory' -and $r.Out -match 'checks global \+ project rules')
     Check '_hooklib excluded from listing' ($r.Out -notmatch '_hooklib')
     Check 'full back suffix on sub-prompts' ($r.Out -match 'back=0' -and $r.Out -match 'quit=exit')
     Check 'main-menu suffix is quit-only' ($r.Out -match 'Select an option.*\{quit=exit\}')
@@ -88,16 +90,16 @@ try {
     $claude2 = Join-Path $t '.claude\settings.local.json'
     Check 'claude settings written' (Test-Path $claude2)
     $j2 = ''; if (Test-Path $claude2) { $j2 = [System.IO.File]::ReadAllText($claude2) }
-    Check 'item 2 installed the FIRST real hook (AiMemoryCheck)' ($j2 -match 'AiMemoryCheck\.ps1')
-    Check 'did not install a neighbor hook' ($j2 -notmatch 'CiStatusCheck')
+    Check 'item 2 installed the FIRST real hook (Ai-Memory-Check)' ($j2 -match 'Ai-Memory-Check\.ps1')
+    Check 'did not install a neighbor hook' ($j2 -notmatch 'Ci-Status-Check')
     Check 'Claude-only leaves codex untouched' (-not (Test-Path (Join-Path $t '.codex\hooks.json')) -and -not (Test-Path (Join-Path $t '.codex')))
     # Self-contained install: the command points at a runtime copy INSIDE the
-    # project, and the copy (script + shared lib) actually exists there.
-    Check 'command points at the project-local copy' ($j2 -like '*hooks\\HookMaker\\AiMemoryCheck\\AiMemoryCheck.ps1*')
+    # project, named with the friendly hyphenated hook name.
+    Check 'command points at the project-local copy' ($j2 -like '*hooks\\HookMaker\\Ai-Memory-Check\\Ai-Memory-Check.ps1*')
     Check 'command does not reference the tool folder' ($j2 -notlike '*Hook Maker*')
-    Check 'runtime copy of the hook exists' (Test-Path (Join-Path $t '.claude\hooks\HookMaker\AiMemoryCheck\AiMemoryCheck.ps1'))
+    Check 'runtime copy of the hook exists' (Test-Path (Join-Path $t '.claude\hooks\HookMaker\Ai-Memory-Check\Ai-Memory-Check.ps1'))
     Check 'runtime copy of _hooklib exists' (Test-Path (Join-Path $t '.claude\hooks\HookMaker\_hooklib.ps1'))
-    Check 'runtime copy has no .env.example' (-not (Test-Path (Join-Path $t '.claude\hooks\HookMaker\AiMemoryCheck\.env.example')))
+    Check 'runtime copy has no .env.example' (-not (Test-Path (Join-Path $t '.claude\hooks\HookMaker\Ai-Memory-Check\.env.example')))
 
     # =====================================================================
     Write-Host '--- sync group with a real install (both clients) ---' -ForegroundColor Cyan
@@ -113,21 +115,46 @@ try {
         Check "$name got codex hooks" (Test-Path (Join-Path $proj '.codex\hooks.json'))
         $cl = Join-Path $proj '.claude\settings.local.json'
         $jc = ''; if (Test-Path $cl) { $jc = [System.IO.File]::ReadAllText($cl) }
-        Check "$name command points at engine + this profile" ($jc -match 'CrossProjectSyncHook\.ps1' -and $jc -match [regex]::Escape($profId3))
-        # Self-contained: engine + lib + routing config copied into BOTH clients.
-        Check "$name command uses the local engine copy" ($jc -like '*hooks\\HookMaker\\CrossProjectSyncHook\\CrossProjectSyncHook.ps1*' -and $jc -notlike '*Hook Maker*')
-        Check "$name claude runtime copy complete" ((Test-Path (Join-Path $proj '.claude\hooks\HookMaker\CrossProjectSyncHook\CrossProjectSyncHook.ps1')) -and (Test-Path (Join-Path $proj '.claude\hooks\HookMaker\_hooklib.ps1')) -and (Test-Path (Join-Path $proj '.claude\hooks\HookMaker\sync-hooks.json')))
-        Check "$name codex runtime copy complete" ((Test-Path (Join-Path $proj '.codex\hooks\HookMaker\CrossProjectSyncHook\CrossProjectSyncHook.ps1')) -and (Test-Path (Join-Path $proj '.codex\hooks\HookMaker\sync-hooks.json')))
+        Check "$name command points at engine + this profile" ($jc -match 'Cross-Project-\.ai-Knowledge-Sync\.ps1' -and $jc -match [regex]::Escape($profId3))
+        # Self-contained: engine + lib + routing config copied into BOTH clients,
+        # the engine folder/script under the friendly name.
+        $eng = 'hooks\HookMaker\Cross-Project-.ai-Knowledge-Sync\Cross-Project-.ai-Knowledge-Sync.ps1'
+        $engCfg = 'hooks\HookMaker\Cross-Project-.ai-Knowledge-Sync\sync-hooks.json'
+        Check "$name command uses the local engine copy" ($jc -like ('*' + $eng.Replace('\', '\\') + '*') -and $jc -notlike '*Hook Maker*')
+        Check "$name claude runtime copy complete" ((Test-Path (Join-Path $proj (Join-Path '.claude' $eng))) -and (Test-Path (Join-Path $proj '.claude\hooks\HookMaker\_hooklib.ps1')) -and (Test-Path (Join-Path $proj (Join-Path '.claude' $engCfg))))
+        Check "$name codex runtime copy complete" ((Test-Path (Join-Path $proj (Join-Path '.codex' $eng))) -and (Test-Path (Join-Path $proj (Join-Path '.codex' $engCfg))))
         # The copied engine must actually RUN from inside the project with the
         # copied config: fire it once via stdin and require a clean exit.
-        $localEngine = Join-Path $proj '.claude\hooks\HookMaker\CrossProjectSyncHook\CrossProjectSyncHook.ps1'
-        $localCfg = Join-Path $proj '.claude\hooks\HookMaker\sync-hooks.json'
+        $localEngine = Join-Path $proj (Join-Path '.claude' $eng)
+        $localCfg = Join-Path $proj (Join-Path '.claude' $engCfg)
         $inE = Join-Path $Work ('eng-' + $name + '.json'); $outE = "$inE.out"; $errE = "$inE.err"
         [System.IO.File]::WriteAllText($inE, (@{ session_id = 'wiztest'; cwd = $proj; hook_event_name = 'SessionStart' } | ConvertTo-Json -Compress), (New-Object System.Text.UTF8Encoding $false))
         $pe = Start-Process pwsh -ArgumentList ('-NoLogo -NoProfile -NonInteractive -File "' + $localEngine + '" -ConfigPath "' + $localCfg + '" -Profile "' + $profId3 + '"') -RedirectStandardInput $inE -RedirectStandardOutput $outE -RedirectStandardError $errE -Wait -NoNewWindow -PassThru
         $errText = ''; if (Test-Path $errE) { $errText = ([System.IO.File]::ReadAllText($errE)).Trim() }
         Check "$name local engine copy runs cleanly" ($pe.ExitCode -eq 0 -and $errText -eq '')
     }
+
+    # =====================================================================
+    Write-Host '--- multi-select install (comma list, same settings) ---' -ForegroundColor Cyan
+    $cfg4 = Join-Path $Work 'cfg4.json'; New-Config $cfg4
+    $m = New-Proj 'Multi'
+    # main 1 -> sub 1 -> "2,3,4" (three advisory hooks, all before the engine at 5)
+    #        -> mode 1 (same) -> events SessionStart -> client Both -> target -> done -> start -> exit
+    $r = Invoke-Wizard -Config $cfg4 -Answers @('1', '1', '2,3,4', '1', '2', '1', $m, 'done', '', '0')
+    Check 'exit 0' ($r.Exit -eq 0)
+    Check 'no stderr' ($r.Err -eq '')
+    $installedFolders = @(Get-ChildItem -LiteralPath (Join-Path $m '.claude\hooks\HookMaker') -Directory -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Name)
+    Check 'three distinct hooks installed in one pass' ($installedFolders.Count -eq 3)
+    Check 'each installed under its own friendly folder' ($installedFolders -notcontains 'CrossProjectSyncHook' -and (@($installedFolders | Where-Object { $_ -match '-' }).Count -eq 3))
+    $codexFolders = @(Get-ChildItem -LiteralPath (Join-Path $m '.codex\hooks\HookMaker') -Directory -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Name)
+    Check 'batch honored client=Both (codex got all three too)' ($codexFolders.Count -eq 3)
+    Check 'summary lists all three (3 event lines)' (([regex]::Matches($r.Out, 'events:')).Count -ge 3)
+
+    Write-Host '--- multi-select: sync group cannot be batched ---' -ForegroundColor Cyan
+    # main 1 -> sub 1 -> "1,2" (rejected) -> 0 back -> 0 back to main -> 0 exit
+    $r2 = Invoke-Wizard -Config $cfg4 -Answers @('1', '1', '1,2', '0', '0', '0')
+    Check 'combining sync group (1) with hooks is rejected' ($r2.Out -match "can't be combined")
+    Check 'rejection still exits cleanly' ($r2.Exit -eq 0)
 }
 finally {
     if (-not $KeepArtifacts) {
