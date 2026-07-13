@@ -17,3 +17,7 @@ logs/
 
 # Local hook configuration (each hook's .env.example stays tracked)
 .env
+
+# The real routing config is machine-local (it holds your project paths).
+# It is auto-created from sync-hooks.sample.json on first wizard run.
+/sync-hooks.json

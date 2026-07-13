@@ -68,6 +68,7 @@ try {
     Check 'sync group is list item 1' ($r.Out -match '1\. Create or update a sync group')
     Check 'hook names are spaced' ($r.Out -match 'Ai Memory Check' -and $r.Out -match 'Rules Check')
     Check 'names not glued together' ($r.Out -notmatch 'AiMemoryCheck')
+    Check 'listing shows short descriptions' ($r.Out -match 'post-task: reminds to update \.ai memory' -and $r.Out -match 'pre-task: checks global \+ project rules')
     Check '_hooklib excluded from listing' ($r.Out -notmatch '_hooklib')
     Check 'full back suffix on sub-prompts' ($r.Out -match 'back=0' -and $r.Out -match 'quit=exit')
     Check 'main-menu suffix is quit-only' ($r.Out -match 'Select an option.*\{quit=exit\}')
@@ -89,7 +90,14 @@ try {
     $j2 = ''; if (Test-Path $claude2) { $j2 = [System.IO.File]::ReadAllText($claude2) }
     Check 'item 2 installed the FIRST real hook (AiMemoryCheck)' ($j2 -match 'AiMemoryCheck\.ps1')
     Check 'did not install a neighbor hook' ($j2 -notmatch 'CiStatusCheck')
-    Check 'Claude-only leaves codex untouched' (-not (Test-Path (Join-Path $t '.codex\hooks.json')))
+    Check 'Claude-only leaves codex untouched' (-not (Test-Path (Join-Path $t '.codex\hooks.json')) -and -not (Test-Path (Join-Path $t '.codex')))
+    # Self-contained install: the command points at a runtime copy INSIDE the
+    # project, and the copy (script + shared lib) actually exists there.
+    Check 'command points at the project-local copy' ($j2 -like '*hooks\\HookMaker\\AiMemoryCheck\\AiMemoryCheck.ps1*')
+    Check 'command does not reference the tool folder' ($j2 -notlike '*Hook Maker*')
+    Check 'runtime copy of the hook exists' (Test-Path (Join-Path $t '.claude\hooks\HookMaker\AiMemoryCheck\AiMemoryCheck.ps1'))
+    Check 'runtime copy of _hooklib exists' (Test-Path (Join-Path $t '.claude\hooks\HookMaker\_hooklib.ps1'))
+    Check 'runtime copy has no .env.example' (-not (Test-Path (Join-Path $t '.claude\hooks\HookMaker\AiMemoryCheck\.env.example')))
 
     # =====================================================================
     Write-Host '--- sync group with a real install (both clients) ---' -ForegroundColor Cyan
@@ -106,6 +114,19 @@ try {
         $cl = Join-Path $proj '.claude\settings.local.json'
         $jc = ''; if (Test-Path $cl) { $jc = [System.IO.File]::ReadAllText($cl) }
         Check "$name command points at engine + this profile" ($jc -match 'CrossProjectSyncHook\.ps1' -and $jc -match [regex]::Escape($profId3))
+        # Self-contained: engine + lib + routing config copied into BOTH clients.
+        Check "$name command uses the local engine copy" ($jc -like '*hooks\\HookMaker\\CrossProjectSyncHook\\CrossProjectSyncHook.ps1*' -and $jc -notlike '*Hook Maker*')
+        Check "$name claude runtime copy complete" ((Test-Path (Join-Path $proj '.claude\hooks\HookMaker\CrossProjectSyncHook\CrossProjectSyncHook.ps1')) -and (Test-Path (Join-Path $proj '.claude\hooks\HookMaker\_hooklib.ps1')) -and (Test-Path (Join-Path $proj '.claude\hooks\HookMaker\sync-hooks.json')))
+        Check "$name codex runtime copy complete" ((Test-Path (Join-Path $proj '.codex\hooks\HookMaker\CrossProjectSyncHook\CrossProjectSyncHook.ps1')) -and (Test-Path (Join-Path $proj '.codex\hooks\HookMaker\sync-hooks.json')))
+        # The copied engine must actually RUN from inside the project with the
+        # copied config: fire it once via stdin and require a clean exit.
+        $localEngine = Join-Path $proj '.claude\hooks\HookMaker\CrossProjectSyncHook\CrossProjectSyncHook.ps1'
+        $localCfg = Join-Path $proj '.claude\hooks\HookMaker\sync-hooks.json'
+        $inE = Join-Path $Work ('eng-' + $name + '.json'); $outE = "$inE.out"; $errE = "$inE.err"
+        [System.IO.File]::WriteAllText($inE, (@{ session_id = 'wiztest'; cwd = $proj; hook_event_name = 'SessionStart' } | ConvertTo-Json -Compress), (New-Object System.Text.UTF8Encoding $false))
+        $pe = Start-Process pwsh -ArgumentList ('-NoLogo -NoProfile -NonInteractive -File "' + $localEngine + '" -ConfigPath "' + $localCfg + '" -Profile "' + $profId3 + '"') -RedirectStandardInput $inE -RedirectStandardOutput $outE -RedirectStandardError $errE -Wait -NoNewWindow -PassThru
+        $errText = ''; if (Test-Path $errE) { $errText = ([System.IO.File]::ReadAllText($errE)).Trim() }
+        Check "$name local engine copy runs cleanly" ($pe.ExitCode -eq 0 -and $errText -eq '')
     }
 }
 finally {

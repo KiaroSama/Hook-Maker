@@ -11,7 +11,8 @@ starts the user's task.
 | Path | Purpose |
 | --- | --- |
 | `run.ps1` | The launcher — the only script in the root. Runs the wizard in the current terminal (PowerShell 7 first). |
-| `sync-hooks.json` | All sync profiles and routes. No project paths are hard-coded in the scripts. |
+| `sync-hooks.sample.json` | The tracked sample config (what CI validates). |
+| `sync-hooks.json` | Your real profiles and routes — **machine-local and git-ignored** (it holds your project paths). Auto-created from the sample on the first wizard run. |
 | `hooks/<Name>/` | One folder per hook: `<Name>.ps1` + `.env.example` (tracked) + `.env` (your local copy, git-ignored). |
 | `hooks/_hooklib.ps1` | Shared helpers (stdin/`.env`/hash/JSON) the shipped hooks dot-source; the `_` prefix keeps it out of the hook picker. |
 | `scripts/Setup-SyncGroup.ps1` | Interactive wizard: sync groups, hook creation/installs, profile listing, validation. |
@@ -19,8 +20,8 @@ starts the user's task.
 | `scripts/Validate-Config.ps1` | Validates `sync-hooks.json`. |
 | `scripts/Test-Engine.ps1` | Self-contained engine smoke test (18 assertions, runs under pwsh and PowerShell 5.1). |
 | `scripts/Test-GitHubHooks.ps1` | Offline test suite for the GitHub hooks (47 assertions; mocks git state and `gh`, no network/account). |
-| `scripts/Test-RulesCheck.ps1` | Offline test suite for the RulesCheck hook and per-client install targeting (28 assertions). |
-| `scripts/Test-Wizard.ps1` | Drives the interactive wizard end-to-end via stdin (menu, hook listing, client targeting, real installs) against temp projects (27 assertions). |
+| `scripts/Test-RulesCheck.ps1` | Offline test suite for the RulesCheck hook and per-client install targeting (31 assertions). |
+| `scripts/Test-Wizard.ps1` | Drives the interactive wizard end-to-end via stdin (menu, hook listing, client targeting, real self-contained installs) against temp projects (41 assertions). |
 | `logs/` | Wizard execution logs (created on demand, not committed). |
 
 ## Shipped hooks
@@ -84,28 +85,36 @@ pick the client, review the summary and confirm (Enter = yes). The wizard:
 1. Creates missing `.ai` directories.
 2. Writes a full-mesh profile — every project becomes a sync destination of every other.
 3. Validates the configuration.
-4. Installs the hook **inside each project** (`.claude/settings.local.json` for Claude,
-   `.codex/hooks.json` for Codex) — not in your global settings, so only these projects carry it.
+4. Installs the hook **inside each project** as a self-contained runtime copy
+   (`.claude/hooks/HookMaker/` + `settings.local.json` for Claude, `.codex/hooks/HookMaker/` +
+   `hooks.json` for Codex) — not in your global settings, so only these projects carry it, and
+   nothing depends on where the Hook Maker folder lives.
 
 Re-running the wizard with the same paths updates the same profile (its id is a hash of the
 sorted project roots), so existing sync state is preserved.
 
-## Where the hook lives and how it reads its config
+## Where the hook lives — installs are self-contained
 
-The wizard installs the hook **per project** (local scope):
+Every install **copies the hook runtime into the target itself** (Kiro-style): the script, the
+shared `_hooklib.ps1`, its `.env` (if present) and — for the sync engine — a copy of the routing
+config land in
 
-- Claude Code reads it from `<project>/.claude/settings.local.json` (auto-gitignored; the command
-  holds a machine-specific absolute path, so it must not be committed).
-- Codex reads it from `<project>/.codex/hooks.json` (loads only after you trust it via `/hooks`).
+- `<project>/.claude/hooks/HookMaker/…` for Claude (registered in
+  `<project>/.claude/settings.local.json`, auto-gitignored — the command holds a machine-specific
+  absolute path), and
+- `<project>/.codex/hooks/HookMaker/…` for Codex (registered in `<project>/.codex/hooks.json`;
+  loads only after you trust it via `/hooks`),
 
-Both entries point at the same engine (`hooks/CrossProjectSyncHook.ps1`) and the same routing
-file (`sync-hooks.json`, passed via `-ConfigPath`). So *which projects sync* is decided entirely
-by `sync-hooks.json`; the per-project settings file only decides *where the hook is registered*.
-If a settings file already has other content, it is preserved: the installer merges the hook in
-(deduplicated by exact command) and writes a timestamped backup first.
+and the registered command points at that copy. **Moving, renaming, or deleting the Hook Maker
+folder never breaks an installed hook.** The flip side: copies do not auto-update — after
+changing a hook, its `.env`, or a sync group, re-run the install (or the sync-group flow) and
+the copies are refreshed; a re-install *replaces* the hook's old registration (even one that
+pointed into the tool folder) instead of duplicating it. Other content in the settings files is
+preserved, and a timestamped backup is written first.
 
-Global install is still available for scripting: `scripts/Install-Hook.ps1` with no
-`-TargetProject` writes to `~/.claude/settings.json` and `~/.codex/hooks.json` instead.
+Global install works the same way: `scripts/Install-Hook.ps1` with no `-TargetProject` copies to
+`~/.claude/hooks/HookMaker/` + `~/.codex/hooks/HookMaker/` and registers in
+`~/.claude/settings.json` and `~/.codex/hooks.json`.
 
 ## How syncing works
 
