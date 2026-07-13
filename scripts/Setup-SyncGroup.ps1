@@ -1334,7 +1334,7 @@ function Invoke-InstallExistingHook {
             Write-Field '     projects' (@($plan.Config.Targets | ForEach-Object { $_.Name }) -join ', ')
         }
         Write-Host ''
-        Write-Field 'install' 'self-contained copy per project (.claude/.codex hooks\HookMaker\<name>\)'
+        Write-Field 'install' 'self-contained copy per project (.claude/.codex hooks\Hook-Maker\<name>\)'
         Write-PhaseHeader 'Confirm' $C.Confirm '-'
         $confirm = Read-YesNo (New-QuestionPrompt 'Start now?' 'y/n' 'y') $true 'start multi hook install'
         if ($null -eq $confirm) { continue }
