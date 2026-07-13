@@ -15,10 +15,10 @@ jobs:
       - uses: actions/checkout@v7
 
       # The real sync-hooks.json is machine-local (git-ignored); the tracked
-      # sample is what ships, so that is what CI validates.
-      - name: Validate sync-hooks.sample.json
+      # example is what ships, so that is what CI validates.
+      - name: Validate sync-hooks.example.json
         shell: pwsh
-        run: .\scripts\Validate-Config.ps1 -ConfigPath .\sync-hooks.sample.json
+        run: .\scripts\Validate-Config.ps1 -ConfigPath .\sync-hooks.example.json
 
       - name: Parse-check all PowerShell scripts
         shell: pwsh

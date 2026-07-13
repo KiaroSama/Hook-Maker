@@ -17,6 +17,9 @@ $ErrorActionPreference = 'Stop'
 
 $Utf8NoBom = [System.Text.UTF8Encoding]::new($false)
 $ToolRoot = Split-Path -Parent $PSScriptRoot
+# Shared: Get-HookFriendlyName (folder/file naming). This is install-time only;
+# the runtime hooks ignore it.
+. (Join-Path $ToolRoot 'hooks\_hooklib.ps1')
 
 if (-not [string]::IsNullOrWhiteSpace($CustomHook)) {
     if (-not [string]::IsNullOrWhiteSpace($Profile)) {
@@ -37,6 +40,17 @@ else {
     $ConfigPath = [System.IO.Path]::GetFullPath([Environment]::ExpandEnvironmentVariables($ConfigPath))
 }
 
+# Internal name (source folder / file) and the friendly, hyphenated name used
+# for the installed copy's folder + script file so it is easy to identify.
+$SourceDir = Split-Path -Parent $HookScript
+if ((Split-Path -Leaf $SourceDir) -ieq 'hooks') {
+    $SourceName = [System.IO.Path]::GetFileNameWithoutExtension($HookScript)
+}
+else {
+    $SourceName = Split-Path -Leaf $SourceDir
+}
+$FriendlyName = Get-HookFriendlyName $SourceName
+
 if (-not [string]::IsNullOrWhiteSpace($TargetProject)) {
     $projectRoot = [System.IO.Path]::GetFullPath([Environment]::ExpandEnvironmentVariables($TargetProject))
     # settings.local.json (not settings.json): the command holds a machine-specific
@@ -54,39 +68,57 @@ $Timestamp = (Get-Date).ToString('yyyyMMdd-HHmmss')
 
 # Installs are SELF-CONTAINED: the hook runtime (script, shared _hooklib.ps1,
 # its .env, and - for the sync engine - the routing config) is COPIED into the
-# scope's client folder (<scope>\.claude|.codex\hooks\HookMaker\), and the
-# registered command points at that copy. Moving or deleting the Hook Maker
-# folder never breaks an installed hook; re-run the install to refresh copies.
+# scope's client folder (<scope>\.claude|.codex\hooks\HookMaker\<Friendly-Name>\),
+# and the registered command points at that copy. Moving or deleting the Hook
+# Maker folder never breaks an installed hook; re-run the install to refresh.
+# The copy's folder + script use the friendly hyphenated name for easy ID.
 function Copy-HookRuntime {
     param([Parameter(Mandatory = $true)][string]$ClientDir)
 
     $runtimeRoot = Join-Path $ClientDir 'hooks\HookMaker'
     New-Item -ItemType Directory -Path $runtimeRoot -Force | Out-Null
+    # _hooklib is shared by every hook in this scope; it sits at the HookMaker
+    # root so each copied script's "..\_hooklib.ps1" dot-source resolves.
     $hookLib = Join-Path $ToolRoot 'hooks\_hooklib.ps1'
     if (Test-Path -LiteralPath $hookLib -PathType Leaf) {
         Copy-Item -LiteralPath $hookLib -Destination $runtimeRoot -Force
     }
-    $sourceDir = Split-Path -Parent $HookScript
-    if ((Split-Path -Leaf $sourceDir) -ieq 'hooks') {
-        # Loose script directly in hooks\ - copy just the file into its own folder.
-        $destDir = Join-Path $runtimeRoot ([System.IO.Path]::GetFileNameWithoutExtension($HookScript))
-        New-Item -ItemType Directory -Path $destDir -Force | Out-Null
-        Copy-Item -LiteralPath $HookScript -Destination $destDir -Force
+
+    # Clean this hook's own folder (fresh copy) and any legacy internal-name
+    # folder / root config from an older layout.
+    $destDir = Join-Path $runtimeRoot $FriendlyName
+    if (Test-Path -LiteralPath $destDir) { Remove-Item -LiteralPath $destDir -Recurse -Force }
+    New-Item -ItemType Directory -Path $destDir -Force | Out-Null
+    $legacyDir = Join-Path $runtimeRoot $SourceName
+    if ($SourceName -ne $FriendlyName -and (Test-Path -LiteralPath $legacyDir)) {
+        Remove-Item -LiteralPath $legacyDir -Recurse -Force
+    }
+    $legacyRootConfig = Join-Path $runtimeRoot 'sync-hooks.json'
+    if (Test-Path -LiteralPath $legacyRootConfig) { Remove-Item -LiteralPath $legacyRootConfig -Force }
+
+    $friendlyScript = Join-Path $destDir ($FriendlyName + '.ps1')
+    if ((Split-Path -Leaf $SourceDir) -ieq 'hooks') {
+        # Loose script directly in hooks\ - just the file, under the friendly name.
+        Copy-Item -LiteralPath $HookScript -Destination $friendlyScript -Force
     }
     else {
-        $destDir = Join-Path $runtimeRoot (Split-Path -Leaf $sourceDir)
-        New-Item -ItemType Directory -Path $destDir -Force | Out-Null
-        Copy-Item -Path (Join-Path $sourceDir '*') -Destination $destDir -Recurse -Force
-        # The template only matters in the tool folder, not in the runtime copy.
+        # One folder per hook: copy its contents (e.g. a real .env), drop the
+        # template, and rename the main script to the friendly name.
+        Copy-Item -Path (Join-Path $SourceDir '*') -Destination $destDir -Recurse -Force
         Remove-Item -LiteralPath (Join-Path $destDir '.env.example') -Force -ErrorAction SilentlyContinue
+        $copiedOriginal = Join-Path $destDir (Split-Path -Leaf $HookScript)
+        if ((Test-Path -LiteralPath $copiedOriginal) -and ($copiedOriginal -ne $friendlyScript)) {
+            Move-Item -LiteralPath $copiedOriginal -Destination $friendlyScript -Force
+        }
     }
+
     $localConfig = ''
     if ([string]::IsNullOrWhiteSpace($CustomHook)) {
-        $localConfig = Join-Path $runtimeRoot 'sync-hooks.json'
+        $localConfig = Join-Path $destDir 'sync-hooks.json'
         Copy-Item -LiteralPath $ConfigPath -Destination $localConfig -Force
     }
     return [pscustomobject]@{
-        Script = Join-Path $destDir (Split-Path -Leaf $HookScript)
+        Script = $friendlyScript
         Config = $localConfig
     }
 }
@@ -108,9 +140,11 @@ function New-HookCommands {
     }
 }
 
-# Removes existing handlers for the SAME hook (same script leaf and, for the
-# engine, the same -Profile) so a re-install replaces the old registration -
-# including entries from older versions that pointed into the tool folder.
+# Removes existing handlers for the SAME hook so a re-install replaces the old
+# registration instead of duplicating it. Matches the command by either the new
+# friendly script leaf or the legacy internal-name leaf (so entries from older
+# versions - including the flat tool-folder layout - are migrated), and, for the
+# engine, the same -Profile.
 function Remove-StaleHandlers {
     param(
         [Parameter(Mandatory = $true)]$HooksObject,
@@ -120,7 +154,9 @@ function Remove-StaleHandlers {
     if ($null -eq $HooksObject.PSObject.Properties[$EventName]) {
         return
     }
-    $leafMarker = '\' + (Split-Path -Leaf $HookScript) + '"'
+    # Parenthesize each element: comma binds tighter than '+', so without the
+    # parens this collapses into a single mangled marker and matches nothing.
+    $leafMarkers = @(('\' + $FriendlyName + '.ps1"'), ('\' + $SourceName + '.ps1"'))
     $profileMarker = ''
     if (-not [string]::IsNullOrWhiteSpace($Profile)) {
         $profileMarker = '-Profile "' + $Profile + '"'
@@ -133,7 +169,11 @@ function Remove-StaleHandlers {
             if ($null -ne $handler.PSObject.Properties['command']) {
                 $command = [string]$handler.command
             }
-            $sameHook = $command.Contains($leafMarker) -and ($profileMarker -eq '' -or $command.Contains($profileMarker))
+            $matchesLeaf = $false
+            foreach ($marker in $leafMarkers) {
+                if ($command.Contains($marker)) { $matchesLeaf = $true; break }
+            }
+            $sameHook = $matchesLeaf -and ($profileMarker -eq '' -or $command.Contains($profileMarker))
             if (-not $sameHook) {
                 $keptHandlers += $handler
             }
