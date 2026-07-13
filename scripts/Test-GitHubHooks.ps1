@@ -17,9 +17,9 @@ $ErrorActionPreference = 'Stop'
 
 $ScriptRoot = $PSScriptRoot
 $HooksRoot = Join-Path (Split-Path -Parent $ScriptRoot) 'hooks'
-$DependabotHook = Join-Path $HooksRoot 'DependabotCheck\DependabotCheck.ps1'
-$CiHook = Join-Path $HooksRoot 'CiStatusCheck\CiStatusCheck.ps1'
-$BaselineHook = Join-Path $HooksRoot 'GithubBaselineCheck\GithubBaselineCheck.ps1'
+$DependabotHook = Join-Path $HooksRoot 'Dependabot-Check\Dependabot-Check.ps1'
+$CiHook = Join-Path $HooksRoot 'Ci-Status-Check\Ci-Status-Check.ps1'
+$BaselineHook = Join-Path $HooksRoot 'Github-Baseline-Check\Github-Baseline-Check.ps1'
 foreach ($hook in @($DependabotHook, $CiHook, $BaselineHook)) {
     if (-not (Test-Path -LiteralPath $hook -PathType Leaf)) {
         Write-Host "Hook not found: $hook" -ForegroundColor Red

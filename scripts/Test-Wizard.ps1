@@ -71,6 +71,7 @@ try {
     Check 'engine shows the friendly name' ($r.Out -match 'Cross-Project-\.ai-Knowledge-Sync')
     Check 'listing shows timing tags' ($r.Out -match '\[post-task\]' -and $r.Out -match '\[pre-task\]')
     Check 'listing shows short descriptions' ($r.Out -match 'reminds to update \.ai memory' -and $r.Out -match 'checks global \+ project rules')
+    Check 'menu parts are pipe-separated' ($r.Out -match 'Create or update a sync group \| \[pre-task\] \| cross-project \.ai knowledge sync')
     Check '_hooklib excluded from listing' ($r.Out -notmatch '_hooklib')
     Check 'full back suffix on sub-prompts' ($r.Out -match 'back=0' -and $r.Out -match 'quit=exit')
     Check 'main-menu suffix is quit-only' ($r.Out -match 'Select an option.*\{quit=exit\}')
@@ -83,7 +84,7 @@ try {
     Write-Host '--- install a real hook (list offset + Claude-only targeting) ---' -ForegroundColor Cyan
     $cfg2 = Join-Path $Work 'cfg2.json'; New-Config $cfg2
     $t = New-Proj 'T2'
-    # main 1 -> sub 1 (install existing) -> item 2 (first real hook = AiMemoryCheck) -> events SessionStart -> client Claude -> target -> done -> start
+    # main 1 -> sub 1 (install existing) -> item 2 (first real hook = Ai-Memory-Check) -> events SessionStart -> client Claude -> target -> done -> start
     $r = Invoke-Wizard -Config $cfg2 -Answers @('1', '1', '2', '2', '2', $t, 'done', '', '0')
     Check 'exit 0' ($r.Exit -eq 0)
     Check 'no stderr' ($r.Err -eq '')
@@ -145,7 +146,7 @@ try {
     Check 'no stderr' ($r.Err -eq '')
     $installedFolders = @(Get-ChildItem -LiteralPath (Join-Path $m '.claude\hooks\HookMaker') -Directory -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Name)
     Check 'three distinct hooks installed in one pass' ($installedFolders.Count -eq 3)
-    Check 'each installed under its own friendly folder' ($installedFolders -notcontains 'CrossProjectSyncHook' -and (@($installedFolders | Where-Object { $_ -match '-' }).Count -eq 3))
+    Check 'each installed under its own friendly folder' ($installedFolders -notcontains 'Cross-Project-.ai-Knowledge-Sync' -and (@($installedFolders | Where-Object { $_ -match '-' }).Count -eq 3))
     $codexFolders = @(Get-ChildItem -LiteralPath (Join-Path $m '.codex\hooks\HookMaker') -Directory -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Name)
     Check 'batch honored client=Both (codex got all three too)' ($codexFolders.Count -eq 3)
     Check 'summary lists all three (3 event lines)' (([regex]::Matches($r.Out, 'events:')).Count -ge 3)

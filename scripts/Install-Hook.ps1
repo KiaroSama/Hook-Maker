@@ -31,7 +31,7 @@ if (-not [string]::IsNullOrWhiteSpace($CustomHook)) {
     }
 }
 else {
-    $HookScript = [System.IO.Path]::GetFullPath((Join-Path $ToolRoot 'hooks\CrossProjectSyncHook\CrossProjectSyncHook.ps1'))
+    $HookScript = [System.IO.Path]::GetFullPath((Join-Path $ToolRoot 'hooks\Cross-Project-.ai-Knowledge-Sync\Cross-Project-.ai-Knowledge-Sync.ps1'))
 }
 if ([string]::IsNullOrWhiteSpace($ConfigPath)) {
     $ConfigPath = [System.IO.Path]::GetFullPath((Join-Path $ToolRoot 'sync-hooks.json'))

@@ -162,18 +162,18 @@ function Get-ExampleText {
 # which turns the internal name into the hyphenated display name, lives in
 # _hooklib.ps1 so the installer shares it.)
 $script:HookMeta = @{
-    CrossProjectSyncHook = @{ When = 'pre';  Text = 'the sync engine - normally set up via the sync group above' }
-    AiMemoryCheck        = @{ When = 'post'; Text = 'reminds to update .ai memory when it is stale' }
-    CiStatusCheck        = @{ When = 'post'; Text = 'verifies GitHub checks of the exact pushed commit' }
-    CloudflareDeploy     = @{ When = 'post'; Text = 'suggests deploying in Cloudflare Workers projects' }
-    DependabotCheck      = @{ When = 'pre';  Text = 'reports pending Dependabot pull requests' }
-    GithubBaselineCheck  = @{ When = 'pre';  Text = 'checks the .github CI/dependabot baseline' }
-    GitSyncCheck         = @{ When = 'both'; Text = 'warns when out of sync with the git remote' }
-    GraphUpdateCheck     = @{ When = 'post'; Text = 'suggests graphify update when the graph is stale' }
-    LargeFileCheck       = @{ When = 'both'; Text = 'small-files policy + oversized-file scan' }
-    McpUsageCheck        = @{ When = 'pre';  Text = 'reminder to consider MCP servers/tools' }
-    RulesCheck           = @{ When = 'pre';  Text = 'checks global + project rules were read' }
-    SkillsCheck          = @{ When = 'pre';  Text = 'skill-policy reminder with the copied skills' }
+    'Cross-Project-.ai-Knowledge-Sync' = @{ When = 'pre';  Text = 'the sync engine - normally set up via the sync group above' }
+    'Ai-Memory-Check'                  = @{ When = 'post'; Text = 'reminds to update .ai memory when it is stale' }
+    'Ci-Status-Check'                  = @{ When = 'post'; Text = 'verifies GitHub checks of the exact pushed commit' }
+    'Cloudflare-Deploy'                = @{ When = 'post'; Text = 'suggests deploying in Cloudflare Workers projects' }
+    'Dependabot-Check'                 = @{ When = 'pre';  Text = 'reports pending Dependabot pull requests' }
+    'Github-Baseline-Check'            = @{ When = 'pre';  Text = 'checks the .github CI/dependabot baseline' }
+    'Git-Sync-Check'                   = @{ When = 'both'; Text = 'warns when out of sync with the git remote' }
+    'Graph-Update-Check'               = @{ When = 'post'; Text = 'suggests graphify update when the graph is stale' }
+    'Large-File-Check'                 = @{ When = 'both'; Text = 'small-files policy + oversized-file scan' }
+    'Mcp-Usage-Check'                  = @{ When = 'pre';  Text = 'reminder to consider MCP servers/tools' }
+    'Rules-Check'                      = @{ When = 'pre';  Text = 'checks global + project rules were read' }
+    'Skills-Check'                     = @{ When = 'pre';  Text = 'skill-policy reminder with the copied skills' }
 }
 # The "[pre-task]" / "[post-task]" tag, colored by phase (a different color than
 # the description, FFmWiz-style, so timing reads at a glance).
@@ -194,17 +194,21 @@ function Get-HookDescriptionText {
     }
     return ''
 }
-# A hook menu line: "N. Friendly-Name  [timing]  description" with the timing
-# tag and the description each in their own color for readability.
+# The " | " separator between menu-line parts (muted, so the parts stand out).
+$script:MenuSep = "$Esc[38;5;240m | $($C.Reset)"
+
+# A hook menu line: "N. Friendly-Name | [timing] | description", each part in
+# its own color and separated by a pipe for readability.
 function Write-HookMenuLine {
     param([int]$Number, [string]$Name, [string]$ExtraSuffix = '')
-    $line = '  ' + (Get-Painted ($Number.ToString() + '.') $C.LightBlue) + ' ' + (Get-Painted (Get-HookFriendlyName $Name) $C.Bold)
+    $parts = New-Object System.Collections.Generic.List[string]
+    [void]$parts.Add((Get-Painted (Get-HookFriendlyName $Name) $C.Bold))
     $tag = Get-HookTimingTag $Name
-    if ($tag -ne '') { $line += '  ' + $tag }
+    if ($tag -ne '') { [void]$parts.Add($tag) }
     $desc = Get-HookDescriptionText $Name
-    if ($desc -ne '') { $line += '  ' + (Get-Painted $desc $C.HintYellow) }
-    if ($ExtraSuffix -ne '') { $line += ' ' + (Get-Painted $ExtraSuffix $C.Gray) }
-    Write-Host $line
+    if ($desc -ne '') { [void]$parts.Add((Get-Painted $desc $C.HintYellow)) }
+    if ($ExtraSuffix -ne '') { [void]$parts.Add((Get-Painted $ExtraSuffix $C.Gray)) }
+    Write-Host ('  ' + (Get-Painted ($Number.ToString() + '.') $C.LightBlue) + ' ' + ($parts.ToArray() -join $script:MenuSep))
 }
 
 # --------------------------------------------------------------- logging ----
@@ -651,10 +655,10 @@ function Invoke-CreateGroup {
         $events = @($config.defaults.events)
     }
 
-    # Optional config mode: hooks\CrossProjectSyncHook\.env can predefine the
-    # group's project paths (SYNC_PROJECTS) so nothing has to be typed.
+    # Optional config mode: the engine's .env can predefine the group's project
+    # paths (SYNC_PROJECTS) so nothing has to be typed.
     $configProjects = @()
-    $engineEnv = Read-EnvFile (Join-Path $HooksDir 'CrossProjectSyncHook\.env')
+    $engineEnv = Read-EnvFile (Join-Path $HooksDir 'Cross-Project-.ai-Knowledge-Sync\.env')
     if ($engineEnv.ContainsKey('SYNC_PROJECTS') -and $engineEnv['SYNC_PROJECTS'] -ne '') {
         foreach ($path in @($engineEnv['SYNC_PROJECTS'].Split(';') | ForEach-Object { $_.Trim().Trim('"') } | Where-Object { $_ -ne '' })) {
             try {
@@ -689,7 +693,7 @@ function Invoke-CreateGroup {
         if ($stage -eq 0) {
             $projects = $null
             if ($configProjects.Count -ge 2) {
-                $useConfig = Read-YesNo (New-QuestionPrompt 'Use the project paths from the config?' ($configProjects.Count.ToString() + ' path(s) in hooks\CrossProjectSyncHook\.env') 'y') $true 'use sync config'
+                $useConfig = Read-YesNo (New-QuestionPrompt 'Use the project paths from the config?' ($configProjects.Count.ToString() + ' path(s) in the engine .env') 'y') $true 'use sync config'
                 if ($null -eq $useConfig) {
                     return
                 }
@@ -942,9 +946,11 @@ exit 0
 function Get-HookBody-GitSync {
     param([string]$HookName)
 
-    # Reuse the shipped GitSyncCheck hook verbatim (renamed) so the template
-    # never drifts from the maintained implementation.
-    $shipped = Join-Path $HooksDir 'GitSyncCheck\GitSyncCheck.ps1'
+    # Reuse the shipped Git-Sync-Check hook verbatim (renamed) so the template
+    # never drifts from the maintained implementation. Its file body still uses
+    # the identifier 'GitSyncCheck' internally (state key, comments), which is
+    # what gets rewritten to the new hook name.
+    $shipped = Join-Path $HooksDir 'Git-Sync-Check\Git-Sync-Check.ps1'
     $content = [System.IO.File]::ReadAllText($shipped)
     return $content.Replace('GitSyncCheck', $HookName).Replace("`r`n", "`n")
 }
@@ -1247,7 +1253,7 @@ function Invoke-InstallExistingHook {
     while ($true) {
         # ---- selection: a single number, or a comma list ----
         Write-MenuTitle 'Available hooks (hooks\):'
-        Write-Host ('  ' + (Get-Painted '1.' $C.LightBlue) + ' ' + (Get-Painted 'Create or update a sync group' $C.Bold) + '  ' + (Get-Painted '[pre-task]' $C.Mint) + '  ' + (Get-Painted 'cross-project .ai knowledge sync' $C.HintYellow))
+        Write-Host ('  ' + (Get-Painted '1.' $C.LightBlue) + ' ' + (Get-Painted 'Create or update a sync group' $C.Bold) + $script:MenuSep + (Get-Painted '[pre-task]' $C.Mint) + $script:MenuSep + (Get-Painted 'cross-project .ai knowledge sync' $C.HintYellow))
         for ($i = 0; $i -lt $hookFiles.Count; $i++) {
             Write-HookMenuLine ($i + 2) $hookFiles[$i].Name
         }

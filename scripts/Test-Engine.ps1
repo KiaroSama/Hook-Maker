@@ -13,7 +13,7 @@ Set-StrictMode -Version 2.0
 $ErrorActionPreference = 'Stop'
 
 $ScriptRoot = $PSScriptRoot
-$Engine = Join-Path (Split-Path -Parent $ScriptRoot) 'hooks\CrossProjectSyncHook\CrossProjectSyncHook.ps1'
+$Engine = Join-Path (Split-Path -Parent $ScriptRoot) 'hooks\Cross-Project-.ai-Knowledge-Sync\Cross-Project-.ai-Knowledge-Sync.ps1'
 if (-not (Test-Path -LiteralPath $Engine -PathType Leaf)) {
     Write-Host "Engine not found at: $Engine" -ForegroundColor Red
     exit 1

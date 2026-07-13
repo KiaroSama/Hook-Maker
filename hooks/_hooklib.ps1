@@ -87,13 +87,12 @@ function Write-JsonFileAtomic {
     Move-Item -LiteralPath $temporaryPath -Destination $Path -Force
 }
 
-# Friendly, hyphen-separated hook name used for BOTH the menu display and the
-# installed runtime folder/script names, so a copy is easy to identify. A few
-# hooks get a nicer explicit label; everything else is its PascalCase name
-# split on word boundaries and joined with '-' (McpUsageCheck -> Mcp-Usage-Check).
-$script:HookFriendlyOverrides = @{
-    CrossProjectSyncHook = 'Cross-Project-.ai-Knowledge-Sync'
-}
+# Friendly, hyphen-separated hook name. The shipped hook folders are already
+# hyphenated (Cross-Project-.ai-Knowledge-Sync, Mcp-Usage-Check, ...), so this
+# is a no-op for them; it still tidies a user's PascalCase custom-hook name
+# (MyContextHook -> My-Context-Hook) for the menu + the installed copy folder.
+# Explicit overrides can rename a folder to a nicer label if ever needed.
+$script:HookFriendlyOverrides = @{}
 function Get-HookFriendlyName {
     param([Parameter(Mandatory = $true)][string]$Name)
     if ($script:HookFriendlyOverrides.ContainsKey($Name)) {

@@ -20,26 +20,26 @@ starts the user's task.
 | `scripts/Validate-Config.ps1` | Validates `sync-hooks.json`. |
 | `scripts/Test-Engine.ps1` | Self-contained engine smoke test (18 assertions, runs under pwsh and PowerShell 5.1). |
 | `scripts/Test-GitHubHooks.ps1` | Offline test suite for the GitHub hooks (47 assertions; mocks git state and `gh`, no network/account). |
-| `scripts/Test-RulesCheck.ps1` | Offline test suite for the RulesCheck hook and per-client install targeting (31 assertions). |
-| `scripts/Test-Wizard.ps1` | Drives the interactive wizard end-to-end via stdin (menu, hook listing, client targeting, real self-contained installs) against temp projects (41 assertions). |
+| `scripts/Test-RulesCheck.ps1` | Offline test suite for the Rules-Check hook and per-client install targeting (33 assertions). |
+| `scripts/Test-Wizard.ps1` | Drives the interactive wizard end-to-end via stdin (menu, hook listing, comma multi-select, client targeting, real self-contained installs) against temp projects (52 assertions). |
 | `logs/` | Wizard execution logs (created on demand, not committed). |
 
 ## Shipped hooks
 
 | Hook | Runs | What it does |
 | --- | --- | --- |
-| `CrossProjectSyncHook` | pre-task (SessionStart, UserPromptSubmit) | The sync engine: stages changed `.ai` knowledge from related projects for review. |
-| `GitSyncCheck` | pre-task + post-task (Stop) | Reports uncommitted/unpushed/unpulled work; on Stop asks the AI to decide whether to sync now. |
-| `AiMemoryCheck` | post-task (Stop) | If `.ai/memory.md` is older than the latest work, asks the AI to update the memory per the policy — or finish if nothing durable was learned. |
-| `GraphUpdateCheck` | post-task (Stop) | If `graphify-out/graph.json` is stale, asks the AI to decide whether `graphify update .` is warranted. |
-| `CloudflareDeploy` | post-task (Stop) | In Workers projects (wrangler config present), asks the AI to deploy when the result should go live. |
-| `SkillsCheck` | pre-task (SessionStart) | Compact Skill Policy reminder listing the copied skills, the `.ai/SKILLS.md` record, and the library. |
-| `McpUsageCheck` | pre-task (SessionStart) | Compact reminder to consider MCP servers/tools (docs lookup, browser, DB) when they materially help. |
-| `LargeFileCheck` | pre-task + post-task (Stop) | Pre-task: reminds to prefer small, multi-part files (split by responsibility, ~500-800 lines = split signal). Post-task: scans for oversized source files and asks the AI whether a split is safe and worthwhile. |
-| `DependabotCheck` | pre-task (SessionStart) | In a GitHub repo, reports pending pull requests from the verified `app/dependabot` author (with exact head SHA, classification, merge/check state) so they are reviewed before unrelated work. Detection only — never merges. |
-| `CiStatusCheck` | post-task (Stop) | After a push, blocks "done" until the GitHub checks for the **exact** pushed commit are verified; distinguishes pending / failed / infra-flaky and points at the failed job. |
-| `GithubBaselineCheck` | pre-task (SessionStart) | Checks the `.github` automation baseline against the project's real structure (CI workflow, `dependabot.yml` coverage per ecosystem/dir, optional CodeQL) and reports concrete gaps. |
-| `RulesCheck` | pre-task (SessionStart, UserPromptSubmit) | Verifies the configured rules were read before the task starts: the **global** rules directory (`~\.claude\rules` / `~\.codex\rules`) plus the current project's **local** rules directory (`<project>\.claude\rules` / `<project>\.codex\rules`). First check lists all rules files; afterwards it stays silent until a rules file is added/changed/removed, then reports exactly what moved. Detects the running client automatically (Claude Code exports `CLAUDE_PROJECT_DIR` on hook processes; Codex does not). |
+| `Cross-Project-.ai-Knowledge-Sync` | pre-task (SessionStart, UserPromptSubmit) | The sync engine: stages changed `.ai` knowledge from related projects for review. |
+| `Git-Sync-Check` | pre-task + post-task (Stop) | Reports uncommitted/unpushed/unpulled work; on Stop asks the AI to decide whether to sync now. |
+| `Ai-Memory-Check` | post-task (Stop) | If `.ai/memory.md` is older than the latest work, asks the AI to update the memory per the policy — or finish if nothing durable was learned. |
+| `Graph-Update-Check` | post-task (Stop) | If `graphify-out/graph.json` is stale, asks the AI to decide whether `graphify update .` is warranted. |
+| `Cloudflare-Deploy` | post-task (Stop) | In Workers projects (wrangler config present), asks the AI to deploy when the result should go live. |
+| `Skills-Check` | pre-task (SessionStart) | Compact Skill Policy reminder listing the copied skills, the `.ai/SKILLS.md` record, and the library. |
+| `Mcp-Usage-Check` | pre-task (SessionStart) | Compact reminder to consider MCP servers/tools (docs lookup, browser, DB) when they materially help. |
+| `Large-File-Check` | pre-task + post-task (Stop) | Pre-task: reminds to prefer small, multi-part files (split by responsibility, ~500-800 lines = split signal). Post-task: scans for oversized source files and asks the AI whether a split is safe and worthwhile. |
+| `Dependabot-Check` | pre-task (SessionStart) | In a GitHub repo, reports pending pull requests from the verified `app/dependabot` author (with exact head SHA, classification, merge/check state) so they are reviewed before unrelated work. Detection only — never merges. |
+| `Ci-Status-Check` | post-task (Stop) | After a push, blocks "done" until the GitHub checks for the **exact** pushed commit are verified; distinguishes pending / failed / infra-flaky and points at the failed job. |
+| `Github-Baseline-Check` | pre-task (SessionStart) | Checks the `.github` automation baseline against the project's real structure (CI workflow, `dependabot.yml` coverage per ecosystem/dir, optional CodeQL) and reports concrete gaps. |
+| `Rules-Check` | pre-task (SessionStart, UserPromptSubmit) | Verifies the configured rules were read before the task starts: the **global** rules directory (`~\.claude\rules` / `~\.codex\rules`) plus the current project's **local** rules directory (`<project>\.claude\rules` / `<project>\.codex\rules`). First check lists all rules files; afterwards it stays silent until a rules file is added/changed/removed, then reports exactly what moved. Detects the running client automatically (Claude Code exports `CLAUDE_PROJECT_DIR` on hook processes; Codex does not). |
 
 All advisory hooks are token-efficient by design: they stay **silent** unless a deterministic
 signal fires (staleness, wrangler config, out-of-sync git, pending Dependabot PR, unverified
@@ -52,7 +52,7 @@ a remote, `gh`, authentication, or network access is missing.
 
 Each hook folder ships a tracked `.env.example`. Copy it to `.env` (git-ignored) and fill in
 your local values — most importantly `TARGET_PROJECTS` (semicolon-separated project roots),
-`EVENTS`, and `CLIENTS` (`Both`, `Claude`, or `Codex`). Then use menu `2 -> 3` (*Install from
+`EVENTS`, and `CLIENTS` (`Both`, `Claude`, or `Codex`). Then use menu `1 -> 3` (*Install from
 config*) and the wizard installs the hook into all listed projects **without asking any
 questions**. The sync engine's `.env` supports `SYNC_PROJECTS`, which the sync-group flow offers
 to use instead of asking for paths.
@@ -112,7 +112,7 @@ config land in
   `<project>/.codex/hooks.json`; loads only after you trust it via `/hooks`),
 
 where `<Friendly-Name>` is the hook's readable, hyphenated name (e.g. the sync engine lands in
-`HookMaker/Cross-Project-.ai-Knowledge-Sync/`, `McpUsageCheck` in `HookMaker/Mcp-Usage-Check/`),
+`HookMaker/Cross-Project-.ai-Knowledge-Sync/`, `Mcp-Usage-Check` in `HookMaker/Mcp-Usage-Check/`),
 
 and the registered command points at that copy. **Moving, renaming, or deleting the Hook Maker
 folder never breaks an installed hook.** The flip side: copies do not auto-update — after
@@ -149,8 +149,8 @@ installed right away). Templates:
    and non-git projects, and falls back to the last fetched state when offline.
 5. **Empty skeleton** — a commented template for your own logic.
 
-Template 4 is also shipped ready-made as `hooks/GitSyncCheck.ps1` if you prefer to install it
-directly (menu `1` -> install an existing hook).
+Template 4 is also shipped ready-made as `hooks/Git-Sync-Check/Git-Sync-Check.ps1` if you prefer to
+install it directly (menu `1` -> install an existing hook).
 
 In the wizard, `0` steps back one question and `exit` quits; the menus never pause for Enter.
 
