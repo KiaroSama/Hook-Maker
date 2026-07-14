@@ -23,6 +23,7 @@ starts the user's task.
 | `scripts/Test-RulesCheck.ps1` | Offline test suite for the Rules-Check hook and per-client install targeting (33 assertions). |
 | `scripts/Test-Wizard.ps1` | Drives the interactive wizard end-to-end via stdin (menu, hook listing, comma multi-select, client targeting, real self-contained installs) against temp projects (60 assertions). |
 | `scripts/Test-SecretsCheck.ps1` | Offline test suite for the Secrets-Check hook (auto-append, ignore/tracked/staged/leak, throttled unused-secret scan; real throwaway git repos, 32 assertions). |
+| `scripts/Test-AiMemoryLoad.ps1` | Offline test suite for Ai-Memory-Load and Graph-Read-Check (content fingerprinting, truncation, graph-exists gate; 17 assertions). |
 | `logs/` | Wizard execution logs (created on demand, not committed). |
 
 ## Shipped hooks
@@ -31,7 +32,9 @@ starts the user's task.
 | --- | --- | --- |
 | `Cross-Project-.ai-Knowledge-Sync` | pre-task (SessionStart, UserPromptSubmit) | The sync engine: stages changed `.ai` knowledge from related projects for review. |
 | `Git-Sync-Check` | pre-task + post-task (Stop) | Reports uncommitted/unpushed/unpulled work; on Stop asks the AI to decide whether to sync now. |
+| `Ai-Memory-Load` | pre-task (SessionStart, UserPromptSubmit) | Loads `.ai/memory.md` (the startup router) directly into context before work starts, per the AI Context Memory Policy's Mandatory Startup Gate — saves an explicit Read call. Content-fingerprinted: shown once, silent until memory.md actually changes. Capped size with a truncation note; silent when no `.ai/memory.md` exists. |
 | `Ai-Memory-Check` | post-task (Stop) | If `.ai/memory.md` is older than the latest work, asks the AI to update the memory per the policy — or finish if nothing durable was learned. |
+| `Graph-Read-Check` | pre-task (SessionStart) | If `graphify-out/graph.json` exists, reminds the AI to prefer scoped `graphify query`/`path`/`explain` over broad file browsing **only when the task actually needs codebase understanding** — silent when no graph exists, so non-codebase-projects pay zero tokens. |
 | `Graph-Update-Check` | post-task (Stop) | If `graphify-out/graph.json` is stale, asks the AI to decide whether `graphify update .` is warranted. |
 | `Cloudflare-Deploy` | post-task (Stop) | In Workers projects (wrangler config present), asks the AI to deploy when the result should go live. |
 | `Skills-Check` | pre-task (SessionStart) | Compact Skill Policy reminder listing the copied skills, the `.ai/SKILLS.md` record, and the library. |
