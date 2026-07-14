@@ -69,14 +69,14 @@ if (Test-Path -LiteralPath $statePath -PathType Leaf) {
 # Only remind when there is actually work newer than the last reminder
 # (git-based; non-git Workers projects fall back to reminding per cooldown).
 if ($null -ne (Get-Command git -ErrorAction SilentlyContinue)) {
-    $inside = & git -C $cwd rev-parse --is-inside-work-tree 2>$null
+    $inside = Invoke-QuietCommand -FilePath git -ArgumentList @('-C', $cwd, 'rev-parse', '--is-inside-work-tree')
     if ($LASTEXITCODE -eq 0 -and [string]$inside -eq 'true') {
         $latest = [DateTime]::MinValue
-        $commitUnix = & git -C $cwd log -1 --format=%ct 2>$null
+        $commitUnix = Invoke-QuietCommand -FilePath git -ArgumentList @('-C', $cwd, 'log', '-1', '--format=%ct')
         if ($LASTEXITCODE -eq 0 -and $commitUnix) {
             $latest = [DateTimeOffset]::FromUnixTimeSeconds([int64]([string]$commitUnix)).UtcDateTime
         }
-        $dirty = @((& git -C $cwd status --porcelain 2>$null) | Where-Object { $_ })
+        $dirty = @((Invoke-QuietCommand -FilePath git -ArgumentList @('-C', $cwd, 'status', '--porcelain')) | Where-Object { $_ })
         if ($dirty.Count -eq 0 -and $latest -ne [DateTime]::MinValue -and $latest -le $lastFire) {
             exit 0
         }

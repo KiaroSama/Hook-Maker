@@ -174,6 +174,7 @@ $script:HookMeta = @{
     'Large-File-Check'                 = @{ When = 'both'; Text = 'small-files policy + oversized-file scan' }
     'Mcp-Usage-Check'                  = @{ When = 'pre';  Text = 'reminder to consider MCP servers/tools' }
     'Rules-Check'                      = @{ When = 'pre';  Text = 'checks global + project rules were read' }
+    'Secrets-Check'                    = @{ When = 'both'; Text = 'keeps secrets.md accurate and checks for leaks' }
     'Skills-Check'                     = @{ When = 'pre';  Text = 'skill-policy reminder with the copied skills' }
 }
 # The "[pre-task]" / "[post-task]" tag, colored by phase (a different color than
@@ -1267,7 +1268,7 @@ function Invoke-InstallExistingHook {
         for ($i = 0; $i -lt $hookFiles.Count; $i++) {
             Write-HookMenuLine ($i + 2) $hookFiles[$i].Name
         }
-        Write-NoteLine '  Tip: install several at once with commas, e.g. 2,4,5'
+        Write-NoteLine '  Tip: install several at once with commas, e.g. 2,4,5 (include 1 to run the sync group first, then the rest)'
         $value = Read-Answer (New-QuestionPrompt 'Select a hook (or a comma list)' $null '1') 'select custom hook'
         if ($value -eq '0') { return 'back' }
         if ($value -eq '') { $value = '1' }
@@ -1285,14 +1286,21 @@ function Invoke-InstallExistingHook {
             Write-ErrorLine ('Enter number(s) between 1 and ' + ($hookFiles.Count + 1) + ', separated by commas.')
             continue
         }
-        # The sync group (item 1) is its own multi-project flow; not batchable.
+        # The sync group (item 1) is its own multi-project flow, not a plain
+        # hook install - it can't be gathered into the same events/client/
+        # projects batch below. When it's selected alongside other hooks, run
+        # its wizard first, then fall through and install the rest right after
+        # (no need to re-enter this menu a second time).
+        $ranSyncGroup = $false
         if ($indices.Contains(1)) {
-            if ($indices.Count -gt 1) {
-                Write-ErrorLine 'The sync group (1) can''t be combined with other hooks; select it on its own.'
-                continue
+            [void]$indices.Remove(1)
+            if ($indices.Count -gt 0) {
+                Write-NoteLine ('  Running the sync group first, then installing ' + $indices.Count + ' more hook(s)...')
             }
             Invoke-CreateGroup
-            return 'done'
+            $ranSyncGroup = $true
+            if ($indices.Count -eq 0) { return 'done' }
+            Write-PhaseHeader 'Install an Existing Hook' $C.Input '-'
         }
         $selected = @($indices | ForEach-Object { $hookFiles[$_ - 2] })
         Write-Log 'INFO' 'CUSTOM' ('Selected ' + $selected.Count + ' hook(s): ' + (($selected | ForEach-Object { $_.Name }) -join ', '))
@@ -1348,7 +1356,12 @@ function Invoke-InstallExistingHook {
         $confirm = Read-YesNo (New-QuestionPrompt 'Start now?' 'y/n' 'y') $true 'start multi hook install'
         if ($null -eq $confirm) { continue }
         if ($confirm -ne $true) {
-            Write-NoteLine 'Canceled. Nothing was installed.'
+            if ($ranSyncGroup) {
+                Write-NoteLine 'Canceled. The sync group was applied; the remaining hook(s) were not installed.'
+            }
+            else {
+                Write-NoteLine 'Canceled. Nothing was installed.'
+            }
             Write-Log 'INFO' 'CUSTOM' 'User declined at confirmation; no install.'
             return 'done'
         }
@@ -1365,9 +1378,10 @@ function Invoke-InstallExistingHook {
             Write-Log 'INFO' 'INSTALL' ('Installed ' + $plan.Hook.Name + ' | client=' + $plan.Config.Clients + ' | events=' + ($plan.Config.Events -join ',') + ' | projects=' + $plan.Config.Targets.Count)
         }
         Write-PhaseHeader 'Completed' $C.Done '='
-        Write-Host (Get-Painted ('  Installed ' + $plans.Count + ' hook(s). Restart the Claude/Codex clients and review /hooks inside each project.') $C.White)
+        $doneMsg = if ($ranSyncGroup) { '  Sync group + ' + $plans.Count + ' hook(s) installed.' } else { '  Installed ' + $plans.Count + ' hook(s).' }
+        Write-Host (Get-Painted ($doneMsg + ' Restart the Claude/Codex clients and review /hooks inside each project.') $C.White)
         Write-NoteLine '  Codex: run /hooks in each project and trust the new command before it runs.'
-        Write-Log 'INFO' 'DONE' ('Multi-hook install complete: ' + $plans.Count + ' hook(s).')
+        Write-Log 'INFO' 'DONE' ('Multi-hook install complete: ' + $plans.Count + ' hook(s)' + $(if ($ranSyncGroup) { ' + sync group' } else { '' }) + '.')
         return 'done'
     }
 }
