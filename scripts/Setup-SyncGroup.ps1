@@ -165,11 +165,13 @@ function Get-ExampleText {
 # installer shares it.)
 $script:HookMeta = @{
     'Ai-Memory-Check'                  = @{ When = 'post'; Text = 'reminds to update .ai memory when it is stale' }
+    'Ai-Memory-Load'                   = @{ When = 'pre';  Text = 'loads .ai/memory.md into context before work starts' }
     'Ci-Status-Check'                  = @{ When = 'post'; Text = 'verifies GitHub checks of the exact pushed commit' }
     'Cloudflare-Deploy'                = @{ When = 'post'; Text = 'suggests deploying in Cloudflare Workers projects' }
     'Dependabot-Check'                 = @{ When = 'pre';  Text = 'reports pending Dependabot pull requests' }
     'Github-Baseline-Check'            = @{ When = 'pre';  Text = 'checks the .github CI/dependabot baseline' }
     'Git-Sync-Check'                   = @{ When = 'both'; Text = 'warns when out of sync with the git remote' }
+    'Graph-Read-Check'                 = @{ When = 'pre';  Text = 'suggests graphify queries when a graph exists and the task needs it' }
     'Graph-Update-Check'               = @{ When = 'post'; Text = 'suggests graphify update when the graph is stale' }
     'Large-File-Check'                 = @{ When = 'both'; Text = 'small-files policy + oversized-file scan' }
     'Mcp-Usage-Check'                  = @{ When = 'pre';  Text = 'reminder to consider MCP servers/tools' }

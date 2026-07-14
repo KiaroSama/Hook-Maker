@@ -71,3 +71,9 @@ jobs:
       - name: Secrets-Check test suite
         shell: pwsh
         run: .\scripts\Test-SecretsCheck.ps1
+
+      # Ai-Memory-Load (injects .ai/memory.md pre-task) + Graph-Read-Check
+      # (suggests graphify queries when a graph exists). Offline, no network.
+      - name: Ai-Memory-Load and Graph-Read-Check test suite
+        shell: pwsh
+        run: .\scripts\Test-AiMemoryLoad.ps1
