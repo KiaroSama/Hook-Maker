@@ -68,7 +68,12 @@ try {
     Check 'sync group is list item 1' ($r.Out -match '1\. Create or update a sync group')
     Check 'hook names are hyphenated' ($r.Out -match 'Ai-Memory-Check' -and $r.Out -match 'Rules-Check')
     Check 'names not glued together' ($r.Out -notmatch 'AiMemoryCheck')
-    Check 'engine shows the friendly name' ($r.Out -match 'Cross-Project-\.ai-Knowledge-Sync')
+    # The engine is reachable ONLY through item 1's hardcoded description line
+    # (checked by "menu parts are pipe-separated" below), NOT by its own
+    # hyphenated name as a separate list item: installed as a generic custom
+    # hook (no -Profile, no config copy) it can never find its routing config
+    # once copied into a project and silently does nothing.
+    Check 'engine is NOT a separate numbered list entry' ($r.Out -notmatch '\d+\.\s+Cross-Project')
     Check 'listing shows timing tags' ($r.Out -match '\[post-task\]' -and $r.Out -match '\[pre-task\]')
     Check 'listing shows short descriptions' ($r.Out -match 'reminds to update \.ai memory' -and $r.Out -match 'checks global \+ project rules')
     Check 'menu parts are pipe-separated' ($r.Out -match 'Create or update a sync group \| \[pre-task\] \| cross-project \.ai knowledge sync')
@@ -139,7 +144,8 @@ try {
     Write-Host '--- multi-select install (comma list, same settings) ---' -ForegroundColor Cyan
     $cfg4 = Join-Path $Work 'cfg4.json'; New-Config $cfg4
     $m = New-Proj 'Multi'
-    # main 1 -> sub 1 -> "2,3,4" (three advisory hooks, all before the engine at 5)
+    # main 1 -> sub 1 -> "2,3,4" (three advisory hooks; the engine is excluded
+    #        from this list entirely, see the guard test below)
     #        -> mode 1 (same) -> events SessionStart -> client Both -> target -> done -> start -> exit
     $r = Invoke-Wizard -Config $cfg4 -Answers @('1', '1', '2,3,4', '1', '2', '1', $m, 'done', '', '0')
     Check 'exit 0' ($r.Exit -eq 0)

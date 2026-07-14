@@ -84,9 +84,11 @@ choose the same events/client/projects for all or configure each, then a summary
 what will be installed.
 
 The **sync group** now lives inside `1` → **Install an existing hook** as list item `1`
-("Create or update a sync group"; it can't be combined with other hooks in one comma list). Choose
-it, enter each project root path (finish with `done`), pick the client, review the summary and
-confirm (Enter = yes). The wizard:
+("Create or update a sync group"; it can't be combined with other hooks in one comma list). The
+sync engine itself is **not** listed as its own numbered hook — installing it as a plain custom
+hook would skip its `-Profile`/routing config, so it only works through this flow. Choose item 1,
+enter each project root path (finish with `done`), pick the client, review the summary and confirm
+(Enter = yes). The wizard:
 
 1. Creates missing `.ai` directories.
 2. Writes a full-mesh profile — every project becomes a sync destination of every other.
