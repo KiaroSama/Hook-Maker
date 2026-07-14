@@ -114,6 +114,21 @@ if ($reasonWhy -eq '') {
 New-Item -ItemType Directory -Path $stateDir -Force | Out-Null
 [System.IO.File]::WriteAllText($statePath, [DateTime]::UtcNow.ToString('o'))
 
-$reason = 'AI MEMORY CHECK: the task is ending but ' + $reasonWhy + '. Per the AI Context Memory Policy, memory updates follow MEANINGFUL work only, in this order: (1) update .ai/memory.md first (index/router), (2) update ONLY the specialized files that gained reusable value (LESSON.md, REFERENCE.md, COMMANDS.md, DECISIONS.md, ...), (3) never duplicate a lesson across files - full detail in the best file, links elsewhere. Keep entries factual and deduplicated. If this task was trivial or produced nothing reusable, finish now WITHOUT updating - this reminder respects a cooldown.'
+# Concrete, not generic: list the specialized files that ACTUALLY exist right
+# now, so "update only the ones that gained value" has real names to weigh
+# instead of the policy's example list. A brand-new specialized file is just
+# as valid an outcome as updating an existing one.
+$existingFiles = @(Get-ChildItem -LiteralPath $aiDir -Filter '*.md' -File -ErrorAction SilentlyContinue |
+    Where-Object { $_.Name -ne 'memory.md' } |
+    Sort-Object Name |
+    Select-Object -ExpandProperty Name)
+$filesClause = if ($existingFiles.Count -gt 0) {
+    'Other files currently in .ai/: ' + ($existingFiles -join ', ') + '.'
+}
+else {
+    '.ai/ has no specialized files yet (only memory.md) - create one ONLY if this task produced something reusable enough to name (e.g. LESSON.md, REFERENCE.md).'
+}
+
+$reason = 'AI MEMORY CHECK: the task is ending but ' + $reasonWhy + '. Per the AI Context Memory Policy, memory updates follow MEANINGFUL work only, in this order: (1) update .ai/memory.md first (index/router), (2) update ONLY the specialized files that gained reusable value this task - not every file, not on a schedule. ' + $filesClause + ' (3) never duplicate a lesson across files - full detail in the best file, links elsewhere. Keep entries factual and deduplicated. If this task was trivial or produced nothing reusable, finish now WITHOUT updating - this reminder respects a cooldown.'
 @{ decision = 'block'; reason = $reason } | ConvertTo-Json -Compress
 exit 0
