@@ -2,15 +2,21 @@
 # .ai\memory.md (the AI Context Memory Policy's startup router) directly into
 # context, per the policy's Mandatory Startup Gate: "read memory first." This
 # saves the agent an explicit Read call and guarantees the router is actually
-# seen before work begins - the router itself then points at only the
-# specialized .ai\*.md files the CURRENT task needs (LESSON, REFERENCE, ...);
-# this hook does not guess which ones, that stays the AI's call.
+# seen before work begins. It also LISTS every other top-level .ai\*.md file
+# that currently exists (name only, not content) so the agent has full
+# visibility of the whole .ai folder - not just memory.md - without paying to
+# load files the current task does not need; the router's own "Read Next"
+# section decides which of them are actually relevant, that stays the AI's
+# call, exactly per the policy's "route by task, do not load everything"
+# rule. ARCHIVE\ and TARGETS\ are deliberately excluded (never loaded by
+# default / local-only workspace, per the policy).
 #
 # Token-efficient by design:
 # - Silent when .ai\memory.md does not exist (nothing to load).
 # - CONTENT-fingerprinted, not time-cooled: shown once, then silent until
-#   memory.md actually changes (e.g. a prior AiMemoryCheck Stop updated it) -
-#   never repeats the same content across SessionStart/resume/compact events.
+#   memory.md's content OR the set of other .ai\*.md files changes (e.g. a
+#   prior AiMemoryCheck Stop updated memory.md, or added a new file) - never
+#   repeats the same content across SessionStart/resume/compact events.
 # - Capped size (MAX_CHARS) as a safety valve; if memory.md exceeds it, the
 #   injected excerpt says so and points at the file for the rest.
 #
@@ -62,9 +68,20 @@ if ([string]::IsNullOrWhiteSpace($content)) {
     exit 0
 }
 
-# ---- fingerprint the content (not the reminder text) so re-reads that find
-# the file unchanged stay silent, but any real edit re-surfaces it ----
-$fingerprint = Get-ShortHash $content
+# ---- the rest of .ai\: top-level *.md files besides memory.md itself.
+# Non-recursive (the policy's helper files live directly in .ai\), and
+# ARCHIVE\/TARGETS\ are subdirectories so a top-level listing already skips
+# them - matches "never load archives by default" / "local-only workspace".
+$aiDir = Join-Path $cwd '.ai'
+$otherFiles = @(Get-ChildItem -LiteralPath $aiDir -Filter '*.md' -File -ErrorAction SilentlyContinue |
+    Where-Object { $_.Name -ne 'memory.md' } |
+    Sort-Object Name |
+    Select-Object -ExpandProperty Name)
+
+# ---- fingerprint the content + the set of other files present, so re-reads
+# that find both unchanged stay silent, but a real edit OR a new file re-
+# surfaces it ----
+$fingerprint = Get-ShortHash ($content + '|' + ($otherFiles -join ','))
 $stateDir = Join-Path $env:LOCALAPPDATA 'HookMaker\state'
 $statePath = Join-Path $stateDir ('AiMemoryLoad-' + (Get-ShortHash $cwd.ToLowerInvariant()) + '.txt')
 if (Test-Path -LiteralPath $statePath -PathType Leaf) {
@@ -98,7 +115,10 @@ $lines = New-Object System.Collections.Generic.List[string]
 if ($truncated) {
     [void]$lines.Add('(truncated at ' + $maxChars + ' chars - read .ai/memory.md directly for the rest.)')
 }
-[void]$lines.Add('Use this as the starting point; per its own "Read Next" section, read only the specialized .ai/*.md files THIS task actually needs - do not load every file by default. This note stays silent until memory.md changes again.')
+if ($otherFiles.Count -gt 0) {
+    [void]$lines.Add('Other files present in .ai/ (not loaded here - read only the ones relevant to THIS task, per memory.md''s own routing above): ' + ($otherFiles -join ', '))
+}
+[void]$lines.Add('Use memory.md as the starting point; do not load every .ai file by default - only what this task actually needs. This note stays silent until memory.md or the .ai/ file list changes again.')
 
 @{ hookSpecificOutput = @{ hookEventName = $eventName; additionalContext = ($lines.ToArray() -join "`n") } } |
     ConvertTo-Json -Depth 5 -Compress

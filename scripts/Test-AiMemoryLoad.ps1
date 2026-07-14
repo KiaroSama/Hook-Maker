@@ -127,6 +127,26 @@ try {
     Check 'still stable on UserPromptSubmit -> silent' ($r5.Exit -eq 0 -and $r5.Out -eq '') $r5.Out
 
     # =====================================================================
+    Write-Host '--- Ai-Memory-Load: lists the REST of .ai/, not just memory.md ---' -ForegroundColor Cyan
+    $proj1b = New-Proj 'WholeAiFolder'
+    New-Item -ItemType Directory -Path (Join-Path $proj1b '.ai') -Force | Out-Null
+    Write-Utf8 (Join-Path $proj1b '.ai\memory.md') "# Memory`n`nROUTER_TEXT`n"
+    Write-Utf8 (Join-Path $proj1b '.ai\LESSON.md') 'lesson content'
+    Write-Utf8 (Join-Path $proj1b '.ai\REFERENCE.md') 'reference content'
+    $rb1 = Fire -Cwd $proj1b
+    Check 'lists other .ai files by name' ($rb1.Out -like '*LESSON.md*' -and $rb1.Out -like '*REFERENCE.md*') $rb1.Out
+    Check 'does not inject their CONTENT, only names' ($rb1.Out -notlike '*lesson content*' -and $rb1.Out -notlike '*reference content*') $rb1.Out
+    $rb2 = Fire -Cwd $proj1b
+    Check 'unchanged file set + content -> silent' ($rb2.Exit -eq 0 -and $rb2.Out -eq '') $rb2.Out
+    # A NEW specialized file appearing (memory.md itself untouched) must still
+    # re-surface the note - the file-set is part of the fingerprint too.
+    Write-Utf8 (Join-Path $proj1b '.ai\DECISIONS.md') 'decisions content'
+    $rb3 = Fire -Cwd $proj1b
+    Check 'a new .ai file (memory.md unchanged) still re-fires' ($rb3.Out -like '*DECISIONS.md*') $rb3.Out
+    $rb4 = Fire -Cwd $proj1b
+    Check 'stable again after the new file is acknowledged' ($rb4.Exit -eq 0 -and $rb4.Out -eq '') $rb4.Out
+
+    # =====================================================================
     Write-Host '--- Ai-Memory-Load: truncation ---' -ForegroundColor Cyan
     $proj2 = New-Proj 'BigMemory'
     New-Item -ItemType Directory -Path (Join-Path $proj2 '.ai') -Force | Out-Null

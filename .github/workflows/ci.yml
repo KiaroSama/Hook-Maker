@@ -72,8 +72,20 @@ jobs:
         shell: pwsh
         run: .\scripts\Test-SecretsCheck.ps1
 
-      # Ai-Memory-Load (injects .ai/memory.md pre-task) + Graph-Read-Check
-      # (suggests graphify queries when a graph exists). Offline, no network.
+      # Ai-Memory-Load (injects .ai/memory.md + lists the rest of .ai/ pre-task)
+      # + Graph-Read-Check (suggests graphify queries when a graph exists).
+      # Offline, no network.
       - name: Ai-Memory-Load and Graph-Read-Check test suite
         shell: pwsh
         run: .\scripts\Test-AiMemoryLoad.ps1
+
+      # Ai-Memory-Check post-task staleness trigger, real throwaway git repos.
+      # Offline, no network.
+      - name: Ai-Memory-Check test suite
+        shell: pwsh
+        run: .\scripts\Test-AiMemoryCheck.ps1
+
+      # Mcp-Usage-Check + Skills-Check pre-task reminders. Offline, no network.
+      - name: Context hooks test suite (Mcp-Usage-Check, Skills-Check)
+        shell: pwsh
+        run: .\scripts\Test-ContextHooks.ps1
