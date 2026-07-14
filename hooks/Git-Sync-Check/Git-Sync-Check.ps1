@@ -63,7 +63,7 @@ if ($isStopEvent) {
 function Invoke-Git {
     param([Parameter(Mandatory = $true)][string[]]$GitArgs)
 
-    $output = & git -C $cwd @GitArgs 2>$null
+    $output = Invoke-QuietCommand -FilePath git -ArgumentList (@('-C', $cwd) + $GitArgs)
     return [pscustomobject]@{ Ok = ($LASTEXITCODE -eq 0); Output = @($output) }
 }
 

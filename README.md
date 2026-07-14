@@ -21,7 +21,8 @@ starts the user's task.
 | `scripts/Test-Engine.ps1` | Self-contained engine smoke test (18 assertions, runs under pwsh and PowerShell 5.1). |
 | `scripts/Test-GitHubHooks.ps1` | Offline test suite for the GitHub hooks (47 assertions; mocks git state and `gh`, no network/account). |
 | `scripts/Test-RulesCheck.ps1` | Offline test suite for the Rules-Check hook and per-client install targeting (33 assertions). |
-| `scripts/Test-Wizard.ps1` | Drives the interactive wizard end-to-end via stdin (menu, hook listing, comma multi-select, client targeting, real self-contained installs) against temp projects (52 assertions). |
+| `scripts/Test-Wizard.ps1` | Drives the interactive wizard end-to-end via stdin (menu, hook listing, comma multi-select, client targeting, real self-contained installs) against temp projects (60 assertions). |
+| `scripts/Test-SecretsCheck.ps1` | Offline test suite for the Secrets-Check hook (auto-append, ignore/tracked/staged/leak, throttled unused-secret scan; real throwaway git repos, 32 assertions). |
 | `logs/` | Wizard execution logs (created on demand, not committed). |
 
 ## Shipped hooks
@@ -40,6 +41,7 @@ starts the user's task.
 | `Ci-Status-Check` | post-task (Stop) | After a push, blocks "done" until the GitHub checks for the **exact** pushed commit are verified; distinguishes pending / failed / infra-flaky and points at the failed job. |
 | `Github-Baseline-Check` | pre-task (SessionStart) | Checks the `.github` automation baseline against the project's real structure (CI workflow, `dependabot.yml` coverage per ecosystem/dir, optional CodeQL) and reports concrete gaps. |
 | `Rules-Check` | pre-task (SessionStart, UserPromptSubmit) | Verifies the configured rules were read before the task starts: the **global** rules directory (`~\.claude\rules` / `~\.codex\rules`) plus the current project's **local** rules directory (`<project>\.claude\rules` / `<project>\.codex\rules`). First check lists all rules files; afterwards it stays silent until a rules file is added/changed/removed, then reports exactly what moved. Detects the running client automatically (Claude Code exports `CLAUDE_PROJECT_DIR` on hook processes; Codex does not). |
+| `Secrets-Check` | pre-task + post-task (Stop) | Keeps `secrets.md` accurate and safe: flags it if untracked-but-should-be-ignored, tracked, or staged; flags a real `.env*` file that is itself tracked; flags a discovered secret value that turns up in another tracked file (file path only, value never printed); auto-appends secrets found in `.env*` but missing from `secrets.md` (value copied file-to-file, never printed/logged); flags empty-looking placeholder values; and, on a long throttle (default weekly, not every run), flags `secrets.md` entries that are no longer referenced anywhere else in the project — reported by name only, **never auto-removed** (a false positive would destroy an unrecoverable credential, so removal stays the AI's call, like every other advisory hook here). Makes no network calls and never tests a secret against its real service. |
 
 All advisory hooks are token-efficient by design: they stay **silent** unless a deterministic
 signal fires (staleness, wrangler config, out-of-sync git, pending Dependabot PR, unverified
@@ -84,11 +86,12 @@ choose the same events/client/projects for all or configure each, then a summary
 what will be installed.
 
 The **sync group** now lives inside `1` → **Install an existing hook** as list item `1`
-("Create or update a sync group"; it can't be combined with other hooks in one comma list). The
-sync engine itself is **not** listed as its own numbered hook — installing it as a plain custom
-hook would skip its `-Profile`/routing config, so it only works through this flow. Choose item 1,
-enter each project root path (finish with `done`), pick the client, review the summary and confirm
-(Enter = yes). The wizard:
+("Create or update a sync group"). Including `1` in a comma list (e.g. `1,3,5`) runs the sync-group
+wizard first, then installs the rest of the selection right after — one pass, no need to re-enter
+this menu. The sync engine itself is **not** listed as its own numbered hook — installing it as a
+plain custom hook would skip its `-Profile`/routing config, so it only works through this flow.
+Choose item 1 (alone or in a list), enter each project root path (finish with `done`), pick the
+client, review the summary and confirm (Enter = yes). The wizard:
 
 1. Creates missing `.ai` directories.
 2. Writes a full-mesh profile — every project becomes a sync destination of every other.

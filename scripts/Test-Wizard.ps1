@@ -157,11 +157,35 @@ try {
     Check 'batch honored client=Both (codex got all three too)' ($codexFolders.Count -eq 3)
     Check 'summary lists all three (3 event lines)' (([regex]::Matches($r.Out, 'events:')).Count -ge 3)
 
-    Write-Host '--- multi-select: sync group cannot be batched ---' -ForegroundColor Cyan
-    # main 1 -> sub 1 -> "1,2" (rejected) -> 0 back -> 0 back to main -> 0 exit
-    $r2 = Invoke-Wizard -Config $cfg4 -Answers @('1', '1', '1,2', '0', '0', '0')
-    Check 'combining sync group (1) with hooks is rejected' ($r2.Out -match "can't be combined")
-    Check 'rejection still exits cleanly' ($r2.Exit -eq 0)
+    # =====================================================================
+    Write-Host '--- multi-select: sync group (1) combined with a hook runs both, once ---' -ForegroundColor Cyan
+    $cfg5 = Join-Path $Work 'cfg5.json'; New-Config $cfg5
+    $c = New-Proj 'ComboC'; $d = New-Proj 'ComboD'; $e = New-Proj 'ComboE'
+    # main 1 -> sub 1 -> "1,2" (sync group + Ai-Memory-Check) ->
+    #   [sync group wizard: C, D, done, client Both, confirm] ->
+    #   [single-hook config: events SessionStart+UPS, client Both, target E, done, confirm] -> exit
+    $r2 = Invoke-Wizard -Config $cfg5 -Answers @('1', '1', '1,2', $c, $d, 'done', '1', '', '1', '1', $e, 'done', '', '0')
+    Check 'exit 0' ($r2.Exit -eq 0)
+    Check 'no stderr' ($r2.Err -eq '')
+    Check 'runs the sync group first, then the hook, without repeating the menu' ($r2.Out -match 'Running the sync group first')
+    Check 'completion message counts both' ($r2.Out -match 'Sync group \+ 1 hook\(s\) installed')
+    $prof5 = @((Get-Content $cfg5 -Raw | ConvertFrom-Json).profiles)
+    Check 'sync group profile was applied' ($prof5.Count -eq 1 -and @($prof5[0].routes).Count -eq 2)
+    Check 'the hook was installed at the separate target' (Test-Path (Join-Path $e '.claude\hooks\Hook-Maker\Ai-Memory-Check\Ai-Memory-Check.ps1'))
+    Check 'the sync group did NOT install the hook, or vice versa' ((-not (Test-Path (Join-Path $c '.claude\hooks\Hook-Maker\Ai-Memory-Check'))) -and (-not (Test-Path (Join-Path $e '.claude\hooks\Hook-Maker\Cross-Project-.ai-Knowledge-Sync'))))
+
+    Write-Host '--- multi-select: sync group alone still works (unchanged) ---' -ForegroundColor Cyan
+    $cfg6 = Join-Path $Work 'cfg6.json'; New-Config $cfg6
+    $f = New-Proj 'SoloF'; $g = New-Proj 'SoloG'
+    $r3 = Invoke-Wizard -Config $cfg6 -Answers @('1', '1', '1', $f, $g, 'done', '1', '', '0')
+    Check 'exit 0' ($r3.Exit -eq 0)
+    Check 'no stderr' ($r3.Err -eq '')
+    # NOTE: -match is case-INSENSITIVE by default, and the main menu's own
+    # static description text is "(sync group + hooks\ folder)" - a plain
+    # 'Sync group \+' pattern collides with that. Anchor on "N hook(s)
+    # installed" (the actual completion-message shape) to target only the
+    # combined-install summary, never the menu label.
+    Check 'sync-group-only completion message (no "+ N hooks installed")' ($r3.Out -match 'Restart the Claude/Codex clients' -and $r3.Out -notmatch 'Sync group \+ \d+ hook')
 }
 finally {
     if (-not $KeepArtifacts) {

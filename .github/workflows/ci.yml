@@ -65,3 +65,9 @@ jobs:
       - name: Wizard functional test suite
         shell: pwsh
         run: .\scripts\Test-Wizard.ps1
+
+      # Secrets-Check hook: auto-append/placeholder/ignore/tracked/staged/leak/
+      # unused checks against real throwaway git repos. Offline, no network.
+      - name: Secrets-Check test suite
+        shell: pwsh
+        run: .\scripts\Test-SecretsCheck.ps1

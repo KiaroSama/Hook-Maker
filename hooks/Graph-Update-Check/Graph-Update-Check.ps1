@@ -62,16 +62,16 @@ function Get-LatestWorkTimeUtc {
     if ($null -eq (Get-Command git -ErrorAction SilentlyContinue)) {
         return $null
     }
-    $inside = & git -C $ProjectRoot rev-parse --is-inside-work-tree 2>$null
+    $inside = Invoke-QuietCommand -FilePath git -ArgumentList @('-C', $ProjectRoot, 'rev-parse', '--is-inside-work-tree')
     if ($LASTEXITCODE -ne 0 -or [string]$inside -ne 'true') {
         return $null
     }
     $latest = [DateTime]::MinValue
-    $commitUnix = & git -C $ProjectRoot log -1 --format=%ct 2>$null
+    $commitUnix = Invoke-QuietCommand -FilePath git -ArgumentList @('-C', $ProjectRoot, 'log', '-1', '--format=%ct')
     if ($LASTEXITCODE -eq 0 -and $commitUnix) {
         $latest = [DateTimeOffset]::FromUnixTimeSeconds([int64]([string]$commitUnix)).UtcDateTime
     }
-    $status = & git -C $ProjectRoot status --porcelain 2>$null
+    $status = Invoke-QuietCommand -FilePath git -ArgumentList @('-C', $ProjectRoot, 'status', '--porcelain')
     if ($LASTEXITCODE -eq 0) {
         foreach ($line in @($status)) {
             if ([string]::IsNullOrWhiteSpace([string]$line)) { continue }
