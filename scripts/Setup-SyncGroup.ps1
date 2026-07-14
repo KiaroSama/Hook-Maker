@@ -158,11 +158,12 @@ function Get-ExampleText {
 }
 
 # Per-hook menu metadata: when it runs (pre / post / pre+post) and a one-line
-# description. Unknown/custom hooks get a blank entry. (Get-HookFriendlyName,
-# which turns the internal name into the hyphenated display name, lives in
-# _hooklib.ps1 so the installer shares it.)
+# description. Unknown/custom hooks get a blank entry. The sync engine itself
+# is excluded here too - Get-HookEntries never returns it (see EngineHookName),
+# so it never reaches this lookup. (Get-HookFriendlyName, which turns the
+# internal name into the hyphenated display name, lives in _hooklib.ps1 so the
+# installer shares it.)
 $script:HookMeta = @{
-    'Cross-Project-.ai-Knowledge-Sync' = @{ When = 'pre';  Text = 'the sync engine - normally set up via the sync group above' }
     'Ai-Memory-Check'                  = @{ When = 'post'; Text = 'reminds to update .ai memory when it is stale' }
     'Ci-Status-Check'                  = @{ When = 'post'; Text = 'verifies GitHub checks of the exact pushed commit' }
     'Cloudflare-Deploy'                = @{ When = 'post'; Text = 'suggests deploying in Cloudflare Workers projects' }
@@ -397,11 +398,19 @@ function Read-EnvFile {
     return $values
 }
 
+# Name of the sync-engine hook folder. Excluded from Get-HookEntries: the
+# engine only works when installed via "Create or update a sync group" (menu
+# item 1), which passes -Profile and copies sync-hooks.json alongside it.
+# Installed as a generic custom hook (no -Profile, no config copy) it can never
+# resolve its own routing config once copied into a project and silently does
+# nothing forever - so it must not be selectable from the plain hook lists.
+$script:EngineHookName = 'Cross-Project-.ai-Knowledge-Sync'
+
 # Hooks live one folder per hook: hooks\<Name>\<Name>.ps1 (+ .env/.env.example).
 # Loose .ps1 files directly in hooks\ are still accepted for compatibility.
 function Get-HookEntries {
     $entries = New-Object System.Collections.Generic.List[object]
-    foreach ($dir in @(Get-ChildItem -LiteralPath $HooksDir -Directory -ErrorAction SilentlyContinue | Sort-Object Name)) {
+    foreach ($dir in @(Get-ChildItem -LiteralPath $HooksDir -Directory -ErrorAction SilentlyContinue | Where-Object { $_.Name -ne $script:EngineHookName } | Sort-Object Name)) {
         $script = Join-Path $dir.FullName ($dir.Name + '.ps1')
         if (-not (Test-Path -LiteralPath $script -PathType Leaf)) {
             $firstScript = @(Get-ChildItem -LiteralPath $dir.FullName -Filter '*.ps1' -File -ErrorAction SilentlyContinue | Sort-Object Name) | Select-Object -First 1
