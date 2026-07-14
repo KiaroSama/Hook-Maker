@@ -43,14 +43,14 @@ if ($eventName -eq 'Stop' -or $eventName -eq 'SubagentStop') {
 if ($null -eq (Get-Command git -ErrorAction SilentlyContinue)) {
     exit 0
 }
-$inside = & git -C $cwd rev-parse --is-inside-work-tree 2>$null
+$inside = Invoke-QuietCommand -FilePath git -ArgumentList @('-C', $cwd, 'rev-parse', '--is-inside-work-tree')
 if ($LASTEXITCODE -ne 0 -or [string]$inside -ne 'true') {
     exit 0
 }
 $repoSlug = ''
-foreach ($remoteName in @(& git -C $cwd remote 2>$null)) {
+foreach ($remoteName in @(Invoke-QuietCommand -FilePath git -ArgumentList @('-C', $cwd, 'remote'))) {
     if ([string]::IsNullOrWhiteSpace([string]$remoteName)) { continue }
-    $url = [string](& git -C $cwd remote get-url $remoteName 2>$null)
+    $url = [string](Invoke-QuietCommand -FilePath git -ArgumentList @('-C', $cwd, 'remote', 'get-url', $remoteName))
     if ($LASTEXITCODE -ne 0) { continue }
     if ($url -match 'github\.com[:/]([^/]+)/([^/\s]+?)(\.git)?/?$') {
         $repoSlug = $Matches[1] + '/' + $Matches[2]
@@ -107,7 +107,7 @@ if ($null -eq (Get-Command gh -ErrorAction SilentlyContinue)) {
     $limitReason = 'the GitHub CLI (gh) is not installed'
 }
 else {
-    & gh auth status *> $null
+    $null = Invoke-QuietCommand -FilePath gh -ArgumentList @('auth', 'status')
     if ($LASTEXITCODE -ne 0) {
         $limitReason = 'gh is not authenticated (gh auth login)'
     }
@@ -115,7 +115,7 @@ else {
 
 $prs = @()
 if ($limitReason -eq '') {
-    $rawJson = & gh pr list --author 'app/dependabot' --state open --json 'number,title,author,headRefName,baseRefName,headRefOid,isDraft,mergeStateStatus,labels,statusCheckRollup' --limit 30 2>$null
+    $rawJson = Invoke-QuietCommand -FilePath gh -ArgumentList @('pr', 'list', '--author', 'app/dependabot', '--state', 'open', '--json', 'number,title,author,headRefName,baseRefName,headRefOid,isDraft,mergeStateStatus,labels,statusCheckRollup', '--limit', '30')
     if ($LASTEXITCODE -ne 0) {
         $limitReason = 'gh could not query pull requests (network or repository permissions)'
     }

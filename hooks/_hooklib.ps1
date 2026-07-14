@@ -87,6 +87,27 @@ function Write-JsonFileAtomic {
     Move-Item -LiteralPath $temporaryPath -Destination $Path -Force
 }
 
+# Runs an external command (git, gh, ...) whose stderr must NEVER become a
+# terminating error, even when the command exits non-zero. Windows PowerShell
+# 5.1 promotes ANY stderr line from a native command into a NativeCommandError
+# under $ErrorActionPreference='Stop' - and, verified empirically, `2>$null`,
+# `2>&1 | Out-Null`, and `*>$null` all fail to prevent that promotion under 5.1
+# (pwsh 7 is unaffected, which is why this only shows up against the real
+# Claude client). Only relaxing $ErrorActionPreference around the call works.
+# Returns stdout lines (redirecting stderr away); $LASTEXITCODE is left intact
+# for the caller exactly as a raw `&` call would leave it.
+function Invoke-QuietCommand {
+    param([Parameter(Mandatory = $true)][string]$FilePath, [Parameter(Mandatory = $true)][string[]]$ArgumentList)
+    $savedPreference = $ErrorActionPreference
+    $ErrorActionPreference = 'SilentlyContinue'
+    try {
+        return & $FilePath @ArgumentList 2>$null
+    }
+    finally {
+        $ErrorActionPreference = $savedPreference
+    }
+}
+
 # Friendly, hyphen-separated hook name. The shipped hook folders are already
 # hyphenated (Cross-Project-.ai-Knowledge-Sync, Mcp-Usage-Check, ...), so this
 # is a no-op for them; it still tidies a user's PascalCase custom-hook name

@@ -44,14 +44,14 @@ if ([string]::IsNullOrWhiteSpace($cwd) -or -not (Test-Path -LiteralPath $cwd -Pa
 if ($null -eq (Get-Command git -ErrorAction SilentlyContinue)) {
     exit 0
 }
-$inside = & git -C $cwd rev-parse --is-inside-work-tree 2>$null
+$inside = Invoke-QuietCommand -FilePath git -ArgumentList @('-C', $cwd, 'rev-parse', '--is-inside-work-tree')
 if ($LASTEXITCODE -ne 0 -or [string]$inside -ne 'true') {
     exit 0
 }
 $repoSlug = ''
-foreach ($remoteName in @(& git -C $cwd remote 2>$null)) {
+foreach ($remoteName in @(Invoke-QuietCommand -FilePath git -ArgumentList @('-C', $cwd, 'remote'))) {
     if ([string]::IsNullOrWhiteSpace([string]$remoteName)) { continue }
-    $url = [string](& git -C $cwd remote get-url $remoteName 2>$null)
+    $url = [string](Invoke-QuietCommand -FilePath git -ArgumentList @('-C', $cwd, 'remote', 'get-url', $remoteName))
     if ($LASTEXITCODE -ne 0) { continue }
     if ($url -match 'github\.com[:/]([^/]+)/([^/\s]+?)(\.git)?/?$') {
         $repoSlug = $Matches[1] + '/' + $Matches[2]
@@ -61,22 +61,22 @@ foreach ($remoteName in @(& git -C $cwd remote 2>$null)) {
 if ($repoSlug -eq '') {
     exit 0
 }
-$branch = [string](& git -C $cwd rev-parse --abbrev-ref HEAD 2>$null)
+$branch = [string](Invoke-QuietCommand -FilePath git -ArgumentList @('-C', $cwd, 'rev-parse', '--abbrev-ref', 'HEAD'))
 if ($LASTEXITCODE -ne 0 -or $branch -eq '' -or $branch -eq 'HEAD') {
     exit 0
 }
-$null = & git -C $cwd rev-parse --abbrev-ref '@{upstream}' 2>$null
+$null = Invoke-QuietCommand -FilePath git -ArgumentList @('-C', $cwd, 'rev-parse', '--abbrev-ref', '@{upstream}')
 if ($LASTEXITCODE -ne 0) {
     exit 0    # never pushed - not this hook's concern
 }
-$aheadRaw = & git -C $cwd rev-list --count '@{upstream}..HEAD' 2>$null
+$aheadRaw = Invoke-QuietCommand -FilePath git -ArgumentList @('-C', $cwd, 'rev-list', '--count', '@{upstream}..HEAD')
 if ($LASTEXITCODE -ne 0) {
     exit 0
 }
 if ([int]([string]$aheadRaw).Trim() -gt 0) {
     exit 0    # HEAD not pushed yet - GitSyncCheck's domain
 }
-$sha = ([string](& git -C $cwd rev-parse HEAD 2>$null)).Trim()
+$sha = ([string](Invoke-QuietCommand -FilePath git -ArgumentList @('-C', $cwd, 'rev-parse', 'HEAD'))).Trim()
 if ($LASTEXITCODE -ne 0 -or $sha -eq '') {
     exit 0
 }
@@ -141,13 +141,13 @@ function Write-Block {
 if ($null -eq (Get-Command gh -ErrorAction SilentlyContinue)) {
     exit 0
 }
-& gh auth status *> $null
+$null = Invoke-QuietCommand -FilePath gh -ArgumentList @('auth', 'status')
 if ($LASTEXITCODE -ne 0) {
     exit 0
 }
 
 # ---- workflow runs for the EXACT pushed commit ----
-$rawJson = & gh run list --commit $sha --json 'databaseId,name,workflowName,status,conclusion' --limit 50 2>$null
+$rawJson = Invoke-QuietCommand -FilePath gh -ArgumentList @('run', 'list', '--commit', $sha, '--json', 'databaseId,name,workflowName,status,conclusion', '--limit', '50')
 if ($LASTEXITCODE -ne 0) {
     exit 0    # API/permission failure: degrade without claiming anything
 }

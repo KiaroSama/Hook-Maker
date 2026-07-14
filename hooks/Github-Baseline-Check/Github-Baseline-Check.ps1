@@ -41,14 +41,14 @@ if ($eventName -eq 'Stop' -or $eventName -eq 'SubagentStop') {
 if ($null -eq (Get-Command git -ErrorAction SilentlyContinue)) {
     exit 0
 }
-$inside = & git -C $cwd rev-parse --is-inside-work-tree 2>$null
+$inside = Invoke-QuietCommand -FilePath git -ArgumentList @('-C', $cwd, 'rev-parse', '--is-inside-work-tree')
 if ($LASTEXITCODE -ne 0 -or [string]$inside -ne 'true') {
     exit 0
 }
 $repoSlug = ''
-foreach ($remoteName in @(& git -C $cwd remote 2>$null)) {
+foreach ($remoteName in @(Invoke-QuietCommand -FilePath git -ArgumentList @('-C', $cwd, 'remote'))) {
     if ([string]::IsNullOrWhiteSpace([string]$remoteName)) { continue }
-    $url = [string](& git -C $cwd remote get-url $remoteName 2>$null)
+    $url = [string](Invoke-QuietCommand -FilePath git -ArgumentList @('-C', $cwd, 'remote', 'get-url', $remoteName))
     if ($LASTEXITCODE -ne 0) { continue }
     if ($url -match 'github\.com[:/]([^/]+)/([^/\s]+?)(\.git)?/?$') {
         $repoSlug = $Matches[1] + '/' + $Matches[2]
