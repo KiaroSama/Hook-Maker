@@ -1,8 +1,15 @@
 /.ai/
 /secrets.md
 /explain-AI.md
+/reference.md
+/CLAUDE.md
+/AGENTS.md
+/.agents/
 /.claude/
+/.kiro/
 /.codex/
+/.cursor/
+/.cline/
 graphify-out/
 .ignoreme
 **/.ignoreme
