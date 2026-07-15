@@ -26,7 +26,7 @@ starts the user's task.
 | `scripts/Test-AiMemoryLoad.ps1` | Offline test suite for Ai-Memory-Load and Graph-Read-Check (content fingerprinting, whole-.ai/ file listing, truncation, graph-exists gate; 22 assertions). |
 | `scripts/Test-AiMemoryCheck.ps1` | Offline test suite for the Ai-Memory-Check hook (missing/stale memory.md, real specialized-file enumeration, cooldown; real throwaway git repos, 11 assertions). |
 | `scripts/Test-ContextHooks.ps1` | Offline test suite for Mcp-Usage-Check and Skills-Check (16 assertions). |
-| `scripts/Test-IgnoreRulesCheck.ps1` | Offline test suite for Ignore-Rules-Check (14 assertions; pre/post auto-fix, rule extraction, tracked protection, native pre-push enforcement, PowerShell 5.1). |
+| `scripts/Test-IgnoreRulesCheck.ps1` | Offline test suite for the deterministic Ignore → Secrets → Large File → previous-hook pre-push chain (18 assertions; real pushes, PowerShell 5.1). |
 | `scripts/_testlib.ps1` | Shared assertion helper used by the offline PowerShell test suites. |
 | `logs/` | Wizard execution logs (created on demand, not committed). |
 
@@ -49,7 +49,7 @@ starts the user's task.
 | `Github-Baseline-Check` | pre-task (SessionStart) | Checks the `.github` automation baseline against the project's real structure (CI workflow, `dependabot.yml` coverage per ecosystem/dir, optional CodeQL) and reports concrete gaps. |
 | `Rules-Check` | pre-task (SessionStart, UserPromptSubmit) | Verifies the configured rules were read before the task starts: the **global** rules directory (`~\.claude\rules` / `~\.codex\rules`) plus the current project's **local** rules directory (`<project>\.claude\rules` / `<project>\.codex\rules`). First check lists all rules files; afterwards it stays silent until a rules file is added/changed/removed, then reports exactly what moved. Detects the running client automatically (Claude Code exports `CLAUDE_PROJECT_DIR` on hook processes; Codex does not). |
 | `Secrets-Check` | pre-task + post-task (Stop) | Keeps `secrets.md` accurate and safe: flags it if untracked-but-should-be-ignored, tracked, or staged; flags a real `.env*` file that is itself tracked; flags a discovered secret value that turns up in another tracked file (file path only, value never printed); auto-appends secrets found in `.env*` but missing from `secrets.md` (value copied file-to-file, never printed/logged); flags empty-looking placeholder values; and, on a long throttle (default weekly, not every run), flags `secrets.md` entries that are no longer referenced anywhere else in the project — reported by name only, **never auto-removed** (a false positive would destroy an unrecoverable credential, so removal stays the AI's call, like every other advisory hook here). Makes no network calls and never tests a secret against its real service. |
-| `Ignore-Rules-Check` | pre-task (SessionStart) + post-task (Stop) + native Git pre-push | Auto-adds required local/private patterns to `.gitignore`, extracts additional path-like entries from explicit local-only/never-commit project rules, and blocks both completion and `git push` while required fixes remain. Project installs preserve and chain an existing native pre-push hook. Optional extra patterns can be set in `.env`. |
+| `Ignore-Rules-Check` | pre-task (SessionStart) + post-task (Stop) + native Git pre-push | Auto-adds required local/private patterns to `.gitignore`, extracts additional paths from explicit local-only/never-commit project rules, and blocks completion while required fixes remain. Project installs create a deterministic pre-push chain: Ignore → Secrets → Large File → preserved previous hook. Optional extra patterns can be set in `.env`. |
 
 All advisory hooks are token-efficient by design: they stay **silent** unless a deterministic
 signal fires (staleness, wrangler config, out-of-sync git, pending Dependabot PR, unverified
@@ -57,6 +57,9 @@ push), they respect a per-project **cooldown/fingerprint**, they never loop (`st
 guard), and the decision always stays with the AI — every reminder explicitly allows finishing
 without action. The GitHub hooks degrade safely (silent, never a false "all clear") when git,
 a remote, `gh`, authentication, or network access is missing.
+
+Matching lifecycle hooks for the same event run concurrently and are intentionally independent;
+their registration order is display-only. The native pre-push chain is the only ordered sequence.
 
 ## Hook configs (.env)
 
