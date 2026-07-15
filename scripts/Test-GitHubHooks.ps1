@@ -123,7 +123,15 @@ function Fire {
         $file = 'powershell.exe'
         $argLine = '-NoLogo -NoProfile -ExecutionPolicy Bypass -File "' + $HookPath + '"'
     }
-    $proc = Start-Process -FilePath $file -ArgumentList $argLine -RedirectStandardInput $inFile -RedirectStandardOutput $outFile -RedirectStandardError $errFile -Wait -NoNewWindow -PassThru
+    $startArgs = @{
+        FilePath = $file; ArgumentList = $argLine; RedirectStandardInput = $inFile
+        RedirectStandardOutput = $outFile; RedirectStandardError = $errFile
+        Wait = $true; NoNewWindow = $true; PassThru = $true
+    }
+    if ((Get-Command Start-Process).Parameters.ContainsKey('Environment')) {
+        $startArgs.Environment = @{ PATH = $env:PATH; GH_MOCK_DIR = $env:GH_MOCK_DIR; LOCALAPPDATA = $env:LOCALAPPDATA }
+    }
+    $proc = Start-Process @startArgs
     $out = ''
     if (Test-Path -LiteralPath $outFile) { $out = ([System.IO.File]::ReadAllText($outFile)).Trim() }
     $err = ''

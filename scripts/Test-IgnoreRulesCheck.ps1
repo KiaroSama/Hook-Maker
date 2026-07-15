@@ -4,6 +4,7 @@ Set-StrictMode -Version 2.0
 $ErrorActionPreference = 'Stop'
 
 $Hook = Join-Path (Split-Path -Parent $PSScriptRoot) 'hooks\Ignore-Rules-Check\Ignore-Rules-Check.ps1'
+$InstallScript = Join-Path $PSScriptRoot 'Install-Hook.ps1'
 $script:Pass = 0
 $script:Fail = 0
 $script:TestPreviewLength = 400
@@ -75,6 +76,29 @@ try {
     $ps5 = New-Repo 'ps5'
     $r = Fire -Cwd $ps5 -Exe 'powershell.exe'
     Check 'Windows PowerShell 5.1 auto-fix works' ($r.Exit -eq 0 -and (Test-Path -LiteralPath (Join-Path $ps5 '.gitignore'))) $r.Err
+
+    Write-Host '--- native git pre-push enforcement ---' -ForegroundColor Cyan
+    $pushRepo = New-Repo 'pre push'
+    & git -C $pushRepo config core.autocrlf false
+    [System.IO.File]::WriteAllText((Join-Path $pushRepo 'file.txt'), 'v1', (New-Object System.Text.UTF8Encoding $false))
+    & git -C $pushRepo add file.txt
+    & git -C $pushRepo commit -q -m c1
+    $nativeHook = Join-Path $pushRepo '.git\hooks\pre-push'
+    [System.IO.File]::WriteAllText($nativeHook, "#!/bin/sh`necho previous > previous-hook.txt`n", (New-Object System.Text.UTF8Encoding $false))
+    & $InstallScript -CustomHook $Hook -Events @('Stop') -TargetProject $pushRepo -CodexOnly *> $null
+    Check 'install creates a managed native pre-push hook' ((Test-Path -LiteralPath $nativeHook) -and ([System.IO.File]::ReadAllText($nativeHook) -match 'Hook Maker: Ignore-Rules-Check'))
+    Check 'install preserves an existing pre-push hook' (Test-Path -LiteralPath ($nativeHook + '.hookmaker-existing'))
+
+    $remote = Join-Path $Work 'remote.git'
+    & git init -q --bare $remote
+    & git -C $pushRepo remote add origin $remote
+    $pushOutput = (& git -C $pushRepo push -u origin main 2>&1 | Out-String)
+    Check 'first push is blocked after auto-fixing missing ignore rules' ($LASTEXITCODE -ne 0 -and $pushOutput -match 'IGNORE RULES CHECK' -and (Test-Path -LiteralPath (Join-Path $pushRepo '.gitignore'))) $pushOutput
+
+    & git -C $pushRepo add .gitignore
+    & git -C $pushRepo commit -q -m c2
+    $pushOutput = (& git -C $pushRepo push -u origin main 2>&1 | Out-String)
+    Check 'clean push succeeds and still runs the previous hook' ($LASTEXITCODE -eq 0 -and (Test-Path -LiteralPath (Join-Path $pushRepo 'previous-hook.txt'))) $pushOutput
 }
 finally {
     if ($KeepArtifacts) {

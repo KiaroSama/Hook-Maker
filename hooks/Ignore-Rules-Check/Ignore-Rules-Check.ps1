@@ -1,15 +1,22 @@
-# Ignore-Rules-Check - enforces local/private git-ignore rules at task end.
+# Ignore-Rules-Check - enforces local/private git-ignore rules at task end and push time.
+
+param([switch]$GitPrePush)
 
 Set-StrictMode -Version 2.0
 $ErrorActionPreference = 'Stop'
 
 . (Join-Path $PSScriptRoot '..\_hooklib.ps1')
 
-$hookInput = Read-HookInput
+$hookInput = if ($GitPrePush) {
+    [pscustomobject]@{ cwd = (Get-Location).Path; hook_event_name = 'GitPrePush' }
+}
+else {
+    Read-HookInput
+}
 if ($null -eq $hookInput) { exit 0 }
 $eventName = [string](Get-Field $hookInput 'hook_event_name')
-if ($eventName -ne 'Stop' -and $eventName -ne 'SubagentStop') { exit 0 }
-if ((Get-Field $hookInput 'stop_hook_active') -eq $true) { exit 0 }
+if ($eventName -notin @('Stop', 'SubagentStop', 'GitPrePush')) { exit 0 }
+if (-not $GitPrePush -and (Get-Field $hookInput 'stop_hook_active') -eq $true) { exit 0 }
 $cwd = [string](Get-Field $hookInput 'cwd')
 if ([string]::IsNullOrWhiteSpace($cwd) -or -not (Test-Path -LiteralPath $cwd -PathType Container)) { exit 0 }
 if ($null -eq (Get-Command git -ErrorAction SilentlyContinue)) { exit 0 }
@@ -105,5 +112,10 @@ if ($missing.Count -gt 0) { [void]$lines.Add('Auto-added ' + $missing.Count + ' 
 if ($tracked.Count -gt 0) { [void]$lines.Add('TRACKED protected paths must be untracked before push (preserve local files): ' + (($tracked | Sort-Object -Unique) -join ', ')) }
 if ($staged.Count -gt 0) { [void]$lines.Add('STAGED protected paths must be removed from the index before push: ' + (($staged | Sort-Object -Unique) -join ', ')) }
 [void]$lines.Add('Review .gitignore, preserve local files, and add any other project-specific private/generated paths required by the current rules before pushing.')
-@{ decision = 'block'; reason = ($lines.ToArray() -join "`n") } | ConvertTo-Json -Compress
+$reason = $lines.ToArray() -join "`n"
+if ($GitPrePush) {
+    [Console]::Error.WriteLine($reason)
+    exit 1
+}
+@{ decision = 'block'; reason = $reason } | ConvertTo-Json -Compress
 exit 0
