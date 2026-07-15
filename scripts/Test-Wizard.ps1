@@ -66,8 +66,8 @@ try {
     Check 'main menu merged (Create or install a hook)' ($r.Out -match '1\. Create or install a hook')
     Check 'no separate top-level sync-group option' ($r.Out -notmatch '1\. Create or update a sync group\s*\r?\n\s*2\. Show')
     Check 'sync group is list item 1' ($r.Out -match '1\. Create or update a sync group')
-    Check 'hook names are hyphenated' ($r.Out -match 'Ai-Memory-Check' -and $r.Out -match 'Rules-Check')
-    Check 'names not glued together' ($r.Out -notmatch 'AiMemoryCheck')
+    Check 'context hook menu names match their whole-.ai scope' ($r.Out -match 'Ai-Context-Check' -and $r.Out -match 'Ai-Context-Load')
+    Check 'old memory-only menu names are hidden' ($r.Out -notmatch 'Ai-Memory-(Check|Load)')
     # The engine is reachable ONLY through item 1's hardcoded description line
     # (checked by "menu parts are pipe-separated" below), NOT by its own
     # hyphenated name as a separate list item: installed as a generic custom
@@ -75,8 +75,16 @@ try {
     # once copied into a project and silently does nothing.
     Check 'engine is NOT a separate numbered list entry' ($r.Out -notmatch '\d+\.\s+Cross-Project')
     Check 'listing shows timing tags' ($r.Out -match '\[post-task\]' -and $r.Out -match '\[pre-task\]')
-    Check 'listing shows short descriptions' ($r.Out -match 'reminds to update \.ai memory' -and $r.Out -match 'checks global \+ project rules')
+    Check 'listing shows short descriptions' ($r.Out -match 'relevant \.ai context files' -and $r.Out -match 'checks global \+ project rules')
     Check 'menu parts are pipe-separated' ($r.Out -match 'Create or update a sync group \| \[pre-task\] \| cross-project \.ai knowledge sync')
+    $menuOrder = @(
+        '1\. Create or update a sync group', '2\. Ai-Context-Check', '3\. Ai-Context-Load',
+        '4\. Ci-Status-Check', '5\. Dependabot-Check', '6\. Github-Baseline-Check',
+        '7\. Git-Sync-Check', '8\. Cloudflare-Deploy', '9\. Graph-Read-Check',
+        '10\. Graph-Update-Check', '11\. Large-File-Check', '12\. Mcp-Usage-Check',
+        '13\. Rules-Check', '14\. Skills-Check', '15\. Secrets-Check'
+    ) -join '[\s\S]*'
+    Check 'hooks follow the requested menu order' ($r.Out -match $menuOrder)
     Check '_hooklib excluded from listing' ($r.Out -notmatch '_hooklib')
     Check 'full back suffix on sub-prompts' ($r.Out -match 'back=0' -and $r.Out -match 'quit=exit')
     Check 'main-menu suffix is quit-only' ($r.Out -match 'Select an option.*\{quit=exit\}')
@@ -89,7 +97,8 @@ try {
     Write-Host '--- install a real hook (list offset + Claude-only targeting) ---' -ForegroundColor Cyan
     $cfg2 = Join-Path $Work 'cfg2.json'; New-Config $cfg2
     $t = New-Proj 'T2'
-    # main 1 -> sub 1 (install existing) -> item 2 (first real hook = Ai-Memory-Check) -> events SessionStart -> client Claude -> target -> done -> start
+    # main 1 -> sub 1 (install existing) -> item 2 (displayed as Ai-Context-Check,
+    # internally Ai-Memory-Check) -> events SessionStart -> client Claude -> target -> done -> start
     $r = Invoke-Wizard -Config $cfg2 -Answers @('1', '1', '2', '2', '2', $t, 'done', '', '0')
     Check 'exit 0' ($r.Exit -eq 0)
     Check 'no stderr' ($r.Err -eq '')
