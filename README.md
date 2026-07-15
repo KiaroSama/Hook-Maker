@@ -21,12 +21,12 @@ starts the user's task.
 | `scripts/Test-Engine.ps1` | Self-contained engine smoke test (18 assertions, runs under pwsh and PowerShell 5.1). |
 | `scripts/Test-GitHubHooks.ps1` | Offline test suite for the GitHub hooks (47 assertions; mocks git state and `gh`, no network/account). |
 | `scripts/Test-RulesCheck.ps1` | Offline test suite for the Rules-Check hook and per-client install targeting (33 assertions). |
-| `scripts/Test-Wizard.ps1` | Drives the interactive wizard end-to-end via stdin (menu, hook listing, comma multi-select, client targeting, real self-contained installs) against temp projects (61 assertions). |
+| `scripts/Test-Wizard.ps1` | Drives the interactive wizard end-to-end via stdin (menu, hook listing, list/range multi-select, client targeting, real self-contained installs) against temp projects (66 assertions). |
 | `scripts/Test-SecretsCheck.ps1` | Offline test suite for the Secrets-Check hook (auto-append, ignore/tracked/staged/leak, throttled unused-secret scan; real throwaway git repos, 32 assertions). |
 | `scripts/Test-AiMemoryLoad.ps1` | Offline test suite for Ai-Memory-Load and Graph-Read-Check (content fingerprinting, whole-.ai/ file listing, truncation, graph-exists gate; 22 assertions). |
 | `scripts/Test-AiMemoryCheck.ps1` | Offline test suite for the Ai-Memory-Check hook (missing/stale memory.md, real specialized-file enumeration, cooldown; real throwaway git repos, 11 assertions). |
 | `scripts/Test-ContextHooks.ps1` | Offline test suite for Mcp-Usage-Check and Skills-Check (16 assertions). |
-| `scripts/Test-IgnoreRulesCheck.ps1` | Offline test suite for Ignore-Rules-Check (12 assertions; auto-fix, rule extraction, tracked protection, native pre-push enforcement, PowerShell 5.1). |
+| `scripts/Test-IgnoreRulesCheck.ps1` | Offline test suite for Ignore-Rules-Check (14 assertions; pre/post auto-fix, rule extraction, tracked protection, native pre-push enforcement, PowerShell 5.1). |
 | `scripts/_testlib.ps1` | Shared assertion helper used by the offline PowerShell test suites. |
 | `logs/` | Wizard execution logs (created on demand, not committed). |
 
@@ -49,7 +49,7 @@ starts the user's task.
 | `Github-Baseline-Check` | pre-task (SessionStart) | Checks the `.github` automation baseline against the project's real structure (CI workflow, `dependabot.yml` coverage per ecosystem/dir, optional CodeQL) and reports concrete gaps. |
 | `Rules-Check` | pre-task (SessionStart, UserPromptSubmit) | Verifies the configured rules were read before the task starts: the **global** rules directory (`~\.claude\rules` / `~\.codex\rules`) plus the current project's **local** rules directory (`<project>\.claude\rules` / `<project>\.codex\rules`). First check lists all rules files; afterwards it stays silent until a rules file is added/changed/removed, then reports exactly what moved. Detects the running client automatically (Claude Code exports `CLAUDE_PROJECT_DIR` on hook processes; Codex does not). |
 | `Secrets-Check` | pre-task + post-task (Stop) | Keeps `secrets.md` accurate and safe: flags it if untracked-but-should-be-ignored, tracked, or staged; flags a real `.env*` file that is itself tracked; flags a discovered secret value that turns up in another tracked file (file path only, value never printed); auto-appends secrets found in `.env*` but missing from `secrets.md` (value copied file-to-file, never printed/logged); flags empty-looking placeholder values; and, on a long throttle (default weekly, not every run), flags `secrets.md` entries that are no longer referenced anywhere else in the project — reported by name only, **never auto-removed** (a false positive would destroy an unrecoverable credential, so removal stays the AI's call, like every other advisory hook here). Makes no network calls and never tests a secret against its real service. |
-| `Ignore-Rules-Check` | post-task (Stop) + native Git pre-push | Auto-adds required local/private patterns to `.gitignore`, extracts additional path-like entries from explicit local-only/never-commit project rules, and blocks both completion and `git push` while required fixes remain. Project installs preserve and chain an existing native pre-push hook. Optional extra patterns can be set in `.env`. |
+| `Ignore-Rules-Check` | pre-task (SessionStart) + post-task (Stop) + native Git pre-push | Auto-adds required local/private patterns to `.gitignore`, extracts additional path-like entries from explicit local-only/never-commit project rules, and blocks both completion and `git push` while required fixes remain. Project installs preserve and chain an existing native pre-push hook. Optional extra patterns can be set in `.env`. |
 
 All advisory hooks are token-efficient by design: they stay **silent** unless a deterministic
 signal fires (staleness, wrangler config, out-of-sync git, pending Dependabot PR, unverified
@@ -89,12 +89,12 @@ existing one, or install from config), `2` show configured profiles, `3` validat
 `exit` quits.
 
 Under **Install an existing hook**, each hook shows a colored `[pre-task]`/`[post-task]` tag and a
-one-line description, and you can **install several at once** with a comma list (e.g. `2,4,5`) —
-choose the same events/client/projects for all or configure each, then a summary lists exactly
+one-line description, and you can **install several at once** with lists and ranges (e.g. `2-8,15`) —
+use each hook's recommended events with shared client/projects or configure each separately, then a summary lists exactly
 what will be installed.
 
 The **sync group** now lives inside `1` → **Install an existing hook** as list item `1`
-("Create or update a sync group"). Including `1` in a comma list (e.g. `1,3,5`) runs the sync-group
+("Create or update a sync group"). Including `1` in a selection (e.g. `1,3-5`) runs the sync-group
 wizard first, then installs the rest of the selection right after — one pass, no need to re-enter
 this menu. The sync engine itself is **not** listed as its own numbered hook — installing it as a
 plain custom hook would skip its `-Profile`/routing config, so it only works through this flow.

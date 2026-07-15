@@ -51,6 +51,25 @@ function New-Config {
 }
 function New-Proj { param([string]$Name) $p = Join-Path $Work $Name; New-Item -ItemType Directory -Path $p -Force | Out-Null; return $p }
 
+function Get-RegisteredEvents {
+    param([string]$SettingsPath, [string]$HookName)
+    $settings = Get-Content -LiteralPath $SettingsPath -Raw | ConvertFrom-Json
+    $events = New-Object System.Collections.Generic.List[string]
+    $pattern = '[\\/]' + [regex]::Escape($HookName) + '[\\/]' + [regex]::Escape($HookName + '.ps1')
+    foreach ($event in $settings.hooks.PSObject.Properties) {
+        $matched = $false
+        foreach ($group in @($event.Value)) {
+            foreach ($handler in @($group.hooks)) {
+                foreach ($property in @('command', 'commandWindows', 'command_windows')) {
+                    if ($null -ne $handler.PSObject.Properties[$property] -and [string]$handler.$property -match $pattern) { $matched = $true }
+                }
+            }
+        }
+        if ($matched) { [void]$events.Add($event.Name) }
+    }
+    return $events.ToArray()
+}
+
 try {
     # =====================================================================
     Write-Host '--- menu structure + listing + sync-group create (-NoInstall) ---' -ForegroundColor Cyan
@@ -100,6 +119,7 @@ try {
     $r = Invoke-Wizard -Config $cfg2 -Answers @('1', '1', '2', '2', '2', $t, 'done', '', '0')
     Check 'exit 0' ($r.Exit -eq 0)
     Check 'no stderr' ($r.Err -eq '')
+    Check 'event menu separates camel-case labels' ($r.Out -match 'Session Start \+ User Prompt Submit' -and $r.Out -match 'User Prompt Submit' -and $r.Out -match 'Pre Tool Use, Post Tool Use, Stop')
     $claude2 = Join-Path $t '.claude\settings.local.json'
     Check 'claude settings written' (Test-Path $claude2)
     $j2 = ''; if (Test-Path $claude2) { $j2 = [System.IO.File]::ReadAllText($claude2) }
@@ -148,21 +168,43 @@ try {
     }
 
     # =====================================================================
-    Write-Host '--- multi-select install (comma list, same settings) ---' -ForegroundColor Cyan
+    Write-Host '--- multi-select install (range + list, recommended events) ---' -ForegroundColor Cyan
     $cfg4 = Join-Path $Work 'cfg4.json'; New-Config $cfg4
     $m = New-Proj 'Multi'
-    # main 1 -> sub 1 -> "2,3,4" (three advisory hooks; the engine is excluded
+    # main 1 -> sub 1 -> "2-8,15" (eight advisory hooks; the engine is excluded
     #        from this list entirely, see the guard test below)
-    #        -> mode 1 (same) -> events SessionStart -> client Both -> target -> done -> start -> exit
-    $r = Invoke-Wizard -Config $cfg4 -Answers @('1', '1', '2,3,4', '1', '2', '1', $m, 'done', '', '0')
+    #        -> mode 1 (recommended events per hook) -> client Both -> target -> done -> start -> exit
+    $r = Invoke-Wizard -Config $cfg4 -Answers @('1', '1', '2-8,15', '1', '1', $m, 'done', '', '0')
     Check 'exit 0' ($r.Exit -eq 0)
     Check 'no stderr' ($r.Err -eq '')
+    Check 'selection accepts a range combined with a single item' ($r.Out -notmatch 'Enter number\(s\)')
+    Check 'multi-hook header has a blank line before its options' ($r.Out -match 'Configuring 8 hooks:[^\r\n]*\r?\n\r?\n\s*1\.')
+    $setupSource = [System.IO.File]::ReadAllText($Setup)
+    Check 'multi-hook header label uses a different color from hook names' ($setupSource -match "Get-Painted \('Configuring '.*\`$C\.Input.*Get-Painted \`$selectedNames \`$C\.White")
     $installedFolders = @(Get-ChildItem -LiteralPath (Join-Path $m '.claude\hooks\Hook-Maker') -Directory -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Name)
-    Check 'three distinct hooks installed in one pass' ($installedFolders.Count -eq 3)
-    Check 'each installed under its own friendly folder' ($installedFolders -notcontains 'Cross-Project-.ai-Knowledge-Sync' -and (@($installedFolders | Where-Object { $_ -match '-' }).Count -eq 3))
+    Check 'eight distinct hooks installed in one pass' ($installedFolders.Count -eq 8)
+    Check 'each installed under its own friendly folder' ($installedFolders -notcontains 'Cross-Project-.ai-Knowledge-Sync' -and (@($installedFolders | Where-Object { $_ -match '-' }).Count -eq 8))
     $codexFolders = @(Get-ChildItem -LiteralPath (Join-Path $m '.codex\hooks\Hook-Maker') -Directory -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Name)
-    Check 'batch honored client=Both (codex got all three too)' ($codexFolders.Count -eq 3)
-    Check 'summary lists all three (3 event lines)' (([regex]::Matches($r.Out, 'events:')).Count -ge 3)
+    Check 'batch honored client=Both (codex got all eight too)' ($codexFolders.Count -eq 8)
+    $expectedEvents = [ordered]@{
+        'Ai-Memory-Check'       = 'Stop'
+        'Ai-Memory-Load'        = 'SessionStart,UserPromptSubmit'
+        'Ci-Status-Check'       = 'Stop'
+        'Dependabot-Check'      = 'SessionStart'
+        'Github-Baseline-Check' = 'SessionStart'
+        'Git-Sync-Check'        = 'SessionStart,Stop'
+        'Cloudflare-Deploy'     = 'Stop'
+        'Secrets-Check'         = 'SessionStart,Stop'
+    }
+    $recommendedEventsApplied = $true
+    foreach ($entry in $expectedEvents.GetEnumerator()) {
+        $expected = @($entry.Value.Split(',') | Sort-Object) -join ','
+        $claudeEvents = @(Get-RegisteredEvents (Join-Path $m '.claude\settings.local.json') $entry.Key | Sort-Object) -join ','
+        $codexEvents = @(Get-RegisteredEvents (Join-Path $m '.codex\hooks.json') $entry.Key | Sort-Object) -join ','
+        if ($claudeEvents -ne $expected -or $codexEvents -ne $expected) { $recommendedEventsApplied = $false }
+    }
+    Check 'batch applies each hook recommended events in both clients' $recommendedEventsApplied
+    Check 'summary lists all eight (8 event lines)' (([regex]::Matches($r.Out, 'events:')).Count -ge 8)
 
     # =====================================================================
     Write-Host '--- multi-select: sync group (1) combined with a hook runs both, once ---' -ForegroundColor Cyan

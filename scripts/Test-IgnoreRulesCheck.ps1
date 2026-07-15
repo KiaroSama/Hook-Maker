@@ -56,15 +56,21 @@ try {
 
     $r = Fire -Cwd $repo -RawStdin ''
     Check 'empty stdin -> silent' ($r.Exit -eq 0 -and $r.Out -eq '') $r.Out
+    $r = Fire -Cwd $repo -EventName 'UserPromptSubmit'
+    Check 'unconfigured event -> silent' ($r.Exit -eq 0 -and $r.Out -eq '') $r.Out
     $r = Fire -Cwd $repo -EventName 'SessionStart'
-    Check 'non-Stop event -> silent' ($r.Exit -eq 0 -and $r.Out -eq '') $r.Out
-    $r = Fire -Cwd $repo
     $ignore = [System.IO.File]::ReadAllText((Join-Path $repo '.gitignore'))
-    Check 'Stop auto-adds required protected patterns' ($ignore -match '(?m)^/\.ai/$' -and $ignore -match '(?m)^/AGENTS\.md$' -and $ignore -match '(?m)^\*\*/\.ignoreme$') $ignore
-    Check 'Stop extracts a local-only path from project rules' ($ignore -match '(?m)^/private-cache/$') $ignore
-    Check 'auto-fix blocks once so .gitignore can be reviewed and staged' ($r.Out -match '"decision":"block"' -and $r.Out -match 'Auto-added') $r.Out
+    Check 'SessionStart auto-adds required protected patterns' ($ignore -match '(?m)^/\.ai/$' -and $ignore -match '(?m)^/AGENTS\.md$' -and $ignore -match '(?m)^\*\*/\.ignoreme$') $ignore
+    Check 'SessionStart extracts a local-only path from project rules' ($ignore -match '(?m)^/private-cache/$') $ignore
+    Check 'pre-task auto-fix reports context' ($r.Out -match '"hookSpecificOutput"' -and $r.Out -match 'Auto-added') $r.Out
     $r = Fire -Cwd $repo
-    Check 'clean second Stop -> silent' ($r.Exit -eq 0 -and $r.Out -eq '') $r.Out
+    Check 'clean post-task Stop -> silent' ($r.Exit -eq 0 -and $r.Out -eq '') $r.Out
+
+    $post = New-Repo 'post'
+    $r = Fire -Cwd $post
+    $postIgnore = [System.IO.File]::ReadAllText((Join-Path $post '.gitignore'))
+    Check 'Stop also auto-adds required protected patterns' ($postIgnore -match '(?m)^/\.ai/$') $postIgnore
+    Check 'post-task auto-fix blocks once for review' ($r.Out -match '"decision":"block"' -and $r.Out -match 'Auto-added') $r.Out
 
     $tracked = New-Repo 'tracked'
     [System.IO.File]::WriteAllText((Join-Path $tracked 'AGENTS.md'), 'private', (New-Object System.Text.UTF8Encoding $false))
