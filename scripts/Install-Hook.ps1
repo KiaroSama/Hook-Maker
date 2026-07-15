@@ -246,6 +246,32 @@ function Write-JsonFile {
     [System.IO.File]::WriteAllText($Path, ($Value | ConvertTo-Json -Depth 50), $Utf8NoBom)
 }
 
+function Install-IgnorePrePush {
+    if ($FriendlyName -ne 'Ignore-Rules-Check' -or [string]::IsNullOrWhiteSpace($TargetProject)) { return }
+    if ($null -eq (Get-Command git -ErrorAction SilentlyContinue)) { return }
+    $hooksPath = [string](Invoke-QuietCommand -FilePath git -ArgumentList @('-C', $projectRoot, 'rev-parse', '--git-path', 'hooks'))
+    if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($hooksPath)) { return }
+    if (-not [System.IO.Path]::IsPathRooted($hooksPath)) { $hooksPath = Join-Path $projectRoot $hooksPath }
+    $hooksPath = [System.IO.Path]::GetFullPath($hooksPath)
+
+    $runtime = Copy-HookRuntime -ClientDir (Split-Path -Parent $hooksPath)
+    $prePush = Join-Path $hooksPath 'pre-push'
+    $previous = $prePush + '.hookmaker-existing'
+    $marker = '# Hook Maker: Ignore-Rules-Check'
+    if (Test-Path -LiteralPath $prePush -PathType Leaf) {
+        $current = [System.IO.File]::ReadAllText($prePush)
+        if (-not $current.Contains($marker)) {
+            if (Test-Path -LiteralPath $previous) { throw "Cannot preserve the existing pre-push hook because '$previous' already exists." }
+            Move-Item -LiteralPath $prePush -Destination $previous
+        }
+    }
+
+    $scriptPath = $runtime.Script.Replace('\', '/').Replace('$', '\$').Replace('`', '\`')
+    $body = "#!/bin/sh`n$marker`npowershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File `"$scriptPath`" -GitPrePush || exit `$?`nif [ -f `"`$0.hookmaker-existing`" ]; then`n  `"`$0.hookmaker-existing`" `"`$@`"`nfi`n"
+    [System.IO.File]::WriteAllText($prePush, $body, $Utf8NoBom)
+    Write-Host "Native git pre-push protection installed in: $prePush"
+}
+
 function Add-HookGroup {
     param(
         [Parameter(Mandatory = $true)]$HooksObject,
@@ -350,5 +376,7 @@ if (-not $ClaudeOnly) {
     Write-Host "Codex hook ($ScopeLabel) installed in: $CodexHooks"
     Write-Host "Codex runtime copy: $($codexRuntime.Script)"
 }
+
+Install-IgnorePrePush
 
 Write-Host 'Restart the clients and review /hooks. Codex may require trusting the new command.'
