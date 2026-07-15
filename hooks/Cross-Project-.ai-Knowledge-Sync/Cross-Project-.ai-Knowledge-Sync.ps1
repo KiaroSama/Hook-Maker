@@ -27,46 +27,6 @@ else {
 
 . (Join-Path $ScriptRoot '..\_hooklib.ps1')
 
-function Normalize-Path {
-    param([Parameter(Mandatory = $true)][string]$Path)
-
-    $expanded = [Environment]::ExpandEnvironmentVariables($Path)
-    $full = [System.IO.Path]::GetFullPath($expanded)
-    return $full.TrimEnd([char[]]@([System.IO.Path]::DirectorySeparatorChar, [System.IO.Path]::AltDirectorySeparatorChar))
-}
-
-function Test-PathInside {
-    param(
-        [Parameter(Mandatory = $true)][string]$Candidate,
-        [Parameter(Mandatory = $true)][string]$Parent
-    )
-
-    $candidatePath = Normalize-Path $Candidate
-    $parentPath = Normalize-Path $Parent
-
-    if ([string]::Equals($candidatePath, $parentPath, [System.StringComparison]::OrdinalIgnoreCase)) {
-        return $true
-    }
-
-    $prefix = $parentPath + [System.IO.Path]::DirectorySeparatorChar
-    return $candidatePath.StartsWith($prefix, [System.StringComparison]::OrdinalIgnoreCase)
-}
-
-function Set-ObjectProperty {
-    param(
-        [Parameter(Mandatory = $true)]$Object,
-        [Parameter(Mandatory = $true)][string]$Name,
-        $Value
-    )
-
-    if ($null -ne $Object.PSObject.Properties[$Name]) {
-        $Object.$Name = $Value
-    }
-    else {
-        $Object | Add-Member -MemberType NoteProperty -Name $Name -Value $Value
-    }
-}
-
 function Get-PropertyValue {
     param(
         $Primary,
@@ -559,37 +519,20 @@ if ($Acknowledge) {
     exit 0
 }
 
-$rawInput = [Console]::In.ReadToEnd()
-if ([string]::IsNullOrWhiteSpace($rawInput)) {
-    exit 0
-}
-try {
-    $hookInput = $rawInput | ConvertFrom-Json
-}
-catch {
+$hookInput = Read-HookInput
+if ($null -eq $hookInput) {
     exit 0
 }
 
-# Read stdin fields defensively: a missing property must not crash the hook
-# under strict mode when a client omits an optional field.
-function Get-InputField {
-    param($Object, [Parameter(Mandatory = $true)][string]$Name)
-
-    if ($null -ne $Object -and $null -ne $Object.PSObject.Properties[$Name] -and $null -ne $Object.$Name) {
-        return [string]$Object.$Name
-    }
-    return ''
-}
-
-$eventName = Get-InputField $hookInput 'hook_event_name'
+$eventName = [string](Get-Field $hookInput 'hook_event_name')
 if ([string]::IsNullOrWhiteSpace($eventName)) {
     exit 0
 }
-$workingDirectory = Get-InputField $hookInput 'cwd'
+$workingDirectory = [string](Get-Field $hookInput 'cwd')
 if ([string]::IsNullOrWhiteSpace($workingDirectory)) {
     $workingDirectory = (Get-Location).Path
 }
-$sessionId = Get-InputField $hookInput 'session_id'
+$sessionId = [string](Get-Field $hookInput 'session_id')
 
 $contexts = @(Get-MatchingRoutes -Config $config -WorkingDirectory $workingDirectory -EventName $eventName -ProfileFilter $Profile -RouteFilter $Route)
 if ($contexts.Count -eq 0) {

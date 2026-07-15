@@ -23,22 +23,8 @@ foreach ($required in @($Hook, $InstallScript)) {
 
 $script:Pass = 0
 $script:Fail = 0
-function Check {
-    param([string]$Name, [bool]$Condition, [string]$Actual = $null)
-    if ($Condition) {
-        $script:Pass++
-        Write-Host ('[PASS] ' + $Name) -ForegroundColor Green
-    }
-    else {
-        $script:Fail++
-        Write-Host ('[FAIL] ' + $Name) -ForegroundColor Red
-        if ($env:HOOKMAKER_TEST_DEBUG -eq '1' -and $null -ne $Actual) {
-            $preview = $Actual
-            if ($preview.Length -gt 400) { $preview = $preview.Substring(0, 400) }
-            Write-Host ('       actual: [' + $preview + ']') -ForegroundColor DarkGray
-        }
-    }
-}
+$script:TestPreviewLength = 400
+. (Join-Path $PSScriptRoot '_testlib.ps1')
 
 $Work = Join-Path ([System.IO.Path]::GetTempPath()) ('hookmaker-secretstest-' + [guid]::NewGuid().ToString('N').Substring(0, 8))
 $FakeAppData = Join-Path $Work 'appdata'
