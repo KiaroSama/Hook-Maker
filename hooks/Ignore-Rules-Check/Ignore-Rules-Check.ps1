@@ -1,4 +1,4 @@
-# Ignore-Rules-Check - enforces local/private git-ignore rules at task end and push time.
+# Ignore-Rules-Check - enforces local/private git-ignore rules before/after tasks and pushes.
 
 param([switch]$GitPrePush)
 
@@ -15,8 +15,9 @@ else {
 }
 if ($null -eq $hookInput) { exit 0 }
 $eventName = [string](Get-Field $hookInput 'hook_event_name')
-if ($eventName -notin @('Stop', 'SubagentStop', 'GitPrePush')) { exit 0 }
-if (-not $GitPrePush -and (Get-Field $hookInput 'stop_hook_active') -eq $true) { exit 0 }
+if ($eventName -notin @('SessionStart', 'Stop', 'SubagentStop', 'GitPrePush')) { exit 0 }
+$isStopEvent = ($eventName -eq 'Stop' -or $eventName -eq 'SubagentStop')
+if ($isStopEvent -and (Get-Field $hookInput 'stop_hook_active') -eq $true) { exit 0 }
 $cwd = [string](Get-Field $hookInput 'cwd')
 if ([string]::IsNullOrWhiteSpace($cwd) -or -not (Test-Path -LiteralPath $cwd -PathType Container)) { exit 0 }
 if ($null -eq (Get-Command git -ErrorAction SilentlyContinue)) { exit 0 }
@@ -117,5 +118,10 @@ if ($GitPrePush) {
     [Console]::Error.WriteLine($reason)
     exit 1
 }
-@{ decision = 'block'; reason = $reason } | ConvertTo-Json -Compress
+if ($isStopEvent) {
+    @{ decision = 'block'; reason = $reason } | ConvertTo-Json -Compress
+    exit 0
+}
+@{ hookSpecificOutput = @{ hookEventName = $eventName; additionalContext = $reason } } |
+    ConvertTo-Json -Depth 5 -Compress
 exit 0
