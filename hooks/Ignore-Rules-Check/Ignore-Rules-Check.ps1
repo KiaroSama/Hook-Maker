@@ -1,0 +1,109 @@
+# Ignore-Rules-Check - enforces local/private git-ignore rules at task end.
+
+Set-StrictMode -Version 2.0
+$ErrorActionPreference = 'Stop'
+
+. (Join-Path $PSScriptRoot '..\_hooklib.ps1')
+
+$hookInput = Read-HookInput
+if ($null -eq $hookInput) { exit 0 }
+$eventName = [string](Get-Field $hookInput 'hook_event_name')
+if ($eventName -ne 'Stop' -and $eventName -ne 'SubagentStop') { exit 0 }
+if ((Get-Field $hookInput 'stop_hook_active') -eq $true) { exit 0 }
+$cwd = [string](Get-Field $hookInput 'cwd')
+if ([string]::IsNullOrWhiteSpace($cwd) -or -not (Test-Path -LiteralPath $cwd -PathType Container)) { exit 0 }
+if ($null -eq (Get-Command git -ErrorAction SilentlyContinue)) { exit 0 }
+$inside = Invoke-QuietCommand -FilePath git -ArgumentList @('-C', $cwd, 'rev-parse', '--is-inside-work-tree')
+if ($LASTEXITCODE -ne 0 -or [string]$inside -ne 'true') { exit 0 }
+
+$patterns = New-Object System.Collections.Generic.List[string]
+@(
+    '/.ai/', '/secrets.md', '/explain-AI.md', '/reference.md', '/CLAUDE.md', '/AGENTS.md',
+    '/.agents/', '/.claude/', '/.kiro/', '/.codex/', '/.cursor/', '/.cline/', '/graphify-out/',
+    '.ignoreme', '**/.ignoreme', '/.env', '/.env.*', '!/.env.example', '!/.env.sample',
+    '!/.env.template', '!/.env.dist'
+) | ForEach-Object { [void]$patterns.Add($_) }
+
+$config = Read-HookEnv (Join-Path $PSScriptRoot '.env')
+if ($config.ContainsKey('EXTRA_PATTERNS')) {
+    foreach ($item in $config['EXTRA_PATTERNS'].Split(';')) {
+        $item = $item.Trim()
+        if ($item -ne '') { [void]$patterns.Add($item) }
+    }
+}
+
+# Extract only path-like backtick tokens from explicit ignore/local-only rules.
+$ruleFiles = New-Object System.Collections.Generic.List[string]
+foreach ($name in @('AGENTS.md', 'CLAUDE.md')) {
+    $path = Join-Path $cwd $name
+    if (Test-Path -LiteralPath $path -PathType Leaf) { [void]$ruleFiles.Add($path) }
+}
+foreach ($relativeDir in @('.agents\rules', '.claude\rules', '.codex\rules', '.cursor\rules', '.cline\rules', '.kiro\rules')) {
+    $dir = Join-Path $cwd $relativeDir
+    if (-not (Test-Path -LiteralPath $dir -PathType Container)) { continue }
+    foreach ($file in @(Get-ChildItem -LiteralPath $dir -File -Recurse -ErrorAction SilentlyContinue)) {
+        [void]$ruleFiles.Add($file.FullName)
+    }
+}
+foreach ($file in $ruleFiles) {
+    foreach ($line in [System.IO.File]::ReadAllLines($file)) {
+        if ($line -notmatch '(?i)(git.?ignore|local-only|never\s+(?:be\s+)?commit|do\s+not\s+commit|must\s+not.*commit)') { continue }
+        foreach ($match in [regex]::Matches($line, '`([^`]+)`')) {
+            $item = $match.Groups[1].Value.Trim().Replace('\', '/')
+            $item = $item -replace '^(?i)<(?:project|repo)(?:Root)?>/', ''
+            if ($item -eq '' -or $item -match '[\s:|<>]' -or $item -in @('.git', '.git/', '.gitignore')) { continue }
+            if ($item.StartsWith('./')) { $item = $item.Substring(2) }
+            if (-not $item.StartsWith('/') -and -not $item.StartsWith('**/')) { $item = '/' + $item }
+            if ($item -match '^/?[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.*-]+)*/?$' -or $item.StartsWith('**/')) {
+                [void]$patterns.Add($item)
+            }
+        }
+    }
+}
+$patterns = @($patterns | Sort-Object -Unique)
+
+$ignorePath = Join-Path $cwd '.gitignore'
+$existing = ''
+if (Test-Path -LiteralPath $ignorePath -PathType Leaf) {
+    $existing = [System.IO.File]::ReadAllText($ignorePath)
+}
+$existingLines = @($existing -split '\r?\n' | ForEach-Object { $_.Trim() })
+$missing = @($patterns | Where-Object { $existingLines -notcontains $_ })
+if ($missing.Count -gt 0) {
+    $prefix = $existing.TrimEnd()
+    if ($prefix -ne '') { $prefix += "`n`n" }
+    $header = '# Hook Maker: local/private files (auto-managed)'
+    if ($existingLines -contains $header) { $header = '' }
+    $block = @($header) + $missing | Where-Object { $_ -ne '' }
+    [System.IO.File]::WriteAllText($ignorePath, $prefix + ($block -join "`n") + "`n", [System.Text.UTF8Encoding]::new($false))
+}
+
+# A .gitignore entry does not untrack an already indexed file; block until fixed.
+$tracked = New-Object System.Collections.Generic.List[string]
+$staged = New-Object System.Collections.Generic.List[string]
+$trackedFiles = @(Invoke-QuietCommand -FilePath git -ArgumentList @('-C', $cwd, 'ls-files') | Where-Object { $_ })
+$stagedFiles = @(Invoke-QuietCommand -FilePath git -ArgumentList @('-C', $cwd, 'diff', '--cached', '--name-only') | Where-Object { $_ })
+foreach ($file in @($trackedFiles + $stagedFiles | Sort-Object -Unique)) {
+    $detail = @(Invoke-QuietCommand -FilePath git -ArgumentList @('-C', $cwd, 'check-ignore', '--no-index', '-v', '--', $file))
+    if ($LASTEXITCODE -ne 0 -or $detail.Count -eq 0) { continue }
+    $text = [string]$detail[0]
+    $tab = $text.IndexOf("`t")
+    if ($tab -lt 0) { continue }
+    $source = $text.Substring(0, $tab)
+    $colon = $source.LastIndexOf(':')
+    if ($colon -lt 0) { continue }
+    $matchedPattern = $source.Substring($colon + 1)
+    if ($patterns -notcontains $matchedPattern) { continue }
+    if ($trackedFiles -contains $file) { [void]$tracked.Add($file) }
+    if ($stagedFiles -contains $file) { [void]$staged.Add($file) }
+}
+
+if ($missing.Count -eq 0 -and $tracked.Count -eq 0 -and $staged.Count -eq 0) { exit 0 }
+$lines = New-Object System.Collections.Generic.List[string]
+[void]$lines.Add('IGNORE RULES CHECK (' + $cwd + '):')
+if ($missing.Count -gt 0) { [void]$lines.Add('Auto-added ' + $missing.Count + ' missing pattern(s) to .gitignore: ' + ($missing -join ', ')) }
+if ($tracked.Count -gt 0) { [void]$lines.Add('TRACKED protected paths must be untracked before push (preserve local files): ' + (($tracked | Sort-Object -Unique) -join ', ')) }
+if ($staged.Count -gt 0) { [void]$lines.Add('STAGED protected paths must be removed from the index before push: ' + (($staged | Sort-Object -Unique) -join ', ')) }
+[void]$lines.Add('Review .gitignore, preserve local files, and add any other project-specific private/generated paths required by the current rules before pushing.')
+@{ decision = 'block'; reason = ($lines.ToArray() -join "`n") } | ConvertTo-Json -Compress
+exit 0
