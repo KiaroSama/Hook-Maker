@@ -3,7 +3,7 @@
 #
 # Fully offline and account-free: git state is built in throwaway local repos
 # (remote-tracking refs are simulated with git update-ref - no fetch/push), and
-# the GitHub CLI is replaced by a PATH shim (gh.cmd -> gh-mock.ps1) that serves
+# the GitHub CLI is replaced by a PATH shim (gh.ps1) that serves
 # canned JSON from $env:GH_MOCK_DIR. Payloads are delivered through a real
 # stdin file handle (see Test-Engine.ps1 for why pipes are not used).
 #
@@ -29,34 +29,20 @@ foreach ($hook in @($DependabotHook, $CiHook, $BaselineHook)) {
 
 $script:Pass = 0
 $script:Fail = 0
-function Check {
-    param([string]$Name, [bool]$Condition, [string]$Actual = $null)
-    if ($Condition) {
-        $script:Pass++
-        Write-Host ('[PASS] ' + $Name) -ForegroundColor Green
-    }
-    else {
-        $script:Fail++
-        Write-Host ('[FAIL] ' + $Name) -ForegroundColor Red
-        if ($env:HOOKMAKER_TEST_DEBUG -eq '1' -and $null -ne $Actual) {
-            $preview = $Actual
-            if ($preview.Length -gt 200) { $preview = $preview.Substring(0, 200) }
-            Write-Host ('       actual: [' + $preview + ']') -ForegroundColor DarkGray
-        }
-    }
-}
+$script:TestPreviewLength = 200
+. (Join-Path $PSScriptRoot '_testlib.ps1')
 
-$TestStart = [DateTime]::UtcNow
 $Work = Join-Path ([System.IO.Path]::GetTempPath()) ('hookmaker-ghtest-' + [guid]::NewGuid().ToString('N').Substring(0, 8))
 New-Item -ItemType Directory -Path $Work -Force | Out-Null
+$OriginalLocalAppData = $env:LOCALAPPDATA
+$env:LOCALAPPDATA = Join-Path $Work 'localappdata'
+New-Item -ItemType Directory -Path $env:LOCALAPPDATA -Force | Out-Null
 Write-Host ("Workspace: $Work") -ForegroundColor DarkGray
 
 # ---- gh shim: intercepts every `gh` call in child processes ----
 $ShimDir = Join-Path $Work 'ghshim'
 $MockDir = Join-Path $Work 'ghmock'
 New-Item -ItemType Directory -Path $ShimDir, $MockDir -Force | Out-Null
-$ghCmd = "@echo off`r`npowershell -NoProfile -ExecutionPolicy Bypass -File `"%~dp0gh-mock.ps1`" %*`r`nexit /b %ERRORLEVEL%`r`n"
-[System.IO.File]::WriteAllText((Join-Path $ShimDir 'gh.cmd'), $ghCmd)
 $ghMock = @'
 $mockDir = $env:GH_MOCK_DIR
 if (-not $mockDir) { exit 1 }
@@ -95,8 +81,11 @@ if ($a.Count -ge 2 -and $a[0] -eq 'run' -and $a[1] -eq 'list') {
 }
 exit 1
 '@
-[System.IO.File]::WriteAllText((Join-Path $ShimDir 'gh-mock.ps1'), $ghMock)
-$env:PATH = $ShimDir + ';' + $env:PATH
+[System.IO.File]::WriteAllText((Join-Path $ShimDir 'gh.ps1'), $ghMock)
+$pathWithoutRealGh = @($env:PATH -split ';' | Where-Object {
+    $_ -ne '' -and -not (Test-Path -LiteralPath (Join-Path $_ 'gh.exe') -PathType Leaf)
+})
+$env:PATH = (@($ShimDir) + $pathWithoutRealGh) -join ';'
 $env:GH_MOCK_DIR = $MockDir
 
 function Set-Mock {
@@ -413,13 +402,7 @@ updates:
     }
 }
 finally {
-    # remove only the cooldown state files this run created
-    $stateDir = Join-Path $env:LOCALAPPDATA 'HookMaker\state'
-    if (Test-Path -LiteralPath $stateDir) {
-        Get-ChildItem -LiteralPath $stateDir -File -ErrorAction SilentlyContinue |
-            Where-Object { $_.Name -match '^(DependabotCheck|CiStatusCheck|GithubBaselineCheck)-' -and $_.LastWriteTimeUtc -ge $TestStart } |
-            Remove-Item -Force -ErrorAction SilentlyContinue
-    }
+    $env:LOCALAPPDATA = $OriginalLocalAppData
     if ($KeepArtifacts) {
         Write-Host ("Artifacts kept at: $Work") -ForegroundColor DarkGray
     }

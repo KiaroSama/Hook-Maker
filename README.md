@@ -14,7 +14,7 @@ starts the user's task.
 | `sync-hooks.example.json` | The tracked example config (what CI validates). |
 | `sync-hooks.json` | Your real profiles and routes — **machine-local and git-ignored** (it holds your project paths). Auto-created from the sample on the first wizard run. |
 | `hooks/<Name>/` | One folder per hook: `<Name>.ps1` + `.env.example` (tracked) + `.env` (your local copy, git-ignored). |
-| `hooks/_hooklib.ps1` | Shared helpers (stdin/`.env`/hash/JSON) the shipped hooks dot-source; the `_` prefix keeps it out of the hook picker. |
+| `hooks/_hooklib.ps1` | Shared helpers (stdin/`.env`/path/object/hash/JSON/work-time) the shipped hooks dot-source; the `_` prefix keeps it out of the hook picker. |
 | `scripts/Setup-SyncGroup.ps1` | Interactive wizard: sync groups, hook creation/installs, profile listing, validation. |
 | `scripts/Install-Hook.ps1` | Writes a hook command into a project's `.claude/settings.local.json` + `.codex/hooks.json` (or, with no `-TargetProject`, the global `~/.claude` + `~/.codex`). Supports `-CustomHook <path>`. |
 | `scripts/Validate-Config.ps1` | Validates `sync-hooks.json`. |
@@ -26,6 +26,7 @@ starts the user's task.
 | `scripts/Test-AiMemoryLoad.ps1` | Offline test suite for Ai-Memory-Load and Graph-Read-Check (content fingerprinting, whole-.ai/ file listing, truncation, graph-exists gate; 22 assertions). |
 | `scripts/Test-AiMemoryCheck.ps1` | Offline test suite for the Ai-Memory-Check hook (missing/stale memory.md, real specialized-file enumeration, cooldown; real throwaway git repos, 11 assertions). |
 | `scripts/Test-ContextHooks.ps1` | Offline test suite for Mcp-Usage-Check and Skills-Check (16 assertions). |
+| `scripts/_testlib.ps1` | Shared assertion helper used by the offline PowerShell test suites. |
 | `logs/` | Wizard execution logs (created on demand, not committed). |
 
 ## Shipped hooks
