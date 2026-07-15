@@ -92,8 +92,20 @@ try {
     $nativeHook = Join-Path $pushRepo '.git\hooks\pre-push'
     [System.IO.File]::WriteAllText($nativeHook, "#!/bin/sh`necho previous > previous-hook.txt`n", (New-Object System.Text.UTF8Encoding $false))
     & $InstallScript -CustomHook $Hook -Events @('Stop') -TargetProject $pushRepo -CodexOnly *> $null
-    Check 'install creates a managed native pre-push hook' ((Test-Path -LiteralPath $nativeHook) -and ([System.IO.File]::ReadAllText($nativeHook) -match 'Hook Maker: Ignore-Rules-Check'))
+    $nativeBody = [System.IO.File]::ReadAllText($nativeHook)
+    Check 'install creates a managed native pre-push hook' ((Test-Path -LiteralPath $nativeHook) -and ($nativeBody -match 'Hook Maker: Ignore-Rules-Check'))
     Check 'install preserves an existing pre-push hook' (Test-Path -LiteralPath ($nativeHook + '.hookmaker-existing'))
+    $prePushRuntime = Join-Path $pushRepo '.git\hooks\Hook-Maker'
+    $ignoreCommand = $nativeBody.IndexOf('Ignore-Rules-Check.ps1')
+    $secretsCommand = $nativeBody.IndexOf('Secrets-Check.ps1')
+    $largeCommand = $nativeBody.IndexOf('Large-File-Check.ps1')
+    $previousCommand = $nativeBody.IndexOf('.hookmaker-existing')
+    Check 'pre-push bundles all three self-contained checks' (
+        (Test-Path -LiteralPath (Join-Path $prePushRuntime 'Ignore-Rules-Check\Ignore-Rules-Check.ps1')) -and
+        (Test-Path -LiteralPath (Join-Path $prePushRuntime 'Secrets-Check\Secrets-Check.ps1')) -and
+        (Test-Path -LiteralPath (Join-Path $prePushRuntime 'Large-File-Check\Large-File-Check.ps1')))
+    Check 'pre-push order is Ignore then Secrets then Large File then previous hook' (
+        $ignoreCommand -ge 0 -and $ignoreCommand -lt $secretsCommand -and $secretsCommand -lt $largeCommand -and $largeCommand -lt $previousCommand)
 
     $remote = Join-Path $Work 'remote.git'
     & git init -q --bare $remote
@@ -103,6 +115,20 @@ try {
 
     & git -C $pushRepo add .gitignore
     & git -C $pushRepo commit -q -m c2
+    [System.IO.File]::WriteAllText((Join-Path $pushRepo '.env'), 'API_KEY=fixture-value-123456789', (New-Object System.Text.UTF8Encoding $false))
+    $pushOutput = (& git -C $pushRepo push -u origin main 2>&1 | Out-String)
+    Check 'Secrets-Check blocks before Large File and previous hook' ($LASTEXITCODE -ne 0 -and $pushOutput -match 'SECRETS CHECK' -and -not (Test-Path -LiteralPath (Join-Path $pushRepo 'previous-hook.txt'))) $pushOutput
+
+    [System.IO.File]::WriteAllText((Join-Path $pushRepo 'use.txt'), 'API_KEY', (New-Object System.Text.UTF8Encoding $false))
+    [System.IO.File]::WriteAllLines((Join-Path $pushRepo 'big.ps1'), @(1..801 | ForEach-Object { '# line' }), (New-Object System.Text.UTF8Encoding $false))
+    & git -C $pushRepo add use.txt big.ps1
+    & git -C $pushRepo commit -q -m c3
+    $pushOutput = (& git -C $pushRepo push -u origin main 2>&1 | Out-String)
+    Check 'Large-File-Check blocks before previous hook' ($LASTEXITCODE -ne 0 -and $pushOutput -match 'LARGE FILE CHECK' -and -not (Test-Path -LiteralPath (Join-Path $pushRepo 'previous-hook.txt'))) $pushOutput
+
+    [System.IO.File]::WriteAllText((Join-Path $pushRepo 'big.ps1'), '# small', (New-Object System.Text.UTF8Encoding $false))
+    & git -C $pushRepo add big.ps1
+    & git -C $pushRepo commit -q -m c4
     $pushOutput = (& git -C $pushRepo push -u origin main 2>&1 | Out-String)
     Check 'clean push succeeds and still runs the previous hook' ($LASTEXITCODE -eq 0 -and (Test-Path -LiteralPath (Join-Path $pushRepo 'previous-hook.txt'))) $pushOutput
 }

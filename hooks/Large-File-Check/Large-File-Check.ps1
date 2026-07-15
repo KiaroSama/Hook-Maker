@@ -16,12 +16,19 @@
 #   EXTENSIONS        comma-separated source extensions to scan
 #   COOLDOWN_MINUTES  minimum minutes between Stop reports per project (default 60)
 
+param([switch]$GitPrePush)
+
 Set-StrictMode -Version 2.0
 $ErrorActionPreference = 'Stop'
 
 . (Join-Path $PSScriptRoot '..\_hooklib.ps1')
 
-$hookInput = Read-HookInput
+$hookInput = if ($GitPrePush) {
+    [pscustomobject]@{ cwd = (Get-Location).Path; hook_event_name = 'GitPrePush' }
+}
+else {
+    Read-HookInput
+}
 if ($null -eq $hookInput) {
     exit 0
 }
@@ -33,7 +40,7 @@ $eventName = [string](Get-Field $hookInput 'hook_event_name')
 if ([string]::IsNullOrWhiteSpace($eventName)) {
     $eventName = 'SessionStart'
 }
-$isStopEvent = ($eventName -eq 'Stop' -or $eventName -eq 'SubagentStop')
+$isStopEvent = ($GitPrePush -or $eventName -eq 'Stop' -or $eventName -eq 'SubagentStop')
 
 # ---- pre-task: short policy reminder, nothing else ----
 if (-not $isStopEvent) {
@@ -48,7 +55,7 @@ if (-not $isStopEvent) {
 }
 
 # ---- post-task (Stop): scan for oversized source files ----
-if ((Get-Field $hookInput 'stop_hook_active') -eq $true) {
+if (-not $GitPrePush -and (Get-Field $hookInput 'stop_hook_active') -eq $true) {
     exit 0
 }
 
@@ -78,7 +85,7 @@ foreach ($ext in $extensionList.Split(',')) {
 # cooldown state (per project)
 $stateDir = Join-Path $env:LOCALAPPDATA 'HookMaker\state'
 $statePath = Join-Path $stateDir ('LargeFileCheck-' + (Get-ShortHash $cwd.ToLowerInvariant()) + '.txt')
-if (Test-Path -LiteralPath $statePath -PathType Leaf) {
+if (-not $GitPrePush -and (Test-Path -LiteralPath $statePath -PathType Leaf)) {
     try {
         $last = [DateTime]::Parse([System.IO.File]::ReadAllText($statePath).Trim(), [System.Globalization.CultureInfo]::InvariantCulture, [System.Globalization.DateTimeStyles]::RoundtripKind)
         if (([DateTime]::UtcNow - $last.ToUniversalTime()).TotalMinutes -lt $cooldownMinutes) {
@@ -125,8 +132,10 @@ if ($offenders.Count -eq 0) {
     exit 0
 }
 
-New-Item -ItemType Directory -Path $stateDir -Force | Out-Null
-[System.IO.File]::WriteAllText($statePath, [DateTime]::UtcNow.ToString('o'))
+if (-not $GitPrePush) {
+    New-Item -ItemType Directory -Path $stateDir -Force | Out-Null
+    [System.IO.File]::WriteAllText($statePath, [DateTime]::UtcNow.ToString('o'))
+}
 
 $top = @($offenders | Sort-Object -Property Lines -Descending | Select-Object -First 5)
 $fileLines = @($top | ForEach-Object { $_.Path + ' (' + $_.Lines + ' lines)' })
@@ -135,5 +144,9 @@ if ($offenders.Count -gt $top.Count) {
     $more = ' and ' + ($offenders.Count - $top.Count) + ' more'
 }
 $reason = 'LARGE FILE CHECK: ' + $offenders.Count + ' source file(s) exceed ' + $lineThreshold + ' lines: ' + ($fileLines -join '; ') + $more + '. Decide for yourself whether splitting is SAFE and worthwhile: split by responsibility (features, layers, cohesive groups - never arbitrary line count), keep a single clear entry point, update imports/re-exports, avoid circular dependencies, and run build/tests afterwards. If a safe split is not practical right now, finish - this reminder respects a cooldown.'
+if ($GitPrePush) {
+    [Console]::Error.WriteLine($reason)
+    exit 1
+}
 @{ decision = 'block'; reason = $reason } | ConvertTo-Json -Compress
 exit 0

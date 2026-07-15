@@ -26,12 +26,19 @@
 #   AUTO_APPEND                    true/false - write missing secrets into secrets.md (default true)
 #   MIN_SECRET_LENGTH              values shorter than this are skipped in the leak scan (default 8)
 
+param([switch]$GitPrePush)
+
 Set-StrictMode -Version 2.0
 $ErrorActionPreference = 'Stop'
 
 . (Join-Path $PSScriptRoot '..\_hooklib.ps1')
 
-$hookInput = Read-HookInput
+$hookInput = if ($GitPrePush) {
+    [pscustomobject]@{ cwd = (Get-Location).Path; hook_event_name = 'GitPrePush' }
+}
+else {
+    Read-HookInput
+}
 if ($null -eq $hookInput) {
     exit 0
 }
@@ -43,8 +50,8 @@ $eventName = [string](Get-Field $hookInput 'hook_event_name')
 if ([string]::IsNullOrWhiteSpace($eventName)) {
     $eventName = 'SessionStart'
 }
-$isStopEvent = ($eventName -eq 'Stop' -or $eventName -eq 'SubagentStop')
-if ($isStopEvent -and (Get-Field $hookInput 'stop_hook_active') -eq $true) {
+$isStopEvent = ($GitPrePush -or $eventName -eq 'Stop' -or $eventName -eq 'SubagentStop')
+if (-not $GitPrePush -and $isStopEvent -and (Get-Field $hookInput 'stop_hook_active') -eq $true) {
     exit 0
 }
 
@@ -202,7 +209,7 @@ if ($inGitRepo) {
 $unusedStateDir = Join-Path $env:LOCALAPPDATA 'HookMaker\state'
 $unusedStatePath = Join-Path $unusedStateDir ('Secrets-Check-Unused-' + (Get-ShortHash $cwd.ToLowerInvariant()) + '.txt')
 $runUnusedScan = $true
-if (Test-Path -LiteralPath $unusedStatePath -PathType Leaf) {
+if (-not $GitPrePush -and (Test-Path -LiteralPath $unusedStatePath -PathType Leaf)) {
     try {
         $lastUnused = [DateTime]::Parse(([System.IO.File]::ReadAllText($unusedStatePath)).Trim(), [System.Globalization.CultureInfo]::InvariantCulture, [System.Globalization.DateTimeStyles]::RoundtripKind)
         if (([DateTime]::UtcNow - $lastUnused.ToUniversalTime()).TotalMinutes -lt $unusedScanCooldownMinutes) {
@@ -230,13 +237,15 @@ if ($runUnusedScan -and $inGitRepo -and $secretsExists) {
             [void]$unused.Add($key)
         }
     }
-    try {
-        if (-not (Test-Path -LiteralPath $unusedStateDir -PathType Container)) {
-            New-Item -ItemType Directory -Path $unusedStateDir -Force | Out-Null
+    if (-not $GitPrePush) {
+        try {
+            if (-not (Test-Path -LiteralPath $unusedStateDir -PathType Container)) {
+                New-Item -ItemType Directory -Path $unusedStateDir -Force | Out-Null
+            }
+            [System.IO.File]::WriteAllText($unusedStatePath, [DateTime]::UtcNow.ToString('o'))
         }
-        [System.IO.File]::WriteAllText($unusedStatePath, [DateTime]::UtcNow.ToString('o'))
+        catch { }
     }
-    catch { }
 }
 
 # ---- nothing at all to report -> silent ----
@@ -249,7 +258,7 @@ $fingerprintSource = (@($added) -join ',') + '|' + (@($missingUndocumented) -joi
 $fingerprint = Get-ShortHash $fingerprintSource
 $stateDir = Join-Path $env:LOCALAPPDATA 'HookMaker\state'
 $statePath = Join-Path $stateDir ('Secrets-Check-' + (Get-ShortHash $cwd.ToLowerInvariant()) + '.txt')
-if ($critical.Count -eq 0) {
+if ($critical.Count -eq 0 -and -not $GitPrePush) {
     if (Test-Path -LiteralPath $statePath -PathType Leaf) {
         try {
             $lines = [System.IO.File]::ReadAllLines($statePath)
@@ -263,13 +272,15 @@ if ($critical.Count -eq 0) {
         catch { }
     }
 }
-try {
-    if (-not (Test-Path -LiteralPath $stateDir -PathType Container)) {
-        New-Item -ItemType Directory -Path $stateDir -Force | Out-Null
+if (-not $GitPrePush) {
+    try {
+        if (-not (Test-Path -LiteralPath $stateDir -PathType Container)) {
+            New-Item -ItemType Directory -Path $stateDir -Force | Out-Null
+        }
+        [System.IO.File]::WriteAllLines($statePath, @($fingerprint, [DateTime]::UtcNow.ToString('o')))
     }
-    [System.IO.File]::WriteAllLines($statePath, @($fingerprint, [DateTime]::UtcNow.ToString('o')))
+    catch { }
 }
-catch { }
 
 # ---- build the report (key names / file paths only - NEVER a secret value) ----
 $lines = New-Object System.Collections.Generic.List[string]
@@ -293,6 +304,10 @@ if ($unused.Count -gt 0) {
 [void]$lines.Add('Never print, log, or commit a secret value. Rotate anything that may have leaked. Removing a secrets.md entry is always your call, not automated.')
 $message = $lines.ToArray() -join "`n"
 
+if ($GitPrePush) {
+    [Console]::Error.WriteLine($message)
+    exit 1
+}
 if ($isStopEvent) {
     @{ decision = 'block'; reason = $message } | ConvertTo-Json -Compress
     exit 0
