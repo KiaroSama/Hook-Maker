@@ -255,6 +255,25 @@ function Install-IgnorePrePush {
     $hooksPath = [System.IO.Path]::GetFullPath($hooksPath)
 
     $runtime = Copy-HookRuntime -ClientDir (Split-Path -Parent $hooksPath)
+    $runtimeRoot = Join-Path $hooksPath 'Hook-Maker'
+    function Copy-PrePushCompanion {
+        param([Parameter(Mandatory = $true)][string]$Name)
+        $sourceDir = Join-Path $ToolRoot ('hooks\' + $Name)
+        $sourceScript = Join-Path $sourceDir ($Name + '.ps1')
+        if (-not (Test-Path -LiteralPath $sourceScript -PathType Leaf)) { throw "Pre-push check not found: $sourceScript" }
+        $destinationDir = [System.IO.Path]::GetFullPath((Join-Path $runtimeRoot $Name))
+        $safeRoot = [System.IO.Path]::GetFullPath($runtimeRoot).TrimEnd('\') + '\'
+        if (-not $destinationDir.StartsWith($safeRoot, [System.StringComparison]::OrdinalIgnoreCase)) { throw "Unsafe pre-push runtime path: $destinationDir" }
+        if (Test-Path -LiteralPath $destinationDir) { Remove-Item -LiteralPath $destinationDir -Recurse -Force }
+        New-Item -ItemType Directory -Path $destinationDir -Force | Out-Null
+        $destinationScript = Join-Path $destinationDir ($Name + '.ps1')
+        Copy-Item -LiteralPath $sourceScript -Destination $destinationScript -Force
+        $sourceEnv = Join-Path $sourceDir '.env'
+        if (Test-Path -LiteralPath $sourceEnv -PathType Leaf) { Copy-Item -LiteralPath $sourceEnv -Destination (Join-Path $destinationDir '.env') -Force }
+        return $destinationScript
+    }
+    $secretsScript = Copy-PrePushCompanion 'Secrets-Check'
+    $largeFileScript = Copy-PrePushCompanion 'Large-File-Check'
     $prePush = Join-Path $hooksPath 'pre-push'
     $previous = $prePush + '.hookmaker-existing'
     $marker = '# Hook Maker: Ignore-Rules-Check'
@@ -266,8 +285,11 @@ function Install-IgnorePrePush {
         }
     }
 
-    $scriptPath = $runtime.Script.Replace('\', '/').Replace('$', '\$').Replace('`', '\`')
-    $body = "#!/bin/sh`n$marker`npowershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File `"$scriptPath`" -GitPrePush || exit `$?`nif [ -f `"`$0.hookmaker-existing`" ]; then`n  `"`$0.hookmaker-existing`" `"`$@`"`nfi`n"
+    $commands = @($runtime.Script, $secretsScript, $largeFileScript) | ForEach-Object {
+        $scriptPath = $_.Replace('\', '/').Replace('$', '\$').Replace('`', '\`')
+        'powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "' + $scriptPath + '" -GitPrePush || exit $?'
+    }
+    $body = "#!/bin/sh`n$marker`n" + ($commands -join "`n") + "`nif [ -f `"`$0.hookmaker-existing`" ]; then`n  `"`$0.hookmaker-existing`" `"`$@`"`nfi`n"
     [System.IO.File]::WriteAllText($prePush, $body, $Utf8NoBom)
     Write-Host "Native git pre-push protection installed in: $prePush"
 }
