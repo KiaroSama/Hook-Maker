@@ -14,6 +14,41 @@ function Get-Field {
     return $null
 }
 
+function Normalize-Path {
+    param([Parameter(Mandatory = $true)][string]$Path)
+    $expanded = [Environment]::ExpandEnvironmentVariables($Path)
+    $full = [System.IO.Path]::GetFullPath($expanded)
+    return $full.TrimEnd([char[]]@([System.IO.Path]::DirectorySeparatorChar, [System.IO.Path]::AltDirectorySeparatorChar))
+}
+
+function Test-PathInside {
+    param(
+        [Parameter(Mandatory = $true)][string]$Candidate,
+        [Parameter(Mandatory = $true)][string]$Parent
+    )
+    $candidatePath = Normalize-Path $Candidate
+    $parentPath = Normalize-Path $Parent
+    if ([string]::Equals($candidatePath, $parentPath, [System.StringComparison]::OrdinalIgnoreCase)) {
+        return $true
+    }
+    $prefix = $parentPath + [System.IO.Path]::DirectorySeparatorChar
+    return $candidatePath.StartsWith($prefix, [System.StringComparison]::OrdinalIgnoreCase)
+}
+
+function Set-ObjectProperty {
+    param(
+        [Parameter(Mandatory = $true)]$Object,
+        [Parameter(Mandatory = $true)][string]$Name,
+        $Value
+    )
+    if ($null -ne $Object.PSObject.Properties[$Name]) {
+        $Object.$Name = $Value
+    }
+    else {
+        $Object | Add-Member -MemberType NoteProperty -Name $Name -Value $Value
+    }
+}
+
 # Reads the hook event JSON from stdin. Returns the parsed object, or $null on
 # empty / non-JSON input (the caller then exits silently).
 function Read-HookInput {
@@ -108,17 +143,45 @@ function Invoke-QuietCommand {
     }
 }
 
+function Get-LatestWorkTimeUtc {
+    param([string]$ProjectRoot)
+    if ($null -eq (Get-Command git -ErrorAction SilentlyContinue)) {
+        return $null
+    }
+    $inside = Invoke-QuietCommand -FilePath git -ArgumentList @('-C', $ProjectRoot, 'rev-parse', '--is-inside-work-tree')
+    if ($LASTEXITCODE -ne 0 -or [string]$inside -ne 'true') {
+        return $null
+    }
+    $latest = [DateTime]::MinValue
+    $commitUnix = Invoke-QuietCommand -FilePath git -ArgumentList @('-C', $ProjectRoot, 'log', '-1', '--format=%ct')
+    if ($LASTEXITCODE -eq 0 -and $commitUnix) {
+        $latest = [DateTimeOffset]::FromUnixTimeSeconds([int64]([string]$commitUnix)).UtcDateTime
+    }
+    $status = Invoke-QuietCommand -FilePath git -ArgumentList @('-C', $ProjectRoot, 'status', '--porcelain')
+    if ($LASTEXITCODE -eq 0) {
+        foreach ($line in @($status)) {
+            if ([string]::IsNullOrWhiteSpace([string]$line)) { continue }
+            $relative = ([string]$line).Substring(3).Trim('"')
+            if ($relative -like '.ai/*' -or $relative -like 'graphify-out/*' -or $relative -like 'logs/*') { continue }
+            $full = Join-Path $ProjectRoot ($relative.Replace('/', '\'))
+            if (Test-Path -LiteralPath $full -PathType Leaf) {
+                $modified = (Get-Item -LiteralPath $full -Force).LastWriteTimeUtc
+                if ($modified -gt $latest) { $latest = $modified }
+            }
+        }
+    }
+    if ($latest -eq [DateTime]::MinValue) {
+        return $null
+    }
+    return $latest
+}
+
 # Friendly, hyphen-separated hook name. The shipped hook folders are already
 # hyphenated (Cross-Project-.ai-Knowledge-Sync, Mcp-Usage-Check, ...), so this
 # is a no-op for them; it still tidies a user's PascalCase custom-hook name
 # (MyContextHook -> My-Context-Hook) for the menu + the installed copy folder.
-# Explicit overrides can rename a folder to a nicer label if ever needed.
-$script:HookFriendlyOverrides = @{}
 function Get-HookFriendlyName {
     param([Parameter(Mandatory = $true)][string]$Name)
-    if ($script:HookFriendlyOverrides.ContainsKey($Name)) {
-        return $script:HookFriendlyOverrides[$Name]
-    }
     $hyphenated = [System.Text.RegularExpressions.Regex]::Replace($Name, '([A-Z]+)([A-Z][a-z])', '$1-$2')
     $hyphenated = [System.Text.RegularExpressions.Regex]::Replace($hyphenated, '([a-z0-9])([A-Z])', '$1-$2')
     return $hyphenated

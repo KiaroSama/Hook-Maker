@@ -344,27 +344,6 @@ function Read-YesNo {
 }
 
 # --------------------------------------------------------------- helpers ----
-function Normalize-Path {
-    param([Parameter(Mandatory = $true)][string]$Path)
-
-    $expanded = [Environment]::ExpandEnvironmentVariables($Path)
-    $full = [System.IO.Path]::GetFullPath($expanded)
-    return $full.TrimEnd([char[]]@([System.IO.Path]::DirectorySeparatorChar, [System.IO.Path]::AltDirectorySeparatorChar))
-}
-
-function Test-PathInside {
-    param(
-        [Parameter(Mandatory = $true)][string]$Candidate,
-        [Parameter(Mandatory = $true)][string]$Parent
-    )
-
-    if ([string]::Equals($Candidate, $Parent, [System.StringComparison]::OrdinalIgnoreCase)) {
-        return $true
-    }
-    $prefix = $Parent + [System.IO.Path]::DirectorySeparatorChar
-    return $Candidate.StartsWith($prefix, [System.StringComparison]::OrdinalIgnoreCase)
-}
-
 function Get-Slug {
     param([Parameter(Mandatory = $true)][string]$Name)
 
@@ -373,40 +352,6 @@ function Get-Slug {
         $slug = 'project'
     }
     return $slug
-}
-
-function Set-ObjectProperty {
-    param(
-        [Parameter(Mandatory = $true)]$Object,
-        [Parameter(Mandatory = $true)][string]$Name,
-        $Value
-    )
-
-    if ($null -ne $Object.PSObject.Properties[$Name]) {
-        $Object.$Name = $Value
-    }
-    else {
-        $Object | Add-Member -MemberType NoteProperty -Name $Name -Value $Value
-    }
-}
-
-# Simple KEY=VALUE .env parser ('#' comments allowed). Returns a hashtable.
-function Read-EnvFile {
-    param([Parameter(Mandatory = $true)][string]$Path)
-
-    $values = @{}
-    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
-        return $values
-    }
-    foreach ($line in [System.IO.File]::ReadAllLines($Path)) {
-        $trimmed = $line.Trim()
-        if ($trimmed -eq '' -or $trimmed.StartsWith('#')) { continue }
-        $separator = $trimmed.IndexOf('=')
-        if ($separator -gt 0) {
-            $values[$trimmed.Substring(0, $separator).Trim()] = $trimmed.Substring($separator + 1).Trim()
-        }
-    }
-    return $values
 }
 
 # Name of the sync-engine hook folder. Excluded from Get-HookEntries: the
@@ -682,7 +627,7 @@ function Invoke-CreateGroup {
     # Optional config mode: the engine's .env can predefine the group's project
     # paths (SYNC_PROJECTS) so nothing has to be typed.
     $configProjects = @()
-    $engineEnv = Read-EnvFile (Join-Path $HooksDir 'Cross-Project-.ai-Knowledge-Sync\.env')
+    $engineEnv = Read-HookEnv (Join-Path $HooksDir 'Cross-Project-.ai-Knowledge-Sync\.env')
     if ($engineEnv.ContainsKey('SYNC_PROJECTS') -and $engineEnv['SYNC_PROJECTS'] -ne '') {
         foreach ($path in @($engineEnv['SYNC_PROJECTS'].Split(';') | ForEach-Object { $_.Trim().Trim('"') } | Where-Object { $_ -ne '' })) {
             try {
@@ -1439,7 +1384,7 @@ function Invoke-InstallHookFromConfig {
             Write-NoteLine ('Copy ' + (Join-Path (Split-Path -Parent $hook.EnvPath) '.env.example') + ' to .env and fill TARGET_PROJECTS.')
             continue
         }
-        $envValues = Read-EnvFile $hook.EnvPath
+        $envValues = Read-HookEnv $hook.EnvPath
 
         $events = @('SessionStart', 'UserPromptSubmit')
         if ($envValues.ContainsKey('EVENTS') -and $envValues['EVENTS'] -ne '') {

@@ -56,40 +56,6 @@ if (Test-Path -LiteralPath $statePath -PathType Leaf) {
 }
 
 # ---- staleness: newest CODE work (git-based) vs graph.json ----
-function Get-LatestWorkTimeUtc {
-    param([string]$ProjectRoot)
-
-    if ($null -eq (Get-Command git -ErrorAction SilentlyContinue)) {
-        return $null
-    }
-    $inside = Invoke-QuietCommand -FilePath git -ArgumentList @('-C', $ProjectRoot, 'rev-parse', '--is-inside-work-tree')
-    if ($LASTEXITCODE -ne 0 -or [string]$inside -ne 'true') {
-        return $null
-    }
-    $latest = [DateTime]::MinValue
-    $commitUnix = Invoke-QuietCommand -FilePath git -ArgumentList @('-C', $ProjectRoot, 'log', '-1', '--format=%ct')
-    if ($LASTEXITCODE -eq 0 -and $commitUnix) {
-        $latest = [DateTimeOffset]::FromUnixTimeSeconds([int64]([string]$commitUnix)).UtcDateTime
-    }
-    $status = Invoke-QuietCommand -FilePath git -ArgumentList @('-C', $ProjectRoot, 'status', '--porcelain')
-    if ($LASTEXITCODE -eq 0) {
-        foreach ($line in @($status)) {
-            if ([string]::IsNullOrWhiteSpace([string]$line)) { continue }
-            $relative = ([string]$line).Substring(3).Trim('"')
-            if ($relative -like '.ai/*' -or $relative -like 'graphify-out/*' -or $relative -like 'logs/*') { continue }
-            $full = Join-Path $ProjectRoot ($relative.Replace('/', '\'))
-            if (Test-Path -LiteralPath $full -PathType Leaf) {
-                $modified = (Get-Item -LiteralPath $full -Force).LastWriteTimeUtc
-                if ($modified -gt $latest) { $latest = $modified }
-            }
-        }
-    }
-    if ($latest -eq [DateTime]::MinValue) {
-        return $null
-    }
-    return $latest
-}
-
 $workTime = Get-LatestWorkTimeUtc $cwd
 if ($null -eq $workTime) {
     exit 0
