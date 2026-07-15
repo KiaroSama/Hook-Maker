@@ -79,7 +79,8 @@ try {
         '4\. Ci-Status-Check', '5\. Dependabot-Check', '6\. Github-Baseline-Check',
         '7\. Git-Sync-Check', '8\. Cloudflare-Deploy', '9\. Graph-Read-Check',
         '10\. Graph-Update-Check', '11\. Large-File-Check', '12\. Mcp-Usage-Check',
-        '13\. Rules-Check', '14\. Skills-Check', '15\. Secrets-Check'
+        '13\. Rules-Check', '14\. Skills-Check', '15\. Secrets-Check',
+        '16\. Ignore-Rules-Check'
     ) -join '[\s\S]*'
     Check 'hooks follow the requested menu order' ($r.Out -match $menuOrder)
     Check '_hooklib excluded from listing' ($r.Out -notmatch '_hooklib')
