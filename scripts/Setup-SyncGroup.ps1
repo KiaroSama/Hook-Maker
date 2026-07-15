@@ -157,27 +157,28 @@ function Get-ExampleText {
     return (Get-Painted $Text $C.LightBlue) + $C.HintYellow
 }
 
-# Per-hook menu metadata: when it runs (pre / post / pre+post) and a one-line
-# description. Unknown/custom hooks get a blank entry. The sync engine itself
+# Per-hook menu metadata: display order/name, when it runs (pre / post /
+# pre+post), and a one-line description. Unknown/custom hooks sort last and get
+# a blank timing/description entry. The sync engine itself
 # is excluded here too - Get-HookEntries never returns it (see EngineHookName),
 # so it never reaches this lookup. (Get-HookFriendlyName, which turns the
 # internal name into the hyphenated display name, lives in _hooklib.ps1 so the
 # installer shares it.)
 $script:HookMeta = @{
-    'Ai-Memory-Check'                  = @{ When = 'post'; Text = 'reminds to update .ai memory when it is stale' }
-    'Ai-Memory-Load'                   = @{ When = 'pre';  Text = 'loads .ai/memory.md into context before work starts' }
-    'Ci-Status-Check'                  = @{ When = 'post'; Text = 'verifies GitHub checks of the exact pushed commit' }
-    'Cloudflare-Deploy'                = @{ When = 'post'; Text = 'suggests deploying in Cloudflare Workers projects' }
-    'Dependabot-Check'                 = @{ When = 'pre';  Text = 'reports pending Dependabot pull requests' }
-    'Github-Baseline-Check'            = @{ When = 'pre';  Text = 'checks the .github CI/dependabot baseline' }
-    'Git-Sync-Check'                   = @{ When = 'both'; Text = 'warns when out of sync with the git remote' }
-    'Graph-Read-Check'                 = @{ When = 'pre';  Text = 'suggests graphify queries when a graph exists and the task needs it' }
-    'Graph-Update-Check'               = @{ When = 'post'; Text = 'suggests graphify update when the graph is stale' }
-    'Large-File-Check'                 = @{ When = 'both'; Text = 'small-files policy + oversized-file scan' }
-    'Mcp-Usage-Check'                  = @{ When = 'pre';  Text = 'reminder to consider MCP servers/tools' }
-    'Rules-Check'                      = @{ When = 'pre';  Text = 'checks global + project rules were read' }
-    'Secrets-Check'                    = @{ When = 'both'; Text = 'keeps secrets.md accurate and checks for leaks' }
-    'Skills-Check'                     = @{ When = 'pre';  Text = 'skill-policy reminder with the copied skills' }
+    'Ai-Memory-Check'                  = @{ Order = 2;  Label = 'Ai-Context-Check'; When = 'post'; Text = 'reminds to update the relevant .ai context files when stale' }
+    'Ai-Memory-Load'                   = @{ Order = 3;  Label = 'Ai-Context-Load';  When = 'pre';  Text = 'loads the .ai context router and file index before work starts' }
+    'Ci-Status-Check'                  = @{ Order = 4;  When = 'post'; Text = 'verifies GitHub checks of the exact pushed commit' }
+    'Dependabot-Check'                 = @{ Order = 5;  When = 'pre';  Text = 'reports pending Dependabot pull requests' }
+    'Github-Baseline-Check'            = @{ Order = 6;  When = 'pre';  Text = 'checks the .github CI/dependabot baseline' }
+    'Git-Sync-Check'                   = @{ Order = 7;  When = 'both'; Text = 'warns when out of sync with the git remote' }
+    'Cloudflare-Deploy'                = @{ Order = 8;  When = 'post'; Text = 'suggests deploying in Cloudflare Workers projects' }
+    'Graph-Read-Check'                 = @{ Order = 9;  When = 'pre';  Text = 'suggests graphify queries when a graph exists and the task needs it' }
+    'Graph-Update-Check'               = @{ Order = 10; When = 'post'; Text = 'suggests graphify update when the graph is stale' }
+    'Large-File-Check'                 = @{ Order = 11; When = 'both'; Text = 'small-files policy + oversized-file scan' }
+    'Mcp-Usage-Check'                  = @{ Order = 12; When = 'pre';  Text = 'reminder to consider MCP servers/tools' }
+    'Rules-Check'                      = @{ Order = 13; When = 'pre';  Text = 'checks global + project rules were read' }
+    'Skills-Check'                     = @{ Order = 14; When = 'pre';  Text = 'skill-policy reminder with the copied skills' }
+    'Secrets-Check'                    = @{ Order = 15; When = 'both'; Text = 'keeps secrets.md accurate and checks for leaks' }
 }
 # The "[pre-task]" / "[post-task]" tag, colored by phase (a different color than
 # the description, FFmWiz-style, so timing reads at a glance).
@@ -198,6 +199,13 @@ function Get-HookDescriptionText {
     }
     return ''
 }
+function Get-HookMenuName {
+    param([Parameter(Mandatory = $true)][string]$Name)
+    if ($script:HookMeta.ContainsKey($Name) -and $script:HookMeta[$Name].ContainsKey('Label')) {
+        return $script:HookMeta[$Name].Label
+    }
+    return (Get-HookFriendlyName $Name)
+}
 # The " | " separator between menu-line parts (a light gray - visible, but
 # still quieter than the parts it divides).
 $script:MenuSep = "$Esc[38;5;248m | $($C.Reset)"
@@ -207,7 +215,7 @@ $script:MenuSep = "$Esc[38;5;248m | $($C.Reset)"
 function Write-HookMenuLine {
     param([int]$Number, [string]$Name, [string]$ExtraSuffix = '')
     $parts = New-Object System.Collections.Generic.List[string]
-    [void]$parts.Add((Get-Painted (Get-HookFriendlyName $Name) $C.Bold))
+    [void]$parts.Add((Get-Painted (Get-HookMenuName $Name) $C.Bold))
     $tag = Get-HookTimingTag $Name
     if ($tag -ne '') { [void]$parts.Add($tag) }
     $desc = Get-HookDescriptionText $Name
@@ -413,7 +421,10 @@ $script:EngineHookName = 'Cross-Project-.ai-Knowledge-Sync'
 # Loose .ps1 files directly in hooks\ are still accepted for compatibility.
 function Get-HookEntries {
     $entries = New-Object System.Collections.Generic.List[object]
-    foreach ($dir in @(Get-ChildItem -LiteralPath $HooksDir -Directory -ErrorAction SilentlyContinue | Where-Object { $_.Name -ne $script:EngineHookName } | Sort-Object Name)) {
+    $hookDirs = Get-ChildItem -LiteralPath $HooksDir -Directory -ErrorAction SilentlyContinue |
+        Where-Object { $_.Name -ne $script:EngineHookName } |
+        Sort-Object @{ Expression = { if ($script:HookMeta.ContainsKey($_.Name)) { $script:HookMeta[$_.Name].Order } else { [int]::MaxValue } } }, Name
+    foreach ($dir in @($hookDirs)) {
         $script = Join-Path $dir.FullName ($dir.Name + '.ps1')
         if (-not (Test-Path -LiteralPath $script -PathType Leaf)) {
             $firstScript = @(Get-ChildItem -LiteralPath $dir.FullName -Filter '*.ps1' -File -ErrorAction SilentlyContinue | Sort-Object Name) | Select-Object -First 1
