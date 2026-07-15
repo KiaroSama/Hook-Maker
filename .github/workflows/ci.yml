@@ -89,3 +89,7 @@ jobs:
       - name: Context hooks test suite (Mcp-Usage-Check, Skills-Check)
         shell: pwsh
         run: .\scripts\Test-ContextHooks.ps1
+
+      - name: Ignore-Rules-Check test suite
+        shell: pwsh
+        run: .\scripts\Test-IgnoreRulesCheck.ps1
