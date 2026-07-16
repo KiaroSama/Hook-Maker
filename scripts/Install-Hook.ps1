@@ -66,6 +66,40 @@ else {
 }
 $Timestamp = (Get-Date).ToString('yyyyMMdd-HHmmss')
 
+function Write-SyncProjectList {
+    param(
+        [Parameter(Mandatory = $true)][string]$DestinationDirectory,
+        [Parameter(Mandatory = $true)][string]$RoutingConfig
+    )
+
+    if ([string]::IsNullOrWhiteSpace($Profile)) { return }
+    $config = Get-Content -LiteralPath $RoutingConfig -Raw | ConvertFrom-Json
+    $matchingProfile = @($config.profiles | Where-Object { $_.id -eq $Profile } | Select-Object -First 1)
+    if ($matchingProfile.Count -eq 0) { return }
+
+    $projectsByRoot = @{}
+    foreach ($route in @($matchingProfile[0].routes)) {
+        foreach ($endpoint in @($route.source, $route.destination)) {
+            $root = [string]$endpoint.root
+            if ([string]::IsNullOrWhiteSpace($root)) { continue }
+            $key = $root.ToLowerInvariant()
+            if (-not $projectsByRoot.ContainsKey($key)) {
+                $projectsByRoot[$key] = [pscustomobject]@{ Name = [string]$endpoint.name; Root = $root }
+            }
+        }
+    }
+
+    $lines = New-Object System.Collections.Generic.List[string]
+    [void]$lines.Add('Cross-project AI knowledge sync')
+    [void]$lines.Add(('Profile: ' + [string]$matchingProfile[0].name))
+    [void]$lines.Add('')
+    [void]$lines.Add('Synchronized projects:')
+    foreach ($project in @($projectsByRoot.Values | Sort-Object -Property Root)) {
+        [void]$lines.Add(('- ' + $project.Name + ' | ' + $project.Root))
+    }
+    [System.IO.File]::WriteAllLines((Join-Path $DestinationDirectory 'SYNC-PROJECTS.txt'), $lines, $Utf8NoBom)
+}
+
 # Installs are SELF-CONTAINED: the hook runtime (script, shared _hooklib.ps1,
 # its .env, and - for the sync engine - the routing config) is COPIED into the
 # scope's client folder (<scope>\.claude|.codex\hooks\Hook-Maker\<Friendly-Name>\),
@@ -129,6 +163,7 @@ function Copy-HookRuntime {
     if ([string]::IsNullOrWhiteSpace($CustomHook)) {
         $localConfig = Join-Path $destDir 'sync-hooks.json'
         Copy-Item -LiteralPath $ConfigPath -Destination $localConfig -Force
+        Write-SyncProjectList -DestinationDirectory $destDir -RoutingConfig $localConfig
     }
     return [pscustomobject]@{
         Script = $friendlyScript
