@@ -18,19 +18,22 @@
 # Test-HasValidationCommand) rather than a full parser - this is intentionally
 # lightweight, not a general-purpose static analyzer. `on:` trigger detection
 # recognizes block-style, flow-style ([a, b]), bare-value, and block-sequence
-# forms, strictly SCOPED to the top-level `on:` block (children more indented
-# than it, until indentation drops back) - an unrelated same-named key
-# elsewhere in the file (most commonly a step's own `push: true`/`push: false`
-# input, e.g. docker/build-push-action) is never mistaken for a trigger.
+# forms, strictly SCOPED to the DIRECT children of the top-level `on:` block
+# (only keys/sequence entries at the first-child indentation level) - an
+# unrelated same-named key elsewhere in the file (a step's own `push: true`
+# input, e.g. docker/build-push-action) or a trigger word nested DEEPER as an
+# option (a `push` key under `workflow_dispatch: inputs:`) is never mistaken
+# for a trigger.
 # A `workflow_call`-only workflow with real validation counts as CI only when
 # another local workflow (`uses: ./.github/workflows/<file>`) actually calls
 # it AND that caller is itself directly triggered (push/pull_request/
 # pull_request_target) - an uncalled reusable workflow is never counted as
 # proof on its own. Multiline `run: |`/`run: >` blocks are scanned (bounded
-# lookahead) for validation keywords, not just the `run:` line itself; a bare
-# pyproject.toml defaults to the `pip` Dependabot ecosystem (also correct for
-# Poetry, which has no separate ecosystem value), and is reclassified as `uv`
-# only when a uv.lock sits beside it.
+# lookahead) for validation keywords, skipping full-line shell comments so a
+# keyword that appears only in a comment (`# TODO: run npm test`) is not
+# counted as real validation; a bare pyproject.toml defaults to the `pip`
+# Dependabot ecosystem (also correct for Poetry, which has no separate
+# ecosystem value), and is reclassified as `uv` only when a uv.lock sits beside it.
 # Known, intentional limitations (would require real YAML/expression
 # evaluation to close, which this hook deliberately does not add): a
 # validation step disabled via an `if:` condition is not detected as disabled,
@@ -173,13 +176,20 @@ function Test-HasWorkflowTrigger {
             if ($rest -match ('^["'']?(' + $union + ')["'']?\s*(#.*)?$')) { return $true }    # bare single value
             continue    # a non-matching inline value - no block children to scan for this "on:"
         }
-        # Block-style children (mapping keys or sequence items) strictly more
-        # indented than "on:" itself, until indentation drops back to end the block.
+        # Block-style children of "on:" - but only the DIRECT children (the
+        # first child's indentation level). A trigger key/sequence entry must
+        # sit exactly at that level; anything deeper (e.g. a `push:` key nested
+        # under `workflow_dispatch: inputs:`) is an input/option, not a
+        # trigger, and must be ignored. The block ends when indentation drops
+        # back to `on:`'s level or shallower.
+        $childIndent = -1
         for ($j = $i + 1; $j -lt $lines.Count; $j++) {
             $next = $lines[$j]
             if ($next.Trim() -eq '' -or $next.Trim().StartsWith('#')) { continue }
             $nextIndent = $next.Length - $next.TrimStart(' ').Length
             if ($nextIndent -le $indent) { break }
+            if ($childIndent -lt 0) { $childIndent = $nextIndent }
+            if ($nextIndent -ne $childIndent) { continue }    # deeper nested key - not a direct trigger
             if ($next -match ('^\s*["'']?(' + $union + ')["'']?\s*:')) { return $true }
             if ($next -match ('^\s*-\s*["'']?(' + $union + ')["'']?\s*$')) { return $true }
         }
@@ -190,8 +200,12 @@ function Test-HasWorkflowTrigger {
 # Whether any `run:`/`uses:` step contains a validation keyword - inline
 # (`run: npm test`) or on the following, more-indented lines of a block
 # scalar (`run: |` / `run: >` followed by the real shell commands, the most
-# common real-world shape). A bounded lookahead keeps this a single
-# deterministic pass rather than a full YAML/indentation parse.
+# common real-world shape). Full-line shell comments are ignored so a keyword
+# that appears ONLY in a comment (e.g. `# TODO: run npm test later`) is not
+# counted as real validation; a genuine command on a later line still counts.
+# A bounded lookahead keeps this a single deterministic pass rather than a
+# full YAML/shell parse (no inline-comment stripping, which would need real
+# shell parsing).
 function Test-HasValidationCommand {
     param([string]$Text)
     $keywordPattern = '(?i)\b(test|lint|typecheck|type-check|build|verify|check)\b'
@@ -200,14 +214,19 @@ function Test-HasValidationCommand {
         if ($lines[$i] -notmatch '^(?<indent>\s*)-?\s*(run|uses)\s*:\s*(?<rest>.*)$') { continue }
         $indent = $Matches['indent'].Length
         $rest = $Matches['rest'].TrimEnd()
-        if ($rest -match $keywordPattern) { return $true }
-        if ($rest -eq '' -or $rest -match '^[|>][+-]?\d*\s*$') {
+        $restTrimmed = $rest.TrimStart()
+        $isBlockScalar = ($restTrimmed -eq '' -or $restTrimmed -match '^[|>][+-]?\d*\s*$')
+        # Inline command value on the run:/uses: line - but not when that value
+        # is itself a comment (`run: # TODO test`).
+        if (-not $isBlockScalar -and -not $restTrimmed.StartsWith('#') -and $rest -match $keywordPattern) { return $true }
+        if ($isBlockScalar) {
             $limit = [Math]::Min($lines.Count, $i + 40)
             for ($j = $i + 1; $j -lt $limit; $j++) {
                 $next = $lines[$j]
                 if ($next.Trim() -eq '') { continue }
                 $nextIndent = $next.Length - $next.TrimStart(' ').Length
                 if ($nextIndent -le $indent) { break }    # block scalar ended
+                if ($next.TrimStart().StartsWith('#')) { continue }    # full-line shell comment
                 if ($next -match $keywordPattern) { return $true }
             }
         }

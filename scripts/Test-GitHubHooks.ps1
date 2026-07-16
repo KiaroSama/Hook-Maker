@@ -510,21 +510,41 @@ try {
 
     # An infra-consistent state (cancelled - not a completed code/test
     # failure) IS eligible, and recording captures that exact state.
-    Set-Mock -RunJson '[{"databaseId":81,"name":"CI","workflowName":"CI","status":"completed","conclusion":"cancelled"}]' -ExpectedSha $extSha1
+    Set-Mock -RunJson '[{"databaseId":81,"attempt":1,"name":"CI","workflowName":"CI","status":"completed","conclusion":"cancelled","updatedAt":"2026-07-16T10:00:00Z"}]' -ExpectedSha $extSha1
     $r = FireExternalBlocker -Cwd $ext1 -Classification 'github-outage' -Reason 'GitHub Actions status page reports a full outage'
     Check 'recording an evidenced external blocker succeeds for an infra-consistent CI state' ($r.Exit -eq 0 -and $r.Out -match 'EXTERNAL CI blocker' -and $r.Out -match 'does NOT mark CI verified') $r.Out
+    # Item 5: completion allowed, but Stop surfaces a NON-BLOCKING "CI not green" notice.
     $r = Fire -HookPath $CiHook -Cwd $ext1 -EventName 'Stop'
-    Check 'completion is allowed once a matching external blocker is recorded (within the recheck throttle)' ([string]::IsNullOrWhiteSpace([string]$r.Out)) ([string]$r.Out)
+    Check 'active exception authorizes completion with a NON-BLOCKING context (not decision:block)' ($r.Out -notmatch '"decision":"block"' -and $r.Out -match 'additionalContext') $r.Out
+    Check 'the completion context explicitly says CI is NOT verified green' ($r.Out -match 'CI NOT VERIFIED GREEN' -and $r.Out -match 'external' ) $r.Out
+    Check 'the completion context names classification + short sha and leaks no secret' ($r.Out -match 'github-outage' -and $r.Out -notmatch 'status page reports a full outage.*token') $r.Out
 
-    # Throttled re-check, same observed fingerprint -> still allowed (refreshed, not retired).
+    # Throttled re-check, same observed fingerprint -> still allowed (refreshed, not retired) + still non-blocking notice.
     $recheckHook = New-ConfiguredCiHookCopy @{ EXTERNAL_BLOCKER_RECHECK_MINUTES = '0' }
     $r = Fire -HookPath $recheckHook -Cwd $ext1 -EventName 'Stop'
-    Check 'recheck with the identical CI fingerprint keeps completion allowed' ([string]::IsNullOrWhiteSpace([string]$r.Out)) ([string]$r.Out)
+    Check 'recheck with the identical CI fingerprint keeps completion allowed with the notice' ($r.Out -notmatch '"decision":"block"' -and $r.Out -match 'CI NOT VERIFIED GREEN') $r.Out
 
-    # Throttled re-check, CI turned GREEN -> exception retired, verified normally (not "excused").
-    Set-Mock -RunJson '[{"databaseId":81,"name":"CI","workflowName":"CI","status":"completed","conclusion":"success"}]' -ExpectedSha $extSha1
+    # Item 4: same run id/status/conclusion but a CHANGED attempt/updatedAt
+    # (a rerun) produces a different fingerprint -> the old exception is
+    # invalidated and the (still-infra) state blocks normally.
+    Set-Mock -RunJson '[{"databaseId":81,"attempt":2,"name":"CI","workflowName":"CI","status":"completed","conclusion":"cancelled","updatedAt":"2026-07-16T12:30:00Z"}]' -ExpectedSha $extSha1
     $r = Fire -HookPath $recheckHook -Cwd $ext1 -EventName 'Stop'
-    Check 'CI turning green on recheck retires the exception and verifies normally' ([string]::IsNullOrWhiteSpace([string]$r.Out)) ([string]$r.Out)
+    Check 'a rerun (changed attempt/updatedAt, same id/status/conclusion) invalidates the old exception' ($r.Out -match '"decision":"block"') $r.Out
+
+    # Re-record, then recheck with the SAME runs in a DIFFERENT order -> the
+    # normalized/sorted fingerprint is unchanged, so the exception is kept.
+    Set-Mock -RunJson '[{"databaseId":81,"attempt":1,"name":"CI","workflowName":"CI","status":"completed","conclusion":"cancelled","updatedAt":"2026-07-16T10:00:00Z"},{"databaseId":70,"attempt":1,"name":"Lint","workflowName":"Lint","status":"completed","conclusion":"cancelled","updatedAt":"2026-07-16T10:00:00Z"}]' -ExpectedSha $extSha1
+    $r = FireExternalBlocker -Cwd $ext1 -Classification 'github-outage' -Reason 'GitHub Actions status page reports a full outage'
+    Check 'records an exception over a two-run snapshot' ($r.Exit -eq 0) $r.Err
+    Set-Mock -RunJson '[{"databaseId":70,"attempt":1,"name":"Lint","workflowName":"Lint","status":"completed","conclusion":"cancelled","updatedAt":"2026-07-16T10:00:00Z"},{"databaseId":81,"attempt":1,"name":"CI","workflowName":"CI","status":"completed","conclusion":"cancelled","updatedAt":"2026-07-16T10:00:00Z"}]' -ExpectedSha $extSha1
+    $r = Fire -HookPath $recheckHook -Cwd $ext1 -EventName 'Stop'
+    Check 'reordered but identical snapshot keeps the exception (order-independent fingerprint)' ($r.Out -notmatch '"decision":"block"' -and $r.Out -match 'CI NOT VERIFIED GREEN') $r.Out
+
+    # Throttled re-check, CI turned GREEN -> exception retired, verified normally
+    # (NO external wording).
+    Set-Mock -RunJson '[{"databaseId":81,"attempt":1,"name":"CI","workflowName":"CI","status":"completed","conclusion":"success"},{"databaseId":70,"attempt":1,"name":"Lint","workflowName":"Lint","status":"completed","conclusion":"success"}]' -ExpectedSha $extSha1
+    $r = Fire -HookPath $recheckHook -Cwd $ext1 -EventName 'Stop'
+    Check 'CI turning green on recheck retires the exception and verifies normally (no external wording)' ($r.Out -notmatch 'CI NOT VERIFIED GREEN' -and [string]::IsNullOrWhiteSpace([string]$r.Out)) ([string]$r.Out)
     $r2 = Fire -HookPath $CiHook -Cwd $ext1 -EventName 'Stop'
     Check 'the commit now stays verified on a normal follow-up check too' ([string]::IsNullOrWhiteSpace([string]$r2.Out)) ([string]$r2.Out)
 
@@ -551,7 +571,7 @@ try {
     Check 'records an exception for ext1c' ($r.Exit -eq 0) $r.Err
     Set-Mock -AuthExit 1
     $r = Fire -HookPath $recheckHookC -Cwd $ext1c -EventName 'Stop'
-    Check 'a recheck that cannot query gh keeps tolerating the existing exception' ([string]::IsNullOrWhiteSpace([string]$r.Out)) ([string]$r.Out)
+    Check 'a recheck that cannot query gh keeps tolerating the existing exception (with the notice)' ($r.Out -notmatch '"decision":"block"' -and $r.Out -match 'CI NOT VERIFIED GREEN') $r.Out
 
     # A NEW pushed commit invalidates the old exception (also proves a wrong SHA cannot reuse it).
     Set-Mock -RunJson '[{"databaseId":81,"name":"CI","workflowName":"CI","status":"completed","conclusion":"cancelled"}]' -ExpectedSha $extSha1
@@ -827,6 +847,88 @@ jobs:
     $r = Fire -HookPath $BaselineHook -Cwd $commentsAndText
     Check 'comments and run-command text mentioning "push:" are not mistaken for a trigger' ($r.Out -match 'none provides blocking project validation') $r.Out
 
+    # Item 7.1: a validation keyword that appears ONLY in a full-line shell
+    # comment inside a run: | block is not real validation.
+    $commentValidation = New-GitRepo 'commentvalidation'
+    Set-Content (Join-Path $commentValidation 'package.json') '{}'
+    New-Item -ItemType Directory -Path (Join-Path $commentValidation '.github\workflows') -Force | Out-Null
+    Set-Content (Join-Path $commentValidation '.github\workflows\ci.yml') @'
+on:
+  push:
+  pull_request:
+jobs:
+  test:
+    steps:
+      - run: |
+          # TODO: run npm test later
+          echo "not implemented"
+'@
+    $r = Fire -HookPath $BaselineHook -Cwd $commentValidation
+    Check '7.1 validation keyword only in a shell comment is NOT counted as CI' ($r.Out -match 'none provides blocking project validation') $r.Out
+
+    # Item 7.1 positive: a real validation command AFTER a comment line counts.
+    $realAfterComment = New-GitRepo 'realaftercomment'
+    Set-Content (Join-Path $realAfterComment 'package.json') '{}'
+    New-Item -ItemType Directory -Path (Join-Path $realAfterComment '.github\workflows') -Force | Out-Null
+    Set-Content (Join-Path $realAfterComment '.github\workflows\ci.yml') @'
+on:
+  push:
+  pull_request:
+jobs:
+  test:
+    steps:
+      - run: |
+          # install dependencies first
+          npm ci
+          npm test
+'@
+    Set-Content (Join-Path $realAfterComment '.github\dependabot.yml') "version: 2`nupdates:`n  - package-ecosystem: npm`n    directory: /`n  - package-ecosystem: github-actions`n    directory: /"
+    $r = Fire -HookPath $BaselineHook -Cwd $realAfterComment
+    Check '7.1 a real validation command after a comment line IS counted as CI' ([string]::IsNullOrWhiteSpace([string]$r.Out)) ([string]$r.Out)
+
+    # Item 7.2: a `push` key nested as a workflow_dispatch INPUT (deeper than
+    # the direct children of on:) is not a push trigger. Discriminating: the
+    # workflow has REAL validation and complete dependabot, so if the nested
+    # `push` were wrongly treated as a trigger the baseline would be silent;
+    # correctly ignoring it leaves the workflow only manually triggered ->
+    # "none provides blocking project validation" surfaces.
+    $nestedInputPush = New-GitRepo 'nestedinputpush'
+    Set-Content (Join-Path $nestedInputPush 'package.json') '{}'
+    New-Item -ItemType Directory -Path (Join-Path $nestedInputPush '.github\workflows') -Force | Out-Null
+    Set-Content (Join-Path $nestedInputPush '.github\workflows\manual.yml') @'
+on:
+  workflow_dispatch:
+    inputs:
+      push:
+        required: false
+        type: boolean
+jobs:
+  build:
+    steps:
+      - run: npm test
+'@
+    Set-Content (Join-Path $nestedInputPush '.github\dependabot.yml') "version: 2`nupdates:`n  - package-ecosystem: npm`n    directory: /`n  - package-ecosystem: github-actions`n    directory: /"
+    $r = Fire -HookPath $BaselineHook -Cwd $nestedInputPush
+    Check '7.2 a push key nested as a workflow_dispatch input is not a push trigger' ($r.Out -match 'none provides blocking project validation') $r.Out
+
+    # Item 7.2 positive: a direct-child push: under on: still triggers, and with
+    # real validation this is a complete, silent baseline.
+    $directChildPush = New-GitRepo 'directchildpush'
+    Set-Content (Join-Path $directChildPush 'package.json') '{}'
+    New-Item -ItemType Directory -Path (Join-Path $directChildPush '.github\workflows') -Force | Out-Null
+    Set-Content (Join-Path $directChildPush '.github\workflows\ci.yml') @'
+on:
+  push:
+    branches: [main]
+jobs:
+  test:
+    steps:
+      - run: npm test
+'@
+    Set-Content (Join-Path $directChildPush '.github\dependabot.yml') "version: 2`nupdates:`n  - package-ecosystem: npm`n    directory: /`n  - package-ecosystem: github-actions`n    directory: /"
+    $r = Fire -HookPath $BaselineHook -Cwd $directChildPush
+    Check '7.2 a direct-child push: (with nested branches:) is still a trigger; adequate baseline is silent' ([string]::IsNullOrWhiteSpace([string]$r.Out)) ([string]$r.Out)
+
     # Quoted continue-on-error value.
     $quotedCoe = New-GitRepo 'quotedcoe'
     Set-Content (Join-Path $quotedCoe 'package.json') '{}'
@@ -896,7 +998,7 @@ jobs:
         $r = FireExternalBlocker -Cwd $ps51ci -Classification 'github-outage' -Reason '5.1 host outage test, status page confirms it' -Exe 'powershell.exe'
         Check '-ReportExternalBlocker under 5.1' ($r.Exit -eq 0 -and $r.Out -match 'EXTERNAL CI blocker')
         $r = Fire -HookPath $CiHook -Cwd $ps51ci -EventName 'Stop' -Exe 'powershell.exe'
-        Check 'external-blocker exception honored under 5.1' ($r.Exit -eq 0 -and [string]::IsNullOrWhiteSpace([string]$r.Out))
+        Check 'external-blocker exception honored under 5.1 (non-blocking notice, CI not green)' ($r.Exit -eq 0 -and $r.Out -notmatch '"decision":"block"' -and $r.Out -match 'CI NOT VERIFIED GREEN')
     }
     else {
         Write-Host '[SKIP] powershell.exe not available' -ForegroundColor Yellow

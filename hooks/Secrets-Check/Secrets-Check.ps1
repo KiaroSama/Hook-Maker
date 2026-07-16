@@ -19,7 +19,19 @@
 #   New branches (remote sha all-zero) are scoped to commits not already on any
 #   remote-tracking ref; deletions (local sha all-zero) push nothing and are
 #   skipped; force-pushes/non-fast-forwards use the same `<remote>..<local>`
-#   range, which does not require fast-forward ancestry.
+#   range, which does not require fast-forward ancestry. The outgoing scan does
+#   NOT exclude .env*/secrets.md (unlike the current-file scan): a committed
+#   real .env or registry file in outgoing history is itself a leak even if it
+#   was later deleted/untracked before the push. It FAILS CLOSED - the whole
+#   range is scanned in bounded batches (no commit cap), and if any ref range
+#   cannot be resolved or a batch grep errors, the push is BLOCKED with a safe
+#   message rather than being treated as clean.
+#   LIMITATION: this is a registry/value-based leak guard, not a full
+#   entropy/pattern/history secret scanner - it can only search for values it
+#   currently knows (from active .env* files or the local secrets.md). A secret
+#   introduced and later removed from BOTH outgoing history AND every current
+#   source is no longer known and cannot be matched; use a dedicated
+#   historical secret scanner in CI for unknown credentials.
 # - Secret KEYs found in .env* files but missing from secrets.md are AUTO-APPENDED
 #   to secrets.md (created if absent) with their real value copied in - never
 #   printed, logged, or echoed anywhere, only the KEY NAME appears in reports/logs.
@@ -135,7 +147,11 @@ $secretsPath = Join-Path $cwd 'secrets.md'
 $secretsExists = Test-Path -LiteralPath $secretsPath -PathType Leaf
 
 # Nothing to look at: no candidate secret files and no existing registry -> silent.
-if ($envFiles.Count -eq 0 -and -not $secretsExists) {
+# EXCEPTION: a -GitPrePush invocation with real ref-update lines still continues,
+# so an unresolvable/incomplete outgoing range fails closed (blocks the push)
+# even when there are no known secret values to search for - a security gate
+# must not authorize a push it could not actually scan.
+if ($envFiles.Count -eq 0 -and -not $secretsExists -and -not ($GitPrePush -and $refUpdateLines.Count -gt 0)) {
     exit 0
 }
 
@@ -214,42 +230,81 @@ foreach ($key in @($discovered.Keys | Sort-Object)) {
     }
 }
 
-# Resolves the exact commits about to be pushed from real pre-push ref-update
-# lines: "<local ref> <local sha1> <remote ref> <remote sha1>". A deletion
-# (local sha all-zero) pushes nothing and is skipped. A brand-new ref (remote
-# sha all-zero) has no remote history to diff against, so it is scoped to
-# commits not already reachable from ANY existing remote-tracking ref (avoids
-# rescanning old, presumably already-reviewed history on a first-time push of
-# a new branch/tag). Otherwise it is exactly `<remote>..<local>` - reachable
-# from local, not from remote - which is correct for normal updates AND
-# force-pushes/non-fast-forwards alike (git range syntax does not require
-# fast-forward ancestry). Multiple ref-update lines are unioned and deduped.
-# Capped per ref as a safety valve against a pathological first push of a
-# huge new branch; a truncated scan is reported, never silently claimed complete.
+# Resolves the COMPLETE set of commits about to be pushed from real pre-push
+# ref-update lines: "<local ref> <local sha1> <remote ref> <remote sha1>". A
+# deletion (local sha all-zero) pushes nothing and is skipped. A brand-new ref
+# (remote sha all-zero) is scoped to commits reachable from local but not from
+# ANY existing remote ref (avoids rescanning old, already-reviewed history).
+# Otherwise it is exactly `<remote>..<local>` - reachable from local, not from
+# remote - correct for normal updates AND force-pushes/non-fast-forwards alike
+# (git range syntax does not require fast-forward ancestry). Multiple ref lines
+# are unioned and deduped.
+#
+# This is a security-authorization boundary, so it FAILS CLOSED: there is no
+# commit cap (a huge range is scanned in bounded batches by the caller, not
+# truncated), and any ref whose range cannot be resolved - a `rev-list`
+# failure, or a remote sha that is not a resolvable commit object locally -
+# is recorded in .Errors instead of being silently skipped. The caller turns
+# a non-empty .Errors into a hard block, so an incomplete scan can never be
+# mistaken for a clean one.
 function Get-OutgoingCommits {
     param([string]$Cwd, [string[]]$RefUpdateLines)
     $allZero = '0' * 40
-    $maxCommitsPerRef = 500
     $commits = New-Object System.Collections.Generic.HashSet[string]
-    $truncated = $false
+    $errors = New-Object System.Collections.Generic.List[string]
     foreach ($line in $RefUpdateLines) {
         $parts = @($line.Trim() -split '\s+')
         if ($parts.Count -lt 4) { continue }
+        $localRef = $parts[0]
         $localSha = $parts[1]
         $remoteSha = $parts[3]
         if ($localSha -eq $allZero) { continue }    # deletion - nothing pushed
-        $revListArgs = if ($remoteSha -eq $allZero) {
-            @('-C', $Cwd, 'rev-list', $localSha, '--not', '--remotes', ('--max-count=' + $maxCommitsPerRef))
+        if ($remoteSha -eq $allZero) {
+            $revs = @(Invoke-QuietCommand -FilePath git -ArgumentList @('-C', $Cwd, 'rev-list', $localSha, '--not', '--remotes') | Where-Object { $_ })
+            if ($LASTEXITCODE -ne 0) {
+                [void]$errors.Add('new ref ' + $localRef + ' - outgoing commits could not be resolved (rev-list failed); refusing to treat it as clean')
+                continue
+            }
         }
         else {
-            @('-C', $Cwd, 'rev-list', ($remoteSha + '..' + $localSha), ('--max-count=' + $maxCommitsPerRef))
+            # The remote sha must be a locally-resolvable commit to bound the
+            # range; if it is not (unknown object), fail closed rather than
+            # scanning an unbounded or wrong range.
+            $null = Invoke-QuietCommand -FilePath git -ArgumentList @('-C', $Cwd, 'rev-parse', '--verify', '--quiet', ($remoteSha + '^{commit}'))
+            if ($LASTEXITCODE -ne 0) {
+                $shortRemote = if ($remoteSha.Length -gt 7) { $remoteSha.Substring(0, 7) } else { $remoteSha }
+                [void]$errors.Add('ref ' + $localRef + ' - remote commit ' + $shortRemote + ' is not resolvable locally, so the outgoing range cannot be bounded; refusing to treat it as clean')
+                continue
+            }
+            $revs = @(Invoke-QuietCommand -FilePath git -ArgumentList @('-C', $Cwd, 'rev-list', ($remoteSha + '..' + $localSha)) | Where-Object { $_ })
+            if ($LASTEXITCODE -ne 0) {
+                [void]$errors.Add('ref ' + $localRef + ' - outgoing commits could not be resolved (rev-list failed); refusing to treat it as clean')
+                continue
+            }
         }
-        $revs = @(Invoke-QuietCommand -FilePath git -ArgumentList $revListArgs | Where-Object { $_ })
-        if ($LASTEXITCODE -ne 0) { continue }
-        if ($revs.Count -ge $maxCommitsPerRef) { $truncated = $true }
         foreach ($rev in $revs) { [void]$commits.Add([string]$rev) }
     }
-    return [pscustomobject]@{ Commits = @($commits); Truncated = $truncated }
+    return [pscustomobject]@{ Commits = @($commits); Errors = @($errors) }
+}
+
+# Runs the exact-value `git grep` across a set of outgoing commit trees in
+# BOUNDED batches (never one giant command line), so an arbitrarily large
+# outgoing range is fully scanned without truncation. Returns the matching
+# "<sha>:<path>" lines and a hard-error flag: `git grep` exit >1 is a real
+# error (not "no match", which is exit 1) and must fail the scan closed.
+function Invoke-OutgoingGrepBatched {
+    param([string]$Cwd, [string]$Value, [string[]]$Commits, [int]$BatchSize = 200)
+    $hits = New-Object System.Collections.Generic.List[string]
+    $hadError = $false
+    for ($i = 0; $i -lt $Commits.Count; $i += $BatchSize) {
+        $end = [Math]::Min($i + $BatchSize, $Commits.Count) - 1
+        $batch = @($Commits[$i..$end])
+        $out = Invoke-QuietCommand -FilePath git -ArgumentList (@('-C', $Cwd, 'grep', '-Il', '-F', $Value) + $batch)
+        $code = $LASTEXITCODE
+        if ($code -gt 1) { $hadError = $true; continue }
+        foreach ($m in @($out | Where-Object { $_ })) { [void]$hits.Add([string]$m) }
+    }
+    return [pscustomobject]@{ Hits = @($hits); HadError = $hadError }
 }
 
 # ---- git-based checks: ignore/tracked/staged/leak/outgoing (skipped outside a git repo) ----
@@ -260,12 +315,13 @@ if ($null -ne (Get-Command git -ErrorAction SilentlyContinue)) {
     $inGitRepo = ($LASTEXITCODE -eq 0 -and [string]$inside -eq 'true')
 }
 $outgoingCommits = @()
-$outgoingTruncated = $false
+$outgoingResolveErrors = @()
 if ($inGitRepo -and $GitPrePush -and $refUpdateLines.Count -gt 0) {
     $outgoing = Get-OutgoingCommits -Cwd $cwd -RefUpdateLines $refUpdateLines
     $outgoingCommits = @($outgoing.Commits)
-    $outgoingTruncated = $outgoing.Truncated
+    $outgoingResolveErrors = @($outgoing.Errors)
 }
+$outgoingScanFailedClosed = $false
 
 if ($inGitRepo) {
     if ($secretsExists) {
@@ -317,36 +373,39 @@ if ($inGitRepo) {
         }
 
         # Outgoing-commit scan: the actual push-safety boundary. A value can
-        # be absent from BOTH the working tree and the index (already
-        # cleaned up, staged clean, just not yet committed) while an EARLIER
-        # commit that is still part of what this push sends still contains
-        # it - `git grep` across those exact commit trees in one call catches
-        # that, and also a value introduced and fully removed again within
-        # the outgoing range (still pushed as reachable history either way).
+        # be absent from BOTH the working tree and the index (already cleaned
+        # up, staged clean, just not yet committed) while an EARLIER commit
+        # still part of this push contains it - `git grep` across those exact
+        # commit trees catches that, and also a value introduced and fully
+        # removed again within the outgoing range (still pushed as reachable
+        # history). Unlike the working-tree/index scan, the outgoing scan does
+        # NOT exclude .env*/secrets.md: a committed real .env or registry file
+        # sitting in outgoing history IS a leak, even if it was later
+        # deleted/untracked before the push.
         if ($outgoingCommits.Count -gt 0) {
-            $commitHits = Invoke-QuietCommand -FilePath git -ArgumentList (@('-C', $cwd, 'grep', '-Il', '-F', $value) + $outgoingCommits)
-            if ($LASTEXITCODE -eq 0) {
-                $seenOutgoingPaths = New-Object System.Collections.Generic.HashSet[string]
-                foreach ($hit in @($commitHits | Where-Object { $_ })) {
-                    $hitText = [string]$hit
-                    $sep = $hitText.IndexOf(':')
-                    if ($sep -lt 0) { continue }
-                    $hitSha = $hitText.Substring(0, $sep)
-                    $hitPath = $hitText.Substring($sep + 1)
-                    if ($excludeNames -contains $hitPath.Replace('\', '/')) { continue }
-                    if (-not $seenOutgoingPaths.Add($hitPath)) { continue }    # dedupe by path across commits
-                    $hitSha7 = $hitSha
-                    if ($hitSha7.Length -gt 7) { $hitSha7 = $hitSha7.Substring(0, 7) }
-                    [void]$critical.Add('Value of ' + $key + ' appears in outgoing commit ' + $hitSha7 + ': ' + $hitPath)
-                }
+            $grepResult = Invoke-OutgoingGrepBatched -Cwd $cwd -Value $value -Commits $outgoingCommits
+            if ($grepResult.HadError) { $outgoingScanFailedClosed = $true }
+            $seenOutgoingPaths = New-Object System.Collections.Generic.HashSet[string]
+            foreach ($hit in @($grepResult.Hits)) {
+                $hitText = [string]$hit
+                $sep = $hitText.IndexOf(':')
+                if ($sep -lt 0) { continue }
+                $hitSha = $hitText.Substring(0, $sep)
+                $hitPath = $hitText.Substring($sep + 1)
+                if (-not $seenOutgoingPaths.Add($hitPath)) { continue }    # dedupe by path across commits
+                $hitSha7 = $hitSha
+                if ($hitSha7.Length -gt 7) { $hitSha7 = $hitSha7.Substring(0, 7) }
+                [void]$critical.Add('Value of ' + $key + ' appears in outgoing commit ' + $hitSha7 + ': ' + $hitPath)
             }
         }
     }
-    if ($outgoingTruncated) {
-        # Advisory only - a cap being hit is not itself a confirmed leak and
-        # must not become a false blocker; surfaced on stderr so it is visible
-        # alongside a real block, or on its own when the push is otherwise clean.
-        [Console]::Error.WriteLine('SECRETS CHECK: outgoing commit scan was capped for at least one ref (too many new commits) - a leak deeper in that history may not have been checked.')
+    # Fail closed: an outgoing range that could not be resolved, or a grep that
+    # errored mid-scan, means "unknown", not "clean" - block the push.
+    foreach ($resolveError in $outgoingResolveErrors) {
+        [void]$critical.Add('Outgoing history could not be fully scanned: ' + $resolveError + '.')
+    }
+    if ($outgoingScanFailedClosed) {
+        [void]$critical.Add('Outgoing history could not be fully scanned: git grep failed on at least one commit batch; refusing to authorize the push as clean.')
     }
 }
 
