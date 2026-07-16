@@ -25,7 +25,7 @@ function New-Repo {
 }
 
 function Fire {
-    param([string]$Cwd, [string]$EventName = 'Stop', [string]$Exe = '', $RawStdin = $null)
+    param([string]$Cwd, [string]$EventName = 'Stop', [string]$Exe = '', $RawStdin = $null, [string]$HookPath = $Hook)
     $payload = $RawStdin
     if ($null -eq $payload) {
         $payload = @{ session_id = 't'; cwd = $Cwd; hook_event_name = $EventName } | ConvertTo-Json
@@ -36,11 +36,25 @@ function Fire {
     $errFile = Join-Path $Work ('err-' + $token + '.txt')
     [System.IO.File]::WriteAllText($inFile, $payload, (New-Object System.Text.UTF8Encoding $false))
     $file = if ([string]::IsNullOrWhiteSpace($Exe)) { (Get-Process -Id $PID).Path } else { $Exe }
-    $argLine = '-NoLogo -NoProfile -ExecutionPolicy Bypass -File "' + $Hook + '"'
+    $argLine = '-NoLogo -NoProfile -ExecutionPolicy Bypass -File "' + $HookPath + '"'
     $proc = Start-Process -FilePath $file -ArgumentList $argLine -RedirectStandardInput $inFile -RedirectStandardOutput $outFile -RedirectStandardError $errFile -Wait -NoNewWindow -PassThru
     $out = if (Test-Path -LiteralPath $outFile) { ([System.IO.File]::ReadAllText($outFile)).Trim() } else { '' }
     $err = if (Test-Path -LiteralPath $errFile) { ([System.IO.File]::ReadAllText($errFile)).Trim() } else { '' }
     return [pscustomobject]@{ Exit = $proc.ExitCode; Out = $out; Err = $err }
+}
+
+# Copies Ignore-Rules-Check.ps1 + its shared _hooklib.ps1 with a custom .env so a
+# project-specific EXTRA_PATTERNS override can be tested in isolation.
+function New-ConfiguredIgnoreHookCopy {
+    param([hashtable]$EnvOverrides)
+    $dir = Join-Path $Work ('ignorehookcopy-' + [guid]::NewGuid().ToString('N').Substring(0, 6))
+    New-Item -ItemType Directory -Path $dir -Force | Out-Null
+    Copy-Item $Hook (Join-Path $dir 'Ignore-Rules-Check.ps1')
+    Copy-Item (Join-Path (Split-Path -Parent $Hook) '..\_hooklib.ps1') (Join-Path $Work '_hooklib.ps1') -Force
+    $lines = New-Object System.Collections.Generic.List[string]
+    foreach ($key in $EnvOverrides.Keys) { [void]$lines.Add($key + '=' + $EnvOverrides[$key]) }
+    [System.IO.File]::WriteAllText((Join-Path $dir '.env'), (($lines.ToArray() -join "`r`n") + "`r`n"), (New-Object System.Text.UTF8Encoding $false))
+    return (Join-Path $dir 'Ignore-Rules-Check.ps1')
 }
 
 try {
@@ -78,6 +92,75 @@ try {
     & git -C $tracked commit -q -m c
     $r = Fire -Cwd $tracked
     Check 'tracked protected file blocks completion' ($r.Out -match 'TRACKED' -and $r.Out -match 'AGENTS.md') $r.Out
+
+    # =====================================================================
+    Write-Host '--- .env.example and other template files are allowed to stay tracked ---' -ForegroundColor Cyan
+
+    # Root-level template files must be TRACKABLE, not falsely reported as
+    # protected. Reproduced root cause: the built-in negation patterns
+    # (!/.env.example, ...) were written ALPHABETICALLY SORTED, landing before
+    # the /.env.* pattern they are meant to override - so the negation never
+    # took effect (git check-ignore's last-match-wins picked /.env.* instead),
+    # AND even when a negation DID match, the old code treated any pattern
+    # found in the combined managed-pattern list (negations included) as
+    # protected. Both are fixed: patterns are written in insertion order, and
+    # a negation match is never protected.
+    $envTemplates = New-Repo 'env-templates'
+    $r0 = Fire -Cwd $envTemplates -EventName 'SessionStart'
+    foreach ($tmpl in @('.env.example', '.env.sample', '.env.template', '.env.dist')) {
+        [System.IO.File]::WriteAllText((Join-Path $envTemplates $tmpl), 'PLACEHOLDER_KEY=changeme', (New-Object System.Text.UTF8Encoding $false))
+    }
+    $addOutput = (& git -C $envTemplates add .env.example .env.sample .env.template .env.dist 2>&1 | Out-String)
+    Check 'git add does not refuse root template files as ignored' ($addOutput -notmatch 'ignored') $addOutput
+    & git -C $envTemplates commit -q -m 'track placeholder templates'
+    $r = Fire -Cwd $envTemplates
+    Check 'tracked placeholders-only .env.example is allowed (silent)' ($r.Exit -eq 0 -and $r.Out -eq '') $r.Out
+    Check 'tracked .env.sample/.env.template/.env.dist are allowed too' ($r.Out -notmatch '\.env\.sample' -and $r.Out -notmatch '\.env\.template' -and $r.Out -notmatch '\.env\.dist') $r.Out
+
+    # A staged (not yet committed) template update is also allowed.
+    [System.IO.File]::WriteAllText((Join-Path $envTemplates '.env.example'), 'PLACEHOLDER_KEY=changeme`nOTHER=1', (New-Object System.Text.UTF8Encoding $false))
+    & git -C $envTemplates add .env.example
+    $r = Fire -Cwd $envTemplates
+    Check 'a staged template update is allowed (silent)' ($r.Exit -eq 0 -and $r.Out -eq '') $r.Out
+    & git -C $envTemplates commit -q -m 'update template'
+
+    # The native pre-push chain allows a clean push whose only tracked env-ish
+    # content is the safe .env.example template.
+    & git -C $envTemplates config core.autocrlf false
+    $envTemplatesRemote = Join-Path $Work 'env-templates-remote.git'
+    & git init -q --bare $envTemplatesRemote
+    & git -C $envTemplates remote add origin $envTemplatesRemote
+    & $InstallScript -CustomHook $Hook -Events @('Stop') -TargetProject $envTemplates -CodexOnly *> $null
+    $ErrorActionPreference = 'Continue'
+    $templatePushOutput = (& git -C $envTemplates push -u origin main 2>&1 | Out-String)
+    $templatePushExit = $LASTEXITCODE
+    $ErrorActionPreference = 'Stop'
+    Check 'a clean push containing only a safe tracked .env.example succeeds' ($templatePushExit -eq 0 -and $templatePushOutput -notmatch 'IGNORE RULES CHECK') $templatePushOutput
+
+    # Real env files remain protected: tracked .env, .env.local, .env.production.
+    foreach ($real in @('.env', '.env.local', '.env.production')) {
+        [System.IO.File]::WriteAllText((Join-Path $envTemplates $real), 'REAL_SECRET=x', (New-Object System.Text.UTF8Encoding $false))
+        & git -C $envTemplates add -f $real
+    }
+    & git -C $envTemplates commit -q -m 'force-track real env files (simulated pre-existing)'
+    $r = Fire -Cwd $envTemplates
+    Check 'tracked real .env is blocked' ($r.Out -match 'TRACKED' -and $r.Out -match '(?<!\.)\.env(?!\.\w)') $r.Out
+    Check 'tracked .env.local is blocked' ($r.Out -match '\.env\.local') $r.Out
+    Check 'tracked .env.production is blocked' ($r.Out -match '\.env\.production') $r.Out
+    Check 'the still-allowed .env.example is not listed among the blocked paths' ($r.Out -notmatch '\.env\.example') $r.Out
+
+    # A project rule that explicitly re-protects .env.example as a POSITIVE
+    # pattern (added after the default negations via EXTRA_PATTERNS) still
+    # blocks it - an explicit project override wins when the effective
+    # gitignore result for that path is positive.
+    $envOverride = New-Repo 'env-override'
+    $overrideHook = New-ConfiguredIgnoreHookCopy -EnvOverrides @{ EXTRA_PATTERNS = '/.env.example' }
+    $r0 = Fire -Cwd $envOverride -EventName 'SessionStart' -HookPath $overrideHook
+    [System.IO.File]::WriteAllText((Join-Path $envOverride '.env.example'), 'PLACEHOLDER_KEY=changeme', (New-Object System.Text.UTF8Encoding $false))
+    & git -C $envOverride add -f .env.example
+    & git -C $envOverride commit -q -m 'track template despite explicit override'
+    $r = Fire -Cwd $envOverride -HookPath $overrideHook
+    Check 'an explicit project-specific positive rule still blocks .env.example' ($r.Out -match 'TRACKED' -and $r.Out -match '\.env\.example') $r.Out
 
     $ps5 = New-Repo 'ps5'
     $r = Fire -Cwd $ps5 -Exe 'powershell.exe'

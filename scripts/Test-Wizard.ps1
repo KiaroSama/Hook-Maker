@@ -403,10 +403,60 @@ try {
     # Configure two hooks with shared targets, back from confirmation, then
     # enter done immediately: existing targets must still be present.
     $rBack = Invoke-Wizard -Config $cfgBack -Answers @('1', '1', '3,4', '1', '1', $backA, $backB, 'done', '0', 'done', 'exit')
-    $projectPromptNumbers = @([regex]::Matches($rBack.Out, '(?m)^(\d+)\. Project root path') | ForEach-Object { [int]$_.Groups[1].Value })
-    Check 'each repeated project prompt advances the question number' ($projectPromptNumbers.Count -ge 3 -and $projectPromptNumbers[1] -eq ($projectPromptNumbers[0] + 1) -and $projectPromptNumbers[2] -eq ($projectPromptNumbers[1] + 1))
+    # Repeated child prompts inside ONE parent question use hierarchical
+    # "<parent>-<slot>" numbering (e.g. "12-1.", "12-2.") - they must NOT each
+    # steal a fresh top-level integer (the confirmed bug this replaces).
+    $nestedPromptMatches = @([regex]::Matches($rBack.Out, '(?m)^(\d+)-(\d+)\. Project root path'))
+    Check 'repeated project prompts use hierarchical <parent>-<slot> numbering, not fresh top-level integers' (
+        $nestedPromptMatches.Count -ge 2 -and
+        $nestedPromptMatches[0].Groups[1].Value -eq $nestedPromptMatches[1].Groups[1].Value -and
+        $nestedPromptMatches[0].Groups[2].Value -eq '1' -and $nestedPromptMatches[1].Groups[2].Value -eq '2')
+    Check 'no repeated project prompt appears as a bare top-level integer' (-not ($rBack.Out -match '(?m)^\d+\. Project root path'))
     Check 'confirmation back returns to project entry instead of the hook list' (([regex]::Matches($rBack.Out, 'Add Projects')).Count -eq 2 -and ([regex]::Matches($rBack.Out, 'Available hooks')).Count -eq 1)
     Check 'confirmation back preserves the existing project list' (([regex]::Matches($rBack.Out, 'projects: BackA, BackB')).Count -eq 4)
+
+    # =====================================================================
+    Write-Host '--- hierarchical numbering: invalid/duplicate/overlap/undo retain the correct slot ---' -ForegroundColor Cyan
+    $cfgSlots = Join-Path $Work 'cfg-slots.json'; New-Config $cfgSlots
+    $slotA = New-Proj 'Slot A With Spaces'
+    $slotB = New-Proj 'SlotB'
+    $missingPath = Join-Path $Work 'does-not-exist-anywhere'
+    $overlapChild = Join-Path $slotA 'nested'
+    New-Item -ItemType Directory -Path $overlapChild -Force | Out-Null
+    $rSlots = Invoke-Wizard -Config $cfgSlots -Answers @(
+        '1', '1', '3', '1', '1',
+        $slotA,             # slot 1 accepted
+        $missingPath,       # invalid (missing dir) -> re-shows slot 2
+        $slotA,              # duplicate -> re-shows slot 2
+        $overlapChild,       # overlaps slotA -> re-shows slot 2
+        $slotB,             # slot 2 accepted
+        'undo',             # removes slotB -> back to slot 2
+        $slotB,             # slot 2 accepted again
+        'done', 'y', 'exit'
+    )
+    $slotMatches = @([regex]::Matches($rSlots.Out, '(?m)^(\d+)-(\d+)\. Project root path'))
+    $slotNumbers = @($slotMatches | ForEach-Object { [int]$_.Groups[2].Value })
+    Check 'invalid/duplicate/overlap all re-display the SAME child slot (2) instead of advancing' (
+        $slotNumbers.Count -ge 6 -and
+        $slotNumbers[0] -eq 1 -and $slotNumbers[1] -eq 2 -and $slotNumbers[2] -eq 2 -and $slotNumbers[3] -eq 2 -and $slotNumbers[4] -eq 2)
+    # slotNumbers[5] is "3" - the prompt shown BEFORE the 'undo' answer is read
+    # (childNumber had already advanced past the just-accepted slotB). The
+    # prompt shown AFTER undo processes (slotNumbers[6]) is what proves the
+    # slot stepped back to 2 instead of continuing at 3.
+    Check 'undo steps the slot counter back (re-shows slot 2, not 3)' ($slotNumbers.Count -ge 7 -and $slotNumbers[6] -eq 2) ($slotNumbers -join ',')
+    Check 'a project path containing spaces is accepted' ($rSlots.Out -match [regex]::Escape('Slot A With Spaces'))
+    Check 'the missing directory is rejected without being added' ($rSlots.Out -match 'Directory not found')
+    Check 'the duplicate path is rejected without being added' ($rSlots.Out -match 'Already added')
+    Check 'the overlapping nested path is rejected without being added' ($rSlots.Out -match 'Path overlaps an already added project')
+
+    # =====================================================================
+    Write-Host '--- hierarchical numbering: back=0 and subsequent top-level numbering stay correct ---' -ForegroundColor Cyan
+    $cfgAfter = Join-Path $Work 'cfg-after-nested.json'; New-Config $cfgAfter
+    $afterA = New-Proj 'AfterA'; $afterB = New-Proj 'AfterB'
+    $rAfter = Invoke-Wizard -Config $cfgAfter -Answers @('1', '1', '3', '1', '1', '0', '1', $afterA, $afterB, 'done', 'y', 'exit')
+    Check 'back=0 from the first child slot returns to the correct parent stage (client select)' (([regex]::Matches($rAfter.Out, 'Select the client')).Count -eq 2)
+    $afterConfirmMatches = @([regex]::Matches($rAfter.Out, '(?m)^(\d+)\. Start now\?'))
+    Check 'genuine top-level numbering after the nested collection is unaffected (still a plain integer, not <n>-<n>)' ($afterConfirmMatches.Count -ge 1)
 
     # =====================================================================
     Write-Host '--- multi-select: sync group (1) combined with a hook runs both, once ---' -ForegroundColor Cyan
