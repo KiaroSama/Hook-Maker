@@ -19,30 +19,45 @@
 #   a GitHub remote, or gh is unavailable (it never claims checks passed).
 #
 # ---- Reported EXTERNAL blocker (confirmed, evidenced, local-only, re-verified) ----
-# When CI is failing/pending only because of a confirmed EXTERNAL condition the
-# agent cannot fix (GitHub outage, no hosted runner, an org/repo permission
-# failure, an externally-controlled secret being unavailable, a manual
-# approval/environment gate, ...), the agent may record an explicit exception
-# instead of being blocked forever:
+# When CI is blocked only by a confirmed EXTERNAL condition the agent cannot
+# fix, the agent may record an explicit exception instead of being blocked
+# forever:
 #   pwsh -File Ci-Status-Check.ps1 -ReportExternalBlocker -Classification <see list below> -Reason "<concise evidence>"
+# ELIGIBILITY (conservative, no log interpretation): an exception may only be
+# recorded when the observed GitHub run state is one the hook can identify as
+# non-code-failure WITHOUT reading logs - i.e. still pending / a manual gate,
+# or a completed run whose conclusion is cancelled / timed_out / stale /
+# action_required (or similar abnormal ending). A completed `failure` or
+# `startup_failure` is NEVER eligible: the hook cannot distinguish a genuine
+# code/test/build/lint failure from an external one without inspecting trusted
+# evidence, so it always treats those as real and refuses the exception,
+# regardless of classification (including `other-external`). The named
+# classifications (`github-outage`, `runner-unavailable`, `permission-failure`,
+# `external-service-outage`, `external-secret-unavailable`,
+# `manual-approval-required`, `other-external`) describe WHY, but are usable
+# only when the observed run state is eligible above - they cannot excuse a
+# generic `failure`.
 # Recording ALWAYS queries the exact-SHA CI state first (never accepted blind):
 # - refused if that commit is already fully green (nothing to excuse);
-# - refused if any check shows a genuine COMPLETED failure/startup_failure -
-#   a real code/test/build/lint failure is never eligible, regardless of
-#   classification (this is what stops "other-external" from being a bypass);
+# - refused if any check shows a genuine COMPLETED failure/startup_failure;
+# - refused if CI cannot be queried at all;
 # - otherwise the observed run states are hashed into a non-secret fingerprint
-#   and stored alongside the record.
-# This never marks the commit verified/green. Every subsequent Stop still
-# performs a THROTTLED (EXTERNAL_BLOCKER_RECHECK_MINUTES) exact-SHA
-# re-evaluation while the exception exists: the same fingerprint keeps
-# completion allowed (reported as an external blocker, not success); CI
-# turning green retires the exception and verifies normally; CI changing to a
+#   (databaseId/attempt/workflowName/status/conclusion/updatedAt) and stored.
+# This never marks the commit verified/green. While an exception authorizes
+# completion, Stop emits a NON-BLOCKING "CI NOT VERIFIED GREEN" context notice
+# so the final task context can never misrepresent CI as successful. Every
+# subsequent Stop performs a THROTTLED (EXTERNAL_BLOCKER_RECHECK_MINUTES)
+# exact-SHA re-evaluation: the same fingerprint keeps completion allowed
+# (reported as an external blocker, not success); CI turning green retires the
+# exception and verifies normally (no external wording); CI changing to a
 # DIFFERENT state (including a real failure) invalidates the exception and
 # falls back to normal blocking. Bound to the exact resolved repository +
 # pushed HEAD SHA (a different SHA or repository cannot reuse it), expires
 # after EXTERNAL_BLOCKER_TTL_MINUTES if never rechecked, requires no source
 # edits, and is local-only (%LOCALAPPDATA%\HookMaker\state) - never written
 # into the target repository.
+# This is NOT a log-analysis subsystem: it does not parse job logs to decide
+# whether a `failure` is external.
 #
 # Optional .env next to this script (copy .env.example):
 #   PENDING_COOLDOWN_MINUTES          minutes between "still running" reminders (default 3)
@@ -99,15 +114,19 @@ function Get-PushedHeadInfo {
 # flow and for -ReportExternalBlocker, so both always agree on what "the
 # current state" means. Returns $null when it cannot be verified at all (gh
 # missing/unauthenticated, or the API call itself failed) - callers must then
-# degrade without claiming anything. Fingerprint is a hash of each run's
-# (id, status, conclusion) - non-secret, deterministic, changes exactly when
-# the observed CI state changes.
+# degrade without claiming anything. The fingerprint hashes each run's
+# (databaseId, attempt, workflowName, status, conclusion, updatedAt) - all
+# non-secret, stable fields actually supported by `gh run list --json` - so a
+# rerun (new attempt / newer updatedAt) or any materially changed state
+# produces a different fingerprint even when the run id/status/conclusion are
+# unchanged. The per-run parts are normalized and sorted deterministically so
+# ordering never affects the hash.
 function Get-CiRunSnapshot {
     param([string]$RepoSlug, [string]$Sha)
     if ($null -eq (Get-Command gh -ErrorAction SilentlyContinue)) { return $null }
     $null = Invoke-QuietCommand -FilePath gh -ArgumentList @('auth', 'status')
     if ($LASTEXITCODE -ne 0) { return $null }
-    $rawJson = Invoke-QuietCommand -FilePath gh -ArgumentList @('run', 'list', '--repo', $RepoSlug, '--commit', $Sha, '--json', 'databaseId,name,workflowName,status,conclusion', '--limit', '50')
+    $rawJson = Invoke-QuietCommand -FilePath gh -ArgumentList @('run', 'list', '--repo', $RepoSlug, '--commit', $Sha, '--json', 'databaseId,attempt,name,workflowName,status,conclusion,updatedAt', '--limit', '50')
     if ($LASTEXITCODE -ne 0) { return $null }
     $runs = @()
     try {
@@ -120,25 +139,31 @@ function Get-CiRunSnapshot {
     $failedRuns = @()
     $infraRuns = @()
     $fingerprintParts = New-Object System.Collections.Generic.List[string]
-    foreach ($run in @($runs | Sort-Object { [string](Get-Field $_ 'databaseId') })) {
+    foreach ($run in @($runs)) {
         if ($null -eq $run) { continue }
         $name = [string](Get-Field $run 'workflowName')
         if ($name -eq '') { $name = [string](Get-Field $run 'name') }
         $id = [string](Get-Field $run 'databaseId')
+        $attempt = [string](Get-Field $run 'attempt')
+        $updatedAt = [string](Get-Field $run 'updatedAt')
         $entry = $name + ' (run ' + $id + ')'
         $status = ([string](Get-Field $run 'status')).ToLowerInvariant()
         $conclusion = ([string](Get-Field $run 'conclusion')).ToLowerInvariant()
-        [void]$fingerprintParts.Add($id + ':' + $status + ':' + $conclusion)
+        # Non-secret, stable identity for this run; joined with a delimiter that
+        # cannot appear in the values, and the whole set is sorted below.
+        [void]$fingerprintParts.Add($id + "`t" + $attempt + "`t" + $name + "`t" + $status + "`t" + $conclusion + "`t" + $updatedAt)
         if ($status -ne 'completed') { $pendingRuns += $entry }
         elseif ($conclusion -in @('success', 'neutral', 'skipped')) { }
         elseif ($conclusion -in @('failure', 'startup_failure')) { $failedRuns += $entry }
         else {
             # cancelled / timed_out / stale / action_required / unknown:
-            # abnormal endings that are often infrastructure or flakiness.
+            # abnormal endings that are often infrastructure or flakiness -
+            # the ONLY states an external-blocker exception may excuse
+            # (a genuine completed failure/startup_failure never is).
             $infraRuns += ($entry + ' [' + $conclusion + ']')
         }
     }
-    $fingerprint = Get-ShortHash (($fingerprintParts.ToArray() -join '|'))
+    $fingerprint = Get-ShortHash ((@($fingerprintParts.ToArray() | Sort-Object) -join '|'))
     $allSuccess = ($runs.Count -gt 0 -and $pendingRuns.Count -eq 0 -and $failedRuns.Count -eq 0 -and $infraRuns.Count -eq 0)
     return [pscustomobject]@{
         Runs = $runs; PendingRuns = $pendingRuns; FailedRuns = $failedRuns; InfraRuns = $infraRuns
@@ -255,6 +280,23 @@ function Write-Block {
     exit 0
 }
 
+# Emits a NON-BLOCKING completion-context notice while a valid external-blocker
+# exception authorizes completion. It never blocks (no `decision:block`) and it
+# can never misrepresent CI as green - it states explicitly that CI is NOT
+# verified and completion is allowed only because of the recorded external
+# blocker. Uses hookSpecificOutput.additionalContext (the same shape the
+# context hooks use); if a client does not surface Stop additionalContext this
+# is the smallest safe non-blocking output and still cannot claim success.
+function Write-ExternalBlockerContext {
+    param([string]$Classification, [string]$Reason, [string]$Sha7, [string]$RepoSlug, [string]$EventName)
+    $message = 'CI NOT VERIFIED GREEN. Completion is allowed only because a recorded EXTERNAL CI blocker is in effect for ' +
+        $RepoSlug + '@' + $Sha7 + ' [' + $Classification + ']: ' + $Reason +
+        '. This is a documented external blocker, not a successful CI run - report it accurately and do not claim CI passed.'
+    @{ hookSpecificOutput = @{ hookEventName = $EventName; additionalContext = $message } } | ConvertTo-Json -Depth 5 -Compress |
+        ForEach-Object { [Console]::Out.WriteLine($_) }
+    exit 0
+}
+
 # ---- explicit external-blocker exception: SHA + repo bound, local-only,
 # re-verified on a throttle so it can never silently outlive a changed CI
 # state (a rerun, a fix, or a genuinely different failure). ----
@@ -285,27 +327,29 @@ if (Test-Path -LiteralPath $externalStatePath -PathType Leaf) {
     catch { }
     if ($extValid) {
         if (([DateTime]::UtcNow - $extLastCheckedTime).TotalMinutes -lt $externalBlockerRecheckMinutes) {
-            exit 0    # within the re-check throttle window - same external blocker still applies
+            # Within the re-check throttle window - same external blocker still
+            # applies; surface the non-blocking "CI not green" notice.
+            Write-ExternalBlockerContext -Classification $extClassification -Reason $extReason -Sha7 $sha7 -RepoSlug $repoSlug -EventName $eventName
         }
         $recheck = Get-CiRunSnapshot -RepoSlug $repoSlug -Sha $sha
         if ($null -eq $recheck) {
             # Cannot verify right now - keep tolerating the existing, already
             # evidenced exception (never invent a new one, never claim verified).
             try { [System.IO.File]::WriteAllLines($externalStatePath, @($sha, $repoSlug, $extClassification, $extReason, $extRecordedRaw, $extFingerprint, [DateTime]::UtcNow.ToString('o'))) } catch { }
-            exit 0
+            Write-ExternalBlockerContext -Classification $extClassification -Reason $extReason -Sha7 $sha7 -RepoSlug $repoSlug -EventName $eventName
         }
         if ($recheck.AllSuccess) {
             # CI recovered - retire the exception and verify normally (green,
-            # not "excused").
+            # not "excused"); no external wording.
             Remove-Item -LiteralPath $externalStatePath -Force -ErrorAction SilentlyContinue
             Save-State -Outcome 'verified'
             exit 0
         }
         if ($recheck.Fingerprint -eq $extFingerprint) {
-            # The exact same external condition persists - refresh only the
-            # recheck timestamp, keep allowing completion.
+            # The exact same external condition persists - refresh the recheck
+            # timestamp, keep allowing completion, and surface the notice.
             try { [System.IO.File]::WriteAllLines($externalStatePath, @($sha, $repoSlug, $extClassification, $extReason, $extRecordedRaw, $extFingerprint, [DateTime]::UtcNow.ToString('o'))) } catch { }
-            exit 0
+            Write-ExternalBlockerContext -Classification $extClassification -Reason $extReason -Sha7 $sha7 -RepoSlug $repoSlug -EventName $eventName
         }
         # CI now shows a DIFFERENT state (possibly a genuine new failure) -
         # invalidate the stale exception and fall through to normal
