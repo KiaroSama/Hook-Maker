@@ -232,54 +232,87 @@ try {
     Check 'summary lists all eight (8 event lines)' (([regex]::Matches($r.Out, 'events:')).Count -ge 8)
 
     # =====================================================================
-    Write-Host '--- Select all hooks (aggregate menu item 1) ---' -ForegroundColor Cyan
+    Write-Host '--- Select all hooks (aggregate menu item 1 = sync group + every hook) ---' -ForegroundColor Cyan
     $RealHooksDir = Join-Path (Split-Path -Parent $PSScriptRoot) 'hooks'
     $hookCount = @(Get-ChildItem -LiteralPath $RealHooksDir -Directory -ErrorAction SilentlyContinue | Where-Object { $_.Name -ne 'Cross-Project-.ai-Knowledge-Sync' }).Count
+    $syncX = New-Proj 'SelectAllSyncX'; $syncY = New-Proj 'SelectAllSyncY'
 
     $cfgAll = Join-Path $Work 'cfg-all.json'; New-Config $cfgAll
     $allProj = New-Proj 'SelectAllProj'
-    # main 1 -> sub 1 -> "1" (select all) -> mode 1 (recommended events) -> client Both -> target -> done -> start
-    $rAll = Invoke-Wizard -Config $cfgAll -Answers @('1', '1', '1', '1', '1', $allProj, 'done', '', '0')
+    # main 1 -> sub 1 -> "1" (select all: sync group + every hook) ->
+    #   [sync group: syncX, syncY, done, client Both, confirm] ->
+    #   [hooks: mode 1 (recommended events), client Both, target, done, confirm]
+    $rAll = Invoke-Wizard -Config $cfgAll -Answers @('1', '1', '1', $syncX, $syncY, 'done', '1', '', '1', '1', $allProj, 'done', '', '0')
     Check 'exit 0' ($rAll.Exit -eq 0)
     Check 'no stderr' ($rAll.Err -eq '')
+    Check 'select-all alone (no "2" typed) still runs the sync group' ($rAll.Out -match 'Running the sync group first')
     Check ('select-all configures every discovered hook (' + $hookCount + ')') ($rAll.Out -match ('Configuring ' + $hookCount + ' hooks:'))
+    Check 'completion summary reports both the sync group and the resolved hook count' ($rAll.Out -match ('Sync group \+ ' + $hookCount + ' hook\(s\) installed'))
     $allFolders = @(Get-ChildItem -LiteralPath (Join-Path $allProj '.claude\hooks\Hook-Maker') -Directory -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Name)
     Check 'select-all installs every discovered hook exactly once (no duplicates)' ($allFolders.Count -eq $hookCount -and @($allFolders | Group-Object | Where-Object { $_.Count -gt 1 }).Count -eq 0)
-    Check 'select-all never installs the sync engine as a plain hook' ($allFolders -notcontains 'Cross-Project-.ai-Knowledge-Sync')
+    Check 'select-all never installs the sync engine as a plain hook (at the hooks target)' ($allFolders -notcontains 'Cross-Project-.ai-Knowledge-Sync')
     Check 'select-all includes Cloudflare-Deploy (the last individual entry)' ($allFolders -contains 'Cloudflare-Deploy')
+    $profAll = @((Get-Content $cfgAll -Raw | ConvertFrom-Json).profiles)
+    Check 'select-all applies the sync-group profile exactly once' ($profAll.Count -eq 1 -and @($profAll[0].routes).Count -eq 2)
+    Check 'sync group installed its engine at the sync-group targets, not the hooks target' (
+        (Test-Path (Join-Path $syncX '.claude\hooks\Hook-Maker\Cross-Project-.ai-Knowledge-Sync\Cross-Project-.ai-Knowledge-Sync.ps1')) -and
+        (Test-Path (Join-Path $syncY '.claude\hooks\Hook-Maker\Cross-Project-.ai-Knowledge-Sync\Cross-Project-.ai-Knowledge-Sync.ps1')))
 
     # Combining "1" (select all) with an explicit individual pick must not
-    # install anything twice.
+    # install anything twice, and the sync group still runs exactly once.
     $cfgAllCombo = Join-Path $Work 'cfg-all-combo.json'; New-Config $cfgAllCombo
     $comboProj = New-Proj 'SelectAllCombo'
-    $rCombo = Invoke-Wizard -Config $cfgAllCombo -Answers @('1', '1', '1,5', '1', '1', $comboProj, 'done', '', '0')
+    $rCombo = Invoke-Wizard -Config $cfgAllCombo -Answers @('1', '1', '1,5', $syncX, $syncY, 'done', '1', '', '1', '1', $comboProj, 'done', '', '0')
+    Check 'select-all + explicit pick still runs the sync group exactly once' ((@([regex]::Matches($rCombo.Out, 'Running the sync group first'))).Count -eq 1)
     Check 'select-all combined with an explicit pick still configures each hook exactly once' ($rCombo.Out -match ('Configuring ' + $hookCount + ' hooks:'))
 
-    # Claude-only and Codex-only client scoping still apply with Select All.
+    # Combining "1" with "2" (the sync group's own item) must not run the
+    # sync group twice either.
+    $cfgAllWith2 = Join-Path $Work 'cfg-all-with2.json'; New-Config $cfgAllWith2
+    $with2Proj = New-Proj 'SelectAllWith2'
+    $rWith2 = Invoke-Wizard -Config $cfgAllWith2 -Answers @('1', '1', '1,2', $syncX, $syncY, 'done', '1', '', '1', '1', $with2Proj, 'done', '', '0')
+    Check 'select-all + explicit "2" still runs the sync group exactly once (no duplicate)' ((@([regex]::Matches($rWith2.Out, 'Running the sync group first'))).Count -eq 1)
+    Check '"1,2" still configures every hook exactly once' ($rWith2.Out -match ('Configuring ' + $hookCount + ' hooks:'))
+
+    # Canceling the sync-group confirmation must not install any individual
+    # hook and must not claim success.
+    $cfgCancel = Join-Path $Work 'cfg-all-cancel.json'; New-Config $cfgCancel
+    $cancelProj = New-Proj 'SelectAllCancel'
+    $rCancel = Invoke-Wizard -Config $cfgCancel -Answers @('1', '1', '1', $syncX, $syncY, 'done', '1', 'n', '0')
+    Check 'exit 0 (sync-group stage canceled)' ($rCancel.Exit -eq 0)
+    Check 'canceling the sync-group stage reports Canceled, not success' ($rCancel.Out -match 'Canceled\. Nothing was changed\.' -and $rCancel.Out -notmatch 'hook\(s\) installed')
+    Check 'canceling the sync-group stage installs no individual hook' (-not (Test-Path (Join-Path $cancelProj '.claude')))
+
+    # Claude-only and Codex-only client scoping still apply with Select All
+    # (checked at the hooks target; the sync-group phase uses its own choice).
     $cfgAllClaude = Join-Path $Work 'cfg-all-claude.json'; New-Config $cfgAllClaude
     $claudeOnlyProj = New-Proj 'SelectAllClaude'
-    $null = Invoke-Wizard -Config $cfgAllClaude -Answers @('1', '1', '1', '1', '2', $claudeOnlyProj, 'done', '', '0')
+    $null = Invoke-Wizard -Config $cfgAllClaude -Answers @('1', '1', '1', $syncX, $syncY, 'done', '1', '', '1', '2', $claudeOnlyProj, 'done', '', '0')
     Check 'select-all honors Claude-only client scoping' ((Test-Path (Join-Path $claudeOnlyProj '.claude\settings.local.json')) -and -not (Test-Path (Join-Path $claudeOnlyProj '.codex')))
 
     $cfgAllCodex = Join-Path $Work 'cfg-all-codex.json'; New-Config $cfgAllCodex
     $codexOnlyProj = New-Proj 'SelectAllCodex'
-    $null = Invoke-Wizard -Config $cfgAllCodex -Answers @('1', '1', '1', '1', '3', $codexOnlyProj, 'done', '', '0')
+    $null = Invoke-Wizard -Config $cfgAllCodex -Answers @('1', '1', '1', $syncX, $syncY, 'done', '1', '', '1', '3', $codexOnlyProj, 'done', '', '0')
     Check 'select-all honors Codex-only client scoping' ((Test-Path (Join-Path $codexOnlyProj '.codex\hooks.json')) -and -not (Test-Path (Join-Path $codexOnlyProj '.claude')))
 
-    # Selecting the LAST individual entry (a single-hook pick) installs
-    # Cloudflare-Deploy specifically.
+    # Selecting the LAST individual entry (a single-hook pick, no aggregate)
+    # installs Cloudflare-Deploy specifically and does NOT run the sync group.
     $cfgLast = Join-Path $Work 'cfg-last.json'; New-Config $cfgLast
     $lastProj = New-Proj 'LastEntryProj'
     $rLast = Invoke-Wizard -Config $cfgLast -Answers @('1', '1', ($hookCount + 2).ToString(), '2', '2', $lastProj, 'done', '', '0')
     Check 'selecting the last individual entry installs Cloudflare-Deploy' (Test-Path (Join-Path $lastProj '.claude\hooks\Hook-Maker\Cloudflare-Deploy\Cloudflare-Deploy.ps1'))
+    Check 'selecting a single individual entry does not run the sync group' ($rLast.Out -notmatch 'Running the sync group first')
 
     # Reinstalling via Select All stays idempotent: same set, no duplicate
-    # registrations, nothing previously installed goes missing.
-    $rAllAgain = Invoke-Wizard -Config $cfgAll -Answers @('1', '1', '1', '1', '1', $allProj, 'done', '', '0')
+    # registrations, nothing previously installed goes missing, sync-group
+    # profile is updated in place rather than duplicated.
+    $rAllAgain = Invoke-Wizard -Config $cfgAll -Answers @('1', '1', '1', $syncX, $syncY, 'done', '1', '', '1', '1', $allProj, 'done', '', '0')
     Check 'exit 0 (select-all reinstall)' ($rAllAgain.Exit -eq 0)
     $allFoldersAgain = @(Get-ChildItem -LiteralPath (Join-Path $allProj '.claude\hooks\Hook-Maker') -Directory -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Name)
     Check 'reinstall via select-all stays idempotent (same hook count)' ($allFoldersAgain.Count -eq $hookCount)
     Check 'reinstall preserves every previously-installed hook (none dropped or duplicated)' (((@($allFolders | Sort-Object)) -join ',') -eq ((@($allFoldersAgain | Sort-Object)) -join ','))
+    $profAllAgain = @((Get-Content $cfgAll -Raw | ConvertFrom-Json).profiles)
+    Check 'reinstall does not duplicate the sync-group profile' ($profAllAgain.Count -eq 1 -and $profAllAgain[0].id -eq $profAll[0].id)
     # Parse the JSON (rather than raw-text/regex match it) so JSON's own
     # backslash-escaping ("\\") can never be mistaken for a missing/duplicate
     # entry: count actual handler entries whose (decoded) command references
@@ -309,7 +342,7 @@ try {
 
         $cfgFuture = Join-Path $Work 'cfg-future.json'; New-Config $cfgFuture
         $futureProj = New-Proj 'SelectAllFuture'
-        $rFuture = Invoke-Wizard -Config $cfgFuture -Answers @('1', '1', '1', '1', '1', $futureProj, 'done', '', '0')
+        $rFuture = Invoke-Wizard -Config $cfgFuture -Answers @('1', '1', '1', $syncX, $syncY, 'done', '1', '', '1', '1', $futureProj, 'done', '', '0')
         Check 'exit 0 (with synthetic hook present)' ($rFuture.Exit -eq 0)
         Check 'select-all dynamically picks up the new hook count - no hard-coded 16' ($rFuture.Out -match ('Configuring ' + $newHookCount + ' hooks:'))
         $futureFolders = @(Get-ChildItem -LiteralPath (Join-Path $futureProj '.claude\hooks\Hook-Maker') -Directory -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Name)

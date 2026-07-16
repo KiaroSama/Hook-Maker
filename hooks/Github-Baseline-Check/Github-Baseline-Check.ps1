@@ -16,18 +16,27 @@
 # No YAML parser is guaranteed in this environment, so workflow/Dependabot
 # inspection stays a deliberate, bounded regex heuristic (Test-HasWorkflowTrigger,
 # Test-HasValidationCommand) rather than a full parser - this is intentionally
-# lightweight, not a general-purpose static analyzer. It recognizes block-style,
-# flow-style ([a, b]), bare-value, and block-sequence `on:` triggers; a
-# `workflow_call` trigger counts as real CI so a reusable workflow with actual
-# validation is not misread as "no CI"; multiline `run: |`/`run: >` blocks are
-# scanned (bounded lookahead) for validation keywords, not just the `run:` line
-# itself; a bare pyproject.toml defaults to the `pip` Dependabot ecosystem
-# (also correct for Poetry, which has no separate ecosystem value), and is
-# reclassified as `uv` only when a uv.lock sits beside it.
+# lightweight, not a general-purpose static analyzer. `on:` trigger detection
+# recognizes block-style, flow-style ([a, b]), bare-value, and block-sequence
+# forms, strictly SCOPED to the top-level `on:` block (children more indented
+# than it, until indentation drops back) - an unrelated same-named key
+# elsewhere in the file (most commonly a step's own `push: true`/`push: false`
+# input, e.g. docker/build-push-action) is never mistaken for a trigger.
+# A `workflow_call`-only workflow with real validation counts as CI only when
+# another local workflow (`uses: ./.github/workflows/<file>`) actually calls
+# it AND that caller is itself directly triggered (push/pull_request/
+# pull_request_target) - an uncalled reusable workflow is never counted as
+# proof on its own. Multiline `run: |`/`run: >` blocks are scanned (bounded
+# lookahead) for validation keywords, not just the `run:` line itself; a bare
+# pyproject.toml defaults to the `pip` Dependabot ecosystem (also correct for
+# Poetry, which has no separate ecosystem value), and is reclassified as `uv`
+# only when a uv.lock sits beside it.
 # Known, intentional limitations (would require real YAML/expression
 # evaluation to close, which this hook deliberately does not add): a
 # validation step disabled via an `if:` condition is not detected as disabled,
-# and there is no dedicated least-privilege `permissions:` check.
+# there is no dedicated least-privilege `permissions:` check, and a reusable
+# workflow called only from OUTSIDE this repository cannot be confirmed
+# locally (reported as a gap, not falsely assumed complete).
 #
 # Optional .env next to this script (copy .env.example):
 #   COOLDOWN_MINUTES  minimum minutes between identical reports per repo (default 240)
@@ -142,16 +151,39 @@ while ($stack.Count -gt 0) {
 # Matches a YAML trigger keyword across the shapes real workflows use: a
 # block-mapping key (`push:`), a flow-style list on the `on:` line
 # (`on: [push, pull_request]`), a bare single value (`on: push`), or a
-# block-sequence item (`on:` then `  - push`). No YAML parser is guaranteed in
-# this environment (see README/.ai notes) - this stays a deliberate, bounded
-# regex heuristic rather than a full parser.
+# block-sequence item (`on:` then `  - push`). Strictly scoped to the
+# TOP-LEVEL `on:` block (its own line at column 0, keyword-'d or quoted;
+# children indented strictly deeper than it, until indentation drops back)
+# so an unrelated key elsewhere in the file - most commonly a step's own
+# `push: true`/`push: false` input (e.g. docker/build-push-action) - is never
+# mistaken for a trigger. No YAML parser is guaranteed in this environment
+# (see README/.ai notes) - this stays a deliberate, bounded regex heuristic
+# rather than a full parser.
 function Test-HasWorkflowTrigger {
     param([string]$Text, [string[]]$Keywords)
     $union = ($Keywords -join '|')
-    if ($Text -match ('(?im)^\s*(' + $union + ')\s*:')) { return $true }
-    if ($Text -match ('(?im)^\s*on\s*:\s*\[[^\]]*\b(' + $union + ')\b')) { return $true }
-    if ($Text -match ('(?im)^\s*on\s*:\s*["'']?(' + $union + ')["'']?\s*$')) { return $true }
-    if ($Text -match ('(?im)^\s*-\s*["'']?(' + $union + ')["'']?\s*$')) { return $true }
+    $lines = $Text -split '\r?\n'
+    for ($i = 0; $i -lt $lines.Count; $i++) {
+        if ($lines[$i] -notmatch '^(?<indent>\s*)["'']?on["'']?\s*:\s*(?<rest>.*)$') { continue }
+        $indent = $Matches['indent'].Length
+        if ($indent -ne 0) { continue }    # `on:` is only meaningful at the top level
+        $rest = $Matches['rest'].Trim()
+        if ($rest -ne '') {
+            if ($rest -match ('^\[[^\]]*\b(' + $union + ')\b')) { return $true }             # flow-style list
+            if ($rest -match ('^["'']?(' + $union + ')["'']?\s*(#.*)?$')) { return $true }    # bare single value
+            continue    # a non-matching inline value - no block children to scan for this "on:"
+        }
+        # Block-style children (mapping keys or sequence items) strictly more
+        # indented than "on:" itself, until indentation drops back to end the block.
+        for ($j = $i + 1; $j -lt $lines.Count; $j++) {
+            $next = $lines[$j]
+            if ($next.Trim() -eq '' -or $next.Trim().StartsWith('#')) { continue }
+            $nextIndent = $next.Length - $next.TrimStart(' ').Length
+            if ($nextIndent -le $indent) { break }
+            if ($next -match ('^\s*["'']?(' + $union + ')["'']?\s*:')) { return $true }
+            if ($next -match ('^\s*-\s*["'']?(' + $union + ')["'']?\s*$')) { return $true }
+        }
+    }
     return $false
 }
 
@@ -229,20 +261,55 @@ if ($dependabotPath -ne '') {
 $findings = @()
 $hasCode = ($ecosystems.Count -gt 0 -or $sourceCount -ge 3)
 
-$meaningfulCi = $false
-$workflowProblems = @()
+# ---- per-workflow signals + local reusable-workflow call graph ----
+# A `workflow_call`-only workflow is never proof of CI on its own - it only
+# runs when something else invokes it. It counts toward the baseline ONLY
+# when either (a) it is ALSO directly triggered (push/pull_request/
+# pull_request_target), or (b) another workflow in this repo actually calls
+# it locally (`uses: ./.github/workflows/<file>` or `.github/workflows/<file>`)
+# AND that caller is itself directly triggered. An uncalled reusable workflow
+# is not counted as proof - this is the safe default (report a gap) rather
+# than assuming a relationship that cannot be confirmed locally.
+$workflowInfos = New-Object System.Collections.Generic.List[object]
+$callersByCalledFile = @{}
 foreach ($workflow in $workflowFiles) {
     $text = [System.IO.File]::ReadAllText($workflow.FullName)
-    # workflow_call is included so a reusable workflow (triggered by another
-    # workflow's `uses:`, not directly by push/PR) that DOES run real
-    # validation still counts toward the repo's baseline instead of being
-    # misread as "no CI".
-    $hasTrigger = Test-HasWorkflowTrigger -Text $text -Keywords @('push', 'pull_request', 'pull_request_target', 'workflow_call')
+    $hasDirectTrigger = Test-HasWorkflowTrigger -Text $text -Keywords @('push', 'pull_request', 'pull_request_target')
+    $hasWorkflowCallTrigger = Test-HasWorkflowTrigger -Text $text -Keywords @('workflow_call')
     $hasValidation = Test-HasValidationCommand -Text $text
     $deployOnly = ($text -match '(?i)\b(deploy|publish|release)\b') -and -not $hasValidation
-    if ($hasTrigger -and $hasValidation -and -not $deployOnly) { $meaningfulCi = $true }
-    if ($text -match '(?im)^\s*continue-on-error:\s*["'']?true["'']?\s*$' -and $hasValidation) { $workflowProblems += ($workflow.Name + ' makes validation non-blocking with continue-on-error') }
-    if ((Test-HasWorkflowTrigger -Text $text -Keywords @('pull_request_target')) -and $text -match 'actions/checkout' -and $text -match '(?i)(github\.event\.pull_request\.head|head\.sha)') { $workflowProblems += ($workflow.Name + ' uses pull_request_target with untrusted PR checkout') }
+    [void]$workflowInfos.Add([pscustomobject]@{
+        Name = $workflow.Name; Text = $text; HasDirectTrigger = $hasDirectTrigger
+        HasWorkflowCallTrigger = $hasWorkflowCallTrigger; HasValidation = $hasValidation; DeployOnly = $deployOnly
+    })
+    foreach ($m in [regex]::Matches($text, '(?im)^\s*-?\s*uses\s*:\s*["'']?(\./[^\s"''#@]+|\.github[/\\]workflows[/\\][^\s"''#@]+)')) {
+        $calledLeaf = (Split-Path -Leaf $m.Groups[1].Value.Trim()).ToLowerInvariant()
+        if ($calledLeaf -eq '') { continue }
+        if (-not $callersByCalledFile.ContainsKey($calledLeaf)) { $callersByCalledFile[$calledLeaf] = New-Object System.Collections.Generic.List[string] }
+        [void]$callersByCalledFile[$calledLeaf].Add($workflow.Name)
+    }
+}
+
+$meaningfulCi = $false
+$workflowProblems = @()
+foreach ($info in $workflowInfos) {
+    if ($info.HasValidation -and -not $info.DeployOnly) {
+        if ($info.HasDirectTrigger) {
+            $meaningfulCi = $true
+        }
+        elseif ($info.HasWorkflowCallTrigger) {
+            $calledLeaf = $info.Name.ToLowerInvariant()
+            if ($callersByCalledFile.ContainsKey($calledLeaf)) {
+                foreach ($callerName in $callersByCalledFile[$calledLeaf]) {
+                    $callerInfo = @($workflowInfos | Where-Object { $_.Name -eq $callerName }) | Select-Object -First 1
+                    if ($null -ne $callerInfo -and $callerInfo.HasDirectTrigger) { $meaningfulCi = $true; break }
+                }
+            }
+        }
+    }
+    $text = $info.Text
+    if ($text -match '(?im)^\s*continue-on-error:\s*["'']?true["'']?\s*$' -and $info.HasValidation) { $workflowProblems += ($info.Name + ' makes validation non-blocking with continue-on-error') }
+    if ((Test-HasWorkflowTrigger -Text $text -Keywords @('pull_request_target')) -and $text -match 'actions/checkout' -and $text -match '(?i)(github\.event\.pull_request\.head|head\.sha)') { $workflowProblems += ($info.Name + ' uses pull_request_target with untrusted PR checkout') }
 }
 
 if (-not $meaningfulCi -and $hasCode) {
