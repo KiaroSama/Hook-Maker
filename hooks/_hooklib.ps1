@@ -143,6 +143,35 @@ function Invoke-QuietCommand {
     }
 }
 
+function Get-GitHubRepository {
+    param([Parameter(Mandatory = $true)][string]$ProjectRoot)
+    if ($null -eq (Get-Command git -ErrorAction SilentlyContinue)) { return $null }
+    $inside = Invoke-QuietCommand -FilePath git -ArgumentList @('-C', $ProjectRoot, 'rev-parse', '--is-inside-work-tree')
+    if ($LASTEXITCODE -ne 0 -or [string]$inside -ne 'true') { return $null }
+
+    $remoteNames = @(Invoke-QuietCommand -FilePath git -ArgumentList @('-C', $ProjectRoot, 'remote') | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) })
+    $valid = @{}
+    foreach ($remoteName in $remoteNames) {
+        $url = [string](Invoke-QuietCommand -FilePath git -ArgumentList @('-C', $ProjectRoot, 'remote', 'get-url', [string]$remoteName))
+        if ($LASTEXITCODE -ne 0) { continue }
+        if ($url -match '^(?:https?://github\.com/|ssh://git@github\.com/|git@github\.com:)([^/\s]+)/([^/\s]+?)(?:\.git)?/?$') {
+            $valid[[string]$remoteName] = ($Matches[1] + '/' + $Matches[2])
+        }
+    }
+    if ($valid.Count -eq 0) { return $null }
+
+    $selected = ''
+    $branch = [string](Invoke-QuietCommand -FilePath git -ArgumentList @('-C', $ProjectRoot, 'rev-parse', '--abbrev-ref', 'HEAD'))
+    if ($LASTEXITCODE -eq 0 -and $branch -ne '' -and $branch -ne 'HEAD') {
+        $upstreamRemote = [string](Invoke-QuietCommand -FilePath git -ArgumentList @('-C', $ProjectRoot, 'config', '--get', ('branch.' + $branch + '.remote')))
+        if ($LASTEXITCODE -eq 0 -and $valid.ContainsKey($upstreamRemote)) { $selected = $upstreamRemote }
+    }
+    if ($selected -eq '' -and $valid.ContainsKey('origin')) { $selected = 'origin' }
+    if ($selected -eq '' -and $valid.Count -eq 1) { $selected = [string]@($valid.Keys)[0] }
+    if ($selected -eq '') { return $null }
+    return [pscustomobject]@{ Remote = $selected; Repository = [string]$valid[$selected] }
+}
+
 function Get-LatestWorkTimeUtc {
     param([string]$ProjectRoot)
     if ($null -eq (Get-Command git -ErrorAction SilentlyContinue)) {

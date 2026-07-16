@@ -45,19 +45,9 @@ $inside = Invoke-QuietCommand -FilePath git -ArgumentList @('-C', $cwd, 'rev-par
 if ($LASTEXITCODE -ne 0 -or [string]$inside -ne 'true') {
     exit 0
 }
-$repoSlug = ''
-foreach ($remoteName in @(Invoke-QuietCommand -FilePath git -ArgumentList @('-C', $cwd, 'remote'))) {
-    if ([string]::IsNullOrWhiteSpace([string]$remoteName)) { continue }
-    $url = [string](Invoke-QuietCommand -FilePath git -ArgumentList @('-C', $cwd, 'remote', 'get-url', $remoteName))
-    if ($LASTEXITCODE -ne 0) { continue }
-    if ($url -match 'github\.com[:/]([^/]+)/([^/\s]+?)(\.git)?/?$') {
-        $repoSlug = $Matches[1] + '/' + $Matches[2]
-        break
-    }
-}
-if ($repoSlug -eq '') {
-    exit 0
-}
+$repository = Get-GitHubRepository -ProjectRoot $cwd
+if ($null -eq $repository) { exit 0 }
+$repoSlug = $repository.Repository
 
 # ---- optional .env ----
 $config = Read-HookEnv (Join-Path $PSScriptRoot '.env')
@@ -77,6 +67,10 @@ $manifestMap = @{
     'composer.json'    = 'composer'
     'Gemfile'          = 'bundler'
     'Dockerfile'       = 'docker'
+    'pom.xml'          = 'maven'
+    'build.gradle'     = 'gradle'
+    'build.gradle.kts' = 'gradle'
+    'packages.config'  = 'nuget'
 }
 $sourceExtensions = @('.ps1', '.psm1', '.py', '.js', '.ts', '.jsx', '.tsx', '.mjs', '.cjs', '.cs', '.java', '.go', '.rb', '.php', '.rs', '.c', '.cpp', '.h', '.kt', '.swift')
 $excludedDirs = @('.git', 'node_modules', '.ai', 'graphify-out', 'logs', 'dist', 'build', 'out', 'target', 'vendor', '__pycache__', '.venv', 'venv', '.claude', '.codex', 'bin', 'obj', '.cross-project-sync', '.github')
@@ -92,12 +86,11 @@ while ($stack.Count -gt 0) {
     $currentDir = [string]$frame[0]
     $depth = [int]$frame[1]
     try {
-        if ($depth -lt 3) {
-            foreach ($childDir in [System.IO.Directory]::EnumerateDirectories($currentDir)) {
-                $leaf = Split-Path -Leaf $childDir
-                if ($excludedDirs -notcontains $leaf.ToLowerInvariant()) {
-                    $stack.Push(@($childDir, ($depth + 1)))
-                }
+        foreach ($childDir in [System.IO.Directory]::EnumerateDirectories($currentDir)) {
+            $leaf = Split-Path -Leaf $childDir
+            $item = Get-Item -LiteralPath $childDir -Force -ErrorAction SilentlyContinue
+            if ($null -ne $item -and -not ($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -and $excludedDirs -notcontains $leaf.ToLowerInvariant()) {
+                $stack.Push(@($childDir, ($depth + 1)))
             }
         }
         foreach ($file in [System.IO.Directory]::EnumerateFiles($currentDir)) {
@@ -106,6 +99,11 @@ while ($stack.Count -gt 0) {
                 $relDir = $currentDir.Substring($rootFull.Length).TrimStart('\', '/').Replace('\', '/')
                 if ($relDir -eq '') { $relDir = '/' } else { $relDir = '/' + $relDir }
                 $ecosystems[($manifestMap[$fileName] + '|' + $relDir)] = $fileName
+            }
+            elseif ([System.IO.Path]::GetExtension($fileName) -in @('.csproj', '.fsproj', '.vbproj', '.sln')) {
+                $relDir = $currentDir.Substring($rootFull.Length).TrimStart('\', '/').Replace('\', '/')
+                if ($relDir -eq '') { $relDir = '/' } else { $relDir = '/' + $relDir }
+                $ecosystems[('nuget|' + $relDir)] = $fileName
             }
             elseif ($sourceExtensions -contains [System.IO.Path]::GetExtension($fileName).ToLowerInvariant()) {
                 $sourceCount++
@@ -134,17 +132,26 @@ if ($workflowFiles.Count -gt 0) { $required['github-actions|/'] = $true }
 
 # covered pairs from the existing dependabot config (light block parse)
 $covered = @{}
+$dependabotMalformed = $false
 if ($dependabotPath -ne '') {
     $dependabotText = [System.IO.File]::ReadAllText($dependabotPath)
+    if ($dependabotText -notmatch '(?m)^\s*version:\s*["'']?2["'']?\s*$' -or $dependabotText -notmatch '(?m)^\s*updates:\s*$') { $dependabotMalformed = $true }
     $blocks = [regex]::Split($dependabotText, '(?m)^\s*-\s+package-ecosystem:')
     for ($i = 1; $i -lt $blocks.Count; $i++) {
         $block = $blocks[$i]
         $eco = ''
         if ($block -match '^\s*["'']?([a-z-]+)') { $eco = $Matches[1] }
-        $dir = '/'
-        if ($block -match '(?m)^\s*directory:\s*["'']?([^"''#\r\n]+)') { $dir = $Matches[1].Trim() }
-        if ($dir -ne '/') { $dir = '/' + $dir.Trim('/') }
-        if ($eco -ne '') { $covered[($eco + '|' + $dir)] = $true }
+        $dirs = @()
+        if ($block -match '(?m)^\s*directory:\s*["'']?([^"''#\r\n]+)') { $dirs += $Matches[1].Trim() }
+        $directoriesMatch = [regex]::Match($block, '(?ms)^\s*directories:\s*\r?\n(?<items>(?:\s*-\s*[^\r\n]+\r?\n?)+)')
+        if ($directoriesMatch.Success) {
+            foreach ($item in [regex]::Matches($directoriesMatch.Groups['items'].Value, '(?m)^\s*-\s*["'']?([^"''#\r\n]+)')) { $dirs += $item.Groups[1].Value.Trim() }
+        }
+        if ($dirs.Count -eq 0) { $dirs = @('/') }
+        foreach ($dir in $dirs) {
+            if ($dir -ne '/') { $dir = '/' + $dir.Trim('/') }
+            if ($eco -ne '' -and -not $dependabotMalformed) { $covered[($eco + '|' + $dir)] = $true }
+        }
     }
 }
 
@@ -152,12 +159,26 @@ if ($dependabotPath -ne '') {
 $findings = @()
 $hasCode = ($ecosystems.Count -gt 0 -or $sourceCount -ge 3)
 
-if ($workflowFiles.Count -eq 0 -and $hasCode) {
+$meaningfulCi = $false
+$workflowProblems = @()
+foreach ($workflow in $workflowFiles) {
+    $text = [System.IO.File]::ReadAllText($workflow.FullName)
+    $hasTrigger = $text -match '(?m)^\s*(push|pull_request)\s*:'
+    $hasValidation = $text -match '(?im)^\s*-?\s*(run|uses)\s*:.*\b(test|lint|typecheck|type-check|build|verify|check)\b'
+    $deployOnly = $text -match '(?i)\b(deploy|publish|release)\b' -and -not $hasValidation
+    if ($hasTrigger -and $hasValidation -and -not $deployOnly) { $meaningfulCi = $true }
+    if ($text -match '(?im)^\s*continue-on-error:\s*true\s*$' -and $hasValidation) { $workflowProblems += ($workflow.Name + ' makes validation non-blocking with continue-on-error') }
+    if ($text -match '(?m)^\s*pull_request_target\s*:' -and $text -match 'actions/checkout' -and $text -match '(?i)(github\.event\.pull_request\.head|head\.sha)') { $workflowProblems += ($workflow.Name + ' uses pull_request_target with untrusted PR checkout') }
+}
+
+if (-not $meaningfulCi -and $hasCode) {
     $detected = @($ecosystems.Keys | Sort-Object | ForEach-Object { $_.Replace('|', ' at ') })
     $detectedText = 'source files only'
     if ($detected.Count -gt 0) { $detectedText = ($detected -join ', ') }
-    $findings += ('- No CI workflow (.github/workflows). Detected: ' + $detectedText + '. Add a CI that runs the project''s REAL commands with deterministic lockfile-based installs; keep lint/type-check/test/build failures blocking; least-privilege permissions; no unsafe pull_request_target; trusted, pinned actions.')
+    $findingPrefix = if ($workflowFiles.Count -eq 0) { 'No CI workflow' } else { 'Workflow files exist, but none provides blocking project validation' }
+    $findings += ('- ' + $findingPrefix + ' (.github/workflows). Detected: ' + $detectedText + '. Add CI on push/pull_request that runs the project''s real lint/test/type-check/build commands; keep failures blocking; use least-privilege permissions and avoid unsafe pull_request_target execution.')
 }
+foreach ($problem in $workflowProblems) { $findings += ('- Unsafe/non-blocking workflow: ' + $problem + '.') }
 
 if ($dependabotPath -eq '') {
     if ($required.Count -gt 0) {
@@ -166,6 +187,7 @@ if ($dependabotPath -eq '') {
     }
 }
 else {
+    if ($dependabotMalformed) { $findings += '- dependabot.yml is malformed or missing version: 2 / updates; coverage cannot be trusted.' }
     $missing = @()
     foreach ($key in ($required.Keys | Sort-Object)) {
         if (-not $covered.ContainsKey($key)) { $missing += $key.Replace('|', ' at ') }
