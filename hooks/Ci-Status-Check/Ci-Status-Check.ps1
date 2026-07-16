@@ -48,19 +48,9 @@ $inside = Invoke-QuietCommand -FilePath git -ArgumentList @('-C', $cwd, 'rev-par
 if ($LASTEXITCODE -ne 0 -or [string]$inside -ne 'true') {
     exit 0
 }
-$repoSlug = ''
-foreach ($remoteName in @(Invoke-QuietCommand -FilePath git -ArgumentList @('-C', $cwd, 'remote'))) {
-    if ([string]::IsNullOrWhiteSpace([string]$remoteName)) { continue }
-    $url = [string](Invoke-QuietCommand -FilePath git -ArgumentList @('-C', $cwd, 'remote', 'get-url', $remoteName))
-    if ($LASTEXITCODE -ne 0) { continue }
-    if ($url -match 'github\.com[:/]([^/]+)/([^/\s]+?)(\.git)?/?$') {
-        $repoSlug = $Matches[1] + '/' + $Matches[2]
-        break
-    }
-}
-if ($repoSlug -eq '') {
-    exit 0
-}
+$repository = Get-GitHubRepository -ProjectRoot $cwd
+if ($null -eq $repository) { exit 0 }
+$repoSlug = $repository.Repository
 $branch = [string](Invoke-QuietCommand -FilePath git -ArgumentList @('-C', $cwd, 'rev-parse', '--abbrev-ref', 'HEAD'))
 if ($LASTEXITCODE -ne 0 -or $branch -eq '' -or $branch -eq 'HEAD') {
     exit 0
@@ -117,9 +107,11 @@ if ($stateSha -eq $sha) {
     }
     $ageMinutes = ([DateTime]::UtcNow - $stateTime).TotalMinutes
     if ($stateOutcome -eq 'failed' -and $ageMinutes -lt $failureCooldown) {
-        exit 0    # already reported; don't nag a deterministic failure
+        @{ decision = 'block'; reason = ('CI CHECK: pushed commit ' + $sha7 + ' still has failed checks. Detailed failure guidance was recently reported; completion remains blocked until a replacement commit is pushed or the failure is reported as an external/manual blocker.') } | ConvertTo-Json -Compress
+        exit 0
     }
     if ($stateOutcome -eq 'pending' -and $ageMinutes -lt $pendingCooldown) {
+        @{ decision = 'block'; reason = ('CI CHECK: pushed commit ' + $sha7 + ' is still awaiting terminal checks. Detailed status was recently reported; completion remains blocked.') } | ConvertTo-Json -Compress
         exit 0
     }
 }
@@ -133,7 +125,8 @@ function Save-State {
 function Write-Block {
     param([string]$Outcome, [string]$Reason)
     Save-State -Outcome $Outcome
-    @{ decision = 'block'; reason = $Reason } | ConvertTo-Json -Compress
+    $json = @{ decision = 'block'; reason = $Reason } | ConvertTo-Json -Compress
+    [Console]::Out.WriteLine($json)
     exit 0
 }
 
@@ -147,12 +140,16 @@ if ($LASTEXITCODE -ne 0) {
 }
 
 # ---- workflow runs for the EXACT pushed commit ----
-$rawJson = Invoke-QuietCommand -FilePath gh -ArgumentList @('run', 'list', '--commit', $sha, '--json', 'databaseId,name,workflowName,status,conclusion', '--limit', '50')
+$rawJson = Invoke-QuietCommand -FilePath gh -ArgumentList @('run', 'list', '--repo', $repoSlug, '--commit', $sha, '--json', 'databaseId,name,workflowName,status,conclusion', '--limit', '50')
 if ($LASTEXITCODE -ne 0) {
     exit 0    # API/permission failure: degrade without claiming anything
 }
 $runs = @()
-try { $runs = @((@($rawJson) -join "`n") | ConvertFrom-Json) } catch { $runs = @() }
+try {
+    $parsedRuns = ((@($rawJson) -join "`n") | ConvertFrom-Json)
+    $runs = @($parsedRuns | ForEach-Object { $_ })
+}
+catch { $runs = @() }
 
 if ($runs.Count -eq 0) {
     $workflowsDir = Join-Path $cwd '.github\workflows'

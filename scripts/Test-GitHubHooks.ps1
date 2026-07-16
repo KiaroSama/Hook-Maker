@@ -47,6 +47,7 @@ $ghMock = @'
 $mockDir = $env:GH_MOCK_DIR
 if (-not $mockDir) { exit 1 }
 $a = @($args)
+Add-Content -LiteralPath (Join-Path $mockDir 'calls.txt') -Value ($a -join '|')
 if ($a.Count -ge 2 -and $a[0] -eq 'auth' -and $a[1] -eq 'status') {
     $f = Join-Path $mockDir 'auth_exit.txt'
     $code = 0
@@ -73,7 +74,7 @@ if ($a.Count -ge 2 -and $a[0] -eq 'run' -and $a[1] -eq 'list') {
         $receivedFile = Join-Path $mockDir 'received_sha.txt'
         $received = ''
         if (Test-Path $receivedFile) { $received = (Get-Content $receivedFile -Raw).Trim() }
-        if ($received -ne $expected) { Write-Output '[]'; exit 0 }
+        if ($received -ne $expected) { Set-Content -Path (Join-Path $mockDir 'sha_mismatch.txt') -Value ($received + ' != ' + $expected) }
     }
     $f = Join-Path $mockDir 'run_list.json'
     if (Test-Path $f) { Write-Output (Get-Content $f -Raw) } else { Write-Output '[]' }
@@ -103,7 +104,7 @@ function Fire {
     # $RawStdin is intentionally UNTYPED: a [string] param coerces a $null
     # default to '', which would make the "$null -eq $payload" guard below false
     # and send empty stdin. Keep it untyped so an omitted RawStdin stays $null.
-    param([string]$HookPath, [string]$Cwd, [string]$EventName = 'SessionStart', $Extra = $null, $RawStdin = $null, [string]$Exe = 'pwsh')
+    param([string]$HookPath, [string]$Cwd, [string]$EventName = 'SessionStart', $Extra = $null, $RawStdin = $null, [string]$Exe = '')
     $payload = $RawStdin
     if ($null -eq $payload) {
         $obj = @{ session_id = 't'; cwd = $Cwd; hook_event_name = $EventName }
@@ -115,8 +116,8 @@ function Fire {
     $outFile = Join-Path $Work ('out-' + $token + '.txt')
     $errFile = Join-Path $Work ('err-' + $token + '.txt')
     [System.IO.File]::WriteAllText($inFile, $payload, (New-Object System.Text.UTF8Encoding $false))
-    if ($Exe -eq 'pwsh') {
-        $file = 'pwsh'
+    if ([string]::IsNullOrWhiteSpace($Exe)) {
+        $file = (Get-Process -Id $PID).Path
         $argLine = '-NoLogo -NoProfile -File "' + $HookPath + '"'
     }
     else {
@@ -149,6 +150,7 @@ function New-GitRepo {
     & git -C $repo init -q -b main
     & git -C $repo config user.email 't@t'
     & git -C $repo config user.name 't'
+    & git -C $repo config core.autocrlf false
     Set-Content (Join-Path $repo 'file.txt') 'v1'
     & git -C $repo add .
     & git -C $repo commit -q -m c1
@@ -205,6 +207,18 @@ try {
     Set-Mock -PrJson '[]'
     $r = Fire -HookPath $DependabotHook -Cwd $repoB
     Check 'no Dependabot PRs -> silent' ($r.Exit -eq 0 -and $r.Out -eq '')
+
+    $multi = New-GitRepo 'multi'
+    & git -C $multi remote rename origin backup
+    & git -C $multi remote add origin 'https://github.com/wrong/origin.git'
+    & git -C $multi remote add upstream 'git@github.com:right/upstream-repo.git'
+    & git -C $multi config branch.main.remote upstream
+    & git -C $multi config branch.main.merge refs/heads/main
+    & git -C $multi update-ref refs/remotes/upstream/main (Get-HeadSha $multi)
+    Set-Mock -PrJson '[]'
+    $r = Fire -HookPath $DependabotHook -Cwd $multi
+    $calls = [System.IO.File]::ReadAllText((Join-Path $MockDir 'calls.txt'))
+    Check 'Dependabot binds gh to current upstream repository' ($calls -match 'pr\|list\|--repo\|right/upstream-repo') $calls
 
     # fake author with dependabot-looking branch -> excluded -> silent
     $fakePr = '[{"number":9,"title":"Bump x from 1.0.0 to 9.9.9","author":{"login":"eviluser"},"headRefName":"dependabot/npm/x-9.9.9","baseRefName":"main","headRefOid":"deadbeefdeadbeefdeadbeefdeadbeefdeadbeef","isDraft":false,"mergeStateStatus":"CLEAN","labels":[],"statusCheckRollup":[]}]'
@@ -272,12 +286,12 @@ try {
     # success -> verified silently; second run also silent via state
     Set-Mock -RunJson '[{"databaseId":10,"name":"CI","workflowName":"CI","status":"completed","conclusion":"success"}]' -ExpectedSha $sha
     $r = Fire -HookPath $CiHook -Cwd $ci -EventName 'Stop'
-    Check 'all checks green -> silent, commit verified' ($r.Out -eq '')
+    Check 'all checks green -> silent, commit verified' ([string]::IsNullOrWhiteSpace([string]$r.Out)) ([string]$r.Out)
     $received = (Get-Content (Join-Path $MockDir 'received_sha.txt') -Raw).Trim()
     Check 'exact pushed SHA queried (not newest run)' ($received -eq $sha)
     Set-Mock -RunJson '[{"databaseId":11,"name":"CI","workflowName":"CI","status":"completed","conclusion":"failure"}]' -ExpectedSha $sha
     $r = Fire -HookPath $CiHook -Cwd $ci -EventName 'Stop'
-    Check 'already-verified commit -> silent (no re-query nag)' ($r.Out -eq '')
+    Check 'already-verified commit -> silent (no re-query nag)' ([string]::IsNullOrWhiteSpace([string]$r.Out)) ([string]$r.Out)
 
     # pending -> block
     $ci2 = New-GitRepo 'ci2'
@@ -286,7 +300,7 @@ try {
     $r = Fire -HookPath $CiHook -Cwd $ci2 -EventName 'Stop'
     Check 'pending checks -> block with wait guidance' ($r.Out -match '"decision":"block"' -and $r.Out -match 'still in progress' -and $r.Out -match 'gh run list --commit')
     $r = Fire -HookPath $CiHook -Cwd $ci2 -EventName 'Stop'
-    Check 'pending again within cooldown -> silent' ($r.Out -eq '')
+    Check 'pending checks remain a completion block during cooldown' ($r.Out -match '"decision":"block"') $r.Out
 
     # failure -> block with fix guidance; repeated -> cooldown silence
     $ci3 = New-GitRepo 'ci3'
@@ -295,7 +309,9 @@ try {
     $r = Fire -HookPath $CiHook -Cwd $ci3 -EventName 'Stop'
     Check 'failed checks -> block with real-fix guidance' ($r.Out -match 'FAILED' -and $r.Out -match '--log-failed' -and $r.Out -match 'Do not weaken or skip tests')
     $r = Fire -HookPath $CiHook -Cwd $ci3 -EventName 'Stop'
-    Check 'same failed SHA -> silent within failure cooldown' ($r.Out -eq '')
+    Check 'failed checks remain a completion block during cooldown' ($r.Out -match '"decision":"block"') $r.Out
+    $calls = [System.IO.File]::ReadAllText((Join-Path $MockDir 'calls.txt'))
+    Check 'CI binds exact-SHA query to repository' ($calls -match 'run\|list\|--repo\|testowner/testrepo-ci3\|--commit') $calls
 
     # new pushed commit resets the cycle
     Set-Content (Join-Path $ci3 'file.txt') 'v3'
@@ -324,7 +340,7 @@ try {
     $ci6 = New-GitRepo 'ci6'
     Set-Mock -ExpectedSha (Get-HeadSha $ci6)
     $r = Fire -HookPath $CiHook -Cwd $ci6 -EventName 'Stop'
-    Check 'no workflows configured -> silent verified' ($r.Out -eq '')
+    Check 'no workflows configured -> silent verified' ([string]::IsNullOrWhiteSpace([string]$r.Out)) ([string]$r.Out)
 
     # gh unauthenticated -> silent degradation (never claims verified)
     $ci7 = New-GitRepo 'ci7'
@@ -377,7 +393,7 @@ updates:
     # complete baseline -> silent
     $b4 = New-GitRepo 'base4'
     New-Item -ItemType Directory -Path (Join-Path $b4 '.github\workflows') -Force | Out-Null
-    Set-Content (Join-Path $b4 '.github\workflows\ci.yml') 'name: CI'
+    Set-Content (Join-Path $b4 '.github\workflows\ci.yml') "on:`n  push:`njobs:`n  test:`n    steps:`n      - run: npm test"
     Set-Content (Join-Path $b4 'package.json') '{}'
     Set-Content (Join-Path $b4 '.github\dependabot.yml') @'
 version: 2
@@ -388,7 +404,30 @@ updates:
     directory: "/"
 '@
     $r = Fire -HookPath $BaselineHook -Cwd $b4
-    Check 'complete baseline -> silent' ($r.Out -eq '')
+    Check 'complete baseline -> silent' ([string]::IsNullOrWhiteSpace([string]$r.Out)) ([string]$r.Out)
+
+    $deployOnly = New-GitRepo 'deployonly'
+    New-Item -ItemType Directory -Path (Join-Path $deployOnly '.github\workflows') -Force | Out-Null
+    Set-Content (Join-Path $deployOnly 'package.json') '{}'
+    Set-Content (Join-Path $deployOnly '.github\workflows\deploy.yml') "on:`n  push:`njobs:`n  deploy:`n    steps:`n      - run: npm run deploy"
+    $r = Fire -HookPath $BaselineHook -Cwd $deployOnly
+    Check 'deploy-only workflow does not count as CI' ($r.Out -match 'none provides blocking project validation') $r.Out
+
+    $deep = New-GitRepo 'deepmono'
+    $deepDir = Join-Path $deep 'services\platform\backend\billing\worker'
+    New-Item -ItemType Directory -Path $deepDir -Force | Out-Null
+    Set-Content (Join-Path $deepDir 'pom.xml') '<project />'
+    $r = Fire -HookPath $BaselineHook -Cwd $deep
+    Check 'deep Maven monorepo directory is detected' ($r.Out -match 'maven at /services/platform/backend/billing/worker') $r.Out
+
+    $dirsRepo = New-GitRepo 'dependabotdirs'
+    New-Item -ItemType Directory -Path (Join-Path $dirsRepo '.github\workflows'), (Join-Path $dirsRepo 'apps\a'), (Join-Path $dirsRepo 'apps\b') -Force | Out-Null
+    Set-Content (Join-Path $dirsRepo '.github\workflows\ci.yml') "on:`n  pull_request:`njobs:`n  test:`n    steps:`n      - run: npm test"
+    Set-Content (Join-Path $dirsRepo 'apps\a\package.json') '{}'
+    Set-Content (Join-Path $dirsRepo 'apps\b\package.json') '{}'
+    Set-Content (Join-Path $dirsRepo '.github\dependabot.yml') "version: 2`nupdates:`n  - package-ecosystem: npm`n    directories:`n      - /apps/a`n      - /apps/b`n  - package-ecosystem: github-actions`n    directory: /"
+    $r = Fire -HookPath $BaselineHook -Cwd $dirsRepo
+    Check 'Dependabot directories list covers multiple package roots' ([string]::IsNullOrWhiteSpace([string]$r.Out)) ([string]$r.Out)
 
     # =====================================================================
     if (Get-Command powershell.exe -ErrorAction SilentlyContinue) {

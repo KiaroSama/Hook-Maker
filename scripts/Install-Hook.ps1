@@ -107,9 +107,17 @@ function Write-SyncProjectList {
 # Maker folder never breaks an installed hook; re-run the install to refresh.
 # The copy's folder + script use the friendly hyphenated name for easy ID.
 function Copy-HookRuntime {
-    param([Parameter(Mandatory = $true)][string]$ClientDir)
+    param(
+        [Parameter(Mandatory = $true)][string]$ClientDir,
+        [string]$RuntimeRootOverride
+    )
 
-    $runtimeRoot = Join-Path $ClientDir 'hooks\Hook-Maker'
+    $runtimeRoot = if ([string]::IsNullOrWhiteSpace($RuntimeRootOverride)) {
+        Join-Path $ClientDir 'hooks\Hook-Maker'
+    }
+    else {
+        [System.IO.Path]::GetFullPath($RuntimeRootOverride)
+    }
     New-Item -ItemType Directory -Path $runtimeRoot -Force | Out-Null
     # _hooklib is shared by every hook in this scope; it sits at the Hook-Maker
     # root so each copied script's "..\_hooklib.ps1" dot-source resolves.
@@ -123,7 +131,7 @@ function Copy-HookRuntime {
     # registered there keep working; drop the whole legacy root once it holds no
     # more hook subfolders.
     $legacyRoot = Join-Path $ClientDir 'hooks\HookMaker'
-    if ((Test-Path -LiteralPath $legacyRoot) -and -not [string]::Equals($legacyRoot, $runtimeRoot, [System.StringComparison]::OrdinalIgnoreCase)) {
+    if ([string]::IsNullOrWhiteSpace($RuntimeRootOverride) -and (Test-Path -LiteralPath $legacyRoot) -and -not [string]::Equals($legacyRoot, $runtimeRoot, [System.StringComparison]::OrdinalIgnoreCase)) {
         $legacyHookDir = Join-Path $legacyRoot $FriendlyName
         if (Test-Path -LiteralPath $legacyHookDir) { Remove-Item -LiteralPath $legacyHookDir -Recurse -Force }
         if (@(Get-ChildItem -LiteralPath $legacyRoot -Directory -ErrorAction SilentlyContinue).Count -eq 0) {
@@ -289,8 +297,18 @@ function Install-IgnorePrePush {
     if (-not [System.IO.Path]::IsPathRooted($hooksPath)) { $hooksPath = Join-Path $projectRoot $hooksPath }
     $hooksPath = [System.IO.Path]::GetFullPath($hooksPath)
 
-    $runtime = Copy-HookRuntime -ClientDir (Split-Path -Parent $hooksPath)
     $runtimeRoot = Join-Path $hooksPath 'Hook-Maker'
+    $runtime = Copy-HookRuntime -ClientDir $hooksPath -RuntimeRootOverride $runtimeRoot
+    $oldWrongRoot = Join-Path (Split-Path -Parent $hooksPath) 'hooks\Hook-Maker'
+    if (-not [string]::Equals([System.IO.Path]::GetFullPath($oldWrongRoot), [System.IO.Path]::GetFullPath($runtimeRoot), [System.StringComparison]::OrdinalIgnoreCase)) {
+        foreach ($name in @('Ignore-Rules-Check', 'Secrets-Check', 'Large-File-Check')) {
+            $stale = Join-Path $oldWrongRoot $name
+            if (Test-Path -LiteralPath $stale -PathType Container) { Remove-Item -LiteralPath $stale -Recurse -Force }
+        }
+        if ((Test-Path -LiteralPath $oldWrongRoot -PathType Container) -and @(Get-ChildItem -LiteralPath $oldWrongRoot -Force -ErrorAction SilentlyContinue).Count -eq 0) {
+            Remove-Item -LiteralPath $oldWrongRoot -Force
+        }
+    }
     function Copy-PrePushCompanion {
         param([Parameter(Mandatory = $true)][string]$Name)
         $sourceDir = Join-Path $ToolRoot ('hooks\' + $Name)

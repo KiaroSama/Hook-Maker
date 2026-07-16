@@ -78,7 +78,7 @@ function Fire {
     [System.IO.File]::WriteAllText($inFile, $payload, (New-Object System.Text.UTF8Encoding $false))
 
     if ($Exe -eq 'pwsh') {
-        $file = 'pwsh'
+        $file = (Get-Process -Id $PID).Path
         $argLine = '-NoLogo -NoProfile -File "' + $Engine + '" -ConfigPath "' + $Config + '"'
     }
     else {
@@ -130,7 +130,8 @@ try {
     Check 'same session: second fire is silent' ([string]::IsNullOrWhiteSpace($rSame.Out))
 
     # --- Scenario 5: acknowledge clears the pending review -----------------
-    $ack = & pwsh -NoLogo -NoProfile -File $Engine -Acknowledge -ProjectRoot $B -Profile 'grp' -Route 'a-to-b' -ConfigPath $cfg1 2>&1
+    $currentHost = (Get-Process -Id $PID).Path
+    $ack = & $currentHost -NoLogo -NoProfile -File $Engine -Acknowledge -ProjectRoot $B -Profile 'grp' -Route 'a-to-b' -ConfigPath $cfg1 2>&1
     Check 'acknowledge: succeeds' ($LASTEXITCODE -eq 0 -and (($ack | Out-String) -match 'acknowledged'))
     $stagedAfter = @(Get-ChildItem -LiteralPath $inboxRoot -Recurse -File -ErrorAction SilentlyContinue)
     Check 'acknowledge: inbox cleaned' ($stagedAfter.Count -eq 0)

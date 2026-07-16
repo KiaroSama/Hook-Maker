@@ -46,7 +46,7 @@ function Fire {
     $errFile = Join-Path $Work ('err-' + $token + '.txt')
     [System.IO.File]::WriteAllText($inFile, $payload, (New-Object System.Text.UTF8Encoding $false))
     if ($Exe -eq 'pwsh') {
-        $file = 'pwsh'; $argLine = '-NoLogo -NoProfile -File "' + $HookPath + '"'
+        $file = (Get-Process -Id $PID).Path; $argLine = '-NoLogo -NoProfile -File "' + $HookPath + '"'
     }
     else {
         $file = 'powershell.exe'; $argLine = '-NoLogo -NoProfile -ExecutionPolicy Bypass -File "' + $HookPath + '"'

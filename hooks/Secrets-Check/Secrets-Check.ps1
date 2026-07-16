@@ -74,10 +74,31 @@ if ($config.ContainsKey('MIN_SECRET_LENGTH')) {
     try { $minSecretLength = [int]$config['MIN_SECRET_LENGTH'] } catch { }
 }
 
-# ---- discover .env* files (real ones, not templates) ----
-$envFiles = @(Get-ChildItem -LiteralPath $cwd -Filter '.env*' -File -ErrorAction SilentlyContinue |
-    Where-Object { $_.Name -notmatch '(?i)\.(example|sample|template|dist)$' } |
-    Sort-Object Name)
+# ---- discover real .env* files in active project trees ----
+$excludedDirs = @('.git', 'node_modules', 'vendor', 'vendors', 'dist', 'build', 'out', 'target', 'coverage', '.cache', 'cache', '__pycache__', '.venv', 'venv', 'env', '.ai', 'graphify-out', '.claude', '.codex', '.agents', 'bin', 'obj')
+$envFiles = New-Object System.Collections.Generic.List[object]
+$rootFull = (Get-Item -LiteralPath $cwd).FullName.TrimEnd('\', '/')
+$stack = New-Object System.Collections.Generic.Stack[string]
+$stack.Push($rootFull)
+while ($stack.Count -gt 0) {
+    $current = $stack.Pop()
+    try {
+        foreach ($filePath in [System.IO.Directory]::EnumerateFiles($current, '.env*', [System.IO.SearchOption]::TopDirectoryOnly)) {
+            $leaf = Split-Path -Leaf $filePath
+            if ($leaf -notmatch '(?i)\.(example|sample|template|dist)$') {
+                $relative = $filePath.Substring($rootFull.Length).TrimStart('\', '/').Replace('\', '/')
+                [void]$envFiles.Add([pscustomobject]@{ FullName = $filePath; Name = $relative })
+            }
+        }
+        foreach ($dirPath in [System.IO.Directory]::EnumerateDirectories($current)) {
+            $dir = Get-Item -LiteralPath $dirPath -Force -ErrorAction SilentlyContinue
+            if ($null -eq $dir -or ($dir.Attributes -band [System.IO.FileAttributes]::ReparsePoint)) { continue }
+            if ($excludedDirs -notcontains $dir.Name.ToLowerInvariant()) { $stack.Push($dir.FullName) }
+        }
+    }
+    catch { }
+}
+$envFiles = @($envFiles.ToArray() | Sort-Object Name)
 
 $secretsPath = Join-Path $cwd 'secrets.md'
 $secretsExists = Test-Path -LiteralPath $secretsPath -PathType Leaf
@@ -191,15 +212,19 @@ if ($inGitRepo) {
         if ($LASTEXITCODE -eq 0 -and @($tracked | Where-Object { $_ }).Count -gt 0) {
             [void]$critical.Add($relPath + ' (contains real secrets) is TRACKED by git.')
         }
+        $staged = Invoke-QuietCommand -FilePath git -ArgumentList @('-C', $cwd, 'diff', '--cached', '--name-only', '--', $relPath)
+        if ($LASTEXITCODE -eq 0 -and @($staged | Where-Object { $_ }).Count -gt 0) {
+            [void]$critical.Add($relPath + ' (contains real secrets) is STAGED for commit.')
+        }
     }
-    $excludeNames = @('secrets.md') + @($envFiles | ForEach-Object { $_.Name })
+    $excludeNames = @('secrets.md') + @($envFiles | ForEach-Object { $_.Name.Replace('\', '/') })
     foreach ($key in @($discovered.Keys | Sort-Object)) {
         $value = $discovered[$key].Value
         if ($value.Length -lt $minSecretLength) { continue }
         $grepHits = Invoke-QuietCommand -FilePath git -ArgumentList @('-C', $cwd, 'grep', '-Il', '-F', '--', $value)
         if ($LASTEXITCODE -ne 0) { continue }
         foreach ($matchFile in @($grepHits | Where-Object { $_ })) {
-            if ($excludeNames -contains (Split-Path -Leaf $matchFile)) { continue }
+            if ($excludeNames -contains ([string]$matchFile).Replace('\', '/')) { continue }
             [void]$critical.Add('Value of ' + $key + ' appears in a git-tracked file: ' + $matchFile)
         }
     }
@@ -219,7 +244,7 @@ if (-not $GitPrePush -and (Test-Path -LiteralPath $unusedStatePath -PathType Lea
     catch { }
 }
 $unused = New-Object System.Collections.Generic.List[string]
-if ($runUnusedScan -and $inGitRepo -and $secretsExists) {
+if (-not $GitPrePush -and $runUnusedScan -and $inGitRepo -and $secretsExists) {
     $documentedKeys = @([regex]::Matches($secretsContent, '(?m)^##\s+(\S+)\s*$') | ForEach-Object { $_.Groups[1].Value })
     foreach ($key in @($documentedKeys | Sort-Object -Unique)) {
         $grepHits = Invoke-QuietCommand -FilePath git -ArgumentList @('-C', $cwd, 'grep', '-Il', '-F', '--', $key)
@@ -250,6 +275,10 @@ if ($runUnusedScan -and $inGitRepo -and $secretsExists) {
 
 # ---- nothing at all to report -> silent ----
 if ($critical.Count -eq 0 -and $added.Count -eq 0 -and $missingUndocumented.Count -eq 0 -and $placeholders.Count -eq 0 -and $unused.Count -eq 0) {
+    exit 0
+}
+
+if ($GitPrePush -and $critical.Count -eq 0) {
     exit 0
 }
 
