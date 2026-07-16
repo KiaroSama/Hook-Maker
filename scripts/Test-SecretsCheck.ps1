@@ -519,6 +519,111 @@ try {
     Check 'real end-to-end push: the secret value never appears in git''s output' ($pushOutput -notlike '*e2erealpushvalue1234567890*') $pushOutput
 
     # =====================================================================
+    Write-Host '--- outgoing history: committed .env*/secrets.md later removed is still blocked (item 1) ---' -ForegroundColor Cyan
+
+    # An outgoing commit adds a real .env with a secret, a later outgoing
+    # commit untracks it - the current-file scan excludes .env, but the
+    # outgoing-history scan must NOT, so the leak is caught.
+    $envHist = New-PushableRepo 'OutgoingEnvHistory'
+    Write-Utf8 (Join-Path $envHist '.gitignore') ".env`nsecrets.md`n"
+    Add-Commit $envHist 'baseline'
+    Push-Repo $envHist
+    Write-Utf8 (Join-Path $envHist '.env') "ENVHIST_SECRET=envhistvalue1234567890`r`n"
+    & git -C $envHist add -f .env 2>$null | Out-Null
+    Add-Commit $envHist 'oops commit .env'
+    & git -C $envHist rm -q --cached .env 2>$null | Out-Null
+    Write-Utf8 (Join-Path $envHist '.env') "ENVHIST_SECRET=envhistvalue1234567890`r`n"
+    Add-Commit $envHist 'untrack .env (local copy kept, ignored)'
+    $rEnvHist = FireGitPrePush -Cwd $envHist -StdinText (Get-RefUpdateLine -Repo $envHist)
+    Check 'outgoing commit adds .env then removes it: push blocked' ($rEnvHist.Exit -eq 1 -and $rEnvHist.Err -match 'ENVHIST_SECRET' -and $rEnvHist.Err -match 'outgoing commit') $rEnvHist.Err
+    Check 'outgoing .env-history leak: value never printed' ($rEnvHist.Err -notlike '*envhistvalue1234567890*') $rEnvHist.Err
+
+    # Nested .env.local, later removed.
+    $envNestedHist = New-PushableRepo 'OutgoingEnvNestedHistory'
+    Write-Utf8 (Join-Path $envNestedHist '.gitignore') "**/.env*`nsecrets.md`n"
+    Add-Commit $envNestedHist 'baseline'
+    Push-Repo $envNestedHist
+    New-Item -ItemType Directory -Path (Join-Path $envNestedHist 'apps\api') -Force | Out-Null
+    Write-Utf8 (Join-Path $envNestedHist 'apps\api\.env.local') "NESTED_ENVHIST_SECRET=nestedenvhistvalue1234567890`r`n"
+    & git -C $envNestedHist add -f apps/api/.env.local 2>$null | Out-Null
+    Add-Commit $envNestedHist 'oops commit nested .env.local'
+    & git -C $envNestedHist rm -q --cached apps/api/.env.local 2>$null | Out-Null
+    Write-Utf8 (Join-Path $envNestedHist 'apps\api\.env.local') "NESTED_ENVHIST_SECRET=nestedenvhistvalue1234567890`r`n"
+    Add-Commit $envNestedHist 'untrack nested .env.local'
+    $rNestedHist = FireGitPrePush -Cwd $envNestedHist -StdinText (Get-RefUpdateLine -Repo $envNestedHist)
+    Check 'outgoing commit adds nested .env.local then removes it: push blocked' ($rNestedHist.Exit -eq 1 -and $rNestedHist.Err -match 'NESTED_ENVHIST_SECRET' -and $rNestedHist.Err -match 'apps[/\\]api[/\\]\.env\.local') $rNestedHist.Err
+
+    # secrets.md committed then removed.
+    $secHist = New-PushableRepo 'OutgoingSecretsMdHistory'
+    Write-Utf8 (Join-Path $secHist '.gitignore') ".env`nsecrets.md`n"
+    Write-Utf8 (Join-Path $secHist '.env') "SECMD_SECRET=secmdvalue1234567890`r`n"
+    Add-Commit $secHist 'baseline'
+    Push-Repo $secHist
+    Write-Utf8 (Join-Path $secHist 'secrets.md') "# Secrets`n`n## SECMD_SECRET`n- Value: secmdvalue1234567890`n"
+    & git -C $secHist add -f secrets.md 2>$null | Out-Null
+    Add-Commit $secHist 'oops commit secrets.md'
+    & git -C $secHist rm -q --cached secrets.md 2>$null | Out-Null
+    Write-Utf8 (Join-Path $secHist 'secrets.md') "# Secrets`n`n## SECMD_SECRET`n- Value: secmdvalue1234567890`n"
+    Add-Commit $secHist 'untrack secrets.md'
+    $rSecHist = FireGitPrePush -Cwd $secHist -StdinText (Get-RefUpdateLine -Repo $secHist)
+    Check 'outgoing commit adds secrets.md then removes it: push blocked' ($rSecHist.Exit -eq 1 -and $rSecHist.Err -match 'SECMD_SECRET' -and $rSecHist.Err -match 'secrets\.md') $rSecHist.Err
+    Check 'outgoing secrets.md-history leak: value never printed' ($rSecHist.Err -notlike '*secmdvalue1234567890*') $rSecHist.Err
+
+    # A current, ignored, local-only .env (never committed) must NOT be
+    # reported as an outgoing-history leak - the outgoing range is clean.
+    $envLocalOnly = New-PushableRepo 'OutgoingEnvLocalOnly'
+    Write-Utf8 (Join-Path $envLocalOnly '.gitignore') ".env`nsecrets.md`n"
+    Write-Utf8 (Join-Path $envLocalOnly 'readme.txt') 'nothing secret'
+    Add-Commit $envLocalOnly 'baseline'
+    Push-Repo $envLocalOnly
+    Write-Utf8 (Join-Path $envLocalOnly '.env') "LOCALONLY_SECRET=localonlyvalue1234567890`r`n"
+    Write-Utf8 (Join-Path $envLocalOnly 'notes.txt') 'a clean outgoing change'
+    Add-Commit $envLocalOnly 'clean outgoing commit'
+    $rLocalOnly = FireGitPrePush -Cwd $envLocalOnly -StdinText (Get-RefUpdateLine -Repo $envLocalOnly)
+    Check 'a current ignored local-only .env is NOT a false outgoing-history leak' ($rLocalOnly.Exit -eq 0) $rLocalOnly.Err
+
+    # =====================================================================
+    Write-Host '--- outgoing history: incomplete scans fail closed (item 2) ---' -ForegroundColor Cyan
+
+    # >500 outgoing commits with a secret BEYOND the former 500 cutoff must
+    # still be blocked (no security-skipping cap). Build the leak first (oldest
+    # outgoing commit), then pile 520 trivial commits on top.
+    $bigLeak = New-PushableRepo 'OutgoingBigRangeLeak'
+    Write-Utf8 (Join-Path $bigLeak '.gitignore') ".env`nsecrets.md`n"
+    Add-Commit $bigLeak 'baseline'
+    Push-Repo $bigLeak
+    Write-Utf8 (Join-Path $bigLeak '.env') "BIGRANGE_SECRET=bigrangevalue1234567890`r`n"
+    Write-Utf8 (Join-Path $bigLeak 'deep-leak.txt') "leak: bigrangevalue1234567890`r`n"
+    Add-Commit $bigLeak 'the leak, at the very bottom of a 520-deep outgoing range'
+    for ($n = 1; $n -le 520; $n++) { Write-Utf8 (Join-Path $bigLeak 'counter.txt') ("commit $n"); Add-Commit $bigLeak "trivial $n" }
+    $rBigLeak = FireGitPrePush -Cwd $bigLeak -StdinText (Get-RefUpdateLine -Repo $bigLeak)
+    Check '>500 outgoing commits with a leak beyond the former cutoff is still blocked' ($rBigLeak.Exit -eq 1 -and $rBigLeak.Err -match 'BIGRANGE_SECRET') $rBigLeak.Err
+
+    # >500 clean outgoing commits must still be allowed (no false block, no
+    # duplicate findings from batching).
+    $bigClean = New-PushableRepo 'OutgoingBigRangeClean'
+    Write-Utf8 (Join-Path $bigClean '.gitignore') ".env`nsecrets.md`n"
+    Write-Utf8 (Join-Path $bigClean '.env') "BIGCLEAN_SECRET=bigcleanvalue1234567890`r`n"
+    Add-Commit $bigClean 'baseline'
+    Push-Repo $bigClean
+    for ($n = 1; $n -le 520; $n++) { Write-Utf8 (Join-Path $bigClean 'counter.txt') ("commit $n"); Add-Commit $bigClean "trivial $n" }
+    $rBigClean = FireGitPrePush -Cwd $bigClean -StdinText (Get-RefUpdateLine -Repo $bigClean)
+    Check '>500 clean outgoing commits are allowed (no false block)' ($rBigClean.Exit -eq 0) $rBigClean.Err
+
+    # An unresolvable remote SHA (not present locally) must fail closed - block
+    # with a safe incomplete-scan message, never treated as clean.
+    $unresolvable = New-PushableRepo 'OutgoingUnresolvableRemote'
+    Write-Utf8 (Join-Path $unresolvable '.gitignore') ".env`nsecrets.md`n"
+    Add-Commit $unresolvable 'baseline'
+    Push-Repo $unresolvable
+    Write-Utf8 (Join-Path $unresolvable 'notes.txt') 'clean'
+    Add-Commit $unresolvable 'clean change'
+    $fakeRemote = 'deadbeef' + ('0' * 32)
+    $rUnresolvable = FireGitPrePush -Cwd $unresolvable -StdinText (Get-RefUpdateLine -Repo $unresolvable -RemoteSha $fakeRemote)
+    Check 'unresolvable remote SHA fails closed (blocked with incomplete-scan message)' ($rUnresolvable.Exit -eq 1 -and $rUnresolvable.Err -match 'could not be fully scanned' -and $rUnresolvable.Err -match 'not resolvable locally') $rUnresolvable.Err
+    Check 'incomplete-scan block never prints a secret value' ($rUnresolvable.Err -notlike '*bigrangevalue*' -and $rUnresolvable.Err -notlike '*bigcleanvalue*') $rUnresolvable.Err
+
+    # =====================================================================
     Write-Host '--- unused-secret scan (throttled) ---' -ForegroundColor Cyan
     $proj7 = New-GitProj 'Unused'
     Write-Utf8 (Join-Path $proj7 '.gitignore') "secrets.md`n"
