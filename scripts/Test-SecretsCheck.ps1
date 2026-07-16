@@ -224,6 +224,79 @@ try {
     Check 'leak report never contains the raw value' ($r.Out -notlike '*zzzverylongsecretvalue999*') $r.Out
 
     # =====================================================================
+    Write-Host '--- git: staged/index-only leak detection (confirmed gap) ---' -ForegroundColor Cyan
+
+    # Leak only in the WORKING TREE (a dirty, unstaged edit adds the value).
+    $projLeakWt = New-GitProj 'LeakWorktreeOnly'
+    Write-Utf8 (Join-Path $projLeakWt '.gitignore') ".env`nsecrets.md`n"
+    Write-Utf8 (Join-Path $projLeakWt '.env') "WT_ONLY_SECRET=wtonlyvalue1234567890`r`n"
+    Write-Utf8 (Join-Path $projLeakWt 'notes.txt') "clean`r`n"
+    Add-Commit $projLeakWt 'seed clean'
+    Write-Utf8 (Join-Path $projLeakWt 'notes.txt') "leaked: wtonlyvalue1234567890`r`n"
+    $r = Fire -Cwd $projLeakWt
+    Check 'leak only in working tree (unstaged) is detected' ($r.Out -like '*WT_ONLY_SECRET*appears in a git-tracked file*notes.txt*') $r.Out
+    Check 'worktree-only leak: value never printed' ($r.Out -notlike '*wtonlyvalue1234567890*') $r.Out
+
+    # Leak only in the INDEX (staged, then the working copy is cleaned WITHOUT
+    # staging that cleanup) - the confirmed gap: a working-tree-only `git grep`
+    # misses this; the index scan (`git grep --cached`) must catch it.
+    $projLeakIdx = New-GitProj 'LeakIndexOnly'
+    Write-Utf8 (Join-Path $projLeakIdx '.gitignore') ".env`nsecrets.md`n"
+    Write-Utf8 (Join-Path $projLeakIdx '.env') "IDX_ONLY_SECRET=idxonlyvalue1234567890`r`n"
+    Write-Utf8 (Join-Path $projLeakIdx 'notes.txt') "clean`r`n"
+    Add-Commit $projLeakIdx 'seed clean'
+    Write-Utf8 (Join-Path $projLeakIdx 'notes.txt') "leaked: idxonlyvalue1234567890`r`n"
+    & git -C $projLeakIdx add notes.txt 2>$null | Out-Null
+    Write-Utf8 (Join-Path $projLeakIdx 'notes.txt') "clean again (worktree only)`r`n"
+    $r = Fire -Cwd $projLeakIdx
+    Check 'leak only in the git index (staged) is detected' ($r.Out -like '*IDX_ONLY_SECRET*appears in a git-tracked file*notes.txt*') $r.Out
+    Check 'index-only leak: value never printed' ($r.Out -notlike '*idxonlyvalue1234567890*') $r.Out
+
+    # Same leak present in BOTH the working tree and the index - reported once.
+    $projLeakBoth = New-GitProj 'LeakBoth'
+    Write-Utf8 (Join-Path $projLeakBoth '.gitignore') ".env`nsecrets.md`n"
+    Write-Utf8 (Join-Path $projLeakBoth '.env') "BOTH_SECRET=bothvalue1234567890`r`n"
+    Write-Utf8 (Join-Path $projLeakBoth 'notes.txt') "leaked: bothvalue1234567890`r`n"
+    & git -C $projLeakBoth add notes.txt 2>$null | Out-Null
+    $r = Fire -Cwd $projLeakBoth
+    Check 'leak in both working tree and index is reported exactly once (deduped)' (@($r.Out -split "`n" | Where-Object { $_ -like '*BOTH_SECRET*notes.txt*' }).Count -eq 1) $r.Out
+
+    # Cleaned AND re-staged - true negative, must NOT be flagged.
+    $projClean = New-GitProj 'LeakCleanedRestaged'
+    Write-Utf8 (Join-Path $projClean '.gitignore') ".env`nsecrets.md`n"
+    Write-Utf8 (Join-Path $projClean '.env') "CLEANED_SECRET=cleanedvalue1234567890`r`n"
+    Write-Utf8 (Join-Path $projClean 'notes.txt') "clean`r`n"
+    Add-Commit $projClean 'seed clean'
+    Write-Utf8 (Join-Path $projClean 'notes.txt') "leaked: cleanedvalue1234567890`r`n"
+    & git -C $projClean add notes.txt 2>$null | Out-Null
+    Write-Utf8 (Join-Path $projClean 'notes.txt') "clean again`r`n"
+    & git -C $projClean add notes.txt 2>$null | Out-Null
+    $r = Fire -Cwd $projClean
+    Check 'cleaned and re-staged file is NOT flagged as a leak' ($r.Out -notlike '*CLEANED_SECRET*appears in a git-tracked file*') $r.Out
+
+    # Nested file path.
+    $projNested = New-GitProj 'LeakNestedPath'
+    Write-Utf8 (Join-Path $projNested '.gitignore') ".env`nsecrets.md`n"
+    Write-Utf8 (Join-Path $projNested '.env') "NESTED_LEAK=nestedvalue1234567890`r`n"
+    New-Item -ItemType Directory -Path (Join-Path $projNested 'src\deep\dir') -Force | Out-Null
+    Write-Utf8 (Join-Path $projNested 'src\deep\dir\config.txt') "leaked: nestedvalue1234567890`r`n"
+    Add-Commit $projNested 'nested leak'
+    $r = Fire -Cwd $projNested
+    Check 'nested tracked file leak is detected with relative path' ($r.Out -match 'src[/\\]deep[/\\]dir[/\\]config\.txt') $r.Out
+
+    # Path containing spaces (project root and file name both).
+    $projSpace = New-GitProj 'Leak With Space'
+    Write-Utf8 (Join-Path $projSpace '.gitignore') ".env`nsecrets.md`n"
+    Write-Utf8 (Join-Path $projSpace '.env') "SPACE_LEAK=spacevalue1234567890`r`n"
+    Write-Utf8 (Join-Path $projSpace 'my notes.txt') "leaked: spacevalue1234567890`r`n"
+    Add-Commit $projSpace 'space leak'
+    $r = Fire -Cwd $projSpace
+    Check 'tracked file leak is detected when project/file paths contain spaces' ($r.Out -like '*SPACE_LEAK*appears in a git-tracked file*my notes.txt*') $r.Out
+    Check 'no secret value ever appears in output or stderr (leak regression block)' (
+        $r.Out -notlike '*spacevalue1234567890*' -and $r.Err -notlike '*spacevalue1234567890*'
+    ) ($r.Out + $r.Err)
+
+    # =====================================================================
     Write-Host '--- unused-secret scan (throttled) ---' -ForegroundColor Cyan
     $proj7 = New-GitProj 'Unused'
     Write-Utf8 (Join-Path $proj7 '.gitignore') "secrets.md`n"

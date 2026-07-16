@@ -4,7 +4,12 @@
 # - secrets.md exists but is NOT git-ignored, or is tracked/staged in git -> CRITICAL.
 # - Any real .env* file (not a .example/.sample/.template) is itself tracked -> CRITICAL.
 # - A discovered secret VALUE turns up inside a git-TRACKED file elsewhere in the
-#   repo (git grep, filenames only, value never printed) -> CRITICAL "possible leak".
+#   repo (git grep across BOTH the working tree and the index/staged content,
+#   merged and deduplicated by path; filenames only, value never printed) ->
+#   CRITICAL "possible leak". The index scan catches a value that is staged but
+#   already removed from the working copy, or committed and later edited away
+#   locally without staging that edit - either state stays invisible to a
+#   working-tree-only grep.
 # - Secret KEYs found in .env* files but missing from secrets.md are AUTO-APPENDED
 #   to secrets.md (created if absent) with their real value copied in - never
 #   printed, logged, or echoed anywhere, only the KEY NAME appears in reports/logs.
@@ -221,9 +226,21 @@ if ($inGitRepo) {
     foreach ($key in @($discovered.Keys | Sort-Object)) {
         $value = $discovered[$key].Value
         if ($value.Length -lt $minSecretLength) { continue }
-        $grepHits = Invoke-QuietCommand -FilePath git -ArgumentList @('-C', $cwd, 'grep', '-Il', '-F', '--', $value)
-        if ($LASTEXITCODE -ne 0) { continue }
-        foreach ($matchFile in @($grepHits | Where-Object { $_ })) {
+        # Merge working-tree (git grep) and index/staged (git grep --cached) hits.
+        # A value staged then cleaned from the working copy only - or committed
+        # and later edited away locally without staging that edit - is invisible
+        # to a working-tree-only scan but is still what would actually be pushed
+        # or committed next; only the union of both scans is trustworthy.
+        $matchPaths = New-Object System.Collections.Generic.List[string]
+        $worktreeHits = Invoke-QuietCommand -FilePath git -ArgumentList @('-C', $cwd, 'grep', '-Il', '-F', '--', $value)
+        if ($LASTEXITCODE -eq 0) {
+            foreach ($m in @($worktreeHits | Where-Object { $_ })) { [void]$matchPaths.Add([string]$m) }
+        }
+        $indexHits = Invoke-QuietCommand -FilePath git -ArgumentList @('-C', $cwd, 'grep', '--cached', '-Il', '-F', '--', $value)
+        if ($LASTEXITCODE -eq 0) {
+            foreach ($m in @($indexHits | Where-Object { $_ })) { [void]$matchPaths.Add([string]$m) }
+        }
+        foreach ($matchFile in @($matchPaths.ToArray() | Sort-Object -Unique)) {
             if ($excludeNames -contains ([string]$matchFile).Replace('\', '/')) { continue }
             [void]$critical.Add('Value of ' + $key + ' appears in a git-tracked file: ' + $matchFile)
         }

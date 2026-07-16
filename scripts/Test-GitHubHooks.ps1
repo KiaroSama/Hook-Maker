@@ -144,7 +144,7 @@ function Fire {
 }
 
 function New-GitRepo {
-    param([string]$Name, [bool]$GithubRemote = $true, [string]$PushState = 'synced')
+    param([string]$Name, [bool]$GithubRemote = $true, [string]$PushState = 'synced', [switch]$SkipUpstreamConfig)
     $repo = Join-Path $Work $Name
     New-Item -ItemType Directory -Path $repo -Force | Out-Null
     & git -C $repo init -q -b main
@@ -156,16 +156,21 @@ function New-GitRepo {
     & git -C $repo commit -q -m c1
     if ($GithubRemote) {
         & git -C $repo remote add origin ('https://github.com/testowner/testrepo-' + $Name + '.git')
-        # Simulate pushed state locally: remote-tracking ref + upstream config,
-        # no network involved.
-        & git -C $repo config branch.main.remote origin
-        & git -C $repo config branch.main.merge refs/heads/main
-        $head = (& git -C $repo rev-parse HEAD).Trim()
-        & git -C $repo update-ref refs/remotes/origin/main $head
-        if ($PushState -eq 'ahead') {
-            Set-Content (Join-Path $repo 'file.txt') 'v2'
-            & git -C $repo add .
-            & git -C $repo commit -q -m c2
+        # SkipUpstreamConfig leaves the remote added but skips the upstream
+        # config + tracking ref, so a test can wire up its own (mismatched,
+        # ambiguous, or missing) remote-tracking shape.
+        if (-not $SkipUpstreamConfig) {
+            # Simulate pushed state locally: remote-tracking ref + upstream config,
+            # no network involved.
+            & git -C $repo config branch.main.remote origin
+            & git -C $repo config branch.main.merge refs/heads/main
+            $head = (& git -C $repo rev-parse HEAD).Trim()
+            & git -C $repo update-ref refs/remotes/origin/main $head
+            if ($PushState -eq 'ahead') {
+                Set-Content (Join-Path $repo 'file.txt') 'v2'
+                & git -C $repo add .
+                & git -C $repo commit -q -m c2
+            }
         }
     }
     return $repo
@@ -174,6 +179,54 @@ function New-GitRepo {
 function Get-HeadSha {
     param([string]$Repo)
     return ((& git -C $Repo rev-parse HEAD) | Out-String).Trim()
+}
+
+# Invokes Ci-Status-Check.ps1 -ReportExternalBlocker as a direct CLI action
+# (not stdin-driven) with $Cwd as the process's actual working directory,
+# mirroring how the agent would run it from inside the target repo.
+function FireExternalBlocker {
+    param([string]$Cwd, [string]$Classification = '', [string]$Reason = '', [string]$Exe = '', [string]$HookPath = $CiHook)
+    $argLine = '-NoLogo -NoProfile -File "' + $HookPath + '" -ReportExternalBlocker'
+    if ($Classification -ne '') { $argLine += ' -Classification ' + $Classification }
+    if ($Reason -ne '') { $argLine += ' -Reason "' + $Reason + '"' }
+    if ([string]::IsNullOrWhiteSpace($Exe)) {
+        $file = (Get-Process -Id $PID).Path
+    }
+    else {
+        $file = 'powershell.exe'
+        $argLine = $argLine.Replace('-NoLogo -NoProfile -File', '-NoLogo -NoProfile -ExecutionPolicy Bypass -File')
+    }
+    $token = [guid]::NewGuid().ToString('N').Substring(0, 8)
+    $outFile = Join-Path $Work ('out-' + $token + '.txt')
+    $errFile = Join-Path $Work ('err-' + $token + '.txt')
+    $startArgs = @{
+        FilePath = $file; ArgumentList = $argLine; WorkingDirectory = $Cwd
+        RedirectStandardOutput = $outFile; RedirectStandardError = $errFile
+        Wait = $true; NoNewWindow = $true; PassThru = $true
+    }
+    if ((Get-Command Start-Process).Parameters.ContainsKey('Environment')) {
+        $startArgs.Environment = @{ PATH = $env:PATH; GH_MOCK_DIR = $env:GH_MOCK_DIR; LOCALAPPDATA = $env:LOCALAPPDATA }
+    }
+    $proc = Start-Process @startArgs
+    $out = ''
+    if (Test-Path -LiteralPath $outFile) { $out = ([System.IO.File]::ReadAllText($outFile)).Trim() }
+    $err = ''
+    if (Test-Path -LiteralPath $errFile) { $err = ([System.IO.File]::ReadAllText($errFile)).Trim() }
+    return [pscustomobject]@{ Exit = $proc.ExitCode; Out = $out; Err = $err }
+}
+
+# Copies Ci-Status-Check.ps1 + a custom .env (own _hooklib copy, since the
+# hook dot-sources "..\_hooklib.ps1") - used to override EXTERNAL_BLOCKER_TTL_MINUTES.
+function New-ConfiguredCiHookCopy {
+    param([hashtable]$EnvOverrides)
+    $dir = Join-Path $Work ('cihookcopy-' + [guid]::NewGuid().ToString('N').Substring(0, 6))
+    New-Item -ItemType Directory -Path $dir -Force | Out-Null
+    Copy-Item $CiHook (Join-Path $dir 'Ci-Status-Check.ps1')
+    Copy-Item (Join-Path $HooksRoot '_hooklib.ps1') (Join-Path $Work '_hooklib.ps1') -Force
+    $lines = New-Object System.Collections.Generic.List[string]
+    foreach ($key in $EnvOverrides.Keys) { [void]$lines.Add($key + '=' + $EnvOverrides[$key]) }
+    Set-Content -Path (Join-Path $dir '.env') -Value ($lines.ToArray() -join "`r`n") -Encoding utf8
+    return (Join-Path $dir 'Ci-Status-Check.ps1')
 }
 
 try {
@@ -349,6 +402,142 @@ try {
     Check 'gh unavailable -> silent degradation' ($r.Out -eq '')
 
     # =====================================================================
+    Write-Host '--- CiStatusCheck: repository/remote resolution correctness (issue 3) ---' -ForegroundColor Cyan
+
+    # Branch upstream tracks a NON-GitHub remote while `origin` is GitHub and
+    # its OWN tracking ref is up to date with HEAD - must still resolve and
+    # verify against origin, not misuse the mirror's ahead-count.
+    $mismatchOk = New-GitRepo 'mismatch-ok' -SkipUpstreamConfig
+    & git -C $mismatchOk remote add mirror 'https://gitlab.example.com/testowner/mismatch-ok.git'
+    & git -C $mismatchOk config branch.main.remote mirror
+    & git -C $mismatchOk config branch.main.merge refs/heads/main
+    $mmSha = Get-HeadSha $mismatchOk
+    & git -C $mismatchOk update-ref refs/remotes/mirror/main $mmSha
+    & git -C $mismatchOk update-ref refs/remotes/origin/main $mmSha
+    Set-Mock -RunJson '[{"databaseId":70,"name":"CI","workflowName":"CI","status":"completed","conclusion":"success"}]' -ExpectedSha $mmSha
+    $r = Fire -HookPath $CiHook -Cwd $mismatchOk -EventName 'Stop'
+    Check 'non-GitHub upstream + up-to-date GitHub origin ref -> still verifies against origin' ([string]::IsNullOrWhiteSpace([string]$r.Out)) ([string]$r.Out)
+    $calls = [System.IO.File]::ReadAllText((Join-Path $MockDir 'calls.txt'))
+    Check 'queries the origin repository slug, not the mirror' ($calls -match 'testowner/testrepo-mismatch-ok') $calls
+
+    # Same mismatched-upstream shape, but origin has NO matching tracking ref
+    # at all - must stay silent, never claim pushed/verified off the mirror.
+    $mismatchNoRef = New-GitRepo 'mismatch-noref' -SkipUpstreamConfig
+    & git -C $mismatchNoRef remote add mirror 'https://gitlab.example.com/testowner/mismatch-noref.git'
+    & git -C $mismatchNoRef config branch.main.remote mirror
+    & git -C $mismatchNoRef config branch.main.merge refs/heads/main
+    & git -C $mismatchNoRef update-ref refs/remotes/mirror/main (Get-HeadSha $mismatchNoRef)
+    Set-Mock
+    $r = Fire -HookPath $CiHook -Cwd $mismatchNoRef -EventName 'Stop'
+    Check 'non-GitHub upstream + no origin tracking ref -> stays silent (no false pushed claim)' ($r.Exit -eq 0 -and $r.Out -eq '') $r.Out
+
+    # Local branch tracks a DIFFERENTLY NAMED remote branch on the correct,
+    # selected remote - @{upstream} must still resolve it correctly.
+    $diffBranch = New-GitRepo 'diffbranch'
+    & git -C $diffBranch config branch.main.merge refs/heads/release
+    $dbSha = Get-HeadSha $diffBranch
+    & git -C $diffBranch update-ref refs/remotes/origin/release $dbSha
+    Set-Mock -RunJson '[{"databaseId":71,"name":"CI","workflowName":"CI","status":"completed","conclusion":"success"}]' -ExpectedSha $dbSha
+    $r = Fire -HookPath $CiHook -Cwd $diffBranch -EventName 'Stop'
+    Check 'differently-named remote branch still resolves via @{upstream}' ([string]::IsNullOrWhiteSpace([string]$r.Out)) ([string]$r.Out)
+
+    # Multiple GitHub remotes, no unambiguous target (neither is origin,
+    # neither matches the branch's configured upstream) - must degrade silently.
+    $ambiguous = New-GitRepo 'ambiguous' -SkipUpstreamConfig
+    & git -C $ambiguous remote remove origin
+    & git -C $ambiguous remote add alpha 'https://github.com/testowner/alpha-repo.git'
+    & git -C $ambiguous remote add beta 'https://github.com/testowner/beta-repo.git'
+    Set-Mock
+    $r = Fire -HookPath $CiHook -Cwd $ambiguous -EventName 'Stop'
+    Check 'multiple ambiguous GitHub remotes -> stays silent' ($r.Exit -eq 0 -and $r.Out -eq '') $r.Out
+
+    # Detached HEAD - no branch, must stay silent.
+    $detached = New-GitRepo 'detached'
+    $detSha = Get-HeadSha $detached
+    & git -C $detached checkout -q --detach $detSha
+    Set-Mock
+    $r = Fire -HookPath $CiHook -Cwd $detached -EventName 'Stop'
+    Check 'detached HEAD -> stays silent' ($r.Exit -eq 0 -and $r.Out -eq '') $r.Out
+
+    # No upstream config and no remote-tracking ref at all.
+    $noRef = New-GitRepo 'norackingref' -SkipUpstreamConfig
+    Set-Mock
+    $r = Fire -HookPath $CiHook -Cwd $noRef -EventName 'Stop'
+    Check 'no upstream config and no remote-tracking ref -> stays silent' ($r.Exit -eq 0 -and $r.Out -eq '') $r.Out
+
+    # Path containing spaces still resolves and verifies correctly.
+    $spacedRepo = New-GitRepo 'repo with space'
+    $spacedSha = Get-HeadSha $spacedRepo
+    Set-Mock -RunJson '[{"databaseId":72,"name":"CI","workflowName":"CI","status":"completed","conclusion":"success"}]' -ExpectedSha $spacedSha
+    $r = Fire -HookPath $CiHook -Cwd $spacedRepo -EventName 'Stop'
+    Check 'project path containing spaces resolves and verifies' ([string]::IsNullOrWhiteSpace([string]$r.Out)) ([string]$r.Out)
+
+    # =====================================================================
+    Write-Host '--- CiStatusCheck: -ReportExternalBlocker exception (issue 2) ---' -ForegroundColor Cyan
+
+    $ext1 = New-GitRepo 'ext1'
+    $extSha1 = Get-HeadSha $ext1
+
+    $r = FireExternalBlocker -Cwd $ext1 -Classification 'test-failure-not-really-external' -Reason 'ci is red'
+    Check 'unknown classification is rejected (no bypass via free text)' ($r.Exit -eq 1 -and $r.Err -match 'requires -Classification') $r.Err
+    $r = FireExternalBlocker -Cwd $ext1 -Classification 'github-outage' -Reason ''
+    Check 'missing -Reason is rejected' ($r.Exit -eq 1 -and $r.Err -match 'requires -Reason') $r.Err
+    $r = FireExternalBlocker -Cwd $plainDir -Classification 'github-outage' -Reason 'github.com is down'
+    Check 'cannot record an exception outside a resolvable pushed GitHub commit' ($r.Exit -eq 1 -and $r.Err -match 'not a resolvable, pushed commit') $r.Err
+
+    # Normal failure still blocks BEFORE any exception is recorded.
+    Set-Mock -RunJson '[{"databaseId":80,"name":"CI","workflowName":"CI","status":"completed","conclusion":"failure"}]' -ExpectedSha $extSha1
+    $r = Fire -HookPath $CiHook -Cwd $ext1 -EventName 'Stop'
+    Check 'failed CI still blocks completion before any exception exists' ($r.Out -match '"decision":"block"' -and $r.Out -match 'FAILED') $r.Out
+
+    # Confirmed external blocker recorded -> completion is then allowed, and it
+    # must document that this is NOT a verified/green CI result.
+    $r = FireExternalBlocker -Cwd $ext1 -Classification 'github-outage' -Reason 'GitHub Actions status page reports a full outage'
+    Check 'recording an evidenced external blocker succeeds' ($r.Exit -eq 0 -and $r.Out -match 'EXTERNAL CI blocker' -and $r.Out -match 'does NOT mark CI verified') $r.Out
+    $r = Fire -HookPath $CiHook -Cwd $ext1 -EventName 'Stop'
+    Check 'completion is allowed once a matching external blocker is recorded' ([string]::IsNullOrWhiteSpace([string]$r.Out)) ([string]$r.Out)
+
+    # A NEW pushed commit invalidates the old exception (also proves a wrong
+    # SHA cannot reuse it).
+    Set-Content (Join-Path $ext1 'file.txt') 'v2'
+    & git -C $ext1 add .
+    & git -C $ext1 commit -q -m c2
+    $extSha1b = Get-HeadSha $ext1
+    & git -C $ext1 update-ref refs/remotes/origin/main $extSha1b
+    Set-Mock -RunJson '[{"databaseId":81,"name":"CI","workflowName":"CI","status":"completed","conclusion":"failure"}]' -ExpectedSha $extSha1b
+    $r = Fire -HookPath $CiHook -Cwd $ext1 -EventName 'Stop'
+    Check 'a new pushed commit resets the state - the old exception does not carry over' ($r.Out -match '"decision":"block"' -and $r.Out -match 'FAILED') $r.Out
+
+    # Wrong repository cannot reuse an exception recorded for a different
+    # resolved repository slug.
+    $ext2 = New-GitRepo 'ext2'
+    $extSha2 = Get-HeadSha $ext2
+    $r = FireExternalBlocker -Cwd $ext2 -Classification 'runner-unavailable' -Reason 'no hosted runner available for this org'
+    Check 'records an exception for ext2''s own repository' ($r.Exit -eq 0) $r.Err
+    & git -C $ext2 remote set-url origin 'https://github.com/testowner/testrepo-ext2-renamed.git'
+    Set-Mock -RunJson '[{"databaseId":82,"name":"CI","workflowName":"CI","status":"completed","conclusion":"failure"}]' -ExpectedSha $extSha2
+    $r = Fire -HookPath $CiHook -Cwd $ext2 -EventName 'Stop'
+    Check 'a different resolved repository cannot reuse a prior exception' ($r.Out -match '"decision":"block"' -and $r.Out -match 'FAILED') $r.Out
+
+    # Expired/stale exception is rejected: TTL=0 means the very next check
+    # already treats it as expired and falls back to normal (blocking) evaluation.
+    $ext3 = New-GitRepo 'ext3'
+    $extSha3 = Get-HeadSha $ext3
+    $r = FireExternalBlocker -Cwd $ext3 -Classification 'permission-failure' -Reason 'org disabled Actions for this repo temporarily'
+    Check 'records an exception for ext3' ($r.Exit -eq 0) $r.Err
+    $shortTtlHook = New-ConfiguredCiHookCopy @{ EXTERNAL_BLOCKER_TTL_MINUTES = '0' }
+    Set-Mock -RunJson '[{"databaseId":83,"name":"CI","workflowName":"CI","status":"completed","conclusion":"failure"}]' -ExpectedSha $extSha3
+    $r = Fire -HookPath $shortTtlHook -Cwd $ext3 -EventName 'Stop'
+    Check 'expired exception is rejected - falls back to normal (blocking) evaluation' ($r.Out -match '"decision":"block"' -and $r.Out -match 'FAILED') $r.Out
+
+    # stop_hook_active still prevents recursion, even with a live exception on file.
+    $ext4 = New-GitRepo 'ext4'
+    $r = FireExternalBlocker -Cwd $ext4 -Classification 'manual-approval-required' -Reason 'awaiting a required environment approval the agent cannot grant'
+    Check 'records an exception for ext4' ($r.Exit -eq 0) $r.Err
+    $r = Fire -HookPath $CiHook -Cwd $ext4 -EventName 'Stop' -Extra @{ stop_hook_active = $true }
+    Check 'stop_hook_active still short-circuits before any exception/gh logic' ($r.Out -eq '') $r.Out
+
+    # =====================================================================
     Write-Host '--- GithubBaselineCheck ---' -ForegroundColor Cyan
     Set-Mock
     $r = Fire -HookPath $BaselineHook -Cwd $plainDir
@@ -430,6 +619,131 @@ updates:
     Check 'Dependabot directories list covers multiple package roots' ([string]::IsNullOrWhiteSpace([string]$r.Out)) ([string]$r.Out)
 
     # =====================================================================
+    Write-Host '--- GithubBaselineCheck: false positive/negative audit (issue 4) ---' -ForegroundColor Cyan
+
+    # Flow-style trigger array on the `on:` line - a confirmed false negative
+    # (the old line-anchored regex only matched block-style `push:`/`pull_request:`).
+    $flowTrigger = New-GitRepo 'flowtrigger'
+    Set-Content (Join-Path $flowTrigger 'package.json') '{}'
+    New-Item -ItemType Directory -Path (Join-Path $flowTrigger '.github\workflows') -Force | Out-Null
+    Set-Content (Join-Path $flowTrigger '.github\workflows\ci.yml') "on: [push, pull_request]`njobs:`n  test:`n    steps:`n      - run: npm test"
+    Set-Content (Join-Path $flowTrigger '.github\dependabot.yml') "version: 2`nupdates:`n  - package-ecosystem: npm`n    directory: /`n  - package-ecosystem: github-actions`n    directory: /"
+    $r = Fire -HookPath $BaselineHook -Cwd $flowTrigger
+    Check 'flow-style trigger array (on: [push, pull_request]) is recognized' ([string]::IsNullOrWhiteSpace([string]$r.Out)) ([string]$r.Out)
+
+    # Quoted "on": key with block-style triggers underneath.
+    $quotedOn = New-GitRepo 'quotedon'
+    Set-Content (Join-Path $quotedOn 'package.json') '{}'
+    New-Item -ItemType Directory -Path (Join-Path $quotedOn '.github\workflows') -Force | Out-Null
+    Set-Content (Join-Path $quotedOn '.github\workflows\ci.yml') "`"on`":`n  push:`n  pull_request:`njobs:`n  test:`n    steps:`n      - run: npm test"
+    Set-Content (Join-Path $quotedOn '.github\dependabot.yml') "version: 2`nupdates:`n  - package-ecosystem: npm`n    directory: /`n  - package-ecosystem: github-actions`n    directory: /"
+    $r = Fire -HookPath $BaselineHook -Cwd $quotedOn
+    Check 'quoted "on" key with block-style triggers is recognized' ([string]::IsNullOrWhiteSpace([string]$r.Out)) ([string]$r.Out)
+
+    # Multiline `run: |` block scalar with the real validation command on a
+    # SUBSEQUENT, more-indented line - a confirmed false negative (the old
+    # regex only looked for the keyword on the same line as `run:`).
+    $multilineRun = New-GitRepo 'multilinerun'
+    Set-Content (Join-Path $multilineRun 'package.json') '{}'
+    New-Item -ItemType Directory -Path (Join-Path $multilineRun '.github\workflows') -Force | Out-Null
+    Set-Content (Join-Path $multilineRun '.github\workflows\ci.yml') @'
+on:
+  push:
+  pull_request:
+jobs:
+  test:
+    steps:
+      - run: |
+          npm ci
+          npm run build
+          npm test
+'@
+    Set-Content (Join-Path $multilineRun '.github\dependabot.yml') "version: 2`nupdates:`n  - package-ecosystem: npm`n    directory: /`n  - package-ecosystem: github-actions`n    directory: /"
+    $r = Fire -HookPath $BaselineHook -Cwd $multilineRun
+    Check 'multiline run: | block with validation commands is recognized' ([string]::IsNullOrWhiteSpace([string]$r.Out)) ([string]$r.Out)
+
+    # pyproject.toml classification: Poetry has no distinct Dependabot
+    # ecosystem value (stays `pip`); uv DOES (only when uv.lock is present).
+    $poetryRepo = New-GitRepo 'poetryproj'
+    Set-Content (Join-Path $poetryRepo 'pyproject.toml') "[tool.poetry]`nname = `"x`""
+    $r = Fire -HookPath $BaselineHook -Cwd $poetryRepo
+    Check 'pyproject.toml without uv.lock classifies as pip (covers Poetry too)' ($r.Out -match 'pip at /') $r.Out
+
+    $uvRepo = New-GitRepo 'uvproj'
+    Set-Content (Join-Path $uvRepo 'pyproject.toml') "[project]`nname = `"x`""
+    Set-Content (Join-Path $uvRepo 'uv.lock') 'version = 1'
+    $r = Fire -HookPath $BaselineHook -Cwd $uvRepo
+    Check 'pyproject.toml WITH uv.lock classifies as uv, not pip' ($r.Out -match 'uv at /' -and $r.Out -notmatch 'pip at /') $r.Out
+
+    # Reusable workflow: triggered only by `workflow_call` (not push/PR
+    # directly), but with real validation commands - must count as CI, not be
+    # misread as "no CI configured".
+    $reusable = New-GitRepo 'reusablewf'
+    Set-Content (Join-Path $reusable 'package.json') '{}'
+    New-Item -ItemType Directory -Path (Join-Path $reusable '.github\workflows') -Force | Out-Null
+    Set-Content (Join-Path $reusable '.github\workflows\reusable.yml') @'
+on:
+  workflow_call:
+jobs:
+  test:
+    steps:
+      - run: npm test
+'@
+    Set-Content (Join-Path $reusable '.github\dependabot.yml') "version: 2`nupdates:`n  - package-ecosystem: npm`n    directory: /`n  - package-ecosystem: github-actions`n    directory: /"
+    $r = Fire -HookPath $BaselineHook -Cwd $reusable
+    Check 'workflow_call-triggered reusable workflow with real validation counts as CI' ([string]::IsNullOrWhiteSpace([string]$r.Out)) ([string]$r.Out)
+
+    # Quoted continue-on-error value.
+    $quotedCoe = New-GitRepo 'quotedcoe'
+    Set-Content (Join-Path $quotedCoe 'package.json') '{}'
+    New-Item -ItemType Directory -Path (Join-Path $quotedCoe '.github\workflows') -Force | Out-Null
+    Set-Content (Join-Path $quotedCoe '.github\workflows\ci.yml') @'
+on:
+  push:
+jobs:
+  test:
+    steps:
+      - run: npm test
+        continue-on-error: "true"
+'@
+    $r = Fire -HookPath $BaselineHook -Cwd $quotedCoe
+    Check 'quoted continue-on-error: "true" is still detected as non-blocking' ($r.Out -match 'continue-on-error') $r.Out
+
+    # Flow-style pull_request_target trigger with untrusted checkout - the
+    # unsafe-pattern check has the SAME flow-style gap as the main trigger check.
+    $prtFlow = New-GitRepo 'prtflow'
+    Set-Content (Join-Path $prtFlow 'package.json') '{}'
+    New-Item -ItemType Directory -Path (Join-Path $prtFlow '.github\workflows') -Force | Out-Null
+    Set-Content (Join-Path $prtFlow '.github\workflows\ci.yml') @'
+on: [pull_request_target]
+jobs:
+  test:
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+      - run: npm test
+'@
+    $r = Fire -HookPath $BaselineHook -Cwd $prtFlow
+    Check 'flow-style pull_request_target with untrusted checkout is flagged unsafe' ($r.Out -match 'pull_request_target with untrusted PR checkout') $r.Out
+
+    # Empty workflow file - must not crash, and correctly counts as "no validation".
+    $emptyWf = New-GitRepo 'emptywf'
+    Set-Content (Join-Path $emptyWf 'package.json') '{}'
+    New-Item -ItemType Directory -Path (Join-Path $emptyWf '.github\workflows') -Force | Out-Null
+    Set-Content (Join-Path $emptyWf '.github\workflows\ci.yml') ''
+    $r = Fire -HookPath $BaselineHook -Cwd $emptyWf
+    Check 'empty workflow file does not crash and is reported as missing validation' ($r.Exit -eq 0 -and $r.Out -match 'none provides blocking project validation') $r.Out
+
+    # Unparseable/garbage workflow content - must degrade gracefully, never crash.
+    $garbageWf = New-GitRepo 'garbagewf'
+    Set-Content (Join-Path $garbageWf 'package.json') '{}'
+    New-Item -ItemType Directory -Path (Join-Path $garbageWf '.github\workflows') -Force | Out-Null
+    Set-Content (Join-Path $garbageWf '.github\workflows\ci.yml') '{{{ not: valid: yaml :::: [[['
+    $r = Fire -HookPath $BaselineHook -Cwd $garbageWf
+    Check 'unparseable workflow content does not crash the hook' ($r.Exit -eq 0) ($r.Out + '|exit=' + $r.Exit)
+
+    # =====================================================================
     if (Get-Command powershell.exe -ErrorAction SilentlyContinue) {
         Write-Host '--- Windows PowerShell 5.1 ---' -ForegroundColor Cyan
         $ps51 = New-GitRepo 'ps51repo'
@@ -440,9 +754,14 @@ updates:
         $r = Fire -HookPath $BaselineHook -Cwd $ps51 -Exe 'powershell.exe'
         Check 'GithubBaselineCheck under 5.1' ($r.Exit -eq 0 -and $r.Out -match 'GITHUB BASELINE CHECK')
         $ps51ci = New-GitRepo 'ps51ci'
-        Set-Mock -RunJson '[{"databaseId":51,"name":"CI","workflowName":"CI","status":"completed","conclusion":"failure"}]' -ExpectedSha (Get-HeadSha $ps51ci)
+        $ps51ciSha = Get-HeadSha $ps51ci
+        Set-Mock -RunJson '[{"databaseId":51,"name":"CI","workflowName":"CI","status":"completed","conclusion":"failure"}]' -ExpectedSha $ps51ciSha
         $r = Fire -HookPath $CiHook -Cwd $ps51ci -EventName 'Stop' -Exe 'powershell.exe'
         Check 'CiStatusCheck under 5.1' ($r.Exit -eq 0 -and $r.Out -match '"decision":"block"')
+        $r = FireExternalBlocker -Cwd $ps51ci -Classification 'github-outage' -Reason '5.1 host outage test' -Exe 'powershell.exe'
+        Check '-ReportExternalBlocker under 5.1' ($r.Exit -eq 0 -and $r.Out -match 'EXTERNAL CI blocker')
+        $r = Fire -HookPath $CiHook -Cwd $ps51ci -EventName 'Stop' -Exe 'powershell.exe'
+        Check 'external-blocker exception honored under 5.1' ($r.Exit -eq 0 -and [string]::IsNullOrWhiteSpace([string]$r.Out))
     }
     else {
         Write-Host '[SKIP] powershell.exe not available' -ForegroundColor Yellow

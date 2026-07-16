@@ -13,6 +13,22 @@
 # the detected structure, or the same findings were reported within the
 # cooldown.
 #
+# No YAML parser is guaranteed in this environment, so workflow/Dependabot
+# inspection stays a deliberate, bounded regex heuristic (Test-HasWorkflowTrigger,
+# Test-HasValidationCommand) rather than a full parser - this is intentionally
+# lightweight, not a general-purpose static analyzer. It recognizes block-style,
+# flow-style ([a, b]), bare-value, and block-sequence `on:` triggers; a
+# `workflow_call` trigger counts as real CI so a reusable workflow with actual
+# validation is not misread as "no CI"; multiline `run: |`/`run: >` blocks are
+# scanned (bounded lookahead) for validation keywords, not just the `run:` line
+# itself; a bare pyproject.toml defaults to the `pip` Dependabot ecosystem
+# (also correct for Poetry, which has no separate ecosystem value), and is
+# reclassified as `uv` only when a uv.lock sits beside it.
+# Known, intentional limitations (would require real YAML/expression
+# evaluation to close, which this hook deliberately does not add): a
+# validation step disabled via an `if:` condition is not detected as disabled,
+# and there is no dedicated least-privilege `permissions:` check.
+#
 # Optional .env next to this script (copy .env.example):
 #   COOLDOWN_MINUTES  minimum minutes between identical reports per repo (default 240)
 
@@ -60,7 +76,6 @@ if ($config.ContainsKey('COOLDOWN_MINUTES')) {
 $manifestMap = @{
     'package.json'     = 'npm'
     'requirements.txt' = 'pip'
-    'pyproject.toml'   = 'pip'
     'Pipfile'          = 'pip'
     'go.mod'           = 'gomod'
     'Cargo.toml'       = 'cargo'
@@ -72,6 +87,10 @@ $manifestMap = @{
     'build.gradle.kts' = 'gradle'
     'packages.config'  = 'nuget'
 }
+# pyproject.toml is handled separately (not via $manifestMap): it is shared by
+# plain pip/PEP 621 projects, Poetry, AND uv, but only uv has its OWN
+# Dependabot package-ecosystem value ('uv') - Poetry has none and is correctly
+# reported under 'pip' too. Distinguish by the presence of uv's lockfile.
 $sourceExtensions = @('.ps1', '.psm1', '.py', '.js', '.ts', '.jsx', '.tsx', '.mjs', '.cjs', '.cs', '.java', '.go', '.rb', '.php', '.rs', '.c', '.cpp', '.h', '.kt', '.swift')
 $excludedDirs = @('.git', 'node_modules', '.ai', 'graphify-out', 'logs', 'dist', 'build', 'out', 'target', 'vendor', '__pycache__', '.venv', 'venv', '.claude', '.codex', 'bin', 'obj', '.cross-project-sync', '.github')
 
@@ -95,7 +114,14 @@ while ($stack.Count -gt 0) {
         }
         foreach ($file in [System.IO.Directory]::EnumerateFiles($currentDir)) {
             $fileName = Split-Path -Leaf $file
-            if ($manifestMap.ContainsKey($fileName)) {
+            if ($fileName -eq 'pyproject.toml') {
+                $relDir = $currentDir.Substring($rootFull.Length).TrimStart('\', '/').Replace('\', '/')
+                if ($relDir -eq '') { $relDir = '/' } else { $relDir = '/' + $relDir }
+                $pyEco = 'pip'
+                if (Test-Path -LiteralPath (Join-Path $currentDir 'uv.lock') -PathType Leaf) { $pyEco = 'uv' }
+                $ecosystems[($pyEco + '|' + $relDir)] = $fileName
+            }
+            elseif ($manifestMap.ContainsKey($fileName)) {
                 $relDir = $currentDir.Substring($rootFull.Length).TrimStart('\', '/').Replace('\', '/')
                 if ($relDir -eq '') { $relDir = '/' } else { $relDir = '/' + $relDir }
                 $ecosystems[($manifestMap[$fileName] + '|' + $relDir)] = $fileName
@@ -111,6 +137,50 @@ while ($stack.Count -gt 0) {
         }
     }
     catch { }
+}
+
+# Matches a YAML trigger keyword across the shapes real workflows use: a
+# block-mapping key (`push:`), a flow-style list on the `on:` line
+# (`on: [push, pull_request]`), a bare single value (`on: push`), or a
+# block-sequence item (`on:` then `  - push`). No YAML parser is guaranteed in
+# this environment (see README/.ai notes) - this stays a deliberate, bounded
+# regex heuristic rather than a full parser.
+function Test-HasWorkflowTrigger {
+    param([string]$Text, [string[]]$Keywords)
+    $union = ($Keywords -join '|')
+    if ($Text -match ('(?im)^\s*(' + $union + ')\s*:')) { return $true }
+    if ($Text -match ('(?im)^\s*on\s*:\s*\[[^\]]*\b(' + $union + ')\b')) { return $true }
+    if ($Text -match ('(?im)^\s*on\s*:\s*["'']?(' + $union + ')["'']?\s*$')) { return $true }
+    if ($Text -match ('(?im)^\s*-\s*["'']?(' + $union + ')["'']?\s*$')) { return $true }
+    return $false
+}
+
+# Whether any `run:`/`uses:` step contains a validation keyword - inline
+# (`run: npm test`) or on the following, more-indented lines of a block
+# scalar (`run: |` / `run: >` followed by the real shell commands, the most
+# common real-world shape). A bounded lookahead keeps this a single
+# deterministic pass rather than a full YAML/indentation parse.
+function Test-HasValidationCommand {
+    param([string]$Text)
+    $keywordPattern = '(?i)\b(test|lint|typecheck|type-check|build|verify|check)\b'
+    $lines = $Text -split '\r?\n'
+    for ($i = 0; $i -lt $lines.Count; $i++) {
+        if ($lines[$i] -notmatch '^(?<indent>\s*)-?\s*(run|uses)\s*:\s*(?<rest>.*)$') { continue }
+        $indent = $Matches['indent'].Length
+        $rest = $Matches['rest'].TrimEnd()
+        if ($rest -match $keywordPattern) { return $true }
+        if ($rest -eq '' -or $rest -match '^[|>][+-]?\d*\s*$') {
+            $limit = [Math]::Min($lines.Count, $i + 40)
+            for ($j = $i + 1; $j -lt $limit; $j++) {
+                $next = $lines[$j]
+                if ($next.Trim() -eq '') { continue }
+                $nextIndent = $next.Length - $next.TrimStart(' ').Length
+                if ($nextIndent -le $indent) { break }    # block scalar ended
+                if ($next -match $keywordPattern) { return $true }
+            }
+        }
+    }
+    return $false
 }
 
 # workflows + dependabot config
@@ -163,12 +233,16 @@ $meaningfulCi = $false
 $workflowProblems = @()
 foreach ($workflow in $workflowFiles) {
     $text = [System.IO.File]::ReadAllText($workflow.FullName)
-    $hasTrigger = $text -match '(?m)^\s*(push|pull_request)\s*:'
-    $hasValidation = $text -match '(?im)^\s*-?\s*(run|uses)\s*:.*\b(test|lint|typecheck|type-check|build|verify|check)\b'
-    $deployOnly = $text -match '(?i)\b(deploy|publish|release)\b' -and -not $hasValidation
+    # workflow_call is included so a reusable workflow (triggered by another
+    # workflow's `uses:`, not directly by push/PR) that DOES run real
+    # validation still counts toward the repo's baseline instead of being
+    # misread as "no CI".
+    $hasTrigger = Test-HasWorkflowTrigger -Text $text -Keywords @('push', 'pull_request', 'pull_request_target', 'workflow_call')
+    $hasValidation = Test-HasValidationCommand -Text $text
+    $deployOnly = ($text -match '(?i)\b(deploy|publish|release)\b') -and -not $hasValidation
     if ($hasTrigger -and $hasValidation -and -not $deployOnly) { $meaningfulCi = $true }
-    if ($text -match '(?im)^\s*continue-on-error:\s*true\s*$' -and $hasValidation) { $workflowProblems += ($workflow.Name + ' makes validation non-blocking with continue-on-error') }
-    if ($text -match '(?m)^\s*pull_request_target\s*:' -and $text -match 'actions/checkout' -and $text -match '(?i)(github\.event\.pull_request\.head|head\.sha)') { $workflowProblems += ($workflow.Name + ' uses pull_request_target with untrusted PR checkout') }
+    if ($text -match '(?im)^\s*continue-on-error:\s*["'']?true["'']?\s*$' -and $hasValidation) { $workflowProblems += ($workflow.Name + ' makes validation non-blocking with continue-on-error') }
+    if ((Test-HasWorkflowTrigger -Text $text -Keywords @('pull_request_target')) -and $text -match 'actions/checkout' -and $text -match '(?i)(github\.event\.pull_request\.head|head\.sha)') { $workflowProblems += ($workflow.Name + ' uses pull_request_target with untrusted PR checkout') }
 }
 
 if (-not $meaningfulCi -and $hasCode) {
@@ -205,6 +279,7 @@ if ($findings.Count -gt 0) {
         switch (($key -split '\|')[0]) {
             'npm' { $codeqlLangs['javascript-typescript'] = $true }
             'pip' { $codeqlLangs['python'] = $true }
+            'uv' { $codeqlLangs['python'] = $true }
             'gomod' { $codeqlLangs['go'] = $true }
             'bundler' { $codeqlLangs['ruby'] = $true }
         }
