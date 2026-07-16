@@ -107,6 +107,30 @@ try {
     Check 'pre-push order is Ignore then Secrets then previous hook' (
         $ignoreCommand -ge 0 -and $ignoreCommand -lt $secretsCommand -and $secretsCommand -lt $previousCommand)
 
+    $customRepo = New-Repo 'custom hooks path'
+    & git -C $customRepo config core.hooksPath '.config/hooks nested'
+    $customHooks = Join-Path $customRepo '.config\hooks nested'
+    New-Item -ItemType Directory -Path $customHooks -Force | Out-Null
+    [System.IO.File]::WriteAllText((Join-Path $customHooks 'pre-push'), "#!/bin/sh`necho custom > custom-hook.txt`n", (New-Object System.Text.UTF8Encoding $false))
+    & $InstallScript -CustomHook $Hook -Events @('Stop') -TargetProject $customRepo -CodexOnly *> $null
+    & $InstallScript -CustomHook $Hook -Events @('Stop') -TargetProject $customRepo -CodexOnly *> $null
+    $customBody = [System.IO.File]::ReadAllText((Join-Path $customHooks 'pre-push'))
+    Check 'relative custom hooksPath receives managed runtime without hooks/hooks duplication' (
+        (Test-Path (Join-Path $customHooks 'Hook-Maker\Ignore-Rules-Check\Ignore-Rules-Check.ps1')) -and
+        -not (Test-Path (Join-Path $customHooks 'hooks\Hook-Maker')))
+    Check 'custom pre-push is preserved exactly once across reinstall' (
+        (Test-Path (Join-Path $customHooks 'pre-push.hookmaker-existing')) -and
+        ([regex]::Matches($customBody, 'Hook Maker: Ignore-Rules-Check').Count -eq 1))
+
+    $absoluteRepo = New-Repo 'absolute hooks repo'
+    $absoluteHooks = Join-Path $Work 'absolute hooks path'
+    New-Item -ItemType Directory -Path $absoluteHooks -Force | Out-Null
+    & git -C $absoluteRepo config core.hooksPath $absoluteHooks
+    & $InstallScript -CustomHook $Hook -Events @('Stop') -TargetProject $absoluteRepo -CodexOnly *> $null
+    Check 'absolute custom hooksPath with spaces receives the managed chain' (
+        (Test-Path (Join-Path $absoluteHooks 'pre-push')) -and
+        (Test-Path (Join-Path $absoluteHooks 'Hook-Maker\Secrets-Check\Secrets-Check.ps1')))
+
     $remote = Join-Path $Work 'remote.git'
     & git init -q --bare $remote
     & git -C $pushRepo remote add origin $remote
@@ -119,12 +143,16 @@ try {
     & git -C $pushRepo add .gitignore
     & git -C $pushRepo commit -q -m c2
     [System.IO.File]::WriteAllText((Join-Path $pushRepo '.env'), 'API_KEY=fixture-value-123456789', (New-Object System.Text.UTF8Encoding $false))
+    [System.IO.File]::WriteAllText((Join-Path $pushRepo 'leak.txt'), 'fixture-value-123456789', (New-Object System.Text.UTF8Encoding $false))
+    & git -C $pushRepo add leak.txt
+    & git -C $pushRepo commit -q -m c2b
     $ErrorActionPreference = 'Continue'
     $pushOutput = (& git -C $pushRepo push -u origin main 2>&1 | Out-String)
     $pushExit = $LASTEXITCODE
     $ErrorActionPreference = 'Stop'
     Check 'Secrets-Check blocks before the previous hook' ($pushExit -ne 0 -and $pushOutput -match 'SECRETS CHECK' -and -not (Test-Path -LiteralPath (Join-Path $pushRepo 'previous-hook.txt'))) $pushOutput
 
+    Remove-Item -LiteralPath (Join-Path $pushRepo 'leak.txt') -Force
     [System.IO.File]::WriteAllText((Join-Path $pushRepo 'use.txt'), 'API_KEY', (New-Object System.Text.UTF8Encoding $false))
     [System.IO.File]::WriteAllLines((Join-Path $pushRepo 'big.ps1'), @(1..801 | ForEach-Object { '# line' }), (New-Object System.Text.UTF8Encoding $false))
     & git -C $pushRepo add use.txt big.ps1

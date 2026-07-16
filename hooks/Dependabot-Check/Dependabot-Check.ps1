@@ -47,19 +47,9 @@ $inside = Invoke-QuietCommand -FilePath git -ArgumentList @('-C', $cwd, 'rev-par
 if ($LASTEXITCODE -ne 0 -or [string]$inside -ne 'true') {
     exit 0
 }
-$repoSlug = ''
-foreach ($remoteName in @(Invoke-QuietCommand -FilePath git -ArgumentList @('-C', $cwd, 'remote'))) {
-    if ([string]::IsNullOrWhiteSpace([string]$remoteName)) { continue }
-    $url = [string](Invoke-QuietCommand -FilePath git -ArgumentList @('-C', $cwd, 'remote', 'get-url', $remoteName))
-    if ($LASTEXITCODE -ne 0) { continue }
-    if ($url -match 'github\.com[:/]([^/]+)/([^/\s]+?)(\.git)?/?$') {
-        $repoSlug = $Matches[1] + '/' + $Matches[2]
-        break
-    }
-}
-if ($repoSlug -eq '') {
-    exit 0
-}
+$repository = Get-GitHubRepository -ProjectRoot $cwd
+if ($null -eq $repository) { exit 0 }
+$repoSlug = $repository.Repository
 
 # ---- optional .env ----
 $config = Read-HookEnv (Join-Path $PSScriptRoot '.env')
@@ -115,7 +105,7 @@ else {
 
 $prs = @()
 if ($limitReason -eq '') {
-    $rawJson = Invoke-QuietCommand -FilePath gh -ArgumentList @('pr', 'list', '--author', 'app/dependabot', '--state', 'open', '--json', 'number,title,author,headRefName,baseRefName,headRefOid,isDraft,mergeStateStatus,labels,statusCheckRollup', '--limit', '30')
+    $rawJson = Invoke-QuietCommand -FilePath gh -ArgumentList @('pr', 'list', '--repo', $repoSlug, '--author', 'app/dependabot', '--state', 'open', '--json', 'number,title,author,headRefName,baseRefName,headRefOid,isDraft,mergeStateStatus,labels,statusCheckRollup', '--limit', '30')
     if ($LASTEXITCODE -ne 0) {
         $limitReason = 'gh could not query pull requests (network or repository permissions)'
     }

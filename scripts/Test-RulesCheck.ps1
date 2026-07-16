@@ -55,7 +55,7 @@ function Fire {
     $errFile = Join-Path $Work ('err-' + $token + '.txt')
     [System.IO.File]::WriteAllText($inFile, $payload, (New-Object System.Text.UTF8Encoding $false))
     if ($Exe -eq 'pwsh') {
-        $file = 'pwsh'
+        $file = (Get-Process -Id $PID).Path
         $argLine = '-NoLogo -NoProfile -File "' + $HookPath + '"'
     }
     else {

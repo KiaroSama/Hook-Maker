@@ -19,14 +19,14 @@ starts the user's task.
 | `scripts/Install-Hook.ps1` | Writes a hook command into a project's `.claude/settings.local.json` + `.codex/hooks.json` (or, with no `-TargetProject`, the global `~/.claude` + `~/.codex`). Supports `-CustomHook <path>`. |
 | `scripts/Validate-Config.ps1` | Validates `sync-hooks.json`. |
 | `scripts/Test-Engine.ps1` | Self-contained engine smoke test (18 assertions, runs under pwsh and PowerShell 5.1). |
-| `scripts/Test-GitHubHooks.ps1` | Offline test suite for the GitHub hooks (47 assertions; mocks git state and `gh`, no network/account). |
+| `scripts/Test-GitHubHooks.ps1` | Offline test suite for the GitHub hooks (52 assertions; mocks git state and `gh`, no network/account). |
 | `scripts/Test-RulesCheck.ps1` | Offline test suite for the Rules-Check hook and per-client install targeting (33 assertions). |
 | `scripts/Test-Wizard.ps1` | Drives the interactive wizard end-to-end via stdin (menu, hook listing, list/range multi-select, client targeting, real self-contained installs) against temp projects (76 assertions). |
-| `scripts/Test-SecretsCheck.ps1` | Offline test suite for the Secrets-Check hook (auto-append, ignore/tracked/staged/leak, throttled unused-secret scan; real throwaway git repos, 32 assertions). |
+| `scripts/Test-SecretsCheck.ps1` | Offline test suite for the Secrets-Check hook (nested env discovery, critical/advisory pre-push policy, ignore/tracked/staged/leak, throttled unused scan; real throwaway git repos, 35 assertions). |
 | `scripts/Test-AiMemoryLoad.ps1` | Offline test suite for Ai-Memory-Load and Graph-Read-Check (content fingerprinting, whole-.ai/ file listing, truncation, graph-exists gate; 22 assertions). |
 | `scripts/Test-AiMemoryCheck.ps1` | Offline test suite for the Ai-Memory-Check hook (missing/stale memory.md, real specialized-file enumeration, cooldown; real throwaway git repos, 11 assertions). |
 | `scripts/Test-ContextHooks.ps1` | Offline test suite for Mcp-Usage-Check and Skills-Check (16 assertions). |
-| `scripts/Test-IgnoreRulesCheck.ps1` | Offline test suite for the deterministic Ignore → Secrets → previous-hook pre-push chain (19 assertions; real pushes, PowerShell 5.1). |
+| `scripts/Test-IgnoreRulesCheck.ps1` | Offline test suite for the deterministic Ignore → Secrets → previous-hook pre-push chain and relative/absolute custom hooks paths (22 assertions; real pushes, PowerShell 5.1). |
 | `scripts/_testlib.ps1` | Shared assertion helper used by the offline PowerShell test suites. |
 | `logs/` | Wizard execution logs (created on demand, not committed). |
 
@@ -45,10 +45,10 @@ starts the user's task.
 | `Mcp-Usage-Check` | pre-task (SessionStart) | Compact reminder to consider MCP servers/tools (docs lookup, browser, DB) when they materially help. |
 | `Large-File-Check` | pre-task + post-task (Stop) | Pre-task: reminds to prefer small, multi-part files (split by responsibility, ~500-800 lines = split signal). Post-task: scans for oversized source files and asks the AI whether a split is safe and worthwhile. |
 | `Dependabot-Check` | pre-task (SessionStart) | In a GitHub repo, reports pending pull requests from the verified `app/dependabot` author (with exact head SHA, classification, merge/check state) so they are reviewed before unrelated work. Detection only — never merges. |
-| `Ci-Status-Check` | post-task (Stop) | After a push, blocks "done" until the GitHub checks for the **exact** pushed commit are verified; distinguishes pending / failed / infra-flaky and points at the failed job. |
-| `Github-Baseline-Check` | pre-task (SessionStart) | Checks the `.github` automation baseline against the project's real structure (CI workflow, `dependabot.yml` coverage per ecosystem/dir, optional CodeQL) and reports concrete gaps. |
+| `Ci-Status-Check` | post-task (Stop) | After a push, blocks "done" until checks for the **exact** pushed commit reach an acceptable terminal state. Pending/failed authorization remains blocking even while repeated detail is cooled down; GitHub queries are throttled, exact-SHA, and explicitly bound to the resolved upstream repository. Missing access is never reported as verified. |
+| `Github-Baseline-Check` | pre-task (SessionStart) | Checks that workflows contain blocking project validation (not empty/deploy-only YAML), flags broad `continue-on-error` and unsafe PR-target execution, detects common ecosystems in pruned deep monorepos, and validates `dependabot.yml` directory/directories coverage. |
 | `Rules-Check` | pre-task (SessionStart, UserPromptSubmit) | Verifies the configured rules were read before the task starts: the **global** rules directory (`~\.claude\rules` / `~\.codex\rules`) plus the current project's **local** rules directory (`<project>\.claude\rules` / `<project>\.codex\rules`). First check lists all rules files; afterwards it stays silent until a rules file is added/changed/removed, then reports exactly what moved. Detects the running client automatically (Claude Code exports `CLAUDE_PROJECT_DIR` on hook processes; Codex does not). |
-| `Secrets-Check` | pre-task + post-task (Stop) | Keeps `secrets.md` accurate and safe: flags it if untracked-but-should-be-ignored, tracked, or staged; flags a real `.env*` file that is itself tracked; flags a discovered secret value that turns up in another tracked file (file path only, value never printed); auto-appends secrets found in `.env*` but missing from `secrets.md` (value copied file-to-file, never printed/logged); flags empty-looking placeholder values; and, on a long throttle (default weekly, not every run), flags `secrets.md` entries that are no longer referenced anywhere else in the project — reported by name only, **never auto-removed** (a false positive would destroy an unrecoverable credential, so removal stays the AI's call, like every other advisory hook here). Makes no network calls and never tests a secret against its real service. |
+| `Secrets-Check` | pre-task + post-task (Stop) | Safely scans real `.env*` files throughout active project subtrees (templates, dependencies, builds, caches, assistant runtimes, and reparse points are pruned). Lifecycle events retain registry/placeholder/unused advisories. Native pre-push blocks only confirmed indexing/leak risks (tracked/staged registry or env files, or a discovered value in tracked content); advisory-only findings exit successfully. Secret values are never printed. |
 | `Ignore-Rules-Check` | pre-task (SessionStart) + post-task (Stop) + native Git pre-push | Auto-adds required local/private patterns to `.gitignore`, extracts additional paths from explicit local-only/never-commit project rules, and blocks completion while required fixes remain. Project installs create a deterministic pre-push chain: Ignore → Secrets → preserved previous hook. Large-File-Check remains advisory and never decides whether a push may proceed. Optional extra patterns can be set in `.env`. |
 
 All advisory hooks are token-efficient by design: they stay **silent** unless a deterministic
@@ -60,6 +60,7 @@ a remote, `gh`, authentication, or network access is missing.
 
 Matching lifecycle hooks for the same event run concurrently and are intentionally independent;
 their registration order is display-only. The native pre-push chain is the only ordered sequence.
+It honors Git's resolved `core.hooksPath` (default, relative, nested, absolute, and paths with spaces), preserves an existing pre-push hook once, and is idempotent.
 
 ## Hook configs (.env)
 

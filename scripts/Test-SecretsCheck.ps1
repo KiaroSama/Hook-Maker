@@ -34,7 +34,7 @@ $SavedLocalAppData = $env:LOCALAPPDATA
 
 function Fire {
     # $RawStdin intentionally UNTYPED: [string] coerces $null to '' (see LESSON.md).
-    param([string]$Cwd, [string]$EventName = 'SessionStart', $RawStdin = $null, [string]$HookPath = $Hook, [string]$Exe = 'pwsh', [bool]$StopHookActive = $false)
+    param([string]$Cwd, [string]$EventName = 'SessionStart', $RawStdin = $null, [string]$HookPath = $Hook, [string]$Exe = '', [bool]$StopHookActive = $false, [switch]$GitPrePush)
     $payload = $RawStdin
     if ($null -eq $payload) {
         $obj = @{ session_id = 't'; cwd = $Cwd; hook_event_name = $EventName }
@@ -46,12 +46,13 @@ function Fire {
     $outFile = Join-Path $Work ('out-' + $token + '.txt')
     $errFile = Join-Path $Work ('err-' + $token + '.txt')
     [System.IO.File]::WriteAllText($inFile, $payload, (New-Object System.Text.UTF8Encoding $false))
-    if ($Exe -eq 'pwsh') {
-        $file = 'pwsh'; $argLine = '-NoLogo -NoProfile -File "' + $HookPath + '"'
+    if ([string]::IsNullOrWhiteSpace($Exe)) {
+        $file = (Get-Process -Id $PID).Path; $argLine = '-NoLogo -NoProfile -File "' + $HookPath + '"'
     }
     else {
         $file = 'powershell.exe'; $argLine = '-NoLogo -NoProfile -ExecutionPolicy Bypass -File "' + $HookPath + '"'
     }
+    if ($GitPrePush) { $argLine += ' -GitPrePush' }
     $env:LOCALAPPDATA = $FakeAppData
     try {
         $proc = Start-Process -FilePath $file -ArgumentList $argLine -RedirectStandardInput $inFile -RedirectStandardOutput $outFile -RedirectStandardError $errFile -Wait -NoNewWindow -PassThru
@@ -77,6 +78,7 @@ function New-GitProj {
     & git -C $repo init -q -b main
     & git -C $repo config user.email 't@t'
     & git -C $repo config user.name 't'
+    & git -C $repo config core.autocrlf false
     return $repo
 }
 
@@ -199,6 +201,17 @@ try {
     $r = Fire -Cwd $proj5
     Check 'CRITICAL: .env itself is tracked by git' ($r.Out -like '*.env*TRACKED by git*') $r.Out
 
+    $nested = New-GitProj 'NestedEnv'
+    New-Item -ItemType Directory -Path (Join-Path $nested 'apps\api'), (Join-Path $nested 'node_modules\pkg') -Force | Out-Null
+    Write-Utf8 (Join-Path $nested '.gitignore') "secrets.md`n"
+    Write-Utf8 (Join-Path $nested 'apps\api\.env.local') "NESTED_TOKEN=abcdefghij1234567890`r`n"
+    Write-Utf8 (Join-Path $nested 'apps\api\.env.example') "EXAMPLE=not-real`r`n"
+    Write-Utf8 (Join-Path $nested 'node_modules\pkg\.env') "IGNORED=abcdefghij1234567890`r`n"
+    & git -C $nested add -f apps/api/.env.local
+    & git -C $nested commit -q -m 'nested env'
+    $r = Fire -Cwd $nested
+    Check 'nested real env is detected with relative path' ($r.Out -match 'apps[/\\]api[/\\]\.env\.local' -and $r.Out -notmatch 'node_modules') $r.Out
+
     # =====================================================================
     Write-Host '--- git: leaked value inside a tracked file (reported by name/path only) ---' -ForegroundColor Cyan
     $proj6 = New-GitProj 'Leaked'
@@ -235,6 +248,13 @@ try {
     try { $parsed = $r.Out | ConvertFrom-Json } catch { }
     Check 'Stop with findings returns decision:block' ($null -ne $parsed -and [string]$parsed.decision -eq 'block')
     Check 'block reason mentions the key, not the value' ($null -ne $parsed -and [string]$parsed.reason -like '*STOP_KEY*' -and [string]$parsed.reason -notlike '*abcdefghij1234567890*')
+
+    $advisory = New-GitProj 'AdvisoryPush'
+    Write-Utf8 (Join-Path $advisory '.gitignore') ".env`nsecrets.md`n"
+    Write-Utf8 (Join-Path $advisory '.env') "PLACEHOLDER_KEY=changeme`r`n"
+    $r = Fire -Cwd $advisory -GitPrePush
+    Check 'advisory-only pre-push findings exit zero' ($r.Exit -eq 0) $r.Err
+    Check 'advisory-only pre-push is quiet' ([string]::IsNullOrWhiteSpace($r.Out) -and [string]::IsNullOrWhiteSpace($r.Err)) ($r.Out + $r.Err)
 
     # =====================================================================
     Write-Host '--- Install-Hook.ps1: self-contained copy ---' -ForegroundColor Cyan
