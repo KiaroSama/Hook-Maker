@@ -30,10 +30,10 @@ logs/
 /sync-hooks.json
 
 # Hook Maker: local/private files (auto-managed)
+/.env
+/.env.*
 !/.env.dist
 !/.env.example
 !/.env.sample
 !/.env.template
-/.env
-/.env.*
 /graphify-out/
