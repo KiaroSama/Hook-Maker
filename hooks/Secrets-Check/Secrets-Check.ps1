@@ -10,6 +10,16 @@
 #   already removed from the working copy, or committed and later edited away
 #   locally without staging that edit - either state stays invisible to a
 #   working-tree-only grep.
+# - -GitPrePush ALSO scans the exact commits about to be pushed, resolved from
+#   git's real pre-push ref-update stdin ("<local ref> <local sha> <remote ref>
+#   <remote sha>"), not just the current working tree/index - a value can be
+#   fully cleaned up locally (working tree AND index) while an earlier commit
+#   still being pushed keeps it, or a value can be introduced and removed again
+#   entirely within the outgoing range and still ship as reachable history.
+#   New branches (remote sha all-zero) are scoped to commits not already on any
+#   remote-tracking ref; deletions (local sha all-zero) push nothing and are
+#   skipped; force-pushes/non-fast-forwards use the same `<remote>..<local>`
+#   range, which does not require fast-forward ancestry.
 # - Secret KEYs found in .env* files but missing from secrets.md are AUTO-APPENDED
 #   to secrets.md (created if absent) with their real value copied in - never
 #   printed, logged, or echoed anywhere, only the KEY NAME appears in reports/logs.
@@ -46,6 +56,22 @@ else {
 }
 if ($null -eq $hookInput) {
     exit 0
+}
+# Native `pre-push` hooks receive ref-update lines on stdin:
+# "<local ref> <local sha1> <remote ref> <remote sha1>", one per pushed ref -
+# NOT JSON, so this reads raw text instead of Read-HookInput. The managed
+# pre-push wrapper tees the real stdin into a temp file and feeds the SAME
+# file to every stage, so reading it here does not consume it for the rest
+# of the chain or the preserved previous hook.
+$refUpdateLines = @()
+if ($GitPrePush) {
+    try {
+        $rawRefUpdates = [Console]::In.ReadToEnd()
+        if (-not [string]::IsNullOrWhiteSpace($rawRefUpdates)) {
+            $refUpdateLines = @($rawRefUpdates -split '\r?\n' | Where-Object { $_.Trim() -ne '' })
+        }
+    }
+    catch { }
 }
 $cwd = [string](Get-Field $hookInput 'cwd')
 if ([string]::IsNullOrWhiteSpace($cwd) -or -not (Test-Path -LiteralPath $cwd -PathType Container)) {
@@ -188,12 +214,57 @@ foreach ($key in @($discovered.Keys | Sort-Object)) {
     }
 }
 
-# ---- git-based checks: ignore/tracked/staged/leak (skipped outside a git repo) ----
+# Resolves the exact commits about to be pushed from real pre-push ref-update
+# lines: "<local ref> <local sha1> <remote ref> <remote sha1>". A deletion
+# (local sha all-zero) pushes nothing and is skipped. A brand-new ref (remote
+# sha all-zero) has no remote history to diff against, so it is scoped to
+# commits not already reachable from ANY existing remote-tracking ref (avoids
+# rescanning old, presumably already-reviewed history on a first-time push of
+# a new branch/tag). Otherwise it is exactly `<remote>..<local>` - reachable
+# from local, not from remote - which is correct for normal updates AND
+# force-pushes/non-fast-forwards alike (git range syntax does not require
+# fast-forward ancestry). Multiple ref-update lines are unioned and deduped.
+# Capped per ref as a safety valve against a pathological first push of a
+# huge new branch; a truncated scan is reported, never silently claimed complete.
+function Get-OutgoingCommits {
+    param([string]$Cwd, [string[]]$RefUpdateLines)
+    $allZero = '0' * 40
+    $maxCommitsPerRef = 500
+    $commits = New-Object System.Collections.Generic.HashSet[string]
+    $truncated = $false
+    foreach ($line in $RefUpdateLines) {
+        $parts = @($line.Trim() -split '\s+')
+        if ($parts.Count -lt 4) { continue }
+        $localSha = $parts[1]
+        $remoteSha = $parts[3]
+        if ($localSha -eq $allZero) { continue }    # deletion - nothing pushed
+        $revListArgs = if ($remoteSha -eq $allZero) {
+            @('-C', $Cwd, 'rev-list', $localSha, '--not', '--remotes', ('--max-count=' + $maxCommitsPerRef))
+        }
+        else {
+            @('-C', $Cwd, 'rev-list', ($remoteSha + '..' + $localSha), ('--max-count=' + $maxCommitsPerRef))
+        }
+        $revs = @(Invoke-QuietCommand -FilePath git -ArgumentList $revListArgs | Where-Object { $_ })
+        if ($LASTEXITCODE -ne 0) { continue }
+        if ($revs.Count -ge $maxCommitsPerRef) { $truncated = $true }
+        foreach ($rev in $revs) { [void]$commits.Add([string]$rev) }
+    }
+    return [pscustomobject]@{ Commits = @($commits); Truncated = $truncated }
+}
+
+# ---- git-based checks: ignore/tracked/staged/leak/outgoing (skipped outside a git repo) ----
 $critical = New-Object System.Collections.Generic.List[string]
 $inGitRepo = $false
 if ($null -ne (Get-Command git -ErrorAction SilentlyContinue)) {
     $inside = Invoke-QuietCommand -FilePath git -ArgumentList @('-C', $cwd, 'rev-parse', '--is-inside-work-tree')
     $inGitRepo = ($LASTEXITCODE -eq 0 -and [string]$inside -eq 'true')
+}
+$outgoingCommits = @()
+$outgoingTruncated = $false
+if ($inGitRepo -and $GitPrePush -and $refUpdateLines.Count -gt 0) {
+    $outgoing = Get-OutgoingCommits -Cwd $cwd -RefUpdateLines $refUpdateLines
+    $outgoingCommits = @($outgoing.Commits)
+    $outgoingTruncated = $outgoing.Truncated
 }
 
 if ($inGitRepo) {
@@ -244,6 +315,38 @@ if ($inGitRepo) {
             if ($excludeNames -contains ([string]$matchFile).Replace('\', '/')) { continue }
             [void]$critical.Add('Value of ' + $key + ' appears in a git-tracked file: ' + $matchFile)
         }
+
+        # Outgoing-commit scan: the actual push-safety boundary. A value can
+        # be absent from BOTH the working tree and the index (already
+        # cleaned up, staged clean, just not yet committed) while an EARLIER
+        # commit that is still part of what this push sends still contains
+        # it - `git grep` across those exact commit trees in one call catches
+        # that, and also a value introduced and fully removed again within
+        # the outgoing range (still pushed as reachable history either way).
+        if ($outgoingCommits.Count -gt 0) {
+            $commitHits = Invoke-QuietCommand -FilePath git -ArgumentList (@('-C', $cwd, 'grep', '-Il', '-F', $value) + $outgoingCommits)
+            if ($LASTEXITCODE -eq 0) {
+                $seenOutgoingPaths = New-Object System.Collections.Generic.HashSet[string]
+                foreach ($hit in @($commitHits | Where-Object { $_ })) {
+                    $hitText = [string]$hit
+                    $sep = $hitText.IndexOf(':')
+                    if ($sep -lt 0) { continue }
+                    $hitSha = $hitText.Substring(0, $sep)
+                    $hitPath = $hitText.Substring($sep + 1)
+                    if ($excludeNames -contains $hitPath.Replace('\', '/')) { continue }
+                    if (-not $seenOutgoingPaths.Add($hitPath)) { continue }    # dedupe by path across commits
+                    $hitSha7 = $hitSha
+                    if ($hitSha7.Length -gt 7) { $hitSha7 = $hitSha7.Substring(0, 7) }
+                    [void]$critical.Add('Value of ' + $key + ' appears in outgoing commit ' + $hitSha7 + ': ' + $hitPath)
+                }
+            }
+        }
+    }
+    if ($outgoingTruncated) {
+        # Advisory only - a cap being hit is not itself a confirmed leak and
+        # must not become a false blocker; surfaced on stderr so it is visible
+        # alongside a real block, or on its own when the push is otherwise clean.
+        [Console]::Error.WriteLine('SECRETS CHECK: outgoing commit scan was capped for at least one ref (too many new commits) - a leak deeper in that history may not have been checked.')
     }
 }
 

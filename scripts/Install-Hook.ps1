@@ -341,11 +341,23 @@ function Install-IgnorePrePush {
         }
     }
 
+    # Git delivers ref-update lines ("<local ref> <local sha> <remote ref>
+    # <remote sha>") on the pre-push hook's STDIN - a stream that can only be
+    # read once. Buffer it into a temp file up front and feed that SAME file
+    # to every stage (each managed check, then the preserved previous hook),
+    # so Secrets-Check can resolve the exact outgoing commits without
+    # starving any later stage of the same data. `trap ... EXIT` guarantees
+    # cleanup on every exit path, including the early `exit $?` on failure.
     $commands = @($runtime.Script, $secretsScript) | ForEach-Object {
         $scriptPath = $_.Replace('\', '/').Replace('$', '\$').Replace('`', '\`')
-        'powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "' + $scriptPath + '" -GitPrePush || exit $?'
+        'powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "' + $scriptPath + '" -GitPrePush < "$STDIN_FILE" || exit $?'
     }
-    $body = "#!/bin/sh`n$marker`n" + ($commands -join "`n") + "`nif [ -f `"`$0.hookmaker-existing`" ]; then`n  `"`$0.hookmaker-existing`" `"`$@`"`nfi`n"
+    $body = "#!/bin/sh`n$marker`n" +
+        "STDIN_FILE=`$(mktemp `"`${TMPDIR:-/tmp}/hookmaker-prepush.XXXXXX`") || exit 1`n" +
+        "trap 'rm -f `"`$STDIN_FILE`"' EXIT`n" +
+        "cat > `"`$STDIN_FILE`"`n" +
+        ($commands -join "`n") + "`n" +
+        "if [ -f `"`$0.hookmaker-existing`" ]; then`n  `"`$0.hookmaker-existing`" `"`$@`" < `"`$STDIN_FILE`"`nfi`n"
     [System.IO.File]::WriteAllText($prePush, $body, $Utf8NoBom)
     Write-Host "Native git pre-push protection installed in: $prePush"
 }
