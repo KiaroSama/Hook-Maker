@@ -104,7 +104,13 @@ function Fire {
     # $RawStdin is intentionally UNTYPED: a [string] param coerces a $null
     # default to '', which would make the "$null -eq $payload" guard below false
     # and send empty stdin. Keep it untyped so an omitted RawStdin stays $null.
-    param([string]$HookPath, [string]$Cwd, [string]$EventName = 'SessionStart', $Extra = $null, $RawStdin = $null, [string]$Exe = '')
+    # $Client controls the child's CLAUDE_PROJECT_DIR, the signal hooks use to
+    # tell Claude Code from Codex. Start-Process -Environment MERGES with the
+    # inherited environment, so a CLAUDE_PROJECT_DIR set in the parent (running
+    # the suite from inside Claude Code) would otherwise leak in and make
+    # client-dependent assertions pass locally but differ in CI. Always set it
+    # explicitly: 'claude' -> a path, anything else -> empty (Codex).
+    param([string]$HookPath, [string]$Cwd, [string]$EventName = 'SessionStart', $Extra = $null, $RawStdin = $null, [string]$Exe = '', [string]$Client = 'codex')
     $payload = $RawStdin
     if ($null -eq $payload) {
         $obj = @{ session_id = 't'; cwd = $Cwd; hook_event_name = $EventName }
@@ -130,7 +136,8 @@ function Fire {
         Wait = $true; NoNewWindow = $true; PassThru = $true
     }
     if ((Get-Command Start-Process).Parameters.ContainsKey('Environment')) {
-        $startArgs.Environment = @{ PATH = $env:PATH; GH_MOCK_DIR = $env:GH_MOCK_DIR; LOCALAPPDATA = $env:LOCALAPPDATA }
+        $claudeProjectDir = if ($Client -eq 'claude') { $Cwd } else { '' }
+        $startArgs.Environment = @{ PATH = $env:PATH; GH_MOCK_DIR = $env:GH_MOCK_DIR; LOCALAPPDATA = $env:LOCALAPPDATA; CLAUDE_PROJECT_DIR = $claudeProjectDir }
     }
     $proc = Start-Process @startArgs
     $out = ''
@@ -185,7 +192,7 @@ function Get-HeadSha {
 # (not stdin-driven) with $Cwd as the process's actual working directory,
 # mirroring how the agent would run it from inside the target repo.
 function FireExternalBlocker {
-    param([string]$Cwd, [string]$Classification = '', [string]$Reason = '', [string]$Exe = '', [string]$HookPath = $CiHook)
+    param([string]$Cwd, [string]$Classification = '', [string]$Reason = '', [string]$Exe = '', [string]$HookPath = $CiHook, [string]$Client = 'codex')
     $argLine = '-NoLogo -NoProfile -File "' + $HookPath + '" -ReportExternalBlocker'
     if ($Classification -ne '') { $argLine += ' -Classification ' + $Classification }
     if ($Reason -ne '') { $argLine += ' -Reason "' + $Reason + '"' }
@@ -205,7 +212,8 @@ function FireExternalBlocker {
         Wait = $true; NoNewWindow = $true; PassThru = $true
     }
     if ((Get-Command Start-Process).Parameters.ContainsKey('Environment')) {
-        $startArgs.Environment = @{ PATH = $env:PATH; GH_MOCK_DIR = $env:GH_MOCK_DIR; LOCALAPPDATA = $env:LOCALAPPDATA }
+        $claudeProjectDir = if ($Client -eq 'claude') { $Cwd } else { '' }
+        $startArgs.Environment = @{ PATH = $env:PATH; GH_MOCK_DIR = $env:GH_MOCK_DIR; LOCALAPPDATA = $env:LOCALAPPDATA; CLAUDE_PROJECT_DIR = $claudeProjectDir }
     }
     $proc = Start-Process @startArgs
     $out = ''
@@ -513,11 +521,33 @@ try {
     Set-Mock -RunJson '[{"databaseId":81,"attempt":1,"name":"CI","workflowName":"CI","status":"completed","conclusion":"cancelled","updatedAt":"2026-07-16T10:00:00Z"}]' -ExpectedSha $extSha1
     $r = FireExternalBlocker -Cwd $ext1 -Classification 'github-outage' -Reason 'GitHub Actions status page reports a full outage'
     Check 'recording an evidenced external blocker succeeds for an infra-consistent CI state' ($r.Exit -eq 0 -and $r.Out -match 'EXTERNAL CI blocker' -and $r.Out -match 'does NOT mark CI verified') $r.Out
-    # Item 5: completion allowed, but Stop surfaces a NON-BLOCKING "CI not green" notice.
-    $r = Fire -HookPath $CiHook -Cwd $ext1 -EventName 'Stop'
-    Check 'active exception authorizes completion with a NON-BLOCKING context (not decision:block)' ($r.Out -notmatch '"decision":"block"' -and $r.Out -match 'additionalContext') $r.Out
-    Check 'the completion context explicitly says CI is NOT verified green' ($r.Out -match 'CI NOT VERIFIED GREEN' -and $r.Out -match 'external' ) $r.Out
-    Check 'the completion context names classification + short sha and leaks no secret' ($r.Out -match 'github-outage' -and $r.Out -notmatch 'status page reports a full outage.*token') $r.Out
+    # Item 5: completion allowed, but Stop surfaces a NON-BLOCKING "CI not green"
+    # notice. The shape is client-aware (verified against the current official
+    # docs): Claude Stop supports model-visible hookSpecificOutput.additionalContext;
+    # Codex Stop supports only the common systemMessage field.
+    $r = Fire -HookPath $CiHook -Cwd $ext1 -EventName 'Stop' -Client 'claude'
+    Check 'Claude: active exception authorizes completion with a NON-BLOCKING context (not decision:block)' ($r.Out -notmatch '"decision":"block"' -and $r.Out -match 'additionalContext') $r.Out
+    Check 'Claude: Stop uses the model-visible hookSpecificOutput/additionalContext shape' ($r.Out -match '"hookSpecificOutput"' -and $r.Out -match '"hookEventName":"Stop"' -and $r.Out -notmatch '"systemMessage"') $r.Out
+    Check 'Claude: the completion context explicitly says CI is NOT verified green' ($r.Out -match 'CI NOT VERIFIED GREEN' -and $r.Out -match 'external' ) $r.Out
+    Check 'Claude: the context names repo, short sha, classification and sanitized reason' ($r.Out -match 'testowner/testrepo-ext1' -and $r.Out -match ($extSha1.Substring(0, 7)) -and $r.Out -match 'github-outage' -and $r.Out -match 'status page reports a full outage') $r.Out
+    Check 'Claude: the context denies success and instructs not to claim CI passed' ($r.Out -match 'not a successful CI run' -and $r.Out -match 'do not claim CI passed') $r.Out
+
+    # Codex: same message text, but through the officially supported common
+    # systemMessage field - no hookSpecificOutput/additionalContext (undocumented
+    # for Codex Stop) and never decision:block (which in Codex Stop would FORCE
+    # continuation instead of allowing completion).
+    $rCodex = Fire -HookPath $CiHook -Cwd $ext1 -EventName 'Stop' -Client 'codex'
+    Check 'Codex: Stop uses the supported systemMessage shape (no hookSpecificOutput/additionalContext)' ($rCodex.Out -match '"systemMessage"' -and $rCodex.Out -notmatch 'additionalContext' -and $rCodex.Out -notmatch 'hookSpecificOutput') $rCodex.Out
+    Check 'Codex: the notice is non-blocking (no decision:block)' ($rCodex.Out -notmatch '"decision":"block"') $rCodex.Out
+    Check 'Codex: the notice explicitly says CI is NOT verified green' ($rCodex.Out -match 'CI NOT VERIFIED GREEN' -and $rCodex.Out -match 'not a successful CI run') $rCodex.Out
+    Check 'Codex: the notice names repo, short sha, classification and sanitized reason' ($rCodex.Out -match 'testowner/testrepo-ext1' -and $rCodex.Out -match ($extSha1.Substring(0, 7)) -and $rCodex.Out -match 'github-outage' -and $rCodex.Out -match 'status page reports a full outage') $rCodex.Out
+    Check 'both client shapes carry the identical notice text' (
+        ($r.Out -replace '.*CI NOT VERIFIED GREEN', 'CI NOT VERIFIED GREEN' -replace '"\}\}$', '') -match 'external CI blocker' -and
+        ($rCodex.Out -replace '.*CI NOT VERIFIED GREEN', 'CI NOT VERIFIED GREEN' -replace '"\}$', '') -match 'external CI blocker'
+    ) ($r.Out + ' || ' + $rCodex.Out)
+    Check 'neither client output exposes secret-like data (no tokens/paths/logs)' (
+        $r.Out -notmatch '(?i)(ghp_|gho_|password|secret=|Bearer )' -and $rCodex.Out -notmatch '(?i)(ghp_|gho_|password|secret=|Bearer )'
+    ) ($r.Out + ' || ' + $rCodex.Out)
 
     # Throttled re-check, same observed fingerprint -> still allowed (refreshed, not retired) + still non-blocking notice.
     $recheckHook = New-ConfiguredCiHookCopy @{ EXTERNAL_BLOCKER_RECHECK_MINUTES = '0' }
@@ -997,8 +1027,10 @@ jobs:
         Set-Mock -RunJson '[{"databaseId":52,"name":"CI","workflowName":"CI","status":"completed","conclusion":"cancelled"}]' -ExpectedSha $ps51ciSha
         $r = FireExternalBlocker -Cwd $ps51ci -Classification 'github-outage' -Reason '5.1 host outage test, status page confirms it' -Exe 'powershell.exe'
         Check '-ReportExternalBlocker under 5.1' ($r.Exit -eq 0 -and $r.Out -match 'EXTERNAL CI blocker')
-        $r = Fire -HookPath $CiHook -Cwd $ps51ci -EventName 'Stop' -Exe 'powershell.exe'
-        Check 'external-blocker exception honored under 5.1 (non-blocking notice, CI not green)' ($r.Exit -eq 0 -and $r.Out -notmatch '"decision":"block"' -and $r.Out -match 'CI NOT VERIFIED GREEN')
+        $r = Fire -HookPath $CiHook -Cwd $ps51ci -EventName 'Stop' -Exe 'powershell.exe' -Client 'codex'
+        Check 'external-blocker exception honored under 5.1 (Codex: non-blocking systemMessage, CI not green)' ($r.Exit -eq 0 -and $r.Out -notmatch '"decision":"block"' -and $r.Out -match '"systemMessage"' -and $r.Out -match 'CI NOT VERIFIED GREEN')
+        $r = Fire -HookPath $CiHook -Cwd $ps51ci -EventName 'Stop' -Exe 'powershell.exe' -Client 'claude'
+        Check 'external-blocker exception honored under 5.1 (Claude: non-blocking additionalContext, CI not green)' ($r.Exit -eq 0 -and $r.Out -notmatch '"decision":"block"' -and $r.Out -match 'additionalContext' -and $r.Out -match 'CI NOT VERIFIED GREEN')
     }
     else {
         Write-Host '[SKIP] powershell.exe not available' -ForegroundColor Yellow

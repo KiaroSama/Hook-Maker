@@ -357,6 +357,46 @@ try {
     }
 
     # =====================================================================
+    Write-Host '--- an unwritable project .ai directory must not crash the wizard ---' -ForegroundColor Cyan
+    # Real regression: a project whose .ai directory cannot be created
+    # (permission denied / read-only location) raised a terminating
+    # UnauthorizedAccessException that propagated out of Invoke-CreateGroup ->
+    # Invoke-InstallExistingHook -> the main menu -> run.ps1, killing the whole
+    # wizard and ejecting the user. It must instead report the failure, change
+    # nothing, and return to the hook list. The denial is created with a real
+    # ACL (icacls "add subdirectory" deny), matching the reported failure.
+    $cfgAcl = Join-Path $Work 'cfg-acl.json'; New-Config $cfgAcl
+    $aclOk = New-Proj 'AclOkProj'
+    $aclBlocked = New-Proj 'AclBlockedProj'
+    $aclUser = $env:USERNAME
+    $aclApplied = $false
+    try {
+        & icacls $aclBlocked /deny "${aclUser}:(AD)" *> $null
+        $aclApplied = ($LASTEXITCODE -eq 0)
+        if ($aclApplied) {
+            # Confirm the denial actually reproduces the reported exception.
+            $aclRepro = $false
+            try { New-Item -ItemType Directory -Path (Join-Path $aclBlocked '.ai') -Force -ErrorAction Stop | Out-Null }
+            catch { $aclRepro = ($_.Exception -is [System.UnauthorizedAccessException]) }
+            Check 'ACL fixture reproduces the reported UnauthorizedAccessException' $aclRepro
+
+            $rAcl = Invoke-Wizard -Config $cfgAcl -Answers @('1', '1', '2', $aclOk, $aclBlocked, 'done', '1', '', '0', 'exit')
+            Check 'an unwritable .ai directory does NOT crash the wizard (exit 0, no fatal)' ($rAcl.Exit -eq 0 -and $rAcl.Err -notmatch 'UnauthorizedAccessException') ($rAcl.Err)
+            Check 'the failing project path is reported' ($rAcl.Out -match 'Could not create 1 knowledge' -and $rAcl.Out -match 'AclBlockedProj') $rAcl.Out
+            Check 'it states nothing was changed' ($rAcl.Out -match 'Nothing was changed') $rAcl.Out
+            Check 'the wizard returns to the hook list instead of exiting' ((([regex]::Matches($rAcl.Out, 'Available hooks')).Count) -ge 2) $rAcl.Out
+            $profAcl = @((Get-Content $cfgAcl -Raw | ConvertFrom-Json).profiles)
+            Check 'no sync profile is written when a .ai directory could not be created' ($profAcl.Count -eq 0)
+        }
+        else {
+            Write-Host '[SKIP] icacls deny could not be applied; skipping the unwritable-.ai regression' -ForegroundColor Yellow
+        }
+    }
+    finally {
+        if ($aclApplied) { & icacls $aclBlocked /remove:d "$aclUser" *> $null }
+    }
+
+    # =====================================================================
     Write-Host '--- repeated project prompts + confirmation back navigation ---' -ForegroundColor Cyan
     $cfgBack = Join-Path $Work 'cfg-back.json'; New-Config $cfgBack
     $backA = New-Proj 'BackA'; $backB = New-Proj 'BackB'

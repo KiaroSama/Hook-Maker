@@ -28,3 +28,12 @@ logs/
 # The real routing config is machine-local (it holds your project paths).
 # It is auto-created from sync-hooks.example.json on first wizard run.
 /sync-hooks.json
+
+# Hook Maker: local/private files (auto-managed)
+!/.env.dist
+!/.env.example
+!/.env.sample
+!/.env.template
+/.env
+/.env.*
+/graphify-out/

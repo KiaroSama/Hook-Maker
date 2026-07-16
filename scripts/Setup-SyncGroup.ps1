@@ -772,16 +772,35 @@ function Invoke-CreateGroup {
     $stopwatch = [System.Diagnostics.Stopwatch]::StartNew()
     Write-PhaseHeader 'Applying Changes' $C.Process '-'
 
+    # Creating a project's .ai directory can fail (permission denied, path in
+    # use, read-only location). That must NOT crash the whole wizard and eject
+    # the user - catch it, report which project failed, and abort this install
+    # cleanly back to the menu BEFORE any profile/config is written, so nothing
+    # is left half-applied and the user can fix access and retry.
+    $aiCreateFailures = New-Object System.Collections.Generic.List[object]
     foreach ($project in $projects) {
         if (-not $project.AiExists) {
-            New-Item -ItemType Directory -Path $project.AiPath -Force | Out-Null
-            Write-Host ('  ' + (Get-Painted '+ created' $C.Green) + ' ' + (Get-Painted $project.AiPath $C.LightBlue))
-            Write-Log 'INFO' 'CONFIG' ('Created knowledge directory: ' + $project.AiPath)
+            try {
+                New-Item -ItemType Directory -Path $project.AiPath -Force -ErrorAction Stop | Out-Null
+                Write-Host ('  ' + (Get-Painted '+ created' $C.Green) + ' ' + (Get-Painted $project.AiPath $C.LightBlue))
+                Write-Log 'INFO' 'CONFIG' ('Created knowledge directory: ' + $project.AiPath)
+            }
+            catch {
+                [void]$aiCreateFailures.Add([pscustomobject]@{ Path = $project.AiPath; Reason = $_.Exception.Message })
+                Write-Host ('  ' + (Get-Painted '! failed ' $C.Amber) + ' ' + (Get-Painted $project.AiPath $C.LightBlue))
+                Write-Log 'ERROR' 'CONFIG' ('Could not create knowledge directory: ' + $project.AiPath + ' | ' + $_.Exception.Message)
+            }
         }
         else {
             Write-Host ('  ' + (Get-Painted ('= exists  ' + $project.AiPath) $C.Dim))
             Write-Log 'DEBUG' 'CONFIG' ('Knowledge directory exists: ' + $project.AiPath)
         }
+    }
+    if ($aiCreateFailures.Count -gt 0) {
+        Write-ErrorLine ('Could not create ' + $aiCreateFailures.Count + ' knowledge (.ai) directory(ies) - likely a permission-denied or read-only location. Nothing was changed; fix access to these paths and retry:')
+        foreach ($failure in $aiCreateFailures) { Write-NoteLine ('  ' + $failure.Path) }
+        Write-Log 'ERROR' 'GROUP' ('Aborted sync group: ' + $aiCreateFailures.Count + ' .ai directory creation failure(s); no profile written.')
+        return 'back'
     }
 
     $existingProfiles = @()
