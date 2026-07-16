@@ -55,7 +55,10 @@ function Fire {
     if ($GitPrePush) { $argLine += ' -GitPrePush' }
     $env:LOCALAPPDATA = $FakeAppData
     try {
-        $proc = Start-Process -FilePath $file -ArgumentList $argLine -RedirectStandardInput $inFile -RedirectStandardOutput $outFile -RedirectStandardError $errFile -Wait -NoNewWindow -PassThru
+        # -GitPrePush resolves cwd from the PROCESS's actual working directory
+        # (Get-Location), not from any stdin field - WorkingDirectory must be
+        # set explicitly so the hook inspects the intended repo.
+        $proc = Start-Process -FilePath $file -ArgumentList $argLine -WorkingDirectory $Cwd -RedirectStandardInput $inFile -RedirectStandardOutput $outFile -RedirectStandardError $errFile -Wait -NoNewWindow -PassThru
     }
     finally {
         $env:LOCALAPPDATA = $SavedLocalAppData
@@ -91,6 +94,64 @@ function Add-Commit {
     param([string]$Repo, [string]$Message = 'c')
     & git -C $Repo add -A 2>$null | Out-Null
     & git -C $Repo commit -q -m $Message 2>$null | Out-Null
+}
+
+# ---- outgoing-commit (real push-safety) test helpers ----
+function New-PushableRepo {
+    param([string]$Name)
+    $repo = New-GitProj $Name
+    $bare = Join-Path $Work ($Name + '.git')
+    & git init -q --bare $bare 2>$null | Out-Null
+    & git -C $repo remote add origin $bare 2>$null | Out-Null
+    return $repo
+}
+
+function Push-Repo {
+    param([string]$Repo, [string]$Branch = 'main')
+    & git -C $Repo push -q origin $Branch 2>$null | Out-Null
+}
+
+# Builds one real pre-push ref-update stdin line from actual git plumbing
+# (local HEAD sha + the local remote-tracking ref, refreshed by every real
+# push) - not hand-typed shas. LocalSha/RemoteSha are intentionally UNTYPED:
+# a [string] param would coerce an omitted $null default to '' (see
+# LESSON.md), making "was it explicitly passed?" unanswerable.
+function Get-RefUpdateLine {
+    param([string]$Repo, [string]$Branch = 'main', $LocalSha = $null, $RemoteSha = $null)
+    $local = if ($null -ne $LocalSha) { [string]$LocalSha } else { ((& git -C $Repo rev-parse ('refs/heads/' + $Branch)) | Out-String).Trim() }
+    $remote = if ($null -ne $RemoteSha) { [string]$RemoteSha } else {
+        $resolved = & git -C $Repo rev-parse ('refs/remotes/origin/' + $Branch) 2>$null
+        if ($LASTEXITCODE -eq 0) { ([string]$resolved).Trim() } else { '0' * 40 }
+    }
+    return ('refs/heads/' + $Branch + ' ' + $local + ' refs/heads/' + $Branch + ' ' + $remote + "`n")
+}
+
+# Fires Secrets-Check.ps1 -GitPrePush with an explicit, real ref-update stdin
+# payload (what git's native pre-push hook actually receives), instead of the
+# synthetic single-field object the plain Fire helper builds.
+function FireGitPrePush {
+    param([string]$Cwd, [string]$StdinText, [string]$HookPath = $Hook, [string]$Exe = '')
+    $token = [guid]::NewGuid().ToString('N').Substring(0, 8)
+    $inFile = Join-Path $Work ('in-' + $token + '.json')
+    $outFile = Join-Path $Work ('out-' + $token + '.txt')
+    $errFile = Join-Path $Work ('err-' + $token + '.txt')
+    [System.IO.File]::WriteAllText($inFile, $StdinText, (New-Object System.Text.UTF8Encoding $false))
+    if ([string]::IsNullOrWhiteSpace($Exe)) {
+        $file = (Get-Process -Id $PID).Path; $argLine = '-NoLogo -NoProfile -File "' + $HookPath + '" -GitPrePush'
+    }
+    else {
+        $file = 'powershell.exe'; $argLine = '-NoLogo -NoProfile -ExecutionPolicy Bypass -File "' + $HookPath + '" -GitPrePush'
+    }
+    $env:LOCALAPPDATA = $FakeAppData
+    try {
+        $proc = Start-Process -FilePath $file -ArgumentList $argLine -WorkingDirectory $Cwd -RedirectStandardInput $inFile -RedirectStandardOutput $outFile -RedirectStandardError $errFile -Wait -NoNewWindow -PassThru
+    }
+    finally {
+        $env:LOCALAPPDATA = $SavedLocalAppData
+    }
+    $out = if (Test-Path -LiteralPath $outFile) { ([System.IO.File]::ReadAllText($outFile)).Trim() } else { '' }
+    $err = if (Test-Path -LiteralPath $errFile) { ([System.IO.File]::ReadAllText($errFile)).Trim() } else { '' }
+    return [pscustomobject]@{ Exit = $proc.ExitCode; Out = $out; Err = $err }
 }
 
 # Copies the hook + a custom .env into an isolated folder (own _hooklib copy,
@@ -295,6 +356,167 @@ try {
     Check 'no secret value ever appears in output or stderr (leak regression block)' (
         $r.Out -notlike '*spacevalue1234567890*' -and $r.Err -notlike '*spacevalue1234567890*'
     ) ($r.Out + $r.Err)
+
+    # =====================================================================
+    Write-Host '--- outgoing-commit scan: the actual push-safety boundary (confirmed gap) ---' -ForegroundColor Cyan
+
+    # Baseline sanity: a secret committed and pushed with no cleanup at all
+    # must still be caught (the simplest outgoing case).
+    $outBasic = New-PushableRepo 'OutgoingBasic'
+    Write-Utf8 (Join-Path $outBasic '.gitignore') ".env`nsecrets.md`n"
+    Add-Commit $outBasic 'baseline'
+    Push-Repo $outBasic
+    Write-Utf8 (Join-Path $outBasic '.env') "BASIC_OUTGOING_SECRET=basicoutgoingvalue1234567890`r`n"
+    Write-Utf8 (Join-Path $outBasic 'leak.txt') "leak: basicoutgoingvalue1234567890`r`n"
+    Add-Commit $outBasic 'introduce a leak, never cleaned'
+    $rBasic = FireGitPrePush -Cwd $outBasic -StdinText (Get-RefUpdateLine -Repo $outBasic)
+    Check 'basic outgoing leak (no cleanup) is detected' ($rBasic.Exit -eq 1 -and $rBasic.Err -match 'BASIC_OUTGOING_SECRET' -and $rBasic.Err -match 'outgoing commit') $rBasic.Err
+
+    # Secret in an OLDER outgoing commit, with a later cleanup commit also in
+    # the same outgoing range - both worktree AND index are clean, only
+    # history still carries it (the confirmed gap: neither `git grep` nor
+    # `git grep --cached` sees this; also covers "introduced and removed
+    # entirely within the outgoing range", since neither commit was ever
+    # previously pushed).
+    $outOlder = New-PushableRepo 'OutgoingOlderPlusCleanup'
+    Write-Utf8 (Join-Path $outOlder '.gitignore') ".env`nsecrets.md`n"
+    Add-Commit $outOlder 'baseline'
+    Push-Repo $outOlder
+    Write-Utf8 (Join-Path $outOlder '.env') "OLDER_COMMIT_SECRET=oldercommitvalue1234567890`r`n"
+    Write-Utf8 (Join-Path $outOlder 'leaked.txt') "leak: oldercommitvalue1234567890`r`n"
+    Add-Commit $outOlder 'introduce leak (older outgoing commit)'
+    Write-Utf8 (Join-Path $outOlder 'leaked.txt') "cleaned`r`n"
+    Add-Commit $outOlder 'cleanup commit (also outgoing, tree now clean)'
+    Check 'worktree and index are already clean before the push check' (@(& git -C $outOlder status --porcelain).Count -eq 0)
+    $rOlder = FireGitPrePush -Cwd $outOlder -StdinText (Get-RefUpdateLine -Repo $outOlder)
+    Check 'secret in an older outgoing commit is detected despite a clean later cleanup commit' ($rOlder.Exit -eq 1 -and $rOlder.Err -match 'OLDER_COMMIT_SECRET' -and $rOlder.Err -match 'outgoing commit') $rOlder.Err
+    Check 'older-outgoing-commit leak: value never printed' ($rOlder.Err -notlike '*oldercommitvalue1234567890*') $rOlder.Err
+
+    # A clean outgoing range must stay silent (no false blocker).
+    $outClean = New-PushableRepo 'OutgoingCleanRange'
+    Write-Utf8 (Join-Path $outClean '.gitignore') ".env`nsecrets.md`n"
+    Add-Commit $outClean 'baseline'
+    Push-Repo $outClean
+    Write-Utf8 (Join-Path $outClean '.env') "CLEANRANGE_KEY=cleanrangevalue1234567890`r`n"
+    Write-Utf8 (Join-Path $outClean 'notes.txt') "nothing secret in this outgoing range`r`n"
+    Add-Commit $outClean 'unrelated, clean change'
+    $rClean = FireGitPrePush -Cwd $outClean -StdinText (Get-RefUpdateLine -Repo $outClean)
+    Check 'clean outgoing range never blocks' ($rClean.Exit -eq 0) $rClean.Err
+
+    # New branch push: remote sha is all-zero. Scoped to commits not already
+    # on any remote-tracking ref, so the already-pushed baseline is not rescanned.
+    $outNewBranch = New-PushableRepo 'OutgoingNewBranch'
+    Write-Utf8 (Join-Path $outNewBranch '.gitignore') ".env`nsecrets.md`n"
+    Add-Commit $outNewBranch 'baseline'
+    Push-Repo $outNewBranch
+    & git -C $outNewBranch checkout -q -b feature
+    Write-Utf8 (Join-Path $outNewBranch '.env') "NEWBRANCH_SECRET=newbranchvalue1234567890`r`n"
+    Write-Utf8 (Join-Path $outNewBranch 'feature.txt') "leak: newbranchvalue1234567890`r`n"
+    Add-Commit $outNewBranch 'feature work with a leak'
+    $stdinNewBranch = Get-RefUpdateLine -Repo $outNewBranch -Branch 'feature' -RemoteSha ('0' * 40)
+    $rNewBranch = FireGitPrePush -Cwd $outNewBranch -StdinText $stdinNewBranch
+    Check 'new branch push (remote sha all-zero) detects a leak in its only commit' ($rNewBranch.Exit -eq 1 -and $rNewBranch.Err -match 'NEWBRANCH_SECRET') $rNewBranch.Err
+
+    # Deletion push: local sha is all-zero - nothing is being pushed for that
+    # ref, so it contributes no commits to scan and must never crash.
+    $outDelete = New-PushableRepo 'OutgoingDeletion'
+    Write-Utf8 (Join-Path $outDelete '.gitignore') ".env`nsecrets.md`n"
+    Add-Commit $outDelete 'baseline'
+    Push-Repo $outDelete
+    $deleteStdin = 'refs/heads/gone ' + ('0' * 40) + ' refs/heads/gone ' + ((& git -C $outDelete rev-parse HEAD | Out-String).Trim()) + "`n"
+    $rDelete = FireGitPrePush -Cwd $outDelete -StdinText $deleteStdin
+    Check 'deletion push (local sha all-zero) does not crash and scans nothing for that ref' ($rDelete.Exit -eq 0) $rDelete.Err
+
+    # Force-push/non-fast-forward: the range is exactly the NEW divergent
+    # commit(s), regardless of ancestry. A replaced commit that is no longer
+    # reachable from local must not be rescanned (proves cleaned/replaced
+    # history that is not part of the pushed result creates no false blocker)...
+    $outForceClean = New-PushableRepo 'OutgoingForceCleanDivergence'
+    Write-Utf8 (Join-Path $outForceClean '.gitignore') ".env`nsecrets.md`n"
+    Add-Commit $outForceClean 'baseline'
+    Write-Utf8 (Join-Path $outForceClean '.env') "FORCE_REPLACED_SECRET=forcereplacedvalue1234567890`r`n"
+    Write-Utf8 (Join-Path $outForceClean 'old.txt') "leak: forcereplacedvalue1234567890`r`n"
+    Add-Commit $outForceClean 'commit A (has a leak, gets replaced)'
+    Push-Repo $outForceClean
+    $shaA = ((& git -C $outForceClean rev-parse HEAD) | Out-String).Trim()
+    & git -C $outForceClean reset -q --hard HEAD~1
+    Write-Utf8 (Join-Path $outForceClean 'new.txt') "unrelated, no secret`r`n"
+    Add-Commit $outForceClean 'commit B (diverged, clean)'
+    $rForceClean = FireGitPrePush -Cwd $outForceClean -StdinText (Get-RefUpdateLine -Repo $outForceClean -RemoteSha $shaA)
+    Check 'force-push: the replaced (no longer reachable) commit is not rescanned' ($rForceClean.Exit -eq 0) $rForceClean.Err
+    # ...but a leak IN the new divergent commit is still caught.
+    $outForceLeak = New-PushableRepo 'OutgoingForceLeakDivergence'
+    Write-Utf8 (Join-Path $outForceLeak '.gitignore') ".env`nsecrets.md`n"
+    Add-Commit $outForceLeak 'baseline'
+    Write-Utf8 (Join-Path $outForceLeak 'a.txt') "commit A content`r`n"
+    Add-Commit $outForceLeak 'commit A (pushed, no secret yet)'
+    Push-Repo $outForceLeak
+    $shaA2 = ((& git -C $outForceLeak rev-parse HEAD) | Out-String).Trim()
+    & git -C $outForceLeak reset -q --hard HEAD~1
+    Write-Utf8 (Join-Path $outForceLeak '.env') "FORCE_LEAK_SECRET=forceleakvalue1234567890`r`n"
+    Write-Utf8 (Join-Path $outForceLeak 'c.txt') "leak: forceleakvalue1234567890`r`n"
+    Add-Commit $outForceLeak 'commit C (diverged, has a leak)'
+    $rForceLeak = FireGitPrePush -Cwd $outForceLeak -StdinText (Get-RefUpdateLine -Repo $outForceLeak -RemoteSha $shaA2)
+    Check 'force-push/non-fast-forward: a leak in the new divergent commit is still detected' ($rForceLeak.Exit -eq 1 -and $rForceLeak.Err -match 'FORCE_LEAK_SECRET') $rForceLeak.Err
+
+    # Multiple ref-update lines in ONE invocation (e.g. `git push --all`):
+    # both refs' outgoing commits are scanned and their leaks reported.
+    $outMulti = New-PushableRepo 'OutgoingMultiRef'
+    Write-Utf8 (Join-Path $outMulti '.gitignore') ".env`nsecrets.md`n"
+    Add-Commit $outMulti 'baseline'
+    Push-Repo $outMulti
+    Write-Utf8 (Join-Path $outMulti '.env') "MULTIREF_SECRET_A=multirefvalueA1234567890`r`nMULTIREF_SECRET_B=multirefvalueB1234567890`r`n"
+    & git -C $outMulti checkout -q -b branchA
+    Write-Utf8 (Join-Path $outMulti 'a.txt') "leak: multirefvalueA1234567890`r`n"
+    Add-Commit $outMulti 'branchA leak'
+    $stdinBranchA = Get-RefUpdateLine -Repo $outMulti -Branch 'branchA' -RemoteSha ('0' * 40)
+    & git -C $outMulti checkout -q main
+    & git -C $outMulti checkout -q -b branchB
+    Write-Utf8 (Join-Path $outMulti 'b.txt') "leak: multirefvalueB1234567890`r`n"
+    Add-Commit $outMulti 'branchB leak'
+    $stdinBranchB = Get-RefUpdateLine -Repo $outMulti -Branch 'branchB' -RemoteSha ('0' * 40)
+    $rMulti = FireGitPrePush -Cwd $outMulti -StdinText ($stdinBranchA + $stdinBranchB)
+    Check 'multiple ref-update lines in one invocation: both leaks are detected' ($rMulti.Exit -eq 1 -and $rMulti.Err -match 'MULTIREF_SECRET_A' -and $rMulti.Err -match 'MULTIREF_SECRET_B') $rMulti.Err
+
+    # Nested path with spaces, inside an outgoing commit.
+    $outNested = New-PushableRepo 'OutgoingNestedSpace'
+    Write-Utf8 (Join-Path $outNested '.gitignore') ".env`nsecrets.md`n"
+    Add-Commit $outNested 'baseline'
+    Push-Repo $outNested
+    Write-Utf8 (Join-Path $outNested '.env') "NESTED_SPACE_SECRET=nestedspacevalue1234567890`r`n"
+    New-Item -ItemType Directory -Path (Join-Path $outNested 'deep dir\sub folder') -Force | Out-Null
+    Write-Utf8 (Join-Path $outNested 'deep dir\sub folder\my notes.txt') "leak: nestedspacevalue1234567890`r`n"
+    Add-Commit $outNested 'nested leak with spaces'
+    $rNested = FireGitPrePush -Cwd $outNested -StdinText (Get-RefUpdateLine -Repo $outNested)
+    Check 'nested path with spaces in an outgoing commit is detected' ($rNested.Exit -eq 1 -and $rNested.Err -match 'NESTED_SPACE_SECRET' -and $rNested.Err -match [regex]::Escape('deep dir/sub folder/my notes.txt')) $rNested.Err
+    Check 'nested/spaced outgoing leak: value never printed' ($rNested.Err -notlike '*nestedspacevalue1234567890*') $rNested.Err
+
+    # =====================================================================
+    Write-Host '--- outgoing-commit scan: real end-to-end git push (native pre-push chain) ---' -ForegroundColor Cyan
+    $e2e = New-PushableRepo 'OutgoingRealPush'
+    $e2eIgnore = @(
+        '!/.env.dist', '!/.env.example', '!/.env.sample', '!/.env.template',
+        '**/.ignoreme', '.ignoreme', '/.agents/', '/.ai/', '/.claude/', '/.cline/',
+        '/.codex/', '/.cursor/', '/.env', '/.env.*', '/.kiro/', '/AGENTS.md',
+        '/CLAUDE.md', '/explain-AI.md', '/graphify-out/', '/reference.md', '/secrets.md'
+    ) -join "`r`n"
+    Write-Utf8 (Join-Path $e2e '.gitignore') ($e2eIgnore + "`r`n")
+    Add-Commit $e2e 'baseline with the full required ignore ruleset'
+    Push-Repo $e2e
+    $ignoreHook = Join-Path (Split-Path -Parent (Split-Path -Parent $Hook)) 'Ignore-Rules-Check\Ignore-Rules-Check.ps1'
+    & $InstallScript -CustomHook $ignoreHook -Events @('Stop') -TargetProject $e2e -CodexOnly *> $null
+    Write-Utf8 (Join-Path $e2e '.env') "E2E_REALPUSH_SECRET=e2erealpushvalue1234567890`r`n"
+    Write-Utf8 (Join-Path $e2e 'leak.txt') "leak: e2erealpushvalue1234567890`r`n"
+    Add-Commit $e2e 'introduce a real leak commit'
+    Write-Utf8 (Join-Path $e2e 'leak.txt') "cleaned`r`n"
+    Add-Commit $e2e 'clean it up in a later commit (still outgoing)'
+    $savedEap = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    $pushOutput = (& git -C $e2e push origin main 2>&1 | Out-String)
+    $pushExit = $LASTEXITCODE
+    $ErrorActionPreference = $savedEap
+    Check 'real end-to-end git push is rejected by the native pre-push chain' ($pushExit -ne 0 -and $pushOutput -match 'SECRETS CHECK' -and $pushOutput -match 'outgoing commit') $pushOutput
+    Check 'real end-to-end push: the secret value never appears in git''s output' ($pushOutput -notlike '*e2erealpushvalue1234567890*') $pushOutput
 
     # =====================================================================
     Write-Host '--- unused-secret scan (throttled) ---' -ForegroundColor Cyan

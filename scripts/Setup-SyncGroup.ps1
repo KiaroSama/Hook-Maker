@@ -1251,12 +1251,12 @@ function Invoke-InstallExistingHook {
         # itself), 2 = the sync group (its own multi-project flow), 3..N+2 =
         # the individual hooks in $script:HookMeta.Order sequence.
         Write-MenuTitle 'Available hooks (hooks\):'
-        Write-Host ('  ' + (Get-Painted '1.' $C.LightBlue) + ' ' + (Get-Painted 'Select all hooks' $C.Bold) + $script:MenuSep + (Get-Painted '[all]' $C.Mint) + $script:MenuSep + (Get-Painted ('install all ' + $hookFiles.Count + ' hooks below in one pass') $C.HintYellow))
+        Write-Host ('  ' + (Get-Painted '1.' $C.LightBlue) + ' ' + (Get-Painted 'Select all hooks' $C.Bold) + $script:MenuSep + (Get-Painted '[all]' $C.Mint) + $script:MenuSep + (Get-Painted ('run the sync group and install all ' + $hookFiles.Count + ' hooks below - the complete former full-list flow') $C.HintYellow))
         Write-Host ('  ' + (Get-Painted '2.' $C.LightBlue) + ' ' + (Get-Painted 'Create or update a sync group' $C.Bold) + $script:MenuSep + (Get-Painted '[pre-task]' $C.Mint) + $script:MenuSep + (Get-Painted 'cross-project .ai knowledge sync' $C.HintYellow))
         for ($i = 0; $i -lt $hookFiles.Count; $i++) {
             Write-HookMenuLine ($i + 3) $hookFiles[$i].Name
         }
-        Write-NoteLine ('  Tip: use lists and ranges, e.g. 3-8,' + ($hookFiles.Count + 2) + ' (include 1 to select every hook, 2 to also run the sync group)')
+        Write-NoteLine ('  Tip: use lists and ranges, e.g. 3-8,' + ($hookFiles.Count + 2) + ' (1 alone runs everything: the sync group AND every hook)')
         $value = Read-Answer (New-QuestionPrompt 'Select a hook (number, list, or range)' $null '2') 'select custom hook'
         if ($value -eq '0') { return 'back' }
         if ($value -eq '') { $value = '2' }
@@ -1290,16 +1290,16 @@ function Invoke-InstallExistingHook {
             continue
         }
         # "Select all hooks" (item 1) is an aggregate action, not a hook: it
-        # expands to every individual hook index (3..N+2), dynamically
-        # derived from $hookFiles (never a hard-coded count), and rebuilds the
-        # selection in canonical order so combining it with explicit picks
-        # (e.g. "1,5") can never duplicate an entry. It never re-includes
-        # itself and never implicitly pulls in the separate sync-group flow -
-        # that still requires explicitly including item 2 too (e.g. "1,2").
+        # means the COMPLETE former full-list flow - the sync group AND every
+        # individual hook index (3..N+2), dynamically derived from
+        # $hookFiles (never a hard-coded count) - unconditionally, without
+        # needing "2" also typed explicitly. It rebuilds the selection in
+        # canonical order so combining it with explicit picks (e.g. "1,5" or
+        # "1,2") can never run the sync group twice or install a hook twice.
+        # It never re-includes itself as a hook.
         if ($indices.Contains(1)) {
-            $runSyncGroupToo = $indices.Contains(2)
             $indices = New-Object System.Collections.Generic.List[int]
-            if ($runSyncGroupToo) { [void]$indices.Add(2) }
+            [void]$indices.Add(2)
             foreach ($hookIndex in 3..($hookFiles.Count + 2)) { [void]$indices.Add($hookIndex) }
         }
         # The sync group (item 2) is its own multi-project flow, not a plain
