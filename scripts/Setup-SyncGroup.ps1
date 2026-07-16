@@ -151,6 +151,43 @@ function New-QuestionPrompt {
     return $prompt + ' ' + $suffix + ': '
 }
 
+# Reserves the NEXT top-level question number without rendering a prompt, for a
+# caller that is about to ask a repeated CHILD question one or more times (e.g.
+# a growing list of project paths). Call this ONCE per entry into the repeated
+# flow, then render every repeat with New-NestedQuestionPrompt using that same
+# reserved number - this is what keeps "13. Project root path" / "14. Project
+# root path" / ... from each stealing a fresh top-level integer.
+function Get-ReservedQuestionNumber {
+    $script:QuestionNumber++
+    return $script:QuestionNumber
+}
+
+# Child prompt of a repeated collection: "\nP-C. Title (hint) [default] {...}: "
+# (e.g. "12-1. Project root path", "12-2. Project root path", ...). P is the
+# number reserved once via Get-ReservedQuestionNumber; C is the caller's own
+# slot counter (1-based, advances only on an accepted entry - see Read-ProjectList).
+function New-NestedQuestionPrompt {
+    param(
+        [Parameter(Mandatory = $true)][int]$ParentNumber,
+        [Parameter(Mandatory = $true)][int]$ChildNumber,
+        [Parameter(Mandatory = $true)][string]$Title,
+        [string]$Details,
+        [string]$Default,
+        [switch]$QuitOnly
+    )
+
+    $label = $ParentNumber.ToString() + '-' + $ChildNumber.ToString()
+    $prompt = "`n" + (Get-Painted ($label + '. ' + $Title) $C.Bold)
+    if (-not [string]::IsNullOrEmpty($Details)) {
+        $prompt += ' (' + (Get-Painted $Details $C.HintYellow) + ')'
+    }
+    if (-not [string]::IsNullOrEmpty($Default)) {
+        $prompt += ' ' + (Get-Painted ('[' + $Default + ']') $C.Green)
+    }
+    $suffix = if ($QuitOnly) { $script:BackTextQuit } else { $script:BackTextFull }
+    return $prompt + ' ' + $suffix + ': '
+}
+
 function Get-ExampleText {
     param([Parameter(Mandatory = $true)][string]$Text)
     # Example values keep their own color inside hints (FFmWiz example_text).
@@ -474,8 +511,15 @@ function Read-ProjectList {
         [void]$projects.Add($project)
     }
     $example = Get-ExampleText 'G:\Projects\My Bot'
+    # Reserve ONE top-level question number for this whole repeated-entry flow;
+    # every child prompt below renders as "<parent>-<slot>" instead of stealing
+    # a fresh top-level integer per path. The slot advances only when an entry
+    # is actually accepted (see below); invalid/duplicate/overlapping input and
+    # a premature "done" re-display the same slot, and "undo" steps it back.
+    $parentNumber = Get-ReservedQuestionNumber
+    $childNumber = 1
     while ($true) {
-        $prompt = New-QuestionPrompt 'Project root path' ('done=finish, undo=remove last; example: ' + $example) $null
+        $prompt = New-NestedQuestionPrompt -ParentNumber $parentNumber -ChildNumber $childNumber -Title 'Project root path' -Details ('done=finish, undo=remove last; example: ' + $example) -Default $null
         $value = Read-Answer $prompt 'project root path'
         if ($value -eq '0') {
             Write-Log 'INFO' 'INPUT' 'User backed out of project entry.'
@@ -491,6 +535,7 @@ function Read-ProjectList {
             if ($projects.Count -gt 0) {
                 $removed = $projects[$projects.Count - 1]
                 $projects.RemoveAt($projects.Count - 1)
+                if ($childNumber -gt 1) { $childNumber-- }
                 Write-Host ('  ' + (Get-Painted ('- removed ' + $removed.Name + '  ' + $removed.Root) $C.Dim))
                 Write-Log 'INFO' 'INPUT' ('Removed project: ' + $removed.Root)
             }
@@ -567,6 +612,7 @@ function Read-ProjectList {
         }
         Write-Host ('  ' + (Get-Painted '+ added' $C.Green) + ' ' + (Get-Painted $entry.Name $C.Bold) + '  ' + (Get-Painted $entry.Root $C.Gray) + $note)
         Write-Log 'INFO' 'INPUT' ('Added project: ' + $root + ' | aiExists=' + $entry.AiExists)
+        $childNumber++
     }
 
     return $projects.ToArray()

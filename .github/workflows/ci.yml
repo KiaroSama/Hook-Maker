@@ -93,3 +93,10 @@ jobs:
       - name: Ignore-Rules-Check test suite
         shell: pwsh
         run: .\scripts\Test-IgnoreRulesCheck.ps1
+
+      # Git-Sync-Check hook: mandatory Stop instruction, fingerprint+session
+      # gating, SessionStart/UserPromptSubmit context. Real throwaway git
+      # repos + bare remotes, no network.
+      - name: Git-Sync-Check test suite
+        shell: pwsh
+        run: .\scripts\Test-GitSyncCheck.ps1

@@ -1,4 +1,11 @@
 # Ignore-Rules-Check - enforces local/private git-ignore rules before/after tasks and pushes.
+#
+# Default public template files (.env.example/.env.sample/.env.template/.env.dist) are
+# intentionally exempt via `!`-prefixed negation patterns and may stay tracked; only real
+# env files (.env, .env.local, .env.production, ...) and other managed patterns are
+# protected. Patterns are written/compared in INSERTION order (never alphabetically
+# sorted - see below), and a path whose effective `git check-ignore` match is a negation
+# is treated as explicitly allowed, never as a tracked/staged violation.
 
 param([switch]$GitPrePush)
 
@@ -68,7 +75,16 @@ foreach ($file in $ruleFiles) {
         }
     }
 }
-$patterns = @($patterns | Sort-Object -Unique)
+# Dedupe while PRESERVING insertion order - never alphabetically sort. Gitignore is
+# last-match-wins: the built-in order intentionally puts a negation exception
+# (`!/.env.example`) AFTER the broader ignore it un-ignores (`/.env.*`). An alphabetical
+# sort would move every `!`-prefixed negation before its `/`-prefixed pattern (`!` < `/`
+# in ASCII), silently making every negation exception dead on arrival once written.
+$patterns = @($patterns | Select-Object -Unique)
+# The PROTECTED set (used to flag a tracked/staged path that must be untracked) excludes
+# negation/allow rules - a negation match means "explicitly allowed to stay tracked", not
+# "protected". Only non-negated positive patterns are ever grounds for a block.
+$protectedPatterns = @($patterns | Where-Object { -not $_.StartsWith('!') })
 
 $ignorePath = Join-Path $cwd '.gitignore'
 $existing = ''
@@ -101,7 +117,10 @@ foreach ($file in @($trackedFiles + $stagedFiles | Sort-Object -Unique)) {
     $colon = $source.LastIndexOf(':')
     if ($colon -lt 0) { continue }
     $matchedPattern = $source.Substring($colon + 1)
-    if ($patterns -notcontains $matchedPattern) { continue }
+    # The effective (last-matching) rule is a negation - Git explicitly allows this path
+    # to stay tracked (e.g. `.env.example` against `!/.env.example`). Never protected.
+    if ($matchedPattern.StartsWith('!')) { continue }
+    if ($protectedPatterns -notcontains $matchedPattern) { continue }
     if ($trackedFiles -contains $file) { [void]$tracked.Add($file) }
     if ($stagedFiles -contains $file) { [void]$staged.Add($file) }
 }

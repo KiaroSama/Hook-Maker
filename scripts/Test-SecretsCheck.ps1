@@ -284,6 +284,23 @@ try {
     Check 'CRITICAL: leak detected in tracked file' ($r.Out -like '*LEAKED_SECRET*appears in a git-tracked file*notes.txt*') $r.Out
     Check 'leak report never contains the raw value' ($r.Out -notlike '*zzzverylongsecretvalue999*') $r.Out
 
+    # A real secret value accidentally copy-pasted into a TRACKED template file
+    # (.env.example) must still be caught - Ignore-Rules-Check intentionally
+    # allows .env.example/.env.sample/.env.template/.env.dist to stay tracked
+    # (a path-privacy decision), but that must never weaken Secrets-Check's
+    # independent exact-value leak scan, which treats .env.example as an
+    # ordinary tracked file (it is excluded only from being a discovered
+    # SOURCE of secrets, not from being a reported match target).
+    $proj6b = New-GitProj 'LeakedTemplate'
+    Write-Utf8 (Join-Path $proj6b '.gitignore') ".env`nsecrets.md`n!/.env.example`n"
+    Write-Utf8 (Join-Path $proj6b '.env') "REAL_TEMPLATE_SECRET=templateleakvalue1234567890`r`n"
+    Write-Utf8 (Join-Path $proj6b '.env.example') "REAL_TEMPLATE_SECRET=templateleakvalue1234567890`r`n"
+    & git -C $proj6b add -f .env.example 2>$null | Out-Null
+    Add-Commit $proj6b 'track template with an accidentally leaked real value'
+    $r = Fire -Cwd $proj6b
+    Check 'a real secret value copy-pasted into a tracked .env.example is still caught' ($r.Out -like '*REAL_TEMPLATE_SECRET*appears in a git-tracked file*.env.example*') $r.Out
+    Check 'the tracked-template leak report never contains the raw value' ($r.Out -notlike '*templateleakvalue1234567890*') $r.Out
+
     # =====================================================================
     Write-Host '--- git: staged/index-only leak detection (confirmed gap) ---' -ForegroundColor Cyan
 
