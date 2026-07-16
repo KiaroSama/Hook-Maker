@@ -171,15 +171,18 @@ $script:HookMeta = @{
     'Dependabot-Check'                 = @{ Order = 5;  When = 'pre';  Text = 'reports pending Dependabot pull requests' }
     'Github-Baseline-Check'            = @{ Order = 6;  When = 'pre';  Text = 'checks the .github CI/dependabot baseline' }
     'Git-Sync-Check'                   = @{ Order = 7;  When = 'both'; Text = 'warns when out of sync with the git remote' }
-    'Cloudflare-Deploy'                = @{ Order = 8;  When = 'post'; Text = 'suggests deploying in Cloudflare Workers projects' }
-    'Graph-Read-Check'                 = @{ Order = 9;  When = 'pre';  Text = 'suggests graphify queries when a graph exists and the task needs it' }
-    'Graph-Update-Check'               = @{ Order = 10; When = 'post'; Text = 'suggests graphify update when the graph is stale' }
-    'Large-File-Check'                 = @{ Order = 11; When = 'both'; Text = 'small-files policy + oversized-file scan' }
-    'Mcp-Usage-Check'                  = @{ Order = 12; When = 'pre';  Text = 'reminder to consider MCP servers/tools' }
-    'Rules-Check'                      = @{ Order = 13; When = 'pre';  Text = 'checks global + project rules were read' }
-    'Skills-Check'                     = @{ Order = 14; When = 'pre';  Text = 'skill-policy reminder with the copied skills' }
-    'Secrets-Check'                    = @{ Order = 15; When = 'both'; Text = 'keeps secrets.md accurate and checks for leaks' }
-    'Ignore-Rules-Check'               = @{ Order = 16; When = 'pre+post'; Text = 'auto-fixes required local/private gitignore rules before and after tasks' }
+    'Graph-Read-Check'                 = @{ Order = 8;  When = 'pre';  Text = 'suggests graphify queries when a graph exists and the task needs it' }
+    'Graph-Update-Check'               = @{ Order = 9;  When = 'post'; Text = 'suggests graphify update when the graph is stale' }
+    'Large-File-Check'                 = @{ Order = 10; When = 'both'; Text = 'small-files policy + oversized-file scan' }
+    'Mcp-Usage-Check'                  = @{ Order = 11; When = 'pre';  Text = 'reminder to consider MCP servers/tools' }
+    'Rules-Check'                      = @{ Order = 12; When = 'pre';  Text = 'checks global + project rules were read' }
+    'Skills-Check'                     = @{ Order = 13; When = 'pre';  Text = 'skill-policy reminder with the copied skills' }
+    'Secrets-Check'                    = @{ Order = 14; When = 'both'; Text = 'keeps secrets.md accurate and checks for leaks' }
+    'Ignore-Rules-Check'               = @{ Order = 15; When = 'pre+post'; Text = 'auto-fixes required local/private gitignore rules before and after tasks' }
+    # Cloudflare-Deploy is deliberately kept LAST among individual hook
+    # entries (Order = highest value) per an explicit user requirement, not
+    # filesystem/alphabetical order - see Test-Wizard.ps1 for the pinned order.
+    'Cloudflare-Deploy'                = @{ Order = 16; When = 'post'; Text = 'suggests deploying in Cloudflare Workers projects' }
 }
 # The "[pre-task]" / "[post-task]" tag, colored by phase (a different color than
 # the description, FFmWiz-style, so timing reads at a glance).
@@ -356,8 +359,9 @@ function Get-Slug {
 }
 
 # Name of the sync-engine hook folder. Excluded from Get-HookEntries: the
-# engine only works when installed via "Create or update a sync group" (menu
-# item 1), which passes -Profile and copies sync-hooks.json alongside it.
+# engine only works when installed via "Create or update a sync group" (item
+# 2 of the "Install an existing hook" list), which passes -Profile and copies
+# sync-hooks.json alongside it.
 # Installed as a generic custom hook (no -Profile, no config copy) it can never
 # resolve its own routing config once copied into a project and silently does
 # nothing forever - so it must not be selectable from the plain hook lists.
@@ -1243,19 +1247,23 @@ function Invoke-InstallExistingHook {
 
     while ($true) {
         # ---- selection: a single number, comma list, or range ----
+        # Menu layout: 1 = Select all hooks (aggregate action, not a hook
+        # itself), 2 = the sync group (its own multi-project flow), 3..N+2 =
+        # the individual hooks in $script:HookMeta.Order sequence.
         Write-MenuTitle 'Available hooks (hooks\):'
-        Write-Host ('  ' + (Get-Painted '1.' $C.LightBlue) + ' ' + (Get-Painted 'Create or update a sync group' $C.Bold) + $script:MenuSep + (Get-Painted '[pre-task]' $C.Mint) + $script:MenuSep + (Get-Painted 'cross-project .ai knowledge sync' $C.HintYellow))
+        Write-Host ('  ' + (Get-Painted '1.' $C.LightBlue) + ' ' + (Get-Painted 'Select all hooks' $C.Bold) + $script:MenuSep + (Get-Painted '[all]' $C.Mint) + $script:MenuSep + (Get-Painted ('install all ' + $hookFiles.Count + ' hooks below in one pass') $C.HintYellow))
+        Write-Host ('  ' + (Get-Painted '2.' $C.LightBlue) + ' ' + (Get-Painted 'Create or update a sync group' $C.Bold) + $script:MenuSep + (Get-Painted '[pre-task]' $C.Mint) + $script:MenuSep + (Get-Painted 'cross-project .ai knowledge sync' $C.HintYellow))
         for ($i = 0; $i -lt $hookFiles.Count; $i++) {
-            Write-HookMenuLine ($i + 2) $hookFiles[$i].Name
+            Write-HookMenuLine ($i + 3) $hookFiles[$i].Name
         }
-        Write-NoteLine '  Tip: use lists and ranges, e.g. 2-8,15 (include 1 to run the sync group first, then the rest)'
-        $value = Read-Answer (New-QuestionPrompt 'Select a hook (number, list, or range)' $null '1') 'select custom hook'
+        Write-NoteLine ('  Tip: use lists and ranges, e.g. 3-8,' + ($hookFiles.Count + 2) + ' (include 1 to select every hook, 2 to also run the sync group)')
+        $value = Read-Answer (New-QuestionPrompt 'Select a hook (number, list, or range)' $null '2') 'select custom hook'
         if ($value -eq '0') { return 'back' }
-        if ($value -eq '') { $value = '1' }
+        if ($value -eq '') { $value = '2' }
 
         $indices = New-Object System.Collections.Generic.List[int]
         $bad = $false
-        $maxIndex = $hookFiles.Count + 1
+        $maxIndex = $hookFiles.Count + 2
         foreach ($tok in @($value.Split(',') | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne '' })) {
             $idx = 0
             $expanded = @()
@@ -1281,14 +1289,27 @@ function Invoke-InstallExistingHook {
             Write-ErrorLine ('Enter numbers or ranges between 1 and ' + $maxIndex + ', separated by commas.')
             continue
         }
-        # The sync group (item 1) is its own multi-project flow, not a plain
+        # "Select all hooks" (item 1) is an aggregate action, not a hook: it
+        # expands to every individual hook index (3..N+2), dynamically
+        # derived from $hookFiles (never a hard-coded count), and rebuilds the
+        # selection in canonical order so combining it with explicit picks
+        # (e.g. "1,5") can never duplicate an entry. It never re-includes
+        # itself and never implicitly pulls in the separate sync-group flow -
+        # that still requires explicitly including item 2 too (e.g. "1,2").
+        if ($indices.Contains(1)) {
+            $runSyncGroupToo = $indices.Contains(2)
+            $indices = New-Object System.Collections.Generic.List[int]
+            if ($runSyncGroupToo) { [void]$indices.Add(2) }
+            foreach ($hookIndex in 3..($hookFiles.Count + 2)) { [void]$indices.Add($hookIndex) }
+        }
+        # The sync group (item 2) is its own multi-project flow, not a plain
         # hook install - it can't be gathered into the same events/client/
         # projects batch below. When it's selected alongside other hooks, run
         # its wizard first, then fall through and install the rest right after
         # (no need to re-enter this menu a second time).
         $ranSyncGroup = $false
-        if ($indices.Contains(1)) {
-            [void]$indices.Remove(1)
+        if ($indices.Contains(2)) {
+            [void]$indices.Remove(2)
             if ($indices.Count -gt 0) {
                 Write-NoteLine ('  Running the sync group first, then installing ' + $indices.Count + ' more hook(s)...')
             }
@@ -1299,7 +1320,7 @@ function Invoke-InstallExistingHook {
             if ($indices.Count -eq 0) { return 'done' }
             Write-PhaseHeader 'Install an Existing Hook' $C.Input '-'
         }
-        $selected = @($indices | ForEach-Object { $hookFiles[$_ - 2] })
+        $selected = @($indices | ForEach-Object { $hookFiles[$_ - 3] })
         Write-Log 'INFO' 'CUSTOM' ('Selected ' + $selected.Count + ' hook(s): ' + (($selected | ForEach-Object { $_.Name }) -join ', '))
 
         # ---- gather config (same for all, or per hook) ----
@@ -1531,7 +1552,8 @@ function Invoke-InstallHookFromConfig {
 }
 
 # The "Create or install a hook" sub-menu: create a new hook, install an
-# existing one (the sync group is item 1 of that list), or install from config.
+# existing one (item 1 of that list selects every individual hook at once,
+# item 2 is the sync group), or install from config.
 # Loops so that backing out of a sub-flow returns HERE (one step), not to the
 # main menu. Returns 'done' after a completed sub-flow, or when the user backs
 # out of this sub-menu.
