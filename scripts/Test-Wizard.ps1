@@ -76,16 +76,17 @@ try {
     Write-Host '--- menu structure + listing + sync-group create (-NoInstall) ---' -ForegroundColor Cyan
     $cfg1 = Join-Path $Work 'cfg1.json'; New-Config $cfg1
     $a = New-Proj 'A1'; $b = New-Proj 'B1'
-    # main 1 -> sub 1 (install existing) -> item 1 (sync group) -> A,B,done -> client Both -> start
-    $r = Invoke-Wizard -Config $cfg1 -NoInstall -Answers @('1', '1', '1', $a, $b, 'done', '1', '', '0')
+    # main 1 -> sub 1 (install existing) -> item 2 (sync group) -> A,B,done -> client Both -> start
+    $r = Invoke-Wizard -Config $cfg1 -NoInstall -Answers @('1', '1', '2', $a, $b, 'done', '1', '', '0')
     Check 'exit 0' ($r.Exit -eq 0)
     Check 'no stderr' ($r.Err -eq '')
     Check 'main menu merged (Create or install a hook)' ($r.Out -match '1\. Create or install a hook')
     Check 'no separate top-level sync-group option' ($r.Out -notmatch '1\. Create or update a sync group\s*\r?\n\s*2\. Show')
-    Check 'sync group is list item 1' ($r.Out -match '1\. Create or update a sync group')
+    Check 'select-all is list item 1' ($r.Out -match '1\. Select all hooks')
+    Check 'sync group is list item 2' ($r.Out -match '2\. Create or update a sync group')
     Check 'context hook menu names match their whole-.ai scope' ($r.Out -match 'Ai-Context-Check' -and $r.Out -match 'Ai-Context-Load')
     Check 'old memory-only menu names are hidden' ($r.Out -notmatch 'Ai-Memory-(Check|Load)')
-    # The engine is reachable ONLY through item 1's hardcoded description line
+    # The engine is reachable ONLY through item 2's hardcoded description line
     # (checked by "menu parts are pipe-separated" below), NOT by its own
     # hyphenated name as a separate list item: installed as a generic custom
     # hook (no -Profile, no config copy) it can never find its routing config
@@ -95,14 +96,14 @@ try {
     Check 'listing shows short descriptions' ($r.Out -match 'relevant \.ai context files' -and $r.Out -match 'checks global \+ project rules')
     Check 'menu parts are pipe-separated' ($r.Out -match 'Create or update a sync group \| \[pre-task\] \| cross-project \.ai knowledge sync')
     $menuOrder = @(
-        '1\. Create or update a sync group', '2\. Ai-Context-Check', '3\. Ai-Context-Load',
-        '4\. Ci-Status-Check', '5\. Dependabot-Check', '6\. Github-Baseline-Check',
-        '7\. Git-Sync-Check', '8\. Cloudflare-Deploy', '9\. Graph-Read-Check',
+        '1\. Select all hooks', '2\. Create or update a sync group', '3\. Ai-Context-Check',
+        '4\. Ai-Context-Load', '5\. Ci-Status-Check', '6\. Dependabot-Check',
+        '7\. Github-Baseline-Check', '8\. Git-Sync-Check', '9\. Graph-Read-Check',
         '10\. Graph-Update-Check', '11\. Large-File-Check', '12\. Mcp-Usage-Check',
         '13\. Rules-Check', '14\. Skills-Check', '15\. Secrets-Check',
-        '16\. Ignore-Rules-Check'
+        '16\. Ignore-Rules-Check', '17\. Cloudflare-Deploy'
     ) -join '[\s\S]*'
-    Check 'hooks follow the requested menu order' ($r.Out -match $menuOrder)
+    Check 'hooks follow the requested menu order (Select all -> sync group -> hooks, Cloudflare-Deploy last)' ($r.Out -match $menuOrder)
     Check '_hooklib excluded from listing' ($r.Out -notmatch '_hooklib')
     Check 'full back suffix on sub-prompts' ($r.Out -match 'back=0' -and $r.Out -match 'quit=exit')
     Check 'main-menu suffix is quit-only' ($r.Out -match 'Select an option.*\{quit=exit\}')
@@ -115,7 +116,7 @@ try {
     Write-Host '--- back navigation returns exactly one menu level ---' -ForegroundColor Cyan
     $cfgNav = Join-Path $Work 'cfg-nav.json'; New-Config $cfgNav
     $rNav = Invoke-Wizard -Config $cfgNav -Answers @(
-        '1', '1', '1', '0', # sync-group project entry -> hook list
+        '1', '1', '2', '0', # sync-group project entry -> hook list
         '0',                # hook list -> create/install menu
         '2', '0',           # create-hook first prompt -> create/install menu
         '3', '0',           # config-install hook list -> create/install menu
@@ -130,16 +131,16 @@ try {
     Write-Host '--- install a real hook (list offset + Claude-only targeting) ---' -ForegroundColor Cyan
     $cfg2 = Join-Path $Work 'cfg2.json'; New-Config $cfg2
     $t = New-Proj 'T2'
-    # main 1 -> sub 1 (install existing) -> item 2 (displayed as Ai-Context-Check,
+    # main 1 -> sub 1 (install existing) -> item 3 (displayed as Ai-Context-Check,
     # internally Ai-Memory-Check) -> events SessionStart -> client Claude -> target -> done -> start
-    $r = Invoke-Wizard -Config $cfg2 -Answers @('1', '1', '2', '2', '2', $t, 'done', '', '0')
+    $r = Invoke-Wizard -Config $cfg2 -Answers @('1', '1', '3', '2', '2', $t, 'done', '', '0')
     Check 'exit 0' ($r.Exit -eq 0)
     Check 'no stderr' ($r.Err -eq '')
     Check 'event menu separates camel-case labels' ($r.Out -match 'Session Start \+ User Prompt Submit' -and $r.Out -match 'User Prompt Submit' -and $r.Out -match 'Pre Tool Use, Post Tool Use, Stop')
     $claude2 = Join-Path $t '.claude\settings.local.json'
     Check 'claude settings written' (Test-Path $claude2)
     $j2 = ''; if (Test-Path $claude2) { $j2 = [System.IO.File]::ReadAllText($claude2) }
-    Check 'item 2 installed the FIRST real hook (Ai-Memory-Check)' ($j2 -match 'Ai-Memory-Check\.ps1')
+    Check 'item 3 installed the FIRST real hook (Ai-Memory-Check)' ($j2 -match 'Ai-Memory-Check\.ps1')
     Check 'did not install a neighbor hook' ($j2 -notmatch 'Ci-Status-Check')
     Check 'Claude-only leaves codex untouched' (-not (Test-Path (Join-Path $t '.codex\hooks.json')) -and -not (Test-Path (Join-Path $t '.codex')))
     # Self-contained install: the command points at a runtime copy INSIDE the
@@ -154,7 +155,7 @@ try {
     Write-Host '--- sync group with a real install (both clients) ---' -ForegroundColor Cyan
     $cfg3 = Join-Path $Work 'cfg3.json'; New-Config $cfg3
     $a3 = New-Proj 'A3'; $b3 = New-Proj 'B3'
-    $r = Invoke-Wizard -Config $cfg3 -Answers @('1', '1', '1', $a3, $b3, 'done', '1', '', '0')
+    $r = Invoke-Wizard -Config $cfg3 -Answers @('1', '1', '2', $a3, $b3, 'done', '1', '', '0')
     Check 'exit 0' ($r.Exit -eq 0)
     Check 'no stderr' ($r.Err -eq '')
     $profId3 = (@((Get-Content $cfg3 -Raw | ConvertFrom-Json).profiles)[0]).id
@@ -194,10 +195,11 @@ try {
     Write-Host '--- multi-select install (range + list, recommended events) ---' -ForegroundColor Cyan
     $cfg4 = Join-Path $Work 'cfg4.json'; New-Config $cfg4
     $m = New-Proj 'Multi'
-    # main 1 -> sub 1 -> "2-8,15" (eight advisory hooks; the engine is excluded
-    #        from this list entirely, see the guard test below)
+    # main 1 -> sub 1 -> "3-8,15,17" (eight advisory hooks incl. Cloudflare-Deploy,
+    #        now the LAST individual entry; the engine is excluded from this
+    #        list entirely, see the guard test below)
     #        -> mode 1 (recommended events per hook) -> client Both -> target -> done -> start -> exit
-    $r = Invoke-Wizard -Config $cfg4 -Answers @('1', '1', '2-8,15', '1', '1', $m, 'done', '', '0')
+    $r = Invoke-Wizard -Config $cfg4 -Answers @('1', '1', '3-8,15,17', '1', '1', $m, 'done', '', '0')
     Check 'exit 0' ($r.Exit -eq 0)
     Check 'no stderr' ($r.Err -eq '')
     Check 'selection accepts a range combined with a single item' ($r.Out -notmatch 'Enter number\(s\)')
@@ -230,12 +232,104 @@ try {
     Check 'summary lists all eight (8 event lines)' (([regex]::Matches($r.Out, 'events:')).Count -ge 8)
 
     # =====================================================================
+    Write-Host '--- Select all hooks (aggregate menu item 1) ---' -ForegroundColor Cyan
+    $RealHooksDir = Join-Path (Split-Path -Parent $PSScriptRoot) 'hooks'
+    $hookCount = @(Get-ChildItem -LiteralPath $RealHooksDir -Directory -ErrorAction SilentlyContinue | Where-Object { $_.Name -ne 'Cross-Project-.ai-Knowledge-Sync' }).Count
+
+    $cfgAll = Join-Path $Work 'cfg-all.json'; New-Config $cfgAll
+    $allProj = New-Proj 'SelectAllProj'
+    # main 1 -> sub 1 -> "1" (select all) -> mode 1 (recommended events) -> client Both -> target -> done -> start
+    $rAll = Invoke-Wizard -Config $cfgAll -Answers @('1', '1', '1', '1', '1', $allProj, 'done', '', '0')
+    Check 'exit 0' ($rAll.Exit -eq 0)
+    Check 'no stderr' ($rAll.Err -eq '')
+    Check ('select-all configures every discovered hook (' + $hookCount + ')') ($rAll.Out -match ('Configuring ' + $hookCount + ' hooks:'))
+    $allFolders = @(Get-ChildItem -LiteralPath (Join-Path $allProj '.claude\hooks\Hook-Maker') -Directory -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Name)
+    Check 'select-all installs every discovered hook exactly once (no duplicates)' ($allFolders.Count -eq $hookCount -and @($allFolders | Group-Object | Where-Object { $_.Count -gt 1 }).Count -eq 0)
+    Check 'select-all never installs the sync engine as a plain hook' ($allFolders -notcontains 'Cross-Project-.ai-Knowledge-Sync')
+    Check 'select-all includes Cloudflare-Deploy (the last individual entry)' ($allFolders -contains 'Cloudflare-Deploy')
+
+    # Combining "1" (select all) with an explicit individual pick must not
+    # install anything twice.
+    $cfgAllCombo = Join-Path $Work 'cfg-all-combo.json'; New-Config $cfgAllCombo
+    $comboProj = New-Proj 'SelectAllCombo'
+    $rCombo = Invoke-Wizard -Config $cfgAllCombo -Answers @('1', '1', '1,5', '1', '1', $comboProj, 'done', '', '0')
+    Check 'select-all combined with an explicit pick still configures each hook exactly once' ($rCombo.Out -match ('Configuring ' + $hookCount + ' hooks:'))
+
+    # Claude-only and Codex-only client scoping still apply with Select All.
+    $cfgAllClaude = Join-Path $Work 'cfg-all-claude.json'; New-Config $cfgAllClaude
+    $claudeOnlyProj = New-Proj 'SelectAllClaude'
+    $null = Invoke-Wizard -Config $cfgAllClaude -Answers @('1', '1', '1', '1', '2', $claudeOnlyProj, 'done', '', '0')
+    Check 'select-all honors Claude-only client scoping' ((Test-Path (Join-Path $claudeOnlyProj '.claude\settings.local.json')) -and -not (Test-Path (Join-Path $claudeOnlyProj '.codex')))
+
+    $cfgAllCodex = Join-Path $Work 'cfg-all-codex.json'; New-Config $cfgAllCodex
+    $codexOnlyProj = New-Proj 'SelectAllCodex'
+    $null = Invoke-Wizard -Config $cfgAllCodex -Answers @('1', '1', '1', '1', '3', $codexOnlyProj, 'done', '', '0')
+    Check 'select-all honors Codex-only client scoping' ((Test-Path (Join-Path $codexOnlyProj '.codex\hooks.json')) -and -not (Test-Path (Join-Path $codexOnlyProj '.claude')))
+
+    # Selecting the LAST individual entry (a single-hook pick) installs
+    # Cloudflare-Deploy specifically.
+    $cfgLast = Join-Path $Work 'cfg-last.json'; New-Config $cfgLast
+    $lastProj = New-Proj 'LastEntryProj'
+    $rLast = Invoke-Wizard -Config $cfgLast -Answers @('1', '1', ($hookCount + 2).ToString(), '2', '2', $lastProj, 'done', '', '0')
+    Check 'selecting the last individual entry installs Cloudflare-Deploy' (Test-Path (Join-Path $lastProj '.claude\hooks\Hook-Maker\Cloudflare-Deploy\Cloudflare-Deploy.ps1'))
+
+    # Reinstalling via Select All stays idempotent: same set, no duplicate
+    # registrations, nothing previously installed goes missing.
+    $rAllAgain = Invoke-Wizard -Config $cfgAll -Answers @('1', '1', '1', '1', '1', $allProj, 'done', '', '0')
+    Check 'exit 0 (select-all reinstall)' ($rAllAgain.Exit -eq 0)
+    $allFoldersAgain = @(Get-ChildItem -LiteralPath (Join-Path $allProj '.claude\hooks\Hook-Maker') -Directory -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Name)
+    Check 'reinstall via select-all stays idempotent (same hook count)' ($allFoldersAgain.Count -eq $hookCount)
+    Check 'reinstall preserves every previously-installed hook (none dropped or duplicated)' (((@($allFolders | Sort-Object)) -join ',') -eq ((@($allFoldersAgain | Sort-Object)) -join ','))
+    # Parse the JSON (rather than raw-text/regex match it) so JSON's own
+    # backslash-escaping ("\\") can never be mistaken for a missing/duplicate
+    # entry: count actual handler entries whose (decoded) command references
+    # Ai-Memory-Check's runtime copy.
+    $claudeSettingsAllObj = Get-Content -LiteralPath (Join-Path $allProj '.claude\settings.local.json') -Raw | ConvertFrom-Json
+    $aiMemHandlerCount = 0
+    foreach ($eventProp in $claudeSettingsAllObj.hooks.PSObject.Properties) {
+        foreach ($group in @($eventProp.Value)) {
+            foreach ($handler in @($group.hooks)) {
+                if ([string]$handler.command -like '*Ai-Memory-Check\Ai-Memory-Check.ps1*') { $aiMemHandlerCount++ }
+            }
+        }
+    }
+    Check 'reinstall does not duplicate a hook''s registration' ($aiMemHandlerCount -eq 1)
+
+    # Future-proof: a synthetic, unknown hook folder must be picked up by
+    # Select All with NO code change - proves the set is derived dynamically
+    # from Get-HookEntries, never a hard-coded count. Created/removed inside
+    # its own try/finally so the real hooks\ directory is never left dirty.
+    $syntheticName = 'ZZZ-Synthetic-Test-Hook'
+    $syntheticDir = Join-Path $RealHooksDir $syntheticName
+    try {
+        New-Item -ItemType Directory -Path $syntheticDir -Force | Out-Null
+        Set-Content -LiteralPath (Join-Path $syntheticDir ($syntheticName + '.ps1')) -Value 'exit 0' -Encoding utf8
+        $newHookCount = @(Get-ChildItem -LiteralPath $RealHooksDir -Directory -ErrorAction SilentlyContinue | Where-Object { $_.Name -ne 'Cross-Project-.ai-Knowledge-Sync' }).Count
+        Check 'synthetic fixture increases the discovered hook count by exactly one' ($newHookCount -eq $hookCount + 1)
+
+        $cfgFuture = Join-Path $Work 'cfg-future.json'; New-Config $cfgFuture
+        $futureProj = New-Proj 'SelectAllFuture'
+        $rFuture = Invoke-Wizard -Config $cfgFuture -Answers @('1', '1', '1', '1', '1', $futureProj, 'done', '', '0')
+        Check 'exit 0 (with synthetic hook present)' ($rFuture.Exit -eq 0)
+        Check 'select-all dynamically picks up the new hook count - no hard-coded 16' ($rFuture.Out -match ('Configuring ' + $newHookCount + ' hooks:'))
+        $futureFolders = @(Get-ChildItem -LiteralPath (Join-Path $futureProj '.claude\hooks\Hook-Maker') -Directory -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Name)
+        Check 'select-all includes the synthetic hook without any code change' ($futureFolders -contains $syntheticName)
+    }
+    finally {
+        if (Test-Path -LiteralPath $syntheticDir) {
+            Get-ChildItem -LiteralPath $syntheticDir -Recurse -Force -ErrorAction SilentlyContinue | ForEach-Object { $_.Attributes = [System.IO.FileAttributes]::Normal }
+            Remove-Item -LiteralPath $syntheticDir -Recurse -Force -ErrorAction SilentlyContinue
+        }
+        Check 'synthetic fixture directory was cleaned up' (-not (Test-Path -LiteralPath $syntheticDir))
+    }
+
+    # =====================================================================
     Write-Host '--- repeated project prompts + confirmation back navigation ---' -ForegroundColor Cyan
     $cfgBack = Join-Path $Work 'cfg-back.json'; New-Config $cfgBack
     $backA = New-Proj 'BackA'; $backB = New-Proj 'BackB'
     # Configure two hooks with shared targets, back from confirmation, then
     # enter done immediately: existing targets must still be present.
-    $rBack = Invoke-Wizard -Config $cfgBack -Answers @('1', '1', '2,3', '1', '1', $backA, $backB, 'done', '0', 'done', 'exit')
+    $rBack = Invoke-Wizard -Config $cfgBack -Answers @('1', '1', '3,4', '1', '1', $backA, $backB, 'done', '0', 'done', 'exit')
     $projectPromptNumbers = @([regex]::Matches($rBack.Out, '(?m)^(\d+)\. Project root path') | ForEach-Object { [int]$_.Groups[1].Value })
     Check 'each repeated project prompt advances the question number' ($projectPromptNumbers.Count -ge 3 -and $projectPromptNumbers[1] -eq ($projectPromptNumbers[0] + 1) -and $projectPromptNumbers[2] -eq ($projectPromptNumbers[1] + 1))
     Check 'confirmation back returns to project entry instead of the hook list' (([regex]::Matches($rBack.Out, 'Add Projects')).Count -eq 2 -and ([regex]::Matches($rBack.Out, 'Available hooks')).Count -eq 1)
@@ -245,10 +339,10 @@ try {
     Write-Host '--- multi-select: sync group (1) combined with a hook runs both, once ---' -ForegroundColor Cyan
     $cfg5 = Join-Path $Work 'cfg5.json'; New-Config $cfg5
     $c = New-Proj 'ComboC'; $d = New-Proj 'ComboD'; $e = New-Proj 'ComboE'
-    # main 1 -> sub 1 -> "1,2" (sync group + Ai-Memory-Check) ->
+    # main 1 -> sub 1 -> "2,3" (sync group + Ai-Memory-Check) ->
     #   [sync group wizard: C, D, done, client Both, confirm] ->
     #   [single-hook config: events SessionStart+UPS, client Both, target E, done, confirm] -> exit
-    $r2 = Invoke-Wizard -Config $cfg5 -Answers @('1', '1', '1,2', $c, $d, 'done', '1', '', '1', '1', $e, 'done', '', '0')
+    $r2 = Invoke-Wizard -Config $cfg5 -Answers @('1', '1', '2,3', $c, $d, 'done', '1', '', '1', '1', $e, 'done', '', '0')
     Check 'exit 0' ($r2.Exit -eq 0)
     Check 'no stderr' ($r2.Err -eq '')
     Check 'runs the sync group first, then the hook, without repeating the menu' ($r2.Out -match 'Running the sync group first')
@@ -261,7 +355,7 @@ try {
     Write-Host '--- multi-select: sync group alone still works (unchanged) ---' -ForegroundColor Cyan
     $cfg6 = Join-Path $Work 'cfg6.json'; New-Config $cfg6
     $f = New-Proj 'SoloF'; $g = New-Proj 'SoloG'
-    $r3 = Invoke-Wizard -Config $cfg6 -Answers @('1', '1', '1', $f, $g, 'done', '1', '', '0')
+    $r3 = Invoke-Wizard -Config $cfg6 -Answers @('1', '1', '2', $f, $g, 'done', '1', '', '0')
     Check 'exit 0' ($r3.Exit -eq 0)
     Check 'no stderr' ($r3.Err -eq '')
     # NOTE: -match is case-INSENSITIVE by default, and the main menu's own

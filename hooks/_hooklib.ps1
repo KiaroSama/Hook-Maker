@@ -160,16 +160,46 @@ function Get-GitHubRepository {
     }
     if ($valid.Count -eq 0) { return $null }
 
-    $selected = ''
-    $branch = [string](Invoke-QuietCommand -FilePath git -ArgumentList @('-C', $ProjectRoot, 'rev-parse', '--abbrev-ref', 'HEAD'))
-    if ($LASTEXITCODE -eq 0 -and $branch -ne '' -and $branch -ne 'HEAD') {
-        $upstreamRemote = [string](Invoke-QuietCommand -FilePath git -ArgumentList @('-C', $ProjectRoot, 'config', '--get', ('branch.' + $branch + '.remote')))
-        if ($LASTEXITCODE -eq 0 -and $valid.ContainsKey($upstreamRemote)) { $selected = $upstreamRemote }
+    $branchName = ''
+    $branchRaw = [string](Invoke-QuietCommand -FilePath git -ArgumentList @('-C', $ProjectRoot, 'rev-parse', '--abbrev-ref', 'HEAD'))
+    if ($LASTEXITCODE -eq 0 -and $branchRaw -ne '' -and $branchRaw -ne 'HEAD') { $branchName = $branchRaw }
+
+    $branchRemote = ''
+    if ($branchName -ne '') {
+        $configuredRemote = [string](Invoke-QuietCommand -FilePath git -ArgumentList @('-C', $ProjectRoot, 'config', '--get', ('branch.' + $branchName + '.remote')))
+        if ($LASTEXITCODE -eq 0) { $branchRemote = $configuredRemote }
     }
+
+    $selected = ''
+    if ($branchRemote -ne '' -and $valid.ContainsKey($branchRemote)) { $selected = $branchRemote }
     if ($selected -eq '' -and $valid.ContainsKey('origin')) { $selected = 'origin' }
     if ($selected -eq '' -and $valid.Count -eq 1) { $selected = [string]@($valid.Keys)[0] }
     if ($selected -eq '') { return $null }
-    return [pscustomobject]@{ Remote = $selected; Repository = [string]$valid[$selected] }
+
+    # TrackingRef is the remote-tracking ref a caller may safely diff HEAD
+    # against to decide "is HEAD pushed to the repository just selected". It is
+    # populated ONLY when it is guaranteed to belong to $selected:
+    # - the branch's own configured upstream, but only when that upstream's
+    #   remote IS $selected (so @{upstream} cannot silently point at a
+    #   different, possibly non-GitHub, remote than the repository resolved
+    #   above); or
+    # - a same-named remote-tracking branch under $selected, when the branch
+    #   upstream doesn't match (or isn't configured at all).
+    # Left empty when neither can be trusted - callers must then degrade
+    # without claiming a pushed/verified state.
+    $trackingRef = ''
+    if ($branchName -ne '') {
+        if ($branchRemote -eq $selected) {
+            $upstreamRef = [string](Invoke-QuietCommand -FilePath git -ArgumentList @('-C', $ProjectRoot, 'rev-parse', '--abbrev-ref', '@{upstream}'))
+            if ($LASTEXITCODE -eq 0 -and $upstreamRef -ne '') { $trackingRef = $upstreamRef }
+        }
+        if ($trackingRef -eq '') {
+            $null = Invoke-QuietCommand -FilePath git -ArgumentList @('-C', $ProjectRoot, 'rev-parse', '--verify', '--quiet', ('refs/remotes/' + $selected + '/' + $branchName))
+            if ($LASTEXITCODE -eq 0) { $trackingRef = $selected + '/' + $branchName }
+        }
+    }
+
+    return [pscustomobject]@{ Remote = $selected; Repository = [string]$valid[$selected]; Branch = $branchName; TrackingRef = $trackingRef }
 }
 
 function Get-LatestWorkTimeUtc {

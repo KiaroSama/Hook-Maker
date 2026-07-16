@@ -152,7 +152,12 @@ try {
     $ErrorActionPreference = 'Stop'
     Check 'Secrets-Check blocks before the previous hook' ($pushExit -ne 0 -and $pushOutput -match 'SECRETS CHECK' -and -not (Test-Path -LiteralPath (Join-Path $pushRepo 'previous-hook.txt'))) $pushOutput
 
-    Remove-Item -LiteralPath (Join-Path $pushRepo 'leak.txt') -Force
+    # Actually remove the leak from git (not just the working-tree copy) - a
+    # disk-only delete would leave the secret value sitting in the commit
+    # tree/index, which Secrets-Check's index-aware leak scan correctly still
+    # catches (that scan exists precisely to catch a lingering index/HEAD
+    # leak the working tree no longer shows).
+    & git -C $pushRepo rm -q leak.txt
     [System.IO.File]::WriteAllText((Join-Path $pushRepo 'use.txt'), 'API_KEY', (New-Object System.Text.UTF8Encoding $false))
     [System.IO.File]::WriteAllLines((Join-Path $pushRepo 'big.ps1'), @(1..801 | ForEach-Object { '# line' }), (New-Object System.Text.UTF8Encoding $false))
     & git -C $pushRepo add use.txt big.ps1
