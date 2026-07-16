@@ -21,7 +21,7 @@ starts the user's task.
 | `scripts/Test-Engine.ps1` | Self-contained engine smoke test (18 assertions, runs under pwsh and PowerShell 5.1). |
 | `scripts/Test-GitHubHooks.ps1` | Offline test suite for the GitHub hooks (47 assertions; mocks git state and `gh`, no network/account). |
 | `scripts/Test-RulesCheck.ps1` | Offline test suite for the Rules-Check hook and per-client install targeting (33 assertions). |
-| `scripts/Test-Wizard.ps1` | Drives the interactive wizard end-to-end via stdin (menu, hook listing, list/range multi-select, client targeting, real self-contained installs) against temp projects (66 assertions). |
+| `scripts/Test-Wizard.ps1` | Drives the interactive wizard end-to-end via stdin (menu, hook listing, list/range multi-select, client targeting, real self-contained installs) against temp projects (73 assertions). |
 | `scripts/Test-SecretsCheck.ps1` | Offline test suite for the Secrets-Check hook (auto-append, ignore/tracked/staged/leak, throttled unused-secret scan; real throwaway git repos, 32 assertions). |
 | `scripts/Test-AiMemoryLoad.ps1` | Offline test suite for Ai-Memory-Load and Graph-Read-Check (content fingerprinting, whole-.ai/ file listing, truncation, graph-exists gate; 22 assertions). |
 | `scripts/Test-AiMemoryCheck.ps1` | Offline test suite for the Ai-Memory-Check hook (missing/stale memory.md, real specialized-file enumeration, cooldown; real throwaway git repos, 11 assertions). |
@@ -119,7 +119,7 @@ sorted project roots), so existing sync state is preserved.
 
 Every install **copies the hook runtime into the target itself** (Kiro-style): the script, the
 shared `_hooklib.ps1`, its `.env` (if present) and — for the sync engine — a copy of the routing
-config land in
+config plus `SYNC-PROJECTS.txt` (the readable project names and paths in that sync group) land in
 
 - `<project>/.claude/hooks/Hook-Maker/<Friendly-Name>/` for Claude (registered in
   `<project>/.claude/settings.local.json`, auto-gitignored — the command holds a machine-specific
