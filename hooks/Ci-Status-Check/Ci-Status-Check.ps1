@@ -45,8 +45,14 @@
 #   (databaseId/attempt/workflowName/status/conclusion/updatedAt) and stored.
 # This never marks the commit verified/green. While an exception authorizes
 # completion, Stop emits a NON-BLOCKING "CI NOT VERIFIED GREEN" context notice
-# so the final task context can never misrepresent CI as successful. Every
-# subsequent Stop performs a THROTTLED (EXTERNAL_BLOCKER_RECHECK_MINUTES)
+# so the final task context can never misrepresent CI as successful. The
+# notice shape is CLIENT-AWARE (see Write-ExternalBlockerContext below):
+# Claude Code gets `hookSpecificOutput.additionalContext` (documented
+# model-visible on Stop); Codex gets `systemMessage` (its only documented
+# common Stop field - user/event-visible, not documented as model-visible for
+# Codex). Client is detected the same way Rules-Check does: CLAUDE_PROJECT_DIR
+# present -> Claude, absent -> Codex. Neither shape ever uses `decision:block`.
+# Every subsequent Stop performs a THROTTLED (EXTERNAL_BLOCKER_RECHECK_MINUTES)
 # exact-SHA re-evaluation: the same fingerprint keeps completion allowed
 # (reported as an external blocker, not success); CI turning green retires the
 # exception and verifies normally (no external wording); CI changing to a
@@ -281,19 +287,39 @@ function Write-Block {
 }
 
 # Emits a NON-BLOCKING completion-context notice while a valid external-blocker
-# exception authorizes completion. It never blocks (no `decision:block`) and it
-# can never misrepresent CI as green - it states explicitly that CI is NOT
-# verified and completion is allowed only because of the recorded external
-# blocker. Uses hookSpecificOutput.additionalContext (the same shape the
-# context hooks use); if a client does not surface Stop additionalContext this
-# is the smallest safe non-blocking output and still cannot claim success.
+# exception authorizes completion. It never emits `decision:block` and can
+# never misrepresent CI as green - it states explicitly that CI is NOT verified
+# and completion is allowed only because of the recorded external blocker.
+#
+# The output shape is CLIENT-AWARE, using the officially supported non-blocking
+# Stop field for each client (verified against the current Claude Code and Codex
+# hook docs, 2026-07-17):
+# - Claude Code: `hookSpecificOutput.additionalContext` is documented as
+#   MODEL-VISIBLE for Stop/SubagentStop ("at the end of the turn ... so Claude
+#   can act on the feedback"); `systemMessage` there is only shown to the user.
+# - Codex: Stop does NOT document `hookSpecificOutput.additionalContext`; its
+#   supported common field is `systemMessage`, "surfaced as a warning in the UI
+#   or event stream" (user/event-visible, NOT documented as model-visible).
+#   Codex Stop `decision:block` would FORCE CONTINUATION (a new prompt), so it
+#   is never used here.
+# Client detection reuses the project's existing signal: Claude Code exports
+# CLAUDE_PROJECT_DIR on every hook process, Codex does not (same signal
+# Rules-Check uses). Neither output can claim CI success; the message text is
+# identical for both, only the JSON wrapper differs.
 function Write-ExternalBlockerContext {
     param([string]$Classification, [string]$Reason, [string]$Sha7, [string]$RepoSlug, [string]$EventName)
     $message = 'CI NOT VERIFIED GREEN. Completion is allowed only because a recorded EXTERNAL CI blocker is in effect for ' +
         $RepoSlug + '@' + $Sha7 + ' [' + $Classification + ']: ' + $Reason +
         '. This is a documented external blocker, not a successful CI run - report it accurately and do not claim CI passed.'
-    @{ hookSpecificOutput = @{ hookEventName = $EventName; additionalContext = $message } } | ConvertTo-Json -Depth 5 -Compress |
-        ForEach-Object { [Console]::Out.WriteLine($_) }
+    if (-not [string]::IsNullOrWhiteSpace($env:CLAUDE_PROJECT_DIR)) {
+        # Claude Code: model-visible, non-blocking Stop context.
+        $payload = @{ hookSpecificOutput = @{ hookEventName = $EventName; additionalContext = $message } }
+    }
+    else {
+        # Codex: the strongest officially supported non-blocking Stop field.
+        $payload = @{ systemMessage = $message }
+    }
+    $payload | ConvertTo-Json -Depth 5 -Compress | ForEach-Object { [Console]::Out.WriteLine($_) }
     exit 0
 }
 
