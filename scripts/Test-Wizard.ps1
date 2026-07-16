@@ -153,9 +153,15 @@ try {
         # the engine folder/script under the friendly name.
         $eng = 'hooks\Hook-Maker\Cross-Project-.ai-Knowledge-Sync\Cross-Project-.ai-Knowledge-Sync.ps1'
         $engCfg = 'hooks\Hook-Maker\Cross-Project-.ai-Knowledge-Sync\sync-hooks.json'
+        $engProjects = 'hooks\Hook-Maker\Cross-Project-.ai-Knowledge-Sync\SYNC-PROJECTS.txt'
         Check "$name command uses the local engine copy" ($jc -like ('*' + $eng.Replace('\', '\\') + '*') -and $jc -notlike '*Hook Maker*')
         Check "$name claude runtime copy complete" ((Test-Path (Join-Path $proj (Join-Path '.claude' $eng))) -and (Test-Path (Join-Path $proj '.claude\hooks\Hook-Maker\_hooklib.ps1')) -and (Test-Path (Join-Path $proj (Join-Path '.claude' $engCfg))))
         Check "$name codex runtime copy complete" ((Test-Path (Join-Path $proj (Join-Path '.codex' $eng))) -and (Test-Path (Join-Path $proj (Join-Path '.codex' $engCfg))))
+        foreach ($clientDir in @('.claude', '.codex')) {
+            $projectList = Join-Path $proj (Join-Path $clientDir $engProjects)
+            $projectListText = ''; if (Test-Path $projectList) { $projectListText = [System.IO.File]::ReadAllText($projectList) }
+            Check "$name $clientDir runtime lists the sync projects" ((Test-Path $projectList) -and $projectListText.Contains($a3) -and $projectListText.Contains($b3))
+        }
         # The copied engine must actually RUN from inside the project with the
         # copied config: fire it once via stdin and require a clean exit.
         $localEngine = Join-Path $proj (Join-Path '.claude' $eng)
@@ -205,6 +211,18 @@ try {
     }
     Check 'batch applies each hook recommended events in both clients' $recommendedEventsApplied
     Check 'summary lists all eight (8 event lines)' (([regex]::Matches($r.Out, 'events:')).Count -ge 8)
+
+    # =====================================================================
+    Write-Host '--- repeated project prompts + confirmation back navigation ---' -ForegroundColor Cyan
+    $cfgBack = Join-Path $Work 'cfg-back.json'; New-Config $cfgBack
+    $backA = New-Proj 'BackA'; $backB = New-Proj 'BackB'
+    # Configure two hooks with shared targets, back from confirmation, then
+    # enter done immediately: existing targets must still be present.
+    $rBack = Invoke-Wizard -Config $cfgBack -Answers @('1', '1', '2,3', '1', '1', $backA, $backB, 'done', '0', 'done', 'exit')
+    $projectPromptNumbers = @([regex]::Matches($rBack.Out, '(?m)^(\d+)\. Project root path') | ForEach-Object { [int]$_.Groups[1].Value })
+    Check 'each repeated project prompt advances the question number' ($projectPromptNumbers.Count -ge 3 -and $projectPromptNumbers[1] -eq ($projectPromptNumbers[0] + 1) -and $projectPromptNumbers[2] -eq ($projectPromptNumbers[1] + 1))
+    Check 'confirmation back returns to project entry instead of the hook list' (([regex]::Matches($rBack.Out, 'Add Projects')).Count -eq 2 -and ([regex]::Matches($rBack.Out, 'Available hooks')).Count -eq 1)
+    Check 'confirmation back preserves the existing project list' (([regex]::Matches($rBack.Out, 'projects: BackA, BackB')).Count -eq 4)
 
     # =====================================================================
     Write-Host '--- multi-select: sync group (1) combined with a hook runs both, once ---' -ForegroundColor Cyan

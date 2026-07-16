@@ -457,18 +457,21 @@ function Get-ClientInstallLabel {
 function Read-ProjectList {
     param(
         [int]$MinimumCount = 2,
-        [switch]$ShowAiNote
+        [switch]$ShowAiNote,
+        [object[]]$InitialProjects = @()
     )
 
     Write-PhaseHeader 'Add Projects' $C.Input '-'
     Write-MenuTitle 'Target projects:'
     Write-Host (Get-Painted ('  Enter each project root path, one per line (at least ' + $MinimumCount + ').') $C.Gray)
 
-    $example = Get-ExampleText 'G:\Projects\My Bot'
-    $prompt = New-QuestionPrompt 'Project root path' ('done=finish, undo=remove last; example: ' + $example) $null
-
     $projects = New-Object System.Collections.Generic.List[object]
+    foreach ($project in @($InitialProjects)) {
+        [void]$projects.Add($project)
+    }
+    $example = Get-ExampleText 'G:\Projects\My Bot'
     while ($true) {
+        $prompt = New-QuestionPrompt 'Project root path' ('done=finish, undo=remove last; example: ' + $example) $null
         $value = Read-Answer $prompt 'project root path'
         if ($value -eq '0') {
             Write-Log 'INFO' 'INPUT' 'User backed out of project entry.'
@@ -1298,6 +1301,7 @@ function Invoke-InstallExistingHook {
 
         # ---- gather config (same for all, or per hook) ----
         $plans = $null
+        $sharedTargets = $false
         if ($selected.Count -eq 1) {
             $cfg = Read-HookConfig
             if ($null -eq $cfg) { continue }
@@ -1315,6 +1319,7 @@ function Invoke-InstallExistingHook {
             if ($mode -eq '1') {
                 $cfg = Read-HookConfig ' (all selected hooks)' -SkipEvents
                 if ($null -eq $cfg) { continue }
+                $sharedTargets = $true
                 $plans = @($selected | ForEach-Object {
                     $hookConfig = [pscustomobject]@{ Events = @(Get-HookRecommendedEvents $_); Clients = $cfg.Clients; Targets = @($cfg.Targets) }
                     [pscustomobject]@{ Hook = $_; Config = $hookConfig }
@@ -1338,28 +1343,42 @@ function Invoke-InstallExistingHook {
         }
 
         # ---- summary ----
-        Write-PhaseHeader 'Summary' $C.Summary '-'
-        for ($i = 0; $i -lt $plans.Count; $i++) {
-            $plan = $plans[$i]
-            Write-MenuLine ($i + 1) (Get-HookFriendlyName $plan.Hook.Name)
-            Write-Field '     events' ($plan.Config.Events -join ', ')
-            Write-Field '     client' $plan.Config.Clients
-            Write-Field '     projects' (@($plan.Config.Targets | ForEach-Object { $_.Name }) -join ', ')
-        }
-        Write-Host ''
-        Write-Field 'install' 'self-contained copy per project (.claude/.codex hooks\Hook-Maker\<name>\)'
-        Write-PhaseHeader 'Confirm' $C.Confirm '-'
-        $confirm = Read-YesNo (New-QuestionPrompt 'Start now?' 'y/n' 'y') $true 'start multi hook install'
-        if ($null -eq $confirm) { continue }
-        if ($confirm -ne $true) {
-            if ($ranSyncGroup) {
-                Write-NoteLine 'Canceled. The sync group was applied; the remaining hook(s) were not installed.'
+        while ($true) {
+            Write-PhaseHeader 'Summary' $C.Summary '-'
+            for ($i = 0; $i -lt $plans.Count; $i++) {
+                $plan = $plans[$i]
+                Write-MenuLine ($i + 1) (Get-HookFriendlyName $plan.Hook.Name)
+                Write-Field '     events' ($plan.Config.Events -join ', ')
+                Write-Field '     client' $plan.Config.Clients
+                Write-Field '     projects' (@($plan.Config.Targets | ForEach-Object { $_.Name }) -join ', ')
             }
-            else {
-                Write-NoteLine 'Canceled. Nothing was installed.'
+            Write-Host ''
+            Write-Field 'install' 'self-contained copy per project (.claude/.codex hooks\Hook-Maker\<name>\)'
+            Write-PhaseHeader 'Confirm' $C.Confirm '-'
+            $confirm = Read-YesNo (New-QuestionPrompt 'Start now?' 'y/n' 'y') $true 'start multi hook install'
+            if ($null -eq $confirm) {
+                $lastPlan = $plans[$plans.Count - 1]
+                $editedTargets = Read-ProjectList -MinimumCount 1 -InitialProjects @($lastPlan.Config.Targets)
+                if ($null -eq $editedTargets) { continue }
+                if ($sharedTargets) {
+                    foreach ($plan in $plans) { $plan.Config.Targets = @($editedTargets) }
+                }
+                else {
+                    $lastPlan.Config.Targets = @($editedTargets)
+                }
+                continue
             }
-            Write-Log 'INFO' 'CUSTOM' 'User declined at confirmation; no install.'
-            return 'done'
+            if ($confirm -ne $true) {
+                if ($ranSyncGroup) {
+                    Write-NoteLine 'Canceled. The sync group was applied; the remaining hook(s) were not installed.'
+                }
+                else {
+                    Write-NoteLine 'Canceled. Nothing was installed.'
+                }
+                Write-Log 'INFO' 'CUSTOM' 'User declined at confirmation; no install.'
+                return 'done'
+            }
+            break
         }
 
         # ---- install ----
