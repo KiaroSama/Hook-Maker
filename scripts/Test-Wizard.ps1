@@ -38,7 +38,8 @@ function Invoke-Wizard {
     [System.IO.File]::WriteAllText($inF, (($Answers -join "`r`n") + "`r`n"), (New-Object System.Text.UTF8Encoding $false))
     $argLine = '-NoLogo -NoProfile -File "' + $Setup + '" -ConfigPath "' + $Config + '"'
     if ($NoInstall) { $argLine += ' -NoInstall' }
-    $p = Start-Process pwsh -ArgumentList $argLine -RedirectStandardInput $inF -RedirectStandardOutput $outF -RedirectStandardError $errF -Wait -NoNewWindow -PassThru
+    $hostExecutable = (Get-Process -Id $PID).Path
+    $p = Start-Process $hostExecutable -ArgumentList $argLine -RedirectStandardInput $inF -RedirectStandardOutput $outF -RedirectStandardError $errF -Wait -NoNewWindow -PassThru
     $out = ''; if (Test-Path $outF) { $out = [System.IO.File]::ReadAllText($outF) }
     $err = ''; if (Test-Path $errF) { $err = ([System.IO.File]::ReadAllText($errF)).Trim() }
     return [pscustomobject]@{ Exit = $p.ExitCode; Out = [regex]::Replace($out, "\x1b\[[0-9;]*m", ''); Err = $err }
@@ -111,6 +112,21 @@ try {
     Check 'one full-mesh profile written' ($prof1.Count -eq 1 -and $prof1[0].id -match '^sync-group-[0-9a-f]{10}$' -and @($prof1[0].routes).Count -eq 2)
 
     # =====================================================================
+    Write-Host '--- back navigation returns exactly one menu level ---' -ForegroundColor Cyan
+    $cfgNav = Join-Path $Work 'cfg-nav.json'; New-Config $cfgNav
+    $rNav = Invoke-Wizard -Config $cfgNav -Answers @(
+        '1', '1', '1', '0', # sync-group project entry -> hook list
+        '0',                # hook list -> create/install menu
+        '2', '0',           # create-hook first prompt -> create/install menu
+        '3', '0',           # config-install hook list -> create/install menu
+        '0',                # create/install menu -> main menu
+        'exit'
+    )
+    Check 'sync-group project back returns to the hook list' (([regex]::Matches($rNav.Out, 'Tip: use lists and ranges')).Count -eq 2)
+    Check 'sub-flow back always returns to the create/install menu' (([regex]::Matches($rNav.Out, 'Create or Install a Hook')).Count -eq 4)
+    Check 'create/install back returns to the main menu' (([regex]::Matches($rNav.Out, 'Main menu:')).Count -eq 2)
+
+    # =====================================================================
     Write-Host '--- install a real hook (list offset + Claude-only targeting) ---' -ForegroundColor Cyan
     $cfg2 = Join-Path $Work 'cfg2.json'; New-Config $cfg2
     $t = New-Proj 'T2'
@@ -168,7 +184,8 @@ try {
         $localCfg = Join-Path $proj (Join-Path '.claude' $engCfg)
         $inE = Join-Path $Work ('eng-' + $name + '.json'); $outE = "$inE.out"; $errE = "$inE.err"
         [System.IO.File]::WriteAllText($inE, (@{ session_id = 'wiztest'; cwd = $proj; hook_event_name = 'SessionStart' } | ConvertTo-Json -Compress), (New-Object System.Text.UTF8Encoding $false))
-        $pe = Start-Process pwsh -ArgumentList ('-NoLogo -NoProfile -NonInteractive -File "' + $localEngine + '" -ConfigPath "' + $localCfg + '" -Profile "' + $profId3 + '"') -RedirectStandardInput $inE -RedirectStandardOutput $outE -RedirectStandardError $errE -Wait -NoNewWindow -PassThru
+        $engineHost = (Get-Process -Id $PID).Path
+        $pe = Start-Process $engineHost -ArgumentList ('-NoLogo -NoProfile -NonInteractive -File "' + $localEngine + '" -ConfigPath "' + $localCfg + '" -Profile "' + $profId3 + '"') -RedirectStandardInput $inE -RedirectStandardOutput $outE -RedirectStandardError $errE -Wait -NoNewWindow -PassThru
         $errText = ''; if (Test-Path $errE) { $errText = ([System.IO.File]::ReadAllText($errE)).Trim() }
         Check "$name local engine copy runs cleanly" ($pe.ExitCode -eq 0 -and $errText -eq '')
     }
