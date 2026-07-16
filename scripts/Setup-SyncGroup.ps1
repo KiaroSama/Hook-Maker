@@ -631,7 +631,7 @@ function Invoke-CreateGroup {
     if ($null -eq $config) {
         Write-ErrorLine ('Config file not found or empty: ' + $ConfigPath)
         Write-Log 'ERROR' 'CONFIG' ('Config missing or empty: ' + $ConfigPath)
-        return
+        return 'back'
     }
 
     $events = @('SessionStart', 'UserPromptSubmit')
@@ -680,7 +680,7 @@ function Invoke-CreateGroup {
             if ($configProjects.Count -ge 2) {
                 $useConfig = Read-YesNo (New-QuestionPrompt 'Use the project paths from the config?' ($configProjects.Count.ToString() + ' path(s) in the engine .env') 'y') $true 'use sync config'
                 if ($null -eq $useConfig) {
-                    return
+                    return 'back'
                 }
                 if ($useConfig -eq $true) {
                     $projects = @($configProjects)
@@ -689,7 +689,7 @@ function Invoke-CreateGroup {
             if ($null -eq $projects) {
                 $projects = Read-ProjectList -MinimumCount 2 -ShowAiNote
                 if ($null -eq $projects) {
-                    return
+                    return 'back'
                 }
             }
             $groupProfile = New-GroupProfile -Projects $projects
@@ -751,7 +751,7 @@ function Invoke-CreateGroup {
         if ($confirm -ne $true) {
             Write-NoteLine 'Canceled. Nothing was changed.'
             Write-Log 'INFO' 'GROUP' 'User declined at confirmation; no changes applied.'
-            return
+            return 'canceled'
         }
         break
     }
@@ -851,6 +851,7 @@ function Invoke-CreateGroup {
     }
     $installSummary = if ($NoInstall) { 'not installed (-NoInstall)' } else { $clients + ' in ' + $projects.Count + ' project(s)' }
     Write-Log 'INFO' 'DONE' ('Sync group applied: ' + $groupProfile.id + ' | routes=' + $routeCount + ' | events=' + ($events -join ',') + ' | install=' + $installSummary + ' | durationMs=' + $stopwatch.ElapsedMilliseconds)
+    return 'done'
 }
 
 # -------------------------------------------------- custom hook flow (2) ----
@@ -1291,7 +1292,9 @@ function Invoke-InstallExistingHook {
             if ($indices.Count -gt 0) {
                 Write-NoteLine ('  Running the sync group first, then installing ' + $indices.Count + ' more hook(s)...')
             }
-            Invoke-CreateGroup
+            $groupResult = Invoke-CreateGroup
+            if ($groupResult -eq 'back') { continue }
+            if ($groupResult -eq 'canceled') { return 'done' }
             $ranSyncGroup = $true
             if ($indices.Count -eq 0) { return 'done' }
             Write-PhaseHeader 'Install an Existing Hook' $C.Input '-'

@@ -25,7 +25,7 @@ function New-Repo {
 }
 
 function Fire {
-    param([string]$Cwd, [string]$EventName = 'Stop', [string]$Exe = 'pwsh', $RawStdin = $null)
+    param([string]$Cwd, [string]$EventName = 'Stop', [string]$Exe = '', $RawStdin = $null)
     $payload = $RawStdin
     if ($null -eq $payload) {
         $payload = @{ session_id = 't'; cwd = $Cwd; hook_event_name = $EventName } | ConvertTo-Json
@@ -35,7 +35,7 @@ function Fire {
     $outFile = Join-Path $Work ('out-' + $token + '.txt')
     $errFile = Join-Path $Work ('err-' + $token + '.txt')
     [System.IO.File]::WriteAllText($inFile, $payload, (New-Object System.Text.UTF8Encoding $false))
-    $file = $Exe
+    $file = if ([string]::IsNullOrWhiteSpace($Exe)) { (Get-Process -Id $PID).Path } else { $Exe }
     $argLine = '-NoLogo -NoProfile -ExecutionPolicy Bypass -File "' + $Hook + '"'
     $proc = Start-Process -FilePath $file -ArgumentList $argLine -RedirectStandardInput $inFile -RedirectStandardOutput $outFile -RedirectStandardError $errFile -Wait -NoNewWindow -PassThru
     $out = if (Test-Path -LiteralPath $outFile) { ([System.IO.File]::ReadAllText($outFile)).Trim() } else { '' }
@@ -98,39 +98,54 @@ try {
     $prePushRuntime = Join-Path $pushRepo '.git\hooks\Hook-Maker'
     $ignoreCommand = $nativeBody.IndexOf('Ignore-Rules-Check.ps1')
     $secretsCommand = $nativeBody.IndexOf('Secrets-Check.ps1')
-    $largeCommand = $nativeBody.IndexOf('Large-File-Check.ps1')
     $previousCommand = $nativeBody.IndexOf('.hookmaker-existing')
-    Check 'pre-push bundles all three self-contained checks' (
+    Check 'pre-push bundles only the two push-safety checks' (
         (Test-Path -LiteralPath (Join-Path $prePushRuntime 'Ignore-Rules-Check\Ignore-Rules-Check.ps1')) -and
         (Test-Path -LiteralPath (Join-Path $prePushRuntime 'Secrets-Check\Secrets-Check.ps1')) -and
-        (Test-Path -LiteralPath (Join-Path $prePushRuntime 'Large-File-Check\Large-File-Check.ps1')))
-    Check 'pre-push order is Ignore then Secrets then Large File then previous hook' (
-        $ignoreCommand -ge 0 -and $ignoreCommand -lt $secretsCommand -and $secretsCommand -lt $largeCommand -and $largeCommand -lt $previousCommand)
+        -not (Test-Path -LiteralPath (Join-Path $prePushRuntime 'Large-File-Check')) -and
+        $nativeBody -notmatch 'Large-File-Check\.ps1')
+    Check 'pre-push order is Ignore then Secrets then previous hook' (
+        $ignoreCommand -ge 0 -and $ignoreCommand -lt $secretsCommand -and $secretsCommand -lt $previousCommand)
 
     $remote = Join-Path $Work 'remote.git'
     & git init -q --bare $remote
     & git -C $pushRepo remote add origin $remote
+    $ErrorActionPreference = 'Continue'
     $pushOutput = (& git -C $pushRepo push -u origin main 2>&1 | Out-String)
-    Check 'first push is blocked after auto-fixing missing ignore rules' ($LASTEXITCODE -ne 0 -and $pushOutput -match 'IGNORE RULES CHECK' -and (Test-Path -LiteralPath (Join-Path $pushRepo '.gitignore'))) $pushOutput
+    $pushExit = $LASTEXITCODE
+    $ErrorActionPreference = 'Stop'
+    Check 'first push is blocked after auto-fixing missing ignore rules' ($pushExit -ne 0 -and $pushOutput -match 'IGNORE RULES CHECK' -and (Test-Path -LiteralPath (Join-Path $pushRepo '.gitignore'))) $pushOutput
 
     & git -C $pushRepo add .gitignore
     & git -C $pushRepo commit -q -m c2
     [System.IO.File]::WriteAllText((Join-Path $pushRepo '.env'), 'API_KEY=fixture-value-123456789', (New-Object System.Text.UTF8Encoding $false))
+    $ErrorActionPreference = 'Continue'
     $pushOutput = (& git -C $pushRepo push -u origin main 2>&1 | Out-String)
-    Check 'Secrets-Check blocks before Large File and previous hook' ($LASTEXITCODE -ne 0 -and $pushOutput -match 'SECRETS CHECK' -and -not (Test-Path -LiteralPath (Join-Path $pushRepo 'previous-hook.txt'))) $pushOutput
+    $pushExit = $LASTEXITCODE
+    $ErrorActionPreference = 'Stop'
+    Check 'Secrets-Check blocks before the previous hook' ($pushExit -ne 0 -and $pushOutput -match 'SECRETS CHECK' -and -not (Test-Path -LiteralPath (Join-Path $pushRepo 'previous-hook.txt'))) $pushOutput
 
     [System.IO.File]::WriteAllText((Join-Path $pushRepo 'use.txt'), 'API_KEY', (New-Object System.Text.UTF8Encoding $false))
     [System.IO.File]::WriteAllLines((Join-Path $pushRepo 'big.ps1'), @(1..801 | ForEach-Object { '# line' }), (New-Object System.Text.UTF8Encoding $false))
     & git -C $pushRepo add use.txt big.ps1
     & git -C $pushRepo commit -q -m c3
+    $largeHook = Join-Path (Split-Path -Parent $PSScriptRoot) 'hooks\Large-File-Check\Large-File-Check.ps1'
+    $largePrePushOutput = (& $largeHook -GitPrePush 2>&1 | Out-String)
+    Check 'Large-File-Check never decides whether a push may proceed' ($LASTEXITCODE -eq 0 -and [string]::IsNullOrWhiteSpace($largePrePushOutput)) $largePrePushOutput
+    $ErrorActionPreference = 'Continue'
     $pushOutput = (& git -C $pushRepo push -u origin main 2>&1 | Out-String)
-    Check 'Large-File-Check blocks before previous hook' ($LASTEXITCODE -ne 0 -and $pushOutput -match 'LARGE FILE CHECK' -and -not (Test-Path -LiteralPath (Join-Path $pushRepo 'previous-hook.txt'))) $pushOutput
+    $pushExit = $LASTEXITCODE
+    $ErrorActionPreference = 'Stop'
+    Check 'large source files do not block push and the previous hook runs' ($pushExit -eq 0 -and $pushOutput -notmatch 'LARGE FILE CHECK' -and (Test-Path -LiteralPath (Join-Path $pushRepo 'previous-hook.txt'))) $pushOutput
 
     [System.IO.File]::WriteAllText((Join-Path $pushRepo 'big.ps1'), '# small', (New-Object System.Text.UTF8Encoding $false))
     & git -C $pushRepo add big.ps1
     & git -C $pushRepo commit -q -m c4
+    $ErrorActionPreference = 'Continue'
     $pushOutput = (& git -C $pushRepo push -u origin main 2>&1 | Out-String)
-    Check 'clean push succeeds and still runs the previous hook' ($LASTEXITCODE -eq 0 -and (Test-Path -LiteralPath (Join-Path $pushRepo 'previous-hook.txt'))) $pushOutput
+    $pushExit = $LASTEXITCODE
+    $ErrorActionPreference = 'Stop'
+    Check 'clean push succeeds and still runs the previous hook' ($pushExit -eq 0 -and (Test-Path -LiteralPath (Join-Path $pushRepo 'previous-hook.txt'))) $pushOutput
 }
 finally {
     if ($KeepArtifacts) {

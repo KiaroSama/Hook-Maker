@@ -21,6 +21,9 @@ param([switch]$GitPrePush)
 Set-StrictMode -Version 2.0
 $ErrorActionPreference = 'Stop'
 
+# Large-file guidance is advisory task context, never a push authorization gate.
+if ($GitPrePush) { exit 0 }
+
 . (Join-Path $PSScriptRoot '..\_hooklib.ps1')
 
 $hookInput = if ($GitPrePush) {

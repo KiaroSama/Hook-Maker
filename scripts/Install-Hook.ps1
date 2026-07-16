@@ -308,7 +308,10 @@ function Install-IgnorePrePush {
         return $destinationScript
     }
     $secretsScript = Copy-PrePushCompanion 'Secrets-Check'
-    $largeFileScript = Copy-PrePushCompanion 'Large-File-Check'
+    $staleLargeFileCheck = Join-Path $runtimeRoot 'Large-File-Check'
+    if (Test-Path -LiteralPath $staleLargeFileCheck) {
+        Remove-Item -LiteralPath $staleLargeFileCheck -Recurse -Force
+    }
     $prePush = Join-Path $hooksPath 'pre-push'
     $previous = $prePush + '.hookmaker-existing'
     $marker = '# Hook Maker: Ignore-Rules-Check'
@@ -320,7 +323,7 @@ function Install-IgnorePrePush {
         }
     }
 
-    $commands = @($runtime.Script, $secretsScript, $largeFileScript) | ForEach-Object {
+    $commands = @($runtime.Script, $secretsScript) | ForEach-Object {
         $scriptPath = $_.Replace('\', '/').Replace('$', '\$').Replace('`', '\`')
         'powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "' + $scriptPath + '" -GitPrePush || exit $?'
     }
