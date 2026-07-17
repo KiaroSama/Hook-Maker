@@ -100,3 +100,11 @@ jobs:
       - name: Git-Sync-Check test suite
         shell: pwsh
         run: .\scripts\Test-GitSyncCheck.ps1
+
+      # Dependency-Version-Check hook: npm/pip outdated classification, GitHub
+      # Actions/runtime-pin/Docker static checks, cache/fingerprint gating.
+      # npm/pip are PATH-shimmed (same convention as the gh shim) - no live
+      # registry calls in CI.
+      - name: Dependency-Version-Check test suite
+        shell: pwsh
+        run: .\scripts\Test-DependencyVersionCheck.ps1

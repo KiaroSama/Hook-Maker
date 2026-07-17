@@ -101,9 +101,9 @@ try {
         '7\. Github-Baseline-Check', '8\. Git-Sync-Check', '9\. Graph-Read-Check',
         '10\. Graph-Update-Check', '11\. Large-File-Check', '12\. Mcp-Usage-Check',
         '13\. Rules-Check', '14\. Skills-Check', '15\. Secrets-Check',
-        '16\. Ignore-Rules-Check', '17\. Cloudflare-Deploy'
+        '16\. Ignore-Rules-Check', '17\. Dependency-Version-Check', '18\. Cloudflare-Deploy'
     ) -join '[\s\S]*'
-    Check 'hooks follow the requested menu order (Select all -> sync group -> hooks, Cloudflare-Deploy last)' ($r.Out -match $menuOrder)
+    Check 'hooks follow the requested menu order (Select all -> sync group -> hooks -> Dependency-Version-Check -> Cloudflare-Deploy last)' ($r.Out -match $menuOrder)
     Check '_hooklib excluded from listing' ($r.Out -notmatch '_hooklib')
     Check 'full back suffix on sub-prompts' ($r.Out -match 'back=0' -and $r.Out -match 'quit=exit')
     Check 'main-menu suffix is quit-only' ($r.Out -match 'Select an option.*\{quit=exit\}')
@@ -195,11 +195,11 @@ try {
     Write-Host '--- multi-select install (range + list, recommended events) ---' -ForegroundColor Cyan
     $cfg4 = Join-Path $Work 'cfg4.json'; New-Config $cfg4
     $m = New-Proj 'Multi'
-    # main 1 -> sub 1 -> "3-8,15,17" (eight advisory hooks incl. Cloudflare-Deploy,
+    # main 1 -> sub 1 -> "3-8,15,18" (eight advisory hooks incl. Cloudflare-Deploy,
     #        now the LAST individual entry; the engine is excluded from this
     #        list entirely, see the guard test below)
     #        -> mode 1 (recommended events per hook) -> client Both -> target -> done -> start -> exit
-    $r = Invoke-Wizard -Config $cfg4 -Answers @('1', '1', '3-8,15,17', '1', '1', $m, 'done', '', '0')
+    $r = Invoke-Wizard -Config $cfg4 -Answers @('1', '1', '3-8,15,18', '1', '1', $m, 'done', '', '0')
     Check 'exit 0' ($r.Exit -eq 0)
     Check 'no stderr' ($r.Err -eq '')
     Check 'selection accepts a range combined with a single item' ($r.Out -notmatch 'Enter number\(s\)')
