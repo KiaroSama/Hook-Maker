@@ -108,3 +108,16 @@ jobs:
       - name: Dependency-Version-Check test suite
         shell: pwsh
         run: .\scripts\Test-DependencyVersionCheck.ps1
+
+      # Cloudflare-Deploy hook: deployment-worthiness/environment/pre-deploy
+      # review/post-deploy verification/failure-handling wording, cooldown.
+      # Offline, no network, never actually deploys.
+      - name: Cloudflare-Deploy test suite
+        shell: pwsh
+        run: .\scripts\Test-CloudflareDeploy.ps1
+
+      # Graph-Update-Check hook: structural-impact criteria (not file count),
+      # staleness detection, cooldown. Offline, no network.
+      - name: Graph-Update-Check test suite
+        shell: pwsh
+        run: .\scripts\Test-GraphUpdateCheck.ps1
