@@ -1,6 +1,7 @@
-# CloudflareDeploy - after a task ends (Stop), reminds the agent to deploy to
-# Cloudflare Workers WHEN IT IS WARRANTED. The AI decides; nothing is deployed
-# automatically by this script.
+# CloudflareDeploy - after a task ends (Stop), reminds the agent to work
+# through BOTH a deployment-worthiness decision and post-deployment
+# verification. The AI decides; nothing is deployed or verified automatically
+# by this script - it never deploys merely because a wrangler config exists.
 #
 # Token-efficient by design:
 # - Fires only in projects with a wrangler config (wrangler.toml/.json/.jsonc)
@@ -86,6 +87,14 @@ if ($null -ne (Get-Command git -ErrorAction SilentlyContinue)) {
 New-Item -ItemType Directory -Path $stateDir -Force | Out-Null
 [System.IO.File]::WriteAllText($statePath, [DateTime]::UtcNow.ToString('o'))
 
-$reason = 'CLOUDFLARE DEPLOY CHECK: this project deploys to Cloudflare Workers (' + $wranglerConfig + ' found). Decide for yourself: if the finished task should go live, run the release checks first (tests/build pass, docs match, no secrets or local-only files staged) and then deploy with: ' + $deployCommand + '  If it is not deploy-worthy (partial work, experiments, docs-only), finish now - this reminder respects a cooldown.'
+$reasonLines = New-Object System.Collections.Generic.List[string]
+[void]$reasonLines.Add('CLOUDFLARE DEPLOY CHECK: this project deploys to Cloudflare Workers (' + $wranglerConfig + ' found). Deployment is NOT automatic just because this config exists - work through both steps below.')
+[void]$reasonLines.Add('1) Deployment-worthiness: deploy ONLY if the task is complete (not partial/experimental/local-only diagnostic), relevant tests/typecheck/lint/build pass, the exact release commit is known, CI for that commit is green if this repo uses CI (or an explicit documented policy allows otherwise), no secrets/local-only/debug files or unrelated changes are included, the target environment and any required bindings/migrations are understood, and project/user rules permit it. If any of that is not true - or the change is documentation-only, an experiment, or the release commit is not known - finish now WITHOUT deploying and briefly state why.')
+[void]$reasonLines.Add('2) Environment: explicitly decide production / staging / preview-development / a named Wrangler environment before deploying - never silently default to production - and use the matching Wrangler config/command for it.')
+[void]$reasonLines.Add('3) Cloudflare-specific pre-deploy review, only where relevant to this diff: Worker name and account/environment selection, environment-specific variables, bindings, D1 databases and migrations, KV namespaces, R2 buckets, Queues, Durable Objects and migrations, service bindings, routes/custom domains, cron triggers, compatibility date/flags, deployment CLI/version compatibility, and build output. Never print secret values.')
+[void]$reasonLines.Add('4) If deployment is warranted, run: ' + $deployCommand)
+[void]$reasonLines.Add('5) Post-deployment verification is REQUIRED - do not claim deployment succeeded solely because the command exited 0. Record the target environment, deployed Worker/project, exact source commit SHA, the deploy command used (excluding secrets), and the deployment/version identifier or URL. Then perform the smallest appropriate check: smoke-test the public/staging URL, call a health endpoint, verify the changed feature, inspect recent Cloudflare deployment output/logs, verify routes/bindings, or confirm migrations completed. If verification cannot be performed, state that limitation accurately instead of assuming success.')
+[void]$reasonLines.Add('6) On failure: do not repeatedly redeploy blindly - inspect the actual failure, fix only confirmed deployment/configuration issues, rerun relevant local validation, retry only when safe, never hide a failed deployment, and never claim the task is live if it is not. This reminder respects a cooldown.')
+$reason = $reasonLines.ToArray() -join "`n"
 @{ decision = 'block'; reason = $reason } | ConvertTo-Json -Compress
 exit 0

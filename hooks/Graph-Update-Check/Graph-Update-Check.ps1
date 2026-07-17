@@ -1,6 +1,11 @@
 # GraphUpdateCheck - after a task ends (Stop), checks whether the graphify
 # knowledge graph is stale and, if so, asks the AI to decide whether updating
-# it is worth it (graphify update . is AST-only, no API cost).
+# it is worth it (graphify update . is AST-only, no API cost). The decision is
+# based on STRUCTURAL impact (symbols, exports, imports, call/inheritance
+# relationships, entry points, cross-file dependencies) - never on how many
+# files changed: a single-file change can still be graph-relevant (a renamed
+# export, a changed call relationship) while a multi-file change can be
+# graph-irrelevant (docs-only, formatting-only, generated output).
 #
 # Token-efficient by design:
 # - Fires only when graphify-out\graph.json exists AND the latest project work
@@ -68,6 +73,6 @@ if ($workTime -le $graphTime.AddMinutes(2)) {
 New-Item -ItemType Directory -Path $stateDir -Force | Out-Null
 [System.IO.File]::WriteAllText($statePath, [DateTime]::UtcNow.ToString('o'))
 
-$reason = 'GRAPH UPDATE CHECK: graphify-out/graph.json predates the latest project changes. Per the graphify rule, decide for yourself: if this task changed code structure (files, functions, cross-file relationships), run: graphify update .  (AST-only, no API cost). Do NOT update for tiny edits, documentation-only changes, or one-file fixes - in that case finish now; this reminder returns after future changes.'
+$reason = 'GRAPH UPDATE CHECK: graphify-out/graph.json predates the latest project changes. Decide for yourself based on STRUCTURAL impact, not the number of files changed - a single-file change can still be graph-relevant (e.g. an added/removed/renamed function or class, a changed export, import, call, or inheritance relationship, a new entry point, a changed cross-file dependency), while a multi-file change can be graph-irrelevant (prose/comments/formatting only, a literal or config value change, generated output, tests only unless test architecture is intentionally represented in the graph). If this task changed graph-relevant structure, run: graphify update .  (AST-only, no API cost). Otherwise finish now without updating; this reminder returns after future changes.'
 @{ decision = 'block'; reason = $reason } | ConvertTo-Json -Compress
 exit 0
