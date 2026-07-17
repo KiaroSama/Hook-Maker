@@ -1,7 +1,10 @@
 # SkillsCheck - before work starts (SessionStart), injects a compact Skill
 # Policy reminder: check whether a relevant skill exists BEFORE doing the work
 # manually, activate the minimal set, and record it. The AI decides; trivial
-# edits need no skills.
+# edits need no skills. It also requires the final task summary to report
+# exactly which skills were actually used - never merely installed, available,
+# discovered, copied, considered, or read but not followed - so a trivial task
+# is never forced to invent skill usage just to produce that line.
 #
 # Token-efficient by design:
 # - Completely silent when no skill source exists (no library, no copied
@@ -73,6 +76,7 @@ if ($hasRecord) {
 if ($hasLibrary) {
     [void]$lines.Add('- Skill library: ' + $libraryDir + '. If a relevant skill is missing here, copy the minimal set (1-5) into .claude\skills and record it.')
 }
+[void]$lines.Add('- In the final task summary, add a concise "Skills used: <name1>, <name2>" line listing ONLY the exact skill names actually invoked or materially followed during this task - never a skill that was merely installed, available, discovered, copied, considered, or read but not used, and never the whole library. Omit the line entirely if no skill was actually used; do not force a skill for trivial tasks just to produce it.')
 
 @{ hookSpecificOutput = @{ hookEventName = $eventName; additionalContext = ($lines.ToArray() -join "`n") } } |
     ConvertTo-Json -Depth 5 -Compress

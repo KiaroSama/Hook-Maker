@@ -130,6 +130,12 @@ try {
     $hook1 = New-ConfiguredSkillsHookCopy -EnvOverrides @{ SKILLS_DIR = (Join-Path $Work 'no-such-library') }
     $r = Fire -HookPath $hook1 -Cwd $proj1
     Check 'lists the copied skill folder name' ($r.Out -like '*SKILL POLICY CHECK*' -and $r.Out -like '*my-skill*') $r.Out
+    Check 'requires a final "Skills used:" summary line for skills actually used' ($r.Out -match 'Skills used:') $r.Out
+    Check 'the policy explicitly excludes merely-installed/available/considered/copied-but-unused skills' (
+        $r.Out -match 'never a skill that was merely installed, available, discovered, copied, considered, or read but not used') $r.Out
+    Check 'the policy requires omitting the line entirely when no skill was used' ($r.Out -match 'Omit the line entirely if no skill was actually used') $r.Out
+    Check 'the policy forbids listing the whole library' ($r.Out -match 'never the whole library') $r.Out
+    Check 'the policy does not force a skill for trivial tasks merely to produce the line' ($r.Out -match 'do not force a skill for trivial tasks') $r.Out
 
     # =====================================================================
     Write-Host '--- Skills-Check: reports .ai/SKILLS.md record ---' -ForegroundColor Cyan
