@@ -29,6 +29,10 @@ logs/
 # It is auto-created from sync-hooks.example.json on first wizard run.
 /sync-hooks.json
 
+# Machine-local install registry/history (which hooks Hook Maker has
+# installed and where) - used by "Update previously installed hooks".
+/state/
+
 # Hook Maker: local/private files (auto-managed)
 /.env
 /.env.*

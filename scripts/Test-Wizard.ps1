@@ -28,6 +28,11 @@ $script:TestPreviewLength = 400
 $Work = Join-Path ([System.IO.Path]::GetTempPath()) ('hookmaker-wiztest-' + [guid]::NewGuid().ToString('N').Substring(0, 8))
 New-Item -ItemType Directory -Path $Work -Force | Out-Null
 Write-Host ("Workspace: $Work") -ForegroundColor DarkGray
+# Isolates Install-Hook.ps1's install registry (state\install-registry.json,
+# written whenever the wizard installs anything) away from this real
+# checkout's own registry - shared for the whole file's Invoke-Wizard calls,
+# same convention as an isolated LOCALAPPDATA elsewhere in this test suite.
+$IsolatedStateDir = Join-Path $Work 'state'
 
 # Drives the wizard with a list of stdin answers. Returns exit code, ANSI-stripped
 # stdout, and trimmed stderr. A fresh config + project dirs per run keep it isolated.
@@ -39,7 +44,17 @@ function Invoke-Wizard {
     $argLine = '-NoLogo -NoProfile -File "' + $Setup + '" -ConfigPath "' + $Config + '"'
     if ($NoInstall) { $argLine += ' -NoInstall' }
     $hostExecutable = (Get-Process -Id $PID).Path
-    $p = Start-Process $hostExecutable -ArgumentList $argLine -RedirectStandardInput $inF -RedirectStandardOutput $outF -RedirectStandardError $errF -Wait -NoNewWindow -PassThru
+    $startArgs = @{
+        FilePath = $hostExecutable; ArgumentList = $argLine; RedirectStandardInput = $inF
+        RedirectStandardOutput = $outF; RedirectStandardError = $errF
+        Wait = $true; NoNewWindow = $true; PassThru = $true
+    }
+    if ((Get-Command Start-Process).Parameters.ContainsKey('Environment')) {
+        # -Environment MERGES with the inherited environment (see LESSON.md) -
+        # this only adds HOOKMAKER_STATE_DIR, everything else stays inherited.
+        $startArgs.Environment = @{ HOOKMAKER_STATE_DIR = $IsolatedStateDir }
+    }
+    $p = Start-Process @startArgs
     $out = ''; if (Test-Path $outF) { $out = [System.IO.File]::ReadAllText($outF) }
     $err = ''; if (Test-Path $errF) { $err = ([System.IO.File]::ReadAllText($errF)).Trim() }
     return [pscustomobject]@{ Exit = $p.ExitCode; Out = [regex]::Replace($out, "\x1b\[[0-9;]*m", ''); Err = $err }
@@ -94,6 +109,26 @@ try {
     Check 'engine is NOT a separate numbered list entry' ($r.Out -notmatch '\d+\.\s+Cross-Project')
     Check 'listing shows timing tags' ($r.Out -match '\[post-task\]' -and $r.Out -match '\[pre-task\]')
     Check 'Docs-Freshness-Check (When=both) renders the [pre+post-task] timing tag' ($r.Out -match 'Docs-Freshness-Check[\s\S]*?\[pre\+post-task\]')
+    # Regression: Ignore-Rules-Check's metadata used to say When='pre+post', a
+    # value Get-HookTimingTag's switch never recognized (only pre/post/both),
+    # so it silently rendered NO tag at all; Skills-Check's real recommended
+    # events (SessionStart,UserPromptSubmit,Stop) were marked pre-only despite
+    # including Stop. Both are normalized to 'both' now - verify every single
+    # shipped hook renders exactly one recognized, non-blank timing tag, and
+    # that these two specific hooks render the correct pre+post tag.
+    Check 'Ignore-Rules-Check renders a recognized (non-blank) timing tag' ($r.Out -match 'Ignore-Rules-Check[\s\S]*?\[(pre|post|pre\+post)-task\]') $r.Out
+    Check 'Ignore-Rules-Check renders the [pre+post-task] tag (real events: SessionStart,Stop)' ($r.Out -match 'Ignore-Rules-Check[\s\S]*?\[pre\+post-task\]') $r.Out
+    Check 'Skills-Check renders the [pre+post-task] tag (real events include Stop)' ($r.Out -match 'Skills-Check[\s\S]*?\[pre\+post-task\]') $r.Out
+    $allShippedHookCount = @(Get-ChildItem -LiteralPath (Join-Path (Split-Path -Parent $PSScriptRoot) 'hooks') -Directory -ErrorAction SilentlyContinue | Where-Object { $_.Name -ne 'Cross-Project-.ai-Knowledge-Sync' }).Count
+    $preTagCount = @([regex]::Matches($r.Out, '\[pre-task\]')).Count
+    $postTagCount = @([regex]::Matches($r.Out, '\[post-task\]')).Count
+    $bothTagCount = @([regex]::Matches($r.Out, '\[pre\+post-task\]')).Count
+    # +1 accounts for the sync engine's own hardcoded, correctly-accurate
+    # "Create or update a sync group | [pre-task] | ..." line (item 2) - it is
+    # not one of the $script:HookMeta-driven hook-list entries counted by
+    # $allShippedHookCount, but this single render of the hook list still
+    # shows it exactly once alongside the real per-hook entries.
+    Check 'every shipped hook renders exactly one valid, non-empty timing tag' (($preTagCount + $postTagCount + $bothTagCount) -eq ($allShippedHookCount + 1)) ('pre=' + $preTagCount + ' post=' + $postTagCount + ' both=' + $bothTagCount + ' expected=' + ($allShippedHookCount + 1))
     Check 'listing shows short descriptions' ($r.Out -match 'relevant \.ai context files' -and $r.Out -match 'checks global \+ project rules')
     Check 'menu parts are pipe-separated' ($r.Out -match 'Create or update a sync group \| \[pre-task\] \| cross-project \.ai knowledge sync')
     $menuOrder = @(
@@ -134,8 +169,11 @@ try {
     $cfg2 = Join-Path $Work 'cfg2.json'; New-Config $cfg2
     $t = New-Proj 'T2'
     # main 1 -> sub 1 (install existing) -> item 3 (displayed as Ai-Context-Check,
-    # internally Ai-Memory-Check) -> events SessionStart -> client Claude -> target -> done -> start
-    $r = Invoke-Wizard -Config $cfg2 -Answers @('1', '1', '3', '2', '2', $t, 'done', '', '0')
+    # internally Ai-Memory-Check, whose recommended events are 'Stop' - so
+    # choice 1 in the single-hook event menu is now that recommendation; choice
+    # 3 is the explicit "Session Start" alone this test actually wants) ->
+    # events Session Start (explicit, not the recommendation) -> client Claude -> target -> done -> start
+    $r = Invoke-Wizard -Config $cfg2 -Answers @('1', '1', '3', '3', '2', $t, 'done', '', '0')
     Check 'exit 0' ($r.Exit -eq 0)
     Check 'no stderr' ($r.Err -eq '')
     Check 'event menu separates camel-case labels' ($r.Out -match 'Session Start \+ User Prompt Submit' -and $r.Out -match 'User Prompt Submit' -and $r.Out -match 'Pre Tool Use, Post Tool Use, Stop')
@@ -143,6 +181,7 @@ try {
     Check 'claude settings written' (Test-Path $claude2)
     $j2 = ''; if (Test-Path $claude2) { $j2 = [System.IO.File]::ReadAllText($claude2) }
     Check 'item 3 installed the FIRST real hook (Ai-Memory-Check)' ($j2 -match 'Ai-Memory-Check\.ps1')
+    Check 'explicit choice 3 (Session Start alone) registered only SessionStart, not the Stop recommendation' (@(Get-RegisteredEvents $claude2 'Ai-Memory-Check') -join ',' -eq 'SessionStart')
     Check 'did not install a neighbor hook' ($j2 -notmatch 'Ci-Status-Check')
     Check 'Claude-only leaves codex untouched' (-not (Test-Path (Join-Path $t '.codex\hooks.json')) -and -not (Test-Path (Join-Path $t '.codex')))
     # Self-contained install: the command points at a runtime copy INSIDE the
@@ -152,6 +191,35 @@ try {
     Check 'runtime copy of the hook exists' (Test-Path (Join-Path $t '.claude\hooks\Hook-Maker\Ai-Memory-Check\Ai-Memory-Check.ps1'))
     Check 'runtime copy of _hooklib exists' (Test-Path (Join-Path $t '.claude\hooks\Hook-Maker\_hooklib.ps1'))
     Check 'runtime copy has no .env.example' (-not (Test-Path (Join-Path $t '.claude\hooks\Hook-Maker\Ai-Memory-Check\.env.example')))
+
+    # =====================================================================
+    Write-Host '--- single-hook install now defaults to THAT hook''s recommended events (regression) ---' -ForegroundColor Cyan
+    # Before the fix, a single-hook pick always opened the generic 4-choice
+    # event menu (default SessionStart+UserPromptSubmit on a bare Enter),
+    # regardless of what the hook actually needed - a Stop-only hook like
+    # Cloudflare-Deploy or a SessionStart+Stop hook like Docs-Freshness-Check
+    # could silently be installed on the wrong events by just pressing Enter.
+    $shippedHookCountForEventsTest = @(Get-ChildItem -LiteralPath (Join-Path (Split-Path -Parent $PSScriptRoot) 'hooks') -Directory -ErrorAction SilentlyContinue | Where-Object { $_.Name -ne 'Cross-Project-.ai-Knowledge-Sync' }).Count
+    $cfgRecStop = Join-Path $Work 'cfg-rec-stop.json'; New-Config $cfgRecStop
+    $recStopProj = New-Proj 'RecommendedStopOnly'
+    # main 1 -> sub 1 -> last individual entry (Cloudflare-Deploy, Stop-only) ->
+    # events: blank Enter (choice 1 = recommended) -> client Both -> target -> done -> start
+    $rRecStop = Invoke-Wizard -Config $cfgRecStop -Answers @('1', '1', ($shippedHookCountForEventsTest + 2).ToString(), '', '1', $recStopProj, 'done', '', '0')
+    Check 'exit 0 (recommended-events single-hook install, Stop-only)' ($rRecStop.Exit -eq 0) $rRecStop.Err
+    Check 'the recommended-events choice names the actual events' ($rRecStop.Out -match "This hook's recommended events.*\(Stop\)")
+    $recStopClaude = Join-Path $recStopProj '.claude\settings.local.json'
+    Check 'Cloudflare-Deploy installed' (Test-Path $recStopClaude)
+    Check 'a bare Enter on the recommended-events choice registers exactly Stop, not SessionStart+UserPromptSubmit' (@(Get-RegisteredEvents $recStopClaude 'Cloudflare-Deploy') -join ',' -eq 'Stop')
+
+    $cfgRecBoth = Join-Path $Work 'cfg-rec-both.json'; New-Config $cfgRecBoth
+    $recBothProj = New-Proj 'RecommendedSessionStartStop'
+    # item 9 = Docs-Freshness-Check (recommended events: SessionStart,Stop).
+    $rRecBoth = Invoke-Wizard -Config $cfgRecBoth -Answers @('1', '1', '9', '', '1', $recBothProj, 'done', '', '0')
+    Check 'exit 0 (recommended-events single-hook install, SessionStart+Stop)' ($rRecBoth.Exit -eq 0) $rRecBoth.Err
+    Check 'the recommended-events choice names both actual events' ($rRecBoth.Out -match 'This hook''s recommended events.*\(SessionStart, Stop\)')
+    $recBothClaude = Join-Path $recBothProj '.claude\settings.local.json'
+    Check 'Docs-Freshness-Check installed' (Test-Path $recBothClaude)
+    Check 'a bare Enter on the recommended-events choice registers exactly SessionStart+Stop' (@(@(Get-RegisteredEvents $recBothClaude 'Docs-Freshness-Check') | Sort-Object) -join ',' -eq 'SessionStart,Stop')
 
     # =====================================================================
     Write-Host '--- sync group with a real install (both clients) ---' -ForegroundColor Cyan
@@ -436,6 +504,12 @@ try {
     $cfgAcl = Join-Path $Work 'cfg-acl.json'; New-Config $cfgAcl
     $aclOk = New-Proj 'AclOkProj'
     $aclBlocked = New-Proj 'AclBlockedProj'
+    # A third project whose .ai already existed BEFORE this run (with real
+    # content) - it must survive untouched regardless of the later failure.
+    $aclPreExisting = New-Proj 'AclPreExistingProj'
+    $aclPreExistingAi = Join-Path $aclPreExisting '.ai'
+    New-Item -ItemType Directory -Path $aclPreExistingAi -Force | Out-Null
+    [System.IO.File]::WriteAllText((Join-Path $aclPreExistingAi 'memory.md'), 'pre-existing content', (New-Object System.Text.UTF8Encoding $false))
     $aclUser = $env:USERNAME
     $aclApplied = $false
     try {
@@ -448,13 +522,25 @@ try {
             catch { $aclRepro = ($_.Exception -is [System.UnauthorizedAccessException]) }
             Check 'ACL fixture reproduces the reported UnauthorizedAccessException' $aclRepro
 
-            $rAcl = Invoke-Wizard -Config $cfgAcl -Answers @('1', '1', '2', $aclOk, $aclBlocked, 'done', '1', '', '0', 'exit')
+            # Order matters: aclOk (succeeds first), aclPreExisting (already
+            # has .ai, untouched), aclBlocked (fails last) - proves a LATER
+            # project's failure rolls back an EARLIER project's already-
+            # created empty .ai directory from the SAME run.
+            $rAcl = Invoke-Wizard -Config $cfgAcl -Answers @('1', '1', '2', $aclOk, $aclPreExisting, $aclBlocked, 'done', '1', '', '0', 'exit')
             Check 'an unwritable .ai directory does NOT crash the wizard (exit 0, no fatal)' ($rAcl.Exit -eq 0 -and $rAcl.Err -notmatch 'UnauthorizedAccessException') ($rAcl.Err)
             Check 'the failing project path is reported' ($rAcl.Out -match 'Could not create 1 knowledge' -and $rAcl.Out -match 'AclBlockedProj') $rAcl.Out
             Check 'it states nothing was changed' ($rAcl.Out -match 'Nothing was changed') $rAcl.Out
             Check 'the wizard returns to the hook list instead of exiting' ((([regex]::Matches($rAcl.Out, 'Available hooks')).Count) -ge 2) $rAcl.Out
             $profAcl = @((Get-Content $cfgAcl -Raw | ConvertFrom-Json).profiles)
             Check 'no sync profile is written when a .ai directory could not be created' ($profAcl.Count -eq 0)
+            # Regression: a LATER project's failure must not leave an EARLIER
+            # project's just-created empty .ai directory behind while the
+            # wizard claims "nothing was changed".
+            Check 'an earlier project''s just-created .ai directory is rolled back (not left behind)' (-not (Test-Path -LiteralPath (Join-Path $aclOk '.ai')))
+            # A pre-existing .ai directory (present before this run) must never
+            # be touched, rolled back, or have its content altered.
+            Check 'a pre-existing .ai directory is never touched by the rollback' ((Test-Path -LiteralPath $aclPreExistingAi -PathType Container) -and (Test-Path -LiteralPath (Join-Path $aclPreExistingAi 'memory.md')))
+            Check 'a pre-existing .ai directory''s content is unmodified' ([System.IO.File]::ReadAllText((Join-Path $aclPreExistingAi 'memory.md')) -eq 'pre-existing content')
         }
         else {
             Write-Host '[SKIP] icacls deny could not be applied; skipping the unwritable-.ai regression' -ForegroundColor Yellow

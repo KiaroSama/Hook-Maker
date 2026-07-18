@@ -31,6 +31,10 @@ $FakeAppData = Join-Path $Work 'appdata'
 New-Item -ItemType Directory -Path $Work, $FakeAppData -Force | Out-Null
 Write-Host ("Workspace: $Work") -ForegroundColor DarkGray
 $SavedLocalAppData = $env:LOCALAPPDATA
+# Isolates Install-Hook.ps1's install registry (state\install-registry.json)
+# away from this real checkout's own registry for every in-process & call.
+$SavedHookMakerStateDir = $env:HOOKMAKER_STATE_DIR
+$env:HOOKMAKER_STATE_DIR = Join-Path $Work 'state'
 
 function Fire {
     # $RawStdin intentionally UNTYPED: [string] coerces $null to '' (see LESSON.md).
@@ -874,6 +878,7 @@ try {
     Check '5.1 host: auto-append + report works' ($r.Exit -eq 0 -and $r.Out -like '*Auto-added*HOST_TOKEN*' -and $r.Out -notlike '*abcdefghij1234567890*') $r.Out
 }
 finally {
+    $env:HOOKMAKER_STATE_DIR = $SavedHookMakerStateDir
     if (-not $KeepArtifacts) {
         try {
             Get-ChildItem -LiteralPath $Work -Recurse -Force -ErrorAction SilentlyContinue |
