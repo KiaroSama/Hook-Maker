@@ -247,7 +247,11 @@ engine, from any client/scope combination) is recorded — through the same shar
 install parameters needed to reproduce a refresh — never `.env` values, secret values, file
 contents, or any prompt/tool-input content. Reinstalling the same hook into the same scope updates
 its existing entry instead of creating a duplicate. Registry writes are atomic and guarded by a
-bounded lock file, so two installs running at once cannot lose each other's records. The lock is
+bounded lock file, so two installs running at once cannot lose each other's records. The same
+crash-aware primitive guards **each settings file** during its read-modify-write, so two processes
+installing different hooks into one settings file cannot lose each other's handlers (verified with
+two real concurrent processes). Locks are taken one at a time — Claude settings, then Codex
+settings, then the registry, never nested — so no deadlock cycle can form. The lock is
 **crash-aware**: it is held as an open exclusive handle carrying non-secret owner metadata (PID,
 process start time, host, timestamp, token), so a lock left behind by a killed process is
 recognized as an orphan and reclaimed instead of blocking every future write forever.
@@ -323,8 +327,8 @@ caused the atomic write to land *inside* it while reporting success.)
   can still need one reinstall.
 - Per-component *history* is not persisted in the registry yet — outcomes are reported for the
   current run, but past attempts are not kept per component.
-- Concurrency is protected only around the registry (see above); settings files and runtime
-  directories still have no lock of their own.
+- Runtime directories and the native Git integration do not have locks of their own; the registry
+  and each settings file do.
 
 ### Custom-hook source boundaries
 

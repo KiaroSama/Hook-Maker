@@ -550,29 +550,35 @@ if (-not $CodexOnly) {
     # on the Hook Maker folder (or on the other client's files).
     $claudeRuntime = Copy-HookRuntime -ClientDir (Split-Path -Parent $ClaudeSettings)
     $claudeCommands = New-HookCommands -Runtime $claudeRuntime
-    $claude = Read-OrCreateJsonObject $ClaudeSettings
-    $claudeHooks = Ensure-Property -Object $claude -Name 'hooks' -DefaultValue ([pscustomobject]@{})
-    # Prune this hook's old registrations from EVERY event (a re-install may
-    # use fewer events, and old entries can point into the old tool folder).
-    # Member enumeration (.Properties.Name) throws under StrictMode when the
-    # object has no properties yet, so collect the names explicitly.
-    $existingEvents = @()
-    foreach ($property in $claudeHooks.PSObject.Properties) { $existingEvents += $property.Name }
-    foreach ($existingEvent in $existingEvents) {
-        Remove-StaleHandlers -HooksObject $claudeHooks -EventName $existingEvent
-    }
-    foreach ($eventName in $Events) {
-        $handler = [pscustomobject][ordered]@{ type = 'command'; command = $claudeCommands.Windows; timeout = 60 }
-        $group = if ($eventName -eq 'SessionStart') {
-            [pscustomobject][ordered]@{ matcher = 'startup|resume|clear|compact'; hooks = @($handler) }
+    # The whole read-modify-write is held under a crash-aware lock on THIS
+    # settings file, so two installs touching the same file cannot lose each
+    # other's handlers. Locks are taken one at a time (Claude, then Codex,
+    # then the registry) and never nested, so no deadlock cycle can form.
+    Invoke-WithResourceLock -ResourcePath $ClaudeSettings -Action {
+        $claude = Read-OrCreateJsonObject $ClaudeSettings
+        $claudeHooks = Ensure-Property -Object $claude -Name 'hooks' -DefaultValue ([pscustomobject]@{})
+        # Prune this hook's old registrations from EVERY event (a re-install may
+        # use fewer events, and old entries can point into the old tool folder).
+        # Member enumeration (.Properties.Name) throws under StrictMode when the
+        # object has no properties yet, so collect the names explicitly.
+        $existingEvents = @()
+        foreach ($property in $claudeHooks.PSObject.Properties) { $existingEvents += $property.Name }
+        foreach ($existingEvent in $existingEvents) {
+            Remove-StaleHandlers -HooksObject $claudeHooks -EventName $existingEvent
         }
-        else {
-            [pscustomobject][ordered]@{ hooks = @($handler) }
+        foreach ($eventName in $Events) {
+            $handler = [pscustomobject][ordered]@{ type = 'command'; command = $claudeCommands.Windows; timeout = 60 }
+            $group = if ($eventName -eq 'SessionStart') {
+                [pscustomobject][ordered]@{ matcher = 'startup|resume|clear|compact'; hooks = @($handler) }
+            }
+            else {
+                [pscustomobject][ordered]@{ hooks = @($handler) }
+            }
+            Add-HookGroup -HooksObject $claudeHooks -EventName $eventName -Group $group -ExactCommand $claudeCommands.Windows
         }
-        Add-HookGroup -HooksObject $claudeHooks -EventName $eventName -Group $group -ExactCommand $claudeCommands.Windows
+        Backup-File $ClaudeSettings
+        Write-JsonFile -Value $claude -Path $ClaudeSettings
     }
-    Backup-File $ClaudeSettings
-    Write-JsonFile -Value $claude -Path $ClaudeSettings
     Set-ComponentResult -Component 'claude' -Status 'ok'
     Write-Host "Claude hook ($ScopeLabel) installed in: $ClaudeSettings"
     Write-Host "Claude runtime copy: $($claudeRuntime.Script)"
@@ -581,31 +587,37 @@ if (-not $CodexOnly) {
 if (-not $ClaudeOnly) {
     $codexRuntime = Copy-HookRuntime -ClientDir (Split-Path -Parent $CodexHooks)
     $codexCommands = New-HookCommands -Runtime $codexRuntime
-    $codex = Read-OrCreateJsonObject $CodexHooks
-    $codexHooksObject = Ensure-Property -Object $codex -Name 'hooks' -DefaultValue ([pscustomobject]@{})
-    $existingEvents = @()
-    foreach ($property in $codexHooksObject.PSObject.Properties) { $existingEvents += $property.Name }
-    foreach ($existingEvent in $existingEvents) {
-        Remove-StaleHandlers -HooksObject $codexHooksObject -EventName $existingEvent
+    # The whole read-modify-write is held under a crash-aware lock on THIS
+    # settings file, so two installs touching the same file cannot lose each
+    # other's handlers. Locks are taken one at a time (Claude, then Codex,
+    # then the registry) and never nested, so no deadlock cycle can form.
+    Invoke-WithResourceLock -ResourcePath $CodexHooks -Action {
+        $codex = Read-OrCreateJsonObject $CodexHooks
+        $codexHooksObject = Ensure-Property -Object $codex -Name 'hooks' -DefaultValue ([pscustomobject]@{})
+        $existingEvents = @()
+        foreach ($property in $codexHooksObject.PSObject.Properties) { $existingEvents += $property.Name }
+        foreach ($existingEvent in $existingEvents) {
+            Remove-StaleHandlers -HooksObject $codexHooksObject -EventName $existingEvent
+        }
+        foreach ($eventName in $Events) {
+            $handler = [pscustomobject][ordered]@{
+                type = 'command'
+                command = $codexCommands.Portable
+                commandWindows = $codexCommands.Windows
+                timeout = 60
+                statusMessage = $status
+            }
+            $group = if ($eventName -eq 'SessionStart') {
+                [pscustomobject][ordered]@{ matcher = 'startup|resume|clear|compact'; hooks = @($handler) }
+            }
+            else {
+                [pscustomobject][ordered]@{ hooks = @($handler) }
+            }
+            Add-HookGroup -HooksObject $codexHooksObject -EventName $eventName -Group $group -ExactCommand $codexCommands.Windows
+        }
+        Backup-File $CodexHooks
+        Write-JsonFile -Value $codex -Path $CodexHooks
     }
-    foreach ($eventName in $Events) {
-        $handler = [pscustomobject][ordered]@{
-            type = 'command'
-            command = $codexCommands.Portable
-            commandWindows = $codexCommands.Windows
-            timeout = 60
-            statusMessage = $status
-        }
-        $group = if ($eventName -eq 'SessionStart') {
-            [pscustomobject][ordered]@{ matcher = 'startup|resume|clear|compact'; hooks = @($handler) }
-        }
-        else {
-            [pscustomobject][ordered]@{ hooks = @($handler) }
-        }
-        Add-HookGroup -HooksObject $codexHooksObject -EventName $eventName -Group $group -ExactCommand $codexCommands.Windows
-    }
-    Backup-File $CodexHooks
-    Write-JsonFile -Value $codex -Path $CodexHooks
     Set-ComponentResult -Component 'codex' -Status 'ok'
     Write-Host "Codex hook ($ScopeLabel) installed in: $CodexHooks"
     Write-Host "Codex runtime copy: $($codexRuntime.Script)"
