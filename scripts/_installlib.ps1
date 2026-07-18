@@ -74,6 +74,9 @@ function ConvertTo-ManifestArray {
 # script renamed to <FriendlyName>.ps1, every other file in the hook's source
 # folder (including a real .env - hashed whole, never read), and, for the sync
 # engine, the routing config copied in as sync-hooks.json.
+# Delegates to the CANONICAL install plan so the updater's expectation is
+# derived from exactly the same description the installer builds from - a
+# separate approximation here is what previously let the two drift apart.
 function Get-ManagedSourceManifest {
     param(
         [Parameter(Mandatory = $true)][string]$ToolRoot,
@@ -81,43 +84,12 @@ function Get-ManagedSourceManifest {
         [Parameter(Mandatory = $true)][string]$SourceDir,
         [Parameter(Mandatory = $true)][string]$FriendlyName,
         [string]$ConfigPath = '',
-        [switch]$IncludeConfig
+        [switch]$IncludeConfig,
+        [string]$ProfileId = ''
     )
-    $entries = New-Object System.Collections.Generic.List[object]
-
-    $hookLib = Join-Path $ToolRoot 'hooks\_hooklib.ps1'
-    if (Test-Path -LiteralPath $hookLib -PathType Leaf) {
-        [void]$entries.Add([pscustomobject]@{ path = '_hooklib.ps1'; hash = (Get-FileSha256 $hookLib) })
-    }
-
-    $mainRelative = $FriendlyName + '/' + $FriendlyName + '.ps1'
-    [void]$entries.Add([pscustomobject]@{ path = $mainRelative; hash = (Get-FileSha256 $HookScript) })
-
-    # A loose script directly in hooks\ has no folder of companions to copy.
-    if ((Split-Path -Leaf $SourceDir) -ine 'hooks') {
-        $sourceRoot = [System.IO.Path]::GetFullPath($SourceDir).TrimEnd('\') + '\'
-        $mainLeaf = Split-Path -Leaf $HookScript
-        foreach ($file in @(Get-ChildItem -LiteralPath $SourceDir -File -Recurse -Force -ErrorAction SilentlyContinue)) {
-            $leaf = $file.Name
-            if ([string]::Equals($leaf, $mainLeaf, [System.StringComparison]::OrdinalIgnoreCase)) { continue }
-            $skip = $false
-            foreach ($excluded in $script:ManagedSourceExcludedNames) {
-                if ([string]::Equals($leaf, $excluded, [System.StringComparison]::OrdinalIgnoreCase)) { $skip = $true; break }
-            }
-            if ($skip) { continue }
-            $relative = $file.FullName.Substring($sourceRoot.Length)
-            if (-not (Test-ManagedRuntimeFileTracked -RelativePath $relative)) { continue }
-            [void]$entries.Add([pscustomobject]@{ path = ($FriendlyName + '/' + $relative); hash = (Get-FileSha256 $file.FullName) })
-        }
-    }
-
-    if ($IncludeConfig -and -not [string]::IsNullOrWhiteSpace($ConfigPath) -and (Test-Path -LiteralPath $ConfigPath -PathType Leaf)) {
-        [void]$entries.Add([pscustomobject]@{ path = ($FriendlyName + '/sync-hooks.json'); hash = (Get-FileSha256 $ConfigPath) })
-    }
-
-    # .ToArray(): @($aListOfObject) throws "Argument types do not match" on
-    # both PS hosts, even when empty - a documented trap in this project.
-    return ConvertTo-ManifestArray $entries.ToArray()
+    $plan = Get-InstallPlanFor -HookScript $HookScript -ToolRoot $ToolRoot -FriendlyNameOverride $FriendlyName `
+        -ProfileId $ProfileId -ConfigPath $ConfigPath -IsEngine:$IncludeConfig -AllowMissing
+    return ConvertTo-ManifestArray (Get-PlanManifest -Plan $plan)
 }
 
 # The manifest of what is ACTUALLY on disk inside a managed runtime root, in
@@ -446,7 +418,8 @@ function Get-InstallIntegrity {
             -HookScript ([string]$Record.sourceScript) `
             -SourceDir ([string]$Record.sourceDir) `
             -FriendlyName ([string]$Record.friendlyName) `
-            -ConfigPath $configPath -IncludeConfig:$isEngine)
+            -ConfigPath $configPath -IncludeConfig:$isEngine `
+            -ProfileId ([string]$Record.profile))
 
     # 1. Did the source itself change since this install was recorded?
     $recordedSource = @()
@@ -594,9 +567,11 @@ function Read-InstallRegistryState {
     try { $raw = [System.IO.File]::ReadAllText($path, [System.Text.Encoding]::UTF8) }
     catch { return [pscustomobject]@{ State = 'corrupt'; Registry = $null; Path = $path; Reason = ('registry could not be read: ' + $_.Exception.Message) } }
     if ([string]::IsNullOrWhiteSpace($raw)) {
-        # A zero-byte file is an interrupted write, not tracked data worth
-        # preserving - safe to treat as empty.
-        return [pscustomobject]@{ State = 'missing'; Registry = (New-EmptyInstallRegistry); Path = $path; Reason = '' }
+        # A registry file that EXISTS but is empty/whitespace is an interrupted
+        # or truncated write, not an absent registry: the previous contents may
+        # have held real installs. Treat it as corrupt so it is quarantined
+        # rather than silently overwritten. (An absent file is 'missing' above.)
+        return [pscustomobject]@{ State = 'corrupt'; Registry = $null; Path = $path; Reason = 'registry file exists but is empty (interrupted or truncated write)' }
     }
     $parsed = $null
     try { $parsed = $raw | ConvertFrom-Json }
@@ -662,9 +637,66 @@ function Move-CorruptInstallRegistry {
     return $candidate
 }
 
+# Crash-aware exclusive lock.
+#
+# A plain CreateNew lock file is permanently fatal: if the owning process is
+# killed, the file survives and every future write fails forever. This keeps
+# the file OPEN with FileShare.None for as long as the lock is held, so the OS
+# releases the handle when the owner dies - which is what makes a leftover file
+# distinguishable from a live lock:
+#
+#   * can't open it exclusively  -> a live owner still holds it -> wait.
+#   * can open it exclusively    -> no live owner -> it is an orphan we may
+#                                   reclaim (we already hold the handle).
+#
+# Ownership metadata (PID, process start time, host, creation UTC, random
+# token - all non-secret) is written for diagnosability and to guard against
+# PID reuse: a recorded PID that now belongs to a process with a DIFFERENT
+# start time is not the original owner.
+function Open-CrashAwareLock {
+    param(
+        [Parameter(Mandatory = $true)][string]$LockPath,
+        [int]$TimeoutSeconds = 10
+    )
+    $deadline = [DateTime]::UtcNow.AddSeconds($TimeoutSeconds)
+    while ($true) {
+        $stream = $null
+        try {
+            # OpenOrCreate + FileShare.None: succeeds only when no live owner
+            # holds the file. An orphan left by a killed process has no open
+            # handle, so this reclaims it instead of failing forever.
+            $stream = [System.IO.File]::Open($LockPath, [System.IO.FileMode]::OpenOrCreate, [System.IO.FileAccess]::ReadWrite, [System.IO.FileShare]::None)
+        }
+        catch {
+            if ([DateTime]::UtcNow -gt $deadline) {
+                throw ('Timed out waiting for the lock held by another Hook Maker process (' + $LockPath + '). Nothing was changed.')
+            }
+            Start-Sleep -Milliseconds 100
+            continue
+        }
+        try {
+            $process = Get-Process -Id $PID
+            $owner = [pscustomobject][ordered]@{
+                pid              = $PID
+                processStartUtc  = $process.StartTime.ToUniversalTime().ToString('o')
+                host             = [System.Net.Dns]::GetHostName()
+                acquiredUtc      = [DateTime]::UtcNow.ToString('o')
+                ownerToken       = [guid]::NewGuid().ToString('N')
+            }
+            $bytes = [System.Text.UTF8Encoding]::new($false).GetBytes(($owner | ConvertTo-Json -Compress))
+            $stream.SetLength(0)
+            $stream.Write($bytes, 0, $bytes.Length)
+            $stream.Flush()
+        }
+        catch {
+            # Metadata is diagnostic only - never fail the lock over it.
+        }
+        return $stream
+    }
+}
+
 # Bounded exclusive lock around registry read-modify-write so two installs
-# running near-simultaneously cannot lose each other's records. Uses atomic
-# CreateNew (fails if the lock exists) rather than a check-then-create race.
+# running near-simultaneously cannot lose each other's records.
 function Invoke-WithInstallRegistryLock {
     param(
         [Parameter(Mandatory = $true)][string]$ToolRoot,
@@ -676,19 +708,7 @@ function Invoke-WithInstallRegistryLock {
         New-Item -ItemType Directory -Path $directory -Force | Out-Null
     }
     $lockPath = Join-Path $directory 'install-registry.lock'
-    $deadline = [DateTime]::UtcNow.AddSeconds($TimeoutSeconds)
-    $stream = $null
-    while ($null -eq $stream) {
-        try {
-            $stream = [System.IO.File]::Open($lockPath, [System.IO.FileMode]::CreateNew, [System.IO.FileAccess]::ReadWrite, [System.IO.FileShare]::None)
-        }
-        catch {
-            if ([DateTime]::UtcNow -gt $deadline) {
-                throw ('Timed out waiting for the install registry lock (' + $lockPath + '). No registry change was made.')
-            }
-            Start-Sleep -Milliseconds 100
-        }
-    }
+    $stream = Open-CrashAwareLock -LockPath $lockPath -TimeoutSeconds $TimeoutSeconds
     try { return (& $Action) }
     finally {
         try { $stream.Dispose() } catch { }
@@ -869,11 +889,18 @@ function Set-InstallRecord {
         if ([string]$existingList[$i].id -eq [string]$Record.id) { $existingIndex = $i; break }
     }
     $touchedClients = @(Get-InstalledClientNames -Record $Record)
+    # Read defensively: StrictMode throws on a missing property, and a record
+    # arriving from an older schema (or a partially-built one) must not be able
+    # to abort the whole registry write.
+    $recordResult = ''
+    if ($null -ne $Record.PSObject.Properties['lastResult']) { $recordResult = [string]$Record.lastResult }
+    $recordReason = ''
+    if ($null -ne $Record.PSObject.Properties['lastReason']) { $recordReason = [string]$Record.lastReason }
     $historyEntry = [pscustomobject][ordered]@{
         ts      = $nowIso
-        result  = [string]$Record.lastResult
+        result  = $recordResult
         clients = ($touchedClients -join ',')
-        reason  = [string]$Record.lastReason
+        reason  = $recordReason
     }
     if ($existingIndex -ge 0) {
         $existing = $existingList[$existingIndex]

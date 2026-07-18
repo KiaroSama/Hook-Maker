@@ -247,12 +247,69 @@ engine, from any client/scope combination) is recorded — through the same shar
 install parameters needed to reproduce a refresh — never `.env` values, secret values, file
 contents, or any prompt/tool-input content. Reinstalling the same hook into the same scope updates
 its existing entry instead of creating a duplicate. Registry writes are atomic and guarded by a
-bounded lock file, so two installs running at once cannot lose each other's records.
+bounded lock file, so two installs running at once cannot lose each other's records. The lock is
+**crash-aware**: it is held as an open exclusive handle carrying non-secret owner metadata (PID,
+process start time, host, timestamp, token), so a lock left behind by a killed process is
+recognized as an orphan and reclaimed instead of blocking every future write forever.
+
+### Known limitations
+
+- `_hooklib.ps1` is shared per scope (it sits at the runtime root because each installed hook
+  dot-sources `..\_hooklib.ps1`). Updating one hook therefore rewrites the library that other
+  already-installed hooks load. Giving each hook a private copy requires rewriting the dot-source
+  line inside the copied script and is not implemented yet.
+- Legacy discovery/removal supports only the historical layouts listed under
+  "Registration ownership" above; other historical forms are reported, never rewritten.
+
+### Custom-hook source boundaries
+
+A hook source is installed as one of two things, and the distinction is a
+security boundary, not a convenience:
+
+- **Package** — the script sits in `<hooks root>/<Name>/<Name>.ps1`, i.e. a folder that is a
+  *direct child* of a recognized hooks root. Its (filtered) folder contents are installed with it.
+  `.env.example`-style templates are never shipped, and `.git`, `.ai`, `.claude`, `node_modules`,
+  build output and similar directories are never copied even from inside a package.
+- **Standalone** — anything else, including a loose script in a hooks root. **Only that one file**
+  is installed, and the hook is named after the *script*.
+
+An arbitrary parent directory is never treated as a hook package, so pointing `-CustomHook` at a
+script inside an unrelated project cannot copy that project's `.git`, `.env`, credentials or source
+into a settings-registered runtime directory. Reparse points (symlinks/junctions) are refused
+rather than followed out of the declared boundary.
+
+### Transactional install and update
+
+Replacing a runtime is staged, not destructive: the new tree is built in a sibling staging
+directory and every planned artifact is hash-verified **before** anything live is touched, then
+swapped into place; if the swap itself fails the previous runtime is restored. A failure at any
+earlier point leaves the existing installation exactly as it was, and abandoned staging directories
+from an interrupted run are cleaned up on the next install. Settings files are written the same
+way — serialized to a sibling temp file, re-parsed from disk to prove they load, then atomically
+replaced — so a failure can never leave truncated or unparseable settings behind.
+
+### Registration ownership
+
+A registered handler is recognized as Hook Maker's by its **managed runtime path shape**, checked
+across `command`, `commandWindows` and `command_windows` — never by a bare script basename. Your own
+handler pointing at a script that merely shares a filename with a shipped hook is preserved across
+reinstalls. Two historical layouts are also recognized for migration (the older un-hyphenated
+`HookMaker` runtime root, and the pre-self-contained tool-folder form `…/hooks/<Name>/<Name>.ps1`);
+the second is additionally gated on the hook name matching the installation being acted on.
+
+### Input validation
+
+The installer validates before it mutates anything: `-ClaudeOnly` and `-CodexOnly` are mutually
+exclusive, at least one valid event is required, event names are checked against the supported set
+and deduplicated, and a target project must already exist. An invalid invocation leaves runtime,
+settings, registry and native Git hooks completely untouched.
 
 ### If the registry is damaged
 
-A registry that is unreadable, not valid JSON, structurally invalid, or written by a newer schema
-version is **never** silently treated as empty and overwritten. The next install preserves its exact
+A registry that is unreadable, not valid JSON, structurally invalid, **present but empty/truncated**,
+or written by a newer schema version is **never** silently treated as empty and overwritten. (An
+absent file is genuinely "no registry yet"; a zero-byte one is an interrupted write whose previous
+contents mattered.) The next install preserves its exact
 bytes under `state/install-registry.corrupt-<UTC timestamp>-<short hash>.json`, warns with that
 path, and only then starts a fresh registry. If the file cannot be quarantined, it is left
 completely untouched and the install reports that **tracking failed** — the hook itself may still be
