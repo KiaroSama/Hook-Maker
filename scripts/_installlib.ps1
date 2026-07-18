@@ -1248,6 +1248,38 @@ function Update-InstallRegistry {
         }
         Set-InstallRecord -Registry $registry -Record $Record
         Save-InstallRegistry -ToolRoot $ToolRoot -Registry $registry
+
+        # PERSISTENCE IS VERIFIED, NOT ASSUMED. Writing without checking let a
+        # silent failure look like success: when a DIRECTORY occupied the
+        # registry path, the atomic write moved the temp file INSIDE it and
+        # reported ok, so the install was never actually tracked. Read the
+        # registry back and confirm this exact record is really there.
+        $registryPath = Get-InstallRegistryPath -ToolRoot $ToolRoot
+        if (-not (Test-Path -LiteralPath $registryPath -PathType Leaf)) {
+            return [pscustomobject]@{
+                Ok             = $false
+                QuarantinePath = $quarantinePath
+                Warning        = ('the registry could not be written to ' + $registryPath + ' (the path is not a writable file) - this installation was NOT recorded')
+            }
+        }
+        $verifyState = Read-InstallRegistryState -ToolRoot $ToolRoot
+        if ($verifyState.State -ne 'ok' -or $null -eq $verifyState.Registry) {
+            return [pscustomobject]@{
+                Ok             = $false
+                QuarantinePath = $quarantinePath
+                Warning        = ('the registry did not read back cleanly after writing (' + $verifyState.Reason + ') - this installation may NOT be recorded')
+            }
+        }
+        $persisted = @(@($verifyState.Registry.installs) | Where-Object {
+            $null -ne $_ -and $null -ne $_.PSObject.Properties['id'] -and [string]$_.id -eq [string]$Record.id
+        })
+        if ($persisted.Count -ne 1) {
+            return [pscustomobject]@{
+                Ok             = $false
+                QuarantinePath = $quarantinePath
+                Warning        = 'the record was not found in the registry after writing - this installation was NOT recorded'
+            }
+        }
         return [pscustomobject]@{ Ok = $true; QuarantinePath = $quarantinePath; Warning = $warning }
     })
 }
