@@ -6,8 +6,14 @@
 #
 # It inspects the local project only (manifests, lockfiles, monorepo package
 # dirs, workflow files); no gh or network is needed. It reports concrete gaps
-# and leaves the writing to the agent under the repository rules - it never
-# copies a fixed template and never overwrites existing automation.
+# and leaves the writing to the agent - it never copies a fixed template and
+# never overwrites existing automation. The response is scope-aware: ordinary
+# gaps (missing/weak CI, incomplete Dependabot coverage, optional CodeQL) are
+# advisory for an unrelated task - fixed now only when the user asked for CI/
+# repository/security/release work, the current task directly requires the
+# missing baseline, or a workflow poses a confirmed unsafe risk. A confirmed
+# unsafe workflow (pull_request_target + untrusted checkout) is called out as
+# urgent regardless, though remediation still stays scoped and evidence-based.
 #
 # Silent when: not a git repo, no GitHub remote, the baseline already covers
 # the detected structure, or the same findings were reported within the
@@ -311,6 +317,7 @@ foreach ($workflow in $workflowFiles) {
 
 $meaningfulCi = $false
 $workflowProblems = @()
+$hasImmediateUnsafeRisk = $false
 foreach ($info in $workflowInfos) {
     if ($info.HasValidation -and -not $info.DeployOnly) {
         if ($info.HasDirectTrigger) {
@@ -328,7 +335,10 @@ foreach ($info in $workflowInfos) {
     }
     $text = $info.Text
     if ($text -match '(?im)^\s*continue-on-error:\s*["'']?true["'']?\s*$' -and $info.HasValidation) { $workflowProblems += ($info.Name + ' makes validation non-blocking with continue-on-error') }
-    if ((Test-HasWorkflowTrigger -Text $text -Keywords @('pull_request_target')) -and $text -match 'actions/checkout' -and $text -match '(?i)(github\.event\.pull_request\.head|head\.sha)') { $workflowProblems += ($info.Name + ' uses pull_request_target with untrusted PR checkout') }
+    if ((Test-HasWorkflowTrigger -Text $text -Keywords @('pull_request_target')) -and $text -match 'actions/checkout' -and $text -match '(?i)(github\.event\.pull_request\.head|head\.sha)') {
+        $workflowProblems += ($info.Name + ' uses pull_request_target with untrusted PR checkout')
+        $hasImmediateUnsafeRisk = $true    # confirmed unsafe workflow, an immediate security risk
+    }
 }
 
 if (-not $meaningfulCi -and $hasCode) {
@@ -404,9 +414,15 @@ if (Test-Path -LiteralPath $statePath -PathType Leaf) {
 New-Item -ItemType Directory -Path $stateDir -Force | Out-Null
 [System.IO.File]::WriteAllLines($statePath, @($fingerprint, [DateTime]::UtcNow.ToString('o')))
 
+$scopeNote = if ($hasImmediateUnsafeRisk) {
+    'The pull_request_target + untrusted-checkout finding above is an immediate security risk (a fork PR can run with repository-level permissions) - treat it as urgent even in an otherwise unrelated task, but keep the fix itself scoped and evidence-based (inspect the real workflow first, change only what is actually unsafe).'
+}
+else {
+    'These are advisory for an unrelated task: fix now only when the user asked for CI/repository/security/release setup, the current task directly requires the missing baseline, or a workflow poses a confirmed unsafe risk (see above) - otherwise preserve this finding for a separate task and continue the requested work. Never create or rewrite workflows during an unrelated task, and never treat the optional CodeQL suggestion as mandatory.'
+}
 $message = 'GITHUB BASELINE CHECK (' + $repoSlug + '): the .github automation baseline does not match the project structure:' + "`n" +
     ($findings -join "`n") + "`n" +
-    'Fix per the repository rules: inspect the real project first, use its actual commands, and never blindly copy templates or overwrite working project-specific automation.'
+    $scopeNote + ' When a fix does go ahead: inspect the real project first, use its actual commands, and never blindly copy templates or overwrite working project-specific automation.'
 @{ hookSpecificOutput = @{ hookEventName = $eventName; additionalContext = $message } } |
     ConvertTo-Json -Depth 5 -Compress
 exit 0
