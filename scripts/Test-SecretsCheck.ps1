@@ -256,7 +256,7 @@ try {
     # =====================================================================
     Write-Host '--- git: a real .env file itself tracked ---' -ForegroundColor Cyan
     $proj5 = New-GitProj 'EnvTracked'
-    Write-Utf8 (Join-Path $proj5 '.env') "LEAK_KEY=abcdefghij1234567890`r`n"
+    Write-Utf8 (Join-Path $proj5 '.env') "LEAK_TOKEN=abcdefghij1234567890`r`n"
     Write-Utf8 (Join-Path $proj5 '.gitignore') "secrets.md`n"
     Add-Commit $proj5 'commit env by mistake'
     $r = Fire -Cwd $proj5
@@ -300,6 +300,117 @@ try {
     $r = Fire -Cwd $proj6b
     Check 'a real secret value copy-pasted into a tracked .env.example is still caught' ($r.Out -like '*REAL_TEMPLATE_SECRET*appears in a git-tracked file*.env.example*') $r.Out
     Check 'the tracked-template leak report never contains the raw value' ($r.Out -notlike '*templateleakvalue1234567890*') $r.Out
+
+    # =====================================================================
+    Write-Host '--- classification: PublicConfig keys never register or block ---' -ForegroundColor Cyan
+    $projPub = New-GitProj 'PublicConfigKeys'
+    Write-Utf8 (Join-Path $projPub '.gitignore') ".env`nsecrets.md`n"
+    Write-Utf8 (Join-Path $projPub '.env') "NEXT_PUBLIC_APP_URL=https://example.com`r`nR2_BUCKET=public-assets`r`n"
+    Write-Utf8 (Join-Path $projPub 'wrangler.toml') "name = ""demo""`r`nR2_BUCKET = ""public-assets""`r`n"
+    Add-Commit $projPub 'tracked config referencing the same public values'
+    $r = Fire -Cwd $projPub
+    Check 'NEXT_PUBLIC_APP_URL is not auto-added to secrets.md' ($r.Out -notlike '*NEXT_PUBLIC_APP_URL*') $r.Out
+    Check 'R2_BUCKET is not auto-added to secrets.md' ($r.Out -notlike '*R2_BUCKET*') $r.Out
+    Check 'no secrets.md was created for public-only config' (-not (Test-Path (Join-Path $projPub 'secrets.md')))
+    Check 'tracked reuse of the same public value is not reported as a leak' ($r.Out -notlike '*appears in a git-tracked file*') $r.Out
+    Check 'nothing blocks (exit 0) for public config alone' ($r.Exit -eq 0)
+
+    # Same shape through the real native pre-push path.
+    $projPubPush = New-PushableRepo 'PublicConfigPush'
+    Write-Utf8 (Join-Path $projPubPush '.gitignore') ".env`nsecrets.md`n"
+    Write-Utf8 (Join-Path $projPubPush '.env') "NEXT_PUBLIC_APP_URL=https://example.com`r`nR2_BUCKET=public-assets`r`n"
+    Write-Utf8 (Join-Path $projPubPush 'wrangler.toml') "R2_BUCKET = ""public-assets""`r`n"
+    Add-Commit $projPubPush 'seed'
+    Push-Repo $projPubPush
+    $rPush = FireGitPrePush -Cwd $projPubPush -StdinText (Get-RefUpdateLine -Repo $projPubPush)
+    Check 'a normal push with only public config is NOT blocked' ($rPush.Exit -eq 0) $rPush.Err
+
+    # =====================================================================
+    Write-Host '--- classification: a public-prefixed key with credential evidence still blocks ---' -ForegroundColor Cyan
+    $projPubToken = New-GitProj 'PublicPrefixCredential'
+    Write-Utf8 (Join-Path $projPubToken '.gitignore') ".env`nsecrets.md`n"
+    Write-Utf8 (Join-Path $projPubToken '.env') "PUBLIC_API_TOKEN=zzcredentiallikevalue123456`r`n"
+    Write-Utf8 (Join-Path $projPubToken 'notes.txt') "token: zzcredentiallikevalue123456`r`n"
+    Add-Commit $projPubToken 'seed'
+    $r = Fire -Cwd $projPubToken
+    Check 'PUBLIC_API_TOKEN (key semantics: TOKEN) still classifies as Secret and is auto-added' ($r.Out -like '*Auto-added*PUBLIC_API_TOKEN*') $r.Out
+    Check 'PUBLIC_API_TOKEN leaking into a tracked file still blocks' ($r.Out -like '*PUBLIC_API_TOKEN*appears in a git-tracked file*notes.txt*') $r.Out
+
+    $projPubKey = New-GitProj 'NextPublicApiKey'
+    Write-Utf8 (Join-Path $projPubKey '.gitignore') ".env`nsecrets.md`n"
+    Write-Utf8 (Join-Path $projPubKey '.env') "NEXT_PUBLIC_API_KEY=sk_live_abcdefghij1234567890`r`n"
+    Write-Utf8 (Join-Path $projPubKey 'notes.txt') "sk_live_abcdefghij1234567890`r`n"
+    Add-Commit $projPubKey 'seed'
+    $r = Fire -Cwd $projPubKey
+    Check 'NEXT_PUBLIC_API_KEY with a live-looking key value still classifies as Secret' ($r.Out -like '*Auto-added*NEXT_PUBLIC_API_KEY*') $r.Out
+    Check 'NEXT_PUBLIC_API_KEY leak still blocks despite the public prefix' ($r.Out -like '*NEXT_PUBLIC_API_KEY*appears in a git-tracked file*notes.txt*') $r.Out
+
+    # =====================================================================
+    Write-Host '--- classification: value shape can force Secret or PublicConfig regardless of key wording ---' -ForegroundColor Cyan
+    $projConn = New-GitProj 'ConnectionStringSecret'
+    Write-Utf8 (Join-Path $projConn '.gitignore') ".env`nsecrets.md`n"
+    Write-Utf8 (Join-Path $projConn '.env') "DATABASE_URL=postgres://dbuser:dbpass1234@db.example.com:5432/app`r`n"
+    Write-Utf8 (Join-Path $projConn 'notes.txt') "postgres://dbuser:dbpass1234@db.example.com:5432/app`r`n"
+    Add-Commit $projConn 'seed'
+    $r = Fire -Cwd $projConn
+    Check 'a *_URL key with an embedded username:password still classifies as Secret' ($r.Out -like '*Auto-added*DATABASE_URL*') $r.Out
+    Check 'the embedded-credential connection string still blocks as a leak' ($r.Out -like '*DATABASE_URL*appears in a git-tracked file*notes.txt*') $r.Out
+
+    $projPlainUrl = New-GitProj 'PlainPublicUrl'
+    Write-Utf8 (Join-Path $projPlainUrl '.gitignore') ".env`nsecrets.md`n"
+    Write-Utf8 (Join-Path $projPlainUrl '.env') "API_ORIGIN_URL=https://api.example.com`r`n"
+    Write-Utf8 (Join-Path $projPlainUrl 'notes.txt') "https://api.example.com`r`n"
+    Add-Commit $projPlainUrl 'seed'
+    $r = Fire -Cwd $projPlainUrl
+    Check 'a public URL with no embedded credentials is not registered or blocked' ($r.Out -notlike '*API_ORIGIN_URL*' -and $r.Exit -eq 0) $r.Out
+
+    # =====================================================================
+    Write-Host '--- classification: Unknown is advisory only, never a confirmed leak from a bare match ---' -ForegroundColor Cyan
+    $projUnknown = New-GitProj 'UnknownConfig'
+    Write-Utf8 (Join-Path $projUnknown '.gitignore') ".env`nsecrets.md`n"
+    Write-Utf8 (Join-Path $projUnknown '.env') "WIDGET_ID=abc123`r`n"
+    Write-Utf8 (Join-Path $projUnknown 'notes.txt') "abc123`r`n"
+    Add-Commit $projUnknown 'seed'
+    $r = Fire -Cwd $projUnknown
+    Check 'an ambiguous key is reported as needing classification, not auto-added' ($r.Out -like '*Classification unclear*WIDGET_ID*' -and $r.Out -notlike '*Auto-added*WIDGET_ID*') $r.Out
+    Check 'the ambiguous key is never treated as a confirmed leak from a bare value match' ($r.Out -notlike '*WIDGET_ID*appears in a git-tracked file*') $r.Out
+    Check 'the ambiguous-key advisory does not block the task' ($r.Exit -eq 0)
+
+    # =====================================================================
+    Write-Host '--- classification: explicit local overrides ---' -ForegroundColor Cyan
+    $projOverrideSecret = New-GitProj 'OverrideForcesSecret'
+    Write-Utf8 (Join-Path $projOverrideSecret '.gitignore') ".env`nsecrets.md`n"
+    Write-Utf8 (Join-Path $projOverrideSecret '.env') "INTERNAL_CODE=abc123`r`n"
+    $overrideSecretHook = New-ConfiguredHookCopy @{ SECRET_KEYS = 'INTERNAL_CODE' }
+    $r = Fire -Cwd $projOverrideSecret -HookPath $overrideSecretHook
+    Check 'SECRET_KEYS override forces an otherwise-ambiguous key to classify as Secret' ($r.Out -like '*Auto-added*INTERNAL_CODE*') $r.Out
+
+    $projOverridePublic = New-GitProj 'OverrideForcesPublic'
+    Write-Utf8 (Join-Path $projOverridePublic '.gitignore') ".env`nsecrets.md`n"
+    Write-Utf8 (Join-Path $projOverridePublic '.env') "WIDGET_ID=abc123`r`n"
+    $overridePublicHook = New-ConfiguredHookCopy @{ PUBLIC_CONFIG_KEYS = 'WIDGET_ID' }
+    $r = Fire -Cwd $projOverridePublic -HookPath $overridePublicHook
+    Check 'PUBLIC_CONFIG_KEYS override allows an otherwise-unknown key with no advisory at all' ($r.Exit -eq 0 -and $r.Out -eq '') $r.Out
+
+    $projOverrideConflict = New-GitProj 'OverrideConflict'
+    Write-Utf8 (Join-Path $projOverrideConflict '.gitignore') ".env`nsecrets.md`n"
+    Write-Utf8 (Join-Path $projOverrideConflict '.env') "WIDGET_ID=abc123`r`n"
+    $overrideConflictHook = New-ConfiguredHookCopy @{ SECRET_KEYS = 'WIDGET_ID'; PUBLIC_CONFIG_KEYS = 'WIDGET_ID' }
+    $r = Fire -Cwd $projOverrideConflict -HookPath $overrideConflictHook
+    Check 'SECRET_KEYS wins over PUBLIC_CONFIG_KEYS on the same key' ($r.Out -like '*Auto-added*WIDGET_ID*') $r.Out
+
+    # =====================================================================
+    Write-Host '--- classification: conservative registry cleanup for stale auto-added public config ---' -ForegroundColor Cyan
+    $projCleanup = New-GitProj 'RegistryCleanup'
+    Write-Utf8 (Join-Path $projCleanup '.gitignore') "secrets.md`n"
+    $staleContent = "# Secrets`n`nLocal-only registry.`n`n## NEXT_PUBLIC_APP_URL`n- Purpose: TODO`n- Used by: (auto-detected from .env; update if used elsewhere)`n- Source: x`n- Created: 2026-01-01 (auto-added by Secrets-Check)`n- Value: https://example.com`n`n## MANUAL_SECRET`n- Purpose: a real, user-authored secret`n- Value: keepme123`n"
+    Write-Utf8 (Join-Path $projCleanup 'secrets.md') $staleContent
+    Write-Utf8 (Join-Path $projCleanup '.env') "NEXT_PUBLIC_APP_URL=https://example.com`r`n"
+    $r = Fire -Cwd $projCleanup
+    $cleanedContent = [System.IO.File]::ReadAllText((Join-Path $projCleanup 'secrets.md'))
+    Check 'a stale auto-added PublicConfig entry is removed from secrets.md' ($cleanedContent -notmatch 'NEXT_PUBLIC_APP_URL') $cleanedContent
+    Check 'a user-authored entry is never touched by the cleanup' ($cleanedContent -match 'MANUAL_SECRET' -and $cleanedContent -match 'keepme123') $cleanedContent
+    Check 'the cleanup is reported' ($r.Out -like '*Removed*NEXT_PUBLIC_APP_URL*') $r.Out
 
     # =====================================================================
     Write-Host '--- git: staged/index-only leak detection (confirmed gap) ---' -ForegroundColor Cyan
@@ -355,7 +466,7 @@ try {
     # Nested file path.
     $projNested = New-GitProj 'LeakNestedPath'
     Write-Utf8 (Join-Path $projNested '.gitignore') ".env`nsecrets.md`n"
-    Write-Utf8 (Join-Path $projNested '.env') "NESTED_LEAK=nestedvalue1234567890`r`n"
+    Write-Utf8 (Join-Path $projNested '.env') "NESTED_LEAK_TOKEN=nestedvalue1234567890`r`n"
     New-Item -ItemType Directory -Path (Join-Path $projNested 'src\deep\dir') -Force | Out-Null
     Write-Utf8 (Join-Path $projNested 'src\deep\dir\config.txt') "leaked: nestedvalue1234567890`r`n"
     Add-Commit $projNested 'nested leak'
@@ -365,11 +476,11 @@ try {
     # Path containing spaces (project root and file name both).
     $projSpace = New-GitProj 'Leak With Space'
     Write-Utf8 (Join-Path $projSpace '.gitignore') ".env`nsecrets.md`n"
-    Write-Utf8 (Join-Path $projSpace '.env') "SPACE_LEAK=spacevalue1234567890`r`n"
+    Write-Utf8 (Join-Path $projSpace '.env') "SPACE_LEAK_TOKEN=spacevalue1234567890`r`n"
     Write-Utf8 (Join-Path $projSpace 'my notes.txt') "leaked: spacevalue1234567890`r`n"
     Add-Commit $projSpace 'space leak'
     $r = Fire -Cwd $projSpace
-    Check 'tracked file leak is detected when project/file paths contain spaces' ($r.Out -like '*SPACE_LEAK*appears in a git-tracked file*my notes.txt*') $r.Out
+    Check 'tracked file leak is detected when project/file paths contain spaces' ($r.Out -like '*SPACE_LEAK_TOKEN*appears in a git-tracked file*my notes.txt*') $r.Out
     Check 'no secret value ever appears in output or stderr (leak regression block)' (
         $r.Out -notlike '*spacevalue1234567890*' -and $r.Err -notlike '*spacevalue1234567890*'
     ) ($r.Out + $r.Err)
@@ -414,7 +525,7 @@ try {
     Write-Utf8 (Join-Path $outClean '.gitignore') ".env`nsecrets.md`n"
     Add-Commit $outClean 'baseline'
     Push-Repo $outClean
-    Write-Utf8 (Join-Path $outClean '.env') "CLEANRANGE_KEY=cleanrangevalue1234567890`r`n"
+    Write-Utf8 (Join-Path $outClean '.env') "CLEANRANGE_TOKEN=cleanrangevalue1234567890`r`n"
     Write-Utf8 (Join-Path $outClean 'notes.txt') "nothing secret in this outgoing range`r`n"
     Add-Commit $outClean 'unrelated, clean change'
     $rClean = FireGitPrePush -Cwd $outClean -StdinText (Get-RefUpdateLine -Repo $outClean)
@@ -659,16 +770,16 @@ try {
     # =====================================================================
     Write-Host '--- Stop event: decision:block shape ---' -ForegroundColor Cyan
     $proj8 = New-Proj 'StopBlock'
-    Write-Utf8 (Join-Path $proj8 '.env') "STOP_KEY=abcdefghij1234567890`r`n"
+    Write-Utf8 (Join-Path $proj8 '.env') "STOP_TOKEN=abcdefghij1234567890`r`n"
     $r = Fire -Cwd $proj8 -EventName 'Stop'
     $parsed = $null
     try { $parsed = $r.Out | ConvertFrom-Json } catch { }
     Check 'Stop with findings returns decision:block' ($null -ne $parsed -and [string]$parsed.decision -eq 'block')
-    Check 'block reason mentions the key, not the value' ($null -ne $parsed -and [string]$parsed.reason -like '*STOP_KEY*' -and [string]$parsed.reason -notlike '*abcdefghij1234567890*')
+    Check 'block reason mentions the key, not the value' ($null -ne $parsed -and [string]$parsed.reason -like '*STOP_TOKEN*' -and [string]$parsed.reason -notlike '*abcdefghij1234567890*')
 
     $advisory = New-GitProj 'AdvisoryPush'
     Write-Utf8 (Join-Path $advisory '.gitignore') ".env`nsecrets.md`n"
-    Write-Utf8 (Join-Path $advisory '.env') "PLACEHOLDER_KEY=changeme`r`n"
+    Write-Utf8 (Join-Path $advisory '.env') "PLACEHOLDER_TOKEN=changeme`r`n"
     $r = Fire -Cwd $advisory -GitPrePush
     Check 'advisory-only pre-push findings exit zero' ($r.Exit -eq 0) $r.Err
     Check 'advisory-only pre-push is quiet' ([string]::IsNullOrWhiteSpace($r.Out) -and [string]::IsNullOrWhiteSpace($r.Err)) ($r.Out + $r.Err)
@@ -685,9 +796,9 @@ try {
     # =====================================================================
     Write-Host '--- Windows PowerShell 5.1 host ---' -ForegroundColor Cyan
     $proj9 = New-Proj 'Host51'
-    Write-Utf8 (Join-Path $proj9 '.env') "HOST_KEY=abcdefghij1234567890`r`n"
+    Write-Utf8 (Join-Path $proj9 '.env') "HOST_TOKEN=abcdefghij1234567890`r`n"
     $r = Fire -Cwd $proj9 -Exe 'powershell.exe'
-    Check '5.1 host: auto-append + report works' ($r.Exit -eq 0 -and $r.Out -like '*Auto-added*HOST_KEY*' -and $r.Out -notlike '*abcdefghij1234567890*') $r.Out
+    Check '5.1 host: auto-append + report works' ($r.Exit -eq 0 -and $r.Out -like '*Auto-added*HOST_TOKEN*' -and $r.Out -notlike '*abcdefghij1234567890*') $r.Out
 }
 finally {
     if (-not $KeepArtifacts) {

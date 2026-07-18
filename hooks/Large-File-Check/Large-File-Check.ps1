@@ -3,10 +3,15 @@
 # Two behaviors in one hook:
 # - SessionStart / UserPromptSubmit (pre-task): injects a short reminder to
 #   prefer small, multi-part files and not to create one big file unless
-#   unavoidable (split by responsibility; ~500-800 logical lines = split signal).
+#   unavoidable (split by responsibility; ~500-800 logical lines = review
+#   signal, not a rule). Equally explicit about the OPPOSITE failure mode:
+#   never create thin wrappers, pass-through modules, or arbitrary fragments
+#   just to stay under the threshold - cohesion outranks line count.
 # - Stop (post-task): scans the project for source files above the line
 #   threshold and reports them, asking the AI to judge for itself whether a
-#   split is SAFE and worthwhile. Silent when nothing is oversized.
+#   split is SAFE and WORTHWHILE (a real responsibility/module/layer boundary
+#   must actually exist there) - never mandatory, and never an invitation to
+#   start a refactor unrelated to the current task. Silent when nothing is oversized.
 #
 # Token-efficient by design: deterministic scan, per-project cooldown on Stop,
 # stop_hook_active guard (never loops), and the decision stays with the AI.
@@ -50,7 +55,9 @@ if (-not $isStopEvent) {
     $note = @(
         'FILE SIZE POLICY - prefer small, multi-part files:',
         '- Do not create one big file unless unavoidable; plan a multi-file layout up front and split by responsibility (features, layers, cohesive groups).',
-        '- Treat ~500-800 logical lines as the signal to split; when extending an already-large file, prefer a new well-named file over appending.'
+        '- ~500-800 logical lines is a REVIEW SIGNAL, not an architectural law - cohesion and maintainability outrank raw line count.',
+        '- Create a new file only when a real responsibility, cohesive module, layer, or public boundary exists. Do not create thin wrappers, pass-through modules, single-use fragments, or arbitrary files solely to stay under a line threshold.',
+        '- Appending to an existing file is fine when the new code belongs to the same responsibility as that file.'
     ) -join "`n"
     @{ hookSpecificOutput = @{ hookEventName = $eventName; additionalContext = $note } } |
         ConvertTo-Json -Depth 5 -Compress
@@ -146,7 +153,7 @@ $more = ''
 if ($offenders.Count -gt $top.Count) {
     $more = ' and ' + ($offenders.Count - $top.Count) + ' more'
 }
-$reason = 'LARGE FILE CHECK: ' + $offenders.Count + ' source file(s) exceed ' + $lineThreshold + ' lines: ' + ($fileLines -join '; ') + $more + '. Decide for yourself whether splitting is SAFE and worthwhile: split by responsibility (features, layers, cohesive groups - never arbitrary line count), keep a single clear entry point, update imports/re-exports, avoid circular dependencies, and run build/tests afterwards. If a safe split is not practical right now, finish - this reminder respects a cooldown.'
+$reason = 'LARGE FILE CHECK: ' + $offenders.Count + ' source file(s) exceed ' + $lineThreshold + ' lines: ' + ($fileLines -join '; ') + $more + '. No split is mandatory - this is advisory. Decide for yourself whether splitting is SAFE and worthwhile: the line count is a REVIEW SIGNAL, not a rule, so only split when a real responsibility, cohesive module, layer, or public boundary actually exists there - never create thin wrappers, pass-through modules, or arbitrary fragments merely to get under the threshold, and never start a refactor unrelated to the current task just because a file is large. If you do split: split by responsibility, keep a single clear entry point, update imports/re-exports, avoid circular dependencies, and run build/tests afterwards. If a safe split is not practical or not warranted right now, finish with no split - this reminder respects a cooldown.'
 if ($GitPrePush) {
     [Console]::Error.WriteLine($reason)
     exit 1

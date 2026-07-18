@@ -307,6 +307,15 @@ try {
     Check 'grouped update classified' ($r.Out -match '#15 .*\[grouped')
     Check 'exact head SHA quoted' ($r.Out -match 'head sha 1111111')
     Check 'policy tail present, concise' ($r.Out -match 'never auto-merge MAJOR or PRERELEASE')
+    # Scope: a confirmed SECURITY update is highlighted for priority review;
+    # the OTHER (unrelated, non-critical) PRs are explicitly deferred, never
+    # forced into the current task, and never a reason to block unrelated work.
+    Check 'a confirmed SECURITY PR is highlighted for priority review' ($r.Out -match 'A PR marked SECURITY above is a confirmed security update - prioritize') $r.Out
+    Check 'unrelated/non-critical PRs are explicitly deferred to a separate task' (
+        $r.Out -match 'Do not review, merge, or remediate the REST of these during the current task unless the user explicitly asked') $r.Out
+    Check 'pending PRs are never a reason to block or delay unrelated work' ($r.Out -match 'Pending PRs are never a reason to block or delay unrelated work') $r.Out
+    Check 'the old unconditional "review before unrelated work" wording is gone' ($r.Out -notmatch 'Review these BEFORE unrelated work') $r.Out
+    Check 'still no auto-merge instruction exists' ($r.Out -notmatch '(?i)automatically merge' -and $r.Out -notmatch '(?i)merge (it|them|these) now')
 
     # unchanged state -> silent; changed state -> reports again
     $r = Fire -HookPath $DependabotHook -Cwd $repoB
@@ -315,6 +324,14 @@ try {
     Set-Mock -PrJson $changed
     $r = Fire -HookPath $DependabotHook -Cwd $repoB
     Check 'changed PR state -> reported again immediately' ($r.Out -match 'DEPENDABOT CHECK')
+
+    # No security PR pending -> the report says so explicitly rather than
+    # silently omitting the priority note.
+    $repoNoSecurity = New-GitRepo 'dep-no-security'
+    $noSecurityPrJson = '[{"number":21,"title":"Bump lodash from 4.17.20 to 4.17.21","author":{"login":"app/dependabot"},"headRefName":"dependabot/npm/lodash","baseRefName":"main","headRefOid":"6666666fffffffffffffffffffffffffffffffff","isDraft":false,"mergeStateStatus":"CLEAN","labels":[],"statusCheckRollup":[{"status":"COMPLETED","conclusion":"SUCCESS"}]}]'
+    Set-Mock -PrJson $noSecurityPrJson
+    $r = Fire -HookPath $DependabotHook -Cwd $repoNoSecurity
+    Check 'no pending PR is SECURITY -> explicitly says so' ($r.Out -match 'None of these are marked SECURITY') $r.Out
 
     # query failure -> limitation, not silence-as-no-updates
     $repoC = New-GitRepo 'depc'
@@ -661,6 +678,14 @@ try {
     $r = Fire -HookPath $BaselineHook -Cwd $b1
     Check 'missing .github -> CI + dependabot findings' ($r.Out -match 'GITHUB BASELINE CHECK' -and $r.Out -match 'No CI workflow' -and $r.Out -match 'No \.github/dependabot\.yml' -and $r.Out -match 'npm at /')
     Check 'CodeQL suggested for detected language' ($r.Out -match 'CodeQL')
+    Check 'CodeQL is explicitly optional, never mandatory' ($r.Out -match '- Optional: CodeQL') $r.Out
+    # Scope: ordinary gaps (missing/weak CI, incomplete Dependabot, optional
+    # CodeQL) are advisory for an unrelated task - fix now only when the user
+    # asked, the task directly needs it, or a workflow is confirmed unsafe.
+    Check 'ordinary gaps are advisory for an unrelated task' (
+        $r.Out -match 'These are advisory for an unrelated task: fix now only when the user asked') $r.Out
+    Check 'current-task expansion is explicitly prohibited' ($r.Out -match 'Never create or rewrite workflows during an unrelated task') $r.Out
+    Check 'the old unconditional "fix per the repository rules" wording is gone' ($r.Out -notmatch 'Fix per the repository rules:') $r.Out
     $r = Fire -HookPath $BaselineHook -Cwd $b1
     Check 'unchanged findings -> silent (cooldown)' ($r.Out -eq '')
 
@@ -992,6 +1017,10 @@ jobs:
 '@
     $r = Fire -HookPath $BaselineHook -Cwd $prtFlow
     Check 'flow-style pull_request_target with untrusted checkout is flagged unsafe' ($r.Out -match 'pull_request_target with untrusted PR checkout') $r.Out
+    # A confirmed unsafe workflow is called out as urgent EVEN for an
+    # unrelated task, unlike ordinary advisory gaps.
+    Check 'a confirmed unsafe workflow is called out as urgent regardless of task relation' (
+        $r.Out -match 'is an immediate security risk' -and $r.Out -match 'treat it as urgent even in an otherwise unrelated task') $r.Out
 
     # Empty workflow file - must not crash, and correctly counts as "no validation".
     $emptyWf = New-GitRepo 'emptywf'

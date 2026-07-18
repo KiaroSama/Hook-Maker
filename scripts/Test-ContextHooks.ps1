@@ -1,11 +1,12 @@
-# Offline smoke test for the two simplest pre-task context hooks, which had
-# ZERO dedicated coverage before this suite (only implicitly touched by
-# Test-Wizard's generic install flow, never actually fired and verified):
+# Offline smoke test for a few simple pre-task/lightweight context hooks:
 # - Mcp-Usage-Check: always emits a short MCP-usage reminder on SessionStart
 #   (no deterministic gate - it is meant to be cheap and constant, matching
 #   the shipped hook's own design).
 # - Skills-Check: silent unless a skill source exists (copied project
 #   skills, .ai/SKILLS.md record, or the configured/default skill library).
+# - Large-File-Check: wording-only assertions (anti-fragmentation policy,
+#   threshold-as-signal-not-rule, advisory Stop reason) - a few assertions
+#   here rather than a whole new suite for wording-only behavior.
 #
 # Usage:  pwsh -NoLogo -NoProfile -File .\scripts\Test-ContextHooks.ps1 [-KeepArtifacts]
 # Exit code is the number of failed assertions (0 = all passed).
@@ -18,7 +19,8 @@ $ErrorActionPreference = 'Stop'
 $ScriptRoot = $PSScriptRoot
 $McpHook = Join-Path (Split-Path -Parent $ScriptRoot) 'hooks\Mcp-Usage-Check\Mcp-Usage-Check.ps1'
 $SkillsHook = Join-Path (Split-Path -Parent $ScriptRoot) 'hooks\Skills-Check\Skills-Check.ps1'
-foreach ($required in @($McpHook, $SkillsHook)) {
+$LargeFileHook = Join-Path (Split-Path -Parent $ScriptRoot) 'hooks\Large-File-Check\Large-File-Check.ps1'
+foreach ($required in @($McpHook, $SkillsHook, $LargeFileHook)) {
     if (-not (Test-Path -LiteralPath $required -PathType Leaf)) {
         Write-Host "Required script not found: $required" -ForegroundColor Red
         exit 1
@@ -198,6 +200,34 @@ try {
     $hook4 = New-ConfiguredSkillsHookCopy -EnvOverrides @{ SKILLS_DIR = $libDir }
     $r = Fire -HookPath $hook4 -Cwd $proj3 -Exe 'powershell.exe'
     Check '5.1 host: emits cleanly, no crash' ($r.Exit -eq 0 -and $r.Err -eq '' -and $r.Out -like '*SKILL POLICY CHECK*') $r.Out
+
+    # =====================================================================
+    Write-Host '--- Large-File-Check: pre-task anti-fragmentation wording ---' -ForegroundColor Cyan
+    $lfProj = New-Proj 'LargeFilePlain'
+    $r = Fire -HookPath $LargeFileHook -Cwd $lfProj
+    Check 'pre-task note mentions the threshold is a review signal, not a rule' ($r.Out -match 'REVIEW SIGNAL, not an architectural law') $r.Out
+    Check 'pre-task note explicitly forbids thin wrappers/pass-through/arbitrary fragmentation' (
+        $r.Out -match 'thin wrappers, pass-through modules, single-use fragments, or arbitrary files') $r.Out
+    Check 'pre-task note allows appending when the code shares the same responsibility' ($r.Out -match 'Appending to an existing file is fine') $r.Out
+
+    # =====================================================================
+    Write-Host '--- Large-File-Check: Stop reason is advisory, never mandates a split or an unrelated refactor ---' -ForegroundColor Cyan
+    $lfBigProj = New-Proj 'LargeFileOversized'
+    $bigContent = (1..10 | ForEach-Object { 'line ' + $_ }) -join "`n"
+    Write-Utf8 (Join-Path $lfBigProj 'big.ps1') $bigContent
+    $lfHookLowThreshold = Join-Path $Work ('lfhookcopy-' + [guid]::NewGuid().ToString('N').Substring(0, 6))
+    New-Item -ItemType Directory -Path $lfHookLowThreshold -Force | Out-Null
+    Copy-Item $LargeFileHook (Join-Path $lfHookLowThreshold 'Large-File-Check.ps1')
+    Copy-Item (Join-Path (Split-Path -Parent $LargeFileHook) '..\_hooklib.ps1') (Join-Path $Work '_hooklib.ps1') -Force
+    Write-Utf8 (Join-Path $lfHookLowThreshold '.env') "LINE_THRESHOLD=5`r`n"
+    $lfHook = Join-Path $lfHookLowThreshold 'Large-File-Check.ps1'
+    $r = Fire -HookPath $lfHook -Cwd $lfBigProj -EventName 'Stop'
+    Check 'an oversized file is still detected and reported' ($r.Out -match 'LARGE FILE CHECK' -and $r.Out -match 'big\.ps1') $r.Out
+    Check 'the reason says no split is mandatory' ($r.Out -match 'No split is mandatory - this is advisory') $r.Out
+    Check 'the reason repeats the review-signal-not-a-rule framing' ($r.Out -match 'a REVIEW SIGNAL, not a rule') $r.Out
+    Check 'the reason forbids thin wrappers/pass-through/arbitrary fragments here too' ($r.Out -match 'never create thin wrappers, pass-through modules, or arbitrary fragments') $r.Out
+    Check 'the reason forbids starting an unrelated refactor merely because a file is large' ($r.Out -match 'never start a refactor unrelated to the current task') $r.Out
+    Check 'a safe/no-split outcome remains explicitly valid' ($r.Out -match 'finish with no split') $r.Out
 }
 finally {
     if (-not $KeepArtifacts) {
