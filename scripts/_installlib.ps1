@@ -485,6 +485,8 @@ function Get-HookRegistrations {
                 if ($profileMarker -ne '' -and -not $combined.Contains($profileMarker)) { continue }
                 $timeout = 0
                 if ($null -ne $handler.PSObject.Properties['timeout']) { $timeout = [int]$handler.timeout }
+                $handlerType = ''
+                if ($null -ne $handler.PSObject.Properties['type']) { $handlerType = [string]$handler.type }
                 $statusMessage = ''
                 if ($null -ne $handler.PSObject.Properties['statusMessage']) { $statusMessage = [string]$handler.statusMessage }
                 [void]$found.Add([pscustomobject]@{
@@ -494,6 +496,7 @@ function Get-HookRegistrations {
                     CommandWindows = $commandWindows
                     Timeout        = $timeout
                     StatusMessage  = $statusMessage
+                    HandlerType    = $handlerType
                 })
             }
         }
@@ -512,6 +515,13 @@ function Test-ClientRegistrationState {
         [Parameter(Mandatory = $true)][string[]]$ExpectedEvents,
         [string]$ProfileId = '',
         [string]$ExpectedCommand = '',
+        # Each of these is verified on its own. They stay optional so records
+        # written before these fields were tracked are not reported as drifted
+        # for lacking an expectation.
+        [string]$ExpectedCommandWindows = '',
+        [string]$ExpectedHandlerType = '',
+        [string]$ExpectedStatusMessage = '',
+        [switch]$ExpectedStatusMessageKnown,
         [int]$ExpectedTimeout = 60
     )
     $registrations = @(Get-HookRegistrations -SettingsPath $SettingsPath -RuntimeScript $RuntimeScript -ProfileId $ProfileId)
@@ -540,11 +550,29 @@ function Test-ClientRegistrationState {
         if ($ExpectedTimeout -gt 0 -and [int]$registration.Timeout -ne $ExpectedTimeout) {
             return [pscustomobject]@{ Ok = $false; Reason = 'registration drifted'; Detail = ('timeout changed on ' + $eventName) }
         }
+        # EVERY installer-owned field is checked INDEPENDENTLY. The previous
+        # check accepted the handler when EITHER command form matched, so a
+        # corrupted Windows command stayed hidden behind a still-correct
+        # portable one (Codex handlers carry both).
         if (-not [string]::IsNullOrWhiteSpace($ExpectedCommand)) {
-            $actual = [string]$registration.Command
-            $actualWindows = [string]$registration.CommandWindows
-            if ($actual -ne $ExpectedCommand -and $actualWindows -ne $ExpectedCommand) {
+            if ([string]$registration.Command -ne $ExpectedCommand) {
                 return [pscustomobject]@{ Ok = $false; Reason = 'registration drifted'; Detail = ('command changed on ' + $eventName) }
+            }
+        }
+        if (-not [string]::IsNullOrWhiteSpace($ExpectedCommandWindows)) {
+            if ([string]$registration.CommandWindows -ne $ExpectedCommandWindows) {
+                return [pscustomobject]@{ Ok = $false; Reason = 'registration drifted'; Detail = ('commandWindows changed on ' + $eventName) }
+            }
+        }
+        if (-not [string]::IsNullOrWhiteSpace($ExpectedHandlerType)) {
+            if ([string]$registration.HandlerType -ne $ExpectedHandlerType) {
+                return [pscustomobject]@{ Ok = $false; Reason = 'registration drifted'; Detail = ('handler type changed on ' + $eventName) }
+            }
+        }
+        # statusMessage is owned only where the installer writes one (Codex).
+        if ($ExpectedStatusMessageKnown) {
+            if ([string]$registration.StatusMessage -ne $ExpectedStatusMessage) {
+                return [pscustomobject]@{ Ok = $false; Reason = 'registration drifted'; Detail = ('statusMessage changed on ' + $eventName) }
             }
         }
     }
@@ -656,8 +684,23 @@ function Get-InstallIntegrity {
             continue
         }
 
+        # Each owned field is passed separately so each is verified on its own.
+        # A field the record does not carry (older records) is simply not
+        # asserted, rather than being treated as drift.
         $expectedCommand = ''
         if ($null -ne $subrecord.PSObject.Properties['command']) { $expectedCommand = [string]$subrecord.command }
+        $expectedCommandWindows = ''
+        if ($null -ne $subrecord.PSObject.Properties['commandWindows']) { $expectedCommandWindows = [string]$subrecord.commandWindows }
+        $expectedHandlerType = ''
+        if ($null -ne $subrecord.PSObject.Properties['handlerType']) { $expectedHandlerType = [string]$subrecord.handlerType }
+        $expectedStatusMessage = ''
+        $statusMessageKnown = $false
+        if ($null -ne $subrecord.PSObject.Properties['statusMessage']) {
+            $expectedStatusMessage = [string]$subrecord.statusMessage
+            # Only assert it where the installer actually writes one (Codex);
+            # an empty recorded value means "this client has none".
+            $statusMessageKnown = (-not [string]::IsNullOrWhiteSpace($expectedStatusMessage))
+        }
         $expectedTimeout = 60
         if ($null -ne $subrecord.PSObject.Properties['timeout']) { $expectedTimeout = [int]$subrecord.timeout }
         $registrationState = Test-ClientRegistrationState `
@@ -666,6 +709,10 @@ function Get-InstallIntegrity {
             -ExpectedEvents @($subrecord.events) `
             -ProfileId ([string]$Record.profile) `
             -ExpectedCommand $expectedCommand `
+            -ExpectedCommandWindows $expectedCommandWindows `
+            -ExpectedHandlerType $expectedHandlerType `
+            -ExpectedStatusMessage $expectedStatusMessage `
+            -ExpectedStatusMessageKnown:$statusMessageKnown `
             -ExpectedTimeout $expectedTimeout
         if (-not $registrationState.Ok) {
             Add-Component -Name $client -Status 'update' -Detail ($registrationState.Reason + ' (' + $registrationState.Detail + ')')
@@ -963,6 +1010,12 @@ function New-ClientSubrecord {
         [Parameter(Mandatory = $true)][string]$RuntimeScript,
         [Parameter(Mandatory = $true)][string[]]$Events,
         [Parameter(Mandatory = $true)][string]$Command,
+        # Recorded so integrity can verify the Windows command INDEPENDENTLY.
+        # Codex handlers carry both a portable `command` and a `commandWindows`;
+        # storing only one meant a corrupt Windows command could hide behind a
+        # still-correct portable one. Empty for Claude, which has no second form.
+        [string]$CommandWindows = '',
+        [string]$HandlerType = 'command',
         [string]$StatusMessage = '',
         [int]$Timeout = 60,
         $InstalledManifest = @()
@@ -974,6 +1027,8 @@ function New-ClientSubrecord {
         runtimeScript     = $RuntimeScript
         events            = @($Events)
         command           = $Command
+        commandWindows    = $CommandWindows
+        handlerType       = $HandlerType
         statusMessage     = $StatusMessage
         timeout           = $Timeout
         installedManifest = @($InstalledManifest)

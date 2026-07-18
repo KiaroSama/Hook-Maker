@@ -589,6 +589,7 @@ try {
             -RuntimeScript $claudeRuntime.Script `
             -Events @($Events) `
             -Command $claudeCommands.Windows `
+            -HandlerType 'command' `
             -Timeout 60 `
             -InstalledManifest @(Get-InstalledManifest -RuntimeRoot $claudeRuntimeRoot -FriendlyName $FriendlyName))
     }
@@ -601,6 +602,8 @@ try {
             -RuntimeScript $codexRuntime.Script `
             -Events @($Events) `
             -Command $codexCommands.Portable `
+            -CommandWindows $codexCommands.Windows `
+            -HandlerType 'command' `
             -StatusMessage $status `
             -Timeout 60 `
             -InstalledManifest @(Get-InstalledManifest -RuntimeRoot $codexRuntimeRoot -FriendlyName $FriendlyName))
