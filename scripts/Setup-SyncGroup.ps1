@@ -19,6 +19,9 @@ $HooksDir = Join-Path $ToolRoot 'hooks'
 $InstallScript = Join-Path $ScriptRoot 'Install-Hook.ps1'
 $ValidateScript = Join-Path $ScriptRoot 'Validate-Config.ps1'
 . (Join-Path $ToolRoot 'hooks\_hooklib.ps1')
+# Install-state registry + installed-state integrity evaluation (install-time
+# only - deliberately NOT in _hooklib.ps1, which ships inside every runtime).
+. (Join-Path $ScriptRoot '_installlib.ps1')
 if ([string]::IsNullOrWhiteSpace($ConfigPath)) {
     $ConfigPath = Join-Path $ToolRoot 'sync-hooks.json'
 }
@@ -1783,12 +1786,17 @@ function Get-LegacyHookCandidates {
                     FriendlyName = $entry.FriendlyName
                     Profile      = $entry.Profile
                     ConfigPath   = $entry.ConfigPath
-                    Events       = New-Object System.Collections.Generic.List[string]
-                    Clients      = New-Object System.Collections.Generic.HashSet[string]
+                    # Events are tracked PER CLIENT: a live Claude-only
+                    # SessionStart install alongside a Codex-only Stop install
+                    # is legitimate, and merging them would silently rewrite
+                    # one client's semantics with the other's on repair.
+                    EventsByClient = @{ 'claude' = (New-Object System.Collections.Generic.List[string]); 'codex' = (New-Object System.Collections.Generic.List[string]) }
                 }
             }
-            if (-not $byKey[$key].Events.Contains($entry.EventName)) { [void]$byKey[$key].Events.Add($entry.EventName) }
-            [void]$byKey[$key].Clients.Add($entry.Client)
+            $clientKey = $entry.Client.ToLowerInvariant()
+            if (-not $byKey[$key].EventsByClient[$clientKey].Contains($entry.EventName)) {
+                [void]$byKey[$key].EventsByClient[$clientKey].Add($entry.EventName)
+            }
         }
         foreach ($key in $byKey.Keys) {
             $foundEntry = $byKey[$key]
@@ -1803,34 +1811,56 @@ function Get-LegacyHookCandidates {
             else {
                 Join-Path $HooksDir ($foundEntry.FriendlyName + '\' + $foundEntry.FriendlyName + '.ps1')
             }
-            $clientsValue = if ($foundEntry.Clients.Contains('Claude') -and $foundEntry.Clients.Contains('Codex')) { 'Both' } elseif ($foundEntry.Clients.Contains('Claude')) { 'Claude' } else { 'Codex' }
             $scopePaths = Get-ScopeSettingsPaths $scope
+            # Per-client subrecords built from what each client's settings file
+            # ACTUALLY registers right now - never merged, never guessed.
+            $clients = [pscustomobject][ordered]@{}
+            $importedClients = New-Object System.Collections.Generic.List[string]
+            foreach ($client in @('claude', 'codex')) {
+                $clientEvents = @(@($foundEntry.EventsByClient[$client].ToArray()) | Sort-Object)
+                if (@($clientEvents).Count -eq 0) { continue }
+                $settingsPath = if ($client -eq 'claude') { $scopePaths.Claude } else { $scopePaths.Codex }
+                $clientDir = Split-Path -Parent $settingsPath
+                $runtimeRoot = Join-Path $clientDir 'hooks\Hook-Maker'
+                Set-ObjectProperty -Object $clients -Name $client -Value ([pscustomobject][ordered]@{
+                    installed         = $true
+                    settingsPath      = $settingsPath
+                    runtimeRoot       = $runtimeRoot
+                    runtimeScript     = (Join-Path $runtimeRoot ($foundEntry.FriendlyName + '\' + $foundEntry.FriendlyName + '.ps1'))
+                    events            = @($clientEvents)
+                    command           = ''
+                    statusMessage     = ''
+                    timeout           = 60
+                    installedManifest = @()
+                    lastInstalledUtc  = ''
+                    lastResult        = 'imported'
+                    lastError         = ''
+                })
+                [void]$importedClients.Add($client)
+            }
+            if ($importedClients.Count -eq 0) { continue }
             $record = [pscustomobject][ordered]@{
-                id                  = $recordId
-                internalName        = $foundEntry.FriendlyName
-                friendlyName        = $foundEntry.FriendlyName
-                hookType            = $hookType
-                sourceScript        = $sourceScript
-                sourceDir           = Split-Path -Parent $sourceScript
-                scope               = $scope.ScopeLabel
-                targetProjectRoot   = if ($scope.ScopeLabel -eq 'project') { $scope.Root } else { '' }
-                clients             = $clientsValue
-                claudeSettingsPath  = $scopePaths.Claude
-                codexHooksPath      = $scopePaths.Codex
-                events              = @(@($foundEntry.Events.ToArray()) | Sort-Object)
-                profile             = $foundEntry.Profile
-                configPath          = $foundEntry.ConfigPath
-                claudeRuntimeScript = ''
-                codexRuntimeScript  = ''
-                prePushManaged      = $false
-                sourceHash          = ''
-                hooklibHash         = ''
-                configHash          = ''
-                lastInstalledUtc    = ''
-                lastUpdatedUtc      = ''
-                lastResult          = ''
-                lastError           = ''
-                imported            = $true
+                id                = $recordId
+                schema            = 2
+                internalName      = $foundEntry.FriendlyName
+                friendlyName      = $foundEntry.FriendlyName
+                hookType          = $hookType
+                sourceScript      = $sourceScript
+                sourceDir         = Split-Path -Parent $sourceScript
+                scope             = $scope.ScopeLabel
+                targetProjectRoot = if ($scope.ScopeLabel -eq 'project') { $scope.Root } else { '' }
+                profile           = $foundEntry.Profile
+                configPath        = $foundEntry.ConfigPath
+                sourceManifest    = @()
+                clients           = $clients
+                nativeGit         = $null
+                lastUpdatedUtc    = ''
+                lastResult        = ''
+                lastReason        = ''
+                lastError         = ''
+                needsManualRepair = $false
+                imported          = $true
+                importedClients   = @($importedClients.ToArray())
             }
             [void]$candidates.Add($record)
         }
@@ -1847,6 +1877,19 @@ function Invoke-UpdateInstalledHooks {
     Write-Log 'INFO' 'UPDATE' 'Update previously installed hooks started.'
     Write-PhaseHeader 'Update Previously Installed Hooks' $C.Input '-'
 
+    # A corrupt registry must never read back as a quiet "nothing tracked" -
+    # that would hide real installations and let the summary imply everything
+    # is fine. Report it loudly; the file itself is left untouched here (only
+    # a real install quarantines and recovers it).
+    $registryState = Read-InstallRegistryState -ToolRoot $ToolRoot
+    if ($registryState.State -eq 'corrupt') {
+        Write-NoteLine ('  WARNING: the install registry could not be used: ' + $registryState.Reason)
+        Write-NoteLine ('  File: ' + $registryState.Path)
+        Write-NoteLine '  Tracked installations cannot be listed or verified until it is repaired. It has NOT been modified or deleted.'
+        Write-NoteLine '  Reinstalling any hook will preserve the unreadable file under a "install-registry.corrupt-<timestamp>-<hash>.json" name and start a new registry.'
+        Write-Log 'ERROR' 'UPDATE' ('Registry unusable: ' + $registryState.Reason)
+        return 'done'
+    }
     $registry = Read-InstallRegistry -ToolRoot $ToolRoot
     $legacyCandidates = @(Get-LegacyHookCandidates -Registry $registry)
     $allRecords = @(@($registry.installs) + @($legacyCandidates))
@@ -1878,22 +1921,9 @@ function Invoke-UpdateInstalledHooks {
             if (-not $profileExists) { $status = 'skip'; $detail = 'profile no longer exists in the sync config: ' + $record.profile }
         }
         if ($status -eq '') {
-            $currentSourceHash = (Get-FileHash -LiteralPath $record.sourceScript -Algorithm SHA256).Hash
-            $currentHooklibHash = ''
-            $hooklibPath = Join-Path $ToolRoot 'hooks\_hooklib.ps1'
-            if (Test-Path -LiteralPath $hooklibPath -PathType Leaf) { $currentHooklibHash = (Get-FileHash -LiteralPath $hooklibPath -Algorithm SHA256).Hash }
-            $currentConfigHash = ''
-            if ($record.hookType -eq 'Engine') { $currentConfigHash = (Get-FileHash -LiteralPath $record.configPath -Algorithm SHA256).Hash }
-            $isImported = ($null -ne $record.PSObject.Properties['imported']) -and $record.imported -eq $true
-            $hashesMatch = ($currentSourceHash -eq $record.sourceHash) -and ($currentHooklibHash -eq $record.hooklibHash) -and ($currentConfigHash -eq $record.configHash)
-            if ($isImported -or -not $hashesMatch) {
-                $status = 'update'
-                $detail = if ($isImported) { 'not yet tracked - will be registered' } else { 'source changed since last install' }
-            }
-            else {
-                $status = 'current'
-                $detail = 'up to date'
-            }
+            $evaluation = Get-InstallIntegrity -Record $record -ToolRoot $ToolRoot
+            $status = $evaluation.Status
+            $detail = $evaluation.Detail
         }
         [void]$plan.Add([pscustomobject]@{ Record = $record; Status = $status; Detail = $detail })
     }
@@ -1936,27 +1966,59 @@ function Invoke-UpdateInstalledHooks {
     $failed = New-Object System.Collections.Generic.List[string]
     foreach ($item in $toUpdate) {
         $record = $item.Record
-        $clientArgs = Get-ClientInstallArgs $record.clients
-        $installArgs = @{ Events = @($record.events) }
-        if ($record.scope -eq 'project') { $installArgs['TargetProject'] = $record.targetProjectRoot }
-        if ($record.hookType -eq 'Engine') {
-            $installArgs['Profile'] = $record.profile
-            $installArgs['ConfigPath'] = $record.configPath
+        $displayName = Get-HookFriendlyName $record.friendlyName
+        $scopeText = if ($record.scope -eq 'global') { 'global' } else { $record.targetProjectRoot }
+
+        # Repair EACH client separately with that client's own saved events.
+        # A single shared invocation would force one client's semantics onto
+        # the other whenever they differ (Claude on SessionStart, Codex on
+        # Stop is a legitimate, supported combination).
+        $clientsToRepair = @(Get-InstalledClientNames -Record $record)
+        if ($clientsToRepair.Count -eq 0 -and $null -ne $record.PSObject.Properties['imported'] -and $record.imported -eq $true) {
+            # A legacy import records the clients it actually found live.
+            $clientsToRepair = @($record.importedClients)
+        }
+        $clientResults = New-Object System.Collections.Generic.List[string]
+        $anyFailed = $false
+        foreach ($client in $clientsToRepair) {
+            $events = @()
+            $subrecord = Get-ClientSubrecord -Record $record -Client $client
+            if ($null -ne $subrecord) { $events = @($subrecord.events) }
+            elseif ($null -ne $record.PSObject.Properties['events']) { $events = @($record.events) }
+            if (@($events).Count -eq 0) {
+                $anyFailed = $true
+                [void]$clientResults.Add($client + ': no recorded events')
+                continue
+            }
+            $installArgs = @{ Events = @($events) }
+            if ($record.scope -eq 'project') { $installArgs['TargetProject'] = $record.targetProjectRoot }
+            if ($record.hookType -eq 'Engine') {
+                $installArgs['Profile'] = $record.profile
+                $installArgs['ConfigPath'] = $record.configPath
+            }
+            else {
+                $installArgs['CustomHook'] = $record.sourceScript
+            }
+            $clientArgs = if ($client -eq 'claude') { @{ ClaudeOnly = $true } } else { @{ CodexOnly = $true } }
+            try {
+                $installOutput = & $InstallScript @installArgs @clientArgs *>&1
+                foreach ($line in @($installOutput)) { Write-Log 'INFO' 'INSTALL' ([string]$line) }
+                [void]$clientResults.Add($client + ': ok')
+            }
+            catch {
+                $anyFailed = $true
+                [void]$clientResults.Add($client + ': ' + $_.Exception.Message)
+                Write-Log 'ERROR' 'UPDATE' ('Failed to update ' + $record.friendlyName + ' for ' + $client + ': ' + $_.Exception.Message)
+            }
+        }
+
+        if ($anyFailed) {
+            [void]$failed.Add($displayName + ': ' + ($clientResults -join '; '))
+            Write-Host ('  ' + (Get-Painted '! failed  ' $C.Red) + ' ' + (Get-Painted $displayName $C.Bold) + '  ' + (Get-Painted ($clientResults -join '; ') $C.Gray))
         }
         else {
-            $installArgs['CustomHook'] = $record.sourceScript
-        }
-        try {
-            $installOutput = & $InstallScript @installArgs @clientArgs *>&1
-            foreach ($line in @($installOutput)) { Write-Log 'INFO' 'INSTALL' ([string]$line) }
-            [void]$updated.Add((Get-HookFriendlyName $record.friendlyName))
-            $scopeText = if ($record.scope -eq 'global') { 'global' } else { $record.targetProjectRoot }
-            Write-Host ('  ' + (Get-Painted '+ updated' $C.Green) + ' ' + (Get-Painted (Get-HookFriendlyName $record.friendlyName) $C.Bold) + '  ' + (Get-Painted $scopeText $C.Gray))
-        }
-        catch {
-            [void]$failed.Add((Get-HookFriendlyName $record.friendlyName) + ': ' + $_.Exception.Message)
-            Write-Host ('  ' + (Get-Painted '! failed  ' $C.Red) + ' ' + (Get-Painted (Get-HookFriendlyName $record.friendlyName) $C.Bold))
-            Write-Log 'ERROR' 'UPDATE' ('Failed to update ' + $record.friendlyName + ': ' + $_.Exception.Message)
+            [void]$updated.Add($displayName)
+            Write-Host ('  ' + (Get-Painted '+ updated' $C.Green) + ' ' + (Get-Painted $displayName $C.Bold) + '  ' + (Get-Painted ($scopeText + $script:MenuSep + ($clientsToRepair -join ', ')) $C.Gray))
         }
     }
 

@@ -40,9 +40,12 @@ $script:Pass = 0
 $script:Fail = 0
 $script:TestPreviewLength = 500
 . (Join-Path $PSScriptRoot '_testlib.ps1')
-# Read-InstallRegistry/Save-InstallRegistry/Set-InstallRecord/Get-InstallRecordId
-# are called directly in this suite (not only via the wizard/installer).
+# Read-InstallRegistry/Save-InstallRegistry/Set-InstallRecord/Get-InstallRecordId,
+# the manifest builders and Get-InstallIntegrity are called directly in this
+# suite (not only via the wizard/installer). _installlib.ps1 needs _hooklib.ps1
+# dot-sourced first (Get-ShortHash, Read-JsonFile, Write-JsonFileAtomic).
 . $HookLib
+. (Join-Path $ScriptRoot '_installlib.ps1')
 
 $Work = Join-Path ([System.IO.Path]::GetTempPath()) ('hookmaker-registrytest-' + [guid]::NewGuid().ToString('N').Substring(0, 8))
 New-Item -ItemType Directory -Path $Work -Force | Out-Null
@@ -162,10 +165,13 @@ try {
         Check 'record hookType is CustomHook' ([string]$rec.hookType -eq 'CustomHook')
         Check 'record scope is project' ([string]$rec.scope -eq 'project')
         Check 'record targetProjectRoot matches' ([string]$rec.targetProjectRoot -eq $proj1)
-        Check 'record events match what was installed' (@(@($rec.events) | Sort-Object) -join ',' -eq 'SessionStart,Stop')
-        Check 'record clients is Both (neither -ClaudeOnly nor -CodexOnly)' ([string]$rec.clients -eq 'Both')
-        Check 'record has a non-empty sourceHash' (-not [string]::IsNullOrWhiteSpace([string]$rec.sourceHash))
-        Check 'record has createdUtc and lastInstalledUtc' (-not [string]::IsNullOrWhiteSpace([string]$rec.createdUtc) -and -not [string]::IsNullOrWhiteSpace([string]$rec.lastInstalledUtc))
+        Check 'record is schema 2' ([int]$rec.schema -eq 2)
+        Check 'both client subrecords exist (neither -ClaudeOnly nor -CodexOnly)' ((@(Get-InstalledClientNames -Record $rec) | Sort-Object) -join ',' -eq 'claude,codex')
+        Check 'claude subrecord events match what was installed' (@(@($rec.clients.claude.events) | Sort-Object) -join ',' -eq 'SessionStart,Stop')
+        Check 'codex subrecord events match what was installed' (@(@($rec.clients.codex.events) | Sort-Object) -join ',' -eq 'SessionStart,Stop')
+        Check 'record has a non-empty managed-source manifest' (@($rec.sourceManifest).Count -gt 0)
+        Check 'manifest covers the shared _hooklib.ps1' (@($rec.sourceManifest | Where-Object { $_.path -eq '_hooklib.ps1' }).Count -eq 1)
+        Check 'record has createdUtc and per-client lastInstalledUtc' (-not [string]::IsNullOrWhiteSpace([string]$rec.createdUtc) -and -not [string]::IsNullOrWhiteSpace([string]$rec.clients.claude.lastInstalledUtc))
         Check 'record has a bounded history with one entry' (@($rec.history).Count -eq 1)
     }
     finally { Remove-FixtureHook 'ZZZ-Regtest-Basic' }
@@ -179,7 +185,7 @@ try {
         $recFirst = (Get-RecordsFor 'ZZZ-Regtest-Reinstall')[0]
         $idFirst = [string]$recFirst.id
         $createdFirst = [string]$recFirst.createdUtc
-        $hashFirst = [string]$recFirst.sourceHash
+        $manifestFirst = (@($recFirst.sourceManifest | ForEach-Object { $_.path + '=' + $_.hash })) -join '|'
         Write-Utf8 $fixture2 "exit 0 # v2 changed`n"
         & $InstallScript -CustomHook $fixture2 -Events @('Stop') -TargetProject $proj2 *> $null
         $recsSecond = Get-RecordsFor 'ZZZ-Regtest-Reinstall'
@@ -187,7 +193,7 @@ try {
         $recSecond = $recsSecond[0]
         Check 'the id is unchanged across reinstall' ([string]$recSecond.id -eq $idFirst)
         Check 'createdUtc is preserved (not reset) across reinstall' ([string]$recSecond.createdUtc -eq $createdFirst)
-        Check 'sourceHash reflects the NEW content after reinstall' ([string]$recSecond.sourceHash -ne $hashFirst)
+        Check 'source manifest reflects the NEW content after reinstall' (((@($recSecond.sourceManifest | ForEach-Object { $_.path + '=' + $_.hash })) -join '|') -ne $manifestFirst)
         Check 'history grew to two entries (bounded, not unbounded)' (@($recSecond.history).Count -eq 2)
     }
     finally { Remove-FixtureHook 'ZZZ-Regtest-Reinstall' }
@@ -199,20 +205,20 @@ try {
         $projClaude = New-Proj 'ScopeClaudeOnly'
         & $InstallScript -CustomHook $fixture3 -Events @('SessionStart') -TargetProject $projClaude -ClaudeOnly *> $null
         $recClaude = @(Get-RecordsFor 'ZZZ-Regtest-Scopes' | Where-Object { $_.targetProjectRoot -eq $projClaude })[0]
-        Check 'Claude-only record reports clients=Claude' ([string]$recClaude.clients -eq 'Claude')
-        Check 'Claude-only record has a claudeRuntimeScript, no codexRuntimeScript' (-not [string]::IsNullOrWhiteSpace([string]$recClaude.claudeRuntimeScript) -and [string]::IsNullOrWhiteSpace([string]$recClaude.codexRuntimeScript))
+        Check 'Claude-only record has only a claude subrecord' ((@(Get-InstalledClientNames -Record $recClaude) -join ',') -eq 'claude')
+        Check 'Claude-only subrecord carries its own runtime script' (-not [string]::IsNullOrWhiteSpace([string]$recClaude.clients.claude.runtimeScript))
 
         $projCodex = New-Proj 'ScopeCodexOnly'
         & $InstallScript -CustomHook $fixture3 -Events @('SessionStart') -TargetProject $projCodex -CodexOnly *> $null
         $recCodex = @(Get-RecordsFor 'ZZZ-Regtest-Scopes' | Where-Object { $_.targetProjectRoot -eq $projCodex })[0]
-        Check 'Codex-only record reports clients=Codex' ([string]$recCodex.clients -eq 'Codex')
-        Check 'Codex-only record has a codexRuntimeScript, no claudeRuntimeScript' (-not [string]::IsNullOrWhiteSpace([string]$recCodex.codexRuntimeScript) -and [string]::IsNullOrWhiteSpace([string]$recCodex.claudeRuntimeScript))
+        Check 'Codex-only record has only a codex subrecord' ((@(Get-InstalledClientNames -Record $recCodex) -join ',') -eq 'codex')
+        Check 'Codex-only subrecord carries its own statusMessage' (-not [string]::IsNullOrWhiteSpace([string]$recCodex.clients.codex.statusMessage))
 
         $projBoth = New-Proj 'ScopeBoth'
         & $InstallScript -CustomHook $fixture3 -Events @('SessionStart') -TargetProject $projBoth *> $null
         $recBoth = @(Get-RecordsFor 'ZZZ-Regtest-Scopes' | Where-Object { $_.targetProjectRoot -eq $projBoth })[0]
-        Check 'default (no client switch) record reports clients=Both' ([string]$recBoth.clients -eq 'Both')
-        Check 'Both record has both runtime script paths' (-not [string]::IsNullOrWhiteSpace([string]$recBoth.claudeRuntimeScript) -and -not [string]::IsNullOrWhiteSpace([string]$recBoth.codexRuntimeScript))
+        Check 'default (no client switch) record has both subrecords' ((@(Get-InstalledClientNames -Record $recBoth) | Sort-Object) -join ',' -eq 'claude,codex')
+        Check 'Both record has a distinct runtime script per client' ([string]$recBoth.clients.claude.runtimeScript -ne [string]$recBoth.clients.codex.runtimeScript)
 
         # Global scope (-no TargetProject) reads $HOME once at process start, so
         # it must be a real spawned process with USERPROFILE overridden for it.
@@ -249,7 +255,8 @@ try {
     Check 'engine install record has hookType=Engine' ($null -ne $recEngine -and [string]$recEngine.hookType -eq 'Engine')
     Check 'engine install record stores the profile id' ([string]$recEngine.profile -eq $engineProfileId)
     Check 'engine install record stores the configPath' ([string]$recEngine.configPath -eq $engineCfg)
-    Check 'engine install record has a non-empty configHash' (-not [string]::IsNullOrWhiteSpace([string]$recEngine.configHash))
+    Check 'engine install manifest tracks the copied sync config' (@($recEngine.sourceManifest | Where-Object { $_.path -like '*/sync-hooks.json' }).Count -eq 1)
+    Check 'engine install manifest excludes the generated SYNC-PROJECTS.txt' (@($recEngine.sourceManifest | Where-Object { $_.path -like '*sync-projects.txt' }).Count -eq 0)
 
     # =====================================================================
     Write-Host '--- the updater refreshes a changed source byte-for-byte and preserves registration semantics ---' -ForegroundColor Cyan
@@ -272,14 +279,15 @@ try {
         $cfgU = Join-Path $Work 'cfg-run-update.json'; New-Config $cfgU
         $rUpdate = Invoke-Wizard -Config $cfgU -Answers @('1', '4', '', '0')
         Check 'exit 0 (update previously installed hooks)' ($rUpdate.Exit -eq 0) $rUpdate.Err
-        Check 'the plan lists the changed fixture as needing an update' ($rUpdate.Out -match 'ZZZ-Regtest-Update[\s\S]*?source changed since last install') $rUpdate.Out
+        Check 'the plan lists the changed fixture as needing an update' ($rUpdate.Out -match 'ZZZ-Regtest-Update[\s\S]*?source changed') $rUpdate.Out
 
         $hashAfterUpdate = (Get-FileHash -LiteralPath $installedCopyClaude -Algorithm SHA256).Hash
         Check 'the installed copy now matches the edited source byte-for-byte' ($hashAfterUpdate -eq $sourceHashAfterEdit)
 
         $recAfter = (Get-RecordsFor 'ZZZ-Regtest-Update')[0]
-        Check 'events are preserved across the update' (@(@($recAfter.events) | Sort-Object) -join ',' -eq (@(@($recBefore.events) | Sort-Object) -join ','))
-        Check 'client selection is preserved across the update' ([string]$recAfter.clients -eq [string]$recBefore.clients)
+        Check 'claude events are preserved across the update' (@(@($recAfter.clients.claude.events) | Sort-Object) -join ',' -eq (@(@($recBefore.clients.claude.events) | Sort-Object) -join ','))
+        Check 'codex events are preserved across the update' (@(@($recAfter.clients.codex.events) | Sort-Object) -join ',' -eq (@(@($recBefore.clients.codex.events) | Sort-Object) -join ','))
+        Check 'client selection is preserved across the update' ((((@(Get-InstalledClientNames -Record $recAfter) | Sort-Object) -join ',')) -eq (((@(Get-InstalledClientNames -Record $recBefore) | Sort-Object) -join ',')))
         Check 'target project is preserved across the update' ([string]$recAfter.targetProjectRoot -eq [string]$recBefore.targetProjectRoot)
         Check 'scope is preserved across the update' ([string]$recAfter.scope -eq [string]$recBefore.scope)
 
@@ -289,7 +297,7 @@ try {
         $cfgU2 = Join-Path $Work 'cfg-run-update-2.json'; New-Config $cfgU2
         $rUpdate2 = Invoke-Wizard -Config $cfgU2 -Answers @('1', '4', '0')
         Check 'second update run reports the fixture as up to date (idempotent)' ($rUpdate2.Out -match 'ZZZ-Regtest-Update[\s\S]*?up to date') $rUpdate2.Out
-        Check 'second run never claims a further update was applied to the fixture' ($rUpdate2.Out -notmatch 'ZZZ-Regtest-Update[\s\S]*?source changed since last install') $rUpdate2.Out
+        Check 'second run never claims a further update was applied to the fixture' ($rUpdate2.Out -notmatch 'ZZZ-Regtest-Update[\s\S]*?source changed') $rUpdate2.Out
     }
     finally { Remove-FixtureHook 'ZZZ-Regtest-Update' }
 
@@ -378,16 +386,66 @@ try {
     Check 'installing Ignore-Rules-Check preserves the existing pre-push hook as .hookmaker-existing' (Test-Path (Join-Path $existingPrePushDir 'pre-push.hookmaker-existing'))
     $companionSecretsScript = Join-Path $existingPrePushDir 'Hook-Maker\Secrets-Check\Secrets-Check.ps1'
     Check 'the pre-push managed companion (Secrets-Check) copy exists' (Test-Path $companionSecretsScript)
-    $companionHashBefore = (Get-FileHash -LiteralPath $companionSecretsScript -Algorithm SHA256).Hash
     $realSecretsHash = (Get-FileHash -LiteralPath (Join-Path $RealHooksDir 'Secrets-Check\Secrets-Check.ps1') -Algorithm SHA256).Hash
-    Check 'the pre-push managed companion matches the current real Secrets-Check source' ($companionHashBefore -eq $realSecretsHash)
+    Check 'the pre-push managed companion matches the current real Secrets-Check source' ((Get-FileHash -LiteralPath $companionSecretsScript -Algorithm SHA256).Hash -eq $realSecretsHash)
+    $preservedPath = Join-Path $existingPrePushDir 'pre-push.hookmaker-existing'
+    $preservedBytesBefore = [System.IO.File]::ReadAllBytes($preservedPath)
 
+    $recPrePush = @(Get-RecordsFor 'Ignore-Rules-Check' | Where-Object { $_.targetProjectRoot -eq $prePushProj })[0]
+    Check 'the record tracks the native pre-push integration' ($null -ne $recPrePush.nativeGit -and $recPrePush.nativeGit.managed -eq $true)
+    Check 'the native manifest includes the Secrets-Check companion source' (@($recPrePush.nativeGit.sourceManifest | Where-Object { $_.path -like 'secrets-check/*' }).Count -ge 1)
+    Check 'the record notes that a previous user hook was preserved' ($recPrePush.nativeGit.previousHookPreserved -eq $true)
+    Check 'a freshly installed native chain evaluates as current' ((Get-InstallIntegrity -Record $recPrePush -ToolRoot $ToolRoot).Status -eq 'current')
+
+    # Deliberately make the INSTALLED companion stale while its SOURCE is
+    # untouched - the exact case a source-hash-only updater reports as
+    # "up to date" while the native chain silently runs old code.
+    Add-Content -LiteralPath $companionSecretsScript -Value '# deliberately corrupted companion'
+    $staleCompanionHash = (Get-FileHash -LiteralPath $companionSecretsScript -Algorithm SHA256).Hash
+    Check 'the installed companion is genuinely stale before updating' ($staleCompanionHash -ne $realSecretsHash)
+    $staleEval = Get-InstallIntegrity -Record $recPrePush -ToolRoot $ToolRoot
+    Check 'a stale native companion is planned for update' ($staleEval.Status -eq 'update')
+    Check 'a stale native companion is reported with a native reason' ($staleEval.Detail -match 'native' -and $staleEval.Detail -match 'secrets-check') $staleEval.Detail
+
+    # Companion SOURCE drift: tamper the RECORDED hash (equivalent to the
+    # source having changed since install) - proves the companion's source is
+    # actually part of the tracked manifest, without mutating a shipped hook.
+    $recSourceDrift = @(Get-RecordsFor 'Ignore-Rules-Check' | Where-Object { $_.targetProjectRoot -eq $prePushProj })[0]
+    foreach ($entry in @($recSourceDrift.nativeGit.sourceManifest)) {
+        if ($entry.path -like 'secrets-check/*.ps1') { $entry.hash = 'DEADBEEF' }
+    }
+    $sourceDriftEval = Get-InstallIntegrity -Record $recSourceDrift -ToolRoot $ToolRoot
+    Check 'companion SOURCE drift alone plans the parent hook for update' ($sourceDriftEval.Status -eq 'update')
+    Check 'companion source drift names the companion' ($sourceDriftEval.Detail -match 'secrets-check') $sourceDriftEval.Detail
+
+    # Something needs updating now, so ONE confirmation is asked.
     $cfgPrePush = Join-Path $Work 'cfg-prepush.json'; New-Config $cfgPrePush
-    $rPrePushUpdate = Invoke-Wizard -Config $cfgPrePush -Answers @('1', '4', '0')
+    $rPrePushUpdate = Invoke-Wizard -Config $cfgPrePush -Answers @('1', '4', '', '0')
     Check 'exit 0 (updating Ignore-Rules-Check refreshes its pre-push chain)' ($rPrePushUpdate.Exit -eq 0) $rPrePushUpdate.Err
-    Check 'the pre-push managed companion still matches current source after the update' ((Get-FileHash -LiteralPath $companionSecretsScript -Algorithm SHA256).Hash -eq $realSecretsHash)
-    Check 'the preserved previous pre-push hook is still intact after the update' ((Test-Path (Join-Path $existingPrePushDir 'pre-push.hookmaker-existing')) -and ([System.IO.File]::ReadAllText((Join-Path $existingPrePushDir 'pre-push.hookmaker-existing')) -match 'user-own-pre-push-hook'))
-    Check 'the pre-push wrapper still chains to the preserved previous hook' ([System.IO.File]::ReadAllText($prePushFile) -match 'hookmaker-existing')
+    Check 'the stale native companion is repaired back to the current source' ((Get-FileHash -LiteralPath $companionSecretsScript -Algorithm SHA256).Hash -eq $realSecretsHash)
+
+    $wrapperBody = [System.IO.File]::ReadAllText($prePushFile)
+    Check 'the preserved previous pre-push hook is byte-for-byte unchanged' (
+        (Test-Path -LiteralPath $preservedPath) -and
+        ([System.IO.File]::ReadAllBytes($preservedPath).Length -eq $preservedBytesBefore.Length) -and
+        ([System.IO.File]::ReadAllText($preservedPath) -match 'user-own-pre-push-hook'))
+    Check 'the pre-push wrapper still chains to the preserved previous hook' ($wrapperBody -match 'hookmaker-existing')
+    Check 'the wrapper is not duplicated (one Hook Maker marker)' ((([regex]::Matches($wrapperBody, [regex]::Escape('# Hook Maker: Ignore-Rules-Check'))).Count) -eq 1)
+    Check 'the wrapper runs Ignore-Rules-Check exactly once' ((([regex]::Matches($wrapperBody, [regex]::Escape('/Ignore-Rules-Check/Ignore-Rules-Check.ps1"'))).Count) -eq 1)
+    Check 'the wrapper runs Secrets-Check exactly once' ((([regex]::Matches($wrapperBody, [regex]::Escape('/Secrets-Check/Secrets-Check.ps1"'))).Count) -eq 1)
+    Check 'chain order is Ignore-Rules-Check then Secrets-Check then the previous hook' (
+        $wrapperBody.IndexOf('/Ignore-Rules-Check/Ignore-Rules-Check.ps1"') -lt $wrapperBody.IndexOf('/Secrets-Check/Secrets-Check.ps1"') -and
+        $wrapperBody.IndexOf('/Secrets-Check/Secrets-Check.ps1"') -lt $wrapperBody.IndexOf('hookmaker-existing'))
+    Check 'stdin is still buffered once and replayed to every stage' (
+        $wrapperBody -match 'STDIN_FILE' -and
+        ((([regex]::Matches($wrapperBody, [regex]::Escape('< "$STDIN_FILE"'))).Count) -ge 3))
+    Check 'fail-closed chaining (|| exit) is preserved' ($wrapperBody -match '\|\| exit')
+    Check 'the native chain evaluates as current after repair' ((Get-InstallIntegrity -Record (@(Get-RecordsFor 'Ignore-Rules-Check' | Where-Object { $_.targetProjectRoot -eq $prePushProj })[0]) -ToolRoot $ToolRoot).Status -eq 'current')
+
+    # Second run: nothing left to do, so no confirmation is asked.
+    $cfgPrePush2 = Join-Path $Work 'cfg-prepush-2.json'; New-Config $cfgPrePush2
+    $rPrePush2 = Invoke-Wizard -Config $cfgPrePush2 -Answers @('1', '4', '0')
+    Check 'the second native pre-push run is idempotent (up to date)' ($rPrePush2.Out -match 'Ignore-Rules-Check[\s\S]*?up to date') $rPrePush2.Out
 
     # =====================================================================
     Write-Host '--- registry never stores secret/.env/prompt content ---' -ForegroundColor Cyan
@@ -406,30 +464,380 @@ try {
     }
 
     # =====================================================================
-    Write-Host '--- registry read/write: atomic write + malformed state fails safe ---' -ForegroundColor Cyan
-    $atomicToolRoot = Join-Path $Work 'atomic-root'
-    New-Item -ItemType Directory -Path $atomicToolRoot -Force | Out-Null
-    $atomicRegistryPath = Join-Path $atomicToolRoot 'state\install-registry.json'
-    New-Item -ItemType Directory -Path (Split-Path -Parent $atomicRegistryPath) -Force | Out-Null
-    Write-Utf8 $atomicRegistryPath '{ this is not valid json !!'
-    $savedEnvForAtomic = $env:HOOKMAKER_STATE_DIR
+    # Installed-state drift: NONE of these change the source, so an updater
+    # that only compares stored source hashes would wrongly report "up to
+    # date". Each asserts the precise repairable reason.
+    Write-Host '--- installed-state drift is detected without any source change ---' -ForegroundColor Cyan
+    $fixtureDrift = New-FixtureHook 'ZZZ-Regtest-Drift' "exit 0 # drift`n"
+    try {
+        $projDrift = New-Proj 'DriftProj'
+        & $InstallScript -CustomHook $fixtureDrift -Events @('SessionStart', 'Stop') -TargetProject $projDrift *> $null
+        $recDrift = (Get-RecordsFor 'ZZZ-Regtest-Drift')[0]
+        Check 'baseline drift install is current before tampering' ((Get-InstallIntegrity -Record $recDrift -ToolRoot $ToolRoot).Status -eq 'current')
+
+        $claudeScript = [string]$recDrift.clients.claude.runtimeScript
+        $claudeRoot = [string]$recDrift.clients.claude.runtimeRoot
+        $claudeSettings = [string]$recDrift.clients.claude.settingsPath
+        $codexScript = [string]$recDrift.clients.codex.runtimeScript
+        $codexSettings = [string]$recDrift.clients.codex.settingsPath
+        $originalScriptBytes = [System.IO.File]::ReadAllBytes($claudeScript)
+        $originalHookLibBytes = [System.IO.File]::ReadAllBytes((Join-Path $claudeRoot '_hooklib.ps1'))
+        $originalClaudeJson = [System.IO.File]::ReadAllText($claudeSettings)
+        $originalCodexJson = [System.IO.File]::ReadAllText($codexSettings)
+
+        # 1. installed main script deleted
+        Remove-Item -LiteralPath $claudeScript -Force
+        $d = Get-InstallIntegrity -Record $recDrift -ToolRoot $ToolRoot
+        Check 'a deleted installed script is planned for update' ($d.Status -eq 'update')
+        Check 'a deleted installed script reports a missing-file reason' ($d.Detail -match 'missing') $d.Detail
+        [System.IO.File]::WriteAllBytes($claudeScript, $originalScriptBytes)
+
+        # 2. installed main script modified
+        Add-Content -LiteralPath $claudeScript -Value '# tampered'
+        $d = Get-InstallIntegrity -Record $recDrift -ToolRoot $ToolRoot
+        Check 'a modified installed script is planned for update' ($d.Status -eq 'update')
+        Check 'a modified installed script reports installed-file-modified' ($d.Detail -match 'installed file modified') $d.Detail
+        [System.IO.File]::WriteAllBytes($claudeScript, $originalScriptBytes)
+
+        # 3. installed shared _hooklib.ps1 modified / deleted
+        Add-Content -LiteralPath (Join-Path $claudeRoot '_hooklib.ps1') -Value '# tampered'
+        $d = Get-InstallIntegrity -Record $recDrift -ToolRoot $ToolRoot
+        Check 'a stale shared _hooklib.ps1 is planned for update' ($d.Status -eq 'update')
+        Check 'a stale shared runtime is reported as such' ($d.Detail -match 'shared runtime is stale') $d.Detail
+        Remove-Item -LiteralPath (Join-Path $claudeRoot '_hooklib.ps1') -Force
+        $d = Get-InstallIntegrity -Record $recDrift -ToolRoot $ToolRoot
+        Check 'a missing shared runtime is reported as such' ($d.Detail -match 'shared runtime is missing') $d.Detail
+        [System.IO.File]::WriteAllBytes((Join-Path $claudeRoot '_hooklib.ps1'), $originalHookLibBytes)
+        Check 'restoring the managed files returns the install to current' ((Get-InstallIntegrity -Record $recDrift -ToolRoot $ToolRoot).Status -eq 'current')
+
+        # 4./5. a client registration removed entirely
+        Write-Utf8 $claudeSettings '{"hooks":{}}'
+        $d = Get-InstallIntegrity -Record $recDrift -ToolRoot $ToolRoot
+        Check 'a removed Claude registration is planned for update' ($d.Status -eq 'update')
+        Check 'a removed Claude registration reports registration-missing' ($d.Detail -match 'registration missing') $d.Detail
+        [System.IO.File]::WriteAllText($claudeSettings, $originalClaudeJson)
+        Write-Utf8 $codexSettings '{"hooks":{}}'
+        $d = Get-InstallIntegrity -Record $recDrift -ToolRoot $ToolRoot
+        Check 'a removed Codex registration reports registration-missing for codex' ($d.Status -eq 'update' -and $d.Detail -match '^codex') $d.Detail
+        [System.IO.File]::WriteAllText($codexSettings, $originalCodexJson)
+
+        # 6./7. event moved (stale registration on an old event) and matcher changed
+        $mutated = $originalClaudeJson.Replace('"Stop"', '"SubagentStop"')
+        [System.IO.File]::WriteAllText($claudeSettings, $mutated)
+        $d = Get-InstallIntegrity -Record $recDrift -ToolRoot $ToolRoot
+        Check 'a registration moved to a different event is planned for update' ($d.Status -eq 'update')
+        Check 'a registration on an unexpected event is reported precisely' ($d.Detail -match 'registration missing|stale registration') $d.Detail
+        [System.IO.File]::WriteAllText($claudeSettings, $originalClaudeJson)
+
+        $claudeObj = $originalClaudeJson | ConvertFrom-Json
+        $claudeObj.hooks.SessionStart[0].matcher = 'startup'
+        [System.IO.File]::WriteAllText($claudeSettings, ($claudeObj | ConvertTo-Json -Depth 50))
+        $d = Get-InstallIntegrity -Record $recDrift -ToolRoot $ToolRoot
+        Check 'a changed matcher is planned for update' ($d.Status -eq 'update')
+        Check 'a changed matcher reports registration-drifted' ($d.Detail -match 'registration drifted' -and $d.Detail -match 'matcher') $d.Detail
+        [System.IO.File]::WriteAllText($claudeSettings, $originalClaudeJson)
+
+        # 8. duplicate registration for the same logical install on one event
+        $dupObj = $originalClaudeJson | ConvertFrom-Json
+        $dupGroup = $dupObj.hooks.Stop[0] | ConvertTo-Json -Depth 50 | ConvertFrom-Json
+        $dupObj.hooks.Stop = @($dupObj.hooks.Stop) + @($dupGroup)
+        [System.IO.File]::WriteAllText($claudeSettings, ($dupObj | ConvertTo-Json -Depth 50))
+        $d = Get-InstallIntegrity -Record $recDrift -ToolRoot $ToolRoot
+        Check 'a duplicate registration is planned for update' ($d.Status -eq 'update')
+        Check 'a duplicate registration is reported as duplicate' ($d.Detail -match 'duplicate registration') $d.Detail
+        [System.IO.File]::WriteAllText($claudeSettings, $originalClaudeJson)
+
+        # 9. only one of two expected client runtimes remains
+        Remove-Item -LiteralPath (Split-Path -Parent $codexScript) -Recurse -Force
+        $d = Get-InstallIntegrity -Record $recDrift -ToolRoot $ToolRoot
+        Check 'a wiped Codex runtime is detected even though Claude is intact' ($d.Status -eq 'update' -and $d.Detail -match '^codex') $d.Detail
+
+        # 10. the updater actually REPAIRS all of it, exactly once
+        $cfgDrift = Join-Path $Work 'cfg-drift.json'; New-Config $cfgDrift
+        $rDrift = Invoke-Wizard -Config $cfgDrift -Answers @('1', '4', '', '0')
+        Check 'the drift repair run exits 0' ($rDrift.Exit -eq 0) $rDrift.Err
+        $recRepaired = (Get-RecordsFor 'ZZZ-Regtest-Drift')[0]
+        Check 'after repair the installation is current again' ((Get-InstallIntegrity -Record $recRepaired -ToolRoot $ToolRoot).Status -eq 'current')
+        $repairedSourceHash = (Get-FileHash -LiteralPath $fixtureDrift -Algorithm SHA256).Hash
+        Check 'after repair the installed copy matches source byte-for-byte' ((Get-FileHash -LiteralPath ([string]$recRepaired.clients.claude.runtimeScript) -Algorithm SHA256).Hash -eq $repairedSourceHash)
+        $repairedClaude = @(Get-HookRegistrations -SettingsPath $claudeSettings -RuntimeScript ([string]$recRepaired.clients.claude.runtimeScript))
+        Check 'after repair Claude has exactly one registration per expected event' ($repairedClaude.Count -eq 2)
+        Check 'after repair no registration is left on the stale event' (@($repairedClaude | Where-Object { $_.EventName -eq 'SubagentStop' }).Count -eq 0)
+    }
+    finally { Remove-FixtureHook 'ZZZ-Regtest-Drift' }
+
+    # =====================================================================
+    # The managed manifest must cover EVERY file the installer copies, not
+    # just the main script + _hooklib + sync config.
+    Write-Host '--- managed-file manifest covers .env and copied helpers ---' -ForegroundColor Cyan
+    $fixtureMan = New-FixtureHook 'ZZZ-Regtest-Manifest' "exit 0 # manifest`n"
+    try {
+        $manDir = Split-Path -Parent $fixtureMan
+        Write-Utf8 (Join-Path $manDir '.env') "EVENTS=Stop`n"
+        Write-Utf8 (Join-Path $manDir '.env.example') "EVENTS=Stop`n"
+        Write-Utf8 (Join-Path $manDir 'helper.ps1') "# helper v1`n"
+        $projMan = New-Proj 'ManifestProj'
+        & $InstallScript -CustomHook $fixtureMan -Events @('Stop') -TargetProject $projMan -ClaudeOnly *> $null
+        $recMan = (Get-RecordsFor 'ZZZ-Regtest-Manifest')[0]
+        $manPaths = @($recMan.sourceManifest | ForEach-Object { $_.path })
+        Check 'the manifest includes the hook-local .env' (@($manPaths | Where-Object { $_ -like '*/.env' }).Count -eq 1)
+        Check 'the manifest includes a copied helper file' (@($manPaths | Where-Object { $_ -like '*/helper.ps1' }).Count -eq 1)
+        Check 'the manifest excludes .env.example (never copied by the installer)' (@($manPaths | Where-Object { $_ -like '*.env.example' }).Count -eq 0)
+        Check 'baseline manifest install is current' ((Get-InstallIntegrity -Record $recMan -ToolRoot $ToolRoot).Status -eq 'current')
+
+        # 1. .env-only source change must trigger update
+        Write-Utf8 (Join-Path $manDir '.env') "EVENTS=Stop`nEXTRA=1`n"
+        $m = Get-InstallIntegrity -Record $recMan -ToolRoot $ToolRoot
+        Check 'a .env-only source change triggers an update' ($m.Status -eq 'update' -and $m.Detail -match '\.env') $m.Detail
+        Write-Utf8 (Join-Path $manDir '.env') "EVENTS=Stop`n"
+
+        # 2. helper-only source change must trigger update
+        Write-Utf8 (Join-Path $manDir 'helper.ps1') "# helper v2`n"
+        $m = Get-InstallIntegrity -Record $recMan -ToolRoot $ToolRoot
+        Check 'a copied-helper-only source change triggers an update' ($m.Status -eq 'update' -and $m.Detail -match 'helper\.ps1') $m.Detail
+        Write-Utf8 (Join-Path $manDir 'helper.ps1') "# helper v1`n"
+
+        # 3. a managed file ADDED to source
+        Write-Utf8 (Join-Path $manDir 'extra.psd1') "@{}`n"
+        $m = Get-InstallIntegrity -Record $recMan -ToolRoot $ToolRoot
+        Check 'a newly added managed source file triggers an update' ($m.Status -eq 'update' -and $m.Detail -match 'added') $m.Detail
+        Remove-Item -LiteralPath (Join-Path $manDir 'extra.psd1') -Force
+
+        # 4. a managed file REMOVED from source
+        Remove-Item -LiteralPath (Join-Path $manDir 'helper.ps1') -Force
+        $m = Get-InstallIntegrity -Record $recMan -ToolRoot $ToolRoot
+        Check 'a removed managed source file triggers an update' ($m.Status -eq 'update' -and $m.Detail -match 'removed') $m.Detail
+        Write-Utf8 (Join-Path $manDir 'helper.ps1') "# helper v1`n"
+        Check 'restoring source returns the install to current' ((Get-InstallIntegrity -Record $recMan -ToolRoot $ToolRoot).Status -eq 'current')
+
+        # 5. the INSTALLED .env corrupted (source untouched)
+        $installedEnv = Join-Path ([string]$recMan.clients.claude.runtimeRoot) 'ZZZ-Regtest-Manifest\.env'
+        Add-Content -LiteralPath $installedEnv -Value 'TAMPERED=1'
+        $m = Get-InstallIntegrity -Record $recMan -ToolRoot $ToolRoot
+        Check 'a corrupted installed .env triggers an update' ($m.Status -eq 'update' -and $m.Detail -match 'installed file modified') $m.Detail
+        Write-Utf8 $installedEnv "EVENTS=Stop`n"
+
+        # 6. a runtime-only mutable file must NOT trigger update
+        Write-Utf8 (Join-Path ([string]$recMan.clients.claude.runtimeRoot) 'ZZZ-Regtest-Manifest\run.log') 'runtime noise'
+        Check 'a runtime-generated .log file never counts as managed drift' ((Get-InstallIntegrity -Record $recMan -ToolRoot $ToolRoot).Status -eq 'current')
+    }
+    finally { Remove-FixtureHook 'ZZZ-Regtest-Manifest' }
+
+    # =====================================================================
+    # Per-client semantics: the exact sequence that silently corrupted a v1
+    # record (Claude-only SessionStart, then Codex-only Stop -> clients=Both,
+    # events=Stop -> updater rewrote Claude to Stop).
+    Write-Host '--- per-client semantics are stored and preserved independently ---' -ForegroundColor Cyan
+    $fixturePc = New-FixtureHook 'ZZZ-Regtest-Perclient' "exit 0 # per-client v1`n"
+    try {
+        $projPc = New-Proj 'PerClientProj'
+        & $InstallScript -CustomHook $fixturePc -Events @('SessionStart') -TargetProject $projPc -ClaudeOnly *> $null
+        & $InstallScript -CustomHook $fixturePc -Events @('Stop') -TargetProject $projPc -CodexOnly *> $null
+        $recPc = (Get-RecordsFor 'ZZZ-Regtest-Perclient')
+        Check 'both client installs share ONE logical record' ($recPc.Count -eq 1)
+        $recPc = $recPc[0]
+        Check 'Claude keeps its own SessionStart events' ((@($recPc.clients.claude.events) -join ',') -eq 'SessionStart')
+        Check 'Codex keeps its own Stop events (not overwritten by Claude)' ((@($recPc.clients.codex.events) -join ',') -eq 'Stop')
+        Check 'adding Codex later did not drop the Claude subrecord' ((@(Get-InstalledClientNames -Record $recPc) | Sort-Object) -join ',' -eq 'claude,codex')
+        Check 'a mixed-event install is still considered current' ((Get-InstallIntegrity -Record $recPc -ToolRoot $ToolRoot).Status -eq 'current')
+
+        $pcClaudeSettings = [string]$recPc.clients.claude.settingsPath
+        $pcCodexSettings = [string]$recPc.clients.codex.settingsPath
+        $pcClaudeScript = [string]$recPc.clients.claude.runtimeScript
+        $pcCodexScript = [string]$recPc.clients.codex.runtimeScript
+
+        # Change the source, then let the updater refresh BOTH clients.
+        Write-Utf8 $fixturePc "exit 0 # per-client v2`n"
+        $cfgPc = Join-Path $Work 'cfg-perclient.json'; New-Config $cfgPc
+        $rPc = Invoke-Wizard -Config $cfgPc -Answers @('1', '4', '', '0')
+        Check 'the per-client update run exits 0' ($rPc.Exit -eq 0) $rPc.Err
+
+        $claudeRegs = @(Get-HookRegistrations -SettingsPath $pcClaudeSettings -RuntimeScript $pcClaudeScript)
+        $codexRegs = @(Get-HookRegistrations -SettingsPath $pcCodexSettings -RuntimeScript $pcCodexScript)
+        Check 'after update Claude still registers ONLY SessionStart' ((@($claudeRegs | ForEach-Object { $_.EventName }) | Sort-Object -Unique) -join ',' -eq 'SessionStart')
+        Check 'after update Codex still registers ONLY Stop' ((@($codexRegs | ForEach-Object { $_.EventName }) | Sort-Object -Unique) -join ',' -eq 'Stop')
+        Check 'after update Claude has exactly one registration' ($claudeRegs.Count -eq 1)
+        Check 'after update Codex has exactly one registration' ($codexRegs.Count -eq 1)
+        $newSourceHash = (Get-FileHash -LiteralPath $fixturePc -Algorithm SHA256).Hash
+        Check 'after update both clients got the new source byte-for-byte' (
+            (Get-FileHash -LiteralPath $pcClaudeScript -Algorithm SHA256).Hash -eq $newSourceHash -and
+            (Get-FileHash -LiteralPath $pcCodexScript -Algorithm SHA256).Hash -eq $newSourceHash)
+
+        # Damaging ONE client must not disturb the healthy one.
+        $codexBefore = [System.IO.File]::ReadAllText($pcCodexSettings)
+        Remove-Item -LiteralPath $pcClaudeScript -Force
+        $cfgPc2 = Join-Path $Work 'cfg-perclient-2.json'; New-Config $cfgPc2
+        $rPc2 = Invoke-Wizard -Config $cfgPc2 -Answers @('1', '4', '', '0')
+        Check 'repairing one damaged client exits 0' ($rPc2.Exit -eq 0) $rPc2.Err
+        Check 'the damaged Claude runtime is restored' (Test-Path -LiteralPath $pcClaudeScript)
+        Check 'the healthy Codex settings file is byte-for-byte unchanged' ([System.IO.File]::ReadAllText($pcCodexSettings) -eq $codexBefore)
+    }
+    finally { Remove-FixtureHook 'ZZZ-Regtest-Perclient' }
+
+    # =====================================================================
+    # v1 -> v2 migration must never invent semantics.
+    Write-Host '--- v1 records migrate safely to the per-client schema ---' -ForegroundColor Cyan
+    $fixtureMig = New-FixtureHook 'ZZZ-Regtest-Migrate' "exit 0 # migrate`n"
+    try {
+        $projMig = New-Proj 'MigrateProj'
+        & $InstallScript -CustomHook $fixtureMig -Events @('SessionStart') -TargetProject $projMig -ClaudeOnly *> $null
+        $recMig = (Get-RecordsFor 'ZZZ-Regtest-Migrate')[0]
+        $claudeScriptMig = [string]$recMig.clients.claude.runtimeScript
+        $claudeSettingsMig = [string]$recMig.clients.claude.settingsPath
+
+        # Rebuild the on-disk registry as a genuine v1 record for this hook.
+        $registryPath = Join-Path $IsolatedStateDir 'install-registry.json'
+        $liveRegistry = Get-Content -LiteralPath $registryPath -Raw | ConvertFrom-Json
+        $v1Record = [pscustomobject][ordered]@{
+            id = [string]$recMig.id; internalName = 'ZZZ-Regtest-Migrate'; friendlyName = 'ZZZ-Regtest-Migrate'
+            hookType = 'CustomHook'; sourceScript = $fixtureMig; sourceDir = (Split-Path -Parent $fixtureMig)
+            scope = 'project'; targetProjectRoot = $projMig
+            clients = 'Claude'; claudeSettingsPath = $claudeSettingsMig; codexHooksPath = (Join-Path $projMig '.codex\hooks.json')
+            events = @('SessionStart'); profile = ''; configPath = ''
+            claudeRuntimeScript = $claudeScriptMig; codexRuntimeScript = ''
+            prePushManaged = $false; sourceHash = 'OLD'; hooklibHash = 'OLD'; configHash = ''
+            lastInstalledUtc = '2026-01-01T00:00:00.0000000Z'; lastUpdatedUtc = ''; lastResult = 'ok'; lastError = ''
+            createdUtc = '2026-01-01T00:00:00.0000000Z'; history = @()
+        }
+        $liveRegistry.installs = @(@($liveRegistry.installs | Where-Object { [string]$_.id -ne [string]$recMig.id }) + @($v1Record))
+        $liveRegistry.version = 1
+        [System.IO.File]::WriteAllText($registryPath, ($liveRegistry | ConvertTo-Json -Depth 50), (New-Object System.Text.UTF8Encoding $false))
+
+        $migrated = @((Read-InstallRegistry -ToolRoot $ToolRoot).installs | Where-Object { [string]$_.id -eq [string]$recMig.id })[0]
+        Check 'a v1 record is migrated to schema 2 on read' ([int]$migrated.schema -eq 2)
+        Check 'migration derives the claude subrecord from the v1 clients value' ((@(Get-InstalledClientNames -Record $migrated) -join ',') -eq 'claude')
+        Check 'migration takes the events from the LIVE registration, not a guess' ((@($migrated.clients.claude.events) -join ',') -eq 'SessionStart')
+        Check 'migration marks where the events came from' ($migrated.clients.claude.eventsFromLive -eq $true)
+        Check 'a migrated record is planned for update (it predates manifest tracking)' ((Get-InstallIntegrity -Record $migrated -ToolRoot $ToolRoot).Status -eq 'update')
+
+        # An unusable v1 record must be flagged, never guessed at.
+        $brokenV1 = [pscustomobject][ordered]@{
+            id = 'broken-v1-record'; internalName = 'ZZZ-Regtest-Broken'; friendlyName = 'ZZZ-Regtest-Broken'
+            hookType = 'CustomHook'; sourceScript = $fixtureMig; sourceDir = (Split-Path -Parent $fixtureMig)
+            scope = 'project'; targetProjectRoot = $projMig
+            clients = 'Both'; claudeSettingsPath = ''; codexHooksPath = ''
+            events = @(); profile = ''; configPath = ''
+            claudeRuntimeScript = ''; codexRuntimeScript = ''
+        }
+        $migratedBroken = ConvertTo-InstallRecordV2 -Record $brokenV1
+        Check 'an unusable v1 record is flagged for manual repair, not guessed' ($migratedBroken.needsManualRepair -eq $true)
+        Check 'an unusable v1 record is skipped (never silently rewritten)' ((Get-InstallIntegrity -Record $migratedBroken -ToolRoot $ToolRoot).Status -eq 'skip')
+    }
+    finally { Remove-FixtureHook 'ZZZ-Regtest-Migrate' }
+
+    # =====================================================================
+    # Corrupt registry: preserve, warn, recover - never silently destroy.
+    Write-Host '--- a corrupt registry is quarantined, never silently overwritten ---' -ForegroundColor Cyan
+    $corruptRoot = Join-Path $Work 'corrupt-root'
+    New-Item -ItemType Directory -Path (Join-Path $corruptRoot 'state') -Force | Out-Null
+    $corruptRegistry = Join-Path $corruptRoot 'state\install-registry.json'
+    $savedStateDir = $env:HOOKMAKER_STATE_DIR
     $env:HOOKMAKER_STATE_DIR = ''
     try {
-        $malformedRegistry = Read-InstallRegistry -ToolRoot $atomicToolRoot
-        Check 'a malformed registry file reads back as an empty, valid skeleton (no crash)' ($null -ne $malformedRegistry -and @($malformedRegistry.installs).Count -eq 0 -and [int]$malformedRegistry.version -eq 1)
+        function New-CorruptRecord {
+            return [pscustomobject][ordered]@{
+                id = 'quarantine-probe'; schema = 2; friendlyName = 'QuarantineProbe'; hookType = 'CustomHook'
+                sourceScript = ''; sourceDir = ''; scope = 'project'; targetProjectRoot = ''
+                profile = ''; configPath = ''; sourceManifest = @()
+                clients = [pscustomobject]@{}; nativeGit = $null
+                lastResult = 'ok'; lastReason = 'probe'; lastError = ''
+            }
+        }
 
-        $rec1 = [pscustomobject][ordered]@{ id = 'atomic-test-1'; friendlyName = 'AtomicOne'; sourceHash = 'h1'; lastResult = 'ok' }
-        Set-InstallRecord -Registry $malformedRegistry -Record $rec1
-        Save-InstallRegistry -ToolRoot $atomicToolRoot -Registry $malformedRegistry
-        $parsedAfterSave = Get-Content -LiteralPath $atomicRegistryPath -Raw | ConvertFrom-Json
-        Check 'saving after recovering from malformed state produces valid JSON' ($null -ne $parsedAfterSave)
-        Check 'no leftover .tmp file remains after an atomic write' (-not (Test-Path -LiteralPath ($atomicRegistryPath + '.tmp')))
+        # 1. malformed JSON
+        Write-Utf8 $corruptRegistry '{ this is not valid json !!'
+        $originalBytes = [System.IO.File]::ReadAllBytes($corruptRegistry)
+        $state = Read-InstallRegistryState -ToolRoot $corruptRoot
+        Check 'malformed JSON is reported as corrupt, not as an empty registry' ($state.State -eq 'corrupt')
+        $result = Update-InstallRegistry -ToolRoot $corruptRoot -Record (New-CorruptRecord)
+        Check 'the install still succeeds after quarantining a corrupt registry' ($result.Ok -eq $true)
+        Check 'quarantine emits an explicit warning naming the preserved file' ($result.Warning -match 'install-registry\.corrupt-') $result.Warning
+        $quarantined = @(Get-ChildItem -LiteralPath (Split-Path -Parent $corruptRegistry) -Filter 'install-registry.corrupt-*.json')
+        Check 'exactly one quarantine file is produced' ($quarantined.Count -eq 1)
+        $quarantinedBytes = [System.IO.File]::ReadAllBytes($quarantined[0].FullName)
+        Check 'the quarantined file preserves the original bytes exactly' (
+            $quarantinedBytes.Length -eq $originalBytes.Length -and
+            (Compare-Object $quarantinedBytes $originalBytes -SyncWindow 0 | Measure-Object).Count -eq 0)
+        $recovered = Read-InstallRegistry -ToolRoot $corruptRoot
+        Check 'a new valid registry exists only after quarantine succeeded' (@($recovered.installs).Count -eq 1 -and [string]$recovered.installs[0].id -eq 'quarantine-probe')
+        Check 'no raw file contents or secrets appear in the quarantine warning' ($result.Warning -notmatch 'this is not valid json')
 
-        $reReadRegistry = Read-InstallRegistry -ToolRoot $atomicToolRoot
-        Check 'the recovered + saved record round-trips correctly' (@($reReadRegistry.installs).Count -eq 1 -and [string]$reReadRegistry.installs[0].id -eq 'atomic-test-1')
+        # 2. valid JSON, wrong field types
+        Write-Utf8 $corruptRegistry '{"version":2,"installs":"not-an-array-of-records"}'
+        $state = Read-InstallRegistryState -ToolRoot $corruptRoot
+        Check 'valid JSON with a wrong installs type is reported as corrupt' ($state.State -eq 'corrupt')
+
+        Write-Utf8 $corruptRegistry '{"version":2,"installs":[{"friendlyName":"NoId"}]}'
+        $state = Read-InstallRegistryState -ToolRoot $corruptRoot
+        Check 'a record with no id is reported as corrupt' ($state.State -eq 'corrupt' -and $state.Reason -match 'no id') $state.Reason
+
+        # 3. unsupported (newer) schema version
+        Write-Utf8 $corruptRegistry '{"version":99,"installs":[]}'
+        $state = Read-InstallRegistryState -ToolRoot $corruptRoot
+        Check 'an unsupported newer schema version is rejected explicitly' ($state.State -eq 'corrupt' -and $state.Reason -match 'newer than this Hook Maker supports') $state.Reason
+
+        # 4. a truncated .tmp beside a valid registry is cleaned up, not read
+        Write-Utf8 $corruptRegistry '{"version":2,"installs":[]}'
+        Write-Utf8 ($corruptRegistry + '.tmp') '{"version":2,"insta'
+        $result = Update-InstallRegistry -ToolRoot $corruptRoot -Record (New-CorruptRecord)
+        Check 'a valid registry with a stale .tmp still updates cleanly' ($result.Ok -eq $true)
+        Check 'the stale .tmp file is removed by the atomic write' (-not (Test-Path -LiteralPath ($corruptRegistry + '.tmp')))
+
+        # 5. quarantine collision gets a unique name
+        Write-Utf8 $corruptRegistry '{ corrupt again'
+        $result = Update-InstallRegistry -ToolRoot $corruptRoot -Record (New-CorruptRecord)
+        Write-Utf8 $corruptRegistry '{ corrupt again'
+        $result2 = Update-InstallRegistry -ToolRoot $corruptRoot -Record (New-CorruptRecord)
+        $allQuarantined = @(Get-ChildItem -LiteralPath (Split-Path -Parent $corruptRegistry) -Filter 'install-registry.corrupt-*.json')
+        Check 'identical corrupt content quarantined twice yields two distinct files' ($allQuarantined.Count -ge 3 -and $result.Ok -and $result2.Ok)
+        Check 'quarantine names are unique (no overwrite)' ((@($allQuarantined | ForEach-Object { $_.Name }) | Sort-Object -Unique).Count -eq $allQuarantined.Count)
+
+        # 6. quarantine failure leaves the original untouched
+        Write-Utf8 $corruptRegistry '{ unquarantinable'
+        $lockedBytes = [System.IO.File]::ReadAllBytes($corruptRegistry)
+        $held = [System.IO.File]::Open($corruptRegistry, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::Read)
+        try {
+            $failResult = Update-InstallRegistry -ToolRoot $corruptRoot -Record (New-CorruptRecord)
+            Check 'a failed quarantine reports tracking failure instead of claiming success' ($failResult.Ok -eq $false)
+            Check 'a failed quarantine explains that nothing was recorded' ($failResult.Warning -match 'NOT recorded') $failResult.Warning
+        }
+        finally { $held.Dispose() }
+        Check 'a failed quarantine leaves the original file byte-for-byte intact' (
+            (Test-Path -LiteralPath $corruptRegistry) -and
+            ([System.IO.File]::ReadAllBytes($corruptRegistry).Length -eq $lockedBytes.Length))
+
+        # 7. concurrent read-modify-write must not lose records
+        Write-Utf8 $corruptRegistry '{"version":2,"installs":[]}'
+        $concurrentScript = Join-Path $Work 'concurrent-writer.ps1'
+        Write-Utf8 $concurrentScript @"
+Set-StrictMode -Version 2.0
+`$ErrorActionPreference = 'Stop'
+. '$HookLib'
+. '$(Join-Path $ScriptRoot '_installlib.ps1')'
+`$env:HOOKMAKER_STATE_DIR = ''
+for (`$i = 0; `$i -lt 8; `$i++) {
+    `$record = [pscustomobject][ordered]@{
+        id = `$args[0] + '-' + `$i; schema = 2; friendlyName = 'Concurrent'; hookType = 'CustomHook'
+        sourceScript = ''; sourceDir = ''; scope = 'project'; targetProjectRoot = ''
+        profile = ''; configPath = ''; sourceManifest = @()
+        clients = [pscustomobject]@{}; nativeGit = `$null
+        lastResult = 'ok'; lastReason = 'concurrent'; lastError = ''
+    }
+    Update-InstallRegistry -ToolRoot '$corruptRoot' -Record `$record | Out-Null
+}
+"@
+        $hostExe = (Get-Process -Id $PID).Path
+        $jobs = @()
+        foreach ($tag in @('writerA', 'writerB')) {
+            $jobs += Start-Process -FilePath $hostExe -ArgumentList ('-NoLogo -NoProfile -File "' + $concurrentScript + '" ' + $tag) -NoNewWindow -PassThru
+        }
+        foreach ($job in $jobs) { $job.WaitForExit() }
+        $afterConcurrent = Read-InstallRegistry -ToolRoot $corruptRoot
+        Check 'concurrent writers do not lose each other''s records (lock held)' (@($afterConcurrent.installs).Count -eq 16) ('records=' + @($afterConcurrent.installs).Count)
+        Check 'no lock file is left behind after concurrent writes' (-not (Test-Path -LiteralPath (Join-Path $corruptRoot 'state\install-registry.lock')))
     }
     finally {
-        $env:HOOKMAKER_STATE_DIR = $savedEnvForAtomic
+        $env:HOOKMAKER_STATE_DIR = $savedStateDir
     }
 }
 finally {
