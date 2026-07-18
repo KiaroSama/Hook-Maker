@@ -162,3 +162,7 @@ jobs:
       - name: Registry schema / isolation / path-safety test suite
         shell: pwsh
         run: .\scripts\Test-InstallRegistrySchema.ps1
+
+      - name: Native Git pre-push install test suite
+        shell: pwsh
+        run: .\scripts\Test-NativePrePushInstall.ps1
