@@ -3,9 +3,22 @@
 # verification. The AI decides; nothing is deployed or verified automatically
 # by this script - it never deploys merely because a wrangler config exists.
 #
+# The decision is gated on actual RELEASE READINESS (deterministic repo/CI/
+# cleanup state), never on menu position or hook registration order - Stop
+# hooks for the same event may run concurrently, so this hook never assumes
+# it runs "after" Git-Sync-Check, Ci-Status-Check, or Test-Temp-Cleanup. It
+# stays completely silent (no reminder at all this Stop) when the working
+# tree is dirty, the branch is ahead/unpushed, the exact release commit isn't
+# known to be pushed, CI exists but is not verified green for that exact SHA,
+# or Test-Temp-Cleanup (when installed for this project) has not reported a
+# fresh clean/safe-cleaned/review-only-preserved result for the CURRENT repo
+# state. If Test-Temp-Cleanup races on the same Stop and hasn't recorded yet,
+# this hook simply stays silent and re-evaluates on the next Stop - it never
+# loops or retries within one invocation.
+#
 # Token-efficient by design:
 # - Fires only in projects with a wrangler config (wrangler.toml/.json/.jsonc)
-#   AND only when there is work newer than the last reminder.
+#   AND only when release-readiness actually holds.
 # - Respects stop_hook_active (never loops) and a per-project cooldown.
 #
 # Optional .env next to this script (copy .env.example):
@@ -53,6 +66,76 @@ if ($config.ContainsKey('DEPLOY_COMMAND') -and $config['DEPLOY_COMMAND'] -ne '')
     $deployCommand = $config['DEPLOY_COMMAND']
 }
 
+# Reads Test-Temp-Cleanup's coordination state, only trusting it when its
+# recorded repo-state fingerprint still matches the CURRENT state (never a
+# stale/racing read from an earlier Stop).
+function Get-CleanupCoordinationState {
+    param([string]$Root)
+    $path = Join-Path (Join-Path $env:LOCALAPPDATA 'HookMaker\state') ('TestTempCleanup-result-' + (Get-ShortHash $Root.ToLowerInvariant()) + '.json')
+    $record = Read-JsonFile -Path $path
+    if ($null -eq $record) { return $null }
+    $recordedFingerprint = [string](Get-Field $record 'fingerprint')
+    if ([string]::IsNullOrWhiteSpace($recordedFingerprint)) { return $null }
+    if ($recordedFingerprint -ne (Get-RepoStateFingerprint -ProjectRoot $Root)) { return $null }
+    return [string](Get-Field $record 'category')
+}
+
+# Deterministic release-readiness gate: only when this holds does the
+# deployment-worthiness decision get shown at all.
+function Test-ReleaseReady {
+    param([string]$Root)
+
+    if ($null -eq (Get-Command git -ErrorAction SilentlyContinue)) { return $false }
+    $inside = Invoke-QuietCommand -FilePath git -ArgumentList @('-C', $Root, 'rev-parse', '--is-inside-work-tree')
+    if ($LASTEXITCODE -ne 0 -or [string]$inside -ne 'true') { return $false }
+
+    # 1) no uncommitted task changes.
+    $status = @((Invoke-QuietCommand -FilePath git -ArgumentList @('-C', $Root, 'status', '--porcelain')) | Where-Object { $_ })
+    if ($status.Count -gt 0) { return $false }
+
+    $headSha = [string](Invoke-QuietCommand -FilePath git -ArgumentList @('-C', $Root, 'rev-parse', 'HEAD'))
+    if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($headSha)) { return $false }
+
+    # 2) the release commit must be known to be pushed - ANY configured
+    # upstream (Cloudflare Workers projects need not be hosted on GitHub at
+    # all); Get-GitHubRepository is reserved for the GitHub-specific CI query
+    # below, not for this generic pushed/ahead check.
+    $upstreamRef = [string](Invoke-QuietCommand -FilePath git -ArgumentList @('-C', $Root, 'rev-parse', '--abbrev-ref', '@{upstream}'))
+    if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($upstreamRef)) { return $false }
+    $aheadRaw = [string](Invoke-QuietCommand -FilePath git -ArgumentList @('-C', $Root, 'rev-list', '--count', ($upstreamRef + '..HEAD')))
+    if ($LASTEXITCODE -ne 0) { return $false }
+    $ahead = -1
+    if (-not [int]::TryParse($aheadRaw, [ref]$ahead) -or $ahead -ne 0) { return $false }
+
+    # 3) if this repo uses CI, the exact HEAD sha must be verified green.
+    $workflowsDir = Join-Path $Root '.github\workflows'
+    $usesCi = (Test-Path -LiteralPath $workflowsDir -PathType Container) -and
+        (@(Get-ChildItem -LiteralPath $workflowsDir -Filter '*.yml' -ErrorAction SilentlyContinue) + @(Get-ChildItem -LiteralPath $workflowsDir -Filter '*.yaml' -ErrorAction SilentlyContinue)).Count -gt 0
+    if ($usesCi) {
+        $repoInfo = Get-GitHubRepository -ProjectRoot $Root
+        if ($null -eq $repoInfo) { return $false }
+        if ($null -eq (Get-Command gh -ErrorAction SilentlyContinue)) { return $false }
+        $runsJson = [string](Invoke-QuietCommand -FilePath gh -ArgumentList @('run', 'list', '--repo', $repoInfo.Repository, '--commit', $headSha, '--json', 'status,conclusion', '--limit', '20'))
+        if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($runsJson)) { return $false }
+        $runs = $null
+        try { $runs = @($runsJson | ConvertFrom-Json) } catch { return $false }
+        if ($runs.Count -eq 0) { return $false }
+        foreach ($run in $runs) {
+            if ([string](Get-Field $run 'status') -ne 'completed' -or [string](Get-Field $run 'conclusion') -ne 'success') { return $false }
+        }
+    }
+
+    # 4) Test-Temp-Cleanup coordination, only enforced when it is installed for this project.
+    $cleanupInstalled = (Test-Path -LiteralPath (Join-Path $Root '.claude\hooks\Hook-Maker\Test-Temp-Cleanup') -PathType Container) -or
+        (Test-Path -LiteralPath (Join-Path $Root '.codex\hooks\Hook-Maker\Test-Temp-Cleanup') -PathType Container)
+    if ($cleanupInstalled) {
+        $cleanupCategory = Get-CleanupCoordinationState -Root $Root
+        if ($cleanupCategory -notin @('clean', 'safe-cleaned', 'review-only-preserved')) { return $false }
+    }
+
+    return $true
+}
+
 # ---- cooldown (per project) ----
 $stateDir = Join-Path $env:LOCALAPPDATA 'HookMaker\state'
 $statePath = Join-Path $stateDir ('CloudflareDeploy-' + (Get-ShortHash $cwd.ToLowerInvariant()) + '.txt')
@@ -67,21 +150,10 @@ if (Test-Path -LiteralPath $statePath -PathType Leaf) {
     catch { }
 }
 
-# Only remind when there is actually work newer than the last reminder
-# (git-based; non-git Workers projects fall back to reminding per cooldown).
-if ($null -ne (Get-Command git -ErrorAction SilentlyContinue)) {
-    $inside = Invoke-QuietCommand -FilePath git -ArgumentList @('-C', $cwd, 'rev-parse', '--is-inside-work-tree')
-    if ($LASTEXITCODE -eq 0 -and [string]$inside -eq 'true') {
-        $latest = [DateTime]::MinValue
-        $commitUnix = Invoke-QuietCommand -FilePath git -ArgumentList @('-C', $cwd, 'log', '-1', '--format=%ct')
-        if ($LASTEXITCODE -eq 0 -and $commitUnix) {
-            $latest = [DateTimeOffset]::FromUnixTimeSeconds([int64]([string]$commitUnix)).UtcDateTime
-        }
-        $dirty = @((Invoke-QuietCommand -FilePath git -ArgumentList @('-C', $cwd, 'status', '--porcelain')) | Where-Object { $_ })
-        if ($dirty.Count -eq 0 -and $latest -ne [DateTime]::MinValue -and $latest -le $lastFire) {
-            exit 0
-        }
-    }
+# Only show the decision when the repository and release state are actually
+# ready - never based on hook registration order (see header).
+if (-not (Test-ReleaseReady $cwd)) {
+    exit 0
 }
 
 New-Item -ItemType Directory -Path $stateDir -Force | Out-Null
@@ -89,7 +161,7 @@ New-Item -ItemType Directory -Path $stateDir -Force | Out-Null
 
 $reasonLines = New-Object System.Collections.Generic.List[string]
 [void]$reasonLines.Add('CLOUDFLARE DEPLOY CHECK: this project deploys to Cloudflare Workers (' + $wranglerConfig + ' found). Deployment is NOT automatic just because this config exists - work through both steps below.')
-[void]$reasonLines.Add('1) Deployment-worthiness: deploy ONLY if the task is complete (not partial/experimental/local-only diagnostic), relevant tests/typecheck/lint/build pass, the exact release commit is known, CI for that commit is green if this repo uses CI (or an explicit documented policy allows otherwise), no secrets/local-only/debug files or unrelated changes are included, the target environment and any required bindings/migrations are understood, and project/user rules permit it. If any of that is not true - or the change is documentation-only, an experiment, or the release commit is not known - finish now WITHOUT deploying and briefly state why.')
+[void]$reasonLines.Add('1) Deployment-worthiness: deploy ONLY if the task is complete (not partial/experimental/local-only diagnostic), relevant tests/typecheck/lint/build pass, the exact release commit is known, CI for that commit is green if this repo uses CI (or an explicit documented policy allows otherwise), no secrets/local-only/debug files, unrelated changes, or disposable test cache/temp residue are included, the target environment and any required bindings/migrations are understood, and project/user rules permit it. If any of that is not true - or the change is documentation-only, an experiment, or the release commit is not known - finish now WITHOUT deploying and briefly state why.')
 [void]$reasonLines.Add('2) Environment: explicitly decide production / staging / preview-development / a named Wrangler environment before deploying - never silently default to production - and use the matching Wrangler config/command for it.')
 [void]$reasonLines.Add('3) Cloudflare-specific pre-deploy review, only where relevant to this diff: Worker name and account/environment selection, environment-specific variables, bindings, D1 databases and migrations, KV namespaces, R2 buckets, Queues, Durable Objects and migrations, service bindings, routes/custom domains, cron triggers, compatibility date/flags, deployment CLI/version compatibility, and build output. Never print secret values.')
 [void]$reasonLines.Add('4) If deployment is warranted, run: ' + $deployCommand)

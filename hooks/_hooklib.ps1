@@ -202,6 +202,24 @@ function Get-GitHubRepository {
     return [pscustomobject]@{ Remote = $selected; Repository = [string]$valid[$selected]; Branch = $branchName; TrackingRef = $trackingRef }
 }
 
+# Deterministic per-project state fingerprint (HEAD sha + sorted status lines,
+# hashed - never raw paths/content). Used to bind one hook's Stop-time result
+# to the EXACT repository state another hook observes on a later Stop, so
+# lifecycle hooks that fire concurrently on the same event (registration order
+# is display-only, never execution order) can hand off state safely without
+# racing: a consumer only trusts a producer's recorded state when this
+# fingerprint still matches what the consumer observes right now.
+function Get-RepoStateFingerprint {
+    param([Parameter(Mandatory = $true)][string]$ProjectRoot)
+    if ($null -eq (Get-Command git -ErrorAction SilentlyContinue)) { return '' }
+    $inside = Invoke-QuietCommand -FilePath git -ArgumentList @('-C', $ProjectRoot, 'rev-parse', '--is-inside-work-tree')
+    if ($LASTEXITCODE -ne 0 -or [string]$inside -ne 'true') { return '' }
+    $head = [string](Invoke-QuietCommand -FilePath git -ArgumentList @('-C', $ProjectRoot, 'rev-parse', 'HEAD'))
+    if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($head)) { return '' }
+    $status = @((Invoke-QuietCommand -FilePath git -ArgumentList @('-C', $ProjectRoot, 'status', '--porcelain')) | Where-Object { $_ } | Sort-Object)
+    return Get-ShortHash ($head + '|' + ($status -join '|'))
+}
+
 function Get-LatestWorkTimeUtc {
     param([string]$ProjectRoot)
     if ($null -eq (Get-Command git -ErrorAction SilentlyContinue)) {
