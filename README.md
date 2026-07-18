@@ -274,6 +274,17 @@ isolated, precisely-reported skip. It never aborts the run, the remaining record
 evaluated, and nothing about the bad record is modified or guessed at; it is left for manual
 repair.
 
+### Component-level repair
+
+The integrity check reports a per-component result — source, Claude, Codex, native Git — instead of
+stopping at the first problem it finds. The updater then reinstalls **only** the damaged components.
+Repairing a healthy client would rewrite its settings file, add another timestamped backup and bump
+its runtime timestamps for no reason, so it is left completely untouched and reported as such.
+
+A changed **source** is a shared dependency: every client is stale by definition, so they are all
+refreshed together. A missing user-owned pre-push hook is reported as `manual repair required` and
+is never "repaired" by recreating it.
+
 ### Known limitations
 
 - Legacy discovery/removal supports only the historical layouts listed under

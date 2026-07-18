@@ -932,6 +932,72 @@ for (`$i = 0; `$i -lt 8; `$i++) {
     finally {
         $env:HOOKMAKER_STATE_DIR = $savedStateDir
     }
+    # =====================================================================
+    # COMPONENT-LEVEL REPAIR: only the damaged component is reinstalled.
+    # Repairing a healthy client would rewrite its settings, add another
+    # timestamped backup and bump its runtime mtimes for no reason.
+    Write-Host '--- only the damaged component is repaired; healthy ones are untouched ---' -ForegroundColor Cyan
+    $compProj = New-Proj 'ComponentRepairProj'
+    & $InstallScript -CustomHook (Join-Path $RealHooksDir 'Ai-Memory-Check\Ai-Memory-Check.ps1') -Events @('Stop') -TargetProject $compProj *> $null
+    $compRec = @(Get-RecordsFor 'Ai-Memory-Check' | Where-Object { $_.targetProjectRoot -eq $compProj })[0]
+    Check 'the fixture is installed for both clients' ((@(Get-InstalledClientNames -Record $compRec) -join ',') -eq 'claude,codex')
+
+    $compEval = Get-InstallIntegrity -Record $compRec -ToolRoot $ToolRoot
+    Check 'a clean install is current' ($compEval.Status -eq 'current') $compEval.Detail
+    Check 'integrity returns a per-component breakdown' ($null -ne $compEval.PSObject.Properties['Components'] -and @($compEval.Components).Count -ge 3)
+    Check 'every component reports current' (@($compEval.Components | Where-Object { $_.Status -ne 'current' }).Count -eq 0)
+
+    # Damage ONLY the Claude runtime.
+    $compClaudeScript = [string]$compRec.clients.claude.runtimeScript
+    $compCodexScript = [string]$compRec.clients.codex.runtimeScript
+    $compCodexSettings = [string]$compRec.clients.codex.settingsPath
+    Add-Content -LiteralPath $compClaudeScript -Value '# tampered'
+    $compEval2 = Get-InstallIntegrity -Record $compRec -ToolRoot $ToolRoot
+    $compClaude = @($compEval2.Components | Where-Object { $_.Name -eq 'claude' })[0]
+    $compCodex = @($compEval2.Components | Where-Object { $_.Name -eq 'codex' })[0]
+    $compSource = @($compEval2.Components | Where-Object { $_.Name -eq 'source' })[0]
+    Check 'the damaged client is reported as needing update' ($compClaude.Status -eq 'update') $compClaude.Detail
+    Check 'the healthy client is still reported current' ($compCodex.Status -eq 'current')
+    Check 'source is still current (only the installed copy drifted)' ($compSource.Status -eq 'current')
+
+    # Snapshot the healthy client, then repair only what is damaged.
+    $compCodexHash = (Get-FileHash -LiteralPath $compCodexScript -Algorithm SHA256).Hash
+    $compCodexMtime = (Get-Item -LiteralPath $compCodexScript).LastWriteTimeUtc
+    $compCodexJson = [System.IO.File]::ReadAllText($compCodexSettings)
+    $compCodexSettingsMtime = (Get-Item -LiteralPath $compCodexSettings).LastWriteTimeUtc
+    $compCodexBackups = @(Get-ChildItem -LiteralPath (Split-Path -Parent $compCodexSettings) -Filter '*.backup-*' -ErrorAction SilentlyContinue).Count
+    Start-Sleep -Milliseconds 1200
+
+    $compDamaged = @($compEval2.Components |
+        Where-Object { $_.Status -eq 'update' -and $_.Name -ne 'source' -and $_.Name -ne 'nativeGit' } |
+        ForEach-Object { [string]$_.Name })
+    Check 'only the damaged client is selected for repair' ((@($compDamaged) -join ',') -eq 'claude')
+    foreach ($compClient in $compDamaged) {
+        $compClientArgs = if ($compClient -eq 'claude') { @{ ClaudeOnly = $true } } else { @{ CodexOnly = $true } }
+        & $InstallScript -CustomHook ([string]$compRec.sourceScript) -TargetProject ([string]$compRec.targetProjectRoot) -Events @($compRec.clients.$compClient.events) @compClientArgs *> $null
+    }
+    $compRecAfter = @(Get-RecordsFor 'Ai-Memory-Check' | Where-Object { $_.targetProjectRoot -eq $compProj })[0]
+    Check 'the damaged client is repaired back to current' ((Get-InstallIntegrity -Record $compRecAfter -ToolRoot $ToolRoot).Status -eq 'current')
+    Check 'the healthy runtime bytes are unchanged' ((Get-FileHash -LiteralPath $compCodexScript -Algorithm SHA256).Hash -eq $compCodexHash)
+    Check 'the healthy runtime mtime is unchanged' ((Get-Item -LiteralPath $compCodexScript).LastWriteTimeUtc -eq $compCodexMtime)
+    Check 'the healthy settings content is unchanged' ([System.IO.File]::ReadAllText($compCodexSettings) -eq $compCodexJson)
+    Check 'the healthy settings file was not rewritten (mtime unchanged)' ((Get-Item -LiteralPath $compCodexSettings).LastWriteTimeUtc -eq $compCodexSettingsMtime)
+    Check 'no extra backup was created for the healthy client' (@(Get-ChildItem -LiteralPath (Split-Path -Parent $compCodexSettings) -Filter '*.backup-*' -ErrorAction SilentlyContinue).Count -eq $compCodexBackups)
+
+    # A SOURCE change is a shared dependency: every client is stale by
+    # definition and they must be repaired together.
+    $fixtureShared = New-FixtureHook 'ZZZ-Regtest-Sharedsource' "exit 0`n"
+    try {
+        $sharedProj = New-Proj 'SharedSourceProj'
+        & $InstallScript -CustomHook $fixtureShared -Events @('Stop') -TargetProject $sharedProj *> $null
+        $sharedRec = @(Get-RecordsFor 'ZZZ-Regtest-Sharedsource')[0]
+        Write-Utf8 $fixtureShared "exit 0 # changed`n"
+        $sharedEval = Get-InstallIntegrity -Record $sharedRec -ToolRoot $ToolRoot
+        $sharedDamaged = @($sharedEval.Components | Where-Object { $_.Status -eq 'update' } | ForEach-Object { [string]$_.Name })
+        Check 'a source change marks the source component damaged' ($sharedDamaged -contains 'source')
+        Check 'a source change marks BOTH clients damaged (shared dependency)' (($sharedDamaged -contains 'claude') -and ($sharedDamaged -contains 'codex'))
+    }
+    finally { Remove-FixtureHook 'ZZZ-Regtest-Sharedsource' }
     # Installed-state drift: NONE of these change the source, so an updater
 
     # that only compares stored source hashes would wrongly report "up to

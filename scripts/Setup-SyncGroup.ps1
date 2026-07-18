@@ -1924,6 +1924,7 @@ function Invoke-UpdateInstalledHooks {
     # nothing about it is modified or guessed at.
     foreach ($record in $allRecords) {
         $status = ''
+        $components = @()
         $detail = ''
         try {
             $validation = Test-InstallRecordValid -Record $record
@@ -1948,6 +1949,8 @@ function Invoke-UpdateInstalledHooks {
                 $evaluation = Get-InstallIntegrity -Record $record -ToolRoot $ToolRoot
                 $status = $evaluation.Status
                 $detail = $evaluation.Detail
+                # Per-component breakdown drives targeted repair below.
+                if ($null -ne $evaluation.PSObject.Properties['Components']) { $components = @($evaluation.Components) }
             }
         }
         catch {
@@ -1955,7 +1958,7 @@ function Invoke-UpdateInstalledHooks {
             $status = 'skip'
             $detail = 'could not evaluate this record (manual repair): ' + $_.Exception.Message
         }
-        [void]$plan.Add([pscustomobject]@{ Record = $record; Status = $status; Detail = $detail })
+        [void]$plan.Add([pscustomobject]@{ Record = $record; Status = $status; Detail = $detail; Components = $components })
     }
 
     Write-MenuTitle 'Plan:'
@@ -2009,6 +2012,25 @@ function Invoke-UpdateInstalledHooks {
             $clientsToRepair = @($record.importedClients)
         }
         $clientResults = New-Object System.Collections.Generic.List[string]
+        $clientResultsSkipped = New-Object System.Collections.Generic.List[string]
+        # COMPONENT-LEVEL REPAIR: reinstall only the clients the integrity check
+        # actually reported as damaged. Reinstalling a healthy client would
+        # rewrite its settings file, add another timestamped backup and bump its
+        # runtime mtimes for no reason. A changed SOURCE is a shared dependency,
+        # so the integrity check already marks every client damaged in that case
+        # and they are all repaired together.
+        if ($null -ne $item.PSObject.Properties['Components'] -and $null -ne $item.Components) {
+            $damagedClients = @(@($item.Components) |
+                Where-Object { $_.Status -eq 'update' -and $_.Name -ne 'source' -and $_.Name -ne 'nativeGit' } |
+                ForEach-Object { [string]$_.Name })
+            if ($damagedClients.Count -gt 0) {
+                $healthy = @($clientsToRepair | Where-Object { $damagedClients -notcontains $_ })
+                $clientsToRepair = @($clientsToRepair | Where-Object { $damagedClients -contains $_ })
+                foreach ($untouched in $healthy) {
+                    [void]$clientResultsSkipped.Add($untouched + ': already current (left untouched)')
+                }
+            }
+        }
         $anyFailed = $false
         foreach ($client in $clientsToRepair) {
             $events = @()
@@ -2048,7 +2070,14 @@ function Invoke-UpdateInstalledHooks {
         }
         else {
             [void]$updated.Add($displayName)
-            Write-Host ('  ' + (Get-Painted '+ updated' $C.Green) + ' ' + (Get-Painted $displayName $C.Bold) + '  ' + (Get-Painted ($scopeText + $script:MenuSep + ($clientsToRepair -join ', ')) $C.Gray))
+            # Name the components actually repaired, and say plainly which were
+            # left alone - "updated" must not imply every client was rewritten.
+            $repairedText = if ($clientsToRepair.Count -gt 0) { $clientsToRepair -join ', ' } else { 'no client needed repair' }
+            $untouchedText = ''
+            if ($clientResultsSkipped.Count -gt 0) {
+                $untouchedText = $script:MenuSep + 'untouched: ' + (@($clientResultsSkipped | ForEach-Object { ($_ -split ':')[0] }) -join ', ')
+            }
+            Write-Host ('  ' + (Get-Painted '+ updated' $C.Green) + ' ' + (Get-Painted $displayName $C.Bold) + '  ' + (Get-Painted ($scopeText + $script:MenuSep + $repairedText + $untouchedText) $C.Gray))
         }
     }
 
