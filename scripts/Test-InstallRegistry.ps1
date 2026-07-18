@@ -705,6 +705,69 @@ try {
     Check 'repair records that the preserved hook is missing' ($afterRepair.nativeGit.previousHookMissing -eq $true)
     Check 'repair never regenerates a user-owned hook' (-not (Test-Path -LiteralPath $preservedPath))
 
+    # =====================================================================
+    # Registry schema validation and PER-RECORD isolation. Under StrictMode a
+    # single malformed record used to throw and abort the whole update run, so
+    # every healthy record after it was never evaluated.
+    Write-Host '--- registry schema validation and per-record isolation ---' -ForegroundColor Cyan
+    $goodRecord = [pscustomobject]@{
+        id = 'schema-ok'; schema = 2; friendlyName = 'F'; hookType = 'CustomHook'
+        sourceScript = 'C:.ps1'; scope = 'global'
+        clients = [pscustomobject]@{ claude = [pscustomobject]@{ runtimeScript = 'C:.ps1'; settingsPath = 'C:\s.json'; events = @('Stop') } }
+    }
+    function Copy-Record { param($R) return ($R | ConvertTo-Json -Depth 20 | ConvertFrom-Json) }
+    Check 'a well-formed record validates' ((Test-InstallRecordValid -Record $goodRecord).Ok)
+    Check 'a null record is rejected' (-not (Test-InstallRecordValid -Record $null).Ok)
+    foreach ($requiredField in @('id', 'friendlyName', 'hookType', 'sourceScript', 'scope')) {
+        $missingField = Copy-Record $goodRecord
+        $missingField.PSObject.Properties.Remove($requiredField)
+        Check ("a record missing '" + $requiredField + "' is rejected") (-not (Test-InstallRecordValid -Record $missingField).Ok)
+    }
+    $newerSchema = Copy-Record $goodRecord; $newerSchema.schema = 99
+    $newerResult = Test-InstallRecordValid -Record $newerSchema
+    Check 'a NEWER schema version is refused explicitly, not assumed valid' ((-not $newerResult.Ok) -and ($newerResult.Reason -match 'unsupported schema')) $newerResult.Reason
+    $olderSchema = Copy-Record $goodRecord; $olderSchema.schema = 1
+    Check 'an OLD schema version is reported as needing migration' (-not (Test-InstallRecordValid -Record $olderSchema).Ok)
+    $invalidScope = Copy-Record $goodRecord; $invalidScope.scope = 'nonsense'
+    Check 'an invalid scope is rejected' (-not (Test-InstallRecordValid -Record $invalidScope).Ok)
+    $invalidType = Copy-Record $goodRecord; $invalidType.hookType = 'Weird'
+    Check 'an unknown hookType is rejected' (-not (Test-InstallRecordValid -Record $invalidType).Ok)
+    $noEvents = Copy-Record $goodRecord; $noEvents.clients.claude.events = @()
+    Check 'a client subrecord with no events is rejected' (-not (Test-InstallRecordValid -Record $noEvents).Ok)
+    $badManifest = Copy-Record $goodRecord
+    $badManifest | Add-Member -MemberType NoteProperty -Name sourceManifest -Value @([pscustomobject]@{ nothing = 'here' })
+    Check 'a malformed sourceManifest entry is rejected' (-not (Test-InstallRecordValid -Record $badManifest).Ok)
+    $engineNoProfile = Copy-Record $goodRecord; $engineNoProfile.hookType = 'Engine'
+    Check 'an engine record without profile/config is rejected' (-not (Test-InstallRecordValid -Record $engineNoProfile).Ok)
+
+    # End-to-end: a broken record placed BEFORE a healthy one must not stop the
+    # healthy one from being evaluated.
+    $isoProj = New-Proj 'IsolationProj'
+    & $InstallScript -CustomHook (Join-Path $RealHooksDir 'Ai-Memory-Check\Ai-Memory-Check.ps1') -Events @('Stop') -TargetProject $isoProj -ClaudeOnly *> $null
+    $isoRegPath = Join-Path $env:HOOKMAKER_STATE_DIR 'install-registry.json'
+    $isoReg = Get-Content -LiteralPath $isoRegPath -Raw | ConvertFrom-Json
+    $isoOriginal = [System.IO.File]::ReadAllText($isoRegPath)
+    $isoBroken = [pscustomobject]@{ id = 'broken-isolation'; schema = 2; friendlyName = 'Broken-Hook' }
+    $isoReg.installs = @($isoBroken) + @($isoReg.installs)
+    [System.IO.File]::WriteAllText($isoRegPath, ($isoReg | ConvertTo-Json -Depth 50), (New-Object System.Text.UTF8Encoding $false))
+    $isoEvaluated = 0; $isoSkipped = 0; $isoCrashed = $false
+    foreach ($isoRecord in @((Read-InstallRegistry -ToolRoot $ToolRoot).installs)) {
+        try {
+            $isoValid = Test-InstallRecordValid -Record $isoRecord
+            if (-not $isoValid.Ok) { $isoSkipped++; continue }
+            $null = Get-InstallIntegrity -Record $isoRecord -ToolRoot $ToolRoot
+            $isoEvaluated++
+        }
+        catch { $isoCrashed = $true; break }
+    }
+    Check 'a malformed record never crashes the batch' (-not $isoCrashed)
+    Check 'the malformed record is isolated as a skip' ($isoSkipped -ge 1)
+    Check 'healthy records after it are still evaluated' ($isoEvaluated -ge 1)
+    # The updater must not have modified the malformed record.
+    $isoAfter = Get-Content -LiteralPath $isoRegPath -Raw | ConvertFrom-Json
+    Check 'the malformed record is left untouched, never repaired by guessing' (@($isoAfter.installs | Where-Object { $_.id -eq 'broken-isolation' }).Count -eq 1)
+    [System.IO.File]::WriteAllText($isoRegPath, $isoOriginal, (New-Object System.Text.UTF8Encoding $false))
+
     # Installed-state drift: NONE of these change the source, so an updater
     # that only compares stored source hashes would wrongly report "up to
     # date". Each asserts the precise repairable reason.

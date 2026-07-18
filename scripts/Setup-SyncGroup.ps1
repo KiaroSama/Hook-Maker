@@ -1874,6 +1874,18 @@ function Get-LegacyHookCandidates {
 # record's saved parameters - a correct reinstall without re-asking any
 # configuration question. Missing source/target/profile are reported and
 # skipped, never destructively touched. One confirmation for the whole batch.
+# Safe field read for registry records shown in the update plan. A malformed
+# record must be DISPLAYABLE (so the user can see what needs manual repair)
+# without StrictMode throwing on its missing properties.
+function Get-RecordDisplayField {
+    param($Record, [string]$Name, [string]$Fallback = '(unknown)')
+    if ($null -eq $Record) { return $Fallback }
+    if ($null -eq $Record.PSObject.Properties[$Name]) { return $Fallback }
+    $value = [string]$Record.$Name
+    if ([string]::IsNullOrWhiteSpace($value)) { return $Fallback }
+    return $value
+}
+
 function Invoke-UpdateInstalledHooks {
     Write-Log 'INFO' 'UPDATE' 'Update previously installed hooks started.'
     Write-PhaseHeader 'Update Previously Installed Hooks' $C.Input '-'
@@ -1904,27 +1916,44 @@ function Invoke-UpdateInstalledHooks {
 
     # ---- evaluate each record: up to date / needs update / skip reason ----
     $plan = New-Object System.Collections.Generic.List[object]
+    # PER-RECORD ISOLATION. Every record is validated before any of its fields
+    # are read, and its whole evaluation runs inside try/catch. Under StrictMode
+    # a single malformed record (e.g. one missing sourceScript) previously threw
+    # and aborted the entire run, so every healthy record after it was never
+    # evaluated. A bad record is now an isolated, precisely-reported entry and
+    # nothing about it is modified or guessed at.
     foreach ($record in $allRecords) {
         $status = ''
         $detail = ''
-        if (-not (Test-Path -LiteralPath $record.sourceScript -PathType Leaf)) {
-            $status = 'skip'; $detail = 'source script no longer found: ' + $record.sourceScript
+        try {
+            $validation = Test-InstallRecordValid -Record $record
+            if (-not $validation.Ok) {
+                $status = 'skip'; $detail = 'invalid registry record (manual repair): ' + $validation.Reason
+            }
+            elseif (-not (Test-Path -LiteralPath $record.sourceScript -PathType Leaf)) {
+                $status = 'skip'; $detail = 'source script no longer found: ' + $record.sourceScript
+            }
+            elseif (($record.scope -ne 'global') -and -not (Test-Path -LiteralPath $record.targetProjectRoot -PathType Container)) {
+                $status = 'skip'; $detail = 'target project no longer found: ' + $record.targetProjectRoot
+            }
+            elseif ($record.hookType -eq 'Engine' -and -not (Test-Path -LiteralPath $record.configPath -PathType Leaf)) {
+                $status = 'skip'; $detail = 'sync config no longer found: ' + $record.configPath
+            }
+            elseif ($record.hookType -eq 'Engine') {
+                $engineConfig = Read-JsonFile $record.configPath
+                $profileExists = ($null -ne $engineConfig) -and ($null -ne $engineConfig.PSObject.Properties['profiles']) -and (@($engineConfig.profiles | Where-Object { [string]$_.id -eq [string]$record.profile }).Count -gt 0)
+                if (-not $profileExists) { $status = 'skip'; $detail = 'profile no longer exists in the sync config: ' + $record.profile }
+            }
+            if ($status -eq '') {
+                $evaluation = Get-InstallIntegrity -Record $record -ToolRoot $ToolRoot
+                $status = $evaluation.Status
+                $detail = $evaluation.Detail
+            }
         }
-        elseif (($record.scope -ne 'global') -and -not (Test-Path -LiteralPath $record.targetProjectRoot -PathType Container)) {
-            $status = 'skip'; $detail = 'target project no longer found: ' + $record.targetProjectRoot
-        }
-        elseif ($record.hookType -eq 'Engine' -and -not (Test-Path -LiteralPath $record.configPath -PathType Leaf)) {
-            $status = 'skip'; $detail = 'sync config no longer found: ' + $record.configPath
-        }
-        elseif ($record.hookType -eq 'Engine') {
-            $engineConfig = Read-JsonFile $record.configPath
-            $profileExists = ($null -ne $engineConfig) -and ($null -ne $engineConfig.PSObject.Properties['profiles']) -and (@($engineConfig.profiles | Where-Object { [string]$_.id -eq [string]$record.profile }).Count -gt 0)
-            if (-not $profileExists) { $status = 'skip'; $detail = 'profile no longer exists in the sync config: ' + $record.profile }
-        }
-        if ($status -eq '') {
-            $evaluation = Get-InstallIntegrity -Record $record -ToolRoot $ToolRoot
-            $status = $evaluation.Status
-            $detail = $evaluation.Detail
+        catch {
+            # Never let one record's failure end the run.
+            $status = 'skip'
+            $detail = 'could not evaluate this record (manual repair): ' + $_.Exception.Message
         }
         [void]$plan.Add([pscustomobject]@{ Record = $record; Status = $status; Detail = $detail })
     }
@@ -1932,9 +1961,9 @@ function Invoke-UpdateInstalledHooks {
     Write-MenuTitle 'Plan:'
     for ($i = 0; $i -lt $plan.Count; $i++) {
         $item = $plan[$i]
-        $scopeText = if ($item.Record.scope -eq 'global') { 'global' } else { $item.Record.targetProjectRoot }
+        $scopeText = if ((Get-RecordDisplayField $item.Record 'scope') -eq 'global') { 'global' } else { Get-RecordDisplayField $item.Record 'targetProjectRoot' }
         $color = switch ($item.Status) { 'update' { $C.Amber }; 'skip' { $C.Red }; default { $C.Mint } }
-        Write-Host ('  ' + (Get-Painted (($i + 1).ToString() + '.') $C.LightBlue) + ' ' + (Get-Painted (Get-HookFriendlyName $item.Record.friendlyName) $C.Bold) + $script:MenuSep + (Get-Painted $scopeText $C.Gray) + $script:MenuSep + (Get-Painted $item.Detail $color))
+        Write-Host ('  ' + (Get-Painted (($i + 1).ToString() + '.') $C.LightBlue) + ' ' + (Get-Painted (Get-HookFriendlyName (Get-RecordDisplayField $item.Record 'friendlyName' 'unknown-record')) $C.Bold) + $script:MenuSep + (Get-Painted $scopeText $C.Gray) + $script:MenuSep + (Get-Painted $item.Detail $color))
     }
     $toUpdate = @($plan | Where-Object { $_.Status -eq 'update' })
     $toSkip = @($plan | Where-Object { $_.Status -eq 'skip' })
@@ -1949,7 +1978,7 @@ function Invoke-UpdateInstalledHooks {
         Write-NoteLine '  Nothing to update - every valid tracked installation already matches the current source.'
         if ($toSkip.Count -gt 0) {
             Write-NoteLine '  Skipped (review and reinstall manually if still needed):'
-            foreach ($item in $toSkip) { Write-NoteLine ('    ' + (Get-HookFriendlyName $item.Record.friendlyName) + ' - ' + $item.Detail) }
+            foreach ($item in $toSkip) { Write-NoteLine ('    ' + (Get-HookFriendlyName (Get-RecordDisplayField $item.Record 'friendlyName' 'unknown-record')) + ' - ' + $item.Detail) }
         }
         return 'done'
     }
@@ -2031,7 +2060,7 @@ function Invoke-UpdateInstalledHooks {
     }
     if ($toSkip.Count -gt 0) {
         Write-NoteLine ('  ' + $toSkip.Count + ' skipped (missing source/target/profile) - review and reinstall manually if still needed:')
-        foreach ($item in $toSkip) { Write-NoteLine ('    ' + (Get-HookFriendlyName $item.Record.friendlyName) + ' - ' + $item.Detail) }
+        foreach ($item in $toSkip) { Write-NoteLine ('    ' + (Get-HookFriendlyName (Get-RecordDisplayField $item.Record 'friendlyName' 'unknown-record')) + ' - ' + $item.Detail) }
     }
     Write-NoteLine '  Restart the Claude/Codex clients and review /hooks inside each affected project.'
     Write-Log 'INFO' 'DONE' ('Update installed hooks complete: updated=' + $updated.Count + ' failed=' + $failed.Count + ' skipped=' + $toSkip.Count + ' current=' + $current.Count)
