@@ -93,16 +93,17 @@ try {
     # once copied into a project and silently does nothing.
     Check 'engine is NOT a separate numbered list entry' ($r.Out -notmatch '\d+\.\s+Cross-Project')
     Check 'listing shows timing tags' ($r.Out -match '\[post-task\]' -and $r.Out -match '\[pre-task\]')
+    Check 'Docs-Freshness-Check (When=both) renders the [pre+post-task] timing tag' ($r.Out -match 'Docs-Freshness-Check[\s\S]*?\[pre\+post-task\]')
     Check 'listing shows short descriptions' ($r.Out -match 'relevant \.ai context files' -and $r.Out -match 'checks global \+ project rules')
     Check 'menu parts are pipe-separated' ($r.Out -match 'Create or update a sync group \| \[pre-task\] \| cross-project \.ai knowledge sync')
     $menuOrder = @(
         '1\. Select all hooks', '2\. Create or update a sync group', '3\. Ai-Context-Check',
         '4\. Ai-Context-Load', '5\. Ci-Status-Check', '6\. Dependabot-Check',
-        '7\. Github-Baseline-Check', '8\. Git-Sync-Check', '9\. Graph-Read-Check',
-        '10\. Graph-Update-Check', '11\. Large-File-Check', '12\. Mcp-Usage-Check',
-        '13\. Rules-Check', '14\. Skills-Check', '15\. Secrets-Check',
-        '16\. Ignore-Rules-Check', '17\. Dependency-Version-Check', '18\. Test-Temp-Cleanup',
-        '19\. Cloudflare-Deploy'
+        '7\. Github-Baseline-Check', '8\. Git-Sync-Check', '9\. Docs-Freshness-Check',
+        '10\. Graph-Read-Check', '11\. Graph-Update-Check', '12\. Large-File-Check',
+        '13\. Mcp-Usage-Check', '14\. Rules-Check', '15\. Skills-Check',
+        '16\. Secrets-Check', '17\. Ignore-Rules-Check', '18\. Dependency-Version-Check',
+        '19\. Test-Temp-Cleanup', '20\. Cloudflare-Deploy'
     ) -join '[\s\S]*'
     Check 'hooks follow the requested menu order (Select all -> sync group -> hooks -> Dependency-Version-Check -> Test-Temp-Cleanup -> Cloudflare-Deploy last)' ($r.Out -match $menuOrder)
     Check '_hooklib excluded from listing' ($r.Out -notmatch '_hooklib')
@@ -196,12 +197,12 @@ try {
     Write-Host '--- multi-select install (range + list, recommended events) ---' -ForegroundColor Cyan
     $cfg4 = Join-Path $Work 'cfg4.json'; New-Config $cfg4
     $m = New-Proj 'Multi'
-    # main 1 -> sub 1 -> "3-8,15,19" (eight advisory hooks incl. Cloudflare-Deploy,
-    #        now the LAST individual entry (Test-Temp-Cleanup inserted at 18
-    #        pushed it to 19); the engine is excluded from this list entirely,
-    #        see the guard test below)
+    # main 1 -> sub 1 -> "3-8,16,20" (eight advisory hooks incl. Cloudflare-Deploy,
+    #        still the LAST individual entry (Docs-Freshness-Check inserted at 9
+    #        shifted Secrets-Check 15->16 and Cloudflare-Deploy 19->20); the
+    #        engine is excluded from this list entirely, see the guard test below)
     #        -> mode 1 (recommended events per hook) -> client Both -> target -> done -> start -> exit
-    $r = Invoke-Wizard -Config $cfg4 -Answers @('1', '1', '3-8,15,19', '1', '1', $m, 'done', '', '0')
+    $r = Invoke-Wizard -Config $cfg4 -Answers @('1', '1', '3-8,16,20', '1', '1', $m, 'done', '', '0')
     Check 'exit 0' ($r.Exit -eq 0)
     Check 'no stderr' ($r.Err -eq '')
     Check 'selection accepts a range combined with a single item' ($r.Out -notmatch 'Enter number\(s\)')
@@ -298,7 +299,7 @@ try {
     Check 'select-all honors Codex-only client scoping' ((Test-Path (Join-Path $codexOnlyProj '.codex\hooks.json')) -and -not (Test-Path (Join-Path $codexOnlyProj '.claude')))
 
     # Selecting the second-to-last individual entry installs Test-Temp-Cleanup
-    # (menu item 18, immediately before Cloudflare-Deploy).
+    # (menu item 19, immediately before Cloudflare-Deploy).
     $cfgPenult = Join-Path $Work 'cfg-penult.json'; New-Config $cfgPenult
     $penultProj = New-Proj 'PenultEntryProj'
     $rPenult = Invoke-Wizard -Config $cfgPenult -Answers @('1', '1', ($hookCount + 1).ToString(), '2', '2', $penultProj, 'done', '', '0')
@@ -339,7 +340,28 @@ try {
     Check 'reinstall does not duplicate a hook''s registration' ($aiMemHandlerCount -eq 1)
 
     # =====================================================================
-    Write-Host '--- installer/idempotency check: the two menu-affected hooks (18, 19) ---' -ForegroundColor Cyan
+    Write-Host '--- installer/idempotency check: Docs-Freshness-Check (new menu item 9) ---' -ForegroundColor Cyan
+    # Selected together with its neighbor (10) so this goes through the
+    # multi-hook "recommended events per hook" mode (a single-item selection
+    # instead takes the fixed 4-choice event menu, which has no "recommended"
+    # option - see Read-HookConfig/Read-EventSelection).
+    $cfgDocs = Join-Path $Work 'cfg-docs.json'; New-Config $cfgDocs
+    $docsProj = New-Proj 'DocsFreshnessProj'
+    $rDocs = Invoke-Wizard -Config $cfgDocs -Answers @('1', '1', '9,10', '1', '1', $docsProj, 'done', '', '0')
+    Check 'exit 0 (installing Docs-Freshness-Check)' ($rDocs.Exit -eq 0)
+    Check 'Docs-Freshness-Check installed at its own friendly folder' (Test-Path (Join-Path $docsProj '.claude\hooks\Hook-Maker\Docs-Freshness-Check\Docs-Freshness-Check.ps1'))
+    $docsEvents = @(Get-RegisteredEvents (Join-Path $docsProj '.claude\settings.local.json') 'Docs-Freshness-Check' | Sort-Object) -join ','
+    Check 'Docs-Freshness-Check gets its recommended SessionStart,Stop events' ($docsEvents -eq 'SessionStart,Stop') $docsEvents
+    $docsSourceHash = (Get-FileHash -LiteralPath (Join-Path $RealHooksDir 'Docs-Freshness-Check\Docs-Freshness-Check.ps1') -Algorithm SHA256).Hash
+    $docsInstalledHash = (Get-FileHash -LiteralPath (Join-Path $docsProj '.claude\hooks\Hook-Maker\Docs-Freshness-Check\Docs-Freshness-Check.ps1') -Algorithm SHA256).Hash
+    Check 'the installed Docs-Freshness-Check copy matches the maintained source byte-for-byte' ($docsSourceHash -eq $docsInstalledHash)
+    $rDocsAgain = Invoke-Wizard -Config $cfgDocs -Answers @('1', '1', '9,10', '1', '1', $docsProj, 'done', '', '0')
+    Check 'exit 0 (reinstalling Docs-Freshness-Check)' ($rDocsAgain.Exit -eq 0)
+    $docsFoldersAgain = @(Get-ChildItem -LiteralPath (Join-Path $docsProj '.claude\hooks\Hook-Maker') -Directory -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Name)
+    Check 'reinstall keeps exactly one Docs-Freshness-Check folder (no duplicate)' (@($docsFoldersAgain | Where-Object { $_ -eq 'Docs-Freshness-Check' }).Count -eq 1)
+
+    # =====================================================================
+    Write-Host '--- installer/idempotency check: the two menu-affected hooks (19, 20) ---' -ForegroundColor Cyan
     $cfgAffected = Join-Path $Work 'cfg-affected.json'; New-Config $cfgAffected
     $affectedProj = New-Proj 'AffectedHooksProj'
     $affectedSelection = ($hookCount + 1).ToString() + ',' + ($hookCount + 2).ToString()
