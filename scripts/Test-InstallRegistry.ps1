@@ -174,7 +174,8 @@ try {
         Check 'claude subrecord events match what was installed' (@(@($rec.clients.claude.events) | Sort-Object) -join ',' -eq 'SessionStart,Stop')
         Check 'codex subrecord events match what was installed' (@(@($rec.clients.codex.events) | Sort-Object) -join ',' -eq 'SessionStart,Stop')
         Check 'record has a non-empty managed-source manifest' (@($rec.sourceManifest).Count -gt 0)
-        Check 'manifest covers the shared _hooklib.ps1' (@($rec.sourceManifest | Where-Object { $_.path -eq '_hooklib.ps1' }).Count -eq 1)
+        Check 'manifest covers the hook-PRIVATE _hooklib.ps1' (@($rec.sourceManifest | Where-Object { $_.path -eq ((Get-HookFriendlyName $rec.friendlyName).ToLowerInvariant() + '/_hooklib.ps1') }).Count -eq 1)
+        Check 'no shared runtime-root library is tracked any more' (@($rec.sourceManifest | Where-Object { $_.path -eq '_hooklib.ps1' }).Count -eq 0)
         Check 'record has createdUtc and per-client lastInstalledUtc' (-not [string]::IsNullOrWhiteSpace([string]$rec.createdUtc) -and -not [string]::IsNullOrWhiteSpace([string]$rec.clients.claude.lastInstalledUtc))
         Check 'record has a bounded history with one entry' (@($rec.history).Count -eq 1)
     }
@@ -349,7 +350,7 @@ try {
         # A confirm answer is included because OTHER healthy records in the
         # shared registry may legitimately need a refresh; the run must still
         # exit 0 and report this record as skipped either way.
-        $rMissingSrc = Invoke-Wizard -Config $cfgMissingSrc -Answers @('1', '4', '', '0')
+        $rMissingSrc = Invoke-Wizard -Config $cfgMissingSrc -Answers @('1', '4', '', 'exit')
         Check 'exit 0 (missing source is reported, not a crash)' ($rMissingSrc.Exit -eq 0) $rMissingSrc.Err
         Check 'missing source is reported by name' ($rMissingSrc.Out -match 'ZZZ-Regtest-Missingsource[\s\S]*?source script no longer found') $rMissingSrc.Out
     }
@@ -361,7 +362,7 @@ try {
         & $InstallScript -CustomHook $fixtureMissingTgt -Events @('SessionStart') -TargetProject $projMissingTgt *> $null
         Remove-Item -LiteralPath $projMissingTgt -Recurse -Force -ErrorAction SilentlyContinue
         $cfgMissingTgt = Join-Path $Work 'cfg-missing-tgt.json'; New-Config $cfgMissingTgt
-        $rMissingTgt = Invoke-Wizard -Config $cfgMissingTgt -Answers @('1', '4', '', '0')
+        $rMissingTgt = Invoke-Wizard -Config $cfgMissingTgt -Answers @('1', '4', '', 'exit')
         Check 'exit 0 (missing target is reported, not a crash)' ($rMissingTgt.Exit -eq 0) $rMissingTgt.Err
         Check 'missing target is reported by name' ($rMissingTgt.Out -match 'ZZZ-Regtest-Missingtarget[\s\S]*?target project no longer found') $rMissingTgt.Out
     }
@@ -404,7 +405,10 @@ try {
     Check 'installing Ignore-Rules-Check preserves the existing pre-push hook as .hookmaker-existing' (Test-Path (Join-Path $existingPrePushDir 'pre-push.hookmaker-existing'))
     $companionSecretsScript = Join-Path $existingPrePushDir 'Hook-Maker\Secrets-Check\Secrets-Check.ps1'
     Check 'the pre-push managed companion (Secrets-Check) copy exists' (Test-Path $companionSecretsScript)
-    $realSecretsHash = (Get-FileHash -LiteralPath (Join-Path $RealHooksDir 'Secrets-Check\Secrets-Check.ps1') -Algorithm SHA256).Hash
+    # The installed companion is the source with its shared-library dot-source
+    # rewritten to the private sibling copy, so the expected hash is the PLAN's
+    # generated content - which also proves that transform is deterministic.
+    $realSecretsHash = Get-PlanArtifactExpectedHash -Artifact (New-PlanArtifact -RelativePath 'expected' -Kind 'Generated' -GeneratedContent (Get-PrivateLibraryScriptContent -SourceScriptPath (Join-Path $RealHooksDir 'Secrets-Check\Secrets-Check.ps1')))
     Check 'the pre-push managed companion matches the current real Secrets-Check source' ((Get-FileHash -LiteralPath $companionSecretsScript -Algorithm SHA256).Hash -eq $realSecretsHash)
     $preservedPath = Join-Path $existingPrePushDir 'pre-push.hookmaker-existing'
     $preservedBytesBefore = [System.IO.File]::ReadAllBytes($preservedPath)
@@ -612,6 +616,95 @@ try {
     }
     finally { $env:HOOKMAKER_STATE_DIR = $savedAvailStateDir }
 
+    # =====================================================================
+    # Filesystem roots and physical boundaries. Lexical containment must never
+    # turn a root into a non-root ('C:\' -> 'C:'), and a sibling whose name
+    # merely starts with the parent's name is not inside it.
+    Write-Host '--- path roots, sibling-prefix attacks and traversal ---' -ForegroundColor Cyan
+    Check 'a drive root contains its children' (Test-PathContainedIn -ChildPath 'C:\Windows\System32' -ParentPath 'C:\')
+    Check 'a drive root is contained in itself' (Test-PathContainedIn -ChildPath 'C:\' -ParentPath 'C:\')
+    Check 'a UNC share root contains its children' (Test-PathContainedIn -ChildPath '\\server\share\dir\file.txt' -ParentPath '\\server\share')
+    Check 'a sibling-prefix directory is NOT contained' (-not (Test-PathContainedIn -ChildPath 'C:\Hook-Maker-Evil\x.ps1' -ParentPath 'C:\Hook-Maker'))
+    Check 'an exact-name directory IS contained' (Test-PathContainedIn -ChildPath 'C:\Hook-Maker\x.ps1' -ParentPath 'C:\Hook-Maker')
+    Check 'a parent-relative traversal escapes containment' (-not (Test-PathContainedIn -ChildPath 'C:\Hook-Maker\..\Other\x.ps1' -ParentPath 'C:\Hook-Maker'))
+    Check 'a nested traversal that stays inside is contained' (Test-PathContainedIn -ChildPath 'C:\Hook-Maker\sub\..\x.ps1' -ParentPath 'C:\Hook-Maker')
+    Check 'alternate separators are normalized' (Test-PathContainedIn -ChildPath 'C:/Hook-Maker/sub/x.ps1' -ParentPath 'C:\Hook-Maker')
+    Check 'Windows path comparison is case-insensitive' (Test-PathContainedIn -ChildPath 'C:\HOOK-MAKER\x.ps1' -ParentPath 'C:\hook-maker')
+    Check 'an unrelated drive is never contained' (-not (Test-PathContainedIn -ChildPath 'D:\Hook-Maker\x.ps1' -ParentPath 'C:\Hook-Maker'))
+    Check 'empty paths are never contained' ((-not (Test-PathContainedIn -ChildPath '' -ParentPath 'C:\X')) -and (-not (Test-PathContainedIn -ChildPath 'C:\X' -ParentPath '')))
+    # A planned artifact must never be able to escape its staging directory.
+    $escapePlan = @(New-PlanArtifact -RelativePath '../escaped.ps1' -Kind 'Generated' -GeneratedContent 'x')
+    $escapeRoot = Join-Path $Work 'escape-root'
+    New-Item -ItemType Directory -Path $escapeRoot -Force | Out-Null
+    $escapeThrew = $false
+    try { Install-PlannedRuntime -Plan $escapePlan -RuntimeRoot $escapeRoot -FriendlyName 'Escape-Test' | Out-Null } catch { $escapeThrew = $true }
+    Check 'a planned artifact that escapes staging is rejected' $escapeThrew
+    Check 'the escape attempt wrote nothing outside the runtime root' (-not (Test-Path -LiteralPath (Join-Path (Split-Path -Parent $escapeRoot) 'escaped.ps1')))
+
+    # =====================================================================
+    # The preserved user pre-push hook is USER-OWNED: preserved as opaque
+    # bytes, never parsed, rewritten, or regenerated. Compared by exact bytes
+    # AND SHA-256, using content that is not valid UTF-8 text and has no
+    # trailing newline - a text round-trip would corrupt either one.
+    Write-Host '--- previous user pre-push hook: exact byte preservation ---' -ForegroundColor Cyan
+    $byteRepo = Join-Path $Work 'byte-preserve-repo'
+    New-Item -ItemType Directory -Path $byteRepo -Force | Out-Null
+    Push-Location $byteRepo
+    try {
+        & git init --quiet 2>$null | Out-Null
+        & git config user.email 'regtest@example.invalid' 2>$null | Out-Null
+        & git config user.name 'Regtest' 2>$null | Out-Null
+        Write-Utf8 (Join-Path $byteRepo 'readme.md') 'seed'
+        & git add -A 2>$null | Out-Null
+        & git commit -m seed --quiet 2>$null | Out-Null
+    }
+    finally { Pop-Location }
+    $gitHooksDir = Join-Path $byteRepo '.git\hooks'
+    New-Item -ItemType Directory -Path $gitHooksDir -Force | Out-Null
+    # Deliberately NOT valid UTF-8, and deliberately no trailing newline.
+    $userHookBytes = [byte[]]@(0x23, 0x21, 0x2F, 0x62, 0x69, 0x6E, 0x2F, 0x73, 0x68, 0x0A,
+                               0x23, 0x20, 0xFF, 0xFE, 0x80, 0x81, 0x0A,
+                               0x65, 0x78, 0x69, 0x74, 0x20, 0x30)
+    $userHookPath = Join-Path $gitHooksDir 'pre-push'
+    [System.IO.File]::WriteAllBytes($userHookPath, $userHookBytes)
+    $userHookSha = (Get-FileHash -LiteralPath $userHookPath -Algorithm SHA256).Hash
+
+    & $InstallScript -CustomHook (Join-Path $RealHooksDir 'Ignore-Rules-Check\Ignore-Rules-Check.ps1') -Events @('Stop') -TargetProject $byteRepo -ClaudeOnly *> $null
+    $preservedPath = Join-Path $gitHooksDir 'pre-push.hookmaker-existing'
+    Check 'the user pre-push hook is preserved as .hookmaker-existing' (Test-Path -LiteralPath $preservedPath)
+    $preservedBytes = [System.IO.File]::ReadAllBytes($preservedPath)
+    $bytesIdentical = ($preservedBytes.Length -eq $userHookBytes.Length)
+    if ($bytesIdentical) {
+        for ($bi = 0; $bi -lt $userHookBytes.Length; $bi++) {
+            if ($preservedBytes[$bi] -ne $userHookBytes[$bi]) { $bytesIdentical = $false; break }
+        }
+    }
+    Check 'the preserved hook is byte-for-byte identical (exact byte array)' $bytesIdentical
+    Check 'the preserved hook SHA-256 is unchanged' ((Get-FileHash -LiteralPath $preservedPath -Algorithm SHA256).Hash -eq $userHookSha)
+    Check 'non-UTF-8 bytes survived (no text round-trip)' (($preservedBytes -contains 0xFF) -and ($preservedBytes -contains 0xFE))
+    Check 'the absent trailing newline survived' ($preservedBytes[$preservedBytes.Length - 1] -eq 0x30)
+
+    # Reinstalling must not re-preserve, duplicate, or rewrite the user hook.
+    & $InstallScript -CustomHook (Join-Path $RealHooksDir 'Ignore-Rules-Check\Ignore-Rules-Check.ps1') -Events @('Stop') -TargetProject $byteRepo -ClaudeOnly *> $null
+    Check 'a reinstall leaves the preserved hook byte-identical' ((Get-FileHash -LiteralPath $preservedPath -Algorithm SHA256).Hash -eq $userHookSha)
+    Check 'a reinstall creates no second preserved copy' (@(Get-ChildItem -LiteralPath $gitHooksDir -Filter 'pre-push.hookmaker-existing*' -Force).Count -eq 1)
+
+    # Sticky state: if the preserved hook DISAPPEARS, that historical fact must
+    # not be rewritten to "there never was one" - it stays a manual-repair item.
+    $byteRecord = @((Read-InstallRegistry -ToolRoot $ToolRoot).installs |
+        Where-Object { $_.friendlyName -eq 'Ignore-Rules-Check' -and $_.targetProjectRoot -eq $byteRepo })[0]
+    Check 'the record remembers a user hook was preserved' ($byteRecord.nativeGit.previousHookPreserved -eq $true)
+    Remove-Item -LiteralPath $preservedPath -Force
+    $stickyEval = Get-InstallIntegrity -Record $byteRecord -ToolRoot $ToolRoot
+    Check 'a vanished preserved hook is never silently reported current' ($stickyEval.Status -ne 'current') $stickyEval.Detail
+    Check 'it is reported as needing manual repair, not auto-fixed' ($stickyEval.Detail -match 'previously preserved user pre-push hook is missing') $stickyEval.Detail
+    & $InstallScript -CustomHook (Join-Path $RealHooksDir 'Ignore-Rules-Check\Ignore-Rules-Check.ps1') -Events @('Stop') -TargetProject $byteRepo -ClaudeOnly *> $null
+    $afterRepair = @((Read-InstallRegistry -ToolRoot $ToolRoot).installs |
+        Where-Object { $_.friendlyName -eq 'Ignore-Rules-Check' -and $_.targetProjectRoot -eq $byteRepo })[0]
+    Check 'repair does NOT rewrite the historical flag to false' ($afterRepair.nativeGit.previousHookPreserved -eq $true)
+    Check 'repair records that the preserved hook is missing' ($afterRepair.nativeGit.previousHookMissing -eq $true)
+    Check 'repair never regenerates a user-owned hook' (-not (Test-Path -LiteralPath $preservedPath))
+
     # Installed-state drift: NONE of these change the source, so an updater
     # that only compares stored source hashes would wrongly report "up to
     # date". Each asserts the precise repairable reason.
@@ -629,7 +722,7 @@ try {
         $codexScript = [string]$recDrift.clients.codex.runtimeScript
         $codexSettings = [string]$recDrift.clients.codex.settingsPath
         $originalScriptBytes = [System.IO.File]::ReadAllBytes($claudeScript)
-        $originalHookLibBytes = [System.IO.File]::ReadAllBytes((Join-Path $claudeRoot '_hooklib.ps1'))
+        $originalHookLibBytes = [System.IO.File]::ReadAllBytes((Join-Path (Split-Path -Parent $claudeScript) '_hooklib.ps1'))
         $originalClaudeJson = [System.IO.File]::ReadAllText($claudeSettings)
         $originalCodexJson = [System.IO.File]::ReadAllText($codexSettings)
 
@@ -648,14 +741,14 @@ try {
         [System.IO.File]::WriteAllBytes($claudeScript, $originalScriptBytes)
 
         # 3. installed shared _hooklib.ps1 modified / deleted
-        Add-Content -LiteralPath (Join-Path $claudeRoot '_hooklib.ps1') -Value '# tampered'
+        Add-Content -LiteralPath (Join-Path (Split-Path -Parent $claudeScript) '_hooklib.ps1') -Value '# tampered'
         $d = Get-InstallIntegrity -Record $recDrift -ToolRoot $ToolRoot
-        Check 'a stale shared _hooklib.ps1 is planned for update' ($d.Status -eq 'update')
-        Check 'a stale shared runtime is reported as such' ($d.Detail -match 'shared runtime is stale') $d.Detail
-        Remove-Item -LiteralPath (Join-Path $claudeRoot '_hooklib.ps1') -Force
+        Check 'a stale private _hooklib.ps1 is planned for update' ($d.Status -eq 'update')
+        Check 'a stale private runtime library is reported by path' ($d.Detail -match 'private runtime library is stale') $d.Detail
+        Remove-Item -LiteralPath (Join-Path (Split-Path -Parent $claudeScript) '_hooklib.ps1') -Force
         $d = Get-InstallIntegrity -Record $recDrift -ToolRoot $ToolRoot
-        Check 'a missing shared runtime is reported as such' ($d.Detail -match 'shared runtime is missing') $d.Detail
-        [System.IO.File]::WriteAllBytes((Join-Path $claudeRoot '_hooklib.ps1'), $originalHookLibBytes)
+        Check 'a missing private runtime library is reported by path' ($d.Detail -match 'private runtime library is missing') $d.Detail
+        [System.IO.File]::WriteAllBytes((Join-Path (Split-Path -Parent $claudeScript) '_hooklib.ps1'), $originalHookLibBytes)
         Check 'restoring the managed files returns the install to current' ((Get-InstallIntegrity -Record $recDrift -ToolRoot $ToolRoot).Status -eq 'current')
 
         # 4./5. a client registration removed entirely
@@ -765,9 +858,19 @@ try {
         Check 'a corrupted installed .env triggers an update' ($m.Status -eq 'update' -and $m.Detail -match 'installed file modified') $m.Detail
         Write-Utf8 $installedEnv "EVENTS=Stop`n"
 
-        # 6. a runtime-only mutable file must NOT trigger update
-        Write-Utf8 (Join-Path ([string]$recMan.clients.claude.runtimeRoot) 'ZZZ-Regtest-Manifest\run.log') 'runtime noise'
-        Check 'a runtime-generated .log file never counts as managed drift' ((Get-InstallIntegrity -Record $recMan -ToolRoot $ToolRoot).Status -eq 'current')
+        # 6. An UNEXPECTED file inside a managed runtime directory is drift.
+        # The old behaviour excluded .log/.tmp/.bak by extension - a second
+        # source of truth that disagreed with the install plan (it also excluded
+        # the generated SYNC-PROJECTS.txt, which made every sync-engine install
+        # permanently stale). Mutable artifacts are now declared by exact path
+        # via $script:ManagedRuntimeMutablePaths, intentionally empty because no
+        # shipped hook writes into its own runtime directory.
+        $strayFile = Join-Path (Join-Path ([string]$recMan.clients.claude.runtimeRoot) 'ZZZ-Regtest-Manifest') 'run.log'
+        Write-Utf8 $strayFile 'runtime noise'
+        $strayResult = Get-InstallIntegrity -Record $recMan -ToolRoot $ToolRoot
+        Check 'an unexpected file in a managed runtime directory is detected as drift' ($strayResult.Status -eq 'update') $strayResult.Detail
+        Remove-Item -LiteralPath $strayFile -Force
+        Check 'removing the unexpected file restores current' ((Get-InstallIntegrity -Record $recMan -ToolRoot $ToolRoot).Status -eq 'current')
     }
     finally { Remove-FixtureHook 'ZZZ-Regtest-Manifest' }
 

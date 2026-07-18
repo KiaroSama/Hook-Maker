@@ -100,6 +100,10 @@ else {
     $ScopeLabel = 'global'
 }
 $Timestamp = (Get-Date).ToString('yyyyMMdd-HHmmss')
+# Resolved once: this tool root plus every tool root previously recorded in the
+# registry. Only registrations provably rooted under one of these may be
+# claimed as ours when they use the historical tool-folder layout.
+$script:KnownToolRoots = @(Get-KnownToolRoots -ToolRoot $ToolRoot)
 # Set by Install-IgnorePrePush when this install also manages a native Git
 # pre-push chain; stays $null for every other hook (StrictMode-safe default).
 $script:NativeGitState = $null
@@ -160,12 +164,12 @@ function Copy-HookRuntime {
         [System.IO.Path]::GetFullPath($RuntimeRootOverride)
     }
     New-Item -ItemType Directory -Path $runtimeRoot -Force | Out-Null
-    # _hooklib is shared by every hook in this scope; it sits at the Hook-Maker
-    # root so each copied script's "..\_hooklib.ps1" dot-source resolves.
-    $hookLib = Join-Path $ToolRoot 'hooks\_hooklib.ps1'
-    if (Test-Path -LiteralPath $hookLib -PathType Leaf) {
-        Copy-Item -LiteralPath $hookLib -Destination $runtimeRoot -Force
-    }
+    # NOTE: the shared library is no longer written to the runtime root here.
+    # Each hook receives a PRIVATE _hooklib.ps1 inside its own runtime
+    # directory as part of the plan, installed transactionally with the rest of
+    # that hook. Writing it to the root before the transaction was both an
+    # unrollback-able side effect and a cross-hook coupling: it changed the
+    # library other installed hooks load, before this install had committed.
 
     # Migrate this hook out of a legacy 'HookMaker' folder (older, un-hyphenated
     # runtime root). Only remove THIS hook's subfolder so other hooks still
@@ -199,6 +203,9 @@ function Copy-HookRuntime {
     $plan = Get-ManagedInstallPlan -SourceInfo $SourceInfo -FriendlyName $FriendlyName -ToolRoot $ToolRoot `
         -ConfigPath $ConfigPath -IncludeConfig:$isEngineInstall -SyncProjectListContent $syncListContent
     Install-PlannedRuntime -Plan $plan -RuntimeRoot $runtimeRoot -FriendlyName $FriendlyName | Out-Null
+    # Post-commit cleanup phase, never before: retires the legacy shared
+    # library once every hook under this root owns a private copy.
+    Remove-SharedRuntimeLibrary -RuntimeRoot $runtimeRoot | Out-Null
 
     $friendlyScript = Join-Path $destDir ($FriendlyName + '.ps1')
     $localConfig = if ($isEngineInstall) { Join-Path $destDir 'sync-hooks.json' } else { '' }
@@ -249,8 +256,13 @@ function Remove-StaleHandlers {
     foreach ($group in @($HooksObject.$EventName)) {
         $keptHandlers = @()
         foreach ($handler in @($group.hooks)) {
+            # KnownToolRoots is what makes the historical tool-folder layout
+            # provable rather than a shape guess: only a command rooted under a
+            # KNOWN Hook Maker tool root can be claimed. Anything else that
+            # merely looks similar is left untouched.
             $sameHook = Test-HandlerBelongsToInstall -Handler $handler -FriendlyName $FriendlyName `
-                -ProfileId ([string]$Profile) -AlsoMatchHookNames @($SourceName)
+                -ProfileId ([string]$Profile) -AlsoMatchHookNames @($SourceName) `
+                -KnownToolRoots $script:KnownToolRoots
             if (-not $sameHook) {
                 $keptHandlers += $handler
             }
@@ -355,21 +367,22 @@ function Install-IgnorePrePush {
             Remove-Item -LiteralPath $oldWrongRoot -Force
         }
     }
+    # Native companions go through the SAME canonical plan and transactional
+    # staging as any other managed runtime, so they get a private _hooklib.ps1
+    # and the matching dot-source rewrite. Copying just the script by hand left
+    # the companion with no library to load once the shared root copy was
+    # retired, which broke the real pre-push chain.
     function Copy-PrePushCompanion {
         param([Parameter(Mandatory = $true)][string]$Name)
-        $sourceDir = Join-Path $ToolRoot ('hooks\' + $Name)
-        $sourceScript = Join-Path $sourceDir ($Name + '.ps1')
+        $sourceScript = Join-Path $ToolRoot ('hooks\' + $Name + '\' + $Name + '.ps1')
         if (-not (Test-Path -LiteralPath $sourceScript -PathType Leaf)) { throw "Pre-push check not found: $sourceScript" }
         $destinationDir = [System.IO.Path]::GetFullPath((Join-Path $runtimeRoot $Name))
-        $safeRoot = [System.IO.Path]::GetFullPath($runtimeRoot).TrimEnd('\') + '\'
-        if (-not $destinationDir.StartsWith($safeRoot, [System.StringComparison]::OrdinalIgnoreCase)) { throw "Unsafe pre-push runtime path: $destinationDir" }
-        if (Test-Path -LiteralPath $destinationDir) { Remove-Item -LiteralPath $destinationDir -Recurse -Force }
-        New-Item -ItemType Directory -Path $destinationDir -Force | Out-Null
-        $destinationScript = Join-Path $destinationDir ($Name + '.ps1')
-        Copy-Item -LiteralPath $sourceScript -Destination $destinationScript -Force
-        $sourceEnv = Join-Path $sourceDir '.env'
-        if (Test-Path -LiteralPath $sourceEnv -PathType Leaf) { Copy-Item -LiteralPath $sourceEnv -Destination (Join-Path $destinationDir '.env') -Force }
-        return $destinationScript
+        if (-not (Test-PathContainedIn -ChildPath $destinationDir -ParentPath $runtimeRoot)) {
+            throw "Unsafe pre-push runtime path: $destinationDir"
+        }
+        $companionPlan = Get-InstallPlanFor -HookScript $sourceScript -ToolRoot $ToolRoot -FriendlyNameOverride $Name
+        Install-PlannedRuntime -Plan $companionPlan -RuntimeRoot $runtimeRoot -FriendlyName $Name | Out-Null
+        return (Join-Path $destinationDir ($Name + '.ps1'))
     }
     $secretsScript = Copy-PrePushCompanion 'Secrets-Check'
     $staleLargeFileCheck = Join-Path $runtimeRoot 'Large-File-Check'
@@ -378,32 +391,43 @@ function Install-IgnorePrePush {
     }
     $prePush = Join-Path $hooksPath 'pre-push'
     $previous = $prePush + '.hookmaker-existing'
-    $marker = '# Hook Maker: Ignore-Rules-Check'
+    $marker = $script:PrePushMarker
     if (Test-Path -LiteralPath $prePush -PathType Leaf) {
         $current = [System.IO.File]::ReadAllText($prePush)
         if (-not $current.Contains($marker)) {
             if (Test-Path -LiteralPath $previous) { throw "Cannot preserve the existing pre-push hook because '$previous' already exists." }
+            # Move, never copy-and-rewrite: the user's hook is preserved as
+            # opaque BYTES (it may be binary, or have no trailing newline).
             Move-Item -LiteralPath $prePush -Destination $previous
         }
     }
-
-    # Git delivers ref-update lines ("<local ref> <local sha> <remote ref>
-    # <remote sha>") on the pre-push hook's STDIN - a stream that can only be
-    # read once. Buffer it into a temp file up front and feed that SAME file
-    # to every stage (each managed check, then the preserved previous hook),
-    # so Secrets-Check can resolve the exact outgoing commits without
-    # starving any later stage of the same data. `trap ... EXIT` guarantees
-    # cleanup on every exit path, including the early `exit $?` on failure.
-    $commands = @($runtime.Script, $secretsScript) | ForEach-Object {
-        $scriptPath = $_.Replace('\', '/').Replace('$', '\$').Replace('`', '\`')
-        'powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "' + $scriptPath + '" -GitPrePush < "$STDIN_FILE" || exit $?'
+    # "Did a user hook ever exist here?" is STICKY. If we recorded one before
+    # and the file has since vanished, we must not silently rewrite history to
+    # previousHookPreserved=false - that would erase the fact that a user hook
+    # is expected and let a rebuilt wrapper quietly drop the stage. It becomes
+    # an unresolved state the updater reports for manual attention instead.
+    $previousExistsNow = Test-Path -LiteralPath $previous -PathType Leaf
+    $previousEverPreserved = $previousExistsNow
+    $previousMissing = $false
+    try {
+        $existingRecord = Get-InstallRecordById -ToolRoot $ToolRoot -Id (Get-InstallRecordId -FriendlyName $FriendlyName -ScopeKey ($projectRoot.ToLowerInvariant()) -ProfileId ([string]$Profile))
+        if ($null -ne $existingRecord -and
+            $null -ne $existingRecord.PSObject.Properties['nativeGit'] -and $null -ne $existingRecord.nativeGit -and
+            $null -ne $existingRecord.nativeGit.PSObject.Properties['previousHookPreserved'] -and
+            $existingRecord.nativeGit.previousHookPreserved -eq $true) {
+            $previousEverPreserved = $true
+            $previousMissing = (-not $previousExistsNow)
+        }
     }
-    $body = "#!/bin/sh`n$marker`n" +
-        "STDIN_FILE=`$(mktemp `"`${TMPDIR:-/tmp}/hookmaker-prepush.XXXXXX`") || exit 1`n" +
-        "trap 'rm -f `"`$STDIN_FILE`"' EXIT`n" +
-        "cat > `"`$STDIN_FILE`"`n" +
-        ($commands -join "`n") + "`n" +
-        "if [ -f `"`$0.hookmaker-existing`" ]; then`n  `"`$0.hookmaker-existing`" `"`$@`" < `"`$STDIN_FILE`"`nfi`n"
+    catch { }
+
+    # ONE canonical generator (see New-PrePushWrapperBody) produces these bytes,
+    # and the updater's integrity check rebuilds them with the same function to
+    # compare exactly - so the wrapper's stdin buffering, stage order,
+    # fail-closed `|| exit $?`, cleanup trap and previous-hook invocation can
+    # never drift apart from what we verify.
+    $managedStages = @($runtime.Script, $secretsScript)
+    $body = New-PrePushWrapperBody -ManagedScripts $managedStages
     [System.IO.File]::WriteAllText($prePush, $body, $Utf8NoBom)
     Write-Host "Native git pre-push protection installed in: $prePush"
 
@@ -417,7 +441,13 @@ function Install-IgnorePrePush {
         runtimeRoot           = $runtimeRoot
         wrapperPath           = $prePush
         previousHookPath      = $previous
-        previousHookPreserved = (Test-Path -LiteralPath $previous -PathType Leaf)
+        # Sticky: once true, stays true. previousHookMissing records that the
+        # user's preserved hook has since disappeared, so the updater surfaces
+        # it for manual attention instead of quietly forgetting it ever existed.
+        previousHookPreserved = $previousEverPreserved
+        previousHookMissing   = $previousMissing
+        expectedStages        = @($managedStages)
+        wrapperBodyHash       = (Get-ShortHash $body)
         companions            = @('Secrets-Check')
         sourceManifest        = @(Get-NativePrePushSourceManifest -ToolRoot $ToolRoot -PrimaryFriendlyName $FriendlyName -PrimaryHookScript $HookScript -PrimarySourceDir $SourceDir -Companions @('Secrets-Check'))
     }
@@ -587,6 +617,11 @@ try {
         hookType          = $hookType
         sourceScript      = $HookScript
         sourceDir         = $SourceDir
+        # The Hook Maker tool root this install came from. Recorded so a later
+        # version can PROVE that a historical tool-folder registration belongs
+        # to Hook Maker (rather than guessing from path shape) even after the
+        # tool has been moved - see Get-KnownToolRoots.
+        toolRoot          = $ToolRoot
         scope             = $ScopeLabel
         targetProjectRoot = if ($ScopeLabel -eq 'project') { $projectRoot } else { '' }
         profile           = [string]$Profile

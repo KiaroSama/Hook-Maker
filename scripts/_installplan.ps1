@@ -26,8 +26,11 @@
 # name (C:\Hook-Maker-Evil vs C:\Hook-Maker) is not treated as contained.
 function Test-PathContainedIn {
     param(
-        [Parameter(Mandatory = $true)][string]$ChildPath,
-        [Parameter(Mandatory = $true)][string]$ParentPath
+        # AllowEmptyString: [Parameter(Mandatory)] otherwise rejects '' at bind
+        # time, so the "empty is never contained" guard below is unreachable and
+        # a caller passing an unset path gets a hard error instead of $false.
+        [Parameter(Mandatory = $true)][AllowEmptyString()][string]$ChildPath,
+        [Parameter(Mandatory = $true)][AllowEmptyString()][string]$ParentPath
     )
     if ([string]::IsNullOrWhiteSpace($ChildPath) -or [string]::IsNullOrWhiteSpace($ParentPath)) { return $false }
     $child = [System.IO.Path]::GetFullPath($ChildPath)
@@ -135,6 +138,28 @@ function Get-HookSourceInfo {
 
 # ---- the plan --------------------------------------------------------------
 
+# Rewrites a hook script's shared-library dot-source to its PRIVATE sibling
+# copy. Deterministic and byte-exact: the only change is the relative path
+# inside the dot-source expression, so the transformed content has a stable
+# hash the plan can verify. Repository sources are never touched.
+#
+# Both root-variable spellings used by shipped hooks are handled; a script that
+# uses neither is returned unchanged (nothing to rewrite).
+$script:PrivateLibraryRewrites = @(
+    @{ From = ". (Join-Path `$PSScriptRoot '..\_hooklib.ps1')"; To = ". (Join-Path `$PSScriptRoot '_hooklib.ps1')" },
+    @{ From = ". (Join-Path `$ScriptRoot '..\_hooklib.ps1')";   To = ". (Join-Path `$ScriptRoot '_hooklib.ps1')" }
+)
+
+function Get-PrivateLibraryScriptContent {
+    param([Parameter(Mandatory = $true)][string]$SourceScriptPath)
+    if (-not (Test-Path -LiteralPath $SourceScriptPath -PathType Leaf)) { return '' }
+    $text = [System.IO.File]::ReadAllText($SourceScriptPath)
+    foreach ($rewrite in $script:PrivateLibraryRewrites) {
+        $text = $text.Replace([string]$rewrite.From, [string]$rewrite.To)
+    }
+    return $text
+}
+
 function New-PlanArtifact {
     param(
         [Parameter(Mandatory = $true)][string]$RelativePath,
@@ -185,20 +210,21 @@ function Get-ManagedInstallPlan {
         [void]$artifacts.Add($Artifact)
     }
 
-    # The shared library sits at the runtime ROOT because every copied hook
-    # script dot-sources '..\_hooklib.ps1'. It is planned (and therefore
-    # verified) like any other artifact.
-    # KNOWN LIMITATION: because it is shared, updating one hook rewrites the
-    # library that other hooks' already-installed scripts load. Giving each
-    # hook a private copy requires rewriting the dot-source line inside the
-    # copied script, which is a separate change - see the README's
-    # "Known limitations".
+    # Each hook gets its OWN PRIVATE copy of the shared library inside its
+    # runtime directory, and its installed script is rewritten to dot-source
+    # that private copy. A single shared library at the runtime root meant
+    # updating one hook silently swapped the library every OTHER already
+    # installed hook loads - a cross-hook version skew with no version boundary.
     $hookLib = Join-Path $ToolRoot 'hooks\_hooklib.ps1'
     if (Test-Path -LiteralPath $hookLib -PathType Leaf) {
-        Add-Artifact (New-PlanArtifact -RelativePath '_hooklib.ps1' -Kind 'File' -SourcePath $hookLib)
+        Add-Artifact (New-PlanArtifact -RelativePath ($FriendlyName + '/_hooklib.ps1') -Kind 'File' -SourcePath $hookLib)
     }
 
-    Add-Artifact (New-PlanArtifact -RelativePath ($FriendlyName + '/' + $FriendlyName + '.ps1') -Kind 'File' -SourcePath $SourceInfo.ScriptPath)
+    # The installed main script is GENERATED (source bytes + a deterministic
+    # dot-source rewrite), so it is hashed and verified exactly like any other
+    # planned artifact. Repository sources are never modified.
+    $mainScriptContent = Get-PrivateLibraryScriptContent -SourceScriptPath $SourceInfo.ScriptPath
+    Add-Artifact (New-PlanArtifact -RelativePath ($FriendlyName + '/' + $FriendlyName + '.ps1') -Kind 'Generated' -GeneratedContent $mainScriptContent)
 
     if ($SourceInfo.Kind -eq 'Package') {
         $packageRoot = [System.IO.Path]::GetFullPath($SourceInfo.PackageRoot)
@@ -225,6 +251,17 @@ function Get-ManagedInstallPlan {
             }
             if ($inForbidden) { continue }
             if (Test-IsReparsePoint -Path $file.FullName) { continue }
+            # Any packaged .ps1 that dot-sources the shared library needs the
+            # same private-copy rewrite as the main script, or it would look for
+            # a library one directory up that no longer exists. Non-script files
+            # (and scripts that don't reference it) are copied verbatim.
+            if ([string]::Equals($file.Extension, '.ps1', [System.StringComparison]::OrdinalIgnoreCase)) {
+                $rewritten = Get-PrivateLibraryScriptContent -SourceScriptPath $file.FullName
+                if ($rewritten -ne [System.IO.File]::ReadAllText($file.FullName)) {
+                    Add-Artifact (New-PlanArtifact -RelativePath ($FriendlyName + '/' + $relative) -Kind 'Generated' -GeneratedContent $rewritten)
+                    continue
+                }
+            }
             Add-Artifact (New-PlanArtifact -RelativePath ($FriendlyName + '/' + $relative) -Kind 'File' -SourcePath $file.FullName)
         }
     }
@@ -468,6 +505,79 @@ function Install-PlannedRuntime {
     }
 }
 
+# ---- native pre-push wrapper (ONE canonical generator) ---------------------
+
+$script:PrePushMarker = '# Hook Maker: Ignore-Rules-Check'
+
+# The single source of truth for the managed pre-push wrapper's bytes. The
+# installer WRITES this and the updater's integrity check REBUILDS it to
+# compare - so "is the wrapper current?" is an exact-content question, not a
+# collection of substring guesses that can drift from what we actually write.
+#
+# Semantics that must survive any edit here (each is asserted by the suite):
+#   * mktemp-backed single stdin buffer (git delivers ref lines once),
+#   * `trap ... EXIT` cleanup on every exit path,
+#   * every managed stage fed that SAME buffer, in the given order,
+#   * `|| exit $?` after each stage => fail-closed,
+#   * the preserved previous hook runs last, with "$@" forwarded and the
+#     same buffered stdin.
+function New-PrePushWrapperBody {
+    param([Parameter(Mandatory = $true)][string[]]$ManagedScripts)
+
+    $stages = @($ManagedScripts) | ForEach-Object {
+        $scriptPath = $_.Replace('\', '/').Replace('$', '\$').Replace('`', '\`')
+        'powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "' + $scriptPath + '" -GitPrePush < "$STDIN_FILE" || exit $?'
+    }
+    return "#!/bin/sh`n" + $script:PrePushMarker + "`n" +
+        "STDIN_FILE=`$(mktemp `"`${TMPDIR:-/tmp}/hookmaker-prepush.XXXXXX`") || exit 1`n" +
+        "trap 'rm -f `"`$STDIN_FILE`"' EXIT`n" +
+        "cat > `"`$STDIN_FILE`"`n" +
+        (($stages) -join "`n") + "`n" +
+        "if [ -f `"`$0.hookmaker-existing`" ]; then`n  `"`$0.hookmaker-existing`" `"`$@`" < `"`$STDIN_FILE`"`nfi`n"
+}
+
+# Line-ending normalization is the ONLY difference tolerated between the
+# expected and installed wrapper (a checkout or editor may rewrite CRLF/LF).
+function Compare-PrePushWrapperBody {
+    param(
+        [Parameter(Mandatory = $true)][string]$Expected,
+        [Parameter(Mandatory = $true)][string]$Actual
+    )
+    $normalize = { param($t) ($t -replace "`r`n", "`n") }
+    return ([string](& $normalize $Expected) -ceq [string](& $normalize $Actual))
+}
+
+# Retires the legacy shared runtime-root _hooklib.ps1.
+#
+# This runs ONLY as a post-commit cleanup phase, and only when it is provably
+# unreferenced: every hook directory under the runtime root must already carry
+# its own private copy. A hook installed by an older version still dot-sources
+# '..\_hooklib.ps1', so removing the shared file while any such hook remains
+# would break it - the check is what makes the removal safe rather than a
+# hopeful cleanup.
+function Remove-SharedRuntimeLibrary {
+    param([Parameter(Mandatory = $true)][string]$RuntimeRoot)
+
+    $shared = Join-Path $RuntimeRoot '_hooklib.ps1'
+    if (-not (Test-Path -LiteralPath $shared -PathType Leaf)) {
+        return [pscustomobject]@{ Removed = $false; Reason = 'no shared library present' }
+    }
+    $hookDirs = @(Get-ChildItem -LiteralPath $RuntimeRoot -Directory -Force -ErrorAction SilentlyContinue |
+        Where-Object { -not $_.Name.StartsWith('.hookmaker-', [System.StringComparison]::OrdinalIgnoreCase) })
+    foreach ($hookDir in $hookDirs) {
+        if (-not (Test-Path -LiteralPath (Join-Path $hookDir.FullName '_hooklib.ps1') -PathType Leaf)) {
+            return [pscustomobject]@{ Removed = $false; Reason = ('still referenced by ' + $hookDir.Name) }
+        }
+    }
+    try {
+        Remove-Item -LiteralPath $shared -Force
+        return [pscustomobject]@{ Removed = $true; Reason = 'every hook now has a private library copy' }
+    }
+    catch {
+        return [pscustomobject]@{ Removed = $false; Reason = ('could not remove: ' + $_.Exception.Message) }
+    }
+}
+
 # ---- Hook Maker registration ownership -------------------------------------
 
 # The ONE place that decides "is this registered command a Hook Maker command,
@@ -478,9 +588,17 @@ function Install-PlannedRuntime {
 # never by a bare script basename - a user's own unrelated script that happens
 # to share a filename must never be treated as ours.
 function Get-HookMakerCommandInfo {
-    param([string]$Command)
+    param(
+        [string]$Command,
+        # Tool roots whose own hooks\ folder is KNOWN to be Hook Maker's. Only
+        # these make the ambiguous historical tool-folder shape provable.
+        [string[]]$KnownToolRoots = @()
+    )
     $result = [pscustomobject]@{
         IsHookMaker   = $false
+        # Looks like a Hook Maker layout but ownership cannot be proven.
+        # Such entries are PRESERVED and reported, never removed.
+        IsAmbiguous   = $false
         RuntimeScript = ''
         HookName      = ''
         Profile       = ''
@@ -502,20 +620,37 @@ function Get-HookMakerCommandInfo {
     }
     else {
         # Form 2 (proven historical): before self-contained installs, the
-        # registered command pointed straight at the tool folder's own source
-        # layout, ...\hooks\<Name>\<Name>.ps1 (folder name == script name).
-        # This shape is less distinctive, so callers MUST additionally require
-        # the hook name to match the installation being acted on
-        # (Test-HandlerBelongsToInstall does) - it is never sufficient on its
-        # own to claim ownership of an arbitrary handler.
+        # registered command pointed straight at a Hook Maker TOOL FOLDER's own
+        # source layout, <toolRoot>\hooks\<Name>\<Name>.ps1.
+        #
+        # That path SHAPE alone is not proof of ownership - any project can have
+        # hooks/Foo/Foo.ps1 - so it is only accepted when the path is rooted
+        # under a KNOWN Hook Maker tool root supplied by the caller
+        # (-KnownToolRoots: this installation plus any tool root recorded in the
+        # registry's own history). Without that proof the entry is reported as
+        # AMBIGUOUS: preserved, never removed.
         $legacy = [regex]::Match($Command, '(?<full>[^"]*[\\/]hooks[\\/](?<name>[^\\/"]+)[\\/](?<leaf>[^\\/"]+)\.ps1)')
-        if ($legacy.Success -and [string]::Equals($legacy.Groups['name'].Value, $legacy.Groups['leaf'].Value, [System.StringComparison]::OrdinalIgnoreCase)) {
-            $result.IsHookMaker = $true
-            $result.RuntimeScript = $legacy.Groups['full'].Value
-            $result.HookName = $legacy.Groups['name'].Value
-            $result.Layout = 'legacy-toolfolder'
+        if (-not ($legacy.Success -and [string]::Equals($legacy.Groups['name'].Value, $legacy.Groups['leaf'].Value, [System.StringComparison]::OrdinalIgnoreCase))) {
+            return $result
         }
-        else { return $result }
+        $candidatePath = $legacy.Groups['full'].Value
+        $provenRoot = $false
+        foreach ($knownRoot in @($KnownToolRoots)) {
+            if ([string]::IsNullOrWhiteSpace($knownRoot)) { continue }
+            $hooksRoot = Join-Path $knownRoot 'hooks'
+            if (Test-PathContainedIn -ChildPath $candidatePath -ParentPath $hooksRoot) { $provenRoot = $true; break }
+        }
+        if (-not $provenRoot) {
+            $result.IsAmbiguous = $true
+            $result.RuntimeScript = $candidatePath
+            $result.HookName = $legacy.Groups['name'].Value
+            $result.Layout = 'ambiguous-toolfolder'
+            return $result
+        }
+        $result.IsHookMaker = $true
+        $result.RuntimeScript = $candidatePath
+        $result.HookName = $legacy.Groups['name'].Value
+        $result.Layout = 'legacy-toolfolder'
     }
     $profileMatch = [regex]::Match($Command, '-Profile\s+"([^"]*)"')
     if ($profileMatch.Success) { $result.Profile = $profileMatch.Groups[1].Value }
@@ -549,7 +684,8 @@ function Test-HandlerBelongsToInstall {
         [Parameter(Mandatory = $true)]$Handler,
         [Parameter(Mandatory = $true)][string]$FriendlyName,
         [string]$ProfileId = '',
-        [string[]]$AlsoMatchHookNames = @()
+        [string[]]$AlsoMatchHookNames = @(),
+        [string[]]$KnownToolRoots = @()
     )
     $names = New-Object System.Collections.Generic.HashSet[string]([System.StringComparer]::OrdinalIgnoreCase)
     [void]$names.Add($FriendlyName)
@@ -557,11 +693,27 @@ function Test-HandlerBelongsToInstall {
         if (-not [string]::IsNullOrWhiteSpace($alias)) { [void]$names.Add($alias) }
     }
     foreach ($command in @(Get-HandlerCommandValues -Handler $Handler)) {
-        $info = Get-HookMakerCommandInfo -Command $command
+        $info = Get-HookMakerCommandInfo -Command $command -KnownToolRoots $KnownToolRoots
+        # An ambiguous entry is never claimed: it stays where it is.
         if (-not $info.IsHookMaker) { continue }
         if (-not $names.Contains($info.HookName)) { continue }
         if (-not [string]::IsNullOrWhiteSpace($ProfileId) -and $info.Profile -ne $ProfileId) { continue }
         return $true
     }
     return $false
+}
+
+# Reports handlers that LOOK like Hook Maker's but whose ownership cannot be
+# proven, so a caller can surface them instead of silently leaving them behind.
+function Get-AmbiguousHandlerCommands {
+    param(
+        [Parameter(Mandatory = $true)]$Handler,
+        [string[]]$KnownToolRoots = @()
+    )
+    $ambiguous = New-Object System.Collections.Generic.List[string]
+    foreach ($command in @(Get-HandlerCommandValues -Handler $Handler)) {
+        $info = Get-HookMakerCommandInfo -Command $command -KnownToolRoots $KnownToolRoots
+        if ($info.IsAmbiguous) { [void]$ambiguous.Add($command) }
+    }
+    return $ambiguous.ToArray()
 }

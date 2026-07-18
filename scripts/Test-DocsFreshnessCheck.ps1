@@ -420,7 +420,7 @@ try {
     Check 'Claude gets a self-contained runtime copy' (
         ($claudeJson -like '*hooks\\Hook-Maker\\Docs-Freshness-Check\\Docs-Freshness-Check.ps1*') -and
         (Test-Path (Join-Path $tgt '.claude\hooks\Hook-Maker\Docs-Freshness-Check\Docs-Freshness-Check.ps1')) -and
-        (Test-Path (Join-Path $tgt '.claude\hooks\Hook-Maker\_hooklib.ps1')))
+        (Test-Path (Join-Path $tgt '.claude\hooks\Hook-Maker\Docs-Freshness-Check\_hooklib.ps1')))
     Check 'Claude command does not reference the tool folder' ($claudeJson -notlike '*Hook Maker*')
     $codexJson = ''
     if (Test-Path (Join-Path $tgt '.codex\hooks.json')) { $codexJson = [System.IO.File]::ReadAllText((Join-Path $tgt '.codex\hooks.json')) }

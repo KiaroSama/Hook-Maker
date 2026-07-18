@@ -203,7 +203,7 @@ try {
     Check 'default -> both clients written' ($claudeJson -ne '' -and (Test-Path (Join-Path $tgtC '.codex\hooks.json')))
     Check 'installed command points at Rules-Check' ($claudeJson -like '*Rules-Check.ps1*')
     # The copy folder + script use the friendly hyphenated name (Rules-Check).
-    Check 'install is self-contained (local runtime copy)' (($claudeJson -like '*hooks\\Hook-Maker\\Rules-Check\\Rules-Check.ps1*') -and (Test-Path (Join-Path $tgtC '.claude\hooks\Hook-Maker\Rules-Check\Rules-Check.ps1')) -and (Test-Path (Join-Path $tgtC '.claude\hooks\Hook-Maker\_hooklib.ps1')))
+    Check 'install is self-contained (local runtime copy)' (($claudeJson -like '*hooks\\Hook-Maker\\Rules-Check\\Rules-Check.ps1*') -and (Test-Path (Join-Path $tgtC '.claude\hooks\Hook-Maker\Rules-Check\Rules-Check.ps1')) -and (Test-Path (Join-Path $tgtC '.claude\hooks\Hook-Maker\Rules-Check\_hooklib.ps1')))
     # Re-install must REPLACE the old registration, not duplicate it.
     & $InstallScript -CustomHook $Hook -Events @('SessionStart') -TargetProject $tgtC *> $null
     $claudeJson2 = [System.IO.File]::ReadAllText((Join-Path $tgtC '.claude\settings.local.json'))
@@ -215,19 +215,26 @@ try {
     $r = Fire -Cwd $tgtProj -HookPath (Join-Path $tgtC '.claude\hooks\Hook-Maker\Rules-Check\Rules-Check.ps1')
     Check 'runtime copy runs standalone (dot-source resolves)' ($r.Exit -eq 0 -and $r.Err -eq '' -and $r.Out -like '*copyrun.md*') $r.Out
 
-    # Migration: a stale registration whose command CHANGED (here: an old
-    # tool-folder path) must be pruned on re-install, not left behind next to the
-    # new project-local one. Regression for the comma-precedence bug that mangled
-    # the leaf marker so Remove-StaleHandlers matched nothing on a command change.
-    # (Add-HookGroup's exact-command dedup can't catch this - the path differs.)
+    # Migration and ownership proof.
+    #
+    # A registration using the historical TOOL-FOLDER layout
+    # (<toolRoot>\hooks\<Name>\<Name>.ps1) is only claimed when the path is
+    # rooted under a tool root Hook Maker can PROVE is its own - this
+    # installation, or one recorded by an earlier install in the registry.
+    # An identical-looking path somewhere else belongs to somebody else and is
+    # preserved, because that shape alone is not evidence of ownership.
     $tgtMig = Join-Path $Work 'tgt-mig'; New-Item -ItemType Directory -Path (Join-Path $tgtMig '.claude') -Force | Out-Null
-    $legacyCmd = 'powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "G:\Old Tool Folder\hooks\Rules-Check\Rules-Check.ps1"'
-    $legacyJson = @{ hooks = @{ SessionStart = @(@{ matcher = 'startup|resume|clear|compact'; hooks = @(@{ type = 'command'; command = $legacyCmd; timeout = 60 }) }) } } | ConvertTo-Json -Depth 10
+    $provenLegacy = 'powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "' + (Join-Path (Split-Path -Parent $ScriptRoot) 'hooks\Rules-Check\Rules-Check.ps1') + '"'
+    $foreignLegacy = 'powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "D:\SomeoneElsesProject\hooks\Rules-Check\Rules-Check.ps1"'
+    $legacyJson = @{ hooks = @{ SessionStart = @(@{ matcher = 'startup|resume|clear|compact'; hooks = @(
+        @{ type = 'command'; command = $provenLegacy; timeout = 60 },
+        @{ type = 'command'; command = $foreignLegacy; timeout = 60 }) }) } } | ConvertTo-Json -Depth 10
     [System.IO.File]::WriteAllText((Join-Path $tgtMig '.claude\settings.local.json'), $legacyJson, (New-Object System.Text.UTF8Encoding $false))
     & $InstallScript -CustomHook $Hook -Events @('SessionStart') -TargetProject $tgtMig -ClaudeOnly *> $null
     $migJson = [System.IO.File]::ReadAllText((Join-Path $tgtMig '.claude\settings.local.json'))
-    Check 'stale changed-path registration pruned on migration' ($migJson -notlike '*Old Tool Folder*')
-    Check 'friendly registration present exactly once' (([regex]::Matches($migJson, 'Rules-Check\.ps1')).Count -eq 1)
+    Check 'a PROVEN old tool-folder registration is pruned on migration' ($migJson -notmatch [regex]::Escape((Join-Path (Split-Path -Parent $ScriptRoot) 'hooks\Rules-Check\Rules-Check.ps1')))
+    Check 'an unprovable same-shape registration is PRESERVED, not deleted' ($migJson -like '*SomeoneElsesProject*')
+    Check 'the new self-contained registration is present exactly once' (([regex]::Matches($migJson, 'Hook-Maker')).Count -eq 1)
 }
 finally {
     $env:USERPROFILE = $SavedUserProfile
