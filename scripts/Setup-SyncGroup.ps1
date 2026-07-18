@@ -214,9 +214,14 @@ $script:HookMeta = @{
     'Large-File-Check'                 = @{ Order = 11; When = 'both'; Text = 'small-files policy + oversized-file scan' }
     'Mcp-Usage-Check'                  = @{ Order = 12; When = 'pre';  Text = 'reminder to consider MCP servers/tools' }
     'Rules-Check'                      = @{ Order = 13; When = 'pre';  Text = 'checks global + project rules were read' }
-    'Skills-Check'                     = @{ Order = 14; When = 'pre';  Text = 'skill-policy reminder with the copied skills' }
+    # Skills-Check's real recommended EVENTS are SessionStart,UserPromptSubmit,Stop
+    # (the Stop event carries the "Skills used:" summary requirement) - When must
+    # be 'both', not 'pre' alone, or the menu tag disagrees with its actual timing.
+    'Skills-Check'                     = @{ Order = 14; When = 'both'; Text = 'skill-policy reminder with the copied skills' }
     'Secrets-Check'                    = @{ Order = 15; When = 'both'; Text = 'keeps secrets.md accurate and checks for leaks' }
-    'Ignore-Rules-Check'               = @{ Order = 16; When = 'pre+post'; Text = 'auto-fixes required local/private gitignore rules before and after tasks' }
+    # 'both' (not 'pre+post') - Get-HookTimingTag's switch only recognizes
+    # pre/post/both; an unrecognized value silently rendered NO timing tag at all.
+    'Ignore-Rules-Check'               = @{ Order = 16; When = 'both'; Text = 'auto-fixes required local/private gitignore rules before and after tasks' }
     'Dependency-Version-Check'         = @{ Order = 17; When = 'pre';  Text = 'advises on outdated dependencies and safe, incremental upgrades' }
     'Test-Temp-Cleanup'                = @{ Order = 18; When = 'both'; Text = 'cleans safe test cache/temp residue; keeps diagnostics' }
     # Cloudflare-Deploy is deliberately kept LAST among individual hook
@@ -825,12 +830,17 @@ function Invoke-CreateGroup {
     # use, read-only location). That must NOT crash the whole wizard and eject
     # the user - catch it, report which project failed, and abort this install
     # cleanly back to the menu BEFORE any profile/config is written, so nothing
-    # is left half-applied and the user can fix access and retry.
+    # is left half-applied and the user can fix access and retry. A LATER
+    # project's failure must not leave an EARLIER project's freshly-created
+    # empty .ai directory behind while claiming "nothing was changed" - track
+    # every directory actually created THIS run and roll it back on any failure.
     $aiCreateFailures = New-Object System.Collections.Generic.List[object]
+    $aiCreatedThisRun = New-Object System.Collections.Generic.List[string]
     foreach ($project in $projects) {
         if (-not $project.AiExists) {
             try {
                 New-Item -ItemType Directory -Path $project.AiPath -Force -ErrorAction Stop | Out-Null
+                [void]$aiCreatedThisRun.Add($project.AiPath)
                 Write-Host ('  ' + (Get-Painted '+ created' $C.Green) + ' ' + (Get-Painted $project.AiPath $C.LightBlue))
                 Write-Log 'INFO' 'CONFIG' ('Created knowledge directory: ' + $project.AiPath)
             }
@@ -846,9 +856,35 @@ function Invoke-CreateGroup {
         }
     }
     if ($aiCreateFailures.Count -gt 0) {
-        Write-ErrorLine ('Could not create ' + $aiCreateFailures.Count + ' knowledge (.ai) directory(ies) - likely a permission-denied or read-only location. Nothing was changed; fix access to these paths and retry:')
+        # Roll back ONLY the .ai directories this run just created - never a
+        # pre-existing one, and never one that unexpectedly gained content, so
+        # user data is never at risk even if something else touched it meanwhile.
+        $rollbackFailures = New-Object System.Collections.Generic.List[string]
+        foreach ($createdPath in $aiCreatedThisRun) {
+            try {
+                $isEmpty = @(Get-ChildItem -LiteralPath $createdPath -Force -ErrorAction Stop).Count -eq 0
+                if ($isEmpty) {
+                    Remove-Item -LiteralPath $createdPath -Force -ErrorAction Stop
+                    Write-Log 'INFO' 'CONFIG' ('Rolled back just-created knowledge directory: ' + $createdPath)
+                }
+                else {
+                    [void]$rollbackFailures.Add($createdPath)
+                }
+            }
+            catch {
+                [void]$rollbackFailures.Add($createdPath)
+                Write-Log 'ERROR' 'CONFIG' ('Could not roll back knowledge directory: ' + $createdPath + ' | ' + $_.Exception.Message)
+            }
+        }
+        if ($rollbackFailures.Count -eq 0) {
+            Write-ErrorLine ('Could not create ' + $aiCreateFailures.Count + ' knowledge (.ai) directory(ies) - likely a permission-denied or read-only location. Nothing was changed; fix access to these paths and retry:')
+        }
+        else {
+            Write-ErrorLine ('Could not create ' + $aiCreateFailures.Count + ' knowledge (.ai) directory(ies) - likely a permission-denied or read-only location. No profile/config was written, but these directory(ies) created earlier this run could not be rolled back:')
+            foreach ($path in $rollbackFailures) { Write-NoteLine ('  ' + $path) }
+        }
         foreach ($failure in $aiCreateFailures) { Write-NoteLine ('  ' + $failure.Path) }
-        Write-Log 'ERROR' 'GROUP' ('Aborted sync group: ' + $aiCreateFailures.Count + ' .ai directory creation failure(s); no profile written.')
+        Write-Log 'ERROR' 'GROUP' ('Aborted sync group: ' + $aiCreateFailures.Count + ' .ai directory creation failure(s); ' + ($aiCreatedThisRun.Count - $rollbackFailures.Count) + ' directory(ies) rolled back; no profile written.')
         return 'back'
     }
 
@@ -934,7 +970,9 @@ function Get-HookBody-ContextNote {
     $escaped = $Message.Replace("'", "''")
     return @"
 # $HookName - injects a fixed context note into every matched event.
-# Generated by Hook Maker. Edit freely; reinstall is not needed after edits.
+# Generated by Hook Maker. Edit this file freely - but if it is already
+# installed anywhere, installed copies are self-contained: use "Update
+# previously installed hooks" (or reinstall) to apply your edits there.
 `$hookInput = [Console]::In.ReadToEnd() | ConvertFrom-Json
 `$note = '$escaped'
 @{ hookSpecificOutput = @{ hookEventName = `$hookInput.hook_event_name; additionalContext = `$note } } |
@@ -948,7 +986,9 @@ function Get-HookBody-PromptGuard {
     $wordList = (@($Words | ForEach-Object { "'" + $_.Replace("'", "''") + "'" })) -join ', '
     return @"
 # $HookName - blocks prompts that contain forbidden words (UserPromptSubmit).
-# Generated by Hook Maker. Edit the list freely; reinstall is not needed after edits.
+# Generated by Hook Maker. Edit the list freely - but if it is already
+# installed anywhere, installed copies are self-contained: use "Update
+# previously installed hooks" (or reinstall) to apply your edits there.
 `$hookInput = [Console]::In.ReadToEnd() | ConvertFrom-Json
 `$forbidden = @($wordList)
 `$prompt = ''
@@ -968,7 +1008,9 @@ function Get-HookBody-ToolLogger {
     param([string]$HookName)
     return @"
 # $HookName - appends one line per tool call to a log file next to this hook.
-# Generated by Hook Maker. Edit freely; reinstall is not needed after edits.
+# Generated by Hook Maker. Edit this file freely - but if it is already
+# installed anywhere, installed copies are self-contained: use "Update
+# previously installed hooks" (or reinstall) to apply your edits there.
 `$hookInput = [Console]::In.ReadToEnd() | ConvertFrom-Json
 `$logFile = Join-Path (Split-Path -Parent `$MyInvocation.MyCommand.Path) '$HookName.log'
 `$toolName = ''
@@ -1235,48 +1277,67 @@ function Invoke-CreateHook {
 }
 
 # Reads an event selection (or a custom list). Returns an events array, or
-# $null when the user backs out.
+# $null when the user backs out. When $RecommendedEvents is non-empty (the
+# SPECIFIC hook's own recommended EVENTS, from Get-HookRecommendedEvents), it
+# becomes choice 1 - a clear, correctly-defaulted option - instead of the
+# single-hook flow silently defaulting to the generic "SessionStart,
+# UserPromptSubmit" pair on a bare Enter, regardless of what the hook actually
+# needs (e.g. a Stop-only hook like Cloudflare-Deploy/Ci-Status-Check, or a
+# SessionStart+Stop hook like Docs-Freshness-Check). Nothing is removed - every
+# other choice (including full custom) still follows.
 function Read-EventSelection {
-    param([string]$TitleSuffix = '')
+    param([string]$TitleSuffix = '', [string[]]$RecommendedEvents = @())
     $knownEvents = @('SessionStart', 'UserPromptSubmit', 'PreToolUse', 'PostToolUse', 'Stop', 'SubagentStop', 'PreCompact', 'SessionEnd', 'Notification', 'PermissionRequest', 'PostCompact', 'SubagentStart')
+    $recommended = @($RecommendedEvents | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+    $hasRecommended = $recommended.Count -gt 0
+
+    $choices = New-Object System.Collections.Generic.List[object]
+    if ($hasRecommended) {
+        [void]$choices.Add(@{ Label = "This hook's recommended events"; Hint = '(' + ($recommended -join ', ') + ')'; Events = $recommended })
+    }
+    $sessionPromptHint = if ($hasRecommended) { '(context hooks)' } else { '(context hooks - recommended)' }
+    [void]$choices.Add(@{ Label = 'Session Start + User Prompt Submit'; Hint = $sessionPromptHint; Events = @('SessionStart', 'UserPromptSubmit') })
+    [void]$choices.Add(@{ Label = 'Session Start'; Hint = ''; Events = @('SessionStart') })
+    [void]$choices.Add(@{ Label = 'User Prompt Submit'; Hint = ''; Events = @('UserPromptSubmit') })
+    $customChoiceNumber = $choices.Count + 1
+
     while ($true) {
         Write-MenuTitle ('Events' + $TitleSuffix + ':')
-        Write-MenuLine 1 'Session Start + User Prompt Submit' '(context hooks - recommended)'
-        Write-MenuLine 2 'Session Start'
-        Write-MenuLine 3 'User Prompt Submit'
-        Write-MenuLine 4 'Custom list' '(e.g. Pre Tool Use, Post Tool Use, Stop)'
+        for ($i = 0; $i -lt $choices.Count; $i++) {
+            Write-MenuLine ($i + 1) $choices[$i].Label $choices[$i].Hint
+        }
+        Write-MenuLine $customChoiceNumber 'Custom list' '(e.g. Pre Tool Use, Post Tool Use, Stop)'
         $value = Read-Answer (New-QuestionPrompt 'Select events' $null '1') 'select events'
         if ($value -eq '0') { return $null }
         if ($value -eq '') { $value = '1' }
-        switch ($value) {
-            '1' { return @('SessionStart', 'UserPromptSubmit') }
-            '2' { return @('SessionStart') }
-            '3' { return @('UserPromptSubmit') }
-            '4' {
-                $raw = Read-Answer (New-QuestionPrompt 'Event names' ('comma separated; example: ' + (Get-ExampleText 'PreToolUse,PostToolUse')) $null) 'custom event list'
-                if ($raw -eq '0') { continue }
-                $candidates = @($raw.Split(',') | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne '' })
-                if ($candidates.Count -eq 0) { Write-ErrorLine 'Enter at least one event name.'; continue }
-                $invalid = @($candidates | Where-Object { $_ -notmatch '^[A-Za-z]+$' })
-                if ($invalid.Count -gt 0) { Write-ErrorLine ('Invalid event name(s): ' + ($invalid -join ', ')); continue }
-                $unknown = @($candidates | Where-Object { $knownEvents -notcontains $_ })
-                if ($unknown.Count -gt 0) { Write-NoteLine ('Not a known event (installing anyway): ' + ($unknown -join ', ')) }
-                return $candidates
-            }
-            default { Write-ErrorLine 'Enter 1, 2, 3 or 4.' }
+        $picked = 0
+        if ([int]::TryParse($value, [ref]$picked) -and $picked -ge 1 -and $picked -le $choices.Count) {
+            return @($choices[$picked - 1].Events)
         }
+        if ($picked -eq $customChoiceNumber) {
+            $raw = Read-Answer (New-QuestionPrompt 'Event names' ('comma separated; example: ' + (Get-ExampleText 'PreToolUse,PostToolUse')) $null) 'custom event list'
+            if ($raw -eq '0') { continue }
+            $candidates = @($raw.Split(',') | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne '' })
+            if ($candidates.Count -eq 0) { Write-ErrorLine 'Enter at least one event name.'; continue }
+            $invalid = @($candidates | Where-Object { $_ -notmatch '^[A-Za-z]+$' })
+            if ($invalid.Count -gt 0) { Write-ErrorLine ('Invalid event name(s): ' + ($invalid -join ', ')); continue }
+            $unknown = @($candidates | Where-Object { $knownEvents -notcontains $_ })
+            if ($unknown.Count -gt 0) { Write-NoteLine ('Not a known event (installing anyway): ' + ($unknown -join ', ')) }
+            return $candidates
+        }
+        Write-ErrorLine ('Enter a number between 1 and ' + $customChoiceNumber + '.')
     }
 }
 
 # Gathers events + client + target projects for one hook as a mini stage machine
 # (back steps one). Returns an object, or $null when backed out of the first step.
 function Read-HookConfig {
-    param([string]$TitleSuffix = '', [switch]$SkipEvents)
+    param([string]$TitleSuffix = '', [switch]$SkipEvents, [string[]]$RecommendedEvents = @())
     $events = $null; $clients = $null; $stage = if ($SkipEvents) { 1 } else { 0 }
     while ($true) {
         switch ($stage) {
             0 {
-                $events = Read-EventSelection $TitleSuffix
+                $events = Read-EventSelection $TitleSuffix $RecommendedEvents
                 if ($null -eq $events) { return $null }
                 $stage = 1
             }
@@ -1395,7 +1456,7 @@ function Invoke-InstallExistingHook {
         $plans = $null
         $sharedTargets = $false
         if ($selected.Count -eq 1) {
-            $cfg = Read-HookConfig
+            $cfg = Read-HookConfig -RecommendedEvents @(Get-HookRecommendedEvents $selected[0])
             if ($null -eq $cfg) { continue }
             $plans = @([pscustomobject]@{ Hook = $selected[0]; Config = $cfg })
         }
@@ -1421,7 +1482,7 @@ function Invoke-InstallExistingHook {
                 $collected = New-Object System.Collections.Generic.List[object]
                 $aborted = $false
                 foreach ($h in $selected) {
-                    $cfg = Read-HookConfig (' for ' + (Get-HookFriendlyName $h.Name))
+                    $cfg = Read-HookConfig (' for ' + (Get-HookFriendlyName $h.Name)) -RecommendedEvents @(Get-HookRecommendedEvents $h)
                     if ($null -eq $cfg) { $aborted = $true; break }
                     [void]$collected.Add([pscustomobject]@{ Hook = $h; Config = $cfg })
                 }
@@ -1619,9 +1680,305 @@ function Invoke-InstallHookFromConfig {
     }
 }
 
+# --------------------------------------------------- update installed (4) ----
+# Scopes a legacy (pre-registry) scan can safely and provably reach: the
+# current project (cwd), global (~/.claude + ~/.codex), and every OTHER
+# project root the current sync-hooks.json's profiles/routes already
+# reference. Any other project Hook Maker has never recorded a path for is
+# genuinely unreachable without the user pointing at it once - reported, never
+# guessed (reinstalling there, by any method, enters it into the registry).
+function Get-LegacyScanScopes {
+    $scopes = New-Object System.Collections.Generic.List[object]
+    $cwdRoot = (Get-Location).Path.TrimEnd('\', '/')
+    [void]$scopes.Add([pscustomobject]@{ ScopeLabel = 'project'; Root = $cwdRoot })
+    [void]$scopes.Add([pscustomobject]@{ ScopeLabel = 'global'; Root = '' })
+    $config = Read-JsonFile $ConfigPath
+    if ($null -ne $config -and $null -ne $config.PSObject.Properties['profiles'] -and $null -ne $config.profiles) {
+        $seen = New-Object System.Collections.Generic.HashSet[string]([System.StringComparer]::OrdinalIgnoreCase)
+        [void]$seen.Add($cwdRoot)
+        foreach ($profileConfig in @($config.profiles)) {
+            if ($null -eq $profileConfig.PSObject.Properties['routes'] -or $null -eq $profileConfig.routes) { continue }
+            foreach ($route in @($profileConfig.routes)) {
+                foreach ($endpoint in @($route.source, $route.destination)) {
+                    if ($null -eq $endpoint) { continue }
+                    $root = [string]$endpoint.root
+                    if ([string]::IsNullOrWhiteSpace($root)) { continue }
+                    $normalized = $root.TrimEnd('\', '/')
+                    if ($seen.Contains($normalized)) { continue }
+                    [void]$seen.Add($normalized)
+                    [void]$scopes.Add([pscustomobject]@{ ScopeLabel = 'project'; Root = $normalized })
+                }
+            }
+        }
+    }
+    return $scopes.ToArray()
+}
+
+function Get-ScopeSettingsPaths {
+    param([Parameter(Mandatory = $true)]$Scope)
+    if ($Scope.ScopeLabel -eq 'project') {
+        return [pscustomobject]@{ Claude = (Join-Path $Scope.Root '.claude\settings.local.json'); Codex = (Join-Path $Scope.Root '.codex\hooks.json') }
+    }
+    return [pscustomobject]@{ Claude = (Join-Path $HOME '.claude\settings.json'); Codex = (Join-Path $HOME '.codex\hooks.json') }
+}
+
+# Scans one settings file for Hook-Maker-managed commands
+# (...\hooks\Hook-Maker\<Name>\<Name>.ps1), extracting the friendly name, the
+# event it is registered under, and - when present - the exact -Profile/
+# -ConfigPath a sync-engine install embeds in its own command line. This reads
+# Hook Maker's OWN generated invocation syntax (New-HookCommands), so it is a
+# precise parse, never a guess at ambiguous metadata.
+function Find-ManagedCommands {
+    param([string]$SettingsPath, [string]$ClientLabel)
+    $found = New-Object System.Collections.Generic.List[object]
+    if ([string]::IsNullOrWhiteSpace($SettingsPath) -or -not (Test-Path -LiteralPath $SettingsPath -PathType Leaf)) {
+        return $found.ToArray()
+    }
+    $json = Read-JsonFile $SettingsPath
+    if ($null -eq $json -or $null -eq $json.PSObject.Properties['hooks'] -or $null -eq $json.hooks) {
+        return $found.ToArray()
+    }
+    foreach ($eventProp in $json.hooks.PSObject.Properties) {
+        foreach ($group in @($eventProp.Value)) {
+            foreach ($handler in @($group.hooks)) {
+                $command = ''
+                if ($null -ne $handler.PSObject.Properties['command']) { $command = [string]$handler.command }
+                $match = [regex]::Match($command, '[\\/]hooks[\\/]Hook-Maker[\\/]([^\\/"]+)[\\/][^\\/"]+\.ps1')
+                if (-not $match.Success) { continue }
+                $profileMatch = [regex]::Match($command, '-Profile\s+"([^"]*)"')
+                $configMatch = [regex]::Match($command, '-ConfigPath\s+"([^"]*)"')
+                [void]$found.Add([pscustomobject]@{
+                    FriendlyName = $match.Groups[1].Value
+                    EventName    = $eventProp.Name
+                    Client       = $ClientLabel
+                    Profile      = if ($profileMatch.Success) { $profileMatch.Groups[1].Value } else { '' }
+                    ConfigPath   = if ($configMatch.Success) { $configMatch.Groups[1].Value } else { '' }
+                })
+            }
+        }
+    }
+    return $found.ToArray()
+}
+
+# Builds best-effort candidate records for Hook-Maker-managed registrations
+# that exist live in a reachable scope's settings files but are NOT already in
+# the registry - a conservative one-time import: every field is read directly
+# from the actual settings file (or resolved from a known source layout),
+# never invented. Already-tracked ids (by the same identity rule as a real
+# install) are skipped.
+function Get-LegacyHookCandidates {
+    param([Parameter(Mandatory = $true)]$Registry)
+    $trackedIds = New-Object System.Collections.Generic.HashSet[string]
+    foreach ($existing in @($Registry.installs)) { [void]$trackedIds.Add([string]$existing.id) }
+
+    $candidates = New-Object System.Collections.Generic.List[object]
+    foreach ($scope in @(Get-LegacyScanScopes)) {
+        $paths = Get-ScopeSettingsPaths $scope
+        $allFound = @(Find-ManagedCommands -SettingsPath $paths.Claude -ClientLabel 'Claude') + @(Find-ManagedCommands -SettingsPath $paths.Codex -ClientLabel 'Codex')
+        $byKey = @{}
+        foreach ($entry in $allFound) {
+            $key = $entry.FriendlyName + '|' + $entry.Profile
+            if (-not $byKey.ContainsKey($key)) {
+                $byKey[$key] = [pscustomobject]@{
+                    FriendlyName = $entry.FriendlyName
+                    Profile      = $entry.Profile
+                    ConfigPath   = $entry.ConfigPath
+                    Events       = New-Object System.Collections.Generic.List[string]
+                    Clients      = New-Object System.Collections.Generic.HashSet[string]
+                }
+            }
+            if (-not $byKey[$key].Events.Contains($entry.EventName)) { [void]$byKey[$key].Events.Add($entry.EventName) }
+            [void]$byKey[$key].Clients.Add($entry.Client)
+        }
+        foreach ($key in $byKey.Keys) {
+            $foundEntry = $byKey[$key]
+            $scopeKey = if ($scope.ScopeLabel -eq 'project') { $scope.Root.ToLowerInvariant() } else { 'global' }
+            $recordId = Get-InstallRecordId -FriendlyName $foundEntry.FriendlyName -ScopeKey $scopeKey -ProfileId $foundEntry.Profile
+            if ($trackedIds.Contains($recordId)) { continue }
+
+            $hookType = if ([string]::IsNullOrWhiteSpace($foundEntry.Profile) -and [string]::IsNullOrWhiteSpace($foundEntry.ConfigPath)) { 'CustomHook' } else { 'Engine' }
+            $sourceScript = if ($hookType -eq 'Engine') {
+                Join-Path $HooksDir 'Cross-Project-.ai-Knowledge-Sync\Cross-Project-.ai-Knowledge-Sync.ps1'
+            }
+            else {
+                Join-Path $HooksDir ($foundEntry.FriendlyName + '\' + $foundEntry.FriendlyName + '.ps1')
+            }
+            $clientsValue = if ($foundEntry.Clients.Contains('Claude') -and $foundEntry.Clients.Contains('Codex')) { 'Both' } elseif ($foundEntry.Clients.Contains('Claude')) { 'Claude' } else { 'Codex' }
+            $scopePaths = Get-ScopeSettingsPaths $scope
+            $record = [pscustomobject][ordered]@{
+                id                  = $recordId
+                internalName        = $foundEntry.FriendlyName
+                friendlyName        = $foundEntry.FriendlyName
+                hookType            = $hookType
+                sourceScript        = $sourceScript
+                sourceDir           = Split-Path -Parent $sourceScript
+                scope               = $scope.ScopeLabel
+                targetProjectRoot   = if ($scope.ScopeLabel -eq 'project') { $scope.Root } else { '' }
+                clients             = $clientsValue
+                claudeSettingsPath  = $scopePaths.Claude
+                codexHooksPath      = $scopePaths.Codex
+                events              = @(@($foundEntry.Events.ToArray()) | Sort-Object)
+                profile             = $foundEntry.Profile
+                configPath          = $foundEntry.ConfigPath
+                claudeRuntimeScript = ''
+                codexRuntimeScript  = ''
+                prePushManaged      = $false
+                sourceHash          = ''
+                hooklibHash         = ''
+                configHash          = ''
+                lastInstalledUtc    = ''
+                lastUpdatedUtc      = ''
+                lastResult          = ''
+                lastError           = ''
+                imported            = $true
+            }
+            [void]$candidates.Add($record)
+        }
+    }
+    return $candidates.ToArray()
+}
+
+# Refreshes every valid tracked (or newly-discovered legacy) installation
+# whose managed runtime no longer matches current source, reusing each
+# record's saved parameters - a correct reinstall without re-asking any
+# configuration question. Missing source/target/profile are reported and
+# skipped, never destructively touched. One confirmation for the whole batch.
+function Invoke-UpdateInstalledHooks {
+    Write-Log 'INFO' 'UPDATE' 'Update previously installed hooks started.'
+    Write-PhaseHeader 'Update Previously Installed Hooks' $C.Input '-'
+
+    $registry = Read-InstallRegistry -ToolRoot $ToolRoot
+    $legacyCandidates = @(Get-LegacyHookCandidates -Registry $registry)
+    $allRecords = @(@($registry.installs) + @($legacyCandidates))
+
+    if ($allRecords.Count -eq 0) {
+        Write-NoteLine '  No previously installed hooks are tracked yet, and none were found in the current project, the global scope, or projects referenced by the sync config.'
+        Write-NoteLine '  Install a hook once (any method) to start tracking it; a hook installed in another, unreferenced project must be reinstalled once there to enter the registry.'
+        Write-Log 'INFO' 'UPDATE' 'No tracked or discoverable installs.'
+        return 'back'
+    }
+
+    # ---- evaluate each record: up to date / needs update / skip reason ----
+    $plan = New-Object System.Collections.Generic.List[object]
+    foreach ($record in $allRecords) {
+        $status = ''
+        $detail = ''
+        if (-not (Test-Path -LiteralPath $record.sourceScript -PathType Leaf)) {
+            $status = 'skip'; $detail = 'source script no longer found: ' + $record.sourceScript
+        }
+        elseif (($record.scope -ne 'global') -and -not (Test-Path -LiteralPath $record.targetProjectRoot -PathType Container)) {
+            $status = 'skip'; $detail = 'target project no longer found: ' + $record.targetProjectRoot
+        }
+        elseif ($record.hookType -eq 'Engine' -and -not (Test-Path -LiteralPath $record.configPath -PathType Leaf)) {
+            $status = 'skip'; $detail = 'sync config no longer found: ' + $record.configPath
+        }
+        elseif ($record.hookType -eq 'Engine') {
+            $engineConfig = Read-JsonFile $record.configPath
+            $profileExists = ($null -ne $engineConfig) -and ($null -ne $engineConfig.PSObject.Properties['profiles']) -and (@($engineConfig.profiles | Where-Object { [string]$_.id -eq [string]$record.profile }).Count -gt 0)
+            if (-not $profileExists) { $status = 'skip'; $detail = 'profile no longer exists in the sync config: ' + $record.profile }
+        }
+        if ($status -eq '') {
+            $currentSourceHash = (Get-FileHash -LiteralPath $record.sourceScript -Algorithm SHA256).Hash
+            $currentHooklibHash = ''
+            $hooklibPath = Join-Path $ToolRoot 'hooks\_hooklib.ps1'
+            if (Test-Path -LiteralPath $hooklibPath -PathType Leaf) { $currentHooklibHash = (Get-FileHash -LiteralPath $hooklibPath -Algorithm SHA256).Hash }
+            $currentConfigHash = ''
+            if ($record.hookType -eq 'Engine') { $currentConfigHash = (Get-FileHash -LiteralPath $record.configPath -Algorithm SHA256).Hash }
+            $isImported = ($null -ne $record.PSObject.Properties['imported']) -and $record.imported -eq $true
+            $hashesMatch = ($currentSourceHash -eq $record.sourceHash) -and ($currentHooklibHash -eq $record.hooklibHash) -and ($currentConfigHash -eq $record.configHash)
+            if ($isImported -or -not $hashesMatch) {
+                $status = 'update'
+                $detail = if ($isImported) { 'not yet tracked - will be registered' } else { 'source changed since last install' }
+            }
+            else {
+                $status = 'current'
+                $detail = 'up to date'
+            }
+        }
+        [void]$plan.Add([pscustomobject]@{ Record = $record; Status = $status; Detail = $detail })
+    }
+
+    Write-MenuTitle 'Plan:'
+    for ($i = 0; $i -lt $plan.Count; $i++) {
+        $item = $plan[$i]
+        $scopeText = if ($item.Record.scope -eq 'global') { 'global' } else { $item.Record.targetProjectRoot }
+        $color = switch ($item.Status) { 'update' { $C.Amber }; 'skip' { $C.Red }; default { $C.Mint } }
+        Write-Host ('  ' + (Get-Painted (($i + 1).ToString() + '.') $C.LightBlue) + ' ' + (Get-Painted (Get-HookFriendlyName $item.Record.friendlyName) $C.Bold) + $script:MenuSep + (Get-Painted $scopeText $C.Gray) + $script:MenuSep + (Get-Painted $item.Detail $color))
+    }
+    $toUpdate = @($plan | Where-Object { $_.Status -eq 'update' })
+    $toSkip = @($plan | Where-Object { $_.Status -eq 'skip' })
+    $current = @($plan | Where-Object { $_.Status -eq 'current' })
+    Write-Host ''
+    Write-Field 'already up to date' $current.Count.ToString()
+    Write-Field 'will be updated' $toUpdate.Count.ToString()
+    Write-Field 'skipped (missing source/target/profile)' $toSkip.Count.ToString()
+    Write-Log 'INFO' 'UPDATE' ('Plan built: total=' + $allRecords.Count + ' current=' + $current.Count + ' update=' + $toUpdate.Count + ' skip=' + $toSkip.Count)
+
+    if ($toUpdate.Count -eq 0) {
+        Write-NoteLine '  Nothing to update - every valid tracked installation already matches the current source.'
+        if ($toSkip.Count -gt 0) {
+            Write-NoteLine '  Skipped (review and reinstall manually if still needed):'
+            foreach ($item in $toSkip) { Write-NoteLine ('    ' + (Get-HookFriendlyName $item.Record.friendlyName) + ' - ' + $item.Detail) }
+        }
+        return 'done'
+    }
+
+    Write-PhaseHeader 'Confirm' $C.Confirm '-'
+    $confirm = Read-YesNo (New-QuestionPrompt ('Update ' + $toUpdate.Count + ' installed hook(s) now?') 'y/n' 'y') $true 'confirm update installed hooks'
+    if ($null -eq $confirm -or $confirm -ne $true) {
+        Write-NoteLine 'Canceled. Nothing was changed.'
+        Write-Log 'INFO' 'UPDATE' 'User declined at confirmation; no changes applied.'
+        return 'done'
+    }
+
+    Write-PhaseHeader 'Applying Changes' $C.Process '-'
+    $updated = New-Object System.Collections.Generic.List[string]
+    $failed = New-Object System.Collections.Generic.List[string]
+    foreach ($item in $toUpdate) {
+        $record = $item.Record
+        $clientArgs = Get-ClientInstallArgs $record.clients
+        $installArgs = @{ Events = @($record.events) }
+        if ($record.scope -eq 'project') { $installArgs['TargetProject'] = $record.targetProjectRoot }
+        if ($record.hookType -eq 'Engine') {
+            $installArgs['Profile'] = $record.profile
+            $installArgs['ConfigPath'] = $record.configPath
+        }
+        else {
+            $installArgs['CustomHook'] = $record.sourceScript
+        }
+        try {
+            $installOutput = & $InstallScript @installArgs @clientArgs *>&1
+            foreach ($line in @($installOutput)) { Write-Log 'INFO' 'INSTALL' ([string]$line) }
+            [void]$updated.Add((Get-HookFriendlyName $record.friendlyName))
+            $scopeText = if ($record.scope -eq 'global') { 'global' } else { $record.targetProjectRoot }
+            Write-Host ('  ' + (Get-Painted '+ updated' $C.Green) + ' ' + (Get-Painted (Get-HookFriendlyName $record.friendlyName) $C.Bold) + '  ' + (Get-Painted $scopeText $C.Gray))
+        }
+        catch {
+            [void]$failed.Add((Get-HookFriendlyName $record.friendlyName) + ': ' + $_.Exception.Message)
+            Write-Host ('  ' + (Get-Painted '! failed  ' $C.Red) + ' ' + (Get-Painted (Get-HookFriendlyName $record.friendlyName) $C.Bold))
+            Write-Log 'ERROR' 'UPDATE' ('Failed to update ' + $record.friendlyName + ': ' + $_.Exception.Message)
+        }
+    }
+
+    Write-PhaseHeader 'Completed' $C.Done '='
+    Write-Host (Get-Painted ('  Updated ' + $updated.Count + ' of ' + $toUpdate.Count + ' hook(s).') $C.White)
+    if ($failed.Count -gt 0) {
+        Write-ErrorLine ('  ' + $failed.Count + ' failed:')
+        foreach ($f in $failed) { Write-NoteLine ('    ' + $f) }
+    }
+    if ($toSkip.Count -gt 0) {
+        Write-NoteLine ('  ' + $toSkip.Count + ' skipped (missing source/target/profile) - review and reinstall manually if still needed:')
+        foreach ($item in $toSkip) { Write-NoteLine ('    ' + (Get-HookFriendlyName $item.Record.friendlyName) + ' - ' + $item.Detail) }
+    }
+    Write-NoteLine '  Restart the Claude/Codex clients and review /hooks inside each affected project.'
+    Write-Log 'INFO' 'DONE' ('Update installed hooks complete: updated=' + $updated.Count + ' failed=' + $failed.Count + ' skipped=' + $toSkip.Count + ' current=' + $current.Count)
+    return 'done'
+}
+
 # The "Create or install a hook" sub-menu: create a new hook, install an
 # existing one (item 1 of that list selects every individual hook at once,
-# item 2 is the sync group), or install from config.
+# item 2 is the sync group), install from config, or update previously
+# installed hooks (refresh existing installs from current source, no re-ask).
 # Loops so that backing out of a sub-flow returns HERE (one step), not to the
 # main menu. Returns 'done' after a completed sub-flow, or when the user backs
 # out of this sub-menu.
@@ -1632,6 +1989,7 @@ function Invoke-CustomHookMenu {
         Write-MenuLine 1 'Install an existing hook' '(sync group + hooks\ - interactive)'
         Write-MenuLine 2 'Create a new hook' '(guided templates)'
         Write-MenuLine 3 'Install from config' '(reads the hook''s .env - no questions)'
+        Write-MenuLine 4 'Update previously installed hooks' '(refresh runtime copies from current source)'
         $value = Read-Answer (New-QuestionPrompt 'Select an option' $null '1') 'custom hook menu'
         if ($value -eq '0') {
             Write-Log 'INFO' 'MENU' 'Create-or-install sub-menu -> 0. Back'
@@ -1640,13 +1998,14 @@ function Invoke-CustomHookMenu {
         if ($value -eq '') {
             $value = '1'
         }
-        $subAction = @{ '1' = 'Install an existing hook'; '2' = 'Create a new hook'; '3' = 'Install from config' }[$value]
+        $subAction = @{ '1' = 'Install an existing hook'; '2' = 'Create a new hook'; '3' = 'Install from config'; '4' = 'Update previously installed hooks' }[$value]
         if ($subAction) { Write-Log 'INFO' 'MENU' ('Create-or-install sub-menu -> ' + $value + '. ' + $subAction) }
         switch ($value) {
             '1' { if ((Invoke-InstallExistingHook) -eq 'done') { return } }
             '2' { if ((Invoke-CreateHook) -eq 'done') { return } }
             '3' { if ((Invoke-InstallHookFromConfig) -eq 'done') { return } }
-            default { Write-ErrorLine 'Enter 1, 2, 3 or 0.' }
+            '4' { if ((Invoke-UpdateInstalledHooks) -eq 'done') { return } }
+            default { Write-ErrorLine 'Enter 1, 2, 3, 4 or 0.' }
         }
     }
 }

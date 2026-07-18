@@ -13,6 +13,10 @@ $script:TestPreviewLength = 400
 $Work = Join-Path ([System.IO.Path]::GetTempPath()) ('hookmaker-ignoretest-' + [guid]::NewGuid().ToString('N').Substring(0, 8))
 New-Item -ItemType Directory -Path $Work -Force | Out-Null
 Write-Host ("Workspace: $Work") -ForegroundColor DarkGray
+# Isolates Install-Hook.ps1's install registry away from this real checkout's
+# own registry for every in-process & $InstallScript call below.
+$SavedHookMakerStateDir = $env:HOOKMAKER_STATE_DIR
+$env:HOOKMAKER_STATE_DIR = Join-Path $Work 'state'
 
 function New-Repo {
     param([string]$Name)
@@ -264,6 +268,7 @@ try {
     Check 'clean push succeeds and still runs the previous hook' ($pushExit -eq 0 -and (Test-Path -LiteralPath (Join-Path $pushRepo 'previous-hook.txt'))) $pushOutput
 }
 finally {
+    $env:HOOKMAKER_STATE_DIR = $SavedHookMakerStateDir
     if ($KeepArtifacts) {
         Write-Host ("Artifacts kept at: $Work") -ForegroundColor DarkGray
     }

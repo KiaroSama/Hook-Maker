@@ -37,6 +37,10 @@ $script:TestPreviewLength = 500
 $Work = Join-Path ([System.IO.Path]::GetTempPath()) ('hookmaker-docsfreshtest-' + [guid]::NewGuid().ToString('N').Substring(0, 8))
 New-Item -ItemType Directory -Path $Work -Force | Out-Null
 Write-Host ("Workspace: $Work") -ForegroundColor DarkGray
+# Isolates Install-Hook.ps1's install registry away from this real checkout's
+# own registry for the in-process & $InstallScript call below.
+$SavedHookMakerStateDir = $env:HOOKMAKER_STATE_DIR
+$env:HOOKMAKER_STATE_DIR = Join-Path $Work 'state'
 
 function New-Proj { param([string]$Name) $p = Join-Path $Work $Name; New-Item -ItemType Directory -Path $p -Force | Out-Null; return $p }
 function Write-Utf8 { param([string]$Path, [string]$Content) [System.IO.File]::WriteAllText($Path, $Content, (New-Object System.Text.UTF8Encoding $false)) }
@@ -426,6 +430,7 @@ try {
     Check 'Codex command does not reference the tool folder' ($codexJson -notlike '*Hook Maker*')
 }
 finally {
+    $env:HOOKMAKER_STATE_DIR = $SavedHookMakerStateDir
     if (-not $KeepArtifacts) {
         try {
             Get-ChildItem -LiteralPath $Work -Recurse -Force -ErrorAction SilentlyContinue |

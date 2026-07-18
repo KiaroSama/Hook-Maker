@@ -40,6 +40,10 @@ Write-Host ("Workspace: $Work") -ForegroundColor DarkGray
 $SavedUserProfile = $env:USERPROFILE
 $SavedLocalAppData = $env:LOCALAPPDATA
 $SavedClaudeDir = $env:CLAUDE_PROJECT_DIR
+# Isolates Install-Hook.ps1's install registry away from this real checkout's
+# own registry for every in-process & $InstallScript call below.
+$SavedHookMakerStateDir = $env:HOOKMAKER_STATE_DIR
+$env:HOOKMAKER_STATE_DIR = Join-Path $Work 'state'
 
 # ---- helpers ----
 function Fire {
@@ -229,6 +233,7 @@ finally {
     $env:USERPROFILE = $SavedUserProfile
     $env:LOCALAPPDATA = $SavedLocalAppData
     if ($null -ne $SavedClaudeDir) { $env:CLAUDE_PROJECT_DIR = $SavedClaudeDir } else { Remove-Item Env:CLAUDE_PROJECT_DIR -ErrorAction SilentlyContinue }
+    $env:HOOKMAKER_STATE_DIR = $SavedHookMakerStateDir
     if (-not $KeepArtifacts) {
         try {
             Get-ChildItem -LiteralPath $Work -Recurse -Force -ErrorAction SilentlyContinue |

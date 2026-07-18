@@ -469,4 +469,64 @@ if (-not $ClaudeOnly) {
 
 Install-IgnorePrePush
 
+# ---- install registry (best-effort; a registry failure never fails the
+# install itself - the hook/settings files above are already correctly
+# written by this point). Records enough to reproduce this exact install via
+# "Update previously installed hooks" without re-asking any question. Never
+# stores .env content, secret values, or any hook stdin/prompt/tool-input -
+# only paths and content hashes.
+try {
+    $scopeKey = if ($ScopeLabel -eq 'project') { $projectRoot.ToLowerInvariant() } else { 'global' }
+    $recordId = Get-InstallRecordId -FriendlyName $FriendlyName -ScopeKey $scopeKey -ProfileId ([string]$Profile)
+    $hookType = if ([string]::IsNullOrWhiteSpace($CustomHook)) { 'Engine' } else { 'CustomHook' }
+
+    $claudeRuntimeScript = Join-Path (Split-Path -Parent $ClaudeSettings) ('hooks\Hook-Maker\' + $FriendlyName + '\' + $FriendlyName + '.ps1')
+    $codexRuntimeScript = Join-Path (Split-Path -Parent $CodexHooks) ('hooks\Hook-Maker\' + $FriendlyName + '\' + $FriendlyName + '.ps1')
+    $claudeInstalled = Test-Path -LiteralPath $claudeRuntimeScript -PathType Leaf
+    $codexInstalled = Test-Path -LiteralPath $codexRuntimeScript -PathType Leaf
+    $clientsNow = if ($claudeInstalled -and $codexInstalled) { 'Both' } elseif ($claudeInstalled) { 'Claude' } elseif ($codexInstalled) { 'Codex' } else { 'None' }
+
+    $sourceHash = ''
+    if (Test-Path -LiteralPath $HookScript -PathType Leaf) { $sourceHash = (Get-FileHash -LiteralPath $HookScript -Algorithm SHA256).Hash }
+    $hooklibPath = Join-Path $ToolRoot 'hooks\_hooklib.ps1'
+    $hooklibHash = ''
+    if (Test-Path -LiteralPath $hooklibPath -PathType Leaf) { $hooklibHash = (Get-FileHash -LiteralPath $hooklibPath -Algorithm SHA256).Hash }
+    $configHash = ''
+    if ($hookType -eq 'Engine' -and (Test-Path -LiteralPath $ConfigPath -PathType Leaf)) { $configHash = (Get-FileHash -LiteralPath $ConfigPath -Algorithm SHA256).Hash }
+
+    $nowIso = [DateTime]::UtcNow.ToString('o')
+    $record = [pscustomobject][ordered]@{
+        id                  = $recordId
+        internalName        = $SourceName
+        friendlyName        = $FriendlyName
+        hookType            = $hookType
+        sourceScript        = $HookScript
+        sourceDir           = $SourceDir
+        scope               = $ScopeLabel
+        targetProjectRoot   = if ($ScopeLabel -eq 'project') { $projectRoot } else { '' }
+        clients             = $clientsNow
+        claudeSettingsPath  = $ClaudeSettings
+        codexHooksPath      = $CodexHooks
+        events              = @($Events)
+        profile             = [string]$Profile
+        configPath          = if ($hookType -eq 'Engine') { $ConfigPath } else { '' }
+        claudeRuntimeScript = if ($claudeInstalled) { $claudeRuntimeScript } else { '' }
+        codexRuntimeScript  = if ($codexInstalled) { $codexRuntimeScript } else { '' }
+        prePushManaged      = [bool]($FriendlyName -eq 'Ignore-Rules-Check' -and $ScopeLabel -eq 'project')
+        sourceHash          = $sourceHash
+        hooklibHash         = $hooklibHash
+        configHash          = $configHash
+        lastInstalledUtc    = $nowIso
+        lastUpdatedUtc      = $nowIso
+        lastResult          = 'ok'
+        lastError           = ''
+    }
+    $registry = Read-InstallRegistry -ToolRoot $ToolRoot
+    Set-InstallRecord -Registry $registry -Record $record
+    Save-InstallRegistry -ToolRoot $ToolRoot -Registry $registry
+}
+catch {
+    Write-Host ('Warning: could not update the local install registry (non-fatal): ' + $_.Exception.Message)
+}
+
 Write-Host 'Restart the clients and review /hooks. Codex may require trusting the new command.'

@@ -16,12 +16,12 @@ starts the user's task.
 | `hooks/<Name>/` | One folder per hook: `<Name>.ps1` + `.env.example` (tracked) + `.env` (your local copy, git-ignored). |
 | `hooks/_hooklib.ps1` | Shared helpers (stdin/`.env`/path/object/hash/JSON/work-time) the shipped hooks dot-source; the `_` prefix keeps it out of the hook picker. |
 | `scripts/Setup-SyncGroup.ps1` | Interactive wizard: sync groups, hook creation/installs, profile listing, validation. |
-| `scripts/Install-Hook.ps1` | Writes a hook command into a project's `.claude/settings.local.json` + `.codex/hooks.json` (or, with no `-TargetProject`, the global `~/.claude` + `~/.codex`). Supports `-CustomHook <path>`. |
+| `scripts/Install-Hook.ps1` | Writes a hook command into a project's `.claude/settings.local.json` + `.codex/hooks.json` (or, with no `-TargetProject`, the global `~/.claude` + `~/.codex`). Supports `-CustomHook <path>`. Records the install in `state/install-registry.json` on success (see "Updating previously installed hooks"). |
 | `scripts/Validate-Config.ps1` | Validates `sync-hooks.json`. |
 | `scripts/Test-Engine.ps1` | Self-contained engine smoke test (18 assertions, runs under pwsh and PowerShell 5.1). |
 | `scripts/Test-GitHubHooks.ps1` | Offline test suite for the GitHub hooks (133 assertions; mocks git state and `gh`, no network/account). |
 | `scripts/Test-RulesCheck.ps1` | Offline test suite for the Rules-Check hook and per-client install targeting (33 assertions). |
-| `scripts/Test-Wizard.ps1` | Drives the interactive wizard end-to-end via stdin (menu, hook listing, list/range multi-select, Select All = sync group + every hook, client targeting, real self-contained installs, graceful handling of an unwritable project `.ai` directory, hierarchical `<parent>-<slot>` numbering for repeated project-path prompts, installer/idempotency + source-hash verification for the menu-affected hooks) against temp projects (140 assertions). |
+| `scripts/Test-Wizard.ps1` | Drives the interactive wizard end-to-end via stdin (menu incl. "Update previously installed hooks", hook listing, list/range multi-select, Select All = sync group + every hook, client targeting, real self-contained installs, single-hook installs defaulting to that hook's own recommended events, a valid non-empty timing tag for every shipped hook, an unwritable project `.ai` directory failing safely with no partial rollback left behind and pre-existing `.ai` directories untouched, hierarchical `<parent>-<slot>` numbering for repeated project-path prompts, installer/idempotency + source-hash verification for the menu-affected hooks) against temp projects (156 assertions). |
 | `scripts/Test-SecretsCheck.ps1` | Offline test suite for the Secrets-Check hook (nested env discovery, Secret/PublicConfig/Unknown classification precedence, PUBLIC_CONFIG_KEYS-cannot-declassify-a-credential, AUTH/OAUTH token-boundary matching, critical-only-blocks Stop policy, ignore/tracked/staged/index leak, outgoing-commit + committed-then-removed `.env*`/`secrets.md` history scan, fail-closed incomplete-scan handling via real bare-remote pushes, a real secret leaked into a tracked template file, throttled unused scan; real throwaway git repos, 113 assertions). |
 | `scripts/Test-AiMemoryLoad.ps1` | Offline test suite for Ai-Memory-Load and Graph-Read-Check (content fingerprinting, whole-.ai/ file listing, truncation, graph-exists gate, UserPromptSubmit codebase-structure relevance gating; 27 assertions). |
 | `scripts/Test-AiMemoryCheck.ps1` | Offline test suite for the Ai-Memory-Check hook (missing/stale memory.md, real specialized-file enumeration, cooldown; real throwaway git repos, 11 assertions). |
@@ -33,8 +33,10 @@ starts the user's task.
 | `scripts/Test-GraphUpdateCheck.ps1` | Offline test suite for the Graph-Update-Check hook (structural-impact criteria replacing file-count wording, staleness/freshness detection, cooldown/`stop_hook_active`; 14 assertions, PowerShell 5.1). |
 | `scripts/Test-TestTempCleanup.ps1` | Offline test suite for the Test-Temp-Cleanup hook (SessionStart baseline, safe-candidate deletion + rescan verification, tracked/staged/reparse-point/hard-protected-root preservation, review-only-by-default, missing-baseline conservative fallback, path/byte limits, locked-candidate failure fingerprint with no-loop guarantee, Claude/Codex output shapes; 31 assertions, PowerShell 5.1). |
 | `scripts/Test-DocsFreshnessCheck.ps1` | Offline test suite for the Docs-Freshness-Check hook (SessionStart baseline, task-delta detection across committed/staged/working-tree changes, comment/blank-only-change silence, hard exclusions, ranked tracked-doc candidates, content-hashed impact fingerprint immune to unrelated doc edits, the Updated/NoUpdate acknowledgement flow with rejection of generic reasons and out-of-root/private/untracked paths, acknowledgement invalidation on a further non-doc change, `stop_hook_active`, self-contained installer copies; real throwaway git repos, 40 assertions, PowerShell 5.1). |
+| `scripts/Test-InstallRegistry.ps1` | Offline test suite for the install registry and "Update previously installed hooks" (single/multi/config-based/generated/sync-engine installs tracked without duplication, Claude/Codex/Both + project/global scope, byte-for-byte refresh preserving events/client/target/scope/profile, never installing a never-installed hook, missing-source/target reported and skipped, second-run idempotency, atomic writes + malformed-state safety, no secret/`.env`/prompt content ever stored, unrelated JSON preserved, native pre-push companion refresh with a preserved previous hook; real throwaway projects + a disposable custom-hook fixture, 60 assertions). |
 | `scripts/_testlib.ps1` | Shared assertion helper used by the offline PowerShell test suites. |
 | `logs/` | Wizard execution logs (created on demand, not committed). |
+| `state/` | **Machine-local and git-ignored.** `install-registry.json` — what Hook Maker has installed and where (see "Updating previously installed hooks"); never holds secret/`.env`/prompt content. |
 
 ## Shipped hooks
 
@@ -100,9 +102,9 @@ Claude-only install never touches the Codex file and vice versa.
 Double-clicking `run.ps1` opens the wizard in a Windows Terminal window when `wt.exe` is
 available; otherwise it runs in the current console with the best available PowerShell.
 
-Main menu: `1` **Create or install a hook** (opens a sub-menu: create a new hook, install an
-existing one, or install from config), `2` show configured profiles, `3` validate. `0` goes back,
-`exit` quits.
+Main menu: `1` **Create or install a hook** (opens a sub-menu: install an existing hook, create a
+new hook, install from config, or update previously installed hooks — see "Updating previously
+installed hooks" below), `2` show configured profiles, `3` validate. `0` goes back, `exit` quits.
 
 Under **Install an existing hook**, list item `1` is **Select all hooks** — an aggregate action
 (not a hook itself) that runs the **complete former full-list flow**: the sync-group wizard AND
@@ -117,7 +119,10 @@ the **sync group** on its own. Individual hooks start at `3`, each showing a col
 — use each hook's recommended events with shared client/projects or configure each separately,
 then a summary lists exactly what will be installed. Combining `1` with an explicit pick (e.g.
 `1,5`) never installs anything twice. If the sync-group stage is canceled, the individual hooks are
-not installed and nothing is falsely reported as completed.
+not installed and nothing is falsely reported as completed. Picking a **single** hook shows that
+hook's own recommended events as the first, clearly-labeled event choice (e.g. "This hook's
+recommended events (Stop)") — a bare Enter installs on the events that hook actually needs, not a
+generic default; the other fixed choices and a fully custom event list remain available too.
 
 The **sync group** also lives inside `1` → **Install an existing hook** as list item `2`
 ("Create or update a sync group") for when you want it on its own. Including `2` in a selection
@@ -167,6 +172,41 @@ preserved, and a timestamped backup is written first.
 Global install works the same way: `scripts/Install-Hook.ps1` with no `-TargetProject` copies to
 `~/.claude/hooks/Hook-Maker/` + `~/.codex/hooks/Hook-Maker/` and registers in
 `~/.claude/settings.json` and `~/.codex/hooks.json`.
+
+## Updating previously installed hooks
+
+Because installs are self-contained copies, editing a hook's source under `hooks/` (or updating
+Hook Maker itself) does **not** change any copy you already installed — the copies are frozen at
+install time. Rather than re-selecting and reconfiguring every hook you've installed one by one,
+use the final item in **`1` → Install an existing hook / Create or install a hook**:
+
+`4` **Update previously installed hooks**
+
+This reads a local install registry, shows a plan (already up to date / will be updated / skipped —
+missing source, target, or profile), asks **one** confirmation, then refreshes every hook whose
+installed copy no longer matches current source — reusing each installation's original events,
+client selection, target/global scope, and (for the sync engine) profile/config, so you never
+re-answer the same questions. It never installs a hook that was never installed, never touches
+unrelated settings-file content, and a second run with nothing changed reports everything as
+already current (no-op). `Ignore-Rules-Check`'s native Git pre-push chain and its bundled
+`Secrets-Check` companion are refreshed the same way, while a pre-existing (non-Hook-Maker)
+pre-push hook stays preserved exactly as the installer already promises.
+
+Every successful install (single hook, a batch, config-based, a generated/custom hook, or the sync
+engine, from any client/scope combination) is recorded — through the same shared step inside
+`Install-Hook.ps1` — in `state/install-registry.json` at the Hook Maker project root:
+**machine-local and git-ignored**, never committed. Each entry stores what is needed to reproduce a
+refresh without re-asking anything: the hook's friendly/internal name and type, its source path and
+a content hash (so a real change is detected), the target scope and events/client/profile it was
+installed with, the installed runtime paths, and timestamps/result — never `.env` values, secret
+values, or any prompt/tool-input content. Reinstalling the same hook into the same scope updates its
+existing entry instead of creating a duplicate.
+
+A hook installed by an **older** version of Hook Maker (before this registry existed) is picked up
+automatically the moment `4` runs, for the current project, the global scope, and any other project
+already referenced by your sync config's profiles — the only scopes a durable path is known for.
+A Hook-Maker-managed installation in some other, unreferenced project can't be discovered this way;
+reinstall it there once (any method) and it enters the registry going forward.
 
 ## How syncing works
 

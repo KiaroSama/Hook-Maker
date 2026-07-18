@@ -139,3 +139,15 @@ jobs:
       - name: Docs-Freshness-Check test suite
         shell: pwsh
         run: .\scripts\Test-DocsFreshnessCheck.ps1
+
+      # Install registry + "Update previously installed hooks": single/multi/
+      # config-based/generated/sync-engine installs tracked without
+      # duplication, byte-for-byte refresh preserving events/client/target/
+      # scope/profile, never-installed hooks never added, missing source/
+      # target reported and skipped, idempotent second run, atomic writes +
+      # malformed-state safety, no secret/.env/prompt content ever stored,
+      # native pre-push companion refresh. Offline, no network; isolates the
+      # registry away from this checkout's own state\.
+      - name: Install registry / update-installed-hooks test suite
+        shell: pwsh
+        run: .\scripts\Test-InstallRegistry.ps1
