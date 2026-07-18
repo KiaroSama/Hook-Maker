@@ -262,6 +262,18 @@ already-installed hook loads. A legacy shared library at the runtime root is ret
 every hook under that root has its own copy, so hooks installed by older versions keep working
 until they are updated.
 
+### Registry validation and per-record isolation
+
+Every record is validated before any of its fields are read: required fields and their types,
+scope, hook type, engine profile/config, per-client subrecords (runtime path, settings path,
+non-empty events) and manifest entry shape. A schema version **newer** than this build supports is
+refused explicitly rather than assumed valid, and an older one is reported as needing migration.
+
+A record that fails validation — or whose evaluation throws for any other reason — becomes an
+isolated, precisely-reported skip. It never aborts the run, the remaining records are still
+evaluated, and nothing about the bad record is modified or guessed at; it is left for manual
+repair.
+
 ### Known limitations
 
 - Legacy discovery/removal supports only the historical layouts listed under

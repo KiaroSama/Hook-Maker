@@ -132,6 +132,101 @@ function Get-KnownToolRoots {
     return $roots.ToArray()
 }
 
+# Validates ONE record's shape before anything reads its fields.
+#
+# Under StrictMode a missing property throws, so a single malformed record used
+# to abort the entire update run and leave every healthy record after it
+# unevaluated. Callers use this to turn a bad record into an isolated,
+# precisely-reported skip instead of a batch failure.
+#
+# A record is never "repaired" by guessing: an invalid one is reported for
+# manual attention, and nothing about it is modified.
+function Test-InstallRecordValid {
+    param($Record)
+
+    if ($null -eq $Record) { return [pscustomobject]@{ Ok = $false; Reason = 'record is null' } }
+    if ($Record -isnot [psobject]) { return [pscustomobject]@{ Ok = $false; Reason = 'record is not an object' } }
+
+    function Get-RecordField {
+        param($Object, [string]$Name)
+        if ($null -eq $Object.PSObject.Properties[$Name]) { return $null }
+        return $Object.$Name
+    }
+
+    foreach ($required in @('id', 'friendlyName', 'hookType', 'sourceScript', 'scope')) {
+        $value = Get-RecordField -Object $Record -Name $required
+        if ($null -eq $value -or [string]::IsNullOrWhiteSpace([string]$value)) {
+            return [pscustomobject]@{ Ok = $false; Reason = ('record is missing the required field "' + $required + '"') }
+        }
+    }
+    $schema = Get-RecordField -Object $Record -Name 'schema'
+    if ($null -eq $schema) {
+        return [pscustomobject]@{ Ok = $false; Reason = 'record has no schema version' }
+    }
+    $schemaNumber = 0
+    if (-not [int]::TryParse([string]$schema, [ref]$schemaNumber)) {
+        return [pscustomobject]@{ Ok = $false; Reason = ('record has a non-numeric schema version "' + [string]$schema + '"') }
+    }
+    # schema >= current is NOT automatically valid: a newer writer may store
+    # fields this version cannot interpret, so it is refused explicitly rather
+    # than acted on with partial understanding.
+    if ($schemaNumber -gt $script:InstallRegistrySchemaVersion) {
+        return [pscustomobject]@{ Ok = $false; Reason = ('record uses unsupported schema version ' + $schemaNumber + ' (this version supports up to ' + $script:InstallRegistrySchemaVersion + ')') }
+    }
+    if ($schemaNumber -lt $script:InstallRegistrySchemaVersion) {
+        return [pscustomobject]@{ Ok = $false; Reason = ('record uses old schema version ' + $schemaNumber + ' and needs migration') }
+    }
+    $scope = [string](Get-RecordField -Object $Record -Name 'scope')
+    if ($scope -ne 'global' -and $scope -ne 'project') {
+        return [pscustomobject]@{ Ok = $false; Reason = ('record has an invalid scope "' + $scope + '"') }
+    }
+    if ($scope -eq 'project') {
+        $target = Get-RecordField -Object $Record -Name 'targetProjectRoot'
+        if ($null -eq $target -or [string]::IsNullOrWhiteSpace([string]$target)) {
+            return [pscustomobject]@{ Ok = $false; Reason = 'project-scoped record has no targetProjectRoot' }
+        }
+    }
+    $hookType = [string](Get-RecordField -Object $Record -Name 'hookType')
+    if ($hookType -ne 'Engine' -and $hookType -ne 'CustomHook') {
+        return [pscustomobject]@{ Ok = $false; Reason = ('record has an unknown hookType "' + $hookType + '"') }
+    }
+    if ($hookType -eq 'Engine') {
+        foreach ($required in @('profile', 'configPath')) {
+            $value = Get-RecordField -Object $Record -Name $required
+            if ($null -eq $value -or [string]::IsNullOrWhiteSpace([string]$value)) {
+                return [pscustomobject]@{ Ok = $false; Reason = ('engine record is missing "' + $required + '"') }
+            }
+        }
+    }
+    $clients = Get-RecordField -Object $Record -Name 'clients'
+    if ($null -eq $clients -or $clients -isnot [psobject]) {
+        return [pscustomobject]@{ Ok = $false; Reason = 'record has no clients object' }
+    }
+    foreach ($clientName in @('claude', 'codex')) {
+        $client = Get-RecordField -Object $clients -Name $clientName
+        if ($null -eq $client) { continue }
+        foreach ($required in @('runtimeScript', 'settingsPath')) {
+            $value = Get-RecordField -Object $client -Name $required
+            if ($null -eq $value -or [string]::IsNullOrWhiteSpace([string]$value)) {
+                return [pscustomobject]@{ Ok = $false; Reason = ($clientName + ' subrecord is missing "' + $required + '"') }
+            }
+        }
+        $events = Get-RecordField -Object $client -Name 'events'
+        if ($null -eq $events -or @($events).Count -eq 0) {
+            return [pscustomobject]@{ Ok = $false; Reason = ($clientName + ' subrecord has no events') }
+        }
+    }
+    $manifest = Get-RecordField -Object $Record -Name 'sourceManifest'
+    if ($null -ne $manifest) {
+        foreach ($entry in @($manifest)) {
+            if ($null -eq $entry -or $null -eq $entry.PSObject.Properties['path'] -or $null -eq $entry.PSObject.Properties['hash']) {
+                return [pscustomobject]@{ Ok = $false; Reason = 'sourceManifest contains a malformed entry' }
+            }
+        }
+    }
+    return [pscustomobject]@{ Ok = $true; Reason = '' }
+}
+
 function Get-ManagedSourceManifest {
     param(
         [Parameter(Mandatory = $true)][string]$ToolRoot,
