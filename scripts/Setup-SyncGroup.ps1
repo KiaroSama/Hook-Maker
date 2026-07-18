@@ -208,20 +208,21 @@ $script:HookMeta = @{
     'Dependabot-Check'                 = @{ Order = 5;  When = 'pre';  Text = 'reports pending Dependabot pull requests' }
     'Github-Baseline-Check'            = @{ Order = 6;  When = 'pre';  Text = 'checks the .github CI/dependabot baseline' }
     'Git-Sync-Check'                   = @{ Order = 7;  When = 'both'; Text = 'warns when out of sync with the git remote' }
-    'Graph-Read-Check'                 = @{ Order = 8;  When = 'pre';  Text = 'suggests graphify queries when a graph exists and the task needs it' }
-    'Graph-Update-Check'               = @{ Order = 9;  When = 'post'; Text = 'suggests graphify update when the graph is stale' }
-    'Large-File-Check'                 = @{ Order = 10; When = 'both'; Text = 'small-files policy + oversized-file scan' }
-    'Mcp-Usage-Check'                  = @{ Order = 11; When = 'pre';  Text = 'reminder to consider MCP servers/tools' }
-    'Rules-Check'                      = @{ Order = 12; When = 'pre';  Text = 'checks global + project rules were read' }
-    'Skills-Check'                     = @{ Order = 13; When = 'pre';  Text = 'skill-policy reminder with the copied skills' }
-    'Secrets-Check'                    = @{ Order = 14; When = 'both'; Text = 'keeps secrets.md accurate and checks for leaks' }
-    'Ignore-Rules-Check'               = @{ Order = 15; When = 'pre+post'; Text = 'auto-fixes required local/private gitignore rules before and after tasks' }
-    'Dependency-Version-Check'         = @{ Order = 16; When = 'pre';  Text = 'advises on outdated dependencies and safe, incremental upgrades' }
-    'Test-Temp-Cleanup'                = @{ Order = 17; When = 'both'; Text = 'removes safe project-local test cache/temp residue, preserves diagnostic artifacts' }
+    'Docs-Freshness-Check'             = @{ Order = 8;  When = 'both'; Text = 'checks tracked docs for staleness after task changes; requires acknowledgement' }
+    'Graph-Read-Check'                 = @{ Order = 9;  When = 'pre';  Text = 'suggests graphify queries when a graph exists and the task needs it' }
+    'Graph-Update-Check'               = @{ Order = 10; When = 'post'; Text = 'suggests graphify update when the graph is stale' }
+    'Large-File-Check'                 = @{ Order = 11; When = 'both'; Text = 'small-files policy + oversized-file scan' }
+    'Mcp-Usage-Check'                  = @{ Order = 12; When = 'pre';  Text = 'reminder to consider MCP servers/tools' }
+    'Rules-Check'                      = @{ Order = 13; When = 'pre';  Text = 'checks global + project rules were read' }
+    'Skills-Check'                     = @{ Order = 14; When = 'pre';  Text = 'skill-policy reminder with the copied skills' }
+    'Secrets-Check'                    = @{ Order = 15; When = 'both'; Text = 'keeps secrets.md accurate and checks for leaks' }
+    'Ignore-Rules-Check'               = @{ Order = 16; When = 'pre+post'; Text = 'auto-fixes required local/private gitignore rules before and after tasks' }
+    'Dependency-Version-Check'         = @{ Order = 17; When = 'pre';  Text = 'advises on outdated dependencies and safe, incremental upgrades' }
+    'Test-Temp-Cleanup'                = @{ Order = 18; When = 'both'; Text = 'cleans safe test cache/temp residue; keeps diagnostics' }
     # Cloudflare-Deploy is deliberately kept LAST among individual hook
     # entries (Order = highest value) per an explicit user requirement, not
     # filesystem/alphabetical order - see Test-Wizard.ps1 for the pinned order.
-    'Cloudflare-Deploy'                = @{ Order = 18; When = 'post'; Text = 'suggests deploying in Cloudflare Workers projects, gated on release readiness' }
+    'Cloudflare-Deploy'                = @{ Order = 19; When = 'post'; Text = 'suggests deploying in Cloudflare Workers projects, gated on release readiness' }
 }
 # The "[pre-task]" / "[post-task]" tag, colored by phase (a different color than
 # the description, FFmWiz-style, so timing reads at a glance).

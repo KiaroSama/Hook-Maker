@@ -413,6 +413,61 @@ try {
     Check 'the cleanup is reported' ($r.Out -like '*Removed*NEXT_PUBLIC_APP_URL*') $r.Out
 
     # =====================================================================
+    Write-Host '--- classification: an opaque value under a public-looking prefix stays Unknown ---' -ForegroundColor Cyan
+    $projOpaquePublic = New-GitProj 'OpaquePublicPrefix'
+    Write-Utf8 (Join-Path $projOpaquePublic '.gitignore') ".env`nsecrets.md`n"
+    Write-Utf8 (Join-Path $projOpaquePublic '.env') "NEXT_PUBLIC_SESSION=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa`r`n"
+    Add-Commit $projOpaquePublic 'seed'
+    $r = Fire -Cwd $projOpaquePublic
+    Check 'NEXT_PUBLIC_SESSION with an opaque repeated-letter value is NOT auto-classified PublicConfig' ($r.Out -notlike '*Auto-added*NEXT_PUBLIC_SESSION*') $r.Out
+    Check 'the opaque public-prefixed value is instead reported as needing classification (Unknown)' ($r.Out -like '*Classification unclear*NEXT_PUBLIC_SESSION*') $r.Out
+
+    # =====================================================================
+    Write-Host '--- classification: PUBLIC_CONFIG_KEYS can never declassify a real credential ---' -ForegroundColor Cyan
+    $projNoDeclassifyValue = New-GitProj 'NoDeclassifyCredentialValue'
+    Write-Utf8 (Join-Path $projNoDeclassifyValue '.gitignore') ".env`nsecrets.md`n"
+    Write-Utf8 (Join-Path $projNoDeclassifyValue '.env') "API_TOKEN=ghp_abcdefghijklmnopqrst1234`r`n"
+    $noDeclassifyValueHook = New-ConfiguredHookCopy @{ PUBLIC_CONFIG_KEYS = 'API_TOKEN' }
+    $r = Fire -Cwd $projNoDeclassifyValue -HookPath $noDeclassifyValueHook
+    Check 'PUBLIC_CONFIG_KEYS cannot declassify a credential-shaped VALUE (a real GitHub token)' ($r.Out -like '*Auto-added*API_TOKEN*') $r.Out
+
+    $projNoDeclassifyKey = New-GitProj 'NoDeclassifyCredentialKey'
+    Write-Utf8 (Join-Path $projNoDeclassifyKey '.gitignore') ".env`nsecrets.md`n"
+    Write-Utf8 (Join-Path $projNoDeclassifyKey '.env') "SERVICE_PASSWORD=abc123`r`n"
+    $noDeclassifyKeyHook = New-ConfiguredHookCopy @{ PUBLIC_CONFIG_KEYS = 'SERVICE_PASSWORD' }
+    $r = Fire -Cwd $projNoDeclassifyKey -HookPath $noDeclassifyKeyHook
+    Check 'PUBLIC_CONFIG_KEYS cannot declassify credential-like KEY semantics (PASSWORD)' ($r.Out -like '*Auto-added*SERVICE_PASSWORD*') $r.Out
+
+    # =====================================================================
+    Write-Host '--- classification: AUTH/OAUTH token-boundary matching (not a raw substring) ---' -ForegroundColor Cyan
+    $projAuthSecret = New-Proj 'AuthBoundarySecret'
+    Write-Utf8 (Join-Path $projAuthSecret '.env') (
+        "AUTH_TOKEN=abcdefghij1234567890`r`n" +
+        "AUTH_SECRET=abcdefghij1234567890`r`n" +
+        "AUTH_PASSWORD=abcdefghij1234567890`r`n" +
+        "AUTH_CREDENTIAL=abcdefghij1234567890`r`n" +
+        "AUTH_KEY=abcdefghij1234567890`r`n" +
+        "BASIC_AUTH_PASSWORD=abcdefghij1234567890`r`n" +
+        "OAUTH_CLIENT_SECRET=abcdefghij1234567890`r`n"
+    )
+    $r = Fire -Cwd $projAuthSecret
+    foreach ($k in @('AUTH_TOKEN', 'AUTH_SECRET', 'AUTH_PASSWORD', 'AUTH_CREDENTIAL', 'AUTH_KEY', 'BASIC_AUTH_PASSWORD', 'OAUTH_CLIENT_SECRET')) {
+        Check ($k + ' classifies as Secret and is auto-added') ($r.Out -like ('*Auto-added*' + $k + '*')) $r.Out
+    }
+
+    $projAuthNotSecret = New-Proj 'AuthBoundaryNotSecret'
+    Write-Utf8 (Join-Path $projAuthNotSecret '.env') (
+        "AUTHOR_NAME=Jane-Doe`r`n" +
+        "AUTH0_DOMAIN=example.auth0.com`r`n" +
+        "NEXT_PUBLIC_AUTH_URL=https://example.com/auth`r`n" +
+        "AUTH_CALLBACK_URL=https://example.com/callback`r`n"
+    )
+    $r = Fire -Cwd $projAuthNotSecret
+    foreach ($k in @('AUTHOR_NAME', 'AUTH0_DOMAIN', 'NEXT_PUBLIC_AUTH_URL', 'AUTH_CALLBACK_URL')) {
+        Check ($k + ' never classifies as Secret merely for containing the letters AUTH') ($r.Out -notlike ('*Auto-added*' + $k + '*')) $r.Out
+    }
+
+    # =====================================================================
     Write-Host '--- git: staged/index-only leak detection (confirmed gap) ---' -ForegroundColor Cyan
 
     # Leak only in the WORKING TREE (a dirty, unstaged edit adds the value).
@@ -768,14 +823,32 @@ try {
     Check 'default long cooldown skips the unused scan on the very next run' ($r2.Out -notlike '*not referenced elsewhere*') $r2.Out
 
     # =====================================================================
-    Write-Host '--- Stop event: decision:block shape ---' -ForegroundColor Cyan
-    $proj8 = New-Proj 'StopBlock'
-    Write-Utf8 (Join-Path $proj8 '.env') "STOP_TOKEN=abcdefghij1234567890`r`n"
+    Write-Host '--- Stop event: only a CRITICAL finding produces decision:block ---' -ForegroundColor Cyan
+    $proj8 = New-GitProj 'StopBlockCritical'
+    Write-Utf8 (Join-Path $proj8 'secrets.md') "# Secrets`n`n## FOO`n- Value: realsecretvalue1234567890`n"
     $r = Fire -Cwd $proj8 -EventName 'Stop'
     $parsed = $null
     try { $parsed = $r.Out | ConvertFrom-Json } catch { }
-    Check 'Stop with findings returns decision:block' ($null -ne $parsed -and [string]$parsed.decision -eq 'block')
-    Check 'block reason mentions the key, not the value' ($null -ne $parsed -and [string]$parsed.reason -like '*STOP_TOKEN*' -and [string]$parsed.reason -notlike '*abcdefghij1234567890*')
+    Check 'Stop with a CRITICAL finding returns decision:block' ($null -ne $parsed -and [string]$parsed.decision -eq 'block') $r.Out
+    Check 'critical block reason names the problem, never a secret value' ($null -ne $parsed -and [string]$parsed.reason -like '*NOT covered by .gitignore*' -and [string]$parsed.reason -notlike '*realsecretvalue1234567890*') $r.Out
+
+    Write-Host '--- Stop event: Unknown-only findings never block (advisory only) ---' -ForegroundColor Cyan
+    $projUnknownStop = New-GitProj 'UnknownStopNonBlocking'
+    Write-Utf8 (Join-Path $projUnknownStop '.gitignore') ".env`nsecrets.md`n"
+    Write-Utf8 (Join-Path $projUnknownStop '.env') "WIDGET_ID=abc123`r`n"
+    Add-Commit $projUnknownStop 'seed'
+    $r = Fire -Cwd $projUnknownStop -EventName 'Stop'
+    Check 'Unknown-only Stop output is never decision:block' ($r.Out -notlike '*"decision":"block"*') $r.Out
+    Check 'Unknown-only Stop output still surfaces the advisory context' ($r.Out -like '*Classification unclear*WIDGET_ID*') $r.Out
+    Check 'Unknown-only Stop exits zero' ($r.Exit -eq 0) $r.Out
+
+    Write-Host '--- Stop event: a successful auto-add alone never blocks (advisory only) ---' -ForegroundColor Cyan
+    $projAutoAddStop = New-Proj 'AutoAddStopNonBlocking'
+    Write-Utf8 (Join-Path $projAutoAddStop '.env') "STOP_TOKEN=abcdefghij1234567890`r`n"
+    $r = Fire -Cwd $projAutoAddStop -EventName 'Stop'
+    Check 'successful auto-add alone at Stop is never decision:block' ($r.Out -notlike '*"decision":"block"*') $r.Out
+    Check 'successful auto-add alone at Stop still reports the addition' ($r.Out -like '*Auto-added*STOP_TOKEN*') $r.Out
+    Check 'auto-add-only Stop never prints the secret value' ($r.Out -notlike '*abcdefghij1234567890*') $r.Out
 
     $advisory = New-GitProj 'AdvisoryPush'
     Write-Utf8 (Join-Path $advisory '.gitignore') ".env`nsecrets.md`n"

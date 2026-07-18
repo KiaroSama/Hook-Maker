@@ -307,15 +307,20 @@ try {
     Check 'grouped update classified' ($r.Out -match '#15 .*\[grouped')
     Check 'exact head SHA quoted' ($r.Out -match 'head sha 1111111')
     Check 'policy tail present, concise' ($r.Out -match 'never auto-merge MAJOR or PRERELEASE')
-    # Scope: a confirmed SECURITY update is highlighted for priority review;
-    # the OTHER (unrelated, non-critical) PRs are explicitly deferred, never
-    # forced into the current task, and never a reason to block unrelated work.
-    Check 'a confirmed SECURITY PR is highlighted for priority review' ($r.Out -match 'A PR marked SECURITY above is a confirmed security update - prioritize') $r.Out
-    Check 'unrelated/non-critical PRs are explicitly deferred to a separate task' (
-        $r.Out -match 'Do not review, merge, or remediate the REST of these during the current task unless the user explicitly asked') $r.Out
-    Check 'pending PRs are never a reason to block or delay unrelated work' ($r.Out -match 'Pending PRs are never a reason to block or delay unrelated work') $r.Out
+    # Scope: a PR marked SECURITY is described as classification only (never
+    # "confirmed"); it is reviewed now only if directly relevant, explicitly
+    # requested, or critically unsafe to defer - otherwise every pending PR,
+    # SECURITY-marked or not, is deferred and never forced into or allowed to
+    # block/delay the current, unrelated task.
+    Check 'a SECURITY-marked PR is described as classification only, not confirmed' ($r.Out -match 'A PR above is marked SECURITY \(by title/label, not independently verified severity\)\.') $r.Out
+    Check 'the old "confirmed security update - prioritize" wording is gone' ($r.Out -notmatch 'confirmed security update - prioritize') $r.Out
+    Check 'unrelated/non-critical PRs (including SECURITY-marked) are explicitly deferred to a separate task' (
+        $r.Out -match 'Do not review, merge, or remediate ANY of these during the current task - including a PR marked SECURITY - unless it is directly relevant to the current task, the user explicitly asked for dependency/security remediation, or reliable evidence shows it is critical enough that continuing the current work is unsafe') $r.Out
+    Check 'pending Dependabot PRs are never a reason to block or delay unrelated work' ($r.Out -match 'Pending Dependabot PRs are never a reason to block or delay unrelated work') $r.Out
+    Check 'the old "REST of these" wording is gone' ($r.Out -notmatch 'REST of these') $r.Out
     Check 'the old unconditional "review before unrelated work" wording is gone' ($r.Out -notmatch 'Review these BEFORE unrelated work') $r.Out
     Check 'still no auto-merge instruction exists' ($r.Out -notmatch '(?i)automatically merge' -and $r.Out -notmatch '(?i)merge (it|them|these) now')
+    Check 'MAJOR and PRERELEASE remain explicitly non-automatic' ($r.Out -match 'never auto-merge MAJOR or PRERELEASE') $r.Out
 
     # unchanged state -> silent; changed state -> reports again
     $r = Fire -HookPath $DependabotHook -Cwd $repoB

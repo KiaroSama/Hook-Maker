@@ -5,14 +5,30 @@
 #   PublicConfig - ordinary public configuration (a public URL, a public bucket
 #                  name, a region, ...) - never registered, never leak-scanned,
 #                  never blocks a push merely for appearing in tracked files.
-#   Unknown      - mixed/insufficient evidence - reported as an advisory asking
+#   Unknown      - mixed/insufficient evidence - reported as an ADVISORY asking
 #                  for explicit classification (SECRET_KEYS/PUBLIC_CONFIG_KEYS
 #                  in .env), never silently treated as safe, never a confirmed
-#                  leak from a bare value match alone.
+#                  leak from a bare value match alone, and NEVER blocking on
+#                  its own (only a real critical finding - a confirmed leak,
+#                  tracked/staged secrets.md or real .env*, or a fail-closed
+#                  outgoing scan - can produce decision:block on Stop).
+# Classification order (precedence, strongest first):
+#   SECRET_KEYS override > credential-like VALUE evidence > credential-like
+#   KEY evidence > PUBLIC_CONFIG_KEYS override > inferred public config
+#   (public-looking key AND a recognized public value shape) > Unknown.
 # A key prefix (NEXT_PUBLIC_, PUBLIC_, VITE_, REACT_APP_) is never sufficient
-# by itself to call something safe - real credential evidence (key semantics
-# like TOKEN/SECRET/API_KEY/PASSWORD, or a credential-shaped value) always
-# wins and classifies as Secret regardless of a "public" prefix.
+# by itself to call something safe - it requires BOTH a public-looking key
+# AND a recognizable public value shape (Test-PublicConfigValue); an opaque
+# unrecognized value under a "public" prefix stays Unknown, never PublicConfig.
+# Real credential evidence (key semantics like TOKEN/SECRET/API_KEY/PASSWORD,
+# or a credential-shaped value) always wins and classifies as Secret
+# regardless of a "public" prefix, and PUBLIC_CONFIG_KEYS can never declassify
+# it (credential evidence is checked before the override is ever consulted).
+# Key-semantic matching is token/boundary-aware, not a raw substring match:
+# AUTHOR_NAME, AUTH0_DOMAIN, NEXT_PUBLIC_AUTH_URL, and AUTH_CALLBACK_URL are
+# never Secret merely for containing the letters "AUTH" - a bare AUTH/OAUTH
+# token only counts when paired with another credential token in the same key
+# (AUTH_TOKEN, BASIC_AUTH_PASSWORD, OAUTH_CLIENT_SECRET).
 #
 # Checks (pre-task SessionStart + post-task Stop):
 # - secrets.md exists but is NOT git-ignored, or is tracked/staged in git -> CRITICAL.
@@ -169,10 +185,6 @@ if ($config.ContainsKey('PUBLIC_CONFIG_KEYS')) { $publicConfigKeysRaw = $config[
 $secretKeyOverrides = @(Get-KeyOverrideList $secretKeysRaw)
 $publicConfigKeyOverrides = @(Get-KeyOverrideList $publicConfigKeysRaw)
 
-$script:CredentialKeySubstrings = @(
-    'SECRET', 'TOKEN', 'PASSWORD', 'PASSWD', 'PRIVATE_KEY', 'CLIENT_SECRET', 'API_KEY',
-    'ACCESS_KEY', 'SIGNING_KEY', 'WEBHOOK_SECRET', 'AUTH', 'CREDENTIAL', 'SESSION_KEY', 'ENCRYPTION_KEY'
-)
 $script:PublicKeyPrefixes = @('NEXT_PUBLIC_', 'PUBLIC_', 'VITE_', 'REACT_APP_')
 $script:PublicKeySuffixes = @(
     '_URL', '_ORIGIN', '_HOST', '_HOSTNAME', '_PORT', '_REGION', '_BUCKET', '_BUCKET_NAME',
@@ -207,15 +219,99 @@ function Test-CredentialLikeValue {
     return $false
 }
 
+# Token/boundary-aware key-semantic matcher (never a raw substring): the key
+# is split on separators (_ - .) into whole tokens, so AUTHOR_NAME, AUTH0_DOMAIN,
+# NEXT_PUBLIC_AUTH_URL, and AUTH_CALLBACK_URL never match merely for containing
+# the letters "AUTH" - "AUTHOR" and "AUTH0" are each a DIFFERENT whole token
+# than "AUTH", and a bare AUTH/OAUTH token only counts when it co-occurs with
+# another credential-indicating token (AUTH_TOKEN, BASIC_AUTH_PASSWORD,
+# OAUTH_CLIENT_SECRET) - "AUTH" alone (paired only with CALLBACK/URL/etc.) is
+# not enough.
+function Test-CredentialLikeKey {
+    param([string]$UpperKey)
+    $tokens = @($UpperKey -split '[_\-.]' | Where-Object { $_ -ne '' })
+    $tokenSet = New-Object System.Collections.Generic.HashSet[string]
+    foreach ($t in $tokens) { [void]$tokenSet.Add($t) }
+
+    # Credential-indicating on their own, as an exact separator-bound token.
+    foreach ($word in @('SECRET', 'TOKEN', 'PASSWORD', 'PASSWD', 'CREDENTIAL', 'CREDENTIALS')) {
+        if ($tokenSet.Contains($word)) { return $true }
+    }
+    # AUTH/OAUTH alone is not sufficient - only Secret when paired with
+    # another credential-indicating token in the same key.
+    if ($tokenSet.Contains('AUTH') -or $tokenSet.Contains('OAUTH')) {
+        foreach ($word in @('TOKEN', 'SECRET', 'PASSWORD', 'PASSWD', 'CREDENTIAL', 'CREDENTIALS', 'KEY')) {
+            if ($tokenSet.Contains($word)) { return $true }
+        }
+    }
+    # Compound established names, still boundary-aware (a whole `_`-delimited
+    # phrase, not a raw Contains).
+    foreach ($pattern in @('PRIVATE_KEY', 'CLIENT_SECRET', 'API_KEY', 'ACCESS_KEY', 'SIGNING_KEY', 'WEBHOOK_SECRET', 'SESSION_KEY', 'ENCRYPTION_KEY')) {
+        if ($UpperKey -match ('(^|_)' + $pattern + '($|_)')) { return $true }
+    }
+    return $false
+}
+
+# True only for a clearly non-sensitive, recognizable PUBLIC configuration
+# value shape. A public-looking KEY is never enough by itself (see
+# Get-KeyValueClassification) - the VALUE must also look like real public
+# config, so an opaque unrecognized value (e.g. a bare 32-character opaque
+# string) stays Unknown even under a NEXT_PUBLIC_/PUBLIC_ prefix.
+function Test-PublicConfigValue {
+    param([string]$Value)
+    if ([string]::IsNullOrWhiteSpace($Value) -or $Value -match '\s') { return $false }
+    if (Test-CredentialLikeValue $Value) { return $false }    # never public if it looks like a credential
+
+    if ($Value -match '^(?i:true|false)$') { return $true }    # boolean
+
+    if ($Value -match '^\d{1,5}$') {    # numeric port
+        $portNum = [int]$Value
+        if ($portNum -ge 1 -and $portNum -le 65535) { return $true }
+    }
+
+    if ($Value -match '^(?i:development|dev|test|staging|preview|production|prod)$') { return $true }
+
+    if ($Value -match '^(\d{1,3}\.){3}\d{1,3}$') { return $true }    # IPv4
+
+    if ($Value -match '^https?://') { return $true }    # embedded creds/credential query params already excluded above
+
+    # hostname/domain (dotted labels, no scheme, no path/spaces)
+    if ($Value.Length -le 253 -and $Value -match '^[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?(\.[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?)+$') { return $true }
+
+    # short opaque alphabetic code - typical of region/environment shorthand
+    # (weur, enam, apac, ...); length alone is what distinguishes a real short
+    # code from a long opaque placeholder value.
+    if ($Value -match '^[a-z]{2,6}$') { return $true }
+
+    # bounded bucket/container/service/worker/project-id name: must show real
+    # word-like structure (a separator or a digit) - a bare long repeated/
+    # opaque run of letters (e.g. 32 "a"s) is NOT a recognized public shape
+    # and falls through to Unknown.
+    if ($Value.Length -ge 3 -and $Value.Length -le 63 -and
+        $Value -match '^[A-Za-z0-9][A-Za-z0-9._-]*[A-Za-z0-9]$' -and
+        ($Value -match '[-._]' -or $Value -match '\d')) {
+        return $true
+    }
+
+    return $false
+}
+
+# Classification order (SECRET_KEYS strongest, PUBLIC_CONFIG_KEYS can never
+# override real credential evidence):
+#   1. Explicit SECRET_KEYS override
+#   2. Credential-like VALUE evidence
+#   3. Credential-like KEY evidence
+#   4. Explicit PUBLIC_CONFIG_KEYS override (only reachable once neither the
+#      value nor the key showed credential evidence)
+#   5. Public-looking key semantics AND a recognized public value shape
+#   6. Unknown
 function Get-KeyValueClassification {
     param([string]$Key, [string]$Value)
     $upperKey = $Key.ToUpperInvariant()
     if (Test-KeyMatchesOverride $upperKey $secretKeyOverrides) { return 'Secret' }
-    if (Test-KeyMatchesOverride $upperKey $publicConfigKeyOverrides) { return 'PublicConfig' }
     if (Test-CredentialLikeValue $Value) { return 'Secret' }
-    foreach ($substr in $script:CredentialKeySubstrings) {
-        if ($upperKey.Contains($substr)) { return 'Secret' }
-    }
+    if (Test-CredentialLikeKey $upperKey) { return 'Secret' }
+    if (Test-KeyMatchesOverride $upperKey $publicConfigKeyOverrides) { return 'PublicConfig' }
     $isPublicShape = $false
     foreach ($prefix in $script:PublicKeyPrefixes) { if ($upperKey.StartsWith($prefix)) { $isPublicShape = $true; break } }
     if (-not $isPublicShape) {
@@ -224,7 +320,7 @@ function Get-KeyValueClassification {
     if (-not $isPublicShape) {
         foreach ($contains in $script:PublicKeyContains) { if ($upperKey.Contains($contains)) { $isPublicShape = $true; break } }
     }
-    if ($isPublicShape) { return 'PublicConfig' }
+    if ($isPublicShape -and (Test-PublicConfigValue $Value)) { return 'PublicConfig' }
     return 'Unknown'
 }
 
@@ -696,8 +792,25 @@ if ($GitPrePush) {
     [Console]::Error.WriteLine($message)
     exit 1
 }
-if ($isStopEvent) {
+
+# Only a real blocking/critical finding (confirmed leak, tracked/staged
+# secrets.md or real .env*, an incomplete/fail-closed outgoing scan) may use
+# decision:block. Advisory-only findings (Unknown classification, placeholder,
+# unused registry entry, a stale-entry cleanup, a successful auto-add) never
+# block completion on their own - Stop reports them as non-blocking context,
+# client-aware exactly like every other advisory hook in this project.
+$hasBlockingFindings = ($critical.Count -gt 0)
+if ($isStopEvent -and $hasBlockingFindings) {
     @{ decision = 'block'; reason = $message } | ConvertTo-Json -Compress
+    exit 0
+}
+if ($isStopEvent) {
+    if (-not [string]::IsNullOrWhiteSpace($env:CLAUDE_PROJECT_DIR)) {
+        @{ hookSpecificOutput = @{ hookEventName = $eventName; additionalContext = $message } } | ConvertTo-Json -Depth 5 -Compress
+    }
+    else {
+        @{ systemMessage = $message } | ConvertTo-Json -Compress
+    }
     exit 0
 }
 
