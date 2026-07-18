@@ -1161,6 +1161,31 @@ for (`$i = 0; `$i -lt 8; `$i++) {
         Remove-FixtureHook 'ZZZ-Regtest-Concurrenta'
         Remove-FixtureHook 'ZZZ-Regtest-Concurrentb'
     }
+    # =====================================================================
+    # PER-COMPONENT HISTORY: a partial failure must stay visible afterwards
+    # instead of being flattened into one overall "ok".
+    Write-Host '--- per-component outcomes are persisted in bounded history ---' -ForegroundColor Cyan
+    $histProj = New-Proj 'ComponentHistoryProj'
+    & $InstallScript -CustomHook (Join-Path $RealHooksDir 'Ai-Memory-Check\Ai-Memory-Check.ps1') -Events @('Stop') -TargetProject $histProj -ClaudeOnly *> $null
+    $histRec = @(Get-RecordsFor 'Ai-Memory-Check' | Where-Object { $_.targetProjectRoot -eq $histProj })[0]
+    Check 'the record carries per-component outcomes for the last attempt' (@($histRec.lastComponents).Count -ge 2)
+    $histNames = @($histRec.lastComponents | ForEach-Object { [string]$_.component })
+    Check 'the client component is recorded' ($histNames -contains 'claude')
+    # The registry's own outcome cannot be inside the record it is writing;
+    # it is reported in the structured result document instead (tested above).
+    Check 'the native-git component is recorded' ($histNames -contains 'nativeGit')
+    Check 'history entries carry the component breakdown' (@(@($histRec.history)[-1].components).Count -ge 2)
+    Check 'history entries are timestamped' (-not [string]::IsNullOrWhiteSpace([string](@($histRec.history)[-1].ts)))
+
+    # Reinstall a few times: history must stay bounded, never grow forever.
+    for ($histRun = 0; $histRun -lt 3; $histRun++) {
+        & $InstallScript -CustomHook (Join-Path $RealHooksDir 'Ai-Memory-Check\Ai-Memory-Check.ps1') -Events @('Stop') -TargetProject $histProj -ClaudeOnly *> $null
+    }
+    $histRec2 = @(Get-RecordsFor 'Ai-Memory-Check' | Where-Object { $_.targetProjectRoot -eq $histProj })[0]
+    Check 'history grows across attempts' (@($histRec2.history).Count -gt 1)
+    Check 'history stays bounded (never unbounded growth)' (@($histRec2.history).Count -le 10)
+    $histRaw = ($histRec2 | ConvertTo-Json -Depth 30)
+    Check 'history stores no .env values or file contents' (($histRaw -notmatch 'EVENTS=') -and ($histRaw -notmatch 'COOLDOWN_MINUTES='))
     # Installed-state drift: NONE of these change the source, so an updater
 
     # that only compares stored source hashes would wrongly report "up to

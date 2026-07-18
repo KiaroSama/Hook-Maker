@@ -704,6 +704,11 @@ try {
         lastResult        = 'ok'
         lastReason        = 'installed'
         lastError         = ''
+        # Sanitized per-component outcomes for this attempt; Set-InstallRecord
+        # folds them into the record's bounded history.
+        lastComponents    = @($script:ComponentResults.ToArray() | ForEach-Object {
+            [pscustomobject][ordered]@{ component = [string]$_.component; status = [string]$_.status; reason = [string]$_.reason }
+        })
         needsManualRepair = $false
     }
     $registryResult = Update-InstallRegistry -ToolRoot $ToolRoot -Record $record

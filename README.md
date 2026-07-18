@@ -315,6 +315,13 @@ Registry persistence itself is verified rather than assumed: after writing, the 
 back and the exact record confirmed present. (A directory occupying the registry path previously
 caused the atomic write to land *inside* it while reporting success.)
 
+### Per-component history
+
+Each record keeps a **bounded** history (last 10 attempts) where every entry carries the outcome of
+each component for that attempt, not one flattened verdict — so a partial failure stays visible
+afterwards instead of being overwritten by a later `ok`. Entries hold timestamps, component names,
+statuses and reason codes only: never file contents, `.env` values, prompt text or raw output.
+
 ### Known limitations
 
 - Legacy discovery/removal supports only the historical layouts listed under
@@ -325,8 +332,8 @@ caused the atomic write to land *inside* it while reporting success.)
 - Runtime replacement is staged, hash-verified and swapped, with the previous runtime restored if
   the swap fails. That is compensating rollback, not crash-atomicity: a machine that dies mid-swap
   can still need one reinstall.
-- Per-component *history* is not persisted in the registry yet — outcomes are reported for the
-  current run, but past attempts are not kept per component.
+- Runtime replacement is compensating rollback, not crash-atomicity (see above): a machine that
+  dies mid-swap can still need one reinstall.
 - Runtime directories and the native Git integration do not have locks of their own; the registry
   and each settings file do.
 

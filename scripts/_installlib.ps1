@@ -1204,11 +1204,26 @@ function Set-InstallRecord {
     if ($null -ne $Record.PSObject.Properties['lastResult']) { $recordResult = [string]$Record.lastResult }
     $recordReason = ''
     if ($null -ne $Record.PSObject.Properties['lastReason']) { $recordReason = [string]$Record.lastReason }
+    # PER-COMPONENT history: the outcome of each component this attempt, not
+    # just one overall verdict, so a partial failure stays visible afterwards
+    # instead of being flattened into a single 'ok'. Sanitized fields only -
+    # never file contents, .env values, prompt text or raw tool output.
+    $componentOutcomes = @()
+    if ($null -ne $Record.PSObject.Properties['lastComponents'] -and $null -ne $Record.lastComponents) {
+        $componentOutcomes = @(@($Record.lastComponents) | ForEach-Object {
+            [pscustomobject][ordered]@{
+                component = [string]$_.component
+                status    = [string]$_.status
+                reason    = [string]$_.reason
+            }
+        })
+    }
     $historyEntry = [pscustomobject][ordered]@{
-        ts      = $nowIso
-        result  = $recordResult
-        clients = ($touchedClients -join ',')
-        reason  = $recordReason
+        ts         = $nowIso
+        result     = $recordResult
+        clients    = ($touchedClients -join ',')
+        reason     = $recordReason
+        components = $componentOutcomes
     }
     if ($existingIndex -ge 0) {
         $existing = $existingList[$existingIndex]
