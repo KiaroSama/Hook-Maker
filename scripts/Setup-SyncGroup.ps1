@@ -21,6 +21,7 @@ $ValidateScript = Join-Path $ScriptRoot 'Validate-Config.ps1'
 . (Join-Path $ToolRoot 'hooks\_hooklib.ps1')
 # Install-state registry + installed-state integrity evaluation (install-time
 # only - deliberately NOT in _hooklib.ps1, which ships inside every runtime).
+. (Join-Path $ScriptRoot '_installplan.ps1')
 . (Join-Path $ScriptRoot '_installlib.ps1')
 if ([string]::IsNullOrWhiteSpace($ConfigPath)) {
     $ConfigPath = Join-Path $ToolRoot 'sync-hooks.json'

@@ -1,0 +1,567 @@
+# ---------------------------------------------------------------------------
+# Managed install plan: the ONE canonical description of every artifact a hook
+# installation owns, plus the safe primitives that act on it.
+#
+# Everything that touches a managed runtime - staging, copying, manifest
+# building, integrity verification, cleanup - is derived from the same plan, so
+# the installer and the updater can never drift apart in their idea of what an
+# installation consists of.
+#
+# Dot-sourced by Install-Hook.ps1 and Setup-SyncGroup.ps1 AFTER
+# hooks\_hooklib.ps1 (needs Get-HookFriendlyName / Get-ShortHash).
+#
+# Security boundary: a hook source is either a PACKAGE (a folder that is a
+# direct child of a recognized hooks root, whose contents are intentionally
+# shipped together) or a STANDALONE script (only that one file is installed).
+# An arbitrary parent directory is NEVER treated as a hook package - that would
+# copy .git, .env, credentials, node_modules and unrelated source into a
+# settings-registered runtime directory.
+# ---------------------------------------------------------------------------
+
+# ---- path safety -----------------------------------------------------------
+
+# Root-aware containment test. Never trims a filesystem root away (`C:\` must
+# stay `C:\`, a UNC share root must stay intact) and always compares on a
+# separator boundary so a sibling whose name merely starts with the parent's
+# name (C:\Hook-Maker-Evil vs C:\Hook-Maker) is not treated as contained.
+function Test-PathContainedIn {
+    param(
+        [Parameter(Mandatory = $true)][string]$ChildPath,
+        [Parameter(Mandatory = $true)][string]$ParentPath
+    )
+    if ([string]::IsNullOrWhiteSpace($ChildPath) -or [string]::IsNullOrWhiteSpace($ParentPath)) { return $false }
+    $child = [System.IO.Path]::GetFullPath($ChildPath)
+    $parent = [System.IO.Path]::GetFullPath($ParentPath)
+    $parentRoot = [System.IO.Path]::GetPathRoot($parent)
+    # Only strip trailing separators that are NOT part of the root itself.
+    $parentNormalized = $parent
+    if ($parentNormalized.Length -gt $parentRoot.Length) {
+        $parentNormalized = $parentNormalized.TrimEnd([System.IO.Path]::DirectorySeparatorChar, [System.IO.Path]::AltDirectorySeparatorChar)
+    }
+    if ([string]::Equals($child, $parentNormalized, [System.StringComparison]::OrdinalIgnoreCase)) { return $true }
+    $prefix = $parentNormalized
+    if (-not $prefix.EndsWith([string][System.IO.Path]::DirectorySeparatorChar) -and
+        -not $prefix.EndsWith([string][System.IO.Path]::AltDirectorySeparatorChar)) {
+        $prefix += [System.IO.Path]::DirectorySeparatorChar
+    }
+    return $child.StartsWith($prefix, [System.StringComparison]::OrdinalIgnoreCase)
+}
+
+# A reparse point (symlink/junction) inside a source folder can point anywhere;
+# following it would copy content from outside the declared package boundary.
+function Test-IsReparsePoint {
+    param([Parameter(Mandatory = $true)][string]$Path)
+    if (-not (Test-Path -LiteralPath $Path)) { return $false }
+    try {
+        $item = Get-Item -LiteralPath $Path -Force -ErrorAction Stop
+        return (($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -eq [System.IO.FileAttributes]::ReparsePoint)
+    }
+    catch { return $true }  # unreadable -> treat as unsafe
+}
+
+# ---- source classification -------------------------------------------------
+
+# Directory names that must never be copied into a managed runtime even when
+# they appear inside a legitimate package folder.
+$script:PlanForbiddenDirectoryNames = @('.git', '.svn', '.hg', '.ai', '.claude', '.codex', '.agents', 'node_modules', '.venv', 'venv', '__pycache__', 'dist', 'build', 'out', 'target', 'bin', 'obj', '.cross-project-sync')
+# Files a package never ships into its runtime.
+$script:PlanExcludedFileNames = @('.env.example', '.env.sample', '.env.template', '.env.dist', 'secrets.md')
+
+# Decides how a hook source is installed.
+#   Package    - the script lives in <hooksRoot>\<Name>\<Name>.ps1; the folder
+#                is a deliberate package and its (bounded, filtered) contents
+#                are installed alongside the script.
+#   Standalone - anything else, including a loose script directly in a hooks
+#                root: ONLY that single script file is installed.
+# $PackageRoots are the directories under which a folder may be considered a
+# package (normally <ToolRoot>\hooks). A folder anywhere else is never a
+# package, no matter what it contains.
+# -AllowMissing is for VERIFICATION callers (the updater builds an expected
+# manifest for a record whose source may since have been deleted, and must
+# report that as a skip rather than crash the whole run). Install callers leave
+# it off so a missing/unsafe source is a hard error before anything is touched.
+function Get-HookSourceInfo {
+    param(
+        [Parameter(Mandatory = $true)][string]$HookScript,
+        [Parameter(Mandatory = $true)][string[]]$PackageRoots,
+        [switch]$AllowMissing
+    )
+    $scriptPath = [System.IO.Path]::GetFullPath($HookScript)
+    if (-not (Test-Path -LiteralPath $scriptPath -PathType Leaf)) {
+        if (-not $AllowMissing) { throw "Hook script not found: $scriptPath" }
+        return [pscustomobject]@{
+            Kind = 'Standalone'; ScriptPath = $scriptPath; PackageRoot = ''
+            Name = [System.IO.Path]::GetFileNameWithoutExtension($scriptPath)
+        }
+    }
+    if (Test-IsReparsePoint -Path $scriptPath) {
+        throw "Hook script is a reparse point (symlink/junction), which cannot be installed safely: $scriptPath"
+    }
+    $parentDir = Split-Path -Parent $scriptPath
+    $scriptBaseName = [System.IO.Path]::GetFileNameWithoutExtension($scriptPath)
+
+    foreach ($root in @($PackageRoots)) {
+        if ([string]::IsNullOrWhiteSpace($root)) { continue }
+        if (-not (Test-Path -LiteralPath $root -PathType Container)) { continue }
+        $rootFull = [System.IO.Path]::GetFullPath($root)
+        # A loose script sitting directly in the hooks root is standalone.
+        if ([string]::Equals($parentDir, $rootFull, [System.StringComparison]::OrdinalIgnoreCase)) {
+            return [pscustomobject]@{
+                Kind = 'Standalone'; ScriptPath = $scriptPath; PackageRoot = ''
+                Name = $scriptBaseName
+            }
+        }
+        # A package is a DIRECT child of the hooks root - never a deeper path,
+        # and never some unrelated directory that merely contains a .ps1.
+        $parentOfParent = Split-Path -Parent $parentDir
+        if ([string]::Equals($parentOfParent, $rootFull, [System.StringComparison]::OrdinalIgnoreCase)) {
+            if (Test-IsReparsePoint -Path $parentDir) {
+                throw "Hook package directory is a reparse point, which cannot be installed safely: $parentDir"
+            }
+            return [pscustomobject]@{
+                Kind = 'Package'; ScriptPath = $scriptPath; PackageRoot = $parentDir
+                Name = (Split-Path -Leaf $parentDir)
+            }
+        }
+    }
+    # Anything outside a recognized hooks root installs ONLY the script itself,
+    # and is named after the SCRIPT (not its parent directory - naming a hook
+    # after an arbitrary containing folder was part of the same defect).
+    return [pscustomobject]@{
+        Kind = 'Standalone'; ScriptPath = $scriptPath; PackageRoot = ''
+        Name = $scriptBaseName
+    }
+}
+
+# ---- the plan --------------------------------------------------------------
+
+function New-PlanArtifact {
+    param(
+        [Parameter(Mandatory = $true)][string]$RelativePath,
+        [Parameter(Mandatory = $true)][ValidateSet('File', 'Generated')][string]$Kind,
+        [string]$SourcePath = '',
+        [string]$GeneratedContent = $null,
+        [ValidateSet('Immutable', 'Mutable')][string]$Ownership = 'Immutable'
+    )
+    return [pscustomobject][ordered]@{
+        relativePath     = $RelativePath.Replace('\', '/')
+        kind             = $Kind
+        sourcePath       = $SourcePath
+        generatedContent = $GeneratedContent
+        ownership        = $Ownership
+    }
+}
+
+# Builds the complete artifact list for ONE hook's managed runtime directory,
+# with paths relative to the runtime ROOT (the Hook-Maker folder), so the same
+# plan drives copying, manifests, verification and cleanup.
+#
+# Ownership:
+#   Immutable - Hook Maker owns the exact bytes; drift is a repairable defect.
+#   Mutable   - written once at install and allowed to change afterwards
+#               (nothing is currently mutable; the field exists so a future
+#               runtime-written file is declared explicitly rather than
+#               excluded by a broad extension rule).
+function Get-ManagedInstallPlan {
+    param(
+        [Parameter(Mandatory = $true)]$SourceInfo,
+        [Parameter(Mandatory = $true)][string]$FriendlyName,
+        [Parameter(Mandatory = $true)][string]$ToolRoot,
+        [string]$ConfigPath = '',
+        [switch]$IncludeConfig,
+        # Deliberately UNTYPED: a [string] parameter coerces $null to '', which
+        # would make "no generated list" indistinguishable from "empty list"
+        # and plan a bogus empty SYNC-PROJECTS.txt for every custom hook.
+        $SyncProjectListContent = $null
+    )
+    $artifacts = New-Object System.Collections.Generic.List[object]
+    $seen = New-Object System.Collections.Generic.HashSet[string]([System.StringComparer]::OrdinalIgnoreCase)
+
+    function Add-Artifact {
+        param($Artifact)
+        if (-not $seen.Add($Artifact.relativePath)) {
+            throw ("The install plan produced two artifacts for the same destination: " + $Artifact.relativePath)
+        }
+        [void]$artifacts.Add($Artifact)
+    }
+
+    # The shared library sits at the runtime ROOT because every copied hook
+    # script dot-sources '..\_hooklib.ps1'. It is planned (and therefore
+    # verified) like any other artifact.
+    # KNOWN LIMITATION: because it is shared, updating one hook rewrites the
+    # library that other hooks' already-installed scripts load. Giving each
+    # hook a private copy requires rewriting the dot-source line inside the
+    # copied script, which is a separate change - see the README's
+    # "Known limitations".
+    $hookLib = Join-Path $ToolRoot 'hooks\_hooklib.ps1'
+    if (Test-Path -LiteralPath $hookLib -PathType Leaf) {
+        Add-Artifact (New-PlanArtifact -RelativePath '_hooklib.ps1' -Kind 'File' -SourcePath $hookLib)
+    }
+
+    Add-Artifact (New-PlanArtifact -RelativePath ($FriendlyName + '/' + $FriendlyName + '.ps1') -Kind 'File' -SourcePath $SourceInfo.ScriptPath)
+
+    if ($SourceInfo.Kind -eq 'Package') {
+        $packageRoot = [System.IO.Path]::GetFullPath($SourceInfo.PackageRoot)
+        $mainLeaf = Split-Path -Leaf $SourceInfo.ScriptPath
+        foreach ($file in @(Get-ChildItem -LiteralPath $packageRoot -File -Recurse -Force -ErrorAction SilentlyContinue)) {
+            if ([string]::Equals($file.Name, $mainLeaf, [System.StringComparison]::OrdinalIgnoreCase) -and
+                [string]::Equals($file.DirectoryName, $packageRoot, [System.StringComparison]::OrdinalIgnoreCase)) {
+                continue  # the main script, already planned under its friendly name
+            }
+            $excluded = $false
+            foreach ($name in $script:PlanExcludedFileNames) {
+                if ([string]::Equals($file.Name, $name, [System.StringComparison]::OrdinalIgnoreCase)) { $excluded = $true; break }
+            }
+            if ($excluded) { continue }
+            if (-not (Test-PathContainedIn -ChildPath $file.FullName -ParentPath $packageRoot)) { continue }
+            $relative = $file.FullName.Substring($packageRoot.Length).TrimStart('\', '/')
+            $segments = $relative.Split([char[]]@('\', '/'), [System.StringSplitOptions]::RemoveEmptyEntries)
+            $inForbidden = $false
+            for ($i = 0; $i -lt $segments.Length - 1; $i++) {
+                foreach ($forbidden in $script:PlanForbiddenDirectoryNames) {
+                    if ([string]::Equals($segments[$i], $forbidden, [System.StringComparison]::OrdinalIgnoreCase)) { $inForbidden = $true; break }
+                }
+                if ($inForbidden) { break }
+            }
+            if ($inForbidden) { continue }
+            if (Test-IsReparsePoint -Path $file.FullName) { continue }
+            Add-Artifact (New-PlanArtifact -RelativePath ($FriendlyName + '/' + $relative) -Kind 'File' -SourcePath $file.FullName)
+        }
+    }
+
+    if ($IncludeConfig -and -not [string]::IsNullOrWhiteSpace($ConfigPath) -and (Test-Path -LiteralPath $ConfigPath -PathType Leaf)) {
+        Add-Artifact (New-PlanArtifact -RelativePath ($FriendlyName + '/sync-hooks.json') -Kind 'File' -SourcePath $ConfigPath)
+    }
+    # SYNC-PROJECTS.txt is GENERATED, so it is planned with its exact expected
+    # content: it gets a deterministic hash and is verified like any other
+    # managed artifact instead of being excluded from checking.
+    if (-not [string]::IsNullOrEmpty($SyncProjectListContent)) {
+        Add-Artifact (New-PlanArtifact -RelativePath ($FriendlyName + '/SYNC-PROJECTS.txt') -Kind 'Generated' -GeneratedContent $SyncProjectListContent)
+    }
+
+    return @($artifacts.ToArray())
+}
+
+# Exact content of the generated SYNC-PROJECTS.txt for a sync-engine install.
+# Lives here (not in the installer) so the installer and the updater's
+# integrity check derive the same deterministic bytes from the same code.
+function Get-SyncProjectListContentFor {
+    param(
+        [Parameter(Mandatory = $true)][string]$RoutingConfig,
+        [string]$ProfileId = ''
+    )
+    if ([string]::IsNullOrWhiteSpace($ProfileId)) { return $null }
+    if (-not (Test-Path -LiteralPath $RoutingConfig -PathType Leaf)) { return $null }
+    $config = $null
+    try { $config = Get-Content -LiteralPath $RoutingConfig -Raw | ConvertFrom-Json } catch { return $null }
+    if ($null -eq $config -or $null -eq $config.PSObject.Properties['profiles']) { return $null }
+    $matchingProfile = @($config.profiles | Where-Object { $_.id -eq $ProfileId } | Select-Object -First 1)
+    if ($matchingProfile.Count -eq 0) { return $null }
+
+    $projectsByRoot = @{}
+    foreach ($route in @($matchingProfile[0].routes)) {
+        foreach ($endpoint in @($route.source, $route.destination)) {
+            if ($null -eq $endpoint) { continue }
+            $root = [string]$endpoint.root
+            if ([string]::IsNullOrWhiteSpace($root)) { continue }
+            $key = $root.ToLowerInvariant()
+            if (-not $projectsByRoot.ContainsKey($key)) {
+                $projectsByRoot[$key] = [pscustomobject]@{ Name = [string]$endpoint.name; Root = $root }
+            }
+        }
+    }
+    $lines = New-Object System.Collections.Generic.List[string]
+    [void]$lines.Add('Cross-project AI knowledge sync')
+    [void]$lines.Add(('Profile: ' + [string]$matchingProfile[0].name))
+    [void]$lines.Add('')
+    [void]$lines.Add('Synchronized projects:')
+    foreach ($project in @($projectsByRoot.Values | Sort-Object -Property Root)) {
+        [void]$lines.Add(('- ' + $project.Name + ' | ' + $project.Root))
+    }
+    return (($lines.ToArray() -join "`r`n") + "`r`n")
+}
+
+# The single entry point both the installer and the updater use to obtain a
+# plan, so they can never disagree about what an installation consists of.
+function Get-InstallPlanFor {
+    param(
+        [Parameter(Mandatory = $true)][string]$HookScript,
+        [Parameter(Mandatory = $true)][string]$ToolRoot,
+        [string]$FriendlyNameOverride = '',
+        [string]$ProfileId = '',
+        [string]$ConfigPath = '',
+        [switch]$IsEngine,
+        [switch]$AllowMissing
+    )
+    $sourceInfo = Get-HookSourceInfo -HookScript $HookScript -PackageRoots @((Join-Path $ToolRoot 'hooks')) -AllowMissing:$AllowMissing
+    $friendlyName = if (-not [string]::IsNullOrWhiteSpace($FriendlyNameOverride)) { $FriendlyNameOverride } else { Get-HookFriendlyName $sourceInfo.Name }
+    $syncList = $null
+    if ($IsEngine) { $syncList = Get-SyncProjectListContentFor -RoutingConfig $ConfigPath -ProfileId $ProfileId }
+    return (Get-ManagedInstallPlan -SourceInfo $sourceInfo -FriendlyName $friendlyName -ToolRoot $ToolRoot `
+            -ConfigPath $ConfigPath -IncludeConfig:$IsEngine -SyncProjectListContent $syncList)
+}
+
+# ---- hashing / manifests ---------------------------------------------------
+
+function Get-PlanArtifactExpectedHash {
+    param([Parameter(Mandatory = $true)]$Artifact)
+    if ($Artifact.kind -eq 'Generated') {
+        $bytes = [System.Text.UTF8Encoding]::new($false).GetBytes([string]$Artifact.generatedContent)
+        $sha = [System.Security.Cryptography.SHA256]::Create()
+        try { return ([System.BitConverter]::ToString($sha.ComputeHash($bytes))).Replace('-', '').ToUpperInvariant() }
+        finally { $sha.Dispose() }
+    }
+    if (-not (Test-Path -LiteralPath $Artifact.sourcePath -PathType Leaf)) { return '' }
+    return (Get-FileHash -LiteralPath $Artifact.sourcePath -Algorithm SHA256).Hash
+}
+
+# path+hash manifest derived from the plan (never file contents).
+function Get-PlanManifest {
+    param([Parameter(Mandatory = $true)]$Plan)
+    $entries = New-Object System.Collections.Generic.List[object]
+    foreach ($artifact in @($Plan)) {
+        if ($artifact.ownership -ne 'Immutable') { continue }
+        [void]$entries.Add([pscustomobject][ordered]@{
+            path = ([string]$artifact.relativePath).ToLowerInvariant()
+            hash = (Get-PlanArtifactExpectedHash -Artifact $artifact)
+        })
+    }
+    return @($entries.ToArray() | Sort-Object -Property path)
+}
+
+# What is actually on disk for this hook, in the same shape. Only the hook's
+# own directory is considered - sibling hooks under the same runtime root
+# belong to other records.
+function Get-PlanInstalledManifest {
+    param(
+        [Parameter(Mandatory = $true)][string]$RuntimeRoot,
+        [Parameter(Mandatory = $true)][string]$FriendlyName
+    )
+    $entries = New-Object System.Collections.Generic.List[object]
+    $hookDir = Join-Path $RuntimeRoot $FriendlyName
+    if (-not (Test-Path -LiteralPath $hookDir -PathType Container)) { return @() }
+    $hookRoot = [System.IO.Path]::GetFullPath($hookDir)
+    foreach ($file in @(Get-ChildItem -LiteralPath $hookDir -File -Recurse -Force -ErrorAction SilentlyContinue)) {
+        if (-not (Test-PathContainedIn -ChildPath $file.FullName -ParentPath $hookRoot)) { continue }
+        $relative = $file.FullName.Substring($hookRoot.Length).TrimStart('\', '/')
+        [void]$entries.Add([pscustomobject][ordered]@{
+            path = ($FriendlyName + '/' + $relative).Replace('\', '/').ToLowerInvariant()
+            hash = (Get-FileHash -LiteralPath $file.FullName -Algorithm SHA256).Hash
+        })
+    }
+    return @($entries.ToArray() | Sort-Object -Property path)
+}
+
+# ---- transactional runtime installation ------------------------------------
+
+# Installs a plan into <RuntimeRoot>\<FriendlyName> WITHOUT destroying the
+# existing runtime unless the replacement is fully built and verified:
+#   1. build everything in a sibling staging directory,
+#   2. verify every planned artifact exists with the expected hash,
+#   3. move the live directory aside,
+#   4. move staging into place,
+#   5. delete the set-aside directory.
+# Any failure before step 4 leaves the previous runtime untouched; a failure
+# during step 4 restores it. Abandoned staging/backup directories from an
+# interrupted run are cleaned on the next install.
+function Install-PlannedRuntime {
+    param(
+        [Parameter(Mandatory = $true)]$Plan,
+        [Parameter(Mandatory = $true)][string]$RuntimeRoot,
+        [Parameter(Mandatory = $true)][string]$FriendlyName
+    )
+    if (-not (Test-Path -LiteralPath $RuntimeRoot -PathType Container)) {
+        New-Item -ItemType Directory -Path $RuntimeRoot -Force | Out-Null
+    }
+    $destination = Join-Path $RuntimeRoot $FriendlyName
+    $token = [guid]::NewGuid().ToString('N').Substring(0, 8)
+    $staging = Join-Path $RuntimeRoot ('.hookmaker-staging-' + $FriendlyName + '-' + $token)
+    $setAside = Join-Path $RuntimeRoot ('.hookmaker-previous-' + $FriendlyName + '-' + $token)
+
+    # Clean what an earlier INTERRUPTED run abandoned for this hook. Only
+    # directories older than the threshold are removed: a concurrent install of
+    # the same hook has its own freshly-created staging directory that matches
+    # the same name pattern, and deleting it out from under that process would
+    # turn a survivable race into a failed install.
+    $abandonedBefore = [DateTime]::UtcNow.AddMinutes(-30)
+    foreach ($prefix in @(('.hookmaker-staging-' + $FriendlyName + '-'), ('.hookmaker-previous-' + $FriendlyName + '-'))) {
+        foreach ($candidate in @(Get-ChildItem -LiteralPath $RuntimeRoot -Directory -Force -ErrorAction SilentlyContinue)) {
+            if (-not $candidate.Name.StartsWith($prefix, [System.StringComparison]::OrdinalIgnoreCase)) { continue }
+            if ($candidate.CreationTimeUtc -gt $abandonedBefore) { continue }
+            Remove-Item -LiteralPath $candidate.FullName -Recurse -Force -ErrorAction SilentlyContinue
+        }
+    }
+
+    $swapped = $false
+    try {
+        New-Item -ItemType Directory -Path $staging -Force | Out-Null
+        $stagingHookDir = Join-Path $staging $FriendlyName
+        New-Item -ItemType Directory -Path $stagingHookDir -Force | Out-Null
+
+        foreach ($artifact in @($Plan)) {
+            $relative = ([string]$artifact.relativePath)
+            $targetPath = Join-Path $staging ($relative.Replace('/', '\'))
+            if (-not (Test-PathContainedIn -ChildPath $targetPath -ParentPath $staging)) {
+                throw ("Planned artifact escapes the staging directory: " + $relative)
+            }
+            $targetDir = Split-Path -Parent $targetPath
+            if (-not (Test-Path -LiteralPath $targetDir -PathType Container)) {
+                New-Item -ItemType Directory -Path $targetDir -Force | Out-Null
+            }
+            if ($artifact.kind -eq 'Generated') {
+                [System.IO.File]::WriteAllText($targetPath, [string]$artifact.generatedContent, [System.Text.UTF8Encoding]::new($false))
+            }
+            else {
+                if (-not (Test-Path -LiteralPath $artifact.sourcePath -PathType Leaf)) {
+                    throw ("Planned source file is missing: " + $artifact.sourcePath)
+                }
+                Copy-Item -LiteralPath $artifact.sourcePath -Destination $targetPath -Force
+            }
+        }
+
+        # Verify the staged tree BEFORE touching the live runtime.
+        foreach ($artifact in @($Plan)) {
+            if ($artifact.ownership -ne 'Immutable') { continue }
+            $targetPath = Join-Path $staging (([string]$artifact.relativePath).Replace('/', '\'))
+            if (-not (Test-Path -LiteralPath $targetPath -PathType Leaf)) {
+                throw ("Staged artifact missing after copy: " + $artifact.relativePath)
+            }
+            $expected = Get-PlanArtifactExpectedHash -Artifact $artifact
+            $actual = (Get-FileHash -LiteralPath $targetPath -Algorithm SHA256).Hash
+            if ($expected -ne $actual) {
+                throw ("Staged artifact does not match its source: " + $artifact.relativePath)
+            }
+        }
+
+        if (Test-Path -LiteralPath $destination) {
+            Move-Item -LiteralPath $destination -Destination $setAside -Force
+        }
+        try {
+            Move-Item -LiteralPath $stagingHookDir -Destination $destination -Force
+            $swapped = $true
+        }
+        catch {
+            # Put the previous runtime back so the installation keeps working.
+            if ((Test-Path -LiteralPath $setAside) -and -not (Test-Path -LiteralPath $destination)) {
+                Move-Item -LiteralPath $setAside -Destination $destination -Force
+            }
+            throw
+        }
+        # Root-level artifacts (currently only the shared _hooklib.ps1) live
+        # beside every hook rather than inside this one, so they are placed
+        # after the per-hook swap. They are copied from the verified staging
+        # tree, never straight from source.
+        foreach ($artifact in @($Plan)) {
+            $relative = [string]$artifact.relativePath
+            if ($relative.Contains('/')) { continue }
+            $stagedPath = Join-Path $staging $relative
+            if (-not (Test-Path -LiteralPath $stagedPath -PathType Leaf)) { continue }
+            Copy-Item -LiteralPath $stagedPath -Destination (Join-Path $RuntimeRoot $relative) -Force
+        }
+        return [pscustomobject]@{ Ok = $true; Destination = $destination }
+    }
+    finally {
+        if (Test-Path -LiteralPath $staging) { Remove-Item -LiteralPath $staging -Recurse -Force -ErrorAction SilentlyContinue }
+        if ($swapped -and (Test-Path -LiteralPath $setAside)) {
+            Remove-Item -LiteralPath $setAside -Recurse -Force -ErrorAction SilentlyContinue
+        }
+    }
+}
+
+# ---- Hook Maker registration ownership -------------------------------------
+
+# The ONE place that decides "is this registered command a Hook Maker command,
+# and if so which installation does it belong to?".
+#
+# Ownership is proven by the managed runtime PATH SHAPE
+# (...\hooks\Hook-Maker\<Name>\<file>.ps1, or the legacy ...\hooks\HookMaker\...),
+# never by a bare script basename - a user's own unrelated script that happens
+# to share a filename must never be treated as ours.
+function Get-HookMakerCommandInfo {
+    param([string]$Command)
+    $result = [pscustomobject]@{
+        IsHookMaker   = $false
+        RuntimeScript = ''
+        HookName      = ''
+        Profile       = ''
+        ConfigPath    = ''
+        Layout        = ''
+    }
+    if ([string]::IsNullOrWhiteSpace($Command)) { return $result }
+
+    # Form 1 (current + the renamed-folder legacy): a self-contained managed
+    # runtime under ...\hooks\Hook-Maker\<Name>\<file>.ps1 (or the older
+    # un-hyphenated HookMaker root). This shape is unambiguous - only Hook
+    # Maker creates it.
+    $match = [regex]::Match($Command, '(?<full>[^"]*[\\/]hooks[\\/](?<root>Hook-Maker|HookMaker)[\\/](?<name>[^\\/"]+)[\\/](?<leaf>[^\\/"]+\.ps1))')
+    if ($match.Success) {
+        $result.IsHookMaker = $true
+        $result.RuntimeScript = $match.Groups['full'].Value
+        $result.HookName = $match.Groups['name'].Value
+        $result.Layout = if ($match.Groups['root'].Value -eq 'HookMaker') { 'legacy-root' } else { 'current' }
+    }
+    else {
+        # Form 2 (proven historical): before self-contained installs, the
+        # registered command pointed straight at the tool folder's own source
+        # layout, ...\hooks\<Name>\<Name>.ps1 (folder name == script name).
+        # This shape is less distinctive, so callers MUST additionally require
+        # the hook name to match the installation being acted on
+        # (Test-HandlerBelongsToInstall does) - it is never sufficient on its
+        # own to claim ownership of an arbitrary handler.
+        $legacy = [regex]::Match($Command, '(?<full>[^"]*[\\/]hooks[\\/](?<name>[^\\/"]+)[\\/](?<leaf>[^\\/"]+)\.ps1)')
+        if ($legacy.Success -and [string]::Equals($legacy.Groups['name'].Value, $legacy.Groups['leaf'].Value, [System.StringComparison]::OrdinalIgnoreCase)) {
+            $result.IsHookMaker = $true
+            $result.RuntimeScript = $legacy.Groups['full'].Value
+            $result.HookName = $legacy.Groups['name'].Value
+            $result.Layout = 'legacy-toolfolder'
+        }
+        else { return $result }
+    }
+    $profileMatch = [regex]::Match($Command, '-Profile\s+"([^"]*)"')
+    if ($profileMatch.Success) { $result.Profile = $profileMatch.Groups[1].Value }
+    $configMatch = [regex]::Match($Command, '-ConfigPath\s+"([^"]*)"')
+    if ($configMatch.Success) { $result.ConfigPath = $configMatch.Groups[1].Value }
+    return $result
+}
+
+# Every command-bearing field a client may use. Checked consistently everywhere
+# so a handler registered only under commandWindows/command_windows is neither
+# missed during discovery nor orphaned during stale removal.
+$script:HookCommandFieldNames = @('command', 'commandWindows', 'command_windows')
+
+function Get-HandlerCommandValues {
+    param([Parameter(Mandatory = $true)]$Handler)
+    $values = New-Object System.Collections.Generic.List[string]
+    foreach ($field in $script:HookCommandFieldNames) {
+        if ($null -ne $Handler.PSObject.Properties[$field]) {
+            $value = [string]$Handler.$field
+            if (-not [string]::IsNullOrWhiteSpace($value)) { [void]$values.Add($value) }
+        }
+    }
+    return $values.ToArray()
+}
+
+# Does this handler belong to the given logical installation? Requires a real
+# managed-runtime path match on at least one command field, the same hook name,
+# and - for the sync engine - the same profile.
+function Test-HandlerBelongsToInstall {
+    param(
+        [Parameter(Mandatory = $true)]$Handler,
+        [Parameter(Mandatory = $true)][string]$FriendlyName,
+        [string]$ProfileId = '',
+        [string[]]$AlsoMatchHookNames = @()
+    )
+    $names = New-Object System.Collections.Generic.HashSet[string]([System.StringComparer]::OrdinalIgnoreCase)
+    [void]$names.Add($FriendlyName)
+    foreach ($alias in @($AlsoMatchHookNames)) {
+        if (-not [string]::IsNullOrWhiteSpace($alias)) { [void]$names.Add($alias) }
+    }
+    foreach ($command in @(Get-HandlerCommandValues -Handler $Handler)) {
+        $info = Get-HookMakerCommandInfo -Command $command
+        if (-not $info.IsHookMaker) { continue }
+        if (-not $names.Contains($info.HookName)) { continue }
+        if (-not [string]::IsNullOrWhiteSpace($ProfileId) -and $info.Profile -ne $ProfileId) { continue }
+        return $true
+    }
+    return $false
+}
