@@ -295,6 +295,22 @@ corrupted Windows command — Codex handlers carry both forms and each is checke
 Fields Hook Maker does not own are left alone, and a record written before a field was tracked
 simply carries no expectation for it rather than being reported as drifted.
 
+### Structured outcomes
+
+`Install-Hook.ps1 -ResultPath <file>` writes a versioned, machine-readable document describing the
+outcome of each component (validation, Claude, Codex, native Git, registry). Programmatic callers
+read that instead of parsing console text or assuming "no exception means success".
+
+It distinguishes states that matter: `ok`, `failed`, `skipped` (not applicable to this invocation),
+and `trackingFailed` — runtime and settings were applied but the registry write did not land, which
+is reported as **partial**, never as success. The updater consumes this document *and* independently
+re-reads the record and re-verifies integrity afterwards, so nothing is reported as updated unless
+it is genuinely current.
+
+Registry persistence itself is verified rather than assumed: after writing, the registry is read
+back and the exact record confirmed present. (A directory occupying the registry path previously
+caused the atomic write to land *inside* it while reporting success.)
+
 ### Known limitations
 
 - Legacy discovery/removal supports only the historical layouts listed under
@@ -305,8 +321,10 @@ simply carries no expectation for it rather than being reported as drifted.
 - Runtime replacement is staged, hash-verified and swapped, with the previous runtime restored if
   the swap fails. That is compensating rollback, not crash-atomicity: a machine that dies mid-swap
   can still need one reinstall.
-- Structured installer outcomes and per-component failure history are not implemented yet: the
-  updater infers success from the installer completing without an error, then re-verifies integrity.
+- Per-component *history* is not persisted in the registry yet — outcomes are reported for the
+  current run, but past attempts are not kept per component.
+- Concurrency is protected only around the registry (see above); settings files and runtime
+  directories still have no lock of their own.
 
 ### Custom-hook source boundaries
 
