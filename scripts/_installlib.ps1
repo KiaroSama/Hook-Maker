@@ -23,20 +23,29 @@ $script:InstallRegistrySchemaVersion = 2
 # installed identity: generated at install time from inputs already covered by
 # the manifest (SYNC-PROJECTS.txt is derived from sync-hooks.json), or mutated
 # at runtime. Comparing them would report permanent false drift.
-$script:ManagedRuntimeExcludedNames = @('SYNC-PROJECTS.txt')
-$script:ManagedRuntimeExcludedExtensions = @('.log', '.tmp', '.bak')
-# Never copied into a runtime by Copy-HookRuntime, so never part of a manifest.
+# RUNTIME-MUTABLE ARTIFACTS ARE DECLARED BY EXACT RELATIVE PATH, never by a
+# broad extension rule.
+#
+# The previous `.log`/`.tmp`/`.bak` extension exclusions plus a hard-coded
+# 'SYNC-PROJECTS.txt' name exclusion were a SECOND source of truth that
+# disagreed with the install plan: the plan generates SYNC-PROJECTS.txt (so it
+# is expected) while the scanner skipped it (so it was never found), which made
+# every sync-engine install report "installed file missing: sync-projects.txt"
+# forever - a permanent update loop, reproduced end-to-end.
+#
+# The plan is now the only authority. This list exists so that a genuinely
+# runtime-written file can be declared explicitly if one is ever introduced;
+# no shipped hook writes into its own runtime directory today (hook state lives
+# under %LOCALAPPDATA%), so it is intentionally empty.
+$script:ManagedRuntimeMutablePaths = @()
+# Never copied into a runtime, so never part of a manifest.
 $script:ManagedSourceExcludedNames = @('.env.example')
 
 function Test-ManagedRuntimeFileTracked {
     param([Parameter(Mandatory = $true)][string]$RelativePath)
-    $leaf = Split-Path -Leaf $RelativePath
-    foreach ($excluded in $script:ManagedRuntimeExcludedNames) {
-        if ([string]::Equals($leaf, $excluded, [System.StringComparison]::OrdinalIgnoreCase)) { return $false }
-    }
-    $extension = [System.IO.Path]::GetExtension($leaf)
-    foreach ($excluded in $script:ManagedRuntimeExcludedExtensions) {
-        if ([string]::Equals($extension, $excluded, [System.StringComparison]::OrdinalIgnoreCase)) { return $false }
+    $normalized = ([string]$RelativePath).Replace('\', '/').TrimStart('/')
+    foreach ($mutable in $script:ManagedRuntimeMutablePaths) {
+        if ([string]::Equals($normalized, ([string]$mutable).Replace('\', '/'), [System.StringComparison]::OrdinalIgnoreCase)) { return $false }
     }
     return $true
 }
@@ -77,6 +86,52 @@ function ConvertTo-ManifestArray {
 # Delegates to the CANONICAL install plan so the updater's expectation is
 # derived from exactly the same description the installer builds from - a
 # separate approximation here is what previously let the two drift apart.
+# Looks up a single existing record without failing on a missing/corrupt
+# registry - callers use it to carry sticky facts (e.g. "a user pre-push hook
+# was preserved here once") forward across a reinstall.
+function Get-InstallRecordById {
+    param(
+        [Parameter(Mandatory = $true)][string]$ToolRoot,
+        [Parameter(Mandatory = $true)][string]$Id
+    )
+    try {
+        $state = Read-InstallRegistryState -ToolRoot $ToolRoot
+        if ($state.State -ne 'ok' -or $null -eq $state.Registry) { return $null }
+        foreach ($record in @($state.Registry.installs)) {
+            if ($null -eq $record) { continue }
+            if ($null -eq $record.PSObject.Properties['id']) { continue }
+            if ([string]$record.id -eq $Id) { return $record }
+        }
+    }
+    catch { return $null }
+    return $null
+}
+
+# Every tool root Hook Maker can PROVE is its own: this installation, plus any
+# tool root recorded by a previous install in the registry. Only a historical
+# tool-folder registration rooted under one of these may be claimed; anything
+# else that merely looks similar is ambiguous and is preserved untouched.
+function Get-KnownToolRoots {
+    param([Parameter(Mandatory = $true)][string]$ToolRoot)
+
+    $roots = New-Object System.Collections.Generic.List[string]
+    $seen = New-Object System.Collections.Generic.HashSet[string]([System.StringComparer]::OrdinalIgnoreCase)
+    if ($seen.Add($ToolRoot)) { [void]$roots.Add($ToolRoot) }
+    try {
+        $state = Read-InstallRegistryState -ToolRoot $ToolRoot
+        if ($state.State -eq 'ok' -and $null -ne $state.Registry) {
+            foreach ($record in @($state.Registry.installs)) {
+                if ($null -eq $record -or $null -eq $record.PSObject.Properties['toolRoot']) { continue }
+                $recorded = [string]$record.toolRoot
+                if ([string]::IsNullOrWhiteSpace($recorded)) { continue }
+                if ($seen.Add($recorded)) { [void]$roots.Add($recorded) }
+            }
+        }
+    }
+    catch { }
+    return $roots.ToArray()
+}
+
 function Get-ManagedSourceManifest {
     param(
         [Parameter(Mandatory = $true)][string]$ToolRoot,
@@ -105,10 +160,10 @@ function Get-InstalledManifest {
     if ([string]::IsNullOrWhiteSpace($RuntimeRoot) -or -not (Test-Path -LiteralPath $RuntimeRoot -PathType Container)) {
         return @()
     }
-    $hookLib = Join-Path $RuntimeRoot '_hooklib.ps1'
-    if (Test-Path -LiteralPath $hookLib -PathType Leaf) {
-        [void]$entries.Add([pscustomobject]@{ path = '_hooklib.ps1'; hash = (Get-FileSha256 $hookLib) })
-    }
+    # The runtime-root _hooklib.ps1 is deliberately NOT part of any hook's
+    # manifest: each hook owns a private copy inside its own directory. A root
+    # copy left over from an older layout belongs to no record and is cleaned
+    # up only after a successful install (see Remove-SharedRuntimeLibrary).
     $hookDir = Join-Path $RuntimeRoot $FriendlyName
     if (Test-Path -LiteralPath $hookDir -PathType Container) {
         $hookRoot = [System.IO.Path]::GetFullPath($hookDir).TrimEnd('\') + '\'
@@ -174,15 +229,16 @@ function Get-NativePrePushSourceManifest {
     foreach ($entry in @(Get-ManagedSourceManifest -ToolRoot $ToolRoot -HookScript $PrimaryHookScript -SourceDir $PrimarySourceDir -FriendlyName $PrimaryFriendlyName)) {
         [void]$entries.Add($entry)
     }
+    # Companions are installed through the canonical plan (private library +
+    # dot-source rewrite), so their expected hashes MUST come from that same
+    # plan. Hashing the raw source files here was a second rule that no longer
+    # describes what is actually installed.
     foreach ($companion in @($Companions)) {
-        $companionDir = Join-Path $ToolRoot ('hooks\' + $companion)
-        $companionScript = Join-Path $companionDir ($companion + '.ps1')
-        if (Test-Path -LiteralPath $companionScript -PathType Leaf) {
-            [void]$entries.Add([pscustomobject]@{ path = ($companion + '/' + $companion + '.ps1'); hash = (Get-FileSha256 $companionScript) })
-        }
-        $companionEnv = Join-Path $companionDir '.env'
-        if (Test-Path -LiteralPath $companionEnv -PathType Leaf) {
-            [void]$entries.Add([pscustomobject]@{ path = ($companion + '/.env'); hash = (Get-FileSha256 $companionEnv) })
+        $companionScript = Join-Path $ToolRoot ('hooks\' + $companion + '\' + $companion + '.ps1')
+        if (-not (Test-Path -LiteralPath $companionScript -PathType Leaf)) { continue }
+        $companionPlan = Get-InstallPlanFor -HookScript $companionScript -ToolRoot $ToolRoot -FriendlyNameOverride $companion -AllowMissing
+        foreach ($entry in @(Get-PlanManifest -Plan $companionPlan)) {
+            [void]$entries.Add($entry)
         }
     }
     # .ToArray(): @($aListOfObject) throws "Argument types do not match" on
@@ -231,27 +287,49 @@ function Test-NativePrePushState {
         return [pscustomobject]@{ Ok = $false; Reason = 'native integration stale'; Detail = 'managed pre-push wrapper is missing' }
     }
     $body = [System.IO.File]::ReadAllText($wrapper)
-    if (-not $body.Contains('# Hook Maker: Ignore-Rules-Check')) {
+    if (-not $body.Contains($script:PrePushMarker)) {
         return [pscustomobject]@{ Ok = $false; Reason = 'native integration stale'; Detail = 'pre-push hook is no longer the Hook Maker managed wrapper' }
     }
-    $stages = @($PrimaryFriendlyName)
-    foreach ($companion in @($NativeRecord.companions)) { $stages += [string]$companion }
-    foreach ($stage in $stages) {
-        $marker = '/' + $stage + '/' + $stage + '.ps1"'
-        $occurrences = ([regex]::Matches($body, [regex]::Escape($marker))).Count
-        if ($occurrences -eq 0) {
-            return [pscustomobject]@{ Ok = $false; Reason = 'native integration stale'; Detail = ('pre-push chain no longer runs ' + $stage) }
-        }
-        if ($occurrences -gt 1) {
-            return [pscustomobject]@{ Ok = $false; Reason = 'duplicate registration'; Detail = ('pre-push chain runs ' + $stage + ' more than once') }
+    # Exact comparison against a wrapper REBUILT by the same generator the
+    # installer uses. This proves stage order, single invocation per stage, the
+    # mktemp stdin buffer, the cleanup trap, `|| exit $?` fail-closed behaviour,
+    # argument forwarding and the previous-hook stage all at once - substring
+    # probes could only ever approximate that.
+    if ($null -ne $NativeRecord.PSObject.Properties['expectedStages'] -and $null -ne $NativeRecord.expectedStages) {
+        $expectedStages = @($NativeRecord.expectedStages | ForEach-Object { [string]$_ })
+        if ($expectedStages.Count -gt 0) {
+            $expectedBody = New-PrePushWrapperBody -ManagedScripts $expectedStages
+            if (-not (Compare-PrePushWrapperBody -Expected $expectedBody -Actual $body)) {
+                return [pscustomobject]@{ Ok = $false; Reason = 'native integration stale'; Detail = 'the managed pre-push wrapper does not match its expected content' }
+            }
         }
     }
+    else {
+        # Records written before expectedStages existed: fall back to proving
+        # each stage appears exactly once (the previous, weaker check).
+        $stages = @($PrimaryFriendlyName)
+        foreach ($companion in @($NativeRecord.companions)) { $stages += [string]$companion }
+        foreach ($stage in $stages) {
+            $marker = '/' + $stage + '/' + $stage + '.ps1"'
+            $occurrences = ([regex]::Matches($body, [regex]::Escape($marker))).Count
+            if ($occurrences -eq 0) {
+                return [pscustomobject]@{ Ok = $false; Reason = 'native integration stale'; Detail = ('pre-push chain no longer runs ' + $stage) }
+            }
+            if ($occurrences -gt 1) {
+                return [pscustomobject]@{ Ok = $false; Reason = 'duplicate registration'; Detail = ('pre-push chain runs ' + $stage + ' more than once') }
+            }
+        }
+    }
+    # The preserved user hook is USER-OWNED: existence only, never hashed or
+    # rewritten. Because previousHookPreserved is sticky, a hook that once
+    # existed and has since vanished stays an unresolved state needing manual
+    # attention - it is never silently forgotten.
     if ($null -ne $NativeRecord.PSObject.Properties['previousHookPath']) {
         $previous = [string]$NativeRecord.previousHookPath
         if (-not [string]::IsNullOrWhiteSpace($previous) -and
             $null -ne $NativeRecord.PSObject.Properties['previousHookPreserved'] -and $NativeRecord.previousHookPreserved -eq $true -and
             -not (Test-Path -LiteralPath $previous -PathType Leaf)) {
-            return [pscustomobject]@{ Ok = $false; Reason = 'native integration stale'; Detail = 'the preserved previous pre-push hook is missing' }
+            return [pscustomobject]@{ Ok = $false; Reason = 'manual repair required'; Detail = 'a previously preserved user pre-push hook is missing; Hook Maker will not recreate or overwrite a user-owned hook' }
         }
     }
     $expected = @($NativeRecord.sourceManifest)
@@ -446,12 +524,12 @@ function Get-InstallIntegrity {
         if (-not $difference.IsMatch) {
             if ($difference.Missing.Count -gt 0) {
                 $missing = $difference.Missing[0]
-                $reason = if ($missing -eq '_hooklib.ps1') { 'shared runtime is missing' } else { 'installed file missing: ' + $missing }
+                $reason = if ($missing -like '*/_hooklib.ps1') { 'private runtime library is missing: ' + $missing } else { 'installed file missing: ' + $missing }
                 return [pscustomobject]@{ Status = 'update'; Detail = ($client + ': ' + $reason) }
             }
             if ($difference.Modified.Count -gt 0) {
                 $modified = $difference.Modified[0]
-                $reason = if ($modified -eq '_hooklib.ps1') { 'shared runtime is stale' } else { 'installed file modified: ' + $modified }
+                $reason = if ($modified -like '*/_hooklib.ps1') { 'private runtime library is stale: ' + $modified } else { 'installed file modified: ' + $modified }
                 return [pscustomobject]@{ Status = 'update'; Detail = ($client + ': ' + $reason) }
             }
             return [pscustomobject]@{ Status = 'update'; Detail = ($client + ': unexpected managed file: ' + $difference.Unexpected[0]) }

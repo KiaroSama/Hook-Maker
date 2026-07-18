@@ -24,6 +24,12 @@ $script:Pass = 0
 $script:Fail = 0
 $script:TestPreviewLength = 400
 . (Join-Path $PSScriptRoot '_testlib.ps1')
+# Installed scripts are the source with their library dot-source rewritten to
+# the private sibling copy, so expectations are derived from the canonical plan
+# (Get-PrivateLibraryScriptContent / Get-PlanArtifactExpectedHash) rather than
+# from raw source bytes.
+. (Join-Path (Split-Path -Parent $PSScriptRoot) 'hooks\_hooklib.ps1')
+. (Join-Path $PSScriptRoot '_installplan.ps1')
 
 $Work = Join-Path ([System.IO.Path]::GetTempPath()) ('hookmaker-wiztest-' + [guid]::NewGuid().ToString('N').Substring(0, 8))
 New-Item -ItemType Directory -Path $Work -Force | Out-Null
@@ -189,7 +195,8 @@ try {
     Check 'command points at the project-local copy' ($j2 -like '*hooks\\Hook-Maker\\Ai-Memory-Check\\Ai-Memory-Check.ps1*')
     Check 'command does not reference the tool folder' ($j2 -notlike '*Hook Maker*')
     Check 'runtime copy of the hook exists' (Test-Path (Join-Path $t '.claude\hooks\Hook-Maker\Ai-Memory-Check\Ai-Memory-Check.ps1'))
-    Check 'runtime copy of _hooklib exists' (Test-Path (Join-Path $t '.claude\hooks\Hook-Maker\_hooklib.ps1'))
+    Check 'each hook gets its own PRIVATE _hooklib copy' (Test-Path (Join-Path $t '.claude\hooks\Hook-Maker\Ai-Memory-Check\_hooklib.ps1'))
+    Check 'no shared library is left at the runtime root' (-not (Test-Path (Join-Path $t '.claude\hooks\Hook-Maker\_hooklib.ps1')))
     Check 'runtime copy has no .env.example' (-not (Test-Path (Join-Path $t '.claude\hooks\Hook-Maker\Ai-Memory-Check\.env.example')))
 
     # =====================================================================
@@ -242,7 +249,7 @@ try {
         $engCfg = 'hooks\Hook-Maker\Cross-Project-.ai-Knowledge-Sync\sync-hooks.json'
         $engProjects = 'hooks\Hook-Maker\Cross-Project-.ai-Knowledge-Sync\SYNC-PROJECTS.txt'
         Check "$name command uses the local engine copy" ($jc -like ('*' + $eng.Replace('\', '\\') + '*') -and $jc -notlike '*Hook Maker*')
-        Check "$name claude runtime copy complete" ((Test-Path (Join-Path $proj (Join-Path '.claude' $eng))) -and (Test-Path (Join-Path $proj '.claude\hooks\Hook-Maker\_hooklib.ps1')) -and (Test-Path (Join-Path $proj (Join-Path '.claude' $engCfg))))
+        Check "$name claude runtime copy complete" ((Test-Path (Join-Path $proj (Join-Path '.claude' $eng))) -and (Test-Path (Join-Path $proj '.claude\hooks\Hook-Maker\Cross-Project-.ai-Knowledge-Sync\_hooklib.ps1')) -and (Test-Path (Join-Path $proj (Join-Path '.claude' $engCfg))))
         Check "$name codex runtime copy complete" ((Test-Path (Join-Path $proj (Join-Path '.codex' $eng))) -and (Test-Path (Join-Path $proj (Join-Path '.codex' $engCfg))))
         foreach ($clientDir in @('.claude', '.codex')) {
             $projectList = Join-Path $proj (Join-Path $clientDir $engProjects)
@@ -420,9 +427,9 @@ try {
     Check 'Docs-Freshness-Check installed at its own friendly folder' (Test-Path (Join-Path $docsProj '.claude\hooks\Hook-Maker\Docs-Freshness-Check\Docs-Freshness-Check.ps1'))
     $docsEvents = @(Get-RegisteredEvents (Join-Path $docsProj '.claude\settings.local.json') 'Docs-Freshness-Check' | Sort-Object) -join ','
     Check 'Docs-Freshness-Check gets its recommended SessionStart,Stop events' ($docsEvents -eq 'SessionStart,Stop') $docsEvents
-    $docsSourceHash = (Get-FileHash -LiteralPath (Join-Path $RealHooksDir 'Docs-Freshness-Check\Docs-Freshness-Check.ps1') -Algorithm SHA256).Hash
+    $docsSourceHash = Get-PlanArtifactExpectedHash -Artifact (New-PlanArtifact -RelativePath 'expected' -Kind 'Generated' -GeneratedContent (Get-PrivateLibraryScriptContent -SourceScriptPath (Join-Path $RealHooksDir 'Docs-Freshness-Check\Docs-Freshness-Check.ps1')))
     $docsInstalledHash = (Get-FileHash -LiteralPath (Join-Path $docsProj '.claude\hooks\Hook-Maker\Docs-Freshness-Check\Docs-Freshness-Check.ps1') -Algorithm SHA256).Hash
-    Check 'the installed Docs-Freshness-Check copy matches the maintained source byte-for-byte' ($docsSourceHash -eq $docsInstalledHash)
+    Check 'the installed Docs-Freshness-Check copy matches its planned content byte-for-byte' ($docsSourceHash -eq $docsInstalledHash)
     $rDocsAgain = Invoke-Wizard -Config $cfgDocs -Answers @('1', '1', '9,10', '1', '1', $docsProj, 'done', '', '0')
     Check 'exit 0 (reinstalling Docs-Freshness-Check)' ($rDocsAgain.Exit -eq 0)
     $docsFoldersAgain = @(Get-ChildItem -LiteralPath (Join-Path $docsProj '.claude\hooks\Hook-Maker') -Directory -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Name)
@@ -442,9 +449,9 @@ try {
     Check 'Test-Temp-Cleanup gets its recommended SessionStart,Stop events' ($cleanupEvents -eq 'SessionStart,Stop') $cleanupEvents
     $cfDeployEvents = @(Get-RegisteredEvents (Join-Path $affectedProj '.claude\settings.local.json') 'Cloudflare-Deploy' | Sort-Object) -join ','
     Check 'Cloudflare-Deploy still gets its recommended Stop event' ($cfDeployEvents -eq 'Stop') $cfDeployEvents
-    $cleanupSourceHash = (Get-FileHash -LiteralPath (Join-Path $RealHooksDir 'Test-Temp-Cleanup\Test-Temp-Cleanup.ps1') -Algorithm SHA256).Hash
+    $cleanupSourceHash = Get-PlanArtifactExpectedHash -Artifact (New-PlanArtifact -RelativePath 'expected' -Kind 'Generated' -GeneratedContent (Get-PrivateLibraryScriptContent -SourceScriptPath (Join-Path $RealHooksDir 'Test-Temp-Cleanup\Test-Temp-Cleanup.ps1')))
     $cleanupInstalledHash = (Get-FileHash -LiteralPath (Join-Path $affectedProj '.claude\hooks\Hook-Maker\Test-Temp-Cleanup\Test-Temp-Cleanup.ps1') -Algorithm SHA256).Hash
-    Check 'the installed Test-Temp-Cleanup copy matches the maintained source byte-for-byte' ($cleanupSourceHash -eq $cleanupInstalledHash)
+    Check 'the installed Test-Temp-Cleanup copy matches its planned content byte-for-byte' ($cleanupSourceHash -eq $cleanupInstalledHash)
 
     # Reinstalling the same pair is idempotent: no duplicate registrations,
     # no duplicate runtime folders.

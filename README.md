@@ -252,14 +252,29 @@ bounded lock file, so two installs running at once cannot lose each other's reco
 process start time, host, timestamp, token), so a lock left behind by a killed process is
 recognized as an orphan and reclaimed instead of blocking every future write forever.
 
+### Per-hook private runtime library
+
+Each installed hook gets its **own** `_hooklib.ps1` inside its runtime directory, and its installed
+script is deterministically rewritten to dot-source that private copy. Repository sources are never
+modified; the rewritten content is hashed in the plan and verified like any other artifact. This
+removes cross-hook version skew — updating one hook can no longer change the library another
+already-installed hook loads. A legacy shared library at the runtime root is retired only after
+every hook under that root has its own copy, so hooks installed by older versions keep working
+until they are updated.
+
 ### Known limitations
 
-- `_hooklib.ps1` is shared per scope (it sits at the runtime root because each installed hook
-  dot-sources `..\_hooklib.ps1`). Updating one hook therefore rewrites the library that other
-  already-installed hooks load. Giving each hook a private copy requires rewriting the dot-source
-  line inside the copied script and is not implemented yet.
 - Legacy discovery/removal supports only the historical layouts listed under
   "Registration ownership" above; other historical forms are reported, never rewritten.
+- Concurrency is protected by a crash-aware lock around the **registry**. Settings files and
+  runtime directories do not yet have their own locks, so two installs targeting the *same* client
+  settings file at the same instant are not fully serialized.
+- Runtime replacement is staged, hash-verified and swapped, with the previous runtime restored if
+  the swap fails. That is compensating rollback, not crash-atomicity: a machine that dies mid-swap
+  can still need one reinstall.
+- Registration integrity verifies the command path, profile/config, event and occurrence count. It
+  does not yet independently validate every owned field (timeout, matcher, statusMessage) per
+  client.
 
 ### Custom-hook source boundaries
 
@@ -290,12 +305,19 @@ replaced — so a failure can never leave truncated or unparseable settings behi
 
 ### Registration ownership
 
-A registered handler is recognized as Hook Maker's by its **managed runtime path shape**, checked
-across `command`, `commandWindows` and `command_windows` — never by a bare script basename. Your own
+A registered handler is recognized as Hook Maker's by its **managed runtime path**, checked across
+`command`, `commandWindows` and `command_windows` — never by a bare script basename. Your own
 handler pointing at a script that merely shares a filename with a shipped hook is preserved across
-reinstalls. Two historical layouts are also recognized for migration (the older un-hyphenated
-`HookMaker` runtime root, and the pre-self-contained tool-folder form `…/hooks/<Name>/<Name>.ps1`);
-the second is additionally gated on the hook name matching the installation being acted on.
+reinstalls.
+
+Two forms are unambiguous and always ours: the current `…/hooks/Hook-Maker/<Name>/<file>.ps1`
+layout and the older un-hyphenated `HookMaker` runtime root.
+
+The pre-self-contained tool-folder form `…/hooks/<Name>/<Name>.ps1` is **not** proof of ownership on
+its own — any project can have that shape. It is claimed only when the path is rooted under a tool
+root Hook Maker can prove is its own: this installation, or one recorded by an earlier install in
+the registry. An identical-looking path anywhere else is treated as **ambiguous**: preserved and
+reported, never removed.
 
 ### Input validation
 
