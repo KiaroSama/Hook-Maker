@@ -45,12 +45,16 @@ $script:TestPreviewLength = 500
 # suite (not only via the wizard/installer). _installlib.ps1 needs _hooklib.ps1
 # dot-sourced first (Get-ShortHash, Read-JsonFile, Write-JsonFileAtomic).
 . $HookLib
+# _installplan.ps1 first: _installlib.ps1's manifest builders delegate to the
+# canonical plan defined there.
+. (Join-Path $ScriptRoot '_installplan.ps1')
 . (Join-Path $ScriptRoot '_installlib.ps1')
 
 $Work = Join-Path ([System.IO.Path]::GetTempPath()) ('hookmaker-registrytest-' + [guid]::NewGuid().ToString('N').Substring(0, 8))
 New-Item -ItemType Directory -Path $Work -Force | Out-Null
 Write-Host ("Workspace: $Work") -ForegroundColor DarkGray
 
+function Get-HandlerFieldValue { param($Handler, [string]$Field) if ($null -ne $Handler.PSObject.Properties[$Field]) { return [string]$Handler.$Field } return '' }
 function New-Proj { param([string]$Name) $p = Join-Path $Work $Name; New-Item -ItemType Directory -Path $p -Force | Out-Null; return $p }
 function Write-Utf8 { param([string]$Path, [string]$Content) [System.IO.File]::WriteAllText($Path, $Content, (New-Object System.Text.UTF8Encoding $false)) }
 
@@ -256,7 +260,18 @@ try {
     Check 'engine install record stores the profile id' ([string]$recEngine.profile -eq $engineProfileId)
     Check 'engine install record stores the configPath' ([string]$recEngine.configPath -eq $engineCfg)
     Check 'engine install manifest tracks the copied sync config' (@($recEngine.sourceManifest | Where-Object { $_.path -like '*/sync-hooks.json' }).Count -eq 1)
-    Check 'engine install manifest excludes the generated SYNC-PROJECTS.txt' (@($recEngine.sourceManifest | Where-Object { $_.path -like '*sync-projects.txt' }).Count -eq 0)
+    # SYNC-PROJECTS.txt is GENERATED, and is now planned with its exact expected
+    # content so it gets a deterministic hash and is verified like any other
+    # managed artifact - previously it was excluded from checking entirely.
+    Check 'engine install manifest includes the generated SYNC-PROJECTS.txt' (@($recEngine.sourceManifest | Where-Object { $_.path -like '*sync-projects.txt' }).Count -eq 1)
+    $syncListPath = Join-Path ([string]$recEngine.clients.claude.runtimeRoot) ((Get-HookFriendlyName $recEngine.friendlyName) + '\SYNC-PROJECTS.txt')
+    Check 'the generated SYNC-PROJECTS.txt exists on disk' (Test-Path -LiteralPath $syncListPath)
+    Check 'the generated file matches its planned hash (deterministic)' (
+        ((Get-FileHash -LiteralPath $syncListPath -Algorithm SHA256).Hash) -eq
+        [string](@($recEngine.sourceManifest | Where-Object { $_.path -like '*sync-projects.txt' })[0].hash))
+    Check 'tampering with the generated file is detected as drift' (
+        $(Add-Content -LiteralPath $syncListPath -Value 'tampered'
+          (Get-InstallIntegrity -Record $recEngine -ToolRoot $ToolRoot).Status -eq 'update'))
 
     # =====================================================================
     Write-Host '--- the updater refreshes a changed source byte-for-byte and preserves registration semantics ---' -ForegroundColor Cyan
@@ -331,7 +346,10 @@ try {
         Remove-FixtureHook 'ZZZ-Regtest-Missingsource'
         $missingSrcInstalled = $false
         $cfgMissingSrc = Join-Path $Work 'cfg-missing-src.json'; New-Config $cfgMissingSrc
-        $rMissingSrc = Invoke-Wizard -Config $cfgMissingSrc -Answers @('1', '4', '0')
+        # A confirm answer is included because OTHER healthy records in the
+        # shared registry may legitimately need a refresh; the run must still
+        # exit 0 and report this record as skipped either way.
+        $rMissingSrc = Invoke-Wizard -Config $cfgMissingSrc -Answers @('1', '4', '', '0')
         Check 'exit 0 (missing source is reported, not a crash)' ($rMissingSrc.Exit -eq 0) $rMissingSrc.Err
         Check 'missing source is reported by name' ($rMissingSrc.Out -match 'ZZZ-Regtest-Missingsource[\s\S]*?source script no longer found') $rMissingSrc.Out
     }
@@ -343,7 +361,7 @@ try {
         & $InstallScript -CustomHook $fixtureMissingTgt -Events @('SessionStart') -TargetProject $projMissingTgt *> $null
         Remove-Item -LiteralPath $projMissingTgt -Recurse -Force -ErrorAction SilentlyContinue
         $cfgMissingTgt = Join-Path $Work 'cfg-missing-tgt.json'; New-Config $cfgMissingTgt
-        $rMissingTgt = Invoke-Wizard -Config $cfgMissingTgt -Answers @('1', '4', '0')
+        $rMissingTgt = Invoke-Wizard -Config $cfgMissingTgt -Answers @('1', '4', '', '0')
         Check 'exit 0 (missing target is reported, not a crash)' ($rMissingTgt.Exit -eq 0) $rMissingTgt.Err
         Check 'missing target is reported by name' ($rMissingTgt.Out -match 'ZZZ-Regtest-Missingtarget[\s\S]*?target project no longer found') $rMissingTgt.Out
     }
@@ -464,6 +482,136 @@ try {
     }
 
     # =====================================================================
+    # =====================================================================
+    # A hook source OUTSIDE a recognized hooks root is a STANDALONE script:
+    # only that file is installed. Previously the installer recursively copied
+    # the script's whole parent directory, so pointing -CustomHook at a script
+    # inside a project copied that project's .git/.env/credentials/source into
+    # a settings-registered runtime directory.
+    Write-Host '--- custom-hook source boundaries: never copy an arbitrary parent directory ---' -ForegroundColor Cyan
+    $victim = Join-Path $Work 'victim-project'
+    New-Item -ItemType Directory -Path (Join-Path $victim '.git'), (Join-Path $victim 'node_modules\pkg'), (Join-Path $victim 'src') -Force | Out-Null
+    Write-Utf8 (Join-Path $victim 'zzz-standalone-hook.ps1') "exit 0`n"
+    $secretValue = 'REGTEST-SECRET-' + [guid]::NewGuid().ToString('N').Substring(0, 8)
+    Write-Utf8 (Join-Path $victim '.env') ('AWS_SECRET_ACCESS_KEY=' + $secretValue)
+    Write-Utf8 (Join-Path $victim 'secrets.md') 'db password: hunter2'
+    Write-Utf8 (Join-Path $victim '.git\config') 'url = git@github.com:me/private.git'
+    Write-Utf8 (Join-Path $victim 'node_modules\pkg\index.js') 'module.exports=1'
+    Write-Utf8 (Join-Path $victim 'src\proprietary.cs') 'class Secret {}'
+    $projStandalone = New-Proj 'StandaloneSourceProj'
+    & $InstallScript -CustomHook (Join-Path $victim 'zzz-standalone-hook.ps1') -Events @('Stop') -TargetProject $projStandalone -ClaudeOnly *> $null
+    $standaloneRoot = Join-Path $projStandalone '.claude\hooks\Hook-Maker'
+    $standaloneFiles = @(Get-ChildItem -LiteralPath $standaloneRoot -Recurse -Force -File -ErrorAction SilentlyContinue)
+    $standaloneNames = @($standaloneFiles | ForEach-Object { $_.Name })
+    Check 'a standalone hook installs only its own script plus the shared library' ((@($standaloneNames | Sort-Object) -join ',') -eq '_hooklib.ps1,zzz-standalone-hook.ps1')
+    Check 'the neighbouring project .env is never copied' (@($standaloneNames | Where-Object { $_ -eq '.env' }).Count -eq 0)
+    Check 'the neighbouring project secrets.md is never copied' (@($standaloneNames | Where-Object { $_ -eq 'secrets.md' }).Count -eq 0)
+    Check 'git metadata is never copied' (@($standaloneFiles | Where-Object { $_.FullName -like '*.git*' -and $_.Name -eq 'config' }).Count -eq 0)
+    Check 'node_modules is never copied' (@($standaloneFiles | Where-Object { $_.FullName -like '*node_modules*' }).Count -eq 0)
+    Check 'unrelated source files are never copied' (@($standaloneNames | Where-Object { $_ -eq 'proprietary.cs' }).Count -eq 0)
+    $standaloneBytes = ''
+    foreach ($standaloneFile in $standaloneFiles) { $standaloneBytes += [System.IO.File]::ReadAllText($standaloneFile.FullName) }
+    Check 'no secret value from the neighbouring project reaches the runtime' ($standaloneBytes -notmatch [regex]::Escape($secretValue))
+    Check 'a standalone hook is named after its SCRIPT, not its parent folder' (Test-Path -LiteralPath (Join-Path $standaloneRoot 'zzz-standalone-hook\zzz-standalone-hook.ps1'))
+    $projPackage = New-Proj 'PackagedSourceProj'
+    & $InstallScript -CustomHook (Join-Path $RealHooksDir 'Secrets-Check\Secrets-Check.ps1') -Events @('Stop') -TargetProject $projPackage -ClaudeOnly *> $null
+    Check 'a packaged shipped hook still installs its package contents' (Test-Path -LiteralPath (Join-Path $projPackage '.claude\hooks\Hook-Maker\Secrets-Check\Secrets-Check.ps1'))
+    Check 'a package never ships its .env.example template' (-not (Test-Path -LiteralPath (Join-Path $projPackage '.claude\hooks\Hook-Maker\Secrets-Check\.env.example')))
+
+    # =====================================================================
+    Write-Host '--- direct installer inputs are validated before anything is mutated ---' -ForegroundColor Cyan
+    $HookForValidation = Join-Path $RealHooksDir 'Ai-Memory-Check\Ai-Memory-Check.ps1'
+    $projValidate = New-Proj 'ValidateInputsProj'
+    $bothSwitches = $false
+    try { & $InstallScript -CustomHook $HookForValidation -TargetProject $projValidate -Events @('Stop') -ClaudeOnly -CodexOnly *> $null } catch { $bothSwitches = $true }
+    Check 'ClaudeOnly and CodexOnly together are rejected' $bothSwitches
+    Check 'the rejected invocation wrote no settings at all' (-not (Test-Path -LiteralPath (Join-Path $projValidate '.claude')))
+    $emptyEvents = $false
+    try { & $InstallScript -CustomHook $HookForValidation -TargetProject $projValidate -Events @() -ClaudeOnly *> $null } catch { $emptyEvents = $true }
+    Check 'an empty event list is rejected' $emptyEvents
+    $badEvent = $false
+    try { & $InstallScript -CustomHook $HookForValidation -TargetProject $projValidate -Events @('NotARealEvent') -ClaudeOnly *> $null } catch { $badEvent = $true }
+    Check 'an unsupported event name is rejected' $badEvent
+    $missingTargetPath = Join-Path $Work 'target-that-does-not-exist'
+    $badTarget = $false
+    try { & $InstallScript -CustomHook $HookForValidation -TargetProject $missingTargetPath -Events @('Stop') -ClaudeOnly *> $null } catch { $badTarget = $true }
+    Check 'a nonexistent target project is rejected' $badTarget
+    Check 'the rejected target directory was not created' (-not (Test-Path -LiteralPath $missingTargetPath))
+    & $InstallScript -CustomHook $HookForValidation -TargetProject $projValidate -Events @('Stop', 'Stop', 'SessionStart') -ClaudeOnly *> $null
+    $validatedJson = Get-Content -LiteralPath (Join-Path $projValidate '.claude\settings.local.json') -Raw | ConvertFrom-Json
+    Check 'duplicate events are normalized to one registration each' (@($validatedJson.hooks.PSObject.Properties).Count -eq 2)
+
+    # =====================================================================
+    # Ownership is proven by the managed runtime PATH, never by a basename.
+    Write-Host '--- unrelated handlers with the same script basename are preserved ---' -ForegroundColor Cyan
+    $projBasename = New-Proj 'BasenameIdentityProj'
+    & $InstallScript -CustomHook $HookForValidation -TargetProject $projBasename -Events @('Stop') -ClaudeOnly *> $null
+    $basenameSettings = Join-Path $projBasename '.claude\settings.local.json'
+    $basenameJson = Get-Content -LiteralPath $basenameSettings -Raw | ConvertFrom-Json
+    $userHandlerA = [pscustomobject]@{ hooks = @([pscustomobject]@{ type = 'command'; command = 'pwsh -File "C:\Users\me\MyTools\Ai-Memory-Check.ps1"'; timeout = 99 }) }
+    $userHandlerB = [pscustomobject]@{ hooks = @([pscustomobject]@{ type = 'command'; commandWindows = 'powershell -File "D:\Other\Ai-Memory-Check.ps1"'; timeout = 5 }) }
+    $basenameJson.hooks.Stop = @($basenameJson.hooks.Stop) + @($userHandlerA) + @($userHandlerB)
+    [System.IO.File]::WriteAllText($basenameSettings, ($basenameJson | ConvertTo-Json -Depth 50), (New-Object System.Text.UTF8Encoding $false))
+    & $InstallScript -CustomHook $HookForValidation -TargetProject $projBasename -Events @('Stop') -ClaudeOnly *> $null
+    $basenameAfter = Get-Content -LiteralPath $basenameSettings -Raw | ConvertFrom-Json
+    $basenameHandlers = @(@($basenameAfter.hooks.Stop) | ForEach-Object { $_.hooks })
+    Check 'a user same-basename handler in command survives a reinstall' (@($basenameHandlers | Where-Object { (Get-HandlerFieldValue $_ 'command') -like '*MyTools*' }).Count -eq 1)
+    Check 'a user same-basename handler in commandWindows survives a reinstall' (@($basenameHandlers | Where-Object { (Get-HandlerFieldValue $_ 'commandWindows') -like '*Other*' }).Count -eq 1)
+    Check 'the real Hook Maker registration is still present exactly once' (@($basenameHandlers | Where-Object { (Get-HandlerFieldValue $_ 'command') -like '*Hook-Maker*' }).Count -eq 1)
+
+    # =====================================================================
+    # A failed replacement must never leave a working runtime worse off.
+    Write-Host '--- runtime replacement is transactional (failed staging keeps the old runtime) ---' -ForegroundColor Cyan
+    $fixtureTx = New-FixtureHook 'ZZZ-Regtest-Transaction' "exit 0 # good`n"
+    try {
+        $projTx = New-Proj 'TransactionProj'
+        & $InstallScript -CustomHook $fixtureTx -Events @('Stop') -TargetProject $projTx -ClaudeOnly *> $null
+        $txRuntimeRoot = Join-Path $projTx '.claude\hooks\Hook-Maker'
+        $txScript = Join-Path $txRuntimeRoot 'ZZZ-Regtest-Transaction\ZZZ-Regtest-Transaction.ps1'
+        Check 'baseline transactional install succeeded' (Test-Path -LiteralPath $txScript)
+        $txGoodHash = (Get-FileHash -LiteralPath $txScript -Algorithm SHA256).Hash
+        $txMissingSource = Join-Path $Work 'no-such-file.txt'
+        $txPlan = @(Get-InstallPlanFor -HookScript $fixtureTx -ToolRoot $ToolRoot) + @(New-PlanArtifact -RelativePath 'ZZZ-Regtest-Transaction/missing.txt' -Kind 'File' -SourcePath $txMissingSource)
+        $txThrew = $false
+        try { Install-PlannedRuntime -Plan $txPlan -RuntimeRoot $txRuntimeRoot -FriendlyName 'ZZZ-Regtest-Transaction' | Out-Null } catch { $txThrew = $true }
+        Check 'a staging failure is surfaced as an error' $txThrew
+        Check 'the previous runtime still exists after a failed staging' (Test-Path -LiteralPath $txScript)
+        Check 'the previous runtime is byte-identical after a failed staging' ((Get-FileHash -LiteralPath $txScript -Algorithm SHA256).Hash -eq $txGoodHash)
+        Check 'no staging or set-aside directory is left behind' (@(Get-ChildItem -LiteralPath $txRuntimeRoot -Directory -Force | Where-Object { $_.Name -like '.hookmaker-*' }).Count -eq 0)
+    }
+    finally { Remove-FixtureHook 'ZZZ-Regtest-Transaction' }
+
+    # =====================================================================
+    Write-Host '--- registry availability: zero-byte file and orphan lock ---' -ForegroundColor Cyan
+    $availRoot = Join-Path $Work 'availability-root'
+    New-Item -ItemType Directory -Path (Join-Path $availRoot 'state') -Force | Out-Null
+    $availRegistry = Join-Path $availRoot 'state\install-registry.json'
+    $savedAvailStateDir = $env:HOOKMAKER_STATE_DIR
+    $env:HOOKMAKER_STATE_DIR = ''
+    try {
+        Write-Utf8 $availRegistry '{"version":2,"installs":[{"id":"real-record","schema":2,"friendlyName":"Real"}]}'
+        Check 'a healthy registry reads as ok' ((Read-InstallRegistryState -ToolRoot $availRoot).State -eq 'ok')
+        [System.IO.File]::WriteAllText($availRegistry, '')
+        Check 'a zero-byte registry is corrupt, not missing' ((Read-InstallRegistryState -ToolRoot $availRoot).State -eq 'corrupt')
+        [System.IO.File]::WriteAllText($availRegistry, '    ')
+        Check 'a whitespace-only registry is corrupt, not missing' ((Read-InstallRegistryState -ToolRoot $availRoot).State -eq 'corrupt')
+        Remove-Item -LiteralPath $availRegistry -Force
+        Check 'a genuinely absent registry is still reported missing' ((Read-InstallRegistryState -ToolRoot $availRoot).State -eq 'missing')
+        $availLock = Join-Path $availRoot 'state\install-registry.lock'
+        Write-Utf8 $availLock '{"pid":999999,"host":"machine-that-died"}'
+        $reclaimed = $false
+        $probeRecord = [pscustomobject][ordered]@{
+            id = 'orphan-lock-probe'; schema = 2; friendlyName = 'OrphanProbe'; hookType = 'CustomHook'
+            sourceScript = ''; sourceDir = ''; scope = 'project'; targetProjectRoot = ''
+            profile = ''; configPath = ''; sourceManifest = @(); clients = [pscustomobject]@{}; nativeGit = $null
+            lastResult = 'ok'; lastReason = 'probe'; lastError = ''
+        }
+        try { Update-InstallRegistry -ToolRoot $availRoot -Record $probeRecord | Out-Null; $reclaimed = $true } catch { }
+        Check 'an orphan lock from a killed writer is reclaimed, not fatal forever' $reclaimed
+        Check 'the lock file is released after the write' (-not (Test-Path -LiteralPath $availLock))
+    }
+    finally { $env:HOOKMAKER_STATE_DIR = $savedAvailStateDir }
+
     # Installed-state drift: NONE of these change the source, so an updater
     # that only compares stored source hashes would wrongly report "up to
     # date". Each asserts the precise repairable reason.

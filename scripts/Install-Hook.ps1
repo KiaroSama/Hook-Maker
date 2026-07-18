@@ -23,6 +23,39 @@ $ToolRoot = Split-Path -Parent $PSScriptRoot
 # Install-state registry (install-time only - deliberately NOT in _hooklib.ps1,
 # which is copied into every self-contained runtime).
 . (Join-Path $PSScriptRoot '_installlib.ps1')
+# Canonical managed-install plan: safe source classification, transactional
+# runtime replacement, and the single Hook Maker registration-ownership parser.
+. (Join-Path $PSScriptRoot '_installplan.ps1')
+
+# ---- input validation ------------------------------------------------------
+# Everything is validated BEFORE any runtime, settings, registry or native git
+# state is touched, so an invalid invocation leaves the machine untouched
+# instead of half-applying (or recording a tracked install with no client).
+if ($ClaudeOnly -and $CodexOnly) {
+    throw '-ClaudeOnly and -CodexOnly are mutually exclusive. Omit both to install for both clients.'
+}
+$ValidEvents = @('SessionStart', 'UserPromptSubmit', 'Stop', 'SubagentStop', 'PreToolUse', 'PostToolUse', 'SessionEnd', 'PreCompact', 'Notification')
+$normalizedEvents = New-Object System.Collections.Generic.List[string]
+foreach ($rawEvent in @($Events)) {
+    $candidate = ([string]$rawEvent).Trim()
+    if ([string]::IsNullOrWhiteSpace($candidate)) { continue }
+    $canonical = @($ValidEvents | Where-Object { $_ -eq $candidate })
+    if ($canonical.Count -eq 0) {
+        throw ("Unsupported hook event '" + $candidate + "'. Supported events: " + ($ValidEvents -join ', ') + '.')
+    }
+    if (-not $normalizedEvents.Contains($canonical[0])) { [void]$normalizedEvents.Add($canonical[0]) }
+}
+if ($normalizedEvents.Count -eq 0) {
+    throw 'At least one hook event is required (-Events).'
+}
+$Events = $normalizedEvents.ToArray()
+
+if (-not [string]::IsNullOrWhiteSpace($TargetProject)) {
+    $resolvedTarget = [System.IO.Path]::GetFullPath([Environment]::ExpandEnvironmentVariables($TargetProject))
+    if (-not (Test-Path -LiteralPath $resolvedTarget -PathType Container)) {
+        throw ("Target project directory does not exist: " + $resolvedTarget)
+    }
+}
 
 if (-not [string]::IsNullOrWhiteSpace($CustomHook)) {
     if (-not [string]::IsNullOrWhiteSpace($Profile)) {
@@ -43,15 +76,14 @@ else {
     $ConfigPath = [System.IO.Path]::GetFullPath([Environment]::ExpandEnvironmentVariables($ConfigPath))
 }
 
-# Internal name (source folder / file) and the friendly, hyphenated name used
-# for the installed copy's folder + script file so it is easy to identify.
-$SourceDir = Split-Path -Parent $HookScript
-if ((Split-Path -Leaf $SourceDir) -ieq 'hooks') {
-    $SourceName = [System.IO.Path]::GetFileNameWithoutExtension($HookScript)
-}
-else {
-    $SourceName = Split-Path -Leaf $SourceDir
-}
+# How this source is installed. A folder counts as a hook PACKAGE only when it
+# is a direct child of a recognized hooks root; any other script installs
+# standalone (that one file), so pointing -CustomHook at a script inside an
+# unrelated project can never copy that project's .git/.env/credentials/source
+# into a settings-registered runtime directory.
+$SourceInfo = Get-HookSourceInfo -HookScript $HookScript -PackageRoots @((Join-Path $ToolRoot 'hooks'))
+$SourceDir = if ($SourceInfo.Kind -eq 'Package') { $SourceInfo.PackageRoot } else { Split-Path -Parent $SourceInfo.ScriptPath }
+$SourceName = $SourceInfo.Name
 $FriendlyName = Get-HookFriendlyName $SourceName
 
 if (-not [string]::IsNullOrWhiteSpace($TargetProject)) {
@@ -72,16 +104,17 @@ $Timestamp = (Get-Date).ToString('yyyyMMdd-HHmmss')
 # pre-push chain; stays $null for every other hook (StrictMode-safe default).
 $script:NativeGitState = $null
 
-function Write-SyncProjectList {
-    param(
-        [Parameter(Mandatory = $true)][string]$DestinationDirectory,
-        [Parameter(Mandatory = $true)][string]$RoutingConfig
-    )
+# Produces SYNC-PROJECTS.txt's exact content (rather than writing it directly)
+# so the install plan can give this GENERATED artifact a deterministic expected
+# hash and verify it like any other managed file.
+function Get-SyncProjectListContent {
+    param([Parameter(Mandatory = $true)][string]$RoutingConfig)
 
-    if ([string]::IsNullOrWhiteSpace($Profile)) { return }
+    if ([string]::IsNullOrWhiteSpace($Profile)) { return $null }
+    if (-not (Test-Path -LiteralPath $RoutingConfig -PathType Leaf)) { return $null }
     $config = Get-Content -LiteralPath $RoutingConfig -Raw | ConvertFrom-Json
     $matchingProfile = @($config.profiles | Where-Object { $_.id -eq $Profile } | Select-Object -First 1)
-    if ($matchingProfile.Count -eq 0) { return }
+    if ($matchingProfile.Count -eq 0) { return $null }
 
     $projectsByRoot = @{}
     foreach ($route in @($matchingProfile[0].routes)) {
@@ -103,7 +136,9 @@ function Write-SyncProjectList {
     foreach ($project in @($projectsByRoot.Values | Sort-Object -Property Root)) {
         [void]$lines.Add(('- ' + $project.Name + ' | ' + $project.Root))
     }
-    [System.IO.File]::WriteAllLines((Join-Path $DestinationDirectory 'SYNC-PROJECTS.txt'), $lines, $Utf8NoBom)
+    # WriteAllLines appends a trailing newline after the last line; match that
+    # exactly so the planned hash equals what lands on disk.
+    return (($lines.ToArray() -join "`r`n") + "`r`n")
 }
 
 # Installs are SELF-CONTAINED: the hook runtime (script, shared _hooklib.ps1,
@@ -145,11 +180,7 @@ function Copy-HookRuntime {
         }
     }
 
-    # Clean this hook's own folder (fresh copy) and any legacy internal-name
-    # folder / root config from an older layout.
     $destDir = Join-Path $runtimeRoot $FriendlyName
-    if (Test-Path -LiteralPath $destDir) { Remove-Item -LiteralPath $destDir -Recurse -Force }
-    New-Item -ItemType Directory -Path $destDir -Force | Out-Null
     $legacyDir = Join-Path $runtimeRoot $SourceName
     if ($SourceName -ne $FriendlyName -and (Test-Path -LiteralPath $legacyDir)) {
         Remove-Item -LiteralPath $legacyDir -Recurse -Force
@@ -157,31 +188,24 @@ function Copy-HookRuntime {
     $legacyRootConfig = Join-Path $runtimeRoot 'sync-hooks.json'
     if (Test-Path -LiteralPath $legacyRootConfig) { Remove-Item -LiteralPath $legacyRootConfig -Force }
 
-    $friendlyScript = Join-Path $destDir ($FriendlyName + '.ps1')
-    if ((Split-Path -Leaf $SourceDir) -ieq 'hooks') {
-        # Loose script directly in hooks\ - just the file, under the friendly name.
-        Copy-Item -LiteralPath $HookScript -Destination $friendlyScript -Force
-    }
-    else {
-        # One folder per hook: copy its contents (e.g. a real .env), drop the
-        # template, and rename the main script to the friendly name.
-        Copy-Item -Path (Join-Path $SourceDir '*') -Destination $destDir -Recurse -Force
-        Remove-Item -LiteralPath (Join-Path $destDir '.env.example') -Force -ErrorAction SilentlyContinue
-        $copiedOriginal = Join-Path $destDir (Split-Path -Leaf $HookScript)
-        if ((Test-Path -LiteralPath $copiedOriginal) -and ($copiedOriginal -ne $friendlyScript)) {
-            Move-Item -LiteralPath $copiedOriginal -Destination $friendlyScript -Force
-        }
-    }
+    # Build the canonical plan, then install it TRANSACTIONALLY: staged in a
+    # sibling directory, hash-verified, and only then swapped into place. The
+    # previous runtime survives any failure before the swap and is restored if
+    # the swap itself fails - a failed update never leaves a working
+    # installation less functional than it was.
+    $isEngineInstall = [string]::IsNullOrWhiteSpace($CustomHook)
+    $syncListContent = $null
+    if ($isEngineInstall) { $syncListContent = Get-SyncProjectListContent -RoutingConfig $ConfigPath }
+    $plan = Get-ManagedInstallPlan -SourceInfo $SourceInfo -FriendlyName $FriendlyName -ToolRoot $ToolRoot `
+        -ConfigPath $ConfigPath -IncludeConfig:$isEngineInstall -SyncProjectListContent $syncListContent
+    Install-PlannedRuntime -Plan $plan -RuntimeRoot $runtimeRoot -FriendlyName $FriendlyName | Out-Null
 
-    $localConfig = ''
-    if ([string]::IsNullOrWhiteSpace($CustomHook)) {
-        $localConfig = Join-Path $destDir 'sync-hooks.json'
-        Copy-Item -LiteralPath $ConfigPath -Destination $localConfig -Force
-        Write-SyncProjectList -DestinationDirectory $destDir -RoutingConfig $localConfig
-    }
+    $friendlyScript = Join-Path $destDir ($FriendlyName + '.ps1')
+    $localConfig = if ($isEngineInstall) { Join-Path $destDir 'sync-hooks.json' } else { '' }
     return [pscustomobject]@{
         Script = $friendlyScript
         Config = $localConfig
+        Plan   = $plan
     }
 }
 
@@ -216,26 +240,17 @@ function Remove-StaleHandlers {
     if ($null -eq $HooksObject.PSObject.Properties[$EventName]) {
         return
     }
-    # Parenthesize each element: comma binds tighter than '+', so without the
-    # parens this collapses into a single mangled marker and matches nothing.
-    $leafMarkers = @(('\' + $FriendlyName + '.ps1"'), ('\' + $SourceName + '.ps1"'))
-    $profileMarker = ''
-    if (-not [string]::IsNullOrWhiteSpace($Profile)) {
-        $profileMarker = '-Profile "' + $Profile + '"'
-    }
+    # Ownership is proven by the managed runtime PATH SHAPE
+    # (...\hooks\Hook-Maker\<Name>\<file>.ps1, or the legacy HookMaker layout),
+    # checked across command / commandWindows / command_windows - never by a
+    # bare script basename. A user's own unrelated handler that happens to
+    # point at a script with the same filename is NOT ours and is preserved.
     $keptGroups = @()
     foreach ($group in @($HooksObject.$EventName)) {
         $keptHandlers = @()
         foreach ($handler in @($group.hooks)) {
-            $command = ''
-            if ($null -ne $handler.PSObject.Properties['command']) {
-                $command = [string]$handler.command
-            }
-            $matchesLeaf = $false
-            foreach ($marker in $leafMarkers) {
-                if ($command.Contains($marker)) { $matchesLeaf = $true; break }
-            }
-            $sameHook = $matchesLeaf -and ($profileMarker -eq '' -or $command.Contains($profileMarker))
+            $sameHook = Test-HandlerBelongsToInstall -Handler $handler -FriendlyName $FriendlyName `
+                -ProfileId ([string]$Profile) -AlsoMatchHookNames @($SourceName)
             if (-not $sameHook) {
                 $keptHandlers += $handler
             }
@@ -282,6 +297,10 @@ function Backup-File {
     }
 }
 
+# Settings are replaced transactionally: serialize to a sibling temp file,
+# re-parse that temp file to prove it is valid JSON, and only then atomically
+# replace the real file. A failure at any step leaves the original settings
+# exactly as they were - never truncated or half-written.
 function Write-JsonFile {
     param(
         [Parameter(Mandatory = $true)]$Value,
@@ -292,7 +311,28 @@ function Write-JsonFile {
     if (-not (Test-Path -LiteralPath $directory -PathType Container)) {
         New-Item -ItemType Directory -Path $directory -Force | Out-Null
     }
-    [System.IO.File]::WriteAllText($Path, ($Value | ConvertTo-Json -Depth 50), $Utf8NoBom)
+    $json = $Value | ConvertTo-Json -Depth 50
+    $temporaryPath = $Path + '.hookmaker-tmp-' + [guid]::NewGuid().ToString('N').Substring(0, 8)
+    try {
+        [System.IO.File]::WriteAllText($temporaryPath, $json, $Utf8NoBom)
+        # Re-parse from disk: proves what we are about to publish is loadable.
+        $verify = [System.IO.File]::ReadAllText($temporaryPath, [System.Text.Encoding]::UTF8)
+        $null = $verify | ConvertFrom-Json
+        if (Test-Path -LiteralPath $Path -PathType Leaf) {
+            # [NullString]::Value, not $null: PowerShell coerces a bare $null
+            # to '' for a [string] parameter, and Replace rejects an empty
+            # backup path.
+            [System.IO.File]::Replace($temporaryPath, $Path, [NullString]::Value)
+        }
+        else {
+            Move-Item -LiteralPath $temporaryPath -Destination $Path -Force
+        }
+    }
+    finally {
+        if (Test-Path -LiteralPath $temporaryPath -PathType Leaf) {
+            Remove-Item -LiteralPath $temporaryPath -Force -ErrorAction SilentlyContinue
+        }
+    }
 }
 
 function Install-IgnorePrePush {
@@ -507,7 +547,7 @@ try {
     $hookType = if ([string]::IsNullOrWhiteSpace($CustomHook)) { 'Engine' } else { 'CustomHook' }
     $isEngine = ($hookType -eq 'Engine')
 
-    $sourceManifest = @(Get-ManagedSourceManifest -ToolRoot $ToolRoot -HookScript $HookScript -SourceDir $SourceDir -FriendlyName $FriendlyName -ConfigPath $ConfigPath -IncludeConfig:$isEngine)
+    $sourceManifest = @(Get-ManagedSourceManifest -ToolRoot $ToolRoot -HookScript $HookScript -SourceDir $SourceDir -FriendlyName $FriendlyName -ConfigPath $ConfigPath -IncludeConfig:$isEngine -ProfileId ([string]$Profile))
 
     $clients = [pscustomobject][ordered]@{}
     if (-not $CodexOnly) {
