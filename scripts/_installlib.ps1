@@ -594,44 +594,68 @@ function Get-InstallIntegrity {
             -ConfigPath $configPath -IncludeConfig:$isEngine `
             -ProfileId ([string]$Record.profile))
 
-    # 1. Did the source itself change since this install was recorded?
+    # Component-level evaluation. Nothing early-returns any more: every
+    # component is evaluated so the caller can repair ONLY what is damaged.
+    # Repairing a healthy client would rewrite its settings, add a backup and
+    # bump its runtime mtimes for no reason.
+    #
+    # SOURCE is a shared dependency: when it changes every component is stale
+    # by definition, so they are all marked for repair together.
+    $components = New-Object System.Collections.Generic.List[object]
+    function Add-Component {
+        param([string]$Name, [string]$Status, [string]$Detail)
+        [void]$components.Add([pscustomobject]@{ Name = $Name; Status = $Status; Detail = $Detail })
+    }
+
     $recordedSource = @()
     if ($null -ne $Record.PSObject.Properties['sourceManifest'] -and $null -ne $Record.sourceManifest) { $recordedSource = @($Record.sourceManifest) }
     $sourceDifference = Compare-Manifest -Expected $recordedSource -Actual $currentSource
-    if (-not $sourceDifference.IsMatch) {
-        $detail = 'source changed since last install'
-        if ($recordedSource.Count -eq 0) { $detail = 'tracked before managed-file tracking existed - will be refreshed' }
-        elseif ($sourceDifference.Modified.Count -gt 0) { $detail = 'source changed: ' + $sourceDifference.Modified[0] }
-        elseif ($sourceDifference.Unexpected.Count -gt 0) { $detail = 'source file added: ' + $sourceDifference.Unexpected[0] }
-        elseif ($sourceDifference.Missing.Count -gt 0) { $detail = 'source file removed: ' + $sourceDifference.Missing[0] }
-        return [pscustomobject]@{ Status = 'update'; Detail = $detail }
+    $sourceChanged = (-not $sourceDifference.IsMatch)
+    $sourceDetail = ''
+    if ($sourceChanged) {
+        $sourceDetail = 'source changed since last install'
+        if ($recordedSource.Count -eq 0) { $sourceDetail = 'tracked before managed-file tracking existed - will be refreshed' }
+        elseif ($sourceDifference.Modified.Count -gt 0) { $sourceDetail = 'source changed: ' + $sourceDifference.Modified[0] }
+        elseif ($sourceDifference.Unexpected.Count -gt 0) { $sourceDetail = 'source file added: ' + $sourceDifference.Unexpected[0] }
+        elseif ($sourceDifference.Missing.Count -gt 0) { $sourceDetail = 'source file removed: ' + $sourceDifference.Missing[0] }
+        Add-Component -Name 'source' -Status 'update' -Detail $sourceDetail
+    }
+    else {
+        Add-Component -Name 'source' -Status 'current' -Detail ''
     }
 
-    # 2. Does what is actually installed still match that source, per client?
     foreach ($client in $installedClients) {
+        # A changed source invalidates every client regardless of what is on
+        # disk right now, so they are repaired together with it.
+        if ($sourceChanged) {
+            Add-Component -Name $client -Status 'update' -Detail $sourceDetail
+            continue
+        }
         $subrecord = Get-ClientSubrecord -Record $Record -Client $client
         $runtimeScript = [string]$subrecord.runtimeScript
         if ([string]::IsNullOrWhiteSpace($runtimeScript) -or -not (Test-Path -LiteralPath $runtimeScript -PathType Leaf)) {
-            return [pscustomobject]@{ Status = 'update'; Detail = ($client + ': installed hook script is missing') }
+            Add-Component -Name $client -Status 'update' -Detail 'installed hook script is missing'
+            continue
         }
         $installed = @(Get-InstalledManifest -RuntimeRoot ([string]$subrecord.runtimeRoot) -FriendlyName ([string]$Record.friendlyName))
         $difference = Compare-Manifest -Expected $currentSource -Actual $installed
         if (-not $difference.IsMatch) {
+            $reason = ''
             if ($difference.Missing.Count -gt 0) {
                 $missing = $difference.Missing[0]
                 $reason = if ($missing -like '*/_hooklib.ps1') { 'private runtime library is missing: ' + $missing } else { 'installed file missing: ' + $missing }
-                return [pscustomobject]@{ Status = 'update'; Detail = ($client + ': ' + $reason) }
             }
-            if ($difference.Modified.Count -gt 0) {
+            elseif ($difference.Modified.Count -gt 0) {
                 $modified = $difference.Modified[0]
                 $reason = if ($modified -like '*/_hooklib.ps1') { 'private runtime library is stale: ' + $modified } else { 'installed file modified: ' + $modified }
-                return [pscustomobject]@{ Status = 'update'; Detail = ($client + ': ' + $reason) }
             }
-            return [pscustomobject]@{ Status = 'update'; Detail = ($client + ': unexpected managed file: ' + $difference.Unexpected[0]) }
+            else {
+                $reason = 'unexpected managed file: ' + $difference.Unexpected[0]
+            }
+            Add-Component -Name $client -Status 'update' -Detail $reason
+            continue
         }
 
-        # 3. Is the registration still there, exactly once, with the semantics
-        #    this client was installed with?
         $expectedCommand = ''
         if ($null -ne $subrecord.PSObject.Properties['command']) { $expectedCommand = [string]$subrecord.command }
         $expectedTimeout = 60
@@ -644,35 +668,63 @@ function Get-InstallIntegrity {
             -ExpectedCommand $expectedCommand `
             -ExpectedTimeout $expectedTimeout
         if (-not $registrationState.Ok) {
-            return [pscustomobject]@{ Status = 'update'; Detail = ($client + ': ' + $registrationState.Reason + ' (' + $registrationState.Detail + ')') }
+            Add-Component -Name $client -Status 'update' -Detail ($registrationState.Reason + ' (' + $registrationState.Detail + ')')
+            continue
         }
+        Add-Component -Name $client -Status 'current' -Detail ''
     }
 
-    # 4. Native Git pre-push chain (part of this logical install, not separate).
+    # Native Git pre-push chain: part of this logical install, evaluated as its
+    # own component so a damaged wrapper does not force a client reinstall.
     if ($null -ne $Record.PSObject.Properties['nativeGit'] -and $null -ne $Record.nativeGit) {
         $native = $Record.nativeGit
         if ($null -ne $native.PSObject.Properties['managed'] -and $native.managed -eq $true) {
-            $currentNative = @(Get-NativePrePushSourceManifest -ToolRoot $ToolRoot `
-                    -PrimaryFriendlyName ([string]$Record.friendlyName) `
-                    -PrimaryHookScript ([string]$Record.sourceScript) `
-                    -PrimarySourceDir ([string]$Record.sourceDir) `
-                    -Companions @($native.companions))
-            $recordedNative = @()
-            if ($null -ne $native.PSObject.Properties['sourceManifest'] -and $null -ne $native.sourceManifest) { $recordedNative = @($native.sourceManifest) }
-            $nativeSourceDifference = Compare-Manifest -Expected $recordedNative -Actual $currentNative
-            if (-not $nativeSourceDifference.IsMatch) {
-                $detail = 'native pre-push companion source changed'
-                if ($nativeSourceDifference.Modified.Count -gt 0) { $detail = 'native pre-push source changed: ' + $nativeSourceDifference.Modified[0] }
-                return [pscustomobject]@{ Status = 'update'; Detail = $detail }
+            if ($sourceChanged) {
+                Add-Component -Name 'nativeGit' -Status 'update' -Detail $sourceDetail
             }
-            $nativeState = Test-NativePrePushState -NativeRecord $native -PrimaryFriendlyName ([string]$Record.friendlyName)
-            if (-not $nativeState.Ok) {
-                return [pscustomobject]@{ Status = 'update'; Detail = ($nativeState.Reason + ': ' + $nativeState.Detail) }
+            else {
+                $currentNative = @(Get-NativePrePushSourceManifest -ToolRoot $ToolRoot `
+                        -PrimaryFriendlyName ([string]$Record.friendlyName) `
+                        -PrimaryHookScript ([string]$Record.sourceScript) `
+                        -PrimarySourceDir ([string]$Record.sourceDir) `
+                        -Companions @($native.companions))
+                $recordedNative = @()
+                if ($null -ne $native.PSObject.Properties['sourceManifest'] -and $null -ne $native.sourceManifest) { $recordedNative = @($native.sourceManifest) }
+                $nativeSourceDifference = Compare-Manifest -Expected $recordedNative -Actual $currentNative
+                if (-not $nativeSourceDifference.IsMatch) {
+                    $nativeDetail = 'native pre-push companion source changed'
+                    if ($nativeSourceDifference.Modified.Count -gt 0) { $nativeDetail = 'native pre-push source changed: ' + $nativeSourceDifference.Modified[0] }
+                    Add-Component -Name 'nativeGit' -Status 'update' -Detail $nativeDetail
+                }
+                else {
+                    $nativeState = Test-NativePrePushState -NativeRecord $native -PrimaryFriendlyName ([string]$Record.friendlyName)
+                    if (-not $nativeState.Ok) {
+                        # 'manual repair required' is NOT fixable by reinstalling:
+                        # it means a user-owned file is missing and Hook Maker
+                        # must not recreate it.
+                        $nativeStatus = if ($nativeState.Reason -eq 'manual repair required') { 'skip' } else { 'update' }
+                        Add-Component -Name 'nativeGit' -Status $nativeStatus -Detail ($nativeState.Reason + ': ' + $nativeState.Detail)
+                    }
+                    else {
+                        Add-Component -Name 'nativeGit' -Status 'current' -Detail ''
+                    }
+                }
             }
         }
     }
 
-    return [pscustomobject]@{ Status = 'current'; Detail = 'up to date' }
+    $componentArray = @($components.ToArray())
+    $damaged = @($componentArray | Where-Object { $_.Status -eq 'update' })
+    $blocked = @($componentArray | Where-Object { $_.Status -eq 'skip' })
+    if ($damaged.Count -gt 0) {
+        $firstDamaged = $damaged[0]
+        $prefix = if ($firstDamaged.Name -eq 'source' -or $firstDamaged.Name -eq 'nativeGit') { '' } else { $firstDamaged.Name + ': ' }
+        return [pscustomobject]@{ Status = 'update'; Detail = ($prefix + $firstDamaged.Detail); Components = $componentArray }
+    }
+    if ($blocked.Count -gt 0) {
+        return [pscustomobject]@{ Status = 'skip'; Detail = $blocked[0].Detail; Components = $componentArray }
+    }
+    return [pscustomobject]@{ Status = 'current'; Detail = 'up to date'; Components = $componentArray }
 }
 
 # ---- registry file: path, validation, quarantine, locking ------------------
