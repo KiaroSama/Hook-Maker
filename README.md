@@ -33,10 +33,11 @@ starts the user's task.
 | `scripts/Test-GraphUpdateCheck.ps1` | Offline test suite for the Graph-Update-Check hook (structural-impact criteria replacing file-count wording, staleness/freshness detection, cooldown/`stop_hook_active`; 14 assertions, PowerShell 5.1). |
 | `scripts/Test-TestTempCleanup.ps1` | Offline test suite for the Test-Temp-Cleanup hook (SessionStart baseline, safe-candidate deletion + rescan verification, tracked/staged/reparse-point/hard-protected-root preservation, review-only-by-default, missing-baseline conservative fallback, path/byte limits, locked-candidate failure fingerprint with no-loop guarantee, Claude/Codex output shapes; 31 assertions, PowerShell 5.1). |
 | `scripts/Test-DocsFreshnessCheck.ps1` | Offline test suite for the Docs-Freshness-Check hook (SessionStart baseline, task-delta detection across committed/staged/working-tree changes, comment/blank-only-change silence, hard exclusions, ranked tracked-doc candidates, content-hashed impact fingerprint immune to unrelated doc edits, the Updated/NoUpdate acknowledgement flow with rejection of generic reasons and out-of-root/private/untracked paths, acknowledgement invalidation on a further non-doc change, `stop_hook_active`, self-contained installer copies; real throwaway git repos, 40 assertions, PowerShell 5.1). |
-| `scripts/Test-InstallRegistry.ps1` | Offline test suite for the install registry and "Update previously installed hooks" (single/multi/config-based/generated/sync-engine installs tracked without duplication, Claude/Codex/Both + project/global scope, byte-for-byte refresh preserving events/client/target/scope/profile, never installing a never-installed hook, missing-source/target reported and skipped, second-run idempotency, atomic writes + malformed-state safety, no secret/`.env`/prompt content ever stored, unrelated JSON preserved, native pre-push companion refresh with a preserved previous hook; real throwaway projects + a disposable custom-hook fixture, 60 assertions). |
+| `scripts/Test-InstallRegistry.ps1` | Offline test suite for the install registry and "Update previously installed hooks" (single/multi/config-based/generated/sync-engine installs tracked without duplication, Claude/Codex/Both + project/global scope, byte-for-byte refresh preserving events/client/target/scope/profile, never installing a never-installed hook, missing-source/target reported and skipped, second-run idempotency, no secret/`.env`/prompt content ever stored, unrelated JSON preserved; **installed-state drift** — deleted/modified runtime script, stale or missing shared `_hooklib.ps1`, removed Claude/Codex registration, moved event, changed matcher, duplicate registration, one wiped client runtime — detected and repaired with no source change at all; **managed manifest** covering `.env`/copied helpers/added/removed files while ignoring runtime-generated files; **per-client semantics** (Claude `SessionStart` + Codex `Stop` preserved independently across an update, repairing one client leaving the other byte-for-byte untouched); **v1→v2 migration** deriving events from live registrations and flagging unprovable records for manual repair; **native pre-push** with a deliberately corrupted companion repaired, chain order/single-wrapper/stdin-replay/fail-closed preserved and the user's previous hook byte-for-byte intact; **corrupt-registry quarantine** (malformed JSON, wrong field types, unsupported version, stale `.tmp`, unique collision names, quarantine failure leaving the original untouched, concurrent lock-guarded writers losing no records); real throwaway projects/git repos + disposable custom-hook fixtures, 153 assertions). |
 | `scripts/_testlib.ps1` | Shared assertion helper used by the offline PowerShell test suites. |
 | `logs/` | Wizard execution logs (created on demand, not committed). |
-| `state/` | **Machine-local and git-ignored.** `install-registry.json` — what Hook Maker has installed and where (see "Updating previously installed hooks"); never holds secret/`.env`/prompt content. |
+| `scripts/_installlib.ps1` | Install-time-only library: the install registry (schema, validation, atomic+locked writes, corruption quarantine, v1→v2 migration), the managed-file manifest builders, and the installed-state integrity evaluation behind "Update previously installed hooks". Deliberately separate from `hooks/_hooklib.ps1`, which is copied into every installed runtime. |
+| `state/` | **Machine-local and git-ignored.** `install-registry.json` — what Hook Maker has installed and where (see "Updating previously installed hooks"); never holds secret/`.env`/prompt content or file contents. A damaged registry is preserved beside it as `install-registry.corrupt-<UTC timestamp>-<short hash>.json` instead of being overwritten. |
 
 ## Shipped hooks
 
@@ -182,25 +183,81 @@ use the final item in **`1` → Install an existing hook / Create or install a h
 
 `4` **Update previously installed hooks**
 
-This reads a local install registry, shows a plan (already up to date / will be updated / skipped —
-missing source, target, or profile), asks **one** confirmation, then refreshes every hook whose
-installed copy no longer matches current source — reusing each installation's original events,
-client selection, target/global scope, and (for the sync engine) profile/config, so you never
-re-answer the same questions. It never installs a hook that was never installed, never touches
-unrelated settings-file content, and a second run with nothing changed reports everything as
-already current (no-op). `Ignore-Rules-Check`'s native Git pre-push chain and its bundled
-`Secrets-Check` companion are refreshed the same way, while a pre-existing (non-Hook-Maker)
-pre-push hook stays preserved exactly as the installer already promises.
+This reads a local install registry, shows a plan, asks **one** confirmation, then repairs
+everything that needs it — reusing each installation's original events, client selection,
+target/global scope, and (for the sync engine) profile/config, so you never re-answer the same
+questions. It never installs a hook that was never installed, never touches unrelated
+settings-file content, and a second run with nothing changed reports everything as already current
+(no-op).
+
+### What "up to date" actually means
+
+An installation is reported as **up to date** only when *all* of the following hold — it is never
+inferred from the registry's own last-known hashes, which only describe what was true at install
+time:
+
+- the registry record and schema are valid, and the recorded source still resolves;
+- the current **managed-source manifest** matches the one recorded at install time;
+- every managed file **actually on disk** matches that source manifest;
+- every expected registration exists **exactly once**, with the matching event, matcher, command,
+  and timeout for that client;
+- no stale registration for the same installation is left on another event;
+- the target/scope/profile/config still exist;
+- any native Git pre-push integration is intact.
+
+Anything else is planned as an **update** with a precise reason (`source changed`,
+`installed file missing`, `installed file modified`, `shared runtime is stale`,
+`registration missing`, `registration drifted`, `duplicate registration`, `stale registration`,
+`native integration stale`), or **skipped** with a precise non-destructive reason. Deleting,
+corrupting, or hand-editing an installed runtime file, or removing/altering a registration, is
+therefore detected and repaired even when the source has not changed at all.
+
+### Managed files
+
+The manifest covers **every** file the installer copies for that hook — the main script, the shared
+`_hooklib.ps1`, the hook's own `.env` (hashed as a whole file; its values are never read or stored),
+any other helper/data file in the hook's source folder, and the sync engine's copied config. So a
+change to only a hook's `.env` or only a copied helper still triggers an update. Files the installer
+does not copy (`.env.example`) and files generated or mutated at runtime (`SYNC-PROJECTS.txt`, logs)
+are deliberately excluded so they never cause permanent false drift.
+
+### Per-client semantics
+
+Claude and Codex are tracked **separately** inside one logical installation. Installing a hook for
+Claude on `SessionStart` and later for Codex on `Stop` in the same project is a supported
+combination: each client keeps its own events, matcher, command, timeout, status message, runtime
+paths, and manifest, and the updater repairs each client with **its own** saved parameters. Adding,
+removing, or repairing one client never rewrites the other. Client selection is stored explicitly at
+install time — never guessed from which runtime files happen to exist on disk.
+
+### Native Git pre-push
+
+`Ignore-Rules-Check`'s native Git pre-push chain is treated as part of that installation, including
+its bundled managed companions (currently `Secrets-Check`). A change to a companion's **source**, or
+a corrupted/missing managed companion **on disk**, plans the parent hook for update. Repair rebuilds
+the wrapper exactly once, keeps the `Ignore → Secrets → previous hook` order, preserves the
+fail-closed `|| exit` chaining and the single-read stdin buffering/replay, and leaves a pre-existing
+(non-Hook-Maker) `pre-push.hookmaker-existing` hook **byte-for-byte untouched** — it is user-owned,
+so it is never hashed, rewritten, or deleted.
 
 Every successful install (single hook, a batch, config-based, a generated/custom hook, or the sync
 engine, from any client/scope combination) is recorded — through the same shared step inside
 `Install-Hook.ps1` — in `state/install-registry.json` at the Hook Maker project root:
-**machine-local and git-ignored**, never committed. Each entry stores what is needed to reproduce a
-refresh without re-asking anything: the hook's friendly/internal name and type, its source path and
-a content hash (so a real change is detected), the target scope and events/client/profile it was
-installed with, the installed runtime paths, and timestamps/result — never `.env` values, secret
-values, or any prompt/tool-input content. Reinstalling the same hook into the same scope updates its
-existing entry instead of creating a duplicate.
+**machine-local and git-ignored**, never committed. Entries store paths, content hashes, and the
+install parameters needed to reproduce a refresh — never `.env` values, secret values, file
+contents, or any prompt/tool-input content. Reinstalling the same hook into the same scope updates
+its existing entry instead of creating a duplicate. Registry writes are atomic and guarded by a
+bounded lock file, so two installs running at once cannot lose each other's records.
+
+### If the registry is damaged
+
+A registry that is unreadable, not valid JSON, structurally invalid, or written by a newer schema
+version is **never** silently treated as empty and overwritten. The next install preserves its exact
+bytes under `state/install-registry.corrupt-<UTC timestamp>-<short hash>.json`, warns with that
+path, and only then starts a fresh registry. If the file cannot be quarantined, it is left
+completely untouched and the install reports that **tracking failed** — the hook itself may still be
+correctly installed, but it is never claimed to be tracked when it is not. The updater refuses to
+list or verify anything against a damaged registry rather than reporting a misleading "up to date".
 
 A hook installed by an **older** version of Hook Maker (before this registry existed) is picked up
 automatically the moment `4` runs, for the current project, the global scope, and any other project

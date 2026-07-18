@@ -144,10 +144,17 @@ jobs:
       # config-based/generated/sync-engine installs tracked without
       # duplication, byte-for-byte refresh preserving events/client/target/
       # scope/profile, never-installed hooks never added, missing source/
-      # target reported and skipped, idempotent second run, atomic writes +
-      # malformed-state safety, no secret/.env/prompt content ever stored,
-      # native pre-push companion refresh. Offline, no network; isolates the
-      # registry away from this checkout's own state\.
+      # target reported and skipped, idempotent second run, no secret/.env/
+      # prompt content ever stored. Also covers installed-state drift with no
+      # source change (deleted/modified runtime, stale shared _hooklib,
+      # removed/moved/duplicated registration, one wiped client), the managed
+      # manifest (.env + copied helpers + added/removed files, runtime-
+      # generated files ignored), per-client Claude/Codex semantics preserved
+      # independently, v1 -> v2 record migration, native pre-push repair of a
+      # deliberately corrupted companion with the user's previous hook left
+      # byte-for-byte intact, and corrupt-registry quarantine + locked
+      # concurrent writes. Offline, no network; isolates the registry away
+      # from this checkout's own state\.
       - name: Install registry / update-installed-hooks test suite
         shell: pwsh
         run: .\scripts\Test-InstallRegistry.ps1
