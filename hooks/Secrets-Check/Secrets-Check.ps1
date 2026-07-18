@@ -1,5 +1,19 @@
 # Secrets-Check - keeps a project's secrets.md registry accurate and safe.
 #
+# Every discovered .env* key is classified before anything else applies:
+#   Secret       - registered in secrets.md, scanned for leaks, can block a push.
+#   PublicConfig - ordinary public configuration (a public URL, a public bucket
+#                  name, a region, ...) - never registered, never leak-scanned,
+#                  never blocks a push merely for appearing in tracked files.
+#   Unknown      - mixed/insufficient evidence - reported as an advisory asking
+#                  for explicit classification (SECRET_KEYS/PUBLIC_CONFIG_KEYS
+#                  in .env), never silently treated as safe, never a confirmed
+#                  leak from a bare value match alone.
+# A key prefix (NEXT_PUBLIC_, PUBLIC_, VITE_, REACT_APP_) is never sufficient
+# by itself to call something safe - real credential evidence (key semantics
+# like TOKEN/SECRET/API_KEY/PASSWORD, or a credential-shaped value) always
+# wins and classifies as Secret regardless of a "public" prefix.
+#
 # Checks (pre-task SessionStart + post-task Stop):
 # - secrets.md exists but is NOT git-ignored, or is tracked/staged in git -> CRITICAL.
 # - Any real .env* file (not a .example/.sample/.template) is itself tracked -> CRITICAL.
@@ -117,6 +131,131 @@ if ($config.ContainsKey('MIN_SECRET_LENGTH')) {
     try { $minSecretLength = [int]$config['MIN_SECRET_LENGTH'] } catch { }
 }
 
+# ---- Secret / PublicConfig / Unknown classification ----
+# A key living in .env* is not automatically a credential: NEXT_PUBLIC_APP_URL
+# and R2_BUCKET are ordinary public configuration, not secrets. Classification
+# considers BOTH key semantics and value shape - a key prefix alone (PUBLIC_,
+# NEXT_PUBLIC_, VITE_, ...) is never sufficient to call something safe, and it
+# never overrides real credential evidence (PUBLIC_API_TOKEN, NEXT_PUBLIC_API_KEY
+# with a live-looking key still classify as Secret).
+function Get-KeyOverrideList {
+    param([string]$Raw)
+    # Caller always wraps the call with @(...) - never rely on the internal
+    # return value alone: a bare `return $list` collapses to a scalar (no
+    # array semantics) under StrictMode when the list holds 0 or 1 items.
+    $result = New-Object System.Collections.Generic.List[string]
+    if ([string]::IsNullOrWhiteSpace($Raw)) { return $result.ToArray() }
+    foreach ($tok in $Raw.Split(',')) {
+        $t = $tok.Trim().ToUpperInvariant()
+        if ($t -eq '' -or $t -eq '*') { continue }    # reject empty/overly broad
+        [void]$result.Add($t)
+    }
+    return $result.ToArray()
+}
+function Test-KeyMatchesOverride {
+    param([string]$UpperKey, [string[]]$Overrides)
+    foreach ($entry in $Overrides) {
+        if ($entry.EndsWith('*')) {
+            if ($UpperKey.StartsWith($entry.TrimEnd('*'))) { return $true }
+        }
+        elseif ($UpperKey -eq $entry) { return $true }
+    }
+    return $false
+}
+$secretKeysRaw = ''
+if ($config.ContainsKey('SECRET_KEYS')) { $secretKeysRaw = $config['SECRET_KEYS'] }
+$publicConfigKeysRaw = ''
+if ($config.ContainsKey('PUBLIC_CONFIG_KEYS')) { $publicConfigKeysRaw = $config['PUBLIC_CONFIG_KEYS'] }
+$secretKeyOverrides = @(Get-KeyOverrideList $secretKeysRaw)
+$publicConfigKeyOverrides = @(Get-KeyOverrideList $publicConfigKeysRaw)
+
+$script:CredentialKeySubstrings = @(
+    'SECRET', 'TOKEN', 'PASSWORD', 'PASSWD', 'PRIVATE_KEY', 'CLIENT_SECRET', 'API_KEY',
+    'ACCESS_KEY', 'SIGNING_KEY', 'WEBHOOK_SECRET', 'AUTH', 'CREDENTIAL', 'SESSION_KEY', 'ENCRYPTION_KEY'
+)
+$script:PublicKeyPrefixes = @('NEXT_PUBLIC_', 'PUBLIC_', 'VITE_', 'REACT_APP_')
+$script:PublicKeySuffixes = @(
+    '_URL', '_ORIGIN', '_HOST', '_HOSTNAME', '_PORT', '_REGION', '_BUCKET', '_BUCKET_NAME',
+    '_ENV', '_ENVIRONMENT', '_PUBLIC_ID', '_PROJECT_ID', '_APP_ID', '_SITE_ID', '_WORKER_NAME', '_SERVICE_NAME'
+)
+$script:PublicKeyContains = @('FEATURE')
+
+# Value-shape evidence strong enough to call something a Secret regardless of
+# its key name: private-key material, bearer/JWT tokens, known live-credential
+# formats (Stripe/GitHub/Slack/AWS/Google), a connection string with an
+# embedded username:password or a token/password query parameter, and a long
+# no-whitespace opaque value that mixes upper/lower/digit (high-entropy-like)
+# and is not itself a URL.
+function Test-CredentialLikeValue {
+    param([string]$Value)
+    if ([string]::IsNullOrWhiteSpace($Value)) { return $false }
+    if ($Value -match '-----BEGIN [A-Z ]*PRIVATE KEY-----') { return $true }
+    if ($Value -match '^Bearer\s+\S+') { return $true }
+    if ($Value -match '^eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$') { return $true }
+    if ($Value -match '^(sk|pk|rk)_(live|test)_[A-Za-z0-9]{10,}$') { return $true }
+    if ($Value -match '^gh[pousr]_[A-Za-z0-9]{20,}$' -or $Value -match '^github_pat_[A-Za-z0-9_]{20,}$') { return $true }
+    if ($Value -match '^xox[baprs]-[A-Za-z0-9-]{10,}$') { return $true }
+    if ($Value -match '^AKIA[0-9A-Z]{16}$') { return $true }
+    if ($Value -match '^AIza[0-9A-Za-z_-]{35}$') { return $true }
+    if ($Value -match '^[A-Za-z][A-Za-z0-9+.-]*://[^/@\s]+:[^/@\s]+@') { return $true }
+    if ($Value -match '(?i)[?&](token|access_token|api_key|apikey|password|secret)=[^&\s]+') { return $true }
+    if ($Value -notmatch '\s' -and $Value.Length -ge 24 -and
+        $Value -notmatch '^[A-Za-z][A-Za-z0-9+.-]*://' -and
+        $Value -match '[A-Z]' -and $Value -match '[a-z]' -and $Value -match '[0-9]') {
+        return $true
+    }
+    return $false
+}
+
+function Get-KeyValueClassification {
+    param([string]$Key, [string]$Value)
+    $upperKey = $Key.ToUpperInvariant()
+    if (Test-KeyMatchesOverride $upperKey $secretKeyOverrides) { return 'Secret' }
+    if (Test-KeyMatchesOverride $upperKey $publicConfigKeyOverrides) { return 'PublicConfig' }
+    if (Test-CredentialLikeValue $Value) { return 'Secret' }
+    foreach ($substr in $script:CredentialKeySubstrings) {
+        if ($upperKey.Contains($substr)) { return 'Secret' }
+    }
+    $isPublicShape = $false
+    foreach ($prefix in $script:PublicKeyPrefixes) { if ($upperKey.StartsWith($prefix)) { $isPublicShape = $true; break } }
+    if (-not $isPublicShape) {
+        foreach ($suffix in $script:PublicKeySuffixes) { if ($upperKey.EndsWith($suffix)) { $isPublicShape = $true; break } }
+    }
+    if (-not $isPublicShape) {
+        foreach ($contains in $script:PublicKeyContains) { if ($upperKey.Contains($contains)) { $isPublicShape = $true; break } }
+    }
+    if ($isPublicShape) { return 'PublicConfig' }
+    return 'Unknown'
+}
+
+# Conservative cleanup of entries THIS hook itself previously auto-added (the
+# "(auto-added by Secrets-Check)" marker) that now classify as PublicConfig.
+# Never touches a user-authored entry, and never removes anything whose
+# provenance is unclear - only exact auto-added blocks for a key that
+# currently classifies as PublicConfig are dropped.
+function Remove-StalePublicConfigEntries {
+    param([string]$Content, [hashtable]$Discovered)
+    if ($Content -notmatch '\(auto-added by Secrets-Check\)') {
+        return [pscustomobject]@{ Content = $Content; Removed = @() }
+    }
+    $parts = [regex]::Split($Content, '(?=(?m)^## )')
+    $removed = New-Object System.Collections.Generic.List[string]
+    $kept = New-Object System.Collections.Generic.List[string]
+    foreach ($part in $parts) {
+        if ($part -notmatch '(?m)^## (\S+)') { [void]$kept.Add($part); continue }
+        $blockKey = $Matches[1]
+        $isAutoAdded = $part -match '\(auto-added by Secrets-Check\)'
+        $classification = if ($Discovered.ContainsKey($blockKey)) { $Discovered[$blockKey].Classification } else { $null }
+        if ($isAutoAdded -and $classification -eq 'PublicConfig') {
+            [void]$removed.Add($blockKey)
+            continue
+        }
+        [void]$kept.Add($part)
+    }
+    if ($removed.Count -eq 0) { return [pscustomobject]@{ Content = $Content; Removed = @() } }
+    return [pscustomobject]@{ Content = ($kept.ToArray() -join ''); Removed = @($removed.ToArray()) }
+}
+
 # ---- discover real .env* files in active project trees ----
 $excludedDirs = @('.git', 'node_modules', 'vendor', 'vendors', 'dist', 'build', 'out', 'target', 'coverage', '.cache', 'cache', '__pycache__', '.venv', 'venv', 'env', '.ai', 'graphify-out', '.claude', '.codex', '.agents', 'bin', 'obj')
 $envFiles = New-Object System.Collections.Generic.List[object]
@@ -155,12 +294,15 @@ if ($envFiles.Count -eq 0 -and -not $secretsExists -and -not ($GitPrePush -and $
     exit 0
 }
 
-# ---- collect discovered secrets: KEY -> {Value, SourceFile} (later file wins) ----
+# ---- collect discovered secrets: KEY -> {Value, SourceFile, Classification} (later file wins) ----
 $discovered = @{}
 foreach ($file in $envFiles) {
     $values = Read-HookEnv $file.FullName
     foreach ($key in $values.Keys) {
-        $discovered[$key] = [pscustomobject]@{ Value = $values[$key]; Source = $file.Name; SourcePath = $file.FullName }
+        $discovered[$key] = [pscustomobject]@{
+            Value = $values[$key]; Source = $file.Name; SourcePath = $file.FullName
+            Classification = (Get-KeyValueClassification -Key $key -Value $values[$key])
+        }
     }
 }
 
@@ -181,10 +323,33 @@ function Test-KeyDocumented {
     return [regex]::IsMatch($Content, '\b' + [regex]::Escape($Key) + '\b')
 }
 
-# ---- auto-append missing secrets (additive only - never overwrites/removes) ----
+# ---- conservative cleanup: drop this hook's own stale auto-added PublicConfig entries ----
+$removedPublicConfigKeys = @()
+if ($secretsExists) {
+    $cleanup = Remove-StalePublicConfigEntries -Content $secretsContent -Discovered $discovered
+    if (@($cleanup.Removed).Count -gt 0) {
+        try {
+            [System.IO.File]::WriteAllText($secretsPath, $cleanup.Content, [System.Text.UTF8Encoding]::new($false))
+            $secretsContent = $cleanup.Content
+            $removedPublicConfigKeys = @($cleanup.Removed)
+        }
+        catch { }    # could not write - do not claim a removal that did not happen
+    }
+}
+
+# ---- auto-append missing SECRETS only (additive only - never overwrites/removes).
+# PublicConfig keys are never registry material; Unknown keys are never
+# silently added either - they need an explicit classification first. ----
 $added = New-Object System.Collections.Generic.List[string]
 $missingUndocumented = New-Object System.Collections.Generic.List[string]
+$needsClassification = New-Object System.Collections.Generic.List[string]
 foreach ($key in @($discovered.Keys | Sort-Object)) {
+    $classification = $discovered[$key].Classification
+    if ($classification -eq 'PublicConfig') { continue }
+    if ($classification -eq 'Unknown') {
+        if (-not (Test-KeyDocumented -Key $key -Content $secretsContent)) { [void]$needsClassification.Add($key) }
+        continue
+    }
     if (Test-KeyDocumented -Key $key -Content $secretsContent) { continue }
     if ($autoAppend) {
         [void]$added.Add($key)
@@ -225,6 +390,7 @@ if ($added.Count -gt 0) {
 
 $placeholders = New-Object System.Collections.Generic.List[string]
 foreach ($key in @($discovered.Keys | Sort-Object)) {
+    if ($discovered[$key].Classification -ne 'Secret') { continue }
     if (Test-PlaceholderValue $discovered[$key].Value) {
         [void]$placeholders.Add($key)
     }
@@ -351,6 +517,12 @@ if ($inGitRepo) {
     }
     $excludeNames = @('secrets.md') + @($envFiles | ForEach-Object { $_.Name.Replace('\', '/') })
     foreach ($key in @($discovered.Keys | Sort-Object)) {
+        # Only high-confidence Secrets participate in exact-value leak matching.
+        # PublicConfig (e.g. NEXT_PUBLIC_APP_URL, R2_BUCKET) is expected to
+        # appear in tracked config/code/workflows and must never block a push
+        # for that reason alone. Unknown stays advisory (see $needsClassification)
+        # rather than being treated as a confirmed leak from a bare value match.
+        if ($discovered[$key].Classification -ne 'Secret') { continue }
         $value = $discovered[$key].Value
         if ($value.Length -lt $minSecretLength) { continue }
         # Merge working-tree (git grep) and index/staged (git grep --cached) hits.
@@ -453,7 +625,8 @@ if (-not $GitPrePush -and $runUnusedScan -and $inGitRepo -and $secretsExists) {
 }
 
 # ---- nothing at all to report -> silent ----
-if ($critical.Count -eq 0 -and $added.Count -eq 0 -and $missingUndocumented.Count -eq 0 -and $placeholders.Count -eq 0 -and $unused.Count -eq 0) {
+if ($critical.Count -eq 0 -and $added.Count -eq 0 -and $missingUndocumented.Count -eq 0 -and $placeholders.Count -eq 0 -and
+    $unused.Count -eq 0 -and $needsClassification.Count -eq 0 -and $removedPublicConfigKeys.Count -eq 0) {
     exit 0
 }
 
@@ -462,7 +635,8 @@ if ($GitPrePush -and $critical.Count -eq 0) {
 }
 
 # ---- non-critical fingerprint + cooldown (critical findings always bypass this) ----
-$fingerprintSource = (@($added) -join ',') + '|' + (@($missingUndocumented) -join ',') + '|' + (@($placeholders) -join ',') + '|' + (@($unused) -join ',')
+$fingerprintSource = (@($added) -join ',') + '|' + (@($missingUndocumented) -join ',') + '|' + (@($placeholders) -join ',') + '|' + (@($unused) -join ',') +
+    '|' + (@($needsClassification.ToArray()) -join ',') + '|' + (@($removedPublicConfigKeys) -join ',')
 $fingerprint = Get-ShortHash $fingerprintSource
 $stateDir = Join-Path $env:LOCALAPPDATA 'HookMaker\state'
 $statePath = Join-Path $stateDir ('Secrets-Check-' + (Get-ShortHash $cwd.ToLowerInvariant()) + '.txt')
@@ -508,6 +682,12 @@ if ($placeholders.Count -gt 0) {
 }
 if ($unused.Count -gt 0) {
     [void]$lines.Add('In secrets.md but not referenced elsewhere in the tracked project (verify before removing - never auto-removed): ' + ($unused.ToArray() -join ', '))
+}
+if ($needsClassification.Count -gt 0) {
+    [void]$lines.Add('Classification unclear (neither confirmed Secret nor confirmed PublicConfig) - not registered, not treated as a confirmed leak, and never blocking on its own: ' + ($needsClassification.ToArray() -join ', ') + '. Classify explicitly via SECRET_KEYS or PUBLIC_CONFIG_KEYS in .env if this recurs.')
+}
+if ($removedPublicConfigKeys.Count -gt 0) {
+    [void]$lines.Add('Removed ' + $removedPublicConfigKeys.Count + ' previously auto-added secrets.md entr' + $(if ($removedPublicConfigKeys.Count -eq 1) { 'y' } else { 'ies' }) + ' now classified as public config, not a secret: ' + ($removedPublicConfigKeys -join ', ') + '.')
 }
 [void]$lines.Add('Never print, log, or commit a secret value. Rotate anything that may have leaked. Removing a secrets.md entry is always your call, not automated.')
 $message = $lines.ToArray() -join "`n"

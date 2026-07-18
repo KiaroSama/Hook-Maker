@@ -1,7 +1,11 @@
 # DependabotCheck - at the start of work in a GitHub repository, reports
-# pending Dependabot pull requests so they are reviewed BEFORE unrelated
-# implementation, per the user's dependency rules. Detection only: this hook
-# never merges, approves, or modifies anything.
+# pending Dependabot pull requests concisely and highlights any confirmed
+# SECURITY update for priority review. It never expands the current task:
+# unrelated, non-critical PRs are deferred to a separate task rather than
+# reviewed/merged/remediated now, unless the user explicitly asked, the
+# current task directly depends on one, or a confirmed critical security
+# issue makes continuing unsafe. Pending PRs never block unrelated work.
+# Detection only: this hook never merges, approves, or modifies anything.
 #
 # Verification: PRs are queried and then filtered by the verified
 # app/dependabot author; each is reported with its exact head SHA, base
@@ -219,8 +223,16 @@ if ($prs.Count -gt $prLines.Count) {
     $moreNote = "`n- ... and " + ($prs.Count - $prLines.Count) + ' more'
 }
 
+$hasSecurity = $false
+foreach ($pr in $prs) { if ((Get-UpdateKind $pr) -eq 'SECURITY') { $hasSecurity = $true; break } }
+$priorityNote = if ($hasSecurity) {
+    'A PR marked SECURITY above is a confirmed security update - prioritize reviewing that one now (verify the exact head SHA, the actual diff, release notes, and required checks for that commit before merging).'
+}
+else {
+    'None of these are marked SECURITY.'
+}
 $message = 'DEPENDABOT CHECK (' + $repoSlug + '): ' + $prs.Count + ' pending Dependabot PR(s) from the verified app/dependabot author:' + "`n" +
     (($prLines -join "`n") + $moreNote) + "`n" +
-    'Review these BEFORE unrelated work, per the dependency rules: verify the exact head SHA, the actual diff, manifests and lockfiles, release notes and breaking changes, runtime compatibility, permissions, and supply-chain risk, plus the required checks for that exact commit. Merge only what the rules allow: security and patch first after full validation; minor only when low-risk and validated; never auto-merge MAJOR or PRERELEASE. After any merge, verify the resulting default-branch commit and its checks before continuing.'
+    $priorityNote + ' Do not review, merge, or remediate the REST of these during the current task unless the user explicitly asked, the current task directly depends on one of them, or a confirmed critical security issue makes continuing unsafe - defer non-critical/unrelated PRs to a separate task instead of expanding this one. Pending PRs are never a reason to block or delay unrelated work. When a PR IS reviewed: verify the exact head SHA, the actual diff, manifests/lockfiles, release notes and breaking changes, runtime compatibility, permissions, and supply-chain risk, plus the required checks for that exact commit; merge only what the rules allow (security/patch after full validation, minor only when low-risk and validated, never auto-merge MAJOR or PRERELEASE); after any merge, verify the resulting default-branch commit and its checks before continuing.'
 
 Write-ContextIfNew -Fingerprint (($fingerprintParts | Sort-Object) -join '|') -Message $message
