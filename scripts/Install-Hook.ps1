@@ -20,6 +20,9 @@ $ToolRoot = Split-Path -Parent $PSScriptRoot
 # Shared: Get-HookFriendlyName (folder/file naming). This is install-time only;
 # the runtime hooks ignore it.
 . (Join-Path $ToolRoot 'hooks\_hooklib.ps1')
+# Install-state registry (install-time only - deliberately NOT in _hooklib.ps1,
+# which is copied into every self-contained runtime).
+. (Join-Path $PSScriptRoot '_installlib.ps1')
 
 if (-not [string]::IsNullOrWhiteSpace($CustomHook)) {
     if (-not [string]::IsNullOrWhiteSpace($Profile)) {
@@ -65,6 +68,9 @@ else {
     $ScopeLabel = 'global'
 }
 $Timestamp = (Get-Date).ToString('yyyyMMdd-HHmmss')
+# Set by Install-IgnorePrePush when this install also manages a native Git
+# pre-push chain; stays $null for every other hook (StrictMode-safe default).
+$script:NativeGitState = $null
 
 function Write-SyncProjectList {
     param(
@@ -360,6 +366,21 @@ function Install-IgnorePrePush {
         "if [ -f `"`$0.hookmaker-existing`" ]; then`n  `"`$0.hookmaker-existing`" `"`$@`" < `"`$STDIN_FILE`"`nfi`n"
     [System.IO.File]::WriteAllText($prePush, $body, $Utf8NoBom)
     Write-Host "Native git pre-push protection installed in: $prePush"
+
+    # Record what this chain manages so the updater can detect a stale managed
+    # companion (e.g. a changed Secrets-Check source) as drift of THIS logical
+    # installation. The preserved previous hook is tracked by path/existence
+    # only - it is user-owned and is never hashed or rewritten.
+    $script:NativeGitState = [pscustomobject][ordered]@{
+        managed               = $true
+        hooksPath             = $hooksPath
+        runtimeRoot           = $runtimeRoot
+        wrapperPath           = $prePush
+        previousHookPath      = $previous
+        previousHookPreserved = (Test-Path -LiteralPath $previous -PathType Leaf)
+        companions            = @('Secrets-Check')
+        sourceManifest        = @(Get-NativePrePushSourceManifest -ToolRoot $ToolRoot -PrimaryFriendlyName $FriendlyName -PrimaryHookScript $HookScript -PrimarySourceDir $SourceDir -Companions @('Secrets-Check'))
+    }
 }
 
 function Add-HookGroup {
@@ -469,64 +490,88 @@ if (-not $ClaudeOnly) {
 
 Install-IgnorePrePush
 
-# ---- install registry (best-effort; a registry failure never fails the
-# install itself - the hook/settings files above are already correctly
-# written by this point). Records enough to reproduce this exact install via
-# "Update previously installed hooks" without re-asking any question. Never
-# stores .env content, secret values, or any hook stdin/prompt/tool-input -
-# only paths and content hashes.
+# ---- install registry -----------------------------------------------------
+# The hook/settings/native files above are already correctly written by this
+# point, so a registry failure never fails the install itself - but it is NOT
+# silent either: tracking failure is reported explicitly, because an untracked
+# install cannot be refreshed by "Update previously installed hooks".
+#
+# ONLY the clients this invocation actually installed are recorded. Each keeps
+# its own events/matcher/command/timeout/runtime paths, so a later -CodexOnly
+# install can never rewrite what Claude has registered (and vice versa).
+# Stores paths and content hashes only - never .env values, secrets, hook
+# stdin, prompt text, tool input, or any copied file's contents.
 try {
     $scopeKey = if ($ScopeLabel -eq 'project') { $projectRoot.ToLowerInvariant() } else { 'global' }
     $recordId = Get-InstallRecordId -FriendlyName $FriendlyName -ScopeKey $scopeKey -ProfileId ([string]$Profile)
     $hookType = if ([string]::IsNullOrWhiteSpace($CustomHook)) { 'Engine' } else { 'CustomHook' }
+    $isEngine = ($hookType -eq 'Engine')
 
-    $claudeRuntimeScript = Join-Path (Split-Path -Parent $ClaudeSettings) ('hooks\Hook-Maker\' + $FriendlyName + '\' + $FriendlyName + '.ps1')
-    $codexRuntimeScript = Join-Path (Split-Path -Parent $CodexHooks) ('hooks\Hook-Maker\' + $FriendlyName + '\' + $FriendlyName + '.ps1')
-    $claudeInstalled = Test-Path -LiteralPath $claudeRuntimeScript -PathType Leaf
-    $codexInstalled = Test-Path -LiteralPath $codexRuntimeScript -PathType Leaf
-    $clientsNow = if ($claudeInstalled -and $codexInstalled) { 'Both' } elseif ($claudeInstalled) { 'Claude' } elseif ($codexInstalled) { 'Codex' } else { 'None' }
+    $sourceManifest = @(Get-ManagedSourceManifest -ToolRoot $ToolRoot -HookScript $HookScript -SourceDir $SourceDir -FriendlyName $FriendlyName -ConfigPath $ConfigPath -IncludeConfig:$isEngine)
 
-    $sourceHash = ''
-    if (Test-Path -LiteralPath $HookScript -PathType Leaf) { $sourceHash = (Get-FileHash -LiteralPath $HookScript -Algorithm SHA256).Hash }
-    $hooklibPath = Join-Path $ToolRoot 'hooks\_hooklib.ps1'
-    $hooklibHash = ''
-    if (Test-Path -LiteralPath $hooklibPath -PathType Leaf) { $hooklibHash = (Get-FileHash -LiteralPath $hooklibPath -Algorithm SHA256).Hash }
-    $configHash = ''
-    if ($hookType -eq 'Engine' -and (Test-Path -LiteralPath $ConfigPath -PathType Leaf)) { $configHash = (Get-FileHash -LiteralPath $ConfigPath -Algorithm SHA256).Hash }
-
-    $nowIso = [DateTime]::UtcNow.ToString('o')
-    $record = [pscustomobject][ordered]@{
-        id                  = $recordId
-        internalName        = $SourceName
-        friendlyName        = $FriendlyName
-        hookType            = $hookType
-        sourceScript        = $HookScript
-        sourceDir           = $SourceDir
-        scope               = $ScopeLabel
-        targetProjectRoot   = if ($ScopeLabel -eq 'project') { $projectRoot } else { '' }
-        clients             = $clientsNow
-        claudeSettingsPath  = $ClaudeSettings
-        codexHooksPath      = $CodexHooks
-        events              = @($Events)
-        profile             = [string]$Profile
-        configPath          = if ($hookType -eq 'Engine') { $ConfigPath } else { '' }
-        claudeRuntimeScript = if ($claudeInstalled) { $claudeRuntimeScript } else { '' }
-        codexRuntimeScript  = if ($codexInstalled) { $codexRuntimeScript } else { '' }
-        prePushManaged      = [bool]($FriendlyName -eq 'Ignore-Rules-Check' -and $ScopeLabel -eq 'project')
-        sourceHash          = $sourceHash
-        hooklibHash         = $hooklibHash
-        configHash          = $configHash
-        lastInstalledUtc    = $nowIso
-        lastUpdatedUtc      = $nowIso
-        lastResult          = 'ok'
-        lastError           = ''
+    $clients = [pscustomobject][ordered]@{}
+    if (-not $CodexOnly) {
+        $claudeRoot = Split-Path -Parent $claudeRuntime.Script
+        $claudeRuntimeRoot = Split-Path -Parent $claudeRoot
+        Set-ObjectProperty -Object $clients -Name 'claude' -Value (New-ClientSubrecord `
+            -SettingsPath $ClaudeSettings `
+            -RuntimeRoot $claudeRuntimeRoot `
+            -RuntimeScript $claudeRuntime.Script `
+            -Events @($Events) `
+            -Command $claudeCommands.Windows `
+            -Timeout 60 `
+            -InstalledManifest @(Get-InstalledManifest -RuntimeRoot $claudeRuntimeRoot -FriendlyName $FriendlyName))
     }
-    $registry = Read-InstallRegistry -ToolRoot $ToolRoot
-    Set-InstallRecord -Registry $registry -Record $record
-    Save-InstallRegistry -ToolRoot $ToolRoot -Registry $registry
+    if (-not $ClaudeOnly) {
+        $codexRoot = Split-Path -Parent $codexRuntime.Script
+        $codexRuntimeRoot = Split-Path -Parent $codexRoot
+        Set-ObjectProperty -Object $clients -Name 'codex' -Value (New-ClientSubrecord `
+            -SettingsPath $CodexHooks `
+            -RuntimeRoot $codexRuntimeRoot `
+            -RuntimeScript $codexRuntime.Script `
+            -Events @($Events) `
+            -Command $codexCommands.Portable `
+            -StatusMessage $status `
+            -Timeout 60 `
+            -InstalledManifest @(Get-InstalledManifest -RuntimeRoot $codexRuntimeRoot -FriendlyName $FriendlyName))
+    }
+
+    $nativeGit = $null
+    if ($null -ne $script:NativeGitState) { $nativeGit = $script:NativeGitState }
+
+    $record = [pscustomobject][ordered]@{
+        id                = $recordId
+        schema            = 2
+        internalName      = $SourceName
+        friendlyName      = $FriendlyName
+        hookType          = $hookType
+        sourceScript      = $HookScript
+        sourceDir         = $SourceDir
+        scope             = $ScopeLabel
+        targetProjectRoot = if ($ScopeLabel -eq 'project') { $projectRoot } else { '' }
+        profile           = [string]$Profile
+        configPath        = if ($isEngine) { $ConfigPath } else { '' }
+        sourceManifest    = $sourceManifest
+        clients           = $clients
+        nativeGit         = $nativeGit
+        lastUpdatedUtc    = [DateTime]::UtcNow.ToString('o')
+        lastResult        = 'ok'
+        lastReason        = 'installed'
+        lastError         = ''
+        needsManualRepair = $false
+    }
+    $registryResult = Update-InstallRegistry -ToolRoot $ToolRoot -Record $record
+    if (-not $registryResult.Ok) {
+        Write-Host ('WARNING: the hook was installed, but tracking it FAILED - ' + $registryResult.Warning)
+        Write-Host 'WARNING: "Update previously installed hooks" will not see this installation until it is reinstalled.'
+    }
+    elseif (-not [string]::IsNullOrWhiteSpace($registryResult.Warning)) {
+        Write-Host ('WARNING: ' + $registryResult.Warning)
+    }
 }
 catch {
-    Write-Host ('Warning: could not update the local install registry (non-fatal): ' + $_.Exception.Message)
+    Write-Host ('WARNING: the hook was installed, but the local install registry could not be updated: ' + $_.Exception.Message)
+    Write-Host 'WARNING: "Update previously installed hooks" will not see this installation until it is reinstalled.'
 }
 
 Write-Host 'Restart the clients and review /hooks. Codex may require trusting the new command.'
