@@ -998,6 +998,73 @@ for (`$i = 0; `$i -lt 8; `$i++) {
         Check 'a source change marks BOTH clients damaged (shared dependency)' (($sharedDamaged -contains 'claude') -and ($sharedDamaged -contains 'codex'))
     }
     finally { Remove-FixtureHook 'ZZZ-Regtest-Sharedsource' }
+    # =====================================================================
+    # Every installer-OWNED registration field is verified independently.
+    # The previous check accepted a handler when EITHER command form matched,
+    # so a corrupted Windows command stayed hidden behind a still-correct
+    # portable one (Codex handlers carry both).
+    Write-Host '--- every owned registration field drifts independently ---' -ForegroundColor Cyan
+    $fieldProj = New-Proj 'OwnedFieldsProj'
+    & $InstallScript -CustomHook (Join-Path $RealHooksDir 'Ai-Memory-Check\Ai-Memory-Check.ps1') -Events @('Stop') -TargetProject $fieldProj *> $null
+    function Get-FieldRecord { return @(Get-RecordsFor 'Ai-Memory-Check' | Where-Object { $_.targetProjectRoot -eq $fieldProj })[0] }
+    $fieldRec = Get-FieldRecord
+    Check 'baseline owned-field install is current' ((Get-InstallIntegrity -Record $fieldRec -ToolRoot $ToolRoot).Status -eq 'current')
+    Check 'the codex subrecord records BOTH command forms' (
+        (-not [string]::IsNullOrWhiteSpace([string]$fieldRec.clients.codex.command)) -and
+        (-not [string]::IsNullOrWhiteSpace([string]$fieldRec.clients.codex.commandWindows)))
+    Check 'the subrecord records the handler type' ([string]$fieldRec.clients.codex.handlerType -eq 'command')
+
+    $fieldCodexSettings = [string]$fieldRec.clients.codex.settingsPath
+    $fieldClaudeSettings = [string]$fieldRec.clients.claude.settingsPath
+    $savedCodexJson = [System.IO.File]::ReadAllText($fieldCodexSettings)
+    $savedClaudeJson = [System.IO.File]::ReadAllText($fieldClaudeSettings)
+    function Set-StopHandlerField {
+        param([string]$Path, [string]$Field, $Value)
+        $json = Get-Content -LiteralPath $Path -Raw | ConvertFrom-Json
+        $handler = @(@($json.hooks.Stop) | ForEach-Object { $_.hooks })[0]
+        if ($null -eq $handler.PSObject.Properties[$Field]) { $handler | Add-Member -MemberType NoteProperty -Name $Field -Value $Value }
+        else { $handler.$Field = $Value }
+        [System.IO.File]::WriteAllText($Path, ($json | ConvertTo-Json -Depth 50), (New-Object System.Text.UTF8Encoding $false))
+    }
+    function Restore-Settings { param([string]$Path, [string]$Saved) [System.IO.File]::WriteAllText($Path, $Saved, (New-Object System.Text.UTF8Encoding $false)) }
+
+    Set-StopHandlerField $fieldCodexSettings 'commandWindows' 'powershell.exe -File "C:\elsewhere\other.ps1"'
+    $driftWindows = Get-InstallIntegrity -Record (Get-FieldRecord) -ToolRoot $ToolRoot
+    Check 'a corrupted commandWindows is caught even though command still matches' (($driftWindows.Status -eq 'update') -and ($driftWindows.Detail -match 'commandWindows')) $driftWindows.Detail
+    Restore-Settings $fieldCodexSettings $savedCodexJson
+
+    Set-StopHandlerField $fieldCodexSettings 'command' 'pwsh -File "C:\elsewhere\other.ps1"'
+    $driftCommand = Get-InstallIntegrity -Record (Get-FieldRecord) -ToolRoot $ToolRoot
+    Check 'a corrupted portable command is caught' (($driftCommand.Status -eq 'update') -and ($driftCommand.Detail -match 'command changed')) $driftCommand.Detail
+    Restore-Settings $fieldCodexSettings $savedCodexJson
+
+    Set-StopHandlerField $fieldCodexSettings 'statusMessage' 'totally different'
+    $driftStatus = Get-InstallIntegrity -Record (Get-FieldRecord) -ToolRoot $ToolRoot
+    Check 'a changed statusMessage is caught' (($driftStatus.Status -eq 'update') -and ($driftStatus.Detail -match 'statusMessage')) $driftStatus.Detail
+    Restore-Settings $fieldCodexSettings $savedCodexJson
+
+    Set-StopHandlerField $fieldCodexSettings 'type' 'prompt'
+    $driftType = Get-InstallIntegrity -Record (Get-FieldRecord) -ToolRoot $ToolRoot
+    Check 'a changed handler type is caught' (($driftType.Status -eq 'update') -and ($driftType.Detail -match 'handler type')) $driftType.Detail
+    Restore-Settings $fieldCodexSettings $savedCodexJson
+
+    Set-StopHandlerField $fieldClaudeSettings 'timeout' 999
+    $driftTimeout = Get-InstallIntegrity -Record (Get-FieldRecord) -ToolRoot $ToolRoot
+    Check 'a changed timeout is caught' (($driftTimeout.Status -eq 'update') -and ($driftTimeout.Detail -match 'timeout')) $driftTimeout.Detail
+    Restore-Settings $fieldClaudeSettings $savedClaudeJson
+
+    Check 'restoring every field returns the install to current' ((Get-InstallIntegrity -Record (Get-FieldRecord) -ToolRoot $ToolRoot).Status -eq 'current')
+
+    # matcher drift needs a SessionStart registration (only that event carries one)
+    $matcherProj = New-Proj 'MatcherDriftProj'
+    & $InstallScript -CustomHook (Join-Path $RealHooksDir 'Ai-Memory-Check\Ai-Memory-Check.ps1') -Events @('SessionStart') -TargetProject $matcherProj -ClaudeOnly *> $null
+    $matcherRec = @(Get-RecordsFor 'Ai-Memory-Check' | Where-Object { $_.targetProjectRoot -eq $matcherProj })[0]
+    $matcherSettings = [string]$matcherRec.clients.claude.settingsPath
+    $matcherJson = Get-Content -LiteralPath $matcherSettings -Raw | ConvertFrom-Json
+    @($matcherJson.hooks.SessionStart)[0].matcher = 'startup'
+    [System.IO.File]::WriteAllText($matcherSettings, ($matcherJson | ConvertTo-Json -Depth 50), (New-Object System.Text.UTF8Encoding $false))
+    $driftMatcher = Get-InstallIntegrity -Record (@(Get-RecordsFor 'Ai-Memory-Check' | Where-Object { $_.targetProjectRoot -eq $matcherProj })[0]) -ToolRoot $ToolRoot
+    Check 'a changed matcher is caught' (($driftMatcher.Status -eq 'update') -and ($driftMatcher.Detail -match 'matcher')) $driftMatcher.Detail
     # Installed-state drift: NONE of these change the source, so an updater
 
     # that only compares stored source hashes would wrongly report "up to
