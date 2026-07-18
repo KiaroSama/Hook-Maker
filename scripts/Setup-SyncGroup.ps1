@@ -217,10 +217,11 @@ $script:HookMeta = @{
     'Secrets-Check'                    = @{ Order = 14; When = 'both'; Text = 'keeps secrets.md accurate and checks for leaks' }
     'Ignore-Rules-Check'               = @{ Order = 15; When = 'pre+post'; Text = 'auto-fixes required local/private gitignore rules before and after tasks' }
     'Dependency-Version-Check'         = @{ Order = 16; When = 'pre';  Text = 'advises on outdated dependencies and safe, incremental upgrades' }
+    'Test-Temp-Cleanup'                = @{ Order = 17; When = 'both'; Text = 'removes safe project-local test cache/temp residue, preserves diagnostic artifacts' }
     # Cloudflare-Deploy is deliberately kept LAST among individual hook
     # entries (Order = highest value) per an explicit user requirement, not
     # filesystem/alphabetical order - see Test-Wizard.ps1 for the pinned order.
-    'Cloudflare-Deploy'                = @{ Order = 17; When = 'post'; Text = 'suggests deploying in Cloudflare Workers projects' }
+    'Cloudflare-Deploy'                = @{ Order = 18; When = 'post'; Text = 'suggests deploying in Cloudflare Workers projects, gated on release readiness' }
 }
 # The "[pre-task]" / "[post-task]" tag, colored by phase (a different color than
 # the description, FFmWiz-style, so timing reads at a glance).

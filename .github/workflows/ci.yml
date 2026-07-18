@@ -110,8 +110,10 @@ jobs:
         run: .\scripts\Test-DependencyVersionCheck.ps1
 
       # Cloudflare-Deploy hook: deployment-worthiness/environment/pre-deploy
-      # review/post-deploy verification/failure-handling wording, cooldown.
-      # Offline, no network, never actually deploys.
+      # review/post-deploy verification/failure-handling wording, cooldown,
+      # and the release-readiness gate (clean/pushed/CI-green/cleanup-state).
+      # Offline, no network (real bare-remote pushes + a PATH-shimmed gh),
+      # never actually deploys.
       - name: Cloudflare-Deploy test suite
         shell: pwsh
         run: .\scripts\Test-CloudflareDeploy.ps1
@@ -121,3 +123,11 @@ jobs:
       - name: Graph-Update-Check test suite
         shell: pwsh
         run: .\scripts\Test-GraphUpdateCheck.ps1
+
+      # Test-Temp-Cleanup hook: safe-candidate deletion + rescan verification,
+      # tracked/staged/reparse-point/hard-protected-root preservation,
+      # review-only-by-default, limits, locked-candidate no-loop guarantee.
+      # Offline, no network; never runs git clean/reset.
+      - name: Test-Temp-Cleanup test suite
+        shell: pwsh
+        run: .\scripts\Test-TestTempCleanup.ps1

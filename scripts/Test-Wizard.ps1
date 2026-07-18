@@ -101,9 +101,10 @@ try {
         '7\. Github-Baseline-Check', '8\. Git-Sync-Check', '9\. Graph-Read-Check',
         '10\. Graph-Update-Check', '11\. Large-File-Check', '12\. Mcp-Usage-Check',
         '13\. Rules-Check', '14\. Skills-Check', '15\. Secrets-Check',
-        '16\. Ignore-Rules-Check', '17\. Dependency-Version-Check', '18\. Cloudflare-Deploy'
+        '16\. Ignore-Rules-Check', '17\. Dependency-Version-Check', '18\. Test-Temp-Cleanup',
+        '19\. Cloudflare-Deploy'
     ) -join '[\s\S]*'
-    Check 'hooks follow the requested menu order (Select all -> sync group -> hooks -> Dependency-Version-Check -> Cloudflare-Deploy last)' ($r.Out -match $menuOrder)
+    Check 'hooks follow the requested menu order (Select all -> sync group -> hooks -> Dependency-Version-Check -> Test-Temp-Cleanup -> Cloudflare-Deploy last)' ($r.Out -match $menuOrder)
     Check '_hooklib excluded from listing' ($r.Out -notmatch '_hooklib')
     Check 'full back suffix on sub-prompts' ($r.Out -match 'back=0' -and $r.Out -match 'quit=exit')
     Check 'main-menu suffix is quit-only' ($r.Out -match 'Select an option.*\{quit=exit\}')
@@ -195,11 +196,12 @@ try {
     Write-Host '--- multi-select install (range + list, recommended events) ---' -ForegroundColor Cyan
     $cfg4 = Join-Path $Work 'cfg4.json'; New-Config $cfg4
     $m = New-Proj 'Multi'
-    # main 1 -> sub 1 -> "3-8,15,18" (eight advisory hooks incl. Cloudflare-Deploy,
-    #        now the LAST individual entry; the engine is excluded from this
-    #        list entirely, see the guard test below)
+    # main 1 -> sub 1 -> "3-8,15,19" (eight advisory hooks incl. Cloudflare-Deploy,
+    #        now the LAST individual entry (Test-Temp-Cleanup inserted at 18
+    #        pushed it to 19); the engine is excluded from this list entirely,
+    #        see the guard test below)
     #        -> mode 1 (recommended events per hook) -> client Both -> target -> done -> start -> exit
-    $r = Invoke-Wizard -Config $cfg4 -Answers @('1', '1', '3-8,15,18', '1', '1', $m, 'done', '', '0')
+    $r = Invoke-Wizard -Config $cfg4 -Answers @('1', '1', '3-8,15,19', '1', '1', $m, 'done', '', '0')
     Check 'exit 0' ($r.Exit -eq 0)
     Check 'no stderr' ($r.Err -eq '')
     Check 'selection accepts a range combined with a single item' ($r.Out -notmatch 'Enter number\(s\)')
@@ -295,6 +297,14 @@ try {
     $null = Invoke-Wizard -Config $cfgAllCodex -Answers @('1', '1', '1', $syncX, $syncY, 'done', '1', '', '1', '3', $codexOnlyProj, 'done', '', '0')
     Check 'select-all honors Codex-only client scoping' ((Test-Path (Join-Path $codexOnlyProj '.codex\hooks.json')) -and -not (Test-Path (Join-Path $codexOnlyProj '.claude')))
 
+    # Selecting the second-to-last individual entry installs Test-Temp-Cleanup
+    # (menu item 18, immediately before Cloudflare-Deploy).
+    $cfgPenult = Join-Path $Work 'cfg-penult.json'; New-Config $cfgPenult
+    $penultProj = New-Proj 'PenultEntryProj'
+    $rPenult = Invoke-Wizard -Config $cfgPenult -Answers @('1', '1', ($hookCount + 1).ToString(), '2', '2', $penultProj, 'done', '', '0')
+    Check 'selecting the second-to-last individual entry installs Test-Temp-Cleanup' (Test-Path (Join-Path $penultProj '.claude\hooks\Hook-Maker\Test-Temp-Cleanup\Test-Temp-Cleanup.ps1'))
+    Check 'did not install the neighboring Cloudflare-Deploy hook instead' (-not (Test-Path (Join-Path $penultProj '.claude\hooks\Hook-Maker\Cloudflare-Deploy')))
+
     # Selecting the LAST individual entry (a single-hook pick, no aggregate)
     # installs Cloudflare-Deploy specifically and does NOT run the sync group.
     $cfgLast = Join-Path $Work 'cfg-last.json'; New-Config $cfgLast
@@ -327,6 +337,42 @@ try {
         }
     }
     Check 'reinstall does not duplicate a hook''s registration' ($aiMemHandlerCount -eq 1)
+
+    # =====================================================================
+    Write-Host '--- installer/idempotency check: the two menu-affected hooks (18, 19) ---' -ForegroundColor Cyan
+    $cfgAffected = Join-Path $Work 'cfg-affected.json'; New-Config $cfgAffected
+    $affectedProj = New-Proj 'AffectedHooksProj'
+    $affectedSelection = ($hookCount + 1).ToString() + ',' + ($hookCount + 2).ToString()
+    $rAffected = Invoke-Wizard -Config $cfgAffected -Answers @('1', '1', $affectedSelection, '1', '1', $affectedProj, 'done', '', '0')
+    Check 'exit 0 (installing Test-Temp-Cleanup + Cloudflare-Deploy together)' ($rAffected.Exit -eq 0)
+    Check 'both affected hooks installed' (
+        (Test-Path (Join-Path $affectedProj '.claude\hooks\Hook-Maker\Test-Temp-Cleanup\Test-Temp-Cleanup.ps1')) -and
+        (Test-Path (Join-Path $affectedProj '.claude\hooks\Hook-Maker\Cloudflare-Deploy\Cloudflare-Deploy.ps1')))
+    $cleanupEvents = @(Get-RegisteredEvents (Join-Path $affectedProj '.claude\settings.local.json') 'Test-Temp-Cleanup' | Sort-Object) -join ','
+    Check 'Test-Temp-Cleanup gets its recommended SessionStart,Stop events' ($cleanupEvents -eq 'SessionStart,Stop') $cleanupEvents
+    $cfDeployEvents = @(Get-RegisteredEvents (Join-Path $affectedProj '.claude\settings.local.json') 'Cloudflare-Deploy' | Sort-Object) -join ','
+    Check 'Cloudflare-Deploy still gets its recommended Stop event' ($cfDeployEvents -eq 'Stop') $cfDeployEvents
+    $cleanupSourceHash = (Get-FileHash -LiteralPath (Join-Path $RealHooksDir 'Test-Temp-Cleanup\Test-Temp-Cleanup.ps1') -Algorithm SHA256).Hash
+    $cleanupInstalledHash = (Get-FileHash -LiteralPath (Join-Path $affectedProj '.claude\hooks\Hook-Maker\Test-Temp-Cleanup\Test-Temp-Cleanup.ps1') -Algorithm SHA256).Hash
+    Check 'the installed Test-Temp-Cleanup copy matches the maintained source byte-for-byte' ($cleanupSourceHash -eq $cleanupInstalledHash)
+
+    # Reinstalling the same pair is idempotent: no duplicate registrations,
+    # no duplicate runtime folders.
+    $rAffectedAgain = Invoke-Wizard -Config $cfgAffected -Answers @('1', '1', $affectedSelection, '1', '1', $affectedProj, 'done', '', '0')
+    Check 'exit 0 (reinstalling the same pair)' ($rAffectedAgain.Exit -eq 0)
+    $affectedFolders = @(Get-ChildItem -LiteralPath (Join-Path $affectedProj '.claude\hooks\Hook-Maker') -Directory -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Name)
+    $affectedFoldersJoined = (@($affectedFolders | Sort-Object)) -join ','
+    Check 'reinstall keeps exactly these two folders (no duplicates, none dropped)' ($affectedFoldersJoined -eq 'Cloudflare-Deploy,Test-Temp-Cleanup')
+    $affectedSettingsObj = Get-Content -LiteralPath (Join-Path $affectedProj '.claude\settings.local.json') -Raw | ConvertFrom-Json
+    $cleanupHandlerCount = 0
+    foreach ($eventProp in $affectedSettingsObj.hooks.PSObject.Properties) {
+        foreach ($group in @($eventProp.Value)) {
+            foreach ($handler in @($group.hooks)) {
+                if ([string]$handler.command -like '*Test-Temp-Cleanup\Test-Temp-Cleanup.ps1*') { $cleanupHandlerCount++ }
+            }
+        }
+    }
+    Check 'reinstall does not duplicate Test-Temp-Cleanup''s registration (one per configured event)' ($cleanupHandlerCount -eq 2)
 
     # Future-proof: a synthetic, unknown hook folder must be picked up by
     # Select All with NO code change - proves the set is derived dynamically
