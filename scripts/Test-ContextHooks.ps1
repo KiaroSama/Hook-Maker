@@ -80,6 +80,11 @@ function New-ConfiguredSkillsHookCopy {
     return (Join-Path $dir 'Skills-Check.ps1')
 }
 
+function New-PromptStdin {
+    param([string]$Cwd, [string]$EventName, [string]$Prompt, [string]$SessionId = 't')
+    return @{ session_id = $SessionId; cwd = $Cwd; hook_event_name = $EventName; prompt = $Prompt } | ConvertTo-Json
+}
+
 try {
     # =====================================================================
     Write-Host '--- Mcp-Usage-Check: input handling ---' -ForegroundColor Cyan
@@ -89,7 +94,9 @@ try {
     $r = Fire -HookPath $McpHook -Cwd $plain -RawStdin 'garbage'
     Check 'garbage stdin -> silent exit 0' ($r.Exit -eq 0 -and $r.Out -eq '') $r.Out
     $r = Fire -HookPath $McpHook -Cwd $plain -EventName 'Stop'
-    Check 'Stop event -> silent' ($r.Exit -eq 0 -and $r.Out -eq '') $r.Out
+    Check 'Stop event -> silent (no longer a registered event)' ($r.Exit -eq 0 -and $r.Out -eq '') $r.Out
+    $r = Fire -HookPath $McpHook -Cwd $plain -EventName 'SubagentStop'
+    Check 'SubagentStop event -> silent' ($r.Exit -eq 0 -and $r.Out -eq '') $r.Out
 
     # =====================================================================
     Write-Host '--- Mcp-Usage-Check: always reminds on SessionStart (cheap, no gate) ---' -ForegroundColor Cyan
@@ -100,9 +107,21 @@ try {
     Check 'mentions MCP USAGE CHECK' ($r.Out -like '*MCP USAGE CHECK*') $r.Out
     Check 'note stays short (under ~600 chars, matching the "3-4 lines" design)' ($null -ne $parsed -and ([string]$parsed.hookSpecificOutput.additionalContext).Length -lt 600)
     $r2 = Fire -HookPath $McpHook -Cwd $plain
-    Check 'fires again next session too (no state file by design)' ($r2.Out -like '*MCP USAGE CHECK*') $r2.Out
-    $r3 = Fire -HookPath $McpHook -Cwd $plain -EventName 'UserPromptSubmit'
-    Check 'also emits on UserPromptSubmit' ($r3.Out -like '*MCP USAGE CHECK*') $r3.Out
+    Check 'fires again next session too (no state file on SessionStart by design)' ($r2.Out -like '*MCP USAGE CHECK*') $r2.Out
+
+    # =====================================================================
+    Write-Host '--- Mcp-Usage-Check: UserPromptSubmit only when the prompt suggests MCP would help ---' -ForegroundColor Cyan
+    $mcpProj = New-Proj 'McpRelevance'
+    $r = Fire -HookPath $McpHook -Cwd $mcpProj -RawStdin (New-PromptStdin -Cwd $mcpProj -EventName 'UserPromptSubmit' -Prompt 'fix a typo in the readme' -SessionId 's-irrelevant')
+    Check 'an irrelevant prompt stays silent' ($r.Exit -eq 0 -and $r.Out -eq '') $r.Out
+    $r = Fire -HookPath $McpHook -Cwd $mcpProj -RawStdin (New-PromptStdin -Cwd $mcpProj -EventName 'UserPromptSubmit' -Prompt '' -SessionId 's-empty')
+    Check 'an empty prompt stays silent' ($r.Exit -eq 0 -and $r.Out -eq '') $r.Out
+    $r = Fire -HookPath $McpHook -Cwd $mcpProj -RawStdin (New-PromptStdin -Cwd $mcpProj -EventName 'UserPromptSubmit' -Prompt 'add the new payments API library and check its docs' -SessionId 's-relevant')
+    Check 'a relevant prompt (library/API/docs) emits the reminder' ($r.Out -like '*MCP USAGE CHECK*') $r.Out
+    $r2 = Fire -HookPath $McpHook -Cwd $mcpProj -RawStdin (New-PromptStdin -Cwd $mcpProj -EventName 'UserPromptSubmit' -Prompt 'now also update the library docs further' -SessionId 's-relevant')
+    Check 'the SAME session does not repeat the reminder on the next relevant prompt' ($r2.Exit -eq 0 -and $r2.Out -eq '') $r2.Out
+    $r3 = Fire -HookPath $McpHook -Cwd $mcpProj -RawStdin (New-PromptStdin -Cwd $mcpProj -EventName 'UserPromptSubmit' -Prompt 'add another library dependency' -SessionId 's-relevant-2')
+    Check 'a NEW session with a relevant prompt reminds again' ($r3.Out -like '*MCP USAGE CHECK*') $r3.Out
 
     # =====================================================================
     Write-Host '--- Mcp-Usage-Check: Windows PowerShell 5.1 host ---' -ForegroundColor Cyan
@@ -114,28 +133,47 @@ try {
     $splain = New-Proj 'SkillsPlain'
     $r = Fire -HookPath $SkillsHook -Cwd $splain -RawStdin ''
     Check 'empty stdin -> silent exit 0' ($r.Exit -eq 0 -and $r.Out -eq '') $r.Out
-    $r = Fire -HookPath $SkillsHook -Cwd $splain -EventName 'Stop'
-    Check 'Stop event -> silent' ($r.Exit -eq 0 -and $r.Out -eq '') $r.Out
+    $r = Fire -HookPath $SkillsHook -Cwd $splain -EventName 'SubagentStop'
+    Check 'SubagentStop event -> silent' ($r.Exit -eq 0 -and $r.Out -eq '') $r.Out
     # No copied skills, no .ai/SKILLS.md, and the DEFAULT library path does not
     # exist on a throwaway machine path - override SKILLS_DIR to something
     # guaranteed absent so this run is deterministic regardless of the real host.
     $noSourceHook = New-ConfiguredSkillsHookCopy -EnvOverrides @{ SKILLS_DIR = (Join-Path $Work 'no-such-library') }
     $r = Fire -HookPath $noSourceHook -Cwd $splain
-    Check 'no skill source anywhere -> silent, zero tokens' ($r.Exit -eq 0 -and $r.Out -eq '') $r.Out
+    Check 'no skill source anywhere -> silent on SessionStart, zero tokens' ($r.Exit -eq 0 -and $r.Out -eq '') $r.Out
+    $r = Fire -HookPath $noSourceHook -Cwd $splain -EventName 'Stop'
+    Check 'no skill source anywhere -> silent on Stop too' ($r.Exit -eq 0 -and $r.Out -eq '') $r.Out
 
     # =====================================================================
-    Write-Host '--- Skills-Check: reports copied project skills ---' -ForegroundColor Cyan
+    Write-Host '--- Skills-Check: reports copied project skills (SessionStart discovery) ---' -ForegroundColor Cyan
     $proj1 = New-Proj 'WithCopiedSkills'
     New-Item -ItemType Directory -Path (Join-Path $proj1 '.claude\skills\my-skill') -Force | Out-Null
     $hook1 = New-ConfiguredSkillsHookCopy -EnvOverrides @{ SKILLS_DIR = (Join-Path $Work 'no-such-library') }
     $r = Fire -HookPath $hook1 -Cwd $proj1
     Check 'lists the copied skill folder name' ($r.Out -like '*SKILL POLICY CHECK*' -and $r.Out -like '*my-skill*') $r.Out
-    Check 'requires a final "Skills used:" summary line for skills actually used' ($r.Out -match 'Skills used:') $r.Out
+    Check 'SessionStart points to the Stop reminder rather than repeating the full policy text' ($r.Out -match 'see the Stop reminder') $r.Out
+
+    # =====================================================================
+    Write-Host '--- Skills-Check: Stop requires the "Skills used:" summary line ---' -ForegroundColor Cyan
+    $r = Fire -HookPath $hook1 -Cwd $proj1 -EventName 'Stop'
+    Check 'Stop requires a final "Skills used:" summary line for skills actually used' ($r.Out -match 'Skills used:') $r.Out
     Check 'the policy explicitly excludes merely-installed/available/considered/copied-but-unused skills' (
         $r.Out -match 'never a skill that was merely installed, available, discovered, copied, considered, or read but not used') $r.Out
     Check 'the policy requires omitting the line entirely when no skill was used' ($r.Out -match 'Omit the line entirely if no skill was actually used') $r.Out
     Check 'the policy forbids listing the whole library' ($r.Out -match 'never the whole library') $r.Out
     Check 'the policy does not force a skill for trivial tasks merely to produce the line' ($r.Out -match 'do not force a skill for trivial tasks') $r.Out
+    $stopHookActiveStdin = @{ session_id = 't'; cwd = $proj1; hook_event_name = 'Stop'; stop_hook_active = $true } | ConvertTo-Json
+    $r = Fire -HookPath $hook1 -Cwd $proj1 -EventName 'Stop' -RawStdin $stopHookActiveStdin
+    Check 'stop_hook_active short-circuits the Stop reminder' ($r.Exit -eq 0 -and $r.Out -eq '') $r.Out
+
+    # =====================================================================
+    Write-Host '--- Skills-Check: UserPromptSubmit task-relevance nudge, once per session ---' -ForegroundColor Cyan
+    $r = Fire -HookPath $hook1 -Cwd $proj1 -RawStdin (New-PromptStdin -Cwd $proj1 -EventName 'UserPromptSubmit' -Prompt 'anything' -SessionId 'skills-s1')
+    Check 'UserPromptSubmit emits a short task-relevance nudge' ($r.Out -match 'SKILL POLICY CHECK' -and $r.Out -match 'THIS task') $r.Out
+    $r2 = Fire -HookPath $hook1 -Cwd $proj1 -RawStdin (New-PromptStdin -Cwd $proj1 -EventName 'UserPromptSubmit' -Prompt 'anything else' -SessionId 'skills-s1')
+    Check 'the SAME session does not repeat the nudge' ($r2.Exit -eq 0 -and $r2.Out -eq '') $r2.Out
+    $r3 = Fire -HookPath $hook1 -Cwd $proj1 -RawStdin (New-PromptStdin -Cwd $proj1 -EventName 'UserPromptSubmit' -Prompt 'anything' -SessionId 'skills-s2')
+    Check 'a NEW session gets the nudge again' ($r3.Out -match 'SKILL POLICY CHECK') $r3.Out
 
     # =====================================================================
     Write-Host '--- Skills-Check: reports .ai/SKILLS.md record ---' -ForegroundColor Cyan

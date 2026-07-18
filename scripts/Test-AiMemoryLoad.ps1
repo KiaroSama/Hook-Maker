@@ -168,6 +168,23 @@ try {
     Check 'graph exists -> emits the reminder' ($r.Out -like '*GRAPH READ CHECK*' -and $r.Out -like '*graphify query*') $r.Out
     $r2 = Fire -Cwd $proj4 -HookPath $GraphHook
     Check 'fires again next session (cheap static reminder, no state needed)' ($r2.Out -like '*GRAPH READ CHECK*') $r2.Out
+    $r = Fire -Cwd $proj4 -HookPath $GraphHook -EventName 'SubagentStop'
+    Check 'SubagentStop -> silent (not a registered event)' ($r.Exit -eq 0 -and $r.Out -eq '') $r.Out
+
+    # =====================================================================
+    Write-Host '--- Graph-Read-Check: UserPromptSubmit only when the prompt needs codebase structure ---' -ForegroundColor Cyan
+    $irrelevantStdin = @{ session_id = 'g-irrelevant'; cwd = $proj4; hook_event_name = 'UserPromptSubmit'; prompt = 'fix a typo in the README' } | ConvertTo-Json
+    $r = Fire -Cwd $proj4 -HookPath $GraphHook -RawStdin $irrelevantStdin
+    Check 'a docs-only/trivial prompt stays silent' ($r.Exit -eq 0 -and $r.Out -eq '') $r.Out
+    $relevantStdin1 = @{ session_id = 'g-relevant'; cwd = $proj4; hook_event_name = 'UserPromptSubmit'; prompt = 'refactor the module and check what calls this function across the codebase' } | ConvertTo-Json
+    $r = Fire -Cwd $proj4 -HookPath $GraphHook -RawStdin $relevantStdin1
+    Check 'a structure/refactor/call-path prompt emits the reminder' ($r.Out -like '*GRAPH READ CHECK*') $r.Out
+    $relevantStdin2 = @{ session_id = 'g-relevant'; cwd = $proj4; hook_event_name = 'UserPromptSubmit'; prompt = 'now also check the architecture impact further' } | ConvertTo-Json
+    $r2 = Fire -Cwd $proj4 -HookPath $GraphHook -RawStdin $relevantStdin2
+    Check 'the SAME session does not repeat the reminder on the next relevant prompt' ($r2.Exit -eq 0 -and $r2.Out -eq '') $r2.Out
+    $relevantStdin3 = @{ session_id = 'g-relevant-2'; cwd = $proj4; hook_event_name = 'UserPromptSubmit'; prompt = 'where is this used across modules' } | ConvertTo-Json
+    $r3 = Fire -Cwd $proj4 -HookPath $GraphHook -RawStdin $relevantStdin3
+    Check 'a NEW session with a relevant prompt reminds again' ($r3.Out -like '*GRAPH READ CHECK*') $r3.Out
 
     # =====================================================================
     Write-Host '--- Graph-Read-Check: Windows PowerShell 5.1 host ---' -ForegroundColor Cyan
