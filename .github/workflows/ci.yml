@@ -131,3 +131,11 @@ jobs:
       - name: Test-Temp-Cleanup test suite
         shell: pwsh
         run: .\scripts\Test-TestTempCleanup.ps1
+
+      # Docs-Freshness-Check hook: SessionStart baseline, Stop task-delta
+      # detection (comment/blank-only changes excluded), hard exclusions,
+      # ranked tracked-doc candidates, and the fingerprint-bound Updated/
+      # NoUpdate acknowledgement flow. Offline, no network.
+      - name: Docs-Freshness-Check test suite
+        shell: pwsh
+        run: .\scripts\Test-DocsFreshnessCheck.ps1
