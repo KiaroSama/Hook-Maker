@@ -9,11 +9,62 @@ param(
     # without the sync engine's -ConfigPath/-Profile arguments.
     [string]$CustomHook,
     [switch]$ClaudeOnly,
-    [switch]$CodexOnly
+    [switch]$CodexOnly,
+    # When set, a machine-readable result document is written here describing
+    # the outcome of EACH component (validation, runtime, settings, native git,
+    # registry). Programmatic callers - the updater - consume this instead of
+    # inferring success from console text or from the mere absence of an
+    # exception, which cannot distinguish "fully installed" from "installed but
+    # tracking failed".
+    [string]$ResultPath
 )
 
 Set-StrictMode -Version 2.0
 $ErrorActionPreference = 'Stop'
+
+# ---- structured outcome ----------------------------------------------------
+# Component results are accumulated here and written to -ResultPath. States:
+#   ok            - the component was applied and verified
+#   failed        - the component could not be applied
+#   skipped       - not applicable to this invocation (e.g. client not selected)
+#   trackingFailed- runtime/settings succeeded but the registry write did not
+$script:ComponentResults = New-Object System.Collections.Generic.List[object]
+function Set-ComponentResult {
+    param(
+        [Parameter(Mandatory = $true)][string]$Component,
+        [Parameter(Mandatory = $true)][ValidateSet('ok', 'failed', 'skipped', 'trackingFailed')][string]$Status,
+        [string]$ReasonCode = '',
+        [string]$Message = ''
+    )
+    # Sanitized message only: never raw file contents, .env values or stdin.
+    [void]$script:ComponentResults.Add([pscustomobject][ordered]@{
+        component = $Component
+        status    = $Status
+        reason    = $ReasonCode
+        message   = $Message
+        atUtc     = [DateTime]::UtcNow.ToString('o')
+    })
+}
+function Write-InstallResult {
+    param([string]$Overall)
+    if ([string]::IsNullOrWhiteSpace($ResultPath)) { return }
+    try {
+        $document = [pscustomobject][ordered]@{
+            schema     = 1
+            overall    = $Overall
+            components = @($script:ComponentResults.ToArray())
+            atUtc      = [DateTime]::UtcNow.ToString('o')
+        }
+        $directory = Split-Path -Parent $ResultPath
+        if (-not [string]::IsNullOrWhiteSpace($directory) -and -not (Test-Path -LiteralPath $directory -PathType Container)) {
+            New-Item -ItemType Directory -Path $directory -Force | Out-Null
+        }
+        [System.IO.File]::WriteAllText($ResultPath, ($document | ConvertTo-Json -Depth 20), ([System.Text.UTF8Encoding]::new($false)))
+    }
+    catch {
+        # A result-file failure must never fail the install itself.
+    }
+}
 
 $Utf8NoBom = [System.Text.UTF8Encoding]::new($false)
 $ToolRoot = Split-Path -Parent $PSScriptRoot
@@ -522,6 +573,7 @@ if (-not $CodexOnly) {
     }
     Backup-File $ClaudeSettings
     Write-JsonFile -Value $claude -Path $ClaudeSettings
+    Set-ComponentResult -Component 'claude' -Status 'ok'
     Write-Host "Claude hook ($ScopeLabel) installed in: $ClaudeSettings"
     Write-Host "Claude runtime copy: $($claudeRuntime.Script)"
 }
@@ -554,11 +606,15 @@ if (-not $ClaudeOnly) {
     }
     Backup-File $CodexHooks
     Write-JsonFile -Value $codex -Path $CodexHooks
+    Set-ComponentResult -Component 'codex' -Status 'ok'
     Write-Host "Codex hook ($ScopeLabel) installed in: $CodexHooks"
     Write-Host "Codex runtime copy: $($codexRuntime.Script)"
 }
 
 Install-IgnorePrePush
+# Native chain is only part of some installs; record which.
+if ($null -ne $script:NativeGitState) { Set-ComponentResult -Component 'nativeGit' -Status 'ok' }
+else { Set-ComponentResult -Component 'nativeGit' -Status 'skipped' -ReasonCode 'notApplicable' }
 
 # ---- install registry -----------------------------------------------------
 # The hook/settings/native files above are already correctly written by this
@@ -642,14 +698,30 @@ try {
     if (-not $registryResult.Ok) {
         Write-Host ('WARNING: the hook was installed, but tracking it FAILED - ' + $registryResult.Warning)
         Write-Host 'WARNING: "Update previously installed hooks" will not see this installation until it is reinstalled.'
+        # Runtime and settings ARE applied; only tracking failed. The caller
+        # must be able to tell those apart, so this is its own state.
+        Set-ComponentResult -Component 'registry' -Status 'trackingFailed' -ReasonCode 'registryWriteFailed' -Message ([string]$registryResult.Warning)
     }
     elseif (-not [string]::IsNullOrWhiteSpace($registryResult.Warning)) {
         Write-Host ('WARNING: ' + $registryResult.Warning)
+        Set-ComponentResult -Component 'registry' -Status 'ok' -ReasonCode 'warning' -Message ([string]$registryResult.Warning)
+    }
+    else {
+        Set-ComponentResult -Component 'registry' -Status 'ok'
     }
 }
 catch {
     Write-Host ('WARNING: the hook was installed, but the local install registry could not be updated: ' + $_.Exception.Message)
     Write-Host 'WARNING: "Update previously installed hooks" will not see this installation until it is reinstalled.'
+    Set-ComponentResult -Component 'registry' -Status 'trackingFailed' -ReasonCode 'registryException' -Message $_.Exception.Message
 }
+
+# Overall state is derived from the component results, never from the absence
+# of an exception: an install whose runtime and settings landed but whose
+# tracking failed is 'partial', not success.
+$failedComponents = @($script:ComponentResults | Where-Object { $_.status -eq 'failed' })
+$trackingFailed = @($script:ComponentResults | Where-Object { $_.status -eq 'trackingFailed' })
+$overallResult = if ($failedComponents.Count -gt 0) { 'failed' } elseif ($trackingFailed.Count -gt 0) { 'partial' } else { 'ok' }
+Write-InstallResult -Overall $overallResult
 
 Write-Host 'Restart the clients and review /hooks. Codex may require trusting the new command.'

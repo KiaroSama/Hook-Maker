@@ -2053,14 +2053,70 @@ function Invoke-UpdateInstalledHooks {
             }
             $clientArgs = if ($client -eq 'claude') { @{ ClaudeOnly = $true } } else { @{ CodexOnly = $true } }
             try {
+                # STRUCTURED OUTCOME: the installer writes a machine-readable
+                # result document. Success is read from that, never inferred
+                # from console text or from "no exception was thrown" - an
+                # install whose runtime and settings landed but whose tracking
+                # failed must not be reported as fully updated.
+                $resultFile = Join-Path ([System.IO.Path]::GetTempPath()) ('hookmaker-install-result-' + [guid]::NewGuid().ToString('N').Substring(0, 10) + '.json')
+                $installArgs['ResultPath'] = $resultFile
                 $installOutput = & $InstallScript @installArgs @clientArgs *>&1
                 foreach ($line in @($installOutput)) { Write-Log 'INFO' 'INSTALL' ([string]$line) }
-                [void]$clientResults.Add($client + ': ok')
+                $installResult = $null
+                if (Test-Path -LiteralPath $resultFile -PathType Leaf) {
+                    try { $installResult = Get-Content -LiteralPath $resultFile -Raw | ConvertFrom-Json } catch { $installResult = $null }
+                    Remove-Item -LiteralPath $resultFile -Force -ErrorAction SilentlyContinue
+                }
+                if ($null -eq $installResult) {
+                    $anyFailed = $true
+                    [void]$clientResults.Add($client + ': no structured result from the installer')
+                }
+                elseif ([string]$installResult.overall -eq 'failed') {
+                    $anyFailed = $true
+                    $failedNames = @(@($installResult.components) | Where-Object { $_.status -eq 'failed' } | ForEach-Object { [string]$_.component })
+                    [void]$clientResults.Add($client + ': failed (' + ($failedNames -join ', ') + ')')
+                }
+                elseif ([string]$installResult.overall -eq 'partial') {
+                    # Runtime/settings applied but tracking did not - report it
+                    # honestly rather than calling the hook updated.
+                    $anyFailed = $true
+                    [void]$clientResults.Add($client + ': installed but tracking failed - reinstall to restore tracking')
+                }
+                else {
+                    [void]$clientResults.Add($client + ': ok')
+                }
             }
             catch {
                 $anyFailed = $true
                 [void]$clientResults.Add($client + ': ' + $_.Exception.Message)
                 Write-Log 'ERROR' 'UPDATE' ('Failed to update ' + $record.friendlyName + ' for ' + $client + ': ' + $_.Exception.Message)
+            }
+        }
+
+        # INDEPENDENT RE-VERIFICATION. The installer reporting success is not
+        # sufficient evidence that the installation is now intact, so the
+        # record is re-read and integrity re-evaluated before anything is
+        # called "updated". Combined with the installer's structured result
+        # (which distinguishes "installed but tracking failed" from success),
+        # this is what stops a nominal success from being reported as a real one.
+        if (-not $anyFailed) {
+            try {
+                $verifyRecord = Get-InstallRecordById -ToolRoot $ToolRoot -Id ([string]$record.id)
+                if ($null -eq $verifyRecord) {
+                    $anyFailed = $true
+                    [void]$clientResults.Add('post-update verification: the installation is no longer tracked')
+                }
+                else {
+                    $verifyResult = Get-InstallIntegrity -Record $verifyRecord -ToolRoot $ToolRoot
+                    if ($verifyResult.Status -ne 'current') {
+                        $anyFailed = $true
+                        [void]$clientResults.Add('post-update verification: ' + $verifyResult.Detail)
+                    }
+                }
+            }
+            catch {
+                $anyFailed = $true
+                [void]$clientResults.Add('post-update verification failed: ' + $_.Exception.Message)
             }
         }
 

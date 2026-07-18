@@ -1065,6 +1065,51 @@ for (`$i = 0; `$i -lt 8; `$i++) {
     [System.IO.File]::WriteAllText($matcherSettings, ($matcherJson | ConvertTo-Json -Depth 50), (New-Object System.Text.UTF8Encoding $false))
     $driftMatcher = Get-InstallIntegrity -Record (@(Get-RecordsFor 'Ai-Memory-Check' | Where-Object { $_.targetProjectRoot -eq $matcherProj })[0]) -ToolRoot $ToolRoot
     Check 'a changed matcher is caught' (($driftMatcher.Status -eq 'update') -and ($driftMatcher.Detail -match 'matcher')) $driftMatcher.Detail
+    # =====================================================================
+    # STRUCTURED OUTCOME CONTRACT: programmatic callers must never infer
+    # success from console text or from "no exception was thrown". The
+    # installer emits a machine-readable document describing each component,
+    # and distinguishes "installed but tracking failed" from real success.
+    Write-Host '--- the installer emits a structured, machine-readable result ---' -ForegroundColor Cyan
+    $resultProj = New-Proj 'StructuredResultProj'
+    $resultFile = Join-Path $Work 'install-result.json'
+    & $InstallScript -CustomHook (Join-Path $RealHooksDir 'Ai-Memory-Check\Ai-Memory-Check.ps1') -Events @('Stop') -TargetProject $resultProj -ResultPath $resultFile *> $null
+    Check 'a result document is written when -ResultPath is given' (Test-Path -LiteralPath $resultFile)
+    $resultDoc = Get-Content -LiteralPath $resultFile -Raw | ConvertFrom-Json
+    Check 'the result document is versioned' ([int]$resultDoc.schema -ge 1)
+    Check 'a fully successful install reports overall=ok' ([string]$resultDoc.overall -eq 'ok')
+    $resultComponents = @($resultDoc.components | ForEach-Object { [string]$_.component })
+    Check 'per-component results are reported for both clients' (($resultComponents -contains 'claude') -and ($resultComponents -contains 'codex'))
+    Check 'the registry component is reported' ($resultComponents -contains 'registry')
+    Check 'the native-git component is reported (skipped for a plain hook)' ($resultComponents -contains 'nativeGit')
+    $nativeComp = @($resultDoc.components | Where-Object { $_.component -eq 'nativeGit' })[0]
+    Check 'a non-applicable component is skipped, not failed' ([string]$nativeComp.status -eq 'skipped')
+    Check 'every component carries a timestamp' (@($resultDoc.components | Where-Object { [string]::IsNullOrWhiteSpace([string]$_.atUtc) }).Count -eq 0)
+    $resultRaw = [System.IO.File]::ReadAllText($resultFile)
+    Check 'the result document contains no .env values or secrets' (($resultRaw -notmatch 'EVENTS=') -and ($resultRaw -notmatch 'SECRET'))
+
+    # Tracking failure must be reported as PARTIAL, never as success: the
+    # runtime and settings did land, but the install is no longer trackable.
+    $partialProj = New-Proj 'PartialResultProj'
+    $partialResultFile = Join-Path $Work 'install-result-partial.json'
+    $savedStateDir = $env:HOOKMAKER_STATE_DIR
+    $blockedStateDir = Join-Path $Work 'blocked-state'
+    New-Item -ItemType Directory -Path $blockedStateDir -Force | Out-Null
+    # A DIRECTORY where the registry file must be makes the registry write fail
+    # while runtime and settings still succeed.
+    New-Item -ItemType Directory -Path (Join-Path $blockedStateDir 'install-registry.json') -Force | Out-Null
+    try {
+        $env:HOOKMAKER_STATE_DIR = $blockedStateDir
+        & $InstallScript -CustomHook (Join-Path $RealHooksDir 'Ai-Memory-Check\Ai-Memory-Check.ps1') -Events @('Stop') -TargetProject $partialProj -ClaudeOnly -ResultPath $partialResultFile *> $null
+    }
+    finally { $env:HOOKMAKER_STATE_DIR = $savedStateDir }
+    Check 'a result document is still written when tracking fails' (Test-Path -LiteralPath $partialResultFile)
+    $partialDoc = Get-Content -LiteralPath $partialResultFile -Raw | ConvertFrom-Json
+    Check 'a tracking failure is reported as partial, NOT ok' ([string]$partialDoc.overall -eq 'partial')
+    $registryComp = @($partialDoc.components | Where-Object { $_.component -eq 'registry' })[0]
+    Check 'the registry component is marked trackingFailed' ([string]$registryComp.status -eq 'trackingFailed')
+    Check 'the client component still reports ok (settings really were written)' (@($partialDoc.components | Where-Object { $_.component -eq 'claude' -and $_.status -eq 'ok' }).Count -eq 1)
+    Check 'the hook really was installed despite the tracking failure' (Test-Path -LiteralPath (Join-Path $partialProj '.claude\settings.local.json'))
     # Installed-state drift: NONE of these change the source, so an updater
 
     # that only compares stored source hashes would wrongly report "up to
