@@ -285,6 +285,16 @@ A changed **source** is a shared dependency: every client is stale by definition
 refreshed together. A missing user-owned pre-push hook is reported as `manual repair required` and
 is never "repaired" by recreating it.
 
+### Registration field verification
+
+Every field the installer owns is verified **independently** per client and event: handler type,
+`command`, `commandWindows`, timeout, statusMessage, matcher, the exact occurrence count, and the
+absence of stale registrations on other events. A matching portable command no longer hides a
+corrupted Windows command — Codex handlers carry both forms and each is checked on its own.
+
+Fields Hook Maker does not own are left alone, and a record written before a field was tracked
+simply carries no expectation for it rather than being reported as drifted.
+
 ### Known limitations
 
 - Legacy discovery/removal supports only the historical layouts listed under
@@ -295,9 +305,8 @@ is never "repaired" by recreating it.
 - Runtime replacement is staged, hash-verified and swapped, with the previous runtime restored if
   the swap fails. That is compensating rollback, not crash-atomicity: a machine that dies mid-swap
   can still need one reinstall.
-- Registration integrity verifies the command path, profile/config, event and occurrence count. It
-  does not yet independently validate every owned field (timeout, matcher, statusMessage) per
-  client.
+- Structured installer outcomes and per-component failure history are not implemented yet: the
+  updater infers success from the installer completing without an error, then re-verifies integrity.
 
 ### Custom-hook source boundaries
 
