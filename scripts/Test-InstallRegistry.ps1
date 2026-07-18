@@ -1110,6 +1110,57 @@ for (`$i = 0; `$i -lt 8; `$i++) {
     Check 'the registry component is marked trackingFailed' ([string]$registryComp.status -eq 'trackingFailed')
     Check 'the client component still reports ok (settings really were written)' (@($partialDoc.components | Where-Object { $_.component -eq 'claude' -and $_.status -eq 'ok' }).Count -eq 1)
     Check 'the hook really was installed despite the tracking failure' (Test-Path -LiteralPath (Join-Path $partialProj '.claude\settings.local.json'))
+    # =====================================================================
+    # CONCURRENCY: two REAL processes installing DIFFERENT hooks into the same
+    # settings file must not lose each other's handlers. Every read-modify-write
+    # of a settings file is held under a crash-aware lock on that file.
+    Write-Host '--- concurrent installs into one settings file keep both handlers ---' -ForegroundColor Cyan
+    $concProj = New-Proj 'ConcurrencyProj'
+    $fixtureA = New-FixtureHook 'ZZZ-Regtest-Concurrenta' "exit 0`n"
+    $fixtureB = New-FixtureHook 'ZZZ-Regtest-Concurrentb' "exit 0`n"
+    try {
+        $hostExe = (Get-Process -Id $PID).Path
+        $concOutA = Join-Path $Work 'conc-a.out'; $concErrA = Join-Path $Work 'conc-a.err'
+        $concOutB = Join-Path $Work 'conc-b.out'; $concErrB = Join-Path $Work 'conc-b.err'
+        function Start-ConcurrentInstall {
+            param([string]$HookPath, [string]$OutFile, [string]$ErrFile)
+            $argLine = '-NoLogo -NoProfile -File "' + $InstallScript + '" -CustomHook "' + $HookPath + '" -Events Stop -TargetProject "' + $concProj + '" -ClaudeOnly'
+            $startArgs = @{
+                FilePath = $hostExe; ArgumentList = $argLine
+                RedirectStandardOutput = $OutFile; RedirectStandardError = $ErrFile
+                WorkingDirectory = $SafeCwd; NoNewWindow = $true; PassThru = $true
+            }
+            if ((Get-Command Start-Process).Parameters.ContainsKey('Environment')) {
+                $startArgs.Environment = @{ HOOKMAKER_STATE_DIR = $IsolatedStateDir }
+            }
+            return (Start-Process @startArgs)
+        }
+        # Launch both, THEN wait: they must genuinely overlap.
+        $procA = Start-ConcurrentInstall -HookPath $fixtureA -OutFile $concOutA -ErrFile $concErrA
+        $procB = Start-ConcurrentInstall -HookPath $fixtureB -OutFile $concOutB -ErrFile $concErrB
+        $procA.WaitForExit()
+        $procB.WaitForExit()
+
+        Check 'concurrent install A exited 0' ($procA.ExitCode -eq 0) ([System.IO.File]::ReadAllText($concErrA))
+        Check 'concurrent install B exited 0' ($procB.ExitCode -eq 0) ([System.IO.File]::ReadAllText($concErrB))
+        Check 'concurrent install A produced no stderr' ([string]::IsNullOrWhiteSpace([System.IO.File]::ReadAllText($concErrA))) ([System.IO.File]::ReadAllText($concErrA))
+        Check 'concurrent install B produced no stderr' ([string]::IsNullOrWhiteSpace([System.IO.File]::ReadAllText($concErrB))) ([System.IO.File]::ReadAllText($concErrB))
+
+        $concSettings = Join-Path $concProj '.claude\settings.local.json'
+        Check 'the shared settings file is still valid JSON' ($null -ne (Get-Content -LiteralPath $concSettings -Raw | ConvertFrom-Json))
+        $concJson = Get-Content -LiteralPath $concSettings -Raw | ConvertFrom-Json
+        $concHandlers = @(@($concJson.hooks.Stop) | ForEach-Object { $_.hooks })
+        $hasA = @($concHandlers | Where-Object { (Get-HandlerFieldValue $_ 'command') -like '*ZZZ-Regtest-Concurrenta*' }).Count
+        $hasB = @($concHandlers | Where-Object { (Get-HandlerFieldValue $_ 'command') -like '*ZZZ-Regtest-Concurrentb*' }).Count
+        Check 'hook A survived the concurrent write' ($hasA -eq 1)
+        Check 'hook B survived the concurrent write (neither lost the other)' ($hasB -eq 1)
+        Check 'both records were tracked in the registry' ((@(Get-RecordsFor 'ZZZ-Regtest-Concurrenta').Count -eq 1) -and (@(Get-RecordsFor 'ZZZ-Regtest-Concurrentb').Count -eq 1))
+        Check 'no settings lock file is left behind' (-not (Test-Path -LiteralPath ($concSettings + '.hookmaker-lock')))
+    }
+    finally {
+        Remove-FixtureHook 'ZZZ-Regtest-Concurrenta'
+        Remove-FixtureHook 'ZZZ-Regtest-Concurrentb'
+    }
     # Installed-state drift: NONE of these change the source, so an updater
 
     # that only compares stored source hashes would wrongly report "up to

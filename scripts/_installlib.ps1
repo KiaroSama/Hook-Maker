@@ -967,6 +967,34 @@ function Open-CrashAwareLock {
     }
 }
 
+# Bounded exclusive lock around ANY install resource (a settings file, a
+# runtime directory, the native git integration), using the same crash-aware
+# primitive as the registry lock.
+#
+# LOCK ORDERING (must be kept to avoid deadlock): a caller acquires at most one
+# resource lock at a time and never holds a settings lock while taking the
+# registry lock. Install-Hook writes Claude settings, then Codex settings, then
+# the registry - each lock released before the next is taken - so no cycle can
+# form. The lock file lives beside the resource it guards.
+function Invoke-WithResourceLock {
+    param(
+        [Parameter(Mandatory = $true)][string]$ResourcePath,
+        [Parameter(Mandatory = $true)][scriptblock]$Action,
+        [int]$TimeoutSeconds = 10
+    )
+    $directory = Split-Path -Parent $ResourcePath
+    if (-not [string]::IsNullOrWhiteSpace($directory) -and -not (Test-Path -LiteralPath $directory -PathType Container)) {
+        New-Item -ItemType Directory -Path $directory -Force | Out-Null
+    }
+    $lockPath = $ResourcePath + '.hookmaker-lock'
+    $stream = Open-CrashAwareLock -LockPath $lockPath -TimeoutSeconds $TimeoutSeconds
+    try { return (& $Action) }
+    finally {
+        if ($null -ne $stream) { $stream.Dispose() }
+        Remove-Item -LiteralPath $lockPath -Force -ErrorAction SilentlyContinue
+    }
+}
+
 # Bounded exclusive lock around registry read-modify-write so two installs
 # running near-simultaneously cannot lose each other's records.
 function Invoke-WithInstallRegistryLock {
