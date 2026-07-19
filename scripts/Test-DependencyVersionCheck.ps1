@@ -1,7 +1,7 @@
 # Offline test suite for Dependency-Version-Check.
 #
 # npm and pip are replaced by PATH shims (npm.ps1 / pip.ps1, same convention as the `gh` shim in
-# Test-GitHubHooks.ps1) that serve canned JSON and a controllable exit code from
+# Test-CiStatusCheck.ps1) that serve canned JSON and a controllable exit code from
 # $env:DEPVER_MOCK_DIR, plus record every invocation (directory + args) so cache/cooldown
 # behavior can be asserted deterministically. No live npm/PyPI registry calls happen in this
 # suite. GitHub Actions, runtime-pin, and Docker base-image checks are fully static (no
@@ -33,7 +33,7 @@ New-Item -ItemType Directory -Path $FakeLocalAppData -Force | Out-Null
 $ProjsRoot = Join-Path $Work '_projs'
 New-Item -ItemType Directory -Path $ProjsRoot -Force | Out-Null
 
-# ---- npm/pip shims: same PATH-override convention as the `gh` shim in Test-GitHubHooks.ps1 ----
+# ---- npm/pip shims: same PATH-override convention as the `gh` shim in Test-CiStatusCheck.ps1 ----
 $ShimDir = Join-Path $Work 'shim'
 $MockDir = Join-Path $Work 'mock'
 New-Item -ItemType Directory -Path $ShimDir, $MockDir -Force | Out-Null
@@ -66,7 +66,7 @@ exit $code
 # through -Environment leaves the parent's real npm/pip directories reachable regardless). The
 # only reliable way to control what a child resolves `npm`/`pip` to is to mutate THIS process's
 # own $env:PATH before Start-Process, exactly like the established `gh` shim convention in
-# Test-GitHubHooks.ps1 - so PATH is rewritten in place here (and restored in `finally`) instead
+# Test-CiStatusCheck.ps1 - so PATH is rewritten in place here (and restored in `finally`) instead
 # of being threaded through as a separate value.
 $OriginalPath = $env:PATH
 $pathWithoutRealTools = @($OriginalPath -split ';' | Where-Object {

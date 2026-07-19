@@ -2,7 +2,7 @@
 # pre-deploy-review/post-deploy-verification/failure-handling content, PLUS
 # the release-readiness gate (clean+pushed+CI-green-if-applicable+cleanup-
 # coordination) that decides whether the decision is shown AT ALL. `gh` is
-# PATH-shimmed (same convention as Test-GitHubHooks.ps1's gh.ps1) - no live
+# PATH-shimmed (same convention as Test-CiStatusCheck.ps1's gh.ps1) - no live
 # GitHub calls. Remotes are real local bare repos (same convention as
 # Test-GitSyncCheck.ps1) so the generic @{upstream}/ahead-count check is
 # exercised for real, without needing an actual GitHub remote.
@@ -72,7 +72,7 @@ function Set-FakeGithubRemote {
 }
 
 # ---- gh shim: intercepts `gh run list` in child processes (same convention
-# as Test-GitHubHooks.ps1's gh.ps1) - no live GitHub calls. ----
+# as Test-CiStatusCheck.ps1's gh.ps1) - no live GitHub calls. ----
 $ShimDir = Join-Path $Work 'ghshim'
 $MockDir = Join-Path $Work 'ghmock'
 New-Item -ItemType Directory -Path $ShimDir, $MockDir -Force | Out-Null
