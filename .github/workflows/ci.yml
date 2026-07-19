@@ -166,3 +166,14 @@ jobs:
       - name: Native Git pre-push install test suite
         shell: pwsh
         run: .\scripts\Test-NativePrePushInstall.ps1
+
+      # Find-ManagedCommands (legacy/untracked hook discovery for "Update
+      # previously installed hooks"): a registration in only one of
+      # command/commandWindows/command_windows is still found, the same
+      # logical registration split across two fields yields one candidate,
+      # an ambiguous proven-shape path outside any known tool root is never
+      # imported, and an unrelated same-basename command is never confused
+      # with a real one. Offline, no network.
+      - name: Legacy hook discovery test suite
+        shell: pwsh
+        run: .\scripts\Test-LegacyDiscovery.ps1

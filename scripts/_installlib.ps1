@@ -132,6 +132,80 @@ function Get-KnownToolRoots {
     return $roots.ToArray()
 }
 
+# Structural validation for a PARSED sync-hooks config object: every profile
+# has a unique non-empty id, every route within it has a unique non-empty id,
+# and every route's source/destination has a non-empty root. This is the SAME
+# rule set Validate-Config.ps1 enforces - extracted here as the single shared
+# source of truth so Install-Hook.ps1 can prove a config is well-formed BEFORE
+# any mutation, without duplicating (and risking drifting from) that validator.
+#
+# Every access is guarded (PSObject.Properties checked before use, $null
+# checked before member access) so a malformed/fuzzed config - a profile that
+# is a bare string, a null entry in an array, a missing routes array - is
+# REJECTED with a precise reason instead of throwing an unhandled StrictMode
+# exception past the caller.
+function Test-SyncConfigStructure {
+    param($Config)
+    if ($null -eq $Config -or $null -eq $Config.PSObject.Properties['profiles'] -or $null -eq $Config.profiles) {
+        return [pscustomobject]@{ Ok = $false; Reason = 'the config must contain a profiles array' }
+    }
+    $profileIds = @{}
+    foreach ($configProfile in @($Config.profiles)) {
+        $profileId = ''
+        if ($null -ne $configProfile -and $null -ne $configProfile.PSObject.Properties['id']) { $profileId = [string]$configProfile.id }
+        if ([string]::IsNullOrWhiteSpace($profileId)) {
+            return [pscustomobject]@{ Ok = $false; Reason = 'every profile requires a non-empty id' }
+        }
+        if ($profileIds.ContainsKey($profileId)) {
+            return [pscustomobject]@{ Ok = $false; Reason = ('duplicate profile id: ' + $profileId) }
+        }
+        $profileIds[$profileId] = $true
+
+        # 'name' is not just cosmetic: Install-Hook.ps1 generates SYNC-PROJECTS.txt
+        # from it (profile name on one line, each endpoint's name alongside its
+        # root). A profile/endpoint missing it previously crashed deep inside the
+        # install (an unguarded property access on a well-formed-per-id config),
+        # reproduced directly - a config that structurally validates must never
+        # be able to crash the installer it is handed to.
+        $profileName = ''
+        if ($null -ne $configProfile.PSObject.Properties['name']) { $profileName = [string]$configProfile.name }
+        if ([string]::IsNullOrWhiteSpace($profileName)) {
+            return [pscustomobject]@{ Ok = $false; Reason = ("profile '" + $profileId + "' requires a non-empty name") }
+        }
+
+        $routesValue = @()
+        if ($null -ne $configProfile.PSObject.Properties['routes']) { $routesValue = $configProfile.routes }
+        $routeIds = @{}
+        foreach ($route in @($routesValue)) {
+            $routeId = ''
+            if ($null -ne $route -and $null -ne $route.PSObject.Properties['id']) { $routeId = [string]$route.id }
+            if ([string]::IsNullOrWhiteSpace($routeId)) {
+                return [pscustomobject]@{ Ok = $false; Reason = ("every route in profile '" + $profileId + "' requires a non-empty id") }
+            }
+            if ($routeIds.ContainsKey($routeId)) {
+                return [pscustomobject]@{ Ok = $false; Reason = ("duplicate route id '" + $routeId + "' in profile '" + $profileId + "'") }
+            }
+            $routeIds[$routeId] = $true
+
+            foreach ($side in @('source', 'destination')) {
+                $endpoint = $null
+                if ($null -ne $route.PSObject.Properties[$side]) { $endpoint = $route.$side }
+                $root = ''
+                if ($null -ne $endpoint -and $null -ne $endpoint.PSObject.Properties['root']) { $root = [string]$endpoint.root }
+                if ($null -eq $endpoint -or [string]::IsNullOrWhiteSpace($root)) {
+                    return [pscustomobject]@{ Ok = $false; Reason = ("route '" + $routeId + "' in profile '" + $profileId + "' requires " + $side + '.root') }
+                }
+                $endpointName = ''
+                if ($null -ne $endpoint.PSObject.Properties['name']) { $endpointName = [string]$endpoint.name }
+                if ([string]::IsNullOrWhiteSpace($endpointName)) {
+                    return [pscustomobject]@{ Ok = $false; Reason = ("route '" + $routeId + "' in profile '" + $profileId + "' requires " + $side + '.name') }
+                }
+            }
+        }
+    }
+    return [pscustomobject]@{ Ok = $true; Reason = '' }
+}
+
 # Validates ONE record's shape before anything reads its fields.
 #
 # Under StrictMode a missing property throws, so a single malformed record used
@@ -153,7 +227,7 @@ function Test-InstallRecordValid {
         return $Object.$Name
     }
 
-    foreach ($required in @('id', 'friendlyName', 'hookType', 'sourceScript', 'scope')) {
+    foreach ($required in @('id', 'friendlyName', 'hookType', 'sourceScript', 'sourceDir', 'scope')) {
         $value = Get-RecordField -Object $Record -Name $required
         if ($null -eq $value -or [string]::IsNullOrWhiteSpace([string]$value)) {
             return [pscustomobject]@{ Ok = $false; Reason = ('record is missing the required field "' + $required + '"') }
@@ -205,7 +279,10 @@ function Test-InstallRecordValid {
     foreach ($clientName in @('claude', 'codex')) {
         $client = Get-RecordField -Object $clients -Name $clientName
         if ($null -eq $client) { continue }
-        foreach ($required in @('runtimeScript', 'settingsPath')) {
+        # runtimeRoot joins runtimeScript/settingsPath here: Get-InstallIntegrity
+        # reads it unguarded (via Get-InstalledManifest) for every client on
+        # every evaluation, not only when something is already known to be wrong.
+        foreach ($required in @('runtimeScript', 'settingsPath', 'runtimeRoot')) {
             $value = Get-RecordField -Object $client -Name $required
             if ($null -eq $value -or [string]::IsNullOrWhiteSpace([string]$value)) {
                 return [pscustomobject]@{ Ok = $false; Reason = ($clientName + ' subrecord is missing "' + $required + '"') }
@@ -215,12 +292,51 @@ function Test-InstallRecordValid {
         if ($null -eq $events -or @($events).Count -eq 0) {
             return [pscustomobject]@{ Ok = $false; Reason = ($clientName + ' subrecord has no events') }
         }
+        # timeout, when present, is cast with [int] during integrity evaluation -
+        # a non-numeric value fails that cast, not a StrictMode property lookup,
+        # so it needs its own type check rather than a presence check.
+        $timeoutValue = Get-RecordField -Object $client -Name 'timeout'
+        if ($null -ne $timeoutValue) {
+            $parsedTimeout = 0
+            if (-not [int]::TryParse([string]$timeoutValue, [ref]$parsedTimeout)) {
+                return [pscustomobject]@{ Ok = $false; Reason = ($clientName + ' subrecord has a non-numeric timeout "' + [string]$timeoutValue + '"') }
+            }
+        }
     }
     $manifest = Get-RecordField -Object $Record -Name 'sourceManifest'
     if ($null -ne $manifest) {
         foreach ($entry in @($manifest)) {
             if ($null -eq $entry -or $null -eq $entry.PSObject.Properties['path'] -or $null -eq $entry.PSObject.Properties['hash']) {
                 return [pscustomobject]@{ Ok = $false; Reason = 'sourceManifest contains a malformed entry' }
+            }
+        }
+    }
+    # nativeGit shape is only ever read by Get-InstallIntegrity/Test-NativePrePushState
+    # when managed=true; an unmanaged or absent nativeGit is never dereferenced.
+    $nativeGit = Get-RecordField -Object $Record -Name 'nativeGit'
+    if ($null -ne $nativeGit) {
+        $nativeManaged = $false
+        if ($null -ne $nativeGit.PSObject.Properties['managed']) { $nativeManaged = ($nativeGit.managed -eq $true) }
+        if ($nativeManaged) {
+            foreach ($required in @('wrapperPath', 'runtimeRoot')) {
+                $value = Get-RecordField -Object $nativeGit -Name $required
+                if ($null -eq $value -or [string]::IsNullOrWhiteSpace([string]$value)) {
+                    return [pscustomobject]@{ Ok = $false; Reason = ('managed nativeGit record is missing "' + $required + '"') }
+                }
+            }
+            if ($null -eq $nativeGit.PSObject.Properties['companions']) {
+                return [pscustomobject]@{ Ok = $false; Reason = 'managed nativeGit record is missing "companions"' }
+            }
+        }
+    }
+    # lastComponents entries are read unguarded (.component/.status/.reason) by
+    # Set-InstallRecord when present; a null or shapeless entry crashes that read.
+    $lastComponents = Get-RecordField -Object $Record -Name 'lastComponents'
+    if ($null -ne $lastComponents) {
+        foreach ($entry in @($lastComponents)) {
+            if ($null -eq $entry -or $null -eq $entry.PSObject.Properties['component'] -or
+                $null -eq $entry.PSObject.Properties['status'] -or $null -eq $entry.PSObject.Properties['reason']) {
+                return [pscustomobject]@{ Ok = $false; Reason = 'lastComponents contains a malformed entry' }
             }
         }
     }
