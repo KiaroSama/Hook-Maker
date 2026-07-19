@@ -47,12 +47,22 @@ jobs:
         shell: powershell
         run: .\scripts\Test-Engine.ps1
 
-      # Offline GitHub-hook suite: mocks git state and gh via a PATH shim, so it
-      # needs no network or account. It internally exercises Windows PowerShell
-      # 5.1 too, so one pwsh run covers both hosts.
-      - name: GitHub hooks test suite
+      # Offline GitHub-hook suites: mocks git state and gh via a PATH shim, so
+      # they need no network or account. Each internally exercises Windows
+      # PowerShell 5.1 too, so one pwsh run per suite covers both hosts.
+      # Split from one combined suite into three (one per hook, each with its
+      # own harness copy) since the hooks share no production code.
+      - name: Dependabot-Check test suite
         shell: pwsh
-        run: .\scripts\Test-GitHubHooks.ps1
+        run: .\scripts\Test-DependabotCheck.ps1
+
+      - name: Ci-Status-Check test suite
+        shell: pwsh
+        run: .\scripts\Test-CiStatusCheck.ps1
+
+      - name: Github-Baseline-Check test suite
+        shell: pwsh
+        run: .\scripts\Test-GithubBaselineCheck.ps1
 
       # RulesCheck hook + per-client (-ClaudeOnly/-CodexOnly) install targeting.
       # Offline: fake home/state dirs via env vars, no network.
