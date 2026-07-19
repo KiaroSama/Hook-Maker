@@ -326,16 +326,11 @@ statuses and reason codes only: never file contents, `.env` values, prompt text 
 
 - Legacy discovery/removal supports only the historical layouts listed under
   "Registration ownership" above; other historical forms are reported, never rewritten.
-- Concurrency is protected by a crash-aware lock around the **registry**. Settings files and
-  runtime directories do not yet have their own locks, so two installs targeting the *same* client
-  settings file at the same instant are not fully serialized.
+- Runtime directories and the native Git integration do not have a dedicated inter-process lock of
+  their own; the registry and each settings file do.
 - Runtime replacement is staged, hash-verified and swapped, with the previous runtime restored if
-  the swap fails. That is compensating rollback, not crash-atomicity: a machine that dies mid-swap
-  can still need one reinstall.
-- Runtime replacement is compensating rollback, not crash-atomicity (see above): a machine that
+  the swap fails. That is compensating rollback, not crash-atomicity: a machine or process that
   dies mid-swap can still need one reinstall.
-- Runtime directories and the native Git integration do not have locks of their own; the registry
-  and each settings file do.
 
 ### Custom-hook source boundaries
 

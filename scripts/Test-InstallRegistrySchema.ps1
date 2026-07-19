@@ -174,14 +174,9 @@ try {
     Write-Host '--- registry schema validation and per-record isolation ---' -ForegroundColor Cyan
 
     $goodRecord = [pscustomobject]@{
-
         id = 'schema-ok'; schema = 2; friendlyName = 'F'; hookType = 'CustomHook'
-
-        sourceScript = 'C:.ps1'; scope = 'global'
-
-        clients = [pscustomobject]@{ claude = [pscustomobject]@{ runtimeScript = 'C:
-.ps1'; settingsPath = 'C:\s.json'; events = @('Stop') } }
-
+        sourceScript = 'C:\src\hook.ps1'; sourceDir = 'C:\src'; scope = 'global'
+        clients = [pscustomobject]@{ claude = [pscustomobject]@{ runtimeScript = 'C:\runtime\hook.ps1'; settingsPath = 'C:\s.json'; runtimeRoot = 'C:\runtime'; events = @('Stop') } }
     }
 
     function Copy-Record { param($R) return ($R | ConvertTo-Json -Depth 20 | ConvertFrom-Json) }
@@ -190,7 +185,7 @@ try {
 
     Check 'a null record is rejected' (-not (Test-InstallRecordValid -Record $null).Ok)
 
-    foreach ($requiredField in @('id', 'friendlyName', 'hookType', 'sourceScript', 'scope')) {
+    foreach ($requiredField in @('id', 'friendlyName', 'hookType', 'sourceScript', 'sourceDir', 'scope')) {
 
         $missingField = Copy-Record $goodRecord
 
@@ -199,6 +194,42 @@ try {
         Check ("a record missing '" + $requiredField + "' is rejected") (-not (Test-InstallRecordValid -Record $missingField).Ok)
 
     }
+
+    $missingRuntimeRoot = Copy-Record $goodRecord
+    $missingRuntimeRoot.clients.claude.PSObject.Properties.Remove('runtimeRoot')
+    Check "a client subrecord missing 'runtimeRoot' is rejected" (-not (Test-InstallRecordValid -Record $missingRuntimeRoot).Ok)
+
+    $nonNumericTimeout = Copy-Record $goodRecord
+    $nonNumericTimeout.clients.claude | Add-Member -MemberType NoteProperty -Name timeout -Value 'not-a-number'
+    Check 'a non-numeric client timeout is rejected' (-not (Test-InstallRecordValid -Record $nonNumericTimeout).Ok)
+
+    $numericTimeout = Copy-Record $goodRecord
+    $numericTimeout.clients.claude | Add-Member -MemberType NoteProperty -Name timeout -Value 45
+    Check 'a valid numeric client timeout still validates' ((Test-InstallRecordValid -Record $numericTimeout).Ok)
+
+    $managedNativeMissingWrapper = Copy-Record $goodRecord
+    $managedNativeMissingWrapper | Add-Member -MemberType NoteProperty -Name nativeGit -Value ([pscustomobject]@{ managed = $true; runtimeRoot = 'C:\runtime'; companions = @('Secrets-Check') })
+    Check "a managed nativeGit record missing 'wrapperPath' is rejected" (-not (Test-InstallRecordValid -Record $managedNativeMissingWrapper).Ok)
+
+    $managedNativeMissingCompanions = Copy-Record $goodRecord
+    $managedNativeMissingCompanions | Add-Member -MemberType NoteProperty -Name nativeGit -Value ([pscustomobject]@{ managed = $true; wrapperPath = 'C:\p\pre-push'; runtimeRoot = 'C:\runtime' })
+    Check "a managed nativeGit record missing 'companions' is rejected" (-not (Test-InstallRecordValid -Record $managedNativeMissingCompanions).Ok)
+
+    $unmanagedNativeIncomplete = Copy-Record $goodRecord
+    $unmanagedNativeIncomplete | Add-Member -MemberType NoteProperty -Name nativeGit -Value ([pscustomobject]@{ managed = $false })
+    Check 'an UNMANAGED nativeGit record is never dereferenced for shape' ((Test-InstallRecordValid -Record $unmanagedNativeIncomplete).Ok)
+
+    $completeManagedNative = Copy-Record $goodRecord
+    $completeManagedNative | Add-Member -MemberType NoteProperty -Name nativeGit -Value ([pscustomobject]@{ managed = $true; wrapperPath = 'C:\p\pre-push'; runtimeRoot = 'C:\runtime'; companions = @('Secrets-Check') })
+    Check 'a complete managed nativeGit record still validates' ((Test-InstallRecordValid -Record $completeManagedNative).Ok)
+
+    $malformedLastComponents = Copy-Record $goodRecord
+    $malformedLastComponents | Add-Member -MemberType NoteProperty -Name lastComponents -Value @([pscustomobject]@{ component = 'claude' })
+    Check 'a lastComponents entry missing status/reason is rejected' (-not (Test-InstallRecordValid -Record $malformedLastComponents).Ok)
+
+    $wellFormedLastComponents = Copy-Record $goodRecord
+    $wellFormedLastComponents | Add-Member -MemberType NoteProperty -Name lastComponents -Value @([pscustomobject]@{ component = 'claude'; status = 'ok'; reason = '' })
+    Check 'a well-formed lastComponents entry still validates' ((Test-InstallRecordValid -Record $wellFormedLastComponents).Ok)
 
     $newerSchema = Copy-Record $goodRecord; $newerSchema.schema = 99
 
@@ -250,7 +281,28 @@ try {
 
     $isoBroken = [pscustomobject]@{ id = 'broken-isolation'; schema = 2; friendlyName = 'Broken-Hook' }
 
-    $isoReg.installs = @($isoBroken) + @($isoReg.installs)
+    # A second, independently healthy record (a straight clone of the real one
+    # under a different id/friendlyName) alongside THREE differently-malformed
+    # records covering the newly-validated Defect 4 field categories, so the
+    # mixed batch proves both directions at once: every kind of malformed
+    # record is isolated, and BOTH healthy records still evaluate.
+    $isoHealthy2 = $isoReg.installs[0] | ConvertTo-Json -Depth 50 | ConvertFrom-Json
+    $isoHealthy2.id = 'iso-healthy-clone'
+    $isoHealthy2.friendlyName = 'Ai-Memory-Check-Clone'
+
+    $isoMissingRuntimeRoot = $isoReg.installs[0] | ConvertTo-Json -Depth 50 | ConvertFrom-Json
+    $isoMissingRuntimeRoot.id = 'iso-missing-runtimeroot'
+    $isoMissingRuntimeRoot.clients.claude.PSObject.Properties.Remove('runtimeRoot')
+
+    $isoBadTimeout = $isoReg.installs[0] | ConvertTo-Json -Depth 50 | ConvertFrom-Json
+    $isoBadTimeout.id = 'iso-bad-timeout'
+    $isoBadTimeout.clients.claude | Add-Member -MemberType NoteProperty -Name timeout -Value 'not-numeric' -Force
+
+    $isoBadNative = $isoReg.installs[0] | ConvertTo-Json -Depth 50 | ConvertFrom-Json
+    $isoBadNative.id = 'iso-bad-nativegit'
+    $isoBadNative | Add-Member -MemberType NoteProperty -Name nativeGit -Value ([pscustomobject]@{ managed = $true }) -Force
+
+    $isoReg.installs = @($isoBroken, $isoMissingRuntimeRoot, $isoBadTimeout, $isoBadNative) + @($isoReg.installs) + @($isoHealthy2)
 
     [System.IO.File]::WriteAllText($isoRegPath, ($isoReg | ConvertTo-Json -Depth 50), (New-Object System.Text.UTF8Encoding $false))
 
@@ -276,9 +328,9 @@ try {
 
     Check 'a malformed record never crashes the batch' (-not $isoCrashed)
 
-    Check 'the malformed record is isolated as a skip' ($isoSkipped -ge 1)
+    Check 'every differently-malformed record is isolated as a skip (4 total)' ($isoSkipped -eq 4)
 
-    Check 'healthy records after it are still evaluated' ($isoEvaluated -ge 1)
+    Check 'both healthy records (original + clone) are still evaluated' ($isoEvaluated -eq 2)
 
     # The updater must not have modified the malformed record.
 
