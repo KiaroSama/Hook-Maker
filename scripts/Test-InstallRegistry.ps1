@@ -1245,7 +1245,197 @@ for (`$i = 0; `$i -lt 8; `$i++) {
 
     finally { Remove-FixtureHook 'ZZZ-Regtest-Drift' }
 
+    # =====================================================================
+    # DEFECT 1: a structured result document is guaranteed for every terminal
+    # outcome, not only the happy path. Validation, runtime-phase and
+    # native-git-phase failures all THROW (preserving prior behavior for
+    # callers that don't pass -ResultPath) but must still land a valid,
+    # correctly-attributed result document when -ResultPath is given, via
+    # Install-Hook.ps1's top-level trap.
+    Write-Host '--- a structured result is written for every terminal outcome, not only success ---' -ForegroundColor Cyan
+    $d1Hook = Join-Path $RealHooksDir 'Ai-Memory-Check\Ai-Memory-Check.ps1'
 
+    # 1a. validation failure (pre-mutation, phase=validation)
+    $d1ValProj = New-Proj 'D1ValidationFail'
+    $d1ValResult = Join-Path $Work 'd1-validation.json'
+    $d1ValThrew = $false
+    try { & $InstallScript -CustomHook $d1Hook -TargetProject $d1ValProj -Events @('Stop') -ClaudeOnly -CodexOnly -ResultPath $d1ValResult *> $null } catch { $d1ValThrew = $true }
+    Check 'validation failure still throws (original behavior preserved)' $d1ValThrew
+    Check 'validation failure still writes a result document' (Test-Path -LiteralPath $d1ValResult)
+    $d1ValDoc = Get-Content -LiteralPath $d1ValResult -Raw | ConvertFrom-Json
+    Check 'validation failure result document is valid JSON with overall=failed' ([string]$d1ValDoc.overall -eq 'failed')
+    $d1ValComp = @($d1ValDoc.components | Where-Object { $_.component -eq 'validation' })[0]
+    Check 'validation failure is attributed to the validation component' ($null -ne $d1ValComp -and [string]$d1ValComp.status -eq 'failed')
+    Check 'validation failure mutated nothing' (-not (Test-Path -LiteralPath (Join-Path $d1ValProj '.claude')))
+
+    # 1b. runtime-phase failure (mid-pipeline, phase=claude): the source
+    # script is exclusively locked so plan-building/staging cannot read it,
+    # forcing a genuine throw AFTER validation has already passed.
+    $d1RtDir = Join-Path $RealHooksDir 'ZZZ-Regtest-Runtimefail'
+    New-Item -ItemType Directory -Path $d1RtDir -Force | Out-Null
+    $d1RtHook = Join-Path $d1RtDir 'ZZZ-Regtest-Runtimefail.ps1'
+    Write-Utf8 $d1RtHook "exit 0`n"
+    try {
+        $d1RtProj = New-Proj 'D1RuntimeFail'
+        $d1RtResult = Join-Path $Work 'd1-runtime.json'
+        $d1RtHeld = [System.IO.File]::Open($d1RtHook, [System.IO.FileMode]::Open, [System.IO.FileAccess]::ReadWrite, [System.IO.FileShare]::None)
+        $d1RtThrew = $false
+        try {
+            try { & $InstallScript -CustomHook $d1RtHook -TargetProject $d1RtProj -Events @('Stop') -ResultPath $d1RtResult *> $null } catch { $d1RtThrew = $true }
+        }
+        finally { $d1RtHeld.Dispose() }
+        Check 'a mid-pipeline runtime failure throws' $d1RtThrew
+        Check 'a mid-pipeline runtime failure still writes a result document' (Test-Path -LiteralPath $d1RtResult)
+        $d1RtDoc = Get-Content -LiteralPath $d1RtResult -Raw | ConvertFrom-Json
+        Check 'a runtime failure result document reports overall=failed' ([string]$d1RtDoc.overall -eq 'failed')
+        $d1RtComp = @($d1RtDoc.components | Where-Object { $_.component -eq 'claude' })[0]
+        Check 'a runtime failure is attributed to the claude component' ($null -ne $d1RtComp -and [string]$d1RtComp.status -eq 'failed')
+    }
+    finally { Remove-Item -LiteralPath $d1RtDir -Recurse -Force -ErrorAction SilentlyContinue }
+
+    # 1c. native-git-phase failure (phase=nativeGit): a stale
+    # pre-push.hookmaker-existing collides with a real (non-marker) pre-push
+    # hook, which Install-IgnorePrePush already refuses to silently overwrite.
+    $d1NatProj = New-Proj 'D1NativeFail'
+    & git -C $d1NatProj init -q -b main 2>$null
+    & git -C $d1NatProj config user.email 't@t' 2>$null
+    & git -C $d1NatProj config user.name 't' 2>$null
+    $d1NatGitHooks = Join-Path $d1NatProj '.git\hooks'
+    New-Item -ItemType Directory -Path $d1NatGitHooks -Force | Out-Null
+    Write-Utf8 (Join-Path $d1NatGitHooks 'pre-push') "#!/bin/sh`necho user-hook`n"
+    Write-Utf8 (Join-Path $d1NatGitHooks 'pre-push.hookmaker-existing') "#!/bin/sh`necho stale-leftover`n"
+    $d1NatResult = Join-Path $Work 'd1-native.json'
+    $d1NatThrew = $false
+    try { & $InstallScript -CustomHook (Join-Path $RealHooksDir 'Ignore-Rules-Check\Ignore-Rules-Check.ps1') -TargetProject $d1NatProj -Events @('Stop') -ResultPath $d1NatResult *> $null } catch { $d1NatThrew = $true }
+    Check 'a native pre-push conflict throws' $d1NatThrew
+    Check 'a native pre-push conflict still writes a result document' (Test-Path -LiteralPath $d1NatResult)
+    $d1NatDoc = Get-Content -LiteralPath $d1NatResult -Raw | ConvertFrom-Json
+    Check 'a native failure result document reports overall=failed' ([string]$d1NatDoc.overall -eq 'failed')
+    $d1NatComp = @($d1NatDoc.components | Where-Object { $_.component -eq 'nativeGit' })[0]
+    Check 'a native failure is attributed to the nativeGit component' ($null -ne $d1NatComp -and [string]$d1NatComp.status -eq 'failed')
+    Check 'the claude component still reports ok (it committed before native failed)' (@($d1NatDoc.components | Where-Object { $_.component -eq 'claude' -and $_.status -eq 'ok' }).Count -eq 1)
+
+    # 1d. real spawned process: exit code and stderr are preserved, and the
+    # in-process test above cannot prove genuine end-user/CI process behavior.
+    $d1SpProj = New-Proj 'D1SpawnedFail'
+    $d1SpResult = Join-Path $Work 'd1-spawned.json'
+    $d1SpArgLine = '-NoLogo -NoProfile -File "' + $InstallScript + '" -CustomHook "' + $d1Hook + '" -TargetProject "' + $d1SpProj + '" -Events Stop -ClaudeOnly -CodexOnly -ResultPath "' + $d1SpResult + '"'
+    $d1SpOut = Join-Path $Work 'd1-spawned.out'; $d1SpErr = Join-Path $Work 'd1-spawned.err'
+    $d1SpStart = @{
+        FilePath = (Get-Process -Id $PID).Path; ArgumentList = $d1SpArgLine
+        RedirectStandardOutput = $d1SpOut; RedirectStandardError = $d1SpErr
+        NoNewWindow = $true; PassThru = $true; Wait = $true
+    }
+    if ((Get-Command Start-Process).Parameters.ContainsKey('Environment')) { $d1SpStart.Environment = @{ HOOKMAKER_STATE_DIR = $IsolatedStateDir } }
+    $d1SpProc = Start-Process @d1SpStart
+    Check 'a spawned failing install exits non-zero' ($d1SpProc.ExitCode -ne 0)
+    Check 'a spawned failing install still writes a result document' (Test-Path -LiteralPath $d1SpResult)
+    Check 'a spawned failing install does not swallow the original error text' ((Get-Content -LiteralPath $d1SpErr -Raw) -match 'ClaudeOnly.*CodexOnly|mutually exclusive|both.*Claude.*Codex')
+
+    # 1e. success still reports overall=ok (the baseline this all must not break)
+    $d1OkProj = New-Proj 'D1Success'
+    $d1OkResult = Join-Path $Work 'd1-ok.json'
+    & $InstallScript -CustomHook $d1Hook -TargetProject $d1OkProj -Events @('Stop') -ResultPath $d1OkResult *> $null
+    $d1OkDoc = Get-Content -LiteralPath $d1OkResult -Raw | ConvertFrom-Json
+    Check 'a fully successful install still reports overall=ok' ([string]$d1OkDoc.overall -eq 'ok')
+
+    # =====================================================================
+    # DEFECT 2: legacy runtime/config cleanup must happen only AFTER the
+    # replacement runtime has staged, hash-verified and swapped - never
+    # before. A failed replacement must never destroy a working legacy
+    # artifact, and a successful replacement must still clean up afterward.
+    Write-Host '--- legacy cleanup happens only after the replacement runtime commits ---' -ForegroundColor Cyan
+    $d2Fixture = New-FixtureHook 'ZZZ-Regtest-Legacycleanup' "exit 0 # good`n"
+    try {
+        $d2Proj = New-Proj 'D2LegacyCleanup'
+        & $InstallScript -CustomHook $d2Fixture -Events @('Stop') -TargetProject $d2Proj -ClaudeOnly *> $null
+        $d2RuntimeRoot = Join-Path $d2Proj '.claude\hooks\Hook-Maker'
+        $d2Script = Join-Path $d2RuntimeRoot 'ZZZ-Regtest-Legacycleanup\ZZZ-Regtest-Legacycleanup.ps1'
+        Check 'baseline D2 install succeeded' (Test-Path -LiteralPath $d2Script)
+
+        # Plant a fake legacy root-level sync-hooks.json - one of the three
+        # artifacts Copy-HookRuntime cleans up post-commit.
+        $d2LegacyConfig = Join-Path $d2RuntimeRoot 'sync-hooks.json'
+        Write-Utf8 $d2LegacyConfig '{"legacy":true}'
+        $d2LegacyBytesBefore = [System.IO.File]::ReadAllBytes($d2LegacyConfig)
+        $d2GoodHash = (Get-FileHash -LiteralPath $d2Script -Algorithm SHA256).Hash
+
+        # Force a staging failure (source locked exclusively) on a REINSTALL of
+        # the SAME hook, so Copy-HookRuntime runs but Install-PlannedRuntime
+        # throws before the swap - legacy cleanup must never be reached.
+        $d2Held = [System.IO.File]::Open($d2Fixture, [System.IO.FileMode]::Open, [System.IO.FileAccess]::ReadWrite, [System.IO.FileShare]::None)
+        $d2Threw = $false
+        try {
+            try { & $InstallScript -CustomHook $d2Fixture -Events @('Stop') -TargetProject $d2Proj -ClaudeOnly *> $null } catch { $d2Threw = $true }
+        }
+        finally { $d2Held.Dispose() }
+        Check 'a forced staging failure on reinstall throws' $d2Threw
+        Check 'the previous runtime survives a failed staging' (Test-Path -LiteralPath $d2Script)
+        Check 'the previous runtime is byte-identical after a failed staging' ((Get-FileHash -LiteralPath $d2Script -Algorithm SHA256).Hash -eq $d2GoodHash)
+        Check 'the legacy artifact still exists after a failed staging (cleanup never reached)' (Test-Path -LiteralPath $d2LegacyConfig)
+        $d2LegacyBytesAfterFail = [System.IO.File]::ReadAllBytes($d2LegacyConfig)
+        Check 'the legacy artifact is byte-identical after a failed staging' (
+            ($d2LegacyBytesAfterFail.Length -eq $d2LegacyBytesBefore.Length) -and
+            ((Compare-Object $d2LegacyBytesAfterFail $d2LegacyBytesBefore -SyncWindow 0 | Measure-Object).Count -eq 0))
+
+        # Now a normal (unlocked) reinstall: staging/swap succeeds, and ONLY
+        # after that does the legacy artifact get cleaned up.
+        & $InstallScript -CustomHook $d2Fixture -Events @('Stop') -TargetProject $d2Proj -ClaudeOnly *> $null
+        Check 'a successful reinstall keeps the runtime present' (Test-Path -LiteralPath $d2Script)
+        Check 'a successful reinstall cleans up the legacy artifact afterward' (-not (Test-Path -LiteralPath $d2LegacyConfig))
+    }
+    finally { Remove-FixtureHook 'ZZZ-Regtest-Legacycleanup' }
+
+    # =====================================================================
+    # DEFECT 3: a direct engine install fully validates its config/profile
+    # BEFORE any mutation - missing file, malformed JSON, missing profiles,
+    # unknown profile, duplicate profile id, malformed route, missing
+    # endpoint root/name are all rejected with nothing touched.
+    Write-Host '--- engine config/profile is fully validated before any mutation ---' -ForegroundColor Cyan
+    function New-D3Proj { param([string]$Name) return (New-Proj ('D3' + $Name)) }
+    function Assert-D3Rejected {
+        param([string]$Label, [string]$ConfigPath, [string]$ProfileId = 'p', [string]$ProjSuffix)
+        $proj = New-D3Proj $ProjSuffix
+        $threw = $false
+        try { & $InstallScript -Profile $ProfileId -ConfigPath $ConfigPath -TargetProject $proj -Events @('Stop') *> $null } catch { $threw = $true }
+        Check ($Label + ' throws') $threw
+        Check ($Label + ': nothing mutated') (-not (Test-Path -LiteralPath (Join-Path $proj '.claude')))
+    }
+    $d3MissingCfg = Join-Path $Work 'd3-missing.json'
+    Assert-D3Rejected 'missing config file' $d3MissingCfg -ProjSuffix 'MissingCfg'
+
+    $d3BadJson = Join-Path $Work 'd3-badjson.json'
+    Write-Utf8 $d3BadJson '{ not json'
+    Assert-D3Rejected 'malformed JSON config' $d3BadJson -ProjSuffix 'BadJson'
+
+    $d3NoProfiles = Join-Path $Work 'd3-noprofiles.json'
+    Write-Utf8 $d3NoProfiles '{"version":1}'
+    Assert-D3Rejected 'config missing profiles array' $d3NoProfiles -ProjSuffix 'NoProfiles'
+
+    $d3Real = Join-Path $Work 'd3-real.json'
+    Write-Utf8 $d3Real '{"version":1,"profiles":[{"id":"p","name":"P","routes":[{"id":"r1","source":{"name":"A","root":"C:\\x"},"destination":{"name":"B","root":"C:\\y"}}]}]}'
+    Assert-D3Rejected 'unknown profile id' $d3Real -ProfileId 'no-such-profile' -ProjSuffix 'UnknownProfile'
+
+    $d3Dup = Join-Path $Work 'd3-dup.json'
+    Write-Utf8 $d3Dup '{"version":1,"profiles":[{"id":"p","name":"P1","routes":[]},{"id":"p","name":"P2","routes":[]}]}'
+    Assert-D3Rejected 'duplicate profile id' $d3Dup -ProjSuffix 'DupProfile'
+
+    $d3NoRouteId = Join-Path $Work 'd3-norouteid.json'
+    Write-Utf8 $d3NoRouteId '{"version":1,"profiles":[{"id":"p","name":"P","routes":[{"source":{"name":"A","root":"C:\\x"},"destination":{"name":"B","root":"C:\\y"}}]}]}'
+    Assert-D3Rejected 'malformed route (missing id)' $d3NoRouteId -ProjSuffix 'NoRouteId'
+
+    $d3NoRoot = Join-Path $Work 'd3-noroot.json'
+    Write-Utf8 $d3NoRoot '{"version":1,"profiles":[{"id":"p","name":"P","routes":[{"id":"r1","source":{"name":"A"},"destination":{"name":"B","root":"C:\\y"}}]}]}'
+    Assert-D3Rejected 'missing endpoint root' $d3NoRoot -ProjSuffix 'NoRoot'
+
+    $d3NoName = Join-Path $Work 'd3-noname.json'
+    Write-Utf8 $d3NoName '{"version":1,"profiles":[{"id":"p","routes":[{"id":"r1","source":{"name":"A","root":"C:\\x"},"destination":{"name":"B","root":"C:\\y"}}]}]}'
+    Assert-D3Rejected 'profile missing name (SYNC-PROJECTS.txt needs it)' $d3NoName -ProjSuffix 'NoName'
+
+    # A structurally valid config still installs successfully end-to-end.
+    $d3GoodProj = New-D3Proj 'Good'
+    & $InstallScript -Profile 'p' -ConfigPath $d3Real -TargetProject $d3GoodProj -Events @('SessionStart') -ClaudeOnly *> $null
+    Check 'a valid engine config/profile still installs successfully' (Test-Path -LiteralPath (Join-Path $d3GoodProj '.claude\settings.local.json'))
 
 }
 finally {

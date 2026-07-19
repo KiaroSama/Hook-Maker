@@ -1733,7 +1733,7 @@ function Get-ScopeSettingsPaths {
 # Hook Maker's OWN generated invocation syntax (New-HookCommands), so it is a
 # precise parse, never a guess at ambiguous metadata.
 function Find-ManagedCommands {
-    param([string]$SettingsPath, [string]$ClientLabel)
+    param([string]$SettingsPath, [string]$ClientLabel, [string[]]$KnownToolRoots = @())
     $found = New-Object System.Collections.Generic.List[object]
     if ([string]::IsNullOrWhiteSpace($SettingsPath) -or -not (Test-Path -LiteralPath $SettingsPath -PathType Leaf)) {
         return $found.ToArray()
@@ -1745,18 +1745,29 @@ function Find-ManagedCommands {
     foreach ($eventProp in $json.hooks.PSObject.Properties) {
         foreach ($group in @($eventProp.Value)) {
             foreach ($handler in @($group.hooks)) {
-                $command = ''
-                if ($null -ne $handler.PSObject.Properties['command']) { $command = [string]$handler.command }
-                $match = [regex]::Match($command, '[\\/]hooks[\\/]Hook-Maker[\\/]([^\\/"]+)[\\/][^\\/"]+\.ps1')
-                if (-not $match.Success) { continue }
-                $profileMatch = [regex]::Match($command, '-Profile\s+"([^"]*)"')
-                $configMatch = [regex]::Match($command, '-ConfigPath\s+"([^"]*)"')
+                # Every command-bearing field is inspected via the SAME
+                # centralized helper/parser used elsewhere (Get-HandlerCommandValues
+                # + Get-HookMakerCommandInfo), so a registration stored only
+                # under commandWindows/command_windows is never missed here.
+                # A handler commonly carries the SAME logical command in more
+                # than one field (portable + Windows form) - only the first
+                # provably-owned field is used, so one handler never yields
+                # more than one candidate. An ambiguous shape (unproven tool
+                # root) is never imported, matching Test-HandlerBelongsToInstall.
+                $info = $null
+                foreach ($commandValue in @(Get-HandlerCommandValues -Handler $handler)) {
+                    $candidate = Get-HookMakerCommandInfo -Command $commandValue -KnownToolRoots $KnownToolRoots
+                    if (-not $candidate.IsHookMaker) { continue }
+                    $info = $candidate
+                    break
+                }
+                if ($null -eq $info) { continue }
                 [void]$found.Add([pscustomobject]@{
-                    FriendlyName = $match.Groups[1].Value
+                    FriendlyName = $info.HookName
                     EventName    = $eventProp.Name
                     Client       = $ClientLabel
-                    Profile      = if ($profileMatch.Success) { $profileMatch.Groups[1].Value } else { '' }
-                    ConfigPath   = if ($configMatch.Success) { $configMatch.Groups[1].Value } else { '' }
+                    Profile      = $info.Profile
+                    ConfigPath   = $info.ConfigPath
                 })
             }
         }
@@ -1775,10 +1786,11 @@ function Get-LegacyHookCandidates {
     $trackedIds = New-Object System.Collections.Generic.HashSet[string]
     foreach ($existing in @($Registry.installs)) { [void]$trackedIds.Add([string]$existing.id) }
 
+    $knownToolRoots = @(Get-KnownToolRoots -ToolRoot $ToolRoot)
     $candidates = New-Object System.Collections.Generic.List[object]
     foreach ($scope in @(Get-LegacyScanScopes)) {
         $paths = Get-ScopeSettingsPaths $scope
-        $allFound = @(Find-ManagedCommands -SettingsPath $paths.Claude -ClientLabel 'Claude') + @(Find-ManagedCommands -SettingsPath $paths.Codex -ClientLabel 'Codex')
+        $allFound = @(Find-ManagedCommands -SettingsPath $paths.Claude -ClientLabel 'Claude' -KnownToolRoots $knownToolRoots) + @(Find-ManagedCommands -SettingsPath $paths.Codex -ClientLabel 'Codex' -KnownToolRoots $knownToolRoots)
         $byKey = @{}
         foreach ($entry in $allFound) {
             $key = $entry.FriendlyName + '|' + $entry.Profile

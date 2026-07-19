@@ -78,6 +78,36 @@ $ToolRoot = Split-Path -Parent $PSScriptRoot
 # runtime replacement, and the single Hook Maker registration-ownership parser.
 . (Join-Path $PSScriptRoot '_installplan.ps1')
 
+# ---- guarantee a structured result on ANY terminal outcome -----------------
+# A validation/runtime/settings/native failure used to exit before
+# Write-InstallResult was ever reached, so -ResultPath produced no document at
+# all on the very failures callers most need to distinguish. `trap { ...;
+# break }` runs on ANY terminating error from this point on (including ones
+# thrown inside a called function), then `break` lets the error propagate
+# exactly as it would have without the trap - same non-zero exit code, same
+# printed exception text, same "do not swallow the original exception". This
+# is deliberately NOT a script-wide try/catch/finally: that would require
+# re-indenting the entire body, which is an unrelated, larger-blast-radius
+# change than guaranteeing the result document.
+$script:CurrentPhase = 'validation'
+trap {
+    $failedPhase = if ($null -ne $script:CurrentPhase -and -not [string]::IsNullOrWhiteSpace([string]$script:CurrentPhase)) { [string]$script:CurrentPhase } else { 'unknown' }
+    # Only record a failure for a phase that hasn't already reported 'ok' -
+    # a phase either completes and records its own result, or it throws; it
+    # never does both, so this is defensive rather than load-bearing.
+    $alreadyOk = @($script:ComponentResults | Where-Object { $_.component -eq $failedPhase -and $_.status -eq 'ok' })
+    if ($alreadyOk.Count -eq 0) {
+        $sanitizedMessage = [string]$_.Exception.Message
+        if ($sanitizedMessage.Length -gt 500) { $sanitizedMessage = $sanitizedMessage.Substring(0, 500) + '...' }
+        Set-ComponentResult -Component $failedPhase -Status 'failed' -ReasonCode 'exception' -Message $sanitizedMessage
+    }
+    # Write-InstallResult swallows its OWN internal errors, so a failure to
+    # write the result file here can never suppress the original exception
+    # that `break` is about to (re-)propagate.
+    Write-InstallResult -Overall 'failed'
+    break
+}
+
 # ---- input validation ------------------------------------------------------
 # Everything is validated BEFORE any runtime, settings, registry or native git
 # state is touched, so an invalid invocation leaves the machine untouched
@@ -125,6 +155,38 @@ if ([string]::IsNullOrWhiteSpace($ConfigPath)) {
 }
 else {
     $ConfigPath = [System.IO.Path]::GetFullPath([Environment]::ExpandEnvironmentVariables($ConfigPath))
+}
+
+# A direct ENGINE install (-CustomHook absent) must prove its config exists,
+# parses, is structurally valid, and - when a profile is requested - that the
+# profile exists, BEFORE any directory, backup, settings, runtime, registry or
+# native file is touched. Reuses the SAME structural rules Validate-Config.ps1
+# enforces (Test-SyncConfigStructure in _installlib.ps1) rather than a second,
+# potentially-drifting copy of that logic.
+if ([string]::IsNullOrWhiteSpace($CustomHook)) {
+    if (-not (Test-Path -LiteralPath $ConfigPath -PathType Leaf)) {
+        throw "Sync config not found: $ConfigPath"
+    }
+    $rawSyncConfig = ''
+    try { $rawSyncConfig = [System.IO.File]::ReadAllText($ConfigPath, [System.Text.Encoding]::UTF8) }
+    catch { throw ("Could not read sync config '" + $ConfigPath + "': " + $_.Exception.Message) }
+    $parsedSyncConfig = $null
+    try { $parsedSyncConfig = $rawSyncConfig | ConvertFrom-Json }
+    catch { throw ("Sync config '" + $ConfigPath + "' is not valid JSON: " + $_.Exception.Message) }
+    $syncConfigStructure = Test-SyncConfigStructure -Config $parsedSyncConfig
+    if (-not $syncConfigStructure.Ok) {
+        throw ("Sync config '" + $ConfigPath + "' is invalid: " + $syncConfigStructure.Reason)
+    }
+    if (-not [string]::IsNullOrWhiteSpace($Profile)) {
+        # Test-SyncConfigStructure already proved every profile id is unique,
+        # so finding one match IS "exists exactly once" - a second match would
+        # mean two profiles share an id, which structural validation above
+        # would already have rejected.
+        $matchingProfiles = @($parsedSyncConfig.profiles | Where-Object { [string]$_.id -eq $Profile })
+        if ($matchingProfiles.Count -eq 0) {
+            throw ("Profile '" + $Profile + "' was not found in sync config '" + $ConfigPath + "'.")
+        }
+    }
 }
 
 # How this source is installed. A folder counts as a hook PACKAGE only when it
@@ -222,26 +284,7 @@ function Copy-HookRuntime {
     # unrollback-able side effect and a cross-hook coupling: it changed the
     # library other installed hooks load, before this install had committed.
 
-    # Migrate this hook out of a legacy 'HookMaker' folder (older, un-hyphenated
-    # runtime root). Only remove THIS hook's subfolder so other hooks still
-    # registered there keep working; drop the whole legacy root once it holds no
-    # more hook subfolders.
-    $legacyRoot = Join-Path $ClientDir 'hooks\HookMaker'
-    if ([string]::IsNullOrWhiteSpace($RuntimeRootOverride) -and (Test-Path -LiteralPath $legacyRoot) -and -not [string]::Equals($legacyRoot, $runtimeRoot, [System.StringComparison]::OrdinalIgnoreCase)) {
-        $legacyHookDir = Join-Path $legacyRoot $FriendlyName
-        if (Test-Path -LiteralPath $legacyHookDir) { Remove-Item -LiteralPath $legacyHookDir -Recurse -Force }
-        if (@(Get-ChildItem -LiteralPath $legacyRoot -Directory -ErrorAction SilentlyContinue).Count -eq 0) {
-            Remove-Item -LiteralPath $legacyRoot -Recurse -Force
-        }
-    }
-
     $destDir = Join-Path $runtimeRoot $FriendlyName
-    $legacyDir = Join-Path $runtimeRoot $SourceName
-    if ($SourceName -ne $FriendlyName -and (Test-Path -LiteralPath $legacyDir)) {
-        Remove-Item -LiteralPath $legacyDir -Recurse -Force
-    }
-    $legacyRootConfig = Join-Path $runtimeRoot 'sync-hooks.json'
-    if (Test-Path -LiteralPath $legacyRootConfig) { Remove-Item -LiteralPath $legacyRootConfig -Force }
 
     # Build the canonical plan, then install it TRANSACTIONALLY: staged in a
     # sibling directory, hash-verified, and only then swapped into place. The
@@ -254,9 +297,53 @@ function Copy-HookRuntime {
     $plan = Get-ManagedInstallPlan -SourceInfo $SourceInfo -FriendlyName $FriendlyName -ToolRoot $ToolRoot `
         -ConfigPath $ConfigPath -IncludeConfig:$isEngineInstall -SyncProjectListContent $syncListContent
     Install-PlannedRuntime -Plan $plan -RuntimeRoot $runtimeRoot -FriendlyName $FriendlyName | Out-Null
-    # Post-commit cleanup phase, never before: retires the legacy shared
-    # library once every hook under this root owns a private copy.
-    Remove-SharedRuntimeLibrary -RuntimeRoot $runtimeRoot | Out-Null
+
+    # ---- POST-COMMIT CLEANUP ONLY, past this point -------------------------
+    # The replacement runtime is now staged, hash-verified and swapped into
+    # place, so nothing below can destroy a not-yet-committed replacement.
+    # Removing these BEFORE the commit above (the previous ordering) meant a
+    # staging/swap failure could delete a still-working legacy installation
+    # and leave NEITHER the old nor the new runtime behind. Each cleanup is
+    # independent and best-effort: a failure here is reported as a warning and
+    # never allowed to fail the install or be mistaken for a completed cleanup.
+    $script:LegacyCleanupWarnings = @()
+
+    # Retires the legacy shared library once every hook under this root owns a
+    # private copy (already correctly post-commit-only).
+    try { Remove-SharedRuntimeLibrary -RuntimeRoot $runtimeRoot | Out-Null }
+    catch { $script:LegacyCleanupWarnings += ('shared library cleanup: ' + $_.Exception.Message) }
+
+    # Migrate this hook out of a legacy 'HookMaker' folder (older, un-hyphenated
+    # runtime root). Only remove THIS hook's subfolder so other hooks still
+    # registered there keep working; drop the whole legacy root once it holds no
+    # more hook subfolders.
+    if ([string]::IsNullOrWhiteSpace($RuntimeRootOverride)) {
+        $legacyRoot = Join-Path $ClientDir 'hooks\HookMaker'
+        if ((Test-Path -LiteralPath $legacyRoot) -and -not [string]::Equals($legacyRoot, $runtimeRoot, [System.StringComparison]::OrdinalIgnoreCase)) {
+            try {
+                $legacyHookDir = Join-Path $legacyRoot $FriendlyName
+                if (Test-Path -LiteralPath $legacyHookDir) { Remove-Item -LiteralPath $legacyHookDir -Recurse -Force }
+                if (@(Get-ChildItem -LiteralPath $legacyRoot -Directory -ErrorAction SilentlyContinue).Count -eq 0) {
+                    Remove-Item -LiteralPath $legacyRoot -Recurse -Force
+                }
+            }
+            catch { $script:LegacyCleanupWarnings += ('legacy HookMaker root cleanup: ' + $_.Exception.Message) }
+        }
+    }
+
+    $legacyDir = Join-Path $runtimeRoot $SourceName
+    if ($SourceName -ne $FriendlyName -and (Test-Path -LiteralPath $legacyDir)) {
+        try { Remove-Item -LiteralPath $legacyDir -Recurse -Force }
+        catch { $script:LegacyCleanupWarnings += ('legacy same-runtime directory cleanup: ' + $_.Exception.Message) }
+    }
+    $legacyRootConfig = Join-Path $runtimeRoot 'sync-hooks.json'
+    if (Test-Path -LiteralPath $legacyRootConfig) {
+        try { Remove-Item -LiteralPath $legacyRootConfig -Force }
+        catch { $script:LegacyCleanupWarnings += ('legacy root sync-hooks.json cleanup: ' + $_.Exception.Message) }
+    }
+    foreach ($cleanupWarning in @($script:LegacyCleanupWarnings)) {
+        Write-Host ('WARNING: legacy cleanup incomplete (manual cleanup may be required) - ' + $cleanupWarning)
+    }
 
     $friendlyScript = Join-Path $destDir ($FriendlyName + '.ps1')
     $localConfig = if ($isEngineInstall) { Join-Path $destDir 'sync-hooks.json' } else { '' }
@@ -546,6 +633,7 @@ else {
 }
 
 if (-not $CodexOnly) {
+    $script:CurrentPhase = 'claude'
     # Each client gets its own runtime copy so its command has zero dependency
     # on the Hook Maker folder (or on the other client's files).
     $claudeRuntime = Copy-HookRuntime -ClientDir (Split-Path -Parent $ClaudeSettings)
@@ -585,6 +673,7 @@ if (-not $CodexOnly) {
 }
 
 if (-not $ClaudeOnly) {
+    $script:CurrentPhase = 'codex'
     $codexRuntime = Copy-HookRuntime -ClientDir (Split-Path -Parent $CodexHooks)
     $codexCommands = New-HookCommands -Runtime $codexRuntime
     # The whole read-modify-write is held under a crash-aware lock on THIS
@@ -623,11 +712,13 @@ if (-not $ClaudeOnly) {
     Write-Host "Codex runtime copy: $($codexRuntime.Script)"
 }
 
+$script:CurrentPhase = 'nativeGit'
 Install-IgnorePrePush
 # Native chain is only part of some installs; record which.
 if ($null -ne $script:NativeGitState) { Set-ComponentResult -Component 'nativeGit' -Status 'ok' }
 else { Set-ComponentResult -Component 'nativeGit' -Status 'skipped' -ReasonCode 'notApplicable' }
 
+$script:CurrentPhase = 'registry'
 # ---- install registry -----------------------------------------------------
 # The hook/settings/native files above are already correctly written by this
 # point, so a registry failure never fails the install itself - but it is NOT
