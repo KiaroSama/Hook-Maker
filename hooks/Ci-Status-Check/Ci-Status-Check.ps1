@@ -34,9 +34,26 @@
 # regardless of classification (including `other-external`). The named
 # classifications (`github-outage`, `runner-unavailable`, `permission-failure`,
 # `external-service-outage`, `external-secret-unavailable`,
-# `manual-approval-required`, `other-external`) describe WHY, but are usable
-# only when the observed run state is eligible above - they cannot excuse a
-# generic `failure`.
+# `manual-approval-required`, `account-billing`, `other-external`) describe WHY,
+# but are usable only when the observed run state is eligible above - they
+# cannot excuse a generic `failure`.
+#
+# ONE narrow, evidence-backed exception to "a completed failure is never
+# eligible": an ACCOUNT BILLING / PAYMENT / SPENDING-LIMIT block. When Actions
+# cannot start for that reason GitHub reports every run as conclusion=failure
+# even though NO job ran, so status alone is indistinguishable from a real
+# failure - which is exactly why this is otherwise refused. The distinguishing
+# evidence is GitHub's OWN check-run annotation ("recent account payments have
+# failed or your spending limit needs to be increased"), fetched from the
+# check-runs annotations API - a GitHub-authored signal, NEVER inferred from
+# step counts (a broken workflow file also yields zero steps but a DIFFERENT
+# annotation, so it still hard-blocks). Test-CiBillingBlocked returns true ONLY
+# when EVERY failing check-run for the commit carries that billing annotation,
+# and fails CLOSED on any query error, an oversized set, or a single failing
+# check-run without it. A genuine test failure never carries the annotation, so
+# it is never mistaken for billing. This case is AUTO-detected and AUTO-recorded
+# as `account-billing` (no -ReportExternalBlocker needed); it still never marks
+# CI green and reuses the same throttled recheck/retire machinery below.
 # Recording ALWAYS queries the exact-SHA CI state first (never accepted blind):
 # - refused if that commit is already fully green (nothing to excuse);
 # - refused if any check shows a genuine COMPLETED failure/startup_failure;
@@ -89,8 +106,16 @@ $script:AllowedExternalClassifications = @(
     'external-service-outage',
     'external-secret-unavailable',
     'manual-approval-required',
+    'account-billing',
     'other-external'
 )
+
+# GitHub's own wording when Actions is blocked by account billing/payment or a
+# spending limit. Matched case-insensitively against check-run annotation
+# messages. Deliberately tight - these phrases appear only in GitHub's billing
+# block, never in a real test/build failure annotation - so the match fails
+# CLOSED (a real failure is never read as billing). Update if GitHub rewords.
+$script:BillingAnnotationPattern = '(?i)(payments have failed|spending limit|billing & plans)'
 
 # Resolves "is HEAD an exact, pushed commit on a resolvable GitHub repository"
 # identically for the normal Stop flow and for -ReportExternalBlocker, so both
@@ -127,6 +152,57 @@ function Get-PushedHeadInfo {
 # produces a different fingerprint even when the run id/status/conclusion are
 # unchanged. The per-run parts are normalized and sorted deterministically so
 # ordering never affects the hash.
+# True ONLY when the commit's failure is a GitHub account billing/payment/
+# spending-limit block, proven by GitHub's OWN check-run annotations - never
+# inferred from step counts. Queries the commit's check-runs (raw JSON, no jq),
+# then the annotations of each FAILING one, and requires EVERY failing check-run
+# to carry the billing annotation. Fails CLOSED (returns $false, so the caller
+# keeps treating the runs as a genuine failure) on: any query error, no failing
+# check-run found, more failing check-runs than can be verified, or a single
+# failing check-run whose annotations do not include the billing message. A real
+# test failure never carries that annotation; a broken workflow yields a
+# different one - so neither is ever mistaken for billing.
+function Test-CiBillingBlocked {
+    param([string]$RepoSlug, [string]$Sha, [int]$MaxCheckRuns = 100)
+    $listJson = Invoke-QuietCommand -FilePath gh -ArgumentList @('api', ('repos/' + $RepoSlug + '/commits/' + $Sha + '/check-runs?per_page=100'))
+    if ($LASTEXITCODE -ne 0) { return $false }
+    $checkRuns = @()
+    try {
+        $parsed = ((@($listJson) -join "`n") | ConvertFrom-Json)
+        if ($null -ne $parsed -and $null -ne $parsed.PSObject.Properties['check_runs']) {
+            $checkRuns = @($parsed.check_runs)
+        }
+    }
+    catch { return $false }
+    $failingIds = New-Object System.Collections.Generic.List[string]
+    foreach ($cr in $checkRuns) {
+        if ($null -eq $cr) { continue }
+        $concl = ([string](Get-Field $cr 'conclusion')).ToLowerInvariant()
+        if ($concl -eq 'failure' -or $concl -eq 'startup_failure') {
+            [void]$failingIds.Add([string](Get-Field $cr 'id'))
+        }
+    }
+    if ($failingIds.Count -eq 0) { return $false }              # nothing failing here - not our case
+    if ($failingIds.Count -gt $MaxCheckRuns) { return $false }  # too many to verify all - fail closed
+    foreach ($id in $failingIds) {
+        $annJson = Invoke-QuietCommand -FilePath gh -ArgumentList @('api', ('repos/' + $RepoSlug + '/check-runs/' + $id + '/annotations'))
+        if ($LASTEXITCODE -ne 0) { return $false }              # could not verify THIS one - fail closed
+        $hasBilling = $false
+        try {
+            $annotations = @(((@($annJson) -join "`n") | ConvertFrom-Json))
+            foreach ($ann in $annotations) {
+                if ($null -eq $ann) { continue }
+                $level = ([string](Get-Field $ann 'annotation_level')).ToLowerInvariant()
+                $message = [string](Get-Field $ann 'message')
+                if ($level -eq 'failure' -and $message -match $script:BillingAnnotationPattern) { $hasBilling = $true; break }
+            }
+        }
+        catch { return $false }                                 # unparseable annotations - fail closed
+        if (-not $hasBilling) { return $false }                 # a failing run NOT explained by billing - real failure
+    }
+    return $true    # every failing check-run is billing-annotated
+}
+
 function Get-CiRunSnapshot {
     param([string]$RepoSlug, [string]$Sha)
     if ($null -eq (Get-Command gh -ErrorAction SilentlyContinue)) { return $null }
@@ -169,11 +245,25 @@ function Get-CiRunSnapshot {
             $infraRuns += ($entry + ' [' + $conclusion + ']')
         }
     }
+    # A completed failure is a genuine code failure UNLESS GitHub's own
+    # annotations prove it is an account billing/payment block (no job ran).
+    # Reclassify those out of $failedRuns so a real failure is never masked - the
+    # check only runs when there IS a failure (never on the green path), keys on
+    # GitHub's authored annotation, and requires EVERY failing run to be
+    # billing-annotated (billing blocks everything, so a mix with a real failure
+    # cannot occur). The fingerprint above is computed over ALL runs before this,
+    # so reclassification never changes it and the recheck/retire logic stays
+    # stable.
+    $billingRuns = @()
+    if ($failedRuns.Count -gt 0 -and (Test-CiBillingBlocked -RepoSlug $RepoSlug -Sha $Sha)) {
+        $billingRuns = $failedRuns
+        $failedRuns = @()
+    }
     $fingerprint = Get-ShortHash ((@($fingerprintParts.ToArray() | Sort-Object) -join '|'))
-    $allSuccess = ($runs.Count -gt 0 -and $pendingRuns.Count -eq 0 -and $failedRuns.Count -eq 0 -and $infraRuns.Count -eq 0)
+    $allSuccess = ($runs.Count -gt 0 -and $pendingRuns.Count -eq 0 -and $failedRuns.Count -eq 0 -and $infraRuns.Count -eq 0 -and $billingRuns.Count -eq 0)
     return [pscustomobject]@{
         Runs = $runs; PendingRuns = $pendingRuns; FailedRuns = $failedRuns; InfraRuns = $infraRuns
-        Fingerprint = $fingerprint; AllSuccess = $allSuccess
+        BillingRuns = $billingRuns; Fingerprint = $fingerprint; AllSuccess = $allSuccess
     }
 }
 
@@ -447,6 +537,26 @@ if ($snapshot.Runs.Count -eq 0) {
 
 if ($snapshot.PendingRuns.Count -gt 0) {
     Write-Block -Outcome 'pending' -Reason ('CI CHECK: pushed commit ' + $sha7 + ' on ' + $branch + ' (' + $repoSlug + ') has ' + $snapshot.PendingRuns.Count + ' check run(s) still in progress: ' + ($snapshot.PendingRuns -join '; ') + '. The work is not verifiably complete yet - wait for them and verify this exact commit (gh run list --commit ' + $sha + ').')
+}
+
+# ---- account billing / payment block: proven external, auto-recorded ----
+# Pending is already handled above (it exits), so here billing is the whole
+# story only when there is no genuine failure and no abnormal infra ending
+# alongside it. GitHub's own annotation proved this is a billing/payment block,
+# not a code failure - auto-record it (SHA+repo bound, identical file shape to
+# -ReportExternalBlocker) so every later Stop re-verifies on the throttle and
+# retires it the moment CI turns green (or re-blocks if a genuine failure
+# appears), then surface the non-blocking "CI NOT VERIFIED GREEN" notice. Never
+# claims CI passed; no commit can clear a billing block.
+if ($snapshot.BillingRuns.Count -gt 0 -and $snapshot.FailedRuns.Count -eq 0 -and $snapshot.InfraRuns.Count -eq 0) {
+    $billingReason = 'GitHub Actions did not start: an account billing/payment or spending-limit block, per GitHub''s own check-run annotation ("recent account payments have failed or your spending limit needs to be increased"). No job executed, so this is not a code/test failure and no replacement commit can clear it - resolve billing in the repository''s GitHub settings, then rerun the workflow.'
+    try {
+        New-Item -ItemType Directory -Path $stateDir -Force | Out-Null
+        $nowIso = [DateTime]::UtcNow.ToString('o')
+        [System.IO.File]::WriteAllLines($externalStatePath, @($sha, $repoSlug, 'account-billing', $billingReason, $nowIso, $snapshot.Fingerprint, $nowIso))
+    }
+    catch { }    # local-only convenience; the notice below still fires either way
+    Write-ExternalBlockerContext -Classification 'account-billing' -Reason $billingReason -Sha7 $sha7 -RepoSlug $repoSlug -EventName $eventName
 }
 
 if ($snapshot.FailedRuns.Count -gt 0 -or $snapshot.InfraRuns.Count -gt 0) {

@@ -77,6 +77,27 @@ if ($a.Count -ge 2 -and $a[0] -eq 'run' -and $a[1] -eq 'list') {
     if (Test-Path $f) { Write-Output (Get-Content $f -Raw) } else { Write-Output '[]' }
     exit 0
 }
+if ($a.Count -ge 2 -and $a[0] -eq 'api') {
+    $endpoint = [string]$a[1]
+    # commit check-runs list: repos/<slug>/commits/<sha>/check-runs?per_page=100
+    if ($endpoint -match '/commits/[^/]+/check-runs') {
+        $f = Join-Path $mockDir 'checkruns.json'
+        if (Test-Path $f) { Write-Output (Get-Content $f -Raw); exit 0 }
+        Write-Output '{"total_count":0,"check_runs":[]}'; exit 0
+    }
+    # per-check-run annotations: repos/<slug>/check-runs/<id>/annotations
+    if ($endpoint -match '/check-runs/([^/]+)/annotations') {
+        $crid = $Matches[1]
+        $errf = Join-Path $mockDir ('annexit-' + $crid + '.txt')
+        if (Test-Path $errf) { [Console]::Error.WriteLine('api error'); exit ([int]((Get-Content $errf -Raw).Trim())) }
+        $genErr = Join-Path $mockDir 'annexit.txt'
+        if (Test-Path $genErr) { [Console]::Error.WriteLine('api error'); exit ([int]((Get-Content $genErr -Raw).Trim())) }
+        $f = Join-Path $mockDir ('annotations-' + $crid + '.json')
+        if (Test-Path $f) { Write-Output (Get-Content $f -Raw); exit 0 }
+        Write-Output '[]'; exit 0
+    }
+    exit 1
+}
 exit 1
 '@
 [System.IO.File]::WriteAllText((Join-Path $ShimDir 'gh.ps1'), $ghMock)
@@ -87,13 +108,39 @@ $env:PATH = (@($ShimDir) + $pathWithoutRealGh) -join ';'
 $env:GH_MOCK_DIR = $MockDir
 
 function Set-Mock {
-    param([int]$AuthExit = 0, [string]$PrJson = '', [int]$PrExit = -1, [string]$RunJson = '', [string]$ExpectedSha = '')
+    # $CheckRunsJson: the JSON body for repos/.../commits/<sha>/check-runs.
+    # $Annotations: hashtable of check_run id -> annotations JSON array string.
+    # $AnnotationsExitAll: when > 0, every annotations query errors with that code
+    #   (used to prove the billing detector fails CLOSED on a query error).
+    param([int]$AuthExit = 0, [string]$PrJson = '', [int]$PrExit = -1, [string]$RunJson = '', [string]$ExpectedSha = '',
+        [string]$CheckRunsJson = '', [hashtable]$Annotations = $null, [int]$AnnotationsExitAll = -1)
     Remove-Item (Join-Path $MockDir '*') -Force -ErrorAction SilentlyContinue
     Set-Content (Join-Path $MockDir 'auth_exit.txt') $AuthExit
     if ($PrJson -ne '') { Set-Content (Join-Path $MockDir 'pr_list.json') $PrJson -Encoding utf8 }
     if ($PrExit -ge 0) { Set-Content (Join-Path $MockDir 'pr_exit.txt') $PrExit }
     if ($RunJson -ne '') { Set-Content (Join-Path $MockDir 'run_list.json') $RunJson -Encoding utf8 }
     if ($ExpectedSha -ne '') { Set-Content (Join-Path $MockDir 'expected_sha.txt') $ExpectedSha }
+    if ($CheckRunsJson -ne '') { Set-Content (Join-Path $MockDir 'checkruns.json') $CheckRunsJson -Encoding utf8 }
+    if ($null -ne $Annotations) {
+        foreach ($id in $Annotations.Keys) { Set-Content (Join-Path $MockDir ('annotations-' + $id + '.json')) $Annotations[$id] -Encoding utf8 }
+    }
+    if ($AnnotationsExitAll -ge 0) { Set-Content (Join-Path $MockDir 'annexit.txt') $AnnotationsExitAll }
+}
+
+# GitHub's exact billing annotation, plus a canned check-runs list builder so the
+# billing tests read like the real API. A billing block annotates EVERY failing
+# check-run identically.
+$script:BillingMessage = "The job was not started because recent account payments have failed or your spending limit needs to be increased. Please check the 'Billing & plans' section in your settings"
+function New-CheckRunsJson {
+    param([hashtable[]]$Runs)   # each: @{ id = '1'; conclusion = 'failure' }
+    $items = @($Runs | ForEach-Object { '{"id":' + $_.id + ',"conclusion":"' + $_.conclusion + '"}' })
+    return '{"total_count":' + $Runs.Count + ',"check_runs":[' + ($items -join ',') + ']}'
+}
+function New-BillingAnnotations {
+    return '[{"annotation_level":"failure","path":".github","message":' + ($script:BillingMessage | ConvertTo-Json) + '}]'
+}
+function New-RealFailureAnnotations {
+    return '[{"annotation_level":"failure","path":"scripts/x.ps1","message":"Process completed with exit code 1."}]'
 }
 
 # ---- helpers ----
@@ -299,6 +346,72 @@ try {
     Set-Mock -RunJson '[{"databaseId":41,"name":"CI","workflowName":"CI","status":"completed","conclusion":"cancelled"},{"databaseId":42,"name":"Lint","workflowName":"Lint","status":"completed","conclusion":"stale"}]' -ExpectedSha $sha4
     $r = Fire -HookPath $CiHook -Cwd $ci4 -EventName 'Stop'
     Check 'cancelled/stale -> infra wording, rerun-once guidance' ($r.Out -match 'cancelled' -and $r.Out -match 'stale' -and $r.Out -match 'rerun')
+
+    # ---- account billing / payment block ----
+    # GitHub reports every run as conclusion=failure when Actions cannot start
+    # for billing, yet its OWN check-run annotation proves no job ran. This must
+    # be auto-detected (never a hard block), never confused with a real failure,
+    # and always fail CLOSED when it cannot be proven.
+    Write-Host '--- CiStatusCheck: account billing block (annotation-proven, auto-recorded) ---' -ForegroundColor Cyan
+    $billStateDir = Join-Path $env:LOCALAPPDATA 'HookMaker\state'
+
+    # every failing check-run carries the billing annotation -> auto-recorded external blocker
+    $ciBill = New-GitRepo 'ci-bill'
+    $shaBill = Get-HeadSha $ciBill
+    Set-Mock -RunJson '[{"databaseId":81,"name":"CI","workflowName":"CI","status":"completed","conclusion":"failure"},{"databaseId":82,"name":"Lint","workflowName":"Lint","status":"completed","conclusion":"failure"}]' `
+        -ExpectedSha $shaBill `
+        -CheckRunsJson (New-CheckRunsJson @(@{id = '81'; conclusion = 'failure' }, @{id = '82'; conclusion = 'failure' })) `
+        -Annotations @{ '81' = (New-BillingAnnotations); '82' = (New-BillingAnnotations) }
+    $r = Fire -HookPath $CiHook -Cwd $ciBill -EventName 'Stop'
+    Check 'billing block -> NOT a hard block' ($r.Out -notmatch '"decision":"block"') $r.Out
+    Check 'billing block -> non-blocking CI-not-green context, classified account-billing' ($r.Out -match 'CI NOT VERIFIED GREEN' -and $r.Out -match 'account-billing') $r.Out
+    Check 'billing block -> names the payment/spending-limit cause' ($r.Out -match 'payments have failed' -or $r.Out -match 'spending-limit') $r.Out
+    $billStateFile = @(Get-ChildItem -LiteralPath $billStateDir -Filter 'CiStatusCheck-External-*.txt' -ErrorAction SilentlyContinue)
+    $billRecorded = $false
+    foreach ($f in $billStateFile) { if ([System.IO.File]::ReadAllText($f.FullName) -match 'account-billing') { $billRecorded = $true } }
+    Check 'billing block -> an external blocker was auto-recorded as account-billing' $billRecorded
+    # the recorded exception persists on the very next stop (throttled recheck), still non-blocking
+    $r = Fire -HookPath $CiHook -Cwd $ciBill -EventName 'Stop'
+    Check 'billing block -> recorded exception persists on the next stop (no re-block)' ($r.Out -notmatch '"decision":"block"' -and $r.Out -match 'CI NOT VERIFIED GREEN') $r.Out
+    # same case surfaces correctly in the Claude client shape too
+    $ciBillC = New-GitRepo 'ci-bill-claude'
+    $shaBillC = Get-HeadSha $ciBillC
+    Set-Mock -RunJson '[{"databaseId":83,"name":"CI","workflowName":"CI","status":"completed","conclusion":"failure"}]' `
+        -ExpectedSha $shaBillC `
+        -CheckRunsJson (New-CheckRunsJson @(@{id = '83'; conclusion = 'failure' })) `
+        -Annotations @{ '83' = (New-BillingAnnotations) }
+    $r = Fire -HookPath $CiHook -Cwd $ciBillC -EventName 'Stop' -Client 'claude'
+    Check 'billing block (Claude) -> model-visible additionalContext, not a block' ($r.Out -match 'additionalContext' -and $r.Out -match 'account-billing' -and $r.Out -notmatch '"decision":"block"') $r.Out
+
+    # a genuine failure (check-run present, annotation is a real error) still hard-blocks
+    $ciReal = New-GitRepo 'ci-real'
+    $shaReal = Get-HeadSha $ciReal
+    Set-Mock -RunJson '[{"databaseId":91,"name":"CI","workflowName":"CI","status":"completed","conclusion":"failure"}]' `
+        -ExpectedSha $shaReal `
+        -CheckRunsJson (New-CheckRunsJson @(@{id = '91'; conclusion = 'failure' })) `
+        -Annotations @{ '91' = (New-RealFailureAnnotations) }
+    $r = Fire -HookPath $CiHook -Cwd $ciReal -EventName 'Stop'
+    Check 'real failure (non-billing annotation) still hard-blocks' ($r.Out -match '"decision":"block"' -and $r.Out -match 'FAILED') $r.Out
+
+    # mixed: one failing check-run billing, one a real failure -> fail CLOSED (hard block)
+    $ciMixed = New-GitRepo 'ci-mixed'
+    $shaMixed = Get-HeadSha $ciMixed
+    Set-Mock -RunJson '[{"databaseId":101,"name":"CI","workflowName":"CI","status":"completed","conclusion":"failure"},{"databaseId":102,"name":"Lint","workflowName":"Lint","status":"completed","conclusion":"failure"}]' `
+        -ExpectedSha $shaMixed `
+        -CheckRunsJson (New-CheckRunsJson @(@{id = '101'; conclusion = 'failure' }, @{id = '102'; conclusion = 'failure' })) `
+        -Annotations @{ '101' = (New-BillingAnnotations); '102' = (New-RealFailureAnnotations) }
+    $r = Fire -HookPath $CiHook -Cwd $ciMixed -EventName 'Stop'
+    Check 'one failing run without the billing annotation -> hard block (fail closed)' ($r.Out -match '"decision":"block"' -and $r.Out -match 'FAILED') $r.Out
+
+    # the annotations query itself errors -> billing not claimed, hard block (fail closed)
+    $ciAnnErr = New-GitRepo 'ci-annerr'
+    $shaAnnErr = Get-HeadSha $ciAnnErr
+    Set-Mock -RunJson '[{"databaseId":111,"name":"CI","workflowName":"CI","status":"completed","conclusion":"failure"}]' `
+        -ExpectedSha $shaAnnErr `
+        -CheckRunsJson (New-CheckRunsJson @(@{id = '111'; conclusion = 'failure' })) `
+        -AnnotationsExitAll 1
+    $r = Fire -HookPath $CiHook -Cwd $ciAnnErr -EventName 'Stop'
+    Check 'annotations query error -> billing not claimed, hard block (fail closed)' ($r.Out -match '"decision":"block"' -and $r.Out -match 'FAILED') $r.Out
 
     # no runs yet but workflows exist -> block; no workflows at all -> verified silent
     $ci5 = New-GitRepo 'ci5'
