@@ -90,6 +90,16 @@ function Get-GuardedWorkerBudget {
     # Leave headroom for the OS, this runner, and log/cleanup work.
     $budget = [Math]::Max(2, [Math]::Min(8, $cores - 2))
     if ($Requested -gt 0) { $budget = [Math]::Min($Requested, $budget) }
+    # The same project-wide ceiling scripts\Run-Tests.ps1 applies. "One rule,
+    # two consumers" only holds if the override reaches BOTH - otherwise the
+    # workerBudget reported in the result document would contradict the number
+    # the local runner actually ran with.
+    if (-not [string]::IsNullOrWhiteSpace($env:HOOKMAKER_MAX_TEST_WORKERS)) {
+        $ceiling = 0
+        if ([int]::TryParse($env:HOOKMAKER_MAX_TEST_WORKERS, [ref]$ceiling) -and $ceiling -ge 1) {
+            $budget = [Math]::Min($budget, $ceiling)
+        }
+    }
     return $budget
 }
 

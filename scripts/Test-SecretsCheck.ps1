@@ -443,6 +443,73 @@ try {
     Check 'PUBLIC_CONFIG_KEYS cannot declassify credential-like KEY semantics (PASSWORD)' ($r.Out -like '*Auto-added*SERVICE_PASSWORD*') $r.Out
 
     # =====================================================================
+    # Regression: a real push in a Next.js/Vercel project was blocked by 42
+    # CRITICAL lines, all from ONE e-mail address held under three keys. The
+    # address was force-classified Secret by the entropy heuristic ("24+ chars,
+    # mixed case, has a digit"), which sat ABOVE the PUBLIC_CONFIG_KEYS
+    # override - so the block was unclearable by any configuration and the hook
+    # was deleted from that project instead. The heuristic is a guess, not an
+    # identification, and it now sits below the override.
+    Write-Host '--- classification: the entropy HEURISTIC is overridable; identified credentials are not ---' -ForegroundColor Cyan
+
+    # An address is never a credential, whatever its length/charset.
+    $projEmail = New-GitProj 'AdminEmailNotSecret'
+    Write-Utf8 (Join-Path $projEmail '.gitignore') ".env`nsecrets.md`n"
+    Write-Utf8 (Join-Path $projEmail '.env') "ADMIN_EMAIL=Admin.Owner2024@Example.com`r`n"
+    Write-Utf8 (Join-Path $projEmail 'authz.ts') "const OWNER = 'Admin.Owner2024@Example.com';`r`n"
+    Add-Commit $projEmail 'seed'
+    $r = Fire -Cwd $projEmail
+    Check 'an admin e-mail is NOT auto-added to secrets.md as a secret' ($r.Out -notlike '*Auto-added*ADMIN_EMAIL*') $r.Out
+    Check 'an admin e-mail in a tracked file is NOT reported as a leak' ($r.Out -notlike '*appears in a git-tracked file*') $r.Out
+    Check 'the e-mail is reported as needing classification instead (Unknown, advisory)' ($r.Out -like '*Classification unclear*ADMIN_EMAIL*') $r.Out
+
+    # ... and an address under a credential-named key is still Secret: the
+    # e-mail exclusion only removes the heuristic, never key evidence.
+    $projEmailPwd = New-Proj 'EmailUnderCredentialKey'
+    Write-Utf8 (Join-Path $projEmailPwd '.env') "SMTP_PASSWORD=Admin.Owner2024@Example.com`r`n"
+    $r = Fire -Cwd $projEmailPwd
+    Check 'an address under a *_PASSWORD key is still Secret (key evidence is unoverridable)' ($r.Out -like '*Auto-added*SMTP_PASSWORD*') $r.Out
+
+    # A public-by-design high-entropy value (Turnstile SITE key shape): Secret
+    # by default, but now correctable per key.
+    $turnstileEnv = "NEXT_PUBLIC_TURNSTILE_SITE_KEY=0xAAB4cDeF9gHiJk2LmNoPqRsT`r`n"
+    $projSiteKeyDefault = New-Proj 'SiteKeyDefaultSecret'
+    Write-Utf8 (Join-Path $projSiteKeyDefault '.env') $turnstileEnv
+    $r = Fire -Cwd $projSiteKeyDefault
+    Check 'DEFAULT is unchanged: a heuristic-only value with no override is still Secret' ($r.Out -like '*Auto-added*NEXT_PUBLIC_TURNSTILE_SITE_KEY*') $r.Out
+
+    $projSiteKeyOverride = New-GitProj 'SiteKeyDeclassified'
+    Write-Utf8 (Join-Path $projSiteKeyOverride '.gitignore') ".env`nsecrets.md`n"
+    Write-Utf8 (Join-Path $projSiteKeyOverride '.env') $turnstileEnv
+    Write-Utf8 (Join-Path $projSiteKeyOverride 'widget.tsx') "const siteKey = '0xAAB4cDeF9gHiJk2LmNoPqRsT';`r`n"
+    Add-Commit $projSiteKeyOverride 'seed'
+    $siteKeyHook = New-ConfiguredHookCopy @{ PUBLIC_CONFIG_KEYS = 'NEXT_PUBLIC_TURNSTILE_SITE_KEY' }
+    $r = Fire -Cwd $projSiteKeyOverride -HookPath $siteKeyHook
+    Check 'PUBLIC_CONFIG_KEYS CAN declassify a heuristic-only value (the escape hatch is reachable)' ($r.Out -notlike '*Auto-added*NEXT_PUBLIC_TURNSTILE_SITE_KEY*') $r.Out
+    Check 'the declassified site key in tracked client code no longer blocks' ($r.Out -notlike '*appears in a git-tracked file*') $r.Out
+
+    # =====================================================================
+    # One value under several keys is scanned once and reported once. Before
+    # this, 3 keys x 14 files produced 42 duplicate CRITICAL lines for a single
+    # value - the volume that made the hook look broken rather than useful.
+    Write-Host '--- leak scan is grouped BY VALUE, not per key ---' -ForegroundColor Cyan
+    $projShared = New-GitProj 'SharedSecretValue'
+    Write-Utf8 (Join-Path $projShared '.gitignore') ".env`nsecrets.md`n"
+    Write-Utf8 (Join-Path $projShared '.env') (
+        "PRIMARY_API_TOKEN=zzsharedcredential1234567`r`n" +
+        "BACKUP_API_TOKEN=zzsharedcredential1234567`r`n" +
+        "LEGACY_API_TOKEN=zzsharedcredential1234567`r`n")
+    Write-Utf8 (Join-Path $projShared 'notes.txt') "zzsharedcredential1234567`r`n"
+    Add-Commit $projShared 'seed'
+    $r = Fire -Cwd $projShared
+    $leakLines = @(($r.Out -split '\r?\n') | Where-Object { $_ -like '*appears in a git-tracked file*' })
+    Check 'one shared value produces exactly ONE leak line, not one per key' ($leakLines.Count -eq 1) ($leakLines -join ' | ')
+    Check 'that single line names every key holding the value' (
+        $leakLines.Count -eq 1 -and $leakLines[0] -like '*BACKUP_API_TOKEN*' -and
+        $leakLines[0] -like '*LEGACY_API_TOKEN*' -and $leakLines[0] -like '*PRIMARY_API_TOKEN*') ($leakLines -join ' | ')
+    Check 'the shared secret VALUE is still never printed' ($r.Out -notlike '*zzsharedcredential1234567*') $r.Out
+
+    # =====================================================================
     Write-Host '--- classification: AUTH/OAUTH token-boundary matching (not a raw substring) ---' -ForegroundColor Cyan
     $projAuthSecret = New-Proj 'AuthBoundarySecret'
     Write-Utf8 (Join-Path $projAuthSecret '.env') (
