@@ -342,6 +342,18 @@ function Test-HandlerFieldsConsistent {
 }
 
 # Does ONE handler carry the exact identity this client subrecord owns?
+#
+# Returns 'owned' | 'ambiguous' | 'foreign'. ONLY 'owned' is removable.
+#
+# EVERY command-bearing field on the handler must agree - one matching field is
+# NOT enough. A handler carries up to three (command / commandWindows /
+# command_windows) and a real install writes the SAME runtime script into all of
+# the ones it uses (Install-Hook.ps1's Windows and Portable forms are built from
+# one $Runtime.Script). So a handler whose `command` is ours while its
+# `commandWindows` points somewhere else is NOT ours to delete: removing it
+# would silently destroy whatever that other field invokes. That case is
+# 'ambiguous' - the whole client stops with manualRepair - not a quiet removal
+# and not a quiet skip.
 function Test-HandlerExactlyOwned {
     param(
         [Parameter(Mandatory = $true)]$Handler,
@@ -350,18 +362,35 @@ function Test-HandlerExactlyOwned {
         [Parameter(Mandatory = $true)][string]$CanonicalRuntimeScript,
         [Parameter(Mandatory = $true)][System.Collections.Generic.HashSet[string]]$PersistedEvents
     )
-    if (-not $PersistedEvents.Contains($EventName)) { return $false }
+    if (-not $PersistedEvents.Contains($EventName)) { return 'foreign' }
+
+    $matching = 0
+    $conflicting = 0
     foreach ($commandValue in @(Get-HandlerCommandValues -Handler $Handler)) {
         $info = Get-HookMakerCommandInfo -Command $commandValue -KnownToolRoots $script:KnownToolRoots
-        if (-not $info.IsHookMaker) { continue }
-        $parsedCanonical = Get-CanonicalPathOrNull $info.RuntimeScript
-        if ($null -eq $parsedCanonical) { continue }
-        if (-not [string]::Equals($parsedCanonical, $CanonicalRuntimeScript, [System.StringComparison]::OrdinalIgnoreCase)) { continue }
-        if (-not [string]::IsNullOrWhiteSpace($ProfileId) -and [string]$info.Profile -ne $ProfileId) { continue }
-        if (-not (Test-HandlerFieldsConsistent -Handler $Handler -Subrecord $Subrecord)) { continue }
-        return $true
+        $parsedCanonical = $null
+        if ($info.IsHookMaker) { $parsedCanonical = Get-CanonicalPathOrNull $info.RuntimeScript }
+        if ($null -ne $parsedCanonical -and
+            [string]::Equals($parsedCanonical, $CanonicalRuntimeScript, [System.StringComparison]::OrdinalIgnoreCase) -and
+            ([string]::IsNullOrWhiteSpace($ProfileId) -or [string]$info.Profile -eq $ProfileId)) {
+            $matching++
+        }
+        else {
+            # Anything else present on this handler - a different Hook Maker
+            # runtime, a different profile, an ambiguous legacy shape, or a
+            # command that is not Hook Maker's at all - is a field this record
+            # cannot claim.
+            $conflicting++
+        }
     }
-    return $false
+
+    if ($matching -eq 0) { return 'foreign' }
+    if ($conflicting -gt 0) { return 'ambiguous' }
+    # Reached only when every command field is provably ours, so a mismatch in
+    # the persisted handler metadata means OUR registration was edited after
+    # install - report it rather than removing a handler we no longer recognise.
+    if (-not (Test-HandlerFieldsConsistent -Handler $Handler -Subrecord $Subrecord)) { return 'ambiguous' }
+    return 'owned'
 }
 
 # Broader than Test-HandlerExactlyOwned: does this parsed candidate merely
@@ -408,9 +437,21 @@ function Get-ClientHandlerScan {
         $eventName = $eventProperty.Name
         foreach ($group in @($eventProperty.Value)) {
             foreach ($handler in @($group.hooks)) {
-                if (Test-HandlerExactlyOwned -Handler $handler -EventName $eventName -Subrecord $Subrecord `
-                        -CanonicalRuntimeScript $CanonicalRuntimeScript -PersistedEvents $persistedEvents) {
+                $ownership = Test-HandlerExactlyOwned -Handler $handler -EventName $eventName -Subrecord $Subrecord `
+                    -CanonicalRuntimeScript $CanonicalRuntimeScript -PersistedEvents $persistedEvents
+                if ($ownership -eq 'owned') {
                     $result.OwnedCount++
+                    continue
+                }
+                if ($ownership -eq 'ambiguous') {
+                    # Proven-partial ownership: at least one command field is
+                    # ours and at least one is not. This blocks the whole client
+                    # on its own, without needing the name-based near-match scan
+                    # below to notice it.
+                    $result.NearMatch = $true
+                    if ([string]::IsNullOrEmpty($result.NearMatchDetail)) {
+                        $result.NearMatchDetail = 'a registration under ' + $eventName + ' matches this install on some command fields but not on all of them, so it cannot be proven to be ours alone'
+                    }
                     continue
                 }
                 foreach ($commandValue in @(Get-HandlerCommandValues -Handler $handler)) {
@@ -445,8 +486,13 @@ function Remove-ExactlyOwnedHandlers {
     foreach ($group in @($HooksObject.$EventName)) {
         $keptHandlers = @()
         foreach ($handler in @($group.hooks)) {
-            $owned = Test-HandlerExactlyOwned -Handler $handler -EventName $EventName -Subrecord $Subrecord `
-                -CanonicalRuntimeScript $CanonicalRuntimeScript -PersistedEvents $PersistedEvents
+            # Only 'owned' is removable; 'ambiguous' and 'foreign' both survive
+            # byte-identical. (An ambiguous handler cannot actually reach this
+            # point - Get-ClientHandlerScan blocks the entire client first - but
+            # the equality test keeps that a belt-and-braces invariant rather
+            # than a truthiness accident.)
+            $owned = (Test-HandlerExactlyOwned -Handler $handler -EventName $EventName -Subrecord $Subrecord `
+                    -CanonicalRuntimeScript $CanonicalRuntimeScript -PersistedEvents $PersistedEvents) -eq 'owned'
             if ($owned) { $removedAny = $true } else { $keptHandlers += $handler }
         }
         if ($keptHandlers.Count -gt 0) {
@@ -644,6 +690,83 @@ function Remove-ClientComponent {
 }
 
 # ---- native Git pre-push integration ----------------------------------------
+# Which on-disk stages does this record actually own?
+#
+# The name is ONLY a lookup key into the record's own persisted expectedStages -
+# it is never the authority for what gets deleted. Every returned path is a
+# string that was literally persisted at install time (Install-Hook.ps1 writes
+# expectedStages = @($runtime.Script, $secretsScript), i.e. the exact installed
+# stage paths), canonicalized and proven to sit in a proper subdirectory of the
+# record's own runtimeRoot.
+#
+# So a record whose friendlyName/companions do not line up with its persisted
+# stages resolves to a REFUSAL, not to a name-derived directory that happens to
+# exist. Records predating expectedStages cannot prove ownership at all and are
+# likewise refused: they already fail the byte-exact wrapper comparison further
+# down, and "we cannot tell what is ours" must never be reported as a clean
+# removal.
+function Resolve-OwnNativeStages {
+    param(
+        [Parameter(Mandatory = $true)]$Native,
+        [string]$OwnRuntimeRoot
+    )
+    function New-OwnershipFailure {
+        param([string]$Reason)
+        return [pscustomobject]@{ Ok = $false; Reason = $Reason; Stages = @(); Dirs = @() }
+    }
+
+    if ([string]::IsNullOrWhiteSpace($OwnRuntimeRoot)) {
+        return (New-OwnershipFailure 'managed nativeGit record has no runtimeRoot to resolve its own stages against')
+    }
+    $canonicalRoot = Get-CanonicalPathOrNull $OwnRuntimeRoot
+    if ($null -eq $canonicalRoot) {
+        return (New-OwnershipFailure 'managed nativeGit runtimeRoot cannot be canonicalized')
+    }
+
+    $persisted = @()
+    if ($null -ne $Native.PSObject.Properties['expectedStages'] -and $null -ne $Native.expectedStages) {
+        $persisted = @($Native.expectedStages | ForEach-Object { [string]$_ })
+    }
+    if ($persisted.Count -eq 0) {
+        return (New-OwnershipFailure 'managed nativeGit record persists no expectedStages, so none of its on-disk stages can be proven to belong to it')
+    }
+    # Default [hashtable] key comparison is already case-insensitive for
+    # strings, which is what path comparison needs on Windows.
+    $persistedByCanonical = @{}
+    foreach ($stage in $persisted) {
+        $canonicalStage = Get-CanonicalPathOrNull $stage
+        if ($null -eq $canonicalStage) {
+            return (New-OwnershipFailure 'managed nativeGit expectedStages contains a path that cannot be canonicalized')
+        }
+        $persistedByCanonical[$canonicalStage] = $true
+    }
+
+    $ownNames = @($FriendlyName)
+    if ($null -ne $Native.PSObject.Properties['companions'] -and $null -ne $Native.companions) {
+        $ownNames += @(@($Native.companions) | ForEach-Object { [string]$_ })
+    }
+
+    $stages = New-Object System.Collections.Generic.List[string]
+    $dirs = New-Object System.Collections.Generic.List[string]
+    foreach ($name in $ownNames) {
+        if ([string]::IsNullOrWhiteSpace($name)) {
+            return (New-OwnershipFailure 'managed nativeGit record names an empty stage')
+        }
+        $candidate = Get-CanonicalPathOrNull (Join-Path $canonicalRoot ($name + '\' + $name + '.ps1'))
+        if ($null -eq $candidate -or -not $persistedByCanonical.ContainsKey($candidate)) {
+            return (New-OwnershipFailure ('the managed stage for ''' + $name + ''' is absent from this record''s own persisted expectedStages, so it cannot be proven to belong to this installation'))
+        }
+        $dir = Split-Path -Parent $candidate
+        if ([string]::Equals($dir, $canonicalRoot, [System.StringComparison]::OrdinalIgnoreCase) -or
+            -not (Test-PathContainedIn -ChildPath $dir -ParentPath $canonicalRoot)) {
+            return (New-OwnershipFailure ('the persisted stage for ''' + $name + ''' does not sit in a managed subdirectory of the record''s own runtimeRoot'))
+        }
+        [void]$stages.Add($candidate)
+        [void]$dirs.Add($dir)
+    }
+    return [pscustomobject]@{ Ok = $true; Reason = ''; Stages = @($stages.ToArray()); Dirs = @($dirs.ToArray()) }
+}
+
 # Only ever touches the wrapper when it is PROVEN to still be the exact Hook
 # Maker managed wrapper (marker present AND byte-exact match against a wrapper
 # rebuilt from the record's own recorded stage list). Anything else - hand
@@ -658,16 +781,21 @@ function Remove-NativeGitComponent {
     $native = $record.nativeGit
     $wrapperPath = [string]$native.wrapperPath
 
-    # Directories this record itself owns on disk (primary stage + every
-    # recorded companion). Computed read-only, up front, so both the
-    # "wrapper already gone" idempotency proof below and the later
-    # regenerate/cleanup step share one definition of "ours".
+    # Everything this record owns on disk is PROVEN from its own persisted
+    # expectedStages - never rebuilt from FriendlyName. Computed read-only, up
+    # front, so the "wrapper already gone" idempotency proof below, the
+    # remaining-stage split and the cleanup step all share one definition of
+    # "ours". A record whose name and persisted stages disagree is refused
+    # outright rather than being allowed to compute a delete target from its
+    # name.
     $ownRuntimeRoot = [string]$native.runtimeRoot
-    $ownStageDirs = @()
-    if (-not [string]::IsNullOrWhiteSpace($ownRuntimeRoot)) {
-        $ownStageDirs = @((Join-Path $ownRuntimeRoot $FriendlyName)) +
-            @(@($native.companions) | ForEach-Object { Join-Path $ownRuntimeRoot ([string]$_) })
+    $ownership = Resolve-OwnNativeStages -Native $native -OwnRuntimeRoot $ownRuntimeRoot
+    if (-not $ownership.Ok) {
+        Set-ComponentResult -Component 'nativeGit' -Status 'manualRepair' -ReasonCode 'nativeOwnershipUnproven' `
+            -Message ([string]$ownership.Reason)
+        return [pscustomobject]@{ Removed = $false }
     }
+    $ownStageDirs = @($ownership.Dirs)
     $anyOwnedArtifactRemains = @($ownStageDirs | Where-Object { Test-Path -LiteralPath $_ }).Count -gt 0
 
     if ([string]::IsNullOrWhiteSpace($wrapperPath) -or -not (Test-Path -LiteralPath $wrapperPath -PathType Leaf)) {
@@ -721,19 +849,11 @@ function Remove-NativeGitComponent {
         return [pscustomobject]@{ Removed = $false }
     }
 
-    # Stages this record itself owns: its own primary script plus every
-    # companion recorded alongside it. Anything else in expectedStages
-    # belongs to some other logical owner and is left running.
-    # ($ownRuntimeRoot was already computed above.)
-    $ownStages = New-Object System.Collections.Generic.List[string]
-    if (-not [string]::IsNullOrWhiteSpace($ownRuntimeRoot)) {
-        [void]$ownStages.Add((Join-Path $ownRuntimeRoot ($FriendlyName + '\' + $FriendlyName + '.ps1')))
-        foreach ($companion in @($native.companions)) {
-            [void]$ownStages.Add((Join-Path $ownRuntimeRoot ([string]$companion + '\' + [string]$companion + '.ps1')))
-        }
-    }
+    # Stages this record itself owns (already PROVEN against its persisted
+    # expectedStages by Resolve-OwnNativeStages above). Anything else in
+    # expectedStages belongs to some other logical owner and is left running.
     $ownStageSet = New-Object System.Collections.Generic.HashSet[string]([System.StringComparer]::OrdinalIgnoreCase)
-    foreach ($stage in @($ownStages.ToArray())) { [void]$ownStageSet.Add([System.IO.Path]::GetFullPath($stage)) }
+    foreach ($stage in @($ownership.Stages)) { [void]$ownStageSet.Add($stage) }
     $remainingStages = @($expectedStages | Where-Object { -not $ownStageSet.Contains([System.IO.Path]::GetFullPath($_)) })
 
     if ($WhatIf) {
@@ -784,13 +904,15 @@ function Remove-NativeGitComponent {
     # ---- post-commit cleanup only, best-effort: the wrapper is already
     # correct at this point regardless of whether this succeeds. ----
     if (-not [string]::IsNullOrWhiteSpace($ownRuntimeRoot)) {
+        # Both lists come from Resolve-OwnNativeStages and stay index-aligned:
+        # entry i's directory is the parent of entry i's persisted stage path.
+        # Nothing here is derived from a name.
         $dirsToRemove = New-Object System.Collections.Generic.List[string]
-        [void]$dirsToRemove.Add((Join-Path $ownRuntimeRoot $FriendlyName))
-        foreach ($companion in @($native.companions)) {
-            $companionName = [string]$companion
-            $companionScriptFull = [System.IO.Path]::GetFullPath((Join-Path $ownRuntimeRoot ($companionName + '\' + $companionName + '.ps1')))
-            $stillOwnedElsewhere = @($remainingStages | Where-Object { [System.IO.Path]::GetFullPath($_) -eq $companionScriptFull }).Count -gt 0
-            if (-not $stillOwnedElsewhere) { [void]$dirsToRemove.Add((Join-Path $ownRuntimeRoot $companionName)) }
+        $ownStagesResolved = @($ownership.Stages)
+        $ownDirsResolved = @($ownership.Dirs)
+        for ($i = 0; $i -lt $ownStagesResolved.Count; $i++) {
+            $stillOwnedElsewhere = @($remainingStages | Where-Object { [System.IO.Path]::GetFullPath($_) -eq $ownStagesResolved[$i] }).Count -gt 0
+            if (-not $stillOwnedElsewhere) { [void]$dirsToRemove.Add($ownDirsResolved[$i]) }
         }
         foreach ($dir in @($dirsToRemove.ToArray())) {
             if ((Test-Path -LiteralPath $dir -PathType Container) -and (Test-SafeManagedDir -Dir $dir -Root $ownRuntimeRoot)) {

@@ -442,6 +442,19 @@ function Test-InstallRecordValid {
         if ([string]::Equals($runtimeScriptParent, $canonicalRuntimeRoot, [System.StringComparison]::OrdinalIgnoreCase)) {
             return [pscustomobject]@{ Ok = $false; Reason = ($clientName + ' subrecord runtimeScript parent does not match managed hook directory') }
         }
+        # ...and BOTH leaf names must still agree with the name this record
+        # claims the installation has - parity with Uninstall-Hook.ps1's
+        # Test-ClientRecordIdentity, which already refuses this. A record whose
+        # friendlyName and runtimeScript disagree can never be safely acted on:
+        # the updater would refresh a directory the uninstaller would then
+        # decline to remove, so both gates must reject it identically.
+        $friendlyNameValue = [string](Get-RecordField -Object $Record -Name 'friendlyName')
+        $hookDirLeaf = Split-Path -Leaf $runtimeScriptParent
+        $runtimeScriptLeaf = Split-Path -Leaf $canonicalRuntimeScript
+        if (-not [string]::Equals($hookDirLeaf, $friendlyNameValue, [System.StringComparison]::OrdinalIgnoreCase) -or
+            -not [string]::Equals($runtimeScriptLeaf, ($friendlyNameValue + '.ps1'), [System.StringComparison]::OrdinalIgnoreCase)) {
+            return [pscustomobject]@{ Ok = $false; Reason = ($clientName + ' subrecord runtimeScript does not match managed hook directory for friendlyName "' + $friendlyNameValue + '"') }
+        }
 
         # settingsPath must be the EXACT canonical location Install-Hook.ps1
         # would write to for this record's scope/client - never merely "some

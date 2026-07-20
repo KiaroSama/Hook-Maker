@@ -2,7 +2,11 @@
 #
 # Suites run in parallel, with ONE exception handled in a first phase - see the
 # `$Exclusive list below for exactly why. Wall clock becomes
-# (that one suite) + (slowest of everything else) instead of the sum of all 22.
+# (that one suite) + (slowest of everything else) instead of the sum of them all.
+#
+# The suite list is GLOBBED from disk, so a newly added Test-*.ps1 runs here
+# automatically. CI cannot do that (its buckets are hand-written in ci.yml), so
+# ci.yml carries a step that fails when a suite on disk is in no bucket.
 #
 # CI does not need this split: there, each suite gets its own job on its own
 # runner and therefore its own checkout, so nothing is shared (see ci.yml).
