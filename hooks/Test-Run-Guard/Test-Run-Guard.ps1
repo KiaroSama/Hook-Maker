@@ -558,8 +558,18 @@ if ($eventName -eq 'PreToolUse') {
         -Arguments $verdict.Command.Arguments -WallSeconds $wallSeconds -IdleSeconds $idleSeconds `
         -HeartbeatSeconds $heartbeatSeconds -MaxMemoryMB $maxMemoryMB -ResultPath $resultPath
 
+    # Advisory by design. Enforcing this would mean rewriting the worker flag of
+    # the runner just recognised, and every framework spells it differently
+    # (pytest -n, jest --maxWorkers, vitest --maxThreads, go -p, cargo -j,
+    # dotnet -m, PowerShell -ThrottleLimit); guessing wrong breaks the run. The
+    # command that actually oversubscribes usually carries no worker flag at all
+    # - it auto-detects - so there would be nothing to rewrite. A cap can only
+    # bind where the number is decided, inside the runner itself.
     $workerNote = ''
-    if ($maxWorkers -gt 0) { $workerNote = ' Keep test workers at or below ' + $maxWorkers + ' for this project.' }
+    if ($maxWorkers -gt 0) {
+        $workerNote = ' Keep test workers at or below ' + $maxWorkers + ' - pass your runner''s own worker flag explicitly' +
+        ' (a runner that reads HOOKMAKER_MAX_TEST_WORKERS, such as this repo''s scripts\Run-Tests.ps1, clamps itself to it).'
+    }
 
     $message = 'TEST RUN GUARD: "' + $verdict.Command.Label + '" is a test command with no bounded runner around it. ' +
     'A raw run has no wall ceiling, no no-progress ceiling and no process-tree cleanup, so a hang cannot be ' +

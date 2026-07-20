@@ -13,9 +13,16 @@
 #                  tracked/staged secrets.md or real .env*, or a fail-closed
 #                  outgoing scan - can produce decision:block on Stop).
 # Classification order (precedence, strongest first):
-#   SECRET_KEYS override > credential-like VALUE evidence > credential-like
-#   KEY evidence > PUBLIC_CONFIG_KEYS override > inferred public config
-#   (public-looking key AND a recognized public value shape) > Unknown.
+#   SECRET_KEYS override > DEFINITE credential VALUE format > credential-like
+#   KEY evidence > PUBLIC_CONFIG_KEYS override > entropy-HEURISTIC value
+#   evidence > inferred public config (public-looking key AND a recognized
+#   public value shape) > Unknown.
+# The two value tiers are split on purpose. A definite format (private key,
+# JWT, sk_live_, AKIA, user:pass@host, ...) IDENTIFIES a credential and is
+# never overridable. "Long, opaque, mixed charset" only GUESSES, and it fires
+# on values that are public by design - a Turnstile SITE key, a Cloudflare
+# account ID, a publishable key - so it sits below PUBLIC_CONFIG_KEYS and can
+# be corrected per key. Its default answer is unchanged (still Secret).
 # A key prefix (NEXT_PUBLIC_, PUBLIC_, VITE_, REACT_APP_) is never sufficient
 # by itself to call something safe - it requires BOTH a public-looking key
 # AND a recognizable public value shape (Test-PublicConfigValue); an opaque
@@ -35,7 +42,10 @@
 # - Any real .env* file (not a .example/.sample/.template) is itself tracked -> CRITICAL.
 # - A discovered secret VALUE turns up inside a git-TRACKED file elsewhere in the
 #   repo (git grep across BOTH the working tree and the index/staged content,
-#   merged and deduplicated by path; filenames only, value never printed) ->
+#   merged and deduplicated by path; filenames only, value never printed). The
+#   scan is grouped BY VALUE, not by key, so several keys holding one value
+#   (ADMIN_EMAIL/OWNER_EMAIL/KYC_ADMIN_EMAIL) produce ONE finding naming all of
+#   them, instead of the same file list repeated per key ->
 #   CRITICAL "possible leak". The index scan catches a value that is staged but
 #   already removed from the working copy, or committed and later edited away
 #   locally without staging that edit - either state stays invisible to a
@@ -56,10 +66,14 @@
 #   range is scanned in bounded batches (no commit cap), and if any ref range
 #   cannot be resolved or a batch grep errors, the push is BLOCKED with a safe
 #   message rather than being treated as clean.
-#   LIMITATION: this is a registry/value-based leak guard, not a full
-#   entropy/pattern/history secret scanner - it can only search for values it
-#   currently knows (from active .env* files or the local secrets.md). A secret
-#   introduced and later removed from BOTH outgoing history AND every current
+#   LIMITATION: this is a value-based leak guard, not a full entropy/pattern/
+#   history secret scanner - it can only search for values it currently knows,
+#   and the ONLY source of those values is the active .env* files. secrets.md
+#   is read to check whether a key is already DOCUMENTED and for the unused-key
+#   scan; its recorded values are never themselves leak-scanned. So a secret
+#   that lives only in secrets.md or only in the deployment secret store - one
+#   rotated out of .env, or never kept there - is invisible to this scan. A
+#   secret introduced and later removed from BOTH outgoing history AND every current
 #   source is no longer known and cannot be matched; use a dedicated
 #   historical secret scanner in CI for unknown credentials.
 # - Secret KEYs found in .env* files but missing from secrets.md are AUTO-APPENDED
@@ -192,14 +206,33 @@ $script:PublicKeySuffixes = @(
 )
 $script:PublicKeyContains = @('FEATURE')
 
-# Value-shape evidence strong enough to call something a Secret regardless of
-# its key name: private-key material, bearer/JWT tokens, known live-credential
-# formats (Stripe/GitHub/Slack/AWS/Google), a connection string with an
-# embedded username:password or a token/password query parameter, and a long
-# no-whitespace opaque value that mixes upper/lower/digit (high-entropy-like)
-# and is not itself a URL.
+# Value-shape evidence, in TWO TIERS that are deliberately not equally strong.
+#
+# STRONG (-StrongOnly): a definite FORMAT match - private-key material,
+# bearer/JWT tokens, known live-credential formats (Stripe/GitHub/Slack/AWS/
+# Google), a connection string with an embedded username:password, or a
+# token/password query parameter. These identify a credential by its published
+# shape, so they are never overridable: PUBLIC_CONFIG_KEYS must not be able to
+# declassify a real private key because someone listed the wrong key name.
+#
+# HEURISTIC (the default, second tier): "long, no whitespace, mixes
+# upper/lower/digit, not a URL". That is a GUESS, not an identification, and it
+# has a large false-positive surface - a Cloudflare Turnstile SITE key (public
+# by design, meant to be rendered into client HTML), a Cloudflare account ID
+# (public in R2/worker URLs), a publishable API key, or any 24+ character
+# public identifier trips it. Because it is a guess it sits BELOW the
+# PUBLIC_CONFIG_KEYS override in Get-KeyValueClassification, so a project can
+# declassify a specific key it knows to be public. Its default answer is
+# unchanged: with no override, a heuristic match is still Secret.
+#
+# An e-mail address is excluded from the heuristic outright: an address is not
+# a credential under any definition, and a 24+ character address with a digit
+# and a capital is ordinary. A credential that merely CONTAINS an address
+# (user:pass@host) is caught by the strong tier above and does not reach here;
+# a secret stored under a credential-named key (SMTP_PASSWORD) is caught by
+# Test-CredentialLikeKey, which is also unoverridable.
 function Test-CredentialLikeValue {
-    param([string]$Value)
+    param([string]$Value, [switch]$StrongOnly)
     if ([string]::IsNullOrWhiteSpace($Value)) { return $false }
     if ($Value -match '-----BEGIN [A-Z ]*PRIVATE KEY-----') { return $true }
     if ($Value -match '^Bearer\s+\S+') { return $true }
@@ -211,6 +244,8 @@ function Test-CredentialLikeValue {
     if ($Value -match '^AIza[0-9A-Za-z_-]{35}$') { return $true }
     if ($Value -match '^[A-Za-z][A-Za-z0-9+.-]*://[^/@\s]+:[^/@\s]+@') { return $true }
     if ($Value -match '(?i)[?&](token|access_token|api_key|apikey|password|secret)=[^&\s]+') { return $true }
+    if ($StrongOnly) { return $false }
+    if ($Value -match '^[^@\s]+@[^@\s]+\.[A-Za-z]{2,}$') { return $false }    # an address is not a credential
     if ($Value -notmatch '\s' -and $Value.Length -ge 24 -and
         $Value -notmatch '^[A-Za-z][A-Za-z0-9+.-]*://' -and
         $Value -match '[A-Z]' -and $Value -match '[a-z]' -and $Value -match '[0-9]') {
@@ -296,22 +331,33 @@ function Test-PublicConfigValue {
     return $false
 }
 
-# Classification order (SECRET_KEYS strongest, PUBLIC_CONFIG_KEYS can never
-# override real credential evidence):
+# Classification order. PUBLIC_CONFIG_KEYS can never override IDENTIFIED
+# credential evidence - a definite value format or credential key semantics -
+# but it CAN override the entropy heuristic, which is only a guess:
 #   1. Explicit SECRET_KEYS override
-#   2. Credential-like VALUE evidence
-#   3. Credential-like KEY evidence
-#   4. Explicit PUBLIC_CONFIG_KEYS override (only reachable once neither the
-#      value nor the key showed credential evidence)
-#   5. Public-looking key semantics AND a recognized public value shape
-#   6. Unknown
+#   2. Definite credential VALUE format          (unoverridable)
+#   3. Credential-like KEY evidence              (unoverridable)
+#   4. Explicit PUBLIC_CONFIG_KEYS override
+#   5. Entropy-heuristic VALUE evidence          (default Secret, overridable by 4)
+#   6. Public-looking key semantics AND a recognized public value shape
+#   7. Unknown
+#
+# Steps 2 and 3 sit above the override on purpose: PUBLIC_CONFIG_KEYS must
+# never be able to declassify a private key, a live token, or a value stored
+# under a name like DB_PASSWORD. Step 5 sits below it because "long and opaque"
+# is not an identification - it is exactly where the public site keys, public
+# account IDs and publishable keys land, and before this ordering a project had
+# NO way to correct that: the block was unclearable by any configuration.
+# Default behaviour is unchanged - with no override set, step 5 still returns
+# Secret, so nothing becomes silently unprotected.
 function Get-KeyValueClassification {
     param([string]$Key, [string]$Value)
     $upperKey = $Key.ToUpperInvariant()
     if (Test-KeyMatchesOverride $upperKey $secretKeyOverrides) { return 'Secret' }
-    if (Test-CredentialLikeValue $Value) { return 'Secret' }
+    if (Test-CredentialLikeValue $Value -StrongOnly) { return 'Secret' }
     if (Test-CredentialLikeKey $upperKey) { return 'Secret' }
     if (Test-KeyMatchesOverride $upperKey $publicConfigKeyOverrides) { return 'PublicConfig' }
+    if (Test-CredentialLikeValue $Value) { return 'Secret' }
     $isPublicShape = $false
     foreach ($prefix in $script:PublicKeyPrefixes) { if ($upperKey.StartsWith($prefix)) { $isPublicShape = $true; break } }
     if (-not $isPublicShape) {
@@ -612,15 +658,32 @@ if ($inGitRepo) {
         }
     }
     $excludeNames = @('secrets.md') + @($envFiles | ForEach-Object { $_.Name.Replace('\', '/') })
+    # Grouped BY VALUE, not by key. Several keys legitimately hold the same
+    # value (ADMIN_EMAIL / OWNER_EMAIL / KYC_ADMIN_EMAIL pointing at one
+    # address, a URL reused under two names), and scanning per key reported the
+    # same finding once per key: 3 keys x 14 files = 42 CRITICAL lines for a
+    # SINGLE value. That volume is itself a defect - a wall of duplicated
+    # criticals is what makes someone delete the hook instead of reading it.
+    # One value is scanned once and reported once, naming every key that holds
+    # it.
+    #
+    # Only high-confidence Secrets participate in exact-value leak matching.
+    # PublicConfig (e.g. NEXT_PUBLIC_APP_URL, R2_BUCKET) is expected to appear
+    # in tracked config/code/workflows and must never block a push for that
+    # reason alone. Unknown stays advisory (see $needsClassification) rather
+    # than being treated as a confirmed leak from a bare value match.
+    $secretValueGroups = [ordered]@{}
     foreach ($key in @($discovered.Keys | Sort-Object)) {
-        # Only high-confidence Secrets participate in exact-value leak matching.
-        # PublicConfig (e.g. NEXT_PUBLIC_APP_URL, R2_BUCKET) is expected to
-        # appear in tracked config/code/workflows and must never block a push
-        # for that reason alone. Unknown stays advisory (see $needsClassification)
-        # rather than being treated as a confirmed leak from a bare value match.
         if ($discovered[$key].Classification -ne 'Secret') { continue }
-        $value = $discovered[$key].Value
-        if ($value.Length -lt $minSecretLength) { continue }
+        $groupValue = $discovered[$key].Value
+        if ($groupValue.Length -lt $minSecretLength) { continue }
+        if (-not $secretValueGroups.Contains($groupValue)) {
+            $secretValueGroups[$groupValue] = New-Object System.Collections.Generic.List[string]
+        }
+        [void]$secretValueGroups[$groupValue].Add($key)
+    }
+    foreach ($value in @($secretValueGroups.Keys)) {
+        $key = ($secretValueGroups[$value].ToArray() -join ', ')
         # Merge working-tree (git grep) and index/staged (git grep --cached) hits.
         # A value staged then cleaned from the working copy only - or committed
         # and later edited away locally without staging that edit - is invisible

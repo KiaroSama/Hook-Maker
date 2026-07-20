@@ -207,8 +207,21 @@ try {
     Check 'the probe command is recognised and a replacement returned' ($probeReplacement -match '-ArgumentsJson') $probeReplacement
     $probeRunner = Join-Path $Work 'run-replacement.ps1'
     Write-Utf8 $probeRunner ($probeReplacement + "`nexit `$LASTEXITCODE`n")
-    $runnerProc = Start-Process -FilePath (Get-Process -Id $PID).Path -Wait -NoNewWindow -PassThru `
-        -ArgumentList @('-NoLogo', '-NoProfile', '-File', $probeRunner)
+    # The worker ceiling rides along on this same run - the child inherits the
+    # variable, so no second process is needed. A ceiling of 1 is used because
+    # it clamps on ANY machine: the natural budget is max(2, ...) >= 2, so
+    # min(budget, 1) is 1 on a 2-core runner and a 32-core workstation alike.
+    # Asserting against a larger ceiling would pass vacuously wherever the
+    # natural budget already sat below it.
+    $previousWorkerCeiling = $env:HOOKMAKER_MAX_TEST_WORKERS
+    $env:HOOKMAKER_MAX_TEST_WORKERS = '1'
+    try {
+        $runnerProc = Start-Process -FilePath (Get-Process -Id $PID).Path -Wait -NoNewWindow -PassThru `
+            -ArgumentList @('-NoLogo', '-NoProfile', '-File', $probeRunner)
+    }
+    finally {
+        $env:HOOKMAKER_MAX_TEST_WORKERS = $previousWorkerCeiling
+    }
     Check 'the emitted replacement runs and propagates the child exit code (7)' ($runnerProc.ExitCode -eq 7) ([string]$runnerProc.ExitCode)
     $probeResult = Join-Path $hcProbe.LocalAppData 'HookMaker\state'
     $probeResultFile = @(Get-ChildItem -LiteralPath $probeResult -Filter 'TestRunGuard-result-*.json' -ErrorAction SilentlyContinue)
@@ -217,6 +230,7 @@ try {
     Check 'the result document records the failure, not a pass' ($probeDoc.overall -eq 'failed' -and $probeDoc.exitCode -eq 7) $probeDoc.overall
     Check 'the metacharacter argument survived as ONE argument, unevaluated' ($probeDoc.lastProgress -match 'tag=a b\|c&d') $probeDoc.lastProgress
     Check 'the result document records no argument VALUES' (($probeDoc | ConvertTo-Json -Depth 6) -notmatch '-Tag') ([string]$probeDoc.argumentCount)
+    Check 'HOOKMAKER_MAX_TEST_WORKERS clamps the reported worker budget' ($probeDoc.workerBudget -eq 1) ([string]$probeDoc.workerBudget)
 
     # ... and the very next PostToolUse consumes exactly that document.
     $r = Fire -HookPath $hcProbe.Script -Cwd $Proj -EventName 'PostToolUse' -Command $probeCommand -LocalAppData $hcProbe.LocalAppData
