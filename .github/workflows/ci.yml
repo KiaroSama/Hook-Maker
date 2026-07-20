@@ -8,8 +8,19 @@ on:
 permissions:
   contents: read
 
+# A newer push supersedes an in-flight run for the same ref instead of paying
+# for both.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
-  test:
+  # Fast static gate, kept on windows-latest ON PURPOSE. Linux minutes are 10x
+  # cheaper and this job only parses text, but the scripts use Windows-style
+  # paths throughout (e.g. Join-Path ... 'hooks\_hooklib.ps1'), which pwsh on
+  # Linux resolves as literal single-segment filenames. Moving it would need a
+  # verified cross-platform path pass first.
+  static:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v7
@@ -37,165 +48,65 @@ jobs:
           }
           if ($failed) { exit 1 }
 
-      # The engine must work under both hosts: Claude Code's installed command
-      # uses powershell.exe (5.1), Codex's uses pwsh (7).
+  # The engine must work under both hosts: Claude Code's installed command uses
+  # powershell.exe (5.1), Codex's uses pwsh (7).
+  engine:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
       - name: Engine smoke test (PowerShell 7)
         shell: pwsh
         run: .\scripts\Test-Engine.ps1
-
       - name: Engine smoke test (Windows PowerShell 5.1)
         shell: powershell
         run: .\scripts\Test-Engine.ps1
 
-      # Offline GitHub-hook suites: mocks git state and gh via a PATH shim, so
-      # they need no network or account. Each internally exercises Windows
-      # PowerShell 5.1 too, so one pwsh run per suite covers both hosts.
-      # Split from one combined suite into three (one per hook, each with its
-      # own harness copy) since the hooks share no production code.
-      - name: Dependabot-Check test suite
+  # The suites run as PARALLEL BUCKETS rather than one long serial job.
+  #
+  # Why buckets and not one job per suite: every job pays its own runner start
+  # and checkout, and Windows minutes bill at 10x, so 22 jobs would cost far
+  # more than 22 suites are worth. Five balanced buckets keep almost all of the
+  # wall-clock win at a fraction of that overhead.
+  #
+  # Each bucket leads with one of the slow, process-spawning suites so the
+  # buckets finish at roughly the same time. Suites that create throwaway
+  # fixtures under the real hooks\ directory are safe here: each bucket is its
+  # own runner with its own checkout, and within a bucket the suites run one
+  # after another. (Locally that isolation does not exist - see
+  # scripts\Run-Tests.ps1, which splits exclusive from isolated suites.)
+  suites:
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: registry
+            suites: Test-InstallRegistry,Test-InstallRegistrySchema,Test-LegacyDiscovery
+          - name: uninstall
+            suites: Test-UninstallHook,Test-NativePrePushInstall,Test-RulesCheck
+          - name: wizard
+            suites: Test-Wizard,Test-ContextHooks,Test-GraphUpdateCheck
+          - name: secrets
+            suites: Test-SecretsCheck,Test-IgnoreRulesCheck,Test-GitSyncCheck,Test-AiMemoryCheck
+          - name: hooks
+            suites: Test-DocsFreshnessCheck,Test-CloudflareDeploy,Test-DependencyVersionCheck,Test-TestTempCleanup,Test-DependabotCheck,Test-CiStatusCheck,Test-GithubBaselineCheck,Test-AiMemoryLoad
+    name: suites (${{ matrix.name }})
+    steps:
+      - uses: actions/checkout@v7
+      - name: Run ${{ matrix.name }} suites
         shell: pwsh
-        run: .\scripts\Test-DependabotCheck.ps1
-
-      - name: Ci-Status-Check test suite
-        shell: pwsh
-        run: .\scripts\Test-CiStatusCheck.ps1
-
-      - name: Github-Baseline-Check test suite
-        shell: pwsh
-        run: .\scripts\Test-GithubBaselineCheck.ps1
-
-      # RulesCheck hook + per-client (-ClaudeOnly/-CodexOnly) install targeting.
-      # Offline: fake home/state dirs via env vars, no network.
-      - name: RulesCheck and client-targeting test suite
-        shell: pwsh
-        run: .\scripts\Test-RulesCheck.ps1
-
-      # Drives the interactive wizard end-to-end via stdin (menu structure, hook
-      # listing, client splat, real Install-Hook writes) against temp projects.
-      - name: Wizard functional test suite
-        shell: pwsh
-        run: .\scripts\Test-Wizard.ps1
-
-      # Secrets-Check hook: auto-append/placeholder/ignore/tracked/staged/leak/
-      # unused checks against real throwaway git repos. Offline, no network.
-      - name: Secrets-Check test suite
-        shell: pwsh
-        run: .\scripts\Test-SecretsCheck.ps1
-
-      # Ai-Memory-Load (injects .ai/memory.md + lists the rest of .ai/ pre-task)
-      # + Graph-Read-Check (suggests graphify queries when a graph exists).
-      # Offline, no network.
-      - name: Ai-Memory-Load and Graph-Read-Check test suite
-        shell: pwsh
-        run: .\scripts\Test-AiMemoryLoad.ps1
-
-      # Ai-Memory-Check post-task staleness trigger, real throwaway git repos.
-      # Offline, no network.
-      - name: Ai-Memory-Check test suite
-        shell: pwsh
-        run: .\scripts\Test-AiMemoryCheck.ps1
-
-      # Mcp-Usage-Check + Skills-Check pre-task reminders. Offline, no network.
-      - name: Context hooks test suite (Mcp-Usage-Check, Skills-Check)
-        shell: pwsh
-        run: .\scripts\Test-ContextHooks.ps1
-
-      - name: Ignore-Rules-Check test suite
-        shell: pwsh
-        run: .\scripts\Test-IgnoreRulesCheck.ps1
-
-      # Git-Sync-Check hook: mandatory Stop instruction, fingerprint+session
-      # gating, SessionStart/UserPromptSubmit context. Real throwaway git
-      # repos + bare remotes, no network.
-      - name: Git-Sync-Check test suite
-        shell: pwsh
-        run: .\scripts\Test-GitSyncCheck.ps1
-
-      # Dependency-Version-Check hook: npm/pip outdated classification, GitHub
-      # Actions/runtime-pin/Docker static checks, cache/fingerprint gating.
-      # npm/pip are PATH-shimmed (same convention as the gh shim) - no live
-      # registry calls in CI.
-      - name: Dependency-Version-Check test suite
-        shell: pwsh
-        run: .\scripts\Test-DependencyVersionCheck.ps1
-
-      # Cloudflare-Deploy hook: deployment-worthiness/environment/pre-deploy
-      # review/post-deploy verification/failure-handling wording, cooldown,
-      # and the release-readiness gate (clean/pushed/CI-green/cleanup-state).
-      # Offline, no network (real bare-remote pushes + a PATH-shimmed gh),
-      # never actually deploys.
-      - name: Cloudflare-Deploy test suite
-        shell: pwsh
-        run: .\scripts\Test-CloudflareDeploy.ps1
-
-      # Graph-Update-Check hook: structural-impact criteria (not file count),
-      # staleness detection, cooldown. Offline, no network.
-      - name: Graph-Update-Check test suite
-        shell: pwsh
-        run: .\scripts\Test-GraphUpdateCheck.ps1
-
-      # Test-Temp-Cleanup hook: safe-candidate deletion + rescan verification,
-      # tracked/staged/reparse-point/hard-protected-root preservation,
-      # review-only-by-default, limits, locked-candidate no-loop guarantee.
-      # Offline, no network; never runs git clean/reset.
-      - name: Test-Temp-Cleanup test suite
-        shell: pwsh
-        run: .\scripts\Test-TestTempCleanup.ps1
-
-      # Docs-Freshness-Check hook: SessionStart baseline, Stop task-delta
-      # detection (comment/blank-only changes excluded), hard exclusions,
-      # ranked tracked-doc candidates, and the fingerprint-bound Updated/
-      # NoUpdate acknowledgement flow. Offline, no network.
-      - name: Docs-Freshness-Check test suite
-        shell: pwsh
-        run: .\scripts\Test-DocsFreshnessCheck.ps1
-
-      # Install registry + "Update previously installed hooks": single/multi/
-      # config-based/generated/sync-engine installs tracked without
-      # duplication, byte-for-byte refresh preserving events/client/target/
-      # scope/profile, never-installed hooks never added, missing source/
-      # target reported and skipped, idempotent second run, no secret/.env/
-      # prompt content ever stored. Also covers installed-state drift with no
-      # source change (deleted/modified runtime, stale shared _hooklib,
-      # removed/moved/duplicated registration, one wiped client), the managed
-      # manifest (.env + copied helpers + added/removed files, runtime-
-      # generated files ignored), per-client Claude/Codex semantics preserved
-      # independently, v1 -> v2 record migration, native pre-push repair of a
-      # deliberately corrupted companion with the user's previous hook left
-      # byte-for-byte intact, and corrupt-registry quarantine + locked
-      # concurrent writes. Offline, no network; isolates the registry away
-      # from this checkout's own state\.
-      - name: Install registry / update-installed-hooks test suite
-        shell: pwsh
-        run: .\scripts\Test-InstallRegistry.ps1
-
-      - name: Registry schema / isolation / path-safety test suite
-        shell: pwsh
-        run: .\scripts\Test-InstallRegistrySchema.ps1
-
-      - name: Native Git pre-push install test suite
-        shell: pwsh
-        run: .\scripts\Test-NativePrePushInstall.ps1
-
-      # Find-ManagedCommands (legacy/untracked hook discovery for "Update
-      # previously installed hooks"): a registration in only one of
-      # command/commandWindows/command_windows is still found, the same
-      # logical registration split across two fields yields one candidate,
-      # an ambiguous proven-shape path outside any known tool root is never
-      # imported, and an unrelated same-basename command is never confused
-      # with a real one. Offline, no network.
-      - name: Legacy hook discovery test suite
-        shell: pwsh
-        run: .\scripts\Test-LegacyDiscovery.ps1
-
-      # Uninstall-Hook.ps1 (hook-list item 22): exact-ownership removal of one
-      # install record - scope isolation across projects/global, foreign
-      # same-basename handlers preserved, unsafe runtime paths refused,
-      # idempotent already-removed handling, byte-for-byte no-op on -WhatIf,
-      # native pre-push wrapper regenerated or the user's previous hook
-      # restored byte-for-byte, tampered wrapper stopped as manual-repair, and
-      # failure injection proving no false success and no silent registry
-      # deletion. Offline, no network; never touches this checkout's own state.
-      - name: Uninstall-Hook test suite
-        shell: pwsh
-        run: .\scripts\Test-UninstallHook.ps1
+        run: |
+          $ErrorActionPreference = 'Continue'
+          $failed = @()
+          foreach ($suite in ('${{ matrix.suites }}'.Split(',') | ForEach-Object { $_.Trim() } | Where-Object { $_ })) {
+            $path = Join-Path 'scripts' ($suite + '.ps1')
+            if (-not (Test-Path -LiteralPath $path)) { Write-Error "Suite not found: $path"; $failed += $suite; continue }
+            Write-Host "=== $suite ===" -ForegroundColor Cyan
+            & $path
+            if ($LASTEXITCODE -ne 0) { $failed += ($suite + ' (' + $LASTEXITCODE + ' failed assertion(s))') }
+          }
+          if ($failed.Count -gt 0) {
+            Write-Error ("FAILED: " + ($failed -join ', '))
+            exit 1
+          }
+          Write-Host 'All suites in this bucket passed.' -ForegroundColor Green
