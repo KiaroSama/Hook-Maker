@@ -143,6 +143,21 @@ function Get-ComponentReason {
     if ($found.Count -eq 0) { return '' }
     return [string]$found[0].reason
 }
+# An internally inconsistent record can legitimately be refused at EITHER layer:
+# the record-wide validator (Test-InstallRecordValid, shared with menu 21) or the
+# uninstaller's own per-client identity gate. Which one fires first is an
+# implementation detail and has changed as the two gates were brought to parity -
+# what must hold is that SOME component names a precise reason. Asserting on the
+# outcome instead of on one component keeps these tests pinned to the guarantee
+# rather than to the layer that currently happens to enforce it.
+function Get-AnyRefusalReason {
+    param($ResultDoc)
+    $found = @($ResultDoc.components | Where-Object {
+            @('manualRepair', 'failed') -contains [string]$_.status -and -not [string]::IsNullOrWhiteSpace([string]$_.reason)
+        })
+    if ($found.Count -eq 0) { return '' }
+    return [string]$found[0].reason
+}
 
 # Spawns Install-Hook.ps1 as a real process. Only needed for a GLOBAL-scope
 # install: Install-Hook.ps1 reads $HOME once at process start, so a fake
@@ -299,7 +314,7 @@ try {
 
         $rUnsafe = Invoke-UninstallProcess -RecordId $recUnsafe.id
         Check 'an unsafe runtime path does not crash the uninstaller' ($rUnsafe.Exit -eq 0) $rUnsafe.Err
-        Check 'an unsafe runtime path is reported as manualRepair for claude' ((Get-ComponentStatus $rUnsafe.Result 'claude') -eq 'manualRepair')
+        Check 'an unsafe runtime path is refused with a precise reason, at whichever gate catches it' (-not [string]::IsNullOrWhiteSpace((Get-AnyRefusalReason $rUnsafe.Result))) ($rUnsafe.Result | ConvertTo-Json -Depth 5)
         Check 'the decoy directory outside the boundary is never touched' (Test-BytesEqual (Get-BytesOrEmpty (Join-Path $decoyDir 'marker.txt')) $decoyBytesBefore)
         Check 'the real (correctly-pathed) runtime script is left alone too' (Test-BytesEqual (Get-BytesOrEmpty ([string]$recUnsafe.clients.claude.runtimeScript)) $realRuntimeScriptBefore)
         Check 'the record is retained, not deleted, when a path is refused' (@(@(Get-Registry).installs | Where-Object { $_.id -eq $recUnsafe.id }).Count -eq 1)
@@ -733,7 +748,7 @@ try {
         $r = Invoke-UninstallProcess -RecordId $recWrongScript.id
         Check 'wrong runtimeScript does not crash the uninstaller' ($r.Exit -eq 0) $r.Err
         Check 'wrong runtimeScript is reported manualRepair overall' ([string]$r.Result.overall -eq 'manualRepair') ($r.Result | ConvertTo-Json -Depth 5)
-        Check 'wrong runtimeScript names a precise, non-empty reason' (-not [string]::IsNullOrWhiteSpace((Get-ComponentReason $r.Result 'claude'))) ($r.Result | ConvertTo-Json -Depth 5)
+        Check 'wrong runtimeScript names a precise, non-empty reason' (-not [string]::IsNullOrWhiteSpace((Get-AnyRefusalReason $r.Result))) ($r.Result | ConvertTo-Json -Depth 5)
         Check 'the original settings file is untouched' (Test-BytesEqual (Get-BytesOrEmpty $origSettingsPath) $settingsBefore)
         Check 'the original runtime script is untouched' (Test-BytesEqual (Get-BytesOrEmpty $origRuntimeScript) $runtimeBefore)
         Check 'the record is retained' (@(Get-RecordsFor 'ZZZ-Uninst-Wrongscript').Count -eq 1)
@@ -1055,6 +1070,231 @@ try {
         }
     }
     finally { Remove-FixtureHook 'ZZZ-Uninst-Nonstring' }
+
+    # =========================================================================
+    # Native Git ownership is PROVEN from the record's own persisted
+    # expectedStages and is never rebuilt from friendlyName. Every negative
+    # case below leaves the wrapper and every on-disk stage byte-identical; the
+    # positive case proves the rule does not over-reject a genuine install.
+    # =========================================================================
+    function New-NativeRepo {
+        param([string]$Name)
+        $repo = Join-Path $Work $Name
+        New-Item -ItemType Directory -Path $repo -Force | Out-Null
+        Push-Location $repo
+        try { & git init --quiet -b main 2>$null | Out-Null } finally { Pop-Location }
+        New-Item -ItemType Directory -Path (Join-Path $repo '.git\hooks') -Force | Out-Null
+        return $repo
+    }
+    # "Nothing was touched" is proven by BYTES, not by Test-Path: a missing file
+    # snapshots as empty and must still be missing afterwards.
+    function Get-PathSnapshot {
+        param([string[]]$Paths)
+        $snapshot = @{}
+        foreach ($path in $Paths) { $snapshot[$path] = Get-BytesOrEmpty $path }
+        return $snapshot
+    }
+    # A function returning an EMPTY [byte[]] has it unrolled to $null by the
+    # pipeline, so an absent file snapshots as $null - normalize both sides
+    # rather than feeding SequenceEqual a null.
+    function Test-SnapshotUnchanged {
+        param([hashtable]$Snapshot)
+        foreach ($path in @($Snapshot.Keys)) {
+            $before = $Snapshot[$path]; if ($null -eq $before) { $before = [byte[]]::new(0) }
+            $after = Get-BytesOrEmpty $path; if ($null -eq $after) { $after = [byte[]]::new(0) }
+            if (-not (Test-BytesEqual $before $after)) { return $false }
+        }
+        return $true
+    }
+    function Get-PersistedStages {
+        param($Native)
+        return @(@($Native.expectedStages) | ForEach-Object { [string]$_ })
+    }
+
+    Write-Host '--- native ownership: a mutated friendlyName can never rebuild a delete target ---' -ForegroundColor Cyan
+    $ownRepoA1 = New-NativeRepo 'ZZZ-Uninst-Nativeowna1'
+    & $InstallScript -CustomHook $ignoreHook -Events @('Stop') -TargetProject $ownRepoA1 -ClaudeOnly *> $null
+    $recOwnA1 = Get-RecordForScope 'Ignore-Rules-Check' $ownRepoA1
+    Check 'A1 setup: the native chain is tracked as managed' ($null -ne $recOwnA1.nativeGit -and $recOwnA1.nativeGit.managed -eq $true)
+    $stagesA1 = Get-PersistedStages -Native $recOwnA1.nativeGit
+    $stageDirsA1 = @($stagesA1 | ForEach-Object { Split-Path -Parent $_ })
+    $snapA1 = Get-PathSnapshot -Paths (@([string]$recOwnA1.nativeGit.wrapperPath) + $stagesA1)
+
+    # Rename the record and keep its Claude subrecord internally consistent, so
+    # the record-wide validator still passes and the nativeGit ownership gate is
+    # genuinely the thing under test. The persisted expectedStages still name
+    # the ORIGINAL stages, so no name-derived stage can be proven owned.
+    $renamedA1 = 'ZZZ-Uninst-Nativerenamed'
+    $renamedScriptA1 = Join-Path ([string]$recOwnA1.clients.claude.runtimeRoot) ($renamedA1 + '\' + $renamedA1 + '.ps1')
+    $recOwnA1.friendlyName = $renamedA1
+    $recOwnA1.clients.claude.runtimeScript = $renamedScriptA1
+    $recOwnA1.clients.claude.command = 'powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "' + $renamedScriptA1 + '"'
+    Save-MutatedRecord -Record $recOwnA1
+
+    $rOwnA1 = Invoke-UninstallProcess -RecordId $recOwnA1.id
+    Check 'a name-derived stage absent from expectedStages does not crash the uninstaller' ($rOwnA1.Exit -eq 0) $rOwnA1.Err
+    Check 'a name-derived stage absent from expectedStages is manualRepair for nativeGit' ((Get-ComponentStatus $rOwnA1.Result 'nativeGit') -eq 'manualRepair') ($rOwnA1.Result | ConvertTo-Json -Depth 5)
+    Check 'the unprovable-ownership refusal names a precise, non-empty reason' (-not [string]::IsNullOrWhiteSpace((Get-AnyRefusalReason $rOwnA1.Result))) ($rOwnA1.Result | ConvertTo-Json -Depth 5)
+    Check 'the wrapper and every persisted stage file are byte-identical afterwards' (Test-SnapshotUnchanged $snapA1)
+    Check 'every real on-disk stage directory still exists' (@($stageDirsA1 | Where-Object { Test-Path -LiteralPath $_ -PathType Container }).Count -eq $stageDirsA1.Count)
+    Check 'the record is retained after an unprovable-ownership refusal' (@(@(Get-Registry).installs | Where-Object { $_.id -eq $recOwnA1.id }).Count -eq 1)
+
+    # =========================================================================
+    Write-Host '--- native ownership: a managed record with no expectedStages can prove nothing and mutates nothing ---' -ForegroundColor Cyan
+    $ownRepoA2 = New-NativeRepo 'ZZZ-Uninst-Nativeowna2'
+    & $InstallScript -CustomHook $ignoreHook -Events @('Stop') -TargetProject $ownRepoA2 -ClaudeOnly *> $null
+    $recOwnA2 = Get-RecordForScope 'Ignore-Rules-Check' $ownRepoA2
+    $stagesA2 = Get-PersistedStages -Native $recOwnA2.nativeGit
+    $stageDirsA2 = @($stagesA2 | ForEach-Object { Split-Path -Parent $_ })
+    $snapA2 = Get-PathSnapshot -Paths (@([string]$recOwnA2.nativeGit.wrapperPath, [string]$recOwnA2.clients.claude.runtimeScript) + $stagesA2)
+    $recOwnA2.nativeGit.expectedStages = @()
+    Save-MutatedRecord -Record $recOwnA2
+
+    $rOwnA2 = Invoke-UninstallProcess -RecordId $recOwnA2.id
+    Check 'an emptied expectedStages does not crash the uninstaller' ($rOwnA2.Exit -eq 0) $rOwnA2.Err
+    Check 'an emptied expectedStages is manualRepair for nativeGit' ((Get-ComponentStatus $rOwnA2.Result 'nativeGit') -eq 'manualRepair') ($rOwnA2.Result | ConvertTo-Json -Depth 5)
+    Check 'an emptied expectedStages names a precise, non-empty reason' (-not [string]::IsNullOrWhiteSpace((Get-AnyRefusalReason $rOwnA2.Result))) ($rOwnA2.Result | ConvertTo-Json -Depth 5)
+    Check 'an emptied expectedStages leaves the wrapper, stages and Claude runtime byte-identical' (Test-SnapshotUnchanged $snapA2)
+    Check 'an emptied expectedStages leaves every real on-disk stage directory in place' (@($stageDirsA2 | Where-Object { Test-Path -LiteralPath $_ -PathType Container }).Count -eq $stageDirsA2.Count)
+    Check 'an emptied expectedStages retains the record' (@(@(Get-Registry).installs | Where-Object { $_.id -eq $recOwnA2.id }).Count -eq 1)
+
+    # =========================================================================
+    Write-Host '--- native ownership: wrapper ALREADY gone + unprovable stages is manualRepair, never a silent alreadyRemoved ---' -ForegroundColor Cyan
+    $ownRepoA3 = New-NativeRepo 'ZZZ-Uninst-Nativeowna3'
+    & $InstallScript -CustomHook $ignoreHook -Events @('Stop') -TargetProject $ownRepoA3 -ClaudeOnly *> $null
+    $recOwnA3 = Get-RecordForScope 'Ignore-Rules-Check' $ownRepoA3
+    $stagesA3 = Get-PersistedStages -Native $recOwnA3.nativeGit
+    $stageDirsA3 = @($stagesA3 | ForEach-Object { Split-Path -Parent $_ })
+    $wrapperA3 = [string]$recOwnA3.nativeGit.wrapperPath
+    # Wrapper deleted FIRST, then snapshotted (so it snapshots as absent and
+    # must still be absent), then ownership made unprovable. Before the
+    # ownership gate existed, this combination could reach the "wrapper already
+    # gone -> ok / alreadyRemoved" path and silently drop the record.
+    Remove-Item -LiteralPath $wrapperA3 -Force
+    $snapA3 = Get-PathSnapshot -Paths (@($wrapperA3) + $stagesA3)
+    $recOwnA3.nativeGit.expectedStages = @()
+    Save-MutatedRecord -Record $recOwnA3
+
+    $rOwnA3 = Invoke-UninstallProcess -RecordId $recOwnA3.id
+    Check 'a missing wrapper with unprovable ownership does not crash the uninstaller' ($rOwnA3.Exit -eq 0) $rOwnA3.Err
+    Check 'a missing wrapper with unprovable ownership is NEVER reported ok for nativeGit' ((Get-ComponentStatus $rOwnA3.Result 'nativeGit') -ne 'ok') ($rOwnA3.Result | ConvertTo-Json -Depth 5)
+    Check 'a missing wrapper with unprovable ownership is manualRepair for nativeGit' ((Get-ComponentStatus $rOwnA3.Result 'nativeGit') -eq 'manualRepair') ($rOwnA3.Result | ConvertTo-Json -Depth 5)
+    Check 'a missing wrapper with unprovable ownership names a precise, non-empty reason' (-not [string]::IsNullOrWhiteSpace((Get-AnyRefusalReason $rOwnA3.Result))) ($rOwnA3.Result | ConvertTo-Json -Depth 5)
+    Check 'a missing wrapper with unprovable ownership mutates nothing (wrapper stays absent, stages byte-identical)' (Test-SnapshotUnchanged $snapA3)
+    Check 'a missing wrapper with unprovable ownership leaves every stage directory in place' (@($stageDirsA3 | Where-Object { Test-Path -LiteralPath $_ -PathType Container }).Count -eq $stageDirsA3.Count)
+    Check 'a missing wrapper with unprovable ownership retains the record (never a silent idempotent success)' (@(@(Get-Registry).installs | Where-Object { $_.id -eq $recOwnA3.id }).Count -eq 1)
+
+    # =========================================================================
+    Write-Host '--- CRITICAL over-rejection guard: a genuine native pre-push install still uninstalls cleanly ---' -ForegroundColor Cyan
+    $ownRepoA4 = New-NativeRepo 'ZZZ-Uninst-Nativeowna4'
+    & $InstallScript -CustomHook $ignoreHook -Events @('Stop') -TargetProject $ownRepoA4 -ClaudeOnly *> $null
+    $recOwnA4 = Get-RecordForScope 'Ignore-Rules-Check' $ownRepoA4
+    Check 'A4 setup: the native chain is tracked as managed' ($null -ne $recOwnA4.nativeGit -and $recOwnA4.nativeGit.managed -eq $true)
+    $stageDirsA4 = @((Get-PersistedStages -Native $recOwnA4.nativeGit) | ForEach-Object { Split-Path -Parent $_ })
+    Check 'A4 setup: the managed stage directories really exist before uninstall' (@($stageDirsA4 | Where-Object { Test-Path -LiteralPath $_ -PathType Container }).Count -eq $stageDirsA4.Count -and $stageDirsA4.Count -gt 0)
+
+    $rOwnA4 = Invoke-UninstallProcess -RecordId $recOwnA4.id
+    Check 'a genuine native install still uninstalls cleanly (the ownership proof does not over-reject)' ([string]$rOwnA4.Result.overall -eq 'ok') ($rOwnA4.Result | ConvertTo-Json -Depth 5)
+    Check 'a genuine native install reports nativeGit ok' ((Get-ComponentStatus $rOwnA4.Result 'nativeGit') -eq 'ok')
+    Check 'a genuine native install really removes every managed stage directory' (@($stageDirsA4 | Where-Object { Test-Path -LiteralPath $_ }).Count -eq 0)
+    Check 'a genuine native install removes its record' (@(Get-RecordsFor 'Ignore-Rules-Check' | Where-Object { $_.targetProjectRoot -eq $ownRepoA4 }).Count -eq 0)
+
+    # =========================================================================
+    # EVERY command field on a handler must agree before it can be removed.
+    # A genuine Codex install writes the SAME runtime script into both `command`
+    # (pwsh form) and `commandWindows` (powershell.exe form), so a handler where
+    # only some fields point at this record's runtime is 'ambiguous' - it blocks
+    # the whole client and survives byte-identical.
+    # =========================================================================
+    Write-Host '--- all-fields ownership: a Codex handler pointing at a DIFFERENT Hook Maker runtime in commandWindows is ambiguous ---' -ForegroundColor Cyan
+    $fxDivergeA = New-FixtureHook 'ZZZ-Uninst-Divergea'
+    $fxDivergeB = New-FixtureHook 'ZZZ-Uninst-Divergeb'
+    try {
+        $projDiverge = New-Proj 'CodexDivergeProj'
+        & $InstallScript -CustomHook $fxDivergeA -Events @('Stop') -TargetProject $projDiverge -CodexOnly *> $null
+        & $InstallScript -CustomHook $fxDivergeB -Events @('Stop') -TargetProject $projDiverge -CodexOnly *> $null
+        $recDivA = Get-RecordForScope 'ZZZ-Uninst-Divergea' $projDiverge
+        $recDivB = Get-RecordForScope 'ZZZ-Uninst-Divergeb' $projDiverge
+        $codexSettingsDiv = [string]$recDivA.clients.codex.settingsPath
+        $divRuntimeBefore = Get-BytesOrEmpty ([string]$recDivA.clients.codex.runtimeScript)
+
+        # Point ONLY commandWindows at hook B's real Hook Maker runtime script,
+        # leaving `command` still pointing at hook A's - a divergence a genuine
+        # install can never produce, since both forms are built from one script.
+        $jsonDiv = Get-Content -LiteralPath $codexSettingsDiv -Raw | ConvertFrom-Json
+        foreach ($group in @($jsonDiv.hooks.Stop)) {
+            foreach ($handler in @($group.hooks)) {
+                if ((Get-HandlerFieldValue $handler 'command') -like '*ZZZ-Uninst-Divergea*') {
+                    $handler.commandWindows = 'powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "' + [string]$recDivB.clients.codex.runtimeScript + '"'
+                }
+            }
+        }
+        [System.IO.File]::WriteAllText($codexSettingsDiv, ($jsonDiv | ConvertTo-Json -Depth 50), (New-Object System.Text.UTF8Encoding $false))
+        $divBytesBefore = Get-BytesOrEmpty $codexSettingsDiv
+
+        $rDiv = Invoke-UninstallProcess -RecordId $recDivA.id
+        Check 'a partially-matching Codex handler does not crash the uninstaller' ($rDiv.Exit -eq 0) $rDiv.Err
+        Check 'a Codex handler matching on command but not commandWindows is manualRepair for codex' ((Get-ComponentStatus $rDiv.Result 'codex') -eq 'manualRepair') ($rDiv.Result | ConvertTo-Json -Depth 5)
+        Check 'the partially-matching Codex handler names a precise, non-empty reason' (-not [string]::IsNullOrWhiteSpace((Get-ComponentReason $rDiv.Result 'codex'))) ($rDiv.Result | ConvertTo-Json -Depth 5)
+        Check 'the Codex settings file is byte-for-byte unchanged' (Test-BytesEqual (Get-BytesOrEmpty $codexSettingsDiv) $divBytesBefore)
+        $divHandlersAfter = @(@((Get-Content -LiteralPath $codexSettingsDiv -Raw | ConvertFrom-Json).hooks.Stop) | ForEach-Object { $_.hooks })
+        Check 'the partially-matching handler still exists (never removed)' (@($divHandlersAfter | Where-Object { (Get-HandlerFieldValue $_ 'command') -like '*ZZZ-Uninst-Divergea*' }).Count -eq 1)
+        Check 'hook A''s Codex runtime copy is untouched' (Test-BytesEqual (Get-BytesOrEmpty ([string]$recDivA.clients.codex.runtimeScript)) $divRuntimeBefore)
+        Check 'hook A''s record is retained' (@(Get-RecordsFor 'ZZZ-Uninst-Divergea').Count -eq 1)
+    }
+    finally { Remove-FixtureHook 'ZZZ-Uninst-Divergea'; Remove-FixtureHook 'ZZZ-Uninst-Divergeb' }
+
+    # =========================================================================
+    Write-Host '--- all-fields ownership: a Codex handler whose commandWindows is not Hook Maker''s at all is ambiguous ---' -ForegroundColor Cyan
+    $fxForeignField = New-FixtureHook 'ZZZ-Uninst-Foreignfield'
+    try {
+        $projForeignField = New-Proj 'CodexForeignFieldProj'
+        & $InstallScript -CustomHook $fxForeignField -Events @('Stop') -TargetProject $projForeignField -CodexOnly *> $null
+        $recForeignField = Get-RecordForScope 'ZZZ-Uninst-Foreignfield' $projForeignField
+        $codexSettingsFF = [string]$recForeignField.clients.codex.settingsPath
+        $ffRuntimeBefore = Get-BytesOrEmpty ([string]$recForeignField.clients.codex.runtimeScript)
+
+        $jsonFF = Get-Content -LiteralPath $codexSettingsFF -Raw | ConvertFrom-Json
+        foreach ($group in @($jsonFF.hooks.Stop)) {
+            foreach ($handler in @($group.hooks)) {
+                if ((Get-HandlerFieldValue $handler 'command') -like '*ZZZ-Uninst-Foreignfield*') {
+                    $handler.commandWindows = 'node C:\other\thing.js'
+                }
+            }
+        }
+        [System.IO.File]::WriteAllText($codexSettingsFF, ($jsonFF | ConvertTo-Json -Depth 50), (New-Object System.Text.UTF8Encoding $false))
+        $ffBytesBefore = Get-BytesOrEmpty $codexSettingsFF
+
+        $rFF = Invoke-UninstallProcess -RecordId $recForeignField.id
+        Check 'a non-Hook-Maker commandWindows does not crash the uninstaller' ($rFF.Exit -eq 0) $rFF.Err
+        Check 'a non-Hook-Maker commandWindows is manualRepair for codex (never a quiet removal)' ((Get-ComponentStatus $rFF.Result 'codex') -eq 'manualRepair') ($rFF.Result | ConvertTo-Json -Depth 5)
+        Check 'the Codex settings file is byte-for-byte unchanged' (Test-BytesEqual (Get-BytesOrEmpty $codexSettingsFF) $ffBytesBefore)
+        $ffHandlersAfter = @(@((Get-Content -LiteralPath $codexSettingsFF -Raw | ConvertFrom-Json).hooks.Stop) | ForEach-Object { $_.hooks })
+        Check 'the handler carrying a foreign commandWindows still exists' (@($ffHandlersAfter | Where-Object { (Get-HandlerFieldValue $_ 'commandWindows') -eq 'node C:\other\thing.js' }).Count -eq 1)
+        Check 'the Codex runtime copy is untouched' (Test-BytesEqual (Get-BytesOrEmpty ([string]$recForeignField.clients.codex.runtimeScript)) $ffRuntimeBefore)
+        Check 'the record is retained' (@(Get-RecordsFor 'ZZZ-Uninst-Foreignfield').Count -eq 1)
+    }
+    finally { Remove-FixtureHook 'ZZZ-Uninst-Foreignfield' }
+
+    # =========================================================================
+    Write-Host '--- CRITICAL over-rejection guard: an unmutated Codex install still uninstalls (all-fields rule is not too strict) ---' -ForegroundColor Cyan
+    $fxCodexPositive = New-FixtureHook 'ZZZ-Uninst-Codexpositive'
+    try {
+        $projCodexPositive = New-Proj 'CodexPositiveProj'
+        & $InstallScript -CustomHook $fxCodexPositive -Events @('Stop') -TargetProject $projCodexPositive -CodexOnly *> $null
+        $recCodexPositive = Get-RecordForScope 'ZZZ-Uninst-Codexpositive' $projCodexPositive
+        $codexSettingsCP = [string]$recCodexPositive.clients.codex.settingsPath
+        $cpHandlersBefore = @(@((Get-Content -LiteralPath $codexSettingsCP -Raw | ConvertFrom-Json).hooks.Stop) | ForEach-Object { $_.hooks })
+        Check 'positive control: a genuine Codex install writes both command and commandWindows for the same runtime script' (@($cpHandlersBefore | Where-Object { (Get-HandlerFieldValue $_ 'command') -like '*ZZZ-Uninst-Codexpositive*' -and (Get-HandlerFieldValue $_ 'commandWindows') -like '*ZZZ-Uninst-Codexpositive*' }).Count -eq 1)
+
+        $rCP = Invoke-UninstallProcess -RecordId $recCodexPositive.id
+        Check 'positive control: an unmutated Codex install exits 0' ($rCP.Exit -eq 0) $rCP.Err
+        Check 'positive control: an unmutated Codex install reports codex ok, not manualRepair' ((Get-ComponentStatus $rCP.Result 'codex') -eq 'ok') ($rCP.Result | ConvertTo-Json -Depth 5)
+        $cpHandlersAfter = @(@((Get-Content -LiteralPath $codexSettingsCP -Raw | ConvertFrom-Json).hooks.Stop) | ForEach-Object { $_.hooks })
+        Check 'positive control: the Codex handler IS removed' (@($cpHandlersAfter | Where-Object { (Get-HandlerFieldValue $_ 'command') -like '*ZZZ-Uninst-Codexpositive*' }).Count -eq 0)
+        Check 'positive control: the record is fully removed' (@(Get-RecordsFor 'ZZZ-Uninst-Codexpositive').Count -eq 0)
+    }
+    finally { Remove-FixtureHook 'ZZZ-Uninst-Codexpositive' }
 }
 finally {
     $env:HOOKMAKER_STATE_DIR = $SavedHookMakerStateDir

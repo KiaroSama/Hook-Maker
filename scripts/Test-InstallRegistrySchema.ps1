@@ -253,6 +253,29 @@ try {
     $directChildResult = Test-InstallRecordValid -Record $directChildScript
     Check 'runtimeScript sitting directly under runtimeRoot (no managed hook dir) is rejected' ((-not $directChildResult.Ok) -and ($directChildResult.Reason -match 'does not match managed hook directory')) $directChildResult.Reason
 
+    # ---- runtimeScript leaf names must agree with friendlyName -------------
+    # Same gate the uninstaller's Test-ClientRecordIdentity applies: menu 21
+    # must not accept a record menu 22 would refuse as internally inconsistent.
+    $wrongHookDirLeaf = Copy-Record $goodRecord
+    $wrongHookDirLeaf.clients.claude.runtimeScript = (Join-Path $fixtureRuntimeRoot 'Wrong-Dir\F.ps1')
+    $wrongHookDirLeaf.clients.claude.command = 'powershell.exe -File "' + (Join-Path $fixtureRuntimeRoot 'Wrong-Dir\F.ps1') + '"'
+    $wrongHookDirLeafResult = Test-InstallRecordValid -Record $wrongHookDirLeaf
+    Check 'a hook directory leaf that differs from friendlyName is rejected' ((-not $wrongHookDirLeafResult.Ok) -and ($wrongHookDirLeafResult.Reason -match 'managed hook directory')) $wrongHookDirLeafResult.Reason
+
+    $wrongScriptLeaf = Copy-Record $goodRecord
+    $wrongScriptLeaf.clients.claude.runtimeScript = (Join-Path $fixtureRuntimeRoot 'F\Other-Name.ps1')
+    $wrongScriptLeaf.clients.claude.command = 'powershell.exe -File "' + (Join-Path $fixtureRuntimeRoot 'F\Other-Name.ps1') + '"'
+    $wrongScriptLeafResult = Test-InstallRecordValid -Record $wrongScriptLeaf
+    Check 'a script file leaf that differs from friendlyName + .ps1 is rejected' ((-not $wrongScriptLeafResult.Ok) -and ($wrongScriptLeafResult.Reason -match 'managed hook directory')) $wrongScriptLeafResult.Reason
+
+    # Over-rejection guard: the comparison is case-INSENSITIVE on both leaves,
+    # exactly as the uninstaller's is, so a differently-cased-but-genuine
+    # installation must still validate.
+    $casedLeaves = Copy-Record $goodRecord
+    $casedLeaves.friendlyName = 'f'
+    $casedLeavesResult = Test-InstallRecordValid -Record $casedLeaves
+    Check 'leaf names matching friendlyName only case-insensitively still validate' $casedLeavesResult.Ok $casedLeavesResult.Reason
+
     $foreignGlobalSettings = Copy-Record $goodRecord
     $foreignGlobalSettings.clients.claude.settingsPath = 'C:\SomeOther\settings.json'
     $foreignGlobalResult = Test-InstallRecordValid -Record $foreignGlobalSettings
@@ -301,6 +324,23 @@ try {
     }
     $goodProjectResult = Test-InstallRecordValid -Record $goodProjectRecord
     Check 'a fully valid PROJECT-scope record (both clients) validates' $goodProjectResult.Ok $goodProjectResult.Reason
+
+    # The leaf-name gate applies to the codex subrecord too, not just claude.
+    $wrongCodexLeaf = Copy-Record $goodProjectRecord
+    $codexWrongScript = Join-Path $fixtureProjectCodexRuntimeRoot 'F\Wrong.ps1'
+    $wrongCodexLeaf.clients.codex.runtimeScript = $codexWrongScript
+    $wrongCodexLeaf.clients.codex.command = 'pwsh -File "' + $codexWrongScript + '"'
+    $wrongCodexLeaf.clients.codex.commandWindows = 'powershell.exe -File "' + $codexWrongScript + '"'
+    $wrongCodexLeafResult = Test-InstallRecordValid -Record $wrongCodexLeaf
+    Check 'a Codex subrecord with a mismatched script leaf is rejected too' ((-not $wrongCodexLeafResult.Ok) -and ($wrongCodexLeafResult.Reason -match 'managed hook directory')) $wrongCodexLeafResult.Reason
+
+    $wrongCodexDirLeaf = Copy-Record $goodProjectRecord
+    $codexWrongDir = Join-Path $fixtureProjectCodexRuntimeRoot 'Wrong-Dir\F.ps1'
+    $wrongCodexDirLeaf.clients.codex.runtimeScript = $codexWrongDir
+    $wrongCodexDirLeaf.clients.codex.command = 'pwsh -File "' + $codexWrongDir + '"'
+    $wrongCodexDirLeaf.clients.codex.commandWindows = 'powershell.exe -File "' + $codexWrongDir + '"'
+    $wrongCodexDirLeafResult = Test-InstallRecordValid -Record $wrongCodexDirLeaf
+    Check 'a Codex subrecord with a mismatched hook directory leaf is rejected too' ((-not $wrongCodexDirLeafResult.Ok) -and ($wrongCodexDirLeafResult.Reason -match 'managed hook directory')) $wrongCodexDirLeafResult.Reason
 
     $wrongClaudeSettings = Copy-Record $goodProjectRecord
     $wrongClaudeSettings.clients.claude.settingsPath = $fixtureProjectCodexSettingsPath
@@ -488,13 +528,14 @@ try {
     $isoBroken = [pscustomobject]@{ id = 'broken-isolation'; schema = 2; friendlyName = 'Broken-Hook' }
 
     # A second, independently healthy record (a straight clone of the real one
-    # under a different id/friendlyName) alongside THREE differently-malformed
-    # records covering the newly-validated Defect 4 field categories, so the
-    # mixed batch proves both directions at once: every kind of malformed
-    # record is isolated, and BOTH healthy records still evaluate.
+    # under a different id) alongside THREE differently-malformed records
+    # covering the newly-validated Defect 4 field categories, so the mixed
+    # batch proves both directions at once: every kind of malformed record is
+    # isolated, and BOTH healthy records still evaluate. Only the id differs -
+    # renaming friendlyName alone would leave runtimeScript pointing at the
+    # original hook directory, which is now (correctly) an invalid record.
     $isoHealthy2 = $isoReg.installs[0] | ConvertTo-Json -Depth 50 | ConvertFrom-Json
     $isoHealthy2.id = 'iso-healthy-clone'
-    $isoHealthy2.friendlyName = 'Ai-Memory-Check-Clone'
 
     $isoMissingRuntimeRoot = $isoReg.installs[0] | ConvertTo-Json -Depth 50 | ConvertFrom-Json
     $isoMissingRuntimeRoot.id = 'iso-missing-runtimeroot'
