@@ -223,50 +223,47 @@ $script:KnownToolRoots = @(Get-KnownToolRoots -ToolRoot $ToolRoot)
 # ---- shape validation -------------------------------------------------------
 # Refused, never repaired by guessing: a record that cannot state precisely what
 # it refers to cannot be used to authorize a delete.
-function Test-DiscoveredRecordValid {
-    if (@('ClaudeRegistration', 'CodexRegistration', 'NativeGitHook') -notcontains $HookType) {
-        return [pscustomobject]@{ Ok = $false; Reason = ("unknown hookType '" + $HookType + "'") }
-    }
-    if (@('project', 'global') -notcontains $RecordScope) {
-        return [pscustomobject]@{ Ok = $false; Reason = ("unknown scope '" + $RecordScope + "'") }
-    }
+#
+# The schema proof is the SHARED Test-DiscoveredRecordValid from
+# _installregistry.ps1 (reached through _installlib.ps1 above) - the same
+# validator the scanner and the registry merge use. It is deliberately NOT
+# re-implemented here: a local copy would shadow the strong one at the exact
+# moment it matters most, immediately before mutation, and a tampered record
+# missing its event or matcher fingerprint arrays would sail past it.
+#
+# What the shared validator proves is SHAPE: every required field exists, is
+# well typed and holds a legal value. It deliberately accepts states that are
+# valid to PERSIST but insufficient to authorize a REMOVAL, so those - and only
+# those - are gated separately below.
+function Test-DiscoveredRemovalEvidence {
+    # (a) a NativeGitHook record with no nativeGit evidence at all. The shared
+    # validator allows nativeGit to be $null because that is the normal shape of
+    # a registration record; nothing can be proven about a native hook without it.
     if ($HookType -eq 'NativeGitHook') {
         $native = Get-RecordValue $record 'nativeGit'
         if ($null -eq $native) { return [pscustomobject]@{ Ok = $false; Reason = 'native record carries no nativeGit evidence' } }
-        foreach ($field in @('repositoryRoot', 'hooksPath', 'hookName', 'hookPath', 'hookHash')) {
-            if ([string]::IsNullOrWhiteSpace((Get-RecordString $native $field))) {
-                return [pscustomobject]@{ Ok = $false; Reason = ('native evidence is missing ' + $field) }
-            }
-        }
+        # (b) hookHash '' is a legal persisted state - the scanner could not read
+        # the file - but an unhashed hook can never be proven unchanged.
         if ((Get-RecordString $native 'hookHash') -notmatch '^[0-9a-fA-F]{64}$') {
-            return [pscustomobject]@{ Ok = $false; Reason = 'native evidence hookHash is not a SHA-256 hex digest' }
+            return [pscustomobject]@{ Ok = $false; Reason = 'native evidence carries no SHA-256 hookHash to prove the file is unchanged' }
         }
         return [pscustomobject]@{ Ok = $true; Reason = '' }
     }
+    # (c) a registration record with no client evidence, or a client with an
+    # empty fingerprint list (a registration the scanner could not parse). Both
+    # are legal to persist and both authorize nothing.
     $clients = @(Get-RecordArray $record 'clients')
     if ($clients.Count -eq 0) { return [pscustomobject]@{ Ok = $false; Reason = 'registration record carries no client evidence' } }
     foreach ($client in $clients) {
-        $name = Get-RecordString $client 'client'
-        if (@('claude', 'codex') -notcontains $name) {
-            return [pscustomobject]@{ Ok = $false; Reason = ("unknown client '" + $name + "'") }
-        }
-        if ([string]::IsNullOrWhiteSpace((Get-RecordString $client 'settingsPath'))) {
-            return [pscustomobject]@{ Ok = $false; Reason = ($name + ' evidence has no settingsPath') }
-        }
-        $fingerprints = @(Get-RecordStringArray $client 'handlerFingerprints')
-        if ($fingerprints.Count -eq 0) {
-            return [pscustomobject]@{ Ok = $false; Reason = ($name + ' evidence has no handler fingerprints') }
-        }
-        foreach ($fingerprint in $fingerprints) {
-            if ($fingerprint -notmatch '^[0-9a-fA-F]{64}$') {
-                return [pscustomobject]@{ Ok = $false; Reason = ($name + ' evidence carries a malformed handler fingerprint') }
-            }
+        if (@(Get-RecordStringArray $client 'handlerFingerprints').Count -eq 0) {
+            return [pscustomobject]@{ Ok = $false; Reason = ((Get-RecordString $client 'client') + ' evidence has no handler fingerprints') }
         }
     }
     return [pscustomobject]@{ Ok = $true; Reason = '' }
 }
 
-$validity = Test-DiscoveredRecordValid
+$validity = Test-DiscoveredRecordValid -Record $record
+if ($validity.Ok) { $validity = Test-DiscoveredRemovalEvidence }
 if (-not $validity.Ok) {
     Set-ComponentResult -Component 'registry' -Status 'manualRepair' -ReasonCode 'recordInvalid' -Message ([string]$validity.Reason)
     Write-UninstallResult -Overall 'manualRepair'
@@ -840,7 +837,61 @@ if ($stagingError -ne '') {
 }
 
 # ---- phase 3: commit the registration removals ------------------------------
+# Each client's settings file is published SEPARATELY, so a failure on the
+# second client would otherwise leave the first client's registration already
+# gone while the run reported a full rollback. Every file this run intends to
+# write is copied aside BEFORE the first publish, and any file that really was
+# published is restored from its copy if a later client fails. A restore that
+# itself fails is reported by name rather than papered over - no message may
+# claim a restoration that did not happen.
+#
+# Full machine-crash atomicity is still explicitly NOT provided (a power cut
+# between two restores remains an accepted, documented limitation); this is
+# ordered compensating rollback for a single foreground run.
+$script:SettingsSnapshots = New-Object System.Collections.Generic.List[object]
+function Restore-PublishedSettings {
+    # Returns the client names whose published settings file could NOT be put
+    # back. Only PUBLISHED files are touched: restoring a file this run never
+    # wrote would be a mutation dressed up as a rollback.
+    $unrestored = New-Object System.Collections.Generic.List[string]
+    foreach ($entry in @($script:SettingsSnapshots.ToArray())) {
+        if (-not $entry.Published) { continue }
+        try { Copy-Item -LiteralPath $entry.Snapshot -Destination $entry.Original -Force }
+        catch { [void]$unrestored.Add([string]$entry.ClientName) }
+    }
+    return , $unrestored
+}
+function Complete-SettingsSnapshots {
+    foreach ($entry in @($script:SettingsSnapshots.ToArray())) {
+        try { Remove-Item -LiteralPath $entry.Snapshot -Force -ErrorAction SilentlyContinue } catch { }
+    }
+    $script:SettingsSnapshots.Clear()
+}
+
 $script:CurrentPhase = 'settings'
+$snapshotError = ''
+try {
+    foreach ($plan in $script:ClientPlans) {
+        if (@($plan.Scan.MatchedPrints).Count -eq 0) { continue }
+        if (-not (Test-Path -LiteralPath $plan.Scan.SettingsPath -PathType Leaf)) { continue }
+        $snapshot = $plan.Scan.SettingsPath + '.hookmaker-disc-snapshot-' + [guid]::NewGuid().ToString('N').Substring(0, 8)
+        Copy-Item -LiteralPath $plan.Scan.SettingsPath -Destination $snapshot -Force
+        [void]$script:SettingsSnapshots.Add([pscustomobject]@{
+            ClientName = $plan.ClientName; Original = $plan.Scan.SettingsPath; Snapshot = $snapshot; Published = $false
+        })
+    }
+}
+catch { $snapshotError = $_.Exception.Message }
+if ($snapshotError -ne '') {
+    Complete-SettingsSnapshots
+    Restore-SetAsides
+    Set-ComponentResult -Component 'settings' -Status 'failed' -ReasonCode 'snapshotFailed' -Message $snapshotError
+    Set-ComponentResult -Component 'registry' -Status 'ok' -ReasonCode 'retained'
+    Write-UninstallResult -Overall 'failed'
+    Write-Host ('WARNING: the settings files could not be copied aside for rollback. Nothing was removed.')
+    return
+}
+
 $settingsError = ''
 $settingsErrorClient = ''
 foreach ($plan in $script:ClientPlans) {
@@ -859,7 +910,10 @@ foreach ($plan in $script:ClientPlans) {
             $json = $raw | ConvertFrom-Json
             $hooks = Get-RecordValue $json 'hooks'
             if ($null -eq $hooks) { return }
-            $removed = 0
+            # Every identity actually matched under the lock. Compared against
+            # the persisted plan as a SET below - "we removed something" is not
+            # the same claim as "we removed exactly what we verified".
+            $observedKeys = New-KeySet
             $emptyEvents = New-Object System.Collections.Generic.List[string]
             foreach ($eventProperty in @($hooks.PSObject.Properties)) {
                 $eventName = [string]$eventProperty.Name
@@ -873,7 +927,7 @@ foreach ($plan in $script:ClientPlans) {
                         # Identity, recomputed here inside the lock - the array
                         # position this handler happens to occupy is irrelevant.
                         $key = $eventName + '|' + $matcherPrint + '|' + (Get-HandlerFingerprint -Handler $handler)
-                        if ($matchKeys.Contains($key)) { $removed++; continue }
+                        if ($matchKeys.Contains($key)) { [void]$observedKeys.Add($key); continue }
                         $keptHandlers += $handler
                     }
                     # An emptied group is dropped; a group that still holds
@@ -886,10 +940,19 @@ foreach ($plan in $script:ClientPlans) {
                 if ($keptGroups.Count -gt 0) { $hooks.$eventName = $keptGroups }
                 else { [void]$emptyEvents.Add($eventName) }
             }
-            if ($removed -eq 0) {
-                # The file changed between phase 1 and now. Refuse rather than
-                # write a file whose contents were never verified.
-                throw 'the settings file changed between verification and removal'
+            # The plan must be matched EXACTLY - same identities, not merely a
+            # non-zero count. A record owning two handlers, one of which was
+            # edited between phase 1 and this lock, would otherwise remove the
+            # unchanged one, leave the changed one live, and report success on
+            # evidence that is provably stale. Every key here was matched by
+            # recomputed fingerprint, so the observed set is a subset of the
+            # plan by construction and a missing entry is the whole test.
+            $unmatchedKeys = @(@($matchKeys) | Where-Object { -not $observedKeys.Contains($_) })
+            if ($unmatchedKeys.Count -gt 0) {
+                # No mutation has been published at this point - the edits above
+                # are in-memory only and the backup below has not been taken.
+                throw ('the settings file changed between verification and removal: ' + $unmatchedKeys.Count +
+                    ' of ' + @($matchKeys).Count + ' verified handler(s) no longer match their recorded identity')
             }
             # An event whose every group is gone loses its key. The `hooks`
             # object itself is left in place even when empty - it is a field the
@@ -909,6 +972,9 @@ foreach ($plan in $script:ClientPlans) {
                 if (Test-Path -LiteralPath $temporary -PathType Leaf) { Remove-Item -LiteralPath $temporary -Force -ErrorAction SilentlyContinue }
             }
         } | Out-Null
+        foreach ($entry in @($script:SettingsSnapshots.ToArray())) {
+            if ($entry.ClientName -eq $plan.ClientName) { $entry.Published = $true }
+        }
         Set-ComponentResult -Component $plan.ClientName -Status 'ok'
     }
     catch {
@@ -919,15 +985,29 @@ foreach ($plan in $script:ClientPlans) {
 }
 
 if ($settingsError -ne '') {
-    # Nothing has been destroyed yet: put every staged artifact back so the
-    # discovered hook keeps working exactly as it did before this run.
+    # Put back everything this run actually published - the staged runtime
+    # artifacts AND any earlier client's settings file - so the discovered hook
+    # keeps working exactly as it did before this run.
+    $unrestored = Restore-PublishedSettings
     Restore-SetAsides
+    Complete-SettingsSnapshots
     Set-ComponentResult -Component $settingsErrorClient -Status 'failed' -ReasonCode 'settingsWriteFailed' -Message $settingsError
     Set-ComponentResult -Component 'registry' -Status 'ok' -ReasonCode 'retained'
+    if (@($unrestored).Count -gt 0) {
+        # The claim "nothing was removed" would be false, so it is not made.
+        $names = (@($unrestored) -join ', ')
+        Set-ComponentResult -Component 'settings' -Status 'manualRepair' -ReasonCode 'rollbackIncomplete' `
+            -Message ('the registration was already published and could not be restored for: ' + $names)
+        Write-UninstallResult -Overall 'manualRepair'
+        Write-Host ("WARNING: removing the registration for '" + $FriendlyName + "' failed. The registration was ALREADY REMOVED for " +
+            $names + " and could not be restored; that client needs manual repair. Everything else was restored.")
+        return
+    }
     Write-UninstallResult -Overall 'failed'
     Write-Host ("WARNING: removing the registration for '" + $FriendlyName + "' failed. Every artifact was restored; nothing was removed.")
     return
 }
+Complete-SettingsSnapshots
 
 # ---- phase 4: registry -------------------------------------------------------
 # For a NATIVE record the set-asides are still reversible here, so the record is

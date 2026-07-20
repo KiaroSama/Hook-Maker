@@ -681,11 +681,16 @@ try {
     # =====================================================================
     Write-Host '--- outgoing-commit scan: real end-to-end git push (native pre-push chain) ---' -ForegroundColor Cyan
     $e2e = New-PushableRepo 'OutgoingRealPush'
+    # Written in Ignore-Rules-Check's INSERTION order, not alphabetically: each `!`
+    # negation must follow the broader `/.env.*` it un-ignores. A sorted list here
+    # would be a genuinely broken ruleset (dead negations), so Ignore-Rules-Check
+    # would repair it and block first - and this test would stop exercising the
+    # Secrets-Check outgoing-commit path it exists to prove.
     $e2eIgnore = @(
-        '!/.env.dist', '!/.env.example', '!/.env.sample', '!/.env.template',
-        '**/.ignoreme', '.ignoreme', '/.agents/', '/.ai/', '/.claude/', '/.cline/',
-        '/.codex/', '/.cursor/', '/.env', '/.env.*', '/.kiro/', '/AGENTS.md',
-        '/CLAUDE.md', '/explain-AI.md', '/graphify-out/', '/reference.md', '/secrets.md'
+        '/.ai/', '/secrets.md', '/explain-AI.md', '/reference.md', '/CLAUDE.md', '/AGENTS.md',
+        '/.agents/', '/.claude/', '/.kiro/', '/.codex/', '/.cursor/', '/.cline/', '/graphify-out/',
+        '.ignoreme', '**/.ignoreme', '/.env', '/.env.*', '!/.env.example', '!/.env.sample',
+        '!/.env.template', '!/.env.dist'
     ) -join "`r`n"
     Write-Utf8 (Join-Path $e2e '.gitignore') ($e2eIgnore + "`r`n")
     Add-Commit $e2e 'baseline with the full required ignore ruleset'
@@ -862,6 +867,100 @@ try {
     Check 'advisory-only pre-push is quiet' ([string]::IsNullOrWhiteSpace($r.Out) -and [string]::IsNullOrWhiteSpace($r.Err)) ($r.Out + $r.Err)
 
     # =====================================================================
+    Write-Host '--- regression guards: the three hard blocks stay hard ---' -ForegroundColor Cyan
+
+    # These three are the load-bearing blocks. Detection of each is asserted in
+    # detail further up; what is guarded HERE is that each still actually BLOCKS
+    # (decision:block at Stop), so a future false-positive fix cannot quietly
+    # downgrade any of them to advisory.
+    function Test-StopBlocks {
+        param([string]$Out)
+        $parsed = $null
+        try { $parsed = $Out | ConvertFrom-Json } catch { return $false }
+        return ($null -ne $parsed -and [string]$parsed.decision -eq 'block')
+    }
+
+    $blkNotIgnored = New-GitProj 'BlockSecretsMdNotIgnored'
+    Write-Utf8 (Join-Path $blkNotIgnored 'secrets.md') "# Secrets`n`n## FOO`n- Value: blocknotignored1234567890`n"
+    $r = Fire -Cwd $blkNotIgnored -EventName 'Stop'
+    Check 'secrets.md present but NOT git-ignored still hard-blocks' (
+        (Test-StopBlocks $r.Out) -and $r.Out -like '*NOT covered by .gitignore*') $r.Out
+
+    $blkTracked = New-GitProj 'BlockSecretsMdTracked'
+    Write-Utf8 (Join-Path $blkTracked '.gitignore') "secrets.md`n"
+    Write-Utf8 (Join-Path $blkTracked 'secrets.md') "# Secrets`n`n## FOO`n- Value: blocktracked1234567890`n"
+    & git -C $blkTracked add -f secrets.md 2>$null | Out-Null
+    $r = Fire -Cwd $blkTracked -EventName 'Stop'
+    Check 'staged secrets.md still hard-blocks' ((Test-StopBlocks $r.Out) -and $r.Out -like '*STAGED for commit*') $r.Out
+    Add-Commit $blkTracked 'track secrets.md'
+    $r = Fire -Cwd $blkTracked -EventName 'Stop'
+    Check 'tracked secrets.md still hard-blocks' ((Test-StopBlocks $r.Out) -and $r.Out -like '*TRACKED by git*') $r.Out
+
+    $blkLeak = New-GitProj 'BlockValueLeak'
+    Write-Utf8 (Join-Path $blkLeak '.gitignore') ".env`nsecrets.md`n"
+    Write-Utf8 (Join-Path $blkLeak '.env') "GUARD_LEAK_TOKEN=guardleakvalue1234567890`r`n"
+    Write-Utf8 (Join-Path $blkLeak 'notes.txt') "guardleakvalue1234567890`r`n"
+    Add-Commit $blkLeak 'seed'
+    $r = Fire -Cwd $blkLeak -EventName 'Stop'
+    Check 'a real secret VALUE leak into a tracked file still hard-blocks' (
+        (Test-StopBlocks $r.Out) -and $r.Out -like '*GUARD_LEAK_TOKEN*appears in a git-tracked file*') $r.Out
+    Check 'the hard-block reason never prints the leaked value' ($r.Out -notlike '*guardleakvalue1234567890*') $r.Out
+
+    $blkEnvTracked = New-GitProj 'BlockEnvTracked'
+    Write-Utf8 (Join-Path $blkEnvTracked '.gitignore') "secrets.md`n"
+    Write-Utf8 (Join-Path $blkEnvTracked '.env') "GUARD_ENV_TOKEN=guardenvvalue1234567890`r`n"
+    Add-Commit $blkEnvTracked 'commit .env by mistake'
+    $r = Fire -Cwd $blkEnvTracked -EventName 'Stop'
+    Check 'a tracked real .env file still hard-blocks' (
+        (Test-StopBlocks $r.Out) -and $r.Out -like '*.env*TRACKED by git*') $r.Out
+
+    # =====================================================================
+    Write-Host '--- a clean, ignored .venv is not a secret finding (git protection != deployment) ---' -ForegroundColor Cyan
+
+    # An intentionally required .venv that is git-ignored must not be rejected
+    # SOLELY for being ignored, nor for vendoring opaque token-SHAPED constants
+    # inside third-party package files. Being ignored is a git-protection fact;
+    # whether a deployment pipeline includes the directory is a separate concern
+    # this hook neither decides nor authorizes.
+    $venv = New-PushableRepo 'CleanVenvDeployment'
+    Write-Utf8 (Join-Path $venv '.gitignore') ".env`nsecrets.md`n.venv/`n"
+    Write-Utf8 (Join-Path $venv '.env') "VENV_APP_SECRET=venvrealsecretvalue1234567890`r`n"
+    $venvPkg = Join-Path $venv '.venv\Lib\site-packages\thirdparty\tests'
+    New-Item -ItemType Directory -Path $venvPkg -Force | Out-Null
+    # Vendored test fixtures that LOOK like credentials but are inert package data.
+    Write-Utf8 (Join-Path $venvPkg 'fixture_tokens.py') (
+        "SAMPLE_JWT = `"eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJURVNUIn0.AAAAAAAAAAAAAAAAAAAAAAAAAAAAAA`"`r`n" +
+        "SAMPLE_B64 = `"QUJDREVGR0hJSktMTU5PUFFSU1RVVldYWVoxMjM0NTY3ODkw`"`r`n" +
+        "FAKE_API_KEY = `"sk_test_PLACEHOLDER_NOT_A_REAL_KEY_000000`"`r`n")
+    Write-Utf8 (Join-Path $venv 'app.py') "print('hello')`r`n"
+    Add-Commit $venv 'app plus an ignored .venv'
+    $r = Fire -Cwd $venv -EventName 'Stop'
+    Check 'an ignored .venv is never reported as a tracked/staged secret file' ($r.Out -notlike '*.venv*') $r.Out
+    Check 'token-shaped constants vendored inside .venv are never registered as secrets' (
+        $r.Out -notlike '*SAMPLE_JWT*' -and $r.Out -notlike '*SAMPLE_B64*' -and $r.Out -notlike '*FAKE_API_KEY*') $r.Out
+    Check 'the whole .venv directory is never classified as a secret' ($r.Out -notlike '*Classification unclear*.venv*') $r.Out
+    $venvTracked = @(& git -C $venv ls-files -- .venv | Where-Object { $_ })
+    Check 'the hook never tracks the ignored .venv as a side effect' ($venvTracked.Count -eq 0) ($venvTracked -join ', ')
+    $rVenvPush = FireGitPrePush -Cwd $venv -StdinText (Get-RefUpdateLine -Repo $venv)
+    Check 'a push is not blocked merely because an ignored .venv exists' ($rVenvPush.Exit -eq 0) $rVenvPush.Err
+
+    # The allowance is NOT a blanket exemption: once a .venv file is actually
+    # force-tracked, it is ordinary tracked content and a REAL secret value in it
+    # must still be caught by the scan that legitimately covers it.
+    $venvLeak = New-GitProj 'VenvForceTrackedLeak'
+    Write-Utf8 (Join-Path $venvLeak '.gitignore') ".env`nsecrets.md`n.venv/`n"
+    Write-Utf8 (Join-Path $venvLeak '.env') "VENVLEAK_SECRET=venvleakvalue1234567890`r`n"
+    $venvLeakDir = Join-Path $venvLeak '.venv\Lib\site-packages\app_config'
+    New-Item -ItemType Directory -Path $venvLeakDir -Force | Out-Null
+    Write-Utf8 (Join-Path $venvLeakDir 'settings.py') "TOKEN = `"venvleakvalue1234567890`"`r`n"
+    & git -C $venvLeak add -f '.venv/Lib/site-packages/app_config/settings.py' 2>$null | Out-Null
+    Add-Commit $venvLeak 'force-track a .venv file that carries a real secret'
+    $r = Fire -Cwd $venvLeak -EventName 'Stop'
+    Check 'a REAL secret force-tracked inside .venv is still caught' (
+        $r.Out -like '*VENVLEAK_SECRET*appears in a git-tracked file*settings.py*') $r.Out
+    Check 'the force-tracked .venv leak report never prints the raw value' ($r.Out -notlike '*venvleakvalue1234567890*') $r.Out
+
+    # =====================================================================
     Write-Host '--- Install-Hook.ps1: self-contained copy ---' -ForegroundColor Cyan
     $tgt = New-Proj 'Install'
     & $InstallScript -CustomHook $Hook -Events @('SessionStart', 'Stop') -TargetProject $tgt -ClaudeOnly *> $null
@@ -871,6 +970,20 @@ try {
     Check 'does not reference the tool folder' ($claudeJson -notlike '*Hook Maker*')
 
     # =====================================================================
+    # =====================================================================
+    Write-Host '--- isolation: the real user config is never touched ---' -ForegroundColor Cyan
+    # GetTempPath() sits UNDER the real user profile on Windows, so a workspace
+    # path leaking into ~\.claude or ~\.codex is a realistic failure, not theory.
+    # Comparing timestamps would be flaky (a live agent session writes there);
+    # a reference to this run's unique workspace path is unambiguous.
+    $realUserConfigs = @(
+        (Join-Path $env:USERPROFILE '.claude\settings.json'),
+        (Join-Path $env:USERPROFILE '.claude\settings.local.json'),
+        (Join-Path $env:USERPROFILE '.codex\config.toml')
+    ) | Where-Object { Test-Path -LiteralPath $_ -PathType Leaf }
+    $leaked = @($realUserConfigs | Where-Object { [System.IO.File]::ReadAllText($_) -like ('*' + $Work + '*') })
+    Check 'no fixture path ever leaks into the real ~\.claude / ~\.codex config' ($leaked.Count -eq 0) ($leaked -join ', ')
+
     Write-Host '--- Windows PowerShell 5.1 host ---' -ForegroundColor Cyan
     $proj9 = New-Proj 'Host51'
     Write-Utf8 (Join-Path $proj9 '.env') "HOST_TOKEN=abcdefghij1234567890`r`n"

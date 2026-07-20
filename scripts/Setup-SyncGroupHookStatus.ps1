@@ -291,24 +291,42 @@ function Invoke-GetHookStatus {
         return 'done'
     }
 
-    $resultPath = Join-Path ([System.IO.Path]::GetTempPath()) ('hookmaker-status-' + [guid]::NewGuid().ToString('N').Substring(0, 8) + '.json')
-    $arguments = @{ ScanRoot = $scanRoot; ToolRoot = $ToolRoot; ResultPath = $resultPath }
+    # NO -ResultPath, deliberately: the scanner returns the document on stdout
+    # instead of storing it. That is what lets this menu scan a whole drive.
+    # With a file, the result would have to live somewhere - and every writable
+    # location on a single-volume machine, %TEMP% included, is inside a drive
+    # root, which the scanner refuses so that a scan can never contaminate or
+    # observe the tree it is inspecting. Asking for the document back removes
+    # the file from the problem, and nothing is written outside the registry.
+    $arguments = @{ ScanRoot = $scanRoot; ToolRoot = $ToolRoot }
     if ($includeGlobal) { $arguments.IncludeGlobal = $true }
 
     # Elapsed time is measured HERE rather than taken from the result document:
     # it is a property of this run, and it must still be reportable when the
-    # scanner fails before it can write a document at all.
+    # scanner fails before it can produce a document at all.
     $stopwatch = [System.Diagnostics.Stopwatch]::StartNew()
     $threw = ''
-    try { & $StatusScript @arguments *> $null }
+    $captured = $null
+    # 6> discards the progress/host stream only; the SUCCESS stream carries the
+    # JSON document and must survive.
+    try { $captured = & $StatusScript @arguments 6> $null }
     catch { $threw = $_.Exception.Message }
     $stopwatch.Stop()
 
+    # Extract the fenced document. Anything the scanner printed around it -
+    # progress lines, warnings - is ignored rather than fed to the JSON parser.
     $document = $null
-    if (Test-Path -LiteralPath $resultPath) {
-        try { $document = Get-Content -LiteralPath $resultPath -Raw | ConvertFrom-Json }
-        catch { $document = $null }
-        Remove-Item -LiteralPath $resultPath -Force -ErrorAction SilentlyContinue
+    $text = (@($captured) -join "`n")
+    $beginMarker = '<<<HOOKMAKER-SCAN-RESULT>>>'
+    $endMarker = '<<<END-HOOKMAKER-SCAN-RESULT>>>'
+    $begin = $text.IndexOf($beginMarker)
+    $end = $text.LastIndexOf($endMarker)
+    if ($begin -ge 0 -and $end -gt $begin) {
+        $json = $text.Substring($begin + $beginMarker.Length, $end - $begin - $beginMarker.Length).Trim()
+        if ($json -ne '') {
+            try { $document = $json | ConvertFrom-Json }
+            catch { $document = $null }
+        }
     }
     if ($null -eq $document) {
         Write-ErrorLine 'The scan did not produce a readable result, so nothing can be reported.'
