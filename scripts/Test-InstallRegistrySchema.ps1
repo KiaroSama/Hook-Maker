@@ -173,15 +173,30 @@ try {
 
     Write-Host '--- registry schema validation and per-record isolation ---' -ForegroundColor Cyan
 
+    # Canonical-consistent fixture paths: Test-InstallRecordValid now proves
+    # runtimeScript sits one managed-hook-directory level under runtimeRoot,
+    # and that settingsPath/command actually match the record's own
+    # scope/client - so a synthetic "well-formed record" fixture must use a
+    # REAL structural relationship, not arbitrary strings, or every case
+    # derived from it (below) would be rejected for the wrong reason.
+    $fixtureRuntimeRoot = Join-Path $HOME '.claude\hooks\Hook-Maker'
+    $fixtureRuntimeScript = Join-Path $fixtureRuntimeRoot 'F\F.ps1'
+    $fixtureSettingsPath = Join-Path $HOME '.claude\settings.json'
+    $fixtureCommand = 'powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "' + $fixtureRuntimeScript + '"'
+
     $goodRecord = [pscustomobject]@{
         id = 'schema-ok'; schema = 2; friendlyName = 'F'; hookType = 'CustomHook'
         sourceScript = 'C:\src\hook.ps1'; sourceDir = 'C:\src'; scope = 'global'
-        clients = [pscustomobject]@{ claude = [pscustomobject]@{ runtimeScript = 'C:\runtime\hook.ps1'; settingsPath = 'C:\s.json'; runtimeRoot = 'C:\runtime'; events = @('Stop') } }
+        clients = [pscustomobject]@{ claude = [pscustomobject]@{
+            runtimeScript = $fixtureRuntimeScript; settingsPath = $fixtureSettingsPath; runtimeRoot = $fixtureRuntimeRoot
+            events = @('Stop'); command = $fixtureCommand
+        } }
     }
 
     function Copy-Record { param($R) return ($R | ConvertTo-Json -Depth 20 | ConvertFrom-Json) }
 
-    Check 'a well-formed record validates' ((Test-InstallRecordValid -Record $goodRecord).Ok)
+    $goodRecordResult = Test-InstallRecordValid -Record $goodRecord
+    Check 'a well-formed record validates' $goodRecordResult.Ok $goodRecordResult.Reason
 
     Check 'a null record is rejected' (-not (Test-InstallRecordValid -Record $null).Ok)
 
@@ -198,6 +213,116 @@ try {
     $missingRuntimeRoot = Copy-Record $goodRecord
     $missingRuntimeRoot.clients.claude.PSObject.Properties.Remove('runtimeRoot')
     Check "a client subrecord missing 'runtimeRoot' is rejected" (-not (Test-InstallRecordValid -Record $missingRuntimeRoot).Ok)
+
+    # ---- client subrecord fields must be ACTUAL non-empty strings ---------
+    # missing / non-string (survives a [string] cast but never was one) /
+    # whitespace-only, for every field a safe update/uninstall depends on.
+    foreach ($field in @('settingsPath', 'runtimeRoot', 'runtimeScript', 'command')) {
+        $missingVariant = Copy-Record $goodRecord
+        $missingVariant.clients.claude.PSObject.Properties.Remove($field)
+        Check ("a client subrecord missing '" + $field + "' is rejected") (-not (Test-InstallRecordValid -Record $missingVariant).Ok)
+
+        $nonStringVariant = Copy-Record $goodRecord
+        $nonStringVariant.clients.claude | Add-Member -MemberType NoteProperty -Name $field -Value 12345 -Force
+        Check ("a client subrecord with a non-string '" + $field + "' is rejected") (-not (Test-InstallRecordValid -Record $nonStringVariant).Ok)
+
+        $emptyVariant = Copy-Record $goodRecord
+        $emptyVariant.clients.claude | Add-Member -MemberType NoteProperty -Name $field -Value '   ' -Force
+        Check ("a client subrecord with an empty '" + $field + "' is rejected") (-not (Test-InstallRecordValid -Record $emptyVariant).Ok)
+    }
+
+    # ---- events entries must each be a non-empty string --------------------
+    $nonStringEvent = Copy-Record $goodRecord
+    $nonStringEvent.clients.claude.events = @(123)
+    $nonStringEventResult = Test-InstallRecordValid -Record $nonStringEvent
+    Check 'a non-string event entry is rejected' ((-not $nonStringEventResult.Ok) -and ($nonStringEventResult.Reason -match 'non-string entry')) $nonStringEventResult.Reason
+
+    $emptyEvent = Copy-Record $goodRecord
+    $emptyEvent.clients.claude.events = @('   ')
+    $emptyEventResult = Test-InstallRecordValid -Record $emptyEvent
+    Check 'an empty-string event entry is rejected' ((-not $emptyEventResult.Ok) -and ($emptyEventResult.Reason -match 'empty entry')) $emptyEventResult.Reason
+
+    # ---- canonicalized path/command consistency ----------------------------
+    $outsideRuntimeScript = Copy-Record $goodRecord
+    $outsideRuntimeScript.clients.claude.runtimeScript = 'C:\SomewhereElse\F.ps1'
+    $outsideResult = Test-InstallRecordValid -Record $outsideRuntimeScript
+    Check 'runtimeScript outside runtimeRoot is rejected' ((-not $outsideResult.Ok) -and ($outsideResult.Reason -match 'outside runtimeRoot')) $outsideResult.Reason
+
+    $directChildScript = Copy-Record $goodRecord
+    $directChildScript.clients.claude.runtimeScript = (Join-Path $fixtureRuntimeRoot 'F.ps1')
+    $directChildResult = Test-InstallRecordValid -Record $directChildScript
+    Check 'runtimeScript sitting directly under runtimeRoot (no managed hook dir) is rejected' ((-not $directChildResult.Ok) -and ($directChildResult.Reason -match 'does not match managed hook directory')) $directChildResult.Reason
+
+    $foreignGlobalSettings = Copy-Record $goodRecord
+    $foreignGlobalSettings.clients.claude.settingsPath = 'C:\SomeOther\settings.json'
+    $foreignGlobalResult = Test-InstallRecordValid -Record $foreignGlobalSettings
+    Check 'a global record with a foreign settings path is rejected' ((-not $foreignGlobalResult.Ok) -and ($foreignGlobalResult.Reason -match 'does not match project scope/client')) $foreignGlobalResult.Reason
+
+    $mismatchedCommand = Copy-Record $goodRecord
+    $mismatchedCommand.clients.claude.command = 'powershell.exe -File "' + (Join-Path $fixtureRuntimeRoot 'Other\Other.ps1') + '"'
+    $mismatchedCommandResult = Test-InstallRecordValid -Record $mismatchedCommand
+    Check 'a persisted command targeting a different script than runtimeScript is rejected' ((-not $mismatchedCommandResult.Ok) -and ($mismatchedCommandResult.Reason -match 'does not target persisted runtimeScript')) $mismatchedCommandResult.Reason
+
+    # GetFullPath throws on input it cannot interpret at all (an embedded null
+    # character) - that must be a precise rejection, never an unhandled
+    # exception escaping the validator.
+    $uncanonicalizable = Copy-Record $goodRecord
+    $uncanonicalizable.clients.claude | Add-Member -MemberType NoteProperty -Name runtimeRoot -Value ('C:\Bad' + [string][char]0 + 'Path') -Force
+    $uncanonicalizableThrew = $false
+    $uncanonicalizableResult = $null
+    try { $uncanonicalizableResult = Test-InstallRecordValid -Record $uncanonicalizable } catch { $uncanonicalizableThrew = $true }
+    Check 'a path value that cannot be canonicalized is rejected, not thrown' ((-not $uncanonicalizableThrew) -and ($null -ne $uncanonicalizableResult) -and (-not $uncanonicalizableResult.Ok) -and ($uncanonicalizableResult.Reason -match 'cannot be canonicalized')) $(if ($null -ne $uncanonicalizableResult) { $uncanonicalizableResult.Reason } else { 'threw' })
+
+    # ---- PROJECT-scope records: both clients, canonical settingsPath -------
+    $fixtureProjectRoot = Join-Path $Work 'FixtureProjectRoot'
+    $fixtureProjectClaudeRuntimeRoot = Join-Path $fixtureProjectRoot '.claude\hooks\Hook-Maker'
+    $fixtureProjectClaudeRuntimeScript = Join-Path $fixtureProjectClaudeRuntimeRoot 'F\F.ps1'
+    $fixtureProjectClaudeSettingsPath = Join-Path $fixtureProjectRoot '.claude\settings.local.json'
+    $fixtureProjectClaudeCommand = 'powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "' + $fixtureProjectClaudeRuntimeScript + '"'
+    $fixtureProjectCodexRuntimeRoot = Join-Path $fixtureProjectRoot '.codex\hooks\Hook-Maker'
+    $fixtureProjectCodexRuntimeScript = Join-Path $fixtureProjectCodexRuntimeRoot 'F\F.ps1'
+    $fixtureProjectCodexSettingsPath = Join-Path $fixtureProjectRoot '.codex\hooks.json'
+    $fixtureProjectCodexCommand = 'pwsh -NoLogo -NoProfile -NonInteractive -File "' + $fixtureProjectCodexRuntimeScript + '"'
+    $fixtureProjectCodexCommandWindows = 'powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "' + $fixtureProjectCodexRuntimeScript + '"'
+
+    $goodProjectRecord = [pscustomobject]@{
+        id = 'schema-ok-project'; schema = 2; friendlyName = 'F'; hookType = 'CustomHook'
+        sourceScript = 'C:\src\hook.ps1'; sourceDir = 'C:\src'; scope = 'project'; targetProjectRoot = $fixtureProjectRoot
+        clients = [pscustomobject]@{
+            claude = [pscustomobject]@{
+                runtimeScript = $fixtureProjectClaudeRuntimeScript; settingsPath = $fixtureProjectClaudeSettingsPath; runtimeRoot = $fixtureProjectClaudeRuntimeRoot
+                events = @('Stop'); command = $fixtureProjectClaudeCommand
+            }
+            codex = [pscustomobject]@{
+                runtimeScript = $fixtureProjectCodexRuntimeScript; settingsPath = $fixtureProjectCodexSettingsPath; runtimeRoot = $fixtureProjectCodexRuntimeRoot
+                events = @('Stop'); command = $fixtureProjectCodexCommand; commandWindows = $fixtureProjectCodexCommandWindows
+            }
+        }
+    }
+    $goodProjectResult = Test-InstallRecordValid -Record $goodProjectRecord
+    Check 'a fully valid PROJECT-scope record (both clients) validates' $goodProjectResult.Ok $goodProjectResult.Reason
+
+    $wrongClaudeSettings = Copy-Record $goodProjectRecord
+    $wrongClaudeSettings.clients.claude.settingsPath = $fixtureProjectCodexSettingsPath
+    $wrongClaudeResult = Test-InstallRecordValid -Record $wrongClaudeSettings
+    Check 'a project record with the wrong Claude settings path is rejected' ((-not $wrongClaudeResult.Ok) -and ($wrongClaudeResult.Reason -match 'does not match project scope/client')) $wrongClaudeResult.Reason
+
+    $wrongCodexSettings = Copy-Record $goodProjectRecord
+    $wrongCodexSettings.clients.codex.settingsPath = $fixtureProjectClaudeSettingsPath
+    $wrongCodexResult = Test-InstallRecordValid -Record $wrongCodexSettings
+    Check 'a project record with the wrong Codex settings path is rejected' ((-not $wrongCodexResult.Ok) -and ($wrongCodexResult.Reason -match 'does not match project scope/client')) $wrongCodexResult.Reason
+
+    $missingCommandWindows = Copy-Record $goodProjectRecord
+    $missingCommandWindows.clients.codex.PSObject.Properties.Remove('commandWindows')
+    Check "a Codex subrecord missing 'commandWindows' is rejected" (-not (Test-InstallRecordValid -Record $missingCommandWindows).Ok)
+
+    $emptyCommandWindows = Copy-Record $goodProjectRecord
+    $emptyCommandWindows.clients.codex.commandWindows = ''
+    Check 'a Codex subrecord with an empty commandWindows is rejected' (-not (Test-InstallRecordValid -Record $emptyCommandWindows).Ok)
+
+    $claudeEmptyCommandWindowsStillOk = Copy-Record $goodProjectRecord
+    $claudeEmptyCommandWindowsStillOk.clients.claude | Add-Member -MemberType NoteProperty -Name commandWindows -Value '' -Force
+    Check "a Claude subrecord with an empty (not applicable) commandWindows still validates" ((Test-InstallRecordValid -Record $claudeEmptyCommandWindowsStillOk).Ok)
 
     $nonNumericTimeout = Copy-Record $goodRecord
     $nonNumericTimeout.clients.claude | Add-Member -MemberType NoteProperty -Name timeout -Value 'not-a-number'
@@ -497,7 +622,70 @@ try {
 
     Check 'both the healthy normal and the healthy managed-native record still evaluate' ($nmiEvaluated -eq 2)
 
+    # =====================================================================
+    # GENUINE-RECORD PROOF: the stricter validation above must never reject a
+    # record Install-Hook.ps1 actually writes. Every genuine record is checked
+    # both directly and after a real JSON round-trip (ConvertTo-Json |
+    # ConvertFrom-Json), since that is exactly how a record persists and is
+    # read back by every real caller.
+    Write-Host '--- genuine installer-written records still validate ---' -ForegroundColor Cyan
 
+    function Assert-GenuineRecordValidates {
+        param([string]$Label, $Record)
+        Check ("setup: " + $Label + " record was found") ($null -ne $Record)
+        if ($null -eq $Record) { return }
+        $direct = Test-InstallRecordValid -Record $Record
+        Check ($Label + ' validates directly') $direct.Ok $direct.Reason
+        $roundTripped = $Record | ConvertTo-Json -Depth 50 | ConvertFrom-Json
+        $afterRoundTrip = Test-InstallRecordValid -Record $roundTripped
+        Check ($Label + ' still validates after a JSON round-trip') $afterRoundTrip.Ok $afterRoundTrip.Reason
+    }
+
+    # Reuse the two real records already installed above rather than
+    # reinstalling: a plain CustomHook install and a managed native-git
+    # (Ignore-Rules-Check) install, both genuinely written by Install-Hook.ps1.
+    Assert-GenuineRecordValidates 'a real CustomHook install' $nmiHealthyNormal
+    Assert-GenuineRecordValidates 'a real NATIVE-git managed install' $nmiHealthyNative
+
+    # A fresh install for BOTH clients (no -ClaudeOnly/-CodexOnly): the only
+    # way to prove a genuine CODEX subrecord (real commandWindows) validates,
+    # since every fixture above used -ClaudeOnly.
+    $bothClientsProj = New-Proj 'GenuineBothClientsProj'
+    & $InstallScript -CustomHook (Join-Path $RealHooksDir 'Ai-Memory-Check\Ai-Memory-Check.ps1') -Events @('Stop') -TargetProject $bothClientsProj *> $null
+    $bothClientsRecord = @((Read-InstallRegistry -ToolRoot $ToolRoot).installs | Where-Object { $_.friendlyName -eq 'Ai-Memory-Check' -and $_.targetProjectRoot -eq $bothClientsProj })[0]
+    Check 'setup: the both-clients record has a codex subrecord' ($null -ne $bothClientsRecord -and $null -ne $bothClientsRecord.clients.codex)
+    Assert-GenuineRecordValidates 'a real install for both Claude and Codex' $bothClientsRecord
+
+    # A fresh ENGINE/profile install (sync-hooks.json + -Profile), the third
+    # required-to-prove genuine shape.
+    $engineProj = New-Proj 'GenuineEngineProj'
+    $engineCfgPath = Join-Path $Work 'genuine-engine-cfg.json'
+    $engineConfigJson = @{
+        version  = 2
+        defaults = @{ events = @('SessionStart', 'UserPromptSubmit') }
+        profiles = @(@{
+            id     = 'genuine-profile'
+            name   = 'Genuine Profile'
+            routes = @(@{
+                id          = 'genuine-route'
+                source      = @{ root = (Join-Path $Work 'GenuineSyncSrc'); name = 'Src' }
+                destination = @{ root = (Join-Path $Work 'GenuineSyncDst'); name = 'Dst' }
+            })
+        })
+    }
+    ($engineConfigJson | ConvertTo-Json -Depth 20) | Set-Content -LiteralPath $engineCfgPath -Encoding utf8
+    & $InstallScript -Profile 'genuine-profile' -ConfigPath $engineCfgPath -TargetProject $engineProj -Events @('SessionStart') *> $null
+    $engineRecord = @((Read-InstallRegistry -ToolRoot $ToolRoot).installs | Where-Object { $_.hookType -eq 'Engine' -and $_.targetProjectRoot -eq $engineProj })[0]
+    Assert-GenuineRecordValidates 'a real ENGINE/profile install' $engineRecord
+
+    # Get-InstallIntegrity must still accept every one of these without
+    # throwing under StrictMode - a record that validates must never then
+    # crash the updater it feeds into.
+    $integrityThrew = $false
+    foreach ($genuineRecord in @($nmiHealthyNormal, $nmiHealthyNative, $bothClientsRecord, $engineRecord)) {
+        try { $null = Get-InstallIntegrity -Record $genuineRecord -ToolRoot $ToolRoot } catch { $integrityThrew = $true }
+    }
+    Check 'Get-InstallIntegrity accepts every genuine record without throwing' (-not $integrityThrew)
 
 }
 finally {

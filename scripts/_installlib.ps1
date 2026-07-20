@@ -242,6 +242,38 @@ function Test-SyncConfigStructure {
     return [pscustomobject]@{ Ok = $true; Reason = '' }
 }
 
+# Canonicalizes a path for structural comparison, defensively: GetFullPath
+# throws on input it cannot interpret at all (e.g. an embedded null
+# character), which must be a validation REJECTION - never an unhandled
+# exception escaping past Test-InstallRecordValid's caller.
+function Get-CanonicalPathOrNull {
+    param($Path)
+    if ($null -eq $Path -or $Path -isnot [string] -or [string]::IsNullOrWhiteSpace($Path)) { return $null }
+    try { return [System.IO.Path]::GetFullPath($Path) }
+    catch { return $null }
+}
+
+# The exact per-client settings location Install-Hook.ps1 writes to for a
+# given record scope. MUST mirror its own $ClaudeSettings/$CodexHooks
+# expressions exactly:
+#   project: <root>\.claude\settings.local.json / <root>\.codex\hooks.json
+#   global:  $HOME\.claude\settings.json / $HOME\.codex\hooks.json
+# Duplicated here (rather than shared) because a validator has to be able to
+# prove a persisted settingsPath without re-running the installer.
+function Get-CanonicalClientSettingsPath {
+    param(
+        [Parameter(Mandatory = $true)][string]$ClientName,
+        [Parameter(Mandatory = $true)][string]$Scope,
+        [string]$TargetProjectRoot = ''
+    )
+    if ($Scope -eq 'project') {
+        $relative = if ($ClientName -eq 'claude') { '.claude\settings.local.json' } else { '.codex\hooks.json' }
+        return (Join-Path $TargetProjectRoot $relative)
+    }
+    $relative = if ($ClientName -eq 'claude') { '.claude\settings.json' } else { '.codex\hooks.json' }
+    return (Join-Path $HOME $relative)
+}
+
 # Validates ONE record's shape before anything reads its fields.
 #
 # Under StrictMode a missing property throws, so a single malformed record used
@@ -308,6 +340,17 @@ function Test-InstallRecordValid {
             }
         }
     }
+    # A legacy import (Get-LegacyHookCandidates) is a conservative, one-time
+    # snapshot of a live registration Hook Maker discovered but has not yet
+    # re-run the installer for - Get-InstallIntegrity's own 'imported'
+    # fast-path above sends it straight to a real reinstall rather than
+    # inspecting it further. Its clients deliberately carry an empty
+    # command/commandWindows until that reinstall fills them in for real, so
+    # the command-driven checks below (never the path/settings checks, which
+    # ARE real for an import) do not apply to it - that gap is closed by
+    # reinstalling, never by this validator guessing a value for it.
+    $isImportedRecord = ($null -ne $Record.PSObject.Properties['imported']) -and ($Record.imported -eq $true)
+
     $clients = Get-RecordField -Object $Record -Name 'clients'
     if ($null -eq $clients -or $clients -isnot [psobject]) {
         return [pscustomobject]@{ Ok = $false; Reason = 'record has no clients object' }
@@ -318,15 +361,44 @@ function Test-InstallRecordValid {
         # runtimeRoot joins runtimeScript/settingsPath here: Get-InstallIntegrity
         # reads it unguarded (via Get-InstalledManifest) for every client on
         # every evaluation, not only when something is already known to be wrong.
+        # Every one of these must be an ACTUAL [string] - not merely something
+        # that survives a [string] cast (a number, an object) - since each is
+        # used directly as a path or command-line fragment.
         foreach ($required in @('runtimeScript', 'settingsPath', 'runtimeRoot')) {
             $value = Get-RecordField -Object $client -Name $required
-            if ($null -eq $value -or [string]::IsNullOrWhiteSpace([string]$value)) {
+            if ($null -eq $value -or $value -isnot [string] -or [string]::IsNullOrWhiteSpace($value)) {
                 return [pscustomobject]@{ Ok = $false; Reason = ($clientName + ' subrecord is missing "' + $required + '"') }
+            }
+        }
+        # command is required the same way for every genuinely installed
+        # client. commandWindows carries the REAL Windows invocation only for
+        # Codex - Claude's single `command` line already IS the Windows form
+        # (see New-ClientSubrecord), so requiring commandWindows non-empty
+        # there would reject every genuine Claude install, which never sets a
+        # second form.
+        if (-not $isImportedRecord) {
+            $commandValue = Get-RecordField -Object $client -Name 'command'
+            if ($null -eq $commandValue -or $commandValue -isnot [string] -or [string]::IsNullOrWhiteSpace($commandValue)) {
+                return [pscustomobject]@{ Ok = $false; Reason = ($clientName + ' subrecord is missing "command"') }
+            }
+            if ($clientName -eq 'codex') {
+                $commandWindowsValue = Get-RecordField -Object $client -Name 'commandWindows'
+                if ($null -eq $commandWindowsValue -or $commandWindowsValue -isnot [string] -or [string]::IsNullOrWhiteSpace($commandWindowsValue)) {
+                    return [pscustomobject]@{ Ok = $false; Reason = ($clientName + ' subrecord is missing "commandWindows"') }
+                }
             }
         }
         $events = Get-RecordField -Object $client -Name 'events'
         if ($null -eq $events -or @($events).Count -eq 0) {
             return [pscustomobject]@{ Ok = $false; Reason = ($clientName + ' subrecord has no events') }
+        }
+        foreach ($eventEntry in @($events)) {
+            if ($eventEntry -isnot [string]) {
+                return [pscustomobject]@{ Ok = $false; Reason = ($clientName + ' subrecord events contains a non-string entry') }
+            }
+            if ([string]::IsNullOrWhiteSpace($eventEntry)) {
+                return [pscustomobject]@{ Ok = $false; Reason = ($clientName + ' subrecord events contains an empty entry') }
+            }
         }
         # timeout, when present, is cast with [int] during integrity evaluation -
         # a non-numeric value fails that cast, not a StrictMode property lookup,
@@ -336,6 +408,68 @@ function Test-InstallRecordValid {
             $parsedTimeout = 0
             if (-not [int]::TryParse([string]$timeoutValue, [ref]$parsedTimeout)) {
                 return [pscustomobject]@{ Ok = $false; Reason = ($clientName + ' subrecord has a non-numeric timeout "' + [string]$timeoutValue + '"') }
+            }
+        }
+
+        # ---- canonicalized structural consistency --------------------------
+        # A path that cannot even be canonicalized is rejected here, precisely,
+        # rather than throwing later inside Get-InstallIntegrity/Compare-Manifest.
+        $canonicalRuntimeRoot = Get-CanonicalPathOrNull ([string]$client.runtimeRoot)
+        if ($null -eq $canonicalRuntimeRoot) {
+            return [pscustomobject]@{ Ok = $false; Reason = ($clientName + ' subrecord runtimeRoot cannot be canonicalized') }
+        }
+        $canonicalRuntimeScript = Get-CanonicalPathOrNull ([string]$client.runtimeScript)
+        if ($null -eq $canonicalRuntimeScript) {
+            return [pscustomobject]@{ Ok = $false; Reason = ($clientName + ' subrecord runtimeScript cannot be canonicalized') }
+        }
+        $canonicalSettingsPath = Get-CanonicalPathOrNull ([string]$client.settingsPath)
+        if ($null -eq $canonicalSettingsPath) {
+            return [pscustomobject]@{ Ok = $false; Reason = ($clientName + ' subrecord settingsPath cannot be canonicalized') }
+        }
+
+        # runtimeScript must be a PROPER child of runtimeRoot (not equal to it,
+        # and not outside it) - Get-InstalledManifest walks runtimeRoot and
+        # Compare-Manifest trusts runtimeScript's presence under it.
+        if ([string]::Equals($canonicalRuntimeScript, $canonicalRuntimeRoot, [System.StringComparison]::OrdinalIgnoreCase) -or
+            -not (Test-PathContainedIn -ChildPath $canonicalRuntimeScript -ParentPath $canonicalRuntimeRoot)) {
+            return [pscustomobject]@{ Ok = $false; Reason = ($clientName + ' subrecord runtimeScript is outside runtimeRoot') }
+        }
+        # ...and its PARENT must be a managed hook directory one level under
+        # runtimeRoot (<runtimeRoot>\<FriendlyName>\<FriendlyName>.ps1), never
+        # runtimeRoot itself - Copy-HookRuntime never installs a script
+        # directly at the runtime root.
+        $runtimeScriptParent = Split-Path -Parent $canonicalRuntimeScript
+        if ([string]::Equals($runtimeScriptParent, $canonicalRuntimeRoot, [System.StringComparison]::OrdinalIgnoreCase)) {
+            return [pscustomobject]@{ Ok = $false; Reason = ($clientName + ' subrecord runtimeScript parent does not match managed hook directory') }
+        }
+
+        # settingsPath must be the EXACT canonical location Install-Hook.ps1
+        # would write to for this record's scope/client - never merely "some
+        # settings file", which would let a record silently point updates or
+        # uninstalls at the wrong client's (or a foreign) settings file.
+        $targetProjectRootValue = [string](Get-RecordField -Object $Record -Name 'targetProjectRoot')
+        $expectedSettingsPath = Get-CanonicalClientSettingsPath -ClientName $clientName -Scope $scope -TargetProjectRoot $targetProjectRootValue
+        $canonicalExpectedSettingsPath = Get-CanonicalPathOrNull $expectedSettingsPath
+        if ($null -eq $canonicalExpectedSettingsPath -or
+            -not [string]::Equals($canonicalSettingsPath, $canonicalExpectedSettingsPath, [System.StringComparison]::OrdinalIgnoreCase)) {
+            return [pscustomobject]@{ Ok = $false; Reason = ($clientName + ' subrecord settingsPath does not match project scope/client') }
+        }
+
+        # The persisted command(s) must actually target the persisted
+        # runtimeScript - a record whose command points somewhere else could
+        # never be safely "updated" (Get-InstallIntegrity's registration check
+        # would be proving the wrong file is registered) or uninstalled
+        # (ownership pruning matches by this same command/script pairing).
+        if (-not $isImportedRecord) {
+            $commandValue = [string]$client.command
+            if ($commandValue.IndexOf($canonicalRuntimeScript, [System.StringComparison]::OrdinalIgnoreCase) -lt 0) {
+                return [pscustomobject]@{ Ok = $false; Reason = ($clientName + ' subrecord persisted command does not target persisted runtimeScript') }
+            }
+            $commandWindowsValue = Get-RecordField -Object $client -Name 'commandWindows'
+            if ($null -ne $commandWindowsValue -and $commandWindowsValue -is [string] -and -not [string]::IsNullOrWhiteSpace($commandWindowsValue)) {
+                if ($commandWindowsValue.IndexOf($canonicalRuntimeScript, [System.StringComparison]::OrdinalIgnoreCase) -lt 0) {
+                    return [pscustomobject]@{ Ok = $false; Reason = ($clientName + ' subrecord persisted commandWindows does not target persisted runtimeScript') }
+                }
             }
         }
     }

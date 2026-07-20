@@ -107,7 +107,7 @@ function Save-MutatedRecord {
 # $HOME-at-start-only caveat) and returns exit code, stdout/stderr, and the
 # parsed -ResultPath document.
 function Invoke-UninstallProcess {
-    param([string]$RecordId, [switch]$WhatIf, [string]$UninstallToolRoot = $ToolRoot)
+    param([string]$RecordId, [switch]$WhatIf, [string]$UninstallToolRoot = $ToolRoot, [string]$FakeHome = '')
     $token = [guid]::NewGuid().ToString('N').Substring(0, 8)
     $outF = Join-Path $Work "uninstout-$token.txt"; $errF = Join-Path $Work "uninsterr-$token.txt"
     $resultFile = Join-Path $Work "uninstresult-$token.json"
@@ -120,7 +120,9 @@ function Invoke-UninstallProcess {
         Wait = $true; NoNewWindow = $true; PassThru = $true
     }
     if ((Get-Command Start-Process).Parameters.ContainsKey('Environment')) {
-        $startArgs.Environment = @{ HOOKMAKER_STATE_DIR = $IsolatedStateDir }
+        $env = @{ HOOKMAKER_STATE_DIR = $IsolatedStateDir }
+        if ($FakeHome -ne '') { $env['USERPROFILE'] = $FakeHome; $env['HOME'] = $FakeHome }
+        $startArgs.Environment = $env
     }
     $p = Start-Process @startArgs
     $out = ''; if (Test-Path $outF) { $out = [System.IO.File]::ReadAllText($outF) }
@@ -134,6 +136,40 @@ function Get-ComponentStatus {
     $found = @($ResultDoc.components | Where-Object { [string]$_.component -eq $Component })
     if ($found.Count -eq 0) { return '' }
     return [string]$found[0].status
+}
+function Get-ComponentReason {
+    param($ResultDoc, [string]$Component)
+    $found = @($ResultDoc.components | Where-Object { [string]$_.component -eq $Component })
+    if ($found.Count -eq 0) { return '' }
+    return [string]$found[0].reason
+}
+
+# Spawns Install-Hook.ps1 as a real process. Only needed for a GLOBAL-scope
+# install: Install-Hook.ps1 reads $HOME once at process start, so a fake
+# global home must be injected via a fresh process's environment - an
+# in-process `&` call would still see THIS session's real $HOME and could
+# write into the real user's Claude/Codex settings.
+function Invoke-InstallProcess {
+    param([string[]]$ScriptArgs, [string]$FakeHome = '')
+    $token = [guid]::NewGuid().ToString('N').Substring(0, 8)
+    $outF = Join-Path $Work "instout-$token.txt"; $errF = Join-Path $Work "insterr-$token.txt"
+    $quoted = $ScriptArgs | ForEach-Object { if ($_ -match '\s') { '"' + $_ + '"' } else { $_ } }
+    $argLine = '-NoLogo -NoProfile -File "' + $InstallScript + '" ' + ($quoted -join ' ')
+    $hostExecutable = (Get-Process -Id $PID).Path
+    $startArgs = @{
+        FilePath = $hostExecutable; ArgumentList = $argLine
+        RedirectStandardOutput = $outF; RedirectStandardError = $errF
+        Wait = $true; NoNewWindow = $true; PassThru = $true
+    }
+    if ((Get-Command Start-Process).Parameters.ContainsKey('Environment')) {
+        $env = @{ HOOKMAKER_STATE_DIR = $IsolatedStateDir }
+        if ($FakeHome -ne '') { $env['USERPROFILE'] = $FakeHome; $env['HOME'] = $FakeHome }
+        $startArgs.Environment = $env
+    }
+    $p = Start-Process @startArgs
+    $out = ''; if (Test-Path $outF) { $out = [System.IO.File]::ReadAllText($outF) }
+    $err = ''; if (Test-Path $errF) { $err = ([System.IO.File]::ReadAllText($errF)).Trim() }
+    return [pscustomobject]@{ Exit = $p.ExitCode; Out = $out; Err = $err }
 }
 
 try {
@@ -642,6 +678,383 @@ try {
         Check 'after retry the record is gone (or already was)' (@(Get-RecordsFor 'ZZZ-Uninst-Registryfail').Count -eq 0)
     }
     finally { Remove-FixtureHook 'ZZZ-Uninst-Registryfail' }
+
+    # =========================================================================
+    # Strict identity validation: the persisted registry record is the source
+    # of truth. Every fixture below either (a) proves a GENUINE installer-
+    # written record still passes every new invariant and uninstalls cleanly,
+    # or (b) corrupts exactly one persisted invariant and proves NOTHING is
+    # deleted, the record is retained, and the precise reason is manualRepair/
+    # failed - never a silent guess.
+    # =========================================================================
+
+    Write-Host '--- CRITICAL: a genuine installer-written record still passes every new invariant and uninstalls cleanly (both clients) ---' -ForegroundColor Cyan
+    $fxPositive = New-FixtureHook 'ZZZ-Uninst-Positive'
+    try {
+        $projPositive = New-Proj 'PositiveControlProj'
+        & $InstallScript -CustomHook $fxPositive -Events @('Stop') -TargetProject $projPositive *> $null
+        $recPositive = Get-RecordForScope 'ZZZ-Uninst-Positive' $projPositive
+        Check 'positive control: install produced a both-client record' ($null -ne $recPositive -and (@(Get-InstalledClientNames -Record $recPositive) | Sort-Object) -join ',' -eq 'claude,codex')
+
+        $rPositive = Invoke-UninstallProcess -RecordId $recPositive.id
+        Check 'positive control: a real installer-written record exits 0' ($rPositive.Exit -eq 0) $rPositive.Err
+        Check 'positive control: reports overall ok (the new invariants accept a genuine record)' ([string]$rPositive.Result.overall -eq 'ok') ($rPositive.Result | ConvertTo-Json -Depth 5)
+        Check 'positive control: claude reported ok, not manualRepair' ((Get-ComponentStatus $rPositive.Result 'claude') -eq 'ok')
+        Check 'positive control: codex reported ok, not manualRepair' ((Get-ComponentStatus $rPositive.Result 'codex') -eq 'ok')
+        Check 'positive control: the record is fully removed' (@(Get-RecordsFor 'ZZZ-Uninst-Positive').Count -eq 0)
+        Check 'positive control: the claude runtime copy is gone' (-not (Test-Path -LiteralPath ([string]$recPositive.clients.claude.runtimeScript)))
+        Check 'positive control: the codex runtime copy is gone' (-not (Test-Path -LiteralPath ([string]$recPositive.clients.codex.runtimeScript)))
+    }
+    finally { Remove-FixtureHook 'ZZZ-Uninst-Positive' }
+
+    # =========================================================================
+    Write-Host '--- identity: correct friendly name but a runtimeScript whose own directory no longer matches it is refused ---' -ForegroundColor Cyan
+    $fxWrongScript = New-FixtureHook 'ZZZ-Uninst-Wrongscript'
+    try {
+        $projWrongScript = New-Proj 'WrongScriptProj'
+        & $InstallScript -CustomHook $fxWrongScript -Events @('Stop') -TargetProject $projWrongScript -ClaudeOnly *> $null
+        $recWrongScript = Get-RecordForScope 'ZZZ-Uninst-Wrongscript' $projWrongScript
+        $origSettingsPath = [string]$recWrongScript.clients.claude.settingsPath
+        $origRuntimeScript = [string]$recWrongScript.clients.claude.runtimeScript
+        $settingsBefore = Get-BytesOrEmpty $origSettingsPath
+        $runtimeBefore = Get-BytesOrEmpty $origRuntimeScript
+
+        # Still lives under the real runtimeRoot, and its own command is kept
+        # consistent with it (so the registry-level "command targets
+        # runtimeScript" check does not itself block this record) - but its
+        # directory name no longer matches the record's friendlyName. That
+        # inconsistency is internal to the record itself and is never trusted
+        # to compute a delete target, regardless of what the command says.
+        $decoyScript = Join-Path ([string]$recWrongScript.clients.claude.runtimeRoot) 'Some-Other-Name\Some-Other-Name.ps1'
+        $recWrongScript.clients.claude.runtimeScript = $decoyScript
+        $recWrongScript.clients.claude.command = 'powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "' + $decoyScript + '"'
+        Save-MutatedRecord -Record $recWrongScript
+
+        $r = Invoke-UninstallProcess -RecordId $recWrongScript.id
+        Check 'wrong runtimeScript does not crash the uninstaller' ($r.Exit -eq 0) $r.Err
+        Check 'wrong runtimeScript is reported manualRepair overall' ([string]$r.Result.overall -eq 'manualRepair') ($r.Result | ConvertTo-Json -Depth 5)
+        Check 'wrong runtimeScript names a precise, non-empty reason' (-not [string]::IsNullOrWhiteSpace((Get-ComponentReason $r.Result 'claude'))) ($r.Result | ConvertTo-Json -Depth 5)
+        Check 'the original settings file is untouched' (Test-BytesEqual (Get-BytesOrEmpty $origSettingsPath) $settingsBefore)
+        Check 'the original runtime script is untouched' (Test-BytesEqual (Get-BytesOrEmpty $origRuntimeScript) $runtimeBefore)
+        Check 'the record is retained' (@(Get-RecordsFor 'ZZZ-Uninst-Wrongscript').Count -eq 1)
+    }
+    finally { Remove-FixtureHook 'ZZZ-Uninst-Wrongscript' }
+
+    # =========================================================================
+    Write-Host '--- identity: a runtimeScript with the correct basename living under a FOREIGN runtime root is refused ---' -ForegroundColor Cyan
+    $fxForeignRoot = New-FixtureHook 'ZZZ-Uninst-Foreignroot'
+    try {
+        $projForeignA = New-Proj 'ForeignRootProjA'
+        $projForeignB = New-Proj 'ForeignRootProjB'
+        & $InstallScript -CustomHook $fxForeignRoot -Events @('Stop') -TargetProject $projForeignA -ClaudeOnly *> $null
+        & $InstallScript -CustomHook $fxForeignRoot -Events @('Stop') -TargetProject $projForeignB -ClaudeOnly *> $null
+        $recForeignA = Get-RecordForScope 'ZZZ-Uninst-Foreignroot' $projForeignA
+        $recForeignB = Get-RecordForScope 'ZZZ-Uninst-Foreignroot' $projForeignB
+
+        $origSettingsPath = [string]$recForeignA.clients.claude.settingsPath
+        $origRuntimeScript = [string]$recForeignA.clients.claude.runtimeScript
+        $settingsBefore = Get-BytesOrEmpty $origSettingsPath
+        $runtimeBefore = Get-BytesOrEmpty $origRuntimeScript
+        $foreignRuntimeScript = [string]$recForeignB.clients.claude.runtimeScript
+        $foreignBytesBefore = Get-BytesOrEmpty $foreignRuntimeScript
+
+        # Same basename SHAPE (Hook-Maker\ZZZ-Uninst-Foreignroot\ZZZ-Uninst-Foreignroot.ps1)
+        # but this is project B's own copy, entirely outside project A's runtimeRoot.
+        $recForeignA.clients.claude.runtimeScript = $foreignRuntimeScript
+        Save-MutatedRecord -Record $recForeignA
+
+        $r = Invoke-UninstallProcess -RecordId $recForeignA.id
+        Check 'foreign runtime root does not crash the uninstaller' ($r.Exit -eq 0) $r.Err
+        # Caught either by Uninstall-Hook.ps1's own per-client containment
+        # check or by the registry's own record-level validation gate - either
+        # way the overall outcome must be manualRepair/failed, never a false
+        # success, and nothing may be deleted.
+        Check 'foreign runtime root is reported manualRepair/failed overall, never ok' ([string]$r.Result.overall -ne 'ok') ($r.Result | ConvertTo-Json -Depth 5)
+        Check 'the original project A settings file is untouched' (Test-BytesEqual (Get-BytesOrEmpty $origSettingsPath) $settingsBefore)
+        Check 'the original project A runtime script is untouched' (Test-BytesEqual (Get-BytesOrEmpty $origRuntimeScript) $runtimeBefore)
+        Check 'project B''s real runtime script is NEVER touched' (Test-BytesEqual (Get-BytesOrEmpty $foreignRuntimeScript) $foreignBytesBefore)
+        Check 'project A''s record is retained' (@(Get-RecordsFor 'ZZZ-Uninst-Foreignroot' | Where-Object { $_.targetProjectRoot -eq $projForeignA }).Count -eq 1)
+
+        $rCleanupB = Invoke-UninstallProcess -RecordId $recForeignB.id
+        Check 'cleanup: project B''s own untouched record still uninstalls cleanly' ($rCleanupB.Exit -eq 0 -and [string]$rCleanupB.Result.overall -eq 'ok') $rCleanupB.Err
+    }
+    finally { Remove-FixtureHook 'ZZZ-Uninst-Foreignroot' }
+
+    # =========================================================================
+    Write-Host '--- identity: a runtimeScript pointing at a completely unrelated path is refused ---' -ForegroundColor Cyan
+    $fxOutside = New-FixtureHook 'ZZZ-Uninst-Outsideroot'
+    try {
+        $projOutside = New-Proj 'OutsideRootProj'
+        & $InstallScript -CustomHook $fxOutside -Events @('Stop') -TargetProject $projOutside -ClaudeOnly *> $null
+        $recOutside = Get-RecordForScope 'ZZZ-Uninst-Outsideroot' $projOutside
+        $origSettingsPath = [string]$recOutside.clients.claude.settingsPath
+        $origRuntimeScript = [string]$recOutside.clients.claude.runtimeScript
+        $settingsBefore = Get-BytesOrEmpty $origSettingsPath
+        $runtimeBefore = Get-BytesOrEmpty $origRuntimeScript
+
+        $unrelatedFile = Join-Path $Work 'totally-unrelated-file.ps1'
+        Write-Utf8 $unrelatedFile "exit 0`n"
+        $recOutside.clients.claude.runtimeScript = $unrelatedFile
+        Save-MutatedRecord -Record $recOutside
+
+        $r = Invoke-UninstallProcess -RecordId $recOutside.id
+        Check 'runtimeScript outside runtimeRoot does not crash the uninstaller' ($r.Exit -eq 0) $r.Err
+        Check 'runtimeScript outside runtimeRoot is reported manualRepair/failed overall, never ok' ([string]$r.Result.overall -ne 'ok') ($r.Result | ConvertTo-Json -Depth 5)
+        Check 'the unrelated file itself is never touched' (Test-Path -LiteralPath $unrelatedFile)
+        Check 'the original settings file is untouched' (Test-BytesEqual (Get-BytesOrEmpty $origSettingsPath) $settingsBefore)
+        Check 'the original runtime script is untouched' (Test-BytesEqual (Get-BytesOrEmpty $origRuntimeScript) $runtimeBefore)
+        Check 'the record is retained' (@(Get-RecordsFor 'ZZZ-Uninst-Outsideroot').Count -eq 1)
+    }
+    finally { Remove-FixtureHook 'ZZZ-Uninst-Outsideroot' }
+
+    # =========================================================================
+    Write-Host '--- identity: a runtimeScript directly under runtimeRoot (no hook subfolder) is refused ---' -ForegroundColor Cyan
+    $fxRootEqual = New-FixtureHook 'ZZZ-Uninst-Rootequal'
+    try {
+        $projRootEqual = New-Proj 'RootEqualProj'
+        & $InstallScript -CustomHook $fxRootEqual -Events @('Stop') -TargetProject $projRootEqual -ClaudeOnly *> $null
+        $recRootEqual = Get-RecordForScope 'ZZZ-Uninst-Rootequal' $projRootEqual
+        $origSettingsPath = [string]$recRootEqual.clients.claude.settingsPath
+        $origRuntimeScript = [string]$recRootEqual.clients.claude.runtimeScript
+        $settingsBefore = Get-BytesOrEmpty $origSettingsPath
+        $runtimeBefore = Get-BytesOrEmpty $origRuntimeScript
+        $runtimeRootForRootEqual = [string]$recRootEqual.clients.claude.runtimeRoot
+
+        $rootEqualScript = Join-Path $runtimeRootForRootEqual 'ZZZ-Uninst-Rootequal.ps1'
+        $recRootEqual.clients.claude.runtimeScript = $rootEqualScript
+        Save-MutatedRecord -Record $recRootEqual
+
+        $r = Invoke-UninstallProcess -RecordId $recRootEqual.id
+        Check 'runtimeScript directly under runtimeRoot does not crash the uninstaller' ($r.Exit -eq 0) $r.Err
+        Check 'runtimeScript directly under runtimeRoot is reported manualRepair/failed overall, never ok' ([string]$r.Result.overall -ne 'ok') ($r.Result | ConvertTo-Json -Depth 5)
+        Check 'the whole runtimeRoot directory survives (never treated as one hook''s own directory)' (Test-Path -LiteralPath $runtimeRootForRootEqual -PathType Container)
+        Check 'the original settings file is untouched' (Test-BytesEqual (Get-BytesOrEmpty $origSettingsPath) $settingsBefore)
+        Check 'the original runtime script is untouched' (Test-BytesEqual (Get-BytesOrEmpty $origRuntimeScript) $runtimeBefore)
+        Check 'the record is retained' (@(Get-RecordsFor 'ZZZ-Uninst-Rootequal').Count -eq 1)
+    }
+    finally { Remove-FixtureHook 'ZZZ-Uninst-Rootequal' }
+
+    # =========================================================================
+    Write-Host '--- identity: a project record whose Claude settingsPath does not match the canonical project path is refused ---' -ForegroundColor Cyan
+    $fxWrongClaudeSettings = New-FixtureHook 'ZZZ-Uninst-Wrongclaudesettings'
+    try {
+        $projWrongClaudeSettings = New-Proj 'WrongClaudeSettingsProj'
+        & $InstallScript -CustomHook $fxWrongClaudeSettings -Events @('Stop') -TargetProject $projWrongClaudeSettings *> $null
+        $recWCS = Get-RecordForScope 'ZZZ-Uninst-Wrongclaudesettings' $projWrongClaudeSettings
+        $origClaudeSettingsPath = [string]$recWCS.clients.claude.settingsPath
+        $origClaudeRuntimeScript = [string]$recWCS.clients.claude.runtimeScript
+        $claudeSettingsBefore = Get-BytesOrEmpty $origClaudeSettingsPath
+        $claudeRuntimeBefore = Get-BytesOrEmpty $origClaudeRuntimeScript
+
+        # A plausible but WRONG project settings path (settings.json instead of
+        # the machine-specific settings.local.json Install-Hook.ps1 actually writes).
+        $wrongPath = Join-Path $projWrongClaudeSettings '.claude\settings.json'
+        Write-Utf8 $wrongPath '{"hooks":{}}'
+        $recWCS.clients.claude.settingsPath = $wrongPath
+        Save-MutatedRecord -Record $recWCS
+
+        $r = Invoke-UninstallProcess -RecordId $recWCS.id
+        Check 'wrong Claude settingsPath does not crash the uninstaller' ($r.Exit -eq 0) $r.Err
+        Check 'wrong Claude settingsPath is reported manualRepair/failed overall, never ok' ([string]$r.Result.overall -ne 'ok') ($r.Result | ConvertTo-Json -Depth 5)
+        # A malformed record is refused BEFORE either client is even attempted
+        # (this is a whole-record validity gate, not a per-client one) - codex
+        # is therefore never touched either, not "independently succeeded".
+        Check 'codex is never even attempted for a record that fails validation' ((Get-ComponentStatus $r.Result 'codex') -ne 'ok')
+        Check 'the real Claude settings file is untouched' (Test-BytesEqual (Get-BytesOrEmpty $origClaudeSettingsPath) $claudeSettingsBefore)
+        Check 'the Claude runtime copy is untouched' (Test-BytesEqual (Get-BytesOrEmpty $origClaudeRuntimeScript) $claudeRuntimeBefore)
+        Check 'the decoy settings.json is untouched too' ((Get-Content -LiteralPath $wrongPath -Raw) -eq '{"hooks":{}}')
+        $retainedWCS = @(Get-Registry).installs | Where-Object { $_.id -eq $recWCS.id } | Select-Object -First 1
+        Check 'the retained record still lists claude' ($null -ne $retainedWCS.clients.claude)
+        Check 'the retained record still lists codex too (nothing was ever attempted, so nothing was dropped)' ($null -ne $retainedWCS.clients.codex)
+    }
+    finally { Remove-FixtureHook 'ZZZ-Uninst-Wrongclaudesettings' }
+
+    # =========================================================================
+    Write-Host '--- identity: a project record whose Codex settingsPath does not match the canonical project path is refused ---' -ForegroundColor Cyan
+    $fxWrongCodexSettings = New-FixtureHook 'ZZZ-Uninst-Wrongcodexsettings'
+    try {
+        $projWrongCodexSettings = New-Proj 'WrongCodexSettingsProj'
+        & $InstallScript -CustomHook $fxWrongCodexSettings -Events @('Stop') -TargetProject $projWrongCodexSettings *> $null
+        $recWKS = Get-RecordForScope 'ZZZ-Uninst-Wrongcodexsettings' $projWrongCodexSettings
+        $origCodexSettingsPath = [string]$recWKS.clients.codex.settingsPath
+        $origCodexRuntimeScript = [string]$recWKS.clients.codex.runtimeScript
+        $codexSettingsBefore = Get-BytesOrEmpty $origCodexSettingsPath
+        $codexRuntimeBefore = Get-BytesOrEmpty $origCodexRuntimeScript
+
+        $wrongPath = Join-Path $projWrongCodexSettings '.codex\hooks-wrong.json'
+        Write-Utf8 $wrongPath '{"hooks":{}}'
+        $recWKS.clients.codex.settingsPath = $wrongPath
+        Save-MutatedRecord -Record $recWKS
+
+        $r = Invoke-UninstallProcess -RecordId $recWKS.id
+        Check 'wrong Codex settingsPath does not crash the uninstaller' ($r.Exit -eq 0) $r.Err
+        Check 'wrong Codex settingsPath is reported manualRepair/failed overall, never ok' ([string]$r.Result.overall -ne 'ok') ($r.Result | ConvertTo-Json -Depth 5)
+        # Whole-record validity gate: claude is never even attempted either.
+        Check 'claude is never even attempted for a record that fails validation' ((Get-ComponentStatus $r.Result 'claude') -ne 'ok')
+        Check 'the real Codex hooks file is untouched' (Test-BytesEqual (Get-BytesOrEmpty $origCodexSettingsPath) $codexSettingsBefore)
+        Check 'the Codex runtime copy is untouched' (Test-BytesEqual (Get-BytesOrEmpty $origCodexRuntimeScript) $codexRuntimeBefore)
+    }
+    finally { Remove-FixtureHook 'ZZZ-Uninst-Wrongcodexsettings' }
+
+    # =========================================================================
+    Write-Host '--- identity: a GLOBAL-scope record whose settingsPath does not match the canonical global path is refused ---' -ForegroundColor Cyan
+    $fxGlobalForeign = New-FixtureHook 'ZZZ-Uninst-Globalforeign'
+    try {
+        $fakeHome = Join-Path $Work 'fakehome-globalforeign'
+        New-Item -ItemType Directory -Path $fakeHome -Force | Out-Null
+        $rInstall = Invoke-InstallProcess -ScriptArgs @('-CustomHook', $fxGlobalForeign, '-Events', 'Stop', '-ClaudeOnly') -FakeHome $fakeHome
+        Check 'setup: global-scope install exits 0' ($rInstall.Exit -eq 0) $rInstall.Err
+        $recGlobal = @(Get-RecordsFor 'ZZZ-Uninst-Globalforeign' | Where-Object { $_.scope -eq 'global' })[0]
+        Check 'setup: global-scope record has an empty targetProjectRoot' ($null -ne $recGlobal -and [string]::IsNullOrWhiteSpace([string]$recGlobal.targetProjectRoot))
+
+        $origSettingsPath = [string]$recGlobal.clients.claude.settingsPath
+        $origRuntimeScript = [string]$recGlobal.clients.claude.runtimeScript
+        $settingsBefore = Get-BytesOrEmpty $origSettingsPath
+        $runtimeBefore = Get-BytesOrEmpty $origRuntimeScript
+
+        # A foreign settings path: a DIFFERENT fake home entirely, never the
+        # canonical <fakeHome>\.claude\settings.json Install-Hook.ps1 itself wrote.
+        $otherFakeHome = Join-Path $Work 'fakehome-globalforeign-other'
+        $foreignPath = Join-Path $otherFakeHome '.claude\settings.json'
+        New-Item -ItemType Directory -Path (Split-Path -Parent $foreignPath) -Force | Out-Null
+        Write-Utf8 $foreignPath '{"hooks":{}}'
+        $recGlobal.clients.claude.settingsPath = $foreignPath
+        Save-MutatedRecord -Record $recGlobal
+
+        $r = Invoke-UninstallProcess -RecordId $recGlobal.id -FakeHome $fakeHome
+        Check 'global foreign settingsPath does not crash the uninstaller' ($r.Exit -eq 0) $r.Err
+        Check 'global foreign settingsPath is reported manualRepair/failed overall, never ok' ([string]$r.Result.overall -ne 'ok') ($r.Result | ConvertTo-Json -Depth 5)
+        Check 'the real global (fake home) settings file is untouched' (Test-BytesEqual (Get-BytesOrEmpty $origSettingsPath) $settingsBefore)
+        Check 'the real global runtime copy is untouched' (Test-BytesEqual (Get-BytesOrEmpty $origRuntimeScript) $runtimeBefore)
+        Check 'the foreign settings file is untouched' ((Get-Content -LiteralPath $foreignPath -Raw) -eq '{"hooks":{}}')
+        Check 'the record is retained' (@(Get-RecordsFor 'ZZZ-Uninst-Globalforeign').Count -eq 1)
+
+        # Repair the path back and clean up so this doesn't leak a permanently-
+        # broken global record for the rest of the isolated test run.
+        $recGlobal.clients.claude.settingsPath = $origSettingsPath
+        Save-MutatedRecord -Record $recGlobal
+        $rCleanup = Invoke-UninstallProcess -RecordId $recGlobal.id -FakeHome $fakeHome
+        Check 'cleanup: repairing settingsPath back allows a clean uninstall' ($rCleanup.Exit -eq 0 -and [string]$rCleanup.Result.overall -eq 'ok') $rCleanup.Err
+    }
+    finally { Remove-FixtureHook 'ZZZ-Uninst-Globalforeign' }
+
+    # =========================================================================
+    Write-Host '--- ownership: a handler whose command targets a DIFFERENT real hook''s runtime is left alone ---' -ForegroundColor Cyan
+    $fxTargetA = New-FixtureHook 'ZZZ-Uninst-Targetownera'
+    $fxTargetB = New-FixtureHook 'ZZZ-Uninst-Targetownerb'
+    try {
+        $projTarget = New-Proj 'TargetOwnershipProj'
+        & $InstallScript -CustomHook $fxTargetA -Events @('Stop') -TargetProject $projTarget -ClaudeOnly *> $null
+        & $InstallScript -CustomHook $fxTargetB -Events @('Stop') -TargetProject $projTarget -ClaudeOnly *> $null
+        $recTargetA = Get-RecordForScope 'ZZZ-Uninst-Targetownera' $projTarget
+        $recTargetB = Get-RecordForScope 'ZZZ-Uninst-Targetownerb' $projTarget
+        $bBytesBefore = Get-BytesOrEmpty ([string]$recTargetB.clients.claude.runtimeScript)
+
+        $r = Invoke-UninstallProcess -RecordId $recTargetA.id
+        Check 'removing hook A exits 0' ($r.Exit -eq 0) $r.Err
+        Check 'removing hook A reports overall ok - a foreign command in the same event/file is never ambiguous' ([string]$r.Result.overall -eq 'ok') ($r.Result | ConvertTo-Json -Depth 5)
+        Check 'hook A''s record is gone' (@(Get-RecordsFor 'ZZZ-Uninst-Targetownera').Count -eq 0)
+        Check 'hook B''s record survives untouched' (@(Get-RecordsFor 'ZZZ-Uninst-Targetownerb').Count -eq 1)
+        Check 'hook B''s runtime copy is byte-for-byte unchanged' (Test-BytesEqual (Get-BytesOrEmpty ([string]$recTargetB.clients.claude.runtimeScript)) $bBytesBefore)
+        Check 'hook B''s settings registration survives' ((Get-Content -LiteralPath ([string]$recTargetB.clients.claude.settingsPath) -Raw) -like '*ZZZ-Uninst-Targetownerb*')
+
+        $rCleanupB = Invoke-UninstallProcess -RecordId $recTargetB.id
+        Check 'cleanup: hook B still uninstalls cleanly afterward' ($rCleanupB.Exit -eq 0 -and [string]$rCleanupB.Result.overall -eq 'ok') $rCleanupB.Err
+    }
+    finally { Remove-FixtureHook 'ZZZ-Uninst-Targetownera'; Remove-FixtureHook 'ZZZ-Uninst-Targetownerb' }
+
+    # =========================================================================
+    Write-Host '--- ownership: a same-name registration pointing at the WRONG path is an ambiguous near-match, never removed and never silently ignored ---' -ForegroundColor Cyan
+    $fxNearMatch = New-FixtureHook 'ZZZ-Uninst-Nearmatch'
+    try {
+        $projNearMatch = New-Proj 'NearMatchProj'
+        & $InstallScript -CustomHook $fxNearMatch -Events @('Stop') -TargetProject $projNearMatch -ClaudeOnly *> $null
+        $recNearMatch = Get-RecordForScope 'ZZZ-Uninst-Nearmatch' $projNearMatch
+        $settingsPathNM = [string]$recNearMatch.clients.claude.settingsPath
+        $runtimeBeforeNM = Get-BytesOrEmpty ([string]$recNearMatch.clients.claude.runtimeScript)
+
+        # A SECOND handler under the SAME event, same Hook-Maker path SHAPE and
+        # same friendly name, but pointing at a decoy directory that is NOT
+        # this record's own persisted runtimeScript (e.g. a stale duplicate
+        # left behind by hand).
+        $jsonNM = Get-Content -LiteralPath $settingsPathNM -Raw | ConvertFrom-Json
+        $decoyCommand = 'powershell.exe -NoLogo -NoProfile -File "C:\Somewhere\Else\hooks\Hook-Maker\ZZZ-Uninst-Nearmatch\ZZZ-Uninst-Nearmatch.ps1"'
+        $decoyGroup = [pscustomobject]@{ hooks = @([pscustomobject]@{ type = 'command'; command = $decoyCommand; timeout = 60 }) }
+        $jsonNM.hooks.Stop = @($jsonNM.hooks.Stop) + @($decoyGroup)
+        [System.IO.File]::WriteAllText($settingsPathNM, ($jsonNM | ConvertTo-Json -Depth 50), (New-Object System.Text.UTF8Encoding $false))
+        $settingsWithDecoy = Get-BytesOrEmpty $settingsPathNM
+
+        $r = Invoke-UninstallProcess -RecordId $recNearMatch.id
+        Check 'a near-match registration does not crash the uninstaller' ($r.Exit -eq 0) $r.Err
+        Check 'a near-match registration is reported manualRepair for claude' ((Get-ComponentStatus $r.Result 'claude') -eq 'manualRepair')
+        Check 'a near-match registration names a precise reason' ((Get-ComponentReason $r.Result 'claude') -eq 'ambiguousRegistration')
+        Check 'nothing is removed from settings - byte-for-byte unchanged (including the decoy)' (Test-BytesEqual (Get-BytesOrEmpty $settingsPathNM) $settingsWithDecoy)
+        Check 'the real runtime copy is untouched' (Test-BytesEqual (Get-BytesOrEmpty ([string]$recNearMatch.clients.claude.runtimeScript)) $runtimeBeforeNM)
+        Check 'the record is retained' (@(Get-RecordsFor 'ZZZ-Uninst-Nearmatch').Count -eq 1)
+    }
+    finally { Remove-FixtureHook 'ZZZ-Uninst-Nearmatch' }
+
+    # =========================================================================
+    Write-Host '--- ownership: an exact-path duplicate registered under an event OUTSIDE the persisted list is an ambiguous near-match ---' -ForegroundColor Cyan
+    $fxEventGate = New-FixtureHook 'ZZZ-Uninst-Eventgate'
+    try {
+        $projEventGate = New-Proj 'EventGateProj'
+        & $InstallScript -CustomHook $fxEventGate -Events @('Stop') -TargetProject $projEventGate -ClaudeOnly *> $null
+        $recEventGate = Get-RecordForScope 'ZZZ-Uninst-Eventgate' $projEventGate
+        $settingsPathEG = [string]$recEventGate.clients.claude.settingsPath
+        $runtimeBeforeEG = Get-BytesOrEmpty ([string]$recEventGate.clients.claude.runtimeScript)
+        $realCommandEG = [string]$recEventGate.clients.claude.command
+
+        # Duplicate the EXACT real handler (same command, same runtime script)
+        # but registered under SessionStart - an event this record never
+        # persisted. Even an exact path match must never be removed from an
+        # event outside the persisted list, and must not be silently ignored.
+        $jsonEG = Get-Content -LiteralPath $settingsPathEG -Raw | ConvertFrom-Json
+        $extraGroup = [pscustomobject]@{ matcher = 'startup|resume|clear|compact'; hooks = @([pscustomobject]@{ type = 'command'; command = $realCommandEG; timeout = 60 }) }
+        Add-Member -InputObject $jsonEG.hooks -MemberType NoteProperty -Name 'SessionStart' -Value @($extraGroup) -Force
+        [System.IO.File]::WriteAllText($settingsPathEG, ($jsonEG | ConvertTo-Json -Depth 50), (New-Object System.Text.UTF8Encoding $false))
+        $settingsWithExtra = Get-BytesOrEmpty $settingsPathEG
+
+        $r = Invoke-UninstallProcess -RecordId $recEventGate.id
+        Check 'an exact-path duplicate on an unlisted event does not crash the uninstaller' ($r.Exit -eq 0) $r.Err
+        Check 'an exact-path duplicate on an unlisted event is reported manualRepair for claude' ((Get-ComponentStatus $r.Result 'claude') -eq 'manualRepair')
+        Check 'nothing is removed from settings - byte-for-byte unchanged' (Test-BytesEqual (Get-BytesOrEmpty $settingsPathEG) $settingsWithExtra)
+        Check 'the real runtime copy is untouched' (Test-BytesEqual (Get-BytesOrEmpty ([string]$recEventGate.clients.claude.runtimeScript)) $runtimeBeforeEG)
+        Check 'the record is retained' (@(Get-RecordsFor 'ZZZ-Uninst-Eventgate').Count -eq 1)
+    }
+    finally { Remove-FixtureHook 'ZZZ-Uninst-Eventgate' }
+
+    # =========================================================================
+    Write-Host '--- identity: non-string subrecord fields (events/runtimeScript/settingsPath/command) are refused, never merely cast ---' -ForegroundColor Cyan
+    $fxNonString = New-FixtureHook 'ZZZ-Uninst-Nonstring'
+    try {
+        $nonStringScenarios = @(
+            [pscustomobject]@{ Field = 'events'; Value = 'Stop'; Label = 'a bare string instead of an array' },
+            [pscustomobject]@{ Field = 'runtimeScript'; Value = 424242; Label = 'a number' },
+            [pscustomobject]@{ Field = 'settingsPath'; Value = 424242; Label = 'a number' },
+            [pscustomobject]@{ Field = 'command'; Value = 424242; Label = 'a number' }
+        )
+        foreach ($scenario in $nonStringScenarios) {
+            $proj = New-Proj ('NonString' + $scenario.Field + 'Proj')
+            & $InstallScript -CustomHook $fxNonString -Events @('Stop') -TargetProject $proj -ClaudeOnly *> $null
+            $rec = Get-RecordForScope 'ZZZ-Uninst-Nonstring' $proj
+            $origSettingsPath = [string]$rec.clients.claude.settingsPath
+            $origRuntimeScript = [string]$rec.clients.claude.runtimeScript
+            $settingsBefore = Get-BytesOrEmpty $origSettingsPath
+            $runtimeBefore = Get-BytesOrEmpty $origRuntimeScript
+
+            $rec.clients.claude.($scenario.Field) = $scenario.Value
+            Save-MutatedRecord -Record $rec
+
+            $r = Invoke-UninstallProcess -RecordId $rec.id
+            Check ('non-string ' + $scenario.Field + ' (' + $scenario.Label + ') does not crash the uninstaller') ($r.Exit -eq 0) $r.Err
+            Check ('non-string ' + $scenario.Field + ' is reported manualRepair/failed overall, never ok') ([string]$r.Result.overall -ne 'ok') ($r.Result | ConvertTo-Json -Depth 5)
+            Check ('non-string ' + $scenario.Field + ': the settings file is untouched') (Test-BytesEqual (Get-BytesOrEmpty $origSettingsPath) $settingsBefore)
+            Check ('non-string ' + $scenario.Field + ': the runtime copy is untouched') (Test-BytesEqual (Get-BytesOrEmpty $origRuntimeScript) $runtimeBefore)
+            Check ('non-string ' + $scenario.Field + ': the record is retained') (@(Get-RecordsFor 'ZZZ-Uninst-Nonstring' | Where-Object { $_.targetProjectRoot -eq $proj }).Count -eq 1)
+        }
+    }
+    finally { Remove-FixtureHook 'ZZZ-Uninst-Nonstring' }
 }
 finally {
     $env:HOOKMAKER_STATE_DIR = $SavedHookMakerStateDir
