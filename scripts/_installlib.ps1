@@ -173,8 +173,36 @@ function Test-SyncConfigStructure {
             return [pscustomobject]@{ Ok = $false; Reason = ("profile '" + $profileId + "' requires a non-empty name") }
         }
 
-        $routesValue = @()
-        if ($null -ne $configProfile.PSObject.Properties['routes']) { $routesValue = $configProfile.routes }
+        # 'routes' is REQUIRED and must be a genuine route sequence. Defaulting a
+        # missing property to @() (the previous behavior) silently turned a
+        # profile with no routes property at all into a "valid profile with an
+        # empty route list", which is exactly the malformed-structure case this
+        # validator exists to reject before any mutation.
+        #
+        # EMPTY routes (`"routes": []`) is deliberately still STRUCTURALLY valid:
+        # Validate-Config.ps1 runs this over EVERY profile in a whole config
+        # file, including profiles the user is not installing, and an emptied-out
+        # or placeholder group is a legitimate file state - failing the entire
+        # config for one would be a regression with no safety benefit. The
+        # stricter "the profile being installed must actually have a route" rule
+        # belongs where a specific profile is known, and is enforced in
+        # Install-Hook.ps1's pre-mutation engine block.
+        $routesProperty = $configProfile.PSObject.Properties['routes']
+        if ($null -eq $routesProperty) {
+            return [pscustomobject]@{ Ok = $false; Reason = ("profile '" + $profileId + "' requires a routes array") }
+        }
+        $routesValue = $routesProperty.Value
+        if ($null -eq $routesValue) {
+            return [pscustomobject]@{ Ok = $false; Reason = ("profile '" + $profileId + "' has a null routes value; a routes array is required") }
+        }
+        # A string is IEnumerable (over its characters) and a PSCustomObject /
+        # hashtable is not a route sequence at all, so both are rejected rather
+        # than being silently enumerated into nonsense routes.
+        if ($routesValue -is [string] -or
+            $routesValue -is [System.Collections.IDictionary] -or
+            -not ($routesValue -is [System.Collections.IEnumerable])) {
+            return [pscustomobject]@{ Ok = $false; Reason = ("profile '" + $profileId + "' has a routes value that is not an array") }
+        }
         $routeIds = @{}
         foreach ($route in @($routesValue)) {
             $routeId = ''
@@ -324,8 +352,84 @@ function Test-InstallRecordValid {
                     return [pscustomobject]@{ Ok = $false; Reason = ('managed nativeGit record is missing "' + $required + '"') }
                 }
             }
-            if ($null -eq $nativeGit.PSObject.Properties['companions']) {
+            # companions is enumerated twice by Test-NativePrePushState (to build
+            # the expected stage list and to rebuild the installed manifest), and
+            # each entry is cast to a string used as a path segment - so the
+            # collection shape AND every entry has to hold up, not just presence.
+            $companionsProperty = $nativeGit.PSObject.Properties['companions']
+            if ($null -eq $companionsProperty) {
                 return [pscustomobject]@{ Ok = $false; Reason = 'managed nativeGit record is missing "companions"' }
+            }
+            $companionsValue = $companionsProperty.Value
+            if ($null -eq $companionsValue -or $companionsValue -is [string] -or
+                $companionsValue -is [System.Collections.IDictionary] -or
+                -not ($companionsValue -is [System.Collections.IEnumerable])) {
+                return [pscustomobject]@{ Ok = $false; Reason = 'managed nativeGit "companions" is not an array' }
+            }
+            foreach ($companion in @($companionsValue)) {
+                if ($null -eq $companion -or [string]::IsNullOrWhiteSpace([string]$companion)) {
+                    return [pscustomobject]@{ Ok = $false; Reason = 'managed nativeGit "companions" contains an empty entry' }
+                }
+            }
+            # sourceManifest is read UNGUARDED by Test-NativePrePushState
+            # (`@($NativeRecord.sourceManifest)`), so a managed record without it
+            # previously passed validation and then threw under StrictMode during
+            # integrity evaluation - the exact "passes validation, fails later"
+            # gap this validator exists to close.
+            $nativeManifestProperty = $nativeGit.PSObject.Properties['sourceManifest']
+            if ($null -eq $nativeManifestProperty) {
+                return [pscustomobject]@{ Ok = $false; Reason = 'managed nativeGit record is missing "sourceManifest"' }
+            }
+            $nativeManifestValue = $nativeManifestProperty.Value
+            if ($null -eq $nativeManifestValue -or $nativeManifestValue -is [string] -or
+                $nativeManifestValue -is [System.Collections.IDictionary] -or
+                -not ($nativeManifestValue -is [System.Collections.IEnumerable])) {
+                return [pscustomobject]@{ Ok = $false; Reason = 'managed nativeGit "sourceManifest" is not an array' }
+            }
+            foreach ($nativeEntry in @($nativeManifestValue)) {
+                if ($null -eq $nativeEntry -or $nativeEntry -isnot [psobject] -or
+                    $null -eq $nativeEntry.PSObject.Properties['path'] -or
+                    $null -eq $nativeEntry.PSObject.Properties['hash']) {
+                    return [pscustomobject]@{ Ok = $false; Reason = 'managed nativeGit "sourceManifest" contains a malformed entry' }
+                }
+                if ([string]::IsNullOrWhiteSpace([string]$nativeEntry.path)) {
+                    return [pscustomobject]@{ Ok = $false; Reason = 'managed nativeGit "sourceManifest" contains an entry with an empty path' }
+                }
+                # Compare-Manifest matches on the recorded hash; a non-hex value
+                # can never equal a real SHA-256 and would silently read as
+                # permanent drift instead of the malformed record it is.
+                $nativeHash = [string]$nativeEntry.hash
+                if ([string]::IsNullOrWhiteSpace($nativeHash) -or $nativeHash -notmatch '^[0-9a-fA-F]+$') {
+                    return [pscustomobject]@{ Ok = $false; Reason = 'managed nativeGit "sourceManifest" contains an entry with an invalid hash' }
+                }
+            }
+            # expectedStages, when present, is enumerated and each entry cast to
+            # a string used to rebuild the wrapper body for an exact comparison.
+            $stagesProperty = $nativeGit.PSObject.Properties['expectedStages']
+            if ($null -ne $stagesProperty -and $null -ne $stagesProperty.Value) {
+                $stagesValue = $stagesProperty.Value
+                if ($stagesValue -is [string] -or $stagesValue -is [System.Collections.IDictionary] -or
+                    -not ($stagesValue -is [System.Collections.IEnumerable])) {
+                    return [pscustomobject]@{ Ok = $false; Reason = 'managed nativeGit "expectedStages" is not an array' }
+                }
+                foreach ($stage in @($stagesValue)) {
+                    if ($null -eq $stage -or [string]::IsNullOrWhiteSpace([string]$stage)) {
+                        return [pscustomobject]@{ Ok = $false; Reason = 'managed nativeGit "expectedStages" contains an empty entry' }
+                    }
+                }
+            }
+            # The preserved user hook is checked by path existence, and the
+            # sticky flag is compared with -eq $true; a non-string path or a
+            # non-boolean flag means the record cannot be interpreted safely.
+            $previousPathProperty = $nativeGit.PSObject.Properties['previousHookPath']
+            if ($null -ne $previousPathProperty -and $null -ne $previousPathProperty.Value -and
+                $previousPathProperty.Value -isnot [string]) {
+                return [pscustomobject]@{ Ok = $false; Reason = 'managed nativeGit "previousHookPath" is not a string' }
+            }
+            $preservedProperty = $nativeGit.PSObject.Properties['previousHookPreserved']
+            if ($null -ne $preservedProperty -and $null -ne $preservedProperty.Value -and
+                $preservedProperty.Value -isnot [bool]) {
+                return [pscustomobject]@{ Ok = $false; Reason = 'managed nativeGit "previousHookPreserved" is not a boolean' }
             }
         }
     }

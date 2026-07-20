@@ -220,7 +220,7 @@ try {
     Check 'an UNMANAGED nativeGit record is never dereferenced for shape' ((Test-InstallRecordValid -Record $unmanagedNativeIncomplete).Ok)
 
     $completeManagedNative = Copy-Record $goodRecord
-    $completeManagedNative | Add-Member -MemberType NoteProperty -Name nativeGit -Value ([pscustomobject]@{ managed = $true; wrapperPath = 'C:\p\pre-push'; runtimeRoot = 'C:\runtime'; companions = @('Secrets-Check') })
+    $completeManagedNative | Add-Member -MemberType NoteProperty -Name nativeGit -Value ([pscustomobject]@{ managed = $true; wrapperPath = 'C:\p\pre-push'; runtimeRoot = 'C:\runtime'; companions = @('Secrets-Check'); sourceManifest = @([pscustomobject]@{ path = 'secrets-check/secrets-check.ps1'; hash = 'ABCDEF1234567890' }) })
     Check 'a complete managed nativeGit record still validates' ((Test-InstallRecordValid -Record $completeManagedNative).Ok)
 
     $malformedLastComponents = Copy-Record $goodRecord
@@ -262,6 +262,56 @@ try {
     $engineNoProfile = Copy-Record $goodRecord; $engineNoProfile.hookType = 'Engine'
 
     Check 'an engine record without profile/config is rejected' (-not (Test-InstallRecordValid -Record $engineNoProfile).Ok)
+
+    # Table-driven managed-nativeGit schema cases (Defect 4): Test-NativePrePushState
+    # reads `@($NativeRecord.sourceManifest)` completely unguarded, so a managed
+    # record missing it used to pass validation here and only throw later, under
+    # StrictMode, during integrity evaluation. Every malformed variant below is
+    # derived from one valid fixture so only the field under test differs.
+    $goodManagedNative = Copy-Record $goodRecord
+    $goodManagedNative | Add-Member -MemberType NoteProperty -Name nativeGit -Value ([pscustomobject]@{
+        managed = $true; hooksPath = 'C:\p\.git\hooks'; runtimeRoot = 'C:\p\.git\hooks\Hook-Maker'
+        wrapperPath = 'C:\p\.git\hooks\pre-push'; previousHookPath = 'C:\p\.git\hooks\pre-push.hookmaker-existing'
+        previousHookPreserved = $true; previousHookMissing = $false
+        expectedStages = @('Ignore-Rules-Check', 'Secrets-Check'); wrapperBodyHash = 'abc123'
+        companions = @('Secrets-Check')
+        sourceManifest = @([pscustomobject]@{ path = 'secrets-check/secrets-check.ps1'; hash = 'A1B2C3D4E5F60718293A4B5C6D7E8F901234567890ABCDEF1234567890ABCDEF' })
+    })
+    $goodManagedNative = Copy-Record $goodManagedNative
+
+    Check 'a fully valid managed native record validates' ((Test-InstallRecordValid -Record $goodManagedNative).Ok)
+
+    $noExpectedStages = Copy-Record $goodManagedNative
+    $noExpectedStages.nativeGit.PSObject.Properties.Remove('expectedStages')
+    Check 'a managed native record with expectedStages absent still validates (it is optional)' ((Test-InstallRecordValid -Record $noExpectedStages).Ok)
+
+    $unmanagedMissingEverything = Copy-Record $goodRecord
+    $unmanagedMissingEverything | Add-Member -MemberType NoteProperty -Name nativeGit -Value ([pscustomobject]@{ managed = $false })
+    Check 'an unmanaged nativeGit record missing sourceManifest/companions is never shape-checked' ((Test-InstallRecordValid -Record $unmanagedMissingEverything).Ok)
+
+    $managedNativeSchemaCases = @(
+        @{ Name = 'sourceManifest missing'; Reason = 'is missing "sourceManifest"'; Mutate = { param($r) $r.nativeGit.PSObject.Properties.Remove('sourceManifest') } }
+        @{ Name = 'sourceManifest is $null'; Reason = '"sourceManifest" is not an array'; Mutate = { param($r) $r.nativeGit | Add-Member -MemberType NoteProperty -Name sourceManifest -Value $null -Force } }
+        @{ Name = 'sourceManifest is a scalar'; Reason = '"sourceManifest" is not an array'; Mutate = { param($r) $r.nativeGit | Add-Member -MemberType NoteProperty -Name sourceManifest -Value 'not-an-array' -Force } }
+        @{ Name = 'sourceManifest has a null entry'; Reason = 'contains a malformed entry'; Mutate = { param($r) $r.nativeGit | Add-Member -MemberType NoteProperty -Name sourceManifest -Value @($null) -Force } }
+        @{ Name = 'sourceManifest entry missing path'; Reason = 'contains a malformed entry'; Mutate = { param($r) $r.nativeGit | Add-Member -MemberType NoteProperty -Name sourceManifest -Value @([pscustomobject]@{ hash = 'ABCDEF1234567890' }) -Force } }
+        @{ Name = 'sourceManifest entry missing hash'; Reason = 'contains a malformed entry'; Mutate = { param($r) $r.nativeGit | Add-Member -MemberType NoteProperty -Name sourceManifest -Value @([pscustomobject]@{ path = 'x.ps1' }) -Force } }
+        @{ Name = 'sourceManifest entry has an empty path'; Reason = 'contains an entry with an empty path'; Mutate = { param($r) $r.nativeGit | Add-Member -MemberType NoteProperty -Name sourceManifest -Value @([pscustomobject]@{ path = '   '; hash = 'ABCDEF1234567890' }) -Force } }
+        @{ Name = 'sourceManifest entry has a malformed hash'; Reason = 'contains an entry with an invalid hash'; Mutate = { param($r) $r.nativeGit | Add-Member -MemberType NoteProperty -Name sourceManifest -Value @([pscustomobject]@{ path = 'x.ps1'; hash = 'not-hex-zzz!' }) -Force } }
+        @{ Name = 'companions is a scalar'; Reason = '"companions" is not an array'; Mutate = { param($r) $r.nativeGit | Add-Member -MemberType NoteProperty -Name companions -Value 'Secrets-Check' -Force } }
+        @{ Name = 'companions has an empty entry'; Reason = '"companions" contains an empty entry'; Mutate = { param($r) $r.nativeGit | Add-Member -MemberType NoteProperty -Name companions -Value @('') -Force } }
+        @{ Name = 'expectedStages is a scalar'; Reason = '"expectedStages" is not an array'; Mutate = { param($r) $r.nativeGit | Add-Member -MemberType NoteProperty -Name expectedStages -Value 'Secrets-Check' -Force } }
+        @{ Name = 'expectedStages has an empty entry'; Reason = '"expectedStages" contains an empty entry'; Mutate = { param($r) $r.nativeGit | Add-Member -MemberType NoteProperty -Name expectedStages -Value @('') -Force } }
+        @{ Name = 'previousHookPreserved is not a boolean'; Reason = '"previousHookPreserved" is not a boolean'; Mutate = { param($r) $r.nativeGit | Add-Member -MemberType NoteProperty -Name previousHookPreserved -Value 'yes' -Force } }
+        @{ Name = 'previousHookPath is not a string'; Reason = '"previousHookPath" is not a string'; Mutate = { param($r) $r.nativeGit | Add-Member -MemberType NoteProperty -Name previousHookPath -Value 12345 -Force } }
+    )
+
+    foreach ($case in $managedNativeSchemaCases) {
+        $variant = Copy-Record $goodManagedNative
+        & $case.Mutate $variant
+        $result = Test-InstallRecordValid -Record $variant
+        Check ('managed nativeGit: ' + $case.Name + ' is rejected') ((-not $result.Ok) -and ($result.Reason -match $case.Reason)) $result.Reason
+    }
 
 
 
@@ -339,6 +389,82 @@ try {
     Check 'the malformed record is left untouched, never repaired by guessing' (@($isoAfter.installs | Where-Object { $_.id -eq 'broken-isolation' }).Count -eq 1)
 
     [System.IO.File]::WriteAllText($isoRegPath, $isoOriginal, (New-Object System.Text.UTF8Encoding $false))
+
+    # A SEPARATE mixed-registry batch, specifically for the Defect 4 fields:
+    # a real installer-written managed nativeGit record (Ignore-Rules-Check,
+    # installed into a real git repo) alongside a real client-based record,
+    # plus several nativeGit variants malformed ONLY in the newly validated
+    # fields (missing sourceManifest, a non-hex hash, non-array companions) -
+    # proving each is skipped before Get-InstallIntegrity/Test-NativePrePushState
+    # ever sees it, while both healthy records still evaluate.
+
+    $nmiProj = New-Proj 'NativeManagedIsolation'
+
+    & git -C $nmiProj init -q -b main 2>$null
+
+    & git -C $nmiProj config user.email 't@t' 2>$null
+
+    & git -C $nmiProj config user.name 't' 2>$null
+
+    & $InstallScript -CustomHook (Join-Path $RealHooksDir 'Ai-Memory-Check\Ai-Memory-Check.ps1') -Events @('Stop') -TargetProject $nmiProj -ClaudeOnly *> $null
+
+    & $InstallScript -CustomHook (Join-Path $RealHooksDir 'Ignore-Rules-Check\Ignore-Rules-Check.ps1') -Events @('Stop') -TargetProject $nmiProj -ClaudeOnly *> $null
+
+    $nmiReg = Read-InstallRegistry -ToolRoot $ToolRoot
+
+    $nmiHealthyNormal = @($nmiReg.installs | Where-Object { $_.friendlyName -eq 'Ai-Memory-Check' -and $_.targetProjectRoot -eq $nmiProj })[0]
+
+    $nmiHealthyNative = @($nmiReg.installs | Where-Object { $_.friendlyName -eq 'Ignore-Rules-Check' -and $_.targetProjectRoot -eq $nmiProj })[0]
+
+    Check 'setup: the healthy normal record installed for the native batch' ($null -ne $nmiHealthyNormal)
+
+    Check 'setup: the healthy managed-native record installed for the native batch' ($null -ne $nmiHealthyNative -and $nmiHealthyNative.nativeGit.managed -eq $true)
+
+    $nmiMissingSourceManifest = Copy-Record $nmiHealthyNative
+
+    $nmiMissingSourceManifest.id = 'nmi-missing-sourcemanifest'
+
+    $nmiMissingSourceManifest.nativeGit.PSObject.Properties.Remove('sourceManifest')
+
+    $nmiBadHash = Copy-Record $nmiHealthyNative
+
+    $nmiBadHash.id = 'nmi-bad-hash'
+
+    $nmiBadHash.nativeGit | Add-Member -MemberType NoteProperty -Name sourceManifest -Value @([pscustomobject]@{ path = 'secrets-check/secrets-check.ps1'; hash = 'not-hex-zzz!' }) -Force
+
+    $nmiScalarCompanions = Copy-Record $nmiHealthyNative
+
+    $nmiScalarCompanions.id = 'nmi-scalar-companions'
+
+    $nmiScalarCompanions.nativeGit | Add-Member -MemberType NoteProperty -Name companions -Value 'Secrets-Check' -Force
+
+    $nmiBatch = @($nmiHealthyNormal, $nmiHealthyNative, $nmiMissingSourceManifest, $nmiBadHash, $nmiScalarCompanions)
+
+    $nmiEvaluated = 0; $nmiSkipped = 0; $nmiCrashed = $false
+
+    foreach ($nmiRecord in $nmiBatch) {
+
+        try {
+
+            $nmiValid = Test-InstallRecordValid -Record $nmiRecord
+
+            if (-not $nmiValid.Ok) { $nmiSkipped++; continue }
+
+            $null = Get-InstallIntegrity -Record $nmiRecord -ToolRoot $ToolRoot
+
+            $nmiEvaluated++
+
+        }
+
+        catch { $nmiCrashed = $true; break }
+
+    }
+
+    Check 'a malformed managed-native record never crashes the batch' (-not $nmiCrashed)
+
+    Check 'every differently-malformed managed-native record is isolated as a skip (3 total)' ($nmiSkipped -eq 3)
+
+    Check 'both the healthy normal and the healthy managed-native record still evaluate' ($nmiEvaluated -eq 2)
 
 
 
