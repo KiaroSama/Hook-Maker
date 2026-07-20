@@ -74,6 +74,30 @@ if ($ThrottleLimit -le 0) {
     $ThrottleLimit = [Math]::Max(2, [Math]::Min(8, $cores - 2))
 }
 
+# Project-wide ceiling, applied to BOTH the auto-detected number and an explicit
+# -ThrottleLimit. This is where a worker cap can actually be enforced: it is the
+# only place that knows the real number.
+#
+# Test-Run-Guard deliberately does NOT enforce its TEST_GUARD_MAX_WORKERS - it
+# would have to rewrite the worker flag of whatever runner it just recognised,
+# and every framework spells that differently (pytest -n, jest --maxWorkers,
+# vitest --maxThreads, go -p, cargo -j, dotnet -m, here -ThrottleLimit).
+# Guessing wrong breaks the run, and the common oversubscribing case carries no
+# flag at all - it auto-detects - so there would be nothing to rewrite anyway.
+# The hook advises the number; this line is what makes it bind.
+if (-not [string]::IsNullOrWhiteSpace($env:HOOKMAKER_MAX_TEST_WORKERS)) {
+    $ceiling = 0
+    if ([int]::TryParse($env:HOOKMAKER_MAX_TEST_WORKERS, [ref]$ceiling) -and $ceiling -ge 1) {
+        if ($ThrottleLimit -gt $ceiling) {
+            Write-Host ('Worker ceiling HOOKMAKER_MAX_TEST_WORKERS=' + $ceiling + ' applied (was ' + $ThrottleLimit + ').') -ForegroundColor DarkGray
+            $ThrottleLimit = $ceiling
+        }
+    }
+    else {
+        Write-Host ('Ignoring HOOKMAKER_MAX_TEST_WORKERS: not a positive integer.') -ForegroundColor Yellow
+    }
+}
+
 Write-Host ('Running ' + $all.Count + ' suite(s): ' + $isolatedSuites.Count + ' parallel + ' + $exclusiveSuites.Count + ' exclusive-first. Per-suite timeout ' + $TimeoutSeconds + 's.') -ForegroundColor Cyan
 $stopwatch = [System.Diagnostics.Stopwatch]::StartNew()
 $host7 = (Get-Process -Id $PID).Path
