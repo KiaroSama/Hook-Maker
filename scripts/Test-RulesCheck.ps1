@@ -242,12 +242,7 @@ finally {
     if ($null -ne $SavedClaudeDir) { $env:CLAUDE_PROJECT_DIR = $SavedClaudeDir } else { Remove-Item Env:CLAUDE_PROJECT_DIR -ErrorAction SilentlyContinue }
     $env:HOOKMAKER_STATE_DIR = $SavedHookMakerStateDir
     if (-not $KeepArtifacts) {
-        try {
-            Get-ChildItem -LiteralPath $Work -Recurse -Force -ErrorAction SilentlyContinue |
-                ForEach-Object { $_.Attributes = [System.IO.FileAttributes]::Normal }
-            Remove-Item -LiteralPath $Work -Recurse -Force -ErrorAction SilentlyContinue
-        }
-        catch { }
+        if (-not (Remove-TestWorkspace $Work)) { $script:Fail++ }
     }
 }
 
