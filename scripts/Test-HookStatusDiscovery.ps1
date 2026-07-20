@@ -45,8 +45,13 @@ $script:TestPreviewLength = 800
 . (Join-Path $ToolRoot 'hooks\_hooklib.ps1')
 . (Join-Path $ScriptRoot '_installplan.ps1')
 
-$Work = Join-Path ([System.IO.Path]::GetTempPath()) ('hookmaker-statusdisc-' + [guid]::NewGuid().ToString('N').Substring(0, 8))
+$WorkToken = [guid]::NewGuid().ToString('N').Substring(0, 8)
+$Work = Join-Path ([System.IO.Path]::GetTempPath()) ('hookmaker-statusdisc-' + $WorkToken)
+# A SIBLING of $Work, never inside it: $Work is the tree these tests scan, and
+# the scanner refuses to write its result document into a scanned root.
+$Artifacts = Join-Path ([System.IO.Path]::GetTempPath()) ('hookmaker-statusdisc-art-' + $WorkToken)
 New-Item -ItemType Directory -Path $Work -Force | Out-Null
+New-Item -ItemType Directory -Path $Artifacts -Force | Out-Null
 Write-Host ("Workspace: $Work") -ForegroundColor DarkGray
 
 $SavedStateDir = $env:HOOKMAKER_STATE_DIR
@@ -64,9 +69,17 @@ function Write-JsonFixture { param([string]$Path, $Value) Write-Utf8 -Path $Path
 function Invoke-Scan {
     param([string]$Root, [switch]$IncludeGlobal, [switch]$Persist, [int]$MaxDepth = 0, [hashtable]$Environment)
     $token = [guid]::NewGuid().ToString('N').Substring(0, 8)
-    $resultPath = Join-Path $Work ("result-$token.json")
-    $outFile = Join-Path $Work ("out-$token.txt")
-    $errFile = Join-Path $Work ("err-$token.txt")
+    # Harness artifacts live OUTSIDE $Work, because $Work is what gets scanned.
+    # The scanner now refuses a -ResultPath inside any scan root - writing into
+    # the tree under inspection would both contaminate it and let the scan
+    # observe its own output. Keeping stdout/stderr capture out too means the
+    # fixture directory contains only what a test deliberately put there.
+    if (-not (Test-Path -LiteralPath $Artifacts)) {
+        New-Item -ItemType Directory -Path $Artifacts -Force | Out-Null
+    }
+    $resultPath = Join-Path $Artifacts ("result-$token.json")
+    $outFile = Join-Path $Artifacts ("out-$token.txt")
+    $errFile = Join-Path $Artifacts ("err-$token.txt")
     $argLine = '-NoLogo -NoProfile -File "' + $Scanner + '" -ScanRoot "' + $Root + '" -ToolRoot "' + $ToolRoot +
         '" -ResultPath "' + $resultPath + '"'
     if (-not $Persist) { $argLine += ' -NoPersist' }
@@ -435,6 +448,7 @@ finally {
             Get-ChildItem -LiteralPath $Work -Recurse -Force -ErrorAction SilentlyContinue |
                 ForEach-Object { try { $_.Attributes = [System.IO.FileAttributes]::Normal } catch { } }
             Remove-Item -LiteralPath $Work -Recurse -Force -ErrorAction SilentlyContinue
+            Remove-Item -LiteralPath $Artifacts -Recurse -Force -ErrorAction SilentlyContinue
         }
         catch { }
     }

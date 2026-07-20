@@ -10,6 +10,14 @@ param(
     [string]$CustomHook,
     [switch]$ClaudeOnly,
     [switch]$CodexOnly,
+    # Per-hook registration timeout in SECONDS, written into each client's own
+    # handler entry (both clients document `timeout` per hook entry - see the
+    # bounds comment in _installlib.ps1). OMIT IT for the historical behaviour:
+    # an omitted value keeps whatever this installation already had, and 60 when
+    # there is nothing recorded, so every existing install is byte-identical.
+    # A value outside $script:MinHookTimeoutSeconds..$script:MaxHookTimeoutSeconds
+    # is REJECTED before anything is written, never clamped.
+    [Nullable[int]]$Timeout,
     # When set, a machine-readable result document is written here describing
     # the outcome of EACH component (validation, runtime, settings, native git,
     # registry). Programmatic callers - the updater - consume this instead of
@@ -131,6 +139,18 @@ if ($normalizedEvents.Count -eq 0) {
 }
 $Events = $normalizedEvents.ToArray()
 
+# Bounds are checked HERE, in the pre-mutation validation block, so an
+# out-of-range value can never half-apply: it is rejected before any runtime,
+# settings, registry or native git file is touched. Rejected, not clamped - a
+# silently-clamped timeout would register something the caller never asked for.
+if ($null -ne $Timeout) {
+    if ($Timeout -lt $script:MinHookTimeoutSeconds -or $Timeout -gt $script:MaxHookTimeoutSeconds) {
+        throw ('Hook timeout ' + [string]$Timeout + ' is out of range. -Timeout must be between ' +
+            [string]$script:MinHookTimeoutSeconds + ' and ' + [string]$script:MaxHookTimeoutSeconds +
+            ' seconds, or omitted to use ' + [string]$script:DefaultHookTimeoutSeconds + '.')
+    }
+}
+
 if (-not [string]::IsNullOrWhiteSpace($TargetProject)) {
     $resolvedTarget = [System.IO.Path]::GetFullPath([Environment]::ExpandEnvironmentVariables($TargetProject))
     if (-not (Test-Path -LiteralPath $resolvedTarget -PathType Container)) {
@@ -231,6 +251,49 @@ $script:KnownToolRoots = @(Get-KnownToolRoots -ToolRoot $ToolRoot)
 # Set by Install-IgnorePrePush when this install also manages a native Git
 # pre-push chain; stays $null for every other hook (StrictMode-safe default).
 $script:NativeGitState = $null
+
+# ---- effective per-hook timeout -------------------------------------------
+# Resolution order, still BEFORE any file is touched:
+#   1. an explicit -Timeout (already bounds-validated above);
+#   2. otherwise the timeout this same installation ALREADY has recorded;
+#   3. otherwise 60, exactly as every previously shipped version wrote.
+#
+# Step 2 is what makes repair correct. "Update previously installed hooks"
+# re-invokes this script from the RECORD (events, scope, profile, config) and
+# does not pass -Timeout, so without it, repairing any drift - even unrelated
+# command drift - would silently reset a hook's own timeout back to 60 and call
+# that "up to date". An out-of-range or non-numeric recorded value is ignored
+# rather than propagated, so a hand-edited registry cannot install a value this
+# script would refuse on the command line.
+$script:EffectiveTimeout = $script:DefaultHookTimeoutSeconds
+if ($null -ne $Timeout) {
+    $script:EffectiveTimeout = [int]$Timeout
+}
+else {
+    try {
+        $priorScopeKey = if ($ScopeLabel -eq 'project') { $projectRoot.ToLowerInvariant() } else { 'global' }
+        $priorRecord = Get-InstallRecordById -ToolRoot $ToolRoot `
+            -Id (Get-InstallRecordId -FriendlyName $FriendlyName -ScopeKey $priorScopeKey -ProfileId ([string]$Profile))
+        if ($null -ne $priorRecord) {
+            # The client THIS invocation is installing decides, so a -CodexOnly
+            # repair cannot inherit Claude's value (they are written identically,
+            # but a partially-repaired record must never cross-contaminate).
+            $priorClients = if ($CodexOnly) { @('codex', 'claude') } else { @('claude', 'codex') }
+            foreach ($priorClientName in $priorClients) {
+                $priorSubrecord = Get-ClientSubrecord -Record $priorRecord -Client $priorClientName
+                if ($null -eq $priorSubrecord -or $null -eq $priorSubrecord.PSObject.Properties['timeout']) { continue }
+                $priorTimeout = 0
+                if (-not [int]::TryParse([string]$priorSubrecord.timeout, [ref]$priorTimeout)) { continue }
+                if ($priorTimeout -lt $script:MinHookTimeoutSeconds -or $priorTimeout -gt $script:MaxHookTimeoutSeconds) { continue }
+                $script:EffectiveTimeout = $priorTimeout
+                break
+            }
+        }
+    }
+    catch {
+        # An unreadable registry must never fail an install; the default stands.
+    }
+}
 
 # Produces SYNC-PROJECTS.txt's exact content (rather than writing it directly)
 # so the install plan can give this GENERATED artifact a deterministic expected
@@ -666,7 +729,7 @@ if (-not $CodexOnly) {
             Remove-StaleHandlers -HooksObject $claudeHooks -EventName $existingEvent
         }
         foreach ($eventName in $Events) {
-            $handler = [pscustomobject][ordered]@{ type = 'command'; command = $claudeCommands.Windows; timeout = 60 }
+            $handler = [pscustomobject][ordered]@{ type = 'command'; command = $claudeCommands.Windows; timeout = $script:EffectiveTimeout }
             $group = if ($eventName -eq 'SessionStart') {
                 [pscustomobject][ordered]@{ matcher = 'startup|resume|clear|compact'; hooks = @($handler) }
             }
@@ -704,7 +767,7 @@ if (-not $ClaudeOnly) {
                 type = 'command'
                 command = $codexCommands.Portable
                 commandWindows = $codexCommands.Windows
-                timeout = 60
+                timeout = $script:EffectiveTimeout
                 statusMessage = $status
             }
             $group = if ($eventName -eq 'SessionStart') {
@@ -760,7 +823,7 @@ try {
             -Events @($Events) `
             -Command $claudeCommands.Windows `
             -HandlerType 'command' `
-            -Timeout 60 `
+            -Timeout $script:EffectiveTimeout `
             -InstalledManifest @(Get-InstalledManifest -RuntimeRoot $claudeRuntimeRoot -FriendlyName $FriendlyName))
     }
     if (-not $ClaudeOnly) {
@@ -775,7 +838,7 @@ try {
             -CommandWindows $codexCommands.Windows `
             -HandlerType 'command' `
             -StatusMessage $status `
-            -Timeout 60 `
+            -Timeout $script:EffectiveTimeout `
             -InstalledManifest @(Get-InstalledManifest -RuntimeRoot $codexRuntimeRoot -FriendlyName $FriendlyName))
     }
 

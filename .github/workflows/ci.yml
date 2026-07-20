@@ -22,6 +22,10 @@ jobs:
   # verified cross-platform path pass first.
   static:
     runs-on: windows-latest
+    # Ceilings, not expected durations. This job only parses text and validates
+    # config; it finishes in well under a minute locally. A hung parse means a
+    # defect, not a slow machine, so the ceiling is deliberately tight.
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7
 
@@ -81,6 +85,8 @@ jobs:
   # powershell.exe (5.1), Codex's uses pwsh (7).
   engine:
     runs-on: windows-latest
+    # Test-Engine runs ~11s locally per host, twice here (pwsh 7 + 5.1).
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7
       - name: Engine smoke test (PowerShell 7)
@@ -105,16 +111,22 @@ jobs:
   # scripts\Run-Tests.ps1, which splits exclusive from isolated suites.)
   suites:
     runs-on: windows-latest
+    # The heaviest bucket sums to ~7 minutes of measured LOCAL wall time run
+    # back-to-back; a CI runner is slower, so this leaves roughly 3x headroom.
+    # Without a ceiling a suite that blocks on stdin would burn GitHub's 6-hour
+    # default before anyone learned anything - the per-suite timeout in
+    # Run-Tests.ps1 does not apply here, because CI invokes each suite directly.
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
         include:
           - name: registry
-            suites: Test-InstallRegistry,Test-InstallRegistrySchema,Test-LegacyDiscovery,Test-StatePersistence,Test-InstalledHooksMenu,Test-HookStatusDiscovery
+            suites: Test-InstallRegistry,Test-InstallRegistrySchema,Test-LegacyDiscovery,Test-StatePersistence,Test-InstalledHooksMenu,Test-HookStatusDiscovery,Test-TestPlanCheck
           - name: uninstall
-            suites: Test-UninstallHook,Test-NativePrePushInstall,Test-RulesCheck,Test-DiscoveredUninstall,Test-HookStatusScan
+            suites: Test-UninstallHook,Test-NativePrePushInstall,Test-RulesCheck,Test-DiscoveredUninstall,Test-HookStatusScan,Test-TestCompletionCheck
           - name: wizard
-            suites: Test-Wizard,Test-ContextHooks,Test-GraphUpdateCheck
+            suites: Test-Wizard,Test-ContextHooks,Test-GraphUpdateCheck,Test-TestRunGuard
           - name: secrets
             suites: Test-SecretsCheck,Test-IgnoreRulesCheck,Test-GitSyncCheck,Test-AiMemoryCheck
           - name: hooks

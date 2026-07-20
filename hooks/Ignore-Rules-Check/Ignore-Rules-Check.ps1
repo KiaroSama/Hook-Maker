@@ -92,7 +92,28 @@ if (Test-Path -LiteralPath $ignorePath -PathType Leaf) {
     $existing = [System.IO.File]::ReadAllText($ignorePath)
 }
 $existingLines = @($existing -split '\r?\n' | ForEach-Object { $_.Trim() })
-$missing = @($patterns | Where-Object { $existingLines -notcontains $_ })
+# A managed negation is only ALIVE if it sits after every managed positive pattern that
+# precedes it in insertion order - gitignore is last-match-wins. Presence alone is not
+# enough: sorting an existing .gitignore (common tooling behaviour) hoists every '!' line
+# above '/.env.*' ('!' < '/' in ASCII), which silently re-ignores the public templates AND
+# makes an already-tracked .env.example match the protected '/.env.*' pattern, producing a
+# false "TRACKED protected paths" block. A dead negation is therefore treated as missing
+# and re-appended, restoring precedence without removing or weakening any existing rule.
+function Test-NegationLive {
+    param([string]$Negation, [string[]]$Ordered, [string[]]$Lines)
+    $at = [array]::LastIndexOf($Lines, $Negation)
+    if ($at -lt 0) { return $false }
+    foreach ($pattern in $Ordered) {
+        if ($pattern -eq $Negation) { break }
+        if ($pattern.StartsWith('!')) { continue }
+        if ([array]::LastIndexOf($Lines, $pattern) -gt $at) { return $false }
+    }
+    return $true
+}
+$missing = @($patterns | Where-Object {
+        if ($_.StartsWith('!')) { -not (Test-NegationLive -Negation $_ -Ordered $patterns -Lines $existingLines) }
+        else { $existingLines -notcontains $_ }
+    })
 if ($missing.Count -gt 0) {
     $prefix = $existing.TrimEnd()
     if ($prefix -ne '') { $prefix += "`n`n" }
