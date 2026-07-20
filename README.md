@@ -332,6 +332,53 @@ settings, then the registry, never nested — so no deadlock cycle can form. The
 process start time, host, timestamp, token), so a lock left behind by a killed process is
 recognized as an orphan and reclaimed instead of blocking every future write forever.
 
+### The persistent tracking file
+
+There is exactly **one** persistent state file, and it is the single source of truth for what Hook
+Maker has installed:
+
+```text
+<Hook-Maker>\state\install-registry.json
+```
+
+`HOOKMAKER_STATE_DIR` overrides its location, but that override exists for the test suites (so they
+never touch your real registry) and for a deliberate, documented relocation — it is not part of
+normal use. No second registry, cache, catalog, per-project tracking database, or hidden
+source-of-truth file exists anywhere.
+
+**What it stores:** for each installation, the record id, hook identity and type, the exact source
+script and source directory, the tool root, scope and target project root, profile and config path
+for engine installs, the managed-file manifest (path + hash), and per client: the exact settings
+path, runtime root, runtime script, registered events, generated command lines, handler type,
+timeout and status message. For a managed native Git chain it additionally stores the Git hooks
+path, wrapper path, expected stages, owned companions and the preserved-user-hook state.
+
+**What it never stores:** secret values, `.env` contents, prompt or tool-input text, stdin, or the
+contents of any copied file. Paths and hashes only.
+
+**Menu `21` and `22` depend on it.** Filesystem discovery under `hooks\` is only the catalog of
+hooks *available* to install — it is never proof that something *is* installed. Consequently:
+
+- Update refreshes from each record's **persisted `sourceScript`**, never a path rebuilt from the
+  hook's name. If that source has been moved or deleted it is reported as missing and skipped — no
+  other path is guessed.
+- Uninstall targets the **exact persisted** runtime script, settings path and command for that
+  record. A handler is removed only when its parsed command proves that exact identity; a
+  same-named or same-basename handler pointing anywhere else is foreign and survives.
+- **Source hooks under `hooks\` are never deleted** by any operation.
+- If an uninstall is partial or ambiguous, the record is **retained** with a precise
+  failure/manual-repair state rather than reporting a success that did not happen.
+
+**Persistence guarantees:** every mutation takes the crash-aware exclusive registry lock, writes to
+a sibling temp file, re-parses the JSON before publishing it, and reads the record back afterwards
+to confirm it persisted. A registry that cannot be parsed is quarantined with its exact original
+bytes preserved beside it rather than being overwritten. Records survive across separate wizard and
+script processes — that is verified by a regression that installs in one process, verifies and
+updates in a second, and uninstalls in a third.
+
+As everywhere else in this tool, this is compensating rollback rather than machine-crash atomicity
+— see "Known limitations".
+
 ### Per-hook private runtime library
 
 Each installed hook gets its **own** `_hooklib.ps1` inside its runtime directory, and its installed
