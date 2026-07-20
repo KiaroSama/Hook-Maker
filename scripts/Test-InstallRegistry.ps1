@@ -1437,6 +1437,114 @@ for (`$i = 0; `$i -lt 8; `$i++) {
     & $InstallScript -Profile 'p' -ConfigPath $d3Real -TargetProject $d3GoodProj -Events @('SessionStart') -ClaudeOnly *> $null
     Check 'a valid engine config/profile still installs successfully' (Test-Path -LiteralPath (Join-Path $d3GoodProj '.claude\settings.local.json'))
 
+    # =====================================================================
+    # REGRESSION: Test-SyncConfigStructure used to default a MISSING 'routes'
+    # property to @(), silently treating "no routes property at all" as a
+    # valid profile with an empty route list. It now REQUIRES 'routes' to be
+    # present and a genuine array. An EMPTY array ("routes":[]) is deliberately
+    # still STRUCTURALLY valid (Validate-Config.ps1 validates every profile in
+    # a whole file, including ones not being installed, and an emptied-out
+    # placeholder group is a legitimate file state) - the stricter "the
+    # profile being installed needs at least one route" rule is enforced only
+    # in Install-Hook.ps1's pre-mutation engine block, tested separately below.
+    Write-Host '--- Test-SyncConfigStructure requires a genuine routes array (both directions) ---' -ForegroundColor Cyan
+    function New-RoutesTestConfig { param($ProfileObj) return [pscustomobject]@{ profiles = @($ProfileObj) } }
+
+    $profMissingRoutes = [pscustomobject]@{ id = 'p'; name = 'P' }
+    $rtMissing = Test-SyncConfigStructure -Config (New-RoutesTestConfig $profMissingRoutes)
+    Check 'a profile missing routes entirely is rejected' (-not $rtMissing.Ok)
+    Check 'the rejection reason names the profile and the missing routes array' ($rtMissing.Reason -match "profile 'p' requires a routes array") $rtMissing.Reason
+
+    $profNullRoutes = [pscustomobject]@{ id = 'p'; name = 'P'; routes = $null }
+    $rtNull = Test-SyncConfigStructure -Config (New-RoutesTestConfig $profNullRoutes)
+    Check 'routes: null is rejected' (-not $rtNull.Ok) $rtNull.Reason
+
+    $profStringRoutes = [pscustomobject]@{ id = 'p'; name = 'P'; routes = 'not-an-array' }
+    $rtString = Test-SyncConfigStructure -Config (New-RoutesTestConfig $profStringRoutes)
+    Check 'routes as a string is rejected' (-not $rtString.Ok) $rtString.Reason
+
+    $profObjectRoutes = [pscustomobject]@{ id = 'p'; name = 'P'; routes = [pscustomobject]@{ note = 'not an array' } }
+    $rtObject = Test-SyncConfigStructure -Config (New-RoutesTestConfig $profObjectRoutes)
+    Check 'routes as an object (not an array) is rejected' (-not $rtObject.Ok) $rtObject.Reason
+
+    $profNumberRoutes = [pscustomobject]@{ id = 'p'; name = 'P'; routes = 5 }
+    $rtNumber = Test-SyncConfigStructure -Config (New-RoutesTestConfig $profNumberRoutes)
+    Check 'routes as a number is rejected' (-not $rtNumber.Ok) $rtNumber.Reason
+
+    $profEmptyRoutes = [pscustomobject]@{ id = 'p'; name = 'P'; routes = @() }
+    $rtEmpty = Test-SyncConfigStructure -Config (New-RoutesTestConfig $profEmptyRoutes)
+    Check 'routes: [] (empty array) is still accepted - a legitimate emptied/placeholder profile' ($rtEmpty.Ok -eq $true) $rtEmpty.Reason
+
+    $profOneRoute = [pscustomobject]@{
+        id     = 'p'; name = 'P'
+        routes = @([pscustomobject]@{
+                id          = 'r1'
+                source      = [pscustomobject]@{ name = 'A'; root = 'C:\x' }
+                destination = [pscustomobject]@{ name = 'B'; root = 'C:\y' }
+            })
+    }
+    $rtOneRoute = Test-SyncConfigStructure -Config (New-RoutesTestConfig $profOneRoute)
+    Check 'a valid one-route profile is still accepted' ($rtOneRoute.Ok -eq $true) $rtOneRoute.Reason
+
+    # REGRESSION: the real shipped sync-hooks.example.json still validates.
+    $exampleSyncConfigPath = Join-Path $ToolRoot 'sync-hooks.example.json'
+    $exampleSyncConfig = Get-Content -LiteralPath $exampleSyncConfigPath -Raw | ConvertFrom-Json
+    $rtExample = Test-SyncConfigStructure -Config $exampleSyncConfig
+    Check 'the shipped sync-hooks.example.json still validates' ($rtExample.Ok -eq $true) $rtExample.Reason
+
+    # =====================================================================
+    # REGRESSION: at ENGINE INSTALL time the specific profile being installed
+    # must have at least one route - a zero-route install would produce a
+    # hook that provably cannot sync anything plus an empty generated
+    # SYNC-PROJECTS.txt. Extends Assert-D3Rejected (which only checks
+    # throw + ".claude never created") with the full structured-result,
+    # validation-attribution, registry and leftover-artifact assertions this
+    # defect specifically requires.
+    Write-Host '--- a zero-route (or routeless) profile is rejected before any engine install mutation ---' -ForegroundColor Cyan
+    function Assert-EngineValidationRejected {
+        param([string]$Label, [string]$ConfigPath, [string]$ProfileId, [string]$ProjSuffix)
+        $proj = New-D3Proj $ProjSuffix
+        $resultFile = Join-Path $Work ('routes-reject-' + $ProjSuffix + '.json')
+        $threw = $false
+        try { & $InstallScript -Profile $ProfileId -ConfigPath $ConfigPath -TargetProject $proj -Events @('Stop') -ResultPath $resultFile *> $null } catch { $threw = $true }
+        Check ($Label + ': invocation throws') $threw
+
+        Check ($Label + ': a structured result document is written') (Test-Path -LiteralPath $resultFile)
+        $docOk = $false; $doc = $null
+        try { $doc = Get-Content -LiteralPath $resultFile -Raw | ConvertFrom-Json; $docOk = $true } catch { }
+        Check ($Label + ': the result document is valid JSON') $docOk
+        Check ($Label + ': the result document reports overall=failed') ($docOk -and [string]$doc.overall -eq 'failed')
+
+        $validationComp = $null
+        if ($docOk) { $validationComp = @($doc.components | Where-Object { $_.component -eq 'validation' })[0] }
+        Check ($Label + ': the failure is attributed to the validation component') ($null -ne $validationComp -and [string]$validationComp.status -eq 'failed')
+
+        Check ($Label + ': no .claude directory was created') (-not (Test-Path -LiteralPath (Join-Path $proj '.claude')))
+        Check ($Label + ': no .codex directory was created') (-not (Test-Path -LiteralPath (Join-Path $proj '.codex')))
+
+        $recs = @((Get-Registry).installs | Where-Object { [string]$_.targetProjectRoot -eq $proj })
+        Check ($Label + ': no registry record was created for this target') ($recs.Count -eq 0)
+
+        $leftovers = @(Get-ChildItem -LiteralPath $proj -Recurse -Force -ErrorAction SilentlyContinue)
+        Check ($Label + ': no backup/temp/staging/result-lock artifact was left in the target project') ($leftovers.Count -eq 0)
+    }
+
+    $d4ZeroRoutesCfg = Join-Path $Work 'd4-zeroroutes.json'
+    Write-Utf8 $d4ZeroRoutesCfg '{"version":1,"profiles":[{"id":"p","name":"P","routes":[]}]}'
+    Assert-EngineValidationRejected 'zero-route profile being installed' $d4ZeroRoutesCfg -ProfileId 'p' -ProjSuffix 'ZeroRoutes'
+
+    $d4NoRoutesCfg = Join-Path $Work 'd4-noroutes.json'
+    Write-Utf8 $d4NoRoutesCfg '{"version":1,"profiles":[{"id":"p","name":"P"}]}'
+    Assert-EngineValidationRejected 'profile missing routes entirely' $d4NoRoutesCfg -ProfileId 'p' -ProjSuffix 'NoRoutesEntirely'
+
+    # (C) The new checks must not break the happy path: a valid one-route
+    # engine install still succeeds end-to-end.
+    $d4GoodRoutesCfg = Join-Path $Work 'd4-goodroutes.json'
+    Write-Utf8 $d4GoodRoutesCfg '{"version":1,"profiles":[{"id":"p","name":"P","routes":[{"id":"r1","source":{"name":"A","root":"C:\\x"},"destination":{"name":"B","root":"C:\\y"}}]}]}'
+    $d4GoodProj = New-D3Proj 'RoutesGood'
+    & $InstallScript -Profile 'p' -ConfigPath $d4GoodRoutesCfg -TargetProject $d4GoodProj -Events @('SessionStart') -ClaudeOnly *> $null
+    Check 'a valid one-route engine install still succeeds end-to-end (routes checks do not break the happy path)' (Test-Path -LiteralPath (Join-Path $d4GoodProj '.claude\settings.local.json'))
+
 }
 finally {
     $env:HOOKMAKER_STATE_DIR = $SavedHookMakerStateDir

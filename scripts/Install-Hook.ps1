@@ -186,6 +186,17 @@ if ([string]::IsNullOrWhiteSpace($CustomHook)) {
         if ($matchingProfiles.Count -eq 0) {
             throw ("Profile '" + $Profile + "' was not found in sync config '" + $ConfigPath + "'.")
         }
+        # Test-SyncConfigStructure already proved 'routes' exists and is a real
+        # array for every profile; an EMPTY one is structurally valid there
+        # (a whole-file validation must tolerate an emptied-out group it is not
+        # installing). Installing THIS profile is different: a zero-route engine
+        # install produces a hook that provably cannot sync anything plus an
+        # empty generated SYNC-PROJECTS.txt - a silently useless installation.
+        # Rejected here, before any directory, backup, settings, runtime,
+        # registry or native file is touched.
+        if (@($matchingProfiles[0].routes).Count -eq 0) {
+            throw ("Profile '" + $Profile + "' in sync config '" + $ConfigPath + "' has no routes; an engine install requires at least one route.")
+        }
     }
 }
 
