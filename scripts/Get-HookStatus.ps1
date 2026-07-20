@@ -115,13 +115,33 @@ function Add-ScanError {
 
 # ---- result document -------------------------------------------------------
 
+# Fence for the stdout channel. Deliberately unmistakable, and deliberately NOT
+# valid JSON, so a caller can find the document inside arbitrary console output
+# without guessing. Shared with Setup-SyncGroupHookStatus.ps1 and the suites -
+# if you change these, change every extractor with them.
+$script:ResultBeginMarker = '<<<HOOKMAKER-SCAN-RESULT>>>'
+$script:ResultEndMarker = '<<<END-HOOKMAKER-SCAN-RESULT>>>'
+
 # Written on EVERY terminal outcome. `coverage.complete` is false whenever any
 # directory could not be read or any reparse point was skipped: a scan that did
 # not see everything must never be able to claim it did, because a caller uses
 # that flag to decide whether "not found" means "gone".
+#
+# TWO DELIVERY CHANNELS, and the second one exists to resolve a real conflict:
+#   -ResultPath given  -> written to that file (refused if it is inside a scan
+#                         root, so the scan can neither contaminate the tree it
+#                         is inspecting nor observe its own output).
+#   -ResultPath absent -> the JSON is emitted to STDOUT and no file is created
+#                         anywhere.
+#
+# Without the second channel, "never writes inside the scanned root" and "a drive
+# root such as G:\ is a valid scan root" cannot both hold on a single-volume
+# machine: every writable path, including %TEMP%, is inside the scanned tree, so
+# the caller has nowhere legal to put a result file. Returning the document
+# instead of storing it removes the file from the problem entirely. The wizard
+# uses this channel, which is why menu 22 can scan a whole drive.
 function Write-ScanResult {
     param([Parameter(Mandatory = $true)][ValidateSet('ok', 'partial', 'failed', 'canceled')][string]$Overall)
-    if ([string]::IsNullOrWhiteSpace($ResultPath)) { return }
     try {
         $ambiguousCount = @(@($script:Findings) | Where-Object {
             $null -ne $_ -and ([string]$_.status -eq 'ambiguous' -or [string]$_.status -eq 'manualRepair')
@@ -154,11 +174,29 @@ function Write-ScanResult {
             elapsedSeconds = [math]::Round(([DateTime]::UtcNow - $script:StartedAt).TotalSeconds, 3)
             atUtc          = [DateTime]::UtcNow.ToString('o')
         }
+        $json = $document | ConvertTo-Json -Depth 30
+
+        if ([string]::IsNullOrWhiteSpace($ResultPath)) {
+            # STDOUT channel, FENCED.
+            #
+            # The fence is not decoration. PowerShell's stream separation
+            # (success vs information) only exists inside one PowerShell process:
+            # once this script runs as a CHILD, everything it writes to the
+            # console - progress lines included - arrives on the parent's stdout
+            # together, and a caller that simply parsed the lot would choke on
+            # the first progress line. The markers let any caller, in-process or
+            # cross-process, extract exactly the document and ignore the rest.
+            Write-Output $script:ResultBeginMarker
+            Write-Output $json
+            Write-Output $script:ResultEndMarker
+            return
+        }
+
         $directory = Split-Path -Parent $ResultPath
         if (-not [string]::IsNullOrWhiteSpace($directory) -and -not (Test-Path -LiteralPath $directory -PathType Container)) {
             New-Item -ItemType Directory -Path $directory -Force | Out-Null
         }
-        [System.IO.File]::WriteAllText($ResultPath, ($document | ConvertTo-Json -Depth 30), ([System.Text.UTF8Encoding]::new($false)))
+        [System.IO.File]::WriteAllText($ResultPath, $json, ([System.Text.UTF8Encoding]::new($false)))
     }
     catch {
         # A result-file failure must never mask the scan's own outcome.
@@ -606,11 +644,8 @@ function Invoke-ScanWalk {
         Add-ScanWarning ('scan root is not an existing directory and was skipped: ' + $Root)
         return
     }
-    if (Test-IsReparsePoint -Path $canonicalRoot) {
-        # The root itself being a reparse point is recorded but still walked:
-        # the user named it explicitly, so there is no ambiguity about intent.
-        [void]$script:SkippedReparse.Add($canonicalRoot)
-    }
+    # A reparse-point root never reaches here: main refuses it outright, before
+    # anything is scanned (see the -ScanRoot checks at the bottom of this file).
 
     $stack = New-Object System.Collections.Generic.Stack[object]
     $stack.Push([pscustomobject]@{ Path = $canonicalRoot; Depth = 0 })
@@ -1126,6 +1161,19 @@ $ScanRoot = Get-CanonicalPathOrEmpty $ScanRoot
 if ($ScanRoot -eq '' -or -not (Test-Path -LiteralPath $ScanRoot -PathType Container)) {
     throw ('-ScanRoot is not an existing directory: ' + $ScanRoot)
 }
+# Option (a): refuse a reparse-point root outright rather than resolving and
+# walking it. This scanner's contract is that junctions/symlinks are NOT
+# followed, and the root is not an exception: a junction can point anywhere,
+# so "scan this folder" would silently become "scan somewhere else". Being
+# named explicitly proves the caller meant this PATH, not that they know where
+# it lands. Nothing is scanned, so this is not a partial scan - it is a scan
+# that did not run. A caller who genuinely means the target passes the physical
+# directory; an interactive layer is free to resolve it, SHOW the target and ask
+# first, which is a decision this noninteractive worker cannot make.
+if (Test-IsReparsePoint -Path $ScanRoot) {
+    throw ('-ScanRoot is a reparse point (junction/symlink) and is never followed: ' + $ScanRoot +
+        ' - re-run with the physical directory it points at if that is what you meant.')
+}
 [void]$script:ScanRoots.Add($ScanRoot)
 
 if ($IncludeGlobal) {
@@ -1143,10 +1191,22 @@ if ($IncludeGlobal) {
     }
 }
 
+# "This scan never writes anything inside the folder it scans" is a guarantee,
+# not a preference, so a -ResultPath that lands inside ANY scan root (including
+# a global root added by -IncludeGlobal) is refused before a single directory is
+# read. The refusal CANNOT be reported in the result document - that document is
+# the offending path - so it is a terminating error on stderr plus a non-zero
+# exit, and $ResultPath is blanked first so the trap's own write is suppressed
+# too. Nothing scanned, nothing written, no registry change.
 if (-not [string]::IsNullOrWhiteSpace($ResultPath)) {
     $resultCanonical = Get-CanonicalPathOrEmpty $ResultPath
-    if ($resultCanonical -ne '' -and (Test-PathContainedIn -ChildPath $resultCanonical -ParentPath $ScanRoot)) {
-        Add-ScanWarning 'the result document was written inside the scanned root, at the caller''s explicit request'
+    foreach ($root in @($script:ScanRoots.ToArray())) {
+        if ($resultCanonical -ne '' -and (Test-PathContainedIn -ChildPath $resultCanonical -ParentPath $root)) {
+            $offending = $resultCanonical
+            $ResultPath = ''
+            throw ('-ResultPath resolves inside a scanned root, and this scan never writes inside what it scans: ' +
+                $offending + ' is inside ' + $root + ' - choose a result path outside every scan root.')
+        }
     }
 }
 

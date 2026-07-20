@@ -87,6 +87,13 @@ param($SuitePath, $Exe, $TimeoutSeconds)
 $sw = [System.Diagnostics.Stopwatch]::StartNew()
 $outFile = [System.IO.Path]::GetTempFileName()
 $errFile = [System.IO.Path]::GetTempFileName()
+# An EMPTY file as stdin, so a suite that reads input gets EOF immediately
+# instead of inheriting this console's stdin and blocking. Without this the
+# only protection is the timeout below, which turns a 1-second bug into a
+# full 600-second stall - and in CI, into a job that burns its whole budget.
+# An empty real file is used rather than the NUL device because it gives a
+# deterministic EOF on every host this runs under.
+$inFile = [System.IO.Path]::GetTempFileName()
 $name = Split-Path -Leaf $SuitePath
 try {
     # Single quoted argument STRING, matching the convention used by every other
@@ -94,6 +101,7 @@ try {
     # array form is not accepted consistently across hosts here.
     $p = Start-Process -FilePath $Exe -ArgumentList ('-NoLogo -NoProfile -File "' + $SuitePath + '"') `
         -RedirectStandardOutput $outFile -RedirectStandardError $errFile `
+        -RedirectStandardInput $inFile `
         -NoNewWindow -PassThru
     if (-not $p.WaitForExit($TimeoutSeconds * 1000)) {
         try { $p.Kill($true) } catch { }

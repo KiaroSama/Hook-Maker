@@ -24,10 +24,11 @@ $ValidateScript = Join-Path $ScriptRoot 'Validate-Config.ps1'
 . (Join-Path $ScriptRoot '_installplan.ps1')
 . (Join-Path $ScriptRoot '_installlib.ps1')
 . (Join-Path $ScriptRoot 'Setup-SyncGroupBuilder.ps1')
-# Installed-hook management (hook-list items 21/23) plus the ONE canonical
+# Installed-hook management (the "Update installed hooks" / "Uninstall
+# installed hooks" rows of the hook list) plus the ONE canonical
 # numeric list/range parser both this menu and those screens use.
 . (Join-Path $ScriptRoot 'Setup-SyncGroupInstalledHooks.ps1')
-# Hook-status discovery wizard (hook-list item 22): the scan prompts and the
+# Hook-status discovery wizard (the "Get hook status" row): the scan prompts and the
 # grouped result screen. The scan itself lives in Get-HookStatus.ps1.
 . (Join-Path $ScriptRoot 'Setup-SyncGroupHookStatus.ps1')
 # Guided hook creation: the five starter hook-body templates, the custom-
@@ -244,10 +245,18 @@ $script:HookMeta = @{
     'Ignore-Rules-Check'               = @{ Order = 16; When = 'both'; Text = 'auto-fixes required local/private gitignore rules before and after tasks' }
     'Dependency-Version-Check'         = @{ Order = 17; When = 'pre';  Text = 'advises on outdated dependencies and safe, incremental upgrades' }
     'Test-Temp-Cleanup'                = @{ Order = 18; When = 'both'; Text = 'cleans safe test cache/temp residue; keeps diagnostics' }
+    # The three-stage test-health hooks (24.txt). Events/Timeout are the
+    # CANONICAL per-hook values - Get-HookRecommendedEvents and the install call
+    # read them from here, so name/order/timing/events/timeout cannot drift into
+    # a second table. Text stays short for the same single-line reason as
+    # Docs-Freshness-Check above.
+    'Test-Plan-Check'                  = @{ Order = 19; When = 'pre';  Text = 'surfaces test-health policy before test or CI work'; Events = @('SessionStart', 'UserPromptSubmit'); Timeout = 15 }
+    'Test-Run-Guard'                   = @{ Order = 20; When = 'both'; Text = 'requires a bounded runner for recognised test commands'; Events = @('PreToolUse', 'PostToolUse'); Timeout = 10 }
+    'Test-Completion-Check'            = @{ Order = 21; When = 'post'; Text = 'verifies test evidence and cleanup before finishing'; Events = @('Stop', 'SubagentStop'); Timeout = 20 }
     # Cloudflare-Deploy is deliberately kept LAST among individual hook
     # entries (Order = highest value) per an explicit user requirement, not
     # filesystem/alphabetical order - see Test-Wizard.ps1 for the pinned order.
-    'Cloudflare-Deploy'                = @{ Order = 19; When = 'post'; Text = 'suggests deploying in Cloudflare Workers projects, gated on release readiness' }
+    'Cloudflare-Deploy'                = @{ Order = 22; When = 'post'; Text = 'suggests deploying in Cloudflare Workers projects, gated on release readiness' }
 }
 # The "[pre-task]" / "[post-task]" tag, colored by phase (a different color than
 # the description, FFmWiz-style, so timing reads at a glance).
@@ -464,6 +473,14 @@ function Get-HookEntries {
 
 function Get-HookRecommendedEvents {
     param([Parameter(Mandatory = $true)]$Hook)
+    # $script:HookMeta is the canonical source: a hook that declares Events
+    # there wins over any .env.example, so the menu tag, the recommended events
+    # and the installed registration can never disagree. Hooks without an
+    # Events key keep the historical .env.example -> generic-default order
+    # byte-for-byte.
+    if ($script:HookMeta.ContainsKey($Hook.Name) -and $script:HookMeta[$Hook.Name].ContainsKey('Events')) {
+        return @($script:HookMeta[$Hook.Name].Events)
+    }
     if (-not [string]::IsNullOrWhiteSpace($Hook.EnvPath)) {
         $examplePath = Join-Path (Split-Path -Parent $Hook.EnvPath) '.env.example'
         $values = Read-HookEnv $examplePath
@@ -509,6 +526,18 @@ function Get-ClientInstallArgs {
         'Codex' { return @{ CodexOnly = $true } }
         default { return @{} }
     }
+}
+
+# Per-hook registration timeout, from the canonical metadata. Returns an EMPTY
+# splat for every hook without an explicit Timeout, so Install-Hook.ps1 keeps
+# resolving those exactly as before (persisted record value, else 60) - passing
+# an explicit 60 here would instead overwrite a deliberately repaired record.
+function Get-HookTimeoutArgs {
+    param([Parameter(Mandatory = $true)][string]$Name)
+    if ($script:HookMeta.ContainsKey($Name) -and $script:HookMeta[$Name].ContainsKey('Timeout')) {
+        return @{ Timeout = [int]$script:HookMeta[$Name].Timeout }
+    }
+    return @{}
 }
 
 # Human-readable "where does it land" label for summaries.
@@ -630,11 +659,13 @@ function Invoke-InstallExistingHook {
         #   4+S                    Get hook status           (management action)
         #   5+S                    Uninstall installed hooks (management action)
         #   6+S ..                 user-created/custom hooks, deterministic order
-        # With all 18 shipped hooks present that renders as 3..20, 21, 22, 23,
-        # 24+. The THREE management rows are placed AFTER the shipped block and
+        # With all 21 shipped hooks present that renders as 3..23, 24, 25, 26,
+        # 27+. The THREE management rows are placed AFTER the shipped block and
         # BEFORE the custom block deliberately: discovering a new custom hook
-        # under hooks\ must never shift 21/22/23, because those numbers are
-        # documented UI.
+        # under hooks\ must never shift 24/25/26, because those numbers are
+        # documented UI. Every index below is derived from $shippedHooks.Count -
+        # adding a shipped hook renumbers the management rows, it never needs a
+        # hand-edited constant.
         $shippedHooks = @($hookFiles | Where-Object { $script:HookMeta.ContainsKey($_.Name) })
         $customHooks = @($hookFiles | Where-Object { -not $script:HookMeta.ContainsKey($_.Name) })
         $updateIndex = $shippedHooks.Count + 3
@@ -823,8 +854,9 @@ function Invoke-InstallExistingHook {
         Write-PhaseHeader 'Applying Changes' $C.Process '-'
         foreach ($plan in $plans) {
             $clientArgs = Get-ClientInstallArgs $plan.Config.Clients
+            $timeoutArgs = Get-HookTimeoutArgs $plan.Hook.Name
             foreach ($target in $plan.Config.Targets) {
-                $installOutput = & $InstallScript -CustomHook $plan.Hook.ScriptPath -Events @($plan.Config.Events) -TargetProject $target.Root @clientArgs *>&1
+                $installOutput = & $InstallScript -CustomHook $plan.Hook.ScriptPath -Events @($plan.Config.Events) -TargetProject $target.Root @clientArgs @timeoutArgs *>&1
                 foreach ($line in @($installOutput)) { Write-Log 'INFO' 'INSTALL' ([string]$line) }
                 Write-Host ('  ' + (Get-Painted '+ installed' $C.Green) + ' ' + (Get-Painted (Get-HookFriendlyName $plan.Hook.Name) $C.Bold) + ' -> ' + (Get-Painted $target.Name $C.Bold) + '  ' + (Get-Painted ('(' + $plan.Config.Clients + ', ' + ($plan.Config.Events -join '+') + ')') $C.Gray))
             }
@@ -949,8 +981,9 @@ function Invoke-InstallHookFromConfig {
 
         Write-PhaseHeader 'Applying Changes' $C.Process '-'
         $clientArgs = Get-ClientInstallArgs $clients
+        $timeoutArgs = Get-HookTimeoutArgs $hook.Name
         foreach ($target in $targets) {
-            $installOutput = & $InstallScript -CustomHook $hook.ScriptPath -Events @($events) -TargetProject $target.Root @clientArgs *>&1
+            $installOutput = & $InstallScript -CustomHook $hook.ScriptPath -Events @($events) -TargetProject $target.Root @clientArgs @timeoutArgs *>&1
             foreach ($line in @($installOutput)) {
                 Write-Log 'INFO' 'INSTALL' ([string]$line)
             }
@@ -1264,11 +1297,15 @@ function Invoke-CustomHookMenu {
         Write-MenuLine 2 'Create a new hook' '(guided templates)'
         Write-MenuLine 3 'Install from config' '(reads the hook''s .env - no questions)'
         # COMPATIBILITY ALIAS ONLY. The canonical, documented home for updating
-        # installed hooks is item 21 in the "Available hooks" list (22 is hook
-        # status, 23 is uninstall). This row is kept so existing muscle memory and scripted
+        # installed hooks is the "Update installed hooks" management row in the
+        # "Available hooks" list (followed there by hook status and uninstall).
+        # That row's NUMBER moves whenever a shipped hook is added, so it is
+        # derived here rather than written out - the alias may never claim a
+        # stale index. This row is kept so existing muscle memory and scripted
         # answer sequences keep working - it calls exactly the same
         # Invoke-UpdateInstalledHooks implementation, never a second copy.
-        Write-MenuLine 4 'Update installed hooks' '(same as item 21 in the hook list)'
+        $aliasUpdateIndex = @(@(Get-HookEntries) | Where-Object { $script:HookMeta.ContainsKey($_.Name) }).Count + 3
+        Write-MenuLine 4 'Update installed hooks' ('(same as item ' + $aliasUpdateIndex + ' in the hook list)')
         $value = Read-Answer (New-QuestionPrompt 'Select an option' $null '1') 'custom hook menu'
         if ($value -eq '0') {
             Write-Log 'INFO' 'MENU' 'Create-or-install sub-menu -> 0. Back'

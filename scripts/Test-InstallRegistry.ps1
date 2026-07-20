@@ -1545,6 +1545,193 @@ for (`$i = 0; `$i -lt 8; `$i++) {
     & $InstallScript -Profile 'p' -ConfigPath $d4GoodRoutesCfg -TargetProject $d4GoodProj -Events @('SessionStart') -ClaudeOnly *> $null
     Check 'a valid one-route engine install still succeeds end-to-end (routes checks do not break the happy path)' (Test-Path -LiteralPath (Join-Path $d4GoodProj '.claude\settings.local.json'))
 
+    # =====================================================================
+    # PER-HOOK REGISTRATION TIMEOUT.
+    # Both clients document `timeout` on the INDIVIDUAL hook entry, so a
+    # per-hook value is registrable; the universal 60 stays the default for
+    # every hook that does not ask for its own. These blocks pin the
+    # compatibility guard, the bounds, per-client persistence, drift detection
+    # and repair-without-collateral-damage.
+    Write-Host '--- an install with no explicit timeout still writes 60 for both clients ---' -ForegroundColor Cyan
+    $fixtureT1 = New-FixtureHook 'ZZZ-Regtest-Timeoutdefault'
+    try {
+        $projT1 = New-Proj 'TimeoutDefault'
+        & $InstallScript -CustomHook $fixtureT1 -Events @('Stop') -TargetProject $projT1 *> $null
+        $t1Claude = Get-Content -LiteralPath (Join-Path $projT1 '.claude\settings.local.json') -Raw | ConvertFrom-Json
+        $t1Codex = Get-Content -LiteralPath (Join-Path $projT1 '.codex\hooks.json') -Raw | ConvertFrom-Json
+        Check 'claude handler timeout is 60 when -Timeout is omitted' ([int]$t1Claude.hooks.Stop[0].hooks[0].timeout -eq 60)
+        Check 'codex handler timeout is 60 when -Timeout is omitted' ([int]$t1Codex.hooks.Stop[0].hooks[0].timeout -eq 60)
+        $recT1 = (Get-RecordsFor 'ZZZ-Regtest-Timeoutdefault')[0]
+        Check 'claude subrecord persists timeout 60 when -Timeout is omitted' ([int]$recT1.clients.claude.timeout -eq 60)
+        Check 'codex subrecord persists timeout 60 when -Timeout is omitted' ([int]$recT1.clients.codex.timeout -eq 60)
+        Check 'a default-timeout install is reported as current (no false drift)' ((Get-InstallIntegrity -Record $recT1 -ToolRoot $ToolRoot).Status -eq 'current')
+    }
+    finally { Remove-FixtureHook 'ZZZ-Regtest-Timeoutdefault' }
+
+    # =====================================================================
+    Write-Host '--- an explicit in-range timeout is written and persisted per client ---' -ForegroundColor Cyan
+    $fixtureT2 = New-FixtureHook 'ZZZ-Regtest-Timeoutexplicit'
+    try {
+        $projT2 = New-Proj 'TimeoutExplicit'
+        & $InstallScript -CustomHook $fixtureT2 -Events @('Stop', 'SessionStart') -TargetProject $projT2 -Timeout 180 *> $null
+        $t2Claude = Get-Content -LiteralPath (Join-Path $projT2 '.claude\settings.local.json') -Raw | ConvertFrom-Json
+        $t2Codex = Get-Content -LiteralPath (Join-Path $projT2 '.codex\hooks.json') -Raw | ConvertFrom-Json
+        Check 'claude handler carries the explicit timeout' ([int]$t2Claude.hooks.Stop[0].hooks[0].timeout -eq 180)
+        Check 'codex handler carries the explicit timeout' ([int]$t2Codex.hooks.Stop[0].hooks[0].timeout -eq 180)
+        Check 'the explicit timeout is written on EVERY registered event, not just the first' (
+            [int]$t2Claude.hooks.SessionStart[0].hooks[0].timeout -eq 180 -and [int]$t2Codex.hooks.SessionStart[0].hooks[0].timeout -eq 180)
+        $recT2 = (Get-RecordsFor 'ZZZ-Regtest-Timeoutexplicit')[0]
+        Check 'claude subrecord persists the explicit timeout' ([int]$recT2.clients.claude.timeout -eq 180)
+        Check 'codex subrecord persists the explicit timeout' ([int]$recT2.clients.codex.timeout -eq 180)
+        Check 'a record with a non-default timeout still validates' ((Test-InstallRecordValid -Record $recT2).Ok)
+        Check 'an explicit-timeout install is reported as current (asserted against 180, not 60)' ((Get-InstallIntegrity -Record $recT2 -ToolRoot $ToolRoot).Status -eq 'current')
+
+        # A repair invocation (what the updater issues) carries no -Timeout, so
+        # the hook's OWN value must survive rather than silently reset to 60.
+        & $InstallScript -CustomHook $fixtureT2 -Events @('Stop', 'SessionStart') -TargetProject $projT2 *> $null
+        $t2Again = Get-Content -LiteralPath (Join-Path $projT2 '.claude\settings.local.json') -Raw | ConvertFrom-Json
+        Check 'reinstalling without -Timeout keeps the recorded per-hook value' ([int]$t2Again.hooks.Stop[0].hooks[0].timeout -eq 180)
+        Check 'the persisted per-hook value is unchanged by a no-Timeout reinstall' ([int]((Get-RecordsFor 'ZZZ-Regtest-Timeoutexplicit')[0]).clients.claude.timeout -eq 180)
+        # ...and it is still explicitly overridable in both directions.
+        & $InstallScript -CustomHook $fixtureT2 -Events @('Stop', 'SessionStart') -TargetProject $projT2 -Timeout 60 *> $null
+        $t2Back = Get-Content -LiteralPath (Join-Path $projT2 '.claude\settings.local.json') -Raw | ConvertFrom-Json
+        Check 'an explicit -Timeout 60 returns the hook to the default' ([int]$t2Back.hooks.Stop[0].hooks[0].timeout -eq 60)
+    }
+    finally { Remove-FixtureHook 'ZZZ-Regtest-Timeoutexplicit' }
+
+    # =====================================================================
+    Write-Host '--- an out-of-range timeout is refused with a precise reason and nothing is written ---' -ForegroundColor Cyan
+    $fixtureT3 = New-FixtureHook 'ZZZ-Regtest-Timeoutbounds'
+    try {
+        function Assert-TimeoutRejected {
+            param([string]$Label, [int]$Value, [string]$ProjSuffix)
+            $projReject = New-Proj ('TimeoutReject' + $ProjSuffix)
+            $resultFile = Join-Path $Work ('timeout-reject-' + $ProjSuffix + '.json')
+            $rejectMessage = ''
+            $threw = $false
+            try { & $InstallScript -CustomHook $fixtureT3 -Events @('Stop') -TargetProject $projReject -Timeout $Value -ResultPath $resultFile *> $null }
+            catch { $threw = $true; $rejectMessage = [string]$_.Exception.Message }
+            Check ($Label + ': the invocation is refused') $threw
+            Check ($Label + ': the reason names the timeout and the allowed range') (
+                $rejectMessage -match 'timeout' -and $rejectMessage -match [regex]::Escape([string]$Value) -and $rejectMessage -match '5' -and $rejectMessage -match '600') $rejectMessage
+            # Refused, never clamped: a clamped value would have installed
+            # something the caller never asked for.
+            Check ($Label + ': no .claude registration was written') (-not (Test-Path -LiteralPath (Join-Path $projReject '.claude')))
+            Check ($Label + ': no .codex registration was written') (-not (Test-Path -LiteralPath (Join-Path $projReject '.codex')))
+            Check ($Label + ': nothing at all was left in the target project') (@(Get-ChildItem -LiteralPath $projReject -Recurse -Force -ErrorAction SilentlyContinue).Count -eq 0)
+            Check ($Label + ': no registry record was created') (@((Get-Registry).installs | Where-Object { [string]$_.targetProjectRoot -eq $projReject }).Count -eq 0)
+            $docOk = $false; $doc = $null
+            if (Test-Path -LiteralPath $resultFile) { try { $doc = Get-Content -LiteralPath $resultFile -Raw | ConvertFrom-Json; $docOk = $true } catch { } }
+            Check ($Label + ': the failure is attributed to the validation component') (
+                $docOk -and [string]$doc.overall -eq 'failed' -and @($doc.components | Where-Object { $_.component -eq 'validation' -and $_.status -eq 'failed' }).Count -eq 1)
+        }
+        Assert-TimeoutRejected 'above the maximum' 5000 'High'
+        Assert-TimeoutRejected 'below the minimum' 1 'Low'
+        Assert-TimeoutRejected 'zero' 0 'Zero'
+        Assert-TimeoutRejected 'negative' -30 'Negative'
+
+        # The boundary values themselves are IN range - an off-by-one in the
+        # bounds check would make the documented range a lie.
+        $projEdgeLow = New-Proj 'TimeoutEdgeLow'
+        & $InstallScript -CustomHook $fixtureT3 -Events @('Stop') -TargetProject $projEdgeLow -Timeout 5 -ClaudeOnly *> $null
+        $projEdgeHigh = New-Proj 'TimeoutEdgeHigh'
+        & $InstallScript -CustomHook $fixtureT3 -Events @('Stop') -TargetProject $projEdgeHigh -Timeout 600 -ClaudeOnly *> $null
+        Check 'the minimum bound (5) is accepted' (
+            [int]((Get-Content -LiteralPath (Join-Path $projEdgeLow '.claude\settings.local.json') -Raw | ConvertFrom-Json).hooks.Stop[0].hooks[0].timeout) -eq 5)
+        Check 'the maximum bound (600) is accepted' (
+            [int]((Get-Content -LiteralPath (Join-Path $projEdgeHigh '.claude\settings.local.json') -Raw | ConvertFrom-Json).hooks.Stop[0].hooks[0].timeout) -eq 600)
+    }
+    finally { Remove-FixtureHook 'ZZZ-Regtest-Timeoutbounds' }
+
+    # =====================================================================
+    Write-Host '--- an edited live registration timeout is drift, and update repairs ONLY it ---' -ForegroundColor Cyan
+    $fixtureT4 = New-FixtureHook 'ZZZ-Regtest-Timeoutdrift'
+    try {
+        $projT4 = New-Proj 'TimeoutDrift'
+        & $InstallScript -CustomHook $fixtureT4 -Events @('Stop') -TargetProject $projT4 -Timeout 240 -ClaudeOnly *> $null
+        $t4Settings = Join-Path $projT4 '.claude\settings.local.json'
+        $recT4 = (Get-RecordsFor 'ZZZ-Regtest-Timeoutdrift')[0]
+        Check 'the drift fixture starts out current' ((Get-InstallIntegrity -Record $recT4 -ToolRoot $ToolRoot).Status -eq 'current')
+
+        # A FOREIGN handler in the SAME settings file, on its own event. It is
+        # not Hook Maker's, so repairing the timeout must not touch one byte of
+        # it. The installed source is left alone so the ONLY thing needing
+        # repair is the timeout.
+        $t4Json = Get-Content -LiteralPath $t4Settings -Raw | ConvertFrom-Json
+        $t4Json.hooks | Add-Member -MemberType NoteProperty -Name 'PreCompact' -Value @(
+            [pscustomobject]@{ matcher = 'manual'; hooks = @([pscustomobject]@{ type = 'command'; command = 'pwsh -File "D:\Foreign\Watcher.ps1"'; timeout = 17; statusMessage = 'foreign watcher' }) }) -Force
+        # Live drift: someone edited the registered timeout by hand.
+        $t4Json.hooks.Stop[0].hooks[0].timeout = 9
+        [System.IO.File]::WriteAllText($t4Settings, ($t4Json | ConvertTo-Json -Depth 50), (New-Object System.Text.UTF8Encoding $false))
+
+        # BYTE baseline of the foreign subtree, captured after it is on disk.
+        $t4ForeignBefore = ((Get-Content -LiteralPath $t4Settings -Raw | ConvertFrom-Json).hooks.PreCompact | ConvertTo-Json -Depth 50)
+        $t4ForeignBeforeBytes = [System.Text.Encoding]::UTF8.GetBytes($t4ForeignBefore)
+
+        $recT4Drifted = (Get-RecordsFor 'ZZZ-Regtest-Timeoutdrift')[0]
+        $integrityT4 = Get-InstallIntegrity -Record $recT4Drifted -ToolRoot $ToolRoot
+        Check 'an edited registration timeout is detected as needing an update' ($integrityT4.Status -eq 'update')
+        Check 'the drift detail names the timeout, not some other field' ([string]$integrityT4.Detail -match 'timeout') ([string]$integrityT4.Detail)
+
+        $cfgT4 = Join-Path $Work 'cfg-timeout-drift.json'; New-Config $cfgT4
+        $rT4 = Invoke-Wizard -Config $cfgT4 -Answers @('1', '4', '', '0')
+        Check 'the update run exits 0' ($rT4.Exit -eq 0) $rT4.Err
+        $t4After = Get-Content -LiteralPath $t4Settings -Raw | ConvertFrom-Json
+        Check 'update restored the recorded per-hook timeout (240, not the default 60)' ([int]$t4After.hooks.Stop[0].hooks[0].timeout -eq 240)
+        Check 'the record still carries the per-hook timeout after the repair' ([int]((Get-RecordsFor 'ZZZ-Regtest-Timeoutdrift')[0]).clients.claude.timeout -eq 240)
+        Check 'the repaired installation is reported as current again' ((Get-InstallIntegrity -Record ((Get-RecordsFor 'ZZZ-Regtest-Timeoutdrift')[0]) -ToolRoot $ToolRoot).Status -eq 'current')
+
+        $t4ForeignAfterBytes = [System.Text.Encoding]::UTF8.GetBytes(($t4After.hooks.PreCompact | ConvertTo-Json -Depth 50))
+        Check 'the foreign handler in the same settings file is byte-identical after the repair' (
+            [System.Linq.Enumerable]::SequenceEqual([byte[]]$t4ForeignBeforeBytes, [byte[]]$t4ForeignAfterBytes)) ($t4After.hooks.PreCompact | ConvertTo-Json -Depth 50)
+        Check 'the foreign handler still appears exactly once' (
+            @([regex]::Matches((Get-Content -LiteralPath $t4Settings -Raw), [regex]::Escape('D:\\Foreign\\Watcher.ps1'))).Count -eq 1)
+    }
+    finally { Remove-FixtureHook 'ZZZ-Regtest-Timeoutdrift' }
+
+    # =====================================================================
+    # Records written before timeouts were per-hook carry no `timeout` field at
+    # all. They must keep validating, keep evaluating against the historical
+    # 60, and keep updating - never be reported as drifted for lacking one.
+    Write-Host '--- a pre-per-hook-timeout record still validates and still updates cleanly ---' -ForegroundColor Cyan
+    $fixtureT5 = New-FixtureHook 'ZZZ-Regtest-Timeoutlegacy' "exit 0 # legacy v1`n"
+    try {
+        $projT5 = New-Proj 'TimeoutLegacy'
+        & $InstallScript -CustomHook $fixtureT5 -Events @('Stop') -TargetProject $projT5 *> $null
+        $legacyId = [string]((Get-RecordsFor 'ZZZ-Regtest-Timeoutlegacy')[0]).id
+
+        # Strip the field the old writer never wrote.
+        $registryT5 = Get-Registry
+        foreach ($candidate in @($registryT5.installs | Where-Object { [string]$_.id -eq $legacyId })) {
+            foreach ($clientName in @('claude', 'codex')) {
+                $sub = Get-ClientSubrecord -Record $candidate -Client $clientName
+                if ($null -ne $sub -and $null -ne $sub.PSObject.Properties['timeout']) { $sub.PSObject.Properties.Remove('timeout') }
+            }
+        }
+        Save-InstallRegistry -ToolRoot $ToolRoot -Registry $registryT5
+        $recT5 = @((Get-Registry).installs | Where-Object { [string]$_.id -eq $legacyId })[0]
+        Check 'the legacy-shaped record really has no timeout field' (
+            $null -eq (Get-ClientSubrecord -Record $recT5 -Client 'claude').PSObject.Properties['timeout'])
+        Check 'a record with no timeout field still validates' ((Test-InstallRecordValid -Record $recT5).Ok) ([string](Test-InstallRecordValid -Record $recT5).Reason)
+        Check 'a record with no timeout field is still schema 2 (id/shape compatible)' ([int]$recT5.schema -eq 2 -and [string]$recT5.id -eq $legacyId)
+        Check 'a record with no timeout field is reported as current, not drifted' (
+            (Get-InstallIntegrity -Record $recT5 -ToolRoot $ToolRoot).Status -eq 'current')
+
+        # ...and it updates cleanly, gaining the historical 60 rather than
+        # anything new, with its id preserved.
+        Write-Utf8 $fixtureT5 "exit 0 # legacy v2 changed`n"
+        $cfgT5 = Join-Path $Work 'cfg-timeout-legacy.json'; New-Config $cfgT5
+        $rT5 = Invoke-Wizard -Config $cfgT5 -Answers @('1', '4', '', '0')
+        Check 'the legacy-record update run exits 0' ($rT5.Exit -eq 0) $rT5.Err
+        $recT5After = @((Get-Registry).installs | Where-Object { [string]$_.id -eq $legacyId })[0]
+        Check 'the legacy record survives the update under the same id' ($null -ne $recT5After)
+        Check 'the updated legacy record now carries the historical 60' ([int]$recT5After.clients.claude.timeout -eq 60)
+        Check 'the updated legacy registration is still 60 on disk' (
+            [int]((Get-Content -LiteralPath (Join-Path $projT5 '.claude\settings.local.json') -Raw | ConvertFrom-Json).hooks.Stop[0].hooks[0].timeout) -eq 60)
+        Check 'the legacy record is current after the update' ((Get-InstallIntegrity -Record $recT5After -ToolRoot $ToolRoot).Status -eq 'current')
+    }
+    finally { Remove-FixtureHook 'ZZZ-Regtest-Timeoutlegacy' }
+
 }
 finally {
     $env:HOOKMAKER_STATE_DIR = $SavedHookMakerStateDir

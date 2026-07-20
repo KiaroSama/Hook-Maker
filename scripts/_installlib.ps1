@@ -37,6 +37,25 @@ $script:InstallRegistrySchemaVersion = 3
 $script:ManagedRecordSchemaVersion = 2
 $script:DiscoveredRecordSchemaVersion = 3
 
+# ---- per-hook registration timeout ----------------------------------------
+# BOTH clients document `timeout` as a field of the INDIVIDUAL hook entry, not
+# of the event group or the file, so a per-hook value is safe to write:
+#   * Claude Code hooks reference, hook-object field table: "timeout | no |
+#     Seconds before canceling. Defaults: 600 for `command` ...".
+#   * Codex hooks reference, "Config shape": "`timeout` is in seconds. If
+#     `timeout` is omitted, Codex uses `600` seconds."
+# Neither client documents a minimum or a maximum, so the bounds below are
+# Hook Maker's own conservative policy rather than a client limit: a hook must
+# be fast, and a registration that can stall a client for longer than the
+# clients' own 600s default is a defect, not a configuration choice.
+#
+# 60 remains the DEFAULT for every hook that does not ask for its own value -
+# it is what every previously shipped install wrote, and changing it would
+# silently rewrite existing registrations.
+$script:DefaultHookTimeoutSeconds = 60
+$script:MinHookTimeoutSeconds = 5
+$script:MaxHookTimeoutSeconds = 600
+
 # Files that exist inside a managed runtime directory but are NOT part of the
 # installed identity: generated at install time from inputs already covered by
 # the manifest (SYNC-PROJECTS.txt is derived from sync-hooks.json), or mutated
@@ -951,7 +970,10 @@ function Test-ClientRegistrationState {
         [string]$ExpectedHandlerType = '',
         [string]$ExpectedStatusMessage = '',
         [switch]$ExpectedStatusMessageKnown,
-        [int]$ExpectedTimeout = 60
+        # Per-hook, not universal: the caller passes what the RECORD says this
+        # installation registered. The default only covers a caller that has no
+        # recorded expectation at all.
+        [int]$ExpectedTimeout = $script:DefaultHookTimeoutSeconds
     )
     $registrations = @(Get-HookRegistrations -SettingsPath $SettingsPath -RuntimeScript $RuntimeScript -ProfileId $ProfileId)
     $byEvent = @{}
@@ -1130,7 +1152,10 @@ function Get-InstallIntegrity {
             # an empty recorded value means "this client has none".
             $statusMessageKnown = (-not [string]::IsNullOrWhiteSpace($expectedStatusMessage))
         }
-        $expectedTimeout = 60
+        # Per-client PERSISTED timeout is the expectation, so a hook installed
+        # with its own value drifts against THAT value, not against the default.
+        # A record written before timeouts were per-hook simply carries 60.
+        $expectedTimeout = $script:DefaultHookTimeoutSeconds
         if ($null -ne $subrecord.PSObject.Properties['timeout']) { $expectedTimeout = [int]$subrecord.timeout }
         $registrationState = Test-ClientRegistrationState `
             -SettingsPath ([string]$subrecord.settingsPath) `

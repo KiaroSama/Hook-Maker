@@ -92,6 +92,29 @@ function Get-RegisteredEvents {
     return $events.ToArray()
 }
 
+# Every registered handler timeout for one hook, one entry per registration, so
+# a missing timeout property reads as '' rather than silently matching.
+function Get-RegisteredTimeouts {
+    param([string]$SettingsPath, [string]$HookName)
+    $settings = Get-Content -LiteralPath $SettingsPath -Raw | ConvertFrom-Json
+    $pattern = '[\\/]' + [regex]::Escape($HookName) + '[\\/]' + [regex]::Escape($HookName + '.ps1')
+    $timeouts = New-Object System.Collections.Generic.List[string]
+    foreach ($event in $settings.hooks.PSObject.Properties) {
+        foreach ($group in @($event.Value)) {
+            foreach ($handler in @($group.hooks)) {
+                $matched = $false
+                foreach ($property in @('command', 'commandWindows', 'command_windows')) {
+                    if ($null -ne $handler.PSObject.Properties[$property] -and [string]$handler.$property -match $pattern) { $matched = $true }
+                }
+                if (-not $matched) { continue }
+                if ($null -ne $handler.PSObject.Properties['timeout']) { [void]$timeouts.Add([string]$handler.timeout) }
+                else { [void]$timeouts.Add('') }
+            }
+        }
+    }
+    return $timeouts.ToArray()
+}
+
 try {
     # =====================================================================
     Write-Host '--- menu structure + listing + sync-group create (-NoInstall) ---' -ForegroundColor Cyan
@@ -144,9 +167,20 @@ try {
         '10\. Graph-Read-Check', '11\. Graph-Update-Check', '12\. Large-File-Check',
         '13\. Mcp-Usage-Check', '14\. Rules-Check', '15\. Skills-Check',
         '16\. Secrets-Check', '17\. Ignore-Rules-Check', '18\. Dependency-Version-Check',
-        '19\. Test-Temp-Cleanup', '20\. Cloudflare-Deploy'
+        '19\. Test-Temp-Cleanup', '20\. Test-Plan-Check', '21\. Test-Run-Guard',
+        '22\. Test-Completion-Check', '23\. Cloudflare-Deploy'
     ) -join '[\s\S]*'
-    Check 'hooks follow the requested menu order (Select all -> sync group -> hooks -> Dependency-Version-Check -> Test-Temp-Cleanup -> Cloudflare-Deploy last)' ($r.Out -match $menuOrder)
+    Check 'hooks follow the requested menu order (Select all -> sync group -> hooks -> the three test-health hooks at 20/21/22 -> Cloudflare-Deploy last at 23)' ($r.Out -match $menuOrder)
+    # The three test-health hooks (24.txt) render one line each, with the tag
+    # their canonical When value demands - a value Get-HookTimingTag does not
+    # recognize silently renders NO tag at all.
+    Check 'Test-Plan-Check renders the [pre-task] tag' ($r.Out -match '(?m)^  20\. Test-Plan-Check \| \[pre-task\] \| \S') $r.Out
+    Check 'Test-Run-Guard renders the [pre+post-task] tag' ($r.Out -match '(?m)^  21\. Test-Run-Guard \| \[pre\+post-task\] \| \S') $r.Out
+    Check 'Test-Completion-Check renders the [post-task] tag' ($r.Out -match '(?m)^  22\. Test-Completion-Check \| \[post-task\] \| \S') $r.Out
+    Check 'the three management rows follow the shipped block at 24/25/26' (
+        ($r.Out -match '(?m)^  24\. Update installed hooks \| \[manage\] \|') -and
+        ($r.Out -match '(?m)^  25\. Get hook status \| \[manage\] \|') -and
+        ($r.Out -match '(?m)^  26\. Uninstall installed hooks \| \[manage\] \|')) $r.Out
     Check '_hooklib excluded from listing' ($r.Out -notmatch '_hooklib')
     Check 'full back suffix on sub-prompts' ($r.Out -match 'back=0' -and $r.Out -match 'quit=exit')
     Check 'main-menu suffix is quit-only' ($r.Out -match 'Select an option.*\{quit=exit\}')
@@ -272,12 +306,13 @@ try {
     Write-Host '--- multi-select install (range + list, recommended events) ---' -ForegroundColor Cyan
     $cfg4 = Join-Path $Work 'cfg4.json'; New-Config $cfg4
     $m = New-Proj 'Multi'
-    # main 1 -> sub 1 -> "3-8,16,20" (eight advisory hooks incl. Cloudflare-Deploy,
+    # main 1 -> sub 1 -> "3-8,16,23" (eight advisory hooks incl. Cloudflare-Deploy,
     #        still the LAST individual entry (Docs-Freshness-Check inserted at 9
-    #        shifted Secrets-Check 15->16 and Cloudflare-Deploy 19->20); the
-    #        engine is excluded from this list entirely, see the guard test below)
+    #        shifted Secrets-Check 15->16, and the three test-health hooks at
+    #        20/21/22 shifted Cloudflare-Deploy 20->23); the engine is excluded
+    #        from this list entirely, see the guard test below)
     #        -> mode 1 (recommended events per hook) -> client Both -> target -> done -> start -> exit
-    $r = Invoke-Wizard -Config $cfg4 -Answers @('1', '1', '3-8,16,20', '1', '1', $m, 'done', '', '0')
+    $r = Invoke-Wizard -Config $cfg4 -Answers @('1', '1', '3-8,16,23', '1', '1', $m, 'done', '', '0')
     Check 'exit 0' ($r.Exit -eq 0)
     Check 'no stderr' ($r.Err -eq '')
     Check 'selection accepts a range combined with a single item' ($r.Out -notmatch 'Enter number\(s\)')
@@ -373,12 +408,12 @@ try {
     $null = Invoke-Wizard -Config $cfgAllCodex -Answers @('1', '1', '1', $syncX, $syncY, 'done', '1', '', '1', '3', $codexOnlyProj, 'done', '', '0')
     Check 'select-all honors Codex-only client scoping' ((Test-Path (Join-Path $codexOnlyProj '.codex\hooks.json')) -and -not (Test-Path (Join-Path $codexOnlyProj '.claude')))
 
-    # Selecting the second-to-last individual entry installs Test-Temp-Cleanup
-    # (menu item 19, immediately before Cloudflare-Deploy).
+    # Selecting the second-to-last individual entry installs Test-Completion-Check
+    # (menu item 22, immediately before Cloudflare-Deploy).
     $cfgPenult = Join-Path $Work 'cfg-penult.json'; New-Config $cfgPenult
     $penultProj = New-Proj 'PenultEntryProj'
     $rPenult = Invoke-Wizard -Config $cfgPenult -Answers @('1', '1', ($hookCount + 1).ToString(), '2', '2', $penultProj, 'done', '', '0')
-    Check 'selecting the second-to-last individual entry installs Test-Temp-Cleanup' (Test-Path (Join-Path $penultProj '.claude\hooks\Hook-Maker\Test-Temp-Cleanup\Test-Temp-Cleanup.ps1'))
+    Check 'selecting the second-to-last individual entry installs Test-Completion-Check' (Test-Path (Join-Path $penultProj '.claude\hooks\Hook-Maker\Test-Completion-Check\Test-Completion-Check.ps1'))
     Check 'did not install the neighboring Cloudflare-Deploy hook instead' (-not (Test-Path (Join-Path $penultProj '.claude\hooks\Hook-Maker\Cloudflare-Deploy')))
 
     # Selecting the LAST individual entry (a single-hook pick, no aggregate)
@@ -436,10 +471,13 @@ try {
     Check 'reinstall keeps exactly one Docs-Freshness-Check folder (no duplicate)' (@($docsFoldersAgain | Where-Object { $_ -eq 'Docs-Freshness-Check' }).Count -eq 1)
 
     # =====================================================================
-    Write-Host '--- installer/idempotency check: the two menu-affected hooks (19, 20) ---' -ForegroundColor Cyan
+    Write-Host '--- installer/idempotency check: the two menu-affected hooks (19, 23) ---' -ForegroundColor Cyan
+    # Test-Temp-Cleanup keeps its stable index 19 (the three new test-health
+    # hooks were inserted AFTER it); Cloudflare-Deploy stays the last entry and
+    # therefore moved 20 -> 23, i.e. $hookCount + 2.
     $cfgAffected = Join-Path $Work 'cfg-affected.json'; New-Config $cfgAffected
     $affectedProj = New-Proj 'AffectedHooksProj'
-    $affectedSelection = ($hookCount + 1).ToString() + ',' + ($hookCount + 2).ToString()
+    $affectedSelection = '19,' + ($hookCount + 2).ToString()
     $rAffected = Invoke-Wizard -Config $cfgAffected -Answers @('1', '1', $affectedSelection, '1', '1', $affectedProj, 'done', '', '0')
     Check 'exit 0 (installing Test-Temp-Cleanup + Cloudflare-Deploy together)' ($rAffected.Exit -eq 0)
     Check 'both affected hooks installed' (
@@ -470,6 +508,45 @@ try {
         }
     }
     Check 'reinstall does not duplicate Test-Temp-Cleanup''s registration (one per configured event)' ($cleanupHandlerCount -eq 2)
+    # Test-Temp-Cleanup declares no Timeout in $script:HookMeta, so its
+    # registration must stay on the historical default of 60 - the per-hook
+    # timeout feature may not change a single hook that did not ask for one.
+    $cleanupTimeouts = @(Get-RegisteredTimeouts (Join-Path $affectedProj '.claude\settings.local.json') 'Test-Temp-Cleanup')
+    Check 'a hook without a metadata Timeout still registers the historical default 60' (
+        $cleanupTimeouts.Count -eq 2 -and @($cleanupTimeouts | Where-Object { $_ -ne '60' }).Count -eq 0) ($cleanupTimeouts -join ',')
+
+    # =====================================================================
+    Write-Host '--- the three test-health hooks: canonical events + per-hook timeout (24.txt) ---' -ForegroundColor Cyan
+    # 20,21,22 selected together so the batch takes the "recommended events per
+    # hook" path - which resolves each hook's events through
+    # Get-HookRecommendedEvents, i.e. straight out of $script:HookMeta (none of
+    # the three ships a .env.example, so a generic default would be the
+    # regression this pins).
+    $cfgHealth = Join-Path $Work 'cfg-health.json'; New-Config $cfgHealth
+    $healthProj = New-Proj 'TestHealthHooksProj'
+    $rHealth = Invoke-Wizard -Config $cfgHealth -Answers @('1', '1', '20-22', '1', '1', $healthProj, 'done', '', '0')
+    Check 'exit 0 (installing the three test-health hooks)' ($rHealth.Exit -eq 0) $rHealth.Err
+    Check 'no stderr (installing the three test-health hooks)' ($rHealth.Err -eq '')
+    $healthClaude = Join-Path $healthProj '.claude\settings.local.json'
+    $healthCodex = Join-Path $healthProj '.codex\hooks.json'
+    # name -> canonical events + canonical timeout, exactly as $script:HookMeta declares them.
+    $healthExpected = [ordered]@{
+        'Test-Plan-Check'       = @{ Events = 'SessionStart,UserPromptSubmit'; Timeout = '15' }
+        'Test-Run-Guard'        = @{ Events = 'PostToolUse,PreToolUse';        Timeout = '10' }
+        'Test-Completion-Check' = @{ Events = 'Stop,SubagentStop';             Timeout = '20' }
+    }
+    foreach ($entry in $healthExpected.GetEnumerator()) {
+        $hookName = $entry.Key
+        Check ($hookName + ' installed at its own friendly folder') (Test-Path (Join-Path $healthProj ('.claude\hooks\Hook-Maker\' + $hookName + '\' + $hookName + '.ps1')))
+        foreach ($settings in @($healthClaude, $healthCodex)) {
+            $client = if ($settings -eq $healthClaude) { 'claude' } else { 'codex' }
+            $events = @(Get-RegisteredEvents $settings $hookName | Sort-Object) -join ','
+            Check ($hookName + ' registers its canonical metadata events in ' + $client) ($events -eq $entry.Value.Events) $events
+            $timeouts = @(Get-RegisteredTimeouts $settings $hookName)
+            Check ($hookName + ' registers its canonical metadata timeout in ' + $client) (
+                $timeouts.Count -eq 2 -and @($timeouts | Where-Object { $_ -ne $entry.Value.Timeout }).Count -eq 0) ($timeouts -join ',')
+        }
+    }
 
     # Future-proof: a synthetic, unknown hook folder must be picked up by
     # Select All with NO code change - proves the set is derived dynamically

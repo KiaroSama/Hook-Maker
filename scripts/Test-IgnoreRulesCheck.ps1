@@ -166,6 +166,108 @@ try {
     $r = Fire -Cwd $envOverride -HookPath $overrideHook
     Check 'an explicit project-specific positive rule still blocks .env.example' ($r.Out -match 'TRACKED' -and $r.Out -match '\.env\.example') $r.Out
 
+    # =====================================================================
+    Write-Host '--- the stable protected ignore set: presence AND semantic order ---' -ForegroundColor Cyan
+
+    # The exact built-in set from Ignore-Rules-Check.ps1. Ordering here is
+    # SEMANTIC, not cosmetic: gitignore is last-match-wins, so every `!` negation
+    # must sit AFTER the broader positive pattern it un-ignores. Asserting only
+    # presence would pass on a file where every negation is dead.
+    $StableIgnoreSet = @(
+        '/.ai/', '/secrets.md', '/explain-AI.md', '/reference.md', '/CLAUDE.md', '/AGENTS.md',
+        '/.agents/', '/.claude/', '/.kiro/', '/.codex/', '/.cursor/', '/.cline/', '/graphify-out/',
+        '.ignoreme', '**/.ignoreme', '/.env', '/.env.*', '!/.env.example', '!/.env.sample',
+        '!/.env.template', '!/.env.dist'
+    )
+
+    function Get-IgnoreLines {
+        param([string]$Repo)
+        return @([System.IO.File]::ReadAllLines((Join-Path $Repo '.gitignore')) | ForEach-Object { $_.Trim() })
+    }
+
+    # Resolves what git ACTUALLY decides for a path - the only trustworthy check,
+    # since a pattern can be present and still be overridden by a later match.
+    function Test-GitIgnored {
+        param([string]$Repo, [string]$RelPath)
+        & git -C $Repo check-ignore -q --no-index -- $RelPath 2>$null
+        return ($LASTEXITCODE -eq 0)
+    }
+
+    $stable = New-Repo 'stable-ignore-set'
+    $null = Fire -Cwd $stable -EventName 'SessionStart'
+    $stableLines = Get-IgnoreLines $stable
+    $missingStable = @($StableIgnoreSet | Where-Object { $stableLines -notcontains $_ })
+    Check 'the full stable protected ignore set is present after the first run' ($missingStable.Count -eq 0) (($missingStable -join ', ') + ' | file: ' + ($stableLines -join ', '))
+
+    # Relative order: every negation must come after the broader /.env.* it un-ignores.
+    $broadEnvAt = [array]::LastIndexOf([string[]]$stableLines, '/.env.*')
+    $negationsAfterBroad = @(@('!/.env.example', '!/.env.sample', '!/.env.template', '!/.env.dist') |
+            Where-Object { [array]::LastIndexOf([string[]]$stableLines, $_) -lt $broadEnvAt })
+    Check 'every .env negation is written AFTER the broader /.env.* it un-ignores' (
+        $broadEnvAt -ge 0 -and $negationsAfterBroad.Count -eq 0) (($negationsAfterBroad -join ', ') + ' | /.env.* at ' + $broadEnvAt)
+
+    # Order is only meaningful through its effect: prove git agrees.
+    Check 'effective result: a real .env is ignored' (Test-GitIgnored -Repo $stable -RelPath '.env')
+    Check 'effective result: a real .env.local is ignored' (Test-GitIgnored -Repo $stable -RelPath '.env.local')
+    foreach ($tmpl in @('.env.example', '.env.sample', '.env.template', '.env.dist')) {
+        Check ('effective result: the public template ' + $tmpl + ' is NOT ignored') (-not (Test-GitIgnored -Repo $stable -RelPath $tmpl))
+    }
+
+    # A negation placed BEFORE its broader rule is dead on arrival (last-match-wins).
+    # Reproduced consequence: alphabetically sorting an existing .gitignore moves
+    # every '!' line above '/.env.*' ('!' < '/' in ASCII), which both re-ignores the
+    # public templates AND makes an already-tracked .env.example match the protected
+    # /.env.* pattern - a false "TRACKED protected paths" block on a legitimately
+    # public file. The hook must repair the precedence, never just accept presence.
+    $sortedRepo = New-Repo 'sorted-gitignore'
+    $null = Fire -Cwd $sortedRepo -EventName 'SessionStart'
+    [System.IO.File]::WriteAllText((Join-Path $sortedRepo '.env.example'), 'PLACEHOLDER_KEY=changeme', (New-Object System.Text.UTF8Encoding $false))
+    & git -C $sortedRepo add .env.example .gitignore
+    & git -C $sortedRepo commit -q -m 'track the public template while ordering is correct'
+    # Simulate any tool (or human) that sorts .gitignore alphabetically.
+    $scrambled = @(Get-IgnoreLines $sortedRepo | Where-Object { $_ -ne '' -and -not $_.StartsWith('#') } | Sort-Object)
+    Check 'the scrambled fixture really does place a negation before /.env.*' (
+        [array]::LastIndexOf([string[]]$scrambled, '!/.env.example') -lt [array]::LastIndexOf([string[]]$scrambled, '/.env.*')) ($scrambled -join ', ')
+    [System.IO.File]::WriteAllText((Join-Path $sortedRepo '.gitignore'), (($scrambled -join "`n") + "`n"), (New-Object System.Text.UTF8Encoding $false))
+
+    $r = Fire -Cwd $sortedRepo
+    $repairedLines = Get-IgnoreLines $sortedRepo
+    Check 'a negation ordered before its broader rule is repaired, not accepted' (
+        [array]::LastIndexOf([string[]]$repairedLines, '!/.env.example') -gt [array]::LastIndexOf([string[]]$repairedLines, '/.env.*')) ($repairedLines -join ', ')
+    Check 'after repair the public template is genuinely un-ignored again' (-not (Test-GitIgnored -Repo $sortedRepo -RelPath '.env.example'))
+    Check 'after repair a real .env is still ignored (no protection weakened)' (Test-GitIgnored -Repo $sortedRepo -RelPath '.env')
+    $stillMissing = @($StableIgnoreSet | Where-Object { $repairedLines -notcontains $_ })
+    Check 'the repair never drops, renames or weakens any protected pattern' ($stillMissing.Count -eq 0) ($stillMissing -join ', ')
+    Check 'the tracked public template is NOT falsely reported as a protected path' ($r.Out -notmatch 'TRACKED') $r.Out
+
+    # Idempotent: a second run must not keep re-appending the same negations.
+    $r2 = Fire -Cwd $sortedRepo
+    Check 'the order repair is idempotent (second run is silent)' ($r2.Exit -eq 0 -and $r2.Out -eq '') $r2.Out
+
+    # =====================================================================
+    Write-Host '--- an ignored .venv stays ignored and untracked ---' -ForegroundColor Cyan
+
+    # A required-for-deployment .venv is a git-protection concern only: the hook
+    # must leave it ignored and untracked and must never un-ignore it. Whether a
+    # deployment pipeline copies that directory is a SEPARATE concern this hook
+    # neither authorizes nor decides.
+    $venvRepo = New-Repo 'venv-ignored'
+    $venvPkg = Join-Path $venvRepo '.venv\Lib\site-packages\thirdparty'
+    New-Item -ItemType Directory -Path $venvPkg -Force | Out-Null
+    # An opaque, token-SHAPED but obviously fake constant vendored by a package.
+    [System.IO.File]::WriteAllText((Join-Path $venvPkg 'fixture_sample.py'),
+        "SAMPLE_TOKEN = `"QUJDREVGR0hJSktMTU5PUFFSU1RVVldYWVoxMjM0NTY3ODkw`"`n", (New-Object System.Text.UTF8Encoding $false))
+    [System.IO.File]::WriteAllText((Join-Path $venvRepo '.gitignore'), ".venv/`n", (New-Object System.Text.UTF8Encoding $false))
+    $r = Fire -Cwd $venvRepo -EventName 'SessionStart'
+    $venvLines = Get-IgnoreLines $venvRepo
+    Check '.venv/ ignore rule is preserved by the auto-fix' ($venvLines -contains '.venv/') ($venvLines -join ', ')
+    Check 'the hook never adds a negation that would un-ignore .venv' (
+        -not @($venvLines | Where-Object { $_ -like '!*venv*' }).Count) ($venvLines -join ', ')
+    Check '.venv is still ignored by git after the hook runs' (Test-GitIgnored -Repo $venvRepo -RelPath '.venv/Lib/site-packages/thirdparty/fixture_sample.py')
+    $venvTracked = @(& git -C $venvRepo ls-files -- .venv | Where-Object { $_ })
+    Check '.venv is never tracked as a side effect of the hook' ($venvTracked.Count -eq 0) ($venvTracked -join ', ')
+    Check 'an ignored .venv containing a token-shaped constant does not block' ($r.Out -notmatch '\.venv') $r.Out
+
     $ps5 = New-Repo 'ps5'
     $r = Fire -Cwd $ps5 -Exe 'powershell.exe'
     Check 'Windows PowerShell 5.1 auto-fix works' ($r.Exit -eq 0 -and (Test-Path -LiteralPath (Join-Path $ps5 '.gitignore'))) $r.Err
@@ -266,6 +368,19 @@ try {
     $pushExit = $LASTEXITCODE
     $ErrorActionPreference = 'Stop'
     Check 'clean push succeeds and still runs the previous hook' ($pushExit -eq 0 -and (Test-Path -LiteralPath (Join-Path $pushRepo 'previous-hook.txt'))) $pushOutput
+
+    # =====================================================================
+    Write-Host '--- isolation: the real user config is never touched ---' -ForegroundColor Cyan
+    # GetTempPath() sits UNDER the real user profile on Windows, and this suite
+    # runs Install-Hook.ps1 several times; a workspace path leaking into the real
+    # ~\.claude or ~\.codex config is a realistic failure, not theory.
+    $realUserConfigs = @(
+        (Join-Path $env:USERPROFILE '.claude\settings.json'),
+        (Join-Path $env:USERPROFILE '.claude\settings.local.json'),
+        (Join-Path $env:USERPROFILE '.codex\config.toml')
+    ) | Where-Object { Test-Path -LiteralPath $_ -PathType Leaf }
+    $leaked = @($realUserConfigs | Where-Object { [System.IO.File]::ReadAllText($_) -like ('*' + $Work + '*') })
+    Check 'no fixture path ever leaks into the real ~\.claude / ~\.codex config' ($leaked.Count -eq 0) ($leaked -join ', ')
 }
 finally {
     $env:HOOKMAKER_STATE_DIR = $SavedHookMakerStateDir

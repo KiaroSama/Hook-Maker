@@ -191,27 +191,28 @@ you add or create hooks:
 
 | Item | What it is |
 | --- | --- |
-| `1` | Select all hooks — the sync group **and** every hook below (shipped + your own). Never runs `21`/`22`/`23`. |
+| `1` | Select all hooks — the sync group **and** every hook below (shipped + your own). Never runs `24`/`25`/`26`. |
 | `2` | Create or update a sync group |
-| `3`–`20` | The 18 shipped hooks, in a pinned order (`9` is `Docs-Freshness-Check`) |
-| `21` | **Update installed hooks** |
-| `22` | **Get hook status** |
-| `23` | **Uninstall installed hooks** |
-| `24`+ | Your own created/custom hooks under `hooks\`, in deterministic name order |
+| `3`–`22` | The 21 shipped hooks, in a pinned order (`9` is `Docs-Freshness-Check`; `20`–`22` are the three test-health hooks) |
+| `23` | `Cloudflare-Deploy` |
+| `24` | **Update installed hooks** |
+| `25` | **Get hook status** |
+| `26` | **Uninstall installed hooks** |
+| `27`+ | Your own created/custom hooks under `hooks\`, in deterministic name order |
 
-Discovering or creating a custom hook adds rows from `24` onward and **never shifts `21`/`22`/`23`**.
+Discovering or creating a custom hook adds rows from `27` onward and **never shifts `24`/`25`/`26`**.
 
 Selections accept a single number, a comma list, and inclusive ascending ranges — `1`, `1,2`,
-`1,2,3-6`. `21`, `22` and `23` are management actions, not hook selections: each must be chosen on
-its own, and combining any of them with hook numbers (`3,22`, `21-23`, `1,23`, `22,24`) is rejected
+`1,2,3-6`. `24`, `25` and `26` are management actions, not hook selections: each must be chosen on
+its own, and combining any of them with hook numbers (`3,25`, `24-26`, `1,26`, `25,27`) is rejected
 rather than half-executed.
 
-## Updating installed hooks (`21`)
+## Updating installed hooks (`24`)
 
 Because installs are self-contained copies, editing a hook's source under `hooks/` (or updating
 Hook Maker itself) does **not** change any copy you already installed — the copies are frozen at
 install time. Rather than re-selecting and reconfiguring every hook you've installed one by one,
-use item **`21` Update installed hooks** (also reachable as `4` in the "Create or install a hook"
+use item **`24` Update installed hooks** (also reachable as `4` in the "Create or install a hook"
 submenu, which is a compatibility alias for the *same* implementation).
 
 This reads a local install registry, shows a plan, asks **one** confirmation, then repairs
@@ -223,11 +224,11 @@ source was moved or deleted it is reported as missing and skipped — no other p
 never installs a hook that was never installed, never touches unrelated settings-file content, and
 a second run with nothing changed reports everything as already current (no-op).
 
-## Getting hook status (`22`)
+## Getting hook status (`25`)
 
-Item **`22` Get hook status** scans a path you choose, reports every installed hook it can find —
+Item **`25` Get hook status** scans a path you choose, reports every installed hook it can find —
 **Hook Maker's own and third-party alike** — and records the verified results. It is an explicit,
-on-demand action: nothing scans on startup, and item `21` still only looks at its own registry.
+on-demand action: nothing scans on startup, and item `24` still only looks at its own registry.
 
 It asks two questions:
 
@@ -263,10 +264,10 @@ paths stay separate. A cancelled or failed scan writes nothing.
 Findings are reported as either **status-only** or **safely removable**. Anything ambiguous, shared
 between hooks, or outside a recognised hook root is shown but never auto-deleted.
 
-## Uninstalling installed hooks (`23`)
+## Uninstalling installed hooks (`26`)
 
-Item **`23` Uninstall installed hooks** lists every tracked installation — Hook Maker's own plus
-anything item `22` discovered — and removes the ones you pick. It accepts the same `1` / `1,2` /
+Item **`26` Uninstall installed hooks** lists every tracked installation — Hook Maker's own plus
+anything item `25` discovered — and removes the ones you pick. It accepts the same `1` / `1,2` /
 `1,2,3-6` syntax, and shows each row's record type and whether removal is possible.
 
 Two kinds of row are offered:
