@@ -7,7 +7,11 @@
 # the native Git pre-push chain (regenerate around a remaining foreign stage,
 # restore the preserved user hook byte-for-byte on full removal, refuse a
 # tampered wrapper with a manual-repair status, never touch an unrelated
-# repo's hook), and failure injection on the Claude settings write, the Codex
+# repo's hook), the ownership pre-flight (a wrapper file present but missing
+# the Hook Maker marker is manualRepair - ownership unknown - never a silent
+# "not managed anymore" success; a missing wrapper is only idempotent success
+# once proven no owned native runtime remains, otherwise it is retained as
+# manualRepair), and failure injection on the Claude settings write, the Codex
 # settings write, and the final registry-removal persistence (no false
 # success, no silent registry deletion, retained record reflects reality).
 #
@@ -442,6 +446,100 @@ try {
     Check 'a tampered wrapper stops the WHOLE record - claude/codex components are never even attempted' ((Get-ComponentStatus $rTamper.Result 'claude') -eq '' -and (Get-ComponentStatus $rTamper.Result 'codex') -eq '')
     Check 'the record is retained (not removed) after a tampered-wrapper stop' (@(Get-RecordsFor 'Ignore-Rules-Check' | Where-Object { $_.targetProjectRoot -eq $tamperRepo }).Count -eq 1)
     Check 'the unrelated repo''s own pre-push hook is STILL untouched after the tamper scenario' (Test-BytesEqual (Get-BytesOrEmpty (Join-Path $unrelatedHooksDir 'pre-push')) $unrelatedBytesBefore)
+
+    # =========================================================================
+    Write-Host '--- native Git: a wrapper file present but missing the marker is manualRepair - ownership unknown, never silent success ---' -ForegroundColor Cyan
+    $noMarkerRepo = Join-Path $Work 'nomarker-repo'
+    New-Item -ItemType Directory -Path $noMarkerRepo -Force | Out-Null
+    Push-Location $noMarkerRepo
+    try { & git init --quiet -b main 2>$null | Out-Null } finally { Pop-Location }
+    New-Item -ItemType Directory -Path (Join-Path $noMarkerRepo '.git\hooks') -Force | Out-Null
+
+    & $InstallScript -CustomHook $ignoreHook -Events @('Stop') -TargetProject $noMarkerRepo *> $null
+    $recNoMarker = Get-RecordForScope 'Ignore-Rules-Check' $noMarkerRepo
+    $noMarkerWrapperPath = [string]$recNoMarker.nativeGit.wrapperPath
+    $noMarkerRuntimeRoot = [string]$recNoMarker.nativeGit.runtimeRoot
+    Check 'setup: the native chain is tracked as managed (no-marker case)' ($null -ne $recNoMarker.nativeGit -and $recNoMarker.nativeGit.managed -eq $true)
+
+    # Replace the wrapper outright with a plain file carrying NO Hook Maker
+    # marker - simulates a user or another tool having replaced it, where
+    # ownership of whatever now sits at this path is genuinely unknown.
+    Write-Utf8 $noMarkerWrapperPath "#!/bin/sh`necho a completely different pre-push hook, not ours`n"
+    $noMarkerWrapperBytesBefore = Get-BytesOrEmpty $noMarkerWrapperPath
+    $noMarkerClaudeSettingsBefore = Get-BytesOrEmpty ([string]$recNoMarker.clients.claude.settingsPath)
+    $noMarkerCodexSettingsBefore = Get-BytesOrEmpty ([string]$recNoMarker.clients.codex.settingsPath)
+    $noMarkerClaudeRuntimeBefore = Get-BytesOrEmpty ([string]$recNoMarker.clients.claude.runtimeScript)
+    $noMarkerCodexRuntimeBefore = Get-BytesOrEmpty ([string]$recNoMarker.clients.codex.runtimeScript)
+
+    $rNoMarker = Invoke-UninstallProcess -RecordId $recNoMarker.id
+    Check 'a marker-less wrapper does not crash the uninstaller' ($rNoMarker.Exit -eq 0) $rNoMarker.Err
+    Check 'a marker-less wrapper is reported as manualRepair overall' ([string]$rNoMarker.Result.overall -eq 'manualRepair') ($rNoMarker.Result | ConvertTo-Json -Depth 5)
+    Check 'a marker-less wrapper is reported manualRepair for nativeGit with the precise reason' ((@($rNoMarker.Result.components | Where-Object { $_.component -eq 'nativeGit' }))[0].reason -eq 'wrapperReplacedOrOwnershipUnknown')
+    Check 'the marker-less wrapper is preserved byte-for-byte (never overwritten)' (Test-BytesEqual (Get-BytesOrEmpty $noMarkerWrapperPath) $noMarkerWrapperBytesBefore)
+    Check 'the managed native runtime directory still exists (never swept away)' (Test-Path -LiteralPath (Join-Path $noMarkerRuntimeRoot 'Ignore-Rules-Check'))
+    Check 'the managed native companion directory still exists (never swept away)' (Test-Path -LiteralPath (Join-Path $noMarkerRuntimeRoot 'Secrets-Check'))
+    Check 'the registry record is retained, not removed' (@(Get-RecordsFor 'Ignore-Rules-Check' | Where-Object { $_.targetProjectRoot -eq $noMarkerRepo }).Count -eq 1)
+    Check 'claude is never even attempted once nativeGit is ambiguous' ((Get-ComponentStatus $rNoMarker.Result 'claude') -eq '')
+    Check 'codex is never even attempted once nativeGit is ambiguous' ((Get-ComponentStatus $rNoMarker.Result 'codex') -eq '')
+    Check 'Claude settings are byte-for-byte unchanged (proves nothing else was mutated)' (Test-BytesEqual (Get-BytesOrEmpty ([string]$recNoMarker.clients.claude.settingsPath)) $noMarkerClaudeSettingsBefore)
+    Check 'Codex settings are byte-for-byte unchanged (proves nothing else was mutated)' (Test-BytesEqual (Get-BytesOrEmpty ([string]$recNoMarker.clients.codex.settingsPath)) $noMarkerCodexSettingsBefore)
+    Check 'Claude runtime copy is byte-for-byte unchanged (proves nothing else was mutated)' (Test-BytesEqual (Get-BytesOrEmpty ([string]$recNoMarker.clients.claude.runtimeScript)) $noMarkerClaudeRuntimeBefore)
+    Check 'Codex runtime copy is byte-for-byte unchanged (proves nothing else was mutated)' (Test-BytesEqual (Get-BytesOrEmpty ([string]$recNoMarker.clients.codex.runtimeScript)) $noMarkerCodexRuntimeBefore)
+
+    # =========================================================================
+    Write-Host '--- native Git: wrapper missing but owned native runtime remains -> retained as manual repair, never silently abandoned ---' -ForegroundColor Cyan
+    $missingArtifactsRepo = Join-Path $Work 'missing-wrapper-artifacts-repo'
+    New-Item -ItemType Directory -Path $missingArtifactsRepo -Force | Out-Null
+    Push-Location $missingArtifactsRepo
+    try { & git init --quiet -b main 2>$null | Out-Null } finally { Pop-Location }
+    New-Item -ItemType Directory -Path (Join-Path $missingArtifactsRepo '.git\hooks') -Force | Out-Null
+
+    & $InstallScript -CustomHook $ignoreHook -Events @('Stop') -TargetProject $missingArtifactsRepo -ClaudeOnly *> $null
+    $recMissingArtifacts = Get-RecordForScope 'Ignore-Rules-Check' $missingArtifactsRepo
+    $maWrapperPath = [string]$recMissingArtifacts.nativeGit.wrapperPath
+    $maRuntimeRoot = [string]$recMissingArtifacts.nativeGit.runtimeRoot
+    Check 'setup: the native chain is tracked as managed (missing-wrapper-artifacts case)' ($null -ne $recMissingArtifacts.nativeGit -and $recMissingArtifacts.nativeGit.managed -eq $true)
+
+    # Simulate the wrapper having been removed by hand while the managed
+    # runtime directories are still sitting on disk (e.g. a crash between the
+    # two deletes, or a user only deleting the wrapper).
+    Remove-Item -LiteralPath $maWrapperPath -Force
+    $maClaudeRuntimeBefore = Get-BytesOrEmpty ([string]$recMissingArtifacts.clients.claude.runtimeScript)
+
+    $rMissingArtifacts = Invoke-UninstallProcess -RecordId $recMissingArtifacts.id
+    Check 'a missing wrapper with owned artifacts remaining does not crash the uninstaller' ($rMissingArtifacts.Exit -eq 0) $rMissingArtifacts.Err
+    Check 'a missing wrapper with owned artifacts remaining is reported as manualRepair overall' ([string]$rMissingArtifacts.Result.overall -eq 'manualRepair') ($rMissingArtifacts.Result | ConvertTo-Json -Depth 5)
+    Check 'a missing wrapper with owned artifacts remaining is reported manualRepair for nativeGit' ((Get-ComponentStatus $rMissingArtifacts.Result 'nativeGit') -eq 'manualRepair')
+    Check 'the owned native runtime directory is left in place, not silently abandoned' (Test-Path -LiteralPath (Join-Path $maRuntimeRoot 'Ignore-Rules-Check'))
+    Check 'the owned native companion directory is left in place too' (Test-Path -LiteralPath (Join-Path $maRuntimeRoot 'Secrets-Check'))
+    Check 'the record is retained, not removed' (@(Get-RecordsFor 'Ignore-Rules-Check' | Where-Object { $_.targetProjectRoot -eq $missingArtifactsRepo }).Count -eq 1)
+    Check 'claude is never even attempted once nativeGit needs manual repair' ((Get-ComponentStatus $rMissingArtifacts.Result 'claude') -eq '')
+    Check 'the claude runtime copy is untouched' (Test-BytesEqual (Get-BytesOrEmpty ([string]$recMissingArtifacts.clients.claude.runtimeScript)) $maClaudeRuntimeBefore)
+
+    # =========================================================================
+    Write-Host '--- native Git: wrapper missing AND no owned native artifacts remain -> true idempotent success ---' -ForegroundColor Cyan
+    $missingCleanRepo = Join-Path $Work 'missing-wrapper-clean-repo'
+    New-Item -ItemType Directory -Path $missingCleanRepo -Force | Out-Null
+    Push-Location $missingCleanRepo
+    try { & git init --quiet -b main 2>$null | Out-Null } finally { Pop-Location }
+    New-Item -ItemType Directory -Path (Join-Path $missingCleanRepo '.git\hooks') -Force | Out-Null
+
+    & $InstallScript -CustomHook $ignoreHook -Events @('Stop') -TargetProject $missingCleanRepo -ClaudeOnly *> $null
+    $recMissingClean = Get-RecordForScope 'Ignore-Rules-Check' $missingCleanRepo
+    $mcWrapperPath = [string]$recMissingClean.nativeGit.wrapperPath
+    $mcRuntimeRoot = [string]$recMissingClean.nativeGit.runtimeRoot
+    Check 'setup: the native chain is tracked as managed (missing-wrapper-clean case)' ($null -ne $recMissingClean.nativeGit -and $recMissingClean.nativeGit.managed -eq $true)
+
+    # A fully hand-cleaned-up native side: the wrapper AND every managed
+    # runtime directory are already gone before the uninstaller ever runs.
+    Remove-Item -LiteralPath $mcWrapperPath -Force
+    Remove-Item -LiteralPath $mcRuntimeRoot -Recurse -Force
+
+    $rMissingClean = Invoke-UninstallProcess -RecordId $recMissingClean.id
+    Check 'a missing wrapper with no owned artifacts remaining does not crash the uninstaller' ($rMissingClean.Exit -eq 0) $rMissingClean.Err
+    Check 'a missing wrapper with no owned artifacts remaining reports overall ok' ([string]$rMissingClean.Result.overall -eq 'ok') ($rMissingClean.Result | ConvertTo-Json -Depth 5)
+    Check 'a missing wrapper with no owned artifacts remaining reports nativeGit ok (alreadyRemoved)' ((Get-ComponentStatus $rMissingClean.Result 'nativeGit') -eq 'ok')
+    Check 'the record is fully removed (true idempotent success)' (@(Get-RecordsFor 'Ignore-Rules-Check' | Where-Object { $_.targetProjectRoot -eq $missingCleanRepo }).Count -eq 0)
 
     # =========================================================================
     Write-Host '--- failure injection: Claude settings write blocked -> no false success, no silent deletion ---' -ForegroundColor Cyan
