@@ -17,6 +17,9 @@ starts the user's task.
 | `hooks/_hooklib.ps1` | Shared helpers (stdin/`.env`/path/object/hash/JSON/work-time) the shipped hooks dot-source; the `_` prefix keeps it out of the hook picker. |
 | `scripts/Setup-SyncGroup.ps1` | Interactive wizard: sync groups, hook creation/installs, profile listing, validation. |
 | `scripts/Setup-SyncGroupBuilder.ps1` | Sync-group builder dot-sourced by the wizard: collecting project paths, building the full-mesh route profile, confirming and applying a new or updated group. |
+| `scripts/Setup-SyncGroupCreateHook.ps1` | Hook authoring dot-sourced by the wizard: the guided templates and the "Create a new hook" flow that generates a new hook from them. |
+| `scripts/Setup-SyncGroupInstalledHooks.ps1` | Installed-hook management dot-sourced by the wizard: the installed-hook snapshot/list model behind menu items `21`/`22`, the uninstall screen, and the one canonical numeric list/range selection parser shared with the hook menu. |
+| `scripts/Uninstall-Hook.ps1` | Removes ONE install-registry record's artifacts by id — exact-ownership settings/runtime/native-Git cleanup with compensating rollback, then the registry record. Supports `-WhatIf` and the same structured `-ResultPath` contract as `Install-Hook.ps1`. Never deletes a hook's source. |
 | `scripts/Install-Hook.ps1` | Writes a hook command into a project's `.claude/settings.local.json` + `.codex/hooks.json` (or, with no `-TargetProject`, the global `~/.claude` + `~/.codex`). Supports `-CustomHook <path>`. Records the install in `state/install-registry.json` on success (see "Updating previously installed hooks"). |
 | `scripts/Validate-Config.ps1` | Validates `sync-hooks.json`. |
 | `scripts/Test-Engine.ps1` | Self-contained engine smoke test (18 assertions, runs under pwsh and PowerShell 5.1). |
@@ -42,7 +45,8 @@ starts the user's task.
 | `scripts/Test-LegacyDiscovery.ps1` | Offline test suite for legacy/untracked hook discovery ("Update previously installed hooks"): a registration in only one of `command`/`commandWindows`/`command_windows` is still found, the same registration split across two fields yields one candidate, an ambiguous proven-shape path outside any known tool root is never imported, an unrelated same-basename command is never confused with a real one (7 assertions). |
 | `scripts/_testlib.ps1` | Shared assertion helper used by the offline PowerShell test suites. |
 | `logs/` | Wizard execution logs (created on demand, not committed). |
-| `scripts/_installlib.ps1` | Install-time-only library: the install registry (schema, validation, atomic+locked writes, corruption quarantine, v1→v2 migration), the managed-file manifest builders, the installed-state integrity evaluation, and legacy/untracked hook discovery behind "Update previously installed hooks". Deliberately separate from `hooks/_hooklib.ps1`, which is copied into every installed runtime. |
+| `scripts/_installlib.ps1` | Install-time-only library and the single entry point consumers dot-source: the managed-file manifest builders, record/sync-config shape validation, installed-state integrity evaluation, and legacy/untracked hook discovery. Deliberately separate from `hooks/_hooklib.ps1`, which is copied into every installed runtime. |
+| `scripts/_installregistry.ps1` | The registry-persistence layer split out of `_installlib.ps1` (which dot-sources it, so consumers need no change): registry path/shape/quarantine, crash-aware locking, record identity and per-client subrecords, v1→v2 migration, and the locked atomic record upsert. |
 | `state/` | **Machine-local and git-ignored.** `install-registry.json` — what Hook Maker has installed and where (see "Updating previously installed hooks"); never holds secret/`.env`/prompt content or file contents. A damaged registry is preserved beside it as `install-registry.corrupt-<UTC timestamp>-<short hash>.json` instead of being overwritten. |
 
 ## Shipped hooks
@@ -180,21 +184,87 @@ Global install works the same way: `scripts/Install-Hook.ps1` with no `-TargetPr
 `~/.claude/hooks/Hook-Maker/` + `~/.codex/hooks/Hook-Maker/` and registers in
 `~/.claude/settings.json` and `~/.codex/hooks.json`.
 
-## Updating previously installed hooks
+## The hook list: fixed menu numbering
+
+The "Available hooks" list uses **fixed numbers**, so the two management actions never move when
+you add or create hooks:
+
+| Item | What it is |
+| --- | --- |
+| `1` | Select all hooks — the sync group **and** every hook below (shipped + your own). Never runs `21`/`22`. |
+| `2` | Create or update a sync group |
+| `3`–`20` | The 18 shipped hooks, in a pinned order (`9` is `Docs-Freshness-Check`) |
+| `21` | **Update installed hooks** |
+| `22` | **Uninstall installed hooks** |
+| `23`+ | Your own created/custom hooks under `hooks\`, in deterministic name order |
+
+Discovering or creating a custom hook adds rows from `23` onward and **never shifts `21`/`22`**.
+
+Selections accept a single number, a comma list, and inclusive ascending ranges — `1`, `1,2`,
+`1,2,3-6`. `21` and `22` are management actions, not hook selections: each must be chosen on its
+own, and combining either with hook numbers (`3,21`, `21-22`, `1,22`) is rejected rather than
+half-executed.
+
+## Updating installed hooks (`21`)
 
 Because installs are self-contained copies, editing a hook's source under `hooks/` (or updating
 Hook Maker itself) does **not** change any copy you already installed — the copies are frozen at
 install time. Rather than re-selecting and reconfiguring every hook you've installed one by one,
-use the final item in **`1` → Install an existing hook / Create or install a hook**:
-
-`4` **Update previously installed hooks**
+use item **`21` Update installed hooks** (also reachable as `4` in the "Create or install a hook"
+submenu, which is a compatibility alias for the *same* implementation).
 
 This reads a local install registry, shows a plan, asks **one** confirmation, then repairs
 everything that needs it — reusing each installation's original events, client selection,
 target/global scope, and (for the sync engine) profile/config, so you never re-answer the same
-questions. It never installs a hook that was never installed, never touches unrelated
-settings-file content, and a second run with nothing changed reports everything as already current
-(no-op).
+questions. It updates from each record's **persisted source path**, never a path reconstructed from
+the hook's name, so a hook you created yourself is refreshed from where it actually lives. If a
+source was moved or deleted it is reported as missing and skipped — no other path is guessed. It
+never installs a hook that was never installed, never touches unrelated settings-file content, and
+a second run with nothing changed reports everything as already current (no-op).
+
+## Uninstalling installed hooks (`22`)
+
+Item **`22` Uninstall installed hooks** lists every tracked installation and removes the ones you
+pick. It accepts the same `1` / `1,2` / `1,2,3-6` syntax.
+
+Two kinds of row are offered:
+
+- **Individual** — one row per logical installation, showing the hook (and profile, for the sync
+  engine), scope, exact project root or `global`, and which clients it is installed for.
+- **Aggregate** — after those, one row per project (`Remove all Hook Maker hooks from project:
+  <path>`) and, when global installs exist, `Remove all global Hook Maker hooks`.
+
+Selecting an aggregate together with one of its own individual rows removes each installation
+exactly once (deduplicated by record id).
+
+**Your hook source files are never deleted.** Uninstalling removes only the installed runtime
+copies, the client registrations, any native Git integration owned by that record, and the registry
+record itself. The originals under `hooks\` are untouched, so you can reinstall at any time.
+
+Safety properties:
+
+- Ownership is proven by the managed runtime **path**, checked across `command`, `commandWindows`
+  and `command_windows` — never by a bare filename. A handler of yours that merely points at a
+  same-named script elsewhere is preserved.
+- Only the selected record's own per-client runtime directory is removed, and only inside a
+  physically verified boundary. Another hook's runtime, the shared `Hook-Maker` root while other
+  hooks remain, and anything outside the expected path are all refused.
+- Settings files are written under the same per-file lock, atomic writer and timestamped-backup
+  behavior as installs; unrelated groups, handlers and JSON properties survive untouched.
+- Before anything is touched you get a summary of every installation, scope, client, runtime path,
+  settings path and whether native Git is involved, and it proceeds only on an explicit `y`.
+  Cancelling, declining, going back, quitting or entering an invalid selection performs **no**
+  mutation at all — no backups, no registry write, no file removal.
+- A record is removed from the registry only after its owned cleanup is verified. If an uninstall
+  is partial or ambiguous, the record is **kept** with a precise failure/manual-repair state rather
+  than reporting a success that did not happen. Repeating an uninstall is idempotent.
+- For native Git, the managed wrapper is regenerated around any stages that remain, or your
+  previously preserved `pre-push` hook is restored **byte-for-byte** when no managed stages are
+  left. A wrapper that has drifted or been tampered with is preserved and reported for manual
+  repair rather than overwritten.
+
+As with installs, this uses compensating rollback (runtime directories are set aside and restored
+if a later step fails), **not** machine-crash atomicity — see "Known limitations".
 
 ### What "up to date" actually means
 

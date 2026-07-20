@@ -187,3 +187,15 @@ jobs:
       - name: Legacy hook discovery test suite
         shell: pwsh
         run: .\scripts\Test-LegacyDiscovery.ps1
+
+      # Uninstall-Hook.ps1 (hook-list item 22): exact-ownership removal of one
+      # install record - scope isolation across projects/global, foreign
+      # same-basename handlers preserved, unsafe runtime paths refused,
+      # idempotent already-removed handling, byte-for-byte no-op on -WhatIf,
+      # native pre-push wrapper regenerated or the user's previous hook
+      # restored byte-for-byte, tampered wrapper stopped as manual-repair, and
+      # failure injection proving no false success and no silent registry
+      # deletion. Offline, no network; never touches this checkout's own state.
+      - name: Uninstall-Hook test suite
+        shell: pwsh
+        run: .\scripts\Test-UninstallHook.ps1
