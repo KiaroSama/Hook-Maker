@@ -327,12 +327,7 @@ New-Item -ItemType File -Path (Join-Path $PSScriptRoot 'EXECUTED-MARKER.txt') -F
 finally {
     $env:CLAUDE_PROJECT_DIR = $SavedClaudeProjectDir
     if (-not $KeepArtifacts) {
-        try {
-            Get-ChildItem -LiteralPath $Work -Recurse -Force -ErrorAction SilentlyContinue |
-                ForEach-Object { $_.Attributes = [System.IO.FileAttributes]::Normal }
-            Remove-Item -LiteralPath $Work -Recurse -Force -ErrorAction SilentlyContinue
-        }
-        catch { }
+        if (-not (Remove-TestWorkspace $Work)) { $script:Fail++ }
     }
 }
 

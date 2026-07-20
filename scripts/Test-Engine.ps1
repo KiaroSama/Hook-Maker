@@ -177,7 +177,7 @@ finally {
         Write-Host ("Artifacts kept at: $Work") -ForegroundColor DarkGray
     }
     else {
-        [System.IO.Directory]::Delete($Work, $true)
+        if (-not (Remove-TestWorkspace $Work)) { $script:Fail++ }
     }
 }
 
