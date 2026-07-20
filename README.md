@@ -186,24 +186,25 @@ Global install works the same way: `scripts/Install-Hook.ps1` with no `-TargetPr
 
 ## The hook list: fixed menu numbering
 
-The "Available hooks" list uses **fixed numbers**, so the two management actions never move when
+The "Available hooks" list uses **fixed numbers**, so the three management actions never move when
 you add or create hooks:
 
 | Item | What it is |
 | --- | --- |
-| `1` | Select all hooks — the sync group **and** every hook below (shipped + your own). Never runs `21`/`22`. |
+| `1` | Select all hooks — the sync group **and** every hook below (shipped + your own). Never runs `21`/`22`/`23`. |
 | `2` | Create or update a sync group |
 | `3`–`20` | The 18 shipped hooks, in a pinned order (`9` is `Docs-Freshness-Check`) |
 | `21` | **Update installed hooks** |
-| `22` | **Uninstall installed hooks** |
-| `23`+ | Your own created/custom hooks under `hooks\`, in deterministic name order |
+| `22` | **Get hook status** |
+| `23` | **Uninstall installed hooks** |
+| `24`+ | Your own created/custom hooks under `hooks\`, in deterministic name order |
 
-Discovering or creating a custom hook adds rows from `23` onward and **never shifts `21`/`22`**.
+Discovering or creating a custom hook adds rows from `24` onward and **never shifts `21`/`22`/`23`**.
 
 Selections accept a single number, a comma list, and inclusive ascending ranges — `1`, `1,2`,
-`1,2,3-6`. `21` and `22` are management actions, not hook selections: each must be chosen on its
-own, and combining either with hook numbers (`3,21`, `21-22`, `1,22`) is rejected rather than
-half-executed.
+`1,2,3-6`. `21`, `22` and `23` are management actions, not hook selections: each must be chosen on
+its own, and combining any of them with hook numbers (`3,22`, `21-23`, `1,23`, `22,24`) is rejected
+rather than half-executed.
 
 ## Updating installed hooks (`21`)
 
@@ -222,10 +223,51 @@ source was moved or deleted it is reported as missing and skipped — no other p
 never installs a hook that was never installed, never touches unrelated settings-file content, and
 a second run with nothing changed reports everything as already current (no-op).
 
-## Uninstalling installed hooks (`22`)
+## Getting hook status (`22`)
 
-Item **`22` Uninstall installed hooks** lists every tracked installation and removes the ones you
-pick. It accepts the same `1` / `1,2` / `1,2,3-6` syntax.
+Item **`22` Get hook status** scans a path you choose, reports every installed hook it can find —
+**Hook Maker's own and third-party alike** — and records the verified results. It is an explicit,
+on-demand action: nothing scans on startup, and item `21` still only looks at its own registry.
+
+It asks two questions:
+
+1. **`Root folder to scan`** — a project root, a parent holding many projects, a `.claude` /
+   `.codex` / `.git` / `hooks` / `Hook-Maker` directory, any ancestor of an installed hook, or a
+   drive root such as `G:\`. Quoted paths, paths with spaces and environment variables all work, and
+   the path is canonicalised before scanning. You do **not** have to supply the exact project root:
+   given `...\.claude\hooks\Hook-Maker` it looks upward for the matching registration.
+2. **`Also inspect the current user's global Claude and Codex hook locations?`** — **defaults to
+   No** (Enter means No). Answering Yes inspects only the canonical current-user `.claude`/`.codex`
+   settings locations; it never walks your whole home directory. Answering No means those files are
+   **not opened at all**, by any code path.
+
+What it inspects: Claude `settings.local.json` and `settings.json`, Codex `hooks.json`, the hook
+runtime trees those registrations point at, and native Git hooks — including `.git` files with
+`gitdir:` (worktrees and submodules) and a custom `core.hooksPath`. All hook events and handlers are
+parsed, not just Hook Maker's, and `*.sample` is ignored.
+
+**Nothing is ever executed.** Commands found in settings are parsed as text only — never run,
+dot-sourced, or resolved through an interpreter — and no Git hook is invoked. The scan is read-only
+with respect to the folder you point it at, and never writes anything inside it.
+
+Reparse points (symlinks, junctions, mount points) are **not followed** and are reported as skipped.
+Directories that cannot be read produce **partial coverage**, not a failed scan: verified findings
+are still saved, the run is reported as partial, and records under unreadable areas are never marked
+as missing. A scan that did not see everything can never claim it did.
+
+Verified results are saved to `<Hook-Maker>\state\install-registry.json` — the same single registry
+used for installs, with discovered records kept distinct from Hook Maker's own managed ones. A later
+scan updates the same record rather than duplicating it; two hooks with the same name at different
+paths stay separate. A cancelled or failed scan writes nothing.
+
+Findings are reported as either **status-only** or **safely removable**. Anything ambiguous, shared
+between hooks, or outside a recognised hook root is shown but never auto-deleted.
+
+## Uninstalling installed hooks (`23`)
+
+Item **`23` Uninstall installed hooks** lists every tracked installation — Hook Maker's own plus
+anything item `22` discovered — and removes the ones you pick. It accepts the same `1` / `1,2` /
+`1,2,3-6` syntax, and shows each row's record type and whether removal is possible.
 
 Two kinds of row are offered:
 
@@ -240,6 +282,23 @@ exactly once (deduplicated by record id).
 **Your hook source files are never deleted.** Uninstalling removes only the installed runtime
 copies, the client registrations, any native Git integration owned by that record, and the registry
 record itself. The originals under `hooks\` are untouched, so you can reinstall at any time.
+
+Removing a **discovered** (third-party) hook follows a stricter rule, because Hook Maker did not
+install it and so cannot rely on its own install record:
+
+- The live settings or hook file is re-read and re-fingerprinted first. If anything changed since
+  the scan, nothing is removed for that record — it is kept and reported as needing manual repair.
+- Handlers are matched by exact structural fingerprint plus event/matcher context. Never by
+  filename, friendly name, event alone, array position, or "looks like a Hook Maker path". Every
+  unrelated handler, matcher, event and JSON field in the file is preserved.
+- Removing the registration and deleting the runtime file are **separate decisions**. A file is
+  deleted only when it is the exact recorded target, its hash still matches, it sits inside a
+  recognised hook root (`.claude\hooks`, `.codex\hooks`, or the effective Git hooks directory), it
+  is a proven entrypoint rather than a shared helper, and nothing else still references it.
+  Otherwise the registration goes and the file stays — reported as *registration removed; runtime
+  preserved*.
+- Files outside a recognised hook root are never deleted automatically, and `*.sample` Git hooks are
+  never removed.
 
 Safety properties:
 
@@ -453,7 +512,12 @@ statuses and reason codes only: never file contents, `.env` values, prompt text 
   their own; the registry and each settings file do.
 - Runtime replacement is staged, hash-verified and swapped, with the previous runtime restored if
   the swap fails. That is compensating rollback, not crash-atomicity: a machine or process that
-  dies mid-swap can still need one reinstall.
+  dies mid-swap can still need one reinstall. The same applies to removing a discovered hook.
+- A hook status scan (`22`) reports what it could actually reach. Directories it could not read, and
+  reparse points it deliberately did not follow, are listed and the run is reported as **partial** —
+  it does not claim that every unreadable, system or reparse directory was scanned.
+- A discovered registration whose command cannot be parsed to a single target is still reported as
+  an installed hook, but it cannot be removed automatically — there is no proven target to act on.
 
 ### Custom-hook source boundaries
 
