@@ -48,6 +48,35 @@ jobs:
           }
           if ($failed) { exit 1 }
 
+      # The bucket lists in the `suites` matrix below are hand-maintained, so a
+      # newly added Test-*.ps1 silently never runs in CI unless someone
+      # remembers to add it - which is exactly how Test-InstalledHooksMenu and
+      # Test-StatePersistence were once written, passing locally, while CI kept
+      # reporting green over a matrix that never executed them. Locally
+      # scripts\Run-Tests.ps1 globs the directory and cannot drift this way;
+      # this step gives CI the same guarantee by failing on any suite file that
+      # no bucket claims.
+      - name: Every test suite is covered by a CI bucket
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $onDisk = @(Get-ChildItem -LiteralPath 'scripts' -Filter 'Test-*.ps1' -File | ForEach-Object { $_.BaseName })
+          $workflow = Get-Content -LiteralPath '.github\workflows\ci.yml' -Raw
+          # [^\r\n]+ deliberately, not \s*(.+)$: in .NET `.` matches \r, so the
+          # looser form swallows the line break after the bare `suites:` job key
+          # and captures the NEXT line instead.
+          $inMatrix = @([regex]::Matches($workflow, '(?m)^[ \t]*suites:[ \t]*([^\r\n]+)') |
+            ForEach-Object { $_.Groups[1].Value.Split(',') } |
+            ForEach-Object { $_.Trim() } | Where-Object { $_ })
+          # Test-Engine runs in its own job (both hosts), not in a bucket.
+          $covered = $inMatrix + @('Test-Engine')
+          $missing = @($onDisk | Where-Object { $covered -notcontains $_ })
+          $stale = @($inMatrix | Where-Object { $onDisk -notcontains $_ })
+          if ($missing.Count -gt 0) { Write-Error ("Test suites not in any CI bucket: " + ($missing -join ', ')) }
+          if ($stale.Count -gt 0) { Write-Error ("CI buckets name suites that do not exist: " + ($stale -join ', ')) }
+          if ($missing.Count -gt 0 -or $stale.Count -gt 0) { exit 1 }
+          Write-Host ("All " + $onDisk.Count + " suite(s) are covered by a CI job.") -ForegroundColor Green
+
   # The engine must work under both hosts: Claude Code's installed command uses
   # powershell.exe (5.1), Codex's uses pwsh (7).
   engine:
@@ -64,8 +93,8 @@ jobs:
   # The suites run as PARALLEL BUCKETS rather than one long serial job.
   #
   # Why buckets and not one job per suite: every job pays its own runner start
-  # and checkout, and Windows minutes bill at 10x, so 22 jobs would cost far
-  # more than 22 suites are worth. Five balanced buckets keep almost all of the
+  # and checkout, and Windows minutes bill at 10x, so one job per suite would
+  # cost far more than it is worth. Five balanced buckets keep almost all of the
   # wall-clock win at a fraction of that overhead.
   #
   # Each bucket leads with one of the slow, process-spawning suites so the
@@ -81,7 +110,7 @@ jobs:
       matrix:
         include:
           - name: registry
-            suites: Test-InstallRegistry,Test-InstallRegistrySchema,Test-LegacyDiscovery
+            suites: Test-InstallRegistry,Test-InstallRegistrySchema,Test-LegacyDiscovery,Test-StatePersistence,Test-InstalledHooksMenu
           - name: uninstall
             suites: Test-UninstallHook,Test-NativePrePushInstall,Test-RulesCheck
           - name: wizard
