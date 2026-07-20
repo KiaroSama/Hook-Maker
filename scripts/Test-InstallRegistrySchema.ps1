@@ -220,7 +220,7 @@ try {
     Check 'an UNMANAGED nativeGit record is never dereferenced for shape' ((Test-InstallRecordValid -Record $unmanagedNativeIncomplete).Ok)
 
     $completeManagedNative = Copy-Record $goodRecord
-    $completeManagedNative | Add-Member -MemberType NoteProperty -Name nativeGit -Value ([pscustomobject]@{ managed = $true; wrapperPath = 'C:\p\pre-push'; runtimeRoot = 'C:\runtime'; companions = @('Secrets-Check'); sourceManifest = @([pscustomobject]@{ path = 'secrets-check/secrets-check.ps1'; hash = 'ABCDEF1234567890' }) })
+    $completeManagedNative | Add-Member -MemberType NoteProperty -Name nativeGit -Value ([pscustomobject]@{ managed = $true; wrapperPath = 'C:\p\pre-push'; runtimeRoot = 'C:\runtime'; companions = @('Secrets-Check'); sourceManifest = @([pscustomobject]@{ path = 'secrets-check/secrets-check.ps1'; hash = 'A1B2C3D4E5F60718293A4B5C6D7E8F901234567890ABCDEF1234567890ABCDEF' }) })
     Check 'a complete managed nativeGit record still validates' ((Test-InstallRecordValid -Record $completeManagedNative).Ok)
 
     $malformedLastComponents = Copy-Record $goodRecord
@@ -285,6 +285,17 @@ try {
     $noExpectedStages.nativeGit.PSObject.Properties.Remove('expectedStages')
     Check 'a managed native record with expectedStages absent still validates (it is optional)' ((Test-InstallRecordValid -Record $noExpectedStages).Ok)
 
+    # Hash comparison is case-sensitive text matching against Get-FileSha256's
+    # output, but Get-FileHash itself may emit either case, so the validator's
+    # hex-format check must accept both.
+    $upperHashNative = Copy-Record $goodManagedNative
+    $upperHashNative.nativeGit | Add-Member -MemberType NoteProperty -Name sourceManifest -Value @([pscustomobject]@{ path = 'secrets-check/secrets-check.ps1'; hash = 'A1B2C3D4E5F60718293A4B5C6D7E8F901234567890ABCDEF1234567890ABCDEF' }) -Force
+    Check 'a valid UPPERCASE 64-hex hash is accepted' ((Test-InstallRecordValid -Record $upperHashNative).Ok)
+
+    $lowerHashNative = Copy-Record $goodManagedNative
+    $lowerHashNative.nativeGit | Add-Member -MemberType NoteProperty -Name sourceManifest -Value @([pscustomobject]@{ path = 'secrets-check/secrets-check.ps1'; hash = 'a1b2c3d4e5f60718293a4b5c6d7e8f901234567890abcdef1234567890abcdef' }) -Force
+    Check 'a valid lowercase 64-hex hash is accepted' ((Test-InstallRecordValid -Record $lowerHashNative).Ok)
+
     $unmanagedMissingEverything = Copy-Record $goodRecord
     $unmanagedMissingEverything | Add-Member -MemberType NoteProperty -Name nativeGit -Value ([pscustomobject]@{ managed = $false })
     Check 'an unmanaged nativeGit record missing sourceManifest/companions is never shape-checked' ((Test-InstallRecordValid -Record $unmanagedMissingEverything).Ok)
@@ -297,13 +308,33 @@ try {
         @{ Name = 'sourceManifest entry missing path'; Reason = 'contains a malformed entry'; Mutate = { param($r) $r.nativeGit | Add-Member -MemberType NoteProperty -Name sourceManifest -Value @([pscustomobject]@{ hash = 'ABCDEF1234567890' }) -Force } }
         @{ Name = 'sourceManifest entry missing hash'; Reason = 'contains a malformed entry'; Mutate = { param($r) $r.nativeGit | Add-Member -MemberType NoteProperty -Name sourceManifest -Value @([pscustomobject]@{ path = 'x.ps1' }) -Force } }
         @{ Name = 'sourceManifest entry has an empty path'; Reason = 'contains an entry with an empty path'; Mutate = { param($r) $r.nativeGit | Add-Member -MemberType NoteProperty -Name sourceManifest -Value @([pscustomobject]@{ path = '   '; hash = 'ABCDEF1234567890' }) -Force } }
-        @{ Name = 'sourceManifest entry has a malformed hash'; Reason = 'contains an entry with an invalid hash'; Mutate = { param($r) $r.nativeGit | Add-Member -MemberType NoteProperty -Name sourceManifest -Value @([pscustomobject]@{ path = 'x.ps1'; hash = 'not-hex-zzz!' }) -Force } }
+        @{ Name = 'sourceManifest entry has a malformed hash'; Reason = 'is not a 64-character SHA-256 hex value'; Mutate = { param($r) $r.nativeGit | Add-Member -MemberType NoteProperty -Name sourceManifest -Value @([pscustomobject]@{ path = 'x.ps1'; hash = 'not-hex-zzz!' }) -Force } }
         @{ Name = 'companions is a scalar'; Reason = '"companions" is not an array'; Mutate = { param($r) $r.nativeGit | Add-Member -MemberType NoteProperty -Name companions -Value 'Secrets-Check' -Force } }
         @{ Name = 'companions has an empty entry'; Reason = '"companions" contains an empty entry'; Mutate = { param($r) $r.nativeGit | Add-Member -MemberType NoteProperty -Name companions -Value @('') -Force } }
         @{ Name = 'expectedStages is a scalar'; Reason = '"expectedStages" is not an array'; Mutate = { param($r) $r.nativeGit | Add-Member -MemberType NoteProperty -Name expectedStages -Value 'Secrets-Check' -Force } }
         @{ Name = 'expectedStages has an empty entry'; Reason = '"expectedStages" contains an empty entry'; Mutate = { param($r) $r.nativeGit | Add-Member -MemberType NoteProperty -Name expectedStages -Value @('') -Force } }
         @{ Name = 'previousHookPreserved is not a boolean'; Reason = '"previousHookPreserved" is not a boolean'; Mutate = { param($r) $r.nativeGit | Add-Member -MemberType NoteProperty -Name previousHookPreserved -Value 'yes' -Force } }
         @{ Name = 'previousHookPath is not a string'; Reason = '"previousHookPath" is not a string'; Mutate = { param($r) $r.nativeGit | Add-Member -MemberType NoteProperty -Name previousHookPath -Value 12345 -Force } }
+        # Hash validity: Get-FileSha256 always returns exactly 64 lowercase-or-
+        # uppercase hex characters, so anything shorter, longer, or non-hex can
+        # never equal a real hash and must be rejected rather than read as drift.
+        @{ Name = 'sourceManifest entry hash is empty (0 chars)'; Reason = 'is not a 64-character SHA-256 hex value'; Mutate = { param($r) $r.nativeGit | Add-Member -MemberType NoteProperty -Name sourceManifest -Value @([pscustomobject]@{ path = 'x.ps1'; hash = '' }) -Force } }
+        @{ Name = 'sourceManifest entry hash is 16 hex chars'; Reason = 'is not a 64-character SHA-256 hex value'; Mutate = { param($r) $r.nativeGit | Add-Member -MemberType NoteProperty -Name sourceManifest -Value @([pscustomobject]@{ path = 'x.ps1'; hash = 'ABCDEF1234567890' }) -Force } }
+        @{ Name = 'sourceManifest entry hash is 63 hex chars'; Reason = 'is not a 64-character SHA-256 hex value'; Mutate = { param($r) $r.nativeGit | Add-Member -MemberType NoteProperty -Name sourceManifest -Value @([pscustomobject]@{ path = 'x.ps1'; hash = ('A1B2C3D4E5F60718293A4B5C6D7E8F901234567890ABCDEF1234567890ABCDEF').Substring(0, 63) }) -Force } }
+        @{ Name = 'sourceManifest entry hash is 65 hex chars'; Reason = 'is not a 64-character SHA-256 hex value'; Mutate = { param($r) $r.nativeGit | Add-Member -MemberType NoteProperty -Name sourceManifest -Value @([pscustomobject]@{ path = 'x.ps1'; hash = ('A1B2C3D4E5F60718293A4B5C6D7E8F901234567890ABCDEF1234567890ABCDEF' + 'A') }) -Force } }
+        @{ Name = 'sourceManifest entry hash is 64 non-hex chars'; Reason = 'is not a 64-character SHA-256 hex value'; Mutate = { param($r) $r.nativeGit | Add-Member -MemberType NoteProperty -Name sourceManifest -Value @([pscustomobject]@{ path = 'x.ps1'; hash = ('z' * 64) }) -Force } }
+        # Type strictness: path/companion/expectedStages entries are used as path
+        # segments or rebuilt into wrapper text verbatim, so a numeric/object/$null
+        # value that merely SURVIVES a [string] cast must still be rejected.
+        @{ Name = 'sourceManifest entry path is numeric'; Reason = 'whose path is not a string'; Mutate = { param($r) $r.nativeGit | Add-Member -MemberType NoteProperty -Name sourceManifest -Value @([pscustomobject]@{ path = 123; hash = 'A1B2C3D4E5F60718293A4B5C6D7E8F901234567890ABCDEF1234567890ABCDEF' }) -Force } }
+        @{ Name = 'sourceManifest entry path is an object'; Reason = 'whose path is not a string'; Mutate = { param($r) $r.nativeGit | Add-Member -MemberType NoteProperty -Name sourceManifest -Value @([pscustomobject]@{ path = ([pscustomobject]@{ nested = $true }); hash = 'A1B2C3D4E5F60718293A4B5C6D7E8F901234567890ABCDEF1234567890ABCDEF' }) -Force } }
+        @{ Name = 'sourceManifest entry path is $null'; Reason = 'whose path is not a string'; Mutate = { param($r) $r.nativeGit | Add-Member -MemberType NoteProperty -Name sourceManifest -Value @([pscustomobject]@{ path = $null; hash = 'A1B2C3D4E5F60718293A4B5C6D7E8F901234567890ABCDEF1234567890ABCDEF' }) -Force } }
+        @{ Name = 'companions entry is numeric'; Reason = '"companions" contains a non-string entry'; Mutate = { param($r) $r.nativeGit | Add-Member -MemberType NoteProperty -Name companions -Value @(123) -Force } }
+        @{ Name = 'companions entry is an object'; Reason = '"companions" contains a non-string entry'; Mutate = { param($r) $r.nativeGit | Add-Member -MemberType NoteProperty -Name companions -Value @([pscustomobject]@{ nested = $true }) -Force } }
+        @{ Name = 'companions entry is $null'; Reason = '"companions" contains a non-string entry'; Mutate = { param($r) $r.nativeGit | Add-Member -MemberType NoteProperty -Name companions -Value @($null) -Force } }
+        @{ Name = 'expectedStages entry is numeric'; Reason = '"expectedStages" contains a non-string entry'; Mutate = { param($r) $r.nativeGit | Add-Member -MemberType NoteProperty -Name expectedStages -Value @(123) -Force } }
+        @{ Name = 'expectedStages entry is an object'; Reason = '"expectedStages" contains a non-string entry'; Mutate = { param($r) $r.nativeGit | Add-Member -MemberType NoteProperty -Name expectedStages -Value @([pscustomobject]@{ nested = $true }) -Force } }
+        @{ Name = 'expectedStages entry is $null'; Reason = '"expectedStages" contains a non-string entry'; Mutate = { param($r) $r.nativeGit | Add-Member -MemberType NoteProperty -Name expectedStages -Value @($null) -Force } }
     )
 
     foreach ($case in $managedNativeSchemaCases) {
