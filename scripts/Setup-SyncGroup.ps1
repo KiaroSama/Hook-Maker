@@ -24,13 +24,17 @@ $ValidateScript = Join-Path $ScriptRoot 'Validate-Config.ps1'
 . (Join-Path $ScriptRoot '_installplan.ps1')
 . (Join-Path $ScriptRoot '_installlib.ps1')
 . (Join-Path $ScriptRoot 'Setup-SyncGroupBuilder.ps1')
-# Installed-hook management (hook-list items 21/22) plus the ONE canonical
+# Installed-hook management (hook-list items 21/23) plus the ONE canonical
 # numeric list/range parser both this menu and those screens use.
 . (Join-Path $ScriptRoot 'Setup-SyncGroupInstalledHooks.ps1')
+# Hook-status discovery wizard (hook-list item 22): the scan prompts and the
+# grouped result screen. The scan itself lives in Get-HookStatus.ps1.
+. (Join-Path $ScriptRoot 'Setup-SyncGroupHookStatus.ps1')
 # Guided hook creation: the five starter hook-body templates, the custom-
 # hook target-selection flow, and the Invoke-CreateHook stage machine.
 . (Join-Path $ScriptRoot 'Setup-SyncGroupCreateHook.ps1')
 $UninstallScript = Join-Path $ScriptRoot 'Uninstall-Hook.ps1'
+$StatusScript = Join-Path $ScriptRoot 'Get-HookStatus.ps1'
 if ([string]::IsNullOrWhiteSpace($ConfigPath)) {
     $ConfigPath = Join-Path $ToolRoot 'sync-hooks.json'
 }
@@ -622,18 +626,21 @@ function Invoke-InstallExistingHook {
         #   1                      Select all hooks (aggregate action)
         #   2                      the sync group (its own multi-project flow)
         #   3 .. 2+S               the S SHIPPED hooks, in $script:HookMeta.Order
-        #   3+S                    Update installed hooks   (management action)
-        #   4+S                    Uninstall installed hooks (management action)
-        #   5+S ..                 user-created/custom hooks, deterministic order
-        # With all 18 shipped hooks present that renders as 3..20, 21, 22, 23+.
-        # The management rows are placed AFTER the shipped block and BEFORE the
-        # custom block deliberately: discovering a new custom hook under hooks\
-        # must never shift 21/22, because those numbers are documented UI.
+        #   3+S                    Update installed hooks    (management action)
+        #   4+S                    Get hook status           (management action)
+        #   5+S                    Uninstall installed hooks (management action)
+        #   6+S ..                 user-created/custom hooks, deterministic order
+        # With all 18 shipped hooks present that renders as 3..20, 21, 22, 23,
+        # 24+. The THREE management rows are placed AFTER the shipped block and
+        # BEFORE the custom block deliberately: discovering a new custom hook
+        # under hooks\ must never shift 21/22/23, because those numbers are
+        # documented UI.
         $shippedHooks = @($hookFiles | Where-Object { $script:HookMeta.ContainsKey($_.Name) })
         $customHooks = @($hookFiles | Where-Object { -not $script:HookMeta.ContainsKey($_.Name) })
         $updateIndex = $shippedHooks.Count + 3
-        $uninstallIndex = $shippedHooks.Count + 4
-        $customStartIndex = $shippedHooks.Count + 5
+        $statusIndex = $shippedHooks.Count + 4
+        $uninstallIndex = $shippedHooks.Count + 5
+        $customStartIndex = $shippedHooks.Count + 6
         $maxIndex = $customStartIndex + $customHooks.Count - 1
 
         Write-MenuTitle 'Available hooks (hooks\):'
@@ -643,11 +650,12 @@ function Invoke-InstallExistingHook {
             Write-HookMenuLine ($i + 3) $shippedHooks[$i].Name
         }
         Write-Host ('  ' + (Get-Painted ([string]$updateIndex + '.') $C.LightBlue) + ' ' + (Get-Painted 'Update installed hooks' $C.Bold) + $script:MenuSep + (Get-Painted '[manage]' $C.Amber) + $script:MenuSep + (Get-Painted 'refresh installed copies from their current source' $C.HintYellow))
+        Write-Host ('  ' + (Get-Painted ([string]$statusIndex + '.') $C.LightBlue) + ' ' + (Get-Painted 'Get hook status' $C.Bold) + $script:MenuSep + (Get-Painted '[manage]' $C.Amber) + $script:MenuSep + (Get-Painted 'scan a path, detect installed hooks, and track verified results' $C.HintYellow))
         Write-Host ('  ' + (Get-Painted ([string]$uninstallIndex + '.') $C.LightBlue) + ' ' + (Get-Painted 'Uninstall installed hooks' $C.Bold) + $script:MenuSep + (Get-Painted '[manage]' $C.Amber) + $script:MenuSep + (Get-Painted 'list and remove installed hooks; never deletes hook sources' $C.HintYellow))
         for ($i = 0; $i -lt $customHooks.Count; $i++) {
             Write-HookMenuLine ($customStartIndex + $i) $customHooks[$i].Name
         }
-        Write-NoteLine ('  Tip: use lists and ranges, e.g. 3-8 (1 alone runs everything: the sync group AND every hook). ' + $updateIndex + '/' + $uninstallIndex + ' are management actions - pick one on its own.')
+        Write-NoteLine ('  Tip: use lists and ranges, e.g. 3-8 (1 alone runs everything: the sync group AND every hook). ' + $updateIndex + '/' + $statusIndex + '/' + $uninstallIndex + ' are management actions - pick one on its own.')
         $value = Read-Answer (New-QuestionPrompt 'Select a hook (number, list, or range)' $null '2') 'select custom hook'
         if ($value -eq '0') { return 'back' }
         if ($value -eq '') { $value = '2' }
@@ -666,14 +674,18 @@ function Invoke-InstallExistingHook {
         # The management rows are actions, not hook selections: mixing them with
         # hooks (or with each other) has no coherent meaning, so it is rejected
         # explicitly rather than silently doing half of what was typed.
-        $managementPicked = @($indices | Where-Object { $_ -eq $updateIndex -or $_ -eq $uninstallIndex })
+        $managementPicked = @($indices | Where-Object { $_ -eq $updateIndex -or $_ -eq $statusIndex -or $_ -eq $uninstallIndex })
         if ($managementPicked.Count -gt 0) {
             if ($indices.Count -ne 1) {
-                Write-ErrorLine ('Select ' + $updateIndex + ' (update) or ' + $uninstallIndex + ' (uninstall) on its own - it cannot be combined with hook selections.')
+                Write-ErrorLine ('Select ' + $updateIndex + ' (update), ' + $statusIndex + ' (status) or ' + $uninstallIndex + ' (uninstall) on its own - it cannot be combined with hook selections or with each other.')
                 continue
             }
             if ($indices[0] -eq $updateIndex) {
                 if ((Invoke-UpdateInstalledHooks) -eq 'done') { return 'done' }
+                continue
+            }
+            if ($indices[0] -eq $statusIndex) {
+                if ((Invoke-GetHookStatus) -eq 'done') { return 'done' }
                 continue
             }
             if ((Invoke-UninstallInstalledHooks) -eq 'done') { return 'done' }
@@ -687,9 +699,11 @@ function Invoke-InstallExistingHook {
         # canonical order so combining it with explicit picks (e.g. "1,5" or
         # "1,2") can never run the sync group twice or install a hook twice.
         # It never re-includes itself as a hook.
-        # It never re-includes itself as a hook, and it never triggers the
-        # management rows (update/uninstall) - "install everything" must not be
-        # able to uninstall anything.
+        # It never re-includes itself as a hook, and it never triggers any of the
+        # three management rows (update/status/uninstall) - "install everything"
+        # must not be able to scan or uninstall anything. The rebuilt list is
+        # literally 2 + the shipped range + the custom range, so the management
+        # indices between them are structurally unreachable from item 1.
         if ($indices.Contains(1)) {
             $indices = New-Object System.Collections.Generic.List[int]
             [void]$indices.Add(2)
@@ -1250,8 +1264,8 @@ function Invoke-CustomHookMenu {
         Write-MenuLine 2 'Create a new hook' '(guided templates)'
         Write-MenuLine 3 'Install from config' '(reads the hook''s .env - no questions)'
         # COMPATIBILITY ALIAS ONLY. The canonical, documented home for updating
-        # installed hooks is item 21 in the "Available hooks" list (and 22 for
-        # uninstall). This row is kept so existing muscle memory and scripted
+        # installed hooks is item 21 in the "Available hooks" list (22 is hook
+        # status, 23 is uninstall). This row is kept so existing muscle memory and scripted
         # answer sequences keep working - it calls exactly the same
         # Invoke-UpdateInstalledHooks implementation, never a second copy.
         Write-MenuLine 4 'Update installed hooks' '(same as item 21 in the hook list)'

@@ -34,21 +34,27 @@ if ($PSVersionTable.PSVersion.Major -lt 7) {
 
 $ScriptRoot = $PSScriptRoot
 
-# Only ONE suite is genuinely exclusive.
+# The suites that COUNT the real hooks\ directory must run alone.
 #
 # Several suites create throwaway fixtures under the real hooks\ directory, but
 # each uses its own unique prefix (ZZZ-Regtest, ZZZ-Ld, ZZZ-Uninst, ...), so they
-# never collide with one another by name. The single real constraint is that
-# Test-Wizard ASSERTS ON THE NUMBER of hooks discovered in hooks\ - if anything
-# else adds or removes a fixture while it counts, its assertions fail for a
-# reason that has nothing to do with the code under test.
+# never collide with one another by name. The real constraint is different:
+# these two suites ASSERT ON THE NUMBER of hooks discovered in hooks\, because
+# the menu's index math is derived from it. If anything else adds or removes a
+# fixture while they count, their assertions fail for a reason that has nothing
+# to do with the code under test - Test-InstalledHooksMenu was observed at 76/1
+# in a parallel run and 77/0 alone, purely from that.
 #
-# So Test-Wizard runs alone, and everything else runs in parallel. An earlier
-# version of this file serialised all six fixture-creating suites, which was
-# over-cautious in the worst possible way: those six are the slowest suites, so
-# serialising them threw away most of the available speedup.
+# So these run alone and everything else runs in parallel. An earlier version of
+# this file serialised all six fixture-creating suites, which was over-cautious
+# in the worst possible way: those six are the slowest suites, so serialising
+# them threw away most of the available speedup.
+#
+# CI does not need this: each bucket is its own runner with its own checkout,
+# and suites inside a bucket run one after another (see ci.yml).
 $Exclusive = @(
-    'Test-Wizard.ps1'
+    'Test-Wizard.ps1',
+    'Test-InstalledHooksMenu.ps1'
 )
 
 $all = @(Get-ChildItem -LiteralPath $ScriptRoot -Filter 'Test-*.ps1' -File | Sort-Object Name)

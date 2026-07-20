@@ -17,7 +17,25 @@
 # stdin, prompt text, tool input, secrets, or any copied file's contents.
 # ---------------------------------------------------------------------------
 
-$script:InstallRegistrySchemaVersion = 2
+# The REGISTRY FILE's schema version. v3 introduced discriminated records: the
+# file may now hold managed install records (written by Install-Hook.ps1) and
+# discovered records (written by the read-only status scan) side by side, told
+# apart by their `recordType` field.
+$script:InstallRegistrySchemaVersion = 3
+
+# A RECORD's own `schema` version is NOT the registry's. They were the same
+# number until v3 and are deliberately separated now:
+#
+#   * a managed record's shape did not change in v3 - it only GAINED
+#     recordType/origin - so it stays at 2. Bumping it would have declared every
+#     record written by every shipped Install-Hook.ps1 "in need of migration".
+#   * a discovered record is new in v3 and carries 3.
+#
+# Test-InstallRecordValid compares against the MANAGED number and
+# Test-DiscoveredRecordValid against the DISCOVERED one, so each record kind is
+# held to exactly its own contract.
+$script:ManagedRecordSchemaVersion = 2
+$script:DiscoveredRecordSchemaVersion = 3
 
 # Files that exist inside a managed runtime directory but are NOT part of the
 # installed identity: generated at install time from inputs already covered by
@@ -289,6 +307,15 @@ function Test-InstallRecordValid {
     if ($null -eq $Record) { return [pscustomobject]@{ Ok = $false; Reason = 'record is null' } }
     if ($Record -isnot [psobject]) { return [pscustomobject]@{ Ok = $false; Reason = 'record is not an object' } }
 
+    # DISCRIMINATION (schema 3). A discovered record has a completely different
+    # shape - no runtime, no managed command, no installed manifest - so running
+    # the managed rules over it could only ever produce a misleading reason. It
+    # is handed to its own validator instead. A record with recordType absent or
+    # 'managed' falls through to the UNCHANGED managed rules below.
+    if (Test-IsDiscoveredRecord -Record $Record) {
+        return (Test-DiscoveredRecordValid -Record $Record)
+    }
+
     function Get-RecordField {
         param($Object, [string]$Name)
         if ($null -eq $Object.PSObject.Properties[$Name]) { return $null }
@@ -312,10 +339,10 @@ function Test-InstallRecordValid {
     # schema >= current is NOT automatically valid: a newer writer may store
     # fields this version cannot interpret, so it is refused explicitly rather
     # than acted on with partial understanding.
-    if ($schemaNumber -gt $script:InstallRegistrySchemaVersion) {
-        return [pscustomobject]@{ Ok = $false; Reason = ('record uses unsupported schema version ' + $schemaNumber + ' (this version supports up to ' + $script:InstallRegistrySchemaVersion + ')') }
+    if ($schemaNumber -gt $script:ManagedRecordSchemaVersion) {
+        return [pscustomobject]@{ Ok = $false; Reason = ('record uses unsupported schema version ' + $schemaNumber + ' (this version supports up to ' + $script:ManagedRecordSchemaVersion + ')') }
     }
-    if ($schemaNumber -lt $script:InstallRegistrySchemaVersion) {
+    if ($schemaNumber -lt $script:ManagedRecordSchemaVersion) {
         return [pscustomobject]@{ Ok = $false; Reason = ('record uses old schema version ' + $schemaNumber + ' and needs migration') }
     }
     $scope = [string](Get-RecordField -Object $Record -Name 'scope')

@@ -110,9 +110,9 @@ jobs:
       matrix:
         include:
           - name: registry
-            suites: Test-InstallRegistry,Test-InstallRegistrySchema,Test-LegacyDiscovery,Test-StatePersistence,Test-InstalledHooksMenu
+            suites: Test-InstallRegistry,Test-InstallRegistrySchema,Test-LegacyDiscovery,Test-StatePersistence,Test-InstalledHooksMenu,Test-HookStatusDiscovery
           - name: uninstall
-            suites: Test-UninstallHook,Test-NativePrePushInstall,Test-RulesCheck
+            suites: Test-UninstallHook,Test-NativePrePushInstall,Test-RulesCheck,Test-DiscoveredUninstall,Test-HookStatusScan
           - name: wizard
             suites: Test-Wizard,Test-ContextHooks,Test-GraphUpdateCheck
           - name: secrets
