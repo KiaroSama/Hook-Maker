@@ -1,13 +1,28 @@
 # Installed-hook management screens for the wizard: the shared numeric-selection
 # parser, the installed-hook snapshot/list model, and the interactive uninstall
-# flow behind hook-list items 21 (update) and 22 (uninstall).
+# flow behind the hook list's [manage] items (update, and uninstall).
 #
 # Split out of Setup-SyncGroup.ps1 as its own responsibility: everything here is
 # about installations that ALREADY exist (reading the registry, presenting what
 # is installed where, and removing selected installs), which is a different
 # concern from the wizard's create/install flows. The actual removal work is
-# delegated to scripts\Uninstall-Hook.ps1 - this file is UI orchestration only
-# and performs no destructive filesystem or registry mutation itself.
+# delegated to an executor - scripts\Uninstall-Hook.ps1 for MANAGED records,
+# scripts\Uninstall-DiscoveredHook.ps1 for DISCOVERED ones - and this file is UI
+# orchestration only, performing no destructive filesystem or registry mutation
+# itself.
+#
+# The registry holds two kinds of record (schema 3) and they are NOT
+# interchangeable:
+#   * 'managed'    - Hook Maker installed it, so ownership is provable from the
+#                    install plan, and Uninstall-Hook.ps1's settled safety
+#                    contract applies.
+#   * 'discovered' - a status scan FOUND it on disk. Ownership is never assumed;
+#                    removal is gated on the scan's fingerprints/hashes still
+#                    matching exactly, which is a different proof and therefore
+#                    a different executor.
+# Routing a record to the wrong executor would bypass the proofs the other one
+# depends on, so record type decides the executor - never the friendly name and
+# never the row's position in the list.
 #
 # Dot-sourced by Setup-SyncGroup.ps1, which supplies the UI primitives
 # ($C, Write-PhaseHeader, Write-MenuTitle, Read-Answer, Write-Log, ...). The
@@ -64,15 +79,87 @@ function Expand-MenuSelection {
     return [pscustomobject]@{ Ok = $true; Indices = @($indices.ToArray()); Reason = '' }
 }
 
+# ---- record-type helpers ---------------------------------------------------
+
+# A record written before schema 3 carries no recordType and is, by definition,
+# one Hook Maker installed itself. Defaulting to 'managed' keeps every existing
+# record routed to the executor whose safety contract already covers it.
+function Get-RecordType {
+    param($Record)
+    $value = Get-RecordDisplayField $Record 'recordType' 'managed'
+    if ($value -eq 'discovered') { return 'discovered' }
+    return 'managed'
+}
+
+# Can this DISCOVERED record be removed automatically, and if not, why not?
+#
+# Discovered records are found, not installed, so the scan itself records how
+# far removal can safely go. Anything short of a clear answer is shown as
+# non-removable with the reason visible - never quietly dropped from the list
+# (which would hide a real installed hook) and never silently included in a
+# bulk "remove everything here" row.
+function Get-DiscoveredRemovalCapability {
+    param($Record)
+
+    if ($null -ne $Record -and $null -ne $Record.PSObject.Properties['needsManualRepair'] -and $Record.needsManualRepair -eq $true) {
+        return [pscustomobject]@{ Removable = $false; Capability = 'manual review'; Reason = 'manual repair: the scan flagged this record for review' }
+    }
+    $status = Get-RecordDisplayField $Record 'status' 'unknown'
+    if (@('ambiguous', 'manualRepair', 'orphanCandidate') -contains $status) {
+        $reason = Get-RecordDisplayField $Record 'statusReason' ''
+        $detail = if ([string]::IsNullOrWhiteSpace($reason)) { $status } else { $status + ' - ' + $reason }
+        return [pscustomobject]@{ Removable = $false; Capability = 'manual review'; Reason = ('not removable: ' + $detail) }
+    }
+    $policy = Get-RecordDisplayField $Record 'removalPolicy' 'unavailable'
+    switch ($policy) {
+        'full' { return [pscustomobject]@{ Removable = $true; Capability = 'registration + runtime'; Reason = '' } }
+        'registrationOnly' { return [pscustomobject]@{ Removable = $true; Capability = 'registration only (runtime preserved)'; Reason = '' } }
+        'nativeFileOnly' { return [pscustomobject]@{ Removable = $true; Capability = 'native hook file'; Reason = '' } }
+        default {
+            return [pscustomobject]@{ Removable = $false; Capability = 'manual review'; Reason = ('not removable: removal policy is ' + $policy) }
+        }
+    }
+}
+
+# Per-client events for display. The two record shapes store this differently -
+# managed records keep a clients OBJECT keyed by client name, discovered records
+# keep an ARRAY of per-client evidence - so the list model normalizes both into
+# one shape here rather than teaching the renderer about either.
+function Get-DiscoveredClientEvents {
+    param($Record)
+    $clients = @()
+    $eventsByClient = @{}
+    if ($null -eq $Record -or $null -eq $Record.PSObject.Properties['clients'] -or $null -eq $Record.clients) {
+        return [pscustomobject]@{ Clients = $clients; EventsByClient = $eventsByClient }
+    }
+    foreach ($evidence in @($Record.clients)) {
+        if ($null -eq $evidence -or $null -eq $evidence.PSObject.Properties['client']) { continue }
+        $name = [string]$evidence.client
+        if ([string]::IsNullOrWhiteSpace($name)) { continue }
+        $clients += $name
+        $events = @()
+        if ($null -ne $evidence.PSObject.Properties['events'] -and $null -ne $evidence.events) {
+            $events = @($evidence.events | ForEach-Object { [string]$_ })
+        }
+        $eventsByClient[$name] = $events
+    }
+    return [pscustomobject]@{ Clients = $clients; EventsByClient = $eventsByClient }
+}
+
 # ---- installed-hook snapshot ----------------------------------------------
 # Builds the numbered rows shown by the uninstall screen:
-#   * one INDIVIDUAL row per logical install record (removable or, when the
-#     record cannot be interpreted safely, flagged for manual repair),
+#   * one INDIVIDUAL row per logical record - managed installs, discovered
+#     external registrations, discovered native Git hooks, and the ambiguous /
+#     orphan ones that are shown but explicitly NOT removable,
 #   * then one AGGREGATE row per distinct project root,
 #   * then a global aggregate row when any global record exists.
+#
 # Aggregate rows carry the exact record ids they expand to, so selecting an
 # aggregate together with one of its own individual rows deduplicates by id
-# rather than attempting the same removal twice.
+# rather than attempting the same removal twice. They include managed records
+# and SAFELY REMOVABLE discovered ones, and exclude every record needing manual
+# review: a bulk row must never become a way to remove something the individual
+# row refuses to remove.
 #
 # A malformed record is never allowed to crash the list: it is shown as a
 # non-removable manual-repair entry with a precise reason, exactly like the
@@ -83,44 +170,82 @@ function Get-InstalledHookSnapshot {
     $rows = New-Object System.Collections.Generic.List[object]
     $byProject = @{}
     $globalIds = New-Object System.Collections.Generic.List[string]
+    $aggregatedIds = New-Object System.Collections.Generic.HashSet[string]([System.StringComparer]::OrdinalIgnoreCase)
 
     foreach ($record in @($Registry.installs)) {
         $recordId = ''
         if ($null -ne $record -and $null -ne $record.PSObject.Properties['id']) { $recordId = [string]$record.id }
+        $recordType = Get-RecordType $record
         $friendly = Get-RecordDisplayField $record 'friendlyName' 'unknown-record'
         $hookType = Get-RecordDisplayField $record 'hookType' '(unknown type)'
         $scope = Get-RecordDisplayField $record 'scope' 'unknown'
         $targetRoot = Get-RecordDisplayField $record 'targetProjectRoot' ''
         $profileId = Get-RecordDisplayField $record 'profile' ''
-        $sourceScript = Get-RecordDisplayField $record 'sourceScript' '(unknown source)'
 
-        $validation = Test-InstallRecordValid -Record $record
-        $clients = @()
-        $eventsByClient = @{}
-        if ($validation.Ok) {
-            foreach ($client in @(Get-InstalledClientNames -Record $record)) {
-                $clients += $client
-                $subrecord = Get-ClientSubrecord -Record $record -Client $client
-                $eventsByClient[$client] = @($subrecord.events | ForEach-Object { [string]$_ })
+        if ($recordType -eq 'discovered') {
+            # Discovered: the source is the place it was FOUND, not a hook file
+            # this tool shipped, so the row shows that instead of a sourceScript.
+            $capability = Get-DiscoveredRemovalCapability $record
+            $clientInfo = Get-DiscoveredClientEvents $record
+            $sourceScript = '(found by scan - not installed by Hook Maker)'
+            if ($null -ne $record.PSObject.Properties['nativeGit'] -and $null -ne $record.nativeGit -and
+                $null -ne $record.nativeGit.PSObject.Properties['hookPath']) {
+                $hookPath = [string]$record.nativeGit.hookPath
+                if (-not [string]::IsNullOrWhiteSpace($hookPath)) { $sourceScript = $hookPath }
             }
+            $removable = ($capability.Removable -and -not [string]::IsNullOrWhiteSpace($recordId))
+            [void]$rows.Add([pscustomobject]@{
+                Kind           = 'record'
+                RecordType     = 'discovered'
+                RecordIds      = @($recordId)
+                FriendlyName   = $friendly
+                HookType       = $hookType
+                Profile        = $profileId
+                Scope          = $scope
+                TargetRoot     = $targetRoot
+                Clients        = @($clientInfo.Clients)
+                EventsByClient = $clientInfo.EventsByClient
+                SourceScript   = $sourceScript
+                Removable      = $removable
+                Capability     = $capability.Capability
+                Detail         = $capability.Reason
+            })
+            if (-not $removable) { continue }
+        }
+        else {
+            $validation = Test-InstallRecordValid -Record $record
+            $clients = @()
+            $eventsByClient = @{}
+            if ($validation.Ok) {
+                foreach ($client in @(Get-InstalledClientNames -Record $record)) {
+                    $clients += $client
+                    $subrecord = Get-ClientSubrecord -Record $record -Client $client
+                    $eventsByClient[$client] = @($subrecord.events | ForEach-Object { [string]$_ })
+                }
+            }
+            [void]$rows.Add([pscustomobject]@{
+                Kind           = 'record'
+                RecordType     = 'managed'
+                RecordIds      = @($recordId)
+                FriendlyName   = $friendly
+                HookType       = $hookType
+                Profile        = $profileId
+                Scope          = $scope
+                TargetRoot     = $targetRoot
+                Clients        = @($clients)
+                EventsByClient = $eventsByClient
+                SourceScript   = Get-RecordDisplayField $record 'sourceScript' '(unknown source)'
+                Removable      = ($validation.Ok -and -not [string]::IsNullOrWhiteSpace($recordId))
+                Capability     = 'registration + runtime'
+                Detail         = if ($validation.Ok) { '' } else { 'manual repair: ' + $validation.Reason }
+            })
+            if (-not $validation.Ok -or [string]::IsNullOrWhiteSpace($recordId)) { continue }
         }
 
-        [void]$rows.Add([pscustomobject]@{
-            Kind         = 'record'
-            RecordIds    = @($recordId)
-            FriendlyName = $friendly
-            HookType     = $hookType
-            Profile      = $profileId
-            Scope        = $scope
-            TargetRoot   = $targetRoot
-            Clients      = @($clients)
-            EventsByClient = $eventsByClient
-            SourceScript = $sourceScript
-            Removable    = ($validation.Ok -and -not [string]::IsNullOrWhiteSpace($recordId))
-            Detail       = if ($validation.Ok) { '' } else { 'manual repair: ' + $validation.Reason }
-        })
-
-        if (-not $validation.Ok -or [string]::IsNullOrWhiteSpace($recordId)) { continue }
+        # Only rows that reached here are removable, so only these ever join an
+        # aggregate. The id set makes a duplicate id in the registry collapse to
+        # one entry instead of being removed twice.
+        if (-not $aggregatedIds.Add($recordId)) { continue }
         if ($scope -eq 'global') {
             [void]$globalIds.Add($recordId)
         }
@@ -136,34 +261,38 @@ function Get-InstalledHookSnapshot {
     foreach ($key in @($byProject.Keys | Sort-Object)) {
         $group = $byProject[$key]
         [void]$rows.Add([pscustomobject]@{
-            Kind         = 'project'
-            RecordIds    = @($group.Ids.ToArray())
-            FriendlyName = ('Remove all Hook Maker hooks from project: ' + $group.Root)
-            HookType     = ''
-            Profile      = ''
-            Scope        = 'project'
-            TargetRoot   = $group.Root
-            Clients      = @()
+            Kind           = 'project'
+            RecordType     = 'mixed'
+            RecordIds      = @($group.Ids.ToArray())
+            FriendlyName   = ('Remove all removable hooks from project: ' + $group.Root)
+            HookType       = ''
+            Profile        = ''
+            Scope          = 'project'
+            TargetRoot     = $group.Root
+            Clients        = @()
             EventsByClient = @{}
-            SourceScript = ''
-            Removable    = $true
-            Detail       = ('' + $group.Ids.Count + ' installed hook(s)')
+            SourceScript   = ''
+            Removable      = $true
+            Capability     = 'registration + runtime'
+            Detail         = ('' + $group.Ids.Count + ' removable hook(s)')
         })
     }
     if ($globalIds.Count -gt 0) {
         [void]$rows.Add([pscustomobject]@{
-            Kind         = 'global'
-            RecordIds    = @($globalIds.ToArray())
-            FriendlyName = 'Remove all global Hook Maker hooks'
-            HookType     = ''
-            Profile      = ''
-            Scope        = 'global'
-            TargetRoot   = ''
-            Clients      = @()
+            Kind           = 'global'
+            RecordType     = 'mixed'
+            RecordIds      = @($globalIds.ToArray())
+            FriendlyName   = 'Remove all removable global hooks'
+            HookType       = ''
+            Profile        = ''
+            Scope          = 'global'
+            TargetRoot     = ''
+            Clients        = @()
             EventsByClient = @{}
-            SourceScript = ''
-            Removable    = $true
-            Detail       = ('' + $globalIds.Count + ' installed hook(s)')
+            SourceScript   = ''
+            Removable      = $true
+            Capability     = 'registration + runtime'
+            Detail         = ('' + $globalIds.Count + ' removable hook(s)')
         })
     }
     return $rows.ToArray()
@@ -181,12 +310,13 @@ function Get-ClientDisplayName {
     }
 }
 
-# ---- menu 22: list and uninstall installed hooks --------------------------
-# Lists every tracked installation, takes a numeric list/range selection over
+# ---- list and uninstall installed hooks ------------------------------------
+# Lists every tracked record, takes a numeric list/range selection over
 # individual AND aggregate rows, shows exactly what would be removed, and only
-# then delegates each record to scripts\Uninstall-Hook.ps1 (which owns all the
-# destructive work and its own ownership/rollback safety). Nothing here mutates
-# the filesystem or the registry directly.
+# then delegates each record to its own executor by RECORD TYPE - managed to
+# scripts\Uninstall-Hook.ps1, discovered to scripts\Uninstall-DiscoveredHook.ps1
+# - each of which owns all the destructive work and its own ownership/rollback
+# safety. Nothing here mutates the filesystem or the registry directly.
 #
 # Any exit that is not an explicit 'y' - n, 0/back, quit, or an invalid
 # selection - performs NO mutation at all: no backups, no registry write, no
@@ -247,6 +377,14 @@ function Invoke-UninstallInstalledHooks {
                 }
                 Write-Host ('     ' + (Get-Painted 'clients:' $C.Gray) + ' ' + (Get-Painted $clientsText $C.Aqua))
                 Write-Host ('     ' + (Get-Painted 'source:' $C.Gray) + ' ' + $row.SourceScript)
+                # Record type and removal capability are shown for EVERY row:
+                # "this was found, not installed" and "only the registration can
+                # come off" both change what the user is agreeing to, so neither
+                # may be something they have to infer from the name.
+                $recordTypeColor = if ($row.RecordType -eq 'discovered') { $C.Amber } else { $C.Gray }
+                $capabilityColor = if ($row.Removable) { $C.Gray } else { $C.Red }
+                Write-Host ('     ' + (Get-Painted 'record:' $C.Gray) + ' ' + (Get-Painted $row.RecordType $recordTypeColor) +
+                    $script:MenuSep + (Get-Painted ('removal: ' + $row.Capability) $capabilityColor))
 
                 if (-not $row.Removable) {
                     Write-Host ('     ' + (Get-Painted $row.Detail $C.Red))
@@ -287,8 +425,9 @@ function Invoke-UninstallInstalledHooks {
         # ---- confirmation: show exactly what will be touched, before anything ----
         Write-PhaseHeader 'Confirm Uninstall' $C.Confirm '-'
         foreach ($id in $recordIds) {
-            $record = @($registry.installs | Where-Object { [string]$_.id -eq $id })[0]
+            $record = @($registry.installs | Where-Object { (Get-RecordDisplayField $_ 'id' '') -eq $id })[0]
             if ($null -eq $record) { continue }
+            $recordType = Get-RecordType $record
             $hookType = Get-RecordDisplayField $record 'hookType' '(unknown type)'
             $profileId = Get-RecordDisplayField $record 'profile' ''
             $scopeText = if ((Get-RecordDisplayField $record 'scope') -eq 'global') { 'global' } else { Get-RecordDisplayField $record 'targetProjectRoot' '(unknown target)' }
@@ -296,6 +435,36 @@ function Invoke-UninstallInstalledHooks {
             if (-not [string]::IsNullOrWhiteSpace($profileId)) { $label += ' [' + $profileId + ']' }
             Write-Host ('  ' + (Get-Painted $label $C.Bold) + $script:MenuSep + (Get-Painted $hookType $C.Aqua) + $script:MenuSep + (Get-Painted $scopeText $C.Gray))
             Write-Field '    record id' $id
+            Write-Field '    record type' $recordType
+
+            if ($recordType -eq 'discovered') {
+                # Discovered evidence, not an install plan: what the scan saw,
+                # and exactly how far removal will go. Nothing here is presented
+                # as something Hook Maker owns.
+                $capability = Get-DiscoveredRemovalCapability $record
+                Write-Field '    removal' $capability.Capability $C.Amber
+                $clientInfo = Get-DiscoveredClientEvents $record
+                foreach ($client in @($clientInfo.Clients)) {
+                    $events = @($clientInfo.EventsByClient[$client])
+                    $eventsText = if ($events.Count -gt 0) { $events -join ', ' } else { '(none)' }
+                    Write-Field ('    ' + (Get-ClientDisplayName $client) + ' events') $eventsText
+                }
+                foreach ($evidence in @($record.clients)) {
+                    if ($null -eq $evidence -or $null -eq $evidence.PSObject.Properties['settingsPath']) { continue }
+                    Write-Field ('    ' + (Get-ClientDisplayName (Get-RecordDisplayField $evidence 'client' '')) + ' settings') ([string]$evidence.settingsPath)
+                }
+                $discoveredNative = $null
+                if ($null -ne $record.PSObject.Properties['nativeGit']) { $discoveredNative = $record.nativeGit }
+                if ($null -ne $discoveredNative) {
+                    Write-Field '    native Git hook' (Get-RecordDisplayField $discoveredNative 'hookPath' '(unknown path)') $C.Amber
+                    Write-Field '    native Git classification' (Get-RecordDisplayField $discoveredNative 'classification' 'unknown')
+                }
+                else {
+                    Write-Field '    native Git' 'no'
+                }
+                continue
+            }
+
             Write-Field '    source script' (Get-RecordDisplayField $record 'sourceScript' '(unknown source)')
             foreach ($client in @(Get-InstalledClientNames -Record $record)) {
                 $subrecord = Get-ClientSubrecord -Record $record -Client $client
@@ -331,10 +500,17 @@ function Invoke-UninstallInstalledHooks {
         $removed = New-Object System.Collections.Generic.List[string]
         $failed = New-Object System.Collections.Generic.List[string]
         $manual = New-Object System.Collections.Generic.List[string]
+        # Record type decides the executor. Resolved per id from the registry
+        # rather than carried on the row, so a stale row can never route a
+        # managed record into the discovered remover (which cannot prove managed
+        # ownership) or the reverse.
+        $discoveredUninstallScript = Join-Path (Split-Path -Parent $UninstallScript) 'Uninstall-DiscoveredHook.ps1'
         foreach ($id in $recordIds) {
+            $record = @($registry.installs | Where-Object { (Get-RecordDisplayField $_ 'id' '') -eq $id })[0]
+            $executor = if ((Get-RecordType $record) -eq 'discovered') { $discoveredUninstallScript } else { $UninstallScript }
             $resultPath = Join-Path ([System.IO.Path]::GetTempPath()) ('hookmaker-uninstall-' + [guid]::NewGuid().ToString('N').Substring(0, 8) + '.json')
             $threw = $false
-            try { & $UninstallScript -RecordId $id -ToolRoot $ToolRoot -ResultPath $resultPath *> $null }
+            try { & $executor -RecordId $id -ToolRoot $ToolRoot -ResultPath $resultPath *> $null }
             catch { $threw = $true }
             $overall = 'failed'
             if (Test-Path -LiteralPath $resultPath) {
@@ -350,6 +526,10 @@ function Invoke-UninstallInstalledHooks {
             switch ($overall) {
                 'ok' { [void]$removed.Add($id); Write-Host ('  ' + (Get-Painted 'removed' $C.Green) + ' ' + $id) }
                 'manualRepair' { [void]$manual.Add($id); Write-Host ('  ' + (Get-Painted 'manual repair needed' $C.Amber) + ' ' + $id) }
+                # 'partial' is the discovered remover's honest middle outcome:
+                # something really came off but not everything, so it must not be
+                # reported as a clean removal.
+                'partial' { [void]$manual.Add($id); Write-Host ('  ' + (Get-Painted 'partially removed - needs attention' $C.Amber) + ' ' + $id) }
                 default { [void]$failed.Add($id); Write-Host ('  ' + (Get-Painted 'failed' $C.Red) + ' ' + $id) }
             }
         }
