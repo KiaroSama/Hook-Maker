@@ -88,6 +88,7 @@ function Get-InstalledHookSnapshot {
         $recordId = ''
         if ($null -ne $record -and $null -ne $record.PSObject.Properties['id']) { $recordId = [string]$record.id }
         $friendly = Get-RecordDisplayField $record 'friendlyName' 'unknown-record'
+        $hookType = Get-RecordDisplayField $record 'hookType' '(unknown type)'
         $scope = Get-RecordDisplayField $record 'scope' 'unknown'
         $targetRoot = Get-RecordDisplayField $record 'targetProjectRoot' ''
         $profileId = Get-RecordDisplayField $record 'profile' ''
@@ -108,6 +109,7 @@ function Get-InstalledHookSnapshot {
             Kind         = 'record'
             RecordIds    = @($recordId)
             FriendlyName = $friendly
+            HookType     = $hookType
             Profile      = $profileId
             Scope        = $scope
             TargetRoot   = $targetRoot
@@ -137,6 +139,7 @@ function Get-InstalledHookSnapshot {
             Kind         = 'project'
             RecordIds    = @($group.Ids.ToArray())
             FriendlyName = ('Remove all Hook Maker hooks from project: ' + $group.Root)
+            HookType     = ''
             Profile      = ''
             Scope        = 'project'
             TargetRoot   = $group.Root
@@ -152,6 +155,7 @@ function Get-InstalledHookSnapshot {
             Kind         = 'global'
             RecordIds    = @($globalIds.ToArray())
             FriendlyName = 'Remove all global Hook Maker hooks'
+            HookType     = ''
             Profile      = ''
             Scope        = 'global'
             TargetRoot   = ''
@@ -163,6 +167,18 @@ function Get-InstalledHookSnapshot {
         })
     }
     return $rows.ToArray()
+}
+
+# Registry client keys are lowercase ('claude'/'codex'); the UI shows the
+# capitalized client name. Shared by the list and confirmation screens below
+# so the two never drift onto different capitalizations.
+function Get-ClientDisplayName {
+    param([string]$Client)
+    switch ($Client) {
+        'claude' { return 'Claude' }
+        'codex' { return 'Codex' }
+        default { return $Client }
+    }
 }
 
 # ---- menu 22: list and uninstall installed hooks --------------------------
@@ -205,15 +221,39 @@ function Invoke-UninstallInstalledHooks {
             $row = $rows[$i]
             $number = Get-Painted (([string]($i + 1)) + '.') $C.LightBlue
             if ($row.Kind -eq 'record') {
-                $scopeText = if ($row.Scope -eq 'global') { 'global' } else { $row.TargetRoot }
-                $clientText = if (@($row.Clients).Count -gt 0) { (@($row.Clients) -join '+') } else { '(none)' }
+                # Individual install: a multi-line block, never truncated to one
+                # line, so the full target path, per-client events and exact
+                # source script are always visible before the user picks a number.
+                $hookTypeText = if ([string]::IsNullOrWhiteSpace($row.HookType)) { '(unknown type)' } else { $row.HookType }
+                $scopeWord = if ($row.Scope -eq 'global') { 'global' } else { 'project' }
                 $label = Get-HookFriendlyName $row.FriendlyName
                 if (-not [string]::IsNullOrWhiteSpace($row.Profile)) { $label += ' [' + $row.Profile + ']' }
-                $line = '  ' + $number + ' ' + (Get-Painted $label $C.Bold) + $script:MenuSep + (Get-Painted $scopeText $C.Gray) + $script:MenuSep + (Get-Painted $clientText $C.Aqua)
-                if (-not $row.Removable) { $line += $script:MenuSep + (Get-Painted $row.Detail $C.Red) }
-                Write-Host $line
+                $headerLine = '  ' + $number + ' ' + (Get-Painted $label $C.Bold) + $script:MenuSep + (Get-Painted $hookTypeText $C.Aqua) + $script:MenuSep + (Get-Painted $scopeWord $C.Gray)
+                Write-Host $headerLine
+
+                $targetText = if ($row.Scope -eq 'global') { 'global' } elseif ([string]::IsNullOrWhiteSpace($row.TargetRoot)) { '(unknown target)' } else { $row.TargetRoot }
+                Write-Host ('     ' + (Get-Painted 'target:' $C.Gray) + ' ' + $targetText)
+
+                if (@($row.Clients).Count -gt 0) {
+                    $clientParts = @(@($row.Clients) | ForEach-Object {
+                        $events = @($row.EventsByClient[$_])
+                        $eventsText = if ($events.Count -gt 0) { $events -join ', ' } else { '(none)' }
+                        (Get-ClientDisplayName $_) + ' [' + $eventsText + ']'
+                    })
+                    $clientsText = $clientParts -join ' | '
+                }
+                else {
+                    $clientsText = '(none)'
+                }
+                Write-Host ('     ' + (Get-Painted 'clients:' $C.Gray) + ' ' + (Get-Painted $clientsText $C.Aqua))
+                Write-Host ('     ' + (Get-Painted 'source:' $C.Gray) + ' ' + $row.SourceScript)
+
+                if (-not $row.Removable) {
+                    Write-Host ('     ' + (Get-Painted $row.Detail $C.Red))
+                }
             }
             else {
+                # Aggregate rows keep their existing single-line description + count.
                 Write-Host ('  ' + $number + ' ' + (Get-Painted $row.FriendlyName $C.Bold) + $script:MenuSep + (Get-Painted $row.Detail $C.Amber))
             }
         }
@@ -249,17 +289,30 @@ function Invoke-UninstallInstalledHooks {
         foreach ($id in $recordIds) {
             $record = @($registry.installs | Where-Object { [string]$_.id -eq $id })[0]
             if ($null -eq $record) { continue }
-            $scopeText = if ((Get-RecordDisplayField $record 'scope') -eq 'global') { 'global' } else { Get-RecordDisplayField $record 'targetProjectRoot' }
-            Write-Host ('  ' + (Get-Painted (Get-HookFriendlyName (Get-RecordDisplayField $record 'friendlyName' 'unknown-record')) $C.Bold) + $script:MenuSep + (Get-Painted $scopeText $C.Gray))
+            $hookType = Get-RecordDisplayField $record 'hookType' '(unknown type)'
+            $profileId = Get-RecordDisplayField $record 'profile' ''
+            $scopeText = if ((Get-RecordDisplayField $record 'scope') -eq 'global') { 'global' } else { Get-RecordDisplayField $record 'targetProjectRoot' '(unknown target)' }
+            $label = Get-HookFriendlyName (Get-RecordDisplayField $record 'friendlyName' 'unknown-record')
+            if (-not [string]::IsNullOrWhiteSpace($profileId)) { $label += ' [' + $profileId + ']' }
+            Write-Host ('  ' + (Get-Painted $label $C.Bold) + $script:MenuSep + (Get-Painted $hookType $C.Aqua) + $script:MenuSep + (Get-Painted $scopeText $C.Gray))
+            Write-Field '    record id' $id
+            Write-Field '    source script' (Get-RecordDisplayField $record 'sourceScript' '(unknown source)')
             foreach ($client in @(Get-InstalledClientNames -Record $record)) {
                 $subrecord = Get-ClientSubrecord -Record $record -Client $client
-                Write-Field ('  ' + $client + ' settings') ([string]$subrecord.settingsPath)
-                Write-Field ('  ' + $client + ' runtime') ([string]$subrecord.runtimeRoot)
+                $clientLabel = Get-ClientDisplayName $client
+                $events = @($subrecord.events | ForEach-Object { [string]$_ })
+                $eventsText = if ($events.Count -gt 0) { $events -join ', ' } else { '(none)' }
+                Write-Field ('    ' + $clientLabel + ' events') $eventsText
+                Write-Field ('    ' + $clientLabel + ' settings') ([string]$subrecord.settingsPath)
+                Write-Field ('    ' + $clientLabel + ' runtime script') ([string]$subrecord.runtimeScript)
             }
             $native = $null
             if ($null -ne $record.PSObject.Properties['nativeGit']) { $native = $record.nativeGit }
             if ($null -ne $native -and $null -ne $native.PSObject.Properties['managed'] -and $native.managed -eq $true) {
-                Write-Field '  native Git' 'yes - the managed pre-push chain is part of this install' $C.Amber
+                Write-Field '    native Git' 'yes - the managed pre-push chain is part of this install' $C.Amber
+            }
+            else {
+                Write-Field '    native Git' 'no'
             }
         }
         Write-Host ''

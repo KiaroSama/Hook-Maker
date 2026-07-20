@@ -1,17 +1,8 @@
 # Parallel local test runner.
 #
-# The suites are NOT uniformly parallel-safe. Six of them create throwaway hook
-# fixtures inside the REAL hooks\ directory, and some assertions count the hooks
-# found there - so running two of those at once makes the count change mid-run
-# and produces FALSE failures that look like flakiness. (That is not
-# hypothetical: it was diagnosed exactly once, when concurrent agents ran suites
-# against the same checkout.)
-#
-# So the suites are split into two groups:
-#   * ISOLATED  - work only in their own temp workspace; run all at once.
-#   * EXCLUSIVE - create fixtures under the real hooks\ dir; run one at a time.
-# The two groups run CONCURRENTLY, so wall-clock is
-# max(slowest isolated batch, serial exclusive chain) instead of the sum of all.
+# Suites run in parallel, with ONE exception handled in a first phase - see the
+# `$Exclusive list below for exactly why. Wall clock becomes
+# (that one suite) + (slowest of everything else) instead of the sum of all 22.
 #
 # CI does not need this split: there, each suite gets its own job on its own
 # runner and therefore its own checkout, so nothing is shared (see ci.yml).
@@ -39,14 +30,20 @@ if ($PSVersionTable.PSVersion.Major -lt 7) {
 
 $ScriptRoot = $PSScriptRoot
 
-# Suites that create fixtures under the real hooks\ directory, or assert on the
-# number of hooks discovered there. These must not overlap with each other.
+# Only ONE suite is genuinely exclusive.
+#
+# Several suites create throwaway fixtures under the real hooks\ directory, but
+# each uses its own unique prefix (ZZZ-Regtest, ZZZ-Ld, ZZZ-Uninst, ...), so they
+# never collide with one another by name. The single real constraint is that
+# Test-Wizard ASSERTS ON THE NUMBER of hooks discovered in hooks\ - if anything
+# else adds or removes a fixture while it counts, its assertions fail for a
+# reason that has nothing to do with the code under test.
+#
+# So Test-Wizard runs alone, and everything else runs in parallel. An earlier
+# version of this file serialised all six fixture-creating suites, which was
+# over-cautious in the worst possible way: those six are the slowest suites, so
+# serialising them threw away most of the available speedup.
 $Exclusive = @(
-    'Test-InstallRegistry.ps1'
-    'Test-InstallRegistrySchema.ps1'
-    'Test-LegacyDiscovery.ps1'
-    'Test-NativePrePushInstall.ps1'
-    'Test-UninstallHook.ps1'
     'Test-Wizard.ps1'
 )
 
@@ -67,7 +64,7 @@ if ($ThrottleLimit -le 0) {
     $ThrottleLimit = [Math]::Max(2, [Math]::Min(8, $cores - 2))
 }
 
-Write-Host ('Running ' + $all.Count + ' suite(s): ' + $isolatedSuites.Count + ' isolated (parallel, throttle ' + $ThrottleLimit + ') + ' + $exclusiveSuites.Count + ' exclusive (serial), both groups concurrently. Per-suite timeout ' + $TimeoutSeconds + 's.') -ForegroundColor Cyan
+Write-Host ('Running ' + $all.Count + ' suite(s): ' + $isolatedSuites.Count + ' parallel + ' + $exclusiveSuites.Count + ' exclusive-first. Per-suite timeout ' + $TimeoutSeconds + 's.') -ForegroundColor Cyan
 $stopwatch = [System.Diagnostics.Stopwatch]::StartNew()
 $host7 = (Get-Process -Id $PID).Path
 
@@ -127,29 +124,28 @@ finally {
 }
 '@
 
-# The exclusive chain starts first and runs alongside the parallel batch.
-$exclusiveJob = $null
+# The exclusive suite must NOT overlap with the parallel batch: it counts the
+# hooks in the real hooks\ directory, and the parallel batch creates and removes
+# fixtures there. So it runs first, on its own, and only then does the batch
+# start. (Running them concurrently is what produces the "flaky" count failures.)
 if ($exclusiveSuites.Count -gt 0) {
-    $exclusiveJob = Start-ThreadJob -ArgumentList @(, @($exclusiveSuites | ForEach-Object { $_.FullName })), $host7, $TimeoutSeconds, $invokeSuiteBody -ScriptBlock {
-        param($paths, $exe, $timeout, $body)
-        $invoke = [scriptblock]::Create($body)
-        $out = @()
-        foreach ($p in @($paths)) { $out += (& $invoke $p $exe $timeout) }
-        return $out
-    }
+    Write-Host ('Phase 1 - exclusive (counts real hooks\, must run alone): ' + (($exclusiveSuites | ForEach-Object { $_.Name }) -join ', ')) -ForegroundColor DarkGray
+}
+$invokeSuite = [scriptblock]::Create($invokeSuiteBody)
+$exclusiveResults = @()
+foreach ($suite in $exclusiveSuites) {
+    $exclusiveResults += (& $invokeSuite $suite.FullName $host7 $TimeoutSeconds)
 }
 
+if ($isolatedSuites.Count -gt 0) {
+    Write-Host ('Phase 2 - ' + $isolatedSuites.Count + ' suite(s) in parallel.') -ForegroundColor DarkGray
+}
 $isolatedResults = @()
 if ($isolatedSuites.Count -gt 0) {
     $isolatedResults = @($isolatedSuites | ForEach-Object -ThrottleLimit $ThrottleLimit -Parallel {
         $invoke = [scriptblock]::Create($using:invokeSuiteBody)
         & $invoke $_.FullName $using:host7 $using:TimeoutSeconds
     })
-}
-
-$exclusiveResults = @()
-if ($null -ne $exclusiveJob) {
-    $exclusiveResults = @(Receive-Job -Job $exclusiveJob -Wait -AutoRemoveJob)
 }
 
 $stopwatch.Stop()

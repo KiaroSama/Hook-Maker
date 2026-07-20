@@ -374,15 +374,57 @@ function Remove-NativeGitComponent {
     }
     $native = $record.nativeGit
     $wrapperPath = [string]$native.wrapperPath
+
+    # Directories this record itself owns on disk (primary stage + every
+    # recorded companion). Computed read-only, up front, so both the
+    # "wrapper already gone" idempotency proof below and the later
+    # regenerate/cleanup step share one definition of "ours".
+    $ownRuntimeRoot = [string]$native.runtimeRoot
+    $ownStageDirs = @()
+    if (-not [string]::IsNullOrWhiteSpace($ownRuntimeRoot)) {
+        $ownStageDirs = @((Join-Path $ownRuntimeRoot $FriendlyName)) +
+            @(@($native.companions) | ForEach-Object { Join-Path $ownRuntimeRoot ([string]$_) })
+    }
+    $anyOwnedArtifactRemains = @($ownStageDirs | Where-Object { Test-Path -LiteralPath $_ }).Count -gt 0
+
     if ([string]::IsNullOrWhiteSpace($wrapperPath) -or -not (Test-Path -LiteralPath $wrapperPath -PathType Leaf)) {
+        if ($anyOwnedArtifactRemains) {
+            # The wrapper is gone, but this record's own managed native runtime
+            # is still on disk - a genuinely partial state. Idempotent success
+            # is only safe to claim when NOTHING of ours is left behind; here
+            # something is, so retain the record and stop rather than silently
+            # abandoning those artifacts.
+            Set-ComponentResult -Component 'nativeGit' -Status 'manualRepair' -ReasonCode 'wrapperMissingArtifactsRemain' `
+                -Message 'the pre-push wrapper is gone but managed native runtime artifacts for this record still exist on disk'
+            return [pscustomobject]@{ Removed = $false }
+        }
         Set-ComponentResult -Component 'nativeGit' -Status 'ok' -ReasonCode 'alreadyRemoved'
         return [pscustomobject]@{ Removed = $true }
     }
+
+    # wrapperPath must live directly inside the record's own recorded Git hooks
+    # path (when the record has one - it does for every record written by the
+    # current installer). A mismatch means wrapperPath cannot be trusted to
+    # mean what the record claims, so this stops here rather than trusting it.
+    if ($null -ne $native.PSObject.Properties['hooksPath'] -and -not [string]::IsNullOrWhiteSpace([string]$native.hooksPath)) {
+        $expectedParent = [System.IO.Path]::GetFullPath([string]$native.hooksPath)
+        $actualParent = [System.IO.Path]::GetFullPath((Split-Path -Parent $wrapperPath))
+        if (-not [string]::Equals($expectedParent, $actualParent, [System.StringComparison]::OrdinalIgnoreCase)) {
+            Set-ComponentResult -Component 'nativeGit' -Status 'manualRepair' -ReasonCode 'wrapperPathHooksPathMismatch' `
+                -Message 'wrapperPath does not live in the record''s own recorded Git hooks path; ownership cannot be proven safely'
+            return [pscustomobject]@{ Removed = $false }
+        }
+    }
+
     $body = [System.IO.File]::ReadAllText($wrapperPath)
     if (-not $body.Contains($script:PrePushMarker)) {
-        # No longer our wrapper - nothing of ours is left to remove here.
-        Set-ComponentResult -Component 'nativeGit' -Status 'ok' -ReasonCode 'notManagedAnymore'
-        return [pscustomobject]@{ Removed = $true }
+        # A file exists at wrapperPath but carries no Hook Maker marker. This is
+        # NOT "no longer managed" - ownership of whatever now occupies this
+        # path is UNKNOWN (a user or another tool may have replaced it). Stop
+        # and preserve every file rather than guessing this away as success.
+        Set-ComponentResult -Component 'nativeGit' -Status 'manualRepair' -ReasonCode 'wrapperReplacedOrOwnershipUnknown' `
+            -Message 'a file exists at the recorded wrapper path but does not carry the Hook Maker marker; ownership cannot be proven safely'
+        return [pscustomobject]@{ Removed = $false }
     }
 
     $expectedStages = @()
@@ -399,7 +441,7 @@ function Remove-NativeGitComponent {
     # Stages this record itself owns: its own primary script plus every
     # companion recorded alongside it. Anything else in expectedStages
     # belongs to some other logical owner and is left running.
-    $ownRuntimeRoot = [string]$native.runtimeRoot
+    # ($ownRuntimeRoot was already computed above.)
     $ownStages = New-Object System.Collections.Generic.List[string]
     if (-not [string]::IsNullOrWhiteSpace($ownRuntimeRoot)) {
         [void]$ownStages.Add((Join-Path $ownRuntimeRoot ($FriendlyName + '\' + $FriendlyName + '.ps1')))
