@@ -1,42 +1,51 @@
-# LargeFileCheck - keeps source files small and splittable.
+# LargeFileCheck - keeps source files small and splittable. Two stages, both
+# ADVISORY: it never performs a split and never blocks a push. The AI agent makes
+# every architectural decision, judging by responsibility and cohesion - not the
+# hook, and never from line count alone.
 #
-# Two behaviors in one hook:
-# - SessionStart / UserPromptSubmit (pre-task): injects a short reminder to
-#   prefer small, multi-part files and not to create one big file unless
-#   unavoidable (split by responsibility; ~500-800 logical lines = review
-#   signal, not a rule). Equally explicit about the OPPOSITE failure mode:
-#   never create thin wrappers, pass-through modules, or arbitrary fragments
-#   just to stay under the threshold - cohesion outranks line count.
-# - Stop (post-task): scans the project for source files above the line
-#   threshold and reports them, asking the AI to judge for itself whether a
-#   split is SAFE and WORTHWHILE (a real responsibility/module/layer boundary
-#   must actually exist there) - never mandatory, and never an invitation to
-#   start a refactor unrelated to the current task. Silent when nothing is oversized.
+# 1. Pre-task (SessionStart / UserPromptSubmit): injects preventive guidance so
+#    the agent designs code into the right file/module FROM THE START instead of
+#    growing one huge file and decomposing later. SessionStart carries the full
+#    compact policy; UserPromptSubmit carries a shorter reminder. Both quote the
+#    same effective LINE_THRESHOLD. Cohesion outranks line count, so the guidance
+#    is equally against thin wrappers / pass-through files created merely to duck
+#    the threshold.
+# 2. Post-task (Stop / SubagentStop): scans the project for source files whose
+#    line count is STRICTLY GREATER THAN the threshold (default 800 - so 801 is
+#    reported, exactly 800 is not) and lists the largest offenders. Files already
+#    present before the task are scanned too. A split is never mandatory and 801
+#    never forces one; the report is a review signal, decided by the AI. Silent
+#    when nothing is oversized; per-project cooldown; stop_hook_active guard so it
+#    never loops.
 #
-# Token-efficient by design: deterministic scan, per-project cooldown on Stop,
-# stop_hook_active guard (never loops), and the decision stays with the AI.
+# -GitPrePush is advisory-only: it exits 0 without scanning or blocking. This hook
+# never blocks a push.
+#
+# Token-efficient by design: deterministic pruned scan, per-project cooldown on
+# Stop, and state (the cooldown timestamp) lives under %LOCALAPPDATA%\HookMaker\
+# state keyed by a stable hash of the project path + threshold - never inside the
+# scanned project.
 #
 # Optional .env next to this script (copy .env.example):
-#   LINE_THRESHOLD    lines above which a file is reported (default 800)
+#   LINE_THRESHOLD    lines above which a file is reported (default 800; a value
+#                     that is missing/malformed/<50 or >100000 falls back to 800)
 #   EXTENSIONS        comma-separated source extensions to scan
 #   COOLDOWN_MINUTES  minimum minutes between Stop reports per project (default 60)
+#   MAX_FILES         source-file scan ceiling (default 5000; when the ceiling is
+#                     reached the report says so - partial, never all-clear)
 
 param([switch]$GitPrePush)
 
 Set-StrictMode -Version 2.0
 $ErrorActionPreference = 'Stop'
 
-# Large-file guidance is advisory task context, never a push authorization gate.
+# GitPrePush contract (single, consistent): this hook is advisory, never a push
+# authorization gate. It exits 0 without scanning or blocking.
 if ($GitPrePush) { exit 0 }
 
 . (Join-Path $PSScriptRoot '..\_hooklib.ps1')
 
-$hookInput = if ($GitPrePush) {
-    [pscustomobject]@{ cwd = (Get-Location).Path; hook_event_name = 'GitPrePush' }
-}
-else {
-    Read-HookInput
-}
+$hookInput = Read-HookInput
 if ($null -eq $hookInput) {
     exit 0
 }
@@ -48,38 +57,68 @@ $eventName = [string](Get-Field $hookInput 'hook_event_name')
 if ([string]::IsNullOrWhiteSpace($eventName)) {
     $eventName = 'SessionStart'
 }
-$isStopEvent = ($GitPrePush -or $eventName -eq 'Stop' -or $eventName -eq 'SubagentStop')
+$isStopEvent = ($eventName -eq 'Stop' -or $eventName -eq 'SubagentStop')
 
-# ---- pre-task: short policy reminder, nothing else ----
+# ---- config: read .env ONCE, validate, one effective threshold for both stages ----
+# Invalid config never crashes and never leaks a raw invalid value into a message.
+$config = Read-HookEnv (Join-Path $PSScriptRoot '.env')
+$lineThreshold = 800
+if ($config.ContainsKey('LINE_THRESHOLD')) {
+    $parsedThreshold = 0
+    if ([int]::TryParse([string]$config['LINE_THRESHOLD'], [ref]$parsedThreshold) -and $parsedThreshold -ge 50 -and $parsedThreshold -le 100000) {
+        $lineThreshold = $parsedThreshold
+    }
+}
+
+# ---- pre-task: preventive size guidance (full on SessionStart, shorter on prompt) ----
 if (-not $isStopEvent) {
-    $note = @(
-        'FILE SIZE POLICY - prefer small, multi-part files:',
-        '- Do not create one big file unless unavoidable; plan a multi-file layout up front and split by responsibility (features, layers, cohesive groups).',
-        '- ~500-800 logical lines is a REVIEW SIGNAL, not an architectural law - cohesion and maintainability outrank raw line count.',
-        '- Create a new file only when a real responsibility, cohesive module, layer, or public boundary exists. Do not create thin wrappers, pass-through modules, single-use fragments, or arbitrary files solely to stay under a line threshold.',
-        '- Appending to an existing file is fine when the new code belongs to the same responsibility as that file.'
-    ) -join "`n"
+    if ($eventName -eq 'UserPromptSubmit') {
+        $lines = @(
+            "FILE SIZE POLICY (prevent avoidable oversized files; ~$lineThreshold lines is a REVIEW SIGNAL, not a law):",
+            "- Before adding substantial code, check the destination file's current size and responsibility; if the change would push it well past $lineThreshold lines and a real boundary exists, design the new code into the correct file/module from the start.",
+            "- Cohesion outranks line count: append when the code shares the file's responsibility; do NOT create thin wrappers, pass-through modules, or one-function files just to stay under the number.",
+            "- A small overage (e.g. $($lineThreshold + 1)-$($lineThreshold + 20) lines) needs conscious review, not a forced split - especially if it introduces a NEW responsibility. The architectural decision is yours (the AI agent), not the hook's."
+        )
+    }
+    else {
+        $lines = @(
+            "FILE SIZE POLICY - design correctly from the start (~$lineThreshold lines is a REVIEW SIGNAL, not an architectural law):",
+            "- Before adding substantial code, inspect the destination file's current size and responsibility, and estimate whether the planned change brings it near or above $lineThreshold lines.",
+            "- Do NOT create one very large file and postpone decomposition until the end; when a real responsibility, cohesive module, layer, feature, or public-API boundary exists, put the new code in the correct file/module from the start.",
+            "- Prefer keeping ordinary source files below $lineThreshold lines, but appending is correct when the new code genuinely belongs to the same responsibility as that file.",
+            "- A small justified overage (e.g. $($lineThreshold + 1)-$($lineThreshold + 20) lines) does not require a forced split; it still needs conscious architectural review, more so when it adds a NEW responsibility.",
+            "- Never generate wrappers, forwarding files, arbitrary fragments, or one-function files merely to stay numerically under the threshold - cohesion and maintainability outrank raw line count.",
+            "- When working in a file already oversized, do not refactor unrelated parts for the current task, but do not make it worse; if the task itself touches that file and a safe, directly relevant responsibility boundary is obvious, a bounded split is fine.",
+            "- Architectural analysis and the final split decision are yours (the AI agent), not the hook's."
+        )
+    }
+    $note = $lines -join "`n"
     @{ hookSpecificOutput = @{ hookEventName = $eventName; additionalContext = $note } } |
         ConvertTo-Json -Depth 5 -Compress
     exit 0
 }
 
 # ---- post-task (Stop): scan for oversized source files ----
-if (-not $GitPrePush -and (Get-Field $hookInput 'stop_hook_active') -eq $true) {
+if ((Get-Field $hookInput 'stop_hook_active') -eq $true) {
     exit 0
 }
 
-# optional .env
-$config = Read-HookEnv (Join-Path $PSScriptRoot '.env')
-$lineThreshold = 800
-if ($config.ContainsKey('LINE_THRESHOLD')) {
-    try { $lineThreshold = [int]$config['LINE_THRESHOLD'] } catch { }
-}
 $cooldownMinutes = 60
 if ($config.ContainsKey('COOLDOWN_MINUTES')) {
-    try { $cooldownMinutes = [int]$config['COOLDOWN_MINUTES'] } catch { }
+    $parsedCooldown = 0
+    if ([int]::TryParse([string]$config['COOLDOWN_MINUTES'], [ref]$parsedCooldown) -and $parsedCooldown -ge 0 -and $parsedCooldown -le 100000) {
+        $cooldownMinutes = $parsedCooldown
+    }
 }
-$extensionList = '.ps1,.psm1,.py,.js,.ts,.jsx,.tsx,.mjs,.cjs,.cs,.java,.go,.rb,.php,.rs,.c,.cpp,.h,.kt,.swift,.vue,.svelte'
+$maxFiles = 5000
+if ($config.ContainsKey('MAX_FILES')) {
+    $parsedMax = 0
+    if ([int]::TryParse([string]$config['MAX_FILES'], [ref]$parsedMax) -and $parsedMax -ge 1 -and $parsedMax -le 1000000) {
+        $maxFiles = $parsedMax
+    }
+}
+$defaultExtensions = '.ps1,.psm1,.py,.js,.ts,.jsx,.tsx,.mjs,.cjs,.cs,.java,.go,.rb,.php,.rs,.c,.cpp,.h,.kt,.swift,.vue,.svelte'
+$extensionList = $defaultExtensions
 if ($config.ContainsKey('EXTENSIONS') -and $config['EXTENSIONS'] -ne '') {
     $extensionList = $config['EXTENSIONS']
 }
@@ -91,11 +130,15 @@ foreach ($ext in $extensionList.Split(',')) {
         $extensions[$clean] = $true
     }
 }
+# A misconfigured EXTENSIONS (all blank) must not silently scan nothing.
+if ($extensions.Count -eq 0) {
+    foreach ($ext in $defaultExtensions.Split(',')) { $extensions[$ext] = $true }
+}
 
-# cooldown state (per project)
+# cooldown state (per project + threshold) - never written inside the scanned project
 $stateDir = Join-Path $env:LOCALAPPDATA 'HookMaker\state'
-$statePath = Join-Path $stateDir ('LargeFileCheck-' + (Get-ShortHash $cwd.ToLowerInvariant()) + '.txt')
-if (-not $GitPrePush -and (Test-Path -LiteralPath $statePath -PathType Leaf)) {
+$statePath = Join-Path $stateDir ('LargeFileCheck-' + (Get-ShortHash ($cwd.ToLowerInvariant() + '|' + $lineThreshold)) + '.txt')
+if (Test-Path -LiteralPath $statePath -PathType Leaf) {
     try {
         $last = [DateTime]::Parse([System.IO.File]::ReadAllText($statePath).Trim(), [System.Globalization.CultureInfo]::InvariantCulture, [System.Globalization.DateTimeStyles]::RoundtripKind)
         if (([DateTime]::UtcNow - $last.ToUniversalTime()).TotalMinutes -lt $cooldownMinutes) {
@@ -105,21 +148,24 @@ if (-not $GitPrePush -and (Test-Path -LiteralPath $statePath -PathType Leaf)) {
     catch { }
 }
 
-# Pruned recursive scan: generated/vendor directories are never entered, files
-# above 3 MB are skipped (binary/generated), and the walk is capped for safety.
+# Pruned recursive scan: generated/vendor directories are never entered, reparse
+# points (junctions/symlinks) are never followed, files above 3 MB are skipped
+# (binary/generated), streaming line reads, and the walk is capped for safety.
 $excludedDirs = @('.git', 'node_modules', '.ai', 'graphify-out', 'logs', 'dist', 'build', 'out', 'target', 'vendor', '__pycache__', '.venv', 'venv', '.claude', '.codex', 'bin', 'obj', '.cross-project-sync')
 $offenders = New-Object System.Collections.Generic.List[object]
 $stack = New-Object System.Collections.Generic.Stack[string]
 $stack.Push($cwd)
 $scannedFiles = 0
-while ($stack.Count -gt 0 -and $scannedFiles -lt 5000) {
+while ($stack.Count -gt 0 -and $scannedFiles -lt $maxFiles) {
     $currentDir = $stack.Pop()
     try {
         foreach ($childDir in [System.IO.Directory]::EnumerateDirectories($currentDir)) {
             $leaf = Split-Path -Leaf $childDir
-            if ($excludedDirs -notcontains $leaf.ToLowerInvariant()) {
-                $stack.Push($childDir)
-            }
+            if ($excludedDirs -contains $leaf.ToLowerInvariant()) { continue }
+            # Never follow a reparse point (junction/symlink): it can escape the
+            # project or loop back on it. Skip before descent.
+            if (([System.IO.File]::GetAttributes($childDir) -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) { continue }
+            $stack.Push($childDir)
         }
         foreach ($file in [System.IO.Directory]::EnumerateFiles($currentDir)) {
             $extension = [System.IO.Path]::GetExtension($file).ToLowerInvariant()
@@ -137,15 +183,16 @@ while ($stack.Count -gt 0 -and $scannedFiles -lt 5000) {
     }
     catch { }
 }
+# Honest coverage: if the file ceiling was hit with directories still unwalked,
+# the offender list may be incomplete - do NOT imply full-repository coverage.
+$partial = ($scannedFiles -ge $maxFiles -and $stack.Count -gt 0)
 
 if ($offenders.Count -eq 0) {
     exit 0
 }
 
-if (-not $GitPrePush) {
-    New-Item -ItemType Directory -Path $stateDir -Force | Out-Null
-    [System.IO.File]::WriteAllText($statePath, [DateTime]::UtcNow.ToString('o'))
-}
+New-Item -ItemType Directory -Path $stateDir -Force | Out-Null
+[System.IO.File]::WriteAllText($statePath, [DateTime]::UtcNow.ToString('o'))
 
 $top = @($offenders | Sort-Object -Property Lines -Descending | Select-Object -First 5)
 $fileLines = @($top | ForEach-Object { $_.Path + ' (' + $_.Lines + ' lines)' })
@@ -153,10 +200,7 @@ $more = ''
 if ($offenders.Count -gt $top.Count) {
     $more = ' and ' + ($offenders.Count - $top.Count) + ' more'
 }
-$reason = 'LARGE FILE CHECK: ' + $offenders.Count + ' source file(s) exceed ' + $lineThreshold + ' lines: ' + ($fileLines -join '; ') + $more + '. No split is mandatory - this is advisory. Decide for yourself whether splitting is SAFE and worthwhile: the line count is a REVIEW SIGNAL, not a rule, so only split when a real responsibility, cohesive module, layer, or public boundary actually exists there - never create thin wrappers, pass-through modules, or arbitrary fragments merely to get under the threshold, and never start a refactor unrelated to the current task just because a file is large. If you do split: split by responsibility, keep a single clear entry point, update imports/re-exports, avoid circular dependencies, and run build/tests afterwards. If a safe split is not practical or not warranted right now, finish with no split - this reminder respects a cooldown.'
-if ($GitPrePush) {
-    [Console]::Error.WriteLine($reason)
-    exit 1
-}
+$partialNote = if ($partial) { ' (PARTIAL scan: a scan ceiling was reached, so this list may be incomplete - not full-repository coverage.)' } else { '' }
+$reason = 'LARGE FILE CHECK: ' + $offenders.Count + ' source file(s) exceed ' + $lineThreshold + ' lines: ' + ($fileLines -join '; ') + $more + '.' + $partialNote + ' No split is mandatory - this is advisory, and a slight overage (e.g. ' + ($lineThreshold + 1) + ' lines) is a REVIEW SIGNAL, not proof of bad architecture. Cohesion outranks raw line count: large or multi-responsibility files are the stronger split candidates, and a NEW responsibility pushed past the threshold is more concerning than a small cohesive overage. Only split when a real responsibility, cohesive module, layer, or public boundary actually exists there - never create thin wrappers, pass-through modules, or arbitrary fragments merely to get under the threshold, and never start a refactor unrelated to the current task just because a file is large. If you do split: split by responsibility, keep a single clear entry point, update imports/re-exports, avoid circular dependencies, and run build/tests afterwards. If a safe split is not warranted right now, finish with no split - this reminder respects a cooldown.'
 @{ decision = 'block'; reason = $reason } | ConvertTo-Json -Compress
 exit 0

@@ -311,25 +311,27 @@ try {
     $lfProj = New-Proj 'LargeFilePlain'
     $r = Fire -HookPath $LargeFileHook -Cwd $lfProj
     Check 'pre-task note mentions the threshold is a review signal, not a rule' ($r.Out -match 'REVIEW SIGNAL, not an architectural law') $r.Out
-    Check 'pre-task note explicitly forbids thin wrappers/pass-through/arbitrary fragmentation' (
-        $r.Out -match 'thin wrappers, pass-through modules, single-use fragments, or arbitrary files') $r.Out
-    Check 'pre-task note allows appending when the code shares the same responsibility' ($r.Out -match 'Appending to an existing file is fine') $r.Out
+    Check 'pre-task note explicitly forbids wrappers/forwarding/arbitrary fragmentation' (
+        $r.Out -match 'wrappers, forwarding files, arbitrary fragments, or one-function files') $r.Out
+    Check 'pre-task note allows appending when the code shares the same responsibility' ($r.Out -match 'appending is correct when the new code genuinely belongs') $r.Out
 
     # =====================================================================
     Write-Host '--- Large-File-Check: Stop reason is advisory, never mandates a split or an unrelated refactor ---' -ForegroundColor Cyan
     $lfBigProj = New-Proj 'LargeFileOversized'
-    $bigContent = (1..10 | ForEach-Object { 'line ' + $_ }) -join "`n"
+    # 60 lines against a threshold of 50 (the smallest LINE_THRESHOLD the hook now
+    # honours - values below its documented 50..100000 floor fall back to 800).
+    $bigContent = (1..60 | ForEach-Object { 'line ' + $_ }) -join "`n"
     Write-Utf8 (Join-Path $lfBigProj 'big.ps1') $bigContent
     $lfHookLowThreshold = Join-Path $Work ('lfhookcopy-' + [guid]::NewGuid().ToString('N').Substring(0, 6))
     New-Item -ItemType Directory -Path $lfHookLowThreshold -Force | Out-Null
     Copy-Item $LargeFileHook (Join-Path $lfHookLowThreshold 'Large-File-Check.ps1')
     Copy-Item (Join-Path (Split-Path -Parent $LargeFileHook) '..\_hooklib.ps1') (Join-Path $Work '_hooklib.ps1') -Force
-    Write-Utf8 (Join-Path $lfHookLowThreshold '.env') "LINE_THRESHOLD=5`r`n"
+    Write-Utf8 (Join-Path $lfHookLowThreshold '.env') "LINE_THRESHOLD=50`r`n"
     $lfHook = Join-Path $lfHookLowThreshold 'Large-File-Check.ps1'
     $r = Fire -HookPath $lfHook -Cwd $lfBigProj -EventName 'Stop'
     Check 'an oversized file is still detected and reported' ($r.Out -match 'LARGE FILE CHECK' -and $r.Out -match 'big\.ps1') $r.Out
     Check 'the reason says no split is mandatory' ($r.Out -match 'No split is mandatory - this is advisory') $r.Out
-    Check 'the reason repeats the review-signal-not-a-rule framing' ($r.Out -match 'a REVIEW SIGNAL, not a rule') $r.Out
+    Check 'the reason repeats the review-signal-not-a-rule framing' ($r.Out -match 'a REVIEW SIGNAL, not proof of bad architecture') $r.Out
     Check 'the reason forbids thin wrappers/pass-through/arbitrary fragments here too' ($r.Out -match 'never create thin wrappers, pass-through modules, or arbitrary fragments') $r.Out
     Check 'the reason forbids starting an unrelated refactor merely because a file is large' ($r.Out -match 'never start a refactor unrelated to the current task') $r.Out
     Check 'a safe/no-split outcome remains explicitly valid' ($r.Out -match 'finish with no split') $r.Out

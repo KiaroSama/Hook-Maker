@@ -95,6 +95,16 @@ function Get-TestCommandFp {
     finally { $sha.Dispose() }
 }
 
+# Filename-safe runId - must match Run-Tests-Guarded.ps1/Test-Run-Guard.ps1's
+# Get-SafeRunId. Every coordination file is now PER-RUN:
+# TestRunGuard-<kind>-<key>-<safeRunId>.json.
+function Get-SafeRunId { param([string]$Id) $s = ([string]$Id).ToLowerInvariant() -replace '[^a-z0-9]', ''; if ($s -eq '') { $s = Get-ShortHash ([string]$Id) }; return $s }
+function Get-RunStateFile {
+    param([object]$Copy, [string]$Root, [string]$Kind, [string]$RunId = '')
+    if ($RunId -eq '') { $RunId = Get-TestRunId $Root }
+    return (Join-Path (Get-StateDir $Copy) ('TestRunGuard-' + $Kind + '-' + (Get-ProjectKey $Root) + '-' + (Get-SafeRunId $RunId) + '.json'))
+}
+
 function Write-GuardedResult {
     param(
         [object]$Copy, [string]$Root, [string]$Overall = 'ok', [int]$ExitCode = 0,
@@ -118,15 +128,18 @@ function Write-GuardedResult {
         stdoutBytes = 100; stderrBytes = 0; workerBudget = 4
         startedUtc = $ended; endedUtc = $ended
     }
-    $path = Join-Path (Get-StateDir $Copy) ('TestRunGuard-result-' + (Get-ProjectKey $Root) + '.json')
+    # PER-RUN filename, keyed by this result's own runId - two runs in one project
+    # write distinct files instead of overwriting each other.
+    $path = Get-RunStateFile -Copy $Copy -Root $Root -Kind 'result' -RunId $RunId
     Write-Utf8 $path ($doc | ConvertTo-Json -Depth 6)
 }
 
 function Write-ObservedRecord {
     param(
         [object]$Copy, [string]$Root, [bool]$Guarded = $true, [string]$Fingerprint = '',
-        [double]$AgeMinutes = 0, [bool]$RunIdControlled = $true
+        [double]$AgeMinutes = 0, [bool]$RunIdControlled = $true, [string]$RunId = ''
     )
+    if ($RunId -eq '') { $RunId = Get-TestRunId $Root }
     # observedUtc is anchored a full 60s below the result's start. Both this
     # helper and Write-GuardedResult call the git-based Get-Fingerprint, whose
     # duration under parallel git contention is unbounded-in-seconds; a tight
@@ -139,16 +152,17 @@ function Write-ObservedRecord {
     if ($Fingerprint -eq '') { $Fingerprint = Get-Fingerprint $Root }
     $doc = [ordered]@{
         schema = 2; observedUtc = $observedUtc; fingerprint = $Fingerprint; projectFingerprint = $Fingerprint
-        runId = (Get-TestRunId $Root); runIdControlled = $RunIdControlled
+        runId = $RunId; runIdControlled = $RunIdControlled
         commandFingerprint = (Get-TestCommandFp $Root); guarded = $Guarded
     }
-    $path = Join-Path (Get-StateDir $Copy) ('TestRunGuard-observed-' + (Get-ProjectKey $Root) + '.json')
+    $path = Get-RunStateFile -Copy $Copy -Root $Root -Kind 'observed' -RunId $RunId
     Write-Utf8 $path ($doc | ConvertTo-Json -Depth 4)
 }
 
 function Write-ActiveMarker {
     param([object]$Copy, [string]$Root, [int]$ProcessId,
-        [string]$StartUtc = '', [string]$ExePath = '', [string]$ProjectFingerprint = '')
+        [string]$StartUtc = '', [string]$ExePath = '', [string]$ProjectFingerprint = '', [string]$RunId = '')
+    if ($RunId -eq '') { $RunId = Get-TestRunId $Root }
     # Schema-2 marker with owner identity. Defaults reflect the LIVE process at
     # $ProcessId (so a marker written for the current test process validates).
     if ($StartUtc -eq '') {
@@ -159,17 +173,19 @@ function Write-ActiveMarker {
     }
     if ($ProjectFingerprint -eq '') { $ProjectFingerprint = Get-Fingerprint $Root }
     $doc = [ordered]@{
-        schema = 2; runId = (Get-TestRunId $Root); ownerPid = $ProcessId
+        schema = 2; runId = $RunId; ownerPid = $ProcessId
         ownerProcessStartUtc = $StartUtc; ownerExecutablePath = $ExePath
         projectFingerprint = $ProjectFingerprint; markerCreatedUtc = [DateTime]::UtcNow.ToString('o')
     }
-    $path = Join-Path (Get-StateDir $Copy) ('TestRunGuard-active-' + (Get-ProjectKey $Root) + '.json')
+    $path = Get-RunStateFile -Copy $Copy -Root $Root -Kind 'active' -RunId $RunId
     Write-Utf8 $path ($doc | ConvertTo-Json -Depth 4)
 }
 
 function Remove-CoordinationFile {
     param([object]$Copy, [string]$Root, [string]$Kind)
-    Remove-Item -LiteralPath (Join-Path (Get-StateDir $Copy) ('TestRunGuard-' + $Kind + '-' + (Get-ProjectKey $Root) + '.json')) -Force -ErrorAction SilentlyContinue
+    foreach ($f in @(Get-ChildItem -LiteralPath (Get-StateDir $Copy) -Filter ('TestRunGuard-' + $Kind + '-' + (Get-ProjectKey $Root) + '-*.json') -File -ErrorAction SilentlyContinue)) {
+        Remove-Item -LiteralPath $f.FullName -Force -ErrorAction SilentlyContinue
+    }
 }
 
 # Marks Test-Temp-Cleanup as INSTALLED for the project (the same detection
@@ -450,7 +466,7 @@ try {
     Write-ActiveMarker -Copy $c -Root $p -ProcessId $PID -StartUtc '2000-01-01T00:00:00.0000000Z'
     $r = Fire -Copy $c -Cwd $p
     Check 'a live pid with a mismatched process start time is ignored as stale (no block)' ($r.Out -eq '') $r.Out
-    $markerGone = -not (Test-Path -LiteralPath (Join-Path (Get-StateDir $c) ('TestRunGuard-active-' + (Get-ProjectKey $p) + '.json')))
+    $markerGone = -not (Test-Path -LiteralPath (Get-RunStateFile -Copy $c -Root $p -Kind 'active'))
     Check 'the stale (pid-reuse) marker is cleaned up' $markerGone
 
     # Same live pid, mismatched executable path -> stale.
@@ -466,11 +482,11 @@ try {
     Write-ActiveMarker -Copy $c -Root $p -ProcessId $deadProc.Id -StartUtc ([DateTime]::UtcNow.ToString('o')) -ExePath 'x'
     $r = Fire -Copy $c -Cwd $p
     Check 'a dead owner pid is ignored (no block) and its marker cleaned' (
-        $r.Out -eq '' -and -not (Test-Path -LiteralPath (Join-Path (Get-StateDir $c) ('TestRunGuard-active-' + (Get-ProjectKey $p) + '.json')))) $r.Out
+        $r.Out -eq '' -and -not (Test-Path -LiteralPath (Get-RunStateFile -Copy $c -Root $p -Kind 'active'))) $r.Out
 
     # A malformed marker must not create an infinite completion block.
     $c = New-IsolatedHookCopy; $p = New-GitRepo 'MarkerMalformed'
-    Write-Utf8 (Join-Path (Get-StateDir $c) ('TestRunGuard-active-' + (Get-ProjectKey $p) + '.json')) '{ this is not valid json'
+    Write-Utf8 (Get-RunStateFile -Copy $c -Root $p -Kind 'active') '{ this is not valid json'
     $r = Fire -Copy $c -Cwd $p
     Check 'a malformed active marker fails safely (no block, no loop)' ($r.Out -eq '') $r.Out
 
@@ -519,6 +535,86 @@ try {
     $r = Fire -Copy $c -Cwd $p
     Check 'a marker whose owner pid is dead is stale, not active -> silent' ($r.Exit -eq 0 -and $r.Out -eq '') $r.Out
     $sentinel = $null
+
+    # =====================================================================
+    Write-Host '--- concurrent runs in ONE project: per-run files aggregate; completion blocks until every run is done (Defect 1) ---' -ForegroundColor Cyan
+    $c = New-IsolatedHookCopy
+    $p = New-GitRepo 'TwoRuns'
+    $rA = 'runa-' + (Get-ProjectKey $p)
+    $rB = 'runb-' + (Get-ProjectKey $p)
+    # Run A satisfied (observed + fresh ok result); run B observed with NO result yet.
+    Write-ObservedRecord -Copy $c -Root $p -RunId $rA
+    Write-GuardedResult -Copy $c -Root $p -Overall 'ok' -RunId $rA
+    Write-ObservedRecord -Copy $c -Root $p -RunId $rB
+    Check 'each run gets its OWN observed file (no overwrite)' (
+        @(Get-ChildItem -LiteralPath (Get-StateDir $c) -Filter 'TestRunGuard-observed-*.json').Count -eq 2)
+    $r = Fire -Copy $c -Cwd $p
+    Check 'completion is BLOCKED while run B has no result, even though run A passed' ($r.Out -match '"decision":"block"') $r.Out
+    # Run B now fails - run A's pass must not cover it.
+    Write-GuardedResult -Copy $c -Root $p -Overall 'failed' -ExitCode 2 -RunId $rB
+    $r = Fire -Copy $c -Cwd $p
+    Check 'completion is BLOCKED while run B is failed (A''s pass does not cover B)' (
+        $r.Out -match '"decision":"block"' -and (Get-BlockReason $r.Out) -match 'FAILED') $r.Out
+    # Run B passes: BOTH runs are now satisfied.
+    Write-GuardedResult -Copy $c -Root $p -Overall 'ok' -RunId $rB
+    $r = Fire -Copy $c -Cwd $p
+    Check 'completion is ALLOWED only once BOTH current-state runs are satisfied' ($r.Exit -eq 0 -and $r.Out -eq '') $r.Out
+    Check 'run A''s and run B''s result files coexist (per-run, never overwritten)' (
+        @(Get-ChildItem -LiteralPath (Get-StateDir $c) -Filter 'TestRunGuard-result-*.json').Count -eq 2)
+
+    # Run A finishing removes ONLY run A's marker; run B's live marker survives and
+    # still blocks. The completion hook likewise removes a DEAD marker, never a live one.
+    $c = New-IsolatedHookCopy
+    $p = New-GitRepo 'TwoMarkers'
+    $rA = 'runa-' + (Get-ProjectKey $p)
+    $rB = 'runb-' + (Get-ProjectKey $p)
+    $sentinel = Start-Process -FilePath (Get-Process -Id $PID).Path -ArgumentList @('-NoLogo', '-NoProfile', '-Command', 'Start-Sleep -Seconds 30') -PassThru -WindowStyle Hidden
+    $deadA = Start-Process -FilePath (Get-Process -Id $PID).Path -ArgumentList '-NoProfile', '-Command', 'exit 0' -PassThru -WindowStyle Hidden
+    $deadA.WaitForExit()
+    Write-ActiveMarker -Copy $c -Root $p -ProcessId $deadA.Id -StartUtc ([DateTime]::UtcNow.ToString('o')) -ExePath 'x' -RunId $rA
+    Write-ActiveMarker -Copy $c -Root $p -ProcessId $sentinel.Id -RunId $rB
+    $r = Fire -Copy $c -Cwd $p
+    Check 'run B''s live marker blocks even though run A''s marker is stale' (
+        $r.Out -match '"decision":"block"' -and (Get-BlockReason $r.Out) -match 'STILL ACTIVE') $r.Out
+    Check 'run A''s stale marker is removed, but run B''s LIVE marker is NOT deleted' (
+        -not (Test-Path -LiteralPath (Get-RunStateFile -Copy $c -Root $p -Kind 'active' -RunId $rA)) -and
+        (Test-Path -LiteralPath (Get-RunStateFile -Copy $c -Root $p -Kind 'active' -RunId $rB)))
+    $sentinel.Kill(); $sentinel.WaitForExit(10000) | Out-Null; $sentinel = $null
+
+    # An OLDER-STATE run's leftover files must never block a satisfied current run.
+    $c = New-IsolatedHookCopy
+    $p = New-GitRepo 'OldStateLeftover'
+    $rCur = 'runcur-' + (Get-ProjectKey $p)
+    $rOld = 'runold-' + (Get-ProjectKey $p)
+    Write-ObservedRecord -Copy $c -Root $p -RunId $rCur
+    Write-GuardedResult -Copy $c -Root $p -Overall 'ok' -RunId $rCur
+    # A terminated run recorded against a DIFFERENT (older) repository state.
+    Write-ObservedRecord -Copy $c -Root $p -RunId $rOld -Fingerprint 'old-state-xyz'
+    Write-GuardedResult -Copy $c -Root $p -Overall 'terminated' -ExitCode 124 -TerminateReason 'wallTimeout' -TerminateDetail 'x' -RunId $rOld -ProjectFingerprint 'old-state-xyz'
+    $r = Fire -Copy $c -Cwd $p
+    Check 'an older-STATE terminated run''s leftover files do not block the satisfied current run' (
+        $r.Exit -eq 0 -and $r.Out -eq '') $r.Out
+
+    # Bounded state growth: inert per-run result/observed files older than 24h are
+    # pruned; a fresh run's files survive.
+    $c = New-IsolatedHookCopy
+    $p = New-GitRepo 'PruneOld'
+    $rStale = 'runstale-' + (Get-ProjectKey $p)
+    Write-ObservedRecord -Copy $c -Root $p -RunId $rStale
+    Write-GuardedResult -Copy $c -Root $p -Overall 'ok' -RunId $rStale
+    $staleObs = Get-RunStateFile -Copy $c -Root $p -Kind 'observed' -RunId $rStale
+    $staleRes = Get-RunStateFile -Copy $c -Root $p -Kind 'result' -RunId $rStale
+    (Get-Item -LiteralPath $staleObs).LastWriteTimeUtc = [DateTime]::UtcNow.AddHours(-25)
+    (Get-Item -LiteralPath $staleRes).LastWriteTimeUtc = [DateTime]::UtcNow.AddHours(-25)
+    $rFresh = 'runfresh-' + (Get-ProjectKey $p)
+    Write-ObservedRecord -Copy $c -Root $p -RunId $rFresh
+    Write-GuardedResult -Copy $c -Root $p -Overall 'ok' -RunId $rFresh
+    $r = Fire -Copy $c -Cwd $p
+    Check 'per-run result/observed files older than 24h are pruned' (
+        -not (Test-Path -LiteralPath $staleObs) -and -not (Test-Path -LiteralPath $staleRes)) $staleObs
+    Check 'a fresh run''s per-run files are NOT pruned' (
+        (Test-Path -LiteralPath (Get-RunStateFile -Copy $c -Root $p -Kind 'observed' -RunId $rFresh)) -and
+        (Test-Path -LiteralPath (Get-RunStateFile -Copy $c -Root $p -Kind 'result' -RunId $rFresh)))
 
     # =====================================================================
     Write-Host '--- the durable .ai/ note requirement ---' -ForegroundColor Cyan
