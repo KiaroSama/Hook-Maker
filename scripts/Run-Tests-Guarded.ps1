@@ -28,6 +28,12 @@
 #   .\scripts\Run-Tests-Guarded.ps1 -FilePath pwsh -Arguments '-File','x.ps1' -ResultPath r.json
 #
 # Exit code: the child's own exit code, or 124 when this runner terminated it.
+#
+# HookMaker-Guarded-Runner-Contract: v2
+# Stable identity marker. Test-Run-Guard's Find-GuardedRunner reads a candidate
+# file and returns it ONLY when this exact line is present, so an unrelated
+# script that merely shares the name scripts\Run-Tests-Guarded.ps1 can never be
+# invoked as the bounded runner. Keep the string byte-for-byte.
 
 [CmdletBinding()]
 param(
@@ -156,6 +162,30 @@ function Get-ProjectKey {
         return ([System.BitConverter]::ToString($bytes) -replace '-', '').ToLowerInvariant().Substring(0, 12)
     }
     finally { $sha.Dispose() }
+}
+
+# The 10-char state-file key, byte-identical to hooks\_hooklib.ps1's Get-ShortHash
+# (SHA-256 prefix of the lowercased cwd, 10 hex). The active-marker filename MUST
+# use this length: the consumer (Test-Completion-Check) derives the key with
+# Get-ShortHash and would never find a marker written under a different-length key.
+function Get-StateKey {
+    param([string]$Path)
+    $sha = [System.Security.Cryptography.SHA256]::Create()
+    try {
+        $bytes = $sha.ComputeHash([System.Text.Encoding]::UTF8.GetBytes(([string]$Path).ToLowerInvariant()))
+        return ([System.BitConverter]::ToString($bytes) -replace '-', '').ToLowerInvariant().Substring(0, 10)
+    }
+    finally { $sha.Dispose() }
+}
+
+# Filename-safe form of a runId: lowercased, non [a-z0-9] stripped. runIds are
+# 32-hex GUIDs (minted) or short injected tokens; this keeps the per-run state
+# filename unambiguous. Never empty here - the caller resolves a runId first.
+function Get-SafeRunId {
+    param([string]$RunId)
+    $safe = ([string]$RunId).ToLowerInvariant() -replace '[^a-z0-9]', ''
+    if ($safe -eq '') { $safe = (Get-StateKey ([string]$RunId)) }
+    return $safe
 }
 
 # ---- Windows Job Object (crash-proof ownership of the whole tree) -----------
@@ -417,22 +447,17 @@ function Write-GuardedResult {
 # Written best-effort and removed in finally: if this file cannot be written the
 # run still proceeds, and the consumer treats an absent marker as "not
 # evaluated" (silence) rather than as proof that nothing is running.
+# PER-RUN filename: TestRunGuard-active-<key>-<runId>.json. Keying it by runId
+# (not just the project key) is what lets two guarded runs in ONE project each
+# own their own marker - so run A's finally removes only run A's marker and never
+# tears down a live run B. The key is the 10-char Get-StateKey the consumer uses.
 $script:ActiveMarkerPath = ''
 function Get-ActiveMarkerPath {
+    param([string]$RunId)
     try {
         $stateDir = Join-Path $env:LOCALAPPDATA 'HookMaker\state'
-        $key = ''
-        $cwdLower = ((Get-Location).Path).ToLowerInvariant()
-        # Same key the hooks use. Get-ShortHash lives in hooks\_hooklib.ps1; this
-        # script is standalone, so fall back to an equivalent SHA-256 prefix
-        # rather than taking a dependency just for one hash.
-        $sha = [System.Security.Cryptography.SHA256]::Create()
-        try {
-            $bytes = $sha.ComputeHash([System.Text.Encoding]::UTF8.GetBytes($cwdLower))
-            $key = ([System.BitConverter]::ToString($bytes) -replace '-', '').ToLowerInvariant().Substring(0, 12)
-        }
-        finally { $sha.Dispose() }
-        return (Join-Path $stateDir ('TestRunGuard-active-' + $key + '.json'))
+        $key = Get-StateKey (((Get-Location).Path))
+        return (Join-Path $stateDir ('TestRunGuard-active-' + $key + '-' + (Get-SafeRunId $RunId) + '.json'))
     }
     catch { return '' }
 }
@@ -440,7 +465,7 @@ function Get-ActiveMarkerPath {
 function Write-ActiveMarker {
     param([int]$OwnerPid, [string]$RunId, [string]$ProjectFingerprint)
     try {
-        $path = Get-ActiveMarkerPath
+        $path = Get-ActiveMarkerPath -RunId $RunId
         if ([string]::IsNullOrWhiteSpace($path)) { return }
         $dir = Split-Path -Parent $path
         if (-not (Test-Path -LiteralPath $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
@@ -470,8 +495,8 @@ function Write-ActiveMarker {
             markerCreatedUtc     = (Get-Date).ToUniversalTime().ToString('o')
         }
         # Atomic-ish write: temp + force-move, so a consumer never reads a
-        # half-written marker. Single-writer per project key (only this runner
-        # writes this marker), so the force-replace cannot race another writer.
+        # half-written marker. Single-writer per RUN (the filename carries this
+        # run's id), so the force-replace cannot race another writer.
         $tmp = $path + '.' + [guid]::NewGuid().ToString('N').Substring(0, 8) + '.tmp'
         [System.IO.File]::WriteAllText($tmp, ($marker | ConvertTo-Json -Depth 4),
             (New-Object System.Text.UTF8Encoding($false)))
@@ -520,6 +545,22 @@ $script:Result.argumentCount = @($Arguments).Count
 if ([string]::IsNullOrWhiteSpace($RunId)) { $RunId = [guid]::NewGuid().ToString('N') }
 $script:Result.runId = $RunId
 $script:Result.projectKey = (Get-ProjectKey $WorkingDirectory)
+
+# PER-RUN result document. The observing hook already builds a per-run -ResultPath
+# (TestRunGuard-result-<key>-<runId>.json); a managed path handed in WITHOUT the
+# runId (a legacy/base path) is upgraded here so two concurrent guarded runs in
+# one project can never overwrite each other's result. A caller-chosen path that
+# is not a managed state file (e.g. a test's own r.json) is left untouched - the
+# caller owns its uniqueness.
+if (-not [string]::IsNullOrWhiteSpace($ResultPath)) {
+    $safeRunId = Get-SafeRunId $RunId
+    $resultDir = Split-Path -Parent $ResultPath
+    $resultName = Split-Path -Leaf $ResultPath
+    if ($resultName -like 'TestRunGuard-result-*.json' -and $resultName -notlike ('*-' + $safeRunId + '.json')) {
+        $resultName = $resultName.Substring(0, $resultName.Length - 5) + '-' + $safeRunId + '.json'
+        $ResultPath = if ([string]::IsNullOrWhiteSpace($resultDir)) { $resultName } else { Join-Path $resultDir $resultName }
+    }
+}
 $script:Result.projectFingerprint = $ProjectFingerprint
 # Command fingerprint is RECOMPUTED from what actually runs. If a value was
 # passed and disagrees, fail closed rather than persist a spoofable identity.

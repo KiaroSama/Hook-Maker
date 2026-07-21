@@ -128,7 +128,7 @@ jobs:
           - name: wizard
             suites: Test-Wizard,Test-ContextHooks,Test-GraphUpdateCheck,Test-TestRunGuard
           - name: secrets
-            suites: Test-SecretsCheck,Test-IgnoreRulesCheck,Test-GitSyncCheck,Test-AiMemoryCheck
+            suites: Test-SecretsCheck,Test-IgnoreRulesCheck,Test-GitSyncCheck,Test-AiMemoryCheck,Test-LargeFileCheck
           - name: hooks
             suites: Test-DocsFreshnessCheck,Test-CloudflareDeploy,Test-DependencyVersionCheck,Test-TestTempCleanup,Test-DependabotCheck,Test-CiStatusCheck,Test-GithubBaselineCheck,Test-AiMemoryLoad
     name: suites (${{ matrix.name }})
@@ -159,11 +159,28 @@ jobs:
             try { $p.StandardInput.Close() } catch { }
             if (-not $p.WaitForExit($perSuiteTimeoutSeconds * 1000)) {
               Write-Error ("TIMEOUT: $suite exceeded ${perSuiteTimeoutSeconds}s - terminating its process tree")
-              try { & taskkill.exe /PID $p.Id /T /F *> $null } catch { }
-              $failed += ($suite + ' (timed out)')
+              # taskkill /T /F kills the whole tree, but it returns BEFORE the tree
+              # is fully gone and a failed kill would leave a survivor that corrupts
+              # later suites in this bucket. So: record the kill exit code, then wait
+              # (bounded) and re-check liveness. A survivor or a failed kill is
+              # reported explicitly, not swallowed. Dispose either way.
+              $killExit = -1
+              try { & taskkill.exe /PID $p.Id /T /F *> $null; $killExit = $LASTEXITCODE } catch { $killExit = -1 }
+              try { [void]$p.WaitForExit(15000) } catch { }
+              $stillAlive = $true
+              try { $stillAlive = -not $p.HasExited } catch { $stillAlive = $false }
+              if ($stillAlive -or $killExit -ne 0) {
+                $failed += ($suite + " (timed out; kill exit=$killExit, stillAlive=$stillAlive - process tree may not be fully terminated)")
+              }
+              else {
+                $failed += ($suite + ' (timed out; process tree terminated)')
+              }
+              try { $p.Dispose() } catch { }
               continue
             }
-            if ($p.ExitCode -ne 0) { $failed += ($suite + ' (' + $p.ExitCode + ' failed assertion(s))') }
+            $suiteExit = $p.ExitCode
+            try { $p.Dispose() } catch { }
+            if ($suiteExit -ne 0) { $failed += ($suite + ' (' + $suiteExit + ' failed assertion(s))') }
           }
           if ($failed.Count -gt 0) {
             Write-Error ("FAILED: " + ($failed -join ', '))
