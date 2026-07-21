@@ -272,6 +272,37 @@ try {
         Write-Host '[SKIP] junction could not be created on this platform/account' -ForegroundColor Yellow
     }
 
+    Write-Host '--- a ''.git'' JUNCTION is skipped, never dispatched to git handling ---' -ForegroundColor Cyan
+    # '.git' is dispatched to Read-GitRepository by NAME; if the reparse guard
+    # did not also cover that name, a '.git' directory junction would be
+    # followed straight through to whatever it points at (core.hooksPath /
+    # hooks read via an explicit path), reading outside the scan root entirely.
+    $dotGitJunctionRoot = New-Dir (Join-Path $Work 'DotGitJunctionRoot')
+    New-ClaudeHook -ProjectRoot (New-Dir (Join-Path $dotGitJunctionRoot 'Proj')) -HookName 'ZZZ-Beside-DotGit-Junction' | Out-Null
+    $externalGitTarget = New-Dir (Join-Path $Work 'ExternalGitTarget')
+    Write-Utf8 -Path (Join-Path $externalGitTarget 'hooks\pre-push') -Content "#!/bin/sh`necho outside`n"
+    $dotGitJunction = Join-Path $dotGitJunctionRoot '.git'
+    $dotGitJunctionCreated = $false
+    if ($IsWindows) {
+        & cmd.exe /c ('mklink /J "' + $dotGitJunction + '" "' + $externalGitTarget + '"') *> $null
+        $dotGitJunctionCreated = (Test-Path -LiteralPath $dotGitJunction)
+        if ($dotGitJunctionCreated) { [void]$script:Junctions.Add($dotGitJunction) }
+    }
+    if ($dotGitJunctionCreated) {
+        $dotGitJunctionScan = Invoke-Scan -Root $dotGitJunctionRoot
+        Check 'a .git junction does not hang or fail the scan' ($dotGitJunctionScan.Exit -eq 0) $dotGitJunctionScan.Err
+        Check 'the .git junction is recorded as skipped, not dispatched to Read-GitRepository' (
+            @(@($dotGitJunctionScan.Result.coverage.skippedReparse) | Where-Object { $_ -like '*\.git' }).Count -eq 1) (
+            (@($dotGitJunctionScan.Result.coverage.skippedReparse)) -join ',')
+        Check 'nothing behind the .git junction was read (no native hook record produced)' (
+            -not (Test-FoundTarget -Result $dotGitJunctionScan.Result -Fragment 'pre-push'))
+        Check 'the ordinary hook beside the .git junction is still found' (
+            Test-FoundTarget -Result $dotGitJunctionScan.Result -Fragment 'ZZZ-Beside-DotGit-Junction.ps1')
+    }
+    else {
+        Write-Host '[SKIP] .git junction could not be created on this platform/account' -ForegroundColor Yellow
+    }
+
     Write-Host '--- canonical duplicate paths are deduplicated ---' -ForegroundColor Cyan
     $dupRoot = New-Dir (Join-Path $Work 'DupRoot')
     New-ClaudeHook -ProjectRoot (New-Dir (Join-Path $dupRoot 'Proj')) -HookName 'ZZZ-Dup' | Out-Null
