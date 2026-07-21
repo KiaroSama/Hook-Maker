@@ -259,31 +259,104 @@ $stateFingerprint = ''
 try { $stateFingerprint = [string](Get-RepoStateFingerprint -ProjectRoot $cwd) } catch { $stateFingerprint = '' }
 if ([string]::IsNullOrWhiteSpace($stateFingerprint)) { $stateFingerprint = Get-ShortHash $cwd.ToLowerInvariant() }
 
-# ---- this hook's own state ----
+# ---- this hook's own state (a per-incident LEDGER, not single slots) --------
+# TWO independent concurrent incidents (run A and run B both terminated/leaked)
+# each need their OWN resolved-state AND their own note obligation. A single
+# scalar slot let B overwrite A: A then re-blocked and, once re-resolved,
+# forgot B - an unbounded ping-pong, and A's note requirement could vanish
+# before it was ever evaluated. So the state is now:
+#   resolvedIncidents : a BOUNDED, most-recent-first-capped SET of resolved
+#                       incident keys (membership, never a single equality).
+#   pendingNotes      : a BOUNDED, insertion-ordered MAP incidentKey -> { reason,
+#                       baseline } - each obligation carries the note-byte
+#                       snapshot taken when IT was registered, so two concurrent
+#                       incidents demand two DISTINCT notes and resolving one
+#                       never forgets the other.
+# The old single-value shape is migrated forward on read; the collection shape
+# is always written. Bounded (caps below) and secret-free, still plain JSON.
+$script:MaxResolvedIncidents = 50
+$script:MaxPendingNotes = 50
+$script:resolvedIncidents = New-Object System.Collections.Generic.List[string]
+$script:pendingNotes = New-Object System.Collections.Specialized.OrderedDictionary
+$deferredFingerprint = ''
+
 $previous = $null
 try { $previous = Read-JsonFile $statePath } catch { $previous = $null }
-$resolvedIncident = ''
-$pendingNoteKey = ''
-$pendingNoteReason = ''
-$pendingNoteBaseline = -1L
-$deferredFingerprint = ''
 if ($null -ne $previous) {
-    $resolvedIncident = [string](Get-Field $previous 'resolvedIncident')
-    $pendingNoteKey = [string](Get-Field $previous 'pendingNoteKey')
-    $pendingNoteReason = [string](Get-Field $previous 'pendingNoteReason')
-    $rawBaseline = Get-Field $previous 'pendingNoteBaseline'
-    if ($null -ne $rawBaseline) { try { $pendingNoteBaseline = [int64]$rawBaseline } catch { $pendingNoteBaseline = -1L } }
+    $rawResolved = Get-Field $previous 'resolvedIncidents'
+    if ($null -ne $rawResolved) {
+        foreach ($k in @($rawResolved)) { $ks = [string]$k; if ($ks -ne '' -and -not $script:resolvedIncidents.Contains($ks)) { [void]$script:resolvedIncidents.Add($ks) } }
+    }
+    else {
+        $legacyResolved = [string](Get-Field $previous 'resolvedIncident')   # old single-value form
+        if ($legacyResolved -ne '') { [void]$script:resolvedIncidents.Add($legacyResolved) }
+    }
+    while ($script:resolvedIncidents.Count -gt $script:MaxResolvedIncidents) { $script:resolvedIncidents.RemoveAt(0) }
+
+    $rawPending = Get-Field $previous 'pendingNotes'
+    if ($null -ne $rawPending) {
+        foreach ($entry in @($rawPending)) {
+            $ek = [string](Get-Field $entry 'key')
+            if ($ek -eq '' -or $script:pendingNotes.Contains($ek)) { continue }
+            $eb = -1L; $rawEb = Get-Field $entry 'baseline'
+            if ($null -ne $rawEb) { try { $eb = [int64]$rawEb } catch { $eb = -1L } }
+            $script:pendingNotes[$ek] = [pscustomobject]@{ reason = [string](Get-Field $entry 'reason'); baseline = $eb }
+        }
+    }
+    else {
+        $legacyKey = [string](Get-Field $previous 'pendingNoteKey')   # old single-value form
+        if ($legacyKey -ne '') {
+            $lb = -1L; $rawLb = Get-Field $previous 'pendingNoteBaseline'
+            if ($null -ne $rawLb) { try { $lb = [int64]$rawLb } catch { $lb = -1L } }
+            $script:pendingNotes[$legacyKey] = [pscustomobject]@{ reason = [string](Get-Field $previous 'pendingNoteReason'); baseline = $lb }
+        }
+    }
     $deferredFingerprint = [string](Get-Field $previous 'deferredFingerprint')
+}
+$script:deferredFingerprint = $deferredFingerprint
+
+function Test-IncidentResolved {
+    param([string]$Key)
+    return (-not [string]::IsNullOrWhiteSpace($Key) -and $script:resolvedIncidents.Contains($Key))
+}
+
+# Move an incident key into the bounded resolved SET (most-recent-capped) and
+# drop any pending-note obligation it had - resolving one incident.
+function Add-ResolvedIncident {
+    param([string]$Key)
+    if ([string]::IsNullOrWhiteSpace($Key)) { return }
+    if (-not $script:resolvedIncidents.Contains($Key)) { [void]$script:resolvedIncidents.Add($Key) }
+    while ($script:resolvedIncidents.Count -gt $script:MaxResolvedIncidents) { $script:resolvedIncidents.RemoveAt(0) }
+    if ($script:pendingNotes.Contains($Key)) { $script:pendingNotes.Remove($Key) }
+}
+
+# Register a durable-note obligation for one incident, capturing the CURRENT
+# note-byte baseline so each incident demands its own added content. No-op when
+# the incident is already resolved or already owes a note.
+function Register-PendingNote {
+    param([string]$Key, [string]$Reason)
+    if ([string]::IsNullOrWhiteSpace($Key)) { return }
+    if ($script:resolvedIncidents.Contains($Key) -or $script:pendingNotes.Contains($Key)) { return }
+    while ($script:pendingNotes.Count -ge $script:MaxPendingNotes) {
+        $oldest = @($script:pendingNotes.Keys)[0]
+        if ($null -eq $oldest) { break }
+        $script:pendingNotes.Remove([string]$oldest)
+    }
+    $script:pendingNotes[$Key] = [pscustomobject]@{ reason = $Reason; baseline = (Get-NoteBytes -Root $script:cwd) }
 }
 
 function Save-CompletionState {
-    param([string]$ResolvedIncident, [string]$NoteKey, [string]$NoteReason, [int64]$NoteBaseline, [string]$Deferred)
+    param([string]$Deferred)
+    if ($null -eq $Deferred) { $Deferred = $script:deferredFingerprint }
     try {
+        $notes = New-Object System.Collections.Generic.List[object]
+        foreach ($k in @($script:pendingNotes.Keys)) {
+            $entry = $script:pendingNotes[$k]
+            [void]$notes.Add([pscustomobject]@{ key = [string]$k; reason = [string]$entry.reason; baseline = [int64]$entry.baseline })
+        }
         Write-JsonFileAtomic -Value ([pscustomobject]@{
-                resolvedIncident    = $ResolvedIncident
-                pendingNoteKey      = $NoteKey
-                pendingNoteReason   = $NoteReason
-                pendingNoteBaseline = $NoteBaseline
+                resolvedIncidents   = @($script:resolvedIncidents.ToArray())
+                pendingNotes        = @($notes.ToArray())
                 deferredFingerprint = $Deferred
                 updatedUtc          = [DateTime]::UtcNow.ToString('o')
             }) -Path $script:statePath
@@ -387,6 +460,28 @@ function Get-ResultIncidentKey {
     return (Get-ShortHash ($ticks + '|' + $ov + '|' + $tr + '|' + (@($lk) -join ',')))
 }
 
+# The human-readable incident reason for a RESULT document (byte-for-byte the
+# text the main block path builds), or '' when the document is not an incident.
+# Shared so the D2 first-sighting registration records the same reason the block
+# would have used.
+function Get-IncidentReasonFromDoc {
+    param($Doc)
+    if ($null -eq $Doc) { return '' }
+    $ov = ([string](Get-Field $Doc 'overall')).ToLowerInvariant()
+    $tr = [string](Get-Field $Doc 'terminateReason')
+    $td = [string](Get-Field $Doc 'terminateDetail')
+    $lk = @(@(Get-Field $Doc 'leakedProcessIds') | Where-Object { $null -ne $_ -and [string]$_ -ne '' })
+    if ($ov -eq 'terminated') {
+        return 'the guarded run was TERMINATED (' +
+            $(if ($tr -ne '') { $tr } else { 'unknown reason' }) + ')' +
+            $(if ($td -ne '') { ': ' + $td } else { '' })
+    }
+    if ($lk.Count -gt 0) {
+        return 'the guarded run LEAKED process(es) ' + (@($lk) -join ', ') + ' that survived termination'
+    }
+    return ''
+}
+
 # Has a NEGATIVE result been SUPERSEDED by a strictly-newer clean run for the same
 # command AND project state? A clean (overall=ok, no leak) result recorded after
 # the negative one means the same work was re-run green, so the old incident's
@@ -447,23 +542,67 @@ function Resolve-ActiveOwnerPid {
     return 0
 }
 
+# ONE-TO-ONE observed->result assignment (C3). Each guarded result may satisfy AT
+# MOST ONE observed run. Exact-runId (runIdControlled) pairings are resolved FIRST
+# so an uncontrolled run cannot steal a controlled run's result; the remaining
+# uncontrolled runs then each take a DISTINCT leftover result. Returns the sorted
+# observed list, the index->result map, and the set of assigned result paths. Used
+# by BOTH the prune pre-pass (D3) and the main flow, so pruning can never treat one
+# shared result as covering two observations.
+function Get-ObservedResultAssignment {
+    param($CurrentObserved, $ResultEntries, [string]$StateFp)
+    $sortedObserved = @($CurrentObserved | Sort-Object `
+        @{ Expression = { [string](Get-Field $_.Doc 'observedUtc') } }, `
+        @{ Expression = { [string](Get-Field $_.Doc 'runId') } })
+    $sortedResults = @($ResultEntries | Sort-Object `
+        @{ Expression = { $t = Get-ResultRecordedTime -Doc $_.Doc -Path $_.Path; if ($null -ne $t) { $t.Ticks } else { [int64]0 } } }, `
+        @{ Expression = { [string]$_.Path } })
+    $assigned = New-Object System.Collections.Generic.HashSet[string]
+    $map = @{}
+    for ($pass = 0; $pass -lt 2; $pass++) {
+        $controlledPass = ($pass -eq 0)
+        for ($oi = 0; $oi -lt $sortedObserved.Count; $oi++) {
+            if ($map.ContainsKey($oi)) { continue }
+            $odoc = $sortedObserved[$oi].Doc
+            $controlled = ((Get-Field $odoc 'runIdControlled') -eq $true)
+            if ($controlled -ne $controlledPass) { continue }
+            foreach ($re in $sortedResults) {
+                if ($assigned.Contains($re.Path)) { continue }
+                if (Test-ResultMatchesObserved -Result $re.Doc -Observed $odoc -CurrentStateFingerprint $StateFp) {
+                    $map[$oi] = $re
+                    [void]$assigned.Add($re.Path)
+                    break
+                }
+            }
+        }
+    }
+    return [pscustomobject]@{ SortedObserved = $sortedObserved; Map = $map; AssignedPaths = $assigned }
+}
+
 # The evidence is loaded BEFORE pruning so pruning can read each file's content.
 $resultEntries = Get-CompletionStateEntries 'result'
 $observedEntries = Get-CompletionStateEntries 'observed'
 $activeEntries = Get-CompletionStateEntries 'active'
 
-# ---- bounded, CONTENT-AWARE state growth control (C2) ----------------------
+# ---- bounded, CONTENT-AWARE state growth control (C2 / D3 / D4) -------------
 # Age alone must never erase a NEGATIVE finding. Staleness weakens only POSITIVE
 # evidence (see this file's header): a run that TERMINATED, FAILED, LEAKED, errored
 # or was OBSERVED-WITHOUT-A-RESULT for the current state is an incident whose
 # obligation survives until it is RESOLVED (a durable note recorded, tracked in
-# resolvedIncident) or SUPERSEDED (a strictly-newer clean ok run for the same
-# command+state - which also underlies the C4 fix). Only clean ok runs,
-# resolved/superseded negatives, and old-STATE observations that carry no current
-# obligation are pruned, so a hang whose Stop hook never fired within 24h can never
-# be silently deleted before it is seen. Best-effort: a read or delete failure
-# never blocks the gate.
+# resolvedIncidents) or SUPERSEDED (a strictly-newer clean ok run for the same
+# command+state - which also underlies the C4 fix). A CURRENT-state unresolved
+# negative is NEVER pruned by age. Only clean ok runs, resolved/superseded
+# negatives, OLD-STATE clutter past a longer bound (D4), and old-STATE observations
+# carrying no current obligation are pruned, so a hang whose Stop hook never fired
+# within 24h can never be silently deleted before it is seen. Best-effort: a read
+# or delete failure never blocks the gate.
 $pruneCutoff = [DateTime]::UtcNow.AddHours(-24)
+# D4: an OLD-STATE (fingerprint != current) negative can NEVER become current
+# evidence and can never block, yet a plain `failed` has no incident key to ever
+# resolve and, being old-state, is never superseded - so without a bound it would
+# accumulate forever across states. Give old-state negatives a longer, safe
+# retention and prune past it. The CURRENT-state guarantee above is untouched.
+$oldStateNegativeCutoff = [DateTime]::UtcNow.AddDays(-7)
 function Get-FileMtimeUtc { param([string]$Path) try { return (Get-Item -LiteralPath $Path -Force).LastWriteTimeUtc } catch { return $null } }
 $prunedResultPaths = New-Object System.Collections.Generic.HashSet[string]
 $prunedObservedPaths = New-Object System.Collections.Generic.HashSet[string]
@@ -475,20 +614,31 @@ foreach ($re in $resultEntries) {
     $isNegative = ((@('terminated', 'failed', 'error', 'unknown') -contains $ov) -or $lk.Count -gt 0)
     if (-not $isNegative) { [void]$prunedResultPaths.Add($re.Path); continue }   # clean ok run -> prunable
     $ik = Get-ResultIncidentKey -Doc $re.Doc -Path $re.Path
-    $resolved = ($ik -ne '' -and $ik -eq $resolvedIncident)
+    $resolved = (Test-IncidentResolved $ik)
     $superseded = Test-ResultSuperseded -NegDoc $re.Doc -NegTime (Get-ResultRecordedTime -Doc $re.Doc -Path $re.Path) -AllResults $resultEntries
-    if ($resolved -or $superseded) { [void]$prunedResultPaths.Add($re.Path) }
-    # else: an unresolved, un-superseded negative finding -> KEEP, however old.
+    if ($resolved -or $superseded) { [void]$prunedResultPaths.Add($re.Path); continue }
+    # An unresolved, un-superseded negative. CURRENT-state -> KEEP however old
+    # (round-19 guarantee). OLD-state clutter -> bounded retention (D4).
+    $rProjFp = [string](Get-Field $re.Doc 'projectFingerprint')
+    $isCurrentState = ($rProjFp -eq '' -or $rProjFp -eq $stateFingerprint)
+    if (-not $isCurrentState -and $mtime -lt $oldStateNegativeCutoff) { [void]$prunedResultPaths.Add($re.Path) }
+}
+# D3: prune observations by the SAME one-to-one assignment the main flow uses. An
+# observation whose ONE assigned result is a pruned clean/resolved run is fully
+# accounted for; an observation with NO independently-assigned result is an
+# unfinished incident and must NOT be pruned as if a shared result covered it.
+$currentObservedPre = @($observedEntries | Where-Object { (Get-ObservedFingerprint $_.Doc) -eq $stateFingerprint })
+$pruneAssign = Get-ObservedResultAssignment -CurrentObserved $currentObservedPre -ResultEntries $resultEntries -StateFp $stateFingerprint
+$assignedResultForObserved = @{}
+for ($i = 0; $i -lt $pruneAssign.SortedObserved.Count; $i++) {
+    if ($pruneAssign.Map.ContainsKey($i)) { $assignedResultForObserved[$pruneAssign.SortedObserved[$i].Path] = $pruneAssign.Map[$i].Path }
 }
 foreach ($oe in $observedEntries) {
     $mtime = Get-FileMtimeUtc $oe.Path
     if ($null -eq $mtime -or $mtime -ge $pruneCutoff) { continue }
     if ((Get-ObservedFingerprint $oe.Doc) -ne $stateFingerprint) { [void]$prunedObservedPaths.Add($oe.Path); continue }   # old-STATE: no current obligation
-    $matched = @($resultEntries | Where-Object { Test-ResultMatchesObserved -Result $_.Doc -Observed $oe.Doc -CurrentStateFingerprint $stateFingerprint })
-    if ($matched.Count -eq 0) { continue }   # observed-without-result for the CURRENT state -> keep (unfinished incident)
-    $allPruned = $true
-    foreach ($m in $matched) { if (-not $prunedResultPaths.Contains($m.Path)) { $allPruned = $false; break } }
-    if ($allPruned) { [void]$prunedObservedPaths.Add($oe.Path) }   # its run is fully accounted for by a pruned clean/resolved result
+    if (-not $assignedResultForObserved.ContainsKey($oe.Path)) { continue }   # unpaired -> unfinished incident, KEEP
+    if ($prunedResultPaths.Contains($assignedResultForObserved[$oe.Path])) { [void]$prunedObservedPaths.Add($oe.Path) }   # its ONE assigned result is a pruned clean/resolved run
 }
 foreach ($path in @($prunedResultPaths)) { try { Remove-Item -LiteralPath $path -Force -ErrorAction SilentlyContinue } catch { } }
 foreach ($path in @($prunedObservedPaths)) { try { Remove-Item -LiteralPath $path -Force -ErrorAction SilentlyContinue } catch { } }
@@ -522,33 +672,11 @@ foreach ($o in $currentObserved) {
 # each take a DISTINCT result from what is left. Two same-command runs invoked
 # directly without -RunId therefore cannot both pair to one green result - the
 # second is left unmatched and blocks (its own result is not in yet, or it failed).
-$pairedPaths = New-Object System.Collections.Generic.HashSet[string]
-$assignedResultPaths = New-Object System.Collections.Generic.HashSet[string]
-$sortedObserved = @($currentObserved | Sort-Object `
-    @{ Expression = { [string](Get-Field $_.Doc 'observedUtc') } }, `
-    @{ Expression = { [string](Get-Field $_.Doc 'runId') } })
-$sortedResults = @($resultEntries | Sort-Object `
-    @{ Expression = { $t = Get-ResultRecordedTime -Doc $_.Doc -Path $_.Path; if ($null -ne $t) { $t.Ticks } else { [int64]0 } } }, `
-    @{ Expression = { [string]$_.Path } })
-$obsResultMap = @{}
-for ($pass = 0; $pass -lt 2; $pass++) {
-    $controlledPass = ($pass -eq 0)
-    for ($oi = 0; $oi -lt $sortedObserved.Count; $oi++) {
-        if ($obsResultMap.ContainsKey($oi)) { continue }
-        $odoc = $sortedObserved[$oi].Doc
-        $controlled = ((Get-Field $odoc 'runIdControlled') -eq $true)
-        if ($controlled -ne $controlledPass) { continue }
-        foreach ($re in $sortedResults) {
-            if ($assignedResultPaths.Contains($re.Path)) { continue }
-            if (Test-ResultMatchesObserved -Result $re.Doc -Observed $odoc -CurrentStateFingerprint $stateFingerprint) {
-                $obsResultMap[$oi] = $re
-                [void]$assignedResultPaths.Add($re.Path)
-                [void]$pairedPaths.Add($re.Path)
-                break
-            }
-        }
-    }
-}
+# Shared with the D3 prune pre-pass via Get-ObservedResultAssignment.
+$mainAssign = Get-ObservedResultAssignment -CurrentObserved $currentObserved -ResultEntries $resultEntries -StateFp $stateFingerprint
+$sortedObserved = $mainAssign.SortedObserved
+$obsResultMap = $mainAssign.Map
+$pairedPaths = $mainAssign.AssignedPaths
 $obsPairs = New-Object System.Collections.Generic.List[object]
 for ($oi = 0; $oi -lt $sortedObserved.Count; $oi++) {
     $resEntry = if ($obsResultMap.ContainsKey($oi)) { $obsResultMap[$oi] } else { $null }
@@ -607,32 +735,54 @@ function Get-RunClass {
 }
 # A run whose negative finding is ALREADY ACCOUNTED FOR must not be chosen as a
 # blocking representative (C4). Accounted for means EITHER its incident note was
-# already recorded (its key is in resolvedIncident) OR it is SUPERSEDED by a
+# already recorded (its key is in resolvedIncidents) OR it is SUPERSEDED by a
 # strictly-newer clean ok run for the same command/state. This is what lets a green
 # rerun win when an environmental problem is fixed WITHOUT a source change (same
 # fingerprint): the old incident no longer outranks the clean rerun, and it breaks
 # the deadlock where the terminated run's own case-2/3 block would otherwise fire
 # before case 6 could ever process the durable note. A genuinely unresolved,
 # un-superseded incident is NOT excluded and still blocks; the durable-note
-# obligation registered on the first block still stands (case 6 enforces it once
+# obligation registered on the first sighting still stands (case 6 enforces it once
 # the run stops outranking everything else).
 function Test-RunNegativeAccounted {
-    param($Run, [string]$ResolvedIncident, $AllResults)
+    param($Run, $AllResults)
     if ($null -eq $Run.ResultEntry) { return $false }
     $doc = $Run.ResultEntry.Doc
     $path = $Run.ResultEntry.Path
     $ik = Get-ResultIncidentKey -Doc $doc -Path $path
-    if ($ik -ne '' -and $ik -eq $ResolvedIncident) { return $true }
+    if (Test-IncidentResolved $ik) { return $true }
     return (Test-ResultSuperseded -NegDoc $doc -NegTime (Get-ResultRecordedTime -Doc $doc -Path $path) -AllResults $AllResults)
 }
 $classified = @($runs | ForEach-Object { [pscustomobject]@{ Run = $_; Class = (Get-RunClass $_) } })
+
+# ---- D2: register the durable-note obligation on FIRST SIGHTING -------------
+# For EVERY current-state incident, the note obligation is registered the first
+# time it is seen - BEFORE the supersede/resolve exclusion is applied to the block
+# decision. A supersede lifts only the RESULT-level block (case 2/3); it never
+# lifts the note requirement. So a hang that self-heals into green BEFORE any Stop
+# still owes its lesson once (case 6 enforces it). Only ACCOUNTED (already
+# superseded) incidents are registered here; an un-superseded incident is left to
+# register when it becomes the blocking representative (case 2/3), which spaces two
+# concurrent incidents' note baselines across Stops so each demands a DISTINCT note.
+# ponytail: two incidents self-healing within ONE Stop would share a baseline and
+# one note could clear both - the byte-growth heuristic's inherent limit; sequential
+# real-world surfacing gives distinct baselines. Upgrade path: per-incident note tags.
+foreach ($cl in $classified) {
+    if ($cl.Class -ne 'incident' -or $null -eq $cl.Run.ResultEntry) { continue }
+    $ikSeen = Get-ResultIncidentKey -Doc $cl.Run.ResultEntry.Doc -Path $cl.Run.ResultEntry.Path
+    if ($ikSeen -eq '' -or (Test-IncidentResolved $ikSeen) -or $script:pendingNotes.Contains($ikSeen)) { continue }
+    if (Test-RunNegativeAccounted -Run $cl.Run -AllResults $resultEntries) {
+        Register-PendingNote -Key $ikSeen -Reason (Get-IncidentReasonFromDoc $cl.Run.ResultEntry.Doc)
+    }
+}
+
 $rep = $null
 foreach ($wanted in @('incident', 'failed')) {
-    $m = @($classified | Where-Object { $_.Class -eq $wanted -and -not (Test-RunNegativeAccounted -Run $_.Run -ResolvedIncident $resolvedIncident -AllResults $resultEntries) })
+    $m = @($classified | Where-Object { $_.Class -eq $wanted -and -not (Test-RunNegativeAccounted -Run $_.Run -AllResults $resultEntries) })
     if ($m.Count -gt 0) { $rep = $m[0]; break }
 }
 if ($null -eq $rep) {
-    $m = @($classified | Where-Object { $_.Run.HasObserved -and $_.Class -ne 'clean' -and -not (Test-RunNegativeAccounted -Run $_.Run -ResolvedIncident $resolvedIncident -AllResults $resultEntries) })   # condition 5: observed, not satisfied
+    $m = @($classified | Where-Object { $_.Run.HasObserved -and $_.Class -ne 'clean' -and -not (Test-RunNegativeAccounted -Run $_.Run -AllResults $resultEntries) })   # condition 5: observed, not satisfied
     if ($m.Count -gt 0) { $rep = $m[0] }
 }
 if ($null -eq $rep) {
@@ -708,13 +858,24 @@ if ($null -ne $result) {
     }
 }
 
+# Is the REPRESENTATIVE run's negative finding already accounted for (superseded
+# by a clean rerun, or resolved)? An accounted rep must NOT block via the
+# result-level cases 2/3/4/5 - a green rerun WON. Its note obligation (registered
+# on first sighting) is still enforced by case 6. Without this guard, a superseded
+# incident picked as the fallback representative would re-block forever (the D1/D2
+# ping-pong the ledger and this guard together close).
+$repAccounted = $false
+if ($null -ne $rep -and $null -ne $rep.Run.ResultEntry) {
+    $repAccounted = (Test-RunNegativeAccounted -Run $rep.Run -AllResults $resultEntries)
+}
+
 # Nothing recorded at all for this project - no relevant test work. Silence.
-if ($null -eq $result -and -not $observedCurrent -and $activePid -eq 0 -and $pendingNoteKey -eq '') {
+if ($null -eq $result -and -not $observedCurrent -and $activePid -eq 0 -and $script:pendingNotes.Count -eq 0) {
     exit 0
 }
 # A recorded incident that was already resolved, no pending note, nothing
 # current to prove, nothing running: also silence.
-if ($incidentKey -ne '' -and $incidentKey -eq $resolvedIncident -and $pendingNoteKey -eq '' -and
+if ($incidentKey -ne '' -and (Test-IncidentResolved $incidentKey) -and $script:pendingNotes.Count -eq 0 -and
     -not $observedCurrent -and $activePid -eq 0) {
     exit 0
 }
@@ -741,16 +902,14 @@ if ($cleanupInstalled) {
     }
     if (-not $cleanupCurrent -and $deferredFingerprint -ne $stateFingerprint) {
         # First same-state race: hand the event back and re-evaluate next time.
-        Save-CompletionState -ResolvedIncident $resolvedIncident -NoteKey $pendingNoteKey `
-            -NoteReason $pendingNoteReason -NoteBaseline $pendingNoteBaseline -Deferred $stateFingerprint
+        Save-CompletionState -Deferred $stateFingerprint
         exit 0
     }
 }
 
 # ---- 1. a guarded run is still active -------------------------------------
 if ($activePid -gt 0) {
-    Save-CompletionState -ResolvedIncident $resolvedIncident -NoteKey $pendingNoteKey `
-        -NoteReason $pendingNoteReason -NoteBaseline $pendingNoteBaseline -Deferred $deferredFingerprint
+    Save-CompletionState
     Write-Finding -Blocking $true -Lines @(
         'TEST COMPLETION CHECK: a guarded test run is STILL ACTIVE (owner process ' + $activePid + ' is alive). The work cannot be complete while its result is unknown.',
         'Recovery: wait for that run to finish and read its result document, or stop it deliberately with the guarded runner and record how it ended. Do not declare the task complete, and do not claim any test outcome until the run has actually ended.')
@@ -760,16 +919,12 @@ if ($activePid -gt 0) {
 # Gated on identity, not age: an incident from a DIFFERENT run/state is not this
 # run's problem and must not block the current state; a real incident for THIS
 # run still blocks however old its file is.
-if ($incidentKey -ne '' -and $incidentKey -ne $resolvedIncident -and $resultRunMatches) {
-    # Register the owed durable note and capture the byte baseline the note
-    # will be measured against, so a bare "done" cannot satisfy it later.
-    if ($pendingNoteKey -ne $incidentKey) {
-        $pendingNoteKey = $incidentKey
-        $pendingNoteReason = $incidentReason
-        $pendingNoteBaseline = Get-NoteBytes -Root $cwd
-    }
-    Save-CompletionState -ResolvedIncident $resolvedIncident -NoteKey $pendingNoteKey `
-        -NoteReason $pendingNoteReason -NoteBaseline $pendingNoteBaseline -Deferred $deferredFingerprint
+if ($incidentKey -ne '' -and -not (Test-IncidentResolved $incidentKey) -and $resultRunMatches -and -not $repAccounted) {
+    # Register the owed durable note (its own byte baseline is captured now, so a
+    # bare "done" cannot satisfy it later and a second concurrent incident demands
+    # its own distinct note). No-op when this incident already owes one.
+    Register-PendingNote -Key $incidentKey -Reason $incidentReason
+    Save-CompletionState
     $lines = New-Object System.Collections.Generic.List[string]
     [void]$lines.Add('TEST COMPLETION CHECK: ' + $incidentReason + '. This is a confirmed finding from the guarded runner''s own result document, not an inference.')
     if ($elapsedSeconds -gt 0) { [void]$lines.Add('It ran for ' + $elapsedSeconds + 's before ending.') }
@@ -786,9 +941,8 @@ if ($incidentKey -ne '' -and $incidentKey -ne $resolvedIncident -and $resultRunM
 }
 
 # ---- 4. the run completed but failed --------------------------------------
-if ($null -ne $result -and $overall -eq 'failed' -and $resultIsCurrentEvidence) {
-    Save-CompletionState -ResolvedIncident $resolvedIncident -NoteKey $pendingNoteKey `
-        -NoteReason $pendingNoteReason -NoteBaseline $pendingNoteBaseline -Deferred $deferredFingerprint
+if ($null -ne $result -and $overall -eq 'failed' -and $resultIsCurrentEvidence -and -not $repAccounted) {
+    Save-CompletionState
     $exitCode = [string](Get-Field $result 'exitCode')
     Write-Finding -Blocking $true -Lines @(
         'TEST COMPLETION CHECK: the latest guarded test run for this project FAILED (exit code ' + $exitCode + '). The work is not verifiably complete.',
@@ -797,9 +951,8 @@ if ($null -ne $result -and $overall -eq 'failed' -and $resultIsCurrentEvidence) 
 }
 
 # ---- 5. a test ran but there is no current proof of how it ended ----------
-if ($observedCurrent -and -not ($resultIsCurrentEvidence -and $overall -eq 'ok')) {
-    Save-CompletionState -ResolvedIncident $resolvedIncident -NoteKey $pendingNoteKey `
-        -NoteReason $pendingNoteReason -NoteBaseline $pendingNoteBaseline -Deferred $deferredFingerprint
+if ($observedCurrent -and -not ($resultIsCurrentEvidence -and $overall -eq 'ok') -and -not $repAccounted) {
+    Save-CompletionState
     $why = if ($null -eq $result) {
         'no guarded result document exists for it'
     }
@@ -825,36 +978,40 @@ if ($observedCurrent -and -not ($resultIsCurrentEvidence -and $overall -eq 'ok')
 # From here the run itself is accounted for. Mark the incident resolved and,
 # when configured, register the always-on note requirement.
 if ($null -ne $result -and $resultIsCurrentEvidence -and $overall -eq 'ok') {
-    if ($incidentKey -ne '') { $resolvedIncident = $incidentKey }
-    if ($alwaysRequireNote -and $pendingNoteKey -eq '') {
+    if ($incidentKey -ne '') { Add-ResolvedIncident $incidentKey }
+    if ($alwaysRequireNote -and $script:pendingNotes.Count -eq 0) {
         $runKey = Get-ShortHash ('run|' + $script:ResultTicks + '|' + $projectKey)
-        if ($runKey -ne $resolvedIncident) {
-            $pendingNoteKey = $runKey
-            $pendingNoteReason = 'a guarded test run completed and TEST_COMPLETION_ALWAYS_REQUIRE_NOTE is enabled'
-            $pendingNoteBaseline = Get-NoteBytes -Root $cwd
-        }
+        Register-PendingNote -Key $runKey -Reason 'a guarded test run completed and TEST_COMPLETION_ALWAYS_REQUIRE_NOTE is enabled'
     }
 }
 
-# ---- 6. the durable note that is still owed --------------------------------
-if ($pendingNoteKey -ne '') {
-    $grown = 0L
-    if ($pendingNoteBaseline -ge 0) { $grown = (Get-NoteBytes -Root $cwd) - $pendingNoteBaseline }
-    if ($grown -ge $script:MinNoteBytes) {
-        # Satisfied: the incident and its note are both closed out.
-        Save-CompletionState -ResolvedIncident $pendingNoteKey -NoteKey '' -NoteReason '' `
-            -NoteBaseline ([int64](-1)) -Deferred $deferredFingerprint
-        exit 0
+# ---- 6. every durable note that is still owed ------------------------------
+# EVERY pending incident is enforced, not one: a satisfied note (its own .ai byte
+# baseline grew by MinNoteBytes) is resolved and dropped; any still-owed note keeps
+# blocking. Two concurrent incidents therefore each block until their OWN note is
+# written, and resolving one never forgets the other.
+if ($script:pendingNotes.Count -gt 0) {
+    $currentNoteBytes = Get-NoteBytes -Root $cwd
+    $owed = New-Object System.Collections.Generic.List[object]
+    foreach ($k in @($script:pendingNotes.Keys)) {
+        $entry = $script:pendingNotes[$k]
+        $base = [int64]$entry.baseline
+        $grown = if ($base -ge 0) { $currentNoteBytes - $base } else { 0L }
+        if ($grown -ge $script:MinNoteBytes) { Add-ResolvedIncident ([string]$k) }   # satisfied -> resolved, dropped
+        else { [void]$owed.Add([pscustomobject]@{ Reason = [string]$entry.reason }) }
     }
-    Save-CompletionState -ResolvedIncident $resolvedIncident -NoteKey $pendingNoteKey `
-        -NoteReason $pendingNoteReason -NoteBaseline $pendingNoteBaseline -Deferred $deferredFingerprint
-    Write-Finding -Blocking $true -Lines @(
-        'TEST COMPLETION CHECK: a durable .ai/ note is still owed because ' + $pendingNoteReason + '.',
-        'Write it into .ai/BUGS.md, .ai/TESTING_NOTES.md, .ai/COMMANDS.md and/or .ai/LESSON.md, whichever fits. It must state WHY the problem was not detected earlier and the verified prevention/recovery guard that now catches it - concretely enough that a later session can act on it.',
-        'A bare acknowledgement ("done", "n/a", "fixed") does not satisfy this and will not clear it; the check looks for real added content in those files.')
+    if ($owed.Count -gt 0) {
+        Save-CompletionState
+        Write-Finding -Blocking $true -Lines @(
+            'TEST COMPLETION CHECK: a durable .ai/ note is still owed because ' + $owed[0].Reason + '.',
+            'Write it into .ai/BUGS.md, .ai/TESTING_NOTES.md, .ai/COMMANDS.md and/or .ai/LESSON.md, whichever fits. It must state WHY the problem was not detected earlier and the verified prevention/recovery guard that now catches it - concretely enough that a later session can act on it.',
+            'A bare acknowledgement ("done", "n/a", "fixed") does not satisfy this and will not clear it; the check looks for real added content in those files.')
+    }
+    # Every owed note is now satisfied: the incident(s) and their notes are closed.
+    Save-CompletionState
+    exit 0
 }
 
 # Everything accounted for: silent.
-Save-CompletionState -ResolvedIncident $resolvedIncident -NoteKey '' -NoteReason '' `
-    -NoteBaseline ([int64](-1)) -Deferred $deferredFingerprint
+Save-CompletionState
 exit 0

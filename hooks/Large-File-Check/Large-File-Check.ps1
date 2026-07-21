@@ -14,7 +14,10 @@
 #    line count is STRICTLY GREATER THAN the threshold (default 800 - so 801 is
 #    reported, exactly 800 is not) and lists the largest offenders. Files already
 #    present before the task are scanned too. A split is never mandatory and 801
-#    never forces one; the report is a review signal, decided by the AI. Silent
+#    never forces one; the report is a review signal, decided by the AI. The
+#    Stop output is a CLIENT-AWARE, NON-BLOCKING advisory (Claude:
+#    hookSpecificOutput.additionalContext, Codex: systemMessage) - never
+#    decision:block, which on Codex would coerce a new prompt at Stop. Silent
 #    when nothing is oversized; per-project cooldown; stop_hook_active guard so it
 #    never loops.
 #
@@ -135,6 +138,22 @@ if ($extensions.Count -eq 0) {
     foreach ($ext in $defaultExtensions.Split(',')) { $extensions[$ext] = $true }
 }
 
+# Stop output: CLIENT-AWARE, NON-BLOCKING advisory. Mirrors Test-Completion-Check
+# / Ci-Status-Check: the AI owns the split decision, so this hook NEVER emits
+# decision:block (a real Stop gate that on Codex forces a new prompt - a coercive
+# loop). Claude Code exports CLAUDE_PROJECT_DIR on every hook process, Codex does
+# not - the same signal the other Stop hooks use. Claude gets
+# hookSpecificOutput.additionalContext; Codex gets systemMessage.
+function Write-Advisory {
+    param([string]$Message)
+    if (-not [string]::IsNullOrWhiteSpace($env:CLAUDE_PROJECT_DIR)) {
+        @{ hookSpecificOutput = @{ hookEventName = $script:eventName; additionalContext = $Message } } | ConvertTo-Json -Depth 5 -Compress
+    }
+    else {
+        @{ systemMessage = $Message } | ConvertTo-Json -Depth 5 -Compress
+    }
+}
+
 # cooldown state (per project + threshold) - never written inside the scanned project
 $stateDir = Join-Path $env:LOCALAPPDATA 'HookMaker\state'
 $statePath = Join-Path $stateDir ('LargeFileCheck-' + (Get-ShortHash ($cwd.ToLowerInvariant() + '|' + $lineThreshold)) + '.txt')
@@ -168,11 +187,21 @@ $scannedFiles = 0
 # Deriving "partial" from the residual stack alone missed the case where the
 # ceiling fills up inside one big directory while the stack is already empty.
 $scanLimitReached = $false
+# $scanIncomplete is coverage lost to a READ FAILURE (access denied, locked
+# file, an unreadable directory) - separate from the ceiling. A single failure
+# must not abort the whole directory, and either flag means the project was not
+# fully scanned, so a no-offender result is NOT an all-clear.
+$scanIncomplete = $false
 while ($stack.Count -gt 0) {
     if ($scannedFiles -ge $maxFiles) { $scanLimitReached = $true; break }
     $currentDir = $stack.Pop()
-    try {
-        foreach ($childDir in [System.IO.Directory]::EnumerateDirectories($currentDir)) {
+    # Per-CHILD and per-FILE isolation: one unreadable entry must not abort the
+    # whole directory and silently shrink coverage. A failure is recorded in
+    # $scanIncomplete (partial coverage), never swallowed into a false all-clear.
+    $childDirs = @()
+    try { $childDirs = @([System.IO.Directory]::EnumerateDirectories($currentDir)) } catch { $scanIncomplete = $true }
+    foreach ($childDir in $childDirs) {
+        try {
             $leaf = Split-Path -Leaf $childDir
             if ($excludedDirs -contains $leaf.ToLowerInvariant()) { continue }
             # Never follow a reparse point (junction/symlink): it can escape the
@@ -180,13 +209,22 @@ while ($stack.Count -gt 0) {
             if (([System.IO.File]::GetAttributes($childDir) -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) { continue }
             $stack.Push($childDir)
         }
-        foreach ($file in [System.IO.Directory]::EnumerateFiles($currentDir)) {
-            # Enforce the ceiling as a real PER-FILE stop. Without this, a single
-            # directory holding far more source files than MAX_FILES was scanned
-            # whole, because the ceiling was only re-checked between directories.
-            if ($scannedFiles -ge $maxFiles) { $scanLimitReached = $true; break }
+        catch { $scanIncomplete = $true }
+    }
+    $files = @()
+    try { $files = @([System.IO.Directory]::EnumerateFiles($currentDir)) } catch { $scanIncomplete = $true }
+    foreach ($file in $files) {
+        try {
+            # Extension is checked BEFORE the ceiling so the MAX_FILES ceiling
+            # counts only IN-SCOPE (source) files. A trailing non-source file
+            # (e.g. README.md) must never trip a false PARTIAL when no source
+            # file was actually skipped.
             $extension = [System.IO.Path]::GetExtension($file).ToLowerInvariant()
             if (-not $extensions.ContainsKey($extension)) { continue }
+            # Enforce the ceiling as a real PER-SOURCE-FILE stop. Without this, a
+            # single directory holding far more source files than MAX_FILES was
+            # scanned whole, because the ceiling was only re-checked between dirs.
+            if ($scannedFiles -ge $maxFiles) { $scanLimitReached = $true; break }
             $scannedFiles++
             $info = [System.IO.FileInfo]::new($file)
             if ($info.Length -gt 3MB) { continue }
@@ -197,11 +235,12 @@ while ($stack.Count -gt 0) {
                 [void]$offenders.Add([pscustomobject]@{ Path = $relative; Lines = $lineCount })
             }
         }
+        catch { $scanIncomplete = $true }
     }
-    catch { }
 }
-# Honest coverage is driven by the explicit stop flag, not the residual stack.
-$partial = $scanLimitReached
+# Honest coverage: partial when the ceiling stopped the walk OR any file/dir
+# could not be read. Either way an unscanned region may hide an oversized file.
+$partial = $scanLimitReached -or $scanIncomplete
 
 if ($offenders.Count -eq 0) {
     # Full scan, nothing oversized -> silent (the common case). But a PARTIAL
@@ -212,9 +251,11 @@ if ($offenders.Count -eq 0) {
     if ($partial) {
         New-Item -ItemType Directory -Path $stateDir -Force | Out-Null
         [System.IO.File]::WriteAllText($statePath, [DateTime]::UtcNow.ToString('o'))
-        $coverageNote = 'LARGE FILE CHECK: coverage was INCOMPLETE - a scan ceiling of ' + $maxFiles + ' files was reached before the whole project was scanned, so no oversized-file all-clear can be concluded. No offender was found in the scanned portion, but unscanned files may remain. Advisory only - not a block.'
-        @{ hookSpecificOutput = @{ hookEventName = $eventName; additionalContext = $coverageNote } } |
-            ConvertTo-Json -Depth 5 -Compress
+        $causes = New-Object System.Collections.Generic.List[string]
+        if ($scanLimitReached) { [void]$causes.Add('a scan ceiling of ' + $maxFiles + ' files was reached') }
+        if ($scanIncomplete) { [void]$causes.Add('one or more files or directories could not be read') }
+        $coverageNote = 'LARGE FILE CHECK: coverage was INCOMPLETE - ' + ($causes -join ' and ') + ' before the whole project was scanned, so no oversized-file all-clear can be concluded. No offender was found in the scanned portion, but unscanned files may remain. Advisory only - not a block.'
+        Write-Advisory $coverageNote
     }
     exit 0
 }
@@ -230,5 +271,5 @@ if ($offenders.Count -gt $top.Count) {
 }
 $partialNote = if ($partial) { ' (PARTIAL scan: a scan ceiling was reached, so this list may be incomplete - not full-repository coverage.)' } else { '' }
 $reason = 'LARGE FILE CHECK: ' + $offenders.Count + ' source file(s) exceed ' + $lineThreshold + ' lines: ' + ($fileLines -join '; ') + $more + '.' + $partialNote + ' No split is mandatory - this is advisory, and a slight overage (e.g. ' + ($lineThreshold + 1) + ' lines) is a REVIEW SIGNAL, not proof of bad architecture. Cohesion outranks raw line count: large or multi-responsibility files are the stronger split candidates, and a NEW responsibility pushed past the threshold is more concerning than a small cohesive overage. Only split when a real responsibility, cohesive module, layer, or public boundary actually exists there - never create thin wrappers, pass-through modules, or arbitrary fragments merely to get under the threshold, and never start a refactor unrelated to the current task just because a file is large. If you do split: split by responsibility, keep a single clear entry point, update imports/re-exports, avoid circular dependencies, and run build/tests afterwards. If a safe split is not warranted right now, finish with no split - this reminder respects a cooldown.'
-@{ decision = 'block'; reason = $reason } | ConvertTo-Json -Compress
+Write-Advisory $reason
 exit 0
