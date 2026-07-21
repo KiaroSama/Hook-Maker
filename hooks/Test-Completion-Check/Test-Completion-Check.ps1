@@ -36,23 +36,30 @@
 # COORDINATION STATE (all consumed files are OPTIONAL - an absent file means
 # that check is simply not evaluated, so a missing producer can never widen
 # what this hook blocks on). Project key = Get-ShortHash(lowercased cwd), the
-# same key Test-Temp-Cleanup and Cloudflare-Deploy already use.
-#   read  TestRunGuard-result-<key>.json    Run-Tests-Guarded.ps1's result
-#                                           document (schema/overall/exitCode/
-#                                           terminated/terminateReason/
-#                                           leakedProcessIds/endedUtc/...), with
-#                                           optional `fingerprint`/`recordedUtc`
-#                                           added by Test-Run-Guard.
-#   read  TestRunGuard-active-<key>.json    { pid, startedUtc } while a guarded
-#                                           run holds a live child. A dead pid
-#                                           makes the marker stale, not active.
-#   read  TestRunGuard-observed-<key>.json  { observedUtc, fingerprint, guarded }
-#                                           a test command was seen running for
-#                                           that repo-state fingerprint.
+# same key Test-Temp-Cleanup and Cloudflare-Deploy already use. The result,
+# observed and active files are PER-RUN - keyed by <projectKey>-<runId> - so two
+# guarded runs in one project never overwrite each other; this hook ENUMERATES
+# and AGGREGATES all of a project's per-run files rather than reading one path,
+# and accepts completion only when every current-state observed run is finished.
+# (A legacy non-suffixed file from an older build is still honoured.)
+#   read  TestRunGuard-result-<key>-<runId>.json    each run's Run-Tests-Guarded.ps1
+#                                           result document (schema/overall/
+#                                           exitCode/terminated/terminateReason/
+#                                           leakedProcessIds/endedUtc/... plus the
+#                                           run identity runId/commandFingerprint/
+#                                           projectFingerprint).
+#   read  TestRunGuard-active-<key>-<runId>.json     { ownerPid, ownerProcessStartUtc,
+#                                           ownerExecutablePath, ... } while THAT
+#                                           run holds a live child. A dead/recycled
+#                                           pid makes the marker stale, not active.
+#   read  TestRunGuard-observed-<key>-<runId>.json   { observedUtc, projectFingerprint,
+#                                           runId, guarded } - a test command was
+#                                           seen running for that repo-state.
 #   read  TestTempCleanup-result-<key>.json  Test-Temp-Cleanup's existing
 #                                           { fingerprint, category } handoff.
 #   write TestCompletionCheck-<key>.json    this hook's own resolved-incident /
-#                                           owed-note / deferral state.
+#                                           owed-note / deferral state (project-keyed,
+#                                           not per-run - it tracks the project).
 #
 # TEST-TEMP-CLEANUP RACE. Stop hooks for one event run CONCURRENTLY and
 # independently; registration order is display-only and is never an execution
@@ -160,9 +167,8 @@ if ($config.ContainsKey('TEST_COMPLETION_COORDINATION_WAIT_SECONDS')) {
 # ---- paths ----
 $stateDir = Join-Path $env:LOCALAPPDATA 'HookMaker\state'
 $projectKey = Get-ShortHash $cwd.ToLowerInvariant()
-$resultPath = Join-Path $stateDir ('TestRunGuard-result-' + $projectKey + '.json')
-$activePath = Join-Path $stateDir ('TestRunGuard-active-' + $projectKey + '.json')
-$observedPath = Join-Path $stateDir ('TestRunGuard-observed-' + $projectKey + '.json')
+# result/observed/active are PER-RUN now (TestRunGuard-<kind>-<key>-<runId>.json)
+# and are enumerated + aggregated below, never read from one fixed path.
 $cleanupPath = Join-Path $stateDir ('TestTempCleanup-result-' + $projectKey + '.json')
 $statePath = Join-Path $stateDir ('TestCompletionCheck-' + $projectKey + '.json')
 
@@ -317,9 +323,220 @@ function Write-Finding {
     exit 0
 }
 
-# ---- read the recorded evidence -------------------------------------------
+# ---- read the recorded evidence (AGGREGATED across per-run files) ----------
+# result/observed/active are PER-RUN (TestRunGuard-<kind>-<key>-<runId>.json), so
+# two runs in one project each own their own files and never overwrite each other.
+# Completion is accepted only when EVERY current-state observed run is satisfied
+# and none is unfinished; it is BLOCKED when ANY run is active, terminated/leaked/
+# failed, or observed-with-no-result. Older-STATE runs are not current evidence
+# and never block. The single representative run selected below drives the exact
+# same conditions 1-6 the single-file path used, so one-run behaviour is unchanged.
+
+# All per-run files for one kind (+ a legacy non-suffixed file if an older build's
+# run is still in flight), each with its parsed document.
+function Get-CompletionStateEntries {
+    param([string]$Kind)
+    $entries = New-Object System.Collections.Generic.List[object]
+    if (-not (Test-Path -LiteralPath $script:stateDir -PathType Container)) { return @() }
+    $files = New-Object System.Collections.Generic.List[object]
+    try { foreach ($f in @(Get-ChildItem -LiteralPath $script:stateDir -Filter ('TestRunGuard-' + $Kind + '-' + $script:projectKey + '-*.json') -File -ErrorAction SilentlyContinue)) { [void]$files.Add($f) } } catch { }
+    $legacy = Join-Path $script:stateDir ('TestRunGuard-' + $Kind + '-' + $script:projectKey + '.json')
+    try { if (Test-Path -LiteralPath $legacy -PathType Leaf) { [void]$files.Add((Get-Item -LiteralPath $legacy -Force)) } } catch { }
+    foreach ($file in $files) {
+        $doc = $null
+        try { $doc = Read-JsonFile $file.FullName } catch { $doc = $null }
+        if ($null -eq $doc) { continue }
+        [void]$entries.Add([pscustomobject]@{ Doc = $doc; Path = $file.FullName })
+    }
+    return @($entries.ToArray())
+}
+
+# The recorded time of a result: recordedUtc, else endedUtc, else file write time.
+function Get-ResultRecordedTime {
+    param($Doc, [string]$Path)
+    $t = ConvertTo-UtcTime (Get-Field $Doc 'recordedUtc')
+    if ($null -eq $t) { $t = ConvertTo-UtcTime (Get-Field $Doc 'endedUtc') }
+    if ($null -eq $t -and -not [string]::IsNullOrWhiteSpace($Path)) {
+        try { $t = (Get-Item -LiteralPath $Path -Force).LastWriteTimeUtc } catch { $t = $null }
+    }
+    return $t
+}
+
+function Get-ObservedFingerprint {
+    param($Doc)
+    $fp = [string](Get-Field $Doc 'projectFingerprint')
+    if ([string]::IsNullOrWhiteSpace($fp)) { $fp = [string](Get-Field $Doc 'fingerprint') }
+    return $fp
+}
+
+# Is a live guarded run recorded by THIS active marker? Returns the owner pid, or
+# 0. The PID-REUSE-resistant identity check (start time + executable + project)
+# the single-file path used, applied per marker.
+function Resolve-ActiveOwnerPid {
+    param($Doc, [string]$StateFingerprint)
+    $ownerPidRaw = Get-Field $Doc 'ownerPid'
+    if ($null -eq $ownerPidRaw) { $ownerPidRaw = Get-Field $Doc 'pid' }   # schema-1 fallback
+    $candidate = 0
+    if (-not [int]::TryParse([string]$ownerPidRaw, [ref]$candidate) -or $candidate -le 0) { return 0 }
+    $liveProcess = $null
+    try { $liveProcess = Get-Process -Id $candidate -ErrorAction Stop } catch { $liveProcess = $null }
+    if ($null -eq $liveProcess) { return 0 }
+    $markerStartUtc = ConvertTo-UtcTime (Get-Field $Doc 'ownerProcessStartUtc')
+    $markerExe = [string](Get-Field $Doc 'ownerExecutablePath')
+    $markerProjFp = [string](Get-Field $Doc 'projectFingerprint')
+    if ($null -eq $markerStartUtc -and $markerExe -eq '') { return $candidate }   # schema-1 marker: best-effort legacy
+    $identityOk = $true
+    if ($markerProjFp -ne '' -and $markerProjFp -ne $StateFingerprint) { $identityOk = $false }
+    if ($identityOk -and $null -ne $markerStartUtc) {
+        $liveStart = $null
+        try { $liveStart = $liveProcess.StartTime.ToUniversalTime() } catch { $liveStart = $null }
+        if ($null -eq $liveStart -or [Math]::Abs(($liveStart - $markerStartUtc).TotalSeconds) -gt 2) { $identityOk = $false }
+    }
+    if ($identityOk -and $markerExe -ne '') {
+        $liveExe = ''
+        try { $liveExe = [string]$liveProcess.Path } catch { $liveExe = '' }
+        if ($liveExe -ne '' -and -not [string]::Equals($liveExe, $markerExe, [System.StringComparison]::OrdinalIgnoreCase)) { $identityOk = $false }
+    }
+    if ($identityOk) { return $candidate }
+    return 0
+}
+
+# Bounded state growth: prune this project's inert per-run result/observed files
+# older than 24h so they cannot accumulate forever. Never touches a recent run
+# (fresh files) and never active markers (the aggregation below removes those only
+# when their owner is proven dead). Best-effort - a failure never blocks.
+$pruneCutoff = [DateTime]::UtcNow.AddHours(-24)
+foreach ($kind in @('result', 'observed')) {
+    try {
+        foreach ($f in @(Get-ChildItem -LiteralPath $stateDir -Filter ('TestRunGuard-' + $kind + '-' + $projectKey + '-*.json') -File -ErrorAction SilentlyContinue)) {
+            try { if ($f.LastWriteTimeUtc -lt $pruneCutoff) { Remove-Item -LiteralPath $f.FullName -Force -ErrorAction SilentlyContinue } } catch { }
+        }
+    }
+    catch { }
+}
+
+$resultEntries = Get-CompletionStateEntries 'result'
+$observedEntries = Get-CompletionStateEntries 'observed'
+$activeEntries = Get-CompletionStateEntries 'active'
+
+# ---- 1. any live active marker across all runs ----
+# Set $activePid from the first genuinely-alive owner; drop every marker whose
+# owner is dead/recycled. A live marker is NEVER removed - so one run finishing
+# (its runner removing only its own per-run marker) can never tear down another.
+$activePid = 0
+foreach ($ae in $activeEntries) {
+    $p = Resolve-ActiveOwnerPid -Doc $ae.Doc -StateFingerprint $stateFingerprint
+    if ($p -gt 0) { if ($activePid -eq 0) { $activePid = $p } }
+    else { try { Remove-Item -LiteralPath $ae.Path -Force -ErrorAction SilentlyContinue } catch { } }
+}
+
+# ---- build the candidate runs for the CURRENT state ----
+$currentObserved = @($observedEntries | Where-Object { (Get-ObservedFingerprint $_.Doc) -eq $stateFingerprint })
+$observedCurrent = ($currentObserved.Count -gt 0)
+$observedCmdFps = New-Object System.Collections.Generic.HashSet[string]
+foreach ($o in $currentObserved) {
+    $oc = [string](Get-Field $o.Doc 'commandFingerprint')
+    if ($oc -ne '') { [void]$observedCmdFps.Add($oc) }
+}
+
+# First pair every current observed run to its identity-matched result, so those
+# results are off the table when we look for a "same-command" fallback below.
+$pairedPaths = New-Object System.Collections.Generic.HashSet[string]
+$obsPairs = New-Object System.Collections.Generic.List[object]
+foreach ($o in $currentObserved) {
+    $paired = @($resultEntries | Where-Object { Test-ResultMatchesObserved -Result $_.Doc -Observed $o.Doc -CurrentStateFingerprint $stateFingerprint })
+    $resEntry = if ($paired.Count -gt 0) { $paired[0] } else { $null }
+    if ($null -ne $resEntry) { [void]$pairedPaths.Add($resEntry.Path) }
+    [void]$obsPairs.Add([pscustomobject]@{ Observed = $o.Doc; ResEntry = $resEntry })
+}
+
+$runs = New-Object System.Collections.Generic.List[object]
+# Each current observed run, with its identity-matched result (if any). When none
+# matches, a result for the SAME command that is NOT another run's result is
+# attached for messaging only, so a genuine identity mismatch reads DIFFERENT run
+# while a run that simply has no result of its own reads as missing evidence.
+foreach ($op in $obsPairs) {
+    $sameCmdEntry = $null
+    if ($null -eq $op.ResEntry) {
+        $oCmd = [string](Get-Field $op.Observed 'commandFingerprint')
+        if ($oCmd -ne '') {
+            $sc = @($resultEntries | Where-Object { ([string](Get-Field $_.Doc 'commandFingerprint')) -eq $oCmd -and -not $pairedPaths.Contains($_.Path) })
+            if ($sc.Count -gt 0) { $sameCmdEntry = $sc[0] }
+        }
+    }
+    [void]$runs.Add([pscustomobject]@{ Observed = $op.Observed; ResultEntry = $op.ResEntry; SameCmdEntry = $sameCmdEntry; HasObserved = $true; Matches = ($null -ne $op.ResEntry) })
+}
+# A current-state result with NO observation and whose command matches no observed
+# run is an independent run (e.g. a guarded runner invoked directly). A result
+# whose command DOES match an observed run is just a different run of that command
+# and belongs to that observed run's messaging, not a new run.
+foreach ($re in $resultEntries) {
+    $rProjFp = [string](Get-Field $re.Doc 'projectFingerprint')
+    $isCurrentState = if ($rProjFp -ne '') { $rProjFp -eq $stateFingerprint } else { $true }   # legacy result: no identity, age governs
+    if (-not $isCurrentState) { continue }
+    $rCmd = [string](Get-Field $re.Doc 'commandFingerprint')
+    if ($rCmd -ne '' -and $observedCmdFps.Contains($rCmd)) { continue }
+    [void]$runs.Add([pscustomobject]@{ Observed = $null; ResultEntry = $re; SameCmdEntry = $null; HasObserved = $false; Matches = $true })
+}
+
+# ---- classify + select the representative (worst) run ----
+function Test-ResultFresh {
+    param($ResEntry)
+    if ($null -eq $ResEntry) { return $false }
+    $t = Get-ResultRecordedTime -Doc $ResEntry.Doc -Path $ResEntry.Path
+    if ($null -eq $t) { return $false }
+    return (([DateTime]::UtcNow - $t).TotalMinutes -lt $script:evidenceMinutes)
+}
+function Get-RunClass {
+    param($Run)
+    $re = $Run.ResultEntry
+    if ($null -ne $re) {
+        $ov = ([string](Get-Field $re.Doc 'overall')).ToLowerInvariant()
+        $lk = @(@(Get-Field $re.Doc 'leakedProcessIds') | Where-Object { $null -ne $_ -and [string]$_ -ne '' })
+        if ($ov -eq 'terminated' -or $lk.Count -gt 0) { return 'incident' }
+        if ($ov -eq 'failed' -and (Test-ResultFresh $re)) { return 'failed' }
+        if ($ov -eq 'ok' -and (Test-ResultFresh $re) -and $lk.Count -eq 0) { return 'clean' }
+        return 'unproven'
+    }
+    return 'noresult'
+}
+$classified = @($runs | ForEach-Object { [pscustomobject]@{ Run = $_; Class = (Get-RunClass $_) } })
+$rep = $null
+foreach ($wanted in @('incident', 'failed')) {
+    $m = @($classified | Where-Object { $_.Class -eq $wanted })
+    if ($m.Count -gt 0) { $rep = $m[0]; break }
+}
+if ($null -eq $rep) {
+    $m = @($classified | Where-Object { $_.Run.HasObserved -and $_.Class -ne 'clean' })   # condition 5: observed, not satisfied
+    if ($m.Count -gt 0) { $rep = $m[0] }
+}
+if ($null -eq $rep) {
+    $m = @($classified | Where-Object { $_.Class -eq 'clean' })
+    if ($m.Count -gt 0) { $rep = $m[0] }
+}
+if ($null -eq $rep -and $classified.Count -gt 0) { $rep = $classified[0] }
+
+# ---- project the representative onto the single-run variables ----
 $result = $null
-try { $result = Read-JsonFile $resultPath } catch { $result = $null }
+$resultEntry = $null
+$observed = $null
+$observedGuarded = $true
+$resultRunMatches = $false
+if ($null -ne $rep) {
+    $observed = $rep.Run.Observed
+    if ($null -ne $observed -and (Get-Field $observed 'guarded') -eq $false) { $observedGuarded = $false }
+    if ($null -ne $rep.Run.ResultEntry) {
+        $resultEntry = $rep.Run.ResultEntry
+        $result = $resultEntry.Doc
+        $resultRunMatches = $rep.Run.Matches
+    }
+    elseif ($null -ne $rep.Run.SameCmdEntry) {
+        # A DIFFERENT run's result for this command - carried for messaging only.
+        $resultEntry = $rep.Run.SameCmdEntry
+        $result = $resultEntry.Doc
+        $resultRunMatches = $false
+    }
+}
 
 $resultTime = $null
 $overall = ''
@@ -335,110 +552,13 @@ if ($null -ne $result) {
     $leaked = @(@(Get-Field $result 'leakedProcessIds') | Where-Object { $null -ne $_ -and [string]$_ -ne '' })
     try { $elapsedSeconds = [double](Get-Field $result 'elapsedSeconds') } catch { $elapsedSeconds = 0.0 }
     $lastProgress = [string](Get-Field $result 'lastProgress')
-    $resultTime = ConvertTo-UtcTime (Get-Field $result 'recordedUtc')
-    if ($null -eq $resultTime) { $resultTime = ConvertTo-UtcTime (Get-Field $result 'endedUtc') }
-    if ($null -eq $resultTime) {
-        try { $resultTime = (Get-Item -LiteralPath $resultPath -Force).LastWriteTimeUtc } catch { $resultTime = $null }
-    }
+    $resultEntryPath = if ($null -ne $resultEntry) { $resultEntry.Path } else { '' }
+    $resultTime = Get-ResultRecordedTime -Doc $result -Path $resultEntryPath
 }
 $resultIsCurrent = ($null -ne $resultTime -and ([DateTime]::UtcNow - $resultTime).TotalMinutes -lt $evidenceMinutes)
 # Stable, locale-independent identity for the run this result describes.
 $script:ResultTicks = if ($null -ne $resultTime) { [string]$resultTime.Ticks } else { '0' }
-
-# A test command was seen for THIS project state (Test-Run-Guard's PostToolUse
-# handoff). Only trusted while its fingerprint still matches - an observation
-# from an earlier state says nothing about the state being completed now.
-$observedCurrent = $false
-$observedGuarded = $true
-$observed = $null
-try { $observed = Read-JsonFile $observedPath } catch { $observed = $null }
-if ($null -ne $observed) {
-    $observedFingerprint = [string](Get-Field $observed 'fingerprint')
-    if ($observedFingerprint -eq $stateFingerprint) {
-        $observedCurrent = $true
-        if ((Get-Field $observed 'guarded') -eq $false) { $observedGuarded = $false }
-    }
-}
-
-# Does the recorded result actually describe THIS run/command/state? A result
-# for a DIFFERENT run is not evidence about the current one, so every
-# result-driven finding below is gated on identity - never on file age.
-#   $resultRunMatches         : identity/state match, NO age check. Negative
-#                               findings (a terminated/leaked incident) use this,
-#                               because staleness must never weaken a real
-#                               incident - only a genuine identity mismatch clears
-#                               it (spec: a mismatched negative result for a
-#                               DIFFERENT run must not block the current state).
-#   $resultIsCurrentEvidence  : the above AND still fresh. POSITIVE evidence (a
-#                               clean pass, a definite fail) additionally requires
-#                               freshness, since an old pass is not proof a run
-#                               happened for the current state.
-# When an observed record exists, bind exactly by run identity; when none does,
-# bind on the result's own project fingerprint (schema 2) or, for a legacy
-# result with no identity at all, keep the prior age-only behaviour.
-$resultRunMatches = $false
-if ($null -ne $result) {
-    if ($null -ne $observed) {
-        $resultRunMatches = (Test-ResultMatchesObserved -Result $result -Observed $observed -CurrentStateFingerprint $stateFingerprint)
-    }
-    else {
-        $rProjectFp = [string](Get-Field $result 'projectFingerprint')
-        if (-not [string]::IsNullOrWhiteSpace($rProjectFp)) { $resultRunMatches = ($rProjectFp -eq $stateFingerprint) }
-        else { $resultRunMatches = $true }   # legacy result: no identity to bind on, age governs at the positive sites
-    }
-}
 $resultIsCurrentEvidence = ($resultRunMatches -and $resultIsCurrent)
-
-# An active guarded run: only when the recorded owner process is STILL THE SAME
-# process. A bare {pid} marker is a PID-REUSE trap - an unrelated process that
-# later inherits that pid would block completion forever. The schema-2 marker
-# also records the owner's own start time and executable path, so "alive" now
-# means the live process at ownerPid has that EXACT start time and executable and
-# the marker belongs to the current project. A recycled pid, a different program,
-# or a different project makes the marker stale, never active. A malformed marker
-# is treated as absent (no infinite block). A stale marker is removed best-effort.
-$activePid = 0
-$active = $null
-try { $active = Read-JsonFile $activePath } catch { $active = $null }
-if ($null -ne $active) {
-    $ownerPidRaw = Get-Field $active 'ownerPid'
-    if ($null -eq $ownerPidRaw) { $ownerPidRaw = Get-Field $active 'pid' }   # schema-1 fallback
-    $candidate = 0
-    if ([int]::TryParse([string]$ownerPidRaw, [ref]$candidate) -and $candidate -gt 0) {
-        $liveProcess = $null
-        try { $liveProcess = Get-Process -Id $candidate -ErrorAction Stop } catch { $liveProcess = $null }
-        if ($null -ne $liveProcess) {
-            $markerStartUtc = ConvertTo-UtcTime (Get-Field $active 'ownerProcessStartUtc')
-            $markerExe = [string](Get-Field $active 'ownerExecutablePath')
-            $markerProjFp = [string](Get-Field $active 'projectFingerprint')
-            if ($null -ne $markerStartUtc -or $markerExe -ne '') {
-                # Schema-2 identity check: everything present must match the LIVE process.
-                $identityOk = $true
-                if ($markerProjFp -ne '' -and $markerProjFp -ne $stateFingerprint) { $identityOk = $false }
-                if ($identityOk -and $null -ne $markerStartUtc) {
-                    $liveStart = $null
-                    try { $liveStart = $liveProcess.StartTime.ToUniversalTime() } catch { $liveStart = $null }
-                    if ($null -eq $liveStart -or [Math]::Abs(($liveStart - $markerStartUtc).TotalSeconds) -gt 2) { $identityOk = $false }
-                }
-                if ($identityOk -and $markerExe -ne '') {
-                    $liveExe = ''
-                    try { $liveExe = [string]$liveProcess.Path } catch { $liveExe = '' }
-                    if ($liveExe -ne '' -and -not [string]::Equals($liveExe, $markerExe, [System.StringComparison]::OrdinalIgnoreCase)) { $identityOk = $false }
-                }
-                if ($identityOk) { $activePid = $candidate }
-            }
-            else {
-                # Schema-1 marker (no owner identity): best-effort legacy behaviour.
-                $activePid = $candidate
-            }
-        }
-    }
-    # A marker that resolved to no active owner is stale - drop it so a recycled
-    # pid can never resurrect it. Best-effort; failure to delete never blocks.
-    if ($activePid -eq 0) {
-        try { Remove-Item -LiteralPath $activePath -Force -ErrorAction SilentlyContinue } catch { }
-    }
-}
 
 # ---- incident identity ----
 # Keyed on what actually happened, so re-reading the same document never

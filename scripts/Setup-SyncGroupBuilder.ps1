@@ -195,9 +195,153 @@ function New-GroupProfile {
     }
 }
 
+# ----------------------------------------------- transitive group merge ----
+# A new sync group that shares ANY project with an existing group is really the
+# same mesh - the user linked them. Sync 1,2,3 then sync 4 with 3, and 4 must
+# end up meshed with 1, 2 AND 3, not only 3. This computes the transitive
+# closure (every existing profile whose members intersect the growing set is
+# absorbed) and returns ONE full-mesh profile over the union.
+#
+# The merged profile REUSES the id of the LARGEST absorbed group (the "anchor").
+# The engine filters routes by the installed -Profile id and reads the live
+# config at run time (Cross-Project-.ai-Knowledge-Sync.ps1 line ~537), so the
+# anchor group's already-installed hooks keep working and automatically pick up
+# the widened mesh with no reinstall. Only NEW projects and members of the
+# smaller absorbed groups (whose old profile id is being removed) need an engine
+# install pointing at the anchor id. A brand-new group with no overlap keeps its
+# deterministic hash id and installs into all of its projects.
+function Get-SyncProfileMembers {
+    param([Parameter(Mandatory = $true)]$ProfileObj)
+    $seen = @{}
+    $members = New-Object System.Collections.Generic.List[object]
+    foreach ($route in @($ProfileObj.routes)) {
+        foreach ($endpoint in @($route.source, $route.destination)) {
+            if ($null -eq $endpoint) { continue }
+            $root = ''
+            try { $root = [string]$endpoint.root } catch { $root = '' }
+            if ([string]::IsNullOrWhiteSpace($root)) { continue }
+            $lower = $root.ToLowerInvariant()
+            if ($seen.ContainsKey($lower)) { continue }
+            $seen[$lower] = $true
+            $name = ''
+            try { $name = [string]$endpoint.name } catch { $name = '' }
+            if ([string]::IsNullOrWhiteSpace($name)) { $name = Split-Path -Leaf $root }
+            [void]$members.Add([pscustomobject]@{ Name = $name; Root = $root; Lower = $lower })
+        }
+    }
+    return $members.ToArray()
+}
+
+function Get-SyncGroupMerge {
+    param(
+        [Parameter(Mandatory = $true)]$Config,
+        [Parameter(Mandatory = $true)]$NewProjects
+    )
+    $existingProfiles = @()
+    if ($null -ne $Config.PSObject.Properties['profiles'] -and $null -ne $Config.profiles) {
+        $existingProfiles = @($Config.profiles)
+    }
+
+    # union of roots (lowercased), seeded with the just-entered projects
+    $unionLower = @{}
+    $entryByLower = @{}
+    foreach ($project in @($NewProjects)) {
+        $lower = $project.Root.ToLowerInvariant()
+        $unionLower[$lower] = $true
+        $entryByLower[$lower] = $project
+    }
+
+    # transitive closure: keep absorbing profiles until none intersects the union
+    $overlap = New-Object System.Collections.Generic.List[object]
+    $overlapIds = @{}
+    $changed = $true
+    while ($changed) {
+        $changed = $false
+        foreach ($prof in $existingProfiles) {
+            $profId = ''
+            try { $profId = [string]$prof.id } catch { $profId = '' }
+            if ([string]::IsNullOrWhiteSpace($profId) -or $overlapIds.ContainsKey($profId)) { continue }
+            $members = Get-SyncProfileMembers -ProfileObj $prof
+            $intersects = $false
+            foreach ($m in $members) { if ($unionLower.ContainsKey($m.Lower)) { $intersects = $true; break } }
+            if (-not $intersects) { continue }
+            $overlapIds[$profId] = $true
+            [void]$overlap.Add([pscustomobject]@{ Id = $profId; Profile = $prof; Members = $members; Count = $members.Count })
+            foreach ($m in $members) {
+                if (-not $unionLower.ContainsKey($m.Lower)) {
+                    $unionLower[$m.Lower] = $true
+                    if (-not $entryByLower.ContainsKey($m.Lower)) {
+                        $aiPath = Join-Path $m.Root '.ai'
+                        $entryByLower[$m.Lower] = [pscustomobject][ordered]@{
+                            Name     = $m.Name
+                            Root     = $m.Root
+                            AiPath   = $aiPath
+                            AiExists = (Test-Path -LiteralPath $aiPath -PathType Container)
+                        }
+                    }
+                }
+            }
+            $changed = $true
+        }
+    }
+
+    $allMembers = @($entryByLower.Values | Sort-Object -Property Root)
+
+    # anchor = the largest absorbed group; reuse its id so its hooks keep working
+    $anchorId = ''
+    $anchorMembersLower = @{}
+    if ($overlap.Count -gt 0) {
+        $anchor = @($overlap | Sort-Object -Property @{ Expression = { $_.Count }; Descending = $true }, @{ Expression = { $_.Id }; Descending = $false })[0]
+        $anchorId = $anchor.Id
+        foreach ($m in $anchor.Members) { $anchorMembersLower[$m.Lower] = $true }
+    }
+
+    $merged = New-GroupProfile -Projects $allMembers
+    if (-not [string]::IsNullOrWhiteSpace($anchorId)) {
+        $merged.id = $anchorId
+    }
+
+    # keep a route the user had DISABLED in an absorbed profile disabled after the
+    # merge - the widening must never silently re-enable a route they turned off.
+    $disabledPairs = @{}
+    foreach ($o in $overlap) {
+        foreach ($route in @($o.Profile.routes)) {
+            $enabled = $true
+            if ($null -ne $route.PSObject.Properties['enabled']) { try { $enabled = [bool]$route.enabled } catch { $enabled = $true } }
+            if ($enabled) { continue }
+            if ($null -eq $route.source -or $null -eq $route.destination) { continue }
+            $key = ([string]$route.source.root).ToLowerInvariant() + '|' + ([string]$route.destination.root).ToLowerInvariant()
+            $disabledPairs[$key] = $true
+        }
+    }
+    if ($disabledPairs.Count -gt 0) {
+        foreach ($route in @($merged.routes)) {
+            $key = ([string]$route.source.root).ToLowerInvariant() + '|' + ([string]$route.destination.root).ToLowerInvariant()
+            if ($disabledPairs.ContainsKey($key)) { $route.enabled = $false }
+        }
+    }
+
+    # engine (re)install set: everything in the union that is NOT already an
+    # anchor member (anchor members keep their hook + widened mesh automatically).
+    $installMembers = @($allMembers | Where-Object { -not $anchorMembersLower.ContainsKey($_.Root.ToLowerInvariant()) })
+
+    return [pscustomobject]@{
+        Profile          = $merged
+        AllMembers       = @($allMembers)
+        InstallMembers   = @($installMembers)
+        RemoveProfileIds = @($overlapIds.Keys)
+        MergedFromCount  = $overlap.Count
+    }
+}
+
 # --------------------------------------------------- sync group flow (1) ----
 function Invoke-CreateGroup {
     Write-Log 'INFO' 'GROUP' 'Create/update sync group started.'
+    # Published so the "install an existing hook" flow can reuse THIS group's
+    # project paths as the install targets for any other hooks selected in the
+    # same batch - the user enters the paths once, not once per menu item.
+    # Reset up front so a back/cancel never leaves a previous run's paths behind.
+    $script:LastGroupProjects = @()
 
     $config = Read-JsonFile $ConfigPath
     if ($null -eq $config) {
@@ -264,7 +408,15 @@ function Invoke-CreateGroup {
                     return 'back'
                 }
             }
-            $groupProfile = New-GroupProfile -Projects $projects
+            # Merge with any existing group that shares a project (transitive):
+            # one full-mesh profile over the union, reusing the largest absorbed
+            # group's id so its hooks keep working without reinstall.
+            $merge = Get-SyncGroupMerge -Config $config -NewProjects $projects
+            $groupProfile = $merge.Profile
+            $allMembers = @($merge.AllMembers)
+            $installMembers = @($merge.InstallMembers)
+            $removeProfileIds = @($merge.RemoveProfileIds)
+            $mergedFromCount = $merge.MergedFromCount
             $routeCount = @($groupProfile.routes).Count
             $stage = 1
             continue
@@ -283,9 +435,12 @@ function Invoke-CreateGroup {
 
         # stage 2: summary + confirm
         Write-PhaseHeader 'Summary' $C.Summary '-'
+        if ($mergedFromCount -gt 0) {
+            Write-NoteLine ('  Merges with ' + $mergedFromCount + ' existing sync group(s) into one full mesh of ' + $allMembers.Count + ' project(s) - every member syncs with every other.')
+        }
         Write-MenuTitle 'Sync group:'
-        for ($i = 0; $i -lt $projects.Count; $i++) {
-            $project = $projects[$i]
+        for ($i = 0; $i -lt $allMembers.Count; $i++) {
+            $project = $allMembers[$i]
             $note = '(.ai will be created)'
             $noteColor = $C.Amber
             if ($project.AiExists) {
@@ -328,8 +483,8 @@ function Invoke-CreateGroup {
         break
     }
     $installScope = if ($NoInstall) { 'skipped (-NoInstall)' } else { $clients }
-    Write-Log 'INFO' 'GROUP' ('Confirmed. profile=' + $groupProfile.id + ' | name="' + $groupProfile.name + '" | projects=' + $projects.Count + ' | routes=' + $routeCount + ' (full mesh) | events=' + ($events -join ',') + ' | client=' + $installScope + ' | config=' + $ConfigPath)
-    foreach ($project in $projects) {
+    Write-Log 'INFO' 'GROUP' ('Confirmed. profile=' + $groupProfile.id + ' | name="' + $groupProfile.name + '" | projects=' + $allMembers.Count + ' | mergedFrom=' + $mergedFromCount + ' | reinstall=' + @($installMembers).Count + ' | routes=' + $routeCount + ' (full mesh) | events=' + ($events -join ',') + ' | client=' + $installScope + ' | config=' + $ConfigPath)
+    foreach ($project in $allMembers) {
         Write-Log 'DEBUG' 'GROUP' ('Project: ' + $project.Name + ' | root=' + $project.Root + ' | aiExists=' + $project.AiExists)
     }
     foreach ($route in @($groupProfile.routes)) {
@@ -350,7 +505,7 @@ function Invoke-CreateGroup {
     # every directory actually created THIS run and roll it back on any failure.
     $aiCreateFailures = New-Object System.Collections.Generic.List[object]
     $aiCreatedThisRun = New-Object System.Collections.Generic.List[string]
-    foreach ($project in $projects) {
+    foreach ($project in $allMembers) {
         if (-not $project.AiExists) {
             try {
                 New-Item -ItemType Directory -Path $project.AiPath -Force -ErrorAction Stop | Out-Null
@@ -406,20 +561,21 @@ function Invoke-CreateGroup {
     if ($null -ne $config.PSObject.Properties['profiles'] -and $null -ne $config.profiles) {
         $existingProfiles = @($config.profiles)
     }
+    # Drop every absorbed profile (the transitive-closure merge) and any profile
+    # sharing the merged id, then add the single merged full-mesh profile.
+    $removeSet = @{}
+    foreach ($rid in @($removeProfileIds)) { $removeSet[[string]$rid] = $true }
+    $removeSet[[string]$groupProfile.id] = $true
     $replaced = $false
     $newProfiles = New-Object System.Collections.Generic.List[object]
     foreach ($existing in $existingProfiles) {
-        if ($null -ne $existing -and $null -ne $existing.PSObject.Properties['id'] -and [string]$existing.id -eq $groupProfile.id) {
-            [void]$newProfiles.Add($groupProfile)
+        if ($null -ne $existing -and $null -ne $existing.PSObject.Properties['id'] -and $removeSet.ContainsKey([string]$existing.id)) {
             $replaced = $true
+            continue
         }
-        else {
-            [void]$newProfiles.Add($existing)
-        }
+        [void]$newProfiles.Add($existing)
     }
-    if (-not $replaced) {
-        [void]$newProfiles.Add($groupProfile)
-    }
+    [void]$newProfiles.Add($groupProfile)
     Set-ObjectProperty -Object $config -Name 'profiles' -Value $newProfiles.ToArray()
     if ($null -eq $config.PSObject.Properties['version']) {
         Set-ObjectProperty -Object $config -Name 'version' -Value 2
@@ -453,7 +609,14 @@ function Invoke-CreateGroup {
         # Install the hook locally in each project, not in the user's home settings,
         # so only these projects carry the hook and nothing else on the machine is touched.
         $clientArgs = Get-ClientInstallArgs $clients
-        foreach ($project in $projects) {
+        # Install the engine only where it's needed: the new projects and any
+        # member of a smaller absorbed group (whose old profile id was removed).
+        # Members of the anchor group already carry a hook pointing at the reused
+        # id and pick up the widened mesh from the live config with no reinstall.
+        if (@($installMembers).Count -eq 0) {
+            Write-NoteLine '  All members already carry the sync hook; the widened mesh applies with no reinstall.'
+        }
+        foreach ($project in $installMembers) {
             Write-Log 'INFO' 'INSTALL' ('Installing engine hook -> ' + $project.Name + ' | root=' + $project.Root + ' | profile=' + $groupProfile.id + ' | client=' + $clients + ' | events=' + ($events -join ','))
             $installOutput = & $InstallScript -Profile $groupProfile.id -ConfigPath $ConfigPath -TargetProject $project.Root @clientArgs *>&1
             foreach ($line in @($installOutput)) {
@@ -471,7 +634,8 @@ function Invoke-CreateGroup {
     if ($null -ne $script:LogPath) {
         Write-Host (Get-Painted ('  Log: ' + $script:LogPath) $C.Dim)
     }
-    $installSummary = if ($NoInstall) { 'not installed (-NoInstall)' } else { $clients + ' in ' + $projects.Count + ' project(s)' }
+    $installSummary = if ($NoInstall) { 'not installed (-NoInstall)' } else { $clients + ' in ' + @($installMembers).Count + ' of ' + $allMembers.Count + ' project(s)' }
     Write-Log 'INFO' 'DONE' ('Sync group applied: ' + $groupProfile.id + ' | routes=' + $routeCount + ' | events=' + ($events -join ',') + ' | install=' + $installSummary + ' | durationMs=' + $stopwatch.ElapsedMilliseconds)
+    $script:LastGroupProjects = @($projects)
     return 'done'
 }

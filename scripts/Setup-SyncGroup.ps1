@@ -61,6 +61,13 @@ $C = @{
     Aqua       = "$Esc[38;5;159m"
     Amber      = "$Esc[38;5;214m"
     Mint       = "$Esc[38;5;121m"
+    # Distinct hues for the two ACTION tags so they never read as a timing tag:
+    # [all] (Orchid) must not be mistaken for [pre-task] (Mint), and [manage]
+    # (Teal) must not be mistaken for [post-task] (Amber). Keep the five tag
+    # colours in five different hues - Mint(green)/Amber(orange)/Aqua(cyan)/
+    # Orchid(magenta)/Teal(teal).
+    Orchid     = "$Esc[38;5;171m"
+    Teal       = "$Esc[38;5;37m"
     TitleBar   = "$Esc[38;2;255;50;115m"
     Title      = "$Esc[1m$Esc[38;2;255;50;115m"
     Input      = "$Esc[1m$Esc[38;2;68;221;255m"
@@ -607,7 +614,12 @@ function Read-EventSelection {
 # Gathers events + client + target projects for one hook as a mini stage machine
 # (back steps one). Returns an object, or $null when backed out of the first step.
 function Read-HookConfig {
-    param([string]$TitleSuffix = '', [switch]$SkipEvents, [string[]]$RecommendedEvents = @())
+    param([string]$TitleSuffix = '', [switch]$SkipEvents, [string[]]$RecommendedEvents = @(), [object[]]$InitialTargets = @())
+    # When $InitialTargets is supplied (the project paths already collected by the
+    # sync group in this same batch), the path prompt is skipped entirely - the
+    # user typed those paths once and there is no reason to ask again. They stay
+    # editable from the summary screen (Read-ProjectList -InitialProjects).
+    $reuseTargets = (@($InitialTargets).Count -gt 0)
     $events = $null; $clients = $null; $stage = if ($SkipEvents) { 1 } else { 0 }
     while ($true) {
         switch ($stage) {
@@ -626,6 +638,9 @@ function Read-HookConfig {
                 $stage = 2
             }
             2 {
+                if ($reuseTargets) {
+                    return [pscustomobject]@{ Events = @($events); Clients = $clients; Targets = @($InitialTargets) }
+                }
                 $targets = Read-ProjectList -MinimumCount 1
                 if ($null -eq $targets) { $stage = 1; break }
                 return [pscustomobject]@{ Events = @($events); Clients = $clients; Targets = @($targets) }
@@ -675,14 +690,14 @@ function Invoke-InstallExistingHook {
         $maxIndex = $customStartIndex + $customHooks.Count - 1
 
         Write-MenuTitle 'Available hooks (hooks\):'
-        Write-Host ('  ' + (Get-Painted '1.' $C.LightBlue) + ' ' + (Get-Painted 'Select all hooks' $C.Bold) + $script:MenuSep + (Get-Painted '[all]' $C.Mint) + $script:MenuSep + (Get-Painted ('run the sync group and install all ' + $hookFiles.Count + ' hooks below - the complete former full-list flow') $C.HintYellow))
+        Write-Host ('  ' + (Get-Painted '1.' $C.LightBlue) + ' ' + (Get-Painted 'Select all hooks' $C.Bold) + $script:MenuSep + (Get-Painted '[all]' $C.Orchid) + $script:MenuSep + (Get-Painted ('run the sync group (2) and install every hook below (3-' + ($shippedHooks.Count + $customHooks.Count + 2) + '); never the management actions ' + $updateIndex + '/' + $statusIndex + '/' + $uninstallIndex) $C.HintYellow))
         Write-Host ('  ' + (Get-Painted '2.' $C.LightBlue) + ' ' + (Get-Painted 'Create or update a sync group' $C.Bold) + $script:MenuSep + (Get-Painted '[pre-task]' $C.Mint) + $script:MenuSep + (Get-Painted 'cross-project .ai knowledge sync' $C.HintYellow))
         for ($i = 0; $i -lt $shippedHooks.Count; $i++) {
             Write-HookMenuLine ($i + 3) $shippedHooks[$i].Name
         }
-        Write-Host ('  ' + (Get-Painted ([string]$updateIndex + '.') $C.LightBlue) + ' ' + (Get-Painted 'Update installed hooks' $C.Bold) + $script:MenuSep + (Get-Painted '[manage]' $C.Amber) + $script:MenuSep + (Get-Painted 'refresh installed copies from their current source' $C.HintYellow))
-        Write-Host ('  ' + (Get-Painted ([string]$statusIndex + '.') $C.LightBlue) + ' ' + (Get-Painted 'Get hook status' $C.Bold) + $script:MenuSep + (Get-Painted '[manage]' $C.Amber) + $script:MenuSep + (Get-Painted 'scan a path, detect installed hooks, and track verified results' $C.HintYellow))
-        Write-Host ('  ' + (Get-Painted ([string]$uninstallIndex + '.') $C.LightBlue) + ' ' + (Get-Painted 'Uninstall installed hooks' $C.Bold) + $script:MenuSep + (Get-Painted '[manage]' $C.Amber) + $script:MenuSep + (Get-Painted 'list and remove installed hooks; never deletes hook sources' $C.HintYellow))
+        Write-Host ('  ' + (Get-Painted ([string]$updateIndex + '.') $C.LightBlue) + ' ' + (Get-Painted 'Update installed hooks' $C.Bold) + $script:MenuSep + (Get-Painted '[manage]' $C.Teal) + $script:MenuSep + (Get-Painted 'refresh installed copies from their current source' $C.HintYellow))
+        Write-Host ('  ' + (Get-Painted ([string]$statusIndex + '.') $C.LightBlue) + ' ' + (Get-Painted 'Get hook status' $C.Bold) + $script:MenuSep + (Get-Painted '[manage]' $C.Teal) + $script:MenuSep + (Get-Painted 'scan a path, detect installed hooks, and track verified results' $C.HintYellow))
+        Write-Host ('  ' + (Get-Painted ([string]$uninstallIndex + '.') $C.LightBlue) + ' ' + (Get-Painted 'Uninstall installed hooks' $C.Bold) + $script:MenuSep + (Get-Painted '[manage]' $C.Teal) + $script:MenuSep + (Get-Painted 'list and remove installed hooks; never deletes hook sources' $C.HintYellow))
         for ($i = 0; $i -lt $customHooks.Count; $i++) {
             Write-HookMenuLine ($customStartIndex + $i) $customHooks[$i].Name
         }
@@ -747,6 +762,10 @@ function Invoke-InstallExistingHook {
         # its wizard first, then fall through and install the rest right after
         # (no need to re-enter this menu a second time).
         $ranSyncGroup = $false
+        # Project paths collected by the sync group, reused as the install targets
+        # for any other hooks picked in the same batch (entered once, not per hook).
+        # Empty unless item 2 ran and published its projects.
+        $sharedGroupProjects = @()
         if ($indices.Contains(2)) {
             [void]$indices.Remove(2)
             if ($indices.Count -gt 0) {
@@ -757,6 +776,10 @@ function Invoke-InstallExistingHook {
             if ($groupResult -eq 'canceled') { return 'done' }
             $ranSyncGroup = $true
             if ($indices.Count -eq 0) { return 'done' }
+            $sharedGroupProjects = @($script:LastGroupProjects)
+            if ($sharedGroupProjects.Count -gt 0) {
+                Write-NoteLine ('  Reusing the same ' + $sharedGroupProjects.Count + ' project path(s) from the sync group for the remaining hook(s) - edit them at the summary if needed.')
+            }
             Write-PhaseHeader 'Install an Existing Hook' $C.Input '-'
         }
         # Resolve each remaining index back to its hook. Shipped and custom hooks
@@ -772,7 +795,7 @@ function Invoke-InstallExistingHook {
         $plans = $null
         $sharedTargets = $false
         if ($selected.Count -eq 1) {
-            $cfg = Read-HookConfig -RecommendedEvents @(Get-HookRecommendedEvents $selected[0])
+            $cfg = Read-HookConfig -RecommendedEvents @(Get-HookRecommendedEvents $selected[0]) -InitialTargets $sharedGroupProjects
             if ($null -eq $cfg) { continue }
             $plans = @([pscustomobject]@{ Hook = $selected[0]; Config = $cfg })
         }
@@ -786,7 +809,7 @@ function Invoke-InstallExistingHook {
             if ($mode -eq '0') { continue }
             if ($mode -eq '') { $mode = '1' }
             if ($mode -eq '1') {
-                $cfg = Read-HookConfig ' (all selected hooks)' -SkipEvents
+                $cfg = Read-HookConfig ' (all selected hooks)' -SkipEvents -InitialTargets $sharedGroupProjects
                 if ($null -eq $cfg) { continue }
                 $sharedTargets = $true
                 $plans = @($selected | ForEach-Object {
@@ -798,7 +821,7 @@ function Invoke-InstallExistingHook {
                 $collected = New-Object System.Collections.Generic.List[object]
                 $aborted = $false
                 foreach ($h in $selected) {
-                    $cfg = Read-HookConfig (' for ' + (Get-HookFriendlyName $h.Name)) -RecommendedEvents @(Get-HookRecommendedEvents $h)
+                    $cfg = Read-HookConfig (' for ' + (Get-HookFriendlyName $h.Name)) -RecommendedEvents @(Get-HookRecommendedEvents $h) -InitialTargets $sharedGroupProjects
                     if ($null -eq $cfg) { $aborted = $true; break }
                     [void]$collected.Add([pscustomobject]@{ Hook = $h; Config = $cfg })
                 }

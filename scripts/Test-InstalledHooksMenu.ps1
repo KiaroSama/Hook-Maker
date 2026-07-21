@@ -393,7 +393,7 @@ try {
         function Write-ErrorLine { param([string]$Message) [void]$script:Captured.Add($Message) }
         function Write-Log { param([string]$Level, [string]$Component, [string]$Message) }
         function Get-ClientDisplayName { param([string]$Client) if ($Client -eq 'claude') { 'Claude' } elseif ($Client -eq 'codex') { 'Codex' } else { $Client } }
-        $C = @{ Reset = ''; Bold = ''; Red = ''; Green = ''; White = ''; Gray = ''; Dim = ''; LightBlue = ''; HintYellow = ''; NoteYellow = ''; Aqua = ''; Amber = ''; Mint = ''; Summary = ''; Process = ''; Input = '' }
+        $C = @{ Reset = ''; Bold = ''; Red = ''; Green = ''; White = ''; Gray = ''; Dim = ''; LightBlue = ''; HintYellow = ''; NoteYellow = ''; Aqua = ''; Amber = ''; Mint = ''; Orchid = ''; Teal = ''; Summary = ''; Process = ''; Input = '' }
         $script:MenuSep = ' | '
         . (Join-Path $ScriptRoot 'Setup-SyncGroupHookStatus.ps1')
 
@@ -473,7 +473,7 @@ try {
         function Write-ErrorLine { param([string]$Message) [void]$script:Captured.Add($Message) }
         function Write-Log { param([string]$Level, [string]$Component, [string]$Message) }
         function Get-ClientDisplayName { param([string]$Client) return $Client }
-        $C = @{ Reset = ''; Bold = ''; Red = ''; Green = ''; White = ''; Gray = ''; Dim = ''; LightBlue = ''; HintYellow = ''; NoteYellow = ''; Aqua = ''; Amber = ''; Mint = ''; Summary = ''; Process = ''; Input = '' }
+        $C = @{ Reset = ''; Bold = ''; Red = ''; Green = ''; White = ''; Gray = ''; Dim = ''; LightBlue = ''; HintYellow = ''; NoteYellow = ''; Aqua = ''; Amber = ''; Mint = ''; Orchid = ''; Teal = ''; Summary = ''; Process = ''; Input = '' }
         $script:MenuSep = ' | '
         . (Join-Path $ScriptRoot 'Setup-SyncGroupHookStatus.ps1')
         Show-HookStatusResult -Document ([pscustomobject]@{ overall = 'failed'; errors = @('access denied at the root') }) -Elapsed ([TimeSpan]::Zero)

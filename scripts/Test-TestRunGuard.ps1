@@ -45,6 +45,10 @@ Write-Host ("Workspace: $Work") -ForegroundColor DarkGray
 
 function Write-Utf8 { param([string]$Path, [string]$Content) [System.IO.File]::WriteAllText($Path, $Content, (New-Object System.Text.UTF8Encoding $false)) }
 
+# Filename-safe runId, matching Test-Run-Guard.ps1/Run-Tests-Guarded.ps1's
+# Get-SafeRunId - the per-run suffix of every coordination file.
+function Get-SafeRunId { param([string]$Id) $s = ([string]$Id).ToLowerInvariant() -replace '[^a-z0-9]', ''; if ($s -eq '') { $s = [guid]::NewGuid().ToString('N') } return $s }
+
 # Per-case isolated hook copy + fake LOCALAPPDATA, so result/report/config state
 # never collides across cases or with the real machine state.
 function New-IsolatedHookCopy {
@@ -226,6 +230,8 @@ try {
     $probeResult = Join-Path $hcProbe.LocalAppData 'HookMaker\state'
     $probeResultFile = @(Get-ChildItem -LiteralPath $probeResult -Filter 'TestRunGuard-result-*.json' -ErrorAction SilentlyContinue)
     Check 'the replacement wrote its result document to the hook-declared -ResultPath' ($probeResultFile.Count -eq 1)
+    Check 'the result filename is PER-RUN (key + runId), so concurrent runs never collide' (
+        $probeResultFile.Count -eq 1 -and $probeResultFile[0].Name -match '^TestRunGuard-result-[a-z0-9]+-[a-z0-9]+\.json$') $(if ($probeResultFile.Count -eq 1) { $probeResultFile[0].Name } else { 'none' })
     $probeDoc = Get-Content -LiteralPath $probeResultFile[0].FullName -Raw | ConvertFrom-Json
     Check 'the result document records the failure, not a pass' ($probeDoc.overall -eq 'failed' -and $probeDoc.exitCode -eq 7) $probeDoc.overall
     Check 'the metacharacter argument survived as ONE argument, unevaluated' ($probeDoc.lastProgress -match 'tag=a b\|c&d') $probeDoc.lastProgress
@@ -317,16 +323,15 @@ try {
         finally { $sha.Dispose() }
         $dir = Join-Path $LocalAppData 'HookMaker\state'
         New-Item -ItemType Directory -Path $dir -Force | Out-Null
-        $path = Join-Path $dir ('TestRunGuard-result-' + $key + '.json')
         # A synthetic result must carry the run identity of the observation it
         # stands in for, or the hook's identity gate correctly rejects it as
         # belonging to a different run. Copy runId/commandFingerprint/
-        # projectFingerprint from the observed record when one exists.
+        # projectFingerprint from the PER-RUN observed record when one exists.
         $runId = ''; $cmdFp = ''; $projFp = ''
-        $observedPath = Join-Path $dir ('TestRunGuard-observed-' + $key + '.json')
-        if (Test-Path -LiteralPath $observedPath -PathType Leaf) {
+        $obsFiles = @(Get-ChildItem -LiteralPath $dir -Filter ('TestRunGuard-observed-' + $key + '-*.json') -File -ErrorAction SilentlyContinue)
+        if ($obsFiles.Count -ge 1) {
             try {
-                $obs = Get-Content -LiteralPath $observedPath -Raw | ConvertFrom-Json
+                $obs = Get-Content -LiteralPath $obsFiles[0].FullName -Raw | ConvertFrom-Json
                 $runId = [string]$obs.runId
                 $cmdFp = [string]$obs.commandFingerprint
                 $projFp = if ($obs.PSObject.Properties['projectFingerprint']) { [string]$obs.projectFingerprint } else { [string]$obs.fingerprint }
@@ -342,6 +347,8 @@ try {
             startedUtc = $nowIso; endedUtc = $nowIso
         }
         foreach ($key2 in $Fields.Keys) { $document[$key2] = $Fields[$key2] }
+        # PER-RUN result filename by the FINAL runId (after any -Fields override).
+        $path = Join-Path $dir ('TestRunGuard-result-' + $key + '-' + (Get-SafeRunId ([string]$document['runId'])) + '.json')
         Write-Utf8 $path (($document | ConvertTo-Json -Depth 6))
         return $path
     }
@@ -466,6 +473,55 @@ try {
         $shipRepl -match 'scripts.Run-Tests-Guarded\.ps1') $shipRepl
 
     # =====================================================================
+    Write-Host '--- Find-GuardedRunner: MANAGED (shipped-beside) wins over a project runner; contract marker required (Defect 2) ---' -ForegroundColor Cyan
+    # Pulls the -File "<runner>" path out of the replacement's runner invocation.
+    function Get-RunnerPath {
+        param([string]$Message)
+        foreach ($line in ($Message -split "`n")) {
+            if ($line -match '-File\s+"([^"]+Run-Tests-Guarded\.ps1)"') { return $Matches[1] }
+        }
+        return ''
+    }
+    # A hook with the MANAGED runner shipped beside it (carries the contract marker).
+    $mgDir = Join-Path $Work ('managed-' + [guid]::NewGuid().ToString('N').Substring(0, 6))
+    New-Item -ItemType Directory -Path (Join-Path $mgDir 'scripts') -Force | Out-Null
+    Copy-Item $Hook (Join-Path $mgDir 'Test-Run-Guard.ps1')
+    Copy-Item $HookLib (Join-Path (Split-Path -Parent $mgDir) '_hooklib.ps1') -Force
+    Copy-Item $Runner (Join-Path $mgDir 'scripts\Run-Tests-Guarded.ps1')     # managed - has the marker
+    $mgHook = Join-Path $mgDir 'Test-Run-Guard.ps1'
+    $mgLocal = Join-Path $mgDir '_fakelocal'; New-Item -ItemType Directory -Path $mgLocal -Force | Out-Null
+    $mgRunner = Join-Path $mgDir 'scripts\Run-Tests-Guarded.ps1'
+
+    # A project that ALSO ships a scripts\Run-Tests-Guarded.ps1 - but WITHOUT the marker.
+    $projNoMarker = Join-Path $Work ('projnomarker-' + [guid]::NewGuid().ToString('N').Substring(0, 6))
+    New-Item -ItemType Directory -Path (Join-Path $projNoMarker 'scripts') -Force | Out-Null
+    Write-Utf8 (Join-Path $projNoMarker 'scripts\Run-Tests-Guarded.ps1') "param()`nWrite-Host 'not the real guarded runner'`n"
+    $r = Fire -HookPath $mgHook -Cwd $projNoMarker -EventName 'PreToolUse' -Command 'pytest -q' -LocalAppData $mgLocal
+    $runnerUsed = Get-RunnerPath (Get-Message $r.Out)
+    Check 'the MANAGED shipped-beside runner is used, not the project runner' ($runnerUsed -eq $mgRunner) $runnerUsed
+    Check 'the marker-less project runner is never referenced' ($runnerUsed -notmatch [regex]::Escape($projNoMarker)) $runnerUsed
+
+    # A project runner that DOES carry the marker still loses to the managed one.
+    $projWithMarker = Join-Path $Work ('projmarker-' + [guid]::NewGuid().ToString('N').Substring(0, 6))
+    New-Item -ItemType Directory -Path (Join-Path $projWithMarker 'scripts') -Force | Out-Null
+    Copy-Item $Runner (Join-Path $projWithMarker 'scripts\Run-Tests-Guarded.ps1')     # marker present
+    $r = Fire -HookPath $mgHook -Cwd $projWithMarker -EventName 'PreToolUse' -Command 'pytest -q' -LocalAppData $mgLocal
+    $runnerUsed = Get-RunnerPath (Get-Message $r.Out)
+    Check 'even a marker-carrying project runner loses to the managed shipped-beside runner' ($runnerUsed -eq $mgRunner) $runnerUsed
+
+    # (c) A project runner WITHOUT the marker and NO managed runner anywhere on the
+    # walk -> the imposter is skipped -> the gate downgrades to advice, never a
+    # block whose replacement would point at an unrelated script.
+    $isoNoMgr = New-IsolatedHookCopy
+    $projOnlyBad = Join-Path $Work ('projonlybad-' + [guid]::NewGuid().ToString('N').Substring(0, 6))
+    New-Item -ItemType Directory -Path (Join-Path $projOnlyBad 'scripts') -Force | Out-Null
+    Write-Utf8 (Join-Path $projOnlyBad 'scripts\Run-Tests-Guarded.ps1') "param()`nWrite-Host 'imposter runner'`n"
+    $r = Fire -HookPath $isoNoMgr.Script -Cwd $projOnlyBad -EventName 'PreToolUse' -Command 'pytest -q' -LocalAppData $isoNoMgr.LocalAppData
+    $msg = Get-Message $r.Out
+    Check 'a candidate without the contract marker is NOT returned -> the gate advises instead of blocking' (
+        $r.Out -notmatch '"permissionDecision":"deny"' -and $msg -match 'could not be located') $msg
+
+    # =====================================================================
     Write-Host '--- coordination handoff: the observed record Test-Completion-Check reads ---' -ForegroundColor Cyan
     function Get-ObservedRecord {
         param([string]$LocalAppData)
@@ -484,7 +540,8 @@ try {
     $r = Fire -HookPath $hcObs.Script -Cwd $Proj -EventName 'PreToolUse' -Command 'pytest -q' -LocalAppData $hcObs.LocalAppData
     $observed = Get-ObservedRecord $hcObs.LocalAppData
     Check 'a blocked RAW test command writes an observed record' ($null -ne $observed)
-    Check 'the observed file name matches what the consumer reads' ($observed.File.Name -eq ('TestRunGuard-observed-' + $expectedKey + '.json')) $observed.File.Name
+    Check 'the observed file name is PER-RUN (includes the key AND the runId the consumer reads)' (
+        $observed.File.Name -eq ('TestRunGuard-observed-' + $expectedKey + '-' + (Get-SafeRunId ([string]$observed.Document.runId)) + '.json')) $observed.File.Name
     Check 'the observed record carries observedUtc, fingerprint and guarded' (
         $null -ne $observed.Document.PSObject.Properties['observedUtc'] -and
         $null -ne $observed.Document.PSObject.Properties['fingerprint'] -and
@@ -640,6 +697,54 @@ try {
     Check 'a silent CPU-busy run is NOT killed by the 2s no-progress limit (CPU is progress)' (
         $null -ne $busyDoc -and $busyDoc.terminated -eq $false -and $busyDoc.overall -eq 'ok') (
         $(if ($null -ne $busyDoc) { [string]$busyDoc.overall + ' terminated=' + [string]$busyDoc.terminated + ' reason=' + [string]$busyDoc.terminateReason } else { 'no result' }))
+
+    # =====================================================================
+    Write-Host '--- runner: the active marker is PER-RUN (filename carries the runId) and is cleaned up (Defect 1, scope C) ---' -ForegroundColor Cyan
+    # A guarded run of a suite that blocks on a sentinel file, so the marker is
+    # provably present when we poll (no fixed sleep, no timing assumption). Its
+    # LOCALAPPDATA is redirected to an isolated dir so the marker never lands in
+    # the real shared state directory.
+    $activeRunId = [guid]::NewGuid().ToString('N')
+    $activeLocal = Join-Path $Work ('active-local-' + [guid]::NewGuid().ToString('N').Substring(0, 6))
+    $activeStateDir = Join-Path $activeLocal 'HookMaker\state'
+    New-Item -ItemType Directory -Path $activeStateDir -Force | Out-Null
+    $activeGo = Join-Path $Work ('active-go-' + [guid]::NewGuid().ToString('N').Substring(0, 8) + '.flag')
+    $activeSuite = Join-Path $Work 'active-suite.ps1'
+    Write-Utf8 $activeSuite ("`$go = `$env:HOOKMAKER_ACTIVE_GO`n`$deadline = [DateTime]::UtcNow.AddSeconds(30)`nwhile (-not (Test-Path -LiteralPath `$go) -and [DateTime]::UtcNow -lt `$deadline) { Start-Sleep -Milliseconds 50 }`nexit 0`n")
+    $activeResult = Join-Path $Work 'active-result.json'
+    $activeWrapper = Join-Path $Work 'run-active.ps1'
+    Write-Utf8 $activeWrapper (
+        "& '$Runner' -FilePath 'pwsh' -Arguments @('-NoProfile','-File','$activeSuite') " +
+        "-TimeoutSeconds 40 -IdleTimeoutSeconds 35 -HeartbeatSeconds 1 -ResultPath '$activeResult' -RunId '$activeRunId' -Quiet`nexit `$LASTEXITCODE`n")
+    $prevActiveLocal = $env:LOCALAPPDATA
+    $prevActiveGo = $env:HOOKMAKER_ACTIVE_GO
+    $activeProc = $null
+    $markerName = ''
+    try {
+        $env:LOCALAPPDATA = $activeLocal
+        $env:HOOKMAKER_ACTIVE_GO = $activeGo
+        $activeProc = Start-Process -FilePath (Get-Process -Id $PID).Path -NoNewWindow -PassThru -ArgumentList @('-NoLogo', '-NoProfile', '-File', $activeWrapper)
+        $deadline = [DateTime]::UtcNow.AddSeconds(20)
+        while ([DateTime]::UtcNow -lt $deadline) {
+            $m = @(Get-ChildItem -LiteralPath $activeStateDir -Filter 'TestRunGuard-active-*.json' -File -ErrorAction SilentlyContinue)
+            if ($m.Count -ge 1) { $markerName = $m[0].Name; break }
+            Start-Sleep -Milliseconds 100
+        }
+    }
+    finally {
+        # Release the suite so the runner exits cleanly and removes its own marker.
+        try { New-Item -ItemType File -Path $activeGo -Force | Out-Null } catch { }
+        if ($null -ne $activeProc) {
+            try { [void]$activeProc.WaitForExit(10000) } catch { }
+            if (-not $activeProc.HasExited) { try { & taskkill.exe /PID $activeProc.Id /T /F *> $null } catch { } }
+        }
+        $env:LOCALAPPDATA = $prevActiveLocal
+        $env:HOOKMAKER_ACTIVE_GO = $prevActiveGo
+    }
+    Check 'while a guarded run is live its active marker exists and its filename carries the runId' (
+        $markerName -match ('^TestRunGuard-active-[a-z0-9]+-' + [regex]::Escape($activeRunId) + '\.json$')) $markerName
+    $markerLeft = @(Get-ChildItem -LiteralPath $activeStateDir -Filter 'TestRunGuard-active-*.json' -File -ErrorAction SilentlyContinue)
+    Check 'the runner removes ONLY its own per-run active marker when it finishes (none left)' ($markerLeft.Count -eq 0) ([string]$markerLeft.Count)
 
     # =====================================================================
     Write-Host '--- irrelevant events are ignored ---' -ForegroundColor Cyan

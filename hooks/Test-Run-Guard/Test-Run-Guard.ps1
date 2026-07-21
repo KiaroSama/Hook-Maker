@@ -35,22 +35,27 @@
 #
 # COORDINATION STATE written for Test-Completion-Check. Project key =
 # Get-ShortHash(lowercased cwd), the key Test-Temp-Cleanup and Cloudflare-Deploy
-# already use.
-#   TestRunGuard-observed-<key>.json  { observedUtc, fingerprint, guarded }
+# already use. Every file is PER-RUN (keyed by <projectKey>-<runId>) so two
+# concurrent guarded runs in one project never overwrite each other's evidence.
+#   TestRunGuard-observed-<key>-<runId>.json  { observedUtc, projectFingerprint,
+#       runId, commandFingerprint, guarded }
 #       "a test command happened for THIS repo state". Written on PreToolUse for
 #       every recognised test command - blocked, advised, or already guarded -
 #       with `guarded` recording which. This is what lets Test-Completion-Check
 #       refuse a "tests passed" claim when nothing produced a result. A blocked
 #       command is recorded too: the intent to test is what creates the
-#       obligation to show evidence, and a re-run through the guarded runner
-#       simply overwrites the record with guarded=true.
-#   TestRunGuard-result-<key>.json    written by Run-Tests-Guarded.ps1 itself
-#       via the -ResultPath this hook puts in the replacement command line.
+#       obligation to show evidence, and the re-run through the guarded runner
+#       (carrying the same -RunId this hook injected) writes the paired result.
+#   TestRunGuard-result-<key>-<runId>.json    written by Run-Tests-Guarded.ps1
+#       itself via the per-run -ResultPath this hook puts in the replacement.
+#       PostToolUse enumerates the per-run files and pairs a result to the
+#       observation by run identity.
 #
-# TestRunGuard-active-<key>.json { pid, startedUtc } is NOT written, and that is
-# deliberate - see the note above Write-ObservedRecord. Its consumer treats an
-# absent file as "not evaluated", so omitting it is silent, whereas a guessed
-# pid would be a false completion blocker on a recycled process id.
+# TestRunGuard-active-<key>-<runId>.json { ownerPid, ... } is NOT written by this
+# hook, and that is deliberate - see the note above Write-ObservedRecord. Only
+# Run-Tests-Guarded.ps1 knows its own live pid; its consumer treats an absent
+# file as "not evaluated", so omitting it is silent, whereas a guessed pid would
+# be a false completion blocker on a recycled process id.
 #
 # TIMESTAMPS ARE ISO-8601 ROUND-TRIP ('o'), never ticks. ConvertFrom-Json turns
 # an 'o' string back into a Kind=Utc [DateTime], which the consumer's
@@ -166,6 +171,17 @@ function Get-CommandFingerprint {
         return ([System.BitConverter]::ToString($bytes) -replace '-', '').ToLowerInvariant().Substring(0, 32)
     }
     finally { $sha.Dispose() }
+}
+
+# Filename-safe form of a runId (must match Run-Tests-Guarded.ps1's Get-SafeRunId
+# byte-for-byte): lowercased, non [a-z0-9] stripped. This is what turns the runId
+# into the per-run suffix of the coordination filenames, so two runs in one
+# project never share a state file.
+function Get-SafeRunId {
+    param([string]$RunId)
+    $safe = ([string]$RunId).ToLowerInvariant() -replace '[^a-z0-9]', ''
+    if ($safe -eq '') { $safe = Get-ShortHash ([string]$RunId) }
+    return $safe
 }
 
 # Pulls the identity + the INNER executable/arguments back out of an
@@ -466,22 +482,44 @@ function New-GuardedInvocation {
     return ($parts.ToArray() -join ' ')
 }
 
-# The runner is NOT shipped inside the installed hook folder, so it is located
-# at runtime. When it cannot be found the gate DOWNGRADES to advice: a block
-# whose replacement command does not exist would be worse than no block.
+# A candidate is the guarded runner ONLY when it carries the contract marker
+# Run-Tests-Guarded.ps1 ships. This stops an unrelated script that merely shares
+# the name from being handed to the model as the bounded runner. Bounded read
+# (the real runner is tiny); an oversized file or a read failure is skipped.
+$script:GuardedRunnerMarker = 'HookMaker-Guarded-Runner-Contract'
+function Test-GuardedRunnerMarker {
+    param([string]$Path)
+    try {
+        if ((Get-Item -LiteralPath $Path -Force).Length -gt 1MB) { return $false }
+        return ([System.IO.File]::ReadAllText($Path)).Contains($script:GuardedRunnerMarker)
+    }
+    catch { return $false }
+}
+
+# The runner is located at runtime. PRECEDENCE (install-plan contract): the
+# MANAGED runner shipped beside this hook wins - the $PSScriptRoot upward walk,
+# depth 0 = <hookdir>\scripts\Run-Tests-Guarded.ps1. The project's own
+# <ProjectRoot>\scripts\Run-Tests-Guarded.ps1 is only a FALLBACK, so a stale or
+# foreign project copy can never shadow the shipped one. Every candidate must
+# carry the contract marker or it is skipped. When none is found the gate
+# DOWNGRADES to advice: a block whose replacement command does not exist would be
+# worse than no block.
 function Find-GuardedRunner {
     param([string]$ProjectRoot)
     $candidates = New-Object System.Collections.Generic.List[string]
-    if (-not [string]::IsNullOrWhiteSpace($ProjectRoot)) {
-        [void]$candidates.Add((Join-Path $ProjectRoot 'scripts\Run-Tests-Guarded.ps1'))
-    }
     $walk = $PSScriptRoot
     for ($depth = 0; $depth -lt 5 -and -not [string]::IsNullOrWhiteSpace($walk); $depth++) {
         [void]$candidates.Add((Join-Path $walk 'scripts\Run-Tests-Guarded.ps1'))
         $walk = Split-Path -Parent $walk
     }
+    if (-not [string]::IsNullOrWhiteSpace($ProjectRoot)) {
+        [void]$candidates.Add((Join-Path $ProjectRoot 'scripts\Run-Tests-Guarded.ps1'))
+    }
     foreach ($candidate in $candidates) {
-        try { if (Test-Path -LiteralPath $candidate -PathType Leaf) { return $candidate } } catch { }
+        try {
+            if ((Test-Path -LiteralPath $candidate -PathType Leaf) -and (Test-GuardedRunnerMarker -Path $candidate)) { return $candidate }
+        }
+        catch { }
     }
     return ''
 }
@@ -562,6 +600,36 @@ function Write-ObservedRecord {
             })
     }
     catch { }    # coordination is best-effort: it must never break the gate
+}
+
+# ---- per-run state file addressing ----------------------------------------
+# Every coordination file is TestRunGuard-<kind>-<projectKey>-<runId>.json.
+function Get-PerRunStatePath {
+    param([string]$StateDirectory, [string]$Kind, [string]$ProjectKey, [string]$RunId)
+    return (Join-Path $StateDirectory ('TestRunGuard-' + $Kind + '-' + $ProjectKey + '-' + (Get-SafeRunId $RunId) + '.json'))
+}
+
+# All per-run files for one kind, plus a legacy non-suffixed file if a run from an
+# older build is still in flight. Each entry carries the parsed document and the
+# file's age in minutes (age is by file write time - the same signal the single-
+# file path used, so a test that back-dates a result still reads as stale).
+function Get-PerRunStateEntries {
+    param([string]$StateDirectory, [string]$Kind, [string]$ProjectKey)
+    $entries = New-Object System.Collections.Generic.List[object]
+    if ([string]::IsNullOrWhiteSpace($StateDirectory) -or -not (Test-Path -LiteralPath $StateDirectory -PathType Container)) { return @() }
+    $files = New-Object System.Collections.Generic.List[object]
+    try { foreach ($f in @(Get-ChildItem -LiteralPath $StateDirectory -Filter ('TestRunGuard-' + $Kind + '-' + $ProjectKey + '-*.json') -File -ErrorAction SilentlyContinue)) { [void]$files.Add($f) } } catch { }
+    $legacy = Join-Path $StateDirectory ('TestRunGuard-' + $Kind + '-' + $ProjectKey + '.json')
+    try { if (Test-Path -LiteralPath $legacy -PathType Leaf) { [void]$files.Add((Get-Item -LiteralPath $legacy -Force)) } } catch { }
+    foreach ($file in $files) {
+        $doc = $null
+        try { $doc = Read-JsonFile $file.FullName } catch { $doc = $null }
+        if ($null -eq $doc) { continue }
+        $age = [double]::MaxValue
+        try { $age = ([DateTime]::UtcNow - $file.LastWriteTimeUtc).TotalMinutes } catch { }
+        [void]$entries.Add([pscustomobject]@{ Doc = $doc; Path = $file.FullName; AgeMinutes = $age })
+    }
+    return @($entries.ToArray())
 }
 
 # ---- output (dual client) --------------------------------------------------
@@ -663,8 +731,9 @@ $neverGuard = @(Get-ListSetting $config 'TEST_GUARD_NEVER_GUARD')
 
 $stateDirectory = Get-StateDirectory
 $projectKey = Get-ShortHash ($projectRoot.ToLowerInvariant())
-$resultPath = Join-Path $stateDirectory ('TestRunGuard-result-' + $projectKey + '.json')
-$observedPath = Join-Path $stateDirectory ('TestRunGuard-observed-' + $projectKey + '.json')
+# result/observed are now PER-RUN (TestRunGuard-<kind>-<key>-<runId>.json) so two
+# runs in one project never overwrite each other. The exact per-run path is built
+# where the runId is known (PreToolUse) or discovered by enumeration (PostToolUse).
 $reportStatePath = Join-Path $stateDirectory ('TestRunGuard-report-' + $projectKey + '.txt')
 $configStatePath = Join-Path $stateDirectory ('TestRunGuard-config-' + $projectKey + '.txt')
 
@@ -686,10 +755,15 @@ if ($eventName -eq 'PreToolUse') {
     # it is about to run guarded, run unguarded, or be blocked here. Silent -
     # this is a state handoff, not a finding. The observed record carries the run
     # identity so the consumer can bind a later result to THIS observation.
+    $resultPath = ''
     if ($verdict.Kind -eq 'raw') {
         # A fresh, hook-controlled runId: it is injected into the replacement, so
-        # only the result of THAT exact run can match.
+        # only the result of THAT exact run can match. Both the observed record and
+        # the -ResultPath handed to the runner are keyed by it, so concurrent runs
+        # in one project never collide.
         $runId = [guid]::NewGuid().ToString('N')
+        $observedPath = Get-PerRunStatePath -StateDirectory $stateDirectory -Kind 'observed' -ProjectKey $projectKey -RunId $runId
+        $resultPath = Get-PerRunStatePath -StateDirectory $stateDirectory -Kind 'result' -ProjectKey $projectKey -RunId $runId
         $commandFp = Get-CommandFingerprint -ExecutablePath $verdict.Command.FilePath -ArgumentList $verdict.Command.Arguments
         Write-ObservedRecord -Path $observedPath -ProjectRoot $projectRoot -Guarded $false `
             -RunId $runId -RunIdControlled $true -CommandFingerprint $commandFp -ProjectFingerprint $stateFingerprint
@@ -703,6 +777,7 @@ if ($eventName -eq 'PreToolUse') {
         $identity = Get-GuardedInvocationIdentity -Tokens $tokens
         $runIdControlled = -not [string]::IsNullOrWhiteSpace($identity.RunId)
         $runId = if ($runIdControlled) { $identity.RunId } else { [guid]::NewGuid().ToString('N') }
+        $observedPath = Get-PerRunStatePath -StateDirectory $stateDirectory -Kind 'observed' -ProjectKey $projectKey -RunId $runId
         $projFp = if (-not [string]::IsNullOrWhiteSpace($identity.ProjectFingerprint)) { $identity.ProjectFingerprint } else { $stateFingerprint }
         Write-ObservedRecord -Path $observedPath -ProjectRoot $projectRoot -Guarded $true `
             -RunId $runId -RunIdControlled $runIdControlled -CommandFingerprint $identity.CommandFingerprint -ProjectFingerprint $projFp
@@ -764,25 +839,63 @@ if ($verdict.Kind -eq 'none') {
     exit 0
 }
 
+# Discover THIS run's result among the PER-RUN files. What ran is what we see: a
+# guarded invocation carries its runId (and inner command fingerprint); a raw
+# command carries neither, so we bind through the observed record written for it
+# at PreToolUse. Identity FIRST, age only after - a result whose runId/command/
+# project fingerprint does not match the observation, or which started before it,
+# is from a DIFFERENT run and is not evidence, however fresh its file is.
+$stateFingerprint = Get-StateFingerprintFor -ProjectRoot $projectRoot
+$thisRunId = ''
+$thisCommandFp = ''
+if ($verdict.Kind -eq 'guarded') {
+    $identity = Get-GuardedInvocationIdentity -Tokens $tokens
+    $thisRunId = [string]$identity.RunId
+    $thisCommandFp = [string]$identity.CommandFingerprint
+}
+elseif ($verdict.Kind -eq 'raw') {
+    $thisCommandFp = Get-CommandFingerprint -ExecutablePath $verdict.Command.FilePath -ArgumentList $verdict.Command.Arguments
+}
+
+$observedEntries = Get-PerRunStateEntries -StateDirectory $stateDirectory -Kind 'observed' -ProjectKey $projectKey
+$resultEntries = Get-PerRunStateEntries -StateDirectory $stateDirectory -Kind 'result' -ProjectKey $projectKey
+
+# The observed record for THIS run: an exact runId match (guarded with -RunId)
+# first, else the newest current-state observation whose command matches.
+$observed = $null
+if ($thisRunId -ne '') {
+    $byRun = @($observedEntries | Where-Object { [string](Get-Field $_.Doc 'runId') -eq $thisRunId })
+    if ($byRun.Count -gt 0) { $observed = $byRun[0].Doc }
+}
+if ($null -eq $observed -and $thisCommandFp -ne '') {
+    $byCmd = @($observedEntries | Where-Object {
+            if (([string](Get-Field $_.Doc 'commandFingerprint')) -ne $thisCommandFp) { return $false }
+            $oFp = [string](Get-Field $_.Doc 'projectFingerprint')
+            if ([string]::IsNullOrWhiteSpace($oFp)) { $oFp = [string](Get-Field $_.Doc 'fingerprint') }
+            return ($oFp -eq $stateFingerprint)
+        } | Sort-Object { [string](Get-Field $_.Doc 'observedUtc') } -Descending)
+    if ($byCmd.Count -gt 0) { $observed = $byCmd[0].Doc }
+}
+
+# The result: the one that matches the observation by identity; if none matches
+# but a result exists for the SAME command, keep it so we can say DIFFERENT run
+# rather than pretend nothing ran; with no observation at all fall back to the
+# newest result (a legacy/unrecognised flow).
 $result = $null
 $resultAgeMinutes = [double]::MaxValue
-try {
-    if (Test-Path -LiteralPath $resultPath -PathType Leaf) {
-        $result = Read-JsonFile $resultPath
-        $resultAgeMinutes = ([DateTime]::UtcNow - (Get-Item -LiteralPath $resultPath).LastWriteTimeUtc).TotalMinutes
+if ($null -ne $observed) {
+    $paired = @($resultEntries | Where-Object { Test-ResultMatchesObserved -Result $_.Doc -Observed $observed -CurrentStateFingerprint $stateFingerprint } | Sort-Object AgeMinutes)
+    if ($paired.Count -gt 0) { $result = $paired[0].Doc; $resultAgeMinutes = $paired[0].AgeMinutes }
+    elseif ($thisCommandFp -ne '') {
+        $sameCmd = @($resultEntries | Where-Object { ([string](Get-Field $_.Doc 'commandFingerprint')) -eq $thisCommandFp } | Sort-Object AgeMinutes)
+        if ($sameCmd.Count -gt 0) { $result = $sameCmd[0].Doc; $resultAgeMinutes = $sameCmd[0].AgeMinutes }
     }
 }
-catch { $result = $null }
+else {
+    $newest = @($resultEntries | Sort-Object AgeMinutes)
+    if ($newest.Count -gt 0) { $result = $newest[0].Doc; $resultAgeMinutes = $newest[0].AgeMinutes }
+}
 
-# Identity FIRST, age only after. The observed record for THIS run is the anchor:
-# a result whose runId/command/project fingerprint does not match it - or which
-# started before the observation - is from a DIFFERENT run and is not evidence
-# about this one, however fresh its file is. Age remains a bounded secondary
-# freshness check only after identity holds. When no observed record exists (an
-# unrecognised flow), fall back to the age check alone rather than block blindly.
-$observed = $null
-try { if (Test-Path -LiteralPath $observedPath -PathType Leaf) { $observed = Read-JsonFile $observedPath } } catch { $observed = $null }
-$stateFingerprint = Get-StateFingerprintFor -ProjectRoot $projectRoot
 $identityMatches = $true
 if ($null -ne $observed) {
     $identityMatches = (Test-ResultMatchesObserved -Result $result -Observed $observed -CurrentStateFingerprint $stateFingerprint)
@@ -791,12 +904,12 @@ $isStale = ($null -eq $result -or -not $identityMatches -or $resultAgeMinutes -g
 
 if ($isStale) {
     # NEVER claims the run was fine. It says exactly what is missing.
-    $reason = if ($null -eq $result) { 'no guarded result document exists at ' + $resultPath }
+    $reason = if ($null -eq $result) { 'no guarded result document exists for it' }
     elseif (-not $identityMatches) { 'the only guarded result on record is for a DIFFERENT run, command, or repository state (its run identity does not match this observation), so it says nothing about how THIS run ended' }
     else { 'the guarded result document is stale (last written ' + [Math]::Round($resultAgeMinutes) + ' minutes ago)' }
     $message = 'TEST RUN GUARD: a test command ran, but ' + $reason + '. There is therefore NO evidence about how ' +
-    'that run ended - do not report it as passing. Re-run it through scripts\Run-Tests-Guarded.ps1 with ' +
-    '-ResultPath "' + $resultPath + '" to get a verifiable result.' + $configNote
+    'that run ended - do not report it as passing. Re-run it through scripts\Run-Tests-Guarded.ps1 (the Test-Run-Guard ' +
+    'gate supplies the exact bounded command with a per-run -ResultPath) to get a verifiable result.' + $configNote
     if (Test-ShouldReport -StatePath $reportStatePath -Fingerprint (Get-ShortHash ('stale|' + $verdict.Kind + '|' + [string]$identityMatches + '|' + [Math]::Round($resultAgeMinutes / 10)))) {
         Write-Advisory -EventName 'PostToolUse' -Message $message
     }
