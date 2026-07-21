@@ -617,6 +617,118 @@ try {
         (Test-Path -LiteralPath (Get-RunStateFile -Copy $c -Root $p -Kind 'result' -RunId $rFresh)))
 
     # =====================================================================
+    Write-Host '--- C1: a LIVE active marker survives a mid-run repo fingerprint change ---' -ForegroundColor Cyan
+    # A real long-lived owner (bounded sleep, never Read-Host). The marker records
+    # the state fingerprint as of test start; an unrelated edit then MOVES the repo
+    # (git porcelain) fingerprint while the process is STILL alive. Liveness is by
+    # process identity, not the mutable working-tree fingerprint, so the marker must
+    # survive and still block.
+    $c = New-IsolatedHookCopy
+    $p = New-GitRepo 'C1LiveMarker'
+    $fpBefore = Get-Fingerprint $p
+    $sentinel = Start-Process -FilePath (Get-Process -Id $PID).Path -ArgumentList @('-NoLogo', '-NoProfile', '-Command', 'Start-Sleep -Seconds 45') -PassThru -WindowStyle Hidden
+    Write-ActiveMarker -Copy $c -Root $p -ProcessId $sentinel.Id -ProjectFingerprint $fpBefore
+    Write-Utf8 (Join-Path $p 'mid-edit.txt') 'edited mid run'
+    $fpAfter = Get-Fingerprint $p
+    Check 'editing a file actually moved the repo fingerprint (test precondition)' ($fpBefore -ne $fpAfter) ($fpBefore + ' vs ' + $fpAfter)
+    $r = Fire -Copy $c -Cwd $p
+    Check 'C1: the LIVE marker still BLOCKS after the fingerprint changed (liveness is process identity, not fingerprint)' (
+        $r.Out -match '"decision":"block"' -and (Get-BlockReason $r.Out) -match 'STILL ACTIVE') $r.Out
+    Check 'C1: the LIVE marker was NOT deleted despite the fingerprint mismatch' (
+        Test-Path -LiteralPath (Get-RunStateFile -Copy $c -Root $p -Kind 'active')) $r.Out
+    $sentinel.Kill(); $sentinel.WaitForExit(10000) | Out-Null; $sentinel = $null
+
+    # =====================================================================
+    Write-Host '--- C2: content-aware pruning keeps unresolved negatives, prunes clean/superseded ---' -ForegroundColor Cyan
+    $c = New-IsolatedHookCopy
+    $p = New-GitRepo 'C2Prune'
+    $key = Get-ProjectKey $p
+    # (a) an unresolved TERMINATED result older than 24h -> KEPT (negative survives age).
+    $rTerm = 'c2term-' + $key
+    Write-GuardedResult -Copy $c -Root $p -Overall 'terminated' -ExitCode 124 -TerminateReason 'wallTimeout' -TerminateDetail 'x' -RunId $rTerm -ProjectFingerprint 'c2-oldstate' -CommandFingerprint ('cmdterm' + $key)
+    (Get-Item -LiteralPath (Get-RunStateFile -Copy $c -Root $p -Kind 'result' -RunId $rTerm)).LastWriteTimeUtc = [DateTime]::UtcNow.AddHours(-25)
+    # (b) an unresolved LEAKED result older than 24h -> KEPT.
+    $rLeak = 'c2leak-' + $key
+    Write-GuardedResult -Copy $c -Root $p -Overall 'ok' -Leaked @(9111) -RunId $rLeak -ProjectFingerprint 'c2-oldstate2' -CommandFingerprint ('cmdleak' + $key)
+    (Get-Item -LiteralPath (Get-RunStateFile -Copy $c -Root $p -Kind 'result' -RunId $rLeak)).LastWriteTimeUtc = [DateTime]::UtcNow.AddHours(-25)
+    # (c) a clean OK result older than 24h -> PRUNED (staleness weakens positive evidence).
+    $rCleanOld = 'c2clean-' + $key
+    Write-GuardedResult -Copy $c -Root $p -Overall 'ok' -RunId $rCleanOld -CommandFingerprint ('cmdclean' + $key)
+    (Get-Item -LiteralPath (Get-RunStateFile -Copy $c -Root $p -Kind 'result' -RunId $rCleanOld)).LastWriteTimeUtc = [DateTime]::UtcNow.AddHours(-25)
+    # (d) an old TERMINATED result SUPERSEDED by a newer clean run for the same command+state -> PRUNED.
+    $rSup = 'c2sup-' + $key; $rSupOk = 'c2supok-' + $key
+    Write-GuardedResult -Copy $c -Root $p -Overall 'terminated' -ExitCode 124 -TerminateReason 'idleTimeout' -TerminateDetail 'x' -RunId $rSup -CommandFingerprint ('cmdsup' + $key) -AgeMinutes 200
+    (Get-Item -LiteralPath (Get-RunStateFile -Copy $c -Root $p -Kind 'result' -RunId $rSup)).LastWriteTimeUtc = [DateTime]::UtcNow.AddHours(-25)
+    Write-GuardedResult -Copy $c -Root $p -Overall 'ok' -RunId $rSupOk -CommandFingerprint ('cmdsup' + $key) -AgeMinutes 5
+    $r = Fire -Copy $c -Cwd $p
+    Check 'C2: an unresolved terminated result older than 24h is NOT pruned' (
+        Test-Path -LiteralPath (Get-RunStateFile -Copy $c -Root $p -Kind 'result' -RunId $rTerm)) $r.Out
+    Check 'C2: an unresolved leaked result older than 24h is NOT pruned' (
+        Test-Path -LiteralPath (Get-RunStateFile -Copy $c -Root $p -Kind 'result' -RunId $rLeak)) $r.Out
+    Check 'C2: a clean ok result older than 24h IS pruned' (
+        -not (Test-Path -LiteralPath (Get-RunStateFile -Copy $c -Root $p -Kind 'result' -RunId $rCleanOld))) $r.Out
+    Check 'C2: an old terminated result superseded by a newer clean run IS pruned' (
+        -not (Test-Path -LiteralPath (Get-RunStateFile -Copy $c -Root $p -Kind 'result' -RunId $rSup))) $r.Out
+    Check 'C2: the newer clean (superseding) result is retained' (
+        Test-Path -LiteralPath (Get-RunStateFile -Copy $c -Root $p -Kind 'result' -RunId $rSupOk)) $r.Out
+
+    # =====================================================================
+    Write-Host '--- C3: two uncontrolled runs cannot share one green result (one-to-one pairing) ---' -ForegroundColor Cyan
+    $c = New-IsolatedHookCopy
+    $p = New-GitRepo 'C3OneToOne'
+    $key = Get-ProjectKey $p
+    # Two direct guarded runs of the SAME command with NO -RunId -> runIdControlled=false,
+    # each with its own minted runId distinct from the runner's result runId.
+    Write-ObservedRecord -Copy $c -Root $p -RunId ('c3obsa-' + $key) -RunIdControlled:$false
+    Write-ObservedRecord -Copy $c -Root $p -RunId ('c3obsb-' + $key) -RunIdControlled:$false
+    Write-GuardedResult -Copy $c -Root $p -Overall 'ok' -RunId ('c3resx-' + $key)
+    $r = Fire -Copy $c -Cwd $p
+    Check 'C3: two uncontrolled observations with only ONE green result -> completion BLOCKS (the second is unpaired)' (
+        $r.Out -match '"decision":"block"') $r.Out
+    # A SECOND green result: now each observation pairs one-to-one.
+    Write-GuardedResult -Copy $c -Root $p -Overall 'ok' -RunId ('c3resy-' + $key)
+    $r = Fire -Copy $c -Cwd $p
+    Check 'C3: with TWO green results both uncontrolled runs are satisfied -> completion ALLOWED' (
+        $r.Exit -eq 0 -and $r.Out -eq '') $r.Out
+
+    # =====================================================================
+    Write-Host '--- C4: a resolved incident does not re-block a clean rerun; an unresolved one still blocks ---' -ForegroundColor Cyan
+    $c = New-IsolatedHookCopy
+    $p = New-GitRepo 'C4Resolved'
+    $key = Get-ProjectKey $p
+    $rInc = 'c4inc-' + $key
+    Write-ObservedRecord -Copy $c -Root $p -RunId $rInc
+    Write-GuardedResult -Copy $c -Root $p -Overall 'terminated' -ExitCode 124 -TerminateReason 'idleTimeout' -TerminateDetail 'produced no output or state change for 300s' -RunId $rInc
+    $r = Fire -Copy $c -Cwd $p
+    Check 'C4: the incident blocks first and registers the owed note' ($r.Out -match '"decision":"block"') $r.Out
+    # The environmental cause is fixed WITHOUT a source change: a durable note is
+    # written and the SAME command reruns GREEN as a NEW run (same repo fingerprint).
+    Add-AiNote -Root $p -Text ('Idle-timeout hang fixed by clearing a stuck local service; not detected earlier because no idle bound existed. ' +
+        'Guard: Run-Tests-Guarded.ps1 -IdleTimeoutSeconds 300, verified by re-running the suite green.')
+    $rGreen = 'c4green-' + $key
+    Write-ObservedRecord -Copy $c -Root $p -RunId $rGreen
+    Write-GuardedResult -Copy $c -Root $p -Overall 'ok' -RunId $rGreen
+    $r = Fire -Copy $c -Cwd $p
+    Check 'C4: a clean rerun for the same command/state is ACCEPTED, not re-blocked by the old incident' (
+        $r.Exit -eq 0 -and $r.Out -eq '') $r.Out
+    # C2 tie-in: once resolved, the incident''s own aged files become prunable.
+    (Get-Item -LiteralPath (Get-RunStateFile -Copy $c -Root $p -Kind 'result' -RunId $rInc)).LastWriteTimeUtc = [DateTime]::UtcNow.AddHours(-25)
+    (Get-Item -LiteralPath (Get-RunStateFile -Copy $c -Root $p -Kind 'observed' -RunId $rInc)).LastWriteTimeUtc = [DateTime]::UtcNow.AddHours(-25)
+    $r = Fire -Copy $c -Cwd $p
+    Check 'C4/C2: the RESOLVED incident''s aged result file is pruned' (
+        -not (Test-Path -LiteralPath (Get-RunStateFile -Copy $c -Root $p -Kind 'result' -RunId $rInc))) $r.Out
+
+    # An UNRESOLVED incident (no note, no clean rerun) still blocks.
+    $c = New-IsolatedHookCopy
+    $p = New-GitRepo 'C4Unresolved'
+    $rInc2 = 'c4inc2-' + (Get-ProjectKey $p)
+    Write-ObservedRecord -Copy $c -Root $p -RunId $rInc2
+    Write-GuardedResult -Copy $c -Root $p -Overall 'terminated' -ExitCode 124 -TerminateReason 'wallTimeout' -TerminateDetail 'exceeded the 1800s wall ceiling' -RunId $rInc2
+    $r = Fire -Copy $c -Cwd $p
+    Check 'C4: a genuinely unresolved incident still blocks completion' (
+        $r.Out -match '"decision":"block"' -and (Get-BlockReason $r.Out) -match 'wallTimeout') $r.Out
+
+    # =====================================================================
     Write-Host '--- the durable .ai/ note requirement ---' -ForegroundColor Cyan
     $c = New-IsolatedHookCopy
     $p = New-GitRepo 'Note'

@@ -369,11 +369,59 @@ function Get-ObservedFingerprint {
     return $fp
 }
 
+# The stable incident identity of a RESULT document, or '' when it is not an
+# incident. Only a TERMINATED run or one carrying leaked process ids is an
+# incident (a plain non-zero `failed` creates no durable-note obligation). The key
+# is byte-identical to the one the main flow records into resolvedIncident, so a
+# resolved incident can be recognised again per-run - used by the content-aware
+# prune (C2) and the resolved-incident representative exclusion (C4).
+function Get-ResultIncidentKey {
+    param($Doc, [string]$Path)
+    if ($null -eq $Doc) { return '' }
+    $ov = ([string](Get-Field $Doc 'overall')).ToLowerInvariant()
+    $tr = [string](Get-Field $Doc 'terminateReason')
+    $lk = @(@(Get-Field $Doc 'leakedProcessIds') | Where-Object { $null -ne $_ -and [string]$_ -ne '' })
+    if ($ov -ne 'terminated' -and $lk.Count -eq 0) { return '' }
+    $t = Get-ResultRecordedTime -Doc $Doc -Path $Path
+    $ticks = if ($null -ne $t) { [string]$t.Ticks } else { '0' }
+    return (Get-ShortHash ($ticks + '|' + $ov + '|' + $tr + '|' + (@($lk) -join ',')))
+}
+
+# Has a NEGATIVE result been SUPERSEDED by a strictly-newer clean run for the same
+# command AND project state? A clean (overall=ok, no leak) result recorded after
+# the negative one means the same work was re-run green, so the old incident's
+# files are safe to prune (this is the C2/C4 supersede rule).
+# ponytail: O(n*m) over one project's per-run files, which are 24h-bounded and few.
+function Test-ResultSuperseded {
+    param($NegDoc, $NegTime, $AllResults)
+    if ($null -eq $NegDoc -or $null -eq $NegTime) { return $false }
+    $cmd = [string](Get-Field $NegDoc 'commandFingerprint')
+    $proj = [string](Get-Field $NegDoc 'projectFingerprint')
+    if ($cmd -eq '' -or $proj -eq '') { return $false }
+    foreach ($re in @($AllResults)) {
+        $ov = ([string](Get-Field $re.Doc 'overall')).ToLowerInvariant()
+        if ($ov -ne 'ok') { continue }
+        $lk = @(@(Get-Field $re.Doc 'leakedProcessIds') | Where-Object { $null -ne $_ -and [string]$_ -ne '' })
+        if ($lk.Count -gt 0) { continue }
+        if (([string](Get-Field $re.Doc 'commandFingerprint')) -ne $cmd) { continue }
+        if (([string](Get-Field $re.Doc 'projectFingerprint')) -ne $proj) { continue }
+        $t = Get-ResultRecordedTime -Doc $re.Doc -Path $re.Path
+        if ($null -ne $t -and $t -gt $NegTime) { return $true }
+    }
+    return $false
+}
+
 # Is a live guarded run recorded by THIS active marker? Returns the owner pid, or
-# 0. The PID-REUSE-resistant identity check (start time + executable + project)
-# the single-file path used, applied per marker.
+# 0. LIVENESS IS PROVEN BY PROCESS IDENTITY ONLY (C1): the owner pid must be alive
+# AND still carry the recorded process start time AND executable path (the
+# PID-REUSE-resistant check). The marker's projectFingerprint is DELIBERATELY not
+# consulted here - a test process is running regardless of what the working tree
+# looks like now, so editing an unrelated file mid-run (which moves the repo
+# fingerprint) must never make a genuinely-live marker read as stale and be
+# deleted. The fingerprint governs only whether a RESULT is current-state
+# evidence, never whether a running process exists.
 function Resolve-ActiveOwnerPid {
-    param($Doc, [string]$StateFingerprint)
+    param($Doc)
     $ownerPidRaw = Get-Field $Doc 'ownerPid'
     if ($null -eq $ownerPidRaw) { $ownerPidRaw = Get-Field $Doc 'pid' }   # schema-1 fallback
     $candidate = 0
@@ -383,11 +431,9 @@ function Resolve-ActiveOwnerPid {
     if ($null -eq $liveProcess) { return 0 }
     $markerStartUtc = ConvertTo-UtcTime (Get-Field $Doc 'ownerProcessStartUtc')
     $markerExe = [string](Get-Field $Doc 'ownerExecutablePath')
-    $markerProjFp = [string](Get-Field $Doc 'projectFingerprint')
     if ($null -eq $markerStartUtc -and $markerExe -eq '') { return $candidate }   # schema-1 marker: best-effort legacy
     $identityOk = $true
-    if ($markerProjFp -ne '' -and $markerProjFp -ne $StateFingerprint) { $identityOk = $false }
-    if ($identityOk -and $null -ne $markerStartUtc) {
+    if ($null -ne $markerStartUtc) {
         $liveStart = $null
         try { $liveStart = $liveProcess.StartTime.ToUniversalTime() } catch { $liveStart = $null }
         if ($null -eq $liveStart -or [Math]::Abs(($liveStart - $markerStartUtc).TotalSeconds) -gt 2) { $identityOk = $false }
@@ -401,31 +447,62 @@ function Resolve-ActiveOwnerPid {
     return 0
 }
 
-# Bounded state growth: prune this project's inert per-run result/observed files
-# older than 24h so they cannot accumulate forever. Never touches a recent run
-# (fresh files) and never active markers (the aggregation below removes those only
-# when their owner is proven dead). Best-effort - a failure never blocks.
-$pruneCutoff = [DateTime]::UtcNow.AddHours(-24)
-foreach ($kind in @('result', 'observed')) {
-    try {
-        foreach ($f in @(Get-ChildItem -LiteralPath $stateDir -Filter ('TestRunGuard-' + $kind + '-' + $projectKey + '-*.json') -File -ErrorAction SilentlyContinue)) {
-            try { if ($f.LastWriteTimeUtc -lt $pruneCutoff) { Remove-Item -LiteralPath $f.FullName -Force -ErrorAction SilentlyContinue } } catch { }
-        }
-    }
-    catch { }
-}
-
+# The evidence is loaded BEFORE pruning so pruning can read each file's content.
 $resultEntries = Get-CompletionStateEntries 'result'
 $observedEntries = Get-CompletionStateEntries 'observed'
 $activeEntries = Get-CompletionStateEntries 'active'
 
+# ---- bounded, CONTENT-AWARE state growth control (C2) ----------------------
+# Age alone must never erase a NEGATIVE finding. Staleness weakens only POSITIVE
+# evidence (see this file's header): a run that TERMINATED, FAILED, LEAKED, errored
+# or was OBSERVED-WITHOUT-A-RESULT for the current state is an incident whose
+# obligation survives until it is RESOLVED (a durable note recorded, tracked in
+# resolvedIncident) or SUPERSEDED (a strictly-newer clean ok run for the same
+# command+state - which also underlies the C4 fix). Only clean ok runs,
+# resolved/superseded negatives, and old-STATE observations that carry no current
+# obligation are pruned, so a hang whose Stop hook never fired within 24h can never
+# be silently deleted before it is seen. Best-effort: a read or delete failure
+# never blocks the gate.
+$pruneCutoff = [DateTime]::UtcNow.AddHours(-24)
+function Get-FileMtimeUtc { param([string]$Path) try { return (Get-Item -LiteralPath $Path -Force).LastWriteTimeUtc } catch { return $null } }
+$prunedResultPaths = New-Object System.Collections.Generic.HashSet[string]
+$prunedObservedPaths = New-Object System.Collections.Generic.HashSet[string]
+foreach ($re in $resultEntries) {
+    $mtime = Get-FileMtimeUtc $re.Path
+    if ($null -eq $mtime -or $mtime -ge $pruneCutoff) { continue }   # keep anything not yet 24h old
+    $ov = ([string](Get-Field $re.Doc 'overall')).ToLowerInvariant()
+    $lk = @(@(Get-Field $re.Doc 'leakedProcessIds') | Where-Object { $null -ne $_ -and [string]$_ -ne '' })
+    $isNegative = ((@('terminated', 'failed', 'error', 'unknown') -contains $ov) -or $lk.Count -gt 0)
+    if (-not $isNegative) { [void]$prunedResultPaths.Add($re.Path); continue }   # clean ok run -> prunable
+    $ik = Get-ResultIncidentKey -Doc $re.Doc -Path $re.Path
+    $resolved = ($ik -ne '' -and $ik -eq $resolvedIncident)
+    $superseded = Test-ResultSuperseded -NegDoc $re.Doc -NegTime (Get-ResultRecordedTime -Doc $re.Doc -Path $re.Path) -AllResults $resultEntries
+    if ($resolved -or $superseded) { [void]$prunedResultPaths.Add($re.Path) }
+    # else: an unresolved, un-superseded negative finding -> KEEP, however old.
+}
+foreach ($oe in $observedEntries) {
+    $mtime = Get-FileMtimeUtc $oe.Path
+    if ($null -eq $mtime -or $mtime -ge $pruneCutoff) { continue }
+    if ((Get-ObservedFingerprint $oe.Doc) -ne $stateFingerprint) { [void]$prunedObservedPaths.Add($oe.Path); continue }   # old-STATE: no current obligation
+    $matched = @($resultEntries | Where-Object { Test-ResultMatchesObserved -Result $_.Doc -Observed $oe.Doc -CurrentStateFingerprint $stateFingerprint })
+    if ($matched.Count -eq 0) { continue }   # observed-without-result for the CURRENT state -> keep (unfinished incident)
+    $allPruned = $true
+    foreach ($m in $matched) { if (-not $prunedResultPaths.Contains($m.Path)) { $allPruned = $false; break } }
+    if ($allPruned) { [void]$prunedObservedPaths.Add($oe.Path) }   # its run is fully accounted for by a pruned clean/resolved result
+}
+foreach ($path in @($prunedResultPaths)) { try { Remove-Item -LiteralPath $path -Force -ErrorAction SilentlyContinue } catch { } }
+foreach ($path in @($prunedObservedPaths)) { try { Remove-Item -LiteralPath $path -Force -ErrorAction SilentlyContinue } catch { } }
+if ($prunedResultPaths.Count -gt 0) { $resultEntries = @($resultEntries | Where-Object { -not $prunedResultPaths.Contains($_.Path) }) }
+if ($prunedObservedPaths.Count -gt 0) { $observedEntries = @($observedEntries | Where-Object { -not $prunedObservedPaths.Contains($_.Path) }) }
+
 # ---- 1. any live active marker across all runs ----
 # Set $activePid from the first genuinely-alive owner; drop every marker whose
-# owner is dead/recycled. A live marker is NEVER removed - so one run finishing
-# (its runner removing only its own per-run marker) can never tear down another.
+# owner is proven DEAD or pid-reused. A marker whose owner PROCESS is alive is
+# NEVER removed (C1) - not on a fingerprint change, not because one run finished:
+# a running test blocks completion regardless of the current working-tree state.
 $activePid = 0
 foreach ($ae in $activeEntries) {
-    $p = Resolve-ActiveOwnerPid -Doc $ae.Doc -StateFingerprint $stateFingerprint
+    $p = Resolve-ActiveOwnerPid -Doc $ae.Doc
     if ($p -gt 0) { if ($activePid -eq 0) { $activePid = $p } }
     else { try { Remove-Item -LiteralPath $ae.Path -Force -ErrorAction SilentlyContinue } catch { } }
 }
@@ -439,15 +516,43 @@ foreach ($o in $currentObserved) {
     if ($oc -ne '') { [void]$observedCmdFps.Add($oc) }
 }
 
-# First pair every current observed run to its identity-matched result, so those
-# results are off the table when we look for a "same-command" fallback below.
+# ONE-TO-ONE pairing (C3): each guarded result may satisfy AT MOST ONE observed
+# run. Exact-runId (runIdControlled) pairings are resolved FIRST so an uncontrolled
+# run cannot steal a controlled run's result; the remaining uncontrolled runs then
+# each take a DISTINCT result from what is left. Two same-command runs invoked
+# directly without -RunId therefore cannot both pair to one green result - the
+# second is left unmatched and blocks (its own result is not in yet, or it failed).
 $pairedPaths = New-Object System.Collections.Generic.HashSet[string]
+$assignedResultPaths = New-Object System.Collections.Generic.HashSet[string]
+$sortedObserved = @($currentObserved | Sort-Object `
+    @{ Expression = { [string](Get-Field $_.Doc 'observedUtc') } }, `
+    @{ Expression = { [string](Get-Field $_.Doc 'runId') } })
+$sortedResults = @($resultEntries | Sort-Object `
+    @{ Expression = { $t = Get-ResultRecordedTime -Doc $_.Doc -Path $_.Path; if ($null -ne $t) { $t.Ticks } else { [int64]0 } } }, `
+    @{ Expression = { [string]$_.Path } })
+$obsResultMap = @{}
+for ($pass = 0; $pass -lt 2; $pass++) {
+    $controlledPass = ($pass -eq 0)
+    for ($oi = 0; $oi -lt $sortedObserved.Count; $oi++) {
+        if ($obsResultMap.ContainsKey($oi)) { continue }
+        $odoc = $sortedObserved[$oi].Doc
+        $controlled = ((Get-Field $odoc 'runIdControlled') -eq $true)
+        if ($controlled -ne $controlledPass) { continue }
+        foreach ($re in $sortedResults) {
+            if ($assignedResultPaths.Contains($re.Path)) { continue }
+            if (Test-ResultMatchesObserved -Result $re.Doc -Observed $odoc -CurrentStateFingerprint $stateFingerprint) {
+                $obsResultMap[$oi] = $re
+                [void]$assignedResultPaths.Add($re.Path)
+                [void]$pairedPaths.Add($re.Path)
+                break
+            }
+        }
+    }
+}
 $obsPairs = New-Object System.Collections.Generic.List[object]
-foreach ($o in $currentObserved) {
-    $paired = @($resultEntries | Where-Object { Test-ResultMatchesObserved -Result $_.Doc -Observed $o.Doc -CurrentStateFingerprint $stateFingerprint })
-    $resEntry = if ($paired.Count -gt 0) { $paired[0] } else { $null }
-    if ($null -ne $resEntry) { [void]$pairedPaths.Add($resEntry.Path) }
-    [void]$obsPairs.Add([pscustomobject]@{ Observed = $o.Doc; ResEntry = $resEntry })
+for ($oi = 0; $oi -lt $sortedObserved.Count; $oi++) {
+    $resEntry = if ($obsResultMap.ContainsKey($oi)) { $obsResultMap[$oi] } else { $null }
+    [void]$obsPairs.Add([pscustomobject]@{ Observed = $sortedObserved[$oi].Doc; ResEntry = $resEntry })
 }
 
 $runs = New-Object System.Collections.Generic.List[object]
@@ -500,14 +605,34 @@ function Get-RunClass {
     }
     return 'noresult'
 }
+# A run whose negative finding is ALREADY ACCOUNTED FOR must not be chosen as a
+# blocking representative (C4). Accounted for means EITHER its incident note was
+# already recorded (its key is in resolvedIncident) OR it is SUPERSEDED by a
+# strictly-newer clean ok run for the same command/state. This is what lets a green
+# rerun win when an environmental problem is fixed WITHOUT a source change (same
+# fingerprint): the old incident no longer outranks the clean rerun, and it breaks
+# the deadlock where the terminated run's own case-2/3 block would otherwise fire
+# before case 6 could ever process the durable note. A genuinely unresolved,
+# un-superseded incident is NOT excluded and still blocks; the durable-note
+# obligation registered on the first block still stands (case 6 enforces it once
+# the run stops outranking everything else).
+function Test-RunNegativeAccounted {
+    param($Run, [string]$ResolvedIncident, $AllResults)
+    if ($null -eq $Run.ResultEntry) { return $false }
+    $doc = $Run.ResultEntry.Doc
+    $path = $Run.ResultEntry.Path
+    $ik = Get-ResultIncidentKey -Doc $doc -Path $path
+    if ($ik -ne '' -and $ik -eq $ResolvedIncident) { return $true }
+    return (Test-ResultSuperseded -NegDoc $doc -NegTime (Get-ResultRecordedTime -Doc $doc -Path $path) -AllResults $AllResults)
+}
 $classified = @($runs | ForEach-Object { [pscustomobject]@{ Run = $_; Class = (Get-RunClass $_) } })
 $rep = $null
 foreach ($wanted in @('incident', 'failed')) {
-    $m = @($classified | Where-Object { $_.Class -eq $wanted })
+    $m = @($classified | Where-Object { $_.Class -eq $wanted -and -not (Test-RunNegativeAccounted -Run $_.Run -ResolvedIncident $resolvedIncident -AllResults $resultEntries) })
     if ($m.Count -gt 0) { $rep = $m[0]; break }
 }
 if ($null -eq $rep) {
-    $m = @($classified | Where-Object { $_.Run.HasObserved -and $_.Class -ne 'clean' })   # condition 5: observed, not satisfied
+    $m = @($classified | Where-Object { $_.Run.HasObserved -and $_.Class -ne 'clean' -and -not (Test-RunNegativeAccounted -Run $_.Run -ResolvedIncident $resolvedIncident -AllResults $resultEntries) })   # condition 5: observed, not satisfied
     if ($m.Count -gt 0) { $rep = $m[0] }
 }
 if ($null -eq $rep) {
