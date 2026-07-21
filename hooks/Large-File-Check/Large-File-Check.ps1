@@ -145,6 +145,18 @@ if ($config.ContainsKey('MAX_SCAN_SECONDS')) {
         $maxScanSeconds = $parsedSecs
     }
 }
+# TEST-ONLY seam (NO effect in production): when LARGEFILECHECK_TEST_TRIP_TIME_AFTER_FILES
+# is set to a positive integer N, the in-file-loop wall-time check trips after N
+# source files instead of consulting the real Stopwatch. It lets the offline suite
+# prove a deterministic MID-directory time stop without depending on real wall-clock
+# timing. Unset/invalid -> 0 -> inert, so production uses only $scanTimer.
+$testTripAfterFiles = 0
+if (-not [string]::IsNullOrWhiteSpace($env:LARGEFILECHECK_TEST_TRIP_TIME_AFTER_FILES)) {
+    $parsedTrip = 0
+    if ([int]::TryParse([string]$env:LARGEFILECHECK_TEST_TRIP_TIME_AFTER_FILES, [ref]$parsedTrip) -and $parsedTrip -ge 1) {
+        $testTripAfterFiles = $parsedTrip
+    }
+}
 $defaultExtensions = '.ps1,.psm1,.py,.js,.ts,.jsx,.tsx,.mjs,.cjs,.cs,.java,.go,.rb,.php,.rs,.c,.cpp,.h,.kt,.swift,.vue,.svelte'
 $extensionList = $defaultExtensions
 if ($config.ContainsKey('EXTENSIONS') -and $config['EXTENSIONS'] -ne '') {
@@ -217,8 +229,11 @@ $scanTimer = [System.Diagnostics.Stopwatch]::StartNew()
 #                      directory (inner gate). Deriving "partial" from the residual
 #                      stack alone missed the ceiling filling up inside one big dir.
 #   $dirLimitReached   the MAX_DIRECTORIES directory-traversal ceiling.
-#   $timeLimitReached  the MAX_SCAN_SECONDS wall-time ceiling, checked once per
-#                      directory (bounded - never per file, so it cannot dominate).
+#   $timeLimitReached  the MAX_SCAN_SECONDS wall-time ceiling, checked between
+#                      directories AND before each SOURCE file inside a directory
+#                      (a cheap Stopwatch read, gated behind the extension check so
+#                      non-source files never pay for it), so a single huge
+#                      directory can no longer overrun the advertised ceiling.
 #   $scanIncomplete    a READ FAILURE (access denied, locked file, unreadable
 #                      directory) - a single failure must not abort the whole
 #                      directory. ANY flag means the project was not fully scanned,
@@ -263,6 +278,12 @@ while ($stack.Count -gt 0) {
             # single directory holding far more source files than MAX_FILES was
             # scanned whole, because the ceiling was only re-checked between dirs.
             if ($scannedFiles -ge $maxFiles) { $scanLimitReached = $true; break }
+            # Same for wall time: re-check MAX_SCAN_SECONDS here so one directory
+            # holding thousands of source files cannot overrun the advertised
+            # ceiling (the between-directories check alone let that happen). The
+            # test seam forces a deterministic trip; production consults $scanTimer.
+            $timeUp = if ($testTripAfterFiles -gt 0) { $scannedFiles -ge $testTripAfterFiles } else { $scanTimer.Elapsed.TotalSeconds -ge $maxScanSeconds }
+            if ($timeUp) { $timeLimitReached = $true; break }
             $scannedFiles++
             $info = [System.IO.FileInfo]::new($file)
             if ($info.Length -gt 3MB) { continue }
@@ -275,6 +296,11 @@ while ($stack.Count -gt 0) {
         }
         catch { $scanIncomplete = $true }
     }
+    # A mid-directory wall-time trip must stop the WHOLE traversal at once, not
+    # just the current directory - otherwise any directories still on the stack
+    # would be walked past the ceiling. (MAX_FILES relies on the loop-top re-check;
+    # the time check deliberately does not re-run at the loop top, so break here.)
+    if ($timeLimitReached) { break }
 }
 # Honest coverage: partial when ANY ceiling stopped the walk (source files,
 # directories, or wall time) OR any file/dir could not be read. Build ONE shared

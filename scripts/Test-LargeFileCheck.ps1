@@ -83,7 +83,7 @@ function Fire {
     param(
         [string]$HookPath, [string]$Cwd, [string]$EventName = 'Stop',
         [string]$LocalAppData, [switch]$StopHookActive, [switch]$GitPrePush,
-        [string]$Exe = 'pwsh', [string]$ClaudeProjectDir = ''
+        [string]$Exe = 'pwsh', [string]$ClaudeProjectDir = '', [int]$TripTimeAfterFiles = 0
     )
     $obj = @{ cwd = $Cwd; hook_event_name = $EventName }
     if ($StopHookActive) { $obj['stop_hook_active'] = $true }
@@ -106,6 +106,9 @@ function Fire {
         # (systemMessage). A caller passing -ClaudeProjectDir forces the Claude
         # route (hookSpecificOutput) to prove the client-aware advisory shape.
         $startArgs.Environment = @{ PATH = $env:PATH; LOCALAPPDATA = $LocalAppData; CLAUDE_PROJECT_DIR = $ClaudeProjectDir }
+        # TEST-ONLY seam: forces the hook's in-file-loop wall-time check to trip
+        # after N source files, so a mid-directory time stop is deterministic.
+        if ($TripTimeAfterFiles -gt 0) { $startArgs.Environment['LARGEFILECHECK_TEST_TRIP_TIME_AFTER_FILES'] = [string]$TripTimeAfterFiles }
     }
     $proc = Start-Process @startArgs
     $out = if (Test-Path -LiteralPath $outFile) { ([System.IO.File]::ReadAllText($outFile)).Trim() } else { '' }
@@ -562,6 +565,29 @@ try {
     $msgR2s = Get-Advisory $rR2s.Out
     Check 'R2f. a valid MAX_SCAN_SECONDS is honoured: normal scan completes, offender reported, NOT partial' (
         $msgR2s -match 'a\.py \(900 lines\)' -and $msgR2s -notmatch '(?i)PARTIAL') $msgR2s
+
+    # =====================================================================
+    Write-Host '--- Stop scan: MAX_SCAN_SECONDS is a real MID-DIRECTORY time ceiling (deterministic seam) ---' -ForegroundColor Cyan
+    # T1: ONE directory holding 10 oversized source files. The between-directories
+    # time check cannot catch an overrun inside a single big directory; the in-file-
+    # loop check can. A TEST-ONLY seam (LARGEFILECHECK_TEST_TRIP_TIME_AFTER_FILES=2)
+    # forces that in-file-loop check to trip after 2 source files WITHOUT depending
+    # on real wall-clock timing, proving the scan halts IN THE MIDDLE of the
+    # directory (2 of 10 scanned) and names the TIME limit as the partial cause -
+    # not files/dirs/read-failure. The seam is inert unless the env var is set.
+    $hcT1 = New-IsolatedHookCopy
+    $projT1 = New-Proj 'TimeCeilingMidDir'
+    1..10 | ForEach-Object { New-SourceFile (Join-Path $projT1 ('src\t{0:00}.py' -f $_)) 900 }
+    $rT1 = Fire -HookPath $hcT1.Script -Cwd $projT1 -EventName 'Stop' -LocalAppData $hcT1.LocalAppData -TripTimeAfterFiles 2
+    $msgT1 = Get-Advisory $rT1.Out
+    Check 'T1a. the scan stops MID-directory: only 2 of the 10 source files are scanned before the time trip' (
+        $msgT1 -match '\b2 source file\(s\) exceed 800 lines' -and $msgT1 -notmatch '\b10 source file') $msgT1
+    Check 'T1b. coverage is PARTIAL and the cause names the TIME limit (not files/dirs/read failure)' (
+        $msgT1 -match '(?i)PARTIAL scan' -and $msgT1 -match '(?i)scan time limit of 5 seconds was reached' -and
+        $msgT1 -notmatch '(?i)source-file scan ceiling' -and $msgT1 -notmatch '(?i)directory ceiling' -and
+        $msgT1 -notmatch '(?i)could not be read') $msgT1
+    Check 'T1c. the mid-directory time report is a client-aware advisory, never a decision:block' (
+        $rT1.Out -notmatch '"decision"' -and $rT1.Exit -eq 0 -and $rT1.Err -eq '') ("exit=$($rT1.Exit) out=[$($rT1.Out)] err=[$($rT1.Err)]")
 
     # =====================================================================
     Write-Host '--- Stop scan: the MAX_FILES ceiling counts SOURCE files - a trailing non-source file is not PARTIAL ---' -ForegroundColor Cyan
