@@ -74,6 +74,29 @@ param(
     # Written as JSON. MUST NOT be inside a directory the test itself writes to.
     [string]$ResultPath = '',
 
+    # ---- run-identity contract (Test-Run-Guard passes these as DATA) ----------
+    # A cryptographically random id minted by Test-Run-Guard at PreToolUse for
+    # the recognised test intent, echoed here so the consumer can prove THIS
+    # result belongs to THAT observation and not a stale one. Empty when the
+    # runner was invoked directly (no hook), in which case one is generated so
+    # the result still carries a stable identity.
+    [string]$RunId = '',
+
+    # The observing hook's repository-state fingerprint, persisted verbatim so the
+    # consumer can reject a result produced for a different repository/state. Not
+    # recomputed here: the hook owns the git-state derivation.
+    [string]$ProjectFingerprint = '',
+
+    # Optional, for audit only. The command fingerprint is RECOMPUTED below from
+    # the real -FilePath/-Arguments (a passed value cannot be trusted to identify
+    # what actually ran); if a value is supplied and disagrees, the run fails
+    # closed rather than persisting a spoofable identity.
+    [string]$CommandFingerprint = '',
+
+    # Optional heartbeat/progress file. Its last-write time advancing counts as
+    # progress, so a silent long-running step can prove liveness without printing.
+    [string]$ProgressFile = '',
+
     [switch]$Quiet
 )
 
@@ -101,6 +124,112 @@ function Get-GuardedWorkerBudget {
         }
     }
     return $budget
+}
+
+# ---- run identity ----------------------------------------------------------
+
+# SHA-256 prefix over the structured executable + argument ARRAY, joined by a NUL
+# that cannot appear in a Windows argument, then lowercased. Computed from the
+# real (FileName, ArgumentList), never from a re-joined shell string, so "what
+# ran" has ONE canonical identity that the observing hook and this runner both
+# derive the same way. Standalone SHA (this script does not dot-source _hooklib).
+function Get-CommandFingerprint {
+    param([string]$ExecutablePath, [string[]]$ArgumentList)
+    $parts = New-Object System.Collections.Generic.List[string]
+    [void]$parts.Add(([string]$ExecutablePath).ToLowerInvariant())
+    foreach ($a in @($ArgumentList)) { [void]$parts.Add([string]$a) }
+    $joined = ($parts.ToArray() -join "`0")
+    $sha = [System.Security.Cryptography.SHA256]::Create()
+    try {
+        $bytes = $sha.ComputeHash([System.Text.Encoding]::UTF8.GetBytes($joined))
+        return ([System.BitConverter]::ToString($bytes) -replace '-', '').ToLowerInvariant().Substring(0, 32)
+    }
+    finally { $sha.Dispose() }
+}
+
+# The canonical project key the hooks use: SHA-256 prefix of the lowercased cwd.
+function Get-ProjectKey {
+    param([string]$Path)
+    $sha = [System.Security.Cryptography.SHA256]::Create()
+    try {
+        $bytes = $sha.ComputeHash([System.Text.Encoding]::UTF8.GetBytes(([string]$Path).ToLowerInvariant()))
+        return ([System.BitConverter]::ToString($bytes) -replace '-', '').ToLowerInvariant().Substring(0, 12)
+    }
+    finally { $sha.Dispose() }
+}
+
+# ---- Windows Job Object (crash-proof ownership of the whole tree) -----------
+#
+# A test parent can spawn a background child, exit 0, and leave the child alive -
+# a normal-exit orphan the timeout path never sees. A Job Object with
+# JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE makes the OS itself the backstop: when the
+# LAST handle to the job closes (this runner exiting, even on a crash), every
+# process still in the job dies. The root is assigned to the job immediately
+# after Start, and Windows auto-inherits job membership for its descendants.
+#
+# FAIL CLOSED: if the job cannot be created or the root cannot be assigned, this
+# runner does NOT pretend to own the tree - it records processOwnership='degraded'
+# and falls back to the ppid-walk kill, so the result never over-claims safety.
+$script:JobTypeReady = $false
+function Initialize-JobObjectType {
+    if ($script:JobTypeReady) { return $true }
+    if (-not [System.Environment]::OSVersion.Platform.ToString().StartsWith('Win')) { return $false }
+    try {
+        if (-not ('HookMaker.JobNative' -as [type])) {
+            Add-Type -ErrorAction Stop -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+namespace HookMaker {
+  public static class JobNative {
+    [StructLayout(LayoutKind.Sequential)]
+    struct JOBOBJECT_BASIC_LIMIT_INFORMATION {
+      public long PerProcessUserTimeLimit; public long PerJobUserTimeLimit; public uint LimitFlags;
+      public UIntPtr MinimumWorkingSetSize; public UIntPtr MaximumWorkingSetSize; public uint ActiveProcessLimit;
+      public UIntPtr Affinity; public uint PriorityClass; public uint SchedulingClass;
+    }
+    [StructLayout(LayoutKind.Sequential)]
+    struct IO_COUNTERS { public ulong a,b,c,d,e,f; }
+    [StructLayout(LayoutKind.Sequential)]
+    struct JOBOBJECT_EXTENDED_LIMIT_INFORMATION {
+      public JOBOBJECT_BASIC_LIMIT_INFORMATION BasicLimitInformation; public IO_COUNTERS IoInfo;
+      public UIntPtr ProcessMemoryLimit; public UIntPtr JobMemoryLimit; public UIntPtr PeakProcessMemoryUsed; public UIntPtr PeakJobMemoryUsed;
+    }
+    [DllImport("kernel32.dll", CharSet=CharSet.Unicode, SetLastError=true)]
+    static extern IntPtr CreateJobObject(IntPtr a, string name);
+    [DllImport("kernel32.dll", SetLastError=true)]
+    static extern bool SetInformationJobObject(IntPtr job, int infoClass, IntPtr info, uint infoLen);
+    [DllImport("kernel32.dll", SetLastError=true)]
+    static extern bool AssignProcessToJobObject(IntPtr job, IntPtr process);
+    [DllImport("kernel32.dll", SetLastError=true)]
+    static extern bool TerminateJobObject(IntPtr job, uint exitCode);
+    [DllImport("kernel32.dll", SetLastError=true)]
+    static extern bool CloseHandle(IntPtr h);
+    const uint JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x2000;
+    const int JobObjectExtendedLimitInformation = 9;
+    public static IntPtr CreateKillOnClose() {
+      IntPtr job = CreateJobObject(IntPtr.Zero, null);
+      if (job == IntPtr.Zero) return IntPtr.Zero;
+      var ext = new JOBOBJECT_EXTENDED_LIMIT_INFORMATION();
+      ext.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+      int len = Marshal.SizeOf(ext);
+      IntPtr p = Marshal.AllocHGlobal(len);
+      try {
+        Marshal.StructureToPtr(ext, p, false);
+        if (!SetInformationJobObject(job, JobObjectExtendedLimitInformation, p, (uint)len)) { CloseHandle(job); return IntPtr.Zero; }
+      } finally { Marshal.FreeHGlobal(p); }
+      return job;
+    }
+    public static bool Assign(IntPtr job, IntPtr process) { return AssignProcessToJobObject(job, process); }
+    public static bool Terminate(IntPtr job) { return TerminateJobObject(job, 1); }
+    public static bool Close(IntPtr job) { return CloseHandle(job); }
+  }
+}
+'@
+        }
+        $script:JobTypeReady = $true
+        return $true
+    }
+    catch { return $false }
 }
 
 # ---- process tree ----------------------------------------------------------
@@ -160,7 +289,14 @@ function Get-TreeResourceSample {
 # Process.Kill($true) is .NET Core only; Windows PowerShell 5.1 needs taskkill,
 # so both paths exist and the result is verified either way.
 function Stop-OwnedProcessTree {
-    param([int]$RootId)
+    param([int]$RootId, [IntPtr]$JobHandle = [IntPtr]::Zero)
+    # When a Job Object owns the tree, TerminateJobObject kills every member
+    # atomically - including any descendant that ppid-walking would miss - so it
+    # goes first. The ppid walk and taskkill still run as belt-and-braces (and are
+    # the whole story in the degraded, no-job case).
+    if ($JobHandle -ne [IntPtr]::Zero) {
+        try { [void][HookMaker.JobNative]::Terminate($JobHandle) } catch { }
+    }
     $ids = @(Get-OwnedProcessTree -RootId $RootId)
     [array]::Reverse($ids)
     foreach ($id in $ids) {
@@ -202,8 +338,9 @@ function Test-ShouldTerminate {
         }
     }
     if ($IdleLimit -gt 0 -and $IdleSeconds -ge $IdleLimit) {
-        return [pscustomobject]@{ Terminate = $true; Reason = 'idleTimeout'
-            Detail = ('produced no output or state change for ' + [Math]::Round($IdleSeconds) + 's')
+        return [pscustomobject]@{ Terminate = $true; Reason = 'noProgressTimeout'
+            Detail = ('made no progress for ' + [Math]::Round($IdleSeconds) +
+                's - no output, no CPU advance in the owned tree, no process-tree change, no heartbeat')
         }
     }
     if ($MemoryLimitMB -gt 0 -and $MemoryMB -ge $MemoryLimitMB) {
@@ -217,28 +354,33 @@ function Test-ShouldTerminate {
 # ---- result document -------------------------------------------------------
 
 $script:Result = [pscustomobject][ordered]@{
-    schema           = 1
-    overall          = 'unknown'
-    fileName         = $FilePath
-    argumentCount    = @($Arguments).Count
-    workingDirectory = ''
-    exitCode         = $null
-    terminated       = $false
-    terminateReason  = ''
-    terminateDetail  = ''
-    elapsedSeconds   = 0
-    idleSecondsAtEnd = 0
-    heartbeats       = 0
-    peakMemoryMB     = 0
-    cpuSeconds       = 0
-    peakTreeSize     = 0
-    leakedProcessIds = @()
-    lastProgress     = ''
-    stdoutBytes      = 0
-    stderrBytes      = 0
-    workerBudget     = (Get-GuardedWorkerBudget)
-    startedUtc       = ''
-    endedUtc         = ''
+    schema             = 2
+    overall            = 'unknown'
+    fileName           = $FilePath
+    argumentCount      = @($Arguments).Count
+    workingDirectory   = ''
+    runId              = ''
+    projectKey         = ''
+    projectFingerprint = ''
+    commandFingerprint = ''
+    processOwnership   = 'unknown'
+    exitCode           = $null
+    terminated         = $false
+    terminateReason    = ''
+    terminateDetail    = ''
+    elapsedSeconds     = 0
+    noProgressSeconds  = 0
+    heartbeats         = 0
+    peakMemoryMB       = 0
+    cpuSeconds         = 0
+    peakTreeSize       = 0
+    leakedProcessIds   = @()
+    lastProgress       = ''
+    stdoutBytes        = 0
+    stderrBytes        = 0
+    workerBudget       = (Get-GuardedWorkerBudget)
+    startedUtc         = ''
+    endedUtc           = ''
 }
 
 # The ARGUMENTS ARE NOT RECORDED. A test invocation can legitimately carry a
@@ -296,21 +438,44 @@ function Get-ActiveMarkerPath {
 }
 
 function Write-ActiveMarker {
-    param([int]$OwnerPid)
+    param([int]$OwnerPid, [string]$RunId, [string]$ProjectFingerprint)
     try {
         $path = Get-ActiveMarkerPath
         if ([string]::IsNullOrWhiteSpace($path)) { return }
         $dir = Split-Path -Parent $path
         if (-not (Test-Path -LiteralPath $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
-        # ISO-8601 'o', NOT ticks: the consumer parses with
-        # DateTime::TryParse(..., RoundtripKind), which a ticks string fails,
-        # yielding no timestamp at all. Verified against its ConvertTo-UtcTime.
-        $marker = [pscustomobject][ordered]@{
-            pid        = $OwnerPid
-            startedUtc = (Get-Date).ToUniversalTime().ToString('o')
+        # PID reuse is the trap: a plain {pid} marker blocks completion on ANY
+        # live process that later inherits that pid. So the marker also records
+        # the OWNER PROCESS's own start time and executable path (read from the
+        # live process now), plus the runId and project fingerprint. The consumer
+        # accepts the marker as "active" only when the live process at ownerPid
+        # STILL has this exact start time and executable - a recycled pid, a
+        # different program, or a different project makes it stale, never active.
+        # ISO-8601 'o', NOT ticks: the consumer parses with TryParse(RoundtripKind).
+        $startUtc = ''
+        $exePath = ''
+        try {
+            $me = Get-Process -Id $OwnerPid -ErrorAction Stop
+            try { $startUtc = $me.StartTime.ToUniversalTime().ToString('o') } catch { $startUtc = '' }
+            try { $exePath = [string]$me.Path } catch { $exePath = '' }
         }
-        [System.IO.File]::WriteAllText($path, ($marker | ConvertTo-Json -Depth 4),
+        catch { }
+        $marker = [pscustomobject][ordered]@{
+            schema               = 2
+            runId                = $RunId
+            ownerPid             = $OwnerPid
+            ownerProcessStartUtc = $startUtc
+            ownerExecutablePath  = $exePath
+            projectFingerprint   = $ProjectFingerprint
+            markerCreatedUtc     = (Get-Date).ToUniversalTime().ToString('o')
+        }
+        # Atomic-ish write: temp + force-move, so a consumer never reads a
+        # half-written marker. Single-writer per project key (only this runner
+        # writes this marker), so the force-replace cannot race another writer.
+        $tmp = $path + '.' + [guid]::NewGuid().ToString('N').Substring(0, 8) + '.tmp'
+        [System.IO.File]::WriteAllText($tmp, ($marker | ConvertTo-Json -Depth 4),
             (New-Object System.Text.UTF8Encoding($false)))
+        Move-Item -LiteralPath $tmp -Destination $path -Force
         $script:ActiveMarkerPath = $path
     }
     catch { }
@@ -347,6 +512,23 @@ $script:Result.workingDirectory = $WorkingDirectory
 # initializer above runs before that resolution, so it saw an empty list and
 # every JSON-invoked run reported argumentCount 0.
 $script:Result.argumentCount = @($Arguments).Count
+
+# ---- run identity: minted or echoed, computed once the args are resolved ----
+# runId: echo the hook's id when given, else generate one so a direct/manual run
+# still carries a stable identity. A hook-controlled id lets the consumer demand
+# an EXACT match; a self-generated one still binds the result to this run.
+if ([string]::IsNullOrWhiteSpace($RunId)) { $RunId = [guid]::NewGuid().ToString('N') }
+$script:Result.runId = $RunId
+$script:Result.projectKey = (Get-ProjectKey $WorkingDirectory)
+$script:Result.projectFingerprint = $ProjectFingerprint
+# Command fingerprint is RECOMPUTED from what actually runs. If a value was
+# passed and disagrees, fail closed rather than persist a spoofable identity.
+$computedCommandFp = Get-CommandFingerprint -ExecutablePath $FilePath -ArgumentList $Arguments
+if (-not [string]::IsNullOrWhiteSpace($CommandFingerprint) -and $CommandFingerprint -ne $computedCommandFp) {
+    throw ('-CommandFingerprint (' + $CommandFingerprint + ') does not match the fingerprint of the executable + arguments actually being run (' + $computedCommandFp + '); refusing to run under a mismatched identity.')
+}
+$script:Result.commandFingerprint = $computedCommandFp
+
 $script:Result.startedUtc = (Get-Date).ToUniversalTime().ToString('o')
 
 $stdoutFile = [System.IO.Path]::GetTempFileName()
@@ -354,8 +536,19 @@ $stderrFile = [System.IO.Path]::GetTempFileName()
 $process = $null
 $stdoutWriter = $null
 $stderrWriter = $null
+$script:JobHandle = [IntPtr]::Zero
+$script:ResultWritten = $false
 
 try {
+    # Establish the Job Object BEFORE the child starts so the root can be assigned
+    # to it the instant it exists. If this fails, ownership degrades to the
+    # ppid-walk kill and the result says so - it never claims a safety it lacks.
+    $jobReady = Initialize-JobObjectType
+    if ($jobReady) {
+        try { $script:JobHandle = [HookMaker.JobNative]::CreateKillOnClose() } catch { $script:JobHandle = [IntPtr]::Zero }
+    }
+    $script:Result.processOwnership = if ($script:JobHandle -ne [IntPtr]::Zero) { 'jobObject' } else { 'degraded' }
+
     $psi = New-Object System.Diagnostics.ProcessStartInfo
     $psi.FileName = $FilePath
     foreach ($argument in @($Arguments)) { [void]$psi.ArgumentList.Add([string]$argument) }
@@ -370,10 +563,24 @@ try {
     $process.StartInfo = $psi
 
     [void]$process.Start()
+    # Assign the root to the job the instant it exists, before it can spawn a
+    # descendant that escapes ownership. (A CREATE_SUSPENDED start would close the
+    # tiny remaining window entirely, but ProcessStartInfo does not expose it; the
+    # KILL_ON_JOB_CLOSE backstop still catches anything the root itself spawns.)
+    if ($script:JobHandle -ne [IntPtr]::Zero) {
+        $assigned = $false
+        try { $assigned = [HookMaker.JobNative]::Assign($script:JobHandle, $process.Handle) } catch { $assigned = $false }
+        if (-not $assigned) {
+            # Could not take ownership - do NOT claim we did.
+            try { [void][HookMaker.JobNative]::Close($script:JobHandle) } catch { }
+            $script:JobHandle = [IntPtr]::Zero
+            $script:Result.processOwnership = 'degraded'
+        }
+    }
     # The run is genuinely live from here on, so the marker goes up now and
     # comes down in finally - never earlier (nothing is running yet) and never
     # later (a crash between start and here would leave it unrecorded).
-    Write-ActiveMarker -OwnerPid $PID
+    Write-ActiveMarker -OwnerPid $PID -RunId $RunId -ProjectFingerprint $ProjectFingerprint
     # Detach stdin NOW: an interactive prompt then reads EOF and the test fails
     # fast and honestly, instead of blocking until a timeout hides the cause.
     try { $process.StandardInput.Close() } catch { }
@@ -398,11 +605,21 @@ try {
     $heartbeats = 0
     $decision = [pscustomobject]@{ Terminate = $false; Reason = ''; Detail = '' }
 
-    # Progress = bytes written by the pumps. Polling the streams' own Position is
-    # the incremental signal that BeginOutputReadLine was meant to give us, with
-    # none of its runspace problems.
+    # NO-PROGRESS, not output-idle. The old model reset the timer only on OUTPUT
+    # bytes, so a silent CPU-bound computation - legitimate, just not chatty - got
+    # killed at the idle ceiling despite making real progress. Progress is now ANY
+    # of: output-byte growth, a meaningful cumulative-CPU advance in the owned
+    # tree, an owned process-tree membership change, or (optional) a heartbeat/
+    # progress file's write time advancing. High CPU is progress EVIDENCE, never a
+    # kill reason; only sustained no-progress (or the wall/memory ceilings) ends a
+    # run. A silent BUSY computation keeps advancing CPU and is never idle-killed;
+    # a silent SLEEPING/waiting process advances none of these and eventually is.
+    $cpuProgressEpsilon = 0.1     # CPU-seconds of tree advance that counts as progress
     $lastBytes = -1L
-    $lastChangeTicks = [DateTime]::UtcNow.Ticks
+    $lastCpu = -1.0
+    $lastTreeCount = -1
+    $lastProgressFileTicks = 0L
+    $lastProgressTicks = [DateTime]::UtcNow.Ticks
 
     while (-not $process.HasExited) {
         Start-Sleep -Milliseconds ([Math]::Max(250, $HeartbeatSeconds * 1000))
@@ -417,15 +634,31 @@ try {
 
         $bytes = 0L
         try { $bytes = $stdoutWriter.Position + $stderrWriter.Position } catch { }
-        if ($bytes -ne $lastBytes) { $lastBytes = $bytes; $lastChangeTicks = [DateTime]::UtcNow.Ticks }
-        $idleSeconds = ([DateTime]::UtcNow.Ticks - $lastChangeTicks) / 10000000.0
+
+        $progressFileTicks = 0L
+        if (-not [string]::IsNullOrWhiteSpace($ProgressFile)) {
+            try { if (Test-Path -LiteralPath $ProgressFile -PathType Leaf) { $progressFileTicks = (Get-Item -LiteralPath $ProgressFile -Force).LastWriteTimeUtc.Ticks } } catch { }
+        }
+
+        # Any one signal advancing resets the no-progress clock.
+        $madeProgress = $false
+        if ($bytes -ne $lastBytes) { $madeProgress = $true }
+        if ($lastCpu -ge 0 -and ($sample.CpuSeconds - $lastCpu) -ge $cpuProgressEpsilon) { $madeProgress = $true }
+        if ($lastTreeCount -ge 0 -and $tree.Count -ne $lastTreeCount) { $madeProgress = $true }
+        if ($progressFileTicks -gt $lastProgressFileTicks) { $madeProgress = $true }
+        # First sample establishes the baselines without counting as progress.
+        if ($lastBytes -lt 0 -or $lastCpu -lt 0 -or $lastTreeCount -lt 0) { $madeProgress = $true }
+        $lastBytes = $bytes; $lastCpu = $sample.CpuSeconds; $lastTreeCount = $tree.Count; $lastProgressFileTicks = $progressFileTicks
+        if ($madeProgress) { $lastProgressTicks = [DateTime]::UtcNow.Ticks }
+
+        $noProgressSeconds = ([DateTime]::UtcNow.Ticks - $lastProgressTicks) / 10000000.0
         $decision = Test-ShouldTerminate -ElapsedSeconds $stopwatch.Elapsed.TotalSeconds `
-            -IdleSeconds $idleSeconds -MemoryMB $sample.MemoryMB `
+            -IdleSeconds $noProgressSeconds -MemoryMB $sample.MemoryMB `
             -WallLimit $TimeoutSeconds -IdleLimit $IdleTimeoutSeconds -MemoryLimitMB $MaxMemoryMB
 
         if (-not $Quiet) {
-            Write-Host ('  [guard] ' + [Math]::Round($stopwatch.Elapsed.TotalSeconds) + 's  idle ' +
-                [Math]::Round($idleSeconds) + 's  tree ' + $tree.Count + '  mem ' + $sample.MemoryMB +
+            Write-Host ('  [guard] ' + [Math]::Round($stopwatch.Elapsed.TotalSeconds) + 's  no-progress ' +
+                [Math]::Round($noProgressSeconds) + 's  tree ' + $tree.Count + '  mem ' + $sample.MemoryMB +
                 'MB  cpu ' + $sample.CpuSeconds + 's') -ForegroundColor DarkGray
         }
 
@@ -433,7 +666,7 @@ try {
             $script:Result.terminated = $true
             $script:Result.terminateReason = $decision.Reason
             $script:Result.terminateDetail = $decision.Detail
-            $leaked = @(Stop-OwnedProcessTree -RootId $process.Id)
+            $leaked = @(Stop-OwnedProcessTree -RootId $process.Id -JobHandle $script:JobHandle)
             $script:Result.leakedProcessIds = @($leaked)
             break
         }
@@ -461,7 +694,7 @@ try {
 
     $script:Result.exitCode = $exitCode
     $script:Result.elapsedSeconds = [Math]::Round($stopwatch.Elapsed.TotalSeconds, 1)
-    $script:Result.idleSecondsAtEnd = [Math]::Round((([DateTime]::UtcNow.Ticks - $lastChangeTicks) / 10000000.0), 1)
+    $script:Result.noProgressSeconds = [Math]::Round((([DateTime]::UtcNow.Ticks - $lastProgressTicks) / 10000000.0), 1)
     $script:Result.heartbeats = $heartbeats
     $script:Result.peakMemoryMB = $peakMemory
     $script:Result.cpuSeconds = $cpuSeconds
@@ -489,7 +722,30 @@ try {
     try { $script:Result.stderrBytes = (Get-Item -LiteralPath $stderrFile).Length } catch { }
     $script:Result.endedUtc = (Get-Date).ToUniversalTime().ToString('o')
 
+    # ORPHAN DESCENDANTS AFTER A NORMAL EXIT. The timeout path already records
+    # what survived a forced kill; this is the other leak - the root exits (often
+    # 0) but leaves a background child alive. On Windows a dead parent's children
+    # are NOT reparented, so their ParentProcessId still points at the (exited)
+    # root and the ppid walk still finds them. Any found are a leak: record them,
+    # then kill the owned tree/job so nothing outlives this runner. overall can
+    # never be 'ok' while a descendant the parent leaked is still alive, so a
+    # found orphan forces overall away from 'ok' even on exit 0.
+    if (-not $script:Result.terminated) {
+        $orphans = @(@(Get-OwnedProcessTree -RootId $process.Id) |
+            Where-Object { $_ -ne $process.Id } |
+            Where-Object { try { $null = Get-Process -Id $_ -ErrorAction Stop; $true } catch { $false } })
+        if ($orphans.Count -gt 0) {
+            $script:Result.leakedProcessIds = @($orphans)
+            $survivors = @(Stop-OwnedProcessTree -RootId $process.Id -JobHandle $script:JobHandle)
+            $script:Result.terminateReason = 'orphanLeak'
+            $script:Result.terminateDetail = ('the test process exited but left ' + $orphans.Count +
+                ' descendant process(es) alive (' + (@($orphans) -join ', ') + '); a guarded run must own its whole tree' +
+                $(if (@($survivors).Count -gt 0) { ' - ' + @($survivors).Count + ' could not be terminated and remain leaked' } else { ' - all were terminated' }))
+        }
+    }
+
     if ($script:Result.terminated) { $script:Result.overall = 'terminated' }
+    elseif (@($script:Result.leakedProcessIds).Count -gt 0) { $script:Result.overall = 'failed' }
     elseif ($exitCode -eq 0) { $script:Result.overall = 'ok' }
     else { $script:Result.overall = 'failed' }
 
@@ -509,6 +765,7 @@ try {
     }
 
     Write-GuardedResult
+    $script:ResultWritten = $true
 
     if ($script:Result.terminated) {
         Write-Host ('GUARDED RUN TERMINATED (' + $script:Result.terminateReason + '): ' +
@@ -519,9 +776,28 @@ try {
         }
         exit 124
     }
+    # A run that exited on its own but leaked descendants is NOT a pass: surface a
+    # distinct non-zero code (125) so a direct caller sees it, while the result
+    # document's overall='failed' + leakedProcessIds tell the hooks the full story.
+    if (@($script:Result.leakedProcessIds).Count -gt 0) {
+        Write-Host ('GUARDED RUN LEAKED process(es) after a clean exit: ' +
+            (@($script:Result.leakedProcessIds) -join ', ')) -ForegroundColor Red
+        exit 125
+    }
     exit $exitCode
 }
 finally {
+    # A result document must exist on EVERY terminal path. If an unexpected error
+    # above skipped the normal write, persist what is known now (overall stays
+    # 'unknown' / whatever was set) so the consumer sees an honest incomplete
+    # record rather than nothing - silence would read as "no run happened".
+    if (-not $script:ResultWritten) {
+        if ($script:Result.overall -eq 'unknown') { $script:Result.overall = 'error' }
+        if ([string]::IsNullOrWhiteSpace([string]$script:Result.endedUtc)) {
+            $script:Result.endedUtc = (Get-Date).ToUniversalTime().ToString('o')
+        }
+        try { Write-GuardedResult } catch { }
+    }
     # The marker must never outlive this process: a stale one would make
     # Test-Completion-Check block completion on a run that ended long ago.
     Remove-ActiveMarker
@@ -532,10 +808,22 @@ finally {
     # therefore lives here, on every path out, not only in the timeout branch.
     try {
         if ($null -ne $process -and -not $process.HasExited) {
-            $survivors = @(Stop-OwnedProcessTree -RootId $process.Id)
+            $survivors = @(Stop-OwnedProcessTree -RootId $process.Id -JobHandle $script:JobHandle)
             if (@($survivors).Count -gt 0) {
                 Write-Warning ('guarded run left process(es) alive: ' + (@($survivors) -join ', '))
             }
+        }
+    }
+    catch { }
+    # Close the Job Object handle LAST. With KILL_ON_JOB_CLOSE, closing the final
+    # handle makes the OS terminate anything still in the job - the crash-proof
+    # backstop that catches whatever an exception above skipped, even a descendant
+    # the ppid walk could not see.
+    try {
+        if ($script:JobHandle -ne [IntPtr]::Zero) {
+            [void][HookMaker.JobNative]::Terminate($script:JobHandle)
+            [void][HookMaker.JobNative]::Close($script:JobHandle)
+            $script:JobHandle = [IntPtr]::Zero
         }
     }
     catch { }

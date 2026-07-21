@@ -79,21 +79,34 @@ if ($a.Count -ge 2 -and $a[0] -eq 'run' -and $a[1] -eq 'list') {
 }
 if ($a.Count -ge 2 -and $a[0] -eq 'api') {
     $endpoint = [string]$a[1]
-    # commit check-runs list: repos/<slug>/commits/<sha>/check-runs?per_page=100
+    # extract the paginated page number (default 1); "per_page" never matches.
+    $page = 1
+    if ($endpoint -match '[?&]page=(\d+)') { $page = [int]$Matches[1] }
+    # commit check-runs list: repos/<slug>/commits/<sha>/check-runs?per_page=100&page=N
     if ($endpoint -match '/commits/[^/]+/check-runs') {
-        $f = Join-Path $mockDir 'checkruns.json'
-        if (Test-Path $f) { Write-Output (Get-Content $f -Raw); exit 0 }
+        $pf = Join-Path $mockDir ('checkruns-page-' + $page + '.json')
+        if (Test-Path $pf) { Write-Output (Get-Content $pf -Raw); exit 0 }
+        if ($page -eq 1) {
+            $f = Join-Path $mockDir 'checkruns.json'
+            if (Test-Path $f) { Write-Output (Get-Content $f -Raw); exit 0 }
+        }
         Write-Output '{"total_count":0,"check_runs":[]}'; exit 0
     }
-    # per-check-run annotations: repos/<slug>/check-runs/<id>/annotations
+    # per-check-run annotations: repos/<slug>/check-runs/<id>/annotations?per_page=100&page=N
     if ($endpoint -match '/check-runs/([^/]+)/annotations') {
         $crid = $Matches[1]
+        $perPageErr = Join-Path $mockDir ('annexit-' + $crid + '-page-' + $page + '.txt')
+        if (Test-Path $perPageErr) { [Console]::Error.WriteLine('api error'); exit ([int]((Get-Content $perPageErr -Raw).Trim())) }
         $errf = Join-Path $mockDir ('annexit-' + $crid + '.txt')
         if (Test-Path $errf) { [Console]::Error.WriteLine('api error'); exit ([int]((Get-Content $errf -Raw).Trim())) }
         $genErr = Join-Path $mockDir 'annexit.txt'
         if (Test-Path $genErr) { [Console]::Error.WriteLine('api error'); exit ([int]((Get-Content $genErr -Raw).Trim())) }
-        $f = Join-Path $mockDir ('annotations-' + $crid + '.json')
-        if (Test-Path $f) { Write-Output (Get-Content $f -Raw); exit 0 }
+        $pf = Join-Path $mockDir ('annotations-' + $crid + '-page-' + $page + '.json')
+        if (Test-Path $pf) { Write-Output (Get-Content $pf -Raw); exit 0 }
+        if ($page -eq 1) {
+            $f = Join-Path $mockDir ('annotations-' + $crid + '.json')
+            if (Test-Path $f) { Write-Output (Get-Content $f -Raw); exit 0 }
+        }
         Write-Output '[]'; exit 0
     }
     exit 1
@@ -108,12 +121,23 @@ $env:PATH = (@($ShimDir) + $pathWithoutRealGh) -join ';'
 $env:GH_MOCK_DIR = $MockDir
 
 function Set-Mock {
-    # $CheckRunsJson: the JSON body for repos/.../commits/<sha>/check-runs.
-    # $Annotations: hashtable of check_run id -> annotations JSON array string.
+    # $CheckRunsJson: single-page JSON body for repos/.../commits/<sha>/check-runs
+    #   (served for page 1; used when total_count == the whole set fits one page).
+    # $CheckRunPages: hashtable of page number -> check-runs JSON body, for the
+    #   PAGINATED check-runs endpoint (e.g. @{ '1' = ...; '2' = ... }). A page with
+    #   no entry falls back to the empty {"total_count":0,"check_runs":[]} body, so
+    #   a total_count that is never reached exercises the truncation fail-closed.
+    # $Annotations: hashtable of check_run id -> annotations JSON array string
+    #   (served for annotation page 1 of that id).
+    # $AnnotationPages: hashtable of '<id>-<page>' -> annotations JSON array, for
+    #   paginated annotation bodies (e.g. @{ '241-1' = ...; '241-2' = ... }).
+    # $AnnotationPageExits: hashtable of '<id>-<page>' -> exit code, to make one
+    #   annotation page query error (fail-closed mid-pagination).
     # $AnnotationsExitAll: when > 0, every annotations query errors with that code
     #   (used to prove the billing detector fails CLOSED on a query error).
     param([int]$AuthExit = 0, [string]$PrJson = '', [int]$PrExit = -1, [string]$RunJson = '', [string]$ExpectedSha = '',
-        [string]$CheckRunsJson = '', [hashtable]$Annotations = $null, [int]$AnnotationsExitAll = -1)
+        [string]$CheckRunsJson = '', [hashtable]$CheckRunPages = $null, [hashtable]$Annotations = $null,
+        [hashtable]$AnnotationPages = $null, [hashtable]$AnnotationPageExits = $null, [int]$AnnotationsExitAll = -1)
     Remove-Item (Join-Path $MockDir '*') -Force -ErrorAction SilentlyContinue
     Set-Content (Join-Path $MockDir 'auth_exit.txt') $AuthExit
     if ($PrJson -ne '') { Set-Content (Join-Path $MockDir 'pr_list.json') $PrJson -Encoding utf8 }
@@ -121,8 +145,23 @@ function Set-Mock {
     if ($RunJson -ne '') { Set-Content (Join-Path $MockDir 'run_list.json') $RunJson -Encoding utf8 }
     if ($ExpectedSha -ne '') { Set-Content (Join-Path $MockDir 'expected_sha.txt') $ExpectedSha }
     if ($CheckRunsJson -ne '') { Set-Content (Join-Path $MockDir 'checkruns.json') $CheckRunsJson -Encoding utf8 }
+    if ($null -ne $CheckRunPages) {
+        foreach ($pg in $CheckRunPages.Keys) { Set-Content (Join-Path $MockDir ('checkruns-page-' + $pg + '.json')) $CheckRunPages[$pg] -Encoding utf8 }
+    }
     if ($null -ne $Annotations) {
         foreach ($id in $Annotations.Keys) { Set-Content (Join-Path $MockDir ('annotations-' + $id + '.json')) $Annotations[$id] -Encoding utf8 }
+    }
+    if ($null -ne $AnnotationPages) {
+        foreach ($k in $AnnotationPages.Keys) {
+            $i = ([string]$k).LastIndexOf('-'); $id = ([string]$k).Substring(0, $i); $pg = ([string]$k).Substring($i + 1)
+            Set-Content (Join-Path $MockDir ('annotations-' + $id + '-page-' + $pg + '.json')) $AnnotationPages[$k] -Encoding utf8
+        }
+    }
+    if ($null -ne $AnnotationPageExits) {
+        foreach ($k in $AnnotationPageExits.Keys) {
+            $i = ([string]$k).LastIndexOf('-'); $id = ([string]$k).Substring(0, $i); $pg = ([string]$k).Substring($i + 1)
+            Set-Content (Join-Path $MockDir ('annexit-' + $id + '-page-' + $pg + '.txt')) $AnnotationPageExits[$k]
+        }
     }
     if ($AnnotationsExitAll -ge 0) { Set-Content (Join-Path $MockDir 'annexit.txt') $AnnotationsExitAll }
 }
@@ -135,6 +174,14 @@ function New-CheckRunsJson {
     param([hashtable[]]$Runs)   # each: @{ id = '1'; conclusion = 'failure' }
     $items = @($Runs | ForEach-Object { '{"id":' + $_.id + ',"conclusion":"' + $_.conclusion + '"}' })
     return '{"total_count":' + $Runs.Count + ',"check_runs":[' + ($items -join ',') + ']}'
+}
+# Like New-CheckRunsJson but with an EXPLICIT total_count, so a page can carry a
+# slice of a larger set (multi-page) or a deliberately-unreachable total_count
+# (truncation / over-bound fail-closed tests).
+function New-CheckRunsPageJson {
+    param([int]$TotalCount, [hashtable[]]$Runs)
+    $items = @($Runs | ForEach-Object { '{"id":' + $_.id + ',"conclusion":"' + $_.conclusion + '"}' })
+    return '{"total_count":' + $TotalCount + ',"check_runs":[' + ($items -join ',') + ']}'
 }
 function New-BillingAnnotations {
     return '[{"annotation_level":"failure","path":".github","message":' + ($script:BillingMessage | ConvertTo-Json) + '}]'
@@ -412,6 +459,91 @@ try {
         -AnnotationsExitAll 1
     $r = Fire -HookPath $CiHook -Cwd $ciAnnErr -EventName 'Stop'
     Check 'annotations query error -> billing not claimed, hard block (fail closed)' ($r.Out -match '"decision":"block"' -and $r.Out -match 'FAILED') $r.Out
+
+    # ---- account billing block: pagination safety (check-runs + annotations) ----
+    # A commit can have MORE check-runs than one page, so billing is only claimed
+    # after EVERY page is fetched (count == total_count) and EVERY failing run is
+    # billing-annotated. Anything unverifiable within a strict page bound fails
+    # CLOSED (hard block), never billing.
+    Write-Host '--- CiStatusCheck: account billing block (pagination-safe) ---' -ForegroundColor Cyan
+
+    # (A) two full pages, all failing runs billing-annotated -> billing only after
+    # the complete set (count reaches total_count) is verified.
+    $ciBillMP = New-GitRepo 'ci-bill-mp'
+    $shaBillMP = Get-HeadSha $ciBillMP
+    Set-Mock -RunJson '[{"databaseId":201,"name":"CI","workflowName":"CI","status":"completed","conclusion":"failure"}]' `
+        -ExpectedSha $shaBillMP `
+        -CheckRunPages @{
+            '1' = (New-CheckRunsPageJson -TotalCount 4 -Runs @(@{id = '201'; conclusion = 'failure' }, @{id = '202'; conclusion = 'failure' }))
+            '2' = (New-CheckRunsPageJson -TotalCount 4 -Runs @(@{id = '203'; conclusion = 'failure' }, @{id = '204'; conclusion = 'failure' }))
+        } `
+        -Annotations @{ '201' = (New-BillingAnnotations); '202' = (New-BillingAnnotations); '203' = (New-BillingAnnotations); '204' = (New-BillingAnnotations) }
+    $r = Fire -HookPath $CiHook -Cwd $ciBillMP -EventName 'Stop'
+    Check 'multi-page all-billing -> billing classification after full verification' ($r.Out -notmatch '"decision":"block"' -and $r.Out -match 'CI NOT VERIFIED GREEN' -and $r.Out -match 'account-billing') $r.Out
+
+    # (B) a real failure on check-run PAGE 2 (only page 1 was billing) -> the
+    # complete set contains an unannotated failure, so billing is refused (block).
+    $ciMPreal = New-GitRepo 'ci-mp-realfail'
+    $shaMPreal = Get-HeadSha $ciMPreal
+    Set-Mock -RunJson '[{"databaseId":211,"name":"CI","workflowName":"CI","status":"completed","conclusion":"failure"}]' `
+        -ExpectedSha $shaMPreal `
+        -CheckRunPages @{
+            '1' = (New-CheckRunsPageJson -TotalCount 3 -Runs @(@{id = '211'; conclusion = 'failure' }, @{id = '212'; conclusion = 'failure' }))
+            '2' = (New-CheckRunsPageJson -TotalCount 3 -Runs @(@{id = '213'; conclusion = 'failure' }))
+        } `
+        -Annotations @{ '211' = (New-BillingAnnotations); '212' = (New-BillingAnnotations); '213' = (New-RealFailureAnnotations) }
+    $r = Fire -HookPath $CiHook -Cwd $ciMPreal -EventName 'Stop'
+    Check 'a real failure on check-run page 2 prevents billing (hard block, fail closed)' ($r.Out -match '"decision":"block"' -and $r.Out -match 'FAILED') $r.Out
+
+    # (C) total_count above the strict bound (2000) -> cannot fully verify -> fail
+    # closed BEFORE any annotation is trusted, even though the delivered runs are
+    # billing-annotated.
+    $ciBound = New-GitRepo 'ci-bound'
+    $shaBound = Get-HeadSha $ciBound
+    Set-Mock -RunJson '[{"databaseId":221,"name":"CI","workflowName":"CI","status":"completed","conclusion":"failure"}]' `
+        -ExpectedSha $shaBound `
+        -CheckRunPages @{ '1' = (New-CheckRunsPageJson -TotalCount 2001 -Runs @(@{id = '221'; conclusion = 'failure' })) } `
+        -Annotations @{ '221' = (New-BillingAnnotations) }
+    $r = Fire -HookPath $CiHook -Cwd $ciBound -EventName 'Stop'
+    Check 'total_count above the safety bound -> fail closed (hard block)' ($r.Out -match '"decision":"block"' -and $r.Out -match 'FAILED') $r.Out
+
+    # (D) total_count is 5 but only 2 runs are ever delivered (page 2 empty) ->
+    # fetched count never reaches total_count -> truncation -> fail closed.
+    $ciTrunc = New-GitRepo 'ci-trunc'
+    $shaTrunc = Get-HeadSha $ciTrunc
+    Set-Mock -RunJson '[{"databaseId":231,"name":"CI","workflowName":"CI","status":"completed","conclusion":"failure"}]' `
+        -ExpectedSha $shaTrunc `
+        -CheckRunPages @{ '1' = (New-CheckRunsPageJson -TotalCount 5 -Runs @(@{id = '231'; conclusion = 'failure' }, @{id = '232'; conclusion = 'failure' })) } `
+        -Annotations @{ '231' = (New-BillingAnnotations); '232' = (New-BillingAnnotations) }
+    $r = Fire -HookPath $CiHook -Cwd $ciTrunc -EventName 'Stop'
+    Check 'fetched check-run count below total_count -> fail closed (hard block)' ($r.Out -match '"decision":"block"' -and $r.Out -match 'FAILED') $r.Out
+
+    # (E1) the billing annotation is only on annotation PAGE 2 (page 1 is a
+    # different, non-billing annotation) -> the paginator must read page 2 to find
+    # it and still classify billing. Proves annotation pagination is not a no-op.
+    $ciAnnP2 = New-GitRepo 'ci-annp2'
+    $shaAnnP2 = Get-HeadSha $ciAnnP2
+    Set-Mock -RunJson '[{"databaseId":241,"name":"CI","workflowName":"CI","status":"completed","conclusion":"failure"}]' `
+        -ExpectedSha $shaAnnP2 `
+        -CheckRunsJson (New-CheckRunsJson @(@{id = '241'; conclusion = 'failure' })) `
+        -AnnotationPages @{ '241-1' = (New-RealFailureAnnotations); '241-2' = (New-BillingAnnotations) }
+    $r = Fire -HookPath $CiHook -Cwd $ciAnnP2 -EventName 'Stop'
+    Check 'billing annotation found on annotation page 2 -> billing classification' ($r.Out -notmatch '"decision":"block"' -and $r.Out -match 'account-billing') $r.Out
+
+    # (E2) annotation pagination continues past page 1 (page 1 non-billing) and
+    # the page-2 query ERRORS -> fail closed (hard block). Also asserts page 2 was
+    # actually queried, so this cannot pass with a page-1-only reader.
+    $ciAnnErr2 = New-GitRepo 'ci-annerr2'
+    $shaAnnErr2 = Get-HeadSha $ciAnnErr2
+    Set-Mock -RunJson '[{"databaseId":251,"name":"CI","workflowName":"CI","status":"completed","conclusion":"failure"}]' `
+        -ExpectedSha $shaAnnErr2 `
+        -CheckRunsJson (New-CheckRunsJson @(@{id = '251'; conclusion = 'failure' })) `
+        -AnnotationPages @{ '251-1' = (New-RealFailureAnnotations) } `
+        -AnnotationPageExits @{ '251-2' = 1 }
+    $r = Fire -HookPath $CiHook -Cwd $ciAnnErr2 -EventName 'Stop'
+    Check 'annotation pagination error on page 2 -> fail closed (hard block)' ($r.Out -match '"decision":"block"' -and $r.Out -match 'FAILED') $r.Out
+    $annCalls = [System.IO.File]::ReadAllText((Join-Path $MockDir 'calls.txt'))
+    Check 'annotation pagination actually queried page 2 before failing closed' ($annCalls -match 'check-runs/251/annotations\?per_page=100&page=2') $annCalls
 
     # no runs yet but workflows exist -> block; no workflows at all -> verified silent
     $ci5 = New-GitRepo 'ci5'
