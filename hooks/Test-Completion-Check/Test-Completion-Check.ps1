@@ -179,6 +179,13 @@ $script:NoteFiles = @('.ai\BUGS.md', '.ai\TESTING_NOTES.md', '.ai\COMMANDS.md', 
 # Net bytes a durable note must add before it counts. A bare acknowledgement
 # ("done", "n/a", "fixed") cannot clear this; a real note trivially does.
 $script:MinNoteBytes = 80
+# Each incident's note must carry THIS exact tag line so one note can no longer
+# resolve two distinct incidents by byte growth alone (a single 80-byte note used
+# to clear every incident that shared its baseline). The block message tells the
+# agent the exact string to write; resolution requires the marker AND the byte
+# floor, so a bare tag with no substance still does not count.
+$script:IncidentTagPrefix = 'Test incident: '
+function Get-IncidentTag { param([string]$Key) return ($script:IncidentTagPrefix + $Key) }
 
 function Get-NoteBytes {
     param([string]$Root)
@@ -191,6 +198,34 @@ function Get-NoteBytes {
         catch { }
     }
     return $total
+}
+
+# Concatenated text of the four durable-note files (empty when none exist). Read
+# so an incident's own tag can be searched for; a read failure yields '' rather
+# than throwing, so a locked/absent file never crashes the gate.
+function Get-NoteText {
+    param([string]$Root)
+    $sb = New-Object System.Text.StringBuilder
+    foreach ($relative in $script:NoteFiles) {
+        $path = Join-Path $Root $relative
+        try {
+            if (Test-Path -LiteralPath $path -PathType Leaf) { [void]$sb.AppendLine([System.IO.File]::ReadAllText($path, [System.Text.Encoding]::UTF8)) }
+        }
+        catch { }
+    }
+    return $sb.ToString()
+}
+
+# Is this incident's own tag ("Test incident: <key>") present in the .ai/ notes?
+# Whitespace after the colon is tolerated; the key is regex-escaped so it matches
+# literally. This is the per-incident marker that makes two notes genuinely
+# required for two incidents.
+function Test-NoteTagPresent {
+    param([string]$Root, [string]$Key)
+    if ([string]::IsNullOrWhiteSpace($Key)) { return $false }
+    $text = Get-NoteText -Root $Root
+    if ([string]::IsNullOrWhiteSpace($text)) { return $false }
+    return ($text -match ('Test incident:\s*' + [regex]::Escape($Key)))
 }
 
 # Normalises a timestamp read back out of JSON to a genuine UTC DateTime.
@@ -278,6 +313,11 @@ $script:MaxResolvedIncidents = 50
 $script:MaxPendingNotes = 50
 $script:resolvedIncidents = New-Object System.Collections.Generic.List[string]
 $script:pendingNotes = New-Object System.Collections.Specialized.OrderedDictionary
+# Set when a newly-seen incident could NOT be tracked because the ledger is full
+# of UNRESOLVED obligations. An unresolved note is never silently dropped to make
+# room; the overflow is surfaced (a bounded block) so the backlog is cleared
+# first. Kept bounded overall - the cap never grows.
+$script:pendingOverflow = $false
 $deferredFingerprint = ''
 
 $previous = $null
@@ -330,38 +370,152 @@ function Add-ResolvedIncident {
     if ($script:pendingNotes.Contains($Key)) { $script:pendingNotes.Remove($Key) }
 }
 
+# Has this incident's owed note been written? Requires BOTH its own tag (so one
+# note cannot clear a different incident) AND real added content past its byte
+# baseline (so a bare tag with nothing else does not count).
+function Test-PendingNoteSatisfied {
+    param([string]$Key)
+    if (-not $script:pendingNotes.Contains($Key)) { return $false }
+    $entry = $script:pendingNotes[$Key]
+    $base = [int64]$entry.baseline
+    if ($base -lt 0) { return $false }
+    if (((Get-NoteBytes -Root $script:cwd) - $base) -lt $script:MinNoteBytes) { return $false }
+    return (Test-NoteTagPresent -Root $script:cwd -Key $Key)
+}
+
 # Register a durable-note obligation for one incident, capturing the CURRENT
 # note-byte baseline so each incident demands its own added content. No-op when
 # the incident is already resolved or already owes a note.
+#
+# On overflow the OLDEST entry is NOT blindly dropped (that could discard an
+# unresolved lesson). A slot is freed only by evicting an obligation that is
+# already SATISFIED (its tagged note is written); if every tracked obligation is
+# still unresolved, the new one is not added and the overflow is surfaced instead,
+# so an unresolved note is never lost and the cap still never grows.
 function Register-PendingNote {
     param([string]$Key, [string]$Reason)
     if ([string]::IsNullOrWhiteSpace($Key)) { return }
     if ($script:resolvedIncidents.Contains($Key) -or $script:pendingNotes.Contains($Key)) { return }
-    while ($script:pendingNotes.Count -ge $script:MaxPendingNotes) {
-        $oldest = @($script:pendingNotes.Keys)[0]
-        if ($null -eq $oldest) { break }
-        $script:pendingNotes.Remove([string]$oldest)
+    if ($script:pendingNotes.Count -ge $script:MaxPendingNotes) {
+        $freed = $false
+        foreach ($existing in @($script:pendingNotes.Keys)) {
+            if (Test-PendingNoteSatisfied -Key ([string]$existing)) {
+                Add-ResolvedIncident ([string]$existing)   # satisfied -> resolved, frees a slot
+                $freed = $true
+                break
+            }
+        }
+        if (-not $freed) {
+            # ponytail: at MaxPendingNotes genuinely-unresolved incidents the newest
+            # is surfaced as an overflow block rather than tracked individually - a
+            # hard ceiling that keeps growth bounded without dropping a live lesson.
+            $script:pendingOverflow = $true
+            return
+        }
     }
     $script:pendingNotes[$Key] = [pscustomobject]@{ reason = $Reason; baseline = (Get-NoteBytes -Root $script:cwd) }
 }
 
+# Earliest (smallest, so registered when fewer note bytes existed) of two
+# baselines; a negative (unknown) baseline yields to a known one.
+function Get-EarliestBaseline {
+    param([int64]$A, [int64]$B)
+    if ($A -lt 0) { return $B }
+    if ($B -lt 0) { return $A }
+    if ($A -lt $B) { return $A } else { return $B }
+}
+
+# RE-READ the on-disk ledger and MERGE it into the in-memory state, run INSIDE the
+# cross-process lock right before writing. Two Stops racing on one project each
+# read the same (possibly empty) ledger, mutate in memory, and overwrite the whole
+# file; without this merge the later writer would clobber the earlier one's
+# incidents. Union rules: resolvedIncidents unioned; pendingNotes unioned by key
+# keeping the earliest baseline; a key that is resolved never remains pending. Our
+# own prior write in this invocation merges idempotently.
+function Merge-DiskLedger {
+    $disk = $null
+    try { $disk = Read-JsonFile $script:statePath } catch { $disk = $null }
+    if ($null -eq $disk) { return }
+    $diskResolved = Get-Field $disk 'resolvedIncidents'
+    if ($null -ne $diskResolved) {
+        foreach ($k in @($diskResolved)) {
+            $ks = [string]$k
+            if ($ks -ne '' -and -not $script:resolvedIncidents.Contains($ks)) { [void]$script:resolvedIncidents.Add($ks) }
+        }
+    }
+    while ($script:resolvedIncidents.Count -gt $script:MaxResolvedIncidents) { $script:resolvedIncidents.RemoveAt(0) }
+    $diskPending = Get-Field $disk 'pendingNotes'
+    if ($null -ne $diskPending) {
+        foreach ($entry in @($diskPending)) {
+            $ek = [string](Get-Field $entry 'key')
+            if ($ek -eq '' -or $script:resolvedIncidents.Contains($ek)) { continue }   # resolved wins over pending
+            $eb = -1L; $rawEb = Get-Field $entry 'baseline'
+            if ($null -ne $rawEb) { try { $eb = [int64]$rawEb } catch { $eb = -1L } }
+            if ($script:pendingNotes.Contains($ek)) {
+                $cur = $script:pendingNotes[$ek]
+                $merged = Get-EarliestBaseline ([int64]$cur.baseline) $eb
+                $script:pendingNotes[$ek] = [pscustomobject]@{ reason = [string]$cur.reason; baseline = $merged }
+            }
+            else {
+                $script:pendingNotes[$ek] = [pscustomobject]@{ reason = [string](Get-Field $entry 'reason'); baseline = $eb }
+            }
+        }
+    }
+    foreach ($rk in @($script:resolvedIncidents)) { if ($script:pendingNotes.Contains($rk)) { $script:pendingNotes.Remove($rk) } }
+    # ponytail: a merged union >MaxPendingNotes only in the pathological >50-distinct
+    # -incident case the concurrent-Stop race never reaches; keep it bounded.
+    while ($script:pendingNotes.Count -gt $script:MaxPendingNotes) {
+        $oldest = @($script:pendingNotes.Keys)[0]
+        if ($null -eq $oldest) { break }
+        $script:pendingNotes.Remove([string]$oldest)
+    }
+}
+
+# Persist the ledger. The whole read-merge-write runs under a project-keyed
+# cross-process Mutex (the shared crash-aware-lock idea from
+# scripts\_installregistry.ps1's registry lock) so concurrent Stops on one project
+# cannot lose each other's incidents. The mutex is global-namespaced from the
+# project key; acquisition is bounded and best-effort - if it cannot be taken we
+# still merge and write rather than corrupt or deadlock. An AbandonedMutexException
+# means a previous holder died mid-write; we then own it, exactly like the file
+# lock reclaiming an orphan.
 function Save-CompletionState {
     param([string]$Deferred)
     if ($null -eq $Deferred) { $Deferred = $script:deferredFingerprint }
+    $script:deferredFingerprint = $Deferred
+    $mutex = $null
+    $acquired = $false
     try {
-        $notes = New-Object System.Collections.Generic.List[object]
-        foreach ($k in @($script:pendingNotes.Keys)) {
-            $entry = $script:pendingNotes[$k]
-            [void]$notes.Add([pscustomobject]@{ key = [string]$k; reason = [string]$entry.reason; baseline = [int64]$entry.baseline })
+        try {
+            $mutex = New-Object System.Threading.Mutex($false, ('Global\HookMakerTCC-' + $script:projectKey))
+            try { $acquired = $mutex.WaitOne([TimeSpan]::FromSeconds(5)) }
+            catch [System.Threading.AbandonedMutexException] { $acquired = $true }
         }
-        Write-JsonFileAtomic -Value ([pscustomobject]@{
-                resolvedIncidents   = @($script:resolvedIncidents.ToArray())
-                pendingNotes        = @($notes.ToArray())
-                deferredFingerprint = $Deferred
-                updatedUtc          = [DateTime]::UtcNow.ToString('o')
-            }) -Path $script:statePath
+        catch { $mutex = $null; $acquired = $false }
+
+        Merge-DiskLedger
+
+        try {
+            $notes = New-Object System.Collections.Generic.List[object]
+            foreach ($k in @($script:pendingNotes.Keys)) {
+                $entry = $script:pendingNotes[$k]
+                [void]$notes.Add([pscustomobject]@{ key = [string]$k; reason = [string]$entry.reason; baseline = [int64]$entry.baseline })
+            }
+            Write-JsonFileAtomic -Value ([pscustomobject]@{
+                    resolvedIncidents   = @($script:resolvedIncidents.ToArray())
+                    pendingNotes        = @($notes.ToArray())
+                    deferredFingerprint = $Deferred
+                    updatedUtc          = [DateTime]::UtcNow.ToString('o')
+                }) -Path $script:statePath
+        }
+        catch { }
     }
-    catch { }
+    finally {
+        if ($null -ne $mutex) {
+            if ($acquired) { try { $mutex.ReleaseMutex() } catch { } }
+            try { $mutex.Dispose() } catch { }
+        }
+    }
 }
 
 # ---- output ---------------------------------------------------------------
@@ -583,6 +737,27 @@ function Get-ObservedResultAssignment {
 $resultEntries = Get-CompletionStateEntries 'result'
 $observedEntries = Get-CompletionStateEntries 'observed'
 $activeEntries = Get-CompletionStateEntries 'active'
+
+# ---- R1: register note obligations BEFORE pruning can delete a superseded run --
+# The prune below removes a superseded negative (a hang that later re-ran green for
+# the same command+state). A supersede lifts the RESULT-level block but NEVER the
+# durable-note requirement (D2). If the superseded run's files were pruned before
+# its obligation was recorded - e.g. the first Stop fires >24h after a self-heal -
+# the lesson would be lost forever. So every CURRENT-state, unresolved, superseded
+# incident has its note demanded here, before the prune can erase it. Its
+# obligation then lives in the ledger independent of the result file. Un-superseded
+# current-state negatives are KEPT by the prune and register normally when they
+# block, so only the about-to-be-pruned ones need this pass.
+foreach ($re in $resultEntries) {
+    $ik = Get-ResultIncidentKey -Doc $re.Doc -Path $re.Path
+    if ($ik -eq '' -or (Test-IncidentResolved $ik) -or $script:pendingNotes.Contains($ik)) { continue }
+    $rProjFp = [string](Get-Field $re.Doc 'projectFingerprint')
+    $isCurrentState = ($rProjFp -eq '' -or $rProjFp -eq $stateFingerprint)
+    if (-not $isCurrentState) { continue }
+    if (Test-ResultSuperseded -NegDoc $re.Doc -NegTime (Get-ResultRecordedTime -Doc $re.Doc -Path $re.Path) -AllResults $resultEntries) {
+        Register-PendingNote -Key $ik -Reason (Get-IncidentReasonFromDoc $re.Doc)
+    }
+}
 
 # ---- bounded, CONTENT-AWARE state growth control (C2 / D3 / D4) -------------
 # Age alone must never erase a NEGATIVE finding. Staleness weakens only POSITIVE
@@ -936,6 +1111,7 @@ if ($incidentKey -ne '' -and -not (Test-IncidentResolved $incidentKey) -and $res
         [void]$lines.Add('Recovery: fix the cause of the ' + $(if ($terminateReason -ne '') { $terminateReason } else { 'termination' }) + ' - do not simply raise the ceiling to hide it - then re-run the suite through scripts\Run-Tests-Guarded.ps1 and confirm the new result reports overall=ok.')
     }
     [void]$lines.Add('Then record a durable note in .ai/ (BUGS.md, TESTING_NOTES.md, COMMANDS.md and/or LESSON.md as appropriate) covering WHY this was not detected earlier and the verified prevention/recovery guard. A bare acknowledgement is not a note.')
+    [void]$lines.Add('Tag that note with a line `' + (Get-IncidentTag $incidentKey) + '` (exactly) so THIS specific incident is cleared - a note without this tag will not resolve it, and a second concurrent incident needs its own separately tagged note.')
     [void]$lines.Add('Report only what the evidence shows: this hook has seen one guarded run for this project and cannot confirm any broader test scope passed.')
     Write-Finding -Blocking $true -Lines $lines.ToArray()
 }
@@ -986,26 +1162,33 @@ if ($null -ne $result -and $resultIsCurrentEvidence -and $overall -eq 'ok') {
 }
 
 # ---- 6. every durable note that is still owed ------------------------------
-# EVERY pending incident is enforced, not one: a satisfied note (its own .ai byte
-# baseline grew by MinNoteBytes) is resolved and dropped; any still-owed note keeps
-# blocking. Two concurrent incidents therefore each block until their OWN note is
-# written, and resolving one never forgets the other.
-if ($script:pendingNotes.Count -gt 0) {
-    $currentNoteBytes = Get-NoteBytes -Root $cwd
+# EVERY pending incident is enforced, not one: a satisfied note (its OWN tag present
+# AND real added content past its byte baseline) is resolved and dropped; any
+# still-owed note keeps blocking. The tag is what makes two concurrent incidents
+# each require their OWN note - one 80-byte note can no longer clear both by byte
+# growth alone. Resolving one never forgets the other.
+if ($script:pendingNotes.Count -gt 0 -or $script:pendingOverflow) {
     $owed = New-Object System.Collections.Generic.List[object]
     foreach ($k in @($script:pendingNotes.Keys)) {
-        $entry = $script:pendingNotes[$k]
-        $base = [int64]$entry.baseline
-        $grown = if ($base -ge 0) { $currentNoteBytes - $base } else { 0L }
-        if ($grown -ge $script:MinNoteBytes) { Add-ResolvedIncident ([string]$k) }   # satisfied -> resolved, dropped
-        else { [void]$owed.Add([pscustomobject]@{ Reason = [string]$entry.reason }) }
+        if (Test-PendingNoteSatisfied -Key ([string]$k)) { Add-ResolvedIncident ([string]$k) }   # satisfied -> resolved, dropped
+        else { [void]$owed.Add([pscustomobject]@{ Key = [string]$k; Reason = [string]$script:pendingNotes[$k].reason }) }
+    }
+    if ($script:pendingOverflow -and $owed.Count -gt 0) {
+        # R2b: the ledger is full of UNRESOLVED obligations and a newer incident
+        # could not be tracked without discarding one. Surface it - never drop a
+        # live lesson - and keep blocking until the backlog is cleared.
+        Save-CompletionState
+        Write-Finding -Blocking $true -Lines @(
+            'TEST COMPLETION CHECK: the durable-note ledger is FULL (' + $script:MaxPendingNotes + ' unresolved test-incident notes are already owed) and another incident was seen that cannot be tracked without discarding one.',
+            'No unresolved note is being dropped - completion stays blocked until the backlog clears. Write the owed .ai/ notes (each tagged with its own `' + $script:IncidentTagPrefix + '<key>` line as instructed on the Stop that first reported it) so their obligations resolve, then re-run so the newest incident can be recorded.')
     }
     if ($owed.Count -gt 0) {
         Save-CompletionState
         Write-Finding -Blocking $true -Lines @(
             'TEST COMPLETION CHECK: a durable .ai/ note is still owed because ' + $owed[0].Reason + '.',
             'Write it into .ai/BUGS.md, .ai/TESTING_NOTES.md, .ai/COMMANDS.md and/or .ai/LESSON.md, whichever fits. It must state WHY the problem was not detected earlier and the verified prevention/recovery guard that now catches it - concretely enough that a later session can act on it.',
-            'A bare acknowledgement ("done", "n/a", "fixed") does not satisfy this and will not clear it; the check looks for real added content in those files.')
+            'Tag it with a line `' + (Get-IncidentTag $owed[0].Key) + '` (exactly) so THIS specific incident is cleared; a note without this tag, or a bare tag with no real content, will not clear it, and each other owed incident needs its own tagged note.',
+            'A bare acknowledgement ("done", "n/a", "fixed") does not satisfy this and will not clear it; the check looks for the tag plus real added content in those files.')
     }
     # Every owed note is now satisfied: the incident(s) and their notes are closed.
     Save-CompletionState

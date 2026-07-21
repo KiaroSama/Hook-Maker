@@ -250,6 +250,41 @@ function Add-AiNote {
     Write-Utf8 $path ($existing + $Text + "`n")
 }
 
+# The hook now tells the agent to tag its durable note with a line
+# `Test incident: <key>`; a note without that exact tag no longer resolves the
+# incident. These helpers mirror a real agent: extract the tag from the block the
+# hook just emitted, then write a note carrying it plus real content.
+function Get-IncidentTagLine {
+    param([string]$Reason)
+    if ($Reason -match 'Test incident:\s*([0-9a-zA-Z-]+)') { return ('Test incident: ' + $Matches[1]) }
+    return ''
+}
+# Writes a durable note carrying the incident tag found in $Reason plus $Body.
+function Add-TaggedNote {
+    param([string]$Root, [string]$Reason, [string]$Body, [string]$File = 'TESTING_NOTES.md')
+    Add-AiNote -Root $Root -Text ((Get-IncidentTagLine $Reason) + "`n" + $Body) -File $File
+}
+
+# Polls until a just-spawned process is fully queryable (StartTime and Path
+# readable) so an active-marker written for it records the SAME identity the hook
+# will later read. Removes the real-process start-up race that intermittently made
+# a genuinely-live sentinel read as stale.
+function Wait-ProcessReady {
+    param([int]$ProcessId, [int]$TimeoutSeconds = 10)
+    $deadline = [DateTime]::UtcNow.AddSeconds($TimeoutSeconds)
+    while ([DateTime]::UtcNow -lt $deadline) {
+        try {
+            $proc = Get-Process -Id $ProcessId -ErrorAction Stop
+            $st = $proc.StartTime
+            $path = $proc.Path
+            if ($null -ne $st -and -not [string]::IsNullOrWhiteSpace([string]$path)) { return $true }
+        }
+        catch { }
+        Start-Sleep -Milliseconds 50
+    }
+    return $false
+}
+
 function Fire {
     param(
         [object]$Copy, [string]$Cwd, [string]$EventName = 'Stop', [string]$SessionId = 'sess1',
@@ -565,6 +600,10 @@ try {
     # (start-time + exe must match) then correctly rejects as stale, flaking this
     # "is it active" assertion. Start-Sleep stays alive well past the hook check.
     $sentinel = Start-Process -FilePath (Get-Process -Id $PID).Path -ArgumentList @('-NoLogo', '-NoProfile', '-Command', 'Start-Sleep -Seconds 30') -PassThru -WindowStyle Hidden
+    # Wait until the sentinel is fully queryable so the marker records the SAME
+    # StartTime/Path the hook will read - otherwise a not-yet-settled process could
+    # be recorded with an identity the hook rejects as stale (the observed flake).
+    Check 'the sentinel process is ready before its marker is written' (Wait-ProcessReady -ProcessId $sentinel.Id)
     Write-ActiveMarker -Copy $c -Root $p -ProcessId $sentinel.Id
     $r = Fire -Copy $c -Cwd $p
     $reason = Get-BlockReason $r.Out
@@ -609,6 +648,7 @@ try {
     $rA = 'runa-' + (Get-ProjectKey $p)
     $rB = 'runb-' + (Get-ProjectKey $p)
     $sentinel = Start-Process -FilePath (Get-Process -Id $PID).Path -ArgumentList @('-NoLogo', '-NoProfile', '-Command', 'Start-Sleep -Seconds 30') -PassThru -WindowStyle Hidden
+    [void](Wait-ProcessReady -ProcessId $sentinel.Id)
     $deadA = Start-Process -FilePath (Get-Process -Id $PID).Path -ArgumentList '-NoProfile', '-Command', 'exit 0' -PassThru -WindowStyle Hidden
     $deadA.WaitForExit()
     Write-ActiveMarker -Copy $c -Root $p -ProcessId $deadA.Id -StartUtc ([DateTime]::UtcNow.ToString('o')) -ExePath 'x' -RunId $rA
@@ -667,6 +707,7 @@ try {
     $p = New-GitRepo 'C1LiveMarker'
     $fpBefore = Get-Fingerprint $p
     $sentinel = Start-Process -FilePath (Get-Process -Id $PID).Path -ArgumentList @('-NoLogo', '-NoProfile', '-Command', 'Start-Sleep -Seconds 45') -PassThru -WindowStyle Hidden
+    [void](Wait-ProcessReady -ProcessId $sentinel.Id)
     Write-ActiveMarker -Copy $c -Root $p -ProcessId $sentinel.Id -ProjectFingerprint $fpBefore
     Write-Utf8 (Join-Path $p 'mid-edit.txt') 'edited mid run'
     $fpAfter = Get-Fingerprint $p
@@ -741,9 +782,10 @@ try {
     Write-GuardedResult -Copy $c -Root $p -Overall 'terminated' -ExitCode 124 -TerminateReason 'idleTimeout' -TerminateDetail 'produced no output or state change for 300s' -RunId $rInc
     $r = Fire -Copy $c -Cwd $p
     Check 'C4: the incident blocks first and registers the owed note' ($r.Out -match '"decision":"block"') $r.Out
+    Check 'C4: the block instructs the agent to tag the note with the incident key' ((Get-BlockReason $r.Out) -match 'Test incident:') (Get-BlockReason $r.Out)
     # The environmental cause is fixed WITHOUT a source change: a durable note is
-    # written and the SAME command reruns GREEN as a NEW run (same repo fingerprint).
-    Add-AiNote -Root $p -Text ('Idle-timeout hang fixed by clearing a stuck local service; not detected earlier because no idle bound existed. ' +
+    # written (tagged with the incident key) and the SAME command reruns GREEN.
+    Add-TaggedNote -Root $p -Reason (Get-BlockReason $r.Out) -Body ('Idle-timeout hang fixed by clearing a stuck local service; not detected earlier because no idle bound existed. ' +
         'Guard: Run-Tests-Guarded.ps1 -IdleTimeoutSeconds 300, verified by re-running the suite green.')
     $rGreen = 'c4green-' + $key
     Write-ObservedRecord -Copy $c -Root $p -RunId $rGreen
@@ -788,8 +830,8 @@ try {
         $r.Out -match '"decision":"block"' -and (Get-BlockReason $r.Out) -match 'wallTimeout') $r.Out
     $st = Get-CompletionStateDoc -Copy $c -Root $p
     Check 'D1: after A blocks, ONE note obligation is tracked (A only)' ((Get-PendingCount $st) -eq 1) ('pending=' + (Get-PendingCount $st))
-    # Resolve A: write A's durable note AND a green rerun of cmdA that SUPERSEDES A.
-    Add-AiNote -Root $p -Text ('A wall-timeout hang fixed by bounding the wall ceiling; not detected earlier because the ceiling was unset. ' +
+    # Resolve A: write A's OWN tagged durable note AND a green rerun of cmdA that SUPERSEDES A.
+    Add-TaggedNote -Root $p -Reason (Get-BlockReason $r.Out) -Body ('A wall-timeout hang fixed by bounding the wall ceiling; not detected earlier because the ceiling was unset. ' +
         'Guard: Run-Tests-Guarded.ps1 -WallTimeoutSeconds 1800, verified by a green rerun.')
     $rAok = 'd1runaok-' + $key
     Write-ObservedRecord -Copy $c -Root $p -RunId $rAok -CommandFingerprint $cmdA -AgeMinutes 0
@@ -802,8 +844,9 @@ try {
     # obligation with B's, leaving pending=1. The per-incident MAP keeps BOTH.
     Check 'D1: the persisted state now carries BOTH note obligations (A not forgotten when B registered)' (
         (Get-PendingCount $st) -eq 2) ('pending=' + (Get-PendingCount $st))
-    # Resolve B: its own durable note + a green rerun of cmdB.
-    Add-AiNote -Root $p -Text ('B idle-timeout hang fixed by clearing a stuck fixture service; not detected earlier because no idle bound existed. ' +
+    # Resolve B: its OWN tagged durable note + a green rerun of cmdB. B's block ($r
+    # from the fire above) carries B's distinct incident tag, not A's.
+    Add-TaggedNote -Root $p -Reason (Get-BlockReason $r.Out) -Body ('B idle-timeout hang fixed by clearing a stuck fixture service; not detected earlier because no idle bound existed. ' +
         'Guard: Run-Tests-Guarded.ps1 -IdleTimeoutSeconds 300, verified by a green rerun.')
     $rBok = 'd1runbok-' + $key
     Write-ObservedRecord -Copy $c -Root $p -RunId $rBok -CommandFingerprint $cmdB -AgeMinutes 0
@@ -835,7 +878,7 @@ try {
         $r.Out -match '"decision":"block"' -and (Get-BlockReason $r.Out) -match 'durable \.ai/ note is still owed' -and (Get-BlockReason $r.Out) -match 'idleTimeout') $r.Out
     $st = Get-CompletionStateDoc -Copy $c -Root $p
     Check 'D2: the self-healed incident registered a note obligation on first sighting' ((Get-PendingCount $st) -eq 1) ('pending=' + (Get-PendingCount $st))
-    Add-AiNote -Root $p -Text ('Idle-timeout self-healed before the Stop hook fired; recorded so the lesson is not lost. ' +
+    Add-TaggedNote -Root $p -Reason (Get-BlockReason $r.Out) -Body ('Idle-timeout self-healed before the Stop hook fired; recorded so the lesson is not lost. ' +
         'Not detected earlier because no idle bound existed. Guard: Run-Tests-Guarded.ps1 -IdleTimeoutSeconds 300.')
     $r = Fire -Copy $c -Cwd $p
     Check 'D2: once the durable note is written, completion is allowed' ($r.Exit -eq 0 -and $r.Out -eq '') $r.Out
@@ -898,6 +941,159 @@ try {
         Test-Path -LiteralPath (Get-RunStateFile -Copy $c -Root $p -Kind 'result' -RunId $rTermCur)) $r.Out
 
     # =====================================================================
+    Write-Host '--- R1: a superseded incident is note-demanded even when its files are pruned before the first Stop ---' -ForegroundColor Cyan
+    $c = New-IsolatedHookCopy
+    $p = New-GitRepoAi 'R1RegisterBeforePrune'
+    $key = Get-ProjectKey $p
+    $rInc = 'r1inc-' + $key; $rGreen = 'r1green-' + $key; $cmd = 'r1cmd-' + $key
+    # A terminated incident, then a NEWER green rerun of the SAME command (supersedes it).
+    Write-GuardedResult -Copy $c -Root $p -Overall 'terminated' -ExitCode 124 -TerminateReason 'wallTimeout' -TerminateDetail 'exceeded the 1800s wall ceiling' -RunId $rInc -CommandFingerprint $cmd -AgeMinutes 200
+    Write-GuardedResult -Copy $c -Root $p -Overall 'ok' -RunId $rGreen -CommandFingerprint $cmd -AgeMinutes 1
+    # The incident file is already >24h old at the first Stop, so the prune WOULD
+    # delete it (superseded). Its note obligation must be registered BEFORE that.
+    (Get-Item -LiteralPath (Get-RunStateFile -Copy $c -Root $p -Kind 'result' -RunId $rInc)).LastWriteTimeUtc = [DateTime]::UtcNow.AddHours(-25)
+    $r = Fire -Copy $c -Cwd $p
+    Check 'R1: the superseded incident still demands its durable note at the first Stop (register-before-prune)' (
+        $r.Out -match '"decision":"block"' -and (Get-BlockReason $r.Out) -match 'durable \.ai/ note is still owed' -and (Get-BlockReason $r.Out) -match 'wallTimeout') $r.Out
+    Check 'R1: exactly one note obligation was registered before pruning' ((Get-PendingCount (Get-CompletionStateDoc -Copy $c -Root $p)) -eq 1) ''
+    Check 'R1: the superseded incident file WAS pruned - the obligation outlived it in the ledger' (
+        -not (Test-Path -LiteralPath (Get-RunStateFile -Copy $c -Root $p -Kind 'result' -RunId $rInc))) $r.Out
+    Add-TaggedNote -Root $p -Reason (Get-BlockReason $r.Out) -Body ('Wall-timeout self-healed before the first Stop; recorded so the lesson survives pruning. Guard: bounded wall ceiling, verified green.')
+    $r = Fire -Copy $c -Cwd $p
+    Check 'R1: once the tagged note is written, completion is allowed' ($r.Exit -eq 0 -and $r.Out -eq '') $r.Out
+
+    # =====================================================================
+    Write-Host '--- R2a: per-incident tags - one untagged 80-byte note cannot clear two incidents ---' -ForegroundColor Cyan
+    $c = New-IsolatedHookCopy
+    $p = New-GitRepoAi 'R2aTags'
+    $key = Get-ProjectKey $p
+    # Two SUPERSEDED incidents (distinct commands + reasons) both registered in ONE
+    # Stop by R1 -> the SAME baseline (0). Under the old byte-only check a single
+    # 80-byte note cleared both; the per-incident tag now requires two.
+    $cmdA = 'r2acmda-' + $key; $cmdB = 'r2acmdb-' + $key
+    Write-GuardedResult -Copy $c -Root $p -Overall 'terminated' -ExitCode 124 -TerminateReason 'wallTimeout' -TerminateDetail 'x' -RunId ('r2ainca-' + $key) -CommandFingerprint $cmdA -AgeMinutes 200
+    Write-GuardedResult -Copy $c -Root $p -Overall 'ok' -RunId ('r2agreena-' + $key) -CommandFingerprint $cmdA -AgeMinutes 1
+    Write-GuardedResult -Copy $c -Root $p -Overall 'terminated' -ExitCode 124 -TerminateReason 'idleTimeout' -TerminateDetail 'x' -RunId ('r2aincb-' + $key) -CommandFingerprint $cmdB -AgeMinutes 200
+    Write-GuardedResult -Copy $c -Root $p -Overall 'ok' -RunId ('r2agreenb-' + $key) -CommandFingerprint $cmdB -AgeMinutes 1
+    $r = Fire -Copy $c -Cwd $p
+    Check 'R2a: two superseded incidents each owe a note (same baseline)' ((Get-PendingCount (Get-CompletionStateDoc -Copy $c -Root $p)) -eq 2) ('pending=' + (Get-PendingCount (Get-CompletionStateDoc -Copy $c -Root $p)))
+    $firstReason = Get-BlockReason $r.Out
+    Check 'R2a: the first block names one incident tag to write' ((Get-IncidentTagLine $firstReason) -ne '') $firstReason
+    # Write a note tagged for the FIRST incident only - substantial, well over 80 bytes,
+    # but WITHOUT the other incident's tag.
+    Add-TaggedNote -Root $p -Reason $firstReason -Body ('First incident fixed and documented with a real substantial prevention guard so a later session can act on it - well over eighty bytes of genuine content here.')
+    $r = Fire -Copy $c -Cwd $p
+    Check 'R2a: after ONE tagged note completion STILL blocks - the other incident is unresolved (an 80-byte note cannot clear both)' (
+        $r.Out -match '"decision":"block"') $r.Out
+    $secondReason = Get-BlockReason $r.Out
+    Check 'R2a: exactly ONE obligation remains after the first tagged note' ((Get-PendingCount (Get-CompletionStateDoc -Copy $c -Root $p)) -eq 1) ('pending=' + (Get-PendingCount (Get-CompletionStateDoc -Copy $c -Root $p)))
+    Check 'R2a: the remaining block names a DIFFERENT incident tag' (
+        (Get-IncidentTagLine $secondReason) -ne '' -and (Get-IncidentTagLine $secondReason) -ne (Get-IncidentTagLine $firstReason)) ($firstReason + ' || ' + $secondReason)
+    Add-TaggedNote -Root $p -Reason $secondReason -Body ('Second incident fixed and documented with its own substantial prevention guard, distinct from the first - again well over eighty bytes of genuine content here.')
+    $r = Fire -Copy $c -Cwd $p
+    Check 'R2a: only with BOTH tagged notes is completion allowed' ($r.Exit -eq 0 -and $r.Out -eq '') $r.Out
+
+    # =====================================================================
+    Write-Host '--- R2b: a full ledger of UNRESOLVED notes surfaces overflow; a satisfied entry is evicted first ---' -ForegroundColor Cyan
+    # (part 1) 50 UNRESOLVED obligations pre-seeded (baselines impossibly high so none
+    # can be satisfied). A 51st incident must NOT silently drop one - it surfaces.
+    $c = New-IsolatedHookCopy
+    $p = New-GitRepoAi 'R2bOverflow'
+    $key = Get-ProjectKey $p
+    $seed = New-Object System.Collections.Generic.List[object]
+    for ($i = 0; $i -lt 50; $i++) { [void]$seed.Add([pscustomobject]@{ key = ('seed-' + $i + '-' + $key); reason = ('seeded unresolved incident ' + $i); baseline = 100000000 }) }
+    Write-Utf8 (Join-Path (Get-StateDir $c) ('TestCompletionCheck-' + $key + '.json')) (
+        ([pscustomobject]@{ resolvedIncidents = @(); pendingNotes = @($seed.ToArray()); deferredFingerprint = ''; updatedUtc = [DateTime]::UtcNow.ToString('o') }) | ConvertTo-Json -Depth 6)
+    $cmd = 'r2bcmd-' + $key
+    Write-GuardedResult -Copy $c -Root $p -Overall 'terminated' -ExitCode 124 -TerminateReason 'wallTimeout' -TerminateDetail 'x' -RunId ('r2binc-' + $key) -CommandFingerprint $cmd -AgeMinutes 200
+    Write-GuardedResult -Copy $c -Root $p -Overall 'ok' -RunId ('r2bgreen-' + $key) -CommandFingerprint $cmd -AgeMinutes 1
+    $r = Fire -Copy $c -Cwd $p
+    Check 'R2b: overflow of unresolved notes surfaces as a block, not a silent drop' ($r.Out -match '"decision":"block"') $r.Out
+    Check 'R2b: the block names the FULL-ledger overflow condition' ((Get-BlockReason $r.Out) -match 'ledger is FULL') (Get-BlockReason $r.Out)
+    $st = Get-CompletionStateDoc -Copy $c -Root $p
+    Check 'R2b: NONE of the 50 unresolved obligations was dropped (cap held, nothing lost)' ((Get-PendingCount $st) -eq 50) ('pending=' + (Get-PendingCount $st))
+
+    # (part 2) a SATISFIED entry in a full ledger IS evicted to make room; nothing
+    # unresolved is lost and the cap still holds.
+    $c = New-IsolatedHookCopy
+    $p = New-GitRepoAi 'R2bEvictSatisfied'
+    $key = Get-ProjectKey $p
+    Add-AiNote -Root $p -Text ('Test incident: sat-0-' + $key + "`n" +
+        'This seeded obligation already has its tagged note written with real substantial content well over the byte floor so it is satisfiable and evictable.')
+    $seed = New-Object System.Collections.Generic.List[object]
+    [void]$seed.Add([pscustomobject]@{ key = ('sat-0-' + $key); reason = 'seeded SATISFIED incident 0'; baseline = 0 })
+    for ($i = 1; $i -lt 50; $i++) { [void]$seed.Add([pscustomobject]@{ key = ('seed-' + $i + '-' + $key); reason = ('seeded unresolved incident ' + $i); baseline = 100000000 }) }
+    Write-Utf8 (Join-Path (Get-StateDir $c) ('TestCompletionCheck-' + $key + '.json')) (
+        ([pscustomobject]@{ resolvedIncidents = @(); pendingNotes = @($seed.ToArray()); deferredFingerprint = ''; updatedUtc = [DateTime]::UtcNow.ToString('o') }) | ConvertTo-Json -Depth 6)
+    $cmd = 'r2bcmd2-' + $key
+    Write-GuardedResult -Copy $c -Root $p -Overall 'terminated' -ExitCode 124 -TerminateReason 'idleTimeout' -TerminateDetail 'x' -RunId ('r2binc2-' + $key) -CommandFingerprint $cmd -AgeMinutes 200
+    Write-GuardedResult -Copy $c -Root $p -Overall 'ok' -RunId ('r2bgreen2-' + $key) -CommandFingerprint $cmd -AgeMinutes 1
+    $r = Fire -Copy $c -Cwd $p
+    $st = Get-CompletionStateDoc -Copy $c -Root $p
+    Check 'R2b: a SATISFIED entry is evicted so the new incident fits (cap held at 50)' ((Get-PendingCount $st) -eq 50) ('pending=' + (Get-PendingCount $st))
+    Check 'R2b: the evicted entry was RESOLVED, not lost' (
+        @(@($st.resolvedIncidents) | Where-Object { [string]$_ -eq ('sat-0-' + $key) }).Count -eq 1) ''
+    Check 'R2b: the NEW incident replaced the satisfied one and is now tracked' (
+        @(@($st.pendingNotes) | Where-Object { $null -ne $_ -and $null -ne $_.PSObject.Properties['key'] -and [string]$_.key -notlike 'seed-*' -and [string]$_.key -ne ('sat-0-' + $key) }).Count -eq 1) ''
+
+    # =====================================================================
+    Write-Host '--- R3: two genuinely concurrent Stops each register a distinct incident; the merged ledger loses neither ---' -ForegroundColor Cyan
+    # Each spawned process writes its OWN incident (a terminated run superseded by a
+    # green rerun) into the SHARED state dir, then invokes the hook - so both hit the
+    # ONE project ledger at ~the same time. Without the cross-process lock + re-read
+    # merge in Save-CompletionState the later writer would clobber the earlier one.
+    $c = New-IsolatedHookCopy
+    $p = New-GitRepoAi 'R3Concurrent'
+    $key = Get-ProjectKey $p
+    $fp = Get-Fingerprint $p
+    $stateDir = Get-StateDir $c
+    $pwshExe = (Get-Process -Id $PID).Path
+    # A tiny wrapper: write the incident (terminated + green supersede) then dot-source
+    # the hook so it runs against the same stdin/env this test provides.
+    $wrapper = Join-Path $Work 'r3-concurrent-writer.ps1'
+    Write-Utf8 $wrapper @'
+param([string]$Hook, [string]$StateDir, [string]$ProjectKey, [string]$Fp, [string]$Cmd, [string]$TermRunId, [string]$GreenRunId, [string]$TerminateReason)
+function Write-Doc { param($Path, $Obj) [System.IO.File]::WriteAllText($Path, ($Obj | ConvertTo-Json -Depth 6), (New-Object System.Text.UTF8Encoding $false)) }
+$safeTerm = ($TermRunId.ToLowerInvariant() -replace '[^a-z0-9]', '')
+$safeGreen = ($GreenRunId.ToLowerInvariant() -replace '[^a-z0-9]', '')
+$termEnded = [DateTime]::UtcNow.AddMinutes(-5).ToString('o')
+$greenEnded = [DateTime]::UtcNow.ToString('o')
+Write-Doc (Join-Path $StateDir ('TestRunGuard-result-' + $ProjectKey + '-' + $safeTerm + '.json')) ([ordered]@{
+    schema = 2; overall = 'terminated'; fileName = 'pwsh'; runId = $TermRunId; projectFingerprint = $Fp; commandFingerprint = $Cmd
+    terminated = $true; terminateReason = $TerminateReason; terminateDetail = 'x'; leakedProcessIds = @(); elapsedSeconds = 12.5
+    lastProgress = 'Passed: 1  Failed: 0'; exitCode = 124; startedUtc = $termEnded; endedUtc = $termEnded })
+Write-Doc (Join-Path $StateDir ('TestRunGuard-result-' + $ProjectKey + '-' + $safeGreen + '.json')) ([ordered]@{
+    schema = 2; overall = 'ok'; fileName = 'pwsh'; runId = $GreenRunId; projectFingerprint = $Fp; commandFingerprint = $Cmd
+    terminated = $false; terminateReason = ''; terminateDetail = ''; leakedProcessIds = @(); elapsedSeconds = 10
+    lastProgress = 'Passed: 5  Failed: 0'; exitCode = 0; startedUtc = $greenEnded; endedUtc = $greenEnded })
+. $Hook
+'@
+    $evt = @{ session_id = 'r3'; cwd = $p; hook_event_name = 'Stop' } | ConvertTo-Json -Depth 5
+    $inFile = Join-Path $Work ('r3in-' + $key + '.json'); Write-Utf8 $inFile $evt
+    $procs = New-Object System.Collections.Generic.List[object]
+    foreach ($spec in @(
+            @{ Cmd = ('r3cmda-' + $key); Term = ('r3terma-' + $key); Green = ('r3greena-' + $key); Reason = 'wallTimeout' },
+            @{ Cmd = ('r3cmdb-' + $key); Term = ('r3termb-' + $key); Green = ('r3greenb-' + $key); Reason = 'idleTimeout' })) {
+        $argLine = '-NoLogo -NoProfile -File "' + $wrapper + '" -Hook "' + $c.Script + '" -StateDir "' + $stateDir +
+        '" -ProjectKey "' + $key + '" -Fp "' + $fp + '" -Cmd "' + $spec.Cmd + '" -TermRunId "' + $spec.Term +
+        '" -GreenRunId "' + $spec.Green + '" -TerminateReason "' + $spec.Reason + '"'
+        $sa = @{
+            FilePath = $pwshExe; ArgumentList = $argLine; RedirectStandardInput = $inFile
+            RedirectStandardOutput = (Join-Path $Work ('r3out-' + $spec.Reason + '.txt'))
+            RedirectStandardError  = (Join-Path $Work ('r3err-' + $spec.Reason + '.txt'))
+            NoNewWindow = $true; PassThru = $true
+        }
+        if ((Get-Command Start-Process).Parameters.ContainsKey('Environment')) {
+            $sa.Environment = @{ PATH = $env:PATH; LOCALAPPDATA = $c.LocalAppData; CLAUDE_PROJECT_DIR = $p }
+        }
+        [void]$procs.Add((Start-Process @sa))
+    }
+    foreach ($pr in $procs) { [void]$pr.WaitForExit(30000); if (-not $pr.HasExited) { try { $pr.Kill(); [void]$pr.WaitForExit(5000) } catch { } } }
+    $st = Get-CompletionStateDoc -Copy $c -Root $p
+    Check 'R3: BOTH concurrent incidents survive in the merged ledger - no lost update' (
+        (Get-PendingCount $st) -eq 2) ('pending=' + (Get-PendingCount $st))
+
+    # =====================================================================
     Write-Host '--- migration: the old single-value state shape is read and rewritten as the ledger ---' -ForegroundColor Cyan
     # A legacy pendingNoteKey/Reason/Baseline is still ENFORCED after migration.
     $c = New-IsolatedHookCopy
@@ -913,7 +1109,7 @@ try {
     $st = Get-CompletionStateDoc -Copy $c -Root $p
     Check 'migration: the state is rewritten in the new collection shape (pendingNotes, no old scalar)' (
         (Get-PendingCount $st) -eq 1 -and $null -ne $st.PSObject.Properties['pendingNotes'] -and $null -eq $st.PSObject.Properties['pendingNoteKey']) $r.Out
-    Add-AiNote -Root $p -Text ('Legacy migrated incident closed out with a real note describing the cause and the verified prevention guard so a later session can act on it.')
+    Add-TaggedNote -Root $p -Reason (Get-BlockReason $r.Out) -Body ('Legacy migrated incident closed out with a real note describing the cause and the verified prevention guard so a later session can act on it.')
     $r = Fire -Copy $c -Cwd $p
     Check 'migration: writing the note clears the migrated obligation -> completion allowed' ($r.Exit -eq 0 -and $r.Out -eq '') $r.Out
     Check 'migration: the satisfied legacy key is now carried in resolvedIncidents' ((Get-ResolvedCount (Get-CompletionStateDoc -Copy $c -Root $p)) -eq 1) ''
@@ -954,8 +1150,14 @@ try {
     $r = Fire -Copy $c -Cwd $p
     Check 'the word "done" does NOT satisfy the durable-note requirement' ($r.Out -match '"decision":"block"') $r.Out
     Check 'the block says a bare acknowledgement will not clear it' ((Get-BlockReason $r.Out) -match 'bare acknowledgement') $r.Out
+    # An UNTAGGED real note (long enough to clear the byte floor) still does NOT
+    # satisfy it - the incident's own tag is required.
     Add-AiNote -Root $p -Text ('Idle-timeout hang in the integration suite: the runner reported no output for 300s. ' +
         'Not detected earlier because no idle bound existed at all. Guard: Run-Tests-Guarded.ps1 -IdleTimeoutSeconds 300, verified by re-running the suite.')
+    $r = Fire -Copy $c -Cwd $p
+    Check 'a long but UNTAGGED note does not satisfy the requirement - the incident tag is required' ($r.Out -match '"decision":"block"') $r.Out
+    # Now write the SAME note tagged with the incident key the block names.
+    Add-TaggedNote -Root $p -Reason (Get-BlockReason $r.Out) -Body ('Idle-timeout hang in the integration suite (tagged); guard Run-Tests-Guarded.ps1 -IdleTimeoutSeconds 300.')
     $r = Fire -Copy $c -Cwd $p
     Check 'a real durable note satisfies the requirement -> completion allowed' ($r.Exit -eq 0 -and $r.Out -eq '') $r.Out
     $r = Fire -Copy $c -Cwd $p
@@ -1053,7 +1255,7 @@ try {
     $r = Fire -Copy $c -Cwd $p3
     Check 'ALWAYS_REQUIRE_NOTE=1 demands a note even after a clean run' (
         $r.Out -match '"decision":"block"' -and (Get-BlockReason $r.Out) -match 'durable \.ai/ note is still owed') $r.Out
-    Add-AiNote -Root $p3 -Text ('Full suite run through the guarded runner completed clean; recorded here because this project requires a note per run. ' +
+    Add-TaggedNote -Root $p3 -Reason (Get-BlockReason $r.Out) -Body ('Full suite run through the guarded runner completed clean; recorded here because this project requires a note per run. ' +
         'Wall 1800s / idle 300s, no leaked processes observed.')
     $r = Fire -Copy $c -Cwd $p3
     Check 'ALWAYS_REQUIRE_NOTE is satisfied by a real note' ($r.Exit -eq 0 -and $r.Out -eq '') $r.Out
