@@ -854,7 +854,11 @@ try {
     Write-Utf8 (Join-Path $bigLeak '.env') "BIGRANGE_SECRET=bigrangevalue1234567890`r`n"
     Write-Utf8 (Join-Path $bigLeak 'deep-leak.txt') "leak: bigrangevalue1234567890`r`n"
     Add-Commit $bigLeak 'the leak, at the very bottom of a 520-deep outgoing range'
-    for ($n = 1; $n -le 520; $n++) { Write-Utf8 (Join-Path $bigLeak 'counter.txt') ("commit $n"); Add-Commit $bigLeak "trivial $n" }
+    # Empty filler keeps the outgoing range >500 (exercising the uncapped,
+    # batched rev-list/grep path) without a file write + `git add` + tree diff
+    # per commit. deep-leak.txt from the bottom commit persists in every later
+    # tree, so the batched grep still finds it and detection is unchanged.
+    for ($n = 1; $n -le 520; $n++) { & git -C $bigLeak commit --allow-empty -q -m "trivial $n" 2>$null | Out-Null }
     $rBigLeak = FireGitPrePush -Cwd $bigLeak -StdinText (Get-RefUpdateLine -Repo $bigLeak)
     Check '>500 outgoing commits with a leak beyond the former cutoff is still blocked' ($rBigLeak.Exit -eq 1 -and $rBigLeak.Err -match 'BIGRANGE_SECRET') $rBigLeak.Err
 
@@ -865,7 +869,10 @@ try {
     Write-Utf8 (Join-Path $bigClean '.env') "BIGCLEAN_SECRET=bigcleanvalue1234567890`r`n"
     Add-Commit $bigClean 'baseline'
     Push-Repo $bigClean
-    for ($n = 1; $n -le 520; $n++) { Write-Utf8 (Join-Path $bigClean 'counter.txt') ("commit $n"); Add-Commit $bigClean "trivial $n" }
+    # Empty filler: a >500-commit clean outgoing range still exercises the
+    # batched rev-list/grep (no false block, no duplicate findings) without the
+    # per-commit file write + `git add` + tree diff.
+    for ($n = 1; $n -le 520; $n++) { & git -C $bigClean commit --allow-empty -q -m "trivial $n" 2>$null | Out-Null }
     $rBigClean = FireGitPrePush -Cwd $bigClean -StdinText (Get-RefUpdateLine -Repo $bigClean)
     Check '>500 clean outgoing commits are allowed (no false block)' ($rBigClean.Exit -eq 0) $rBigClean.Err
 

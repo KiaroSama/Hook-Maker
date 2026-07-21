@@ -154,9 +154,22 @@ if (Test-Path -LiteralPath $statePath -PathType Leaf) {
 $excludedDirs = @('.git', 'node_modules', '.ai', 'graphify-out', 'logs', 'dist', 'build', 'out', 'target', 'vendor', '__pycache__', '.venv', 'venv', '.claude', '.codex', 'bin', 'obj', '.cross-project-sync')
 $offenders = New-Object System.Collections.Generic.List[object]
 $stack = New-Object System.Collections.Generic.Stack[string]
+# A reparse-point ROOT (cwd itself a junction/symlink) is refused outright: its
+# target can live anywhere, so walking it is the same escape the per-child check
+# below already closes. Refuse before pushing anything - no scan, stay silent.
+$rootIsReparse = $false
+try { $rootIsReparse = ((([System.IO.File]::GetAttributes($cwd)) -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) } catch { }
+if ($rootIsReparse) { exit 0 }
 $stack.Push($cwd)
 $scannedFiles = 0
-while ($stack.Count -gt 0 -and $scannedFiles -lt $maxFiles) {
+# $scanLimitReached is the single source of truth for partial coverage: it is
+# set at the EXACT point traversal stops because of the file ceiling - either
+# between directories (outer gate) or inside one large directory (inner gate).
+# Deriving "partial" from the residual stack alone missed the case where the
+# ceiling fills up inside one big directory while the stack is already empty.
+$scanLimitReached = $false
+while ($stack.Count -gt 0) {
+    if ($scannedFiles -ge $maxFiles) { $scanLimitReached = $true; break }
     $currentDir = $stack.Pop()
     try {
         foreach ($childDir in [System.IO.Directory]::EnumerateDirectories($currentDir)) {
@@ -168,6 +181,10 @@ while ($stack.Count -gt 0 -and $scannedFiles -lt $maxFiles) {
             $stack.Push($childDir)
         }
         foreach ($file in [System.IO.Directory]::EnumerateFiles($currentDir)) {
+            # Enforce the ceiling as a real PER-FILE stop. Without this, a single
+            # directory holding far more source files than MAX_FILES was scanned
+            # whole, because the ceiling was only re-checked between directories.
+            if ($scannedFiles -ge $maxFiles) { $scanLimitReached = $true; break }
             $extension = [System.IO.Path]::GetExtension($file).ToLowerInvariant()
             if (-not $extensions.ContainsKey($extension)) { continue }
             $scannedFiles++
@@ -183,11 +200,22 @@ while ($stack.Count -gt 0 -and $scannedFiles -lt $maxFiles) {
     }
     catch { }
 }
-# Honest coverage: if the file ceiling was hit with directories still unwalked,
-# the offender list may be incomplete - do NOT imply full-repository coverage.
-$partial = ($scannedFiles -ge $maxFiles -and $stack.Count -gt 0)
+# Honest coverage is driven by the explicit stop flag, not the residual stack.
+$partial = $scanLimitReached
 
 if ($offenders.Count -eq 0) {
+    # Full scan, nothing oversized -> silent (the common case). But a PARTIAL
+    # scan that found nothing is NOT an all-clear: the ceiling cut the walk
+    # short, so unscanned files may exist. Emit a short, non-blocking advisory
+    # (same client shape as the pre-task branch) rather than a false silence.
+    # Cooldown is honoured via the shared state file so it cannot spam.
+    if ($partial) {
+        New-Item -ItemType Directory -Path $stateDir -Force | Out-Null
+        [System.IO.File]::WriteAllText($statePath, [DateTime]::UtcNow.ToString('o'))
+        $coverageNote = 'LARGE FILE CHECK: coverage was INCOMPLETE - a scan ceiling of ' + $maxFiles + ' files was reached before the whole project was scanned, so no oversized-file all-clear can be concluded. No offender was found in the scanned portion, but unscanned files may remain. Advisory only - not a block.'
+        @{ hookSpecificOutput = @{ hookEventName = $eventName; additionalContext = $coverageNote } } |
+            ConvertTo-Json -Depth 5 -Compress
+    }
     exit 0
 }
 
