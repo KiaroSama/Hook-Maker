@@ -186,9 +186,15 @@ $projectKey = Get-ShortHash $rootFull.ToLowerInvariant()
 $baselinePath = Join-Path $stateDir ('DocsFreshnessCheck-baseline-' + $projectKey + '.json')
 $ackPath = Join-Path $stateDir ('DocsFreshnessCheck-ack-' + $projectKey + '.json')
 
+# -c core.quotepath=false: without it, git quotes+escapes a non-ASCII tracked
+# name (e.g. "caf\303\251.md" for café.md) - that raw quoted string then flows
+# into [System.IO.Path]::GetExtension() at every call site below, and the
+# embedded '"' throws (illegal path character) on PS 5.1, aborting the whole
+# hook. Raw UTF-8 output can never contain that quoting, so it never reaches
+# GetExtension in a form that can throw.
 function Get-TrackedFiles {
     param([string]$Root)
-    return @((Invoke-QuietCommand -FilePath git -ArgumentList @('-C', $Root, 'ls-files')) | Where-Object { $_ } | Sort-Object -Unique)
+    return @((Invoke-QuietCommand -FilePath git -ArgumentList @('-c', 'core.quotepath=false', '-C', $Root, 'ls-files')) | Where-Object { $_ } | Sort-Object -Unique)
 }
 
 # ==========================================================================
@@ -236,7 +242,10 @@ try {
     $diffRange = if ($baselineAvailable -and $startingHead -ne '') { $startingHead } else { 'HEAD' }
 
     $changed = New-Object System.Collections.Generic.List[object]
-    $raw = Invoke-QuietCommand -FilePath git -ArgumentList @('-C', $rootFull, 'diff', '--name-status', $diffRange)
+    # -c core.quotepath=false here too: these Path values also reach
+    # [System.IO.Path]::GetExtension() below (real-content classification,
+    # doc/non-doc split) - same crash risk as Get-TrackedFiles above.
+    $raw = Invoke-QuietCommand -FilePath git -ArgumentList @('-c', 'core.quotepath=false', '-C', $rootFull, 'diff', '--name-status', $diffRange)
     if ($LASTEXITCODE -eq 0) {
         foreach ($line in @($raw | Where-Object { $_ })) {
             $parts = [string]$line -split "`t"
@@ -244,7 +253,7 @@ try {
         }
     }
     # Untracked new files clearly intended for the repo (not ignored).
-    $untracked = @((Invoke-QuietCommand -FilePath git -ArgumentList @('-C', $rootFull, 'status', '--porcelain', '--untracked-files=all')) | Where-Object { $_ -and ([string]$_).StartsWith('??') })
+    $untracked = @((Invoke-QuietCommand -FilePath git -ArgumentList @('-c', 'core.quotepath=false', '-C', $rootFull, 'status', '--porcelain', '--untracked-files=all')) | Where-Object { $_ -and ([string]$_).StartsWith('??') })
     foreach ($u in $untracked) {
         $p = ([string]$u).Substring(3).Trim().Trim('"')
         [void]$changed.Add([pscustomobject]@{ Status = 'A'; Path = $p })
@@ -367,6 +376,15 @@ try {
 }
 catch {
     $errMsg = 'DOCS FRESHNESS CHECK: could not reliably determine whether documentation needs review this time (detection error) - do not assume documentation is current; review tracked README/CHANGELOG/docs manually if this task changed user-visible behavior.'
-    @{ hookSpecificOutput = @{ hookEventName = $eventName; additionalContext = $errMsg } } | ConvertTo-Json -Depth 5 -Compress
+    # Client-aware (same signal as the rest of this project: CLAUDE_PROJECT_DIR
+    # present -> Claude, absent -> Codex): Codex does not render
+    # hookSpecificOutput.additionalContext at Stop (only systemMessage), so an
+    # unconditional additionalContext here silently drops this warning on Codex.
+    if (-not [string]::IsNullOrWhiteSpace($env:CLAUDE_PROJECT_DIR)) {
+        @{ hookSpecificOutput = @{ hookEventName = $eventName; additionalContext = $errMsg } } | ConvertTo-Json -Depth 5 -Compress
+    }
+    else {
+        @{ systemMessage = $errMsg } | ConvertTo-Json -Compress
+    }
     exit 0
 }

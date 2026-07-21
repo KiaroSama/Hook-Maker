@@ -171,6 +171,29 @@ try {
     else {
         Write-Host '[SKIP] powershell.exe not available' -ForegroundColor Yellow
     }
+
+    # --- Scenario 10: corrupted/partial state file must not crash (B3) -----
+    # A state file that is present but wrong-shaped (e.g. "{}" from a partial
+    # write) used to pass the old "$null -eq $state" check unharmed and then
+    # crash on the first $state.pending read under StrictMode 2.0, dropping
+    # any review messages already queued for earlier contexts in the loop.
+    $CorruptSrc = New-Project 'CorruptSrc'
+    $CorruptDest = New-Project 'CorruptDest'
+    Set-Content -LiteralPath (Join-Path $CorruptSrc '.ai\NOTE.md') 'partial-state regression fixture' -Encoding utf8
+    $cfgCorrupt = Join-Path $Work 'cfg-corrupt.json'
+    Write-Config -Path $cfgCorrupt -Routes @((New-Route 'corrupt-route' (New-Endpoint 'Src' $CorruptSrc) (New-Endpoint 'Dest' $CorruptDest))) -Extensions @('.md')
+
+    $rSeed = Fire -Cwd $CorruptDest -Config $cfgCorrupt
+    Check 'corrupt-state fixture: seed run emits review' ($rSeed.Out -match 'REVIEW REQUIRED')
+    $stateFile = Get-ChildItem -LiteralPath (Join-Path $CorruptDest '.ai\.cross-project-sync\state') -Filter '*.json' -ErrorAction SilentlyContinue | Select-Object -First 1
+    Check 'corrupt-state fixture: state file exists' ($null -ne $stateFile)
+    Set-Content -LiteralPath $stateFile.FullName -Value '{}' -Encoding utf8
+
+    $rCorrupt = Fire -Cwd $CorruptDest -Config $cfgCorrupt
+    Check 'corrupt state ({}): exit 0 (no StrictMode crash)' ($rCorrupt.Exit -eq 0) $rCorrupt.Out
+    Check 'corrupt state ({}): still re-detects as fresh' ($rCorrupt.Out -match 'REVIEW REQUIRED') $rCorrupt.Out
+    $stateAfter = Get-Content -LiteralPath $stateFile.FullName -Raw | ConvertFrom-Json
+    Check 'corrupt state ({}): state file rebuilt with pending' ($null -ne $stateAfter.pending)
 }
 finally {
     if ($KeepArtifacts) {

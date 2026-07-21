@@ -696,6 +696,16 @@ function Get-HandlerCommandValues {
 # Does this handler belong to the given logical installation? Requires a real
 # managed-runtime path match on at least one command field, the same hook name,
 # and - for the sync engine - the same profile.
+#
+# A handler commonly carries the SAME logical command in more than one field
+# (portable + Windows form). Ownership requires EVERY present field to
+# positively agree with this install's target (mirroring _hookdiscovery.ps1's
+# Get-HandlerTargetAgreement "all agree" philosophy for the read-only
+# scanner). Get-HandlerCommandValues only returns fields that are actually
+# present, so anything reaching this loop is real content - a plain user
+# command, a DIFFERENT hook, a different profile, or an ambiguous unproven
+# legacy shape all mean the handler is not fully ours, and removing it would
+# silence whatever that other field pointed at.
 function Test-HandlerBelongsToInstall {
     param(
         [Parameter(Mandatory = $true)]$Handler,
@@ -709,15 +719,17 @@ function Test-HandlerBelongsToInstall {
     foreach ($alias in @($AlsoMatchHookNames)) {
         if (-not [string]::IsNullOrWhiteSpace($alias)) { [void]$names.Add($alias) }
     }
+    $anyAgreed = $false
     foreach ($command in @(Get-HandlerCommandValues -Handler $Handler)) {
         $info = Get-HookMakerCommandInfo -Command $command -KnownToolRoots $KnownToolRoots
-        # An ambiguous entry is never claimed: it stays where it is.
-        if (-not $info.IsHookMaker) { continue }
-        if (-not $names.Contains($info.HookName)) { continue }
-        if (-not [string]::IsNullOrWhiteSpace($ProfileId) -and $info.Profile -ne $ProfileId) { continue }
-        return $true
+        if ($info.IsHookMaker -and $names.Contains($info.HookName) -and
+            ([string]::IsNullOrWhiteSpace($ProfileId) -or $info.Profile -eq $ProfileId)) {
+            $anyAgreed = $true
+            continue
+        }
+        return $false
     }
-    return $false
+    return $anyAgreed
 }
 
 # Reports handlers that LOOK like Hook Maker's but whose ownership cannot be

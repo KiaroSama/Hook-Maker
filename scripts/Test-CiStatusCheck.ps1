@@ -557,6 +557,41 @@ try {
     $r = Fire -HookPath $CiHook -Cwd $ci6 -EventName 'Stop'
     Check 'no workflows configured -> silent verified' ([string]::IsNullOrWhiteSpace([string]$r.Out)) ([string]$r.Out)
 
+    # ---- B5 regression: `gh run list` returning BLANK or literal `null` (exit
+    # 0) must never be silently treated as a verified/all-success commit.
+    # ConvertFrom-Json turns both into $null (no throw, so the catch path is
+    # never hit); piping that single $null through ForEach-Object previously
+    # produced a 1-element array containing $null, so $runs.Count was 1 (not
+    # 0) and every per-run bucket stayed empty, making $allSuccess true on zero
+    # real data. Both variants must fall to the same "no runs registered yet"
+    # pending block as a real empty result set with workflows configured -
+    # never a silent exit 0. A real `'[]'` response (no runs.json override,
+    # the ci5/ci6 pair above) must keep behaving exactly as before.
+    $ci5blank = New-GitRepo 'ci5blank'
+    New-Item -ItemType Directory -Path (Join-Path $ci5blank '.github\workflows') -Force | Out-Null
+    Set-Content (Join-Path $ci5blank '.github\workflows\ci.yml') 'name: CI'
+    Set-Mock -ExpectedSha (Get-HeadSha $ci5blank)
+    Set-Content -Path (Join-Path $MockDir 'run_list.json') -Value '' -NoNewline -Encoding utf8
+    $r = Fire -HookPath $CiHook -Cwd $ci5blank -EventName 'Stop'
+    Check 'B5: blank `gh run list` stdout -> pending block, never silently verified' ($r.Out -match '"decision":"block"' -and $r.Out -match 'no runs are registered yet') $r.Out
+
+    $ci5null = New-GitRepo 'ci5null'
+    New-Item -ItemType Directory -Path (Join-Path $ci5null '.github\workflows') -Force | Out-Null
+    Set-Content (Join-Path $ci5null '.github\workflows\ci.yml') 'name: CI'
+    Set-Mock -RunJson 'null' -ExpectedSha (Get-HeadSha $ci5null)
+    $r = Fire -HookPath $CiHook -Cwd $ci5null -EventName 'Stop'
+    Check 'B5: literal `null` `gh run list` stdout -> pending block, never silently verified' ($r.Out -match '"decision":"block"' -and $r.Out -match 'no runs are registered yet') $r.Out
+
+    # control: a normal successful run set on the same workflows-configured
+    # shape still verifies silently (the Where-Object null filter added for B5
+    # never touches a real run object).
+    $ci5ok = New-GitRepo 'ci5ok'
+    New-Item -ItemType Directory -Path (Join-Path $ci5ok '.github\workflows') -Force | Out-Null
+    Set-Content (Join-Path $ci5ok '.github\workflows\ci.yml') 'name: CI'
+    Set-Mock -RunJson '[{"databaseId":95,"name":"CI","workflowName":"CI","status":"completed","conclusion":"success"}]' -ExpectedSha (Get-HeadSha $ci5ok)
+    $r = Fire -HookPath $CiHook -Cwd $ci5ok -EventName 'Stop'
+    Check 'B5 control: a real successful run set still verifies silently' ([string]::IsNullOrWhiteSpace([string]$r.Out)) ([string]$r.Out)
+
     # gh unauthenticated -> silent degradation (never claims verified)
     $ci7 = New-GitRepo 'ci7'
     Set-Mock -AuthExit 1

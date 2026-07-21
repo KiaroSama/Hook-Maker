@@ -278,7 +278,9 @@ else {
             # The client THIS invocation is installing decides, so a -CodexOnly
             # repair cannot inherit Claude's value (they are written identically,
             # but a partially-repaired record must never cross-contaminate).
-            $priorClients = if ($CodexOnly) { @('codex', 'claude') } else { @('claude', 'codex') }
+            # Only the client(s) actually being installed are ever consulted -
+            # never a fallback to the other client's subrecord.
+            $priorClients = if ($CodexOnly) { @('codex') } elseif ($ClaudeOnly) { @('claude') } else { @('claude', 'codex') }
             foreach ($priorClientName in $priorClients) {
                 $priorSubrecord = Get-ClientSubrecord -Record $priorRecord -Client $priorClientName
                 if ($null -eq $priorSubrecord -or $null -eq $priorSubrecord.PSObject.Properties['timeout']) { continue }
@@ -466,6 +468,14 @@ function Remove-StaleHandlers {
     # point at a script with the same filename is NOT ours and is preserved.
     $keptGroups = @()
     foreach ($group in @($HooksObject.$EventName)) {
+        # A group with no `hooks` key at all (foreign/hand-edited entry) is not
+        # a recognized handler-group shape - unlike a legitimate "hooks": []
+        # group, there is nothing here to prove ownership over, so it passes
+        # through untouched instead of being pruned as empty.
+        if ($null -eq $group.PSObject.Properties['hooks']) {
+            $keptGroups += $group
+            continue
+        }
         $keptHandlers = @()
         foreach ($handler in @($group.hooks)) {
             # KnownToolRoots is what makes the historical tool-folder layout
@@ -679,7 +689,10 @@ function Add-HookGroup {
     }
 
     foreach ($existingGroup in $groups) {
-        foreach ($handler in @($existingGroup.hooks)) {
+        # A group missing `hooks` entirely (foreign/hand-edited) has none to
+        # compare against - never a StrictMode crash, just zero candidates.
+        $existingHandlers = @(if ($null -ne $existingGroup.PSObject.Properties['hooks']) { $existingGroup.hooks } else { @() })
+        foreach ($handler in $existingHandlers) {
             foreach ($propertyName in @('command', 'commandWindows', 'command_windows')) {
                 if ($null -ne $handler.PSObject.Properties[$propertyName] -and [string]$handler.$propertyName -eq $ExactCommand) {
                     return

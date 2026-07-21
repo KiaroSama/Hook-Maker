@@ -145,6 +145,48 @@ try {
     Check 'a baseline state file was written' ($baselineFile.Count -eq 1)
 
     # =====================================================================
+    Write-Host '--- SessionStart baseline: a non-ASCII tracked filename does not crash (PS 5.1 core.quotepath regression) ---' -ForegroundColor Cyan
+    # Regression for: git's default core.quotepath=true quotes+escapes a non-ASCII
+    # tracked name (e.g. "caf\303\251.md"), and [System.IO.Path]::GetExtension() on
+    # that raw quoted string throws on PS 5.1 ('"' is an illegal path char),
+    # aborting the whole SessionStart block before the baseline is ever written.
+    # Fired under 5.1 specifically - that is where GetExtension throws.
+    $hcUtf = New-IsolatedHookCopy
+    $projUtf = New-GitRepo 'NonAsciiBaseline'
+    Write-Utf8 (Join-Path $projUtf 'README.md') "# Proj`n"
+    Write-Utf8 (Join-Path $projUtf 'café.md') "# Café notes`n"
+    Add-Commit $projUtf 'init'
+    $rUtf = Fire -HookPath $hcUtf.Script -Cwd $projUtf -EventName 'SessionStart' -LocalAppData $hcUtf.LocalAppData -Exe 'powershell.exe'
+    Check '5.1 host: SessionStart with a non-ASCII tracked filename does not crash and stays silent' ($rUtf.Exit -eq 0 -and $rUtf.Out -eq '' -and $rUtf.Err -eq '') ($rUtf.Out + ' | err=' + $rUtf.Err)
+    Check '5.1 host: a baseline state file was written despite the non-ASCII filename' (
+        @(Get-ChildItem -LiteralPath (Join-Path $hcUtf.LocalAppData 'HookMaker\state') -Filter 'DocsFreshnessCheck-baseline-*.json' -ErrorAction SilentlyContinue).Count -eq 1)
+
+    # Doc-classification content check (is café.md actually hashed into the
+    # baseline, not silently dropped?) is run under the default pwsh host
+    # instead of re-using the 5.1 firing above: a nested powershell.exe child
+    # spawned from pwsh in this environment loses access to Get-FileHash
+    # (Microsoft.PowerShell.Utility fails to resolve under the inherited
+    # PSModulePath) - an unrelated host-nesting quirk, not a quotepath
+    # regression, and pwsh-under-pwsh does not have it. The crash itself
+    # (asserted above) happens before Get-FileHash is ever reached.
+    $hcUtf2 = New-IsolatedHookCopy
+    $projUtf2 = New-GitRepo 'NonAsciiBaselineContent'
+    Write-Utf8 (Join-Path $projUtf2 'README.md') "# Proj`n"
+    Write-Utf8 (Join-Path $projUtf2 'café.md') "# Café notes`n"
+    Add-Commit $projUtf2 'init'
+    $rUtf2 = Fire -HookPath $hcUtf2.Script -Cwd $projUtf2 -EventName 'SessionStart' -LocalAppData $hcUtf2.LocalAppData
+    Check 'pwsh host: SessionStart with a non-ASCII tracked filename does not crash and stays silent' ($rUtf2.Exit -eq 0 -and $rUtf2.Out -eq '' -and $rUtf2.Err -eq '') ($rUtf2.Out + ' | err=' + $rUtf2.Err)
+    $baselineFileUtf2 = @(Get-ChildItem -LiteralPath (Join-Path $hcUtf2.LocalAppData 'HookMaker\state') -Filter 'DocsFreshnessCheck-baseline-*.json' -ErrorAction SilentlyContinue)
+    Check 'a baseline state file was written despite the non-ASCII filename' ($baselineFileUtf2.Count -eq 1)
+    if ($baselineFileUtf2.Count -eq 1) {
+        $baselineRawUtf2 = [System.IO.File]::ReadAllText($baselineFileUtf2[0].FullName)
+        $baselineObjUtf2 = $baselineRawUtf2 | ConvertFrom-Json
+        $docHashCountUtf2 = @($baselineObjUtf2.docHashes.PSObject.Properties).Count
+        Check 'both tracked doc files are classified into the baseline (the non-ASCII one is not silently dropped)' ($docHashCountUtf2 -eq 2) ('docHashes count=' + $docHashCountUtf2)
+        Check 'the non-ASCII filename is present in the baseline (not silently dropped)' ($baselineRawUtf2 -match 'caf') $baselineRawUtf2
+    }
+
+    # =====================================================================
     Write-Host '--- no git repository is silent ---' -ForegroundColor Cyan
     $hc2 = New-IsolatedHookCopy
     $proj2 = New-Proj 'NoGit'
@@ -410,6 +452,45 @@ try {
     Write-Utf8 (Join-Path $proj19 'a.ps1') "function A { 2 }`n"
     $r = Fire -HookPath $hc19.Script -Cwd $proj19 -EventName 'Stop' -LocalAppData $hc19.LocalAppData -Exe 'powershell.exe'
     Check '5.1 host: detects the change and blocks' ($r.Exit -eq 0 -and $r.Out -match '"decision":"block"') $r.Out
+
+    # =====================================================================
+    Write-Host '--- Stop detection-error catch path: Codex gets systemMessage, not additionalContext ---' -ForegroundColor Cyan
+    $hcErr = New-IsolatedHookCopy
+    $projErr = New-GitRepo 'DetectionErrorCodex'
+    Write-Utf8 (Join-Path $projErr 'README.md') "# Proj`n"
+    Write-Utf8 (Join-Path $projErr 'a.ps1') "function A { 1 }`n"
+    Add-Commit $projErr 'init'
+    Fire -HookPath $hcErr.Script -Cwd $projErr -EventName 'SessionStart' -LocalAppData $hcErr.LocalAppData | Out-Null
+    $baselineFileErr = @(Get-ChildItem -LiteralPath (Join-Path $hcErr.LocalAppData 'HookMaker\state') -Filter 'DocsFreshnessCheck-baseline-*.json' -ErrorAction SilentlyContinue)
+    Check 'a baseline was written to corrupt for this test' ($baselineFileErr.Count -eq 1)
+    # Corrupt the baseline state file directly - Read-JsonFile's ConvertFrom-Json then
+    # throws (a realistic "detection error", e.g. a truncated/corrupted state write),
+    # forcing the Stop handler's catch path exactly like a real detection failure would.
+    if ($baselineFileErr.Count -eq 1) {
+        [System.IO.File]::WriteAllText($baselineFileErr[0].FullName, '{ not valid json !!!', (New-Object System.Text.UTF8Encoding $false))
+    }
+    Write-Utf8 (Join-Path $projErr 'a.ps1') "function A { 2 }`n"
+    # Simulate the Codex client (no CLAUDE_PROJECT_DIR) regardless of the ambient
+    # environment this suite happens to run under - restored in the finally below.
+    $OrigClaudeProjectDirC2 = $env:CLAUDE_PROJECT_DIR
+    if (Test-Path Env:\CLAUDE_PROJECT_DIR) { Remove-Item Env:\CLAUDE_PROJECT_DIR -ErrorAction SilentlyContinue }
+    try {
+        $rCodex = Fire -HookPath $hcErr.Script -Cwd $projErr -EventName 'Stop' -LocalAppData $hcErr.LocalAppData
+    }
+    finally {
+        if ([string]::IsNullOrEmpty($OrigClaudeProjectDirC2)) {
+            if (Test-Path Env:\CLAUDE_PROJECT_DIR) { Remove-Item Env:\CLAUDE_PROJECT_DIR -ErrorAction SilentlyContinue }
+        }
+        else { $env:CLAUDE_PROJECT_DIR = $OrigClaudeProjectDirC2 }
+    }
+    $codexParsed = $null
+    try { $codexParsed = $rCodex.Out | ConvertFrom-Json } catch { }
+    Check 'Codex (no CLAUDE_PROJECT_DIR): the catch path exits cleanly (exit 0, no stderr)' ($rCodex.Exit -eq 0 -and $rCodex.Err -eq '') ($rCodex.Out + ' | err=' + $rCodex.Err)
+    Check 'Codex (no CLAUDE_PROJECT_DIR): the detection-error warning is emitted as systemMessage' (
+        $null -ne $codexParsed -and $null -ne $codexParsed.PSObject.Properties['systemMessage'] -and
+        [string]$codexParsed.systemMessage -match 'DOCS FRESHNESS CHECK') $rCodex.Out
+    Check 'Codex output never uses hookSpecificOutput.additionalContext for this warning' (
+        $null -ne $codexParsed -and $null -eq $codexParsed.PSObject.Properties['hookSpecificOutput']) $rCodex.Out
 
     # =====================================================================
     Write-Host '--- Install-Hook.ps1: self-contained Claude + Codex copies ---' -ForegroundColor Cyan

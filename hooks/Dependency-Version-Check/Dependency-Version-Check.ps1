@@ -373,7 +373,11 @@ foreach ($eco in $detectedEcosystems) {
 # ---- Go (go list -u -m all is a real, built-in Go toolchain command) ----
 if ($manifestPaths.ContainsKey('go') -and (Get-Command go -ErrorAction SilentlyContinue)) {
     foreach ($dir in @($manifestPaths['go'] | Select-Object -First 3)) {
-        $raw = Invoke-QuietCommand -FilePath go -ArgumentList @('list', '-u', '-m', 'all') -WorkingDirectory $dir
+        # Invoke-QuietCommand has no -WorkingDirectory parameter - Push-Location/Pop-Location
+        # around the call instead, same as the npm block above.
+        Push-Location -LiteralPath $dir
+        try { $raw = Invoke-QuietCommand -FilePath go -ArgumentList @('list', '-u', '-m', 'all') }
+        finally { Pop-Location }
         if ($LASTEXITCODE -ne 0) { [void]$incomplete.Add('Go at ' + (Get-RelDir $dir) + ' - `go list -u -m all` failed (exit ' + $LASTEXITCODE + ').'); continue }
         $count = 0
         foreach ($line in @($raw | Where-Object { $_ })) {

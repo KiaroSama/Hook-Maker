@@ -745,6 +745,36 @@ try {
     Check 'nested path with spaces in an outgoing commit is detected' ($rNested.Exit -eq 1 -and $rNested.Err -match 'NESTED_SPACE_SECRET' -and $rNested.Err -match [regex]::Escape('deep dir/sub folder/my notes.txt')) $rNested.Err
     Check 'nested/spaced outgoing leak: value never printed' ($rNested.Err -notlike '*nestedspacevalue1234567890*') $rNested.Err
 
+    # Secret VALUE starting with '-' (a PEM header, a Django-style key, ...):
+    # `git grep -F <value> <shas>` would parse a dash-leading pattern as an
+    # unknown option and error out; the outgoing scan must still detect it as
+    # a real leak, not fail closed with an "unscannable history" message
+    # (regression test for the git-grep argument-injection fix).
+    $outDash = New-PushableRepo 'OutgoingDashPrefixedValue'
+    Write-Utf8 (Join-Path $outDash '.gitignore') ".env`nsecrets.md`n"
+    Add-Commit $outDash 'baseline'
+    Push-Repo $outDash
+    Write-Utf8 (Join-Path $outDash '.env') "DASH_PREFIX_SECRET=-dashprefixvalue1234567890`r`n"
+    Write-Utf8 (Join-Path $outDash 'leak.txt') "leak: -dashprefixvalue1234567890`r`n"
+    Add-Commit $outDash 'introduce a dash-prefixed secret value leak'
+    $rDash = FireGitPrePush -Cwd $outDash -StdinText (Get-RefUpdateLine -Repo $outDash)
+    Check 'dash-prefixed secret value in an outgoing commit is detected as a leak' ($rDash.Exit -eq 1 -and $rDash.Err -match 'DASH_PREFIX_SECRET' -and $rDash.Err -match 'outgoing commit') $rDash.Err
+    Check 'dash-prefixed leak is NOT reported as an unscannable/incomplete outgoing scan' ($rDash.Err -notmatch 'could not be fully scanned') $rDash.Err
+    Check 'dash-prefixed outgoing leak: value never printed' ($rDash.Err -notlike '*dashprefixvalue1234567890*') $rDash.Err
+
+    # Negative control: the same shape WITHOUT the leading '-' must also be
+    # detected, proving the checks above are not trivially true regardless of
+    # the dash.
+    $outNoDash = New-PushableRepo 'OutgoingNoDashControl'
+    Write-Utf8 (Join-Path $outNoDash '.gitignore') ".env`nsecrets.md`n"
+    Add-Commit $outNoDash 'baseline'
+    Push-Repo $outNoDash
+    Write-Utf8 (Join-Path $outNoDash '.env') "NODASH_CONTROL_SECRET=nodashcontrolvalue1234567890`r`n"
+    Write-Utf8 (Join-Path $outNoDash 'leak.txt') "leak: nodashcontrolvalue1234567890`r`n"
+    Add-Commit $outNoDash 'introduce a non-dash-prefixed secret value leak'
+    $rNoDash = FireGitPrePush -Cwd $outNoDash -StdinText (Get-RefUpdateLine -Repo $outNoDash)
+    Check 'non-dash-prefixed secret value in an outgoing commit is still detected (negative control)' ($rNoDash.Exit -eq 1 -and $rNoDash.Err -match 'NODASH_CONTROL_SECRET' -and $rNoDash.Err -match 'outgoing commit') $rNoDash.Err
+
     # =====================================================================
     Write-Host '--- outgoing-commit scan: real end-to-end git push (native pre-push chain) ---' -ForegroundColor Cyan
     $e2e = New-PushableRepo 'OutgoingRealPush'

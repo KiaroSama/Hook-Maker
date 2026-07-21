@@ -607,7 +607,13 @@ function Invoke-OutgoingGrepBatched {
     for ($i = 0; $i -lt $Commits.Count; $i += $BatchSize) {
         $end = [Math]::Min($i + $BatchSize, $Commits.Count) - 1
         $batch = @($Commits[$i..$end])
-        $out = Invoke-QuietCommand -FilePath git -ArgumentList (@('-C', $Cwd, 'grep', '-Il', '-F', $Value) + $batch)
+        # -e marks $Value as the pattern so a value starting with '-' (a PEM
+        # "-----BEGIN..." header, a Django key like "-Abc123...") can't be parsed
+        # as a git option. Unlike the sibling scans below, $batch here is trailing
+        # REVISIONS, not pathspecs - '--' would push them past a pathspec boundary
+        # instead, so the outgoing commits would silently NOT be searched (fail
+        # OPEN). '-e' keeps $batch as revisions while still disambiguating $Value.
+        $out = Invoke-QuietCommand -FilePath git -ArgumentList (@('-C', $Cwd, 'grep', '-Il', '-F', '-e', $Value) + $batch)
         $code = $LASTEXITCODE
         if ($code -gt 1) { $hadError = $true; continue }
         foreach ($m in @($out | Where-Object { $_ })) { [void]$hits.Add([string]$m) }

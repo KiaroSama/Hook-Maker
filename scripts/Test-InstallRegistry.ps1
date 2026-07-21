@@ -1749,6 +1749,132 @@ for (`$i = 0; `$i -lt 8; `$i++) {
     }
     finally { Remove-FixtureHook 'ZZZ-Regtest-Timeoutlegacy' }
 
+    # =====================================================================
+    # D2 (StrictMode crash): a group object with NO `hooks` key at all (a
+    # foreign/hand-edited entry - not a legitimate "hooks": [] group) must
+    # never crash install/update under StrictMode, and must pass through
+    # untouched since there is nothing on it to prove ownership over.
+    Write-Host '--- a foreign event-group missing `hooks` never crashes install/update and is preserved ---' -ForegroundColor Cyan
+    $fixtureForeignGroup = New-FixtureHook 'ZZZ-Regtest-Foreignnohooks'
+    try {
+        $projForeignGroup = New-Proj 'ForeignNoHooksProj'
+        & $InstallScript -CustomHook $fixtureForeignGroup -Events @('Stop') -TargetProject $projForeignGroup -ClaudeOnly *> $null
+        $foreignGroupSettings = Join-Path $projForeignGroup '.claude\settings.local.json'
+        $foreignGroupJson = Get-Content -LiteralPath $foreignGroupSettings -Raw | ConvertFrom-Json
+        # Hand-edit in a group with no `hooks` property at all, alongside the
+        # real Hook Maker group, under the SAME event this install manages.
+        $foreignGroupJson.hooks.Stop = @($foreignGroupJson.hooks.Stop) + @([pscustomobject]@{ matcher = 'foreign-no-hooks-key' })
+        [System.IO.File]::WriteAllText($foreignGroupSettings, ($foreignGroupJson | ConvertTo-Json -Depth 50), (New-Object System.Text.UTF8Encoding $false))
+
+        $foreignGroupThrew = $false
+        try { & $InstallScript -CustomHook $fixtureForeignGroup -Events @('Stop') -TargetProject $projForeignGroup -ClaudeOnly *> $null }
+        catch { $foreignGroupThrew = $true }
+        Check 'a settings file with a hooks-less foreign group does not crash reinstall (StrictMode)' (-not $foreignGroupThrew)
+
+        $foreignGroupAfter = Get-Content -LiteralPath $foreignGroupSettings -Raw | ConvertFrom-Json
+        $foreignGroupStopGroups = @($foreignGroupAfter.hooks.Stop)
+        Check 'the foreign hooks-less group is preserved (not dropped) across the reinstall' (
+            @($foreignGroupStopGroups | Where-Object { $null -eq $_.PSObject.Properties['hooks'] -and [string]$_.matcher -eq 'foreign-no-hooks-key' }).Count -eq 1)
+        $foreignGroupHandlers = @($foreignGroupStopGroups | Where-Object { $null -ne $_.PSObject.Properties['hooks'] } | ForEach-Object { $_.hooks })
+        Check 'the real Hook Maker registration is still present exactly once' (
+            @($foreignGroupHandlers | Where-Object { (Get-HandlerFieldValue $_ 'command') -like '*Hook-Maker*' }).Count -eq 1)
+    }
+    finally { Remove-FixtureHook 'ZZZ-Regtest-Foreignnohooks' }
+
+    # =====================================================================
+    # D1 (cross-client contamination): the prior-timeout lookup must consider
+    # ONLY the client(s) THIS invocation is installing - a first-ever
+    # -CodexOnly install must never inherit an existing -ClaudeOnly install's
+    # custom timeout.
+    Write-Host '--- a first-ever -CodexOnly install never inherits a prior -ClaudeOnly timeout ---' -ForegroundColor Cyan
+    $fixtureCrossClient = New-FixtureHook 'ZZZ-Regtest-Crossclienttimeout'
+    try {
+        $projCrossClient = New-Proj 'CrossClientTimeoutProj'
+        & $InstallScript -CustomHook $fixtureCrossClient -Events @('Stop') -TargetProject $projCrossClient -ClaudeOnly -Timeout 240 *> $null
+        $recCrossClientClaude = (Get-RecordsFor 'ZZZ-Regtest-Crossclienttimeout')[0]
+        Check 'the claude-only baseline install recorded the custom timeout' ([int]$recCrossClientClaude.clients.claude.timeout -eq 240)
+        Check 'the claude-only baseline install has no codex subrecord yet' ($null -eq (Get-ClientSubrecord -Record $recCrossClientClaude -Client 'codex'))
+
+        # First-ever CODEX install of the SAME logical hook (same friendly
+        # name/scope/profile => same record id), with NO -Timeout given.
+        & $InstallScript -CustomHook $fixtureCrossClient -Events @('Stop') -TargetProject $projCrossClient -CodexOnly *> $null
+        Check 'still exactly one logical record after adding codex' ((Get-RecordsFor 'ZZZ-Regtest-Crossclienttimeout').Count -eq 1)
+        $recCrossClientBoth = (Get-RecordsFor 'ZZZ-Regtest-Crossclienttimeout')[0]
+        Check 'the first-ever codex subrecord gets the DEFAULT timeout, never the claude value' ([int]$recCrossClientBoth.clients.codex.timeout -eq 60)
+        Check 'the existing claude subrecord timeout is unaffected' ([int]$recCrossClientBoth.clients.claude.timeout -eq 240)
+        $crossClientCodexSettings = Get-Content -LiteralPath (Join-Path $projCrossClient '.codex\hooks.json') -Raw | ConvertFrom-Json
+        Check 'the codex handler on disk carries the default timeout, not 240' ([int]$crossClientCodexSettings.hooks.Stop[0].hooks[0].timeout -eq 60)
+    }
+    finally { Remove-FixtureHook 'ZZZ-Regtest-Crossclienttimeout' }
+
+    # =====================================================================
+    # D4 (wrong-handler deletion): a handler whose command fields DISAGREE
+    # (one matches THIS install, the other resolves to a DIFFERENT Hook Maker
+    # hook) is not fully owned - deleting it would silence whatever the other
+    # field pointed at, so a reinstall must leave it in place rather than
+    # pruning it as stale.
+    Write-Host '--- a handler with disagreeing command fields is preserved, never treated as stale ---' -ForegroundColor Cyan
+    $fixtureDisagree = New-FixtureHook 'ZZZ-Regtest-Disagreefields'
+    try {
+        $projDisagree = New-Proj 'DisagreeFieldsProj'
+        & $InstallScript -CustomHook $fixtureDisagree -Events @('Stop') -TargetProject $projDisagree -ClaudeOnly *> $null
+        $disagreeSettings = Join-Path $projDisagree '.claude\settings.local.json'
+        $disagreeJson = Get-Content -LiteralPath $disagreeSettings -Raw | ConvertFrom-Json
+        $disagreeHandler = @(@($disagreeJson.hooks.Stop) | ForEach-Object { $_.hooks })[0]
+        $disagreeRealCommand = [string]$disagreeHandler.command
+        Check 'the baseline handler carries the real Hook Maker command' ($disagreeRealCommand -like '*Hook-Maker*ZZZ-Regtest-Disagreefields*')
+
+        # Hand-edit in a SECOND command field that resolves to a DIFFERENT
+        # hook - the same handler now disagrees with itself.
+        $disagreeForeignTarget = 'powershell.exe -NoLogo -NoProfile -File "C:\Somewhere\.claude\hooks\Hook-Maker\ZZZ-Regtest-Otherhook\ZZZ-Regtest-Otherhook.ps1"'
+        $disagreeHandler | Add-Member -MemberType NoteProperty -Name commandWindows -Value $disagreeForeignTarget -Force
+        [System.IO.File]::WriteAllText($disagreeSettings, ($disagreeJson | ConvertTo-Json -Depth 50), (New-Object System.Text.UTF8Encoding $false))
+
+        # A reinstall (repair) of the SAME hook must not delete this
+        # now-ambiguous handler.
+        & $InstallScript -CustomHook $fixtureDisagree -Events @('Stop') -TargetProject $projDisagree -ClaudeOnly *> $null
+        $disagreeAfter = Get-Content -LiteralPath $disagreeSettings -Raw | ConvertFrom-Json
+        $disagreeHandlersAfter = @(@($disagreeAfter.hooks.Stop) | ForEach-Object { $_.hooks })
+        Check 'the disagreeing handler is still present after reinstall (not removed)' (
+            @($disagreeHandlersAfter | Where-Object { (Get-HandlerFieldValue $_ 'commandWindows') -eq $disagreeForeignTarget }).Count -eq 1)
+        Check 'the disagreeing handler still carries its original real command' (
+            @($disagreeHandlersAfter | Where-Object { (Get-HandlerFieldValue $_ 'commandWindows') -eq $disagreeForeignTarget -and (Get-HandlerFieldValue $_ 'command') -eq $disagreeRealCommand }).Count -eq 1)
+    }
+    finally { Remove-FixtureHook 'ZZZ-Regtest-Disagreefields' }
+
+    # =====================================================================
+    # D4 (plain user command variant): Get-HandlerCommandValues only returns
+    # fields that are actually PRESENT, so a second field that is a plain,
+    # non-Hook-Maker-shaped user command is still real content, not "nothing
+    # to disagree with" - it must block removal exactly like a different-hook
+    # field does, or the user's own script gets silently deleted.
+    Write-Host '--- a handler with a plain user command in the other field is preserved ---' -ForegroundColor Cyan
+    $fixtureDisagreePlain = New-FixtureHook 'ZZZ-Regtest-Disagreeplaincmd'
+    try {
+        $projDisagreePlain = New-Proj 'DisagreePlainCmdProj'
+        & $InstallScript -CustomHook $fixtureDisagreePlain -Events @('Stop') -TargetProject $projDisagreePlain -ClaudeOnly *> $null
+        $disagreePlainSettings = Join-Path $projDisagreePlain '.claude\settings.local.json'
+        $disagreePlainJson = Get-Content -LiteralPath $disagreePlainSettings -Raw | ConvertFrom-Json
+        $disagreePlainHandler = @(@($disagreePlainJson.hooks.Stop) | ForEach-Object { $_.hooks })[0]
+        $disagreePlainRealCommand = [string]$disagreePlainHandler.command
+
+        # Hand-add a SECOND field carrying a plain, real, non-Hook-Maker user
+        # command - not a different hook, just the user's own unrelated script.
+        $disagreePlainUserCommand = 'powershell.exe -File "C:\Users\me\MyOwnTools\whatever.ps1"'
+        $disagreePlainHandler | Add-Member -MemberType NoteProperty -Name commandWindows -Value $disagreePlainUserCommand -Force
+        [System.IO.File]::WriteAllText($disagreePlainSettings, ($disagreePlainJson | ConvertTo-Json -Depth 50), (New-Object System.Text.UTF8Encoding $false))
+
+        # A reinstall (repair) of the SAME hook must not delete this handler.
+        & $InstallScript -CustomHook $fixtureDisagreePlain -Events @('Stop') -TargetProject $projDisagreePlain -ClaudeOnly *> $null
+        $disagreePlainAfter = Get-Content -LiteralPath $disagreePlainSettings -Raw | ConvertFrom-Json
+        $disagreePlainHandlersAfter = @(@($disagreePlainAfter.hooks.Stop) | ForEach-Object { $_.hooks })
+        Check 'a handler with a plain user command in the other field is still present after reinstall (not removed)' (
+            @($disagreePlainHandlersAfter | Where-Object { (Get-HandlerFieldValue $_ 'commandWindows') -eq $disagreePlainUserCommand }).Count -eq 1)
+        Check 'that preserved handler still carries its original real command' (
+            @($disagreePlainHandlersAfter | Where-Object { (Get-HandlerFieldValue $_ 'commandWindows') -eq $disagreePlainUserCommand -and (Get-HandlerFieldValue $_ 'command') -eq $disagreePlainRealCommand }).Count -eq 1)
+    }
+    finally { Remove-FixtureHook 'ZZZ-Regtest-Disagreeplaincmd' }
+
 }
 finally {
     $env:HOOKMAKER_STATE_DIR = $SavedHookMakerStateDir
