@@ -234,8 +234,12 @@ namespace HookMaker {
     static extern bool TerminateJobObject(IntPtr job, uint exitCode);
     [DllImport("kernel32.dll", SetLastError=true)]
     static extern bool CloseHandle(IntPtr h);
+    [DllImport("kernel32.dll", SetLastError=true)]
+    static extern bool QueryInformationJobObject(IntPtr job, int infoClass, IntPtr info, uint infoLen, IntPtr returnLen);
     const uint JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x2000;
     const int JobObjectExtendedLimitInformation = 9;
+    const int JobObjectBasicProcessIdList = 3;
+    const int ERROR_MORE_DATA = 234;
     public static IntPtr CreateKillOnClose() {
       IntPtr job = CreateJobObject(IntPtr.Zero, null);
       if (job == IntPtr.Zero) return IntPtr.Zero;
@@ -252,6 +256,46 @@ namespace HookMaker {
     public static bool Assign(IntPtr job, IntPtr process) { return AssignProcessToJobObject(job, process); }
     public static bool Terminate(IntPtr job) { return TerminateJobObject(job, 1); }
     public static bool Close(IntPtr job) { return CloseHandle(job); }
+    // The job's currently-assigned process ids - the PID-REUSE-PROOF ownership set.
+    // A process that has exited is no longer in the list, and a recycled pid was
+    // never assigned to THIS job, so a reused pid can never masquerade as a leaked
+    // descendant the way a ppid walk over Win32_Process can. Returns null on any
+    // query failure so the caller degrades to the ppid walk instead of trusting a
+    // guess; returns a (possibly empty) array on success.
+    public static int[] GetProcessIds(IntPtr job) {
+      if (job == IntPtr.Zero) return null;
+      int capacity = 512;
+      for (int attempt = 0; attempt < 8; attempt++) {
+        // Header is two DWORDs (8 bytes); ProcessIdList[] follows at offset 8 on
+        // both x86 (ULONG_PTR=4, 4-aligned) and x64 (ULONG_PTR=8, already 8-aligned).
+        int header = 8;
+        int len = header + capacity * IntPtr.Size;
+        IntPtr buf = Marshal.AllocHGlobal(len);
+        try {
+          Marshal.WriteInt32(buf, 0, 0);
+          Marshal.WriteInt32(buf, 4, 0);
+          bool ok = QueryInformationJobObject(job, JobObjectBasicProcessIdList, buf, (uint)len, IntPtr.Zero);
+          if (!ok) {
+            int err = Marshal.GetLastWin32Error();
+            if (err == ERROR_MORE_DATA) {
+              int assigned = Marshal.ReadInt32(buf, 0);
+              capacity = (assigned > capacity) ? (assigned + 32) : (capacity * 2);
+              continue;
+            }
+            return null;
+          }
+          int inList = Marshal.ReadInt32(buf, 4);
+          if (inList < 0) return null;
+          int[] ids = new int[inList];
+          for (int i = 0; i < inList; i++) {
+            IntPtr v = Marshal.ReadIntPtr(buf, header + i * IntPtr.Size);
+            ids[i] = (int)v.ToInt64();
+          }
+          return ids;
+        } finally { Marshal.FreeHGlobal(buf); }
+      }
+      return null;
+    }
   }
 }
 '@
@@ -292,6 +336,25 @@ function Get-OwnedProcessTree {
     # up as "cannot convert System.Object[] to Int32". The plain return unrolls
     # a single id to a scalar and @() at the call site re-wraps it correctly.
     return $ids.ToArray()
+}
+
+# The pid-reuse-proof ownership set: the process ids the JOB OBJECT still owns.
+# Unlike Get-OwnedProcessTree's ppid walk, a recycled pid can never appear here -
+# it was never assigned to THIS job - so a child whose pid is reused after it
+# exits cannot be mistaken for a leaked descendant. Returns a result whose
+# .Available is $false when there is no job OR the query failed, so the caller
+# falls back to the ppid walk rather than trusting an empty list it never got.
+# (An empty .Ids under .Available=$true genuinely means "the job owns nothing
+# alive", which is the normal clean exit.)
+function Get-JobOwnedProcessIds {
+    param([IntPtr]$JobHandle)
+    if ($JobHandle -eq [IntPtr]::Zero) { return [pscustomobject]@{ Available = $false; Ids = @() } }
+    try {
+        $ids = [HookMaker.JobNative]::GetProcessIds($JobHandle)
+        if ($null -eq $ids) { return [pscustomobject]@{ Available = $false; Ids = @() } }
+        return [pscustomobject]@{ Available = $true; Ids = @(@($ids) | ForEach-Object { [int]$_ }) }
+    }
+    catch { return [pscustomobject]@{ Available = $false; Ids = @() } }
 }
 
 function Get-TreeResourceSample {
@@ -765,16 +828,33 @@ try {
 
     # ORPHAN DESCENDANTS AFTER A NORMAL EXIT. The timeout path already records
     # what survived a forced kill; this is the other leak - the root exits (often
-    # 0) but leaves a background child alive. On Windows a dead parent's children
-    # are NOT reparented, so their ParentProcessId still points at the (exited)
-    # root and the ppid walk still finds them. Any found are a leak: record them,
+    # 0) but leaves a background child alive. Any found are a leak: record them,
     # then kill the owned tree/job so nothing outlives this runner. overall can
     # never be 'ok' while a descendant the parent leaked is still alive, so a
     # found orphan forces overall away from 'ok' even on exit 0.
+    #
+    # OWNERSHIP IS PROVEN BY THE JOB OBJECT, NOT A PPID WALK. Once the root exits
+    # its pid can be recycled; a ppid walk over Win32_Process would then find an
+    # UNRELATED process's children hanging off the reused pid and call them
+    # "orphans of the child" - a pid-reuse false leak that flipped a clean exit to
+    # 'failed' and made the exit-code assertion flake. The job's assigned-process
+    # list cannot do that: a recycled pid was never assigned to THIS job, so it is
+    # structurally excluded, while a genuine leaked descendant is still in the job
+    # and still alive and is still reported. The ppid walk survives ONLY as the
+    # degraded fallback when there is no job (processOwnership='degraded'), where it
+    # remains pid-reuse-vulnerable - the reason the job list is preferred.
     if (-not $script:Result.terminated) {
-        $orphans = @(@(Get-OwnedProcessTree -RootId $process.Id) |
-            Where-Object { $_ -ne $process.Id } |
-            Where-Object { try { $null = Get-Process -Id $_ -ErrorAction Stop; $true } catch { $false } })
+        $jobOwned = Get-JobOwnedProcessIds -JobHandle $script:JobHandle
+        if ($jobOwned.Available) {
+            $orphans = @(@($jobOwned.Ids) |
+                Where-Object { $_ -ne $process.Id } |
+                Where-Object { try { $null = Get-Process -Id $_ -ErrorAction Stop; $true } catch { $false } })
+        }
+        else {
+            $orphans = @(@(Get-OwnedProcessTree -RootId $process.Id) |
+                Where-Object { $_ -ne $process.Id } |
+                Where-Object { try { $null = Get-Process -Id $_ -ErrorAction Stop; $true } catch { $false } })
+        }
         if ($orphans.Count -gt 0) {
             $script:Result.leakedProcessIds = @($orphans)
             $survivors = @(Stop-OwnedProcessTree -RootId $process.Id -JobHandle $script:JobHandle)
