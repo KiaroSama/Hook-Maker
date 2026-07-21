@@ -318,10 +318,28 @@ try {
         $dir = Join-Path $LocalAppData 'HookMaker\state'
         New-Item -ItemType Directory -Path $dir -Force | Out-Null
         $path = Join-Path $dir ('TestRunGuard-result-' + $key + '.json')
+        # A synthetic result must carry the run identity of the observation it
+        # stands in for, or the hook's identity gate correctly rejects it as
+        # belonging to a different run. Copy runId/commandFingerprint/
+        # projectFingerprint from the observed record when one exists.
+        $runId = ''; $cmdFp = ''; $projFp = ''
+        $observedPath = Join-Path $dir ('TestRunGuard-observed-' + $key + '.json')
+        if (Test-Path -LiteralPath $observedPath -PathType Leaf) {
+            try {
+                $obs = Get-Content -LiteralPath $observedPath -Raw | ConvertFrom-Json
+                $runId = [string]$obs.runId
+                $cmdFp = [string]$obs.commandFingerprint
+                $projFp = if ($obs.PSObject.Properties['projectFingerprint']) { [string]$obs.projectFingerprint } else { [string]$obs.fingerprint }
+            }
+            catch { }
+        }
+        $nowIso = [DateTime]::UtcNow.ToString('o')
         $document = [ordered]@{
-            schema = 1; overall = 'ok'; exitCode = 0; terminated = $false; terminateReason = ''
+            schema = 2; overall = 'ok'; exitCode = 0; terminated = $false; terminateReason = ''
             terminateDetail = ''; elapsedSeconds = 12.5; leakedProcessIds = @(); lastProgress = ''
-            peakMemoryMB = 210.5; peakTreeSize = 4; startedUtc = ([DateTime]::UtcNow.ToString('o'))
+            peakMemoryMB = 210.5; peakTreeSize = 4
+            runId = $runId; commandFingerprint = $cmdFp; projectFingerprint = $projFp
+            startedUtc = $nowIso; endedUtc = $nowIso
         }
         foreach ($key2 in $Fields.Keys) { $document[$key2] = $Fields[$key2] }
         Write-Utf8 $path (($document | ConvertTo-Json -Depth 6))
@@ -427,6 +445,26 @@ try {
     Check 'with no locatable runner the gate downgrades to advice' ($r.Exit -eq 0 -and $r.Out -notmatch '"permissionDecision":"deny"') $r.Out
     Check 'the advice still states the requirement' ($message -match 'could not be located' -and $message -match 'wall timeout') $message
 
+    # Review-1: the runner SHIPS beside the installed hook (installer plants it at
+    # <hookdir>\scripts\Run-Tests-Guarded.ps1 - Find-GuardedRunner's candidate[0]).
+    # So in a project that has NO scripts\Run-Tests-Guarded.ps1 of its own, the
+    # gate must still BLOCK with a real replacement, not downgrade to advice.
+    Write-Host '--- the runner ships beside the hook: a bare project still gets a real block (Review-1) ---' -ForegroundColor Cyan
+    $shipDir = Join-Path $Work ('hookship-' + [guid]::NewGuid().ToString('N').Substring(0, 6))
+    New-Item -ItemType Directory -Path (Join-Path $shipDir 'scripts') -Force | Out-Null
+    Copy-Item $Hook (Join-Path $shipDir 'Test-Run-Guard.ps1')
+    Copy-Item $HookLib (Join-Path (Split-Path -Parent $shipDir) '_hooklib.ps1') -Force
+    Copy-Item $Runner (Join-Path $shipDir 'scripts\Run-Tests-Guarded.ps1')   # <- shipped by the installer
+    $shipFakeLocal = Join-Path $shipDir '_fakelocal'; New-Item -ItemType Directory -Path $shipFakeLocal -Force | Out-Null
+    $bare2 = Join-Path $Work 'BareProject2'; New-Item -ItemType Directory -Path $bare2 -Force | Out-Null
+    $r = Fire -HookPath (Join-Path $shipDir 'Test-Run-Guard.ps1') -Cwd $bare2 -EventName 'PreToolUse' -Command 'pytest -q' -LocalAppData $shipFakeLocal
+    $shipMsg = Get-Message $r.Out
+    $shipRepl = Get-Replacement $shipMsg
+    Check 'a hook with the runner shipped beside it BLOCKS a raw command in a bare project' (
+        $r.Out -match '"permissionDecision":"deny"' -and $shipRepl -match '-ArgumentsJson') $r.Out
+    Check 'the shipped-beside runner is the one referenced in the replacement' (
+        $shipRepl -match 'scripts.Run-Tests-Guarded\.ps1') $shipRepl
+
     # =====================================================================
     Write-Host '--- coordination handoff: the observed record Test-Completion-Check reads ---' -ForegroundColor Cyan
     function Get-ObservedRecord {
@@ -508,6 +546,100 @@ try {
     Check 'in a git repo the fingerprint equals Get-RepoStateFingerprint, as the consumer computes it' (
         $null -ne $observedFp -and [string]$observedFp.Document.fingerprint -eq $consumerFingerprint) (
         ([string]$observedFp.Document.fingerprint) + ' vs ' + $consumerFingerprint)
+
+    # =====================================================================
+    Write-Host '--- direct PowerShell test-script execution is recognised (scope D) ---' -ForegroundColor Cyan
+    $hcD = New-IsolatedHookCopy
+    foreach ($cmd in @('.\scripts\Test-Wizard.ps1', './scripts/Run-Tests.ps1', 'C:\repo\scripts\Test-RulesCheck.ps1 -KeepArtifacts', '& ".\scripts\Test-RulesCheck.ps1"')) {
+        $r = Fire -HookPath $hcD.Script -Cwd $Proj -EventName 'PreToolUse' -Command $cmd -LocalAppData $hcD.LocalAppData
+        $repl = Get-Replacement (Get-Message $r.Out)
+        Check ('direct form is guarded: ' + $cmd) ((Get-Message $r.Out) -match 'TEST RUN GUARD' -and $repl -match 'Run-Tests-Guarded') $r.Out
+    }
+    $r = Fire -HookPath $hcD.Script -Cwd $Proj -EventName 'PreToolUse' -Command '.\scripts\Test-Wizard.ps1 -KeepArtifacts' -LocalAppData $hcD.LocalAppData
+    $repl = Get-Replacement (Get-Message $r.Out)
+    Check 'the direct-script replacement runs it via pwsh -File with the original args intact' (
+        $repl -match '-FilePath "pwsh"' -and $repl -match 'Test-Wizard\.ps1' -and $repl -match 'KeepArtifacts') $repl
+    foreach ($cmd in @('generate-test-fixtures.ps1', 'contest.ps1', '.\testdata\seed.ps1', 'pwsh -Command "Test-Thing"', 'echo test')) {
+        $r = Fire -HookPath $hcD.Script -Cwd $Proj -EventName 'PreToolUse' -Command $cmd -LocalAppData $hcD.LocalAppData
+        Check ('a non-test path stays silent: ' + $cmd) ($r.Exit -eq 0 -and $r.Out -eq '') $r.Out
+    }
+
+    # =====================================================================
+    Write-Host '--- run-identity contract is carried into the observed record + replacement (scope A) ---' -ForegroundColor Cyan
+    $hcId = New-IsolatedHookCopy
+    $r = Fire -HookPath $hcId.Script -Cwd $Proj -EventName 'PreToolUse' -Command 'pytest -q' -LocalAppData $hcId.LocalAppData
+    $obsId = Get-ObservedRecord $hcId.LocalAppData
+    Check 'the observed record is schema 2 with a runId, a command fingerprint, and runIdControlled' (
+        $null -ne $obsId -and $obsId.Document.schema -eq 2 -and
+        -not [string]::IsNullOrWhiteSpace([string]$obsId.Document.runId) -and
+        -not [string]::IsNullOrWhiteSpace([string]$obsId.Document.commandFingerprint) -and
+        $obsId.Document.runIdControlled -eq $true) ($obsId.Document | ConvertTo-Json -Compress)
+    $replId = Get-Replacement (Get-Message $r.Out)
+    Check 'the replacement injects -RunId and -ProjectFingerprint as data' ($replId -match '-RunId ' -and $replId -match '-ProjectFingerprint ') $replId
+    Check 'the injected runId equals the observed runId' ($replId -match ('-RunId ' + [regex]::Escape([string]$obsId.Document.runId))) $replId
+    # A guarded replacement PRESERVES the injected runId instead of minting a
+    # fresh one that could never match the runner's result.
+    $injRun = [string]$obsId.Document.runId
+    $injFp = [string]$obsId.Document.projectFingerprint
+    $null = Fire -HookPath $hcId.Script -Cwd $Proj -EventName 'PreToolUse' `
+        -Command ('pwsh -File .\scripts\Run-Tests-Guarded.ps1 -FilePath pytest -ArgumentsJson ''["-q"]'' -RunId ' + $injRun + ' -ProjectFingerprint ' + $injFp) -LocalAppData $hcId.LocalAppData
+    $obsId2 = Get-ObservedRecord $hcId.LocalAppData
+    Check 'a guarded replacement preserves the injected runId (does not mint a fresh one)' (
+        $null -ne $obsId2 -and $obsId2.Document.runId -eq $injRun -and $obsId2.Document.guarded -eq $true) ([string]$obsId2.Document.runId)
+
+    # PostToolUse rejects a result whose identity does not match the observation.
+    $hcMis = New-IsolatedHookCopy
+    $null = Fire -HookPath $hcMis.Script -Cwd $Proj -EventName 'PreToolUse' -Command 'pytest -q' -LocalAppData $hcMis.LocalAppData
+    $null = New-ResultDocument -LocalAppData $hcMis.LocalAppData -ProjectRoot $Proj -Fields @{ overall = 'ok'; runId = 'a-totally-different-run' }
+    $r = Fire -HookPath $hcMis.Script -Cwd $Proj -EventName 'PostToolUse' -Command 'pytest -q' -LocalAppData $hcMis.LocalAppData
+    Check 'PostToolUse rejects a result from a DIFFERENT run as not-evidence' ((Get-Message $r.Out) -match 'DIFFERENT run') $r.Out
+
+    # =====================================================================
+    Write-Host '--- runner: orphan descendants after a clean exit are a leak (scope B) ---' -ForegroundColor Cyan
+    $orphanSuite = Join-Path $Work 'orphan-suite.ps1'
+    Write-Utf8 $orphanSuite "`$c = Start-Process -FilePath 'ping.exe' -ArgumentList '-n','60','127.0.0.1' -PassThru -WindowStyle Hidden`nSet-Content -LiteralPath `$env:ORPHAN_PIDFILE -Value `$c.Id`nStart-Sleep -Milliseconds 300`nexit 0`n"
+    $orphanPidFile = Join-Path $Work 'orphan-pid.txt'
+    $orphanResult = Join-Path $Work 'orphan-result.json'
+    # A wrapper script invokes the runner with the -Arguments ARRAY (built in
+    # PowerShell), so no JSON/embedded-quote survives Start-Process arg mangling.
+    $orphanWrapper = Join-Path $Work 'run-orphan.ps1'
+    Write-Utf8 $orphanWrapper (
+        "& '$Runner' -FilePath 'pwsh' -Arguments @('-NoProfile','-File','$orphanSuite') " +
+        "-TimeoutSeconds 60 -IdleTimeoutSeconds 30 -HeartbeatSeconds 1 -ResultPath '$orphanResult' -Quiet`nexit `$LASTEXITCODE`n")
+    $prevOrphanEnv = $env:ORPHAN_PIDFILE
+    $env:ORPHAN_PIDFILE = $orphanPidFile
+    try {
+        $rp = Start-Process -FilePath (Get-Process -Id $PID).Path -Wait -NoNewWindow -PassThru -ArgumentList @(
+            '-NoLogo', '-NoProfile', '-File', $orphanWrapper)
+    }
+    finally { $env:ORPHAN_PIDFILE = $prevOrphanEnv }
+    $orphanDoc = $null
+    try { $orphanDoc = Get-Content -LiteralPath $orphanResult -Raw | ConvertFrom-Json } catch { }
+    Check 'the runner records the orphan as a leak and does not call the run ok' (
+        $null -ne $orphanDoc -and $orphanDoc.overall -ne 'ok' -and @($orphanDoc.leakedProcessIds).Count -gt 0) (
+        $(if ($null -ne $orphanDoc) { [string]$orphanDoc.overall + ' leaked=' + (@($orphanDoc.leakedProcessIds) -join ',') } else { 'no result' }))
+    $orphanChild = ''
+    try { $orphanChild = (Get-Content -LiteralPath $orphanPidFile -Raw).Trim() } catch { }
+    $orphanAlive = $false
+    if ($orphanChild -ne '') { try { $null = Get-Process -Id $orphanChild -ErrorAction Stop; $orphanAlive = $true } catch { } }
+    Check 'the orphan child is actually gone after the run (terminated, not leaked forever)' (-not $orphanAlive) ('child ' + $orphanChild + ' alive=' + $orphanAlive)
+
+    # =====================================================================
+    Write-Host '--- runner: a silent CPU-busy run survives the no-progress limit (scope F) ---' -ForegroundColor Cyan
+    $busySuite = Join-Path $Work 'busy-suite.ps1'
+    Write-Utf8 $busySuite "`$sw=[System.Diagnostics.Stopwatch]::StartNew();`$x=0.0`nwhile(`$sw.Elapsed.TotalSeconds -lt 6){ for(`$i=0;`$i -lt 200000;`$i++){ `$x=[math]::Sqrt(`$i)+`$x } }`nexit 0`n"
+    $busyResult = Join-Path $Work 'busy-result.json'
+    $busyWrapper = Join-Path $Work 'run-busy.ps1'
+    Write-Utf8 $busyWrapper (
+        "& '$Runner' -FilePath 'pwsh' -Arguments @('-NoProfile','-File','$busySuite') " +
+        "-TimeoutSeconds 30 -IdleTimeoutSeconds 2 -HeartbeatSeconds 1 -ResultPath '$busyResult' -Quiet`nexit `$LASTEXITCODE`n")
+    $rp = Start-Process -FilePath (Get-Process -Id $PID).Path -Wait -NoNewWindow -PassThru -ArgumentList @(
+        '-NoLogo', '-NoProfile', '-File', $busyWrapper)
+    $busyDoc = $null
+    try { $busyDoc = Get-Content -LiteralPath $busyResult -Raw | ConvertFrom-Json } catch { }
+    Check 'a silent CPU-busy run is NOT killed by the 2s no-progress limit (CPU is progress)' (
+        $null -ne $busyDoc -and $busyDoc.terminated -eq $false -and $busyDoc.overall -eq 'ok') (
+        $(if ($null -ne $busyDoc) { [string]$busyDoc.overall + ' terminated=' + [string]$busyDoc.terminated + ' reason=' + [string]$busyDoc.terminateReason } else { 'no result' }))
 
     # =====================================================================
     Write-Host '--- irrelevant events are ignored ---' -ForegroundColor Cyan

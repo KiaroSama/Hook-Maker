@@ -168,6 +168,7 @@ try {
     # The policy block itself mentions blind sleeps, so absence is asserted on
     # the findings SECTION, which only appears when something real was seen.
     Check 'a bounded test file produces no invented finding' ($msg1 -notmatch '(?i)Observed in this project') $msg1
+    Check 'a small, fully-scanned project is NOT marked partial' ($msg1 -notmatch '(?i)PARTIAL') $msg1
 
     # =====================================================================
     Write-Host '--- Claude output shape, detected both documented ways ---' -ForegroundColor Cyan
@@ -323,6 +324,81 @@ New-Item -ItemType File -Path (Join-Path $PSScriptRoot 'EXECUTED-MARKER.txt') -F
     Check 'an event this hook does not own is silent' ($r.Exit -eq 0 -and $r.Out -eq '') $r.Out
     $r = Fire -HookPath $hc13.Script -Cwd $proj13 -EventName 'SessionStart' -StopHookActive -LocalAppData $hc13.LocalAppData
     Check 'stop_hook_active is honoured first (recursion guard)' ($r.Exit -eq 0 -and $r.Out -eq '') $r.Out
+
+    # =====================================================================
+    Write-Host '--- an excluded tree (node_modules) is pruned before descent, never scanned ---' -ForegroundColor Cyan
+    $hcExcl = New-IsolatedHookCopy
+    $projExcl = New-GitRepo 'Excluded'
+    # A risky pattern buried in an excluded tree must NOT be reported...
+    Write-Utf8 (Join-Path $projExcl 'node_modules\pkg\tests\test_dep.py') "import time`ntime.sleep(500)`n"
+    # ...while a real top-level test file still is.
+    Write-Utf8 (Join-Path $projExcl 'tests\test_app.py') "import time`ntime.sleep(200)`n"
+    & git -C $projExcl add -A 2>$null | Out-Null
+    & git -C $projExcl commit -q -m t 2>$null | Out-Null
+    $rExcl = Fire -HookPath $hcExcl.Script -Cwd $projExcl -EventName 'SessionStart' -LocalAppData $hcExcl.LocalAppData
+    $msgExcl = Get-Message $rExcl.Out
+    Check 'the real top-level test file IS reported' ($msgExcl -match 'test_app\.py:2 - blind sleep of 200s') $msgExcl
+    Check 'the node_modules test file is NOT reported (tree pruned, never descended)' ($msgExcl -notmatch 'test_dep\.py') $msgExcl
+    Check 'pruning a large excluded tree is not treated as partial coverage' ($msgExcl -notmatch '(?i)PARTIAL') $msgExcl
+
+    # =====================================================================
+    Write-Host '--- a reparse point (junction) is never followed ---' -ForegroundColor Cyan
+    $hcRp = New-IsolatedHookCopy
+    $projRp = New-GitRepo 'Reparse'
+    # Real test content OUTSIDE the repo, reachable only via a junction inside it.
+    $rpTarget = Join-Path $Work ('rp-target-' + [guid]::NewGuid().ToString('N').Substring(0, 6))
+    New-Item -ItemType Directory -Path (Join-Path $rpTarget 'tests') -Force | Out-Null
+    Write-Utf8 (Join-Path $rpTarget 'tests\test_linked.py') "import time`ntime.sleep(400)`n"
+    # A normal in-repo finding proves the scan otherwise works.
+    Write-Utf8 (Join-Path $projRp 'tests\test_local.py') "import time`ntime.sleep(150)`n"
+    & git -C $projRp add -A 2>$null | Out-Null
+    & git -C $projRp commit -q -m t 2>$null | Out-Null
+    $rpLink = Join-Path $projRp 'linked'
+    $madeJunction = $false
+    try { New-Item -ItemType Junction -Path $rpLink -Target $rpTarget -ErrorAction Stop | Out-Null; $madeJunction = $true } catch { }
+    if (-not $madeJunction) {
+        try { & cmd /c mklink /J "$rpLink" "$rpTarget" 2>$null | Out-Null } catch { }
+        $madeJunction = (Test-Path -LiteralPath $rpLink) -and
+            ((((Get-Item -LiteralPath $rpLink -Force).Attributes) -band [System.IO.FileAttributes]::ReparsePoint) -ne 0)
+    }
+    if ($madeJunction) {
+        $rRp = Fire -HookPath $hcRp.Script -Cwd $projRp -EventName 'SessionStart' -LocalAppData $hcRp.LocalAppData
+        $msgRp = Get-Message $rRp.Out
+        Check 'the in-repo test file IS reported (scan otherwise works)' ($msgRp -match 'test_local\.py:2 - blind sleep of 150s') $msgRp
+        Check 'content behind the junction is NOT reported (reparse point not followed)' ($msgRp -notmatch 'test_linked\.py') $msgRp
+    }
+    else {
+        Write-Host '[SKIP] junction could not be created in this harness - reparse-skip assertion skipped' -ForegroundColor Yellow
+    }
+
+    # =====================================================================
+    Write-Host '--- a MAX_DIRS ceiling stops the walk and reports partial coverage ---' -ForegroundColor Cyan
+    $hcDir = New-IsolatedHookCopy -EnvContent "TEST_PLAN_MAX_DIRS=1`n"
+    $projDir = New-GitRepo 'DirCeiling'
+    # The only finding lives one level down; with MAX_DIRS=1 the root is visited
+    # but its subdirectory is never descended.
+    Write-Utf8 (Join-Path $projDir 'sub\tests\test_deep.py') "import time`ntime.sleep(300)`n"
+    & git -C $projDir add -A 2>$null | Out-Null
+    & git -C $projDir commit -q -m t 2>$null | Out-Null
+    $rDir = Fire -HookPath $hcDir.Script -Cwd $projDir -EventName 'SessionStart' -LocalAppData $hcDir.LocalAppData
+    $msgDir = Get-Message $rDir.Out
+    Check 'the directory ceiling makes the scan report PARTIAL coverage' ($msgDir -match '(?i)PARTIAL') $msgDir
+    Check 'a finding below the ceiling depth is not scanned (walk pruned by the ceiling)' ($msgDir -notmatch 'test_deep\.py') $msgDir
+    Check 'MAX_DIRS=1 is a valid value (no config warning)' ($msgDir -notmatch 'TEST_PLAN_MAX_DIRS is not') $msgDir
+
+    # =====================================================================
+    Write-Host '--- a MAX_FINDINGS ceiling stops the scan and reports partial coverage ---' -ForegroundColor Cyan
+    $hcFind = New-IsolatedHookCopy -EnvContent "TEST_PLAN_MAX_FINDINGS=1`n"
+    $projFind = New-GitRepo 'FindCeiling'
+    # Three minute-scale sleeps; only the first may be emitted before the cap trips.
+    Write-Utf8 (Join-Path $projFind 'tests\test_many.py') "import time`ntime.sleep(120)`ntime.sleep(180)`ntime.sleep(240)`n"
+    & git -C $projFind add -A 2>$null | Out-Null
+    & git -C $projFind commit -q -m t 2>$null | Out-Null
+    $rFind = Fire -HookPath $hcFind.Script -Cwd $projFind -EventName 'SessionStart' -LocalAppData $hcFind.LocalAppData
+    $msgFind = Get-Message $rFind.Out
+    Check 'the findings ceiling makes the scan report PARTIAL coverage' ($msgFind -match '(?i)PARTIAL') $msgFind
+    $observedCount = @([regex]::Matches($msgFind, 'blind sleep of')).Count
+    Check 'only the capped number of findings (1) is emitted' ($observedCount -eq 1) ("count=$observedCount :: " + $msgFind)
 }
 finally {
     $env:CLAUDE_PROJECT_DIR = $SavedClaudeProjectDir

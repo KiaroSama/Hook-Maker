@@ -149,6 +149,105 @@ function Get-ProgramName {
     return $name
 }
 
+# ---- run identity (must match Run-Tests-Guarded.ps1 byte-for-byte) ----------
+# SHA-256 prefix over the executable + argument ARRAY, NUL-joined, exe lowercased.
+# The observing hook and the runner both derive it this way so "what ran" has one
+# canonical id. This is the SAME algorithm as Run-Tests-Guarded.ps1's
+# Get-CommandFingerprint - keep the two in lockstep.
+function Get-CommandFingerprint {
+    param([string]$ExecutablePath, [string[]]$ArgumentList)
+    $parts = New-Object System.Collections.Generic.List[string]
+    [void]$parts.Add(([string]$ExecutablePath).ToLowerInvariant())
+    foreach ($a in @($ArgumentList)) { [void]$parts.Add([string]$a) }
+    $joined = ($parts.ToArray() -join "`0")
+    $sha = [System.Security.Cryptography.SHA256]::Create()
+    try {
+        $bytes = $sha.ComputeHash([System.Text.Encoding]::UTF8.GetBytes($joined))
+        return ([System.BitConverter]::ToString($bytes) -replace '-', '').ToLowerInvariant().Substring(0, 32)
+    }
+    finally { $sha.Dispose() }
+}
+
+# Pulls the identity + the INNER executable/arguments back out of an
+# already-guarded command line (`... Run-Tests-Guarded.ps1 -FilePath X
+# -ArgumentsJson [...] -RunId R -ProjectFingerprint F ...`). Used so the observed
+# record for a guarded run carries the SAME command fingerprint the runner will
+# compute, and preserves an injected runId instead of minting a fresh one that
+# could never match. A value-taking switch reads the following token.
+function Get-GuardedInvocationIdentity {
+    param([string[]]$Tokens)
+    $t = @($Tokens)
+    $runId = ''; $projFp = ''; $filePath = ''; $argsJson = ''
+    for ($i = 0; $i -lt $t.Count - 1; $i++) {
+        switch ($t[$i].ToLowerInvariant()) {
+            '-runid' { $runId = $t[$i + 1] }
+            '-projectfingerprint' { $projFp = $t[$i + 1] }
+            '-filepath' { $filePath = $t[$i + 1] }
+            '-argumentsjson' { $argsJson = $t[$i + 1] }
+        }
+    }
+    $innerArgs = @()
+    if (-not [string]::IsNullOrWhiteSpace($argsJson)) {
+        try {
+            $parsed = $argsJson | ConvertFrom-Json
+            if ($null -ne $parsed -and -not ($parsed -is [string])) { $innerArgs = @(@($parsed) | ForEach-Object { [string]$_ }) }
+        }
+        catch { }
+    }
+    $commandFp = ''
+    if (-not [string]::IsNullOrWhiteSpace($filePath)) { $commandFp = Get-CommandFingerprint -ExecutablePath $filePath -ArgumentList $innerArgs }
+    return [pscustomobject]@{ RunId = $runId; ProjectFingerprint = $projFp; CommandFingerprint = $commandFp }
+}
+
+# Parse a JSON UTC timestamp to a real UTC DateTime (same reasoning as
+# Test-Completion-Check's ConvertTo-UtcTime: an Unspecified Kind is UTC here, and
+# double-converting it would fabricate a many-hour drift).
+function ConvertTo-UtcDate {
+    param($Value)
+    if ($null -eq $Value) { return $null }
+    if ($Value -is [datetime]) { $p = $Value }
+    else {
+        $text = [string]$Value
+        if ([string]::IsNullOrWhiteSpace($text)) { return $null }
+        $p = [datetime]::MinValue
+        if (-not [datetime]::TryParse($text, [System.Globalization.CultureInfo]::InvariantCulture,
+                [System.Globalization.DateTimeStyles]::RoundtripKind, [ref]$p)) { return $null }
+    }
+    if ($p.Kind -eq [System.DateTimeKind]::Utc) { return $p }
+    if ($p.Kind -eq [System.DateTimeKind]::Local) { return $p.ToUniversalTime() }
+    return [System.DateTime]::SpecifyKind($p, [System.DateTimeKind]::Utc)
+}
+
+# The exact run-identity gate, shared in spirit with Test-Completion-Check. A
+# result is evidence for the current observation ONLY when its command and
+# project fingerprints match the observed record AND the current state, its
+# start is not before the observation, its end is not before its start, its
+# required fields are present, and - when this hook controlled the runId - the
+# runId matches. A fresh result for a different run/command/state is NOT evidence.
+function Test-ResultMatchesObserved {
+    param($Result, $Observed, [string]$CurrentStateFingerprint)
+    if ($null -eq $Result -or $null -eq $Observed) { return $false }
+    $rCmdFp = [string](Get-Field $Result 'commandFingerprint')
+    $rProjFp = [string](Get-Field $Result 'projectFingerprint')
+    $rRunId = [string](Get-Field $Result 'runId')
+    $rStarted = ConvertTo-UtcDate (Get-Field $Result 'startedUtc')
+    $rEnded = ConvertTo-UtcDate (Get-Field $Result 'endedUtc')
+    if ([string]::IsNullOrWhiteSpace($rCmdFp) -or [string]::IsNullOrWhiteSpace($rProjFp) -or $null -eq $rStarted -or $null -eq $rEnded) { return $false }
+    $oCmdFp = [string](Get-Field $Observed 'commandFingerprint')
+    $oProjFp = [string](Get-Field $Observed 'projectFingerprint')
+    if ([string]::IsNullOrWhiteSpace($oProjFp)) { $oProjFp = [string](Get-Field $Observed 'fingerprint') }
+    $oRunId = [string](Get-Field $Observed 'runId')
+    $oControlled = ((Get-Field $Observed 'runIdControlled') -eq $true)
+    $oObserved = ConvertTo-UtcDate (Get-Field $Observed 'observedUtc')
+    if ($rCmdFp -ne $oCmdFp) { return $false }
+    if ($rProjFp -ne $oProjFp) { return $false }
+    if (-not [string]::IsNullOrWhiteSpace($CurrentStateFingerprint) -and $rProjFp -ne $CurrentStateFingerprint) { return $false }
+    if ($null -ne $oObserved -and $rStarted -lt $oObserved.AddSeconds(-2)) { return $false }
+    if ($rEnded -lt $rStarted.AddSeconds(-2)) { return $false }
+    if ($oControlled -and $rRunId -ne $oRunId) { return $false }
+    return $true
+}
+
 # Programs that ARE a test run with no subcommand needed.
 $script:DirectTestPrograms = @(
     'pytest', 'jest', 'vitest', 'mocha', 'phpunit', 'rspec', 'tox', 'nose2',
@@ -255,6 +354,29 @@ function Get-RecognizedTestCommand {
         }
     }
 
+    # Direct PowerShell test-script execution, with no `pwsh -File` wrapper:
+    # `.\scripts\Test-Wizard.ps1`, `./scripts/Run-Tests.ps1`, an absolute path
+    # ending in the same, a quoted path (the tokenizer already unquoted it), and
+    # the call-operator form `& ".\scripts\Test-RulesCheck.ps1"` (Split-Command-
+    # Segments treats `&` as a separator, so that segment arrives here as just the
+    # script path). Recognised ONLY when the leaf is EXACTLY run-tests.ps1 or
+    # matches Test-<safe>.ps1 - Get-ProgramName keeps the .ps1 extension, so a
+    # bare program named "test-foo" (no .ps1) and a path merely CONTAINING "test"
+    # (generate-test-fixtures.ps1, contest.ps1, testdata\x.ps1) never match.
+    # A .ps1 cannot be launched directly by ProcessStartInfo, so it is normalised
+    # to `pwsh -NoLogo -NoProfile -File <script> <original args>`, exactly the
+    # shape the guarded runner and the fingerprint both consume.
+    if ($label -eq '') {
+        $leaf = Get-ProgramName $tokens[0]
+        if ($leaf -eq 'run-tests.ps1' -or $leaf -match '^test-[a-z0-9._-]+\.ps1$') {
+            return [pscustomobject]@{
+                Label     = $leaf
+                FilePath  = 'pwsh'
+                Arguments = @('-NoLogo', '-NoProfile', '-File', $tokens[0]) + $rest
+            }
+        }
+    }
+
     if ($label -eq '') {
         # Project-declared extras (TEST_GUARD_EXTRA_TEST_COMMANDS). Deliberately
         # a fragment match on the joined segment - it is opt-in, per project, and
@@ -317,7 +439,9 @@ function New-GuardedInvocation {
         [int]$IdleSeconds,
         [int]$HeartbeatSeconds,
         [int]$MaxMemoryMB,
-        [string]$ResultPath
+        [string]$ResultPath,
+        [string]$RunId,
+        [string]$ProjectFingerprint
     )
     # The unary comma keeps a single-argument list a JSON ARRAY. Without it a
     # one-element array unrolls to a bare string and the runner rejects it.
@@ -333,6 +457,11 @@ function New-GuardedInvocation {
     [void]$parts.Add('-IdleTimeoutSeconds ' + $IdleSeconds)
     [void]$parts.Add('-HeartbeatSeconds ' + $HeartbeatSeconds)
     if ($MaxMemoryMB -gt 0) { [void]$parts.Add('-MaxMemoryMB ' + $MaxMemoryMB) }
+    # The run-identity contract: the runId this hook just observed and the
+    # repository fingerprint, passed as DATA so the runner echoes them into its
+    # result and the consumer can prove that result belongs to THIS observation.
+    if (-not [string]::IsNullOrWhiteSpace($RunId)) { [void]$parts.Add('-RunId ' + $RunId) }
+    if (-not [string]::IsNullOrWhiteSpace($ProjectFingerprint)) { [void]$parts.Add('-ProjectFingerprint ' + $ProjectFingerprint) }
     [void]$parts.Add('-ResultPath "' + $ResultPath + '"')
     return ($parts.ToArray() -join ' ')
 }
@@ -399,16 +528,37 @@ function Test-ShouldReport {
 # is never in scope here. A fabricated or guessed pid would be strictly worse
 # than none: pids are recycled, so an unrelated live process would block
 # completion forever. Only the runner knows its own pid - see the report.
-function Write-ObservedRecord {
-    param([string]$Path, [string]$ProjectRoot, [bool]$Guarded)
+#
+# The record now carries the full run-identity contract (schema 2): the runId
+# minted (raw) or preserved (guarded), whether this hook CONTROLS that runId
+# (a raw run whose replacement injects it -> yes; a guarded run typed directly
+# without -RunId -> no, so the consumer binds on command+project+time instead),
+# the command fingerprint the runner will independently recompute, and the
+# repository fingerprint. This is what lets the consumer reject a stale result
+# from an earlier run/command/state instead of trusting file age.
+function Get-StateFingerprintFor {
+    param([string]$ProjectRoot)
     $fingerprint = ''
     try { $fingerprint = [string](Get-RepoStateFingerprint -ProjectRoot $ProjectRoot) } catch { $fingerprint = '' }
     if ([string]::IsNullOrWhiteSpace($fingerprint)) { $fingerprint = Get-ShortHash $ProjectRoot.ToLowerInvariant() }
+    return $fingerprint
+}
+function Write-ObservedRecord {
+    param(
+        [string]$Path, [string]$ProjectRoot, [bool]$Guarded,
+        [string]$RunId, [bool]$RunIdControlled, [string]$CommandFingerprint, [string]$ProjectFingerprint
+    )
+    if ([string]::IsNullOrWhiteSpace($ProjectFingerprint)) { $ProjectFingerprint = Get-StateFingerprintFor -ProjectRoot $ProjectRoot }
     try {
         Write-JsonFileAtomic -Path $Path -Value ([pscustomobject][ordered]@{
-                observedUtc = [DateTime]::UtcNow.ToString('o')
-                fingerprint = $fingerprint
-                guarded     = $Guarded
+                schema             = 2
+                observedUtc        = [DateTime]::UtcNow.ToString('o')
+                fingerprint        = $ProjectFingerprint
+                projectFingerprint = $ProjectFingerprint
+                runId              = $RunId
+                runIdControlled    = $RunIdControlled
+                commandFingerprint = $CommandFingerprint
+                guarded            = $Guarded
             })
     }
     catch { }    # coordination is best-effort: it must never break the gate
@@ -531,11 +681,31 @@ $verdict = Get-CommandVerdict -Tokens $tokens -ExtraFragments $extraFragments -N
 # ---- PreToolUse: the gate --------------------------------------------------
 
 if ($eventName -eq 'PreToolUse') {
+    $stateFingerprint = Get-StateFingerprintFor -ProjectRoot $projectRoot
     # Every recognised test command is handed to Test-Completion-Check, whether
     # it is about to run guarded, run unguarded, or be blocked here. Silent -
-    # this is a state handoff, not a finding.
-    if ($verdict.Kind -ne 'none') {
-        Write-ObservedRecord -Path $observedPath -ProjectRoot $projectRoot -Guarded ($verdict.Kind -eq 'guarded')
+    # this is a state handoff, not a finding. The observed record carries the run
+    # identity so the consumer can bind a later result to THIS observation.
+    if ($verdict.Kind -eq 'raw') {
+        # A fresh, hook-controlled runId: it is injected into the replacement, so
+        # only the result of THAT exact run can match.
+        $runId = [guid]::NewGuid().ToString('N')
+        $commandFp = Get-CommandFingerprint -ExecutablePath $verdict.Command.FilePath -ArgumentList $verdict.Command.Arguments
+        Write-ObservedRecord -Path $observedPath -ProjectRoot $projectRoot -Guarded $false `
+            -RunId $runId -RunIdControlled $true -CommandFingerprint $commandFp -ProjectFingerprint $stateFingerprint
+    }
+    elseif ($verdict.Kind -eq 'guarded') {
+        # Already guarded. Recover the identity the invocation carries: if it was
+        # OUR replacement it has -RunId/-ProjectFingerprint and the inner command,
+        # so the observed record matches what the runner will write. A guarded
+        # command typed directly (no -RunId) cannot be bound by runId - mark it
+        # uncontrolled so the consumer binds on command+project+time instead.
+        $identity = Get-GuardedInvocationIdentity -Tokens $tokens
+        $runIdControlled = -not [string]::IsNullOrWhiteSpace($identity.RunId)
+        $runId = if ($runIdControlled) { $identity.RunId } else { [guid]::NewGuid().ToString('N') }
+        $projFp = if (-not [string]::IsNullOrWhiteSpace($identity.ProjectFingerprint)) { $identity.ProjectFingerprint } else { $stateFingerprint }
+        Write-ObservedRecord -Path $observedPath -ProjectRoot $projectRoot -Guarded $true `
+            -RunId $runId -RunIdControlled $runIdControlled -CommandFingerprint $identity.CommandFingerprint -ProjectFingerprint $projFp
     }
     if ($verdict.Kind -ne 'raw') {
         # Unrelated, or already bounded. Nothing to say - and an already-guarded
@@ -556,7 +726,8 @@ if ($eventName -eq 'PreToolUse') {
 
     $replacement = New-GuardedInvocation -RunnerPath $runnerPath -FilePath $verdict.Command.FilePath `
         -Arguments $verdict.Command.Arguments -WallSeconds $wallSeconds -IdleSeconds $idleSeconds `
-        -HeartbeatSeconds $heartbeatSeconds -MaxMemoryMB $maxMemoryMB -ResultPath $resultPath
+        -HeartbeatSeconds $heartbeatSeconds -MaxMemoryMB $maxMemoryMB -ResultPath $resultPath `
+        -RunId $runId -ProjectFingerprint $stateFingerprint
 
     # Advisory by design. Enforcing this would mean rewriting the worker flag of
     # the runner just recognised, and every framework spells it differently
@@ -603,17 +774,30 @@ try {
 }
 catch { $result = $null }
 
-# ponytail: 60 minutes is a flat staleness ceiling. If a project routinely runs
-# suites longer than that, derive it from TEST_GUARD_WALL_TIMEOUT_SECONDS.
-$isStale = ($null -eq $result -or $resultAgeMinutes -gt 60)
+# Identity FIRST, age only after. The observed record for THIS run is the anchor:
+# a result whose runId/command/project fingerprint does not match it - or which
+# started before the observation - is from a DIFFERENT run and is not evidence
+# about this one, however fresh its file is. Age remains a bounded secondary
+# freshness check only after identity holds. When no observed record exists (an
+# unrecognised flow), fall back to the age check alone rather than block blindly.
+$observed = $null
+try { if (Test-Path -LiteralPath $observedPath -PathType Leaf) { $observed = Read-JsonFile $observedPath } } catch { $observed = $null }
+$stateFingerprint = Get-StateFingerprintFor -ProjectRoot $projectRoot
+$identityMatches = $true
+if ($null -ne $observed) {
+    $identityMatches = (Test-ResultMatchesObserved -Result $result -Observed $observed -CurrentStateFingerprint $stateFingerprint)
+}
+$isStale = ($null -eq $result -or -not $identityMatches -or $resultAgeMinutes -gt 60)
 
 if ($isStale) {
     # NEVER claims the run was fine. It says exactly what is missing.
-    $reason = if ($null -eq $result) { 'no guarded result document exists at ' + $resultPath } else { 'the guarded result document is stale (last written ' + [Math]::Round($resultAgeMinutes) + ' minutes ago)' }
+    $reason = if ($null -eq $result) { 'no guarded result document exists at ' + $resultPath }
+    elseif (-not $identityMatches) { 'the only guarded result on record is for a DIFFERENT run, command, or repository state (its run identity does not match this observation), so it says nothing about how THIS run ended' }
+    else { 'the guarded result document is stale (last written ' + [Math]::Round($resultAgeMinutes) + ' minutes ago)' }
     $message = 'TEST RUN GUARD: a test command ran, but ' + $reason + '. There is therefore NO evidence about how ' +
     'that run ended - do not report it as passing. Re-run it through scripts\Run-Tests-Guarded.ps1 with ' +
     '-ResultPath "' + $resultPath + '" to get a verifiable result.' + $configNote
-    if (Test-ShouldReport -StatePath $reportStatePath -Fingerprint (Get-ShortHash ('stale|' + $verdict.Kind + '|' + [Math]::Round($resultAgeMinutes / 10)))) {
+    if (Test-ShouldReport -StatePath $reportStatePath -Fingerprint (Get-ShortHash ('stale|' + $verdict.Kind + '|' + [string]$identityMatches + '|' + [Math]::Round($resultAgeMinutes / 10)))) {
         Write-Advisory -EventName 'PostToolUse' -Message $message
     }
     exit 0

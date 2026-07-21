@@ -226,6 +226,23 @@ function Get-ManagedInstallPlan {
     $mainScriptContent = Get-PrivateLibraryScriptContent -SourceScriptPath $SourceInfo.ScriptPath
     Add-Artifact (New-PlanArtifact -RelativePath ($FriendlyName + '/' + $FriendlyName + '.ps1') -Kind 'Generated' -GeneratedContent $mainScriptContent)
 
+    # Test-Run-Guard's gate is only real if scripts\Run-Tests-Guarded.ps1 travels
+    # WITH it. In a freshly-set-up target project the runner exists nowhere else,
+    # and Test-Run-Guard's Find-GuardedRunner then finds nothing and silently
+    # downgrades the gate to advisory - the exact defect. Ship the CANONICAL
+    # runner (single source of truth in scripts\, never a committed duplicate)
+    # into the installed hook's own scripts\ subdir, which is candidate[0] of
+    # Find-GuardedRunner ($PSScriptRoot\scripts\Run-Tests-Guarded.ps1). It is a
+    # standalone script (no _hooklib dependency), so it is copied verbatim and
+    # becomes an Immutable managed artifact - editing the source runner is then
+    # drift the updater repairs, keeping the shipped copy in lockstep.
+    if ([string]::Equals($FriendlyName, 'Test-Run-Guard', [System.StringComparison]::OrdinalIgnoreCase)) {
+        $guardedRunnerSource = Join-Path $ToolRoot 'scripts\Run-Tests-Guarded.ps1'
+        if (Test-Path -LiteralPath $guardedRunnerSource -PathType Leaf) {
+            Add-Artifact (New-PlanArtifact -RelativePath ($FriendlyName + '/scripts/Run-Tests-Guarded.ps1') -Kind 'File' -SourcePath $guardedRunnerSource)
+        }
+    }
+
     if ($SourceInfo.Kind -eq 'Package') {
         $packageRoot = [System.IO.Path]::GetFullPath($SourceInfo.PackageRoot)
         $mainLeaf = Split-Path -Leaf $SourceInfo.ScriptPath
