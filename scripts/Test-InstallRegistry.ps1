@@ -1753,12 +1753,7 @@ for (`$i = 0; `$i -lt 8; `$i++) {
 finally {
     $env:HOOKMAKER_STATE_DIR = $SavedHookMakerStateDir
     if (-not $KeepArtifacts) {
-        try {
-            Get-ChildItem -LiteralPath $Work -Recurse -Force -ErrorAction SilentlyContinue |
-                ForEach-Object { $_.Attributes = [System.IO.FileAttributes]::Normal }
-            Remove-Item -LiteralPath $Work -Recurse -Force -ErrorAction SilentlyContinue
-        }
-        catch { }
+        if (-not (Remove-TestWorkspace $Work)) { $script:Fail++ }
     }
     # Safety net: remove any ZZZ-Regtest-* fixture folders left behind by a
     # failed/interrupted run so the real hooks\ tree never stays polluted.

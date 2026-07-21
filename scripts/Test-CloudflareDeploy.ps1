@@ -278,8 +278,7 @@ finally {
         Write-Host ("Artifacts kept at: $Work") -ForegroundColor DarkGray
     }
     else {
-        Get-ChildItem -LiteralPath $Work -Recurse -Force -File -ErrorAction SilentlyContinue | ForEach-Object { $_.Attributes = 'Normal' }
-        Remove-Item -LiteralPath $Work -Recurse -Force -ErrorAction SilentlyContinue
+        if (-not (Remove-TestWorkspace $Work)) { $script:Fail++ }
     }
 }
 

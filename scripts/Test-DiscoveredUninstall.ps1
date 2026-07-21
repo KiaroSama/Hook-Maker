@@ -994,12 +994,7 @@ try {
 finally {
     $env:HOOKMAKER_STATE_DIR = $SavedHookMakerStateDir
     if (-not $KeepArtifacts) {
-        try {
-            Get-ChildItem -LiteralPath $Work -Recurse -Force -ErrorAction SilentlyContinue |
-                ForEach-Object { try { $_.Attributes = [System.IO.FileAttributes]::Normal } catch { } }
-            Remove-Item -LiteralPath $Work -Recurse -Force -ErrorAction SilentlyContinue
-        }
-        catch { }
+        if (-not (Remove-TestWorkspace $Work)) { $script:Fail++ }
     }
 }
 
