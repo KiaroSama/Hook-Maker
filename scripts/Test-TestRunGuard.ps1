@@ -682,6 +682,86 @@ try {
     Check 'the orphan child is actually gone after the run (terminated, not leaked forever)' (-not $orphanAlive) ('child ' + $orphanChild + ' alive=' + $orphanAlive)
 
     # =====================================================================
+    Write-Host '--- runner: the Job Object process list is the pid-reuse-proof ownership set (scope B) ---' -ForegroundColor Cyan
+    # Orphan detection after a CLEAN exit used to ppid-walk Win32_Process, which is
+    # NOT pid-reuse-proof: once the child exits its pid can be recycled and an
+    # unrelated process's children then look like "orphans of the child". The fix
+    # asks the Job Object which pids it still owns instead. Load the EXACT shipping
+    # C# from the runner (the same here-string it Add-Types at runtime) and prove
+    # GetProcessIds lists a live assigned child and excludes an unrelated process -
+    # the structural property that makes a recycled pid impossible to mistake for a
+    # leak, because a recycled pid was never assigned to this job.
+    if ([System.Environment]::OSVersion.Platform.ToString().StartsWith('Win')) {
+        $jobTestOk = $false
+        $jobTestDetail = 'not run'
+        $runnerText = Get-Content -LiteralPath $Runner -Raw
+        $csStart = $runnerText.IndexOf('using System;')
+        $csEnd = $runnerText.IndexOf("'@", $csStart)
+        if ($csStart -ge 0 -and $csEnd -gt $csStart -and -not ('HookMaker.JobNative' -as [type])) {
+            try { Add-Type -TypeDefinition $runnerText.Substring($csStart, $csEnd - $csStart) } catch { $jobTestDetail = 'Add-Type failed: ' + $_.Exception.Message }
+        }
+        if ('HookMaker.JobNative' -as [type]) {
+            $jobHandle = [IntPtr]::Zero
+            $jobChild = $null
+            try {
+                $jobHandle = [HookMaker.JobNative]::CreateKillOnClose()
+                if ($jobHandle -ne [IntPtr]::Zero) {
+                    $emptyIds = @([HookMaker.JobNative]::GetProcessIds($jobHandle))
+                    $jobChild = Start-Process -FilePath 'ping.exe' -ArgumentList @('-n', '30', '127.0.0.1') -PassThru -WindowStyle Hidden
+                    [void][HookMaker.JobNative]::Assign($jobHandle, $jobChild.Handle)
+                    Start-Sleep -Milliseconds 200
+                    $liveIds = @([HookMaker.JobNative]::GetProcessIds($jobHandle))
+                    $jobTestOk = ($emptyIds.Count -eq 0 -and ($liveIds -contains $jobChild.Id) -and (-not ($liveIds -contains $PID)))
+                    $jobTestDetail = ('empty=' + $emptyIds.Count + ' live=[' + ($liveIds -join ',') + '] child=' + $jobChild.Id + ' me=' + $PID)
+                }
+                else { $jobTestDetail = 'CreateKillOnClose returned NULL' }
+            }
+            catch { $jobTestDetail = 'threw: ' + $_.Exception.Message }
+            finally {
+                try { if ($jobHandle -ne [IntPtr]::Zero) { [void][HookMaker.JobNative]::Terminate($jobHandle); [void][HookMaker.JobNative]::Close($jobHandle) } } catch { }
+                try { if ($null -ne $jobChild -and -not $jobChild.HasExited) { & taskkill.exe /PID $jobChild.Id /T /F *> $null } } catch { }
+            }
+        }
+        else { $jobTestDetail = 'HookMaker.JobNative type unavailable' }
+        Check 'GetProcessIds lists a live assigned child and excludes an unrelated process (pid-reuse-proof)' $jobTestOk $jobTestDetail
+    }
+
+    # =====================================================================
+    Write-Host '--- runner: a clean exit (7, no descendants) never reports a false orphan, repeatedly (pid-reuse regression) ---' -ForegroundColor Cyan
+    # The flake: after the child exits, its pid could be recycled and the old
+    # ppid-walk orphan check would find an unrelated process's children hanging off
+    # the reused pid, flip overall to 'failed' and return 125 instead of the child's
+    # real exit code. pid reuse cannot be forced deterministically, so prove
+    # stability instead: a clean child (exit 7, no descendants) must propagate 7
+    # with an EMPTY leak list on every one of many runs. cmd exits instantly, so
+    # each iteration is bounded to well under a second.
+    $cleanResult = Join-Path $Work 'clean-result.json'
+    $cleanWrapper = Join-Path $Work 'run-clean.ps1'
+    Write-Utf8 $cleanWrapper (
+        "& '$Runner' -FilePath 'cmd.exe' -Arguments @('/c','exit','7') " +
+        "-TimeoutSeconds 30 -IdleTimeoutSeconds 10 -HeartbeatSeconds 1 -ResultPath '$cleanResult' -Quiet`nexit `$LASTEXITCODE`n")
+    $cleanIterations = 12
+    $cleanStable = $true
+    $cleanDetail = ('all ' + $cleanIterations + ' iterations propagated 7 with no false orphan')
+    for ($ci = 1; $ci -le $cleanIterations; $ci++) {
+        $rpClean = Start-Process -FilePath (Get-Process -Id $PID).Path -Wait -NoNewWindow -PassThru -ArgumentList @(
+            '-NoLogo', '-NoProfile', '-File', $cleanWrapper)
+        $cleanDoc = $null
+        try { $cleanDoc = Get-Content -LiteralPath $cleanResult -Raw | ConvertFrom-Json } catch { }
+        $iterOk = ($rpClean.ExitCode -eq 7 -and $null -ne $cleanDoc -and
+            @($cleanDoc.leakedProcessIds).Count -eq 0 -and [string]$cleanDoc.terminateReason -ne 'orphanLeak')
+        if (-not $iterOk) {
+            $cleanStable = $false
+            $cleanDetail = ('iteration ' + $ci + ': exit=' + $rpClean.ExitCode + ' ' + $(if ($null -ne $cleanDoc) {
+                        'overall=' + [string]$cleanDoc.overall + ' leaked=[' + (@($cleanDoc.leakedProcessIds) -join ',') +
+                        '] reason=' + [string]$cleanDoc.terminateReason + ' ownership=' + [string]$cleanDoc.processOwnership
+                    } else { 'no result doc' }))
+            break
+        }
+    }
+    Check ('a clean exit propagates 7 with no false orphan across ' + $cleanIterations + ' iterations (flake gone)') $cleanStable $cleanDetail
+
+    # =====================================================================
     Write-Host '--- runner: a silent CPU-busy run survives the no-progress limit (scope F) ---' -ForegroundColor Cyan
     $busySuite = Join-Path $Work 'busy-suite.ps1'
     Write-Utf8 $busySuite "`$sw=[System.Diagnostics.Stopwatch]::StartNew();`$x=0.0`nwhile(`$sw.Elapsed.TotalSeconds -lt 6){ for(`$i=0;`$i -lt 200000;`$i++){ `$x=[math]::Sqrt(`$i)+`$x } }`nexit 0`n"
