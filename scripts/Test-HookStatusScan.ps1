@@ -645,15 +645,7 @@ finally {
         try { [System.IO.Directory]::Delete($path) } catch { }
     }
     if (-not $KeepArtifacts) {
-        try {
-            Get-ChildItem -LiteralPath $Work -Recurse -Force -ErrorAction SilentlyContinue |
-                ForEach-Object { try { $_.Attributes = [System.IO.FileAttributes]::Normal } catch { } }
-            Remove-Item -LiteralPath $Work -Recurse -Force -ErrorAction SilentlyContinue
-        }
-        catch { }
-        if (Test-Path -LiteralPath $Work) {
-            Write-Host ('WARNING: workspace could not be fully removed: ' + $Work) -ForegroundColor Yellow
-        }
+        if (-not (Remove-TestWorkspace $Work)) { $script:Fail++ }
     }
 }
 

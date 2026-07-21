@@ -162,7 +162,7 @@ try {
     return [pscustomobject]@{ Suite = $name; Exit = $exitCode; Seconds = [Math]::Round($sw.Elapsed.TotalSeconds, 1); Tail = $tail }
 }
 finally {
-    Remove-Item -LiteralPath $outFile, $errFile -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath $outFile, $errFile, $inFile -Force -ErrorAction SilentlyContinue
 }
 '@
 
