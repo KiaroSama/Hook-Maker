@@ -249,7 +249,7 @@ function Get-CiRunSnapshot {
     $runs = @()
     try {
         $parsedRuns = ((@($rawJson) -join "`n") | ConvertFrom-Json)
-        $runs = @($parsedRuns | ForEach-Object { $_ })
+        $runs = @($parsedRuns | ForEach-Object { $_ } | Where-Object { $null -ne $_ })
     }
     catch { $runs = @() }
 

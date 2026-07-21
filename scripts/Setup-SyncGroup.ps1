@@ -1384,10 +1384,10 @@ function Show-Profiles {
             $sourceName = ''
             $destinationName = ''
             if ($null -ne $route.PSObject.Properties['source'] -and $null -ne $route.source) {
-                if ($null -ne $route.source.PSObject.Properties['name']) { $sourceName = [string]$route.source.name } else { $sourceName = [string]$route.source.root }
+                if ($null -ne $route.source.PSObject.Properties['name']) { $sourceName = [string]$route.source.name } elseif ($null -ne $route.source.PSObject.Properties['root']) { $sourceName = [string]$route.source.root }
             }
             if ($null -ne $route.PSObject.Properties['destination'] -and $null -ne $route.destination) {
-                if ($null -ne $route.destination.PSObject.Properties['name']) { $destinationName = [string]$route.destination.name } else { $destinationName = [string]$route.destination.root }
+                if ($null -ne $route.destination.PSObject.Properties['name']) { $destinationName = [string]$route.destination.name } elseif ($null -ne $route.destination.PSObject.Properties['root']) { $destinationName = [string]$route.destination.root }
             }
             Write-Host ('      ' + (Get-Painted ($sourceName + ' -> ' + $destinationName) $C.Dim))
         }

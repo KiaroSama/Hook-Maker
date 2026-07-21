@@ -96,7 +96,10 @@ function Find-ManagedCommands {
     }
     foreach ($eventProp in $json.hooks.PSObject.Properties) {
         foreach ($group in @($eventProp.Value)) {
-            foreach ($handler in @($group.hooks)) {
+            # A foreign/hand-edited group with no `hooks` key has none to scan -
+            # never a StrictMode crash, just zero commands found here.
+            $groupHandlers = @(if ($null -ne $group.PSObject.Properties['hooks']) { $group.hooks } else { @() })
+            foreach ($handler in $groupHandlers) {
                 # Every command-bearing field is inspected via the SAME
                 # centralized helper/parser used elsewhere (Get-HandlerCommandValues
                 # + Get-HookMakerCommandInfo), so a registration stored only

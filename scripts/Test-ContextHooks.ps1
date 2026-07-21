@@ -20,7 +20,9 @@ $ScriptRoot = $PSScriptRoot
 $McpHook = Join-Path (Split-Path -Parent $ScriptRoot) 'hooks\Mcp-Usage-Check\Mcp-Usage-Check.ps1'
 $SkillsHook = Join-Path (Split-Path -Parent $ScriptRoot) 'hooks\Skills-Check\Skills-Check.ps1'
 $LargeFileHook = Join-Path (Split-Path -Parent $ScriptRoot) 'hooks\Large-File-Check\Large-File-Check.ps1'
-foreach ($required in @($McpHook, $SkillsHook, $LargeFileHook)) {
+$AiMemoryHook = Join-Path (Split-Path -Parent $ScriptRoot) 'hooks\Ai-Memory-Check\Ai-Memory-Check.ps1'
+$HookLib = Join-Path (Split-Path -Parent $ScriptRoot) 'hooks\_hooklib.ps1'
+foreach ($required in @($McpHook, $SkillsHook, $LargeFileHook, $AiMemoryHook, $HookLib)) {
     if (-not (Test-Path -LiteralPath $required -PathType Leaf)) {
         Write-Host "Required script not found: $required" -ForegroundColor Red
         exit 1
@@ -370,6 +372,43 @@ try {
     finally {
         Set-ClaudeProjectDir $OrigClaudeProjectDir
         $env:LOCALAPPDATA = $lfOrigLocalAppData
+    }
+
+    # =====================================================================
+    Write-Host '--- Ai-Memory-Check: a staged rename in git status --porcelain does not crash Get-LatestWorkTimeUtc (5.1 illegal-path regression) ---' -ForegroundColor Cyan
+    # Regression: a rename/copy porcelain line is "R  old -> new"; treating the
+    # whole "old -> new" text as one literal relative path embeds the arrow's '>'
+    # via Join-Path, and Test-Path -LiteralPath then throws on PS 5.1 ('>' is an
+    # illegal path character) - crashing Get-LatestWorkTimeUtc and, with it, every
+    # unguarded caller (Ai-Memory-Check, Graph-Update-Check) at Stop.
+    $amcOrigLocalAppData = $env:LOCALAPPDATA
+    $env:LOCALAPPDATA = (Join-Path $Work 'amc-fakelocal')
+    New-Item -ItemType Directory -Path $env:LOCALAPPDATA -Force | Out-Null
+    try {
+        $renameProj = New-Proj 'RenameRepo'
+        & git -C $renameProj init -q -b main 2>$null | Out-Null
+        & git -C $renameProj config user.email 't@t' 2>$null | Out-Null
+        & git -C $renameProj config user.name 't' 2>$null | Out-Null
+        & git -C $renameProj config core.autocrlf false 2>$null | Out-Null
+        New-Item -ItemType Directory -Path (Join-Path $renameProj '.ai') -Force | Out-Null
+        Write-Utf8 (Join-Path $renameProj 'a.ps1') "function A { 1 }`n"
+        & git -C $renameProj add -A 2>$null | Out-Null
+        & git -C $renameProj commit -q -m init 2>$null | Out-Null
+        & git -C $renameProj mv a.ps1 b.ps1 2>$null | Out-Null
+
+        $renameHookDir = Join-Path $Work ('hookcopy-' + [guid]::NewGuid().ToString('N').Substring(0, 6))
+        New-Item -ItemType Directory -Path $renameHookDir -Force | Out-Null
+        Copy-Item $AiMemoryHook (Join-Path $renameHookDir 'Ai-Memory-Check.ps1')
+        Copy-Item $HookLib (Join-Path $Work '_hooklib.ps1') -Force
+
+        $r = Fire -HookPath (Join-Path $renameHookDir 'Ai-Memory-Check.ps1') -Cwd $renameProj -EventName 'Stop' -Exe 'powershell.exe'
+        Check '5.1 host: a staged rename never crashes Get-LatestWorkTimeUtc (clean exit, no StrictMode/illegal-path error)' (
+            $r.Exit -eq 0 -and $r.Err -eq '') ($r.Out + ' | err=' + $r.Err)
+        Check 'the reminder logic still runs (missing .ai/memory.md is still detected and blocks)' (
+            $r.Out -match '"decision":"block"' -and $r.Out -match 'memory\.md') $r.Out
+    }
+    finally {
+        $env:LOCALAPPDATA = $amcOrigLocalAppData
     }
 }
 finally {
