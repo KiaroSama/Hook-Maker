@@ -383,29 +383,6 @@ function Get-PlanManifest {
     return @($entries.ToArray() | Sort-Object -Property path)
 }
 
-# What is actually on disk for this hook, in the same shape. Only the hook's
-# own directory is considered - sibling hooks under the same runtime root
-# belong to other records.
-function Get-PlanInstalledManifest {
-    param(
-        [Parameter(Mandatory = $true)][string]$RuntimeRoot,
-        [Parameter(Mandatory = $true)][string]$FriendlyName
-    )
-    $entries = New-Object System.Collections.Generic.List[object]
-    $hookDir = Join-Path $RuntimeRoot $FriendlyName
-    if (-not (Test-Path -LiteralPath $hookDir -PathType Container)) { return @() }
-    $hookRoot = [System.IO.Path]::GetFullPath($hookDir)
-    foreach ($file in @(Get-ChildItem -LiteralPath $hookDir -File -Recurse -Force -ErrorAction SilentlyContinue)) {
-        if (-not (Test-PathContainedIn -ChildPath $file.FullName -ParentPath $hookRoot)) { continue }
-        $relative = $file.FullName.Substring($hookRoot.Length).TrimStart('\', '/')
-        [void]$entries.Add([pscustomobject][ordered]@{
-            path = ($FriendlyName + '/' + $relative).Replace('\', '/').ToLowerInvariant()
-            hash = (Get-FileHash -LiteralPath $file.FullName -Algorithm SHA256).Hash
-        })
-    }
-    return @($entries.ToArray() | Sort-Object -Property path)
-}
-
 # ---- transactional runtime installation ------------------------------------
 
 # Installs a plan into <RuntimeRoot>\<FriendlyName> WITHOUT destroying the
@@ -730,19 +707,4 @@ function Test-HandlerBelongsToInstall {
         return $false
     }
     return $anyAgreed
-}
-
-# Reports handlers that LOOK like Hook Maker's but whose ownership cannot be
-# proven, so a caller can surface them instead of silently leaving them behind.
-function Get-AmbiguousHandlerCommands {
-    param(
-        [Parameter(Mandatory = $true)]$Handler,
-        [string[]]$KnownToolRoots = @()
-    )
-    $ambiguous = New-Object System.Collections.Generic.List[string]
-    foreach ($command in @(Get-HandlerCommandValues -Handler $Handler)) {
-        $info = Get-HookMakerCommandInfo -Command $command -KnownToolRoots $KnownToolRoots
-        if ($info.IsAmbiguous) { [void]$ambiguous.Add($command) }
-    }
-    return $ambiguous.ToArray()
 }
