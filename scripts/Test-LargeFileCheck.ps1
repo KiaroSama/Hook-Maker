@@ -83,7 +83,7 @@ function Fire {
     param(
         [string]$HookPath, [string]$Cwd, [string]$EventName = 'Stop',
         [string]$LocalAppData, [switch]$StopHookActive, [switch]$GitPrePush,
-        [string]$Exe = 'pwsh'
+        [string]$Exe = 'pwsh', [string]$ClaudeProjectDir = ''
     )
     $obj = @{ cwd = $Cwd; hook_event_name = $EventName }
     if ($StopHookActive) { $obj['stop_hook_active'] = $true }
@@ -102,7 +102,10 @@ function Fire {
         Wait = $true; NoNewWindow = $true; PassThru = $true
     }
     if ((Get-Command Start-Process).Parameters.ContainsKey('Environment')) {
-        $startArgs.Environment = @{ PATH = $env:PATH; LOCALAPPDATA = $LocalAppData; CLAUDE_PROJECT_DIR = '' }
+        # Default: CLAUDE_PROJECT_DIR empty -> the hook takes the Codex route
+        # (systemMessage). A caller passing -ClaudeProjectDir forces the Claude
+        # route (hookSpecificOutput) to prove the client-aware advisory shape.
+        $startArgs.Environment = @{ PATH = $env:PATH; LOCALAPPDATA = $LocalAppData; CLAUDE_PROJECT_DIR = $ClaudeProjectDir }
     }
     $proc = Start-Process @startArgs
     $out = if (Test-Path -LiteralPath $outFile) { ([System.IO.File]::ReadAllText($outFile)).Trim() } else { '' }
@@ -110,7 +113,12 @@ function Fire {
     return [pscustomobject]@{ Exit = $proc.ExitCode; Out = $out; Err = $err }
 }
 
-# Returns the model/user-visible advisory text from either output shape.
+# Returns the model/user-visible advisory text from either NON-BLOCKING shape:
+# Claude's hookSpecificOutput.additionalContext or Codex's systemMessage. It
+# deliberately does NOT read decision:block's `reason` - accepting that masked
+# the fact that the offender path used to (wrongly) block instead of advise, so
+# a block would be silently treated as "the message". Offender/partial tests now
+# assert the advisory shape here AND separately assert no decision:block.
 function Get-Advisory {
     param([string]$Text)
     if ([string]::IsNullOrWhiteSpace($Text)) { return '' }
@@ -118,7 +126,7 @@ function Get-Advisory {
     if ($null -ne $doc.PSObject.Properties['hookSpecificOutput'] -and $null -ne $doc.hookSpecificOutput) {
         return [string]$doc.hookSpecificOutput.additionalContext
     }
-    if ($null -ne $doc.PSObject.Properties['reason']) { return [string]$doc.reason }
+    if ($null -ne $doc.PSObject.Properties['systemMessage']) { return [string]$doc.systemMessage }
     return ''
 }
 
@@ -386,6 +394,110 @@ try {
     else {
         Write-Host '[SKIP] root junction could not be created in this harness - reparse-root assertion skipped' -ForegroundColor Yellow
     }
+
+    # =====================================================================
+    Write-Host '--- Stop offender report is a CLIENT-AWARE, NON-BLOCKING advisory (never decision:block) ---' -ForegroundColor Cyan
+    # The hook is advisory by contract - the AI owns the split. On Codex a Stop
+    # decision:block coerces a new prompt (an infinite loop), so the offender
+    # report must be a client-aware advisory, never a block.
+    $hcCodex = New-IsolatedHookCopy
+    $projCodex = New-Proj 'OffenderCodexShape'
+    New-SourceFile (Join-Path $projCodex 'src\a.py') 900
+    $rCodex = Fire -HookPath $hcCodex.Script -Cwd $projCodex -EventName 'Stop' -LocalAppData $hcCodex.LocalAppData
+    $parsedCodex = $null
+    try { $parsedCodex = $rCodex.Out | ConvertFrom-Json } catch { $parsedCodex = $null }
+    Check 'S1a. offender report on CODEX (no CLAUDE_PROJECT_DIR) uses systemMessage, not hookSpecificOutput' (
+        $null -ne $parsedCodex -and $null -ne $parsedCodex.PSObject.Properties['systemMessage'] -and
+        $null -eq $parsedCodex.PSObject.Properties['hookSpecificOutput'] -and
+        ([string]$parsedCodex.systemMessage) -match 'a\.py \(900 lines\)') $rCodex.Out
+    Check 'S1b. the CODEX offender report is NOT a decision:block' ($rCodex.Out -notmatch '"decision"') $rCodex.Out
+
+    $hcClaude = New-IsolatedHookCopy
+    $projClaude = New-Proj 'OffenderClaudeShape'
+    New-SourceFile (Join-Path $projClaude 'src\a.py') 900
+    $rClaude = Fire -HookPath $hcClaude.Script -Cwd $projClaude -EventName 'Stop' -LocalAppData $hcClaude.LocalAppData -ClaudeProjectDir $projClaude
+    $parsedClaude = $null
+    try { $parsedClaude = $rClaude.Out | ConvertFrom-Json } catch { $parsedClaude = $null }
+    Check 'S2a. offender report on CLAUDE uses hookSpecificOutput.additionalContext with the event name' (
+        $null -ne $parsedClaude -and $null -ne $parsedClaude.PSObject.Properties['hookSpecificOutput'] -and
+        [string]$parsedClaude.hookSpecificOutput.hookEventName -eq 'Stop' -and
+        ([string]$parsedClaude.hookSpecificOutput.additionalContext) -match 'a\.py \(900 lines\)') $rClaude.Out
+    Check 'S2b. the CLAUDE offender report is NOT a decision:block' ($rClaude.Out -notmatch '"decision"') $rClaude.Out
+
+    # =====================================================================
+    Write-Host '--- Partial no-offender advisory is client-aware in BOTH shapes (never a block) ---' -ForegroundColor Cyan
+    $hcPartX = New-IsolatedHookCopy -EnvContent "MAX_FILES=1`n"
+    $projPartX = New-Proj 'PartialAdvisoryCodex'
+    New-SourceFile (Join-Path $projPartX 'top.py') 200
+    New-SourceFile (Join-Path $projPartX 'sub\deep.py') 1500
+    $rPartX = Fire -HookPath $hcPartX.Script -Cwd $projPartX -EventName 'Stop' -LocalAppData $hcPartX.LocalAppData
+    $parsedPartX = $null
+    try { $parsedPartX = $rPartX.Out | ConvertFrom-Json } catch { $parsedPartX = $null }
+    Check 'S3. partial no-offender advisory on CODEX uses systemMessage and is not a block' (
+        $null -ne $parsedPartX -and $null -ne $parsedPartX.PSObject.Properties['systemMessage'] -and
+        ([string]$parsedPartX.systemMessage) -match '(?i)coverage was INCOMPLETE' -and
+        $rPartX.Out -notmatch '"decision"') $rPartX.Out
+
+    $hcPartC = New-IsolatedHookCopy -EnvContent "MAX_FILES=1`n"
+    $projPartC = New-Proj 'PartialAdvisoryClaude'
+    New-SourceFile (Join-Path $projPartC 'top.py') 200
+    New-SourceFile (Join-Path $projPartC 'sub\deep.py') 1500
+    $rPartC = Fire -HookPath $hcPartC.Script -Cwd $projPartC -EventName 'Stop' -LocalAppData $hcPartC.LocalAppData -ClaudeProjectDir $projPartC
+    $parsedPartC = $null
+    try { $parsedPartC = $rPartC.Out | ConvertFrom-Json } catch { $parsedPartC = $null }
+    Check 'S4. partial no-offender advisory on CLAUDE uses hookSpecificOutput and is not a block' (
+        $null -ne $parsedPartC -and $null -ne $parsedPartC.PSObject.Properties['hookSpecificOutput'] -and
+        ([string]$parsedPartC.hookSpecificOutput.additionalContext) -match '(?i)coverage was INCOMPLETE' -and
+        $rPartC.Out -notmatch '"decision"') $rPartC.Out
+
+    # =====================================================================
+    Write-Host '--- Stop scan: an UNREADABLE file makes a no-offender scan INCOMPLETE, not a silent all-clear ---' -ForegroundColor Cyan
+    # A per-file read failure must not abort the directory and produce a false
+    # all-clear. The parent holds an exclusive (FileShare.None) lock so the child
+    # hook cannot read the file; ReadLines throws, $scanIncomplete is set, and the
+    # no-offender path emits the client-aware INCOMPLETE advisory (not a block).
+    $hcRead = New-IsolatedHookCopy
+    $projRead = New-Proj 'UnreadableFile'
+    $lockedPath = Join-Path $projRead 'src\locked.py'
+    New-SourceFile $lockedPath 200
+    $lockStream = $null
+    $locked = $false
+    try {
+        $lockStream = [System.IO.File]::Open($lockedPath, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::None)
+        $locked = $true
+    }
+    catch { $locked = $false }
+    if ($locked) {
+        try {
+            $rRead = Fire -HookPath $hcRead.Script -Cwd $projRead -EventName 'Stop' -LocalAppData $hcRead.LocalAppData
+        }
+        finally { $lockStream.Dispose() }
+        $msgRead = Get-Advisory $rRead.Out
+        Check 'R1. an unreadable file yields an advisory (exit 0, non-empty, no stderr) - not a silent all-clear' (
+            $rRead.Exit -eq 0 -and $rRead.Out -ne '' -and $rRead.Err -eq '') ("exit=$($rRead.Exit) out=[$($rRead.Out)] err=[$($rRead.Err)]")
+        Check 'R2. the advisory states coverage was INCOMPLETE and names a read failure (not only a ceiling)' (
+            $msgRead -match '(?i)coverage was INCOMPLETE' -and $msgRead -match '(?i)could not be read') $msgRead
+        Check 'R3. the incomplete-coverage advisory is NOT a decision:block' ($rRead.Out -notmatch '"decision"') $rRead.Out
+    }
+    else {
+        Write-Host '[SKIP] could not lock a file exclusively in this harness - read-failure assertion skipped' -ForegroundColor Yellow
+    }
+
+    # =====================================================================
+    Write-Host '--- Stop scan: the MAX_FILES ceiling counts SOURCE files - a trailing non-source file is not PARTIAL ---' -ForegroundColor Cyan
+    # Extension is checked before the ceiling: with MAX_FILES=2 and exactly two
+    # source files plus a trailing non-source file, both source files are scanned
+    # and NO false PARTIAL is declared for the skipped non-source file.
+    $hcExt = New-IsolatedHookCopy -EnvContent "MAX_FILES=2`n"
+    $projExt = New-Proj 'CeilingCountsSource'
+    New-SourceFile (Join-Path $projExt 'a.py') 801
+    New-SourceFile (Join-Path $projExt 'b.py') 801
+    New-SourceFile (Join-Path $projExt 'zzz.md') 900
+    $rExt = Fire -HookPath $hcExt.Script -Cwd $projExt -EventName 'Stop' -LocalAppData $hcExt.LocalAppData
+    $msgExt = Get-Advisory $rExt.Out
+    Check 'X1a. both source files are reported (ceiling counts only in-scope source files)' (
+        $msgExt -match '2 source file\(s\) exceed 800 lines' -and $msgExt -match 'a\.py \(801 lines\)' -and $msgExt -match 'b\.py \(801 lines\)') $msgExt
+    Check 'X1b. a remaining non-source file does NOT trigger a false PARTIAL warning' ($msgExt -notmatch '(?i)PARTIAL') $msgExt
 
     # =====================================================================
     Write-Host '--- GitPrePush is advisory-only: exit 0, no block, no unreachable branch ---' -ForegroundColor Cyan

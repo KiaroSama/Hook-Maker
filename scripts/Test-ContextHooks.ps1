@@ -316,25 +316,61 @@ try {
     Check 'pre-task note allows appending when the code shares the same responsibility' ($r.Out -match 'appending is correct when the new code genuinely belongs') $r.Out
 
     # =====================================================================
-    Write-Host '--- Large-File-Check: Stop reason is advisory, never mandates a split or an unrelated refactor ---' -ForegroundColor Cyan
-    $lfBigProj = New-Proj 'LargeFileOversized'
-    # 60 lines against a threshold of 50 (the smallest LINE_THRESHOLD the hook now
-    # honours - values below its documented 50..100000 floor fall back to 800).
-    $bigContent = (1..60 | ForEach-Object { 'line ' + $_ }) -join "`n"
-    Write-Utf8 (Join-Path $lfBigProj 'big.ps1') $bigContent
-    $lfHookLowThreshold = Join-Path $Work ('lfhookcopy-' + [guid]::NewGuid().ToString('N').Substring(0, 6))
-    New-Item -ItemType Directory -Path $lfHookLowThreshold -Force | Out-Null
-    Copy-Item $LargeFileHook (Join-Path $lfHookLowThreshold 'Large-File-Check.ps1')
-    Copy-Item (Join-Path (Split-Path -Parent $LargeFileHook) '..\_hooklib.ps1') (Join-Path $Work '_hooklib.ps1') -Force
-    Write-Utf8 (Join-Path $lfHookLowThreshold '.env') "LINE_THRESHOLD=50`r`n"
-    $lfHook = Join-Path $lfHookLowThreshold 'Large-File-Check.ps1'
-    $r = Fire -HookPath $lfHook -Cwd $lfBigProj -EventName 'Stop'
-    Check 'an oversized file is still detected and reported' ($r.Out -match 'LARGE FILE CHECK' -and $r.Out -match 'big\.ps1') $r.Out
-    Check 'the reason says no split is mandatory' ($r.Out -match 'No split is mandatory - this is advisory') $r.Out
-    Check 'the reason repeats the review-signal-not-a-rule framing' ($r.Out -match 'a REVIEW SIGNAL, not proof of bad architecture') $r.Out
-    Check 'the reason forbids thin wrappers/pass-through/arbitrary fragments here too' ($r.Out -match 'never create thin wrappers, pass-through modules, or arbitrary fragments') $r.Out
-    Check 'the reason forbids starting an unrelated refactor merely because a file is large' ($r.Out -match 'never start a refactor unrelated to the current task') $r.Out
-    Check 'a safe/no-split outcome remains explicitly valid' ($r.Out -match 'finish with no split') $r.Out
+    Write-Host '--- Large-File-Check: Stop report is a client-aware, non-blocking advisory (never decision:block) ---' -ForegroundColor Cyan
+    # The AI owns the split decision, so the Stop report is an advisory, never a
+    # decision:block (on Codex a Stop block coerces a new prompt). Cooldown state is
+    # redirected under $Work so this section leaves NO residue in the real
+    # LOCALAPPDATA, and each client shape uses its OWN project so the per-project
+    # cooldown never suppresses the second fire.
+    $lfOrigLocalAppData = $env:LOCALAPPDATA
+    $env:LOCALAPPDATA = (Join-Path $Work 'lf-fakelocal')
+    New-Item -ItemType Directory -Path $env:LOCALAPPDATA -Force | Out-Null
+    try {
+        $lfHookLowThreshold = Join-Path $Work ('lfhookcopy-' + [guid]::NewGuid().ToString('N').Substring(0, 6))
+        New-Item -ItemType Directory -Path $lfHookLowThreshold -Force | Out-Null
+        Copy-Item $LargeFileHook (Join-Path $lfHookLowThreshold 'Large-File-Check.ps1')
+        Copy-Item (Join-Path (Split-Path -Parent $LargeFileHook) '..\_hooklib.ps1') (Join-Path $Work '_hooklib.ps1') -Force
+        Write-Utf8 (Join-Path $lfHookLowThreshold '.env') "LINE_THRESHOLD=50`r`n"
+        $lfHook = Join-Path $lfHookLowThreshold 'Large-File-Check.ps1'
+        # 60 lines against a threshold of 50 (the smallest LINE_THRESHOLD the hook
+        # honours - values below its documented 50..100000 floor fall back to 800).
+        $bigContent = (1..60 | ForEach-Object { 'line ' + $_ }) -join "`n"
+
+        # --- Claude route: hookSpecificOutput.additionalContext, never a block ---
+        Set-ClaudeProjectDir $Work
+        $lfClaudeProj = New-Proj 'LargeFileOversizedClaude'
+        Write-Utf8 (Join-Path $lfClaudeProj 'big.ps1') $bigContent
+        $r = Fire -HookPath $lfHook -Cwd $lfClaudeProj -EventName 'Stop'
+        $lfClaudeDoc = $null
+        try { $lfClaudeDoc = $r.Out | ConvertFrom-Json } catch { $lfClaudeDoc = $null }
+        $lfClaudeMsg = if ($null -ne $lfClaudeDoc -and $null -ne $lfClaudeDoc.PSObject.Properties['hookSpecificOutput']) { [string]$lfClaudeDoc.hookSpecificOutput.additionalContext } else { '' }
+        Check 'Stop on CLAUDE emits hookSpecificOutput.additionalContext (event Stop), never decision:block' (
+            $null -ne $lfClaudeDoc -and $null -ne $lfClaudeDoc.PSObject.Properties['hookSpecificOutput'] -and
+            [string]$lfClaudeDoc.hookSpecificOutput.hookEventName -eq 'Stop' -and $r.Out -notmatch '"decision"') $r.Out
+        Check 'an oversized file is still detected and reported' ($lfClaudeMsg -match 'LARGE FILE CHECK' -and $lfClaudeMsg -match 'big\.ps1') $lfClaudeMsg
+        Check 'the reason says no split is mandatory' ($lfClaudeMsg -match 'No split is mandatory - this is advisory') $lfClaudeMsg
+        Check 'the reason repeats the review-signal-not-a-rule framing' ($lfClaudeMsg -match 'a REVIEW SIGNAL, not proof of bad architecture') $lfClaudeMsg
+        Check 'the reason forbids thin wrappers/pass-through/arbitrary fragments here too' ($lfClaudeMsg -match 'never create thin wrappers, pass-through modules, or arbitrary fragments') $lfClaudeMsg
+        Check 'the reason forbids starting an unrelated refactor merely because a file is large' ($lfClaudeMsg -match 'never start a refactor unrelated to the current task') $lfClaudeMsg
+        Check 'a safe/no-split outcome remains explicitly valid' ($lfClaudeMsg -match 'finish with no split') $lfClaudeMsg
+
+        # --- Codex route: systemMessage, never a block (a block would loop Codex) ---
+        Set-ClaudeProjectDir ''
+        $lfCodexProj = New-Proj 'LargeFileOversizedCodex'
+        Write-Utf8 (Join-Path $lfCodexProj 'big.ps1') $bigContent
+        $rx = Fire -HookPath $lfHook -Cwd $lfCodexProj -EventName 'Stop'
+        $lfCodexDoc = $null
+        try { $lfCodexDoc = $rx.Out | ConvertFrom-Json } catch { $lfCodexDoc = $null }
+        $lfCodexMsg = if ($null -ne $lfCodexDoc -and $null -ne $lfCodexDoc.PSObject.Properties['systemMessage']) { [string]$lfCodexDoc.systemMessage } else { '' }
+        Check 'Stop on CODEX emits systemMessage (not hookSpecificOutput, not decision:block)' (
+            $null -ne $lfCodexDoc -and $null -ne $lfCodexDoc.PSObject.Properties['systemMessage'] -and
+            $null -eq $lfCodexDoc.PSObject.Properties['hookSpecificOutput'] -and $rx.Out -notmatch '"decision"') $rx.Out
+        Check 'the CODEX advisory still carries the oversized-file report' ($lfCodexMsg -match 'LARGE FILE CHECK' -and $lfCodexMsg -match 'big\.ps1') $lfCodexMsg
+    }
+    finally {
+        Set-ClaudeProjectDir $OrigClaudeProjectDir
+        $env:LOCALAPPDATA = $lfOrigLocalAppData
+    }
 }
 finally {
     Set-ClaudeProjectDir $OrigClaudeProjectDir

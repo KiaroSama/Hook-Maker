@@ -55,6 +55,44 @@ function New-GitRepo {
     return $p
 }
 
+# A repo that git-ignores .ai/, so writing a durable note between Stops does NOT
+# move the porcelain-based repo fingerprint. The D1/D2 ledger cases need incident
+# results recorded before the note to stay CURRENT-state across the note write.
+function New-GitRepoAi {
+    param([string]$Name)
+    $p = New-Proj $Name
+    & git -C $p init -q -b main
+    & git -C $p config user.email 't@t'
+    & git -C $p config user.name 't'
+    Write-Utf8 (Join-Path $p 'readme.txt') 'x'
+    Write-Utf8 (Join-Path $p '.gitignore') ".ai/`n"
+    & git -C $p add -A
+    & git -C $p commit -q -m 'init'
+    return $p
+}
+
+# The completion hook's own project-keyed state document (resolvedIncidents /
+# pendingNotes ledger), or $null when it has not been written yet.
+function Get-CompletionStateDoc {
+    param([object]$Copy, [string]$Root)
+    $path = Join-Path (Get-StateDir $Copy) ('TestCompletionCheck-' + (Get-ProjectKey $Root) + '.json')
+    if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { return $null }
+    try { return (Get-Content -LiteralPath $path -Raw | ConvertFrom-Json) } catch { return $null }
+}
+# Element counts tolerant of the empty-array-as-'' / single-element-as-scalar JSON
+# quirk. Resolved entries are non-empty strings; pending entries are objects with
+# a non-empty key.
+function Get-ResolvedCount {
+    param($Doc)
+    if ($null -eq $Doc -or $null -eq $Doc.PSObject.Properties['resolvedIncidents']) { return 0 }
+    return @(@($Doc.resolvedIncidents) | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) }).Count
+}
+function Get-PendingCount {
+    param($Doc)
+    if ($null -eq $Doc -or $null -eq $Doc.PSObject.Properties['pendingNotes']) { return 0 }
+    return @(@($Doc.pendingNotes) | Where-Object { $null -ne $_ -and $null -ne $_.PSObject.Properties['key'] -and -not [string]::IsNullOrWhiteSpace([string]$_.key) }).Count
+}
+
 # Isolated hook copy + fake LOCALAPPDATA per case, so coordination state files
 # never collide between cases or with the real machine. _hooklib.ps1 is placed
 # one level above the copy because the hook dot-sources '..\_hooklib.ps1'.
@@ -137,9 +175,11 @@ function Write-GuardedResult {
 function Write-ObservedRecord {
     param(
         [object]$Copy, [string]$Root, [bool]$Guarded = $true, [string]$Fingerprint = '',
-        [double]$AgeMinutes = 0, [bool]$RunIdControlled = $true, [string]$RunId = ''
+        [double]$AgeMinutes = 0, [bool]$RunIdControlled = $true, [string]$RunId = '',
+        [string]$CommandFingerprint = ''
     )
     if ($RunId -eq '') { $RunId = Get-TestRunId $Root }
+    if ($CommandFingerprint -eq '') { $CommandFingerprint = Get-TestCommandFp $Root }
     # observedUtc is anchored a full 60s below the result's start. Both this
     # helper and Write-GuardedResult call the git-based Get-Fingerprint, whose
     # duration under parallel git contention is unbounded-in-seconds; a tight
@@ -153,7 +193,7 @@ function Write-ObservedRecord {
     $doc = [ordered]@{
         schema = 2; observedUtc = $observedUtc; fingerprint = $Fingerprint; projectFingerprint = $Fingerprint
         runId = $RunId; runIdControlled = $RunIdControlled
-        commandFingerprint = (Get-TestCommandFp $Root); guarded = $Guarded
+        commandFingerprint = $CommandFingerprint; guarded = $Guarded
     }
     $path = Get-RunStateFile -Copy $Copy -Root $Root -Kind 'observed' -RunId $RunId
     Write-Utf8 $path ($doc | ConvertTo-Json -Depth 4)
@@ -727,6 +767,172 @@ try {
     $r = Fire -Copy $c -Cwd $p
     Check 'C4: a genuinely unresolved incident still blocks completion' (
         $r.Out -match '"decision":"block"' -and (Get-BlockReason $r.Out) -match 'wallTimeout') $r.Out
+
+    # =====================================================================
+    Write-Host '--- D1: two concurrent incidents each keep their OWN resolved-state + note (no ping-pong) ---' -ForegroundColor Cyan
+    # .ai/ is git-ignored so a note between Stops leaves the repo fingerprint stable
+    # and both incident runs stay CURRENT-state. A and B use DISTINCT commands so a
+    # green rerun of A does NOT supersede B.
+    $c = New-IsolatedHookCopy
+    $p = New-GitRepoAi 'D1TwoIncidents'
+    $key = Get-ProjectKey $p
+    $cmdA = 'd1cmda-' + $key; $cmdB = 'd1cmdb-' + $key
+    $rA = 'd1runa-' + $key; $rB = 'd1runb-' + $key
+    # A sorts first (older observedUtc) so it is the FIRST blocking representative.
+    Write-ObservedRecord -Copy $c -Root $p -RunId $rA -CommandFingerprint $cmdA -AgeMinutes 2
+    Write-GuardedResult -Copy $c -Root $p -Overall 'terminated' -ExitCode 124 -TerminateReason 'wallTimeout' -TerminateDetail 'exceeded the 1800s wall ceiling' -RunId $rA -CommandFingerprint $cmdA -AgeMinutes 2
+    Write-ObservedRecord -Copy $c -Root $p -RunId $rB -CommandFingerprint $cmdB -AgeMinutes 1
+    Write-GuardedResult -Copy $c -Root $p -Overall 'terminated' -ExitCode 124 -TerminateReason 'idleTimeout' -TerminateDetail 'produced no output or state change for 300s' -RunId $rB -CommandFingerprint $cmdB -AgeMinutes 1
+    $r = Fire -Copy $c -Cwd $p
+    Check 'D1: with two incidents the first (A) blocks and names its reason' (
+        $r.Out -match '"decision":"block"' -and (Get-BlockReason $r.Out) -match 'wallTimeout') $r.Out
+    $st = Get-CompletionStateDoc -Copy $c -Root $p
+    Check 'D1: after A blocks, ONE note obligation is tracked (A only)' ((Get-PendingCount $st) -eq 1) ('pending=' + (Get-PendingCount $st))
+    # Resolve A: write A's durable note AND a green rerun of cmdA that SUPERSEDES A.
+    Add-AiNote -Root $p -Text ('A wall-timeout hang fixed by bounding the wall ceiling; not detected earlier because the ceiling was unset. ' +
+        'Guard: Run-Tests-Guarded.ps1 -WallTimeoutSeconds 1800, verified by a green rerun.')
+    $rAok = 'd1runaok-' + $key
+    Write-ObservedRecord -Copy $c -Root $p -RunId $rAok -CommandFingerprint $cmdA -AgeMinutes 0
+    Write-GuardedResult -Copy $c -Root $p -Overall 'ok' -RunId $rAok -CommandFingerprint $cmdA -AgeMinutes 0
+    $r = Fire -Copy $c -Cwd $p
+    Check 'D1: resolving A does NOT allow completion - B (a DISTINCT incident) still blocks' (
+        $r.Out -match '"decision":"block"' -and (Get-BlockReason $r.Out) -match 'idleTimeout') $r.Out
+    $st = Get-CompletionStateDoc -Copy $c -Root $p
+    # THIS is the ledger assertion: a single-slot design would have overwritten A's
+    # obligation with B's, leaving pending=1. The per-incident MAP keeps BOTH.
+    Check 'D1: the persisted state now carries BOTH note obligations (A not forgotten when B registered)' (
+        (Get-PendingCount $st) -eq 2) ('pending=' + (Get-PendingCount $st))
+    # Resolve B: its own durable note + a green rerun of cmdB.
+    Add-AiNote -Root $p -Text ('B idle-timeout hang fixed by clearing a stuck fixture service; not detected earlier because no idle bound existed. ' +
+        'Guard: Run-Tests-Guarded.ps1 -IdleTimeoutSeconds 300, verified by a green rerun.')
+    $rBok = 'd1runbok-' + $key
+    Write-ObservedRecord -Copy $c -Root $p -RunId $rBok -CommandFingerprint $cmdB -AgeMinutes 0
+    Write-GuardedResult -Copy $c -Root $p -Overall 'ok' -RunId $rBok -CommandFingerprint $cmdB -AgeMinutes 0
+    $r = Fire -Copy $c -Cwd $p
+    Check 'D1: completion is ALLOWED only once BOTH incidents are resolved+noted' ($r.Exit -eq 0 -and $r.Out -eq '') $r.Out
+    $st = Get-CompletionStateDoc -Copy $c -Root $p
+    Check 'D1: the persisted state carries BOTH resolved incident keys' ((Get-ResolvedCount $st) -eq 2) ('resolved=' + (Get-ResolvedCount $st))
+    Check 'D1: no note obligation remains once both are satisfied' ((Get-PendingCount $st) -eq 0) ('pending=' + (Get-PendingCount $st))
+    # No A<->B ping-pong: a further Stop stays silent - A never re-blocks.
+    $r = Fire -Copy $c -Cwd $p
+    Check 'D1: the next Stop stays silent - resolving B never re-opened A (no ping-pong)' ($r.Exit -eq 0 -and $r.Out -eq '') $r.Out
+    $st = Get-CompletionStateDoc -Copy $c -Root $p
+    Check 'D1: both resolved keys persist across the extra Stop' ((Get-ResolvedCount $st) -eq 2) ('resolved=' + (Get-ResolvedCount $st))
+
+    # =====================================================================
+    Write-Host '--- D2: an incident that self-heals BEFORE any Stop still owes its durable note ---' -ForegroundColor Cyan
+    $c = New-IsolatedHookCopy
+    $p = New-GitRepoAi 'D2SelfHeal'
+    $key = Get-ProjectKey $p
+    $rInc = 'd2inc-' + $key; $rHeal = 'd2heal-' + $key
+    # The timeout AND its clean rerun are BOTH recorded before the hook ever fires.
+    Write-ObservedRecord -Copy $c -Root $p -RunId $rInc -AgeMinutes 5
+    Write-GuardedResult -Copy $c -Root $p -Overall 'terminated' -ExitCode 124 -TerminateReason 'idleTimeout' -TerminateDetail 'produced no output or state change for 300s' -RunId $rInc -AgeMinutes 5
+    Write-ObservedRecord -Copy $c -Root $p -RunId $rHeal -AgeMinutes 0
+    Write-GuardedResult -Copy $c -Root $p -Overall 'ok' -RunId $rHeal -AgeMinutes 0
+    $r = Fire -Copy $c -Cwd $p
+    Check 'D2: the FIRST Stop still demands the durable note even though the run is already green again' (
+        $r.Out -match '"decision":"block"' -and (Get-BlockReason $r.Out) -match 'durable \.ai/ note is still owed' -and (Get-BlockReason $r.Out) -match 'idleTimeout') $r.Out
+    $st = Get-CompletionStateDoc -Copy $c -Root $p
+    Check 'D2: the self-healed incident registered a note obligation on first sighting' ((Get-PendingCount $st) -eq 1) ('pending=' + (Get-PendingCount $st))
+    Add-AiNote -Root $p -Text ('Idle-timeout self-healed before the Stop hook fired; recorded so the lesson is not lost. ' +
+        'Not detected earlier because no idle bound existed. Guard: Run-Tests-Guarded.ps1 -IdleTimeoutSeconds 300.')
+    $r = Fire -Copy $c -Cwd $p
+    Check 'D2: once the durable note is written, completion is allowed' ($r.Exit -eq 0 -and $r.Out -eq '') $r.Out
+    # A run that was NEVER an incident demands no note (unchanged behaviour).
+    $c = New-IsolatedHookCopy
+    $p = New-GitRepoAi 'D2NeverIncident'
+    Write-ObservedRecord -Copy $c -Root $p
+    Write-GuardedResult -Copy $c -Root $p -Overall 'ok'
+    $r = Fire -Copy $c -Cwd $p
+    Check 'D2: a plain clean run (never an incident) owes no note' ($r.Exit -eq 0 -and $r.Out -eq '') $r.Out
+
+    # =====================================================================
+    Write-Host '--- D3: pruning respects one-to-one pairing (an unpaired observation is not deleted) ---' -ForegroundColor Cyan
+    $c = New-IsolatedHookCopy
+    $p = New-GitRepo 'D3PruneUnpaired'
+    $key = Get-ProjectKey $p
+    # Two UNCONTROLLED observations of one command, ONE clean result, all >24h old.
+    Write-ObservedRecord -Copy $c -Root $p -RunId ('d3o1-' + $key) -RunIdControlled:$false -AgeMinutes 0
+    Write-ObservedRecord -Copy $c -Root $p -RunId ('d3o2-' + $key) -RunIdControlled:$false -AgeMinutes 0
+    Write-GuardedResult -Copy $c -Root $p -Overall 'ok' -RunId ('d3r1-' + $key) -AgeMinutes 0
+    foreach ($f in @(Get-ChildItem -LiteralPath (Get-StateDir $c) -Filter 'TestRunGuard-*.json' -File)) {
+        (Get-Item -LiteralPath $f.FullName).LastWriteTimeUtc = [DateTime]::UtcNow.AddHours(-25)
+    }
+    $r = Fire -Copy $c -Cwd $p
+    $survivingObs = @(Get-ChildItem -LiteralPath (Get-StateDir $c) -Filter 'TestRunGuard-observed-*.json' -File)
+    Check 'D3: exactly ONE observation survives - the unpaired one is not deleted by a shared result' (
+        $survivingObs.Count -eq 1) ('observed files=' + $survivingObs.Count)
+    Check 'D3: the unpaired observation still BLOCKS as observed-without-result' (
+        $r.Out -match '"decision":"block"' -and (Get-BlockReason $r.Out) -match 'no guarded result document exists') $r.Out
+    # A SECOND result now pairs the surviving observation -> completion allowed.
+    Write-GuardedResult -Copy $c -Root $p -Overall 'ok' -RunId ('d3r2-' + $key) -AgeMinutes 0
+    $r = Fire -Copy $c -Cwd $p
+    Check 'D3: once a second result exists the surviving observation pairs one-to-one -> allowed' (
+        $r.Exit -eq 0 -and $r.Out -eq '') $r.Out
+
+    # =====================================================================
+    Write-Host '--- D4: OLD-STATE negatives get bounded retention; CURRENT-state negatives are kept forever ---' -ForegroundColor Cyan
+    $c = New-IsolatedHookCopy
+    $p = New-GitRepo 'D4OldStateFailed'
+    $key = Get-ProjectKey $p
+    # (a) an OLD-STATE plain `failed` (no incident key, never superseded) older than
+    #     the 7-day bound -> PRUNED (it can never be current evidence or block).
+    $rFailOld = 'd4failold-' + $key
+    Write-GuardedResult -Copy $c -Root $p -Overall 'failed' -ExitCode 1 -RunId $rFailOld -ProjectFingerprint 'd4-oldstate' -CommandFingerprint ('d4cmdold-' + $key)
+    (Get-Item -LiteralPath (Get-RunStateFile -Copy $c -Root $p -Kind 'result' -RunId $rFailOld)).LastWriteTimeUtc = [DateTime]::UtcNow.AddDays(-8)
+    # (b) an OLD-STATE `failed` WITHIN the 7-day bound -> KEPT (bounded, not "prune all old-state").
+    $rFailRecent = 'd4failrecent-' + $key
+    Write-GuardedResult -Copy $c -Root $p -Overall 'failed' -ExitCode 1 -RunId $rFailRecent -ProjectFingerprint 'd4-oldstate2' -CommandFingerprint ('d4cmdrecent-' + $key)
+    (Get-Item -LiteralPath (Get-RunStateFile -Copy $c -Root $p -Kind 'result' -RunId $rFailRecent)).LastWriteTimeUtc = [DateTime]::UtcNow.AddHours(-25)
+    # (c) a CURRENT-state unresolved terminated of ANY age -> KEPT forever (round-19).
+    $rTermCur = 'd4termcur-' + $key
+    Write-GuardedResult -Copy $c -Root $p -Overall 'terminated' -ExitCode 124 -TerminateReason 'wallTimeout' -TerminateDetail 'x' -RunId $rTermCur -CommandFingerprint ('d4cmdcur-' + $key)
+    (Get-Item -LiteralPath (Get-RunStateFile -Copy $c -Root $p -Kind 'result' -RunId $rTermCur)).LastWriteTimeUtc = [DateTime]::UtcNow.AddDays(-8)
+    $r = Fire -Copy $c -Cwd $p
+    Check 'D4: an OLD-STATE failed result past the 7-day bound IS pruned (no unbounded growth)' (
+        -not (Test-Path -LiteralPath (Get-RunStateFile -Copy $c -Root $p -Kind 'result' -RunId $rFailOld))) $r.Out
+    Check 'D4: an OLD-STATE failed result within the 7-day bound is still retained' (
+        Test-Path -LiteralPath (Get-RunStateFile -Copy $c -Root $p -Kind 'result' -RunId $rFailRecent)) $r.Out
+    Check 'D4: a CURRENT-state unresolved terminated of any age is NEVER pruned (round-19 kept)' (
+        Test-Path -LiteralPath (Get-RunStateFile -Copy $c -Root $p -Kind 'result' -RunId $rTermCur)) $r.Out
+
+    # =====================================================================
+    Write-Host '--- migration: the old single-value state shape is read and rewritten as the ledger ---' -ForegroundColor Cyan
+    # A legacy pendingNoteKey/Reason/Baseline is still ENFORCED after migration.
+    $c = New-IsolatedHookCopy
+    $p = New-GitRepoAi 'MigrateLegacyNote'
+    $legacyPath = Join-Path (Get-StateDir $c) ('TestCompletionCheck-' + (Get-ProjectKey $p) + '.json')
+    Write-Utf8 $legacyPath (([ordered]@{
+                resolvedIncident = ''; pendingNoteKey = 'legacy-key-xyz'; pendingNoteReason = 'a legacy migrated incident'
+                pendingNoteBaseline = 0; deferredFingerprint = ''; updatedUtc = [DateTime]::UtcNow.ToString('o')
+            }) | ConvertTo-Json)
+    $r = Fire -Copy $c -Cwd $p
+    Check 'migration: a legacy single-value pendingNoteKey is still enforced as an owed note' (
+        $r.Out -match '"decision":"block"' -and (Get-BlockReason $r.Out) -match 'a legacy migrated incident') $r.Out
+    $st = Get-CompletionStateDoc -Copy $c -Root $p
+    Check 'migration: the state is rewritten in the new collection shape (pendingNotes, no old scalar)' (
+        (Get-PendingCount $st) -eq 1 -and $null -ne $st.PSObject.Properties['pendingNotes'] -and $null -eq $st.PSObject.Properties['pendingNoteKey']) $r.Out
+    Add-AiNote -Root $p -Text ('Legacy migrated incident closed out with a real note describing the cause and the verified prevention guard so a later session can act on it.')
+    $r = Fire -Copy $c -Cwd $p
+    Check 'migration: writing the note clears the migrated obligation -> completion allowed' ($r.Exit -eq 0 -and $r.Out -eq '') $r.Out
+    Check 'migration: the satisfied legacy key is now carried in resolvedIncidents' ((Get-ResolvedCount (Get-CompletionStateDoc -Copy $c -Root $p)) -eq 1) ''
+
+    # A legacy resolvedIncident is carried forward into the resolvedIncidents SET.
+    $c = New-IsolatedHookCopy
+    $p = New-GitRepoAi 'MigrateLegacyResolved'
+    $legacyPath = Join-Path (Get-StateDir $c) ('TestCompletionCheck-' + (Get-ProjectKey $p) + '.json')
+    Write-Utf8 $legacyPath (([ordered]@{
+                resolvedIncident = 'legacy-resolved-abc'; pendingNoteKey = ''; pendingNoteReason = ''
+                pendingNoteBaseline = -1; deferredFingerprint = ''; updatedUtc = [DateTime]::UtcNow.ToString('o')
+            }) | ConvertTo-Json)
+    # A clean current run makes the hook reach its final save so the migrated shape is written out.
+    Write-ObservedRecord -Copy $c -Root $p
+    Write-GuardedResult -Copy $c -Root $p -Overall 'ok'
+    $r = Fire -Copy $c -Cwd $p
+    Check 'migration: a legacy resolvedIncident with a clean run stays silent' ($r.Exit -eq 0 -and $r.Out -eq '') $r.Out
+    Check 'migration: the legacy resolvedIncident is carried into the resolvedIncidents set' (
+        (Get-ResolvedCount (Get-CompletionStateDoc -Copy $c -Root $p)) -eq 1) ''
 
     # =====================================================================
     Write-Host '--- the durable .ai/ note requirement ---' -ForegroundColor Cyan
