@@ -535,7 +535,10 @@ function Get-HookRegistrations {
         foreach ($group in @($eventProp.Value)) {
             $matcher = ''
             if ($null -ne $group.PSObject.Properties['matcher']) { $matcher = [string]$group.matcher }
-            foreach ($handler in @($group.hooks)) {
+            # A foreign/hand-edited group with no `hooks` key has none to scan -
+            # never a StrictMode crash, just zero registrations found here.
+            $groupHandlers = @(if ($null -ne $group.PSObject.Properties['hooks']) { $group.hooks } else { @() })
+            foreach ($handler in $groupHandlers) {
                 $command = ''
                 if ($null -ne $handler.PSObject.Properties['command']) { $command = [string]$handler.command }
                 $commandWindows = ''

@@ -238,13 +238,27 @@ function Get-LatestWorkTimeUtc {
     if ($LASTEXITCODE -eq 0) {
         foreach ($line in @($status)) {
             if ([string]::IsNullOrWhiteSpace([string]$line)) { continue }
-            $relative = ([string]$line).Substring(3).Trim('"')
-            if ($relative -like '.ai/*' -or $relative -like 'graphify-out/*' -or $relative -like 'logs/*') { continue }
-            $full = Join-Path $ProjectRoot ($relative.Replace('/', '\'))
-            if (Test-Path -LiteralPath $full -PathType Leaf) {
-                $modified = (Get-Item -LiteralPath $full -Force).LastWriteTimeUtc
-                if ($modified -gt $latest) { $latest = $modified }
+            $lineText = [string]$line
+            # A rename/copy line is "XY old -> new" (X or Y = R/C) instead of "XY path" -
+            # only the destination half exists on disk. Treating the raw "old -> new" text
+            # as one literal path embeds the arrow's '>' via Join-Path below, and
+            # Test-Path -LiteralPath then throws on PS 5.1 ('>' is an illegal path char).
+            $code = $lineText.Substring(0, 2)
+            $relative = $lineText.Substring(3)
+            if ($code.Contains('R') -or $code.Contains('C')) {
+                $arrowIndex = $relative.IndexOf(' -> ')
+                if ($arrowIndex -ge 0) { $relative = $relative.Substring($arrowIndex + 4) }
             }
+            $relative = $relative.Trim('"')
+            if ($relative -like '.ai/*' -or $relative -like 'graphify-out/*' -or $relative -like 'logs/*') { continue }
+            try {
+                $full = Join-Path $ProjectRoot ($relative.Replace('/', '\'))
+                if (Test-Path -LiteralPath $full -PathType Leaf) {
+                    $modified = (Get-Item -LiteralPath $full -Force).LastWriteTimeUtc
+                    if ($modified -gt $latest) { $latest = $modified }
+                }
+            }
+            catch { }
         }
     }
     if ($latest -eq [DateTime]::MinValue) {

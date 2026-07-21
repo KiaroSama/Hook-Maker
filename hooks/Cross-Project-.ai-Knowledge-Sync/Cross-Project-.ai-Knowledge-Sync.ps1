@@ -550,7 +550,12 @@ foreach ($context in $contexts) {
 
     $statePaths = Get-StatePaths -DestinationDirectory $context.destinationDirectory -ProfileId $context.profileId -RouteId $context.routeId -SourceRoot $context.sourceRoot
     $state = Read-JsonFile $statePaths.statePath
-    if ($null -eq $state) {
+    # A $null read (missing file) and a present-but-wrong-shape read (e.g. a
+    # stray "{}") both need New-State: without the property guard, a
+    # non-null object missing 'pending' still passes the null check and then
+    # throws "property 'pending' cannot be found" under StrictMode 2.0 at the
+    # first $state.pending access below.
+    if ($null -eq $state -or $null -eq $state.PSObject.Properties['pending']) {
         $state = New-State -ProfileId $context.profileId -RouteId $context.routeId -SourceRoot $context.sourceRoot
     }
 

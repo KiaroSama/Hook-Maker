@@ -59,8 +59,20 @@ $jsonFile = Join-Path $mockDir 'pip_outdated.json'
 if (Test-Path $jsonFile) { Write-Output (Get-Content $jsonFile -Raw) }
 exit $code
 '@
+$goMock = @'
+$mockDir = $env:DEPVER_MOCK_DIR
+if (-not $mockDir) { exit 1 }
+Add-Content -LiteralPath (Join-Path $mockDir 'go_calls.txt') -Value ((Get-Location).Path + '|' + ($args -join ' '))
+$exitFile = Join-Path $mockDir 'go_exit.txt'
+$code = 0
+if (Test-Path $exitFile) { $code = [int]((Get-Content $exitFile -Raw).Trim()) }
+$outFile = Join-Path $mockDir 'go_list.txt'
+if (Test-Path $outFile) { Get-Content $outFile }
+exit $code
+'@
 [System.IO.File]::WriteAllText((Join-Path $ShimDir 'npm.ps1'), $npmMock)
 [System.IO.File]::WriteAllText((Join-Path $ShimDir 'pip.ps1'), $pipMock)
+[System.IO.File]::WriteAllText((Join-Path $ShimDir 'go.ps1'), $goMock)
 # Start-Process -Environment does NOT replace PATH wholesale for the child - it MERGES the
 # given value into the process's inherited PATH (confirmed: passing an independent variable
 # through -Environment leaves the parent's real npm/pip directories reachable regardless). The
@@ -74,7 +86,8 @@ $pathWithoutRealTools = @($OriginalPath -split ';' | Where-Object {
     -not (Test-Path -LiteralPath (Join-Path $_ 'npm.cmd') -PathType Leaf) -and
     -not (Test-Path -LiteralPath (Join-Path $_ 'npm.exe') -PathType Leaf) -and
     -not (Test-Path -LiteralPath (Join-Path $_ 'npm.ps1') -PathType Leaf) -and
-    -not (Test-Path -LiteralPath (Join-Path $_ 'pip.exe') -PathType Leaf)
+    -not (Test-Path -LiteralPath (Join-Path $_ 'pip.exe') -PathType Leaf) -and
+    -not (Test-Path -LiteralPath (Join-Path $_ 'go.exe') -PathType Leaf)
 })
 $MockedPath = (@($ShimDir) + $pathWithoutRealTools) -join ';'
 $env:PATH = $MockedPath
@@ -98,6 +111,12 @@ function Get-NpmCallCount {
 function Reset-CallLog {
     Remove-Item (Join-Path $MockDir 'npm_calls.txt') -Force -ErrorAction SilentlyContinue
     Remove-Item (Join-Path $MockDir 'pip_calls.txt') -Force -ErrorAction SilentlyContinue
+    Remove-Item (Join-Path $MockDir 'go_calls.txt') -Force -ErrorAction SilentlyContinue
+}
+function Set-GoMock {
+    param([int]$GoExit = 0, [string]$GoOutput = '')
+    Set-Content (Join-Path $MockDir 'go_exit.txt') $GoExit
+    Set-Content (Join-Path $MockDir 'go_list.txt') $GoOutput -Encoding utf8
 }
 
 function New-Proj {
@@ -189,6 +208,27 @@ try {
     Set-Mock -PipExit 0 -PipJson '[{"name":"requests","version":"2.0.0","latest_version":"2.5.0","latest_filetype":"wheel"}]'
     $r = Fire -Cwd $pipProj
     Check 'pip outdated packages are reported' ($r.Out -match 'pip: requests 2\.0\.0 -> 2\.5\.0') $r.Out
+
+    # =====================================================================
+    Write-Host '--- go: go.mod detected, `go list -u -m all` runs in the module dir without crashing ---' -ForegroundColor Cyan
+    # Regression: Invoke-QuietCommand has no -WorkingDirectory parameter, so the
+    # previous `-WorkingDirectory $dir` argument threw a ParameterBindingException
+    # and aborted the whole hook whenever a go.mod was present and `go` was on PATH.
+    $goProj = New-Proj 'GoProj'
+    Write-Utf8 (Join-Path $goProj 'go.mod') "module example.com/fixture`n`ngo 1.21`n"
+    Set-GoMock -GoExit 0 -GoOutput "example.com/fixture`nexample.com/dep v1.0.0 [v1.2.0]`n"
+    Remove-Item (Join-Path $MockDir 'go_calls.txt') -Force -ErrorAction SilentlyContinue
+    $r = Fire -Cwd $goProj
+    Check 'go.mod with go on PATH does not crash the hook' ($r.Exit -eq 0 -and $r.Err -eq '') ($r.Out + ' | err=' + $r.Err)
+    Check 'the go module update is reported and classified' ($r.Out -match 'example\.com/dep v1\.0\.0 -> v1\.2\.0 \[minor\]') $r.Out
+    $goCallLog = Join-Path $MockDir 'go_calls.txt'
+    Check 'the go call log was written (the shim actually ran)' (Test-Path -LiteralPath $goCallLog)
+    if (Test-Path -LiteralPath $goCallLog) {
+        $goCallLine = ([System.IO.File]::ReadAllText($goCallLog)).Trim()
+        $goProjFull = (Get-Item -LiteralPath $goProj).FullName
+        Check 'the go call ran with the module directory as its working directory (Push-Location, not the removed -WorkingDirectory)' (
+            $goCallLine -like ($goProjFull + '|*')) $goCallLine
+    }
 
     # =====================================================================
     Write-Host '--- GitHub Actions: clearly old major version flagged ---' -ForegroundColor Cyan

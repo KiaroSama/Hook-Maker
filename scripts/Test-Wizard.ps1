@@ -762,6 +762,29 @@ try {
     # installed" (the actual completion-message shape) to target only the
     # combined-install summary, never the menu label.
     Check 'sync-group-only completion message (no "+ N hooks installed")' ($r3.Out -match 'Restart the Claude/Codex clients' -and $r3.Out -notmatch 'Sync group \+ \d+ hook')
+
+    # =====================================================================
+    Write-Host '--- a malformed profile route must not crash the wizard (Show-Profiles / StrictMode) ---' -ForegroundColor Cyan
+    # Real regression: Show-Profiles read $route.source.root / $route.destination.root
+    # UNGUARDED whenever '.name' was absent. Under Set-StrictMode -Version 2.0, a
+    # route whose source/destination has neither 'name' nor 'root' (or is a bare
+    # string) throws a property-not-found error that propagates past the main
+    # menu loop into the top-level catch, exiting the whole wizard session.
+    $cfgMalformed = Join-Path $Work 'cfg-malformed.json'
+    @'
+{"version":2,"defaults":{"events":["SessionStart","UserPromptSubmit"]},"profiles":[{"id":"malformed-profile","name":"Malformed","enabled":true,"routes":[{"source":{"root":"C:\\Malformed\\Src"},"destination":{}},{"source":"bare-string-source","destination":{"name":"NormalDest"}}]}]}
+'@ | Set-Content -LiteralPath $cfgMalformed -Encoding utf8
+    # main menu '2' (Show configured profiles) then '0' (exit) - if Show-Profiles
+    # throws, '0' is never read and the process exits 1 from the outer catch
+    # instead of the normal '0' -> break menu path.
+    $rMalformed = Invoke-Wizard -Config $cfgMalformed -Answers @('2', '0')
+    Check 'a malformed route does not crash the wizard (exit 0, no fatal error)' (
+        $rMalformed.Exit -eq 0 -and $rMalformed.Out -notmatch 'Fatal error') (
+        'exit=' + [string]$rMalformed.Exit + ' err=' + $rMalformed.Err)
+    Check 'no stderr' ($rMalformed.Err -eq '')
+    Check 'the malformed profile is still listed' ($rMalformed.Out -match 'Malformed') $rMalformed.Out
+    Check 'a source with only "root" (no "name") still renders its root' ($rMalformed.Out -match 'C:\\Malformed\\Src') $rMalformed.Out
+    Check 'the wizard returns to the main menu instead of exiting' ((([regex]::Matches($rMalformed.Out, 'Main menu:')).Count) -ge 2) $rMalformed.Out
 }
 finally {
     if (-not $KeepArtifacts) {

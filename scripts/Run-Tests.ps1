@@ -129,7 +129,12 @@ try {
         -NoNewWindow -PassThru
     if (-not $p.WaitForExit($TimeoutSeconds * 1000)) {
         try { $p.Kill($true) } catch { }
-        try { $p.WaitForExit() } catch { }
+        # BOUNDED wait after the kill: an unkillable tree (stuck in an
+        # uninterruptible wait) must not hang the whole runner here - that would
+        # defeat the very -TimeoutSeconds guarantee this branch enforces. The tree
+        # is already force-killed; this is just a bounded grace for teardown,
+        # mirroring Run-Tests-Guarded.ps1's WaitForExit(15000).
+        try { [void]$p.WaitForExit(15000) } catch { }
         $sw.Stop()
         return [pscustomobject]@{ Suite = $name; Exit = 124; Seconds = [Math]::Round($sw.Elapsed.TotalSeconds, 1); Tail = ('TIMED OUT after ' + $TimeoutSeconds + 's (killed)') }
     }
