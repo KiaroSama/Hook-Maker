@@ -333,6 +333,61 @@ try {
     Check '21b. a normal small scan is NOT marked partial (case 9 report was clean)' ($msg6 -notmatch '(?i)PARTIAL') $msg6
 
     # =====================================================================
+    Write-Host '--- Stop scan: MAX_FILES is a real per-file ceiling (one flat dir over the limit) ---' -ForegroundColor Cyan
+    # D1/D3: a single directory holding MORE source files than MAX_FILES. The scan
+    # must stop AT the ceiling (not walk the whole directory), and coverage must
+    # read PARTIAL even though the stack ends empty (flag-driven, not stack-driven).
+    $hcD1 = New-IsolatedHookCopy -EnvContent "MAX_FILES=3`n"
+    $projD1 = New-Proj 'FlatCeiling'
+    1..10 | ForEach-Object { New-SourceFile (Join-Path $projD1 ('src\f{0:00}.py' -f $_)) 900 }
+    $rD1 = Fire -HookPath $hcD1.Script -Cwd $projD1 -EventName 'Stop' -LocalAppData $hcD1.LocalAppData
+    $msgD1 = Get-Advisory $rD1.Out
+    Check 'D1. MAX_FILES is a real per-file ceiling: 3 offenders reported, not all 10 scanned' (
+        $msgD1 -match '\b3 source file\(s\) exceed 800 lines' -and $msgD1 -notmatch '\b10 source file') $msgD1
+    Check 'D3. partial coverage is flag-driven: PARTIAL wording appears though the stack ended empty' ($msgD1 -match '(?i)PARTIAL scan') $msgD1
+
+    # =====================================================================
+    Write-Host '--- Stop scan: a PARTIAL scan with NO offender is not a false silence ---' -ForegroundColor Cyan
+    # D2: the ceiling fills on a non-offending root file, so the oversized file
+    # behind it is never seen. The hook must advise incomplete coverage - not a
+    # decision:block, and not silence.
+    $hcD2 = New-IsolatedHookCopy -EnvContent "MAX_FILES=1`n"
+    $projD2 = New-Proj 'PartialNoOffender'
+    New-SourceFile (Join-Path $projD2 'top.py') 200
+    New-SourceFile (Join-Path $projD2 'sub\deep.py') 1500
+    $rD2 = Fire -HookPath $hcD2.Script -Cwd $projD2 -EventName 'Stop' -LocalAppData $hcD2.LocalAppData
+    $msgD2 = Get-Advisory $rD2.Out
+    Check 'D2a. a partial no-offender scan is NOT silent (advisory emitted, exit 0)' (
+        $rD2.Exit -eq 0 -and $rD2.Out -ne '' -and $rD2.Err -eq '') ("exit=$($rD2.Exit) out=[$($rD2.Out)] err=[$($rD2.Err)]")
+    Check 'D2b. the advisory states coverage was INCOMPLETE and is NOT a decision:block' (
+        $msgD2 -match '(?i)coverage was INCOMPLETE' -and $rD2.Out -notmatch '"decision"') $rD2.Out
+    Check 'D2c. the unscanned oversized file is NOT falsely claimed as seen' ($msgD2 -notmatch 'deep\.py') $msgD2
+
+    # =====================================================================
+    Write-Host '--- Stop scan: a reparse-point ROOT is refused, never walked ---' -ForegroundColor Cyan
+    # D4: cwd itself is a junction. The per-child reparse guard does not cover the
+    # root, so the root must be refused before any descent.
+    $hcD4 = New-IsolatedHookCopy
+    $rpRootTarget = Join-Path $Work ('rp-root-' + [guid]::NewGuid().ToString('N').Substring(0, 6))
+    New-SourceFile (Join-Path $rpRootTarget 'src\linked.py') 1400
+    $rpRootLink = Join-Path $Work ('rootlink-' + [guid]::NewGuid().ToString('N').Substring(0, 6))
+    $madeRootJunction = $false
+    try { New-Item -ItemType Junction -Path $rpRootLink -Target $rpRootTarget -ErrorAction Stop | Out-Null; $madeRootJunction = $true } catch { }
+    if (-not $madeRootJunction) {
+        try { & cmd /c mklink /J "$rpRootLink" "$rpRootTarget" 2>$null | Out-Null } catch { }
+        $madeRootJunction = (Test-Path -LiteralPath $rpRootLink) -and
+            ((((Get-Item -LiteralPath $rpRootLink -Force).Attributes) -band [System.IO.FileAttributes]::ReparsePoint) -ne 0)
+    }
+    if ($madeRootJunction) {
+        $rD4 = Fire -HookPath $hcD4.Script -Cwd $rpRootLink -EventName 'Stop' -LocalAppData $hcD4.LocalAppData
+        Check 'D4. a reparse-point root is refused (silent exit 0, target not walked)' (
+            $rD4.Exit -eq 0 -and $rD4.Out -eq '' -and $rD4.Err -eq '') ("exit=$($rD4.Exit) out=[$($rD4.Out)] err=[$($rD4.Err)]")
+    }
+    else {
+        Write-Host '[SKIP] root junction could not be created in this harness - reparse-root assertion skipped' -ForegroundColor Yellow
+    }
+
+    # =====================================================================
     Write-Host '--- GitPrePush is advisory-only: exit 0, no block, no unreachable branch ---' -ForegroundColor Cyan
     $hc18 = New-IsolatedHookCopy
     $proj18 = New-Proj 'GitPrePush'

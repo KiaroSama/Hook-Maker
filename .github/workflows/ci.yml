@@ -143,6 +143,29 @@ jobs:
           # blocks on stdin, deadlocks, spins forever - is killed here instead of
           # eating the 30-minute bucket and starving every suite after it.
           $perSuiteTimeoutSeconds = 900
+          # Enumerate a process's full descendant tree (breadth-first over
+          # Win32_Process ParentProcessId). The tree is snapshotted BEFORE a kill
+          # so that after the kill every recorded pid can be proven gone - a
+          # survivor is a real leak that would corrupt later suites, not something
+          # to infer from taskkill's exit code and the root pid alone.
+          function Get-DescendantPids {
+            param([int]$RootPid)
+            $procs = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Select-Object ProcessId, ParentProcessId)
+            $out = New-Object System.Collections.Generic.List[int]
+            $seen = @{}
+            $queue = New-Object System.Collections.Generic.Queue[int]
+            $queue.Enqueue($RootPid)
+            while ($queue.Count -gt 0) {
+              $cur = $queue.Dequeue()
+              foreach ($pr in $procs) {
+                $cid = [int]$pr.ProcessId
+                if ([int]$pr.ParentProcessId -eq $cur -and -not $seen.ContainsKey($cid)) {
+                  $seen[$cid] = $true; [void]$out.Add($cid); $queue.Enqueue($cid)
+                }
+              }
+            }
+            return $out.ToArray()
+          }
           $failed = @()
           foreach ($suite in ('${{ matrix.suites }}'.Split(',') | ForEach-Object { $_.Trim() } | Where-Object { $_ })) {
             $path = Join-Path 'scripts' ($suite + '.ps1')
@@ -159,21 +182,25 @@ jobs:
             try { $p.StandardInput.Close() } catch { }
             if (-not $p.WaitForExit($perSuiteTimeoutSeconds * 1000)) {
               Write-Error ("TIMEOUT: $suite exceeded ${perSuiteTimeoutSeconds}s - terminating its process tree")
-              # taskkill /T /F kills the whole tree, but it returns BEFORE the tree
-              # is fully gone and a failed kill would leave a survivor that corrupts
-              # later suites in this bucket. So: record the kill exit code, then wait
-              # (bounded) and re-check liveness. A survivor or a failed kill is
-              # reported explicitly, not swallowed. Dispose either way.
+              # Snapshot the whole owned tree (root + every descendant) BEFORE the
+              # kill. taskkill /T /F returns before the tree is fully gone, so after
+              # the wait we prove EACH recorded pid is dead - not just the root. A
+              # survivor, a failed kill, or a live root all fail the job explicitly.
+              $treePids = @(@($p.Id) + @(Get-DescendantPids -RootPid $p.Id) | Select-Object -Unique)
               $killExit = -1
               try { & taskkill.exe /PID $p.Id /T /F *> $null; $killExit = $LASTEXITCODE } catch { $killExit = -1 }
               try { [void]$p.WaitForExit(15000) } catch { }
-              $stillAlive = $true
-              try { $stillAlive = -not $p.HasExited } catch { $stillAlive = $false }
-              if ($stillAlive -or $killExit -ne 0) {
-                $failed += ($suite + " (timed out; kill exit=$killExit, stillAlive=$stillAlive - process tree may not be fully terminated)")
+              $survivors = @()
+              foreach ($tp in $treePids) {
+                try { if (Get-Process -Id $tp -ErrorAction SilentlyContinue) { $survivors += $tp } } catch { }
+              }
+              $rootAlive = $true
+              try { $rootAlive = -not $p.HasExited } catch { $rootAlive = $false }
+              if ($rootAlive -or $killExit -ne 0 -or $survivors.Count -gt 0) {
+                $failed += ($suite + " (timed out; kill exit=$killExit, rootAlive=$rootAlive, survivors=" + ($survivors -join ',') + " - process tree NOT fully terminated)")
               }
               else {
-                $failed += ($suite + ' (timed out; process tree terminated)')
+                $failed += ($suite + " (timed out; process tree of " + $treePids.Count + " pid(s) terminated)")
               }
               try { $p.Dispose() } catch { }
               continue
