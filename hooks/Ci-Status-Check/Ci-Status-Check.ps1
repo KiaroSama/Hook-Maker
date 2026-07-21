@@ -154,26 +154,51 @@ function Get-PushedHeadInfo {
 # ordering never affects the hash.
 # True ONLY when the commit's failure is a GitHub account billing/payment/
 # spending-limit block, proven by GitHub's OWN check-run annotations - never
-# inferred from step counts. Queries the commit's check-runs (raw JSON, no jq),
-# then the annotations of each FAILING one, and requires EVERY failing check-run
-# to carry the billing annotation. Fails CLOSED (returns $false, so the caller
-# keeps treating the runs as a genuine failure) on: any query error, no failing
-# check-run found, more failing check-runs than can be verified, or a single
-# failing check-run whose annotations do not include the billing message. A real
-# test failure never carries that annotation; a broken workflow yields a
+# inferred from step counts. Reads the COMPLETE, paginated set of check-runs for
+# the commit (raw JSON, no jq), verifying the fetched count reaches the reported
+# total_count, then the (paginated) annotations of each FAILING one, and requires
+# EVERY failing check-run in that complete set to carry the billing annotation.
+# Fails CLOSED (returns $false, so the caller keeps treating the runs as a
+# genuine failure) on: any query error, an unparseable/missing-field response, a
+# total_count larger than the strict page bound can verify, a fetched count that
+# does not reach total_count (truncation), no failing check-run found, or a
+# single failing check-run whose annotations do not include the billing message.
+# A real test failure never carries that annotation; a broken workflow yields a
 # different one - so neither is ever mistaken for billing.
 function Test-CiBillingBlocked {
-    param([string]$RepoSlug, [string]$Sha, [int]$MaxCheckRuns = 100)
-    $listJson = Invoke-QuietCommand -FilePath gh -ArgumentList @('api', ('repos/' + $RepoSlug + '/commits/' + $Sha + '/check-runs?per_page=100'))
-    if ($LASTEXITCODE -ne 0) { return $false }
-    $checkRuns = @()
-    try {
-        $parsed = ((@($listJson) -join "`n") | ConvertFrom-Json)
-        if ($null -ne $parsed -and $null -ne $parsed.PSObject.Properties['check_runs']) {
-            $checkRuns = @($parsed.check_runs)
+    param([string]$RepoSlug, [string]$Sha)
+    # Strict pagination bound: at most 20 pages of 100 = 2000 check-runs, and the
+    # same 20-page ceiling for one check-run's annotations. Anything we cannot
+    # fully verify within that bound fails CLOSED, so an unverifiable set is
+    # always treated as a genuine failure, never as billing.
+    # ponytail: fixed 2000-check-run ceiling; revisit only if a real commit
+    # legitimately carries more check-runs than that.
+    $maxPages = 20
+    $perPage = 100
+    $maxCheckRuns = $maxPages * $perPage
+
+    # ---- collect EVERY check-run page; the fetched count must reach total_count ----
+    $checkRuns = New-Object System.Collections.Generic.List[object]
+    $totalCount = -1
+    for ($page = 1; $page -le $maxPages; $page++) {
+        $listJson = Invoke-QuietCommand -FilePath gh -ArgumentList @('api', ('repos/' + $RepoSlug + '/commits/' + $Sha + '/check-runs?per_page=' + $perPage + '&page=' + $page))
+        if ($LASTEXITCODE -ne 0) { return $false }              # query error - fail closed
+        try { $parsed = ((@($listJson) -join "`n") | ConvertFrom-Json) }
+        catch { return $false }                                 # unparseable - fail closed
+        if ($null -eq $parsed -or $null -eq $parsed.PSObject.Properties['total_count'] -or $null -eq $parsed.PSObject.Properties['check_runs']) {
+            return $false                                       # missing required fields - fail closed
         }
+        if ($page -eq 1) {
+            $totalCount = [long]$parsed.total_count
+            if ($totalCount -gt $maxCheckRuns) { return $false } # more than we can verify - fail closed
+        }
+        $pageRuns = @($parsed.check_runs)
+        foreach ($cr in $pageRuns) { if ($null -ne $cr) { [void]$checkRuns.Add($cr) } }
+        if ($checkRuns.Count -ge $totalCount) { break }          # collected the whole set
+        if ($pageRuns.Count -eq 0) { break }                     # page ran dry early - truncation, caught below
     }
-    catch { return $false }
+    if ($totalCount -lt 0 -or $checkRuns.Count -ne $totalCount) { return $false }  # incomplete set - fail closed
+
     $failingIds = New-Object System.Collections.Generic.List[string]
     foreach ($cr in $checkRuns) {
         if ($null -eq $cr) { continue }
@@ -182,25 +207,36 @@ function Test-CiBillingBlocked {
             [void]$failingIds.Add([string](Get-Field $cr 'id'))
         }
     }
-    if ($failingIds.Count -eq 0) { return $false }              # nothing failing here - not our case
-    if ($failingIds.Count -gt $MaxCheckRuns) { return $false }  # too many to verify all - fail closed
+    if ($failingIds.Count -eq 0) { return $false }               # nothing failing here - not our case
     foreach ($id in $failingIds) {
-        $annJson = Invoke-QuietCommand -FilePath gh -ArgumentList @('api', ('repos/' + $RepoSlug + '/check-runs/' + $id + '/annotations'))
-        if ($LASTEXITCODE -ne 0) { return $false }              # could not verify THIS one - fail closed
-        $hasBilling = $false
-        try {
-            $annotations = @(((@($annJson) -join "`n") | ConvertFrom-Json))
-            foreach ($ann in $annotations) {
-                if ($null -eq $ann) { continue }
-                $level = ([string](Get-Field $ann 'annotation_level')).ToLowerInvariant()
-                $message = [string](Get-Field $ann 'message')
-                if ($level -eq 'failure' -and $message -match $script:BillingAnnotationPattern) { $hasBilling = $true; break }
-            }
+        if (-not (Test-CheckRunHasBillingAnnotation -RepoSlug $RepoSlug -CheckRunId $id -MaxPages $maxPages -PerPage $perPage)) {
+            return $false                                        # a failing run not explained by billing (or unverifiable) - real failure
         }
-        catch { return $false }                                 # unparseable annotations - fail closed
-        if (-not $hasBilling) { return $false }                 # a failing run NOT explained by billing - real failure
     }
-    return $true    # every failing check-run is billing-annotated
+    return $true    # every failing check-run in the COMPLETE verified set is billing-annotated
+}
+
+# True ONLY when one check-run's annotations (across every page, up to the same
+# strict bound) include GitHub's billing/payment failure annotation. Fails CLOSED
+# (returns $false) on any query error, an unparseable page, or exceeding the page
+# bound without an empty terminating page (truncation); an empty page reached
+# with no billing annotation found means a genuine, non-billing failure.
+function Test-CheckRunHasBillingAnnotation {
+    param([string]$RepoSlug, [string]$CheckRunId, [int]$MaxPages, [int]$PerPage)
+    for ($page = 1; $page -le $MaxPages; $page++) {
+        $annJson = Invoke-QuietCommand -FilePath gh -ArgumentList @('api', ('repos/' + $RepoSlug + '/check-runs/' + $CheckRunId + '/annotations?per_page=' + $PerPage + '&page=' + $page))
+        if ($LASTEXITCODE -ne 0) { return $false }              # query error - fail closed
+        try { $annotations = @(((@($annJson) -join "`n") | ConvertFrom-Json)) }
+        catch { return $false }                                 # unparseable - fail closed
+        if ($annotations.Count -eq 0) { return $false }          # end of annotations, no billing found
+        foreach ($ann in $annotations) {
+            if ($null -eq $ann) { continue }
+            $level = ([string](Get-Field $ann 'annotation_level')).ToLowerInvariant()
+            $message = [string](Get-Field $ann 'message')
+            if ($level -eq 'failure' -and $message -match $script:BillingAnnotationPattern) { return $true }
+        }
+    }
+    return $false    # exceeded the page bound without a terminating empty page - fail closed
 }
 
 function Get-CiRunSnapshot {

@@ -113,9 +113,9 @@ jobs:
     runs-on: windows-latest
     # The heaviest bucket sums to ~7 minutes of measured LOCAL wall time run
     # back-to-back; a CI runner is slower, so this leaves roughly 3x headroom.
-    # Without a ceiling a suite that blocks on stdin would burn GitHub's 6-hour
-    # default before anyone learned anything - the per-suite timeout in
-    # Run-Tests.ps1 does not apply here, because CI invokes each suite directly.
+    # The bucket ceiling is the OUTER bound; each suite ALSO gets its own
+    # per-suite wall timeout below, so one hung suite cannot consume the whole
+    # bucket and starve the suites after it.
     timeout-minutes: 30
     strategy:
       fail-fast: false
@@ -138,13 +138,32 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Continue'
+          # Per-suite wall ceiling. Real suites finish well under this even on a
+          # slow runner (the heaviest is ~5 min locally); a suite that HANGS -
+          # blocks on stdin, deadlocks, spins forever - is killed here instead of
+          # eating the 30-minute bucket and starving every suite after it.
+          $perSuiteTimeoutSeconds = 900
           $failed = @()
           foreach ($suite in ('${{ matrix.suites }}'.Split(',') | ForEach-Object { $_.Trim() } | Where-Object { $_ })) {
             $path = Join-Path 'scripts' ($suite + '.ps1')
             if (-not (Test-Path -LiteralPath $path)) { Write-Error "Suite not found: $path"; $failed += $suite; continue }
-            Write-Host "=== $suite ===" -ForegroundColor Cyan
-            & $path
-            if ($LASTEXITCODE -ne 0) { $failed += ($suite + ' (' + $LASTEXITCODE + ' failed assertion(s))') }
+            Write-Host "=== $suite (<= ${perSuiteTimeoutSeconds}s) ===" -ForegroundColor Cyan
+            # Each suite is its own child process with stdin DETACHED (a suite
+            # that reads input gets EOF, never a hang) and a bounded wall wait.
+            $psi = New-Object System.Diagnostics.ProcessStartInfo
+            $psi.FileName = (Get-Process -Id $PID).Path
+            foreach ($a in @('-NoLogo', '-NoProfile', '-File', $path)) { [void]$psi.ArgumentList.Add($a) }
+            $psi.UseShellExecute = $false
+            $psi.RedirectStandardInput = $true
+            $p = [System.Diagnostics.Process]::Start($psi)
+            try { $p.StandardInput.Close() } catch { }
+            if (-not $p.WaitForExit($perSuiteTimeoutSeconds * 1000)) {
+              Write-Error ("TIMEOUT: $suite exceeded ${perSuiteTimeoutSeconds}s - terminating its process tree")
+              try { & taskkill.exe /PID $p.Id /T /F *> $null } catch { }
+              $failed += ($suite + ' (timed out)')
+              continue
+            }
+            if ($p.ExitCode -ne 0) { $failed += ($suite + ' (' + $p.ExitCode + ' failed assertion(s))') }
           }
           if ($failed.Count -gt 0) {
             Write-Error ("FAILED: " + ($failed -join ', '))

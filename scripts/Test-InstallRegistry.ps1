@@ -509,6 +509,23 @@ try {
     # =====================================================================
     # The managed manifest must cover EVERY file the installer copies, not
     # just the main script + _hooklib + sync config.
+    # =====================================================================
+    Write-Host '--- Test-Run-Guard ships its guarded runner beside the hook (Review-1) ---' -ForegroundColor Cyan
+    $trgHook = Join-Path $RealHooksDir 'Test-Run-Guard\Test-Run-Guard.ps1'
+    if (Test-Path -LiteralPath $trgHook -PathType Leaf) {
+        $trgPlan = @(Get-InstallPlanFor -HookScript $trgHook -ToolRoot $ToolRoot)
+        $trgRunner = @($trgPlan | Where-Object { $_.relativePath -eq 'Test-Run-Guard/scripts/Run-Tests-Guarded.ps1' })
+        Check 'the install plan ships scripts/Run-Tests-Guarded.ps1 inside the Test-Run-Guard runtime' ($trgRunner.Count -eq 1) (($trgPlan | ForEach-Object { $_.relativePath }) -join ', ')
+        Check 'the shipped runner is an Immutable managed artifact (drift-repairable)' ($trgRunner.Count -eq 1 -and $trgRunner[0].ownership -eq 'Immutable') ([string]$trgRunner[0].ownership)
+        # No OTHER hook drags the runner along.
+        $secHook = Join-Path $RealHooksDir 'Secrets-Check\Secrets-Check.ps1'
+        if (Test-Path -LiteralPath $secHook -PathType Leaf) {
+            $secPlan = @(Get-InstallPlanFor -HookScript $secHook -ToolRoot $ToolRoot)
+            Check 'an unrelated hook does NOT ship the guarded runner' (@($secPlan | Where-Object { $_.relativePath -match 'Run-Tests-Guarded' }).Count -eq 0)
+        }
+    }
+
+    # =====================================================================
     Write-Host '--- managed-file manifest covers .env and copied helpers ---' -ForegroundColor Cyan
     $fixtureMan = New-FixtureHook 'ZZZ-Regtest-Manifest' "exit 0 # manifest`n"
     try {

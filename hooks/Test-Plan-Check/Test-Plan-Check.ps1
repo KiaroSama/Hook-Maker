@@ -35,11 +35,18 @@
 # and Ci-Status-Check use); absent both -> Codex.
 #
 # Optional .env next to this script (copy .env.example):
-#   TEST_PLAN_COOLDOWN_MINUTES  minutes before an unchanged finding repeats (default 120)
-#   TEST_PLAN_EXTRA_KEYWORDS    extra comma-separated project relevance keywords
-#   TEST_PLAN_ALWAYS_REPORT     1 = ignore the cooldown (hook debugging; default 0)
+#   TEST_PLAN_COOLDOWN_MINUTES   minutes before an unchanged finding repeats (default 120)
+#   TEST_PLAN_EXTRA_KEYWORDS     extra comma-separated project relevance keywords
+#   TEST_PLAN_ALWAYS_REPORT      1 = ignore the cooldown (hook debugging; default 0)
+#   TEST_PLAN_MAX_DIRS           directories the scan may visit          (default 4000)
+#   TEST_PLAN_MAX_FILES          candidate test files it may inspect     (default 200)
+#   TEST_PLAN_MAX_FILE_KB        KB read from any one file               (default 400)
+#   TEST_PLAN_MAX_SCAN_SECONDS   total wall time for the whole scan      (default 5)
+#   TEST_PLAN_MAX_FINDINGS       findings emitted before it stops        (default 8)
 # An invalid value is reported in plain text inside the advisory and the
 # default is used - a malformed setting must never block or crash a session.
+# Hitting any ceiling (or an unreadable directory) makes the scan PARTIAL, and
+# the advisory says so instead of implying the whole repository was covered.
 
 Set-StrictMode -Version 2.0
 $ErrorActionPreference = 'Stop'
@@ -64,17 +71,21 @@ if ([string]::IsNullOrWhiteSpace($cwd) -or -not (Test-Path -LiteralPath $cwd -Pa
 $configWarnings = New-Object System.Collections.Generic.List[string]
 $config = Read-HookEnv (Join-Path $PSScriptRoot '.env')
 
-$cooldownMinutes = 120
-if ($config.ContainsKey('TEST_PLAN_COOLDOWN_MINUTES')) {
-    $raw = [string]$config['TEST_PLAN_COOLDOWN_MINUTES']
+# Every integer ceiling shares one validated reader: a value outside [Min..Max]
+# (or non-numeric) is reported once and the documented safe default is used.
+function Read-BoundedIntSetting {
+    param([string]$Key, [int]$Default, [int]$Min, [int]$Max)
+    if (-not $config.ContainsKey($Key)) { return $Default }
+    $raw = [string]$config[$Key]
     $parsed = 0
-    if ([int]::TryParse($raw, [ref]$parsed) -and $parsed -gt 0 -and $parsed -le 10080) {
-        $cooldownMinutes = $parsed
+    if ([int]::TryParse($raw, [ref]$parsed) -and $parsed -ge $Min -and $parsed -le $Max) { return $parsed }
+    if (-not [string]::IsNullOrWhiteSpace($raw)) {
+        [void]$configWarnings.Add($Key + ' is not an integer in ' + $Min + '..' + $Max + '; using the default ' + $Default + '.')
     }
-    elseif (-not [string]::IsNullOrWhiteSpace($raw)) {
-        [void]$configWarnings.Add('TEST_PLAN_COOLDOWN_MINUTES is not an integer in 1..10080; using the default 120.')
-    }
+    return $Default
 }
+
+$cooldownMinutes = Read-BoundedIntSetting 'TEST_PLAN_COOLDOWN_MINUTES' 120 1 10080
 
 $alwaysReport = $false
 if ($config.ContainsKey('TEST_PLAN_ALWAYS_REPORT')) {
@@ -105,36 +116,63 @@ if ($eventName -eq 'UserPromptSubmit') {
     if (-not $relevant) { exit 0 }
 }
 
-# ---- bounded, read-only risk scan -------------------------------------------
-# Only files that are plausibly TEST files, only a capped number of them, only
-# a capped read per file. Everything reported carries a file:line the reader
-# can open; nothing is inferred or theoretical.
-$script:MaxFiles = 200
-$script:MaxBytes = 400KB
-$script:MaxFindings = 8
-$script:ExcludeFragments = @('\.git\', '\node_modules\', '\.venv\', '\venv\', '\graphify-out\', '\dist\', '\build\', '\site-packages\', '\vendor\', '\.tox\', '\__pycache__\')
+# ---- bounded, read-only, iterative risk scan --------------------------------
+# An EXPLICIT-STACK directory walk that PRUNES excluded trees before descending
+# (node_modules/.git/.venv are never even enumerated) and never follows a
+# reparse point (junction/symlink). Every dimension is capped and configurable:
+# directories visited, candidate test files inspected, bytes read per file,
+# total wall time, and findings emitted. Everything reported still carries a
+# file:line the reader can open; nothing is inferred or theoretical.
+$maxDirs      = Read-BoundedIntSetting 'TEST_PLAN_MAX_DIRS'          4000 1 1000000
+$maxFiles     = Read-BoundedIntSetting 'TEST_PLAN_MAX_FILES'          200 1 100000
+$maxFileBytes = 1KB * (Read-BoundedIntSetting 'TEST_PLAN_MAX_FILE_KB' 400 1 1048576)
+$maxSeconds   = Read-BoundedIntSetting 'TEST_PLAN_MAX_SCAN_SECONDS'     5 1 3600
+$maxFindings  = Read-BoundedIntSetting 'TEST_PLAN_MAX_FINDINGS'         8 1 1000
 
-function Test-IsExcludedPath {
-    param([string]$FullPath)
-    $lower = $FullPath.ToLowerInvariant()
-    foreach ($fragment in $script:ExcludeFragments) {
-        if ($lower.Contains($fragment)) { return $true }
+# Directory names pruned BEFORE descent - mirrors Secrets-Check.ps1 $excludedDirs
+# (plus .tox/site-packages that this scan has always skipped).
+$excludedDirs = @('.git', 'node_modules', 'vendor', 'vendors', 'dist', 'build', 'out', 'target', 'coverage', '.cache', 'cache', '__pycache__', '.venv', 'venv', 'env', '.ai', 'graphify-out', '.claude', '.codex', '.agents', 'bin', 'obj', '.tox', 'site-packages')
+$extRegex = '(?i)^\.(ps1|psm1|py|js|mjs|cjs|ts|sh|rb|go)$'
+
+# A ceiling hit OR an unreadable directory sets this; the advisory then declares
+# the scan partial instead of implying whole-repository coverage.
+$partialScan = $false
+$dirsVisited = 0
+$scanTimer = [System.Diagnostics.Stopwatch]::StartNew()
+$candidates = New-Object System.Collections.Generic.List[object]
+
+$rootFull = $cwd.TrimEnd('\', '/')
+try { $rootFull = (Get-Item -LiteralPath $cwd -Force -ErrorAction Stop).FullName.TrimEnd('\', '/') } catch { }
+$stack = New-Object System.Collections.Generic.Stack[string]
+$stack.Push($rootFull)
+while ($stack.Count -gt 0) {
+    if ($dirsVisited -ge $maxDirs -or $candidates.Count -ge $maxFiles -or $scanTimer.Elapsed.TotalSeconds -ge $maxSeconds) {
+        $partialScan = $true; break
     }
-    return $false
+    $current = $stack.Pop()
+    $dirsVisited++
+    try {
+        foreach ($filePath in [System.IO.Directory]::EnumerateFiles($current)) {
+            if ($candidates.Count -ge $maxFiles) { $partialScan = $true; break }
+            if ([System.IO.Path]::GetExtension($filePath) -notmatch $extRegex) { continue }
+            $name = [System.IO.Path]::GetFileName($filePath)
+            $isTest = ($name -match '(?i)(^|[\\/._-])(test|tests|spec)') -or ($current -match '(?i)[\\/](tests?|spec|specs|__tests__)([\\/]|$)')
+            if (-not $isTest) { continue }
+            # Only now touch the filesystem for metadata; skip file-level reparse points too.
+            $info = Get-Item -LiteralPath $filePath -Force -ErrorAction SilentlyContinue
+            if ($null -eq $info -or ($info.Attributes -band [System.IO.FileAttributes]::ReparsePoint)) { continue }
+            [void]$candidates.Add($info)
+        }
+        foreach ($dirPath in [System.IO.Directory]::EnumerateDirectories($current)) {
+            $dir = Get-Item -LiteralPath $dirPath -Force -ErrorAction SilentlyContinue
+            if ($null -eq $dir -or ($dir.Attributes -band [System.IO.FileAttributes]::ReparsePoint)) { continue }
+            if ($excludedDirs -notcontains $dir.Name.ToLowerInvariant()) { $stack.Push($dir.FullName) }
+        }
+    }
+    catch { $partialScan = $true }
 }
 
-$testFiles = @()
-try {
-    $testFiles = @(Get-ChildItem -LiteralPath $cwd -Recurse -File -ErrorAction SilentlyContinue |
-        Where-Object {
-            $_.Extension -match '(?i)^\.(ps1|psm1|py|js|mjs|cjs|ts|sh|rb|go)$' -and
-            (($_.Name -match '(?i)(^|[\\/._-])(test|tests|spec)') -or ($_.DirectoryName -match '(?i)[\\/](tests?|spec|specs|__tests__)([\\/]|$)')) -and
-            -not (Test-IsExcludedPath $_.FullName)
-        } |
-        Sort-Object FullName |
-        Select-Object -First $script:MaxFiles)
-}
-catch { $testFiles = @() }
+$testFiles = @($candidates.ToArray() | Sort-Object FullName | Select-Object -First $maxFiles)
 
 # A file that shows ANY of these is treated as having a visible bound, so the
 # no-bound findings stay conservative (a false silence beats a false warning).
@@ -144,7 +182,8 @@ $findings = New-Object System.Collections.Generic.List[string]
 $signatureParts = New-Object System.Collections.Generic.List[string]
 
 foreach ($file in $testFiles) {
-    if ($file.Length -gt $script:MaxBytes) {
+    if ($scanTimer.Elapsed.TotalSeconds -ge $maxSeconds) { $partialScan = $true; break }
+    if ($file.Length -gt $maxFileBytes) {
         [void]$signatureParts.Add($file.FullName + ':oversize:' + $file.Length)
         continue
     }
@@ -196,9 +235,9 @@ foreach ($file in $testFiles) {
             $reportedNoBound = $true
         }
 
-        if ($findings.Count -ge $script:MaxFindings) { break }
+        if ($findings.Count -ge $maxFindings) { $partialScan = $true; break }
     }
-    if ($findings.Count -ge $script:MaxFindings) { break }
+    if ($findings.Count -ge $maxFindings) { $partialScan = $true; break }
 }
 
 # ---- compact project/state fingerprint --------------------------------------
@@ -208,7 +247,7 @@ $repoState = ''
 try { $repoState = [string](Get-RepoStateFingerprint -ProjectRoot $cwd) } catch { $repoState = '' }
 $fingerprint = Get-ShortHash (
     $cwd.ToLowerInvariant() + '|' + $repoState + '|' +
-    ($signatureParts -join ';') + '|' + (($findings.ToArray()) -join ';') + '|' + ($configWarnings.ToArray() -join ';'))
+    ($signatureParts -join ';') + '|' + (($findings.ToArray()) -join ';') + '|' + ($configWarnings.ToArray() -join ';') + '|partial=' + $partialScan)
 
 $stateDir = Join-Path $env:LOCALAPPDATA 'HookMaker\state'
 $statePath = Join-Path $stateDir ('TestPlanCheck-' + (Get-ShortHash $cwd.ToLowerInvariant()) + '.json')
@@ -257,6 +296,10 @@ if ($findings.Count -gt 0) {
     [void]$lines.Add('')
     [void]$lines.Add('Observed in this project right now (each line is a real file:line - open it and confirm before changing anything):')
     foreach ($finding in $findings) { [void]$lines.Add('- ' + $finding) }
+}
+if ($partialScan) {
+    [void]$lines.Add('')
+    [void]$lines.Add('NOTE: this scan was PARTIAL - a directory/file/time/findings ceiling or an unreadable directory stopped it before the whole repository was covered. Treat the findings above as a sample, not a complete audit.')
 }
 if ($configWarnings.Count -gt 0) {
     [void]$lines.Add('')

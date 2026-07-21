@@ -218,6 +218,36 @@ function ConvertTo-UtcTime {
     return [DateTime]::SpecifyKind($parsed, [System.DateTimeKind]::Utc)
 }
 
+# The exact run-identity gate (mirrors Test-Run-Guard's Test-ResultMatchesObserved).
+# A result describes the current observation ONLY when its command and project
+# fingerprints match the observed record AND the current state, its start is not
+# before the observation, its end is not before its start, its required fields
+# are present, and - when the observing hook controlled the runId - the runId
+# matches. A fresh result for a different run/command/state is NOT evidence.
+function Test-ResultMatchesObserved {
+    param($Result, $Observed, [string]$CurrentStateFingerprint)
+    if ($null -eq $Result -or $null -eq $Observed) { return $false }
+    $rCmdFp = [string](Get-Field $Result 'commandFingerprint')
+    $rProjFp = [string](Get-Field $Result 'projectFingerprint')
+    $rRunId = [string](Get-Field $Result 'runId')
+    $rStarted = ConvertTo-UtcTime (Get-Field $Result 'startedUtc')
+    $rEnded = ConvertTo-UtcTime (Get-Field $Result 'endedUtc')
+    if ([string]::IsNullOrWhiteSpace($rCmdFp) -or [string]::IsNullOrWhiteSpace($rProjFp) -or $null -eq $rStarted -or $null -eq $rEnded) { return $false }
+    $oCmdFp = [string](Get-Field $Observed 'commandFingerprint')
+    $oProjFp = [string](Get-Field $Observed 'projectFingerprint')
+    if ([string]::IsNullOrWhiteSpace($oProjFp)) { $oProjFp = [string](Get-Field $Observed 'fingerprint') }
+    $oRunId = [string](Get-Field $Observed 'runId')
+    $oControlled = ((Get-Field $Observed 'runIdControlled') -eq $true)
+    $oObserved = ConvertTo-UtcTime (Get-Field $Observed 'observedUtc')
+    if ($rCmdFp -ne $oCmdFp) { return $false }
+    if ($rProjFp -ne $oProjFp) { return $false }
+    if (-not [string]::IsNullOrWhiteSpace($CurrentStateFingerprint) -and $rProjFp -ne $CurrentStateFingerprint) { return $false }
+    if ($null -ne $oObserved -and $rStarted -lt $oObserved.AddSeconds(-2)) { return $false }
+    if ($rEnded -lt $rStarted.AddSeconds(-2)) { return $false }
+    if ($oControlled -and $rRunId -ne $oRunId) { return $false }
+    return $true
+}
+
 # ---- current state fingerprint (git-based when available, else the cwd) ----
 $stateFingerprint = ''
 try { $stateFingerprint = [string](Get-RepoStateFingerprint -ProjectRoot $cwd) } catch { $stateFingerprint = '' }
@@ -330,15 +360,83 @@ if ($null -ne $observed) {
     }
 }
 
-# An active guarded run: only when the recorded owner process is actually
-# alive. A leftover marker from a killed run is stale, not evidence.
+# Does the recorded result actually describe THIS run/command/state? A result
+# for a DIFFERENT run is not evidence about the current one, so every
+# result-driven finding below is gated on identity - never on file age.
+#   $resultRunMatches         : identity/state match, NO age check. Negative
+#                               findings (a terminated/leaked incident) use this,
+#                               because staleness must never weaken a real
+#                               incident - only a genuine identity mismatch clears
+#                               it (spec: a mismatched negative result for a
+#                               DIFFERENT run must not block the current state).
+#   $resultIsCurrentEvidence  : the above AND still fresh. POSITIVE evidence (a
+#                               clean pass, a definite fail) additionally requires
+#                               freshness, since an old pass is not proof a run
+#                               happened for the current state.
+# When an observed record exists, bind exactly by run identity; when none does,
+# bind on the result's own project fingerprint (schema 2) or, for a legacy
+# result with no identity at all, keep the prior age-only behaviour.
+$resultRunMatches = $false
+if ($null -ne $result) {
+    if ($null -ne $observed) {
+        $resultRunMatches = (Test-ResultMatchesObserved -Result $result -Observed $observed -CurrentStateFingerprint $stateFingerprint)
+    }
+    else {
+        $rProjectFp = [string](Get-Field $result 'projectFingerprint')
+        if (-not [string]::IsNullOrWhiteSpace($rProjectFp)) { $resultRunMatches = ($rProjectFp -eq $stateFingerprint) }
+        else { $resultRunMatches = $true }   # legacy result: no identity to bind on, age governs at the positive sites
+    }
+}
+$resultIsCurrentEvidence = ($resultRunMatches -and $resultIsCurrent)
+
+# An active guarded run: only when the recorded owner process is STILL THE SAME
+# process. A bare {pid} marker is a PID-REUSE trap - an unrelated process that
+# later inherits that pid would block completion forever. The schema-2 marker
+# also records the owner's own start time and executable path, so "alive" now
+# means the live process at ownerPid has that EXACT start time and executable and
+# the marker belongs to the current project. A recycled pid, a different program,
+# or a different project makes the marker stale, never active. A malformed marker
+# is treated as absent (no infinite block). A stale marker is removed best-effort.
 $activePid = 0
 $active = $null
 try { $active = Read-JsonFile $activePath } catch { $active = $null }
 if ($null -ne $active) {
+    $ownerPidRaw = Get-Field $active 'ownerPid'
+    if ($null -eq $ownerPidRaw) { $ownerPidRaw = Get-Field $active 'pid' }   # schema-1 fallback
     $candidate = 0
-    if ([int]::TryParse([string](Get-Field $active 'pid'), [ref]$candidate) -and $candidate -gt 0) {
-        try { $null = Get-Process -Id $candidate -ErrorAction Stop; $activePid = $candidate } catch { $activePid = 0 }
+    if ([int]::TryParse([string]$ownerPidRaw, [ref]$candidate) -and $candidate -gt 0) {
+        $liveProcess = $null
+        try { $liveProcess = Get-Process -Id $candidate -ErrorAction Stop } catch { $liveProcess = $null }
+        if ($null -ne $liveProcess) {
+            $markerStartUtc = ConvertTo-UtcTime (Get-Field $active 'ownerProcessStartUtc')
+            $markerExe = [string](Get-Field $active 'ownerExecutablePath')
+            $markerProjFp = [string](Get-Field $active 'projectFingerprint')
+            if ($null -ne $markerStartUtc -or $markerExe -ne '') {
+                # Schema-2 identity check: everything present must match the LIVE process.
+                $identityOk = $true
+                if ($markerProjFp -ne '' -and $markerProjFp -ne $stateFingerprint) { $identityOk = $false }
+                if ($identityOk -and $null -ne $markerStartUtc) {
+                    $liveStart = $null
+                    try { $liveStart = $liveProcess.StartTime.ToUniversalTime() } catch { $liveStart = $null }
+                    if ($null -eq $liveStart -or [Math]::Abs(($liveStart - $markerStartUtc).TotalSeconds) -gt 2) { $identityOk = $false }
+                }
+                if ($identityOk -and $markerExe -ne '') {
+                    $liveExe = ''
+                    try { $liveExe = [string]$liveProcess.Path } catch { $liveExe = '' }
+                    if ($liveExe -ne '' -and -not [string]::Equals($liveExe, $markerExe, [System.StringComparison]::OrdinalIgnoreCase)) { $identityOk = $false }
+                }
+                if ($identityOk) { $activePid = $candidate }
+            }
+            else {
+                # Schema-1 marker (no owner identity): best-effort legacy behaviour.
+                $activePid = $candidate
+            }
+        }
+    }
+    # A marker that resolved to no active owner is stale - drop it so a recycled
+    # pid can never resurrect it. Best-effort; failure to delete never blocks.
+    if ($activePid -eq 0) {
+        try { Remove-Item -LiteralPath $activePath -Force -ErrorAction SilentlyContinue } catch { }
     }
 }
 
@@ -414,7 +512,10 @@ if ($activePid -gt 0) {
 }
 
 # ---- 2/3. a terminated or leaking run -------------------------------------
-if ($incidentKey -ne '' -and $incidentKey -ne $resolvedIncident) {
+# Gated on identity, not age: an incident from a DIFFERENT run/state is not this
+# run's problem and must not block the current state; a real incident for THIS
+# run still blocks however old its file is.
+if ($incidentKey -ne '' -and $incidentKey -ne $resolvedIncident -and $resultRunMatches) {
     # Register the owed durable note and capture the byte baseline the note
     # will be measured against, so a bare "done" cannot satisfy it later.
     if ($pendingNoteKey -ne $incidentKey) {
@@ -440,7 +541,7 @@ if ($incidentKey -ne '' -and $incidentKey -ne $resolvedIncident) {
 }
 
 # ---- 4. the run completed but failed --------------------------------------
-if ($null -ne $result -and $overall -eq 'failed' -and $resultIsCurrent) {
+if ($null -ne $result -and $overall -eq 'failed' -and $resultIsCurrentEvidence) {
     Save-CompletionState -ResolvedIncident $resolvedIncident -NoteKey $pendingNoteKey `
         -NoteReason $pendingNoteReason -NoteBaseline $pendingNoteBaseline -Deferred $deferredFingerprint
     $exitCode = [string](Get-Field $result 'exitCode')
@@ -451,11 +552,14 @@ if ($null -ne $result -and $overall -eq 'failed' -and $resultIsCurrent) {
 }
 
 # ---- 5. a test ran but there is no current proof of how it ended ----------
-if ($observedCurrent -and -not ($resultIsCurrent -and $overall -eq 'ok')) {
+if ($observedCurrent -and -not ($resultIsCurrentEvidence -and $overall -eq 'ok')) {
     Save-CompletionState -ResolvedIncident $resolvedIncident -NoteKey $pendingNoteKey `
         -NoteReason $pendingNoteReason -NoteBaseline $pendingNoteBaseline -Deferred $deferredFingerprint
     $why = if ($null -eq $result) {
         'no guarded result document exists for it'
+    }
+    elseif (-not $resultRunMatches) {
+        'the only guarded result on record is for a DIFFERENT run, command, or repository state (its run identity does not match this observation) and says nothing about how THIS run ended'
     }
     elseif (-not $resultIsCurrent) {
         'the only guarded result on record is STALE (older than ' + $evidenceMinutes + ' minutes) and is not proof that a run happened for the current state'
@@ -475,7 +579,7 @@ if ($observedCurrent -and -not ($resultIsCurrent -and $overall -eq 'ok')) {
 # ---- clean, current result -------------------------------------------------
 # From here the run itself is accounted for. Mark the incident resolved and,
 # when configured, register the always-on note requirement.
-if ($null -ne $result -and $resultIsCurrent -and $overall -eq 'ok') {
+if ($null -ne $result -and $resultIsCurrentEvidence -and $overall -eq 'ok') {
     if ($incidentKey -ne '') { $resolvedIncident = $incidentKey }
     if ($alwaysRequireNote -and $pendingNoteKey -eq '') {
         $runKey = Get-ShortHash ('run|' + $script:ResultTicks + '|' + $projectKey)

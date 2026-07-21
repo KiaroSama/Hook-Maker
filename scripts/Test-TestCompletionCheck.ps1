@@ -85,18 +85,34 @@ function Get-ProjectKey { param([string]$Root) return (Get-ShortHash $Root.ToLow
 # Same fingerprint the hook computes for the current repo state.
 function Get-Fingerprint { param([string]$Root) return (Get-RepoStateFingerprint -ProjectRoot $Root) }
 
+# Deterministic run identity per project root, so a result and an observed record
+# for the same root MATCH the hook's identity gate by construction (schema 2).
+function Get-TestRunId { param([string]$Root) return ('run-' + (Get-ProjectKey $Root)) }
+function Get-TestCommandFp {
+    param([string]$Root)
+    $sha = [System.Security.Cryptography.SHA256]::Create()
+    try { return ([System.BitConverter]::ToString($sha.ComputeHash([System.Text.Encoding]::UTF8.GetBytes('cmd|' + $Root.ToLowerInvariant())))).Replace('-', '').ToLowerInvariant().Substring(0, 32) }
+    finally { $sha.Dispose() }
+}
+
 function Write-GuardedResult {
     param(
         [object]$Copy, [string]$Root, [string]$Overall = 'ok', [int]$ExitCode = 0,
         [string]$TerminateReason = '', [string]$TerminateDetail = '', [object[]]$Leaked = @(),
-        [double]$AgeMinutes = 0
+        [double]$AgeMinutes = 0,
+        # Override the identity to simulate a DIFFERENT run/command/state.
+        [string]$RunId = '', [string]$CommandFingerprint = '', [string]$ProjectFingerprint = ''
     )
     $ended = [DateTime]::UtcNow.AddMinutes(-$AgeMinutes).ToString('o')
+    if ($RunId -eq '') { $RunId = Get-TestRunId $Root }
+    if ($CommandFingerprint -eq '') { $CommandFingerprint = Get-TestCommandFp $Root }
+    if ($ProjectFingerprint -eq '') { $ProjectFingerprint = Get-Fingerprint $Root }
     $doc = [ordered]@{
-        schema = 1; overall = $Overall; fileName = 'pwsh'; argumentCount = 3
+        schema = 2; overall = $Overall; fileName = 'pwsh'; argumentCount = 3
         workingDirectory = $Root; exitCode = $ExitCode
+        runId = $RunId; projectFingerprint = $ProjectFingerprint; commandFingerprint = $CommandFingerprint
         terminated = ($Overall -eq 'terminated'); terminateReason = $TerminateReason
-        terminateDetail = $TerminateDetail; elapsedSeconds = 12.5; idleSecondsAtEnd = 0
+        terminateDetail = $TerminateDetail; elapsedSeconds = 12.5; noProgressSeconds = 0
         heartbeats = 2; peakMemoryMB = 40; cpuSeconds = 3; peakTreeSize = 2
         leakedProcessIds = @($Leaked); lastProgress = 'Passed: 10  Failed: 0'
         stdoutBytes = 100; stderrBytes = 0; workerBudget = 4
@@ -107,16 +123,46 @@ function Write-GuardedResult {
 }
 
 function Write-ObservedRecord {
-    param([object]$Copy, [string]$Root, [bool]$Guarded = $true, [string]$Fingerprint = '')
+    param(
+        [object]$Copy, [string]$Root, [bool]$Guarded = $true, [string]$Fingerprint = '',
+        [double]$AgeMinutes = 0, [bool]$RunIdControlled = $true
+    )
+    # observedUtc is anchored a full 60s below the result's start. Both this
+    # helper and Write-GuardedResult call the git-based Get-Fingerprint, whose
+    # duration under parallel git contention is unbounded-in-seconds; a tight
+    # margin let observedUtc drift PAST a result written moments earlier, so the
+    # hook's startedUtc>=observedUtc gate flakily rejected a genuinely-matching
+    # run. 60s dwarfs any git delay yet is negligible against the 180-minute
+    # evidence window, and the identity-mismatch tests use minute-scale gaps, so
+    # this never masks a real "different run".
+    $observedUtc = [DateTime]::UtcNow.AddMinutes(-$AgeMinutes).AddSeconds(-60).ToString('o')
     if ($Fingerprint -eq '') { $Fingerprint = Get-Fingerprint $Root }
-    $doc = [ordered]@{ observedUtc = [DateTime]::UtcNow.ToString('o'); fingerprint = $Fingerprint; guarded = $Guarded }
+    $doc = [ordered]@{
+        schema = 2; observedUtc = $observedUtc; fingerprint = $Fingerprint; projectFingerprint = $Fingerprint
+        runId = (Get-TestRunId $Root); runIdControlled = $RunIdControlled
+        commandFingerprint = (Get-TestCommandFp $Root); guarded = $Guarded
+    }
     $path = Join-Path (Get-StateDir $Copy) ('TestRunGuard-observed-' + (Get-ProjectKey $Root) + '.json')
     Write-Utf8 $path ($doc | ConvertTo-Json -Depth 4)
 }
 
 function Write-ActiveMarker {
-    param([object]$Copy, [string]$Root, [int]$ProcessId)
-    $doc = [ordered]@{ pid = $ProcessId; startedUtc = [DateTime]::UtcNow.ToString('o') }
+    param([object]$Copy, [string]$Root, [int]$ProcessId,
+        [string]$StartUtc = '', [string]$ExePath = '', [string]$ProjectFingerprint = '')
+    # Schema-2 marker with owner identity. Defaults reflect the LIVE process at
+    # $ProcessId (so a marker written for the current test process validates).
+    if ($StartUtc -eq '') {
+        try { $StartUtc = (Get-Process -Id $ProcessId -ErrorAction Stop).StartTime.ToUniversalTime().ToString('o') } catch { $StartUtc = '' }
+    }
+    if ($ExePath -eq '') {
+        try { $ExePath = [string](Get-Process -Id $ProcessId -ErrorAction Stop).Path } catch { $ExePath = '' }
+    }
+    if ($ProjectFingerprint -eq '') { $ProjectFingerprint = Get-Fingerprint $Root }
+    $doc = [ordered]@{
+        schema = 2; runId = (Get-TestRunId $Root); ownerPid = $ProcessId
+        ownerProcessStartUtc = $StartUtc; ownerExecutablePath = $ExePath
+        projectFingerprint = $ProjectFingerprint; markerCreatedUtc = [DateTime]::UtcNow.ToString('o')
+    }
     $path = Join-Path (Get-StateDir $Copy) ('TestRunGuard-active-' + (Get-ProjectKey $Root) + '.json')
     Write-Utf8 $path ($doc | ConvertTo-Json -Depth 4)
 }
@@ -294,7 +340,7 @@ try {
     $c = New-IsolatedHookCopy
     $p = New-GitRepo 'StaleOk'
     Write-GuardedResult -Copy $c -Root $p -Overall 'ok' -AgeMinutes 600   # default window is 180
-    Write-ObservedRecord -Copy $c -Root $p
+    Write-ObservedRecord -Copy $c -Root $p -AgeMinutes 600   # same run, aged with the result
     $r = Fire -Copy $c -Cwd $p
     $reason = Get-BlockReason $r.Out
     Check 'a STALE ok result does not silently allow completion for an observed run' (
@@ -318,24 +364,115 @@ try {
     $c = New-IsolatedHookCopy
     $p = New-GitRepo 'EvidenceWindowMid'
     Write-GuardedResult -Copy $c -Root $p -Overall 'ok' -AgeMinutes 60
-    Write-ObservedRecord -Copy $c -Root $p
+    Write-ObservedRecord -Copy $c -Root $p -AgeMinutes 60
     $r = Fire -Copy $c -Cwd $p
     Check 'a 60-minute-old result is still CURRENT against the 180-minute window' (
         $r.Exit -eq 0 -and $r.Out -eq '') $r.Out
     $c = New-IsolatedHookCopy
     $p = New-GitRepo 'EvidenceWindowEdge'
     Write-GuardedResult -Copy $c -Root $p -Overall 'ok' -AgeMinutes 179
-    Write-ObservedRecord -Copy $c -Root $p
+    Write-ObservedRecord -Copy $c -Root $p -AgeMinutes 179
     $r = Fire -Copy $c -Cwd $p
     Check 'a 179-minute-old result is inside the window; 181 is outside (the boundary is the configured one)' (
         $r.Exit -eq 0 -and $r.Out -eq '') $r.Out
     $c = New-IsolatedHookCopy
     $p = New-GitRepo 'EvidenceWindowOver'
     Write-GuardedResult -Copy $c -Root $p -Overall 'ok' -AgeMinutes 181
-    Write-ObservedRecord -Copy $c -Root $p
+    Write-ObservedRecord -Copy $c -Root $p -AgeMinutes 181
     $r = Fire -Copy $c -Cwd $p
     Check 'a 181-minute-old result is STALE and no longer proves the run happened' (
         $r.Out -match '"decision":"block"' -and (Get-BlockReason $r.Out) -match 'STALE') $r.Out
+
+    # =====================================================================
+    Write-Host '--- run-identity gate: a result must belong to THIS observation (scope A) ---' -ForegroundColor Cyan
+    # Exact match accepted (baseline for the mismatch cases below).
+    $c = New-IsolatedHookCopy; $p = New-GitRepo 'IdMatch'
+    Write-ObservedRecord -Copy $c -Root $p
+    Write-GuardedResult -Copy $c -Root $p -Overall 'ok'
+    $r = Fire -Copy $c -Cwd $p
+    Check 'an exact-matching clean result is accepted (silent)' ($r.Exit -eq 0 -and $r.Out -eq '') $r.Out
+
+    # A fresh green result from a DIFFERENT run (mismatched runId) is not evidence.
+    $c = New-IsolatedHookCopy; $p = New-GitRepo 'IdRunMismatch'
+    Write-ObservedRecord -Copy $c -Root $p   # observed run B (runIdControlled)
+    Write-GuardedResult -Copy $c -Root $p -Overall 'ok' -RunId 'run-A-different'
+    $r = Fire -Copy $c -Cwd $p
+    Check 'a fresh green result from a different runId does NOT satisfy the observed run' (
+        $r.Out -match '"decision":"block"' -and (Get-BlockReason $r.Out) -match 'DIFFERENT run') $r.Out
+
+    # A green result for the same command but a DIFFERENT repository fingerprint.
+    $c = New-IsolatedHookCopy; $p = New-GitRepo 'IdProjMismatch'
+    Write-ObservedRecord -Copy $c -Root $p
+    Write-GuardedResult -Copy $c -Root $p -Overall 'ok' -ProjectFingerprint 'some-other-state'
+    $r = Fire -Copy $c -Cwd $p
+    Check 'a green result for a different repository fingerprint does NOT satisfy the current state' (
+        $r.Out -match '"decision":"block"') $r.Out
+
+    # A previous FAILED result must not block a later observation unless its
+    # identity matches: here it is a different run, so it must NOT block.
+    $c = New-IsolatedHookCopy; $p = New-GitRepo 'IdFailMismatch'
+    Write-ObservedRecord -Copy $c -Root $p
+    Write-GuardedResult -Copy $c -Root $p -Overall 'failed' -ExitCode 1 -RunId 'run-earlier'
+    $r = Fire -Copy $c -Cwd $p
+    Check 'a failed result from a different run blocks as unproven, not as the old failure' (
+        $r.Out -match '"decision":"block"' -and (Get-BlockReason $r.Out) -match 'DIFFERENT run' -and (Get-BlockReason $r.Out) -notmatch 'FAILED \(exit code 1\)') $r.Out
+
+    # A result whose startedUtc PREDATES observedUtc is rejected (it is from
+    # before this observation). Result started 5 min ago, observation is now.
+    $c = New-IsolatedHookCopy; $p = New-GitRepo 'IdTimeOrder'
+    Write-ObservedRecord -Copy $c -Root $p -AgeMinutes 0
+    Write-GuardedResult -Copy $c -Root $p -Overall 'ok' -AgeMinutes 5
+    $r = Fire -Copy $c -Cwd $p
+    Check 'a result that started before the observation is rejected as a different run' (
+        $r.Out -match '"decision":"block"' -and (Get-BlockReason $r.Out) -match 'DIFFERENT run') $r.Out
+
+    # A malformed result (missing runId + fingerprints) with an observed record
+    # fails CLOSED - it is not accepted as a clean pass.
+    $c = New-IsolatedHookCopy; $p = New-GitRepo 'IdMalformed'
+    Write-ObservedRecord -Copy $c -Root $p
+    Write-GuardedResult -Copy $c -Root $p -Overall 'ok' -RunId ' ' -CommandFingerprint ' ' -ProjectFingerprint ' '
+    $r = Fire -Copy $c -Cwd $p
+    Check 'a malformed result (blank identity) is not accepted as a clean pass' (
+        $r.Out -match '"decision":"block"') $r.Out
+
+    # =====================================================================
+    Write-Host '--- active marker is resistant to PID reuse (scope C) ---' -ForegroundColor Cyan
+    # Exact active identity (the live test process itself) blocks completion.
+    $c = New-IsolatedHookCopy; $p = New-GitRepo 'MarkerLive'
+    Write-ActiveMarker -Copy $c -Root $p -ProcessId $PID
+    $r = Fire -Copy $c -Cwd $p
+    Check 'an active marker whose owner process is genuinely THIS live process blocks' (
+        $r.Out -match '"decision":"block"' -and (Get-BlockReason $r.Out) -match 'STILL ACTIVE') $r.Out
+
+    # Same live pid, but the recorded start time does not match -> pid reuse,
+    # treated as stale, never active.
+    $c = New-IsolatedHookCopy; $p = New-GitRepo 'MarkerStartMismatch'
+    Write-ActiveMarker -Copy $c -Root $p -ProcessId $PID -StartUtc '2000-01-01T00:00:00.0000000Z'
+    $r = Fire -Copy $c -Cwd $p
+    Check 'a live pid with a mismatched process start time is ignored as stale (no block)' ($r.Out -eq '') $r.Out
+    $markerGone = -not (Test-Path -LiteralPath (Join-Path (Get-StateDir $c) ('TestRunGuard-active-' + (Get-ProjectKey $p) + '.json')))
+    Check 'the stale (pid-reuse) marker is cleaned up' $markerGone
+
+    # Same live pid, mismatched executable path -> stale.
+    $c = New-IsolatedHookCopy; $p = New-GitRepo 'MarkerExeMismatch'
+    Write-ActiveMarker -Copy $c -Root $p -ProcessId $PID -ExePath 'C:\Windows\System32\notepad.exe'
+    $r = Fire -Copy $c -Cwd $p
+    Check 'a live pid running a different executable is ignored as stale (no block)' ($r.Out -eq '') $r.Out
+
+    # A dead pid is ignored and its marker cleaned.
+    $c = New-IsolatedHookCopy; $p = New-GitRepo 'MarkerDead'
+    $deadProc = Start-Process -FilePath (Get-Process -Id $PID).Path -ArgumentList '-NoProfile', '-Command', 'exit 0' -PassThru -WindowStyle Hidden
+    $deadProc.WaitForExit()
+    Write-ActiveMarker -Copy $c -Root $p -ProcessId $deadProc.Id -StartUtc ([DateTime]::UtcNow.ToString('o')) -ExePath 'x'
+    $r = Fire -Copy $c -Cwd $p
+    Check 'a dead owner pid is ignored (no block) and its marker cleaned' (
+        $r.Out -eq '' -and -not (Test-Path -LiteralPath (Join-Path (Get-StateDir $c) ('TestRunGuard-active-' + (Get-ProjectKey $p) + '.json')))) $r.Out
+
+    # A malformed marker must not create an infinite completion block.
+    $c = New-IsolatedHookCopy; $p = New-GitRepo 'MarkerMalformed'
+    Write-Utf8 (Join-Path (Get-StateDir $c) ('TestRunGuard-active-' + (Get-ProjectKey $p) + '.json')) '{ this is not valid json'
+    $r = Fire -Copy $c -Cwd $p
+    Check 'a malformed active marker fails safely (no block, no loop)' ($r.Out -eq '') $r.Out
 
     $c = New-IsolatedHookCopy
     $p = New-GitRepo 'StaleTerminated'
@@ -366,8 +503,12 @@ try {
     Write-Host '--- a guarded run that is still active ---' -ForegroundColor Cyan
     $c = New-IsolatedHookCopy
     $p = New-GitRepo 'Active'
-    # A real, deterministically-alive process; no timing race, no sleep.
-    $sentinel = Start-Process -FilePath (Get-Process -Id $PID).Path -ArgumentList '-NoLogo -NoProfile -Command "Read-Host"' -PassThru -WindowStyle Hidden
+    # A real process kept ALIVE for the whole check with a bounded sleep. A
+    # Read-Host sentinel could EOF-exit under load (no console/stdin), free its
+    # pid, and a parallel test could reuse it - which the schema-2 identity check
+    # (start-time + exe must match) then correctly rejects as stale, flaking this
+    # "is it active" assertion. Start-Sleep stays alive well past the hook check.
+    $sentinel = Start-Process -FilePath (Get-Process -Id $PID).Path -ArgumentList @('-NoLogo', '-NoProfile', '-Command', 'Start-Sleep -Seconds 30') -PassThru -WindowStyle Hidden
     Write-ActiveMarker -Copy $c -Root $p -ProcessId $sentinel.Id
     $r = Fire -Copy $c -Cwd $p
     $reason = Get-BlockReason $r.Out

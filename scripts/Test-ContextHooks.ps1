@@ -68,24 +68,49 @@ function Fire {
 function New-Proj { param([string]$Name) $p = Join-Path $Work $Name; New-Item -ItemType Directory -Path $p -Force | Out-Null; return $p }
 function Write-Utf8 { param([string]$Path, [string]$Content) [System.IO.File]::WriteAllText($Path, $Content, (New-Object System.Text.UTF8Encoding $false)) }
 
-# Copies Skills-Check + a custom .env into an isolated folder, so SKILLS_DIR
-# overrides never touch the real machine-wide skill library.
+# Copies Skills-Check + a custom .env into an isolated folder, so SKILLS_DIR /
+# GLOBAL_SKILLS_DIR overrides never touch the real machine-wide skill library or
+# the real per-user global skills directory. The global skills dir is defaulted
+# to a guaranteed-absent path unless the caller overrides it, keeping every case
+# hermetic regardless of the host.
 function New-ConfiguredSkillsHookCopy {
     param([hashtable]$EnvOverrides)
     $dir = Join-Path $Work ('hookcopy-' + [guid]::NewGuid().ToString('N').Substring(0, 6))
     New-Item -ItemType Directory -Path $dir -Force | Out-Null
     Copy-Item $SkillsHook (Join-Path $dir 'Skills-Check.ps1')
     Copy-Item (Join-Path (Split-Path -Parent $SkillsHook) '..\_hooklib.ps1') (Join-Path $Work '_hooklib.ps1') -Force
+    $merged = @{}
+    foreach ($k in $EnvOverrides.Keys) { $merged[$k] = $EnvOverrides[$k] }
+    if (-not $merged.ContainsKey('GLOBAL_SKILLS_DIR')) {
+        $merged['GLOBAL_SKILLS_DIR'] = (Join-Path $Work 'no-such-global-skills')
+    }
     $lines = New-Object System.Collections.Generic.List[string]
-    foreach ($key in $EnvOverrides.Keys) { [void]$lines.Add($key + '=' + $EnvOverrides[$key]) }
+    foreach ($key in $merged.Keys) { [void]$lines.Add($key + '=' + $merged[$key]) }
     Write-Utf8 (Join-Path $dir '.env') (($lines.ToArray() -join "`r`n") + "`r`n")
     return (Join-Path $dir 'Skills-Check.ps1')
+}
+
+# Skills-Check routes by CLAUDE_PROJECT_DIR (present -> Claude, absent -> Codex).
+# Tests drive the route by setting/clearing it before a Fire; the child inherits
+# the parent env at spawn time.
+function Set-ClaudeProjectDir {
+    param([string]$Value)
+    if ([string]::IsNullOrEmpty($Value)) {
+        if (Test-Path Env:\CLAUDE_PROJECT_DIR) { Remove-Item Env:\CLAUDE_PROJECT_DIR -ErrorAction SilentlyContinue }
+    }
+    else {
+        $env:CLAUDE_PROJECT_DIR = $Value
+    }
 }
 
 function New-PromptStdin {
     param([string]$Cwd, [string]$EventName, [string]$Prompt, [string]$SessionId = 't')
     return @{ session_id = $SessionId; cwd = $Cwd; hook_event_name = $EventName; prompt = $Prompt } | ConvertTo-Json
 }
+
+# Preserve the ambient client signal so the Skills-Check routing tests can flip
+# it freely and restore it in the finally block.
+$OrigClaudeProjectDir = $env:CLAUDE_PROJECT_DIR
 
 try {
     # =====================================================================
@@ -131,6 +156,9 @@ try {
     Check '5.1 host: emits cleanly, no crash' ($r.Exit -eq 0 -and $r.Err -eq '' -and $r.Out -like '*MCP USAGE CHECK*') $r.Out
 
     # =====================================================================
+    # Force Claude routing for the .claude-based Skills-Check cases below; the
+    # dedicated routing tests flip CLAUDE_PROJECT_DIR explicitly.
+    Set-ClaudeProjectDir $Work
     Write-Host '--- Skills-Check: input handling + silent with nothing to point at ---' -ForegroundColor Cyan
     $splain = New-Proj 'SkillsPlain'
     $r = Fire -HookPath $SkillsHook -Cwd $splain -RawStdin ''
@@ -202,6 +230,83 @@ try {
     Check '5.1 host: emits cleanly, no crash' ($r.Exit -eq 0 -and $r.Err -eq '' -and $r.Out -like '*SKILL POLICY CHECK*') $r.Out
 
     # =====================================================================
+    Write-Host '--- Skills-Check: client routing is isolated (Claude vs Codex, never both policies) ---' -ForegroundColor Cyan
+    $routeProj = New-Proj 'SkillsRouting'
+    New-Item -ItemType Directory -Path (Join-Path $routeProj '.claude\skills\route-claude') -Force | Out-Null
+    New-Item -ItemType Directory -Path (Join-Path $routeProj '.agents\skills\route-codex') -Force | Out-Null
+    $routeHook = New-ConfiguredSkillsHookCopy -EnvOverrides @{ SKILLS_DIR = (Join-Path $Work 'no-such-library') }
+    # CLAUDE_PROJECT_DIR present -> Claude route (reads .claude\skills, cites skill-policy.md).
+    Set-ClaudeProjectDir $Work
+    $rc = Fire -HookPath $routeHook -Cwd $routeProj
+    Check 'auto-detect: CLAUDE_PROJECT_DIR present -> Claude route' ($rc.Out -match 'SKILL POLICY CHECK \(claude\)') $rc.Out
+    Check 'Claude route lists only the .claude skill' ($rc.Out -like '*route-claude*' -and $rc.Out -notlike '*route-codex*') $rc.Out
+    Check 'Claude route cites the non-Codex policy (skill-policy.md)' ($rc.Out -match 'skill-policy\.md') $rc.Out
+    Check 'Claude route never references the Codex policy or Codex locations' ($rc.Out -notmatch 'codex' -and $rc.Out -notmatch '\.agents') $rc.Out
+    # CLAUDE_PROJECT_DIR absent -> Codex route (reads .agents\skills, cites the Codex policy).
+    Set-ClaudeProjectDir ''
+    $rx = Fire -HookPath $routeHook -Cwd $routeProj
+    Check 'auto-detect: CLAUDE_PROJECT_DIR absent -> Codex route' ($rx.Out -match 'SKILL POLICY CHECK \(codex\)') $rx.Out
+    Check 'Codex route lists only the .agents skill' ($rx.Out -like '*route-codex*' -and $rx.Out -notlike '*route-claude*') $rx.Out
+    Check 'Codex route cites the Codex-optimized policy' ($rx.Out -match 'skill-policy-codex-optimized\.md') $rx.Out
+    Check 'Codex route never references the Claude policy or Claude locations' ($rx.Out -notmatch '\.claude' -and $rx.Out -notmatch 'skill-policy\.md') $rx.Out
+
+    # =====================================================================
+    Write-Host '--- Skills-Check: Codex route under Windows PowerShell 5.1 host ---' -ForegroundColor Cyan
+    $r51x = Fire -HookPath $routeHook -Cwd $routeProj -Exe 'powershell.exe'
+    Check '5.1 Codex route: emits cleanly, no crash' ($r51x.Exit -eq 0 -and $r51x.Err -eq '' -and $r51x.Out -match 'SKILL POLICY CHECK \(codex\)') $r51x.Out
+    Set-ClaudeProjectDir $Work
+
+    # =====================================================================
+    Write-Host '--- Skills-Check: global + project sources deduplicated by skill name: ---' -ForegroundColor Cyan
+    $dedupProj = New-Proj 'SkillsDedup'
+    $dedupGlobal = Join-Path $Work 'dedup-global-skills'
+    # Same skill (identical SKILL.md, name: shared-skill) planted in project AND
+    # global under DIFFERENT folder names, proving dedup is by name: not folder.
+    $sharedBody = "---`nname: shared-skill`ndescription: test`n---`nbody"
+    New-Item -ItemType Directory -Path (Join-Path $dedupProj '.claude\skills\folder-a') -Force | Out-Null
+    Write-Utf8 (Join-Path $dedupProj '.claude\skills\folder-a\SKILL.md') $sharedBody
+    New-Item -ItemType Directory -Path (Join-Path $dedupGlobal 'folder-b') -Force | Out-Null
+    Write-Utf8 (Join-Path $dedupGlobal 'folder-b\SKILL.md') $sharedBody
+    $dedupHook = New-ConfiguredSkillsHookCopy -EnvOverrides @{ SKILLS_DIR = (Join-Path $Work 'no-such-library'); GLOBAL_SKILLS_DIR = $dedupGlobal }
+    $rd = Fire -HookPath $dedupHook -Cwd $dedupProj
+    $sharedCount = ([regex]::Matches($rd.Out, 'shared-skill')).Count
+    Check 'the same skill in two locations is listed once (deduped by name:)' ($sharedCount -eq 1) ($rd.Out + ' [count=' + $sharedCount + ']')
+    Check 'the deduped skill shows both sources' ($rd.Out -match 'shared-skill \[global\+project\]') $rd.Out
+    Check 'identical copies are NOT flagged as a conflict' ($rd.Out -notmatch 'CONFLICT') $rd.Out
+
+    # =====================================================================
+    Write-Host '--- Skills-Check: same-name/different-content conflict is flagged, not silently overwritten ---' -ForegroundColor Cyan
+    $confProj = New-Proj 'SkillsConflict'
+    $confGlobal = Join-Path $Work 'conflict-global-skills'
+    New-Item -ItemType Directory -Path (Join-Path $confProj '.claude\skills\dup') -Force | Out-Null
+    Write-Utf8 (Join-Path $confProj '.claude\skills\dup\SKILL.md') "---`nname: dup-skill`n---`nPROJECT VERSION"
+    New-Item -ItemType Directory -Path (Join-Path $confGlobal 'dup') -Force | Out-Null
+    Write-Utf8 (Join-Path $confGlobal 'dup\SKILL.md') "---`nname: dup-skill`n---`nGLOBAL VERSION (different)"
+    $confHook = New-ConfiguredSkillsHookCopy -EnvOverrides @{ SKILLS_DIR = (Join-Path $Work 'no-such-library'); GLOBAL_SKILLS_DIR = $confGlobal }
+    $rf = Fire -HookPath $confHook -Cwd $confProj
+    Check 'a same-name/different-content skill is reported as a CONFLICT' ($rf.Out -match 'CONFLICT' -and $rf.Out -match 'dup-skill') $rf.Out
+    Check 'the conflict advises explicit repair, never a silent overwrite' ($rf.Out -match 'do NOT overwrite silently') $rf.Out
+
+    # =====================================================================
+    Write-Host '--- Skills-Check: import + record guidance is accurate and secret-free ---' -ForegroundColor Cyan
+    $guideProj = New-Proj 'SkillsGuide'
+    New-Item -ItemType Directory -Path (Join-Path $guideProj '.ai') -Force | Out-Null
+    Write-Utf8 (Join-Path $guideProj '.ai\SKILLS.md') '# active skills'
+    $guideLib = Join-Path $Work 'guide-library'
+    New-Item -ItemType Directory -Path $guideLib -Force | Out-Null
+    $guideHook = New-ConfiguredSkillsHookCopy -EnvOverrides @{ SKILLS_DIR = $guideLib }
+    $rg = Fire -HookPath $guideHook -Cwd $guideProj
+    Check 'import guidance: copy the minimal set (1-5)' ($rg.Out -match 'minimal set \(1-5\)') $rg.Out
+    Check 'import guidance: never follow reparse points' ($rg.Out -match 'never reparse points') $rg.Out
+    Check 'import guidance: exclude secrets/caches/VCS metadata' ($rg.Out -match 'secrets/caches/VCS metadata') $rg.Out
+    Check 'import guidance: never overwrite a modified project skill silently' ($rg.Out -match 'never overwrite a modified project skill silently') $rg.Out
+    Check 'record guidance: record source/destination/hash/agent/reason in .ai/SKILLS.md' ($rg.Out -match 'source/destination/hash/agent/reason') $rg.Out
+    Check 'record guidance: .ai/SKILLS.md is local-only and secret-free' ($rg.Out -match 'local-only, secret-free') $rg.Out
+
+    # Restore the ambient client signal for the remaining (client-agnostic) tests.
+    Set-ClaudeProjectDir $OrigClaudeProjectDir
+
+    # =====================================================================
     Write-Host '--- Large-File-Check: pre-task anti-fragmentation wording ---' -ForegroundColor Cyan
     $lfProj = New-Proj 'LargeFilePlain'
     $r = Fire -HookPath $LargeFileHook -Cwd $lfProj
@@ -230,6 +335,7 @@ try {
     Check 'a safe/no-split outcome remains explicitly valid' ($r.Out -match 'finish with no split') $r.Out
 }
 finally {
+    Set-ClaudeProjectDir $OrigClaudeProjectDir
     if (-not $KeepArtifacts) {
         try {
             Get-ChildItem -LiteralPath $Work -Recurse -Force -ErrorAction SilentlyContinue |

@@ -187,6 +187,100 @@ try {
     Check 'a NEW session with a relevant prompt reminds again' ($r3.Out -like '*GRAPH READ CHECK*') $r3.Out
 
     # =====================================================================
+    Write-Host '--- Graph-Read-Check: relevant PERSIAN prompt (graph exists) ---' -ForegroundColor Cyan
+    # Persian terms are built from code points so this file stays pure ASCII and
+    # is read identically by pwsh 7 and Windows PowerShell 5.1 (no BOM reliance).
+    $faArch = -join ([char[]](0x645, 0x639, 0x645, 0x627, 0x631, 0x6cc))   # architecture
+    $faDep = -join ([char[]](0x648, 0x627, 0x628, 0x633, 0x62a, 0x6af, 0x6cc)) # dependency
+    $pGraphFa = New-Proj 'GraphPersian'
+    New-Item -ItemType Directory -Path (Join-Path $pGraphFa 'graphify-out') -Force | Out-Null
+    Write-Utf8 (Join-Path $pGraphFa 'graphify-out\graph.json') '{}'
+    $faStdin1 = @{ session_id = 'g-fa1'; cwd = $pGraphFa; hook_event_name = 'UserPromptSubmit'; prompt = ('please review the ' + $faArch + ' of this project') } | ConvertTo-Json
+    $r = Fire -Cwd $pGraphFa -HookPath $GraphHook -RawStdin $faStdin1
+    Check 'relevant Persian (architecture) -> scoped-query reminder' ($r.Out -like '*GRAPH READ CHECK*' -and $r.Out -like '*graphify query*') $r.Out
+    $faStdin2 = @{ session_id = 'g-fa2'; cwd = $pGraphFa; hook_event_name = 'UserPromptSubmit'; prompt = ('this ' + $faDep + ' needs checking') } | ConvertTo-Json
+    $r = Fire -Cwd $pGraphFa -HookPath $GraphHook -RawStdin $faStdin2
+    Check 'relevant Persian (dependency) -> scoped-query reminder' ($r.Out -like '*GRAPH READ CHECK*' -and $r.Out -like '*graphify query*') $r.Out
+    # A dedicated English relevant case with a fresh project (the graph-exists path).
+    $pGraphEn = New-Proj 'GraphEnglish'
+    New-Item -ItemType Directory -Path (Join-Path $pGraphEn 'graphify-out') -Force | Out-Null
+    Write-Utf8 (Join-Path $pGraphEn 'graphify-out\graph.json') '{}'
+    $enStdin = @{ session_id = 'g-en1'; cwd = $pGraphEn; hook_event_name = 'UserPromptSubmit'; prompt = 'map the call path and module dependencies' } | ConvertTo-Json
+    $r = Fire -Cwd $pGraphEn -HookPath $GraphHook -RawStdin $enStdin
+    Check 'relevant English -> scoped-query reminder' ($r.Out -like '*this project has a graphify knowledge graph*' -and $r.Out -like '*graphify query*') $r.Out
+
+    # =====================================================================
+    Write-Host '--- Graph-Read-Check: missing graph + graphify AVAILABLE -> create-then-query, never runs graphify ---' -ForegroundColor Cyan
+    # A fake graphify.cmd on PATH makes Get-Command resolve it WITHOUT running
+    # it. It writes a sentinel IF executed; the sentinel must never appear.
+    $fakeToolDir = Join-Path $Work 'faketool'
+    New-Item -ItemType Directory -Path $fakeToolDir -Force | Out-Null
+    $sentinel = Join-Path $Work 'graphify-was-run.txt'
+    Write-Utf8 (Join-Path $fakeToolDir 'graphify.cmd') ("@echo off`r`necho ran> `"" + $sentinel + "`"`r`n")
+    $pMiss = New-Proj 'MissGraphAvail'   # deliberately no graphify-out
+    $savedPath = $env:PATH
+    $env:PATH = $fakeToolDir + [System.IO.Path]::PathSeparator + $savedPath
+    try {
+        $missStdin = @{ session_id = 'm-1'; cwd = $pMiss; hook_event_name = 'UserPromptSubmit'; prompt = 'refactor the architecture and check module dependencies across the codebase' } | ConvertTo-Json
+        $r = Fire -Cwd $pMiss -HookPath $GraphHook -RawStdin $missStdin
+        Check 'missing graph + relevant -> create-then-query guidance' ($r.Out -like '*GRAPH READ CHECK*' -and $r.Out -like '*create the graph*' -and $r.Out -like '*graphify query*') $r.Out
+        Check 'hook did NOT execute graphify (no sentinel)' (-not (Test-Path -LiteralPath $sentinel))
+        # Missing graph + trivial/docs prompt -> total silence (new session).
+        $trivialStdin = @{ session_id = 'm-triv'; cwd = $pMiss; hook_event_name = 'UserPromptSubmit'; prompt = 'fix a typo in the changelog wording' } | ConvertTo-Json
+        $r = Fire -Cwd $pMiss -HookPath $GraphHook -RawStdin $trivialStdin
+        Check 'missing graph + trivial/docs prompt -> silent' ($r.Exit -eq 0 -and $r.Out -eq '') $r.Out
+    }
+    finally { $env:PATH = $savedPath }
+
+    # =====================================================================
+    Write-Host '--- Graph-Read-Check: missing graph + graphify UNAVAILABLE -> one fallback advisory, no loop ---' -ForegroundColor Cyan
+    $pMiss2 = New-Proj 'MissGraphUnavail'   # no graphify-out
+    $savedPath = $env:PATH
+    $env:PATH = (Join-Path $env:SystemRoot 'System32')   # a sane PATH with no graphify
+    try {
+        $u1 = @{ session_id = 'u-1'; cwd = $pMiss2; hook_event_name = 'UserPromptSubmit'; prompt = 'trace the call path and impact of this entry point' } | ConvertTo-Json
+        $r = Fire -Cwd $pMiss2 -HookPath $GraphHook -RawStdin $u1
+        Check 'missing graph + graphify unavailable -> bounded fallback advisory' ($r.Out -like '*GRAPH READ CHECK*' -and $r.Out -like '*fall back*' -and $r.Out -like '*not found on PATH*') $r.Out
+        # Same session + same (no-graph) state -> deduped, never loops.
+        $r2 = Fire -Cwd $pMiss2 -HookPath $GraphHook -RawStdin $u1
+        Check 'unavailable fallback does not repeat in the same session/state' ($r2.Exit -eq 0 -and $r2.Out -eq '') $r2.Out
+    }
+    finally { $env:PATH = $savedPath }
+
+    # =====================================================================
+    Write-Host '--- Graph-Read-Check: fingerprint by session + graph version, existence change re-enables ---' -ForegroundColor Cyan
+    $pFp = New-Proj 'GraphFingerprint'
+    $fpGraph = Join-Path $pFp 'graphify-out\graph.json'
+    New-Item -ItemType Directory -Path (Join-Path $pFp 'graphify-out') -Force | Out-Null
+    Write-Utf8 $fpGraph '{}'
+    $fpStdin = @{ session_id = 'fp-1'; cwd = $pFp; hook_event_name = 'UserPromptSubmit'; prompt = 'refactor the module structure' } | ConvertTo-Json
+    $r = Fire -Cwd $pFp -HookPath $GraphHook -RawStdin $fpStdin
+    Check 'first relevant prompt in session -> reminder' ($r.Out -like '*GRAPH READ CHECK*') $r.Out
+    $r2 = Fire -Cwd $pFp -HookPath $GraphHook -RawStdin $fpStdin
+    Check 'same session + unchanged graph -> silent (fingerprint dedup)' ($r2.Exit -eq 0 -and $r2.Out -eq '') $r2.Out
+    # Regenerate the graph (new version): its LastWriteTime changes the token.
+    $gi = Get-Item -LiteralPath $fpGraph -Force
+    $gi.LastWriteTimeUtc = $gi.LastWriteTimeUtc.AddMinutes(5)
+    $r3 = Fire -Cwd $pFp -HookPath $GraphHook -RawStdin $fpStdin
+    Check 'a graph version change re-enables the reminder in the same session' ($r3.Out -like '*GRAPH READ CHECK*') $r3.Out
+
+    # Existence change (no graph -> graph appears): create-guidance, then read.
+    $pEx = New-Proj 'GraphExistenceChange'   # starts with no graphify-out
+    $savedPath = $env:PATH
+    $env:PATH = $fakeToolDir + [System.IO.Path]::PathSeparator + (Join-Path $env:SystemRoot 'System32')
+    try {
+        $exStdin = @{ session_id = 'ex-1'; cwd = $pEx; hook_event_name = 'UserPromptSubmit'; prompt = 'what is the impact across modules and entry points' } | ConvertTo-Json
+        $r = Fire -Cwd $pEx -HookPath $GraphHook -RawStdin $exStdin
+        Check 'no graph yet -> create/fallback guidance (not the read note)' ($r.Out -like '*no graphify knowledge graph exists*' -and $r.Out -notlike '*this project has a graphify knowledge graph*') $r.Out
+        # The graph now appears; the same session must switch to the READ note.
+        New-Item -ItemType Directory -Path (Join-Path $pEx 'graphify-out') -Force | Out-Null
+        Write-Utf8 (Join-Path $pEx 'graphify-out\graph.json') '{}'
+        $r2 = Fire -Cwd $pEx -HookPath $GraphHook -RawStdin $exStdin
+        Check 'graph now exists -> read reminder re-enabled (existence change)' ($r2.Out -like '*this project has a graphify knowledge graph*' -and $r2.Out -like '*graphify query*') $r2.Out
+    }
+    finally { $env:PATH = $savedPath }
+
+    # =====================================================================
     Write-Host '--- Graph-Read-Check: Windows PowerShell 5.1 host ---' -ForegroundColor Cyan
     $r = Fire -Cwd $proj4 -HookPath $GraphHook -Exe 'powershell.exe'
     Check '5.1 host: emits cleanly' ($r.Exit -eq 0 -and $r.Err -eq '' -and $r.Out -like '*GRAPH READ CHECK*') $r.Out
