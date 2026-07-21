@@ -339,6 +339,11 @@ try {
     $msg17 = Get-Advisory $r.Out
     Check '21a. reaching the scan ceiling reports PARTIAL coverage' ($msg17 -match '(?i)PARTIAL scan') $msg17
     Check '21b. a normal small scan is NOT marked partial (case 9 report was clean)' ($msg6 -notmatch '(?i)PARTIAL') $msg6
+    # R1: a ceiling-only partial must name the FILE ceiling in the OFFENDER report -
+    # not a read failure, and not the directory/time limit that were not hit.
+    Check '21c. the ceiling-only offender report names the FILE ceiling, not a read failure or a dir/time limit' (
+        $msg17 -match '(?i)scan ceiling of 1 files was reached' -and
+        $msg17 -notmatch '(?i)could not be read' -and $msg17 -notmatch '(?i)directory ceiling' -and $msg17 -notmatch '(?i)time limit') $msg17
 
     # =====================================================================
     Write-Host '--- Stop scan: MAX_FILES is a real per-file ceiling (one flat dir over the limit) ---' -ForegroundColor Cyan
@@ -482,6 +487,81 @@ try {
     else {
         Write-Host '[SKIP] could not lock a file exclusively in this harness - read-failure assertion skipped' -ForegroundColor Yellow
     }
+
+    # =====================================================================
+    Write-Host '--- R1: a read-failure-only partial WITH an offender names the read failure, not a ceiling ---' -ForegroundColor Cyan
+    # An offender is readable and reported; a sibling file is exclusively locked so
+    # its ReadLines throws -> $scanIncomplete with NO ceiling hit. The OFFENDER
+    # report's partial-cause must name the read failure, never assume a scan ceiling.
+    $hcR1 = New-IsolatedHookCopy
+    $projR1 = New-Proj 'ReadFailWithOffender'
+    New-SourceFile (Join-Path $projR1 'src\big.py') 900
+    $lockedR1 = Join-Path $projR1 'src\locked.py'
+    New-SourceFile $lockedR1 200
+    $lockStreamR1 = $null
+    $lockedOk = $false
+    try {
+        $lockStreamR1 = [System.IO.File]::Open($lockedR1, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::None)
+        $lockedOk = $true
+    }
+    catch { $lockedOk = $false }
+    if ($lockedOk) {
+        try {
+            $rR1 = Fire -HookPath $hcR1.Script -Cwd $projR1 -EventName 'Stop' -LocalAppData $hcR1.LocalAppData
+        }
+        finally { $lockStreamR1.Dispose() }
+        $msgR1 = Get-Advisory $rR1.Out
+        Check 'R1a. the readable offender is still reported' ($msgR1 -match 'big\.py \(900 lines\)') $msgR1
+        Check 'R1b. the offender report marks PARTIAL and names the READ FAILURE cause' (
+            $msgR1 -match '(?i)PARTIAL scan' -and $msgR1 -match '(?i)could not be read') $msgR1
+        Check 'R1c. it does NOT falsely claim a scan ceiling / directory / time limit was hit' (
+            $msgR1 -notmatch '(?i)scan ceiling' -and $msgR1 -notmatch '(?i)directory ceiling' -and $msgR1 -notmatch '(?i)time limit') $msgR1
+    }
+    else {
+        Write-Host '[SKIP] could not lock a file exclusively in this harness - R1 read-failure-with-offender assertions skipped' -ForegroundColor Yellow
+    }
+
+    # =====================================================================
+    Write-Host '--- R2: MAX_DIRECTORIES is a real traversal ceiling; the report names "directories" ---' -ForegroundColor Cyan
+    # With MAX_DIRECTORIES=1 only the root directory is traversed: its offender is
+    # found, but a subdirectory (and the oversized file inside it) is never entered.
+    # Coverage is PARTIAL and the offender report must name the DIRECTORY ceiling.
+    $hcR2 = New-IsolatedHookCopy -EnvContent "MAX_DIRECTORIES=1`n"
+    $projR2 = New-Proj 'DirCeiling'
+    New-SourceFile (Join-Path $projR2 'big.py') 900
+    New-SourceFile (Join-Path $projR2 'sub\deep.py') 1500
+    $rR2 = Fire -HookPath $hcR2.Script -Cwd $projR2 -EventName 'Stop' -LocalAppData $hcR2.LocalAppData
+    $msgR2 = Get-Advisory $rR2.Out
+    Check 'R2a. the root offender IS reported (root directory was traversed)' ($msgR2 -match 'big\.py \(900 lines\)') $msgR2
+    Check 'R2b. the file behind the directory ceiling is NOT reached' ($msgR2 -notmatch 'deep\.py') $msgR2
+    Check 'R2c. coverage is PARTIAL and the cause names the DIRECTORY ceiling (not files/time/read failure)' (
+        $msgR2 -match '(?i)PARTIAL scan' -and $msgR2 -match '(?i)directory ceiling of 1 directories was reached' -and
+        $msgR2 -notmatch '(?i)source-file scan ceiling' -and $msgR2 -notmatch '(?i)time limit' -and $msgR2 -notmatch '(?i)could not be read') $msgR2
+
+    # =====================================================================
+    Write-Host '--- R2: MAX_DIRECTORIES / MAX_SCAN_SECONDS validate and fall back safely ---' -ForegroundColor Cyan
+    # A time trigger is not deterministically forceable in a fast fixture, so assert
+    # the config is HONOURED/VALIDATED: invalid or out-of-range values fall back to
+    # the defaults (4000 dirs, 5 s), so a tiny project still scans fully - no crash,
+    # no false PARTIAL - and the offender is reported normally.
+    $hcR2v = New-IsolatedHookCopy -EnvContent "MAX_DIRECTORIES=not-a-number`nMAX_SCAN_SECONDS=99999`n"
+    $projR2v = New-Proj 'CeilingFallback'
+    New-SourceFile (Join-Path $projR2v 'src\a.py') 801
+    New-SourceFile (Join-Path $projR2v 'sub\deep.py') 1500
+    $rR2v = Fire -HookPath $hcR2v.Script -Cwd $projR2v -EventName 'Stop' -LocalAppData $hcR2v.LocalAppData
+    $msgR2v = Get-Advisory $rR2v.Out
+    Check 'R2d. invalid MAX_DIRECTORIES / out-of-range MAX_SCAN_SECONDS do not crash the hook' ($rR2v.Exit -eq 0 -and $rR2v.Err -eq '') $rR2v.Err
+    Check 'R2e. they fall back to defaults: a tiny project scans fully, offenders reported, NOT partial' (
+        $msgR2v -match 'a\.py \(801 lines\)' -and $msgR2v -match 'deep\.py \(1500 lines\)' -and $msgR2v -notmatch '(?i)PARTIAL') $msgR2v
+
+    # A valid MAX_SCAN_SECONDS is honoured (large enough not to trip on a tiny scan).
+    $hcR2s = New-IsolatedHookCopy -EnvContent "MAX_SCAN_SECONDS=60`n"
+    $projR2s = New-Proj 'ScanSecondsHonoured'
+    New-SourceFile (Join-Path $projR2s 'src\a.py') 900
+    $rR2s = Fire -HookPath $hcR2s.Script -Cwd $projR2s -EventName 'Stop' -LocalAppData $hcR2s.LocalAppData
+    $msgR2s = Get-Advisory $rR2s.Out
+    Check 'R2f. a valid MAX_SCAN_SECONDS is honoured: normal scan completes, offender reported, NOT partial' (
+        $msgR2s -match 'a\.py \(900 lines\)' -and $msgR2s -notmatch '(?i)PARTIAL') $msgR2s
 
     # =====================================================================
     Write-Host '--- Stop scan: the MAX_FILES ceiling counts SOURCE files - a trailing non-source file is not PARTIAL ---' -ForegroundColor Cyan
