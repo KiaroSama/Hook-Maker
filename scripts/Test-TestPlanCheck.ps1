@@ -85,7 +85,7 @@ function Fire {
         [string]$HookPath, [string]$Cwd, [string]$EventName, [string]$Prompt = '',
         [string]$SessionId = 'sess1', [string]$LocalAppData,
         [switch]$ClaudeInputShape, [string]$ClaudeProjectDir = '',
-        [switch]$StopHookActive, [string]$Exe = 'pwsh'
+        [switch]$StopHookActive, [string]$Exe = 'pwsh', [hashtable]$ExtraEnv = @{}
     )
     $obj = @{ session_id = $SessionId; cwd = $Cwd; hook_event_name = $EventName }
     if ($Prompt -ne '') { $obj['prompt'] = $Prompt }
@@ -106,7 +106,9 @@ function Fire {
         Wait = $true; NoNewWindow = $true; PassThru = $true
     }
     if ((Get-Command Start-Process).Parameters.ContainsKey('Environment')) {
-        $startArgs.Environment = @{ PATH = $env:PATH; LOCALAPPDATA = $LocalAppData; CLAUDE_PROJECT_DIR = $ClaudeProjectDir }
+        $envTable = @{ PATH = $env:PATH; LOCALAPPDATA = $LocalAppData; CLAUDE_PROJECT_DIR = $ClaudeProjectDir }
+        foreach ($k in $ExtraEnv.Keys) { $envTable[$k] = [string]$ExtraEnv[$k] }
+        $startArgs.Environment = $envTable
     }
     $proc = Start-Process @startArgs
     $out = if (Test-Path -LiteralPath $outFile) { ([System.IO.File]::ReadAllText($outFile)).Trim() } else { '' }
@@ -399,6 +401,76 @@ New-Item -ItemType File -Path (Join-Path $PSScriptRoot 'EXECUTED-MARKER.txt') -F
     Check 'the findings ceiling makes the scan report PARTIAL coverage' ($msgFind -match '(?i)PARTIAL') $msgFind
     $observedCount = @([regex]::Matches($msgFind, 'blind sleep of')).Count
     Check 'only the capped number of findings (1) is emitted' ($observedCount -eq 1) ("count=$observedCount :: " + $msgFind)
+
+    # =====================================================================
+    Write-Host '--- one huge single directory trips the TIME ceiling MID-ENUMERATION (HM-04) ---' -ForegroundColor Cyan
+    # Pre-fix, the wall-time ceiling was checked only BETWEEN directories, so one
+    # directory holding a huge number of non-test (yet extension-matching) files ran
+    # to the end during enumeration and overran TEST_PLAN_MAX_SCAN_SECONDS. The fix
+    # checks the deadline per file (behind the extension match). The test seam forces
+    # a deterministic mid-enumeration trip so the assertion never depends on real
+    # wall-clock timing.
+    $projTrip = New-Proj 'TimeTrip'
+    # Many extension-matching NON-test files that sort BEFORE the one test file, so a
+    # mid-enumeration TIME stop is reached before the test file is ever enumerated.
+    # The test file (sorts last) carries the only finding.
+    for ($fi = 1; $fi -le 12; $fi++) {
+        Write-Utf8 (Join-Path $projTrip ('bulk\f{0:00}.ps1' -f $fi)) ('$x = ' + $fi + "`n")
+    }
+    Write-Utf8 (Join-Path $projTrip 'bulk\zz_test_slow.ps1') "Start-Sleep -Seconds 300`n"
+    # Seam ON: trip after 5 extension-matching files -> the walk stops inside `bulk`
+    # before reaching zz_test_slow, so its finding is absent and the cause is TIME.
+    $hcTrip = New-IsolatedHookCopy
+    $rTrip = Fire -HookPath $hcTrip.Script -Cwd $projTrip -EventName 'SessionStart' -LocalAppData $hcTrip.LocalAppData -ExtraEnv @{ TESTPLANCHECK_TEST_TRIP_TIME_AFTER_FILES = '5' }
+    $msgTrip = Get-Message $rTrip.Out
+    Check 'a mid-enumeration TIME stop marks the scan PARTIAL' ($msgTrip -match '(?i)PARTIAL') $msgTrip
+    Check 'the partial cause NAMES time, not files/dirs/read-failure' (
+        $msgTrip -match 'scan time limit' -and $msgTrip -notmatch 'directory ceiling' -and
+        $msgTrip -notmatch 'candidate-file ceiling' -and $msgTrip -notmatch 'could not be read') $msgTrip
+    Check 'the finding behind the trip point is absent (enumeration really stopped early)' ($msgTrip -notmatch 'zz_test_slow') $msgTrip
+
+    # NEGATIVE CONTROL: same fixture, NO seam -> the real Stopwatch never trips on a
+    # handful of tiny files, so the scan completes, the finding IS found, and nothing
+    # is marked partial. Proves the PARTIAL above is the mid-enumeration time stop,
+    # not the fixture itself.
+    $hcFull = New-IsolatedHookCopy
+    $rFull = Fire -HookPath $hcFull.Script -Cwd $projTrip -EventName 'SessionStart' -LocalAppData $hcFull.LocalAppData
+    $msgFull = Get-Message $rFull.Out
+    Check 'without the seam the same fixture scans fully (not partial)' ($msgFull -notmatch '(?i)PARTIAL') $msgFull
+    Check 'without the seam the test-file finding IS reported' ($msgFull -match 'zz_test_slow\.ps1:1 - blind sleep of 300s') $msgFull
+
+    # =====================================================================
+    Write-Host '--- a reparse-point (junction) scan ROOT is refused and marked partial (HM-04) ---' -ForegroundColor Cyan
+    # Real test content in a normal directory, reachable as a scan ROOT only via a
+    # junction. The root reparse check must refuse the junction root (push nothing)
+    # so no finding comes from behind it, and mark the scan partial naming the root.
+    $rootTgt = Join-Path $Work ('rproot-tgt-' + [guid]::NewGuid().ToString('N').Substring(0, 6))
+    New-Item -ItemType Directory -Path (Join-Path $rootTgt 'tests') -Force | Out-Null
+    Write-Utf8 (Join-Path $rootTgt 'tests\test_root.py') "import time`ntime.sleep(300)`n"
+    # Control: scanning the target directory DIRECTLY finds the finding (it is real).
+    $hcCtl = New-IsolatedHookCopy
+    $rCtl = Fire -HookPath $hcCtl.Script -Cwd $rootTgt -EventName 'SessionStart' -LocalAppData $hcCtl.LocalAppData
+    Check 'control: scanning the target directly DOES find the finding' ((Get-Message $rCtl.Out) -match 'test_root\.py:2 - blind sleep of 300s') (Get-Message $rCtl.Out)
+    # Now a junction whose cwd IS the reparse point.
+    $rootJct = Join-Path $Work ('rproot-jct-' + [guid]::NewGuid().ToString('N').Substring(0, 6))
+    $madeRootJct = $false
+    try { New-Item -ItemType Junction -Path $rootJct -Target $rootTgt -ErrorAction Stop | Out-Null; $madeRootJct = $true } catch { }
+    if (-not $madeRootJct) {
+        try { & cmd /c mklink /J "$rootJct" "$rootTgt" 2>$null | Out-Null } catch { }
+        $madeRootJct = (Test-Path -LiteralPath $rootJct) -and
+            ((((Get-Item -LiteralPath $rootJct -Force).Attributes) -band [System.IO.FileAttributes]::ReparsePoint) -ne 0)
+    }
+    if ($madeRootJct) {
+        $hcJct = New-IsolatedHookCopy
+        $rJct = Fire -HookPath $hcJct.Script -Cwd $rootJct -EventName 'SessionStart' -LocalAppData $hcJct.LocalAppData
+        $msgJct = Get-Message $rJct.Out
+        Check 'a junction scan ROOT is refused -> the scan is PARTIAL naming the root' (
+            $msgJct -match '(?i)PARTIAL' -and $msgJct -match '(?i)scan root is a junction') $msgJct
+        Check 'the finding behind the junction root is absent (root not followed)' ($msgJct -notmatch 'test_root\.py') $msgJct
+    }
+    else {
+        Write-Host '[SKIP] root junction could not be created in this harness - reparse-root assertion skipped' -ForegroundColor Yellow
+    }
 }
 finally {
     $env:CLAUDE_PROJECT_DIR = $SavedClaudeProjectDir

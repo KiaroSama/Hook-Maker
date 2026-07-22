@@ -118,10 +118,12 @@ if ($eventName -eq 'UserPromptSubmit') {
 
 # ---- bounded, read-only, iterative risk scan --------------------------------
 # An EXPLICIT-STACK directory walk that PRUNES excluded trees before descending
-# (node_modules/.git/.venv are never even enumerated) and never follows a
-# reparse point (junction/symlink). Every dimension is capped and configurable:
-# directories visited, candidate test files inspected, bytes read per file,
-# total wall time, and findings emitted. Everything reported still carries a
+# (node_modules/.git/.venv are never even enumerated), refuses a reparse-point
+# ROOT, and never follows a child reparse point (junction/symlink). Every
+# dimension is capped and configurable: directories visited, candidate test files
+# inspected, bytes read per file, total wall time, and findings emitted. The wall
+# time is enforced BETWEEN directories and DURING file/subdir enumeration, so one
+# huge directory cannot overrun the ceiling. Everything reported still carries a
 # file:line the reader can open; nothing is inferred or theoretical.
 $maxDirs      = Read-BoundedIntSetting 'TEST_PLAN_MAX_DIRS'          4000 1 1000000
 $maxFiles     = Read-BoundedIntSetting 'TEST_PLAN_MAX_FILES'          200 1 100000
@@ -129,47 +131,108 @@ $maxFileBytes = 1KB * (Read-BoundedIntSetting 'TEST_PLAN_MAX_FILE_KB' 400 1 1048
 $maxSeconds   = Read-BoundedIntSetting 'TEST_PLAN_MAX_SCAN_SECONDS'     5 1 3600
 $maxFindings  = Read-BoundedIntSetting 'TEST_PLAN_MAX_FINDINGS'         8 1 1000
 
+# TEST-ONLY seam (NO effect in production; deliberately absent from .env.example).
+# Mirrors Large-File-Check's LARGEFILECHECK_TEST_TRIP_TIME_AFTER_FILES: when set to
+# a positive integer N, the in-file-loop wall-time check trips after N
+# extension-matching files instead of consulting the real Stopwatch, so the offline
+# suite can prove a deterministic MID-ENUMERATION time stop without depending on
+# real wall-clock timing. Unset/invalid -> 0 -> inert, so production uses only the
+# real $scanTimer.
+$testTripAfterFiles = 0
+if (-not [string]::IsNullOrWhiteSpace($env:TESTPLANCHECK_TEST_TRIP_TIME_AFTER_FILES)) {
+    $parsedTrip = 0
+    if ([int]::TryParse($env:TESTPLANCHECK_TEST_TRIP_TIME_AFTER_FILES, [ref]$parsedTrip) -and $parsedTrip -ge 1) {
+        $testTripAfterFiles = $parsedTrip
+    }
+}
+
 # Directory names pruned BEFORE descent - mirrors Secrets-Check.ps1 $excludedDirs
 # (plus .tox/site-packages that this scan has always skipped).
 $excludedDirs = @('.git', 'node_modules', 'vendor', 'vendors', 'dist', 'build', 'out', 'target', 'coverage', '.cache', 'cache', '__pycache__', '.venv', 'venv', 'env', '.ai', 'graphify-out', '.claude', '.codex', '.agents', 'bin', 'obj', '.tox', 'site-packages')
 $extRegex = '(?i)^\.(ps1|psm1|py|js|mjs|cjs|ts|sh|rb|go)$'
 
-# A ceiling hit OR an unreadable directory sets this; the advisory then declares
-# the scan partial instead of implying whole-repository coverage.
-$partialScan = $false
+# Partial-coverage flags - each names a DISTINCT reason the walk stopped short, so
+# the advisory states the REAL cause(s), never a guess (mirrors Large-File-Check):
+#   $fileLimitReached     the candidate-file (MAX_FILES) ceiling.
+#   $dirLimitReached      the MAX_DIRS directory-traversal ceiling.
+#   $timeLimitReached     the MAX_SCAN_SECONDS wall-time ceiling, now checked
+#                         BETWEEN directories AND per file (behind the extension
+#                         match) AND per subdir, so a single huge directory can no
+#                         longer overrun the advertised ceiling during enumeration.
+#   $findingsLimitReached the MAX_FINDINGS ceiling (set in the processing loop).
+#   $scanIncomplete       a read failure (locked/unreadable directory or file).
+#   $rootReparse          the scan ROOT itself is a junction/symlink; it is refused
+#                         (nothing pushed) so no finding can come from behind it.
+# ANY flag means the project was not fully scanned, so a no-finding result is NOT
+# an all-clear.
+$fileLimitReached = $false
+$dirLimitReached = $false
+$timeLimitReached = $false
+$findingsLimitReached = $false
+$scanIncomplete = $false
+$rootReparse = $false
 $dirsVisited = 0
+$filesScanned = 0
 $scanTimer = [System.Diagnostics.Stopwatch]::StartNew()
 $candidates = New-Object System.Collections.Generic.List[object]
 
 $rootFull = $cwd.TrimEnd('\', '/')
 try { $rootFull = (Get-Item -LiteralPath $cwd -Force -ErrorAction Stop).FullName.TrimEnd('\', '/') } catch { }
+# A reparse-point ROOT (cwd itself a junction/symlink) is refused: its target can
+# live anywhere, so walking it is the same escape the per-child check below closes.
+# Unlike Large-File-Check (a silent Stop hook that exits here) this hook still emits
+# its advisory, so it does not exit - it pushes nothing and marks the scan PARTIAL,
+# so no finding can come from behind the junction.
+try { $rootReparse = ((([System.IO.File]::GetAttributes($rootFull)) -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) } catch { }
 $stack = New-Object System.Collections.Generic.Stack[string]
-$stack.Push($rootFull)
+if (-not $rootReparse) { $stack.Push($rootFull) }
 while ($stack.Count -gt 0) {
-    if ($dirsVisited -ge $maxDirs -or $candidates.Count -ge $maxFiles -or $scanTimer.Elapsed.TotalSeconds -ge $maxSeconds) {
-        $partialScan = $true; break
-    }
+    if ($candidates.Count -ge $maxFiles) { $fileLimitReached = $true; break }
+    if ($dirsVisited -ge $maxDirs) { $dirLimitReached = $true; break }
+    if ($scanTimer.Elapsed.TotalSeconds -ge $maxSeconds) { $timeLimitReached = $true; break }
     $current = $stack.Pop()
     $dirsVisited++
-    try {
-        foreach ($filePath in [System.IO.Directory]::EnumerateFiles($current)) {
-            if ($candidates.Count -ge $maxFiles) { $partialScan = $true; break }
-            if ([System.IO.Path]::GetExtension($filePath) -notmatch $extRegex) { continue }
-            $name = [System.IO.Path]::GetFileName($filePath)
-            $isTest = ($name -match '(?i)(^|[\\/._-])(test|tests|spec)') -or ($current -match '(?i)[\\/](tests?|spec|specs|__tests__)([\\/]|$)')
-            if (-not $isTest) { continue }
-            # Only now touch the filesystem for metadata; skip file-level reparse points too.
-            $info = Get-Item -LiteralPath $filePath -Force -ErrorAction SilentlyContinue
-            if ($null -eq $info -or ($info.Attributes -band [System.IO.FileAttributes]::ReparsePoint)) { continue }
-            [void]$candidates.Add($info)
-        }
-        foreach ($dirPath in [System.IO.Directory]::EnumerateDirectories($current)) {
-            $dir = Get-Item -LiteralPath $dirPath -Force -ErrorAction SilentlyContinue
-            if ($null -eq $dir -or ($dir.Attributes -band [System.IO.FileAttributes]::ReparsePoint)) { continue }
-            if ($excludedDirs -notcontains $dir.Name.ToLowerInvariant()) { $stack.Push($dir.FullName) }
-        }
+
+    # Child directories are enumerated and pushed FIRST, files LAST, so the single
+    # time-break after file processing stops the WHOLE walk at once (matching
+    # Large-File-Check). Each enumerate is materialized inside its own try so an
+    # unreadable directory marks partial coverage without aborting the walk.
+    $childDirs = @()
+    try { $childDirs = @([System.IO.Directory]::EnumerateDirectories($current)) } catch { $scanIncomplete = $true }
+    foreach ($dirPath in $childDirs) {
+        # Per-subdir wall check: this hook does a Get-Item per subdirectory, so a
+        # directory with very many subdirectories must not overrun the ceiling
+        # during enumeration either.
+        if ($scanTimer.Elapsed.TotalSeconds -ge $maxSeconds) { $timeLimitReached = $true; break }
+        $dir = Get-Item -LiteralPath $dirPath -Force -ErrorAction SilentlyContinue
+        if ($null -eq $dir -or ($dir.Attributes -band [System.IO.FileAttributes]::ReparsePoint)) { continue }
+        if ($excludedDirs -notcontains $dir.Name.ToLowerInvariant()) { $stack.Push($dir.FullName) }
     }
-    catch { $partialScan = $true }
+    if ($timeLimitReached) { break }
+
+    $files = @()
+    try { $files = @([System.IO.Directory]::EnumerateFiles($current)) } catch { $scanIncomplete = $true }
+    foreach ($filePath in $files) {
+        if ($candidates.Count -ge $maxFiles) { $fileLimitReached = $true; break }
+        if ([System.IO.Path]::GetExtension($filePath) -notmatch $extRegex) { continue }
+        # TIME check gated behind the cheap extension match (like Large-File-Check):
+        # only extension-matching files pay the Stopwatch read, but a huge single
+        # directory of non-test yet extension-matching files can no longer overrun
+        # the advertised ceiling DURING enumeration (the between-directories check
+        # alone let that happen). The seam forces a deterministic trip in tests;
+        # production consults $scanTimer.
+        $timeUp = if ($testTripAfterFiles -gt 0) { $filesScanned -ge $testTripAfterFiles } else { $scanTimer.Elapsed.TotalSeconds -ge $maxSeconds }
+        if ($timeUp) { $timeLimitReached = $true; break }
+        $filesScanned++
+        $name = [System.IO.Path]::GetFileName($filePath)
+        $isTest = ($name -match '(?i)(^|[\\/._-])(test|tests|spec)') -or ($current -match '(?i)[\\/](tests?|spec|specs|__tests__)([\\/]|$)')
+        if (-not $isTest) { continue }
+        # Only now touch the filesystem for metadata; skip file-level reparse points too.
+        $info = Get-Item -LiteralPath $filePath -Force -ErrorAction SilentlyContinue
+        if ($null -eq $info -or ($info.Attributes -band [System.IO.FileAttributes]::ReparsePoint)) { continue }
+        [void]$candidates.Add($info)
+    }
+    if ($timeLimitReached) { break }
 }
 
 $testFiles = @($candidates.ToArray() | Sort-Object FullName | Select-Object -First $maxFiles)
@@ -182,7 +245,7 @@ $findings = New-Object System.Collections.Generic.List[string]
 $signatureParts = New-Object System.Collections.Generic.List[string]
 
 foreach ($file in $testFiles) {
-    if ($scanTimer.Elapsed.TotalSeconds -ge $maxSeconds) { $partialScan = $true; break }
+    if ($scanTimer.Elapsed.TotalSeconds -ge $maxSeconds) { $timeLimitReached = $true; break }
     if ($file.Length -gt $maxFileBytes) {
         [void]$signatureParts.Add($file.FullName + ':oversize:' + $file.Length)
         continue
@@ -235,10 +298,23 @@ foreach ($file in $testFiles) {
             $reportedNoBound = $true
         }
 
-        if ($findings.Count -ge $maxFindings) { $partialScan = $true; break }
+        if ($findings.Count -ge $maxFindings) { $findingsLimitReached = $true; break }
     }
-    if ($findings.Count -ge $maxFindings) { $partialScan = $true; break }
+    if ($findings.Count -ge $maxFindings) { $findingsLimitReached = $true; break }
 }
+
+# Honest coverage: partial when ANY cause stopped the walk short. Build ONE shared
+# cause string naming the REAL reason(s), reused by the advisory NOTE below, so it
+# never assumes a cause it did not actually hit (mirrors Large-File-Check).
+$causes = New-Object System.Collections.Generic.List[string]
+if ($rootReparse) { [void]$causes.Add('the scan root is a junction/symlink and was not followed') }
+if ($fileLimitReached) { [void]$causes.Add('a candidate-file ceiling of ' + $maxFiles + ' files was reached') }
+if ($dirLimitReached) { [void]$causes.Add('a directory ceiling of ' + $maxDirs + ' directories was reached') }
+if ($timeLimitReached) { [void]$causes.Add('a scan time limit of ' + $maxSeconds + ' seconds was reached') }
+if ($findingsLimitReached) { [void]$causes.Add('a findings ceiling of ' + $maxFindings + ' was reached') }
+if ($scanIncomplete) { [void]$causes.Add('one or more files or directories could not be read') }
+$partialScan = $causes.Count -gt 0
+$partialCause = $causes -join ' and '
 
 # ---- compact project/state fingerprint --------------------------------------
 # git state (when available) plus what the scan actually saw, so an unchanged
@@ -299,7 +375,7 @@ if ($findings.Count -gt 0) {
 }
 if ($partialScan) {
     [void]$lines.Add('')
-    [void]$lines.Add('NOTE: this scan was PARTIAL - a directory/file/time/findings ceiling or an unreadable directory stopped it before the whole repository was covered. Treat the findings above as a sample, not a complete audit.')
+    [void]$lines.Add('NOTE: this scan was PARTIAL - ' + $partialCause + ' before the whole repository was covered. Treat the findings above as a sample, not a complete audit.')
 }
 if ($configWarnings.Count -gt 0) {
     [void]$lines.Add('')

@@ -827,6 +827,73 @@ try {
     Check 'the runner removes ONLY its own per-run active marker when it finishes (none left)' ($markerLeft.Count -eq 0) ([string]$markerLeft.Count)
 
     # =====================================================================
+    Write-Host '--- runner: the active marker is keyed to -WorkingDirectory, not the launch cwd (HM-03) ---' -ForegroundColor Cyan
+    # Launched from process cwd = A with -WorkingDirectory B, the RESULT belongs to
+    # B (result.projectKey is B's), so a Test-Completion-Check running in B must find
+    # the live marker. The pre-fix code keyed the marker off Get-Location (= A), so
+    # the check in B never saw the run. Prove the marker lands under B's 10-char key,
+    # NOT under A's, and is cleaned up. Reverting to Get-Location fails exactly these.
+    function Get-TenCharKey {
+        param([string]$Path)
+        $sha = [System.Security.Cryptography.SHA256]::Create()
+        try { return ([System.BitConverter]::ToString($sha.ComputeHash([System.Text.Encoding]::UTF8.GetBytes($Path.ToLowerInvariant())))).Replace('-', '').ToLowerInvariant().Substring(0, 10) }
+        finally { $sha.Dispose() }
+    }
+    $wdA = [System.IO.Path]::GetFullPath((Join-Path $Work ('wd-A-' + [guid]::NewGuid().ToString('N').Substring(0, 6))))
+    $wdB = [System.IO.Path]::GetFullPath((Join-Path $Work ('wd-B-' + [guid]::NewGuid().ToString('N').Substring(0, 6))))
+    New-Item -ItemType Directory -Path $wdA -Force | Out-Null
+    New-Item -ItemType Directory -Path $wdB -Force | Out-Null
+    # Keys derived from the SAME canonical form the runner keys off, so parity does
+    # not depend on GetFullPath leaving the path untouched.
+    $keyA = Get-TenCharKey $wdA
+    $keyB = Get-TenCharKey $wdB
+    Check 'the two working dirs have distinct state keys (the A/B discriminator is real)' ($keyA -ne $keyB) ($keyA + ' vs ' + $keyB)
+    $wdRunId = [guid]::NewGuid().ToString('N')
+    $wdLocal = Join-Path $Work ('wd-local-' + [guid]::NewGuid().ToString('N').Substring(0, 6))
+    $wdStateDir = Join-Path $wdLocal 'HookMaker\state'
+    New-Item -ItemType Directory -Path $wdStateDir -Force | Out-Null
+    $wdGo = Join-Path $Work ('wd-go-' + [guid]::NewGuid().ToString('N').Substring(0, 8) + '.flag')
+    $wdSuite = Join-Path $Work 'wd-suite.ps1'
+    Write-Utf8 $wdSuite ("`$go = `$env:HOOKMAKER_WD_GO`n`$deadline = [DateTime]::UtcNow.AddSeconds(30)`nwhile (-not (Test-Path -LiteralPath `$go) -and [DateTime]::UtcNow -lt `$deadline) { Start-Sleep -Milliseconds 50 }`nexit 0`n")
+    $wdResult = Join-Path $Work 'wd-result.json'
+    $wdWrapper = Join-Path $Work 'run-wd.ps1'
+    # The wrapper runs in cwd A (Start-Process -WorkingDirectory below), and passes
+    # -WorkingDirectory B to the REAL repo runner, so inside it Get-Location != B.
+    Write-Utf8 $wdWrapper (
+        "& '$Runner' -FilePath 'pwsh' -Arguments @('-NoProfile','-File','$wdSuite') " +
+        "-WorkingDirectory '$wdB' -TimeoutSeconds 40 -IdleTimeoutSeconds 35 -HeartbeatSeconds 1 -ResultPath '$wdResult' -RunId '$wdRunId' -Quiet`nexit `$LASTEXITCODE`n")
+    $prevWdLocal = $env:LOCALAPPDATA
+    $prevWdGo = $env:HOOKMAKER_WD_GO
+    $wdProc = $null
+    $wdMarkerName = ''
+    try {
+        $env:LOCALAPPDATA = $wdLocal
+        $env:HOOKMAKER_WD_GO = $wdGo
+        $wdProc = Start-Process -FilePath (Get-Process -Id $PID).Path -NoNewWindow -PassThru -WorkingDirectory $wdA -ArgumentList @('-NoLogo', '-NoProfile', '-File', $wdWrapper)
+        $deadline = [DateTime]::UtcNow.AddSeconds(20)
+        while ([DateTime]::UtcNow -lt $deadline) {
+            $m = @(Get-ChildItem -LiteralPath $wdStateDir -Filter 'TestRunGuard-active-*.json' -File -ErrorAction SilentlyContinue)
+            if ($m.Count -ge 1) { $wdMarkerName = $m[0].Name; break }
+            Start-Sleep -Milliseconds 100
+        }
+    }
+    finally {
+        try { New-Item -ItemType File -Path $wdGo -Force | Out-Null } catch { }
+        if ($null -ne $wdProc) {
+            try { [void]$wdProc.WaitForExit(10000) } catch { }
+            if (-not $wdProc.HasExited) { try { & taskkill.exe /PID $wdProc.Id /T /F *> $null } catch { } }
+        }
+        $env:LOCALAPPDATA = $prevWdLocal
+        $env:HOOKMAKER_WD_GO = $prevWdGo
+    }
+    Check 'the live marker is keyed to -WorkingDirectory B, not the launch cwd A' (
+        $wdMarkerName -eq ('TestRunGuard-active-' + $keyB + '-' + (Get-SafeRunId $wdRunId) + '.json')) ($wdMarkerName + ' (want keyB=' + $keyB + ')')
+    Check 'the marker is NOT written under the launch-cwd (A) key' (
+        $wdMarkerName -ne '' -and $wdMarkerName -notmatch [regex]::Escape($keyA)) ($wdMarkerName + ' keyA=' + $keyA)
+    $wdMarkerLeft = @(Get-ChildItem -LiteralPath $wdStateDir -Filter 'TestRunGuard-active-*.json' -File -ErrorAction SilentlyContinue)
+    Check 'the runner removes its -WorkingDirectory-keyed marker on completion (none left)' ($wdMarkerLeft.Count -eq 0) ([string]$wdMarkerLeft.Count)
+
+    # =====================================================================
     Write-Host '--- irrelevant events are ignored ---' -ForegroundColor Cyan
     foreach ($otherEvent in @('Stop', 'SessionStart', 'UserPromptSubmit')) {
         $r = Fire -HookPath $hc.Script -Cwd $Proj -EventName $otherEvent -Command 'pytest -q' -LocalAppData $hc.LocalAppData
