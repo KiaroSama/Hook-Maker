@@ -516,19 +516,24 @@ function Write-GuardedResult {
 # tears down a live run B. The key is the 10-char Get-StateKey the consumer uses.
 $script:ActiveMarkerPath = ''
 function Get-ActiveMarkerPath {
-    param([string]$RunId)
+    # $ProjectPath is the EFFECTIVE working directory of the run (the canonical
+    # -WorkingDirectory), NOT this process's Get-Location. The two differ when the
+    # runner is launched from dir A with -WorkingDirectory B: the result belongs to
+    # B, so the marker Test-Completion-Check looks for MUST be keyed to B as well.
+    # Keying off Get-Location wrote it under A, where the check in B never saw it.
+    param([string]$RunId, [string]$ProjectPath)
     try {
         $stateDir = Join-Path $env:LOCALAPPDATA 'HookMaker\state'
-        $key = Get-StateKey (((Get-Location).Path))
+        $key = Get-StateKey $ProjectPath
         return (Join-Path $stateDir ('TestRunGuard-active-' + $key + '-' + (Get-SafeRunId $RunId) + '.json'))
     }
     catch { return '' }
 }
 
 function Write-ActiveMarker {
-    param([int]$OwnerPid, [string]$RunId, [string]$ProjectFingerprint)
+    param([int]$OwnerPid, [string]$RunId, [string]$ProjectFingerprint, [string]$ProjectPath)
     try {
-        $path = Get-ActiveMarkerPath -RunId $RunId
+        $path = Get-ActiveMarkerPath -RunId $RunId -ProjectPath $ProjectPath
         if ([string]::IsNullOrWhiteSpace($path)) { return }
         $dir = Split-Path -Parent $path
         if (-not (Test-Path -LiteralPath $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
@@ -595,6 +600,18 @@ if (-not [string]::IsNullOrWhiteSpace($ArgumentsJson)) {
 }
 
 if ([string]::IsNullOrWhiteSpace($WorkingDirectory)) { $WorkingDirectory = (Get-Location).Path }
+# Canonicalize ONCE so the marker key, the child's cwd, and result.projectKey all
+# derive from the same absolute path. A relative -WorkingDirectory is resolved
+# against Get-Location first (GetFullPath alone would use the stale process
+# CurrentDirectory, which PowerShell does not keep in sync). 2-arg GetFullPath is
+# .NET-Core-only, so the rooted-guard + Combine form is used for 5.1 parity.
+try {
+    if (-not [System.IO.Path]::IsPathRooted($WorkingDirectory)) {
+        $WorkingDirectory = [System.IO.Path]::Combine((Get-Location).Path, $WorkingDirectory)
+    }
+    $WorkingDirectory = [System.IO.Path]::GetFullPath($WorkingDirectory)
+}
+catch { }
 $script:Result.workingDirectory = $WorkingDirectory
 # Recomputed HERE, after -ArgumentsJson has been resolved into $Arguments. The
 # initializer above runs before that resolution, so it saw an empty list and
@@ -684,7 +701,7 @@ try {
     # The run is genuinely live from here on, so the marker goes up now and
     # comes down in finally - never earlier (nothing is running yet) and never
     # later (a crash between start and here would leave it unrecorded).
-    Write-ActiveMarker -OwnerPid $PID -RunId $RunId -ProjectFingerprint $ProjectFingerprint
+    Write-ActiveMarker -OwnerPid $PID -RunId $RunId -ProjectFingerprint $ProjectFingerprint -ProjectPath $WorkingDirectory
     # Detach stdin NOW: an interactive prompt then reads EOF and the test fails
     # fast and honestly, instead of blocking until a timeout hides the cause.
     try { $process.StandardInput.Close() } catch { }

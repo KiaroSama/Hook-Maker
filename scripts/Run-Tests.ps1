@@ -102,72 +102,230 @@ Write-Host ('Running ' + $all.Count + ' suite(s): ' + $isolatedSuites.Count + ' 
 $stopwatch = [System.Diagnostics.Stopwatch]::StartNew()
 $host7 = (Get-Process -Id $PID).Path
 
-# Runs one suite as a real child process with stdin detached and a hard
-# timeout, so a suite that blocks waiting for input cannot stall the run.
+# The single source of truth for "did the owned process tree really go away" after
+# a timeout kill. Fail CLOSED: cleanup counts as proven ONLY when the survivor
+# query actually ran (EnumerationOk - a failed CIM/job query is UNPROVEN, never a
+# silent all-clear), nothing owned is still alive (SurvivorCount), and the suite's
+# own process has exited (RootAlive). The per-suite body carries an inline twin of
+# this rule, because a -Parallel runspace does not inherit the caller's functions.
+function Test-OwnedTreeCleared {
+    param([bool]$EnumerationOk, [int]$SurvivorCount, [bool]$RootAlive)
+    return ($EnumerationOk -and $SurvivorCount -le 0 -and -not $RootAlive)
+}
+
+# The Job Object gives the per-suite body crash-proof ownership of its whole child
+# tree (KILL_ON_JOB_CLOSE), so a suite that spawns a background descendant and
+# exits cannot leave it running, and a timeout kill can PROVE the tree is gone via
+# the job's pid-reuse-proof assigned-pid list. The C# is read from the ONE place it
+# already lives - Run-Tests-Guarded.ps1 - never duplicated here, and pre-loaded once
+# so every -Parallel runspace shares the AppDomain-loaded type and a compile error
+# surfaces here, not inside each runspace. The source string is threaded into each
+# runspace as a body argument so the body is self-contained if the type is absent.
+$guardedRunnerPath = Join-Path $ScriptRoot 'Run-Tests-Guarded.ps1'
+$jobCSharp = ''
+try {
+    $guardedText = Get-Content -LiteralPath $guardedRunnerPath -Raw
+    $csStart = $guardedText.IndexOf('using System;')
+    $csEnd = $guardedText.IndexOf("'@", $csStart)
+    if ($csStart -ge 0 -and $csEnd -gt $csStart) { $jobCSharp = $guardedText.Substring($csStart, $csEnd - $csStart) }
+}
+catch { }
+if (-not [string]::IsNullOrWhiteSpace($jobCSharp) -and -not ('HookMaker.JobNative' -as [type])) {
+    try { Add-Type -TypeDefinition $jobCSharp -ErrorAction Stop } catch { }
+}
+
+# Runs one suite as a real child process it OWNS through a Job Object, with stdin
+# detached and a bounded wall timeout, so a suite that blocks on input, hangs, or
+# leaves a background descendant behind cannot stall the run or leak a process.
+#
+# Mirrors Run-Tests-Guarded.ps1's proven core: a raw System.Diagnostics.Process +
+# ArgumentList (no shell re-parse), stdout/stderr drained with CopyToAsync into
+# temp files (never the parameterless WaitForExit() that a pipe-holding grandchild
+# deadlocks), a Job Object with KILL_ON_JOB_CLOSE that ends the whole tree on a
+# clean-exit orphan OR a timeout survivor, and a timeout branch that PROVES the
+# tree is gone (pid-reuse-proof via the job's assigned-pid list) and fails CLOSED:
+# proven-clean timeout -> 124, UNPROVEN cleanup -> a distinct 126.
+#
 # Defined as a string and re-created inside each parallel runspace, because
-# -Parallel does not inherit functions from the caller's scope.
+# -Parallel does not inherit functions from the caller's scope; the Job Object C#
+# source is passed in as $JobCSharp for the same reason.
 $invokeSuiteBody = @'
-param($SuitePath, $Exe, $TimeoutSeconds)
+param($SuitePath, $Exe, $TimeoutSeconds, $JobCSharp)
 $sw = [System.Diagnostics.Stopwatch]::StartNew()
+$name = Split-Path -Leaf $SuitePath
 $outFile = [System.IO.Path]::GetTempFileName()
 $errFile = [System.IO.Path]::GetTempFileName()
-# An EMPTY file as stdin, so a suite that reads input gets EOF immediately
-# instead of inheriting this console's stdin and blocking. Without this the
-# only protection is the timeout below, which turns a 1-second bug into a
-# full 600-second stall - and in CI, into a job that burns its whole budget.
-# An empty real file is used rather than the NUL device because it gives a
-# deterministic EOF on every host this runs under.
-$inFile = [System.IO.Path]::GetTempFileName()
-$name = Split-Path -Leaf $SuitePath
-try {
-    # Single quoted argument STRING, matching the convention used by every other
-    # spawned-process call in this repo: suite paths contain spaces, and the
-    # array form is not accepted consistently across hosts here.
-    $p = Start-Process -FilePath $Exe -ArgumentList ('-NoLogo -NoProfile -File "' + $SuitePath + '"') `
-        -RedirectStandardOutput $outFile -RedirectStandardError $errFile `
-        -RedirectStandardInput $inFile `
-        -NoNewWindow -PassThru
-    if (-not $p.WaitForExit($TimeoutSeconds * 1000)) {
-        try { $p.Kill($true) } catch { }
-        # BOUNDED wait after the kill: an unkillable tree (stuck in an
-        # uninterruptible wait) must not hang the whole runner here - that would
-        # defeat the very -TimeoutSeconds guarantee this branch enforces. The tree
-        # is already force-killed; this is just a bounded grace for teardown,
-        # mirroring Run-Tests-Guarded.ps1's WaitForExit(15000).
-        try { [void]$p.WaitForExit(15000) } catch { }
-        $sw.Stop()
-        return [pscustomobject]@{ Suite = $name; Exit = 124; Seconds = [Math]::Round($sw.Elapsed.TotalSeconds, 1); Tail = ('TIMED OUT after ' + $TimeoutSeconds + 's (killed)') }
-    }
-    # The TIMED WaitForExit overload returns as soon as the process ends, but
-    # the redirected stdout/stderr handles may not be flushed and released yet -
-    # reading the temp file here then fails with "used by another process".
-    # The PARAMETERLESS overload is documented to also wait for that flush, so
-    # it is the required follow-up before touching the files.
-    try { $p.WaitForExit() } catch { }
-    $sw.Stop()
-    $exitCode = $p.ExitCode
-    # Dispose releases the redirect handles the parent Process object still
-    # holds; without this the temp files read back as "used by another
-    # process". Even then release can lag slightly, so reading retries briefly -
-    # these files are only diagnostics, so a failed read must never fail a suite.
-    try { $p.Dispose() } catch { }
-    function Read-Released {
-        param([string]$Path)
-        for ($i = 0; $i -lt 20; $i++) {
-            try { return [System.IO.File]::ReadAllText($Path) } catch { Start-Sleep -Milliseconds 50 }
+
+# Inline TWIN of the top-level Test-OwnedTreeCleared (a -Parallel runspace does not
+# inherit the caller's functions). Keep both in sync: proven-clean requires all
+# three - the survivor query ran, nothing owned is still alive, and the root exited.
+function Test-OwnedTreeClearedLocal { param([bool]$EnumerationOk, [int]$SurvivorCount, [bool]$RootAlive) return ($EnumerationOk -and $SurvivorCount -le 0 -and -not $RootAlive) }
+
+# ppid-walk snapshot (pid + start time), taken BEFORE a kill, for the DEGRADED
+# (no Job Object) proof: after the kill a survivor is a recorded pid still alive
+# WITH the same start time - a recycled pid (different start) is not a survivor.
+# Ok=$false means the CIM query failed, i.e. cleanup could not be proven.
+function Get-TreeSnapshotLocal {
+    param([int]$RootId)
+    $ok = $true
+    $procs = @()
+    try { $procs = @(Get-CimInstance Win32_Process -ErrorAction Stop | Select-Object ProcessId, ParentProcessId, CreationDate) }
+    catch { $ok = $false; $procs = @() }
+    $members = New-Object System.Collections.Generic.List[object]
+    $rootStart = [datetime]::MinValue
+    try { $rootStart = (Get-Process -Id $RootId -ErrorAction Stop).StartTime } catch { }
+    [void]$members.Add([pscustomobject]@{ Pid = $RootId; Start = $rootStart })
+    $seen = @{ "$RootId" = $true }
+    $queue = New-Object System.Collections.Generic.Queue[int]
+    $queue.Enqueue($RootId)
+    while ($queue.Count -gt 0) {
+        $cur = $queue.Dequeue()
+        foreach ($pr in $procs) {
+            $cid = [int]$pr.ProcessId
+            if ([int]$pr.ParentProcessId -eq $cur -and -not $seen.ContainsKey("$cid")) {
+                $seen["$cid"] = $true
+                [void]$members.Add([pscustomobject]@{ Pid = $cid; Start = $pr.CreationDate })
+                $queue.Enqueue($cid)
+            }
         }
-        return ''
     }
+    return [pscustomobject]@{ Ok = $ok; Members = $members.ToArray() }
+}
+
+# The type is normally already AppDomain-loaded by the parent's pre-load; Add-Type
+# from the passed source only if it is somehow absent (self-contained runspace).
+$jobReady = $false
+try {
+    if (-not ('HookMaker.JobNative' -as [type]) -and -not [string]::IsNullOrWhiteSpace($JobCSharp)) { Add-Type -TypeDefinition $JobCSharp -ErrorAction Stop }
+    if ('HookMaker.JobNative' -as [type]) { $jobReady = $true }
+}
+catch { $jobReady = $false }
+
+$process = $null
+$stdoutWriter = $null
+$stderrWriter = $null
+$job = [IntPtr]::Zero
+try {
+    if ($jobReady) { try { $job = [HookMaker.JobNative]::CreateKillOnClose() } catch { $job = [IntPtr]::Zero } }
+
+    $psi = New-Object System.Diagnostics.ProcessStartInfo
+    $psi.FileName = $Exe
+    foreach ($a in @('-NoLogo', '-NoProfile', '-File', $SuitePath)) { [void]$psi.ArgumentList.Add([string]$a) }
+    $psi.UseShellExecute = $false
+    $psi.RedirectStandardOutput = $true
+    $psi.RedirectStandardError = $true
+    $psi.RedirectStandardInput = $true
+    $psi.CreateNoWindow = $true
+    $process = New-Object System.Diagnostics.Process
+    $process.StartInfo = $psi
+    [void]$process.Start()
+    if ($job -ne [IntPtr]::Zero) {
+        $assigned = $false
+        try { $assigned = [HookMaker.JobNative]::Assign($job, $process.Handle) } catch { $assigned = $false }
+        if (-not $assigned) { try { [void][HookMaker.JobNative]::Close($job) } catch { }; $job = [IntPtr]::Zero }
+    }
+    # Detach stdin: a suite that reads input gets EOF and fails fast instead of
+    # blocking until the timeout hides the cause.
+    try { $process.StandardInput.Close() } catch { }
+    # Drain both pipes INSIDE .NET straight into files. The child stdout is a pipe,
+    # so a descendant that inherits it cannot lock the temp FILE (only this
+    # FileStream writes it), and the pumps are awaited WITH A BOUND below - never
+    # the parameterless WaitForExit() that a pipe-holding grandchild deadlocked.
+    $stdoutWriter = [System.IO.File]::Create($outFile)
+    $stderrWriter = [System.IO.File]::Create($errFile)
+    $stdoutPump = $process.StandardOutput.BaseStream.CopyToAsync($stdoutWriter)
+    $stderrPump = $process.StandardError.BaseStream.CopyToAsync($stderrWriter)
+
+    $exitCode = 0
+    $timedOut = $false
+    if (-not $process.WaitForExit($TimeoutSeconds * 1000)) {
+        $timedOut = $true
+        # Degraded proof needs a BEFORE-kill snapshot; the job list is queried AFTER
+        # the kill and is pid-reuse-proof on its own, so it needs none.
+        $snap = $null
+        if ($job -eq [IntPtr]::Zero) { $snap = Get-TreeSnapshotLocal -RootId $process.Id }
+        if ($job -ne [IntPtr]::Zero) { try { [void][HookMaker.JobNative]::Terminate($job) } catch { } }
+        try { & taskkill.exe /PID $process.Id /T /F *> $null } catch { }
+        # BOUNDED grace after the kill - never an unbounded wait.
+        try { [void]$process.WaitForExit(15000) } catch { }
+        $rootAlive = $true
+        try { $rootAlive = -not $process.HasExited } catch { $rootAlive = $false }
+        # Prove the owned tree is gone. Prefer the Job Object's assigned-pid list
+        # (a recycled pid was never assigned to THIS job, so it cannot masquerade as
+        # a survivor); degrade to the pid+start snapshot; never trust pid alone.
+        $enumOk = $false
+        $survivors = 0
+        if ($job -ne [IntPtr]::Zero) {
+            $jobIds = $null
+            try { $jobIds = [HookMaker.JobNative]::GetProcessIds($job) } catch { $jobIds = $null }
+            $enumOk = ($null -ne $jobIds)
+            if ($enumOk) { foreach ($jid in @($jobIds)) { try { $null = Get-Process -Id $jid -ErrorAction Stop; $survivors++ } catch { } } }
+        }
+        else {
+            $enumOk = $snap.Ok
+            foreach ($m in $snap.Members) {
+                try {
+                    $live = Get-Process -Id $m.Pid -ErrorAction SilentlyContinue
+                    if ($live) {
+                        $sameStart = $true
+                        try { $sameStart = ([Math]::Abs(($live.StartTime - [datetime]$m.Start).TotalSeconds) -lt 2) } catch { $sameStart = $true }
+                        if ($sameStart) { $survivors++ }
+                    }
+                }
+                catch { }
+            }
+        }
+        # Fail CLOSED: a proven-clean timeout is 124; an UNPROVEN cleanup (the query
+        # failed, a survivor remains, or the root is still alive) is a DISTINCT 126,
+        # so a leaked tree can never be reported as a clean timeout.
+        if (Test-OwnedTreeClearedLocal -EnumerationOk $enumOk -SurvivorCount $survivors -RootAlive $rootAlive) { $exitCode = 124 }
+        else { $exitCode = 126 }
+    }
+    else {
+        $exitCode = $process.ExitCode
+    }
+
+    # Bounded flush of the pumps' tail; whatever a surviving grandchild still holds
+    # open is not worth hanging for.
+    foreach ($pump in @($stdoutPump, $stderrPump)) { try { [void]$pump.Wait(5000) } catch { } }
+    try { $stdoutWriter.Flush(); $stdoutWriter.Dispose(); $stdoutWriter = $null } catch { }
+    try { $stderrWriter.Flush(); $stderrWriter.Dispose(); $stderrWriter = $null } catch { }
+    $sw.Stop()
+
     $text = ''
-    if (Test-Path -LiteralPath $outFile) { $text = Read-Released $outFile }
+    try { $text = [System.IO.File]::ReadAllText($outFile) } catch { }
     $errText = ''
-    if (Test-Path -LiteralPath $errFile) { $errText = Read-Released $errFile }
-    $tail = (@(($text -split "`r?`n") | Where-Object { $_ -ne '' } | Select-Object -Last 3) -join ' | ')
-    if (-not [string]::IsNullOrWhiteSpace($errText)) { $tail = $tail + ' || stderr: ' + (($errText -split "`r?`n")[0]) }
+    try { $errText = [System.IO.File]::ReadAllText($errFile) } catch { }
+    if ($timedOut) {
+        $tail = 'TIMED OUT after ' + $TimeoutSeconds + 's (killed; ' + $(if ($exitCode -eq 124) { 'tree proven terminated' } else { 'cleanup NOT proven' }) + ')'
+    }
+    else {
+        $tail = (@(($text -split "`r?`n") | Where-Object { $_ -ne '' } | Select-Object -Last 3) -join ' | ')
+        if (-not [string]::IsNullOrWhiteSpace($errText)) { $tail = $tail + ' || stderr: ' + (($errText -split "`r?`n")[0]) }
+    }
     return [pscustomobject]@{ Suite = $name; Exit = $exitCode; Seconds = [Math]::Round($sw.Elapsed.TotalSeconds, 1); Tail = $tail }
 }
 finally {
-    Remove-Item -LiteralPath $outFile, $errFile, $inFile -Force -ErrorAction SilentlyContinue
+    # The owned child dies with us on EVERY path. The Job Object is the backstop
+    # that catches a descendant the root leaked even after a CLEAN root exit (the
+    # old clean path killed nothing); Terminate+Close with KILL_ON_JOB_CLOSE ends
+    # the whole tree. taskkill is the degraded-mode fallback and belt-and-braces.
+    try {
+        if ($null -ne $process -and -not $process.HasExited) { try { & taskkill.exe /PID $process.Id /T /F *> $null } catch { } }
+    }
+    catch { }
+    try {
+        if ($job -ne [IntPtr]::Zero) {
+            [void][HookMaker.JobNative]::Terminate($job)
+            [void][HookMaker.JobNative]::Close($job)
+            $job = [IntPtr]::Zero
+        }
+    }
+    catch { }
+    try { if ($null -ne $stdoutWriter) { $stdoutWriter.Dispose() } } catch { }
+    try { if ($null -ne $stderrWriter) { $stderrWriter.Dispose() } } catch { }
+    try { if ($null -ne $process) { $process.Dispose() } } catch { }
+    Remove-Item -LiteralPath $outFile, $errFile -Force -ErrorAction SilentlyContinue
 }
 '@
 
@@ -181,7 +339,7 @@ if ($exclusiveSuites.Count -gt 0) {
 $invokeSuite = [scriptblock]::Create($invokeSuiteBody)
 $exclusiveResults = @()
 foreach ($suite in $exclusiveSuites) {
-    $exclusiveResults += (& $invokeSuite $suite.FullName $host7 $TimeoutSeconds)
+    $exclusiveResults += (& $invokeSuite $suite.FullName $host7 $TimeoutSeconds $jobCSharp)
 }
 
 if ($isolatedSuites.Count -gt 0) {
@@ -191,7 +349,7 @@ $isolatedResults = @()
 if ($isolatedSuites.Count -gt 0) {
     $isolatedResults = @($isolatedSuites | ForEach-Object -ThrottleLimit $ThrottleLimit -Parallel {
         $invoke = [scriptblock]::Create($using:invokeSuiteBody)
-        & $invoke $_.FullName $using:host7 $using:TimeoutSeconds
+        & $invoke $_.FullName $using:host7 $using:TimeoutSeconds $using:jobCSharp
     })
 }
 
