@@ -1,6 +1,6 @@
 # Offline test suite for the hook-list management rows.
 #
-# Part 1 - menu 26 (Uninstall Installed Hooks): proves the list and
+# Part 1 - menu 27 (Uninstall Installed Hooks): proves the list and
 # confirmation screens in Setup-SyncGroupInstalledHooks.ps1 render the FULL
 # install identity that Get-InstalledHookSnapshot already collects - hook type,
 # exact target path, per-client event names and the exact persisted
@@ -8,14 +8,15 @@
 # native-Git ownership status in the confirmation screen - and that declining
 # the final confirmation mutates nothing (the record survives in the registry).
 #
-# Part 2 - the fixed menu numbering itself: shipped hooks occupy exactly 3..23
-# (the three test-health hooks at 20/21/22 and Cloudflare-Deploy last at 23),
-# 24 is Update, 25 is Get hook status, 26 is Uninstall, custom hooks start at
-# 27, adding a custom hook shifts NONE of the three management rows, each
-# management action must be selected alone, and item 1 ("Select all") expands to
-# the sync group plus every hook while excluding all three management indices.
+# Part 2 - the fixed menu numbering itself: shipped hooks occupy exactly 3..24
+# (the three test-health hooks at 20/21/22, Utf8-Encoding-Check at 23, and
+# Cloudflare-Deploy last at 24), 25 is Update, 26 is Get hook status, 27 is
+# Uninstall, custom hooks start at 28, adding a custom hook shifts NONE of the
+# three management rows, each management action must be selected alone, and
+# item 1 ("Select all") expands to the sync group plus every hook while
+# excluding all three management indices.
 #
-# Part 3 - the menu 25 prompt flow (Setup-SyncGroupHookStatus.ps1): which root
+# Part 3 - the menu 26 prompt flow (Setup-SyncGroupHookStatus.ps1): which root
 # folder inputs are accepted (quoted paths with spaces, a project root, a
 # .claude\hooks\Hook-Maker direct subtree), that an invalid path re-prompts
 # instead of scanning, that the global question defaults to No on a bare Enter,
@@ -169,7 +170,7 @@ try {
 
         # main menu 1 -> submenu 1 -> hook list 26 (Uninstall) -> select row 1
         # (the fixture record) -> decline the confirmation -> exit the main menu.
-        $r = Invoke-Wizard -Config $cfg -Answers @('1', '1', '26', '1', 'n', '0') -WorkingDirectory $proj
+        $r = Invoke-Wizard -Config $cfg -Answers @('1', '1', '27', '1', 'n', '0') -WorkingDirectory $proj
         Check 'the wizard run exits 0' ($r.Exit -eq 0) $r.Err
 
         # ---- list screen: everything Get-InstalledHookSnapshot collects ----
@@ -225,41 +226,43 @@ try {
             Check 'menu: item 1 is "Select all hooks"' ([string]$rows[1] -match '^Select all hooks') ([string]$rows[1])
             Check 'menu: item 2 is the sync group' ([string]$rows[2] -match '^Create or update a sync group') ([string]$rows[2])
 
-            # The 21 shipped hooks occupy exactly 3..23 - no gap, and no
+            # The 22 shipped hooks occupy exactly 3..24 - no gap, and no
             # management row anywhere inside that range.
-            $shippedRange = @(3..23)
+            $shippedRange = @(3..24)
             $missing = @($shippedRange | Where-Object { -not $rows.Contains($_) })
-            Check 'menu: rows 3..23 all exist (the 21 shipped hooks)' ($missing.Count -eq 0) ('missing: ' + ($missing -join ','))
+            Check 'menu: rows 3..24 all exist (the 22 shipped hooks)' ($missing.Count -eq 0) ('missing: ' + ($missing -join ','))
             $strayManagement = @($shippedRange | Where-Object { $rows.Contains($_) -and [string]$rows[$_] -match '\[manage\]' })
-            Check 'menu: no management row appears inside the shipped range 3..23' ($strayManagement.Count -eq 0) ('stray: ' + ($strayManagement -join ','))
+            Check 'menu: no management row appears inside the shipped range 3..24' ($strayManagement.Count -eq 0) ('stray: ' + ($strayManagement -join ','))
 
             # The three test-health hooks (24.txt) sit at 20/21/22 IN THAT
-            # ORDER, immediately before Cloudflare-Deploy, which stays the last
-            # individual entry.
+            # ORDER, then Utf8-Encoding-Check at 23 (30.md), then
+            # Cloudflare-Deploy, which stays the last individual entry.
             Check 'menu: 20 is Test-Plan-Check' ([string]$rows[20] -match '^Test-Plan-Check \| \[pre-task\] \|') ([string]$rows[20])
             Check 'menu: 21 is Test-Run-Guard' ([string]$rows[21] -match '^Test-Run-Guard \| \[pre\+post-task\] \|') ([string]$rows[21])
             Check 'menu: 22 is Test-Completion-Check' ([string]$rows[22] -match '^Test-Completion-Check \| \[post-task\] \|') ([string]$rows[22])
-            Check 'menu: 23 is Cloudflare-Deploy (still the last individual entry)' ([string]$rows[23] -match '^Cloudflare-Deploy \| \[post-task\] \|') ([string]$rows[23])
+            Check 'menu: 23 is Utf8-Encoding-Check' ([string]$rows[23] -match '^Utf8-Encoding-Check \| \[pre\+post-task\] \|') ([string]$rows[23])
+            Check 'menu: 24 is Cloudflare-Deploy (still the last individual entry)' ([string]$rows[24] -match '^Cloudflare-Deploy \| \[post-task\] \|') ([string]$rows[24])
 
-            Check 'menu: 24 is Update installed hooks' ([string]$rows[24] -match '^Update installed hooks \| \[manage\] \|') ([string]$rows[24])
+            Check 'menu: 25 is Update installed hooks' ([string]$rows[25] -match '^Update installed hooks \| \[manage\] \|') ([string]$rows[25])
             # The exact contract wording for the two rows the task pins.
-            Check 'menu: 25 renders EXACTLY the contract row' ([string]$rows[25] -eq 'Get hook status | [manage] | scan a path, detect installed hooks, and track verified results') ([string]$rows[25])
-            Check 'menu: 26 renders EXACTLY the contract row' ([string]$rows[26] -eq 'Uninstall installed hooks | [manage] | list and remove installed hooks; never deletes hook sources') ([string]$rows[26])
+            Check 'menu: 26 renders EXACTLY the contract row' ([string]$rows[26] -eq 'Get hook status | [manage] | scan a path, detect installed hooks, and track verified results') ([string]$rows[26])
+            Check 'menu: 27 renders EXACTLY the contract row' ([string]$rows[27] -eq 'Uninstall installed hooks | [manage] | list and remove installed hooks; never deletes hook sources') ([string]$rows[27])
 
             # The fixture is the only custom hook, so the custom block starts at
-            # 27 - i.e. adding a custom hook did NOT shift 20-26 at all.
-            Check 'menu: custom hooks start at 27' ([string]$rows[27] -match 'ZZZ-Regtest-Menu') ([string]$rows[27])
-            Check 'menu: adding a custom hook did not shift the management rows' (([string]$rows[24] -match 'Update') -and ([string]$rows[25] -match 'Get hook status') -and ([string]$rows[26] -match 'Uninstall')) (($indices | Sort-Object) -join ',')
+            # 28 - i.e. adding a custom hook did NOT shift 20-27 at all.
+            Check 'menu: custom hooks start at 28' ([string]$rows[28] -match 'ZZZ-Regtest-Menu') ([string]$rows[28])
+            Check 'menu: adding a custom hook did not shift the management rows' (([string]$rows[25] -match 'Update') -and ([string]$rows[26] -match 'Get hook status') -and ([string]$rows[27] -match 'Uninstall')) (($indices | Sort-Object) -join ',')
             Check 'menu: adding a custom hook did not shift the three new shipped rows' (([string]$rows[20] -match 'Test-Plan-Check') -and ([string]$rows[21] -match 'Test-Run-Guard') -and ([string]$rows[22] -match 'Test-Completion-Check')) (($indices | Sort-Object) -join ',')
-            Check 'menu: the Tip line names all three management indices' ($menu.Out -match '24/25/26 are management actions') $menu.Out
+            Check 'menu: the Tip line names all three management indices' ($menu.Out -match '25/26/27 are management actions') $menu.Out
 
-            # Each of the three new rows must render on ONE line, within the
-            # budget the existing shipped rows already respect (the longest
+            # Each newly inserted row (the three test-health hooks and
+            # Utf8-Encoding-Check) must render on ONE line, within the budget
+            # the existing shipped rows already respect (the longest
             # pre-existing row is the yardstick - no new row may be the one that
             # starts wrapping).
-            $newRowNumbers = @(20, 21, 22)
+            $newRowNumbers = @(20, 21, 22, 23)
             $existingRowLengths = @(@($rows.Keys) |
-                Where-Object { $_ -ge 3 -and $_ -le 23 -and $newRowNumbers -notcontains $_ } |
+                Where-Object { $_ -ge 3 -and $_ -le 24 -and $newRowNumbers -notcontains $_ } |
                 ForEach-Object { ('  ' + $_ + '. ' + [string]$rows[$_]).Length })
             $rowBudget = (@($existingRowLengths | Sort-Object -Descending)[0])
             foreach ($n in $newRowNumbers) {
@@ -274,11 +277,11 @@ try {
 
         # Four illegal mixtures, one after another; each must be rejected and
         # re-render the menu rather than performing half of what was typed.
-        $reject = Invoke-Wizard -Config $cfg -Answers @('1', '1', '3,25', '24-26', '1,26', '25,27', '0', '0', 'exit') -WorkingDirectory $proj
+        $reject = Invoke-Wizard -Config $cfg -Answers @('1', '1', '3,26', '25-27', '1,27', '26,28', '0', '0', 'exit') -WorkingDirectory $proj
         Check 'mix: the rejection run exits 0' ($reject.Exit -eq 0) $reject.Err
         $rejectionCount = ([regex]::Matches($reject.Out, [regex]::Escape('on its own - it cannot be combined'))).Count
-        Check 'mix: all four illegal selections were rejected (3,25 / 24-26 / 1,26 / 25,27)' ($rejectionCount -eq 4) ('rejections seen: ' + $rejectionCount)
-        Check 'mix: the rejection names all three management indices' ($reject.Out -match 'Select 24 \(update\), 25 \(status\) or 26 \(uninstall\)') $reject.Out
+        Check 'mix: all four illegal selections were rejected (3,26 / 25-27 / 1,27 / 26,28)' ($rejectionCount -eq 4) ('rejections seen: ' + $rejectionCount)
+        Check 'mix: the rejection names all three management indices' ($reject.Out -match 'Select 25 \(update\), 26 \(status\) or 27 \(uninstall\)') $reject.Out
         # None of the three management screens may have been entered. The
         # comparison is CASE-SENSITIVE on purpose: the phase headers ("Get Hook
         # Status") differ from the menu rows ("Get hook status") only by case,
@@ -296,7 +299,7 @@ try {
         if ($null -ne $rows) { $totalHooks = @($rows.Keys).Count - 5 }  # minus items 1, 2 and the 3 management rows
         $all = Invoke-Wizard -Config $cfg -Answers @('1', '1', '1', '0', '0', '0', '0', 'exit') -WorkingDirectory $proj
         Check 'select-all: the run exits 0' ($all.Exit -eq 0) $all.Err
-        Check 'select-all: 21 shipped + 1 custom hook were counted from the menu' ($totalHooks -eq 22) ('total hooks: ' + $totalHooks)
+        Check 'select-all: 22 shipped + 1 custom hook were counted from the menu' ($totalHooks -eq 23) ('total hooks: ' + $totalHooks)
         Check 'select-all: item 1 expanded to the sync group plus every hook' ($all.Out -match ('Running the sync group first, then installing ' + $totalHooks + ' more hook\(s\)')) $all.Out
         Check 'select-all: item 1 never entered a management screen' (($all.Out -cnotmatch 'Get Hook Status') -and ($all.Out -cnotmatch 'Uninstall Installed Hooks') -and ($all.Out -cnotmatch 'Update Previously Installed Hooks')) $all.Out
 
@@ -314,7 +317,7 @@ try {
 
         # -- a missing path re-prompts instead of scanning -------------------
         $missingPath = Join-Path $Work 'no-such-folder-here'
-        $bad = Invoke-Wizard -Config $cfg -Answers @('1', '1', '25', $missingPath, '0', '0', '0', 'exit') -WorkingDirectory $proj
+        $bad = Invoke-Wizard -Config $cfg -Answers @('1', '1', '26', $missingPath, '0', '0', '0', 'exit') -WorkingDirectory $proj
         Check 'status: the invalid-path run exits 0' ($bad.Exit -eq 0) $bad.Err
         Check 'status: a missing folder is rejected with the exact path' ($bad.Out -match [regex]::Escape('Folder not found: ' + $missingPath)) $bad.Out
         Check 'status: the root prompt was shown again after the rejection' (([regex]::Matches($bad.Out, 'Root folder to scan')).Count -ge 2) $bad.Out
@@ -323,7 +326,7 @@ try {
 
         # -- a quoted path containing spaces is accepted ---------------------
         $spaceDir = New-Proj 'Status Root With Spaces'
-        $quoted = Invoke-Wizard -Config $cfg -Answers @('1', '1', '25', ('"' + $spaceDir + '"'), '0', '0', '0', '0', 'exit') -WorkingDirectory $proj
+        $quoted = Invoke-Wizard -Config $cfg -Answers @('1', '1', '26', ('"' + $spaceDir + '"'), '0', '0', '0', '0', 'exit') -WorkingDirectory $proj
         Check 'status: the quoted-path run exits 0' ($quoted.Exit -eq 0) $quoted.Err
         Check 'status: a quoted path containing spaces is accepted' ($quoted.Out -match $globalQuestion) $quoted.Out
         # 0 at the global question goes BACK to the root prompt: that is the
@@ -332,7 +335,7 @@ try {
         Check 'status: cancelling never started a scan' ($quoted.Out -notmatch 'Roots to scan:') $quoted.Out
 
         # -- a plain project root is accepted --------------------------------
-        $projRoot = Invoke-Wizard -Config $cfg -Answers @('1', '1', '25', $proj, '0', '0', '0', '0', 'exit') -WorkingDirectory $proj
+        $projRoot = Invoke-Wizard -Config $cfg -Answers @('1', '1', '26', $proj, '0', '0', '0', '0', 'exit') -WorkingDirectory $proj
         Check 'status: the project-root run exits 0' ($projRoot.Exit -eq 0) $projRoot.Err
         Check 'status: a project root is accepted' ($projRoot.Out -match $globalQuestion) $projRoot.Out
 
@@ -341,7 +344,7 @@ try {
         # directory well inside the project has to work too.
         $subtree = Join-Path $proj '.claude\hooks\Hook-Maker'
         New-Item -ItemType Directory -Path $subtree -Force | Out-Null
-        $sub = Invoke-Wizard -Config $cfg -Answers @('1', '1', '25', $subtree, '0', '0', '0', '0', 'exit') -WorkingDirectory $proj
+        $sub = Invoke-Wizard -Config $cfg -Answers @('1', '1', '26', $subtree, '0', '0', '0', '0', 'exit') -WorkingDirectory $proj
         Check 'status: the .claude\hooks\Hook-Maker run exits 0' ($sub.Exit -eq 0) $sub.Err
         Check 'status: a .claude\hooks\Hook-Maker direct subtree is accepted' ($sub.Out -match $globalQuestion) $sub.Out
 
@@ -360,7 +363,7 @@ try {
         # -- the global question defaults to No on a bare Enter ---------------
         # Enter answers No, so the roots screen must say the global locations
         # are excluded and must list only the chosen root.
-        $defaultNo = Invoke-Wizard -Config $cfg -Answers @('1', '1', '25', $proj, '', '0', 'exit') -WorkingDirectory $proj
+        $defaultNo = Invoke-Wizard -Config $cfg -Answers @('1', '1', '26', $proj, '', '0', 'exit') -WorkingDirectory $proj
         Check 'status: the default-No run exits 0' ($defaultNo.Exit -eq 0) $defaultNo.Err
         Check 'status: Enter at the global question means No' ($defaultNo.Out -match [regex]::Escape('Global Claude/Codex locations are NOT included in this scan.')) $defaultNo.Out
         Check 'status: the canonical root is shown before the scan starts' ($defaultNo.Out -match [regex]::Escape($proj)) $defaultNo.Out

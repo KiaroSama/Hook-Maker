@@ -606,7 +606,13 @@ function Install-IgnorePrePush {
         Install-PlannedRuntime -Plan $companionPlan -RuntimeRoot $runtimeRoot -FriendlyName $Name | Out-Null
         return (Join-Path $destinationDir ($Name + '.ps1'))
     }
+    # The canonical chain-companion list (30.md Part C): the ONE place the
+    # managed stage set is decided. Everything downstream (expectedStages,
+    # companions, sourceManifest, updater integrity, status, uninstall) derives
+    # from the record this writes, so extending the chain is exactly this list.
+    $chainCompanions = @('Secrets-Check', 'Utf8-Encoding-Check')
     $secretsScript = Copy-PrePushCompanion 'Secrets-Check'
+    $utf8Script = Copy-PrePushCompanion 'Utf8-Encoding-Check'
     $staleLargeFileCheck = Join-Path $runtimeRoot 'Large-File-Check'
     if (Test-Path -LiteralPath $staleLargeFileCheck) {
         Remove-Item -LiteralPath $staleLargeFileCheck -Recurse -Force
@@ -648,7 +654,9 @@ function Install-IgnorePrePush {
     # compare exactly - so the wrapper's stdin buffering, stage order,
     # fail-closed `|| exit $?`, cleanup trap and previous-hook invocation can
     # never drift apart from what we verify.
-    $managedStages = @($runtime.Script, $secretsScript)
+    # Chain order is the canonical contract: Ignore -> Secrets -> Utf8 ->
+    # preserved previous user hook (30.md Part C).
+    $managedStages = @($runtime.Script, $secretsScript, $utf8Script)
     $body = New-PrePushWrapperBody -ManagedScripts $managedStages
     [System.IO.File]::WriteAllText($prePush, $body, $Utf8NoBom)
     Write-Host "Native git pre-push protection installed in: $prePush"
@@ -670,8 +678,8 @@ function Install-IgnorePrePush {
         previousHookMissing   = $previousMissing
         expectedStages        = @($managedStages)
         wrapperBodyHash       = (Get-ShortHash $body)
-        companions            = @('Secrets-Check')
-        sourceManifest        = @(Get-NativePrePushSourceManifest -ToolRoot $ToolRoot -PrimaryFriendlyName $FriendlyName -PrimaryHookScript $HookScript -PrimarySourceDir $SourceDir -Companions @('Secrets-Check'))
+        companions            = @($chainCompanions)
+        sourceManifest        = @(Get-NativePrePushSourceManifest -ToolRoot $ToolRoot -PrimaryFriendlyName $FriendlyName -PrimaryHookScript $HookScript -PrimarySourceDir $SourceDir -Companions $chainCompanions)
     }
 }
 
