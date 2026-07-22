@@ -168,6 +168,10 @@ function Get-ProgramName {
 #    form  timeout /t N  is a blind wait.
 #  * An always-true poll loop is flagged only when it also sleeps AND shows no
 #    deadline/break/return/exit anywhere - any sign the author bounded it clears.
+#  * A PYTHON literal sleep (`python -c "time.sleep(300)"`) is matched only in a
+#    segment whose PROGRAM is python/python3/py, against the COMPLETE payload
+#    token the tokenizer already produced - never by re-parsing quoting, so
+#    `grep "time.sleep(300)" app.py` stays untouched.
 
 # Parse a single literal duration token to whole seconds, or -1 if it is not a
 # plain literal (a variable, an expression, anything non-numeric -> not our call).
@@ -249,6 +253,28 @@ function Get-BlindWaitFinding {
         foreach ($b in $boundSignals) { if ($lowerAll.Contains($b)) { $hasBound = $true; break } }
         if ($hasSleep -and -not $hasBound) {
             return New-BlindWaitFinding -Reason 'an always-true poll loop with a sleep and no visible deadline never provably ends' -SafePattern $script:BlindWaitSafeSleep
+        }
+    }
+    # 5) PYTHON literal long sleep (`python -c "time.sleep(300)"`). The tokenizer
+    #    collapsed the quoted payload into ONE token, so a regex over that complete
+    #    token is NOT nested-shell parsing - no quoting is re-interpreted. Scoped
+    #    per SEGMENT, and only when the segment's PROGRAM is python/python3/py, so
+    #    `grep "time.sleep(300)" app.py` and `echo time.sleep(300)` never match.
+    #    ($script:PythonPrograms is declared further down; script scope resolves at
+    #    call time, and the only caller runs long after top-level init.)
+    foreach ($segment in @(Split-CommandSegments -Tokens $t)) {
+        $seg = @($segment)
+        if ($seg.Count -lt 2) { continue }
+        if ($script:PythonPrograms -notcontains (Get-ProgramName $seg[0])) { continue }
+        for ($i = 1; $i -lt $seg.Count; $i++) {
+            # The literal may sit inside a larger payload token
+            # (`import time; time.sleep(300)`) - every occurrence is checked.
+            foreach ($m in [regex]::Matches($seg[$i], 'time\.sleep\(\s*([0-9]+(?:\.[0-9]+)?)\s*\)')) {
+                $secs = [int][Math]::Floor([double]$m.Groups[1].Value)
+                if ($secs -ge $MaxBlindSleepSeconds) {
+                    return New-BlindWaitFinding -Reason ('a literal python time.sleep(' + $secs + ') (>= the ' + $MaxBlindSleepSeconds + 's blind-wait ceiling) is a blind wait') -SafePattern $script:BlindWaitSafeSleep
+                }
+            }
         }
     }
     return $null

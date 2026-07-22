@@ -122,9 +122,10 @@ if ($eventName -eq 'UserPromptSubmit') {
 # ROOT, and never follows a child reparse point (junction/symlink). Every
 # dimension is capped and configurable: directories visited, candidate test files
 # inspected, bytes read per file, total wall time, and findings emitted. The wall
-# time is enforced BETWEEN directories and DURING file/subdir enumeration, so one
-# huge directory cannot overrun the ceiling. Everything reported still carries a
-# file:line the reader can open; nothing is inferred or theoretical.
+# time is enforced BETWEEN directories and for EVERY LAZILY ENUMERATED entry
+# (subdirectory or file, before the extension match), so one huge directory cannot
+# overrun the ceiling - not even during enumeration itself. Everything reported
+# still carries a file:line the reader can open; nothing is inferred or theoretical.
 $maxDirs      = Read-BoundedIntSetting 'TEST_PLAN_MAX_DIRS'          4000 1 1000000
 $maxFiles     = Read-BoundedIntSetting 'TEST_PLAN_MAX_FILES'          200 1 100000
 $maxFileBytes = 1KB * (Read-BoundedIntSetting 'TEST_PLAN_MAX_FILE_KB' 400 1 1048576)
@@ -133,16 +134,17 @@ $maxFindings  = Read-BoundedIntSetting 'TEST_PLAN_MAX_FINDINGS'         8 1 1000
 
 # TEST-ONLY seam (NO effect in production; deliberately absent from .env.example).
 # Mirrors Large-File-Check's LARGEFILECHECK_TEST_TRIP_TIME_AFTER_FILES: when set to
-# a positive integer N, the in-file-loop wall-time check trips after N
-# extension-matching files instead of consulting the real Stopwatch, so the offline
-# suite can prove a deterministic MID-ENUMERATION time stop without depending on
-# real wall-clock timing. Unset/invalid -> 0 -> inert, so production uses only the
-# real $scanTimer.
-$testTripAfterFiles = 0
+# a positive integer N, the per-entry wall-time check trips after N enumerated
+# ENTRIES - subdirectories and files alike, REGARDLESS of extension match - instead
+# of consulting the real Stopwatch, so the offline suite can prove a deterministic
+# MID-ENUMERATION time stop (including one inside a directory of extension-NON-
+# matching files) without depending on real wall-clock timing. Unset/invalid -> 0
+# -> inert, so production uses only the real $scanTimer.
+$testTripAfterEntries = 0
 if (-not [string]::IsNullOrWhiteSpace($env:TESTPLANCHECK_TEST_TRIP_TIME_AFTER_FILES)) {
     $parsedTrip = 0
     if ([int]::TryParse($env:TESTPLANCHECK_TEST_TRIP_TIME_AFTER_FILES, [ref]$parsedTrip) -and $parsedTrip -ge 1) {
-        $testTripAfterFiles = $parsedTrip
+        $testTripAfterEntries = $parsedTrip
     }
 }
 
@@ -155,10 +157,11 @@ $extRegex = '(?i)^\.(ps1|psm1|py|js|mjs|cjs|ts|sh|rb|go)$'
 # the advisory states the REAL cause(s), never a guess (mirrors Large-File-Check):
 #   $fileLimitReached     the candidate-file (MAX_FILES) ceiling.
 #   $dirLimitReached      the MAX_DIRS directory-traversal ceiling.
-#   $timeLimitReached     the MAX_SCAN_SECONDS wall-time ceiling, now checked
-#                         BETWEEN directories AND per file (behind the extension
-#                         match) AND per subdir, so a single huge directory can no
-#                         longer overrun the advertised ceiling during enumeration.
+#   $timeLimitReached     the MAX_SCAN_SECONDS wall-time ceiling, checked BETWEEN
+#                         directories AND for EVERY enumerated entry (file or
+#                         subdir, BEFORE the extension match), so a single huge
+#                         directory - even one full of extension-non-matching
+#                         files - cannot overrun the ceiling during enumeration.
 #   $findingsLimitReached the MAX_FINDINGS ceiling (set in the processing loop).
 #   $scanIncomplete       a read failure (locked/unreadable directory or file).
 #   $rootReparse          the scan ROOT itself is a junction/symlink; it is refused
@@ -172,7 +175,7 @@ $findingsLimitReached = $false
 $scanIncomplete = $false
 $rootReparse = $false
 $dirsVisited = 0
-$filesScanned = 0
+$entriesEnumerated = 0
 $scanTimer = [System.Diagnostics.Stopwatch]::StartNew()
 $candidates = New-Object System.Collections.Generic.List[object]
 
@@ -195,43 +198,52 @@ while ($stack.Count -gt 0) {
 
     # Child directories are enumerated and pushed FIRST, files LAST, so the single
     # time-break after file processing stops the WHOLE walk at once (matching
-    # Large-File-Check). Each enumerate is materialized inside its own try so an
-    # unreadable directory marks partial coverage without aborting the walk.
-    $childDirs = @()
-    try { $childDirs = @([System.IO.Directory]::EnumerateDirectories($current)) } catch { $scanIncomplete = $true }
-    foreach ($dirPath in $childDirs) {
-        # Per-subdir wall check: this hook does a Get-Item per subdirectory, so a
-        # directory with very many subdirectories must not overrun the ceiling
-        # during enumeration either.
-        if ($scanTimer.Elapsed.TotalSeconds -ge $maxSeconds) { $timeLimitReached = $true; break }
-        $dir = Get-Item -LiteralPath $dirPath -Force -ErrorAction SilentlyContinue
-        if ($null -eq $dir -or ($dir.Attributes -band [System.IO.FileAttributes]::ReparsePoint)) { continue }
-        if ($excludedDirs -notcontains $dir.Name.ToLowerInvariant()) { $stack.Push($dir.FullName) }
+    # Large-File-Check). Both listings are walked LAZILY - foreach directly over
+    # the [System.IO.Directory] enumerable, never materialized with @() - because
+    # materializing let one directory with a very large number of entries overrun
+    # the wall-time ceiling before any per-entry check ever ran (HM-04). The
+    # deadline is paid for EVERY enumerated entry, INCLUDING extension-NON-matching
+    # files, which the old gated check skipped entirely. The try around each whole
+    # foreach also catches an exception thrown MID-enumeration (access denied can
+    # surface on the lazy walk, not just on open): it marks partial coverage and
+    # moves on to the next stacked directory, exactly as a failed open always did,
+    # instead of becoming a terminating error under StrictMode.
+    try {
+        foreach ($dirPath in [System.IO.Directory]::EnumerateDirectories($current)) {
+            $entriesEnumerated++
+            # Per-entry wall check (seam-aware): a directory with very many
+            # subdirectories must not overrun the ceiling during enumeration.
+            $timeUp = if ($testTripAfterEntries -gt 0) { $entriesEnumerated -ge $testTripAfterEntries } else { $scanTimer.Elapsed.TotalSeconds -ge $maxSeconds }
+            if ($timeUp) { $timeLimitReached = $true; break }
+            $dir = Get-Item -LiteralPath $dirPath -Force -ErrorAction SilentlyContinue
+            if ($null -eq $dir -or ($dir.Attributes -band [System.IO.FileAttributes]::ReparsePoint)) { continue }
+            if ($excludedDirs -notcontains $dir.Name.ToLowerInvariant()) { $stack.Push($dir.FullName) }
+        }
     }
+    catch { $scanIncomplete = $true }
     if ($timeLimitReached) { break }
 
-    $files = @()
-    try { $files = @([System.IO.Directory]::EnumerateFiles($current)) } catch { $scanIncomplete = $true }
-    foreach ($filePath in $files) {
-        if ($candidates.Count -ge $maxFiles) { $fileLimitReached = $true; break }
-        if ([System.IO.Path]::GetExtension($filePath) -notmatch $extRegex) { continue }
-        # TIME check gated behind the cheap extension match (like Large-File-Check):
-        # only extension-matching files pay the Stopwatch read, but a huge single
-        # directory of non-test yet extension-matching files can no longer overrun
-        # the advertised ceiling DURING enumeration (the between-directories check
-        # alone let that happen). The seam forces a deterministic trip in tests;
-        # production consults $scanTimer.
-        $timeUp = if ($testTripAfterFiles -gt 0) { $filesScanned -ge $testTripAfterFiles } else { $scanTimer.Elapsed.TotalSeconds -ge $maxSeconds }
-        if ($timeUp) { $timeLimitReached = $true; break }
-        $filesScanned++
-        $name = [System.IO.Path]::GetFileName($filePath)
-        $isTest = ($name -match '(?i)(^|[\\/._-])(test|tests|spec)') -or ($current -match '(?i)[\\/](tests?|spec|specs|__tests__)([\\/]|$)')
-        if (-not $isTest) { continue }
-        # Only now touch the filesystem for metadata; skip file-level reparse points too.
-        $info = Get-Item -LiteralPath $filePath -Force -ErrorAction SilentlyContinue
-        if ($null -eq $info -or ($info.Attributes -band [System.IO.FileAttributes]::ReparsePoint)) { continue }
-        [void]$candidates.Add($info)
+    try {
+        foreach ($filePath in [System.IO.Directory]::EnumerateFiles($current)) {
+            if ($candidates.Count -ge $maxFiles) { $fileLimitReached = $true; break }
+            $entriesEnumerated++
+            # TIME check BEFORE the extension match: gating it behind the match
+            # meant a huge directory of extension-non-matching files never paid a
+            # single time check and overran the advertised ceiling. The seam forces
+            # a deterministic trip in tests; production consults $scanTimer.
+            $timeUp = if ($testTripAfterEntries -gt 0) { $entriesEnumerated -ge $testTripAfterEntries } else { $scanTimer.Elapsed.TotalSeconds -ge $maxSeconds }
+            if ($timeUp) { $timeLimitReached = $true; break }
+            if ([System.IO.Path]::GetExtension($filePath) -notmatch $extRegex) { continue }
+            $name = [System.IO.Path]::GetFileName($filePath)
+            $isTest = ($name -match '(?i)(^|[\\/._-])(test|tests|spec)') -or ($current -match '(?i)[\\/](tests?|spec|specs|__tests__)([\\/]|$)')
+            if (-not $isTest) { continue }
+            # Only now touch the filesystem for metadata; skip file-level reparse points too.
+            $info = Get-Item -LiteralPath $filePath -Force -ErrorAction SilentlyContinue
+            if ($null -eq $info -or ($info.Attributes -band [System.IO.FileAttributes]::ReparsePoint)) { continue }
+            [void]$candidates.Add($info)
+        }
     }
+    catch { $scanIncomplete = $true }
     if ($timeLimitReached) { break }
 }
 
@@ -388,9 +400,22 @@ if ($configWarnings.Count -gt 0) {
 # projectKey the runner stored, against both the raw and canonical cwd hash (the
 # runner canonicalizes the working dir), so the derivation difference cannot hide
 # a real baseline. Bounded by the (pruned) per-project timing file count.
+
+# LOCKSTEP with scripts\Run-Tests-Guarded.ps1's Get-ProjectKey - the WRITER and
+# the source of truth for the stored projectKey: SHA-256 of the lowercased path,
+# first 12 hex chars. NOT _hooklib's 10-char Get-ShortHash: a 10-char prefix
+# never equals the stored 12-char key, which silently hid every baseline.
+function Get-RunnerProjectKey {
+    param([string]$Path)
+    $sha = [System.Security.Cryptography.SHA256]::Create()
+    try {
+        return ([System.BitConverter]::ToString($sha.ComputeHash([System.Text.Encoding]::UTF8.GetBytes(([string]$Path).ToLowerInvariant()))) -replace '-', '').ToLowerInvariant().Substring(0, 12)
+    }
+    finally { $sha.Dispose() }
+}
 try {
-    $myTimingKeys = @((Get-ShortHash $cwd.ToLowerInvariant()))
-    try { $myTimingKeys += (Get-ShortHash ([System.IO.Path]::GetFullPath($cwd).ToLowerInvariant())) } catch { }
+    $myTimingKeys = @((Get-RunnerProjectKey $cwd))
+    try { $myTimingKeys += (Get-RunnerProjectKey ([System.IO.Path]::GetFullPath($cwd))) } catch { }
     $suitesWithBaseline = 0
     if (-not [string]::IsNullOrWhiteSpace($cwd) -and (Test-Path -LiteralPath $stateDir -PathType Container)) {
         foreach ($tf in @(Get-ChildItem -LiteralPath $stateDir -Filter 'TestTiming-*.json' -File -ErrorAction SilentlyContinue)) {

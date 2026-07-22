@@ -4,7 +4,11 @@
 # outlives it must NOT hang the runner (the old parameterless WaitForExit did), a
 # clean-exit orphan must be killed, a hang must be killed and PROVEN gone (124), an
 # unproven cleanup must map to a distinct 126, a clean child exit code must
-# propagate exactly, and no process or temp file may leak.
+# propagate exactly, and no process or temp file may leak. The DEGRADED (no Job
+# Object) paths are exercised for real by handing the body EMPTY C# so jobReady
+# stays $false: a degraded clean-exit orphan must be swept via the pid+StartTime
+# walk and reported with the guarded runner's orphanLeak code 125 - never a
+# silent pass - while a degraded clean exit without orphans keeps its exact code.
 #
 # The REAL body is extracted from Run-Tests.ps1 via the AST (never a copy) and run
 # against real ping-spawning fixtures inside a BOUNDED child, so a regression that
@@ -64,7 +68,7 @@ function Test-PidAlive {
 # the body under test can never hang this suite.
 $driver = Join-Path $Work 'body-driver.ps1'
 Write-Utf8 $driver @'
-param([string]$RunTestsPath, [string]$GuardedPath, [string]$SuitePath, [int]$TimeoutSeconds, [string]$ResultPath)
+param([string]$RunTestsPath, [string]$GuardedPath, [string]$SuitePath, [int]$TimeoutSeconds, [string]$ResultPath, [switch]$DegradedJob)
 Set-StrictMode -Version 2.0
 $ErrorActionPreference = 'Stop'
 $ast = [System.Management.Automation.Language.Parser]::ParseFile($RunTestsPath, [ref]$null, [ref]$null)
@@ -76,6 +80,10 @@ $guardText = [System.IO.File]::ReadAllText($GuardedPath)
 $csStart = $guardText.IndexOf('using System;')
 $csEnd = $guardText.IndexOf("'@", $csStart)
 $cs = $guardText.Substring($csStart, $csEnd - $csStart)
+# Degraded mode: hand the body NO C# at all. This driver is a fresh pwsh child,
+# so HookMaker.JobNative is not AppDomain-loaded, the body's Add-Type is skipped,
+# jobReady stays $false, and the body runs its no-Job-Object paths for real.
+if ($DegradedJob) { $cs = '' }
 $body = [scriptblock]::Create($bodyText)
 $exe = (Get-Process -Id $PID).Path
 $result = & $body $SuitePath $exe $TimeoutSeconds $cs
@@ -87,14 +95,26 @@ $result | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath $ResultPath -Encodi
 # provable leak (TempLeftover). Bounded is $false when the body overran the outer
 # wall - i.e. it was NOT bounded (the regression signature).
 function Invoke-BodyInChild {
-    param([string]$SuitePath, [int]$TimeoutSeconds, [int]$OuterWallSeconds)
+    param(
+        [string]$SuitePath,
+        [int]$TimeoutSeconds,
+        [int]$OuterWallSeconds,
+        # No Job Object: the driver passes empty C# so jobReady stays $false.
+        [switch]$Degraded,
+        # Run a DIFFERENT Run-Tests.ps1 (e.g. a materialized pre-fix HEAD copy for
+        # a red-proof) instead of the working-tree file.
+        [string]$BodySource = ''
+    )
     $resultPath = Join-Path $Work ('bodyresult-' + [guid]::NewGuid().ToString('N').Substring(0, 8) + '.json')
     $tmpDir = Join-Path $Work ('bodytmp-' + [guid]::NewGuid().ToString('N').Substring(0, 8))
     New-Item -ItemType Directory -Path $tmpDir -Force | Out-Null
+    $bodyFile = $(if ([string]::IsNullOrWhiteSpace($BodySource)) { $RunTests } else { $BodySource })
     $exe = (Get-Process -Id $PID).Path
     $psi = New-Object System.Diagnostics.ProcessStartInfo
     $psi.FileName = $exe
-    foreach ($a in @('-NoLogo', '-NoProfile', '-File', $driver, '-RunTestsPath', $RunTests, '-GuardedPath', $Guarded, '-SuitePath', $SuitePath, '-TimeoutSeconds', [string]$TimeoutSeconds, '-ResultPath', $resultPath)) {
+    $argList = @('-NoLogo', '-NoProfile', '-File', $driver, '-RunTestsPath', $bodyFile, '-GuardedPath', $Guarded, '-SuitePath', $SuitePath, '-TimeoutSeconds', [string]$TimeoutSeconds, '-ResultPath', $resultPath)
+    if ($Degraded) { $argList += '-DegradedJob' }
+    foreach ($a in $argList) {
         [void]$psi.ArgumentList.Add([string]$a)
     }
     $psi.UseShellExecute = $false
@@ -192,6 +212,62 @@ try {
     Check 'a clean run is bounded and leaks no temp file' ($r4.Bounded -and $r4.TempLeftover -eq 0) ([string]$r4.Bounded + '/' + [string]$r4.TempLeftover)
 
     # =====================================================================
+    Write-Host '--- DEGRADED mode (no Job Object): a clean-exit orphan is swept, proven gone, reported as 125 (HM-02 follow-up) ---' -ForegroundColor Cyan
+    # The driver passes EMPTY C#, so jobReady stays $false and the body runs its
+    # degraded paths for real. Pre-fix, a clean exit here killed nothing: the
+    # finally's taskkill fires only while the root is alive and there is no job to
+    # close, so the ping descendant silently outlived the runner (see the
+    # red-proof below). The fix must sweep it via the pid+StartTime ppid walk and
+    # report the leak with the guarded runner's established orphanLeak code 125.
+    $fx6 = New-PingFixture -Name 'degorphan' -PingSeconds 60 -Tail 'exit 0'
+    $r6 = Invoke-BodyInChild -SuitePath $fx6.Suite -TimeoutSeconds 30 -OuterWallSeconds 60 -Degraded
+    Check 'the degraded body stays bounded with an inherited-stdout orphan' ($r6.Bounded) ([string]$r6.Stderr)
+    $ping6 = Get-RecordedPid $fx6.PidFile
+    Check 'the degraded fixture actually recorded a descendant pid' ($ping6 -ne '') $ping6
+    Check 'the degraded clean-exit orphan IS terminated (snapshot sweep, no job)' (-not (Test-PidAlive $ping6 5)) ('ping ' + $ping6)
+    Check 'a degraded clean exit that leaked is NOT a silent pass: exit 125 (guarded orphanLeak semantics)' ($null -ne $r6.Result -and [int]$r6.Result.Exit -eq 125) $(if ($null -ne $r6.Result) { [string]$r6.Result.Exit } else { 'no result' })
+    # The count is >= 1 but environment-dependent: the ping usually drags a
+    # conhost.exe descendant with it, so 2 is as legitimate as 1.
+    Check 'the result reports the leak honestly (count + original clean exit code in Tail)' ($null -ne $r6.Result -and [string]$r6.Result.Tail -match 'LEAKED \d+ descendant' -and [string]$r6.Result.Tail -match 'clean exit 0') $(if ($null -ne $r6.Result) { [string]$r6.Result.Tail } else { 'no result' })
+    Check 'no temp capture file is left behind by the degraded sweep' ($r6.TempLeftover -eq 0) ([string]$r6.TempLeftover)
+
+    # The sweep must not corrupt the ordinary degraded clean exit: no orphans ->
+    # the exact child code still propagates (fx4 is the exit-7 fixture above).
+    $r7 = Invoke-BodyInChild -SuitePath $fx4 -TimeoutSeconds 30 -OuterWallSeconds 60 -Degraded
+    Check 'a degraded clean exit WITHOUT orphans still propagates the exact child code (7)' ($null -ne $r7.Result -and [int]$r7.Result.Exit -eq 7) $(if ($null -ne $r7.Result) { [string]$r7.Result.Exit } else { 'no result' })
+    Check 'the ordinary degraded clean run is bounded and leaks no temp file' ($r7.Bounded -and $r7.TempLeftover -eq 0) ([string]$r7.Bounded + '/' + [string]$r7.TempLeftover)
+
+    # =====================================================================
+    Write-Host '--- RED-PROOF: the PRE-FIX body (HEAD) leaks a degraded clean-exit orphan ---' -ForegroundColor Cyan
+    # Materialize the pre-fix Run-Tests.ps1 from git and run the SAME degraded
+    # scenario against its body: the orphan must SURVIVE, proving the fix (not the
+    # harness) is what changed the behavior. Once the fix is committed, HEAD
+    # contains the sweep and the pre-fix body no longer exists to prove red
+    # against, so this section skips itself instead of faking a red.
+    $preFixText = ''
+    try {
+        $preFixLines = & git -C $RepoRoot show 'HEAD:scripts/Run-Tests.ps1' 2>$null
+        if ($LASTEXITCODE -eq 0 -and $null -ne $preFixLines) { $preFixText = (@($preFixLines) -join "`n") }
+    }
+    catch { }
+    if ($preFixText -ne '' -and $preFixText -notmatch 'Get-SnapshotSurvivorsLocal') {
+        $oldCopy = Join-Path $Work 'Run-Tests-prefix-HEAD.ps1'
+        Write-Utf8 $oldCopy $preFixText
+        $fx8 = New-PingFixture -Name 'red-orphan' -PingSeconds 60 -Tail 'exit 0'
+        $r8 = Invoke-BodyInChild -SuitePath $fx8.Suite -TimeoutSeconds 30 -OuterWallSeconds 90 -Degraded -BodySource $oldCopy
+        $ping8 = Get-RecordedPid $fx8.PidFile
+        Check 'RED: the pre-fix body reports the clean exit 0 - a silent pass despite the leak' ($null -ne $r8.Result -and [int]$r8.Result.Exit -eq 0) $(if ($null -ne $r8.Result) { [string]$r8.Result.Exit } else { 'no result: ' + [string]$r8.Stderr })
+        Check 'RED: the pre-fix degraded orphan SURVIVES the runner (the leak the fix closes)' ($ping8 -ne '' -and (Test-PidAlive $ping8 0)) ('ping ' + $ping8)
+        # Kill the deliberately leaked red-proof ping NOW so the end-of-suite
+        # no-leak sweep stays meaningful (the finally would catch it anyway).
+        if ($ping8 -ne '') { try { & taskkill.exe /PID ([int]$ping8) /T /F *> $null } catch { } }
+        Check 'the red-proof orphan is cleaned up by the suite' (-not (Test-PidAlive $ping8 5)) ('ping ' + $ping8)
+    }
+    else {
+        Write-Host 'skipped: HEAD already contains the degraded sweep (or git is unavailable) - no pre-fix body to prove red against' -ForegroundColor DarkGray
+    }
+
+    # =====================================================================
     Write-Host '--- fail-closed truth table: Test-OwnedTreeCleared (HM-02 scope 3/5) ---' -ForegroundColor Cyan
     # Extract the REAL top-level function from Run-Tests.ps1 and prove the truth
     # table directly; a pre-fix Run-Tests.ps1 has no such function, so its absence
@@ -217,6 +293,8 @@ try {
         $bodyText -match '\$EnumerationOk\s+-and\s+\$SurvivorCount\s+-le\s+0\s+-and\s+-not\s+\$RootAlive') 'inline twin rule missing'
     Check 'the body maps proven-clean -> 124 and UNPROVEN -> a distinct 126' (
         $bodyText -match '=\s*124' -and $bodyText -match '=\s*126') 'exit-code mapping missing'
+    Check 'the body maps a degraded clean-exit leak (killed + proven gone) -> the distinct 125' (
+        $bodyText -match '=\s*125') 'degraded orphanLeak (125) mapping missing'
     # Comment lines are stripped first: the body's own prose deliberately names the
     # parameterless WaitForExit() it replaced.
     $bodyCode = (($bodyText -split "`n") | Where-Object { $_.Trim() -notmatch '^#' }) -join "`n"

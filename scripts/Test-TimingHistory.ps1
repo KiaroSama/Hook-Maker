@@ -173,6 +173,84 @@ Add-TimingSample -StateDir $StateDir -ProjectKey $Key -CommandFingerprint $Cmd -
     Check 'a 200-day-old TestTiming file is pruned' (-not (Test-Path -LiteralPath $staleTiming))
     Check 'a fresh TestTiming file is preserved' (Test-Path -LiteralPath (Get-TimingHistoryPath -StateDir $StateDir -ProjectKey $PK -CommandFingerprint $CMD))
     Check 'an unresolved incident note is NEVER touched by timing pruning' (Test-Path -LiteralPath $incident)
+
+    # =====================================================================
+    Write-Host '--- stale-lock recovery: a crash leftover .lock is reclaimed; a LIVE lock never is ---' -ForegroundColor Cyan
+    $histPath = Get-TimingHistoryPath -StateDir $StateDir -ProjectKey $PK -CommandFingerprint $CMD
+    $lockPath = $histPath + '.lock'
+
+    # (a) STALE: a .lock backdated 10 minutes simulates a holder that crashed
+    # between CreateNew and its finally-delete. The writer must reclaim it, take
+    # the lock, write the sample, and leave no .lock behind.
+    Reset-History
+    Write-Utf8 $lockPath ''
+    (Get-Item -LiteralPath $lockPath).LastWriteTimeUtc = [DateTime]::UtcNow.AddMinutes(-10)
+    [void](Add-Ok -Seconds 10 -Ceiling 4 -RunId 'stalerec')
+    $docS = Read-History
+    $staleIds = if ($null -ne $docS -and $docS.PSObject.Properties['samples']) { @(@($docS.samples) | ForEach-Object { [string]$_.runId }) } else { @() }
+    Check 'a stale (10-minute-old) crash leftover .lock is reclaimed and the sample IS written' ($staleIds -contains 'stalerec') ($staleIds -join ',')
+    Check 'no .lock remains after stale recovery' (-not (Test-Path -LiteralPath $lockPath))
+
+    # (b) LIVE: an OPEN FileShare::None handle on a backdated .lock proves the
+    # safety property - liveness beats age. The delete is refused by the open
+    # handle, so the writer waits out its 5s deadline and gives up best-effort:
+    # no sample, no exception, and the held lock file is untouched.
+    Reset-History
+    Write-Utf8 $lockPath ''
+    (Get-Item -LiteralPath $lockPath).LastWriteTimeUtc = [DateTime]::UtcNow.AddMinutes(-10)
+    $holder = [System.IO.File]::Open($lockPath, [System.IO.FileMode]::Open, [System.IO.FileAccess]::ReadWrite, [System.IO.FileShare]::None)
+    try {
+        $liveErr = $null
+        try { [void](Add-Ok -Seconds 10 -Ceiling 4 -RunId 'liverec') } catch { $liveErr = $_ }
+        Check 'a LIVE held lock (even stale-looking) is never stolen: no exception escapes' ($null -eq $liveErr) ([string]$liveErr)
+        Check 'the sample is NOT written while the lock is held' (-not (Test-Path -LiteralPath $histPath))
+        Check 'the held .lock file still exists' (Test-Path -LiteralPath $lockPath)
+    }
+    finally {
+        try { $holder.Close() } catch { }
+        Remove-Item -LiteralPath $lockPath -Force -ErrorAction SilentlyContinue
+    }
+
+    # =====================================================================
+    Write-Host '--- red-proof: the PRE-FIX writer is permanently blocked by a stale lock ---' -ForegroundColor Cyan
+    # Extract the committed (HEAD) Add-TimingSample. While HEAD predates the
+    # stale-lock fix this proves scenario (a) genuinely failed before it; once
+    # the fix is committed the two extents become identical and this historical
+    # proof retires itself (scenario (a) stays as the durable regression test).
+    $oldText = ''
+    try { $oldText = (& git -C $RepoRoot show 'HEAD:scripts/Run-Tests-Guarded.ps1' 2>$null) -join "`n" } catch { }
+    if ([string]::IsNullOrWhiteSpace($oldText)) {
+        Write-Host 'git show unavailable; skipping the historical red-proof.' -ForegroundColor DarkGray
+    }
+    else {
+        $t = $null; $e = $null
+        $oldAst = [System.Management.Automation.Language.Parser]::ParseInput($oldText, [ref]$t, [ref]$e)
+        $oldFn = $oldAst.Find({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq 'Add-TimingSample' }, $true)
+        if ($null -eq $oldFn) {
+            Write-Host 'HEAD has no Add-TimingSample; skipping the historical red-proof.' -ForegroundColor DarkGray
+        }
+        elseif ($oldFn.Extent.Text -eq $addFn.Extent.Text) {
+            Write-Host 'HEAD already contains the stale-lock fix; historical red-proof retired.' -ForegroundColor DarkGray
+        }
+        else {
+            $redState = Join-Path $Work 'redstate'
+            New-Item -ItemType Directory -Path $redState -Force | Out-Null
+            $redHist = Get-TimingHistoryPath -StateDir $redState -ProjectKey $PK -CommandFingerprint $CMD
+            $redLock = $redHist + '.lock'
+            Write-Utf8 $redLock ''
+            (Get-Item -LiteralPath $redLock).LastWriteTimeUtc = [DateTime]::UtcNow.AddMinutes(-10)
+            $oldModule = Join-Path $Work 'timingwriter-prefix.ps1'
+            Write-Utf8 $oldModule ("`$script:TimingMaxSamples = 30`r`n" + $oldFn.Extent.Text + "`r`n")
+            # Dot-source inside a child scope so the OLD function never replaces
+            # the fixed one this suite already loaded.
+            & {
+                . $oldModule
+                Add-TimingSample -StateDir $redState -ProjectKey $PK -CommandFingerprint $CMD -RunId 'redproof' -ElapsedSeconds 10 -Outcome 'ok' -WorkerCeiling 4
+            }
+            Check 'PRE-FIX: the stale lock permanently blocks - the sample is NOT written' (-not (Test-Path -LiteralPath $redHist))
+            Check 'PRE-FIX: the stale .lock is never reclaimed' (Test-Path -LiteralPath $redLock)
+        }
+    }
 }
 finally {
     if ($KeepArtifacts) {
