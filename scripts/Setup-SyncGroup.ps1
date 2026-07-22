@@ -260,10 +260,14 @@ $script:HookMeta = @{
     'Test-Plan-Check'                  = @{ Order = 19; When = 'pre';  Text = 'surfaces test-health policy before test or CI work'; Events = @('SessionStart', 'UserPromptSubmit'); Timeout = 15 }
     'Test-Run-Guard'                   = @{ Order = 20; When = 'both'; Text = 'requires a bounded runner for recognised test commands'; Events = @('PreToolUse', 'PostToolUse'); Timeout = 10 }
     'Test-Completion-Check'            = @{ Order = 21; When = 'post'; Text = 'verifies test evidence and cleanup before finishing'; Events = @('Stop', 'SubagentStop'); Timeout = 20 }
+    # 30.md Part D: Utf8-Encoding-Check sits at Order 22 (menu 23), directly
+    # before Cloudflare-Deploy. It is also the third native pre-push chain
+    # stage (Ignore -> Secrets -> Utf8 -> preserved user hook).
+    'Utf8-Encoding-Check'              = @{ Order = 22; When = 'both'; Text = 'blocks new/changed non-UTF-8 text; pre-push chain stage'; Events = @('SessionStart', 'Stop'); Timeout = 30 }
     # Cloudflare-Deploy is deliberately kept LAST among individual hook
     # entries (Order = highest value) per an explicit user requirement, not
     # filesystem/alphabetical order - see Test-Wizard.ps1 for the pinned order.
-    'Cloudflare-Deploy'                = @{ Order = 22; When = 'post'; Text = 'suggests deploying in Cloudflare Workers projects, gated on release readiness' }
+    'Cloudflare-Deploy'                = @{ Order = 23; When = 'post'; Text = 'suggests deploying in Cloudflare Workers projects, gated on release readiness' }
 }
 # The "[pre-task]" / "[post-task]" tag, colored by phase (a different color than
 # the description, FFmWiz-style, so timing reads at a glance).

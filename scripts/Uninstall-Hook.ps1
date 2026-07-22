@@ -529,6 +529,141 @@ function Remove-NativeGitComponent {
     return [pscustomobject]@{ Removed = $true }
 }
 
+# ---- Utf8-Encoding-Check chain-stage removal (30.md Part D, item 27) -------
+# Uninstalling the Utf8-Encoding-Check LIFECYCLE record must also take its
+# stage out of the project's managed pre-push chain. The chain belongs to the
+# SAME project's Ignore-Rules-Check record (which installed the Utf8 COMPANION
+# under its own native runtime root), so this edits THAT record - under exactly
+# the ownership proofs Remove-NativeGitComponent applies to its own record:
+# marker present, byte-exact wrapper match against the record's persisted
+# expectedStages, containment-checked companion dir, wrapper backup + restore
+# on failure. Ignore-Rules-Check, Secrets-Check and the preserved user hook are
+# never touched. Deliberately scoped to Utf8-Encoding-Check: Secrets-Check's
+# stage lifecycle predates this rule and is unchanged.
+function Remove-CompanionChainStage {
+    if ($FriendlyName -ne 'Utf8-Encoding-Check') { return }
+    $projectRoot = ''
+    if ($null -ne $record.PSObject.Properties['targetProjectRoot']) { $projectRoot = [string]$record.targetProjectRoot }
+    if ([string]::IsNullOrWhiteSpace($projectRoot)) {
+        Set-ComponentResult -Component 'chainStage' -Status 'skipped' -ReasonCode 'notApplicable'
+        return
+    }
+    # The chain owner: the same-project managed Ignore-Rules-Check record whose
+    # companions list actually names this hook. None -> nothing to remove.
+    $ignoreRecord = $null
+    foreach ($candidate in @($registry.installs)) {
+        if ($null -eq $candidate) { continue }
+        if ([string](Get-Field $candidate 'friendlyName') -ne 'Ignore-Rules-Check') { continue }
+        $candRoot = [string](Get-Field $candidate 'targetProjectRoot')
+        if ([string]::IsNullOrWhiteSpace($candRoot)) { continue }
+        if (-not [string]::Equals([System.IO.Path]::GetFullPath($candRoot), [System.IO.Path]::GetFullPath($projectRoot), [System.StringComparison]::OrdinalIgnoreCase)) { continue }
+        $candNative = Get-Field $candidate 'nativeGit'
+        if ($null -eq $candNative -or $null -eq $candNative.PSObject.Properties['managed'] -or $candNative.managed -ne $true) { continue }
+        if (@(Get-Field $candNative 'companions') -notcontains 'Utf8-Encoding-Check') { continue }
+        $ignoreRecord = $candidate
+        break
+    }
+    if ($null -eq $ignoreRecord) {
+        Set-ComponentResult -Component 'chainStage' -Status 'skipped' -ReasonCode 'notApplicable'
+        return
+    }
+    $chainNative = $ignoreRecord.nativeGit
+    $wrapperPath = [string]$chainNative.wrapperPath
+    $chainRuntimeRoot = [string]$chainNative.runtimeRoot
+    $expectedStages = @()
+    if ($null -ne $chainNative.PSObject.Properties['expectedStages'] -and $null -ne $chainNative.expectedStages) {
+        $expectedStages = @($chainNative.expectedStages | ForEach-Object { [string]$_ })
+    }
+    # The Utf8 stage this record's uninstall owns: the expectedStages entry that
+    # is the Utf8 companion script INSIDE the chain owner's runtime root. Proven
+    # by path + containment, never by basename alone.
+    $utf8Stage = @($expectedStages | Where-Object {
+            $full = [System.IO.Path]::GetFullPath($_)
+            $full.EndsWith('\Utf8-Encoding-Check\Utf8-Encoding-Check.ps1', [System.StringComparison]::OrdinalIgnoreCase) -and
+            (Test-PathContainedIn -ChildPath $full -ParentPath $chainRuntimeRoot)
+        })
+    if ($utf8Stage.Count -ne 1) {
+        Set-ComponentResult -Component 'chainStage' -Status 'manualRepair' -ReasonCode 'chainStageUnproven' `
+            -Message ('expected exactly one contained Utf8-Encoding-Check stage in the chain owner''s expectedStages, found ' + $utf8Stage.Count)
+        return
+    }
+    if ([string]::IsNullOrWhiteSpace($wrapperPath) -or -not (Test-Path -LiteralPath $wrapperPath -PathType Leaf)) {
+        Set-ComponentResult -Component 'chainStage' -Status 'manualRepair' -ReasonCode 'chainWrapperMissing' `
+            -Message 'the chain owner records a managed wrapper but none exists at its recorded path'
+        return
+    }
+    $body = [System.IO.File]::ReadAllText($wrapperPath)
+    if (-not $body.Contains($script:PrePushMarker)) {
+        Set-ComponentResult -Component 'chainStage' -Status 'manualRepair' -ReasonCode 'chainWrapperReplacedOrOwnershipUnknown' `
+            -Message 'the file at the chain wrapper path does not carry the Hook Maker marker; ownership cannot be proven safely'
+        return
+    }
+    $expectedBody = New-PrePushWrapperBody -ManagedScripts $expectedStages
+    if (-not (Compare-PrePushWrapperBody -Expected $expectedBody -Actual $body)) {
+        Set-ComponentResult -Component 'chainStage' -Status 'manualRepair' -ReasonCode 'chainWrapperDrifted' `
+            -Message 'the chain wrapper does not match its expected content; ownership cannot be proven safely'
+        return
+    }
+    if ($WhatIf) {
+        Set-ComponentResult -Component 'chainStage' -Status 'ok' -ReasonCode 'wouldRemove'
+        return
+    }
+
+    $remainingStages = @($expectedStages | Where-Object { $_ -ne $utf8Stage[0] })
+    $remainingCompanions = @(@(Get-Field $chainNative 'companions') | Where-Object { [string]$_ -ne 'Utf8-Encoding-Check' } | ForEach-Object { [string]$_ })
+    $wrapperBackup = $wrapperPath + '.hookmaker-chainstage-backup-' + [guid]::NewGuid().ToString('N').Substring(0, 8)
+    Copy-Item -LiteralPath $wrapperPath -Destination $wrapperBackup -Force
+    try {
+        # 1) Wrapper first, so the chain never references a script that is gone.
+        $newBody = New-PrePushWrapperBody -ManagedScripts $remainingStages
+        [System.IO.File]::WriteAllText($wrapperPath, $newBody, $Utf8NoBom)
+        # 2) The companion runtime dir, containment-proven against the OWNER's root.
+        $utf8Dir = Split-Path -Parent ([System.IO.Path]::GetFullPath($utf8Stage[0]))
+        if ((Test-Path -LiteralPath $utf8Dir -PathType Container) -and (Test-SafeManagedDir -Dir $utf8Dir -Root $chainRuntimeRoot)) {
+            Remove-Item -LiteralPath $utf8Dir -Recurse -Force
+        }
+        # 3) The chain owner's record, under the registry lock, so its integrity
+        #    check keeps matching what is actually installed.
+        $ignoreId = [string]$ignoreRecord.id
+        $chainSave = Invoke-WithInstallRegistryLock -ToolRoot $ToolRoot -Action {
+            $state = Read-InstallRegistryState -ToolRoot $ToolRoot
+            if ($state.State -eq 'corrupt') { return [pscustomobject]@{ Ok = $false; Warning = ('registry is unreadable: ' + [string]$state.Reason) } }
+            $liveRegistry = ConvertTo-InstallRegistryCurrent -Registry $state.Registry
+            $liveList = @($liveRegistry.installs)
+            for ($i = 0; $i -lt $liveList.Count; $i++) {
+                $live = $liveList[$i]
+                if ($null -eq $live -or $null -eq $live.PSObject.Properties['id'] -or [string]$live.id -ne $ignoreId) { continue }
+                $liveNative = $live.nativeGit
+                Set-ObjectProperty -Object $liveNative -Name 'expectedStages' -Value @($remainingStages)
+                Set-ObjectProperty -Object $liveNative -Name 'companions' -Value @($remainingCompanions)
+                Set-ObjectProperty -Object $liveNative -Name 'wrapperBodyHash' -Value (Get-ShortHash $newBody)
+                $ignoreSource = Join-Path $ToolRoot 'hooks\Ignore-Rules-Check\Ignore-Rules-Check.ps1'
+                Set-ObjectProperty -Object $liveNative -Name 'sourceManifest' -Value @(
+                    Get-NativePrePushSourceManifest -ToolRoot $ToolRoot -PrimaryFriendlyName 'Ignore-Rules-Check' `
+                        -PrimaryHookScript $ignoreSource -PrimarySourceDir (Split-Path -Parent $ignoreSource) -Companions $remainingCompanions)
+                Set-ObjectProperty -Object $live -Name 'lastUpdatedUtc' -Value ([DateTime]::UtcNow.ToString('o'))
+                break
+            }
+            $liveRegistry.installs = $liveList
+            Save-InstallRegistry -ToolRoot $ToolRoot -Registry $liveRegistry
+            $verify = Read-InstallRegistryState -ToolRoot $ToolRoot
+            if ($verify.State -ne 'ok') { return [pscustomobject]@{ Ok = $false; Warning = ('registry did not read back cleanly: ' + [string]$verify.Reason) } }
+            return [pscustomobject]@{ Ok = $true; Warning = '' }
+        }
+        if (-not $chainSave.Ok) { throw ('chain-owner record update failed: ' + [string]$chainSave.Warning) }
+        Remove-Item -LiteralPath $wrapperBackup -Force -ErrorAction SilentlyContinue
+        Set-ComponentResult -Component 'chainStage' -Status 'ok'
+    }
+    catch {
+        # Roll the wrapper back to the proven pre-removal bytes; the companion
+        # dir (if already removed) is re-created by the next install/update, and
+        # the failure keeps the record retained for a retry.
+        try { Copy-Item -LiteralPath $wrapperBackup -Destination $wrapperPath -Force } catch { }
+        Remove-Item -LiteralPath $wrapperBackup -Force -ErrorAction SilentlyContinue
+        Set-ComponentResult -Component 'chainStage' -Status 'failed' -ReasonCode 'chainStageRemovalFailed' -Message ([string]$_.Exception.Message)
+    }
+}
+
 # ---- execution order: native Git first (cheapest, read-mostly proof of
 # ownership) - a drifted wrapper stops the WHOLE record before anything else
 # is touched, matching "stop that record ... preserve every file". ----------
@@ -540,6 +675,13 @@ if ($nativeGitBlocked) {
     Write-Host ("WARNING: the native pre-push wrapper for '" + $FriendlyName + "' is ambiguous or has drifted. Nothing was changed for this record; manual repair is required.")
     return
 }
+
+# The Utf8-Encoding-Check chain stage comes off between the record's own
+# native proof and the client registrations: a manualRepair/failed result here
+# flows into the SAME partial-outcome machinery below (record retained,
+# component-level truth reported), never a silent skip.
+$script:CurrentPhase = 'chainStage'
+Remove-CompanionChainStage
 
 $script:CurrentPhase = 'claude'
 $claudeResult = Remove-ClientComponent -ClientName 'claude'
