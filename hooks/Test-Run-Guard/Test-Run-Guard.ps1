@@ -455,6 +455,7 @@ function New-GuardedInvocation {
         [int]$IdleSeconds,
         [int]$HeartbeatSeconds,
         [int]$MaxMemoryMB,
+        [int]$MaxWorkers,
         [string]$ResultPath,
         [string]$RunId,
         [string]$ProjectFingerprint
@@ -473,6 +474,10 @@ function New-GuardedInvocation {
     [void]$parts.Add('-IdleTimeoutSeconds ' + $IdleSeconds)
     [void]$parts.Add('-HeartbeatSeconds ' + $HeartbeatSeconds)
     if ($MaxMemoryMB -gt 0) { [void]$parts.Add('-MaxMemoryMB ' + $MaxMemoryMB) }
+    # The resolved worker ceiling, passed as DATA. The runner folds it through its
+    # own budget (local formula + ambient HOOKMAKER_MAX_TEST_WORKERS) so it can only
+    # tighten, then exports the result to the child. Omitted at 0 = no cap.
+    if ($MaxWorkers -gt 0) { [void]$parts.Add('-MaxWorkers ' + $MaxWorkers) }
     # The run-identity contract: the runId this hook just observed and the
     # repository fingerprint, passed as DATA so the runner echoes them into its
     # result and the consumer can prove that result belongs to THIS observation.
@@ -801,20 +806,23 @@ if ($eventName -eq 'PreToolUse') {
 
     $replacement = New-GuardedInvocation -RunnerPath $runnerPath -FilePath $verdict.Command.FilePath `
         -Arguments $verdict.Command.Arguments -WallSeconds $wallSeconds -IdleSeconds $idleSeconds `
-        -HeartbeatSeconds $heartbeatSeconds -MaxMemoryMB $maxMemoryMB -ResultPath $resultPath `
+        -HeartbeatSeconds $heartbeatSeconds -MaxMemoryMB $maxMemoryMB -MaxWorkers $maxWorkers -ResultPath $resultPath `
         -RunId $runId -ProjectFingerprint $stateFingerprint
 
-    # Advisory by design. Enforcing this would mean rewriting the worker flag of
-    # the runner just recognised, and every framework spells it differently
-    # (pytest -n, jest --maxWorkers, vitest --maxThreads, go -p, cargo -j,
-    # dotnet -m, PowerShell -ThrottleLimit); guessing wrong breaks the run. The
-    # command that actually oversubscribes usually carries no worker flag at all
-    # - it auto-detects - so there would be nothing to rewrite. A cap can only
-    # bind where the number is decided, inside the runner itself.
+    # The cap now travels with the replacement: -MaxWorkers reaches the runner,
+    # which exports the resolved ceiling as HOOKMAKER_MAX_TEST_WORKERS so an
+    # env-aware runner (this repo's scripts\Run-Tests.ps1) clamps itself to it.
+    # We do NOT rewrite the recognised command's own worker flag: every framework
+    # spells it differently (pytest -n, jest --maxWorkers, vitest --maxThreads,
+    # go -p, cargo -j, dotnet -m, -ThrottleLimit) and the command that actually
+    # oversubscribes usually carries no worker flag at all - it auto-detects. So
+    # for a framework that does NOT read the variable this stays advice; the note
+    # tells the model to pass that framework's own flag.
     $workerNote = ''
     if ($maxWorkers -gt 0) {
-        $workerNote = ' Keep test workers at or below ' + $maxWorkers + ' - pass your runner''s own worker flag explicitly' +
-        ' (a runner that reads HOOKMAKER_MAX_TEST_WORKERS, such as this repo''s scripts\Run-Tests.ps1, clamps itself to it).'
+        $workerNote = ' The runner caps env-aware test workers at ' + $maxWorkers +
+        ' (exported as HOOKMAKER_MAX_TEST_WORKERS). For a framework that ignores that variable, pass its own' +
+        ' worker flag at or below ' + $maxWorkers + '.'
     }
 
     $message = 'TEST RUN GUARD: "' + $verdict.Command.Label + '" is a test command with no bounded runner around it. ' +

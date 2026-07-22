@@ -63,6 +63,15 @@ param(
 
     [string]$WorkingDirectory = '',
 
+    # The resource-aware worker ceiling the OBSERVING hook resolved (its
+    # TEST_GUARD_MAX_WORKERS). 0 = the hook set no cap. It is folded through
+    # Get-GuardedWorkerBudget together with the local formula and any ambient
+    # HOOKMAKER_MAX_TEST_WORKERS, so the number can only TIGHTEN, never raise a
+    # stricter pre-existing value; the result is exported to the child so an
+    # env-aware runner (scripts\Run-Tests.ps1) clamps itself to the same ceiling
+    # this runner reports. Frameworks that ignore the variable stay advisory.
+    [int]$MaxWorkers = 0,
+
     # Total wall ceiling. A ceiling, not an expected duration.
     [int]$TimeoutSeconds = 1800,
 
@@ -471,7 +480,7 @@ $script:Result = [pscustomobject][ordered]@{
     lastProgress       = ''
     stdoutBytes        = 0
     stderrBytes        = 0
-    workerBudget       = (Get-GuardedWorkerBudget)
+    workerBudget       = (Get-GuardedWorkerBudget -Requested $MaxWorkers)
     startedUtc         = ''
     endedUtc           = ''
 }
@@ -679,6 +688,14 @@ try {
     $psi.RedirectStandardError = $true
     $psi.RedirectStandardInput = $true     # then closed immediately => EOF
     $psi.CreateNoWindow = $true
+    # Hand the resolved ceiling down to the child. UseShellExecute=$false means
+    # EnvironmentVariables is seeded from THIS process, so the child inherits it;
+    # we overwrite just this one key with the already-min'd budget (line ~474),
+    # which is <= any ambient value, so a stricter pre-existing ceiling is never
+    # raised. A runner that reads HOOKMAKER_MAX_TEST_WORKERS clamps to it; one
+    # that does not simply ignores it. Reported as workerBudget, so "what the
+    # child was told" and "what the result claims" are the same number.
+    $psi.EnvironmentVariables['HOOKMAKER_MAX_TEST_WORKERS'] = [string]$script:Result.workerBudget
 
     $process = New-Object System.Diagnostics.Process
     $process.StartInfo = $psi
