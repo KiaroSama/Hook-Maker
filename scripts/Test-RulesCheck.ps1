@@ -97,6 +97,25 @@ function New-RuleFile {
     [System.IO.File]::WriteAllText((Join-Path $Dir $Name), $Content)
 }
 
+function New-PromptStdin {
+    param([string]$Cwd, [string]$Prompt, [string]$SessionId = 't')
+    return @{ session_id = $SessionId; cwd = $Cwd; hook_event_name = 'UserPromptSubmit'; prompt = $Prompt } | ConvertTo-Json
+}
+
+# Parses hookSpecificOutput.additionalContext out of a hook's raw JSON stdout;
+# '' when the output is empty or not the expected shape.
+function Get-AdditionalContext {
+    param([string]$RawOut)
+    try {
+        $doc = $RawOut | ConvertFrom-Json
+        if ($null -ne $doc -and $null -ne $doc.PSObject.Properties['hookSpecificOutput']) {
+            return [string]$doc.hookSpecificOutput.additionalContext
+        }
+    }
+    catch { }
+    return ''
+}
+
 try {
     # =====================================================================
     Write-Host '--- input handling ---' -ForegroundColor Cyan
@@ -235,6 +254,110 @@ try {
     Check 'a PROVEN old tool-folder registration is pruned on migration' ($migJson -notmatch [regex]::Escape((Join-Path (Split-Path -Parent $ScriptRoot) 'hooks\Rules-Check\Rules-Check.ps1')))
     Check 'an unprovable same-shape registration is PRESERVED, not deleted' ($migJson -like '*SomeoneElsesProject*')
     Check 'the new self-contained registration is present exactly once' (([regex]::Matches($migJson, 'Hook-Maker')).Count -eq 1)
+
+    # =====================================================================
+    Write-Host '--- E-01: canonical rule routing + UTF-8 guidance (claude) ---' -ForegroundColor Cyan
+    $projE1 = Join-Path $Work 'projE1'; New-Item -ItemType Directory -Path $projE1 -Force | Out-Null
+    $r = Fire -Cwd $projE1
+    Check 'first-run note names the canonical rule set by canonical installed names' (
+        $r.Out -like '*custom-instructions.md*' -and $r.Out -like '*WORKFLOWS.md*' -and $r.Out -like '*CODEWORDS.md*' -and
+        $r.Out -like '*ai-context-memory-policy.md*' -and $r.Out -like '*global-hook-rules.md*' -and
+        $r.Out -like '*global-test-rules.md*' -and $r.Out -like '*global-github-automation-rules.md*') $r.Out
+    Check 'conditional rules stay conditional (MCP work / codebase navigation only)' (
+        $r.Out -like '*global-mcp-rules.md only when MCP work applies*' -and
+        $r.Out -like '*graphify.md only when codebase navigation applies*') $r.Out
+    Check 'claude loads EXACTLY skill-policy.md and never references the codex policy' (
+        $r.Out -match 'load ONLY skill-policy\.md' -and $r.Out -match 'never both together' -and $r.Out -notmatch 'codex') $r.Out
+    Check 'the note warns against uploaded/version-suffixed filenames like "(17)"' (
+        $r.Out -like '*version-suffixed*' -and $r.Out -like '*custom-instructions (17).md*') $r.Out
+    Check 'UTF-8 guidance: strict default, distrust OS/shell/runtime defaults' (
+        $r.Out -like '*STRICT UTF-8*' -and $r.Out -like '*never trust OS/shell/runtime default encodings*') $r.Out
+    Check 'UTF-8 guidance: BOM and no-BOM are both UTF-8; BOM is a separate compatibility decision' (
+        $r.Out -like '*with a BOM and without a BOM are both valid UTF-8*' -and $r.Out -like '*separate compatibility decision*') $r.Out
+    Check 'UTF-8 guidance: exception = narrow scope + exact encoding + reason + forcing system + verification' (
+        $r.Out -like '*narrow path/scope*' -and $r.Out -like '*exact encoding*' -and $r.Out -like '*technical reason*' -and
+        $r.Out -like '*forcing system*' -and $r.Out -like '*compatibility verification*') $r.Out
+    # A real uploaded-style copy in the rules dir is flagged, not trusted.
+    New-RuleFile $globalClaude 'custom-instructions (17).md'
+    $r = Fire -Cwd $projE1
+    Check 'a version-suffixed rule FILE on disk is flagged as non-canonical' (
+        $r.Out -like '*NEW:*custom-instructions (17).md*' -and $r.Out -like '*WARNING - version-suffixed*') $r.Out
+    Remove-Item (Join-Path $globalClaude 'custom-instructions (17).md') -Force
+    $r = Fire -Cwd $projE1
+    Check 'removing the uploaded copy clears the warning (REMOVED reported, no WARNING)' (
+        $r.Out -like '*REMOVED:*custom-instructions (17).md*' -and $r.Out -notlike '*WARNING - version-suffixed*') $r.Out
+
+    # =====================================================================
+    Write-Host '--- E-01: canonical rule routing (codex) ---' -ForegroundColor Cyan
+    $projE1x = Join-Path $Work 'projE1x'; New-Item -ItemType Directory -Path $projE1x -Force | Out-Null
+    $r = Fire -Cwd $projE1x -Claude $false
+    Check 'codex loads EXACTLY skill-policy-codex-optimized.md and never the claude policy' (
+        $r.Out -match 'load ONLY skill-policy-codex-optimized\.md' -and $r.Out -match 'never both together' -and
+        $r.Out -notmatch 'skill-policy\.md') $r.Out
+
+    # =====================================================================
+    Write-Host '--- E-01: ::deep-debug codeword gating + guidance ---' -ForegroundColor Cyan
+    $projDD = Join-Path $Work 'projDD'; New-Item -ItemType Directory -Path $projDD -Force | Out-Null
+    $null = Fire -Cwd $projDD   # consume the first-run baseline report
+    $r = Fire -Cwd $projDD -RawStdin (New-PromptStdin -Cwd $projDD -Prompt 'let us deep debug the login flow and deep-debug some more' -SessionId 'dd-s1')
+    Check 'ordinary prose "deep debug" does NOT activate the codeword path' ($r.Exit -eq 0 -and $r.Out -eq '') $r.Out
+    $r = Fire -Cwd $projDD -RawStdin (New-PromptStdin -Cwd $projDD -Prompt 'run ::deep-debug on the parser' -SessionId 'dd-s1')
+    Check 'a standalone ::deep-debug DOES emit the bounded-workflow guidance' (
+        $r.Out -like '*::deep-debug is a BOUNDED composite workflow*' -and
+        $r.Out -like '*DEEP DEBUG: COMPLETE or DEEP DEBUG: BLOCKED*' -and
+        $r.Out -like '*never an endless audit/refactor/fix loop*') $r.Out
+    Check 'guidance keeps /goal NATIVE (never shadowed/aliased/codeworded/synthesized)' (
+        $r.Out -like '*/goal is a NATIVE command*' -and
+        $r.Out -like '*never shadowed, aliased, converted into a codeword, or synthetically executed by a hook*') $r.Out
+    Check 'guidance frames ::multi-agent as ONE integration + final verification' (
+        $r.Out -like '*::multi-agent is a workflow dependency*' -and $r.Out -like '*ONE integration*' -and
+        $r.Out -like '*final verification on the unified tree*' -and $r.Out -like '*no nested agent trees*') $r.Out
+    Check 'guidance: Ponytail (native /ponytail:ponytail-audit) runs exactly ONCE after all verification' (
+        $r.Out -like '*/ponytail:ponytail-audit*' -and $r.Out -like '*exactly ONCE*' -and
+        $r.Out -like '*integrated verification have completed*') $r.Out
+    Check 'guidance: after Ponytail never a new audit/refactor/debug cycle' (
+        $r.Out -like '*only safe accepted simplifications*' -and $r.Out -like '*never a new audit/refactor/debug cycle*') $r.Out
+    $r2 = Fire -Cwd $projDD -RawStdin (New-PromptStdin -Cwd $projDD -Prompt '::deep-debug again please' -SessionId 'dd-s1')
+    Check 'repeated unchanged ::deep-debug guidance is fingerprint-suppressed in the SAME session' ($r2.Exit -eq 0 -and $r2.Out -eq '') $r2.Out
+    $r3 = Fire -Cwd $projDD -RawStdin (New-PromptStdin -Cwd $projDD -Prompt '::deep-debug' -SessionId 'dd-s2')
+    Check 'a NEW session re-reports the ::deep-debug guidance' ($r3.Out -like '*BOUNDED composite workflow*') $r3.Out
+    (Get-Item (Join-Path $globalClaude 'alpha.md')).LastWriteTimeUtc = [DateTime]::UtcNow.AddMinutes(15)
+    $r4 = Fire -Cwd $projDD -RawStdin (New-PromptStdin -Cwd $projDD -Prompt '::deep-debug' -SessionId 'dd-s2')
+    Check 'changed rule state still re-reports while consumed dd guidance stays suppressed' (
+        $r4.Out -like '*CHANGED:*alpha.md*' -and $r4.Out -notlike '*BOUNDED composite workflow*') $r4.Out
+    # Codex shape: same graph bounds, client-native command references only.
+    $projDDx = Join-Path $Work 'projDDx'; New-Item -ItemType Directory -Path $projDDx -Force | Out-Null
+    $null = Fire -Cwd $projDDx -Claude $false   # consume the codex first-run baseline
+    $r = Fire -Cwd $projDDx -Claude $false -RawStdin (New-PromptStdin -Cwd $projDDx -Prompt '::deep-debug' -SessionId 'ddx-s1')
+    Check 'codex ::deep-debug guidance uses client-native references, not Claude slash literals' (
+        $r.Out -like '*BOUNDED composite workflow*' -and $r.Out -like '*client-native goal command*' -and
+        $r.Out -like '*ponytail-audit capability*' -and $r.Out -notlike '*/ponytail:ponytail-audit*' -and
+        $r.Out -notlike '*/goal*') $r.Out
+
+    # =====================================================================
+    Write-Host '--- E-01: static safety + installed-runtime parity ---' -ForegroundColor Cyan
+    # The hook only REFERENCES native commands as text; it must never gain an
+    # execution path (same static assertion style as the Test-Run-Guard suite).
+    $hookText = [System.IO.File]::ReadAllText($Hook)
+    Check 'hook source has NO execution primitives (Start-Process/Invoke-Expression/iex/call operator on data)' (
+        $hookText -notmatch 'Start-Process' -and $hookText -notmatch 'Invoke-Expression' -and
+        $hookText -notmatch '(?i)\biex\b' -and $hookText -notmatch '&\s*\$') $hookText.Substring(0, 200)
+    Check 'native /goal and /ponytail:ponytail-audit appear in source as referenced text' (
+        $hookText -like '*/goal*' -and $hookText -like '*/ponytail:ponytail-audit*')
+    # Installed-runtime parity: the runtime copy installed above must produce
+    # byte-identical ::deep-debug guidance to the source hook (same client,
+    # same prompt, fresh per-project state for each).
+    $runtimeCopy = Join-Path $tgtC '.claude\hooks\Hook-Maker\Rules-Check\Rules-Check.ps1'
+    $parityA = Join-Path $Work 'parityA'; New-Item -ItemType Directory -Path $parityA -Force | Out-Null
+    $parityB = Join-Path $Work 'parityB'; New-Item -ItemType Directory -Path $parityB -Force | Out-Null
+    $null = Fire -Cwd $parityA
+    $null = Fire -Cwd $parityB -HookPath $runtimeCopy
+    $rSrc = Fire -Cwd $parityA -RawStdin (New-PromptStdin -Cwd $parityA -Prompt '::deep-debug' -SessionId 'par-1')
+    $rCopy = Fire -Cwd $parityB -HookPath $runtimeCopy -RawStdin (New-PromptStdin -Cwd $parityB -Prompt '::deep-debug' -SessionId 'par-1')
+    $srcCtx = Get-AdditionalContext $rSrc.Out
+    $copyCtx = Get-AdditionalContext $rCopy.Out
+    Check 'installed runtime copy emits IDENTICAL ::deep-debug guidance to the source hook' (
+        $srcCtx -ne '' -and $srcCtx -eq $copyCtx) ('src=[' + $srcCtx + '] copy=[' + $copyCtx + ']')
 }
 finally {
     $env:USERPROFILE = $SavedUserProfile

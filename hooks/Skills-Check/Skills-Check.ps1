@@ -6,6 +6,19 @@
 # - UserPromptSubmit: a short reminder to search global + shared sources and
 #   select only the minimal relevant set for THIS task, fingerprint-gated
 #   (session + current skill set) so it does not repeat noisily on every prompt.
+#   A standalone `::deep-debug` codeword (CODEWORDS.md: standalone :: token,
+#   never ordinary prose "deep debug") instead surfaces the composite
+#   capability graph from the active skill policy's "Composite ::deep-debug
+#   Routing": phase-routed goal/orchestration, understanding/planning, known
+#   bug, existing plan, security, test-strengthening, and finalization
+#   guidance, plus which core capabilities are NOT visible in the enumerated
+#   sources (reported as missing/verify-elsewhere, never silently skipped).
+#   Fingerprint = session + client + installed skill set, so unchanged
+#   guidance shows once per session while a skill-set change re-reports.
+#   Skill identity is always the exact name: in each installed SKILL.md;
+#   Claude and Codex invocation syntax stay separate (only the native
+#   goal/ponytail references differ per client). The hook still never
+#   executes, installs, copies, refreshes, or removes anything.
 # - Stop: requires the final task summary to report exactly which skills were
 #   ACTUALLY invoked/materially followed - never merely installed, available,
 #   discovered, copied, considered, or read but not followed. Non-blocking only.
@@ -182,9 +195,74 @@ if ($eventName -eq 'UserPromptSubmit') {
     foreach ($key in @($byName.Keys | Sort-Object)) {
         $sig += $key + ':' + ((@($byName[$key].Hashes) | Sort-Object) -join ',') + ';'
     }
+    $stateDir = Join-Path $env:LOCALAPPDATA 'HookMaker\state'
+
+    # ---- standalone ::deep-debug codeword -> phase-routed capability graph ----
+    # CODEWORDS.md: only a standalone ::-prefixed token activates the composite
+    # workflow; ordinary prose "deep debug" falls through to the generic nudge.
+    $prompt = [string](Get-Field $hookInput 'prompt')
+    if ($prompt -match '(?i)(^|\s)::deep-debug([\s.,;:!?]|$)') {
+        # Fingerprint = session + client + installed skill set: unchanged
+        # guidance shows once per session; a skill-set change re-reports at once.
+        $ddFingerprint = Get-ShortHash ($sessionId + '|deepdebug|' + $client + '|' + $sig)
+        $ddStatePath = Join-Path $stateDir ('SkillsCheck-deepdebug-' + (Get-ShortHash $cwd.ToLowerInvariant()) + '.txt')
+        if (Test-Path -LiteralPath $ddStatePath -PathType Leaf) {
+            try {
+                if (([System.IO.File]::ReadAllText($ddStatePath)).Trim() -eq $ddFingerprint) { exit 0 }
+            }
+            catch { }
+        }
+        New-Item -ItemType Directory -Path $stateDir -Force | Out-Null
+        [System.IO.File]::WriteAllText($ddStatePath, $ddFingerprint)
+
+        # Only the NATIVE invocation references differ per client; the graph and
+        # the skill identities (exact name: in each installed SKILL.md) are the
+        # same. Neither client's syntax is authoritative for the other, and the
+        # references stay plain text - this hook never executes them.
+        if ($client -eq 'codex') {
+            $goalRef = 'the client-native goal command (this client''s own syntax, never another client''s slash form)'
+            $ponytailRef = 'the verified installed ponytail-audit capability via this client''s supported invocation'
+        }
+        else {
+            $goalRef = 'native /goal'
+            $ponytailRef = 'native /ponytail:ponytail-audit'
+        }
+
+        # Core capabilities every ::deep-debug pass relies on: report what the
+        # enumerated sources do NOT show instead of silently skipping it. The
+        # scan sees only the project+global skill dirs (partial coverage by
+        # design), so absence means "verify elsewhere / report as missing",
+        # never a silent all-clear and never an install.
+        $notVisible = New-Object System.Collections.Generic.List[string]
+        foreach ($cap in @('systematic-debugging', 'test-driven-development', 'requesting-code-review', 'verification-before-completion')) {
+            $found = $false
+            foreach ($key in $byName.Keys) {
+                if ($key -eq $cap -or $key.EndsWith(':' + $cap)) { $found = $true; break }
+            }
+            if (-not $found) { [void]$notVisible.Add($cap) }
+        }
+
+        $dd = New-Object System.Collections.Generic.List[string]
+        [void]$dd.Add('SKILL POLICY CHECK (' + $client + ') - ::deep-debug capability routing. Activate by PHASE, never everything at once; skill identity is the exact name: in each installed SKILL.md (never a folder, plugin, marketplace, or category label). Inspect installed/loadable skills FIRST; never silently install/copy/refresh/overwrite/remove/enable a skill.')
+        [void]$dd.Add('- Goal/orchestration: ' + $goalRef + ' first; ::multi-agent is a codeword dependency, not a skill; superpowers:dispatching-parallel-agents for independent discovery/debug workstreams; superpowers:subagent-driven-development for a prepared plan with substantially independent tasks. Flatten dependencies once, deduplicate, detect cycles - never recursive re-runs, never nested agent trees.')
+        [void]$dd.Add('- Understanding/planning: audit-context-building for medium/large/unfamiliar/architecture-heavy/security-heavy scope; Graphify only under its own policy; superpowers:brainstorming only for genuine behavior/design ambiguity; superpowers:writing-plans only when a complex repair lacks an executable plan.')
+        [void]$dd.Add('- Known bug: systematic-debugging, test-driven-development, verification-before-completion; runtime evidence -> CHOOSE debugging-code (DAP) OR debug-live (trusted DebugMCP/VS Code), not normally both for one question.')
+        [void]$dd.Add('- Existing plan: executing-plans (only when a real plan exists), test-driven-development, requesting-code-review, verification-before-completion.')
+        [void]$dd.Add('- Security-sensitive: smallest applicable subset of differential-review, insecure-defaults, requesting-code-review, verification-before-completion, semgrep and/or codeql, sarif-parsing (when SARIF output exists), fp-check before treating automated findings as confirmed, variant-analysis after a proven root cause, supply-chain-risk-auditor (dependency/supply-chain scope), c-review (C/C++ only), rust-review (Rust only). "static-analysis" is a plugin/category LABEL, not an invokable skill, unless an installed SKILL.md declares that exact name:. Active security testing still requires ownership/authorization and matching scope.')
+        [void]$dd.Add('- Test strengthening: property-based-testing only where a meaningful invariant exists (round trips, validators, state machines, path containment, idempotency, boundaries) - never manufacture low-value properties to claim skill use.')
+        [void]$dd.Add('- Finalization: superpowers:using-git-worktrees only when authorized isolation materially reduces collision risk; after integration requesting-code-review + verification-before-completion; superpowers:finishing-a-development-branch only when work really occurred on an independent branch and all checks are green; THEN run ' + $ponytailRef + ' exactly ONCE - afterwards only safe accepted simplifications + targeted tests + final verification, never a second pass.')
+        if ($notVisible.Count -gt 0) {
+            [void]$dd.Add('- NOT VISIBLE in the enumerated project/global skill sources: ' + ($notVisible.ToArray() -join ', ') + '. Verify each is installed/loadable elsewhere before relying on it; a genuinely missing required capability must be REPORTED as missing and the workflow marked blocked/partial - never silently skipped.')
+        }
+        [void]$dd.Add('- Select only the task-relevant subset; keep Claude and Codex invocation syntax separate - neither client''s syntax is authoritative for the other. This hook routes only: it never executes a skill, slash command, or codeword.')
+        @{ hookSpecificOutput = @{ hookEventName = $eventName; additionalContext = ($dd.ToArray() -join "`n") } } |
+            ConvertTo-Json -Depth 5 -Compress
+        exit 0
+    }
+
+    # ---- generic once-per-session relevance nudge ----
     $fingerprintSource = $sessionId + '|' + $client + '|' + $hasLibrary + '|' + $libraryDir + '|' + $hasRecord + '|' + $sig
     $fingerprint = Get-ShortHash $fingerprintSource
-    $stateDir = Join-Path $env:LOCALAPPDATA 'HookMaker\state'
     $statePath = Join-Path $stateDir ('SkillsCheck-prompt-' + (Get-ShortHash $cwd.ToLowerInvariant()) + '.txt')
     if (Test-Path -LiteralPath $statePath -PathType Leaf) {
         try {
