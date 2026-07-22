@@ -141,6 +141,101 @@ function Get-GuardedWorkerBudget {
     return $budget
 }
 
+# ---- HM-07: bounded rolling test-timing history (WRITE side) ----------------
+# Standalone (this runner does not dot-source _hooklib), so the sanitized sample
+# shape, the TestTiming-<projectKey>-<commandFp>.json path and the 30-sample
+# rolling window MUST stay byte-compatible with hooks\_hooklib.ps1's READ side.
+# Only runId/elapsed/outcome/UTC/workerCeiling/suiteLabel are stored - never an
+# argument, path, prompt, secret, user name or token. Best-effort: a timing
+# failure NEVER changes the run's real outcome or exit code.
+$script:TimingRecorded = $false
+$script:TimingMaxSamples = 30
+
+function Add-TimingSample {
+    param([string]$StateDir, [string]$ProjectKey, [string]$CommandFingerprint, [string]$RunId,
+        [double]$ElapsedSeconds, [string]$Outcome, [int]$WorkerCeiling, [string]$SuiteLabel = '')
+    if ([string]::IsNullOrWhiteSpace($ProjectKey) -or [string]::IsNullOrWhiteSpace($CommandFingerprint)) { return }
+    if (-not (Test-Path -LiteralPath $StateDir -PathType Container)) {
+        try { New-Item -ItemType Directory -Path $StateDir -Force | Out-Null } catch { return }
+    }
+    $path = Join-Path $StateDir ('TestTiming-' + $ProjectKey + '-' + $CommandFingerprint + '.json')
+    $lock = $path + '.lock'
+    # Exclusive-create lock with a bounded retry: two concurrent runs in one
+    # project each do a real read-modify-write and neither loses the other sample.
+    $deadline = [DateTime]::UtcNow.AddSeconds(5)
+    $fs = $null
+    while ($null -eq $fs) {
+        try { $fs = [System.IO.File]::Open($lock, [System.IO.FileMode]::CreateNew, [System.IO.FileAccess]::ReadWrite, [System.IO.FileShare]::None) }
+        catch {
+            if ([DateTime]::UtcNow -ge $deadline) { return }   # best-effort; never block the run
+            Start-Sleep -Milliseconds 50
+        }
+    }
+    try {
+        $samples = New-Object System.Collections.Generic.List[object]
+        if (Test-Path -LiteralPath $path -PathType Leaf) {
+            try {
+                $existing = [System.IO.File]::ReadAllText($path, [System.Text.Encoding]::UTF8) | ConvertFrom-Json
+                if ($null -ne $existing -and $existing.PSObject.Properties['samples']) {
+                    foreach ($s in @($existing.samples)) { if ($null -ne $s) { [void]$samples.Add($s) } }
+                }
+            }
+            catch { }   # a corrupt file starts fresh rather than crash the runner
+        }
+        [void]$samples.Add([pscustomobject]@{
+                runId          = $RunId
+                elapsedSeconds = [Math]::Round($ElapsedSeconds, 1)
+                outcome        = $Outcome
+                utc            = (Get-Date).ToUniversalTime().ToString('o')
+                workerCeiling  = $WorkerCeiling
+                suiteLabel     = $SuiteLabel
+            })
+        # Bounded rolling window: keep only the most recent TimingMaxSamples.
+        # .ToArray(), never @($list): @() on a List[object] holding PSCustomObjects
+        # throws "Argument types do not match" under PowerShell.
+        $keep = $samples.ToArray()
+        if ($keep.Count -gt $script:TimingMaxSamples) { $keep = $keep[($keep.Count - $script:TimingMaxSamples)..($keep.Count - 1)] }
+        $doc = [pscustomobject]@{ version = 1; projectKey = $ProjectKey; commandFingerprint = $CommandFingerprint; samples = $keep }
+        $tmp = $path + '.tmp'
+        [System.IO.File]::WriteAllText($tmp, ($doc | ConvertTo-Json -Depth 6), (New-Object System.Text.UTF8Encoding($false)))
+        Move-Item -LiteralPath $tmp -Destination $path -Force
+    }
+    finally {
+        try { $fs.Close() } catch { }
+        try { Remove-Item -LiteralPath $lock -Force -ErrorAction SilentlyContinue } catch { }
+    }
+}
+
+# Prune only TestTiming-* files older than StaleDays. Incident notes use other
+# prefixes and are NEVER touched, so pruning cannot drop an unresolved incident.
+function Remove-StaleTimingKeys {
+    param([string]$StateDir, [int]$StaleDays = 90)
+    try {
+        if (-not (Test-Path -LiteralPath $StateDir -PathType Container)) { return }
+        $cut = (Get-Date).ToUniversalTime().AddDays(-1 * [Math]::Abs($StaleDays))
+        foreach ($f in @(Get-ChildItem -LiteralPath $StateDir -Filter 'TestTiming-*.json' -File -ErrorAction SilentlyContinue)) {
+            if ($f.LastWriteTimeUtc -lt $cut) { Remove-Item -LiteralPath $f.FullName -Force -ErrorAction SilentlyContinue }
+        }
+    }
+    catch { }
+}
+
+# Records THIS run's sample from $script:Result. Called on every terminal path,
+# guarded so it runs once and never alters the real outcome or exit code.
+function Save-TimingSample {
+    if ($script:TimingRecorded) { return }
+    $script:TimingRecorded = $true
+    try {
+        $stateDir = Join-Path $env:LOCALAPPDATA 'HookMaker\state'
+        Add-TimingSample -StateDir $stateDir -ProjectKey ([string]$script:Result.projectKey) `
+            -CommandFingerprint ([string]$script:Result.commandFingerprint) -RunId ([string]$script:Result.runId) `
+            -ElapsedSeconds ([double]$script:Result.elapsedSeconds) -Outcome ([string]$script:Result.overall) `
+            -WorkerCeiling ([int]$script:Result.workerBudget)
+        Remove-StaleTimingKeys -StateDir $stateDir
+    }
+    catch { }
+}
+
 # ---- run identity ----------------------------------------------------------
 
 # SHA-256 prefix over the structured executable + argument ARRAY, joined by a NUL
@@ -921,6 +1016,9 @@ try {
 
     Write-GuardedResult
     $script:ResultWritten = $true
+    # HM-07: record this run's sanitized timing sample (best-effort, never alters
+    # the outcome). All outcomes are stored; only ok runs become baseline samples.
+    Save-TimingSample
 
     if ($script:Result.terminated) {
         Write-Host ('GUARDED RUN TERMINATED (' + $script:Result.terminateReason + '): ' +
@@ -952,6 +1050,7 @@ finally {
             $script:Result.endedUtc = (Get-Date).ToUniversalTime().ToString('o')
         }
         try { Write-GuardedResult } catch { }
+        try { Save-TimingSample } catch { }
     }
     # The marker must never outlive this process: a stale one would make
     # Test-Completion-Check block completion on a run that ended long ago.
