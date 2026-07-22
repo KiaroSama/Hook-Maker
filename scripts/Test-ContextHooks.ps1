@@ -305,6 +305,124 @@ try {
     Check 'record guidance: record source/destination/hash/agent/reason in .ai/SKILLS.md' ($rg.Out -match 'source/destination/hash/agent/reason') $rg.Out
     Check 'record guidance: .ai/SKILLS.md is local-only and secret-free' ($rg.Out -match 'local-only, secret-free') $rg.Out
 
+    # =====================================================================
+    Write-Host '--- Skills-Check: ::deep-debug capability routing (claude shape) ---' -ForegroundColor Cyan
+    Set-ClaudeProjectDir $Work
+    $ddProj = New-Proj 'SkillsDeepDebug'
+    # Install three of the four core capabilities; identity must come from the
+    # exact name: in SKILL.md, so the folder names deliberately differ.
+    foreach ($pair in @(@('sysdbg-folder', 'systematic-debugging'), @('tdd-folder', 'test-driven-development'), @('rcr-folder', 'requesting-code-review'))) {
+        $d = Join-Path $ddProj ('.claude\skills\' + $pair[0])
+        New-Item -ItemType Directory -Path $d -Force | Out-Null
+        Write-Utf8 (Join-Path $d 'SKILL.md') ("---`nname: " + $pair[1] + "`ndescription: test`n---`nbody")
+    }
+    $ddHook = New-ConfiguredSkillsHookCopy -EnvOverrides @{ SKILLS_DIR = (Join-Path $Work 'no-such-library') }
+    $r = Fire -HookPath $ddHook -Cwd $ddProj -RawStdin (New-PromptStdin -Cwd $ddProj -EventName 'UserPromptSubmit' -Prompt 'please deep debug the login flow, maybe deep-debug harder' -SessionId 'sdd-prose')
+    Check 'ordinary prose "deep debug" never surfaces the capability graph (generic nudge only)' (
+        $r.Out -notmatch 'capability routing' -and $r.Out -match 'THIS task') $r.Out
+    $r = Fire -HookPath $ddHook -Cwd $ddProj -RawStdin (New-PromptStdin -Cwd $ddProj -EventName 'UserPromptSubmit' -Prompt '::deep-debug the login flow' -SessionId 'sdd-c1')
+    Check 'standalone ::deep-debug surfaces the phase-routed capability graph' (
+        $r.Out -match 'SKILL POLICY CHECK \(claude\) - ::deep-debug capability routing' -and
+        $r.Out -match 'Activate by PHASE, never everything at once') $r.Out
+    Check 'identity rule: exact name: in each installed SKILL.md, never folder/plugin/marketplace/category' (
+        $r.Out -match 'exact name: in each installed SKILL\.md' -and
+        $r.Out -match 'never a folder, plugin, marketplace, or category label') $r.Out
+    Check 'claude shape references native /goal and /ponytail:ponytail-audit' (
+        $r.Out -match 'native /goal' -and $r.Out -match 'native /ponytail:ponytail-audit') $r.Out
+    Check 'goal/orchestration: ::multi-agent = codeword dependency, parallel/subagent skills, cycle bounds' (
+        $r.Out -match '::multi-agent is a codeword dependency, not a skill' -and
+        $r.Out -match 'superpowers:dispatching-parallel-agents' -and
+        $r.Out -match 'superpowers:subagent-driven-development' -and
+        $r.Out -match 'never recursive re-runs, never nested agent trees') $r.Out
+    Check 'understanding/planning: context/graphify/brainstorm/plan skills stay gated' (
+        $r.Out -match 'audit-context-building' -and $r.Out -match 'Graphify only under its own policy' -and
+        $r.Out -match 'only for genuine behavior/design ambiguity' -and
+        $r.Out -match 'only when a complex repair lacks an executable plan') $r.Out
+    Check 'known bug: debugging triad + exactly one runtime debugger route' (
+        $r.Out -match 'systematic-debugging, test-driven-development, verification-before-completion' -and
+        $r.Out -match 'CHOOSE debugging-code \(DAP\) OR debug-live' -and
+        $r.Out -match 'not normally both for one question') $r.Out
+    Check 'existing plan: executing-plans only when a real plan exists' (
+        $r.Out -match 'executing-plans \(only when a real plan exists\)') $r.Out
+    Check 'security: smallest applicable subset incl. fp-check/variant-analysis/language reviews' (
+        $r.Out -match 'smallest applicable subset' -and $r.Out -match 'differential-review' -and
+        $r.Out -match 'insecure-defaults' -and $r.Out -match 'semgrep and/or codeql' -and
+        $r.Out -match 'sarif-parsing \(when SARIF output exists\)' -and
+        $r.Out -match 'fp-check before treating automated findings as confirmed' -and
+        $r.Out -match 'variant-analysis after a proven root cause' -and
+        $r.Out -match 'supply-chain-risk-auditor' -and
+        $r.Out -match 'c-review \(C/C\+\+ only\)' -and $r.Out -match 'rust-review \(Rust only\)') $r.Out
+    # JSON-escaped quotes wrap "static-analysis", so assert around them.
+    Check 'the static-analysis LABEL is never an invokable skill without an installed name:' (
+        $r.Out -match 'static-analysis' -and
+        $r.Out -match 'is a plugin/category LABEL, not an invokable skill' -and
+        $r.Out -match 'unless an installed SKILL\.md declares that exact name:') $r.Out
+    Check 'security phase still requires authorization for active testing' (
+        $r.Out -match 'Active security testing still requires ownership/authorization') $r.Out
+    Check 'test strengthening: property-based-testing only for real invariants, none manufactured' (
+        $r.Out -match 'property-based-testing only where a meaningful invariant exists' -and
+        $r.Out -match 'never manufacture low-value properties') $r.Out
+    Check 'finalization: worktrees + branch-finishing gated, Ponytail exactly once, no second pass' (
+        $r.Out -match 'using-git-worktrees only when authorized isolation' -and
+        $r.Out -match 'finishing-a-development-branch only when work really occurred' -and
+        $r.Out -match 'exactly ONCE' -and $r.Out -match 'never a second pass') $r.Out
+    Check 'missing core capability is SURFACED (verification-before-completion), workflow blocked/partial' (
+        $r.Out -match 'NOT VISIBLE in the enumerated project/global skill sources: verification-before-completion\.' -and
+        $r.Out -match 'REPORTED as missing' -and $r.Out -match 'blocked/partial' -and
+        $r.Out -match 'never silently skipped') $r.Out
+    Check 'no silent install/copy/refresh/remove/enable, task-relevant subset only' (
+        $r.Out -match 'never silently install/copy/refresh/overwrite/remove/enable' -and
+        $r.Out -match 'Select only the task-relevant subset') $r.Out
+    Check 'client syntax separation is explicit (neither authoritative for the other)' (
+        $r.Out -match 'keep Claude and Codex invocation syntax separate' -and
+        $r.Out -match 'authoritative for the other') $r.Out
+    $r2 = Fire -HookPath $ddHook -Cwd $ddProj -RawStdin (New-PromptStdin -Cwd $ddProj -EventName 'UserPromptSubmit' -Prompt '::deep-debug once more' -SessionId 'sdd-c1')
+    Check 'repeated unchanged ::deep-debug guidance is fingerprint-suppressed in the SAME session' ($r2.Exit -eq 0 -and $r2.Out -eq '') $r2.Out
+    # Installing the missing capability changes the skill set -> re-report in the
+    # SAME session, and the missing line disappears.
+    $vbc = Join-Path $ddProj '.claude\skills\vbc-folder'
+    New-Item -ItemType Directory -Path $vbc -Force | Out-Null
+    Write-Utf8 (Join-Path $vbc 'SKILL.md') "---`nname: verification-before-completion`ndescription: test`n---`nbody"
+    $r3 = Fire -HookPath $ddHook -Cwd $ddProj -RawStdin (New-PromptStdin -Cwd $ddProj -EventName 'UserPromptSubmit' -Prompt '::deep-debug' -SessionId 'sdd-c1')
+    Check 'an installed-skill change re-reports in the same session and clears the missing line' (
+        $r3.Out -match 'capability routing' -and $r3.Out -notmatch 'NOT VISIBLE') $r3.Out
+
+    # =====================================================================
+    Write-Host '--- Skills-Check: ::deep-debug capability routing (codex shape) ---' -ForegroundColor Cyan
+    Set-ClaudeProjectDir ''
+    $ddxProj = New-Proj 'SkillsDeepDebugCodex'
+    $dx = Join-Path $ddxProj '.agents\skills\tdd-folder'
+    New-Item -ItemType Directory -Path $dx -Force | Out-Null
+    Write-Utf8 (Join-Path $dx 'SKILL.md') "---`nname: test-driven-development`ndescription: test`n---`nbody"
+    $ddxHook = New-ConfiguredSkillsHookCopy -EnvOverrides @{ SKILLS_DIR = (Join-Path $Work 'no-such-library') }
+    $rx = Fire -HookPath $ddxHook -Cwd $ddxProj -RawStdin (New-PromptStdin -Cwd $ddxProj -EventName 'UserPromptSubmit' -Prompt '::deep-debug' -SessionId 'sddx-1')
+    Check 'codex shape emits the same phase-routed graph under the codex client' (
+        $rx.Out -match 'SKILL POLICY CHECK \(codex\) - ::deep-debug capability routing' -and
+        $rx.Out -match 'superpowers:dispatching-parallel-agents' -and $rx.Out -match 'property-based-testing') $rx.Out
+    Check 'codex shape does not require the Claude slash literals (client-native references instead)' (
+        $rx.Out -notmatch '/ponytail:ponytail-audit' -and $rx.Out -notmatch '/goal' -and
+        $rx.Out -match 'client-native goal command' -and
+        $rx.Out -match 'ponytail-audit capability via this client' -and
+        $rx.Out -match 'supported invocation') $rx.Out
+    Check 'codex shape never references Claude locations or the claude policy file' (
+        $rx.Out -notmatch '\.claude' -and $rx.Out -notmatch 'skill-policy\.md') $rx.Out
+    Check 'codex-missing core capabilities are surfaced too' (
+        $rx.Out -match 'NOT VISIBLE' -and $rx.Out -match 'systematic-debugging' -and
+        $rx.Out -match 'verification-before-completion') $rx.Out
+    Set-ClaudeProjectDir $Work
+
+    # =====================================================================
+    Write-Host '--- Skills-Check: static safety (the hook never executes anything) ---' -ForegroundColor Cyan
+    # Same static-assertion style as the Test-Run-Guard suite: the DETECTOR/
+    # ADVISORY hook must have no execution primitives at all - it references
+    # skills and native commands as text only.
+    $skillsText = [System.IO.File]::ReadAllText($SkillsHook)
+    Check 'Skills-Check source has NO Start-Process / Invoke-Expression / iex / call-operator-on-data' (
+        $skillsText -notmatch 'Start-Process' -and $skillsText -notmatch 'Invoke-Expression' -and
+        $skillsText -notmatch '(?i)\biex\b' -and $skillsText -notmatch '&\s*\$') $null
+    Check 'Skills-Check references skills/commands as text (routing graph present in source)' (
+        $skillsText -match 'capability routing' -and $skillsText -match 'ponytail-audit')
+
     # Restore the ambient client signal for the remaining (client-agnostic) tests.
     Set-ClaudeProjectDir $OrigClaudeProjectDir
 
