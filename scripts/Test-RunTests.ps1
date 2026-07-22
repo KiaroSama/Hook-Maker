@@ -224,6 +224,38 @@ try {
     Check 'the body owns the tree through a Job Object (KILL_ON_JOB_CLOSE via CreateKillOnClose)' ($bodyText -match 'CreateKillOnClose') 'no Job Object ownership'
 
     # =====================================================================
+    Write-Host '--- HM-05: the worker ceiling clamps BOTH auto-detected and explicit -ThrottleLimit ---' -ForegroundColor Cyan
+    # Execute the REAL clamp statements from Run-Tests.ps1 (extracted via AST, never
+    # copied). The auto-detect must run BEFORE the ceiling clamp, or a default (0)
+    # run would compute its formula AFTER the clamp and never be limited. $rtAst is
+    # the Run-Tests.ps1 AST parsed above.
+    $autoIf = $rtAst.Find({ param($n) $n -is [System.Management.Automation.Language.IfStatementAst] -and $n.Clauses[0].Item1.Extent.Text -match '\$ThrottleLimit\s+-le\s+0' }, $true)
+    $clampIf = $rtAst.Find({ param($n) $n -is [System.Management.Automation.Language.IfStatementAst] -and $n.Clauses[0].Item1.Extent.Text -match 'HOOKMAKER_MAX_TEST_WORKERS' }, $true)
+    Check 'Run-Tests.ps1 auto-detects a worker count (resource formula present)' ($null -ne $autoIf -and $autoIf.Extent.Text -match '\[Math\]::Max\(2') $(if ($null -ne $autoIf) { 'found' } else { 'missing' })
+    Check 'Run-Tests.ps1 clamps to HOOKMAKER_MAX_TEST_WORKERS' ($null -ne $clampIf) $(if ($null -ne $clampIf) { 'found' } else { 'missing' })
+    Check 'the auto-detect runs BEFORE the ceiling clamp (so default runs are limited too)' (
+        $null -ne $autoIf -and $null -ne $clampIf -and $autoIf.Extent.StartOffset -lt $clampIf.Extent.StartOffset)
+    if ($null -ne $autoIf -and $null -ne $clampIf) {
+        # Dot-source into THIS scope so the real code mutates our own $ThrottleLimit.
+        $clampBlock = [scriptblock]::Create($autoIf.Extent.Text + "`n" + $clampIf.Extent.Text)
+        $prevCeil = $env:HOOKMAKER_MAX_TEST_WORKERS
+        try {
+            $env:HOOKMAKER_MAX_TEST_WORKERS = '1'
+            $ThrottleLimit = 0        # the default: auto-detect -> formula (>=2) -> clamp
+            . $clampBlock
+            Check 'the auto-detected default is clamped to the ceiling (0 -> formula -> 1)' ($ThrottleLimit -eq 1) ([string]$ThrottleLimit)
+            $ThrottleLimit = 8        # an explicit -ThrottleLimit above the ceiling
+            . $clampBlock
+            Check 'an explicit -ThrottleLimit above the ceiling is clamped (8 -> 1)' ($ThrottleLimit -eq 1) ([string]$ThrottleLimit)
+            $env:HOOKMAKER_MAX_TEST_WORKERS = '8'
+            $ThrottleLimit = 1        # a stricter existing value under a looser ceiling
+            . $clampBlock
+            Check 'a stricter existing value is NEVER raised (1 stays 1 under ceiling 8)' ($ThrottleLimit -eq 1) ([string]$ThrottleLimit)
+        }
+        finally { $env:HOOKMAKER_MAX_TEST_WORKERS = $prevCeil }
+    }
+
+    # =====================================================================
     Write-Host '--- no process or temp file leaked across the whole run (HM-02 scope 5/5) ---' -ForegroundColor Cyan
     $anyAlive = @($script:SpawnedPids | Where-Object { Test-PidAlive $_ 0 })
     Check 'every ping descendant a fixture spawned is gone' ($anyAlive.Count -eq 0) ('still alive: ' + ($anyAlive -join ','))
