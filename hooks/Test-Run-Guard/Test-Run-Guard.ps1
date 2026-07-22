@@ -154,6 +154,106 @@ function Get-ProgramName {
     return $name
 }
 
+# ---- HM-06: conservative DIRECT blind-wait detection -----------------------
+# A fixed "wait N seconds and hope it is ready" delay is the anti-pattern the
+# during-stage exists to stop, in ad hoc tool commands as much as in committed
+# tests. Detection is deliberately narrow to keep false positives near zero:
+#
+#  * TOP-LEVEL tokens only. The tokenizer keeps a quoted run as ONE token, so a
+#    delay inside  bash -c "sleep 300"  is the single token "sleep 300", never
+#    the bare keyword "sleep" - nested shell strings are therefore NEVER parsed.
+#  * A literal delay is flagged only at or above the configured ceiling, so a
+#    short teardown backoff (Start-Sleep -Milliseconds 200, sleep 2) passes.
+#  * GNU  timeout 300 <cmd>  BOUNDS a command and is good; only the Windows delay
+#    form  timeout /t N  is a blind wait.
+#  * An always-true poll loop is flagged only when it also sleeps AND shows no
+#    deadline/break/return/exit anywhere - any sign the author bounded it clears.
+
+# Parse a single literal duration token to whole seconds, or -1 if it is not a
+# plain literal (a variable, an expression, anything non-numeric -> not our call).
+function ConvertTo-LiteralSeconds {
+    param([string]$Value, [double]$UnitSeconds = 1)
+    $m = [regex]::Match(([string]$Value).Trim(), '^([0-9]+(?:\.[0-9]+)?)([smhd]?)$')
+    if (-not $m.Success) { return -1 }
+    $mult = switch ($m.Groups[2].Value) { 's' { 1 } 'm' { 60 } 'h' { 3600 } 'd' { 86400 } default { $UnitSeconds } }
+    return [int][Math]::Floor([double]$m.Groups[1].Value * $mult)
+}
+
+function New-BlindWaitFinding {
+    param([string]$Reason, [string]$SafePattern)
+    return [pscustomobject]@{ Reason = $Reason; SafePattern = $SafePattern }
+}
+
+$script:BlindWaitSafeSleep = 'Wait on the real signal instead of the clock, or bound the wait with a deadline: ' +
+"`n`n" + '  $deadline = [DateTime]::UtcNow.AddSeconds(<budget>)' + "`n" +
+'  while ([DateTime]::UtcNow -lt $deadline) { if (<ready>) { break }; Start-Sleep -Milliseconds 200 }' + "`n`n" +
+'A short bounded backoff (Start-Sleep -Milliseconds 200) INSIDE such a loop is fine - it is the fixed multi-second delay that is not.'
+
+function Get-BlindWaitFinding {
+    param([string[]]$Tokens, [int]$MaxBlindSleepSeconds)
+    if ($MaxBlindSleepSeconds -le 0) { return $null }
+    $t = @($Tokens)
+    for ($i = 0; $i -lt $t.Count; $i++) {
+        $prog = Get-ProgramName $t[$i]
+        # 1) PowerShell Start-Sleep (-Seconds N, positional N, or -Milliseconds N).
+        if ($prog -eq 'start-sleep') {
+            $secs = -1
+            for ($j = $i + 1; $j -lt $t.Count; $j++) {
+                $flag = $t[$j].ToLowerInvariant()
+                if (($flag -eq '-seconds' -or $flag -eq '-s') -and $j + 1 -lt $t.Count) { $secs = ConvertTo-LiteralSeconds $t[$j + 1] 1; break }
+                if (($flag -eq '-milliseconds' -or $flag -eq '-ms') -and $j + 1 -lt $t.Count) { $ms = ConvertTo-LiteralSeconds $t[$j + 1] 1; if ($ms -ge 0) { $secs = [int][Math]::Floor($ms / 1000) }; break }
+                if ($t[$j] -match '^[0-9]') { $secs = ConvertTo-LiteralSeconds $t[$j] 1; break }
+                if (-not $t[$j].StartsWith('-')) { break }
+            }
+            if ($secs -ge $MaxBlindSleepSeconds) {
+                return New-BlindWaitFinding -Reason ('a fixed Start-Sleep of ' + $secs + 's (>= the ' + $MaxBlindSleepSeconds + 's blind-wait ceiling) is a blind wait') -SafePattern $script:BlindWaitSafeSleep
+            }
+        }
+        # 2) shell/coreutils sleep (sleep 300, sleep 5m).
+        elseif ($prog -eq 'sleep' -and $i + 1 -lt $t.Count) {
+            $secs = ConvertTo-LiteralSeconds $t[$i + 1] 1
+            if ($secs -ge $MaxBlindSleepSeconds) {
+                return New-BlindWaitFinding -Reason ('a fixed sleep of ' + $secs + 's (>= the ' + $MaxBlindSleepSeconds + 's blind-wait ceiling) is a blind wait') -SafePattern $script:BlindWaitSafeSleep
+            }
+        }
+        # 3) Windows  timeout /t N  as a blind delay (GNU  timeout N <cmd>  bounds a
+        #    command - the opposite - so only the /t delay form is flagged).
+        elseif ($prog -eq 'timeout') {
+            for ($j = $i + 1; $j -lt $t.Count; $j++) {
+                if ($t[$j].ToLowerInvariant() -eq '/t' -and $j + 1 -lt $t.Count) {
+                    $secs = ConvertTo-LiteralSeconds $t[$j + 1] 1
+                    if ($secs -ge $MaxBlindSleepSeconds) {
+                        return New-BlindWaitFinding -Reason ('timeout /t ' + $secs + ' (>= the ' + $MaxBlindSleepSeconds + 's blind-wait ceiling) is a blind delay') -SafePattern $script:BlindWaitSafeSleep
+                    }
+                    break
+                }
+            }
+        }
+    }
+    # 4) always-true poll loop with NO visible deadline. Narrow: an always-true
+    #    marker AND a sleep indicator AND no break/return/exit/deadline anywhere.
+    $lowerAll = ($t -join ' ').ToLowerInvariant()
+    $hasInfinite = $false
+    for ($i = 0; $i -lt $t.Count; $i++) {
+        $tok = $t[$i].ToLowerInvariant()
+        if ($tok -eq 'while' -and $i + 1 -lt $t.Count) {
+            $cond = ($t[$i + 1].ToLowerInvariant() -replace '[\s()]', '')
+            if ($cond -eq '$true' -or $cond -eq 'true' -or $cond -eq '1') { $hasInfinite = $true }
+        }
+        if (($tok -replace '\s', '') -match '^for\(?;;\)?$') { $hasInfinite = $true }
+    }
+    if ($hasInfinite) {
+        $hasSleep = ($lowerAll -match '\bstart-sleep\b' -or $lowerAll -match '\bsleep\b')
+        $boundSignals = @('addseconds', 'addminutes', 'addhours', 'deadline', 'stopwatch', 'datetime', '-timeoutsec', '--timeout', 'maxattempts', 'attempts', 'elapsed', 'totalseconds', 'break', 'return', 'exit')
+        $hasBound = $false
+        foreach ($b in $boundSignals) { if ($lowerAll.Contains($b)) { $hasBound = $true; break } }
+        if ($hasSleep -and -not $hasBound) {
+            return New-BlindWaitFinding -Reason 'an always-true poll loop with a sleep and no visible deadline never provably ends' -SafePattern $script:BlindWaitSafeSleep
+        }
+    }
+    return $null
+}
+
 # ---- run identity (must match Run-Tests-Guarded.ps1 byte-for-byte) ----------
 # SHA-256 prefix over the executable + argument ARRAY, NUL-joined, exe lowercased.
 # The observing hook and the runner both derive it this way so "what ran" has one
@@ -730,6 +830,9 @@ $idleSeconds = Get-IntSetting $config 'TEST_GUARD_IDLE_TIMEOUT_SECONDS' 300 0 86
 $heartbeatSeconds = Get-IntSetting $config 'TEST_GUARD_HEARTBEAT_SECONDS' 10 1 3600
 $maxMemoryMB = Get-IntSetting $config 'TEST_GUARD_MAX_MEMORY_MB' 0 0 1048576
 $maxWorkers = Get-IntSetting $config 'TEST_GUARD_MAX_WORKERS' 0 0 1024
+# A fixed literal delay at or above this many seconds in a DIRECT tool command is
+# treated as a blind wait (0 disables the check). Short backoffs stay below it.
+$maxBlindSleepSeconds = Get-IntSetting $config 'TEST_GUARD_MAX_BLIND_SLEEP_SECONDS' 30 0 86400
 $advisoryOnly = Get-BoolSetting $config 'TEST_GUARD_ADVISORY_ONLY' $false
 $extraFragments = @(Get-ListSetting $config 'TEST_GUARD_EXTRA_TEST_COMMANDS')
 $neverGuard = @(Get-ListSetting $config 'TEST_GUARD_NEVER_GUARD')
@@ -755,6 +858,18 @@ $verdict = Get-CommandVerdict -Tokens $tokens -ExtraFragments $extraFragments -N
 # ---- PreToolUse: the gate --------------------------------------------------
 
 if ($eventName -eq 'PreToolUse') {
+    # HM-06: a DIRECT ad hoc blind wait is caught before anything else - it is not a
+    # test command, it is a timing anti-pattern in the tool command itself. On a
+    # confirmed finding the command is DENIED with an exact safe pattern (a
+    # deadline-bounded readiness check), or advised-not-blocked under
+    # TEST_GUARD_ADVISORY_ONLY. Both emitters exit; nothing here re-parses a shell.
+    $blindWait = Get-BlindWaitFinding -Tokens $tokens -MaxBlindSleepSeconds $maxBlindSleepSeconds
+    if ($null -ne $blindWait) {
+        $blindMsg = 'TEST RUN GUARD: ' + $blindWait.Reason + '. ' + $blindWait.SafePattern + $configNote
+        if ($advisoryOnly) { Write-Advisory -EventName 'PreToolUse' -Message ('ADVISORY ONLY (TEST_GUARD_ADVISORY_ONLY=1) - ' + $blindMsg) }
+        Write-Deny -Message $blindMsg
+    }
+
     $stateFingerprint = Get-StateFingerprintFor -ProjectRoot $projectRoot
     # Every recognised test command is handed to Test-Completion-Check, whether
     # it is about to run guarded, run unguarded, or be blocked here. Silent -

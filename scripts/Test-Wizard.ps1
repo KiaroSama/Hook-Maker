@@ -723,6 +723,16 @@ try {
                 $timeouts.Count -eq 2 -and @($timeouts | Where-Object { $_ -ne $entry.Value.Timeout }).Count -eq 0) ($timeouts -join ',')
         }
     }
+    # HM-06 install integrity: the during-stage is useless without its bounded
+    # runner, so a REAL install must land Run-Tests-Guarded.ps1 beside
+    # Test-Run-Guard in the target - and ONLY there. Proven physically, not just in
+    # the plan. Combined with the per-client event checks above, this is "all three
+    # hooks AND the guarded runner present for the correct clients/events".
+    $trgRunnerClaude = Join-Path $healthProj '.claude\hooks\Hook-Maker\Test-Run-Guard\scripts\Run-Tests-Guarded.ps1'
+    Check 'HM-06: the guarded runner is installed beside Test-Run-Guard (Claude runtime)' (Test-Path -LiteralPath $trgRunnerClaude -PathType Leaf) $trgRunnerClaude
+    $installedRunners = @(Get-ChildItem -LiteralPath $healthProj -Recurse -Filter 'Run-Tests-Guarded.ps1' -File -ErrorAction SilentlyContinue)
+    Check 'HM-06: every installed guarded runner rides inside a Test-Run-Guard runtime (never the other two test hooks)' (
+        $installedRunners.Count -ge 1 -and @($installedRunners | Where-Object { $_.FullName -notmatch '[\\/]Test-Run-Guard[\\/]' }).Count -eq 0) (($installedRunners | ForEach-Object { $_.FullName }) -join ' ; ')
 
     # Future-proof: a synthetic, unknown hook folder must be picked up by
     # Select All with NO code change - proves the set is derived dynamically

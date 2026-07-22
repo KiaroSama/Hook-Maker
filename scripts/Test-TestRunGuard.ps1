@@ -294,6 +294,54 @@ try {
     Check 'a guarded invocation whose payload is pytest is still not re-wrapped' ($r.Exit -eq 0 -and $r.Out -eq '') $r.Out
 
     # =====================================================================
+    # HM-06: DIRECT ad hoc blind waits are denied with an EXACT safe pattern; short,
+    # bounded, GNU-timeout-bounded and nested-string waits are left alone.
+    # =====================================================================
+    Write-Host '--- direct blind waits are denied; short/bounded/nested waits are not ---' -ForegroundColor Cyan
+    function Test-BlindWait {
+        param([string]$Label, [string]$Command, [bool]$ExpectDeny)
+        $rb = Fire -HookPath $hc.Script -Cwd $Proj -EventName 'PreToolUse' -Command $Command -LocalAppData $hc.LocalAppData
+        $denied = ($rb.Out -match '"permissionDecision":"deny"')
+        if ($ExpectDeny) {
+            Check ('DENIED: ' + $Label) ($denied) $rb.Out
+            # The message is an EXACT safe pattern (a deadline-bounded readiness
+            # check), not a generic warning.
+            $msg = Get-Message $rb.Out
+            Check ('  ...with a deadline-bounded readiness pattern: ' + $Label) ($msg -match 'AddSeconds' -and $msg -match 'while ') $rb.Out
+        }
+        else {
+            Check ('ALLOWED (not a blind wait): ' + $Label) ((-not $denied) -and $rb.Exit -eq 0) $rb.Out
+        }
+    }
+    # Denied - the four forms the contract names.
+    Test-BlindWait -Label 'Start-Sleep -Seconds 300'        -Command 'Start-Sleep -Seconds 300'                  -ExpectDeny $true
+    Test-BlindWait -Label 'Start-Sleep 240 (positional)'    -Command 'Start-Sleep 240'                           -ExpectDeny $true
+    Test-BlindWait -Label 'sleep 300 (shell)'               -Command 'sleep 300'                                 -ExpectDeny $true
+    Test-BlindWait -Label 'sleep 5m (suffix -> 300s)'       -Command 'sleep 5m'                                  -ExpectDeny $true
+    Test-BlindWait -Label 'timeout /t 200 (Windows delay)'  -Command 'timeout /t 200'                            -ExpectDeny $true
+    Test-BlindWait -Label 'always-true poll loop, no break' -Command 'while ($true) { Start-Sleep -Seconds 1 }'  -ExpectDeny $true
+    # Allowed - short, bounded, GNU-bounded, nested, or shows a deadline.
+    Test-BlindWait -Label 'Start-Sleep -Seconds 5 (short)'     -Command 'Start-Sleep -Seconds 5'                                                                              -ExpectDeny $false
+    Test-BlindWait -Label 'Start-Sleep -Milliseconds 200'      -Command 'Start-Sleep -Milliseconds 200'                                                                       -ExpectDeny $false
+    Test-BlindWait -Label 'sleep 2 (short backoff)'            -Command 'sleep 2'                                                                                             -ExpectDeny $false
+    Test-BlindWait -Label 'GNU timeout 300 bounds a command'   -Command 'timeout 300 node server.js'                                                                          -ExpectDeny $false
+    Test-BlindWait -Label 'nested shell string is NOT parsed'  -Command 'bash -c "sleep 300"'                                                                                 -ExpectDeny $false
+    Test-BlindWait -Label 'deadline-bounded poll loop'         -Command '$d=[DateTime]::UtcNow.AddSeconds(30); while ([DateTime]::UtcNow -lt $d) { Start-Sleep -Milliseconds 200 }' -ExpectDeny $false
+    Test-BlindWait -Label 'always-true loop WITH a break'      -Command 'while ($true) { if ($ready) { break }; Start-Sleep -Seconds 1 }'                                      -ExpectDeny $false
+
+    # Advisory mode reports the finding but does not block.
+    $hcBlindAdv = New-IsolatedHookCopy -EnvOverrides @{ TEST_GUARD_ADVISORY_ONLY = '1' }
+    $rAdv = Fire -HookPath $hcBlindAdv.Script -Cwd $Proj -EventName 'PreToolUse' -Command 'Start-Sleep -Seconds 300' -LocalAppData $hcBlindAdv.LocalAppData
+    Check 'advisory mode reports the blind wait but never denies' ($rAdv.Out -notmatch '"permissionDecision":"deny"' -and (Get-Message $rAdv.Out) -match 'blind wait') $rAdv.Out
+    # 0 disables the check entirely.
+    $hcBlindOff = New-IsolatedHookCopy -EnvOverrides @{ TEST_GUARD_MAX_BLIND_SLEEP_SECONDS = '0' }
+    $rOff = Fire -HookPath $hcBlindOff.Script -Cwd $Proj -EventName 'PreToolUse' -Command 'Start-Sleep -Seconds 300' -LocalAppData $hcBlindOff.LocalAppData
+    Check 'TEST_GUARD_MAX_BLIND_SLEEP_SECONDS=0 disables the check (a long sleep is allowed)' ($rOff.Out -notmatch '"permissionDecision":"deny"' -and $rOff.Exit -eq 0) $rOff.Out
+    # A real test command is unaffected - the blind-wait pass never swallows it.
+    $rStillTest = Fire -HookPath $hc.Script -Cwd $Proj -EventName 'PreToolUse' -Command 'pytest -q' -LocalAppData $hc.LocalAppData
+    Check 'a real test command still gets its guarded-runner replacement (blind-wait pass did not swallow it)' ((Get-Message $rStillTest.Out) -match 'Run-Tests-Guarded') $rStillTest.Out
+
+    # =====================================================================
     Write-Host '--- metacharacters and spaces survive into the replacement, unevaluated ---' -ForegroundColor Cyan
     $marker = Join-Path $Work 'SHOULD-NOT-EXIST.txt'
     $nasty = 'pytest -k "slow and not flaky" --junitxml "C:\out dir\r&d.xml" ; echo pwned > "' + $marker + '"'
