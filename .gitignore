@@ -41,3 +41,8 @@ logs/
 !/.env.sample
 !/.env.template
 /graphify-out/
+
+!/.env.example
+!/.env.sample
+!/.env.template
+!/.env.dist

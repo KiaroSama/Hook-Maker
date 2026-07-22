@@ -232,6 +232,90 @@ function New-State {
     }
 }
 
+function Get-SafeStringField {
+    param($Value, [string]$Default)
+    if ($Value -is [string]) { return $Value }
+    return $Default
+}
+
+function Get-SafeArrayField {
+    param($Value, $Default)
+    # A JSON array round-trips as an object[]; a bare string/number/bool is
+    # not a valid array shape for these fields (foreach would otherwise treat
+    # a string as a scalar element, and downstream code indexes/enumerates
+    # these as collections of records) - discard rather than propagate it.
+    if ($null -eq $Value -or $Value -is [string]) { return $Default }
+    return @($Value)
+}
+
+# Normalizes a raw deserialized 'pending' value into either $null (no pending
+# review) or a complete object carrying every field New-PendingPackage
+# writes. A value that isn't a real JSON object (string/number/bool/array -
+# ConvertFrom-Json never gives one of those a 'pending' package shape) has
+# nothing valid to preserve, so it normalizes to "no pending" rather than a
+# half-built object that still crashes on the first nested read. A genuine
+# object keeps every field it already has and fills in only the ones that
+# are absent or the wrong CLR type - it never rebuilds/discards a valid
+# pending package merely because ONE sibling field is missing.
+function ConvertTo-NormalizedPending {
+    param($Pending)
+
+    if ($null -eq $Pending -or -not ($Pending -is [System.Management.Automation.PSCustomObject])) {
+        return $null
+    }
+
+    return [pscustomobject][ordered]@{
+        sourceQuickFingerprint   = Get-SafeStringField (Get-Field $Pending 'sourceQuickFingerprint') ''
+        sourceContentFingerprint = Get-SafeStringField (Get-Field $Pending 'sourceContentFingerprint') ''
+        sourceFiles              = Get-SafeArrayField (Get-Field $Pending 'sourceFiles') @()
+        packageRoot              = Get-SafeStringField (Get-Field $Pending 'packageRoot') ''
+        manifestPath             = Get-SafeStringField (Get-Field $Pending 'manifestPath') ''
+        filesRoot                = Get-SafeStringField (Get-Field $Pending 'filesRoot') ''
+        acknowledgementCommand   = Get-SafeStringField (Get-Field $Pending 'acknowledgementCommand') ''
+        createdAtUtc             = Get-SafeStringField (Get-Field $Pending 'createdAtUtc') ''
+    }
+}
+
+# THE canonical, idempotent state-shape repair. Read-JsonFile can hand back
+# $null (no file yet), a fully valid state, or anything in between: an empty
+# object, one missing top-level fields (a partial write, or state predating a
+# field this script added later), or a non-null 'pending' that is itself
+# missing nested fields. Every $state.*/$state.pending.* read in this
+# script - the normal per-context loop AND the -Acknowledge branch alike -
+# only ever touches a state that has been through this function first, so no
+# direct property access downstream can hit an absent field under
+# Set-StrictMode 2.0. A field that is present and the right CLR type is kept
+# exactly as-is; only an absent or wrong-typed field is replaced with its
+# New-State default - a damaged file never silently drops a valid queued
+# pending review. Running it again on its own output is a no-op.
+function ConvertTo-NormalizedState {
+    param(
+        $State,
+        [Parameter(Mandatory = $true)][string]$ProfileId,
+        [Parameter(Mandatory = $true)][string]$RouteId,
+        [Parameter(Mandatory = $true)][string]$SourceRoot
+    )
+
+    $defaults = New-State -ProfileId $ProfileId -RouteId $RouteId -SourceRoot $SourceRoot
+    if ($null -eq $State) {
+        return $defaults
+    }
+
+    $rawVersion = Get-Field $State 'version'
+    return [pscustomobject][ordered]@{
+        version                       = if ($null -ne $rawVersion) { $rawVersion } else { $defaults.version }
+        profileId                     = Get-SafeStringField (Get-Field $State 'profileId') $defaults.profileId
+        routeId                       = Get-SafeStringField (Get-Field $State 'routeId') $defaults.routeId
+        sourceRoot                    = Get-SafeStringField (Get-Field $State 'sourceRoot') $defaults.sourceRoot
+        lastAppliedQuickFingerprint   = Get-SafeStringField (Get-Field $State 'lastAppliedQuickFingerprint') $defaults.lastAppliedQuickFingerprint
+        lastAppliedContentFingerprint = Get-SafeStringField (Get-Field $State 'lastAppliedContentFingerprint') $defaults.lastAppliedContentFingerprint
+        lastAppliedFiles              = Get-SafeArrayField (Get-Field $State 'lastAppliedFiles') $defaults.lastAppliedFiles
+        pending                       = ConvertTo-NormalizedPending (Get-Field $State 'pending')
+        lastNotifiedSessionId         = Get-SafeStringField (Get-Field $State 'lastNotifiedSessionId') $defaults.lastNotifiedSessionId
+        lastNotifiedAtUtc             = Get-SafeStringField (Get-Field $State 'lastNotifiedAtUtc') $defaults.lastNotifiedAtUtc
+    }
+}
+
 function Get-StatePaths {
     param(
         [Parameter(Mandatory = $true)][string]$DestinationDirectory,
@@ -501,7 +585,12 @@ if ($Acknowledge) {
     $context = $resolvedRoutes[0]
     $statePaths = Get-StatePaths -DestinationDirectory $context.destinationDirectory -ProfileId $context.profileId -RouteId $context.routeId -SourceRoot $context.sourceRoot
     $state = Read-JsonFile $statePaths.statePath
-    if ($null -eq $state -or $null -eq $state.pending) {
+    # ConvertTo-NormalizedState guarantees 'pending' is a real property
+    # (possibly $null) below - a raw $state.pending read here, before any
+    # shape guard, used to throw under StrictMode 2.0 for any state missing
+    # the property entirely (e.g. a bare "{}").
+    $state = ConvertTo-NormalizedState -State $state -ProfileId $context.profileId -RouteId $context.routeId -SourceRoot $context.sourceRoot
+    if ($null -eq $state.pending) {
         [Console]::Out.WriteLine('No pending review exists for this profile and route.')
         exit 0
     }
@@ -550,14 +639,13 @@ foreach ($context in $contexts) {
 
     $statePaths = Get-StatePaths -DestinationDirectory $context.destinationDirectory -ProfileId $context.profileId -RouteId $context.routeId -SourceRoot $context.sourceRoot
     $state = Read-JsonFile $statePaths.statePath
-    # A $null read (missing file) and a present-but-wrong-shape read (e.g. a
-    # stray "{}") both need New-State: without the property guard, a
-    # non-null object missing 'pending' still passes the null check and then
-    # throws "property 'pending' cannot be found" under StrictMode 2.0 at the
-    # first $state.pending access below.
-    if ($null -eq $state -or $null -eq $state.PSObject.Properties['pending']) {
-        $state = New-State -ProfileId $context.profileId -RouteId $context.routeId -SourceRoot $context.sourceRoot
-    }
+    # ConvertTo-NormalizedState repairs every partial/damaged shape (missing
+    # file, "{}", a missing top-level field, a non-null 'pending' missing
+    # ONE of its own fields, ...) into the full New-State shape in one pass,
+    # so every $state.*/$state.pending.* read below is guaranteed to succeed
+    # under Set-StrictMode 2.0 without ever discarding a value that was
+    # already valid.
+    $state = ConvertTo-NormalizedState -State $state -ProfileId $context.profileId -RouteId $context.routeId -SourceRoot $context.sourceRoot
 
     # @() around the call: an empty result would otherwise unwrap to $null.
     $eligibleFiles = @(Get-EligibleFiles -SourceDirectory $context.sourceDirectory -RouteConfig $context.route -ProfileConfig $context.profile -Defaults $context.defaults)

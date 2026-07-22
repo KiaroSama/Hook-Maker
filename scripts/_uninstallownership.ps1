@@ -438,3 +438,47 @@ function Resolve-OwnNativeStages {
     }
     return [pscustomobject]@{ Ok = $true; Reason = ''; Stages = @($stages.ToArray()); Dirs = @($dirs.ToArray()) }
 }
+
+# ---- shared runtime-root cleanup: the LAST hook leaving a Hook-Maker root --
+# A hook installed before the private-per-hook-copy architecture (see
+# _installplan.ps1's Get-ManagedInstallPlan comment) dot-sources a SHARED
+# '_hooklib.ps1' that Install-PlannedRuntime placed directly in the runtime
+# ROOT, one level above every '<Name>\' hook directory. Removing that hook's
+# own directory never touches that file, so once the LAST managed hook under a
+# root is removed, the shared file - and the now-empty root itself - would
+# otherwise be orphaned forever.
+#
+# Deliberately STRICTER than _installplan.ps1's Remove-SharedRuntimeLibrary
+# (which retires the file once every REMAINING hook already carries its own
+# private copy, even while hooks still exist): here it is only ever safe to
+# touch the shared file when NO sibling hook directory remains at all. A
+# transient '.hookmaker-*' staging/set-aside directory is this tool's own
+# scaffolding, never a hook - exactly like the install-side function, it is
+# excluded from the "sibling remains" proof.
+$script:KnownSharedRuntimeRootFiles = @('_hooklib.ps1')
+
+# Read-only: which files (full canonical paths) directly inside $RuntimeRoot
+# are PROVEN safe to delete right now. Always empty when any sibling hook
+# directory remains, when the root itself is missing/not-a-directory/a
+# reparse point, or when a candidate is anything other than a genuine on-disk
+# file under a KNOWN shared filename contained in the root.
+function Get-RemovableSharedRuntimeRootFiles {
+    param([Parameter(Mandatory = $true)][string]$RuntimeRoot)
+    if ([string]::IsNullOrWhiteSpace($RuntimeRoot) -or -not (Test-Path -LiteralPath $RuntimeRoot -PathType Container)) { return @() }
+    if (Test-IsReparsePoint -Path $RuntimeRoot) { return @() }
+
+    $siblingHookDirs = @(Get-ChildItem -LiteralPath $RuntimeRoot -Directory -Force -ErrorAction SilentlyContinue |
+        Where-Object { -not $_.Name.StartsWith('.hookmaker-', [System.StringComparison]::OrdinalIgnoreCase) })
+    if ($siblingHookDirs.Count -gt 0) { return @() }
+
+    $files = New-Object System.Collections.Generic.List[string]
+    foreach ($name in $script:KnownSharedRuntimeRootFiles) {
+        $candidate = Get-CanonicalPathOrNull (Join-Path $RuntimeRoot $name)
+        if ($null -eq $candidate) { continue }
+        if (-not (Test-PathContainedIn -ChildPath $candidate -ParentPath $RuntimeRoot)) { continue }
+        if (-not (Test-Path -LiteralPath $candidate -PathType Leaf)) { continue }
+        if (Test-IsReparsePoint -Path $candidate) { continue }
+        [void]$files.Add($candidate)
+    }
+    return @($files.ToArray())
+}
