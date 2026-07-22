@@ -370,21 +370,48 @@ try {
     $preFixRoot = Join-Path $Work '_prefix-hook'
     New-Item -ItemType Directory -Path (Join-Path $preFixRoot 'Git-Sync-Check') -Force | Out-Null
     $preFixText = ((& git -C $repoRoot show 'HEAD:hooks/Git-Sync-Check/Git-Sync-Check.ps1') -join "`n")
-    $preFixHook = Join-Path $preFixRoot 'Git-Sync-Check\Git-Sync-Check.ps1'
-    [System.IO.File]::WriteAllText($preFixHook, $preFixText, (New-Object System.Text.UTF8Encoding $false))
-    Copy-Item -LiteralPath (Join-Path $repoRoot 'hooks\_hooklib.ps1') -Destination (Join-Path $preFixRoot '_hooklib.ps1') -Force
-    $red = New-PushedRepo 'wt-dirtyfp-red'
-    $redExtra = Join-Path $ReposRoot 'wt-dirtyfp-red-extra'
-    & git -C $red worktree add -q $redExtra -b wt-dirtyfp-red-extra 2>$null
-    Fire -Cwd $red -EventName 'SessionStart' -SessionId 'red-sess' -HookPath $preFixHook | Out-Null
-    # Modify a TRACKED file inside the pre-existing worktree AFTER the
-    # baseline; its HEAD never moves.
-    [System.IO.File]::WriteAllText((Join-Path $redExtra 'f.txt'), 'edited during task', (New-Object System.Text.UTF8Encoding $false))
-    $rRed = Fire -Cwd $red -SessionId 'red-sess' -HookPath $preFixHook
-    Check 'RED-PROOF: the PRE-FIX hook stays silent for uncommitted edits inside a pre-existing worktree' ($rRed.Exit -eq 0 -and $rRed.Out -eq '') $rRed.Out
-    # Continuity: the FIXED hook reading that PRE-FIX baseline (no dirty
-    # field = UNKNOWN) must neither claim all-clear nor hard-block on unknown.
-    $rUnknown = Fire -Cwd $red -SessionId 'red-sess'
+    if ($preFixText -match 'Get-WorktreeDirtyFingerprint') {
+        # Retire on the FIX MARKER: once the dirty-fingerprint fix is committed,
+        # `git show HEAD:` returns the FIXED hook, so "the pre-fix hook stays
+        # silent" would be a permanent false red. The durable regressions live in
+        # the sections around this one; this block only proved the historical gap.
+        Write-Host 'HEAD already contains the dirty-fingerprint fix; historical red-proof retired.' -ForegroundColor DarkGray
+    }
+    else {
+        $preFixHook = Join-Path $preFixRoot 'Git-Sync-Check\Git-Sync-Check.ps1'
+        [System.IO.File]::WriteAllText($preFixHook, $preFixText, (New-Object System.Text.UTF8Encoding $false))
+        Copy-Item -LiteralPath (Join-Path $repoRoot 'hooks\_hooklib.ps1') -Destination (Join-Path $preFixRoot '_hooklib.ps1') -Force
+        $red = New-PushedRepo 'wt-dirtyfp-red'
+        $redExtra = Join-Path $ReposRoot 'wt-dirtyfp-red-extra'
+        & git -C $red worktree add -q $redExtra -b wt-dirtyfp-red-extra 2>$null
+        Fire -Cwd $red -EventName 'SessionStart' -SessionId 'red-sess' -HookPath $preFixHook | Out-Null
+        # Modify a TRACKED file inside the pre-existing worktree AFTER the
+        # baseline; its HEAD never moves.
+        [System.IO.File]::WriteAllText((Join-Path $redExtra 'f.txt'), 'edited during task', (New-Object System.Text.UTF8Encoding $false))
+        $rRed = Fire -Cwd $red -SessionId 'red-sess' -HookPath $preFixHook
+        Check 'RED-PROOF: the PRE-FIX hook stays silent for uncommitted edits inside a pre-existing worktree' ($rRed.Exit -eq 0 -and $rRed.Out -eq '') $rRed.Out
+    }
+
+    # PERMANENT legacy-baseline regression (independent of HEAD's age): any
+    # baseline written by a pre-fix version has NO per-worktree `dirty` field.
+    # Construct that legacy shape deterministically - fire the FIXED SessionStart,
+    # then strip `dirty` from the stored baseline JSON - so the continuity rule
+    # ("unknown is uncertainty, never all-clear, never a hard block") stays
+    # load-bearing forever instead of depending on a retired pre-fix copy.
+    $legacy = New-PushedRepo 'wt-legacybl'
+    $legacyExtra = Join-Path $ReposRoot 'wt-legacybl-extra'
+    & git -C $legacy worktree add -q $legacyExtra -b wt-legacybl-extra 2>$null
+    Fire -Cwd $legacy -EventName 'SessionStart' -SessionId 'legacy-sess' | Out-Null
+    $legacyStateDir = Join-Path $FakeLocalAppData 'HookMaker\state'
+    foreach ($bl in @(Get-ChildItem -LiteralPath $legacyStateDir -Filter 'GitSyncCheck-baseline-*.json' -File -ErrorAction SilentlyContinue)) {
+        $doc = Get-Content -LiteralPath $bl.FullName -Raw | ConvertFrom-Json
+        if ($null -eq $doc -or -not $doc.PSObject.Properties['worktrees']) { continue }
+        $stripped = @(@($doc.worktrees) | ForEach-Object { [pscustomobject]@{ path = $_.path; head = $_.head } })
+        $doc.worktrees = $stripped
+        [System.IO.File]::WriteAllText($bl.FullName, ($doc | ConvertTo-Json -Depth 6), (New-Object System.Text.UTF8Encoding $false))
+    }
+    [System.IO.File]::WriteAllText((Join-Path $legacyExtra 'f.txt'), 'edited during task', (New-Object System.Text.UTF8Encoding $false))
+    $rUnknown = Fire -Cwd $legacy -SessionId 'legacy-sess'
     Check 'an UNKNOWN (pre-fix) baseline fingerprint surfaces advisory uncertainty, never a false all-clear' ($rUnknown.Out -match 'cannot be confirmed unchanged') $rUnknown.Out
     Check 'an UNKNOWN baseline fingerprint alone never hard-blocks' ($rUnknown.Out -notmatch '"decision":"block"') $rUnknown.Out
 
