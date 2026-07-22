@@ -243,6 +243,49 @@ try {
     Check 'PostToolUse reads the real document the replacement produced' ((Get-Message $r.Out) -match 'exit code 7') $r.Out
 
     # =====================================================================
+    # HM-05: the resolved worker ceiling is ENFORCED end-to-end, not just advised.
+    # =====================================================================
+    Write-Host '--- the worker ceiling rides the replacement AND reaches a real child ---' -ForegroundColor Cyan
+
+    # Unit: TEST_GUARD_MAX_WORKERS is handed to the runner as -MaxWorkers; 0 omits it.
+    $hcCap = New-IsolatedHookCopy -EnvOverrides @{ TEST_GUARD_MAX_WORKERS = '3' }
+    $rCap = Fire -HookPath $hcCap.Script -Cwd $Proj -EventName 'PreToolUse' -Command 'pytest -q' -LocalAppData $hcCap.LocalAppData
+    $capRepl = Get-Replacement (Get-Message $rCap.Out)
+    Check 'TEST_GUARD_MAX_WORKERS is passed to the runner as -MaxWorkers' ($capRepl -match '-MaxWorkers 3') $capRepl
+    $rNoCap = Fire -HookPath $hc.Script -Cwd $Proj -EventName 'PreToolUse' -Command 'pytest -q' -LocalAppData $hc.LocalAppData
+    $noCapRepl = Get-Replacement (Get-Message $rNoCap.Out)
+    Check 'no cap => no -MaxWorkers flag (0 is omitted, never a guessed default)' ($noCapRepl -notmatch '-MaxWorkers') $noCapRepl
+
+    # Integration: with the cap set and NO ambient HOOKMAKER_MAX_TEST_WORKERS, the
+    # runner both REPORTS the ceiling and EXPORTS it into the child that actually
+    # runs. The child prints the value it inherited, so a value of 1 can only have
+    # arrived via -MaxWorkers -> Get-GuardedWorkerBudget -> the child's environment.
+    $hcExport = New-IsolatedHookCopy -EnvOverrides @{ TEST_GUARD_MAX_WORKERS = '1'; TEST_GUARD_WALL_TIMEOUT_SECONDS = '60'; TEST_GUARD_IDLE_TIMEOUT_SECONDS = '30'; TEST_GUARD_HEARTBEAT_SECONDS = '1' }
+    $workerSuite = Join-Path $Proj 'scripts\Test-WorkerProbe.ps1'
+    Write-Utf8 $workerSuite "Write-Host ('WORKERS=' + `$env:HOOKMAKER_MAX_TEST_WORKERS)`nexit 0`n"
+    $workerCommand = 'pwsh -NoProfile -File "' + $workerSuite + '"'
+    $rExp = Fire -HookPath $hcExport.Script -Cwd $Proj -EventName 'PreToolUse' -Command $workerCommand -LocalAppData $hcExport.LocalAppData
+    $expRepl = Get-Replacement (Get-Message $rExp.Out)
+    Check 'the export replacement carries -MaxWorkers 1' ($expRepl -match '-MaxWorkers 1') $expRepl
+    $expRunner = Join-Path $Work 'run-export.ps1'
+    Write-Utf8 $expRunner ($expRepl + "`nexit `$LASTEXITCODE`n")
+    $prevAmbient = $env:HOOKMAKER_MAX_TEST_WORKERS
+    $env:HOOKMAKER_MAX_TEST_WORKERS = ''         # prove the value can ONLY come from -MaxWorkers
+    try {
+        $expProc = Start-Process -FilePath (Get-Process -Id $PID).Path -Wait -NoNewWindow -PassThru `
+            -ArgumentList @('-NoLogo', '-NoProfile', '-File', $expRunner)
+    }
+    finally {
+        $env:HOOKMAKER_MAX_TEST_WORKERS = $prevAmbient
+    }
+    Check 'the export replacement ran and propagated the child exit code (0)' ($expProc.ExitCode -eq 0) ([string]$expProc.ExitCode)
+    $expFile = @(Get-ChildItem -LiteralPath (Join-Path $hcExport.LocalAppData 'HookMaker\state') -Filter 'TestRunGuard-result-*.json' -ErrorAction SilentlyContinue)
+    Check 'the export run wrote its result document' ($expFile.Count -eq 1)
+    $expDoc = Get-Content -LiteralPath $expFile[0].FullName -Raw | ConvertFrom-Json
+    Check 'the runner resolved the ceiling from -MaxWorkers alone (workerBudget=1)' ($expDoc.workerBudget -eq 1) ([string]$expDoc.workerBudget)
+    Check 'the exported ceiling reached the real child (child saw HOOKMAKER_MAX_TEST_WORKERS=1)' ($expDoc.lastProgress -match 'WORKERS=1') $expDoc.lastProgress
+
+    # =====================================================================
     Write-Host '--- an already-guarded command passes untouched (no double wrap) ---' -ForegroundColor Cyan
     $guardedCommand = 'pwsh -NoProfile -File .\scripts\Run-Tests-Guarded.ps1 -FilePath pwsh -ArgumentsJson ''["-File",".\scripts\Run-Tests.ps1"]'' -TimeoutSeconds 900'
     $r = Fire -HookPath $hc.Script -Cwd $Proj -EventName 'PreToolUse' -Command $guardedCommand -LocalAppData $hc.LocalAppData
