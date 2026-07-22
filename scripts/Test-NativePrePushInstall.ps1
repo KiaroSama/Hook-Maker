@@ -132,6 +132,14 @@ try {
 
     Check 'the pre-push managed companion matches the current real Secrets-Check source' ((Get-FileHash -LiteralPath $companionSecretsScript -Algorithm SHA256).Hash -eq $realSecretsHash)
 
+    # 30.md Part C: the chain gained a THIRD managed stage. Same plan-generated
+    # hash proof as Secrets-Check, so the Utf8 companion is the canonical
+    # private-library rewrite of the real hook source, not a raw copy.
+    $companionUtf8Script = Join-Path $existingPrePushDir 'Hook-Maker\Utf8-Encoding-Check\Utf8-Encoding-Check.ps1'
+    Check 'the pre-push managed companion (Utf8-Encoding-Check) copy exists' (Test-Path $companionUtf8Script)
+    $realUtf8Hash = Get-PlanArtifactExpectedHash -Artifact (New-PlanArtifact -RelativePath 'expected' -Kind 'Generated' -GeneratedContent (Get-PrivateLibraryScriptContent -SourceScriptPath (Join-Path $RealHooksDir 'Utf8-Encoding-Check\Utf8-Encoding-Check.ps1')))
+    Check 'the pre-push managed companion matches the current real Utf8-Encoding-Check source' ((Get-FileHash -LiteralPath $companionUtf8Script -Algorithm SHA256).Hash -eq $realUtf8Hash)
+
     $preservedPath = Join-Path $existingPrePushDir 'pre-push.hookmaker-existing'
 
     $preservedBytesBefore = [System.IO.File]::ReadAllBytes($preservedPath)
@@ -143,6 +151,9 @@ try {
     Check 'the record tracks the native pre-push integration' ($null -ne $recPrePush.nativeGit -and $recPrePush.nativeGit.managed -eq $true)
 
     Check 'the native manifest includes the Secrets-Check companion source' (@($recPrePush.nativeGit.sourceManifest | Where-Object { $_.path -like 'secrets-check/*' }).Count -ge 1)
+
+    Check 'the native manifest includes the Utf8-Encoding-Check companion source' (@($recPrePush.nativeGit.sourceManifest | Where-Object { $_.path -like 'utf8-encoding-check/*' }).Count -ge 1)
+    Check 'the record lists BOTH chain companions' ((@($recPrePush.nativeGit.companions) -contains 'Secrets-Check') -and (@($recPrePush.nativeGit.companions) -contains 'Utf8-Encoding-Check'))
 
     Check 'the record notes that a previous user hook was preserved' ($recPrePush.nativeGit.previousHookPreserved -eq $true)
 
@@ -222,17 +233,21 @@ try {
 
     Check 'the wrapper runs Secrets-Check exactly once' ((([regex]::Matches($wrapperBody, [regex]::Escape('/Secrets-Check/Secrets-Check.ps1"'))).Count) -eq 1)
 
-    Check 'chain order is Ignore-Rules-Check then Secrets-Check then the previous hook' (
+    Check 'the wrapper runs Utf8-Encoding-Check exactly once' ((([regex]::Matches($wrapperBody, [regex]::Escape('/Utf8-Encoding-Check/Utf8-Encoding-Check.ps1"'))).Count) -eq 1)
+
+    Check 'chain order is Ignore-Rules-Check then Secrets-Check then Utf8-Encoding-Check then the previous hook' (
 
         $wrapperBody.IndexOf('/Ignore-Rules-Check/Ignore-Rules-Check.ps1"') -lt $wrapperBody.IndexOf('/Secrets-Check/Secrets-Check.ps1"') -and
 
-        $wrapperBody.IndexOf('/Secrets-Check/Secrets-Check.ps1"') -lt $wrapperBody.IndexOf('hookmaker-existing'))
+        $wrapperBody.IndexOf('/Secrets-Check/Secrets-Check.ps1"') -lt $wrapperBody.IndexOf('/Utf8-Encoding-Check/Utf8-Encoding-Check.ps1"') -and
+
+        $wrapperBody.IndexOf('/Utf8-Encoding-Check/Utf8-Encoding-Check.ps1"') -lt $wrapperBody.IndexOf('hookmaker-existing'))
 
     Check 'stdin is still buffered once and replayed to every stage' (
 
         $wrapperBody -match 'STDIN_FILE' -and
 
-        ((([regex]::Matches($wrapperBody, [regex]::Escape('< "$STDIN_FILE"'))).Count) -ge 3))
+        ((([regex]::Matches($wrapperBody, [regex]::Escape('< "$STDIN_FILE"'))).Count) -ge 4))
 
     Check 'fail-closed chaining (|| exit) is preserved' ($wrapperBody -match '\|\| exit')
 
@@ -376,7 +391,59 @@ try {
 
     Check 'repair never regenerates a user-owned hook' (-not (Test-Path -LiteralPath $preservedPath))
 
+    # =====================================================================
+    # 30.md Part D item 27: uninstalling the Utf8-Encoding-Check LIFECYCLE
+    # record removes ITS stage from the managed chain - and nothing else.
+    Write-Host '--- uninstalling Utf8-Encoding-Check removes only its chain stage ---' -ForegroundColor Cyan
+    $stageRepo = Join-Path $Work 'chainstage-repo'
+    New-Item -ItemType Directory -Path $stageRepo -Force | Out-Null
+    Push-Location $stageRepo
+    try {
+        & git init --quiet 2>$null | Out-Null
+        & git config user.email 'regtest@example.invalid' 2>$null | Out-Null
+        & git config user.name 'Regtest' 2>$null | Out-Null
+        Write-Utf8 (Join-Path $stageRepo 'readme.md') 'seed'
+        & git add -A 2>$null | Out-Null
+        & git commit -m seed --quiet 2>$null | Out-Null
+    }
+    finally { Pop-Location }
+    $stageHooksDir = Join-Path $stageRepo '.git\hooks'
+    New-Item -ItemType Directory -Path $stageHooksDir -Force | Out-Null
+    Write-Utf8 (Join-Path $stageHooksDir 'pre-push') "#!/bin/sh`necho user-own-pre-push-hook`n"
+    & $InstallScript -CustomHook (Join-Path $RealHooksDir 'Ignore-Rules-Check\Ignore-Rules-Check.ps1') -Events @('Stop') -TargetProject $stageRepo -ClaudeOnly *> $null
+    & $InstallScript -CustomHook (Join-Path $RealHooksDir 'Utf8-Encoding-Check\Utf8-Encoding-Check.ps1') -Events @('SessionStart', 'Stop') -TargetProject $stageRepo -ClaudeOnly *> $null
+    $stageWrapper = Join-Path $stageHooksDir 'pre-push'
+    Check 'fixture: the chain wrapper carries the Utf8 stage before the uninstall' (([System.IO.File]::ReadAllText($stageWrapper)) -match 'Utf8-Encoding-Check')
+    $stagePreserved = $stageWrapper + '.hookmaker-existing'
+    $stagePreservedBytesBefore = [System.IO.File]::ReadAllBytes($stagePreserved)
+    $utf8Rec = @(Get-RecordsFor 'Utf8-Encoding-Check' | Where-Object { $_.targetProjectRoot -eq $stageRepo })[0]
 
+    # RED (historical, static): the pre-change executor had no chain-stage
+    # concept at all, so uninstalling the Utf8 record provably left the stage
+    # in the wrapper. Retires itself once HEAD contains the fix.
+    $oldUninstallText = ((& git -C $ToolRoot show 'HEAD:scripts/Uninstall-Hook.ps1' 2>$null) -join "`n")
+    if ([string]::IsNullOrWhiteSpace($oldUninstallText) -or $oldUninstallText -match 'Remove-CompanionChainStage') {
+        Write-Host 'HEAD already contains the chain-stage removal; historical red-proof retired.' -ForegroundColor DarkGray
+    }
+    else {
+        Check 'RED-PROOF: the PRE-FIX executor has no chain-stage removal (stage would remain)' ($oldUninstallText -notmatch 'chainStage')
+    }
+
+    $rStageUninstall = & (Join-Path $PSScriptRoot 'Uninstall-Hook.ps1') -RecordId ([string]$utf8Rec.id) -ToolRoot $ToolRoot *> $null
+    $stageBodyAfter = [System.IO.File]::ReadAllText($stageWrapper)
+    Check 'the Utf8 stage is gone from the wrapper' ($stageBodyAfter -notmatch 'Utf8-Encoding-Check')
+    Check 'Ignore-Rules-Check still runs exactly once' ((([regex]::Matches($stageBodyAfter, [regex]::Escape('/Ignore-Rules-Check/Ignore-Rules-Check.ps1"'))).Count) -eq 1)
+    Check 'Secrets-Check still runs exactly once' ((([regex]::Matches($stageBodyAfter, [regex]::Escape('/Secrets-Check/Secrets-Check.ps1"'))).Count) -eq 1)
+    Check 'the preserved user hook is still chained' ($stageBodyAfter -match 'hookmaker-existing')
+    Check 'the preserved user hook bytes are untouched' (@(Compare-Object $stagePreservedBytesBefore ([System.IO.File]::ReadAllBytes($stagePreserved))).Count -eq 0)
+    $stageRuntimeRoot = Join-Path $stageHooksDir 'Hook-Maker'
+    Check 'the Utf8 companion runtime dir is removed' (-not (Test-Path (Join-Path $stageRuntimeRoot 'Utf8-Encoding-Check')))
+    Check 'the Secrets-Check companion runtime dir is preserved' (Test-Path (Join-Path $stageRuntimeRoot 'Secrets-Check\Secrets-Check.ps1'))
+    $ignoreAfterStage = @(Get-RecordsFor 'Ignore-Rules-Check' | Where-Object { $_.targetProjectRoot -eq $stageRepo })[0]
+    Check 'the chain owner''s record no longer lists the Utf8 companion' (@($ignoreAfterStage.nativeGit.companions) -notcontains 'Utf8-Encoding-Check')
+    Check 'the chain owner''s record still lists Secrets-Check' (@($ignoreAfterStage.nativeGit.companions) -contains 'Secrets-Check')
+    Check 'the chain owner evaluates as CURRENT after the stage removal (stages/manifest/wrapper all consistent)' ((Get-InstallIntegrity -Record $ignoreAfterStage -ToolRoot $ToolRoot).Status -eq 'current')
+    Check 'the Utf8 lifecycle record itself is gone' (@(Get-RecordsFor 'Utf8-Encoding-Check' | Where-Object { $_.targetProjectRoot -eq $stageRepo }).Count -eq 0)
 }
 finally {
     $env:HOOKMAKER_STATE_DIR = $SavedHookMakerStateDir

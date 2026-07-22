@@ -126,7 +126,7 @@ try {
     Check 'no stderr' ($r.Err -eq '')
     Check 'main menu merged (Create or install a hook)' ($r.Out -match '1\. Create or install a hook')
     Check 'no separate top-level sync-group option' ($r.Out -notmatch '1\. Create or update a sync group\s*\r?\n\s*2\. Show')
-    Check 'select-all is list item 1 (hint ends at the 3-N bound, no management-action tail)' ($r.Out -match '(?m)^  1\. Select all hooks \| \[all\] \| run the sync group \(2\) and install every hook below \(3-23\)\s*$')
+    Check 'select-all is list item 1 (hint ends at the 3-N bound, no management-action tail)' ($r.Out -match '(?m)^  1\. Select all hooks \| \[all\] \| run the sync group \(2\) and install every hook below \(3-24\)\s*$')
     Check 'sync group is list item 2' ($r.Out -match '2\. Create or update a sync group')
     Check 'context hook menu names match their whole-.ai scope' ($r.Out -match 'Ai-Context-Check' -and $r.Out -match 'Ai-Context-Load')
     Check 'old memory-only menu names are hidden' ($r.Out -notmatch 'Ai-Memory-(Check|Load)')
@@ -168,19 +168,19 @@ try {
         '13\. Mcp-Usage-Check', '14\. Rules-Check', '15\. Skills-Check',
         '16\. Secrets-Check', '17\. Ignore-Rules-Check', '18\. Dependency-Version-Check',
         '19\. Test-Temp-Cleanup', '20\. Test-Plan-Check', '21\. Test-Run-Guard',
-        '22\. Test-Completion-Check', '23\. Cloudflare-Deploy'
+        '22\. Test-Completion-Check', '23\. Utf8-Encoding-Check', '24\. Cloudflare-Deploy'
     ) -join '[\s\S]*'
-    Check 'hooks follow the requested menu order (Select all -> sync group -> hooks -> the three test-health hooks at 20/21/22 -> Cloudflare-Deploy last at 23)' ($r.Out -match $menuOrder)
+    Check 'hooks follow the requested menu order (Select all -> sync group -> hooks -> test-health at 20/21/22 -> Utf8-Encoding-Check at 23 -> Cloudflare-Deploy last at 24)' ($r.Out -match $menuOrder)
     # The three test-health hooks (24.txt) render one line each, with the tag
     # their canonical When value demands - a value Get-HookTimingTag does not
     # recognize silently renders NO tag at all.
     Check 'Test-Plan-Check renders the [pre-task] tag' ($r.Out -match '(?m)^  20\. Test-Plan-Check \| \[pre-task\] \| \S') $r.Out
     Check 'Test-Run-Guard renders the [pre+post-task] tag' ($r.Out -match '(?m)^  21\. Test-Run-Guard \| \[pre\+post-task\] \| \S') $r.Out
     Check 'Test-Completion-Check renders the [post-task] tag' ($r.Out -match '(?m)^  22\. Test-Completion-Check \| \[post-task\] \| \S') $r.Out
-    Check 'the three management rows follow the shipped block at 24/25/26' (
-        ($r.Out -match '(?m)^  24\. Update installed hooks \| \[manage\] \|') -and
-        ($r.Out -match '(?m)^  25\. Get hook status \| \[manage\] \|') -and
-        ($r.Out -match '(?m)^  26\. Uninstall installed hooks \| \[manage\] \|')) $r.Out
+    Check 'the three management rows follow the shipped block at 25/26/27' (
+        ($r.Out -match '(?m)^  25\. Update installed hooks \| \[manage\] \|') -and
+        ($r.Out -match '(?m)^  26\. Get hook status \| \[manage\] \|') -and
+        ($r.Out -match '(?m)^  27\. Uninstall installed hooks \| \[manage\] \|')) $r.Out
     Check '_hooklib excluded from listing' ($r.Out -notmatch '_hooklib')
     Check 'full back suffix on sub-prompts' ($r.Out -match 'back=0' -and $r.Out -match 'quit=exit')
     Check 'main-menu suffix is quit-only' ($r.Out -match 'Select an option.*\{quit=exit\}')
@@ -471,13 +471,14 @@ try {
     Write-Host '--- multi-select install (range + list, recommended events) ---' -ForegroundColor Cyan
     $cfg4 = Join-Path $Work 'cfg4.json'; New-Config $cfg4
     $m = New-Proj 'Multi'
-    # main 1 -> sub 1 -> "3-8,16,23" (eight advisory hooks incl. Cloudflare-Deploy,
+    # main 1 -> sub 1 -> "3-8,16,24" (eight advisory hooks incl. Cloudflare-Deploy,
     #        still the LAST individual entry (Docs-Freshness-Check inserted at 9
-    #        shifted Secrets-Check 15->16, and the three test-health hooks at
-    #        20/21/22 shifted Cloudflare-Deploy 20->23); the engine is excluded
-    #        from this list entirely, see the guard test below)
+    #        shifted Secrets-Check 15->16, the three test-health hooks at
+    #        20/21/22 and Utf8-Encoding-Check at 23 shifted Cloudflare-Deploy
+    #        to 24); the engine is excluded from this list entirely, see the
+    #        guard test below)
     #        -> mode 1 (recommended events per hook) -> client Both -> target -> done -> start -> exit
-    $r = Invoke-Wizard -Config $cfg4 -Answers @('1', '1', '3-8,16,23', '1', '1', $m, 'done', '', '0')
+    $r = Invoke-Wizard -Config $cfg4 -Answers @('1', '1', '3-8,16,24', '1', '1', $m, 'done', '', '0')
     Check 'exit 0' ($r.Exit -eq 0)
     Check 'no stderr' ($r.Err -eq '')
     Check 'selection accepts a range combined with a single item' ($r.Out -notmatch 'Enter number\(s\)')
@@ -582,12 +583,12 @@ try {
     $null = Invoke-Wizard -Config $cfgAllCodex -Answers @('1', '1', '2,3', $coX, $coY, 'done', '3', '', '1', '3', '', '0')
     Check 'a shared-path sync+hook install honors Codex-only client scoping' ((Test-Path (Join-Path $coX '.codex\hooks.json')) -and -not (Test-Path (Join-Path $coX '.claude')))
 
-    # Selecting the second-to-last individual entry installs Test-Completion-Check
-    # (menu item 22, immediately before Cloudflare-Deploy).
+    # Selecting the second-to-last individual entry installs Utf8-Encoding-Check
+    # (menu item 23, immediately before Cloudflare-Deploy).
     $cfgPenult = Join-Path $Work 'cfg-penult.json'; New-Config $cfgPenult
     $penultProj = New-Proj 'PenultEntryProj'
     $rPenult = Invoke-Wizard -Config $cfgPenult -Answers @('1', '1', ($hookCount + 1).ToString(), '2', '2', $penultProj, 'done', '', '0')
-    Check 'selecting the second-to-last individual entry installs Test-Completion-Check' (Test-Path (Join-Path $penultProj '.claude\hooks\Hook-Maker\Test-Completion-Check\Test-Completion-Check.ps1'))
+    Check 'selecting the second-to-last individual entry installs Utf8-Encoding-Check' (Test-Path (Join-Path $penultProj '.claude\hooks\Hook-Maker\Utf8-Encoding-Check\Utf8-Encoding-Check.ps1'))
     Check 'did not install the neighboring Cloudflare-Deploy hook instead' (-not (Test-Path (Join-Path $penultProj '.claude\hooks\Hook-Maker\Cloudflare-Deploy')))
 
     # Selecting the LAST individual entry (a single-hook pick, no aggregate)
