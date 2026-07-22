@@ -200,6 +200,16 @@ try {
     $profG1 = @((Get-Content $cfgMerge -Raw | ConvertFrom-Json).profiles)
     Check 'merge: group 1 is one full mesh of 3 (6 routes)' ($profG1.Count -eq 1 -and @($profG1[0].routes).Count -eq 6)
     $g1Id = $profG1[0].id
+
+    # Disable one route directly in group 1's config BEFORE the merge - the
+    # widening must never silently re-enable a route the user explicitly
+    # turned off (point 6 of the merge contract).
+    $cfgObjDisable = Get-Content $cfgMerge -Raw | ConvertFrom-Json
+    $routeToDisable = @($cfgObjDisable.profiles[0].routes | Where-Object { $_.source.name -eq 'MergeA' -and $_.destination.name -eq 'MergeB' })[0]
+    Check 'merge setup: found MergeA->MergeB route to disable' ($null -ne $routeToDisable)
+    $routeToDisable.enabled = $false
+    ($cfgObjDisable | ConvertTo-Json -Depth 20) | Set-Content -LiteralPath $cfgMerge -Encoding utf8
+
     # Group 2: link D to C. C already belongs to group 1, so the two must MERGE
     # into ONE full mesh of A,B,C,D (12 routes), reusing group 1's id.
     $rG2 = Invoke-Wizard -Config $cfgMerge -NoInstall -Answers @('1', '1', '2', $mC, $mD, 'done', '1', '', '0')
@@ -212,6 +222,137 @@ try {
     $routeNames = @($profM[0].routes | ForEach-Object { $_.source.name + '->' + $_.destination.name })
     Check 'merge: D now meshes with A (a link group 2 never named directly)' (($routeNames -contains 'MergeD->MergeA') -and ($routeNames -contains 'MergeA->MergeD'))
     Check 'merge: D now meshes with B (transitive through C)' (($routeNames -contains 'MergeD->MergeB') -and ($routeNames -contains 'MergeB->MergeD'))
+
+    # Point 4 (full contract): all 12 directed routes of the 4-project full
+    # mesh exist, EACH EXACTLY ONCE - not just "count is 12" (a duplicate-plus-
+    # missing mix could also satisfy a bare count) and not just the two sampled
+    # pairs above. A naive non-transitive union of {A,B,C} and {C,D} would top
+    # out at 8 routes (6 + 2, D only ever meeting C) and would fail this.
+    $expectedPairs = @()
+    foreach ($sourceName in @('MergeA', 'MergeB', 'MergeC', 'MergeD')) {
+        foreach ($destName in @('MergeA', 'MergeB', 'MergeC', 'MergeD')) {
+            if ($sourceName -ne $destName) { $expectedPairs += ($sourceName + '->' + $destName) }
+        }
+    }
+    $missingPairs = @($expectedPairs | Where-Object { $routeNames -notcontains $_ })
+    $dupRouteIds = @($profM[0].routes | Group-Object -Property id | Where-Object { $_.Count -gt 1 })
+    Check 'merge: all 12 directed routes of the full mesh are present' ($missingPairs.Count -eq 0) ('missing=' + ($missingPairs -join ','))
+    Check 'merge: no route id is duplicated' ($dupRouteIds.Count -eq 0) ('dup ids=' + (($dupRouteIds | ForEach-Object { $_.Name }) -join ','))
+    Check 'merge: exactly 12 routes total (no extras beyond the full mesh)' ($routeNames.Count -eq 12)
+
+    # Point 6: the route disabled before the merge stays disabled; a route
+    # that was never touched (the reverse direction) stays enabled; a brand
+    # new transitive route defaults to enabled.
+    $routeAtoB = @($profM[0].routes | Where-Object { $_.source.name -eq 'MergeA' -and $_.destination.name -eq 'MergeB' })[0]
+    Check 'merge: the route explicitly disabled before the merge (MergeA->MergeB) stays disabled' ($routeAtoB.enabled -eq $false)
+    $routeBtoA = @($profM[0].routes | Where-Object { $_.source.name -eq 'MergeB' -and $_.destination.name -eq 'MergeA' })[0]
+    Check 'merge: the reverse direction (MergeB->MergeA), never disabled, stays enabled' ($routeBtoA.enabled -eq $true)
+    $routeAtoD = @($profM[0].routes | Where-Object { $_.source.name -eq 'MergeA' -and $_.destination.name -eq 'MergeD' })[0]
+    Check 'merge: a brand new transitive route (MergeA->MergeD) defaults to enabled' ($routeAtoD.enabled -eq $true)
+
+    # Point 9: re-running the exact same merge-triggering answers again must be
+    # a pure no-op - no duplicate profile, no route churn, no re-enabling the
+    # disabled route, same retained id.
+    $rG2Again = Invoke-Wizard -Config $cfgMerge -NoInstall -Answers @('1', '1', '2', $mC, $mD, 'done', '1', '', '0')
+    Check 'merge: re-running the same merge exits 0' ($rG2Again.Exit -eq 0) $rG2Again.Err
+    $profMAgain = @((Get-Content $cfgMerge -Raw | ConvertFrom-Json).profiles)
+    Check 'merge: idempotent re-run keeps exactly one profile' ($profMAgain.Count -eq 1) ('profiles=' + $profMAgain.Count)
+    Check 'merge: idempotent re-run keeps exactly 12 routes (no duplicates, none dropped)' (@($profMAgain[0].routes).Count -eq 12)
+    Check 'merge: idempotent re-run keeps the same profile id' ($profMAgain[0].id -eq $profM[0].id)
+    $dupRouteIdsAgain = @($profMAgain[0].routes | Group-Object -Property id | Where-Object { $_.Count -gt 1 })
+    Check 'merge: idempotent re-run introduces no duplicate route ids' ($dupRouteIdsAgain.Count -eq 0)
+    $routeAtoBAgain = @($profMAgain[0].routes | Where-Object { $_.source.name -eq 'MergeA' -and $_.destination.name -eq 'MergeB' })[0]
+    Check 'merge: idempotent re-run does not silently re-enable the disabled route' ($routeAtoBAgain.enabled -eq $false)
+
+    # =====================================================================
+    Write-Host '--- transitive merge: the id of the LARGER of two simultaneously-absorbed groups wins ---' -ForegroundColor Cyan
+    # The block above only ever absorbs ONE existing profile per merge step,
+    # so it cannot distinguish "keep the larger absorbed profile's id" from
+    # "keep whichever profile happens to be the only one absorbed". This test
+    # creates TWO separate, non-overlapping groups - a 2-member group created
+    # FIRST (chronologically earlier) and a 3-member group created SECOND -
+    # then links one member of each in a single new entry. Both groups
+    # intersect the new union and are absorbed together; the merge must keep
+    # the LARGER group's id even though it is neither the first created nor
+    # the first entry in the config's profiles array.
+    $cfgTie = Join-Path $Work 'cfg-tie.json'; New-Config $cfgTie
+    $tA = New-Proj 'TieA'; $tB = New-Proj 'TieB'
+    $tX = New-Proj 'TieX'; $tY = New-Proj 'TieY'; $tZ = New-Proj 'TieZ'
+    $rTie1 = Invoke-Wizard -Config $cfgTie -NoInstall -Answers @('1', '1', '2', $tA, $tB, 'done', '1', '', '0')
+    Check 'tie-break: smaller group (TieA,TieB) created first' ($rTie1.Exit -eq 0) $rTie1.Err
+    $idSmall = ((@((Get-Content $cfgTie -Raw | ConvertFrom-Json).profiles))[0]).id
+    $rTie2 = Invoke-Wizard -Config $cfgTie -NoInstall -Answers @('1', '1', '2', $tX, $tY, $tZ, 'done', '1', '', '0')
+    Check 'tie-break: larger group (TieX,TieY,TieZ) created second' ($rTie2.Exit -eq 0) $rTie2.Err
+    $profsTieBefore = @((Get-Content $cfgTie -Raw | ConvertFrom-Json).profiles)
+    Check 'tie-break: two independent (non-overlapping) profiles exist before the link' ($profsTieBefore.Count -eq 2)
+    $idLarge = (@($profsTieBefore | Where-Object { $_.id -ne $idSmall }))[0].id
+    # Link TieB (member of the smaller group) with TieX (member of the larger
+    # group) in one new entry - both existing groups intersect this union and
+    # must be absorbed TOGETHER into a single 5-project full mesh.
+    $rTie3 = Invoke-Wizard -Config $cfgTie -NoInstall -Answers @('1', '1', '2', $tB, $tX, 'done', '1', '', '0')
+    Check 'tie-break: linking one member of each group exits 0' ($rTie3.Exit -eq 0) $rTie3.Err
+    Check 'tie-break: the summary announces absorbing BOTH existing groups' ($rTie3.Out -match 'Merges with 2 existing sync group')
+    $profsTieAfter = @((Get-Content $cfgTie -Raw | ConvertFrom-Json).profiles)
+    Check 'tie-break: exactly one profile remains after absorbing both' ($profsTieAfter.Count -eq 1) ('profiles=' + $profsTieAfter.Count)
+    Check 'tie-break: the merged mesh covers all 5 projects (20 directed routes)' (@($profsTieAfter[0].routes).Count -eq 20) ('routes=' + @($profsTieAfter[0].routes).Count)
+    Check 'tie-break: the LARGER absorbed group''s id is retained' ($profsTieAfter[0].id -eq $idLarge) ('got=' + $profsTieAfter[0].id + ' expectedLarge=' + $idLarge + ' expectedSmall(wrong)=' + $idSmall)
+    Check 'tie-break: the smaller (chronologically first) group''s id is NOT retained' ($profsTieAfter[0].id -ne $idSmall)
+
+    # =====================================================================
+    Write-Host '--- transitive merge + a REAL install: anchor keeps working, only new members installed ---' -ForegroundColor Cyan
+    # Points 7-8 of the merge contract need REAL installs (the -NoInstall
+    # blocks above only prove the config side). RmA anchors group {RmA,RmB}
+    # with a real engine install; group {RmB,RmC} then merges RmC in
+    # transitively. RmA/RmB are anchor members and must NOT be touched again -
+    # RmC (new) must be installed. Then RmA's OWN already-registered engine
+    # copy (unchanged command, same -Profile id) is fired pointed at the LIVE
+    # shared config - the file Setup-SyncGroupBuilder.ps1's own comment
+    # describes ("the engine ... reads the live config at run time") - and
+    # must resolve the newly-linked RmC as a source, something a non-
+    # transitive (naive union) merge could never produce since RmC was never
+    # named when RmA's own group was created.
+    $cfgReal = Join-Path $Work 'cfg-merge-real.json'; New-Config $cfgReal
+    $rmA = New-Proj 'RealAnchorA'; $rmB = New-Proj 'RealAnchorB'; $rmC = New-Proj 'RealAnchorC'
+    $rReal1 = Invoke-Wizard -Config $cfgReal -Answers @('1', '1', '2', $rmA, $rmB, 'done', '1', '', '0')
+    Check 'real-merge: group (RealAnchorA,RealAnchorB) created with a real install' ($rReal1.Exit -eq 0) $rReal1.Err
+    $rmASettings = Join-Path $rmA '.claude\settings.local.json'
+    Check 'real-merge: RealAnchorA got a real engine install' (Test-Path $rmASettings)
+    $rmAEngineSnapshot = Join-Path $rmA '.claude\hooks\Hook-Maker\Cross-Project-.ai-Knowledge-Sync\sync-hooks.json'
+    $rmASettingsHashBefore = (Get-FileHash -LiteralPath $rmASettings -Algorithm SHA256).Hash
+    $rmAEngineWriteBefore = (Get-Item -LiteralPath $rmAEngineSnapshot).LastWriteTimeUtc
+    $anchorProfId = ((@((Get-Content $cfgReal -Raw | ConvertFrom-Json).profiles))[0]).id
+
+    $rReal2 = Invoke-Wizard -Config $cfgReal -Answers @('1', '1', '2', $rmB, $rmC, 'done', '1', '', '0')
+    Check 'real-merge: group (RealAnchorB,RealAnchorC) merges into the existing group with a real install' ($rReal2.Exit -eq 0) $rReal2.Err
+    Check 'real-merge: the summary announces the merge' ($rReal2.Out -match 'Merges with 1 existing sync group')
+    $profsReal = @((Get-Content $cfgReal -Raw | ConvertFrom-Json).profiles)
+    Check 'real-merge: exactly one profile, full mesh of 3 (6 routes)' ($profsReal.Count -eq 1 -and @($profsReal[0].routes).Count -eq 6)
+    Check 'real-merge: the merged profile keeps the anchor''s original id' ($profsReal[0].id -eq $anchorProfId)
+
+    # Point 8: the anchor (RealAnchorA) must not be touched by the second run.
+    $rmASettingsHashAfter = (Get-FileHash -LiteralPath $rmASettings -Algorithm SHA256).Hash
+    Check 'real-merge (point 8): anchor''s settings.local.json is byte-identical (not re-registered)' ($rmASettingsHashBefore -eq $rmASettingsHashAfter)
+    $rmAEngineWriteAfter = (Get-Item -LiteralPath $rmAEngineSnapshot).LastWriteTimeUtc
+    Check 'real-merge (point 8): anchor''s local engine runtime copy was not rewritten' ($rmAEngineWriteBefore -eq $rmAEngineWriteAfter)
+    # RealAnchorC (new member, never an anchor member) must have gotten a fresh install.
+    Check 'real-merge (point 8): the new member RealAnchorC got a fresh engine install' (Test-Path (Join-Path $rmC '.claude\hooks\Hook-Maker\Cross-Project-.ai-Knowledge-Sync\Cross-Project-.ai-Knowledge-Sync.ps1'))
+
+    # Point 7: fire RealAnchorA's OWN already-installed engine SCRIPT (same
+    # file, untouched -Profile id) pointed at the LIVE shared config path and
+    # prove it resolves RealAnchorC - a member RealAnchorA's group never had
+    # until the SECOND, transitive merge widened the shared config.
+    $rmCAi = Join-Path $rmC '.ai'
+    if (-not (Test-Path $rmCAi)) { New-Item -ItemType Directory -Path $rmCAi -Force | Out-Null }
+    [System.IO.File]::WriteAllText((Join-Path $rmCAi 'memory.md'), 'regression probe content from RealAnchorC', (New-Object System.Text.UTF8Encoding $false))
+    $rmAEngineScript = Join-Path $rmA '.claude\hooks\Hook-Maker\Cross-Project-.ai-Knowledge-Sync\Cross-Project-.ai-Knowledge-Sync.ps1'
+    $inFire = Join-Path $Work 'fire-anchor.json'; $outFire = "$inFire.out"; $errFire = "$inFire.err"
+    [System.IO.File]::WriteAllText($inFire, (@{ session_id = 'wiztest-anchor'; cwd = $rmA; hook_event_name = 'SessionStart' } | ConvertTo-Json -Compress), (New-Object System.Text.UTF8Encoding $false))
+    $fireHost = (Get-Process -Id $PID).Path
+    $pFire = Start-Process $fireHost -ArgumentList ('-NoLogo -NoProfile -NonInteractive -File "' + $rmAEngineScript + '" -ConfigPath "' + $cfgReal + '" -Profile "' + $anchorProfId + '"') -RedirectStandardInput $inFire -RedirectStandardOutput $outFire -RedirectStandardError $errFire -Wait -NoNewWindow -PassThru
+    $fireOut = ''; if (Test-Path $outFire) { $fireOut = [System.IO.File]::ReadAllText($outFire) }
+    $fireErr = ''; if (Test-Path $errFire) { $fireErr = ([System.IO.File]::ReadAllText($errFire)).Trim() }
+    Check 'real-merge (point 7): anchor''s installed engine runs cleanly against the live merged config' ($pFire.ExitCode -eq 0 -and $fireErr -eq '') $fireErr
+    Check 'real-merge (point 7): anchor resolves the transitively-linked RealAnchorC through the live config (a naive non-transitive union would never link them)' ($fireOut -match 'RealAnchorC') $fireOut
 
     # =====================================================================
     Write-Host '--- back navigation returns exactly one menu level ---' -ForegroundColor Cyan
@@ -354,7 +495,7 @@ try {
         'Ci-Status-Check'       = 'Stop'
         'Dependabot-Check'      = 'SessionStart'
         'Github-Baseline-Check' = 'SessionStart'
-        'Git-Sync-Check'        = 'SessionStart,Stop'
+        'Git-Sync-Check'        = 'SessionStart,Stop,SubagentStop'
         'Cloudflare-Deploy'     = 'Stop'
         'Secrets-Check'         = 'SessionStart,Stop'
     }
