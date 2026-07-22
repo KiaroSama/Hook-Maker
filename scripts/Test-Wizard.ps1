@@ -126,7 +126,7 @@ try {
     Check 'no stderr' ($r.Err -eq '')
     Check 'main menu merged (Create or install a hook)' ($r.Out -match '1\. Create or install a hook')
     Check 'no separate top-level sync-group option' ($r.Out -notmatch '1\. Create or update a sync group\s*\r?\n\s*2\. Show')
-    Check 'select-all is list item 1' ($r.Out -match '1\. Select all hooks')
+    Check 'select-all is list item 1 (hint ends at the 3-N bound, no management-action tail)' ($r.Out -match '(?m)^  1\. Select all hooks \| \[all\] \| run the sync group \(2\) and install every hook below \(3-23\)\s*$')
     Check 'sync group is list item 2' ($r.Out -match '2\. Create or update a sync group')
     Check 'context hook menu names match their whole-.ai scope' ($r.Out -match 'Ai-Context-Check' -and $r.Out -match 'Ai-Context-Load')
     Check 'old memory-only menu names are hidden' ($r.Out -notmatch 'Ai-Memory-(Check|Load)')
