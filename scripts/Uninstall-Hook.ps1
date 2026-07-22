@@ -242,6 +242,16 @@ function Remove-EmptyManagedRoot {
     if ([string]::IsNullOrWhiteSpace($Root) -or -not (Test-Path -LiteralPath $Root -PathType Container)) { return }
     $leaf = Split-Path -Leaf $Root
     if ($leaf -ne 'Hook-Maker' -and $leaf -ne 'HookMaker') { return }
+    # A pre-private-copy install can leave a shared _hooklib.ps1 sitting
+    # directly in this root (see _uninstallownership.ps1's
+    # Get-RemovableSharedRuntimeRootFiles). Once no sibling hook directory
+    # remains, retiring it here is what lets the root become genuinely empty
+    # instead of staying orphaned forever; the function itself proves it is
+    # safe (no sibling, known filename, contained, not a reparse point), so
+    # this only ever deletes what was already proven removable.
+    foreach ($file in @(Get-RemovableSharedRuntimeRootFiles -RuntimeRoot $Root)) {
+        try { Remove-Item -LiteralPath $file -Force } catch { }
+    }
     if (@(Get-ChildItem -LiteralPath $Root -Force -ErrorAction SilentlyContinue).Count -eq 0) {
         try { Remove-Item -LiteralPath $Root -Force } catch { }
     }

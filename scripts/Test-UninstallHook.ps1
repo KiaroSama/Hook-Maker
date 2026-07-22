@@ -1295,6 +1295,127 @@ try {
         Check 'positive control: the record is fully removed' (@(Get-RecordsFor 'ZZZ-Uninst-Codexpositive').Count -eq 0)
     }
     finally { Remove-FixtureHook 'ZZZ-Uninst-Codexpositive' }
+
+    # =========================================================================
+    # Bug: a pre-private-copy install left a SHARED _hooklib.ps1 sitting
+    # directly in the Hook-Maker runtime root (one level above every hook's own
+    # directory - see _installplan.ps1's Get-ManagedInstallPlan comment for why
+    # a fresh install no longer writes it there). Uninstalling a hook only ever
+    # removed that hook's OWN directory, so once the LAST sibling hook was
+    # removed, the shared file - and the now-empty Hook-Maker folder itself -
+    # were orphaned forever. Fixed in Remove-EmptyManagedRoot (Uninstall-
+    # Hook.ps1) + Get-RemovableSharedRuntimeRootFiles (_uninstallownership.ps1).
+    Write-Host '--- shared runtime-root cleanup: an orphaned shared _hooklib.ps1 is retired only once the LAST sibling hook is gone ---' -ForegroundColor Cyan
+    $fxOrphanA = New-FixtureHook 'ZZZ-Uninst-Orphanliba'
+    $fxOrphanB = New-FixtureHook 'ZZZ-Uninst-Orphanlibb'
+    try {
+        $projOrphan = New-Proj 'OrphanLibProj'
+        & $InstallScript -CustomHook $fxOrphanA -Events @('Stop') -TargetProject $projOrphan -ClaudeOnly *> $null
+        & $InstallScript -CustomHook $fxOrphanB -Events @('Stop') -TargetProject $projOrphan -ClaudeOnly *> $null
+        $recOrphanA = Get-RecordForScope 'ZZZ-Uninst-Orphanliba' $projOrphan
+        $recOrphanB = Get-RecordForScope 'ZZZ-Uninst-Orphanlibb' $projOrphan
+        Check 'setup: both sibling hooks installed' ($null -ne $recOrphanA -and $null -ne $recOrphanB)
+
+        $orphanHookDirA = Split-Path -Parent ([string]$recOrphanA.clients.claude.runtimeScript)
+        $orphanRuntimeRoot = Split-Path -Parent $orphanHookDirA
+        Check 'setup: runtime root leaf is Hook-Maker' ((Split-Path -Leaf $orphanRuntimeRoot) -eq 'Hook-Maker')
+        Check 'setup: both sibling hooks share the same runtime root' ((Split-Path -Parent (Split-Path -Parent ([string]$recOrphanB.clients.claude.runtimeScript))) -eq $orphanRuntimeRoot)
+
+        # Simulate the pre-private-copy legacy leftover: a fresh install never
+        # writes this anymore (each hook gets its own private copy inside its
+        # own directory), so this reproduces what an OLDER Hook Maker version
+        # left behind at the shared runtime root.
+        $orphanLib = Join-Path $orphanRuntimeRoot '_hooklib.ps1'
+        Write-Utf8 $orphanLib "# legacy shared library`n"
+        Check 'setup: the legacy shared _hooklib.ps1 exists at the runtime root' (Test-Path -LiteralPath $orphanLib -PathType Leaf)
+
+        # Canary BESIDE the root (a sibling inside hooks\, never inside
+        # Hook-Maker\ itself): proves containment - the cleanup never reaches
+        # beyond the proven Hook-Maker runtime root.
+        $orphanCanary = Join-Path (Split-Path -Parent $orphanRuntimeRoot) 'CANARY.txt'
+        Write-Utf8 $orphanCanary 'do not touch'
+
+        $rOrphanA = Invoke-UninstallProcess -RecordId $recOrphanA.id
+        Check 'removing the first of two sibling hooks exits 0' ($rOrphanA.Exit -eq 0) $rOrphanA.Err
+        Check 'removing the first sibling reports overall ok' ([string]$rOrphanA.Result.overall -eq 'ok') ($rOrphanA.Result | ConvertTo-Json -Depth 5)
+        Check 'a sibling hook still remains: the shared lib REMAINS' (Test-Path -LiteralPath $orphanLib -PathType Leaf)
+        Check 'a sibling hook still remains: the Hook-Maker root REMAINS' (Test-Path -LiteralPath $orphanRuntimeRoot -PathType Container)
+        Check 'the surviving sibling''s own runtime is untouched' (Test-Path -LiteralPath ([string]$recOrphanB.clients.claude.runtimeScript) -PathType Leaf)
+        Check 'the canary beside the root survives the first removal' (Test-Path -LiteralPath $orphanCanary -PathType Leaf)
+
+        $rOrphanB = Invoke-UninstallProcess -RecordId $recOrphanB.id
+        Check 'removing the LAST sibling hook exits 0' ($rOrphanB.Exit -eq 0) $rOrphanB.Err
+        Check 'removing the last sibling reports overall ok' ([string]$rOrphanB.Result.overall -eq 'ok') ($rOrphanB.Result | ConvertTo-Json -Depth 5)
+        Check 'no sibling hook remains: the orphaned shared lib IS removed' (-not (Test-Path -LiteralPath $orphanLib))
+        Check 'no sibling hook remains: the now-empty Hook-Maker root IS removed' (-not (Test-Path -LiteralPath $orphanRuntimeRoot))
+        Check 'the canary beside the root survives the last removal too' (Test-Path -LiteralPath $orphanCanary -PathType Leaf)
+    }
+    finally { Remove-FixtureHook 'ZZZ-Uninst-Orphanliba'; Remove-FixtureHook 'ZZZ-Uninst-Orphanlibb' }
+
+    # =========================================================================
+    # Negative control: an unrelated file directly in the runtime root must
+    # NEVER be swept just because the root becomes hook-dir-empty - only a
+    # KNOWN shared filename is ever a deletion candidate - and the root itself
+    # must survive too, because with that file still present it is genuinely
+    # not empty.
+    Write-Host '--- shared runtime-root cleanup negative control: an unknown root-level file is never swept, root stays non-empty ---' -ForegroundColor Cyan
+    $fxUnknownA = New-FixtureHook 'ZZZ-Uninst-Orphanunknowna'
+    $fxUnknownB = New-FixtureHook 'ZZZ-Uninst-Orphanunknownb'
+    try {
+        $projUnknown = New-Proj 'OrphanUnknownProj'
+        & $InstallScript -CustomHook $fxUnknownA -Events @('Stop') -TargetProject $projUnknown -ClaudeOnly *> $null
+        & $InstallScript -CustomHook $fxUnknownB -Events @('Stop') -TargetProject $projUnknown -ClaudeOnly *> $null
+        $recUnknownA = Get-RecordForScope 'ZZZ-Uninst-Orphanunknowna' $projUnknown
+        $recUnknownB = Get-RecordForScope 'ZZZ-Uninst-Orphanunknownb' $projUnknown
+        $unknownRuntimeRoot = Split-Path -Parent (Split-Path -Parent ([string]$recUnknownA.clients.claude.runtimeScript))
+
+        $unknownLib = Join-Path $unknownRuntimeRoot '_hooklib.ps1'
+        Write-Utf8 $unknownLib "# legacy shared library`n"
+        $unknownRootFile = Join-Path $unknownRuntimeRoot 'NotAKnownSharedFile.txt'
+        Write-Utf8 $unknownRootFile 'unrelated content'
+
+        [void](Invoke-UninstallProcess -RecordId $recUnknownA.id)
+        $rUnknownB = Invoke-UninstallProcess -RecordId $recUnknownB.id
+        Check 'removing the last sibling (with an unknown root file present) exits 0' ($rUnknownB.Exit -eq 0) $rUnknownB.Err
+        Check 'negative control: the KNOWN shared lib is still removed' (-not (Test-Path -LiteralPath $unknownLib))
+        Check 'negative control: the UNKNOWN root file is never swept' (Test-Path -LiteralPath $unknownRootFile -PathType Leaf)
+        Check 'negative control: the root survives because it is genuinely not empty' (Test-Path -LiteralPath $unknownRuntimeRoot -PathType Container)
+    }
+    finally { Remove-FixtureHook 'ZZZ-Uninst-Orphanunknowna'; Remove-FixtureHook 'ZZZ-Uninst-Orphanunknownb' }
+
+    # =========================================================================
+    Write-Host '--- shared runtime-root cleanup also applies to a GLOBAL-scope runtime root ---' -ForegroundColor Cyan
+    $fxOrphanGlobalA = New-FixtureHook 'ZZZ-Uninst-Orphanglobala'
+    $fxOrphanGlobalB = New-FixtureHook 'ZZZ-Uninst-Orphanglobalb'
+    try {
+        $fakeHomeOrphan = Join-Path $Work 'fakehome-orphanlib'
+        New-Item -ItemType Directory -Path $fakeHomeOrphan -Force | Out-Null
+        $rInstA = Invoke-InstallProcess -ScriptArgs @('-CustomHook', $fxOrphanGlobalA, '-Events', 'Stop', '-ClaudeOnly') -FakeHome $fakeHomeOrphan
+        Check 'setup: global sibling A installs' ($rInstA.Exit -eq 0) $rInstA.Err
+        $rInstB = Invoke-InstallProcess -ScriptArgs @('-CustomHook', $fxOrphanGlobalB, '-Events', 'Stop', '-ClaudeOnly') -FakeHome $fakeHomeOrphan
+        Check 'setup: global sibling B installs' ($rInstB.Exit -eq 0) $rInstB.Err
+
+        $recGlobalA = @(Get-RecordsFor 'ZZZ-Uninst-Orphanglobala' | Where-Object { $_.scope -eq 'global' })[0]
+        $recGlobalB = @(Get-RecordsFor 'ZZZ-Uninst-Orphanglobalb' | Where-Object { $_.scope -eq 'global' })[0]
+        Check 'setup: both global-scope records exist' ($null -ne $recGlobalA -and $null -ne $recGlobalB)
+
+        $globalRuntimeRoot = Split-Path -Parent (Split-Path -Parent ([string]$recGlobalA.clients.claude.runtimeScript))
+        Check 'setup: global runtime root leaf is Hook-Maker' ((Split-Path -Leaf $globalRuntimeRoot) -eq 'Hook-Maker')
+
+        $globalOrphanLib = Join-Path $globalRuntimeRoot '_hooklib.ps1'
+        Write-Utf8 $globalOrphanLib "# legacy shared library`n"
+
+        $rGlobalA = Invoke-UninstallProcess -RecordId $recGlobalA.id -FakeHome $fakeHomeOrphan
+        Check 'removing the first global sibling exits 0' ($rGlobalA.Exit -eq 0) $rGlobalA.Err
+        Check 'global: a sibling remains -> the shared lib REMAINS' (Test-Path -LiteralPath $globalOrphanLib -PathType Leaf)
+        Check 'global: a sibling remains -> the Hook-Maker root REMAINS' (Test-Path -LiteralPath $globalRuntimeRoot -PathType Container)
+
+        $rGlobalB = Invoke-UninstallProcess -RecordId $recGlobalB.id -FakeHome $fakeHomeOrphan
+        Check 'removing the LAST global sibling exits 0' ($rGlobalB.Exit -eq 0) $rGlobalB.Err
+        Check 'global: no sibling remains -> the orphaned shared lib IS removed' (-not (Test-Path -LiteralPath $globalOrphanLib))
+        Check 'global: no sibling remains -> the now-empty Hook-Maker root IS removed' (-not (Test-Path -LiteralPath $globalRuntimeRoot))
+    }
+    finally { Remove-FixtureHook 'ZZZ-Uninst-Orphanglobala'; Remove-FixtureHook 'ZZZ-Uninst-Orphanglobalb' }
 }
 finally {
     $env:HOOKMAKER_STATE_DIR = $SavedHookMakerStateDir

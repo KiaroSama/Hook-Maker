@@ -1,33 +1,82 @@
-# GitSyncCheck - tells the agent when the current project is out of sync with
-# its git remote (GitHub etc.): uncommitted changes, unpushed/unpulled commits,
-# or a branch without an upstream. Silent for in-sync and non-git projects.
+# GitSyncCheck - tells the agent when the current project (and, at task-end,
+# any task-scoped branch/worktree it created or changed) is out of sync with
+# its git remote / intended destination branch. Silent for in-sync and
+# non-git projects.
 #
 # Events:
-# - SessionStart / UserPromptSubmit: injects the status as additional context
-#   (non-blocking) so any pre-existing sync state is considered before making
-#   further changes. Never modifies the repository at session start.
+# - SessionStart: injects the current-repo status as additional context (as
+#   before, non-blocking) AND silently captures a local, SANITIZED baseline
+#   snapshot of this repo's worktrees and local branches (paths/names + HEAD
+#   shas only - never file contents or secret values). One baseline per repo
+#   per session (keyed by session_id, stored once): a resumed session keeps
+#   its original "before this task" baseline; a new session overwrites it.
+#   Never modifies the repository at session start.
+# - UserPromptSubmit: unchanged non-blocking repo-context behavior.
 # - Stop / SubagentStop: this is a DETECTION AND INSTRUCTION boundary, not an
-#   executor - the hook itself never runs `git add`/`commit`/`pull`/`push`. It
-#   instead gives the agent a MANDATORY, operational instruction: reconcile the
-#   repository now (stage only this task's verified changes, commit with a
-#   neutral message, and push) rather than waiting for a separate user request,
-#   unless doing so is unsafe (failing tests, incomplete work, unrelated
-#   pre-existing changes, secrets/protected files, a merge/rebase/conflict
-#   state, a required history rewrite, forbidding project rules, or an
-#   authentication/permission/branch-protection block) - in which case the
+#   executor - the hook itself never runs `git add`/`commit`/`pull`/`push`/
+#   `merge`/`rebase`/`branch -d`/`worktree remove`. It instead gives the agent
+#   a MANDATORY, operational instruction: reconcile the repository (and any
+#   task-scoped branch/worktree) now rather than waiting for a separate user
+#   request, unless doing so is unsafe (failing tests, incomplete work,
+#   unrelated pre-existing changes, secrets/protected files, a merge/rebase/
+#   conflict state, a required history rewrite, forbidding project rules, or
+#   an authentication/permission/branch-protection block) - in which case the
 #   agent preserves the work and reports the exact reason instead of claiming
-#   synchronization succeeded.
+#   synchronization succeeded. SubagentStop inspects the same task-scoped
+#   state (a subagent's produced work is exactly what changed since the
+#   baseline); Stop is the final task-scoped reconciliation gate.
 #
-# Cooldown/repeat behavior: a real git inspection runs on EVERY Stop (never a
-# blind time-only early exit before inspection). The block is gated by a
-# FINGERPRINT of the actionable state (repo, branch, HEAD, upstream, ahead/
-# behind counts, and status paths+codes - never file contents/secret values)
-# combined with the hook's `session_id`: a given fingerprint is instructed
-# (blocked) at most ONCE per session - a changed fingerprint (state got worse,
-# different files, a new commit) or a NEW session is evaluated and instructed
-# again immediately; an already-instructed, unchanged fingerprint within the
-# same session stays silent so it can never loop. `stop_hook_active` remains
-# the immediate-recursion guard.
+# Task-scoped branches/worktrees (Stop/SubagentStop only, needs a same-session
+# baseline - silently skipped when none exists, e.g. SessionStart was never
+# configured): the CURRENT `git worktree list --porcelain` + local branches
+# (`git for-each-ref refs/heads`) are compared against the baseline.
+#   - A worktree/branch that is BYTE-IDENTICAL to baseline (same path/name AND
+#     same HEAD) existed UNCHANGED before this task -> advisory context only,
+#     never a completion blocker.
+#   - A worktree/branch that is NEW or has ADVANCED since baseline is
+#     task-scoped and BLOCKS completion when:
+#       - its worktree has uncommitted/staged/untracked changes, or
+#       - its tip commit is neither reachable from the intended destination
+#         branch (the branch this repo was on at SessionStart, i.e. an
+#         ancestry check via `git merge-base --is-ancestor`) NOR fully pushed
+#         to a configured upstream (ahead=0) - i.e. local-only work at risk of
+#         being lost. A branch that IS pushed to its own upstream but not yet
+#         merged into the destination is NOT itself a blocker on that account
+#         alone - this hook never infers that every remote branch must be
+#         merged. (Known limitation: a squash-merged branch whose original
+#         commits were never pushed can still show as unreconciled, since
+#         ancestry can't see through a squash; report/handle manually.)
+#   Locked/prunable worktrees are always reported (real, useful operational
+#   metadata) but are never a blocker by themselves.
+#   Bounded: at most 50 worktrees / 300 branches / 5 seconds are inspected per
+#   run; a capped or unreadable scan is reported as an advisory note, never
+#   silently treated as all-clear.
+#
+# OUTPUT: a real block (task-scoped reconciliation is required) -> a plain
+# `{ decision: 'block', reason }` for BOTH clients - on Codex this forces
+# continuation, which is exactly the intended effect of a genuine completion
+# gate. A non-blocking Stop/SubagentStop advisory (e.g. only a locked/
+# prunable worktree, or a capped scan, with nothing to actually block on) is
+# CLIENT-AWARE and never `decision:block`: Claude Code gets
+# `hookSpecificOutput.additionalContext`, Codex gets `systemMessage` (client
+# detected via `$env:CLAUDE_PROJECT_DIR`, exported by Claude Code on every
+# hook process, not by Codex - same signal Ci-Status-Check/Rules-Check/
+# Secrets-Check/Test-Completion-Check use). Pre-task (SessionStart/
+# UserPromptSubmit) output stays `additionalContext` on BOTH clients, as for
+# every other pre-task hook in this repo.
+#
+# Cooldown/repeat behavior: a real git inspection runs on EVERY Stop/
+# SubagentStop (never a blind time-only early exit before inspection). The
+# output (block OR advisory) is gated by a FINGERPRINT of the actionable
+# state (repo, branch, HEAD, upstream, ahead/behind counts, status paths+
+# codes, and the task-scoped worktree/branch findings - never file contents/
+# secret values) combined with the hook's `session_id`: a given fingerprint
+# is reported at most ONCE per session - a changed fingerprint (state got
+# worse, different files, a new commit, a new/changed task-scoped branch or
+# worktree) or a NEW session is evaluated and reported again immediately; an
+# already-reported, unchanged fingerprint within the same session stays
+# silent so it can never loop. `stop_hook_active` remains the immediate-
+# recursion guard.
 #
 # Optional .env next to this script (copy .env.example):
 #   (no cooldown-minutes setting - see fingerprint/session gating above)
@@ -59,12 +108,100 @@ if ($isStopEvent -and (Get-Field $hookInput 'stop_hook_active') -eq $true) {
 
 $sessionId = [string](Get-Field $hookInput 'session_id')
 
+# Bounds for the task-scoped worktree/branch scan (never blindly unbounded).
+$MaxWorktreesToInspect = 50
+$MaxBranchesToInspect = 300
+$MaxScanSeconds = 5
+
 # ---- git inspection (always runs - no time-only early exit before this) ----
 function Invoke-Git {
-    param([Parameter(Mandatory = $true)][string[]]$GitArgs)
+    param([Parameter(Mandatory = $true)][string[]]$GitArgs, [string]$RepoPath = $cwd)
 
-    $output = Invoke-QuietCommand -FilePath git -ArgumentList (@('-C', $cwd) + $GitArgs)
-    return [pscustomobject]@{ Ok = ($LASTEXITCODE -eq 0); Output = @($output) }
+    $output = Invoke-QuietCommand -FilePath git -ArgumentList (@('-C', $RepoPath) + $GitArgs)
+    return [pscustomobject]@{ Ok = ($LASTEXITCODE -eq 0); ExitCode = $LASTEXITCODE; Output = @($output) }
+}
+
+# Repo-wide identity used to key baseline/gate state so it is shared correctly
+# across every worktree of the SAME repository (worktrees share one common
+# git dir; `-C <any-worktree> rev-parse --git-common-dir` resolves to it).
+# Falls back to the given path itself on any failure (still stable, just
+# scoped to that one directory instead of the whole repo).
+function Get-RepoCommonDir {
+    param([Parameter(Mandatory = $true)][string]$RepoPath)
+    $result = Invoke-Git @('rev-parse', '--git-common-dir') -RepoPath $RepoPath
+    if (-not $result.Ok -or $result.Output.Count -eq 0 -or [string]::IsNullOrWhiteSpace([string]$result.Output[0])) {
+        return $RepoPath
+    }
+    $raw = [string]$result.Output[0]
+    try {
+        $combined = if ([System.IO.Path]::IsPathRooted($raw)) { $raw } else { Join-Path $RepoPath $raw }
+        return Normalize-Path $combined
+    }
+    catch {
+        return $RepoPath
+    }
+}
+
+# Parses `git worktree list --porcelain` (records separated by a blank line;
+# each line is "key" or "key value") into Path/Head/Branch/Detached/Bare/
+# Locked+LockReason/Prunable+PrunableReason objects.
+function Get-WorktreeList {
+    param([Parameter(Mandatory = $true)][string]$RepoPath)
+    $raw = Invoke-Git @('worktree', 'list', '--porcelain') -RepoPath $RepoPath
+    $items = New-Object System.Collections.Generic.List[object]
+    if (-not $raw.Ok) {
+        return @($items.ToArray())
+    }
+    $current = $null
+    foreach ($line in @($raw.Output)) {
+        $text = [string]$line
+        if ($text -eq '') {
+            if ($null -ne $current) { [void]$items.Add([pscustomobject]$current) }
+            $current = $null
+            continue
+        }
+        if ($null -eq $current) {
+            $current = [ordered]@{
+                Path = ''; Head = ''; Branch = ''; Detached = $false; Bare = $false
+                Locked = $false; LockReason = ''; Prunable = $false; PrunableReason = ''
+            }
+        }
+        $sp = $text.IndexOf(' ')
+        $key = if ($sp -ge 0) { $text.Substring(0, $sp) } else { $text }
+        $val = if ($sp -ge 0) { $text.Substring($sp + 1) } else { '' }
+        switch ($key) {
+            'worktree' { $current.Path = $val }
+            'HEAD' { $current.Head = $val }
+            'branch' { $current.Branch = ($val -replace '^refs/heads/', '') }
+            'detached' { $current.Detached = $true }
+            'bare' { $current.Bare = $true }
+            'locked' { $current.Locked = $true; $current.LockReason = $val }
+            'prunable' { $current.Prunable = $true; $current.PrunableReason = $val }
+        }
+    }
+    if ($null -ne $current) { [void]$items.Add([pscustomobject]$current) }
+    return @($items.ToArray())
+}
+
+# Local branches with their upstream tracking state, via one bounded plumbing
+# call (tab-separated, never a per-branch subprocess).
+function Get-LocalBranchList {
+    param([Parameter(Mandatory = $true)][string]$RepoPath)
+    $result = Invoke-Git @('for-each-ref', 'refs/heads', '--format=%(refname:short)%09%(objectname)%09%(upstream:short)%09%(upstream:track)') -RepoPath $RepoPath
+    $items = New-Object System.Collections.Generic.List[object]
+    if (-not $result.Ok) {
+        return @($items.ToArray())
+    }
+    foreach ($line in @($result.Output)) {
+        $text = [string]$line
+        if ([string]::IsNullOrWhiteSpace($text)) { continue }
+        $parts = $text -split "`t"
+        if ($parts.Count -lt 2) { continue }
+        $upstream = if ($parts.Count -ge 3) { $parts[2] } else { '' }
+        $track = if ($parts.Count -ge 4) { $parts[3] } else { '' }
+        [void]$items.Add([pscustomobject]@{ Name = $parts[0]; Head = $parts[1]; Upstream = $upstream; IsAheadOfUpstream = ($track -match 'ahead') })
+    }
+    return @($items.ToArray())
 }
 
 if ($null -eq (Get-Command git -ErrorAction SilentlyContinue)) {
@@ -77,6 +214,34 @@ if (-not $inRepo.Ok -or [string]$inRepo.Output[0] -ne 'true') {
 $remotes = Invoke-Git @('remote')
 if (-not $remotes.Ok -or @($remotes.Output | Where-Object { $_ }).Count -eq 0) {
     exit 0
+}
+
+$stateDir = Join-Path $env:LOCALAPPDATA 'HookMaker\state'
+$repoCommonDir = Get-RepoCommonDir $cwd
+$baselinePath = Join-Path $stateDir ('GitSyncCheck-baseline-' + (Get-ShortHash $repoCommonDir.ToLowerInvariant()) + '.json')
+
+# ---- SessionStart: capture (once per session) a local sanitized baseline ----
+if ($eventName -eq 'SessionStart') {
+    $existingBaseline = $null
+    try { $existingBaseline = Read-JsonFile $baselinePath } catch { $existingBaseline = $null }
+    $haveCurrentSessionBaseline = ($null -ne $existingBaseline) -and ([string](Get-Field $existingBaseline 'sessionId') -eq $sessionId)
+    if (-not $haveCurrentSessionBaseline) {
+        $primaryBranchResult = Invoke-Git @('rev-parse', '--abbrev-ref', 'HEAD')
+        $primaryBranch = ''
+        if ($primaryBranchResult.Ok -and $primaryBranchResult.Output.Count -gt 0 -and [string]$primaryBranchResult.Output[0] -ne 'HEAD') {
+            $primaryBranch = [string]$primaryBranchResult.Output[0]
+        }
+        $baselineWorktrees = @(Get-WorktreeList $cwd | Select-Object -First $MaxWorktreesToInspect | ForEach-Object { [pscustomobject]@{ path = $_.Path; head = $_.Head } })
+        $baselineBranches = @(Get-LocalBranchList $cwd | Select-Object -First $MaxBranchesToInspect | ForEach-Object { [pscustomobject]@{ name = $_.Name; head = $_.Head } })
+        $baseline = [pscustomobject]@{
+            sessionId     = $sessionId
+            primaryBranch = $primaryBranch
+            worktrees     = $baselineWorktrees
+            branches      = $baselineBranches
+            capturedUtc   = [DateTime]::UtcNow.ToString('o')
+        }
+        try { Write-JsonFileAtomic -Value $baseline -Path $baselinePath } catch { }
+    }
 }
 
 $findings = New-Object System.Collections.Generic.List[string]
@@ -132,28 +297,138 @@ elseif ($branchName -ne '' -and $branchName -ne 'HEAD') {
     [void]$findings.Add('Branch ' + $branchName + ' has no upstream branch configured (never pushed?).')
 }
 
-if ($findings.Count -eq 0) {
-    exit 0
-}
-
-$message = 'GIT SYNC STATUS (' + $cwd + "):`n- " + ($findings.ToArray() -join "`n- ")
-
 if (-not $isStopEvent) {
+    if ($findings.Count -eq 0) {
+        exit 0
+    }
+    $message = 'GIT SYNC STATUS (' + $cwd + "):`n- " + ($findings.ToArray() -join "`n- ")
     $message += "`nConsider this pre-existing sync state before making further changes; this check does not modify the repository."
     @{ hookSpecificOutput = @{ hookEventName = $eventName; additionalContext = $message } } |
         ConvertTo-Json -Depth 5 -Compress
     exit 0
 }
 
+# ---- Stop / SubagentStop: task-scoped worktree/branch inspection ----
+# Needs a same-session baseline; silently skipped (no findings, no crash) when
+# none exists - e.g. SessionStart was never configured for this project.
+$blockingExtra = New-Object System.Collections.Generic.List[string]
+$advisoryExtra = New-Object System.Collections.Generic.List[string]
+$destinationBranch = ''
+
+$baseline = $null
+try { $baseline = Read-JsonFile $baselinePath } catch { $baseline = $null }
+$haveBaseline = ($null -ne $baseline) -and ([string](Get-Field $baseline 'sessionId') -eq $sessionId)
+
+if ($haveBaseline) {
+    $destinationBranch = [string](Get-Field $baseline 'primaryBranch')
+
+    $baselineWorktreeHeads = @{}
+    foreach ($w in @(Get-Field $baseline 'worktrees')) {
+        $p = [string](Get-Field $w 'path')
+        if ($p -ne '') { $baselineWorktreeHeads[(Normalize-Path $p)] = [string](Get-Field $w 'head') }
+    }
+    $baselineBranchHeads = @{}
+    foreach ($b in @(Get-Field $baseline 'branches')) {
+        $n = [string](Get-Field $b 'name')
+        if ($n -ne '') { $baselineBranchHeads[$n] = [string](Get-Field $b 'head') }
+    }
+
+    $scanTimer = [System.Diagnostics.Stopwatch]::StartNew()
+    $scanIncomplete = $false
+    $normCwd = Normalize-Path $cwd
+
+    # -- worktrees: dirty/staged/untracked state + locked/prunable metadata --
+    $inspectedWorktrees = 0
+    foreach ($wt in (Get-WorktreeList $cwd)) {
+        if ($wt.Path -eq '') { continue }
+        $normPath = Normalize-Path $wt.Path
+        if ($normPath -eq $normCwd) { continue }   # cwd's own state is already covered above
+
+        if ($wt.Locked) {
+            $reasonSuffix = if ($wt.LockReason -ne '') { ' (' + $wt.LockReason + ')' } else { '' }
+            [void]$advisoryExtra.Add('Worktree at ' + $wt.Path + ' is locked' + $reasonSuffix + '.')
+        }
+        if ($wt.Prunable) {
+            $reasonSuffix = if ($wt.PrunableReason -ne '') { ' (' + $wt.PrunableReason + ')' } else { '' }
+            [void]$advisoryExtra.Add('Worktree at ' + $wt.Path + ' is prunable' + $reasonSuffix + '.')
+        }
+
+        if ($inspectedWorktrees -ge $MaxWorktreesToInspect -or $scanTimer.Elapsed.TotalSeconds -ge $MaxScanSeconds) {
+            $scanIncomplete = $true
+            continue
+        }
+        $isNew = -not $baselineWorktreeHeads.ContainsKey($normPath)
+        $isChanged = (-not $isNew) -and ($baselineWorktreeHeads[$normPath] -ne $wt.Head)
+        if (-not ($isNew -or $isChanged)) { continue }   # pre-existing + unchanged -> advisory context only
+        if (-not (Test-Path -LiteralPath $wt.Path -PathType Container)) { continue }   # gone from disk; prunable note above already covers it
+
+        $inspectedWorktrees++
+        $wtStatus = Invoke-Git @('status', '--porcelain') -RepoPath $wt.Path
+        if ($wtStatus.Ok) {
+            $dirtyCount = @($wtStatus.Output | Where-Object { $_ }).Count
+            if ($dirtyCount -gt 0) {
+                $label = if ($isNew) { 'created' } else { 'changed' }
+                $branchLabel = if ($wt.Detached) { 'detached' } else { $wt.Branch }
+                [void]$blockingExtra.Add('Task-' + $label + ' worktree at ' + $wt.Path + ' (branch: ' + $branchLabel + ') has ' + $dirtyCount + ' uncommitted change(s).')
+            }
+        }
+    }
+
+    # -- branches: reachability from destination + upstream push state --
+    $destinationTip = ''
+    if ($destinationBranch -ne '') {
+        # Parentheses required (see the identical rev-list note above): the
+        # array comma binds tighter than +, so an unparenthesized concat would
+        # split into two separate git arguments (git then reports a plain
+        # "refs/heads/" is unresolvable instead of resolving the real ref).
+        $destResult = Invoke-Git @('rev-parse', ('refs/heads/' + $destinationBranch))
+        if ($destResult.Ok -and $destResult.Output.Count -gt 0) { $destinationTip = [string]$destResult.Output[0] }
+    }
+    $inspectedBranches = 0
+    foreach ($b in (Get-LocalBranchList $cwd)) {
+        if ($inspectedBranches -ge $MaxBranchesToInspect -or $scanTimer.Elapsed.TotalSeconds -ge $MaxScanSeconds) {
+            $scanIncomplete = $true
+            break
+        }
+        $inspectedBranches++
+        $isNew = -not $baselineBranchHeads.ContainsKey($b.Name)
+        $isChanged = (-not $isNew) -and ($baselineBranchHeads[$b.Name] -ne $b.Head)
+        if (-not ($isNew -or $isChanged)) { continue }   # pre-existing + unchanged -> advisory context only
+        if ($destinationTip -eq '') { continue }          # destination unknown -> never block on unproven state
+
+        $pushedClean = ($b.Upstream -ne '') -and (-not $b.IsAheadOfUpstream)
+        if ($pushedClean) { continue }   # "Do NOT infer every remote branch must be merged": pushed is enough on its own
+
+        $mb = Invoke-Git @('merge-base', '--is-ancestor', $b.Head, $destinationTip)
+        if ($mb.Ok) { continue }          # reachable from destination -> reconciled
+        if ($mb.ExitCode -ne 1) { continue }   # unknown/error (e.g. unrelated history) -> never block on unproven state
+
+        $label = if ($isNew) { 'created' } else { 'advanced' }
+        [void]$blockingExtra.Add('Task-' + $label + ' branch ' + $b.Name + ' has commits not reconciled into ' + $destinationBranch + ' and is not fully pushed to an upstream (local-only work at risk of being lost).')
+    }
+
+    if ($scanIncomplete) {
+        [void]$advisoryExtra.Add('The worktree/branch scan was capped by its limits or time bound; some entries may not have been inspected.')
+    }
+}
+
+$blockingFindings = @($findings.ToArray()) + @($blockingExtra.ToArray())
+$advisoryFindings = @($advisoryExtra.ToArray())
+
+if ($blockingFindings.Count -eq 0 -and $advisoryFindings.Count -eq 0) {
+    exit 0
+}
+
 # ---- Stop: fingerprint + session gate (never a blind time-only exit) ----
 # Non-secret, deterministic identity of the actionable state: repo path,
-# branch, exact HEAD, upstream, ahead/behind counts, and the sorted status
-# lines (paths + XY codes only - never file contents or secret values).
+# branch, exact HEAD, upstream, ahead/behind counts, the sorted status lines
+# (paths + XY codes only), and the task-scoped worktree/branch findings -
+# never file contents or secret values.
 $fingerprintSource = ($cwd.ToLowerInvariant() + '|' + $branchName + '|' + $headSha + '|' + $upstreamName + '|' +
-    $ahead + '|' + $behind + '|' + ($statusLines -join "`n"))
+    $ahead + '|' + $behind + '|' + ($statusLines -join "`n") + '|' +
+    ($blockingExtra.ToArray() -join "`n") + '|' + ($advisoryExtra.ToArray() -join "`n"))
 $fingerprint = Get-ShortHash $fingerprintSource
 
-$stateDir = Join-Path $env:LOCALAPPDATA 'HookMaker\state'
 $statePath = Join-Path $stateDir ('GitSyncCheck-' + (Get-ShortHash $cwd.ToLowerInvariant()) + '.txt')
 $alreadyInstructed = $false
 if (Test-Path -LiteralPath $statePath -PathType Leaf) {
@@ -167,16 +442,45 @@ if (Test-Path -LiteralPath $statePath -PathType Leaf) {
 }
 
 if ($alreadyInstructed) {
-    # Same actionable state, same session: already instructed once - do not
-    # loop. A changed fingerprint (state got worse/better) or a new session
-    # is evaluated and instructed again immediately (see the check above).
+    # Same actionable state, same session: already reported once - do not
+    # loop. A changed fingerprint (state got worse/better, or a task-scoped
+    # branch/worktree changed) or a new session is evaluated and reported
+    # again immediately (see the check above).
     exit 0
 }
 
 New-Item -ItemType Directory -Path $stateDir -Force | Out-Null
 [System.IO.File]::WriteAllLines($statePath, @($fingerprint, $sessionId, [DateTime]::UtcNow.ToString('o')))
 
+$messageParts = New-Object System.Collections.Generic.List[string]
+if ($blockingFindings.Count -gt 0) {
+    [void]$messageParts.Add('- ' + ($blockingFindings -join "`n- "))
+}
+if ($advisoryFindings.Count -gt 0) {
+    [void]$messageParts.Add("Advisory (non-blocking):`n- " + ($advisoryFindings -join "`n- "))
+}
+$message = 'GIT SYNC STATUS (' + $cwd + "):`n" + ($messageParts.ToArray() -join "`n")
+
+if ($blockingFindings.Count -eq 0) {
+    # Advisory-only Stop/SubagentStop output (e.g. only a locked/prunable
+    # worktree, or a capped scan) - CLIENT-AWARE, never `decision:block` (see
+    # the header OUTPUT note): Codex would otherwise be forced into a
+    # pointless new prompt for something that was never a real gate.
+    if (-not [string]::IsNullOrWhiteSpace($env:CLAUDE_PROJECT_DIR)) {
+        $payload = @{ hookSpecificOutput = @{ hookEventName = $eventName; additionalContext = $message } }
+    }
+    else {
+        $payload = @{ systemMessage = $message }
+    }
+    $payload | ConvertTo-Json -Depth 5 -Compress
+    exit 0
+}
+
 $operationalInstruction = "`n`nBefore finishing, inspect and reconcile this repository state instead of waiting for another user request. If the current task's verified changes are ready and normal repository authorization permits: stage only those changes, commit with a neutral message, and push the current branch now. If the branch is clean and only behind with a safe fast-forward available, a fast-forward-only pull (git pull --ff-only) is acceptable after inspection; if it is dirty and behind or diverged, inspect first and do not blindly pull or merge. If there is no upstream, only create/set one when the branch is meant to be published and authorization permits. Never commit unrelated, unverified, secret, or protected files, and never force-push or rewrite history without explicit authorization. If synchronization is unsafe or impossible (failing tests, incomplete work, unrelated pre-existing changes, a merge/rebase/conflict state, or a permission/authentication/branch-protection block), preserve the work and report the exact reason instead of claiming the task is fully synchronized."
+if ($blockingExtra.Count -gt 0) {
+    $destinationWording = if ($destinationBranch -ne '') { $destinationBranch } else { 'the intended destination branch' }
+    $operationalInstruction += "`n`nAlso reconcile every task-created or task-changed branch and worktree reported above before finishing: merge or otherwise incorporate each into " + $destinationWording + " when that is its purpose, push any that are meant to be shared (a branch that is pushed but not yet merged into the destination is acceptable on its own and is not itself a blocker), and remove a worktree with 'git worktree remove' only once its purpose is complete - never one that still holds unreconciled or uncommitted work. Never force-push or rewrite history without explicit authorization. If reconciling a branch or worktree is unsafe or impossible, preserve it and report the exact reason instead of claiming it is resolved."
+}
 $reason = $message + $operationalInstruction
 @{ decision = 'block'; reason = $reason } | ConvertTo-Json -Compress
 exit 0

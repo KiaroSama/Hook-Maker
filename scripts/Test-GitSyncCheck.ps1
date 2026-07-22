@@ -46,7 +46,7 @@ function New-PushedRepo {
 }
 
 function Fire {
-    param([string]$Cwd, [string]$EventName = 'Stop', [string]$SessionId = 't', [switch]$StopHookActive, [string]$Exe = '')
+    param([string]$Cwd, [string]$EventName = 'Stop', [string]$SessionId = 't', [switch]$StopHookActive, [string]$Exe = '', [switch]$Codex)
     $obj = @{ session_id = $SessionId; cwd = $Cwd; hook_event_name = $EventName }
     if ($StopHookActive) { $obj['stop_hook_active'] = $true }
     $payload = $obj | ConvertTo-Json
@@ -63,10 +63,17 @@ function Fire {
         Wait = $true; NoNewWindow = $true; PassThru = $true
     }
     if ((Get-Command Start-Process).Parameters.ContainsKey('Environment')) {
-        $startArgs.Environment = @{ PATH = $env:PATH; LOCALAPPDATA = $FakeLocalAppData }
+        # -Environment MERGES with the inherited environment, so an ambient
+        # CLAUDE_PROJECT_DIR from this very runner would otherwise leak into a
+        # "Codex" case - clear it explicitly rather than omitting the key
+        # (mirrors Test-TestCompletionCheck.ps1's Fire helper).
+        $childEnv = @{ PATH = $env:PATH; LOCALAPPDATA = $FakeLocalAppData }
+        $childEnv['CLAUDE_PROJECT_DIR'] = if ($Codex) { '' } else { $Cwd }
+        $startArgs.Environment = $childEnv
     }
     else {
         $env:LOCALAPPDATA = $FakeLocalAppData
+        $env:CLAUDE_PROJECT_DIR = if ($Codex) { '' } else { $Cwd }
     }
     $proc = Start-Process @startArgs
     $out = if (Test-Path -LiteralPath $outFile) { ([System.IO.File]::ReadAllText($outFile)).Trim() } else { '' }
@@ -207,11 +214,143 @@ try {
     $r = Fire -Cwd $ps5 -Exe 'powershell.exe'
     Check 'Windows PowerShell 5.1: dirty repo blocks with the mandatory instruction' ($r.Exit -eq 0 -and $r.Out -match '"decision":"block"' -and $r.Out -match 'instead of waiting for another user request') $r.Err
 
+    Write-Host '--- Windows PowerShell 5.1: HM-08 task-scoped worktree path ---' -ForegroundColor Cyan
+    $ps5wt = New-PushedRepo 'ps5-wt'
+    $rBase = Fire -Cwd $ps5wt -EventName 'SessionStart' -SessionId 'ps5wt-sess' -Exe 'powershell.exe'
+    Check 'Windows PowerShell 5.1: SessionStart baseline capture runs cleanly (silent, no error)' ($rBase.Exit -eq 0 -and $rBase.Out -eq '' -and $rBase.Err -eq '') $rBase.Err
+    $ps5wtExtra = Join-Path $ReposRoot 'ps5-wt-extra'
+    & git -C $ps5wt worktree add -q $ps5wtExtra -b ps5-wt-extra 2>$null
+    [System.IO.File]::WriteAllText((Join-Path $ps5wtExtra 'new.txt'), 'uncommitted', (New-Object System.Text.UTF8Encoding $false))
+    $rWt = Fire -Cwd $ps5wt -EventName 'SubagentStop' -SessionId 'ps5wt-sess' -Exe 'powershell.exe'
+    Check 'Windows PowerShell 5.1: a new task-scoped worktree with uncommitted changes blocks at SubagentStop' ($rWt.Exit -eq 0 -and $rWt.Out -match '"decision":"block"' -and $rWt.Out -match 'ps5-wt-extra') $rWt.Err
+
     # =====================================================================
-    Write-Host '--- generated Git-sync template includes Stop registration ---' -ForegroundColor Cyan
+    Write-Host '--- generated Git-sync template includes SessionStart+Stop+SubagentStop registration ---' -ForegroundColor Cyan
     $templatePath = Join-Path (Split-Path -Parent $Hook) '.env.example'
     $templateText = [System.IO.File]::ReadAllText($templatePath)
-    Check 'the shipped .env.example registers both SessionStart and Stop' ($templateText -match 'EVENTS=SessionStart,Stop')
+    Check 'the shipped .env.example registers SessionStart, Stop and SubagentStop' ($templateText -match 'EVENTS=SessionStart,Stop,SubagentStop')
+
+    # =====================================================================
+    # HM-08: task-scoped branches/worktrees, without becoming a destructive
+    # Git executor. Each scenario below fires a real SessionStart first (to
+    # capture the baseline) before creating/changing any worktree or branch,
+    # so "task-scoped" classification is exercised for real, not assumed.
+    # =====================================================================
+
+    Write-Host '--- HM-08: pre-existing unrelated worktree stays advisory (never blocks) ---' -ForegroundColor Cyan
+    $wtPre = New-PushedRepo 'wt-preexisting'
+    $wtPreOther = Join-Path $ReposRoot 'wt-preexisting-other'
+    & git -C $wtPre worktree add -q $wtPreOther -b wt-preexisting-other-branch 2>$null
+    # Dirty BEFORE the baseline is captured, and left untouched afterward -
+    # proves "existed unchanged before the task", not merely "nothing to see".
+    [System.IO.File]::WriteAllText((Join-Path $wtPreOther 'pre.txt'), 'pre-existing dirt', (New-Object System.Text.UTF8Encoding $false))
+    $rBaseline = Fire -Cwd $wtPre -EventName 'SessionStart' -SessionId 'wt-pre-sess'
+    Check 'SessionStart baseline capture is silent (no output)' ($rBaseline.Exit -eq 0 -and $rBaseline.Out -eq '') $rBaseline.Out
+    $r = Fire -Cwd $wtPre -SessionId 'wt-pre-sess'
+    Check 'a pre-existing, unchanged worktree (even an already-dirty one) never blocks completion' ($r.Out -notmatch '"decision":"block"') $r.Out
+    Check 'a pre-existing, unchanged worktree produces no output at all (main repo clean, nothing task-scoped)' ($r.Exit -eq 0 -and $r.Out -eq '') $r.Out
+
+    # =====================================================================
+    Write-Host '--- HM-08: new subagent worktree with uncommitted changes BLOCKS at SubagentStop ---' -ForegroundColor Cyan
+    $wtSub = New-PushedRepo 'wt-subagent'
+    Fire -Cwd $wtSub -EventName 'SessionStart' -SessionId 'wt-sub-sess' | Out-Null
+    $wtSubNew = Join-Path $ReposRoot 'wt-subagent-feature'
+    & git -C $wtSub worktree add -q $wtSubNew -b wt-subagent-feature 2>$null
+    [System.IO.File]::WriteAllText((Join-Path $wtSubNew 'new.txt'), 'subagent work in progress', (New-Object System.Text.UTF8Encoding $false))
+    $r = Fire -Cwd $wtSub -EventName 'SubagentStop' -SessionId 'wt-sub-sess'
+    Check 'a new task-scoped worktree with uncommitted changes BLOCKS at SubagentStop' ($r.Out -match '"decision":"block"') $r.Out
+    Check 'the block names the new worktree path and its uncommitted state' ($r.Out -match 'wt-subagent-feature' -and $r.Out -match 'uncommitted change') $r.Out
+
+    # =====================================================================
+    Write-Host '--- HM-08: new branch with commits unreachable from destination BLOCKS; reconciled+pushed clears ---' -ForegroundColor Cyan
+    $wtBranch = New-PushedRepo 'wt-branch'
+    Fire -Cwd $wtBranch -EventName 'SessionStart' -SessionId 'wt-branch-sess' | Out-Null
+    $wtBranchNew = Join-Path $ReposRoot 'wt-branch-feature'
+    & git -C $wtBranch worktree add -q $wtBranchNew -b wt-branch-feature 2>$null
+    [System.IO.File]::WriteAllText((Join-Path $wtBranchNew 'feature.txt'), 'feature work', (New-Object System.Text.UTF8Encoding $false))
+    & git -C $wtBranchNew add feature.txt
+    & git -C $wtBranchNew commit -q -m 'feature commit, not pushed, not merged'
+    $r3 = Fire -Cwd $wtBranch -SessionId 'wt-branch-sess'
+    Check 'a new branch with commits unreachable from destination and no upstream BLOCKS' ($r3.Out -match '"decision":"block"') $r3.Out
+    Check 'the block names the branch and says it is not reconciled into the destination' ($r3.Out -match 'wt-branch-feature' -and $r3.Out -match 'not reconciled into') $r3.Out
+    Check 'the (clean, committed) worktree itself is not what is flagged - branch reconciliation is' ($r3.Out -notmatch 'uncommitted change') $r3.Out
+
+    # Reconcile: merge into the destination branch locally and push both.
+    & git -C $wtBranch merge -q wt-branch-feature -m 'merge feature'
+    & git -C $wtBranch push -q origin main
+    $r4 = Fire -Cwd $wtBranch -SessionId 'wt-branch-sess'
+    Check 'once merged into the destination and pushed, the same branch no longer blocks (changed fingerprint re-evaluated immediately)' ($r4.Out -notmatch '"decision":"block"') $r4.Out
+
+    # =====================================================================
+    Write-Host '--- HM-08: locked/prunable worktree is reported (non-blocking, client-aware advisory) ---' -ForegroundColor Cyan
+    # Two independent repos (each with its OWN baseline under its OWN session
+    # id) rather than two Fire calls against one repo: the baseline/gate are
+    # keyed by session id, and re-firing the SAME repo+session a second time
+    # would just hit the "already reported this session" gate instead of
+    # actually exercising the Codex output shape.
+    $wtLockClaude = New-PushedRepo 'wt-locked-claude'
+    Fire -Cwd $wtLockClaude -EventName 'SessionStart' -SessionId 'wt-lock-sess' | Out-Null
+    $wtLockClaudeExtra = Join-Path $ReposRoot 'wt-locked-claude-extra'
+    & git -C $wtLockClaude worktree add -q $wtLockClaudeExtra -b wt-locked-claude-extra 2>$null
+    & git -C $wtLockClaude worktree lock $wtLockClaudeExtra --reason 'manual test lock' 2>$null
+    $rClaude = Fire -Cwd $wtLockClaude -SessionId 'wt-lock-sess'
+    Check 'a locked worktree with nothing else wrong does not block completion (advisory only)' ($rClaude.Out -notmatch '"decision":"block"') $rClaude.Out
+    Check 'the locked worktree is reported with its lock reason' ($rClaude.Out -match 'locked' -and $rClaude.Out -match 'manual test lock') $rClaude.Out
+    Check 'the Claude client gets additionalContext for the non-blocking advisory, not systemMessage' ($rClaude.Out -match '"additionalContext"' -and $rClaude.Out -notmatch '"systemMessage"') $rClaude.Out
+
+    $wtLockCodex = New-PushedRepo 'wt-locked-codex'
+    Fire -Cwd $wtLockCodex -EventName 'SessionStart' -SessionId 'wt-lock-sess' -Codex | Out-Null
+    $wtLockCodexExtra = Join-Path $ReposRoot 'wt-locked-codex-extra'
+    & git -C $wtLockCodex worktree add -q $wtLockCodexExtra -b wt-locked-codex-extra 2>$null
+    & git -C $wtLockCodex worktree lock $wtLockCodexExtra --reason 'manual test lock' 2>$null
+    $rCodex = Fire -Cwd $wtLockCodex -SessionId 'wt-lock-sess' -Codex
+    Check 'the Codex client gets systemMessage for the identical non-blocking advisory, not additionalContext' ($rCodex.Out -match '"systemMessage"' -and $rCodex.Out -notmatch '"additionalContext"') $rCodex.Out
+
+    # =====================================================================
+    Write-Host '--- HM-08: the hook performs NO mutation anywhere in the repo (main + worktrees) ---' -ForegroundColor Cyan
+    $wtNoMut = New-PushedRepo 'wt-no-mutation'
+    Fire -Cwd $wtNoMut -EventName 'SessionStart' -SessionId 'wt-no-mut-sess' | Out-Null
+    $wtNoMutExtra = Join-Path $ReposRoot 'wt-no-mutation-extra'
+    & git -C $wtNoMut worktree add -q $wtNoMutExtra -b wt-no-mutation-extra 2>$null
+    [System.IO.File]::WriteAllText((Join-Path $wtNoMutExtra 'dirty.txt'), 'still uncommitted', (New-Object System.Text.UTF8Encoding $false))
+    $mainShaBefore = (& git -C $wtNoMut rev-parse HEAD)
+    $mainStatusBefore = ((& git -C $wtNoMut status --porcelain) -join "`n")
+    $extraShaBefore = (& git -C $wtNoMutExtra rev-parse HEAD)
+    $extraStatusBefore = ((& git -C $wtNoMutExtra status --porcelain) -join "`n")
+    $worktreeListBefore = ((& git -C $wtNoMut worktree list --porcelain) -join "`n")
+    $r = Fire -Cwd $wtNoMut -EventName 'Stop' -SessionId 'wt-no-mut-sess'
+    Check 'sanity: the extra worktree with uncommitted changes was actually detected' ($r.Out -match '"decision":"block"') $r.Out
+    $mainShaAfter = (& git -C $wtNoMut rev-parse HEAD)
+    $mainStatusAfter = ((& git -C $wtNoMut status --porcelain) -join "`n")
+    $extraShaAfter = (& git -C $wtNoMutExtra rev-parse HEAD)
+    $extraStatusAfter = ((& git -C $wtNoMutExtra status --porcelain) -join "`n")
+    $worktreeListAfter = ((& git -C $wtNoMut worktree list --porcelain) -join "`n")
+    Check 'main worktree HEAD/status is byte-identical before/after' ($mainShaBefore -eq $mainShaAfter -and $mainStatusBefore -eq $mainStatusAfter)
+    Check 'the extra worktree HEAD/status is byte-identical before/after (still uncommitted - the hook never staged/committed it)' (
+        $extraShaBefore -eq $extraShaAfter -and $extraStatusBefore -eq $extraStatusAfter -and $extraStatusAfter -ne '')
+    Check 'the worktree registration list itself is unchanged (nothing added/removed/(un)locked/pruned by the hook)' ($worktreeListBefore -eq $worktreeListAfter)
+    Check 'the hook script never calls git worktree add/remove/prune/lock/unlock (detection+instruction only)' (
+        $hookText -notmatch "'add'" -and $hookText -notmatch "'remove'" -and $hookText -notmatch "'prune'" -and
+        $hookText -notmatch "'lock'" -and $hookText -notmatch "'unlock'")
+
+    # =====================================================================
+    Write-Host '--- HM-08: an unchanged task-scoped block cannot loop (fires once per session) ---' -ForegroundColor Cyan
+    $wtLoop = New-PushedRepo 'wt-loop'
+    Fire -Cwd $wtLoop -EventName 'SessionStart' -SessionId 'wt-loop-sess' | Out-Null
+    $wtLoopExtra = Join-Path $ReposRoot 'wt-loop-extra'
+    & git -C $wtLoop worktree add -q $wtLoopExtra -b wt-loop-extra 2>$null
+    [System.IO.File]::WriteAllText((Join-Path $wtLoopExtra 'still-dirty.txt'), 'v1', (New-Object System.Text.UTF8Encoding $false))
+    $rFirst = Fire -Cwd $wtLoop -SessionId 'wt-loop-sess'
+    Check 'first Stop for a new task-scoped dirty worktree blocks' ($rFirst.Out -match '"decision":"block"') $rFirst.Out
+    $rSecond = Fire -Cwd $wtLoop -SessionId 'wt-loop-sess'
+    Check 'the identical unchanged task-scoped state does not loop on a second Stop in the same session' ($rSecond.Exit -eq 0 -and $rSecond.Out -eq '') $rSecond.Out
+    # Change the task-scoped state within the SAME session (commit the file -
+    # the worktree becomes clean, but its branch is now unreconciled/unpushed)
+    # - the fingerprint must reflect the new state and re-evaluate immediately.
+    & git -C $wtLoopExtra add still-dirty.txt
+    & git -C $wtLoopExtra commit -q -m 'commit the previously-uncommitted file'
+    $rThird = Fire -Cwd $wtLoop -SessionId 'wt-loop-sess'
+    Check 'a CHANGED task-scoped state (worktree committed, branch now unreconciled) is evaluated again immediately, same session' ($rThird.Out -match '"decision":"block"' -and $rThird.Out -match 'not reconciled into') $rThird.Out
 }
 finally {
     if ($KeepArtifacts) {
