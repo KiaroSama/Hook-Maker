@@ -168,6 +168,20 @@ function Add-TimingSample {
         try { $fs = [System.IO.File]::Open($lock, [System.IO.FileMode]::CreateNew, [System.IO.FileAccess]::ReadWrite, [System.IO.FileShare]::None) }
         catch {
             if ([DateTime]::UtcNow -ge $deadline) { return }   # best-effort; never block the run
+            # Stale-lock recovery: a real write holds the lock for milliseconds, so a
+            # .lock older than 60s can only be a crash leftover between CreateNew and
+            # the finally-delete. FileShare::None is the safety property: a LIVE
+            # holder's open handle makes File.Delete FAIL, so a successful delete is
+            # itself proof the holder is dead - reclaim and retry CreateNew at once.
+            # A refused delete means the holder is alive: keep waiting to the deadline.
+            try {
+                if ([System.IO.File]::Exists($lock) -and
+                    ([DateTime]::UtcNow - [System.IO.File]::GetLastWriteTimeUtc($lock)).TotalSeconds -gt 60) {
+                    [System.IO.File]::Delete($lock)
+                    continue
+                }
+            }
+            catch { }   # holder alive (or lock vanished); fall through to the bounded wait
             Start-Sleep -Milliseconds 50
         }
     }

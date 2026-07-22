@@ -46,7 +46,9 @@ function New-PushedRepo {
 }
 
 function Fire {
-    param([string]$Cwd, [string]$EventName = 'Stop', [string]$SessionId = 't', [switch]$StopHookActive, [string]$Exe = '', [switch]$Codex)
+    # -HookPath fires an ALTERNATE hook script (default: the real one) - used
+    # by the red-proof scenario to run the PRE-FIX hook against the same repo.
+    param([string]$Cwd, [string]$EventName = 'Stop', [string]$SessionId = 't', [switch]$StopHookActive, [string]$Exe = '', [switch]$Codex, [string]$HookPath = '')
     $obj = @{ session_id = $SessionId; cwd = $Cwd; hook_event_name = $EventName }
     if ($StopHookActive) { $obj['stop_hook_active'] = $true }
     $payload = $obj | ConvertTo-Json
@@ -56,7 +58,8 @@ function Fire {
     $errFile = Join-Path $Work ('err-' + $token + '.txt')
     [System.IO.File]::WriteAllText($inFile, $payload, (New-Object System.Text.UTF8Encoding $false))
     $file = if ([string]::IsNullOrWhiteSpace($Exe)) { (Get-Process -Id $PID).Path } else { $Exe }
-    $argLine = '-NoLogo -NoProfile -ExecutionPolicy Bypass -File "' + $Hook + '"'
+    $hookFile = if ([string]::IsNullOrWhiteSpace($HookPath)) { $Hook } else { $HookPath }
+    $argLine = '-NoLogo -NoProfile -ExecutionPolicy Bypass -File "' + $hookFile + '"'
     $startArgs = @{
         FilePath = $file; ArgumentList = $argLine; RedirectStandardInput = $inFile
         RedirectStandardOutput = $outFile; RedirectStandardError = $errFile
@@ -351,6 +354,66 @@ try {
     & git -C $wtLoopExtra commit -q -m 'commit the previously-uncommitted file'
     $rThird = Fire -Cwd $wtLoop -SessionId 'wt-loop-sess'
     Check 'a CHANGED task-scoped state (worktree committed, branch now unreconciled) is evaluated again immediately, same session' ($rThird.Out -match '"decision":"block"' -and $rThird.Out -match 'not reconciled into') $rThird.Out
+
+    # =====================================================================
+    # HM-08 follow-up (dirty fingerprint): a PRE-EXISTING worktree whose HEAD
+    # never moves but whose UNCOMMITTED files are modified DURING the task
+    # must be detected as task-scoped. The genuinely-untouched regression case
+    # is the wt-preexisting scenario above (dirty before baseline, untouched
+    # after -> still fully silent).
+    # =====================================================================
+    Write-Host '--- HM-08 dirty fingerprint: RED-PROOF - the pre-fix hook misses uncommitted edits in a pre-existing worktree ---' -ForegroundColor Cyan
+    # Reconstruct the PRE-FIX hook via read-only `git show` (never a tree
+    # mutation in this repo), placed next to a copy of _hooklib.ps1 so its
+    # `..\_hooklib.ps1` dot-source resolves from the temp location.
+    $repoRoot = Split-Path -Parent $PSScriptRoot
+    $preFixRoot = Join-Path $Work '_prefix-hook'
+    New-Item -ItemType Directory -Path (Join-Path $preFixRoot 'Git-Sync-Check') -Force | Out-Null
+    $preFixText = ((& git -C $repoRoot show 'HEAD:hooks/Git-Sync-Check/Git-Sync-Check.ps1') -join "`n")
+    $preFixHook = Join-Path $preFixRoot 'Git-Sync-Check\Git-Sync-Check.ps1'
+    [System.IO.File]::WriteAllText($preFixHook, $preFixText, (New-Object System.Text.UTF8Encoding $false))
+    Copy-Item -LiteralPath (Join-Path $repoRoot 'hooks\_hooklib.ps1') -Destination (Join-Path $preFixRoot '_hooklib.ps1') -Force
+    $red = New-PushedRepo 'wt-dirtyfp-red'
+    $redExtra = Join-Path $ReposRoot 'wt-dirtyfp-red-extra'
+    & git -C $red worktree add -q $redExtra -b wt-dirtyfp-red-extra 2>$null
+    Fire -Cwd $red -EventName 'SessionStart' -SessionId 'red-sess' -HookPath $preFixHook | Out-Null
+    # Modify a TRACKED file inside the pre-existing worktree AFTER the
+    # baseline; its HEAD never moves.
+    [System.IO.File]::WriteAllText((Join-Path $redExtra 'f.txt'), 'edited during task', (New-Object System.Text.UTF8Encoding $false))
+    $rRed = Fire -Cwd $red -SessionId 'red-sess' -HookPath $preFixHook
+    Check 'RED-PROOF: the PRE-FIX hook stays silent for uncommitted edits inside a pre-existing worktree' ($rRed.Exit -eq 0 -and $rRed.Out -eq '') $rRed.Out
+    # Continuity: the FIXED hook reading that PRE-FIX baseline (no dirty
+    # field = UNKNOWN) must neither claim all-clear nor hard-block on unknown.
+    $rUnknown = Fire -Cwd $red -SessionId 'red-sess'
+    Check 'an UNKNOWN (pre-fix) baseline fingerprint surfaces advisory uncertainty, never a false all-clear' ($rUnknown.Out -match 'cannot be confirmed unchanged') $rUnknown.Out
+    Check 'an UNKNOWN baseline fingerprint alone never hard-blocks' ($rUnknown.Out -notmatch '"decision":"block"') $rUnknown.Out
+
+    # =====================================================================
+    Write-Host '--- HM-08 dirty fingerprint: uncommitted edits inside a pre-existing worktree BLOCK as task-scoped ---' -ForegroundColor Cyan
+    $fp = New-PushedRepo 'wt-dirtyfp'
+    $fpExtra = Join-Path $ReposRoot 'wt-dirtyfp-extra'
+    & git -C $fp worktree add -q $fpExtra -b wt-dirtyfp-extra 2>$null
+    Fire -Cwd $fp -EventName 'SessionStart' -SessionId 'fp-sess' | Out-Null
+    [System.IO.File]::WriteAllText((Join-Path $fpExtra 'f.txt'), 'edited during task', (New-Object System.Text.UTF8Encoding $false))
+    $fpStatusBefore = ((& git -C $fpExtra status --porcelain) -join "`n")
+    $fpHeadBefore = (& git -C $fpExtra rev-parse HEAD)
+    $rFp = Fire -Cwd $fp -SessionId 'fp-sess'
+    Check 'a tracked-file edit inside a pre-existing worktree (HEAD unchanged) BLOCKS at Stop' ($rFp.Out -match '"decision":"block"') $rFp.Out
+    Check 'the block honestly names the pre-existing worktree and that its uncommitted state changed during the task' ($rFp.Out -match 'pre-existing worktree' -and $rFp.Out -match 'wt-dirtyfp-extra' -and $rFp.Out -match 'during this task') $rFp.Out
+    $fpStatusAfter = ((& git -C $fpExtra status --porcelain) -join "`n")
+    $fpHeadAfter = (& git -C $fpExtra rev-parse HEAD)
+    Check 'the hook performed no mutation in the pre-existing worktree (status/HEAD byte-identical before/after)' (
+        $fpStatusBefore -eq $fpStatusAfter -and $fpHeadBefore -eq $fpHeadAfter -and $fpStatusAfter -ne '')
+
+    Write-Host '--- HM-08 dirty fingerprint: anti-loop + changed-state re-evaluation ---' -ForegroundColor Cyan
+    $rFp2 = Fire -Cwd $fp -SessionId 'fp-sess'
+    Check 'the identical unchanged dirty state does not re-block on a second Stop in the same session' ($rFp2.Exit -eq 0 -and $rFp2.Out -eq '') $rFp2.Out
+    # A FURTHER change to the worktree's uncommitted state (a new untracked
+    # file -> different status lines -> different dirty hash) is a different
+    # actionable state and must re-evaluate immediately in the same session.
+    [System.IO.File]::WriteAllText((Join-Path $fpExtra 'extra-untracked.txt'), 'more task work', (New-Object System.Text.UTF8Encoding $false))
+    $rFp3 = Fire -Cwd $fp -SessionId 'fp-sess'
+    Check 'a FURTHER dirty-state change in the same worktree re-blocks immediately in the same session' ($rFp3.Out -match '"decision":"block"' -and $rFp3.Out -match 'pre-existing worktree') $rFp3.Out
 }
 finally {
     if ($KeepArtifacts) {

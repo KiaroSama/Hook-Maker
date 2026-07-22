@@ -329,6 +329,17 @@ try {
     Test-BlindWait -Label 'deadline-bounded poll loop'         -Command '$d=[DateTime]::UtcNow.AddSeconds(30); while ([DateTime]::UtcNow -lt $d) { Start-Sleep -Milliseconds 200 }' -ExpectDeny $false
     Test-BlindWait -Label 'always-true loop WITH a break'      -Command 'while ($true) { if ($ready) { break }; Start-Sleep -Seconds 1 }'                                      -ExpectDeny $false
 
+    # HM-06 follow-up: PYTHON literal long sleeps. The tokenizer hands the quoted
+    # payload over as ONE token, so the hook may regex-match it without parsing a
+    # shell - but ONLY inside a segment whose program is python/python3/py.
+    Test-BlindWait -Label 'python -c "time.sleep(300)"'                -Command 'python -c "time.sleep(300)"'               -ExpectDeny $true
+    Test-BlindWait -Label 'python3 -c "import time; time.sleep(600)"' -Command 'python3 -c "import time; time.sleep(600)"' -ExpectDeny $true
+    Test-BlindWait -Label 'py -c "time.sleep(120)"'                   -Command 'py -c "time.sleep(120)"'                   -ExpectDeny $true
+    Test-BlindWait -Label 'python -c "time.sleep(1)" (below ceiling)' -Command 'python -c "time.sleep(1)"'                 -ExpectDeny $false
+    Test-BlindWait -Label 'grep "time.sleep(300)" (non-python)'       -Command 'grep "time.sleep(300)" app.py'             -ExpectDeny $false
+    Test-BlindWait -Label 'python script.py (no literal sleep)'       -Command 'python script.py'                          -ExpectDeny $false
+    Test-BlindWait -Label 'echo time.sleep(300) (non-python)'         -Command 'echo time.sleep(300)'                      -ExpectDeny $false
+
     # Advisory mode reports the finding but does not block.
     $hcBlindAdv = New-IsolatedHookCopy -EnvOverrides @{ TEST_GUARD_ADVISORY_ONLY = '1' }
     $rAdv = Fire -HookPath $hcBlindAdv.Script -Cwd $Proj -EventName 'PreToolUse' -Command 'Start-Sleep -Seconds 300' -LocalAppData $hcBlindAdv.LocalAppData
