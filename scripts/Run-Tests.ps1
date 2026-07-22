@@ -145,7 +145,13 @@ if (-not [string]::IsNullOrWhiteSpace($jobCSharp) -and -not ('HookMaker.JobNativ
 # deadlocks), a Job Object with KILL_ON_JOB_CLOSE that ends the whole tree on a
 # clean-exit orphan OR a timeout survivor, and a timeout branch that PROVES the
 # tree is gone (pid-reuse-proof via the job's assigned-pid list) and fails CLOSED:
-# proven-clean timeout -> 124, UNPROVEN cleanup -> a distinct 126.
+# proven-clean timeout -> 124, UNPROVEN cleanup -> a distinct 126. With NO Job
+# Object (degraded), a clean exit gets an explicit orphan sweep instead - a
+# pid+StartTime ppid walk that kills and re-verifies survivors - because the
+# finally's backstops both miss that case (taskkill fires only while the root is
+# alive, and there is no job to close). Leaked-but-killed-and-proven maps to the
+# guarded runner's established orphanLeak code 125 (a clean exit that leaked is
+# never a silent pass); an unprovable kill falls into the same fail-closed 126.
 #
 # Defined as a string and re-created inside each parallel runspace, because
 # -Parallel does not inherit functions from the caller's scope; the Job Object C#
@@ -156,6 +162,9 @@ $sw = [System.Diagnostics.Stopwatch]::StartNew()
 $name = Split-Path -Leaf $SuitePath
 $outFile = [System.IO.Path]::GetTempFileName()
 $errFile = [System.IO.Path]::GetTempFileName()
+# Set by the degraded clean-exit orphan sweep below; prefixed onto the reported
+# tail so a leak is visible in the suite table, not only in the exit code.
+$leakNote = ''
 
 # Inline TWIN of the top-level Test-OwnedTreeCleared (a -Parallel runspace does not
 # inherit the caller's functions). Keep both in sync: proven-clean requires all
@@ -191,6 +200,29 @@ function Get-TreeSnapshotLocal {
         }
     }
     return [pscustomobject]@{ Ok = $ok; Members = $members.ToArray() }
+}
+
+# Members of a pid+StartTime snapshot that are STILL alive with the SAME start
+# time. The identity binding is the whole point: a recycled pid (same number,
+# different start) is neither counted nor later killed. Shared by BOTH degraded
+# proofs - the timeout-kill survivor count and the clean-exit orphan sweep. A
+# live pid whose StartTime cannot be read counts as a survivor: fail closed,
+# never assume a kill worked on a process that cannot be identity-checked.
+function Get-SnapshotSurvivorsLocal {
+    param([object[]]$Members)
+    $alive = New-Object System.Collections.Generic.List[object]
+    foreach ($m in @($Members)) {
+        try {
+            $live = Get-Process -Id $m.Pid -ErrorAction SilentlyContinue
+            if ($live) {
+                $sameStart = $true
+                try { $sameStart = ([Math]::Abs(($live.StartTime - [datetime]$m.Start).TotalSeconds) -lt 2) } catch { $sameStart = $true }
+                if ($sameStart) { [void]$alive.Add($m) }
+            }
+        }
+        catch { }
+    }
+    return $alive.ToArray()
 }
 
 # The type is normally already AppDomain-loaded by the parent's pre-load; Add-Type
@@ -264,17 +296,7 @@ try {
         }
         else {
             $enumOk = $snap.Ok
-            foreach ($m in $snap.Members) {
-                try {
-                    $live = Get-Process -Id $m.Pid -ErrorAction SilentlyContinue
-                    if ($live) {
-                        $sameStart = $true
-                        try { $sameStart = ([Math]::Abs(($live.StartTime - [datetime]$m.Start).TotalSeconds) -lt 2) } catch { $sameStart = $true }
-                        if ($sameStart) { $survivors++ }
-                    }
-                }
-                catch { }
-            }
+            $survivors = @(Get-SnapshotSurvivorsLocal -Members @($snap.Members)).Count
         }
         # Fail CLOSED: a proven-clean timeout is 124; an UNPROVEN cleanup (the query
         # failed, a survivor remains, or the root is still alive) is a DISTINCT 126,
@@ -284,6 +306,44 @@ try {
     }
     else {
         $exitCode = $process.ExitCode
+        # DEGRADED (no Job Object) clean-exit orphan sweep. With a job, the finally's
+        # Terminate+Close (KILL_ON_JOB_CLOSE) ends anything the suite leaked even
+        # after a clean root exit; with no job NOTHING did: the finally's taskkill
+        # fires only while the root is still alive, so a dead root + live descendant
+        # leaked silently. The ppid walk still finds those descendants (on Windows a
+        # dead parent's children keep its pid in ParentProcessId), and the
+        # pid+StartTime binding means a recycled pid is never counted or killed.
+        # Mirrors the guarded runner's clean-exit orphan rule and its established
+        # code: a clean exit that leaked descendants is NEVER a silent pass -
+        # killed-and-proven-gone -> 125 (orphanLeak), a kill that cannot be proven
+        # -> the existing fail-closed 126. A failed CIM walk detects nothing and,
+        # like the guarded runner's degraded fallback, leaves the clean exit code
+        # untouched: no kill happened, so there is no cleanup to prove.
+        if ($job -eq [IntPtr]::Zero) {
+            $cleanSnap = Get-TreeSnapshotLocal -RootId $process.Id
+            if ($cleanSnap.Ok) {
+                $orphans = @(Get-SnapshotSurvivorsLocal -Members @(@($cleanSnap.Members) | Where-Object { $_.Pid -ne $process.Id }))
+                if ($orphans.Count -gt 0) {
+                    foreach ($o in $orphans) { try { & taskkill.exe /PID $o.Pid /T /F *> $null } catch { } }
+                    # BOUNDED re-verification with the same pid+StartTime binding, so
+                    # pid reuse after the kill can fake neither a survivor nor a clear.
+                    $deadline = [datetime]::UtcNow.AddSeconds(10)
+                    $remaining = @(Get-SnapshotSurvivorsLocal -Members $orphans)
+                    while ($remaining.Count -gt 0 -and [datetime]::UtcNow -lt $deadline) {
+                        Start-Sleep -Milliseconds 150
+                        $remaining = @(Get-SnapshotSurvivorsLocal -Members $orphans)
+                    }
+                    if ($remaining.Count -eq 0) {
+                        $leakNote = 'LEAKED ' + $orphans.Count + ' descendant(s) after clean exit ' + $exitCode + ' (degraded, no Job Object; killed and proven terminated)'
+                        $exitCode = 125
+                    }
+                    else {
+                        $leakNote = 'LEAKED ' + $orphans.Count + ' descendant(s) after clean exit ' + $exitCode + ' (degraded, no Job Object; ' + $remaining.Count + ' NOT proven terminated)'
+                        $exitCode = 126
+                    }
+                }
+            }
+        }
     }
 
     # Bounded flush of the pumps' tail; whatever a surviving grandchild still holds
@@ -303,6 +363,8 @@ try {
     else {
         $tail = (@(($text -split "`r?`n") | Where-Object { $_ -ne '' } | Select-Object -Last 3) -join ' | ')
         if (-not [string]::IsNullOrWhiteSpace($errText)) { $tail = $tail + ' || stderr: ' + (($errText -split "`r?`n")[0]) }
+        # A degraded clean-exit leak leads the tail: the 125/126 alone does not say why.
+        if ($leakNote -ne '') { $tail = $leakNote + ' || ' + $tail }
     }
     return [pscustomobject]@{ Suite = $name; Exit = $exitCode; Seconds = [Math]::Round($sw.Elapsed.TotalSeconds, 1); Tail = $tail }
 }
@@ -310,7 +372,11 @@ finally {
     # The owned child dies with us on EVERY path. The Job Object is the backstop
     # that catches a descendant the root leaked even after a CLEAN root exit (the
     # old clean path killed nothing); Terminate+Close with KILL_ON_JOB_CLOSE ends
-    # the whole tree. taskkill is the degraded-mode fallback and belt-and-braces.
+    # the whole tree. taskkill is the degraded-mode fallback and belt-and-braces -
+    # but only while the root is still ALIVE (an error path mid-run): once the
+    # root has exited its pid may be recycled, so taskkill-by-root-pid here would
+    # be a pid-reuse hazard. The degraded dead-root + live-descendant case is
+    # therefore handled by the identity-bound clean-exit sweep in the try above.
     try {
         if ($null -ne $process -and -not $process.HasExited) { try { & taskkill.exe /PID $process.Id /T /F *> $null } catch { } }
     }

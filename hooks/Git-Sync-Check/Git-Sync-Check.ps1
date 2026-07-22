@@ -7,7 +7,8 @@
 # - SessionStart: injects the current-repo status as additional context (as
 #   before, non-blocking) AND silently captures a local, SANITIZED baseline
 #   snapshot of this repo's worktrees and local branches (paths/names + HEAD
-#   shas only - never file contents or secret values). One baseline per repo
+#   shas + a short per-worktree DIRTY FINGERPRINT hash of `git status
+#   --porcelain` output - never file contents or secret values). One baseline per repo
 #   per session (keyed by session_id, stored once): a resumed session keeps
 #   its original "before this task" baseline; a new session overwrites it.
 #   Never modifies the repository at session start.
@@ -32,7 +33,14 @@
 # (`git for-each-ref refs/heads`) are compared against the baseline.
 #   - A worktree/branch that is BYTE-IDENTICAL to baseline (same path/name AND
 #     same HEAD) existed UNCHANGED before this task -> advisory context only,
-#     never a completion blocker.
+#     never a completion blocker. For a WORKTREE, path+HEAD alone are NOT
+#     proof of "untouched": its current dirty fingerprint (a hash of `git
+#     status --porcelain` output) must also match the baseline one - a
+#     differing fingerprint means its UNCOMMITTED contents changed during
+#     this task, which is task-scoped and blocking. An UNKNOWN fingerprint
+#     (status failed at capture or now, or a baseline written before the
+#     fingerprint existed) is surfaced as advisory uncertainty - never
+#     treated as "unchanged", and never a hard block by itself.
 #   - A worktree/branch that is NEW or has ADVANCED since baseline is
 #     task-scoped and BLOCKS completion when:
 #       - its worktree has uncommitted/staged/untracked changes, or
@@ -69,8 +77,9 @@
 # SubagentStop (never a blind time-only early exit before inspection). The
 # output (block OR advisory) is gated by a FINGERPRINT of the actionable
 # state (repo, branch, HEAD, upstream, ahead/behind counts, status paths+
-# codes, and the task-scoped worktree/branch findings - never file contents/
-# secret values) combined with the hook's `session_id`: a given fingerprint
+# codes, the task-scoped worktree/branch findings, and per-worktree dirty-
+# state hashes - never file contents/secret values) combined with the hook's
+# `session_id`: a given fingerprint
 # is reported at most ONCE per session - a changed fingerprint (state got
 # worse, different files, a new commit, a new/changed task-scoped branch or
 # worktree) or a NEW session is evaluated and reported again immediately; an
@@ -204,6 +213,19 @@ function Get-LocalBranchList {
     return @($items.ToArray())
 }
 
+# Short, sanitized fingerprint of a worktree's uncommitted state: a hash of
+# its sorted `git status --porcelain` lines (paths + XY codes only - never
+# file contents or secret values). '' is an explicit UNKNOWN sentinel returned
+# when the status command fails; UNKNOWN must never later be treated as
+# "unchanged". A clean worktree hashes the empty string, which is a real,
+# distinct value - so clean, dirty, and unknown never collide.
+function Get-WorktreeDirtyFingerprint {
+    param([Parameter(Mandatory = $true)][string]$WorktreePath)
+    $result = Invoke-Git @('status', '--porcelain') -RepoPath $WorktreePath
+    if (-not $result.Ok) { return '' }
+    return Get-ShortHash ((@($result.Output | Where-Object { $_ }) | Sort-Object) -join "`n")
+}
+
 if ($null -eq (Get-Command git -ErrorAction SilentlyContinue)) {
     exit 0
 }
@@ -231,7 +253,17 @@ if ($eventName -eq 'SessionStart') {
         if ($primaryBranchResult.Ok -and $primaryBranchResult.Output.Count -gt 0 -and [string]$primaryBranchResult.Output[0] -ne 'HEAD') {
             $primaryBranch = [string]$primaryBranchResult.Output[0]
         }
-        $baselineWorktrees = @(Get-WorktreeList $cwd | Select-Object -First $MaxWorktreesToInspect | ForEach-Object { [pscustomobject]@{ path = $_.Path; head = $_.Head } })
+        # Each worktree also gets a DIRTY FINGERPRINT (see the helper above):
+        # HEAD alone cannot prove a pre-existing worktree stayed untouched -
+        # its UNCOMMITTED files may be modified during the task without the
+        # HEAD ever moving. Bounded by the same scan budget as the Stop-side
+        # inspection: past the time cap (or for a bare entry, which has no
+        # working tree) the fingerprint is stored as UNKNOWN, never guessed.
+        $baselineTimer = [System.Diagnostics.Stopwatch]::StartNew()
+        $baselineWorktrees = @(Get-WorktreeList $cwd | Select-Object -First $MaxWorktreesToInspect | ForEach-Object {
+                $dirty = if ($_.Bare -or $baselineTimer.Elapsed.TotalSeconds -ge $MaxScanSeconds) { '' } else { Get-WorktreeDirtyFingerprint $_.Path }
+                [pscustomobject]@{ path = $_.Path; head = $_.Head; dirty = $dirty }
+            })
         $baselineBranches = @(Get-LocalBranchList $cwd | Select-Object -First $MaxBranchesToInspect | ForEach-Object { [pscustomobject]@{ name = $_.Name; head = $_.Head } })
         $baseline = [pscustomobject]@{
             sessionId     = $sessionId
@@ -313,6 +345,12 @@ if (-not $isStopEvent) {
 # none exists - e.g. SessionStart was never configured for this project.
 $blockingExtra = New-Object System.Collections.Generic.List[string]
 $advisoryExtra = New-Object System.Collections.Generic.List[string]
+# Extra non-message state folded into the anti-loop fingerprint: the
+# pre-existing-worktree block message below is state-independent text, so the
+# actual dirty hash must join the fingerprint for a FURTHER change in the same
+# worktree to re-evaluate immediately instead of being silenced as "already
+# reported".
+$fingerprintExtra = New-Object System.Collections.Generic.List[string]
 $destinationBranch = ''
 
 $baseline = $null
@@ -323,9 +361,17 @@ if ($haveBaseline) {
     $destinationBranch = [string](Get-Field $baseline 'primaryBranch')
 
     $baselineWorktreeHeads = @{}
+    $baselineWorktreeDirty = @{}
     foreach ($w in @(Get-Field $baseline 'worktrees')) {
         $p = [string](Get-Field $w 'path')
-        if ($p -ne '') { $baselineWorktreeHeads[(Normalize-Path $p)] = [string](Get-Field $w 'head') }
+        if ($p -ne '') {
+            $normP = Normalize-Path $p
+            $baselineWorktreeHeads[$normP] = [string](Get-Field $w 'head')
+            # A baseline written before the dirty-fingerprint field existed
+            # has no 'dirty' property; [string]$null coerces to '' = UNKNOWN,
+            # which is exactly the honest classification for it.
+            $baselineWorktreeDirty[$normP] = [string](Get-Field $w 'dirty')
+        }
     }
     $baselineBranchHeads = @{}
     foreach ($b in @(Get-Field $baseline 'branches')) {
@@ -359,8 +405,30 @@ if ($haveBaseline) {
         }
         $isNew = -not $baselineWorktreeHeads.ContainsKey($normPath)
         $isChanged = (-not $isNew) -and ($baselineWorktreeHeads[$normPath] -ne $wt.Head)
-        if (-not ($isNew -or $isChanged)) { continue }   # pre-existing + unchanged -> advisory context only
         if (-not (Test-Path -LiteralPath $wt.Path -PathType Container)) { continue }   # gone from disk; prunable note above already covers it
+
+        if (-not ($isNew -or $isChanged)) {
+            # Pre-existing worktree whose HEAD never moved. That alone cannot
+            # prove "untouched": its UNCOMMITTED contents may still have been
+            # modified during this task. Compare the CURRENT dirty fingerprint
+            # against the baseline one before treating it as advisory-only.
+            if ($wt.Bare) { continue }   # a bare entry has no working tree - nothing uncommitted can exist
+            $inspectedWorktrees++
+            $baselineDirty = [string]$baselineWorktreeDirty[$normPath]
+            $currentDirty = Get-WorktreeDirtyFingerprint $wt.Path
+            if ($baselineDirty -eq '' -or $currentDirty -eq '') {
+                # UNKNOWN on either side (status failed at capture or now, or
+                # a baseline written before the fingerprint field existed):
+                # never claim unchanged, and never hard-block on unknown alone.
+                [void]$advisoryExtra.Add('The uncommitted-change state of pre-existing worktree ' + $wt.Path + ' could not be compared against its pre-task baseline; it cannot be confirmed unchanged.')
+                continue
+            }
+            if ($currentDirty -eq $baselineDirty) { continue }   # genuinely unchanged (HEAD AND dirty state) -> advisory context only
+            $branchLabel = if ($wt.Detached) { 'detached' } else { $wt.Branch }
+            [void]$blockingExtra.Add('Uncommitted changes inside pre-existing worktree ' + $wt.Path + ' (branch: ' + $branchLabel + ') appeared or changed during this task.')
+            [void]$fingerprintExtra.Add('wt-dirty:' + $normPath.ToLowerInvariant() + '=' + $currentDirty)
+            continue
+        }
 
         $inspectedWorktrees++
         $wtStatus = Invoke-Git @('status', '--porcelain') -RepoPath $wt.Path
@@ -426,7 +494,8 @@ if ($blockingFindings.Count -eq 0 -and $advisoryFindings.Count -eq 0) {
 # never file contents or secret values.
 $fingerprintSource = ($cwd.ToLowerInvariant() + '|' + $branchName + '|' + $headSha + '|' + $upstreamName + '|' +
     $ahead + '|' + $behind + '|' + ($statusLines -join "`n") + '|' +
-    ($blockingExtra.ToArray() -join "`n") + '|' + ($advisoryExtra.ToArray() -join "`n"))
+    ($blockingExtra.ToArray() -join "`n") + '|' + ($advisoryExtra.ToArray() -join "`n") + '|' +
+    ($fingerprintExtra.ToArray() -join "`n"))
 $fingerprint = Get-ShortHash $fingerprintSource
 
 $statePath = Join-Path $stateDir ('GitSyncCheck-' + (Get-ShortHash $cwd.ToLowerInvariant()) + '.txt')

@@ -8,9 +8,11 @@
 # hookSpecificOutput.additionalContext, Codex systemMessage); SessionStart and
 # UserPromptSubmit; pointable findings (minute-scale sleep, unbounded wait);
 # a malformed .env falling back to the default with a message instead of
-# crashing; output being a single valid JSON document; and the two hard
-# guarantees - the hook NEVER writes into the project and NEVER runs a test
-# (proved by comparing bytes, not Test-Path).
+# crashing; output being a single valid JSON document; the HM-04 per-entry
+# time stop (including extension-NON-matching files); the HM-07 runner-keyed
+# (12-char) timing-baseline advisory; and the two hard guarantees - the hook
+# NEVER writes into the project and NEVER runs a test (proved by comparing
+# bytes, not Test-Path).
 #
 # Usage:  pwsh -NoLogo -NoProfile -File .\scripts\Test-TestPlanCheck.ps1 [-KeepArtifacts]
 # Exit code is the number of failed assertions (0 = all passed).
@@ -407,9 +409,9 @@ New-Item -ItemType File -Path (Join-Path $PSScriptRoot 'EXECUTED-MARKER.txt') -F
     # Pre-fix, the wall-time ceiling was checked only BETWEEN directories, so one
     # directory holding a huge number of non-test (yet extension-matching) files ran
     # to the end during enumeration and overran TEST_PLAN_MAX_SCAN_SECONDS. The fix
-    # checks the deadline per file (behind the extension match). The test seam forces
-    # a deterministic mid-enumeration trip so the assertion never depends on real
-    # wall-clock timing.
+    # enumerates lazily and checks the deadline for EVERY enumerated entry, before
+    # the extension match. The test seam forces a deterministic mid-enumeration trip
+    # so the assertion never depends on real wall-clock timing.
     $projTrip = New-Proj 'TimeTrip'
     # Many extension-matching NON-test files that sort BEFORE the one test file, so a
     # mid-enumeration TIME stop is reached before the test file is ever enumerated.
@@ -418,8 +420,9 @@ New-Item -ItemType File -Path (Join-Path $PSScriptRoot 'EXECUTED-MARKER.txt') -F
         Write-Utf8 (Join-Path $projTrip ('bulk\f{0:00}.ps1' -f $fi)) ('$x = ' + $fi + "`n")
     }
     Write-Utf8 (Join-Path $projTrip 'bulk\zz_test_slow.ps1') "Start-Sleep -Seconds 300`n"
-    # Seam ON: trip after 5 extension-matching files -> the walk stops inside `bulk`
-    # before reaching zz_test_slow, so its finding is absent and the cause is TIME.
+    # Seam ON: trip after 5 enumerated ENTRIES (the `bulk` dir counts as one, then
+    # f01..f04) -> the walk stops inside `bulk` long before reaching zz_test_slow,
+    # so its finding is absent and the cause is TIME.
     $hcTrip = New-IsolatedHookCopy
     $rTrip = Fire -HookPath $hcTrip.Script -Cwd $projTrip -EventName 'SessionStart' -LocalAppData $hcTrip.LocalAppData -ExtraEnv @{ TESTPLANCHECK_TEST_TRIP_TIME_AFTER_FILES = '5' }
     $msgTrip = Get-Message $rTrip.Out
@@ -438,6 +441,31 @@ New-Item -ItemType File -Path (Join-Path $PSScriptRoot 'EXECUTED-MARKER.txt') -F
     $msgFull = Get-Message $rFull.Out
     Check 'without the seam the same fixture scans fully (not partial)' ($msgFull -notmatch '(?i)PARTIAL') $msgFull
     Check 'without the seam the test-file finding IS reported' ($msgFull -match 'zz_test_slow\.ps1:1 - blind sleep of 300s') $msgFull
+
+    # =====================================================================
+    Write-Host '--- extension-NON-matching files also pay the per-entry time check (HM-04) ---' -ForegroundColor Cyan
+    # Pre-fix, the in-loop time check sat BEHIND the cheap extension match, so a
+    # huge directory of extension-NON-matching files never paid a single time
+    # check during enumeration. This fixture contains ONLY non-matching files;
+    # the seam trips mid-enumeration, so the scan must still go PARTIAL with the
+    # TIME cause - proving the deadline is paid per enumerated entry, not per
+    # extension-matching file.
+    $projNm = New-Proj 'NonMatchTrip'
+    for ($fi = 1; $fi -le 8; $fi++) {
+        Write-Utf8 (Join-Path $projNm ('data\d{0:00}.txt' -f $fi)) ('row ' + $fi + "`n")
+    }
+    $hcNm = New-IsolatedHookCopy
+    $rNm = Fire -HookPath $hcNm.Script -Cwd $projNm -EventName 'SessionStart' -LocalAppData $hcNm.LocalAppData -ExtraEnv @{ TESTPLANCHECK_TEST_TRIP_TIME_AFTER_FILES = '3' }
+    $msgNm = Get-Message $rNm.Out
+    Check 'a non-matching-only directory still trips the TIME stop -> PARTIAL' ($rNm.Exit -eq 0 -and $rNm.Err -eq '' -and $msgNm -match '(?i)PARTIAL') ($msgNm + $rNm.Err)
+    Check 'the partial cause NAMES time, not files/dirs/read-failure' (
+        $msgNm -match 'scan time limit' -and $msgNm -notmatch 'directory ceiling' -and
+        $msgNm -notmatch 'candidate-file ceiling' -and $msgNm -notmatch 'could not be read') $msgNm
+    # Negative control: without the seam the same all-non-matching fixture scans
+    # fully - the per-entry check itself must not invent a partial result.
+    $hcNmCtl = New-IsolatedHookCopy
+    $rNmCtl = Fire -HookPath $hcNmCtl.Script -Cwd $projNm -EventName 'SessionStart' -LocalAppData $hcNmCtl.LocalAppData
+    Check 'without the seam the non-matching fixture scans fully (not partial)' ((Get-Message $rNmCtl.Out) -notmatch '(?i)PARTIAL') (Get-Message $rNmCtl.Out)
 
     # =====================================================================
     Write-Host '--- a reparse-point (junction) scan ROOT is refused and marked partial (HM-04) ---' -ForegroundColor Cyan
@@ -471,6 +499,41 @@ New-Item -ItemType File -Path (Join-Path $PSScriptRoot 'EXECUTED-MARKER.txt') -F
     else {
         Write-Host '[SKIP] root junction could not be created in this harness - reparse-root assertion skipped' -ForegroundColor Yellow
     }
+
+    # =====================================================================
+    Write-Host '--- a runner-stored timing baseline surfaces in the advisory (HM-07) ---' -ForegroundColor Cyan
+    # The guarded runner stores TestTiming-<projectKey>-<cmdFp>.json with a 12-char
+    # projectKey (Run-Tests-Guarded.ps1 Get-ProjectKey: SHA-256 of the lowercased
+    # cwd, Substring(0,12)). Pre-fix the hook matched with the 10-char Get-ShortHash,
+    # so a 10-char candidate never equalled the stored 12-char key and the baseline
+    # line NEVER surfaced. The fixture below is keyed EXACTLY like the runner; the
+    # fixed hook must surface it. TEST_PLAN_ALWAYS_REPORT=1 bypasses the cooldown.
+    $hcTm = New-IsolatedHookCopy -EnvContent "TEST_PLAN_ALWAYS_REPORT=1`n"
+    $projTm = New-GitRepo 'TimingBaseline'
+    $tmSha = [System.Security.Cryptography.SHA256]::Create()
+    try { $tmKey12 = ([System.BitConverter]::ToString($tmSha.ComputeHash([System.Text.Encoding]::UTF8.GetBytes($projTm.ToLowerInvariant()))) -replace '-', '').ToLowerInvariant().Substring(0, 12) }
+    finally { $tmSha.Dispose() }
+    $tmStateDir = Join-Path $hcTm.LocalAppData 'HookMaker\state'
+    New-Item -ItemType Directory -Path $tmStateDir -Force | Out-Null
+    # >= 5 'ok' samples (the TimingMinBaseline the hook requires), runner field shape.
+    $tmSamples = @(1..5 | ForEach-Object {
+            [pscustomobject]@{ runId = ('r' + $_); elapsedSeconds = 12.3; outcome = 'ok'; utc = '2026-01-01T00:00:00.0000000Z'; workerCeiling = 4; suiteLabel = '' }
+        })
+    $tmDoc = [pscustomobject]@{ version = 1; projectKey = $tmKey12; commandFingerprint = ('ab' * 16); samples = $tmSamples }
+    Write-Utf8 (Join-Path $tmStateDir ('TestTiming-' + $tmKey12 + '-' + ('ab' * 16) + '.json')) ($tmDoc | ConvertTo-Json -Depth 6)
+    $rTm = Fire -HookPath $hcTm.Script -Cwd $projTm -EventName 'SessionStart' -LocalAppData $hcTm.LocalAppData
+    $msgTm = Get-Message $rTm.Out
+    Check 'the 12-char runner projectKey matches and the baseline line appears' (
+        $rTm.Exit -eq 0 -and $rTm.Err -eq '' -and $msgTm -match 'prior test-timing baseline exists for 1 recorded command') ($msgTm + $rTm.Err)
+    # Control: a timing file for a DIFFERENT project (different 12-char key) must
+    # NOT be counted - the match is by stored key, not by file presence.
+    $hcTmOther = New-IsolatedHookCopy -EnvContent "TEST_PLAN_ALWAYS_REPORT=1`n"
+    $tmOtherState = Join-Path $hcTmOther.LocalAppData 'HookMaker\state'
+    New-Item -ItemType Directory -Path $tmOtherState -Force | Out-Null
+    $tmOtherDoc = [pscustomobject]@{ version = 1; projectKey = ('0' * 12); commandFingerprint = ('cd' * 16); samples = $tmSamples }
+    Write-Utf8 (Join-Path $tmOtherState ('TestTiming-' + ('0' * 12) + '-' + ('cd' * 16) + '.json')) ($tmOtherDoc | ConvertTo-Json -Depth 6)
+    $rTmOther = Fire -HookPath $hcTmOther.Script -Cwd $projTm -EventName 'SessionStart' -LocalAppData $hcTmOther.LocalAppData
+    Check 'a foreign-project timing file is NOT counted as this project''s baseline' ((Get-Message $rTmOther.Out) -notmatch 'prior test-timing baseline') (Get-Message $rTmOther.Out)
 }
 finally {
     $env:CLAUDE_PROJECT_DIR = $SavedClaudeProjectDir
