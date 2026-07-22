@@ -229,7 +229,13 @@ Add-TimingSample -StateDir $StateDir -ProjectKey $Key -CommandFingerprint $Cmd -
         if ($null -eq $oldFn) {
             Write-Host 'HEAD has no Add-TimingSample; skipping the historical red-proof.' -ForegroundColor DarkGray
         }
-        elseif ($oldFn.Extent.Text -eq $addFn.Extent.Text) {
+        elseif ($oldFn.Extent.Text -match 'Stale-lock recovery') {
+            # Retire on the FIX MARKER, not extent equality: `git show` output is
+            # joined with LF while the working file is CRLF, so a byte comparison
+            # never matched and the "pre-fix" proof ran against the FIXED code
+            # (a permanent false red once the fix was committed). The marker asks
+            # the right question - "does HEAD already contain the fix?" - and
+            # stays correct even after unrelated future edits to the function.
             Write-Host 'HEAD already contains the stale-lock fix; historical red-proof retired.' -ForegroundColor DarkGray
         }
         else {
