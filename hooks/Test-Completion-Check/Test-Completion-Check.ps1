@@ -1010,6 +1010,32 @@ $resultIsCurrent = ($null -ne $resultTime -and ([DateTime]::UtcNow - $resultTime
 $script:ResultTicks = if ($null -ne $resultTime) { [string]$resultTime.Ticks } else { '0' }
 $resultIsCurrentEvidence = ($resultRunMatches -and $resultIsCurrent)
 
+# ---- HM-07: meaningful timing regression (advisory) ------------------------
+# Compared against the ROBUST median of PRIOR clean runs at the same worker
+# ceiling (this run's own just-recorded sample is excluded by runId, and a
+# different worker count is not comparable). Advisory by design: it is surfaced
+# only on an otherwise-silent tail, so a real block always wins, and it never
+# blocks completion by itself.
+$timingRegressionLines = @()
+if ($null -ne $result -and $elapsedSeconds -gt 0) {
+    $tKey = [string](Get-Field $result 'projectKey')
+    $tCmd = [string](Get-Field $result 'commandFingerprint')
+    $tRun = [string](Get-Field $result 'runId')
+    $tWc = -1; [void][int]::TryParse([string](Get-Field $result 'workerBudget'), [ref]$tWc)
+    if ($tKey -ne '' -and $tCmd -ne '') {
+        $tHist = $null
+        try { $tHist = Read-JsonFile (Get-TimingHistoryPath -StateDir $stateDir -ProjectKey $tKey -CommandFingerprint $tCmd) } catch { $tHist = $null }
+        $reg = Test-TimingRegression -History $tHist -WorkerCeiling $tWc -ElapsedSeconds $elapsedSeconds -ExcludeRunId $tRun
+        if ($reg.IsRegression) {
+            $timingRegressionLines = @(
+                'TEST COMPLETION CHECK (advisory): this guarded run took ' + $reg.ElapsedSeconds + 's, vs a median of ' +
+                $reg.Median + 's over ' + $reg.Samples + ' prior clean runs at the same worker ceiling (' + $tWc + '). That is a ' +
+                'meaningful slowdown - investigate a real regression (a new blind wait, added work, resource pressure) before ' +
+                'accepting it. Advisory only: it does not by itself block completion.')
+        }
+    }
+}
+
 # ---- incident identity ----
 # Keyed on what actually happened, so re-reading the same document never
 # re-opens a resolved incident and a NEW run always produces a new key.
@@ -1192,9 +1218,12 @@ if ($script:pendingNotes.Count -gt 0 -or $script:pendingOverflow) {
     }
     # Every owed note is now satisfied: the incident(s) and their notes are closed.
     Save-CompletionState
+    if ($timingRegressionLines.Count -gt 0) { Write-Finding -Blocking $false -Lines $timingRegressionLines }
     exit 0
 }
 
-# Everything accounted for: silent.
+# Everything accounted for. If this run was a meaningful timing regression, surface
+# it now as advisory context (never a block); otherwise stay silent.
 Save-CompletionState
+if ($timingRegressionLines.Count -gt 0) { Write-Finding -Blocking $false -Lines $timingRegressionLines }
 exit 0

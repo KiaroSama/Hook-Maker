@@ -122,6 +122,78 @@ function Write-JsonFileAtomic {
     Move-Item -LiteralPath $temporaryPath -Destination $Path -Force
 }
 
+# ---- HM-07: bounded rolling test-timing history (READ side) -----------------
+# Samples live ONLY in local Hook-Maker state (%LOCALAPPDATA%\HookMaker\state),
+# one file per (canonical project key + command/suite fingerprint), never in the
+# project. Each sample is sanitized: runId, elapsed seconds, outcome, UTC, the
+# effective worker ceiling and an optional safe suite label - never an argument,
+# path, prompt, secret, user name or token. The standalone guarded runner WRITES
+# them (Run-Tests-Guarded.ps1); these helpers READ them so Test-Plan-Check can
+# surface a baseline and Test-Completion-Check can report a meaningful regression.
+# The WRITER mirrors TimingMaxSamples exactly - keep the two in lockstep.
+$script:TimingMaxSamples = 30
+$script:TimingMinBaseline = 5        # this many COMPARABLE ok runs before judging
+$script:TimingRelFactor = 1.5        # >= 50% slower than the median, AND ...
+$script:TimingAbsSeconds = 30        # ... >= 30s slower in absolute terms
+
+function Get-TimingHistoryPath {
+    param([string]$StateDir, [string]$ProjectKey, [string]$CommandFingerprint)
+    return (Join-Path $StateDir ('TestTiming-' + $ProjectKey + '-' + $CommandFingerprint + '.json'))
+}
+
+# The ok-only, worker-comparable elapsed samples. A run taken with a DIFFERENT
+# worker ceiling is not comparable (more workers => faster), so a worker-count
+# change yields too few comparable samples rather than a false regression.
+function Get-ComparableOkSeconds {
+    param($History, [int]$WorkerCeiling, [string]$ExcludeRunId = '')
+    $out = New-Object System.Collections.Generic.List[double]
+    if ($null -eq $History -or -not $History.PSObject.Properties['samples']) { return $out }
+    foreach ($s in @($History.samples)) {
+        if ($null -eq $s) { continue }
+        # The run being judged has already been recorded by the runner, so exclude
+        # it: a run must be compared against PRIOR history, never against itself.
+        if ($ExcludeRunId -ne '' -and ([string](Get-Field $s 'runId')) -eq $ExcludeRunId) { continue }
+        if (([string](Get-Field $s 'outcome')) -ne 'ok') { continue }
+        $wc = -1; [void][int]::TryParse([string](Get-Field $s 'workerCeiling'), [ref]$wc)
+        if ($wc -ne $WorkerCeiling) { continue }
+        $sec = 0.0
+        if ([double]::TryParse([string](Get-Field $s 'elapsedSeconds'), [ref]$sec) -and $sec -ge 0) { [void]$out.Add($sec) }
+    }
+    return $out
+}
+
+function Get-Median {
+    param([double[]]$Values)
+    $v = @($Values | Sort-Object)
+    $n = $v.Count
+    if ($n -eq 0) { return 0.0 }
+    if ($n % 2 -eq 1) { return [double]$v[($n - 1) / 2] }
+    return ([double]$v[$n / 2 - 1] + [double]$v[$n / 2]) / 2.0
+}
+
+# A meaningful regression needs enough comparable ok history AND this run being
+# both >= TimingRelFactor x and >= TimingAbsSeconds slower than the ROBUST median
+# (so one earlier outlier neither redefines the baseline nor gets flagged). It is
+# advisory by design - the caller decides how to surface it.
+function Test-TimingRegression {
+    param($History, [int]$WorkerCeiling, [double]$ElapsedSeconds, [string]$ExcludeRunId = '')
+    # @() around the call: returning a List[double] unrolls to a bare double when it
+    # holds one element, so re-wrap to a stable array before Count/Get-Median.
+    $ok = @(Get-ComparableOkSeconds -History $History -WorkerCeiling $WorkerCeiling -ExcludeRunId $ExcludeRunId)
+    $median = Get-Median -Values $ok
+    $isReg = $false
+    if ($ok.Count -ge $script:TimingMinBaseline -and $median -gt 0) {
+        if ($ElapsedSeconds -ge ($median * $script:TimingRelFactor) -and ($ElapsedSeconds - $median) -ge $script:TimingAbsSeconds) { $isReg = $true }
+    }
+    return [pscustomobject]@{
+        IsRegression   = $isReg
+        Median         = [Math]::Round($median, 1)
+        Samples        = $ok.Count
+        ElapsedSeconds = [Math]::Round($ElapsedSeconds, 1)
+        MinBaseline    = $script:TimingMinBaseline
+    }
+}
+
 # Runs an external command (git, gh, ...) whose stderr must NEVER become a
 # terminating error, even when the command exits non-zero. Windows PowerShell
 # 5.1 promotes ANY stderr line from a native command into a NativeCommandError

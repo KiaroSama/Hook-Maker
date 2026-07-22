@@ -381,6 +381,34 @@ if ($configWarnings.Count -gt 0) {
     [void]$lines.Add('')
     foreach ($warning in $configWarnings) { [void]$lines.Add('Test-Plan-Check .env: ' + $warning) }
 }
+# ---- HM-07: surface any prior test-timing baseline for THIS project ----------
+# Read-only: the guarded runner records samples in local Hook-Maker state; here we
+# just report how many recorded commands already have a usable clean-run baseline,
+# so the agent knows Test-Completion-Check can flag a real slowdown. Matched by the
+# projectKey the runner stored, against both the raw and canonical cwd hash (the
+# runner canonicalizes the working dir), so the derivation difference cannot hide
+# a real baseline. Bounded by the (pruned) per-project timing file count.
+try {
+    $myTimingKeys = @((Get-ShortHash $cwd.ToLowerInvariant()))
+    try { $myTimingKeys += (Get-ShortHash ([System.IO.Path]::GetFullPath($cwd).ToLowerInvariant())) } catch { }
+    $suitesWithBaseline = 0
+    if (-not [string]::IsNullOrWhiteSpace($cwd) -and (Test-Path -LiteralPath $stateDir -PathType Container)) {
+        foreach ($tf in @(Get-ChildItem -LiteralPath $stateDir -Filter 'TestTiming-*.json' -File -ErrorAction SilentlyContinue)) {
+            $tdoc = $null
+            try { $tdoc = Read-JsonFile $tf.FullName } catch { $tdoc = $null }
+            if ($null -eq $tdoc -or -not $tdoc.PSObject.Properties['projectKey']) { continue }
+            if ($myTimingKeys -notcontains [string]$tdoc.projectKey) { continue }
+            $okCount = 0
+            if ($tdoc.PSObject.Properties['samples']) { $okCount = @(@($tdoc.samples) | Where-Object { $null -ne $_ -and ([string](Get-Field $_ 'outcome')) -eq 'ok' }).Count }
+            if ($okCount -ge $script:TimingMinBaseline) { $suitesWithBaseline++ }
+        }
+    }
+    if ($suitesWithBaseline -gt 0) {
+        [void]$lines.Add('')
+        [void]$lines.Add('- A prior test-timing baseline exists for ' + $suitesWithBaseline + ' recorded command(s) here (local Hook-Maker state). Test-Completion-Check flags a run only when it is materially slower than that robust median at the same worker ceiling - treat an unexplained jump as a regression to investigate, not a new normal to accept.')
+    }
+}
+catch { }
 [void]$lines.Add('')
 [void]$lines.Add('Silent from here until this project''s test state changes or ' + $cooldownMinutes + ' minutes pass.')
 $message = ($lines.ToArray() -join "`n")
