@@ -78,13 +78,14 @@ if ($ThrottleLimit -le 0) {
 # -ThrottleLimit. This is where a worker cap can actually be enforced: it is the
 # only place that knows the real number.
 #
-# Test-Run-Guard deliberately does NOT enforce its TEST_GUARD_MAX_WORKERS - it
-# would have to rewrite the worker flag of whatever runner it just recognised,
-# and every framework spells that differently (pytest -n, jest --maxWorkers,
-# vitest --maxThreads, go -p, cargo -j, dotnet -m, here -ThrottleLimit).
-# Guessing wrong breaks the run, and the common oversubscribing case carries no
-# flag at all - it auto-detects - so there would be nothing to rewrite anyway.
-# The hook advises the number; this line is what makes it bind.
+# Test-Run-Guard resolves TEST_GUARD_MAX_WORKERS and hands it to the guarded
+# runner, which EXPORTS the resolved ceiling as HOOKMAKER_MAX_TEST_WORKERS into
+# this child's environment (never rewriting the recognised command's own worker
+# flag - every framework spells that differently: pytest -n, jest --maxWorkers,
+# vitest --maxThreads, go -p, cargo -j, dotnet -m, here -ThrottleLimit - and the
+# oversubscribing case usually carries no flag at all). This line is where the
+# exported ceiling actually binds: it clamps $ThrottleLimit whether it was
+# auto-detected (the default) or passed explicitly as -ThrottleLimit.
 if (-not [string]::IsNullOrWhiteSpace($env:HOOKMAKER_MAX_TEST_WORKERS)) {
     $ceiling = 0
     if ([int]::TryParse($env:HOOKMAKER_MAX_TEST_WORKERS, [ref]$ceiling) -and $ceiling -ge 1) {
