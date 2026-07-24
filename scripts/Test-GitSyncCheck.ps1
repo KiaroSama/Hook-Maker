@@ -441,6 +441,67 @@ try {
     [System.IO.File]::WriteAllText((Join-Path $fpExtra 'extra-untracked.txt'), 'more task work', (New-Object System.Text.UTF8Encoding $false))
     $rFp3 = Fire -Cwd $fp -SessionId 'fp-sess'
     Check 'a FURTHER dirty-state change in the same worktree re-blocks immediately in the same session' ($rFp3.Out -match '"decision":"block"' -and $rFp3.Out -match 'pre-existing worktree') $rFp3.Out
+
+    # =====================================================================
+    # E-08: the Stop reporting vocabulary must cover all seven task-scoped
+    # categories by NAME. Behavior is untouched (the scenarios above prove it);
+    # these pins hold the WORDING so the completion report reads unambiguously.
+    # =====================================================================
+    Write-Host '--- E-08: seven-category reporting vocabulary ---' -ForegroundColor Cyan
+    # (1) uncommitted/staged/untracked - the dirty-repo block names all three.
+    $vocab1 = New-PushedRepo 'vocab-dirty'
+    [System.IO.File]::WriteAllText((Join-Path $vocab1 'new.txt'), 'x', (New-Object System.Text.UTF8Encoding $false))
+    $rV1 = Fire -Cwd $vocab1
+    Check 'E-08(1): the dirty finding names staged, unstaged, AND untracked' (
+        $rV1.Out -match 'uncommitted change' -and $rV1.Out -match 'staged, unstaged, and/or untracked') $rV1.Out
+    # (5) unreconciled subagent work - the operational instruction covers it.
+    Check 'E-08(5): the instruction covers unreconciled subagent work explicitly' (
+        $rV1.Out -match 'Work produced by a subagent during this task is task-scoped' -and
+        $rV1.Out -match 'never leave unreconciled subagent work behind') $rV1.Out
+    # (2)+(7) unpushed commits / local-remote final SHA mismatch.
+    $vocab2 = New-PushedRepo 'vocab-ahead'
+    [System.IO.File]::WriteAllText((Join-Path $vocab2 'f.txt'), 'v2', (New-Object System.Text.UTF8Encoding $false))
+    & git -C $vocab2 add f.txt
+    & git -C $vocab2 commit -q -m 'task change'
+    $rV2 = Fire -Cwd $vocab2
+    Check 'E-08(2,7): AHEAD names unpushed commits AND the local/remote final-SHA mismatch' (
+        $rV2.Out -match 'AHEAD of origin/main' -and $rV2.Out -match 'unpushed commits' -and
+        $rV2.Out -match 'local and remote final SHAs do not match') $rV2.Out
+    # (7) behind: the same SHA-mismatch vocabulary on the pull side.
+    $vocab3 = New-PushedRepo 'vocab-behind'
+    $vocab3Clone = Join-Path $ReposRoot 'vocab-behind-clone'
+    & git clone -q (Join-Path $ReposRoot 'vocab-behind-remote.git') $vocab3Clone 2>$null
+    # The bare remote's HEAD still points at the init-default branch, so the
+    # clone lands on an unborn branch - switch to the real pushed 'main' first.
+    & git -C $vocab3Clone checkout -q main 2>$null
+    & git -C $vocab3Clone config user.email 't@t'
+    & git -C $vocab3Clone config user.name 't'
+    [System.IO.File]::WriteAllText((Join-Path $vocab3Clone 'g.txt'), 'remote work', (New-Object System.Text.UTF8Encoding $false))
+    & git -C $vocab3Clone add g.txt
+    & git -C $vocab3Clone commit -q -m 'remote change'
+    & git -C $vocab3Clone push -q origin main
+    $rV3 = Fire -Cwd $vocab3
+    Check 'E-08(7): BEHIND also names the local/remote final-SHA mismatch' (
+        $rV3.Out -match 'BEHIND origin/main' -and $rV3.Out -match 'local and remote final SHAs do not match') $rV3.Out
+    # (3)+(4) changed pre-existing worktrees (HEAD unchanged) and task-created/
+    # advanced branches+worktrees are pinned by the HM-08 scenarios above; (6)
+    # ambiguous/unknown dirty evidence: the legacy-baseline scenario's wording
+    # now names it explicitly.
+    Check 'E-08(6): unknown dirty evidence is named ambiguous/UNKNOWN and never an all-clear' (
+        $rUnknown.Out -match 'ambiguous/UNKNOWN' -and $rUnknown.Out -match 'never treated as an all-clear' -and
+        $rUnknown.Out -match 'cannot be confirmed unchanged') $rUnknown.Out
+
+    # =====================================================================
+    Write-Host '--- E-13: static safety - the hook reports, it never reconciles ---' -ForegroundColor Cyan
+    $gscText = [System.IO.File]::ReadAllText($Hook)
+    # The hook runs only read-only git plumbing; no mutating git verb may appear
+    # as an ARGUMENT to its Invoke-Git wrapper. (The words appear in the agent
+    # INSTRUCTION text as prose - assert on the @('verb'...) call shape instead.)
+    Check 'source invokes no mutating git verb (add/commit/push/pull/merge/rebase/reset/clean/checkout/worktree remove)' (
+        $gscText -notmatch "@\('(add|commit|push|pull|merge|rebase|reset|clean|checkout)'" -and
+        $gscText -notmatch "@\('worktree',\s*'remove'") $gscText.Substring(0, 200)
+    Check 'source has no execution primitive beyond its quiet git wrapper (no Start-Process/Invoke-Expression/iex)' (
+        $gscText -notmatch '(?im)^\s*(Start-Process|Invoke-Expression|iex)\b') $gscText.Substring(0, 200)
 }
 finally {
     if ($KeepArtifacts) {

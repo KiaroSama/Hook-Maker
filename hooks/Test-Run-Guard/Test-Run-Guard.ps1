@@ -28,6 +28,16 @@
 # parsing a shell, so it stays silent. Anything not positively recognised
 # produces total silence; a false positive here would block real work.
 #
+# GUIDANCE ADDITIONS (E-04, output text only - the command guard itself is
+# unchanged): a recognised raw test command's deny/advisory also states the
+# deep-debug/test-policy bounds the replacement already enforces (bounded
+# runner, documented native timeout where supported, wall/idle, one shared
+# worker ceiling, tree cleanup, exit-code propagation, no ad hoc sleeps), and -
+# only when the command VISIBLY writes textual output to a file - advises
+# explicit UTF-8 output using official documented syntax only (PowerShell
+# -Encoding utf8, Python PYTHONUTF8/PYTHONIOENCODING); it never invents an
+# encoding flag, and file validation stays with Utf8-Encoding-Check.
+#
 # Optional .env next to this script (copy .env.example - it documents every key
 # and the defaults). An invalid value is reported ONCE in plain text and the
 # default is used: a malformed setting must never make this an unconditional
@@ -966,12 +976,45 @@ if ($eventName -eq 'PreToolUse') {
         ' worker flag at or below ' + $maxWorkers + '.'
     }
 
+    # E-04: one concise line naming the deep-debug/test-policy requirements the
+    # replacement already enforces, so the model can verify instead of re-derive.
+    # Guidance only - the command guard above is unchanged.
+    $ddNote = ' Deep-debug/test-policy bounds this replacement already covers: bounded runner, outer wall + idle' +
+    ' ceilings, one shared worker ceiling, process-tree cleanup, real exit-code propagation, no ad hoc sleeps.' +
+    ' Where the framework documents its OWN native timeout flag, pass that too - never a guessed one.'
+
+    # E-04: maintained-textual-output advisory. Fires ONLY when the raw command
+    # VISIBLY writes output to a file (a standalone top-level '>'/'>>' token with
+    # a non-null target, or an Out-File/Set-Content/Tee-Object/tee token). The
+    # advice names ONLY official documented syntax (PowerShell -Encoding utf8;
+    # Python's PYTHONUTF8/PYTHONIOENCODING env vars) and never invents an
+    # encoding flag for an arbitrary tool - file validation itself belongs to
+    # Utf8-Encoding-Check, not this hook.
+    $utf8Note = ''
+    for ($ti = 0; $ti -lt $tokens.Count; $ti++) {
+        $tok = [string]$tokens[$ti]
+        $tokLower = $tok.ToLowerInvariant()
+        $isFileRedirect = $false
+        if (($tok -eq '>' -or $tok -eq '>>') -and $ti + 1 -lt $tokens.Count) {
+            $target = ([string]$tokens[$ti + 1]).ToLowerInvariant()
+            if ($target -ne '$null' -and $target -ne 'nul' -and $target -ne '/dev/null') { $isFileRedirect = $true }
+        }
+        elseif ($tokLower -in @('out-file', 'set-content', 'tee-object', 'tee')) { $isFileRedirect = $true }
+        if ($isFileRedirect) {
+            $utf8Note = ' This command also WRITES textual output to a file: if that file is maintained project text,' +
+            ' make the encoding explicitly UTF-8 using the tool''s OFFICIAL syntax only (PowerShell: Out-File/' +
+            'Set-Content -Encoding utf8; Python tools: PYTHONUTF8=1 or PYTHONIOENCODING=utf-8). Never invent an' +
+            ' encoding flag a tool does not document; Utf8-Encoding-Check validates the files themselves.'
+            break
+        }
+    }
+
     $message = 'TEST RUN GUARD: "' + $verdict.Command.Label + '" is a test command with no bounded runner around it. ' +
     'A raw run has no wall ceiling, no no-progress ceiling and no process-tree cleanup, so a hang cannot be ' +
     'detected and cannot be proven to have been cleaned up. Run this instead (arguments are passed as data - ' +
     'nothing is re-parsed by a shell):' + "`n`n" + $replacement + "`n`n" +
     'The runner propagates the real exit code (124 when it terminated the run) and writes its structured result ' +
-    'to the -ResultPath above, which this hook reads on PostToolUse.' + $workerNote + $configNote
+    'to the -ResultPath above, which this hook reads on PostToolUse.' + $workerNote + $ddNote + $utf8Note + $configNote
 
     if ($advisoryOnly) {
         # TEST_GUARD_ADVISORY_ONLY=1: the finding still goes out, the command

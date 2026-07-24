@@ -14,7 +14,20 @@
 #   `@{upstream}` that could silently belong to a different remote.
 # - State per repo remembers the last verified/reported SHA so the same
 #   commit is never re-verified and a deterministic failure is not nagged
-#   endlessly; a NEW pushed commit resets the cycle immediately.
+#   endlessly; a NEW pushed commit resets the cycle immediately. That is also
+#   the ::deep-debug contract (E-09): the workflow's final gate holds for the
+#   EXACT final pushed SHA including accepted post-Ponytail changes - a later
+#   commit re-verifies on its own SHA, and this hook's result alone never
+#   claims the whole workflow passed.
+# - NON-GREEN states (E-09): no run/status data; an expected workflow absent
+#   (workflows exist on disk but no runs registered); queued/in-progress
+#   (status not completed); completed cancelled / timed_out / stale /
+#   action_required / unknown; failure / startup_failure; EVERY completed run
+#   skipped (unexpected skip - nothing verified the commit); and any SHA
+#   mismatch (an unpushed/different HEAD is never evaluated as this commit -
+#   Get-PushedHeadInfo re-derives the exact pushed HEAD every Stop). An
+#   external-blocker exception may permit an explicitly BLOCKED/exceptional
+#   completion but NEVER reads as "CI passed".
 # - Never loops: stop_hook_active exits first. Degrades silently when git,
 #   a GitHub remote, or gh is unavailable (it never claims checks passed).
 #
@@ -256,6 +269,8 @@ function Get-CiRunSnapshot {
     $pendingRuns = @()
     $failedRuns = @()
     $infraRuns = @()
+    $successRunCount = 0
+    $skippedRuns = @()
     $fingerprintParts = New-Object System.Collections.Generic.List[string]
     foreach ($run in @($runs)) {
         if ($null -eq $run) { continue }
@@ -271,7 +286,8 @@ function Get-CiRunSnapshot {
         # cannot appear in the values, and the whole set is sorted below.
         [void]$fingerprintParts.Add($id + "`t" + $attempt + "`t" + $name + "`t" + $status + "`t" + $conclusion + "`t" + $updatedAt)
         if ($status -ne 'completed') { $pendingRuns += $entry }
-        elseif ($conclusion -in @('success', 'neutral', 'skipped')) { }
+        elseif ($conclusion -in @('success', 'neutral')) { $successRunCount++ }
+        elseif ($conclusion -eq 'skipped') { $skippedRuns += $entry }
         elseif ($conclusion -in @('failure', 'startup_failure')) { $failedRuns += $entry }
         else {
             # cancelled / timed_out / stale / action_required / unknown:
@@ -280,6 +296,15 @@ function Get-CiRunSnapshot {
             # (a genuine completed failure/startup_failure never is).
             $infraRuns += ($entry + ' [' + $conclusion + ']')
         }
+    }
+    # UNEXPECTED SKIP (E-09): a 'skipped' conclusion is a normal green companion
+    # to at least one genuinely successful run (path filters, conditional jobs),
+    # but when EVERY completed run was skipped nothing actually verified this
+    # commit - that must never read as CI-green. Classified with the abnormal
+    # endings so it blocks (and stays eligible for an evidenced external-blocker
+    # exception), never as success.
+    if ($successRunCount -eq 0 -and $skippedRuns.Count -gt 0) {
+        foreach ($skippedEntry in $skippedRuns) { $infraRuns += ($skippedEntry + ' [skipped - every run was skipped, nothing verified this commit]') }
     }
     # A completed failure is a genuine code failure UNLESS GitHub's own
     # annotations prove it is an account billing/payment block (no job ran).
@@ -572,7 +597,9 @@ if ($snapshot.Runs.Count -eq 0) {
 }
 
 if ($snapshot.PendingRuns.Count -gt 0) {
-    Write-Block -Outcome 'pending' -Reason ('CI CHECK: pushed commit ' + $sha7 + ' on ' + $branch + ' (' + $repoSlug + ') has ' + $snapshot.PendingRuns.Count + ' check run(s) still in progress: ' + ($snapshot.PendingRuns -join '; ') + '. The work is not verifiably complete yet - wait for them and verify this exact commit (gh run list --commit ' + $sha + ').')
+    # E-09 wording: a non-completed status covers queued AND in_progress (and any
+    # other pre-terminal state) - none of them is ever green.
+    Write-Block -Outcome 'pending' -Reason ('CI CHECK: pushed commit ' + $sha7 + ' on ' + $branch + ' (' + $repoSlug + ') has ' + $snapshot.PendingRuns.Count + ' check run(s) not finished yet (queued or still in progress): ' + ($snapshot.PendingRuns -join '; ') + '. The work is not verifiably complete yet - wait for them and verify this exact commit (gh run list --commit ' + $sha + ').')
 }
 
 # ---- account billing / payment block: proven external, auto-recorded ----
@@ -603,6 +630,10 @@ if ($snapshot.FailedRuns.Count -gt 0 -or $snapshot.InfraRuns.Count -gt 0) {
     if ($snapshot.InfraRuns.Count -gt 0) {
         $parts += ('Abnormal endings: ' + ($snapshot.InfraRuns -join '; ') + '. These are often infrastructure, permission, or flaky failures - report them accurately (not as code failures); one confirming rerun is acceptable (gh run rerun <id>), and repeated flakiness must be investigated. If genuinely external, it may be recorded: -ReportExternalBlocker.')
     }
+    # E-09: completion gates (including a ::deep-debug finish) apply to the EXACT
+    # final pushed SHA - any later commit, e.g. an accepted post-Ponytail
+    # simplification, restarts this gate on its own SHA.
+    $parts += 'Completion applies to the EXACT final pushed SHA: any later commit (including accepted post-Ponytail changes in a ::deep-debug workflow) must be pushed and re-verified on its own SHA.'
     Write-Block -Outcome 'failed' -Reason ('CI CHECK for pushed commit ' + $sha7 + ' on ' + $branch + ' (' + $repoSlug + '): ' + ($parts -join ' '))
 }
 
