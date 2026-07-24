@@ -398,6 +398,48 @@ try {
     $r = Fire -HookPath $CiHook -Cwd $ci4 -EventName 'Stop'
     Check 'cancelled/stale -> infra wording, rerun-once guidance' ($r.Out -match 'cancelled' -and $r.Out -match 'stale' -and $r.Out -match 'rerun')
 
+    # ---- E-09: every listed non-green state stays non-green ----
+    Write-Host '--- CiStatusCheck E-09: queued, unexpected-skip, exact-final-SHA wording ---' -ForegroundColor Cyan
+    # queued (status not completed) blocks and the wording names it.
+    $ciQ = New-GitRepo 'ci-queued'
+    $shaQ = Get-HeadSha $ciQ
+    Set-Mock -RunJson '[{"databaseId":61,"name":"CI","workflowName":"CI","status":"queued","conclusion":null}]' -ExpectedSha $shaQ
+    $r = Fire -HookPath $CiHook -Cwd $ciQ -EventName 'Stop'
+    Check 'E-09: a queued run blocks and is named queued-or-in-progress' (
+        $r.Out -match '"decision":"block"' -and $r.Out -match 'queued or still in progress') $r.Out
+    # EVERY completed run skipped -> nothing verified the commit -> never green.
+    $ciSkip = New-GitRepo 'ci-allskip'
+    $shaSkip = Get-HeadSha $ciSkip
+    Set-Mock -RunJson '[{"databaseId":62,"name":"CI","workflowName":"CI","status":"completed","conclusion":"skipped"},{"databaseId":63,"name":"Lint","workflowName":"Lint","status":"completed","conclusion":"skipped"}]' -ExpectedSha $shaSkip
+    $r = Fire -HookPath $CiHook -Cwd $ciSkip -EventName 'Stop'
+    Check 'E-09: ALL runs skipped -> blocks, never reads as CI-green' (
+        $r.Out -match '"decision":"block"' -and $r.Out -match 'every run was skipped, nothing verified this commit') $r.Out
+    # A skip BESIDE a genuine success is the normal green companion (path
+    # filters) - still verified silently.
+    $ciSkipMix = New-GitRepo 'ci-skipmix'
+    $shaSkipMix = Get-HeadSha $ciSkipMix
+    Set-Mock -RunJson '[{"databaseId":64,"name":"CI","workflowName":"CI","status":"completed","conclusion":"success"},{"databaseId":65,"name":"Docs","workflowName":"Docs","status":"completed","conclusion":"skipped"}]' -ExpectedSha $shaSkipMix
+    $r = Fire -HookPath $CiHook -Cwd $ciSkipMix -EventName 'Stop'
+    Check 'E-09: a skipped run beside a real success stays verified-silent (expected skip)' ([string]::IsNullOrWhiteSpace([string]$r.Out)) ([string]$r.Out)
+    # The failure guidance carries the exact-final-SHA / post-Ponytail contract.
+    $ciSha = New-GitRepo 'ci-exactsha'
+    $shaExact = Get-HeadSha $ciSha
+    Set-Mock -RunJson '[{"databaseId":66,"name":"CI","workflowName":"CI","status":"completed","conclusion":"failure"}]' -ExpectedSha $shaExact `
+        -CheckRunsJson (New-CheckRunsJson @(@{id = '66'; conclusion = 'failure' })) `
+        -Annotations @{ '66' = (New-RealFailureAnnotations) }
+    $r = Fire -HookPath $CiHook -Cwd $ciSha -EventName 'Stop'
+    Check 'E-09: the failure block states the EXACT-final-SHA contract incl. post-Ponytail changes' (
+        $r.Out -match '"decision":"block"' -and $r.Out -match 'EXACT final pushed SHA' -and
+        $r.Out -match 'post-Ponytail' -and $r.Out -match 're-verified on its own SHA') $r.Out
+    # The external-blocker exception contract already exists - pin its wording in
+    # source rather than rewriting it (E-09): the notice always states CI is NOT
+    # verified green and forbids claiming CI passed.
+    $ciText = [System.IO.File]::ReadAllText($CiHook)
+    Check 'E-09: the external-blocker notice source states CI NOT VERIFIED GREEN + never-claim-passed' (
+        $ciText -match 'CI NOT VERIFIED GREEN' -and $ciText -match 'do not claim CI passed') $ciText.Substring(0, 200)
+    Check 'E-09: the notice shape never uses decision:block (source pin)' (
+        $ciText -match 'Neither shape ever uses `decision:block`' -or $ciText -match 'never emits `decision:block`' -or $ciText -match 'It never emits') $ciText.Substring(0, 200)
+
     # ---- account billing / payment block ----
     # GitHub reports every run as conclusion=failure when Actions cannot start
     # for billing, yet its OWN check-run annotation proves no job ran. This must

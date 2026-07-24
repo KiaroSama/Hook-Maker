@@ -156,6 +156,46 @@ try {
     Check 'fresh memory.md -> silent' ($r.Exit -eq 0 -and $r.Out -eq '') $r.Out
 
     # =====================================================================
+    Write-Host '--- E-07: durable-value guidance (deep-debug records), never-store list, UTF-8 ---' -ForegroundColor Cyan
+    $projE7 = New-GitProj 'DurableValue'
+    New-Item -ItemType Directory -Path (Join-Path $projE7 '.ai') -Force | Out-Null
+    Write-Utf8 (Join-Path $projE7 '.ai\memory.md') '# Memory'
+    Add-Commit $projE7 'seed'
+    Start-Sleep -Milliseconds 200
+    Write-Utf8 (Join-Path $projE7 'app.ps1') 'work'
+    Add-Commit $projE7 'newer work'
+    (Get-Item (Join-Path $projE7 '.ai\memory.md')).LastWriteTimeUtc = [DateTime]::UtcNow.AddMinutes(-10)
+    $r = Fire -Cwd $projE7
+    $parsed = $null
+    try { $parsed = $r.Out | ConvertFrom-Json } catch { }
+    $reasonE7 = if ($null -ne $parsed) { [string]$parsed.reason } else { '' }
+    Check 'guidance names the deep-debug DURABLE-value set (root cause/fixed path/regression fixture/commands)' (
+        $reasonE7 -like '*debugging/::deep-debug task*' -and $reasonE7 -like '*confirmed root cause*' -and
+        $reasonE7 -like '*fixed path*' -and $reasonE7 -like '*permanent regression test/fixture*' -and
+        $reasonE7 -like '*verified commands and their outcomes*') $reasonE7
+    Check 'guidance covers blockers/risk, timing facts, Ponytail accept/reject, and the BLOCKED next step' (
+        $reasonE7 -like '*unresolved blockers/remaining risk*' -and $reasonE7 -like '*stable timing/resource facts*' -and
+        $reasonE7 -like '*Ponytail simplifications accepted/rejected*' -and $reasonE7 -like '*exact next step when the workflow ended BLOCKED*') $reasonE7
+    Check 'guidance forbids the never-store list (prompts/logs/dumps/source/secrets/hypotheses/policy text)' (
+        $reasonE7 -like '*Never store raw prompts, raw logs, scan dumps, full source, secrets, temporary hypotheses, routine passing output, or duplicated global policy text*') $reasonE7
+    Check 'guidance requires UTF-8 for new/modified .ai files and defers file validation to Utf8-Encoding-Check' (
+        $reasonE7 -like '*UTF-8*' -and $reasonE7 -like '*Utf8-Encoding-Check validates the files via its own state*' -and
+        $reasonE7 -like '*nothing is rescanned here*') $reasonE7
+    Check 'the pre-existing (1)(2)(3) ordering guidance is preserved unchanged' (
+        $reasonE7 -like '*update .ai/memory.md first*' -and $reasonE7 -like '*ONLY the specialized files that gained reusable value*' -and
+        $reasonE7 -like '*never duplicate a lesson across files*') $reasonE7
+
+    # =====================================================================
+    Write-Host '--- E-13: static safety greps ---' -ForegroundColor Cyan
+    $amcText = [System.IO.File]::ReadAllText($Hook)
+    Check 'source has no execution primitive (Start-Process/Invoke-Expression/iex/call-on-data)' (
+        $amcText -notmatch '(?im)^\s*(Start-Process|Invoke-Expression|iex)\b' -and $amcText -notmatch '&\s+\$') $amcText.Substring(0, 200)
+    Check 'source performs no repository rescan (no recursive enumeration, no content reads of project files)' (
+        $amcText -notmatch '-Recurse' -and $amcText -notmatch 'ReadAllBytes') $amcText.Substring(0, 200)
+    Check 'source references ::deep-debug only inside guidance text, never in statement position' (
+        $amcText -match '::deep-debug' -and $amcText -notmatch '(?im)^\s*::deep-debug') $amcText.Substring(0, 200)
+
+    # =====================================================================
     Write-Host '--- Windows PowerShell 5.1 host ---' -ForegroundColor Cyan
     $proj5 = New-GitProj 'Host51'
     New-Item -ItemType Directory -Path (Join-Path $proj5 '.ai') -Force | Out-Null

@@ -233,6 +233,16 @@ try {
     Check 'candidate documentation includes ranked tracked README/CHANGELOG' ($r.Out -match 'README\.md' -and $r.Out -match 'CHANGELOG\.md') $r.Out
     Check 'the report gives an acknowledgement command with a real fingerprint' ((Get-Fingerprint $r.Out) -ne '') $r.Out
     Check 'output never contains the literal source file content' ($r.Out -notlike '*Invoke-Cli*') $r.Out
+    # E-10: the review-topic list must name the doc-impact areas the UTF-8 hook
+    # and ::deep-debug work introduced - alongside the pre-existing topics.
+    Check 'E-10: review topics include menu numbering/labels (pre-existing, preserved)' ($r.Out -match 'menu numbering/labels') $r.Out
+    Check 'E-10: review topics include the text-encoding policy and documented encoding exceptions' (
+        $r.Out -match 'text-encoding policy' -and $r.Out -match 'encoding-exception formats') $r.Out
+    Check 'E-10: review topics include hook install/update/status/uninstall + native chain order' (
+        $r.Out -match 'hook install/update/status/uninstall behavior' -and $r.Out -match 'native Git hook chain order') $r.Out
+    Check 'E-10: review topics include documented workflow boundaries (::deep-debug / final Ponytail pass)' (
+        $r.Out -match '::deep-debug' -and $r.Out -match 'single final Ponytail pass') $r.Out
+    Check 'E-10: internal-only changes still clear via -Result NoUpdate (no churn requirement)' ($r.Out -match '-Result NoUpdate') $r.Out
 
     # =====================================================================
     Write-Host '--- hard exclusions: private/generated/vendor/fixture/legal changes never trigger or appear as candidates ---' -ForegroundColor Cyan

@@ -534,6 +534,157 @@ New-Item -ItemType File -Path (Join-Path $PSScriptRoot 'EXECUTED-MARKER.txt') -F
     Write-Utf8 (Join-Path $tmOtherState ('TestTiming-' + ('0' * 12) + '-' + ('cd' * 16) + '.json')) ($tmOtherDoc | ConvertTo-Json -Depth 6)
     $rTmOther = Fire -HookPath $hcTmOther.Script -Cwd $projTm -EventName 'SessionStart' -LocalAppData $hcTmOther.LocalAppData
     Check 'a foreign-project timing file is NOT counted as this project''s baseline' ((Get-Message $rTmOther.Out) -notmatch 'prior test-timing baseline') (Get-Message $rTmOther.Out)
+
+    # =====================================================================
+    Write-Host '--- E-03: standalone ::deep-debug extends the advisory; prose never does ---' -ForegroundColor Cyan
+    $hcDd = New-IsolatedHookCopy
+    $projDd = New-GitRepo 'DeepDebug'
+    # Prose "deep debug" with NO other test keyword: total silence (the codeword
+    # never activates from prose, and nothing else makes the prompt relevant).
+    $rProse = Fire -HookPath $hcDd.Script -Cwd $projDd -EventName 'UserPromptSubmit' -Prompt 'let us deep debug the login flow now' -LocalAppData $hcDd.LocalAppData
+    Check 'prose "deep debug" (no test keyword) stays totally silent' ($rProse.Exit -eq 0 -and $rProse.Out -eq '') $rProse.Out
+    # Prose "deep debug" WITH a test keyword: the NORMAL advisory, no dd section.
+    $rProseTest = Fire -HookPath $hcDd.Script -Cwd $projDd -EventName 'UserPromptSubmit' -Prompt 'deep debug this flaky test suite please' -LocalAppData $hcDd.LocalAppData
+    $msgProse = Get-Message $rProseTest.Out
+    Check 'prose "deep debug" + test keyword -> plain advisory WITHOUT the dd section' (
+        $msgProse -match '(?i)TEST PLAN CHECK' -and $msgProse -notmatch '::deep-debug detected') $msgProse
+    # A STANDALONE ::deep-debug token alone (no other keyword) passes the gate
+    # and the advisory carries the deep-debug plan requirements.
+    $hcDd2 = New-IsolatedHookCopy
+    $projDd2 = New-GitRepo 'DeepDebugToken'
+    $rDd = Fire -HookPath $hcDd2.Script -Cwd $projDd2 -EventName 'UserPromptSubmit' -Prompt '::deep-debug' -LocalAppData $hcDd2.LocalAppData
+    $msgDd = Get-Message $rDd.Out
+    Check 'standalone ::deep-debug alone is relevant and advises' ($msgDd -match '(?i)TEST PLAN CHECK' -and $msgDd -match '::deep-debug detected') $msgDd
+    Check 'dd: persistent regression test/fixture + original failing/edge paths' (
+        $msgDd -match 'PERSISTENT regression test' -and $msgDd -match 'original failing path' -and $msgDd -match 'failure/edge paths') $msgDd
+    Check 'dd: bounded per-test/suite/command/idle/CI time + documented native timeout + outer guarded limit' (
+        $msgDd -match 'per-test, per-suite, whole-command, idle/no-progress and CI-job time' -and
+        $msgDd -match 'DOCUMENTED native timeout' -and $msgDd -match 'never a guessed flag' -and $msgDd -match 'outer guarded-runner limit') $msgDd
+    Check 'dd: no blind sleep/unbounded polling/interactive wait/hidden retry + ONE shared worker ceiling' (
+        $msgDd -match 'No blind sleeps, unbounded polling, interactive waits' -and $msgDd -match 'hidden retries' -and
+        $msgDd -match 'ONE shared resource-aware worker ceiling') $msgDd
+    Check 'dd: child-process/temp cleanup + property tests only for real invariants + security findings need confirmation' (
+        $msgDd -match 'Terminate owned child processes and clean temporary resources' -and
+        $msgDd -match 'REAL invariant' -and $msgDd -match 'security-tool finding needs confirmation') $msgDd
+    Check 'dd: Ponytail simplifications get targeted tests, never a second broad loop' (
+        $msgDd -match 'Ponytail simplifications get TARGETED tests only' -and $msgDd -match 'never a second broad debug/audit loop') $msgDd
+    Check 'dd: new/modified test text is UTF-8 unless documented exception; new Test-*.ps1 CI-mapped' (
+        $msgDd -match 'UTF-8 unless a documented technical exception applies' -and $msgDd -match 'permanently mapped to CI') $msgDd
+    Check 'dd: the UTF-8 line defers file validation to Utf8-Encoding-Check (no second scanner here)' (
+        $msgDd -match 'Utf8-Encoding-Check validates the files' -and $msgDd -match 'does not rescan') $msgDd
+    # Same fingerprint gate: an unchanged repeat of the SAME dd prompt is silent.
+    $rDdRepeat = Fire -HookPath $hcDd2.Script -Cwd $projDd2 -EventName 'UserPromptSubmit' -Prompt '::deep-debug' -LocalAppData $hcDd2.LocalAppData
+    Check 'dd anti-loop: an unchanged ::deep-debug repeat inside the cooldown is silent' ($rDdRepeat.Exit -eq 0 -and $rDdRepeat.Out -eq '') $rDdRepeat.Out
+    # Normal behavior unchanged AFTER dd: a later plain test prompt re-reports
+    # the plain advisory (state changed: dd flag left the fingerprint) with no
+    # dd section - the dd path never leaks into ordinary work.
+    $rPlainAfter = Fire -HookPath $hcDd2.Script -Cwd $projDd2 -EventName 'UserPromptSubmit' -Prompt $TestRelatedPrompt -LocalAppData $hcDd2.LocalAppData
+    $msgPlainAfter = Get-Message $rPlainAfter.Out
+    Check 'a later plain test prompt reports the NORMAL advisory without dd lines' (
+        $msgPlainAfter -match '(?i)TEST PLAN CHECK' -and $msgPlainAfter -notmatch '::deep-debug detected') $msgPlainAfter
+    # Client shapes: the dd advisory rides the same client-aware envelope.
+    $hcDdClaude = New-IsolatedHookCopy
+    $projDdCl = New-GitRepo 'DeepDebugClaude'
+    $rDdCl = Fire -HookPath $hcDdClaude.Script -Cwd $projDdCl -EventName 'UserPromptSubmit' -Prompt '::deep-debug' -LocalAppData $hcDdClaude.LocalAppData -ClaudeProjectDir $projDdCl
+    $parsedDdCl = $null
+    try { $parsedDdCl = $rDdCl.Out | ConvertFrom-Json } catch { $parsedDdCl = $null }
+    Check 'dd advisory uses the Claude shape (hookSpecificOutput.additionalContext) for Claude' (
+        $null -ne $parsedDdCl -and $null -ne $parsedDdCl.PSObject.Properties['hookSpecificOutput'] -and
+        ([string]$parsedDdCl.hookSpecificOutput.additionalContext) -match '::deep-debug detected' -and
+        $rDdCl.Out -notmatch '"decision"') $rDdCl.Out
+    $hcDdCodex = New-IsolatedHookCopy
+    $projDdCx = New-GitRepo 'DeepDebugCodex'
+    $rDdCx = Fire -HookPath $hcDdCodex.Script -Cwd $projDdCx -EventName 'UserPromptSubmit' -Prompt '::deep-debug' -LocalAppData $hcDdCodex.LocalAppData
+    $parsedDdCx = $null
+    try { $parsedDdCx = $rDdCx.Out | ConvertFrom-Json } catch { $parsedDdCx = $null }
+    Check 'dd advisory uses the Codex shape (systemMessage) for Codex' (
+        $null -ne $parsedDdCx -and $null -ne $parsedDdCx.PSObject.Properties['systemMessage'] -and
+        ([string]$parsedDdCx.systemMessage) -match '::deep-debug detected') $rDdCx.Out
+
+    # =====================================================================
+    Write-Host '--- E-13: static safety - the hook only DESCRIBES commands, it never executes them ---' -ForegroundColor Cyan
+    # 'Start-Process' appears in the source only inside DETECTION regex/string
+    # literals, so the assertion targets STATEMENT position (start of a line),
+    # where an actual invocation would have to sit.
+    $tpcText = [System.IO.File]::ReadAllText($Hook)
+    Check 'source has no execution primitive in statement position (Start-Process/Invoke-Expression/iex)' (
+        $tpcText -notmatch '(?im)^\s*(Start-Process|Invoke-Expression|iex)\b') $tpcText.Substring(0, 200)
+    Check 'source never applies the call operator to data (no "& $var" execution path)' ($tpcText -notmatch '&\s+\$') $tpcText.Substring(0, 200)
+    Check 'source references ::deep-debug only as a match pattern/advisory text (no slash-command execution)' (
+        $tpcText -match '::deep-debug' -and $tpcText -notmatch '(?im)^\s*/(goal|ponytail)') $tpcText.Substring(0, 200)
+
+    # =====================================================================
+    Write-Host '--- E-13 RED-PROOF: the pre-fix hook has no ::deep-debug path (HEAD copy, retire-guarded) ---' -ForegroundColor Cyan
+    # Reconstructed via read-only `git show HEAD:` (never a tree mutation). FIX
+    # MARKER retire guard: once the dd advisory is committed, HEAD contains
+    # '::deep-debug' and this historical proof retires (byte/extent equality is
+    # never used - git show emits LF while working files are CRLF).
+    $tpcRepoRoot = Split-Path -Parent $ScriptRoot
+    $tpcPreText = ((& git -C $tpcRepoRoot show 'HEAD:hooks/Test-Plan-Check/Test-Plan-Check.ps1') -join "`n")
+    if ($tpcPreText -match '::deep-debug') {
+        Write-Host 'HEAD already contains the ::deep-debug advisory; historical red-proof retired.' -ForegroundColor DarkGray
+    }
+    else {
+        $tpcPreDir = Join-Path $Work '_prefix-tpc'
+        New-Item -ItemType Directory -Path $tpcPreDir -Force | Out-Null
+        $tpcPreHook = Join-Path $tpcPreDir 'Test-Plan-Check.ps1'
+        [System.IO.File]::WriteAllText($tpcPreHook, $tpcPreText, (New-Object System.Text.UTF8Encoding $false))
+        Copy-Item $HookLib (Join-Path $Work '_hooklib.ps1') -Force   # '..\_hooklib.ps1' resolves to $Work
+        $tpcPreLocal = Join-Path $tpcPreDir '_fakelocal'
+        New-Item -ItemType Directory -Path $tpcPreLocal -Force | Out-Null
+        $projRed = New-GitRepo 'DeepDebugRed'
+        $rRed = Fire -HookPath $tpcPreHook -Cwd $projRed -EventName 'UserPromptSubmit' -Prompt '::deep-debug' -LocalAppData $tpcPreLocal
+        Check 'RED-PROOF: the PRE-FIX hook is totally silent for a standalone ::deep-debug prompt' ($rRed.Exit -eq 0 -and $rRed.Out -eq '') $rRed.Out
+    }
+
+    # =====================================================================
+    Write-Host '--- E-13: installed-runtime parity + stale runtime repaired by the update flow ---' -ForegroundColor Cyan
+    # Real install into a temp project (registry isolated via HOOKMAKER_STATE_DIR),
+    # then: (a) the runtime copy emits IDENTICAL dd guidance to the source hook;
+    # (b) a tampered/stale runtime is repaired back to current source by re-running
+    # the installer - the same repair path Update installed hooks drives (the
+    # pattern Test-RulesCheck/Test-InstallRegistry use).
+    $tpcInstallScript = Join-Path $ScriptRoot 'Install-Hook.ps1'
+    $savedHmStateDir = $env:HOOKMAKER_STATE_DIR
+    $env:HOOKMAKER_STATE_DIR = Join-Path $Work 'hmstate'
+    try {
+        $tgtProj = New-Proj 'InstallTarget'
+        & $tpcInstallScript -CustomHook $Hook -Events @('SessionStart', 'UserPromptSubmit') -TargetProject $tgtProj -ClaudeOnly *> $null
+        $tpcRuntime = Join-Path $tgtProj '.claude\hooks\Hook-Maker\Test-Plan-Check\Test-Plan-Check.ps1'
+        Check 'the installed runtime copy exists (self-contained install)' (Test-Path -LiteralPath $tpcRuntime -PathType Leaf)
+        # The staged runtime is deliberately NOT byte-identical to source: the
+        # installer normalizes the BOM and rewrites the shared-library dot-source
+        # ('..\_hooklib.ps1' -> the private '_hooklib.ps1' beside the copy). So
+        # identity is proven on the decoded text after applying exactly that
+        # documented rewrite, and the repair proof below uses the runtime's own
+        # canonical installed hash.
+        $tpcExpectedRuntimeText = ([System.IO.File]::ReadAllText($Hook)).Replace('''..\_hooklib.ps1''', '''_hooklib.ps1''')
+        Check 'the installed runtime matches source content (BOM + dot-source rewrite are the only differences)' (
+            [System.IO.File]::ReadAllText($tpcRuntime) -eq $tpcExpectedRuntimeText)
+        $canonHash = (Get-FileHash -LiteralPath $tpcRuntime -Algorithm SHA256).Hash
+        # (a) parity: same dd prompt, fresh isolated state each, identical text.
+        $parSrcLocal = Join-Path $Work '_par-src-local'; New-Item -ItemType Directory -Path $parSrcLocal -Force | Out-Null
+        $parCopyLocal = Join-Path $Work '_par-copy-local'; New-Item -ItemType Directory -Path $parCopyLocal -Force | Out-Null
+        $projPar = New-GitRepo 'ParityProj'
+        $hcParity = New-IsolatedHookCopy
+        $rParSrc = Fire -HookPath $hcParity.Script -Cwd $projPar -EventName 'UserPromptSubmit' -Prompt '::deep-debug' -LocalAppData $parSrcLocal
+        $rParCopy = Fire -HookPath $tpcRuntime -Cwd $projPar -EventName 'UserPromptSubmit' -Prompt '::deep-debug' -LocalAppData $parCopyLocal
+        $msgParSrc = Get-Message $rParSrc.Out
+        $msgParCopy = Get-Message $rParCopy.Out
+        Check 'installed runtime emits IDENTICAL ::deep-debug guidance to the source hook' (
+            $msgParSrc -ne '' -and $msgParSrc -eq $msgParCopy) ('src=[' + $msgParSrc + '] copy=[' + $msgParCopy + ']')
+        # (b) stale runtime -> update flow -> current again.
+        Add-Content -LiteralPath $tpcRuntime -Value '# tampered stale runtime'
+        Check 'the tampered runtime no longer matches the canonical installed content' ((Get-FileHash -LiteralPath $tpcRuntime -Algorithm SHA256).Hash -ne $canonHash)
+        & $tpcInstallScript -CustomHook $Hook -Events @('SessionStart', 'UserPromptSubmit') -TargetProject $tgtProj -ClaudeOnly *> $null
+        Check 'after the update flow the runtime matches current source again (canonical hash restored)' (
+            (Get-FileHash -LiteralPath $tpcRuntime -Algorithm SHA256).Hash -eq $canonHash -and
+            [System.IO.File]::ReadAllText($tpcRuntime) -eq $tpcExpectedRuntimeText)
+        $parRepairLocal = Join-Path $Work '_par-repair-local'; New-Item -ItemType Directory -Path $parRepairLocal -Force | Out-Null
+        $rParRepaired = Fire -HookPath $tpcRuntime -Cwd $projPar -EventName 'UserPromptSubmit' -Prompt '::deep-debug' -LocalAppData $parRepairLocal
+        Check 'the repaired runtime emits the current ::deep-debug guidance' ((Get-Message $rParRepaired.Out) -match '::deep-debug detected') (Get-Message $rParRepaired.Out)
+    }
+    finally { $env:HOOKMAKER_STATE_DIR = $savedHmStateDir }
 }
 finally {
     $env:CLAUDE_PROJECT_DIR = $SavedClaudeProjectDir

@@ -367,7 +367,12 @@ try {
     else {
         [void]$lines.Add('No tracked .md/.txt documentation exists yet in this project to review.')
     }
-    [void]$lines.Add('Check whether any of these are now stale: user-visible behavior/features; CLI commands, flags, prompts, menu numbering/labels/output/examples; config keys/env vars/defaults; public APIs/exports/endpoints/schemas; install/prerequisites/runtime/dependency instructions; file paths/project layout; deployment/migration/compatibility/security notes; troubleshooting/limitations; or published test/assertion counts and capability lists.')
+    # E-10: the review-topic list also names encoding policy/exceptions, hook
+    # lifecycle (install/update/status/uninstall) and native chain order, and
+    # documented workflow boundaries - the doc-impact areas the UTF-8 hook and
+    # ::deep-debug work introduced. Detection stays generic (any real non-doc
+    # change); pure internal changes still clear with -Result NoUpdate.
+    [void]$lines.Add('Check whether any of these are now stale: user-visible behavior/features; CLI commands, flags, prompts, menu numbering/labels/output/examples; config keys/env vars/defaults; public APIs/exports/endpoints/schemas; install/prerequisites/runtime/dependency instructions; file paths/project layout; deployment/migration/compatibility/security notes; troubleshooting/limitations; text-encoding policy and documented encoding-exception formats; hook install/update/status/uninstall behavior and native Git hook chain order; documented workflow boundaries (e.g. ::deep-debug and the single final Ponytail pass); or published test/assertion counts and capability lists.')
     [void]$lines.Add('Update ONLY the tracked public .md/.txt files actually made stale by this task - do not edit unrelated docs merely for consistency or wording.')
     [void]$lines.Add('Then run exactly one acknowledgement command to clear this: ' + $ackCommand + ' (use -Result NoUpdate -Reason "<why no doc became inaccurate>" instead if nothing needs updating).')
     $reason = $lines.ToArray() -join "`n"
