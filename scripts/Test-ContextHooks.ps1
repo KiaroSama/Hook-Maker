@@ -528,6 +528,74 @@ try {
     finally {
         $env:LOCALAPPDATA = $amcOrigLocalAppData
     }
+
+    # =====================================================================
+    Write-Host '--- _hooklib: the UTF-8 stdin/stdout contract survives a non-UTF-8 console code page ---' -ForegroundColor Cyan
+    # Regression: every shipped hook read stdin through [Console]::In, which
+    # decodes with the CONSOLE code page rather than the UTF-8 the clients
+    # actually send. A hook process with no attached console - a GUI-hosted
+    # client, or any parent spawning it with CreateNoWindow + redirected pipes,
+    # including this repo's own parallel test runner - falls back to the machine's
+    # OEM page (measured: ibm437), so a prompt of 'معماری پروژه' arrived as
+    # box-drawing characters and every non-ASCII prompt, path, and filename
+    # silently missed its match. _hooklib now pins UTF-8 both ways at dot-source
+    # time (the fix Cross-Project-.ai-Knowledge-Sync always had).
+    #
+    # The probe forces CP437 BEFORE dot-sourcing, so the hostile condition is
+    # reproduced deterministically on any machine instead of depending on the
+    # ambient console - this assertion goes red on a real regression even where
+    # the console already happens to be UTF-8. It exercises the shared library
+    # itself, so it stays true for all 24 hooks that dot-source it rather than
+    # tracking one hook's wording.
+    $utf8Probe = Join-Path $Work 'utf8-io-probe.ps1'
+    $probeBody = @'
+Set-StrictMode -Version 2.0
+# Hostile pre-condition: a non-UTF-8 console page, exactly what a console-less
+# hook process inherits. _hooklib must override this, not inherit it.
+try { [Console]::InputEncoding = [System.Text.Encoding]::GetEncoding(437) } catch { }
+. (Join-Path '__LIBDIR__' '_hooklib.ps1')
+$in = Read-HookInput
+$prompt = ''
+if ($null -ne $in) { $prompt = [string](Get-Field $in 'prompt') }
+'CODEPOINTS=' + ((($prompt.ToCharArray() | ForEach-Object { [int]$_ }) -join ','))
+'@
+    Write-Utf8 $utf8Probe ($probeBody.Replace('__LIBDIR__', (Split-Path -Parent $HookLib)))
+
+    # 'معماری' - the exact word the Graph-Read-Check relevance test uses.
+    $persian = [string]::Join('', @(1605, 1593, 1605, 1575, 1585, 1740 | ForEach-Object { [char]$_ }))
+    $expected = (($persian.ToCharArray() | ForEach-Object { [int]$_ }) -join ',')
+    $probePayload = @{ session_id = 't'; hook_event_name = 'UserPromptSubmit'; prompt = $persian } | ConvertTo-Json -Compress
+
+    $psi = New-Object System.Diagnostics.ProcessStartInfo
+    $psi.FileName = (Get-Process -Id $PID).Path
+    foreach ($a in @('-NoLogo', '-NoProfile', '-File', $utf8Probe)) { [void]$psi.ArgumentList.Add([string]$a) }
+    $psi.UseShellExecute = $false
+    $psi.RedirectStandardInput = $true
+    $psi.RedirectStandardOutput = $true
+    $psi.RedirectStandardError = $true
+    # No console for the child - the condition that exposed the defect.
+    $psi.CreateNoWindow = $true
+    $probeProc = [System.Diagnostics.Process]::Start($psi)
+    # Write the payload as raw UTF-8 bytes and read the reply as raw bytes, so
+    # THIS suite's own encoding can never mask or fake the hook's behavior.
+    $payloadBytes = [System.Text.Encoding]::UTF8.GetBytes($probePayload)
+    $probeProc.StandardInput.BaseStream.Write($payloadBytes, 0, $payloadBytes.Length)
+    $probeProc.StandardInput.BaseStream.Flush()
+    $probeProc.StandardInput.Close()
+    # Drain stderr asynchronously first: a full stderr pipe deadlocks a
+    # synchronous stdout read (the _hooklib CopyTo lesson).
+    $probeErrTask = $probeProc.StandardError.ReadToEndAsync()
+    $probeOutBuffer = New-Object System.IO.MemoryStream
+    $probeProc.StandardOutput.BaseStream.CopyTo($probeOutBuffer)
+    [void]$probeProc.WaitForExit(60000)
+    $probeErr = ''
+    try { $probeErr = $probeErrTask.Result } catch { }
+    $probeOut = ([System.Text.Encoding]::UTF8.GetString($probeOutBuffer.ToArray())).Trim()
+
+    Check 'console-less hook process decodes a non-ASCII stdin payload as UTF-8, not the OEM code page' (
+        $probeOut -match ('CODEPOINTS=' + [regex]::Escape($expected))) ($probeOut + ' | expected=' + $expected + ' | err=' + $probeErr)
+    Check 'the probe hook still exits cleanly with nothing on stderr' (
+        $probeProc.ExitCode -eq 0 -and $probeErr.Trim() -eq '') ('exit=' + $probeProc.ExitCode + ' err=' + $probeErr)
 }
 finally {
     Set-ClaudeProjectDir $OrigClaudeProjectDir
