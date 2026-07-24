@@ -289,7 +289,9 @@ $statusLines = @()
 if ($status.Ok) {
     $statusLines = @($status.Output | Where-Object { $_ } | Sort-Object)
     if ($statusLines.Count -gt 0) {
-        [void]$findings.Add('There are ' + $statusLines.Count + ' uncommitted change(s) in the working tree.')
+        # E-08 wording: porcelain covers all three dirty categories - name them
+        # so the report reads unambiguously as staged AND unstaged AND untracked.
+        [void]$findings.Add('There are ' + $statusLines.Count + ' uncommitted change(s) in the working tree (staged, unstaged, and/or untracked).')
     }
 }
 
@@ -316,11 +318,13 @@ if ($upstream.Ok) {
         if ($parts.Count -ge 2) {
             $behind = [int]$parts[0]
             $ahead = [int]$parts[1]
+            # E-08 wording: ahead/behind IS a local/remote final-SHA mismatch -
+            # say so explicitly for the completion report.
             if ($behind -gt 0) {
-                [void]$findings.Add('Branch ' + $branchName + ' is ' + $behind + ' commit(s) BEHIND ' + $upstreamName + ' (pull needed).')
+                [void]$findings.Add('Branch ' + $branchName + ' is ' + $behind + ' commit(s) BEHIND ' + $upstreamName + ' (pull needed; the local and remote final SHAs do not match).')
             }
             if ($ahead -gt 0) {
-                [void]$findings.Add('Branch ' + $branchName + ' is ' + $ahead + ' commit(s) AHEAD of ' + $upstreamName + ' (push needed).')
+                [void]$findings.Add('Branch ' + $branchName + ' is ' + $ahead + ' commit(s) AHEAD of ' + $upstreamName + ' (push needed; unpushed commits - the local and remote final SHAs do not match).')
             }
         }
     }
@@ -420,7 +424,7 @@ if ($haveBaseline) {
                 # UNKNOWN on either side (status failed at capture or now, or
                 # a baseline written before the fingerprint field existed):
                 # never claim unchanged, and never hard-block on unknown alone.
-                [void]$advisoryExtra.Add('The uncommitted-change state of pre-existing worktree ' + $wt.Path + ' could not be compared against its pre-task baseline; it cannot be confirmed unchanged.')
+                [void]$advisoryExtra.Add('The uncommitted-change state of pre-existing worktree ' + $wt.Path + ' could not be compared against its pre-task baseline; its dirty-state evidence is ambiguous/UNKNOWN and it cannot be confirmed unchanged (never treated as an all-clear).')
                 continue
             }
             if ($currentDirty -eq $baselineDirty) { continue }   # genuinely unchanged (HEAD AND dirty state) -> advisory context only
@@ -545,7 +549,7 @@ if ($blockingFindings.Count -eq 0) {
     exit 0
 }
 
-$operationalInstruction = "`n`nBefore finishing, inspect and reconcile this repository state instead of waiting for another user request. If the current task's verified changes are ready and normal repository authorization permits: stage only those changes, commit with a neutral message, and push the current branch now. If the branch is clean and only behind with a safe fast-forward available, a fast-forward-only pull (git pull --ff-only) is acceptable after inspection; if it is dirty and behind or diverged, inspect first and do not blindly pull or merge. If there is no upstream, only create/set one when the branch is meant to be published and authorization permits. Never commit unrelated, unverified, secret, or protected files, and never force-push or rewrite history without explicit authorization. If synchronization is unsafe or impossible (failing tests, incomplete work, unrelated pre-existing changes, a merge/rebase/conflict state, or a permission/authentication/branch-protection block), preserve the work and report the exact reason instead of claiming the task is fully synchronized."
+$operationalInstruction = "`n`nBefore finishing, inspect and reconcile this repository state instead of waiting for another user request. Work produced by a subagent during this task is task-scoped in exactly the same way: reconcile it or report it explicitly - never leave unreconciled subagent work behind. If the current task's verified changes are ready and normal repository authorization permits: stage only those changes, commit with a neutral message, and push the current branch now. If the branch is clean and only behind with a safe fast-forward available, a fast-forward-only pull (git pull --ff-only) is acceptable after inspection; if it is dirty and behind or diverged, inspect first and do not blindly pull or merge. If there is no upstream, only create/set one when the branch is meant to be published and authorization permits. Never commit unrelated, unverified, secret, or protected files, and never force-push or rewrite history without explicit authorization. If synchronization is unsafe or impossible (failing tests, incomplete work, unrelated pre-existing changes, a merge/rebase/conflict state, or a permission/authentication/branch-protection block), preserve the work and report the exact reason instead of claiming the task is fully synchronized."
 if ($blockingExtra.Count -gt 0) {
     $destinationWording = if ($destinationBranch -ne '') { $destinationBranch } else { 'the intended destination branch' }
     $operationalInstruction += "`n`nAlso reconcile every task-created or task-changed branch and worktree reported above before finishing: merge or otherwise incorporate each into " + $destinationWording + " when that is its purpose, push any that are meant to be shared (a branch that is pushed but not yet merged into the destination is acceptable on its own and is not itself a blocker), and remove a worktree with 'git worktree remove' only once its purpose is complete - never one that still holds unreconciled or uncommitted work. Never force-push or rewrite history without explicit authorization. If reconciling a branch or worktree is unsafe or impossible, preserve it and report the exact reason instead of claiming it is resolved."

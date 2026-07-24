@@ -88,6 +88,35 @@
 #                  loop for Codex users - so it is never done.
 # TEST_COMPLETION_ADVISORY_ONLY=1 turns every would-be block into that advisory.
 #
+# ::DEEP-DEBUG SESSION GATE (E-05). When the ::deep-debug workflow is ACTIVE
+# for the current session, this hook's output additionally carries the exact
+# workflow verdict lines `DEEP DEBUG: COMPLETE` or `DEEP DEBUG: BLOCKED
+# (reason)`, judged ONLY from the fresh, scoped, fingerprinted evidence this
+# hook already aggregates (guarded-run results, the incident-note ledger,
+# active/cleanup state). Free-form "done" text is never proof, and points with
+# no machine evidence here (/goal receipts, workstream integration, code/
+# security review, the single Ponytail pass, UTF-8 file validation, Git/exact-
+# SHA CI) are reported honestly as not verifiable by this hook - they belong to
+# their own gates.
+#   ACTIVATION SIGNALS (documented honestly - no client exposes a perfect
+#   Stop-side "::deep-debug was invoked earlier" receipt):
+#     1. a `prompt` field in THIS hook's own stdin carrying the STANDALONE
+#        token (rare at Stop, but the strongest direct signal when present);
+#     2. a readable `transcript_path` in this hook's own stdin whose BOUNDED
+#        tail (last 64KB) contains the standalone token - only the token is
+#        searched for; transcript contents are never stored, printed, hashed
+#        into state, or exposed;
+#     3. a marker file TestCompletionCheck-deepdebug-<projectKey>.json written
+#        by an EARLIER Stop of this hook for the SAME session (schema-versioned,
+#        session-bound; a different session's marker is stale and removed).
+#   Prose "deep debug" never activates it (CODEWORDS.md: standalone ::-token
+#   only), lifecycle-hook independence is preserved (no other hook's state
+#   layout is read), and the hook still never executes a codeword, slash
+#   command, skill, or discovered hook. Anti-loop: the dd-specific outputs
+#   (COMPLETE advisory / no-evidence BLOCKED) are emitted once per session per
+#   unchanged state; the pre-existing condition-1..6 blocks keep their own
+#   established repeat behavior and merely carry the extra BLOCKED line.
+#
 # Optional .env next to this script (copy .env.example):
 #   TEST_COMPLETION_EVIDENCE_MINUTES           minutes a result stays current (default 180)
 #   TEST_COMPLETION_ADVISORY_ONLY              1 = report, never block (default 0)
@@ -171,6 +200,72 @@ $projectKey = Get-ShortHash $cwd.ToLowerInvariant()
 # and are enumerated + aggregated below, never read from one fixed path.
 $cleanupPath = Join-Path $stateDir ('TestTempCleanup-result-' + $projectKey + '.json')
 $statePath = Join-Path $stateDir ('TestCompletionCheck-' + $projectKey + '.json')
+$ddMarkerPath = Join-Path $stateDir ('TestCompletionCheck-deepdebug-' + $projectKey + '.json')
+$ddGatePath = Join-Path $stateDir ('TestCompletionCheck-ddgate-' + $projectKey + '.txt')
+$sessionId = [string](Get-Field $hookInput 'session_id')
+
+# ---- ::deep-debug session detection (E-05; signals documented in the header) --
+# The token must be STANDALONE (::-prefixed); the boundary class includes the
+# JSON-string delimiters a transcript line wraps a prompt in, so `"::deep-debug"`
+# inside a transcript matches while prose "deep debug" (no ::) never can.
+$script:DeepDebugActive = $false
+$ddTokenPattern = '(?i)(^|[\s"])::deep-debug([\s.,;:!?"\\]|$)'
+$ddSeenNow = $false
+$ddPromptField = [string](Get-Field $hookInput 'prompt')
+if (-not [string]::IsNullOrWhiteSpace($ddPromptField) -and $ddPromptField -match $ddTokenPattern) { $ddSeenNow = $true }
+if (-not $ddSeenNow) {
+    $ddTranscriptPath = [string](Get-Field $hookInput 'transcript_path')
+    if (-not [string]::IsNullOrWhiteSpace($ddTranscriptPath) -and (Test-Path -LiteralPath $ddTranscriptPath -PathType Leaf)) {
+        # BOUNDED tail read (64KB), shared-read so a live writer is never blocked.
+        # Only the token is searched; the text is discarded, never stored/printed.
+        try {
+            $ddStream = [System.IO.File]::Open($ddTranscriptPath, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::ReadWrite)
+            try {
+                $ddTailBytes = [int][Math]::Min([int64]65536, $ddStream.Length)
+                if ($ddStream.Length -gt $ddTailBytes) { [void]$ddStream.Seek(-$ddTailBytes, [System.IO.SeekOrigin]::End) }
+                $ddBuffer = New-Object byte[] $ddTailBytes
+                $ddRead = $ddStream.Read($ddBuffer, 0, $ddTailBytes)
+                if ($ddRead -gt 0 -and ([System.Text.Encoding]::UTF8.GetString($ddBuffer, 0, $ddRead)) -match $ddTokenPattern) { $ddSeenNow = $true }
+            }
+            finally { $ddStream.Dispose() }
+        }
+        catch { }
+    }
+}
+if ($ddSeenNow) {
+    # Persist the session-bound marker so LATER Stops of this session stay in
+    # deep-debug mode even if the token has scrolled out of the bounded tail.
+    try { Write-JsonFileAtomic -Path $ddMarkerPath -Value ([pscustomobject]@{ schema = 1; sessionId = $sessionId; detectedUtc = [DateTime]::UtcNow.ToString('o') }) } catch { }
+    $script:DeepDebugActive = $true
+}
+else {
+    $ddMarker = $null
+    try { $ddMarker = Read-JsonFile $ddMarkerPath } catch { $ddMarker = $null }
+    if ($null -ne $ddMarker) {
+        if ($sessionId -ne '' -and [string](Get-Field $ddMarker 'sessionId') -eq $sessionId) { $script:DeepDebugActive = $true }
+        else { try { Remove-Item -LiteralPath $ddMarkerPath -Force -ErrorAction SilentlyContinue } catch { } }
+    }
+}
+
+# Once-per-session-per-state gate for the dd-specific outputs (anti-loop): an
+# unchanged state token reports once; a changed token or a new session reports
+# again immediately. Never consulted for the pre-existing condition-1..6 blocks.
+function Test-DdGateShouldReport {
+    param([string]$StateToken)
+    $ddFp = Get-ShortHash ($StateToken + '|' + $script:sessionId)
+    try {
+        if (Test-Path -LiteralPath $script:ddGatePath -PathType Leaf) {
+            if (([System.IO.File]::ReadAllText($script:ddGatePath)).Trim() -eq $ddFp) { return $false }
+        }
+    }
+    catch { }
+    try {
+        if (-not (Test-Path -LiteralPath $script:stateDir -PathType Container)) { New-Item -ItemType Directory -Path $script:stateDir -Force | Out-Null }
+        [System.IO.File]::WriteAllText($script:ddGatePath, $ddFp, (New-Object System.Text.UTF8Encoding($false)))
+    }
+    catch { }
+    return $true
+}
 
 # The four durable-memory files a hang/timeout finding may legitimately be
 # recorded in (AI Context Memory Policy). Any of them growing satisfies the
@@ -527,6 +622,22 @@ function Write-Finding {
     param([string[]]$Lines, [bool]$Blocking)
     $all = New-Object System.Collections.Generic.List[string]
     foreach ($line in $Lines) { [void]$all.Add($line) }
+    # E-05: while ::deep-debug is active, every blocking finding also carries the
+    # exact workflow verdict line with a concise reason derived from the first
+    # finding line. Constant text riding an EXISTING block - it adds no new loop
+    # path; the dd-specific outputs have their own once-per-session gate.
+    if ($Blocking -and $script:DeepDebugActive) {
+        $ddReason = ''
+        if (@($Lines).Count -gt 0) {
+            $ddReason = ([string]$Lines[0]) -replace '^TEST COMPLETION CHECK:\s*', ''
+            $ddDot = $ddReason.IndexOf('. ')
+            if ($ddDot -gt 0) { $ddReason = $ddReason.Substring(0, $ddDot) }
+            if ($ddReason.Length -gt 160) { $ddReason = $ddReason.Substring(0, 160) }
+        }
+        if ($ddReason -eq '') { $ddReason = 'unresolved test-completion evidence' }
+        [void]$all.Add('')
+        [void]$all.Add('DEEP DEBUG: BLOCKED (' + $ddReason + ')')
+    }
     if ($script:configWarnings.Count -gt 0) {
         [void]$all.Add('')
         foreach ($warning in $script:configWarnings) { [void]$all.Add('Test-Completion-Check .env: ' + $warning) }
@@ -1070,14 +1181,29 @@ if ($null -ne $rep -and $null -ne $rep.Run.ResultEntry) {
     $repAccounted = (Test-RunNegativeAccounted -Run $rep.Run -AllResults $resultEntries)
 }
 
-# Nothing recorded at all for this project - no relevant test work. Silence.
+# Nothing recorded at all for this project - no relevant test work. Silence -
+# UNLESS ::deep-debug is active for this session: the workflow's completion
+# gate REQUIRES fresh guarded evidence, so its total absence is itself a
+# blocked state (once per session per unchanged state - anti-loop).
 if ($null -eq $result -and -not $observedCurrent -and $activePid -eq 0 -and $script:pendingNotes.Count -eq 0) {
+    if ($script:DeepDebugActive -and (Test-DdGateShouldReport ('noevidence|' + $stateFingerprint))) {
+        Write-Finding -Blocking $true -Lines @(
+            'TEST COMPLETION CHECK: ::deep-debug is active for this session but NO guarded test evidence exists for the current project state - no observed run, no guarded result, nothing active.',
+            'The deep-debug completion gate consumes only fresh scoped evidence: run the affected suites through scripts\Run-Tests-Guarded.ps1 (the Test-Run-Guard gate supplies the exact bounded command) so a verifiable result document exists, then finish.')
+    }
     exit 0
 }
 # A recorded incident that was already resolved, no pending note, nothing
-# current to prove, nothing running: also silence.
+# current to prove, nothing running: also silence. Under an active ::deep-debug
+# session this still lacks CURRENT clean evidence, so it is the same blocked
+# no-evidence state (its own once-per-session token).
 if ($incidentKey -ne '' -and (Test-IncidentResolved $incidentKey) -and $script:pendingNotes.Count -eq 0 -and
     -not $observedCurrent -and $activePid -eq 0) {
+    if ($script:DeepDebugActive -and (Test-DdGateShouldReport ('resolvedonly|' + $stateFingerprint))) {
+        Write-Finding -Blocking $true -Lines @(
+            'TEST COMPLETION CHECK: ::deep-debug is active for this session, and while a past incident is resolved, no CURRENT-state guarded test evidence exists.',
+            'Run the affected suites through scripts\Run-Tests-Guarded.ps1 so a fresh clean result document exists for the current project state, then finish.')
+    }
     exit 0
 }
 
@@ -1225,5 +1351,31 @@ if ($script:pendingNotes.Count -gt 0 -or $script:pendingOverflow) {
 # Everything accounted for. If this run was a meaningful timing regression, surface
 # it now as advisory context (never a block); otherwise stay silent.
 Save-CompletionState
+# ---- E-05: the ::deep-debug verdict on the otherwise-silent tail ------------
+# COMPLETE only on a fresh, clean, current-state guarded result; a stale or
+# unproven result reaching this tail must NOT read as a passed gate. The claim
+# is scoped honestly: this hook has machine evidence only for guarded-run
+# results, the incident-note ledger, and active/cleanup state - everything else
+# is named as not verifiable here rather than silently assumed.
+if ($script:DeepDebugActive) {
+    if ($null -ne $result -and $resultIsCurrentEvidence -and $overall -eq 'ok') {
+        if (Test-DdGateShouldReport ('complete|' + $stateFingerprint)) {
+            $ddLines = New-Object System.Collections.Generic.List[string]
+            [void]$ddLines.Add('DEEP DEBUG: COMPLETE')
+            [void]$ddLines.Add('Test-evidence scope verified from recorded state: every current-state observed guarded run has a fresh clean result, no run is still active, no owned process leak or unresolved timeout/kill incident remains, and no durable .ai/ incident note is owed.')
+            [void]$ddLines.Add('NOT verifiable by this hook (each has its own gate/evidence; free-form "done" text is never proof): the /goal objective+ledger receipt, one-time workstream integration, code/security review closure, the exactly-one Ponytail pass, UTF-8 file validation (Utf8-Encoding-Check), and Git/exact-final-SHA CI state.')
+            if ($timingRegressionLines.Count -gt 0) {
+                [void]$ddLines.Add('')
+                foreach ($trl in $timingRegressionLines) { [void]$ddLines.Add($trl) }
+            }
+            Write-Finding -Blocking $false -Lines $ddLines.ToArray()
+        }
+    }
+    elseif (Test-DdGateShouldReport ('staleorunproven|' + $stateFingerprint)) {
+        Write-Finding -Blocking $true -Lines @(
+            'TEST COMPLETION CHECK: ::deep-debug is active for this session but the only recorded guarded evidence is STALE or not a clean current-state result - the deep-debug gate cannot pass on evidence that does not describe the current state.',
+            'Re-run the affected suites through scripts\Run-Tests-Guarded.ps1 so a fresh clean result document exists for the current project state, then finish.')
+    }
+}
 if ($timingRegressionLines.Count -gt 0) { Write-Finding -Blocking $false -Lines $timingRegressionLines }
 exit 0

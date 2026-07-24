@@ -150,6 +150,85 @@ try {
     Check '5.1 host: injects content cleanly' ($r.Exit -eq 0 -and $r.Err -eq '' -and $r.Out -like '*HOST51_MARKER*') $r.Out
 
     # =====================================================================
+    Write-Host '--- Ai-Memory-Load E-06: strict UTF-8 - invalid memory.md is classified, never printed ---' -ForegroundColor Cyan
+    $projBad = New-Proj 'BadEncoding'
+    New-Item -ItemType Directory -Path (Join-Path $projBad '.ai') -Force | Out-Null
+    # 0xC3 0x28 is an invalid UTF-8 sequence; the marker text around it must
+    # never surface because the CONTENT is never printed for an invalid file.
+    $badBytes = [System.Text.Encoding]::ASCII.GetBytes('# Memory SECRET_LEGACY_MARKER ')
+    $badBytes = $badBytes + [byte[]](0xC3, 0x28) + [System.Text.Encoding]::ASCII.GetBytes(' tail')
+    [System.IO.File]::WriteAllBytes((Join-Path $projBad '.ai\memory.md'), $badBytes)
+    $r = Fire -Cwd $projBad
+    Check 'invalid UTF-8 memory.md -> classification advisory, not a crash' (
+        $r.Exit -eq 0 -and $r.Err -eq '' -and $r.Out -like '*NOT valid UTF-8*') ($r.Out + $r.Err)
+    Check 'the advisory shows path + classification ONLY - file contents are not printed' (
+        $r.Out -notlike '*SECRET_LEGACY_MARKER*' -and $r.Out -notlike '*AI MEMORY LOADED*') $r.Out
+    Check 'no replacement-character mojibake is injected (literal or JSON-escaped)' (
+        $r.Out.IndexOf([char]0xFFFD) -lt 0 -and $r.Out -notmatch '(?i)\\ufffd') $r.Out
+    Check 'the advisory demands an explicit reviewed conversion, never a silent transcode' (
+        $r.Out -like '*must be UTF-8*' -and $r.Out -like '*never a silent transcode*') $r.Out
+    Check 'the invalid file is NOT transcoded/mutated by the hook' (
+        [System.Linq.Enumerable]::SequenceEqual([byte[]]$badBytes, [byte[]][System.IO.File]::ReadAllBytes((Join-Path $projBad '.ai\memory.md'))))
+    $r2 = Fire -Cwd $projBad
+    Check 'the unchanged invalid file does not repeat (bytes-fingerprinted)' ($r2.Exit -eq 0 -and $r2.Out -eq '') $r2.Out
+    Write-Utf8 (Join-Path $projBad '.ai\memory.md') "# Memory`n`nREPAIRED_MARKER`n"
+    $r3 = Fire -Cwd $projBad
+    Check 'converting the file to valid UTF-8 loads it normally again' ($r3.Out -like '*AI MEMORY LOADED*' -and $r3.Out -like '*REPAIRED_MARKER*') $r3.Out
+    # A UTF-8 BOM is still valid UTF-8: loads normally, BOM never leaks into context.
+    $projBom = New-Proj 'BomMemory'
+    New-Item -ItemType Directory -Path (Join-Path $projBom '.ai') -Force | Out-Null
+    [System.IO.File]::WriteAllText((Join-Path $projBom '.ai\memory.md'), "# Memory`n`nBOM_MARKER`n", (New-Object System.Text.UTF8Encoding $true))
+    $r = Fire -Cwd $projBom
+    Check 'UTF-8 WITH BOM still loads (BOM and no-BOM are both UTF-8)' ($r.Out -like '*AI MEMORY LOADED*' -and $r.Out -like '*BOM_MARKER*') $r.Out
+    Check 'the decoded BOM char itself never leaks into the injected context (literal or JSON-escaped)' (
+        $r.Out.IndexOf([char]0xFEFF) -lt 0 -and $r.Out -notmatch '(?i)\\ufeff') $r.Out
+
+    # =====================================================================
+    Write-Host '--- Ai-Memory-Load E-06: ::deep-debug routing - standalone token only, once per session ---' -ForegroundColor Cyan
+    $projDd = New-Proj 'DeepDebugRouting'
+    New-Item -ItemType Directory -Path (Join-Path $projDd '.ai') -Force | Out-Null
+    Write-Utf8 (Join-Path $projDd '.ai\memory.md') "# Memory`n`nDD_ROUTER`n"
+    Write-Utf8 (Join-Path $projDd '.ai\TESTING_NOTES.md') 'notes'
+    $rFirst = Fire -Cwd $projDd   # consume the first-load fingerprint
+    Check 'baseline load fired (setup sanity)' ($rFirst.Out -like '*DD_ROUTER*') $rFirst.Out
+    $proseStdin = @{ session_id = 'dd-s1'; cwd = $projDd; hook_event_name = 'UserPromptSubmit'; prompt = 'please deep debug the login flow' } | ConvertTo-Json
+    $r = Fire -Cwd $projDd -RawStdin $proseStdin
+    Check 'prose "deep debug" does NOT bypass the dedup and does NOT add routing' ($r.Exit -eq 0 -and $r.Out -eq '') $r.Out
+    $ddStdin = @{ session_id = 'dd-s1'; cwd = $projDd; hook_event_name = 'UserPromptSubmit'; prompt = 'run ::deep-debug on the parser' } | ConvertTo-Json
+    $r = Fire -Cwd $projDd -RawStdin $ddStdin
+    Check 'standalone ::deep-debug forces the router note out with the deep-debug set' (
+        $r.Out -like '*::deep-debug memory routing*' -and $r.Out -like '*CONTEXT.md, REFERENCE.md, COMMANDS.md, BUGS.md, EDGE_CASES.md, TESTING_NOTES.md*' -and
+        $r.Out -like '*SECURITY_NOTES.md when the work is security-sensitive*' -and $r.Out -like '*DECISIONS.md, LESSON.md*' -and
+        $r.Out -like '*WORKFLOWS.md/PLAYBOOKS.md when present*') $r.Out
+    Check 'the routing forbids loading the whole .ai/ and copying global rules into it' (
+        $r.Out -like '*Never load the whole .ai/ directory*' -and $r.Out -like '*never copy global rules into .ai/*' -and
+        $r.Out -like '*not a reason to create empty boilerplate*') $r.Out
+    Check 'the routing states the .ai/ UTF-8 requirement (path+classification only for legacy files)' (
+        $r.Out -like '*must be UTF-8*' -and $r.Out -like '*path + classification only*' -and $r.Out -like '*never print raw bytes*') $r.Out
+    $r2 = Fire -Cwd $projDd -RawStdin $ddStdin
+    Check 'a repeated ::deep-debug in the SAME session is silent (once per session)' ($r2.Exit -eq 0 -and $r2.Out -eq '') $r2.Out
+    $ddStdin2 = @{ session_id = 'dd-s2'; cwd = $projDd; hook_event_name = 'UserPromptSubmit'; prompt = '::deep-debug' } | ConvertTo-Json
+    $r3 = Fire -Cwd $projDd -RawStdin $ddStdin2
+    Check 'a NEW session re-reports the ::deep-debug routing' ($r3.Out -like '*::deep-debug memory routing*') $r3.Out
+    # Normal behavior unchanged after dd: unchanged memory stays silent for a
+    # plain prompt, and a real edit still re-fires without any dd section.
+    $plainStdin = @{ session_id = 'dd-s2'; cwd = $projDd; hook_event_name = 'UserPromptSubmit'; prompt = 'ordinary work' } | ConvertTo-Json
+    $r4 = Fire -Cwd $projDd -RawStdin $plainStdin
+    Check 'after dd, an ordinary prompt with unchanged memory is silent again' ($r4.Exit -eq 0 -and $r4.Out -eq '') $r4.Out
+    Write-Utf8 (Join-Path $projDd '.ai\memory.md') "# Memory`n`nDD_ROUTER_EDITED`n"
+    $r5 = Fire -Cwd $projDd -RawStdin $plainStdin
+    Check 'a real edit re-fires the plain load WITHOUT the dd routing section' (
+        $r5.Out -like '*DD_ROUTER_EDITED*' -and $r5.Out -notlike '*::deep-debug memory routing*') $r5.Out
+
+    # =====================================================================
+    Write-Host '--- Ai-Memory-Load E-13: static safety greps ---' -ForegroundColor Cyan
+    $amlText = [System.IO.File]::ReadAllText($MemoryHook)
+    Check 'source has no execution primitive (Start-Process/Invoke-Expression/iex/call-on-data)' (
+        $amlText -notmatch '(?im)^\s*(Start-Process|Invoke-Expression|iex)\b' -and $amlText -notmatch '&\s+\$') $amlText.Substring(0, 200)
+    Check 'source references ::deep-debug only as a match pattern/advisory text' (
+        $amlText -match '::deep-debug' -and $amlText -notmatch '(?im)^\s*::deep-debug') $amlText.Substring(0, 200)
+
+    # =====================================================================
     Write-Host '--- Graph-Read-Check: input handling + silent without a graph ---' -ForegroundColor Cyan
     $gplain = New-Proj 'GraphPlain'
     $r = Fire -Cwd $gplain -HookPath $GraphHook -RawStdin ''

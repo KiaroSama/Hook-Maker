@@ -13,7 +13,11 @@
 #   - UserPromptSubmit is RELEVANCE-GATED: it reacts only to prompts that are
 #     actually about tests, CI, runners, hangs, timeouts, parallelism, workers,
 #     CPU/memory, sleep/polling or test cleanup. Ordinary prompts get NOTHING;
-#     silence is the default and by far the common case.
+#     silence is the default and by far the common case. A STANDALONE
+#     `::deep-debug` token (never prose "deep debug") also passes the gate and
+#     extends the advisory with the deep-debug test-health plan requirements
+#     (E-03) under the SAME fingerprint gate - detection only, the hook never
+#     executes a codeword, slash command, or skill.
 #
 # Token-efficient by design: a compact project/state fingerprint (git state +
 # a signature of what the risk scan actually saw) plus a cooldown means an
@@ -104,11 +108,19 @@ if ($config.ContainsKey('TEST_PLAN_EXTRA_KEYWORDS')) {
 }
 
 # ---- relevance gate (UserPromptSubmit only) ----
+# ::deep-debug (E-03): only a STANDALONE ::-prefixed token activates the
+# composite workflow (CODEWORDS.md) - ordinary prose "deep debug" never does.
+# A deep-debug prompt is test-relevant by definition (the workflow's completion
+# gate requires guarded test evidence), so it passes the gate and the advisory
+# below gains the deep-debug test-health requirements. Detection only: this
+# hook never executes a codeword, slash command, or skill.
+$deepDebug = $false
 if ($eventName -eq 'UserPromptSubmit') {
     $prompt = [string](Get-Field $hookInput 'prompt')
     if ([string]::IsNullOrWhiteSpace($prompt)) { exit 0 }
+    if ($prompt -match '(?i)(^|\s)::deep-debug([\s.,;:!?]|$)') { $deepDebug = $true }
     $pattern = '(?i)\b(test|tests|testing|tested|testsuite|suite|suites|regression|ci|pipeline|workflow|runner|runners|pytest|vitest|jest|pester|nunit|xunit|mocha|hang|hangs|hung|hanging|stuck|freeze|frozen|timeout|timeouts|time-out|deadline|parallel|parallelism|serial|concurrency|worker|workers|throttle|cpu|memory|ram|oom|sleep|sleeps|poll|polling|wait|waits|flaky|flakiness|coverage|cleanup|clean-up|leak|leaked|leaking|zombie|orphan)\b'
-    $relevant = $prompt -match $pattern
+    $relevant = $deepDebug -or ($prompt -match $pattern)
     if (-not $relevant -and $extraKeywords.Count -gt 0) {
         $escaped = @($extraKeywords | ForEach-Object { [regex]::Escape($_) })
         $relevant = $prompt -match ('(?i)(?<![\w-])(' + ($escaped -join '|') + ')(?![\w-])')
@@ -333,9 +345,13 @@ $partialCause = $causes -join ' and '
 # repository stays silent and any real change re-reports immediately.
 $repoState = ''
 try { $repoState = [string](Get-RepoStateFingerprint -ProjectRoot $cwd) } catch { $repoState = '' }
+# The deep-debug flag joins the SAME fingerprint gate: the first standalone
+# ::deep-debug prompt re-reports even on an otherwise-unchanged repository (its
+# extra requirements were never shown), while a repeated deep-debug prompt with
+# unchanged state stays inside the normal cooldown - no second gating mechanism.
 $fingerprint = Get-ShortHash (
     $cwd.ToLowerInvariant() + '|' + $repoState + '|' +
-    ($signatureParts -join ';') + '|' + (($findings.ToArray()) -join ';') + '|' + ($configWarnings.ToArray() -join ';') + '|partial=' + $partialScan)
+    ($signatureParts -join ';') + '|' + (($findings.ToArray()) -join ';') + '|' + ($configWarnings.ToArray() -join ';') + '|partial=' + $partialScan + '|dd=' + $deepDebug)
 
 $stateDir = Join-Path $env:LOCALAPPDATA 'HookMaker\state'
 $statePath = Join-Path $stateDir ('TestPlanCheck-' + (Get-ShortHash $cwd.ToLowerInvariant()) + '.json')
@@ -380,6 +396,21 @@ $lines = New-Object System.Collections.Generic.List[string]
 [void]$lines.Add('- Discover suites instead of hardcoding a list, and keep every suite on disk mapped to a CI bucket.')
 [void]$lines.Add('- High CPU alone never means hung. A kill needs a wall/idle/memory bound, or sustained resource use WITH no progress.')
 [void]$lines.Add('- When optimising a suite, record before/after timing - "feels faster" is not evidence.')
+if ($deepDebug) {
+    # E-03: the standalone ::deep-debug codeword was detected in the prompt.
+    # These are PLAN requirements the workflow's test plan must cover - reject
+    # or repair a plan that omits an applicable one. File-level UTF-8 validation
+    # stays with Utf8-Encoding-Check: this hook checks the plan and visible test
+    # commands, it never runs a second repository encoding scanner.
+    [void]$lines.Add('')
+    [void]$lines.Add('::deep-debug detected - additional test-health requirements this plan must cover (advisory; reject/advise a plan that omits an applicable one):')
+    [void]$lines.Add('- Every confirmed behavior defect gets a PERSISTENT regression test or maintained fixture, and the original failing path plus the important failure/edge paths are re-run.')
+    [void]$lines.Add('- Bound per-test, per-suite, whole-command, idle/no-progress and CI-job time; use the tool''s DOCUMENTED native timeout where supported (never a guessed flag) plus the outer guarded-runner limit.')
+    [void]$lines.Add('- No blind sleeps, unbounded polling, interactive waits, unbounded process joins, or hidden retries; ONE shared resource-aware worker ceiling governs explicit and auto-detected counts.')
+    [void]$lines.Add('- Terminate owned child processes and clean temporary resources; property tests only where a REAL invariant exists; a security-tool finding needs confirmation before code changes.')
+    [void]$lines.Add('- Ponytail simplifications get TARGETED tests only - never a second broad debug/audit loop.')
+    [void]$lines.Add('- Every newly created/modified test, fixture, snapshot, golden file, expected output, generated text and test config is UTF-8 unless a documented technical exception applies (Utf8-Encoding-Check validates the files; this hook does not rescan them), and every new Test-*.ps1 is permanently mapped to CI.')
+}
 if ($findings.Count -gt 0) {
     [void]$lines.Add('')
     [void]$lines.Add('Observed in this project right now (each line is a real file:line - open it and confirm before changing anything):')
