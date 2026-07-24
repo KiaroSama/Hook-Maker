@@ -5,6 +5,26 @@
 # (Get-HookEntries skips '_'-prefixed names). StrictMode 2.0 clean; every
 # function is self-contained so it works from any host or scope.
 
+# Hook I/O is UTF-8 BY CONTRACT: Claude Code and Codex hand the event JSON to the
+# hook as UTF-8 and read its output back as UTF-8. [Console]::In / ::Out do NOT
+# honour that on their own - they decode with the CONSOLE code page, and a hook
+# process that has no attached console (a GUI-hosted client, or any parent that
+# spawns it with CreateNoWindow + redirected pipes) reports the machine's OEM
+# page instead. Measured on this repo: such a child sees ibm437, so a prompt of
+# 'معماری پروژه' arrives as box-drawing characters and every relevance regex,
+# path, and filename containing non-ASCII silently misses.
+#
+# Pin BOTH directions explicitly rather than trusting the ambient page - the same
+# fix Cross-Project-.ai-Knowledge-Sync already carries, which is exactly why that
+# one hook was never affected. Each setter is guarded on its own: a host that
+# refuses one must not cost us the other, and a hook must never die over this.
+# This runs at dot-source time, before any hook reads stdin, so [Console]::In is
+# materialised with the encoding already corrected.
+$Utf8NoBomIo = [System.Text.UTF8Encoding]::new($false)
+try { [Console]::InputEncoding = $Utf8NoBomIo } catch { }
+try { [Console]::OutputEncoding = $Utf8NoBomIo } catch { }
+try { $OutputEncoding = $Utf8NoBomIo } catch { }
+
 # Field accessor tolerant of a missing property or a $null value.
 function Get-Field {
     param($Obj, [string]$Name)

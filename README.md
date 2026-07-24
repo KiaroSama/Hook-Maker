@@ -14,7 +14,7 @@ starts the user's task.
 | `sync-hooks.example.json` | The tracked example config (what CI validates). |
 | `sync-hooks.json` | Your real profiles and routes — **machine-local and git-ignored** (it holds your project paths). Auto-created from the sample on the first wizard run. |
 | `hooks/<Name>/` | One folder per hook: `<Name>.ps1` + `.env.example` (tracked) + `.env` (your local copy, git-ignored). |
-| `hooks/_hooklib.ps1` | Shared helpers (stdin/`.env`/path/object/hash/JSON/work-time) the shipped hooks dot-source; the `_` prefix keeps it out of the hook picker. |
+| `hooks/_hooklib.ps1` | Shared helpers (stdin/`.env`/path/object/hash/JSON/work-time) the shipped hooks dot-source; the `_` prefix keeps it out of the hook picker. It also pins the hook's own stdin/stdout to **UTF-8** at dot-source time: `[Console]` otherwise decodes with the console code page, and a hook process with no attached console (a GUI-hosted client, or any parent spawning it with `CreateNoWindow` + redirected pipes) falls back to the machine's OEM page — which silently corrupts every non-ASCII prompt, path, and filename before the hook sees it. |
 | `scripts/Setup-SyncGroup.ps1` | Interactive wizard: sync groups, hook creation/installs, profile listing, validation. |
 | `scripts/Setup-SyncGroupBuilder.ps1` | Sync-group builder dot-sourced by the wizard: collecting project paths, building the full-mesh route profile, confirming and applying a new or updated group. |
 | `scripts/Setup-SyncGroupCreateHook.ps1` | Hook authoring dot-sourced by the wizard: the guided templates and the "Create a new hook" flow that generates a new hook from them. |

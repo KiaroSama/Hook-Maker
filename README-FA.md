@@ -10,7 +10,7 @@
 | `sync-hooks.example.json` | کانفیگ نمونه (داخل گیت — همین را CI اعتبارسنجی می‌کند) |
 | `sync-hooks.json` | کانفیگ واقعی مسیریابی تو — **محلی و git-ignored** (مسیرهای پروژه‌های خودت داخلش است)؛ اولین اجرای ویزارد خودکار از نمونه ساخته می‌شود |
 | `hooks\<Name>\` | برای هر هوک یک پوشه: `<Name>.ps1` + `.env.example` (در گیت) + `.env` (نسخه‌ی محلی تو، git-ignored) |
-| `hooks\_hooklib.ps1` | هِلپرهای مشترک (stdin/`.env`/hash/JSON) که هوک‌های آماده dot-source می‌کنند؛ پیشوند `_` آن را از لیست انتخاب هوک بیرون نگه می‌دارد |
+| `hooks\_hooklib.ps1` | هِلپرهای مشترک (stdin/`.env`/hash/JSON) که هوک‌های آماده dot-source می‌کنند؛ پیشوند `_` آن را از لیست انتخاب هوک بیرون نگه می‌دارد. همچنین در همان لحظه‌ی dot-source، ورودی/خروجی خودِ هوک را روی **UTF-8** تثبیت می‌کند: در غیر این صورت `[Console]` با code page کنسول رمزگشایی می‌کند و هوکی که کنسول متصل ندارد (کلاینت گرافیکی، یا هر والدی که آن را با `CreateNoWindow` و لوله‌های redirect اجرا کند) به code page پیش‌فرض OEM سیستم برمی‌گردد — که هر prompt، مسیر و نام فایلِ غیر‌ASCII را پیش از رسیدن به هوک خراب می‌کند |
 | `scripts\` | ویزارد، نصاب، اعتبارسنج و سوییت‌های تست (موتور، هوک‌های گیت‌هاب، RulesCheck، ویزارد، SecretsCheck، IgnoreRulesCheck، AiMemoryLoad/GraphReadCheck، AiMemoryCheck، ContextHooks، InstallRegistry) |
 | `logs\` | لاگ اجراهای ویزارد (خودکار ساخته می‌شود، commit نمی‌شود) |
 | `state\` | **محلی و git-ignored.** فایل `install-registry.json` — اینکه Hook Maker چه چیزی و کجا نصب کرده (بخش «به‌روزرسانی هوک‌های قبلاً نصب‌شده» را ببین)؛ هرگز مقدار سکرت/`.env`/prompt را نگه نمی‌دارد. |
