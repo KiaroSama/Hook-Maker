@@ -45,6 +45,10 @@ $script:Pass = 0
 $script:Fail = 0
 $script:TestPreviewLength = 800
 . (Join-Path $ScriptRoot '_testlib.ps1')
+# The real Kiro registration writer, so a Kiro fixture is byte-identical to what
+# the installer would produce - the same reason the native fixtures use the
+# canonical wrapper generator.
+. (Join-Path $ScriptRoot '_installkiro.ps1')
 
 $Work = Join-Path ([System.IO.Path]::GetTempPath()) ('hookmaker-statusscan-' + [guid]::NewGuid().ToString('N').Substring(0, 8))
 New-Item -ItemType Directory -Path $Work -Force | Out-Null
@@ -84,6 +88,24 @@ function New-CodexHook {
     Write-Utf8 -Path (Join-Path $ProjectRoot '.codex\hooks.json') -Content (@{
         hooks = @{ Stop = @(@{ hooks = @(@{ type = 'command'; command = ('pwsh -File "' + $target + '"') }) }) }
     } | ConvertTo-Json -Depth 20)
+    return $target
+}
+# One Kiro registration document under <project>\.kiro\hooks, built by the real
+# writer so ownership is genuinely provable rather than fixture-shaped.
+function New-KiroHook {
+    param([string]$ProjectRoot, [string]$HookName, [string]$TargetScript = '')
+    $target = $TargetScript
+    if ([string]::IsNullOrWhiteSpace($target)) {
+        $runtimeDir = New-Dir (Join-Path $ProjectRoot ('.kiro\hook-runtime\Hook-Maker\' + $HookName))
+        $target = Join-Path $runtimeDir ($HookName + '.ps1')
+        Write-Utf8 -Path $target -Content ('# ' + $HookName)
+    }
+    $managedId = 'zzz-' + ([string]$HookName).ToLowerInvariant()
+    $document = New-KiroHookDocument -FriendlyName $HookName -Command ('pwsh -NoProfile -File "' + $target + '"') `
+        -Triggers @('SessionStart') -TimeoutSeconds 30 -ManagedId $managedId
+    $registrationPath = Get-KiroRegistrationPath -Scope 'project' -FriendlyName $HookName `
+        -StableId $managedId -TargetProjectRoot $ProjectRoot
+    Write-Utf8 -Path $registrationPath -Content (ConvertTo-KiroHookJson -Document $document)
     return $target
 }
 function New-GitHookRepo {
@@ -195,19 +217,75 @@ try {
     # above does; before .kiro became an upward marker it resolved NOTHING, so
     # the enclosing registration and git repository were both invisible.
     $kiroProj = New-Dir (Join-Path $Work 'KiroRuntimeProject')
-    Write-Utf8 -Path (Join-Path $kiroProj '.kiro\hook-runtime\Hook-Maker\ZZZ-Kiro\ZZZ-Kiro.ps1') -Content '# kiro runtime'
+    $kiroRuntimeScript = Join-Path $kiroProj '.kiro\hook-runtime\Hook-Maker\ZZZ-Kiro\ZZZ-Kiro.ps1'
+    Write-Utf8 -Path $kiroRuntimeScript -Content '# kiro runtime'
     New-ClaudeHook -ProjectRoot $kiroProj -HookName 'ZZZ-Kiro-Enclosing' | Out-Null
     New-GitHookRepo -RepositoryRoot $kiroProj -HookName 'pre-commit' | Out-Null
+    # ...and the Kiro registration that names that runtime. It lives in a
+    # DIFFERENT directory from the runtime (.kiro\hooks vs .kiro\hook-runtime),
+    # so only the upward hop can connect the two.
+    New-KiroHook -ProjectRoot $kiroProj -HookName 'ZZZ-Kiro-Upward' -TargetScript $kiroRuntimeScript | Out-Null
 
     $kiroScan = Invoke-Scan -Root (Join-Path $kiroProj '.kiro\hook-runtime\Hook-Maker')
     Check 'scanning a .kiro runtime subtree exits 0' ($kiroScan.Exit -eq 0) $kiroScan.Err
     Check 'scanning ...\.kiro\hook-runtime\Hook-Maker finds the enclosing registration' (
         Test-FoundTarget -Result $kiroScan.Result -Fragment 'ZZZ-Kiro-Enclosing.ps1') (
         ($kiroScan.Result | ConvertTo-Json -Depth 6))
+    Check 'the .kiro upward lookup also reads the enclosing .kiro\hooks registrations' (
+        @(@($kiroScan.Result.findings) | Where-Object {
+                @(@($_.clients) | Where-Object { [string]$_.client -eq 'kiro' }).Count -gt 0 }).Count -eq 1) (
+        ($kiroScan.Result.findings | ConvertTo-Json -Depth 6))
     Check 'the .kiro upward lookup also reaches the enclosing git repository' (
         [int]$kiroScan.Result.counts.gitRepositories -eq 1) ([string]$kiroScan.Result.counts.gitRepositories)
     Check 'the .kiro upward lookup does not wander into sibling projects' (
         -not (Test-FoundTarget -Result $kiroScan.Result -Fragment 'ZZZ-Nested-Claude.ps1'))
+
+    Write-Host '--- Kiro per-hook-file registrations are reached by the walk ---' -ForegroundColor Cyan
+    # Kiro registers one JSON document per installation under .kiro\hooks
+    # instead of a shared settings file, so the walk has to recognise the
+    # DIRECTORY by position and open every *.json in it - and an unreadable one
+    # has to degrade into partial coverage exactly like any other directory.
+    $kiroWalkRoot = New-Dir (Join-Path $Work 'KiroWalkRoot')
+    $kiroDeep = New-Dir (Join-Path $kiroWalkRoot 'org\team\Service')
+    New-KiroHook -ProjectRoot $kiroDeep -HookName 'ZZZ-Kiro-Deep' | Out-Null
+    New-ClaudeHook -ProjectRoot (New-Dir (Join-Path $kiroWalkRoot 'org\other\Web')) -HookName 'ZZZ-Kiro-Sibling-Claude' | Out-Null
+    # A directory called 'hooks' that is NOT under .kiro must never be treated
+    # as a registration directory.
+    Write-Utf8 -Path (Join-Path $kiroWalkRoot 'org\team\Service\hooks\decoy.json') -Content (@{
+            version = 'v1'
+            hooks   = @(@{ name = 'decoy'; trigger = 'Stop'; action = @{ type = 'command'; command = 'pwsh -File "C:\ZZZ-Kiro-Decoy.ps1"' } })
+        } | ConvertTo-Json -Depth 20)
+
+    $kiroWalkScan = Invoke-Scan -Root $kiroWalkRoot
+    Check 'a nested Kiro registration is found from an arbitrary ancestor' (
+        Test-FoundTarget -Result $kiroWalkScan.Result -Fragment 'ZZZ-Kiro-Deep.ps1') (
+        ($kiroWalkScan.Result.findings | ConvertTo-Json -Depth 6))
+    Check 'a sibling Claude project beside it is still found' (
+        Test-FoundTarget -Result $kiroWalkScan.Result -Fragment 'ZZZ-Kiro-Sibling-Claude.ps1')
+    Check 'a plain "hooks" directory outside .kiro is NOT read as a Kiro registration' (
+        -not (Test-FoundTarget -Result $kiroWalkScan.Result -Fragment 'ZZZ-Kiro-Decoy.ps1')) (
+        ($kiroWalkScan.Result.findings | ConvertTo-Json -Depth 6))
+
+    $kiroDeniedProj = New-Dir (Join-Path $kiroWalkRoot 'org\team\Locked')
+    New-KiroHook -ProjectRoot $kiroDeniedProj -HookName 'ZZZ-Kiro-Locked' | Out-Null
+    $kiroDeniedEnforced = Deny-Directory -Path (Join-Path $kiroDeniedProj '.kiro\hooks')
+    if ($kiroDeniedEnforced) {
+        $kiroDeniedScan = Invoke-Scan -Root $kiroWalkRoot
+        Check 'an unreadable .kiro\hooks directory does not fail the scan' (
+            $kiroDeniedScan.Exit -eq 0) $kiroDeniedScan.Err
+        Check 'an unreadable .kiro\hooks directory is recorded in coverage.inaccessible' (
+            @(@($kiroDeniedScan.Result.coverage.inaccessible) | Where-Object { $_ -like '*Locked*' }).Count -ge 1) (
+            (@($kiroDeniedScan.Result.coverage.inaccessible)) -join ',')
+        Check 'and the scan reports partial coverage, never a false all-clear' (
+            $kiroDeniedScan.Result.coverage.complete -eq $false -and
+            [string]$kiroDeniedScan.Result.overall -eq 'partial') (
+            'complete=' + [string]$kiroDeniedScan.Result.coverage.complete + ' overall=' + [string]$kiroDeniedScan.Result.overall)
+        Check 'and the readable Kiro registration beside it is still reported' (
+            Test-FoundTarget -Result $kiroDeniedScan.Result -Fragment 'ZZZ-Kiro-Deep.ps1')
+    }
+    else {
+        Write-Host '[SKIP] deny ACL was not enforceable for this account; Kiro partial-coverage assertions skipped' -ForegroundColor Yellow
+    }
 
     Write-Host '--- no default depth cap ---' -ForegroundColor Cyan
     $deepRoot = New-Dir (Join-Path $Work 'DeepTree')
@@ -484,6 +562,24 @@ try {
         $vanished.Count -eq 1 -and [string]$vanished[0].status -eq 'notSeen') (
         $(if ($vanished.Count -eq 1) { [string]$vanished[0].status } else { 'count=' + $vanished.Count }))
 
+    # A persisting scan over a Kiro installation must survive whatever the
+    # registry layer decides about it: the record is either stored or reported
+    # as not stored, but the scan never crashes, never corrupts the registry,
+    # and never loses a managed record.
+    $kiroPersistRoot = New-Dir (Join-Path $Work 'KiroPersistRoot')
+    New-KiroHook -ProjectRoot (New-Dir (Join-Path $kiroPersistRoot 'Proj')) -HookName 'ZZZ-Kiro-Persist' | Out-Null
+    $kiroPersistScan = Invoke-Scan -Root $kiroPersistRoot -Persist
+    Check 'a persisting scan over a Kiro installation exits 0' ($kiroPersistScan.Exit -eq 0) $kiroPersistScan.Err
+    Check 'and the Kiro installation is reported in the scan result' (
+        Test-FoundTarget -Result $kiroPersistScan.Result -Fragment 'ZZZ-Kiro-Persist.ps1') (
+        ($kiroPersistScan.Result.findings | ConvertTo-Json -Depth 6))
+    $kiroRegistry = $null
+    try { $kiroRegistry = [System.IO.File]::ReadAllText($RegistryPath) | ConvertFrom-Json } catch { $kiroRegistry = $null }
+    Check 'and the registry is still readable afterwards' ($null -ne $kiroRegistry)
+    Check 'and the pre-existing managed record still survives' (
+        $null -ne $kiroRegistry -and
+        @(@($kiroRegistry.installs) | Where-Object { [string]$_.id -eq 'zzz-managed-fixture' }).Count -eq 1)
+
     # =====================================================================
     # What the scan refuses BEFORE it starts
     # =====================================================================
@@ -675,6 +771,25 @@ try {
             ((@($homeRootScan.Result.findings) | ForEach-Object { [string]$_.friendlyName }) -join ','))
         Check 'but a project inside the home directory is still discovered' (
             Test-FoundTarget -Result $homeRootScan.Result -Fragment 'ZZZ-HomeProject.ps1')
+
+        # The same gate for the OTHER client shape. Kiro's global location is a
+        # DIRECTORY (~\.kiro\hooks), not a settings file, so it needs its own
+        # proof that declining -IncludeGlobal is honored - this is exactly the
+        # code path that leaked once already for Claude.
+        New-KiroHook -ProjectRoot $fakeHome -HookName 'ZZZ-KiroHome' | Out-Null
+        $kiroHomeNoGlobal = Invoke-Scan -Root $fakeHome -Environment $globalEnv
+        Check 'without -IncludeGlobal the global .kiro\hooks directory is not read' (
+            -not (Test-FoundTarget -Result $kiroHomeNoGlobal.Result -Fragment 'ZZZ-KiroHome.ps1')) (
+            ((@($kiroHomeNoGlobal.Result.findings) | ForEach-Object { [string]$_.friendlyName }) -join ','))
+        $kiroHomeWithGlobal = Invoke-Scan -Root $fakeHome -IncludeGlobal -Environment $globalEnv
+        Check 'with -IncludeGlobal the global .kiro\hooks directory IS read' (
+            Test-FoundTarget -Result $kiroHomeWithGlobal.Result -Fragment 'ZZZ-KiroHome.ps1') (
+            ((@($kiroHomeWithGlobal.Result.findings) | ForEach-Object { [string]$_.friendlyName }) -join ','))
+        Check 'and the global Kiro finding is scoped global, not project' (
+            @(@($kiroHomeWithGlobal.Result.findings) | Where-Object {
+                    [string]$_.scope -eq 'global' -and [string]$_.friendlyName -like '*ZZZ-KiroHome*' }).Count -eq 1) (
+            ((@($kiroHomeWithGlobal.Result.findings) | ForEach-Object {
+                    [string]$_.friendlyName + '=' + [string]$_.scope }) -join ','))
     }
     else {
         Write-Host '[SKIP] Start-Process -Environment unavailable; -IncludeGlobal assertions skipped' -ForegroundColor Yellow

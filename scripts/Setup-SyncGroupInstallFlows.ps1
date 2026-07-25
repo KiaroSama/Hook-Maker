@@ -609,7 +609,14 @@ function Invoke-UpdateInstalledHooks {
             else {
                 $installArgs['CustomHook'] = $record.sourceScript
             }
-            $clientArgs = if ($client -eq 'claude') { @{ ClaudeOnly = $true } } else { @{ CodexOnly = $true } }
+            # The POSITIVE client set, never the -*Only shims. Those are
+            # consumed as double negations, so "anything that is not claude"
+            # meant CodexOnly - a repair of a kiro (or any future) subrecord
+            # would have reinstalled CODEX, i.e. installed a client this record
+            # may never have had, and left the damaged one untouched. -Clients
+            # names exactly the one client being repaired and fails closed on
+            # anything it does not recognise.
+            $clientArgs = @{ Clients = @($client) }
             try {
                 # STRUCTURED OUTCOME: the installer writes a machine-readable
                 # result document. Success is read from that, never inferred

@@ -71,15 +71,66 @@ function Set-ObjectProperty {
 
 # Reads the hook event JSON from stdin. Returns the parsed object, or $null on
 # empty / non-JSON input (the caller then exits silently).
+#
+# On Kiro it also NORMALIZES, and without that every hook is dead on arrival:
+# Kiro IDE documents no stdin JSON at all (only USER_PROMPT, and only on
+# UserPromptSubmit), so stdin is empty, this returned $null, and all 23 hooks
+# took their `if ($null -eq $hookInput) { exit 0 }` path and did nothing. The
+# installed Kiro launcher supplies the one thing that cannot be recovered from
+# an empty stdin - which trigger fired - and the rest is read from the process.
+#
+# Deliberately NOT synthesized (see .ai/KIRO_PROTOCOL.md):
+#   * session_id - inventing a persistent identity would silently mispair
+#     session-keyed baselines. Absent means session-dependent dedup disables
+#     itself, which is the documented degradation.
+#   * stop_hook_active - absent reads as $false, the correct default; a
+#     fabricated $true would suppress the hook entirely.
+#   * tool_name / tool_input - Kiro documents no channel for them.
 function Read-HookInput {
+    $parsed = $null
     try {
         $raw = [Console]::In.ReadToEnd()
         if (-not [string]::IsNullOrWhiteSpace($raw)) {
-            return ($raw | ConvertFrom-Json)
+            $parsed = ($raw | ConvertFrom-Json)
         }
     }
-    catch { }
-    return $null
+    catch { $parsed = $null }
+
+    if ((Get-HookClientId) -cne 'kiro') { return $parsed }
+
+    # Trust boundary: the trigger arrives through the environment, so it is
+    # accepted ONLY when it is one of the events Kiro actually documents. An
+    # unrecognized value is dropped rather than passed to hooks as an event
+    # name, which would let anything that can set an env var choose the
+    # code path a hook takes.
+    $kiroTrigger = ''
+    $rawTrigger = [string]$env:HOOKMAKER_KIRO_TRIGGER
+    if (-not [string]::IsNullOrWhiteSpace($rawTrigger)) {
+        $match = @($script:HookKiroTriggers | Where-Object { $_ -ceq $rawTrigger.Trim() })
+        if ($match.Count -gt 0) { $kiroTrigger = $match[0] }
+    }
+    if ([string]::IsNullOrWhiteSpace($kiroTrigger)) { return $parsed }
+
+    if ($null -eq $parsed) {
+        # cwd from the process, canonicalized. Kiro launches the hook in the
+        # workspace directory; there is no documented cwd field to read.
+        $kiroCwd = ''
+        try { $kiroCwd = [System.IO.Path]::GetFullPath((Get-Location).Path) } catch { $kiroCwd = '' }
+        $synthesized = [pscustomobject]@{ hook_event_name = $kiroTrigger }
+        if (-not [string]::IsNullOrWhiteSpace($kiroCwd)) {
+            Set-ObjectProperty -Object $synthesized -Name 'cwd' -Value $kiroCwd
+        }
+        return $synthesized
+    }
+
+    # CLI v3 does send stdin JSON, but its field names/casing are not
+    # re-published, so a payload may arrive without a usable event name. Fill
+    # that in WITHOUT overwriting one the client did send - a real payload
+    # always wins over the launcher's argument.
+    if ([string]::IsNullOrWhiteSpace([string](Get-Field $parsed 'hook_event_name'))) {
+        Set-ObjectProperty -Object $parsed -Name 'hook_event_name' -Value $kiroTrigger
+    }
+    return $parsed
 }
 
 # The clients a hook runtime can be running under.
@@ -148,6 +199,15 @@ $script:HookBlockCapableEvents = @{
 # section). Writing context anywhere else is a silent no-op, so Write-HookResult
 # reports it as degraded rather than pretending it landed.
 $script:HookKiroContextEvents = @('SessionStart', 'UserPromptSubmit')
+
+# The triggers Kiro documents, mirrored from the capability table's kiro
+# supportedEvents for the same self-contained-runtime reason as
+# $script:HookClientIds above. Read-HookInput accepts an environment-supplied
+# trigger ONLY if it appears here, so this list is a trust boundary, not just a
+# lookup. Kiro's physicalEventMap is identity for all five, which is why no
+# physical-to-logical translation is needed. Test-ContextHooks asserts this
+# matches the capability table.
+$script:HookKiroTriggers = @('SessionStart', 'UserPromptSubmit', 'PreToolUse', 'PostToolUse', 'Stop')
 
 # The ONE place a semantic hook result becomes a client-specific output shape.
 #

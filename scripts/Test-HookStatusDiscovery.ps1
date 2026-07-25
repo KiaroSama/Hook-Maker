@@ -44,6 +44,10 @@ $script:TestPreviewLength = 800
 # what the installer would really write (and a tampered one provably is not).
 . (Join-Path $ToolRoot 'hooks\_hooklib.ps1')
 . (Join-Path $ScriptRoot '_installplan.ps1')
+# Same reason for Kiro: the managed fixture documents below are built by the
+# REAL writer, so "the scanner recognises what the installer wrote" is what the
+# assertions actually prove - not what this suite guessed the format is.
+. (Join-Path $ScriptRoot '_installkiro.ps1')
 
 $WorkToken = [guid]::NewGuid().ToString('N').Substring(0, 8)
 $Work = Join-Path ([System.IO.Path]::GetTempPath()) ('hookmaker-statusdisc-' + $WorkToken)
@@ -425,6 +429,218 @@ try {
     Check 'the managed wrapper is still classified correctly without git' (
         @(@(Get-NativeFinding -Result $noGitScan.Result -HookName 'pre-push' -RepoFragment 'Repo1') |
             Where-Object { [string]$_.nativeGit.classification -eq 'hookMakerWrapper' }).Count -eq 1)
+
+    # =====================================================================
+    # Kiro: a perHookFile client (one JSON document per installation under
+    # .kiro\hooks, no shared settings file anywhere)
+    # =====================================================================
+    Write-Host '--- Kiro per-hook-file registrations ---' -ForegroundColor Cyan
+
+    function Get-FindingBySettingsFragment {
+        param($Result, [string]$Fragment)
+        return @(@($Result.findings) | Where-Object {
+                @(@($_.clients) | Where-Object { [string]$_.settingsPath -like ('*' + $Fragment + '*') }).Count -gt 0
+            })
+    }
+
+    $kiroWork = New-Dir (Join-Path $Work 'KiroWork')
+    $kiroProj = New-Dir (Join-Path $kiroWork 'ProjK')
+
+    # 1. A real managed installation, written by the real writer.
+    $kiroManagedId = 'zzz-kiro-managed-01'
+    $kiroRuntime = Join-Path $kiroProj '.kiro\hook-runtime\Hook-Maker\ZZZ-Kiro-Managed\ZZZ-Kiro-Managed.ps1'
+    Write-Utf8 -Path $kiroRuntime -Content '# ZZZ-Kiro-Managed runtime'
+    $kiroDocument = New-KiroHookDocument -FriendlyName 'ZZZ-Kiro-Managed' `
+        -Command ('pwsh -NoProfile -File "' + $kiroRuntime + '"') `
+        -Triggers @('SessionStart', 'PreToolUse') -TimeoutSeconds 30 -ManagedId $kiroManagedId
+    # ...plus a foreign entry hand-added to OUR document, which the writer is
+    # required to preserve and the scanner must therefore never claim.
+    $kiroForeignInOurs = Join-Path $kiroProj 'tools\ZZZ-Kiro-Foreign-In-Ours.ps1'
+    Write-Utf8 -Path $kiroForeignInOurs -Content '# hand-added by the user'
+    $kiroMixed = [pscustomobject][ordered]@{
+        version = 'v1'
+        hooks   = @(@($kiroDocument.hooks) + @([pscustomobject][ordered]@{
+                    name        = 'team-extra-check'
+                    description = 'hand written by the team'
+                    trigger     = 'PostToolUse'
+                    action      = [pscustomobject][ordered]@{ type = 'command'; command = ('pwsh -File "' + $kiroForeignInOurs + '"') }
+                    timeout     = 30
+                    enabled     = $true
+                }))
+    }
+    $kiroManagedPath = Get-KiroRegistrationPath -Scope 'project' -FriendlyName 'ZZZ-Kiro-Managed' `
+        -StableId $kiroManagedId -TargetProjectRoot $kiroProj
+    Write-Utf8 -Path $kiroManagedPath -Content (ConvertTo-KiroHookJson -Document $kiroMixed)
+
+    # 2. A hand-written third-party hook in the same directory.
+    $kiroTeamTarget = Join-Path $kiroProj 'tools\ZZZ-Kiro-Team.ps1'
+    Write-Utf8 -Path $kiroTeamTarget -Content '# team hook'
+    Write-JsonFixture -Path (Join-Path $kiroProj '.kiro\hooks\team-lint.json') -Value @{
+        version = 'v1'
+        hooks   = @(@{ name = 'team-lint'; trigger = 'PostToolUse'
+                action  = @{ type = 'command'; command = ('pwsh -File "' + $kiroTeamTarget + '"') } })
+    }
+
+    # 3. A document NAMED like ours that carries no ownership identity at all.
+    #    The filename is a hint; only the entries are evidence.
+    $kiroImpostorTarget = Join-Path $kiroProj 'tools\ZZZ-Kiro-Impostor.ps1'
+    Write-Utf8 -Path $kiroImpostorTarget -Content '# impostor'
+    Write-JsonFixture -Path (Join-Path $kiroProj '.kiro\hooks\hookmaker-impostor-abcdef123456.json') -Value @{
+        version = 'v1'
+        hooks   = @(@{ name = 'looks-official'; description = 'hand written'; trigger = 'Stop'
+                action  = @{ type = 'command'; command = ('pwsh -File "' + $kiroImpostorTarget + '"') } })
+    }
+
+    # 4. An 'agent' action: no subprocess, so no command and no target exists.
+    Write-JsonFixture -Path (Join-Path $kiroProj '.kiro\hooks\agent-prompt.json') -Value @{
+        version = 'v1'
+        hooks   = @(@{ name = 'ask-the-model'; trigger = 'UserPromptSubmit'
+                action  = @{ type = 'agent'; prompt = 'review the diff' } })
+    }
+
+    # 5. A Kiro command whose ONLY effect would be creating a sentinel file.
+    $kiroSentinel = Join-Path $Work 'SENTINEL-KIRO-EXECUTED.txt'
+    Write-JsonFixture -Path (Join-Path $kiroProj '.kiro\hooks\zzz-sentinel.json') -Value @{
+        version = 'v1'
+        hooks   = @(@{ name = 'sentinel'; trigger = 'SessionStart'
+                action  = @{ type = 'command'
+                    command = ('powershell.exe -NoProfile -Command "Set-Content -LiteralPath ''' + $kiroSentinel + ''' -Value pwned"') } })
+    }
+
+    # 6. A Claude registration in the SAME project, so "Kiro was added" and
+    #    "Claude still behaves exactly as before" are proven side by side.
+    $kiroSideClaude = Join-Path $kiroProj 'tools\ZZZ-Kiro-Side-Claude.ps1'
+    Write-Utf8 -Path $kiroSideClaude -Content '# claude beside kiro'
+    Write-JsonFixture -Path (Join-Path $kiroProj '.claude\settings.local.json') -Value @{
+        hooks = @{ SessionStart = @(@{ hooks = @(@{ type = 'command'; command = ('pwsh -File "' + $kiroSideClaude + '"') }) }) }
+    }
+
+    $kiroResult = (Invoke-Scan -Root $kiroWork).Result
+    Check 'a scan of a Kiro project reports complete coverage with no warnings' (
+        [string]$kiroResult.overall -eq 'ok') ((@($kiroResult.warnings)) -join ' || ')
+    Check 'NO discovered Kiro command was executed (sentinel file absent)' (
+        -not (Test-Path -LiteralPath $kiroSentinel)) $kiroSentinel
+
+    $kiroManaged = @(Get-FindingByTarget -Result $kiroResult -Fragment 'ZZZ-Kiro-Managed.ps1')
+    Check 'a managed Kiro installation is discovered' ($kiroManaged.Count -eq 1) (
+        'count=' + $kiroManaged.Count + ' | ' + ((@($kiroResult.findings) | ForEach-Object { [string]$_.friendlyName }) -join ','))
+    if ($kiroManaged.Count -eq 1) {
+        Check 'a Kiro-only record is typed KiroRegistration' (
+            [string]$kiroManaged[0].hookType -eq 'KiroRegistration') ([string]$kiroManaged[0].hookType)
+        Check 'its client evidence is the kiro client' (
+            @($kiroManaged[0].clients).Count -eq 1 -and [string]@($kiroManaged[0].clients)[0].client -eq 'kiro') (
+            ($kiroManaged[0].clients | ConvertTo-Json -Depth 4))
+        # THE project-root regression: <proj>\.kiro\hooks\x.json used to resolve
+        # to <proj>\.kiro, i.e. the client directory named as the project.
+        Check 'the project root is the parent of .kiro, NOT .kiro itself' (
+            [string]$kiroManaged[0].targetProjectRoot -eq $kiroProj) (
+            'got ' + [string]$kiroManaged[0].targetProjectRoot + ' expected ' + $kiroProj)
+        Check 'a project-scoped Kiro record is scoped project' ([string]$kiroManaged[0].scope -eq 'project')
+        Check 'ownership is PROVEN from the entry identity, not the filename' (
+            [string]$kiroManaged[0].managedBy -eq 'hookMaker') ([string]$kiroManaged[0].managedBy)
+        Check 'both triggers of one document collapse into ONE record' (
+            (@(@($kiroManaged[0].clients)[0].events | Sort-Object) -join ',') -eq 'PreToolUse,SessionStart') (
+            (@(@($kiroManaged[0].clients)[0].events) -join ','))
+        Check 'the registration points at the proven runtime script' (
+            [string]@($kiroManaged[0].clients)[0].registrationStatus -eq 'parsed')
+        Check 'the registration document itself is recorded as the settings path' (
+            [string]@($kiroManaged[0].clients)[0].settingsPath -eq $kiroManagedPath) (
+            [string]@($kiroManaged[0].clients)[0].settingsPath)
+        Check 'the real Kiro command field name travels with the evidence' (
+            (@(@($kiroManaged[0].clients)[0].commandFieldNames) -join ',') -eq 'action.command') (
+            (@(@($kiroManaged[0].clients)[0].commandFieldNames) -join ','))
+        Check 'no raw Kiro command string is persisted in the finding' (
+            ($kiroManaged[0] | ConvertTo-Json -Depth 8) -notlike '*-NoProfile -File*')
+        # A per-hook-file registration cannot be pruned out of a shared settings
+        # document, so nothing about it may be advertised as removable.
+        Check 'a Kiro record is never offered for automatic removal' (
+            [string]$kiroManaged[0].removalPolicy -eq 'unavailable') ([string]$kiroManaged[0].removalPolicy)
+        Check 'and its runtime artifact is preserved, never delete-eligible' (
+            @(@($kiroManaged[0].runtimeArtifacts) | Where-Object { [string]$_.deleteEligibility -ne 'preserve' }).Count -eq 0) (
+            ($kiroManaged[0].runtimeArtifacts | ConvertTo-Json -Depth 4))
+    }
+
+    $kiroForeignEntry = @(Get-FindingByTarget -Result $kiroResult -Fragment 'ZZZ-Kiro-Foreign-In-Ours.ps1')
+    Check 'a foreign entry inside a document we DO own is reported' ($kiroForeignEntry.Count -eq 1) (
+        'count=' + $kiroForeignEntry.Count)
+    if ($kiroForeignEntry.Count -eq 1) {
+        Check 'and it is never claimed as ours' (
+            [string]$kiroForeignEntry[0].managedBy -eq 'external') ([string]$kiroForeignEntry[0].managedBy)
+    }
+
+    $kiroTeam = @(Get-FindingByTarget -Result $kiroResult -Fragment 'ZZZ-Kiro-Team.ps1')
+    Check 'a hand-written third-party Kiro hook is still discovered' ($kiroTeam.Count -eq 1) (
+        'count=' + $kiroTeam.Count)
+    if ($kiroTeam.Count -eq 1) {
+        Check 'a hand-written third-party Kiro hook is external, never ours' (
+            [string]$kiroTeam[0].managedBy -eq 'external') ([string]$kiroTeam[0].managedBy)
+        Check 'and it is never offered for automatic removal either' (
+            [string]$kiroTeam[0].removalPolicy -eq 'unavailable')
+    }
+
+    $kiroImpostor = @(Get-FindingByTarget -Result $kiroResult -Fragment 'ZZZ-Kiro-Impostor.ps1')
+    Check 'a document merely NAMED hookmaker-*.json is discovered' ($kiroImpostor.Count -eq 1) (
+        'count=' + $kiroImpostor.Count)
+    if ($kiroImpostor.Count -eq 1) {
+        Check 'a hookmaker-NAMED document with no entry identity is NOT claimed as ours' (
+            [string]$kiroImpostor[0].managedBy -ne 'hookMaker') ([string]$kiroImpostor[0].managedBy)
+        Check 'and its ownership is reported as honestly unknown' (
+            [string]$kiroImpostor[0].managedBy -eq 'unknown') ([string]$kiroImpostor[0].managedBy)
+    }
+
+    $kiroAgent = @(Get-FindingBySettingsFragment -Result $kiroResult -Fragment 'agent-prompt.json')
+    Check 'an agent-action Kiro hook is discovered' ($kiroAgent.Count -eq 1) ('count=' + $kiroAgent.Count)
+    if ($kiroAgent.Count -eq 1) {
+        Check 'an agent action spawns no process, so no target is ever claimed' (
+            @(@($kiroAgent[0].clients)[0].parsedTargets).Count -eq 0 -and
+            [string]@($kiroAgent[0].clients)[0].registrationStatus -eq 'unparsedCommand') (
+            ($kiroAgent[0].clients | ConvertTo-Json -Depth 4))
+        Check 'an agent action is honestly unknown ownership, not external' (
+            [string]$kiroAgent[0].managedBy -eq 'unknown') ([string]$kiroAgent[0].managedBy)
+    }
+
+    # The regression guard that matters most for this change: adding a client
+    # must not move ANY Claude/Codex answer.
+    $kiroSideClaudeFinding = @(Get-FindingByTarget -Result $kiroResult -Fragment 'ZZZ-Kiro-Side-Claude.ps1')
+    Check 'a Claude registration beside Kiro is still discovered' ($kiroSideClaudeFinding.Count -eq 1)
+    if ($kiroSideClaudeFinding.Count -eq 1) {
+        Check 'and it is still typed ClaudeRegistration' (
+            [string]$kiroSideClaudeFinding[0].hookType -eq 'ClaudeRegistration')
+        Check 'and its project root is unchanged by the new root derivation' (
+            [string]$kiroSideClaudeFinding[0].targetProjectRoot -eq $kiroProj) (
+            [string]$kiroSideClaudeFinding[0].targetProjectRoot)
+        Check 'and it keeps its full removal policy' (
+            [string]$kiroSideClaudeFinding[0].removalPolicy -eq 'full') (
+            [string]$kiroSideClaudeFinding[0].removalPolicy)
+        Check 'and its runtime artifact is still delete-eligible' (
+            @(@($kiroSideClaudeFinding[0].runtimeArtifacts) |
+                Where-Object { [string]$_.deleteEligibility -eq 'eligible' }).Count -eq 1) (
+            ($kiroSideClaudeFinding[0].runtimeArtifacts | ConvertTo-Json -Depth 4))
+    }
+
+    Write-Host '--- Kiro documents this scanner refuses to interpret ---' -ForegroundColor Cyan
+    # Separate root: these produce warnings, and the clean-coverage assertion
+    # above must stay meaningful.
+    $kiroOdd = New-Dir (Join-Path $Work 'KiroOdd')
+    $kiroOddProj = New-Dir (Join-Path $kiroOdd 'ProjOdd')
+    # Legacy 0.x shape: version "1" with when/then, not v1 with a hooks array.
+    Write-JsonFixture -Path (Join-Path $kiroOddProj '.kiro\hooks\hookmaker-legacy-000000000000.json') -Value @{
+        version = '1'
+        when    = @{ type = 'fileEdited'; patterns = @('*.ts') }
+        then    = @{ type = 'askAgent'; prompt = 'review' }
+    }
+    Write-Utf8 -Path (Join-Path $kiroOddProj '.kiro\hooks\broken.json') -Content '{ "version": "v1", "hooks": [ '
+    $kiroOddResult = (Invoke-Scan -Root $kiroOdd).Result
+    Check 'a legacy (non-v1) Kiro document produces NO record' (
+        @(Get-FindingBySettingsFragment -Result $kiroOddResult -Fragment 'hookmaker-legacy').Count -eq 0) (
+        ($kiroOddResult.findings | ConvertTo-Json -Depth 4))
+    Check 'and the legacy document is reported as skipped, not silently ignored' (
+        @(@($kiroOddResult.warnings) | Where-Object { $_ -like '*hookmaker-legacy*' }).Count -eq 1) (
+        (@($kiroOddResult.warnings)) -join ' || ')
+    Check 'malformed Kiro JSON is a finding, never a crash' (
+        [string]$kiroOddResult.overall -ne 'failed' -and
+        @(@($kiroOddResult.warnings) | Where-Object { $_ -like '*broken.json*' }).Count -eq 1) (
+        (@($kiroOddResult.warnings)) -join ' || ')
 
     Write-Host '--- stable ids and rescan semantics ---' -ForegroundColor Cyan
     # Scanned twice over a subtree that has not changed between the two runs

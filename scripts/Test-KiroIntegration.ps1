@@ -507,6 +507,131 @@ try {
         -not ($bytes.Length -ge 3 -and $bytes[0] -eq 0xEF -and $bytes[1] -eq 0xBB -and $bytes[2] -eq 0xBF)) 'bom'
     Check 'no .hook or .kiro.hook file was produced anywhere in the workspace' (
         @(Get-ChildItem -LiteralPath $Work -Recurse -Force -File | Where-Object { $_.Name -match '\.hook$' }).Count -eq 0) $Work
+
+    # ---- Install-Hook.ps1 wiring ------------------------------------------
+    # Everything above proves the MODULE. These prove the module is actually
+    # reached: before this wiring existed the installer recorded kiro as a
+    # failed component and wrote nothing at all, and every test above still
+    # passed. Assertions here are on observable end state - files, command
+    # lines and a real launcher execution - not on status strings.
+    Write-Host ''
+    Write-Host '--- Install-Hook.ps1: Kiro is actually installed, not just modelled ---' -ForegroundColor Cyan
+
+    $InstallScript = Join-Path $ScriptRoot 'Install-Hook.ps1'
+    $SavedStateDir = $env:HOOKMAKER_STATE_DIR
+    $env:HOOKMAKER_STATE_DIR = Join-Path $Work 'wiring-state'
+    $realHook = Join-Path $ToolRoot 'hooks\Rules-Check\Rules-Check.ps1'
+    try {
+        $wireProject = Join-Path $Work 'Wire Project'
+        New-Item -ItemType Directory -Path $wireProject -Force | Out-Null
+        $wireResult = Join-Path $Work 'wire-result.json'
+        # PreCompact is deliberate: Kiro documents no trigger for it, so it must
+        # be REPORTED, never dropped in silence and never remapped onto Stop.
+        & $InstallScript -CustomHook $realHook -TargetProject $wireProject `
+            -Clients kiro -Events SessionStart, Stop, PreToolUse, PreCompact -ResultPath $wireResult | Out-Null
+
+        $wireHooksDir = Join-Path $wireProject '.kiro\hooks'
+        $registered = @(Get-ChildItem -LiteralPath $wireHooksDir -Filter 'hookmaker-*.json' -File -ErrorAction SilentlyContinue)
+        Check 'installing for kiro writes exactly one managed registration file' (
+            $registered.Count -eq 1) ("count=" + $registered.Count)
+
+        $wireDocument = $null
+        if ($registered.Count -eq 1) { $wireDocument = ((Read-Utf8 -Path $registered[0].FullName | ConvertFrom-Json)) }
+        $wireEntries = @()
+        if ($null -ne $wireDocument) { $wireEntries = @($wireDocument.hooks) }
+        Check 'only the three Kiro-supported triggers are registered, and PreCompact is not among them' (
+            $wireEntries.Count -eq 3 -and
+            @($wireEntries | Where-Object { [string]$_.trigger -ceq 'PreCompact' }).Count -eq 0) (
+            (@($wireEntries | ForEach-Object { [string]$_.trigger }) -join ','))
+        Check 'the unsupported event was NOT silently remapped onto a supported trigger' (
+            @($wireEntries | ForEach-Object { [string]$_.trigger } | Sort-Object -Unique).Count -eq 3) (
+            (@($wireEntries | ForEach-Object { [string]$_.trigger }) -join ','))
+
+        # The whole reason the launcher exists: Kiro IDE documents no stdin
+        # JSON, so an entry whose command omits -Trigger leaves the hook unable
+        # to tell which event fired. One shared command line for three entries
+        # is the exact defect this asserts against.
+        $triggerArguments = @($wireEntries | ForEach-Object {
+                if ([string]$_.action.command -match '-Trigger\s+(\w+)\s*$') { $Matches[1] } else { 'MISSING' }
+            })
+        Check 'every registered entry carries its OWN -Trigger matching its trigger' (
+            @($wireEntries | Where-Object {
+                    [string]$_.action.command -match ('-Trigger\s+' + [regex]::Escape([string]$_.trigger) + '\s*$')
+                }).Count -eq 3) ($triggerArguments -join ',')
+
+        $wireLauncher = Join-Path $wireProject '.kiro\hook-runtime\Hook-Maker\Rules-Check\kiro-launch.ps1'
+        Check 'the generated launcher exists in the Kiro runtime root' (Test-Path -LiteralPath $wireLauncher -PathType Leaf) $wireLauncher
+        Check 'the Kiro runtime is NOT written under .kiro\hooks, which Kiro scans as config' (
+            @(Get-ChildItem -LiteralPath $wireHooksDir -Filter '*.ps1' -File -Recurse -ErrorAction SilentlyContinue).Count -eq 0) $wireHooksDir
+
+        # Executes the launcher for real. Identity travels in the environment
+        # because only 2 of the shipped hooks accept a -Client parameter, so an
+        # argument would break the other 21 - this proves the env route works
+        # and that the trailing hook arguments still arrive intact.
+        $probeTarget = Join-Path $wireProject '.kiro\hook-runtime\Hook-Maker\Rules-Check\Rules-Check.ps1'
+        $savedProbe = Read-Utf8 -Path $probeTarget
+        Write-Utf8 -Path $probeTarget -Content 'Write-Host ("client=" + $env:HOOKMAKER_CLIENT + ";trigger=" + $env:HOOKMAKER_KIRO_TRIGGER + ";args=" + ($args -join " "))'
+        $launcherOutput = (& powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass `
+                -File $wireLauncher -Trigger PreToolUse -ConfigPath 'C:\x.json' 2>&1 | Out-String).Trim()
+        Write-Utf8 -Path $probeTarget -Content $savedProbe
+        Check 'the launcher gives the hook a kiro identity Kiro itself never supplies' (
+            $launcherOutput -match 'client=kiro') $launcherOutput
+        Check 'the launcher passes the physical trigger through to the hook' (
+            $launcherOutput -match 'trigger=PreToolUse') $launcherOutput
+        Check 'the launcher forwards the remaining hook arguments untouched' (
+            $launcherOutput -match '-ConfigPath C:\\x\.json') $launcherOutput
+
+        $wireRecordJson = ''
+        $wireRegistryFile = Join-Path $env:HOOKMAKER_STATE_DIR 'install-registry.json'
+        if (Test-Path -LiteralPath $wireRegistryFile -PathType Leaf) { $wireRecordJson = Read-Utf8 -Path $wireRegistryFile }
+        Check 'the install record carries the per-hook-file fields uninstall needs to prove ownership' (
+            $wireRecordJson -match '"registrationKind"\s*:\s*"perHookFile"' -and
+            $wireRecordJson -match '"managedEntryNames"' -and
+            $wireRecordJson -match '"degradedReasons"') ('len=' + $wireRecordJson.Length)
+        Check 'the permanently non-blocking Kiro Stop is recorded as degraded, not sold as a gate' (
+            $wireRecordJson -match 'degraded-stop-gate') ('len=' + $wireRecordJson.Length)
+
+        # A foreign document sitting at the exact path we would write must be
+        # refused outright. Overwriting it would destroy hooks another tool or
+        # the user owns - and the file content is asserted byte-identical.
+        $foreignProject = Join-Path $Work 'Foreign Project'
+        New-Item -ItemType Directory -Path (Join-Path $foreignProject '.kiro\hooks') -Force | Out-Null
+        $foreignResult = Join-Path $Work 'foreign-result.json'
+        & $InstallScript -CustomHook $realHook -TargetProject $foreignProject `
+            -Clients kiro -Events SessionStart -ResultPath $foreignResult | Out-Null
+        $claimedPath = @(Get-ChildItem -LiteralPath (Join-Path $foreignProject '.kiro\hooks') -Filter 'hookmaker-*.json' -File)[0].FullName
+        $foreignBody = '{"version":"v1","hooks":[{"name":"someone-elses","trigger":"Stop","action":{"type":"command","command":"echo hi"}}]}'
+        Write-Utf8 -Path $claimedPath -Content $foreignBody
+        $refusedResult = Join-Path $Work 'refused-result.json'
+        & $InstallScript -CustomHook $realHook -TargetProject $foreignProject `
+            -Clients kiro -Events SessionStart -ResultPath $refusedResult | Out-Null
+        Check 'a foreign document at our own path is left byte-identical, never overwritten' (
+            (Read-Utf8 -Path $claimedPath) -ceq $foreignBody) (Read-Utf8 -Path $claimedPath)
+        $refusedDocument = ((Read-Utf8 -Path $refusedResult | ConvertFrom-Json))
+        Check 'refusing a foreign file fails the kiro component instead of reporting an install' (
+            @($refusedDocument.components | Where-Object {
+                    [string]$_.component -ceq 'kiro' -and [string]$_.status -ceq 'failed'
+                }).Count -eq 1) (Compact $refusedDocument.components)
+
+        # The reason a kiro failure must never throw: the menu has no
+        # Claude+Codex entry, so 'All clients' is the only way to install two
+        # clients in one pass, and a throw would take both down with it.
+        $allProject = Join-Path $Work 'All Project'
+        New-Item -ItemType Directory -Path $allProject -Force | Out-Null
+        $allResult = Join-Path $Work 'all-result.json'
+        & $InstallScript -CustomHook $realHook -TargetProject $allProject `
+            -Clients claude, codex, kiro -Events SessionStart -ResultPath $allResult | Out-Null
+        Check 'all three clients install in a single pass' (
+            (Test-Path -LiteralPath (Join-Path $allProject '.claude\settings.local.json')) -and
+            (Test-Path -LiteralPath (Join-Path $allProject '.codex\hooks.json')) -and
+            @(Get-ChildItem -LiteralPath (Join-Path $allProject '.kiro\hooks') -Filter 'hookmaker-*.json' -File -ErrorAction SilentlyContinue).Count -eq 1) $allProject
+    }
+    finally {
+        if ([string]::IsNullOrEmpty($SavedStateDir)) {
+            if (Test-Path Env:\HOOKMAKER_STATE_DIR) { Remove-Item Env:\HOOKMAKER_STATE_DIR -ErrorAction SilentlyContinue }
+        }
+        else { $env:HOOKMAKER_STATE_DIR = $SavedStateDir }
+    }
 }
 finally {
     $env:USERPROFILE = $SavedUserProfile

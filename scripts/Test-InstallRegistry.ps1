@@ -27,6 +27,8 @@
 #                                         corruption/locking, drift and repair
 #   _testinstallregistryregressions.ps1 - D1-D4 defect regressions, per-hook
 #                                         timeouts, handler preservation
+#   _testinstallregistrykiro.ps1        - the perHookFile client: enumeration,
+#                                         registration drift, update wiring
 #
 # Usage:  pwsh -NoLogo -NoProfile -File .\scripts\Test-InstallRegistry.ps1 [-KeepArtifacts]
 # Exit code is the number of failed assertions (0 = all passed).
@@ -176,6 +178,7 @@ try {
     . (Join-Path $ScriptRoot '_testinstallregistrysafety.ps1')
     . (Join-Path $ScriptRoot '_testinstallregistrydrift.ps1')
     . (Join-Path $ScriptRoot '_testinstallregistryregressions.ps1')
+    . (Join-Path $ScriptRoot '_testinstallregistrykiro.ps1')
 }
 finally {
     $env:HOOKMAKER_STATE_DIR = $SavedHookMakerStateDir

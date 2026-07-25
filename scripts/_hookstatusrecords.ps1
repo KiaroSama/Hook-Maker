@@ -133,6 +133,21 @@ function Build-RegistrationRecords {
         if (@(@($findings) | Where-Object { [string]$_.ManagedBy -eq 'hookMaker' }).Count -gt 0) { $managedBy = 'hookMaker' }
         elseif (@(@($findings) | Where-Object { [string]$_.ManagedBy -eq 'external' }).Count -gt 0) { $managedBy = 'external' }
 
+        # A perHookFile client (Kiro) registers its own JSON document per
+        # installation. The discovered remover only knows how to prune a handler
+        # out of a SHARED settings file, so offering any removal for one of
+        # these would promise an operation that does not exist - or, worse,
+        # point that pruning at a document with a completely different schema.
+        # Reported in full, never offered for removal, until a per-hook-file
+        # removal path exists.
+        $perHookFileRecord = (@(@($clients) | Where-Object { Test-PerHookFileClient -ClientId ([string]$_) }).Count -gt 0)
+        if ($perHookFileRecord) {
+            $removalPolicy = 'unavailable'
+            if ($status -eq 'active') {
+                $statusReason = 'registration and target verified; per-hook-file removal is not implemented'
+            }
+        }
+
         $id = Get-DiscoveredRecordId -Kind 'registration' -Scope ([string]$first.Scope) `
             -TargetProjectRoot ([string]$first.ProjectRoot) -Client ($clients -join ',') `
             -SettingsPath ($settingsPaths -join ',') -HandlerFingerprints $handlerFingerprints
@@ -143,7 +158,10 @@ function Build-RegistrationRecords {
             recordType        = 'discovered'
             origin            = 'statusScan'
             friendlyName      = (Get-RegistrationFriendlyName -Findings $findings)
-            hookType          = $(if ($clients.Count -eq 1 -and $clients[0] -eq 'codex') { 'CodexRegistration' } else { 'ClaudeRegistration' })
+            hookType          = $(
+                if ($clients.Count -eq 1 -and $clients[0] -eq 'codex') { 'CodexRegistration' }
+                elseif ($clients.Count -eq 1 -and $clients[0] -eq 'kiro') { 'KiroRegistration' }
+                else { 'ClaudeRegistration' })
             scope             = [string]$first.Scope
             targetProjectRoot = [string]$first.ProjectRoot
             firstSeenUtc      = $now
@@ -248,6 +266,13 @@ function Add-RuntimeArtifacts {
     foreach ($record in @($Records)) {
         $artifacts = New-Object System.Collections.Generic.List[object]
         $paths = New-Object System.Collections.Generic.List[object]
+        # 'registeredRuntime' + 'eligible' is the ONE combination
+        # Uninstall-DiscoveredHook.ps1 will auto-delete, so a record whose
+        # registration this tool cannot remove must never hand out that
+        # combination: deleting the runtime while the registration survives
+        # leaves a hook the client still fires and cannot find.
+        $perHookFileRecord = (@(@($record.clients) |
+            Where-Object { Test-PerHookFileClient -ClientId ([string]$_.client) }).Count -gt 0)
         foreach ($client in @($record.clients)) {
             # 'entrypoint' is a CONTRACT literal, not a label: together with
             # classification 'registeredRuntime' it is the only combination
@@ -278,6 +303,9 @@ function Add-RuntimeArtifacts {
             $reason = 'referenced only by this record'
             if (-not $exists) {
                 $classification = 'missingTarget'; $eligibility = 'preserve'; $reason = 'target file does not exist'
+            }
+            elseif ($perHookFileRecord) {
+                $eligibility = 'preserve'; $reason = 'per-hook-file registration removal is not implemented'
             }
             elseif ($referencedBy.Count -gt 1) {
                 $classification = 'sharedRuntime'; $eligibility = 'preserve'; $reason = 'shared with another discovered hook'

@@ -234,11 +234,11 @@
     # =====================================================================
     Write-Host '--- client menu: All clients really installs Claude + Codex despite Kiro ---' -ForegroundColor Cyan
     # Regression guard. The client menu has no Claude+Codex entry, so "All clients"
-    # is the ONLY single pick that reaches two clients in one pass. Kiro's
-    # registration is not implemented, and while that condition threw, it took
-    # "All clients" down with it - leaving no way to install for two clients at
-    # all. Kiro is now recorded as a FAILED COMPONENT and dropped, so the run must
-    # complete and land Claude + Codex while creating nothing for Kiro.
+    # is the ONLY single pick that reaches two clients in one pass. When Kiro's
+    # registration was unimplemented and that condition THREW, it took "All
+    # clients" down with it - leaving no way to install for two clients at all.
+    # Kiro now installs for real, so this asserts the same property from the
+    # other side: all three clients land in one pass.
     $cfgKiroOk = Join-Path $Work 'cfg-client-all-install.json'; New-Config $cfgKiroOk
     $kiroOkProj = New-Proj 'AllClientsInstallProj'
     $rKiroOk = Invoke-Wizard -Config $cfgKiroOk -Answers @('1', '1', '3', '1', '4', $kiroOkProj, 'done', '', '0')
@@ -250,7 +250,13 @@
     Check 'All clients installed the same hook for Codex in the SAME pass' (
         (Test-Path -LiteralPath (Join-Path $kiroOkProj '.codex\hooks.json')) -and
         (Test-Path -LiteralPath (Join-Path $kiroOkProj '.codex\hooks\Hook-Maker\Ai-Memory-Check\Ai-Memory-Check.ps1')))
-    # The failed kiro component must leave NO trace: reporting a Kiro install that
-    # never happened is the failure mode the throw was there to prevent.
-    Check 'the failed Kiro component wrote nothing (no .kiro directory)' (
-        -not (Test-Path -LiteralPath (Join-Path $kiroOkProj '.kiro'))) $rKiroOk.Out
+    # Kiro must land in the SAME pass, as a real registration plus a runtime -
+    # the whole point of the change that made "All clients" survive it. The
+    # launcher is asserted separately because it is planned, not written
+    # afterwards; an unplanned launcher is the "unexpected managed file" that
+    # made the updater reinstall Kiro forever.
+    Check 'All clients installed the same hook for Kiro in the SAME pass' (
+        @(Get-ChildItem -LiteralPath (Join-Path $kiroOkProj '.kiro\hooks') -Filter 'hookmaker-*.json' -File -ErrorAction SilentlyContinue).Count -eq 1 -and
+        (Test-Path -LiteralPath (Join-Path $kiroOkProj '.kiro\hook-runtime\Hook-Maker\Ai-Memory-Check\Ai-Memory-Check.ps1'))) $rKiroOk.Out
+    Check 'the Kiro launcher is produced by the install plan, not written beside it' (
+        Test-Path -LiteralPath (Join-Path $kiroOkProj '.kiro\hook-runtime\Hook-Maker\Ai-Memory-Check\kiro-launch.ps1')) $rKiroOk.Out
