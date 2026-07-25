@@ -77,19 +77,23 @@
     # also already carry an earlier Both-client install).
     $cfgAllClaude = Join-Path $Work 'cfg-all-claude.json'; New-Config $cfgAllClaude
     $caX = New-Proj 'SelAllClaudeX'; $caY = New-Proj 'SelAllClaudeY'
-    $null = Invoke-Wizard -Config $cfgAllClaude -Answers @('1', '1', '2,3', $caX, $caY, 'done', '2', '', '1', '2', '', '0')
+    # Client answer is menu item 1 = Claude (twice: once for the sync group, once
+    # for the hook phase). The '1' between them is the events MODE, not a client.
+    $null = Invoke-Wizard -Config $cfgAllClaude -Answers @('1', '1', '2,3', $caX, $caY, 'done', '1', '', '1', '1', '', '0')
     Check 'a shared-path sync+hook install honors Claude-only client scoping' ((Test-Path (Join-Path $caX '.claude\settings.local.json')) -and -not (Test-Path (Join-Path $caX '.codex')))
 
     $cfgAllCodex = Join-Path $Work 'cfg-all-codex.json'; New-Config $cfgAllCodex
     $coX = New-Proj 'SelAllCodexX'; $coY = New-Proj 'SelAllCodexY'
-    $null = Invoke-Wizard -Config $cfgAllCodex -Answers @('1', '1', '2,3', $coX, $coY, 'done', '3', '', '1', '3', '', '0')
+    # Client answer is menu item 2 = Codex (sync group, then hook phase).
+    $null = Invoke-Wizard -Config $cfgAllCodex -Answers @('1', '1', '2,3', $coX, $coY, 'done', '2', '', '1', '2', '', '0')
     Check 'a shared-path sync+hook install honors Codex-only client scoping' ((Test-Path (Join-Path $coX '.codex\hooks.json')) -and -not (Test-Path (Join-Path $coX '.claude')))
 
     # Selecting the second-to-last individual entry installs Utf8-Encoding-Check
     # (menu item 23, immediately before Cloudflare-Deploy).
     $cfgPenult = Join-Path $Work 'cfg-penult.json'; New-Config $cfgPenult
     $penultProj = New-Proj 'PenultEntryProj'
-    $rPenult = Invoke-Wizard -Config $cfgPenult -Answers @('1', '1', ($hookCount + 1).ToString(), '2', '2', $penultProj, 'done', '', '0')
+    # Answers after the hook item are events '2', then client '1' (= Claude).
+    $rPenult = Invoke-Wizard -Config $cfgPenult -Answers @('1', '1', ($hookCount + 1).ToString(), '2', '1', $penultProj, 'done', '', '0')
     Check 'selecting the second-to-last individual entry installs Utf8-Encoding-Check' (Test-Path (Join-Path $penultProj '.claude\hooks\Hook-Maker\Utf8-Encoding-Check\Utf8-Encoding-Check.ps1'))
     Check 'did not install the neighboring Cloudflare-Deploy hook instead' (-not (Test-Path (Join-Path $penultProj '.claude\hooks\Hook-Maker\Cloudflare-Deploy')))
 
@@ -97,7 +101,8 @@
     # installs Cloudflare-Deploy specifically and does NOT run the sync group.
     $cfgLast = Join-Path $Work 'cfg-last.json'; New-Config $cfgLast
     $lastProj = New-Proj 'LastEntryProj'
-    $rLast = Invoke-Wizard -Config $cfgLast -Answers @('1', '1', ($hookCount + 2).ToString(), '2', '2', $lastProj, 'done', '', '0')
+    # Answers after the hook item are events '2', then client '1' (= Claude).
+    $rLast = Invoke-Wizard -Config $cfgLast -Answers @('1', '1', ($hookCount + 2).ToString(), '2', '1', $lastProj, 'done', '', '0')
     Check 'selecting the last individual entry installs Cloudflare-Deploy' (Test-Path (Join-Path $lastProj '.claude\hooks\Hook-Maker\Cloudflare-Deploy\Cloudflare-Deploy.ps1'))
     Check 'selecting a single individual entry does not run the sync group' ($rLast.Out -notmatch 'Running the sync group first')
 
@@ -203,7 +208,10 @@
     # regression this pins).
     $cfgHealth = Join-Path $Work 'cfg-health.json'; New-Config $cfgHealth
     $healthProj = New-Proj 'TestHealthHooksProj'
-    $rHealth = Invoke-Wizard -Config $cfgHealth -Answers @('1', '1', '20-22', '1', '1', $healthProj, 'done', '', '0')
+    # mode '1' (recommended events per hook), then client '4' = All clients - the
+    # only single pick that reaches Claude AND Codex, which the per-client
+    # assertions below require. The kiro component is recorded failed and dropped.
+    $rHealth = Invoke-Wizard -Config $cfgHealth -Answers @('1', '1', '20-22', '1', '4', $healthProj, 'done', '', '0')
     Check 'exit 0 (installing the three test-health hooks)' ($rHealth.Exit -eq 0) $rHealth.Err
     Check 'no stderr (installing the three test-health hooks)' ($rHealth.Err -eq '')
     $healthClaude = Join-Path $healthProj '.claude\settings.local.json'
