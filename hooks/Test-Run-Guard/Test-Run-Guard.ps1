@@ -778,7 +778,16 @@ function Get-PerRunStateEntries {
 # Claude Code exports CLAUDE_PROJECT_DIR on every hook process; Codex does not.
 
 function Test-IsClaudeClient {
-    return (-not [string]::IsNullOrWhiteSpace($env:CLAUDE_PROJECT_DIR))
+    # Was "CLAUDE_PROJECT_DIR is absent, therefore Codex". Identity now comes
+    # from the one shared resolver, so a third client is recognised as itself
+    # instead of being mistaken for Claude by an absent-signal inversion.
+    #
+    # SCOPE NOTE: this answers "is it Claude", which is all the serialisation
+    # below needs today - it has exactly two shapes. Giving Kiro its own
+    # documented shape (exit code plus stdout, context injected only on the
+    # events Kiro documents for it) belongs to the output-adapter work, not
+    # here; this change fixes the IDENTITY, not the serialiser.
+    return ((Get-HookClientId) -eq 'claude')
 }
 
 function Write-HookJson {

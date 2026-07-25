@@ -69,16 +69,23 @@ if ($eventName -eq 'Stop' -or $eventName -eq 'SubagentStop') {
 }
 
 # ---- which client is running? ----
-$Client = $Client.Trim().ToLowerInvariant()
-if ($Client -ne 'claude' -and $Client -ne 'codex') {
-    if ([string]::IsNullOrWhiteSpace($env:CLAUDE_PROJECT_DIR)) {
-        $Client = 'codex'
-    }
-    else {
-        $Client = 'claude'
-    }
+# Resolved by the ONE shared function in _hooklib.ps1 rather than inline here.
+# The old inline form treated ABSENCE of CLAUDE_PROJECT_DIR as proof of Codex,
+# which silently handed any third client Codex's rules directory.
+$Client = Get-HookClientId -Explicit $Client
+if ($Client -eq 'unknown') {
+    # An explicit -Client value that is not a known client. This hook cannot
+    # guess whose rules to check, and guessing is exactly the defect being
+    # fixed, so it stays silent rather than checking the wrong client's rules.
+    exit 0
 }
 $clientDirName = '.' + $Client
+# Kiro does NOT keep agent rules in .kiro\rules. Its documented equivalents are
+# the steering directory (workspace and global) plus AGENTS.md, which Kiro reads
+# as always-included steering. Verified against primary Kiro documentation - see
+# .ai/KIRO_PROTOCOL.md. Using 'rules' for Kiro would check a path that does not
+# exist and report a false all-clear.
+$clientRulesLeaf = if ($Client -eq 'kiro') { 'steering' } else { 'rules' }
 
 # ---- optional .env ----
 $config = Read-HookEnv (Join-Path $PSScriptRoot '.env')
@@ -95,9 +102,9 @@ if ($config.ContainsKey('GLOBAL_RULES_DIR') -and $config['GLOBAL_RULES_DIR'] -ne
     $globalRulesDir = $config['GLOBAL_RULES_DIR']
 }
 elseif (-not [string]::IsNullOrWhiteSpace($homeDir)) {
-    $globalRulesDir = Join-Path $homeDir (Join-Path $clientDirName 'rules')
+    $globalRulesDir = Join-Path $homeDir (Join-Path $clientDirName $clientRulesLeaf)
 }
-$projectRulesDir = Join-Path $cwd (Join-Path $clientDirName 'rules')
+$projectRulesDir = Join-Path $cwd (Join-Path $clientDirName $clientRulesLeaf)
 
 $ruleSets = @(
     [pscustomobject]@{ Label = 'Global rules'; Dir = $globalRulesDir },

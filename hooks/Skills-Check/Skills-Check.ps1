@@ -63,7 +63,11 @@ if ([string]::IsNullOrWhiteSpace($eventName)) { $eventName = 'SessionStart' }
 if ($eventName -eq 'SubagentStop') { exit 0 }
 
 # ---- which client is running? (same signal the rest of the project uses) ----
-if ([string]::IsNullOrWhiteSpace($env:CLAUDE_PROJECT_DIR)) { $client = 'codex' } else { $client = 'claude' }
+$client = Get-HookClientId
+# Policy selection is keyed on 'codex' POSITIVELY, not on "not claude", so any
+# non-Codex client correctly lands on the non-Codex policy. That is exactly what
+# the Skill Policy requires for a third client, and it is why this line needs no
+# per-client special case - only the identity above had to stop guessing.
 $policyFile = if ($client -eq 'codex') { 'skill-policy-codex-optimized.md' } else { 'skill-policy.md' }
 
 # ---- optional .env ----
