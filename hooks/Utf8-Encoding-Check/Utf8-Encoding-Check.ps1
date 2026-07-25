@@ -97,12 +97,14 @@
 #
 # OUTPUT (client-aware, matching Test-Plan-Check / Ci-Status-Check):
 #   real block -> { decision:'block', reason } for BOTH clients.
-#   advisory   -> Claude Code (hookSpecificOutput present in the INPUT event,
-#                 or CLAUDE_PROJECT_DIR exported) gets
-#                 hookSpecificOutput.additionalContext; Codex gets
-#                 systemMessage. Findings name only the relative path, the
-#                 classification and the safe action - NEVER raw bytes, file
-#                 contents, secrets or prompts.
+#   advisory   -> shaped by the shared Write-HookResult adapter, which also
+#                 decides the client (Get-HookClientId: HOOKMAKER_CLIENT, else
+#                 CLAUDE_PROJECT_DIR, else Codex - an INPUT hookSpecificOutput
+#                 is NOT a client signal). Claude always, and Codex OFF Stop,
+#                 get hookSpecificOutput.additionalContext; Codex gets
+#                 systemMessage on Stop/SubagentStop only. Findings name only
+#                 the relative path, the classification and the safe action -
+#                 NEVER raw bytes, file contents, secrets or prompts.
 #   pre-push   -> human-readable reasons on stderr, exit 1 to block.
 #
 # Optional .env next to this script (copy .env.example):
@@ -558,8 +560,15 @@ function Invoke-Utf8Walk {
 }
 
 # ---- client-aware output ----------------------------------------------------
-# Real block -> decision:block for BOTH clients (the Ci-Status-Check blocking
-# shape). Advisory -> Claude Code additionalContext / Codex systemMessage.
+# Every shape decision belongs to the shared Write-HookResult adapter in
+# _hooklib.ps1, including WHICH client this is: Get-HookClientId reads
+# HOOKMAKER_CLIENT, else CLAUDE_PROJECT_DIR, else Codex. `hookSpecificOutput`
+# in the INPUT event is NOT a documented client signal and is not consulted.
+# Real block -> decision:block for Claude/Codex (the Ci-Status-Check blocking
+# shape). Advisory -> additionalContext for Claude on any event and for Codex
+# OFF Stop; Codex's `systemMessage` is Stop-scoped, so this hook gets it on
+# Stop/SubagentStop and NOT on SessionStart. Write-HookResult never exits, so
+# this helper keeps the exit itself and honours the returned ExitCode.
 function Write-HookMessage {
     param([string[]]$Lines, [bool]$Blocking)
     $all = New-Object System.Collections.Generic.List[string]
@@ -570,19 +579,10 @@ function Write-HookMessage {
     }
     $message = ($all.ToArray() -join "`n")
     if ($Blocking -and -not $advisoryOnly) {
-        @{ decision = 'block'; reason = $message } | ConvertTo-Json -Compress | ForEach-Object { [Console]::Out.WriteLine($_) }
-        exit 0
+        exit (Write-HookResult -EventName $eventName -Kind 'block' -Reason $message).ExitCode
     }
     if ($Blocking -and $advisoryOnly) { $message = 'UTF8_ADVISORY_ONLY is set - reported, not blocked:' + "`n" + $message }
-    $isClaude = ($null -ne (Get-Field $hookInput 'hookSpecificOutput')) -or (-not [string]::IsNullOrWhiteSpace($env:CLAUDE_PROJECT_DIR))
-    if ($isClaude) {
-        $payload = @{ hookSpecificOutput = @{ hookEventName = $eventName; additionalContext = $message } }
-    }
-    else {
-        $payload = @{ systemMessage = $message }
-    }
-    $payload | ConvertTo-Json -Depth 5 -Compress | ForEach-Object { [Console]::Out.WriteLine($_) }
-    exit 0
+    exit (Write-HookResult -EventName $eventName -Kind 'advisory' -Message $message).ExitCode
 }
 
 # ---- shared state -----------------------------------------------------------

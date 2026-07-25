@@ -253,7 +253,7 @@ $script:HookCodexSystemMessageEvents = @('Stop', 'SubagentStop')
 function Write-HookResult {
     param(
         [Parameter(Mandatory = $true)][string]$EventName,
-        [Parameter(Mandatory = $true)][ValidateSet('context', 'advisory', 'block', 'silent')][string]$Kind,
+        [Parameter(Mandatory = $true)][ValidateSet('context', 'advisory', 'block', 'silent', 'deny', 'allow')][string]$Kind,
         [string]$Message = '',
         [string]$Reason = '',
         [string]$Client = ''
@@ -271,6 +271,88 @@ function Write-HookResult {
         if ([string]::IsNullOrWhiteSpace($text)) { $text = $(if ($Kind -eq 'block') { $Message } else { $Reason }) }
 
         $clientId = Get-HookClientId -Explicit $Client
+
+        # ---- the PreToolUse PERMISSION mechanism -------------------------
+        # 'deny'/'allow' are NOT 'block'/'advisory' with a different name. A
+        # PreToolUse permission decision is a separate documented mechanism:
+        # Claude answers with permissionDecision, and Codex has no
+        # permissionDecision at all - it denies by exiting 2 with the reason on
+        # stderr. Folding them into 'block' would emit decision:block, which is
+        # NOT how a Claude tool call is refused.
+        #
+        # Both branches reproduce the existing shipped bytes EXACTLY, including
+        # the second top-level systemMessage key and Codex's systemMessage
+        # payload. That Codex payload is deliberately NOT changed to
+        # additionalContext: unlike a context emission, this pairs with exit 2,
+        # and nothing in the sources documents the context shape as correct for
+        # a refusal. Only the kiro branch is new.
+        if ($Kind -eq 'deny' -or $Kind -eq 'allow') {
+            # These two guards are duplicated from the common path below on
+            # purpose: this branch returns early, so it would otherwise fall
+            # into the non-claude arm and emit a Codex-shaped refusal for an
+            # UNKNOWN client - exactly the guessing this function exists to
+            # prevent - or emit an empty reason.
+            if ($clientId -eq 'unknown') {
+                $degradedParts += 'the client is unknown and no output shape is documented for it, so nothing was emitted'
+            }
+            elseif ([string]::IsNullOrWhiteSpace($text)) {
+                $degradedParts += ('no ' + $Kind + ' text was supplied, so nothing was emitted')
+            }
+            else {
+                $decision = $(if ($Kind -eq 'deny') { 'deny' } else { 'allow' })
+                if ($clientId -eq 'claude') {
+                $permissionPayload = @{
+                    hookSpecificOutput = @{
+                        hookEventName            = $EventName
+                        permissionDecision       = $decision
+                        permissionDecisionReason = $text
+                    }
+                    systemMessage      = $text
+                }
+                [Console]::Out.WriteLine(($permissionPayload | ConvertTo-Json -Depth 6 -Compress))
+                $emitted = $true; $shape = ('claudePermission' + $decision)
+            }
+            elseif ($clientId -eq 'kiro') {
+                # Kiro documents exit 2 + stderr on its block-capable triggers.
+                # There is no documented "allow with a reason", so an allow is a
+                # plain advisory: it must never be emitted as a refusal.
+                if ($Kind -eq 'deny' -and
+                    $script:HookBlockCapableEvents.ContainsKey('kiro') -and
+                    @($script:HookBlockCapableEvents['kiro'] | Where-Object { $_ -ceq $EventName }).Count -gt 0) {
+                    [Console]::Error.WriteLine($text)
+                    $emitted = $true; $shape = 'kiroExit2Stderr'; $exitCode = 2
+                }
+                elseif (@($script:HookKiroContextEvents | Where-Object { $_ -ceq $EventName }).Count -gt 0) {
+                    [Console]::Out.WriteLine($text)
+                    $emitted = $true; $shape = 'kiroStdout'
+                    if ($Kind -eq 'deny') {
+                        $degradedParts += ('kiro documents no refusal on ' + $EventName +
+                            '; emitted as context instead - this is NOT an enforced gate')
+                    }
+                }
+                else {
+                    $degradedParts += ('kiro neither refuses nor adds context on ' + $EventName +
+                        ', so nothing was emitted')
+                }
+            }
+                else {
+                    [Console]::Out.WriteLine((@{ systemMessage = $text } | ConvertTo-Json -Depth 6 -Compress))
+                    $emitted = $true; $shape = ('codexPermission' + $decision)
+                    if ($Kind -eq 'deny') {
+                        [Console]::Error.WriteLine($text)
+                        $exitCode = 2
+                    }
+                }
+            }
+            return [pscustomobject]@{
+                Emitted        = $emitted
+                Shape          = $shape
+                ExitCode       = $exitCode
+                Degraded       = ($degradedParts.Count -gt 0)
+                DegradedReason = ($degradedParts -join '; ')
+            }
+        }
+
         if ($clientId -eq 'unknown') {
             $degradedParts += 'the client is unknown and no output shape is documented for it, so nothing was emitted'
         }
