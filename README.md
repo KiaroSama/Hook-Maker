@@ -260,7 +260,7 @@ It asks two questions:
    drive root such as `G:\`. Quoted paths, paths with spaces and environment variables all work, and
    the path is canonicalised before scanning. You do **not** have to supply the exact project root:
    given `...\.claude\hooks\Hook-Maker` it looks upward for the matching registration.
-2. **`Also inspect the current user's global Claude and Codex hook locations?`** — **defaults to
+2. **`Also inspect the current user's global Claude, Codex and Kiro hook locations?`** — **defaults to
    No** (Enter means No). Answering Yes inspects only the canonical current-user `.claude`/`.codex`
    settings locations; it never walks your whole home directory. Answering No means those files are
    **not opened at all**, by any code path.
