@@ -209,6 +209,13 @@ $script:HookKiroContextEvents = @('SessionStart', 'UserPromptSubmit')
 # matches the capability table.
 $script:HookKiroTriggers = @('SessionStart', 'UserPromptSubmit', 'PreToolUse', 'PostToolUse', 'Stop')
 
+# The ONLY events where Codex takes systemMessage instead of
+# hookSpecificOutput.additionalContext. Codex does not document
+# additionalContext/hookSpecificOutput for Stop, but it honours them everywhere
+# else - so this is a Stop-scoped exception, not a Codex-wide output shape.
+# Getting that backwards silently rewrites every pre-task hook's Codex output.
+$script:HookCodexSystemMessageEvents = @('Stop', 'SubagentStop')
+
 # The ONE place a semantic hook result becomes a client-specific output shape.
 #
 # Kinds:
@@ -305,9 +312,26 @@ function Write-HookResult {
                     $payload = @{ hookSpecificOutput = @{ hookEventName = $EventName; additionalContext = $text } }
                     $shape = 'claudeContext'
                 }
-                else {
+                elseif (@($script:HookCodexSystemMessageEvents | Where-Object { $_ -ceq $EventName }).Count -gt 0) {
+                    # Codex Stop/SubagentStop ONLY. Codex does not document
+                    # additionalContext/hookSpecificOutput for Stop at all, so
+                    # systemMessage is the only common field there.
                     $payload = @{ systemMessage = $text }
                     $shape = 'codexSystemMessage'
+                }
+                else {
+                    # Codex on every OTHER event honours additionalContext, and
+                    # every shipped pre-task hook already emits exactly this -
+                    # verified in an earlier round as correct, NOT a bug.
+                    #
+                    # This branch used to be a bare else, so Codex got
+                    # systemMessage everywhere. Wiring the shipped hooks onto
+                    # this adapter with that in place would have silently
+                    # changed Codex output at ~47 call sites and dropped the
+                    # event name Claude's shape carries. The systemMessage rule
+                    # is Stop-scoped; it is not a Codex-wide rule.
+                    $payload = @{ hookSpecificOutput = @{ hookEventName = $EventName; additionalContext = $text } }
+                    $shape = 'codexContext'
                 }
                 [Console]::Out.WriteLine(($payload | ConvertTo-Json -Depth 5 -Compress))
                 $emitted = $true
