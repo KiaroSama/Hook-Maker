@@ -245,27 +245,61 @@ function Get-HookRecommendedEvents {
     return @('SessionStart', 'UserPromptSubmit')
 }
 
-# Asks which client(s) the hook is installed for. Returns 'Both', 'Claude',
-# 'Codex', or $null when the user backs out.
+# Asks which client(s) the hook is installed for. Returns one canonical selection
+# value ('Claude', 'Codex', 'Kiro', 'All'), or $null when the user backs out.
+#
+# The entries, their order and their spelling all come from the capability table
+# instead of a local list, so a client added there shows up here automatically and
+# the menu can never spell a client differently from a CLIENTS= value.
+#
+# Kiro is ONE entry covering both its surfaces (IDE and CLI). They share a single
+# registrationKind and runtimeRelativeRoot, so a separate "Kiro IDE"/"Kiro CLI"
+# pair would offer a distinction the installer cannot act on.
+#
+# 'Both' is deliberately NOT offered: it survives only as a legacy CLIENTS= value
+# meaning Claude + Codex, and 'All' is the selection that also includes Kiro.
 function Read-ClientChoice {
+    $selections = @(Get-HookMakerClientSelectionValues)
+    # 'All' is the last entry and the default - the historical default ('Both')
+    # was likewise the widest selection available at the time.
+    $defaultChoice = [string]$selections.Count
     while ($true) {
         Write-MenuTitle 'Client:'
-        Write-MenuLine 1 'Both' '(Claude + Codex)'
-        Write-MenuLine 2 'Claude only' '(.claude\settings.local.json)'
-        Write-MenuLine 3 'Codex only' '(.codex\hooks.json)'
-        $value = Read-Answer (New-QuestionPrompt 'Select the client' $null '1') 'select client'
+        for ($i = 0; $i -lt $selections.Count; $i++) {
+            $ids = @(Resolve-HookMakerClientSet $selections[$i])
+            if ($ids.Count -eq 1) {
+                $capability = Get-HookMakerClientCapability -ClientId $ids[0]
+                Write-MenuLine ($i + 1) ([string]$capability.displayName) ('(' + [string]$capability.projectRegistration + ')')
+            }
+            else {
+                $names = New-Object System.Collections.Generic.List[string]
+                foreach ($id in $ids) { [void]$names.Add([string](Get-HookMakerClientCapability -ClientId $id).displayName) }
+                Write-MenuLine ($i + 1) 'All clients' ('(' + (($names.ToArray()) -join ' + ') + ')')
+            }
+        }
+        $value = Read-Answer (New-QuestionPrompt 'Select the client' $null $defaultChoice) 'select client'
         if ($value -eq '0') {
             return $null
         }
         if ($value -eq '') {
-            $value = '1'
+            $value = $defaultChoice
         }
-        switch ($value) {
-            '1' { return 'Both' }
-            '2' { return 'Claude' }
-            '3' { return 'Codex' }
-            default { Write-ErrorLine 'Enter 1, 2, 3 or 0.' }
+        $picked = 0
+        if ([int]::TryParse($value, [ref]$picked) -and $picked -ge 1 -and $picked -le $selections.Count) {
+            $choice = $selections[$picked - 1]
+            # Install-Hook.ps1 refuses any kiro selection in its pre-mutation
+            # validation block (the registration writer is not wired up yet), and a
+            # bare throw there reads as a crash. Say so HERE, while the choice is
+            # still on screen and before anything is attempted. The selection is
+            # returned UNCHANGED: silently dropping kiro would install less than
+            # was asked for and then report success.
+            if (@(Resolve-HookMakerClientSet $choice) -contains 'kiro') {
+                Write-NoteLine '  NOTE: Kiro registration is not implemented yet in this build.'
+                Write-NoteLine '  The install will stop with an error and change nothing. Choose Claude or Codex to install now.'
+            }
+            return $choice
         }
+        Write-ErrorLine ('Enter a number between 1 and ' + $selections.Count + ', or 0.')
     }
 }
 

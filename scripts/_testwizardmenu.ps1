@@ -270,8 +270,10 @@
     # internally Ai-Memory-Check, whose recommended events are 'Stop' - so
     # choice 1 in the single-hook event menu is now that recommendation; choice
     # 3 is the explicit "Session Start" alone this test actually wants) ->
-    # events Session Start (explicit, not the recommendation) -> client Claude -> target -> done -> start
-    $r = Invoke-Wizard -Config $cfg2 -Answers @('1', '1', '3', '3', '2', $t, 'done', '', '0')
+    # events Session Start (explicit, not the recommendation) -> client Claude
+    # (menu item 1 since the client menu became Claude/Codex/Kiro/All) -> target
+    # -> done -> start
+    $r = Invoke-Wizard -Config $cfg2 -Answers @('1', '1', '3', '3', '1', $t, 'done', '', '0')
     Check 'exit 0' ($r.Exit -eq 0)
     Check 'no stderr' ($r.Err -eq '')
     Check 'event menu separates camel-case labels' ($r.Out -match 'Session Start \+ User Prompt Submit' -and $r.Out -match 'User Prompt Submit' -and $r.Out -match 'Pre Tool Use, Post Tool Use, Stop')
@@ -324,7 +326,11 @@
     Write-Host '--- sync group with a real install (both clients) ---' -ForegroundColor Cyan
     $cfg3 = Join-Path $Work 'cfg3.json'; New-Config $cfg3
     $a3 = New-Proj 'A3'; $b3 = New-Proj 'B3'
-    $r = Invoke-Wizard -Config $cfg3 -Answers @('1', '1', '2', $a3, $b3, 'done', '1', '', '0')
+    # Client answer '4' = "All clients". The menu has no Claude+Codex entry, so
+    # All is how one pass reaches both: its kiro component is recorded failed
+    # (registration not implemented) and dropped, and Claude + Codex install
+    # exactly as the legacy 'Both' did. Hence the codex assertions below.
+    $r = Invoke-Wizard -Config $cfg3 -Answers @('1', '1', '2', $a3, $b3, 'done', '4', '', '0')
     Check 'exit 0' ($r.Exit -eq 0)
     Check 'no stderr' ($r.Err -eq '')
     $profId3 = (@((Get-Content $cfg3 -Raw | ConvertFrom-Json).profiles)[0]).id
@@ -370,8 +376,10 @@
     #        20/21/22 and Utf8-Encoding-Check at 23 shifted Cloudflare-Deploy
     #        to 24); the engine is excluded from this list entirely, see the
     #        guard test below)
-    #        -> mode 1 (recommended events per hook) -> client Both -> target -> done -> start -> exit
-    $r = Invoke-Wizard -Config $cfg4 -Answers @('1', '1', '3-8,16,24', '1', '1', $m, 'done', '', '0')
+    #        -> mode 1 (recommended events per hook) -> client 4 = All clients
+    #        (reaches Claude + Codex in one pass; the kiro component is recorded
+    #        failed and dropped) -> target -> done -> start -> exit
+    $r = Invoke-Wizard -Config $cfg4 -Answers @('1', '1', '3-8,16,24', '1', '4', $m, 'done', '', '0')
     Check 'exit 0' ($r.Exit -eq 0)
     Check 'no stderr' ($r.Err -eq '')
     Check 'selection accepts a range combined with a single item' ($r.Out -notmatch 'Enter number\(s\)')
@@ -387,7 +395,7 @@
     Check 'eight distinct hooks installed in one pass' ($installedFolders.Count -eq 8)
     Check 'each installed under its own friendly folder' ($installedFolders -notcontains 'Cross-Project-.ai-Knowledge-Sync' -and (@($installedFolders | Where-Object { $_ -match '-' }).Count -eq 8))
     $codexFolders = @(Get-ChildItem -LiteralPath (Join-Path $m '.codex\hooks\Hook-Maker') -Directory -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Name)
-    Check 'batch honored client=Both (codex got all eight too)' ($codexFolders.Count -eq 8)
+    Check 'batch honored client=All (codex got all eight too)' ($codexFolders.Count -eq 8)
     $expectedEvents = [ordered]@{
         'Ai-Memory-Check'       = 'Stop'
         'Ai-Memory-Load'        = 'SessionStart,UserPromptSubmit'
