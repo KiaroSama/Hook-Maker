@@ -83,7 +83,9 @@ $script:ManagedSourceExcludedNames = @('.env.example')
 # $script:InstallRegistrySchemaVersion above is defined and before any
 # function below can call into it, so every existing consumer of THIS file
 # keeps working with zero changes - they still only need to dot-source
-# _installlib.ps1.
+# _installlib.ps1. That file in turn dot-sources _installdiscovered.ps1 (the
+# discovered-record identity/validation/merge rules), so the whole registry
+# concern still arrives through this single dot-source.
 . (Join-Path $PSScriptRoot '_installregistry.ps1')
 
 # Record validation (the shape one persisted managed record must prove before
