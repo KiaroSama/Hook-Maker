@@ -318,14 +318,36 @@ function Invoke-InstallHookFromConfig {
         if ($envValues.ContainsKey('EVENTS') -and $envValues['EVENTS'] -ne '') {
             $events = @($envValues['EVENTS'].Split(',') | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne '' })
         }
+        # FAILS CLOSED. This used to print a note and fall through with
+        # $clients still 'Both', so a typo such as CLIENTS=Cluade installed for
+        # MORE clients than the config asked for - the one outcome a
+        # client-restricting setting must never produce. Validity now comes from
+        # the canonical capability table, and anything it does not recognise
+        # skips this hook with nothing written.
         $clients = 'Both'
         if ($envValues.ContainsKey('CLIENTS') -and $envValues['CLIENTS'] -ne '') {
-            switch ($envValues['CLIENTS'].Trim().ToLowerInvariant()) {
-                'claude' { $clients = 'Claude' }
-                'codex' { $clients = 'Codex' }
-                'both' { $clients = 'Both' }
-                default { Write-NoteLine ('Unknown CLIENTS value "' + $envValues['CLIENTS'] + '" - installing for both.') }
+            $clientSet = $null
+            try { $clientSet = @(Resolve-HookMakerClientSet $envValues['CLIENTS']) }
+            catch {
+                Write-ErrorLine ('Unknown CLIENTS value "' + $envValues['CLIENTS'] + '" in ' + $hook.EnvPath + '.')
+                Write-NoteLine ('Accepted: Claude, Codex, Both (= Claude + Codex). Nothing was installed for ' + $hook.Name + '.')
+                Write-Log 'WARNING' 'CONFIG' ('Rejected unknown CLIENTS value for ' + $hook.Name + ' - nothing installed')
+                continue
             }
+            # Resolvable but not yet installable through this flow: the
+            # -ClaudeOnly/-CodexOnly switches are consumed as double negations,
+            # so a third client cannot be expressed here until the positive
+            # -Clients set replaces them. Rejecting is correct - accepting would
+            # silently install nothing for the client that was asked for.
+            $notWired = @($clientSet | Where-Object { $_ -ne 'claude' -and $_ -ne 'codex' })
+            if ($notWired.Count -gt 0) {
+                Write-ErrorLine ('CLIENTS value "' + $envValues['CLIENTS'] + '" names a client this config flow cannot install yet: ' + ($notWired -join ', ') + '.')
+                Write-NoteLine ('Nothing was installed for ' + $hook.Name + '. Use the interactive install flow for that client.')
+                continue
+            }
+            if ($clientSet.Count -eq 1 -and $clientSet[0] -eq 'claude') { $clients = 'Claude' }
+            elseif ($clientSet.Count -eq 1 -and $clientSet[0] -eq 'codex') { $clients = 'Codex' }
+            else { $clients = 'Both' }
         }
         $targetsRaw = ''
         if ($envValues.ContainsKey('TARGET_PROJECTS')) {
