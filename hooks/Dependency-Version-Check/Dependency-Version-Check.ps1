@@ -326,7 +326,16 @@ if ($manifestPaths.ContainsKey('pip')) {
         }
         else {
             try {
-                $items = @($text | ConvertFrom-Json)
+                # Inner parentheses required: on Windows PowerShell 5.1
+                # `@($text | ConvertFrom-Json)` yields ONE Object[] element
+                # rather than enumerating the array - at ANY length, including
+                # one. Get-Field reads PSObject.Properties, which is empty on an
+                # Object[], so every package is skipped as nameless and pip
+                # findings are silently never reported. Direct member access like
+                # $x.name still prints correctly via member enumeration, which is
+                # what makes the wrapped shape look healthy.
+                # `@((...))` enumerates on both hosts.
+                $items = @(($text | ConvertFrom-Json))
                 $count = 0
                 foreach ($item in $items) {
                     if ($count -ge $maxFindings) { break }

@@ -11,10 +11,10 @@
 # tree is dirty, the branch is ahead/unpushed, the exact release commit isn't
 # known to be pushed, CI exists but is not verified green for that exact SHA,
 # or Test-Temp-Cleanup (when installed for this project) has not reported a
-# fresh clean/safe-cleaned/review-only-preserved result for the CURRENT repo
-# state. If Test-Temp-Cleanup races on the same Stop and hasn't recorded yet,
-# this hook simply stays silent and re-evaluates on the next Stop - it never
-# loops or retries within one invocation.
+# fresh `clean` result for the CURRENT repo state. If Test-Temp-Cleanup races
+# on the same Stop and hasn't recorded yet, this hook simply stays silent and
+# re-evaluates on the next Stop - it never loops or retries within one
+# invocation.
 #
 # Token-efficient by design:
 # - Fires only in projects with a wrangler config (wrangler.toml/.json/.jsonc)
@@ -65,6 +65,20 @@ $deployCommand = 'npx wrangler deploy'
 if ($config.ContainsKey('DEPLOY_COMMAND') -and $config['DEPLOY_COMMAND'] -ne '') {
     $deployCommand = $config['DEPLOY_COMMAND']
 }
+
+# ---- SHARED RESULT-CATEGORY CONTRACT -------------------------------------
+# The complete vocabulary of the { fingerprint, category } handoff written to
+# TestTempCleanup-result-<projectKey>.json.
+# THE OTHER SIDE OF THIS CONTRACT IS hooks\Test-Temp-Cleanup\Test-Temp-Cleanup.ps1
+# ($script:ResultCategories). Keep both lists identical, in the same commit - a
+# past round shipped a dead gate because two components drifted on exactly this
+# kind of shared state contract.
+$script:CleanupCategories = @('clean', 'review-required', 'residue-confirmed', 'partial', 'unknown')
+# Only a fully clean, complete scan is release-ready. `review-required`,
+# `residue-confirmed`, `partial` and `unknown` each mean the workspace state is
+# unresolved or unproven, so none of them may show a deployment decision. An
+# unrecognized value (an older or newer producer) is treated the same way.
+$script:CleanupReleaseReadyCategories = @('clean')
 
 # Reads Test-Temp-Cleanup's coordination state, only trusting it when its
 # recorded repo-state fingerprint still matches the CURRENT state (never a
@@ -118,7 +132,21 @@ function Test-ReleaseReady {
         $runsJson = [string](Invoke-QuietCommand -FilePath gh -ArgumentList @('run', 'list', '--repo', $repoInfo.Repository, '--commit', $headSha, '--json', 'status,conclusion', '--limit', '20'))
         if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($runsJson)) { return $false }
         $runs = $null
-        try { $runs = @($runsJson | ConvertFrom-Json) } catch { return $false }
+        # The INNER parentheses are load-bearing on Windows PowerShell 5.1.
+        # `@($json | ConvertFrom-Json)` there collects the decoded array as ONE
+        # element of type Object[] instead of enumerating it - at ANY array
+        # length, including one. Get-Field reads $Object.PSObject.Properties,
+        # which is empty on an Object[], so every field read returns $null, no
+        # run ever looks 'completed'/'success', and this gate can never pass.
+        #
+        # What hides it: `$wrapped[0].status` DOES print the right value,
+        # because PowerShell member-enumerates over the array. Only a real
+        # property lookup exposes it, so the shape looks fine under casual
+        # inspection and the failure is silent (never a wrong deploy prompt).
+        #
+        # `@((...))` enumerates identically on both hosts; same form as
+        # Ci-Status-Check.ps1's annotation decode.
+        try { $runs = @(($runsJson | ConvertFrom-Json)) } catch { return $false }
         if ($runs.Count -eq 0) { return $false }
         foreach ($run in $runs) {
             if ([string](Get-Field $run 'status') -ne 'completed' -or [string](Get-Field $run 'conclusion') -ne 'success') { return $false }
@@ -130,7 +158,10 @@ function Test-ReleaseReady {
         (Test-Path -LiteralPath (Join-Path $Root '.codex\hooks\Hook-Maker\Test-Temp-Cleanup') -PathType Container)
     if ($cleanupInstalled) {
         $cleanupCategory = Get-CleanupCoordinationState -Root $Root
-        if ($cleanupCategory -notin @('clean', 'safe-cleaned', 'review-only-preserved')) { return $false }
+        # Missing/stale ($null), a non-ready category, and an unrecognized
+        # category all keep this hook silent until a later Stop.
+        if ($script:CleanupCategories -notcontains $cleanupCategory) { return $false }
+        if ($script:CleanupReleaseReadyCategories -notcontains $cleanupCategory) { return $false }
     }
 
     return $true
