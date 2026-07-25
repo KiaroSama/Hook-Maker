@@ -298,16 +298,21 @@ function Get-InstalledHookSnapshot {
     return $rows.ToArray()
 }
 
-# Registry client keys are lowercase ('claude'/'codex'); the UI shows the
+# Registry client keys are lowercase ('claude'/'codex'/'kiro'); the UI shows the
 # capitalized client name. Shared by the list and confirmation screens below
 # so the two never drift onto different capitalizations.
+#
+# The name comes from the ONE client capability table rather than a switch with
+# a case per client. A switch silently falls through for any client added to
+# the table later - which is exactly what happened to Kiro: it rendered as a
+# bare lowercase 'kiro' next to 'Claude' and 'Codex'. An id the table does not
+# know is still returned unchanged, exactly as the old default branch did, so a
+# foreign or malformed record renders something rather than nothing.
 function Get-ClientDisplayName {
     param([string]$Client)
-    switch ($Client) {
-        'claude' { return 'Claude' }
-        'codex' { return 'Codex' }
-        default { return $Client }
-    }
+    if ([string]::IsNullOrWhiteSpace($Client)) { return $Client }
+    try { return [string](Get-HookMakerClientCapability -ClientId $Client).displayName }
+    catch { return $Client }
 }
 
 # ---- list and uninstall installed hooks ------------------------------------
