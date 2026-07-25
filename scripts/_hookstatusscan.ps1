@@ -494,10 +494,17 @@ function Invoke-ScanWalk {
 # UPWARD - but in exactly ONE bounded hop, not by climbing.
 #
 # The hop is derived from the root's own path components: the OUTERMOST
-# `.claude` / `.codex` / `.git` component in -ScanRoot marks the tree the user
-# pointed inside, and its parent is that tree's project root. Only that one
-# directory is inspected, and only at its known settings/git locations - no
+# `.claude` / `.codex` / `.kiro` / `.git` component in -ScanRoot marks the tree
+# the user pointed inside, and its parent is that tree's project root. Only that
+# one directory is inspected, and only at its known settings/git locations - no
 # ancestor is ever enumerated.
+#
+# `.kiro` is a marker because Kiro's runtime root is `.kiro\hook-runtime\
+# Hook-Maker`, so a scan aimed there was previously left with NO enclosing
+# context at all. It resolves the same project root the other two do, and the
+# leaves read below are unchanged. Kiro's OWN registrations are not read here:
+# it is a perHookFile client (one JSON per install under `.kiro\hooks`), which
+# this scanner's known-name/known-position settings parser does not cover.
 #
 # Deriving the hop instead of walking up until something is found is what keeps
 # this from silently becoming an unrestricted scan outside the user's root: a
@@ -511,7 +518,7 @@ function Find-UpwardContext {
     $segments = @($canonical.Split([char[]]@('\', '/')))
     $markerIndex = -1
     for ($i = 0; $i -lt $segments.Count; $i++) {
-        if ($segments[$i] -eq '.claude' -or $segments[$i] -eq '.codex' -or $segments[$i] -eq '.git') { $markerIndex = $i; break }
+        if ($segments[$i] -eq '.claude' -or $segments[$i] -eq '.codex' -or $segments[$i] -eq '.kiro' -or $segments[$i] -eq '.git') { $markerIndex = $i; break }
     }
     # No client/native component in the path: -ScanRoot is an ordinary directory
     # and the downward walk already covers everything reachable from it.

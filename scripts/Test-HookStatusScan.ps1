@@ -188,6 +188,27 @@ try {
     Check 'the registration found upward is recorded exactly once' (
         @(@($directScan.Result.findings) | Where-Object { @($_.clients).Count -gt 0 }).Count -eq 1)
 
+    Write-Host '--- a Kiro runtime subtree resolves its enclosing project context ---' -ForegroundColor Cyan
+    # Kiro's runtime root is .kiro\hook-runtime\Hook-Maker (deliberately NOT
+    # .kiro\hooks, which is Kiro's own config-discovery root). A scan aimed at
+    # that tree must resolve the enclosing project exactly as the .claude case
+    # above does; before .kiro became an upward marker it resolved NOTHING, so
+    # the enclosing registration and git repository were both invisible.
+    $kiroProj = New-Dir (Join-Path $Work 'KiroRuntimeProject')
+    Write-Utf8 -Path (Join-Path $kiroProj '.kiro\hook-runtime\Hook-Maker\ZZZ-Kiro\ZZZ-Kiro.ps1') -Content '# kiro runtime'
+    New-ClaudeHook -ProjectRoot $kiroProj -HookName 'ZZZ-Kiro-Enclosing' | Out-Null
+    New-GitHookRepo -RepositoryRoot $kiroProj -HookName 'pre-commit' | Out-Null
+
+    $kiroScan = Invoke-Scan -Root (Join-Path $kiroProj '.kiro\hook-runtime\Hook-Maker')
+    Check 'scanning a .kiro runtime subtree exits 0' ($kiroScan.Exit -eq 0) $kiroScan.Err
+    Check 'scanning ...\.kiro\hook-runtime\Hook-Maker finds the enclosing registration' (
+        Test-FoundTarget -Result $kiroScan.Result -Fragment 'ZZZ-Kiro-Enclosing.ps1') (
+        ($kiroScan.Result | ConvertTo-Json -Depth 6))
+    Check 'the .kiro upward lookup also reaches the enclosing git repository' (
+        [int]$kiroScan.Result.counts.gitRepositories -eq 1) ([string]$kiroScan.Result.counts.gitRepositories)
+    Check 'the .kiro upward lookup does not wander into sibling projects' (
+        -not (Test-FoundTarget -Result $kiroScan.Result -Fragment 'ZZZ-Nested-Claude.ps1'))
+
     Write-Host '--- no default depth cap ---' -ForegroundColor Cyan
     $deepRoot = New-Dir (Join-Path $Work 'DeepTree')
     $deep = $deepRoot
