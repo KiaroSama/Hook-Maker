@@ -219,6 +219,39 @@ if ($null -ne $in) { $prompt = [string](Get-Field $in 'prompt') }
         $riKiroWins = Invoke-ReadHookInput -Client 'kiro' -Trigger 'Stop' -Stdin '{"hook_event_name":"SessionStart"}'
         Check 'a real payload event name WINS over the launcher argument' (
             [string](Get-RiField $riKiroWins 'hook_event_name') -ceq 'SessionStart') (Show-Ri $riKiroWins)
+
+        # --- USER_PROMPT is the ONE input channel Kiro documents ---------------
+        # Omitting it left every prompt-driven hook blind on Kiro IDE:
+        # Rules-Check, Skills-Check and the ::deep-debug detection all read
+        # 'prompt', so they ran and silently did nothing.
+        $riOrigUserPrompt = $env:USER_PROMPT
+        try {
+            $env:USER_PROMPT = 'KIRO-PROMPT-TEXT'
+            $riKiroPrompt = Invoke-ReadHookInput -Client 'kiro' -Trigger 'UserPromptSubmit' -Stdin ''
+            Check 'kiro UserPromptSubmit carries the prompt from USER_PROMPT' (
+                (Get-RiField $riKiroPrompt 'prompt') -ceq 'KIRO-PROMPT-TEXT') (Show-Ri $riKiroPrompt)
+            # Scoped to the one trigger Kiro documents it for: a prompt left over
+            # in the environment on SessionStart would be stale, and acting on a
+            # stale prompt is worse than having none.
+            $riKiroNoPrompt = Invoke-ReadHookInput -Client 'kiro' -Trigger 'SessionStart' -Stdin ''
+            Check 'no prompt is attached on a trigger Kiro does not document it for' (
+                [string]::IsNullOrEmpty((Get-RiField $riKiroNoPrompt 'prompt'))) (Show-Ri $riKiroNoPrompt)
+            # Same precedence rule as the event name: the environment is the
+            # fallback, never an override of what the client actually sent.
+            $riPromptWins = Invoke-ReadHookInput -Client 'kiro' -Trigger 'UserPromptSubmit' -Stdin '{"prompt":"FROM-PAYLOAD"}'
+            Check 'a real payload prompt WINS over the environment fallback' (
+                (Get-RiField $riPromptWins 'prompt') -ceq 'FROM-PAYLOAD') (Show-Ri $riPromptWins)
+            # USER_PROMPT is a Kiro-only channel; no other client may inherit it.
+            $riCodexPrompt = Invoke-ReadHookInput -Client 'codex' -Trigger '' -Stdin '{"hook_event_name":"UserPromptSubmit"}'
+            Check 'USER_PROMPT is never injected for a non-Kiro client' (
+                [string]::IsNullOrEmpty((Get-RiField $riCodexPrompt 'prompt'))) (Show-Ri $riCodexPrompt)
+        }
+        finally {
+            if ([string]::IsNullOrEmpty($riOrigUserPrompt)) {
+                if (Test-Path Env:\USER_PROMPT) { Remove-Item Env:\USER_PROMPT -ErrorAction SilentlyContinue }
+            }
+            else { $env:USER_PROMPT = $riOrigUserPrompt }
+        }
     }
     finally {
         Set-ClaudeProjectDir $riOrigCpd
@@ -356,21 +389,32 @@ if ($null -ne $in) { $prompt = [string](Get-Field $in 'prompt') }
             $hrUnknown.Out + ' | ' + [string]$hrUnknown.Result.DegradedReason)
 
         # --- a block on a non-block-capable event is downgraded, never faked ---
-        # Kiro Stop cannot block on either surface Hook Maker targets, AND Kiro
-        # discards hook stdout on Stop - so the honest result is no output at all
-        # plus both facts reported. This is what lets a caller record
-        # degraded-stop-gate instead of claiming a gate it never got.
+        # Kiro Stop cannot block on either surface Hook Maker targets, so the
+        # gate is downgraded to the strongest advisory available and BOTH facts
+        # are reported - that is what lets a caller record degraded-stop-gate
+        # instead of claiming a gate it never got.
+        #
+        # These two assertions previously required TOTAL silence here. That was
+        # wrong and it hid a real defect: Kiro discards stdout on Stop, but a
+        # non-zero exit other than 2 surfaces stderr to the user. Demanding
+        # silence meant a failed gate told the user nothing at all. What must
+        # actually be guaranteed is that it is not mistaken for a gate - so the
+        # exit code, not the presence of output, is the safety property.
         $hrKiroStopBlock = Invoke-HookResult -Call @{ kind = 'block'; event = 'Stop'; reason = 'KIRO-STOP-GATE'; client = 'kiro' }
-        Check 'a block on Kiro Stop is DOWNGRADED, never emitted as a fake block' (
+        Check 'a block on Kiro Stop is DOWNGRADED to a warning, never a fake block' (
             $hrKiroStopBlock.Out -eq '' -and $hrKiroStopBlock.Out -notmatch 'decision' -and
-            $hrKiroStopBlock.Err -notmatch 'KIRO-STOP-GATE' -and
-            $hrKiroStopBlock.Result.Emitted -eq $false -and $hrKiroStopBlock.Result.ExitCode -eq 0) (
+            $hrKiroStopBlock.Err -match 'KIRO-STOP-GATE' -and
+            $hrKiroStopBlock.Result.Shape -eq 'kiroStderrWarning') (
             $hrKiroStopBlock.Out + ' | ' + $hrKiroStopBlock.Err)
+        # THE safety property: 2 is Kiro's refusal code. A downgraded gate that
+        # exited 2 would enforce exactly the block we just proved Kiro cannot do.
+        Check 'the downgraded gate never exits with Kiro''s refusal code' (
+            $hrKiroStopBlock.Result.ExitCode -ne 2) ([string]$hrKiroStopBlock.Result.ExitCode)
         Check 'the downgrade REPORTS Degraded with both reasons (no block mechanism, stdout discarded)' (
             $hrKiroStopBlock.Result.Degraded -eq $true -and
             $hrKiroStopBlock.Result.DegradedReason -match 'no block mechanism on Stop' -and
             $hrKiroStopBlock.Result.DegradedReason -match 'NOT an enforced gate' -and
-            $hrKiroStopBlock.Result.DegradedReason -match 'discarded') ([string]$hrKiroStopBlock.Result.DegradedReason)
+            $hrKiroStopBlock.Result.DegradedReason -match 'discards hook stdout') ([string]$hrKiroStopBlock.Result.DegradedReason)
 
         # --- a block on a block-capable Kiro event is a REAL block ---
         $hrKiroRealBlock = Invoke-HookResult -Call @{ kind = 'block'; event = 'UserPromptSubmit'; reason = 'KIRO-REAL-GATE'; client = 'kiro' }
@@ -385,12 +429,28 @@ if ($null -ne $in) { $prompt = [string](Get-Field $in 'prompt') }
         Check 'Kiro context on a documented trigger is plain stdout, never a Claude/Codex JSON shape' (
             $hrKiroCtx.Out -ceq 'KIRO-CTX-TEXT' -and $hrKiroCtx.Result.Shape -eq 'kiroStdout' -and
             $hrKiroCtx.Result.Emitted -eq $true -and $hrKiroCtx.Result.Degraded -eq $false) $hrKiroCtx.Out
+        # Changed deliberately, not silently. This used to assert TOTAL silence
+        # off Kiro's two context triggers, and that pinned a real defect: Kiro
+        # discards stdout there, but a non-zero exit code other than 2 surfaces
+        # stderr to the user and lets execution continue. Asserting silence meant
+        # every Stop and PostToolUse message was thrown away on Kiro and the test
+        # certified it. The message now reaches the user via that channel.
         $hrKiroCtxIgnored = Invoke-HookResult -Call @{ kind = 'context'; event = 'PostToolUse'; message = 'KIRO-IGNORED'; client = 'kiro' }
-        Check 'Kiro context on an undocumented trigger emits nothing and reports the silent no-op' (
-            $hrKiroCtxIgnored.Out -eq '' -and $hrKiroCtxIgnored.Result.Emitted -eq $false -and
+        Check 'Kiro off its context triggers warns on stderr instead of vanishing' (
+            $hrKiroCtxIgnored.Out -eq '' -and $hrKiroCtxIgnored.Err -match 'KIRO-IGNORED' -and
+            $hrKiroCtxIgnored.Result.Shape -eq 'kiroStderrWarning' -and
+            $hrKiroCtxIgnored.Result.Emitted -eq $true) (
+            $hrKiroCtxIgnored.Out + ' | err=' + $hrKiroCtxIgnored.Err)
+        # Exit 1, never 2: 2 is Kiro's refusal code, so reusing it here would
+        # turn a non-blocking notice into a block on a block-capable trigger.
+        Check 'the Kiro warning uses exit 1, never the refusal code 2' (
+            $hrKiroCtxIgnored.Result.ExitCode -eq 1) ([string]$hrKiroCtxIgnored.Result.ExitCode)
+        # It must still be reported as WEAKER than the context channel: this
+        # reaches the user, not the model. Calling it parity would be a lie.
+        Check 'the stderr warning is still reported as degraded, not as context parity' (
             $hrKiroCtxIgnored.Result.Degraded -eq $true -and
-            $hrKiroCtxIgnored.Result.DegradedReason -match 'discarded') (
-            $hrKiroCtxIgnored.Out + ' | ' + [string]$hrKiroCtxIgnored.Result.DegradedReason)
+            $hrKiroCtxIgnored.Result.DegradedReason -match 'NOT injected into model context') (
+            [string]$hrKiroCtxIgnored.Result.DegradedReason)
 
         # --- the same downgrade rule applies to Claude, not just Kiro ---
         $hrClaudeSsBlock = Invoke-HookResult -Call @{ kind = 'block'; event = 'SessionStart'; reason = 'CLAUDE-SS-GATE'; client = 'claude' }

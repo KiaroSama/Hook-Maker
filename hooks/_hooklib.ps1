@@ -120,6 +120,18 @@ function Read-HookInput {
         if (-not [string]::IsNullOrWhiteSpace($kiroCwd)) {
             Set-ObjectProperty -Object $synthesized -Name 'cwd' -Value $kiroCwd
         }
+        # USER_PROMPT is the ONE input channel Kiro documents, and omitting it
+        # left every prompt-driven hook blind on Kiro IDE: Rules-Check,
+        # Skills-Check and the ::deep-debug detection all read 'prompt', so they
+        # silently did nothing there. Scoped to UserPromptSubmit because that is
+        # the only trigger Kiro documents it for - carrying a stale prompt into
+        # SessionStart or PreToolUse would be worse than having none.
+        if ($kiroTrigger -ceq 'UserPromptSubmit') {
+            $kiroPrompt = [string]$env:USER_PROMPT
+            if (-not [string]::IsNullOrWhiteSpace($kiroPrompt)) {
+                Set-ObjectProperty -Object $synthesized -Name 'prompt' -Value $kiroPrompt
+            }
+        }
         return $synthesized
     }
 
@@ -129,6 +141,16 @@ function Read-HookInput {
     # always wins over the launcher's argument.
     if ([string]::IsNullOrWhiteSpace([string](Get-Field $parsed 'hook_event_name'))) {
         Set-ObjectProperty -Object $parsed -Name 'hook_event_name' -Value $kiroTrigger
+    }
+    # Same rule for the prompt: fill only what the payload did not supply, and
+    # only on the trigger Kiro documents USER_PROMPT for. A real payload always
+    # wins - the environment is the fallback, never the override.
+    if ($kiroTrigger -ceq 'UserPromptSubmit' -and
+        [string]::IsNullOrWhiteSpace([string](Get-Field $parsed 'prompt'))) {
+        $kiroPromptFallback = [string]$env:USER_PROMPT
+        if (-not [string]::IsNullOrWhiteSpace($kiroPromptFallback)) {
+            Set-ObjectProperty -Object $parsed -Name 'prompt' -Value $kiroPromptFallback
+        }
     }
     return $parsed
 }
@@ -380,9 +402,23 @@ function Write-HookResult {
                     $emitted = $true; $shape = 'kiroStdout'
                 }
                 else {
-                    $degradedParts += ('kiro adds hook stdout to context only on ' +
-                        ($script:HookKiroContextEvents -join '/') + '; on ' + $EventName +
-                        ' it is discarded, so nothing was emitted')
+                    # Kiro DISCARDS stdout here, but it is not silent: a non-zero
+                    # exit code other than 2 surfaces stderr as a warning and
+                    # lets execution proceed. This branch used to emit nothing at
+                    # all, which threw away every Stop and PostToolUse message on
+                    # Kiro - the hook ran and the user never learned why.
+                    #
+                    # Exit 1, NOT 2: 2 is the refusal code, and using it here
+                    # would turn an advisory into a block on a block-capable
+                    # trigger. The degradation is real and named: this reaches
+                    # the user, not the model, so it is weaker than the context
+                    # channel Claude and Codex get - never report it as parity.
+                    [Console]::Error.WriteLine($text)
+                    $emitted = $true; $shape = 'kiroStderrWarning'; $exitCode = 1
+                    $degradedParts += ('kiro discards hook stdout on ' + $EventName +
+                        ' (context is added only on ' + ($script:HookKiroContextEvents -join '/') +
+                        '), so this was surfaced as a non-blocking warning on stderr - visible to the ' +
+                        'user, NOT injected into model context')
                 }
             }
             else {
