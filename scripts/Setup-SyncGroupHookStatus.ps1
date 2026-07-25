@@ -100,6 +100,34 @@ function Resolve-ScanRoot {
 }
 
 # ---- result grouping -------------------------------------------------------
+# The per-client "external registrations" sections, derived from the ONE client
+# capability table instead of a second hardcoded client list.
+#
+# A finding's hookType is '<DisplayName>Registration' (see the hookType
+# expression in scripts\_hookstatusrecords.ps1), so the group key, the heading
+# and the hookType that selects them all follow the same table entry. A client
+# added to the table therefore gets its own section automatically - which is
+# what a hardcoded switch failed to do for Kiro, filing a Kiro finding under
+# the External Claude heading and attributing it to the wrong client. Claude's
+# and Codex's keys and headings are byte-identical to the previous literals.
+function Get-ExternalClientGroups {
+    $groups = New-Object System.Collections.Generic.List[object]
+    foreach ($clientId in @(Get-HookMakerClientIds)) {
+        $capability = $null
+        try { $capability = Get-HookMakerClientCapability -ClientId $clientId } catch { continue }
+        $display = [string]$capability.displayName
+        if ([string]::IsNullOrWhiteSpace($display)) { continue }
+        [void]$groups.Add([pscustomobject]@{
+            Key      = 'external' + $display
+            HookType = $display + 'Registration'
+            Title    = 'External ' + $display + ' registrations:'
+        })
+    }
+    # Callers wrap in @(): a single-client table would otherwise unroll to one
+    # bare object on the way out.
+    return $groups.ToArray()
+}
+
 # Which section of the result screen a finding belongs in. Ambiguity wins over
 # everything else: a finding whose command could not be parsed, or whose command
 # fields disagree, must never be quietly filed under a confident heading.
@@ -116,11 +144,19 @@ function Get-StatusGroupKey {
     if ($null -ne $native -and (Get-StatusText $native 'classification' '') -eq 'ambiguous') { return 'ambiguous' }
 
     if ((Get-StatusText $Finding 'managedBy' '') -eq 'hookMaker') { return 'managed' }
-    switch (Get-StatusText $Finding 'hookType' '') {
-        'NativeGitHook' { return 'nativeGit' }
-        'CodexRegistration' { return 'externalCodex' }
-        default { return 'externalClaude' }
+    $hookType = Get-StatusText $Finding 'hookType' ''
+    if ($hookType -eq 'NativeGitHook') { return 'nativeGit' }
+    $clientGroups = @(Get-ExternalClientGroups)
+    foreach ($group in $clientGroups) {
+        if ($hookType -eq $group.HookType) { return $group.Key }
     }
+    # Unchanged fallback: a finding whose hookType names no known client still
+    # lands in the FIRST client's section (Claude), exactly as the previous
+    # switch's default branch did. Taken from the same list the headings are
+    # built from, so a fallback key can never name a section that is never
+    # rendered - which would drop the finding off the screen entirely.
+    if ($clientGroups.Count -gt 0) { return $clientGroups[0].Key }
+    return 'externalClaude'
 }
 
 # How much of a finding this tool can actually remove on its own. Stated in the
@@ -218,7 +254,7 @@ function Write-StatusFinding {
 # Prompt flow (each step can go back one; nothing is scanned or written until
 # the user has passed BOTH prompts):
 #   1. root folder to scan
-#   2. also inspect the current user's global Claude/Codex locations? (default No)
+#   2. also inspect the current user's global client locations? (default No)
 #   3. show the canonical roots, then start immediately
 #
 # Returns 'back' when the user leaves before scanning, 'done' otherwise.
@@ -254,7 +290,7 @@ function Invoke-GetHookStatus {
         # Default No: the global locations belong to the user's whole machine,
         # not to the folder they just named, so including them is an explicit
         # opt-in rather than something Enter does by accident.
-        $answer = Read-YesNo (New-QuestionPrompt "Also inspect the current user's global Claude and Codex hook locations?" 'y/n' 'n') $false 'hook status include global'
+        $answer = Read-YesNo (New-QuestionPrompt "Also inspect the current user's global Claude, Codex and Kiro hook locations?" 'y/n' 'n') $false 'hook status include global'
         if ($null -eq $answer) {
             $stage = 0
             continue
@@ -268,13 +304,37 @@ function Invoke-GetHookStatus {
     Write-MenuTitle 'Roots to scan:'
     Write-Host ('  ' + (Get-Painted $scanRoot $C.White))
     if ($includeGlobal) {
-        foreach ($client in @('claude', 'codex')) {
-            $globalPath = Get-CanonicalClientSettingsPath -ClientName $client -Scope 'global'
+        # Every client the capability table knows, in table order - not a second
+        # hardcoded pair, which left Kiro's global location out of a screen whose
+        # whole job is to state exactly what will be read.
+        #
+        # The two client shapes name different things, and this MIRRORS
+        # Get-GlobalSettingsCandidates in scripts\_hookstatusscan.ps1, which is
+        # what the scanner itself uses to decide the same set. (The scanner is
+        # deliberately not dot-sourced into the wizard - see this file's header -
+        # so the derivation is repeated rather than shared.) A sharedSettingsFile
+        # client names its settings FILE; a perHookFile client has no shared
+        # settings document at all, so it names its registration DIRECTORY.
+        # Get-CanonicalClientSettingsPath REFUSES a perHookFile client by design;
+        # that refusal is correct and is routed around here, never weakened.
+        foreach ($client in @(Get-HookMakerClientIds)) {
+            $globalPath = ''
+            try {
+                $capability = Get-HookMakerClientCapability -ClientId $client
+                $globalPath = if ([string]$capability.registrationKind -eq 'sharedSettingsFile') {
+                    Get-CanonicalClientSettingsPath -ClientName $client -Scope 'global'
+                }
+                else {
+                    Join-Path $HOME ([string]$capability.globalRegistration)
+                }
+            }
+            catch { continue }
+            if ([string]::IsNullOrWhiteSpace($globalPath)) { continue }
             Write-Host ('  ' + (Get-Painted $globalPath $C.White) + $script:MenuSep + (Get-Painted ((Get-ClientDisplayName $client) + ' global') $C.Gray))
         }
     }
     else {
-        Write-NoteLine '  Global Claude/Codex locations are NOT included in this scan.'
+        Write-NoteLine '  Global Claude/Codex/Kiro locations are NOT included in this scan.'
     }
     Write-NoteLine '  Reparse points (symlinks, junctions, mount points) are not followed; they are'
     Write-NoteLine '  reported as skipped instead, so the scan cannot wander outside these roots.'
@@ -362,12 +422,16 @@ function Show-HookStatusResult {
     }
 
     $findings = @(Get-StatusList $Document 'findings')
+    # Managed first, then one section per client in capability-table order
+    # (Claude, Codex, Kiro), then the two client-independent sections. The
+    # per-client rows come from the same helper Get-StatusGroupKey files
+    # findings with, so a key can never exist without a heading to print it
+    # under.
     $groups = @(
-        [pscustomobject]@{ Key = 'managed'; Title = 'Hook Maker managed:' }
-        [pscustomobject]@{ Key = 'externalClaude'; Title = 'External Claude registrations:' }
-        [pscustomobject]@{ Key = 'externalCodex'; Title = 'External Codex registrations:' }
-        [pscustomobject]@{ Key = 'nativeGit'; Title = 'Native Git hooks:' }
-        [pscustomobject]@{ Key = 'ambiguous'; Title = 'Ambiguous / unparsed:' }
+        @([pscustomobject]@{ Key = 'managed'; Title = 'Hook Maker managed:' }) +
+        @(Get-ExternalClientGroups) +
+        @([pscustomobject]@{ Key = 'nativeGit'; Title = 'Native Git hooks:' }) +
+        @([pscustomobject]@{ Key = 'ambiguous'; Title = 'Ambiguous / unparsed:' })
     )
     $anyShown = $false
     foreach ($group in $groups) {
