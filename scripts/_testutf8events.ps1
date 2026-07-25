@@ -137,6 +137,27 @@
     Check 'the staged-content block never leaks the staged bytes' ((Get-Message $r.Out) -notmatch 'STAGEDMARKER') $r.Out
 
     # =====================================================================
+    # GUARD (counter-assertion, not an exclusion): Kiro keeps its hook
+    # configuration in tracked .kiro\hooks\*.json - project text that is part of
+    # the deliverable, so the encoding gate MUST still see it. Only Kiro's
+    # private runtime tree would ever be a candidate for exclusion, and no
+    # equivalent .claude\hooks / .codex\hooks carve-out exists to justify one, so
+    # .kiro is deliberately absent from $script:ExcludedDirs. This block fails
+    # the moment anyone adds it, because Test-PathExcluded is applied to the
+    # tracked/staged candidate set itself.
+    Write-Host '--- Stop: a non-UTF-8 file inside .kiro is STILL caught (never blanket-excluded) ---' -ForegroundColor Cyan
+    $hcKiro = New-IsolatedHookCopy
+    $projKiro = New-GitRepo 'KiroStillScanned'
+    Write-Utf8 (Join-Path $projKiro 'base.txt') "seed`n"
+    Add-Commit $projKiro 'seed'
+    Write-Bytes (Join-Path $projKiro '.kiro\hooks\kiro-hook.json') (Get-InvalidUtf8Bytes 'KIROMARKER')
+    $r = Fire -HookPath $hcKiro.Script -Cwd $projKiro -EventName 'Stop' -SessionId 'k1' -LocalAppData $hcKiro.LocalAppData
+    Check 'invalid UTF-8 in tracked .kiro\hooks config still blocks at Stop' (
+        (Test-StopBlocks $r.Out) -and (Get-Message $r.Out) -match 'kiro-hook\.json') $r.Out
+    Check 'the .kiro block names the path but never leaks its bytes' (
+        (Get-Message $r.Out) -notmatch 'KIROMARKER') $r.Out
+
+    # =====================================================================
     Write-Host '--- Stop: a deleted file is handled without a crash or a block ---' -ForegroundColor Cyan
     $hcDel = New-IsolatedHookCopy
     $projDel = New-GitRepo 'Deleted'

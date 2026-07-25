@@ -249,19 +249,27 @@ try {
     $hc6 = New-IsolatedHookCopy
     $proj6 = New-GitRepo 'Excluded'
     Write-Utf8 (Join-Path $proj6 'README.md') "# Proj`n"
-    New-Item -ItemType Directory -Path (Join-Path $proj6 '.ai'), (Join-Path $proj6 'node_modules\pkg'), (Join-Path $proj6 'test\fixtures') -Force | Out-Null
+    New-Item -ItemType Directory -Path (Join-Path $proj6 '.ai'), (Join-Path $proj6 'node_modules\pkg'), (Join-Path $proj6 'test\fixtures'), (Join-Path $proj6 '.kiro\hook-runtime\Hook-Maker') -Force | Out-Null
     Write-Utf8 (Join-Path $proj6 '.ai\NOTES.md') "private notes`n"
     Write-Utf8 (Join-Path $proj6 'node_modules\pkg\index.js') "module.exports = 1;`n"
     Write-Utf8 (Join-Path $proj6 'test\fixtures\sample.md') "fixture doc`n"
     Write-Utf8 (Join-Path $proj6 'LICENSE.md') "MIT`n"
+    # A Kiro client tree is neither documentation nor project source, so a change
+    # inside it must not put the agent through a doc review - exactly as .claude
+    # and .codex already behave. The content must be REAL code, not a comment:
+    # a comment-only diff is classified as noise anyway, which would make this
+    # assertion pass whether or not .kiro is hard-excluded.
+    Write-Utf8 (Join-Path $proj6 '.kiro\hook-runtime\Hook-Maker\Kiro-Runtime.ps1') "Write-Host 'runtime v1'`n"
     Add-Commit $proj6 'init'
     Fire -HookPath $hc6.Script -Cwd $proj6 -EventName 'SessionStart' -LocalAppData $hc6.LocalAppData | Out-Null
     Write-Utf8 (Join-Path $proj6 '.ai\NOTES.md') "private notes changed`n"
     Write-Utf8 (Join-Path $proj6 'node_modules\pkg\index.js') "module.exports = 2; /* real change */`n"
     Write-Utf8 (Join-Path $proj6 'test\fixtures\sample.md') "fixture doc changed`n"
     Write-Utf8 (Join-Path $proj6 'LICENSE.md') "MIT changed`n"
+    Write-Utf8 (Join-Path $proj6 '.kiro\hook-runtime\Hook-Maker\Kiro-Runtime.ps1') "Write-Host 'runtime v2'`n"
     $r = Fire -HookPath $hc6.Script -Cwd $proj6 -EventName 'Stop' -LocalAppData $hc6.LocalAppData
     Check 'changes confined to hard-excluded paths never trigger a review' ($r.Exit -eq 0 -and $r.Out -eq '') $r.Out
+    Check 'a .kiro client-tree change is hard-excluded (never named as impact)' ($r.Out -notmatch '\.kiro') $r.Out
 
     # =====================================================================
     Write-Host '--- output contains only relative paths, no file contents ---' -ForegroundColor Cyan
