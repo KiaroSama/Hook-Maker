@@ -327,9 +327,9 @@
     $cfg3 = Join-Path $Work 'cfg3.json'; New-Config $cfg3
     $a3 = New-Proj 'A3'; $b3 = New-Proj 'B3'
     # Client answer '4' = "All clients". The menu has no Claude+Codex entry, so
-    # All is how one pass reaches both: its kiro component is recorded failed
-    # (registration not implemented) and dropped, and Claude + Codex install
-    # exactly as the legacy 'Both' did. Hence the codex assertions below.
+    # All is how one pass reaches both, and Claude + Codex install exactly as the
+    # legacy 'Both' did. Hence the codex assertions below. (Kiro installs too;
+    # Test-KiroIntegration.ps1 owns proving that, so it is not re-asserted here.)
     $r = Invoke-Wizard -Config $cfg3 -Answers @('1', '1', '2', $a3, $b3, 'done', '4', '', '0')
     Check 'exit 0' ($r.Exit -eq 0)
     Check 'no stderr' ($r.Err -eq '')
@@ -377,8 +377,9 @@
     #        to 24); the engine is excluded from this list entirely, see the
     #        guard test below)
     #        -> mode 1 (recommended events per hook) -> client 4 = All clients
-    #        (reaches Claude + Codex in one pass; the kiro component is recorded
-    #        failed and dropped) -> target -> done -> start -> exit
+    #        (reaches Claude + Codex in one pass; Kiro installs alongside them
+    #        and is asserted in Test-KiroIntegration.ps1, not here)
+    #        -> target -> done -> start -> exit
     $r = Invoke-Wizard -Config $cfg4 -Answers @('1', '1', '3-8,16,24', '1', '4', $m, 'done', '', '0')
     Check 'exit 0' ($r.Exit -eq 0)
     Check 'no stderr' ($r.Err -eq '')

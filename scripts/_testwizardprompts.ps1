@@ -214,21 +214,32 @@
 
     # =====================================================================
     Write-Host '--- client menu: a bare Enter selects All clients and flags Kiro up front ---' -ForegroundColor Cyan
-    # Install-Hook.ps1 refuses a kiro selection outright in its pre-mutation
-    # validation block, so the wizard must say so BEFORE the install is attempted
-    # instead of letting that throw surface as an apparent crash - and must NOT
-    # quietly drop kiro from the selection to make the install succeed. Declined at
-    # the confirmation, so nothing is written either way.
+    # Kiro installs for real, so the note must describe Kiro's ACTUAL, permanent
+    # limitations (5 of the 12 logical events; Stop can never hard-block) and must
+    # not claim the registration is unimplemented - it has been wired up since
+    # e914f5d, and the assertions here used to pin that stale claim in place. The
+    # selection must still not be quietly narrowed to make an install succeed.
+    # Declined at the confirmation, so nothing is written either way.
     $cfgAllClients = Join-Path $Work 'cfg-client-all.json'; New-Config $cfgAllClients
     $allClientsProj = New-Proj 'AllClientsProj'
     $rAllClients = Invoke-Wizard -Config $cfgAllClients -Answers @('1', '1', '3', '1', '', $allClientsProj, 'done', 'n', 'exit')
     Check 'exit 0 (bare Enter on the client menu)' ($rAllClients.Exit -eq 0) $rAllClients.Err
     Check 'a bare Enter on the client menu resolves to All, not to a single client' (
         $rAllClients.Out -match 'client:[^\r\n]*All' -and $rAllClients.Out -notmatch 'client:[^\r\n]*(Claude|Codex|Kiro)') $rAllClients.Out
-    Check 'a Kiro-inclusive selection warns that Kiro registration is not implemented yet' (
-        $rAllClients.Out -match 'Kiro registration is not implemented yet') $rAllClients.Out
-    Check 'the Kiro warning is pre-flight (before the confirmation) and declining installs nothing' (
-        $rAllClients.Out.IndexOf('Kiro registration is not implemented yet') -lt $rAllClients.Out.IndexOf('Start now?') -and
+    # The five names are spelled out rather than re-derived from the capability
+    # table: a test that computes its expectation from the same source as the
+    # code cannot catch that source being wrong.
+    Check 'a Kiro-inclusive selection names the events Kiro really supports, and never claims it is unimplemented' (
+        $rAllClients.Out -match 'Kiro supports only these events: SessionStart, UserPromptSubmit, PreToolUse, PostToolUse, Stop\.' -and
+        $rAllClients.Out -notmatch 'not implemented') $rAllClients.Out
+    Check 'the Kiro note states the permanent Stop limitation instead of a build-state one' (
+        $rAllClients.Out -match 'Kiro cannot hard-block at Stop') $rAllClients.Out
+    # The -ge 0 is load-bearing: IndexOf returns -1 for an ABSENT note, and -1 is
+    # less than every real offset, so an ordering-only check silently passes when
+    # the note it is ordering does not exist at all.
+    $kiroNoteAt = $rAllClients.Out.IndexOf('Kiro supports only these events')
+    Check 'the Kiro note is pre-flight (before the confirmation) and declining installs nothing' (
+        $kiroNoteAt -ge 0 -and $kiroNoteAt -lt $rAllClients.Out.IndexOf('Start now?') -and
         -not (Test-Path -LiteralPath (Join-Path $allClientsProj '.claude'))) $rAllClients.Out
 
     # =====================================================================

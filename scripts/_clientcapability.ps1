@@ -155,6 +155,23 @@ $script:HookMakerClientCapabilities = @{
         # NOT silently dropped and NOT remapped onto Stop - callers must report
         # them as an explicit degraded component result.
         supportedEvents       = @('SessionStart', 'UserPromptSubmit', 'PreToolUse', 'PostToolUse', 'Stop')
+        # A trigger EXISTING is not the same as a hook being able to do its job
+        # on it. Kiro fires PreToolUse/PostToolUse, but Kiro IDE publishes no
+        # tool_name/tool_input for a shell-command hook, so a hook that needs the
+        # tool payload runs and immediately exits - present, registered, and
+        # useless. Callers must weigh this per HOOK, against what that hook
+        # actually reads, not per event name.
+        #
+        # Field names are the normalized ones Read-HookInput produces. 'prompt'
+        # is absent from this list because USER_PROMPT genuinely supplies it on
+        # UserPromptSubmit; everything here is what Kiro does NOT deliver.
+        unavailableInputFields = @{
+            'PreToolUse'  = @('tool_name', 'tool_input', 'session_id')
+            'PostToolUse' = @('tool_name', 'tool_input', 'tool_result', 'session_id')
+            'SessionStart' = @('session_id')
+            'Stop'        = @('session_id', 'stop_hook_active')
+            'UserPromptSubmit' = @('session_id')
+        }
         # Stop is ABSENT on purpose and it is the most consequential entry in
         # this file. Kiro IDE's trigger table says Stop cannot block, and CLI v3
         # dropped v2's stdout decision JSON entirely. Only the legacy CLI v2

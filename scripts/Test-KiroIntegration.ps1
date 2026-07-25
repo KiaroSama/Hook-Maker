@@ -280,21 +280,35 @@ try {
                 'out=[' + $result.Out + '] err=[' + $result.Err + '] shape=' + $result.Shape)
         }
         else {
+            # The property is "never a FAKE gate", not "silent". Kiro discards
+            # stdout off its two context triggers, but a non-zero exit other
+            # than 2 surfaces stderr as a warning - so a downgraded gate now
+            # tells the user why it did not hold instead of vanishing. What must
+            # never happen is it being mistaken for enforcement: that is exit 2
+            # / kiroExit2Stderr, which is still asserted against.
             Check ('block on Kiro ' + $logical + ': downgraded and REPORTED, never a fake gate') (
-                $result.ExitCode -eq 0 -and $result.Shape -ne 'kiroExit2Stderr' -and
-                $result.Out -notmatch '"?decision"?\s*:' -and $result.Err -eq '' -and
+                $result.ExitCode -ne 2 -and $result.Shape -ne 'kiroExit2Stderr' -and
+                $result.Out -notmatch '"?decision"?\s*:' -and
                 $result.Degraded -and $result.DegradedReason -match 'NOT an enforced gate') (
                 'out=[' + $result.Out + '] err=[' + $result.Err + '] reason=' + $result.DegradedReason)
         }
     }
 
     $stopBlock = Invoke-KiroResult -EventName 'Stop' -Kind 'block' -Text 'STOP-GATE-TEXT'
-    Check 'a Kiro Stop block emits nothing on either channel and reports BOTH degradations' (
-        $stopBlock.Out -eq '' -and $stopBlock.Err -eq '' -and -not $stopBlock.Emitted -and
-        $stopBlock.ExitCode -eq 0 -and $stopBlock.Shape -eq 'none' -and
+    # This asserted total silence, which is what let the message-dropping defect
+    # ship: Kiro discards stdout on Stop, but stderr with a non-2 exit reaches
+    # the user. A failed gate that says nothing is worse than one that explains
+    # itself. Both degradations are still required to be reported.
+    Check 'a Kiro Stop block warns on stderr and reports BOTH degradations' (
+        $stopBlock.Out -eq '' -and $stopBlock.Err -match 'STOP-GATE-TEXT' -and
+        $stopBlock.Shape -eq 'kiroStderrWarning' -and
         $stopBlock.DegradedReason -match 'no block mechanism on Stop' -and
-        $stopBlock.DegradedReason -match 'discarded') (
+        $stopBlock.DegradedReason -match 'discards hook stdout') (
         'out=[' + $stopBlock.Out + '] err=[' + $stopBlock.Err + '] reason=' + $stopBlock.DegradedReason)
+    # THE safety line: Stop is not block-capable on either Kiro surface, so this
+    # must never carry Kiro's refusal code however it is surfaced.
+    Check 'a Kiro Stop block never exits with Kiro''s refusal code' (
+        $stopBlock.ExitCode -ne 2) ([string]$stopBlock.ExitCode)
 
     # =====================================================================
     Write-Host '--- Write-HookResult: Kiro context lands only where the protocol documents it ---' -ForegroundColor Cyan
@@ -306,8 +320,13 @@ try {
     foreach ($logical in $logicalEvents) {
         $result = Invoke-KiroResult -EventName $logical -Kind 'context' -Text ('CTX-' + $logical)
         $shouldEmit = ($logical -ceq 'SessionStart' -or $logical -ceq 'UserPromptSubmit')
-        if ($result.Emitted -and -not $shouldEmit) { $wronglyEmitted += $logical }
-        if (-not $result.Emitted -and $shouldEmit) { $wronglySilent += $logical }
+        # "Emitted" now means "reached the user somehow", and off the two context
+        # triggers that is the stderr warning channel. What distinguishes the
+        # two cases is the CHANNEL, not whether anything came out: only
+        # SessionStart/UserPromptSubmit put text on STDOUT, which is the only
+        # thing Kiro injects into model context.
+        if ($result.Out -ne '' -and -not $shouldEmit) { $wronglyEmitted += $logical }
+        if ($result.Out -eq '' -and $shouldEmit) { $wronglySilent += $logical }
         if ($shouldEmit) {
             # Plain stdout + exit 0. Never a Claude/Codex JSON envelope: Kiro
             # reads stdout as literal context, so an envelope would be shown to
@@ -318,17 +337,21 @@ try {
                 $wrongShape += ($logical + '=[' + $result.Out + ']/' + $result.Shape)
             }
         }
-        elseif (-not ($result.Out -eq '' -and $result.Degraded -and $result.DegradedReason -match 'discarded')) {
+        # Off those triggers the text must still be REPORTED as degraded and go
+        # to stderr, never to stdout - and never with the refusal code.
+        elseif (-not ($result.Out -eq '' -and $result.Err -match ('CTX-' + $logical) -and
+                $result.ExitCode -ne 2 -and $result.Degraded -and
+                $result.DegradedReason -match 'discards hook stdout')) {
             $unreported += ($logical + '=[' + $result.Out + ']/' + $result.DegradedReason)
         }
     }
     Check 'Kiro context is emitted on SessionStart and UserPromptSubmit' ($wronglySilent.Count -eq 0) (
         'silent on: ' + ($wronglySilent -join ','))
-    Check 'Kiro context is emitted on NO other trigger' ($wronglyEmitted.Count -eq 0) (
+    Check 'Kiro context reaches STDOUT on NO other trigger' ($wronglyEmitted.Count -eq 0) (
         'wrongly emitted on: ' + ($wronglyEmitted -join ','))
     Check 'an emitted Kiro context is bare stdout, never a Claude/Codex JSON envelope' ($wrongShape.Count -eq 0) (
         ($wrongShape -join ' | '))
-    Check 'a discarded Kiro context REPORTS itself as not emitted rather than passing silently' (
+    Check 'a stdout-discarded Kiro context still reaches the user on stderr, reported as degraded' (
         $unreported.Count -eq 0) (($unreported -join ' | '))
 
     # =====================================================================
@@ -591,6 +614,55 @@ try {
         Check 'the permanently non-blocking Kiro Stop is recorded as degraded, not sold as a gate' (
             $wireRecordJson -match 'degraded-stop-gate') ('len=' + $wireRecordJson.Length)
 
+        # This install dropped PreCompact and installed a Stop that can only ever
+        # advise, so calling the whole run 'ok' overstates what landed. The
+        # degradation is deliberately NOT expressed as a component status:
+        # component statuses are exactly ok/failed/skipped/trackingFailed and
+        # 'partial' is the OVERALL vocabulary, so the reason code is what the
+        # overall rule has to read.
+        $wireResultDocument = ((Read-Utf8 -Path $wireResult | ConvertFrom-Json))
+        Check 'a Kiro install that dropped an event and can only advise at Stop does NOT report overall ok' (
+            [string]$wireResultDocument.overall -ceq 'partial') ([string]$wireResultDocument.overall)
+        Check 'the degradation travels in the reason code, with the component status still in its own vocabulary' (
+            @($wireResultDocument.components | Where-Object {
+                    [string]$_.component -ceq 'kiro' -and [string]$_.status -ceq 'ok' -and [string]$_.reason -ceq 'degraded'
+                }).Count -eq 1) (Compact $wireResultDocument.components)
+
+        # A trigger EXISTING is not the same as the hook being able to work on
+        # it. Test-Run-Guard reads tool_input, which Kiro IDE does not publish
+        # for a shell-command hook, so registering it on PreToolUse produces a
+        # hook that fires and immediately exits. That must be NAMED, not left
+        # for the user to discover from a hook that silently does nothing.
+        $inputProject = Join-Path $Work 'Input Requirement Project'
+        New-Item -ItemType Directory -Path $inputProject -Force | Out-Null
+        $inputResult = Join-Path $Work 'input-result.json'
+        & $InstallScript -CustomHook (Join-Path $ToolRoot 'hooks\Test-Run-Guard\Test-Run-Guard.ps1') `
+            -TargetProject $inputProject -Clients kiro -Events PreToolUse -ResultPath $inputResult | Out-Null
+        $inputDocument = ((Read-Utf8 -Path $inputResult | ConvertFrom-Json))
+        $inputKiro = @($inputDocument.components | Where-Object { [string]$_.component -ceq 'kiro' })
+        Check 'a hook needing input Kiro cannot supply is reported by NAME, not silently registered' (
+            $inputKiro.Count -eq 1 -and
+            [string]$inputKiro[0].message -match 'input-unavailable' -and
+            [string]$inputKiro[0].message -match 'tool_input') (Compact $inputDocument.components)
+        # The requirement is read from the hook's OWN AST, so it names only the
+        # fields that hook actually reads - it is not a blanket per-event
+        # warning. Rules-Check on SessionStart reads session_id (which Kiro does
+        # not supply, so its dedup degrades) but never touches tool_input, and
+        # the message must reflect exactly that. A blanket flag would list
+        # fields the hook never uses and train the reader to ignore it.
+        $quietProject = Join-Path $Work 'Field Accurate Project'
+        New-Item -ItemType Directory -Path $quietProject -Force | Out-Null
+        $quietResult = Join-Path $Work 'quiet-result.json'
+        & $InstallScript -CustomHook (Join-Path $ToolRoot 'hooks\Rules-Check\Rules-Check.ps1') `
+            -TargetProject $quietProject -Clients kiro -Events SessionStart -ResultPath $quietResult | Out-Null
+        $quietDocument = ((Read-Utf8 -Path $quietResult | ConvertFrom-Json))
+        $quietKiro = @($quietDocument.components | Where-Object { [string]$_.component -ceq 'kiro' })
+        Check 'the report names only the fields THAT hook reads, never a blanket per-event warning' (
+            $quietKiro.Count -eq 1 -and
+            [string]$quietKiro[0].message -match 'session_id' -and
+            [string]$quietKiro[0].message -notmatch 'tool_input' -and
+            [string]$quietKiro[0].message -notmatch 'tool_name') (Compact $quietDocument.components)
+
         # A foreign document sitting at the exact path we would write must be
         # refused outright. Overwriting it would destroy hooks another tool or
         # the user owns - and the file content is asserted byte-identical.
@@ -602,16 +674,55 @@ try {
         $claimedPath = @(Get-ChildItem -LiteralPath (Join-Path $foreignProject '.kiro\hooks') -Filter 'hookmaker-*.json' -File)[0].FullName
         $foreignBody = '{"version":"v1","hooks":[{"name":"someone-elses","trigger":"Stop","action":{"type":"command","command":"echo hi"}}]}'
         Write-Utf8 -Path $claimedPath -Content $foreignBody
+        # The runtime is deleted first so its ABSENCE afterwards is proof the
+        # refused install never re-created it. Copy-HookRuntime used to run
+        # BEFORE the registration path was proven ours, so a refusal left a
+        # complete runtime tree on disk that no install record accounted for -
+        # invisible to update and to uninstall alike.
+        $foreignRuntimeRoot = Join-Path $foreignProject '.kiro\hook-runtime'
+        Remove-Item -LiteralPath $foreignRuntimeRoot -Recurse -Force
         $refusedResult = Join-Path $Work 'refused-result.json'
         & $InstallScript -CustomHook $realHook -TargetProject $foreignProject `
             -Clients kiro -Events SessionStart -ResultPath $refusedResult | Out-Null
         Check 'a foreign document at our own path is left byte-identical, never overwritten' (
             (Read-Utf8 -Path $claimedPath) -ceq $foreignBody) (Read-Utf8 -Path $claimedPath)
+        Check 'a refused registration leaves no orphan runtime behind' (
+            -not (Test-Path -LiteralPath $foreignRuntimeRoot)) $foreignRuntimeRoot
         $refusedDocument = ((Read-Utf8 -Path $refusedResult | ConvertFrom-Json))
         Check 'refusing a foreign file fails the kiro component instead of reporting an install' (
             @($refusedDocument.components | Where-Object {
                     [string]$_.component -ceq 'kiro' -and [string]$_.status -ceq 'failed'
                 }).Count -eq 1) (Compact $refusedDocument.components)
+
+        # A file that EXISTS but will not parse is NOT "no file yet". Swallowing
+        # the parse error into $null handed Merge-KiroManagedEntries the same
+        # input an absent file produces, so it built a fresh document and wrote
+        # it straight over the user's content - the one refusal in this module
+        # that destroyed data instead of preserving it.
+        $corruptProject = Join-Path $Work 'Corrupt Project'
+        New-Item -ItemType Directory -Path (Join-Path $corruptProject '.kiro\hooks') -Force | Out-Null
+        & $InstallScript -CustomHook $realHook -TargetProject $corruptProject `
+            -Clients kiro -Events SessionStart -ResultPath (Join-Path $Work 'corrupt-claim-result.json') | Out-Null
+        $corruptPath = @(Get-ChildItem -LiteralPath (Join-Path $corruptProject '.kiro\hooks') -Filter 'hookmaker-*.json' -File)[0].FullName
+        # Truncated mid-object: exactly what a crashed or interrupted writer
+        # leaves behind, and indistinguishable from valid JSON by its filename.
+        $corruptBody = '{"version":"v1","hooks":[{"name":"half-written",'
+        Write-Utf8 -Path $corruptPath -Content $corruptBody
+        $corruptRuntimeRoot = Join-Path $corruptProject '.kiro\hook-runtime'
+        Remove-Item -LiteralPath $corruptRuntimeRoot -Recurse -Force
+        $corruptResult = Join-Path $Work 'corrupt-result.json'
+        & $InstallScript -CustomHook $realHook -TargetProject $corruptProject `
+            -Clients kiro -Events SessionStart -ResultPath $corruptResult | Out-Null
+        Check 'an unparseable document at our own path is left byte-identical, never overwritten' (
+            (Read-Utf8 -Path $corruptPath) -ceq $corruptBody) (Read-Utf8 -Path $corruptPath)
+        $corruptDocument = ((Read-Utf8 -Path $corruptResult | ConvertFrom-Json))
+        Check 'an unparseable registration file fails the kiro component and names invalid-json' (
+            @($corruptDocument.components | Where-Object {
+                    [string]$_.component -ceq 'kiro' -and [string]$_.status -ceq 'failed' -and
+                    [string]$_.message -match 'invalid-json'
+                }).Count -eq 1) (Compact $corruptDocument.components)
+        Check 'refusing an unparseable file leaves no orphan runtime behind' (
+            -not (Test-Path -LiteralPath $corruptRuntimeRoot)) $corruptRuntimeRoot
 
         # The reason a kiro failure must never throw: the menu has no
         # Claude+Codex entry, so 'All clients' is the only way to install two
