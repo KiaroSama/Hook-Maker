@@ -289,11 +289,19 @@ try {
     New-SourceFile (Join-Path $proj14 'node_modules\pkg\huge.js') 5000
     New-SourceFile (Join-Path $proj14 '.git\hooks\big.py') 5000
     New-SourceFile (Join-Path $proj14 'src\app.py') 900
+    # A Kiro client tree is installed TOOL code, not project source: a hook
+    # runtime copied under .kiro\hook-runtime is routinely far over the line
+    # threshold and must never be reported as an oversized project file. .ps1 is
+    # a scanned extension by default, so this only passes because .kiro is
+    # pruned - not because the extension was filtered out.
+    New-SourceFile (Join-Path $proj14 '.kiro\hook-runtime\Hook-Maker\Kiro-Runtime.ps1') 5000
     $r = Fire -HookPath $hc14.Script -Cwd $proj14 -EventName 'Stop' -LocalAppData $hc14.LocalAppData
     $msg14 = Get-Advisory $r.Out
     Check '18a. the real top-level file IS reported' ($msg14 -match 'app\.py \(900 lines\)') $msg14
     Check '18b. an excluded node_modules file is NOT reported' ($msg14 -notmatch 'huge\.js') $msg14
     Check '18c. an excluded .git file is NOT reported' ($msg14 -notmatch 'big\.py') $msg14
+    Check '18d. an excluded .kiro runtime file is NOT reported' (
+        $msg14 -notmatch 'Kiro-Runtime\.ps1' -and $msg14 -notmatch '\.kiro') $msg14
 
     $hc15 = New-IsolatedHookCopy
     $proj15 = New-Proj 'BigBinary'
