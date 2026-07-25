@@ -93,6 +93,11 @@ $script:ManagedSourceExcludedNames = @('.env.example')
 # files for the same reason, and are dot-sourced HERE on the same terms: after
 # the schema constants above, and before any function below can call into
 # them. Consumers of THIS file still only need to dot-source _installlib.ps1.
+# The canonical client/event capability table. Loaded HERE so every existing
+# consumer keeps dot-sourcing only _installlib.ps1: _installvalidate.ps1 below
+# derives canonical registration paths from it instead of an if/else that made
+# every non-Claude client mean Codex.
+. (Join-Path $PSScriptRoot '_clientcapability.ps1')
 . (Join-Path $PSScriptRoot '_installvalidate.ps1')
 . (Join-Path $PSScriptRoot '_installlegacy.ps1')
 
