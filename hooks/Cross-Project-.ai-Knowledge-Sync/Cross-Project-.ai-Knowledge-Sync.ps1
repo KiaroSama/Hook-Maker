@@ -551,13 +551,7 @@ function Write-HookContext {
     )
 
     $combined = (@($Messages) -join "`n`n---`n`n")
-    $output = [pscustomobject][ordered]@{
-        hookSpecificOutput = [pscustomobject][ordered]@{
-            hookEventName = $EventName
-            additionalContext = $combined
-        }
-    }
-    [Console]::Out.WriteLine(($output | ConvertTo-Json -Depth 20 -Compress))
+    $null = Write-HookResult -EventName $EventName -Kind 'context' -Message $combined
 }
 
 if (-not (Test-Path -LiteralPath $ConfigPath -PathType Leaf)) {

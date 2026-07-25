@@ -506,6 +506,16 @@ try {
     Check 'Codex advisory uses systemMessage, not hookSpecificOutput/decision' (
         $rCodex.Out -match '"systemMessage"' -and $rCodex.Out -notmatch 'hookSpecificOutput' -and $rCodex.Out -notmatch '"decision"') $rCodex.Out
     Check 'Codex advisory carries the SAME full instruction' (Test-HasFullInstruction $rCodex.Out) $rCodex.Out
+    # The Codex shape is EVENT-scoped, and only the Stop half was ever pinned.
+    # systemMessage is what Codex documents for Stop; off Stop it honours
+    # hookSpecificOutput.additionalContext, and this hook emitted systemMessage
+    # there too. Routing the shared helper through the adapter corrected it, so
+    # the SessionStart half is pinned now rather than left to drift back.
+    $rCodexPre = Fire -HookPath $hc12.Script -Cwd (New-GitRepo 'CodexShapePre') -EventName 'SessionStart' `
+        -LocalAppData (New-IsolatedHookCopy).LocalAppData -NoClaudeProjectDir
+    Check 'Codex OFF Stop uses hookSpecificOutput.additionalContext, not systemMessage' (
+        $rCodexPre.Out -eq '' -or (
+            $rCodexPre.Out -match '"additionalContext"' -and $rCodexPre.Out -notmatch '"systemMessage"')) $rCodexPre.Out
     # The gate shape is identical for both supported clients, so a blocking
     # message needs no per-client branch - proven by the residue block above.
     Check 'the blocking gate shape is client-independent (decision:block)' ($r2.Out -match '"decision":"block"') $r2.Out

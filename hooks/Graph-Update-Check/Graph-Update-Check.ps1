@@ -29,6 +29,10 @@ if ($null -eq $hookInput) {
 if ((Get-Field $hookInput 'stop_hook_active') -eq $true) {
     exit 0
 }
+# Only used to shape the result (Write-HookResult below). This is a Stop-only
+# hook, so an absent event name reads as 'Stop' rather than as "no event".
+$eventName = [string](Get-Field $hookInput 'hook_event_name')
+if ([string]::IsNullOrWhiteSpace($eventName)) { $eventName = 'Stop' }
 $cwd = [string](Get-Field $hookInput 'cwd')
 if ([string]::IsNullOrWhiteSpace($cwd) -or -not (Test-Path -LiteralPath $cwd -PathType Container)) {
     exit 0
@@ -74,5 +78,4 @@ New-Item -ItemType Directory -Path $stateDir -Force | Out-Null
 [System.IO.File]::WriteAllText($statePath, [DateTime]::UtcNow.ToString('o'))
 
 $reason = 'GRAPH UPDATE CHECK: graphify-out/graph.json predates the latest project changes. Decide for yourself based on STRUCTURAL impact, not the number of files changed - a single-file change can still be graph-relevant (e.g. an added/removed/renamed function or class, a changed export, import, call, or inheritance relationship, a new entry point, a changed cross-file dependency), while a multi-file change can be graph-irrelevant (prose/comments/formatting only, a literal or config value change, generated output, tests only unless test architecture is intentionally represented in the graph). If this task changed graph-relevant structure, run: graphify update .  (AST-only, no API cost). Otherwise finish now without updating; this reminder returns after future changes.'
-@{ decision = 'block'; reason = $reason } | ConvertTo-Json -Compress
-exit 0
+exit (Write-HookResult -EventName $eventName -Kind 'block' -Reason $reason).ExitCode

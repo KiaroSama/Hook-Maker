@@ -159,9 +159,8 @@ if ($GitPrePush) {
     exit 1
 }
 if ($isStopEvent) {
-    @{ decision = 'block'; reason = $reason } | ConvertTo-Json -Compress
-    exit 0
+    $emit = Write-HookResult -EventName $eventName -Kind 'block' -Reason $reason
+    exit $emit.ExitCode
 }
-@{ hookSpecificOutput = @{ hookEventName = $eventName; additionalContext = $reason } } |
-    ConvertTo-Json -Depth 5 -Compress
-exit 0
+$emit = Write-HookResult -EventName $eventName -Kind 'context' -Message $reason
+exit $emit.ExitCode

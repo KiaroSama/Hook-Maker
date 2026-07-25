@@ -870,19 +870,13 @@ if ($GitPrePush) {
 # client-aware exactly like every other advisory hook in this project.
 $hasBlockingFindings = ($critical.Count -gt 0)
 if ($isStopEvent -and $hasBlockingFindings) {
-    @{ decision = 'block'; reason = $message } | ConvertTo-Json -Compress
-    exit 0
+    $emit = Write-HookResult -EventName $eventName -Kind 'block' -Reason $message
+    exit $emit.ExitCode
 }
 if ($isStopEvent) {
-    if (-not [string]::IsNullOrWhiteSpace($env:CLAUDE_PROJECT_DIR)) {
-        @{ hookSpecificOutput = @{ hookEventName = $eventName; additionalContext = $message } } | ConvertTo-Json -Depth 5 -Compress
-    }
-    else {
-        @{ systemMessage = $message } | ConvertTo-Json -Compress
-    }
-    exit 0
+    $emit = Write-HookResult -EventName $eventName -Kind 'advisory' -Message $message
+    exit $emit.ExitCode
 }
 
-@{ hookSpecificOutput = @{ hookEventName = $eventName; additionalContext = $message } } |
-    ConvertTo-Json -Depth 5 -Compress
-exit 0
+$emit = Write-HookResult -EventName $eventName -Kind 'context' -Message $message
+exit $emit.ExitCode
