@@ -305,6 +305,50 @@ if ($null -ne $in) { $prompt = [string](Get-Field $in 'prompt') }
                 $hrClaudeStop.Out -match '"additionalContext"\s*:\s*"claude-stop"') $hrClaudeStop.Out
         }
 
+        # --- the PreToolUse permission mechanism is NOT block/advisory --------
+        # A Claude tool call is refused with permissionDecision, not
+        # decision:block; Codex has no permissionDecision and refuses by exiting
+        # 2. Folding these into 'block' would emit a shape that refuses nothing.
+        $hrClaudeDeny = Invoke-HookResult -Call @{ kind = 'deny'; event = 'PreToolUse'; reason = 'DENY-REASON'; client = 'claude' }
+        Check 'claude deny is permissionDecision, never decision:block' (
+            $hrClaudeDeny.Result.Shape -eq 'claudePermissiondeny' -and
+            $hrClaudeDeny.Out -match '"permissionDecision"\s*:\s*"deny"' -and
+            $hrClaudeDeny.Out -match '"permissionDecisionReason"\s*:\s*"DENY-REASON"' -and
+            $hrClaudeDeny.Out -notmatch '"decision"' -and
+            $hrClaudeDeny.Result.ExitCode -eq 0) $hrClaudeDeny.Out
+        $hrCodexDeny = Invoke-HookResult -Call @{ kind = 'deny'; event = 'PreToolUse'; reason = 'DENY-REASON'; client = 'codex' }
+        Check 'codex deny is systemMessage plus exit 2, which is how Codex refuses' (
+            $hrCodexDeny.Result.Shape -eq 'codexPermissiondeny' -and
+            $hrCodexDeny.Out -match '"systemMessage"' -and $hrCodexDeny.Out -notmatch 'permissionDecision' -and
+            $hrCodexDeny.Result.ExitCode -eq 2 -and $hrCodexDeny.Err -match 'DENY-REASON') (
+            $hrCodexDeny.Out + ' | err=' + $hrCodexDeny.Err)
+        $hrKiroDeny = Invoke-HookResult -Call @{ kind = 'deny'; event = 'PreToolUse'; reason = 'DENY-REASON'; client = 'kiro' }
+        Check 'kiro deny on a block-capable trigger is exit 2 + stderr, with nothing on stdout' (
+            $hrKiroDeny.Result.Shape -eq 'kiroExit2Stderr' -and $hrKiroDeny.Result.ExitCode -eq 2 -and
+            $hrKiroDeny.Out -eq '' -and $hrKiroDeny.Err -match 'DENY-REASON') (
+            $hrKiroDeny.Out + ' | err=' + $hrKiroDeny.Err)
+        # Kiro cannot refuse at Stop on either surface Hook Maker targets, so a
+        # deny there must never be emitted as if it were enforced.
+        $hrKiroDenyStop = Invoke-HookResult -Call @{ kind = 'deny'; event = 'Stop'; reason = 'DENY-REASON'; client = 'kiro' }
+        Check 'a kiro deny on a non-block-capable event is never emitted as a gate' (
+            $hrKiroDenyStop.Result.ExitCode -ne 2 -and $hrKiroDenyStop.Result.Degraded -eq $true) (
+            $hrKiroDenyStop.Out + ' | ' + [string]$hrKiroDenyStop.Result.DegradedReason)
+        # allow is the same mechanism answering yes - it must never exit 2.
+        $hrClaudeAllow = Invoke-HookResult -Call @{ kind = 'allow'; event = 'PreToolUse'; message = 'ALLOW-REASON'; client = 'claude' }
+        Check 'claude allow keeps permissionDecision allow and exits 0' (
+            $hrClaudeAllow.Out -match '"permissionDecision"\s*:\s*"allow"' -and
+            $hrClaudeAllow.Result.ExitCode -eq 0) $hrClaudeAllow.Out
+        $hrKiroAllow = Invoke-HookResult -Call @{ kind = 'allow'; event = 'PreToolUse'; message = 'ALLOW-REASON'; client = 'kiro' }
+        Check 'a kiro allow never exits 2 - an approval must not read as a refusal' (
+            $hrKiroAllow.Result.ExitCode -eq 0) ($hrKiroAllow.Out + ' | err=' + $hrKiroAllow.Err)
+        # The early-return path has its own unknown/blank guards; without them it
+        # would fall through to the Codex arm and refuse on a guessed shape.
+        $hrDenyUnknown = Invoke-HookResult -Call @{ kind = 'deny'; event = 'PreToolUse'; reason = 'DENY-REASON'; client = 'gemini' }
+        Check 'an unknown client is never refused on a guessed shape' (
+            $hrDenyUnknown.Result.Emitted -eq $false -and $hrDenyUnknown.Result.ExitCode -eq 0 -and
+            $hrDenyUnknown.Result.DegradedReason -match 'client is unknown') (
+            $hrDenyUnknown.Out + ' | ' + [string]$hrDenyUnknown.Result.DegradedReason)
+
         $hrUnknown = Invoke-HookResult -Call @{ kind = 'context'; event = 'SessionStart'; message = 'never-emitted'; client = 'gemini' }
         Check 'an unknown client emits NOTHING and reports it, never a guessed shape' (
             $hrUnknown.Out -eq '' -and $hrUnknown.Result.Emitted -eq $false -and $hrUnknown.Result.Shape -eq 'none' -and
