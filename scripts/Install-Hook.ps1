@@ -104,6 +104,10 @@ $ToolRoot = Split-Path -Parent $PSScriptRoot
 # The read-modify-write of one client settings file: stale-handler pruning,
 # handler-group insertion, backup, and the transactional JSON replace.
 . (Join-Path $PSScriptRoot '_installclientsettings.ps1')
+# Kiro's per-hook-file registration format. A PURE module: it builds, classifies
+# and merges documents but never touches the filesystem, so every write below
+# stays visible in this file where the locking and rollback live.
+. (Join-Path $PSScriptRoot '_installkiro.ps1')
 
 # ---- guarantee a structured result on ANY terminal outcome -----------------
 # A validation/runtime/settings/native failure used to exit before
@@ -179,26 +183,11 @@ $InstallClaude = ($resolvedClients -contains 'claude')
 $InstallCodex = ($resolvedClients -contains 'codex')
 $InstallKiro = ($resolvedClients -contains 'kiro')
 
-# Kiro's registration writer is not wired in yet. It is recorded as a FAILED
-# COMPONENT rather than thrown, because components are independent: a request
-# for three clients where two succeed is 'partial', not a total refusal.
-#
-# An earlier version of this threw here. That was wrong for a reason worth
-# keeping: the client menu offers Claude, Codex, Kiro and All - and no
-# Claude+Codex entry, because 'Both' is legacy config only. So throwing on kiro
-# also broke 'All clients', and a user lost any way to install for two clients
-# in one pass. Failing the one component keeps the other two working while
-# still never reporting a Kiro install that did not happen.
-if ($InstallKiro) {
-    Set-ComponentResult -Component 'kiro' -Status 'failed' -ReasonCode 'notImplemented' `
-        -Message 'Kiro registration is not implemented yet; the other selected clients were installed.'
-    $InstallKiro = $false
-    $resolvedClients = @($resolvedClients | Where-Object { $_ -ne 'kiro' })
-    Write-Host 'Kiro registration is not implemented yet - skipped. Other selected clients continue.'
-    if ($resolvedClients.Count -eq 0) {
-        throw 'Kiro was the only selected client and its registration is not implemented yet. Nothing was installed.'
-    }
-}
+# Components are independent: a request for three clients where two succeed is
+# 'partial', not a total refusal. That rule is why an unsupported Kiro request
+# fails ONE component instead of throwing - the client menu offers Claude,
+# Codex, Kiro and All with no Claude+Codex entry, so throwing on kiro also broke
+# 'All clients' and left no way to install two clients in one pass.
 $ValidEvents = @(Get-HookMakerLogicalEvents)
 $normalizedEvents = New-Object System.Collections.Generic.List[string]
 foreach ($rawEvent in @($Events)) {
@@ -315,13 +304,25 @@ if (-not [string]::IsNullOrWhiteSpace($TargetProject)) {
     $ClaudeSettings = Join-Path $projectRoot '.claude\settings.local.json'
     $CodexHooks = Join-Path $projectRoot '.codex\hooks.json'
     $ScopeLabel = 'project'
+    # Kiro resolves its own roots from the capability table, so it takes the
+    # project root rather than a path assembled here.
+    $KiroTargetRoot = $projectRoot
 }
 else {
     $ClaudeSettings = Join-Path $HOME '.claude\settings.json'
     $CodexHooks = Join-Path $HOME '.codex\hooks.json'
     $ScopeLabel = 'global'
+    $KiroTargetRoot = ''
 }
 $Timestamp = (Get-Date).ToString('yyyyMMdd-HHmmss')
+# Hoisted above the client phases because Kiro needs it DURING its install, not
+# only when the registry is written: it is the ManagedId that makes each Kiro
+# entry provably ours, and the StableId its filename is derived from. The
+# registry block below reuses this exact value - computing it twice would let
+# the recorded id and the registered id drift apart, and ownership is the one
+# thing uninstall cannot re-derive from anywhere else.
+$ScopeKey = if ($ScopeLabel -eq 'project') { $projectRoot.ToLowerInvariant() } else { 'global' }
+$RecordId = Get-InstallRecordId -FriendlyName $FriendlyName -ScopeKey $ScopeKey -ProfileId ([string]$Profile)
 # Resolved once: this tool root plus every tool root previously recorded in the
 # registry. Only registrations provably rooted under one of these may be
 # claimed as ours when they use the historical tool-folder layout.
@@ -579,6 +580,185 @@ if ($InstallCodex) {
     Write-Host "Codex runtime copy: $($codexRuntime.Script)"
 }
 
+# ---- kiro -----------------------------------------------------------------
+# Kiro is registrationKind 'perHookFile': one JSON document per hook under
+# .kiro\hooks, NOT a shared settings file. So there is no Add-HookGroup /
+# Remove-StaleHandlers path here - ownership is proved per ENTRY by the marker
+# _installkiro.ps1 embeds, and foreign entries in the same document are carried
+# across by reference and never rewritten.
+#
+# Every failure below fails ONE component and lets the other clients finish.
+# Nothing here throws, because a Kiro problem must not discard a completed
+# Claude or Codex install.
+$kiroRegistrationPath = ''
+$kiroManagedNames = @()
+$kiroSupported = @()
+$kiroUnsupported = @()
+$kiroDegraded = @()
+$kiroRuntime = $null
+$kiroCommands = $null
+# Initialized before the lock so a refusal inside it cannot leave this unset -
+# reading an unassigned variable throws under StrictMode.
+$script:KiroWrittenNames = @()
+$script:KiroRegistrationWritten = $false
+if ($InstallKiro) {
+    $script:CurrentPhase = 'kiro'
+    try {
+        $kiroCapability = Get-HookMakerClientCapability -ClientId 'kiro'
+        # Kiro documents 5 of the 12 logical events. An unsupported event is
+        # reported by NAME rather than dropped silently, and is never remapped
+        # onto a different trigger - a hook the user believes gates Stop, but
+        # which was quietly moved to SessionStart, is worse than one that
+        # openly did not install.
+        foreach ($requested in @($Events)) {
+            if (@($kiroCapability.supportedEvents | Where-Object { $_ -ceq $requested }).Count -gt 0) {
+                $kiroSupported += $requested
+            }
+            else { $kiroUnsupported += $requested }
+        }
+        # Kiro cannot hard-block at Stop on EITHER targeted surface (see
+        # .ai/KIRO_PROTOCOL.md). This is permanent for Kiro, not conditional, so
+        # it is recorded as a degraded reason rather than presented as a gate.
+        if (@($kiroSupported | Where-Object { $_ -ceq 'Stop' }).Count -gt 0) {
+            $kiroDegraded += 'degraded-stop-gate'
+        }
+
+        if ($kiroSupported.Count -eq 0) {
+            Set-ComponentResult -Component 'kiro' -Status 'failed' -ReasonCode 'noSupportedEvents' `
+                -Message ('None of the requested events (' + (@($Events) -join ', ') +
+                    ') has a documented Kiro trigger. Supported: ' + (@($kiroCapability.supportedEvents) -join ', ') + '.')
+            Write-Host ('Kiro skipped - no requested event has a documented Kiro trigger. Supported: ' +
+                (@($kiroCapability.supportedEvents) -join ', ') + '.')
+        }
+        else {
+            $kiroRuntimeRoot = Get-KiroRuntimeRoot -Scope $ScopeLabel -TargetProjectRoot $KiroTargetRoot
+            # RuntimeRootOverride, because Kiro's runtime must NOT live under
+            # .kiro\hooks: that directory is Kiro's hook-config discovery root,
+            # so a copied .ps1 tree inside it would be scanned as configuration.
+            # -IncludeKiroLauncher: the launcher is part of the PLAN, so it is
+            # staged transactionally, hash-verified and recorded in the install
+            # manifest. Writing it here afterwards (the first version of this)
+            # left a real file no artifact accounted for, so every later
+            # evaluation reported "unexpected managed file" and the updater
+            # reinstalled Kiro forever. See Get-ManagedInstallPlan.
+            $kiroRuntime = Copy-HookRuntime -ClientDir $kiroRuntimeRoot -RuntimeRootOverride $kiroRuntimeRoot -IncludeKiroLauncher
+            $kiroLauncherPath = Join-Path (Split-Path -Parent $kiroRuntime.Script) 'kiro-launch.ps1'
+            if (-not (Test-Path -LiteralPath $kiroLauncherPath -PathType Leaf)) {
+                throw ('The Kiro launcher was not produced by the install plan at ' + $kiroLauncherPath +
+                    '. Nothing was registered.')
+            }
+
+            # Built from the launcher, not the hook script, and carrying the
+            # same -ConfigPath/-Profile suffix the other clients use.
+            $kiroLauncherRuntime = [pscustomobject]@{
+                Script = $kiroLauncherPath
+                Config = $kiroRuntime.Config
+                Plan   = $kiroRuntime.Plan
+            }
+            $kiroCommands = New-HookCommands -Runtime $kiroLauncherRuntime
+
+            $kiroRegistrationPath = Get-KiroRegistrationPath -Scope $ScopeLabel -FriendlyName $FriendlyName `
+                -StableId $RecordId -TargetProjectRoot $KiroTargetRoot
+
+            Invoke-WithResourceLock -ResourcePath $kiroRegistrationPath -Action {
+                $existingDocument = $null
+                if (Test-Path -LiteralPath $kiroRegistrationPath -PathType Leaf) {
+                    $raw = [System.IO.File]::ReadAllText($kiroRegistrationPath, [System.Text.Encoding]::UTF8)
+                    if (-not [string]::IsNullOrWhiteSpace($raw)) {
+                        # Extra parentheses are load-bearing: @($x | ConvertFrom-Json)
+                        # yields ONE opaque Object[] on Windows PowerShell 5.1
+                        # whose PSObject.Properties is empty, so every field
+                        # read below would silently return $null.
+                        try { $existingDocument = (($raw | ConvertFrom-Json)) }
+                        catch { $existingDocument = $null }
+                    }
+                }
+
+                # ONE ENTRY AT A TIME, because each entry needs its OWN command:
+                # KIRO_PROTOCOL requires the physical trigger to be passed
+                # explicitly, and Kiro IDE documents no stdin JSON at all, so a
+                # hook that is registered on three triggers with one shared
+                # command line has no way to tell which one fired. Building the
+                # whole document in a single call would produce exactly that.
+                $builtEntries = @()
+                foreach ($logicalEvent in @($kiroSupported)) {
+                    $physicalTrigger = $logicalEvent
+                    if ($kiroCapability.physicalEventMap.ContainsKey($logicalEvent)) {
+                        $physicalTrigger = [string]$kiroCapability.physicalEventMap[$logicalEvent]
+                    }
+                    # -Trigger is a declared launcher parameter, so it is consumed
+                    # there and the -ConfigPath/-Profile suffix still reaches the
+                    # hook through @args untouched.
+                    $perTriggerCommand = $kiroCommands.Windows + ' -Trigger ' + $physicalTrigger
+                    $builtDocument = New-KiroHookDocument -FriendlyName $FriendlyName -Command $perTriggerCommand `
+                        -Triggers @($logicalEvent) -TimeoutSeconds $script:EffectiveTimeout -ManagedId $RecordId
+                    $builtEntries += @($builtDocument.hooks)
+                }
+                $merged = Merge-KiroManagedEntries -ExistingDocument $existingDocument `
+                    -ManagedEntries @($builtEntries) -ManagedId $RecordId
+                if (-not $merged.Ok) {
+                    # 'foreign' / 'unexpected-schema': the file at our path holds
+                    # entries that are not ours. Refuse it rather than overwrite
+                    # someone else's registrations.
+                    throw ('Kiro registration file ' + $kiroRegistrationPath + ' is not safe to write (' +
+                        $merged.Reason + '). Nothing was changed.')
+                }
+                Backup-File $kiroRegistrationPath
+                Write-JsonFile -Value $merged.Document -Path $kiroRegistrationPath
+                $script:KiroWrittenNames = @($merged.ManagedEntries | ForEach-Object { [string]$_.name })
+                # Set LAST, and only inside the lock: past this line the
+                # registration file exists on disk, so no later failure may be
+                # reported as 'registrationRefused' - that would tell a user
+                # nothing was installed while their .kiro\hooks entry is live.
+                $script:KiroRegistrationWritten = $true
+            }
+            $kiroManagedNames = @($script:KiroWrittenNames)
+
+            # 'ok' with recorded degradation, NOT a 'partial' component status.
+            # The component genuinely succeeded for every trigger Kiro supports;
+            # what was reduced is captured durably in the record's
+            # unsupportedEvents/degradedReasons, and 'partial' is the OVERALL
+            # result's vocabulary, not a component's.
+            $kiroNotes = @()
+            if ($kiroUnsupported.Count -gt 0) { $kiroNotes += ('no Kiro trigger for: ' + ($kiroUnsupported -join ', ')) }
+            if ($kiroDegraded.Count -gt 0) { $kiroNotes += ($kiroDegraded -join ', ') }
+            if ($kiroNotes.Count -gt 0) {
+                Set-ComponentResult -Component 'kiro' -Status 'ok' -ReasonCode 'degraded' `
+                    -Message ('Kiro installed with reduced capability - ' + ($kiroNotes -join '; ') + '.')
+                Write-Host ('Kiro hook (' + $ScopeLabel + ') installed with reduced capability: ' + ($kiroNotes -join '; ') + '.')
+            }
+            else {
+                Set-ComponentResult -Component 'kiro' -Status 'ok'
+            }
+            Write-Host "Kiro hook ($ScopeLabel) registered in: $kiroRegistrationPath"
+            Write-Host "Kiro runtime copy: $($kiroRuntime.Script)"
+        }
+    }
+    catch {
+        # Includes every New-KiroRejection this module raises (unknown trigger,
+        # invalid matcher regex, unusable name, foreign file). The reason text
+        # is preserved verbatim: it names the exact thing to fix.
+        #
+        # The two cases are reported differently ON PURPOSE. Before the write,
+        # nothing was installed and 'registrationRefused' is the truth. AFTER
+        # the write the registration is live, so reporting a refusal would send
+        # the user looking for a hook that is in fact registered - it is
+        # 'postRegistrationError' instead, and it names the file to inspect.
+        if ($script:KiroRegistrationWritten) {
+            Set-ComponentResult -Component 'kiro' -Status 'ok' -ReasonCode 'postRegistrationError' `
+                -Message ('Kiro was registered in ' + $kiroRegistrationPath +
+                    ', but a later step failed: ' + [string]$_.Exception.Message)
+            Write-Host ('WARNING: Kiro was registered in ' + $kiroRegistrationPath +
+                ', but a later step failed: ' + [string]$_.Exception.Message)
+        }
+        else {
+            Set-ComponentResult -Component 'kiro' -Status 'failed' -ReasonCode 'registrationRefused' `
+                -Message ([string]$_.Exception.Message)
+            Write-Host ('Kiro registration refused: ' + [string]$_.Exception.Message)
+        }
+    }
+}
+
 $script:CurrentPhase = 'nativeGit'
 Install-IgnorePrePush
 # Native chain is only part of some installs; record which.
@@ -598,8 +778,12 @@ $script:CurrentPhase = 'registry'
 # Stores paths and content hashes only - never .env values, secrets, hook
 # stdin, prompt text, tool input, or any copied file's contents.
 try {
-    $scopeKey = if ($ScopeLabel -eq 'project') { $projectRoot.ToLowerInvariant() } else { 'global' }
-    $recordId = Get-InstallRecordId -FriendlyName $FriendlyName -ScopeKey $scopeKey -ProfileId ([string]$Profile)
+    # $ScopeKey/$RecordId are computed once near the top, because Kiro needs the
+    # record id DURING its install as the ManagedId that proves entry ownership.
+    # They are used directly here rather than copied into $scopeKey/$recordId:
+    # PowerShell variable names are case-INSENSITIVE, so those would be the SAME
+    # variables, and this project has already shipped one bug from exactly that
+    # ($Clients vs $clients silently coercing the record to a String[]).
     $hookType = if ([string]::IsNullOrWhiteSpace($CustomHook)) { 'Engine' } else { 'CustomHook' }
     $isEngine = ($hookType -eq 'Engine')
 
@@ -640,12 +824,35 @@ try {
             -Timeout $script:EffectiveTimeout `
             -InstalledManifest @(Get-InstalledManifest -RuntimeRoot $codexRuntimeRoot -FriendlyName $FriendlyName))
     }
+    # Recorded ONLY when the registration file was actually written. A failed or
+    # refused Kiro component leaves $kiroRegistrationPath empty and writes no
+    # subrecord, so uninstall can never be handed a path nothing was installed
+    # at. registrationKind/registrationPath/managedEntryNames are what make a
+    # per-hook-file client removable: there is no shared settings document to
+    # scan, so the entry names ARE the ownership proof.
+    if ($InstallKiro -and -not [string]::IsNullOrWhiteSpace($kiroRegistrationPath) -and $kiroManagedNames.Count -gt 0) {
+        $kiroRuntimeRoot = Split-Path -Parent (Split-Path -Parent $kiroRuntime.Script)
+        Set-ObjectProperty -Object $clientSubrecords -Name 'kiro' -Value (New-ClientSubrecord `
+            -SettingsPath $kiroRegistrationPath `
+            -RuntimeRoot $kiroRuntimeRoot `
+            -RuntimeScript $kiroRuntime.Script `
+            -Events @($kiroSupported) `
+            -Command $kiroCommands.Windows `
+            -HandlerType 'command' `
+            -Timeout $script:EffectiveTimeout `
+            -RegistrationKind 'perHookFile' `
+            -RegistrationPath $kiroRegistrationPath `
+            -ManagedEntryNames @($kiroManagedNames) `
+            -UnsupportedEvents @($kiroUnsupported) `
+            -DegradedReasons @($kiroDegraded) `
+            -InstalledManifest @(Get-InstalledManifest -RuntimeRoot $kiroRuntimeRoot -FriendlyName $FriendlyName))
+    }
 
     $nativeGit = $null
     if ($null -ne $script:NativeGitState) { $nativeGit = $script:NativeGitState }
 
     $record = [pscustomobject][ordered]@{
-        id                = $recordId
+        id                = $RecordId
         schema            = 2
         internalName      = $SourceName
         friendlyName      = $FriendlyName

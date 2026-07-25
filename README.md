@@ -1,6 +1,6 @@
 # Hook Maker
 
-Build, install, and manage Claude Code / Codex CLI hooks — including a ready-made
+Build, install, and manage Claude Code / Codex CLI / Kiro hooks — including a ready-made
 cross-project knowledge sync: it keeps the `.ai` knowledge directories of related projects
 in sync. When a source project's knowledge changes, the hook stages the changed files inside
 the destination project and asks the agent to review and import what is durable — before it
@@ -382,12 +382,40 @@ are deliberately excluded so they never cause permanent false drift.
 
 ### Per-client semantics
 
-Claude and Codex are tracked **separately** inside one logical installation. Installing a hook for
-Claude on `SessionStart` and later for Codex on `Stop` in the same project is a supported
+Claude, Codex and Kiro are tracked **separately** inside one logical installation. Installing a hook
+for Claude on `SessionStart` and later for Codex on `Stop` in the same project is a supported
 combination: each client keeps its own events, matcher, command, timeout, status message, runtime
 paths, and manifest, and the updater repairs each client with **its own** saved parameters. Adding,
 removing, or repairing one client never rewrites the other. Client selection is stored explicitly at
 install time — never guessed from which runtime files happen to exist on disk.
+
+Clients are **independent components**. If one cannot be installed, the others still are, and the
+overall result is `partial` rather than `failed` — reporting `failed` would tell a caller to discard
+two installations that genuinely succeeded. Only a request where *nothing* landed is `failed`.
+
+### Kiro
+
+Kiro registers **one JSON document per hook** under `.kiro\hooks\hookmaker-<hook>-<id>.json`, not a
+shared settings file. Hook Maker owns individual **entries**, proven by a `[hookmaker:<id>]` marker,
+so foreign entries in the same document are carried across untouched and a document at our own path
+that turns out to be someone else's is refused rather than overwritten. The runtime is copied to
+`.kiro\hook-runtime\Hook-Maker\` — deliberately **not** under `.kiro\hooks`, which Kiro scans as
+configuration.
+
+Two Kiro facts shape the install and are not worked around:
+
+- **Kiro documents no stdin JSON** (only `USER_PROMPT`, only on `UserPromptSubmit`). So each entry's
+  command ends in `-Trigger <trigger>` and runs through a generated `kiro-launch.ps1`, which supplies
+  the event and the client identity through the environment and then runs the hook in-process, so
+  stdin and the real exit code still pass through. No `session_id` is invented — session-keyed
+  behaviour degrades instead of silently mispairing.
+- **Kiro cannot block at `Stop`** on either targeted surface, and only `SessionStart` and
+  `UserPromptSubmit` add stdout to context. Stop-gating hooks therefore record `degraded-stop-gate`
+  permanently, and events Kiro has no trigger for are reported by name — never dropped in silence and
+  never remapped onto a different trigger.
+
+Kiro supports `SessionStart`, `UserPromptSubmit`, `PreToolUse`, `PostToolUse` and `Stop`; any other
+requested event is reported as unsupported for Kiro while still installing for the other clients.
 
 ### Native Git pre-push
 

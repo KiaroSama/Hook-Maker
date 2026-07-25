@@ -382,7 +382,12 @@ function Get-ClientSubrecord {
 function Get-InstalledClientNames {
     param([Parameter(Mandatory = $true)]$Record)
     $names = New-Object System.Collections.Generic.List[string]
-    foreach ($client in @('claude', 'codex')) {
+    # Derived from the canonical client table, not a second hard-coded pair:
+    # this is what "Update previously installed hooks" enumerates to decide
+    # which components to evaluate and repair, so a client missing here is a
+    # client that can never be refreshed. The table's order is preserved, so a
+    # record without the newer client still yields exactly 'claude,codex'.
+    foreach ($client in @(Get-HookMakerClientIds)) {
         if ($null -ne (Get-ClientSubrecord -Record $Record -Client $client)) { [void]$names.Add($client) }
     }
     return $names.ToArray()

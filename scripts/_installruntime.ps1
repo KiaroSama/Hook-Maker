@@ -64,7 +64,11 @@ function Get-SyncProjectListContent {
 function Copy-HookRuntime {
     param(
         [Parameter(Mandatory = $true)][string]$ClientDir,
-        [string]$RuntimeRootOverride
+        [string]$RuntimeRootOverride,
+        # Kiro only - see Get-ManagedInstallPlan. Planning the launcher rather
+        # than writing it afterwards is what keeps it inside the manifest and
+        # out of the updater's "unexpected managed file" path.
+        [switch]$IncludeKiroLauncher
     )
 
     $runtimeRoot = if ([string]::IsNullOrWhiteSpace($RuntimeRootOverride)) {
@@ -92,7 +96,8 @@ function Copy-HookRuntime {
     $syncListContent = $null
     if ($isEngineInstall) { $syncListContent = Get-SyncProjectListContent -RoutingConfig $ConfigPath }
     $plan = Get-ManagedInstallPlan -SourceInfo $SourceInfo -FriendlyName $FriendlyName -ToolRoot $ToolRoot `
-        -ConfigPath $ConfigPath -IncludeConfig:$isEngineInstall -SyncProjectListContent $syncListContent
+        -ConfigPath $ConfigPath -IncludeConfig:$isEngineInstall -SyncProjectListContent $syncListContent `
+        -IncludeKiroLauncher:$IncludeKiroLauncher
     Install-PlannedRuntime -Plan $plan -RuntimeRoot $runtimeRoot -FriendlyName $FriendlyName | Out-Null
 
     # ---- POST-COMMIT CLEANUP ONLY, past this point -------------------------
