@@ -642,10 +642,20 @@ function Invoke-UpdateInstalledHooks {
                     [void]$clientResults.Add($client + ': failed (' + ($failedNames -join ', ') + ')')
                 }
                 elseif ([string]$installResult.overall -eq 'partial') {
-                    # Runtime/settings applied but tracking did not - report it
-                    # honestly rather than calling the hook updated.
+                    # 'partial' covers three different outcomes: tracking failed,
+                    # one component failed while another landed, or a component
+                    # installed with reduced capability (Kiro drops events it has
+                    # no documented trigger for and can never gate Stop). Naming
+                    # the component and its reason is shorter AND truer than the
+                    # old blanket "tracking failed", which sent the user to
+                    # reinstall something that was not broken.
                     $anyFailed = $true
-                    [void]$clientResults.Add($client + ': installed but tracking failed - reinstall to restore tracking')
+                    $partialNotes = @(@($installResult.components) |
+                        Where-Object {
+                            [string]$_.status -eq 'failed' -or [string]$_.status -eq 'trackingFailed' -or
+                            @('degraded', 'postRegistrationError') -contains [string]$_.reason
+                        } | ForEach-Object { [string]$_.component + ' (' + [string]$_.reason + ')' })
+                    [void]$clientResults.Add($client + ': partial - ' + ($partialNotes -join ', '))
                 }
                 else {
                     [void]$clientResults.Add($client + ': ok')
@@ -662,8 +672,9 @@ function Invoke-UpdateInstalledHooks {
         # sufficient evidence that the installation is now intact, so the
         # record is re-read and integrity re-evaluated before anything is
         # called "updated". Combined with the installer's structured result
-        # (which distinguishes "installed but tracking failed" from success),
-        # this is what stops a nominal success from being reported as a real one.
+        # (which distinguishes a failed, degraded or untracked install from a
+        # clean one), this is what stops a nominal success from being reported
+        # as a real one.
         if (-not $anyFailed) {
             try {
                 $verifyRecord = Get-InstallRecordById -ToolRoot $ToolRoot -Id ([string]$record.id)

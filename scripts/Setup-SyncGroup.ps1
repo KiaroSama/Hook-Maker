@@ -287,15 +287,17 @@ function Read-ClientChoice {
         $picked = 0
         if ([int]::TryParse($value, [ref]$picked) -and $picked -ge 1 -and $picked -le $selections.Count) {
             $choice = $selections[$picked - 1]
-            # Install-Hook.ps1 refuses any kiro selection in its pre-mutation
-            # validation block (the registration writer is not wired up yet), and a
-            # bare throw there reads as a crash. Say so HERE, while the choice is
-            # still on screen and before anything is attempted. The selection is
-            # returned UNCHANGED: silently dropping kiro would install less than
-            # was asked for and then report success.
+            # Kiro DOES install (the registration writer has been wired up since
+            # e914f5d), but it is not the equal of Claude or Codex and the user
+            # should learn that while the choice is still on screen rather than
+            # from a degraded result afterwards. Both limitations below are
+            # permanent facts of Kiro's own documentation, not build state - see
+            # .ai\KIRO_PROTOCOL.md. The event list is read from the capability
+            # table so this note cannot rot the way its predecessor did.
             if (@(Resolve-HookMakerClientSet $choice) -contains 'kiro') {
-                Write-NoteLine '  NOTE: Kiro registration is not implemented yet in this build.'
-                Write-NoteLine '  The install will stop with an error and change nothing. Choose Claude or Codex to install now.'
+                $kiroEvents = @((Get-HookMakerClientCapability -ClientId 'kiro').supportedEvents)
+                Write-NoteLine ('  NOTE: Kiro supports only these events: ' + ($kiroEvents -join ', ') + '.')
+                Write-NoteLine '  Kiro cannot hard-block at Stop, so a Stop gate installs as an advisory only.'
             }
             return $choice
         }

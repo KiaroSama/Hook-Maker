@@ -623,6 +623,49 @@ if ($InstallKiro) {
             $kiroDegraded += 'degraded-stop-gate'
         }
 
+        # A trigger EXISTING is not the same as this hook being able to do its
+        # job on it. Kiro fires PreToolUse/PostToolUse, but Kiro IDE publishes no
+        # tool_name/tool_input for a shell-command hook - so a hook that reads
+        # the tool payload registers fine and then exits immediately. Present,
+        # registered, and useless, with nothing saying so.
+        #
+        # The required fields are read from the HOOK'S OWN SOURCE rather than a
+        # hand-kept table: every hook reads its input through
+        # `Get-Field $hookInput '<name>'`, so the AST already states what it
+        # needs. A maintained list would drift from the code, which is the exact
+        # failure this repo keeps hitting - here it cannot, because the list IS
+        # the code.
+        try {
+            $kiroHookAst = [System.Management.Automation.Language.Parser]::ParseFile(
+                $SourceInfo.ScriptPath, [ref]$null, [ref]$null)
+            $kiroReadFields = @($kiroHookAst.FindAll({
+                        param($node)
+                        $node -is [System.Management.Automation.Language.CommandAst] -and
+                        $node.GetCommandName() -eq 'Get-Field'
+                    }, $true) | ForEach-Object {
+                    $lastArg = @($_.CommandElements | Where-Object { $_ -is [System.Management.Automation.Language.StringConstantExpressionAst] })
+                    if ($lastArg.Count -gt 0) { [string]$lastArg[-1].Value }
+                } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Sort-Object -Unique)
+
+            $kiroMissingByEvent = @()
+            foreach ($supportedEvent in @($kiroSupported)) {
+                if (-not $kiroCapability.unavailableInputFields.ContainsKey($supportedEvent)) { continue }
+                $missingHere = @(@($kiroCapability.unavailableInputFields[$supportedEvent]) |
+                    Where-Object { @($kiroReadFields | Where-Object { $_ -ceq $PSItem }).Count -gt 0 })
+                if ($missingHere.Count -gt 0) {
+                    $kiroMissingByEvent += ($supportedEvent + ' needs ' + ($missingHere -join '/'))
+                }
+            }
+            if ($kiroMissingByEvent.Count -gt 0) {
+                $kiroDegraded += ('input-unavailable: ' + ($kiroMissingByEvent -join '; '))
+            }
+        }
+        catch {
+            # Never fail an install because the source could not be parsed for
+            # ADVISORY metadata - the registration itself is unaffected.
+            $kiroDegraded += 'input-availability-unchecked'
+        }
+
         if ($kiroSupported.Count -eq 0) {
             Set-ComponentResult -Component 'kiro' -Status 'failed' -ReasonCode 'noSupportedEvents' `
                 -Message ('None of the requested events (' + (@($Events) -join ', ') +
@@ -631,6 +674,24 @@ if ($InstallKiro) {
                 (@($kiroCapability.supportedEvents) -join ', ') + '.')
         }
         else {
+            # PRE-FLIGHT BEFORE THE RUNTIME IS COMMITTED. Copy-HookRuntime used
+            # to run first, so a registration refused below left an installed
+            # runtime on disk that no record accounted for - an orphan neither
+            # update nor uninstall could ever see. The path is proven
+            # writable-and-ours here, while nothing has been written yet.
+            #
+            # Test-KiroManagedFile is the ONE place that question is decided
+            # (_installkiro.ps1), so this cannot drift from the writer's own
+            # notion of ownership. It is unlocked and therefore ADVISORY: the
+            # authoritative verdict is re-taken inside the lock below.
+            $kiroRegistrationPath = Get-KiroRegistrationPath -Scope $ScopeLabel -FriendlyName $FriendlyName `
+                -StableId $RecordId -TargetProjectRoot $KiroTargetRoot
+            $kiroPreflight = Test-KiroManagedFile -Path $kiroRegistrationPath -ManagedId $RecordId
+            if (-not $kiroPreflight.Ok) {
+                throw ('Kiro registration file ' + $kiroRegistrationPath + ' is not safe to write (' +
+                    $kiroPreflight.Reason + '). Nothing was changed.')
+            }
+
             $kiroRuntimeRoot = Get-KiroRuntimeRoot -Scope $ScopeLabel -TargetProjectRoot $KiroTargetRoot
             # RuntimeRootOverride, because Kiro's runtime must NOT live under
             # .kiro\hooks: that directory is Kiro's hook-config discovery root,
@@ -657,21 +718,37 @@ if ($InstallKiro) {
             }
             $kiroCommands = New-HookCommands -Runtime $kiroLauncherRuntime
 
-            $kiroRegistrationPath = Get-KiroRegistrationPath -Scope $ScopeLabel -FriendlyName $FriendlyName `
-                -StableId $RecordId -TargetProjectRoot $KiroTargetRoot
-
             Invoke-WithResourceLock -ResourcePath $kiroRegistrationPath -Action {
+                # THE authoritative ownership verdict, re-taken under the lock
+                # because the pre-flight above necessarily ran unlocked and
+                # before the runtime was staged.
+                #
+                # It also separates the two states a bare try/catch used to
+                # collapse into one. A file that is ABSENT ('missing') is a
+                # fresh install; a file that is PRESENT but will not parse
+                # ('invalid-json') is somebody's content in an unknown state,
+                # and swallowing that parse error into $null told
+                # Merge-KiroManagedEntries "no file yet" - which wrote a fresh
+                # document straight over it. A parse failure is a REFUSAL.
+                $kiroOwnership = Test-KiroManagedFile -Path $kiroRegistrationPath -ManagedId $RecordId
+                if (-not $kiroOwnership.Ok) {
+                    throw ('Kiro registration file ' + $kiroRegistrationPath + ' is not safe to write (' +
+                        $kiroOwnership.Reason + '). Nothing was changed.')
+                }
                 $existingDocument = $null
-                if (Test-Path -LiteralPath $kiroRegistrationPath -PathType Leaf) {
+                if ($kiroOwnership.Reason -cne 'missing') {
+                    # Parsed here rather than reusing the classifier's entries
+                    # because Merge-KiroManagedEntries takes the whole document.
+                    # NOT wrapped in try/catch: it just parsed cleanly a moment
+                    # ago under this lock, so a failure now is a real anomaly
+                    # that must surface as a refusal, never as "no file yet".
+                    #
+                    # Extra parentheses are load-bearing: @($x | ConvertFrom-Json)
+                    # yields ONE opaque Object[] on Windows PowerShell 5.1
+                    # whose PSObject.Properties is empty, so every field
+                    # read below would silently return $null.
                     $raw = [System.IO.File]::ReadAllText($kiroRegistrationPath, [System.Text.Encoding]::UTF8)
-                    if (-not [string]::IsNullOrWhiteSpace($raw)) {
-                        # Extra parentheses are load-bearing: @($x | ConvertFrom-Json)
-                        # yields ONE opaque Object[] on Windows PowerShell 5.1
-                        # whose PSObject.Properties is empty, so every field
-                        # read below would silently return $null.
-                        try { $existingDocument = (($raw | ConvertFrom-Json)) }
-                        catch { $existingDocument = $null }
-                    }
+                    $existingDocument = (($raw | ConvertFrom-Json))
                 }
 
                 # ONE ENTRY AT A TIME, because each entry needs its OWN command:
@@ -910,13 +987,24 @@ catch {
 $failedComponents = @($script:ComponentResults | Where-Object { $_.status -eq 'failed' })
 $trackingFailed = @($script:ComponentResults | Where-Object { $_.status -eq 'trackingFailed' })
 $okComponents = @($script:ComponentResults | Where-Object { $_.status -eq 'ok' })
+# A component that landed with LESS than it was asked for is still 'ok' at the
+# component level - component statuses are exactly ok/failed/skipped/
+# trackingFailed, and 'partial' is the OVERALL result's vocabulary, not a
+# component's. That distinction is deliberate, so degradation is read off the
+# REASON CODE instead:
+#   degraded              installed, but with unsupported events dropped and/or
+#                         a gate that can only ever be advisory (Kiro Stop)
+#   postRegistrationError the registration IS live, but a later step failed -
+#                         the one that must never read as a clean 'ok'
+$degradedComponents = @($script:ComponentResults | Where-Object {
+        $_.status -eq 'ok' -and @('degraded', 'postRegistrationError') -contains [string]$_.reason })
 # Components are INDEPENDENT, so a failure among them is only a total failure
 # when nothing else landed. A request for three clients where two are installed
 # and one is unsupported is 'partial' - reporting it 'failed' would tell the
 # caller to discard two working installations, and reporting it 'ok' would
 # claim an install that never happened. Both are wrong in opposite directions.
 $overallResult = if ($failedComponents.Count -gt 0 -and $okComponents.Count -eq 0) { 'failed' }
-elseif ($failedComponents.Count -gt 0 -or $trackingFailed.Count -gt 0) { 'partial' }
+elseif ($failedComponents.Count -gt 0 -or $trackingFailed.Count -gt 0 -or $degradedComponents.Count -gt 0) { 'partial' }
 else { 'ok' }
 Write-InstallResult -Overall $overallResult
 
