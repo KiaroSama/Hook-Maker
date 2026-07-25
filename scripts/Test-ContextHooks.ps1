@@ -110,6 +110,102 @@ function New-PromptStdin {
     return @{ session_id = $SessionId; cwd = $Cwd; hook_event_name = $EventName; prompt = $Prompt } | ConvertTo-Json
 }
 
+# ---- Write-HookResult probe -------------------------------------------------
+# Runs the shared output adapter in a REAL child hook process (either host), so
+# byte-comparisons below are against genuinely emitted bytes rather than an
+# in-process reconstruction. stdout stays byte-pure for the comparison, stderr
+# stays free for the Kiro exit-2 channel, and the returned result object is
+# handed back through a file named in the stdin payload.
+$HookResultProbe = Join-Path $Work 'hookresult-probe.ps1'
+$hookResultProbeBody = @'
+Set-StrictMode -Version 2.0
+$ErrorActionPreference = 'Stop'
+. (Join-Path '__LIBDIR__' '_hooklib.ps1')
+$in = Read-HookInput
+$outcome = Write-HookResult -EventName ([string](Get-Field $in 'event')) -Kind ([string](Get-Field $in 'kind')) `
+    -Message ([string](Get-Field $in 'message')) -Reason ([string](Get-Field $in 'reason')) -Client ([string](Get-Field $in 'client'))
+[System.IO.File]::WriteAllText([string](Get-Field $in 'resultPath'), ($outcome | ConvertTo-Json -Compress), (New-Object System.Text.UTF8Encoding $false))
+'@
+Write-Utf8 $HookResultProbe ($hookResultProbeBody.Replace('__LIBDIR__', (Split-Path -Parent $HookLib)))
+
+# ---- Write-HookResult construct probe ---------------------------------------
+# WHY a SAME-PROCESS comparison exists at all: .NET Core randomises string
+# hashing per process, so a plain @{} with two or more keys serialises its keys
+# in a DIFFERENT order in different pwsh 7 processes - measured here, both
+# {"decision":..,"reason":..} and {"reason":..,"decision":..} come out of the
+# identical expression. That instability belongs to the shipped hooks (they all
+# build plain @{} literals), not to the adapter, and .NET Framework (5.1) is
+# deterministic. So byte-compatibility is proved two ways: cross-process against
+# REAL captured hook output on the 5.1 host (deterministic there), and - here -
+# inside ONE process on BOTH hosts, where the shipped literal and the adapter
+# share a hash seed and any construct divergence ([ordered]@{}, different
+# ConvertTo-Json flags, renamed keys, different escaping) shows up immediately.
+$HookShapeProbe = Join-Path $Work 'hookshape-probe.ps1'
+$hookShapeProbeBody = @'
+Set-StrictMode -Version 2.0
+$ErrorActionPreference = 'Stop'
+. (Join-Path '__LIBDIR__' '_hooklib.ps1')
+$in = Read-HookInput
+$text = [string](Get-Field $in 'message')
+$ev = [string](Get-Field $in 'event')
+
+# What Write-HookResult actually writes to stdout, captured inside THIS process.
+function Get-AdapterBytes {
+    param([string]$Kind, [string]$Client)
+    $writer = New-Object System.IO.StringWriter
+    $previous = [Console]::Out
+    [Console]::SetOut($writer)
+    try { $null = Write-HookResult -EventName $ev -Kind $Kind -Message $text -Reason $text -Client $Client }
+    finally { [Console]::SetOut($previous) }
+    return $writer.ToString().Trim()
+}
+
+# The literal expressions the shipped hooks emit today (Mcp-Usage-Check.ps1:35,
+# Large-File-Check.ps1:187/190, Ci-Status-Check.ps1:435/467/471, and ~59 more).
+$pairs = @(
+    @{ label = 'claudeContext'; hook = (@{ hookSpecificOutput = @{ hookEventName = $ev; additionalContext = $text } } | ConvertTo-Json -Depth 5 -Compress); adapter = (Get-AdapterBytes -Kind 'context' -Client 'claude') },
+    @{ label = 'claudeAdvisory'; hook = (@{ hookSpecificOutput = @{ hookEventName = $ev; additionalContext = $text } } | ConvertTo-Json -Depth 5 -Compress); adapter = (Get-AdapterBytes -Kind 'advisory' -Client 'claude') },
+    @{ label = 'codexSystemMessage'; hook = (@{ systemMessage = $text } | ConvertTo-Json -Depth 5 -Compress); adapter = (Get-AdapterBytes -Kind 'advisory' -Client 'codex') },
+    @{ label = 'decisionBlockClaude'; hook = (@{ decision = 'block'; reason = $text } | ConvertTo-Json -Compress); adapter = (Get-AdapterBytes -Kind 'block' -Client 'claude') },
+    @{ label = 'decisionBlockCodex'; hook = (@{ decision = 'block'; reason = $text } | ConvertTo-Json -Compress); adapter = (Get-AdapterBytes -Kind 'block' -Client 'codex') }
+)
+$bad = @()
+foreach ($pair in $pairs) {
+    if ($pair['hook'] -cne $pair['adapter']) { $bad += ($pair['label'] + ': hook=[' + $pair['hook'] + '] adapter=[' + $pair['adapter'] + ']') }
+}
+[System.IO.File]::WriteAllText([string](Get-Field $in 'resultPath'), ($bad -join ' || '), (New-Object System.Text.UTF8Encoding $false))
+'@
+Write-Utf8 $HookShapeProbe ($hookShapeProbeBody.Replace('__LIBDIR__', (Split-Path -Parent $HookLib)))
+
+# Deliberately nasty payload: newline, double quote, backslash, tab, and the
+# characters 5.1 escapes as &/</> but pwsh 7 does not.
+$HookShapeSample = "GATE line1`nline2 " + [char]34 + 'quoted' + [char]34 + " & <> \ end`ttab"
+
+# Runs the construct probe on one host; returns '' when every shape matched.
+function Test-HookResultConstruct {
+    param([string]$Exe = 'pwsh')
+    $resultPath = Join-Path $Work ('hshape-' + [guid]::NewGuid().ToString('N').Substring(0, 8) + '.txt')
+    $null = Fire -HookPath $HookShapeProbe -Cwd $Work -Exe $Exe `
+        -RawStdin (@{ resultPath = $resultPath; event = 'Stop'; message = $HookShapeSample } | ConvertTo-Json -Compress)
+    if (-not (Test-Path -LiteralPath $resultPath -PathType Leaf)) { return 'the construct probe produced no result file' }
+    return ([System.IO.File]::ReadAllText($resultPath)).Trim()
+}
+
+# Fires the probe with one Write-HookResult call and returns its raw stdout /
+# stderr / exit code plus the parsed result object.
+function Invoke-HookResult {
+    param([hashtable]$Call, [string]$Exe = 'pwsh')
+    $resultPath = Join-Path $Work ('hres-' + [guid]::NewGuid().ToString('N').Substring(0, 8) + '.json')
+    $payload = @{ resultPath = $resultPath }
+    foreach ($key in $Call.Keys) { $payload[$key] = $Call[$key] }
+    $fired = Fire -HookPath $HookResultProbe -Cwd $Work -RawStdin ($payload | ConvertTo-Json -Compress) -Exe $Exe
+    $outcome = $null
+    if (Test-Path -LiteralPath $resultPath -PathType Leaf) {
+        $outcome = ([System.IO.File]::ReadAllText($resultPath)) | ConvertFrom-Json
+    }
+    return [pscustomobject]@{ Out = $fired.Out; Err = $fired.Err; Exit = $fired.Exit; Result = $outcome }
+}
+
 # Preserve the ambient client signal so the Skills-Check routing tests can flip
 # it freely and restore it in the finally block.
 $OrigClaudeProjectDir = $env:CLAUDE_PROJECT_DIR
@@ -473,6 +569,23 @@ try {
         Check 'the reason forbids thin wrappers/pass-through/arbitrary fragments here too' ($lfClaudeMsg -match 'never create thin wrappers, pass-through modules, or arbitrary fragments') $lfClaudeMsg
         Check 'the reason forbids starting an unrelated refactor merely because a file is large' ($lfClaudeMsg -match 'never start a refactor unrelated to the current task') $lfClaudeMsg
         Check 'a safe/no-split outcome remains explicitly valid' ($lfClaudeMsg -match 'finish with no split') $lfClaudeMsg
+        # BYTE-COMPATIBILITY (real emission site 2 of 4): Large-File-Check's own
+        # Write-Advisory Claude branch, fed the message it actually produced.
+        # Run on the 5.1 host: hookSpecificOutput has TWO keys and .NET Core
+        # randomises plain-@{} key order per process, so a cross-process byte
+        # comparison is only meaningful where hashing is deterministic. A fresh
+        # project keeps the hook's per-project cooldown from suppressing the fire.
+        $lfClaudeProj51 = New-Proj 'LargeFileOversizedClaude51'
+        Write-Utf8 (Join-Path $lfClaudeProj51 'big.ps1') $bigContent
+        $lfR51 = Fire -HookPath $lfHook -Cwd $lfClaudeProj51 -EventName 'Stop' -Exe 'powershell.exe'
+        $lfClaudeDoc51 = $null
+        try { $lfClaudeDoc51 = $lfR51.Out | ConvertFrom-Json } catch { }
+        $lfClaudeMsg51 = if ($null -ne $lfClaudeDoc51 -and $null -ne $lfClaudeDoc51.PSObject.Properties['hookSpecificOutput']) { [string]$lfClaudeDoc51.hookSpecificOutput.additionalContext } else { '' }
+        $lfClaudeAdapted = Invoke-HookResult -Call @{ kind = 'advisory'; event = 'Stop'; message = $lfClaudeMsg51; client = 'claude' } -Exe 'powershell.exe'
+        Check '5.1 host: Write-HookResult reproduces the real CLAUDE Stop advisory byte-for-byte' (
+            $lfClaudeMsg51 -ne '' -and $lfClaudeAdapted.Out -ceq $lfR51.Out -and
+            $lfClaudeAdapted.Result.Shape -eq 'claudeContext' -and $lfClaudeAdapted.Result.Emitted -eq $true) (
+            'hook=[' + $lfR51.Out + '] adapter=[' + $lfClaudeAdapted.Out + ']')
 
         # --- Codex route: systemMessage, never a block (a block would loop Codex) ---
         Set-ClaudeProjectDir ''
@@ -486,6 +599,13 @@ try {
             $null -ne $lfCodexDoc -and $null -ne $lfCodexDoc.PSObject.Properties['systemMessage'] -and
             $null -eq $lfCodexDoc.PSObject.Properties['hookSpecificOutput'] -and $rx.Out -notmatch '"decision"') $rx.Out
         Check 'the CODEX advisory still carries the oversized-file report' ($lfCodexMsg -match 'LARGE FILE CHECK' -and $lfCodexMsg -match 'big\.ps1') $lfCodexMsg
+        # BYTE-COMPATIBILITY (real emission site 3 of 4): the same hook's Codex
+        # branch - the one shape a Codex client actually understands at Stop.
+        $lfCodexAdapted = Invoke-HookResult -Call @{ kind = 'advisory'; event = 'Stop'; message = $lfCodexMsg; client = 'codex' }
+        Check 'Write-HookResult reproduces the real CODEX Stop systemMessage byte-for-byte' (
+            $rx.Out -ne '' -and $lfCodexAdapted.Out -ceq $rx.Out -and
+            $lfCodexAdapted.Result.Shape -eq 'codexSystemMessage' -and $lfCodexAdapted.Result.Emitted -eq $true) (
+            'hook=[' + $rx.Out + '] adapter=[' + $lfCodexAdapted.Out + ']')
     }
     finally {
         Set-ClaudeProjectDir $OrigClaudeProjectDir
@@ -524,6 +644,18 @@ try {
             $r.Exit -eq 0 -and $r.Err -eq '') ($r.Out + ' | err=' + $r.Err)
         Check 'the reminder logic still runs (missing .ai/memory.md is still detected and blocks)' (
             $r.Out -match '"decision":"block"' -and $r.Out -match 'memory\.md') $r.Out
+        # BYTE-COMPATIBILITY (real emission site 4 of 4): a genuine decision:block,
+        # captured on the 5.1 host. 5.1 and pwsh 7 escape and ORDER JSON keys
+        # differently, so proving the adapter on both hosts is what makes the
+        # "byte-identical" claim meaningful rather than host-specific luck.
+        $amcDoc = $null
+        try { $amcDoc = $r.Out | ConvertFrom-Json } catch { }
+        $amcReason = if ($null -ne $amcDoc -and $null -ne $amcDoc.PSObject.Properties['reason']) { [string]$amcDoc.reason } else { '' }
+        $amcAdapted = Invoke-HookResult -Call @{ kind = 'block'; event = 'Stop'; reason = $amcReason; client = 'claude' } -Exe 'powershell.exe'
+        Check '5.1 host: Write-HookResult reproduces the real decision:block byte-for-byte' (
+            $amcReason -ne '' -and $amcAdapted.Out -ceq $r.Out -and
+            $amcAdapted.Result.Shape -eq 'decisionBlock' -and $amcAdapted.Result.Degraded -eq $false) (
+            'hook=[' + $r.Out + '] adapter=[' + $amcAdapted.Out + ']')
     }
     finally {
         $env:LOCALAPPDATA = $amcOrigLocalAppData
@@ -640,6 +772,147 @@ if ($null -ne $in) { $prompt = [string](Get-Field $in 'prompt') }
     finally {
         Set-ClaudeProjectDir $cidOrigCpd
         if (Test-Path Env:\HOOKMAKER_CLIENT) { Remove-Item Env:\HOOKMAKER_CLIENT -ErrorAction SilentlyContinue }
+    }
+
+    # =====================================================================
+    Write-Host '--- _hooklib Write-HookResult: one adapter, client-shaped output, honest degradation ---' -ForegroundColor Cyan
+    # ~62 open-coded emission sites across the shipped hooks each re-derive the
+    # client shape by hand, and ~15 emit hookSpecificOutput with no client branch
+    # at all - already mis-shaped for Codex. Write-HookResult is the one place a
+    # SEMANTIC result becomes a client shape. Nothing calls it yet, so these
+    # assertions are the whole contract: byte-identical Claude/Codex output
+    # against REAL captured hook emissions, and a degradation report a caller can
+    # record instead of claiming enforcement it did not get.
+    $hrOrigCpd = $env:CLAUDE_PROJECT_DIR
+    try {
+        if (Test-Path Env:\HOOKMAKER_CLIENT) { Remove-Item Env:\HOOKMAKER_CLIENT -ErrorAction SilentlyContinue }
+
+        # BYTE-COMPATIBILITY (real emission site 1 of 4): Mcp-Usage-Check's
+        # SessionStart context - one of the ~15 unbranched hookSpecificOutput
+        # sites, so this pins the shape the adapter must keep for Claude. On the
+        # 5.1 host for the deterministic-hashing reason described at the probe.
+        $hrRealMcp = Fire -HookPath $McpHook -Cwd $plain -Exe 'powershell.exe'
+        $hrMcpDoc = $null
+        try { $hrMcpDoc = $hrRealMcp.Out | ConvertFrom-Json } catch { }
+        $hrMcpMsg = if ($null -ne $hrMcpDoc -and $null -ne $hrMcpDoc.PSObject.Properties['hookSpecificOutput']) { [string]$hrMcpDoc.hookSpecificOutput.additionalContext } else { '' }
+        $hrMcpAdapted = Invoke-HookResult -Call @{ kind = 'context'; event = 'SessionStart'; message = $hrMcpMsg; client = 'claude' } -Exe 'powershell.exe'
+        Check '5.1 host: Write-HookResult reproduces a real SessionStart claude context byte-for-byte' (
+            $hrMcpMsg -ne '' -and $hrMcpAdapted.Out -ceq $hrRealMcp.Out -and
+            $hrMcpAdapted.Result.Shape -eq 'claudeContext' -and $hrMcpAdapted.Result.Degraded -eq $false) (
+            'hook=[' + $hrRealMcp.Out + '] adapter=[' + $hrMcpAdapted.Out + ']')
+
+        # Same-process construct proof, on BOTH hosts: the adapter's bytes must
+        # equal the shipped literal's bytes for every shape. This is what makes
+        # the byte-compatibility claim hold on pwsh 7, where cross-process key
+        # order is randomised and literal equality is therefore impossible.
+        $hrShape7 = Test-HookResultConstruct -Exe 'pwsh'
+        Check 'pwsh 7: the adapter emits the shipped literal byte-for-byte for every shape (same process)' (
+            $hrShape7 -eq '') $hrShape7
+        $hrShape51 = Test-HookResultConstruct -Exe 'powershell.exe'
+        Check '5.1: the adapter emits the shipped literal byte-for-byte for every shape (same process)' (
+            $hrShape51 -eq '') $hrShape51
+
+        # --- silent writes nothing at all ---
+        $hrSilent = Invoke-HookResult -Call @{ kind = 'silent'; event = 'Stop'; message = 'never-emitted'; client = 'claude' }
+        Check 'silent emits nothing on stdout or stderr and reports nothing degraded' (
+            $hrSilent.Out -eq '' -and $hrSilent.Err -eq '' -and $hrSilent.Result.Emitted -eq $false -and
+            $hrSilent.Result.Shape -eq 'none' -and $hrSilent.Result.Degraded -eq $false) ($hrSilent.Out + ' | ' + $hrSilent.Err)
+
+        # --- an unknown client is never guessed at ---
+        $hrUnknown = Invoke-HookResult -Call @{ kind = 'context'; event = 'SessionStart'; message = 'never-emitted'; client = 'gemini' }
+        Check 'an unknown client emits NOTHING and reports it, never a guessed shape' (
+            $hrUnknown.Out -eq '' -and $hrUnknown.Result.Emitted -eq $false -and $hrUnknown.Result.Shape -eq 'none' -and
+            $hrUnknown.Result.Degraded -eq $true -and $hrUnknown.Result.DegradedReason -match 'client is unknown') (
+            $hrUnknown.Out + ' | ' + [string]$hrUnknown.Result.DegradedReason)
+
+        # --- a block on a non-block-capable event is downgraded, never faked ---
+        # Kiro Stop cannot block on either surface Hook Maker targets, AND Kiro
+        # discards hook stdout on Stop - so the honest result is no output at all
+        # plus both facts reported. This is what lets a caller record
+        # degraded-stop-gate instead of claiming a gate it never got.
+        $hrKiroStopBlock = Invoke-HookResult -Call @{ kind = 'block'; event = 'Stop'; reason = 'KIRO-STOP-GATE'; client = 'kiro' }
+        Check 'a block on Kiro Stop is DOWNGRADED, never emitted as a fake block' (
+            $hrKiroStopBlock.Out -eq '' -and $hrKiroStopBlock.Out -notmatch 'decision' -and
+            $hrKiroStopBlock.Err -notmatch 'KIRO-STOP-GATE' -and
+            $hrKiroStopBlock.Result.Emitted -eq $false -and $hrKiroStopBlock.Result.ExitCode -eq 0) (
+            $hrKiroStopBlock.Out + ' | ' + $hrKiroStopBlock.Err)
+        Check 'the downgrade REPORTS Degraded with both reasons (no block mechanism, stdout discarded)' (
+            $hrKiroStopBlock.Result.Degraded -eq $true -and
+            $hrKiroStopBlock.Result.DegradedReason -match 'no block mechanism on Stop' -and
+            $hrKiroStopBlock.Result.DegradedReason -match 'NOT an enforced gate' -and
+            $hrKiroStopBlock.Result.DegradedReason -match 'discarded') ([string]$hrKiroStopBlock.Result.DegradedReason)
+
+        # --- a block on a block-capable Kiro event is a REAL block ---
+        $hrKiroRealBlock = Invoke-HookResult -Call @{ kind = 'block'; event = 'UserPromptSubmit'; reason = 'KIRO-REAL-GATE'; client = 'kiro' }
+        Check 'a block on a block-capable Kiro event is exit 2 + stderr, and is NOT degraded' (
+            $hrKiroRealBlock.Out -eq '' -and $hrKiroRealBlock.Err -match 'KIRO-REAL-GATE' -and
+            $hrKiroRealBlock.Result.Emitted -eq $true -and $hrKiroRealBlock.Result.Shape -eq 'kiroExit2Stderr' -and
+            $hrKiroRealBlock.Result.ExitCode -eq 2 -and $hrKiroRealBlock.Result.Degraded -eq $false) (
+            $hrKiroRealBlock.Out + ' | ' + $hrKiroRealBlock.Err)
+
+        # --- Kiro context lands only where Kiro documents it ---
+        $hrKiroCtx = Invoke-HookResult -Call @{ kind = 'context'; event = 'SessionStart'; message = 'KIRO-CTX-TEXT'; client = 'kiro' }
+        Check 'Kiro context on a documented trigger is plain stdout, never a Claude/Codex JSON shape' (
+            $hrKiroCtx.Out -ceq 'KIRO-CTX-TEXT' -and $hrKiroCtx.Result.Shape -eq 'kiroStdout' -and
+            $hrKiroCtx.Result.Emitted -eq $true -and $hrKiroCtx.Result.Degraded -eq $false) $hrKiroCtx.Out
+        $hrKiroCtxIgnored = Invoke-HookResult -Call @{ kind = 'context'; event = 'PostToolUse'; message = 'KIRO-IGNORED'; client = 'kiro' }
+        Check 'Kiro context on an undocumented trigger emits nothing and reports the silent no-op' (
+            $hrKiroCtxIgnored.Out -eq '' -and $hrKiroCtxIgnored.Result.Emitted -eq $false -and
+            $hrKiroCtxIgnored.Result.Degraded -eq $true -and
+            $hrKiroCtxIgnored.Result.DegradedReason -match 'discarded') (
+            $hrKiroCtxIgnored.Out + ' | ' + [string]$hrKiroCtxIgnored.Result.DegradedReason)
+
+        # --- the same downgrade rule applies to Claude, not just Kiro ---
+        $hrClaudeSsBlock = Invoke-HookResult -Call @{ kind = 'block'; event = 'SessionStart'; reason = 'CLAUDE-SS-GATE'; client = 'claude' }
+        Check 'a block on Claude SessionStart downgrades to the advisory shape and reports it' (
+            $hrClaudeSsBlock.Out -notmatch '"decision"' -and $hrClaudeSsBlock.Out -match 'additionalContext' -and
+            $hrClaudeSsBlock.Result.Shape -eq 'claudeContext' -and $hrClaudeSsBlock.Result.Degraded -eq $true) $hrClaudeSsBlock.Out
+
+        # --- the forced mirror of the canonical blocking table stays honest ---
+        # _hooklib cannot dot-source scripts\_clientcapability.ps1 (an installed
+        # runtime is self-contained), so blockCapableEvents is duplicated by
+        # force - the same pattern as $script:HookClientIds. This is the guard.
+        $hrMirrorDiff = & {
+            . $HookLib
+            . (Join-Path $ScriptRoot '_clientcapability.ps1')
+            $bad = @()
+            foreach ($clientId in @(Get-HookMakerClientIds)) {
+                if (-not $script:HookBlockCapableEvents.ContainsKey($clientId)) { $bad += ($clientId + '/<missing>'); continue }
+                foreach ($logical in @(Get-HookMakerLogicalEvents)) {
+                    $fromTable = Test-HookMakerEventBlocking -ClientId $clientId -EventName $logical
+                    $fromMirror = (@($script:HookBlockCapableEvents[$clientId] | Where-Object { $_ -ceq $logical }).Count -gt 0)
+                    if ($fromTable -ne $fromMirror) { $bad += ($clientId + '/' + $logical) }
+                }
+            }
+            ($bad -join ',')
+        }
+        Check '_hooklib block-capability mirror decides identically to Test-HookMakerEventBlocking for every client x event' (
+            $hrMirrorDiff -eq '') ('mismatches=' + $hrMirrorDiff)
+        $hrMirrorShape = & {
+            . $HookLib
+            . (Join-Path $ScriptRoot '_clientcapability.ps1')
+            $keys = (@($script:HookBlockCapableEvents.Keys) | Sort-Object) -join ','
+            $bogus = @()
+            foreach ($clientId in @($script:HookBlockCapableEvents.Keys)) {
+                foreach ($name in @($script:HookBlockCapableEvents[$clientId])) {
+                    if ($null -eq (Resolve-HookMakerLogicalEvent -Name $name)) { $bogus += ($clientId + '/' + $name) }
+                }
+            }
+            $keys + '|' + ((@(Get-HookMakerClientIds) | Sort-Object) -join ',') + '|' + ($bogus -join ',')
+        }
+        $hrMirrorParts = $hrMirrorShape.Split('|')
+        Check 'the mirror covers exactly the canonical clients and names no unknown event' (
+            $hrMirrorParts[0] -eq $hrMirrorParts[1] -and $hrMirrorParts[2] -eq '') $hrMirrorShape
+
+        # Kiro's context-capable triggers come from .ai/KIRO_PROTOCOL.md (exit 0:
+        # stdout is added to context ONLY on SessionStart and UserPromptSubmit).
+        # There is no canonical table to mirror, so this pins the constant.
+        $hrKiroCtxEvents = & { . $HookLib; @($script:HookKiroContextEvents) -join ',' }
+        Check 'Kiro context triggers stay exactly the two the protocol documents' (
+            $hrKiroCtxEvents -eq 'SessionStart,UserPromptSubmit') $hrKiroCtxEvents
+    }
+    finally {
+        Set-ClaudeProjectDir $hrOrigCpd
     }
 }
 finally {
