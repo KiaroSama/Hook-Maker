@@ -323,7 +323,8 @@ function Invoke-CreateHook {
                     'EVENTS=' + ($template.DefaultEvents -join ',') + "`n`n" +
                     "# Project roots for config-based install from the Hook Maker menu (semicolon separated).`n" +
                     "TARGET_PROJECTS=`n`n" +
-                    "# Which client(s) to install for from the Hook Maker menu: Both, Claude, or Codex.`n" +
+                    "# Which client(s) to install for from the Hook Maker menu: Claude, Codex, Kiro,`n" +
+                    "# or All. Legacy: Both = Claude + Codex only.`n" +
                     "CLIENTS=Both`n"
                 [System.IO.File]::WriteAllText((Join-Path $hookFolder '.env.example'), $envExample.Replace("`n", "`r`n"), $Utf8NoBom)
                 Write-Host ('  ' + (Get-Painted '+ created' $C.Green) + ' ' + (Get-Painted $hookPath $C.LightBlue))

@@ -179,12 +179,25 @@ $InstallClaude = ($resolvedClients -contains 'claude')
 $InstallCodex = ($resolvedClients -contains 'codex')
 $InstallKiro = ($resolvedClients -contains 'kiro')
 
-# Kiro's registration writer and runtime layout are not implemented yet. Refuse
-# here, in the pre-mutation validation block, so the request fails loudly with
-# nothing touched. Silently installing the other clients and returning success
-# would report a Kiro install that never happened.
+# Kiro's registration writer is not wired in yet. It is recorded as a FAILED
+# COMPONENT rather than thrown, because components are independent: a request
+# for three clients where two succeed is 'partial', not a total refusal.
+#
+# An earlier version of this threw here. That was wrong for a reason worth
+# keeping: the client menu offers Claude, Codex, Kiro and All - and no
+# Claude+Codex entry, because 'Both' is legacy config only. So throwing on kiro
+# also broke 'All clients', and a user lost any way to install for two clients
+# in one pass. Failing the one component keeps the other two working while
+# still never reporting a Kiro install that did not happen.
 if ($InstallKiro) {
-    throw 'Kiro installation is not implemented yet. Use -Clients claude,codex (or omit -Clients) until it lands.'
+    Set-ComponentResult -Component 'kiro' -Status 'failed' -ReasonCode 'notImplemented' `
+        -Message 'Kiro registration is not implemented yet; the other selected clients were installed.'
+    $InstallKiro = $false
+    $resolvedClients = @($resolvedClients | Where-Object { $_ -ne 'kiro' })
+    Write-Host 'Kiro registration is not implemented yet - skipped. Other selected clients continue.'
+    if ($resolvedClients.Count -eq 0) {
+        throw 'Kiro was the only selected client and its registration is not implemented yet. Nothing was installed.'
+    }
 }
 $ValidEvents = @(Get-HookMakerLogicalEvents)
 $normalizedEvents = New-Object System.Collections.Generic.List[string]
@@ -689,7 +702,15 @@ catch {
 # tracking failed is 'partial', not success.
 $failedComponents = @($script:ComponentResults | Where-Object { $_.status -eq 'failed' })
 $trackingFailed = @($script:ComponentResults | Where-Object { $_.status -eq 'trackingFailed' })
-$overallResult = if ($failedComponents.Count -gt 0) { 'failed' } elseif ($trackingFailed.Count -gt 0) { 'partial' } else { 'ok' }
+$okComponents = @($script:ComponentResults | Where-Object { $_.status -eq 'ok' })
+# Components are INDEPENDENT, so a failure among them is only a total failure
+# when nothing else landed. A request for three clients where two are installed
+# and one is unsupported is 'partial' - reporting it 'failed' would tell the
+# caller to discard two working installations, and reporting it 'ok' would
+# claim an install that never happened. Both are wrong in opposite directions.
+$overallResult = if ($failedComponents.Count -gt 0 -and $okComponents.Count -eq 0) { 'failed' }
+elseif ($failedComponents.Count -gt 0 -or $trackingFailed.Count -gt 0) { 'partial' }
+else { 'ok' }
 Write-InstallResult -Overall $overallResult
 
 Write-Host 'Restart the clients and review /hooks. Codex may require trusting the new command.'

@@ -183,3 +183,74 @@
     Check 'the malformed profile is still listed' ($rMalformed.Out -match 'Malformed') $rMalformed.Out
     Check 'a source with only "root" (no "name") still renders its root' ($rMalformed.Out -match 'C:\\Malformed\\Src') $rMalformed.Out
     Check 'the wizard returns to the main menu instead of exiting' ((([regex]::Matches($rMalformed.Out, 'Main menu:')).Count) -ge 2) $rMalformed.Out
+
+    # =====================================================================
+    Write-Host '--- client menu: exactly four entries, All by default, invalid answers re-prompt ---' -ForegroundColor Cyan
+    # The menu offers Claude / Codex / Kiro / All clients in that order and nothing
+    # else. Kiro is ONE entry covering both its surfaces: the IDE and the CLI share
+    # a registrationKind and a runtimeRelativeRoot, so a separate "Kiro IDE" /
+    # "Kiro CLI" pair would offer a distinction the installer cannot act on.
+    # Answers: hook 3 (Ai-Memory-Check) -> recommended events -> an out-of-range
+    # client number, then a non-numeric one, then back out with 0.
+    $cfgClient = Join-Path $Work 'cfg-client-menu.json'; New-Config $cfgClient
+    $rClient = Invoke-Wizard -Config $cfgClient -Answers @('1', '1', '3', '1', '9', 'kiro', '0', '0', 'exit')
+    Check 'exit 0 (client menu navigation)' ($rClient.Exit -eq 0) $rClient.Err
+    Check 'no stderr' ($rClient.Err -eq '')
+    # The number and the label are painted separately, so ANSI escapes sit between
+    # them - hence [^\r\n]* rather than a literal space.
+    Check 'the client menu lists exactly Claude, Codex, Kiro, All clients in that order' (
+        $rClient.Out -match 'Client:[\s\S]*?1\.[^\r\n]*Claude[\s\S]*?2\.[^\r\n]*Codex[\s\S]*?3\.[^\r\n]*Kiro[\s\S]*?4\.[^\r\n]*All clients') $rClient.Out
+    Check 'no menu line offers a separate Kiro IDE / Kiro CLI option, and nothing follows "4. All clients"' (
+        $rClient.Out -notmatch 'Kiro IDE' -and $rClient.Out -notmatch 'Kiro CLI' -and
+        $rClient.Out -notmatch '4\.[^\r\n]*All clients[^\r\n]*\r?\n[^\r\n]*5\.') $rClient.Out
+    Check 'the client prompt shows 4 (All clients) as the Enter default' ($rClient.Out -match 'Select the client[^\r\n]*\[4\]') $rClient.Out
+    # An out-of-range number and a non-numeric answer must EACH re-prompt rather
+    # than being accepted: three menu renders for the three answers given
+    # (9, kiro, 0) and one error line for each of the two rejected ones.
+    Check 'an out-of-range and a non-numeric client answer each re-prompt instead of being accepted' (
+        (([regex]::Matches($rClient.Out, 'Select the client')).Count -eq 3) -and
+        (([regex]::Matches($rClient.Out, 'Enter a number between 1 and 4, or 0\.')).Count -eq 2)) $rClient.Out
+    Check 'back=0 from the client menu returns to the event selection' (([regex]::Matches($rClient.Out, 'Select events')).Count -eq 2) $rClient.Out
+
+    # =====================================================================
+    Write-Host '--- client menu: a bare Enter selects All clients and flags Kiro up front ---' -ForegroundColor Cyan
+    # Install-Hook.ps1 refuses a kiro selection outright in its pre-mutation
+    # validation block, so the wizard must say so BEFORE the install is attempted
+    # instead of letting that throw surface as an apparent crash - and must NOT
+    # quietly drop kiro from the selection to make the install succeed. Declined at
+    # the confirmation, so nothing is written either way.
+    $cfgAllClients = Join-Path $Work 'cfg-client-all.json'; New-Config $cfgAllClients
+    $allClientsProj = New-Proj 'AllClientsProj'
+    $rAllClients = Invoke-Wizard -Config $cfgAllClients -Answers @('1', '1', '3', '1', '', $allClientsProj, 'done', 'n', 'exit')
+    Check 'exit 0 (bare Enter on the client menu)' ($rAllClients.Exit -eq 0) $rAllClients.Err
+    Check 'a bare Enter on the client menu resolves to All, not to a single client' (
+        $rAllClients.Out -match 'client:[^\r\n]*All' -and $rAllClients.Out -notmatch 'client:[^\r\n]*(Claude|Codex|Kiro)') $rAllClients.Out
+    Check 'a Kiro-inclusive selection warns that Kiro registration is not implemented yet' (
+        $rAllClients.Out -match 'Kiro registration is not implemented yet') $rAllClients.Out
+    Check 'the Kiro warning is pre-flight (before the confirmation) and declining installs nothing' (
+        $rAllClients.Out.IndexOf('Kiro registration is not implemented yet') -lt $rAllClients.Out.IndexOf('Start now?') -and
+        -not (Test-Path -LiteralPath (Join-Path $allClientsProj '.claude'))) $rAllClients.Out
+
+    # =====================================================================
+    Write-Host '--- client menu: All clients really installs Claude + Codex despite Kiro ---' -ForegroundColor Cyan
+    # Regression guard. The client menu has no Claude+Codex entry, so "All clients"
+    # is the ONLY single pick that reaches two clients in one pass. Kiro's
+    # registration is not implemented, and while that condition threw, it took
+    # "All clients" down with it - leaving no way to install for two clients at
+    # all. Kiro is now recorded as a FAILED COMPONENT and dropped, so the run must
+    # complete and land Claude + Codex while creating nothing for Kiro.
+    $cfgKiroOk = Join-Path $Work 'cfg-client-all-install.json'; New-Config $cfgKiroOk
+    $kiroOkProj = New-Proj 'AllClientsInstallProj'
+    $rKiroOk = Invoke-Wizard -Config $cfgKiroOk -Answers @('1', '1', '3', '1', '4', $kiroOkProj, 'done', '', '0')
+    Check 'selecting All clients does NOT abort on the unimplemented Kiro (exit 0, no stderr)' (
+        $rKiroOk.Exit -eq 0 -and $rKiroOk.Err -eq '') ('exit=' + [string]$rKiroOk.Exit + ' err=' + $rKiroOk.Err)
+    Check 'All clients installed the hook for Claude' (
+        (Test-Path -LiteralPath (Join-Path $kiroOkProj '.claude\settings.local.json')) -and
+        (Test-Path -LiteralPath (Join-Path $kiroOkProj '.claude\hooks\Hook-Maker\Ai-Memory-Check\Ai-Memory-Check.ps1')))
+    Check 'All clients installed the same hook for Codex in the SAME pass' (
+        (Test-Path -LiteralPath (Join-Path $kiroOkProj '.codex\hooks.json')) -and
+        (Test-Path -LiteralPath (Join-Path $kiroOkProj '.codex\hooks\Hook-Maker\Ai-Memory-Check\Ai-Memory-Check.ps1')))
+    # The failed kiro component must leave NO trace: reporting a Kiro install that
+    # never happened is the failure mode the throw was there to prevent.
+    Check 'the failed Kiro component wrote nothing (no .kiro directory)' (
+        -not (Test-Path -LiteralPath (Join-Path $kiroOkProj '.kiro'))) $rKiroOk.Out
