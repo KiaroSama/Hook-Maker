@@ -281,9 +281,11 @@ try {
     $r = Fire -Cwd $noCleanup
     Check 'cleanup not installed for this project -> gate skipped, decision shown' ($r.Out -match 'CLOUDFLARE DEPLOY CHECK') $r.Out
 
+    # -RuntimeRoot is the client's runtimeRelativeRoot from the capability table.
+    # It defaults to Claude's only so the pre-existing cases below read unchanged.
     function New-CleanupMarker {
-        param([string]$Root)
-        New-Item -ItemType Directory -Path (Join-Path $Root '.claude\hooks\Hook-Maker\Test-Temp-Cleanup') -Force | Out-Null
+        param([string]$Root, [string]$RuntimeRoot = '.claude\hooks\Hook-Maker')
+        New-Item -ItemType Directory -Path (Join-Path (Join-Path $Root $RuntimeRoot) 'Test-Temp-Cleanup') -Force | Out-Null
     }
     function Write-CleanupResult {
         param([string]$Root, [string]$Category, [switch]$StaleFingerprint)
@@ -341,6 +343,31 @@ try {
     $r = Fire -Cwd $cleanCleanup
     Check 'ONLY a fresh "clean" for the current state shows the decision' ($r.Out -match 'CLOUDFLARE DEPLOY CHECK') $r.Out
 
+    # The gate must apply on EVERY supported client's runtime layout. It used to
+    # test only .claude\hooks\Hook-Maker and .codex\hooks\Hook-Maker, so on a
+    # Kiro-only install - whose runtime lives at .kiro\hook-runtime\Hook-Maker,
+    # deliberately NOT under .kiro\hooks, which Kiro scans as configuration - the
+    # hook concluded "cleanup not installed", skipped the coordination gate
+    # outright, and showed a deploy decision for a workspace whose cleanliness
+    # had never been proven. Only the Claude marker was ever created here, which
+    # is exactly why the suite could not see it.
+    foreach ($clientRuntimeRoot in @('.codex\hooks\Hook-Maker', '.kiro\hook-runtime\Hook-Maker')) {
+        $clientLabel = (($clientRuntimeRoot -split '\\')[0]).TrimStart('.')
+        $gatedRepo = New-ReadyWorkersRepo ('CleanupOn-' + $clientLabel)
+        New-CleanupMarker -Root $gatedRepo -RuntimeRoot $clientRuntimeRoot
+        Write-CleanupResult -Root $gatedRepo -Category 'review-required'
+        $r = Fire -Cwd $gatedRepo
+        Check ('a ' + $clientLabel + '-only cleanup install is still detected: review-required -> silent') (
+            $r.Exit -eq 0 -and $r.Out -eq '') $r.Out
+
+        $readyRepo = New-ReadyWorkersRepo ('CleanupOnReady-' + $clientLabel)
+        New-CleanupMarker -Root $readyRepo -RuntimeRoot $clientRuntimeRoot
+        Write-CleanupResult -Root $readyRepo -Category 'clean'
+        $r = Fire -Cwd $readyRepo
+        Check ('a ' + $clientLabel + '-only cleanup install with a fresh clean shows the decision') (
+            $r.Out -match 'CLOUDFLARE DEPLOY CHECK') $r.Out
+    }
+
     # =====================================================================
     Write-Host '--- the shared category contract is declared, not inferred ---' -ForegroundColor Cyan
     $cfText = [System.IO.File]::ReadAllText($Hook)
@@ -354,6 +381,37 @@ try {
         $cfText -notmatch 'safe-cleaned' -and $cfText -notmatch 'review-only-preserved') $cfText
     Check 'the concurrency contract is still documented (no registration-order assumption)' (
         $cfText -match 'may run concurrently' -and $cfText -match 'never assumes') $cfText
+
+    # =====================================================================
+    Write-Host '--- the client runtime-root mirror still equals the capability table ---' -ForegroundColor Cyan
+    # An installed runtime is self-contained - the installer rewrites _hooklib.ps1
+    # into it but copies no sibling out of scripts\ - so the per-client runtime
+    # locations must be MIRRORED into the hook rather than read from the table.
+    # That is only safe while something proves the mirror still EQUALS the table:
+    # without this assertion the list went stale the moment a third client was
+    # added, and a whole gate was skipped silently. Same discipline as
+    # $script:HookBlockCapableEvents in hooks\_hooklib.ps1.
+    . (Join-Path $PSScriptRoot '_clientcapability.ps1')
+    $cfParseErrors = $null
+    $cfAst = [System.Management.Automation.Language.Parser]::ParseFile($Hook, [ref]$null, [ref]$cfParseErrors)
+    Check 'the hook parses with no errors' (@($cfParseErrors).Count -eq 0) (@($cfParseErrors) -join '; ')
+    $mirrorAssignments = @($cfAst.FindAll({
+        $args[0] -is [System.Management.Automation.Language.AssignmentStatementAst] -and
+        $args[0].Left.Extent.Text -eq '$script:ClientRuntimeRelativeRoots' }, $true))
+    Check 'the hook declares exactly one mirrored client runtime-root list' ($mirrorAssignments.Count -eq 1) ([string]$mirrorAssignments.Count)
+    $mirroredRoots = @()
+    if ($mirrorAssignments.Count -eq 1) {
+        $mirroredRoots = @($mirrorAssignments[0].Right.FindAll({
+            $args[0] -is [System.Management.Automation.Language.StringConstantExpressionAst] }, $true) | ForEach-Object { $_.Value })
+    }
+    $tableRoots = @(Get-HookMakerClientIds | ForEach-Object { [string](Get-HookMakerClientCapability -ClientId $_).runtimeRelativeRoot })
+    Check 'the mirror equals the capability table exactly (no missing client, no stale extra)' (
+        ((@($mirroredRoots | Sort-Object)) -join '|') -eq ((@($tableRoots | Sort-Object)) -join '|')) (
+        'mirror=[' + ($mirroredRoots -join ', ') + '] table=[' + ($tableRoots -join ', ') + ']')
+    # Named explicitly so an empty table on both sides cannot satisfy the
+    # equality above, and so the exact path this defect turned on is pinned.
+    Check 'the Kiro runtime root is covered, and it is the hook-runtime path not .kiro\hooks' (
+        @($mirroredRoots | Where-Object { $_ -eq '.kiro\hook-runtime\Hook-Maker' }).Count -eq 1) ($mirroredRoots -join ', ')
 
     # =====================================================================
     Write-Host '--- Windows PowerShell 5.1 ---' -ForegroundColor Cyan

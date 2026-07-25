@@ -130,8 +130,13 @@ $script:HardPruneNames = @(
     '__pypackages__', 'vendor', 'target', 'dist', 'build', 'out', '.next',
     '.nuxt', '.tox', '.svn', '.hg', 'graphify-out', 'logs'
 )
-# Bounds the per-candidate size walk so one huge tree cannot make the hook slow.
-$script:SizeWalkMaxFiles = 2000
+# Bounds the per-candidate size walk so one pathological tree cannot make the
+# hook slow. ENTRIES, not files: a tree of empty directories contains no files
+# to count, so a file-only ceiling left the walk unbounded on exactly the shape
+# that runs away. The seconds ceiling is the outer backstop for a filesystem
+# where each entry is cheap to count but slow to read.
+$script:SizeWalkMaxEntries = 2000
+$script:SizeWalkMaxSeconds = 5
 
 # A plain hashtable, deliberately, as the name/cause set type throughout this
 # hook. It is case-insensitive by default (matching the old HashSet's
@@ -257,18 +262,43 @@ function Get-CandidateSize {
             return [pscustomobject]@{ Bytes = (Get-Item -LiteralPath $Path -Force -ErrorAction Stop).Length; Bounded = $false; Ok = $true }
         }
         $sum = 0L
-        $count = 0
+        $examined = 0
         $bounded = $false
         $ok = $true
-        try {
-            # Lazy enumeration so the walk can stop at the ceiling instead of
-            # materialising an arbitrarily large tree first.
-            foreach ($file in [System.IO.Directory]::EnumerateFiles($Path, '*', [System.IO.SearchOption]::AllDirectories)) {
-                if ($count -ge $script:SizeWalkMaxFiles) { $bounded = $true; break }
-                try { $sum += (New-Object System.IO.FileInfo $file).Length; $count++ } catch { $ok = $false }
+        $deadline = [DateTime]::UtcNow.AddSeconds($script:SizeWalkMaxSeconds)
+        # An explicit non-following stack walk, the same bounded traversal shape
+        # Get-CleanupScan uses. [System.IO.Directory]::EnumerateFiles(...,
+        # AllDirectories) was used here, and it FOLLOWS junctions/symlinks: the
+        # size probe could descend through a link and measure a tree outside the
+        # project, which is precisely what this hook promises never to do, and a
+        # link loop had no reliable bound because the old ceiling counted files
+        # only. Skipping reparse points makes the walk a finite tree; the entry
+        # and time ceilings bound a pathological real tree on top of that.
+        $stack = New-Object System.Collections.Generic.Stack[string]
+        $stack.Push($Path)
+        while ($stack.Count -gt 0) {
+            if ($bounded) { break }
+            $current = $stack.Pop()
+            try {
+                # Lazy enumeration so the walk stops at the ceiling instead of
+                # materialising an arbitrarily large directory first.
+                foreach ($child in [System.IO.Directory]::EnumerateFileSystemEntries($current)) {
+                    if ($examined -ge $script:SizeWalkMaxEntries -or [DateTime]::UtcNow -gt $deadline) { $bounded = $true; break }
+                    # Counted before the attribute read, so entries that are
+                    # skipped or unreadable still consume the ceiling - a
+                    # directory full of junctions cannot spin here.
+                    $examined++
+                    $attributes = [System.IO.FileAttributes]::Normal
+                    try { $attributes = [System.IO.File]::GetAttributes($child) } catch { $ok = $false; continue }
+                    # Never followed and never measured, exactly as in the
+                    # candidate scan: a link's contents are simply not known.
+                    if (($attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) { continue }
+                    if (($attributes -band [System.IO.FileAttributes]::Directory) -ne 0) { $stack.Push($child); continue }
+                    try { $sum += (New-Object System.IO.FileInfo $child).Length } catch { $ok = $false }
+                }
             }
+            catch { $ok = $false }
         }
-        catch { $ok = $false }
         return [pscustomobject]@{ Bytes = $sum; Bounded = $bounded; Ok = $ok }
     }
     catch { return [pscustomobject]@{ Bytes = -1; Bounded = $false; Ok = $false } }

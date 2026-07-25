@@ -84,6 +84,28 @@ $script:CleanupCategories = @('clean', 'review-required', 'residue-confirmed', '
 # unrecognized value (an older or newer producer) is treated the same way.
 $script:CleanupReleaseReadyCategories = @('clean')
 
+# ---- MIRRORED CLIENT RUNTIME ROOTS ---------------------------------------
+# Where an installed Hook Maker runtime lives, relative to the project root,
+# for EVERY supported client. This mirrors runtimeRelativeRoot in
+# scripts\_clientcapability.ps1 and is duplicated for the same structural
+# reason $script:HookClientIds in hooks\_hooklib.ps1 is: an installed runtime
+# is self-contained - the installer rewrites _hooklib.ps1 into it but copies no
+# sibling out of scripts\ - so the capability table cannot be shared by
+# dot-sourcing. Test-CloudflareDeploy.ps1 asserts this mirror equals the table
+# for every Get-HookMakerClientIds entry, which is how the duplication is kept
+# honest instead of drifting into a stale hardcoded list.
+#
+# Kiro's runtime is deliberately NOT under .kiro\hooks: that directory is
+# Kiro's hook-CONFIG discovery root, so a copied .ps1 tree there would be
+# scanned as configuration. A check that only knew the .claude/.codex layouts
+# therefore saw a Kiro-only install as "cleanup not installed" and skipped the
+# coordination gate entirely.
+$script:ClientRuntimeRelativeRoots = @(
+    '.claude\hooks\Hook-Maker',
+    '.codex\hooks\Hook-Maker',
+    '.kiro\hook-runtime\Hook-Maker'
+)
+
 # Reads Test-Temp-Cleanup's coordination state, only trusting it when its
 # recorded repo-state fingerprint still matches the CURRENT state (never a
 # stale/racing read from an earlier Stop).
@@ -158,8 +180,9 @@ function Test-ReleaseReady {
     }
 
     # 4) Test-Temp-Cleanup coordination, only enforced when it is installed for this project.
-    $cleanupInstalled = (Test-Path -LiteralPath (Join-Path $Root '.claude\hooks\Hook-Maker\Test-Temp-Cleanup') -PathType Container) -or
-        (Test-Path -LiteralPath (Join-Path $Root '.codex\hooks\Hook-Maker\Test-Temp-Cleanup') -PathType Container)
+    $cleanupInstalled = @($script:ClientRuntimeRelativeRoots | Where-Object {
+        Test-Path -LiteralPath (Join-Path (Join-Path $Root $_) 'Test-Temp-Cleanup') -PathType Container
+    }).Count -gt 0
     if ($cleanupInstalled) {
         $cleanupCategory = Get-CleanupCoordinationState -Root $Root
         # Missing/stale ($null), a non-ready category, and an unrecognized

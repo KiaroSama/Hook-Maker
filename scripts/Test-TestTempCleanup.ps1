@@ -270,6 +270,76 @@ try {
     }
 
     # =====================================================================
+    Write-Host '--- the candidate SIZE walk never descends through a junction ---' -ForegroundColor Cyan
+    # The junction case above covers a candidate that IS a link (measured not at
+    # all). This covers a link INSIDE a candidate, which was unguarded:
+    # Get-CandidateSize walked with [System.IO.Directory]::EnumerateFiles(...,
+    # AllDirectories), and that FOLLOWS reparse points - so the size probe
+    # descended through the link and measured a tree OUTSIDE the project, the one
+    # thing this hook promises never to do. The reported size is the observable
+    # proof: it must count only the bytes physically inside the candidate.
+    $hc4b = New-IsolatedHookCopy
+    $proj4b = New-GitRepo 'JunctionSizeWalk'
+    Add-Commit $proj4b 'init'
+    Fire -HookPath $hc4b.Script -Cwd $proj4b -EventName 'SessionStart' -LocalAppData $hc4b.LocalAppData | Out-Null
+    # The junction target lives under %TEMP%, outside the project, and is padded
+    # so that following the link cannot coincidentally produce the correct size.
+    $outsideTarget = New-Dir (Join-Path $Work 'OutsideSizeTarget')
+    Write-Utf8 (Join-Path $outsideTarget 'big.txt') ('x' * 4096)
+    $sizeCache = New-Dir (Join-Path $proj4b '.pytest_cache')
+    Write-Utf8 (Join-Path $sizeCache 'inner.txt') 'inner'
+    $sizeLink = Join-Path $sizeCache 'linked'
+    $sizeLinkOk = $false
+    try { & cmd /c mklink /J "$sizeLink" "$outsideTarget" *> $null; $sizeLinkOk = (Test-Path -LiteralPath $sizeLink) } catch { }
+    if (-not $sizeLinkOk) {
+        Write-Host '  (skipped: this host cannot create a directory junction, so the follow-the-link size regression cannot be exercised)' -ForegroundColor DarkYellow
+    }
+    else {
+        try {
+            Check 'the junction really resolves to the outside tree before measuring' (
+                Test-Path -LiteralPath (Join-Path $sizeLink 'big.txt'))
+            $rSize = Fire -HookPath $hc4b.Script -Cwd $proj4b -EventName 'Stop' -LocalAppData $hc4b.LocalAppData
+            # inner.txt is 5 bytes; big.txt behind the junction is 4096. A walk
+            # that followed the link would report 4101.
+            Check 'the reported size counts ONLY the bytes physically inside the project' (
+                $rSize.Out -match ((Get-CandidateLinePattern '.pytest_cache' 'likely-disposable' 'untracked') +
+                    ' \| link=none \| size=5 \|')) $rSize.Out
+            Check '... so the tree behind the junction is never measured into it' (
+                $rSize.Out -notmatch 'size=4101') $rSize.Out
+            Check 'the junction target is untouched by the measurement' (
+                ([System.IO.File]::ReadAllText((Join-Path $outsideTarget 'big.txt'))).Length -eq 4096)
+        }
+        finally {
+            # Remove the LINK only. Directory.Delete on a junction unlinks it and
+            # never touches the target - unlike a recursive delete through it.
+            try { [System.IO.Directory]::Delete($sizeLink, $false) } catch { }
+        }
+        Check 'the junction fixture is unlinked and its target survived' (
+            (-not (Test-Path -LiteralPath $sizeLink)) -and (Test-Path -LiteralPath (Join-Path $outsideTarget 'big.txt')))
+    }
+
+    # =====================================================================
+    Write-Host '--- the size walk is bounded by ENTRIES, not by files alone ---' -ForegroundColor Cyan
+    # Second half of the same defect: the ceiling counted FILES, so a tree made
+    # of directories never tripped it and the walk ran to completion however
+    # large it was - then reported a confident exact size for a measurement that
+    # had had no bound at all. Past the ceiling the value must be a lower bound
+    # ('>=N'), never a confident number.
+    $hc4c = New-IsolatedHookCopy
+    $proj4c = New-GitRepo 'SizeWalkBound'
+    Add-Commit $proj4c 'init'
+    Fire -HookPath $hc4c.Script -Cwd $proj4c -EventName 'SessionStart' -LocalAppData $hc4c.LocalAppData | Out-Null
+    $wideCache = New-Dir (Join-Path $proj4c '.pytest_cache')
+    # One entry past the 2000-entry ceiling, all directories, so a file-only cap
+    # cannot see them at all.
+    for ($i = 0; $i -lt 2001; $i++) { [void][System.IO.Directory]::CreateDirectory((Join-Path $wideCache ('d' + $i.ToString('0000')))) }
+    $rBound = Fire -HookPath $hc4c.Script -Cwd $proj4c -EventName 'Stop' -LocalAppData $hc4c.LocalAppData
+    Check 'a directory-only tree past the ceiling reports a BOUNDED size, never a confident one' (
+        $rBound.Out -match '\.pytest_cache \| class=likely-disposable' -and $rBound.Out -match '\| size=>=') $rBound.Out
+    Check 'the whole 2001-directory tree still exists (measuring mutates nothing)' (
+        @(Get-ChildItem -LiteralPath $wideCache -Directory).Count -eq 2001)
+
+    # =====================================================================
     Write-Host '--- .kiro is hard-pruned: never surfaced, never descended into ---' -ForegroundColor Cyan
     $hc5 = New-IsolatedHookCopy
     $proj5 = New-GitRepo 'KiroPruned'
