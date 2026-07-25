@@ -354,29 +354,23 @@ function Get-AgentInstructionLines {
     )
 }
 
-# Client adapter. The message text is already final; this only chooses the
-# envelope. Signal used across this project: CLAUDE_PROJECT_DIR present ->
-# Claude Code, absent -> Codex. A blocking gate uses { decision: 'block' },
-# which both supported clients honour on Stop; an advisory is client-aware and
-# never blocking.
-# TODO(kiro): a third client (Kiro) is being added to Hook Maker in a separate
-# workstream. Its output protocol is not settled yet, so no Kiro branch is
-# invented here. When it lands, add ONE branch below - the semantic message and
-# every classification/category decision above stay unchanged, and a client that
-# cannot enforce a Stop gate must receive the advisory envelope instead.
+# Client adapter. The message text and the blocking decision are already final;
+# this only chooses the envelope, and it delegates that choice to the shared
+# Write-HookResult so a third client is shaped in ONE place instead of here.
+# A blocking gate stays { decision: 'block' } for the clients that document a
+# Stop gate; a client that documents none has it downgraded to the strongest
+# available advisory and reported as degraded, never emitted as a fake gate.
+# This hook remains ADVISORY-ONLY with respect to the filesystem either way: it
+# still deletes nothing, and no classification/category decision moves here.
+# Write-HookResult never exits, so a real block exit code is propagated - both
+# call sites are followed by `exit 0`, which would otherwise swallow it.
 function Write-ClientMessage {
     param([string]$Message, [string]$EventName, [bool]$Blocking)
     if ([string]::IsNullOrWhiteSpace($Message)) { return }
-    if ($Blocking) {
-        @{ decision = 'block'; reason = $Message } | ConvertTo-Json -Compress
-        return
-    }
-    if (-not [string]::IsNullOrWhiteSpace($env:CLAUDE_PROJECT_DIR)) {
-        @{ hookSpecificOutput = @{ hookEventName = $EventName; additionalContext = $Message } } | ConvertTo-Json -Depth 5 -Compress
-    }
-    else {
-        @{ systemMessage = $Message } | ConvertTo-Json -Compress
-    }
+    $kind = 'advisory'
+    if ($Blocking) { $kind = 'block' }
+    $emit = Write-HookResult -EventName $EventName -Kind $kind -Message $Message -Reason $Message
+    if ($emit.ExitCode -ne 0) { exit $emit.ExitCode }
 }
 
 # ==========================================================================

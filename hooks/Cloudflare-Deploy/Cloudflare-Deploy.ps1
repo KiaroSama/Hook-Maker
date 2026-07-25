@@ -37,6 +37,10 @@ if ($null -eq $hookInput) {
 if ((Get-Field $hookInput 'stop_hook_active') -eq $true) {
     exit 0
 }
+# Only used to shape the result (Write-HookResult below). This is a Stop-only
+# hook, so an absent event name reads as 'Stop' rather than as "no event".
+$eventName = [string](Get-Field $hookInput 'hook_event_name')
+if ([string]::IsNullOrWhiteSpace($eventName)) { $eventName = 'Stop' }
 $cwd = [string](Get-Field $hookInput 'cwd')
 if ([string]::IsNullOrWhiteSpace($cwd) -or -not (Test-Path -LiteralPath $cwd -PathType Container)) {
     exit 0
@@ -199,5 +203,4 @@ $reasonLines = New-Object System.Collections.Generic.List[string]
 [void]$reasonLines.Add('5) Post-deployment verification is REQUIRED - do not claim deployment succeeded solely because the command exited 0. Record the target environment, deployed Worker/project, exact source commit SHA, the deploy command used (excluding secrets), and the deployment/version identifier or URL. Then perform the smallest appropriate check: smoke-test the public/staging URL, call a health endpoint, verify the changed feature, inspect recent Cloudflare deployment output/logs, verify routes/bindings, or confirm migrations completed. If verification cannot be performed, state that limitation accurately instead of assuming success.')
 [void]$reasonLines.Add('6) On failure: do not repeatedly redeploy blindly - inspect the actual failure, fix only confirmed deployment/configuration issues, rerun relevant local validation, retry only when safe, never hide a failed deployment, and never claim the task is live if it is not. This reminder respects a cooldown.')
 $reason = $reasonLines.ToArray() -join "`n"
-@{ decision = 'block'; reason = $reason } | ConvertTo-Json -Compress
-exit 0
+exit (Write-HookResult -EventName $eventName -Kind 'block' -Reason $reason).ExitCode

@@ -103,9 +103,8 @@ if (-not $isStopEvent) {
         )
     }
     $note = $lines -join "`n"
-    @{ hookSpecificOutput = @{ hookEventName = $eventName; additionalContext = $note } } |
-        ConvertTo-Json -Depth 5 -Compress
-    exit 0
+    $emit = Write-HookResult -EventName $eventName -Kind 'context' -Message $note
+    exit $emit.ExitCode
 }
 
 # ---- post-task (Stop): scan for oversized source files ----
@@ -175,20 +174,15 @@ if ($extensions.Count -eq 0) {
     foreach ($ext in $defaultExtensions.Split(',')) { $extensions[$ext] = $true }
 }
 
-# Stop output: CLIENT-AWARE, NON-BLOCKING advisory. Mirrors Test-Completion-Check
-# / Ci-Status-Check: the AI owns the split decision, so this hook NEVER emits
-# decision:block (a real Stop gate that on Codex forces a new prompt - a coercive
-# loop). Claude Code exports CLAUDE_PROJECT_DIR on every hook process, Codex does
-# not - the same signal the other Stop hooks use. Claude gets
-# hookSpecificOutput.additionalContext; Codex gets systemMessage.
+# Stop output: NON-BLOCKING advisory, shaped by the shared adapter. The AI owns
+# the split decision, so this hook NEVER emits decision:block (a real Stop gate
+# that on Codex forces a new prompt - a coercive loop). Write-HookResult picks
+# the client shape: Claude gets hookSpecificOutput.additionalContext, Codex gets
+# systemMessage at Stop, and a client with no documented Stop context channel is
+# reported as degraded instead of being handed a shape it cannot read.
 function Write-Advisory {
     param([string]$Message)
-    if (-not [string]::IsNullOrWhiteSpace($env:CLAUDE_PROJECT_DIR)) {
-        @{ hookSpecificOutput = @{ hookEventName = $script:eventName; additionalContext = $Message } } | ConvertTo-Json -Depth 5 -Compress
-    }
-    else {
-        @{ systemMessage = $Message } | ConvertTo-Json -Depth 5 -Compress
-    }
+    $null = Write-HookResult -EventName $script:eventName -Kind 'advisory' -Message $Message
 }
 
 # cooldown state (per project + threshold) - never written inside the scanned project

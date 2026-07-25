@@ -32,9 +32,8 @@ $note = @(
 ) -join "`n"
 
 if ($eventName -eq 'SessionStart') {
-    @{ hookSpecificOutput = @{ hookEventName = $eventName; additionalContext = $note } } |
-        ConvertTo-Json -Depth 5 -Compress
-    exit 0
+    $emit = Write-HookResult -EventName $eventName -Kind 'context' -Message $note
+    exit $emit.ExitCode
 }
 
 # UserPromptSubmit: only when the prompt itself suggests MCP tools would help.
@@ -56,6 +55,5 @@ if (Test-Path -LiteralPath $statePath -PathType Leaf) {
 New-Item -ItemType Directory -Path $stateDir -Force | Out-Null
 [System.IO.File]::WriteAllText($statePath, $fingerprint)
 
-@{ hookSpecificOutput = @{ hookEventName = $eventName; additionalContext = $note } } |
-    ConvertTo-Json -Depth 5 -Compress
-exit 0
+$emit = Write-HookResult -EventName $eventName -Kind 'context' -Message $note
+exit $emit.ExitCode

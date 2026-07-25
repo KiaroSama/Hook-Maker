@@ -212,6 +212,143 @@
     $claudeEmptyCommandWindowsStillOk.clients.claude | Add-Member -MemberType NoteProperty -Name commandWindows -Value '' -Force
     Check "a Claude subrecord with an empty (not applicable) commandWindows still validates" ((Test-InstallRecordValid -Record $claudeEmptyCommandWindowsStillOk).Ok)
 
+    # ---- Kiro (perHookFile) subrecords -------------------------------------
+    # The client loop used to run over a hardcoded @('claude','codex') and
+    # `continue` past anything else, so a kiro subrecord was never REJECTED -
+    # it was never validated at all. Two of the shared rules are false for it
+    # BY DESIGN and are replaced rather than relaxed: there is no canonical
+    # shared settings path (Get-CanonicalClientSettingsPath throws for a
+    # per-hook-file client, correctly), and the command targets the generated
+    # kiro-launch.ps1 rather than <FriendlyName>.ps1.
+    $fixtureKiroRoot = Join-Path $Work 'FixtureKiroRoot'
+    $fixtureKiroRuntimeRoot = Join-Path $fixtureKiroRoot '.kiro\hook-runtime\Hook-Maker'
+    $fixtureKiroHookDir = Join-Path $fixtureKiroRuntimeRoot 'F'
+    $fixtureKiroRuntimeScript = Join-Path $fixtureKiroHookDir 'F.ps1'
+    $fixtureKiroLauncher = Join-Path $fixtureKiroHookDir 'kiro-launch.ps1'
+    $fixtureKiroId = 'schema-ok-kiro'
+    $fixtureKiroRegistrationPath = Get-KiroRegistrationPath -Scope 'project' -FriendlyName 'F' -StableId $fixtureKiroId -TargetProjectRoot $fixtureKiroRoot
+    $fixtureKiroCommand = '"pwsh" -NoProfile -File "' + $fixtureKiroLauncher + '"'
+    # Entry names come from the REAL writer, so the identity this validator
+    # proves can never drift from the one Install-Hook.ps1 actually registers.
+    $fixtureKiroEntryNames = @(@((New-KiroHookDocument -FriendlyName 'F' -Command ($fixtureKiroCommand + ' -Trigger SessionStart') `
+                    -Triggers @('SessionStart') -TimeoutSeconds 60 -ManagedId $fixtureKiroId).hooks) | ForEach-Object { [string]$_.name })
+
+    $goodKiroRecord = [pscustomobject]@{
+        id = $fixtureKiroId; schema = 2; friendlyName = 'F'; hookType = 'CustomHook'
+        sourceScript = 'C:\src\hook.ps1'; sourceDir = 'C:\src'; scope = 'project'; targetProjectRoot = $fixtureKiroRoot
+        clients = [pscustomobject]@{ kiro = [pscustomobject]@{
+            runtimeScript = $fixtureKiroRuntimeScript; settingsPath = $fixtureKiroRegistrationPath
+            runtimeRoot = $fixtureKiroRuntimeRoot
+            registrationKind = 'perHookFile'; registrationPath = $fixtureKiroRegistrationPath
+            managedEntryNames = @($fixtureKiroEntryNames)
+            events = @('SessionStart'); command = $fixtureKiroCommand; timeout = 60
+        } }
+    }
+
+    Check 'setup: the Kiro fixture entry name carries the record identity' (
+        $fixtureKiroEntryNames.Count -eq 1 -and $fixtureKiroEntryNames[0].StartsWith('hookmaker-schema-ok-kiro-')) ($fixtureKiroEntryNames -join ',')
+
+    # The over-rejection guard for the whole change: a genuine Kiro record must
+    # NOT be refused for having no shared settings path, and must NOT be
+    # refused because its command does not name runtimeScript.
+    $goodKiroResult = Test-InstallRecordValid -Record $goodKiroRecord
+    Check 'a Kiro (perHookFile) record validates' $goodKiroResult.Ok $goodKiroResult.Reason
+
+    $kiroMissingRegistrationPath = Copy-Record $goodKiroRecord
+    $kiroMissingRegistrationPath.clients.kiro.PSObject.Properties.Remove('registrationPath')
+    $kiroMissingRegistrationPathResult = Test-InstallRecordValid -Record $kiroMissingRegistrationPath
+    Check 'a Kiro subrecord missing registrationPath is rejected' (
+        (-not $kiroMissingRegistrationPathResult.Ok) -and ($kiroMissingRegistrationPathResult.Reason -match 'kiro subrecord is missing "registrationPath"')) $kiroMissingRegistrationPathResult.Reason
+
+    $kiroBlankRegistrationPath = Copy-Record $goodKiroRecord
+    $kiroBlankRegistrationPath.clients.kiro.registrationPath = '   '
+    $kiroBlankRegistrationPathResult = Test-InstallRecordValid -Record $kiroBlankRegistrationPath
+    Check 'a Kiro subrecord with a blank registrationPath is rejected' (
+        (-not $kiroBlankRegistrationPathResult.Ok) -and ($kiroBlankRegistrationPathResult.Reason -match 'kiro subrecord is missing "registrationPath"')) $kiroBlankRegistrationPathResult.Reason
+
+    # The shared .kiro\hooks\hooks.json is exactly the document Hook Maker must
+    # never own, and the filename rule that says so lives in _installkiro.ps1.
+    $kiroSharedDocument = Copy-Record $goodKiroRecord
+    $kiroSharedDocument.clients.kiro.registrationPath = (Join-Path $fixtureKiroRoot '.kiro\hooks\hooks.json')
+    $kiroSharedDocumentResult = Test-InstallRecordValid -Record $kiroSharedDocument
+    Check 'a Kiro registrationPath that is not a managed hook file is rejected' (
+        (-not $kiroSharedDocumentResult.Ok) -and ($kiroSharedDocumentResult.Reason -match 'not a Hook Maker managed hook file')) $kiroSharedDocumentResult.Reason
+
+    $kiroWrongKind = Copy-Record $goodKiroRecord
+    $kiroWrongKind.clients.kiro.registrationKind = 'sharedSettingsFile'
+    $kiroWrongKindResult = Test-InstallRecordValid -Record $kiroWrongKind
+    Check 'a Kiro subrecord that does not declare perHookFile is rejected' (
+        (-not $kiroWrongKindResult.Ok) -and ($kiroWrongKindResult.Reason -match 'registrationKind "perHookFile"')) $kiroWrongKindResult.Reason
+
+    $kiroMissingEntryNames = Copy-Record $goodKiroRecord
+    $kiroMissingEntryNames.clients.kiro.PSObject.Properties.Remove('managedEntryNames')
+    $kiroMissingEntryNamesResult = Test-InstallRecordValid -Record $kiroMissingEntryNames
+    Check 'a Kiro subrecord missing managedEntryNames is rejected' (
+        (-not $kiroMissingEntryNamesResult.Ok) -and ($kiroMissingEntryNamesResult.Reason -match 'kiro subrecord has no managedEntryNames')) $kiroMissingEntryNamesResult.Reason
+
+    $kiroEmptyEntryNames = Copy-Record $goodKiroRecord
+    $kiroEmptyEntryNames.clients.kiro.managedEntryNames = @()
+    $kiroEmptyEntryNamesResult = Test-InstallRecordValid -Record $kiroEmptyEntryNames
+    Check 'a Kiro subrecord with an EMPTY managedEntryNames list is rejected' (
+        (-not $kiroEmptyEntryNamesResult.Ok) -and ($kiroEmptyEntryNamesResult.Reason -match 'kiro subrecord has no managedEntryNames')) $kiroEmptyEntryNamesResult.Reason
+
+    $kiroBlankEntryName = Copy-Record $goodKiroRecord
+    $kiroBlankEntryName.clients.kiro.managedEntryNames = @('   ')
+    $kiroBlankEntryNameResult = Test-InstallRecordValid -Record $kiroBlankEntryName
+    Check 'a Kiro managedEntryNames entry that is blank is rejected' (
+        (-not $kiroBlankEntryNameResult.Ok) -and ($kiroBlankEntryNameResult.Reason -match 'empty or non-string entry')) $kiroBlankEntryNameResult.Reason
+
+    # An entry name belonging to a DIFFERENT installation: removing or
+    # refreshing it would act on another record's registration.
+    $kiroForeignEntryName = Copy-Record $goodKiroRecord
+    $kiroForeignEntryName.clients.kiro.managedEntryNames = @('hookmaker-a-different-record-f-sessionstart')
+    $kiroForeignEntryNameResult = Test-InstallRecordValid -Record $kiroForeignEntryName
+    Check 'a Kiro managedEntryNames entry carrying another record''s identity is rejected' (
+        (-not $kiroForeignEntryNameResult.Ok) -and ($kiroForeignEntryNameResult.Reason -match 'does not carry this record')) $kiroForeignEntryNameResult.Reason
+
+    # The load-bearing one: this command WOULD have satisfied the shared
+    # "command targets runtimeScript" rule, and it is wrong for Kiro - the
+    # launcher is what passes -Trigger, so a hook registered on <FriendlyName>.ps1
+    # can never tell which event fired.
+    $kiroCommandOnRuntimeScript = Copy-Record $goodKiroRecord
+    $kiroCommandOnRuntimeScript.clients.kiro.command = '"pwsh" -NoProfile -File "' + $fixtureKiroRuntimeScript + '"'
+    $kiroCommandOnRuntimeScriptResult = Test-InstallRecordValid -Record $kiroCommandOnRuntimeScript
+    Check 'a Kiro command targeting the hook script instead of the launcher is rejected' (
+        (-not $kiroCommandOnRuntimeScriptResult.Ok) -and ($kiroCommandOnRuntimeScriptResult.Reason -match 'does not target the launcher')) $kiroCommandOnRuntimeScriptResult.Reason
+
+    $kiroCommandElsewhere = Copy-Record $goodKiroRecord
+    $kiroCommandElsewhere.clients.kiro.command = '"pwsh" -NoProfile -File "C:\SomewhereElse\kiro-launch.ps1"'
+    $kiroCommandElsewhereResult = Test-InstallRecordValid -Record $kiroCommandElsewhere
+    Check 'a Kiro command targeting a launcher outside the persisted runtime directory is rejected' (
+        (-not $kiroCommandElsewhereResult.Ok) -and ($kiroCommandElsewhereResult.Reason -match 'does not target the launcher')) $kiroCommandElsewhereResult.Reason
+
+    # Both shapes in ONE record: the shared client keeps its own rules, and the
+    # per-hook-file client is genuinely reached rather than skipped.
+    $mixedShapeRecord = Copy-Record $goodKiroRecord
+    $mixedShapeClaudeRuntimeRoot = Join-Path $fixtureKiroRoot '.claude\hooks\Hook-Maker'
+    $mixedShapeClaudeScript = Join-Path $mixedShapeClaudeRuntimeRoot 'F\F.ps1'
+    $mixedShapeRecord.clients | Add-Member -MemberType NoteProperty -Name claude -Value ([pscustomobject]@{
+        runtimeScript = $mixedShapeClaudeScript
+        settingsPath  = (Join-Path $fixtureKiroRoot '.claude\settings.local.json')
+        runtimeRoot   = $mixedShapeClaudeRuntimeRoot
+        events        = @('SessionStart')
+        command       = ('powershell.exe -NoProfile -File "' + $mixedShapeClaudeScript + '"')
+    }) -Force
+    $mixedShapeResult = Test-InstallRecordValid -Record $mixedShapeRecord
+    Check 'a record holding BOTH a shared-settings and a per-hook-file client validates' $mixedShapeResult.Ok $mixedShapeResult.Reason
+
+    $mixedShapeBrokenKiro = Copy-Record $mixedShapeRecord
+    $mixedShapeBrokenKiro.clients.kiro.PSObject.Properties.Remove('managedEntryNames')
+    $mixedShapeBrokenKiroResult = Test-InstallRecordValid -Record $mixedShapeBrokenKiro
+    Check 'a broken kiro subrecord is still rejected when the claude subrecord is healthy' (
+        (-not $mixedShapeBrokenKiroResult.Ok) -and ($mixedShapeBrokenKiroResult.Reason -match 'kiro subrecord has no managedEntryNames')) $mixedShapeBrokenKiroResult.Reason
+
+    $mixedShapeBrokenClaude = Copy-Record $mixedShapeRecord
+    $mixedShapeBrokenClaude.clients.claude.settingsPath = (Join-Path $fixtureKiroRoot '.codex\hooks.json')
+    $mixedShapeBrokenClaudeResult = Test-InstallRecordValid -Record $mixedShapeBrokenClaude
+    Check 'the shared-settings rules still apply unchanged alongside a kiro subrecord' (
+        (-not $mixedShapeBrokenClaudeResult.Ok) -and ($mixedShapeBrokenClaudeResult.Reason -match 'claude subrecord settingsPath does not match project scope/client')) $mixedShapeBrokenClaudeResult.Reason
+
     $nonNumericTimeout = Copy-Record $goodRecord
     $nonNumericTimeout.clients.claude | Add-Member -MemberType NoteProperty -Name timeout -Value 'not-a-number'
     Check 'a non-numeric client timeout is rejected' (-not (Test-InstallRecordValid -Record $nonNumericTimeout).Ok)
