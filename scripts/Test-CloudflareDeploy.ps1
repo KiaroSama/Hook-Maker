@@ -1,7 +1,14 @@
 # Offline test suite for Cloudflare-Deploy: deployment-worthiness/environment/
 # pre-deploy-review/post-deploy-verification/failure-handling content, PLUS
 # the release-readiness gate (clean+pushed+CI-green-if-applicable+cleanup-
-# coordination) that decides whether the decision is shown AT ALL. `gh` is
+# coordination) that decides whether the decision is shown AT ALL.
+#
+# The cleanup-coordination half proves the SHARED category contract with
+# Test-Temp-Cleanup: only a FRESH `clean` for the current repo-state fingerprint
+# is release-ready, while `review-required`, `residue-confirmed`, `partial`,
+# `unknown`, a stale fingerprint, a missing record, and any retired/unrecognized
+# value all keep this hook silent - and a same-Stop race is resolved by a LATER
+# Stop, never by an ordering assumption or an in-invocation retry. `gh` is
 # PATH-shimmed (same convention as Test-CiStatusCheck.ps1's gh.ps1) - no live
 # GitHub calls. Remotes are real local bare repos (same convention as
 # Test-GitSyncCheck.ps1) so the generic @{upstream}/ahead-count check is
@@ -115,10 +122,25 @@ function Fire {
         RedirectStandardOutput = $outFile; RedirectStandardError = $errFile
         Wait = $true; NoNewWindow = $true; PassThru = $true
     }
-    if ((Get-Command Start-Process).Parameters.ContainsKey('Environment')) {
-        $startArgs.Environment = @{ PATH = $childPath; LOCALAPPDATA = $FakeLocalAppData; GH_MOCK_DIR = $MockDir }
+    # Env is handed over by INHERITANCE, not Start-Process -Environment: that
+    # parameter does not exist on Windows PowerShell 5.1, so a -Environment-only
+    # harness silently let the child use the REAL %LOCALAPPDATA% and the real
+    # PATH on that host - which is why the gh-mock and cleanup-state cases used
+    # to fail only under 5.1. Set here, restore in finally, one code path.
+    $savedPath = $env:PATH
+    $savedLocalAppData = $env:LOCALAPPDATA
+    $savedMockDir = $env:GH_MOCK_DIR
+    try {
+        $env:PATH = $childPath
+        $env:LOCALAPPDATA = $FakeLocalAppData
+        $env:GH_MOCK_DIR = $MockDir
+        $proc = Start-Process @startArgs
     }
-    $proc = Start-Process @startArgs
+    finally {
+        $env:PATH = $savedPath
+        $env:LOCALAPPDATA = $savedLocalAppData
+        $env:GH_MOCK_DIR = $savedMockDir
+    }
     $out = if (Test-Path -LiteralPath $outFile) { ([System.IO.File]::ReadAllText($outFile)).Trim() } else { '' }
     $err = if (Test-Path -LiteralPath $errFile) { ([System.IO.File]::ReadAllText($errFile)).Trim() } else { '' }
     return [pscustomobject]@{ Exit = $proc.ExitCode; Out = $out; Err = $err }
@@ -216,6 +238,42 @@ try {
     $r = Fire -Cwd $ciGreen -WithGh
     Check 'CI verified green for the exact HEAD -> the decision is shown' ($r.Out -match 'CLOUDFLARE DEPLOY CHECK') $r.Out
 
+    # Regression: the run list was decoded as `@($runsJson | ConvertFrom-Json)`.
+    # Windows PowerShell 5.1 does not enumerate a JSON array through the
+    # pipeline, so that collected ONE element of type Object[] at any array
+    # length; Get-Field reads PSObject.Properties, which is empty on an
+    # Object[], so no run ever looked completed/success and the CI-green gate
+    # was unreachable on 5.1. The single-run assertion above covers it too - it
+    # was the one the defect originally broke. This multi-run pair additionally
+    # pins that enumeration keeps working past the first element, and that a
+    # failure anywhere in the list still blocks.
+    # Each CI case needs its OWN repo, like CiFail/CiGreen above: the hook keys
+    # its coordination state to the repo-state fingerprint, so re-firing at the
+    # same state is not a clean second observation.
+    $ciMulti = New-ReadyWorkersRepo 'CiGreenMulti'
+    New-Item -ItemType Directory -Path (Join-Path $ciMulti '.github\workflows') -Force | Out-Null
+    Write-Utf8 (Join-Path $ciMulti '.github\workflows\ci.yml') 'on: push'
+    Add-Commit $ciMulti 'add ci'
+    & git -C $ciMulti push -q
+    Set-FakeGithubRemote -Root $ciMulti -Name 'CiGreenMulti'
+    Set-GhMock -RunJson '[{"status":"completed","conclusion":"success"},{"status":"completed","conclusion":"success"}]'
+    $r = Fire -Cwd $ciMulti -WithGh
+    Check 'MULTIPLE green runs for the exact HEAD still pass the CI gate (5.1 array-decode regression)' (
+        $r.Out -match 'CLOUDFLARE DEPLOY CHECK') $r.Out
+
+    # ...and a multi-run list containing one failure must still block, so the
+    # fix cannot be "enumerate, then stop checking".
+    $ciMixed = New-ReadyWorkersRepo 'CiMixed'
+    New-Item -ItemType Directory -Path (Join-Path $ciMixed '.github\workflows') -Force | Out-Null
+    Write-Utf8 (Join-Path $ciMixed '.github\workflows\ci.yml') 'on: push'
+    Add-Commit $ciMixed 'add ci'
+    & git -C $ciMixed push -q
+    Set-FakeGithubRemote -Root $ciMixed -Name 'CiMixed'
+    Set-GhMock -RunJson '[{"status":"completed","conclusion":"success"},{"status":"completed","conclusion":"failure"}]'
+    $r = Fire -Cwd $ciMixed -WithGh
+    Check 'one failing run among several keeps the deploy decision silent' (
+        $r.Out -notmatch 'CLOUDFLARE DEPLOY CHECK') $r.Out
+
     # =====================================================================
     Write-Host '--- release-readiness gate: Test-Temp-Cleanup coordination ---' -ForegroundColor Cyan
     # Not installed at all for this project -> the cleanup gate does not apply.
@@ -242,30 +300,60 @@ try {
     New-CleanupMarker $missingResult
     $r = Fire -Cwd $missingResult
     Check 'cleanup installed but no result recorded yet -> silent' ($r.Exit -eq 0 -and $r.Out -eq '') $r.Out
+    # NO same-event ordering assumption: the racing Stop above stayed silent and
+    # wrote no cooldown, so once the producer records a fresh result the decision
+    # appears on a LATER Stop. Nothing is retried inside one invocation.
+    Write-CleanupResult -Root $missingResult -Category 'clean'
+    $r = Fire -Cwd $missingResult
+    Check 'once the producer records clean, a LATER Stop shows the decision (race resolved, never retried in-invocation)' (
+        $r.Out -match 'CLOUDFLARE DEPLOY CHECK') $r.Out
 
     $staleResult = New-ReadyWorkersRepo 'CleanupStaleResult'
     New-CleanupMarker $staleResult
-    Write-CleanupResult -Root $staleResult -Category 'safe-cleaned' -StaleFingerprint
+    Write-CleanupResult -Root $staleResult -Category 'clean' -StaleFingerprint
     $r = Fire -Cwd $staleResult
-    Check 'a stale/mismatched cleanup fingerprint -> silent' ($r.Exit -eq 0 -and $r.Out -eq '') $r.Out
+    Check 'a stale/mismatched cleanup fingerprint -> silent even when the category is clean' ($r.Exit -eq 0 -and $r.Out -eq '') $r.Out
 
-    $failedCleanup = New-ReadyWorkersRepo 'CleanupFailed'
-    New-CleanupMarker $failedCleanup
-    Write-CleanupResult -Root $failedCleanup -Category 'failed'
-    $r = Fire -Cwd $failedCleanup
-    Check 'cleanup reported "failed" for the current state -> silent' ($r.Exit -eq 0 -and $r.Out -eq '') $r.Out
+    # SHARED CONTRACT with hooks\Test-Temp-Cleanup\Test-Temp-Cleanup.ps1: exactly
+    # one of these five values is ever recorded, and only 'clean' is release-ready.
+    $notReadyCategories = @('review-required', 'residue-confirmed', 'partial', 'unknown')
+    $caseIndex = 0
+    foreach ($category in $notReadyCategories) {
+        $caseIndex++
+        $repo = New-ReadyWorkersRepo ('CleanupNotReady' + $caseIndex)
+        New-CleanupMarker $repo
+        Write-CleanupResult -Root $repo -Category $category
+        $r = Fire -Cwd $repo
+        Check ('cleanup reported "' + $category + '" for the current state -> silent, NOT release-ready') (
+            $r.Exit -eq 0 -and $r.Out -eq '') $r.Out
+    }
 
-    $incompleteCleanup = New-ReadyWorkersRepo 'CleanupIncomplete'
-    New-CleanupMarker $incompleteCleanup
-    Write-CleanupResult -Root $incompleteCleanup -Category 'incomplete-limit'
-    $r = Fire -Cwd $incompleteCleanup
-    Check 'cleanup reported "incomplete-limit" -> silent' ($r.Exit -eq 0 -and $r.Out -eq '') $r.Out
+    # A value from an older or newer producer is not release-ready either.
+    $legacyCategory = New-ReadyWorkersRepo 'CleanupLegacyCategory'
+    New-CleanupMarker $legacyCategory
+    Write-CleanupResult -Root $legacyCategory -Category 'safe-cleaned'
+    $r = Fire -Cwd $legacyCategory
+    Check 'the retired "safe-cleaned" category is no longer release-ready -> silent' ($r.Exit -eq 0 -and $r.Out -eq '') $r.Out
 
-    $safeCleaned = New-ReadyWorkersRepo 'CleanupSafeCleaned'
-    New-CleanupMarker $safeCleaned
-    Write-CleanupResult -Root $safeCleaned -Category 'safe-cleaned'
-    $r = Fire -Cwd $safeCleaned
-    Check 'cleanup reported "safe-cleaned" for the current state -> the decision is shown' ($r.Out -match 'CLOUDFLARE DEPLOY CHECK') $r.Out
+    $cleanCleanup = New-ReadyWorkersRepo 'CleanupClean'
+    New-CleanupMarker $cleanCleanup
+    Write-CleanupResult -Root $cleanCleanup -Category 'clean'
+    $r = Fire -Cwd $cleanCleanup
+    Check 'ONLY a fresh "clean" for the current state shows the decision' ($r.Out -match 'CLOUDFLARE DEPLOY CHECK') $r.Out
+
+    # =====================================================================
+    Write-Host '--- the shared category contract is declared, not inferred ---' -ForegroundColor Cyan
+    $cfText = [System.IO.File]::ReadAllText($Hook)
+    $producerText = [System.IO.File]::ReadAllText((Join-Path $HooksRoot 'Test-Temp-Cleanup\Test-Temp-Cleanup.ps1'))
+    $sharedList = "'clean', 'review-required', 'residue-confirmed', 'partial', 'unknown'"
+    Check 'this consumer declares the full category list explicitly' ($cfText -match [regex]::Escape($sharedList)) $sharedList
+    Check 'the producer declares the identical list (no silent drift)' ($producerText -match [regex]::Escape($sharedList)) $sharedList
+    Check 'the consumer names the producer file in the contract comment' ($cfText -match 'Test-Temp-Cleanup\.ps1') $cfText
+    Check 'only clean is treated as release-ready' ($cfText -match [regex]::Escape("CleanupReleaseReadyCategories = @('clean')")) $cfText
+    Check 'the deletion-era categories are gone from this consumer' (
+        $cfText -notmatch 'safe-cleaned' -and $cfText -notmatch 'review-only-preserved') $cfText
+    Check 'the concurrency contract is still documented (no registration-order assumption)' (
+        $cfText -match 'may run concurrently' -and $cfText -match 'never assumes') $cfText
 
     # =====================================================================
     Write-Host '--- Windows PowerShell 5.1 ---' -ForegroundColor Cyan
