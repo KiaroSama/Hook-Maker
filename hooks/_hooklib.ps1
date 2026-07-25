@@ -82,6 +82,52 @@ function Read-HookInput {
     return $null
 }
 
+# The clients a hook runtime can be running under.
+#
+# This duplicates the id list in scripts\_clientcapability.ps1, and that is
+# structurally forced rather than an oversight: an installed runtime is
+# self-contained, and the installer rewrites THIS file into each runtime but
+# does not copy sibling files from scripts\. So the list cannot be shared by
+# dot-sourcing. Test-ContextHooks asserts the two lists are identical, which is
+# how the duplication is kept honest.
+$script:HookClientIds = @('claude', 'codex', 'kiro')
+
+# Which client is running this hook.
+#
+# Hooks used to decide this inline as
+#   CLAUDE_PROJECT_DIR present -> Claude, otherwise -> Codex
+# which was fine while Codex was the only other client and becomes wrong the
+# moment a third one exists: Kiro would be handed Codex's rules, skills, paths
+# and output protocol with nothing reporting a problem.
+#
+# Resolution order, and why:
+#   1. An EXPLICIT id always wins. Kiro is identified this way because Kiro IDE
+#      documents no hook input at all beyond USER_PROMPT - there is nothing to
+#      infer from - so its generated command carries the id. That costs no
+#      compatibility: Kiro installs are new, so no existing command text or
+#      ownership hash changes. An explicit id that is NOT a known client returns
+#      'unknown' rather than falling through to a guess, because a wrong
+#      confident answer is worse than an admitted unknown.
+#   2. CLAUDE_PROJECT_DIR is Claude's own documented signal - a positive test,
+#      not an absence.
+#   3. Codex remains the default ONLY for a runtime carrying no explicit id.
+#      That is the pre-existing behaviour for every Claude/Codex install made
+#      before this function existed, and preserving it is deliberate: changing
+#      it would silently break working Codex installs to satisfy a rule aimed at
+#      a client that always identifies itself explicitly anyway.
+function Get-HookClientId {
+    param([string]$Explicit = '')
+    $candidate = $Explicit
+    if ([string]::IsNullOrWhiteSpace($candidate)) { $candidate = [string]$env:HOOKMAKER_CLIENT }
+    if (-not [string]::IsNullOrWhiteSpace($candidate)) {
+        $normalized = $candidate.Trim().ToLowerInvariant()
+        if ($script:HookClientIds -contains $normalized) { return $normalized }
+        return 'unknown'
+    }
+    if (-not [string]::IsNullOrWhiteSpace($env:CLAUDE_PROJECT_DIR)) { return 'claude' }
+    return 'codex'
+}
+
 # Parses a KEY=VALUE .env file ('#' comments allowed). Returns a hashtable;
 # empty when the file is absent or blank.
 function Read-HookEnv {
