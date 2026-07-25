@@ -126,7 +126,15 @@
         terminateDetail = 'owned process tree reached 4096MB'; lastProgress = 'suite 3 of 9'
     }
     $r = Fire -HookPath $hcCodexPost.Script -Cwd $Proj -EventName 'PostToolUse' -Command 'pytest -q' -LocalAppData $hcCodexPost.LocalAppData -NoClaudeProjectDir
-    Check 'Codex PostToolUse uses systemMessage and exits 0' ($r.Exit -eq 0 -and $r.Out -match '"systemMessage"' -and $r.Out -match 'memoryLimit') $r.Out
+    # Deliberately changed with the fix, not silently: this pinned
+    # systemMessage on PostToolUse, but systemMessage is what Codex documents
+    # for STOP. PostToolUse is an ordinary non-blocking notice, so it takes
+    # hookSpecificOutput.additionalContext like every other off-Stop emission.
+    # The PreToolUse refusal above still uses systemMessage + exit 2, because a
+    # refusal is a different mechanism - that assertion is untouched.
+    Check 'Codex PostToolUse uses additionalContext (systemMessage is Stop-only) and exits 0' (
+        $r.Exit -eq 0 -and $r.Out -match '"additionalContext"' -and $r.Out -notmatch '"systemMessage"' -and
+        $r.Out -match 'memoryLimit') $r.Out
 
     # =====================================================================
     Write-Host '--- an argv ARRAY command (Codex-style exec) is understood without parsing ---' -ForegroundColor Cyan

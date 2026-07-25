@@ -9,7 +9,7 @@
 # harness, helpers and workspace) - not a standalone suite.
 
     # =====================================================================
-    Write-Host '--- SessionStart: legacy advisory in the Codex shape; state is metadata-only ---' -ForegroundColor Cyan
+    Write-Host '--- SessionStart: legacy advisory in the Codex OFF-Stop shape; state is metadata-only ---' -ForegroundColor Cyan
     $hcLeg = New-IsolatedHookCopy
     $projLeg = New-GitRepo 'LegacyAdvisory'
     Write-Utf8 (Join-Path $projLeg 'good.txt') "VALIDCONTENTMARKER text that must never reach state`n"
@@ -19,9 +19,16 @@
     Check 'legacy SessionStart exits 0 with no stderr' ($r.Exit -eq 0 -and $r.Err -eq '') $r.Err
     $parsedLeg = $null
     try { $parsedLeg = $r.Out | ConvertFrom-Json } catch { $parsedLeg = $null }
-    Check 'Codex client (no hookSpecificOutput input, no CLAUDE_PROJECT_DIR) gets systemMessage' (
-        $null -ne $parsedLeg -and $null -ne $parsedLeg.PSObject.Properties['systemMessage'] -and
-        $null -eq $parsedLeg.PSObject.Properties['hookSpecificOutput']) $r.Out
+    # THE CODEX x OFF-STOP PAIR. This hook runs on BOTH sides of the boundary,
+    # so the pair is asserted in both directions: SessionStart is off Stop and
+    # must be additionalContext (below); Stop keeps systemMessage (asserted at
+    # the UTF8_ADVISORY_ONLY case). Codex documents systemMessage for Stop/
+    # SubagentStop only - having it here was the shipped defect.
+    Check 'Codex OFF Stop (SessionStart, no CLAUDE_PROJECT_DIR) gets additionalContext, never systemMessage' (
+        $null -ne $parsedLeg -and $null -eq $parsedLeg.PSObject.Properties['systemMessage'] -and
+        $null -ne $parsedLeg.PSObject.Properties['hookSpecificOutput'] -and
+        [string]$parsedLeg.hookSpecificOutput.hookEventName -eq 'SessionStart' -and
+        -not [string]::IsNullOrWhiteSpace([string]$parsedLeg.hookSpecificOutput.additionalContext)) $r.Out
     Check 'pre-existing non-UTF-8 is an ADVISORY naming the file, never a block' (
         (Get-Message $r.Out) -match '- old\.txt - an invalid UTF-8 byte sequence' -and $r.Out -notmatch '"decision"') $r.Out
     $stateFiles = @(Get-ChildItem -LiteralPath (Join-Path $hcLeg.LocalAppData 'HookMaker\state') -Filter 'Utf8EncodingCheck-*.json' -ErrorAction SilentlyContinue)
@@ -31,13 +38,18 @@
     Check 'the baseline stores NO file contents (metadata only)' (
         $stateText -notmatch 'LEGACYCONTENTMARKER' -and $stateText -notmatch 'VALIDCONTENTMARKER') $stateText
 
-    Write-Host '--- SessionStart: both documented Claude detections select the Claude shape ---' -ForegroundColor Cyan
+    Write-Host '--- SessionStart: CLAUDE_PROJECT_DIR is the client signal; the INPUT envelope is not ---' -ForegroundColor Cyan
+    # An echoed `hookSpecificOutput` in the INPUT event is NOT a documented client
+    # signal and Get-HookClientId does not implement it. Off Stop that costs
+    # nothing (both clients take the same shape), which is why the Stop case
+    # below is the one that actually pins it.
     $hcCl1 = New-IsolatedHookCopy
     $r = Fire -HookPath $hcCl1.Script -Cwd $projLeg -EventName 'SessionStart' -LocalAppData $hcCl1.LocalAppData -ClaudeInputShape
     $parsedCl = $null
     try { $parsedCl = $r.Out | ConvertFrom-Json } catch { $parsedCl = $null }
-    Check 'hookSpecificOutput in the INPUT selects additionalContext with the right event name' (
+    Check 'an INPUT hookSpecificOutput leaves the off-Stop additionalContext shape unchanged' (
         $null -ne $parsedCl -and $null -ne $parsedCl.PSObject.Properties['hookSpecificOutput'] -and
+        $null -eq $parsedCl.PSObject.Properties['systemMessage'] -and
         [string]$parsedCl.hookSpecificOutput.hookEventName -eq 'SessionStart' -and
         -not [string]::IsNullOrWhiteSpace([string]$parsedCl.hookSpecificOutput.additionalContext)) $r.Out
     $hcCl2 = New-IsolatedHookCopy
@@ -242,6 +254,22 @@
     $r = Fire -HookPath $hcAdv.Script -Cwd $projAdv -EventName 'Stop' -SessionId 'a1' -LocalAppData $hcAdv.LocalAppData
     Check 'UTF8_ADVISORY_ONLY=true reports the finding without decision:block' (
         -not (Test-StopBlocks $r.Out) -and (Get-Message $r.Out) -match 'adv\.txt' -and (Get-Message $r.Out) -match '(?i)reported, not blocked') $r.Out
+    $parsedAdv = $null
+    try { $parsedAdv = $r.Out | ConvertFrom-Json } catch { $parsedAdv = $null }
+    Check 'the OTHER half of the pair: Codex ON Stop keeps systemMessage' (
+        $null -ne $parsedAdv -and $null -ne $parsedAdv.PSObject.Properties['systemMessage'] -and
+        $null -eq $parsedAdv.PSObject.Properties['hookSpecificOutput']) $r.Out
+    # Stop is the only event where the two shapes differ, so it is the only place
+    # a bogus client signal is observable: an INPUT hookSpecificOutput with no
+    # CLAUDE_PROJECT_DIR must stay Codex, i.e. systemMessage.
+    $hcAdv2 = New-IsolatedHookCopy -EnvContent "UTF8_ADVISORY_ONLY=true`n"
+    $r = Fire -HookPath $hcAdv2.Script -Cwd $projAdv -EventName 'Stop' -SessionId 'a2' -LocalAppData $hcAdv2.LocalAppData -ClaudeInputShape
+    $parsedAdv2 = $null
+    try { $parsedAdv2 = $r.Out | ConvertFrom-Json } catch { $parsedAdv2 = $null }
+    Check 'an INPUT hookSpecificOutput does NOT make it Claude on Stop (still systemMessage)' (
+        $null -ne $parsedAdv2 -and $null -ne $parsedAdv2.PSObject.Properties['systemMessage'] -and
+        $null -eq $parsedAdv2.PSObject.Properties['hookSpecificOutput'] -and
+        ([string]$parsedAdv2.systemMessage) -match 'adv\.txt') $r.Out
     $hcBadEnv = New-IsolatedHookCopy -EnvContent "UTF8_MAX_FILES=nope`nUTF8_ADVISORY_ONLY=maybe`n"
     $projBadEnv = New-GitRepo 'BadEnv'
     Write-Utf8 (Join-Path $projBadEnv 'base.txt') "seed`n"

@@ -29,14 +29,17 @@
 # file, an unbounded wait, an unbounded polling loop, a child process started
 # with no visible wall/idle bound. Never a theoretical warning.
 #
-# Output shape is CLIENT-AWARE, matching Ci-Status-Check.ps1 (lines 50-54 and
-# 290-322): Claude Code gets `hookSpecificOutput.additionalContext` (its
-# documented model-visible context field); Codex gets `systemMessage` (its only
-# documented common field). Neither path ever emits `decision:block` - on Codex
-# a Stop-style block FORCES CONTINUATION, and an advisory is what is correct
-# here anyway. Claude is detected by `hookSpecificOutput` being present in the
-# INPUT event, or by CLAUDE_PROJECT_DIR being exported (the signal Rules-Check
-# and Ci-Status-Check use); absent both -> Codex.
+# Output shape comes from the shared Write-HookResult adapter in _hooklib.ps1,
+# so this hook does not hand-roll a client branch. This hook only ever runs on
+# SessionStart/UserPromptSubmit, and OFF Stop both Claude Code and Codex take
+# `hookSpecificOutput.additionalContext`; Codex's `systemMessage` is a
+# Stop-scoped exception that never applies here, and emitting it anyway sent
+# Codex a field it does not document for these events. Kiro takes plain stdout
+# on exactly these two triggers. The client comes from Get-HookClientId
+# (HOOKMAKER_CLIENT, else CLAUDE_PROJECT_DIR, else Codex) - `hookSpecificOutput`
+# in the INPUT event is NOT a client signal and was never a documented one.
+# No path ever emits `decision:block` - on Codex a Stop-style block FORCES
+# CONTINUATION, and an advisory is what is correct here anyway.
 #
 # Optional .env next to this script (copy .env.example):
 #   TEST_PLAN_COOLDOWN_MINUTES   minutes before an unchanged finding repeats (default 120)
@@ -469,12 +472,4 @@ catch { }
 [void]$lines.Add('Silent from here until this project''s test state changes or ' + $cooldownMinutes + ' minutes pass.')
 $message = ($lines.ToArray() -join "`n")
 
-$isClaude = ($null -ne (Get-Field $hookInput 'hookSpecificOutput')) -or (-not [string]::IsNullOrWhiteSpace($env:CLAUDE_PROJECT_DIR))
-if ($isClaude) {
-    $payload = @{ hookSpecificOutput = @{ hookEventName = $eventName; additionalContext = $message } }
-}
-else {
-    $payload = @{ systemMessage = $message }
-}
-$payload | ConvertTo-Json -Depth 5 -Compress | ForEach-Object { [Console]::Out.WriteLine($_) }
-exit 0
+exit (Write-HookResult -EventName $eventName -Kind 'advisory' -Message $message).ExitCode

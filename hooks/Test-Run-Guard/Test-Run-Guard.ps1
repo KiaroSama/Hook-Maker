@@ -773,72 +773,46 @@ function Get-PerRunStateEntries {
     return @($entries.ToArray())
 }
 
-# ---- output (dual client) --------------------------------------------------
-# Authority: hooks\Ci-Status-Check\Ci-Status-Check.ps1 lines 50-54 / 290-322.
-# Claude Code exports CLAUDE_PROJECT_DIR on every hook process; Codex does not.
-
-function Test-IsClaudeClient {
-    # Was "CLAUDE_PROJECT_DIR is absent, therefore Codex". Identity now comes
-    # from the one shared resolver, so a third client is recognised as itself
-    # instead of being mistaken for Claude by an absent-signal inversion.
-    #
-    # SCOPE NOTE: this answers "is it Claude", which is all the serialisation
-    # below needs today - it has exactly two shapes. Giving Kiro its own
-    # documented shape (exit code plus stdout, context injected only on the
-    # events Kiro documents for it) belongs to the output-adapter work, not
-    # here; this change fixes the IDENTITY, not the serialiser.
-    return ((Get-HookClientId) -eq 'claude')
-}
-
-function Write-HookJson {
-    param($Payload)
-    $Payload | ConvertTo-Json -Depth 6 -Compress | ForEach-Object { [Console]::Out.WriteLine($_) }
-}
+# ---- output -----------------------------------------------------------------
+# Client identity and wire shape now both live in Write-HookResult. The local
+# Test-IsClaudeClient / Write-HookJson pair that used to serialise here is gone:
+# it answered only "is it Claude", which was exactly the two-shape assumption
+# that left Kiro receiving a payload it cannot read. Its own scope note said
+# giving Kiro a real shape belonged to the output adapter - it now does.
 
 # A real gate decision. Claude gets the documented permissionDecision; Codex
 # does not document one for PreToolUse, so it gets the documented systemMessage
 # plus exit 2, which feeds stderr back as a blocking error.
+# A real gate decision, now through the shared adapter's 'deny' kind.
+#
+# 'deny' is NOT 'block' renamed. A PreToolUse permission decision is its own
+# documented mechanism - Claude answers with permissionDecision, Codex has none
+# and refuses by exiting 2 with the reason on stderr - so emitting decision:block
+# here would not refuse a Claude tool call at all. The adapter reproduces both
+# clients' bytes exactly, including the second top-level systemMessage key and
+# Codex's exit 2; what it adds is Kiro, which documents exit 2 + stderr on its
+# block-capable triggers and previously received a Codex-shaped payload it
+# cannot read.
 function Write-Deny {
     param([string]$Message)
-    if (Test-IsClaudeClient) {
-        Write-HookJson @{
-            hookSpecificOutput = @{
-                hookEventName            = 'PreToolUse'
-                permissionDecision       = 'deny'
-                permissionDecisionReason = $Message
-            }
-            systemMessage      = $Message
-        }
-        exit 0
-    }
-    Write-HookJson @{ systemMessage = $Message }
-    [Console]::Error.WriteLine($Message)
-    exit 2
+    exit (Write-HookResult -EventName 'PreToolUse' -Kind 'deny' -Reason $Message).ExitCode
 }
 
 function Write-Advisory {
     param([string]$EventName, [string]$Message)
-    if (Test-IsClaudeClient) {
-        if ($EventName -eq 'PreToolUse') {
-            Write-HookJson @{
-                hookSpecificOutput = @{
-                    hookEventName            = 'PreToolUse'
-                    permissionDecision       = 'allow'
-                    permissionDecisionReason = $Message
-                }
-                systemMessage      = $Message
-            }
-        }
-        else {
-            Write-HookJson @{
-                hookSpecificOutput = @{ hookEventName = $EventName; additionalContext = $Message }
-                systemMessage      = $Message
-            }
-        }
-        exit 0
+    # PreToolUse advisories are an explicit ALLOW on the same permission
+    # mechanism as the deny above, not ordinary context - hence 'allow', which
+    # keeps Claude's permissionDecision:'allow'.
+    if ($EventName -eq 'PreToolUse') {
+        exit (Write-HookResult -EventName $EventName -Kind 'allow' -Message $Message).ExitCode
     }
-    Write-HookJson @{ systemMessage = $Message }
-    exit 0
+    # Everywhere else this is a plain non-blocking notice, so it takes the
+    # ordinary context shape. Codex moves from systemMessage to
+    # hookSpecificOutput.additionalContext here: systemMessage is what Codex
+    # documents for Stop, and this fires on PostToolUse. Claude also loses a
+    # duplicate systemMessage key that carried the same text the model already
+    # receives through additionalContext.
+    exit (Write-HookResult -EventName $EventName -Kind 'advisory' -Message $Message).ExitCode
 }
 
 # ---- event -----------------------------------------------------------------

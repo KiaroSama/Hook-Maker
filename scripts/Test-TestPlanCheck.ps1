@@ -4,8 +4,11 @@
 # Covers the explicit contract, not an exhaustive keyword matrix:
 # relevance gating (a test-related prompt advises, an ordinary prompt is
 # silent); the fingerprint + cooldown (an unchanged repeat is suppressed, a
-# CHANGED state reports immediately); BOTH client output shapes (Claude
-# hookSpecificOutput.additionalContext, Codex systemMessage); SessionStart and
+# CHANGED state reports immediately); the client output shapes this hook's two
+# events can produce (Claude AND Codex both take
+# hookSpecificOutput.additionalContext off Stop - Codex's systemMessage is
+# Stop-scoped and must never appear here - while Kiro takes plain stdout);
+# SessionStart and
 # UserPromptSubmit; pointable findings (minute-scale sleep, unbounded wait);
 # a malformed .env falling back to the default with a message instead of
 # crashing; output being a single valid JSON document; the HM-04 per-entry
@@ -152,7 +155,7 @@ $UnrelatedPrompt = 'Rename the customer invoice column in the billing summary an
 
 try {
     # =====================================================================
-    Write-Host '--- SessionStart advises, as one valid JSON document, in the Codex shape ---' -ForegroundColor Cyan
+    Write-Host '--- SessionStart advises, as one valid JSON document, in the Codex OFF-Stop shape ---' -ForegroundColor Cyan
     $hc1 = New-IsolatedHookCopy
     $proj1 = New-GitRepo 'Basic'
     Write-Utf8 (Join-Path $proj1 'scripts\Test-Thing.ps1') "# bounded suite`n`$timeout = 30`n"
@@ -163,9 +166,16 @@ try {
     $parsed = $null
     try { $parsed = $r.Out | ConvertFrom-Json } catch { $parsed = $null }
     Check 'output is a single valid JSON document' ($null -ne $parsed -and (@($r.Out -split "`n" | Where-Object { $_.Trim() -ne '' })).Count -eq 1) $r.Out
-    Check 'Codex client (no hookSpecificOutput in input, no CLAUDE_PROJECT_DIR) gets systemMessage' (
-        $null -ne $parsed -and $null -ne $parsed.PSObject.Properties['systemMessage'] -and
-        $null -eq $parsed.PSObject.Properties['hookSpecificOutput']) $r.Out
+    # THE CODEX x OFF-STOP PAIR. Codex documents `systemMessage` for Stop/
+    # SubagentStop ONLY; on every other event it honours additionalContext, and
+    # SessionStart is every-other-event. This hook never runs on Stop at all, so
+    # `systemMessage` must never appear in ANY of its output. Leaving this pair
+    # unasserted is exactly how the wrong shape shipped.
+    Check 'Codex OFF Stop (no CLAUDE_PROJECT_DIR) gets hookSpecificOutput.additionalContext, never systemMessage' (
+        $null -ne $parsed -and $null -eq $parsed.PSObject.Properties['systemMessage'] -and
+        $null -ne $parsed.PSObject.Properties['hookSpecificOutput'] -and
+        [string]$parsed.hookSpecificOutput.hookEventName -eq 'SessionStart' -and
+        -not [string]::IsNullOrWhiteSpace([string]$parsed.hookSpecificOutput.additionalContext)) $r.Out
     $msg1 = Get-Message $r.Out
     Check 'the advisory surfaces the bounded wall/idle timeout policy point' ($msg1 -match '(?i)wall timeout' -and $msg1 -match '(?i)idle') $msg1
     Check 'the advisory surfaces resource-aware parallelism and process cleanup' ($msg1 -match '(?i)cores-2' -and $msg1 -match '(?i)process tree') $msg1
@@ -175,17 +185,35 @@ try {
     Check 'a small, fully-scanned project is NOT marked partial' ($msg1 -notmatch '(?i)PARTIAL') $msg1
 
     # =====================================================================
-    Write-Host '--- Claude output shape, detected both documented ways ---' -ForegroundColor Cyan
+    Write-Host '--- client detection comes from Get-HookClientId, not from the INPUT envelope ---' -ForegroundColor Cyan
+    # `hookSpecificOutput` echoed in the INPUT event is NOT a documented client
+    # signal and Get-HookClientId does not implement it; with no
+    # CLAUDE_PROJECT_DIR this is still Codex, which off Stop is the same
+    # additionalContext shape - so the envelope must change NOTHING here.
     $hc2 = New-IsolatedHookCopy
     $proj2 = New-GitRepo 'ClaudeShape'
     $r = Fire -HookPath $hc2.Script -Cwd $proj2 -EventName 'SessionStart' -LocalAppData $hc2.LocalAppData -ClaudeInputShape
     $parsed2 = $null
     try { $parsed2 = $r.Out | ConvertFrom-Json } catch { $parsed2 = $null }
-    Check 'hookSpecificOutput in the INPUT selects the Claude shape' (
+    Check 'an INPUT hookSpecificOutput is not a client signal: still the off-Stop additionalContext shape' (
         $null -ne $parsed2 -and $null -ne $parsed2.PSObject.Properties['hookSpecificOutput'] -and
+        $null -eq $parsed2.PSObject.Properties['systemMessage'] -and
         -not [string]::IsNullOrWhiteSpace([string]$parsed2.hookSpecificOutput.additionalContext) -and
         [string]$parsed2.hookSpecificOutput.hookEventName -eq 'SessionStart') $r.Out
-    Check 'the Claude shape never emits decision:block (this hook may never block)' ($r.Out -notmatch '(?i)"decision"') $r.Out
+    Check 'the advisory never emits decision:block (this hook may never block)' ($r.Out -notmatch '(?i)"decision"') $r.Out
+
+    # The one client whose shape is observably different on this hook's events:
+    # Kiro takes PLAIN stdout on SessionStart/UserPromptSubmit, never JSON. It is
+    # reachable only through Get-HookClientId, so this fails outright if the hook
+    # ever goes back to deciding the client for itself.
+    $hcKiro = New-IsolatedHookCopy
+    $rKiro = Fire -HookPath $hcKiro.Script -Cwd $proj2 -EventName 'SessionStart' -LocalAppData $hcKiro.LocalAppData -ExtraEnv @{ HOOKMAKER_CLIENT = 'kiro' }
+    $parsedKiro = $null
+    try { $parsedKiro = $rKiro.Out | ConvertFrom-Json } catch { $parsedKiro = $null }
+    Check 'HOOKMAKER_CLIENT=kiro selects plain stdout, not either JSON envelope' (
+        $rKiro.Exit -eq 0 -and $rKiro.Err -eq '' -and $null -eq $parsedKiro -and
+        $rKiro.Out -match '(?i)TEST PLAN CHECK' -and $rKiro.Out -notmatch '(?i)hookSpecificOutput' -and
+        $rKiro.Out -notmatch '(?i)systemMessage') ($rKiro.Out + $rKiro.Err)
 
     $hc3 = New-IsolatedHookCopy
     $proj3 = New-GitRepo 'ClaudeEnv'
@@ -597,9 +625,12 @@ New-Item -ItemType File -Path (Join-Path $PSScriptRoot 'EXECUTED-MARKER.txt') -F
     $rDdCx = Fire -HookPath $hcDdCodex.Script -Cwd $projDdCx -EventName 'UserPromptSubmit' -Prompt '::deep-debug' -LocalAppData $hcDdCodex.LocalAppData
     $parsedDdCx = $null
     try { $parsedDdCx = $rDdCx.Out | ConvertFrom-Json } catch { $parsedDdCx = $null }
-    Check 'dd advisory uses the Codex shape (systemMessage) for Codex' (
-        $null -ne $parsedDdCx -and $null -ne $parsedDdCx.PSObject.Properties['systemMessage'] -and
-        ([string]$parsedDdCx.systemMessage) -match '::deep-debug detected') $rDdCx.Out
+    # THE CODEX x OFF-STOP PAIR again, on the other event this hook owns.
+    Check 'dd advisory uses the Codex OFF-Stop shape (additionalContext, never systemMessage)' (
+        $null -ne $parsedDdCx -and $null -eq $parsedDdCx.PSObject.Properties['systemMessage'] -and
+        $null -ne $parsedDdCx.PSObject.Properties['hookSpecificOutput'] -and
+        [string]$parsedDdCx.hookSpecificOutput.hookEventName -eq 'UserPromptSubmit' -and
+        ([string]$parsedDdCx.hookSpecificOutput.additionalContext) -match '::deep-debug detected') $rDdCx.Out
 
     # =====================================================================
     Write-Host '--- E-13: static safety - the hook only DESCRIBES commands, it never executes them ---' -ForegroundColor Cyan
