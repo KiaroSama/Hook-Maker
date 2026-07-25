@@ -82,6 +82,10 @@ $ToolRoot = Split-Path -Parent $PSScriptRoot
 # Install-state registry (install-time only - deliberately NOT in _hooklib.ps1,
 # which is copied into every self-contained runtime).
 . (Join-Path $PSScriptRoot '_installlib.ps1')
+# The ONE canonical client/event capability table. This file used to carry its
+# own $ValidEvents list which had fallen 3 events behind the wizard's, so the
+# wizard could offer an event this script then refused.
+. (Join-Path $PSScriptRoot '_clientcapability.ps1')
 # Canonical managed-install plan: safe source classification, transactional
 # runtime replacement, and the single Hook Maker registration-ownership parser.
 . (Join-Path $PSScriptRoot '_installplan.ps1')
@@ -129,16 +133,18 @@ trap {
 if ($ClaudeOnly -and $CodexOnly) {
     throw '-ClaudeOnly and -CodexOnly are mutually exclusive. Omit both to install for both clients.'
 }
-$ValidEvents = @('SessionStart', 'UserPromptSubmit', 'Stop', 'SubagentStop', 'PreToolUse', 'PostToolUse', 'SessionEnd', 'PreCompact', 'Notification')
+$ValidEvents = @(Get-HookMakerLogicalEvents)
 $normalizedEvents = New-Object System.Collections.Generic.List[string]
 foreach ($rawEvent in @($Events)) {
     $candidate = ([string]$rawEvent).Trim()
     if ([string]::IsNullOrWhiteSpace($candidate)) { continue }
-    $canonical = @($ValidEvents | Where-Object { $_ -eq $candidate })
-    if ($canonical.Count -eq 0) {
+    # Case-insensitive match, canonical spelling written out - unchanged
+    # behaviour, but the list now has exactly one definition repo-wide.
+    $canonical = Resolve-HookMakerLogicalEvent $candidate
+    if ($null -eq $canonical) {
         throw ("Unsupported hook event '" + $candidate + "'. Supported events: " + ($ValidEvents -join ', ') + '.')
     }
-    if (-not $normalizedEvents.Contains($canonical[0])) { [void]$normalizedEvents.Add($canonical[0]) }
+    if (-not $normalizedEvents.Contains($canonical)) { [void]$normalizedEvents.Add($canonical) }
 }
 if ($normalizedEvents.Count -eq 0) {
     throw 'At least one hook event is required (-Events).'

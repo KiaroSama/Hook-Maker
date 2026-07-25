@@ -23,6 +23,10 @@ $ValidateScript = Join-Path $ScriptRoot 'Validate-Config.ps1'
 # only - deliberately NOT in _hooklib.ps1, which ships inside every runtime).
 . (Join-Path $ScriptRoot '_installplan.ps1')
 . (Join-Path $ScriptRoot '_installlib.ps1')
+# The ONE canonical client/event capability table. This menu and
+# Install-Hook.ps1 used to keep separate event lists that disagreed, so the
+# wizard could offer an event the installer then refused to install.
+. (Join-Path $ScriptRoot '_clientcapability.ps1')
 # Console presentation: the colour table and every painted-line helper (phase
 # headers, fields, menu/hook-menu rows, question prompts), plus the canonical
 # per-hook menu metadata. Dot-sourced first so the rest of this file and every
@@ -312,7 +316,10 @@ function Get-ClientInstallLabel {
 # other choice (including full custom) still follows.
 function Read-EventSelection {
     param([string]$TitleSuffix = '', [string[]]$RecommendedEvents = @())
-    $knownEvents = @('SessionStart', 'UserPromptSubmit', 'PreToolUse', 'PostToolUse', 'Stop', 'SubagentStop', 'PreCompact', 'SessionEnd', 'Notification', 'PermissionRequest', 'PostCompact', 'SubagentStart')
+    # From the canonical capability table, never a local copy: this list and the
+    # installer's used to drift, and three events offered here were rejected on
+    # install.
+    $knownEvents = @(Get-HookMakerLogicalEvents)
     $recommended = @($RecommendedEvents | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
     $hasRecommended = $recommended.Count -gt 0
 
@@ -346,9 +353,24 @@ function Read-EventSelection {
             if ($candidates.Count -eq 0) { Write-ErrorLine 'Enter at least one event name.'; continue }
             $invalid = @($candidates | Where-Object { $_ -notmatch '^[A-Za-z]+$' })
             if ($invalid.Count -gt 0) { Write-ErrorLine ('Invalid event name(s): ' + ($invalid -join ', ')); continue }
-            $unknown = @($candidates | Where-Object { $knownEvents -notcontains $_ })
-            if ($unknown.Count -gt 0) { Write-NoteLine ('Not a known event (installing anyway): ' + ($unknown -join ', ')) }
-            return $candidates
+            # Reject here rather than "installing anyway". The installer
+            # validates against the same canonical table and throws, so passing
+            # an unknown name through only moved the failure somewhere less
+            # obvious - after the user had answered every remaining question.
+            # Resolving also canonicalises casing, so 'stop' is written as 'Stop'
+            # (client configs are case-sensitive about trigger names).
+            $resolved = New-Object System.Collections.Generic.List[string]
+            $unknown = New-Object System.Collections.Generic.List[string]
+            foreach ($candidate in $candidates) {
+                $canonical = Resolve-HookMakerLogicalEvent $candidate
+                if ($null -eq $canonical) { [void]$unknown.Add($candidate) }
+                elseif (-not $resolved.Contains($canonical)) { [void]$resolved.Add($canonical) }
+            }
+            if ($unknown.Count -gt 0) {
+                Write-ErrorLine ('Not a known event: ' + (($unknown.ToArray()) -join ', ') + '. Known events: ' + ($knownEvents -join ', ') + '.')
+                continue
+            }
+            return @($resolved.ToArray())
         }
         Write-ErrorLine ('Enter a number between 1 and ' + $customChoiceNumber + '.')
     }
