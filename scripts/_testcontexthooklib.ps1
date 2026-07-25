@@ -116,10 +116,120 @@ if ($null -ne $in) { $prompt = [string](Get-Field $in 'prompt') }
         $cidTableIds = & { . (Join-Path $ScriptRoot '_clientcapability.ps1'); @(Get-HookMakerClientIds) -join ',' }
         Check '_hooklib client ids match the canonical capability table exactly' (
             $cidLibIds -eq $cidTableIds) ('hooklib=' + $cidLibIds + ' table=' + $cidTableIds)
+
+        # Same forced-mirror guard for the Kiro trigger list. This one is also a
+        # TRUST BOUNDARY, not just a lookup: Read-HookInput accepts an
+        # environment-supplied trigger only if it appears in this list, so a
+        # drifted copy would either reject a real Kiro event or admit one the
+        # capability table never sanctioned.
+        $cidLibTriggers = & { . $HookLib; @($script:HookKiroTriggers) -join ',' }
+        $cidTableTriggers = & {
+            . (Join-Path $ScriptRoot '_clientcapability.ps1')
+            @((Get-HookMakerClientCapability -ClientId 'kiro').supportedEvents) -join ','
+        }
+        Check '_hooklib Kiro triggers match the capability table supportedEvents exactly' (
+            $cidLibTriggers -eq $cidTableTriggers) ('hooklib=' + $cidLibTriggers + ' table=' + $cidTableTriggers)
     }
     finally {
         Set-ClaudeProjectDir $cidOrigCpd
         if (Test-Path Env:\HOOKMAKER_CLIENT) { Remove-Item Env:\HOOKMAKER_CLIENT -ErrorAction SilentlyContinue }
+    }
+
+    # =====================================================================
+    Write-Host '--- _hooklib Read-HookInput: the Kiro normalizer ---' -ForegroundColor Cyan
+    # Without this every hook is dead on arrival under Kiro IDE, which documents
+    # NO stdin JSON: Read-HookInput returned $null and all 23 hooks took their
+    # `if ($null -eq $hookInput) { exit 0 }` path. The Claude/Codex paths must
+    # stay byte-identical, so they are asserted here too.
+    $riOrigClient = $env:HOOKMAKER_CLIENT
+    $riOrigTrigger = $env:HOOKMAKER_KIRO_TRIGGER
+    $riOrigCpd = $env:CLAUDE_PROJECT_DIR
+    try {
+        Set-ClaudeProjectDir ''
+        # _hooklib is loaded only inside child scopes here (deliberately - the
+        # suite must not inherit its functions), so Get-Field is not in scope.
+        # This reads the same way without pulling the library into the suite.
+        function Get-RiField {
+            param($Object, [string]$Name)
+            if ($null -eq $Object) { return '' }
+            $property = $Object.PSObject.Properties[$Name]
+            if ($null -eq $property) { return '' }
+            return [string]$property.Value
+        }
+        function Show-Ri {
+            param($Object)
+            if ($null -eq $Object) { return 'null' }
+            return (($Object.PSObject.Properties | ForEach-Object { $_.Name + '=' + [string]$_.Value }) -join ';')
+        }
+        function Invoke-ReadHookInput {
+            param([string]$Client, [string]$Trigger, [string]$Stdin)
+            $env:HOOKMAKER_CLIENT = $Client
+            $env:HOOKMAKER_KIRO_TRIGGER = $Trigger
+            $previousIn = [Console]::In
+            try {
+                # stdin is redirected INSIDE the child scope, AFTER _hooklib is
+                # dot-sourced. _hooklib pins Console input/output to UTF-8 at
+                # dot-source time (the console-less mojibake fix), which replaces
+                # any reader installed before it - so setting stdin first silently
+                # dropped the payload and only the empty-stdin cases still looked
+                # right. This is also the real order: library first, then input.
+                return (& {
+                        param($LibraryPath, $StdinText)
+                        . $LibraryPath
+                        [Console]::SetIn((New-Object System.IO.StringReader($StdinText)))
+                        Read-HookInput
+                    } $HookLib $Stdin)
+            }
+            finally { [Console]::SetIn($previousIn) }
+        }
+
+        $riCodex = Invoke-ReadHookInput -Client 'codex' -Trigger '' -Stdin ''
+        Check 'codex with empty stdin still yields nothing, exactly as before' ($null -eq $riCodex) 'codex'
+        $riClaude = Invoke-ReadHookInput -Client 'claude' -Trigger '' -Stdin ''
+        Check 'claude with empty stdin still yields nothing, exactly as before' ($null -eq $riClaude) 'claude'
+        $riClaudeJson = Invoke-ReadHookInput -Client 'claude' -Trigger '' -Stdin '{"hook_event_name":"Stop","session_id":"s1"}'
+        Check 'a claude payload passes through untouched, session id included' (
+            [string](Get-RiField $riClaudeJson 'hook_event_name') -ceq 'Stop' -and
+            [string](Get-RiField $riClaudeJson 'session_id') -ceq 's1') (Show-Ri $riClaudeJson)
+
+        $riKiro = Invoke-ReadHookInput -Client 'kiro' -Trigger 'PreToolUse' -Stdin ''
+        Check 'kiro with empty stdin is normalized from the launcher trigger, not dropped' (
+            $null -ne $riKiro -and [string](Get-RiField $riKiro 'hook_event_name') -ceq 'PreToolUse') (Show-Ri $riKiro)
+        Check 'the normalized kiro input carries a cwd taken from the process' (
+            -not [string]::IsNullOrWhiteSpace([string](Get-RiField $riKiro 'cwd'))) (Show-Ri $riKiro)
+        # Protocol rule: never invent a persistent identity. An absent session id
+        # disables session-keyed dedup; a fabricated one silently mispairs it.
+        Check 'no session id is invented for kiro' (
+            [string]::IsNullOrWhiteSpace([string](Get-RiField $riKiro 'session_id'))) (Show-Ri $riKiro)
+        Check 'no stop_hook_active is fabricated, which would suppress the hook' (
+            [string]::IsNullOrWhiteSpace([string](Get-RiField $riKiro 'stop_hook_active'))) (Show-Ri $riKiro)
+
+        $riKiroNoTrigger = Invoke-ReadHookInput -Client 'kiro' -Trigger '' -Stdin ''
+        Check 'kiro with no trigger yields nothing rather than guessing an event' ($null -eq $riKiroNoTrigger) 'no-trigger'
+        # PostFileSave is a REAL Kiro trigger with no Hook Maker equivalent, so
+        # it is the honest unknown-value case: the env is a trust boundary, and
+        # anything that can set a variable must not choose a hook's code path.
+        $riKiroUnknown = Invoke-ReadHookInput -Client 'kiro' -Trigger 'PostFileSave' -Stdin ''
+        Check 'a trigger outside the capability table is refused, not passed through' ($null -eq $riKiroUnknown) 'PostFileSave'
+
+        $riKiroPartial = Invoke-ReadHookInput -Client 'kiro' -Trigger 'Stop' -Stdin '{"cwd":"C:\\w"}'
+        Check 'a kiro payload with no event name is completed from the launcher trigger' (
+            [string](Get-RiField $riKiroPartial 'hook_event_name') -ceq 'Stop' -and
+            [string](Get-RiField $riKiroPartial 'cwd') -ceq 'C:\w') (Show-Ri $riKiroPartial)
+        $riKiroWins = Invoke-ReadHookInput -Client 'kiro' -Trigger 'Stop' -Stdin '{"hook_event_name":"SessionStart"}'
+        Check 'a real payload event name WINS over the launcher argument' (
+            [string](Get-RiField $riKiroWins 'hook_event_name') -ceq 'SessionStart') (Show-Ri $riKiroWins)
+    }
+    finally {
+        Set-ClaudeProjectDir $riOrigCpd
+        if ([string]::IsNullOrEmpty($riOrigClient)) {
+            if (Test-Path Env:\HOOKMAKER_CLIENT) { Remove-Item Env:\HOOKMAKER_CLIENT -ErrorAction SilentlyContinue }
+        }
+        else { $env:HOOKMAKER_CLIENT = $riOrigClient }
+        if ([string]::IsNullOrEmpty($riOrigTrigger)) {
+            if (Test-Path Env:\HOOKMAKER_KIRO_TRIGGER) { Remove-Item Env:\HOOKMAKER_KIRO_TRIGGER -ErrorAction SilentlyContinue }
+        }
+        else { $env:HOOKMAKER_KIRO_TRIGGER = $riOrigTrigger }
     }
 
     # =====================================================================

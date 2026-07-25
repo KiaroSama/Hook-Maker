@@ -13,7 +13,11 @@
 # once proven no owned native runtime remains, otherwise it is retained as
 # manualRepair), and failure injection on the Claude settings write, the Codex
 # settings write, and the final registry-removal persistence (no false
-# success, no silent registry deletion, retained record reflects reality).
+# success, no silent registry deletion, retained record reflects reality),
+# plus the Kiro 'perHookFile' client: entry-level removal that preserves a
+# hand-added hook, a foreign hookmaker-*.json left byte-identical, an entry
+# that appeared since install refusing the whole component, and a
+# registrationPath outside the record's own scope refused outright.
 #
 # Mirrors Test-InstallRegistry.ps1's conventions: throwaway ZZZ-* fixtures
 # under the real hooks\ folder (removed in a finally), $env:HOOKMAKER_STATE_DIR
@@ -197,6 +201,9 @@ try {
     . (Join-Path $ScriptRoot '_testuninstallhookscope.ps1')
     . (Join-Path $ScriptRoot '_testuninstallhooknative.ps1')
     . (Join-Path $ScriptRoot '_testuninstallhookownership.ps1')
+    # Kiro last: it builds its own records rather than reusing the fixtures the
+    # blocks above share, so it depends on none of them.
+    . (Join-Path $ScriptRoot '_testuninstallhookkiro.ps1')
 }
 finally {
     $env:HOOKMAKER_STATE_DIR = $SavedHookMakerStateDir
