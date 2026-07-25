@@ -52,13 +52,18 @@ function Invoke-InstallExistingHook {
         #   4+S                    Get hook status           (management action)
         #   5+S                    Uninstall installed hooks (management action)
         #   6+S ..                 user-created/custom hooks, deterministic order
-        # With all 21 shipped hooks present that renders as 3..23, 24, 25, 26,
-        # 27+. The THREE management rows are placed AFTER the shipped block and
+        # The THREE management rows are placed AFTER the shipped block and
         # BEFORE the custom block deliberately: discovering a new custom hook
-        # under hooks\ must never shift 24/25/26, because those numbers are
-        # documented UI. Every index below is derived from $shippedHooks.Count -
-        # adding a shipped hook renumbers the management rows, it never needs a
-        # hand-edited constant.
+        # under hooks\ must never shift the management rows, because those
+        # numbers are documented UI. Every index below is derived from
+        # $shippedHooks.Count - adding a shipped hook renumbers the management
+        # rows, it never needs a hand-edited constant.
+        #
+        # Deliberately NOT restating a concrete rendering here. A worked example
+        # ("with all N shipped hooks this renders as 3..M") is a snapshot of S,
+        # and it silently rots every time a hook is added - it had already gone
+        # stale by two hooks. The formula above is the specification; read S off
+        # $shippedHooks.Count when you need the live numbers.
         $shippedHooks = @($hookFiles | Where-Object { $script:HookMeta.ContainsKey($_.Name) })
         $customHooks = @($hookFiles | Where-Object { -not $script:HookMeta.ContainsKey($_.Name) })
         $updateIndex = $shippedHooks.Count + 3

@@ -275,11 +275,13 @@ function Read-ClientChoice {
 # positional parameter ($Profile), which then collides with -CustomHook.
 function Get-ClientInstallArgs {
     param([string]$Clients)
-    switch ($Clients) {
-        'Claude' { return @{ ClaudeOnly = $true } }
-        'Codex' { return @{ CodexOnly = $true } }
-        default { return @{} }
-    }
+    # Emits the canonical POSITIVE selection rather than the legacy -*Only
+    # switches. Those switches were consumed as double negations inside
+    # Install-Hook.ps1, so they cannot express a third client at all; they remain
+    # accepted there only as back-compat shims for older callers and tests.
+    # Resolve-HookMakerClientSet is the single place a selection string becomes a
+    # client id set, and it throws on anything it does not recognise.
+    return @{ Clients = @(Resolve-HookMakerClientSet $Clients) }
 }
 
 # Per-hook registration timeout, from the canonical metadata. Returns an EMPTY
@@ -297,11 +299,15 @@ function Get-HookTimeoutArgs {
 # Human-readable "where does it land" label for summaries.
 function Get-ClientInstallLabel {
     param([string]$Clients)
-    switch ($Clients) {
-        'Claude' { return 'per project: .claude\settings.local.json (Claude only)' }
-        'Codex' { return 'per project: .codex\hooks.json (Codex only)' }
-        default { return 'per project: .claude\settings.local.json + .codex\hooks.json' }
+    # Built from the capability table so a new client cannot be added without
+    # this label following it automatically.
+    $ids = @(Resolve-HookMakerClientSet $Clients)
+    $paths = @($ids | ForEach-Object { (Get-HookMakerClientCapability -ClientId $_).projectRegistration })
+    $suffix = ''
+    if ($ids.Count -eq 1) {
+        $suffix = ' (' + (Get-HookMakerClientCapability -ClientId $ids[0]).displayName + ' only)'
     }
+    return ('per project: ' + ($paths -join ' + ') + $suffix)
 }
 
 
