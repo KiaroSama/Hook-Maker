@@ -213,7 +213,11 @@ try {
         # Part 2 - the fixed menu numbering
         # ================================================================
         Write-Host ''
-        Write-Host '--- the hook list numbers 3..23 shipped, 24/25/26 management, 27+ custom ---' -ForegroundColor Cyan
+        # Banner deliberately states the LAYOUT, not a rendering: the concrete
+        # numbers depend on how many shipped hooks exist and this line had gone
+        # stale against the assertions below it, which compute from the real
+        # count. The assertions are the specification.
+        Write-Host '--- hook list layout: shipped block, then the 3 management rows, then custom ---' -ForegroundColor Cyan
 
         # Render the hook list and leave without selecting anything.
         $menu = Invoke-Wizard -Config $cfg -Answers @('1', '1', '0', '0', 'exit') -WorkingDirectory $proj

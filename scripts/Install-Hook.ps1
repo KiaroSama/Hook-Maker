@@ -8,6 +8,15 @@ param(
     # Path to a standalone hook script (from the hooks/ folder). Installs it plain,
     # without the sync engine's -ConfigPath/-Profile arguments.
     [string]$CustomHook,
+    # The canonical, POSITIVE client selection: -Clients claude,codex,kiro.
+    #
+    # The two -*Only switches below are kept as backward-compatible shims for
+    # existing scripts and tests, but they cannot be the core model: they were
+    # consumed as DOUBLE NEGATIONS (`if (-not $CodexOnly)` meaning "install
+    # Claude"), so a third client was silently IGNORED rather than rejected.
+    # Three negative flags do not compose. Everything resolves into one explicit
+    # set before any mutation.
+    [string[]]$Clients,
     [switch]$ClaudeOnly,
     [switch]$CodexOnly,
     # Per-hook registration timeout in SECONDS, written into each client's own
@@ -132,6 +141,50 @@ trap {
 # instead of half-applying (or recording a tracked install with no client).
 if ($ClaudeOnly -and $CodexOnly) {
     throw '-ClaudeOnly and -CodexOnly are mutually exclusive. Omit both to install for both clients.'
+}
+
+# ---- resolve ONE canonical client set --------------------------------------
+# Every later decision reads $InstallClaude/$InstallCodex/$InstallKiro. Nothing
+# below re-derives the selection from a switch, so a client can no longer be
+# silently skipped by a negation that does not know about it.
+$legacyOnlySwitchUsed = ($ClaudeOnly -or $CodexOnly)
+if ($PSBoundParameters.ContainsKey('Clients') -and $legacyOnlySwitchUsed) {
+    throw '-Clients cannot be combined with -ClaudeOnly/-CodexOnly. Use -Clients on its own.'
+}
+$resolvedClients = $null
+if ($PSBoundParameters.ContainsKey('Clients')) {
+    $requested = @(@($Clients) | ForEach-Object { ([string]$_).Trim() } | Where-Object { $_ -ne '' })
+    if ($requested.Count -eq 0) {
+        throw ('-Clients was empty. Accepted client ids: ' + ((Get-HookMakerClientIds) -join ', ') + '.')
+    }
+    $normalized = New-Object System.Collections.Generic.List[string]
+    foreach ($candidate in $requested) {
+        # Get-HookMakerClientCapability throws on an unknown id, which is the
+        # required fail-closed behaviour: an unrecognised client must never widen
+        # or narrow the set silently.
+        $capability = Get-HookMakerClientCapability -ClientId $candidate
+        if (-not $normalized.Contains($capability.id)) { [void]$normalized.Add($capability.id) }
+    }
+    $resolvedClients = @($normalized.ToArray())
+}
+elseif ($ClaudeOnly) { $resolvedClients = @('claude') }
+elseif ($CodexOnly) { $resolvedClients = @('codex') }
+else {
+    # Historical default, preserved EXACTLY: no switches meant Claude + Codex.
+    # It deliberately does NOT become all three - that would start installing a
+    # third client into every existing caller's projects without being asked.
+    $resolvedClients = @('claude', 'codex')
+}
+$InstallClaude = ($resolvedClients -contains 'claude')
+$InstallCodex = ($resolvedClients -contains 'codex')
+$InstallKiro = ($resolvedClients -contains 'kiro')
+
+# Kiro's registration writer and runtime layout are not implemented yet. Refuse
+# here, in the pre-mutation validation block, so the request fails loudly with
+# nothing touched. Silently installing the other clients and returning success
+# would report a Kiro install that never happened.
+if ($InstallKiro) {
+    throw 'Kiro installation is not implemented yet. Use -Clients claude,codex (or omit -Clients) until it lands.'
 }
 $ValidEvents = @(Get-HookMakerLogicalEvents)
 $normalizedEvents = New-Object System.Collections.Generic.List[string]
@@ -292,7 +345,7 @@ else {
             # but a partially-repaired record must never cross-contaminate).
             # Only the client(s) actually being installed are ever consulted -
             # never a fallback to the other client's subrecord.
-            $priorClients = if ($CodexOnly) { @('codex') } elseif ($ClaudeOnly) { @('claude') } else { @('claude', 'codex') }
+            $priorClients = @($resolvedClients)
             foreach ($priorClientName in $priorClients) {
                 $priorSubrecord = Get-ClientSubrecord -Record $priorRecord -Client $priorClientName
                 if ($null -eq $priorSubrecord -or $null -eq $priorSubrecord.PSObject.Properties['timeout']) { continue }
@@ -433,7 +486,7 @@ else {
     'Checking sync profile: ' + $Profile
 }
 
-if (-not $CodexOnly) {
+if ($InstallClaude) {
     $script:CurrentPhase = 'claude'
     # Each client gets its own runtime copy so its command has zero dependency
     # on the Hook Maker folder (or on the other client's files).
@@ -473,7 +526,7 @@ if (-not $CodexOnly) {
     Write-Host "Claude runtime copy: $($claudeRuntime.Script)"
 }
 
-if (-not $ClaudeOnly) {
+if ($InstallCodex) {
     $script:CurrentPhase = 'codex'
     $codexRuntime = Copy-HookRuntime -ClientDir (Split-Path -Parent $CodexHooks)
     $codexCommands = New-HookCommands -Runtime $codexRuntime
@@ -539,11 +592,17 @@ try {
 
     $sourceManifest = @(Get-ManagedSourceManifest -ToolRoot $ToolRoot -HookScript $HookScript -SourceDir $SourceDir -FriendlyName $FriendlyName -ConfigPath $ConfigPath -IncludeConfig:$isEngine -ProfileId ([string]$Profile))
 
-    $clients = [pscustomobject][ordered]@{}
-    if (-not $CodexOnly) {
+    # NOT named $clients. PowerShell variable names are case-INSENSITIVE, so a
+    # local $clients is the SAME variable as the [string[]]$Clients parameter -
+    # and a parameter's type constraint keeps applying to later assignments, so
+    # `$clients = [pscustomobject]@{}` was silently COERCED into a String[].
+    # Every subrecord written onto it then vanished, and the record shipped with
+    # no clients at all. Verified on pwsh 7 and Windows PowerShell 5.1.
+    $clientSubrecords = [pscustomobject][ordered]@{}
+    if ($InstallClaude) {
         $claudeRoot = Split-Path -Parent $claudeRuntime.Script
         $claudeRuntimeRoot = Split-Path -Parent $claudeRoot
-        Set-ObjectProperty -Object $clients -Name 'claude' -Value (New-ClientSubrecord `
+        Set-ObjectProperty -Object $clientSubrecords -Name 'claude' -Value (New-ClientSubrecord `
             -SettingsPath $ClaudeSettings `
             -RuntimeRoot $claudeRuntimeRoot `
             -RuntimeScript $claudeRuntime.Script `
@@ -553,10 +612,10 @@ try {
             -Timeout $script:EffectiveTimeout `
             -InstalledManifest @(Get-InstalledManifest -RuntimeRoot $claudeRuntimeRoot -FriendlyName $FriendlyName))
     }
-    if (-not $ClaudeOnly) {
+    if ($InstallCodex) {
         $codexRoot = Split-Path -Parent $codexRuntime.Script
         $codexRuntimeRoot = Split-Path -Parent $codexRoot
-        Set-ObjectProperty -Object $clients -Name 'codex' -Value (New-ClientSubrecord `
+        Set-ObjectProperty -Object $clientSubrecords -Name 'codex' -Value (New-ClientSubrecord `
             -SettingsPath $CodexHooks `
             -RuntimeRoot $codexRuntimeRoot `
             -RuntimeScript $codexRuntime.Script `
@@ -590,7 +649,7 @@ try {
         profile           = [string]$Profile
         configPath        = if ($isEngine) { $ConfigPath } else { '' }
         sourceManifest    = $sourceManifest
-        clients           = $clients
+        clients           = $clientSubrecords
         nativeGit         = $nativeGit
         lastUpdatedUtc    = [DateTime]::UtcNow.ToString('o')
         lastResult        = 'ok'
