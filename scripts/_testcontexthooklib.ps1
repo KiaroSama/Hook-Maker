@@ -277,6 +277,34 @@ if ($null -ne $in) { $prompt = [string](Get-Field $in 'prompt') }
             $hrSilent.Result.Shape -eq 'none' -and $hrSilent.Result.Degraded -eq $false) ($hrSilent.Out + ' | ' + $hrSilent.Err)
 
         # --- an unknown client is never guessed at ---
+        # --- Codex systemMessage is STOP-SCOPED, not a Codex-wide shape -------
+        # This was untested, and the adapter had it wrong: a bare else gave Codex
+        # systemMessage on EVERY event. Wiring the shipped hooks onto it would
+        # have silently rewritten ~47 pre-task Codex emissions and dropped the
+        # event name. Codex does not document additionalContext for Stop, but it
+        # honours it everywhere else - so both ends of that rule are asserted.
+        foreach ($hrPreTaskEvent in @('SessionStart', 'UserPromptSubmit', 'PreToolUse', 'PostToolUse')) {
+            $hrCodexPre = Invoke-HookResult -Call @{ kind = 'context'; event = $hrPreTaskEvent; message = 'codex-pre'; client = 'codex' }
+            Check ("codex " + $hrPreTaskEvent + ' keeps hookSpecificOutput.additionalContext, carrying the event name') (
+                $hrCodexPre.Result.Shape -eq 'codexContext' -and
+                $hrCodexPre.Out -match '"additionalContext"\s*:\s*"codex-pre"' -and
+                $hrCodexPre.Out -match ('"hookEventName"\s*:\s*"' + $hrPreTaskEvent + '"') -and
+                $hrCodexPre.Out -notmatch 'systemMessage') $hrCodexPre.Out
+        }
+        foreach ($hrStopEvent in @('Stop', 'SubagentStop')) {
+            $hrCodexStop = Invoke-HookResult -Call @{ kind = 'context'; event = $hrStopEvent; message = 'codex-stop'; client = 'codex' }
+            Check ("codex " + $hrStopEvent + ' uses systemMessage, the only field Codex documents there') (
+                $hrCodexStop.Result.Shape -eq 'codexSystemMessage' -and
+                $hrCodexStop.Out -match '"systemMessage"\s*:\s*"codex-stop"' -and
+                $hrCodexStop.Out -notmatch 'hookSpecificOutput') $hrCodexStop.Out
+            # Claude keeps additionalContext on Stop - it IS documented there as
+            # model-visible, so the two clients legitimately diverge on Stop.
+            $hrClaudeStop = Invoke-HookResult -Call @{ kind = 'context'; event = $hrStopEvent; message = 'claude-stop'; client = 'claude' }
+            Check ("claude " + $hrStopEvent + ' still uses additionalContext, so the clients diverge only on Stop') (
+                $hrClaudeStop.Result.Shape -eq 'claudeContext' -and
+                $hrClaudeStop.Out -match '"additionalContext"\s*:\s*"claude-stop"') $hrClaudeStop.Out
+        }
+
         $hrUnknown = Invoke-HookResult -Call @{ kind = 'context'; event = 'SessionStart'; message = 'never-emitted'; client = 'gemini' }
         Check 'an unknown client emits NOTHING and reports it, never a guessed shape' (
             $hrUnknown.Out -eq '' -and $hrUnknown.Result.Emitted -eq $false -and $hrUnknown.Result.Shape -eq 'none' -and
