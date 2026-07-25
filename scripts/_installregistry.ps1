@@ -313,14 +313,49 @@ function New-ClientSubrecord {
         [string]$HandlerType = 'command',
         [string]$StatusMessage = '',
         [int]$Timeout = 60,
-        $InstalledManifest = @()
+        $InstalledManifest = @(),
+        # ---- registration shape ------------------------------------------
+        # 'sharedSettingsFile' (Claude, Codex): ONE settings document holds every
+        # hook, so $SettingsPath is that document and ownership is per-handler.
+        # 'perHookFile' (Kiro): each logical installation owns its OWN file, so
+        # ownership is per-file AND per-entry.
+        #
+        # Kiro is NOT forced into the settingsPath model. A synthesised
+        # "settings path" for a per-hook-file client would be a fake that every
+        # later consumer would treat as real, which is exactly how an updater
+        # ends up rewriting the wrong file. Instead the shape is recorded
+        # explicitly and the real location lives in registrationPath.
+        [ValidateSet('sharedSettingsFile', 'perHookFile')][string]$RegistrationKind = 'sharedSettingsFile',
+        [string]$RegistrationPath = '',
+        # Logical -> physical trigger names actually written, so a later reader
+        # never has to re-derive the mapping (Kiro renamed every trigger between
+        # its CLI v2 and v1 schemas - the mapping is data, not a constant).
+        $PhysicalTriggers = @(),
+        # Events the caller REQUESTED that this client cannot support, named
+        # individually. An empty array means full parity; a non-empty one is why
+        # the component result is 'partial' rather than 'ok'.
+        [string[]]$UnsupportedEvents = @(),
+        # Non-secret reasons this install is weaker than requested, e.g.
+        # 'degraded-stop-gate' when the client documents Stop as non-blocking.
+        [string[]]$DegradedReasons = @(),
+        # Managed entry identities inside a per-hook file, so pruning can target
+        # exactly what Hook Maker owns and leave foreign entries alone.
+        [string[]]$ManagedEntryNames = @(),
+        [bool]$Enabled = $true
     )
     return [pscustomobject][ordered]@{
         installed         = $true
         settingsPath      = $SettingsPath
+        registrationKind  = $RegistrationKind
+        registrationPath  = $RegistrationPath
         runtimeRoot       = $RuntimeRoot
         runtimeScript     = $RuntimeScript
         events            = @($Events)
+        physicalTriggers  = @($PhysicalTriggers)
+        unsupportedEvents = @($UnsupportedEvents)
+        degradedReasons   = @($DegradedReasons)
+        managedEntryNames = @($ManagedEntryNames)
+        enabled           = $Enabled
         command           = $Command
         commandWindows    = $CommandWindows
         handlerType       = $HandlerType
