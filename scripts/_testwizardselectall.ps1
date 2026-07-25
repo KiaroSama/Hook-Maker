@@ -72,7 +72,7 @@
 
     # Client scoping applies through the shared-path sync+hook flow. It is the same
     # code for 1 hook or all 21, so this uses a small "2,3" (sync group + one hook)
-    # selection with one client and a FRESH project - installing all 21 hooks just
+    # selection with one client and a FRESH project - installing every shipped hook just
     # to check a client flag would be unnecessarily heavy (a reused project would
     # also already carry an earlier Both-client install).
     $cfgAllClaude = Join-Path $Work 'cfg-all-claude.json'; New-Config $cfgAllClaude
