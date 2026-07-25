@@ -128,6 +128,142 @@ function Get-HookClientId {
     return 'codex'
 }
 
+# Which events each client documents a REAL block/deny mechanism for.
+#
+# This mirrors blockCapableEvents in scripts\_clientcapability.ps1, and it is
+# duplicated for the same structural reason $script:HookClientIds is: an
+# installed runtime is self-contained, the installer rewrites THIS file into it
+# but copies no sibling from scripts\, so the table cannot be shared by
+# dot-sourcing. Test-ContextHooks asserts this mirror agrees with
+# Test-HookMakerEventBlocking for every client/event pair, which is how the
+# duplication is kept honest.
+$script:HookBlockCapableEvents = @{
+    'claude' = @('UserPromptSubmit', 'PreToolUse', 'PostToolUse', 'Stop', 'SubagentStop', 'PreCompact', 'PermissionRequest')
+    'codex'  = @('UserPromptSubmit', 'PreToolUse', 'Stop', 'SubagentStop')
+    'kiro'   = @('PreToolUse', 'UserPromptSubmit')
+}
+
+# Kiro adds hook stdout to the model's context ONLY on these triggers; on every
+# other one stdout is read and DISCARDED (.ai/KIRO_PROTOCOL.md, exit-code
+# section). Writing context anywhere else is a silent no-op, so Write-HookResult
+# reports it as degraded rather than pretending it landed.
+$script:HookKiroContextEvents = @('SessionStart', 'UserPromptSubmit')
+
+# The ONE place a semantic hook result becomes a client-specific output shape.
+#
+# Kinds:
+#   silent   - write nothing at all.
+#   context  - model-visible context injection.
+#   advisory - a non-blocking notice to the user/agent.
+#   block    - a real gate decision, carrying a reason.
+#
+# Shapes, byte-for-byte identical to what the shipped hooks already emit. The
+# JSON is deliberately built from the SAME plain @{} literals with the same
+# ConvertTo-Json flags: a plain hashtable serialises its keys in a HOST-decided
+# order (pwsh 7 and Windows PowerShell 5.1 disagree on hookSpecificOutput), so
+# reproducing the existing bytes on both hosts means reproducing the existing
+# construct. [ordered]@{} would be stable but would NOT match pwsh 7's output.
+#   claude       context/advisory -> hookSpecificOutput.{hookEventName,additionalContext}
+#   codex        context/advisory -> systemMessage (Codex documents no model-visible Stop context)
+#   claude/codex block            -> {decision:'block', reason} - the shape every
+#                                    existing block site emits for both clients
+#   kiro         context/advisory -> plain stdout + exit 0, but ONLY on the
+#                                    triggers Kiro documents for it; elsewhere
+#                                    nothing is written and the result says so
+#   kiro         block            -> exit 2 with the reason on stderr, and ONLY
+#                                    on a block-capable trigger
+#   unknown      -> nothing at all, reported. Never guess a shape.
+#
+# A block on an event the client cannot block is DOWNGRADED to the strongest
+# available advisory and reported - never emitted as a fake gate. Kiro Stop can
+# block on neither surface Hook Maker targets, so a Kiro Stop gate is permanently
+# degraded; on Stop its advisory is discarded too, so nothing is emitted at all.
+#
+# Returns @{ Emitted; Shape; ExitCode; Degraded; DegradedReason } so a caller can
+# honestly record 'degraded-stop-gate' instead of claiming enforcement it did not
+# get. ExitCode is what the CALLER must exit with (0 everywhere except a real
+# Kiro block, which needs 2); this function never exits on its own.
+function Write-HookResult {
+    param(
+        [Parameter(Mandatory = $true)][string]$EventName,
+        [Parameter(Mandatory = $true)][ValidateSet('context', 'advisory', 'block', 'silent')][string]$Kind,
+        [string]$Message = '',
+        [string]$Reason = '',
+        [string]$Client = ''
+    )
+    $emitted = $false
+    $shape = 'none'
+    $exitCode = 0
+    $degradedParts = @()
+
+    if ($Kind -ne 'silent') {
+        # 'block' names its payload Reason and context/advisory name it Message;
+        # accept either so a call site keeps the vocabulary it already uses.
+        $text = $Message
+        if ($Kind -eq 'block') { $text = $Reason }
+        if ([string]::IsNullOrWhiteSpace($text)) { $text = $(if ($Kind -eq 'block') { $Message } else { $Reason }) }
+
+        $clientId = Get-HookClientId -Explicit $Client
+        if ($clientId -eq 'unknown') {
+            $degradedParts += 'the client is unknown and no output shape is documented for it, so nothing was emitted'
+        }
+        elseif ([string]::IsNullOrWhiteSpace($text)) {
+            $degradedParts += ('no ' + $Kind + ' text was supplied, so nothing was emitted')
+        }
+        else {
+            $effectiveKind = $Kind
+            if ($Kind -eq 'block') {
+                $blockable = $script:HookBlockCapableEvents.ContainsKey($clientId) -and
+                    (@($script:HookBlockCapableEvents[$clientId] | Where-Object { $_ -ceq $EventName }).Count -gt 0)
+                if (-not $blockable) {
+                    $effectiveKind = 'advisory'
+                    $degradedParts += ($clientId + ' documents no block mechanism on ' + $EventName +
+                        '; downgraded to the strongest available advisory - this is NOT an enforced gate')
+                }
+            }
+            if ($clientId -eq 'kiro') {
+                if ($effectiveKind -eq 'block') {
+                    [Console]::Error.WriteLine($text)    # exit 2 returns stderr to the agent
+                    $emitted = $true; $shape = 'kiroExit2Stderr'; $exitCode = 2
+                }
+                elseif (@($script:HookKiroContextEvents | Where-Object { $_ -ceq $EventName }).Count -gt 0) {
+                    [Console]::Out.WriteLine($text)
+                    $emitted = $true; $shape = 'kiroStdout'
+                }
+                else {
+                    $degradedParts += ('kiro adds hook stdout to context only on ' +
+                        ($script:HookKiroContextEvents -join '/') + '; on ' + $EventName +
+                        ' it is discarded, so nothing was emitted')
+                }
+            }
+            else {
+                if ($effectiveKind -eq 'block') {
+                    $payload = @{ decision = 'block'; reason = $text }
+                    $shape = 'decisionBlock'
+                }
+                elseif ($clientId -eq 'claude') {
+                    $payload = @{ hookSpecificOutput = @{ hookEventName = $EventName; additionalContext = $text } }
+                    $shape = 'claudeContext'
+                }
+                else {
+                    $payload = @{ systemMessage = $text }
+                    $shape = 'codexSystemMessage'
+                }
+                [Console]::Out.WriteLine(($payload | ConvertTo-Json -Depth 5 -Compress))
+                $emitted = $true
+            }
+        }
+    }
+
+    return [pscustomobject]@{
+        Emitted        = $emitted
+        Shape          = $shape
+        ExitCode       = $exitCode
+        Degraded       = ($degradedParts.Count -gt 0)
+        DegradedReason = ($degradedParts -join '; ')
+    }
+}
+
 # Parses a KEY=VALUE .env file ('#' comments allowed). Returns a hashtable;
 # empty when the file is absent or blank.
 function Read-HookEnv {
