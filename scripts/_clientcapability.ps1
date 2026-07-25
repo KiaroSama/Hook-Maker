@@ -122,6 +122,17 @@ $script:HookMakerClientCapabilities = @{
         timeoutField          = 'timeout'
         timeoutUnits          = 'seconds'
         matcherSupported      = $true
+        # A bare matcherSupported=$true is TRUE BUT MISLEADING for Kiro, and a
+        # caller acting on it alone would attach a matcher where Kiro silently
+        # ignores it - a filter that does nothing reads as a restriction that is
+        # in force. Kiro evaluates a matcher only on these triggers; everywhere
+        # else it is not consulted. Documented in .ai/KIRO_PROTOCOL.md.
+        #
+        # This lives in the table rather than only inside the Kiro writer
+        # because that is the drift this table exists to prevent: the writer
+        # already enforced it, but a second caller reading the table would not
+        # have known.
+        matcherEvaluatingEvents = @('PreToolUse', 'PostToolUse')
         actionTypes           = @('command', 'agent')
         # Kiro IDE documents NO stdin JSON and no cwd/session_id/tool_name for
         # shell-command hooks - only USER_PROMPT, and only on UserPromptSubmit.
@@ -276,6 +287,25 @@ function Resolve-HookMakerEventPlan {
         perClient = @($perClient.ToArray())
         degraded  = $degraded
     }
+}
+
+# True only when the client actually EVALUATES a matcher on that event.
+#
+# `matcherSupported` alone is not enough to act on: a client can support
+# matchers in general and still ignore one on a specific event, and attaching a
+# filter that is never consulted reads as a restriction that is in force when it
+# is not. A client that declares no per-event restriction keeps its previous
+# behaviour - the matcher applies wherever the event itself is supported.
+function Test-HookMakerEventMatcher {
+    param(
+        [Parameter(Mandatory = $true)][string]$ClientId,
+        [Parameter(Mandatory = $true)][string]$EventName
+    )
+    $capability = Get-HookMakerClientCapability -ClientId $ClientId
+    if (-not $capability.matcherSupported) { return $false }
+    if (@($capability.supportedEvents | Where-Object { $_ -ceq $EventName }).Count -eq 0) { return $false }
+    if (-not $capability.Contains('matcherEvaluatingEvents')) { return $true }
+    return (@($capability.matcherEvaluatingEvents | Where-Object { $_ -ceq $EventName }).Count -gt 0)
 }
 
 # True only when the client documents a real block/deny mechanism for that
