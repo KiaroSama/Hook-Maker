@@ -596,6 +596,51 @@ if ($null -ne $in) { $prompt = [string](Get-Field $in 'prompt') }
         $probeOut -match ('CODEPOINTS=' + [regex]::Escape($expected))) ($probeOut + ' | expected=' + $expected + ' | err=' + $probeErr)
     Check 'the probe hook still exits cleanly with nothing on stderr' (
         $probeProc.ExitCode -eq 0 -and $probeErr.Trim() -eq '') ('exit=' + $probeProc.ExitCode + ' err=' + $probeErr)
+
+    Write-Host '--- _hooklib: client identity is explicit and never defaults a third client to Codex ---' -ForegroundColor Cyan
+    # Hooks used to decide the client inline as "CLAUDE_PROJECT_DIR present ->
+    # Claude, otherwise -> Codex". With a third client that silently hands Kiro
+    # Codex's rules, skills, paths and output protocol. Get-HookClientId is the
+    # one place that decision is made now.
+    #
+    # Dot-sourced into a child scope so the suite's own helpers are untouched.
+    $cidOrigCpd = $env:CLAUDE_PROJECT_DIR
+    try {
+        if (Test-Path Env:\HOOKMAKER_CLIENT) { Remove-Item Env:\HOOKMAKER_CLIENT -ErrorAction SilentlyContinue }
+        Set-ClaudeProjectDir 'C:\some\project'
+        $cidClaude = & { . $HookLib; Get-HookClientId }
+        $cidKiroBeatsClaude = & { . $HookLib; Get-HookClientId -Explicit 'kiro' }
+        Set-ClaudeProjectDir ''
+        $cidLegacyCodex = & { . $HookLib; Get-HookClientId }
+        $cidUnknownName = & { . $HookLib; Get-HookClientId -Explicit 'gemini' }
+        $cidLooseCase = & { . $HookLib; Get-HookClientId -Explicit '  KIRO ' }
+        $env:HOOKMAKER_CLIENT = 'kiro'
+        $cidEnvMarker = & { . $HookLib; Get-HookClientId }
+        $env:HOOKMAKER_CLIENT = 'nonsense'
+        $cidBadEnvMarker = & { . $HookLib; Get-HookClientId }
+        Remove-Item Env:\HOOKMAKER_CLIENT -ErrorAction SilentlyContinue
+
+        Check 'CLAUDE_PROJECT_DIR present resolves to claude' ($cidClaude -eq 'claude') $cidClaude
+        Check 'an explicit client id overrides CLAUDE_PROJECT_DIR' ($cidKiroBeatsClaude -eq 'kiro') $cidKiroBeatsClaude
+        Check 'no signal at all still resolves to codex (existing installs unchanged)' ($cidLegacyCodex -eq 'codex') $cidLegacyCodex
+        Check 'an UNRECOGNISED explicit client is unknown, never codex' ($cidUnknownName -eq 'unknown') $cidUnknownName
+        Check 'an explicit client id tolerates case and surrounding space' ($cidLooseCase -eq 'kiro') $cidLooseCase
+        Check 'HOOKMAKER_CLIENT identifies a client that passes no argument' ($cidEnvMarker -eq 'kiro') $cidEnvMarker
+        Check 'an unrecognised HOOKMAKER_CLIENT is unknown, never codex' ($cidBadEnvMarker -eq 'unknown') $cidBadEnvMarker
+
+        # An installed runtime is self-contained: the installer rewrites
+        # _hooklib.ps1 into it but copies no sibling from scripts\, so the client
+        # id list CANNOT be shared by dot-sourcing and is duplicated by force.
+        # This is the assertion that keeps the two copies honest.
+        $cidLibIds = & { . $HookLib; @($script:HookClientIds) -join ',' }
+        $cidTableIds = & { . (Join-Path $ScriptRoot '_clientcapability.ps1'); @(Get-HookMakerClientIds) -join ',' }
+        Check '_hooklib client ids match the canonical capability table exactly' (
+            $cidLibIds -eq $cidTableIds) ('hooklib=' + $cidLibIds + ' table=' + $cidTableIds)
+    }
+    finally {
+        Set-ClaudeProjectDir $cidOrigCpd
+        if (Test-Path Env:\HOOKMAKER_CLIENT) { Remove-Item Env:\HOOKMAKER_CLIENT -ErrorAction SilentlyContinue }
+    }
 }
 finally {
     Set-ClaudeProjectDir $OrigClaudeProjectDir
