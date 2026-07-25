@@ -31,6 +31,11 @@
 #     shape and is handed to its own validator instead.
 #   * Get-CanonicalPathOrNull below is also called from _installregistry.ps1,
 #     so it must stay reachable from that file's scope (it is - same scope).
+#   * Get-HookMakerClientIds / Get-HookMakerClientCapability live in
+#     _clientcapability.ps1, and Test-KiroManagedFileName /
+#     Get-KiroManagedNamePrefix in _installkiro.ps1 - the per-hook-file
+#     ownership and naming rules are USED from here, never re-implemented.
+#     _installlib.ps1 dot-sources both files before this one.
 # ---------------------------------------------------------------------------
 
 # Canonicalizes a path for structural comparison, defensively: GetFullPath
@@ -170,16 +175,39 @@ function Test-InstallRecordValid {
     if ($null -eq $clients -or $clients -isnot [psobject]) {
         return [pscustomobject]@{ Ok = $false; Reason = 'record has no clients object' }
     }
-    foreach ($clientName in @('claude', 'codex')) {
+    # Derived from the canonical client table, never a hardcoded pair. The old
+    # @('claude', 'codex') did not REJECT a third client's subrecord - it
+    # `continue`d straight past it, so a kiro subrecord was persisted, updated
+    # and uninstalled without a single field of it ever being proved.
+    foreach ($clientName in @(Get-HookMakerClientIds)) {
         $client = Get-RecordField -Object $clients -Name $clientName
         if ($null -eq $client) { continue }
+        # WHAT a subrecord must prove depends on how its client registers.
+        # 'sharedSettingsFile' (claude, codex) is the shape every rule below was
+        # written for. 'perHookFile' (kiro) owns its own registration file, and
+        # exactly two of those rules are FALSE FOR IT BY DESIGN:
+        #   * there is no canonical shared settings path - Get-CanonicalClientSettingsPath
+        #     throws for such a client, correctly, and that refusal is not weakened here;
+        #   * the command targets the generated launcher, not <FriendlyName>.ps1.
+        # Both are REPLACED with the equivalent per-hook-file proof rather than
+        # skipped. Everything else applies unchanged to both shapes.
+        $isPerHookFile = ([string](Get-HookMakerClientCapability -ClientId $clientName).registrationKind -ceq 'perHookFile')
         # runtimeRoot joins runtimeScript/settingsPath here: Get-InstallIntegrity
         # reads it unguarded (via Get-InstalledManifest) for every client on
         # every evaluation, not only when something is already known to be wrong.
         # Every one of these must be an ACTUAL [string] - not merely something
         # that survives a [string] cast (a number, an object) - since each is
         # used directly as a path or command-line fragment.
-        foreach ($required in @('runtimeScript', 'settingsPath', 'runtimeRoot')) {
+        #
+        # settingsPath stays required for a per-hook-file client too: it is the
+        # registration file there rather than a shared document, and the
+        # installed-hooks view reads `$subrecord.settingsPath` unguarded for
+        # every client it enumerates.
+        $requiredClientFields = @('runtimeScript', 'settingsPath', 'runtimeRoot')
+        # registrationPath is the only location evidence a per-hook-file client
+        # has - there is no shared settings document to re-derive it from.
+        if ($isPerHookFile) { $requiredClientFields += 'registrationPath' }
+        foreach ($required in $requiredClientFields) {
             $value = Get-RecordField -Object $client -Name $required
             if ($null -eq $value -or $value -isnot [string] -or [string]::IsNullOrWhiteSpace($value)) {
                 return [pscustomobject]@{ Ok = $false; Reason = ($clientName + ' subrecord is missing "' + $required + '"') }
@@ -269,6 +297,78 @@ function Test-InstallRecordValid {
         if (-not [string]::Equals($hookDirLeaf, $friendlyNameValue, [System.StringComparison]::OrdinalIgnoreCase) -or
             -not [string]::Equals($runtimeScriptLeaf, ($friendlyNameValue + '.ps1'), [System.StringComparison]::OrdinalIgnoreCase)) {
             return [pscustomobject]@{ Ok = $false; Reason = ($clientName + ' subrecord runtimeScript does not match managed hook directory for friendlyName "' + $friendlyNameValue + '"') }
+        }
+
+        # ---- registration location, and what the command must target -------
+        # The one place the two registration shapes genuinely diverge.
+        if ($isPerHookFile) {
+            # The subrecord must SAY it is per-hook-file. Uninstall-Hook.ps1's
+            # Test-KiroOwnership refuses one that does not, and these two gates
+            # must reject identically - otherwise the updater refreshes a record
+            # the uninstaller then declines to remove.
+            $registrationKindValue = [string](Get-RecordField -Object $client -Name 'registrationKind')
+            if ($registrationKindValue -cne 'perHookFile') {
+                return [pscustomobject]@{ Ok = $false; Reason = ($clientName + ' subrecord does not declare registrationKind "perHookFile"') }
+            }
+            $canonicalRegistrationPath = Get-CanonicalPathOrNull ([string]$client.registrationPath)
+            if ($null -eq $canonicalRegistrationPath) {
+                return [pscustomobject]@{ Ok = $false; Reason = ($clientName + ' subrecord registrationPath cannot be canonicalized') }
+            }
+            # The filename rule is an OWNERSHIP rule and it lives in
+            # _installkiro.ps1 - it is not re-implemented here. It is what stops
+            # a record claiming the shared .kiro\hooks\hooks.json or a legacy
+            # .kiro.hook file, neither of which Hook Maker may ever own.
+            if (-not (Test-KiroManagedFileName -Path $canonicalRegistrationPath)) {
+                return [pscustomobject]@{ Ok = $false; Reason = ($clientName + ' subrecord registrationPath is not a Hook Maker managed hook file') }
+            }
+            # Entry names ARE the ownership proof inside a file that may also
+            # hold the user's own hand-written hooks: without them nothing in it
+            # can be proven ours, so an empty list is a rejection and never a
+            # licence to act on whatever looks familiar.
+            $entryNames = @()
+            $entryNamesValue = Get-RecordField -Object $client -Name 'managedEntryNames'
+            if ($null -ne $entryNamesValue) { $entryNames = @($entryNamesValue) }
+            if ($entryNames.Count -eq 0) {
+                return [pscustomobject]@{ Ok = $false; Reason = ($clientName + ' subrecord has no managedEntryNames') }
+            }
+            foreach ($entryName in $entryNames) {
+                if ($entryName -isnot [string] -or [string]::IsNullOrWhiteSpace($entryName)) {
+                    return [pscustomobject]@{ Ok = $false; Reason = ($clientName + ' subrecord managedEntryNames contains an empty or non-string entry') }
+                }
+            }
+            # ...and every one of them must carry THIS record's identity, by the
+            # same position-anchored prefix _installkiro.ps1 builds and
+            # Test-KiroOwnership already checks. Get-KiroManagedNamePrefix
+            # throws when the id yields no usable slug - a rejection here, never
+            # an exception escaping the validator.
+            $managedId = [string](Get-RecordField -Object $client -Name 'managedId')
+            if ([string]::IsNullOrWhiteSpace($managedId)) { $managedId = [string](Get-RecordField -Object $Record -Name 'id') }
+            $managedNamePrefix = ''
+            try { $managedNamePrefix = Get-KiroManagedNamePrefix -ManagedId $managedId }
+            catch {
+                return [pscustomobject]@{ Ok = $false; Reason = ($clientName + ' subrecord has no provable managed identity: ' + [string]$_.Exception.Message) }
+            }
+            foreach ($entryName in $entryNames) {
+                if (-not ([string]$entryName).StartsWith($managedNamePrefix, [System.StringComparison]::OrdinalIgnoreCase)) {
+                    return [pscustomobject]@{ Ok = $false; Reason = ($clientName + ' subrecord managedEntryNames contains "' + [string]$entryName + '", which does not carry this record''s own managed identity') }
+                }
+            }
+            # The command targets the generated LAUNCHER in the managed hook
+            # directory, not <FriendlyName>.ps1. Only 2 of the shipped hooks
+            # accept a -Client parameter, so client identity travels in the
+            # environment, and KIRO_PROTOCOL requires the physical trigger on
+            # the command line - so each registered entry's command is this one
+            # plus ' -Trigger <trigger>'. Holding this client to the shared
+            # "command targets runtimeScript" rule would reject every real Kiro
+            # record; dropping the check would accept a command pointing
+            # anywhere at all.
+            if (-not $isImportedRecord) {
+                $expectedLauncherPath = Join-Path $runtimeScriptParent 'kiro-launch.ps1'
+                if (([string]$client.command).IndexOf($expectedLauncherPath, [System.StringComparison]::OrdinalIgnoreCase) -lt 0) {
+                    return [pscustomobject]@{ Ok = $false; Reason = ($clientName + ' subrecord persisted command does not target the launcher in the persisted runtime directory') }
+                }
+            }
+            continue
         }
 
         # settingsPath must be the EXACT canonical location Install-Hook.ps1

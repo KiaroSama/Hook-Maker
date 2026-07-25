@@ -92,8 +92,7 @@ function Write-ContextIfNew {
     }
     New-Item -ItemType Directory -Path $script:stateDir -Force | Out-Null
     [System.IO.File]::WriteAllLines($script:statePath, @($Fingerprint, [DateTime]::UtcNow.ToString('o')))
-    @{ hookSpecificOutput = @{ hookEventName = $script:eventName; additionalContext = $Message } } |
-        ConvertTo-Json -Depth 5 -Compress
+    $null = Write-HookResult -EventName $script:eventName -Kind 'context' -Message $Message
     exit 0
 }
 

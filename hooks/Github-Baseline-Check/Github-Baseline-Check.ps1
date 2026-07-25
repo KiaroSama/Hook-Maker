@@ -423,6 +423,5 @@ else {
 $message = 'GITHUB BASELINE CHECK (' + $repoSlug + '): the .github automation baseline does not match the project structure:' + "`n" +
     ($findings -join "`n") + "`n" +
     $scopeNote + ' When a fix does go ahead: inspect the real project first, use its actual commands, and never blindly copy templates or overwrite working project-specific automation.'
-@{ hookSpecificOutput = @{ hookEventName = $eventName; additionalContext = $message } } |
-    ConvertTo-Json -Depth 5 -Compress
+$null = Write-HookResult -EventName $eventName -Kind 'context' -Message $message
 exit 0

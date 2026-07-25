@@ -235,7 +235,7 @@ if ($eventName -eq 'UserPromptSubmit') {
         [void]$parts.Add($cached.Report)
     }
     if ($parts.Count -eq 0) { exit 0 }
-    @{ hookSpecificOutput = @{ hookEventName = $eventName; additionalContext = ($parts.ToArray() -join "`n`n") } } | ConvertTo-Json -Depth 5 -Compress
+    $null = Write-HookResult -EventName $eventName -Kind 'context' -Message ($parts.ToArray() -join "`n`n")
     exit 0
 }
 
@@ -246,7 +246,7 @@ if ($null -ne $cached -and $cached.Fingerprint -eq $fingerprint) {
         $checkedTime = [DateTime]::Parse($cached.CheckedIso, [System.Globalization.CultureInfo]::InvariantCulture, [System.Globalization.DateTimeStyles]::RoundtripKind).ToUniversalTime()
         if (([DateTime]::UtcNow - $checkedTime).TotalMinutes -lt $cooldownMinutes) {
             if ([string]::IsNullOrWhiteSpace($cached.Report)) { exit 0 }
-            @{ hookSpecificOutput = @{ hookEventName = $eventName; additionalContext = $cached.Report } } | ConvertTo-Json -Depth 5 -Compress
+            $null = Write-HookResult -EventName $eventName -Kind 'context' -Message ([string]$cached.Report)
             exit 0
         }
     }
@@ -508,5 +508,5 @@ $report = $reportLines.ToArray() -join "`n"
 Save-CachedState -Report $report
 
 if ($reportLines.Count -eq 0) { exit 0 }
-@{ hookSpecificOutput = @{ hookEventName = $eventName; additionalContext = $report } } | ConvertTo-Json -Depth 5 -Compress
+$null = Write-HookResult -EventName $eventName -Kind 'context' -Message $report
 exit 0

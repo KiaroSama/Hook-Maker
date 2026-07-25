@@ -24,6 +24,10 @@ if ($null -eq $hookInput) {
 if ((Get-Field $hookInput 'stop_hook_active') -eq $true) {
     exit 0
 }
+# Only used to shape the result (Write-HookResult below). This is a Stop-only
+# hook, so an absent event name reads as 'Stop' rather than as "no event".
+$eventName = [string](Get-Field $hookInput 'hook_event_name')
+if ([string]::IsNullOrWhiteSpace($eventName)) { $eventName = 'Stop' }
 $cwd = [string](Get-Field $hookInput 'cwd')
 if ([string]::IsNullOrWhiteSpace($cwd) -or -not (Test-Path -LiteralPath $cwd -PathType Container)) {
     exit 0
@@ -99,5 +103,4 @@ else {
 # themselves is validated by Utf8-Encoding-Check through its own state (no
 # repository rescan here, no dependence on same-event hook order).
 $reason = 'AI MEMORY CHECK: the task is ending but ' + $reasonWhy + '. Per the AI Context Memory Policy, memory updates follow MEANINGFUL work only, in this order: (1) update .ai/memory.md first (index/router), (2) update ONLY the specialized files that gained reusable value this task - not every file, not on a schedule. ' + $filesClause + ' (3) never duplicate a lesson across files - full detail in the best file, links elsewhere. (4) Record only DURABLE value - for a debugging/::deep-debug task that means: the confirmed root cause, the fixed path, the permanent regression test/fixture, verified commands and their outcomes, unresolved blockers/remaining risk, stable timing/resource facts, Ponytail simplifications accepted/rejected when they affect future maintenance, and the exact next step when the workflow ended BLOCKED. Never store raw prompts, raw logs, scan dumps, full source, secrets, temporary hypotheses, routine passing output, or duplicated global policy text. (5) Write every new or modified .ai/ file as UTF-8 - never an OS-default encoding (Utf8-Encoding-Check validates the files via its own state; nothing is rescanned here). Keep entries factual and deduplicated. If this task was trivial or produced nothing reusable, finish now WITHOUT updating - this reminder respects a cooldown.'
-@{ decision = 'block'; reason = $reason } | ConvertTo-Json -Compress
-exit 0
+exit (Write-HookResult -EventName $eventName -Kind 'block' -Reason $reason).ExitCode

@@ -376,20 +376,13 @@ try {
     [void]$lines.Add('Update ONLY the tracked public .md/.txt files actually made stale by this task - do not edit unrelated docs merely for consistency or wording.')
     [void]$lines.Add('Then run exactly one acknowledgement command to clear this: ' + $ackCommand + ' (use -Result NoUpdate -Reason "<why no doc became inaccurate>" instead if nothing needs updating).')
     $reason = $lines.ToArray() -join "`n"
-    @{ decision = 'block'; reason = $reason } | ConvertTo-Json -Compress
-    exit 0
+    exit (Write-HookResult -EventName $eventName -Kind 'block' -Reason $reason).ExitCode
 }
 catch {
     $errMsg = 'DOCS FRESHNESS CHECK: could not reliably determine whether documentation needs review this time (detection error) - do not assume documentation is current; review tracked README/CHANGELOG/docs manually if this task changed user-visible behavior.'
-    # Client-aware (same signal as the rest of this project: CLAUDE_PROJECT_DIR
-    # present -> Claude, absent -> Codex): Codex does not render
+    # Client-aware through the shared adapter: Codex does not render
     # hookSpecificOutput.additionalContext at Stop (only systemMessage), so an
     # unconditional additionalContext here silently drops this warning on Codex.
-    if (-not [string]::IsNullOrWhiteSpace($env:CLAUDE_PROJECT_DIR)) {
-        @{ hookSpecificOutput = @{ hookEventName = $eventName; additionalContext = $errMsg } } | ConvertTo-Json -Depth 5 -Compress
-    }
-    else {
-        @{ systemMessage = $errMsg } | ConvertTo-Json -Compress
-    }
+    $null = Write-HookResult -EventName $eventName -Kind 'advisory' -Message $errMsg
     exit 0
 }

@@ -177,6 +177,5 @@ if ($deepDebug) {
     [void]$lines.Add('Every .ai/ file read or created must be UTF-8; surface a legacy non-UTF-8 .ai file by path + classification only - never print raw bytes and never silently transcode it.')
 }
 
-@{ hookSpecificOutput = @{ hookEventName = $eventName; additionalContext = ($lines.ToArray() -join "`n") } } |
-    ConvertTo-Json -Depth 5 -Compress
+$null = Write-HookResult -EventName $eventName -Kind 'context' -Message ($lines.ToArray() -join "`n")
 exit 0

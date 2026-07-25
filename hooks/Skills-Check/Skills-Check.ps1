@@ -138,9 +138,8 @@ if (-not $hasLibrary -and -not $hasRecord -and $skillFolders.Count -eq 0) { exit
 if ($eventName -eq 'Stop') {
     if ((Get-Field $hookInput 'stop_hook_active') -eq $true) { exit 0 }
     $note = 'SKILL POLICY CHECK - in the final task summary, add a concise "Skills used: <name1>, <name2>" line listing ONLY the exact skill names actually invoked or materially followed during this task - never a skill that was merely installed, available, discovered, copied, considered, or read but not used, and never the whole library. Omit the line entirely if no skill was actually used; do not force a skill for trivial tasks just to produce it.'
-    @{ hookSpecificOutput = @{ hookEventName = $eventName; additionalContext = $note } } |
-        ConvertTo-Json -Depth 5 -Compress
-    exit 0
+    $emit = Write-HookResult -EventName $eventName -Kind 'advisory' -Message $note
+    exit $emit.ExitCode
 }
 
 # ---- build the deduped inventory (name: from SKILL.md, not folder name) ----
@@ -259,9 +258,8 @@ if ($eventName -eq 'UserPromptSubmit') {
             [void]$dd.Add('- NOT VISIBLE in the enumerated project/global skill sources: ' + ($notVisible.ToArray() -join ', ') + '. Verify each is installed/loadable elsewhere before relying on it; a genuinely missing required capability must be REPORTED as missing and the workflow marked blocked/partial - never silently skipped.')
         }
         [void]$dd.Add('- Select only the task-relevant subset; keep Claude and Codex invocation syntax separate - neither client''s syntax is authoritative for the other. This hook routes only: it never executes a skill, slash command, or codeword.')
-        @{ hookSpecificOutput = @{ hookEventName = $eventName; additionalContext = ($dd.ToArray() -join "`n") } } |
-            ConvertTo-Json -Depth 5 -Compress
-        exit 0
+        $emit = Write-HookResult -EventName $eventName -Kind 'context' -Message ($dd.ToArray() -join "`n")
+        exit $emit.ExitCode
     }
 
     # ---- generic once-per-session relevance nudge ----
@@ -277,9 +275,8 @@ if ($eventName -eq 'UserPromptSubmit') {
     New-Item -ItemType Directory -Path $stateDir -Force | Out-Null
     [System.IO.File]::WriteAllText($statePath, $fingerprint)
     $note = 'SKILL POLICY CHECK - before continuing, decide whether an available skill materially helps THIS task; search both global and shared sources, use only the minimal relevant set (1-5), and copy/import into the project only when project-local use is genuinely needed. Skip entirely for trivial edits.'
-    @{ hookSpecificOutput = @{ hookEventName = $eventName; additionalContext = $note } } |
-        ConvertTo-Json -Depth 5 -Compress
-    exit 0
+    $emit = Write-HookResult -EventName $eventName -Kind 'context' -Message $note
+    exit $emit.ExitCode
 }
 
 # ---- SessionStart: compact routed inventory ----
@@ -299,6 +296,5 @@ if ($hasLibrary) {
 }
 [void]$lines.Add('- Select only the minimal relevant set; search global and shared sources first. The final task summary must report which skills were actually used (see the Stop reminder) - never the whole library. Follows ' + $policyFile + '.')
 
-@{ hookSpecificOutput = @{ hookEventName = $eventName; additionalContext = ($lines.ToArray() -join "`n") } } |
-    ConvertTo-Json -Depth 5 -Compress
-exit 0
+$emit = Write-HookResult -EventName $eventName -Kind 'context' -Message ($lines.ToArray() -join "`n")
+exit $emit.ExitCode

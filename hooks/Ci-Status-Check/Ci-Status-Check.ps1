@@ -432,9 +432,7 @@ function Save-State {
 function Write-Block {
     param([string]$Outcome, [string]$Reason)
     Save-State -Outcome $Outcome
-    $json = @{ decision = 'block'; reason = $Reason } | ConvertTo-Json -Compress
-    [Console]::Out.WriteLine($json)
-    exit 0
+    exit (Write-HookResult -EventName $script:eventName -Kind 'block' -Reason $Reason).ExitCode
 }
 
 # Emits a NON-BLOCKING completion-context notice while a valid external-blocker
@@ -453,24 +451,15 @@ function Write-Block {
 #   or event stream" (user/event-visible, NOT documented as model-visible).
 #   Codex Stop `decision:block` would FORCE CONTINUATION (a new prompt), so it
 #   is never used here.
-# Client detection reuses the project's existing signal: Claude Code exports
-# CLAUDE_PROJECT_DIR on every hook process, Codex does not (same signal
-# Rules-Check uses). Neither output can claim CI success; the message text is
-# identical for both, only the JSON wrapper differs.
+# Client detection and the per-client wrapper both come from the shared
+# Write-HookResult adapter. Neither output can claim CI success; the message
+# text is identical for every client, only the JSON wrapper differs.
 function Write-ExternalBlockerContext {
     param([string]$Classification, [string]$Reason, [string]$Sha7, [string]$RepoSlug, [string]$EventName)
     $message = 'CI NOT VERIFIED GREEN. Completion is allowed only because a recorded EXTERNAL CI blocker is in effect for ' +
         $RepoSlug + '@' + $Sha7 + ' [' + $Classification + ']: ' + $Reason +
         '. This is a documented external blocker, not a successful CI run - report it accurately and do not claim CI passed.'
-    if (-not [string]::IsNullOrWhiteSpace($env:CLAUDE_PROJECT_DIR)) {
-        # Claude Code: model-visible, non-blocking Stop context.
-        $payload = @{ hookSpecificOutput = @{ hookEventName = $EventName; additionalContext = $message } }
-    }
-    else {
-        # Codex: the strongest officially supported non-blocking Stop field.
-        $payload = @{ systemMessage = $message }
-    }
-    $payload | ConvertTo-Json -Depth 5 -Compress | ForEach-Object { [Console]::Out.WriteLine($_) }
+    $null = Write-HookResult -EventName $EventName -Kind 'advisory' -Message $message
     exit 0
 }
 
@@ -563,12 +552,10 @@ if ($null -eq $prefetchedSnapshot -and $stateSha -eq $sha) {
     }
     $ageMinutes = ([DateTime]::UtcNow - $stateTime).TotalMinutes
     if ($stateOutcome -eq 'failed' -and $ageMinutes -lt $failureCooldown) {
-        @{ decision = 'block'; reason = ('CI CHECK: pushed commit ' + $sha7 + ' still has failed checks. Detailed failure guidance was recently reported; completion remains blocked until a replacement commit is pushed or the failure is reported as an external/manual blocker.') } | ConvertTo-Json -Compress
-        exit 0
+        exit (Write-HookResult -EventName $eventName -Kind 'block' -Reason ('CI CHECK: pushed commit ' + $sha7 + ' still has failed checks. Detailed failure guidance was recently reported; completion remains blocked until a replacement commit is pushed or the failure is reported as an external/manual blocker.')).ExitCode
     }
     if ($stateOutcome -eq 'pending' -and $ageMinutes -lt $pendingCooldown) {
-        @{ decision = 'block'; reason = ('CI CHECK: pushed commit ' + $sha7 + ' is still awaiting terminal checks. Detailed status was recently reported; completion remains blocked.') } | ConvertTo-Json -Compress
-        exit 0
+        exit (Write-HookResult -EventName $eventName -Kind 'block' -Reason ('CI CHECK: pushed commit ' + $sha7 + ' is still awaiting terminal checks. Detailed status was recently reported; completion remains blocked.')).ExitCode
     }
 }
 

@@ -259,6 +259,5 @@ try {
 }
 catch { }
 
-@{ hookSpecificOutput = @{ hookEventName = $eventName; additionalContext = ($lines.ToArray() -join "`n") } } |
-    ConvertTo-Json -Depth 5 -Compress
-exit 0
+$emit = Write-HookResult -EventName $eventName -Kind 'context' -Message ($lines.ToArray() -join "`n")
+exit $emit.ExitCode

@@ -58,8 +58,7 @@ $haveGraphNote = @(
 # ---- SessionStart: only meaningful when a graph already exists. ----
 if ($eventName -eq 'SessionStart') {
     if (-not $graphExists) { exit 0 }
-    @{ hookSpecificOutput = @{ hookEventName = $eventName; additionalContext = $haveGraphNote } } |
-        ConvertTo-Json -Depth 5 -Compress
+    $null = Write-HookResult -EventName $eventName -Kind 'context' -Message $haveGraphNote
     exit 0
 }
 
@@ -139,6 +138,5 @@ if (Test-Path -LiteralPath $statePath -PathType Leaf) {
 New-Item -ItemType Directory -Path $stateDir -Force | Out-Null
 [System.IO.File]::WriteAllText($statePath, $fingerprint)
 
-@{ hookSpecificOutput = @{ hookEventName = $eventName; additionalContext = $note } } |
-    ConvertTo-Json -Depth 5 -Compress
+$null = Write-HookResult -EventName $eventName -Kind 'context' -Message $note
 exit 0

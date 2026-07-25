@@ -339,8 +339,7 @@ if (-not $isStopEvent) {
     }
     $message = 'GIT SYNC STATUS (' + $cwd + "):`n- " + ($findings.ToArray() -join "`n- ")
     $message += "`nConsider this pre-existing sync state before making further changes; this check does not modify the repository."
-    @{ hookSpecificOutput = @{ hookEventName = $eventName; additionalContext = $message } } |
-        ConvertTo-Json -Depth 5 -Compress
+    $null = Write-HookResult -EventName $eventName -Kind 'context' -Message $message
     exit 0
 }
 
@@ -539,13 +538,7 @@ if ($blockingFindings.Count -eq 0) {
     # worktree, or a capped scan) - CLIENT-AWARE, never `decision:block` (see
     # the header OUTPUT note): Codex would otherwise be forced into a
     # pointless new prompt for something that was never a real gate.
-    if (-not [string]::IsNullOrWhiteSpace($env:CLAUDE_PROJECT_DIR)) {
-        $payload = @{ hookSpecificOutput = @{ hookEventName = $eventName; additionalContext = $message } }
-    }
-    else {
-        $payload = @{ systemMessage = $message }
-    }
-    $payload | ConvertTo-Json -Depth 5 -Compress
+    $null = Write-HookResult -EventName $eventName -Kind 'advisory' -Message $message
     exit 0
 }
 
@@ -555,5 +548,4 @@ if ($blockingExtra.Count -gt 0) {
     $operationalInstruction += "`n`nAlso reconcile every task-created or task-changed branch and worktree reported above before finishing: merge or otherwise incorporate each into " + $destinationWording + " when that is its purpose, push any that are meant to be shared (a branch that is pushed but not yet merged into the destination is acceptable on its own and is not itself a blocker), and remove a worktree with 'git worktree remove' only once its purpose is complete - never one that still holds unreconciled or uncommitted work. Never force-push or rewrite history without explicit authorization. If reconciling a branch or worktree is unsafe or impossible, preserve it and report the exact reason instead of claiming it is resolved."
 }
 $reason = $message + $operationalInstruction
-@{ decision = 'block'; reason = $reason } | ConvertTo-Json -Compress
-exit 0
+exit (Write-HookResult -EventName $eventName -Kind 'block' -Reason $reason).ExitCode

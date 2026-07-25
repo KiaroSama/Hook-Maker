@@ -643,22 +643,16 @@ function Write-Finding {
         foreach ($warning in $script:configWarnings) { [void]$all.Add('Test-Completion-Check .env: ' + $warning) }
     }
     $message = ($all.ToArray() -join "`n")
-    if ($Blocking -and -not $script:advisoryOnly) {
-        @{ decision = 'block'; reason = $message } | ConvertTo-Json -Compress | ForEach-Object { [Console]::Out.WriteLine($_) }
-        exit 0
-    }
-    # Client detection is the project's existing signal: Claude Code exports
-    # CLAUDE_PROJECT_DIR on every hook process, Codex does not (Ci-Status-Check
-    # .ps1:314, Rules-Check.ps1:52, Secrets-Check.ps1:808). `hookSpecificOutput`
-    # is an OUTPUT field and appears in no event INPUT, so it is never a signal.
-    if (-not [string]::IsNullOrWhiteSpace($env:CLAUDE_PROJECT_DIR)) {
-        $payload = @{ hookSpecificOutput = @{ hookEventName = $script:eventName; additionalContext = $message } }
-    }
-    else {
-        $payload = @{ systemMessage = $message }
-    }
-    $payload | ConvertTo-Json -Depth 5 -Compress | ForEach-Object { [Console]::Out.WriteLine($_) }
-    exit 0
+    # The gating DECISION is made above and is unchanged here; Write-HookResult
+    # only turns it into the client's wire shape (claude/codex block ->
+    # decision:block, claude advisory -> hookSpecificOutput.additionalContext,
+    # codex Stop advisory -> systemMessage). A client that documents no Stop
+    # gate has its block downgraded to the strongest advisory and reported as
+    # degraded, which is what 'degraded-stop-gate' means - never a fake gate.
+    $kind = 'advisory'
+    if ($Blocking -and -not $script:advisoryOnly) { $kind = 'block' }
+    $emit = Write-HookResult -EventName $script:eventName -Kind $kind -Message $message -Reason $message
+    exit $emit.ExitCode
 }
 
 # ---- read the recorded evidence (AGGREGATED across per-run files) ----------
