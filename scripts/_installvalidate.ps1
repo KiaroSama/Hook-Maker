@@ -57,12 +57,27 @@ function Get-CanonicalClientSettingsPath {
         [Parameter(Mandatory = $true)][string]$Scope,
         [string]$TargetProjectRoot = ''
     )
-    if ($Scope -eq 'project') {
-        $relative = if ($ClientName -eq 'claude') { '.claude\settings.local.json' } else { '.codex\hooks.json' }
-        return (Join-Path $TargetProjectRoot $relative)
+    # Explicit lookup, never a fallthrough. This used to be
+    #   if ($ClientName -eq 'claude') { .claude\... } else { .codex\... }
+    # so EVERY client that was not Claude resolved to Codex's hooks.json - a
+    # third client would have had its records validated, updated and uninstalled
+    # against the wrong client's settings file. An unknown client is now
+    # rejected outright rather than silently becoming Codex.
+    $capability = Get-HookMakerClientCapability -ClientId $ClientName
+
+    # A perHookFile client has no single settings document: each logical
+    # installation owns its own registration file, so there is nothing for this
+    # function to return and a synthesised path would be a fake. Callers must
+    # branch on registrationKind and use the record's own persisted
+    # registrationPath instead of asking for a canonical settings path.
+    if ($capability.registrationKind -ne 'sharedSettingsFile') {
+        throw ($capability.displayName + " registers one file per installation (registrationKind '" + $capability.registrationKind + "'), so it has no canonical shared settings path. Use the record's persisted registrationPath.")
     }
-    $relative = if ($ClientName -eq 'claude') { '.claude\settings.json' } else { '.codex\hooks.json' }
-    return (Join-Path $HOME $relative)
+
+    if ($Scope -eq 'project') {
+        return (Join-Path $TargetProjectRoot $capability.projectRegistration)
+    }
+    return (Join-Path $HOME $capability.globalRegistration)
 }
 
 # Validates ONE record's shape before anything reads its fields.
@@ -261,7 +276,17 @@ function Test-InstallRecordValid {
         # settings file", which would let a record silently point updates or
         # uninstalls at the wrong client's (or a foreign) settings file.
         $targetProjectRootValue = [string](Get-RecordField -Object $Record -Name 'targetProjectRoot')
-        $expectedSettingsPath = Get-CanonicalClientSettingsPath -ClientName $clientName -Scope $scope -TargetProjectRoot $targetProjectRootValue
+        # Get-CanonicalClientSettingsPath now THROWS for an unknown client and
+        # for a per-hook-file client, both of which are correct refusals. This
+        # function's contract is to RETURN { Ok; Reason }, though: a validator
+        # that throws aborts the whole update run and leaves every healthy
+        # record after it unevaluated, which is a regression this codebase has
+        # already had once. So the refusal is turned into an ordinary rejection.
+        $expectedSettingsPath = $null
+        try { $expectedSettingsPath = Get-CanonicalClientSettingsPath -ClientName $clientName -Scope $scope -TargetProjectRoot $targetProjectRootValue }
+        catch {
+            return [pscustomobject]@{ Ok = $false; Reason = ($clientName + ' subrecord has no canonical shared settings path for this client') }
+        }
         $canonicalExpectedSettingsPath = Get-CanonicalPathOrNull $expectedSettingsPath
         if ($null -eq $canonicalExpectedSettingsPath -or
             -not [string]::Equals($canonicalSettingsPath, $canonicalExpectedSettingsPath, [System.StringComparison]::OrdinalIgnoreCase)) {
