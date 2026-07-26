@@ -147,7 +147,11 @@ function Get-CleanupResultPath {
 #      which document referenced it;
 #   4. require the registered target to BE the recorded runtime script;
 #   5. verify EVERY recorded manifest entry's sha256 against disk, the registered
-#      script among them - the entry point is not the whole runtime.
+#      script among them - the entry point is not the whole runtime - AND prove
+#      the manifest is COMPLETE: every required executable listed, nothing
+#      executable on disk unlisted, no duplicate entry, no reparse escape.
+#      A manifest describes itself, so verifying only what it lists lets an
+#      omission hide a dependency from the check entirely.
 #
 # Unreadable, malformed, foreign, mismatched and missing-metadata evidence are
 # all NEGATIVE now. That deliberately reverses the old "refusing to read is not
@@ -195,6 +199,24 @@ $script:CleanupGateEvent = 'Stop'
 # manifest longer than the writer can emit did not come from an install, and
 # refusing it also bounds the hashing work a Stop hook will do.
 $script:CleanupManifestCap = 64
+# The executables an installed runtime cannot run without, mirrored from the
+# Add-Artifact calls in scripts\_installplan.ps1: every client stages
+# <hook>\_hooklib.ps1 and <hook>\<hook>.ps1, and Kiro additionally stages the
+# <hook>\kiro-launch.ps1 its registration points at.
+#
+# Held INDEPENDENTLY of the metadata, which is the whole point. A manifest
+# DESCRIBES ITSELF: verifying every entry it happens to list says nothing about
+# what it left out, and an omitted dependency is not merely unverified, it is
+# never looked at. Claude/Codex could drop _hooklib.ps1 and Kiro could drop the
+# main hook script behind the launcher, and a manifest whose remaining entries
+# all hashed correctly would still have vouched for a runtime whose executing
+# body was never checked. Only a required set this hook knows on its own can
+# turn that omission into a rejection.
+$script:CleanupRequiredRuntimeLeaves = @{
+    'claude' = @('_hooklib.ps1')
+    'codex'  = @('_hooklib.ps1')
+    'kiro'   = @('_hooklib.ps1', 'kiro-launch.ps1')
+}
 # Mirrors Test-KiroManagedFileName in scripts\_installkiro.ps1: Hook Maker owns
 # ONLY .kiro\hooks\hookmaker-<slug>.json. Anything else in that directory -
 # above all a shared hooks.json - belongs to someone else and is never parsed
@@ -271,16 +293,21 @@ function Test-CleanupReparseEscape {
 # ownership. The install plan already stages all of them as Immutable artifacts
 # and records all of them here, so verify all of them.
 function Test-CleanupRuntimeManifest {
-    param($Metadata, [string]$RuntimeRoot, [string]$RegisteredRelativePath)
+    param($Metadata, [string]$RuntimeRoot, [string]$Client, [string]$RegisteredRelativePath)
     $manifest = Get-Field $Metadata 'runtimeManifest'
     if ($null -eq $manifest) { return $false }
     $entries = @($manifest)
     if ($entries.Count -eq 0 -or $entries.Count -gt $script:CleanupManifestCap) { return $false }
     $wanted = $RegisteredRelativePath.Replace('/', '\').TrimStart('\')
+    $listed = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::OrdinalIgnoreCase)
     $sawRegistered = $false
     foreach ($entry in $entries) {
         $relative = ([string](Get-Field $entry 'path')).Replace('/', '\').TrimStart('\')
         if ([string]::IsNullOrWhiteSpace($relative)) { return $false }
+        # Two entries for one path cannot both be the installer's work, and a
+        # duplicate is how a required path could be "present" while a second
+        # entry says something different about the same file.
+        if (-not $listed.Add($relative)) { return $false }
         # A value that is not a sha256 at all is a manifest that cannot vouch for
         # anything, so one bad entry fails the whole runtime rather than being
         # skipped past.
@@ -290,17 +317,49 @@ function Test-CleanupRuntimeManifest {
         try { $full = Normalize-Path (Join-Path $RuntimeRoot $relative) }
         catch { return $false }
         # A '..' entry must not let a manifest vouch for a file outside the
-        # runtime it claims to describe.
+        # runtime it claims to describe, and a reparse point anywhere in the
+        # chain means the bytes hashed live outside it after all.
         if (-not (Test-PathInside -Candidate $full -Parent $RuntimeRoot)) { return $false }
+        if (Test-CleanupReparseEscape -Path $full -Root $RuntimeRoot) { return $false }
         $actualHash = ''
         try { $actualHash = [string](Get-FileHash -LiteralPath $full -Algorithm SHA256).Hash }
         catch { return $false }
         if (-not [string]::Equals($actualHash, $expectedHash, [System.StringComparison]::OrdinalIgnoreCase)) { return $false }
         if ([string]::Equals($relative, $wanted, [System.StringComparison]::OrdinalIgnoreCase)) { $sawRegistered = $true }
     }
-    # ...and the script that actually runs has to be one of the files just
-    # verified, so a manifest covering only bystanders proves nothing.
-    return $sawRegistered
+    # The script that actually runs has to be one of the files just verified, so
+    # a manifest covering only bystanders proves nothing.
+    if (-not $sawRegistered) { return $false }
+
+    # COMPLETENESS, both directions. Verifying what a manifest lists is only half
+    # the question; the other half is whether it lists everything that runs.
+    #
+    #   listed-but-absent  -> the loop above already failed on Get-FileHash.
+    #   required-but-unlisted -> caught here, by a set the metadata cannot edit.
+    #   present-but-unlisted  -> caught by the scan below, which asks the DISK
+    #                            rather than the document.
+    $hookDirectory = Join-Path $RuntimeRoot $script:CleanupHookName
+    $prefix = $script:CleanupHookName + '\'
+    $required = @(@($script:CleanupRequiredRuntimeLeaves[$Client]) + @($script:CleanupHookName + '.ps1'))
+    foreach ($leaf in $required) {
+        if (-not $listed.Contains($prefix + $leaf)) { return $false }
+    }
+
+    # Anything executable sitting in the runtime the manifest does not account
+    # for is a file the entry point could load and nothing verified. Bounded by
+    # the same cap: a managed runtime directory does not hold more scripts than
+    # the writer can record.
+    $present = @()
+    try { $present = @(Get-ChildItem -LiteralPath $hookDirectory -Recurse -File -Filter '*.ps1' -ErrorAction Stop) }
+    catch { return $false }
+    if ($present.Count -gt $script:CleanupManifestCap) { return $false }
+    foreach ($file in $present) {
+        $relative = ''
+        try { $relative = (Normalize-Path $file.FullName).Substring((Normalize-Path $RuntimeRoot).Length).TrimStart('\') }
+        catch { return $false }
+        if (-not $listed.Contains($relative)) { return $false }
+    }
+    return $true
 }
 
 # Does an ownership-proven managed runtime back this exact registered command?
@@ -398,7 +457,8 @@ function Test-CleanupManagedCommand {
     catch { return $false }
     if (-not [string]::Equals($recordedFull, $resolvedTarget, [System.StringComparison]::OrdinalIgnoreCase)) { return $false }
 
-    return (Test-CleanupRuntimeManifest -Metadata $metadata -RuntimeRoot $runtimeRoot -RegisteredRelativePath $recordedRelative)
+    return (Test-CleanupRuntimeManifest -Metadata $metadata -RuntimeRoot $runtimeRoot -Client $Client `
+            -RegisteredRelativePath $recordedRelative)
 }
 
 # Claude and Codex each keep ONE settings document per client, whose real shape
