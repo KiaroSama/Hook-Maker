@@ -204,13 +204,10 @@ if ($null -ne $in) { $prompt = [string](Get-Field $in 'prompt') }
         Check 'no stop_hook_active is fabricated, which would suppress the hook' (
             [string]::IsNullOrWhiteSpace([string](Get-RiField $riKiro 'stop_hook_active'))) (Show-Ri $riKiro)
 
-        $riKiroNoTrigger = Invoke-ReadHookInput -Client 'kiro' -Trigger '' -Stdin ''
-        Check 'kiro with no trigger yields nothing rather than guessing an event' ($null -eq $riKiroNoTrigger) 'no-trigger'
-        # PostFileSave is a REAL Kiro trigger with no Hook Maker equivalent, so
-        # it is the honest unknown-value case: the env is a trust boundary, and
-        # anything that can set a variable must not choose a hook's code path.
-        $riKiroUnknown = Invoke-ReadHookInput -Client 'kiro' -Trigger 'PostFileSave' -Stdin ''
-        Check 'a trigger outside the capability table is refused, not passed through' ($null -eq $riKiroUnknown) 'PostFileSave'
+        # A missing or unknown launcher trigger now REFUSES with exit 1 (round
+        # 31: registrationless stdin must never select a branch), so those
+        # cases live in the child-probe refusal section below - an in-process
+        # call would take this suite down with the exit.
 
         $riKiroPartial = Invoke-ReadHookInput -Client 'kiro' -Trigger 'Stop' -Stdin '{"cwd":"C:\\w"}'
         Check 'a kiro payload with no event name is completed from the launcher trigger' (
@@ -256,17 +253,22 @@ if ($null -ne $in) { $prompt = [string](Get-Field $in 'prompt') }
                 [string]::IsNullOrEmpty((Get-RiField $riCodexPrompt 'prompt'))) (Show-Ri $riCodexPrompt)
 
             # Every other hook input arrives as client-framed stdin JSON; this one
-            # is an environment variable nothing bounds. A pasted file would land
-            # in memory whole, in a process that runs on every submission.
+            # is an environment variable nothing bounds. An OVERSIZED prompt is
+            # WITHHELD ENTIRELY (round 31, review + user decision): a truncated
+            # prefix is a prompt the user did not type, and prompt-driven hooks
+            # regex-match on it as if it were - so no prefix may ever reach them.
+            # Withheld = the same documented degradation as an absent USER_PROMPT.
             $env:USER_PROMPT = ('x' * 70000)
             $riHuge = Invoke-ReadHookInput -Client 'kiro' -Trigger 'UserPromptSubmit' -Stdin ''
-            $riHugePrompt = [string](Get-RiField $riHuge 'prompt')
-            Check 'an oversized USER_PROMPT is bounded rather than taken whole' (
-                $riHugePrompt.Length -lt 70000) ('len=' + [string]$riHugePrompt.Length)
-            # Silent truncation would be worse than the unbounded read: a hook
-            # matching on prompt text would see a prompt the user never typed.
-            Check 'truncation is REPORTED in the prompt, never silent' (
-                $riHugePrompt -match 'truncated at') ('tail=' + $riHugePrompt.Substring([Math]::Max(0, $riHugePrompt.Length - 60)))
+            Check 'an oversized USER_PROMPT is withheld entirely - no prefix ever reaches the hooks' (
+                [string]::IsNullOrEmpty([string](Get-RiField $riHuge 'prompt'))) (Show-Ri $riHuge)
+            # The bound is a ceiling, not a shrink ray: exactly at the cap still
+            # passes whole. 65536 ASCII chars are exactly 65536 UTF-8 bytes.
+            $env:USER_PROMPT = ('y' * 65536)
+            $riAtCap = Invoke-ReadHookInput -Client 'kiro' -Trigger 'UserPromptSubmit' -Stdin ''
+            Check 'a prompt exactly at the byte cap passes through intact' (
+                ([string](Get-RiField $riAtCap 'prompt')).Length -eq 65536) (
+                'len=' + ([string](Get-RiField $riAtCap 'prompt')).Length)
         }
         finally {
             if ([string]::IsNullOrEmpty($riOrigUserPrompt)) {
@@ -383,52 +385,51 @@ if ($cut -ge 0) { $body = $pr.Substring(0, $cut) }
                         'exit=' + $riOtherResult.Exit + ' out=[' + $riOtherResult.Out + '] err=[' + $riOtherResult.Err + ']')
                 }
 
-                # --- the prompt cap is UTF-8 BYTES, and never splits a pair ----
-                # 40000 CJK characters are 120000 UTF-8 bytes but only 40000
-                # CHARACTERS, so the old character cap admitted ~3x the bound it
-                # documented and did not truncate this at all.
+                # --- an oversized prompt is WITHHELD, on every channel ---------
+                # Round 30 truncated to a prefix + marker; round 31 (review +
+                # user decision) withholds entirely: a prefix is a prompt the
+                # user did not type, and prompt-driven hooks regex-match on it
+                # as if it were. The hook still RUNS (exit 0) - it takes the
+                # documented no-prompt degradation - and a one-line stderr
+                # notice says the prompt was withheld, so it is never silent.
+                # 40000 CJK characters are 120000 UTF-8 bytes: the bound is
+                # BYTES, so this must trip it even at 40000 characters.
                 $riCjk = ([string][char]0x4E00) * 40000
                 $riCjkResult = Invoke-KiroProbe -Client 'kiro' -Trigger 'UserPromptSubmit' -Stdin '' -UserPrompt $riCjk -Exe $riExe
-                Check ($riTag + ': the prompt cap bounds UTF-8 BYTES, not characters') (
-                    (Get-RiPart $riCjkResult.Out 'TRUNC') -eq 'True' -and
-                    [int](Get-RiPart $riCjkResult.Out 'BODYBYTES') -le 65536) ('out=[' + $riCjkResult.Out + ']')
-                # An astral character straddling the limit: .Substring() cuts
-                # between the two halves of the surrogate pair, and the leftover
-                # unpaired surrogate is not encodable as UTF-8 at all.
-                $riSurrogate = ('x' * 65535) + [string]::Concat([char]0xD83D, [char]0xDE00)
-                $riSurrogateResult = Invoke-KiroProbe -Client 'kiro' -Trigger 'UserPromptSubmit' -Stdin '' -UserPrompt $riSurrogate -Exe $riExe
-                Check ($riTag + ': truncation never splits a surrogate pair, so the result stays valid UTF-8') (
-                    (Get-RiPart $riSurrogateResult.Out 'UTF8OK') -eq 'True' -and
-                    (Get-RiPart $riSurrogateResult.Out 'TRUNC') -eq 'True' -and
-                    [int](Get-RiPart $riSurrogateResult.Out 'BODYBYTES') -le 65536) ('out=[' + $riSurrogateResult.Out + ']')
-
-                # --- the byte bound covers EVERY prompt channel, not just env ---
-                # CLI v3 sends stdin JSON, and "payload wins" used to mean the
-                # payload's prompt escaped the cap entirely: the documented 64 KB
-                # bound applied only to the channel that happened to be smaller.
+                Check ($riTag + ': an oversized CJK USER_PROMPT is withheld (byte bound), hook still runs') (
+                    $riCjkResult.Exit -eq 0 -and $riCjkResult.Out -match 'RAN' -and
+                    (Get-RiPart $riCjkResult.Out 'CHARS') -eq '0' -and
+                    $riCjkResult.Err -match 'withheld') ('out=[' + $riCjkResult.Out + '] err=[' + $riCjkResult.Err + ']')
                 $riPayloadPromptJson = '{"hook_event_name":"UserPromptSubmit","prompt":"' + ('A' * 70000) + '"}'
                 $riPayloadBig = Invoke-KiroProbe -Client 'kiro' -Trigger 'UserPromptSubmit' -Stdin $riPayloadPromptJson -Exe $riExe
-                Check ($riTag + ': an oversized PAYLOAD prompt is bounded by the same cap as USER_PROMPT') (
-                    $riPayloadBig.Exit -eq 0 -and
-                    (Get-RiPart $riPayloadBig.Out 'TRUNC') -eq 'True' -and
-                    [int](Get-RiPart $riPayloadBig.Out 'BODYBYTES') -le 65536) ('out=[' + $riPayloadBig.Out + ']')
+                Check ($riTag + ': an oversized PAYLOAD prompt is withheld by the same rule as USER_PROMPT') (
+                    $riPayloadBig.Exit -eq 0 -and $riPayloadBig.Out -match 'RAN' -and
+                    (Get-RiPart $riPayloadBig.Out 'CHARS') -eq '0') ('out=[' + $riPayloadBig.Out + ']')
 
-                # --- no launcher trigger is not a free pass for the payload ----
-                # This used to `return $parsed` unvalidated, so the payload could
-                # name ANY string as the event and the hook ran that branch. Now
-                # the payload's event is held to the SAME trust list the launcher
-                # argument is: resolvable -> runs canonically; anything else ->
-                # visible refusal, because with neither side trusted there is no
-                # identity for the invocation at all.
-                $riNoTrigValid = Invoke-KiroProbe -Client 'kiro' -Trigger '' -Stdin '{"hook_event_name":"stop"}' -Exe $riExe
-                Check ($riTag + ': no trigger + a payload event INSIDE the trust list runs, normalized') (
-                    $riNoTrigValid.Exit -eq 0 -and (Get-RiPart $riNoTrigValid.Out 'EVENT') -ceq 'Stop') (
-                    'exit=' + $riNoTrigValid.Exit + ' out=[' + $riNoTrigValid.Out + ']')
-                $riNoTrigBogus = Invoke-KiroProbe -Client 'kiro' -Trigger '' -Stdin '{"hook_event_name":"PostFileSave"}' -Exe $riExe
-                Check ($riTag + ': no trigger + a payload event OUTSIDE the trust list is refused visibly') (
-                    $riNoTrigBogus.Out -notmatch 'RAN' -and $riNoTrigBogus.Exit -ne 0 -and $riNoTrigBogus.Exit -ne 2 -and
-                    $riNoTrigBogus.Err -match 'PostFileSave') (
-                    'exit=' + $riNoTrigBogus.Exit + ' out=[' + $riNoTrigBogus.Out + '] err=[' + $riNoTrigBogus.Err + ']')
+                # --- no launcher trigger -> NOTHING runs, unconditionally ------
+                # Round 30 let a payload event run here when it resolved inside
+                # the five-trigger trust list; the review and the user rejected
+                # that: a Hook Maker registration ALWAYS passes -Trigger, so a
+                # Kiro invocation without one has no registration identity, and
+                # stdin alone - however well-formed - must never select the
+                # branch a hook takes. Visible refusal on every variant.
+                foreach ($riNoTrigCase in @(
+                        @{ Label = 'a VALID payload event'; Stdin = '{"hook_event_name":"stop"}' },
+                        @{ Label = 'an unknown payload event'; Stdin = '{"hook_event_name":"PostFileSave"}' },
+                        @{ Label = 'an empty stdin'; Stdin = '' })) {
+                    $riNoTrig = Invoke-KiroProbe -Client 'kiro' -Trigger '' -Stdin ([string]$riNoTrigCase.Stdin) -Exe $riExe
+                    Check ($riTag + ': no launcher trigger + ' + [string]$riNoTrigCase.Label + ' is refused visibly, nothing runs') (
+                        $riNoTrig.Out -notmatch 'RAN' -and $riNoTrig.Exit -ne 0 -and $riNoTrig.Exit -ne 2 -and
+                        $riNoTrig.Err -match '-Trigger') (
+                        'exit=' + $riNoTrig.Exit + ' out=[' + $riNoTrig.Out + '] err=[' + $riNoTrig.Err + ']')
+                }
+                # An UNRESOLVABLE trigger value (PostFileSave is a real Kiro
+                # trigger with no Hook Maker equivalent) is the same no-identity
+                # state as an absent one, and refuses the same way.
+                $riBadTrig = Invoke-KiroProbe -Client 'kiro' -Trigger 'PostFileSave' -Stdin '' -Exe $riExe
+                Check ($riTag + ': a trigger outside the capability table refuses identically to an absent one') (
+                    $riBadTrig.Out -notmatch 'RAN' -and $riBadTrig.Exit -ne 0 -and $riBadTrig.Exit -ne 2) (
+                    'exit=' + $riBadTrig.Exit + ' out=[' + $riBadTrig.Out + ']')
 
                 # --- corrupt stdin is not the same thing as empty stdin --------
                 # Non-empty-but-unparseable used to collapse into the SAME $null

@@ -59,6 +59,37 @@
     Check 'CLAUDE_PROJECT_DIR alone also selects the Claude shape' (
         $null -ne $parsedCl2 -and $null -ne $parsedCl2.PSObject.Properties['hookSpecificOutput']) $r.Out
 
+    # =====================================================================
+    # THE KIRO SHAPES (adapter-provided, the strict improvement over the old
+    # hand-rolled branch that sent Kiro a Codex-shaped JSON payload it cannot
+    # read). Kiro adds hook stdout to model context ONLY on SessionStart/
+    # UserPromptSubmit; on Stop stdout is read and DISCARDED and Kiro documents
+    # no block mechanism at all. So: SessionStart advisory -> PLAIN stdout
+    # (never a JSON envelope); a Stop finding -> the degraded path - the text
+    # on STDERR with exit 1 (a user-visible warning), NEVER decision:block
+    # JSON, and NEVER the refusal code 2 Kiro reserves for real gates.
+    # The real kiro-launch registration always sets HOOKMAKER_KIRO_TRIGGER
+    # beside HOOKMAKER_CLIENT; without it Read-HookInput refuses to run (fail
+    # closed), so the faithful launcher simulation passes BOTH.
+    Write-Host '--- Kiro: SessionStart is plain stdout; a Stop finding degrades to a stderr warning ---' -ForegroundColor Cyan
+    $hcKiroSh = New-IsolatedHookCopy
+    $rKiroSh = Fire -HookPath $hcKiroSh.Script -Cwd $projLeg -EventName 'SessionStart' -LocalAppData $hcKiroSh.LocalAppData -ExtraEnv @{ HOOKMAKER_CLIENT = 'kiro'; HOOKMAKER_KIRO_TRIGGER = 'SessionStart' }
+    $parsedKiroSh = $null
+    try { $parsedKiroSh = $rKiroSh.Out | ConvertFrom-Json } catch { $parsedKiroSh = $null }
+    Check 'HOOKMAKER_CLIENT=kiro on SessionStart gets PLAIN stdout naming the file - no JSON envelope, exit 0' (
+        $rKiroSh.Exit -eq 0 -and $rKiroSh.Err -eq '' -and $null -eq $parsedKiroSh -and
+        $rKiroSh.Out -match 'old\.txt' -and $rKiroSh.Out -notmatch '(?i)hookSpecificOutput' -and
+        $rKiroSh.Out -notmatch '(?i)systemMessage') ($rKiroSh.Out + '|' + $rKiroSh.Err)
+    $hcKiroSh2 = New-IsolatedHookCopy
+    $projKiroSh = New-GitRepo 'KiroStopShape'
+    Write-Utf8 (Join-Path $projKiroSh 'base.txt') "seed`n"
+    Add-Commit $projKiroSh 'seed'
+    Write-Bytes (Join-Path $projKiroSh 'kbad.txt') (Get-InvalidUtf8Bytes 'KIROSTOPMARKER')
+    $rKiroSh2 = Fire -HookPath $hcKiroSh2.Script -Cwd $projKiroSh -EventName 'Stop' -SessionId 'ks1' -LocalAppData $hcKiroSh2.LocalAppData -ExtraEnv @{ HOOKMAKER_CLIENT = 'kiro'; HOOKMAKER_KIRO_TRIGGER = 'Stop' }
+    Check 'kiro Stop: the finding reaches STDERR naming the file; stdout carries no JSON Kiro cannot read' (
+        $rKiroSh2.Err -match 'kbad\.txt' -and $rKiroSh2.Out -eq '' -and -not (Test-StopBlocks $rKiroSh2.Out)) ($rKiroSh2.Out + '|' + $rKiroSh2.Err)
+    Check 'kiro Stop: exit 1 (a visible non-blocking warning), never the refusal code 2' ($rKiroSh2.Exit -eq 1) ([string]$rKiroSh2.Exit)
+
     Write-Host '--- a clean project baseline is silent (but still recorded) ---' -ForegroundColor Cyan
     $hcClean = New-IsolatedHookCopy
     $projClean = New-GitRepo 'CleanBase'
