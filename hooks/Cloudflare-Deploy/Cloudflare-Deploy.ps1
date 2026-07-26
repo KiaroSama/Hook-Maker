@@ -84,27 +84,10 @@ $script:CleanupCategories = @('clean', 'review-required', 'residue-confirmed', '
 # unrecognized value (an older or newer producer) is treated the same way.
 $script:CleanupReleaseReadyCategories = @('clean')
 
-# ---- MIRRORED CLIENT RUNTIME ROOTS ---------------------------------------
-# Where an installed Hook Maker runtime lives, relative to the project root,
-# for EVERY supported client. This mirrors runtimeRelativeRoot in
-# scripts\_clientcapability.ps1 and is duplicated for the same structural
-# reason $script:HookClientIds in hooks\_hooklib.ps1 is: an installed runtime
-# is self-contained - the installer rewrites _hooklib.ps1 into it but copies no
-# sibling out of scripts\ - so the capability table cannot be shared by
-# dot-sourcing. Test-CloudflareDeploy.ps1 asserts this mirror equals the table
-# for every Get-HookMakerClientIds entry, which is how the duplication is kept
-# honest instead of drifting into a stale hardcoded list.
-#
-# Kiro's runtime is deliberately NOT under .kiro\hooks: that directory is
-# Kiro's hook-CONFIG discovery root, so a copied .ps1 tree there would be
-# scanned as configuration. A check that only knew the .claude/.codex layouts
-# therefore saw a Kiro-only install as "cleanup not installed" and skipped the
-# coordination gate entirely.
-$script:ClientRuntimeRelativeRoots = @(
-    '.claude\hooks\Hook-Maker',
-    '.codex\hooks\Hook-Maker',
-    '.kiro\hook-runtime\Hook-Maker'
-)
+# (The former mirrored client runtime-root list lived here. Install evidence
+# is REGISTRATION documents now - see Test-CleanupRegistrationEvidence below -
+# because a runtime directory listing proved nothing: an orphaned folder
+# satisfied it while nothing there could ever run.)
 
 # The single definition of WHERE Test-Temp-Cleanup's coordination record lives,
 # so "does a record exist at all" (install evidence) and "what does it currently
@@ -125,30 +108,81 @@ function Get-CleanupResultPath {
     return (Join-Path (Join-Path $env:LOCALAPPDATA 'HookMaker\state') ('TestTempCleanup-result-' + (Get-ShortHash (Normalize-Path $Root).ToLowerInvariant()) + '.json'))
 }
 
-# Is Test-Temp-Cleanup actually part of this project? A directory listing alone
-# is WEAK evidence: a hand-made, half-deleted or orphaned
-# <runtimeRoot>\Test-Temp-Cleanup folder satisfies it while nothing there ever
-# runs, and an install whose runtime lives somewhere this mirrored list does not
-# know about satisfies it not at all. A coordination record in Hook Maker's own
-# private state is REAL evidence - only the hook itself writes one, only for this
-# exact project key - so it is preferred and checked first; the directory remains
-# the weaker second signal for an install that has not recorded yet.
+# Where each client RECORDS its hook registrations, relative to a scope base
+# (the project root, or the user profile for a global install). Mirrored from
+# scripts\_clientcapability.ps1 for the same structural reason the runtime
+# roots above are: an installed runtime is self-contained and cannot dot-source
+# the capability table. Test-CloudflareDeploy.ps1 asserts this mirror equals the
+# table's projectRegistration/globalRegistration values, which is what keeps the
+# duplication honest instead of rotting into a stale hardcoded list.
+$script:ClientRegistrationRelativeFiles = @(
+    '.claude\settings.local.json',
+    '.claude\settings.json',
+    '.codex\hooks.json'
+)
+$script:KiroRegistrationRelativeDir = '.kiro\hooks'
+
+# Does this scope base carry an ACTUAL Test-Temp-Cleanup registration - a hook
+# entry a client will really fire? The command written by the installer names
+# the hook's own directory, so the hook name appearing in a registration
+# document is registration evidence, not a coincidence a settings file
+# produces on its own. A present-but-unreadable document is treated as
+# evidence: refusing to read is not proof of absence, and the conservative
+# side here is "installed" (worst case: a missed reminder).
+function Test-CleanupRegistrationEvidence {
+    param([string]$Base)
+    if ([string]::IsNullOrWhiteSpace($Base)) { return $false }
+    foreach ($relativeFile in $script:ClientRegistrationRelativeFiles) {
+        $settingsPath = Join-Path $Base $relativeFile
+        if (Test-Path -LiteralPath $settingsPath -PathType Leaf) {
+            try { $settingsText = [System.IO.File]::ReadAllText($settingsPath) }
+            catch { return $true }
+            if ($settingsText -match 'Test-Temp-Cleanup') { return $true }
+        }
+    }
+    $kiroDir = Join-Path $Base $script:KiroRegistrationRelativeDir
+    if (Test-Path -LiteralPath $kiroDir -PathType Container) {
+        try { $kiroFiles = @(Get-ChildItem -LiteralPath $kiroDir -Filter '*.json' -File -ErrorAction Stop) }
+        catch { return $true }
+        foreach ($kiroFile in $kiroFiles) {
+            try { if ([System.IO.File]::ReadAllText($kiroFile.FullName) -match 'Test-Temp-Cleanup') { return $true } }
+            catch { return $true }
+        }
+    }
+    return $false
+}
+
+# Is Test-Temp-Cleanup actually INSTALLED for this project? The evidence, in
+# order of strength:
 #
-# NEITHER signal can SATISFY the cleanliness gate. Only a FRESH 'clean' category
-# does that, so an orphan or hand-made folder can never assert that the workspace
-# was proven clean - the strongest thing it can do is make the gate APPLY.
+#   1. A registration a client will really fire - project scope or user scope.
+#      This is what "installed" MEANS; a directory listing never was. An
+#      orphaned <runtimeRoot>\Test-Temp-Cleanup folder, or a state file
+#      surviving from a manually-deleted install, used to satisfy this check
+#      while nothing there could ever run again - and because the gate then
+#      waited forever for a fresh 'clean' nothing would write, the deployment
+#      reminder was permanently dead in that project.
+#   2. A coordination record whose fingerprint matches the CURRENT repo state.
+#      Only the hook itself writes one, and a fingerprint-current record means
+#      the hook genuinely RAN against this exact state - covering an install
+#      registered somewhere this mirror does not know about.
 #
-# The two signals are OR'd on purpose, which is the conservative side of the
-# failure direction: a false "installed" costs at most a missed reminder, while a
-# false "not installed" skips the cleanliness half of release readiness and shows
-# a deploy decision this hook cannot support. Inconclusive evidence therefore
-# keeps this hook silent rather than letting it claim coverage it does not have.
+# A stale record (fingerprint mismatch) and a bare runtime directory prove
+# nothing anymore: the uninstaller retires the record and deletes the runtime
+# directory on the same success path, so what such residue actually evidences
+# is an install that is GONE.
+#
+# NO signal here can SATISFY the cleanliness gate - only a FRESH 'clean'
+# category does that. This decides only whether the gate APPLIES. Unreadable
+# registration documents count as installed, the conservative side: a false
+# "installed" costs at most a missed reminder, while a false "not installed"
+# skips the cleanliness half of release readiness and shows a deploy decision
+# this hook cannot support.
 function Test-CleanupInstalled {
     param([string]$Root)
-    if (Test-Path -LiteralPath (Get-CleanupResultPath -Root $Root) -PathType Leaf) { return $true }
-    foreach ($relativeRoot in $script:ClientRuntimeRelativeRoots) {
-        if (Test-Path -LiteralPath (Join-Path (Join-Path $Root $relativeRoot) 'Test-Temp-Cleanup') -PathType Container) { return $true }
-    }
+    if (Test-CleanupRegistrationEvidence -Base $Root) { return $true }
+    if (Test-CleanupRegistrationEvidence -Base ([string]$env:USERPROFILE)) { return $true }
+    if ($null -ne (Get-CleanupCoordinationState -Root $Root)) { return $true }
     return $false
 }
 
