@@ -363,6 +363,17 @@ try {
             [switch]$NoMetadata,
             [switch]$MissingRuntime,
             [switch]$TamperRuntime,
+            [switch]$TamperLibrary,
+            [switch]$ManifestOmitsRuntimeScript,
+            # Entries APPENDED to an otherwise correct manifest. The registered
+            # script's own entry stays valid, so a case built this way cannot
+            # pass merely because the entry point failed its own lookup - the
+            # extra entries are the only thing left to reject.
+            [object[]]$ManifestExtra = @(),
+            # The event the registration is written under: the hooks.<Event> key
+            # for Claude/Codex, the entry's trigger for Kiro. Only Stop can
+            # produce the result the gate waits for.
+            [string]$RegisteredEvent = 'Stop',
             [ValidateSet('absolute', 'relative', 'escape', 'outside', 'nonCommandField', 'nameDrop', 'malformed', 'none')]
             [string]$CommandForm = 'absolute',
             [string]$KiroVersion = 'v1',
@@ -392,9 +403,27 @@ try {
 
         New-Item -ItemType Directory -Path $hookDir -Force | Out-Null
         if (-not $MissingRuntime) { Write-Utf8 $scriptPath '# fixture managed runtime script' }
+        # A real install NEVER stages the entry point alone: the shared library
+        # ships beside it and is recorded as an Immutable artifact too, because
+        # the entry point dot-sources it. The fixture carries it by default so
+        # the positive cases prove MULTI-entry verification, and so the "a file
+        # behind the entry point was tampered" negatives below have a real file
+        # to tamper.
+        $libraryRelative = 'Test-Temp-Cleanup/_hooklib.ps1'
+        $libraryPath = Join-Path $hookDir '_hooklib.ps1'
+        Write-Utf8 $libraryPath '# fixture shared library, loaded by whatever the registration invokes'
 
         if (-not $NoMetadata) {
             $hash = if ($MissingRuntime) { ('0' * 64) } else { (Get-FileHash -LiteralPath $scriptPath -Algorithm SHA256).Hash.ToLowerInvariant() }
+            $libraryHash = (Get-FileHash -LiteralPath $libraryPath -Algorithm SHA256).Hash.ToLowerInvariant()
+            $manifest = @(
+                @{ path = $scriptRelative; sha256 = $hash },
+                @{ path = $libraryRelative; sha256 = $libraryHash }
+            )
+            # Drops ONLY the entry point's entry, keeping the library's REAL
+            # hash, so that case can fail for its own reason and no other.
+            if ($ManifestOmitsRuntimeScript) { $manifest = @(@{ path = $libraryRelative; sha256 = $libraryHash }) }
+            if ($ManifestExtra.Count -gt 0) { $manifest = @($manifest) + @($ManifestExtra) }
             # A global install serves every project and records no project key.
             $projectKey = if ($Scope -eq 'project') { Get-ShortHash (Normalize-Path $ProjectRoot).ToLowerInvariant() } else { '' }
             $registrationName = if ($Client -eq 'kiro') { $managedNamePrefix } else { 'Hook-Maker/Test-Temp-Cleanup' }
@@ -407,7 +436,7 @@ try {
                 projectKey                = $projectKey
                 registrationName          = $registrationName
                 runtimeScriptRelativePath = $scriptRelative
-                runtimeManifest           = @(@{ path = $scriptRelative; sha256 = $hash })
+                runtimeManifest           = $manifest
             }
             foreach ($key in @($Metadata.Keys)) {
                 if ([string]$Metadata[$key] -eq '<remove>') { $record.Remove($key) } else { $record[$key] = $Metadata[$key] }
@@ -417,6 +446,9 @@ try {
         # AFTER the manifest was computed: the recorded hash no longer describes
         # what would execute.
         if ($TamperRuntime) { Write-Utf8 $scriptPath '# tampered after the manifest was written' }
+        # The entry point is left INTACT here: only a file behind it changed,
+        # which is exactly what verifying one manifest entry could not see.
+        if ($TamperLibrary) { Write-Utf8 $libraryPath '# tampered after the manifest was written' }
 
         $commandTarget = $scriptPath
         if ($CommandForm -eq 'relative') {
@@ -456,7 +488,7 @@ try {
                 $registrationPath = Join-Path (Join-Path $Base '.kiro\hooks') $registrationFileName
                 # description carries Get-KiroManagedMarker's [hookmaker:<id>],
                 # one of the two ownership proofs the Kiro writer embeds.
-                $entryBody = '"name":"' + $entryName + '","description":"Test-Temp-Cleanup - managed by Hook Maker; edit through Hook Maker, not by hand. [hookmaker:' + $recordId + ']","trigger":"Stop"'
+                $entryBody = '"name":"' + $entryName + '","description":"Test-Temp-Cleanup - managed by Hook Maker; edit through Hook Maker, not by hand. [hookmaker:' + $recordId + ']","trigger":"' + $RegisteredEvent + '"'
                 $document = switch ($CommandForm) {
                     'nameDrop' { '{"version":"' + $KiroVersion + '","hooks":[{' + $entryBody + ',"timeout":45,"enabled":true}]}' }
                     'malformed' { '{"version":"v1","hooks":[{"name":"Test-Temp-Cleanup' }
@@ -469,8 +501,8 @@ try {
                 $document = switch ($CommandForm) {
                     'nameDrop' { '{"description":"this document only mentions Test-Temp-Cleanup by name","hooks":{}}' }
                     'malformed' { '{"hooks": broken json naming Test-Temp-Cleanup' }
-                    'nonCommandField' { '{"hooks":{"Stop":[{"hooks":[{"type":"command","notes":"example: ' + $commandString + '"}]}]}}' }
-                    default { '{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"' + $commandString + '","timeout":45}]}]}}' }
+                    'nonCommandField' { '{"hooks":{"' + $RegisteredEvent + '":[{"hooks":[{"type":"command","notes":"example: ' + $commandString + '"}]}]}}' }
+                    default { '{"hooks":{"' + $RegisteredEvent + '":[{"hooks":[{"type":"command","command":"' + $commandString + '","timeout":45}]}]}}' }
                 }
             }
             New-Item -ItemType Directory -Path (Split-Path -Parent $registrationPath) -Force | Out-Null
@@ -767,7 +799,68 @@ try {
         [pscustomobject]@{
             Name  = 'a manifest with no entry for the runtime script'
             Why   = 'an unlisted script is unverified, not verified-by-omission'
-            Build = { param($Repo) New-ManagedCleanupInstall -Base $Repo -Metadata @{ runtimeManifest = @(@{ path = 'Test-Temp-Cleanup/_hooklib.ps1'; sha256 = ('b' * 64) }) } | Out-Null }
+            # Every OTHER entry hashes correctly, so this can only fail on the
+            # missing entry point - not on a bogus hash standing in for it.
+            Build = { param($Repo) New-ManagedCleanupInstall -Base $Repo -ManifestOmitsRuntimeScript | Out-Null }
+        }
+        # ---- the registered EVENT, not merely a registration -----------------
+        # Ownership proves WHOSE runtime it is; it says nothing about WHEN it
+        # runs. A managed install on any non-Stop event never reaches the Stop
+        # that writes the fresh 'clean' this gate waits for, so counting it as
+        # installed parks the reminder behind a result that registration cannot
+        # produce - the same permanently dead gate, reached from a new direction.
+        [pscustomobject]@{
+            Name  = 'a fully ownership-proven Claude install registered on SessionStart only'
+            Why   = 'no Stop handler exists, so nothing will ever record a result for this gate to read'
+            Build = { param($Repo) New-ManagedCleanupInstall -Base $Repo -RegisteredEvent 'SessionStart' | Out-Null }
+        }
+        [pscustomobject]@{
+            Name  = 'a fully ownership-proven Kiro install whose only entry triggers on SessionStart'
+            Why   = 'a Kiro file holds one entry PER trigger, so the file existing says nothing about Stop'
+            Build = { param($Repo) New-ManagedCleanupInstall -Base $Repo -Client 'kiro' -RegisteredEvent 'SessionStart' | Out-Null }
+        }
+        [pscustomobject]@{
+            Name  = 'a Claude registration under a lower-case "stop" key'
+            Why   = 'the client matches the event key literally, so a mis-cased key fires nothing'
+            Build = { param($Repo) New-ManagedCleanupInstall -Base $Repo -RegisteredEvent 'stop' | Out-Null }
+        }
+        [pscustomobject]@{
+            Name  = 'a Kiro entry whose trigger is lower-case "stop"'
+            Why   = 'KIRO_PROTOCOL.md records the triggers as confirmed exact casing'
+            Build = { param($Repo) New-ManagedCleanupInstall -Base $Repo -Client 'kiro' -RegisteredEvent 'stop' | Out-Null }
+        }
+        # ---- the whole runtime, not just its entry point ---------------------
+        # The registration names ONE file, but that file is a door, not the room:
+        # Claude/Codex run <hook>.ps1 which dot-sources _hooklib.ps1, and Kiro
+        # runs kiro-launch.ps1 which runs the hook which loads the same library.
+        # Verifying only the named file left the entire body of executing code
+        # unchecked.
+        [pscustomobject]@{
+            Name  = 'a library BEHIND an untouched Claude entry point, modified after the manifest'
+            Why   = 'the registered script still hashes correctly; only whole-manifest verification sees this'
+            Build = { param($Repo) New-ManagedCleanupInstall -Base $Repo -TamperLibrary | Out-Null }
+        }
+        [pscustomobject]@{
+            Name  = 'a library behind an untouched Kiro LAUNCHER, modified after the manifest'
+            Why   = 'Kiro registers the launcher, so everything it goes on to run sits behind the one recorded path'
+            Build = { param($Repo) New-ManagedCleanupInstall -Base $Repo -Client 'kiro' -TamperLibrary | Out-Null }
+        }
+        [pscustomobject]@{
+            Name  = 'a manifest entry whose path climbs out of the runtime root with ..'
+            Why   = 'a manifest must not be able to vouch for a file outside the runtime it describes'
+            Build = {
+                param($Repo)
+                New-ManagedCleanupInstall -Base $Repo -ManifestExtra @(@{ path = '../../../../elsewhere.ps1'; sha256 = ('c' * 64) }) | Out-Null
+            }
+        }
+        [pscustomobject]@{
+            Name  = 'a manifest longer than the writer can emit'
+            Why   = 'a manifest past the install plan''s cap did not come from an install, and bounds a Stop hook''s hashing'
+            Build = {
+                param($Repo)
+                $pad = @(1..65 | ForEach-Object { @{ path = ('Test-Temp-Cleanup/pad-' + $_ + '.ps1'); sha256 = ('d' * 64) } })
+                New-ManagedCleanupInstall -Base $Repo -ManifestExtra $pad | Out-Null
+            }
         }
         [pscustomobject]@{
             Name  = 'a runtime script MODIFIED after the manifest was written'
@@ -951,6 +1044,15 @@ try {
     $kiroFilePattern = '^hookmaker-[a-z0-9-]+\.json$'
     Check 'the Kiro managed-filename mirror equals the installer''s own ownership rule' (
         $cfText -match [regex]::Escape($kiroFilePattern) -and $kiroInstallText -match [regex]::Escape($kiroFilePattern)) $kiroFilePattern
+    # The manifest-entry cap is a fourth mirror: the hook refuses a manifest
+    # longer than the plan can emit, which is only meaningful while the two
+    # numbers agree. Raise the writer's cap alone and the hook starts rejecting
+    # real installs; lower it alone and the bound stops matching reality.
+    $planText = [System.IO.File]::ReadAllText((Join-Path $PSScriptRoot '_installplan.ps1'))
+    $writerCap = ([regex]::Match($planText, '\$script:RuntimeMetadataManifestCap\s*=\s*(\d+)')).Groups[1].Value
+    $readerCap = ([regex]::Match($cfText, '\$script:CleanupManifestCap\s*=\s*(\d+)')).Groups[1].Value
+    Check 'the manifest-entry cap mirror equals the install plan''s own writer cap' (
+        $writerCap -ne '' -and $writerCap -eq $readerCap) ('writer=[' + $writerCap + '] reader=[' + $readerCap + ']')
 
     # =====================================================================
     Write-Host '--- the ownership-metadata contract has two sides that must agree ---' -ForegroundColor Cyan
