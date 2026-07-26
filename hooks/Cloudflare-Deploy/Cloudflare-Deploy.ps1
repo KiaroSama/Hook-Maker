@@ -123,12 +123,29 @@ $script:ClientRegistrationRelativeFiles = @(
 $script:KiroRegistrationRelativeDir = '.kiro\hooks'
 
 # Does this scope base carry an ACTUAL Test-Temp-Cleanup registration - a hook
-# entry a client will really fire? The command written by the installer names
-# the hook's own directory, so the hook name appearing in a registration
-# document is registration evidence, not a coincidence a settings file
-# produces on its own. A present-but-unreadable document is treated as
-# evidence: refusing to read is not proof of absence, and the conservative
-# side here is "installed" (worst case: a missed reminder).
+# entry a client will really fire? A name-drop is NOT enough: any document
+# merely CONTAINING the substring 'Test-Temp-Cleanup' used to count, so a
+# foreign .kiro\hooks\*.json mentioning the name satisfied this with no
+# command and no runtime behind it - and because nothing there would ever
+# write a coordination record, the gate then waited forever for a fresh
+# 'clean' and the deployment reminder was permanently dead in that project.
+#
+# Evidence now means a COMMAND whose quoted -File target lives in this hook's
+# own runtime directory (...\Test-Temp-Cleanup\Test-Temp-Cleanup.ps1 for
+# Claude/Codex, ...\Test-Temp-Cleanup\kiro-launch.ps1 for Kiro - the DIRECTORY
+# segment is the identity, never the script name) AND whose target script
+# still EXISTS on disk. Command shape + live runtime is the strongest evidence
+# available in-process: the install REGISTRY (tool-root state\
+# install-registry.json) is structurally unreachable from an installed runtime
+# - runtimes are self-contained and do not know the tool root - so a
+# registry/manifest cross-check is impossible here and must not be faked.
+#
+# Failure direction (unchanged, deliberate): a document that cannot be READ,
+# or that names the hook but will not PARSE, still counts as installed -
+# refusing to read is not proof of absence, and the conservative side here is
+# "installed" (worst case: a missed reminder). Only a document that parses
+# CLEANLY and still lacks a live command is PROVEN to be a name-drop, and only
+# that case stopped counting.
 function Test-CleanupRegistrationEvidence {
     param([string]$Base)
     if ([string]::IsNullOrWhiteSpace($Base)) { return $false }
@@ -137,7 +154,7 @@ function Test-CleanupRegistrationEvidence {
         if (Test-Path -LiteralPath $settingsPath -PathType Leaf) {
             try { $settingsText = [System.IO.File]::ReadAllText($settingsPath) }
             catch { return $true }
-            if ($settingsText -match 'Test-Temp-Cleanup') { return $true }
+            if (Test-RegistrationDocumentEvidence -Text $settingsText -Base $Base) { return $true }
         }
     }
     $kiroDir = Join-Path $Base $script:KiroRegistrationRelativeDir
@@ -145,27 +162,94 @@ function Test-CleanupRegistrationEvidence {
         try { $kiroFiles = @(Get-ChildItem -LiteralPath $kiroDir -Filter '*.json' -File -ErrorAction Stop) }
         catch { return $true }
         foreach ($kiroFile in $kiroFiles) {
-            try { if ([System.IO.File]::ReadAllText($kiroFile.FullName) -match 'Test-Temp-Cleanup') { return $true } }
+            try { $kiroText = [System.IO.File]::ReadAllText($kiroFile.FullName) }
             catch { return $true }
+            if (Test-RegistrationDocumentEvidence -Text $kiroText -Base $Base) { return $true }
         }
     }
     return $false
 }
 
-# Is Test-Temp-Cleanup actually INSTALLED for this project? The evidence, in
-# order of strength:
+# One registration document's verdict. Cheap substring first (no parse when
+# the name never appears), then the parse/command/existence ladder described
+# above Test-CleanupRegistrationEvidence.
+function Test-RegistrationDocumentEvidence {
+    param([string]$Text, [string]$Base)
+    if ($Text -notmatch 'Test-Temp-Cleanup') { return $false }
+    $document = $null
+    # Inner parentheses are load-bearing on Windows PowerShell 5.1 - same
+    # array-collection defect as the gh run-list decode below.
+    try { $document = (($Text | ConvertFrom-Json)) }
+    catch { return $true }
+    return (Test-CleanupCommandEvidence -Document $document -Base $Base)
+}
+
+# Every string leaf of a parsed registration document. Walking ALL strings
+# rather than named fields is deliberate: the three clients spell the command
+# key differently (command / commandWindows / command_windows / Kiro's own
+# schema), and recognizing a command by its SHAPE plus a live target instead
+# of its key name covers all of them. The false-positive this admits - a
+# non-command field carrying '-File "...\Test-Temp-Cleanup\..."' whose target
+# really exists on disk - is materially a live install anyway, and it errs on
+# the conservative (missed-reminder) side.
+function Get-RegistrationStringValues {
+    param($Node)
+    if ($null -eq $Node) { return @() }
+    if ($Node -is [string]) { return @(, $Node) }
+    $collected = @()
+    if ($Node -is [System.Collections.IEnumerable]) {
+        foreach ($item in $Node) { $collected += @(Get-RegistrationStringValues $item) }
+        return $collected
+    }
+    if ($Node -is [System.Management.Automation.PSCustomObject]) {
+        foreach ($property in $Node.PSObject.Properties) { $collected += @(Get-RegistrationStringValues $property.Value) }
+    }
+    return $collected
+}
+
+# Does any string in the parsed document carry a quoted -File target inside
+# this hook's runtime directory that still exists on disk? JSON parsing has
+# already unescaped \\ to \ by the time these strings are inspected. A
+# non-rooted target resolves against the scope base, the way a client
+# resolves a relative command against the project.
+function Test-CleanupCommandEvidence {
+    param($Document, [string]$Base)
+    foreach ($value in @(Get-RegistrationStringValues $Document)) {
+        foreach ($match in [regex]::Matches($value, '-File\s+"([^"]+)"', 'IgnoreCase')) {
+            $scriptPath = $match.Groups[1].Value
+            if ($scriptPath -notmatch '[\\/]Test-Temp-Cleanup[\\/]') { continue }
+            # try/catch because IsPathRooted/Join-Path THROW on illegal path
+            # characters under .NET Framework (5.1); a path malformed enough
+            # to throw cannot exist on disk, so "no evidence from this match"
+            # is the faithful verdict, not a swallowed error.
+            try {
+                if (-not [System.IO.Path]::IsPathRooted($scriptPath)) { $scriptPath = Join-Path $Base $scriptPath }
+                if (Test-Path -LiteralPath $scriptPath -PathType Leaf) { return $true }
+            }
+            catch { }
+        }
+    }
+    return $false
+}
+
+# Is Test-Temp-Cleanup actually INSTALLED for this project? The two accepted
+# signals:
 #
-#   1. A registration a client will really fire - project scope or user scope.
-#      This is what "installed" MEANS; a directory listing never was. An
-#      orphaned <runtimeRoot>\Test-Temp-Cleanup folder, or a state file
-#      surviving from a manually-deleted install, used to satisfy this check
-#      while nothing there could ever run again - and because the gate then
-#      waited forever for a fresh 'clean' nothing would write, the deployment
-#      reminder was permanently dead in that project.
+#   1. A registration a client will really fire - project scope or user scope,
+#      proven by a command targeting the hook's runtime directory whose script
+#      still exists (see Test-CleanupRegistrationEvidence). This is what
+#      "installed" MEANS; a directory listing never was, and a name-drop is
+#      not either. An orphaned <runtimeRoot>\Test-Temp-Cleanup folder, or a
+#      state file surviving from a manually-deleted install, used to satisfy
+#      this check while nothing there could ever run again - and because the
+#      gate then waited forever for a fresh 'clean' nothing would write, the
+#      deployment reminder was permanently dead in that project.
 #   2. A coordination record whose fingerprint matches the CURRENT repo state.
 #      Only the hook itself writes one, and a fingerprint-current record means
-#      the hook genuinely RAN against this exact state - covering an install
-#      registered somewhere this mirror does not know about.
+#      the hook genuinely EXECUTED against this exact repo state - stronger
+#      evidence than any registration text can be, which is why it stands
+#      unchanged beside the command check: it covers an install registered
+#      somewhere the mirrored registration list does not know about.
 #
 # A stale record (fingerprint mismatch) and a bare runtime directory prove
 # nothing anymore: the uninstaller retires the record and deletes the runtime
@@ -259,8 +343,9 @@ function Test-ReleaseReady {
     }
 
     # 4) Test-Temp-Cleanup coordination, only enforced when it is installed for
-    # this project - and "installed" is proven by a real coordination record
-    # first, a runtime directory only as weaker evidence (see Test-CleanupInstalled).
+    # this project - and "installed" is proven by a registration command with a
+    # live runtime script, or by a fingerprint-current coordination record
+    # (see Test-CleanupInstalled).
     if (Test-CleanupInstalled -Root $Root) {
         $cleanupCategory = Get-CleanupCoordinationState -Root $Root
         # Missing/stale ($null), a non-ready category, and an unrecognized
