@@ -53,6 +53,10 @@ starts the user's task.
 | `scripts/_installvalidate.ps1` | Read-only shape judgement on one persisted managed record (`Test-InstallRecordValid`, canonical-path helpers). Mutates nothing and returns `{ Ok; Reason }` — the same shape as `_uninstallownership.ps1`, keeping proofs apart from the machinery that acts on them. The canonical settings path for a record is derived from `_clientcapability.ps1`, replacing an `if ($ClientName -eq 'claude') { … } else { … }` fallthrough that made **every** non-Claude client resolve to Codex's `hooks.json` — the very file a record is validated, updated and uninstalled against. An unrecognised client is now rejected outright, and a client that registers one file per installation has no shared settings path at all, so the helper refuses rather than synthesising one the caller cannot tell is fake. Either refusal becomes an ordinary `{ Ok = $false }` rejection, because a validator that throws aborts the whole update run and leaves every healthy record after it unevaluated. Exercised by `Test-InstallRegistrySchema.ps1`. |
 | `scripts/_installlegacy.ps1` | Pre-registry discovery: finds live registrations the registry never recorded (`Get-LegacyScanScopes`, `Get-ScopeSettingsPaths`, `Find-ManagedCommands`, `Get-LegacyHookCandidates`). Exercised by `Test-LegacyDiscovery.ps1`. |
 | `scripts/_installregistry.ps1` | The registry-persistence layer split out of `_installlib.ps1` (which dot-sources it, so consumers need no change): registry path/shape/quarantine, crash-aware locking, record identity and per-client subrecords, v1→v2 migration, and the locked atomic record upsert. |
+| `scripts/_installlibmanifest.ps1` | Manifest building/comparison and native pre-push state, split out of `_installlib.ps1` (which dot-sources it). |
+| `scripts/_installlibregistration.ps1` | Registration inspection for the shared-settings clients and Kiro side by side, split out of `_installlib.ps1` (which dot-sources it). |
+| `scripts/_hookstatusscanregistrations.ps1` | Claude/Codex settings parsing and Kiro per-hook-file parsing, split out of `_hookstatusscan.ps1` (which dot-sources it). |
+| `scripts/_hookstatusscangit.ps1` | Native Git pre-push discovery, split out of `_hookstatusscan.ps1` (which dot-sources it). |
 | `scripts/_installdiscovered.ps1` | The other record kind sharing that file, split out of `_installregistry.ps1` (which dot-sources it): a *discovered* record is one the read-only status scan found rather than one Hook Maker installed, so it has its own stable id derivation, its own field validators (including the rule that a raw command line is never persisted), and its own merge against the managed set. Exercised by `Test-InstallRegistrySchema.ps1`. |
 | `scripts/_installruntime.ps1` | Runtime materialization split out of `Install-Hook.ps1` (which dot-sources it): building the self-contained runtime copy a registration points at — the planned, hash-verified, transactional swap plus its post-commit legacy cleanup — and the two command lines (Windows PowerShell / pwsh) that invoke that copy. |
 | `scripts/_installclientsettings.ps1` | Client settings mutation split out of `Install-Hook.ps1` (which dot-sources it): the read-modify-write of one client's settings file — pruning only handlers this install provably owns, inserting the handler group, backing the file up, and replacing it transactionally after re-parsing the serialized JSON from disk. |
@@ -385,19 +389,23 @@ Four Kiro facts shape the install and are not worked around:
   install still degrades on it — registering a hook that silently cannot work is the worse error —
   but the report does not claim more than the documentation supports. Saying "Kiro cannot supply
   this" would state an unverified CLI v3 fact as a confirmed one.
-- **A registration that disagrees with Kiro is refused, not guessed.** If the trigger recorded in the
-  `.kiro\hooks` registration and the event Kiro reports resolve to two *different* events, the hook
-  writes a warning to stderr and exits non-zero instead of choosing a branch. Different spellings of
-  the *same* event are normalized first, so an undocumented CLI v3 casing never trips it.
+- **A registration that disagrees with Kiro — or supplies no `-Trigger` at all — is refused, not
+  guessed.** If the trigger recorded in the `.kiro\hooks` registration and the event Kiro reports
+  resolve to two *different* events, or the invocation carries no resolvable `-Trigger` (every Hook
+  Maker registration passes one, so its absence means the registration is not ours or was altered),
+  the hook writes a bounded warning to stderr and exits non-zero instead of letting stdin select a
+  branch. Corrupt (non-empty, unparseable) stdin refuses the same way. Different spellings of the
+  *same* event are normalized first, so an undocumented CLI v3 casing never trips it.
 - **Kiro cannot block at `Stop`** on either targeted surface, and only `SessionStart` and
   `UserPromptSubmit` add stdout to context. Stop-gating hooks therefore record `degraded-stop-gate`
   permanently, and events Kiro has no trigger for are reported by name — never dropped in silence and
   never remapped onto a different trigger.
 
-`USER_PROMPT` is capped at 64 KB of **UTF-8 bytes** (not characters, so a non-ASCII prompt is not
-silently allowed three times the documented bound), truncated on a character boundary so a surrogate
-pair is never split, and the truncation is stated in the prompt text itself rather than applied
-silently.
+A prompt over 64 KB of **UTF-8 bytes** (whether it arrived via `USER_PROMPT` or inside a CLI v3
+stdin payload) is **withheld from hooks entirely, never truncated**: a truncated prefix is a prompt
+the user did not type, and prompt-driven checks would match on it as if it were. Hooks take their
+documented no-prompt degradation instead, and a one-line stderr notice reports the withholding so
+it is never silent.
 
 Kiro supports `SessionStart`, `UserPromptSubmit`, `PreToolUse`, `PostToolUse` and `Stop`; any other
 requested event is reported as unsupported for Kiro while still installing for the other clients.

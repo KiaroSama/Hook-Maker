@@ -9,9 +9,11 @@
 # `unknown`, a stale fingerprint, a missing record, and any retired/unrecognized
 # value all keep this hook silent - and a same-Stop race is resolved by a LATER
 # Stop, never by an ordering assumption or an in-invocation retry. It also pins
-# what counts as EVIDENCE that cleanup is installed at all: the coordination
-# record proves it on its own, a bare runtime folder is only the weaker signal,
-# and neither can ever satisfy the gate - only a fresh `clean` does. `gh` is
+# what counts as EVIDENCE that cleanup is installed at all: a registration
+# COMMAND targeting the hook's runtime directory whose script still exists, or
+# a fingerprint-CURRENT coordination record; a bare name-drop, a command with a
+# missing target, an orphan folder, and a stale record all prove nothing - and
+# no evidence can ever SATISFY the gate, only a fresh `clean` does. `gh` is
 # PATH-shimmed (same convention as Test-CiStatusCheck.ps1's gh.ps1) - no live
 # GitHub calls. Remotes are real local bare repos (same convention as
 # Test-GitSyncCheck.ps1) so the generic @{upstream}/ahead-count check is
@@ -307,18 +309,45 @@ try {
         param([string]$Root, [string]$RuntimeRoot = '.claude\hooks\Hook-Maker')
         New-Item -ItemType Directory -Path (Join-Path (Join-Path $Root $RuntimeRoot) 'Test-Temp-Cleanup') -Force | Out-Null
     }
-    # Writes a REAL registration document naming the hook - what "installed"
-    # actually means, and the evidence Test-CleanupInstalled now requires.
+    # Writes a REAL registration document - a command whose quoted -File target
+    # is this hook's runtime script - and creates that script on disk, because
+    # that PAIR (command shape + live target) is what Test-CleanupInstalled now
+    # requires; a bare name-drop no longer counts. The absolute default mirrors
+    # New-HookCommands, which always registers absolute paths.
     # -RelativeFile selects the client: a Claude/Codex settings document, or a
     # per-hook file under .kiro\hooks (Kiro's registrations live THERE; only the
-    # runtime is kept out of that directory).
+    # runtime is kept out of that directory). -ScriptFileName/-RuntimeRelativeRoot
+    # let the Kiro cases register .kiro\hook-runtime\...\kiro-launch.ps1 - the
+    # evidence rule keys on the \Test-Temp-Cleanup\ DIRECTORY segment, never the
+    # script name or the client's runtime root. -NameDropOnly and -MissingScript
+    # build the two documents that must NOT count: a parseable file that merely
+    # mentions the hook, and a real-shaped command whose target does not exist.
+    # -RelativeCommandPath exercises the resolver branch for non-rooted command
+    # paths (resolved against the scope base, as a client resolves them against
+    # the project).
     function New-CleanupRegistration {
-        param([string]$Root, [string]$RelativeFile = '.claude\settings.local.json')
+        param([string]$Root, [string]$RelativeFile = '.claude\settings.local.json',
+              [string]$ScriptFileName = 'Test-Temp-Cleanup.ps1',
+              [string]$RuntimeRelativeRoot = '.claude\hooks\Hook-Maker',
+              [switch]$NameDropOnly, [switch]$MissingScript, [switch]$RelativeCommandPath)
         $regPath = Join-Path $Root $RelativeFile
         New-Item -ItemType Directory -Path (Split-Path -Parent $regPath) -Force | Out-Null
-        [System.IO.File]::WriteAllText($regPath,
-            '{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"powershell.exe -File \".claude\\hooks\\Hook-Maker\\Test-Temp-Cleanup\\Test-Temp-Cleanup.ps1\""}]}]}}',
-            (New-Object System.Text.UTF8Encoding $false))
+        if ($NameDropOnly) {
+            $document = '{"description":"this document only mentions Test-Temp-Cleanup by name","hooks":{}}'
+        }
+        else {
+            $runtimeRelative = Join-Path (Join-Path $RuntimeRelativeRoot 'Test-Temp-Cleanup') $ScriptFileName
+            $runtimeAbsolute = Join-Path $Root $runtimeRelative
+            if (-not $MissingScript) {
+                New-Item -ItemType Directory -Path (Split-Path -Parent $runtimeAbsolute) -Force | Out-Null
+                Write-Utf8 $runtimeAbsolute '# fixture runtime script'
+            }
+            $commandPath = if ($RelativeCommandPath) { $runtimeRelative } else { $runtimeAbsolute }
+            # Hand-built JSON on purpose: the on-disk document must carry the
+            # JSON-escaped \\ form the evidence parser has to survive.
+            $document = '{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File \"' + $commandPath.Replace('\', '\\') + '\""}]}]}}'
+        }
+        [System.IO.File]::WriteAllText($regPath, $document, (New-Object System.Text.UTF8Encoding $false))
         # Registration documents must not DIRTY the fixture repo, or every
         # readiness assertion here silently tests "tree dirty -> silent" instead
         # of the cleanup gate. .git\info\exclude ignores them without touching
@@ -411,15 +440,23 @@ try {
     # directory its RUNTIME deliberately stays out of.
     foreach ($clientRegistration in @('.codex\hooks.json', '.kiro\hooks\hookmaker-test-temp-cleanup-1a2b3c.json')) {
         $clientLabel = (($clientRegistration -split '\\')[0]).TrimStart('.')
+        # Kiro registers the LAUNCHER under its own runtime root, not the hook
+        # script under Claude's - the evidence rule must key on the
+        # \Test-Temp-Cleanup\ directory segment, never the script name or the
+        # client's runtime root.
+        $clientFixtureArgs = @{}
+        if ($clientLabel -eq 'kiro') {
+            $clientFixtureArgs = @{ ScriptFileName = 'kiro-launch.ps1'; RuntimeRelativeRoot = '.kiro\hook-runtime\Hook-Maker' }
+        }
         $gatedRepo = New-ReadyWorkersRepo ('CleanupOn-' + $clientLabel)
-        New-CleanupRegistration -Root $gatedRepo -RelativeFile $clientRegistration
+        New-CleanupRegistration -Root $gatedRepo -RelativeFile $clientRegistration @clientFixtureArgs
         Write-CleanupResult -Root $gatedRepo -Category 'review-required'
         $r = Fire -Cwd $gatedRepo
         Check ('a ' + $clientLabel + '-only cleanup REGISTRATION is detected: review-required -> silent') (
             $r.Exit -eq 0 -and $r.Out -eq '') $r.Out
 
         $readyRepo = New-ReadyWorkersRepo ('CleanupOnReady-' + $clientLabel)
-        New-CleanupRegistration -Root $readyRepo -RelativeFile $clientRegistration
+        New-CleanupRegistration -Root $readyRepo -RelativeFile $clientRegistration @clientFixtureArgs
         Write-CleanupResult -Root $readyRepo -Category 'clean'
         $r = Fire -Cwd $readyRepo
         Check ('a ' + $clientLabel + '-only cleanup registration with a fresh clean shows the decision') (
@@ -499,6 +536,55 @@ try {
     finally {
         Remove-Item -LiteralPath (Join-Path $FakeUserProfile '.claude\settings.json') -Force -ErrorAction SilentlyContinue
     }
+
+    # =====================================================================
+    Write-Host '--- registration evidence means a live command, never a name-drop ---' -ForegroundColor Cyan
+    # A foreign document that merely MENTIONS the hook name has no command and
+    # no runtime behind it - nothing there will ever write a coordination
+    # record, so treating it as installed parked the deploy reminder forever
+    # behind a fresh 'clean' that could not come. The primary shape is a
+    # foreign .kiro\hooks\*.json, where every file in the directory is scanned.
+    $nameDropKiro = New-ReadyWorkersRepo 'CleanupNameDropKiro'
+    New-CleanupRegistration -Root $nameDropKiro -RelativeFile '.kiro\hooks\foreign-hook.json' -NameDropOnly
+    $r = Fire -Cwd $nameDropKiro
+    Check 'a foreign .kiro document that only name-drops the hook is NOT install evidence - gate skipped, decision shown' (
+        $r.Out -match 'CLOUDFLARE DEPLOY CHECK') $r.Out
+
+    $nameDropClaude = New-ReadyWorkersRepo 'CleanupNameDropClaude'
+    New-CleanupRegistration -Root $nameDropClaude -NameDropOnly
+    $r = Fire -Cwd $nameDropClaude
+    Check 'a Claude settings document that only name-drops the hook is NOT install evidence either' (
+        $r.Out -match 'CLOUDFLARE DEPLOY CHECK') $r.Out
+
+    # A real-shaped command whose target script is GONE is manual-deletion
+    # residue: nothing can fire, so nothing will ever record a fresh 'clean'.
+    $missingRuntime = New-ReadyWorkersRepo 'CleanupMissingRuntime'
+    New-CleanupRegistration -Root $missingRuntime -MissingScript
+    $r = Fire -Cwd $missingRuntime
+    Check 'a command pointing at a MISSING runtime script is NOT install evidence - gate skipped, decision shown' (
+        $r.Out -match 'CLOUDFLARE DEPLOY CHECK') $r.Out
+
+    # A non-rooted command path resolves against the scope base, the way a
+    # client resolves it against the project - it must still count.
+    $relativeCommand = New-ReadyWorkersRepo 'CleanupRelativeCommand'
+    New-CleanupRegistration -Root $relativeCommand -RelativeCommandPath
+    $r = Fire -Cwd $relativeCommand
+    Check 'a RELATIVE command path with a live runtime script still proves the install (no record yet -> silent)' (
+        $r.Exit -eq 0 -and $r.Out -eq '') $r.Out
+
+    # Parse failure keeps the old conservative verdict: a document that names
+    # the hook but will not parse cannot be PROVEN a name-drop, and the false
+    # "not installed" direction is the worse error (a deploy decision on
+    # unproven cleanliness). Only a cleanly parsed document with no live
+    # command stopped counting.
+    $unparseable = New-ReadyWorkersRepo 'CleanupUnparseableRegistration'
+    $unparseablePath = Join-Path $unparseable '.claude\settings.local.json'
+    New-Item -ItemType Directory -Path (Split-Path -Parent $unparseablePath) -Force | Out-Null
+    Write-Utf8 $unparseablePath '{"hooks": broken json naming Test-Temp-Cleanup'
+    Add-Content -LiteralPath (Join-Path $unparseable '.git\info\exclude') -Value '/.claude/' -Encoding UTF8
+    $r = Fire -Cwd $unparseable
+    Check 'an unparseable document naming the hook still counts as installed (conservative direction kept) -> silent' (
+        $r.Exit -eq 0 -and $r.Out -eq '') $r.Out
 
     # =====================================================================
     Write-Host '--- the shared category contract is declared, not inferred ---' -ForegroundColor Cyan

@@ -177,30 +177,31 @@ function Read-HookInput {
     # code path a hook takes.
     $kiroTrigger = Resolve-KiroTrigger ([string]$env:HOOKMAKER_KIRO_TRIGGER)
     if ($kiroTrigger -eq '') {
-        # No trusted trigger from the launcher. This used to `return $parsed`
-        # as-is, which quietly moved the trust boundary to nowhere: the payload
-        # could name ANY string as the event - Stop, PostFileSave, anything -
-        # and the hook would run that branch unvalidated, while only the
-        # launcher argument was ever checked against the trigger list.
-        if ($null -eq $parsed) { return $null }
-        $registrationlessEventRaw = [string](Get-Field $parsed 'hook_event_name')
-        $kiroTrigger = Resolve-KiroTrigger $registrationlessEventRaw
-        if ($kiroTrigger -eq '') {
-            # No launcher trigger AND no payload event that resolves to one of
-            # the five documented Kiro triggers: there is no trusted identity
-            # for this invocation at all. Same visible-refusal channel as the
-            # contradiction below - a Hook Maker registration always passes
-            # -Trigger, so landing here means the registration is not ours or
-            # has been altered, which only the user can repair.
-            [Console]::Error.WriteLine('Hook Maker: not running this hook. It is running under Kiro without ' +
-                'a -Trigger from its registration, and the stdin payload''s event name "' +
-                (Get-HookSafeDiagnosticText $registrationlessEventRaw) + '" is not a Kiro trigger Hook Maker ' +
-                'supports. Re-install the hook so its .kiro\hooks registration passes -Trigger.')
-            exit 1
+        # No trusted launcher trigger -> NOTHING runs, unconditionally.
+        #
+        # Every Hook Maker registration passes -Trigger, and kiro-launch.ps1 is
+        # what sets the client identity this branch is gated on - so a Kiro
+        # invocation with no resolvable trigger means the registration is not
+        # ours, is half-copied, or the environment was tampered with. Round 30
+        # let a payload event run here if it resolved inside the five-trigger
+        # trust list; the review (and the user) rejected that: without the
+        # registration's identity, stdin alone must never select the branch a
+        # hook takes - a well-formed payload naming 'Stop' is exactly what a
+        # spoofed invocation would carry. Fail closed, visibly (stderr + exit 1,
+        # never 2), on the SAME channel as every other refusal here.
+        $registrationlessEventRaw = ''
+        if ($null -ne $parsed) { $registrationlessEventRaw = [string](Get-Field $parsed 'hook_event_name') }
+        $registrationlessDetail = if ([string]::IsNullOrWhiteSpace($registrationlessEventRaw)) {
+            'and stdin supplies no event identity to check it against'
         }
-        # The payload's event resolved inside the SAME trust list the launcher
-        # argument is held to, so it may select the branch - normalized, below,
-        # exactly as an agreeing launcher+payload pair would be.
+        else {
+            'so the stdin payload''s event name "' + (Get-HookSafeDiagnosticText $registrationlessEventRaw) +
+            '" cannot be trusted to select a code path'
+        }
+        [Console]::Error.WriteLine('Hook Maker: not running this hook. It is running under Kiro without a ' +
+            '-Trigger from its registration, ' + $registrationlessDetail +
+            '. Re-install the hook so its .kiro\hooks registration passes -Trigger.')
+        exit 1
     }
 
     if ($null -eq $parsed) {
@@ -399,17 +400,20 @@ $script:HookCodexSystemMessageEvents = @('Stop', 'SubagentStop')
 # process that runs on every submission. 64 KB is far above any real prompt and
 # far below anything that matters for a short-lived process.
 #
-# Truncation is REPORTED, never silent: a hook that matches on prompt text would
-# otherwise see a prompt that quietly is not the one the user typed. (A codeword
-# sitting at the very END of an over-long prompt is still lost; the marker is the
-# honest signal that it might be, and buffering more would defeat the bound.)
+# The bound is UTF-8 BYTES, not characters - it exists to cap MEMORY, and this
+# repo measures text in UTF-8 bytes everywhere else. A CHARACTER cap silently
+# admits up to three times the stated limit (65536 CJK characters are ~192 KB).
 #
-# The bound is UTF-8 BYTES, not characters. It exists to cap MEMORY, and this
-# repo measures text in UTF-8 bytes everywhere else - it ships a whole
-# Utf8-Encoding-Check hook. A CHARACTER cap silently admits up to three times the
-# stated limit: 65536 Persian or CJK characters are ~192 KB, so the documented
-# bound was not the bound being enforced.
+# An OVERSIZED prompt is WITHHELD ENTIRELY, never truncated (review + user
+# decision, round 31). Round 30 kept the prefix with an in-text marker, but a
+# prefix is a prompt the user did not type, and every prompt-driven hook
+# regex-matches on it as if it were - so semantic decisions (codeword routing,
+# relevance gating) ran on fabricated text. With the prompt withheld, those
+# hooks take their documented no-prompt degradation path instead, exactly as on
+# Kiro IDE when USER_PROMPT is absent - and a one-line stderr notice says so,
+# once, so the withholding is never silent.
 $script:HookMaxPromptBytes = 65536
+$script:HookPromptWithheldNoticed = $false
 
 # The one prompt-bounding implementation, applied to EVERY channel a Kiro
 # prompt can arrive on (USER_PROMPT env and a CLI v3 stdin payload alike) so
@@ -418,25 +422,17 @@ function Limit-KiroPromptText {
     param([string]$Text)
     $raw = [string]$Text
     if ([string]::IsNullOrWhiteSpace($raw)) { return '' }
-    $utf8 = [System.Text.Encoding]::UTF8
-    if ($utf8.GetByteCount($raw) -le $script:HookMaxPromptBytes) { return $raw }
-
-    # Encoder.Convert is the stdlib answer to "how many CHARS fit in N bytes":
-    # it stops on a character boundary, so it can never cut a surrogate pair in
-    # half. A plain .Substring() can - an emoji or other astral character
-    # straddling the limit leaves an UNPAIRED surrogate, which is not encodable
-    # as UTF-8 at all (it silently becomes U+FFFD on the way out). Emitting
-    # invalid UTF-8 from the shared library is squarely a defect in a repo that
-    # gates the whole tree on UTF-8 validity.
-    $chars = $raw.ToCharArray()
-    $buffer = New-Object byte[] $script:HookMaxPromptBytes
-    $charsUsed = 0
-    $bytesUsed = 0
-    $completed = $false
-    $utf8.GetEncoder().Convert($chars, 0, $chars.Length, $buffer, 0, $script:HookMaxPromptBytes,
-        $false, [ref]$charsUsed, [ref]$bytesUsed, [ref]$completed)
-    return ($raw.Substring(0, $charsUsed) +
-        "`n[hook-maker: prompt truncated at " + [string]$script:HookMaxPromptBytes + ' UTF-8 bytes]')
+    if ([System.Text.Encoding]::UTF8.GetByteCount($raw) -le $script:HookMaxPromptBytes) { return $raw }
+    if (-not $script:HookPromptWithheldNoticed) {
+        $script:HookPromptWithheldNoticed = $true
+        try {
+            [Console]::Error.WriteLine('Hook Maker: the submitted prompt exceeds ' +
+                [string]$script:HookMaxPromptBytes + ' UTF-8 bytes and was withheld from hooks; ' +
+                'prompt-driven checks will not run for this submission.')
+        }
+        catch { }
+    }
+    return ''
 }
 
 function Get-KiroPromptFromEnvironment {

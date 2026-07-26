@@ -142,7 +142,7 @@ function Fire {
     param(
         [string]$HookPath, [string]$Cwd, [string]$EventName, [string]$LocalAppData,
         [string]$SessionId = 'sess1', [switch]$ClaudeInputShape, [string]$ClaudeProjectDir = '',
-        [switch]$StopHookActive, [string]$Exe = 'pwsh'
+        [switch]$StopHookActive, [string]$Exe = 'pwsh', [hashtable]$ExtraEnv = @{}
     )
     $obj = @{ session_id = $SessionId; cwd = $Cwd; hook_event_name = $EventName }
     if ($StopHookActive) { $obj['stop_hook_active'] = $true }
@@ -161,7 +161,9 @@ function Fire {
         Wait = $true; NoNewWindow = $true; PassThru = $true
     }
     if ((Get-Command Start-Process).Parameters.ContainsKey('Environment')) {
-        $startArgs.Environment = @{ PATH = $env:PATH; LOCALAPPDATA = $LocalAppData; CLAUDE_PROJECT_DIR = $ClaudeProjectDir }
+        $envTable = @{ PATH = $env:PATH; LOCALAPPDATA = $LocalAppData; CLAUDE_PROJECT_DIR = $ClaudeProjectDir }
+        foreach ($k in $ExtraEnv.Keys) { $envTable[$k] = [string]$ExtraEnv[$k] }
+        $startArgs.Environment = $envTable
     }
     $proc = Start-Process @startArgs
     $out = if (Test-Path -LiteralPath $outFile) { ([System.IO.File]::ReadAllText($outFile)).Trim() } else { '' }
