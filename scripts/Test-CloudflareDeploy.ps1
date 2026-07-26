@@ -365,6 +365,15 @@ try {
             [switch]$TamperRuntime,
             [switch]$TamperLibrary,
             [switch]$ManifestOmitsRuntimeScript,
+            # Leaves the file on disk, drops its manifest entry.
+            [string[]]$OmitFromManifest = @(),
+            # Drops the file AND its entry - the dependency is simply gone.
+            [string[]]$RemoveLeaf = @(),
+            [switch]$UnlistedExtraFile,
+            # A SECOND entry for this leaf carrying its REAL hash. A duplicate
+            # with a wrong hash would be rejected for the hash, proving nothing
+            # about duplication.
+            [string]$DuplicateEntry = '',
             # Entries APPENDED to an otherwise correct manifest. The registered
             # script's own entry stays valid, so a case built this way cannot
             # pass merely because the entry point failed its own lookup - the
@@ -402,27 +411,45 @@ try {
         $managedEntryName = $managedNamePrefix + '-stop'
 
         New-Item -ItemType Directory -Path $hookDir -Force | Out-Null
-        if (-not $MissingRuntime) { Write-Utf8 $scriptPath '# fixture managed runtime script' }
-        # A real install NEVER stages the entry point alone: the shared library
-        # ships beside it and is recorded as an Immutable artifact too, because
-        # the entry point dot-sources it. The fixture carries it by default so
-        # the positive cases prove MULTI-entry verification, and so the "a file
-        # behind the entry point was tampered" negatives below have a real file
-        # to tamper.
-        $libraryRelative = 'Test-Temp-Cleanup/_hooklib.ps1'
-        $libraryPath = Join-Path $hookDir '_hooklib.ps1'
-        Write-Utf8 $libraryPath '# fixture shared library, loaded by whatever the registration invokes'
+        # A real install NEVER stages the entry point alone. Per
+        # scripts\_installplan.ps1, every client gets <hook>\_hooklib.ps1 (the
+        # library the entry point dot-sources) and <hook>\<hook>.ps1, and Kiro
+        # additionally gets the kiro-launch.ps1 its registration actually names.
+        # The fixture stages the same set so the positive cases prove MULTI-entry
+        # verification and the completeness negatives have real files to omit.
+        $runtimeLeaves = @('_hooklib.ps1', 'Test-Temp-Cleanup.ps1')
+        if ($Client -eq 'kiro') { $runtimeLeaves += 'kiro-launch.ps1' }
+        foreach ($leaf in $runtimeLeaves) {
+            # -MissingRuntime removes only the REGISTERED script; the rest of the
+            # runtime stays, so that case still fails for its own reason.
+            if ($MissingRuntime -and $leaf -eq $scriptName) { continue }
+            if ($RemoveLeaf -contains $leaf) { continue }
+            Write-Utf8 (Join-Path $hookDir $leaf) ('# fixture managed runtime file: ' + $leaf)
+        }
+        # An executable the manifest cannot account for. Only the disk-side scan
+        # can reject this - no required-set check would ever look for it.
+        if ($UnlistedExtraFile) { Write-Utf8 (Join-Path $hookDir 'extra-helper.ps1') '# nothing accounts for me' }
 
         if (-not $NoMetadata) {
-            $hash = if ($MissingRuntime) { ('0' * 64) } else { (Get-FileHash -LiteralPath $scriptPath -Algorithm SHA256).Hash.ToLowerInvariant() }
-            $libraryHash = (Get-FileHash -LiteralPath $libraryPath -Algorithm SHA256).Hash.ToLowerInvariant()
-            $manifest = @(
-                @{ path = $scriptRelative; sha256 = $hash },
-                @{ path = $libraryRelative; sha256 = $libraryHash }
-            )
-            # Drops ONLY the entry point's entry, keeping the library's REAL
-            # hash, so that case can fail for its own reason and no other.
-            if ($ManifestOmitsRuntimeScript) { $manifest = @(@{ path = $libraryRelative; sha256 = $libraryHash }) }
+            $manifest = @()
+            foreach ($leaf in $runtimeLeaves) {
+                # -RemoveLeaf drops the file AND its entry: the dependency is
+                # simply gone, which the disk scan cannot see and only the
+                # required set catches. -OmitFromManifest leaves the file and
+                # drops the entry.
+                if ($RemoveLeaf -contains $leaf -or $OmitFromManifest -contains $leaf) { continue }
+                if ($ManifestOmitsRuntimeScript -and $leaf -eq $scriptName) { continue }
+                $leafPath = Join-Path $hookDir $leaf
+                $leafHash = if ($MissingRuntime -and $leaf -eq $scriptName) { ('0' * 64) }
+                else { (Get-FileHash -LiteralPath $leafPath -Algorithm SHA256).Hash.ToLowerInvariant() }
+                $manifest += @{ path = ('Test-Temp-Cleanup/' + $leaf); sha256 = $leafHash }
+            }
+            if (-not [string]::IsNullOrWhiteSpace($DuplicateEntry)) {
+                $manifest += @{
+                    path   = ('Test-Temp-Cleanup/' + $DuplicateEntry)
+                    sha256 = (Get-FileHash -LiteralPath (Join-Path $hookDir $DuplicateEntry) -Algorithm SHA256).Hash.ToLowerInvariant()
+                }
+            }
             if ($ManifestExtra.Count -gt 0) { $manifest = @($manifest) + @($ManifestExtra) }
             # A global install serves every project and records no project key.
             $projectKey = if ($Scope -eq 'project') { Get-ShortHash (Normalize-Path $ProjectRoot).ToLowerInvariant() } else { '' }
@@ -448,7 +475,7 @@ try {
         if ($TamperRuntime) { Write-Utf8 $scriptPath '# tampered after the manifest was written' }
         # The entry point is left INTACT here: only a file behind it changed,
         # which is exactly what verifying one manifest entry could not see.
-        if ($TamperLibrary) { Write-Utf8 $libraryPath '# tampered after the manifest was written' }
+        if ($TamperLibrary) { Write-Utf8 (Join-Path $hookDir '_hooklib.ps1') '# tampered after the manifest was written' }
 
         $commandTarget = $scriptPath
         if ($CommandForm -eq 'relative') {
@@ -853,6 +880,42 @@ try {
                 New-ManagedCleanupInstall -Base $Repo -ManifestExtra @(@{ path = '../../../../elsewhere.ps1'; sha256 = ('c' * 64) }) | Out-Null
             }
         }
+        # ---- the manifest must be COMPLETE, not merely internally correct -----
+        # A manifest describes itself. Verifying every entry it lists says
+        # nothing about what it left OUT, and an omitted dependency is not
+        # merely unverified - it is never looked at. Every case below leaves the
+        # remaining entries perfectly valid and sawRegistered true, so only a
+        # completeness rule can reject them.
+        [pscustomobject]@{
+            Name  = 'a Claude manifest that simply OMITS _hooklib.ps1 while the file still sits there'
+            Why   = 'the entry point dot-sources it, so dropping its entry hides the library from the check entirely'
+            Build = { param($Repo) New-ManagedCleanupInstall -Base $Repo -OmitFromManifest @('_hooklib.ps1') | Out-Null }
+        }
+        [pscustomobject]@{
+            Name  = 'a Kiro manifest that OMITS the main hook script behind the launcher'
+            Why   = 'Kiro registers kiro-launch.ps1, so the hook it runs is exactly the part an omission can hide'
+            Build = { param($Repo) New-ManagedCleanupInstall -Base $Repo -Client 'kiro' -OmitFromManifest @('Test-Temp-Cleanup.ps1') | Out-Null }
+        }
+        [pscustomobject]@{
+            Name  = 'a Kiro manifest that omits _hooklib.ps1 two levels behind the registration'
+            Why   = 'launcher -> hook -> library: the deepest dependency is the easiest one to leave unlisted'
+            Build = { param($Repo) New-ManagedCleanupInstall -Base $Repo -Client 'kiro' -OmitFromManifest @('_hooklib.ps1') | Out-Null }
+        }
+        [pscustomobject]@{
+            Name  = 'a required dependency deleted from disk AND from the manifest'
+            Why   = 'nothing on disk contradicts the manifest, so only a required set known independently catches it'
+            Build = { param($Repo) New-ManagedCleanupInstall -Base $Repo -RemoveLeaf @('_hooklib.ps1') | Out-Null }
+        }
+        [pscustomobject]@{
+            Name  = 'an unlisted extra .ps1 sitting in the managed runtime directory'
+            Why   = 'the entry point could load it and nothing verified it; no required-set check would look for it'
+            Build = { param($Repo) New-ManagedCleanupInstall -Base $Repo -UnlistedExtraFile | Out-Null }
+        }
+        [pscustomobject]@{
+            Name  = 'a manifest listing the same path twice, both entries hashing correctly'
+            Why   = 'the installer never emits a duplicate; with a WRONG hash this would only prove the hash check'
+            Build = { param($Repo) New-ManagedCleanupInstall -Base $Repo -DuplicateEntry '_hooklib.ps1' | Out-Null }
+        }
         [pscustomobject]@{
             Name  = 'a manifest longer than the writer can emit'
             Why   = 'a manifest past the install plan''s cap did not come from an install, and bounds a Stop hook''s hashing'
@@ -1053,6 +1116,50 @@ try {
     $readerCap = ([regex]::Match($cfText, '\$script:CleanupManifestCap\s*=\s*(\d+)')).Groups[1].Value
     Check 'the manifest-entry cap mirror equals the install plan''s own writer cap' (
         $writerCap -ne '' -and $writerCap -eq $readerCap) ('writer=[' + $writerCap + '] reader=[' + $readerCap + ']')
+    # A fifth mirror, and the one most likely to rot silently: the required
+    # executables. If the plan starts staging a new shared artifact, a required
+    # set frozen at today's two names would go on accepting a manifest that
+    # omits the new one - the exact hole this check exists to close. So derive
+    # what the plan ACTUALLY stages for any hook and require the hook's set to
+    # match it.
+    #
+    # Three exclusions, each for a stated reason rather than to make the numbers
+    # agree:
+    #   '/'                            the fragment of the main-script expression
+    #                                  ($FriendlyName + '/' + $FriendlyName +
+    #                                  '.ps1'); the hook derives that name from
+    #                                  its own hook-name constant.
+    #   scripts/Run-Tests-Guarded.ps1  staged ONLY for Test-Run-Guard, so it is
+    #                                  never part of a Test-Temp-Cleanup runtime.
+    #   non-.ps1                       sync-hooks.json and SYNC-PROJECTS.txt are
+    #                                  DATA staged only for the sync-engine
+    #                                  hooks. This check - and the disk scan it
+    #                                  backs - is deliberately about executables:
+    #                                  what the entry point can LOAD. A data file
+    #                                  is out of its scope, stated rather than
+    #                                  silently dropped.
+    $plannedLeaves = @([regex]::Matches($planText, '\$FriendlyName \+ ''/([^'']+)''') |
+        ForEach-Object { $_.Groups[1].Value } |
+        Where-Object { $_ -like '*.ps1' -and $_ -ne 'scripts/Run-Tests-Guarded.ps1' } | Sort-Object -Unique)
+    $requiredAst = @($cfAst.FindAll({
+                $args[0] -is [System.Management.Automation.Language.AssignmentStatementAst] -and
+                $args[0].Left.Extent.Text -eq '$script:CleanupRequiredRuntimeLeaves' }, $true))
+    $requiredLeaves = @()
+    if ($requiredAst.Count -eq 1) {
+        $requiredLeaves = @($requiredAst[0].Right.FindAll({
+                    $args[0] -is [System.Management.Automation.Language.StringConstantExpressionAst] }, $true) |
+            ForEach-Object { $_.Value } | Where-Object { $_ -like '*.ps1' } | Sort-Object -Unique)
+    }
+    Check 'the REQUIRED-executable mirror equals what the install plan actually stages for a hook' (
+        $plannedLeaves.Count -gt 0 -and ($requiredLeaves -join '|') -eq ($plannedLeaves -join '|')) (
+        'required=[' + ($requiredLeaves -join ', ') + '] planned=[' + ($plannedLeaves -join ', ') + ']')
+    # ...and Kiro must require the launcher its registration names, which the
+    # union above cannot show on its own.
+    $kiroRequired = ''
+    if ($requiredAst.Count -eq 1) {
+        $kiroRequired = [string]($requiredAst[0].Right.Extent.Text -match "kiro'\s*=\s*@\([^)]*kiro-launch\.ps1")
+    }
+    Check 'the Kiro required set specifically includes kiro-launch.ps1' ($kiroRequired -eq 'True') $kiroRequired
 
     # =====================================================================
     Write-Host '--- the ownership-metadata contract has two sides that must agree ---' -ForegroundColor Cyan
