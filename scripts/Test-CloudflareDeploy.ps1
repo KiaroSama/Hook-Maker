@@ -612,10 +612,7 @@ try {
     Check 'a trailing-separator cwd still resolves BOTH the producer''s record and this project''s ownership key (review-required -> silent)' (
         $r.Exit -eq 0 -and $r.Out -eq '') $r.Out
 
-    # Managed-ownership evidence: the positive chain on every client and
-    # scope, every negative case, the source-text contracts, the mirrors and
-    # the two-sided metadata contract. Its own file since it is the largest
-    # single concern in this suite and stands on its own.
+    # ---- managed-ownership evidence ---------------------------------------
     . (Join-Path $PSScriptRoot '_testcloudflareownership.ps1')
 
     # =====================================================================
