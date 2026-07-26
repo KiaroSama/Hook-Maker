@@ -405,6 +405,24 @@ if ($cut -ge 0) { $body = $pr.Substring(0, $cut) }
                 Check ($riTag + ': an oversized PAYLOAD prompt is withheld by the same rule as USER_PROMPT') (
                     $riPayloadBig.Exit -eq 0 -and $riPayloadBig.Out -match 'RAN' -and
                     (Get-RiPart $riPayloadBig.Out 'CHARS') -eq '0') ('out=[' + $riPayloadBig.Out + ']')
+                # THE precedence bug: withholding an oversized payload prompt
+                # emptied the field, and the environment fallback then read that
+                # emptiness as "the payload had none" and substituted USER_PROMPT
+                # - so a huge CLI v3 prompt could be replaced by small or STALE
+                # environment text, which is how an unintended ::deep-debug
+                # could fire. Supplied-but-withheld is a DECISION, not absence.
+                $riPayloadBigEnv = Invoke-KiroProbe -Client 'kiro' -Trigger 'UserPromptSubmit' `
+                    -Stdin $riPayloadPromptJson -UserPrompt '::deep-debug' -Exe $riExe
+                Check ($riTag + ': a withheld payload prompt is NEVER replaced by USER_PROMPT') (
+                    $riPayloadBigEnv.Exit -eq 0 -and $riPayloadBigEnv.Out -match 'RAN' -and
+                    (Get-RiPart $riPayloadBigEnv.Out 'CHARS') -eq '0') ('out=[' + $riPayloadBigEnv.Out + ']')
+                # ...and the fallback still works when the payload genuinely
+                # carried no prompt at all, so the fix did not disable it.
+                $riNoPayloadPrompt = Invoke-KiroProbe -Client 'kiro' -Trigger 'UserPromptSubmit' `
+                    -Stdin '{"hook_event_name":"UserPromptSubmit"}' -UserPrompt 'FROM-ENV' -Exe $riExe
+                Check ($riTag + ': the env fallback still fills a payload that carried NO prompt') (
+                    $riNoPayloadPrompt.Exit -eq 0 -and
+                    [int](Get-RiPart $riNoPayloadPrompt.Out 'CHARS') -eq 8) ('out=[' + $riNoPayloadPrompt.Out + ']')
 
                 # --- no launcher trigger -> NOTHING runs, unconditionally ------
                 # Round 30 let a payload event run here when it resolved inside

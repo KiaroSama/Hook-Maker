@@ -329,11 +329,34 @@ try {
         param([string]$Root, [string]$RelativeFile = '.claude\settings.local.json',
               [string]$ScriptFileName = 'Test-Temp-Cleanup.ps1',
               [string]$RuntimeRelativeRoot = '.claude\hooks\Hook-Maker',
-              [switch]$NameDropOnly, [switch]$MissingScript, [switch]$RelativeCommandPath)
+              [switch]$NameDropOnly, [switch]$MissingScript, [switch]$RelativeCommandPath,
+              [switch]$NonCommandField, [switch]$OutsideManagedRoot)
         $regPath = Join-Path $Root $RelativeFile
         New-Item -ItemType Directory -Path (Split-Path -Parent $regPath) -Force | Out-Null
         if ($NameDropOnly) {
             $document = '{"description":"this document only mentions Test-Temp-Cleanup by name","hooks":{}}'
+        }
+        elseif ($NonCommandField) {
+            # A perfectly real, existing managed command string sitting in a
+            # field that is NOT a command field. Walking every string leaf
+            # accepted this; only command-bearing keys may.
+            $runtimeRelative = Join-Path (Join-Path $RuntimeRelativeRoot 'Test-Temp-Cleanup') $ScriptFileName
+            $runtimeAbsolute = Join-Path $Root $runtimeRelative
+            New-Item -ItemType Directory -Path (Split-Path -Parent $runtimeAbsolute) -Force | Out-Null
+            Write-Utf8 $runtimeAbsolute '# fixture runtime script'
+            $document = '{"hooks":{"Stop":[{"hooks":[{"type":"command","notes":"example: powershell.exe -File \"' +
+                $runtimeAbsolute.Replace('\', '\\') + '\""}]}]}}'
+        }
+        elseif ($OutsideManagedRoot) {
+            # A live script in a Test-Temp-Cleanup directory that is NOT under a
+            # Hook-Maker managed root - someone else's tool, or a hand-made
+            # folder. The directory segment alone must not prove ownership.
+            $foreignRelative = Join-Path (Join-Path 'tools\other-vendor' 'Test-Temp-Cleanup') $ScriptFileName
+            $foreignAbsolute = Join-Path $Root $foreignRelative
+            New-Item -ItemType Directory -Path (Split-Path -Parent $foreignAbsolute) -Force | Out-Null
+            Write-Utf8 $foreignAbsolute '# someone else'
+            $document = '{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"powershell.exe -File \"' +
+                $foreignAbsolute.Replace('\', '\\') + '\""}]}]}}'
         }
         else {
             $runtimeRelative = Join-Path (Join-Path $RuntimeRelativeRoot 'Test-Temp-Cleanup') $ScriptFileName
@@ -354,9 +377,14 @@ try {
         # the working tree - exactly how real projects ignore these directories
         # per the global ignore policy. Only applies when Root IS a repo (the
         # fake user profile is not one).
+        # `/tools/` covers the -OutsideManagedRoot fixture's foreign vendor
+        # directory. Leaving it out made the tree DIRTY, so that case went
+        # silent via "not release-ready" and looked like the evidence rule had
+        # rejected it - a false green in the making, and exactly the confusion
+        # this comment block warns about.
         $excludePath = Join-Path $Root '.git\info\exclude'
         if (Test-Path -LiteralPath (Split-Path -Parent $excludePath) -PathType Container) {
-            Add-Content -LiteralPath $excludePath -Value "/.claude/`n/.codex/`n/.kiro/" -Encoding UTF8
+            Add-Content -LiteralPath $excludePath -Value "/.claude/`n/.codex/`n/.kiro/`n/tools/" -Encoding UTF8
         }
     }
     function Write-CleanupResult {
@@ -514,6 +542,28 @@ try {
         @(Get-ChildItem -LiteralPath (Join-Path $orphanDir '.claude\hooks\Hook-Maker\Test-Temp-Cleanup') -Force).Count -eq 0)
     $r = Fire -Cwd $orphanDir
     Check 'a bare orphan folder is not install evidence - gate skipped, decision shown' (
+        $r.Out -match 'CLOUDFLARE DEPLOY CHECK') $r.Out
+
+    # A live managed command string in a NON-command field is not a
+    # registration. Walking every string leaf of the document accepted any
+    # field that merely quoted a plausible command; only the keys that actually
+    # carry a hook command (command/commandWindows/command_windows, at any
+    # nesting depth) may count.
+    $regNonCommand = New-ReadyWorkersRepo 'CleanupNonCommandField'
+    New-CleanupRegistration -Root $regNonCommand -NonCommandField
+    $r = Fire -Cwd $regNonCommand
+    Check 'a managed command quoted in a NON-command field is not evidence - decision shown' (
+        $r.Out -match 'CLOUDFLARE DEPLOY CHECK') $r.Out
+
+    # The \Test-Temp-Cleanup\ segment alone proves nothing about OWNERSHIP: the
+    # path must also pass through \Hook-Maker\, the segment this installer
+    # writes into every client's managed runtime root. That is an ownership
+    # check needing no per-client root list - the previous mirrored list is
+    # exactly what went stale when a third client arrived.
+    $regForeignRoot = New-ReadyWorkersRepo 'CleanupOutsideManagedRoot'
+    New-CleanupRegistration -Root $regForeignRoot -OutsideManagedRoot
+    $r = Fire -Cwd $regForeignRoot
+    Check 'a live script outside a Hook-Maker managed root is not evidence - decision shown' (
         $r.Out -match 'CLOUDFLARE DEPLOY CHECK') $r.Out
 
     # The evidence that DOES mean installed: a registration a client will fire.

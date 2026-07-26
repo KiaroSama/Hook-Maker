@@ -288,18 +288,26 @@ function Read-HookInput {
     # payload won ("payload wins") with no limit at all - the documented 64 KB
     # bound applied only to the channel that happened to be smaller. Truncation
     # stays REPORTED via the same in-text marker.
+    # Whether the CLIENT supplied a prompt at all - recorded BEFORE bounding,
+    # because "withheld for being oversized" is a decision about a prompt that
+    # exists, not the absence of one. Conflating the two inverted the precedence
+    # rule: an oversized payload prompt became '', the fallback below then read
+    # that empty value as "the payload had none", and a small or STALE
+    # USER_PROMPT replaced it - so a huge CLI v3 prompt could be silently
+    # substituted by leftover environment text, which is exactly how an
+    # unintended `::deep-debug` could fire.
     $kiroPayloadPrompt = [string](Get-Field $parsed 'prompt')
-    if (-not [string]::IsNullOrWhiteSpace($kiroPayloadPrompt)) {
+    $kiroPayloadSuppliedPrompt = -not [string]::IsNullOrWhiteSpace($kiroPayloadPrompt)
+    if ($kiroPayloadSuppliedPrompt) {
         $kiroBoundedPrompt = Limit-KiroPromptText $kiroPayloadPrompt
         if (-not ($kiroBoundedPrompt -ceq $kiroPayloadPrompt)) {
             Set-ObjectProperty -Object $parsed -Name 'prompt' -Value $kiroBoundedPrompt
         }
     }
-    # Same rule for the prompt: fill only what the payload did not supply, and
-    # only on the trigger Kiro documents USER_PROMPT for. A real payload always
-    # wins - the environment is the fallback, never the override.
-    if ($kiroTrigger -ceq 'UserPromptSubmit' -and
-        [string]::IsNullOrWhiteSpace([string](Get-Field $parsed 'prompt'))) {
+    # The environment is a FALLBACK for a payload that carried no prompt, never
+    # an override of one the client sent - including one deliberately withheld.
+    # Scoped to the one trigger Kiro documents USER_PROMPT for.
+    if ($kiroTrigger -ceq 'UserPromptSubmit' -and -not $kiroPayloadSuppliedPrompt) {
         $kiroPromptFallback = Get-KiroPromptFromEnvironment
         if (-not [string]::IsNullOrWhiteSpace($kiroPromptFallback)) {
             Set-ObjectProperty -Object $parsed -Name 'prompt' -Value $kiroPromptFallback
