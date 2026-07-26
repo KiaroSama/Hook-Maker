@@ -118,10 +118,11 @@ function Get-CleanupResultPath {
 }
 
 # ---- WHAT "INSTALLED" MEANS: EXACT MANAGED OWNERSHIP ----------------------
-# One thing only: an ACTIVE, Hook-Maker-MANAGED registration whose command runs
-# a runtime THIS project owns, proven end to end. The previous round's five
-# heuristics are gone, and each was individually load-bearing for a real false
-# verdict:
+# One thing only: an ACTIVE, Hook-Maker-MANAGED *Stop* registration whose
+# command runs a runtime THIS project owns, proven end to end - where "runs" is
+# the whole runtime, not just the file the registration names. The previous
+# round's five heuristics are gone, and each was individually load-bearing for a
+# real false verdict:
 #
 #   unreadable registration document   -> counted as installed ("conservative").
 #   malformed document naming the hook -> counted as installed.
@@ -132,6 +133,9 @@ function Get-CleanupResultPath {
 #   fingerprint-current record ALONE   -> a state file was installation proof.
 #
 # The chain below replaces all five. Per (client, scope):
+#   0. locate the client's Stop registration specifically - the hooks.<Event> key
+#      for Claude/Codex, the entry's own trigger for Kiro - because only a Stop
+#      handler can produce the result this gate then waits for;
 #   1. parse the client's REAL schema and read only real command/action fields -
 #      never a recursive walk looking for command-SHAPED strings;
 #   2. take that command's quoted -File target, canonicalize it, and require
@@ -142,7 +146,8 @@ function Get-CleanupResultPath {
 #      runtimeScriptRelativePath to agree with where that file was found and
 #      which document referenced it;
 #   4. require the registered target to BE the recorded runtime script;
-#   5. verify that script's sha256 against its recorded manifest entry.
+#   5. verify EVERY recorded manifest entry's sha256 against disk, the registered
+#      script among them - the entry point is not the whole runtime.
 #
 # Unreadable, malformed, foreign, mismatched and missing-metadata evidence are
 # all NEGATIVE now. That deliberately reverses the old "refusing to read is not
@@ -168,6 +173,28 @@ function Get-CleanupResultPath {
 $script:CleanupHookName = 'Test-Temp-Cleanup'
 $script:CleanupRuntimeMetadataFile = '.hookmaker-runtime.json'
 $script:CleanupMetadataSchemaVersion = '1'
+# The ONLY event whose registration can satisfy this gate. Ownership alone was
+# not enough: a proven managed runtime registered on SessionStart (or on any
+# other event) never runs at Stop, so it never writes the fresh 'clean' the gate
+# waits for - and the reminder parks forever behind a result that registration
+# is structurally incapable of producing. That is the same permanently-dead gate
+# the ownership rewrite set out to eliminate, reached by a different route.
+# Case-EXACT on both clients: Claude/Codex match the hooks.<Event> key literally,
+# and .ai\KIRO_PROTOCOL.md records Kiro's triggers as confirmed exact casing, so
+# a 'stop' key fires nothing and must not count as an active gate.
+#
+# SubagentStop is deliberately NOT accepted, though the producer can write a
+# record there too: it only does so when its own ENABLE_SUBAGENT_STOP is true,
+# which defaults to false and lives in the INSTALLED hook's environment - not
+# something this separate hook can read. Accepting it would mean betting the
+# gate on an opt-in flag we cannot observe, and losing that bet is the
+# permanently dead gate again. Rejecting it costs a shown reminder on an
+# unusual SubagentStop-only install, which is the recoverable direction.
+$script:CleanupGateEvent = 'Stop'
+# Mirrors $script:RuntimeMetadataManifestCap in scripts\_installplan.ps1. A
+# manifest longer than the writer can emit did not come from an install, and
+# refusing it also bounds the hashing work a Stop hook will do.
+$script:CleanupManifestCap = 64
 # Mirrors Test-KiroManagedFileName in scripts\_installkiro.ps1: Hook Maker owns
 # ONLY .kiro\hooks\hookmaker-<slug>.json. Anything else in that directory -
 # above all a shared hooks.json - belongs to someone else and is never parsed
@@ -232,28 +259,48 @@ function Test-CleanupReparseEscape {
     return $true
 }
 
-# The recorded sha256 of the runtime script must match the file on disk. This is
-# the MINIMUM manifest verification the contract requires, and it is what makes
-# a modified runtime and a modified manifest both negative instead of invisible.
-function Test-CleanupManifestEntry {
-    param($Metadata, [string]$RelativePath, [string]$FullPath)
+# EVERY immutable artifact the install recorded must still hash to its recorded
+# value - not merely the one file the registration happens to name.
+#
+# The registered target is only the ENTRY POINT of the runtime, never the whole
+# of it. Claude and Codex register <hook>\<hook>.ps1, which dot-sources
+# <hook>\_hooklib.ps1; Kiro registers <hook>\kiro-launch.ps1, which runs the main
+# hook, which dot-sources that same library. Hashing the entry point alone left
+# everything BEHIND it unverified, so a tampered _hooklib.ps1 - or, under Kiro, a
+# tampered main hook, the entire body of what executes - still read as proven
+# ownership. The install plan already stages all of them as Immutable artifacts
+# and records all of them here, so verify all of them.
+function Test-CleanupRuntimeManifest {
+    param($Metadata, [string]$RuntimeRoot, [string]$RegisteredRelativePath)
     $manifest = Get-Field $Metadata 'runtimeManifest'
     if ($null -eq $manifest) { return $false }
-    $wanted = $RelativePath.Replace('/', '\').TrimStart('\')
-    $expectedHash = ''
-    foreach ($entry in @($manifest)) {
-        $entryPath = ([string](Get-Field $entry 'path')).Replace('/', '\').TrimStart('\')
-        if (-not [string]::Equals($entryPath, $wanted, [System.StringComparison]::OrdinalIgnoreCase)) { continue }
+    $entries = @($manifest)
+    if ($entries.Count -eq 0 -or $entries.Count -gt $script:CleanupManifestCap) { return $false }
+    $wanted = $RegisteredRelativePath.Replace('/', '\').TrimStart('\')
+    $sawRegistered = $false
+    foreach ($entry in $entries) {
+        $relative = ([string](Get-Field $entry 'path')).Replace('/', '\').TrimStart('\')
+        if ([string]::IsNullOrWhiteSpace($relative)) { return $false }
+        # A value that is not a sha256 at all is a manifest that cannot vouch for
+        # anything, so one bad entry fails the whole runtime rather than being
+        # skipped past.
         $expectedHash = ([string](Get-Field $entry 'sha256')).Trim()
-        break
+        if ($expectedHash -notmatch '^[0-9a-fA-F]{64}$') { return $false }
+        $full = ''
+        try { $full = Normalize-Path (Join-Path $RuntimeRoot $relative) }
+        catch { return $false }
+        # A '..' entry must not let a manifest vouch for a file outside the
+        # runtime it claims to describe.
+        if (-not (Test-PathInside -Candidate $full -Parent $RuntimeRoot)) { return $false }
+        $actualHash = ''
+        try { $actualHash = [string](Get-FileHash -LiteralPath $full -Algorithm SHA256).Hash }
+        catch { return $false }
+        if (-not [string]::Equals($actualHash, $expectedHash, [System.StringComparison]::OrdinalIgnoreCase)) { return $false }
+        if ([string]::Equals($relative, $wanted, [System.StringComparison]::OrdinalIgnoreCase)) { $sawRegistered = $true }
     }
-    # No entry for the runtime script, or a value that is not a sha256 at all,
-    # is a manifest that cannot vouch for what executes.
-    if ($expectedHash -notmatch '^[0-9a-fA-F]{64}$') { return $false }
-    $actualHash = ''
-    try { $actualHash = [string](Get-FileHash -LiteralPath $FullPath -Algorithm SHA256).Hash }
-    catch { return $false }
-    return [string]::Equals($actualHash, $expectedHash, [System.StringComparison]::OrdinalIgnoreCase)
+    # ...and the script that actually runs has to be one of the files just
+    # verified, so a manifest covering only bystanders proves nothing.
+    return $sawRegistered
 }
 
 # Does an ownership-proven managed runtime back this exact registered command?
@@ -351,7 +398,7 @@ function Test-CleanupManagedCommand {
     catch { return $false }
     if (-not [string]::Equals($recordedFull, $resolvedTarget, [System.StringComparison]::OrdinalIgnoreCase)) { return $false }
 
-    return (Test-CleanupManifestEntry -Metadata $metadata -RelativePath $recordedRelative -FullPath $resolvedTarget)
+    return (Test-CleanupRuntimeManifest -Metadata $metadata -RuntimeRoot $runtimeRoot -RegisteredRelativePath $recordedRelative)
 }
 
 # Claude and Codex each keep ONE settings document per client, whose real shape
@@ -374,6 +421,10 @@ function Test-CleanupSettingsRegistration {
     $hooks = Get-Field $document 'hooks'
     if ($null -eq $hooks) { return $false }
     foreach ($eventProperty in $hooks.PSObject.Properties) {
+        # The event key IS the event for these two clients, so a handler under
+        # any other one is not a Stop registration no matter how well its runtime
+        # proves ownership. See $script:CleanupGateEvent.
+        if ($eventProperty.Name -cne $script:CleanupGateEvent) { continue }
         foreach ($group in @($eventProperty.Value)) {
             $handlers = Get-Field $group 'hooks'
             if ($null -eq $handlers) { continue }
@@ -417,6 +468,10 @@ function Test-CleanupKiroRegistration {
         if ($null -eq $entries) { continue }
         foreach ($entry in @($entries)) {
             if ((Get-Field $entry 'enabled') -eq $false) { continue }
+            # A Kiro install writes one entry PER trigger into this one file, so
+            # the file existing says nothing about which events are registered -
+            # only this field does. See $script:CleanupGateEvent.
+            if ([string](Get-Field $entry 'trigger') -cne $script:CleanupGateEvent) { continue }
             $entryName = [string](Get-Field $entry 'name')
             if ([string]::IsNullOrWhiteSpace($entryName)) { continue }
             $action = Get-Field $entry 'action'
