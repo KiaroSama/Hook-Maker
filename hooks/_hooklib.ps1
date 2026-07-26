@@ -96,8 +96,23 @@ function Resolve-KiroTrigger {
     return $match[0]
 }
 
+# Makes an untrusted value safe to embed in a one-line user-visible diagnostic.
+# Control characters (newlines included) become spaces and the length is
+# capped, so a hostile or accidental multi-kilobyte event name can neither
+# flood the warning nor smuggle line breaks into it that would let attacker
+# text masquerade as separate diagnostic lines.
+function Get-HookSafeDiagnosticText {
+    param([string]$Text, [int]$MaxChars = 80)
+    if ([string]::IsNullOrEmpty($Text)) { return '' }
+    $clean = ([regex]::Replace($Text, '[\x00-\x1f\x7f]', ' ')).Trim()
+    if ($clean.Length -gt $MaxChars) { return ($clean.Substring(0, $MaxChars) + '...') }
+    return $clean
+}
+
 # Reads the hook event JSON from stdin. Returns the parsed object, or $null on
-# empty / non-JSON input (the caller then exits silently).
+# genuinely EMPTY input (the caller then exits silently). Non-empty stdin that
+# fails to parse is corrupt input; on Kiro it refuses visibly rather than
+# collapsing into the same $null an empty stdin produces.
 #
 # On Kiro it also NORMALIZES, and without that every hook is dead on arrival:
 # Kiro IDE documents no stdin JSON at all (only USER_PROMPT, and only on
@@ -115,15 +130,45 @@ function Resolve-KiroTrigger {
 #   * tool_name / tool_input - Kiro documents no channel for them.
 function Read-HookInput {
     $parsed = $null
+    $stdinParseFailed = $false
     try {
         $raw = [Console]::In.ReadToEnd()
+        # A leading U+FEFF is a byte-order mark, not payload: a client that
+        # writes UTF-8-with-BOM stdin (and any .NET Framework parent, whose
+        # StreamWriter emits the encoding preamble into a redirected child
+        # stdin) delivers it as the first character. pwsh 7's ConvertFrom-Json
+        # tolerates it; Windows PowerShell 5.1's THROWS on it - so without this
+        # trim the same healthy payload parses on one host and reads as
+        # "corrupt" on the other. Semantically empty, so stripping is lossless.
+        if ($null -ne $raw) { $raw = $raw.TrimStart([char]0xFEFF) }
         if (-not [string]::IsNullOrWhiteSpace($raw)) {
-            $parsed = ($raw | ConvertFrom-Json)
+            # The inner try exists so that "stdin carried bytes that are not
+            # JSON" stays distinguishable from "stdin was empty". Collapsing
+            # the two is harmless on Claude/Codex (both mean: nothing to do)
+            # but NOT on Kiro, where an empty stdin is the documented IDE
+            # normal and gets a synthesized event - a corrupt payload must
+            # never be laundered into that healthy-looking shape.
+            try { $parsed = ($raw | ConvertFrom-Json) }
+            catch { $parsed = $null; $stdinParseFailed = $true }
         }
     }
     catch { $parsed = $null }
 
     if ((Get-HookClientId) -cne 'kiro') { return $parsed }
+
+    if ($stdinParseFailed) {
+        # Non-empty stdin that does not parse is corrupt input, and on Kiro the
+        # $null it used to collapse into is exactly what the "IDE sent nothing"
+        # branch below synthesizes a VALID event from - so corrupt input became
+        # a seemingly healthy invocation. Refuse visibly instead: same channel
+        # as the trigger contradiction below (stderr + exit 1, never 2), same
+        # reason - nothing about this invocation can be trusted to pick a code
+        # path, and only the user can fix what is sending broken JSON.
+        [Console]::Error.WriteLine('Hook Maker: not running this hook. Kiro sent data on stdin that is not ' +
+            'valid JSON, so this invocation cannot be trusted to select an event. If this repeats, ' +
+            're-install the hook and check what is writing to its stdin.')
+        exit 1
+    }
 
     # Trust boundary: the trigger arrives through the environment, so it is
     # accepted ONLY when it resolves to one of the events Kiro actually
@@ -131,7 +176,32 @@ function Read-HookInput {
     # an event name, which would let anything that can set an env var choose the
     # code path a hook takes.
     $kiroTrigger = Resolve-KiroTrigger ([string]$env:HOOKMAKER_KIRO_TRIGGER)
-    if ($kiroTrigger -eq '') { return $parsed }
+    if ($kiroTrigger -eq '') {
+        # No trusted trigger from the launcher. This used to `return $parsed`
+        # as-is, which quietly moved the trust boundary to nowhere: the payload
+        # could name ANY string as the event - Stop, PostFileSave, anything -
+        # and the hook would run that branch unvalidated, while only the
+        # launcher argument was ever checked against the trigger list.
+        if ($null -eq $parsed) { return $null }
+        $registrationlessEventRaw = [string](Get-Field $parsed 'hook_event_name')
+        $kiroTrigger = Resolve-KiroTrigger $registrationlessEventRaw
+        if ($kiroTrigger -eq '') {
+            # No launcher trigger AND no payload event that resolves to one of
+            # the five documented Kiro triggers: there is no trusted identity
+            # for this invocation at all. Same visible-refusal channel as the
+            # contradiction below - a Hook Maker registration always passes
+            # -Trigger, so landing here means the registration is not ours or
+            # has been altered, which only the user can repair.
+            [Console]::Error.WriteLine('Hook Maker: not running this hook. It is running under Kiro without ' +
+                'a -Trigger from its registration, and the stdin payload''s event name "' +
+                (Get-HookSafeDiagnosticText $registrationlessEventRaw) + '" is not a Kiro trigger Hook Maker ' +
+                'supports. Re-install the hook so its .kiro\hooks registration passes -Trigger.')
+            exit 1
+        }
+        # The payload's event resolved inside the SAME trust list the launcher
+        # argument is held to, so it may select the branch - normalized, below,
+        # exactly as an agreeing launcher+payload pair would be.
+    }
 
     if ($null -eq $parsed) {
         # cwd from the process, canonicalized. Kiro launches the hook in the
@@ -200,11 +270,29 @@ function Read-HookInput {
         # Exit 1, NEVER 2. 2 is Kiro's refusal code; blocking the user's tool
         # call over a Hook Maker configuration fault is not this function's
         # decision to make, and Stop cannot block on either Kiro surface anyway.
+        # The payload value is untrusted and goes into a user-visible line, so
+        # it is sanitized and bounded - an unbounded print would let a huge or
+        # newline-carrying event name flood or reshape the very diagnostic that
+        # exists to explain the refusal.
         [Console]::Error.WriteLine('Hook Maker: not running this hook. Its Kiro registration says the trigger is "' +
-            $kiroTrigger + '" but Kiro reported "' + $parsedEventRaw.Trim() + '". The two disagree about what ' +
-            'fired, so the hook refused to guess which branch to run. Re-install the hook so its .kiro\hooks ' +
-            'registration matches the trigger Kiro fires.')
+            $kiroTrigger + '" but Kiro reported "' + (Get-HookSafeDiagnosticText $parsedEventRaw) + '". The two ' +
+            'disagree about what fired, so the hook refused to guess which branch to run. Re-install the hook so ' +
+            'its .kiro\hooks registration matches the trigger Kiro fires.')
         exit 1
+    }
+
+    # The byte bound applies to the prompt WHEREVER it arrived from. Capping
+    # only USER_PROMPT left a hole the capability table itself predicts: CLI v3
+    # DOES send stdin JSON, so the same oversized prompt arriving inside the
+    # payload won ("payload wins") with no limit at all - the documented 64 KB
+    # bound applied only to the channel that happened to be smaller. Truncation
+    # stays REPORTED via the same in-text marker.
+    $kiroPayloadPrompt = [string](Get-Field $parsed 'prompt')
+    if (-not [string]::IsNullOrWhiteSpace($kiroPayloadPrompt)) {
+        $kiroBoundedPrompt = Limit-KiroPromptText $kiroPayloadPrompt
+        if (-not ($kiroBoundedPrompt -ceq $kiroPayloadPrompt)) {
+            Set-ObjectProperty -Object $parsed -Name 'prompt' -Value $kiroBoundedPrompt
+        }
     }
     # Same rule for the prompt: fill only what the payload did not supply, and
     # only on the trigger Kiro documents USER_PROMPT for. A real payload always
@@ -323,8 +411,12 @@ $script:HookCodexSystemMessageEvents = @('Stop', 'SubagentStop')
 # bound was not the bound being enforced.
 $script:HookMaxPromptBytes = 65536
 
-function Get-KiroPromptFromEnvironment {
-    $raw = [string]$env:USER_PROMPT
+# The one prompt-bounding implementation, applied to EVERY channel a Kiro
+# prompt can arrive on (USER_PROMPT env and a CLI v3 stdin payload alike) so
+# the two channels cannot drift to different bounds.
+function Limit-KiroPromptText {
+    param([string]$Text)
+    $raw = [string]$Text
     if ([string]::IsNullOrWhiteSpace($raw)) { return '' }
     $utf8 = [System.Text.Encoding]::UTF8
     if ($utf8.GetByteCount($raw) -le $script:HookMaxPromptBytes) { return $raw }
@@ -345,6 +437,10 @@ function Get-KiroPromptFromEnvironment {
         $false, [ref]$charsUsed, [ref]$bytesUsed, [ref]$completed)
     return ($raw.Substring(0, $charsUsed) +
         "`n[hook-maker: prompt truncated at " + [string]$script:HookMaxPromptBytes + ' UTF-8 bytes]')
+}
+
+function Get-KiroPromptFromEnvironment {
+    return (Limit-KiroPromptText ([string]$env:USER_PROMPT))
 }
 
 # The ONE place a semantic hook result becomes a client-specific output shape.

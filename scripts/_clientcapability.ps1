@@ -195,10 +195,36 @@ $script:HookMakerClientCapabilities = @{
             'Stop'        = @('session_id')
             'UserPromptSubmit' = @('session_id')
         }
+        # ONE client id, TWO evidence surfaces (C-05). The 'kiro' id, the menu
+        # entry and the install records stay singular - splitting the CLIENT
+        # would churn every record for no user-visible gain - but the EVIDENCE
+        # for what each surface delivers is not the same kind and is recorded
+        # per surface: the IDE's input silence is what its primary docs
+        # describe (documented-absent), while CLI v3 demonstrably sends stdin
+        # JSON whose field names are simply unpublished (unverified). The
+        # per-FIELD classification is identical across both surfaces today,
+        # which is why unverifiedInputFields stays ONE list; the day a field is
+        # confirmed on one surface only, that list splits per surface too.
+        surfaces = @{
+            'kiro-ide' = @{
+                displayName   = 'Kiro IDE'
+                inputEvidence = 'documented-absent'
+                stdinJson     = $false
+                promptChannel = 'USER_PROMPT'
+            }
+            'kiro-cli-v3' = @{
+                displayName   = 'Kiro CLI v3'
+                inputEvidence = 'unverified'
+                stdinJson     = $true
+                promptChannel = 'unverified'
+            }
+        }
         # The evidence sentence lives HERE, beside the data it qualifies, and is
         # reported verbatim by the installer. Keeping the claim in the table is
         # what stops a consumer paraphrasing it back into a flat assertion -
         # which is exactly how the previous wording came to overstate v3.
+        # Test-KiroIntegration asserts this sentence AGREES with the surfaces
+        # above (names both, in evidence order), so the two cannot drift.
         unverifiedInputFieldsNote = 'not supplied by Kiro IDE; unverified on Kiro CLI v3'
         # Stop is ABSENT on purpose and it is the most consequential entry in
         # this file. Kiro IDE's trigger table says Stop cannot block, and CLI v3

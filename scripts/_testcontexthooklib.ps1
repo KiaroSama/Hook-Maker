@@ -401,6 +401,77 @@ if ($cut -ge 0) { $body = $pr.Substring(0, $cut) }
                     (Get-RiPart $riSurrogateResult.Out 'UTF8OK') -eq 'True' -and
                     (Get-RiPart $riSurrogateResult.Out 'TRUNC') -eq 'True' -and
                     [int](Get-RiPart $riSurrogateResult.Out 'BODYBYTES') -le 65536) ('out=[' + $riSurrogateResult.Out + ']')
+
+                # --- the byte bound covers EVERY prompt channel, not just env ---
+                # CLI v3 sends stdin JSON, and "payload wins" used to mean the
+                # payload's prompt escaped the cap entirely: the documented 64 KB
+                # bound applied only to the channel that happened to be smaller.
+                $riPayloadPromptJson = '{"hook_event_name":"UserPromptSubmit","prompt":"' + ('A' * 70000) + '"}'
+                $riPayloadBig = Invoke-KiroProbe -Client 'kiro' -Trigger 'UserPromptSubmit' -Stdin $riPayloadPromptJson -Exe $riExe
+                Check ($riTag + ': an oversized PAYLOAD prompt is bounded by the same cap as USER_PROMPT') (
+                    $riPayloadBig.Exit -eq 0 -and
+                    (Get-RiPart $riPayloadBig.Out 'TRUNC') -eq 'True' -and
+                    [int](Get-RiPart $riPayloadBig.Out 'BODYBYTES') -le 65536) ('out=[' + $riPayloadBig.Out + ']')
+
+                # --- no launcher trigger is not a free pass for the payload ----
+                # This used to `return $parsed` unvalidated, so the payload could
+                # name ANY string as the event and the hook ran that branch. Now
+                # the payload's event is held to the SAME trust list the launcher
+                # argument is: resolvable -> runs canonically; anything else ->
+                # visible refusal, because with neither side trusted there is no
+                # identity for the invocation at all.
+                $riNoTrigValid = Invoke-KiroProbe -Client 'kiro' -Trigger '' -Stdin '{"hook_event_name":"stop"}' -Exe $riExe
+                Check ($riTag + ': no trigger + a payload event INSIDE the trust list runs, normalized') (
+                    $riNoTrigValid.Exit -eq 0 -and (Get-RiPart $riNoTrigValid.Out 'EVENT') -ceq 'Stop') (
+                    'exit=' + $riNoTrigValid.Exit + ' out=[' + $riNoTrigValid.Out + ']')
+                $riNoTrigBogus = Invoke-KiroProbe -Client 'kiro' -Trigger '' -Stdin '{"hook_event_name":"PostFileSave"}' -Exe $riExe
+                Check ($riTag + ': no trigger + a payload event OUTSIDE the trust list is refused visibly') (
+                    $riNoTrigBogus.Out -notmatch 'RAN' -and $riNoTrigBogus.Exit -ne 0 -and $riNoTrigBogus.Exit -ne 2 -and
+                    $riNoTrigBogus.Err -match 'PostFileSave') (
+                    'exit=' + $riNoTrigBogus.Exit + ' out=[' + $riNoTrigBogus.Out + '] err=[' + $riNoTrigBogus.Err + ']')
+
+                # --- corrupt stdin is not the same thing as empty stdin --------
+                # Non-empty-but-unparseable used to collapse into the SAME $null
+                # an empty IDE stdin produces, and the synthesize branch then
+                # built a healthy-looking event from it - corrupt input laundered
+                # into a normal invocation. It refuses visibly now, on Kiro only.
+                $riCorrupt = Invoke-KiroProbe -Client 'kiro' -Trigger 'SessionStart' -Stdin '{not json!!' -Exe $riExe
+                Check ($riTag + ': corrupt stdin JSON on Kiro refuses visibly instead of synthesizing an event') (
+                    $riCorrupt.Out -notmatch 'RAN' -and $riCorrupt.Exit -ne 0 -and $riCorrupt.Exit -ne 2 -and
+                    $riCorrupt.Err -match 'JSON') (
+                    'exit=' + $riCorrupt.Exit + ' out=[' + $riCorrupt.Out + '] err=[' + $riCorrupt.Err + ']')
+                foreach ($riOtherCorrupt in @('claude', 'codex')) {
+                    $riOtherCorruptResult = Invoke-KiroProbe -Client $riOtherCorrupt -Trigger '' -Stdin '{not json!!' -Exe $riExe
+                    Check ($riTag + ': corrupt stdin on ' + $riOtherCorrupt + ' stays the silent no-op it always was') (
+                        $riOtherCorruptResult.Exit -eq 0 -and (Get-RiPart $riOtherCorruptResult.Out 'EVENT') -ceq '' -and
+                        $riOtherCorruptResult.Err -eq '') (
+                        'exit=' + $riOtherCorruptResult.Exit + ' err=[' + $riOtherCorruptResult.Err + ']')
+                }
+
+                # --- the refusal diagnostic is itself bounded and single-line --
+                # The payload event name is untrusted text headed for a
+                # user-visible warning: unbounded, a 5 KB name with embedded
+                # newlines flooded the diagnostic and let payload text pose as
+                # additional diagnostic lines.
+                $riNoisyEvent = '{"hook_event_name":"Stop\nFAKE-DIAGNOSTIC-LINE' + ('X' * 5000) + '"}'
+                $riNoise = Invoke-KiroProbe -Client 'kiro' -Trigger 'PreToolUse' -Stdin $riNoisyEvent -Exe $riExe
+                $riNoiseLines = @($riNoise.Err -split "`r?`n" | Where-Object { $_ -ne '' })
+                Check ($riTag + ': a hostile event name cannot flood or line-break the refusal diagnostic') (
+                    $riNoise.Exit -ne 0 -and $riNoise.Exit -ne 2 -and
+                    $riNoiseLines.Count -eq 1 -and $riNoiseLines[0].Length -lt 600) (
+                    'exit=' + $riNoise.Exit + ' errLines=' + $riNoiseLines.Count + ' len=' + $(if ($riNoiseLines.Count -gt 0) { $riNoiseLines[0].Length } else { 0 }))
+
+                # --- a leading BOM is transport, not payload -------------------
+                # A .NET Framework parent's StreamWriter emits the encoding
+                # preamble into a redirected child stdin, and 5.1's
+                # ConvertFrom-Json throws on the resulting leading U+FEFF while
+                # pwsh 7 tolerates it - so without the trim the SAME healthy
+                # payload parsed on one host and read as corrupt on the other.
+                $riBomPayload = [string][char]0xFEFF + '{"hook_event_name":"Stop"}'
+                $riBom = Invoke-KiroProbe -Client 'kiro' -Trigger 'Stop' -Stdin $riBomPayload -Exe $riExe
+                Check ($riTag + ': a BOM-prefixed healthy payload runs normally on both hosts') (
+                    $riBom.Exit -eq 0 -and (Get-RiPart $riBom.Out 'EVENT') -ceq 'Stop') (
+                    'exit=' + $riBom.Exit + ' out=[' + $riBom.Out + '] err=[' + $riBom.Err + ']')
             }
         }
         finally {

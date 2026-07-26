@@ -717,6 +717,32 @@ try {
             $evidenceNote -match 'Kiro IDE' -and
             $evidenceNote -match 'unverified on Kiro CLI v3') $evidenceNote
 
+        # C-05: the two surfaces are STRUCTURED evidence, not just a sentence.
+        # One client id ('kiro' stays singular - records and menu unchanged),
+        # but each surface records its own evidence kind: the IDE's silence is
+        # documented-absent, CLI v3's fields are unverified (it DOES send stdin
+        # JSON; the names are simply unpublished). The note above must AGREE
+        # with these structures - that agreement is what stops the sentence and
+        # the data drifting apart the way the old flat wording did.
+        Check 'the kiro entry records its two surfaces with DIFFERENT evidence kinds' (
+            $evidenceCapability.Contains('surfaces') -and
+            $evidenceCapability.surfaces.ContainsKey('kiro-ide') -and
+            $evidenceCapability.surfaces.ContainsKey('kiro-cli-v3') -and
+            [string]$evidenceCapability.surfaces['kiro-ide'].inputEvidence -eq 'documented-absent' -and
+            [string]$evidenceCapability.surfaces['kiro-cli-v3'].inputEvidence -eq 'unverified') (
+            (@($evidenceCapability.Keys) -join ','))
+        Check 'the surfaces agree with the table: only CLI v3 claims stdin JSON, matching inputProtocol' (
+            $evidenceCapability.Contains('surfaces') -and
+            $evidenceCapability.surfaces['kiro-ide'].stdinJson -eq $false -and
+            $evidenceCapability.surfaces['kiro-cli-v3'].stdinJson -eq $true) 'surface stdinJson flags'
+        if ($evidenceCapability.Contains('surfaces')) {
+            $surfaceIde = [string]$evidenceCapability.surfaces['kiro-ide'].displayName
+            $surfaceCli = [string]$evidenceCapability.surfaces['kiro-cli-v3'].displayName
+            Check 'the note names BOTH surface displayNames, so sentence and structure cannot drift' (
+                $evidenceNote -match [regex]::Escape($surfaceIde) -and
+                $evidenceNote -match [regex]::Escape($surfaceCli)) ($evidenceNote + ' vs ' + $surfaceIde + '/' + $surfaceCli)
+        }
+
         # A foreign document sitting at the exact path we would write must be
         # refused outright. Overwriting it would destroy hooks another tool or
         # the user owns - and the file content is asserted byte-identical.
