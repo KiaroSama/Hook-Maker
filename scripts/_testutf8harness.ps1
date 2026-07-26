@@ -113,7 +113,11 @@ function New-IsolatedHookCopy {
     param([string]$EnvContent = $null)
     $dir = Join-Path $Work ('hookcopy-' + [guid]::NewGuid().ToString('N').Substring(0, 6))
     New-Item -ItemType Directory -Path $dir -Force | Out-Null
-    Copy-Item $Hook (Join-Path $dir 'Utf8-Encoding-Check.ps1')
+    # The whole hook PACKAGE - the installer stages every .ps1 beside the entry
+    # point, so a single-file copy would exercise a runtime that cannot exist.
+    foreach ($pkgFile in @(Get-ChildItem -LiteralPath (Split-Path -Parent $Hook) -File -Filter '*.ps1')) {
+        Copy-Item $pkgFile.FullName (Join-Path $dir $pkgFile.Name) -Force
+    }
     Copy-Item $HookLib (Join-Path $Work '_hooklib.ps1') -Force
     if ($null -ne $EnvContent) { Write-Utf8 (Join-Path $dir '.env') $EnvContent }
     $fakeLocal = Join-Path $dir '_fakelocal'

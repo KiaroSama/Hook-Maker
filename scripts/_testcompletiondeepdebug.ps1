@@ -128,7 +128,10 @@
 
     # =====================================================================
     Write-Host '--- E-13: static safety - the hook never executes commands, codewords, or skills ---' -ForegroundColor Cyan
-    $tccText = [System.IO.File]::ReadAllText($Hook)
+    # The whole hook package: reading only the entry point would silently narrow
+    # these source-text assertions the moment the hook grew a companion module.
+    $tccText = (@(Get-ChildItem -LiteralPath (Split-Path -Parent $Hook) -File -Filter '*.ps1' | Sort-Object Name |
+            ForEach-Object { [System.IO.File]::ReadAllText($_.FullName) }) -join "`n")
     Check 'source has no execution primitive in statement position (Start-Process/Invoke-Expression/iex)' (
         $tccText -notmatch '(?im)^\s*(Start-Process|Invoke-Expression|iex)\b') $tccText.Substring(0, 200)
     Check 'source never applies the call operator to data (no "& $var" execution path)' ($tccText -notmatch '&\s+\$') $tccText.Substring(0, 200)
