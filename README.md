@@ -56,6 +56,8 @@ starts the user's task.
 | `scripts/_installdiscovered.ps1` | The other record kind sharing that file, split out of `_installregistry.ps1` (which dot-sources it): a *discovered* record is one the read-only status scan found rather than one Hook Maker installed, so it has its own stable id derivation, its own field validators (including the rule that a raw command line is never persisted), and its own merge against the managed set. Exercised by `Test-InstallRegistrySchema.ps1`. |
 | `scripts/_installruntime.ps1` | Runtime materialization split out of `Install-Hook.ps1` (which dot-sources it): building the self-contained runtime copy a registration points at — the planned, hash-verified, transactional swap plus its post-commit legacy cleanup — and the two command lines (Windows PowerShell / pwsh) that invoke that copy. |
 | `scripts/_installclientsettings.ps1` | Client settings mutation split out of `Install-Hook.ps1` (which dot-sources it): the read-modify-write of one client's settings file — pruning only handlers this install provably owns, inserting the handler group, backing the file up, and replacing it transactionally after re-parsing the serialized JSON from disk. |
+| `scripts/_installnativegit.ps1` | The native Git pre-push chain split out of `Install-Hook.ps1` (which dot-sources it): for the one hook that also manages a real `.git/hooks/pre-push` wrapper, it stages the managed runtime and its chain companions through the same canonical plan, preserves any pre-existing user hook as opaque bytes, regenerates only the owned wrapper, and records what the chain manages so the updater can detect companion drift. |
+| `scripts/_installkiroclient.ps1` | The Kiro client install FLOW split out of `Install-Hook.ps1` — distinct from `_installkiro.ps1`, which is the pure document format. This file owns every Kiro filesystem write: the runtime rollback snapshot, the ordered commit of runtime then registration, the lock around the registration write, and the degradation reporting. It is dot-sourced at the position the Kiro phase runs (it carries the phase's top-level block, not only functions). |
 | `state/` | **Machine-local and git-ignored.** `install-registry.json` — what Hook Maker has installed and where (see "Updating previously installed hooks"); never holds secret/`.env`/prompt content or file contents. A damaged registry is preserved beside it as `install-registry.corrupt-<UTC timestamp>-<short hash>.json` instead of being overwritten. |
 
 ## Shipped hooks
@@ -402,17 +404,32 @@ that turns out to be someone else's is refused rather than overwritten. The runt
 `.kiro\hook-runtime\Hook-Maker\` — deliberately **not** under `.kiro\hooks`, which Kiro scans as
 configuration.
 
-Two Kiro facts shape the install and are not worked around:
+Four Kiro facts shape the install and are not worked around:
 
-- **Kiro documents no stdin JSON** (only `USER_PROMPT`, only on `UserPromptSubmit`). So each entry's
-  command ends in `-Trigger <trigger>` and runs through a generated `kiro-launch.ps1`, which supplies
-  the event and the client identity through the environment and then runs the hook in-process, so
-  stdin and the real exit code still pass through. No `session_id` is invented — session-keyed
-  behaviour degrades instead of silently mispairing.
+- **The input surface differs between Kiro's two surfaces, and that difference is not flattened.**
+  Kiro IDE documents only `USER_PROMPT`, only on `UserPromptSubmit`. Kiro CLI v3 *does* send stdin
+  JSON — it simply does not publish its field names or casing. So each entry's command ends in
+  `-Trigger <trigger>` and runs through a generated `kiro-launch.ps1`, which supplies the event and
+  the client identity through the environment and then runs the hook in-process, so stdin and the
+  real exit code still pass through. No `session_id` is invented — session-keyed behaviour degrades
+  instead of silently mispairing.
+- **An input Kiro may not deliver is reported as _unverified_, never as confirmed-absent.** The
+  install still degrades on it — registering a hook that silently cannot work is the worse error —
+  but the report does not claim more than the documentation supports. Saying "Kiro cannot supply
+  this" would state an unverified CLI v3 fact as a confirmed one.
+- **A registration that disagrees with Kiro is refused, not guessed.** If the trigger recorded in the
+  `.kiro\hooks` registration and the event Kiro reports resolve to two *different* events, the hook
+  writes a warning to stderr and exits non-zero instead of choosing a branch. Different spellings of
+  the *same* event are normalized first, so an undocumented CLI v3 casing never trips it.
 - **Kiro cannot block at `Stop`** on either targeted surface, and only `SessionStart` and
   `UserPromptSubmit` add stdout to context. Stop-gating hooks therefore record `degraded-stop-gate`
   permanently, and events Kiro has no trigger for are reported by name — never dropped in silence and
   never remapped onto a different trigger.
+
+`USER_PROMPT` is capped at 64 KB of **UTF-8 bytes** (not characters, so a non-ASCII prompt is not
+silently allowed three times the documented bound), truncated on a character boundary so a surrogate
+pair is never split, and the truncation is stated in the prompt text itself rather than applied
+silently.
 
 Kiro supports `SessionStart`, `UserPromptSubmit`, `PreToolUse`, `PostToolUse` and `Stop`; any other
 requested event is reported as unsupported for Kiro while still installing for the other clients.

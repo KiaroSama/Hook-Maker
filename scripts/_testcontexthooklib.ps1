@@ -216,9 +216,18 @@ if ($null -ne $in) { $prompt = [string](Get-Field $in 'prompt') }
         Check 'a kiro payload with no event name is completed from the launcher trigger' (
             [string](Get-RiField $riKiroPartial 'hook_event_name') -ceq 'Stop' -and
             [string](Get-RiField $riKiroPartial 'cwd') -ceq 'C:\w') (Show-Ri $riKiroPartial)
-        $riKiroWins = Invoke-ReadHookInput -Client 'kiro' -Trigger 'Stop' -Stdin '{"hook_event_name":"SessionStart"}'
-        Check 'a real payload event name WINS over the launcher argument' (
-            [string](Get-RiField $riKiroWins 'hook_event_name') -ceq 'SessionStart') (Show-Ri $riKiroWins)
+        # The payload no longer simply "wins": launcher and payload must AGREE on
+        # which event fired, or the hook refuses (asserted in the refusal section
+        # below). A different SPELLING of the same event is NOT a disagreement -
+        # CLI v2 spelled every trigger camelCase and v3 does not re-publish its
+        # casing - so it is resolved and normalized to the canonical name, which
+        # is what keeps every hook's `-ceq 'PreToolUse'` branch working.
+        $riKiroCasing = Invoke-ReadHookInput -Client 'kiro' -Trigger 'PreToolUse' -Stdin '{"hook_event_name":"preToolUse"}'
+        Check 'a payload spelling the SAME event differently is normalized, never refused' (
+            [string](Get-RiField $riKiroCasing 'hook_event_name') -ceq 'PreToolUse') (Show-Ri $riKiroCasing)
+        $riKiroLooseLauncher = Invoke-ReadHookInput -Client 'kiro' -Trigger 'pretooluse' -Stdin ''
+        Check 'the launcher trigger also resolves case-insensitively to the canonical event' (
+            [string](Get-RiField $riKiroLooseLauncher 'hook_event_name') -ceq 'PreToolUse') (Show-Ri $riKiroLooseLauncher)
 
         # --- USER_PROMPT is the ONE input channel Kiro documents ---------------
         # Omitting it left every prompt-driven hook blind on Kiro IDE:
@@ -267,27 +276,132 @@ if ($null -ne $in) { $prompt = [string](Get-Field $in 'prompt') }
         }
 
         # --- a payload event name that CONTRADICTS the launcher ---------------
-        # The launcher argument is written by the INSTALLER into the registration,
-        # so a mismatch means the registration and the client disagree about what
-        # fired. The payload still wins - it is the client's own statement - but
-        # swallowing the disagreement is how "the hook just does nothing" faults
-        # stay invisible.
+        # The launcher argument is written by the INSTALLER into the .kiro\hooks
+        # registration, so a real disagreement means the registration and the
+        # client disagree about what fired - and NEITHER side can then be trusted
+        # to choose the code path a hook takes.
+        #
+        # This used to let the payload win and record 'hookmaker_trigger_mismatch'
+        # on the object. NOTHING read that field, so it was swallowing with extra
+        # steps: a PreToolUse registration whose payload said Stop handed the hook
+        # a Stop event, the hook ran its Stop branch, and nothing said so.
+        #
+        # The refusal is an EXIT CODE plus stderr, so these cases MUST run as real
+        # child hook processes - an in-process call would take this suite down
+        # along with the hook, and the exit code is itself the safety property
+        # being asserted. Both hosts, because Claude launches powershell.exe (5.1)
+        # and Codex pwsh 7, and cross-host differences are this repo's #1 shipped
+        # bug source.
+        $riProbe = Join-Path $Work 'kiro-normalize-probe.ps1'
+        $riProbeBody = @'
+Set-StrictMode -Version 2.0
+$ErrorActionPreference = 'Stop'
+. (Join-Path '__LIBDIR__' '_hooklib.ps1')
+$in = Read-HookInput
+$ev = ''
+$pr = ''
+if ($null -ne $in) {
+    $ev = [string](Get-Field $in 'hook_event_name')
+    $pr = [string](Get-Field $in 'prompt')
+}
+$enc = [System.Text.Encoding]::UTF8
+# An unpaired surrogate is not encodable as UTF-8 - GetBytes turns it into
+# U+FFFD - so a failed round trip IS the split-surrogate detector.
+$utf8Ok = ($enc.GetString($enc.GetBytes($pr)) -ceq $pr)
+$marker = "`n[hook-maker: prompt truncated at"
+$body = $pr
+$cut = $pr.IndexOf($marker)
+if ($cut -ge 0) { $body = $pr.Substring(0, $cut) }
+[Console]::Out.WriteLine('RAN;EVENT=' + $ev + ';BODYBYTES=' + $enc.GetByteCount($body) +
+    ';CHARS=' + $pr.Length + ';UTF8OK=' + $utf8Ok + ';TRUNC=' + ($cut -ge 0))
+'@
+        Write-Utf8 $riProbe ($riProbeBody.Replace('__LIBDIR__', (Split-Path -Parent $HookLib)))
+
+        # The enclosing finally blocks restore all three variables, so these are
+        # set and left for the next call rather than saved per invocation.
+        function Invoke-KiroProbe {
+            param([string]$Client, [string]$Trigger, [string]$Stdin, [string]$UserPrompt = '', [string]$Exe = 'pwsh')
+            $env:HOOKMAKER_CLIENT = $Client
+            $env:HOOKMAKER_KIRO_TRIGGER = $Trigger
+            $env:USER_PROMPT = $UserPrompt
+            return (Fire -HookPath $riProbe -Cwd $Work -RawStdin $Stdin -Exe $Exe)
+        }
+        function Get-RiPart {
+            param([string]$Text, [string]$Key)
+            $m = [regex]::Match($Text, ';' + $Key + '=([^;]*)')
+            if ($m.Success) { return $m.Groups[1].Value }
+            return ''
+        }
+
         try {
-            $riMismatch = Invoke-ReadHookInput -Client 'kiro' -Trigger 'UserPromptSubmit' -Stdin '{"hook_event_name":"Stop"}'
-            Check 'a contradicting payload event still WINS over the launcher argument' (
-                [string](Get-RiField $riMismatch 'hook_event_name') -ceq 'Stop') (Show-Ri $riMismatch)
-            Check 'but the contradiction is RECORDED, naming both sides' (
-                [string](Get-RiField $riMismatch 'hookmaker_trigger_mismatch') -match 'launcher=UserPromptSubmit' -and
-                [string](Get-RiField $riMismatch 'hookmaker_trigger_mismatch') -match 'payload=Stop') (Show-Ri $riMismatch)
-            # An agreeing payload must not carry the marker, or it becomes noise
-            # that every consumer learns to ignore.
-            $riAgree = Invoke-ReadHookInput -Client 'kiro' -Trigger 'Stop' -Stdin '{"hook_event_name":"Stop"}'
-            Check 'an agreeing payload carries no mismatch marker' (
-                [string]::IsNullOrEmpty((Get-RiField $riAgree 'hookmaker_trigger_mismatch'))) (Show-Ri $riAgree)
-            # Filling in a MISSING name is not a contradiction either.
-            $riFilled = Invoke-ReadHookInput -Client 'kiro' -Trigger 'Stop' -Stdin '{"cwd":"C:\\w"}'
-            Check 'completing a missing event name is not reported as a contradiction' (
-                [string]::IsNullOrEmpty((Get-RiField $riFilled 'hookmaker_trigger_mismatch'))) (Show-Ri $riFilled)
+            foreach ($riExe in @('pwsh', 'powershell.exe')) {
+                $riTag = $(if ($riExe -eq 'pwsh') { 'pwsh 7' } else { '5.1' })
+
+                $riMismatch = Invoke-KiroProbe -Client 'kiro' -Trigger 'PreToolUse' -Stdin '{"hook_event_name":"Stop"}' -Exe $riExe
+                Check ($riTag + ': a contradicting payload REFUSES to run and says so on stderr') (
+                    $riMismatch.Out -notmatch 'RAN' -and $riMismatch.Exit -ne 0 -and
+                    $riMismatch.Err -match 'PreToolUse' -and $riMismatch.Err -match 'Stop') (
+                    'exit=' + $riMismatch.Exit + ' out=[' + $riMismatch.Out + '] err=[' + $riMismatch.Err + ']')
+                # THE safety line. Kiro's exit-code table: stdout is added to
+                # context only on SessionStart/UserPromptSubmit (so a stdout
+                # refusal would be silent on exactly the PreToolUse/PostToolUse/
+                # Stop events where a wrong branch does damage), 2 BLOCKS, and any
+                # other non-zero exit shows stderr to the user and proceeds. A
+                # configuration fault is the USER's to repair, not the agent's to
+                # be blocked by - and Kiro cannot block at Stop at all.
+                Check ($riTag + ': the refusal never uses exit 2, Kiro''s block code') (
+                    $riMismatch.Exit -ne 2) ([string]$riMismatch.Exit)
+                # A real Kiro trigger with no Hook Maker equivalent is a genuine
+                # disagreement too, not a spelling difference. The old code passed
+                # it straight through as the hook's event name - an event name
+                # arriving from stdin that is not even a Hook Maker logical event.
+                $riUnknownPayload = Invoke-KiroProbe -Client 'kiro' -Trigger 'PreToolUse' -Stdin '{"hook_event_name":"PostFileSave"}' -Exe $riExe
+                Check ($riTag + ': an unresolvable payload event is refused, never passed through') (
+                    $riUnknownPayload.Out -notmatch 'RAN' -and $riUnknownPayload.Exit -ne 0 -and
+                    $riUnknownPayload.Exit -ne 2) ('exit=' + $riUnknownPayload.Exit + ' out=[' + $riUnknownPayload.Out + ']')
+                # Same event, different spelling: must RUN, and canonically.
+                $riCasing = Invoke-KiroProbe -Client 'kiro' -Trigger 'PreToolUse' -Stdin '{"hook_event_name":"preToolUse"}' -Exe $riExe
+                Check ($riTag + ': a casing-only difference runs and normalizes, so CLI v3 is not broken') (
+                    $riCasing.Exit -eq 0 -and (Get-RiPart $riCasing.Out 'EVENT') -ceq 'PreToolUse') (
+                    'exit=' + $riCasing.Exit + ' out=[' + $riCasing.Out + ']')
+                # Agreement and fill-in stay ordinary, non-refusing paths.
+                $riAgree = Invoke-KiroProbe -Client 'kiro' -Trigger 'Stop' -Stdin '{"hook_event_name":"Stop"}' -Exe $riExe
+                Check ($riTag + ': an agreeing payload runs normally') (
+                    $riAgree.Exit -eq 0 -and (Get-RiPart $riAgree.Out 'EVENT') -ceq 'Stop') (
+                    'exit=' + $riAgree.Exit + ' out=[' + $riAgree.Out + ']')
+                $riFilled = Invoke-KiroProbe -Client 'kiro' -Trigger 'Stop' -Stdin '{"cwd":"C:\\w"}' -Exe $riExe
+                Check ($riTag + ': completing a MISSING event name is not a contradiction') (
+                    $riFilled.Exit -eq 0 -and (Get-RiPart $riFilled.Out 'EVENT') -ceq 'Stop') (
+                    'exit=' + $riFilled.Exit + ' out=[' + $riFilled.Out + ']')
+                # Claude and Codex must be byte-identical to before, even with a
+                # stray Kiro trigger sitting in the environment.
+                foreach ($riOther in @('claude', 'codex')) {
+                    $riOtherResult = Invoke-KiroProbe -Client $riOther -Trigger 'PreToolUse' -Stdin '{"hook_event_name":"Stop"}' -Exe $riExe
+                    Check ($riTag + ': ' + $riOther + ' is untouched by a contradicting Kiro trigger') (
+                        $riOtherResult.Exit -eq 0 -and (Get-RiPart $riOtherResult.Out 'EVENT') -ceq 'Stop' -and
+                        $riOtherResult.Err -eq '') (
+                        'exit=' + $riOtherResult.Exit + ' out=[' + $riOtherResult.Out + '] err=[' + $riOtherResult.Err + ']')
+                }
+
+                # --- the prompt cap is UTF-8 BYTES, and never splits a pair ----
+                # 40000 CJK characters are 120000 UTF-8 bytes but only 40000
+                # CHARACTERS, so the old character cap admitted ~3x the bound it
+                # documented and did not truncate this at all.
+                $riCjk = ([string][char]0x4E00) * 40000
+                $riCjkResult = Invoke-KiroProbe -Client 'kiro' -Trigger 'UserPromptSubmit' -Stdin '' -UserPrompt $riCjk -Exe $riExe
+                Check ($riTag + ': the prompt cap bounds UTF-8 BYTES, not characters') (
+                    (Get-RiPart $riCjkResult.Out 'TRUNC') -eq 'True' -and
+                    [int](Get-RiPart $riCjkResult.Out 'BODYBYTES') -le 65536) ('out=[' + $riCjkResult.Out + ']')
+                # An astral character straddling the limit: .Substring() cuts
+                # between the two halves of the surrogate pair, and the leftover
+                # unpaired surrogate is not encodable as UTF-8 at all.
+                $riSurrogate = ('x' * 65535) + [string]::Concat([char]0xD83D, [char]0xDE00)
+                $riSurrogateResult = Invoke-KiroProbe -Client 'kiro' -Trigger 'UserPromptSubmit' -Stdin '' -UserPrompt $riSurrogate -Exe $riExe
+                Check ($riTag + ': truncation never splits a surrogate pair, so the result stays valid UTF-8') (
+                    (Get-RiPart $riSurrogateResult.Out 'UTF8OK') -eq 'True' -and
+                    (Get-RiPart $riSurrogateResult.Out 'TRUNC') -eq 'True' -and
+                    [int](Get-RiPart $riSurrogateResult.Out 'BODYBYTES') -le 65536) ('out=[' + $riSurrogateResult.Out + ']')
+            }
         }
         finally {
             if ([string]::IsNullOrEmpty($riOrigUserPrompt)) {

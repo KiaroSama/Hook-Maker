@@ -156,22 +156,50 @@ $script:HookMakerClientCapabilities = @{
         # them as an explicit degraded component result.
         supportedEvents       = @('SessionStart', 'UserPromptSubmit', 'PreToolUse', 'PostToolUse', 'Stop')
         # A trigger EXISTING is not the same as a hook being able to do its job
-        # on it. Kiro fires PreToolUse/PostToolUse, but Kiro IDE publishes no
-        # tool_name/tool_input for a shell-command hook, so a hook that needs the
-        # tool payload runs and immediately exits - present, registered, and
+        # on it. Kiro fires PreToolUse/PostToolUse, but a hook that needs the
+        # tool payload may run and immediately exit - present, registered, and
         # useless. Callers must weigh this per HOOK, against what that hook
         # actually reads, not per event name.
         #
+        # NOT named 'unavailable', and that is the whole point. ONE kiro id
+        # covers TWO surfaces whose EVIDENCE differs, and the previous name
+        # flattened them into a single confirmed absence:
+        #
+        #   Kiro IDE   - its documented input surface is USER_PROMPT on
+        #                UserPromptSubmit and nothing else, so for every field
+        #                below the absence IS what the primary docs describe.
+        #   Kiro CLI v3- inputProtocol above already records that v3 DOES send
+        #                stdin JSON. It just does not publish the field names or
+        #                casing (.ai/KIRO_PROTOCOL.md, CRITICAL UNKNOWN 4). So a
+        #                field here may well arrive on v3; we cannot verify it.
+        #
+        # Calling the v3 half "unavailable" recorded an unverified fact as a
+        # confirmed one, and the installer then repeated it to users as fact.
+        # BEHAVIOUR IS UNCHANGED - an unverified field still degrades, because
+        # registering a hook that silently cannot work is the worse error. Only
+        # the claim is corrected.
+        #
+        # ONE list, not two, because the split is per SURFACE and not per field:
+        # today every entry is documented-absent on IDE and unverified on v3.
+        # Two identical per-field buckets would be fake precision. If a future
+        # round ever confirms a field on one surface but not the other, THAT is
+        # when this splits - and until then the name no longer lies.
+        #
         # Field names are the normalized ones Read-HookInput produces. 'prompt'
         # is absent from this list because USER_PROMPT genuinely supplies it on
-        # UserPromptSubmit; everything here is what Kiro does NOT deliver.
-        unavailableInputFields = @{
+        # UserPromptSubmit.
+        unverifiedInputFields = @{
             'PreToolUse'  = @('tool_name', 'tool_input', 'session_id')
             'PostToolUse' = @('tool_name', 'tool_input', 'tool_result', 'session_id')
             'SessionStart' = @('session_id')
             'Stop'        = @('session_id')
             'UserPromptSubmit' = @('session_id')
         }
+        # The evidence sentence lives HERE, beside the data it qualifies, and is
+        # reported verbatim by the installer. Keeping the claim in the table is
+        # what stops a consumer paraphrasing it back into a flat assertion -
+        # which is exactly how the previous wording came to overstate v3.
+        unverifiedInputFieldsNote = 'not supplied by Kiro IDE; unverified on Kiro CLI v3'
         # Stop is ABSENT on purpose and it is the most consequential entry in
         # this file. Kiro IDE's trigger table says Stop cannot block, and CLI v3
         # dropped v2's stdout decision JSON entirely. Only the legacy CLI v2

@@ -195,7 +195,20 @@ if ($config.ContainsKey('TEST_COMPLETION_COORDINATION_WAIT_SECONDS')) {
 
 # ---- paths ----
 $stateDir = Join-Path $env:LOCALAPPDATA 'HookMaker\state'
-$projectKey = Get-ShortHash $cwd.ToLowerInvariant()
+# Normalize-Path is load-bearing, not decoration, and this key names THREE
+# things: Test-Temp-Cleanup's coordination record (read below), this hook's own
+# incident ledger, and its deep-debug marker.
+#
+# The producer of the cleanup record hashes Normalize-Path($cwd) (see
+# Test-Temp-Cleanup.ps1's $projectRoot), while ToLowerInvariant alone folds case
+# only. A cwd carrying a trailing separator or a '.'/'..' segment therefore
+# hashed to a key the producer never writes - so the cleanup record read as
+# ABSENT, and, worse, THIS hook's own ledger split across two keys for one
+# project, which can drop a pending note obligation the ledger exists to hold.
+# Both sides of a shared-state contract must canonicalize with the same helper
+# or the state is only nominally shared. $cwd is already proven non-empty and an
+# existing directory by the guard above, so Normalize-Path cannot throw here.
+$projectKey = Get-ShortHash (Normalize-Path $cwd).ToLowerInvariant()
 # result/observed/active are PER-RUN now (TestRunGuard-<kind>-<key>-<runId>.json)
 # and are enumerated + aggregated below, never read from one fixed path.
 $cleanupPath = Join-Path $stateDir ('TestTempCleanup-result-' + $projectKey + '.json')

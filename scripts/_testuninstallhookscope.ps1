@@ -199,3 +199,113 @@
         Check 'uninstalling a nonexistent id leaves every real file byte-for-byte unchanged' $allUnchangedAfterGhost
     }
     finally { Remove-FixtureHook 'ZZZ-Uninst-Noop' }
+
+    # =========================================================================
+    Write-Host '--- Test-Temp-Cleanup: uninstall retires the coordination record ---' -ForegroundColor Cyan
+    # Cloudflare-Deploy proves "Test-Temp-Cleanup is installed here" primarily
+    # from %LOCALAPPDATA%\HookMaker\state\TestTempCleanup-result-<key>.json -
+    # only the hook writes one. A record that outlived its uninstall therefore
+    # asserted an installation that no longer exists: the gate kept waiting for
+    # a fresh 'clean' category nothing would ever write again, and the deploy
+    # reminder was permanently dead in that project.
+    #
+    # The REAL hook is installed and its INSTALLED runtime copy is fired, so the
+    # record under test is the one production actually writes. Nothing here
+    # recomputes a project key - the key is a hash of a path SPELLING, so a test
+    # that hand-built the path would agree with itself and still miss the file
+    # production wrote. Each record is identified by which file APPEARED after
+    # that project was fired.
+    $cleanupSource = Join-Path $RealHooksDir 'Test-Temp-Cleanup\Test-Temp-Cleanup.ps1'
+    Check 'setup: the real Test-Temp-Cleanup hook source exists' (Test-Path -LiteralPath $cleanupSource -PathType Leaf)
+
+    # Installed one at a time so the newly-appeared file identifies its project.
+    $seenRecords = @()
+    $cleanupProjects = [ordered]@{}
+    foreach ($caseName in @('Red', 'Keep', 'Green', 'Spelled')) {
+        $proj = New-Proj ('CleanupState' + $caseName)
+        # 'Spelled' installs with a TRAILING SEPARATOR: targetProjectRoot is only
+        # GetFullPath'd at install time and GetFullPath keeps it, so the record
+        # persists a spelling that hashes to a different key than the one the
+        # hook - which canonicalizes with Normalize-Path - actually writes. An
+        # uninstaller that skipped that canonicalization deleted nothing here
+        # while reporting a clean success.
+        $installTarget = if ($caseName -eq 'Spelled') { $proj + '\' } else { $proj }
+        & $InstallScript -CustomHook $cleanupSource -Events @('Stop') -TargetProject $installTarget -ClaudeOnly *> $null
+        $rec = @(Get-RecordsFor 'Test-Temp-Cleanup' | Where-Object { [string]$_.targetProjectRoot -eq $installTarget })[0]
+        Check ('setup: ' + $caseName + ' got its own Test-Temp-Cleanup record') ($null -ne $rec)
+        # cwd is the canonical spelling a client really sends, whatever spelling
+        # the install was targeted with.
+        [void](Invoke-CleanupHookStop -RuntimeScript ([string]$rec.clients.claude.runtimeScript) -Cwd $proj)
+        $appeared = @(Get-CleanupRecordFiles | Where-Object { $seenRecords -notcontains $_.FullName })
+        Check ('setup: firing ' + $caseName + '''s INSTALLED runtime wrote exactly one new coordination record') ($appeared.Count -eq 1)
+        $seenRecords += @($appeared | ForEach-Object { $_.FullName })
+        $cleanupProjects[$caseName] = [pscustomobject]@{
+            Record = $rec; RecordFile = [string]$appeared[0].FullName
+            RuntimeDir = (Split-Path -Parent ([string]$rec.clients.claude.runtimeScript))
+        }
+    }
+
+    # Guards the Spelled case against silently degrading into a duplicate of the
+    # canonical one: if the installer ever starts canonicalizing targetProjectRoot
+    # itself, this fails loudly instead of leaving a green test that proves
+    # nothing about the uninstaller's own canonicalization.
+    Check 'setup: the Spelled record really persists a non-canonical spelling (the case still bites)' (
+        ([string]$cleanupProjects['Spelled'].Record.targetProjectRoot) -cne
+        (Normalize-Path ([string]$cleanupProjects['Spelled'].Record.targetProjectRoot)))
+
+    # ---- RED (historical, self-retiring): the pre-change executor names the
+    # record path nowhere, so it provably could not remove it. Executed for real
+    # against a HEAD export staged beside copies of its sibling modules - the
+    # shared working tree is never reverted.
+    $headText = ((& git -C $ToolRoot show 'HEAD:scripts/Uninstall-Hook.ps1' 2>$null) -join "`n")
+    if ([string]::IsNullOrWhiteSpace($headText) -or $headText -match 'TestTempCleanup-result') {
+        Write-Host 'HEAD already retires the coordination record; historical red-proof retired.' -ForegroundColor DarkGray
+    }
+    else {
+        $shadowDir = Join-Path $Work 'headuninstall'
+        New-Item -ItemType Directory -Path $shadowDir -Force | Out-Null
+        # The whole _*.ps1 set: the uninstaller's dot-source closure
+        # (_installplan -> _clientcapability/_installkiro/..., _installlib ->
+        # _installdiscovered -> _hookdiscovery, _uninstallownership) is entirely
+        # underscore-prefixed, so one wildcard copy covers it without the test
+        # having to track that graph.
+        Copy-Item -Path (Join-Path $ScriptRoot '_*.ps1') -Destination $shadowDir -Force
+        $shadowScript = Join-Path $shadowDir 'Uninstall-Hook.ps1'
+        Write-Utf8 $shadowScript $headText
+        $rRed = Invoke-UninstallProcess -RecordId ([string]$cleanupProjects['Red'].Record.id) -ScriptPath $shadowScript
+        # Without this the red proof would pass vacuously whenever the shadow run
+        # merely failed to do anything at all.
+        Check 'RED-PROOF setup: the pre-fix executor really did complete the uninstall' (
+            $rRed.Exit -eq 0 -and [string]$rRed.Result.overall -eq 'ok' -and
+            @(Get-RecordsFor 'Test-Temp-Cleanup' | Where-Object { [string]$_.id -eq [string]$cleanupProjects['Red'].Record.id }).Count -eq 0) $rRed.Err
+        Check 'RED-PROOF: the pre-fix executor leaves the coordination record behind (gate dead forever)' (
+            Test-Path -LiteralPath $cleanupProjects['Red'].RecordFile -PathType Leaf)
+    }
+
+    # ---- a dry run must retire nothing.
+    $rKeepWhatIf = Invoke-UninstallProcess -RecordId ([string]$cleanupProjects['Keep'].Record.id) -WhatIf
+    Check 'a WhatIf uninstall leaves the coordination record in place' (
+        $rKeepWhatIf.Exit -eq 0 -and (Test-Path -LiteralPath $cleanupProjects['Keep'].RecordFile -PathType Leaf)) $rKeepWhatIf.Err
+
+    # ---- GREEN.
+    $rGreen = Invoke-UninstallProcess -RecordId ([string]$cleanupProjects['Green'].Record.id)
+    Check 'uninstalling Test-Temp-Cleanup succeeds' ($rGreen.Exit -eq 0 -and [string]$rGreen.Result.overall -eq 'ok') $rGreen.Err
+    Check 'the uninstalled project''s coordination record is retired' (
+        -not (Test-Path -LiteralPath $cleanupProjects['Green'].RecordFile))
+    # The orphan-runtime-directory signal needs no separate handling: the client
+    # remover already deletes the managed hook directory on this same success
+    # path, so both of Test-CleanupInstalled's signals fall together.
+    Check 'the weaker runtime-directory signal is retired by the same success path' (
+        -not (Test-Path -LiteralPath $cleanupProjects['Green'].RuntimeDir))
+    Check 'a still-installed project''s record is never swept' (
+        Test-Path -LiteralPath $cleanupProjects['Keep'].RecordFile -PathType Leaf)
+
+    # ---- the canonicalization proof: a trailing-separator targetProjectRoot
+    # still resolves to the file the hook really wrote.
+    $rSpelled = Invoke-UninstallProcess -RecordId ([string]$cleanupProjects['Spelled'].Record.id)
+    Check 'uninstalling a trailing-separator-targeted record succeeds' (
+        $rSpelled.Exit -eq 0 -and [string]$rSpelled.Result.overall -eq 'ok') $rSpelled.Err
+    Check 'a trailing-separator targetProjectRoot still retires the record the hook actually wrote' (
+        -not (Test-Path -LiteralPath $cleanupProjects['Spelled'].RecordFile))
+    Check 'retiring one project''s record never sweeps an unrelated orphaned record' (
+        Test-Path -LiteralPath $cleanupProjects['Red'].RecordFile -PathType Leaf)

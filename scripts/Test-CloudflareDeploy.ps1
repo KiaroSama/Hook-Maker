@@ -353,6 +353,23 @@ try {
     $r = Fire -Cwd $cleanCleanup
     Check 'ONLY a fresh "clean" for the current state shows the decision' ($r.Out -match 'CLOUDFLARE DEPLOY CHECK') $r.Out
 
+    # The record path must be spelled the way the PRODUCER spells it. The
+    # producer hashes Normalize-Path($cwd).ToLowerInvariant(); ToLowerInvariant
+    # alone folds case only, so a cwd carrying a trailing separator (or a
+    # '.'/'..' segment) names the SAME directory but a DIFFERENT raw string and
+    # therefore a different key. An uncanonicalized reader looked at a file
+    # nothing ever writes, read "no record", concluded cleanup was not installed
+    # at all, and skipped the cleanliness gate entirely for a workspace it had
+    # proven nothing about - the failure direction Test-CleanupInstalled itself
+    # calls the worse one. No marker directory is created here on purpose: the
+    # record has to be the ONLY installed-evidence signal, otherwise a directory
+    # would keep the gate applying and mask the missed read.
+    $spelledRepo = New-ReadyWorkersRepo 'CleanupPathSpelling'
+    Write-CleanupResult -Root $spelledRepo -Category 'review-required'
+    $r = Fire -Cwd ($spelledRepo + '\')
+    Check 'a trailing-separator cwd still resolves the producer''s record (review-required -> silent, gate NOT skipped)' (
+        $r.Exit -eq 0 -and $r.Out -eq '') $r.Out
+
     # The gate must apply on EVERY supported client's runtime layout. It used to
     # test only .claude\hooks\Hook-Maker and .codex\hooks\Hook-Maker, so on a
     # Kiro-only install - whose runtime lives at .kiro\hook-runtime\Hook-Maker,

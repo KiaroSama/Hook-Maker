@@ -69,6 +69,33 @@ function Set-ObjectProperty {
     }
 }
 
+# Resolves any spelling of a Kiro trigger to Hook Maker's canonical logical
+# event name, or '' when it is not one of the five Kiro documents.
+#
+# Case-INSENSITIVE in, canonical OUT - deliberately the same contract
+# Resolve-HookMakerLogicalEvent already has in scripts\_clientcapability.ps1,
+# and it is load-bearing rather than cosmetic. Kiro renamed every trigger
+# between CLI v2 (camelCase 'preToolUse') and the v1 schema (PascalCase
+# 'PreToolUse'), and CLI v3 sends stdin JSON WITHOUT re-publishing its field
+# names or casing (.ai/KIRO_PROTOCOL.md, critical unknown 4). Comparing raw
+# spellings instead of resolved events would call 'preToolUse' and 'PreToolUse'
+# a contradiction and refuse every CLI v3 hook.
+#
+# One list resolves BOTH sides because Kiro's physicalEventMap is identity for
+# all five triggers - the physical trigger name and the logical event name are
+# the same string - so there is no second table to translate through.
+# Test-ContextHooks asserts $script:HookKiroTriggers still equals the capability
+# table's kiro supportedEvents, which is what keeps that true.
+function Resolve-KiroTrigger {
+    param([string]$Name)
+    if ([string]::IsNullOrWhiteSpace($Name)) { return '' }
+    # -eq on strings is case-insensitive in PowerShell; the RETURNED value is
+    # always the canonical spelling from the list, never the caller's.
+    $match = @($script:HookKiroTriggers | Where-Object { $_ -eq ([string]$Name).Trim() })
+    if ($match.Count -eq 0) { return '' }
+    return $match[0]
+}
+
 # Reads the hook event JSON from stdin. Returns the parsed object, or $null on
 # empty / non-JSON input (the caller then exits silently).
 #
@@ -99,17 +126,12 @@ function Read-HookInput {
     if ((Get-HookClientId) -cne 'kiro') { return $parsed }
 
     # Trust boundary: the trigger arrives through the environment, so it is
-    # accepted ONLY when it is one of the events Kiro actually documents. An
-    # unrecognized value is dropped rather than passed to hooks as an event
-    # name, which would let anything that can set an env var choose the
+    # accepted ONLY when it resolves to one of the events Kiro actually
+    # documents. An unrecognized value is dropped rather than passed to hooks as
+    # an event name, which would let anything that can set an env var choose the
     # code path a hook takes.
-    $kiroTrigger = ''
-    $rawTrigger = [string]$env:HOOKMAKER_KIRO_TRIGGER
-    if (-not [string]::IsNullOrWhiteSpace($rawTrigger)) {
-        $match = @($script:HookKiroTriggers | Where-Object { $_ -ceq $rawTrigger.Trim() })
-        if ($match.Count -gt 0) { $kiroTrigger = $match[0] }
-    }
-    if ([string]::IsNullOrWhiteSpace($kiroTrigger)) { return $parsed }
+    $kiroTrigger = Resolve-KiroTrigger ([string]$env:HOOKMAKER_KIRO_TRIGGER)
+    if ($kiroTrigger -eq '') { return $parsed }
 
     if ($null -eq $parsed) {
         # cwd from the process, canonicalized. Kiro launches the hook in the
@@ -135,12 +157,54 @@ function Read-HookInput {
         return $synthesized
     }
 
-    # CLI v3 does send stdin JSON, but its field names/casing are not
-    # re-published, so a payload may arrive without a usable event name. Fill
-    # that in WITHOUT overwriting one the client did send - a real payload
-    # always wins over the launcher's argument.
-    if ([string]::IsNullOrWhiteSpace([string](Get-Field $parsed 'hook_event_name'))) {
+    # CLI v3 DOES send stdin JSON, but does not re-publish its field names or
+    # casing, so a payload may arrive with no usable event name, with the same
+    # event spelled differently, or - the case that matters - naming a
+    # GENUINELY DIFFERENT event than the launcher.
+    #
+    # The launcher argument is written by Hook Maker's own installer into the
+    # .kiro\hooks registration, so a real disagreement means the registration
+    # and the client disagree about what fired, and NEITHER side can then be
+    # trusted to select the code path a hook takes.
+    $parsedEventRaw = [string](Get-Field $parsed 'hook_event_name')
+    if ([string]::IsNullOrWhiteSpace($parsedEventRaw)) {
+        # Nothing to contradict - fill in what the payload never carried.
         Set-ObjectProperty -Object $parsed -Name 'hook_event_name' -Value $kiroTrigger
+    }
+    elseif ((Resolve-KiroTrigger $parsedEventRaw) -ceq $kiroTrigger) {
+        # The SAME event, possibly spelled differently. Normalize to the
+        # canonical name so every hook's `-ceq 'PreToolUse'` branch keeps
+        # working on a client whose casing is undocumented.
+        Set-ObjectProperty -Object $parsed -Name 'hook_event_name' -Value $kiroTrigger
+    }
+    else {
+        # Two genuinely different events. REFUSE to run rather than guess.
+        #
+        # This used to let the payload win and record 'hookmaker_trigger_mismatch'
+        # on the object - a field NOTHING reads, which is the same as swallowing
+        # it: a PreToolUse registration whose payload said Stop handed the hook a
+        # Stop event, the hook ran its Stop branch, and nothing said so.
+        #
+        # The refusal has to be VISIBLE or it is that defect in a new place.
+        # Returning $null would make every hook take its
+        # `if ($null -eq $hookInput) { exit 0 }` path in total silence. Per the
+        # CONFIRMED exit-code table in .ai/KIRO_PROTOCOL.md: exit 0 adds stdout
+        # to context ONLY on SessionStart/UserPromptSubmit and discards it
+        # everywhere else - so a stdout message would be silent on exactly the
+        # PreToolUse/PostToolUse/Stop events where a wrong branch does damage -
+        # exit 2 blocks on the block-capable events, and ANY OTHER non-zero exit
+        # shows stderr to the user and lets execution proceed. That last channel
+        # is right on the merits, not merely available: a registration/client
+        # disagreement is a configuration fault only the USER can repair.
+        #
+        # Exit 1, NEVER 2. 2 is Kiro's refusal code; blocking the user's tool
+        # call over a Hook Maker configuration fault is not this function's
+        # decision to make, and Stop cannot block on either Kiro surface anyway.
+        [Console]::Error.WriteLine('Hook Maker: not running this hook. Its Kiro registration says the trigger is "' +
+            $kiroTrigger + '" but Kiro reported "' + $parsedEventRaw.Trim() + '". The two disagree about what ' +
+            'fired, so the hook refused to guess which branch to run. Re-install the hook so its .kiro\hooks ' +
+            'registration matches the trigger Kiro fires.')
+        exit 1
     }
     # Same rule for the prompt: fill only what the payload did not supply, and
     # only on the trigger Kiro documents USER_PROMPT for. A real payload always
@@ -153,18 +217,6 @@ function Read-HookInput {
         }
     }
 
-    # A payload event name that CONTRADICTS the launcher argument is not an
-    # ordinary override - the launcher argument is written by the installer into
-    # the registration, so a mismatch means the registration and the client
-    # disagree about what fired. The payload still wins (it is the client's own
-    # statement), but it is recorded rather than swallowed, because a hook that
-    # silently runs its Stop branch on a PreToolUse registration is exactly the
-    # kind of fault that otherwise surfaces as "the hook just does nothing".
-    $parsedEventName = [string](Get-Field $parsed 'hook_event_name')
-    if (-not [string]::IsNullOrWhiteSpace($parsedEventName) -and $parsedEventName -cne $kiroTrigger) {
-        Set-ObjectProperty -Object $parsed -Name 'hookmaker_trigger_mismatch' `
-            -Value ('launcher=' + $kiroTrigger + ' payload=' + $parsedEventName)
-    }
     return $parsed
 }
 
@@ -260,15 +312,39 @@ $script:HookCodexSystemMessageEvents = @('Stop', 'SubagentStop')
 # far below anything that matters for a short-lived process.
 #
 # Truncation is REPORTED, never silent: a hook that matches on prompt text would
-# otherwise see a prompt that quietly is not the one the user typed.
-$script:HookMaxPromptChars = 65536
+# otherwise see a prompt that quietly is not the one the user typed. (A codeword
+# sitting at the very END of an over-long prompt is still lost; the marker is the
+# honest signal that it might be, and buffering more would defeat the bound.)
+#
+# The bound is UTF-8 BYTES, not characters. It exists to cap MEMORY, and this
+# repo measures text in UTF-8 bytes everywhere else - it ships a whole
+# Utf8-Encoding-Check hook. A CHARACTER cap silently admits up to three times the
+# stated limit: 65536 Persian or CJK characters are ~192 KB, so the documented
+# bound was not the bound being enforced.
+$script:HookMaxPromptBytes = 65536
 
 function Get-KiroPromptFromEnvironment {
     $raw = [string]$env:USER_PROMPT
     if ([string]::IsNullOrWhiteSpace($raw)) { return '' }
-    if ($raw.Length -le $script:HookMaxPromptChars) { return $raw }
-    return ($raw.Substring(0, $script:HookMaxPromptChars) +
-        "`n[hook-maker: prompt truncated at " + [string]$script:HookMaxPromptChars + ' characters]')
+    $utf8 = [System.Text.Encoding]::UTF8
+    if ($utf8.GetByteCount($raw) -le $script:HookMaxPromptBytes) { return $raw }
+
+    # Encoder.Convert is the stdlib answer to "how many CHARS fit in N bytes":
+    # it stops on a character boundary, so it can never cut a surrogate pair in
+    # half. A plain .Substring() can - an emoji or other astral character
+    # straddling the limit leaves an UNPAIRED surrogate, which is not encodable
+    # as UTF-8 at all (it silently becomes U+FFFD on the way out). Emitting
+    # invalid UTF-8 from the shared library is squarely a defect in a repo that
+    # gates the whole tree on UTF-8 validity.
+    $chars = $raw.ToCharArray()
+    $buffer = New-Object byte[] $script:HookMaxPromptBytes
+    $charsUsed = 0
+    $bytesUsed = 0
+    $completed = $false
+    $utf8.GetEncoder().Convert($chars, 0, $chars.Length, $buffer, 0, $script:HookMaxPromptBytes,
+        $false, [ref]$charsUsed, [ref]$bytesUsed, [ref]$completed)
+    return ($raw.Substring(0, $charsUsed) +
+        "`n[hook-maker: prompt truncated at " + [string]$script:HookMaxPromptBytes + ' UTF-8 bytes]')
 }
 
 # The ONE place a semantic hook result becomes a client-specific output shape.
