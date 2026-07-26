@@ -591,7 +591,12 @@ function Set-InstallRecord {
         $existing = $existingList[$existingIndex]
         Set-ObjectProperty -Object $Record -Name 'createdUtc' -Value ([string]$existing.createdUtc)
         # Carry forward every client subrecord this invocation did NOT touch.
-        foreach ($client in @('claude', 'codex')) {
+        # Derived from the canonical client table for the same reason
+        # Get-InstalledClientNames is: a client missing from this loop is a
+        # client whose subrecord is DROPPED by any later install of the same
+        # record id, taking its registrationPath/managedEntryNames - the only
+        # ownership proof uninstall has - with it.
+        foreach ($client in @(Get-HookMakerClientIds)) {
             if (@($touchedClients) -contains $client) { continue }
             $previous = $null
             if ($null -ne $existing.PSObject.Properties['clients'] -and $null -ne $existing.clients -and $null -ne $existing.clients.PSObject.Properties[$client]) {
