@@ -424,6 +424,36 @@ if ($cut -ge 0) { $body = $pr.Substring(0, $cut) }
                     $riNoPayloadPrompt.Exit -eq 0 -and
                     [int](Get-RiPart $riNoPayloadPrompt.Out 'CHARS') -eq 8) ('out=[' + $riNoPayloadPrompt.Out + ']')
 
+                # --- precedence is PROPERTY PRESENCE, not non-whitespace text --
+                # `IsNullOrWhiteSpace` could not tell "the client sent no prompt"
+                # from "the client sent an empty, whitespace-only or null one", so
+                # all three fell through to USER_PROMPT. Measured on both hosts:
+                # a `::deep-debug` sitting in the environment fired for every one
+                # of them. A client that sent a prompt has spoken, even when what
+                # it sent is empty; a NON-STRING value is `invalid` and likewise
+                # never falls back. Only a genuinely ABSENT property may.
+                foreach ($riPresent in @(
+                        @{ Label = 'an EMPTY string'; Json = '{"hook_event_name":"UserPromptSubmit","prompt":""}' },
+                        @{ Label = 'WHITESPACE only'; Json = '{"hook_event_name":"UserPromptSubmit","prompt":"   "}' },
+                        @{ Label = 'JSON null'; Json = '{"hook_event_name":"UserPromptSubmit","prompt":null}' },
+                        @{ Label = 'a NON-STRING object'; Json = '{"hook_event_name":"UserPromptSubmit","prompt":{"a":1}}' })) {
+                    $riPresentResult = Invoke-KiroProbe -Client 'kiro' -Trigger 'UserPromptSubmit' `
+                        -Stdin ([string]$riPresent.Json) -UserPrompt '::deep-debug' -Exe $riExe
+                    Check ($riTag + ': a payload prompt property holding ' + [string]$riPresent.Label +
+                        ' is NEVER replaced by USER_PROMPT') (
+                        $riPresentResult.Exit -eq 0 -and $riPresentResult.Out -match 'RAN' -and
+                        (Get-RiPart $riPresentResult.Out 'CHARS') -eq '0') ('out=[' + $riPresentResult.Out + ']')
+                }
+                # Byte-exactness of an ACCEPTED prompt, across scripts that need
+                # it most: Persian, an astral emoji (surrogate pair) and a
+                # combining sequence must survive resolution unchanged.
+                $riExactText = 'معماری پروژه ' + [string]::Concat([char]0xD83D, [char]0xDE00) + ' e' + [string][char]0x0301
+                $riExact = Invoke-KiroProbe -Client 'kiro' -Trigger 'UserPromptSubmit' -Stdin '' -UserPrompt $riExactText -Exe $riExe
+                Check ($riTag + ': an accepted prompt survives byte-exact (Persian + emoji + combining mark)') (
+                    [int](Get-RiPart $riExact.Out 'CHARS') -eq $riExactText.Length -and
+                    (Get-RiPart $riExact.Out 'UTF8OK') -eq 'True') (
+                    'chars=' + (Get-RiPart $riExact.Out 'CHARS') + ' expected=' + $riExactText.Length)
+
                 # --- no launcher trigger -> NOTHING runs, unconditionally ------
                 # Round 30 let a payload event run here when it resolved inside
                 # the five-trigger trust list; the review and the user rejected

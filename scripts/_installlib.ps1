@@ -294,6 +294,13 @@ function Get-InstallIntegrity {
     $isEngine = ([string]$Record.hookType -eq 'Engine')
     $configPath = ''
     if ($null -ne $Record.PSObject.Properties['configPath']) { $configPath = [string]$Record.configPath }
+    $recordProjectRoot = ''
+    if ($null -ne $Record.PSObject.Properties['targetProjectRoot']) { $recordProjectRoot = [string]$Record.targetProjectRoot }
+    # CLIENT-AGNOSTIC on purpose: this manifest answers "did the hook's SOURCE
+    # change since it was installed?" and is compared against the recorded one.
+    # The per-client artifacts (kiro-launch.ps1, the ownership metadata) are NOT
+    # source, so including them here would make the source verdict depend on which
+    # client is asked and would mark every existing record's source as changed.
     $currentSource = @(Get-ManagedSourceManifest -ToolRoot $ToolRoot `
             -HookScript ([string]$Record.sourceScript) `
             -SourceDir ([string]$Record.sourceDir) `
@@ -344,17 +351,53 @@ function Get-InstallIntegrity {
             Add-Component -Name $client -Status 'update' -Detail 'installed hook script is missing'
             continue
         }
+        # THIS client's expected content, not the shared source manifest: only a
+        # per-client plan can describe kiro-launch.ps1 and the client's own
+        # .hookmaker-runtime.json, and comparing on-disk reality against a manifest
+        # that cannot describe two of its files is a permanent update loop.
+        #
+        # Wrapped, because deriving it can legitimately refuse (a Kiro record whose
+        # managed id yields no provable identity). A refusal must skip ONE client,
+        # exactly like an unresolvable Kiro scope below - letting it throw would
+        # abort the whole update run and leave every healthy record after this one
+        # unevaluated, a regression this codebase has already had once.
+        $expectedForClient = @()
+        try {
+            $expectedForClient = @(Get-ManagedClientManifest -ToolRoot $ToolRoot -Client $client `
+                    -HookScript ([string]$Record.sourceScript) `
+                    -FriendlyName ([string]$Record.friendlyName) `
+                    -RecordId ([string]$Record.id) `
+                    -Scope ([string]$Record.scope) -ProjectRoot $recordProjectRoot `
+                    -ConfigPath $configPath -IncludeConfig:$isEngine `
+                    -ProfileId ([string]$Record.profile))
+        }
+        catch {
+            Add-Component -Name $client -Status 'skip' -Detail ('this client''s expected runtime content cannot be derived: ' + $_.Exception.Message)
+            continue
+        }
         $installed = @(Get-InstalledManifest -RuntimeRoot ([string]$subrecord.runtimeRoot) -FriendlyName ([string]$Record.friendlyName))
-        $difference = Compare-Manifest -Expected $currentSource -Actual $installed
+        $difference = Compare-Manifest -Expected $expectedForClient -Actual $installed
         if (-not $difference.IsMatch) {
             $reason = ''
+            # The ownership metadata gets its own wording because its two failure
+            # modes are worth telling apart from an ordinary copied file: MISSING is
+            # what every install made before it existed looks like (one repair), and
+            # MODIFIED means the file no longer states the identity that owns this
+            # directory - the exact claim a runtime hook trusts.
+            $metadataSuffix = '/' + $script:RuntimeMetadataFileName
             if ($difference.Missing.Count -gt 0) {
                 $missing = $difference.Missing[0]
-                $reason = if ($missing -like '*/_hooklib.ps1') { 'private runtime library is missing: ' + $missing } else { 'installed file missing: ' + $missing }
+                $reason =
+                if ($missing.EndsWith($metadataSuffix, [System.StringComparison]::OrdinalIgnoreCase)) { 'runtime ownership metadata is missing: ' + $missing }
+                elseif ($missing -like '*/_hooklib.ps1') { 'private runtime library is missing: ' + $missing }
+                else { 'installed file missing: ' + $missing }
             }
             elseif ($difference.Modified.Count -gt 0) {
                 $modified = $difference.Modified[0]
-                $reason = if ($modified -like '*/_hooklib.ps1') { 'private runtime library is stale: ' + $modified } else { 'installed file modified: ' + $modified }
+                $reason =
+                if ($modified.EndsWith($metadataSuffix, [System.StringComparison]::OrdinalIgnoreCase)) { 'runtime ownership metadata does not describe this installation: ' + $modified }
+                elseif ($modified -like '*/_hooklib.ps1') { 'private runtime library is stale: ' + $modified }
+                else { 'installed file modified: ' + $modified }
             }
             else {
                 $reason = 'unexpected managed file: ' + $difference.Unexpected[0]

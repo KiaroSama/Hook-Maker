@@ -86,6 +86,44 @@ function Get-ManagedSourceManifest {
     return ConvertTo-ManifestArray (Get-PlanManifest -Plan $plan)
 }
 
+# What ONE CLIENT's managed runtime should contain: the client-agnostic source
+# manifest above PLUS the two artifacts that only exist per client -
+# kiro-launch.ps1 (Kiro only) and the .hookmaker-runtime.json ownership metadata
+# (every client, with that client's own identity inside it).
+#
+# This is the manifest to compare against Get-InstalledManifest.
+# Get-ManagedSourceManifest is NOT: it deliberately stays client-agnostic because
+# it answers a different question ("did the hook's SOURCE change since install?"),
+# and the answer to that must not flip depending on which client is asked. Using
+# it for the on-disk comparison is what made every real Kiro install report
+# "unexpected managed file: <hook>/kiro-launch.ps1" on every single evaluation -
+# a permanent update loop, because the launcher IS installed and was describable
+# by no expected manifest.
+function Get-ManagedClientManifest {
+    param(
+        [Parameter(Mandatory = $true)][string]$ToolRoot,
+        [Parameter(Mandatory = $true)][string]$Client,
+        [Parameter(Mandatory = $true)][string]$HookScript,
+        [Parameter(Mandatory = $true)][string]$FriendlyName,
+        [Parameter(Mandatory = $true)][AllowEmptyString()][string]$RecordId,
+        [Parameter(Mandatory = $true)][string]$Scope,
+        [AllowEmptyString()][string]$ProjectRoot = '',
+        [string]$ConfigPath = '',
+        [switch]$IncludeConfig,
+        [string]$ProfileId = ''
+    )
+    # 'kiro' by NAME, not by registrationKind: the launcher exists because Kiro
+    # supplies neither the client identity nor the physical trigger to the hook it
+    # runs, which is a Kiro fact - not a property of per-hook-file registration in
+    # general. New-RuntimeIdentity validates the client id, so an unknown one is a
+    # refusal here rather than a silently launcher-less plan.
+    $identity = New-RuntimeIdentity -Client $Client -Scope $Scope -RecordId $RecordId -ProjectRoot $ProjectRoot
+    $plan = Get-InstallPlanFor -HookScript $HookScript -ToolRoot $ToolRoot -FriendlyNameOverride $FriendlyName `
+        -ProfileId $ProfileId -ConfigPath $ConfigPath -IsEngine:$IncludeConfig -AllowMissing `
+        -IncludeKiroLauncher:($Client -ceq 'kiro') -RuntimeIdentity $identity
+    return ConvertTo-ManifestArray (Get-PlanManifest -Plan $plan)
+}
+
 # The manifest of what is ACTUALLY on disk inside a managed runtime root, in
 # the same shape/keys as Get-ManagedSourceManifest so the two compare directly.
 # Only this hook's own folder plus the shared _hooklib.ps1 are considered -

@@ -373,6 +373,13 @@ $Timestamp = (Get-Date).ToString('yyyyMMdd-HHmmss')
 # thing uninstall cannot re-derive from anywhere else.
 $ScopeKey = if ($ScopeLabel -eq 'project') { $projectRoot.ToLowerInvariant() } else { 'global' }
 $RecordId = Get-InstallRecordId -FriendlyName $FriendlyName -ScopeKey $ScopeKey -ProfileId ([string]$Profile)
+# Hoisted for the same reason as $RecordId: $projectRoot is assigned ONLY on the
+# project branch above, so under StrictMode every later reader of it needs this
+# one guarded derivation rather than repeating the scope test. It feeds each
+# client's runtime-metadata identity AND the record's own targetProjectRoot, which
+# must be the same value - the metadata's projectKey is what a runtime hook
+# compares against the project it is running in.
+$RecordProjectRoot = if ($ScopeLabel -eq 'project') { $projectRoot } else { '' }
 # Resolved once: this tool root plus every tool root previously recorded in the
 # registry. Only registrations provably rooted under one of these may be
 # claimed as ours when they use the historical tool-folder layout.
@@ -440,7 +447,8 @@ if ($InstallClaude) {
     $script:CurrentPhase = 'claude'
     # Each client gets its own runtime copy so its command has zero dependency
     # on the Hook Maker folder (or on the other client's files).
-    $claudeRuntime = Copy-HookRuntime -ClientDir (Split-Path -Parent $ClaudeSettings)
+    $claudeRuntime = Copy-HookRuntime -ClientDir (Split-Path -Parent $ClaudeSettings) `
+        -RuntimeIdentity (New-RuntimeIdentity -Client 'claude' -Scope $ScopeLabel -RecordId $RecordId -ProjectRoot $RecordProjectRoot)
     $claudeCommands = New-HookCommands -Runtime $claudeRuntime
     # The whole read-modify-write is held under a crash-aware lock on THIS
     # settings file, so two installs touching the same file cannot lose each
@@ -478,7 +486,8 @@ if ($InstallClaude) {
 
 if ($InstallCodex) {
     $script:CurrentPhase = 'codex'
-    $codexRuntime = Copy-HookRuntime -ClientDir (Split-Path -Parent $CodexHooks)
+    $codexRuntime = Copy-HookRuntime -ClientDir (Split-Path -Parent $CodexHooks) `
+        -RuntimeIdentity (New-RuntimeIdentity -Client 'codex' -Scope $ScopeLabel -RecordId $RecordId -ProjectRoot $RecordProjectRoot)
     $codexCommands = New-HookCommands -Runtime $codexRuntime
     # The whole read-modify-write is held under a crash-aware lock on THIS
     # settings file, so two installs touching the same file cannot lose each
@@ -648,7 +657,7 @@ try {
         # tool has been moved - see Get-KnownToolRoots.
         toolRoot          = $ToolRoot
         scope             = $ScopeLabel
-        targetProjectRoot = if ($ScopeLabel -eq 'project') { $projectRoot } else { '' }
+        targetProjectRoot = $RecordProjectRoot
         profile           = [string]$Profile
         configPath        = if ($isEngine) { $ConfigPath } else { '' }
         sourceManifest    = $sourceManifest

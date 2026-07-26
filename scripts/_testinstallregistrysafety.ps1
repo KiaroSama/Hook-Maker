@@ -5,7 +5,11 @@
 # path, never a basename; runtime replacement is transactional (failed
 # staging keeps the old runtime); the install plan ships per-hook artifacts
 # (guarded runner) and the managed manifest covers every copied file
-# (.env, helpers, added/removed/tampered files, unexpected runtime files).
+# (.env, helpers, added/removed/tampered files, unexpected runtime files);
+# every managed runtime carries planned ownership metadata whose projectKey
+# recomputes from the project root, whose bounded manifest covers the runtime
+# script it names, that drifts when deleted or edited, is repaired by the update
+# path, and never holds a command, an absolute path, a secret or source content.
 # NOT a standalone suite: this file is dot-sourced into the entry suite's
 # scope and relies on its harness (Check, $script:Pass/$script:Fail), shared
 # fixtures and helper functions. Run scripts\Test-InstallRegistry.ps1 instead.
@@ -32,7 +36,19 @@
     $standaloneRoot = Join-Path $projStandalone '.claude\hooks\Hook-Maker'
     $standaloneFiles = @(Get-ChildItem -LiteralPath $standaloneRoot -Recurse -Force -File -ErrorAction SilentlyContinue)
     $standaloneNames = @($standaloneFiles | ForEach-Object { $_.Name })
-    Check 'a standalone hook installs only its own script plus the shared library' ((@($standaloneNames | Sort-Object) -join ',') -eq '_hooklib.ps1,zzz-standalone-hook.ps1')
+    # The EXACT shipped artifact set. Every entry is deliberate: the private
+    # library copy, the hook script itself, and the ownership metadata that says
+    # which install owns this directory. Anything else appearing here is either a
+    # new planned artifact (update this list in the same change) or a file the
+    # installer is writing that no plan accounts for - the defect that made the
+    # updater reinstall Kiro for ever.
+    # ORDINAL sort, not Sort-Object: Sort-Object compares culture-sensitively and
+    # orders '_hooklib.ps1' BEFORE '.hookmaker-runtime.json' on an en-US host, so a
+    # culture-dependent expected string here would be a latent flake.
+    $standaloneSorted = @($standaloneNames)
+    [System.Array]::Sort($standaloneSorted, [System.StringComparer]::Ordinal)
+    Check 'a standalone hook installs its own script, the shared library and its ownership metadata' (
+        (($standaloneSorted) -join ',') -ceq '.hookmaker-runtime.json,_hooklib.ps1,zzz-standalone-hook.ps1') (($standaloneSorted) -join ',')
     Check 'the neighbouring project .env is never copied' (@($standaloneNames | Where-Object { $_ -eq '.env' }).Count -eq 0)
     Check 'the neighbouring project secrets.md is never copied' (@($standaloneNames | Where-Object { $_ -eq 'secrets.md' }).Count -eq 0)
     Check 'git metadata is never copied' (@($standaloneFiles | Where-Object { $_.FullName -like '*.git*' -and $_.Name -eq 'config' }).Count -eq 0)
@@ -40,6 +56,7 @@
     Check 'unrelated source files are never copied' (@($standaloneNames | Where-Object { $_ -eq 'proprietary.cs' }).Count -eq 0)
     $standaloneBytes = ''
     foreach ($standaloneFile in $standaloneFiles) { $standaloneBytes += [System.IO.File]::ReadAllText($standaloneFile.FullName) }
+    Check 'the neighbouring project .env is not even NAMED by the ownership metadata' ($standaloneBytes -notmatch 'AWS_SECRET_ACCESS_KEY')
     Check 'no secret value from the neighbouring project reaches the runtime' ($standaloneBytes -notmatch [regex]::Escape($secretValue))
     Check 'a standalone hook is named after its SCRIPT, not its parent folder' (Test-Path -LiteralPath (Join-Path $standaloneRoot 'zzz-standalone-hook\zzz-standalone-hook.ps1'))
     $projPackage = New-Proj 'PackagedSourceProj'
@@ -128,6 +145,225 @@
             Check 'an unrelated hook does NOT ship the guarded runner' (@($secPlan | Where-Object { $_.relativePath -match 'Run-Tests-Guarded' }).Count -eq 0)
         }
     }
+
+    # =====================================================================
+    # Install-generated ownership metadata: <runtime>/<hook>/.hookmaker-runtime.json.
+    #
+    # A managed runtime is self-contained, so a hook executing from it cannot read
+    # the tool root's install registry. This file is the only ownership evidence
+    # available at runtime, and projectKey is the load-bearing field: it must be
+    # RECOMPUTABLE from the project root with the same helpers the hooks use, or a
+    # runtime directory copied in from another project reads as belonging here.
+    Write-Host '--- install-generated runtime ownership metadata ---' -ForegroundColor Cyan
+    $ownFixtureName = 'ZZZ-Regtest-Ownership'
+    $ownFixture = New-FixtureHook $ownFixtureName "exit 0 # ownership v1`n"
+    try {
+        $ownSourceDir = Split-Path -Parent $ownFixture
+        $ownEnvValue = 'REGTEST-ENVVALUE-' + [guid]::NewGuid().ToString('N').Substring(0, 8)
+        Write-Utf8 (Join-Path $ownSourceDir '.env') ('TOKEN=' + $ownEnvValue + "`n")
+        $ownProject = New-Proj 'OwnershipMetaProj'
+        & $InstallScript -CustomHook $ownFixture -Events @('SessionStart') -TargetProject $ownProject -Clients @('claude', 'codex', 'kiro') *> $null
+        $ownRecord = @(Get-RecordsFor $ownFixtureName | Where-Object { [string]$_.targetProjectRoot -eq $ownProject })[0]
+
+        # ---- planned, not side-written ------------------------------------
+        # The launcher was originally written beside the runtime AFTER the plan had
+        # committed, so no artifact accounted for it and every later evaluation
+        # reported "unexpected managed file". These assertions are what stop this
+        # file repeating that: it is a Generated/Immutable PLAN artifact, so it is
+        # staged, hash-verified before the swap, rolled back with everything else,
+        # and drift-detectable.
+        $ownIdentity = New-RuntimeIdentity -Client 'claude' -Scope 'project' -RecordId ([string]$ownRecord.id) -ProjectRoot $ownProject
+        $ownPlan = @(Get-InstallPlanFor -HookScript $ownFixture -ToolRoot $ToolRoot -RuntimeIdentity $ownIdentity)
+        $ownPlanned = @($ownPlan | Where-Object { $_.relativePath -eq ($ownFixtureName + '/.hookmaker-runtime.json') })
+        Check 'the ownership metadata is a PLANNED artifact, not a file written beside the runtime' ($ownPlanned.Count -eq 1) ((@($ownPlan | ForEach-Object { $_.relativePath })) -join ', ')
+        Check 'it is Generated + Immutable, so it is hash-verified and drift-repairable' (
+            $ownPlanned.Count -eq 1 -and $ownPlanned[0].kind -eq 'Generated' -and $ownPlanned[0].ownership -eq 'Immutable') (
+            [string]$ownPlanned[0].kind + '/' + [string]$ownPlanned[0].ownership)
+        Check 'no metadata artifact is planned when no install identity is supplied (the SOURCE manifest stays client-agnostic)' (
+            @(@(Get-InstallPlanFor -HookScript $ownFixture -ToolRoot $ToolRoot) | Where-Object { $_.relativePath -like '*hookmaker-runtime.json' }).Count -eq 0)
+        $ownSourceManifest = @(Get-ManagedSourceManifest -ToolRoot $ToolRoot -HookScript $ownFixture -SourceDir $ownSourceDir -FriendlyName $ownFixtureName)
+        Check 'the client-agnostic source manifest does NOT carry the metadata (identity is not source)' (
+            @($ownSourceManifest | Where-Object { $_.path -like '*hookmaker-runtime.json' }).Count -eq 0)
+
+        # ---- present for every client, with that client's own identity ----
+        # Same source, three runtimes: the ONLY difference between them is what
+        # this file says, which is exactly why the expected manifest has to be
+        # per-client rather than shared.
+        $ownDocuments = @{}
+        foreach ($ownClient in @('claude', 'codex', 'kiro')) {
+            $ownRuntimeRoot = [string]$ownRecord.clients.$ownClient.runtimeRoot
+            $ownPath = Join-Path (Join-Path $ownRuntimeRoot $ownFixtureName) '.hookmaker-runtime.json'
+            Check ('the ' + $ownClient + ' runtime carries ownership metadata') (Test-Path -LiteralPath $ownPath -PathType Leaf) $ownPath
+            $ownRaw = [System.IO.File]::ReadAllText($ownPath, [System.Text.Encoding]::UTF8)
+            $ownDocuments[$ownClient] = [pscustomobject]@{ Path = $ownPath; Raw = $ownRaw; Json = (($ownRaw | ConvertFrom-Json)) }
+        }
+
+        # ---- the contract: EXACTLY these fields, nothing more -------------
+        $ownExpectedFields = @('schemaVersion', 'recordId', 'friendlyName', 'client', 'scope', 'projectKey',
+            'registrationName', 'runtimeScriptRelativePath', 'runtimeManifest')
+        foreach ($ownClient in @('claude', 'codex', 'kiro')) {
+            $ownJson = $ownDocuments[$ownClient].Json
+            $ownFields = @($ownJson.PSObject.Properties | ForEach-Object { $_.Name })
+            Check ('the ' + $ownClient + ' metadata carries exactly the contract fields, in order') (
+                (($ownFields) -join ',') -ceq (($ownExpectedFields) -join ',')) (($ownFields) -join ',')
+            Check ('the ' + $ownClient + ' metadata states schemaVersion 1, this record id, this hook and this client') (
+                $ownJson.schemaVersion -eq 1 -and
+                ([string]$ownJson.recordId) -ceq ([string]$ownRecord.id) -and
+                ([string]$ownJson.friendlyName) -ceq $ownFixtureName -and
+                ([string]$ownJson.client) -ceq $ownClient -and
+                ([string]$ownJson.scope) -ceq 'project') (
+                [string]$ownJson.recordId + ' / ' + [string]$ownJson.friendlyName + ' / ' + [string]$ownJson.client + ' / ' + [string]$ownJson.scope)
+        }
+
+        # ---- projectKey: recomputed the way a HOOK would ------------------
+        # Derived from the REAL producers (Normalize-Path then Get-ShortHash out of
+        # hooks\_hooklib.ps1), never re-implemented here: a shared-state test that
+        # rebuilds the derivation agrees with itself and can disagree with
+        # production, which is exactly how this project shipped three sites keying
+        # one state file three different ways.
+        $ownRecomputed = Get-ShortHash ((Normalize-Path $ownProject).ToLowerInvariant())
+        foreach ($ownClient in @('claude', 'codex', 'kiro')) {
+            Check ('the ' + $ownClient + ' projectKey recomputes from the project root') (
+                ([string]$ownDocuments[$ownClient].Json.projectKey) -ceq $ownRecomputed) (
+                [string]$ownDocuments[$ownClient].Json.projectKey + ' vs ' + $ownRecomputed)
+        }
+        # Adversarial spellings of the same root must key identically, or a hook
+        # resolving its own cwd slightly differently reads as a foreign copy.
+        $ownSpellingKeys = @(@($ownProject, ($ownProject + '\'), (Join-Path $ownProject '.\'), $ownProject.ToUpperInvariant()) |
+            ForEach-Object { Get-RuntimeMetadataProjectKey -Scope 'project' -ProjectRoot $_ })
+        Check 'a trailing separator, a dot segment and a case change all yield the same projectKey' (
+            (@($ownSpellingKeys | Sort-Object -Unique).Count -eq 1) -and $ownSpellingKeys[0] -ceq $ownRecomputed) (($ownSpellingKeys) -join ' ')
+        # A DIFFERENT project must not produce this key - the whole point.
+        Check 'a different project root yields a different projectKey (a copied-in runtime is detectable)' (
+            (Get-RuntimeMetadataProjectKey -Scope 'project' -ProjectRoot (New-Proj 'OwnershipOtherProj')) -cne $ownRecomputed)
+
+        # ---- registrationName / runtimeScriptRelativePath -----------------
+        Check 'claude and codex record the managed runtime ownership segment as their registration identity' (
+            ([string]$ownDocuments['claude'].Json.registrationName) -ceq ('Hook-Maker/' + $ownFixtureName) -and
+            ([string]$ownDocuments['codex'].Json.registrationName) -ceq ('Hook-Maker/' + $ownFixtureName)) (
+            [string]$ownDocuments['claude'].Json.registrationName)
+        # Kiro registers one entry per physical trigger, so no single entry name
+        # identifies the install; the shared managed-name prefix does, and it is the
+        # same prefix Test-KiroOwnership and the record validator prove ownership
+        # with. Every name the install actually wrote must start with it.
+        $ownKiroPrefix = Get-KiroManagedNamePrefix -ManagedId ([string]$ownRecord.id)
+        $ownKiroNames = @(@($ownRecord.clients.kiro.managedEntryNames) | ForEach-Object { [string]$_ })
+        Check 'the kiro registrationName is the managed entry-name prefix this install actually registered under' (
+            ([string]$ownDocuments['kiro'].Json.registrationName).StartsWith($ownKiroPrefix, [System.StringComparison]::Ordinal) -and
+            $ownKiroNames.Count -gt 0 -and
+            @($ownKiroNames | Where-Object { $_.StartsWith([string]$ownDocuments['kiro'].Json.registrationName, [System.StringComparison]::OrdinalIgnoreCase) }).Count -eq $ownKiroNames.Count) (
+            [string]$ownDocuments['kiro'].Json.registrationName + ' vs ' + ($ownKiroNames -join ', '))
+        Check 'claude/codex name <hook>.ps1 as the runtime script, kiro names kiro-launch.ps1 (what its registration invokes)' (
+            ([string]$ownDocuments['claude'].Json.runtimeScriptRelativePath) -ceq ($ownFixtureName + '/' + $ownFixtureName + '.ps1') -and
+            ([string]$ownDocuments['codex'].Json.runtimeScriptRelativePath) -ceq ($ownFixtureName + '/' + $ownFixtureName + '.ps1') -and
+            ([string]$ownDocuments['kiro'].Json.runtimeScriptRelativePath) -ceq ($ownFixtureName + '/kiro-launch.ps1')) (
+            [string]$ownDocuments['kiro'].Json.runtimeScriptRelativePath)
+
+        # ---- runtimeManifest: bounded, covers the runtime script, excludes itself
+        foreach ($ownClient in @('claude', 'codex', 'kiro')) {
+            $ownJson = $ownDocuments[$ownClient].Json
+            $ownEntries = @($ownJson.runtimeManifest)
+            $ownHookDir = Split-Path -Parent $ownDocuments[$ownClient].Path
+            $ownRuntimeRelative = [string]$ownJson.runtimeScriptRelativePath
+            $ownScriptEntries = @($ownEntries | Where-Object { ([string]$_.path) -ceq $ownRuntimeRelative })
+            Check ('the ' + $ownClient + ' manifest covers the runtime script it names, exactly once') ($ownScriptEntries.Count -eq 1) (
+                (@($ownEntries | ForEach-Object { [string]$_.path })) -join ', ')
+            $ownScriptOnDisk = Join-Path (Split-Path -Parent $ownHookDir) ($ownRuntimeRelative.Replace('/', '\'))
+            Check ('the ' + $ownClient + ' manifest hash matches the installed runtime script byte-for-byte') (
+                $ownScriptEntries.Count -eq 1 -and
+                ([string]$ownScriptEntries[0].sha256) -ceq ((Get-FileHash -LiteralPath $ownScriptOnDisk -Algorithm SHA256).Hash.ToLowerInvariant())) (
+                [string]$ownScriptEntries[0].sha256)
+            Check ('the ' + $ownClient + ' manifest hashes are 64 lowercase hex characters') (
+                @($ownEntries | Where-Object { ([string]$_.sha256) -cmatch '^[0-9a-f]{64}$' }).Count -eq $ownEntries.Count) (
+                (@($ownEntries | ForEach-Object { [string]$_.sha256 })) -join ', ')
+            Check ('the ' + $ownClient + ' metadata excludes ITSELF from its own manifest (a file cannot hash its own bytes)') (
+                @($ownEntries | Where-Object { ([string]$_.path) -like '*hookmaker-runtime.json' }).Count -eq 0)
+            Check ('the ' + $ownClient + ' manifest is bounded by the documented cap') (
+                $ownEntries.Count -le $script:RuntimeMetadataManifestCap) (
+                [string]$ownEntries.Count + ' of ' + [string]$script:RuntimeMetadataManifestCap)
+            # Every entry must be a runtime-RELATIVE path. An absolute one would put
+            # a user directory name inside an installed runtime.
+            Check ('the ' + $ownClient + ' manifest paths are runtime-relative, never absolute') (
+                @($ownEntries | Where-Object { ([string]$_.path).Contains(':') -or ([string]$_.path).StartsWith('/') -or ([string]$_.path).StartsWith('\') }).Count -eq 0)
+        }
+        Check 'the kiro manifest covers the launcher AND the hook script (both are installed)' (
+            @(@($ownDocuments['kiro'].Json.runtimeManifest) | Where-Object { ([string]$_.path) -ceq ($ownFixtureName + '/' + $ownFixtureName + '.ps1') }).Count -eq 1)
+
+        # ---- FORBIDDEN content -------------------------------------------
+        # Never: a command line, an absolute path, a .env value, prompt or tool
+        # input, secrets, source content, log text. The file is identity ONLY.
+        foreach ($ownClient in @('claude', 'codex', 'kiro')) {
+            $ownRaw = $ownDocuments[$ownClient].Raw
+            Check ('the ' + $ownClient + ' metadata contains no absolute path') ($ownRaw -notmatch '[A-Za-z]:\\|[A-Za-z]:/|^\\\\') $ownRaw
+            Check ('the ' + $ownClient + ' metadata contains no command line') (
+                $ownRaw -notmatch 'powershell|pwsh\b|-NoProfile|-ExecutionPolicy|-File ') $ownRaw
+            Check ('the ' + $ownClient + ' metadata contains no .env value') ($ownRaw -notmatch [regex]::Escape($ownEnvValue))
+            Check ('the ' + $ownClient + ' metadata contains no hook source content') ($ownRaw -notmatch 'exit 0')
+            Check ('the ' + $ownClient + ' metadata never leaks the project root, only its hash') (
+                $ownRaw -notmatch [regex]::Escape((Split-Path -Leaf $ownProject))) $ownRaw
+        }
+
+        # ---- drift: deleted, edited, and repaired -------------------------
+        Check 'a freshly installed runtime with metadata evaluates as current for every client' (
+            (Get-InstallIntegrity -Record $ownRecord -ToolRoot $ToolRoot).Status -eq 'current') (
+            (Get-InstallIntegrity -Record $ownRecord -ToolRoot $ToolRoot).Detail)
+        $ownClaudeMetaPath = $ownDocuments['claude'].Path
+        $ownClaudeMetaBytes = [System.IO.File]::ReadAllText($ownClaudeMetaPath)
+        Remove-Item -LiteralPath $ownClaudeMetaPath -Force
+        $ownDeleted = Get-InstallIntegrity -Record $ownRecord -ToolRoot $ToolRoot
+        Check 'deleting the ownership metadata is detected as drift, and named as such' (
+            $ownDeleted.Status -eq 'update' -and $ownDeleted.Detail -match 'ownership metadata is missing') $ownDeleted.Detail
+        Write-Utf8 $ownClaudeMetaPath $ownClaudeMetaBytes
+        Check 'restoring it returns the install to current' ((Get-InstallIntegrity -Record $ownRecord -ToolRoot $ToolRoot).Status -eq 'current')
+        # An EDITED file is the interesting case: it still parses, so only the hash
+        # catches it. Forging another project's key is the attack this detects.
+        $ownForged = $ownClaudeMetaBytes.Replace(('"projectKey": "' + $ownRecomputed + '"'), '"projectKey": "0000000000"')
+        Check 'the forged document really differs from the installed one' ($ownForged -cne $ownClaudeMetaBytes)
+        Write-Utf8 $ownClaudeMetaPath $ownForged
+        $ownEdited = Get-InstallIntegrity -Record $ownRecord -ToolRoot $ToolRoot
+        Check 'editing the ownership metadata to claim a different project is detected as drift' (
+            $ownEdited.Status -eq 'update' -and $ownEdited.Detail -match 'ownership metadata does not describe this installation') $ownEdited.Detail
+
+        # The updater must REPAIR it, not merely notice it.
+        $ownCfg = Join-Path $Work 'cfg-ownership.json'; New-Config $ownCfg
+        $ownUpdate = Invoke-Wizard -Config $ownCfg -Answers @('1', '4', '', '0')
+        Check 'the update run that repairs the metadata exits 0' ($ownUpdate.Exit -eq 0) $ownUpdate.Err
+        Check 'the update restored the exact planned bytes' (
+            ([System.IO.File]::ReadAllText($ownClaudeMetaPath)) -ceq $ownClaudeMetaBytes) (
+            [System.IO.File]::ReadAllText($ownClaudeMetaPath))
+        $ownAfter = @(Get-RecordsFor $ownFixtureName | Where-Object { [string]$_.targetProjectRoot -eq $ownProject })[0]
+        Check 'the repaired install evaluates as current' ((Get-InstallIntegrity -Record $ownAfter -ToolRoot $ToolRoot).Status -eq 'current') (
+            (Get-InstallIntegrity -Record $ownAfter -ToolRoot $ToolRoot).Detail)
+        Check 'the installed manifest recorded for a client now covers the metadata' (
+            @(@(Get-InstalledManifest -RuntimeRoot ([string]$ownAfter.clients.claude.runtimeRoot) -FriendlyName $ownFixtureName) |
+                Where-Object { $_.path -like '*hookmaker-runtime.json' }).Count -eq 1)
+
+        # ---- global scope: no project, so no project key ------------------
+        # GATED on Start-Process -Environment, which only PowerShell 7 has. Without
+        # it Invoke-InstallProcess cannot redirect USERPROFILE/HOME, and a global
+        # install would write into the REAL user profile - a test must never do
+        # that. Skipped rather than made dangerous; the same block runs on the host
+        # CI actually uses (pwsh).
+        if ((Get-Command Start-Process).Parameters.ContainsKey('Environment')) {
+            $ownFakeHome = Join-Path $Work 'OwnershipGlobalHome'
+            New-Item -ItemType Directory -Path $ownFakeHome -Force | Out-Null
+            $ownGlobal = Invoke-InstallProcess -ScriptArgs @('-CustomHook', $ownFixture, '-Events', 'SessionStart', '-ClaudeOnly') -FakeHome $ownFakeHome
+            Check 'a global install succeeds' ($ownGlobal.Exit -eq 0) $ownGlobal.Err
+            $ownGlobalMeta = Join-Path $ownFakeHome ('.claude\hooks\Hook-Maker\' + $ownFixtureName + '\.hookmaker-runtime.json')
+            Check 'a global install writes ownership metadata too' (Test-Path -LiteralPath $ownGlobalMeta -PathType Leaf) $ownGlobalMeta
+            if (Test-Path -LiteralPath $ownGlobalMeta -PathType Leaf) {
+                $ownGlobalJson = ((([System.IO.File]::ReadAllText($ownGlobalMeta, [System.Text.Encoding]::UTF8)) | ConvertFrom-Json))
+                Check 'a global install records scope=global and an EMPTY projectKey (there is no project to key to)' (
+                    ([string]$ownGlobalJson.scope) -ceq 'global' -and ([string]$ownGlobalJson.projectKey) -ceq '') (
+                    [string]$ownGlobalJson.scope + ' / [' + [string]$ownGlobalJson.projectKey + ']')
+                Check 'a global install still names a runtime script and covers it in the manifest' (
+                    ([string]$ownGlobalJson.runtimeScriptRelativePath) -ceq ($ownFixtureName + '/' + $ownFixtureName + '.ps1') -and
+                    @(@($ownGlobalJson.runtimeManifest) | Where-Object { ([string]$_.path) -ceq ($ownFixtureName + '/' + $ownFixtureName + '.ps1') }).Count -eq 1) (
+                    [string]$ownGlobalJson.runtimeScriptRelativePath)
+            }
+        }
+    }
+    finally { Remove-FixtureHook $ownFixtureName }
 
     # =====================================================================
     Write-Host '--- managed-file manifest covers .env and copied helpers ---' -ForegroundColor Cyan

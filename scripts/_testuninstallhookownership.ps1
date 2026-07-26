@@ -5,9 +5,11 @@
 # record's persisted expectedStages (a mutated friendlyName can never rebuild
 # a delete target, and an over-rejection guard proves a genuine install still
 # uninstalls); every command field on a Codex handler must agree before
-# removal; and the orphaned shared _hooklib.ps1 / empty Hook-Maker root are
+# removal; the orphaned shared _hooklib.ps1 / empty Hook-Maker root are
 # retired only once the LAST sibling hook is gone (project and global scope),
-# never sweeping unknown files.
+# never sweeping unknown files; and the runtime ownership metadata goes only with
+# an ownership-proven removal, never on an ambiguous near-match and never from a
+# sibling record's directory.
 # Relies on $ignoreHook from _testuninstallhooknative.ps1, which the entry
 # suite dot-sources first.
 # NOT a standalone suite: this file is dot-sourced into the entry suite's
@@ -25,9 +27,19 @@
         $recTargetA = Get-RecordForScope 'ZZZ-Uninst-Targetownera' $projTarget
         $recTargetB = Get-RecordForScope 'ZZZ-Uninst-Targetownerb' $projTarget
         $bBytesBefore = Get-BytesOrEmpty ([string]$recTargetB.clients.claude.runtimeScript)
+        # The ownership metadata is removed by the SAME directory removal as the
+        # rest of the runtime - it needs no separate delete path, which is the
+        # point: it can only be removed once identity and handler ownership have
+        # both been proven for this record.
+        $metaTargetA = Join-Path (Split-Path -Parent ([string]$recTargetA.clients.claude.runtimeScript)) '.hookmaker-runtime.json'
+        $metaTargetB = Join-Path (Split-Path -Parent ([string]$recTargetB.clients.claude.runtimeScript)) '.hookmaker-runtime.json'
+        Check 'both installed runtimes carry ownership metadata before removal' (
+            (Test-Path -LiteralPath $metaTargetA -PathType Leaf) -and (Test-Path -LiteralPath $metaTargetB -PathType Leaf))
 
         $r = Invoke-UninstallProcess -RecordId $recTargetA.id
         Check 'removing hook A exits 0' ($r.Exit -eq 0) $r.Err
+        Check 'hook A''s ownership metadata is gone with its runtime directory' (-not (Test-Path -LiteralPath $metaTargetA))
+        Check 'hook B''s ownership metadata survives - one record''s removal never touches a sibling''s' (Test-Path -LiteralPath $metaTargetB -PathType Leaf)
         Check 'removing hook A reports overall ok - a foreign command in the same event/file is never ambiguous' ([string]$r.Result.overall -eq 'ok') ($r.Result | ConvertTo-Json -Depth 5)
         Check 'hook A''s record is gone' (@(Get-RecordsFor 'ZZZ-Uninst-Targetownera').Count -eq 0)
         Check 'hook B''s record survives untouched' (@(Get-RecordsFor 'ZZZ-Uninst-Targetownerb').Count -eq 1)
@@ -67,6 +79,11 @@
         Check 'nothing is removed from settings - byte-for-byte unchanged (including the decoy)' (Test-BytesEqual (Get-BytesOrEmpty $settingsPathNM) $settingsWithDecoy)
         Check 'the real runtime copy is untouched' (Test-BytesEqual (Get-BytesOrEmpty ([string]$recNearMatch.clients.claude.runtimeScript)) $runtimeBeforeNM)
         Check 'the record is retained' (@(Get-RecordsFor 'ZZZ-Uninst-Nearmatch').Count -eq 1)
+        # Ownership metadata is removed ONLY by an ownership-proven uninstall. An
+        # ambiguous near-match removes nothing, so the file that states who owns
+        # this directory must still be there for the human who reviews it.
+        Check 'the ownership metadata survives an ambiguous, un-proven uninstall' (
+            Test-Path -LiteralPath (Join-Path (Split-Path -Parent ([string]$recNearMatch.clients.claude.runtimeScript)) '.hookmaker-runtime.json') -PathType Leaf)
     }
     finally { Remove-FixtureHook 'ZZZ-Uninst-Nearmatch' }
 
