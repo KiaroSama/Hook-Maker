@@ -109,9 +109,20 @@ $script:ClientRuntimeRelativeRoots = @(
 # The single definition of WHERE Test-Temp-Cleanup's coordination record lives,
 # so "does a record exist at all" (install evidence) and "what does it currently
 # say" (the gate itself) can never disagree about which file they mean.
+#
+# Normalize-Path is load-bearing, not decoration: the PRODUCER hashes
+# Normalize-Path($cwd).ToLowerInvariant() (Test-Temp-Cleanup.ps1's $projectRoot),
+# and ToLowerInvariant alone folds case only. A cwd carrying a trailing
+# separator or a '.'/'..' segment therefore hashed to a key the producer never
+# writes, so the record read as ABSENT: the gate concluded "cleanup not
+# installed", skipped the cleanliness half of release readiness entirely, and
+# showed a deploy decision for a workspace whose cleanliness was never proven -
+# exactly the failure direction Test-CleanupInstalled below calls the worse one.
+# Both sides must canonicalize with the same helper or the shared-state contract
+# is only nominally shared.
 function Get-CleanupResultPath {
     param([string]$Root)
-    return (Join-Path (Join-Path $env:LOCALAPPDATA 'HookMaker\state') ('TestTempCleanup-result-' + (Get-ShortHash $Root.ToLowerInvariant()) + '.json'))
+    return (Join-Path (Join-Path $env:LOCALAPPDATA 'HookMaker\state') ('TestTempCleanup-result-' + (Get-ShortHash (Normalize-Path $Root).ToLowerInvariant()) + '.json'))
 }
 
 # Is Test-Temp-Cleanup actually part of this project? A directory listing alone

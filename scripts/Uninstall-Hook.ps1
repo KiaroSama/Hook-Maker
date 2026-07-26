@@ -373,580 +373,56 @@ function Remove-ClientComponent {
 }
 
 # ---- Kiro: the per-hook-file client ----------------------------------------
-# Claude and Codex register inside ONE shared settings document, so ownership
-# there is per-handler-entry. Kiro is 'perHookFile': this installation owns its
-# OWN JSON file(s) under <scope root>\.kiro\hooks - and a user can hand-add
-# entries to one of them, which is exactly what the install side's
-# Merge-KiroManagedEntries is built to preserve. Removal is therefore
-# entry-level, not file-level: our entries come off, foreign entries survive as
-# the SAME parsed objects (nothing re-derives them), and the file itself is
-# deleted only once nothing but ours was ever in it.
-#
-# Nothing below is derived from a filename, a friendly name, an event or an
-# array index. A file is touched only when all of this is proven, right now:
-#   * it sits in the exact .kiro\hooks directory this record's own scope
-#     resolves to - the analogue of Get-ExpectedSettingsPath for the shared
-#     clients, and what stops a drifted registrationPath aiming elsewhere;
-#   * its leaf matches Test-KiroManagedFileName;
-#   * Test-KiroManagedFile classifies it 'managed' for THIS record's managed id;
-#   * every entry that classification calls ours is also named in the record's
-#     own persisted managedEntryNames.
-# Anything else - foreign, empty, unreadable, schema-unknown, or holding an
-# entry this record never recorded - is left completely untouched and reported
-# as manualRepair, so the record is retained instead of a guess being acted on.
-
-function Get-KiroSubrecordValue {
-    param([Parameter(Mandatory = $true)]$Subrecord, [Parameter(Mandatory = $true)][string]$Name)
-    $property = $Subrecord.PSObject.Properties[$Name]
-    if ($null -eq $property) { return $null }
-    return $property.Value
-}
-
-# Everything that must hold about the persisted kiro subrecord BEFORE anything
-# is staged or removed. Returns a verdict; mutates nothing.
-function Resolve-KiroOwnership {
-    param([Parameter(Mandatory = $true)]$Subrecord)
-
-    function New-KiroOwnershipFailure {
-        param([string]$Reason)
-        return [pscustomobject]@{
-            Ok = $false; Reason = $Reason
-            RegistrationDir = ''; HookDir = ''; RuntimeRoot = ''; ManagedId = ''; EntryNames = @()
-        }
-    }
-
-    # A kiro subrecord that does not declare the per-hook-file shape cannot be
-    # interpreted: the whole removal model below depends on it, and guessing
-    # would mean either rewriting a shared document as if it were ours or
-    # deleting a file whose ownership model we never verified.
-    $registrationKind = [string](Get-KiroSubrecordValue -Subrecord $Subrecord -Name 'registrationKind')
-    if ($registrationKind -cne 'perHookFile') {
-        return (New-KiroOwnershipFailure ("kiro.registrationKind is '" + $registrationKind + "' rather than 'perHookFile', so this record's registration shape cannot be proven"))
-    }
-    foreach ($field in @('runtimeRoot', 'runtimeScript', 'command')) {
-        if (-not (Test-RequiredStringField (Get-KiroSubrecordValue -Subrecord $Subrecord -Name $field))) {
-            return (New-KiroOwnershipFailure ('kiro.' + $field + ' is missing or is not a genuine non-empty string'))
-        }
-    }
-
-    # ---- the runtime directory to remove, proven exactly as the shared
-    # clients prove theirs: from the persisted runtimeScript, never rebuilt by
-    # joining runtimeRoot to a friendly name.
-    $canonicalRuntimeRoot = Get-CanonicalPathOrNull ([string]$Subrecord.runtimeRoot)
-    $canonicalRuntimeScript = Get-CanonicalPathOrNull ([string]$Subrecord.runtimeScript)
-    if ($null -eq $canonicalRuntimeRoot -or $null -eq $canonicalRuntimeScript) {
-        return (New-KiroOwnershipFailure 'kiro has a runtime path that cannot be canonicalized')
-    }
-    if (-not (Test-PathContainedIn -ChildPath $canonicalRuntimeScript -ParentPath $canonicalRuntimeRoot)) {
-        return (New-KiroOwnershipFailure 'kiro.runtimeScript is outside runtimeRoot')
-    }
-    $hookDir = Split-Path -Parent $canonicalRuntimeScript
-    if ([string]::Equals($hookDir, $canonicalRuntimeRoot, [System.StringComparison]::OrdinalIgnoreCase) -or
-        -not (Test-PathContainedIn -ChildPath $hookDir -ParentPath $canonicalRuntimeRoot)) {
-        return (New-KiroOwnershipFailure 'kiro.runtimeScript parent is the runtime root itself or lies outside it')
-    }
-    if (-not [string]::Equals((Split-Path -Leaf $hookDir), $FriendlyName, [System.StringComparison]::OrdinalIgnoreCase) -or
-        -not [string]::Equals((Split-Path -Leaf $canonicalRuntimeScript), ($FriendlyName + '.ps1'), [System.StringComparison]::OrdinalIgnoreCase)) {
-        return (New-KiroOwnershipFailure ('kiro.runtimeScript parent does not match the managed hook directory for friendlyName ''' + $FriendlyName + ''''))
-    }
-
-    # ---- the ONE directory this record's own scope may register in. Derived
-    # by the same helper the updater's drift check uses, so the two gates can
-    # never disagree about where this record's registration lives.
-    $expectedDir = $null
-    try { $expectedDir = Get-CanonicalPathOrNull (Get-KiroRecordRegistrationDirectory -Record $record) }
-    catch { return (New-KiroOwnershipFailure ([string]$_.Exception.Message)) }
-    if ($null -eq $expectedDir) {
-        return (New-KiroOwnershipFailure 'the .kiro hooks directory for this record''s scope cannot be canonicalized')
-    }
-    # The persisted path is cross-checked against that directory rather than
-    # trusted as the place to act on. It may legitimately be the directory or a
-    # file inside it; anything else means the record drifted and nothing is
-    # touched.
-    $persistedRegistration = [string](Get-KiroSubrecordValue -Subrecord $Subrecord -Name 'registrationPath')
-    if (-not [string]::IsNullOrWhiteSpace($persistedRegistration)) {
-        $canonicalPersisted = Get-CanonicalPathOrNull $persistedRegistration
-        if ($null -eq $canonicalPersisted) {
-            return (New-KiroOwnershipFailure 'kiro.registrationPath cannot be canonicalized')
-        }
-        $persistedDir = $canonicalPersisted
-        if (Test-KiroManagedFileName -Path $canonicalPersisted) { $persistedDir = Split-Path -Parent $canonicalPersisted }
-        if (-not [string]::Equals($persistedDir, $expectedDir, [System.StringComparison]::OrdinalIgnoreCase)) {
-            return (New-KiroOwnershipFailure 'kiro.registrationPath is not the .kiro hooks directory for this record''s scope')
-        }
-    }
-
-    # ---- the persisted entry identities. Without them no entry inside a file
-    # that may also hold the user's own hooks can be proven ours, so an empty
-    # list is a refusal, never a licence to remove whatever looks familiar.
-    $entryNames = @()
-    $persistedNames = Get-KiroSubrecordValue -Subrecord $Subrecord -Name 'managedEntryNames'
-    if ($null -ne $persistedNames) {
-        $entryNames = @(@($persistedNames) | Where-Object { $_ -is [string] -and -not [string]::IsNullOrWhiteSpace($_) })
-    }
-    if ($entryNames.Count -eq 0) {
-        return (New-KiroOwnershipFailure 'kiro.managedEntryNames is empty, so no entry inside a shared file can be proven to belong to this installation')
-    }
-
-    # The managed id the entries were written with. An explicit persisted value
-    # wins; otherwise it is the record id, and either way it must AGREE with the
-    # record's own persisted entry names - Get-KiroManagedNamePrefix anchors the
-    # id immediately after the fixed 'hookmaker-' prefix, so this is a real
-    # check and not a formality.
-    $managedId = [string](Get-KiroSubrecordValue -Subrecord $Subrecord -Name 'managedId')
-    if ([string]::IsNullOrWhiteSpace($managedId)) { $managedId = [string]$record.id }
-    $namePrefix = ''
-    try { $namePrefix = Get-KiroManagedNamePrefix -ManagedId $managedId }
-    catch { return (New-KiroOwnershipFailure ([string]$_.Exception.Message)) }
-    foreach ($entryName in $entryNames) {
-        if (-not $entryName.StartsWith($namePrefix, [System.StringComparison]::OrdinalIgnoreCase)) {
-            return (New-KiroOwnershipFailure ("kiro.managedEntryNames contains '" + $entryName + "', which does not carry this record's own managed identity"))
-        }
-    }
-
-    return [pscustomobject]@{
-        Ok = $true; Reason = ''
-        RegistrationDir = $expectedDir
-        HookDir         = $hookDir
-        RuntimeRoot     = $canonicalRuntimeRoot
-        ManagedId       = $managedId
-        EntryNames      = @($entryNames)
-    }
-}
-
-# Every managed entry a fresh classification calls ours must ALSO be named in
-# the record's own persisted list. An entry carrying our identity that this
-# record never recorded means two installations wrote the same file (or the
-# file was hand-edited): ambiguous, so nothing is removed.
-function Get-KiroUnrecordedEntryName {
-    param([Parameter(Mandatory = $true)]$Classification, [Parameter(Mandatory = $true)][string[]]$EntryNames)
-    foreach ($entry in @($Classification.ManagedEntries)) {
-        $entryName = [string](Get-KiroEntryField -Entry $entry -Name 'name')
-        if (@($EntryNames | Where-Object { $_ -ieq $entryName }).Count -eq 0) { return $entryName }
-    }
-    return ''
-}
-
-function Remove-KiroClientComponent {
-    $subrecord = Get-ClientSubrecord -Record $record -Client 'kiro'
-    if ($null -eq $subrecord) {
-        Set-ComponentResult -Component 'kiro' -Status 'skipped' -ReasonCode 'notInstalled'
-        return [pscustomobject]@{ Removed = $true }
-    }
-    $identity = Resolve-KiroOwnership -Subrecord $subrecord
-    if (-not $identity.Ok) {
-        Set-ComponentResult -Component 'kiro' -Status 'manualRepair' -ReasonCode 'identityInvalid' -Message $identity.Reason
-        return [pscustomobject]@{ Removed = $false }
-    }
-
-    # ---- read-only pre-flight over the live directory.
-    $candidates = New-Object System.Collections.Generic.List[string]
-    $ambiguousDetail = ''
-    # Used ONLY to widen caution, never to claim ownership: an unreadable file
-    # under this hook's own name shape might be ours, and reporting a clean
-    # uninstall while a live registration may still exist would be a false
-    # success. It can never cause a deletion.
-    $ownNamePrefix = 'hookmaker-' + (ConvertTo-KiroSlug -Text $FriendlyName) + '-'
-    foreach ($file in @(Get-ChildItem -LiteralPath $identity.RegistrationDir -File -Force -ErrorAction SilentlyContinue)) {
-        if (-not (Test-KiroManagedFileName -Path $file.FullName)) { continue }
-        $classification = Test-KiroManagedFile -Path $file.FullName -ManagedId $identity.ManagedId
-        if ([string]$classification.Reason -eq 'managed') {
-            $unrecorded = Get-KiroUnrecordedEntryName -Classification $classification -EntryNames @($identity.EntryNames)
-            if ($unrecorded -ne '') {
-                $ambiguousDetail = "'" + (Split-Path -Leaf $file.FullName) + "' holds a managed entry ('" + $unrecorded + "') this record never recorded, so its entries cannot be proven to be ours alone"
-                break
-            }
-            [void]$candidates.Add($file.FullName)
-            continue
-        }
-        if (@('invalid-json', 'unexpected-schema', 'unreadable', 'not-a-file') -contains [string]$classification.Reason -and
-            (Split-Path -Leaf $file.FullName).StartsWith($ownNamePrefix, [System.StringComparison]::OrdinalIgnoreCase)) {
-            $ambiguousDetail = "'" + (Split-Path -Leaf $file.FullName) + "' carries this hook's own filename shape but is " + [string]$classification.Reason + ', so whether it is still our registration cannot be established'
-            break
-        }
-    }
-    if ($ambiguousDetail -ne '') {
-        Set-ComponentResult -Component 'kiro' -Status 'manualRepair' -ReasonCode 'ambiguousRegistration' -Message $ambiguousDetail
-        return [pscustomobject]@{ Removed = $false }
-    }
-
-    if ($WhatIf) {
-        Set-ComponentResult -Component 'kiro' -Status 'ok' -ReasonCode 'wouldRemove'
-        return [pscustomobject]@{ Removed = $true }
-    }
-
-    # ---- compensating rollback, same order as the shared clients: the runtime
-    # is staged aside (reversible) before any registration file is touched.
-    $setAside = ''
-    if (Test-Path -LiteralPath $identity.HookDir -PathType Container) {
-        $setAside = Join-Path $identity.RuntimeRoot ('.hookmaker-uninstall-' + $FriendlyName + '-' + [guid]::NewGuid().ToString('N').Substring(0, 8))
-        try { Move-Item -LiteralPath $identity.HookDir -Destination $setAside -Force }
-        catch {
-            Set-ComponentResult -Component 'kiro' -Status 'failed' -ReasonCode 'stageRuntimeFailed' -Message $_.Exception.Message
-            return [pscustomobject]@{ Removed = $false }
-        }
-    }
-
-    $registrationError = ''
-    foreach ($candidate in @($candidates.ToArray())) {
-        try {
-            # Under the SAME per-file lock the install side takes on this exact
-            # path, so a concurrent install cannot interleave with this
-            # read-classify-write and lose the user's own entries - the shared
-            # clients lock their settings file here for the same reason.
-            $fileError = Invoke-WithResourceLock -ResourcePath $candidate -Action {
-                # Re-read and re-classify IMMEDIATELY before mutating: the
-                # pre-flight above proves the plan is safe, this proves the file
-                # has not changed since, and only this fresh classification is
-                # acted on.
-                $fresh = Test-KiroManagedFile -Path $candidate -ManagedId $identity.ManagedId
-                if ([string]$fresh.Reason -ne 'managed') {
-                    return ("'" + (Split-Path -Leaf $candidate) + "' changed while it was being removed (now " + [string]$fresh.Reason + ')')
-                }
-                $unrecorded = Get-KiroUnrecordedEntryName -Classification $fresh -EntryNames @($identity.EntryNames)
-                if ($unrecorded -ne '') {
-                    return ("'" + (Split-Path -Leaf $candidate) + "' gained an unrecorded managed entry ('" + $unrecorded + "') while it was being removed")
-                }
-                Backup-SettingsFile $candidate
-                if (@($fresh.ForeignEntries).Count -eq 0) {
-                    Remove-Item -LiteralPath $candidate -Force
-                }
-                else {
-                    # The user's own entries are written back as the very objects
-                    # that were parsed, so their order, matcher, timeout, command
-                    # and enabled state cannot be perturbed. Write-SettingsFileAtomic
-                    # serializes at depth 50 - deeper than ConvertTo-KiroHookJson's
-                    # 12 and far past the 3 a Kiro document needs - and re-parses
-                    # the temp file before replacing the original.
-                    Write-SettingsFileAtomic -Value ([pscustomobject][ordered]@{ version = 'v1'; hooks = @($fresh.ForeignEntries) }) -Path $candidate
-                }
-                return ''
-            }
-            if (-not [string]::IsNullOrWhiteSpace([string]$fileError)) {
-                $registrationError = [string]$fileError
-                break
-            }
-        }
-        catch {
-            $registrationError = $_.Exception.Message
-            break
-        }
-    }
-
-    if ($registrationError -ne '') {
-        if (-not [string]::IsNullOrWhiteSpace($setAside) -and (Test-Path -LiteralPath $setAside)) {
-            try { Move-Item -LiteralPath $setAside -Destination $identity.HookDir -Force } catch { }
-        }
-        Set-ComponentResult -Component 'kiro' -Status 'failed' -ReasonCode 'registrationWriteFailed' -Message $registrationError
-        return [pscustomobject]@{ Removed = $false }
-    }
-
-    if (-not [string]::IsNullOrWhiteSpace($setAside) -and (Test-Path -LiteralPath $setAside)) {
-        try { Remove-Item -LiteralPath $setAside -Recurse -Force }
-        catch {
-            Set-ComponentResult -Component 'kiro' -Status 'ok' -ReasonCode 'runtimeCleanupIncomplete' -Message $_.Exception.Message
-            return [pscustomobject]@{ Removed = $true }
-        }
-    }
-    Remove-EmptyManagedRoot -Root $identity.RuntimeRoot
-    Set-ComponentResult -Component 'kiro' -Status 'ok'
-    return [pscustomobject]@{ Removed = $true }
-}
+# Its ownership is per-FILE and per-ENTRY rather than per-handler inside a
+# shared document, so the whole client lives in its own module. Dot-sourced
+# HERE, deliberately: those functions read the record identity and $WhatIf from
+# this scope and call the settings/runtime helpers defined just above, so this
+# line must stay after them and before the first call below.
+. (Join-Path $PSScriptRoot '_uninstallkiro.ps1')
 
 # ---- native Git pre-push integration ----------------------------------------
+# Both removers edit the one generated pre-push wrapper under the same
+# ownership proof, so they share a module. Same dot-source contract as above.
+. (Join-Path $PSScriptRoot '_uninstallnative.ps1')
 
-# Only ever touches the wrapper when it is PROVEN to still be the exact Hook
-# Maker managed wrapper (marker present AND byte-exact match against a wrapper
-# rebuilt from the record's own recorded stage list). Anything else - hand
-# edited, replaced, or otherwise drifted - stops with manualRepair and
-# preserves every file untouched.
-function Remove-NativeGitComponent {
-    if ($null -eq $record.PSObject.Properties['nativeGit'] -or $null -eq $record.nativeGit -or
-        $null -eq $record.nativeGit.PSObject.Properties['managed'] -or $record.nativeGit.managed -ne $true) {
-        Set-ComponentResult -Component 'nativeGit' -Status 'skipped' -ReasonCode 'notApplicable'
-        return [pscustomobject]@{ Removed = $true }
-    }
-    $native = $record.nativeGit
-    $wrapperPath = [string]$native.wrapperPath
-
-    # Everything this record owns on disk is PROVEN from its own persisted
-    # expectedStages - never rebuilt from FriendlyName. Computed read-only, up
-    # front, so the "wrapper already gone" idempotency proof below, the
-    # remaining-stage split and the cleanup step all share one definition of
-    # "ours". A record whose name and persisted stages disagree is refused
-    # outright rather than being allowed to compute a delete target from its
-    # name.
-    $ownRuntimeRoot = [string]$native.runtimeRoot
-    $ownership = Resolve-OwnNativeStages -Native $native -OwnRuntimeRoot $ownRuntimeRoot
-    if (-not $ownership.Ok) {
-        Set-ComponentResult -Component 'nativeGit' -Status 'manualRepair' -ReasonCode 'nativeOwnershipUnproven' `
-            -Message ([string]$ownership.Reason)
-        return [pscustomobject]@{ Removed = $false }
-    }
-    $ownStageDirs = @($ownership.Dirs)
-    $anyOwnedArtifactRemains = @($ownStageDirs | Where-Object { Test-Path -LiteralPath $_ }).Count -gt 0
-
-    if ([string]::IsNullOrWhiteSpace($wrapperPath) -or -not (Test-Path -LiteralPath $wrapperPath -PathType Leaf)) {
-        if ($anyOwnedArtifactRemains) {
-            # The wrapper is gone, but this record's own managed native runtime
-            # is still on disk - a genuinely partial state. Idempotent success
-            # is only safe to claim when NOTHING of ours is left behind; here
-            # something is, so retain the record and stop rather than silently
-            # abandoning those artifacts.
-            Set-ComponentResult -Component 'nativeGit' -Status 'manualRepair' -ReasonCode 'wrapperMissingArtifactsRemain' `
-                -Message 'the pre-push wrapper is gone but managed native runtime artifacts for this record still exist on disk'
-            return [pscustomobject]@{ Removed = $false }
-        }
-        Set-ComponentResult -Component 'nativeGit' -Status 'ok' -ReasonCode 'alreadyRemoved'
-        return [pscustomobject]@{ Removed = $true }
-    }
-
-    # wrapperPath must live directly inside the record's own recorded Git hooks
-    # path (when the record has one - it does for every record written by the
-    # current installer). A mismatch means wrapperPath cannot be trusted to
-    # mean what the record claims, so this stops here rather than trusting it.
-    if ($null -ne $native.PSObject.Properties['hooksPath'] -and -not [string]::IsNullOrWhiteSpace([string]$native.hooksPath)) {
-        $expectedParent = [System.IO.Path]::GetFullPath([string]$native.hooksPath)
-        $actualParent = [System.IO.Path]::GetFullPath((Split-Path -Parent $wrapperPath))
-        if (-not [string]::Equals($expectedParent, $actualParent, [System.StringComparison]::OrdinalIgnoreCase)) {
-            Set-ComponentResult -Component 'nativeGit' -Status 'manualRepair' -ReasonCode 'wrapperPathHooksPathMismatch' `
-                -Message 'wrapperPath does not live in the record''s own recorded Git hooks path; ownership cannot be proven safely'
-            return [pscustomobject]@{ Removed = $false }
-        }
-    }
-
-    $body = [System.IO.File]::ReadAllText($wrapperPath)
-    if (-not $body.Contains($script:PrePushMarker)) {
-        # A file exists at wrapperPath but carries no Hook Maker marker. This is
-        # NOT "no longer managed" - ownership of whatever now occupies this
-        # path is UNKNOWN (a user or another tool may have replaced it). Stop
-        # and preserve every file rather than guessing this away as success.
-        Set-ComponentResult -Component 'nativeGit' -Status 'manualRepair' -ReasonCode 'wrapperReplacedOrOwnershipUnknown' `
-            -Message 'a file exists at the recorded wrapper path but does not carry the Hook Maker marker; ownership cannot be proven safely'
-        return [pscustomobject]@{ Removed = $false }
-    }
-
-    $expectedStages = @()
-    if ($null -ne $native.PSObject.Properties['expectedStages'] -and $null -ne $native.expectedStages) {
-        $expectedStages = @($native.expectedStages | ForEach-Object { [string]$_ })
-    }
-    $expectedBody = New-PrePushWrapperBody -ManagedScripts $expectedStages
-    if (-not (Compare-PrePushWrapperBody -Expected $expectedBody -Actual $body)) {
-        Set-ComponentResult -Component 'nativeGit' -Status 'manualRepair' -ReasonCode 'wrapperDrifted' `
-            -Message 'the pre-push wrapper does not match its expected content; ownership cannot be proven safely'
-        return [pscustomobject]@{ Removed = $false }
-    }
-
-    # Stages this record itself owns (already PROVEN against its persisted
-    # expectedStages by Resolve-OwnNativeStages above). Anything else in
-    # expectedStages belongs to some other logical owner and is left running.
-    $ownStageSet = New-Object System.Collections.Generic.HashSet[string]([System.StringComparer]::OrdinalIgnoreCase)
-    foreach ($stage in @($ownership.Stages)) { [void]$ownStageSet.Add($stage) }
-    $remainingStages = @($expectedStages | Where-Object { -not $ownStageSet.Contains([System.IO.Path]::GetFullPath($_)) })
-
-    if ($WhatIf) {
-        Set-ComponentResult -Component 'nativeGit' -Status 'ok' -ReasonCode 'wouldRemove'
-        return [pscustomobject]@{ Removed = $true }
-    }
-
-    $wrapperBackup = $wrapperPath + '.hookmaker-uninstall-backup-' + [guid]::NewGuid().ToString('N').Substring(0, 8)
-    try { Copy-Item -LiteralPath $wrapperPath -Destination $wrapperBackup -Force } catch { }
-
-    $wrapperOk = $true
-    $wrapperError = ''
+# ---- Test-Temp-Cleanup's per-project coordination record -------------------
+# Cloudflare-Deploy treats %LOCALAPPDATA%\HookMaker\state\TestTempCleanup-result-<key>.json
+# as the STRONG proof that Test-Temp-Cleanup is installed for a project ("only
+# the hook itself writes one"), preferring it over the weaker runtime-directory
+# listing. Uninstalling the hook is what RETIRES that ownership, so a surviving
+# record makes the proof permanently false: the release-readiness gate keeps
+# waiting for a fresh 'clean' category that nothing will ever write again, and
+# the deploy reminder is dead in that project forever. The record is evidence,
+# so the uninstall has to retire it - weakening the consumer instead would
+# trade a missed reminder for a deploy decision on unproven cleanliness, which
+# is the worse direction (see Test-CleanupInstalled's own comment block).
+#
+# The key must be spelled the way the WRITER spells it. Test-Temp-Cleanup.ps1
+# hashes Normalize-Path($cwd).ToLowerInvariant(); targetProjectRoot is only
+# GetFullPath'd at install time, and GetFullPath KEEPS a trailing separator, so
+# `-TargetProject 'C:\p\'` persists a spelling that hashes to a DIFFERENT key.
+# Canonicalizing here is what makes the delete hit the real file instead of
+# silently missing it while looking like it worked.
+#
+# Scoped to this hook and this project: never a sweep of the state directory,
+# which would retire records belonging to other projects' still-installed
+# copies. A user-scope install has no targetProjectRoot and therefore no single
+# project record to retire, so its records are deliberately left alone.
+#
+# Best effort by contract: an absent, locked or unreachable file is not an
+# uninstall failure. It runs only once every owned component came off cleanly,
+# which is also why the weaker runtime-directory signal needs nothing here -
+# that directory is deleted by the client removers above on the same success
+# path, and a partial uninstall must keep BOTH signals so the hook is not
+# reported as retired while a live registration may remain.
+function Remove-CleanupCoordinationRecord {
+    if ($FriendlyName -ne 'Test-Temp-Cleanup' -or [string]::IsNullOrWhiteSpace($RecordTargetProjectRoot)) { return }
     try {
-        if ($remainingStages.Count -gt 0) {
-            # Other managed stages remain: regenerate from the ONE canonical
-            # generator - never hand-edited - so order/stdin-buffering/
-            # fail-closed semantics stay exactly correct.
-            $newBody = New-PrePushWrapperBody -ManagedScripts $remainingStages
-            [System.IO.File]::WriteAllText($wrapperPath, $newBody, $Utf8NoBom)
-        }
-        else {
-            $previousPath = ''
-            if ($null -ne $native.PSObject.Properties['previousHookPath']) { $previousPath = [string]$native.previousHookPath }
-            $previousPreserved = ($null -ne $native.PSObject.Properties['previousHookPreserved'] -and $native.previousHookPreserved -eq $true)
-            if ($previousPreserved -and -not [string]::IsNullOrWhiteSpace($previousPath) -and (Test-Path -LiteralPath $previousPath -PathType Leaf)) {
-                # Restore the user's own hook BYTE-FOR-BYTE: a move, never a
-                # copy-then-rewrite, so binary content / missing trailing
-                # newline survive exactly.
-                Remove-Item -LiteralPath $wrapperPath -Force
-                Move-Item -LiteralPath $previousPath -Destination $wrapperPath -Force
-            }
-            else {
-                # Nothing to restore (never preserved, or it has since
-                # vanished) - just remove the now-empty managed wrapper.
-                Remove-Item -LiteralPath $wrapperPath -Force
-            }
-        }
+        $cleanupKey = Get-ShortHash (Normalize-Path $RecordTargetProjectRoot).ToLowerInvariant()
+        Remove-Item -Force -ErrorAction SilentlyContinue -LiteralPath (
+            Join-Path $env:LOCALAPPDATA ('HookMaker\state\TestTempCleanup-result-' + $cleanupKey + '.json'))
     }
-    catch { $wrapperOk = $false; $wrapperError = $_.Exception.Message }
-
-    if (-not $wrapperOk) {
-        try { if (Test-Path -LiteralPath $wrapperBackup) { Copy-Item -LiteralPath $wrapperBackup -Destination $wrapperPath -Force } } catch { }
-        Set-ComponentResult -Component 'nativeGit' -Status 'failed' -ReasonCode 'wrapperCommitFailed' -Message $wrapperError
-        return [pscustomobject]@{ Removed = $false }
-    }
-    try { if (Test-Path -LiteralPath $wrapperBackup) { Remove-Item -LiteralPath $wrapperBackup -Force -ErrorAction SilentlyContinue } } catch { }
-
-    # ---- post-commit cleanup only, best-effort: the wrapper is already
-    # correct at this point regardless of whether this succeeds. ----
-    if (-not [string]::IsNullOrWhiteSpace($ownRuntimeRoot)) {
-        # Both lists come from Resolve-OwnNativeStages and stay index-aligned:
-        # entry i's directory is the parent of entry i's persisted stage path.
-        # Nothing here is derived from a name.
-        $dirsToRemove = New-Object System.Collections.Generic.List[string]
-        $ownStagesResolved = @($ownership.Stages)
-        $ownDirsResolved = @($ownership.Dirs)
-        for ($i = 0; $i -lt $ownStagesResolved.Count; $i++) {
-            $stillOwnedElsewhere = @($remainingStages | Where-Object { [System.IO.Path]::GetFullPath($_) -eq $ownStagesResolved[$i] }).Count -gt 0
-            if (-not $stillOwnedElsewhere) { [void]$dirsToRemove.Add($ownDirsResolved[$i]) }
-        }
-        foreach ($dir in @($dirsToRemove.ToArray())) {
-            if ((Test-Path -LiteralPath $dir -PathType Container) -and (Test-SafeManagedDir -Dir $dir -Root $ownRuntimeRoot)) {
-                try { Remove-Item -LiteralPath $dir -Recurse -Force } catch { }
-            }
-        }
-        Remove-EmptyManagedRoot -Root $ownRuntimeRoot
-    }
-
-    Set-ComponentResult -Component 'nativeGit' -Status 'ok'
-    return [pscustomobject]@{ Removed = $true }
-}
-
-# ---- Utf8-Encoding-Check chain-stage removal (30.md Part D, item 27) -------
-# Uninstalling the Utf8-Encoding-Check LIFECYCLE record must also take its
-# stage out of the project's managed pre-push chain. The chain belongs to the
-# SAME project's Ignore-Rules-Check record (which installed the Utf8 COMPANION
-# under its own native runtime root), so this edits THAT record - under exactly
-# the ownership proofs Remove-NativeGitComponent applies to its own record:
-# marker present, byte-exact wrapper match against the record's persisted
-# expectedStages, containment-checked companion dir, wrapper backup + restore
-# on failure. Ignore-Rules-Check, Secrets-Check and the preserved user hook are
-# never touched. Deliberately scoped to Utf8-Encoding-Check: Secrets-Check's
-# stage lifecycle predates this rule and is unchanged.
-function Remove-CompanionChainStage {
-    if ($FriendlyName -ne 'Utf8-Encoding-Check') { return }
-    $projectRoot = ''
-    if ($null -ne $record.PSObject.Properties['targetProjectRoot']) { $projectRoot = [string]$record.targetProjectRoot }
-    if ([string]::IsNullOrWhiteSpace($projectRoot)) {
-        Set-ComponentResult -Component 'chainStage' -Status 'skipped' -ReasonCode 'notApplicable'
-        return
-    }
-    # The chain owner: the same-project managed Ignore-Rules-Check record whose
-    # companions list actually names this hook. None -> nothing to remove.
-    $ignoreRecord = $null
-    foreach ($candidate in @($registry.installs)) {
-        if ($null -eq $candidate) { continue }
-        if ([string](Get-Field $candidate 'friendlyName') -ne 'Ignore-Rules-Check') { continue }
-        $candRoot = [string](Get-Field $candidate 'targetProjectRoot')
-        if ([string]::IsNullOrWhiteSpace($candRoot)) { continue }
-        if (-not [string]::Equals([System.IO.Path]::GetFullPath($candRoot), [System.IO.Path]::GetFullPath($projectRoot), [System.StringComparison]::OrdinalIgnoreCase)) { continue }
-        $candNative = Get-Field $candidate 'nativeGit'
-        if ($null -eq $candNative -or $null -eq $candNative.PSObject.Properties['managed'] -or $candNative.managed -ne $true) { continue }
-        if (@(Get-Field $candNative 'companions') -notcontains 'Utf8-Encoding-Check') { continue }
-        $ignoreRecord = $candidate
-        break
-    }
-    if ($null -eq $ignoreRecord) {
-        Set-ComponentResult -Component 'chainStage' -Status 'skipped' -ReasonCode 'notApplicable'
-        return
-    }
-    $chainNative = $ignoreRecord.nativeGit
-    $wrapperPath = [string]$chainNative.wrapperPath
-    $chainRuntimeRoot = [string]$chainNative.runtimeRoot
-    $expectedStages = @()
-    if ($null -ne $chainNative.PSObject.Properties['expectedStages'] -and $null -ne $chainNative.expectedStages) {
-        $expectedStages = @($chainNative.expectedStages | ForEach-Object { [string]$_ })
-    }
-    # The Utf8 stage this record's uninstall owns: the expectedStages entry that
-    # is the Utf8 companion script INSIDE the chain owner's runtime root. Proven
-    # by path + containment, never by basename alone.
-    $utf8Stage = @($expectedStages | Where-Object {
-            $full = [System.IO.Path]::GetFullPath($_)
-            $full.EndsWith('\Utf8-Encoding-Check\Utf8-Encoding-Check.ps1', [System.StringComparison]::OrdinalIgnoreCase) -and
-            (Test-PathContainedIn -ChildPath $full -ParentPath $chainRuntimeRoot)
-        })
-    if ($utf8Stage.Count -ne 1) {
-        Set-ComponentResult -Component 'chainStage' -Status 'manualRepair' -ReasonCode 'chainStageUnproven' `
-            -Message ('expected exactly one contained Utf8-Encoding-Check stage in the chain owner''s expectedStages, found ' + $utf8Stage.Count)
-        return
-    }
-    if ([string]::IsNullOrWhiteSpace($wrapperPath) -or -not (Test-Path -LiteralPath $wrapperPath -PathType Leaf)) {
-        Set-ComponentResult -Component 'chainStage' -Status 'manualRepair' -ReasonCode 'chainWrapperMissing' `
-            -Message 'the chain owner records a managed wrapper but none exists at its recorded path'
-        return
-    }
-    $body = [System.IO.File]::ReadAllText($wrapperPath)
-    if (-not $body.Contains($script:PrePushMarker)) {
-        Set-ComponentResult -Component 'chainStage' -Status 'manualRepair' -ReasonCode 'chainWrapperReplacedOrOwnershipUnknown' `
-            -Message 'the file at the chain wrapper path does not carry the Hook Maker marker; ownership cannot be proven safely'
-        return
-    }
-    $expectedBody = New-PrePushWrapperBody -ManagedScripts $expectedStages
-    if (-not (Compare-PrePushWrapperBody -Expected $expectedBody -Actual $body)) {
-        Set-ComponentResult -Component 'chainStage' -Status 'manualRepair' -ReasonCode 'chainWrapperDrifted' `
-            -Message 'the chain wrapper does not match its expected content; ownership cannot be proven safely'
-        return
-    }
-    if ($WhatIf) {
-        Set-ComponentResult -Component 'chainStage' -Status 'ok' -ReasonCode 'wouldRemove'
-        return
-    }
-
-    $remainingStages = @($expectedStages | Where-Object { $_ -ne $utf8Stage[0] })
-    $remainingCompanions = @(@(Get-Field $chainNative 'companions') | Where-Object { [string]$_ -ne 'Utf8-Encoding-Check' } | ForEach-Object { [string]$_ })
-    $wrapperBackup = $wrapperPath + '.hookmaker-chainstage-backup-' + [guid]::NewGuid().ToString('N').Substring(0, 8)
-    Copy-Item -LiteralPath $wrapperPath -Destination $wrapperBackup -Force
-    try {
-        # 1) Wrapper first, so the chain never references a script that is gone.
-        $newBody = New-PrePushWrapperBody -ManagedScripts $remainingStages
-        [System.IO.File]::WriteAllText($wrapperPath, $newBody, $Utf8NoBom)
-        # 2) The companion runtime dir, containment-proven against the OWNER's root.
-        $utf8Dir = Split-Path -Parent ([System.IO.Path]::GetFullPath($utf8Stage[0]))
-        if ((Test-Path -LiteralPath $utf8Dir -PathType Container) -and (Test-SafeManagedDir -Dir $utf8Dir -Root $chainRuntimeRoot)) {
-            Remove-Item -LiteralPath $utf8Dir -Recurse -Force
-        }
-        # 3) The chain owner's record, under the registry lock, so its integrity
-        #    check keeps matching what is actually installed.
-        $ignoreId = [string]$ignoreRecord.id
-        $chainSave = Invoke-WithInstallRegistryLock -ToolRoot $ToolRoot -Action {
-            $state = Read-InstallRegistryState -ToolRoot $ToolRoot
-            if ($state.State -eq 'corrupt') { return [pscustomobject]@{ Ok = $false; Warning = ('registry is unreadable: ' + [string]$state.Reason) } }
-            $liveRegistry = ConvertTo-InstallRegistryCurrent -Registry $state.Registry
-            $liveList = @($liveRegistry.installs)
-            for ($i = 0; $i -lt $liveList.Count; $i++) {
-                $live = $liveList[$i]
-                if ($null -eq $live -or $null -eq $live.PSObject.Properties['id'] -or [string]$live.id -ne $ignoreId) { continue }
-                $liveNative = $live.nativeGit
-                Set-ObjectProperty -Object $liveNative -Name 'expectedStages' -Value @($remainingStages)
-                Set-ObjectProperty -Object $liveNative -Name 'companions' -Value @($remainingCompanions)
-                Set-ObjectProperty -Object $liveNative -Name 'wrapperBodyHash' -Value (Get-ShortHash $newBody)
-                $ignoreSource = Join-Path $ToolRoot 'hooks\Ignore-Rules-Check\Ignore-Rules-Check.ps1'
-                Set-ObjectProperty -Object $liveNative -Name 'sourceManifest' -Value @(
-                    Get-NativePrePushSourceManifest -ToolRoot $ToolRoot -PrimaryFriendlyName 'Ignore-Rules-Check' `
-                        -PrimaryHookScript $ignoreSource -PrimarySourceDir (Split-Path -Parent $ignoreSource) -Companions $remainingCompanions)
-                Set-ObjectProperty -Object $live -Name 'lastUpdatedUtc' -Value ([DateTime]::UtcNow.ToString('o'))
-                break
-            }
-            $liveRegistry.installs = $liveList
-            Save-InstallRegistry -ToolRoot $ToolRoot -Registry $liveRegistry
-            $verify = Read-InstallRegistryState -ToolRoot $ToolRoot
-            if ($verify.State -ne 'ok') { return [pscustomobject]@{ Ok = $false; Warning = ('registry did not read back cleanly: ' + [string]$verify.Reason) } }
-            return [pscustomobject]@{ Ok = $true; Warning = '' }
-        }
-        if (-not $chainSave.Ok) { throw ('chain-owner record update failed: ' + [string]$chainSave.Warning) }
-        Remove-Item -LiteralPath $wrapperBackup -Force -ErrorAction SilentlyContinue
-        Set-ComponentResult -Component 'chainStage' -Status 'ok'
-    }
-    catch {
-        # Roll the wrapper back to the proven pre-removal bytes; the companion
-        # dir (if already removed) is re-created by the next install/update, and
-        # the failure keeps the record retained for a retry.
-        try { Copy-Item -LiteralPath $wrapperBackup -Destination $wrapperPath -Force } catch { }
-        Remove-Item -LiteralPath $wrapperBackup -Force -ErrorAction SilentlyContinue
-        Set-ComponentResult -Component 'chainStage' -Status 'failed' -ReasonCode 'chainStageRemovalFailed' -Message ([string]$_.Exception.Message)
-    }
+    catch { }
 }
 
 # ---- execution order: native Git first (cheapest, read-mostly proof of
@@ -1054,6 +530,11 @@ if ($anyFailed.Count -gt 0 -or $anyManual.Count -gt 0) {
 }
 
 # ---- everything owned by this record came off cleanly: remove the record --
+# The coordination record is retired HERE, past the partial/ambiguous gate
+# above: a record that only partially came off may still be live for this
+# project, and its cleanup evidence must survive with it.
+Remove-CleanupCoordinationRecord
+
 $removeResult = $null
 try {
     $removeResult = Invoke-WithInstallRegistryLock -ToolRoot $ToolRoot -Action {
