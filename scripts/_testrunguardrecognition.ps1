@@ -237,7 +237,14 @@
     Write-Host '--- static safety: the hook never evaluates or spawns anything ---' -ForegroundColor Cyan
     # Comment lines are stripped first: the header deliberately says the words
     # "Invoke-Expression" and "shell" in prose.
-    $hookCode = (([System.IO.File]::ReadAllLines($Hook)) | Where-Object { $_.Trim() -notmatch '^#' }) -join "`n"
+    # The WHOLE hook package, not just the entry point. These are the hook's
+    # execution-safety assertions (no Invoke-Expression, no Start-Process, no
+    # script blocks, no call-operator on a variable); reading one file would
+    # quietly stop covering everything a companion module contains, so a split
+    # could weaken them to nothing while every assertion still reported green.
+    $hookCode = (@(Get-ChildItem -LiteralPath (Split-Path -Parent $Hook) -File -Filter '*.ps1' | Sort-Object Name |
+            ForEach-Object { [System.IO.File]::ReadAllLines($_.FullName) }) |
+        Where-Object { $_.Trim() -notmatch '^#' }) -join "`n"
     Check 'no Invoke-Expression' ($hookCode -notmatch 'Invoke-Expression')
     Check 'no iex alias' ($hookCode -notmatch '(^|[^\w-])iex([^\w-]|$)')
     Check 'no Start-Process' ($hookCode -notmatch 'Start-Process')

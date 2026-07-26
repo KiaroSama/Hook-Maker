@@ -163,7 +163,7 @@
     Write-Host '--- the runner ships beside the hook: a bare project still gets a real block (Review-1) ---' -ForegroundColor Cyan
     $shipDir = Join-Path $Work ('hookship-' + [guid]::NewGuid().ToString('N').Substring(0, 6))
     New-Item -ItemType Directory -Path (Join-Path $shipDir 'scripts') -Force | Out-Null
-    Copy-Item $Hook (Join-Path $shipDir 'Test-Run-Guard.ps1')
+    Copy-HookPackage -Destination $shipDir
     Copy-Item $HookLib (Join-Path (Split-Path -Parent $shipDir) '_hooklib.ps1') -Force
     Copy-Item $Runner (Join-Path $shipDir 'scripts\Run-Tests-Guarded.ps1')   # <- shipped by the installer
     $shipFakeLocal = Join-Path $shipDir '_fakelocal'; New-Item -ItemType Directory -Path $shipFakeLocal -Force | Out-Null
@@ -189,7 +189,7 @@
     # A hook with the MANAGED runner shipped beside it (carries the contract marker).
     $mgDir = Join-Path $Work ('managed-' + [guid]::NewGuid().ToString('N').Substring(0, 6))
     New-Item -ItemType Directory -Path (Join-Path $mgDir 'scripts') -Force | Out-Null
-    Copy-Item $Hook (Join-Path $mgDir 'Test-Run-Guard.ps1')
+    Copy-HookPackage -Destination $mgDir
     Copy-Item $HookLib (Join-Path (Split-Path -Parent $mgDir) '_hooklib.ps1') -Force
     Copy-Item $Runner (Join-Path $mgDir 'scripts\Run-Tests-Guarded.ps1')     # managed - has the marker
     $mgHook = Join-Path $mgDir 'Test-Run-Guard.ps1'

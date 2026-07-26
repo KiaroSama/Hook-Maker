@@ -13,11 +13,26 @@ function Get-SafeRunId { param([string]$Id) $s = ([string]$Id).ToLowerInvariant(
 
 # Per-case isolated hook copy + fake LOCALAPPDATA, so result/report/config state
 # never collides across cases or with the real machine state.
+# EVERY .ps1 beside the hook, not just the entry point. The real installer
+# stages the whole hook PACKAGE, so a copy that took one file would exercise a
+# runtime that cannot exist - and silently breaks the moment a hook grows a
+# companion module, which Test-Run-Guard now has. One definition, so a future
+# split cannot reintroduce the single-file copy at some other call site.
+function Copy-HookPackage {
+    param([Parameter(Mandatory = $true)][string]$Destination)
+    if (-not (Test-Path -LiteralPath $Destination -PathType Container)) {
+        New-Item -ItemType Directory -Path $Destination -Force | Out-Null
+    }
+    foreach ($file in @(Get-ChildItem -LiteralPath (Split-Path -Parent $Hook) -File -Filter '*.ps1')) {
+        Copy-Item $file.FullName (Join-Path $Destination $file.Name) -Force
+    }
+}
+
 function New-IsolatedHookCopy {
     param([hashtable]$EnvOverrides = @{})
     $dir = Join-Path $Work ('hookcopy-' + [guid]::NewGuid().ToString('N').Substring(0, 6))
     New-Item -ItemType Directory -Path $dir -Force | Out-Null
-    Copy-Item $Hook (Join-Path $dir 'Test-Run-Guard.ps1')
+    Copy-HookPackage -Destination $dir
     Copy-Item $HookLib (Join-Path $Work '_hooklib.ps1') -Force
     if ($EnvOverrides.Count -gt 0) {
         $lines = New-Object System.Collections.Generic.List[string]
