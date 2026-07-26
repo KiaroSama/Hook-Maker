@@ -83,6 +83,51 @@ function Write-InstallResult {
     }
 }
 
+# THE one definition of the overall verdict. It used to be computed inline at
+# the very end, while the install RECORD hardcoded lastResult='ok' 50 lines
+# earlier - so a partial or failed outcome still persisted a record claiming
+# success. Two places deciding the same thing is how they disagree; there is
+# now one, called by both.
+#
+# States:
+#   ok      every component landed exactly what was asked for
+#   partial something landed, but less than was asked for (a failed component
+#           alongside a working one, a degraded client, or tracking that failed)
+#   failed  nothing the caller asked for is installed
+function Get-OverallInstallResult {
+    $failed = @($script:ComponentResults | Where-Object { $_.status -eq 'failed' })
+    $trackingFailed = @($script:ComponentResults | Where-Object { $_.status -eq 'trackingFailed' })
+    # A component that landed with LESS than it was asked for is still 'ok' at
+    # the component level - component statuses are exactly ok/failed/skipped/
+    # trackingFailed, and 'partial' is the OVERALL result's vocabulary, not a
+    # component's. That distinction is deliberate, so degradation is read off the
+    # REASON CODE instead:
+    #   degraded              installed, but with unsupported events dropped and/or
+    #                         a gate that can only ever be advisory (Kiro Stop)
+    #   postRegistrationError the registration IS live, but a later step failed -
+    #                         the one that must never read as a clean 'ok'
+    $degraded = @($script:ComponentResults | Where-Object {
+            $_.status -eq 'ok' -and @('degraded', 'postRegistrationError') -contains [string]$_.reason })
+    # ONLY CLIENT components answer "did anything the caller asked for actually
+    # land". 'registry' and 'nativeGit' are BOOKKEEPING, and counting them as
+    # landed work inverted the verdict: a kiro-only install whose kiro component
+    # FAILED still had an ok 'registry' component, so the total failure was
+    # downgraded to 'partial' - telling the caller to keep an installation that
+    # does not exist. The client set is derived from the capability table, never
+    # a third hardcoded list beside the two this repo already keeps in sync.
+    $clientIds = @(Get-HookMakerClientIds)
+    $okClients = @($script:ComponentResults | Where-Object {
+            $_.status -eq 'ok' -and @($clientIds) -contains [string]$_.component })
+    # Components are INDEPENDENT, so a failure among them is only a total failure
+    # when no client landed. A request for three clients where two are installed
+    # and one is unsupported is 'partial' - reporting it 'failed' would tell the
+    # caller to discard two working installations, and reporting it 'ok' would
+    # claim an install that never happened. Both are wrong in opposite directions.
+    if ($failed.Count -gt 0 -and $okClients.Count -eq 0) { return 'failed' }
+    if ($failed.Count -gt 0 -or $trackingFailed.Count -gt 0 -or $degraded.Count -gt 0) { return 'partial' }
+    return 'ok'
+}
+
 $Utf8NoBom = [System.Text.UTF8Encoding]::new($false)
 $ToolRoot = Split-Path -Parent $PSScriptRoot
 # Shared: Get-HookFriendlyName (folder/file naming). This is install-time only;
@@ -580,6 +625,90 @@ if ($InstallCodex) {
     Write-Host "Codex runtime copy: $($codexRuntime.Script)"
 }
 
+# ---- kiro runtime rollback -------------------------------------------------
+# Copy-HookRuntime COMMITS the runtime: Install-PlannedRuntime stages the
+# replacement in a sibling directory, hash-verifies it, moves the live directory
+# aside, swaps the replacement in and then DROPS the set-aside copy. Past that
+# point the target has already changed while the registration - the only thing
+# that makes the runtime reachable - has not been written yet. A registration
+# that is then refused or fails to write must leave the target exactly as it was
+# found, and the runtime's own transaction has already closed.
+#
+# So the same mechanism is applied one level up: the hook's runtime directory is
+# set aside BEFORE the install, restored if the registration never lands, and
+# dropped once it does. COPIED rather than moved, so the previous runtime stays
+# live while the replacement is staged - Install-PlannedRuntime's own move-aside
+# window stays exactly as short as it already is.
+#
+# The set-aside directory deliberately reuses Install-PlannedRuntime's
+# '.hookmaker-previous-<FriendlyName>-<token>' naming: its janitor sweeps
+# abandoned directories with that prefix older than 30 minutes, so a process
+# killed between the swap and the registration write is cleaned by the next
+# install rather than leaving a directory nothing owns. The token makes it
+# distinct from the one Install-PlannedRuntime creates for itself, and the
+# 30-minute floor means it never deletes a concurrent install's live copy.
+function New-KiroRuntimeSnapshot {
+    param(
+        [Parameter(Mandatory = $true)][string]$RuntimeRoot,
+        [Parameter(Mandatory = $true)][string]$HookDirectoryName
+    )
+    $hookDirectory = Join-Path $RuntimeRoot $HookDirectoryName
+    # Every ancestor that does not exist yet is one this install is about to
+    # create, so removing it again is part of "exactly as it was found". Deepest
+    # first, which is also the only order they can be removed in.
+    $createdDirectories = New-Object System.Collections.Generic.List[string]
+    $ancestor = $RuntimeRoot
+    while (-not [string]::IsNullOrWhiteSpace($ancestor) -and -not (Test-Path -LiteralPath $ancestor -PathType Container)) {
+        [void]$createdDirectories.Add($ancestor)
+        $ancestor = Split-Path -Parent $ancestor
+    }
+    $asideCopy = ''
+    if (Test-Path -LiteralPath $hookDirectory -PathType Container) {
+        $asideCopy = Join-Path $RuntimeRoot ('.hookmaker-previous-' + $HookDirectoryName + '-' +
+            [guid]::NewGuid().ToString('N').Substring(0, 8))
+        Copy-Item -LiteralPath $hookDirectory -Destination $asideCopy -Recurse -Force
+    }
+    return [pscustomobject]@{
+        RuntimeRoot        = $RuntimeRoot
+        HookDirectory      = $hookDirectory
+        AsideCopy          = $asideCopy
+        CreatedDirectories = @($createdDirectories.ToArray())
+    }
+}
+
+# Puts the runtime back the way New-KiroRuntimeSnapshot found it, and returns a
+# sanitized note when it could not. Best-effort BY DESIGN: this runs while an
+# install is already failing, so a cleanup error must be REPORTED alongside the
+# real reason rather than replacing it with its own.
+function Restore-KiroRuntimeSnapshot {
+    param($Snapshot)
+    if ($null -eq $Snapshot) { return '' }
+    try {
+        if (Test-Path -LiteralPath $Snapshot.HookDirectory) {
+            Remove-Item -LiteralPath $Snapshot.HookDirectory -Recurse -Force
+        }
+        if (-not [string]::IsNullOrWhiteSpace([string]$Snapshot.AsideCopy) -and
+            (Test-Path -LiteralPath $Snapshot.AsideCopy)) {
+            Move-Item -LiteralPath $Snapshot.AsideCopy -Destination $Snapshot.HookDirectory -Force
+            return ''
+        }
+        # Nothing was here before, so the directories this install created on the
+        # way in go too - but only while they are empty. A non-empty one holds
+        # something this install did not put there (another hook's runtime), and
+        # stopping at it also stops at every ancestor above it.
+        foreach ($created in @($Snapshot.CreatedDirectories)) {
+            if (-not (Test-Path -LiteralPath $created -PathType Container)) { continue }
+            if (@(Get-ChildItem -LiteralPath $created -Force -ErrorAction SilentlyContinue).Count -gt 0) { break }
+            Remove-Item -LiteralPath $created -Force
+        }
+        return ''
+    }
+    catch {
+        return (' The previously installed Kiro runtime could not be fully restored at ' +
+            [string]$Snapshot.HookDirectory + ': ' + [string]$_.Exception.Message)
+    }
+}
+
 # ---- kiro -----------------------------------------------------------------
 # Kiro is registrationKind 'perHookFile': one JSON document per hook under
 # .kiro\hooks, NOT a shared settings file. So there is no Add-HookGroup /
@@ -601,6 +730,8 @@ $kiroCommands = $null
 # reading an unassigned variable throws under StrictMode.
 $script:KiroWrittenNames = @()
 $script:KiroRegistrationWritten = $false
+# Set the moment before the runtime is committed; read by the catch to undo it.
+$script:KiroRuntimeSnapshot = $null
 if ($InstallKiro) {
     $script:CurrentPhase = 'kiro'
     try {
@@ -702,6 +833,16 @@ if ($InstallKiro) {
             # left a real file no artifact accounted for, so every later
             # evaluation reported "unexpected managed file" and the updater
             # reinstalled Kiro forever. See Get-ManagedInstallPlan.
+            #
+            # THE NEXT LINE COMMITS THE RUNTIME. The pre-flight above is
+            # unlocked, and the authoritative ownership verdict is not re-taken
+            # until inside the lock below, so both a registration file that
+            # changed in between and a registration WRITE that fails leave a
+            # committed runtime behind. Neither can be rolled back by the
+            # runtime's own transaction, which has already closed - so the
+            # target's previous state is captured here and restored by the
+            # catch when the registration does not land.
+            $script:KiroRuntimeSnapshot = New-KiroRuntimeSnapshot -RuntimeRoot $kiroRuntimeRoot -HookDirectoryName $FriendlyName
             $kiroRuntime = Copy-HookRuntime -ClientDir $kiroRuntimeRoot -RuntimeRootOverride $kiroRuntimeRoot -IncludeKiroLauncher
             $kiroLauncherPath = Join-Path (Split-Path -Parent $kiroRuntime.Script) 'kiro-launch.ps1'
             if (-not (Test-Path -LiteralPath $kiroLauncherPath -PathType Leaf)) {
@@ -790,6 +931,16 @@ if ($InstallKiro) {
                 $script:KiroRegistrationWritten = $true
             }
             $kiroManagedNames = @($script:KiroWrittenNames)
+            # The registration is live, so the runtime it points at is the one
+            # that must survive: the set-aside copy is no longer a rollback
+            # target, it is clutter. Dropped best-effort - failing an install
+            # that fully succeeded because a temporary directory would not
+            # delete would be the wrong trade. Nulled so nothing below can
+            # restore a superseded runtime over the live one.
+            if (-not [string]::IsNullOrWhiteSpace([string]$script:KiroRuntimeSnapshot.AsideCopy)) {
+                Remove-Item -LiteralPath $script:KiroRuntimeSnapshot.AsideCopy -Recurse -Force -ErrorAction SilentlyContinue
+            }
+            $script:KiroRuntimeSnapshot = $null
 
             # 'ok' with recorded degradation, NOT a 'partial' component status.
             # The component genuinely succeeded for every trigger Kiro supports;
@@ -829,9 +980,23 @@ if ($InstallKiro) {
                 ', but a later step failed: ' + [string]$_.Exception.Message)
         }
         else {
+            # Nothing was registered, so the runtime this install may already
+            # have committed is unreachable and accounted for by no record -
+            # exactly the orphan the pre-flight was added to prevent, reached
+            # by the two paths the pre-flight cannot cover (a registration file
+            # that changed before the lock, and a write that fails). Undone
+            # here, and a rollback that could not complete is APPENDED to the
+            # reason rather than swallowed: a half-restored runtime the user is
+            # never told about is worse than the failure that caused it.
+            #
+            # Guarded on KiroRegistrationWritten because a POST-registration
+            # failure must KEEP the runtime - the live .kiro\hooks entry points
+            # straight at it.
+            $kiroRollbackNote = Restore-KiroRuntimeSnapshot -Snapshot $script:KiroRuntimeSnapshot
+            $script:KiroRuntimeSnapshot = $null
             Set-ComponentResult -Component 'kiro' -Status 'failed' -ReasonCode 'registrationRefused' `
-                -Message ([string]$_.Exception.Message)
-            Write-Host ('Kiro registration refused: ' + [string]$_.Exception.Message)
+                -Message ([string]$_.Exception.Message + $kiroRollbackNote)
+            Write-Host ('Kiro registration refused: ' + [string]$_.Exception.Message + $kiroRollbackNote)
         }
     }
 }
@@ -928,6 +1093,23 @@ try {
     $nativeGit = $null
     if ($null -ne $script:NativeGitState) { $nativeGit = $script:NativeGitState }
 
+    # The record's verdict is DERIVED, never hardcoded. It used to say
+    # lastResult='ok'/lastReason='installed' unconditionally, 50 lines before
+    # $overallResult was computed, so a record could persist "ok" for an install
+    # whose only requested client had failed.
+    #
+    # 'registry' is deliberately not among the components consulted here: its
+    # status is the outcome of the very write this record is the payload of, so
+    # it cannot be known yet - and a registry failure means this record does not
+    # land at all. Everything else already has its verdict, and the final
+    # document below re-runs the same function once the registry does too.
+    $recordResult = Get-OverallInstallResult
+    $recordReason = switch ($recordResult) {
+        'ok' { 'installed' }
+        'failed' { 'no requested client was installed' }
+        default { 'installed with reduced or failed components' }
+    }
+
     $record = [pscustomobject][ordered]@{
         id                = $RecordId
         schema            = 2
@@ -949,8 +1131,8 @@ try {
         clients           = $clientSubrecords
         nativeGit         = $nativeGit
         lastUpdatedUtc    = [DateTime]::UtcNow.ToString('o')
-        lastResult        = 'ok'
-        lastReason        = 'installed'
+        lastResult        = $recordResult
+        lastReason        = $recordReason
         lastError         = ''
         # Sanitized per-component outcomes for this attempt; Set-InstallRecord
         # folds them into the record's bounded history.
@@ -983,29 +1165,10 @@ catch {
 
 # Overall state is derived from the component results, never from the absence
 # of an exception: an install whose runtime and settings landed but whose
-# tracking failed is 'partial', not success.
-$failedComponents = @($script:ComponentResults | Where-Object { $_.status -eq 'failed' })
-$trackingFailed = @($script:ComponentResults | Where-Object { $_.status -eq 'trackingFailed' })
-$okComponents = @($script:ComponentResults | Where-Object { $_.status -eq 'ok' })
-# A component that landed with LESS than it was asked for is still 'ok' at the
-# component level - component statuses are exactly ok/failed/skipped/
-# trackingFailed, and 'partial' is the OVERALL result's vocabulary, not a
-# component's. That distinction is deliberate, so degradation is read off the
-# REASON CODE instead:
-#   degraded              installed, but with unsupported events dropped and/or
-#                         a gate that can only ever be advisory (Kiro Stop)
-#   postRegistrationError the registration IS live, but a later step failed -
-#                         the one that must never read as a clean 'ok'
-$degradedComponents = @($script:ComponentResults | Where-Object {
-        $_.status -eq 'ok' -and @('degraded', 'postRegistrationError') -contains [string]$_.reason })
-# Components are INDEPENDENT, so a failure among them is only a total failure
-# when nothing else landed. A request for three clients where two are installed
-# and one is unsupported is 'partial' - reporting it 'failed' would tell the
-# caller to discard two working installations, and reporting it 'ok' would
-# claim an install that never happened. Both are wrong in opposite directions.
-$overallResult = if ($failedComponents.Count -gt 0 -and $okComponents.Count -eq 0) { 'failed' }
-elseif ($failedComponents.Count -gt 0 -or $trackingFailed.Count -gt 0 -or $degradedComponents.Count -gt 0) { 'partial' }
-else { 'ok' }
+# tracking failed is 'partial', not success. Same function the record above
+# used, now that the registry component has its verdict too - so the persisted
+# record and this document cannot claim different outcomes for one install.
+$overallResult = Get-OverallInstallResult
 Write-InstallResult -Overall $overallResult
 
 Write-Host 'Restart the clients and review /hooks. Codex may require trusting the new command.'

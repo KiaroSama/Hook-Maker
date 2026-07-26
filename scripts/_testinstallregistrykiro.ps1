@@ -227,6 +227,47 @@ try {
         (Test-InstallRecordValid -Record $kiStored).Reason)
     Check 'kiro update: Get-InstalledClientNames enumerates kiro' ((@(Get-InstalledClientNames -Record $kiStored) -join ',') -eq 'kiro') (
         (@(Get-InstalledClientNames -Record $kiStored) -join ','))
+
+    # --- an untouched kiro subrecord must SURVIVE a claude-only reinstall ----
+    # Set-InstallRecord carried subrecords forward with a literal
+    # @('claude','codex'), so installing the SAME record id for another client
+    # silently deleted the kiro subrecord - and with it registrationPath and
+    # managedEntryNames, which are the only proof Kiro uninstall has of what it
+    # owns. The .kiro\hooks file stays on disk and becomes unremovable: the
+    # damage is invisible until someone tries to uninstall.
+    $kiSecond = [pscustomobject][ordered]@{
+        id = $kiRecordId; schema = 2; internalName = $KiroRegName; friendlyName = $KiroRegName
+        hookType = 'CustomHook'; sourceScript = $kiHook; sourceDir = (Split-Path -Parent $kiHook)
+        toolRoot = $ToolRoot; scope = 'project'; targetProjectRoot = $kiProject; profile = ''; configPath = ''
+        sourceManifest = @(Get-ManagedSourceManifest -ToolRoot $ToolRoot -HookScript $kiHook `
+                -SourceDir (Split-Path -Parent $kiHook) -FriendlyName $KiroRegName)
+        # Only claude this time: kiro is UNTOUCHED, so it must be carried over.
+        clients = ([pscustomobject][ordered]@{ claude = (New-ClientSubrecord `
+                    -SettingsPath (Join-Path $kiProject '.claude\settings.local.json') `
+                    -RuntimeRoot $kiRuntimeRoot -RuntimeScript $kiRuntimeScript `
+                    -Events @('SessionStart') -Command $kiCommand -Timeout 60 `
+                    -InstalledManifest @(Get-InstalledManifest -RuntimeRoot $kiRuntimeRoot -FriendlyName $KiroRegName)) })
+        nativeGit = $null
+        lastUpdatedUtc = [DateTime]::UtcNow.ToString('o'); lastResult = 'ok'; lastReason = 'installed'; lastError = ''
+        lastComponents = @(); needsManualRepair = $false
+    }
+    $kiRegistry2 = Get-Registry
+    Set-InstallRecord -Registry $kiRegistry2 -Record $kiSecond
+    Save-InstallRegistry -ToolRoot $ToolRoot -Registry $kiRegistry2
+    $kiAfter = @(Get-RecordsFor $KiroRegName)[0]
+
+    Check 'a claude-only reinstall does NOT drop the untouched kiro subrecord' (
+        $null -ne $kiAfter.clients.PSObject.Properties['kiro']) (
+        (@(Get-InstalledClientNames -Record $kiAfter) -join ','))
+    # Presence alone is not enough - the ownership fields are the whole point.
+    Check 'the carried-over kiro subrecord keeps the fields uninstall proves ownership with' (
+        $null -ne $kiAfter.clients.PSObject.Properties['kiro'] -and
+        [string]$kiAfter.clients.kiro.registrationPath -eq $kiPath -and
+        @($kiAfter.clients.kiro.managedEntryNames).Count -eq @($kiNames).Count) (
+        (Compact $kiAfter.clients.kiro))
+    Check 'both clients are enumerated after the reinstall' (
+        (@(Get-InstalledClientNames -Record $kiAfter | Sort-Object) -join ',') -eq 'claude,kiro') (
+        (@(Get-InstalledClientNames -Record $kiAfter) -join ','))
     Check 'kiro update: the registration directory is derived from the record''s own scope' (
         [string]::Equals((Get-KiroRecordRegistrationDirectory -Record $kiStored), (Join-Path $kiProject '.kiro\hooks'), [System.StringComparison]::OrdinalIgnoreCase)) (
         (Get-KiroRecordRegistrationDirectory -Record $kiStored))

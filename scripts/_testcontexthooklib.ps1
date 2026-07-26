@@ -245,6 +245,49 @@ if ($null -ne $in) { $prompt = [string](Get-Field $in 'prompt') }
             $riCodexPrompt = Invoke-ReadHookInput -Client 'codex' -Trigger '' -Stdin '{"hook_event_name":"UserPromptSubmit"}'
             Check 'USER_PROMPT is never injected for a non-Kiro client' (
                 [string]::IsNullOrEmpty((Get-RiField $riCodexPrompt 'prompt'))) (Show-Ri $riCodexPrompt)
+
+            # Every other hook input arrives as client-framed stdin JSON; this one
+            # is an environment variable nothing bounds. A pasted file would land
+            # in memory whole, in a process that runs on every submission.
+            $env:USER_PROMPT = ('x' * 70000)
+            $riHuge = Invoke-ReadHookInput -Client 'kiro' -Trigger 'UserPromptSubmit' -Stdin ''
+            $riHugePrompt = [string](Get-RiField $riHuge 'prompt')
+            Check 'an oversized USER_PROMPT is bounded rather than taken whole' (
+                $riHugePrompt.Length -lt 70000) ('len=' + [string]$riHugePrompt.Length)
+            # Silent truncation would be worse than the unbounded read: a hook
+            # matching on prompt text would see a prompt the user never typed.
+            Check 'truncation is REPORTED in the prompt, never silent' (
+                $riHugePrompt -match 'truncated at') ('tail=' + $riHugePrompt.Substring([Math]::Max(0, $riHugePrompt.Length - 60)))
+        }
+        finally {
+            if ([string]::IsNullOrEmpty($riOrigUserPrompt)) {
+                if (Test-Path Env:\USER_PROMPT) { Remove-Item Env:\USER_PROMPT -ErrorAction SilentlyContinue }
+            }
+            else { $env:USER_PROMPT = $riOrigUserPrompt }
+        }
+
+        # --- a payload event name that CONTRADICTS the launcher ---------------
+        # The launcher argument is written by the INSTALLER into the registration,
+        # so a mismatch means the registration and the client disagree about what
+        # fired. The payload still wins - it is the client's own statement - but
+        # swallowing the disagreement is how "the hook just does nothing" faults
+        # stay invisible.
+        try {
+            $riMismatch = Invoke-ReadHookInput -Client 'kiro' -Trigger 'UserPromptSubmit' -Stdin '{"hook_event_name":"Stop"}'
+            Check 'a contradicting payload event still WINS over the launcher argument' (
+                [string](Get-RiField $riMismatch 'hook_event_name') -ceq 'Stop') (Show-Ri $riMismatch)
+            Check 'but the contradiction is RECORDED, naming both sides' (
+                [string](Get-RiField $riMismatch 'hookmaker_trigger_mismatch') -match 'launcher=UserPromptSubmit' -and
+                [string](Get-RiField $riMismatch 'hookmaker_trigger_mismatch') -match 'payload=Stop') (Show-Ri $riMismatch)
+            # An agreeing payload must not carry the marker, or it becomes noise
+            # that every consumer learns to ignore.
+            $riAgree = Invoke-ReadHookInput -Client 'kiro' -Trigger 'Stop' -Stdin '{"hook_event_name":"Stop"}'
+            Check 'an agreeing payload carries no mismatch marker' (
+                [string]::IsNullOrEmpty((Get-RiField $riAgree 'hookmaker_trigger_mismatch'))) (Show-Ri $riAgree)
+            # Filling in a MISSING name is not a contradiction either.
+            $riFilled = Invoke-ReadHookInput -Client 'kiro' -Trigger 'Stop' -Stdin '{"cwd":"C:\\w"}'
+            Check 'completing a missing event name is not reported as a contradiction' (
+                [string]::IsNullOrEmpty((Get-RiField $riFilled 'hookmaker_trigger_mismatch'))) (Show-Ri $riFilled)
         }
         finally {
             if ([string]::IsNullOrEmpty($riOrigUserPrompt)) {
@@ -371,9 +414,20 @@ if ($null -ne $in) { $prompt = [string](Get-Field $in 'prompt') }
         Check 'claude allow keeps permissionDecision allow and exits 0' (
             $hrClaudeAllow.Out -match '"permissionDecision"\s*:\s*"allow"' -and
             $hrClaudeAllow.Result.ExitCode -eq 0) $hrClaudeAllow.Out
+        # This branch emitted NOTHING AT ALL, which silently deleted every
+        # PreToolUse advisory on Kiro: an allow is not block-capable and
+        # PreToolUse is not a context trigger, so it fell straight through.
+        # Test-Run-Guard routes its PreToolUse advisories through 'allow', so
+        # TEST_GUARD_ADVISORY_ONLY announced advisory mode to nobody.
         $hrKiroAllow = Invoke-HookResult -Call @{ kind = 'allow'; event = 'PreToolUse'; message = 'ALLOW-REASON'; client = 'kiro' }
+        Check 'a kiro allow REACHES the user instead of vanishing' (
+            $hrKiroAllow.Result.Emitted -eq $true -and $hrKiroAllow.Err -match 'ALLOW-REASON' -and
+            $hrKiroAllow.Result.Shape -eq 'kiroStderrWarning') (
+            $hrKiroAllow.Out + ' | err=' + $hrKiroAllow.Err)
+        # THE safety line: an approval carrying Kiro's refusal code would enforce
+        # the exact opposite of what it says.
         Check 'a kiro allow never exits 2 - an approval must not read as a refusal' (
-            $hrKiroAllow.Result.ExitCode -eq 0) ($hrKiroAllow.Out + ' | err=' + $hrKiroAllow.Err)
+            $hrKiroAllow.Result.ExitCode -ne 2) ([string]$hrKiroAllow.Result.ExitCode)
         # The early-return path has its own unknown/blank guards; without them it
         # would fall through to the Codex arm and refuse on a guessed shape.
         $hrDenyUnknown = Invoke-HookResult -Call @{ kind = 'deny'; event = 'PreToolUse'; reason = 'DENY-REASON'; client = 'gemini' }
