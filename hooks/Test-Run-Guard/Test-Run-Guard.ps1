@@ -115,10 +115,6 @@ function Get-ListSetting {
 }
 
 # ---- command analysis and run identity ------------------------------------
-# Everything derived from the command string itself - parsing, blind-wait
-# detection, recognition, verdict, the safe replacement invocation and the
-# run-identity fingerprints shared with Run-Tests-Guarded.ps1. One pipeline over
-# one input, so it lives in one file beside this one.
 . (Join-Path $PSScriptRoot '_commandanalysis.ps1')
 
 # ---- state -----------------------------------------------------------------
