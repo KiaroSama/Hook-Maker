@@ -84,14 +84,13 @@ $script:CleanupCategories = @('clean', 'review-required', 'residue-confirmed', '
 # unrecognized value (an older or newer producer) is treated the same way.
 $script:CleanupReleaseReadyCategories = @('clean')
 
-# (The former mirrored client runtime-root list lived here. Install evidence
-# is REGISTRATION documents now - see Test-CleanupRegistrationEvidence below -
-# because a runtime directory listing proved nothing: an orphaned folder
-# satisfied it while nothing there could ever run.)
+# (Install evidence is exact managed OWNERSHIP - see Test-CleanupInstalled and
+# the ownership header below. A runtime directory listing never was evidence and
+# still is not: an orphaned folder satisfied a listing while nothing there could
+# ever run. What came back is a runtime-root mirror used purely as a containment
+# bound for a registered command's target.)
 
-# The single definition of WHERE Test-Temp-Cleanup's coordination record lives,
-# so "does a record exist at all" (install evidence) and "what does it currently
-# say" (the gate itself) can never disagree about which file they mean.
+# THE canonical project key, and the only place it is spelled.
 #
 # Normalize-Path is load-bearing, not decoration: the PRODUCER hashes
 # Normalize-Path($cwd).ToLowerInvariant() (Test-Temp-Cleanup.ps1's $projectRoot),
@@ -99,199 +98,373 @@ $script:CleanupReleaseReadyCategories = @('clean')
 # separator or a '.'/'..' segment therefore hashed to a key the producer never
 # writes, so the record read as ABSENT: the gate concluded "cleanup not
 # installed", skipped the cleanliness half of release readiness entirely, and
-# showed a deploy decision for a workspace whose cleanliness was never proven -
-# exactly the failure direction Test-CleanupInstalled below calls the worse one.
+# showed a deploy decision for a workspace whose cleanliness was never proven.
 # Both sides must canonicalize with the same helper or the shared-state contract
 # is only nominally shared.
+#
+# Two consumers now share this one definition - the coordination-record filename
+# below, and the projectKey an installed runtime's ownership metadata records -
+# so "which project is this" cannot mean two different things in one hook.
+function Get-CleanupProjectKey {
+    param([string]$Root)
+    return (Get-ShortHash (Normalize-Path $Root).ToLowerInvariant())
+}
+
+# The single definition of WHERE Test-Temp-Cleanup's coordination record lives,
+# so the gate and any diagnostic can never disagree about which file they mean.
 function Get-CleanupResultPath {
     param([string]$Root)
-    return (Join-Path (Join-Path $env:LOCALAPPDATA 'HookMaker\state') ('TestTempCleanup-result-' + (Get-ShortHash (Normalize-Path $Root).ToLowerInvariant()) + '.json'))
+    return (Join-Path (Join-Path $env:LOCALAPPDATA 'HookMaker\state') ('TestTempCleanup-result-' + (Get-CleanupProjectKey -Root $Root) + '.json'))
 }
 
-# Where each client RECORDS its hook registrations, relative to a scope base
-# (the project root, or the user profile for a global install). Mirrored from
-# scripts\_clientcapability.ps1 for the same structural reason the runtime
-# roots above are: an installed runtime is self-contained and cannot dot-source
-# the capability table. Test-CloudflareDeploy.ps1 asserts this mirror equals the
-# table's projectRegistration/globalRegistration values, which is what keeps the
-# duplication honest instead of rotting into a stale hardcoded list.
-$script:ClientRegistrationRelativeFiles = @(
-    '.claude\settings.local.json',
-    '.claude\settings.json',
-    '.codex\hooks.json'
-)
-$script:KiroRegistrationRelativeDir = '.kiro\hooks'
+# ---- WHAT "INSTALLED" MEANS: EXACT MANAGED OWNERSHIP ----------------------
+# One thing only: an ACTIVE, Hook-Maker-MANAGED registration whose command runs
+# a runtime THIS project owns, proven end to end. The previous round's five
+# heuristics are gone, and each was individually load-bearing for a real false
+# verdict:
+#
+#   unreadable registration document   -> counted as installed ("conservative").
+#   malformed document naming the hook -> counted as installed.
+#   command-bearing key at ANY depth   -> a nested foreign object counted.
+#   \Hook-Maker\ + \Test-Temp-Cleanup\ -> any path SPELLING satisfied it, so a
+#                                         runtime hand-copied in from another
+#                                         project, or simply fabricated, counted.
+#   fingerprint-current record ALONE   -> a state file was installation proof.
+#
+# The chain below replaces all five. Per (client, scope):
+#   1. parse the client's REAL schema and read only real command/action fields -
+#      never a recursive walk looking for command-SHAPED strings;
+#   2. take that command's quoted -File target, canonicalize it, and require
+#      PHYSICAL containment under the client's expected runtime root for the
+#      DECLARED scope - no '..' escape, no reparse-point escape;
+#   3. load <runtimeRoot>\Test-Temp-Cleanup\.hookmaker-runtime.json and require
+#      schemaVersion, friendlyName, client, scope, the RECOMPUTED projectKey and
+#      runtimeScriptRelativePath to agree with where that file was found and
+#      which document referenced it;
+#   4. require the registered target to BE the recorded runtime script;
+#   5. verify that script's sha256 against its recorded manifest entry.
+#
+# Unreadable, malformed, foreign, mismatched and missing-metadata evidence are
+# all NEGATIVE now. That deliberately reverses the old "refusing to read is not
+# proof of absence, so treat it as installed" rule for exactly those cases, and
+# nothing is lost by reversing it: a negative SKIPS the cleanup gate, so the
+# deployment decision is SHOWN and the agent still has to work through step 1's
+# "no disposable test cache/temp residue" requirement itself. The old direction
+# parked the reminder indefinitely behind a fresh 'clean' that nothing would
+# write - a permanently dead gate is the worse and more persistent failure.
+#
+# WHAT THIS CANNOT DO, stated instead of faked: the tool-root
+# state\install-registry.json is unreachable from a self-contained installed
+# runtime - a runtime is copied out of the tool folder and does not know where
+# it came from - so recordId is NOT cross-checked against the registry. It is
+# carried in the ownership metadata and checked for INTERNAL agreement only:
+# non-empty for every client, and for Kiro additionally proven by the managed
+# entry's own [hookmaker:<recordId>] description marker, the only client
+# document that carries a managed identity at all. Claude and Codex handler
+# entries have neither a name nor an id, so there recordId stays
+# recorded-but-unverifiable in-process (registrationName is still checked - see
+# its two shapes below); what binds those installs to THIS project is the
+# recomputed projectKey, the containment check and the manifest hash.
+$script:CleanupHookName = 'Test-Temp-Cleanup'
+$script:CleanupRuntimeMetadataFile = '.hookmaker-runtime.json'
+$script:CleanupMetadataSchemaVersion = '1'
+# Mirrors Test-KiroManagedFileName in scripts\_installkiro.ps1: Hook Maker owns
+# ONLY .kiro\hooks\hookmaker-<slug>.json. Anything else in that directory -
+# above all a shared hooks.json - belongs to someone else and is never parsed
+# for ownership at all.
+$script:CleanupKiroManagedFilePattern = '^hookmaker-[a-z0-9-]+\.json$'
 
-# Does this scope base carry an ACTUAL Test-Temp-Cleanup registration - a hook
-# entry a client will really fire? A name-drop is NOT enough: any document
-# merely CONTAINING the substring 'Test-Temp-Cleanup' used to count, so a
-# foreign .kiro\hooks\*.json mentioning the name satisfied this with no
-# command and no runtime behind it - and because nothing there would ever
-# write a coordination record, the gate then waited forever for a fresh
-# 'clean' and the deployment reminder was permanently dead in that project.
-#
-# Evidence now means a COMMAND whose quoted -File target lives in this hook's
-# own runtime directory (...\Test-Temp-Cleanup\Test-Temp-Cleanup.ps1 for
-# Claude/Codex, ...\Test-Temp-Cleanup\kiro-launch.ps1 for Kiro - the DIRECTORY
-# segment is the identity, never the script name) AND whose target script
-# still EXISTS on disk. Command shape + live runtime is the strongest evidence
-# available in-process: the install REGISTRY (tool-root state\
-# install-registry.json) is structurally unreachable from an installed runtime
-# - runtimes are self-contained and do not know the tool root - so a
-# registry/manifest cross-check is impossible here and must not be faked.
-#
-# Failure direction (unchanged, deliberate): a document that cannot be READ,
-# or that names the hook but will not PARSE, still counts as installed -
-# refusing to read is not proof of absence, and the conservative side here is
-# "installed" (worst case: a missed reminder). Only a document that parses
-# CLEANLY and still lacks a live command is PROVEN to be a name-drop, and only
-# that case stopped counting.
-function Test-CleanupRegistrationEvidence {
-    param([string]$Base)
-    if ([string]::IsNullOrWhiteSpace($Base)) { return $false }
-    foreach ($relativeFile in $script:ClientRegistrationRelativeFiles) {
-        $settingsPath = Join-Path $Base $relativeFile
-        if (Test-Path -LiteralPath $settingsPath -PathType Leaf) {
-            try { $settingsText = [System.IO.File]::ReadAllText($settingsPath) }
-            catch { return $true }
-            if (Test-RegistrationDocumentEvidence -Text $settingsText -Base $Base) { return $true }
-        }
-    }
-    $kiroDir = Join-Path $Base $script:KiroRegistrationRelativeDir
-    if (Test-Path -LiteralPath $kiroDir -PathType Container) {
-        try { $kiroFiles = @(Get-ChildItem -LiteralPath $kiroDir -Filter '*.json' -File -ErrorAction Stop) }
-        catch { return $true }
-        foreach ($kiroFile in $kiroFiles) {
-            try { $kiroText = [System.IO.File]::ReadAllText($kiroFile.FullName) }
-            catch { return $true }
-            if (Test-RegistrationDocumentEvidence -Text $kiroText -Base $Base) { return $true }
-        }
-    }
-    return $false
+# Mirrored from scripts\_clientcapability.ps1 for the same structural reason as
+# ever: an installed runtime is self-contained and cannot dot-source the
+# capability table. Test-CloudflareDeploy.ps1 asserts all three mirrors still
+# EQUAL the table - registration files, the Kiro registration directory, and the
+# per-client runtime roots - which is what keeps the duplication honest instead
+# of rotting into a stale hardcoded list. A runtime-root mirror is back here on
+# purpose: it is a CONTAINMENT bound now, never evidence on its own, so the
+# reason the previous one was deleted (a directory listing proving nothing) does
+# not apply - but the reason it ROTTED does, hence the equality test.
+$script:CleanupRegistrationFiles = @{
+    'claude' = @{ 'project' = '.claude\settings.local.json'; 'global' = '.claude\settings.json' }
+    'codex'  = @{ 'project' = '.codex\hooks.json'; 'global' = '.codex\hooks.json' }
+}
+$script:CleanupKiroRegistrationDir = '.kiro\hooks'
+$script:CleanupRuntimeRoots = @{
+    'claude' = '.claude\hooks\Hook-Maker'
+    'codex'  = '.codex\hooks\Hook-Maker'
+    'kiro'   = '.kiro\hook-runtime\Hook-Maker'
+}
+# The property names a Claude/Codex handler entry actually carries a command in.
+# Read on the HANDLER, never searched for at arbitrary depth.
+$script:CleanupCommandFields = @('command', 'commandWindows', 'command_windows')
+
+# The quoted -File target of a registered command, or '' when it has none. JSON
+# parsing has already unescaped \\ to \ by the time this sees the string.
+function Get-RegisteredFileTarget {
+    param([string]$Command)
+    $match = [regex]::Match([string]$Command, '-File\s+"([^"]+)"', 'IgnoreCase')
+    if (-not $match.Success) { return '' }
+    return $match.Groups[1].Value
 }
 
-# One registration document's verdict. Cheap substring first (no parse when
-# the name never appears), then the parse/command/existence ladder described
-# above Test-CleanupRegistrationEvidence.
-function Test-RegistrationDocumentEvidence {
-    param([string]$Text, [string]$Base)
-    if ($Text -notmatch 'Test-Temp-Cleanup') { return $false }
-    $document = $null
-    # Inner parentheses are load-bearing on Windows PowerShell 5.1 - same
-    # array-collection defect as the gh run-list decode below.
-    try { $document = (($Text | ConvertFrom-Json)) }
+# Physical containment. Is any element of the chain from $Path up to and
+# including $Root a reparse point? A junction anywhere in that chain means the
+# bytes that actually execute live outside the root the lexical containment test
+# just approved. Bounded to the chain INSIDE the root deliberately: a user whose
+# whole project sits under a junction is not escaping anything, and walking to
+# the volume root would reject that legitimate layout.
+function Test-CleanupReparseEscape {
+    param([string]$Path, [string]$Root)
+    $rootNormalized = ''
+    try { $rootNormalized = Normalize-Path $Root }
     catch { return $true }
-    return (Test-CleanupCommandEvidence -Document $document -Base $Base)
-}
-
-# Every string leaf of a parsed registration document. Walking ALL strings
-# rather than named fields is deliberate: the three clients spell the command
-# key differently (command / commandWindows / command_windows / Kiro's own
-# schema), and recognizing a command by its SHAPE plus a live target instead
-# of its key name covers all of them. The false-positive this admits - a
-# non-command field carrying '-File "...\Test-Temp-Cleanup\..."' whose target
-# really exists on disk - is materially a live install anyway, and it errs on
-# the conservative (missed-reminder) side.
-# The property names that actually CARRY a hook command, across all three
-# clients. Mirrors the installer's own field set (Claude/Codex write `command`,
-# and the legacy/platform spellings exist in real settings files; Kiro nests the
-# same key under `action`). Collecting only these - instead of every string leaf
-# in the document - is what stops an unrelated field (a description, a label, an
-# env value) that merely QUOTES a plausible command from counting as evidence.
-$script:RegistrationCommandKeys = @('command', 'commandWindows', 'command_windows')
-
-# Collects only the values of command-bearing properties, at any depth. Depth
-# still has to be walked because the key sits at different nesting levels per
-# client (Claude: hooks.<Event>[].hooks[].command; Codex: its own shape; Kiro:
-# hooks[].action.command) - but the KEY NAME is the gate, not the value's shape.
-function Get-RegistrationCommandValues {
-    param($Node)
-    if ($null -eq $Node -or $Node -is [string]) { return @() }
-    $collected = @()
-    if ($Node -is [System.Collections.IEnumerable]) {
-        foreach ($item in $Node) { $collected += @(Get-RegistrationCommandValues $item) }
-        return $collected
-    }
-    if ($Node -is [System.Management.Automation.PSCustomObject]) {
-        foreach ($property in $Node.PSObject.Properties) {
-            if (@($script:RegistrationCommandKeys) -contains [string]$property.Name) {
-                if ($property.Value -is [string]) { $collected += @(, [string]$property.Value) }
-                continue
-            }
-            $collected += @(Get-RegistrationCommandValues $property.Value)
+    $current = $Path
+    # Bounded, so a pathological loop cannot hang a Stop hook. Containment was
+    # already proven, so a real chain is far shorter than this.
+    for ($depth = 0; $depth -lt 64; $depth++) {
+        if ([string]::IsNullOrWhiteSpace($current)) { return $true }
+        try {
+            if (([System.IO.File]::GetAttributes($current) -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) { return $true }
+            if ([string]::Equals((Normalize-Path $current), $rootNormalized, [System.StringComparison]::OrdinalIgnoreCase)) { return $false }
+            $current = Split-Path -Parent $current
         }
+        catch { return $true }
     }
-    return $collected
+    return $true
 }
 
-# Does any string in the parsed document carry a quoted -File target inside
-# this hook's runtime directory that still exists on disk? JSON parsing has
-# already unescaped \\ to \ by the time these strings are inspected. A
-# non-rooted target resolves against the scope base, the way a client
-# resolves a relative command against the project.
-function Test-CleanupCommandEvidence {
-    param($Document, [string]$Base)
-    foreach ($value in @(Get-RegistrationCommandValues $Document)) {
-        foreach ($match in [regex]::Matches($value, '-File\s+"([^"]+)"', 'IgnoreCase')) {
-            $scriptPath = $match.Groups[1].Value
-            # BOTH segments required. `Test-Temp-Cleanup` alone would accept a
-            # command pointing anywhere; `Hook-Maker` is the segment Hook Maker
-            # itself writes into every client's managed runtime root
-            # (.claude\hooks\Hook-Maker, .codex\hooks\Hook-Maker,
-            # .kiro\hook-runtime\Hook-Maker), so requiring it is an ownership
-            # check that needs no per-client root list - the previous mirrored
-            # list is exactly what went stale when a third client arrived.
-            if ($scriptPath -notmatch '[\\/]Hook-Maker[\\/]') { continue }
-            if ($scriptPath -notmatch '[\\/]Test-Temp-Cleanup[\\/]') { continue }
-            # try/catch because IsPathRooted/Join-Path THROW on illegal path
-            # characters under .NET Framework (5.1); a path malformed enough
-            # to throw cannot exist on disk, so "no evidence from this match"
-            # is the faithful verdict, not a swallowed error.
-            try {
-                if (-not [System.IO.Path]::IsPathRooted($scriptPath)) { $scriptPath = Join-Path $Base $scriptPath }
-                if (Test-Path -LiteralPath $scriptPath -PathType Leaf) { return $true }
+# The recorded sha256 of the runtime script must match the file on disk. This is
+# the MINIMUM manifest verification the contract requires, and it is what makes
+# a modified runtime and a modified manifest both negative instead of invisible.
+function Test-CleanupManifestEntry {
+    param($Metadata, [string]$RelativePath, [string]$FullPath)
+    $manifest = Get-Field $Metadata 'runtimeManifest'
+    if ($null -eq $manifest) { return $false }
+    $wanted = $RelativePath.Replace('/', '\').TrimStart('\')
+    $expectedHash = ''
+    foreach ($entry in @($manifest)) {
+        $entryPath = ([string](Get-Field $entry 'path')).Replace('/', '\').TrimStart('\')
+        if (-not [string]::Equals($entryPath, $wanted, [System.StringComparison]::OrdinalIgnoreCase)) { continue }
+        $expectedHash = ([string](Get-Field $entry 'sha256')).Trim()
+        break
+    }
+    # No entry for the runtime script, or a value that is not a sha256 at all,
+    # is a manifest that cannot vouch for what executes.
+    if ($expectedHash -notmatch '^[0-9a-fA-F]{64}$') { return $false }
+    $actualHash = ''
+    try { $actualHash = [string](Get-FileHash -LiteralPath $FullPath -Algorithm SHA256).Hash }
+    catch { return $false }
+    return [string]::Equals($actualHash, $expectedHash, [System.StringComparison]::OrdinalIgnoreCase)
+}
+
+# Does an ownership-proven managed runtime back this exact registered command?
+#
+# $Base is the SCOPE base the registration was found under (the project root, or
+# the user profile for a global install) and $ExpectedProjectKey the key that
+# base must claim - recomputed here, never read from the metadata, which is what
+# catches a runtime copied in from another project. $RegistrationName and
+# $IdentityText carry the managed identity for the one client whose document has
+# one (Kiro); both are '' for Claude/Codex.
+function Test-CleanupManagedCommand {
+    param(
+        [string]$Command, [string]$Client, [string]$Scope, [string]$Base,
+        [string]$ExpectedProjectKey, [string]$RegistrationName = '', [string]$IdentityText = ''
+    )
+    $target = Get-RegisteredFileTarget -Command $Command
+    if ([string]::IsNullOrWhiteSpace($target)) { return $false }
+
+    $runtimeRoot = ''
+    $resolvedTarget = ''
+    # try/catch because IsPathRooted/Join-Path/GetFullPath THROW on illegal path
+    # characters under .NET Framework (5.1); a path malformed enough to throw
+    # cannot be a live managed runtime, so "no evidence here" is the faithful
+    # verdict rather than a swallowed error.
+    try {
+        $runtimeRoot = Normalize-Path (Join-Path $Base $script:CleanupRuntimeRoots[$Client])
+        # A non-rooted command path resolves against the scope base, the way a
+        # client resolves a relative command against the project.
+        if (-not [System.IO.Path]::IsPathRooted($target)) { $target = Join-Path $Base $target }
+        $resolvedTarget = Normalize-Path $target
+    }
+    catch { return $false }
+
+    # Containment is tested BEFORE existence on purpose: a '..' escape must be
+    # rejected as an escape, not accidentally by the escaped file not existing.
+    if (-not (Test-PathInside -Candidate $resolvedTarget -Parent $runtimeRoot)) { return $false }
+    if (-not (Test-Path -LiteralPath $resolvedTarget -PathType Leaf)) { return $false }
+    if (Test-CleanupReparseEscape -Path $resolvedTarget -Root $runtimeRoot) { return $false }
+
+    $metadata = $null
+    try { $metadata = Read-JsonFile -Path (Join-Path (Join-Path $runtimeRoot $script:CleanupHookName) $script:CleanupRuntimeMetadataFile) }
+    catch { return $false }
+    if ($null -eq $metadata) { return $false }
+
+    # Every field is compared AS A STRING: metadata carrying an unexpected type
+    # (an object where a string belongs) must read as disagreement, never throw a
+    # cast error inside a Stop hook.
+    if ([string](Get-Field $metadata 'schemaVersion') -ne $script:CleanupMetadataSchemaVersion) { return $false }
+    if ([string](Get-Field $metadata 'friendlyName') -ne $script:CleanupHookName) { return $false }
+    if ([string](Get-Field $metadata 'client') -ne $Client) { return $false }
+    if ([string](Get-Field $metadata 'scope') -ne $Scope) { return $false }
+    # A global install serves every project and therefore records no project
+    # key; a project install must claim exactly THIS project's key.
+    if ([string](Get-Field $metadata 'projectKey') -ne $ExpectedProjectKey) { return $false }
+    $recordId = [string](Get-Field $metadata 'recordId')
+    if ([string]::IsNullOrWhiteSpace($recordId)) { return $false }
+    # registrationName has TWO shapes, because the two registration kinds have two
+    # kinds of identity, and getting this wrong is not theoretical - an exact
+    # equality check here would have rejected every real Kiro install:
+    #
+    #   kiro  - the managed entry-name PREFIX shared by every entry the install
+    #           wrote (hookmaker-<recordIdSlug>-<friendlySlug>). A Kiro install
+    #           registers ONE entry per physical trigger, so no single entry name
+    #           identifies the install; only the prefix does. The located entry's
+    #           name must therefore START WITH the recorded value, not equal it.
+    #   claude/codex - a handler entry has no name at all; its identity is the
+    #           command, which must never be copied into the metadata. The
+    #           installer records the managed runtime SEGMENT PAIR instead
+    #           ('Hook-Maker/<hook>'), derived below from the same runtime-root
+    #           mirror the containment check uses, so there is no fourth literal.
+    $recordedRegistrationName = [string](Get-Field $metadata 'registrationName')
+    if ([string]::IsNullOrWhiteSpace($recordedRegistrationName)) { return $false }
+    if ([string]::IsNullOrWhiteSpace($RegistrationName)) {
+        if ($recordedRegistrationName -ne ((Split-Path -Leaf $script:CleanupRuntimeRoots[$Client]) + '/' + $script:CleanupHookName)) { return $false }
+    }
+    else {
+        # A bare or truncated prefix must not match every managed entry, so the
+        # recorded value has to be a managed prefix in the first place.
+        if ($recordedRegistrationName -notlike 'hookmaker-*') { return $false }
+        if (-not $RegistrationName.StartsWith($recordedRegistrationName, [System.StringComparison]::OrdinalIgnoreCase)) { return $false }
+        # ...and the entry must independently prove the same recordId. Mirrors
+        # Get-KiroManagedMarker in scripts\_installkiro.ps1 - one of the two
+        # ownership proofs the Kiro writer embeds in every managed entry. A
+        # hand-edited description therefore degrades VISIBLY (the decision is
+        # shown), which is the safe direction; it never silences the reminder.
+        if ($IdentityText -notmatch [regex]::Escape('[hookmaker:' + $recordId + ']')) { return $false }
+    }
+
+    # The registered target must BE the runtime script the metadata names -
+    # relative to the runtime root, exactly as the metadata records it.
+    $recordedRelative = ([string](Get-Field $metadata 'runtimeScriptRelativePath')).Trim().Replace('/', '\')
+    if ([string]::IsNullOrWhiteSpace($recordedRelative)) { return $false }
+    $recordedFull = ''
+    try { $recordedFull = Normalize-Path (Join-Path $runtimeRoot $recordedRelative) }
+    catch { return $false }
+    if (-not [string]::Equals($recordedFull, $resolvedTarget, [System.StringComparison]::OrdinalIgnoreCase)) { return $false }
+
+    return (Test-CleanupManifestEntry -Metadata $metadata -RelativePath $recordedRelative -FullPath $resolvedTarget)
+}
+
+# Claude and Codex each keep ONE settings document per client, whose real shape
+# is hooks.<Event>[].hooks[] with type='command' and the command in one of
+# $script:CleanupCommandFields. Only the exact handler entry is read - never
+# "some string somewhere in the document", which is how a description field that
+# merely quoted a plausible command used to count.
+function Test-CleanupSettingsRegistration {
+    param([string]$Client, [string]$Scope, [string]$Base, [string]$ExpectedProjectKey)
+    $path = ''
+    try { $path = Join-Path $Base $script:CleanupRegistrationFiles[$Client][$Scope] }
+    catch { return $false }
+    if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { return $false }
+    $document = $null
+    # Unreadable AND malformed are both negative now - see the header. The inner
+    # parentheses are load-bearing on Windows PowerShell 5.1, the same
+    # array-collection defect as the gh run-list decode further down.
+    try { $document = (([System.IO.File]::ReadAllText($path, [System.Text.Encoding]::UTF8) | ConvertFrom-Json)) }
+    catch { return $false }
+    $hooks = Get-Field $document 'hooks'
+    if ($null -eq $hooks) { return $false }
+    foreach ($eventProperty in $hooks.PSObject.Properties) {
+        foreach ($group in @($eventProperty.Value)) {
+            $handlers = Get-Field $group 'hooks'
+            if ($null -eq $handlers) { continue }
+            foreach ($handler in @($handlers)) {
+                if ([string](Get-Field $handler 'type') -ne 'command') { continue }
+                foreach ($field in @($script:CleanupCommandFields)) {
+                    $command = [string](Get-Field $handler $field)
+                    if ([string]::IsNullOrWhiteSpace($command)) { continue }
+                    if (Test-CleanupManagedCommand -Command $command -Client $Client -Scope $Scope `
+                            -Base $Base -ExpectedProjectKey $ExpectedProjectKey) { return $true }
+                }
             }
-            catch { }
         }
     }
     return $false
 }
 
-# Is Test-Temp-Cleanup actually INSTALLED for this project? The two accepted
-# signals:
+# Kiro registers one managed FILE per logical install under .kiro\hooks, in the
+# v1 shape { version:'v1', hooks:[ { name, description, trigger,
+# action:{type,command}, timeout, enabled } ] }. The managed entry is located by
+# its NAME, and that name must be the one the ownership metadata records - a
+# foreign entry sitting in the same file cannot borrow it.
+function Test-CleanupKiroRegistration {
+    param([string]$Scope, [string]$Base, [string]$ExpectedProjectKey)
+    $dir = ''
+    try { $dir = Join-Path $Base $script:CleanupKiroRegistrationDir }
+    catch { return $false }
+    if (-not (Test-Path -LiteralPath $dir -PathType Container)) { return $false }
+    $files = @()
+    try { $files = @(Get-ChildItem -LiteralPath $dir -Filter '*.json' -File -ErrorAction Stop) }
+    catch { return $false }
+    foreach ($file in $files) {
+        if ($file.Name -notmatch $script:CleanupKiroManagedFilePattern) { continue }
+        $document = $null
+        try { $document = (([System.IO.File]::ReadAllText($file.FullName, [System.Text.Encoding]::UTF8) | ConvertFrom-Json)) }
+        catch { continue }
+        # The v1 document shape is REQUIRED. A legacy .kiro.hook / 0.x document
+        # is not something this hook can reason about, so it is not evidence.
+        if ([string](Get-Field $document 'version') -ne 'v1') { continue }
+        $entries = Get-Field $document 'hooks'
+        if ($null -eq $entries) { continue }
+        foreach ($entry in @($entries)) {
+            if ((Get-Field $entry 'enabled') -eq $false) { continue }
+            $entryName = [string](Get-Field $entry 'name')
+            if ([string]::IsNullOrWhiteSpace($entryName)) { continue }
+            $action = Get-Field $entry 'action'
+            # 'command' only: an 'agent' action spawns no subprocess, so a
+            # runtime registered that way would never run.
+            if ([string](Get-Field $action 'type') -ne 'command') { continue }
+            $command = [string](Get-Field $action 'command')
+            if ([string]::IsNullOrWhiteSpace($command)) { continue }
+            if (Test-CleanupManagedCommand -Command $command -Client 'kiro' -Scope $Scope -Base $Base `
+                    -ExpectedProjectKey $ExpectedProjectKey -RegistrationName $entryName `
+                    -IdentityText ([string](Get-Field $entry 'description'))) { return $true }
+        }
+    }
+    return $false
+}
+
+# Is Test-Temp-Cleanup ACTIVELY installed, with proven Hook Maker ownership, for
+# this project? Evaluated per (client, scope): project scope against the project
+# root, global scope against the user profile.
 #
-#   1. A registration a client will really fire - project scope or user scope,
-#      proven by a command targeting the hook's runtime directory whose script
-#      still exists (see Test-CleanupRegistrationEvidence). This is what
-#      "installed" MEANS; a directory listing never was, and a name-drop is
-#      not either. An orphaned <runtimeRoot>\Test-Temp-Cleanup folder, or a
-#      state file surviving from a manually-deleted install, used to satisfy
-#      this check while nothing there could ever run again - and because the
-#      gate then waited forever for a fresh 'clean' nothing would write, the
-#      deployment reminder was permanently dead in that project.
-#   2. A coordination record whose fingerprint matches the CURRENT repo state.
-#      Only the hook itself writes one, and a fingerprint-current record means
-#      the hook genuinely EXECUTED against this exact repo state - stronger
-#      evidence than any registration text can be, which is why it stands
-#      unchanged beside the command check: it covers an install registered
-#      somewhere the mirrored registration list does not know about.
+# The scope PAIRING is part of the check, not a shortcut. Each client's
+# registration FILE is scope-specific (Claude writes settings.local.json for a
+# project install and settings.json for a global one), the runtime root is
+# resolved from that same scope base, and the metadata's declared scope must
+# match - so a document cannot be read at one scope and vouched for by a runtime
+# installed at the other. The retired flat list checked every file at every base,
+# which is precisely what let unrelated evidence be paired up.
 #
-# A stale record (fingerprint mismatch) and a bare runtime directory prove
-# nothing anymore: the uninstaller retires the record and deletes the runtime
-# directory on the same success path, so what such residue actually evidences
-# is an install that is GONE.
-#
-# NO signal here can SATISFY the cleanliness gate - only a FRESH 'clean'
-# category does that. This decides only whether the gate APPLIES. Unreadable
-# registration documents count as installed, the conservative side: a false
-# "installed" costs at most a missed reminder, while a false "not installed"
-# skips the cleanliness half of release readiness and shows a deploy decision
-# this hook cannot support.
+# NO evidence here can SATISFY the cleanliness gate - only a FRESH 'clean'
+# category does that. This decides only whether the gate APPLIES, and it is
+# evaluated BEFORE any coordination state is read (see Test-ReleaseReady): a
+# coordination record is never installation evidence on its own.
 function Test-CleanupInstalled {
     param([string]$Root)
-    if (Test-CleanupRegistrationEvidence -Base $Root) { return $true }
-    if (Test-CleanupRegistrationEvidence -Base ([string]$env:USERPROFILE)) { return $true }
-    if ($null -ne (Get-CleanupCoordinationState -Root $Root)) { return $true }
+    $projectKey = ''
+    try { $projectKey = Get-CleanupProjectKey -Root $Root }
+    catch { return $false }
+    foreach ($scope in @('project', 'global')) {
+        $base = if ($scope -eq 'project') { $Root } else { [string]$env:USERPROFILE }
+        if ([string]::IsNullOrWhiteSpace($base)) { continue }
+        if (-not (Test-Path -LiteralPath $base -PathType Container)) { continue }
+        $expectedProjectKey = if ($scope -eq 'project') { $projectKey } else { '' }
+        foreach ($client in @('claude', 'codex')) {
+            if (Test-CleanupSettingsRegistration -Client $client -Scope $scope -Base $base `
+                    -ExpectedProjectKey $expectedProjectKey) { return $true }
+        }
+        if (Test-CleanupKiroRegistration -Scope $scope -Base $base -ExpectedProjectKey $expectedProjectKey) { return $true }
+    }
     return $false
 }
 
@@ -367,10 +540,21 @@ function Test-ReleaseReady {
         }
     }
 
-    # 4) Test-Temp-Cleanup coordination, only enforced when it is installed for
-    # this project - and "installed" is proven by a registration command with a
-    # live runtime script, or by a fingerprint-current coordination record
-    # (see Test-CleanupInstalled).
+    # 4) Test-Temp-Cleanup coordination. THE ORDER BELOW IS THE CONTRACT, not an
+    # implementation detail:
+    #
+    #     prove an ACTIVE MANAGED installation
+    #       -> only then read coordination state
+    #       -> require its fingerprint to match the CURRENT repo state
+    #       -> require category 'clean'
+    #
+    # A coordination record is NEVER installation evidence on its own. It used to
+    # be (a fingerprint-current record alone applied the gate) on the argument
+    # that only the hook writes one, so it proved execution; but that made the
+    # gate self-justifying - a leftover state file could apply a gate for a hook
+    # that no longer exists. Ownership is proven first, from the client's own
+    # registration and the installed runtime, and the record is then read only to
+    # answer WHAT it currently says.
     if (Test-CleanupInstalled -Root $Root) {
         $cleanupCategory = Get-CleanupCoordinationState -Root $Root
         # Missing/stale ($null), a non-ready category, and an unrecognized

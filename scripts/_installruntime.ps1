@@ -68,7 +68,13 @@ function Copy-HookRuntime {
         # Kiro only - see Get-ManagedInstallPlan. Planning the launcher rather
         # than writing it afterwards is what keeps it inside the manifest and
         # out of the updater's "unexpected managed file" path.
-        [switch]$IncludeKiroLauncher
+        [switch]$IncludeKiroLauncher,
+        # Which install this runtime copy belongs to (New-RuntimeIdentity). Passed
+        # per CLIENT, because that is what the metadata file records - the same
+        # source installed for Claude and for Codex produces two runtimes whose
+        # only difference is this identity. Omitted (the native Git pre-push
+        # chain, which has no client identity) plans no metadata file.
+        $RuntimeIdentity = $null
     )
 
     $runtimeRoot = if ([string]::IsNullOrWhiteSpace($RuntimeRootOverride)) {
@@ -97,7 +103,7 @@ function Copy-HookRuntime {
     if ($isEngineInstall) { $syncListContent = Get-SyncProjectListContent -RoutingConfig $ConfigPath }
     $plan = Get-ManagedInstallPlan -SourceInfo $SourceInfo -FriendlyName $FriendlyName -ToolRoot $ToolRoot `
         -ConfigPath $ConfigPath -IncludeConfig:$isEngineInstall -SyncProjectListContent $syncListContent `
-        -IncludeKiroLauncher:$IncludeKiroLauncher
+        -IncludeKiroLauncher:$IncludeKiroLauncher -RuntimeIdentity $RuntimeIdentity
     Install-PlannedRuntime -Plan $plan -RuntimeRoot $runtimeRoot -FriendlyName $FriendlyName | Out-Null
 
     # ---- POST-COMMIT CLEANUP ONLY, past this point -------------------------

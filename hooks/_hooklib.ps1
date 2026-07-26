@@ -288,30 +288,17 @@ function Read-HookInput {
     # payload won ("payload wins") with no limit at all - the documented 64 KB
     # bound applied only to the channel that happened to be smaller. Truncation
     # stays REPORTED via the same in-text marker.
-    # Whether the CLIENT supplied a prompt at all - recorded BEFORE bounding,
-    # because "withheld for being oversized" is a decision about a prompt that
-    # exists, not the absence of one. Conflating the two inverted the precedence
-    # rule: an oversized payload prompt became '', the fallback below then read
-    # that empty value as "the payload had none", and a small or STALE
-    # USER_PROMPT replaced it - so a huge CLI v3 prompt could be silently
-    # substituted by leftover environment text, which is exactly how an
-    # unintended `::deep-debug` could fire.
-    $kiroPayloadPrompt = [string](Get-Field $parsed 'prompt')
-    $kiroPayloadSuppliedPrompt = -not [string]::IsNullOrWhiteSpace($kiroPayloadPrompt)
-    if ($kiroPayloadSuppliedPrompt) {
-        $kiroBoundedPrompt = Limit-KiroPromptText $kiroPayloadPrompt
-        if (-not ($kiroBoundedPrompt -ceq $kiroPayloadPrompt)) {
-            Set-ObjectProperty -Object $parsed -Name 'prompt' -Value $kiroBoundedPrompt
-        }
-    }
-    # The environment is a FALLBACK for a payload that carried no prompt, never
-    # an override of one the client sent - including one deliberately withheld.
-    # Scoped to the one trigger Kiro documents USER_PROMPT for.
-    if ($kiroTrigger -ceq 'UserPromptSubmit' -and -not $kiroPayloadSuppliedPrompt) {
-        $kiroPromptFallback = Get-KiroPromptFromEnvironment
-        if (-not [string]::IsNullOrWhiteSpace($kiroPromptFallback)) {
-            Set-ObjectProperty -Object $parsed -Name 'prompt' -Value $kiroPromptFallback
-        }
+    # ONE resolution of which prompt this invocation carries, so no later reader
+    # has to re-interpret an empty value. The environment is offered as a
+    # fallback only on the trigger Kiro documents USER_PROMPT for - carrying a
+    # leftover prompt into SessionStart or PreToolUse would be worse than none.
+    $kiroPromptSource = Resolve-KiroPromptSource -Payload $parsed `
+        -AllowEnvironmentFallback:($kiroTrigger -ceq 'UserPromptSubmit')
+    # Written unconditionally: the resolved text is authoritative, and an
+    # empty/oversized/invalid outcome must OVERWRITE whatever the raw payload
+    # held so nothing downstream can read the unresolved value by accident.
+    if ($kiroPromptSource.SourcePresent) {
+        Set-ObjectProperty -Object $parsed -Name 'prompt' -Value ([string]$kiroPromptSource.Text)
     }
 
     return $parsed
@@ -445,6 +432,71 @@ function Limit-KiroPromptText {
 
 function Get-KiroPromptFromEnvironment {
     return (Limit-KiroPromptText ([string]$env:USER_PROMPT))
+}
+
+# Resolves WHICH prompt a Kiro invocation carries, as an explicit decision
+# rather than a value whose emptiness later has to be re-interpreted.
+#
+# Returns: SourcePresent (bool), Source (payload|environment|none),
+#          Status (ok|empty|oversized|invalid|absent), Text (exact or '').
+#
+# The load-bearing rule is PROPERTY PRESENCE, not non-whitespace text. Payload
+# precedence used to be decided with IsNullOrWhiteSpace, which cannot tell
+# "the client sent no prompt" from "the client sent an empty, whitespace-only or
+# null one" - so `{"prompt":""}`, `{"prompt":"   "}` and `{"prompt":null}` all
+# fell through to USER_PROMPT and could be replaced by unrelated or STALE
+# environment text (measured: a `::deep-debug` in the environment fired for all
+# three). A client that sent a prompt has spoken, even when what it sent is
+# empty; only a genuinely ABSENT property may fall back.
+#
+# A non-string value is `invalid`, not text: it never reaches a semantic matcher
+# and never falls back either - substituting the environment for a payload the
+# client did supply would be the same precedence break by another route.
+function Resolve-KiroPromptSource {
+    param($Payload, [switch]$AllowEnvironmentFallback)
+
+    $result = [pscustomobject]@{
+        SourcePresent = $false
+        Source        = 'none'
+        Status        = 'absent'
+        Text          = ''
+    }
+
+    $property = $null
+    if ($null -ne $Payload -and $null -ne $Payload.PSObject) { $property = $Payload.PSObject.Properties['prompt'] }
+    if ($null -ne $property) {
+        # Verified on both hosts: ConvertFrom-Json CREATES the property for a
+        # JSON null, so presence is a real signal and not an artefact.
+        $result.SourcePresent = $true
+        $result.Source = 'payload'
+        $value = $property.Value
+        if ($null -eq $value) { $result.Status = 'empty' }
+        elseif ($value -isnot [string]) { $result.Status = 'invalid' }
+        elseif ([string]::IsNullOrWhiteSpace($value)) { $result.Status = 'empty' }
+        else {
+            $bounded = Limit-KiroPromptText $value
+            if ([string]::IsNullOrEmpty($bounded)) { $result.Status = 'oversized' }
+            else {
+                $result.Status = 'ok'
+                $result.Text = $bounded   # byte-exact when within the bound
+            }
+        }
+        return $result
+    }
+
+    if (-not $AllowEnvironmentFallback) { return $result }
+
+    $raw = [string]$env:USER_PROMPT
+    if ([string]::IsNullOrWhiteSpace($raw)) { return $result }
+    $result.SourcePresent = $true
+    $result.Source = 'environment'
+    $bounded = Limit-KiroPromptText $raw
+    if ([string]::IsNullOrEmpty($bounded)) { $result.Status = 'oversized' }
+    else {
+        $result.Status = 'ok'
+        $result.Text = $bounded
+    }
+    return $result
 }
 
 # The ONE place a semantic hook result becomes a client-specific output shape.
