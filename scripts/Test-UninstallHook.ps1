@@ -64,6 +64,19 @@ $SavedHookMakerStateDir = $env:HOOKMAKER_STATE_DIR
 $IsolatedStateDir = Join-Path $Work 'state'
 $env:HOOKMAKER_STATE_DIR = $IsolatedStateDir
 
+# HOOKMAKER_STATE_DIR only redirects the INSTALL REGISTRY. Hook coordination
+# state (Test-Temp-Cleanup's per-project record) lives under %LOCALAPPDATA%
+# with no override, so the hook runtimes fired below and the uninstaller under
+# test would otherwise read and DELETE from the real machine profile. Handed
+# over by INHERITANCE, not Start-Process -Environment: that parameter does not
+# exist on Windows PowerShell 5.1, so an -Environment-only harness silently
+# lets the child use the real %LOCALAPPDATA% on that host - one code path for
+# both hosts, restored in the finally.
+$SavedLocalAppData = $env:LOCALAPPDATA
+$FakeLocalAppData = Join-Path $Work '_fakelocal'
+New-Item -ItemType Directory -Path $FakeLocalAppData -Force | Out-Null
+$env:LOCALAPPDATA = $FakeLocalAppData
+
 function New-Proj { param([string]$Name) $p = Join-Path $Work $Name; New-Item -ItemType Directory -Path $p -Force | Out-Null; return $p }
 function Write-Utf8 { param([string]$Path, [string]$Content) [System.IO.File]::WriteAllText($Path, $Content, (New-Object System.Text.UTF8Encoding $false)) }
 function Get-HandlerFieldValue { param($Handler, [string]$Field) if ($null -ne $Handler.PSObject.Properties[$Field]) { return [string]$Handler.$Field } return '' }
@@ -111,11 +124,17 @@ function Save-MutatedRecord {
 # $HOME-at-start-only caveat) and returns exit code, stdout/stderr, and the
 # parsed -ResultPath document.
 function Invoke-UninstallProcess {
-    param([string]$RecordId, [switch]$WhatIf, [string]$UninstallToolRoot = $ToolRoot, [string]$FakeHome = '')
+    # -ScriptPath runs a DIFFERENT copy of the uninstaller (a `git show HEAD:`
+    # export staged beside copies of its sibling _*.ps1 modules) so a historical
+    # red-proof can execute the pre-change executor for real, without ever
+    # reverting the shared working tree.
+    param([string]$RecordId, [switch]$WhatIf, [string]$UninstallToolRoot = $ToolRoot, [string]$FakeHome = '',
+        [string]$ScriptPath = '')
+    if ([string]::IsNullOrWhiteSpace($ScriptPath)) { $ScriptPath = $UninstallScript }
     $token = [guid]::NewGuid().ToString('N').Substring(0, 8)
     $outF = Join-Path $Work "uninstout-$token.txt"; $errF = Join-Path $Work "uninsterr-$token.txt"
     $resultFile = Join-Path $Work "uninstresult-$token.json"
-    $argLine = '-NoLogo -NoProfile -File "' + $UninstallScript + '" -RecordId "' + $RecordId + '" -ToolRoot "' + $UninstallToolRoot + '" -ResultPath "' + $resultFile + '"'
+    $argLine = '-NoLogo -NoProfile -File "' + $ScriptPath + '" -RecordId "' + $RecordId + '" -ToolRoot "' + $UninstallToolRoot + '" -ResultPath "' + $resultFile + '"'
     if ($WhatIf) { $argLine += ' -WhatIf' }
     $hostExecutable = (Get-Process -Id $PID).Path
     $startArgs = @{
@@ -191,6 +210,34 @@ function Invoke-InstallProcess {
     return [pscustomobject]@{ Exit = $p.ExitCode; Out = $out; Err = $err }
 }
 
+# Fires an INSTALLED Test-Temp-Cleanup runtime copy on Stop so the HOOK ITSELF
+# writes its coordination record. That is the whole point: a test that hand-built
+# the record path from its own idea of the project key would pass while
+# production missed the file, because the key is a hash of a path SPELLING. The
+# record only ever appears here if the producer and the code under test agree
+# byte-for-byte on the path. The Stop path writes the record unconditionally
+# (its only earlier exit is stop_hook_active, which is not set here).
+function Invoke-CleanupHookStop {
+    param([string]$RuntimeScript, [string]$Cwd)
+    $token = [guid]::NewGuid().ToString('N').Substring(0, 8)
+    $inF = Join-Path $Work "cleanin-$token.json"
+    Write-Utf8 $inF (@{ session_id = 'ttc'; cwd = $Cwd; hook_event_name = 'Stop' } | ConvertTo-Json)
+    $p = Start-Process -FilePath (Get-Process -Id $PID).Path `
+        -ArgumentList ('-NoLogo -NoProfile -File "' + $RuntimeScript + '"') `
+        -RedirectStandardInput $inF `
+        -RedirectStandardOutput (Join-Path $Work "cleanout-$token.txt") `
+        -RedirectStandardError (Join-Path $Work "cleanerr-$token.txt") `
+        -Wait -NoNewWindow -PassThru
+    return $p.ExitCode
+}
+# Every TestTempCleanup-result-*.json currently in the isolated state directory.
+# Counted rather than path-matched, so "project B's record survived" is proven
+# by the file set itself and never by recomputing a key here.
+function Get-CleanupRecordFiles {
+    return @(Get-ChildItem -LiteralPath (Join-Path $FakeLocalAppData 'HookMaker\state') `
+            -Filter 'TestTempCleanup-result-*.json' -File -Force -ErrorAction SilentlyContinue)
+}
+
 try {
     # Scenario blocks, split by responsibility and dot-sourced in execution
     # order into THIS scope, so Check, $script:Pass/$script:Fail, the shared
@@ -207,6 +254,7 @@ try {
 }
 finally {
     $env:HOOKMAKER_STATE_DIR = $SavedHookMakerStateDir
+    $env:LOCALAPPDATA = $SavedLocalAppData
     if (-not $KeepArtifacts) {
         if (-not (Remove-TestWorkspace $Work)) { $script:Fail++ }
     }

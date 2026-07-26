@@ -640,9 +640,9 @@ try {
             -TargetProject $inputProject -Clients kiro -Events PreToolUse -ResultPath $inputResult | Out-Null
         $inputDocument = ((Read-Utf8 -Path $inputResult | ConvertFrom-Json))
         $inputKiro = @($inputDocument.components | Where-Object { [string]$_.component -ceq 'kiro' })
-        Check 'a hook needing input Kiro cannot supply is reported by NAME, not silently registered' (
+        Check 'a hook needing input Kiro may not supply is reported by NAME, not silently registered' (
             $inputKiro.Count -eq 1 -and
-            [string]$inputKiro[0].message -match 'input-unavailable' -and
+            [string]$inputKiro[0].message -match 'input-unverified' -and
             [string]$inputKiro[0].message -match 'tool_input') (Compact $inputDocument.components)
         # The requirement is read from the hook's OWN AST, so it names only the
         # fields that hook actually reads - it is not a blanket per-event
@@ -662,6 +662,60 @@ try {
             [string]$quietKiro[0].message -match 'session_id' -and
             [string]$quietKiro[0].message -notmatch 'tool_input' -and
             [string]$quietKiro[0].message -notmatch 'tool_name') (Compact $quietDocument.components)
+
+        # ---- the evidence behind that report must not overstate itself ------
+        # ONE kiro client covers TWO surfaces with different evidence. Kiro IDE
+        # documents its whole input surface as USER_PROMPT/UserPromptSubmit and
+        # nothing else, so a field's absence there is documented. Kiro CLI v3
+        # DOES send stdin JSON (this table's own inputProtocol says so) but does
+        # not publish its field names - CRITICAL UNKNOWN 4 in
+        # .ai/KIRO_PROTOCOL.md. Recording the second as a flat "unavailable" is
+        # an unverified fact presented as a confirmed one, and the installer
+        # then repeats it to the user as fact.
+        #
+        # The degradation itself must NOT soften: an unverified field still
+        # degrades. Only the CLAIM is corrected.
+        foreach ($evidenceCase in @(
+                @{ Label = 'a field the hook reads on PreToolUse'; Kiro = $inputKiro; Doc = $inputDocument },
+                @{ Label = 'a field the hook reads on SessionStart'; Kiro = $quietKiro; Doc = $quietDocument })) {
+            $evidenceMessage = [string]@($evidenceCase.Kiro)[0].message
+            Check ('the reason for ' + $evidenceCase.Label + ' never states the field is confirmed unavailable') (
+                $evidenceMessage -notmatch 'input-unavailable') $evidenceMessage
+            Check ('the reason for ' + $evidenceCase.Label + ' names Kiro IDE as the surface the absence is documented on') (
+                $evidenceMessage -match 'Kiro IDE') $evidenceMessage
+            Check ('the reason for ' + $evidenceCase.Label + ' says CLI v3 is UNVERIFIED rather than absent') (
+                $evidenceMessage -match 'unverified' -and $evidenceMessage -match 'CLI v3') $evidenceMessage
+        }
+        # Conservative behaviour is unchanged: the component is still degraded,
+        # so correcting the wording cannot be mistaken for silently accepting
+        # the field as present.
+        Check 'an unverified input field still DEGRADES the component rather than passing clean' (
+            @($inputDocument.components | Where-Object {
+                    [string]$_.component -ceq 'kiro' -and [string]$_.status -ceq 'ok' -and [string]$_.reason -ceq 'degraded'
+                }).Count -eq 1) (Compact $inputDocument.components)
+
+        # The table is the source of the claim, so the claim is asserted there
+        # too - a corrected message built from a table that still says
+        # "unavailable" would drift back the moment anyone else reads the table.
+        $evidenceCapability = Get-HookMakerClientCapability -ClientId 'kiro'
+        Check 'the capability table no longer carries a flat unavailableInputFields assertion' (
+            -not $evidenceCapability.Contains('unavailableInputFields')) (
+            (@($evidenceCapability.Keys) -join ','))
+        Check 'the table records those fields as UNVERIFIED, keyed by the same logical events' (
+            $evidenceCapability.Contains('unverifiedInputFields') -and
+            $evidenceCapability.unverifiedInputFields.ContainsKey('PreToolUse') -and
+            @($evidenceCapability.unverifiedInputFields['PreToolUse']) -contains 'tool_input') (
+            (@($evidenceCapability.Keys) -join ','))
+        # The detail is read through Contains first: Check evaluates its detail
+        # argument EAGERLY, so reading a missing key directly would crash the
+        # suite under StrictMode instead of failing this assertion cleanly.
+        $evidenceNote = if ($evidenceCapability.Contains('unverifiedInputFieldsNote')) {
+            [string]$evidenceCapability.unverifiedInputFieldsNote
+        }
+        else { '<absent>' }
+        Check 'the table states the two-surface evidence once, in the words the installer reports' (
+            $evidenceNote -match 'Kiro IDE' -and
+            $evidenceNote -match 'unverified on Kiro CLI v3') $evidenceNote
 
         # A foreign document sitting at the exact path we would write must be
         # refused outright. Overwriting it would destroy hooks another tool or
