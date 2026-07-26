@@ -192,17 +192,34 @@ function Test-RegistrationDocumentEvidence {
 # non-command field carrying '-File "...\Test-Temp-Cleanup\..."' whose target
 # really exists on disk - is materially a live install anyway, and it errs on
 # the conservative (missed-reminder) side.
-function Get-RegistrationStringValues {
+# The property names that actually CARRY a hook command, across all three
+# clients. Mirrors the installer's own field set (Claude/Codex write `command`,
+# and the legacy/platform spellings exist in real settings files; Kiro nests the
+# same key under `action`). Collecting only these - instead of every string leaf
+# in the document - is what stops an unrelated field (a description, a label, an
+# env value) that merely QUOTES a plausible command from counting as evidence.
+$script:RegistrationCommandKeys = @('command', 'commandWindows', 'command_windows')
+
+# Collects only the values of command-bearing properties, at any depth. Depth
+# still has to be walked because the key sits at different nesting levels per
+# client (Claude: hooks.<Event>[].hooks[].command; Codex: its own shape; Kiro:
+# hooks[].action.command) - but the KEY NAME is the gate, not the value's shape.
+function Get-RegistrationCommandValues {
     param($Node)
-    if ($null -eq $Node) { return @() }
-    if ($Node -is [string]) { return @(, $Node) }
+    if ($null -eq $Node -or $Node -is [string]) { return @() }
     $collected = @()
     if ($Node -is [System.Collections.IEnumerable]) {
-        foreach ($item in $Node) { $collected += @(Get-RegistrationStringValues $item) }
+        foreach ($item in $Node) { $collected += @(Get-RegistrationCommandValues $item) }
         return $collected
     }
     if ($Node -is [System.Management.Automation.PSCustomObject]) {
-        foreach ($property in $Node.PSObject.Properties) { $collected += @(Get-RegistrationStringValues $property.Value) }
+        foreach ($property in $Node.PSObject.Properties) {
+            if (@($script:RegistrationCommandKeys) -contains [string]$property.Name) {
+                if ($property.Value -is [string]) { $collected += @(, [string]$property.Value) }
+                continue
+            }
+            $collected += @(Get-RegistrationCommandValues $property.Value)
+        }
     }
     return $collected
 }
@@ -214,9 +231,17 @@ function Get-RegistrationStringValues {
 # resolves a relative command against the project.
 function Test-CleanupCommandEvidence {
     param($Document, [string]$Base)
-    foreach ($value in @(Get-RegistrationStringValues $Document)) {
+    foreach ($value in @(Get-RegistrationCommandValues $Document)) {
         foreach ($match in [regex]::Matches($value, '-File\s+"([^"]+)"', 'IgnoreCase')) {
             $scriptPath = $match.Groups[1].Value
+            # BOTH segments required. `Test-Temp-Cleanup` alone would accept a
+            # command pointing anywhere; `Hook-Maker` is the segment Hook Maker
+            # itself writes into every client's managed runtime root
+            # (.claude\hooks\Hook-Maker, .codex\hooks\Hook-Maker,
+            # .kiro\hook-runtime\Hook-Maker), so requiring it is an ownership
+            # check that needs no per-client root list - the previous mirrored
+            # list is exactly what went stale when a third client arrived.
+            if ($scriptPath -notmatch '[\\/]Hook-Maker[\\/]') { continue }
             if ($scriptPath -notmatch '[\\/]Test-Temp-Cleanup[\\/]') { continue }
             # try/catch because IsPathRooted/Join-Path THROW on illegal path
             # characters under .NET Framework (5.1); a path malformed enough
