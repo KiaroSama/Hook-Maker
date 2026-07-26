@@ -591,7 +591,20 @@ function Set-InstallRecord {
         $existing = $existingList[$existingIndex]
         Set-ObjectProperty -Object $Record -Name 'createdUtc' -Value ([string]$existing.createdUtc)
         # Carry forward every client subrecord this invocation did NOT touch.
-        foreach ($client in @('claude', 'codex')) {
+        #
+        # Derived from the capability table, NOT a literal pair. It was
+        # @('claude','codex'), so a kiro subrecord was silently DROPPED the next
+        # time the same record id was installed for claude/codex only - and it
+        # took registrationPath and managedEntryNames with it, which are Kiro
+        # uninstall's only proof of what it owns. The result is an orphaned
+        # .kiro\hooks registration nothing can ever prove is removable.
+        #
+        # This file already derives the client list this way in
+        # Get-InstalledClientNames, with a comment explaining why; the two were
+        # inconsistent. Note the OTHER literal pair above (the legacy migration
+        # loop) is correct and must stay: its $legacyClients vocabulary only
+        # ever held Both/Claude/Codex, so there is no kiro to migrate.
+        foreach ($client in @(Get-HookMakerClientIds)) {
             if (@($touchedClients) -contains $client) { continue }
             $previous = $null
             if ($null -ne $existing.PSObject.Properties['clients'] -and $null -ne $existing.clients -and $null -ne $existing.clients.PSObject.Properties[$client]) {

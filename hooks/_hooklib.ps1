@@ -127,7 +127,7 @@ function Read-HookInput {
         # the only trigger Kiro documents it for - carrying a stale prompt into
         # SessionStart or PreToolUse would be worse than having none.
         if ($kiroTrigger -ceq 'UserPromptSubmit') {
-            $kiroPrompt = [string]$env:USER_PROMPT
+            $kiroPrompt = Get-KiroPromptFromEnvironment
             if (-not [string]::IsNullOrWhiteSpace($kiroPrompt)) {
                 Set-ObjectProperty -Object $synthesized -Name 'prompt' -Value $kiroPrompt
             }
@@ -147,10 +147,23 @@ function Read-HookInput {
     # wins - the environment is the fallback, never the override.
     if ($kiroTrigger -ceq 'UserPromptSubmit' -and
         [string]::IsNullOrWhiteSpace([string](Get-Field $parsed 'prompt'))) {
-        $kiroPromptFallback = [string]$env:USER_PROMPT
+        $kiroPromptFallback = Get-KiroPromptFromEnvironment
         if (-not [string]::IsNullOrWhiteSpace($kiroPromptFallback)) {
             Set-ObjectProperty -Object $parsed -Name 'prompt' -Value $kiroPromptFallback
         }
+    }
+
+    # A payload event name that CONTRADICTS the launcher argument is not an
+    # ordinary override - the launcher argument is written by the installer into
+    # the registration, so a mismatch means the registration and the client
+    # disagree about what fired. The payload still wins (it is the client's own
+    # statement), but it is recorded rather than swallowed, because a hook that
+    # silently runs its Stop branch on a PreToolUse registration is exactly the
+    # kind of fault that otherwise surfaces as "the hook just does nothing".
+    $parsedEventName = [string](Get-Field $parsed 'hook_event_name')
+    if (-not [string]::IsNullOrWhiteSpace($parsedEventName) -and $parsedEventName -cne $kiroTrigger) {
+        Set-ObjectProperty -Object $parsed -Name 'hookmaker_trigger_mismatch' `
+            -Value ('launcher=' + $kiroTrigger + ' payload=' + $parsedEventName)
     }
     return $parsed
 }
@@ -238,6 +251,26 @@ $script:HookKiroTriggers = @('SessionStart', 'UserPromptSubmit', 'PreToolUse', '
 # Getting that backwards silently rewrites every pre-task hook's Codex output.
 $script:HookCodexSystemMessageEvents = @('Stop', 'SubagentStop')
 
+# Ceiling on the prompt taken from Kiro's USER_PROMPT environment variable.
+#
+# Every other hook input arrives as stdin JSON, which the client frames; this
+# one arrives as an environment variable whose size nothing bounds. A pasted
+# file or a machine-generated prompt therefore lands in memory whole, in a hook
+# process that runs on every submission. 64 KB is far above any real prompt and
+# far below anything that matters for a short-lived process.
+#
+# Truncation is REPORTED, never silent: a hook that matches on prompt text would
+# otherwise see a prompt that quietly is not the one the user typed.
+$script:HookMaxPromptChars = 65536
+
+function Get-KiroPromptFromEnvironment {
+    $raw = [string]$env:USER_PROMPT
+    if ([string]::IsNullOrWhiteSpace($raw)) { return '' }
+    if ($raw.Length -le $script:HookMaxPromptChars) { return $raw }
+    return ($raw.Substring(0, $script:HookMaxPromptChars) +
+        "`n[hook-maker: prompt truncated at " + [string]$script:HookMaxPromptChars + ' characters]')
+}
+
 # The ONE place a semantic hook result becomes a client-specific output shape.
 #
 # Kinds:
@@ -266,7 +299,8 @@ $script:HookCodexSystemMessageEvents = @('Stop', 'SubagentStop')
 # A block on an event the client cannot block is DOWNGRADED to the strongest
 # available advisory and reported - never emitted as a fake gate. Kiro Stop can
 # block on neither surface Hook Maker targets, so a Kiro Stop gate is permanently
-# degraded; on Stop its advisory is discarded too, so nothing is emitted at all.
+# degraded; on Stop its advisory cannot reach model context either, so it is
+# surfaced as a non-blocking stderr warning (exit 1, never the refusal code 2).
 #
 # Returns @{ Emitted; Shape; ExitCode; Degraded; DegradedReason } so a caller can
 # honestly record 'degraded-stop-gate' instead of claiming enforcement it did not
@@ -353,8 +387,24 @@ function Write-HookResult {
                     }
                 }
                 else {
+                    # This branch used to emit NOTHING, and that silently
+                    # deleted every PreToolUse advisory on Kiro. An 'allow' is
+                    # not block-capable and PreToolUse is not one of Kiro's two
+                    # context triggers, so it fell straight through here.
+                    # Test-Run-Guard routes its PreToolUse advisories through
+                    # 'allow', so TEST_GUARD_ADVISORY_ONLY produced no output at
+                    # all on Kiro - the guard announced it was in advisory mode
+                    # to nobody.
+                    #
+                    # Kiro surfaces stderr as a warning for a non-zero exit other
+                    # than 2, so the text reaches the user here. Exit 1, NEVER 2:
+                    # an approval carrying the refusal code would enforce the
+                    # exact opposite of what it says.
+                    [Console]::Error.WriteLine($text)
+                    $emitted = $true; $shape = 'kiroStderrWarning'; $exitCode = 1
                     $degradedParts += ('kiro neither refuses nor adds context on ' + $EventName +
-                        ', so nothing was emitted')
+                        '; surfaced as a non-blocking warning on stderr - visible to the user, ' +
+                        'NOT injected into model context')
                 }
             }
                 else {

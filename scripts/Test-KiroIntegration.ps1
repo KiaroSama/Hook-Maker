@@ -693,6 +693,15 @@ try {
             @($refusedDocument.components | Where-Object {
                     [string]$_.component -ceq 'kiro' -and [string]$_.status -ceq 'failed'
                 }).Count -eq 1) (Compact $refusedDocument.components)
+        # Kiro was the ONLY client asked for and it failed, so nothing the caller
+        # requested is installed. This read 'partial' because the overall rule
+        # counted EVERY ok component - and the bookkeeping 'registry' component
+        # is ok here, since tracking a failed install is itself a success. A
+        # total failure that reports partial success tells the caller to keep an
+        # installation that does not exist.
+        Check 'a Kiro-only install whose only client FAILED reports overall failed, never partial' (
+            [string]$refusedDocument.overall -ceq 'failed') (
+            [string]$refusedDocument.overall + ' | ' + (Compact $refusedDocument.components))
 
         # A file that EXISTS but will not parse is NOT "no file yet". Swallowing
         # the parse error into $null handed Merge-KiroManagedEntries the same
@@ -723,6 +732,74 @@ try {
                 }).Count -eq 1) (Compact $corruptDocument.components)
         Check 'refusing an unparseable file leaves no orphan runtime behind' (
             -not (Test-Path -LiteralPath $corruptRuntimeRoot)) $corruptRuntimeRoot
+
+        # ---- the registration WRITE fails, after the runtime is committed ----
+        # Every refusal above is decided by the pre-flight, BEFORE Copy-HookRuntime
+        # runs, so proving "no orphan runtime" there only proves the runtime was
+        # never staged. This is the other half: the write itself fails once the
+        # runtime is already live on disk and its own transaction has closed.
+        # Nothing in Install-Hook.ps1 rolled that back, so a failed registration
+        # left a changed target - the very thing "nothing was changed" claims.
+        #
+        # The failure is injected by marking the registration file READ-ONLY:
+        # ownership still classifies it as ours, the merge still succeeds, and
+        # Write-JsonFile's File.Replace is what throws. That is a genuine
+        # post-staging I/O failure, not a mocked one.
+        $writeFailProject = Join-Path $Work 'Write Fail Project'
+        New-Item -ItemType Directory -Path $writeFailProject -Force | Out-Null
+        & $InstallScript -CustomHook $realHook -TargetProject $writeFailProject `
+            -Clients kiro -Events SessionStart -ResultPath (Join-Path $Work 'writefail-claim.json') | Out-Null
+        $writeFailPath = @(Get-ChildItem -LiteralPath (Join-Path $writeFailProject '.kiro\hooks') -Filter 'hookmaker-*.json' -File)[0].FullName
+        $writeFailRuntimeDir = Join-Path $writeFailProject '.kiro\hook-runtime\Hook-Maker\Rules-Check'
+        # A file only the PREVIOUS runtime has. Copy-HookRuntime replaces the
+        # whole directory by swapping in a staged tree, so this cannot survive
+        # unless the previous runtime was genuinely put back - which "a runtime
+        # exists here" would not have distinguished, since a fresh one does too.
+        $writeFailSentinel = Join-Path $writeFailRuntimeDir 'previous-runtime-marker.txt'
+        Write-Utf8 -Path $writeFailSentinel -Content 'PREVIOUS RUNTIME'
+        (Get-Item -LiteralPath $writeFailPath).Attributes = 'ReadOnly'
+        $writeFailResult = Join-Path $Work 'writefail-result.json'
+        & $InstallScript -CustomHook $realHook -TargetProject $writeFailProject `
+            -Clients kiro -Events SessionStart -ResultPath $writeFailResult | Out-Null
+        (Get-Item -LiteralPath $writeFailPath).Attributes = 'Normal'
+        $writeFailDocument = ((Read-Utf8 -Path $writeFailResult | ConvertFrom-Json))
+        Check 'a registration write that fails after staging is reported as a failed kiro component' (
+            @($writeFailDocument.components | Where-Object {
+                    [string]$_.component -ceq 'kiro' -and [string]$_.status -ceq 'failed'
+                }).Count -eq 1) (Compact $writeFailDocument.components)
+        Check 'a registration write that fails after staging RESTORES the previous runtime' (
+            (Test-Path -LiteralPath $writeFailSentinel -PathType Leaf) -and
+            (Read-Utf8 -Path $writeFailSentinel) -ceq 'PREVIOUS RUNTIME') $writeFailSentinel
+        # The set-aside copy is a rollback target, not a deliverable. Left in the
+        # runtime root it would be exactly the kind of unaccounted-for directory
+        # that made the updater reinstall Kiro forever.
+        Check 'the rollback leaves no set-aside runtime copy behind' (
+            @(Get-ChildItem -LiteralPath (Join-Path $writeFailProject '.kiro\hook-runtime\Hook-Maker') `
+                    -Directory -Force -ErrorAction SilentlyContinue |
+                Where-Object { $_.Name -like '.hookmaker-*' }).Count -eq 0) (
+            (@(Get-ChildItem -LiteralPath (Join-Path $writeFailProject '.kiro\hook-runtime\Hook-Maker') -Directory -Force -ErrorAction SilentlyContinue |
+                    ForEach-Object { $_.Name }) -join ','))
+
+        # The same failure with NOTHING to restore: the runtime this install
+        # created must go, along with the directories it created on the way in.
+        $freshFailProject = Join-Path $Work 'Fresh Fail Project'
+        New-Item -ItemType Directory -Path $freshFailProject -Force | Out-Null
+        & $InstallScript -CustomHook $realHook -TargetProject $freshFailProject `
+            -Clients kiro -Events SessionStart -ResultPath (Join-Path $Work 'freshfail-claim.json') | Out-Null
+        $freshFailPath = @(Get-ChildItem -LiteralPath (Join-Path $freshFailProject '.kiro\hooks') -Filter 'hookmaker-*.json' -File)[0].FullName
+        $freshFailRuntimeRoot = Join-Path $freshFailProject '.kiro\hook-runtime'
+        Remove-Item -LiteralPath $freshFailRuntimeRoot -Recurse -Force
+        # Still ours (an empty managed document), so the write is reached rather
+        # than refused up front - only File.Replace fails.
+        Write-Utf8 -Path $freshFailPath -Content '{"version":"v1","hooks":[]}'
+        (Get-Item -LiteralPath $freshFailPath).Attributes = 'ReadOnly'
+        & $InstallScript -CustomHook $realHook -TargetProject $freshFailProject `
+            -Clients kiro -Events SessionStart -ResultPath (Join-Path $Work 'freshfail-result.json') | Out-Null
+        (Get-Item -LiteralPath $freshFailPath).Attributes = 'Normal'
+        Check 'a registration write that fails after staging leaves no live runtime behind' (
+            -not (Test-Path -LiteralPath $freshFailRuntimeRoot)) $freshFailRuntimeRoot
+        Check 'the registration file a failed write touched is left byte-identical' (
+            (Read-Utf8 -Path $freshFailPath) -ceq '{"version":"v1","hooks":[]}') (Read-Utf8 -Path $freshFailPath)
 
         # The reason a kiro failure must never throw: the menu has no
         # Claude+Codex entry, so 'All clients' is the only way to install two
