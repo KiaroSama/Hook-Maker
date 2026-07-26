@@ -179,6 +179,79 @@ try {
     . (Join-Path $ScriptRoot '_testinstallregistrydrift.ps1')
     . (Join-Path $ScriptRoot '_testinstallregistryregressions.ps1')
     . (Join-Path $ScriptRoot '_testinstallregistrykiro.ps1')
+
+    # =====================================================================
+    # The persisted record's verdict must equal the install's actual outcome.
+    #
+    # It did not. The record hardcoded lastResult='ok'/lastReason='installed'
+    # while $overallResult was computed 50 lines LATER, so the registry could
+    # persist "ok" for an install that was degraded or that installed nothing at
+    # all - and "Update previously installed hooks" reads that record, not the
+    # result document. Each case below asserts the record and the result file
+    # agree, which is the property a single derivation gives and two independent
+    # ones cannot.
+    Write-Host ''
+    Write-Host '--- the install record records the outcome that actually happened ---' -ForegroundColor Cyan
+    $verdictFixtureName = 'ZZZ-Regtest-Verdict'
+    $verdictFixture = New-FixtureHook -Name $verdictFixtureName
+    try {
+        # Reads BOTH sides of one install: the result document's overall verdict
+        # and the record the same run persisted.
+        function Get-InstallVerdict {
+            param([string]$ProjectName, [string[]]$Clients, [string[]]$Events)
+            $project = New-Proj $ProjectName
+            $resultPath = Join-Path $Work ($ProjectName + '-result.json')
+            & $InstallScript -CustomHook $verdictFixture -TargetProject $project `
+                -Clients $Clients -Events $Events -ResultPath $resultPath *> $null
+            $document = ((Read-JsonFile $resultPath))
+            $records = @(Get-RecordsFor $verdictFixtureName | Where-Object { [string]$_.targetProjectRoot -eq $project })
+            $recorded = ''
+            $reason = ''
+            if ($records.Count -eq 1) {
+                $recorded = [string]$records[0].lastResult
+                $reason = [string]$records[0].lastReason
+            }
+            return [pscustomobject]@{
+                Overall  = [string]$document.overall
+                Recorded = $recorded
+                Reason   = $reason
+                Details  = ((@($document.components | ForEach-Object { [string]$_.component + ':' + [string]$_.status }) -join ' ') +
+                    ' | overall=' + [string]$document.overall + ' record=' + $recorded)
+            }
+        }
+
+        $verdictOk = Get-InstallVerdict -ProjectName 'verdict-ok' -Clients @('claude') -Events @('SessionStart')
+        Check 'a clean install reports ok and records ok' (
+            $verdictOk.Overall -ceq 'ok' -and $verdictOk.Recorded -ceq 'ok' -and
+            $verdictOk.Reason -ceq 'installed') $verdictOk.Details
+
+        # Kiro documents no PreCompact trigger, so that event is dropped and the
+        # component lands 'ok' with reason 'degraded' - less than was asked for.
+        $verdictPartial = Get-InstallVerdict -ProjectName 'verdict-partial' -Clients @('kiro') -Events @('SessionStart', 'PreCompact')
+        Check 'a degraded install reports partial and records partial, never ok' (
+            $verdictPartial.Overall -ceq 'partial' -and $verdictPartial.Recorded -ceq 'partial') $verdictPartial.Details
+
+        # Kiro is the only client asked for and NO requested event has a Kiro
+        # trigger, so the component fails outright and nothing is installed. The
+        # bookkeeping 'registry' component is still ok - it tracked the failure
+        # successfully - which is exactly what used to downgrade this to
+        # 'partial' and let the record claim 'ok'.
+        $verdictFailed = Get-InstallVerdict -ProjectName 'verdict-failed' -Clients @('kiro') -Events @('PreCompact')
+        Check 'an install where the only requested client failed reports failed and records failed' (
+            $verdictFailed.Overall -ceq 'failed' -and $verdictFailed.Recorded -ceq 'failed') $verdictFailed.Details
+        Check 'the recorded reason states that nothing the caller asked for was installed' (
+            $verdictFailed.Reason -match 'no requested client') $verdictFailed.Reason
+        # The load-bearing property, stated once over all three: whatever the
+        # verdict is, both sides of the install say the same thing.
+        Check 'the record and the result document never disagree about the outcome' (
+            $verdictOk.Overall -ceq $verdictOk.Recorded -and
+            $verdictPartial.Overall -ceq $verdictPartial.Recorded -and
+            $verdictFailed.Overall -ceq $verdictFailed.Recorded) (
+            $verdictOk.Details + ' // ' + $verdictPartial.Details + ' // ' + $verdictFailed.Details)
+    }
+    finally {
+        Remove-FixtureHook -Name $verdictFixtureName
+    }
 }
 finally {
     $env:HOOKMAKER_STATE_DIR = $SavedHookMakerStateDir

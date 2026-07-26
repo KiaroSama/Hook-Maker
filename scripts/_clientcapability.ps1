@@ -140,7 +140,7 @@ $script:HookMakerClientCapabilities = @{
         # event identity is passed EXPLICITLY on the launcher command line and
         # stdin is strict-decoded only when present. See .ai/KIRO_PROTOCOL.md.
         inputProtocol         = 'explicitTriggerArgument'
-        outputProtocol        = 'kiroExitCodeAndStdout'
+        outputProtocol        = 'kiroExitCodeStdoutAndStderrWarning'
         # Logical -> physical. Identity mappings today, but the indirection is
         # load-bearing: Kiro renamed every trigger between CLI v2 (camelCase)
         # and the current v1 schema (PascalCase).
@@ -169,7 +169,7 @@ $script:HookMakerClientCapabilities = @{
             'PreToolUse'  = @('tool_name', 'tool_input', 'session_id')
             'PostToolUse' = @('tool_name', 'tool_input', 'tool_result', 'session_id')
             'SessionStart' = @('session_id')
-            'Stop'        = @('session_id', 'stop_hook_active')
+            'Stop'        = @('session_id')
             'UserPromptSubmit' = @('session_id')
         }
         # Stop is ABSENT on purpose and it is the most consequential entry in
@@ -182,7 +182,7 @@ $script:HookMakerClientCapabilities = @{
         capabilityNotes       = @(
             'Stop is advisory only: Kiro IDE and CLI v3 both document Stop as non-blocking.',
             'Kiro IDE hook input is undocumented beyond USER_PROMPT; session id is normally absent, so session-keyed deduplication degrades instead of pairing wrongly.',
-            'The global hooks path ~/.kiro/hooks is inferred from CLI v3 plus the ~/.kiro/skills and ~/.kiro/steering pattern; it is not confirmed by primary IDE documentation.',
+            'The global hooks path ~/.kiro/hooks is CONFIRMED by Kiro''s own CLI changelog. It was previously recorded as inferred; the path never changed, only this classification was stale.',
             'Kiro-only triggers PreTaskExec, PostTaskExec, PostFileCreate, PostFileSave and PostFileDelete have no Hook Maker logical equivalent and are not installed.',
             'The Manual trigger is never emitted: Kiro documentation contradicts itself on whether the IDE still accepts it.'
         )

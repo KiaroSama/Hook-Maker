@@ -8,22 +8,32 @@
 # is release-ready, while `review-required`, `residue-confirmed`, `partial`,
 # `unknown`, a stale fingerprint, a missing record, and any retired/unrecognized
 # value all keep this hook silent - and a same-Stop race is resolved by a LATER
-# Stop, never by an ordering assumption or an in-invocation retry. `gh` is
+# Stop, never by an ordering assumption or an in-invocation retry. It also pins
+# what counts as EVIDENCE that cleanup is installed at all: the coordination
+# record proves it on its own, a bare runtime folder is only the weaker signal,
+# and neither can ever satisfy the gate - only a fresh `clean` does. `gh` is
 # PATH-shimmed (same convention as Test-CiStatusCheck.ps1's gh.ps1) - no live
 # GitHub calls. Remotes are real local bare repos (same convention as
 # Test-GitSyncCheck.ps1) so the generic @{upstream}/ahead-count check is
 # exercised for real, without needing an actual GitHub remote.
 #
 # Usage:  pwsh -NoLogo -NoProfile -File .\scripts\Test-CloudflareDeploy.ps1 [-KeepArtifacts]
+#         ... -HookPathOverride <path>   run the same assertions against another
+#                                        copy of the hook (used to prove new
+#                                        assertions go RED against the pre-change
+#                                        file exported with `git show HEAD:...`).
+#                                        The copy needs a sibling _hooklib.ps1 one
+#                                        directory up, exactly like the real hook.
 # Exit code is the number of failed assertions (0 = all passed).
 
-param([switch]$KeepArtifacts)
+param([switch]$KeepArtifacts, [string]$HookPathOverride)
 
 Set-StrictMode -Version 2.0
 $ErrorActionPreference = 'Stop'
 
 $HooksRoot = Join-Path (Split-Path -Parent $PSScriptRoot) 'hooks'
 $Hook = Join-Path $HooksRoot 'Cloudflare-Deploy\Cloudflare-Deploy.ps1'
+if (-not [string]::IsNullOrWhiteSpace($HookPathOverride)) { $Hook = $HookPathOverride }
 $HookLib = Join-Path $HooksRoot '_hooklib.ps1'
 if (-not (Test-Path -LiteralPath $Hook -PathType Leaf)) {
     Write-Host "Hook not found: $Hook" -ForegroundColor Red
@@ -367,6 +377,56 @@ try {
         Check ('a ' + $clientLabel + '-only cleanup install with a fresh clean shows the decision') (
             $r.Out -match 'CLOUDFLARE DEPLOY CHECK') $r.Out
     }
+
+    # =====================================================================
+    Write-Host '--- install evidence: the coordination record, not a folder listing ---' -ForegroundColor Cyan
+    # A DIRECTORY named Test-Temp-Cleanup under a client runtime root is only
+    # weak evidence that the hook is installed: a hand-made, half-deleted or
+    # orphaned folder satisfies a listing while nothing there ever runs, and an
+    # install whose runtime lives anywhere the mirrored list does not know about
+    # satisfies it not at all - which is how a whole gate got skipped before. The
+    # coordination record in Hook Maker's private state is REAL evidence: only
+    # Test-Temp-Cleanup writes one, only for this exact project key. So a record
+    # ALONE must prove the install and make the gate apply, with no runtime
+    # directory present anywhere in the project.
+    $recordOnly = New-ReadyWorkersRepo 'CleanupRecordOnly'
+    Write-CleanupResult -Root $recordOnly -Category 'review-required'
+    Check 'the record-only fixture genuinely has no client runtime directory at all' (
+        @(Get-ChildItem -LiteralPath $recordOnly -Force -Directory | Where-Object { $_.Name -ne '.git' }).Count -eq 0) (
+        (@(Get-ChildItem -LiteralPath $recordOnly -Force -Directory | ForEach-Object { $_.Name })) -join ', ')
+    $r = Fire -Cwd $recordOnly
+    Check 'a coordination record alone proves the install: review-required -> silent, no directory needed' (
+        $r.Exit -eq 0 -and $r.Out -eq '') $r.Out
+
+    # A STALE record still proves the hook ran here, so the install is detected;
+    # the staleness then keeps this hook silent. Proving the install and
+    # satisfying the gate are two different things and only the second needs a
+    # fresh fingerprint.
+    $recordOnlyStale = New-ReadyWorkersRepo 'CleanupRecordOnlyStale'
+    Write-CleanupResult -Root $recordOnlyStale -Category 'clean' -StaleFingerprint
+    $r = Fire -Cwd $recordOnlyStale
+    Check 'a STALE record still proves the install, and staleness then keeps it silent' (
+        $r.Exit -eq 0 -and $r.Out -eq '') $r.Out
+
+    # ...and the record path must not become a blanket silencer: a fresh clean
+    # recorded the same way still shows the decision.
+    $recordOnlyClean = New-ReadyWorkersRepo 'CleanupRecordOnlyClean'
+    Write-CleanupResult -Root $recordOnlyClean -Category 'clean'
+    $r = Fire -Cwd $recordOnlyClean
+    Check 'a record-only install with a fresh clean still shows the decision (not a blanket silencer)' (
+        $r.Out -match 'CLOUDFLARE DEPLOY CHECK') $r.Out
+
+    # The other half of the rule: the weak signal may make the gate APPLY, but it
+    # can never SATISFY it. A bare hand-made folder carries no cleanliness proof,
+    # and the conservative answer to inconclusive evidence is silence - never a
+    # deploy decision whose cleanliness half this hook cannot support.
+    $orphanDir = New-ReadyWorkersRepo 'CleanupOrphanDirectory'
+    New-CleanupMarker $orphanDir
+    Check 'the orphan marker really is a bare directory (no runtime files, no record)' (
+        @(Get-ChildItem -LiteralPath (Join-Path $orphanDir '.claude\hooks\Hook-Maker\Test-Temp-Cleanup') -Force).Count -eq 0)
+    $r = Fire -Cwd $orphanDir
+    Check 'a bare orphan folder can never SATISFY the gate - only a fresh clean record does' (
+        $r.Exit -eq 0 -and $r.Out -eq '') $r.Out
 
     # =====================================================================
     Write-Host '--- the shared category contract is declared, not inferred ---' -ForegroundColor Cyan

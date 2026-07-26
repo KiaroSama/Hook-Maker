@@ -106,13 +106,47 @@ $script:ClientRuntimeRelativeRoots = @(
     '.kiro\hook-runtime\Hook-Maker'
 )
 
+# The single definition of WHERE Test-Temp-Cleanup's coordination record lives,
+# so "does a record exist at all" (install evidence) and "what does it currently
+# say" (the gate itself) can never disagree about which file they mean.
+function Get-CleanupResultPath {
+    param([string]$Root)
+    return (Join-Path (Join-Path $env:LOCALAPPDATA 'HookMaker\state') ('TestTempCleanup-result-' + (Get-ShortHash $Root.ToLowerInvariant()) + '.json'))
+}
+
+# Is Test-Temp-Cleanup actually part of this project? A directory listing alone
+# is WEAK evidence: a hand-made, half-deleted or orphaned
+# <runtimeRoot>\Test-Temp-Cleanup folder satisfies it while nothing there ever
+# runs, and an install whose runtime lives somewhere this mirrored list does not
+# know about satisfies it not at all. A coordination record in Hook Maker's own
+# private state is REAL evidence - only the hook itself writes one, only for this
+# exact project key - so it is preferred and checked first; the directory remains
+# the weaker second signal for an install that has not recorded yet.
+#
+# NEITHER signal can SATISFY the cleanliness gate. Only a FRESH 'clean' category
+# does that, so an orphan or hand-made folder can never assert that the workspace
+# was proven clean - the strongest thing it can do is make the gate APPLY.
+#
+# The two signals are OR'd on purpose, which is the conservative side of the
+# failure direction: a false "installed" costs at most a missed reminder, while a
+# false "not installed" skips the cleanliness half of release readiness and shows
+# a deploy decision this hook cannot support. Inconclusive evidence therefore
+# keeps this hook silent rather than letting it claim coverage it does not have.
+function Test-CleanupInstalled {
+    param([string]$Root)
+    if (Test-Path -LiteralPath (Get-CleanupResultPath -Root $Root) -PathType Leaf) { return $true }
+    foreach ($relativeRoot in $script:ClientRuntimeRelativeRoots) {
+        if (Test-Path -LiteralPath (Join-Path (Join-Path $Root $relativeRoot) 'Test-Temp-Cleanup') -PathType Container) { return $true }
+    }
+    return $false
+}
+
 # Reads Test-Temp-Cleanup's coordination state, only trusting it when its
 # recorded repo-state fingerprint still matches the CURRENT state (never a
 # stale/racing read from an earlier Stop).
 function Get-CleanupCoordinationState {
     param([string]$Root)
-    $path = Join-Path (Join-Path $env:LOCALAPPDATA 'HookMaker\state') ('TestTempCleanup-result-' + (Get-ShortHash $Root.ToLowerInvariant()) + '.json')
-    $record = Read-JsonFile -Path $path
+    $record = Read-JsonFile -Path (Get-CleanupResultPath -Root $Root)
     if ($null -eq $record) { return $null }
     $recordedFingerprint = [string](Get-Field $record 'fingerprint')
     if ([string]::IsNullOrWhiteSpace($recordedFingerprint)) { return $null }
@@ -179,11 +213,10 @@ function Test-ReleaseReady {
         }
     }
 
-    # 4) Test-Temp-Cleanup coordination, only enforced when it is installed for this project.
-    $cleanupInstalled = @($script:ClientRuntimeRelativeRoots | Where-Object {
-        Test-Path -LiteralPath (Join-Path (Join-Path $Root $_) 'Test-Temp-Cleanup') -PathType Container
-    }).Count -gt 0
-    if ($cleanupInstalled) {
+    # 4) Test-Temp-Cleanup coordination, only enforced when it is installed for
+    # this project - and "installed" is proven by a real coordination record
+    # first, a runtime directory only as weaker evidence (see Test-CleanupInstalled).
+    if (Test-CleanupInstalled -Root $Root) {
         $cleanupCategory = Get-CleanupCoordinationState -Root $Root
         # Missing/stale ($null), a non-ready category, and an unrecognized
         # category all keep this hook silent until a later Stop.

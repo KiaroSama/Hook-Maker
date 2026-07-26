@@ -134,9 +134,34 @@ $script:HardPruneNames = @(
 # hook slow. ENTRIES, not files: a tree of empty directories contains no files
 # to count, so a file-only ceiling left the walk unbounded on exactly the shape
 # that runs away. The seconds ceiling is the outer backstop for a filesystem
-# where each entry is cheap to count but slow to read.
+# where each entry is cheap to count but slow to read. DEPTH is the third bound:
+# Get-CleanupScan has always had a MaxDepth, this walk had none at all, so a
+# deep real tree was bounded only by entries and time.
 $script:SizeWalkMaxEntries = 2000
 $script:SizeWalkMaxSeconds = 5
+$script:SizeWalkMaxDepth = 8
+
+# Production-inert test seam for the TIME bound, which is otherwise unprovable -
+# a genuine 5-second walk cannot be forced deterministically, so the guard would
+# ship with no red proof behind it. Read from the ENVIRONMENT only: never from
+# .env, never documented in .env.example (same convention as
+# LARGEFILECHECK_TEST_TRIP_TIME_AFTER_FILES in Large-File-Check). It can only
+# TIGHTEN the ceiling - a value that is negative, unparseable, or above
+# $script:SizeWalkMaxSeconds is ignored - so it can never be used to widen the
+# bound it exists to prove. Invariant culture, because a comma-decimal machine
+# must read '0.5' the same way.
+$script:SizeWalkSecondsEnvVar = 'TESTTEMPCLEANUP_TEST_SIZE_WALK_MAX_SECONDS'
+function Get-SizeWalkSecondsBudget {
+    $raw = [string][Environment]::GetEnvironmentVariable($script:SizeWalkSecondsEnvVar)
+    $parsed = 0.0
+    if (-not [string]::IsNullOrWhiteSpace($raw) -and
+        [double]::TryParse($raw, [System.Globalization.NumberStyles]::Float,
+            [System.Globalization.CultureInfo]::InvariantCulture, [ref]$parsed) -and
+        $parsed -ge 0 -and $parsed -le $script:SizeWalkMaxSeconds) {
+        return $parsed
+    }
+    return [double]$script:SizeWalkMaxSeconds
+}
 
 # A plain hashtable, deliberately, as the name/cause set type throughout this
 # hook. It is case-insensitive by default (matching the old HashSet's
@@ -252,7 +277,9 @@ function Get-CleanupScan {
 }
 
 # Bounded size probe. Ok=$false means the metadata is genuinely unreadable (a
-# named partial cause), Bounded=$true means the value is a lower bound.
+# named partial cause). Bounded=$true means the value is a LOWER BOUND (">=N"),
+# never a size - it is reported as '>=N', stored beside sizeBounded=true, and it
+# must never be allowed to satisfy a comparison that an exact value would.
 function Get-CandidateSize {
     param([Parameter(Mandatory = $true)][string]$Path, [bool]$IsDir, [bool]$IsLink)
     # A reparse point is never traversed, so its contents are simply not known.
@@ -263,27 +290,43 @@ function Get-CandidateSize {
         }
         $sum = 0L
         $examined = 0
+        # Two distinct facts, deliberately not one flag: $bounded says the
+        # RESULT is only a lower bound, $ceilingHit says a hard ceiling stopped
+        # the walk outright. Depth sets the first without the second, so one
+        # over-deep branch marks the total as a lower bound instead of
+        # abandoning the measurement of every shallower sibling.
         $bounded = $false
+        $ceilingHit = $false
         $ok = $true
-        $deadline = [DateTime]::UtcNow.AddSeconds($script:SizeWalkMaxSeconds)
+        # A Stopwatch, NOT [DateTime]::UtcNow: the wall clock is not monotonic,
+        # so an NTP correction or a manual clock change landing between the two
+        # reads could collapse this budget to nothing or extend it arbitrarily.
+        # Stopwatch measures elapsed time from a tick source that cannot step.
+        $budgetSeconds = Get-SizeWalkSecondsBudget
+        $timer = [System.Diagnostics.Stopwatch]::StartNew()
         # An explicit non-following stack walk, the same bounded traversal shape
-        # Get-CleanupScan uses. [System.IO.Directory]::EnumerateFiles(...,
+        # Get-CleanupScan uses - including its depth counter, which this walk
+        # previously lacked. [System.IO.Directory]::EnumerateFiles(...,
         # AllDirectories) was used here, and it FOLLOWS junctions/symlinks: the
         # size probe could descend through a link and measure a tree outside the
         # project, which is precisely what this hook promises never to do, and a
         # link loop had no reliable bound because the old ceiling counted files
-        # only. Skipping reparse points makes the walk a finite tree; the entry
-        # and time ceilings bound a pathological real tree on top of that.
-        $stack = New-Object System.Collections.Generic.Stack[string]
-        $stack.Push($Path)
+        # only. Skipping reparse points makes the walk a finite tree; the entry,
+        # time and depth ceilings bound a pathological real tree on top of that.
+        $stack = New-Object System.Collections.Generic.Stack[object]
+        $stack.Push([pscustomobject]@{ Path = $Path; Depth = 0 })
         while ($stack.Count -gt 0) {
-            if ($bounded) { break }
+            if ($ceilingHit) { break }
             $current = $stack.Pop()
             try {
                 # Lazy enumeration so the walk stops at the ceiling instead of
                 # materialising an arbitrarily large directory first.
-                foreach ($child in [System.IO.Directory]::EnumerateFileSystemEntries($current)) {
-                    if ($examined -ge $script:SizeWalkMaxEntries -or [DateTime]::UtcNow -gt $deadline) { $bounded = $true; break }
+                foreach ($child in [System.IO.Directory]::EnumerateFileSystemEntries($current.Path)) {
+                    if ($examined -ge $script:SizeWalkMaxEntries -or $timer.Elapsed.TotalSeconds -ge $budgetSeconds) {
+                        $bounded = $true
+                        $ceilingHit = $true
+                        break
+                    }
                     # Counted before the attribute read, so entries that are
                     # skipped or unreadable still consume the ceiling - a
                     # directory full of junctions cannot spin here.
@@ -293,7 +336,15 @@ function Get-CandidateSize {
                     # Never followed and never measured, exactly as in the
                     # candidate scan: a link's contents are simply not known.
                     if (($attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) { continue }
-                    if (($attributes -band [System.IO.FileAttributes]::Directory) -ne 0) { $stack.Push($child); continue }
+                    if (($attributes -band [System.IO.FileAttributes]::Directory) -ne 0) {
+                        # Depth is a COVERAGE limit, not a stop condition: the
+                        # subtree below it goes unmeasured, which makes the
+                        # total a lower bound, but the rest of the tree is
+                        # still worth measuring honestly.
+                        if ($current.Depth -ge $script:SizeWalkMaxDepth) { $bounded = $true; continue }
+                        $stack.Push([pscustomobject]@{ Path = $child; Depth = $current.Depth + 1 })
+                        continue
+                    }
                     try { $sum += (New-Object System.IO.FileInfo $child).Length } catch { $ok = $false }
                 }
             }
@@ -302,6 +353,22 @@ function Get-CandidateSize {
         return [pscustomobject]@{ Bytes = $sum; Bounded = $bounded; Ok = $ok }
     }
     catch { return [pscustomobject]@{ Bytes = -1; Bounded = $false; Ok = $false } }
+}
+
+# One text form for a baseline timestamp, whichever shape ConvertFrom-Json hands
+# back. That decode is HOST-DIVERGENT and it silently broke the session-delta
+# comparison on one of the two supported hosts: Windows PowerShell 5.1 returns
+# the ISO-8601 text as a [string], pwsh 7 coerces it to a [DateTime] - and
+# [string] on a DateTime yields the CURRENT CULTURE's short form
+# ('07/26/2026 03:15:22'), which can never equal the round-trip 'o' text the live
+# side produces. So on pwsh 7 every pre-existing candidate compared unequal and
+# was reported during-session=modified whether or not anything had changed, while
+# 5.1 reported it correctly. Normalizing both shapes here is what makes the two
+# hosts agree - and what makes the bounded-size rule below reachable at all.
+function Format-BaselineTimestamp {
+    param($Value)
+    if ($Value -is [DateTime]) { return ([DateTime]$Value).ToUniversalTime().ToString('o') }
+    return [string]$Value
 }
 
 # tracked | staged | untracked | ignored | unknown. 'unknown' is returned
@@ -471,6 +538,10 @@ if ($eventName -eq 'SessionStart') {
         catch { $causes['candidate-metadata-unreadable'] = $true }
         $gitState = Get-GitCandidateState -Root $projectRoot -RelPath $relPath -GitAvailable $gitAvailable
         if ($gitState -eq 'unknown') { $causes['git-state-unknown'] = $true }
+        # sizeBounded is load-bearing, not decorative: it is what makes the
+        # neighbouring sizeBytes a LOWER BOUND rather than a size, and the Stop
+        # comparison below reads it. Anything that ever consumes sizeBytes must
+        # read sizeBounded in the same breath.
         [void]$records.Add([ordered]@{
             relPath = $relPath; kind = $candidate.Kind; isDir = $candidate.IsDir; isLink = $candidate.IsLink
             sizeBytes = $size.Bytes; sizeBounded = $size.Bounded; modifiedUtc = $modifiedUtc; gitState = $gitState
@@ -521,9 +592,14 @@ else {
     $baselineAvailable = $true
     foreach ($record in @(Get-Field $baseline 'candidates')) {
         if ($null -eq $record) { continue }
+        # SizeBounded travels with SizeBytes deliberately. A baseline written by
+        # an older build has no sizeBounded field at all; Get-Field returns
+        # $null there, which reads as "not bounded" - the same answer that build
+        # would have given, so an old baseline is not retroactively distrusted.
         $baselineMap[[string](Get-Field $record 'relPath')] = [pscustomobject]@{
             SizeBytes = [string](Get-Field $record 'sizeBytes')
-            ModifiedUtc = [string](Get-Field $record 'modifiedUtc')
+            SizeBounded = ((Get-Field $record 'sizeBounded') -eq $true)
+            ModifiedUtc = (Format-BaselineTimestamp (Get-Field $record 'modifiedUtc'))
         }
     }
     # A baseline whose own scan was partial cannot prove a candidate is new.
@@ -572,7 +648,17 @@ foreach ($candidate in @($scan.Candidates)) {
         if ($baselineMap.ContainsKey($relPath)) {
             $existedAtStart = 'yes'
             $before = $baselineMap[$relPath]
-            if ($before.ModifiedUtc -ne $modifiedUtc -or $before.SizeBytes -ne ([string]$size.Bytes)) { $sessionDelta = 'modified' }
+            # A '>=N' measurement on EITHER side can never prove 'unchanged':
+            # two equal lower bounds are two ceilings that happened to land in
+            # the same place, not two equal sizes - and two different lower
+            # bounds prove nothing either, since a partial walk has no
+            # guaranteed order. So a bounded size may still confirm a change
+            # via the mtime (a positive fact), but may never be the evidence
+            # for 'unchanged'; without that evidence the delta is 'unknown',
+            # which is already this field's vocabulary for "cannot tell".
+            if ($before.ModifiedUtc -ne $modifiedUtc) { $sessionDelta = 'modified' }
+            elseif ($before.SizeBounded -or $size.Bounded) { $sessionDelta = 'unknown' }
+            elseif ($before.SizeBytes -ne ([string]$size.Bytes)) { $sessionDelta = 'modified' }
             else { $sessionDelta = 'unchanged' }
         }
         else {
