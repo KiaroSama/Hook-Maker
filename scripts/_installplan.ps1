@@ -8,7 +8,13 @@
 # installation consists of.
 #
 # Dot-sourced by Install-Hook.ps1 and Setup-SyncGroup.ps1 AFTER
-# hooks\_hooklib.ps1 (needs Get-HookFriendlyName / Get-ShortHash).
+# hooks\_hooklib.ps1 (needs Get-HookFriendlyName / Get-ShortHash /
+# Normalize-Path). The runtime-metadata block below additionally resolves
+# _installkiro.ps1's Get-KiroManagedNamePrefix / ConvertTo-KiroSlug at CALL time,
+# and only for a Kiro identity - deliberately reusing the real producer of the
+# managed entry name rather than re-deriving it here, because two sites deriving
+# one identity differently is this project's most repeated defect
+# (see .ai/LESSON_INSTALL.md).
 #
 # Security boundary: a hook source is either a PACKAGE (a folder that is a
 # direct child of a recognized hooks root, whose contents are intentionally
@@ -217,6 +223,205 @@ exit $LASTEXITCODE
     return $body.Replace('HOOKMAKER_TARGET_SCRIPT', $HookScriptLeaf)
 }
 
+# ---- managed-runtime ownership metadata ------------------------------------
+#
+# ONE bounded JSON document inside every managed runtime, stating which install
+# owns that directory.
+#
+# It exists because a managed runtime is SELF-CONTAINED: a hook executing from it
+# cannot reach the tool root's state\install-registry.json (it does not know the
+# tool root - see .ai/DECISIONS.md, "Cloudflare-Deploy install evidence"). So the
+# only ownership evidence a runtime hook had was the SHAPE of the path it happens
+# to sit at, which cannot tell an install belonging to THIS project from a runtime
+# directory copied in from another one. projectKey answers exactly that: it is
+# recomputed from the project root with the SAME helpers the hooks use, so a
+# mismatch is proof of a foreign copy.
+#
+# It is a PLANNED 'Generated' artifact, exactly like the Kiro launcher: staged
+# transactionally, hash-verified before the swap, restored on rollback, covered by
+# the source-vs-installed manifest comparison, and therefore drift-detectable when
+# it is edited or deleted.
+#
+# CONTENT RULES (asserted by Test-InstallRegistry.ps1): identity only. No command
+# lines, no absolute paths, no prompt or tool input, no secrets, no source
+# content, no user data, no log text. projectKey is a HASH of the project root and
+# never the root itself, so no user directory name reaches an installed runtime.
+#
+# NOT planned for the native Git pre-push chain. That chain is not a client
+# registration - it has no claude/codex/kiro identity to record - so
+# Install-IgnorePrePush passes no identity, its runtimes carry no metadata file,
+# and Get-NativePrePushSourceManifest/Get-NativePrePushInstalledManifest stay in
+# agreement without any change.
+$script:RuntimeMetadataFileName = '.hookmaker-runtime.json'
+$script:RuntimeMetadataSchemaVersion = 1
+# runtimeManifest is BOUNDED at this many entries. Every shipped hook plans 3-6
+# artifacts, so the cap is unreachable in practice; it exists so a pathological
+# custom-hook package cannot grow this file without limit. The artifact named by
+# runtimeScriptRelativePath is always entry 0, so the cap can never drop the one
+# entry the contract requires.
+$script:RuntimeMetadataManifestCap = 64
+
+# The install identity a runtime metadata file describes. One constructor so the
+# installer and the updater cannot assemble it differently.
+#
+# The client ValidateSet must be a literal, so it cannot be derived from
+# _clientcapability.ps1's table. A FOURTH client therefore has to be added here
+# too - it fails CLOSED if it is not (Get-InstallIntegrity turns the bind error
+# into a per-client 'skip' naming the reason), never silently writing metadata
+# with no client identity.
+function New-RuntimeIdentity {
+    param(
+        [Parameter(Mandatory = $true)][ValidateSet('claude', 'codex', 'kiro')][string]$Client,
+        [Parameter(Mandatory = $true)][ValidateSet('project', 'global')][string]$Scope,
+        [Parameter(Mandatory = $true)][AllowEmptyString()][string]$RecordId,
+        [AllowEmptyString()][string]$ProjectRoot = ''
+    )
+    return [pscustomobject]@{
+        Client      = $Client
+        Scope       = $Scope
+        RecordId    = $RecordId
+        ProjectRoot = $ProjectRoot
+    }
+}
+
+# The project key a runtime hook can RECOMPUTE from the project root it is running
+# in. Normalize-Path then Get-ShortHash, both from hooks\_hooklib.ps1 - the exact
+# pair every hook already uses to key its own shared state, because the whole
+# point of this field is that the two sides agree. Do not "simplify" it to
+# GetFullPath or a bare ToLowerInvariant: neither trims a trailing separator, and
+# that mismatch is a defect this project has already shipped once.
+# '' for a global install, which has no project to be keyed to.
+function Get-RuntimeMetadataProjectKey {
+    param(
+        [Parameter(Mandatory = $true)][ValidateSet('project', 'global')][string]$Scope,
+        [AllowEmptyString()][string]$ProjectRoot = ''
+    )
+    if ($Scope -ceq 'global' -or [string]::IsNullOrWhiteSpace($ProjectRoot)) { return '' }
+    return (Get-ShortHash ((Normalize-Path $ProjectRoot).ToLowerInvariant()))
+}
+
+# The registration identity this install wrote, per client.
+#   kiro   - the managed entry-name PREFIX every entry this install registered
+#            shares. A Kiro install writes ONE entry per physical trigger, so no
+#            single entry name identifies the install; the prefix does, and it is
+#            exactly what Test-KiroOwnership and _installvalidate.ps1 already
+#            prove ownership with. Taken from the real producers so it cannot
+#            drift from the names actually written.
+#   claude / codex - these clients have no entry NAME: their handler identity is
+#            the command, which must never be copied into this file. The marker
+#            the installer already writes instead is the managed runtime segment
+#            pair, '<Hook-Maker root>/<hook>', which is what
+#            Get-HookMakerCommandInfo proves ownership from.
+function Get-RuntimeMetadataRegistrationName {
+    param(
+        [Parameter(Mandatory = $true)][string]$Client,
+        [Parameter(Mandatory = $true)][string]$FriendlyName,
+        [Parameter(Mandatory = $true)][AllowEmptyString()][string]$RecordId
+    )
+    if ($Client -ceq 'kiro') {
+        return ((Get-KiroManagedNamePrefix -ManagedId $RecordId) + (ConvertTo-KiroSlug -Text $FriendlyName))
+    }
+    return ('Hook-Maker/' + $FriendlyName)
+}
+
+# JSON string literal, written by hand rather than through ConvertTo-Json.
+#
+# These bytes are HASHED into the install manifest and re-derived later to detect
+# drift, so they must be identical on Windows PowerShell 5.1 and pwsh 7 forever.
+# The two hosts use different serializers with different escaping rules (5.1's
+# JavaScriptSerializer escapes '<', '>' and non-ASCII; 7's does not), and a
+# host-dependent byte would make every cross-host evaluation report permanent
+# drift and reinstall the hook for ever. Escaping exactly the characters RFC 8259
+# requires removes the question entirely.
+function ConvertTo-PlanJsonStringLiteral {
+    param([Parameter(Mandatory = $true)][AllowEmptyString()][string]$Text)
+    $builder = New-Object System.Text.StringBuilder
+    [void]$builder.Append('"')
+    foreach ($character in $Text.ToCharArray()) {
+        $code = [int]$character
+        if ($character -eq '"') { [void]$builder.Append('\"') }
+        elseif ($character -eq '\') { [void]$builder.Append('\\') }
+        elseif ($code -eq 8) { [void]$builder.Append('\b') }
+        elseif ($code -eq 9) { [void]$builder.Append('\t') }
+        elseif ($code -eq 10) { [void]$builder.Append('\n') }
+        elseif ($code -eq 12) { [void]$builder.Append('\f') }
+        elseif ($code -eq 13) { [void]$builder.Append('\r') }
+        elseif ($code -lt 32) { [void]$builder.Append('\u' + $code.ToString('x4')) }
+        else { [void]$builder.Append($character) }
+    }
+    [void]$builder.Append('"')
+    return $builder.ToString()
+}
+
+# The exact bytes of one managed runtime's ownership metadata.
+#
+# -Artifacts is the plan built SO FAR, which is why this is planned last: the
+# document hashes the other artifacts, so it cannot exist before they do. It also
+# cannot contain itself - a file cannot hash its own bytes - and excluding it is
+# automatic here because it has not been added to the plan yet.
+function Get-RuntimeMetadataContent {
+    param(
+        [Parameter(Mandatory = $true)][AllowEmptyCollection()][object[]]$Artifacts,
+        [Parameter(Mandatory = $true)][string]$FriendlyName,
+        [Parameter(Mandatory = $true)]$RuntimeIdentity,
+        [Parameter(Mandatory = $true)][string]$RuntimeScriptRelativePath
+    )
+    $client = [string]$RuntimeIdentity.Client
+    # Entry 0 is the runtime script the registration actually invokes, so the cap
+    # below can never drop it. Everything else follows in ORDINAL path order -
+    # Sort-Object compares culture-sensitively, which is not a safe basis for
+    # bytes that get hashed.
+    $ordered = New-Object System.Collections.Generic.List[object]
+    $rest = New-Object System.Collections.Generic.List[object]
+    foreach ($artifact in @($Artifacts)) {
+        if ([string]$artifact.ownership -ne 'Immutable') { continue }
+        $relative = [string]$artifact.relativePath
+        if ([string]::Equals($relative, $RuntimeScriptRelativePath, [System.StringComparison]::OrdinalIgnoreCase)) {
+            [void]$ordered.Add($artifact)
+        }
+        else { [void]$rest.Add($artifact) }
+    }
+    $restArray = $rest.ToArray()
+    [System.Array]::Sort($restArray, [System.Comparison[object]] {
+            param($left, $right)
+            return [System.StringComparer]::OrdinalIgnoreCase.Compare([string]$left.relativePath, [string]$right.relativePath)
+        })
+    foreach ($artifact in $restArray) { [void]$ordered.Add($artifact) }
+
+    $lines = New-Object System.Collections.Generic.List[string]
+    [void]$lines.Add('{')
+    [void]$lines.Add('  "schemaVersion": ' + [string]$script:RuntimeMetadataSchemaVersion + ',')
+    [void]$lines.Add('  "recordId": ' + (ConvertTo-PlanJsonStringLiteral ([string]$RuntimeIdentity.RecordId)) + ',')
+    [void]$lines.Add('  "friendlyName": ' + (ConvertTo-PlanJsonStringLiteral $FriendlyName) + ',')
+    [void]$lines.Add('  "client": ' + (ConvertTo-PlanJsonStringLiteral $client) + ',')
+    [void]$lines.Add('  "scope": ' + (ConvertTo-PlanJsonStringLiteral ([string]$RuntimeIdentity.Scope)) + ',')
+    [void]$lines.Add('  "projectKey": ' + (ConvertTo-PlanJsonStringLiteral (Get-RuntimeMetadataProjectKey `
+                    -Scope ([string]$RuntimeIdentity.Scope) -ProjectRoot ([string]$RuntimeIdentity.ProjectRoot))) + ',')
+    [void]$lines.Add('  "registrationName": ' + (ConvertTo-PlanJsonStringLiteral (Get-RuntimeMetadataRegistrationName `
+                    -Client $client -FriendlyName $FriendlyName -RecordId ([string]$RuntimeIdentity.RecordId))) + ',')
+    [void]$lines.Add('  "runtimeScriptRelativePath": ' + (ConvertTo-PlanJsonStringLiteral $RuntimeScriptRelativePath) + ',')
+    [void]$lines.Add('  "runtimeManifest": [')
+    $entryLines = New-Object System.Collections.Generic.List[string]
+    foreach ($artifact in @($ordered.ToArray())) {
+        if ($entryLines.Count -ge $script:RuntimeMetadataManifestCap) { break }
+        # Lower-case hex: Get-PlanArtifactExpectedHash / Get-FileHash return
+        # upper-case, and the contract fixes one casing so a consumer never has
+        # to normalize before comparing.
+        $hash = ([string](Get-PlanArtifactExpectedHash -Artifact $artifact)).ToLowerInvariant()
+        [void]$entryLines.Add('    { "path": ' + (ConvertTo-PlanJsonStringLiteral ([string]$artifact.relativePath)) +
+            ', "sha256": ' + (ConvertTo-PlanJsonStringLiteral $hash) + ' }')
+    }
+    for ($index = 0; $index -lt $entryLines.Count; $index++) {
+        $suffix = if ($index -lt $entryLines.Count - 1) { ',' } else { '' }
+        [void]$lines.Add($entryLines[$index] + $suffix)
+    }
+    [void]$lines.Add('  ]')
+    [void]$lines.Add('}')
+    # LF, chosen once: these bytes are hashed, so the line ending must not depend
+    # on the host or on a checkout's autocrlf setting.
+    return (($lines.ToArray() -join "`n") + "`n")
+}
+
 function Get-ManagedInstallPlan {
     param(
         [Parameter(Mandatory = $true)]$SourceInfo,
@@ -232,7 +437,24 @@ function Get-ManagedInstallPlan {
         # to every runtime would change the manifest of every already-installed
         # Claude and Codex hook, and the updater would then see all of them as
         # drifted and reinstall the lot.
-        [switch]$IncludeKiroLauncher
+        [switch]$IncludeKiroLauncher,
+        # The install identity the runtime metadata file describes, or $null for
+        # no metadata artifact at all.
+        #
+        # Supplied ONLY by the client-specific callers: the installer for the
+        # client it is installing, and Get-ManagedClientManifest when the updater
+        # asks "does THIS client's runtime still match?". Omitted, the plan is
+        # byte-for-byte the client-agnostic description it has always been, which
+        # is exactly what the SOURCE manifest needs - "did the hook's SOURCE
+        # change?" must not depend on which client is asked, and an installed
+        # identity is not a source change.
+        #
+        # UNLIKE -IncludeKiroLauncher this artifact is not opt-in per client: it
+        # lands in EVERY managed runtime, so the first evaluation after this ships
+        # reports every already-installed hook as missing one expected file. That
+        # is one idempotent repair per client per hook (measured, see the round
+        # report) and is the accepted price of manifest coverage.
+        $RuntimeIdentity = $null
     )
     $artifacts = New-Object System.Collections.Generic.List[object]
     $seen = New-Object System.Collections.Generic.HashSet[string]([System.StringComparer]::OrdinalIgnoreCase)
@@ -348,6 +570,22 @@ function Get-ManagedInstallPlan {
         Add-Artifact (New-PlanArtifact -RelativePath ($FriendlyName + '/SYNC-PROJECTS.txt') -Kind 'Generated' -GeneratedContent $SyncProjectListContent)
     }
 
+    # LAST, deliberately: the metadata document hashes every other planned
+    # artifact, so it cannot be built until they are all known.
+    #
+    # runtimeScriptRelativePath is read off the plan rather than off the client id
+    # (`if kiro then kiro-launch.ps1`). Deriving it from what the plan ACTUALLY
+    # contains makes it impossible for this file to name a runtime script the same
+    # plan never produces - the two would otherwise drift the moment the launcher
+    # switch and the identity disagreed.
+    if ($null -ne $RuntimeIdentity) {
+        $launcherRelative = $FriendlyName + '/kiro-launch.ps1'
+        $runtimeScriptRelative = if ($seen.Contains($launcherRelative)) { $launcherRelative } else { $FriendlyName + '/' + $FriendlyName + '.ps1' }
+        Add-Artifact (New-PlanArtifact -RelativePath ($FriendlyName + '/' + $script:RuntimeMetadataFileName) -Kind 'Generated' `
+                -GeneratedContent (Get-RuntimeMetadataContent -Artifacts @($artifacts.ToArray()) -FriendlyName $FriendlyName `
+                    -RuntimeIdentity $RuntimeIdentity -RuntimeScriptRelativePath $runtimeScriptRelative))
+    }
+
     return @($artifacts.ToArray())
 }
 
@@ -400,14 +638,21 @@ function Get-InstallPlanFor {
         [string]$ProfileId = '',
         [string]$ConfigPath = '',
         [switch]$IsEngine,
-        [switch]$AllowMissing
+        [switch]$AllowMissing,
+        # Both forwarded straight through, so a VERIFICATION caller can ask for the
+        # exact same plan a client install produced. Before this existed the
+        # updater's expected manifest could not describe kiro-launch.ps1 at all, so
+        # every real Kiro install reported "unexpected managed file" for ever.
+        [switch]$IncludeKiroLauncher,
+        $RuntimeIdentity = $null
     )
     $sourceInfo = Get-HookSourceInfo -HookScript $HookScript -PackageRoots @((Join-Path $ToolRoot 'hooks')) -AllowMissing:$AllowMissing
     $friendlyName = if (-not [string]::IsNullOrWhiteSpace($FriendlyNameOverride)) { $FriendlyNameOverride } else { Get-HookFriendlyName $sourceInfo.Name }
     $syncList = $null
     if ($IsEngine) { $syncList = Get-SyncProjectListContentFor -RoutingConfig $ConfigPath -ProfileId $ProfileId }
     return (Get-ManagedInstallPlan -SourceInfo $sourceInfo -FriendlyName $friendlyName -ToolRoot $ToolRoot `
-            -ConfigPath $ConfigPath -IncludeConfig:$IsEngine -SyncProjectListContent $syncList)
+            -ConfigPath $ConfigPath -IncludeConfig:$IsEngine -SyncProjectListContent $syncList `
+            -IncludeKiroLauncher:$IncludeKiroLauncher -RuntimeIdentity $RuntimeIdentity)
 }
 
 # ---- hashing / manifests ---------------------------------------------------

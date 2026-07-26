@@ -24,9 +24,10 @@
 # use (see Test-InstallRegistry.ps1 and its _testinstallregistry*.ps1 files).
 #
 # It relies on the entry script's scope throughout: it reads $InstallKiro,
-# $Events, $ScopeLabel, $FriendlyName, $RecordId, $KiroTargetRoot, $SourceInfo
-# and $script:EffectiveTimeout, and it assigns the $kiro* variables the install
-# registry block below it records. Nothing here is callable on its own.
+# $Events, $ScopeLabel, $FriendlyName, $RecordId, $RecordProjectRoot,
+# $KiroTargetRoot, $SourceInfo and $script:EffectiveTimeout, and it assigns the
+# $kiro* variables the install registry block below it records. Nothing here is
+# callable on its own.
 
 # ---- kiro runtime rollback -------------------------------------------------
 # Copy-HookRuntime COMMITS the runtime: Install-PlannedRuntime stages the
@@ -286,7 +287,8 @@ if ($InstallKiro) {
             # missing - visible, and failing on every trigger. Do not "fix" this
             # by swapping the order.
             $script:KiroRuntimeSnapshot = New-KiroRuntimeSnapshot -RuntimeRoot $kiroRuntimeRoot -HookDirectoryName $FriendlyName
-            $kiroRuntime = Copy-HookRuntime -ClientDir $kiroRuntimeRoot -RuntimeRootOverride $kiroRuntimeRoot -IncludeKiroLauncher
+            $kiroRuntime = Copy-HookRuntime -ClientDir $kiroRuntimeRoot -RuntimeRootOverride $kiroRuntimeRoot -IncludeKiroLauncher `
+                -RuntimeIdentity (New-RuntimeIdentity -Client 'kiro' -Scope $ScopeLabel -RecordId $RecordId -ProjectRoot $RecordProjectRoot)
             $kiroLauncherPath = Join-Path (Split-Path -Parent $kiroRuntime.Script) 'kiro-launch.ps1'
             if (-not (Test-Path -LiteralPath $kiroLauncherPath -PathType Leaf)) {
                 throw ('The Kiro launcher was not produced by the install plan at ' + $kiroLauncherPath +
