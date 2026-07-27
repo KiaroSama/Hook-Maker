@@ -131,6 +131,42 @@ $same = Get-SyncGroupMerge -Config ([pscustomobject]@{ profiles = @((New-TestGro
 Check 're-entering an existing group unchanged asks nothing' (
     @($same.ExpansionProfiles).Count -eq 0) ([string]@($same.ExpansionProfiles).Count)
 
+# ---- every yes/no prompt must SHOW its default (round 40c) -------------------
+# Read-YesNo computes a default marker but only uses it in its RETRY message, so
+# a caller that passes a bare string renders a question with no [y] or [n] at
+# all and the user cannot tell what Enter does. Exactly one call site did that -
+# the merge question added this session. Pin the rule for every call site rather
+# than the one string, because the next bare caller has the same bug.
+$callerFiles = @(Get-ChildItem -LiteralPath $PSScriptRoot -Filter 'Setup-SyncGroup*.ps1' -File)
+$bareCalls = New-Object System.Collections.Generic.List[string]
+foreach ($file in $callerFiles) {
+    $lineNumber = 0
+    foreach ($line in [System.IO.File]::ReadAllLines($file.FullName)) {
+        $lineNumber++
+        if ($line -notmatch 'Read-YesNo\s') { continue }
+        if ($line -match 'function\s+Read-YesNo') { continue }
+        # A COMMENT that merely mentions Read-YesNo is not a call site. Without
+        # this the guard fails on the comment written to explain the guard.
+        if ($line.TrimStart().StartsWith('#')) { continue }
+        # The prompt argument must be built by New-QuestionPrompt, which is the
+        # only thing that renders "[n]" and the {back=0, quit=exit} legend.
+        if ($line -notmatch 'Read-YesNo\s*\(\s*New-QuestionPrompt') {
+            [void]$bareCalls.Add($file.Name + ':' + $lineNumber)
+        }
+    }
+}
+Check 'every Read-YesNo call renders its default through New-QuestionPrompt' (
+    $bareCalls.Count -eq 0) ($bareCalls -join ', ')
+
+# And the guard must be able to SEE the calls, or it proves nothing by passing.
+$totalCalls = 0
+foreach ($file in $callerFiles) {
+    foreach ($line in [System.IO.File]::ReadAllLines($file.FullName)) {
+        if ($line -match 'Read-YesNo\s*\(\s*New-QuestionPrompt') { $totalCalls++ }
+    }
+}
+Check 'the prompt-default guard actually inspected the real call sites' ($totalCalls -ge 8) ([string]$totalCalls)
+
 Write-Host ''
 Write-Host ('Passed: ' + $script:Pass + '  Failed: ' + $script:Fail) -ForegroundColor $(if ($script:Fail -eq 0) { 'Green' } else { 'Red' })
 exit $script:Fail

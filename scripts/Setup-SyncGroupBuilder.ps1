@@ -492,9 +492,20 @@ function Invoke-CreateGroup {
                     @($merge.AllMembers).Count + ' project(s) - each syncs with all the others.')
                 Write-NoteLine '  Answering no adds only the project(s) you entered. The other groups stay as they are,'
                 Write-NoteLine '  and a project in both simply belongs to both - it still receives from each.'
+                # Membership is CONFIGURATION in sync-hooks.json, not proof that
+                # anything is installed. Uninstalling every hook leaves the group
+                # topology untouched on purpose - removing a hook must not
+                # silently destroy the mesh the user built - but then this screen
+                # reads as "these projects are syncing" when nothing is running.
+                Write-NoteLine '  Membership is routing configuration, not installed hooks: a group keeps its projects'
+                Write-NoteLine '  even after every hook is uninstalled, and syncing only happens once hooks are installed.'
                 Write-Log 'INFO' 'GROUP' ('Expansion offered: groups=' + @($merge.ExpansionProfiles).Count +
                     '; wouldAdd=' + @($merge.ExpansionMembers).Count + '; unionIfYes=' + @($merge.AllMembers).Count)
-                $expand = Read-YesNo 'Also sync the connected group(s)?' $false 'sync group expand'
+                # Through New-QuestionPrompt like every other yes/no question, so
+                # the prompt actually SHOWS its default. Read-YesNo only puts the
+                # default in its retry message, so a bare string renders with no
+                # [n] at all and the user cannot tell what Enter does.
+                $expand = Read-YesNo (New-QuestionPrompt 'Also sync the connected group(s)?' 'y/n' 'n') $false 'sync group expand'
                 if ($null -eq $expand) { return 'back' }
                 if (-not $expand) {
                     $merge = Get-SyncGroupMerge -Config $config -NewProjects $projects -NoExpand
