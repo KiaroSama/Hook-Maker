@@ -105,7 +105,7 @@
 
     # Group 2: link D to C. C already belongs to group 1, so the two must MERGE
     # into ONE full mesh of A,B,C,D (12 routes), reusing group 1's id.
-    $rG2 = Invoke-Wizard -Config $cfgMerge -NoInstall -Answers @('1', '1', '2', $mC, $mD, 'done', '1', '', '0')
+    $rG2 = Invoke-Wizard -Config $cfgMerge -NoInstall -Answers @('1', '1', '2', $mC, $mD, 'done', 'y', '1', '', '0')
     Check 'merge: group 2 (C,D) applied' ($rG2.Exit -eq 0) $rG2.Err
     Check 'merge: the summary announces the merge with the existing group' ($rG2.Out -match 'Merges with 1 existing sync group')
     $profM = @((Get-Content $cfgMerge -Raw | ConvertFrom-Json).profiles)
@@ -133,6 +133,28 @@
     Check 'merge: no route id is duplicated' ($dupRouteIds.Count -eq 0) ('dup ids=' + (($dupRouteIds | ForEach-Object { $_.Name }) -join ','))
     Check 'merge: exactly 12 routes total (no extras beyond the full mesh)' ($routeNames.Count -eq 12)
 
+    # The expansion PROMPT and its default. Every merge scenario above answers
+    # 'y' because each is asserting the merge itself; this one answers the way
+    # a user pressing Enter does. The wizard must offer the choice, name the
+    # group it would pull in, and default to NOT pulling it in.
+    $cfgAsk = Join-Path $Work 'cfg-ask.json'; New-Config $cfgAsk
+    $aA = New-Proj 'AskA'; $aB = New-Proj 'AskB'; $aC = New-Proj 'AskC'; $aD = New-Proj 'AskD'
+    $null = Invoke-Wizard -Config $cfgAsk -NoInstall -Answers @('1', '1', '2', $aA, $aB, $aC, 'done', '1', '', '0')
+    # Entering only C and D: A and B would be dragged in, so the question fires.
+    $rAsk = Invoke-Wizard -Config $cfgAsk -NoInstall -Answers @('1', '1', '2', $aC, $aD, 'done', '', '1', '', '0')
+    Check 'expansion prompt: the wizard asks before widening the mesh' (
+        $rAsk.Out -match 'already belong to other sync group') $rAsk.Out
+    Check 'expansion prompt: it names the projects a yes would ADD' (
+        $rAsk.Out -match 'would be ADDED to this mesh') $rAsk.Out
+    $askProfiles = @((Get-Content $cfgAsk -Raw | ConvertFrom-Json).profiles)
+    # Enter = no: the entered pair meshes on its own and the existing group is
+    # left exactly as it was, so BOTH profiles survive.
+    Check 'expansion prompt: pressing Enter declines, leaving both groups intact' (
+        $askProfiles.Count -eq 2) ('profiles=' + $askProfiles.Count)
+    $askRouteCounts = @($askProfiles | ForEach-Object { @($_.routes).Count } | Sort-Object)
+    Check 'expansion prompt: declining yields 6 + 2 routes, never a 12-route merge' (
+        ($askRouteCounts -join ',') -eq '2,6') ($askRouteCounts -join ',')
+
     # Point 6: the route disabled before the merge stays disabled; a route
     # that was never touched (the reverse direction) stays enabled; a brand
     # new transitive route defaults to enabled.
@@ -146,7 +168,7 @@
     # Point 9: re-running the exact same merge-triggering answers again must be
     # a pure no-op - no duplicate profile, no route churn, no re-enabling the
     # disabled route, same retained id.
-    $rG2Again = Invoke-Wizard -Config $cfgMerge -NoInstall -Answers @('1', '1', '2', $mC, $mD, 'done', '1', '', '0')
+    $rG2Again = Invoke-Wizard -Config $cfgMerge -NoInstall -Answers @('1', '1', '2', $mC, $mD, 'done', 'y', '1', '', '0')
     Check 'merge: re-running the same merge exits 0' ($rG2Again.Exit -eq 0) $rG2Again.Err
     $profMAgain = @((Get-Content $cfgMerge -Raw | ConvertFrom-Json).profiles)
     Check 'merge: idempotent re-run keeps exactly one profile' ($profMAgain.Count -eq 1) ('profiles=' + $profMAgain.Count)
@@ -182,7 +204,7 @@
     # Link TieB (member of the smaller group) with TieX (member of the larger
     # group) in one new entry - both existing groups intersect this union and
     # must be absorbed TOGETHER into a single 5-project full mesh.
-    $rTie3 = Invoke-Wizard -Config $cfgTie -NoInstall -Answers @('1', '1', '2', $tB, $tX, 'done', '1', '', '0')
+    $rTie3 = Invoke-Wizard -Config $cfgTie -NoInstall -Answers @('1', '1', '2', $tB, $tX, 'done', 'y', '1', '', '0')
     Check 'tie-break: linking one member of each group exits 0' ($rTie3.Exit -eq 0) $rTie3.Err
     Check 'tie-break: the summary announces absorbing BOTH existing groups' ($rTie3.Out -match 'Merges with 2 existing sync group')
     $profsTieAfter = @((Get-Content $cfgTie -Raw | ConvertFrom-Json).profiles)
@@ -215,7 +237,7 @@
     $rmAEngineWriteBefore = (Get-Item -LiteralPath $rmAEngineSnapshot).LastWriteTimeUtc
     $anchorProfId = ((@((Get-Content $cfgReal -Raw | ConvertFrom-Json).profiles))[0]).id
 
-    $rReal2 = Invoke-Wizard -Config $cfgReal -Answers @('1', '1', '2', $rmB, $rmC, 'done', '1', '', '0')
+    $rReal2 = Invoke-Wizard -Config $cfgReal -Answers @('1', '1', '2', $rmB, $rmC, 'done', 'y', '1', '', '0')
     Check 'real-merge: group (RealAnchorB,RealAnchorC) merges into the existing group with a real install' ($rReal2.Exit -eq 0) $rReal2.Err
     Check 'real-merge: the summary announces the merge' ($rReal2.Out -match 'Merges with 1 existing sync group')
     $profsReal = @((Get-Content $cfgReal -Raw | ConvertFrom-Json).profiles)
