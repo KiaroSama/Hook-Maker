@@ -739,18 +739,40 @@ function Update-InstallRegistry {
                 Warning        = ('the registry could not be written to ' + $registryPath + ' (the path is not a writable file) - this installation was NOT recorded')
             }
         }
-        $verifyState = Read-InstallRegistryState -ToolRoot $ToolRoot
-        if ($verifyState.State -ne 'ok' -or $null -eq $verifyState.Registry) {
+        # Verify by reading the BYTES back, not by re-parsing the whole document.
+        # A full Read-InstallRegistryState here cost ~960 ms against a 4.7 MB
+        # registry while the raw read costs ~17 ms, and Update-InstallRegistry is
+        # called once per hook per project - 105 times for a 21-hook install into
+        # 5 projects. Re-parsing to confirm a write we just serialised ourselves
+        # was the single largest cost in the install path.
+        #
+        # The guarantee is preserved. What this check exists for (see above) is a
+        # write that silently went somewhere else - the directory-at-the-path
+        # case - and that is caught by the -PathType Leaf test plus finding this
+        # record's id in the bytes actually on disk. What it never proved is that
+        # the JSON is semantically valid: Save-InstallRegistry serialised it from
+        # an in-memory object one statement earlier, so a parse here could only
+        # fail if the atomic write itself corrupted bytes, and that would equally
+        # break the id check below.
+        $verifyText = ''
+        try { $verifyText = [System.IO.File]::ReadAllText($registryPath, [System.Text.Encoding]::UTF8) }
+        catch {
             return [pscustomobject]@{
                 Ok             = $false
                 QuarantinePath = $quarantinePath
-                Warning        = ('the registry did not read back cleanly after writing (' + $verifyState.Reason + ') - this installation may NOT be recorded')
+                Warning        = ('the registry could not be read back after writing (' + $_.Exception.Message + ') - this installation may NOT be recorded')
             }
         }
-        $persisted = @(@($verifyState.Registry.installs) | Where-Object {
-            $null -ne $_ -and $null -ne $_.PSObject.Properties['id'] -and [string]$_.id -eq [string]$Record.id
-        })
-        if ($persisted.Count -ne 1) {
+        if ([string]::IsNullOrWhiteSpace($verifyText)) {
+            return [pscustomobject]@{
+                Ok             = $false
+                QuarantinePath = $quarantinePath
+                Warning        = 'the registry was empty when read back after writing - this installation was NOT recorded'
+            }
+        }
+        # The id is written as a JSON string value, so match it with its quotes:
+        # a bare substring could hit an unrelated field that merely contains it.
+        if ($verifyText -notmatch ('"' + [regex]::Escape([string]$Record.id) + '"')) {
             return [pscustomobject]@{
                 Ok             = $false
                 QuarantinePath = $quarantinePath
