@@ -164,6 +164,7 @@ function Invoke-InstallExistingHook {
         # for any other hooks picked in the same batch (entered once, not per hook).
         # Empty unless item 2 ran and published its projects.
         $sharedGroupProjects = @()
+        $sharedGroupClients = ''
         if ($indices.Contains(2)) {
             [void]$indices.Remove(2)
             if ($indices.Count -gt 0) {
@@ -175,6 +176,9 @@ function Invoke-InstallExistingHook {
             $ranSyncGroup = $true
             if ($indices.Count -eq 0) { return 'done' }
             $sharedGroupProjects = @($script:LastGroupProjects)
+            if ($null -ne (Get-Variable -Name 'LastGroupClients' -Scope Script -ErrorAction SilentlyContinue)) {
+                $sharedGroupClients = [string]$script:LastGroupClients
+            }
             if ($sharedGroupProjects.Count -gt 0) {
                 Write-NoteLine ('  Reusing the same ' + $sharedGroupProjects.Count + ' project path(s) from the sync group for the remaining hook(s) - edit them at the summary if needed.')
             }
@@ -193,8 +197,15 @@ function Invoke-InstallExistingHook {
         $plans = $null
         $sharedTargets = $false
         if ($selected.Count -eq 1) {
-            $cfg = Read-HookConfig -RecommendedEvents @(Get-HookRecommendedEvents $selected[0]) -InitialTargets $sharedGroupProjects
-            if ($null -eq $cfg) { continue }
+            $cfg = Read-HookConfig -RecommendedEvents @(Get-HookRecommendedEvents $selected[0]) -InitialTargets $sharedGroupProjects -InitialClients $sharedGroupClients
+            # Every abandoned path below LOGS. A selection that installs nothing
+            # must say why: round 40 spent a diagnosis proving a 21-hook install
+            # had simply stopped at an unanswered prompt, because the log ended
+            # at the selection and recorded no outcome at all.
+            if ($null -eq $cfg) {
+                Write-Log 'INFO' 'CUSTOM' 'Abandoned: hook configuration was backed out; nothing installed.'
+                continue
+            }
             $plans = @([pscustomobject]@{ Hook = $selected[0]; Config = $cfg })
         }
         else {
@@ -204,11 +215,17 @@ function Invoke-InstallExistingHook {
             Write-MenuLine 1 'Recommended events per hook / same client / projects' '(one set of target answers)'
             Write-MenuLine 2 'Configure each hook separately' '(ask per hook)'
             $mode = Read-Answer (New-QuestionPrompt 'How should they be configured?' $null '1') 'multi-hook config mode'
-            if ($mode -eq '0') { continue }
+            if ($mode -eq '0') {
+                Write-Log 'INFO' 'CUSTOM' ('Abandoned at the configuration-mode question; ' + $selected.Count + ' selected hook(s) were not installed.')
+                continue
+            }
             if ($mode -eq '') { $mode = '1' }
             if ($mode -eq '1') {
-                $cfg = Read-HookConfig ' (all selected hooks)' -SkipEvents -InitialTargets $sharedGroupProjects
-                if ($null -eq $cfg) { continue }
+                $cfg = Read-HookConfig ' (all selected hooks)' -SkipEvents -InitialTargets $sharedGroupProjects -InitialClients $sharedGroupClients
+                if ($null -eq $cfg) {
+                    Write-Log 'INFO' 'CUSTOM' ('Abandoned while collecting the shared targets; ' + $selected.Count + ' selected hook(s) were not installed.')
+                    continue
+                }
                 $sharedTargets = $true
                 $plans = @($selected | ForEach-Object {
                     $hookConfig = [pscustomobject]@{ Events = @(Get-HookRecommendedEvents $_); Clients = $cfg.Clients; Targets = @($cfg.Targets) }
@@ -219,15 +236,19 @@ function Invoke-InstallExistingHook {
                 $collected = New-Object System.Collections.Generic.List[object]
                 $aborted = $false
                 foreach ($h in $selected) {
-                    $cfg = Read-HookConfig (' for ' + (Get-HookFriendlyName $h.Name)) -RecommendedEvents @(Get-HookRecommendedEvents $h) -InitialTargets $sharedGroupProjects
+                    $cfg = Read-HookConfig (' for ' + (Get-HookFriendlyName $h.Name)) -RecommendedEvents @(Get-HookRecommendedEvents $h) -InitialTargets $sharedGroupProjects -InitialClients $sharedGroupClients
                     if ($null -eq $cfg) { $aborted = $true; break }
                     [void]$collected.Add([pscustomobject]@{ Hook = $h; Config = $cfg })
                 }
-                if ($aborted) { continue }
+                if ($aborted) {
+                    Write-Log 'INFO' 'CUSTOM' ('Abandoned while configuring hooks one by one after ' + $collected.Count + ' of ' + $selected.Count + '; nothing installed.')
+                    continue
+                }
                 $plans = $collected.ToArray()
             }
             else {
                 Write-ErrorLine 'Enter 1, 2 or 0.'
+                Write-Log 'WARNING' 'CUSTOM' ('Configuration mode not understood: ' + $mode + '; re-asking.')
                 continue
             }
         }
