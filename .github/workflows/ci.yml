@@ -126,7 +126,7 @@ jobs:
           - name: uninstall
             suites: Test-UninstallHook,Test-NativePrePushInstall,Test-RulesCheck,Test-DiscoveredUninstall,Test-HookStatusScan,Test-TestCompletionCheck
           - name: wizard
-            suites: Test-Wizard,Test-ContextHooks,Test-GraphUpdateCheck,Test-TestRunGuard,Test-RunTests,Test-TimingHistory
+            suites: Test-Wizard,Test-ContextHooks,Test-GraphUpdateCheck,Test-TestRunGuard,Test-RunTests,Test-TimingHistory,Test-SyncGroupMerge
           - name: secrets
             suites: Test-SecretsCheck,Test-IgnoreRulesCheck,Test-GitSyncCheck,Test-AiMemoryCheck,Test-LargeFileCheck,Test-Utf8EncodingCheck
           - name: hooks

@@ -235,7 +235,18 @@ function Get-SyncProfileMembers {
 function Get-SyncGroupMerge {
     param(
         [Parameter(Mandatory = $true)]$Config,
-        [Parameter(Mandatory = $true)]$NewProjects
+        [Parameter(Mandatory = $true)]$NewProjects,
+        # Absorb ONLY groups whose every member is already one of the entered
+        # projects. A group that would drag in projects the user did not name is
+        # left alone, and the shared project simply belongs to both groups - the
+        # engine iterates every profile, so it still receives from both.
+        #
+        # This exists because the closure is silently enormous: adding one
+        # project that happens to belong to another cluster merges that whole
+        # cluster, and any cluster IT touches, in one step. That is right when
+        # the user means "link these", and wrong when they mean "just add this
+        # one project". The caller asks; this switch is the "no" answer.
+        [switch]$NoExpand
     )
     $existingProfiles = @()
     if ($null -ne $Config.PSObject.Properties['profiles'] -and $null -ne $Config.profiles) {
@@ -245,11 +256,18 @@ function Get-SyncGroupMerge {
     # union of roots (lowercased), seeded with the just-entered projects
     $unionLower = @{}
     $entryByLower = @{}
+    # The entered set never grows - it is what "expansion" is measured against.
+    $enteredLower = @{}
     foreach ($project in @($NewProjects)) {
         $lower = $project.Root.ToLowerInvariant()
         $unionLower[$lower] = $true
         $entryByLower[$lower] = $project
+        $enteredLower[$lower] = $true
     }
+    # Absorbed groups that bring in at least one project the user did not enter.
+    # Reported whether or not they were absorbed, so the caller can show exactly
+    # what a "yes" would pull in before anything is decided.
+    $expansionProfiles = New-Object System.Collections.Generic.List[object]
 
     # transitive closure: keep absorbing profiles until none intersects the union
     $overlap = New-Object System.Collections.Generic.List[object]
@@ -265,6 +283,19 @@ function Get-SyncGroupMerge {
             $intersects = $false
             foreach ($m in $members) { if ($unionLower.ContainsKey($m.Lower)) { $intersects = $true; break } }
             if (-not $intersects) { continue }
+            # Does this group reach beyond what the user actually named?
+            $outsiders = @($members | Where-Object { -not $enteredLower.ContainsKey($_.Lower) })
+            if ($outsiders.Count -gt 0) {
+                [void]$expansionProfiles.Add([pscustomobject]@{
+                        Id       = $profId
+                        Name     = (Get-ProfileDisplayName -ProfileObj $prof -Fallback $profId)
+                        Members  = $members
+                        Outsider = $outsiders
+                    })
+                # -NoExpand stops here: not absorbed, union not widened, so the
+                # closure never reaches whatever THAT group is linked to either.
+                if ($NoExpand) { continue }
+            }
             $overlapIds[$profId] = $true
             [void]$overlap.Add([pscustomobject]@{ Id = $profId; Profile = $prof; Members = $members; Count = $members.Count })
             foreach ($m in $members) {
@@ -326,12 +357,29 @@ function Get-SyncGroupMerge {
     $installMembers = @($allMembers | Where-Object { -not $anchorMembersLower.ContainsKey($_.Root.ToLowerInvariant()) })
 
     return [pscustomobject]@{
-        Profile          = $merged
-        AllMembers       = @($allMembers)
-        InstallMembers   = @($installMembers)
-        RemoveProfileIds = @($overlapIds.Keys)
-        MergedFromCount  = $overlap.Count
+        Profile           = $merged
+        AllMembers        = @($allMembers)
+        InstallMembers    = @($installMembers)
+        RemoveProfileIds  = @($overlapIds.Keys)
+        MergedFromCount   = $overlap.Count
+        # Groups that reach beyond the entered projects. Non-empty means the
+        # caller has a real choice to put to the user.
+        ExpansionProfiles = @($expansionProfiles.ToArray())
+        # Projects that a "yes" would add and a "no" would leave out.
+        ExpansionMembers  = @($allMembers | Where-Object { -not $enteredLower.ContainsKey($_.Root.ToLowerInvariant()) })
     }
+}
+
+# A sync profile's display name, falling back to its id when unnamed - used by
+# the expansion prompt, which must be able to name every group it lists.
+function Get-ProfileDisplayName {
+    param($ProfileObj, [string]$Fallback)
+    $name = ''
+    if ($null -ne $ProfileObj -and $null -ne $ProfileObj.PSObject.Properties['name']) {
+        try { $name = [string]$ProfileObj.name } catch { $name = '' }
+    }
+    if ([string]::IsNullOrWhiteSpace($name)) { return $Fallback }
+    return $name
 }
 
 # --------------------------------------------------- sync group flow (1) ----
@@ -411,7 +459,51 @@ function Invoke-CreateGroup {
             # Merge with any existing group that shares a project (transitive):
             # one full-mesh profile over the union, reusing the largest absorbed
             # group's id so its hooks keep working without reinstall.
+            #
+            # But NEVER silently. If one of the entered projects already belongs
+            # to another group, the closure would pull that whole cluster - and
+            # everything IT touches - into this mesh. That is a decision, not a
+            # detail, so it is shown in full and asked, defaulting to NO.
             $merge = Get-SyncGroupMerge -Config $config -NewProjects $projects
+            if (@($merge.ExpansionProfiles).Count -gt 0) {
+                $enteredLookup = @{}
+                foreach ($p in @($projects)) { $enteredLookup[$p.Root.ToLowerInvariant()] = $true }
+                Write-Host ''
+                Write-MenuTitle 'These entered project(s) already belong to other sync group(s):'
+                foreach ($grp in @($merge.ExpansionProfiles)) {
+                    Write-Host ''
+                    Write-Field '  group' ([string]$grp.Name) $C.Aqua
+                    Write-Field '  id' ([string]$grp.Id)
+                    foreach ($m in @($grp.Members)) {
+                        $mark = '+'
+                        $markColor = $C.Amber
+                        if ($enteredLookup.ContainsKey(([string]$m.Root).ToLowerInvariant())) {
+                            $mark = '='
+                            $markColor = $C.Mint
+                        }
+                        Write-Host ('    ' + (Get-Painted $mark $markColor) + ' ' + [string]$m.Name + '  ' + [string]$m.Root)
+                    }
+                }
+                Write-Host ''
+                Write-NoteLine ('  ' + (Get-Painted '=' $C.Mint) + ' already entered    ' +
+                    (Get-Painted '+' $C.Amber) + ' would be ADDED to this mesh')
+                Write-NoteLine ('  Answering yes merges ' + @($merge.ExpansionProfiles).Count +
+                    ' group(s) and every group they are linked to into ONE mesh of ' +
+                    @($merge.AllMembers).Count + ' project(s) - each syncs with all the others.')
+                Write-NoteLine '  Answering no adds only the project(s) you entered. The other groups stay as they are,'
+                Write-NoteLine '  and a project in both simply belongs to both - it still receives from each.'
+                Write-Log 'INFO' 'GROUP' ('Expansion offered: groups=' + @($merge.ExpansionProfiles).Count +
+                    '; wouldAdd=' + @($merge.ExpansionMembers).Count + '; unionIfYes=' + @($merge.AllMembers).Count)
+                $expand = Read-YesNo 'Also sync the connected group(s)?' $false 'sync group expand'
+                if ($null -eq $expand) { return 'back' }
+                if (-not $expand) {
+                    $merge = Get-SyncGroupMerge -Config $config -NewProjects $projects -NoExpand
+                    Write-Log 'INFO' 'GROUP' ('Expansion DECLINED: mesh limited to ' + @($merge.AllMembers).Count + ' entered project(s).')
+                }
+                else {
+                    Write-Log 'INFO' 'GROUP' ('Expansion ACCEPTED: mesh of ' + @($merge.AllMembers).Count + ' project(s).')
+                }
+            }
             $groupProfile = $merge.Profile
             $allMembers = @($merge.AllMembers)
             $installMembers = @($merge.InstallMembers)

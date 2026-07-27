@@ -524,5 +524,30 @@ function Show-HookStatusResult {
     }
     foreach ($warning in @(Get-StatusList $Document 'warnings')) { Write-NoteLine ('  ' + [string]$warning) }
 
+    # The COUNTS alone never explained a 'partial'. A reader coming back to the
+    # log saw "overall=partial; complete=False" with no cause, while the cause
+    # was on screen at the time and had long scrolled away behind hundreds of
+    # findings. Log the evidence the document already carries.
+    $errorList = @(Get-StatusList $Document 'errors')
+    $warningList = @(Get-StatusList $Document 'warnings')
     Write-Log 'INFO' 'STATUS' ('Scan finished: overall=' + $overall + '; hooks=' + [string](Get-StatusValue $counts 'logicalHooks' 0) + '; added=' + [string](Get-StatusValue $Document 'recordsAdded' 0) + '; updated=' + [string](Get-StatusValue $Document 'recordsUpdated' 0) + '; complete=' + $complete)
+    Write-Log 'INFO' 'STATUS' ('Coverage: inaccessible=' + $inaccessible.Count + '; skippedReparse=' + $skippedReparse.Count +
+        '; warnings=' + $warningList.Count + '; errors=' + $errorList.Count +
+        '; ambiguous=' + [string](Get-StatusValue $counts 'ambiguous' 0) +
+        '; directories=' + [string](Get-StatusValue $counts 'directories' 0))
+    if (-not $complete) {
+        $causes = New-Object System.Collections.Generic.List[string]
+        if ($inaccessible.Count -gt 0) { [void]$causes.Add($inaccessible.Count.ToString() + ' unreadable director(ies)') }
+        if ($skippedReparse.Count -gt 0) { [void]$causes.Add($skippedReparse.Count.ToString() + ' reparse point(s) not followed') }
+        if ($warningList.Count -gt 0) { [void]$causes.Add($warningList.Count.ToString() + ' warning(s)') }
+        if ($errorList.Count -gt 0) { [void]$causes.Add($errorList.Count.ToString() + ' error(s)') }
+        # Never invent a cause. An empty list is itself the finding: the scan
+        # reported incomplete coverage without recording what it skipped.
+        $causeText = if ($causes.Count -gt 0) { $causes.ToArray() -join ', ' } else { 'cause NOT enumerated by the scan' }
+        Write-Log 'WARNING' 'STATUS' ('Coverage PARTIAL - this result does not prove no other hooks exist. Cause: ' + $causeText)
+        foreach ($path in @($inaccessible)) { Write-Log 'WARNING' 'STATUS' ('  not readable: ' + [string]$path) }
+        foreach ($path in @($skippedReparse)) { Write-Log 'WARNING' 'STATUS' ('  reparse point: ' + [string]$path) }
+        foreach ($w in $warningList) { Write-Log 'WARNING' 'STATUS' ('  warning: ' + [string]$w) }
+        foreach ($e in $errorList) { Write-Log 'ERROR' 'STATUS' ('  error: ' + [string]$e) }
+    }
 }
