@@ -25,6 +25,35 @@
 
 # ---- shared path helpers ---------------------------------------------------
 
+# Dependency and build CACHES: never descended into, by name.
+#
+# A real scan of one machine walked 22,254 directories in 106s and came back
+# PARTIAL - because 10 of its 14 skipped reparse points were npm/pnpm package
+# junctions inside node_modules and .next. Those trees hold no registration, no
+# managed runtime and no Git repository worth reading; walking them cost most of
+# the time and produced a permanent "coverage incomplete" for a part of the disk
+# that can never contain what the scan is looking for.
+#
+# This is deliberately NOT $script:PlanForbiddenDirectoryNames from
+# _installplan.ps1. That list also excludes .claude, .codex, .ai and .agents -
+# which is right when copying files INTO a runtime and exactly wrong here, since
+# those directories are where registrations actually live.
+#
+# Kept to caches that cannot plausibly be a project root a user syncs. 'dist',
+# 'build', 'out', 'bin', 'obj' and 'target' are deliberately ABSENT: a project
+# can legitimately live at ...\build\myapp, and skipping it would hide a real
+# install. Pruning is reported, never silent - see the coverage section of the
+# result document.
+$script:ScanPrunedDirectoryNames = @(
+    'node_modules', '.next', '.nuxt', '.svelte-kit', '.angular', '.parcel-cache',
+    '.venv', 'venv', '__pycache__', '.pytest_cache', '.mypy_cache', '.ruff_cache', '.tox',
+    '.gradle', '.terraform', '.turbo'
+)
+# Count plus the DISTINCT names actually hit - not the paths. A machine with
+# hundreds of node_modules trees would otherwise bloat the result document with
+# thousands of paths that all say the same thing.
+$script:PrunedDirectoryCount = 0
+$script:PrunedDirectoryNamesSeen = New-Object System.Collections.Generic.HashSet[string] ([System.StringComparer]::OrdinalIgnoreCase)
 $script:SeenDirectoryKeys = New-Object System.Collections.Generic.HashSet[string]
 $script:SeenSettingsKeys = New-Object System.Collections.Generic.HashSet[string]
 $script:SeenGitKeys = New-Object System.Collections.Generic.HashSet[string]
@@ -110,6 +139,16 @@ function Invoke-ScanWalk {
             if ($script:Canceled) { return }
             $isDirectory = (($entry.Attributes -band [System.IO.FileAttributes]::Directory) -eq [System.IO.FileAttributes]::Directory)
             if ($isDirectory) {
+                # Prune FIRST, before the reparse check: most of the reparse
+                # points on a developer machine are package junctions INSIDE
+                # these trees, and pruning the parent means they are never
+                # enumerated at all - so they stop being reported as coverage
+                # gaps, which is what they never really were.
+                if ($script:ScanPrunedDirectoryNames -contains $entry.Name) {
+                    $script:PrunedDirectoryCount++
+                    [void]$script:PrunedDirectoryNamesSeen.Add([string]$entry.Name)
+                    continue
+                }
                 # Reparse check BEFORE the '.git' name dispatch below - a '.git'
                 # entry that is itself a junction/symlink must be caught here
                 # too, or Read-GitRepository would follow it via an explicit
