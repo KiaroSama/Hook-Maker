@@ -15,6 +15,12 @@
 # so this is a normal one-directional dependency, not a layering violation.
 # ---------------------------------------------------------------------------
 
+# The one profile that ships in sync-hooks.example.json. It is disabled and its
+# routes point at placeholder paths, so it can never match a real project - which
+# is why the reset action keeps it as the editable template while removing every
+# wizard-created group.
+$script:ExampleProfileId = 'example-sync-profile'
+
 # ----------------------------------------------------------- input phase ----
 # Collects project root paths. Returns an array, or $null when the user backs out.
 function Read-ProjectList {
@@ -740,5 +746,89 @@ function Invoke-CreateGroup {
     $installSummary = if ($NoInstall) { 'not installed (-NoInstall)' } else { $clients + ' in ' + @($installMembers).Count + ' of ' + $allMembers.Count + ' project(s)' }
     Write-Log 'INFO' 'DONE' ('Sync group applied: ' + $groupProfile.id + ' | routes=' + $routeCount + ' | events=' + ($events -join ',') + ' | install=' + $installSummary + ' | durationMs=' + $stopwatch.ElapsedMilliseconds)
     $script:LastGroupProjects = @($projects)
+    return 'done'
+}
+
+# ---- reset every sync group ------------------------------------------------
+# Removes all wizard-created sync groups and leaves the config exactly as a
+# fresh install has it: version + defaults + the disabled example profile.
+#
+# This exists because group membership is CONFIGURATION and deliberately
+# survives uninstalling every hook (see Invoke-CreateGroup) - which means a user
+# who has removed all their hooks still gets told their projects "already belong
+# to" groups, with no supported way to clear that. Editing sync-hooks.json by
+# hand was the only route.
+#
+# The example profile is KEPT: it ships disabled and points at placeholder paths
+# (D:\Projects\Project A), so it can never match a real project or trigger the
+# overlap prompt, and removing it would leave no template to edit.
+function Invoke-ResetSyncGroups {
+    param(
+        [Parameter(Mandatory = $true)][string]$ConfigPath,
+        [Parameter(Mandatory = $true)][string]$ValidateScript
+    )
+    Write-Log 'INFO' 'RESET' 'Reset sync groups started.'
+    Write-PhaseHeader 'Reset Sync Groups' $C.Input '-'
+
+    if (-not (Test-Path -LiteralPath $ConfigPath -PathType Leaf)) {
+        Write-NoteLine '  There is no sync configuration file yet - nothing to reset.'
+        Write-Log 'INFO' 'RESET' 'No config file; nothing to reset.'
+        return 'done'
+    }
+    $config = $null
+    try { $config = Get-Content -LiteralPath $ConfigPath -Raw -Encoding UTF8 | ConvertFrom-Json }
+    catch {
+        Write-ErrorLine ('The sync configuration could not be read: ' + $_.Exception.Message)
+        Write-NoteLine '  It has NOT been modified. Repair or remove the file, then try again.'
+        Write-Log 'ERROR' 'RESET' ('Config unreadable: ' + $_.Exception.Message)
+        return 'done'
+    }
+
+    $existing = @()
+    if ($null -ne $config.PSObject.Properties['profiles'] -and $null -ne $config.profiles) {
+        $existing = @($config.profiles)
+    }
+    $groups = @($existing | Where-Object { $null -ne $_ -and [string]$_.id -ne $script:ExampleProfileId })
+    if ($groups.Count -eq 0) {
+        Write-NoteLine '  No sync groups are configured - nothing to reset.'
+        Write-Log 'INFO' 'RESET' 'No groups configured; nothing to reset.'
+        return 'done'
+    }
+
+    Write-NoteLine ('  ' + $groups.Count + ' sync group(s) would be removed from the configuration:')
+    foreach ($g in $groups) {
+        $routeCount = 0
+        if ($null -ne $g.PSObject.Properties['routes'] -and $null -ne $g.routes) { $routeCount = @($g.routes).Count }
+        Write-Host ('    ' + (Get-Painted ([string]$g.id) $C.Aqua) + $script:MenuSep +
+            (Get-Painted ([string]$g.name) $C.Gray) + $script:MenuSep +
+            (Get-Painted ($routeCount.ToString() + ' route(s)') $C.Dim))
+    }
+    Write-NoteLine '  This changes routing configuration ONLY. No hook is uninstalled and no file'
+    Write-NoteLine '  in any project is touched - use the uninstall action for that.'
+    Write-NoteLine '  A timestamped backup of the current configuration is written first.'
+
+    $confirm = Read-YesNo (New-QuestionPrompt ('Remove all ' + $groups.Count + ' sync group(s) now?') 'y/n' 'n') $false 'confirm reset sync groups'
+    if ($null -eq $confirm) { return 'back' }
+    if (-not $confirm) {
+        Write-NoteLine '  Canceled. Nothing was changed.'
+        Write-Log 'INFO' 'RESET' 'Reset declined; no change.'
+        return 'done'
+    }
+
+    $backupPath = $ConfigPath + '.backup-' + (Get-Date).ToString('yyyyMMdd-HHmmss')
+    Copy-Item -LiteralPath $ConfigPath -Destination $backupPath -Force
+    Write-Log 'INFO' 'RESET' ('Config backup created: ' + $backupPath)
+
+    $kept = @($existing | Where-Object { $null -ne $_ -and [string]$_.id -eq $script:ExampleProfileId })
+    Set-ObjectProperty -Object $config -Name 'profiles' -Value $kept
+    Write-JsonFileAtomic -Value $config -Path $ConfigPath
+
+    Write-Host ('  ' + (Get-Painted ('- removed ' + $groups.Count + ' sync group(s)') $C.Green))
+    Write-Field 'backup' $backupPath
+    Write-Log 'INFO' 'RESET' ('Reset complete: removed=' + $groups.Count + '; kept=' + @($kept).Count + '; backup=' + $backupPath)
+
+    $validateOutput = & $ValidateScript -ConfigPath $ConfigPath *>&1
+    foreach ($line in @($validateOutput)) { Write-Log 'DEBUG' 'VALIDATE' ([string]$line) }
+    Write-Host ('  ' + (Get-Painted '+ configuration validated' $C.Green))
     return 'done'
 }
