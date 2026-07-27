@@ -158,6 +158,13 @@ function Read-GitRepository {
     if ($gitDirectory -eq '') { return }
     $script:GitRepositoriesSeen++
     $script:CandidateRootsSeen++
+    # Repaint here too, not only once per directory: the per-candidate
+    # work below (settings parsing, one finding per registered hook)
+    # grew long once projects held 22 hooks each, and with the only
+    # call sitting in the directory walk the elapsed counter froze for
+    # the whole of it and the scan read as hung. Show-ScanProgress is
+    # throttled to 750 ms, so extra calls cost nothing.
+    Show-ScanProgress
 
     $hooksPath = ''
     $configured = Get-GitConfigValue -RepositoryRoot $canonicalRoot -Name 'core.hooksPath'

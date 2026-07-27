@@ -197,6 +197,13 @@ function Read-SettingsRegistrations {
     if (-not (Test-Path -LiteralPath $SettingsPath -PathType Leaf)) { return }
     $script:SettingsFilesSeen++
     $script:CandidateRootsSeen++
+    # Repaint here too, not only once per directory: the per-candidate
+    # work below (settings parsing, one finding per registered hook)
+    # grew long once projects held 22 hooks each, and with the only
+    # call sitting in the directory walk the elapsed counter froze for
+    # the whole of it and the scan read as hung. Show-ScanProgress is
+    # throttled to 750 ms, so extra calls cost nothing.
+    Show-ScanProgress
 
     $raw = ''
     try { $raw = [System.IO.File]::ReadAllText($SettingsPath, [System.Text.Encoding]::UTF8) }
@@ -238,7 +245,7 @@ function Read-SettingsRegistrations {
                 $finding = New-RegistrationFinding -Client $Client -SettingsPath $canonicalSettings `
                     -Scope $scopeInfo.Scope -ProjectRoot $scopeInfo.ProjectRoot `
                     -EventName $eventName -Group $group -MatcherFingerprint $matcherFingerprint -Handler $handler
-                if ($null -ne $finding) { [void]$script:RegistrationFindings.Add($finding) }
+                if ($null -ne $finding) { [void]$script:RegistrationFindings.Add($finding); Show-ScanProgress }
             }
         }
     }
@@ -449,6 +456,7 @@ function Read-KiroRegistrationFile {
     if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { return }
     $script:SettingsFilesSeen++
     $script:CandidateRootsSeen++
+    Show-ScanProgress
 
     $raw = ''
     try { $raw = [System.IO.File]::ReadAllText($Path, [System.Text.Encoding]::UTF8) }
@@ -531,7 +539,7 @@ function Read-KiroRegistrationFile {
         }
         $finding = New-KiroRegistrationFinding -RegistrationPath $canonicalPath -Scope $scopeInfo.Scope `
             -ProjectRoot $scopeInfo.ProjectRoot -Entry $entry -ManagedBy $managedBy
-        if ($null -ne $finding) { [void]$script:RegistrationFindings.Add($finding) }
+        if ($null -ne $finding) { [void]$script:RegistrationFindings.Add($finding); Show-ScanProgress }
     }
 }
 
