@@ -396,6 +396,7 @@ function Invoke-CreateGroup {
     # same batch - the user enters the paths once, not once per menu item.
     # Reset up front so a back/cancel never leaves a previous run's paths behind.
     $script:LastGroupProjects = @()
+    $script:LastGroupClients = ''
 
     $config = Read-JsonFile $ConfigPath
     if ($null -eq $config) {
@@ -746,6 +747,8 @@ function Invoke-CreateGroup {
     $installSummary = if ($NoInstall) { 'not installed (-NoInstall)' } else { $clients + ' in ' + @($installMembers).Count + ' of ' + $allMembers.Count + ' project(s)' }
     Write-Log 'INFO' 'DONE' ('Sync group applied: ' + $groupProfile.id + ' | routes=' + $routeCount + ' | events=' + ($events -join ',') + ' | install=' + $installSummary + ' | durationMs=' + $stopwatch.ElapsedMilliseconds)
     $script:LastGroupProjects = @($projects)
+    # Carried to the hook flow in the same batch so "which client" is asked once.
+    $script:LastGroupClients = $clients
     return 'done'
 }
 

@@ -421,12 +421,16 @@ function Read-EventSelection {
 # Gathers events + client + target projects for one hook as a mini stage machine
 # (back steps one). Returns an object, or $null when backed out of the first step.
 function Read-HookConfig {
-    param([string]$TitleSuffix = '', [switch]$SkipEvents, [string[]]$RecommendedEvents = @(), [object[]]$InitialTargets = @())
+    param([string]$TitleSuffix = '', [switch]$SkipEvents, [string[]]$RecommendedEvents = @(), [object[]]$InitialTargets = @(), [string]$InitialClients = '')
     # When $InitialTargets is supplied (the project paths already collected by the
     # sync group in this same batch), the path prompt is skipped entirely - the
     # user typed those paths once and there is no reason to ask again. They stay
     # editable from the summary screen (Read-ProjectList -InitialProjects).
     $reuseTargets = (@($InitialTargets).Count -gt 0)
+    # Same reasoning as $reuseTargets, for the client: when the sync group in this
+    # same batch already asked "which client", asking again is the tool forgetting
+    # an answer the user just gave. It stays editable from the summary screen.
+    $reuseClients = (-not [string]::IsNullOrWhiteSpace($InitialClients))
     $events = $null; $clients = $null; $stage = if ($SkipEvents) { 1 } else { 0 }
     while ($true) {
         switch ($stage) {
@@ -436,6 +440,11 @@ function Read-HookConfig {
                 $stage = 1
             }
             1 {
+                if ($reuseClients) {
+                    $clients = $InitialClients
+                    $stage = 2
+                    break
+                }
                 $clients = Read-ClientChoice
                 if ($null -eq $clients) {
                     if ($SkipEvents) { return $null }
