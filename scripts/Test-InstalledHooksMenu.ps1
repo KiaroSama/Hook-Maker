@@ -255,8 +255,12 @@ try {
             Check 'menu: 24 is Cloudflare-Deploy (still the last individual entry)' ([string]$rows[24] -match '^Cloudflare-Deploy \| \[post-task\] \|') ([string]$rows[24])
 
             Check 'menu: 25 is Update installed hooks' ([string]$rows[25] -match '^Update installed hooks \| \[manage\] \|') ([string]$rows[25])
-            # The exact contract wording for the two rows the task pins.
-            Check 'menu: 26 renders EXACTLY the contract row' ([string]$rows[26] -eq 'Get hook status | [manage] | scan a path, detect installed hooks, and track verified results') ([string]$rows[26])
+            # The exact contract wording for the two rows the task pins. Row 26
+            # gained '; skips dependency caches' when the scan started pruning
+            # node_modules/.next/... - the row states what the scan DOES, and a
+            # scan that no longer walks those trees must say so rather than let
+            # the reader assume full coverage.
+            Check 'menu: 26 renders EXACTLY the contract row' ([string]$rows[26] -eq 'Get hook status | [manage] | scan a path, detect installed hooks, and track verified results; skips dependency caches') ([string]$rows[26])
             Check 'menu: 27 renders EXACTLY the contract row' ([string]$rows[27] -eq 'Uninstall installed hooks | [manage] | list and remove installed hooks; never deletes hook sources') ([string]$rows[27])
 
             # The fixture is the only custom hook, so the custom block starts at

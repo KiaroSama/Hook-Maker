@@ -72,19 +72,28 @@ function Invoke-InstallExistingHook {
         $customStartIndex = $shippedHooks.Count + 6
         $maxIndex = $customStartIndex + $customHooks.Count - 1
 
+        # The hook numbers are NOT one contiguous run: the three management rows
+        # sit between the shipped block and the custom block. A single '3-N'
+        # span therefore both claims the management rows are hooks and stops
+        # short of the custom ones. It read correctly only while no custom hook
+        # existed - which is exactly what the fixture had, so the suite agreed
+        # with it. Render the real spans instead.
+        $hookSpans = '3-' + ($shippedHooks.Count + 2)
+        if ($customHooks.Count -gt 0) { $hookSpans += ' and ' + $customStartIndex + '-' + $maxIndex }
+
         Write-MenuTitle 'Available hooks (hooks\):'
-        Write-Host ('  ' + (Get-Painted '1.' $C.LightBlue) + ' ' + (Get-Painted 'Select all hooks' $C.Bold) + $script:MenuSep + (Get-Painted '[all]' $C.Orchid) + $script:MenuSep + (Get-Painted ('run the sync group (2) and install every hook below (3-' + ($shippedHooks.Count + $customHooks.Count + 2) + ')') $C.HintYellow))
-        Write-Host ('  ' + (Get-Painted '2.' $C.LightBlue) + ' ' + (Get-Painted 'Create or update a sync group' $C.Bold) + $script:MenuSep + (Get-Painted '[pre-task]' $C.Mint) + $script:MenuSep + (Get-Painted 'cross-project .ai knowledge sync' $C.HintYellow))
+        Write-Host ('  ' + (Get-Painted '1.' $C.LightBlue) + ' ' + (Get-Painted 'Select all hooks' $C.Bold) + $script:MenuSep + (Get-Painted '[all]' $C.Orchid) + $script:MenuSep + (Get-Painted ('run the sync group (2) and install every hook below (' + $hookSpans + ')') $C.HintYellow))
+        Write-Host ('  ' + (Get-Painted '2.' $C.LightBlue) + ' ' + (Get-Painted 'Create or update a sync group' $C.Bold) + $script:MenuSep + (Get-Painted '[pre-task]' $C.Mint) + $script:MenuSep + (Get-Painted 'cross-project .ai knowledge sync; asks before merging linked groups' $C.HintYellow))
         for ($i = 0; $i -lt $shippedHooks.Count; $i++) {
             Write-HookMenuLine ($i + 3) $shippedHooks[$i].Name
         }
         Write-Host ('  ' + (Get-Painted ([string]$updateIndex + '.') $C.LightBlue) + ' ' + (Get-Painted 'Update installed hooks' $C.Bold) + $script:MenuSep + (Get-Painted '[manage]' $C.Teal) + $script:MenuSep + (Get-Painted 'refresh installed copies from their current source' $C.HintYellow))
-        Write-Host ('  ' + (Get-Painted ([string]$statusIndex + '.') $C.LightBlue) + ' ' + (Get-Painted 'Get hook status' $C.Bold) + $script:MenuSep + (Get-Painted '[manage]' $C.Teal) + $script:MenuSep + (Get-Painted 'scan a path, detect installed hooks, and track verified results' $C.HintYellow))
+        Write-Host ('  ' + (Get-Painted ([string]$statusIndex + '.') $C.LightBlue) + ' ' + (Get-Painted 'Get hook status' $C.Bold) + $script:MenuSep + (Get-Painted '[manage]' $C.Teal) + $script:MenuSep + (Get-Painted 'scan a path, detect installed hooks, and track verified results; skips dependency caches' $C.HintYellow))
         Write-Host ('  ' + (Get-Painted ([string]$uninstallIndex + '.') $C.LightBlue) + ' ' + (Get-Painted 'Uninstall installed hooks' $C.Bold) + $script:MenuSep + (Get-Painted '[manage]' $C.Teal) + $script:MenuSep + (Get-Painted 'list and remove installed hooks; never deletes hook sources' $C.HintYellow))
         for ($i = 0; $i -lt $customHooks.Count; $i++) {
             Write-HookMenuLine ($customStartIndex + $i) $customHooks[$i].Name
         }
-        Write-NoteLine ('  Tip: use lists and ranges, e.g. 3-8 (1 alone runs everything: the sync group AND every hook). ' + $updateIndex + '/' + $statusIndex + '/' + $uninstallIndex + ' are management actions - pick one on its own.')
+        Write-NoteLine ('  Tip: use lists and ranges, e.g. 3-8 (1 alone runs everything: the sync group AND every hook). Hooks are ' + $hookSpans + '; ' + $updateIndex + '/' + $statusIndex + '/' + $uninstallIndex + ' are management actions - pick one on its own.')
         $value = Read-Answer (New-QuestionPrompt 'Select a hook (number, list, or range)' $null '2') 'select custom hook'
         if ($value -eq '0') { return 'back' }
         if ($value -eq '') { $value = '2' }
