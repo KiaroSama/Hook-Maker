@@ -69,7 +69,8 @@ function Invoke-InstallExistingHook {
         $updateIndex = $shippedHooks.Count + 3
         $statusIndex = $shippedHooks.Count + 4
         $uninstallIndex = $shippedHooks.Count + 5
-        $customStartIndex = $shippedHooks.Count + 6
+        $resetIndex = $shippedHooks.Count + 6
+        $customStartIndex = $shippedHooks.Count + 7
         $maxIndex = $customStartIndex + $customHooks.Count - 1
 
         # The hook numbers are NOT one contiguous run: the three management rows
@@ -90,10 +91,11 @@ function Invoke-InstallExistingHook {
         Write-Host ('  ' + (Get-Painted ([string]$updateIndex + '.') $C.LightBlue) + ' ' + (Get-Painted 'Update installed hooks' $C.Bold) + $script:MenuSep + (Get-Painted '[manage]' $C.Teal) + $script:MenuSep + (Get-Painted 'refresh installed copies from their current source' $C.HintYellow))
         Write-Host ('  ' + (Get-Painted ([string]$statusIndex + '.') $C.LightBlue) + ' ' + (Get-Painted 'Get hook status' $C.Bold) + $script:MenuSep + (Get-Painted '[manage]' $C.Teal) + $script:MenuSep + (Get-Painted 'scan a path for installed hooks (skips dependency caches) and track results' $C.HintYellow))
         Write-Host ('  ' + (Get-Painted ([string]$uninstallIndex + '.') $C.LightBlue) + ' ' + (Get-Painted 'Uninstall installed hooks' $C.Bold) + $script:MenuSep + (Get-Painted '[manage]' $C.Teal) + $script:MenuSep + (Get-Painted 'list and remove installed hooks; never deletes hook sources' $C.HintYellow))
+        Write-Host ('  ' + (Get-Painted ([string]$resetIndex + '.') $C.LightBlue) + ' ' + (Get-Painted 'Reset sync groups' $C.Bold) + $script:MenuSep + (Get-Painted '[manage]' $C.Teal) + $script:MenuSep + (Get-Painted 'remove every sync group from the config; installs and files untouched' $C.HintYellow))
         for ($i = 0; $i -lt $customHooks.Count; $i++) {
             Write-HookMenuLine ($customStartIndex + $i) $customHooks[$i].Name
         }
-        Write-NoteLine ('  Tip: use lists and ranges, e.g. 3-8 (1 alone runs everything: the sync group AND every hook). Hooks are ' + $hookSpans + '; ' + $updateIndex + '/' + $statusIndex + '/' + $uninstallIndex + ' are management actions - pick one on its own.')
+        Write-NoteLine ('  Tip: use lists and ranges, e.g. 3-8 (1 alone runs everything: the sync group AND every hook). Hooks are ' + $hookSpans + '; ' + $updateIndex + '/' + $statusIndex + '/' + $uninstallIndex + '/' + $resetIndex + ' are management actions - pick one on its own.')
         $value = Read-Answer (New-QuestionPrompt 'Select a hook (number, list, or range)' $null '2') 'select custom hook'
         if ($value -eq '0') { return 'back' }
         if ($value -eq '') { $value = '2' }
@@ -112,10 +114,10 @@ function Invoke-InstallExistingHook {
         # The management rows are actions, not hook selections: mixing them with
         # hooks (or with each other) has no coherent meaning, so it is rejected
         # explicitly rather than silently doing half of what was typed.
-        $managementPicked = @($indices | Where-Object { $_ -eq $updateIndex -or $_ -eq $statusIndex -or $_ -eq $uninstallIndex })
+        $managementPicked = @($indices | Where-Object { $_ -eq $updateIndex -or $_ -eq $statusIndex -or $_ -eq $uninstallIndex -or $_ -eq $resetIndex })
         if ($managementPicked.Count -gt 0) {
             if ($indices.Count -ne 1) {
-                Write-ErrorLine ('Select ' + $updateIndex + ' (update), ' + $statusIndex + ' (status) or ' + $uninstallIndex + ' (uninstall) on its own - it cannot be combined with hook selections or with each other.')
+                Write-ErrorLine ('Select ' + $updateIndex + ' (update), ' + $statusIndex + ' (status), ' + $uninstallIndex + ' (uninstall) or ' + $resetIndex + ' (reset sync groups) on its own - it cannot be combined with hook selections or with each other.')
                 continue
             }
             if ($indices[0] -eq $updateIndex) {
@@ -124,6 +126,10 @@ function Invoke-InstallExistingHook {
             }
             if ($indices[0] -eq $statusIndex) {
                 if ((Invoke-GetHookStatus) -eq 'done') { return 'done' }
+                continue
+            }
+            if ($indices[0] -eq $resetIndex) {
+                if ((Invoke-ResetSyncGroups -ConfigPath $ConfigPath -ValidateScript $ValidateScript) -eq 'done') { return 'done' }
                 continue
             }
             if ((Invoke-UninstallInstalledHooks) -eq 'done') { return 'done' }

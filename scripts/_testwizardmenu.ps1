@@ -33,7 +33,7 @@
     # management rows in and stopped short of the custom hook. It read correctly
     # only while no custom hook existed - which is all this fixture had, so the
     # assertion above agreed with the bug. The real span is asserted below.
-    Check 'the tip states where the hooks actually are' ($r.Out -match 'Hooks are 3-24( and \d+-\d+)?; 25/26/27 are management actions') $r.Out
+    Check 'the tip states where the hooks actually are' ($r.Out -match 'Hooks are 3-24( and \d+-\d+)?; 25/26/27/28 are management actions') $r.Out
     Check 'sync group is list item 2' ($r.Out -match '2\. Create or update a sync group')
     Check 'context hook menu names match their whole-.ai scope' ($r.Out -match 'Ai-Context-Check' -and $r.Out -match 'Ai-Context-Load')
     Check 'old memory-only menu names are hidden' ($r.Out -notmatch 'Ai-Memory-(Check|Load)')
@@ -104,12 +104,12 @@
         [System.IO.File]::WriteAllText((Join-Path $spanHook 'ZZZ-MenuSpan.ps1'), '# span fixture', (New-Object System.Text.UTF8Encoding $false))
         $rSpan = Invoke-Wizard -Config $cfg1 -NoInstall -Answers @('1', '1', '0', '0')
         Check 'with a custom hook the select-all hint lists BOTH spans, not one run' (
-            $rSpan.Out -match 'install every hook below \(3-24 and 28-28\)') $rSpan.Out
+            $rSpan.Out -match 'install every hook below \(3-24 and 29-29\)') $rSpan.Out
         Check 'the hint no longer claims the management rows are hooks' (
             $rSpan.Out -notmatch 'install every hook below \(3-25\)') $rSpan.Out
-        Check 'the custom hook really is listed at 28, after the management rows' (
-            $rSpan.Out -match '(?m)^  28\. ZZZ-') $rSpan.Out
-        Check 'the management rows stay at 25/26/27 regardless of custom hooks' (
+        Check 'the custom hook really is listed at 29, after the management rows' (
+            $rSpan.Out -match '(?m)^  29\. ZZZ-') $rSpan.Out
+        Check 'the management rows stay at 25/26/27/28 regardless of custom hooks' (
             $rSpan.Out -match '(?m)^  25\. Update installed hooks \|') $rSpan.Out
 
         # ZZZ-* IMMUNITY (this suite counts the REAL hooks\ directory, which
