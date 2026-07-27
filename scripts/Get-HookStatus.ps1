@@ -158,6 +158,13 @@ function Write-ScanResult {
                 complete      = (($script:Inaccessible.Count -eq 0) -and ($script:SkippedReparse.Count -eq 0) -and (-not $script:Canceled) -and ($MaxDepth -le 0))
                 inaccessible  = @($script:Inaccessible.ToArray())
                 skippedReparse = @($script:SkippedReparse.ToArray())
+                # Dependency/build caches excluded BY NAME. Reported so the
+                # result never implies it looked everywhere, but NOT counted
+                # against completeness: these trees cannot hold a registration,
+                # a managed runtime or a repository worth reading, so excluding
+                # them is scoping, not a gap.
+                prunedDirectories = $script:PrunedDirectoryCount
+                prunedNames       = @($script:PrunedDirectoryNamesSeen | Sort-Object)
             }
             counts         = [pscustomobject][ordered]@{
                 directories     = $script:DirectoriesInspected

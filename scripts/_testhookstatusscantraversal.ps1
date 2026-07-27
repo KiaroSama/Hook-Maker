@@ -305,3 +305,46 @@
         Check 'and the drive scan is reported as partial, not complete' (
             $driveScan.Result.coverage.complete -eq $false -and [string]$driveScan.Result.overall -eq 'partial')
     }
+
+# =====================================================================
+Write-Host '--- dependency/build caches are pruned by name, and only those ---' -ForegroundColor Cyan
+# A real 22,254-directory scan came back PARTIAL because 10 of its 14 skipped
+# reparse points were npm/pnpm package junctions inside node_modules and .next.
+# Those trees cannot hold a registration, so walking them bought nothing and
+# cost a permanent "coverage incomplete". Pruning them dropped that scan to
+# 7,838 directories and 4 skips - and the 4 that remain are real .claude/.codex
+# junctions, so it is still honestly partial.
+$pruneRoot = New-Dir (Join-Path $Work 'PruneRoot')
+# Inside pruned caches: must NOT be discovered.
+New-ClaudeHook -ProjectRoot (New-Dir (Join-Path $pruneRoot 'app\node_modules\some-pkg')) -HookName 'ZZZ-Pruned-NodeModules' | Out-Null
+New-ClaudeHook -ProjectRoot (New-Dir (Join-Path $pruneRoot 'app\.next\cached')) -HookName 'ZZZ-Pruned-Next' | Out-Null
+New-ClaudeHook -ProjectRoot (New-Dir (Join-Path $pruneRoot 'py\.venv\Lib')) -HookName 'ZZZ-Pruned-Venv' | Out-Null
+# NOT pruned: a project can legitimately live under a directory called build or
+# dist, so those names are deliberately absent from the prune list. This is the
+# assertion that stops someone "tidying up" by adding them.
+New-ClaudeHook -ProjectRoot (New-Dir (Join-Path $pruneRoot 'build\realproject')) -HookName 'ZZZ-Kept-Build' | Out-Null
+New-ClaudeHook -ProjectRoot (New-Dir (Join-Path $pruneRoot 'dist\realproject')) -HookName 'ZZZ-Kept-Dist' | Out-Null
+New-ClaudeHook -ProjectRoot (New-Dir (Join-Path $pruneRoot 'normal')) -HookName 'ZZZ-Kept-Normal' | Out-Null
+
+$pruneScan = Invoke-Scan -Root $pruneRoot
+Check 'the pruning scan exits 0' ($pruneScan.Exit -eq 0) $pruneScan.Err
+foreach ($hidden in @('ZZZ-Pruned-NodeModules.ps1', 'ZZZ-Pruned-Next.ps1', 'ZZZ-Pruned-Venv.ps1')) {
+    Check ('a hook inside a pruned cache is NOT reported: ' + $hidden) (
+        -not (Test-FoundTarget -Result $pruneScan.Result -Fragment $hidden))
+}
+foreach ($kept in @('ZZZ-Kept-Build.ps1', 'ZZZ-Kept-Dist.ps1', 'ZZZ-Kept-Normal.ps1')) {
+    Check ('a hook under a NON-pruned directory is still found: ' + $kept) (
+        Test-FoundTarget -Result $pruneScan.Result -Fragment $kept)
+}
+Check 'the pruning is REPORTED, never silent' (
+    [int]$pruneScan.Result.coverage.prunedDirectories -ge 3) (
+    [string]$pruneScan.Result.coverage.prunedDirectories)
+$prunedNames = @($pruneScan.Result.coverage.prunedNames)
+Check 'the report names which caches were excluded' (
+    ($prunedNames -contains 'node_modules') -and ($prunedNames -contains '.next') -and ($prunedNames -contains '.venv')) (
+    $prunedNames -join ',')
+# Pruning is scoping, not a coverage gap: with nothing unreadable and no
+# reparse point, a pruned scan must still be able to report complete.
+Check 'pruning alone does NOT make coverage incomplete' (
+    $pruneScan.Result.coverage.complete -eq $true -and [string]$pruneScan.Result.overall -eq 'ok') (
+    'overall=' + [string]$pruneScan.Result.overall + ' complete=' + [string]$pruneScan.Result.coverage.complete)

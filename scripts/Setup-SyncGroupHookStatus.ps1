@@ -501,6 +501,11 @@ function Show-HookStatusResult {
     Write-Field '  records matched' ([string](Get-StatusValue $Document 'recordsMatched' 0))
     Write-Field '  ambiguous findings' ([string](Get-StatusValue $counts 'ambiguous' 0))
     Write-Field '  inaccessible directories' ([string]$inaccessible.Count)
+    $prunedCount = [int](Get-StatusValue $coverage 'prunedDirectories' 0)
+    if ($prunedCount -gt 0) {
+        $prunedNames = @(Get-StatusList $coverage 'prunedNames')
+        Write-Field '  excluded by name (caches)' ([string]$prunedCount + ' - ' + (($prunedNames | Select-Object -First 6) -join ', '))
+    }
     Write-Field '  elapsed' ($Elapsed.ToString('hh\:mm\:ss\.fff'))
     Write-Field '  registry' (Get-StatusText $Document 'registryPath' '(not written)')
 
@@ -534,7 +539,8 @@ function Show-HookStatusResult {
     Write-Log 'INFO' 'STATUS' ('Coverage: inaccessible=' + $inaccessible.Count + '; skippedReparse=' + $skippedReparse.Count +
         '; warnings=' + $warningList.Count + '; errors=' + $errorList.Count +
         '; ambiguous=' + [string](Get-StatusValue $counts 'ambiguous' 0) +
-        '; directories=' + [string](Get-StatusValue $counts 'directories' 0))
+        '; directories=' + [string](Get-StatusValue $counts 'directories' 0) +
+        '; prunedCaches=' + [string](Get-StatusValue $coverage 'prunedDirectories' 0))
     if (-not $complete) {
         $causes = New-Object System.Collections.Generic.List[string]
         if ($inaccessible.Count -gt 0) { [void]$causes.Add($inaccessible.Count.ToString() + ' unreadable director(ies)') }
