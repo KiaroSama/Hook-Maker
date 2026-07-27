@@ -91,6 +91,29 @@ function Get-RecordType {
     return 'managed'
 }
 
+# WHERE does this record actually live? A native Git hook is a single file and
+# that exact path is the only useful answer; everything else is identified by
+# the project it was installed into, or by being global. Used wherever an
+# outcome needs a human to go and look at something.
+function Get-RecordLocationText {
+    param($Record)
+    if ($null -eq $Record) { return '(unknown location)' }
+    $native = $Record.PSObject.Properties['nativeGit']
+    if ($null -ne $native -and $null -ne $native.Value -and
+        $null -ne $native.Value.PSObject.Properties['hookPath']) {
+        $hookPath = [string]$native.Value.hookPath
+        if (-not [string]::IsNullOrWhiteSpace($hookPath)) { return $hookPath }
+    }
+    # Read the two fields directly rather than through Get-RecordDisplayField:
+    # this helper is called from outcome reporting and from tests, and must not
+    # depend on the wider UI scope being loaded to answer "where is it".
+    $scope = $Record.PSObject.Properties['scope']
+    if ($null -ne $scope -and [string]$scope.Value -eq 'global') { return 'global (user profile)' }
+    $target = $Record.PSObject.Properties['targetProjectRoot']
+    if ($null -ne $target -and -not [string]::IsNullOrWhiteSpace([string]$target.Value)) { return [string]$target.Value }
+    return '(unknown location)'
+}
+
 # Can this DISCOVERED record be removed automatically, and if not, why not?
 #
 # Discovered records are found, not installed, so the scan itself records how
@@ -549,14 +572,35 @@ function Invoke-UninstallInstalledHooks {
             }
             elseif (-not $threw) { $overall = 'failed' }
 
+            # A bare record id tells the user NOTHING about which hook this was or
+            # where it lives, which is exactly what they need when a row asks for
+            # manual repair - the id alone forced a registry lookup by hand. A
+            # clean removal stays short; anything needing action names the file.
+            $rowName = Get-HookFriendlyName (Get-RecordDisplayField $record 'friendlyName' 'unknown-record')
+            $rowWhere = Get-RecordLocationText $record
             switch ($overall) {
-                'ok' { [void]$removed.Add($id); Write-Host ('  ' + (Get-Painted 'removed' $C.Green) + ' ' + $id) }
-                'manualRepair' { [void]$manual.Add($id); Write-Host ('  ' + (Get-Painted 'manual repair needed' $C.Amber) + ' ' + $id) }
+                'ok' { [void]$removed.Add($id); Write-Host ('  ' + (Get-Painted 'removed' $C.Green) + ' ' + $rowName) }
+                'manualRepair' {
+                    [void]$manual.Add($id)
+                    Write-Host ('  ' + (Get-Painted 'manual repair needed' $C.Amber) + ' ' + $rowName)
+                    Write-Host ('      ' + (Get-Painted $rowWhere $C.Gray))
+                    Write-Log 'WARNING' 'UNINSTALL' ('Manual repair needed: ' + $rowName + ' at ' + $rowWhere + ' (id ' + $id + ')')
+                }
                 # 'partial' is the discovered remover's honest middle outcome:
                 # something really came off but not everything, so it must not be
                 # reported as a clean removal.
-                'partial' { [void]$manual.Add($id); Write-Host ('  ' + (Get-Painted 'partially removed - needs attention' $C.Amber) + ' ' + $id) }
-                default { [void]$failed.Add($id); Write-Host ('  ' + (Get-Painted 'failed' $C.Red) + ' ' + $id) }
+                'partial' {
+                    [void]$manual.Add($id)
+                    Write-Host ('  ' + (Get-Painted 'partially removed - needs attention' $C.Amber) + ' ' + $rowName)
+                    Write-Host ('      ' + (Get-Painted $rowWhere $C.Gray))
+                    Write-Log 'WARNING' 'UNINSTALL' ('Partially removed: ' + $rowName + ' at ' + $rowWhere + ' (id ' + $id + ')')
+                }
+                default {
+                    [void]$failed.Add($id)
+                    Write-Host ('  ' + (Get-Painted 'failed' $C.Red) + ' ' + $rowName)
+                    Write-Host ('      ' + (Get-Painted $rowWhere $C.Gray))
+                    Write-Log 'ERROR' 'UNINSTALL' ('Uninstall failed: ' + $rowName + ' at ' + $rowWhere + ' (id ' + $id + ')')
+                }
             }
         }
         Write-Host ''

@@ -882,6 +882,32 @@ try {
     Check 'uninstall: the refusal re-asks instead of exiting the screen' (
         (@([regex]::Matches($allBlocked, [regex]::Escape('Installed hooks:'))).Count -eq 2) -and
         ($allBlocked -match 'Canceled\. Nothing was changed\.')) $allBlocked
+
+    # ---- where a record lives (round 40) -----------------------------------
+    # The uninstall outcome lines used to print only an opaque record id, so a
+    # row asking for manual repair told the user nothing about WHICH hook it was
+    # or where to go and look - the id had to be resolved against the registry
+    # by hand. A native Git hook is one exact file, and that path is the answer.
+    $locNative = [pscustomobject]@{
+        friendlyName = 'pre-push (Ftree)'
+        scope        = 'project'
+        targetProjectRoot = 'G:\proj\Ftree'
+        nativeGit    = [pscustomobject]@{ hookPath = 'G:\proj\Ftree\.git\hooks\pre-push' }
+    }
+    Check 'location: a native Git hook reports its exact file path' ((Get-RecordLocationText $locNative) -eq 'G:\proj\Ftree\.git\hooks\pre-push') (Get-RecordLocationText $locNative)
+
+    $locProject = [pscustomobject]@{ friendlyName = 'Secrets-Check'; scope = 'project'; targetProjectRoot = 'G:\proj\Thing' }
+    Check 'location: a project install reports its project root' ((Get-RecordLocationText $locProject) -eq 'G:\proj\Thing') (Get-RecordLocationText $locProject)
+
+    $locGlobal = [pscustomobject]@{ friendlyName = 'Secrets-Check'; scope = 'global'; targetProjectRoot = '' }
+    Check 'location: a global install says so instead of showing an empty path' ((Get-RecordLocationText $locGlobal) -match 'global') (Get-RecordLocationText $locGlobal)
+
+    # Never render a blank or misleading location: an unknown one must SAY it is
+    # unknown, otherwise the line reads as though the hook is nowhere.
+    $locUnknown = [pscustomobject]@{ friendlyName = 'x'; scope = 'project'; targetProjectRoot = '' }
+    Check 'location: an unresolvable record says the location is unknown' ((Get-RecordLocationText $locUnknown) -match 'unknown') (Get-RecordLocationText $locUnknown)
+    Check 'location: a null record does not throw' ((Get-RecordLocationText $null) -match 'unknown') (Get-RecordLocationText $null)
+
 }
 finally {
     $env:HOOKMAKER_STATE_DIR = $SavedHookMakerStateDir
