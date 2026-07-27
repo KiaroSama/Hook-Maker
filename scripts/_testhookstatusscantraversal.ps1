@@ -319,6 +319,12 @@ $pruneRoot = New-Dir (Join-Path $Work 'PruneRoot')
 New-ClaudeHook -ProjectRoot (New-Dir (Join-Path $pruneRoot 'app\node_modules\some-pkg')) -HookName 'ZZZ-Pruned-NodeModules' | Out-Null
 New-ClaudeHook -ProjectRoot (New-Dir (Join-Path $pruneRoot 'app\.next\cached')) -HookName 'ZZZ-Pruned-Next' | Out-Null
 New-ClaudeHook -ProjectRoot (New-Dir (Join-Path $pruneRoot 'py\.venv\Lib')) -HookName 'ZZZ-Pruned-Venv' | Out-Null
+# Reference collections: third-party skills/MCP material that holds other
+# people's .claude and .codex directories - findings for hooks nobody
+# installed here.
+New-ClaudeHook -ProjectRoot (New-Dir (Join-Path $pruneRoot '.OTHERS\steering')) -HookName 'ZZZ-Pruned-Others' | Out-Null
+New-ClaudeHook -ProjectRoot (New-Dir (Join-Path $pruneRoot '.SKILLS\somepack')) -HookName 'ZZZ-Pruned-Skills' | Out-Null
+New-ClaudeHook -ProjectRoot (New-Dir (Join-Path $pruneRoot '.MCPs\server')) -HookName 'ZZZ-Pruned-Mcps' | Out-Null
 # NOT pruned: a project can legitimately live under a directory called build or
 # dist, so those names are deliberately absent from the prune list. This is the
 # assertion that stops someone "tidying up" by adding them.
@@ -328,7 +334,8 @@ New-ClaudeHook -ProjectRoot (New-Dir (Join-Path $pruneRoot 'normal')) -HookName 
 
 $pruneScan = Invoke-Scan -Root $pruneRoot
 Check 'the pruning scan exits 0' ($pruneScan.Exit -eq 0) $pruneScan.Err
-foreach ($hidden in @('ZZZ-Pruned-NodeModules.ps1', 'ZZZ-Pruned-Next.ps1', 'ZZZ-Pruned-Venv.ps1')) {
+foreach ($hidden in @('ZZZ-Pruned-NodeModules.ps1', 'ZZZ-Pruned-Next.ps1', 'ZZZ-Pruned-Venv.ps1',
+        'ZZZ-Pruned-Others.ps1', 'ZZZ-Pruned-Skills.ps1', 'ZZZ-Pruned-Mcps.ps1')) {
     Check ('a hook inside a pruned cache is NOT reported: ' + $hidden) (
         -not (Test-FoundTarget -Result $pruneScan.Result -Fragment $hidden))
 }

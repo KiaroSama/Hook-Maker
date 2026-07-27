@@ -47,7 +47,14 @@
 $script:ScanPrunedDirectoryNames = @(
     'node_modules', '.next', '.nuxt', '.svelte-kit', '.angular', '.parcel-cache',
     '.venv', 'venv', '__pycache__', '.pytest_cache', '.mypy_cache', '.ruff_cache', '.tox',
-    '.gradle', '.terraform', '.turbo'
+    '.gradle', '.terraform', '.turbo',
+    # Reference collections, not projects: third-party skills, MCP servers and
+    # assorted material kept for reading. They hold other people's agent
+    # configuration - including .claude and .codex directories that are NOT
+    # installs of ours - so walking them produced findings and reparse-point
+    # skips for hooks nobody installed here. Add machine-specific collection
+    # folders here; keep real project trees out of this list.
+    '.OTHERS', '.SKILLS', '.MCPs'
 )
 # Count plus the DISTINCT names actually hit - not the paths. A machine with
 # hundreds of node_modules trees would otherwise bloat the result document with
