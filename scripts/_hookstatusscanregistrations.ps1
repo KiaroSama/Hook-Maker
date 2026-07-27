@@ -1,3 +1,4 @@
+$script:ScanKnownToolRoots = $null
 # ---------------------------------------------------------------------------
 # Registration parsing for the hook-status scan engine. Dot-sourced by
 # _hookstatusscan.ps1 ONLY (which Get-HookStatus.ps1 dot-sources), so exactly
@@ -296,7 +297,17 @@ function New-RegistrationFinding {
         $managedBy = 'external'
         foreach ($field in @(Get-DiscoveryCommandFields -Handler $Handler)) {
             $info = $null
-            try { $info = Get-HookMakerCommandInfo -Command $field.Value -KnownToolRoots @(Get-KnownToolRoots -ToolRoot $ToolRoot) }
+            # Get-KnownToolRoots parses the ENTIRE install registry (~1 s
+            # against a 5 MB / 563-record file) and was called here for EVERY
+            # command field of EVERY finding - 66 of the scan's 116 seconds on
+            # one project, and the reason a full-tree scan (591 registrations)
+            # never finished. The roots cannot change mid-scan, so resolve them
+            # once per scan. Same disease as the install-path double-parse fixed
+            # in f72ebe8: an unindexed re-read of the same growing registry.
+            if ($null -eq $script:ScanKnownToolRoots) {
+                $script:ScanKnownToolRoots = @(Get-KnownToolRoots -ToolRoot $ToolRoot)
+            }
+            try { $info = Get-HookMakerCommandInfo -Command $field.Value -KnownToolRoots $script:ScanKnownToolRoots }
             catch { continue }
             if ($null -ne $info -and $info.IsHookMaker) { $managedBy = 'hookMaker'; $hookMakerName = [string]$info.HookName; break }
         }
@@ -413,7 +424,13 @@ function New-KiroRegistrationFinding {
             $targetExists = (Test-Path -LiteralPath $parsedTargets[0] -PathType Leaf)
             $registrationStatus = $(if ($targetExists) { 'parsed' } else { 'targetMissing' })
             $info = $null
-            try { $info = Get-HookMakerCommandInfo -Command $command -KnownToolRoots @(Get-KnownToolRoots -ToolRoot $ToolRoot) }
+            # Same scan-lifetime cache as the settings path above: this is the
+            # second call site of the full-registry re-parse, and the full-tree
+            # scan hits it once per per-hook registration file.
+            if ($null -eq $script:ScanKnownToolRoots) {
+                $script:ScanKnownToolRoots = @(Get-KnownToolRoots -ToolRoot $ToolRoot)
+            }
+            try { $info = Get-HookMakerCommandInfo -Command $command -KnownToolRoots $script:ScanKnownToolRoots }
             catch { $info = $null }
             if ($null -ne $info -and $info.IsHookMaker) { $hookMakerName = [string]$info.HookName }
         }

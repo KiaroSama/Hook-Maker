@@ -242,12 +242,19 @@ catch {
 # ---- progress --------------------------------------------------------------
 
 $script:LastProgressAt = [DateTime]::UtcNow
+
+# The elapsed counter advances on its OWN one-second tick, independent of how
+# fast items are processed. It used to repaint only when the scan happened to
+# call in, so a slow item (one settings file can take tens of seconds) froze the
+# clock and a running scan read as hung. Counters still show whatever the last
+# call left, but the SECONDS are always truthful.
 function Show-ScanProgress {
     param([switch]$Force)
     $now = [DateTime]::UtcNow
-    if (-not $Force -and ($now - $script:LastProgressAt).TotalMilliseconds -lt 750) { return }
+    $sinceTick = ($now - $script:LastProgressAt).TotalMilliseconds
+    if (-not $Force -and $sinceTick -lt 1000) { return }
     $script:LastProgressAt = $now
-    $elapsed = [math]::Round(($now - $script:StartedAt).TotalSeconds, 1)
+    $elapsed = [int][math]::Floor(($now - $script:StartedAt).TotalSeconds)
     try {
         Write-Progress -Id 1 -Activity 'Scanning for installed hooks' -Status (
             'directories ' + $script:DirectoriesInspected +
