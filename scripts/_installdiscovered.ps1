@@ -503,7 +503,10 @@ function Merge-DiscoveredRecord {
         if ([string]$candidate.id -ne [string]$Record.id) { continue }
         $firstSeenProperty = $candidate.PSObject.Properties['firstSeenUtc']
         if ($null -ne $firstSeenProperty -and -not [string]::IsNullOrWhiteSpace([string]$firstSeenProperty.Value)) {
-            Set-ObjectProperty -Object $Record -Name 'firstSeenUtc' -Value ([string]$firstSeenProperty.Value)
+            # NOT [string]: that renders a deserialized [datetime] in the current
+            # culture and permanently destroys the ISO 8601 form, which is what
+            # made every carried-forward discovered record unremovable.
+            Set-ObjectProperty -Object $Record -Name 'firstSeenUtc' -Value (ConvertTo-RegistryUtcTimestamp -Value $firstSeenProperty.Value)
         }
         $existingList[$i] = $Record
         $Registry.installs = $existingList

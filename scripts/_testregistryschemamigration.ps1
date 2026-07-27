@@ -200,3 +200,48 @@
         Check 'a v3 registry reads as ok' ((Read-InstallRegistryState -ToolRoot $futureRoot).State -eq 'ok')
     }
     finally { $env:HOOKMAKER_STATE_DIR = $savedFutureStateDir }
+
+# ---- UTC timestamp carry-forward (round 40) --------------------------------
+# ConvertFrom-Json turns an ISO-8601 string back into a [datetime]; casting THAT
+# with [string] renders it in the CURRENT CULTURE and destroys the ISO form.
+# Every one of 334 real discovered records was corrupted this way: each survived
+# one rescan, then failed the strict UTC validator forever and could never be
+# uninstalled. These assertions pin both halves - never re-corrupt, and repair
+# what is already corrupted.
+$stampRoundTripped = ('{"t":"' + [DateTime]::UtcNow.ToString('o') + '"}') | ConvertFrom-Json
+Check 'a JSON round trip really yields a [datetime], not a string' ($stampRoundTripped.t -is [datetime]) ($stampRoundTripped.t.GetType().FullName)
+Check 'the old [string] cast is NOT ISO 8601 - this is the trap itself' (([string]$stampRoundTripped.t) -notmatch '^\d{4}-\d{2}-\d{2}T') ([string]$stampRoundTripped.t)
+
+$stampNormalized = ConvertTo-RegistryUtcTimestamp -Value $stampRoundTripped.t
+Check 'the normalizer keeps ISO 8601 UTC across the round trip' ($stampNormalized -match '^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}.*Z$') $stampNormalized
+
+# An already-corrupted value is REPAIRED, not passed through - passing it
+# through is what left the records permanently unremovable.
+$stampRepaired = ConvertTo-RegistryUtcTimestamp -Value '07/26/2026 23:22:47'
+Check 'a locale-rendered timestamp is repaired to the same instant in ISO 8601' ($stampRepaired -match '^2026-07-26T23:22:47') $stampRepaired
+
+# ...but it must never INVENT a timestamp it cannot actually read.
+Check 'an unreadable timestamp is returned untouched, not replaced with now' ((ConvertTo-RegistryUtcTimestamp -Value 'not-a-timestamp') -eq 'not-a-timestamp')
+Check 'an empty timestamp stays empty' ((ConvertTo-RegistryUtcTimestamp -Value '') -eq '')
+
+# The repair runs on READ, so an already-corrupted registry is usable straight
+# away instead of staying stuck until something happens to rescan it.
+$stampRegistry = [pscustomobject]@{
+    version  = 3
+    installs = @([pscustomobject]@{
+            id           = 'stamp-1'
+            recordType   = 'discovered'
+            firstSeenUtc = '07/26/2026 23:22:47'
+            lastSeenUtc  = '07/26/2026 23:22:48'
+        })
+}
+$stampCurrent = ConvertTo-InstallRegistryCurrent -Registry $stampRegistry
+$stampRecord = @($stampCurrent.installs)[0]
+Check 'reading the registry repairs a corrupted firstSeenUtc' ([string]$stampRecord.firstSeenUtc -match '^2026-07-26T23:22:47') ([string]$stampRecord.firstSeenUtc)
+Check 'reading the registry repairs a corrupted lastSeenUtc' ([string]$stampRecord.lastSeenUtc -match '^2026-07-26T23:22:48') ([string]$stampRecord.lastSeenUtc)
+
+# The repaired record must now satisfy the validator that was rejecting it -
+# that rejection is what blocked uninstall.
+$stampDiscovered = [pscustomobject]@{ firstSeenUtc = [string]$stampRecord.firstSeenUtc; lastSeenUtc = [string]$stampRecord.lastSeenUtc }
+Check 'the repaired firstSeenUtc passes the strict UTC field check' ((Test-DiscoveredUtcTimestampField -Object $stampDiscovered -Name 'firstSeenUtc' -Label 'record') -eq '')
+Check 'the repaired lastSeenUtc passes the strict UTC field check' ((Test-DiscoveredUtcTimestampField -Object $stampDiscovered -Name 'lastSeenUtc' -Label 'record') -eq '')
