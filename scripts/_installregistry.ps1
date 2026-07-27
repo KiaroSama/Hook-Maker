@@ -41,6 +41,44 @@
 # shared identity layer both this file's callers and the scanner hash with.
 . (Join-Path $PSScriptRoot '_installdiscovered.ps1')
 
+# Carry a stored UTC timestamp forward WITHOUT destroying its ISO 8601 form.
+#
+# `ConvertFrom-Json` turns an ISO-8601 string back into a real [datetime], so a
+# field that was written correctly is a [datetime] once read back. Casting that
+# with [string] renders it in the CURRENT CULTURE - "07/26/2026 23:22:47" - and
+# writing that back destroys the format permanently. Round 40 found every one of
+# 334 discovered records corrupted this way: each survived one rescan, failed
+# `Test-DiscoveredUtcTimestampField` forever after, and so could never be
+# uninstalled. Same trap as the cross-host ConvertFrom-Json bug in
+# LESSON_POWERSHELL.md, in a new place.
+#
+# A zone-less string is REPAIRED rather than passed through: it is an older
+# build's locale rendering of a UTC time, and leaving it would leave the record
+# permanently unremovable. Parsing assumes UTC because that is what the field
+# means. An unparseable value is returned untouched so the validator still
+# reports it honestly instead of this function inventing a timestamp.
+function ConvertTo-RegistryUtcTimestamp {
+    param($Value)
+    if ($Value -is [datetime]) { return $Value.ToUniversalTime().ToString('o') }
+    if ($Value -is [datetimeoffset]) { return $Value.UtcDateTime.ToString('o') }
+    $text = [string]$Value
+    if ([string]::IsNullOrWhiteSpace($text)) { return '' }
+    # A value that already carries a zone is returned BYTE-FOR-BYTE. Re-emitting
+    # it through ToString('o') would rewrite "...:47Z" as "...:47.0000000Z" -
+    # the same instant, but it breaks the migration contract that only malformed
+    # data is ever touched. A zone-bearing value that is still nonsense is also
+    # left alone, so the validator reports it instead of this function hiding it.
+    if ($text -match '(Z|[+-]\d{2}:?\d{2})$') { return $text }
+    $parsed = [datetime]::MinValue
+    $styles = [System.Globalization.DateTimeStyles]::AssumeUniversal -bor [System.Globalization.DateTimeStyles]::AdjustToUniversal
+    foreach ($culture in @([System.Globalization.CultureInfo]::CurrentCulture, [System.Globalization.CultureInfo]::InvariantCulture)) {
+        if ([datetime]::TryParse($text, $culture, $styles, [ref]$parsed)) {
+            return ([DateTime]::SpecifyKind($parsed, [System.DateTimeKind]::Utc)).ToString('o')
+        }
+    }
+    return $text
+}
+
 # ---- registry file: path, validation, quarantine, locking ------------------
 
 function Get-InstallStateDirectory {
@@ -527,6 +565,27 @@ function ConvertTo-InstallRegistryCurrent {
     param([Parameter(Mandatory = $true)]$Registry)
     $migrated = New-Object System.Collections.Generic.List[object]
     foreach ($record in @($Registry.installs)) {
+        # Repair UTC timestamps on READ, not only on rescan. An older build
+        # carried these forward with [string], which renders a deserialized
+        # [datetime] in the current culture and destroys the ISO 8601 form. Doing
+        # it here means an already-corrupted registry is usable immediately -
+        # otherwise a record stays unremovable until something happens to rescan
+        # it, which is exactly how 334 records became permanently stuck.
+        # Only a zone-LESS STRING is repaired. A live [datetime] is already valid
+        # (the field check accepts it), and a zone-bearing string is already ISO,
+        # so touching either would rewrite healthy data and break the contract
+        # that migration changes nothing but the two fields it adds.
+        if ($null -ne $record) {
+            foreach ($stampField in @('firstSeenUtc', 'lastSeenUtc', 'createdUtc')) {
+                $stampProperty = $record.PSObject.Properties[$stampField]
+                if ($null -eq $stampProperty) { continue }
+                $stampValue = $stampProperty.Value
+                if ($stampValue -is [string] -and -not [string]::IsNullOrWhiteSpace($stampValue) -and
+                    $stampValue -notmatch '(Z|[+-]\d{2}:?\d{2})$') {
+                    Set-ObjectProperty -Object $record -Name $stampField -Value (ConvertTo-RegistryUtcTimestamp -Value $stampValue)
+                }
+            }
+        }
         # A discovered record is already current - it is only ever written by a
         # schema-3 writer - and must not be pushed through the v1->v2 managed
         # rebuild, which would try to read v1 client fields it never had.
@@ -589,7 +648,7 @@ function Set-InstallRecord {
     }
     if ($existingIndex -ge 0) {
         $existing = $existingList[$existingIndex]
-        Set-ObjectProperty -Object $Record -Name 'createdUtc' -Value ([string]$existing.createdUtc)
+        Set-ObjectProperty -Object $Record -Name 'createdUtc' -Value (ConvertTo-RegistryUtcTimestamp -Value $existing.createdUtc)
         # Carry forward every client subrecord this invocation did NOT touch.
         #
         # Derived from the capability table, NOT a literal pair. It was
