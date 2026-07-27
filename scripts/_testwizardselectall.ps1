@@ -15,7 +15,17 @@
     # =====================================================================
     Write-Host '--- Select all hooks (aggregate menu item 1 = sync group + every hook) ---' -ForegroundColor Cyan
     $RealHooksDir = Join-Path (Split-Path -Parent $PSScriptRoot) 'hooks'
+    # TWO different numbers, and conflating them is what let a sibling suite's
+    # ZZZ-* fixture (or an aborted run's leftover) break this block:
+    #   $hookCount        every hook Select All will configure - shipped AND
+    #                     custom, so a ZZZ-* fixture belongs in it.
+    #   $shippedHookCount MENU-INDEX arithmetic only. Custom hooks render AFTER
+    #                     the three management rows, so a shipped index is
+    #                     shipped+N and must never count a ZZZ-* fixture -
+    #                     otherwise +2 selects "Update installed hooks" and the
+    #                     scripted answers march on into the wrong flow.
     $hookCount = @(Get-ChildItem -LiteralPath $RealHooksDir -Directory -ErrorAction SilentlyContinue | Where-Object { $_.Name -ne 'Cross-Project-.ai-Knowledge-Sync' }).Count
+    $shippedHookCount = @(Get-ChildItem -LiteralPath $RealHooksDir -Directory -ErrorAction SilentlyContinue | Where-Object { $_.Name -ne 'Cross-Project-.ai-Knowledge-Sync' -and $_.Name -notlike 'ZZZ-*' }).Count
     $syncX = New-Proj 'SelectAllSyncX'; $syncY = New-Proj 'SelectAllSyncY'
 
     $cfgAll = Join-Path $Work 'cfg-all.json'; New-Config $cfgAll
@@ -93,7 +103,7 @@
     $cfgPenult = Join-Path $Work 'cfg-penult.json'; New-Config $cfgPenult
     $penultProj = New-Proj 'PenultEntryProj'
     # Answers after the hook item are events '2', then client '1' (= Claude).
-    $rPenult = Invoke-Wizard -Config $cfgPenult -Answers @('1', '1', ($hookCount + 1).ToString(), '2', '1', $penultProj, 'done', '', '0')
+    $rPenult = Invoke-Wizard -Config $cfgPenult -Answers @('1', '1', ($shippedHookCount + 1).ToString(), '2', '1', $penultProj, 'done', '', '0')
     Check 'selecting the second-to-last individual entry installs Utf8-Encoding-Check' (Test-Path (Join-Path $penultProj '.claude\hooks\Hook-Maker\Utf8-Encoding-Check\Utf8-Encoding-Check.ps1'))
     Check 'did not install the neighboring Cloudflare-Deploy hook instead' (-not (Test-Path (Join-Path $penultProj '.claude\hooks\Hook-Maker\Cloudflare-Deploy')))
 
@@ -102,7 +112,7 @@
     $cfgLast = Join-Path $Work 'cfg-last.json'; New-Config $cfgLast
     $lastProj = New-Proj 'LastEntryProj'
     # Answers after the hook item are events '2', then client '1' (= Claude).
-    $rLast = Invoke-Wizard -Config $cfgLast -Answers @('1', '1', ($hookCount + 2).ToString(), '2', '1', $lastProj, 'done', '', '0')
+    $rLast = Invoke-Wizard -Config $cfgLast -Answers @('1', '1', ($shippedHookCount + 2).ToString(), '2', '1', $lastProj, 'done', '', '0')
     Check 'selecting the last individual entry installs Cloudflare-Deploy' (Test-Path (Join-Path $lastProj '.claude\hooks\Hook-Maker\Cloudflare-Deploy\Cloudflare-Deploy.ps1'))
     Check 'selecting a single individual entry does not run the sync group' ($rLast.Out -notmatch 'Running the sync group first')
 
@@ -158,10 +168,10 @@
     Write-Host '--- installer/idempotency check: the two menu-affected hooks (19, 23) ---' -ForegroundColor Cyan
     # Test-Temp-Cleanup keeps its stable index 19 (the three new test-health
     # hooks were inserted AFTER it); Cloudflare-Deploy stays the last entry and
-    # therefore moved 20 -> 23, i.e. $hookCount + 2.
+    # therefore moved 20 -> 23, i.e. $shippedHookCount + 2.
     $cfgAffected = Join-Path $Work 'cfg-affected.json'; New-Config $cfgAffected
     $affectedProj = New-Proj 'AffectedHooksProj'
-    $affectedSelection = '19,' + ($hookCount + 2).ToString()
+    $affectedSelection = '19,' + ($shippedHookCount + 2).ToString()
     $rAffected = Invoke-Wizard -Config $cfgAffected -Answers @('1', '1', $affectedSelection, '1', '1', $affectedProj, 'done', '', '0')
     Check 'exit 0 (installing Test-Temp-Cleanup + Cloudflare-Deploy together)' ($rAffected.Exit -eq 0)
     Check 'both affected hooks installed' (
@@ -251,11 +261,16 @@
     # its own try/finally so the real hooks\ directory is never left dirty.
     $syntheticName = 'ZZZ-Synthetic-Test-Hook'
     $syntheticDir = Join-Path $RealHooksDir $syntheticName
+    # Baseline taken HERE, not at the top of the file: this assertion is about the
+    # delta one fixture makes, and many wizard runs (and any sibling suite) sit
+    # between the two points. Comparing against the stale opening count turns
+    # someone else's throwaway hook into a failure of ours.
+    $preSyntheticHookCount = @(Get-ChildItem -LiteralPath $RealHooksDir -Directory -ErrorAction SilentlyContinue | Where-Object { $_.Name -ne 'Cross-Project-.ai-Knowledge-Sync' }).Count
     try {
         New-Item -ItemType Directory -Path $syntheticDir -Force | Out-Null
         Set-Content -LiteralPath (Join-Path $syntheticDir ($syntheticName + '.ps1')) -Value 'exit 0' -Encoding utf8
         $newHookCount = @(Get-ChildItem -LiteralPath $RealHooksDir -Directory -ErrorAction SilentlyContinue | Where-Object { $_.Name -ne 'Cross-Project-.ai-Knowledge-Sync' }).Count
-        Check 'synthetic fixture increases the discovered hook count by exactly one' ($newHookCount -eq $hookCount + 1)
+        Check 'synthetic fixture increases the discovered hook count by exactly one' ($newHookCount -eq $preSyntheticHookCount + 1) ('before=' + $preSyntheticHookCount + ' after=' + $newHookCount)
 
         $cfgFuture = Join-Path $Work 'cfg-future.json'; New-Config $cfgFuture
         $fX = New-Proj 'SelAllFutureX'; $fY = New-Proj 'SelAllFutureY'

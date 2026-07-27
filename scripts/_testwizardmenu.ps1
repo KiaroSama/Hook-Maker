@@ -19,15 +19,21 @@
     Check 'no stderr' ($r.Err -eq '')
     Check 'main menu merged (Create or install a hook)' ($r.Out -match '1\. Create or install a hook')
     Check 'no separate top-level sync-group option' ($r.Out -notmatch '1\. Create or update a sync group\s*\r?\n\s*2\. Show')
-    Check 'select-all is list item 1, and with no custom hook the span is just the shipped block' (
-        $r.Out -match '(?m)^  1\. Select all hooks \| \[all\] \| run the sync group \(2\) and install every hook below \(3-24\)\s*$')
+    # The optional " and N-M" group is NOT slack in the shipped span: it absorbs a
+    # sibling suite's ZZZ-* fixture (or an aborted run's leftover), which the
+    # wizard correctly renders as a SECOND span. The shipped span itself is still
+    # pinned exactly at 3-24, and the both-spans rendering is asserted positively
+    # by the ZZZ-MenuSpan case below - so nothing this line used to prove is lost
+    # except "no custom hook exists right now", which is not this suite's to own.
+    Check 'select-all is list item 1 and the shipped span is exactly 3-24' (
+        $r.Out -match '(?m)^  1\. Select all hooks \| \[all\] \| run the sync group \(2\) and install every hook below \(3-24( and \d+-\d+)?\)\s*$') $r.Out
     # The hook numbers are NOT contiguous once a custom hook exists: three
     # management rows sit between the shipped and custom blocks. The old hint
     # printed one '3-N' span computed as shipped+custom+2, which BOTH swept the
     # management rows in and stopped short of the custom hook. It read correctly
     # only while no custom hook existed - which is all this fixture had, so the
     # assertion above agreed with the bug. The real span is asserted below.
-    Check 'the tip states where the hooks actually are' ($r.Out -match 'Hooks are 3-24; 25/26/27 are management actions')
+    Check 'the tip states where the hooks actually are' ($r.Out -match 'Hooks are 3-24( and \d+-\d+)?; 25/26/27 are management actions') $r.Out
     Check 'sync group is list item 2' ($r.Out -match '2\. Create or update a sync group')
     Check 'context hook menu names match their whole-.ai scope' ($r.Out -match 'Ai-Context-Check' -and $r.Out -match 'Ai-Context-Load')
     Check 'old memory-only menu names are hidden' ($r.Out -notmatch 'Ai-Memory-(Check|Load)')
@@ -49,7 +55,13 @@
     Check 'Ignore-Rules-Check renders a recognized (non-blank) timing tag' ($r.Out -match 'Ignore-Rules-Check[\s\S]*?\[(pre|post|pre\+post)-task\]') $r.Out
     Check 'Ignore-Rules-Check renders the [pre+post-task] tag (real events: SessionStart,Stop)' ($r.Out -match 'Ignore-Rules-Check[\s\S]*?\[pre\+post-task\]') $r.Out
     Check 'Skills-Check renders the [pre+post-task] tag (real events include Stop)' ($r.Out -match 'Skills-Check[\s\S]*?\[pre\+post-task\]') $r.Out
-    $allShippedHookCount = @(Get-ChildItem -LiteralPath (Join-Path (Split-Path -Parent $PSScriptRoot) 'hooks') -Directory -ErrorAction SilentlyContinue | Where-Object { $_.Name -ne 'Cross-Project-.ai-Knowledge-Sync' }).Count
+    # ZZZ-* is this project's reserved throwaway-fixture prefix (ZZZ-Regtest,
+    # ZZZ-Ld, ZZZ-Uninst, ...). Sibling suites create those directly inside the
+    # real hooks\, and an aborted run can leave one behind - either way they are
+    # CUSTOM hooks to the wizard (not in $script:HookMeta), so they render after
+    # the management rows with no timing tag and never shift a shipped index.
+    # Counting them here is what made this suite fail on someone else's fixture.
+    $allShippedHookCount = @(Get-ChildItem -LiteralPath (Join-Path (Split-Path -Parent $PSScriptRoot) 'hooks') -Directory -ErrorAction SilentlyContinue | Where-Object { $_.Name -ne 'Cross-Project-.ai-Knowledge-Sync' -and $_.Name -notlike 'ZZZ-*' }).Count
     $preTagCount = @([regex]::Matches($r.Out, '\[pre-task\]')).Count
     $postTagCount = @([regex]::Matches($r.Out, '\[post-task\]')).Count
     $bothTagCount = @([regex]::Matches($r.Out, '\[pre\+post-task\]')).Count
@@ -99,8 +111,36 @@
             $rSpan.Out -match '(?m)^  28\. ZZZ-') $rSpan.Out
         Check 'the management rows stay at 25/26/27 regardless of custom hooks' (
             $rSpan.Out -match '(?m)^  25\. Update installed hooks \|') $rSpan.Out
+
+        # ZZZ-* IMMUNITY (this suite counts the REAL hooks\ directory, which
+        # sibling suites write throwaway fixtures into). A leftover
+        # hooks/ZZZ-MenuSpan from one aborted run broke five assertions in the
+        # next run, which is why Test-Wizard sits in Run-Tests' exclusive list.
+        # The fixture above is a live ZZZ-* hook, so recount and re-derive the
+        # same numbers with it in place: both must be identical to the clean
+        # render. These three ride on the existing fixture on purpose (a second
+        # wizard spawn buys nothing) - keep them if that block is ever reworked.
+        $spanShippedCount = @(Get-ChildItem -LiteralPath (Join-Path (Split-Path -Parent $PSScriptRoot) 'hooks') -Directory -ErrorAction SilentlyContinue | Where-Object { $_.Name -ne 'Cross-Project-.ai-Knowledge-Sync' -and $_.Name -notlike 'ZZZ-*' }).Count
+        Check 'ZZZ-* immunity: a fixture in the real hooks\ does not change the shipped-hook count' (
+            $spanShippedCount -eq $allShippedHookCount) ('withFixture=' + $spanShippedCount + ' clean=' + $allShippedHookCount)
+        $spanPre = @([regex]::Matches($rSpan.Out, '\[pre-task\]')).Count
+        $spanPost = @([regex]::Matches($rSpan.Out, '\[post-task\]')).Count
+        $spanBoth = @([regex]::Matches($rSpan.Out, '\[pre\+post-task\]')).Count
+        Check 'ZZZ-* immunity: the timing-tag total still resolves against the shipped count (custom hooks carry no tag)' (
+            ($spanPre + $spanPost + $spanBoth) -eq ($spanShippedCount + 1)) ('pre=' + $spanPre + ' post=' + $spanPost + ' both=' + $spanBoth + ' expected=' + ($spanShippedCount + 1))
+        # The failure that actually bit: shipped+2 is the LAST shipped menu row.
+        # Counting a ZZZ-* fixture pushes it onto "Update installed hooks", so
+        # the scripted answers install/scan the wrong thing instead of erroring.
+        Check 'ZZZ-* immunity: the derived last-shipped index still lands on Cloudflare-Deploy, not a management row' (
+            $rSpan.Out -match ('(?m)^  ' + ($spanShippedCount + 2) + '\. Cloudflare-Deploy \|')) $rSpan.Out
     }
-    finally { Remove-Item -LiteralPath $spanHook -Recurse -Force -ErrorAction SilentlyContinue }
+    finally {
+        Remove-Item -LiteralPath $spanHook -Recurse -Force -ErrorAction SilentlyContinue
+        # A leaked hooks/ZZZ-* corrupts every suite that counts the real
+        # directory, so prove the cleanup rather than assume it.
+        Check 'the ZZZ-MenuSpan fixture was removed from the real hooks directory' (
+            -not (Test-Path -LiteralPath $spanHook)) $spanHook
+    }
 
     Check '_hooklib excluded from listing' ($r.Out -notmatch '_hooklib')
     Check 'full back suffix on sub-prompts' ($r.Out -match 'back=0' -and $r.Out -match 'quit=exit')
@@ -350,7 +390,11 @@
     # regardless of what the hook actually needed - a Stop-only hook like
     # Cloudflare-Deploy or a SessionStart+Stop hook like Docs-Freshness-Check
     # could silently be installed on the wrong events by just pressing Enter.
-    $shippedHookCountForEventsTest = @(Get-ChildItem -LiteralPath (Join-Path (Split-Path -Parent $PSScriptRoot) 'hooks') -Directory -ErrorAction SilentlyContinue | Where-Object { $_.Name -ne 'Cross-Project-.ai-Knowledge-Sync' }).Count
+    # ZZZ-* fixtures excluded: this count is MENU-INDEX arithmetic (+2 = the last
+    # shipped row). A custom hook sits AFTER the three management rows, so
+    # counting one here walks the selection straight into "Update installed
+    # hooks" and desynchronises every scripted answer that follows.
+    $shippedHookCountForEventsTest = @(Get-ChildItem -LiteralPath (Join-Path (Split-Path -Parent $PSScriptRoot) 'hooks') -Directory -ErrorAction SilentlyContinue | Where-Object { $_.Name -ne 'Cross-Project-.ai-Knowledge-Sync' -and $_.Name -notlike 'ZZZ-*' }).Count
     $cfgRecStop = Join-Path $Work 'cfg-rec-stop.json'; New-Config $cfgRecStop
     $recStopProj = New-Proj 'RecommendedStopOnly'
     # main 1 -> sub 1 -> last individual entry (Cloudflare-Deploy, Stop-only) ->

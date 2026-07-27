@@ -92,6 +92,59 @@ function Remove-FixtureHook {
     if (Test-Path -LiteralPath $dir) { Remove-Item -LiteralPath $dir -Recurse -Force -ErrorAction SilentlyContinue }
 }
 
+# ---- immunity to OTHER suites' throwaway fixtures --------------------------
+# ZZZ- is this project's reserved prefix for throwaway hook fixtures, and
+# several suites create them directly inside the REAL hooks\ directory. Such a
+# directory is a CUSTOM hook to the wizard (it is not in $script:HookMeta), so
+# it takes an index in the custom block and pushes every later row down one - a
+# leftover from an aborted run silently corrupted this suite's counts and row
+# assertions. Every count and index taken off the real hooks\ directory below
+# therefore goes through Remove-ForeignFixtureRows first.
+#
+# This suite's OWN fixtures are kept: they are what the custom-block assertions
+# are about. Everything else starting with ZZZ- belongs to another suite.
+$script:OwnFixtureHooks = @('ZZZ-Menusuite-Fixture')
+function Test-ForeignFixtureRow {
+    param([string]$Label)
+    # -match is case-insensitive, which is the intent: zzz-, Zzz- and ZZZ- are
+    # all the same reserved fixture prefix.
+    if ($Label -notmatch '^ZZZ-') { return $false }
+    foreach ($own in $script:OwnFixtureHooks) {
+        if ($Label -match ('^' + [regex]::Escape($own) + '\b')) { return $false }
+    }
+    return $true
+}
+# Drops foreign fixture rows and shifts the rows after each one down by exactly
+# the number dropped before it, so the surviving rows keep the numbers they
+# would have had on a clean hooks\ directory. It shifts rather than renumbering
+# 1..N on purpose: renumbering would manufacture contiguity and quietly defeat
+# the "rows 3..24 all exist" assertion if a real row ever went missing.
+function Remove-ForeignFixtureRows {
+    param($Rows)
+    if ($null -eq $Rows) { return $null }
+    $dropped = @(@($Rows.Keys) | Where-Object { Test-ForeignFixtureRow ([string]$Rows[$_]) })
+    $out = @{}
+    foreach ($key in @($Rows.Keys)) {
+        if ($dropped -contains $key) { continue }
+        $shift = @($dropped | Where-Object { $_ -lt $key }).Count
+        $out[$key - $shift] = [string]$Rows[$key]
+    }
+    return , $out
+}
+# One comparable string for a whole row map, so "nothing moved" is provable
+# row-for-row instead of by spot-checking a few indices.
+#
+# Row 1 is excluded: it is the "Select all" aggregate, and its hint quotes the
+# LIVE hook spans ("...install every hook below (3-24 and 28-28)"), so it
+# legitimately changes when a hook exists that this suite filters out - that is
+# the wizard counting correctly, not a row moving. Nothing here pins that hint's
+# text; the assertion on row 1 matches its "Select all hooks" prefix only.
+function Get-RowSignature {
+    param($Rows)
+    if ($null -eq $Rows) { return '<no rows>' }
+    return ((@($Rows.Keys) | Sort-Object | Where-Object { $_ -ne 1 } | ForEach-Object { [string]$_ + '. ' + [string]$Rows[$_] }) -join "`n")
+}
+
 function New-Config {
     param([string]$Path)
     '{"version":2,"defaults":{"events":["SessionStart","UserPromptSubmit"]},"profiles":[]}' | Set-Content -LiteralPath $Path -Encoding utf8
@@ -158,7 +211,7 @@ try {
     # ZZZ-Regtest-* throwaway fixture, no internal lower->upper case transition
     # (Get-HookFriendlyName hyphenates PascalCase boundaries; this name already
     # uses hyphens so its rendered label matches the name verbatim).
-    $fxName = 'ZZZ-Regtest-Menu'
+    $fxName = 'ZZZ-Menusuite-Fixture'
     $fxScript = New-FixtureHook $fxName
     try {
         $proj = New-Proj 'Menu22Proj'
@@ -181,7 +234,7 @@ try {
         Check 'the wizard run exits 0' ($r.Exit -eq 0) $r.Err
 
         # ---- list screen: everything Get-InstalledHookSnapshot collects ----
-        Check 'list: the friendly hook name appears' ($r.Out -match [regex]::Escape('ZZZ-Regtest-Menu')) $r.Out
+        Check 'list: the friendly hook name appears' ($r.Out -match [regex]::Escape('ZZZ-Menusuite-Fixture')) $r.Out
         Check 'list: the hook type (CustomHook) appears' ($r.Out -match 'CustomHook') $r.Out
         Check 'list: the exact target project root appears' ($r.Out -match [regex]::Escape($proj)) $r.Out
         Check 'list: Claude''s events appear' ($r.Out -match 'Claude \[SessionStart, Stop\]') $r.Out
@@ -209,7 +262,7 @@ try {
         # "Available hooks:" - the row we want is the one inside "Installed
         # hooks:", so anchor the search there rather than on the first match.
         $installedHeaderAt = $r.Out.IndexOf('Installed hooks:')
-        $sampleStart = if ($installedHeaderAt -ge 0) { $r.Out.IndexOf('ZZZ-Regtest-Menu', $installedHeaderAt) } else { -1 }
+        $sampleStart = if ($installedHeaderAt -ge 0) { $r.Out.IndexOf('ZZZ-Menusuite-Fixture', $installedHeaderAt) } else { -1 }
         if ($sampleStart -ge 0) {
             $sampleEnd = $r.Out.IndexOf("`n`n", $sampleStart)
             if ($sampleEnd -lt 0) { $sampleEnd = [Math]::Min($r.Out.Length, $sampleStart + 600) }
@@ -229,8 +282,15 @@ try {
         # Render the hook list and leave without selecting anything.
         $menu = Invoke-Wizard -Config $cfg -Answers @('1', '1', '0', '0', 'exit') -WorkingDirectory $proj
         Check 'menu: the render-only run exits 0' ($menu.Exit -eq 0) $menu.Err
-        $rows = Get-HookListRows $menu.Out
+        # Foreign ZZZ-* fixtures are removed before ANY count or index below is
+        # taken - see Remove-ForeignFixtureRows. $foreignRowCount is what the
+        # WIZARD still sees (it installs those hooks too), needed wherever an
+        # assertion compares against a number the wizard itself rendered.
+        $rawRows = Get-HookListRows $menu.Out
+        $rows = Remove-ForeignFixtureRows $rawRows
         Check 'menu: the hook list block was rendered' ($null -ne $rows) $menu.Out
+        $foreignRowCount = 0
+        if ($null -ne $rawRows) { $foreignRowCount = @($rawRows.Keys).Count - @($rows.Keys).Count }
 
         if ($null -ne $rows) {
             $indices = @($rows.Keys)
@@ -260,12 +320,12 @@ try {
             # node_modules/.next/... - the row states what the scan DOES, and a
             # scan that no longer walks those trees must say so rather than let
             # the reader assume full coverage.
-            Check 'menu: 26 renders EXACTLY the contract row' ([string]$rows[26] -eq 'Get hook status | [manage] | scan a path, detect installed hooks, and track verified results; skips dependency caches') ([string]$rows[26])
+            Check 'menu: 26 renders EXACTLY the contract row' ([string]$rows[26] -eq 'Get hook status | [manage] | scan a path for installed hooks (skips dependency caches) and track results') ([string]$rows[26])
             Check 'menu: 27 renders EXACTLY the contract row' ([string]$rows[27] -eq 'Uninstall installed hooks | [manage] | list and remove installed hooks; never deletes hook sources') ([string]$rows[27])
 
             # The fixture is the only custom hook, so the custom block starts at
             # 28 - i.e. adding a custom hook did NOT shift 20-27 at all.
-            Check 'menu: custom hooks start at 28' ([string]$rows[28] -match 'ZZZ-Regtest-Menu') ([string]$rows[28])
+            Check 'menu: custom hooks start at 28' ([string]$rows[28] -match 'ZZZ-Menusuite-Fixture') ([string]$rows[28])
             Check 'menu: adding a custom hook did not shift the management rows' (([string]$rows[25] -match 'Update') -and ([string]$rows[26] -match 'Get hook status') -and ([string]$rows[27] -match 'Uninstall')) (($indices | Sort-Object) -join ',')
             Check 'menu: adding a custom hook did not shift the three new shipped rows' (([string]$rows[20] -match 'Test-Plan-Check') -and ([string]$rows[21] -match 'Test-Run-Guard') -and ([string]$rows[22] -match 'Test-Completion-Check')) (($indices | Sort-Object) -join ',')
             Check 'menu: the Tip line names all three management indices' ($menu.Out -match '25/26/27 are management actions') $menu.Out
@@ -286,6 +346,46 @@ try {
                     $rendered -notmatch "[`r`n]" -and $rendered.Length -le $rowBudget) ($rendered.Length.ToString() + ': ' + $rendered)
             }
         }
+
+        Write-Host ''
+        Write-Host '--- a foreign ZZZ-* fixture in the real hooks\ dir moves nothing this suite reads ---' -ForegroundColor Cyan
+
+        # The failure this pins happened for real: a leftover hooks\ZZZ-* from
+        # another suite's aborted run is a custom hook to the wizard, so it took
+        # an index inside the custom block and pushed this suite's own fixture
+        # down one, breaking the counts above. Create one deliberately, render
+        # the SAME menu again, and require the filtered view to be identical
+        # row for row.
+        $probeName = 'ZZZ-Menu-Immunity-Probe'  # sorts BEFORE ZZZ-Menusuite-Fixture, so it really does shift it
+        $beforeSignature = Get-RowSignature $rows
+        [void](New-FixtureHook $probeName)
+        try {
+            $probe = Invoke-Wizard -Config $cfg -Answers @('1', '1', '0', '0', 'exit') -WorkingDirectory $proj
+            Check 'immunity: the probe render run exits 0' ($probe.Exit -eq 0) $probe.Err
+            $probeRaw = Get-HookListRows $probe.Out
+            # The probe must actually be IN the rendered menu, otherwise the
+            # equality below would prove nothing at all.
+            Check 'immunity: the foreign fixture really did render as one extra row' (
+                $null -ne $probeRaw -and $null -ne $rawRows -and
+                @($probeRaw.Keys).Count -eq (@($rawRows.Keys).Count + 1) -and
+                @(@($probeRaw.Values) | Where-Object { $_ -match [regex]::Escape($probeName) }).Count -eq 1) (Get-RowSignature $probeRaw)
+            $probeRows = Remove-ForeignFixtureRows $probeRaw
+            Check 'immunity: every row this suite reads is unchanged' (
+                (Get-RowSignature $probeRows) -eq $beforeSignature) ((Get-RowSignature $probeRows) + "`n--- expected ---`n" + $beforeSignature)
+            Check 'immunity: the hook total is unchanged' (
+                (@($probeRows.Keys).Count - 5) -eq 23) ('total hooks: ' + (@($probeRows.Keys).Count - 5))
+            Check 'immunity: the custom block still starts at 28 with this suite''s own fixture' (
+                [string]$probeRows[28] -match 'ZZZ-Menusuite-Fixture') ([string]$probeRows[28])
+            Check 'immunity: the foreign fixture is absent from the filtered view' (
+                @(@($probeRows.Values) | Where-Object { $_ -match [regex]::Escape($probeName) }).Count -eq 0) (Get-RowSignature $probeRows)
+        }
+        finally {
+            # A leaked hooks\ZZZ-* corrupts the NEXT run of this suite and of
+            # Test-Wizard, so the removal is mandatory, not best-effort.
+            Remove-FixtureHook $probeName
+        }
+        Check 'immunity: the foreign fixture was removed from the real hooks directory' (
+            -not (Test-Path -LiteralPath (Join-Path $RealHooksDir $probeName))) $probeName
 
         Write-Host ''
         Write-Host '--- each management action must be selected alone ---' -ForegroundColor Cyan
@@ -315,7 +415,9 @@ try {
         $all = Invoke-Wizard -Config $cfg -Answers @('1', '1', '1', '0', '0', '0', '0', 'exit') -WorkingDirectory $proj
         Check 'select-all: the run exits 0' ($all.Exit -eq 0) $all.Err
         Check 'select-all: 22 shipped + 1 custom hook were counted from the menu' ($totalHooks -eq 23) ('total hooks: ' + $totalHooks)
-        Check 'select-all: item 1 expanded to the sync group plus every hook' ($all.Out -match ('Running the sync group first, then installing ' + $totalHooks + ' more hook\(s\)')) $all.Out
+        # The wizard counts what it will actually install, foreign fixtures
+        # included, so the number it PRINTS is the unfiltered one.
+        Check 'select-all: item 1 expanded to the sync group plus every hook' ($all.Out -match ('Running the sync group first, then installing ' + ($totalHooks + $foreignRowCount) + ' more hook\(s\)')) $all.Out
         Check 'select-all: item 1 never entered a management screen' (($all.Out -cnotmatch 'Get Hook Status') -and ($all.Out -cnotmatch 'Uninstall Installed Hooks') -and ($all.Out -cnotmatch 'Update Previously Installed Hooks')) $all.Out
 
         # ================================================================
@@ -636,6 +738,150 @@ try {
     Check 'render: a failed scan says nothing was written to the registry' ($failedRender -match 'Nothing was written to the install registry') $failedRender
     Check 'render: a failed scan surfaces the reported error' ($failedRender -match 'access denied at the root') $failedRender
     Check 'render: a failed scan prints no totals block' ($failedRender -notmatch 'directories inspected') $failedRender
+
+    # ================================================================
+    # Part 6 - a non-removable row is skipped, never a veto over the
+    # rest of the uninstall selection
+    # ================================================================
+    # Any row needing manual repair used to reject the WHOLE selection with a
+    # continue, so picking 370 rows containing 3 unrepairable ones removed
+    # nothing and simply re-asked - the only way forward was to hand-compute the
+    # gaps. The blocked rows are now skipped, the rest proceeds, the skipped
+    # ones are listed by name and counted, and only a selection where NOTHING is
+    # removable is still refused outright.
+    #
+    # Driven through the same & {} stub harness the result screens above use:
+    # the registry readers, the UI primitives and the uninstall EXECUTOR are all
+    # stubbed, so the selection logic runs for real while nothing is removed.
+    # The removable records are JSON clones of the REAL managed record installed
+    # at the top of this suite (only their ids differ - friendlyName is pinned to
+    # the runtime path by Test-InstallRecordValid), so the row model sees a
+    # genuine record shape rather than a hand-built guess.
+    Write-Host ''
+    Write-Host '--- a blocked uninstall row is skipped, not a veto over the rest ---' -ForegroundColor Cyan
+
+    $executorLog = Join-Path $Work 'uninstall-executor-calls.txt'
+    $stubExecutor = Join-Path $Work 'Stub-Uninstall-Hook.ps1'
+    Write-Utf8 $stubExecutor ((@(
+        'param([string]$RecordId, [string]$ToolRoot, [string]$ResultPath)'
+        'Add-Content -LiteralPath (Join-Path $PSScriptRoot ''uninstall-executor-calls.txt'') -Value $RecordId'
+        '[System.IO.File]::WriteAllText($ResultPath, ''{"overall":"ok"}'')'
+    ) -join "`r`n") + "`r`n")
+
+    function New-RemovableRecord {
+        param($Source, [string]$Id)
+        $clone = ($Source | ConvertTo-Json -Depth 30) | ConvertFrom-Json
+        $clone.id = $Id
+        return $clone
+    }
+    # Non-removable for the clearest possible reason: the scan itself flagged it
+    # (Get-DiscoveredRemovalCapability's needsManualRepair branch).
+    function New-BlockedRecord {
+        param([string]$Id, [string]$FriendlyName)
+        return [pscustomobject]@{
+            id = $Id; recordType = 'discovered'; friendlyName = $FriendlyName
+            hookType = 'ClaudeRegistration'; scope = 'project'; targetProjectRoot = 'C:\Proj\Blocked'
+            status = 'ambiguous'; statusReason = 'command could not be parsed'
+            removalPolicy = 'unavailable'; needsManualRepair = $true
+            clients = @([pscustomobject]@{ client = 'claude'; settingsPath = 'C:\Proj\Blocked\.claude\settings.json'; events = @('SessionStart') })
+        }
+    }
+    # Rows 1-2 removable, rows 3-4 blocked, row 5 the project aggregate.
+    $uninstallInstalls = @(
+        (New-RemovableRecord $rec 'zzz-removable-a')
+        (New-RemovableRecord $rec 'zzz-removable-b')
+        (New-BlockedRecord 'zzz-blocked-a' 'ZZZ-Blocked-One')
+        (New-BlockedRecord 'zzz-blocked-b' 'ZZZ-Blocked-Two')
+    )
+
+    $uninstallRuns = & {
+        $script:Captured = New-Object System.Collections.Generic.List[string]
+        function Write-Host { param([Parameter(ValueFromRemainingArguments = $true)]$Args) [void]$script:Captured.Add((@($Args) -join ' ')) }
+        function Get-Painted { param([AllowEmptyString()][string]$Text, [string]$Color) return $Text }
+        function Write-PhaseHeader { param([string]$Text, [string]$Color, [string]$Char = '=') [void]$script:Captured.Add($Text) }
+        function Write-MenuTitle { param([string]$Text) [void]$script:Captured.Add($Text) }
+        function Write-Field { param([string]$Name, [AllowEmptyString()][string]$Value, [string]$ValueColor = '') [void]$script:Captured.Add(($Name.Trim() + ': ' + $Value)) }
+        function Write-NoteLine { param([string]$Message) [void]$script:Captured.Add($Message) }
+        function Write-ErrorLine { param([string]$Message) [void]$script:Captured.Add($Message) }
+        function Write-Log { param([string]$Level, [string]$Component, [string]$Message) }
+        function New-QuestionPrompt { param([string]$Title, [string]$Details, [string]$Default) return $Title }
+        # A scripted answer queue, exhausted into '0' so a wrong expectation
+        # ends the screen instead of looping forever.
+        function Read-Answer {
+            param([string]$Prompt, [string]$LogLabel)
+            if ($script:UninstallAnswers.Count -eq 0) { return '0' }
+            return $script:UninstallAnswers.Dequeue()
+        }
+        function Read-YesNo { param([string]$Prompt, [bool]$Default, [string]$LogLabel) return $true }
+        # The registry is supplied directly, so nothing on disk is read and the
+        # real install-registry file cannot be touched by this part.
+        function Read-InstallRegistryState { param([string]$ToolRoot) return [pscustomobject]@{ State = 'ok'; Reason = ''; Path = 'synthetic' } }
+        function Read-InstallRegistry { param([string]$ToolRoot) return [pscustomobject]@{ installs = $uninstallInstalls } }
+        $C = @{ Reset = ''; Bold = ''; Red = ''; Green = ''; White = ''; Gray = ''; Dim = ''; LightBlue = ''; HintYellow = ''; NoteYellow = ''; Aqua = ''; Amber = ''; Mint = ''; Orchid = ''; Teal = ''; Summary = ''; Process = ''; Input = ''; Confirm = '' }
+        $script:MenuSep = ' | '
+        # Record type routes to the executor; both point at the stub, so a
+        # misrouted record would still be visible in the call log.
+        $UninstallScript = $stubExecutor
+        # Get-RecordDisplayField (the StrictMode-safe field reader the snapshot
+        # uses for every record) lives in Setup-SyncGroupInstallFlows.ps1, which
+        # defines functions only. The real one is loaded rather than stubbed:
+        # its fallback behaviour is part of what the row model relies on.
+        . (Join-Path $ScriptRoot 'Setup-SyncGroupInstallFlows.ps1')
+        . (Join-Path $ScriptRoot 'Setup-SyncGroupInstalledHooks.ps1')
+
+        $results = @{}
+        foreach ($case in @(
+                # 1-4: two removable rows and two blocked ones in one selection.
+                [pscustomobject]@{ Name = 'mixed'; Answers = @('1-4') }
+                # 3,4: nothing removable at all - then 0 to leave the re-ask.
+                [pscustomobject]@{ Name = 'allBlocked'; Answers = @('3,4', '0') }
+            )) {
+            $script:Captured = New-Object System.Collections.Generic.List[string]
+            $script:UninstallAnswers = New-Object System.Collections.Generic.Queue[string]
+            foreach ($answer in $case.Answers) { $script:UninstallAnswers.Enqueue($answer) }
+            [void](Invoke-UninstallInstalledHooks)
+            $results[$case.Name] = ($script:Captured -join "`n")
+            $results[($case.Name + 'Calls')] = if (Test-Path -LiteralPath $executorLog) { [System.IO.File]::ReadAllText($executorLog) } else { '' }
+        }
+        return , $results
+    }
+
+    $mixed = [string]$uninstallRuns['mixed']
+    $mixedCalls = @(([string]$uninstallRuns['mixedCalls']) -split "`r?`n" | Where-Object { $_ -ne '' })
+    # The skip notice and its per-row list, isolated from the rest of the
+    # output: the LIST screen prints every blocked row's name and reason too, so
+    # matching anywhere in the capture would prove nothing about the skip block.
+    $skipStart = $mixed.IndexOf('need manual repair and are SKIPPED')
+    $skipEnd = if ($skipStart -ge 0) { $mixed.IndexOf('Confirm Uninstall', $skipStart) } else { -1 }
+    $skipBlock = if ($skipStart -ge 0 -and $skipEnd -gt $skipStart) { $mixed.Substring($skipStart, $skipEnd - $skipStart) } else { '' }
+
+    # "did not abort" has to be asserted as what DID happen: the run reached the
+    # confirmation after ONE list render. A bare "the refusal message is absent"
+    # passes against the pre-fix code too, which rejected with different wording.
+    Check 'uninstall: a blocked row does not abort the selection - it reaches the confirmation' (
+        ($mixed -match 'Confirm Uninstall') -and
+        (@([regex]::Matches($mixed, [regex]::Escape('Installed hooks:'))).Count -eq 1) -and
+        ($mixed -notmatch 'Nothing removable was selected\.')) $mixed
+    Check 'uninstall: the blocked rows are announced as skipped, with their count' ($mixed -match '2 selected record\(s\) need manual repair and are SKIPPED') $mixed
+    Check 'uninstall: each blocked row is named in the skip list' (
+        ($skipBlock -match 'ZZZ-Blocked-One') -and ($skipBlock -match 'ZZZ-Blocked-Two')) $skipBlock
+    Check 'uninstall: the skip list gives the reason for each blocked row' (
+        (@([regex]::Matches($skipBlock, [regex]::Escape('manual repair: the scan flagged this record for review'))).Count) -eq 2) $skipBlock
+    Check 'uninstall: the confirmation offered exactly the two removable records' ($mixed -match 'installations to remove: 2') $mixed
+    Check 'uninstall: only the removable records reached the executor' (
+        (($mixedCalls | Sort-Object) -join ',') -eq 'zzz-removable-a,zzz-removable-b') (($mixedCalls -join ',') + ' (' + $mixedCalls.Count + ')')
+    Check 'uninstall: the removable records are reported as removed' ($mixed -match 'removed: 2') $mixed
+    Check 'uninstall: the summary counts the skipped rows separately' ($mixed -match 'skipped \(manual repair\): 2') $mixed
+    Check 'uninstall: nothing was silently lost - the kept-in-registry note is shown' ($mixed -match 'are KEPT in the registry') $mixed
+
+    $allBlocked = [string]$uninstallRuns['allBlocked']
+    $allBlockedCalls = @(([string]$uninstallRuns['allBlockedCalls']) -split "`r?`n" | Where-Object { $_ -ne '' })
+    Check 'uninstall: a selection where EVERYTHING is blocked is still refused' ($allBlocked -match 'Nothing removable was selected\.') $allBlocked
+    Check 'uninstall: the refusal never reached the confirmation screen' ($allBlocked -notmatch 'Confirm Uninstall') $allBlocked
+    Check 'uninstall: the refusal invoked no executor at all' ($allBlockedCalls.Count -eq $mixedCalls.Count) (($allBlockedCalls -join ',') + ' (' + $allBlockedCalls.Count + ')')
+    Check 'uninstall: the refusal re-asks instead of exiting the screen' (
+        (@([regex]::Matches($allBlocked, [regex]::Escape('Installed hooks:'))).Count -eq 2) -and
+        ($allBlocked -match 'Canceled\. Nothing was changed\.')) $allBlocked
 }
 finally {
     $env:HOOKMAKER_STATE_DIR = $SavedHookMakerStateDir

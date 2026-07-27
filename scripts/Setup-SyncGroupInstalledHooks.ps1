@@ -407,17 +407,33 @@ function Invoke-UninstallInstalledHooks {
         if ($value -eq '0' -or $value -eq '') { Write-NoteLine 'Canceled. Nothing was changed.'; return 'back' }
 
         $parsed = Expand-MenuSelection -Value $value -MaxIndex $rows.Count
-        if (-not $parsed.Ok) { Write-ErrorLine $parsed.Reason; continue }
+        # A refused selection removes NOTHING, so it must be visible in the log.
+        # Round 40 spent a whole diagnosis reconstructing which of two refusals
+        # fired, because both wrote to the console only and the log recorded the
+        # input but never the outcome.
+        if (-not $parsed.Ok) {
+            Write-ErrorLine $parsed.Reason
+            Write-Log 'WARNING' 'UNINSTALL' ('Selection refused: ' + $parsed.Reason + ' rows=' + $rows.Count)
+            continue
+        }
 
         # Expand every picked row to its record ids and DEDUPLICATE: selecting a
         # project aggregate together with one of its own individual rows must
         # remove each record exactly once, not twice.
         $picked = @($parsed.Indices | ForEach-Object { $rows[$_ - 1] })
+        # A record that needs manual repair is SKIPPED, never a veto over the
+        # rest of the selection. Rejecting the whole batch made a broad pick
+        # useless in practice: selecting 370 rows with 3 unrepairable ones
+        # removed NOTHING and simply re-asked, so the only way forward was to
+        # hand-compute the gaps. The executor below already reports every record
+        # individually (removed / manual repair / partial / failed), so
+        # proceeding with what CAN be removed loses no honesty - it just stops
+        # three bad rows from holding the other 367 hostage.
         $blocked = @($picked | Where-Object { -not $_.Removable })
+        $picked = @($picked | Where-Object { $_.Removable })
         if ($blocked.Count -gt 0) {
-            Write-ErrorLine ('That selection includes ' + $blocked.Count + ' record(s) that need manual repair and cannot be uninstalled automatically.')
+            Write-NoteLine ('  ' + $blocked.Count + ' selected record(s) need manual repair and are SKIPPED - the rest of the selection still proceeds:')
             foreach ($b in $blocked) { Write-NoteLine ('    ' + (Get-HookFriendlyName $b.FriendlyName) + ' - ' + $b.Detail) }
-            continue
         }
         $recordIds = New-Object System.Collections.Generic.List[string]
         foreach ($row in $picked) {
@@ -425,7 +441,12 @@ function Invoke-UninstallInstalledHooks {
                 if (-not [string]::IsNullOrWhiteSpace($id) -and -not $recordIds.Contains($id)) { [void]$recordIds.Add($id) }
             }
         }
-        if ($recordIds.Count -eq 0) { Write-ErrorLine 'Nothing removable was selected.'; continue }
+        # Only when the WHOLE selection was unremovable is there nothing to do.
+        if ($recordIds.Count -eq 0) {
+            Write-ErrorLine 'Nothing removable was selected.'
+            Write-Log 'WARNING' 'UNINSTALL' ('Selection refused: every selected record needs manual repair; selected=' + $blocked.Count)
+            continue
+        }
 
         # ---- confirmation: show exactly what will be touched, before anything ----
         Write-PhaseHeader 'Confirm Uninstall' $C.Confirm '-'
@@ -542,10 +563,14 @@ function Invoke-UninstallInstalledHooks {
         Write-Field 'removed' ([string]$removed.Count)
         Write-Field 'needs manual repair' ([string]$manual.Count)
         Write-Field 'failed' ([string]$failed.Count)
-        if ($manual.Count -gt 0 -or $failed.Count -gt 0) {
+        # Skipped rows never reached the executor, so they appear in no other
+        # count. Surfacing them here is what keeps "the rest still proceeds"
+        # from quietly becoming "some of your selection vanished".
+        if ($blocked.Count -gt 0) { Write-Field 'skipped (manual repair)' ([string]$blocked.Count) }
+        if ($manual.Count -gt 0 -or $failed.Count -gt 0 -or $blocked.Count -gt 0) {
             Write-NoteLine '  Records that did not fully uninstall are KEPT in the registry so nothing is silently lost.'
         }
-        Write-Log 'INFO' 'UNINSTALL' ('Uninstall finished: removed=' + $removed.Count + ' manual=' + $manual.Count + ' failed=' + $failed.Count)
+        Write-Log 'INFO' 'UNINSTALL' ('Uninstall finished: removed=' + $removed.Count + ' manual=' + $manual.Count + ' failed=' + $failed.Count + ' skipped=' + $blocked.Count)
         return 'done'
     }
 }

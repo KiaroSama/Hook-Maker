@@ -50,6 +50,21 @@ $ScriptRoot = $PSScriptRoot
 # in the worst possible way: those six are the slowest suites, so serialising
 # them threw away most of the available speedup.
 #
+# DO NOT empty this list because both suites now ignore `ZZZ-*` fixtures.
+# Round 40 made them immune to LEFTOVER fixtures, which is a real fix for the
+# residue flake - but immunity to residue is NOT immunity to concurrency, and
+# the two were measured separately:
+#   * Test-Wizard concurrent with Test-InstalledHooksMenu -> 254/8 (262/0 alone).
+#   * Test-Wizard concurrent with ONLY Test-InstallRegistry, Test-UninstallHook
+#     and Test-DiscoveredUninstall, menu suite absent  -> 258/4.
+# The second run is the important one: the exclusivity is not about the menu
+# suite, it is about ANY suite that creates or removes a fixture under the real
+# hooks\ while a counting suite runs. `_testwizardselectall.ps1` deliberately
+# counts EVERY hook including `ZZZ-*`, because the wizard genuinely configures
+# them - so the count legitimately changes mid-run and no name filter can help.
+# Fixing this for real means giving fixture-creating suites their own copy of
+# hooks\ instead of the shared one. Until then, these two stay exclusive.
+#
 # CI does not need this: each bucket is its own runner with its own checkout,
 # and suites inside a bucket run one after another (see ci.yml).
 $Exclusive = @(
