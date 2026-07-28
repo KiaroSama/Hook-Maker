@@ -400,7 +400,27 @@ function Save-DiscoveredRecords {
             switch ([string]$outcome.Action) {
                 'added' { $script:RecordsAdded++ }
                 'updated' { $script:RecordsUpdated++ }
-                'coveredByManaged' { $script:RecordsMatched++ }
+                'coveredByManaged' {
+                    $script:RecordsMatched++
+                    # The finding IS removable - just not by the DISCOVERED-record
+                    # remover, whose limits produced the policy on this record. A
+                    # managed install owns it, and the normal uninstall action
+                    # handles that, including Kiro's per-hook-file format.
+                    #
+                    # Without this restamp the report kept the discovered-side
+                    # verdict, so every managed Kiro hook was printed as
+                    # "automatic uninstall: unavailable - per-hook-file removal is
+                    # not implemented". On a real machine that was ~1500 rows of
+                    # the user's OWN hooks described as unremovable while menu 27
+                    # removed them without complaint. Coverage is proven here, so
+                    # this is the one place that can say so.
+                    Set-ObjectProperty -Object $record -Name 'removalPolicy' -Value 'managedInstall'
+                    $managedName = ''
+                    if ($null -ne $outcome.ManagedRecord) { $managedName = [string]$outcome.ManagedRecord.friendlyName }
+                    $managedReason = 'installed and tracked by Hook Maker'
+                    if (-not [string]::IsNullOrWhiteSpace($managedName)) { $managedReason += ' as "' + $managedName + '"' }
+                    Set-ObjectProperty -Object $record -Name 'statusReason' -Value ($managedReason + '; remove it with the uninstall action')
+                }
                 default { Add-ScanWarning ('a finding was not recorded: ' + [string]$outcome.Reason) }
             }
             # This merge is the scan's slowest stage on a large registry, and it
