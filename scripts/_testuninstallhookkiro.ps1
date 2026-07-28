@@ -165,6 +165,17 @@ Check 'kiro: a non-managed .kiro\hooks file survives byte-identical' (
     (Test-Path -LiteralPath $k1Plain -PathType Leaf) -and (Test-BytesEqual $k1PlainBefore (Get-BytesOrEmpty $k1Plain)))
 Check 'kiro: the .kiro\hooks directory itself is preserved' (Test-Path -LiteralPath $k1.RegistrationDir -PathType Container)
 
+# A document that was entirely ours is DELETED, so a backup of it is a copy of a
+# file this tool wrote and just removed - it restores nothing that reinstalling
+# does not. And .kiro\hooks is the directory Kiro SCANS as its configuration: a
+# real 24-hook uninstall left 24 dead copies sitting in it, which is what a
+# "clean uninstall" must not do. The bystander files are matched by exact name,
+# so this counts only backup copies.
+Check 'kiro: deleting the document leaves no backup copy behind in .kiro\hooks' (
+    @(Get-ChildItem -LiteralPath $k1.RegistrationDir -Filter '*.backup-*' -File -ErrorAction SilentlyContinue).Count -eq 0) (
+    (@(Get-ChildItem -LiteralPath $k1.RegistrationDir -Filter '*.backup-*' -File -ErrorAction SilentlyContinue) |
+        ForEach-Object { $_.Name }) -join ',')
+
 # ---- 2. a hand-added entry inside OUR file survives ------------------------
 # The install side merges around foreign entries (Merge-KiroManagedEntries);
 # the uninstall side must be its mirror image or a user's own hook is silently
@@ -195,6 +206,11 @@ Check 'kiro/mixed: the surviving entry keeps its own command and timeout' (
 Check 'kiro/mixed: the document is still a v1 document' ($null -ne $k2After -and [string]$k2After.version -eq 'v1')
 Check 'kiro/mixed: the runtime still came off' (-not (Test-Path -LiteralPath $k2.HookDir))
 Check 'kiro/mixed: the record is removed' ((@(Get-RecordsFor $k2.Name)).Count -eq 0)
+# The mirror of the clean case: here the file SURVIVES and now holds the user's
+# own entry, which is exactly when a backup is worth keeping.
+Check 'kiro/mixed: a document that survives KEEPS its backup' (
+    @(Get-ChildItem -LiteralPath $k2.RegistrationDir -Filter ((Split-Path -Leaf $k2.RegistrationPath) + '.backup-*') -File -ErrorAction SilentlyContinue).Count -ge 1) (
+    (@(Get-ChildItem -LiteralPath $k2.RegistrationDir -File -ErrorAction SilentlyContinue) | ForEach-Object { $_.Name }) -join ',')
 
 # ---- 3. an entry that appeared since install is NOT removed ----------------
 # Same managed identity, but a name this record never recorded: two

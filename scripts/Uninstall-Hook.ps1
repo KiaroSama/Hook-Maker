@@ -192,9 +192,11 @@ $script:UninstallTimestamp = (Get-Date).ToString('yyyyMMdd-HHmmss')
 # a single settings file used to collect one backup per removed hook. The
 # operation is part of the name, so an install run and an uninstall run in the
 # same wizard session never satisfy each other's backup.
-function Backup-SettingsFile {
+# Where THIS run's backup of a settings file lives. Split out so a caller that
+# deletes the file it just backed up can find that copy again (see the Kiro
+# per-hook-file path in _uninstallkiro.ps1).
+function Get-SettingsBackupPath {
     param([Parameter(Mandatory = $true)][string]$Path)
-    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { return }
     $stamp = $script:UninstallTimestamp
     $run = [string]$env:HOOKMAKER_BACKUP_RUN
     if (-not [string]::IsNullOrWhiteSpace($run)) {
@@ -202,7 +204,13 @@ function Backup-SettingsFile {
         if ($safe.Length -gt 40) { $safe = $safe.Substring(0, 40) }
         if ($safe -ne '') { $stamp = 'uninstall-' + $safe }
     }
-    $backupPath = $Path + '.backup-' + $stamp
+    return ($Path + '.backup-' + $stamp)
+}
+
+function Backup-SettingsFile {
+    param([Parameter(Mandatory = $true)][string]$Path)
+    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { return }
+    $backupPath = Get-SettingsBackupPath -Path $Path
     if (Test-Path -LiteralPath $backupPath -PathType Leaf) { return }
     Copy-Item -LiteralPath $Path -Destination $backupPath -Force
 }
