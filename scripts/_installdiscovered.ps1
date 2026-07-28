@@ -397,6 +397,33 @@ function Test-DiscoveredRecordValid {
 
 # ---- discovered record merge ------------------------------------------------
 
+# Every path a managed client subrecord actually REGISTERED, taken from the
+# command it wrote rather than from runtimeScript alone.
+#
+# For a per-hook-file client (Kiro) those two are deliberately different: the
+# registration launches the hook's shim, `<hook>\kiro-launch.ps1`, while
+# runtimeScript names the hook script itself. Comparing only runtimeScript
+# therefore never matched a Kiro registration, so every Kiro install was ALSO
+# kept as a `discovered` record - a duplicate of Hook Maker's own hook that the
+# uninstall screen then listed as unremovable ("per-hook-file removal is not
+# implemented"). A real registry had 510 of them, and they were most of the
+# list.
+function Get-ManagedRegisteredTargets {
+    param($Subrecord)
+    $keys = New-Object System.Collections.Generic.List[string]
+    foreach ($field in @('command', 'commandWindows')) {
+        $property = $Subrecord.PSObject.Properties[$field]
+        if ($null -eq $property) { continue }
+        $text = [string]$property.Value
+        if ([string]::IsNullOrWhiteSpace($text)) { continue }
+        foreach ($match in @([regex]::Matches($text, '-File\s+"([^"]+)"'))) {
+            $key = Get-CanonicalPathKey -Path ([string]$match.Groups[1].Value)
+            if ($key -ne '' -and -not $keys.Contains($key)) { [void]$keys.Add($key) }
+        }
+    }
+    return $keys.ToArray()
+}
+
 # Does a MANAGED record already account for this discovered finding? Decided on
 # EVIDENCE (the settings file plus the script actually registered, or the exact
 # wrapper path), never on a friendly name - two different hooks can share a
@@ -438,10 +465,18 @@ function Test-DiscoveredCoveredByManaged {
             $managedSettingsKey = Get-CanonicalPathKey -Path ([string]$settingsProperty.Value)
             if ($managedSettingsKey -eq '' -or
                 $managedSettingsKey -ne (Get-CanonicalPathKey -Path ([string]$clientEvidence.settingsPath))) { continue }
+            # The settings file already matched exactly; a target match against
+            # anything this managed record itself registered proves the same
+            # install, so a foreign hook in the same file can never be claimed.
+            $managedKeys = New-Object System.Collections.Generic.List[string]
             $managedScriptKey = Get-CanonicalPathKey -Path ([string]$scriptProperty.Value)
-            if ($managedScriptKey -eq '') { continue }
+            if ($managedScriptKey -ne '') { [void]$managedKeys.Add($managedScriptKey) }
+            foreach ($registered in @(Get-ManagedRegisteredTargets -Subrecord $subrecord)) {
+                if (-not $managedKeys.Contains($registered)) { [void]$managedKeys.Add($registered) }
+            }
+            if ($managedKeys.Count -eq 0) { continue }
             foreach ($target in @($clientEvidence.parsedTargets)) {
-                if ((Get-CanonicalPathKey -Path ([string]$target)) -eq $managedScriptKey) { return $managed }
+                if ($managedKeys.Contains((Get-CanonicalPathKey -Path ([string]$target)))) { return $managed }
             }
         }
     }
@@ -489,6 +524,35 @@ function Merge-DiscoveredRecord {
 
     $managed = Test-DiscoveredCoveredByManaged -Registry $Registry -Record $Record
     if ($null -ne $managed) {
+        # Retire any discovered record for this SAME id. The coverage test above
+        # matches on exact paths (a native wrapper path, or a settings path plus
+        # the runtime target the registration actually resolves to), and the id
+        # is derived from those same paths - so such a record describes the very
+        # artifact the managed record owns. It is a duplicate, not a second hook.
+        #
+        # Left in place it becomes a ghost that can never be cleaned up: this
+        # branch returns before the update below, so the record is never
+        # refreshed; the scan's demotion pass then marks it notSeen ("no longer
+        # present") even though the file is right there; and the uninstall list
+        # offers a row whose removal can never be proven, because the on-disk
+        # evidence it would need now belongs to the managed record. Eight such
+        # rows accumulated in a real registry after hooks were reinstalled over
+        # paths a previous scan had discovered.
+        #
+        # Id first, THEN the record-kind test: this runs once per covered finding
+        # against the whole registry (on a real one, ~1000 findings x ~1100
+        # records), so the per-candidate work has to stay a string compare, and
+        # the array is only rebuilt when a duplicate is actually there.
+        $before = @($Registry.installs)
+        for ($i = 0; $i -lt $before.Count; $i++) {
+            $candidate = $before[$i]
+            if ($null -eq $candidate -or [string]$candidate.id -ne [string]$Record.id) { continue }
+            if (-not (Test-IsDiscoveredRecord -Record $candidate)) { continue }
+            $kept = New-Object System.Collections.Generic.List[object]
+            for ($j = 0; $j -lt $before.Count; $j++) { if ($j -ne $i) { [void]$kept.Add($before[$j]) } }
+            $Registry.installs = $kept.ToArray()
+            break
+        }
         return [pscustomobject]@{
             Action = 'coveredByManaged'
             Reason = ('already tracked as the managed install "' + [string]$managed.friendlyName + '"')
