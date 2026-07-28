@@ -275,9 +275,19 @@ between hooks, or outside a recognised hook root is shown but never auto-deleted
 
 ## Uninstalling installed hooks (`27`)
 
-Item **`27` Uninstall installed hooks** lists every tracked installation — Hook Maker's own plus
-anything item `26` discovered — and removes the ones you pick. It accepts the same `1` / `1,2` /
-`1,2,3-6` syntax, and shows each row's record type and whether removal is possible.
+Item **`27` Uninstall installed hooks** removes tracked installations — Hook Maker's own plus
+anything item `26` discovered. It accepts the same `1` / `1,2` / `1,2,3-6` syntax, and shows each
+row's record type and whether removal is possible.
+
+It asks **which set** before it lists anything, because a machine that has been used for a while
+holds hundreds of installs and one flat list of all of them cannot be picked from:
+
+1. **Every installed hook** — one list of everything tracked.
+2. **Only the hooks in one project** — you give a folder, and only installs whose recorded project
+   root is that folder *or inside it* are listed. Global-scope installs are left out. The folder
+   does not have to still exist (so a deleted project can still be untracked), quotes around a
+   pasted path are accepted, and a folder with no tracked install says so and re-offers the choice
+   instead of dropping you out of the screen.
 
 Two kinds of row are offered:
 
