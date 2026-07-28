@@ -188,7 +188,15 @@ function Get-DiscoveredClientEvents {
 # non-removable manual-repair entry with a precise reason, exactly like the
 # update flow treats it.
 function Get-InstalledHookSnapshot {
-    param([Parameter(Mandatory = $true)]$Registry)
+    param(
+        [Parameter(Mandatory = $true)]$Registry,
+        # When set, only records installed into this folder - or into a folder
+        # inside it - are listed. Global-scope records are dropped entirely: a
+        # project filter asks about one tree, and a global hook lives in none.
+        # The aggregates below are built from what survives this filter, so the
+        # "remove all" row means "all of THIS project", not all of everything.
+        [string]$ProjectFilter = ''
+    )
 
     $rows = New-Object System.Collections.Generic.List[object]
     $byProject = @{}
@@ -204,6 +212,11 @@ function Get-InstalledHookSnapshot {
         $scope = Get-RecordDisplayField $record 'scope' 'unknown'
         $targetRoot = Get-RecordDisplayField $record 'targetProjectRoot' ''
         $profileId = Get-RecordDisplayField $record 'profile' ''
+
+        if (-not [string]::IsNullOrWhiteSpace($ProjectFilter)) {
+            if ($scope -eq 'global') { continue }
+            if (-not (Test-PathContainedIn -ChildPath $targetRoot -ParentPath $ProjectFilter)) { continue }
+        }
 
         if ($recordType -eq 'discovered') {
             # Discovered: the source is the place it was FOUND, not a hook file
@@ -349,6 +362,28 @@ function Get-ClientDisplayName {
 # Any exit that is not an explicit 'y' - n, 0/back, quit, or an invalid
 # selection - performs NO mutation at all: no backups, no registry write, no
 # runtime removal.
+# Turns whatever the user typed into a folder path to match records against.
+#
+# The folder does NOT have to exist: the filter is compared to the paths the
+# registry RECORDED, and removing the tracking for a project that has already
+# been deleted is exactly when this is most useful. Surrounding quotes are
+# stripped because a path pasted from Explorer usually arrives wrapped in them.
+function Resolve-UninstallProjectFilter {
+    param([string]$Value)
+
+    $text = [string]$Value
+    if ([string]::IsNullOrWhiteSpace($text)) {
+        return [pscustomobject]@{ Ok = $false; Path = ''; Reason = 'Enter a folder path.' }
+    }
+    $text = $text.Trim().Trim('"').Trim("'").Trim()
+    try {
+        return [pscustomobject]@{ Ok = $true; Path = [System.IO.Path]::GetFullPath([Environment]::ExpandEnvironmentVariables($text)); Reason = '' }
+    }
+    catch {
+        return [pscustomobject]@{ Ok = $false; Path = ''; Reason = ('Not a usable folder path: ' + $text) }
+    }
+}
+
 function Invoke-UninstallInstalledHooks {
     Write-Log 'INFO' 'UNINSTALL' 'Uninstall installed hooks started.'
     Write-PhaseHeader 'Uninstall Installed Hooks' $C.Input '-'
@@ -366,15 +401,65 @@ function Invoke-UninstallInstalledHooks {
     }
 
     $registry = Read-InstallRegistry -ToolRoot $ToolRoot
-    $rows = @(Get-InstalledHookSnapshot -Registry $registry)
-    if ($rows.Count -eq 0) {
+    if (@(Get-InstalledHookSnapshot -Registry $registry).Count -eq 0) {
         Write-NoteLine '  No installed hooks are tracked yet - nothing to uninstall.'
         Write-Log 'INFO' 'UNINSTALL' 'No tracked installs.'
         return 'back'
     }
 
+    # WHICH set first, then which rows. A machine that has been used for a while
+    # holds hundreds of installs, and one flat list of all of them is not
+    # something anyone can actually pick from - the numbers are meaningless
+    # until the set is small enough to read.
+    $outerScope = $true
+    $projectFilter = ''
+    $rows = @()
     while ($true) {
+        if ($outerScope) {
+            Write-MenuTitle 'What do you want to uninstall?'
+            Write-MenuLine 1 'Every installed hook' '(one list of everything tracked)'
+            Write-MenuLine 2 'Only the hooks in one project' '(you give the folder)'
+            $mode = Read-Answer (New-QuestionPrompt 'Choose' $null '0') 'uninstall scope'
+            if ($mode -eq '0' -or $mode -eq '') {
+                Write-NoteLine 'Canceled. Nothing was changed.'
+                Write-Log 'INFO' 'UNINSTALL' 'User left the uninstall scope menu; nothing was changed.'
+                return 'back'
+            }
+            if ($mode -eq '2') {
+                $answer = Read-Answer (New-QuestionPrompt 'Project folder' (
+                        'example: ' + (Get-ExampleText 'G:\Projects\My App') + ' - subfolders are included') $null) 'uninstall project filter'
+                if ($answer -eq '0' -or $answer -eq '') { continue }
+                $resolvedFilter = Resolve-UninstallProjectFilter $answer
+                if (-not $resolvedFilter.Ok) {
+                    Write-ErrorLine $resolvedFilter.Reason
+                    Write-Log 'WARNING' 'UNINSTALL' ('Rejected project folder: ' + $resolvedFilter.Reason)
+                    continue
+                }
+                $projectFilter = $resolvedFilter.Path
+            }
+            elseif ($mode -eq '1') { $projectFilter = '' }
+            else {
+                Write-ErrorLine 'Enter 1 or 2.'
+                continue
+            }
+
+            $rows = @(Get-InstalledHookSnapshot -Registry $registry -ProjectFilter $projectFilter)
+            if ($rows.Count -eq 0) {
+                # Not an error, and not a dead end: the folder simply has no
+                # tracked installs, so the scope menu is offered again.
+                Write-NoteLine ('  No tracked hooks are installed in ' + $projectFilter)
+                Write-NoteLine '  Nothing was changed. Pick another folder, or list everything.'
+                Write-Log 'INFO' 'UNINSTALL' ('Project folder matched no tracked installs: ' + $projectFilter)
+                continue
+            }
+            Write-Log 'INFO' 'UNINSTALL' (
+                'Scope: ' + $(if ($projectFilter -eq '') { 'every installed hook' } else { 'project ' + $projectFilter }) +
+                '; rows=' + $rows.Count)
+            $outerScope = $false
+        }
+
         Write-MenuTitle 'Installed hooks:'
+        if ($projectFilter -ne '') { Write-NoteLine ('  Showing only hooks installed in ' + $projectFilter) }
         for ($i = 0; $i -lt $rows.Count; $i++) {
             $row = $rows[$i]
             $number = Get-Painted (([string]($i + 1)) + '.') $C.LightBlue

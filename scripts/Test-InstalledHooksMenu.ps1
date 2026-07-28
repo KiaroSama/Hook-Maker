@@ -228,9 +228,10 @@ try {
         $codexSettings = [string]$rec.clients.codex.settingsPath
         $codexRuntimeScript = [string]$rec.clients.codex.runtimeScript
 
-        # main menu 1 -> submenu 1 -> hook list 26 (Uninstall) -> select row 1
-        # (the fixture record) -> decline the confirmation -> exit the main menu.
-        $r = Invoke-Wizard -Config $cfg -Answers @('1', '1', '27', '1', 'n', '0') -WorkingDirectory $proj
+        # main menu 1 -> submenu 1 -> hook list 27 (Uninstall) -> scope menu 1
+        # (every installed hook) -> select row 1 (the fixture record) -> decline
+        # the confirmation -> exit the main menu.
+        $r = Invoke-Wizard -Config $cfg -Answers @('1', '1', '27', '1', '1', 'n', '0') -WorkingDirectory $proj
         Check 'the wizard run exits 0' ($r.Exit -eq 0) $r.Err
 
         # ---- list screen: everything Get-InstalledHookSnapshot collects ----
@@ -805,6 +806,9 @@ try {
         function Write-ErrorLine { param([string]$Message) [void]$script:Captured.Add($Message) }
         function Write-Log { param([string]$Level, [string]$Component, [string]$Message) }
         function New-QuestionPrompt { param([string]$Title, [string]$Details, [string]$Default) return $Title }
+        # Used by the scope submenu that now precedes the list.
+        function Write-MenuLine { param([int]$Number, [string]$Label, [string]$Suffix = '') [void]$script:Captured.Add(($Number.ToString() + '. ' + $Label + ' ' + $Suffix)) }
+        function Get-ExampleText { param([string]$Text) return $Text }
         # A scripted answer queue, exhausted into '0' so a wrong expectation
         # ends the screen instead of looping forever.
         function Read-Answer {
@@ -831,10 +835,24 @@ try {
 
         $results = @{}
         foreach ($case in @(
+                # Every case starts by choosing a scope: '1' = every installed
+                # hook, which is the set these cases were written against.
                 # 1-4: two removable rows and two blocked ones in one selection.
-                [pscustomobject]@{ Name = 'mixed'; Answers = @('1-4') }
+                [pscustomobject]@{ Name = 'mixed'; Answers = @('1', '1-4') }
                 # 3,4: nothing removable at all - then 0 to leave the re-ask.
-                [pscustomobject]@{ Name = 'allBlocked'; Answers = @('3,4', '0') }
+                [pscustomobject]@{ Name = 'allBlocked'; Answers = @('1', '3,4', '0') }
+                # Scope 2 + the folder the two REMOVABLE rows were installed
+                # into: only those are listed, and the blocked rows - which live
+                # in a different project - are gone from the screen entirely.
+                [pscustomobject]@{ Name = 'filtered'; Answers = @('2', $proj, '0') }
+                # A quoted path (how Explorer hands one over) must resolve too.
+                [pscustomobject]@{ Name = 'filteredQuoted'; Answers = @('2', ('"' + $proj + '"'), '0') }
+                # A PARENT folder includes the projects underneath it: C:\Proj
+                # owns only the blocked rows (C:\Proj\Blocked).
+                [pscustomobject]@{ Name = 'filteredParent'; Answers = @('2', 'C:\Proj', '0') }
+                # Scope 2 + a folder with no tracked install: not an error and
+                # not a dead end - it says so and offers the scope menu again.
+                [pscustomobject]@{ Name = 'filteredEmpty'; Answers = @('2', 'C:\Proj\Nothing\Here', '0') }
             )) {
             $script:Captured = New-Object System.Collections.Generic.List[string]
             $script:UninstallAnswers = New-Object System.Collections.Generic.Queue[string]
@@ -879,6 +897,43 @@ try {
     Check 'uninstall: a selection where EVERYTHING is blocked is still refused' ($allBlocked -match 'Nothing removable was selected\.') $allBlocked
     Check 'uninstall: the refusal never reached the confirmation screen' ($allBlocked -notmatch 'Confirm Uninstall') $allBlocked
     Check 'uninstall: the refusal invoked no executor at all' ($allBlockedCalls.Count -eq $mixedCalls.Count) (($allBlockedCalls -join ',') + ' (' + $allBlockedCalls.Count + ')')
+
+    # ---- scope submenu: uninstall one project instead of the whole machine ---
+    # A real registry holds hundreds of installs. One flat list of all of them
+    # cannot be picked from, so the screen asks WHICH SET first.
+    $filtered = [string]$uninstallRuns['filtered']
+    Check 'uninstall: the scope menu offers both ways before any list is drawn' (
+        ($filtered -match 'What do you want to uninstall\?') -and
+        ($filtered -match '1\. Every installed hook') -and
+        ($filtered -match '2\. Only the hooks in one project')) $filtered
+    Check 'uninstall: a project scope lists that project''s hooks' ($filtered -match 'ZZZ-Menusuite-Fixture') $filtered
+    Check 'uninstall: a project scope EXCLUDES hooks installed elsewhere' (
+        ($filtered -notmatch 'ZZZ-Blocked-One') -and ($filtered -notmatch 'ZZZ-Blocked-Two')) $filtered
+    Check 'uninstall: the filtered list says which folder it is showing' (
+        $filtered -match ('Showing only hooks installed in ' + [regex]::Escape($proj))) $filtered
+    Check 'uninstall: the project aggregate row counts only the filtered rows' (
+        $filtered -match '2 removable hook\(s\)') $filtered
+
+    # A path pasted from Explorer arrives wrapped in quotes; the same rows must
+    # come back, otherwise the feature fails on the most common way to type one.
+    $filteredQuoted = [string]$uninstallRuns['filteredQuoted']
+    Check 'uninstall: a quoted project folder resolves exactly like an unquoted one' (
+        ($filteredQuoted -match 'ZZZ-Menusuite-Fixture') -and ($filteredQuoted -notmatch 'ZZZ-Blocked-One')) $filteredQuoted
+
+    # Containment, not equality: a parent folder covers the projects under it.
+    $filteredParent = [string]$uninstallRuns['filteredParent']
+    Check 'uninstall: a parent folder includes the projects underneath it' (
+        ($filteredParent -match 'ZZZ-Blocked-One') -and ($filteredParent -match 'ZZZ-Blocked-Two')) $filteredParent
+    Check 'uninstall: and still excludes a project outside that parent' (
+        $filteredParent -notmatch 'ZZZ-Menusuite-Fixture') $filteredParent
+
+    # An empty match is a normal answer, not a failure: say so and offer the
+    # scope menu again rather than dropping the user out of the screen.
+    $filteredEmpty = [string]$uninstallRuns['filteredEmpty']
+    Check 'uninstall: a folder with no tracked install says so instead of an empty list' (
+        $filteredEmpty -match 'No tracked hooks are installed in') $filteredEmpty
+    Check 'uninstall: and never draws a hook list for it' (
+        $filteredEmpty -notmatch 'Installed hooks:') $filteredEmpty
     Check 'uninstall: the refusal re-asks instead of exiting the screen' (
         (@([regex]::Matches($allBlocked, [regex]::Escape('Installed hooks:'))).Count -eq 2) -and
         ($allBlocked -match 'Canceled\. Nothing was changed\.')) $allBlocked
