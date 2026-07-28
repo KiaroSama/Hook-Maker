@@ -169,6 +169,10 @@ function Get-RemovalPolicyText {
         'full' { return 'full' }
         'registrationOnly' { return 'registration-only' }
         'nativeFileOnly' { return 'native-file-only' }
+        # Stamped by the scan when a managed install was PROVEN to own this
+        # artifact. The discovered-record remover's limits do not apply to it,
+        # so reporting 'unavailable' here was simply wrong.
+        'managedInstall' { return 'use the uninstall action' }
         default { return 'unavailable' }
     }
 }
@@ -177,6 +181,7 @@ function Get-RemovalPolicyColor {
     param([string]$PolicyText)
     switch ($PolicyText) {
         'full' { return $C.Green }
+        'use the uninstall action' { return $C.Green }
         'unavailable' { return $C.Red }
         default { return $C.Amber }
     }
