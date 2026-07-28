@@ -555,6 +555,11 @@ function Show-MainMenu {
 # ----------------------------------------------------------------- entry ----
 Initialize-Log
 Write-Log 'INFO' 'STARTUP' ('Execution id: ' + [guid]::NewGuid().ToString())
+# Marks every install/uninstall this wizard run performs as ONE run, so a
+# settings file is backed up once for the whole batch instead of once per hook
+# (see Backup-File in _installclientsettings.ps1). Child Install-Hook.ps1 /
+# Uninstall-Hook.ps1 processes inherit it.
+$env:HOOKMAKER_BACKUP_RUN = (Get-Date).ToString('yyyyMMdd-HHmmss')
 Write-Log 'INFO' 'STARTUP' ('Script: ' + $PSCommandPath)
 # The real config is machine-local (git-ignored); seed it from the tracked
 # example on first run so a fresh clone works out of the box.
