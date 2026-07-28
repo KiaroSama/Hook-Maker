@@ -50,7 +50,11 @@ param(
     # Dry run: proves every safety check (ownership, path containment, native
     # wrapper integrity) and reports what WOULD happen, without writing,
     # moving or deleting anything.
-    [switch]$WhatIf
+    [switch]$WhatIf,
+    # Drop a record this tool CANNOT interpret from the registry, and nothing
+    # else. Refused outright for a record that validates - a valid record has a
+    # real removal path and must use it. See Remove-UninterpretableRecord.
+    [switch]$ForgetUnreadableRecord
 )
 
 Set-StrictMode -Version 2.0
@@ -154,10 +158,72 @@ if ($null -eq $record) {
     return
 }
 $recordValidity = Test-InstallRecordValid -Record $record
+
+# A record this tool cannot interpret used to be a dead end: the executor said
+# "manual repair", and there was no manual repair to perform - `clients` cannot
+# be inferred, so no supported command could act on it and the row stayed in the
+# registry forever. -ForgetUnreadableRecord is that missing exit, and it is
+# deliberately the narrowest one possible: it drops the REGISTRY ROW and touches
+# nothing on disk, because a record that cannot be interpreted cannot prove what
+# it owns. Anything still installed stays installed - and the status scan will
+# rediscover it as a `discovered` record, which does have a removal path. The
+# refusal for a VALID record is what stops this becoming a way around the
+# ownership proofs.
+if ($ForgetUnreadableRecord) {
+    if ($recordValidity.Ok) {
+        Set-ComponentResult -Component 'registry' -Status 'manualRepair' -ReasonCode 'recordIsReadable' `
+            -Message 'this record can be interpreted; use the normal uninstall so its files and registrations are removed too'
+        Write-UninstallResult -Overall 'manualRepair'
+        Write-Host ("WARNING: record '" + $RecordId + "' CAN be interpreted. Nothing was changed - remove it normally so its files come off too.")
+        return
+    }
+    if ($WhatIf) {
+        Set-ComponentResult -Component 'registry' -Status 'ok' -ReasonCode 'wouldForget' -Message ([string]$recordValidity.Reason)
+        Write-UninstallResult -Overall 'ok'
+        Write-Host ("WhatIf: record '" + $RecordId + "' would be dropped from the registry (" + [string]$recordValidity.Reason + "). Nothing on disk would be touched.")
+        return
+    }
+    # The lock helper hands back whatever the action returns: '' on success, a
+    # reason otherwise. Re-read UNDER the lock so a concurrent write cannot be
+    # clobbered by a stale copy read before it was taken.
+    $forgetError = ''
+    try {
+        $forgetError = [string](Invoke-WithInstallRegistryLock -ToolRoot $ToolRoot -Action {
+                $state = Read-InstallRegistryState -ToolRoot $ToolRoot
+                if ($state.State -ne 'ok') { return 'the registry could not be re-read under the lock' }
+                $live = ConvertTo-InstallRegistryCurrent -Registry $state.Registry
+                $before = @($live.installs)
+                # Read `id` directly: Get-RecordString lives in the DISCOVERED
+                # remover's module, which this script does not load.
+                $kept = @($before | Where-Object {
+                        $null -eq $_ -or $null -eq $_.PSObject.Properties['id'] -or [string]$_.id -ne $RecordId
+                    })
+                if ($kept.Count -eq $before.Count) { return 'the record was already gone' }
+                $live.installs = $kept
+                Save-InstallRegistry -ToolRoot $ToolRoot -Registry $live
+                return ''
+            })
+    }
+    catch { $forgetError = $_.Exception.Message }
+    if ($forgetError -ne '') {
+        Set-ComponentResult -Component 'registry' -Status 'failed' -ReasonCode 'forgetFailed' -Message $forgetError
+        Write-UninstallResult -Overall 'failed'
+        Write-Host ("ERROR: record '" + $RecordId + "' could not be dropped: " + $forgetError)
+        return
+    }
+    Set-ComponentResult -Component 'registry' -Status 'ok' -ReasonCode 'forgotten' `
+        -Message ('dropped an uninterpretable record; nothing on disk was touched (' + [string]$recordValidity.Reason + ')')
+    Write-UninstallResult -Overall 'ok'
+    Write-Host ("Dropped record '" + $RecordId + "' from the registry (" + [string]$recordValidity.Reason + ").")
+    Write-Host '  Nothing on disk was touched. Anything still installed stays installed - run a status scan to find it again.'
+    return
+}
+
 if (-not $recordValidity.Ok) {
     Set-ComponentResult -Component 'registry' -Status 'manualRepair' -ReasonCode 'recordInvalid' -Message ([string]$recordValidity.Reason)
     Write-UninstallResult -Overall 'manualRepair'
     Write-Host ("WARNING: record '" + $RecordId + "' cannot be safely interpreted (" + [string]$recordValidity.Reason + "). Nothing was changed.")
+    Write-Host '  It can be dropped from the registry with -ForgetUnreadableRecord; that removes the row only, never a file.'
     return
 }
 

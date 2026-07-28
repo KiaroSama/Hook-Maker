@@ -80,10 +80,25 @@ New-Item -ItemType Directory -Path $IsolatedStateDir -Force | Out-Null
 $FakeToolRoot = Join-Path $Work 'faketool'
 New-Item -ItemType Directory -Path (Join-Path $FakeToolRoot 'hooks') -Force | Out-Null
 
+# This exact line threw twice under the full matrix while the suite passed
+# 106/0 standalone every time, and a scratchpad under %TEMP% was wiped in the
+# same session - the working theory is an EXTERNAL deleter (Storage Sense, a
+# scanner, a harness sweep) removing the directory between the check and the
+# write. It is deliberately NOT retried: a silent retry would hide an
+# environment that deletes live working directories, which would corrupt a real
+# run just as easily. What it does instead is fail with the evidence needed to
+# identify the deleter next time - whether the workspace root and the immediate
+# directory still existed at the moment of the write.
 function Write-Utf8 { param([string]$Path, [string]$Content)
     $directory = Split-Path -Parent $Path
     if (-not (Test-Path -LiteralPath $directory -PathType Container)) { New-Item -ItemType Directory -Path $directory -Force | Out-Null }
-    [System.IO.File]::WriteAllText($Path, $Content, (New-Object System.Text.UTF8Encoding $false))
+    try { [System.IO.File]::WriteAllText($Path, $Content, (New-Object System.Text.UTF8Encoding $false)) }
+    catch {
+        throw ('Write-Utf8 failed for ' + $Path + ' :: ' + $_.Exception.Message +
+            ' [workspace exists=' + (Test-Path -LiteralPath $Work -PathType Container) +
+            '; parent exists=' + (Test-Path -LiteralPath $directory -PathType Container) +
+            '; utc=' + [DateTime]::UtcNow.ToString('o') + ']')
+    }
 }
 # Comma-wrapped: a bare `return [byte[]]@()` enumerates to $null, which would
 # make the "unchanged" comparison throw instead of failing the assertion.

@@ -307,6 +307,14 @@ exactly once (deduplicated by record id).
 copies, the client registrations, any native Git integration owned by that record, and the registry
 record itself. The originals under `hooks\` are untouched, so you can reinstall at any time.
 
+**A record Hook Maker cannot interpret can still be dropped — as a tracking row only.** If a record
+is damaged past the point where its client list can be read, nothing can prove what it installed, so
+no file is touched. The row is listed as removable with the capability `registry record only
+(nothing on disk)` and removing it drops the registry entry alone; whatever is still installed stays
+installed, and the next status scan finds it again as a discovered hook, which does have a removal
+path. The engine switch is `Uninstall-Hook.ps1 -ForgetUnreadableRecord`, and it refuses outright for
+a record that *can* be interpreted — that one has a real uninstall and must use it.
+
 Removing a **discovered** (third-party) hook follows a stricter rule, because Hook Maker did not
 install it and so cannot rely on its own install record:
 
