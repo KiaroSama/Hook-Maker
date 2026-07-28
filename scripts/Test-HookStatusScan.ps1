@@ -65,6 +65,40 @@ $script:TestPreviewLength = 800
 . (Join-Path $ScriptRoot '_installkiro.ps1')
 
 $Work = Join-Path ([System.IO.Path]::GetTempPath()) ('hookmaker-statusscan-' + [guid]::NewGuid().ToString('N').Substring(0, 8))
+
+# Sweep workspaces an INTERRUPTED earlier run left behind, before making a new
+# one. The finally block below undoes every deny ACL it created, but a run that
+# is killed never reaches it - and Deny-Directory denies the CURRENT user, so
+# what is left cannot be deleted by an ordinary recursive remove, and not by
+# `icacls /reset` either. Only the same undo used at teardown clears it, so it
+# is applied here too rather than leaving the tree to accumulate forever. Only
+# this suite's own workspaces are touched, and only ones no longer in use.
+# -Except guards the LIVE workspace: this same sweep is exercised mid-run by a
+# test, and without it that call would delete the tree the suite is standing on.
+function Clear-StaleStatusScanWorkspaces {
+    param([string]$Except = '')
+    $swept = 0
+    $identity = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
+    foreach ($stale in @(Get-ChildItem -LiteralPath ([System.IO.Path]::GetTempPath()) -Directory -Filter 'hookmaker-statusscan-*' -ErrorAction SilentlyContinue)) {
+        if ($Except -ne '' -and [string]::Equals($stale.FullName, $Except, [System.StringComparison]::OrdinalIgnoreCase)) { continue }
+        foreach ($directory in (@($stale) + @(Get-ChildItem -LiteralPath $stale.FullName -Recurse -Directory -Force -ErrorAction SilentlyContinue))) {
+            try {
+                & icacls $directory.FullName /remove:d $identity *> $null
+                & icacls $directory.FullName /grant ($identity + ':(OI)(CI)F') *> $null
+            }
+            catch { }
+        }
+        try { Remove-Item -LiteralPath $stale.FullName -Recurse -Force -ErrorAction Stop; $swept++ }
+        catch { Write-Host ('  stale workspace could not be swept (in use?): ' + $stale.Name) -ForegroundColor DarkYellow }
+    }
+    return $swept
+}
+
+$script:SweptWorkspaces = Clear-StaleStatusScanWorkspaces
+if ($script:SweptWorkspaces -gt 0) {
+    Write-Host ("Swept $script:SweptWorkspaces stale workspace(s) from an interrupted run") -ForegroundColor DarkGray
+}
+
 New-Item -ItemType Directory -Path $Work -Force | Out-Null
 Write-Host ("Workspace: $Work") -ForegroundColor DarkGray
 

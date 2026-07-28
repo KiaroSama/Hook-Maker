@@ -494,3 +494,58 @@
         Check 'global: no sibling remains -> the now-empty Hook-Maker root IS removed' (-not (Test-Path -LiteralPath $globalRuntimeRoot))
     }
     finally { Remove-FixtureHook 'ZZZ-Uninst-Orphanglobala'; Remove-FixtureHook 'ZZZ-Uninst-Orphanglobalb' }
+
+# ---- an uninterpretable record can finally leave the registry ---------------
+# A record whose `clients` object is gone cannot be interpreted: nothing can
+# infer what it installed, so the normal remover refuses - correctly. Before
+# -ForgetUnreadableRecord that refusal was a dead end, because the "manual
+# repair" it asked for had no supported command behind it and the row stayed
+# forever. The switch is the narrowest possible exit: registry row only.
+$fxForget = New-FixtureHook 'ZZZ-Uninst-Forgetunreadable'
+try {
+    $projForget = New-Proj 'ForgetUnreadable'
+    & $InstallScript -CustomHook $fxForget -Events @('Stop') -TargetProject $projForget -ClaudeOnly *> $null
+    $recForget = Get-RecordForScope 'ZZZ-Uninst-Forgetunreadable' $projForget
+    $forgetRuntime = [string]$recForget.clients.claude.runtimeScript
+    $forgetSettings = [string]$recForget.clients.claude.settingsPath
+    Check 'setup: the uninterpretable-record fixture installed' (
+        (Test-Path -LiteralPath $forgetRuntime -PathType Leaf) -and (Test-Path -LiteralPath $forgetSettings -PathType Leaf))
+
+    # A VALID record must never take this path: it has a real removal, and
+    # skipping it would leave the files and registrations behind.
+    $refuse = Invoke-UninstallProcess -RecordId $recForget.id -ForgetUnreadableRecord
+    Check 'forget: a record that CAN be interpreted is refused' ([string]$refuse.Result.overall -eq 'manualRepair') ([string]$refuse.Result.overall)
+    Check 'forget: the refusal says to use the normal uninstall' ($refuse.Out -match 'remove it normally') $refuse.Out
+    Check 'forget: the refusal changed nothing' ((@(Get-RecordsFor 'ZZZ-Uninst-Forgetunreadable')).Count -eq 1)
+
+    # Now make it uninterpretable, exactly as the two real polluted records were.
+    $broken = Get-RecordForScope 'ZZZ-Uninst-Forgetunreadable' $projForget
+    $broken.PSObject.Properties.Remove('clients')
+    Save-MutatedRecord -Record $broken
+    $stillThere = Invoke-UninstallProcess -RecordId $recForget.id
+    Check 'forget: the normal remover still refuses an uninterpretable record' (
+        [string]$stillThere.Result.overall -eq 'manualRepair') ([string]$stillThere.Result.overall)
+    Check 'forget: and now it names the way out instead of leaving a dead end' (
+        $stillThere.Out -match 'ForgetUnreadableRecord') $stillThere.Out
+
+    $whatIf = Invoke-UninstallProcess -RecordId $recForget.id -ForgetUnreadableRecord -WhatIf
+    Check 'forget: -WhatIf reports the drop without doing it' (
+        ([string]$whatIf.Result.overall -eq 'ok') -and (@(Get-RecordsFor 'ZZZ-Uninst-Forgetunreadable')).Count -eq 1) (
+        [string]$whatIf.Result.overall)
+
+    $forgot = Invoke-UninstallProcess -RecordId $recForget.id -ForgetUnreadableRecord
+    Check 'forget: the uninterpretable record is dropped' ([string]$forgot.Result.overall -eq 'ok') ($forgot.Out + $forgot.Err)
+    Check 'forget: the registry row is gone' ((@(Get-RecordsFor 'ZZZ-Uninst-Forgetunreadable')).Count -eq 0)
+    Check 'forget: the registry component says exactly what happened' (
+        (Get-ComponentStatus $forgot.Result 'registry') -eq 'ok') (Get-ComponentStatus $forgot.Result 'registry')
+    # The whole safety case for this switch: it is a registry operation, and a
+    # record that cannot prove ownership must never cause a delete.
+    Check 'forget: NOTHING on disk was touched - the runtime file survives' (Test-Path -LiteralPath $forgetRuntime -PathType Leaf)
+    Check 'forget: and the settings file survives' (Test-Path -LiteralPath $forgetSettings -PathType Leaf)
+    Check 'forget: the output warns that what is installed stays installed' ($forgot.Out -match 'stays installed') $forgot.Out
+
+    # Idempotent, like every other removal path here.
+    $again = Invoke-UninstallProcess -RecordId $recForget.id -ForgetUnreadableRecord
+    Check 'forget: dropping an id that is already gone is not an error' ([string]$again.Result.overall -eq 'ok') ([string]$again.Result.overall)
+}
+finally { Remove-FixtureHook 'ZZZ-Uninst-Forgetunreadable' }

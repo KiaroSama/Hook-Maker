@@ -131,3 +131,32 @@
     Check 'the real per-user .claude/.codex directories were never touched' (
         ($realConfigBefore -join ';') -eq ($realConfigAfter -join ';')) (
         ($realConfigBefore -join ';') + ' vs ' + ($realConfigAfter -join ';'))
+
+    # ---- stale-workspace sweep ------------------------------------------------
+    # A run that is KILLED never reaches the finally block that undoes the deny
+    # ACLs, and Deny-Directory denies the CURRENT user - so what is left behind
+    # survives an ordinary recursive delete AND `icacls /reset`. One such tree
+    # was found in %TEMP% during a closure pass. The suite now sweeps its own
+    # leftovers at startup; this proves the sweep really clears that shape, and
+    # that it cannot eat the workspace the suite is currently standing on.
+    $staleWork = Join-Path ([System.IO.Path]::GetTempPath()) ('hookmaker-statusscan-' + [guid]::NewGuid().ToString('N').Substring(0, 8))
+    $staleDenied = New-Dir (Join-Path $staleWork 'FakeDrive\Windows\System32-ish')
+    [System.IO.File]::WriteAllText((Join-Path $staleDenied 'left-behind.json'), '{}')
+    $staleEnforced = Deny-Directory -Path $staleDenied
+    if ($staleEnforced) {
+        # Exactly the state an interrupted run leaves: a plain delete must fail.
+        $plainDeleteFailed = $false
+        try { Remove-Item -LiteralPath $staleWork -Recurse -Force -ErrorAction Stop }
+        catch { $plainDeleteFailed = $true }
+        Check 'an interrupted run leaves a workspace an ordinary delete cannot remove' $plainDeleteFailed (
+            'still present: ' + (Test-Path -LiteralPath $staleWork))
+
+        $sweptCount = Clear-StaleStatusScanWorkspaces -Except $Work
+        Check 'the startup sweep removes that leftover workspace' (
+            (-not (Test-Path -LiteralPath $staleWork)) -and $sweptCount -ge 1) (
+            'swept=' + $sweptCount + ' present=' + (Test-Path -LiteralPath $staleWork))
+        Check 'the sweep never touches the workspace this run is using' (Test-Path -LiteralPath $Work -PathType Container)
+    }
+    else {
+        Write-Host '[SKIP] a deny ACL could not be enforced on this account; stale-workspace sweep assertions skipped' -ForegroundColor Yellow
+    }
