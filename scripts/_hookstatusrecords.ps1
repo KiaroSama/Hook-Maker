@@ -403,6 +403,11 @@ function Save-DiscoveredRecords {
                 'coveredByManaged' { $script:RecordsMatched++ }
                 default { Add-ScanWarning ('a finding was not recorded: ' + [string]$outcome.Reason) }
             }
+            # This merge is the scan's slowest stage on a large registry, and it
+            # runs after the walk is finished - without a tick here the progress
+            # line would sit frozen (or, before it reported this stage at all,
+            # simply disappear) for the rest of the run.
+            Show-ScanProgress
         }
 
         # Demote only what this scan PROVABLY covered and did not find. The merge
@@ -411,6 +416,7 @@ function Save-DiscoveredRecords {
         $roots = @($script:ScanRoots.ToArray())
         foreach ($record in @($registry.installs)) {
             if ($null -eq $record -or -not (Test-IsDiscoveredRecord -Record $record)) { continue }
+            Show-ScanProgress
             if ($incomingIds.Contains([string]$record.id)) { continue }
             if ([string]$record.status -eq 'notSeen') { continue }
             if (-not (Test-RecordCoveredByScan -Record $record -Roots $roots)) { continue }

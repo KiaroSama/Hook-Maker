@@ -393,6 +393,53 @@
     Check 'a hook already tracked as a managed install is NOT duplicated' ($coveredMerge.Action -eq 'coveredByManaged') $coveredMerge.Reason
     Check 'nothing was written for the managed-covered hook' (@($coverageRegistry.installs).Count -eq 1)
 
+    # A per-hook-file client (Kiro) registers the hook's LAUNCHER shim, so the
+    # managed record's runtimeScript and the path it actually registered are
+    # different files. Matching runtimeScript alone missed every one of them, and
+    # each Kiro install was then kept as a second, unremovable discovered record.
+    $launcherScript = Join-Path $fixtureProjectClaudeRuntimeRoot 'F\kiro-launch.ps1'
+    $launcherRegistry = New-EmptyInstallRegistry
+    $launcherManaged = Copy-Record $goodProjectRecord
+    $launcherManaged.clients.claude.command = 'powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "' + $launcherScript + '"'
+    $launcherRegistry.installs = @($launcherManaged)
+    $launcherDiscovered = New-DiscoveredRecordFixture
+    $launcherDiscovered.targetProjectRoot = $fixtureProjectRoot
+    $launcherDiscovered.scanRoots = @($fixtureProjectRoot)
+    $launcherDiscovered.clients[0].settingsPath = $fixtureProjectClaudeSettingsPath
+    $launcherDiscovered.clients[0].parsedTargets = @($launcherScript)
+    $launcherMerge = Merge-DiscoveredRecord -Registry $launcherRegistry -Record $launcherDiscovered
+    Check 'a registration pointing at the launcher the managed record REGISTERED is covered' ($launcherMerge.Action -eq 'coveredByManaged') $launcherMerge.Reason
+    Check 'nothing was written for the launcher-registered hook' (@($launcherRegistry.installs).Count -eq 1)
+
+    # The registered command is still not a free pass: a path the managed record
+    # never registered, in the same settings file, remains a separate hook.
+    $foreignLauncherRegistry = New-EmptyInstallRegistry
+    $foreignLauncherRegistry.installs = @((Copy-Record $launcherManaged))
+    $foreignDiscovered = New-DiscoveredRecordFixture
+    $foreignDiscovered.targetProjectRoot = $fixtureProjectRoot
+    $foreignDiscovered.scanRoots = @($fixtureProjectRoot)
+    $foreignDiscovered.clients[0].settingsPath = $fixtureProjectClaudeSettingsPath
+    $foreignDiscovered.clients[0].parsedTargets = @((Join-Path $fixtureProjectClaudeRuntimeRoot 'F\not-ours.ps1'))
+    $foreignMerge = Merge-DiscoveredRecord -Registry $foreignLauncherRegistry -Record $foreignDiscovered
+    Check 'a path the managed record never registered is still its own record' ($foreignMerge.Action -eq 'added') $foreignMerge.Reason
+
+    # A discovered record for the same artifact can predate the managed install
+    # (hooks reinstalled over paths an earlier scan had discovered). Left in the
+    # registry it can never be cleaned up: this branch returns before the update
+    # below, the demotion pass then calls it notSeen although the file is right
+    # there, and the uninstall screen offers a row whose removal can never be
+    # proven. It must be retired where the duplicate is proven.
+    $ghostRegistry = New-EmptyInstallRegistry
+    $ghostStale = Copy-Record $coveredDiscovered
+    $ghostStale.status = 'manualRepair'
+    $ghostStale.needsManualRepair = $true
+    $ghostStale.statusReason = 'left over from an earlier removal attempt'
+    $ghostRegistry.installs = @((Copy-Record $goodProjectRecord), $ghostStale)
+    $ghostMerge = Merge-DiscoveredRecord -Registry $ghostRegistry -Record (Copy-Record $coveredDiscovered)
+    Check 'a hook now covered by a managed install still reports coveredByManaged' ($ghostMerge.Action -eq 'coveredByManaged') $ghostMerge.Reason
+    Check 'the stale discovered duplicate is RETIRED, not left unremovable' (@(@($ghostRegistry.installs) | Where-Object { [string]$_.id -eq [string]$ghostStale.id }).Count -eq 0)
+    Check 'retiring the duplicate leaves the managed record untouched' (@(@($ghostRegistry.installs) | Where-Object { [string]$_.id -eq 'schema-ok-project' }).Count -eq 1)
+
     # Same settings file but a DIFFERENT script is a genuinely different hook -
     # coverage must not be claimed on the settings path alone.
     $notCoveredDiscovered = New-DiscoveredRecordFixture

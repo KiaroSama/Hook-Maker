@@ -259,6 +259,12 @@ used for installs, with discovered records kept distinct from Hook Maker's own m
 scan updates the same record rather than duplicating it; two hooks with the same name at different
 paths stay separate. A cancelled or failed scan writes nothing.
 
+A hook Hook Maker itself installs is never also kept as a discovered one. Coverage is proved by the
+exact paths the managed record registered — including a Kiro registration, which points at the
+hook's `kiro-launch.ps1` shim rather than at the hook script — and a discovered record for that same
+artifact is retired the next time it is recognised. Without that, reinstalling over a path an
+earlier scan had discovered left a duplicate row in the uninstall list that could never be removed.
+
 Findings are reported as either **status-only** or **safely removable**. Anything ambiguous, shared
 between hooks, or outside a recognised hook root is shown but never auto-deleted.
 

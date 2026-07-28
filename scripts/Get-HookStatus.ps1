@@ -99,6 +99,10 @@ $script:RecordsUpdated = 0
 $script:RecordsMatched = 0
 $script:Canceled = $false
 $script:Persisted = $false
+# Which stage the progress line is describing. The walk is only the first of
+# three, and the other two are not fast: see Show-ScanProgress.
+$script:ScanPhase = 'walk'
+$script:PersistTotal = 0
 
 function Add-ScanWarning {
     param([string]$Message)
@@ -248,6 +252,13 @@ $script:LastProgressAt = [DateTime]::UtcNow
 # call in, so a slow item (one settings file can take tens of seconds) froze the
 # clock and a running scan read as hung. Counters still show whatever the last
 # call left, but the SECONDS are always truthful.
+#
+# It also reports which STAGE is running. The directory walk is not the whole
+# scan: on a real tree it was 27 s of a 97 s run, and the progress line used to
+# be dismissed the moment the walk ended - so building records and merging them
+# into the registry ran with no display at all, and the scan looked like it had
+# vanished mid-work. Every stage now reports, and the line is cleared once, at
+# the very end.
 function Show-ScanProgress {
     param([switch]$Force)
     $now = [DateTime]::UtcNow
@@ -255,13 +266,23 @@ function Show-ScanProgress {
     if (-not $Force -and $sinceTick -lt 1000) { return }
     $script:LastProgressAt = $now
     $elapsed = [int][math]::Floor(($now - $script:StartedAt).TotalSeconds)
-    try {
-        Write-Progress -Id 1 -Activity 'Scanning for installed hooks' -Status (
+    $status = switch ($script:ScanPhase) {
+        'records' {
+            'building records from ' +
+            ($script:RegistrationFindings.Count + $script:NativeFindings.Count) + ' finding(s)'
+        }
+        'persist' {
+            'recording results ' +
+            ($script:RecordsAdded + $script:RecordsUpdated + $script:RecordsMatched) +
+            '/' + $script:PersistTotal
+        }
+        default {
             'directories ' + $script:DirectoriesInspected +
             ' | candidate roots ' + $script:CandidateRootsSeen +
-            ' | registrations ' + ($script:RegistrationFindings.Count + $script:NativeFindings.Count) +
-            ' | ' + $elapsed + 's')
+            ' | registrations ' + ($script:RegistrationFindings.Count + $script:NativeFindings.Count)
+        }
     }
+    try { Write-Progress -Id 1 -Activity 'Scanning for installed hooks' -Status ($status + ' | ' + $elapsed + 's') }
     catch { }
 }
 
@@ -344,14 +365,16 @@ foreach ($root in @($script:ScanRoots.ToArray())) {
     Invoke-ScanWalk -Root $root
 }
 Show-ScanProgress -Force
-try { Write-Progress -Id 1 -Activity 'Scanning for installed hooks' -Completed } catch { }
 
 if ($script:Canceled) {
+    try { Write-Progress -Id 1 -Activity 'Scanning for installed hooks' -Completed } catch { }
     Write-ScanResult -Overall 'canceled'
     Write-Host 'Scan canceled. Nothing was written.'
     exit 2
 }
 
+$script:ScanPhase = 'records'
+Show-ScanProgress -Force
 $script:Findings = @(@(Build-RegistrationRecords) + @(Build-NativeRecords))
 $script:Findings = @(Add-RuntimeArtifacts -Records $script:Findings)
 
@@ -360,6 +383,9 @@ $overall = 'ok'
 if (-not $coverageComplete -or $script:Warnings.Count -gt 0) { $overall = 'partial' }
 
 if (-not $NoPersist) {
+    $script:ScanPhase = 'persist'
+    $script:PersistTotal = @($script:Findings).Count
+    Show-ScanProgress -Force
     try { Save-DiscoveredRecords -Records $script:Findings -CoverageComplete $coverageComplete }
     catch {
         Add-ScanError ('scan results could not be persisted: ' + $_.Exception.Message)
@@ -367,6 +393,7 @@ if (-not $NoPersist) {
     }
 }
 
+try { Write-Progress -Id 1 -Activity 'Scanning for installed hooks' -Completed } catch { }
 Write-ScanResult -Overall $overall
 Write-Host ('Scan ' + $overall + ': ' + @($script:Findings).Count + ' logical hook(s) across ' +
     $script:DirectoriesInspected + ' director(ies).' +

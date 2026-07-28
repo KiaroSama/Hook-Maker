@@ -425,6 +425,7 @@ function Invoke-UninstallInstalledHooks {
         }
         Write-NoteLine '  Source hook files are NEVER deleted - only installed copies, registrations and tracking are removed.'
         Write-NoteLine '  Tip: use lists and ranges, e.g. 1  |  1,2  |  1,2,3-6'
+        Write-NoteLine '  To clear one project in one pick, use its "Remove all removable hooks from project:" row - those are listed last, just above.'
 
         $value = Read-Answer (New-QuestionPrompt 'Select what to uninstall (number, list, or range)' $null '0') 'select uninstall targets'
         if ($value -eq '0' -or $value -eq '') { Write-NoteLine 'Canceled. Nothing was changed.'; return 'back' }
