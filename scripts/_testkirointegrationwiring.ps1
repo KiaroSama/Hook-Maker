@@ -97,6 +97,31 @@
         Check 'the permanently non-blocking Kiro Stop is recorded as degraded, not sold as a gate' (
             $wireRecordJson -match 'degraded-stop-gate') ('len=' + $wireRecordJson.Length)
 
+        # The status report used to describe THIS hook - Hook Maker's own managed
+        # Kiro install, just written above - as "automatic uninstall: unavailable
+        # - per-hook-file removal is not implemented". That limit belongs to the
+        # DISCOVERED-record remover; the uninstall action removes this install
+        # without trouble. On a real machine it mislabelled ~1500 rows of the
+        # user's own hooks. Once the merge PROVES a managed record owns the
+        # artifact, the finding has to say so.
+        $wireScanResult = Join-Path $Work 'wire-scan-result.json'
+        & (Join-Path $ScriptRoot 'Get-HookStatus.ps1') -ScanRoot $wireProject -ToolRoot $ToolRoot -ResultPath $wireScanResult *> $null
+        $wireScan = $null
+        if (Test-Path -LiteralPath $wireScanResult -PathType Leaf) { $wireScan = ((Read-Utf8 -Path $wireScanResult | ConvertFrom-Json)) }
+        $wireKiroFinding = @()
+        if ($null -ne $wireScan) {
+            $wireKiroFinding = @(@($wireScan.findings) | Where-Object { [string]$_.hookType -eq 'KiroRegistration' })
+        }
+        Check 'a scan of the installed project finds the managed Kiro registration' (
+            $wireKiroFinding.Count -eq 1) ('count=' + $wireKiroFinding.Count)
+        if ($wireKiroFinding.Count -eq 1) {
+            Check 'a Kiro hook Hook Maker itself installed is NOT reported as unremovable' (
+                [string]$wireKiroFinding[0].removalPolicy -eq 'managedInstall') ([string]$wireKiroFinding[0].removalPolicy)
+            Check 'and its reason points at the uninstall action, not the unimplemented path' (
+                [string]$wireKiroFinding[0].statusReason -match 'remove it with the uninstall action') (
+                [string]$wireKiroFinding[0].statusReason)
+        }
+
         # This install dropped PreCompact and installed a Stop that can only ever
         # advise, so calling the whole run 'ok' overstates what landed. The
         # degradation is deliberately NOT expressed as a component status:
