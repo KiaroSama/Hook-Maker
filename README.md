@@ -175,7 +175,12 @@ folder never breaks an installed hook.** The flip side: copies do not auto-updat
 changing a hook, its `.env`, or a sync group, re-run the install (or the sync-group flow) and
 the copies are refreshed; a re-install *replaces* the hook's old registration (even one that
 pointed into the tool folder) instead of duplicating it. Other content in the settings files is
-preserved, and a timestamped backup is written first.
+preserved, and a timestamped backup is written first — **once per wizard run, not once per hook**.
+Installing 20 hooks is 20 separate installs, so a single `settings.local.json` used to collect 20
+near-identical copies of itself; the first install of a run now writes
+`settings.local.json.backup-install-<run>` and the rest leave it alone, so what is preserved is the
+file as it was *before* the batch. Uninstalls do the same with `-uninstall-<run>`. A direct
+`Install-Hook.ps1` call outside the wizard keeps the old per-invocation name.
 
 Global install works the same way: `scripts/Install-Hook.ps1` with no `-TargetProject` copies to
 `~/.claude/hooks/Hook-Maker/` + `~/.codex/hooks/Hook-Maker/` and registers in

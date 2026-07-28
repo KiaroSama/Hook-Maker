@@ -186,11 +186,25 @@ function Read-OrCreateJsonObject {
 }
 
 $script:UninstallTimestamp = (Get-Date).ToString('yyyyMMdd-HHmmss')
+
+# Same one-backup-per-run rule as the installer (see Backup-File in
+# _installclientsettings.ps1): a bulk uninstall is one invocation per record, so
+# a single settings file used to collect one backup per removed hook. The
+# operation is part of the name, so an install run and an uninstall run in the
+# same wizard session never satisfy each other's backup.
 function Backup-SettingsFile {
     param([Parameter(Mandatory = $true)][string]$Path)
-    if (Test-Path -LiteralPath $Path -PathType Leaf) {
-        Copy-Item -LiteralPath $Path -Destination ($Path + '.backup-' + $script:UninstallTimestamp) -Force
+    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { return }
+    $stamp = $script:UninstallTimestamp
+    $run = [string]$env:HOOKMAKER_BACKUP_RUN
+    if (-not [string]::IsNullOrWhiteSpace($run)) {
+        $safe = ($run -replace '[^A-Za-z0-9._-]', '')
+        if ($safe.Length -gt 40) { $safe = $safe.Substring(0, 40) }
+        if ($safe -ne '') { $stamp = 'uninstall-' + $safe }
     }
+    $backupPath = $Path + '.backup-' + $stamp
+    if (Test-Path -LiteralPath $backupPath -PathType Leaf) { return }
+    Copy-Item -LiteralPath $Path -Destination $backupPath -Force
 }
 
 # Same transactional pattern as Install-Hook.ps1's Write-JsonFile: serialize to

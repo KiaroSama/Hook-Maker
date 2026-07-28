@@ -92,12 +92,36 @@ function Ensure-Property {
     return $Object.$Name
 }
 
+# A settings file is backed up once per install RUN, not once per hook.
+#
+# Installing 20 hooks is 20 separate Install-Hook.ps1 invocations, each with its
+# own timestamp, so one settings.local.json collected 20 near-identical copies
+# of itself - and the only genuinely useful one, the state BEFORE the batch, was
+# buried among 19 mid-batch snapshots. When the caller marks a run
+# (HOOKMAKER_BACKUP_RUN, which the wizard sets at startup), the first install of
+# that run writes the backup and every later one finds it already there and
+# leaves it alone, so what survives is exactly the pre-batch file. A direct
+# single install with no run marker keeps the old per-invocation name.
+function Get-BackupRunStamp {
+    param([Parameter(Mandatory = $true)][string]$Operation, [Parameter(Mandatory = $true)][string]$Fallback)
+    $run = [string]$env:HOOKMAKER_BACKUP_RUN
+    if ([string]::IsNullOrWhiteSpace($run)) { return $Fallback }
+    # The value lands in a FILE NAME, so it is sanitized rather than trusted.
+    $safe = ($run -replace '[^A-Za-z0-9._-]', '')
+    if ($safe.Length -gt 40) { $safe = $safe.Substring(0, 40) }
+    if ($safe -eq '') { return $Fallback }
+    return ($Operation + '-' + $safe)
+}
+
 function Backup-File {
     param([Parameter(Mandatory = $true)][string]$Path)
 
-    if (Test-Path -LiteralPath $Path -PathType Leaf) {
-        Copy-Item -LiteralPath $Path -Destination ($Path + '.backup-' + $Timestamp) -Force
-    }
+    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { return }
+    $backupPath = $Path + '.backup-' + (Get-BackupRunStamp -Operation 'install' -Fallback $Timestamp)
+    # Never -Force over an existing run backup: that would replace the pre-batch
+    # state with a mid-batch one, which is the copy nobody needs.
+    if (Test-Path -LiteralPath $backupPath -PathType Leaf) { return }
+    Copy-Item -LiteralPath $Path -Destination $backupPath -Force
 }
 
 # Settings are replaced transactionally: serialize to a sibling temp file,
