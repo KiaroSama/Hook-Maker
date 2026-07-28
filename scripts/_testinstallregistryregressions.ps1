@@ -623,3 +623,55 @@
             @($disagreePlainHandlersAfter | Where-Object { (Get-HandlerFieldValue $_ 'commandWindows') -eq $disagreePlainUserCommand -and (Get-HandlerFieldValue $_ 'command') -eq $disagreePlainRealCommand }).Count -eq 1)
     }
     finally { Remove-FixtureHook 'ZZZ-Regtest-Disagreeplaincmd' }
+
+    # =====================================================================
+    # DEFECT 5: ONE settings backup per install run, not one per hook.
+    # Installing 20 hooks is 20 Install-Hook.ps1 invocations, and each used to
+    # drop its own timestamped copy of the same settings.local.json - so the
+    # one copy worth keeping, the state BEFORE the batch, sat buried among 19
+    # mid-batch snapshots. The wizard marks its run in HOOKMAKER_BACKUP_RUN;
+    # the first install of that run backs up and the rest must leave it alone.
+    $fixtureBackupA = New-FixtureHook 'ZZZ-Regtest-Backupruna'
+    $fixtureBackupB = New-FixtureHook 'ZZZ-Regtest-Backuprunb'
+    $previousBackupRun = $env:HOOKMAKER_BACKUP_RUN
+    try {
+        # Marked run: one backup for the whole batch, and it is the PRE-batch file.
+        $projBackupRun = New-Proj 'BackupRunMarkedProj'
+        $backupRunDir = Join-Path $projBackupRun '.claude'
+        $env:HOOKMAKER_BACKUP_RUN = ''
+        & $InstallScript -CustomHook $fixtureBackupA -Events @('Stop') -TargetProject $projBackupRun -ClaudeOnly *> $null
+        Get-ChildItem -LiteralPath $backupRunDir -Filter 'settings.local.json.backup-*' -File -ErrorAction SilentlyContinue |
+            Remove-Item -Force -ErrorAction SilentlyContinue
+        $env:HOOKMAKER_BACKUP_RUN = '20260728-010203'
+        & $InstallScript -CustomHook $fixtureBackupB -Events @('Stop') -TargetProject $projBackupRun -ClaudeOnly *> $null
+        & $InstallScript -CustomHook $fixtureBackupB -Events @('SessionStart') -TargetProject $projBackupRun -ClaudeOnly *> $null
+        & $InstallScript -CustomHook $fixtureBackupA -Events @('SessionStart') -TargetProject $projBackupRun -ClaudeOnly *> $null
+        $runBackups = @(Get-ChildItem -LiteralPath $backupRunDir -Filter 'settings.local.json.backup-*' -File -ErrorAction SilentlyContinue)
+        Check 'three installs in one marked run leave exactly ONE settings backup' ($runBackups.Count -eq 1) ('backups=' + (@($runBackups.Name) -join ', '))
+        Check 'the surviving backup is named for the run, not for one invocation' (
+            $runBackups.Count -eq 1 -and $runBackups[0].Name -eq 'settings.local.json.backup-install-20260728-010203') ('name=' + (@($runBackups.Name) -join ', '))
+        $runBackupText = ''
+        if ($runBackups.Count -eq 1) { $runBackupText = [System.IO.File]::ReadAllText($runBackups[0].FullName) }
+        Check 'it holds the state from BEFORE the batch, not a mid-batch snapshot' (
+            $runBackupText -match 'ZZZ-Regtest-Backupruna' -and $runBackupText -notmatch 'ZZZ-Regtest-Backuprunb') $runBackupText
+
+        # A run marker that sanitizes to nothing must not produce a nameless
+        # backup file - it falls back to the per-invocation timestamp, which is
+        # also the shape an unmarked single install keeps.
+        $projBackupJunk = New-Proj 'BackupRunJunkProj'
+        $backupJunkDir = Join-Path $projBackupJunk '.claude'
+        $env:HOOKMAKER_BACKUP_RUN = ''
+        & $InstallScript -CustomHook $fixtureBackupA -Events @('Stop') -TargetProject $projBackupJunk -ClaudeOnly *> $null
+        Get-ChildItem -LiteralPath $backupJunkDir -Filter 'settings.local.json.backup-*' -File -ErrorAction SilentlyContinue |
+            Remove-Item -Force -ErrorAction SilentlyContinue
+        $env:HOOKMAKER_BACKUP_RUN = '///'
+        & $InstallScript -CustomHook $fixtureBackupB -Events @('Stop') -TargetProject $projBackupJunk -ClaudeOnly *> $null
+        $junkBackups = @(Get-ChildItem -LiteralPath $backupJunkDir -Filter 'settings.local.json.backup-*' -File -ErrorAction SilentlyContinue)
+        Check 'an unusable run marker falls back to a real per-invocation name' (
+            $junkBackups.Count -eq 1 -and $junkBackups[0].Name -match '^settings\.local\.json\.backup-\d{8}-\d{6}$') ('name=' + (@($junkBackups.Name) -join ', '))
+    }
+    finally {
+        $env:HOOKMAKER_BACKUP_RUN = $previousBackupRun
+        Remove-FixtureHook 'ZZZ-Regtest-Backupruna'
+        Remove-FixtureHook 'ZZZ-Regtest-Backuprunb'
+    }
