@@ -271,11 +271,16 @@ function Get-InstalledHookSnapshot {
                 Clients        = @($clients)
                 EventsByClient = $eventsByClient
                 SourceScript   = Get-RecordDisplayField $record 'sourceScript' '(unknown source)'
-                Removable      = ($validation.Ok -and -not [string]::IsNullOrWhiteSpace($recordId))
-                Capability     = 'registration + runtime'
-                Detail         = if ($validation.Ok) { '' } else { 'manual repair: ' + $validation.Reason }
+                # A record the tool cannot interpret is still removable - but only
+                # as a REGISTRY ROW. It cannot prove what it owns, so nothing on
+                # disk is touched; the executor enforces that, this only offers
+                # it. Before this, such a row said "manual repair" and there was
+                # no manual repair to do: it could never leave the list.
+                Removable      = (-not [string]::IsNullOrWhiteSpace($recordId))
+                Capability     = if ($validation.Ok) { 'registration + runtime' } else { 'registry record only (nothing on disk)' }
+                Detail         = if ($validation.Ok) { '' } else { 'cannot be interpreted (' + $validation.Reason + ') - only the tracking row can be dropped' }
             })
-            if (-not $validation.Ok -or [string]::IsNullOrWhiteSpace($recordId)) { continue }
+            if ([string]::IsNullOrWhiteSpace($recordId)) { continue }
         }
 
         # Only rows that reached here are removable, so only these ever join an
@@ -660,9 +665,18 @@ function Invoke-UninstallInstalledHooks {
         foreach ($id in $recordIds) {
             $record = @($registry.installs | Where-Object { (Get-RecordDisplayField $_ 'id' '') -eq $id })[0]
             $executor = if ((Get-RecordType $record) -eq 'discovered') { $discoveredUninstallScript } else { $UninstallScript }
+            # A MANAGED record that does not validate has no removal path at all
+            # - `clients` cannot be inferred - so it is dropped as a registry row
+            # and nothing else. Decided from the live record here, next to the
+            # executor choice, for the same reason: a stale row must not be able
+            # to pick the narrower operation for a record that is fine.
+            $forgetArgs = @{}
+            if ((Get-RecordType $record) -ne 'discovered' -and -not (Test-InstallRecordValid -Record $record).Ok) {
+                $forgetArgs['ForgetUnreadableRecord'] = $true
+            }
             $resultPath = Join-Path ([System.IO.Path]::GetTempPath()) ('hookmaker-uninstall-' + [guid]::NewGuid().ToString('N').Substring(0, 8) + '.json')
             $threw = $false
-            try { & $executor -RecordId $id -ToolRoot $ToolRoot -ResultPath $resultPath *> $null }
+            try { & $executor -RecordId $id -ToolRoot $ToolRoot -ResultPath $resultPath @forgetArgs *> $null }
             catch { $threw = $true }
             $overall = 'failed'
             if (Test-Path -LiteralPath $resultPath) {

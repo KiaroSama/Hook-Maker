@@ -129,13 +129,14 @@ function Invoke-UninstallProcess {
     # red-proof can execute the pre-change executor for real, without ever
     # reverting the shared working tree.
     param([string]$RecordId, [switch]$WhatIf, [string]$UninstallToolRoot = $ToolRoot, [string]$FakeHome = '',
-        [string]$ScriptPath = '')
+        [string]$ScriptPath = '', [switch]$ForgetUnreadableRecord)
     if ([string]::IsNullOrWhiteSpace($ScriptPath)) { $ScriptPath = $UninstallScript }
     $token = [guid]::NewGuid().ToString('N').Substring(0, 8)
     $outF = Join-Path $Work "uninstout-$token.txt"; $errF = Join-Path $Work "uninsterr-$token.txt"
     $resultFile = Join-Path $Work "uninstresult-$token.json"
     $argLine = '-NoLogo -NoProfile -File "' + $ScriptPath + '" -RecordId "' + $RecordId + '" -ToolRoot "' + $UninstallToolRoot + '" -ResultPath "' + $resultFile + '"'
     if ($WhatIf) { $argLine += ' -WhatIf' }
+    if ($ForgetUnreadableRecord) { $argLine += ' -ForgetUnreadableRecord' }
     $hostExecutable = (Get-Process -Id $PID).Path
     $startArgs = @{
         FilePath = $hostExecutable; ArgumentList = $argLine
