@@ -228,10 +228,10 @@ try {
         $codexSettings = [string]$rec.clients.codex.settingsPath
         $codexRuntimeScript = [string]$rec.clients.codex.runtimeScript
 
-        # main menu 1 -> submenu 1 -> hook list 27 (Uninstall) -> scope menu 1
+        # main menu 1 -> submenu 1 -> hook list 27 (Uninstall) -> scope menu 2
         # (every installed hook) -> select row 1 (the fixture record) -> decline
         # the confirmation -> exit the main menu.
-        $r = Invoke-Wizard -Config $cfg -Answers @('1', '1', '27', '1', '1', 'n', '0') -WorkingDirectory $proj
+        $r = Invoke-Wizard -Config $cfg -Answers @('1', '1', '27', '2', '1', 'n', '0') -WorkingDirectory $proj
         Check 'the wizard run exits 0' ($r.Exit -eq 0) $r.Err
 
         # ---- list screen: everything Get-InstalledHookSnapshot collects ----
@@ -805,7 +805,9 @@ try {
         function Write-NoteLine { param([string]$Message) [void]$script:Captured.Add($Message) }
         function Write-ErrorLine { param([string]$Message) [void]$script:Captured.Add($Message) }
         function Write-Log { param([string]$Level, [string]$Component, [string]$Message) }
-        function New-QuestionPrompt { param([string]$Title, [string]$Details, [string]$Default) return $Title }
+        # The default is part of what is being asserted (which row Enter picks),
+        # so it travels into the captured prompt text rather than being dropped.
+        function New-QuestionPrompt { param([string]$Title, [string]$Details, [string]$Default) return ($Title + ' [' + $Default + ']') }
         # Used by the scope submenu that now precedes the list.
         function Write-MenuLine { param([int]$Number, [string]$Label, [string]$Suffix = '') [void]$script:Captured.Add(($Number.ToString() + '. ' + $Label + ' ' + $Suffix)) }
         function Get-ExampleText { param([string]$Text) return $Text }
@@ -813,6 +815,9 @@ try {
         # ends the screen instead of looping forever.
         function Read-Answer {
             param([string]$Prompt, [string]$LogLabel)
+            # The prompt carries the DEFAULT, and which row Enter picks is part
+            # of what these cases assert, so it is captured like any other line.
+            [void]$script:Captured.Add($Prompt)
             if ($script:UninstallAnswers.Count -eq 0) { return '0' }
             return $script:UninstallAnswers.Dequeue()
         }
@@ -835,24 +840,28 @@ try {
 
         $results = @{}
         foreach ($case in @(
-                # Every case starts by choosing a scope: '1' = every installed
+                # Every case starts by choosing a scope: '2' = every installed
                 # hook, which is the set these cases were written against.
                 # 1-4: two removable rows and two blocked ones in one selection.
-                [pscustomobject]@{ Name = 'mixed'; Answers = @('1', '1-4') }
+                [pscustomobject]@{ Name = 'mixed'; Answers = @('2', '1-4') }
                 # 3,4: nothing removable at all - then 0 to leave the re-ask.
-                [pscustomobject]@{ Name = 'allBlocked'; Answers = @('1', '3,4', '0') }
-                # Scope 2 + the folder the two REMOVABLE rows were installed
+                [pscustomobject]@{ Name = 'allBlocked'; Answers = @('2', '3,4', '0') }
+                # Scope 1 + the folder the two REMOVABLE rows were installed
                 # into: only those are listed, and the blocked rows - which live
                 # in a different project - are gone from the screen entirely.
-                [pscustomobject]@{ Name = 'filtered'; Answers = @('2', $proj, '0') }
+                [pscustomobject]@{ Name = 'filtered'; Answers = @('1', $proj, '0') }
+                # The scope prompt defaults to 1, so Enter takes the project
+                # route; the selection then defaults to the single aggregate
+                # row, so Enter again removes exactly that project's hooks.
+                [pscustomobject]@{ Name = 'filteredDefault'; Answers = @('', $proj, '') }
                 # A quoted path (how Explorer hands one over) must resolve too.
-                [pscustomobject]@{ Name = 'filteredQuoted'; Answers = @('2', ('"' + $proj + '"'), '0') }
+                [pscustomobject]@{ Name = 'filteredQuoted'; Answers = @('1', ('"' + $proj + '"'), '0') }
                 # A PARENT folder includes the projects underneath it: C:\Proj
                 # owns only the blocked rows (C:\Proj\Blocked).
-                [pscustomobject]@{ Name = 'filteredParent'; Answers = @('2', 'C:\Proj', '0') }
-                # Scope 2 + a folder with no tracked install: not an error and
+                [pscustomobject]@{ Name = 'filteredParent'; Answers = @('1', 'C:\Proj', '0') }
+                # Scope 1 + a folder with no tracked install: not an error and
                 # not a dead end - it says so and offers the scope menu again.
-                [pscustomobject]@{ Name = 'filteredEmpty'; Answers = @('2', 'C:\Proj\Nothing\Here', '0') }
+                [pscustomobject]@{ Name = 'filteredEmpty'; Answers = @('1', 'C:\Proj\Nothing\Here', '0') }
             )) {
             $script:Captured = New-Object System.Collections.Generic.List[string]
             $script:UninstallAnswers = New-Object System.Collections.Generic.Queue[string]
@@ -904,8 +913,14 @@ try {
     $filtered = [string]$uninstallRuns['filtered']
     Check 'uninstall: the scope menu offers both ways before any list is drawn' (
         ($filtered -match 'What do you want to uninstall\?') -and
-        ($filtered -match '1\. Every installed hook') -and
-        ($filtered -match '2\. Only the hooks in one project')) $filtered
+        ($filtered -match '1\. Only the hooks in one project') -and
+        ($filtered -match '2\. Every installed hook')) $filtered
+    Check 'uninstall: the scope prompt defaults to the project route' (
+        $filtered -match [regex]::Escape('Choose [1]')) $filtered
+    # The whole point of the project scope is "clear this project", so the row
+    # that does exactly that is what Enter picks.
+    Check 'uninstall: the selection defaults to the single remove-all row' (
+        $filtered -match [regex]::Escape('Select what to uninstall (number, list, or range) [3]')) $filtered
     Check 'uninstall: a project scope lists that project''s hooks' ($filtered -match 'ZZZ-Menusuite-Fixture') $filtered
     Check 'uninstall: a project scope EXCLUDES hooks installed elsewhere' (
         ($filtered -notmatch 'ZZZ-Blocked-One') -and ($filtered -notmatch 'ZZZ-Blocked-Two')) $filtered
@@ -913,6 +928,18 @@ try {
         $filtered -match ('Showing only hooks installed in ' + [regex]::Escape($proj))) $filtered
     Check 'uninstall: the project aggregate row counts only the filtered rows' (
         $filtered -match '2 removable hook\(s\)') $filtered
+
+    # Enter at the scope prompt and Enter at the selection: the project route
+    # with its remove-all row, i.e. the two removable records and nothing else.
+    $filteredDefault = [string]$uninstallRuns['filteredDefault']
+    $filteredDefaultCalls = @(([string]$uninstallRuns['filteredDefaultCalls']) -split "`r?`n" | Where-Object { $_ -ne '' })
+    Check 'uninstall: pressing Enter twice takes the project route and its remove-all row' (
+        ($filteredDefault -match 'Showing only hooks installed in') -and
+        ($filteredDefault -match 'installations to remove: 2')) $filteredDefault
+    Check 'uninstall: and that default removed exactly the filtered project''s records' (
+        ((@($filteredDefaultCalls | Sort-Object -Unique) -join ',') -match 'zzz-removable-a') -and
+        ((@($filteredDefaultCalls | Sort-Object -Unique) -join ',') -match 'zzz-removable-b') -and
+        ((@($filteredDefaultCalls | Sort-Object -Unique) -join ',') -notmatch 'zzz-blocked')) (@($filteredDefaultCalls) -join ',')
 
     # A path pasted from Explorer arrives wrapped in quotes; the same rows must
     # come back, otherwise the feature fails on the most common way to type one.

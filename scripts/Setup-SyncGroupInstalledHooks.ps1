@@ -417,15 +417,19 @@ function Invoke-UninstallInstalledHooks {
     while ($true) {
         if ($outerScope) {
             Write-MenuTitle 'What do you want to uninstall?'
-            Write-MenuLine 1 'Every installed hook' '(one list of everything tracked)'
-            Write-MenuLine 2 'Only the hooks in one project' '(you give the folder)'
-            $mode = Read-Answer (New-QuestionPrompt 'Choose' $null '0') 'uninstall scope'
-            if ($mode -eq '0' -or $mode -eq '') {
+            # The project route is first and is the default: on a machine with
+            # hundreds of installs it is the only one that produces a list
+            # anyone can pick from.
+            Write-MenuLine 1 'Only the hooks in one project' '(you give the folder)'
+            Write-MenuLine 2 'Every installed hook' '(one list of everything tracked)'
+            $mode = Read-Answer (New-QuestionPrompt 'Choose' $null '1') 'uninstall scope'
+            if ($mode -eq '') { $mode = '1' }
+            if ($mode -eq '0') {
                 Write-NoteLine 'Canceled. Nothing was changed.'
                 Write-Log 'INFO' 'UNINSTALL' 'User left the uninstall scope menu; nothing was changed.'
                 return 'back'
             }
-            if ($mode -eq '2') {
+            if ($mode -eq '1') {
                 $answer = Read-Answer (New-QuestionPrompt 'Project folder' (
                         'example: ' + (Get-ExampleText 'G:\Projects\My App') + ' - subfolders are included') $null) 'uninstall project filter'
                 if ($answer -eq '0' -or $answer -eq '') { continue }
@@ -437,7 +441,7 @@ function Invoke-UninstallInstalledHooks {
                 }
                 $projectFilter = $resolvedFilter.Path
             }
-            elseif ($mode -eq '1') { $projectFilter = '' }
+            elseif ($mode -eq '2') { $projectFilter = '' }
             else {
                 Write-ErrorLine 'Enter 1 or 2.'
                 continue
@@ -512,8 +516,21 @@ function Invoke-UninstallInstalledHooks {
         Write-NoteLine '  Tip: use lists and ranges, e.g. 1  |  1,2  |  1,2,3-6'
         Write-NoteLine '  To clear one project in one pick, use its "Remove all removable hooks from project:" row - those are listed last, just above.'
 
-        $value = Read-Answer (New-QuestionPrompt 'Select what to uninstall (number, list, or range)' $null '0') 'select uninstall targets'
-        if ($value -eq '0' -or $value -eq '') { Write-NoteLine 'Canceled. Nothing was changed.'; return 'back' }
+        # When the screen offers exactly ONE "remove all" row - which is what a
+        # project scope always produces - that row is the default, because it is
+        # the answer this screen exists to give. With several of them (the
+        # whole-machine list has one per project) there is no single "all", so
+        # the default stays 0 and Enter cancels as before. Either way the y/n
+        # confirmation still defaults to No, so Enter twice changes nothing.
+        $aggregateNumbers = @()
+        for ($i = 0; $i -lt $rows.Count; $i++) {
+            if ($rows[$i].Kind -ne 'record') { $aggregateNumbers += ($i + 1) }
+        }
+        $defaultSelection = if ($aggregateNumbers.Count -eq 1) { [string]$aggregateNumbers[0] } else { '0' }
+
+        $value = Read-Answer (New-QuestionPrompt 'Select what to uninstall (number, list, or range)' $null $defaultSelection) 'select uninstall targets'
+        if ($value -eq '') { $value = $defaultSelection }
+        if ($value -eq '0') { Write-NoteLine 'Canceled. Nothing was changed.'; return 'back' }
 
         $parsed = Expand-MenuSelection -Value $value -MaxIndex $rows.Count
         # A refused selection removes NOTHING, so it must be visible in the log.

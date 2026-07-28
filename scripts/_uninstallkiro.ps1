@@ -254,9 +254,24 @@ function Remove-KiroClientComponent {
                 if ($unrecorded -ne '') {
                     return ("'" + (Split-Path -Leaf $candidate) + "' gained an unrecorded managed entry ('" + $unrecorded + "') while it was being removed")
                 }
+                $candidateBackup = Get-SettingsBackupPath -Path $candidate
                 Backup-SettingsFile $candidate
                 if (@($fresh.ForeignEntries).Count -eq 0) {
                     Remove-Item -LiteralPath $candidate -Force
+                    # The document was entirely ours - proven managed twice, and
+                    # it carried no foreign entry - so it is gone now and the
+                    # backup is a copy of a file this tool wrote and just
+                    # removed. It restores nothing that reinstalling does not,
+                    # and .kiro\hooks is the directory Kiro SCANS as its
+                    # configuration: leaving one dead copy per hook turned a
+                    # clean 24-hook uninstall into 24 files of debris sitting in
+                    # the user's config folder. The rewrite branch below keeps
+                    # its backup - there the file survives and holds the user's
+                    # own entries, which is exactly when a backup is worth having.
+                    if (-not [string]::IsNullOrWhiteSpace($candidateBackup) -and
+                        (Test-Path -LiteralPath $candidateBackup -PathType Leaf)) {
+                        try { Remove-Item -LiteralPath $candidateBackup -Force } catch { }
+                    }
                 }
                 else {
                     # The user's own entries are written back as the very objects
