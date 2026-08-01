@@ -60,8 +60,7 @@ $script:TestPreviewLength = 500
 . (Join-Path $PSScriptRoot '_clientcapability.ps1')
 . $HookLib
 
-$Work = Join-Path ([System.IO.Path]::GetTempPath()) ('hookmaker-cftest-' + [guid]::NewGuid().ToString('N').Substring(0, 8))
-New-Item -ItemType Directory -Path $Work -Force | Out-Null
+$Work = New-TestWorkspace -Prefix 'hookmaker-cftest'
 Write-Host ("Workspace: $Work") -ForegroundColor DarkGray
 $FakeLocalAppData = Join-Path $Work '_fakelocal'
 $FakeUserProfile = Join-Path $Work '_fakeprofile'

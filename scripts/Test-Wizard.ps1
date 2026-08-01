@@ -38,8 +38,7 @@ $script:TestPreviewLength = 400
 . (Join-Path (Split-Path -Parent $PSScriptRoot) 'hooks\_hooklib.ps1')
 . (Join-Path $PSScriptRoot '_installplan.ps1')
 
-$Work = Join-Path ([System.IO.Path]::GetTempPath()) ('hookmaker-wiztest-' + [guid]::NewGuid().ToString('N').Substring(0, 8))
-New-Item -ItemType Directory -Path $Work -Force | Out-Null
+$Work = New-TestWorkspace -Prefix 'hookmaker-wiztest'
 Write-Host ("Workspace: $Work") -ForegroundColor DarkGray
 # Isolates Install-Hook.ps1's install registry (state\install-registry.json,
 # written whenever the wizard installs anything) away from this real

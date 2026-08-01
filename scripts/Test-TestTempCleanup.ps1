@@ -48,8 +48,7 @@ $script:TestPreviewLength = 900
 # the hook's own state files exactly the way its consumers do.
 . $HookLib
 
-$Work = Join-Path ([System.IO.Path]::GetTempPath()) ('hookmaker-cleanuptest-' + [guid]::NewGuid().ToString('N').Substring(0, 8))
-New-Item -ItemType Directory -Path $Work -Force | Out-Null
+$Work = New-TestWorkspace -Prefix 'hookmaker-cleanuptest'
 Write-Host ("Workspace: $Work") -ForegroundColor DarkGray
 
 function New-Proj { param([string]$Name) $p = Join-Path $Work $Name; New-Item -ItemType Directory -Path $p -Force | Out-Null; return $p }

@@ -75,8 +75,7 @@ $script:TestPreviewLength = 500
 . $KiroModule    # dot-sources _clientcapability.ps1 itself
 . $HookLib
 
-$Work = Join-Path ([System.IO.Path]::GetTempPath()) ('hookmaker-kirointeg-' + [guid]::NewGuid().ToString('N').Substring(0, 8))
-New-Item -ItemType Directory -Path $Work -Force | Out-Null
+$Work = New-TestWorkspace -Prefix 'hookmaker-kirointeg'
 Write-Host ("Workspace: $Work") -ForegroundColor DarkGray
 
 function Write-Utf8 { param([string]$Path, [string]$Content) [System.IO.File]::WriteAllText($Path, $Content, (New-Object System.Text.UTF8Encoding $false)) }

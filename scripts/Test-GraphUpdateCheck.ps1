@@ -19,8 +19,7 @@ $script:Fail = 0
 $script:TestPreviewLength = 500
 . (Join-Path $PSScriptRoot '_testlib.ps1')
 
-$Work = Join-Path ([System.IO.Path]::GetTempPath()) ('hookmaker-graphtest-' + [guid]::NewGuid().ToString('N').Substring(0, 8))
-New-Item -ItemType Directory -Path $Work -Force | Out-Null
+$Work = New-TestWorkspace -Prefix 'hookmaker-graphtest'
 Write-Host ("Workspace: $Work") -ForegroundColor DarkGray
 $FakeLocalAppData = Join-Path $Work '_fakelocal'
 New-Item -ItemType Directory -Path $FakeLocalAppData -Force | Out-Null

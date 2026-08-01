@@ -39,8 +39,7 @@ $script:TestPreviewLength = 500
 . (Join-Path $PSScriptRoot '_testlib.ps1')
 . $Module
 
-$Work = Join-Path ([System.IO.Path]::GetTempPath()) ('hookmaker-kiro-' + [guid]::NewGuid().ToString('N').Substring(0, 8))
-New-Item -ItemType Directory -Path $Work -Force | Out-Null
+$Work = New-TestWorkspace -Prefix 'hookmaker-kiro'
 Write-Host ("Workspace: $Work") -ForegroundColor DarkGray
 
 function Write-Utf8 { param([string]$Path, [string]$Content) [System.IO.File]::WriteAllText($Path, $Content, (New-Object System.Text.UTF8Encoding $false)) }

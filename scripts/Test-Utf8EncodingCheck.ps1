@@ -41,8 +41,7 @@ $script:Fail = 0
 $script:TestPreviewLength = 700
 . (Join-Path $PSScriptRoot '_testlib.ps1')
 
-$Work = Join-Path ([System.IO.Path]::GetTempPath()) ('hookmaker-utf8test-' + [guid]::NewGuid().ToString('N').Substring(0, 8))
-New-Item -ItemType Directory -Path $Work -Force | Out-Null
+$Work = New-TestWorkspace -Prefix 'hookmaker-utf8test'
 Write-Host ("Workspace: $Work") -ForegroundColor DarkGray
 
 # GetTempPath() sits UNDER the real user profile on Windows, so a fixture here
