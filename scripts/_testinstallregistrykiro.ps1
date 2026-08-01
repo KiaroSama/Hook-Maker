@@ -272,6 +272,50 @@ try {
     Check 'kiro update: the repair loop passes the POSITIVE -Clients set' ($kiFlows -match '\$clientArgs\s*=\s*@\{\s*Clients\s*=\s*@\(\$client\)\s*\}') $kiFlows
     Check 'kiro update: the repair loop no longer falls back to CodexOnly' (
         $kiFlows -notmatch '\$clientArgs\s*=\s*if\s*\(') $kiFlows
+
+    # ---- a `partial` result is classified, not counted as failure ----------
+    # Kiro reports `degraded` for events it has no documented trigger for. That
+    # is permanent and identical on every run, so treating it as a failure meant
+    # a record could NEVER reach a clean update: a real 572-record run reported
+    # failed=21 where every one was "claude: ok; codex: ok; kiro: partial - kiro
+    # (degraded)". The classifier is loaded and called for real - a regex over
+    # the source would agree with itself while the behaviour drifted.
+    . (Join-Path $ScriptRoot 'Setup-SyncGroupInstallFlows.ps1')
+    $kiDegradedOnly = Get-PartialInstallVerdict -Components @(
+        [pscustomobject]@{ component = 'registry'; status = 'ok'; reason = '' },
+        [pscustomobject]@{ component = 'kiro'; status = 'ok'; reason = 'degraded' })
+    Check 'partial verdict: a degraded-only result is NOT a failure' (-not $kiDegradedOnly.IsFailure) ($kiDegradedOnly.Summary)
+    Check 'partial verdict: it still says which client is running with reduced capability' (
+        $kiDegradedOnly.Summary -ceq 'ok (reduced capability: kiro)') ($kiDegradedOnly.Summary)
+
+    # Everything that IS a failure must stay one.
+    foreach ($kiCase in @(
+            @{ Name = 'a failed component'; Component = [pscustomobject]@{ component = 'claude'; status = 'failed'; reason = 'registrationError' } },
+            @{ Name = 'a tracking failure'; Component = [pscustomobject]@{ component = 'registry'; status = 'trackingFailed'; reason = 'registryWriteFailed' } },
+            @{ Name = 'a post-registration error'; Component = [pscustomobject]@{ component = 'kiro'; status = 'ok'; reason = 'postRegistrationError' } })) {
+        $kiVerdict = Get-PartialInstallVerdict -Components @($kiCase.Component)
+        Check ('partial verdict: ' + [string]$kiCase.Name + ' is still a failure') ($kiVerdict.IsFailure) ($kiVerdict.Summary)
+    }
+    # Mixed: the real problem decides the verdict, and the degraded client is
+    # still named so the user is not told it installed cleanly.
+    $kiMixed = Get-PartialInstallVerdict -Components @(
+        [pscustomobject]@{ component = 'claude'; status = 'failed'; reason = 'registrationError' },
+        [pscustomobject]@{ component = 'kiro'; status = 'ok'; reason = 'degraded' })
+    Check 'partial verdict: a real problem alongside a degraded client is a failure' ($kiMixed.IsFailure) ($kiMixed.Summary)
+    Check 'partial verdict: the mixed summary names both the failure and the reduced capability' (
+        $kiMixed.Summary -match 'claude \(registrationError\)' -and $kiMixed.Summary -match 'kiro \(degraded\)') ($kiMixed.Summary)
+    # A component that failed AND is degraded is reported once, as the failure.
+    $kiBoth = Get-PartialInstallVerdict -Components @(
+        [pscustomobject]@{ component = 'kiro'; status = 'failed'; reason = 'degraded' })
+    Check 'partial verdict: a failed component is not laundered into reduced capability by its reason' (
+        $kiBoth.IsFailure -and $kiBoth.Summary -notmatch 'reduced capability') ($kiBoth.Summary)
+    # An unrecognized partial must reach a human rather than read as success.
+    $kiUnknown = Get-PartialInstallVerdict -Components @(
+        [pscustomobject]@{ component = 'codex'; status = 'weird'; reason = 'somethingNew' })
+    Check 'partial verdict: an unrecognized partial is still a failure, and says so' (
+        $kiUnknown.IsFailure -and $kiUnknown.Summary -match 'codex \(somethingNew\)') ($kiUnknown.Summary)
+    Check 'partial verdict: a partial with no components at all is a failure, not a silent pass' (
+        (Get-PartialInstallVerdict -Components @()).IsFailure)
 }
 finally {
     Remove-FixtureHook $KiroRegName
