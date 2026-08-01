@@ -134,11 +134,47 @@ function Test-InstallRegistryShape {
 #   missing | ok | corrupt
 # A corrupt registry keeps its ORIGINAL bytes available to the caller so they
 # can be preserved verbatim on quarantine.
+# Parsed-registry cache for READ-ONLY callers, valid only while the file on disk
+# is provably unchanged.
+#
+# Measured against the real 5.0 MB / 525-record registry: ONE install parses the
+# whole document THREE times - Get-KnownToolRoots, Get-InstallRecordById, and
+# Update-InstallRegistry - at ~700-990 ms each, and Install-Hook.ps1 runs 105
+# times in a 21-hook x 5-project wizard run. The first two only READ (a toolRoot
+# string and a timeout int); they were paying a full parse for it.
+#
+# The key is (path, last-write ticks, length), so ANY change by any process -
+# including another Hook Maker - misses and re-parses. It is not a TTL and never
+# guesses.
+#
+# WHY THE MUTATING PATH MUST BYPASS IT: ConvertTo-InstallRegistryCurrent mutates
+# the registry object IN PLACE and returns it, and Set-InstallRecord then adds to
+# it. Handing the cached document to that path would leave an unsaved record
+# sitting in the cache if the write failed, and a later read in the same process
+# would report it as persisted. Update-InstallRegistry therefore passes -NoCache
+# and always parses fresh under the lock.
+$script:InstallRegistryCache = $null
+function Clear-InstallRegistryCache { $script:InstallRegistryCache = $null }
 function Read-InstallRegistryState {
-    param([Parameter(Mandatory = $true)][string]$ToolRoot)
+    param(
+        [Parameter(Mandatory = $true)][string]$ToolRoot,
+        # Required by any caller that will mutate, save, or otherwise rely on
+        # owning the returned object. See the note above.
+        [switch]$NoCache
+    )
     $path = Get-InstallRegistryPath -ToolRoot $ToolRoot
     if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
         return [pscustomobject]@{ State = 'missing'; Registry = (New-EmptyInstallRegistry); Path = $path; Reason = '' }
+    }
+    $stamp = $null
+    try {
+        $item = Get-Item -LiteralPath $path -Force
+        $stamp = [string]$path + '|' + $item.LastWriteTimeUtc.Ticks + '|' + $item.Length
+    }
+    catch { $stamp = $null }
+    if (-not $NoCache -and $null -ne $stamp -and $null -ne $script:InstallRegistryCache -and
+        [string]$script:InstallRegistryCache.Stamp -ceq $stamp) {
+        return $script:InstallRegistryCache.State
     }
     $raw = ''
     try { $raw = [System.IO.File]::ReadAllText($path, [System.Text.Encoding]::UTF8) }
@@ -157,7 +193,13 @@ function Read-InstallRegistryState {
     if (-not $shape.Ok) {
         return [pscustomobject]@{ State = 'corrupt'; Registry = $null; Path = $path; Reason = $shape.Reason }
     }
-    return [pscustomobject]@{ State = 'ok'; Registry = $parsed; Path = $path; Reason = '' }
+    $state = [pscustomobject]@{ State = 'ok'; Registry = $parsed; Path = $path; Reason = '' }
+    # Only a clean parse is cached. A corrupt/missing read returns above without
+    # populating it, so a damaged registry is re-examined every time.
+    if (-not $NoCache -and $null -ne $stamp) {
+        $script:InstallRegistryCache = [pscustomobject]@{ Stamp = $stamp; State = $state }
+    }
+    return $state
 }
 
 # Read-only accessor for callers that just want the records (the updater's
@@ -180,6 +222,10 @@ function Save-InstallRegistry {
     # written file is never mistaken for real state by anything else.
     $stale = $path + '.tmp'
     if (Test-Path -LiteralPath $stale -PathType Leaf) { Remove-Item -LiteralPath $stale -Force -ErrorAction SilentlyContinue }
+    # Belt and braces beside the (path, ticks, length) key: drop the cached parse
+    # before the bytes change, so no reader can be served a pre-write document
+    # even if a filesystem's timestamp granularity ever failed to move.
+    Clear-InstallRegistryCache
     Write-JsonFileAtomic -Value $Registry -Path $path
 }
 
@@ -702,7 +748,8 @@ function Update-InstallRegistry {
         [Parameter(Mandatory = $true)]$Record
     )
     return (Invoke-WithInstallRegistryLock -ToolRoot $ToolRoot -Action {
-        $state = Read-InstallRegistryState -ToolRoot $ToolRoot
+        # -NoCache: this path mutates the document it is handed and then saves it.
+        $state = Read-InstallRegistryState -ToolRoot $ToolRoot -NoCache
         $quarantinePath = ''
         $warning = ''
         $registry = $null

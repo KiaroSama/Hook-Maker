@@ -93,6 +93,45 @@
     finally { Remove-FixtureHook 'ZZZ-Regtest-Scopes' }
 
     # =====================================================================
+    # =====================================================================
+    # The parsed-registry cache: a read-only fast path that must be provably
+    # tied to the bytes on disk.
+    #
+    # Measured cause: ONE install parsed the whole 5 MB registry THREE times
+    # (Get-KnownToolRoots, Get-InstallRecordById, Update-InstallRegistry) at
+    # ~700-990 ms each, x105 invocations in a full wizard run. The first two only
+    # read a string and an int.
+    Write-Host '--- the registry cache serves reads and is invalidated by the bytes ---' -ForegroundColor Cyan
+    $cacheFirst = Read-InstallRegistryState -ToolRoot $ToolRoot
+    $cacheSecond = Read-InstallRegistryState -ToolRoot $ToolRoot
+    Check 'a second read of an unchanged registry returns the SAME parsed object (cache hit)' (
+        [object]::ReferenceEquals($cacheFirst, $cacheSecond)) 're-parsed instead of hitting the cache'
+    # The mutating path must never receive the shared object: it mutates in place
+    # and saves, so a failed write would otherwise leave an unsaved record in the
+    # cache looking persisted.
+    $cacheFresh = Read-InstallRegistryState -ToolRoot $ToolRoot -NoCache
+    Check '-NoCache always re-parses, so the mutating path never shares the cached object' (
+        -not [object]::ReferenceEquals($cacheFirst, $cacheFresh)) 'the mutating path was handed the cached object'
+    # Any byte change by ANY process must miss - the key is (path, ticks, length).
+    $cachePath = [string]$cacheFirst.Path
+    (Get-Item -LiteralPath $cachePath -Force).LastWriteTimeUtc = ([DateTime]::UtcNow.AddSeconds(1))
+    $cacheAfterTouch = Read-InstallRegistryState -ToolRoot $ToolRoot
+    Check 'a changed last-write time invalidates the cache' (
+        -not [object]::ReferenceEquals($cacheFirst, $cacheAfterTouch)) 'a stale parse survived a file change'
+    # A real install writes the registry; the very next read must see it.
+    $cacheProj = New-Proj 'RegistryCacheProj'
+    $cacheHook = New-FixtureHook 'ZZZ-Regtest-Cache' "exit 0`n"
+    try {
+        $cacheBefore = @(Read-InstallRegistryState -ToolRoot $ToolRoot).Registry.installs.Count
+        & $InstallScript -CustomHook $cacheHook -Events @('Stop') -TargetProject $cacheProj -ClaudeOnly *> $null
+        $cacheAfter = @(Read-InstallRegistryState -ToolRoot $ToolRoot).Registry.installs.Count
+        Check 'a read taken straight after an install sees the newly written record (no stale cache)' (
+            $cacheAfter -eq $cacheBefore + 1) ('before=' + $cacheBefore + ' after=' + $cacheAfter)
+        Check 'and the new record is findable by id through the cached path' (
+            $null -ne (@(Get-RecordsFor 'ZZZ-Regtest-Cache' | Where-Object { $_.targetProjectRoot -eq $cacheProj })[0]))
+    }
+    finally { Remove-FixtureHook 'ZZZ-Regtest-Cache' }
+
     Write-Host '--- sync-engine installs are tracked as hookType=Engine with profile+configPath ---' -ForegroundColor Cyan
     $engineProj1 = New-Proj 'EngineA'; $engineProj2 = New-Proj 'EngineB'
     New-Item -ItemType Directory -Path (Join-Path $engineProj1 '.ai'), (Join-Path $engineProj2 '.ai') -Force | Out-Null
