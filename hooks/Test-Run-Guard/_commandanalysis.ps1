@@ -336,10 +336,30 @@ $script:PowerShellPrograms = @('pwsh', 'powershell')
 
 # Does this segment already go through the bounded runner? Matched on the
 # runner's FILE NAME anywhere in the segment, so any invocation style counts.
+# The guarded runner counts as INVOKED, never merely MENTIONED.
+#
+# This used to scan every token, so `grep -n "x" scripts\Run-Tests-Guarded.ps1`
+# - which only reads the file - was indistinguishable from actually running it.
+# The segment was then recorded as an observed guarded run, and because no run
+# ever happened, no result document could ever appear: Test-Completion-Check
+# blocked with "a test command was observed ... but no guarded result document
+# exists for it", and nothing the agent did could clear it except an unrelated
+# real test run. Reading a file about the runner is not a test run.
+#
+# An invocation is the runner as the segment's own program, or as the -File
+# target of a PowerShell host (-f/-fi/-fil/-file, the prefixes PowerShell itself
+# accepts). Anything else is an argument to some other program.
 function Test-SegmentIsGuarded {
     param([string[]]$Tokens)
-    foreach ($token in @($Tokens)) {
-        if ((Get-ProgramName $token) -eq 'run-tests-guarded.ps1') { return $true }
+    $tokens = @($Tokens)
+    if ($tokens.Count -eq 0) { return $false }
+    if ((Get-ProgramName $tokens[0]) -eq 'run-tests-guarded.ps1') { return $true }
+    if ($script:PowerShellPrograms -contains (Get-ProgramName $tokens[0])) {
+        for ($i = 1; $i -lt $tokens.Count - 1; $i++) {
+            $switch = $tokens[$i].ToLowerInvariant()
+            if ($switch.Length -lt 2 -or -not '-file'.StartsWith($switch)) { continue }
+            if ((Get-ProgramName $tokens[$i + 1]) -eq 'run-tests-guarded.ps1') { return $true }
+        }
     }
     return $false
 }
