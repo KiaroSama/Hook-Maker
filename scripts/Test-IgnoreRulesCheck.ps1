@@ -10,8 +10,7 @@ $script:Fail = 0
 $script:TestPreviewLength = 400
 . (Join-Path $PSScriptRoot '_testlib.ps1')
 
-$Work = Join-Path ([System.IO.Path]::GetTempPath()) ('hookmaker-ignoretest-' + [guid]::NewGuid().ToString('N').Substring(0, 8))
-New-Item -ItemType Directory -Path $Work -Force | Out-Null
+$Work = New-TestWorkspace -Prefix 'hookmaker-ignoretest'
 Write-Host ("Workspace: $Work") -ForegroundColor DarkGray
 # Isolates Install-Hook.ps1's install registry away from this real checkout's
 # own registry for every in-process & $InstallScript call below.

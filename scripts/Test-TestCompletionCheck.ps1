@@ -46,8 +46,7 @@ $script:Fail = 0
 $script:TestPreviewLength = 700
 . (Join-Path $PSScriptRoot '_testlib.ps1')
 
-$Work = Join-Path ([System.IO.Path]::GetTempPath()) ('hookmaker-completiontest-' + [guid]::NewGuid().ToString('N').Substring(0, 8))
-New-Item -ItemType Directory -Path $Work -Force | Out-Null
+$Work = New-TestWorkspace -Prefix 'hookmaker-completiontest'
 Write-Host ("Workspace: $Work") -ForegroundColor DarkGray
 
 . (Join-Path $PSScriptRoot '_testcompletionharness.ps1')

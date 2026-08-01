@@ -50,8 +50,7 @@ $script:TestPreviewLength = 500
 . (Join-Path $ScriptRoot '_installplan.ps1')
 . (Join-Path $ScriptRoot '_installlib.ps1')
 
-$Work = Join-Path ([System.IO.Path]::GetTempPath()) ('hookmaker-regschema-' + [guid]::NewGuid().ToString('N').Substring(0, 8))
-New-Item -ItemType Directory -Path $Work -Force | Out-Null
+$Work = New-TestWorkspace -Prefix 'hookmaker-regschema'
 Write-Host ("Workspace: $Work") -ForegroundColor DarkGray
 
 function New-Proj { param([string]$Name) $p = Join-Path $Work $Name; New-Item -ItemType Directory -Path $p -Force | Out-Null; return $p }

@@ -68,8 +68,7 @@ $script:TestPreviewLength = 500
 # stub of it, which cannot prove the shipped function names a client correctly.
 . (Join-Path $ScriptRoot 'Setup-SyncGroupInstalledHooks.ps1')
 
-$Work = Join-Path ([System.IO.Path]::GetTempPath()) ('hookmaker-menu22-' + [guid]::NewGuid().ToString('N').Substring(0, 8))
-New-Item -ItemType Directory -Path $Work -Force | Out-Null
+$Work = New-TestWorkspace -Prefix 'hookmaker-menu22'
 Write-Host ("Workspace: $Work") -ForegroundColor DarkGray
 
 $SavedHookMakerStateDir = $env:HOOKMAKER_STATE_DIR

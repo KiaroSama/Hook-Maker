@@ -33,8 +33,7 @@ $script:Fail = 0
 $script:TestPreviewLength = 200
 . (Join-Path $PSScriptRoot '_testlib.ps1')
 
-$Work = Join-Path ([System.IO.Path]::GetTempPath()) ('hookmaker-cistatustest-' + [guid]::NewGuid().ToString('N').Substring(0, 8))
-New-Item -ItemType Directory -Path $Work -Force | Out-Null
+$Work = New-TestWorkspace -Prefix 'hookmaker-cistatustest'
 $OriginalLocalAppData = $env:LOCALAPPDATA
 $env:LOCALAPPDATA = Join-Path $Work 'localappdata'
 New-Item -ItemType Directory -Path $env:LOCALAPPDATA -Force | Out-Null
