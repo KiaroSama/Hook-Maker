@@ -17,6 +17,49 @@ function Check {
     }
 }
 
+# Creates a suite's throwaway workspace. This is the line 37 suites each inlined
+# - Join-Path (GetTempPath) (<prefix> + '-' + <8 hex chars>) - written once, plus
+# one escape hatch.
+#
+# HOOKMAKER_TEST_TEMP_ROOT exists because a full-matrix run twice had a LIVE
+# workspace deleted underneath it by something outside this repo (no code here
+# sweeps %TEMP%; Storage Sense, a scanner and the harness are all still suspects)
+# and the suite then crashed at its own file writer. Relocating the workspaces
+# turns "is the deleter %TEMP%-specific?" into an experiment instead of a guess.
+#
+# It is a DIAGNOSTIC switch, never a new default: unset or blank keeps the old
+# %TEMP% behaviour byte-for-byte. An unusable value - a path that cannot be
+# created, a permission denial, garbage - falls back to %TEMP% rather than
+# throwing, because a suite failing over a diagnostic setting would be a worse
+# bug than the one it was set to diagnose. The returned path is always a
+# directory that exists.
+function New-TestWorkspace {
+    param([Parameter(Mandatory)][string]$Prefix)
+
+    $root = ''
+    $configured = [string]$env:HOOKMAKER_TEST_TEMP_ROOT
+    if (-not [string]::IsNullOrWhiteSpace($configured)) {
+        try {
+            $candidate = [System.IO.Path]::GetFullPath($configured)
+            if (-not (Test-Path -LiteralPath $candidate -PathType Container)) {
+                New-Item -ItemType Directory -Path $candidate -Force -ErrorAction Stop | Out-Null
+            }
+            # Trust the filesystem, not the absence of an exception: New-Item
+            # -Force is a SILENT no-op for some unusable targets (a path under a
+            # FILE returns nothing and throws nothing), which would otherwise hand
+            # back a workspace that does not exist - the very crash this helper is
+            # meant to be diagnosing.
+            if (Test-Path -LiteralPath $candidate -PathType Container) { $root = $candidate }
+        }
+        catch { $root = '' }
+    }
+    if ($root -eq '') { $root = [System.IO.Path]::GetTempPath() }
+
+    $path = Join-Path $root ($Prefix + '-' + [guid]::NewGuid().ToString('N').Substring(0, 8))
+    New-Item -ItemType Directory -Path $path -Force | Out-Null
+    return $path
+}
+
 # Removes a suite's throwaway workspace and PROVES it is gone. A child hook
 # process, a git invocation, or an antivirus scan of the freshly written .git
 # tree can still hold a handle for a beat after the suite's work finishes; a

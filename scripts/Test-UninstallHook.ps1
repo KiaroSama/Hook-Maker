@@ -56,8 +56,7 @@ $script:TestPreviewLength = 500
 . (Join-Path $ScriptRoot '_installplan.ps1')
 . (Join-Path $ScriptRoot '_installlib.ps1')
 
-$Work = Join-Path ([System.IO.Path]::GetTempPath()) ('hookmaker-uninstalltest-' + [guid]::NewGuid().ToString('N').Substring(0, 8))
-New-Item -ItemType Directory -Path $Work -Force | Out-Null
+$Work = New-TestWorkspace -Prefix 'hookmaker-uninstalltest'
 Write-Host ("Workspace: $Work") -ForegroundColor DarkGray
 
 $SavedHookMakerStateDir = $env:HOOKMAKER_STATE_DIR

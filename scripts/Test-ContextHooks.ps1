@@ -34,8 +34,7 @@ $script:Fail = 0
 $script:TestPreviewLength = 400
 . (Join-Path $PSScriptRoot '_testlib.ps1')
 
-$Work = Join-Path ([System.IO.Path]::GetTempPath()) ('hookmaker-ctxtest-' + [guid]::NewGuid().ToString('N').Substring(0, 8))
-New-Item -ItemType Directory -Path $Work -Force | Out-Null
+$Work = New-TestWorkspace -Prefix 'hookmaker-ctxtest'
 Write-Host ("Workspace: $Work") -ForegroundColor DarkGray
 
 function Fire {

@@ -39,8 +39,7 @@ $script:Fail = 0
 $script:TestPreviewLength = 900
 . (Join-Path $PSScriptRoot '_testlib.ps1')
 
-$Work = Join-Path ([System.IO.Path]::GetTempPath()) ('hookmaker-largefiletest-' + [guid]::NewGuid().ToString('N').Substring(0, 8))
-New-Item -ItemType Directory -Path $Work -Force | Out-Null
+$Work = New-TestWorkspace -Prefix 'hookmaker-largefiletest'
 Write-Host ("Workspace: $Work") -ForegroundColor DarkGray
 
 # Nothing below may reach real ~\.claude / ~\.codex state: every child gets a

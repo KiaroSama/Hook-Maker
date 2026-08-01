@@ -38,8 +38,7 @@ $script:Fail = 0
 $script:TestPreviewLength = 900
 . (Join-Path $PSScriptRoot '_testlib.ps1')
 
-$Work = Join-Path ([System.IO.Path]::GetTempPath()) ('hookmaker-runteststest-' + [guid]::NewGuid().ToString('N').Substring(0, 8))
-New-Item -ItemType Directory -Path $Work -Force | Out-Null
+$Work = New-TestWorkspace -Prefix 'hookmaker-runteststest'
 Write-Host ("Workspace: $Work") -ForegroundColor DarkGray
 
 function Write-Utf8 { param([string]$Path, [string]$Content) [System.IO.File]::WriteAllText($Path, $Content, (New-Object System.Text.UTF8Encoding $false)) }
@@ -331,6 +330,67 @@ try {
             Check 'a stricter existing value is NEVER raised (1 stays 1 under ceiling 8)' ($ThrottleLimit -eq 1) ([string]$ThrottleLimit)
         }
         finally { $env:HOOKMAKER_MAX_TEST_WORKERS = $prevCeil }
+    }
+
+    # =====================================================================
+    Write-Host '--- _testlib New-TestWorkspace: %TEMP% by default, relocatable for diagnosis, never fatal ---' -ForegroundColor Cyan
+    # The whole point of the env var is that a full matrix can be re-run OUT of
+    # %TEMP% to test whether the external deleter that twice removed a live
+    # workspace is %TEMP%-specific. So both halves matter: unset must be the old
+    # behaviour exactly, and a broken value must degrade to the old behaviour
+    # rather than take the suite down with it.
+    $spaces = New-Object System.Collections.Generic.List[string]
+    $prevRoot = $env:HOOKMAKER_TEST_TEMP_ROOT
+    try {
+        $tempRoot = ([System.IO.Path]::GetTempPath()).TrimEnd('\', '/')
+
+        $env:HOOKMAKER_TEST_TEMP_ROOT = $null
+        $w1 = New-TestWorkspace -Prefix 'hookmaker-nwtest'
+        [void]$spaces.Add($w1)
+        Check 'unset: the workspace lands directly under %TEMP% (unchanged default)' ((Split-Path -Parent $w1) -eq $tempRoot) $w1
+        Check 'unset: the returned path is an existing directory named for the prefix' (
+            (Test-Path -LiteralPath $w1 -PathType Container) -and (Split-Path -Leaf $w1).StartsWith('hookmaker-nwtest-')) $w1
+
+        $w1b = New-TestWorkspace -Prefix 'hookmaker-nwtest'
+        [void]$spaces.Add($w1b)
+        Check 'two calls with the SAME prefix return different paths (no collision between suites)' ($w1b -ne $w1) ($w1 + ' vs ' + $w1b)
+
+        $env:HOOKMAKER_TEST_TEMP_ROOT = '   '
+        $w2 = New-TestWorkspace -Prefix 'hookmaker-nwtest'
+        [void]$spaces.Add($w2)
+        Check 'blank: whitespace is treated as unset, not as a root named " "' ((Split-Path -Parent $w2) -eq $tempRoot) $w2
+
+        $customRoot = Join-Path $Work 'relocated'
+        New-Item -ItemType Directory -Path $customRoot -Force | Out-Null
+        $env:HOOKMAKER_TEST_TEMP_ROOT = $customRoot
+        $w3 = New-TestWorkspace -Prefix 'hookmaker-nwtest'
+        [void]$spaces.Add($w3)
+        Check 'configured: the workspace moves OUT of %TEMP% and under the configured root' (
+            (Split-Path -Parent $w3) -eq $customRoot -and (Test-Path -LiteralPath $w3 -PathType Container)) $w3
+
+        # A relocation root nobody created yet must not be a reason to fail.
+        $autoRoot = Join-Path $Work 'relocated-auto\nested'
+        $env:HOOKMAKER_TEST_TEMP_ROOT = $autoRoot
+        $w4 = New-TestWorkspace -Prefix 'hookmaker-nwtest'
+        [void]$spaces.Add($w4)
+        Check 'configured: a not-yet-existing root is created rather than rejected' (
+            (Split-Path -Parent $w4) -eq $autoRoot -and (Test-Path -LiteralPath $w4 -PathType Container)) $w4
+
+        # Uncreatable: a directory cannot exist under a FILE, so New-Item throws.
+        $blocker = Join-Path $Work 'not-a-dir.txt'
+        Write-Utf8 $blocker 'blocker'
+        $env:HOOKMAKER_TEST_TEMP_ROOT = (Join-Path $blocker 'child')
+        $threw = $false
+        $w5 = ''
+        try { $w5 = New-TestWorkspace -Prefix 'hookmaker-nwtest' } catch { $threw = $true }
+        if ($w5 -ne '') { [void]$spaces.Add($w5) }
+        Check 'unusable root: the helper does NOT throw (a diagnostic setting must never fail a suite)' (-not $threw) 'threw'
+        Check 'unusable root: it falls back to %TEMP% and still returns an existing directory' (
+            $w5 -ne '' -and (Split-Path -Parent $w5) -eq $tempRoot -and (Test-Path -LiteralPath $w5 -PathType Container)) $w5
+    }
+    finally {
+        $env:HOOKMAKER_TEST_TEMP_ROOT = $prevRoot
+        if ($spaces.Count -gt 0) { if (-not (Remove-TestWorkspace $spaces.ToArray())) { $script:Fail++ } }
     }
 
     # =====================================================================

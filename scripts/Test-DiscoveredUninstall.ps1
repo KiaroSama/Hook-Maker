@@ -64,8 +64,7 @@ $script:TestPreviewLength = 500
 . (Join-Path $ScriptRoot '_installlib.ps1')
 . (Join-Path $ScriptRoot '_hookdiscovery.ps1')
 
-$Work = Join-Path ([System.IO.Path]::GetTempPath()) ('hookmaker-disctest-' + [guid]::NewGuid().ToString('N').Substring(0, 8))
-New-Item -ItemType Directory -Path $Work -Force | Out-Null
+$Work = New-TestWorkspace -Prefix 'hookmaker-disctest'
 Write-Host ("Workspace: $Work") -ForegroundColor DarkGray
 
 $SavedHookMakerStateDir = $env:HOOKMAKER_STATE_DIR
