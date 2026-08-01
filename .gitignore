@@ -42,6 +42,9 @@ logs/
 !/.env.template
 /graphify-out/
 
+# Advisor handoff plans (local working notes, not part of the tool)
+/plans/
+
 !/.env.example
 !/.env.sample
 !/.env.template
