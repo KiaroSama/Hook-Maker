@@ -57,6 +57,16 @@ function New-TestWorkspace {
 
     $path = Join-Path $root ($Prefix + '-' + [guid]::NewGuid().ToString('N').Substring(0, 8))
     New-Item -ItemType Directory -Path $path -Force | Out-Null
+    # Same reason as the root check above, applied to the workspace itself: this
+    # helper must never hand back a directory that does not exist. Without it a
+    # silent no-op here surfaces later as an unexplained failure at whatever
+    # first writes into the workspace - which is exactly the signature of the
+    # open Test-DiscoveredUninstall flake (see BUGS.md). Failing at the creation
+    # site names the path instead, and tells the "never created" branch apart
+    # from "deleted underneath us" without waiting for a rare reproduction.
+    if (-not (Test-Path -LiteralPath $path -PathType Container)) {
+        throw ('Test workspace could not be created: ' + $path)
+    }
     return $path
 }
 
