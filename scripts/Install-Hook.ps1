@@ -562,7 +562,11 @@ try {
     $hookType = if ([string]::IsNullOrWhiteSpace($CustomHook)) { 'Engine' } else { 'CustomHook' }
     $isEngine = ($hookType -eq 'Engine')
 
-    $sourceManifest = @(Get-ManagedSourceManifest -ToolRoot $ToolRoot -HookScript $HookScript -SourceDir $SourceDir -FriendlyName $FriendlyName -ConfigPath $ConfigPath -IncludeConfig:$isEngine -ProfileId ([string]$Profile))
+    # -ProjectRoot: the generated SYNC-PROJECTS.txt is keyed by project, and this
+    # manifest is what the updater compares against later. $RecordProjectRoot is
+    # the same value the record stores and every client identity carries, so all
+    # three descriptions of that file agree by construction.
+    $sourceManifest = @(Get-ManagedSourceManifest -ToolRoot $ToolRoot -HookScript $HookScript -SourceDir $SourceDir -FriendlyName $FriendlyName -ConfigPath $ConfigPath -IncludeConfig:$isEngine -ProfileId ([string]$Profile) -ProjectRoot ([string]$RecordProjectRoot))
 
     # NOT named $clients. PowerShell variable names are case-INSENSITIVE, so a
     # local $clients is the SAME variable as the [string[]]$Clients parameter -
