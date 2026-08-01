@@ -236,6 +236,34 @@ try {
     Check 'secrets.md NOT created when AUTO_APPEND=false' (-not (Test-Path (Join-Path $proj2 'secrets.md')))
 
     # =====================================================================
+    # AUTO_APPEND stays at its default here: the point is that the write itself
+    # is refused, not that the feature is off. Reporting "not ignored" AFTER
+    # creating the file would leave a committable file full of live credentials
+    # in the window before the user reads the warning.
+    Write-Host '--- pre-write guard: no secret value lands in an unignored secrets.md ---' -ForegroundColor Cyan
+    $guardValue = 'zzzsentinelvalue1234567890'
+    $projGuard = New-GitProj 'PreWriteNotIgnored'
+    Write-Utf8 (Join-Path $projGuard '.env') ("GUARD_PREWRITE_TOKEN=$guardValue`r`n")
+    $r = Fire -Cwd $projGuard
+    Check 'secrets.md NOT created when the repo does not ignore it' (-not (Test-Path (Join-Path $projGuard 'secrets.md'))) $r.Out
+    # Deliberately keyed on the REFUSAL, not just on "NOT covered by .gitignore":
+    # the pre-existing post-hoc check emits that phrase too, but only once the
+    # file already exists - so asserting the phrase alone would still pass
+    # against the unfixed hook and prove nothing.
+    Check 'refusal names the key, says it refused, and never claims an auto-add' (
+        $r.Out -like '*GUARD_PREWRITE_TOKEN*' -and $r.Out -like '*refusing to write*' -and
+        $r.Out -like '*NOT covered by .gitignore*' -and $r.Out -notlike '*Auto-added*') $r.Out
+    Check 'refusal never prints the secret value' ($r.Out -notlike ('*' + $guardValue + '*')) $r.Out
+
+    # Control: the guard refuses an unsafe write, it does not disable the feature.
+    $projGuardOk = New-GitProj 'PreWriteIgnored'
+    Write-Utf8 (Join-Path $projGuardOk '.gitignore') "/secrets.md`n"
+    Write-Utf8 (Join-Path $projGuardOk '.env') ("GUARD_PREWRITE_TOKEN=$guardValue`r`n")
+    $r = Fire -Cwd $projGuardOk
+    Check 'secrets.md IS written once /secrets.md is ignored' (Test-Path (Join-Path $projGuardOk 'secrets.md')) $r.Out
+    Check 'the ignored secrets.md documents the key' ((Test-Path (Join-Path $projGuardOk 'secrets.md')) -and [System.IO.File]::ReadAllText((Join-Path $projGuardOk 'secrets.md')) -match 'GUARD_PREWRITE_TOKEN') $r.Out
+
+    # =====================================================================
     Write-Host '--- git: secrets.md not ignored ---' -ForegroundColor Cyan
     $proj3 = New-GitProj 'NotIgnored'
     # Seed the repo WITHOUT touching secrets.md, so it stays untracked and this
