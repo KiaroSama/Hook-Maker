@@ -380,7 +380,8 @@ function Get-InstallIntegrity {
             -SourceDir ([string]$Record.sourceDir) `
             -FriendlyName ([string]$Record.friendlyName) `
             -ConfigPath $configPath -IncludeConfig:$isEngine `
-            -ProfileId ([string]$Record.profile))
+            -ProfileId ([string]$Record.profile) `
+            -ProjectRoot $recordProjectRoot)
 
     # Component-level evaluation. Nothing early-returns any more: every
     # component is evaluated so the caller can repair ONLY what is damaged.

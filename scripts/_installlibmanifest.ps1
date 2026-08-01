@@ -79,10 +79,16 @@ function Get-ManagedSourceManifest {
         [Parameter(Mandatory = $true)][string]$FriendlyName,
         [string]$ConfigPath = '',
         [switch]$IncludeConfig,
-        [string]$ProfileId = ''
+        [string]$ProfileId = '',
+        # Client-agnostic does NOT mean project-agnostic: a record belongs to one
+        # project, and the generated SYNC-PROJECTS.txt is keyed by it. Omitting it
+        # here would make this manifest describe that file differently from
+        # Get-ManagedClientManifest, i.e. permanent disagreement about one path.
+        [AllowEmptyString()][string]$ProjectRoot = ''
     )
     $plan = Get-InstallPlanFor -HookScript $HookScript -ToolRoot $ToolRoot -FriendlyNameOverride $FriendlyName `
-        -ProfileId $ProfileId -ConfigPath $ConfigPath -IsEngine:$IncludeConfig -AllowMissing
+        -ProfileId $ProfileId -ConfigPath $ConfigPath -IsEngine:$IncludeConfig -AllowMissing `
+        -ProjectRoot $ProjectRoot
     return ConvertTo-ManifestArray (Get-PlanManifest -Plan $plan)
 }
 
