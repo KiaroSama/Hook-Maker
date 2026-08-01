@@ -142,10 +142,19 @@ function Invoke-UninstallProcess {
         RedirectStandardOutput = $outF; RedirectStandardError = $errF
         Wait = $true; NoNewWindow = $true; PassThru = $true
     }
+    # See the same guard in Test-InstallRegistry.ps1: on a 5.1 host this block is
+    # skipped, taking the USERPROFILE/HOME redirect with it, and a global-scope
+    # test would then operate on the developer's real profile.
     if ((Get-Command Start-Process).Parameters.ContainsKey('Environment')) {
         $env = @{ HOOKMAKER_STATE_DIR = $IsolatedStateDir }
         if ($FakeHome -ne '') { $env['USERPROFILE'] = $FakeHome; $env['HOME'] = $FakeHome }
         $startArgs.Environment = $env
+    }
+    elseif ($FakeHome -ne '') {
+        throw ('Refusing to run a global-scope test without process isolation: ' +
+            'Start-Process -Environment is unavailable on this host (Windows PowerShell 5.1), ' +
+            'so USERPROFILE cannot be redirected and the test would operate on the real user profile. ' +
+            'Run this suite under pwsh 7.')
     }
     $p = Start-Process @startArgs
     $out = ''; if (Test-Path $outF) { $out = [System.IO.File]::ReadAllText($outF) }
@@ -199,10 +208,19 @@ function Invoke-InstallProcess {
         RedirectStandardOutput = $outF; RedirectStandardError = $errF
         Wait = $true; NoNewWindow = $true; PassThru = $true
     }
+    # See the same guard in Test-InstallRegistry.ps1: on a 5.1 host this block is
+    # skipped, taking the USERPROFILE/HOME redirect with it, and a global-scope
+    # test would then operate on the developer's real profile.
     if ((Get-Command Start-Process).Parameters.ContainsKey('Environment')) {
         $env = @{ HOOKMAKER_STATE_DIR = $IsolatedStateDir }
         if ($FakeHome -ne '') { $env['USERPROFILE'] = $FakeHome; $env['HOME'] = $FakeHome }
         $startArgs.Environment = $env
+    }
+    elseif ($FakeHome -ne '') {
+        throw ('Refusing to run a global-scope test without process isolation: ' +
+            'Start-Process -Environment is unavailable on this host (Windows PowerShell 5.1), ' +
+            'so USERPROFILE cannot be redirected and the test would operate on the real user profile. ' +
+            'Run this suite under pwsh 7.')
     }
     $p = Start-Process @startArgs
     $out = ''; if (Test-Path $outF) { $out = [System.IO.File]::ReadAllText($outF) }
