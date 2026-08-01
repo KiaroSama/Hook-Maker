@@ -195,7 +195,7 @@ you add or create hooks:
 | --- | --- |
 | `1` | Select all hooks — the sync group **and** every hook below (shipped + your own). Never runs `25`–`28`. |
 | `2` | Create or update a sync group |
-| `3`–`23` | The 22 shipped hooks, in a pinned order (`9` is `Docs-Freshness-Check`; `20`–`22` are the three test-health hooks; `23` is `Utf8-Encoding-Check`) |
+| `3`–`23` | The 21 shipped hooks, in a pinned order (`9` is `Docs-Freshness-Check`; `20`–`22` are the three test-health hooks; `23` is `Utf8-Encoding-Check`) |
 | `24` | `Cloudflare-Deploy` |
 | `25` | **Update installed hooks** |
 | `26` | **Get hook status** |
