@@ -17,6 +17,25 @@
 function Install-IgnorePrePush {
     if ($FriendlyName -ne 'Ignore-Rules-Check' -or [string]::IsNullOrWhiteSpace($TargetProject)) { return }
     if ($null -eq (Get-Command git -ErrorAction SilentlyContinue)) { return }
+    # ONLY the repository's own top level may own its pre-push hook.
+    #
+    # `rev-parse --git-path hooks` answers for the ENCLOSING repository, so a
+    # target that is merely a subdirectory resolves to its parent repo's real
+    # .git\hooks - and that record then owns, regenerates and (on uninstall)
+    # DELETES a pre-push hook belonging to a repository it is not the root of.
+    # Observed for real: fixture projects created under this repo's own state\
+    # directory took ownership of this repository's pre-push chain, and removing
+    # those records removed it.
+    #
+    # Skipping is the whole fix: every other client still installs, and this
+    # function already returns early when git is absent or rev-parse fails, so a
+    # chain-less install is an established, supported outcome.
+    $topLevel = [string](Invoke-QuietCommand -FilePath git -ArgumentList @('-C', $projectRoot, 'rev-parse', '--show-toplevel'))
+    if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($topLevel)) { return }
+    if ((Normalize-Path ($topLevel.Trim() -replace '/', '\')).ToLowerInvariant() -cne
+        (Normalize-Path $projectRoot).ToLowerInvariant()) {
+        return
+    }
     $hooksPath = [string](Invoke-QuietCommand -FilePath git -ArgumentList @('-C', $projectRoot, 'rev-parse', '--git-path', 'hooks'))
     if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($hooksPath)) { return }
     if (-not [System.IO.Path]::IsPathRooted($hooksPath)) { $hooksPath = Join-Path $projectRoot $hooksPath }
