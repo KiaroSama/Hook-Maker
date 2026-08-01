@@ -500,6 +500,35 @@ foreach ($key in @($discovered.Keys | Sort-Object)) {
         [void]$missingUndocumented.Add($key)
     }
 }
+# Established HERE rather than beside the other git checks further down: the
+# auto-append write below needs the ignore proof, and a proof that runs after
+# the write cannot prevent anything.
+$critical = New-Object System.Collections.Generic.List[string]
+$inGitRepo = $false
+if ($null -ne (Get-Command git -ErrorAction SilentlyContinue)) {
+    $inside = Invoke-QuietCommand -FilePath git -ArgumentList @('-C', $cwd, 'rev-parse', '--is-inside-work-tree')
+    $inGitRepo = ($LASTEXITCODE -eq 0 -and [string]$inside -eq 'true')
+}
+
+# ORDER MATTERS: prove secrets.md will be ignored BEFORE a real secret value is
+# written into it. Creating the file first and warning afterwards leaves live
+# credentials sitting in a committable path - a single `git add -A` in that
+# window commits them, and the warning arrives too late to help. Outside a git
+# repository there is nothing to commit into, so the write proceeds as before.
+# `git check-ignore` tests a PATH against the ignore rules, so it answers this
+# even though the file does not exist yet.
+if ($added.Count -gt 0 -and $inGitRepo) {
+    $null = Invoke-QuietCommand -FilePath git -ArgumentList @('-C', $cwd, 'check-ignore', '-q', '--', 'secrets.md')
+    if ($LASTEXITCODE -ne 0) {
+        [void]$critical.Add('secrets.md is NOT covered by .gitignore - refusing to write ' + $added.Count +
+            ' discovered secret value(s) into it. Add /secrets.md to .gitignore, then re-run.')
+        # Same degradation as the write-failure path below: name the keys in the
+        # report, put no value on disk.
+        [void]$missingUndocumented.AddRange($added)
+        $added.Clear()
+    }
+}
+
 if ($added.Count -gt 0) {
     if (-not $secretsExists) {
         $header = "# Secrets`n`nLocal-only registry of real secrets for this project. This file must stay" +
@@ -621,13 +650,9 @@ function Invoke-OutgoingGrepBatched {
     return [pscustomobject]@{ Hits = @($hits); HadError = $hadError }
 }
 
-# ---- git-based checks: ignore/tracked/staged/leak/outgoing (skipped outside a git repo) ----
-$critical = New-Object System.Collections.Generic.List[string]
-$inGitRepo = $false
-if ($null -ne (Get-Command git -ErrorAction SilentlyContinue)) {
-    $inside = Invoke-QuietCommand -FilePath git -ArgumentList @('-C', $cwd, 'rev-parse', '--is-inside-work-tree')
-    $inGitRepo = ($LASTEXITCODE -eq 0 -and [string]$inside -eq 'true')
-}
+# ---- git-based checks: ignore/tracked/staged/leak/outgoing (skipped outside a git repo).
+# $critical and $inGitRepo are established earlier, above the auto-append write,
+# because that write needs the ignore proof before it may touch the disk. ----
 $outgoingCommits = @()
 $outgoingResolveErrors = @()
 if ($inGitRepo -and $GitPrePush -and $refUpdateLines.Count -gt 0) {
