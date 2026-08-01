@@ -443,6 +443,56 @@ try {
     Check 'the chain owner''s record still lists Secrets-Check' (@($ignoreAfterStage.nativeGit.companions) -contains 'Secrets-Check')
     Check 'the chain owner evaluates as CURRENT after the stage removal (stages/manifest/wrapper all consistent)' ((Get-InstallIntegrity -Record $ignoreAfterStage -ToolRoot $ToolRoot).Status -eq 'current')
     Check 'the Utf8 lifecycle record itself is gone' (@(Get-RecordsFor 'Utf8-Encoding-Check' | Where-Object { $_.targetProjectRoot -eq $stageRepo }).Count -eq 0)
+
+    # =====================================================================
+    # A target that is only a SUBDIRECTORY of a repository must never take
+    # ownership of that repository's pre-push hook.
+    #
+    # `git rev-parse --git-path hooks` answers for the enclosing repo, so a
+    # subdirectory install used to install into - and on uninstall DELETE - the
+    # parent repository's real .git\hooks\pre-push. Observed for real: fixture
+    # projects created under this tool's own state\ directory took ownership of
+    # this repository's chain, and removing those records removed it.
+    Write-Host '--- a subdirectory target never owns the enclosing repository''s pre-push ---' -ForegroundColor Cyan
+    $outerRepo = New-Proj 'OuterRepoForSubdir'
+    & git -C $outerRepo init -q -b main
+    & git -C $outerRepo config user.email 't@t'
+    & git -C $outerRepo config user.name 't'
+    $outerHooks = Join-Path $outerRepo '.git\hooks'
+    New-Item -ItemType Directory -Path $outerHooks -Force | Out-Null
+    $outerPrePush = Join-Path $outerHooks 'pre-push'
+    Write-Utf8 $outerPrePush "#!/bin/sh`necho outer-repo-own-pre-push`n"
+    $outerBytesBefore = [System.IO.File]::ReadAllBytes($outerPrePush)
+
+    $innerDir = Join-Path $outerRepo 'nested\project'
+    New-Item -ItemType Directory -Path $innerDir -Force | Out-Null
+    $subIgnoreHook = Join-Path $RealHooksDir 'Ignore-Rules-Check\Ignore-Rules-Check.ps1'
+    & $InstallScript -CustomHook $subIgnoreHook -Events @('SessionStart') -TargetProject $innerDir *> $null
+
+    $subRecord = @(Get-RecordsFor 'Ignore-Rules-Check' | Where-Object { $_.targetProjectRoot -eq $innerDir })[0]
+    Check 'the subdirectory install still succeeds for the normal clients' ($null -ne $subRecord) 'no record written'
+    Check 'it records NO native git chain (it is not the repository root)' (
+        $null -eq $subRecord -or $null -eq $subRecord.PSObject.Properties['nativeGit'] -or $null -eq $subRecord.nativeGit) (
+        'nativeGit present')
+    Check 'the enclosing repository''s own pre-push is byte-for-byte untouched' (
+        @(Compare-Object $outerBytesBefore ([System.IO.File]::ReadAllBytes($outerPrePush))).Count -eq 0)
+    Check 'no managed chain runtime was written into the enclosing repository' (
+        -not (Test-Path -LiteralPath (Join-Path $outerHooks 'Hook-Maker')))
+    Check 'the enclosing repository''s hook was not displaced to .hookmaker-existing' (
+        -not (Test-Path -LiteralPath (Join-Path $outerHooks 'pre-push.hookmaker-existing')))
+    Check 'the subdirectory record evaluates as current (a chain-less install is not drift)' (
+        $null -eq $subRecord -or (Get-InstallIntegrity -Record $subRecord -ToolRoot $ToolRoot).Status -eq 'current') (
+        $(if ($null -eq $subRecord) { 'no record' } else { (Get-InstallIntegrity -Record $subRecord -ToolRoot $ToolRoot).Detail }))
+
+    # The repository ROOT itself must still get its chain - the guard narrows
+    # ownership, it does not remove the feature.
+    & $InstallScript -CustomHook $subIgnoreHook -Events @('SessionStart') -TargetProject $outerRepo *> $null
+    $rootRecord = @(Get-RecordsFor 'Ignore-Rules-Check' | Where-Object { $_.targetProjectRoot -eq $outerRepo })[0]
+    Check 'installing at the repository ROOT still installs the native chain' (
+        $null -ne $rootRecord -and $null -ne $rootRecord.PSObject.Properties['nativeGit'] -and $null -ne $rootRecord.nativeGit)
+    Check 'and the root install still preserves the user''s own pre-push bytes' (
+        (Test-Path -LiteralPath (Join-Path $outerHooks 'pre-push.hookmaker-existing')) -and
+        @(Compare-Object $outerBytesBefore ([System.IO.File]::ReadAllBytes((Join-Path $outerHooks 'pre-push.hookmaker-existing')))).Count -eq 0)
 }
 finally {
     $env:HOOKMAKER_STATE_DIR = $SavedHookMakerStateDir
