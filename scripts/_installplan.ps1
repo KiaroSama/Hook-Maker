@@ -598,24 +598,12 @@ function Get-ManagedInstallPlan {
     return @($artifacts.ToArray())
 }
 
-# Exact content of the generated SYNC-PROJECTS.txt for a sync-engine install.
-# Lives here (not in the installer) so the installer and the updater's
-# integrity check derive the same deterministic bytes from the same code.
-function Get-SyncProjectListContentFor {
-    param(
-        [Parameter(Mandatory = $true)][string]$RoutingConfig,
-        [string]$ProfileId = ''
-    )
-    if ([string]::IsNullOrWhiteSpace($ProfileId)) { return $null }
-    if (-not (Test-Path -LiteralPath $RoutingConfig -PathType Leaf)) { return $null }
-    $config = $null
-    try { $config = Get-Content -LiteralPath $RoutingConfig -Raw | ConvertFrom-Json } catch { return $null }
-    if ($null -eq $config -or $null -eq $config.PSObject.Properties['profiles']) { return $null }
-    $matchingProfile = @($config.profiles | Where-Object { $_.id -eq $ProfileId } | Select-Object -First 1)
-    if ($matchingProfile.Count -eq 0) { return $null }
-
+# The projects one sync-group profile connects, keyed by lower-cased root so the
+# same project named twice in a mesh is listed once.
+function Get-SyncProfileProjects {
+    param([Parameter(Mandatory = $true)]$Profile)
     $projectsByRoot = @{}
-    foreach ($route in @($matchingProfile[0].routes)) {
+    foreach ($route in @($Profile.routes)) {
         foreach ($endpoint in @($route.source, $route.destination)) {
             if ($null -eq $endpoint) { continue }
             $root = [string]$endpoint.root
@@ -626,13 +614,78 @@ function Get-SyncProjectListContentFor {
             }
         }
     }
+    return $projectsByRoot
+}
+
+# Exact content of the generated SYNC-PROJECTS.txt for a sync-engine install.
+#
+# THE ONE generator. The installer used to carry a second copy that had to stay
+# byte-identical with this one for ever; a runtime directory is verified against
+# this hash, so any divergence would have been permanent drift.
+#
+# Content is keyed by the PROJECT, not by the installing record's profile. One
+# runtime directory is shared by every record with the same (project, client), so
+# a project in three sync groups had three records generating three different
+# files at one path: whichever installed last won, the other two read as stale,
+# and the next update flipped which. Listing every group this project belongs to
+# makes all of them generate identical bytes - and describes the directory
+# honestly, since its sync-hooks.json carries every profile anyway.
+#
+# A project in exactly ONE group produces byte-for-byte what it always did, so
+# the common case does not churn.
+function Get-SyncProjectListContentFor {
+    param(
+        [Parameter(Mandatory = $true)][string]$RoutingConfig,
+        [string]$ProfileId = '',
+        # '' for a global install, which is not tied to one project: then every
+        # profile in the config is listed, because the shared runtime serves all
+        # of them.
+        [AllowEmptyString()][string]$ProjectRoot = ''
+    )
+    # An empty profile id is how a CUSTOM hook install says "not the engine" -
+    # it plans no list at all. Kept as the gate even though the id no longer
+    # selects the content.
+    if ([string]::IsNullOrWhiteSpace($ProfileId)) { return $null }
+    if (-not (Test-Path -LiteralPath $RoutingConfig -PathType Leaf)) { return $null }
+    $config = $null
+    try { $config = Get-Content -LiteralPath $RoutingConfig -Raw | ConvertFrom-Json } catch { return $null }
+    if ($null -eq $config -or $null -eq $config.PSObject.Properties['profiles']) { return $null }
+
+    $projectKey = ''
+    if (-not [string]::IsNullOrWhiteSpace($ProjectRoot)) { $projectKey = (Normalize-Path $ProjectRoot).ToLowerInvariant() }
+
+    $selected = New-Object System.Collections.Generic.List[object]
+    foreach ($profile in @($config.profiles)) {
+        $projects = Get-SyncProfileProjects -Profile $profile
+        if ($projectKey -ne '') {
+            $belongs = $false
+            foreach ($project in @($projects.Values)) {
+                if ((Normalize-Path ([string]$project.Root)).ToLowerInvariant() -ceq $projectKey) { $belongs = $true; break }
+            }
+            if (-not $belongs) { continue }
+        }
+        [void]$selected.Add([pscustomobject]@{ Profile = $profile; Projects = $projects })
+    }
+    # A project the config no longer mentions (hand-edited between installs)
+    # still gets its own profile described rather than an empty file.
+    if ($selected.Count -eq 0) {
+        $own = @(@($config.profiles) | Where-Object { $_.id -eq $ProfileId } | Select-Object -First 1)
+        if ($own.Count -eq 0) { return $null }
+        [void]$selected.Add([pscustomobject]@{ Profile = $own[0]; Projects = (Get-SyncProfileProjects -Profile $own[0]) })
+    }
+
     $lines = New-Object System.Collections.Generic.List[string]
     [void]$lines.Add('Cross-project AI knowledge sync')
-    [void]$lines.Add(('Profile: ' + [string]$matchingProfile[0].name))
-    [void]$lines.Add('')
-    [void]$lines.Add('Synchronized projects:')
-    foreach ($project in @($projectsByRoot.Values | Sort-Object -Property Root)) {
-        [void]$lines.Add(('- ' + $project.Name + ' | ' + $project.Root))
+    $first = $true
+    foreach ($entry in @($selected.ToArray())) {
+        if (-not $first) { [void]$lines.Add('') }
+        $first = $false
+        [void]$lines.Add(('Profile: ' + [string]$entry.Profile.name))
+        [void]$lines.Add('')
+        [void]$lines.Add('Synchronized projects:')
+        foreach ($project in @($entry.Projects.Values | Sort-Object -Property Root)) {
+            [void]$lines.Add(('- ' + $project.Name + ' | ' + $project.Root))
+        }
     }
     return (($lines.ToArray() -join "`r`n") + "`r`n")
 }
@@ -653,12 +706,21 @@ function Get-InstallPlanFor {
         # updater's expected manifest could not describe kiro-launch.ps1 at all, so
         # every real Kiro install reported "unexpected managed file" for ever.
         [switch]$IncludeKiroLauncher,
+        # Which project this plan is FOR. The generated SYNC-PROJECTS.txt is keyed
+        # by it, and the source and client manifests must therefore both supply
+        # it or they would describe the same file differently. Taken from the
+        # runtime identity when a client-specific caller already carries one.
+        [AllowEmptyString()][string]$ProjectRoot = '',
         $RuntimeIdentity = $null
     )
     $sourceInfo = Get-HookSourceInfo -HookScript $HookScript -PackageRoots @((Join-Path $ToolRoot 'hooks')) -AllowMissing:$AllowMissing
     $friendlyName = if (-not [string]::IsNullOrWhiteSpace($FriendlyNameOverride)) { $FriendlyNameOverride } else { Get-HookFriendlyName $sourceInfo.Name }
+    $effectiveProjectRoot = $ProjectRoot
+    if ([string]::IsNullOrWhiteSpace($effectiveProjectRoot) -and $null -ne $RuntimeIdentity) {
+        $effectiveProjectRoot = [string]$RuntimeIdentity.ProjectRoot
+    }
     $syncList = $null
-    if ($IsEngine) { $syncList = Get-SyncProjectListContentFor -RoutingConfig $ConfigPath -ProfileId $ProfileId }
+    if ($IsEngine) { $syncList = Get-SyncProjectListContentFor -RoutingConfig $ConfigPath -ProfileId $ProfileId -ProjectRoot $effectiveProjectRoot }
     return (Get-ManagedInstallPlan -SourceInfo $sourceInfo -FriendlyName $friendlyName -ToolRoot $ToolRoot `
             -ConfigPath $ConfigPath -IncludeConfig:$IsEngine -SyncProjectListContent $syncList `
             -IncludeKiroLauncher:$IncludeKiroLauncher -RuntimeIdentity $RuntimeIdentity)

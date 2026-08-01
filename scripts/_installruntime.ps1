@@ -18,42 +18,10 @@
 # not a layering violation.
 # ---------------------------------------------------------------------------
 
-# Produces SYNC-PROJECTS.txt's exact content (rather than writing it directly)
-# so the install plan can give this GENERATED artifact a deterministic expected
-# hash and verify it like any other managed file.
-function Get-SyncProjectListContent {
-    param([Parameter(Mandatory = $true)][string]$RoutingConfig)
-
-    if ([string]::IsNullOrWhiteSpace($Profile)) { return $null }
-    if (-not (Test-Path -LiteralPath $RoutingConfig -PathType Leaf)) { return $null }
-    $config = Get-Content -LiteralPath $RoutingConfig -Raw | ConvertFrom-Json
-    $matchingProfile = @($config.profiles | Where-Object { $_.id -eq $Profile } | Select-Object -First 1)
-    if ($matchingProfile.Count -eq 0) { return $null }
-
-    $projectsByRoot = @{}
-    foreach ($route in @($matchingProfile[0].routes)) {
-        foreach ($endpoint in @($route.source, $route.destination)) {
-            $root = [string]$endpoint.root
-            if ([string]::IsNullOrWhiteSpace($root)) { continue }
-            $key = $root.ToLowerInvariant()
-            if (-not $projectsByRoot.ContainsKey($key)) {
-                $projectsByRoot[$key] = [pscustomobject]@{ Name = [string]$endpoint.name; Root = $root }
-            }
-        }
-    }
-
-    $lines = New-Object System.Collections.Generic.List[string]
-    [void]$lines.Add('Cross-project AI knowledge sync')
-    [void]$lines.Add(('Profile: ' + [string]$matchingProfile[0].name))
-    [void]$lines.Add('')
-    [void]$lines.Add('Synchronized projects:')
-    foreach ($project in @($projectsByRoot.Values | Sort-Object -Property Root)) {
-        [void]$lines.Add(('- ' + $project.Name + ' | ' + $project.Root))
-    }
-    # WriteAllLines appends a trailing newline after the last line; match that
-    # exactly so the planned hash equals what lands on disk.
-    return (($lines.ToArray() -join "`r`n") + "`r`n")
-}
+# SYNC-PROJECTS.txt used to be generated HERE as well as in _installplan.ps1 -
+# two copies of the same bytes, which a runtime is then hash-verified against.
+# The installer now calls the planner's Get-SyncProjectListContentFor, so there
+# is one generator and divergence is impossible rather than merely unlikely.
 
 # Installs are SELF-CONTAINED: the hook runtime (script, shared _hooklib.ps1,
 # its .env, and - for the sync engine - the routing config) is COPIED into the
@@ -100,7 +68,18 @@ function Copy-HookRuntime {
     # installation less functional than it was.
     $isEngineInstall = [string]::IsNullOrWhiteSpace($CustomHook)
     $syncListContent = $null
-    if ($isEngineInstall) { $syncListContent = Get-SyncProjectListContent -RoutingConfig $ConfigPath }
+    if ($isEngineInstall) {
+        # $Profile comes from Install-Hook.ps1's parameters, which this file is
+        # dot-sourced into. The project root keys the generated list, so a runtime
+        # shared by several sync groups gets the same bytes no matter which record
+        # installs it. Read defensively: the native Git pre-push chain calls this
+        # function with no identity at all, and StrictMode throws on a property of
+        # $null.
+        $identityProjectRoot = ''
+        if ($null -ne $RuntimeIdentity) { $identityProjectRoot = [string]$RuntimeIdentity.ProjectRoot }
+        $syncListContent = Get-SyncProjectListContentFor -RoutingConfig $ConfigPath -ProfileId ([string]$Profile) `
+            -ProjectRoot $identityProjectRoot
+    }
     $plan = Get-ManagedInstallPlan -SourceInfo $SourceInfo -FriendlyName $FriendlyName -ToolRoot $ToolRoot `
         -ConfigPath $ConfigPath -IncludeConfig:$isEngineInstall -SyncProjectListContent $syncListContent `
         -IncludeKiroLauncher:$IncludeKiroLauncher -RuntimeIdentity $RuntimeIdentity

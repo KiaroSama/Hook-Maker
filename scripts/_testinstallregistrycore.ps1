@@ -131,6 +131,62 @@
           (Get-InstallIntegrity -Record $recEngine -ToolRoot $ToolRoot).Status -eq 'update'))
 
     # =====================================================================
+    # A project in SEVERAL sync groups gets one engine record per group, and all
+    # of them install into ONE runtime directory (keyed by project+client). While
+    # SYNC-PROJECTS.txt was generated per PROFILE, each record wrote a different
+    # file to that one path: whichever installed last won, the others read as
+    # stale, and the next update flipped which - a loop no run could ever end.
+    # It is generated per PROJECT now, so every sibling produces the same bytes.
+    Write-Host '--- a runtime shared by several sync groups converges ---' -ForegroundColor Cyan
+    $sharedProfileId = 'sync-group-registrytest02'
+    $engineConfigObj.profiles = @(@($engineConfigObj.profiles) + @([pscustomobject]@{
+                id = $sharedProfileId; name = 'Second test engine profile'; enabled = $true
+                routes = @([pscustomobject]@{
+                        id = 'a-to-c'; enabled = $true
+                        source = [pscustomobject]@{ name = 'A'; root = $engineProj1; directory = '.ai'; aliases = @() }
+                        destination = [pscustomobject]@{ name = 'C'; root = (New-Proj 'EngineC'); directory = '.ai'; aliases = @() }
+                    })
+            }))
+    ($engineConfigObj | ConvertTo-Json -Depth 10) | Set-Content -LiteralPath $engineCfg -Encoding utf8
+
+    # The pure generator first: same project, different profile -> same bytes.
+    $sharedFirst = Get-SyncProjectListContentFor -RoutingConfig $engineCfg -ProfileId $engineProfileId -ProjectRoot $engineProj1
+    $sharedSecond = Get-SyncProjectListContentFor -RoutingConfig $engineCfg -ProfileId $sharedProfileId -ProjectRoot $engineProj1
+    Check 'two profiles covering the same project generate IDENTICAL bytes' ($sharedFirst -ceq $sharedSecond) (
+        'first=' + [string]$sharedFirst.Length + ' second=' + [string]$sharedSecond.Length)
+    Check 'the shared list names both groups the project belongs to' (
+        $sharedFirst -match 'Test engine profile' -and $sharedFirst -match 'Second test engine profile') $sharedFirst
+    # A project in only ONE group must not churn: its content is what it always was.
+    $onlyB = Get-SyncProjectListContentFor -RoutingConfig $engineCfg -ProfileId $engineProfileId -ProjectRoot $engineProj2
+    Check 'a project in one group still gets exactly that group, in the original single-block shape' (
+        $onlyB -ceq ("Cross-project AI knowledge sync`r`nProfile: Test engine profile`r`n`r`nSynchronized projects:`r`n" +
+            '- A | ' + $engineProj1 + "`r`n" + '- B | ' + $engineProj2 + "`r`n")) $onlyB
+    Check 'a custom hook (no profile id) still generates no list at all' (
+        $null -eq (Get-SyncProjectListContentFor -RoutingConfig $engineCfg -ProfileId '' -ProjectRoot $engineProj1))
+
+    # Then end to end: install BOTH groups into the one project and require both
+    # records to evaluate as current at the same time.
+    & $InstallScript -Profile $engineProfileId -ConfigPath $engineCfg -TargetProject $engineProj1 -Events @('SessionStart', 'UserPromptSubmit') *> $null
+    & $InstallScript -Profile $sharedProfileId -ConfigPath $engineCfg -TargetProject $engineProj1 -Events @('SessionStart', 'UserPromptSubmit') *> $null
+    $sharedRecords = @((Get-Registry).installs | Where-Object {
+            [string]$_.targetProjectRoot -eq $engineProj1 -and [string]$_.hookType -eq 'Engine' })
+    Check 'the project now carries one engine record per sync group' ($sharedRecords.Count -eq 2) (
+        (@($sharedRecords | ForEach-Object { [string]$_.profile }) -join ', '))
+    $sharedStatuses = @($sharedRecords | ForEach-Object { (Get-InstallIntegrity -Record $_ -ToolRoot $ToolRoot) })
+    Check 'BOTH records evaluate as current - the second install did not invalidate the first' (
+        @($sharedStatuses | Where-Object { $_.Status -eq 'current' }).Count -eq 2) (
+        (@($sharedStatuses | ForEach-Object { $_.Status + ': ' + $_.Detail }) -join ' || '))
+    # And it must STAY converged: a second evaluation after re-installing the
+    # first group again is where the old loop showed itself.
+    & $InstallScript -Profile $engineProfileId -ConfigPath $engineCfg -TargetProject $engineProj1 -Events @('SessionStart', 'UserPromptSubmit') *> $null
+    $sharedAgain = @(@((Get-Registry).installs | Where-Object {
+                [string]$_.targetProjectRoot -eq $engineProj1 -and [string]$_.hookType -eq 'Engine' }) |
+        ForEach-Object { (Get-InstallIntegrity -Record $_ -ToolRoot $ToolRoot) })
+    Check 'reinstalling one group leaves the other current too (no update loop)' (
+        @($sharedAgain | Where-Object { $_.Status -eq 'current' }).Count -eq 2) (
+        (@($sharedAgain | ForEach-Object { $_.Status + ': ' + $_.Detail }) -join ' || '))
+
+    # =====================================================================
     Write-Host '--- the updater refreshes a changed source byte-for-byte and preserves registration semantics ---' -ForegroundColor Cyan
     $fixture4 = New-FixtureHook 'ZZZ-Regtest-Update' "exit 0 # original`n"
     try {
