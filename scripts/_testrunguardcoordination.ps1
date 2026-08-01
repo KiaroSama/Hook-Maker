@@ -140,3 +140,39 @@
     $r = Fire -HookPath $hcMis.Script -Cwd $Proj -EventName 'PostToolUse' -Command 'pytest -q' -LocalAppData $hcMis.LocalAppData
     Check 'PostToolUse rejects a result from a DIFFERENT run as not-evidence' ((Get-Message $r.Out) -match 'DIFFERENT run') $r.Out
 
+
+    # =====================================================================
+    # MENTIONING the guarded runner is not RUNNING it.
+    #
+    # Test-SegmentIsGuarded used to scan every token, so `grep ...
+    # Run-Tests-Guarded.ps1` - which only READS the file - was recorded as an
+    # observed guarded run. No run happened, so no result document could ever
+    # appear, and Test-Completion-Check then blocked with "a test command was
+    # observed ... but no guarded result document exists for it" - a state
+    # nothing could clear except an unrelated real test run. Hit for real while
+    # closing out this project.
+    Write-Host '--- mentioning the guarded runner is not running it ---' -ForegroundColor Cyan
+    foreach ($mention in @(
+            'grep -n "projectFingerprint" scripts/Run-Tests-Guarded.ps1',
+            'grep -rn "Run-Tests-Guarded.ps1" hooks/',
+            'Get-Content scripts\Run-Tests-Guarded.ps1')) {
+        $hcMention = New-IsolatedHookCopy
+        $r = Fire -HookPath $hcMention.Script -Cwd $Proj -EventName 'PreToolUse' -Command $mention -LocalAppData $hcMention.LocalAppData
+        Check ('a command that only mentions the runner stays silent: ' + $mention) ($r.Exit -eq 0 -and $r.Out -eq '') $r.Out
+        Check ('...and writes NO observed record, so nothing waits for a result: ' + $mention) (
+            $null -eq (Get-ObservedRecord $hcMention.LocalAppData))
+        $rPost = Fire -HookPath $hcMention.Script -Cwd $Proj -EventName 'PostToolUse' -Command $mention -LocalAppData $hcMention.LocalAppData
+        Check ('...and PostToolUse does not demand a result document for it: ' + $mention) (
+            $rPost.Exit -eq 0 -and (Get-Message $rPost.Out) -notmatch 'no guarded result document') $rPost.Out
+    }
+    # The real invocations must still register, including the -f abbreviation and
+    # running the runner directly - narrowing recognition must not lose them.
+    foreach ($invocation in @(
+            'pwsh -NoProfile -File scripts\Run-Tests-Guarded.ps1 -FilePath pwsh -ArgumentsJson ''["-File","x.ps1"]''',
+            'pwsh -NoProfile -f scripts\Run-Tests-Guarded.ps1 -FilePath pwsh -ArgumentsJson ''["-File","x.ps1"]''',
+            '.\scripts\Run-Tests-Guarded.ps1 -FilePath pwsh -ArgumentsJson ''["-File","x.ps1"]''')) {
+        $hcInv = New-IsolatedHookCopy
+        $r = Fire -HookPath $hcInv.Script -Cwd $Proj -EventName 'PreToolUse' -Command $invocation -LocalAppData $hcInv.LocalAppData
+        Check ('a real guarded invocation is still recognised (silent, never re-wrapped): ' + $invocation) (
+            $r.Exit -eq 0 -and $r.Out -eq '') $r.Out
+    }
