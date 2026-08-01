@@ -275,6 +275,80 @@ function Test-SyncConfigStructure {
 #
 # Deliberately does NOT trust the registry's own last-known hashes as proof of
 # the installed state: they only describe what was true at install time.
+# Is this runtime directory maintained by a SIBLING registration of the same
+# hook, for the same client, in the same project?
+#
+# True only when the ownership document ON DISK is well-formed and states this
+# hook, this client, this scope and this project - everything a runtime hook
+# actually trusts - while naming a DIFFERENT record id. Its own runtimeManifest
+# must also agree with -ExpectedManifest on every path and hash, so a document
+# that describes some other content cannot pass by having the right header.
+#
+# Checked against the record's identity rather than against a regenerated
+# document: the caller's manifest is {path,hash} entries, and regenerating the
+# expected bytes here would mean re-planning the whole install for a case that
+# is, by construction, "everything matched except one file".
+#
+# Refuses on anything unexpected - unreadable file, bad JSON, missing field,
+# wrong schema version, an internally inconsistent registrationName, one
+# differing hash. A tampered or genuinely stale document must still be reported.
+function Test-SiblingOwnedRuntime {
+    param(
+        [Parameter(Mandatory = $true)][AllowEmptyCollection()][object[]]$ExpectedManifest,
+        [Parameter(Mandatory = $true)][string]$RuntimeRoot,
+        [Parameter(Mandatory = $true)][string]$FriendlyName,
+        [Parameter(Mandatory = $true)][string]$Client,
+        [Parameter(Mandatory = $true)][string]$Scope,
+        [Parameter(Mandatory = $true)][AllowEmptyString()][string]$ProjectRoot,
+        [Parameter(Mandatory = $true)][AllowEmptyString()][string]$RecordId
+    )
+    try {
+        $installedPath = Join-Path $RuntimeRoot ($FriendlyName + '\' + $script:RuntimeMetadataFileName)
+        if (-not (Test-Path -LiteralPath $installedPath -PathType Leaf)) { return $false }
+        $document = [System.IO.File]::ReadAllText($installedPath, [System.Text.Encoding]::UTF8) | ConvertFrom-Json
+        if ($null -eq $document) { return $false }
+
+        $field = {
+            param($Name)
+            $property = $document.PSObject.Properties[$Name]
+            if ($null -eq $property) { return $null }
+            return [string]$property.Value
+        }
+
+        if ((& $field 'schemaVersion') -cne [string]$script:RuntimeMetadataSchemaVersion) { return $false }
+        if ((& $field 'friendlyName') -cne $FriendlyName) { return $false }
+        if ((& $field 'client') -cne $Client) { return $false }
+        if ((& $field 'scope') -cne $Scope) { return $false }
+        if ((& $field 'projectKey') -cne (Get-RuntimeMetadataProjectKey -Scope $Scope -ProjectRoot $ProjectRoot)) { return $false }
+        $runtimeScript = & $field 'runtimeScriptRelativePath'
+        if ([string]::IsNullOrWhiteSpace($runtimeScript) -or -not $runtimeScript.StartsWith($FriendlyName + '/', [System.StringComparison]::OrdinalIgnoreCase)) { return $false }
+
+        # A record id that is absent or identical to ours is not the sibling
+        # case at all, and the registrationName must be the one THAT id would
+        # have produced - otherwise the document is internally inconsistent.
+        $installedRecordId = & $field 'recordId'
+        if ([string]::IsNullOrWhiteSpace($installedRecordId) -or $installedRecordId -ceq $RecordId) { return $false }
+        if ((& $field 'registrationName') -cne (Get-RuntimeMetadataRegistrationName -Client $Client `
+                    -FriendlyName $FriendlyName -RecordId $installedRecordId)) {
+            return $false
+        }
+
+        $expectedHashes = @{}
+        foreach ($entry in @($ExpectedManifest)) { $expectedHashes[[string]$entry.path] = ([string]$entry.hash).ToLowerInvariant() }
+        $entries = @()
+        $manifestProperty = $document.PSObject.Properties['runtimeManifest']
+        if ($null -ne $manifestProperty -and $null -ne $manifestProperty.Value) { $entries = @($manifestProperty.Value) }
+        if ($entries.Count -eq 0) { return $false }
+        foreach ($entry in $entries) {
+            $path = [string]$entry.path
+            if (-not $expectedHashes.ContainsKey($path)) { return $false }
+            if ($expectedHashes[$path] -cne ([string]$entry.sha256).ToLowerInvariant()) { return $false }
+        }
+        return $true
+    }
+    catch { return $false }
+}
+
 function Get-InstallIntegrity {
     param(
         [Parameter(Mandatory = $true)]$Record,
@@ -377,6 +451,35 @@ function Get-InstallIntegrity {
         }
         $installed = @(Get-InstalledManifest -RuntimeRoot ([string]$subrecord.runtimeRoot) -FriendlyName ([string]$Record.friendlyName))
         $difference = Compare-Manifest -Expected $expectedForClient -Actual $installed
+
+        # A runtime directory can legitimately have SEVERAL owners. A project in
+        # N sync groups gets N engine records - same hook, same client, same
+        # project, differing only by profile - and they all register handlers
+        # pointing at ONE runtime directory. Only one of them can be named in
+        # .hookmaker-runtime.json, so every other record saw "ownership metadata
+        # does not describe this installation", was replanned as `update`, and
+        # came back to the same verdict on the next run: a permanent update loop
+        # that could never reach `current`. A real registry hit this on 21 of 572
+        # records.
+        #
+        # Ownership is really keyed by (hook, client, project) - the record id is
+        # bookkeeping on top of it. So when the ONLY thing that differs is the
+        # metadata document, and that document agrees on hook, client, scope,
+        # project and EVERY file hash, this runtime is current: a sibling
+        # registration maintains it. Deliberately NOT a registry lookup - this
+        # runs once per record over the whole plan, and re-reading a multi-MB
+        # registry here is the exact shape of the three performance bugs already
+        # fixed in this codebase.
+        if ((-not $difference.IsMatch) -and $difference.Missing.Count -eq 0 -and
+            $difference.Unexpected.Count -eq 0 -and $difference.Modified.Count -eq 1 -and
+            ([string]$difference.Modified[0]).EndsWith('/' + $script:RuntimeMetadataFileName, [System.StringComparison]::OrdinalIgnoreCase)) {
+            if (Test-SiblingOwnedRuntime -ExpectedManifest $expectedForClient -RuntimeRoot ([string]$subrecord.runtimeRoot) `
+                    -FriendlyName ([string]$Record.friendlyName) -Client $client -Scope ([string]$Record.scope) `
+                    -ProjectRoot $recordProjectRoot -RecordId ([string]$Record.id)) {
+                $difference = [pscustomobject]@{ IsMatch = $true; Missing = @(); Modified = @(); Unexpected = @() }
+            }
+        }
+
         if (-not $difference.IsMatch) {
             $reason = ''
             # The ownership metadata gets its own wording because its two failure

@@ -338,6 +338,52 @@
             @(@(Get-InstalledManifest -RuntimeRoot ([string]$ownAfter.clients.claude.runtimeRoot) -FriendlyName $ownFixtureName) |
                 Where-Object { $_.path -like '*hookmaker-runtime.json' }).Count -eq 1)
 
+        # ---- SHARED runtime: a sibling registration is not drift -----------
+        # One project in N sync groups gets N engine records - same hook, same
+        # client, same project, differing only by profile - and every one of them
+        # registers a handler pointing at the SAME runtime directory. Only one
+        # record id can be named in the metadata, so the others each read
+        # "ownership metadata does not describe this installation", were replanned
+        # as `update`, reinstalled, and came back to the same verdict on the next
+        # run: an update loop that could never reach `current`. A real registry hit
+        # this on 21 of 572 records.
+        $ownSiblingBytes = [System.IO.File]::ReadAllText($ownClaudeMetaPath)
+        $ownSiblingId = 'a1b2c3d4e5'
+        $ownSiblingDoc = $ownSiblingBytes.Replace(('"recordId": "' + [string]$ownAfter.id + '"'), ('"recordId": "' + $ownSiblingId + '"'))
+        Check 'the sibling document really differs from the installed one' (
+            $ownSiblingDoc -cne $ownSiblingBytes -and $ownSiblingId -cne ([string]$ownAfter.id))
+        Write-Utf8 $ownClaudeMetaPath $ownSiblingDoc
+        $ownSibling = Get-InstallIntegrity -Record $ownAfter -ToolRoot $ToolRoot
+        Check 'a runtime whose metadata names a SIBLING record of the same hook/client/project is current, not drift' (
+            $ownSibling.Status -eq 'current') $ownSibling.Detail
+
+        # ...but ONLY the record id may differ. Each of these keeps a foreign
+        # record id and breaks one other claim, and every one must still drift -
+        # otherwise the sibling allowance became a way to launder any document.
+        foreach ($ownTamper in @(
+                @{ Name = 'a foreign projectKey'; From = ('"projectKey": "' + $ownRecomputed + '"'); To = '"projectKey": "0000000000"' },
+                @{ Name = 'a foreign client'; From = '"client": "claude"'; To = '"client": "codex"' },
+                @{ Name = 'a foreign scope'; From = '"scope": "project"'; To = '"scope": "global"' },
+                @{ Name = 'a foreign hook name'; From = ('"friendlyName": "' + $ownFixtureName + '"'); To = '"friendlyName": "Some-Other-Hook"' },
+                @{ Name = 'an unknown schema version'; From = '"schemaVersion": 1'; To = '"schemaVersion": 99' },
+                @{ Name = 'a registrationName no record id would produce'; From = ('"registrationName": "Hook-Maker/' + $ownFixtureName + '"'); To = '"registrationName": "Hook-Maker/Some-Other-Hook"' },
+                @{ Name = 'a manifest hash that does not match the installed file'; From = '"sha256": "'; To = '"sha256": "0000' })) {
+            $ownTampered = $ownSiblingDoc.Replace([string]$ownTamper.From, [string]$ownTamper.To)
+            Check ('the tampered document (' + [string]$ownTamper.Name + ') really differs') ($ownTampered -cne $ownSiblingDoc) ([string]$ownTamper.From)
+            Write-Utf8 $ownClaudeMetaPath $ownTampered
+            $ownTamperResult = Get-InstallIntegrity -Record $ownAfter -ToolRoot $ToolRoot
+            Check ('a sibling record id does NOT excuse ' + [string]$ownTamper.Name) (
+                $ownTamperResult.Status -eq 'update' -and $ownTamperResult.Detail -match 'ownership metadata does not describe this installation') (
+                $ownTamperResult.Status + ': ' + $ownTamperResult.Detail)
+        }
+        # Unparseable is not "close enough to a sibling" either.
+        Write-Utf8 $ownClaudeMetaPath '{ not json'
+        $ownGarbage = Get-InstallIntegrity -Record $ownAfter -ToolRoot $ToolRoot
+        Check 'an unparseable ownership document is still drift' ($ownGarbage.Status -eq 'update') ($ownGarbage.Status + ': ' + $ownGarbage.Detail)
+        Write-Utf8 $ownClaudeMetaPath $ownSiblingBytes
+        Check 'restoring this record own metadata returns the install to current' (
+            (Get-InstallIntegrity -Record $ownAfter -ToolRoot $ToolRoot).Status -eq 'current')
+
         # ---- global scope: no project, so no project key ------------------
         # GATED on Start-Process -Environment, which only PowerShell 7 has. Without
         # it Invoke-InstallProcess cannot redirect USERPROFILE/HOME, and a global
