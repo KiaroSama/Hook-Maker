@@ -379,6 +379,20 @@ Anything else is planned as an **update** with a precise reason (`source changed
 corrupting, or hand-editing an installed runtime file, or removing/altering a registration, is
 therefore detected and repaired even when the source has not changed at all.
 
+### One runtime directory, several owners
+
+A project that belongs to **several sync groups** gets one engine record per group — same hook, same
+client, same project, differing only by profile — and they all register handlers pointing at the
+**same** runtime directory. Only one of them can be named in that directory's ownership metadata, so
+the others would otherwise read as drift for ever: reinstalled on every run, and still "wrong" on the
+next one.
+
+When the ownership document is the **only** file that differs, it is therefore accepted if it states
+this hook, this client, this scope, this project, an internally consistent registration name and a
+matching hash for every file it lists — with only the record id differing. A document that disagrees
+about any of those, or that cannot be parsed, is still drift, and every other file is still compared
+byte-for-byte. Uninstall ownership is unchanged: it still proves a record owns what it removes.
+
 ### Managed files
 
 The manifest covers **every** file the installer copies for that hook — the main script, the shared
