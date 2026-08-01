@@ -141,10 +141,21 @@ function Invoke-InstallProcess {
         RedirectStandardOutput = $outF; RedirectStandardError = $errF
         Wait = $true; NoNewWindow = $true; PassThru = $true
     }
+    # -Environment is pwsh-7 only. On Windows PowerShell 5.1 this block is simply
+    # skipped - and skipping it does not just lose HOOKMAKER_STATE_DIR, it loses
+    # the USERPROFILE/HOME redirect too, so a GLOBAL-scope install would write
+    # into the developer's REAL %USERPROFILE%\.claude. Refuse instead: a test
+    # that cannot isolate itself must not run at all.
     if ((Get-Command Start-Process).Parameters.ContainsKey('Environment')) {
         $env = @{ HOOKMAKER_STATE_DIR = $IsolatedStateDir }
         if ($FakeHome -ne '') { $env['USERPROFILE'] = $FakeHome; $env['HOME'] = $FakeHome }
         $startArgs.Environment = $env
+    }
+    elseif ($FakeHome -ne '') {
+        throw ('Refusing to run a global-scope install test without process isolation: ' +
+            'Start-Process -Environment is unavailable on this host (Windows PowerShell 5.1), ' +
+            'so USERPROFILE cannot be redirected and the install would write to the real user profile. ' +
+            'Run this suite under pwsh 7.')
     }
     $p = Start-Process @startArgs
     $out = ''; if (Test-Path $outF) { $out = [System.IO.File]::ReadAllText($outF) }
