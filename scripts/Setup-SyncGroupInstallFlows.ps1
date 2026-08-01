@@ -480,6 +480,51 @@ function Get-RecordDisplayField {
     return $value
 }
 
+# What a `partial` install result actually means for the user.
+#
+# 'partial' covers three different outcomes: tracking failed, one component
+# failed while another landed, or a component installed with REDUCED CAPABILITY
+# (Kiro drops events it has no documented trigger for, and can never gate Stop).
+#
+# Only the first two are failures. `degraded` is Kiro stating what it does not
+# support: permanent, documented, and identical on every future run. Counting it
+# as a failure made a clean update impossible to reach - a real 572-record run
+# reported failed=21 in which every single one was
+# "claude: ok; codex: ok; kiro: partial - kiro (degraded)". A failure count that
+# can never be zero hides the failures that matter, which is the opposite of
+# what it is for.
+#
+# A component that is BOTH a real problem and degraded is a real problem: the
+# reduced capability is reported alongside, never instead.
+function Get-PartialInstallVerdict {
+    param($Components)
+    $realProblems = @(@($Components) |
+        Where-Object {
+            [string]$_.status -eq 'failed' -or [string]$_.status -eq 'trackingFailed' -or
+            [string]$_.reason -eq 'postRegistrationError'
+        } | ForEach-Object { [string]$_.component + ' (' + [string]$_.reason + ')' })
+    $capabilityOnly = @(@($Components) |
+        Where-Object {
+            [string]$_.reason -eq 'degraded' -and
+            -not ([string]$_.status -eq 'failed' -or [string]$_.status -eq 'trackingFailed')
+        } | ForEach-Object { [string]$_.component })
+
+    if ($realProblems.Count -gt 0) {
+        $notes = @($realProblems) + @($capabilityOnly | ForEach-Object { $_ + ' (degraded)' })
+        return [pscustomobject]@{ IsFailure = $true; Summary = ('partial - ' + ($notes -join ', ')) }
+    }
+    if ($capabilityOnly.Count -gt 0) {
+        # Installed, and honest about what the client cannot do.
+        return [pscustomobject]@{ IsFailure = $false; Summary = ('ok (reduced capability: ' + ($capabilityOnly -join ', ') + ')') }
+    }
+    # 'partial' with nothing this function recognizes is NOT quietly an success:
+    # an unknown reason is exactly the case that must reach a human.
+    $unknown = @(@($Components) | Where-Object { [string]$_.status -ne 'ok' } |
+        ForEach-Object { [string]$_.component + ' (' + [string]$_.reason + ')' })
+    if ($unknown.Count -eq 0) { $unknown = @('reason not reported') }
+    return [pscustomobject]@{ IsFailure = $true; Summary = ('partial - ' + ($unknown -join ', ')) }
+}
+
 function Invoke-UpdateInstalledHooks {
     Write-Log 'INFO' 'UPDATE' 'Update previously installed hooks started.'
     Write-PhaseHeader 'Update Previously Installed Hooks' $C.Input '-'
@@ -678,20 +723,9 @@ function Invoke-UpdateInstalledHooks {
                     [void]$clientResults.Add($client + ': failed (' + ($failedNames -join ', ') + ')')
                 }
                 elseif ([string]$installResult.overall -eq 'partial') {
-                    # 'partial' covers three different outcomes: tracking failed,
-                    # one component failed while another landed, or a component
-                    # installed with reduced capability (Kiro drops events it has
-                    # no documented trigger for and can never gate Stop). Naming
-                    # the component and its reason is shorter AND truer than the
-                    # old blanket "tracking failed", which sent the user to
-                    # reinstall something that was not broken.
-                    $anyFailed = $true
-                    $partialNotes = @(@($installResult.components) |
-                        Where-Object {
-                            [string]$_.status -eq 'failed' -or [string]$_.status -eq 'trackingFailed' -or
-                            @('degraded', 'postRegistrationError') -contains [string]$_.reason
-                        } | ForEach-Object { [string]$_.component + ' (' + [string]$_.reason + ')' })
-                    [void]$clientResults.Add($client + ': partial - ' + ($partialNotes -join ', '))
+                    $verdict = Get-PartialInstallVerdict -Components $installResult.components
+                    if ($verdict.IsFailure) { $anyFailed = $true }
+                    [void]$clientResults.Add($client + ': ' + $verdict.Summary)
                 }
                 else {
                     [void]$clientResults.Add($client + ': ok')
