@@ -377,9 +377,42 @@ try {
     }
     else {
         $tail = (@(($text -split "`r?`n") | Where-Object { $_ -ne '' } | Select-Object -Last 3) -join ' | ')
-        if (-not [string]::IsNullOrWhiteSpace($errText)) { $tail = $tail + ' || stderr: ' + (($errText -split "`r?`n")[0]) }
+        if (-not [string]::IsNullOrWhiteSpace($errText)) {
+            # Keep the first few NON-EMPTY lines, not just [0]. A PowerShell
+            # failure's first stderr line is always 'Exception: <file>:<line>' -
+            # the least informative part - and the message a suite deliberately
+            # threw lands AFTER it. Keeping only [0] discarded exactly the
+            # evidence a suite was instrumented to produce: a real run of
+            # Test-DiscoveredUninstall threw its workspace/parent-existence
+            # detail and the table showed only the file and line number.
+            $errLines = @(($errText -split "`r?`n") | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Select-Object -First 3)
+            $tail = $tail + ' || stderr: ' + ($errLines -join ' | ')
+        }
         # A degraded clean-exit leak leads the tail: the 125/126 alone does not say why.
         if ($leakNote -ne '') { $tail = $leakNote + ' || ' + $tail }
+    }
+    # A failing suite's FULL output is the evidence; the one-line tail is only a
+    # signpost. Both streams are written beside the project's other logs before
+    # the finally deletes the temp copies, because the failures worth diagnosing
+    # here are rare and load-dependent - by the time anyone reads the table, the
+    # only run that reproduced it is over and its output is gone.
+    if ($exitCode -ne 0) {
+        try {
+            $logDir = Join-Path (Split-Path -Parent (Split-Path -Parent $SuitePath)) 'logs'
+            if (-not (Test-Path -LiteralPath $logDir -PathType Container)) {
+                New-Item -ItemType Directory -Path $logDir -Force | Out-Null
+            }
+            $keep = Join-Path $logDir ('failed-' + $name + '-' + [DateTime]::UtcNow.ToString('yyyy-MM-dd_HH-mm-ss') + '_UTC')
+            # Strip the SGR colour escapes a child pwsh emits: this file exists to
+            # be read by a human (or grepped) after the fact, and raw escapes bury
+            # the message. [char]27 rather than `e - the latter is PS 6+ only and
+            # this runner must also parse under Windows PowerShell 5.1.
+            $ansiPattern = ([char]27) + '\[[0-9;]*m'
+            [System.IO.File]::WriteAllText(($keep + '.err.log'), ([string]$errText -replace $ansiPattern, ''))
+            [System.IO.File]::WriteAllText(($keep + '.out.log'), ([string]$text -replace $ansiPattern, ''))
+            $tail = $tail + ' || full output: ' + $keep + '.err.log'
+        }
+        catch { }
     }
     return [pscustomobject]@{ Suite = $name; Exit = $exitCode; Seconds = [Math]::Round($sw.Elapsed.TotalSeconds, 1); Tail = $tail }
 }
