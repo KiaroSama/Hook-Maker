@@ -44,7 +44,7 @@ starts the user's task.
 | `scripts/Test-DocsFreshnessCheck.ps1` | Offline test suite for the Docs-Freshness-Check hook (SessionStart baseline, task-delta detection across committed/staged/working-tree changes, comment/blank-only-change silence, hard exclusions, ranked tracked-doc candidates, content-hashed impact fingerprint immune to unrelated doc edits, the Updated/NoUpdate acknowledgement flow with rejection of generic reasons and out-of-root/private/untracked paths, acknowledgement invalidation on a further non-doc change, `stop_hook_active`, self-contained installer copies; real throwaway git repos, 40 assertions, PowerShell 5.1). |
 | `scripts/Test-InstallRegistry.ps1` | Offline test suite for the install registry and "Update previously installed hooks" (single/multi/config-based/generated/sync-engine installs tracked without duplication, Claude/Codex/Both + project/global scope, byte-for-byte refresh preserving events/client/target/scope/profile, never installing a never-installed hook, missing-source/target reported and skipped, second-run idempotency, no secret/`.env`/prompt content ever stored, unrelated JSON preserved; **installed-state drift** — deleted/modified runtime script, stale or missing shared `_hooklib.ps1`, removed Claude/Codex registration, moved event, changed matcher, duplicate registration, one wiped client runtime — detected and repaired with no source change at all; **managed manifest** covering `.env`/copied helpers/added/removed files while ignoring runtime-generated files; **per-client semantics** (Claude `SessionStart` + Codex `Stop` preserved independently across an update, repairing one client leaving the other byte-for-byte untouched); **v1→v2 migration** deriving events from live registrations and flagging unprovable records for manual repair; **native pre-push** with a deliberately corrupted companion repaired, chain order/single-wrapper/stdin-replay/fail-closed preserved and the user's previous hook byte-for-byte intact; **corrupt-registry quarantine** (malformed JSON, wrong field types, unsupported version, stale `.tmp`, unique collision names, quarantine failure leaving the original untouched, concurrent lock-guarded writers losing no records); structured install-result contract guaranteed on every terminal outcome (validation/runtime/native-git failure, success, and registry-tracking failure) via a top-level trap, and post-commit-only legacy runtime/config cleanup proven with a forced staging failure; real throwaway projects/git repos + disposable custom-hook fixtures, 259 assertions). |
 | `scripts/Test-InstallRegistrySchema.ps1` | Offline test suite for registry schema validation, per-record isolation (a malformed record never blocks evaluating healthy ones), corruption/availability handling (zero-byte file, orphan lock), and the path-safety primitives the installer relies on (47 assertions). |
-| `scripts/Test-NativePrePushInstall.ps1` | Offline test suite for the native Git pre-push integration: chain order, single-wrapper-per-stage, stdin replay, fail-closed chaining, the user's previous hook preserved byte-for-byte, repair of a deliberately corrupted companion; real throwaway git repos (37 assertions). |
+| `scripts/Test-NativePrePushInstall.ps1` | Offline test suite for the native Git pre-push integration: chain order, single-wrapper-per-stage, stdin replay, fail-closed chaining, the user's previous hook preserved byte-for-byte, repair of a deliberately corrupted companion, and the ownership boundary — a target that is only a **subdirectory** of a repository never installs into, displaces or deletes that repository's own `pre-push`, while the repository root still gets the full chain; real throwaway git repos (62 assertions). |
 | `scripts/Test-LegacyDiscovery.ps1` | Offline test suite for legacy/untracked hook discovery ("Update previously installed hooks"): a registration in only one of `command`/`commandWindows`/`command_windows` is still found, the same registration split across two fields yields one candidate, an ambiguous proven-shape path outside any known tool root is never imported, an unrelated same-basename command is never confused with a real one (7 assertions). |
 | `scripts/_testlib.ps1` | Shared assertion helper used by the offline PowerShell test suites. |
 | `logs/` | Wizard execution logs (created on demand, not committed). |
@@ -159,7 +159,9 @@ disabled stays disabled after the merge; it is never silently re-enabled.
 
 Every install **copies the hook runtime into the target itself** (Kiro-style): the script, the
 shared `_hooklib.ps1`, its `.env` (if present) and — for the sync engine — a copy of the routing
-config plus `SYNC-PROJECTS.txt` (the readable project names and paths in that sync group) land in
+config plus `SYNC-PROJECTS.txt` (the readable project names and paths of every sync group **this
+project** belongs to — one runtime directory is shared by all of them, so its content is keyed by
+the project, not by the group that happened to install last) land in
 
 - `<project>/.claude/hooks/Hook-Maker/<Friendly-Name>/` for Claude (registered in
   `<project>/.claude/settings.local.json`, auto-gitignored — the command holds a machine-specific
@@ -378,6 +380,14 @@ Anything else is planned as an **update** with a precise reason (`source changed
 `native integration stale`), or **skipped** with a precise non-destructive reason. Deleting,
 corrupting, or hand-editing an installed runtime file, or removing/altering a registration, is
 therefore detected and repaired even when the source has not changed at all.
+
+### Native Git pre-push: only a repository's own root owns it
+
+`Ignore-Rules-Check` also manages a real `.git/hooks/pre-push` wrapper. That chain is installed
+**only when the target is the repository's top level**. A target that is merely a subdirectory of a
+repository gets every other client normally and no native chain at all — because `git rev-parse`
+answers for the *enclosing* repository, so a subdirectory install would otherwise take ownership of
+that repository's real `pre-push`, regenerate it, and delete it on uninstall.
 
 ### One runtime directory, several owners
 
