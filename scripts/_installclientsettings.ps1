@@ -120,8 +120,14 @@ function Backup-File {
     $backupPath = $Path + '.backup-' + (Get-BackupRunStamp -Operation 'install' -Fallback $Timestamp)
     # Never -Force over an existing run backup: that would replace the pre-batch
     # state with a mid-batch one, which is the copy nobody needs.
-    if (Test-Path -LiteralPath $backupPath -PathType Leaf) { return }
-    Copy-Item -LiteralPath $Path -Destination $backupPath -Force
+    if (-not (Test-Path -LiteralPath $backupPath -PathType Leaf)) {
+        Copy-Item -LiteralPath $Path -Destination $backupPath -Force
+    }
+    # ONE backup per file at a time. The per-run rule above stops copies piling
+    # up within a run; this stops them piling up ACROSS runs. Runs unconditionally
+    # (not only when a copy was just made) so a second install in the same run
+    # still clears anything an earlier run left behind.
+    Remove-SupersededBackups -Path $Path -KeepPath $backupPath
 }
 
 # Settings are replaced transactionally: serialize to a sibling temp file,

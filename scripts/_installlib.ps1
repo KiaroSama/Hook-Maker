@@ -140,6 +140,46 @@ function Get-InstallRecordById {
 # tool root recorded by a previous install in the registry. Only a historical
 # tool-folder registration rooted under one of these may be claimed; anything
 # else that merely looks similar is ambiguous and is preserved untouched.
+# Keeps exactly ONE backup per backed-up file: the one this run just wrote.
+#
+# The per-run rule already stopped a settings file collecting one copy per HOOK,
+# but nothing ever removed a PREVIOUS run's copy, so they accumulated for ever -
+# 464 files / 6.5 MB across one machine's projects, most of them from repeated
+# wizard runs, and Kiro multiplies it because it is per-hook-file (one document,
+# and therefore one backup, per hook per project).
+#
+# Scope is deliberately narrow: only siblings named exactly
+# "<this file's name>.backup-*", in this file's own directory, and never the one
+# just written. A file Hook Maker does not back up is never passed here, so an
+# unrelated "<something>.backup-<date>" belonging to the user is untouched by
+# construction - the pruning only ever reaches files this tool created beside a
+# file it owns.
+#
+# Best-effort: a backup that cannot be deleted (locked, read-only) is left alone
+# rather than failing the install. Losing an old backup is not worth aborting a
+# working install over.
+function Remove-SupersededBackups {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][string]$KeepPath
+    )
+    try {
+        $directory = Split-Path -Parent $Path
+        $leaf = Split-Path -Leaf $Path
+        if ([string]::IsNullOrWhiteSpace($directory) -or [string]::IsNullOrWhiteSpace($leaf)) { return }
+        $keepFull = ''
+        try { $keepFull = [System.IO.Path]::GetFullPath($KeepPath) } catch { $keepFull = $KeepPath }
+        foreach ($candidate in @(Get-ChildItem -LiteralPath $directory -File -Force -ErrorAction SilentlyContinue)) {
+            # StartsWith on the exact leaf plus the marker: "settings.json" must
+            # never prune "settings.local.json.backup-...".
+            if (-not $candidate.Name.StartsWith($leaf + '.backup-', [System.StringComparison]::Ordinal)) { continue }
+            if ([string]::Equals($candidate.FullName, $keepFull, [System.StringComparison]::OrdinalIgnoreCase)) { continue }
+            try { Remove-Item -LiteralPath $candidate.FullName -Force -ErrorAction Stop } catch { }
+        }
+    }
+    catch { }
+}
+
 function Get-KnownToolRoots {
     param([Parameter(Mandatory = $true)][string]$ToolRoot)
 
