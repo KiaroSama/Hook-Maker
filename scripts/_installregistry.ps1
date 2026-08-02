@@ -638,6 +638,27 @@ function ConvertTo-InstallRegistryCurrent {
             [void]$migrated.Add($record)
             continue
         }
+        # Already-current records skip both converters. This is not a shortcut
+        # around them - it is their OWN early-return conditions, hoisted:
+        # ConvertTo-InstallRecordV2 returns the record untouched when
+        # schema >= 2, and ConvertTo-InstallRecordV3 only adds recordType and
+        # origin when they are absent. A record satisfying all three is returned
+        # unchanged by both, so the outcome is identical either way.
+        #
+        # What it saves is the CALLS. Measured on the real 525-record registry:
+        # the whole migration pass cost 605 ms, of which the timestamp repair
+        # above is 25 ms - the rest was ~1575 PowerShell function invocations
+        # doing nothing. The timestamp repair still runs for every record, every
+        # time: that is the check that unstuck 334 permanently-unremovable
+        # records, and it is per-RECORD data that a current `version` says
+        # nothing about.
+        if ($null -ne $record -and
+            $null -ne $record.PSObject.Properties['schema'] -and [int]$record.schema -ge 2 -and
+            $null -ne $record.PSObject.Properties['recordType'] -and
+            $null -ne $record.PSObject.Properties['origin']) {
+            [void]$migrated.Add($record)
+            continue
+        }
         [void]$migrated.Add((ConvertTo-InstallRecordV3 -Record (ConvertTo-InstallRecordV2 -Record $record)))
     }
     Set-ObjectProperty -Object $Registry -Name 'installs' -Value @($migrated.ToArray())
