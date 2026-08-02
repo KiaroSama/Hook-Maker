@@ -251,3 +251,45 @@
     $wdMarkerLeft = @(Get-ChildItem -LiteralPath $wdStateDir -Filter 'TestRunGuard-active-*.json' -File -ErrorAction SilentlyContinue)
     Check 'the runner removes its -WorkingDirectory-keyed marker on completion (none left)' ($wdMarkerLeft.Count -eq 0) ([string]$wdMarkerLeft.Count)
 
+
+    # =====================================================================
+    # -ArgumentsJson must accept a SINGLE-argument list.
+    #
+    # "Is it an array?" used to be asked of the DESERIALIZED object, but the
+    # pipeline enumerates: '["x"] | ConvertFrom-Json' yields the bare string "x",
+    # indistinguishable from the scalar '"x"'. So every one-argument list was
+    # rejected - `node test.js`, the most ordinary case there is - while two or
+    # more passed. Reported from real use, reproduced at the throw, fixed by
+    # asking the TEXT instead (-NoEnumerate does not exist on 5.1, and this
+    # runner keeps 5.1 parity).
+    Write-Host '--- runner: -ArgumentsJson accepts one argument, and still rejects non-arrays ---' -ForegroundColor Cyan
+    foreach ($argCase in @(
+            @{ Name = 'a SINGLE-element array'; Json = '["-NoProfile"]'; Reject = $false },
+            @{ Name = 'a two-element array'; Json = '["-NoProfile","-NoLogo"]'; Reject = $false },
+            @{ Name = 'an empty array'; Json = '[]'; Reject = $false },
+            @{ Name = 'an array with leading whitespace'; Json = '  ["-NoProfile"]'; Reject = $false },
+            @{ Name = 'a bare scalar string'; Json = '"-NoProfile"'; Reject = $true },
+            @{ Name = 'a JSON object'; Json = '{"a":1}'; Reject = $true },
+            @{ Name = 'an array of objects'; Json = '[{"a":1}]'; Reject = $true })) {
+        $argResult = Join-Path $Work ('argjson-' + [guid]::NewGuid().ToString('N').Substring(0, 8) + '.json')
+        $argWrapper = Join-Path $Work ('run-argjson-' + [guid]::NewGuid().ToString('N').Substring(0, 8) + '.ps1')
+        # Wrapper script, same reason as the orphan case above: the JSON keeps its
+        # quotes instead of being mangled by Start-Process argument joining.
+        Write-Utf8 $argWrapper (
+            "& '$Runner' -FilePath 'pwsh' -ArgumentsJson '" + ([string]$argCase.Json).Replace("'", "''") + "' " +
+            "-TimeoutSeconds 60 -IdleTimeoutSeconds 30 -ResultPath '$argResult' -Quiet`nexit `$LASTEXITCODE`n")
+        $argOut = Join-Path $Work ('argjson-out-' + [guid]::NewGuid().ToString('N').Substring(0, 8) + '.txt')
+        $null = Start-Process -FilePath (Get-Process -Id $PID).Path -Wait -NoNewWindow -PassThru `
+            -RedirectStandardError $argOut -ArgumentList @('-NoLogo', '-NoProfile', '-File', $argWrapper)
+        $argErr = ''
+        try { $argErr = [System.IO.File]::ReadAllText($argOut) } catch { }
+        $argRejected = ($argErr -match 'must be a JSON ARRAY' -or $argErr -match 'elements must be strings')
+        if ($argCase.Reject) {
+            Check ('-ArgumentsJson rejects ' + [string]$argCase.Name) $argRejected $argErr
+        }
+        else {
+            Check ('-ArgumentsJson accepts ' + [string]$argCase.Name) (-not $argRejected) $argErr
+            Check ('...and actually ran it, producing a result document: ' + [string]$argCase.Name) (
+                Test-Path -LiteralPath $argResult) $argResult
+        }
+    }

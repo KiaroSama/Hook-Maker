@@ -707,12 +707,34 @@ function Remove-ActiveMarker {
 # caller can use for an argument list that starts with a switch. Parsed, never
 # evaluated - ConvertFrom-Json cannot execute what it reads.
 if (-not [string]::IsNullOrWhiteSpace($ArgumentsJson)) {
+    # "Is it an array?" is answered from the TEXT, not from the deserialized
+    # object, because the pipeline ENUMERATES: '["x"]' | ConvertFrom-Json yields
+    # the bare string "x", indistinguishable from the scalar '"x"'. Testing the
+    # object therefore rejected every SINGLE-argument list - `node test.js`, the
+    # most ordinary case there is - while accepting two or more. Verified on
+    # pwsh 7: one element -> String, two -> Object[].
+    #
+    # -NoEnumerate would answer it directly but does not exist on Windows
+    # PowerShell 5.1, and this runner deliberately keeps 5.1 parity (see the
+    # taskkill and GetFullPath notes above), so the check stays textual.
+    $jsonText = $ArgumentsJson.TrimStart([char[]]@(' ', "`t", "`r", "`n", [char]0xFEFF))
+    if (-not $jsonText.StartsWith('[')) {
+        throw '-ArgumentsJson must be a JSON ARRAY of strings, e.g. ["-NoProfile","-File","x.ps1"] (a single argument is still an array: ["x"])'
+    }
     $parsed = $null
     try { $parsed = $ArgumentsJson | ConvertFrom-Json }
     catch { throw ('-ArgumentsJson is not valid JSON: ' + $_.Exception.Message) }
     if ($null -eq $parsed) { $parsed = @() }
-    if ($parsed -is [string] -or -not ($parsed -is [System.Collections.IEnumerable])) {
-        throw '-ArgumentsJson must be a JSON ARRAY of strings, e.g. ["-NoProfile","-File","x.ps1"]'
+    # An element that is not a JSON primitive would stringify to something like
+    # "System.Management.Automation.PSCustomObject" and be handed to the child as
+    # a real argument - silent garbage rather than a refusal.
+    foreach ($element in @($parsed)) {
+        if ($null -ne $element -and ($element -is [System.Collections.IEnumerable]) -and -not ($element -is [string])) {
+            throw '-ArgumentsJson elements must be strings, numbers or booleans - not arrays or objects'
+        }
+        if ($null -ne $element -and $element.PSObject.TypeNames -contains 'System.Management.Automation.PSCustomObject') {
+            throw '-ArgumentsJson elements must be strings, numbers or booleans - not arrays or objects'
+        }
     }
     $Arguments = @(@($parsed) | ForEach-Object { [string]$_ })
 }
