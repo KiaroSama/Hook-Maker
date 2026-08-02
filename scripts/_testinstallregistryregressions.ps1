@@ -655,6 +655,33 @@
         Check 'it holds the state from BEFORE the batch, not a mid-batch snapshot' (
             $runBackupText -match 'ZZZ-Regtest-Backupruna' -and $runBackupText -notmatch 'ZZZ-Regtest-Backuprunb') $runBackupText
 
+        # ONE backup per file AT A TIME. The per-run rule above stops copies
+        # piling up WITHIN a run; nothing used to stop them piling up ACROSS
+        # runs, so a machine accumulated 464 backup files (6.5 MB) - and Kiro
+        # multiplies it, being one document, and therefore one backup, per hook
+        # per project. A later run must now leave exactly its own copy.
+        $env:HOOKMAKER_BACKUP_RUN = '20260728-020304'
+        & $InstallScript -CustomHook $fixtureBackupA -Events @('Stop') -TargetProject $projBackupRun -ClaudeOnly *> $null
+        $afterSecondRun = @(Get-ChildItem -LiteralPath $backupRunDir -Filter 'settings.local.json.backup-*' -File -ErrorAction SilentlyContinue)
+        Check 'a SECOND run leaves exactly one backup - the previous run''s copy is gone' (
+            $afterSecondRun.Count -eq 1) ('backups=' + (@($afterSecondRun.Name) -join ', '))
+        Check 'and the survivor is the CURRENT run''s copy, not the stale one' (
+            $afterSecondRun.Count -eq 1 -and $afterSecondRun[0].Name -eq 'settings.local.json.backup-install-20260728-020304') (
+            'name=' + (@($afterSecondRun.Name) -join ', '))
+        # Pruning is scoped to the exact file it backs up. A neighbour whose name
+        # merely STARTS with the same text, and an unrelated file of the user's
+        # that happens to use the same suffix convention, must both survive.
+        $neighbourBackup = Join-Path $backupRunDir 'settings.local.json.extra.backup-install-19990101-000000'
+        $foreignBackup = Join-Path $backupRunDir 'my-database.sqlite3.backup-19990101-000000'
+        Write-Utf8 $neighbourBackup 'not ours'
+        Write-Utf8 $foreignBackup 'user file'
+        $env:HOOKMAKER_BACKUP_RUN = '20260728-030405'
+        & $InstallScript -CustomHook $fixtureBackupA -Events @('SessionStart') -TargetProject $projBackupRun -ClaudeOnly *> $null
+        Check 'pruning never touches a DIFFERENT file whose name shares the prefix' (Test-Path -LiteralPath $neighbourBackup)
+        Check 'pruning never touches an unrelated file using the same backup suffix' (Test-Path -LiteralPath $foreignBackup)
+        Check 'and it still left exactly one backup of the file it owns' (
+            @(Get-ChildItem -LiteralPath $backupRunDir -Filter 'settings.local.json.backup-*' -File -ErrorAction SilentlyContinue).Count -eq 1)
+
         # A run marker that sanitizes to nothing must not produce a nameless
         # backup file - it falls back to the per-invocation timestamp, which is
         # also the shape an unmarked single install keeps.

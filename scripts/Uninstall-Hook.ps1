@@ -277,8 +277,12 @@ function Backup-SettingsFile {
     param([Parameter(Mandatory = $true)][string]$Path)
     if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { return }
     $backupPath = Get-SettingsBackupPath -Path $Path
-    if (Test-Path -LiteralPath $backupPath -PathType Leaf) { return }
-    Copy-Item -LiteralPath $Path -Destination $backupPath -Force
+    if (-not (Test-Path -LiteralPath $backupPath -PathType Leaf)) {
+        Copy-Item -LiteralPath $Path -Destination $backupPath -Force
+    }
+    # ONE backup per file at a time, same rule as the installer's Backup-File:
+    # this run's copy survives, every earlier run's copy of the same file goes.
+    Remove-SupersededBackups -Path $Path -KeepPath $backupPath
 }
 
 # Same transactional pattern as Install-Hook.ps1's Write-JsonFile: serialize to
