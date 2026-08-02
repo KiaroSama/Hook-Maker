@@ -228,14 +228,32 @@ function Get-SafeRunId {
 # record for a guarded run carries the SAME command fingerprint the runner will
 # compute, and preserves an injected runId instead of minting a fresh one that
 # could never match. A value-taking switch reads the following token.
+# An identity token is only usable if it was LITERALLY readable in the command.
+#
+# The command arrives as text, before any shell has expanded it, so `-RunId
+# "$RUNID"` yields the four characters '$RUNID' - not the value. Recording that
+# as the run's identity claims a control this hook never had: the runner receives
+# the expanded GUID and writes it into the result, so observation and result can
+# never pair, and the completion gate stays unsatisfiable for ever.
+#
+# Real ids are hex/GUID-shaped. Anything carrying a shell's expansion syntax
+# ($, %, backtick, parentheses) fails this and is treated as absent, which makes
+# the run UNCONTROLLED - and an uncontrolled run is matched on its command
+# fingerprint instead, which is exactly the honest fallback.
+function Test-LiteralIdentityToken {
+    param([string]$Value)
+    if ([string]::IsNullOrWhiteSpace($Value)) { return $false }
+    return ($Value -match '^[A-Za-z0-9._-]+$')
+}
+
 function Get-GuardedInvocationIdentity {
     param([string[]]$Tokens)
     $t = @($Tokens)
     $runId = ''; $projFp = ''; $filePath = ''; $argsJson = ''
     for ($i = 0; $i -lt $t.Count - 1; $i++) {
         switch ($t[$i].ToLowerInvariant()) {
-            '-runid' { $runId = $t[$i + 1] }
-            '-projectfingerprint' { $projFp = $t[$i + 1] }
+            '-runid' { if (Test-LiteralIdentityToken $t[$i + 1]) { $runId = $t[$i + 1] } }
+            '-projectfingerprint' { if (Test-LiteralIdentityToken $t[$i + 1]) { $projFp = $t[$i + 1] } }
             '-filepath' { $filePath = $t[$i + 1] }
             '-argumentsjson' { $argsJson = $t[$i + 1] }
         }

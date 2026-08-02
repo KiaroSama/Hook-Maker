@@ -176,3 +176,31 @@
         Check ('a real guarded invocation is still recognised (silent, never re-wrapped): ' + $invocation) (
             $r.Exit -eq 0 -and $r.Out -eq '') $r.Out
     }
+
+    # =====================================================================
+    # An identity token the hook could not literally READ must not be claimed
+    # as a controlled identity.
+    #
+    # The command arrives as text, before any shell expansion, so a hand-written
+    # guarded run using `-RunId "$RUNID"` hands the hook the four characters
+    # '$RUNID'. Recording that as this run's identity made observation and result
+    # unpairable for ever - the runner receives the expanded GUID - and the
+    # completion gate then blocked with "the only guarded result on record is for
+    # a DIFFERENT run". Hit repeatedly while closing this project out.
+    Write-Host '--- an unexpanded shell variable is not a run identity ---' -ForegroundColor Cyan
+    $hcVar = New-IsolatedHookCopy
+    $varCommand = 'pwsh -NoProfile -File .\scripts\Run-Tests-Guarded.ps1 -FilePath pwsh ' +
+        '-ArgumentsJson ''["-File",".\scripts\Run-Tests.ps1"]'' -RunId "$RUNID" -ProjectFingerprint "$FP" -TimeoutSeconds 900'
+    # PreToolUse: that is where an already-guarded command's observed record is
+    # written (the identity has to exist before the run, not after it).
+    $rVar = Fire -HookPath $hcVar.Script -Cwd $Proj -EventName 'PreToolUse' -Command $varCommand -LocalAppData $hcVar.LocalAppData
+    $obsVar = Get-ObservedRecord $hcVar.LocalAppData
+    Check 'a guarded run whose -RunId is an unexpanded variable is recorded UNCONTROLLED' (
+        $null -ne $obsVar -and $obsVar.Document.runIdControlled -ne $true) (
+        $(if ($null -eq $obsVar) { '<no observed record>' } else { $obsVar.Document | ConvertTo-Json -Compress }))
+    Check 'and the literal token is never stored as the runId' (
+        $null -ne $obsVar -and ([string]$obsVar.Document.runId) -notmatch '\$') (
+        $(if ($null -eq $obsVar) { '<no observed record>' } else { [string]$obsVar.Document.runId }))
+    Check 'the unexpanded projectFingerprint is not stored either' (
+        $null -ne $obsVar -and ([string]$obsVar.Document.projectFingerprint) -notmatch '\$') (
+        $(if ($null -eq $obsVar) { '<no observed record>' } else { [string]$obsVar.Document.projectFingerprint }))
