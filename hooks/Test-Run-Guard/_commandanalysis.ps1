@@ -347,8 +347,10 @@ $script:PowerShellPrograms = @('pwsh', 'powershell')
 # real test run. Reading a file about the runner is not a test run.
 #
 # An invocation is the runner as the segment's own program, or as the -File
-# target of a PowerShell host (-f/-fi/-fil/-file, the prefixes PowerShell itself
-# accepts). Anything else is an argument to some other program.
+# target of a PowerShell host. Anything else is an argument to some other
+# program. '-file' is matched EXACTLY, the same spelling Get-RecognizedTestCommand
+# below requires: these two must agree about what a -File target is, and no
+# caller here writes the abbreviated form.
 function Test-SegmentIsGuarded {
     param([string[]]$Tokens)
     $tokens = @($Tokens)
@@ -356,8 +358,7 @@ function Test-SegmentIsGuarded {
     if ((Get-ProgramName $tokens[0]) -eq 'run-tests-guarded.ps1') { return $true }
     if ($script:PowerShellPrograms -contains (Get-ProgramName $tokens[0])) {
         for ($i = 1; $i -lt $tokens.Count - 1; $i++) {
-            $switch = $tokens[$i].ToLowerInvariant()
-            if ($switch.Length -lt 2 -or -not '-file'.StartsWith($switch)) { continue }
+            if ($tokens[$i].ToLowerInvariant() -ne '-file') { continue }
             if ((Get-ProgramName $tokens[$i + 1]) -eq 'run-tests-guarded.ps1') { return $true }
         }
     }

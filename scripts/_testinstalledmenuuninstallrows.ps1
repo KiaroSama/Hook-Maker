@@ -4,6 +4,25 @@
 # suite's harness (Check, $script:Pass/$script:Fail), helpers, fixtures and
 # workspace. NOT a standalone suite: run scripts\Test-InstalledHooksMenu.ps1.
 
+
+    # ================================================================
+    # Part 6 - a non-removable row is skipped, never a veto over the
+    # rest of the uninstall selection
+    # ================================================================
+    # Any row needing manual repair used to reject the WHOLE selection with a
+    # continue, so picking 370 rows containing 3 unrepairable ones removed
+    # nothing and simply re-asked - the only way forward was to hand-compute the
+    # gaps. The blocked rows are now skipped, the rest proceeds, the skipped
+    # ones are listed by name and counted, and only a selection where NOTHING is
+    # removable is still refused outright.
+    #
+    # Driven through the same & {} stub harness the result screens above use:
+    # the registry readers, the UI primitives and the uninstall EXECUTOR are all
+    # stubbed, so the selection logic runs for real while nothing is removed.
+    # The removable records are JSON clones of the REAL managed record installed
+    # at the top of this suite (only their ids differ - friendlyName is pinned to
+    # the runtime path by Test-InstallRecordValid), so the row model sees a
+    # genuine record shape rather than a hand-built guess.
     Write-Host ''
     Write-Host '--- a blocked uninstall row is skipped, not a veto over the rest ---' -ForegroundColor Cyan
 
