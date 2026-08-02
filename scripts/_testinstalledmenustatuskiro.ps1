@@ -4,6 +4,16 @@
 # suite's harness (Check, $script:Pass/$script:Fail), helpers, fixtures and
 # workspace. NOT a standalone suite: run scripts\Test-InstalledHooksMenu.ps1.
 
+
+    # ================================================================
+    # Part 5 - Kiro is displayed as Kiro, and Claude/Codex are untouched
+    # ================================================================
+    # Kiro became a real third client, but this screen predated it: the group
+    # switch had no KiroRegistration case (so a Kiro finding was filed under
+    # "External Claude registrations:" - attributed to the WRONG client), the
+    # display-name switch had no kiro case (so it printed a bare lowercase
+    # "kiro"), and the roots screen listed only the Claude and Codex global
+    # locations. All three now derive from the one client capability table.
     Write-Host ''
     Write-Host '--- a Kiro finding is grouped, labelled and located as Kiro ---' -ForegroundColor Cyan
 
@@ -140,22 +150,3 @@
     Check 'render: a failed scan says nothing was written to the registry' ($failedRender -match 'Nothing was written to the install registry') $failedRender
     Check 'render: a failed scan surfaces the reported error' ($failedRender -match 'access denied at the root') $failedRender
     Check 'render: a failed scan prints no totals block' ($failedRender -notmatch 'directories inspected') $failedRender
-
-    # ================================================================
-    # Part 6 - a non-removable row is skipped, never a veto over the
-    # rest of the uninstall selection
-    # ================================================================
-    # Any row needing manual repair used to reject the WHOLE selection with a
-    # continue, so picking 370 rows containing 3 unrepairable ones removed
-    # nothing and simply re-asked - the only way forward was to hand-compute the
-    # gaps. The blocked rows are now skipped, the rest proceeds, the skipped
-    # ones are listed by name and counted, and only a selection where NOTHING is
-    # removable is still refused outright.
-    #
-    # Driven through the same & {} stub harness the result screens above use:
-    # the registry readers, the UI primitives and the uninstall EXECUTOR are all
-    # stubbed, so the selection logic runs for real while nothing is removed.
-    # The removable records are JSON clones of the REAL managed record installed
-    # at the top of this suite (only their ids differ - friendlyName is pinned to
-    # the runtime path by Test-InstallRecordValid), so the row model sees a
-    # genuine record shape rather than a hand-built guess.

@@ -4,6 +4,16 @@
 # suite's harness (Check, $script:Pass/$script:Fail), helpers, fixtures and
 # workspace. NOT a standalone suite: run scripts\Test-InstalledHooksMenu.ps1.
 
+
+    # ================================================================
+    # Part 4 - the result screen, rendered offline from a synthetic
+    # scan-result document
+    # ================================================================
+    # scripts\Get-HookStatus.ps1 owns the scanning and may not exist yet, so the
+    # grouping/totals rendering is exercised directly instead: the wizard's UI
+    # primitives are stubbed into a capture buffer, Setup-SyncGroupHookStatus.ps1
+    # is dot-sourced on top of them, and Show-HookStatusResult is handed a
+    # contract-shaped document covering every group at once.
     Write-Host ''
     Write-Host '--- menu 25 result screen groups findings and reports partial coverage ---' -ForegroundColor Cyan
 
@@ -97,13 +107,3 @@
     # document lists both an unreadable path and a reparse point, so the
     # evidenced wording is required and the "did not enumerate" wording is not.
     Check 'render: partial coverage names a cause only when the scan evidenced one' (($render -match 'unreadable or were reparse points') -and ($render -notmatch 'did not enumerate which parts were skipped')) $render
-
-    # ================================================================
-    # Part 5 - Kiro is displayed as Kiro, and Claude/Codex are untouched
-    # ================================================================
-    # Kiro became a real third client, but this screen predated it: the group
-    # switch had no KiroRegistration case (so a Kiro finding was filed under
-    # "External Claude registrations:" - attributed to the WRONG client), the
-    # display-name switch had no kiro case (so it printed a bare lowercase
-    # "kiro"), and the roots screen listed only the Claude and Codex global
-    # locations. All three now derive from the one client capability table.

@@ -154,7 +154,6 @@ function Test-InstallRegistryShape {
 # would report it as persisted. Update-InstallRegistry therefore passes -NoCache
 # and always parses fresh under the lock.
 $script:InstallRegistryCache = $null
-function Clear-InstallRegistryCache { $script:InstallRegistryCache = $null }
 function Read-InstallRegistryState {
     param(
         [Parameter(Mandatory = $true)][string]$ToolRoot,
@@ -171,7 +170,7 @@ function Read-InstallRegistryState {
         $item = Get-Item -LiteralPath $path -Force
         $stamp = [string]$path + '|' + $item.LastWriteTimeUtc.Ticks + '|' + $item.Length
     }
-    catch { $stamp = $null }
+    catch { }
     if (-not $NoCache -and $null -ne $stamp -and $null -ne $script:InstallRegistryCache -and
         [string]$script:InstallRegistryCache.Stamp -ceq $stamp) {
         return $script:InstallRegistryCache.State
@@ -225,7 +224,7 @@ function Save-InstallRegistry {
     # Belt and braces beside the (path, ticks, length) key: drop the cached parse
     # before the bytes change, so no reader can be served a pre-write document
     # even if a filesystem's timestamp granularity ever failed to move.
-    Clear-InstallRegistryCache
+    $script:InstallRegistryCache = $null
     Write-JsonFileAtomic -Value $Registry -Path $path
 }
 

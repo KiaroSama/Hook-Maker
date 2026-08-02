@@ -315,13 +315,3 @@
     finally {
         Remove-FixtureHook $fxName
     }
-
-    # ================================================================
-    # Part 4 - the result screen, rendered offline from a synthetic
-    # scan-result document
-    # ================================================================
-    # scripts\Get-HookStatus.ps1 owns the scanning and may not exist yet, so the
-    # grouping/totals rendering is exercised directly instead: the wizard's UI
-    # primitives are stubbed into a capture buffer, Setup-SyncGroupHookStatus.ps1
-    # is dot-sourced on top of them, and Show-HookStatusResult is handed a
-    # contract-shaped document covering every group at once.
