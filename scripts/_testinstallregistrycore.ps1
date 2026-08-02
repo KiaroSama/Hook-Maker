@@ -101,6 +101,46 @@
     # (Get-KnownToolRoots, Get-InstallRecordById, Update-InstallRegistry) at
     # ~700-990 ms each, x105 invocations in a full wizard run. The first two only
     # read a string and an int.
+    # An already-current record skips BOTH schema converters. The fast path is
+    # their own early-return conditions hoisted (V2 returns untouched at
+    # schema >= 2; V3 only adds recordType/origin when absent), so the outcome
+    # must be identical - what it saves is ~1575 PowerShell calls that did
+    # nothing on a 525-record registry. The timestamp repair still runs for
+    # EVERY record: that is what unstuck 334 unremovable records, and it is
+    # per-record data the registry `version` says nothing about.
+    Write-Host '--- migration skips the converters for current records, but never the timestamp repair ---' -ForegroundColor Cyan
+    $migCurrent = [pscustomobject]@{
+        version  = 3
+        installs = @(
+            [pscustomobject]@{ id = 'aaaaaaaaaa'; schema = 2; recordType = 'managed'; origin = 'hookMaker'
+                friendlyName = 'ZZZ-Mig-Current'; createdUtc = '2026-08-02T00:00:00.0000000Z' })
+    }
+    $migOut = ConvertTo-InstallRegistryCurrent -Registry $migCurrent
+    Check 'migration: a current record is returned unchanged by the fast path' (
+        [string]@($migOut.installs)[0].id -eq 'aaaaaaaaaa' -and
+        [string]@($migOut.installs)[0].recordType -eq 'managed' -and
+        [string]@($migOut.installs)[0].origin -eq 'hookMaker')
+    Check 'migration: the fast path does not touch an already-ISO timestamp' (
+        [string]@($migOut.installs)[0].createdUtc -ceq '2026-08-02T00:00:00.0000000Z') (
+        [string]@($migOut.installs)[0].createdUtc)
+    # The load-bearing one: a CURRENT record whose timestamp is a locale-rendered
+    # string must STILL be repaired - the fast path must not skip that.
+    $migCorrupt = [pscustomobject]@{
+        version  = 3
+        installs = @(
+            [pscustomobject]@{ id = 'bbbbbbbbbb'; schema = 2; recordType = 'managed'; origin = 'hookMaker'
+                friendlyName = 'ZZZ-Mig-Corrupt'; createdUtc = '07/26/2026 23:22:47' })
+    }
+    $migRepaired = [string]@((ConvertTo-InstallRegistryCurrent -Registry $migCorrupt).installs)[0].createdUtc
+    Check 'migration: a current record with a zone-less timestamp is STILL repaired' (
+        $migRepaired -match '(Z|[+-]\d{2}:?\d{2})$') $migRepaired
+    # And a legacy record must still take the full converter path.
+    $migLegacy = [pscustomobject]@{ version = 1; installs = @([pscustomobject]@{ id = 'cccccccccc'; friendlyName = 'ZZZ-Mig-Legacy'; clients = 'Claude'; events = @('Stop') }) }
+    $migLegacyOut = @((ConvertTo-InstallRegistryCurrent -Registry $migLegacy).installs)[0]
+    Check 'migration: a legacy record without recordType still goes through the converters' (
+        $null -ne $migLegacyOut.PSObject.Properties['recordType'] -and
+        [string]$migLegacyOut.recordType -eq 'managed')
+
     Write-Host '--- the registry cache serves reads and is invalidated by the bytes ---' -ForegroundColor Cyan
     $cacheFirst = Read-InstallRegistryState -ToolRoot $ToolRoot
     $cacheSecond = Read-InstallRegistryState -ToolRoot $ToolRoot
