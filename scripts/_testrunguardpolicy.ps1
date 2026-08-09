@@ -77,6 +77,37 @@
     $r = Fire -HookPath $hc51.Script -Cwd $Proj -EventName 'PreToolUse' -Command 'pytest -q tests/' -LocalAppData $hc51.LocalAppData -Exe 'powershell.exe'
     $replacement = Get-Replacement (Get-Message $r.Out)
     Check '5.1: a raw test command is blocked with a valid -ArgumentsJson replacement' ($r.Err -eq '' -and $replacement -match '-ArgumentsJson') ($replacement + '|' + $r.Err)
+    # The SHAPE of that JSON, not merely its presence. This assertion existed and
+    # passed all along while the emitted command was unusable on this host: the
+    # old `, @($Arguments) | ConvertTo-Json` is host-dependent, and 5.1 wraps the
+    # comma-built array in a PSObject, emitting {"value":[...],"Count":N}. The
+    # runner then rejects the hook's OWN suggestion with "must be a JSON ARRAY",
+    # so on a 5.1-hosted install (the default registration) the replacement could
+    # never work for any argument count. Reported from real use.
+    $json51 = ''
+    if ($replacement -match "-ArgumentsJson\s+'([^']*)'") { $json51 = $Matches[1] }
+    Check '5.1: the emitted -ArgumentsJson is a JSON ARRAY, not a PSObject wrapper' (
+        $json51 -ne '' -and $json51.TrimStart().StartsWith('[')) ('json=' + $json51)
+    Check '5.1: it carries no value/Count wrapper properties' (
+        $json51 -notmatch '"value"\s*:' -and $json51 -notmatch '"Count"\s*:') ('json=' + $json51)
+    $roundTrip51 = @()
+    try { $roundTrip51 = @($json51 | ConvertFrom-Json) } catch { }
+    Check '5.1: it round-trips to the ORIGINAL arguments, in order' (
+        (@($roundTrip51) -join '|') -eq '-q|tests/') ((@($roundTrip51) -join '|') + ' from ' + $json51)
+    # A SINGLE argument is the case the unary comma existed to protect; prove the
+    # replacement keeps it an array on this host too.
+    #
+    # Its OWN isolated hook copy on purpose: every PreToolUse firing writes an
+    # observed record, and Get-ObservedRecord below deliberately returns $null
+    # when it finds more than one. Probing on $hc51 would break that assertion -
+    # and it would look like a product regression rather than test pollution.
+    $hcOne51 = New-IsolatedHookCopy
+    $rOne51 = Fire -HookPath $hcOne51.Script -Cwd $Proj -EventName 'PreToolUse' -Command 'pytest' -LocalAppData $hcOne51.LocalAppData -Exe 'powershell.exe'
+    $oneReplacement51 = Get-Replacement (Get-Message $rOne51.Out)
+    $oneJson51 = ''
+    if ($oneReplacement51 -match "-ArgumentsJson\s+'([^']*)'") { $oneJson51 = $Matches[1] }
+    Check '5.1: a single-argument command still emits a JSON ARRAY' (
+        $oneJson51.TrimStart().StartsWith('[') -and $oneJson51 -notmatch '"value"\s*:') ('json=' + $oneJson51)
     # Write-ObservedRecord swallows its own errors by design, so a 5.1-only
     # breakage would otherwise be invisible. Prove the record really lands.
     $observed51 = Get-ObservedRecord $hc51.LocalAppData
