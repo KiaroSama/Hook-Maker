@@ -537,9 +537,21 @@ function New-GuardedInvocation {
         [string]$RunId,
         [string]$ProjectFingerprint
     )
-    # The unary comma keeps a single-argument list a JSON ARRAY. Without it a
-    # one-element array unrolls to a bare string and the runner rejects it.
-    $json = (, @($Arguments) | ConvertTo-Json -Compress)
+    # -InputObject with a typed [string[]], NOT a piped unary comma.
+    #
+    # The comma form was host-dependent, and this hook runs under whichever host
+    # the client registered - by default powershell.exe, i.e. 5.1:
+    #   pwsh 7 : , @('-m','pytest') | ConvertTo-Json  ->  ["-m","pytest"]
+    #   5.1    : same expression                      ->  {"value":["-m","pytest"],"Count":2}
+    # 5.1 wraps the comma-built array in a PSObject and serializes the WRAPPER's
+    # value/Count properties. The runner then refuses its own suggested command
+    # with "-ArgumentsJson must be a JSON ARRAY" - so on a 5.1-hosted install the
+    # replacement this hook prints could never work, for any argument count.
+    #
+    # -InputObject passes the array as ONE argument, so nothing enumerates and no
+    # wrapper is introduced; the [string[]] cast keeps a single element an array.
+    # Verified on both hosts for 0, 1, 2 and space-bearing arguments.
+    $json = ConvertTo-Json -InputObject ([string[]]@($Arguments)) -Compress
     if ($null -eq $json) { $json = '[]' }
     # Quoting only - the JSON is data for ConvertFrom-Json on the other side.
     $quotedJson = "'" + $json.Replace("'", "''") + "'"
