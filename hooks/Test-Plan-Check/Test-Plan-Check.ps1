@@ -357,7 +357,11 @@ $fingerprint = Get-ShortHash (
     ($signatureParts -join ';') + '|' + (($findings.ToArray()) -join ';') + '|' + ($configWarnings.ToArray() -join ';') + '|partial=' + $partialScan + '|dd=' + $deepDebug)
 
 $stateDir = Join-Path $env:LOCALAPPDATA 'HookMaker\state'
-$statePath = Join-Path $stateDir ('TestPlanCheck-' + (Get-ShortHash $cwd.ToLowerInvariant()) + '.json')
+# Normalize-Path then hash, matching Test-Run-Guard and Test-Completion-Check.
+# This file is only read by this hook, so a non-canonical cwd did not break a
+# handoff here - it just scattered one project's cooldown state across several
+# keys, so the "silent until the state changes" promise quietly reset.
+$statePath = Join-Path $stateDir ('TestPlanCheck-' + (Get-ShortHash (Normalize-Path $cwd).ToLowerInvariant()) + '.json')
 
 if (-not $alwaysReport) {
     $previous = $null
