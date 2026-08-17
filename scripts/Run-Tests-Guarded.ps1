@@ -750,6 +750,14 @@ try {
         $WorkingDirectory = [System.IO.Path]::Combine((Get-Location).Path, $WorkingDirectory)
     }
     $WorkingDirectory = [System.IO.Path]::GetFullPath($WorkingDirectory)
+    # TrimEnd, because GetFullPath PRESERVES a trailing separator: "C:\p\" and
+    # "C:\p" are the same directory but hash to different keys, which splits one
+    # project's timing history and result identity in two. Same canonical form
+    # as hooks\_hooklib.ps1's Normalize-Path, which the hooks use to key the
+    # files this runner's results are paired with. Inlined rather than shared:
+    # this runner is deliberately standalone (it never dot-sources _hooklib).
+    $WorkingDirectory = $WorkingDirectory.TrimEnd([char[]]@(
+            [System.IO.Path]::DirectorySeparatorChar, [System.IO.Path]::AltDirectorySeparatorChar))
 }
 catch { }
 $script:Result.workingDirectory = $WorkingDirectory

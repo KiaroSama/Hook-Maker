@@ -309,7 +309,20 @@ $extraFragments = @(Get-ListSetting $config 'TEST_GUARD_EXTRA_TEST_COMMANDS')
 $neverGuard = @(Get-ListSetting $config 'TEST_GUARD_NEVER_GUARD')
 
 $stateDirectory = Get-StateDirectory
-$projectKey = Get-ShortHash ($projectRoot.ToLowerInvariant())
+# Normalize-Path FIRST, then hash - the same pair Test-Completion-Check uses to
+# READ these files back. It lowercased the raw cwd instead, so producer and
+# consumer only agreed when the incoming cwd happened to already be canonical:
+# a trailing separator, a '.' segment or a '..' round trip each produced a
+# DIFFERENT key, and the observed records then sat under a key the completion
+# gate never looks at. The gate could not be closed by running any number of
+# tests, because the evidence was filed under another name. Reported from real
+# use, on a machine whose state directory is shared across many projects.
+#
+# The codebase already warned about exactly this, in Get-RuntimeMetadataProjectKey:
+# "Do not simplify it to GetFullPath or a bare ToLowerInvariant: neither trims a
+# trailing separator, and that mismatch is a defect this project has already
+# shipped once." This line was the bare-ToLowerInvariant half of that warning.
+$projectKey = Get-ShortHash (Normalize-Path $projectRoot).ToLowerInvariant()
 # result/observed are now PER-RUN (TestRunGuard-<kind>-<key>-<runId>.json) so two
 # runs in one project never overwrite each other. The exact per-run path is built
 # where the runId is known (PreToolUse) or discovered by enumeration (PostToolUse).

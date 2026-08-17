@@ -204,3 +204,38 @@
     Check 'the unexpanded projectFingerprint is not stored either' (
         $null -ne $obsVar -and ([string]$obsVar.Document.projectFingerprint) -notmatch '\$') (
         $(if ($null -eq $obsVar) { '<no observed record>' } else { [string]$obsVar.Document.projectFingerprint }))
+
+    # =====================================================================
+    # The project key must survive a NON-CANONICAL cwd.
+    #
+    # The producer (this hook) hashed the raw lowercased cwd while the consumer
+    # (Test-Completion-Check) hashes Normalize-Path'd cwd, so they agreed only
+    # when the incoming cwd happened to already be canonical. A trailing
+    # separator, a '.' segment or a '..' round trip each produced a DIFFERENT
+    # key: the observed records landed under a name the completion gate never
+    # reads, and no number of test runs could close it. Reported from real use.
+    #
+    # The assertion above could not catch this - it passes a canonical $Proj, the
+    # one spelling where both derivations agree.
+    Write-Host '--- coordination: the project key is canonical, whatever the cwd spelling ---' -ForegroundColor Cyan
+    $canonicalKey = & {
+        $sha = [System.Security.Cryptography.SHA256]::Create()
+        try {
+            $canon = ([System.IO.Path]::GetFullPath($Proj)).TrimEnd([char[]]@(
+                    [System.IO.Path]::DirectorySeparatorChar, [System.IO.Path]::AltDirectorySeparatorChar))
+            return ([System.BitConverter]::ToString($sha.ComputeHash([System.Text.Encoding]::UTF8.GetBytes($canon.ToLowerInvariant())))).Replace('-', '').ToLowerInvariant().Substring(0, 10)
+        }
+        finally { $sha.Dispose() }
+    }
+    foreach ($spelling in @(
+            @{ Name = 'a trailing separator'; Cwd = ($Proj + '\') },
+            @{ Name = 'a dot segment'; Cwd = (Join-Path $Proj '.') },
+            @{ Name = 'an upper-cased path'; Cwd = $Proj.ToUpperInvariant() })) {
+        $hcSpell = New-IsolatedHookCopy
+        $null = Fire -HookPath $hcSpell.Script -Cwd ([string]$spelling.Cwd) -EventName 'PreToolUse' -Command 'pytest -q' -LocalAppData $hcSpell.LocalAppData
+        $spellObserved = Get-ObservedRecord $hcSpell.LocalAppData
+        Check ('the observed record is keyed canonically despite ' + [string]$spelling.Name) (
+            $null -ne $spellObserved -and
+            $spellObserved.File.Name.StartsWith('TestRunGuard-observed-' + $canonicalKey + '-', [System.StringComparison]::Ordinal)) (
+            $(if ($null -ne $spellObserved) { $spellObserved.File.Name + ' expected key ' + $canonicalKey } else { 'no observed record' }))
+    }
