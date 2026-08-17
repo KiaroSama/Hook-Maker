@@ -818,8 +818,49 @@ try {
     }
     $script:Result.processOwnership = if ($script:JobHandle -ne [IntPtr]::Zero) { 'jobObject' } else { 'degraded' }
 
+    # A PATH-LIKE -FilePath is resolved HERE, because .NET will not resolve it
+    # against WorkingDirectory and will silently fall back to PATH instead.
+    #
+    # With UseShellExecute = $false a relative FileName is resolved against the
+    # CALLING process's current directory and then PATH; WorkingDirectory only
+    # sets the child's cwd and takes no part in finding the executable. Verified:
+    # a file that exists inside WorkingDirectory still fails to start.
+    #
+    # So `-FilePath .venv/Scripts/python.exe -WorkingDirectory <project>` did not
+    # fail - it found the SYSTEM python on PATH and ran the tests with the wrong
+    # interpreter, reporting ModuleNotFoundError for the project's dependencies.
+    # A guarded run that silently executes a different program than the one named
+    # is worse than one that refuses. Reported from real use.
+    #
+    # A bare name ('pwsh', 'python', 'npm') is left alone: PATH lookup is exactly
+    # what it means. Only a value carrying a separator is treated as a path.
+    $resolvedFilePath = $FilePath
+    if ($FilePath.IndexOfAny([char[]]@('\', '/')) -ge 0) {
+        $candidates = New-Object System.Collections.Generic.List[string]
+        if ([System.IO.Path]::IsPathRooted($FilePath)) { [void]$candidates.Add($FilePath) }
+        else {
+            [void]$candidates.Add([System.IO.Path]::Combine($WorkingDirectory, $FilePath))
+            [void]$candidates.Add([System.IO.Path]::Combine((Get-Location).Path, $FilePath))
+        }
+        $found = ''
+        foreach ($candidate in $candidates) {
+            $full = $candidate
+            try { $full = [System.IO.Path]::GetFullPath($candidate) } catch { }
+            if (Test-Path -LiteralPath $full -PathType Leaf) { $found = $full; break }
+        }
+        if ($found -eq '') {
+            throw ('-FilePath "' + $FilePath + '" does not exist. A path-like -FilePath is NOT resolved against ' +
+                '-WorkingDirectory by the OS, and falling back to PATH would run a different program than the one ' +
+                'named. Looked in: ' + (@($candidates) -join ' ; ') + '. Pass an absolute -FilePath, or a bare ' +
+                'command name to use PATH deliberately.')
+        }
+        $resolvedFilePath = $found
+    }
+    # Record what was actually started, not what was asked for, so the result
+    # document names the exact executable if this ever has to be diagnosed again.
+    $script:Result.fileName = $resolvedFilePath
     $psi = New-Object System.Diagnostics.ProcessStartInfo
-    $psi.FileName = $FilePath
+    $psi.FileName = $resolvedFilePath
     foreach ($argument in @($Arguments)) { [void]$psi.ArgumentList.Add([string]$argument) }
     $psi.WorkingDirectory = $WorkingDirectory
     $psi.UseShellExecute = $false          # no shell: nothing re-parses the args

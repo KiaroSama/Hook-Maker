@@ -291,3 +291,33 @@
     $r = Fire -HookPath $hcExtra.Script -Cwd $Proj -EventName 'PreToolUse' -Command 'bazel build //...' -LocalAppData $hcExtra.LocalAppData
     Check 'the extras do not widen recognition beyond the declared fragment' ($r.Exit -eq 0 -and $r.Out -eq '') $r.Out
 
+
+    # =====================================================================
+    # A shell REDIRECTION must not survive into the argument list.
+    #
+    # '|' was a recognised separator but '2>&1' was not, so
+    #   python -m pytest tests/x.py -q 2>&1 | tail -3
+    # emitted ["-m","pytest","tests/x.py","-q","2>&1"] and the replacement this
+    # hook prints died with `file or directory not found: 2>&1`. Every redirection
+    # form leaked the same way, operand included. The guarded runner captures both
+    # streams itself, so a redirection has nothing to express here.
+    Write-Host '--- redirections never reach the replacement command ---' -ForegroundColor Cyan
+    $hcRedir = New-IsolatedHookCopy
+    foreach ($redirCase in @(
+            @{ Cmd = 'pytest -q --no-header 2>&1 | tail -3'; Expect = '["-q","--no-header"]' },
+            @{ Cmd = 'pytest -q > out.txt'; Expect = '["-q"]' },
+            @{ Cmd = 'pytest -q 2> err.txt'; Expect = '["-q"]' },
+            @{ Cmd = 'pytest -q >> log.txt'; Expect = '["-q"]' })) {
+        $rRedir = Fire -HookPath $hcRedir.Script -Cwd $Proj -EventName 'PreToolUse' -Command ([string]$redirCase.Cmd) -LocalAppData $hcRedir.LocalAppData
+        $redirReplacement = Get-Replacement (Get-Message $rRedir.Out)
+        $redirJson = ''
+        if ($redirReplacement -match "-ArgumentsJson\s+'([^']*)'") { $redirJson = $Matches[1] }
+        Check ('no redirection token survives: ' + [string]$redirCase.Cmd) (
+            $redirJson -eq [string]$redirCase.Expect) ('got ' + $redirJson + ' want ' + [string]$redirCase.Expect)
+    }
+    # A redirection CHARACTER inside a quoted argument is data, not an operator -
+    # the tokenizer already swallowed the quoted run, so it must survive intact.
+    $rRedirQuoted = Fire -HookPath $hcRedir.Script -Cwd $Proj -EventName 'PreToolUse' -Command 'pytest -k "a>b" -q' -LocalAppData $hcRedir.LocalAppData
+    $redirQuotedReplacement = Get-Replacement (Get-Message $rRedirQuoted.Out)
+    Check 'a redirection character inside a QUOTED argument is preserved' (
+        $redirQuotedReplacement -match 'a>b') $redirQuotedReplacement
