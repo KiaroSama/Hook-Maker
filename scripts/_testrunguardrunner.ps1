@@ -293,3 +293,51 @@
                 Test-Path -LiteralPath $argResult) $argResult
         }
     }
+
+    # =====================================================================
+    # A PATH-LIKE -FilePath must resolve, or refuse - never silently become a
+    # different program.
+    #
+    # With UseShellExecute = $false, .NET resolves a relative FileName against the
+    # CALLING process's cwd and then PATH; -WorkingDirectory takes no part in it.
+    # So `-FilePath .venv/Scripts/python.exe` did not fail - it found the SYSTEM
+    # python and reported ModuleNotFoundError for the project's dependencies, i.e.
+    # a guarded run that executed something other than what it was told to.
+    Write-Host '--- runner: a path-like -FilePath resolves against -WorkingDirectory or refuses ---' -ForegroundColor Cyan
+    $fpDir = Join-Path $Work ('fp-' + [guid]::NewGuid().ToString('N').Substring(0, 8))
+    New-Item -ItemType Directory -Path (Join-Path $fpDir 'tools') -Force | Out-Null
+    $fpLocal = Join-Path $fpDir 'tools\localhost-runner.exe'
+    # hostname.exe, not a copied pwsh.exe: pwsh needs its DLLs beside it, so a
+    # lone copy starts and then fails - which would test the fixture, not the fix.
+    Copy-Item -LiteralPath (Join-Path $env:SystemRoot 'System32\hostname.exe') -Destination $fpLocal -Force
+    $fpResult = Join-Path $Work ('fp-ok-' + [guid]::NewGuid().ToString('N').Substring(0, 8) + '.json')
+    $fpWrapper = Join-Path $Work ('run-fp-' + [guid]::NewGuid().ToString('N').Substring(0, 8) + '.ps1')
+    Write-Utf8 $fpWrapper (
+        "& '$Runner' -FilePath 'tools/localhost-runner.exe' -WorkingDirectory '$fpDir' " +
+        "-ArgumentsJson '[]' -TimeoutSeconds 60 -ResultPath '$fpResult' -Quiet`nexit `$LASTEXITCODE`n")
+    $null = Start-Process -FilePath (Get-Process -Id $PID).Path -Wait -NoNewWindow -PassThru `
+        -ArgumentList @('-NoLogo', '-NoProfile', '-File', $fpWrapper)
+    $fpDoc = $null
+    try { $fpDoc = Get-Content -LiteralPath $fpResult -Raw | ConvertFrom-Json } catch { }
+    Check 'a relative -FilePath found under -WorkingDirectory actually runs' (
+        $null -ne $fpDoc -and [string]$fpDoc.overall -eq 'ok') (
+        $(if ($null -ne $fpDoc) { [string]$fpDoc.overall } else { 'no result document' }))
+    Check '...and the result names the executable that was really started' (
+        $null -ne $fpDoc -and ([string]$fpDoc.fileName) -match 'localhost-runner\.exe$') (
+        $(if ($null -ne $fpDoc) { [string]$fpDoc.fileName } else { 'no result document' }))
+    # A path-like value that exists nowhere must REFUSE, not fall through to PATH.
+    $fpMissResult = Join-Path $Work ('fp-miss-' + [guid]::NewGuid().ToString('N').Substring(0, 8) + '.json')
+    $fpMissErr = Join-Path $Work ('fp-miss-' + [guid]::NewGuid().ToString('N').Substring(0, 8) + '.txt')
+    $fpMissWrapper = Join-Path $Work ('run-fpmiss-' + [guid]::NewGuid().ToString('N').Substring(0, 8) + '.ps1')
+    # A bare 'pwsh' WOULD be found on PATH - the point is that './nope/pwsh.exe'
+    # must not silently become it.
+    Write-Utf8 $fpMissWrapper (
+        "& '$Runner' -FilePath './nope/pwsh.exe' -WorkingDirectory '$fpDir' " +
+        "-ArgumentsJson '[""-NoProfile"",""-Command"",""exit 0""]' -TimeoutSeconds 60 -ResultPath '$fpMissResult' -Quiet`nexit `$LASTEXITCODE`n")
+    $null = Start-Process -FilePath (Get-Process -Id $PID).Path -Wait -NoNewWindow -PassThru `
+        -RedirectStandardError $fpMissErr -ArgumentList @('-NoLogo', '-NoProfile', '-File', $fpMissWrapper)
+    $fpMissText = ''
+    try { $fpMissText = [System.IO.File]::ReadAllText($fpMissErr) } catch { }
+    Check 'a path-like -FilePath that exists nowhere is REFUSED, never resolved via PATH' (
+        $fpMissText -match 'does not exist') $fpMissText
+    Check '...and the refusal names where it looked' ($fpMissText -match 'Looked in') $fpMissText

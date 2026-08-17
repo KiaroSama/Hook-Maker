@@ -34,7 +34,18 @@ function Split-CommandTokens {
 
 # Separator TOKENS only. Because the tokenizer already swallowed quoted runs, a
 # '|' inside "-k 'a|b'" is part of a token and cannot split anything here.
-$script:SeparatorTokens = @('&&', '||', ';', '|', '&', "`n")
+#
+# Redirections end the command's ARGUMENTS exactly as a pipe does, and they were
+# missing: '|' was recognised but '2>&1' was not, so
+#   python -m pytest tests/x.py -q 2>&1 | tail -3
+# produced ["-m","pytest","tests/x.py","-q","2>&1"] and the replacement this hook
+# prints died with `file or directory not found: 2>&1`. Every redirection form
+# leaked the same way, operand included: '>' out.txt, '2>' err.txt, '>>' log.txt.
+# The runner captures both streams itself, so a shell redirection has nothing to
+# express here anyway - dropping it is what makes the suggestion runnable.
+# Reported from real use.
+$script:SeparatorTokens = @('&&', '||', ';', '|', '&', "`n",
+    '>', '>>', '<', '2>', '2>>', '2>&1', '1>', '1>>', '&>', '&>>', '>&', '3>', '*>', '*>&1')
 
 function Split-CommandSegments {
     param([string[]]$Tokens)
