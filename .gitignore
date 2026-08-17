@@ -45,6 +45,9 @@ logs/
 # Advisor handoff plans (local working notes, not part of the tool)
 /plans/
 
+# Local assistant skill state - machine-specific, not part of the tool
+/skills-lock.json
+
 !/.env.example
 !/.env.sample
 !/.env.template
