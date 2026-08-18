@@ -341,3 +341,59 @@
     Check 'a path-like -FilePath that exists nowhere is REFUSED, never resolved via PATH' (
         $fpMissText -match 'does not exist') $fpMissText
     Check '...and the refusal names where it looked' ($fpMissText -match 'Looked in') $fpMissText
+
+    # =====================================================================
+    # A BARE program name must resolve through PATHEXT.
+    #
+    # .NET's own PATH lookup does not apply PATHEXT, so Process.Start('npm')
+    # throws "The system cannot find the file specified" on Windows - npm ships
+    # as npm.cmd. The guard emitted `-FilePath "npm"`, so the command it told the
+    # user to run could never start, no result document was ever written, and the
+    # completion gate could never be closed. Reported from real use.
+    Write-Host '--- runner: a bare program name resolves through PATHEXT ---' -ForegroundColor Cyan
+    # A .cmd of our own, on a PATH we control: no dependency on npm being present.
+    $pathExtDir = Join-Path $Work 'pathext-probe'
+    New-Item -ItemType Directory -Path $pathExtDir -Force | Out-Null
+    Write-Utf8 (Join-Path $pathExtDir 'zzzprobe.cmd') "@echo off`r`nexit /b 0`r`n"
+    $bareResult = Join-Path $Work 'bare-name-result.json'
+    $bareWrapper = Join-Path $Work 'run-bare-name.ps1'
+    Write-Utf8 $bareWrapper (
+        "`$env:PATH = '$pathExtDir' + ';' + `$env:PATH`n" +
+        "& '$Runner' -FilePath 'zzzprobe' -Arguments @() " +
+        "-TimeoutSeconds 60 -IdleTimeoutSeconds 30 -ResultPath '$bareResult' -Quiet`nexit `$LASTEXITCODE`n")
+    $null = Start-Process -FilePath (Get-Process -Id $PID).Path -Wait -NoNewWindow -PassThru -ArgumentList @(
+        '-NoLogo', '-NoProfile', '-File', $bareWrapper)
+    $bareDoc = $null
+    try { $bareDoc = Get-Content -LiteralPath $bareResult -Raw | ConvertFrom-Json } catch { }
+    Check 'a bare name whose only match is a .cmd still STARTS' (
+        $null -ne $bareDoc -and [string]$bareDoc.overall -eq 'ok') (
+        $(if ($null -ne $bareDoc) { [string]$bareDoc.overall } else { 'no result document' }))
+    Check 'and the result names the RESOLVED executable, not the bare name' (
+        $null -ne $bareDoc -and ([string]$bareDoc.fileName) -match 'zzzprobe\.cmd$') (
+        $(if ($null -ne $bareDoc) { [string]$bareDoc.fileName } else { 'no result document' }))
+
+    # =====================================================================
+    # System pids are never "leaked descendants".
+    #
+    # Get-OwnedProcessTree BFSes by parent id; rooted at 0 it enqueues every
+    # process whose ParentProcessId is 0 - System Idle (0) and System (4) and
+    # their children - and reported them as processes the run had left alive.
+    # Reproduced exactly as "0, 4, 236, 280, 928".
+    Write-Host '--- runner: a non-positive root owns nothing (no system-pid false leak) ---' -ForegroundColor Cyan
+    $treeProbe = Join-Path $Work 'tree-probe.ps1'
+    Write-Utf8 $treeProbe (
+        "`$ErrorActionPreference = 'Stop'`n" +
+        "`$src = Get-Content -LiteralPath '$Runner' -Raw`n" +
+        "`$start = `$src.IndexOf('function Get-OwnedProcessTree')`n" +
+        "`$body = `$src.Substring(`$start)`n" +
+        "`$end = `$body.IndexOf(""`nfunction "", 1)`n" +
+        "if (`$end -gt 0) { `$body = `$body.Substring(0, `$end) }`n" +
+        "Invoke-Expression `$body`n" +
+        "foreach (`$root in @(0, 4)) { Write-Output (`$root.ToString() + '=' + (@(Get-OwnedProcessTree -RootId `$root).Count)) }`n")
+    $treeOut = Join-Path $Work 'tree-probe-out.txt'
+    $null = Start-Process -FilePath (Get-Process -Id $PID).Path -Wait -NoNewWindow -PassThru `
+        -RedirectStandardOutput $treeOut -ArgumentList @('-NoLogo', '-NoProfile', '-File', $treeProbe)
+    $treeText = ''
+    try { $treeText = [System.IO.File]::ReadAllText($treeOut) } catch { }
+    Check 'root 0 (System Idle) owns no processes' ($treeText -match '(?m)^0=0\s*$') $treeText
+    Check 'root 4 (System) owns no processes' ($treeText -match '(?m)^4=0\s*$') $treeText
