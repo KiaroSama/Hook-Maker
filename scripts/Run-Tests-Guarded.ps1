@@ -431,6 +431,13 @@ namespace HookMaker {
 # owned tree" means.
 function Get-OwnedProcessTree {
     param([int]$RootId)
+    # A non-positive root owns NOTHING. Rooted at 0 this BFS enqueues every
+    # process whose ParentProcessId is 0 - System Idle (0) and System (4) and
+    # their children - and reports them as leaked descendants of the test run.
+    # Reproduced exactly: root 0 returns "0, 4, 236, 280, 928", the same list a
+    # user saw reported as "left process(es) alive" when the child never started.
+    # PID 4 is also not something this runner could ever own or terminate.
+    if ($RootId -le 4) { return @() }
     $ids = New-Object System.Collections.Generic.List[int]
     $seen = New-Object System.Collections.Generic.HashSet[int]
     $queue = New-Object System.Collections.Generic.Queue[int]
@@ -832,10 +839,48 @@ try {
     # A guarded run that silently executes a different program than the one named
     # is worse than one that refuses. Reported from real use.
     #
-    # A bare name ('pwsh', 'python', 'npm') is left alone: PATH lookup is exactly
-    # what it means. Only a value carrying a separator is treated as a path.
+    # A BARE NAME still means "use PATH" - but we do the PATH lookup ourselves,
+    # because .NET's does not apply PATHEXT. Process.Start('npm') throws "The
+    # system cannot find the file specified" on Windows, since npm ships as
+    # npm.cmd, not npm.exe. That made the guard emit `-FilePath "npm"` - a
+    # command that could never start, so no result document was ever written and
+    # the completion gate could never be closed. Reported from real use, and
+    # reproduced directly: bare 'npm' throws, 'npm.cmd' starts.
+    #
+    # .ps1 is deliberately NOT a candidate: PATHEXT lists it, but with
+    # UseShellExecute = $false there is no interpreter attached, so starting it
+    # fails the same way. (On this machine `Get-Command npm` even resolves to
+    # npm.ps1 - which is exactly the wrong answer for Process.Start.)
+    #
+    # Unresolvable names are passed through UNCHANGED rather than refused: this
+    # is a convenience lookup, and .NET may still find something we did not model.
     $resolvedFilePath = $FilePath
-    if ($FilePath.IndexOfAny([char[]]@('\', '/')) -ge 0) {
+    if ($FilePath.IndexOfAny([char[]]@('\', '/')) -lt 0) {
+        $startable = @('.COM', '.EXE', '.BAT', '.CMD')
+        $pathExt = @(([string]$env:PATHEXT -split ';') | ForEach-Object { $_.Trim() } |
+            Where-Object { $_ -ne '' -and ($startable -contains $_.ToUpperInvariant()) })
+        if ($pathExt.Count -eq 0) { $pathExt = @('.EXE', '.CMD', '.BAT') }
+        # @() around the pipeline: under StrictMode a single result has no .Count.
+        $hasKnownExt = @($pathExt | Where-Object { $FilePath.EndsWith($_, [System.StringComparison]::OrdinalIgnoreCase) }).Count -gt 0
+        foreach ($dir in @(([string]$env:PATH -split ';') | Where-Object { $_ -ne '' })) {
+            $hit = ''
+            try {
+                if ($hasKnownExt) {
+                    $direct = [System.IO.Path]::Combine($dir, $FilePath)
+                    if (Test-Path -LiteralPath $direct -PathType Leaf) { $hit = $direct }
+                }
+                else {
+                    foreach ($ext in $pathExt) {
+                        $candidate = [System.IO.Path]::Combine($dir, $FilePath + $ext)
+                        if (Test-Path -LiteralPath $candidate -PathType Leaf) { $hit = $candidate; break }
+                    }
+                }
+            }
+            catch { }      # an unusable PATH entry is skipped, never fatal
+            if ($hit -ne '') { $resolvedFilePath = $hit; break }
+        }
+    }
+    elseif ($FilePath.IndexOfAny([char[]]@('\', '/')) -ge 0) {
         $candidates = New-Object System.Collections.Generic.List[string]
         if ([System.IO.Path]::IsPathRooted($FilePath)) { [void]$candidates.Add($FilePath) }
         else {
