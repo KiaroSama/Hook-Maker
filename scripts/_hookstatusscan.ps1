@@ -156,6 +156,16 @@ function Invoke-ScanWalk {
                     [void]$script:PrunedDirectoryNamesSeen.Add([string]$entry.Name)
                     continue
                 }
+                # A virtualenv whose directory name is none of the conventional
+                # spellings above is still a virtualenv, and still cannot hold a
+                # registration. Reported under the MARKER name rather than the
+                # directory's own, so the distinct-names contract stays a small
+                # stable set instead of gaining an entry per oddly named venv.
+                if (Test-IsVirtualEnvDirectory -Path $entry.FullName) {
+                    $script:PrunedDirectoryCount++
+                    [void]$script:PrunedDirectoryNamesSeen.Add('pyvenv.cfg')
+                    continue
+                }
                 # Reparse check BEFORE the '.git' name dispatch below - a '.git'
                 # entry that is itself a junction/symlink must be caught here
                 # too, or Read-GitRepository would follow it via an explicit
