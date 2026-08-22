@@ -77,6 +77,21 @@ function Test-IsReparsePoint {
     catch { return $true }  # unreadable -> treat as unsafe
 }
 
+# A virtualenv is identified by the marker file PEP 405 puts in its root, not by
+# its directory NAME. Both the list below and $script:ScanPrunedDirectoryNames in
+# _hookstatusscan.ps1 name only the conventional spellings '.venv'/'venv', and a
+# project may call it anything - a real 'tools/spotdl-env' held 9,815 of a 13,559
+# entry walk. Deliberately a TWIN of hooks/_hooklib.ps1's copy: installed hook
+# runtimes are self-contained and cannot dot-source this file, so the two
+# definitions must be changed together. Never throws - an invalid, too-long or
+# unreadable path is simply $false.
+function Test-IsVirtualEnvDirectory {
+    param([string]$Path)
+    if ([string]::IsNullOrWhiteSpace($Path)) { return $false }
+    try { return [System.IO.File]::Exists([System.IO.Path]::Combine($Path, 'pyvenv.cfg')) }
+    catch { return $false }
+}
+
 # ---- source classification -------------------------------------------------
 
 # Directory names that must never be copied into a managed runtime even when
@@ -532,6 +547,7 @@ function Get-ManagedInstallPlan {
     if ($SourceInfo.Kind -eq 'Package') {
         $packageRoot = [System.IO.Path]::GetFullPath($SourceInfo.PackageRoot)
         $mainLeaf = Split-Path -Leaf $SourceInfo.ScriptPath
+        $venvAncestorCache = @{}
         foreach ($file in @(Get-ChildItem -LiteralPath $packageRoot -File -Recurse -Force -ErrorAction SilentlyContinue)) {
             if ([string]::Equals($file.Name, $mainLeaf, [System.StringComparison]::OrdinalIgnoreCase) -and
                 [string]::Equals($file.DirectoryName, $packageRoot, [System.StringComparison]::OrdinalIgnoreCase)) {
@@ -551,6 +567,17 @@ function Get-ManagedInstallPlan {
                     if ([string]::Equals($segments[$i], $forbidden, [System.StringComparison]::OrdinalIgnoreCase)) { $inForbidden = $true; break }
                 }
                 if ($inForbidden) { break }
+                # An oddly named virtualenv inside a package would otherwise be
+                # copied WHOLESALE into every managed runtime - large, and broken
+                # on arrival, because a venv stores absolute paths to the
+                # interpreter that created it. Answered per ANCESTOR DIRECTORY and
+                # cached, so this costs one stat per package directory rather than
+                # one per file underneath it.
+                $ancestor = [System.IO.Path]::Combine($packageRoot, ($segments[0..$i] -join [System.IO.Path]::DirectorySeparatorChar))
+                if (-not $venvAncestorCache.ContainsKey($ancestor)) {
+                    $venvAncestorCache[$ancestor] = (Test-IsVirtualEnvDirectory -Path $ancestor)
+                }
+                if ($venvAncestorCache[$ancestor]) { $inForbidden = $true; break }
             }
             if ($inForbidden) { continue }
             if (Test-IsReparsePoint -Path $file.FullName) { continue }

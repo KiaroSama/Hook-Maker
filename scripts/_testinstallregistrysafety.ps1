@@ -128,6 +128,33 @@
     finally { Remove-FixtureHook 'ZZZ-Regtest-Transaction' }
 
     # =====================================================================
+    # A virtualenv inside a package is excluded by its PEP 405 MARKER, not by
+    # its name. '.venv'/'venv' in $script:PlanForbiddenDirectoryNames are only
+    # the conventional spellings, so an oddly named one was copied wholesale
+    # into every managed runtime - large, and broken on arrival, because a venv
+    # stores absolute paths to the interpreter that created it.
+    Write-Host '--- an oddly named virtualenv inside a package is never planned ---' -ForegroundColor Cyan
+    $venvFixture = New-FixtureHook 'ZZZ-Regtest-VenvPkg' "exit 0`n"
+    try {
+        $venvPkgRoot = Split-Path -Parent $venvFixture
+        $oddVenvDir = Join-Path $venvPkgRoot 'spotdl-env'
+        New-Item -ItemType Directory -Path (Join-Path $oddVenvDir 'Lib') -Force | Out-Null
+        Write-Utf8 (Join-Path $oddVenvDir 'pyvenv.cfg') "home = C:\Python312`n"
+        Write-Utf8 (Join-Path $oddVenvDir 'Lib\site.py') "# third-party content`n"
+        New-Item -ItemType Directory -Path (Join-Path $venvPkgRoot 'data') -Force | Out-Null
+        Write-Utf8 (Join-Path $venvPkgRoot 'data\keep.txt') "real package content`n"
+        $venvPlanPaths = @(@(Get-InstallPlanFor -HookScript $venvFixture -ToolRoot $ToolRoot) | ForEach-Object { [string]$_.relativePath })
+        Check 'the virtualenv marker file itself is not planned' (
+            @($venvPlanPaths | Where-Object { $_ -like '*pyvenv.cfg' }).Count -eq 0) ($venvPlanPaths -join ',')
+        Check 'a file inside the oddly named virtualenv is not planned' (
+            @($venvPlanPaths | Where-Object { $_ -like '*spotdl-env*' }).Count -eq 0) ($venvPlanPaths -join ',')
+        # The guard must EXCLUDE the venv without going blind to the package.
+        Check 'ordinary package content beside it is still planned' (
+            @($venvPlanPaths | Where-Object { $_ -like '*keep.txt' }).Count -eq 1) ($venvPlanPaths -join ',')
+    }
+    finally { Remove-FixtureHook 'ZZZ-Regtest-VenvPkg' }
+
+    # =====================================================================
     # The managed manifest must cover EVERY file the installer copies, not
     # just the main script + _hooklib + sync config.
     # =====================================================================

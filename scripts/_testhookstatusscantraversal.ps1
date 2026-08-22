@@ -319,6 +319,12 @@ $pruneRoot = New-Dir (Join-Path $Work 'PruneRoot')
 New-ClaudeHook -ProjectRoot (New-Dir (Join-Path $pruneRoot 'app\node_modules\some-pkg')) -HookName 'ZZZ-Pruned-NodeModules' | Out-Null
 New-ClaudeHook -ProjectRoot (New-Dir (Join-Path $pruneRoot 'app\.next\cached')) -HookName 'ZZZ-Pruned-Next' | Out-Null
 New-ClaudeHook -ProjectRoot (New-Dir (Join-Path $pruneRoot 'py\.venv\Lib')) -HookName 'ZZZ-Pruned-Venv' | Out-Null
+# The same tree under a name the prune list does NOT know. Only the PEP 405
+# marker identifies it, which is the whole point: a project may call its
+# virtualenv anything, and the real case that exposed this was 'spotdl-env'.
+$oddVenv = New-Dir (Join-Path $pruneRoot 'py\spotdl-env')
+[System.IO.File]::WriteAllText((Join-Path $oddVenv 'pyvenv.cfg'), 'home = C:\Python312', (New-Object System.Text.UTF8Encoding $false))
+New-ClaudeHook -ProjectRoot (New-Dir (Join-Path $oddVenv 'Lib')) -HookName 'ZZZ-Pruned-OddVenv' | Out-Null
 # Reference collections: third-party skills/MCP material that holds other
 # people's .claude and .codex directories - findings for hooks nobody
 # installed here.
@@ -335,6 +341,7 @@ New-ClaudeHook -ProjectRoot (New-Dir (Join-Path $pruneRoot 'normal')) -HookName 
 $pruneScan = Invoke-Scan -Root $pruneRoot
 Check 'the pruning scan exits 0' ($pruneScan.Exit -eq 0) $pruneScan.Err
 foreach ($hidden in @('ZZZ-Pruned-NodeModules.ps1', 'ZZZ-Pruned-Next.ps1', 'ZZZ-Pruned-Venv.ps1',
+        'ZZZ-Pruned-OddVenv.ps1',
         'ZZZ-Pruned-Others.ps1', 'ZZZ-Pruned-Skills.ps1', 'ZZZ-Pruned-Mcps.ps1')) {
     Check ('a hook inside a pruned cache is NOT reported: ' + $hidden) (
         -not (Test-FoundTarget -Result $pruneScan.Result -Fragment $hidden))
@@ -349,6 +356,11 @@ Check 'the pruning is REPORTED, never silent' (
 $prunedNames = @($pruneScan.Result.coverage.prunedNames)
 Check 'the report names which caches were excluded' (
     ($prunedNames -contains 'node_modules') -and ($prunedNames -contains '.next') -and ($prunedNames -contains '.venv')) (
+    $prunedNames -join ',')
+# Reported under the MARKER, never under the directory's own name: one stable
+# entry however many oddly named virtualenvs a machine happens to hold.
+Check 'a marker-detected virtualenv is reported under the marker name' (
+    ($prunedNames -contains 'pyvenv.cfg') -and -not ($prunedNames -contains 'spotdl-env')) (
     $prunedNames -join ',')
 # Pruning is scoping, not a coverage gap: with nothing unreadable and no
 # reparse point, a pruned scan must still be able to report complete.
