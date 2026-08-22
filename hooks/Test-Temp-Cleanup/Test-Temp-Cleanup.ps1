@@ -253,6 +253,11 @@ function Get-CleanupScan {
 
             # Hard prune first: never surfaced, never descended, whatever config says.
             if ($pruneSet.Contains($entry.Name)) { continue }
+            # Same standing as a hard prune, and checked before classification so
+            # that a virtualenv can never be OFFERED for deletion either: it is
+            # recognized by its PEP 405 marker rather than by name, because
+            # '.venv'/'venv'/'env' above are only the conventional spellings.
+            if (Test-IsVirtualEnvDirectory $entry.FullName) { continue }
             $kind = ''
             if ($taskCreatedSet.Contains($entry.Name)) { $kind = 'task-created-dir' }
             elseif ($candidateSet.Contains($entry.Name)) { $kind = 'cache-dir' }
