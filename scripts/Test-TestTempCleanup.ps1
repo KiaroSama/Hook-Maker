@@ -479,6 +479,29 @@ try {
         $r.Out -eq '' -and (Get-RecordedCategory $hc5.LocalAppData $proj5) -eq 'clean') ((Get-RecordedCategory $hc5.LocalAppData $proj5) + '|' + $r.Out)
 
     # =====================================================================
+    Write-Host '--- a virtualenv is pruned by its PEP 405 marker, not by its name ---' -ForegroundColor Cyan
+    # The real case: 'tools/spotdl-env' is a virtualenv whose name matches none
+    # of '.venv'/'venv'/'env', so the walk descended and spent 9,815 of a
+    # 13,559-entry budget counting third-party bytecode, hit its ceiling, and
+    # could only answer PARTIAL. The marker file is what makes it a virtualenv.
+    $hc6 = New-IsolatedHookCopy
+    $proj6 = New-GitRepo 'VenvPruned'
+    Add-Commit $proj6 'init'
+    Fire -HookPath $hc6.Script -Cwd $proj6 -EventName 'SessionStart' -LocalAppData $hc6.LocalAppData | Out-Null
+    $venv = New-Dir (Join-Path (New-Dir (Join-Path $proj6 'tools')) 'spotdl-env')
+    Write-Utf8 (Join-Path $venv 'pyvenv.cfg') "home = C:\Python312`r`nversion = 3.12.1`r`n"
+    $venvNested = New-Cache $venv '.mypy_cache'
+    # A REAL candidate outside the virtualenv, so this cannot pass by the scan
+    # simply finding nothing: the run must still report this one.
+    $realCache = New-Cache $proj6 '.pytest_cache'
+    $r6 = Fire -HookPath $hc6.Script -Cwd $proj6 -EventName 'Stop' -LocalAppData $hc6.LocalAppData
+    Check 'a cache nested inside an oddly-named virtualenv is never discovered' ($r6.Out -notmatch 'mypy_cache') $r6.Out
+    Check 'the virtualenv directory itself is never surfaced as a candidate' ($r6.Out -notmatch 'spotdl-env') $r6.Out
+    Check 'the virtualenv and its contents still exist on disk' ((Test-Path -LiteralPath (Join-Path $venv 'pyvenv.cfg')) -and (Test-Path -LiteralPath $venvNested))
+    Check 'a real candidate OUTSIDE the virtualenv is still reported (the scan did not just go blind)' (
+        $r6.Out -match 'pytest_cache' -and (Test-Path -LiteralPath $realCache)) $r6.Out
+
+    # =====================================================================
     Write-Host '--- STATIC: the hook AST contains no project-mutation primitive ---' -ForegroundColor Cyan
     # Parsed, not grepped: a COMMENT mentioning Remove-Item must not fail this,
     # and a real invocation must not slip through as a differently spelled string.
