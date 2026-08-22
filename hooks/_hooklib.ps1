@@ -55,6 +55,24 @@ function Test-PathInside {
     return $candidatePath.StartsWith($prefix, [System.StringComparison]::OrdinalIgnoreCase)
 }
 
+# A virtualenv is identified by the marker file PEP 405 puts in its root, not by
+# its directory NAME. Every prune/exclude list in this project lists only the
+# conventional spellings ('.venv', 'venv', 'env'), and a project is free to name
+# it anything: a real 'tools/spotdl-env' held 9,815 of a 13,559-entry walk - 72%
+# of the budget spent counting third-party bytecode, so the scan hit its ceiling
+# and could only report PARTIAL. One stat per directory prunes the whole subtree.
+# Deliberately NOT generalized to the rest of those lists: 'node_modules' and
+# '.git' are named by their own tools and cannot be renamed, so a marker probe
+# there buys nothing, and 'build'/'out'/'dist' have no marker to probe for.
+# Never throws - an invalid, too-long or unreadable path is simply $false, so a
+# walk can never break here.
+function Test-IsVirtualEnvDirectory {
+    param([string]$Path)
+    if ([string]::IsNullOrWhiteSpace($Path)) { return $false }
+    try { return [System.IO.File]::Exists([System.IO.Path]::Combine($Path, 'pyvenv.cfg')) }
+    catch { return $false }
+}
+
 function Set-ObjectProperty {
     param(
         [Parameter(Mandatory = $true)]$Object,
