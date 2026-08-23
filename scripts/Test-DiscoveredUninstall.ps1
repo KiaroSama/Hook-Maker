@@ -134,16 +134,17 @@ function Get-HandlerPrints {
 # Written as raw schema-3 JSON rather than through the installer: these records
 # describe hooks Hook Maker never installed, so there is no install path that
 # could produce them.
+# Written and read THROUGH the library, not through one document's path: the
+# registry is a directory of per-record files, so a hand-written single document
+# would be a file nothing consults - and every assertion below would then be
+# measuring a fixture the code under test never saw.
 function Set-Registry {
     param([object[]]$Records)
-    $registry = [pscustomobject][ordered]@{ version = 3; installs = @($Records) }
-    Write-Utf8 (Join-Path $IsolatedStateDir 'install-registry.json') ($registry | ConvertTo-Json -Depth 40)
+    Save-InstallRegistry -ToolRoot $ToolRoot -Registry ([pscustomobject][ordered]@{ version = 3; installs = @($Records) })
 }
 function Get-RegistryRecord {
     param([string]$Id)
-    $path = Join-Path $IsolatedStateDir 'install-registry.json'
-    if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { return $null }
-    $registry = [System.IO.File]::ReadAllText($path, [System.Text.Encoding]::UTF8) | ConvertFrom-Json
+    $registry = Read-InstallRegistry -ToolRoot $ToolRoot
     return @(@($registry.installs) | Where-Object { $null -ne $_ -and $null -ne $_.PSObject.Properties['id'] -and [string]$_.id -eq $Id })[0]
 }
 

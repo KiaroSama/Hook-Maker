@@ -26,12 +26,19 @@
             clients = @{}; createdUtc = '2020-01-01T00:00:00.0000000Z'
         })
     }
-    Write-Utf8 -Path $RegistryPath -Content ($managedRegistry | ConvertTo-Json -Depth 20)
-    $beforeBytes = [System.IO.File]::ReadAllBytes($RegistryPath)
+    # Written THROUGH the library: the registry is a directory of per-record
+    # files, so a hand-written single document is a file nothing consults.
+    # Round-tripped through JSON first so the fixture is the SHAPE the registry
+    # really stores - PSCustomObject records, not hashtables. Save-InstallRegistry
+    # reads each record's id to name its file and refuses a record it cannot
+    # identify, which a hashtable literal would trip.
+    Save-InstallRegistry -ToolRoot $ToolRoot -Registry ($managedRegistry | ConvertTo-Json -Depth 20 | ConvertFrom-Json)
+    # Storage-shape agnostic: the registry is a directory of per-record files.
+    $beforeText = Get-InstallRegistryRawText -ToolRoot $ToolRoot
 
     $noPersistScan = Invoke-Scan -Root $ancestor
     Check '-NoPersist leaves the registry byte-identical' (
-        [System.Linq.Enumerable]::SequenceEqual([byte[]]$beforeBytes, [byte[]][System.IO.File]::ReadAllBytes($RegistryPath)))
+        [string]::Equals($beforeText, (Get-InstallRegistryRawText -ToolRoot $ToolRoot), [System.StringComparison]::Ordinal))
     Check '-NoPersist still reports findings' (@($noPersistScan.Result.findings).Count -gt 0)
     Check '-NoPersist reports no records added' ([int]$noPersistScan.Result.recordsAdded -eq 0)
 
@@ -41,13 +48,13 @@
         $null -ne $failScan.Result -and [string]$failScan.Result.overall -eq 'failed') (
         $(if ($null -ne $failScan.Result) { [string]$failScan.Result.overall } else { 'no document' }))
     Check 'a failed scan leaves the registry byte-identical' (
-        [System.Linq.Enumerable]::SequenceEqual([byte[]]$beforeBytes, [byte[]][System.IO.File]::ReadAllBytes($RegistryPath)))
+        [string]::Equals($beforeText, (Get-InstallRegistryRawText -ToolRoot $ToolRoot), [System.StringComparison]::Ordinal))
 
     $persistScan = Invoke-Scan -Root $ancestor -Persist
     Check 'a successful scan exits 0' ($persistScan.Exit -eq 0) $persistScan.Err
     Check 'a successful scan reports records added' ([int]$persistScan.Result.recordsAdded -gt 0) (
         [string]$persistScan.Result.recordsAdded)
-    $registry = [System.IO.File]::ReadAllText($RegistryPath) | ConvertFrom-Json
+    $registry = Read-InstallRegistry -ToolRoot $ToolRoot
     $discovered = @(@($registry.installs) | Where-Object { $null -ne $_.PSObject.Properties['recordType'] -and [string]$_.recordType -eq 'discovered' })
     Check 'discovered records land in the registry' ($discovered.Count -eq @($persistScan.Result.findings).Count) (
         'registry=' + $discovered.Count + ' findings=' + @($persistScan.Result.findings).Count)
@@ -66,12 +73,12 @@
     Check 'every discovered record carries origin=statusScan' (
         @(@($discovered) | Where-Object { [string]$_.origin -ne 'statusScan' }).Count -eq 0)
     Check 'no discovered record stores a raw command string' (
-        ([System.IO.File]::ReadAllText($RegistryPath)) -notlike '*pwsh -File*')
+        (Get-InstallRegistryRawText -ToolRoot $ToolRoot) -notlike '*pwsh -File*')
 
     $firstSeen = [string]@($discovered)[0].firstSeenUtc
     Start-Sleep -Milliseconds 20
     $rescan = Invoke-Scan -Root $ancestor -Persist
-    $registry2 = [System.IO.File]::ReadAllText($RegistryPath) | ConvertFrom-Json
+    $registry2 = Read-InstallRegistry -ToolRoot $ToolRoot
     $discovered2 = @(@($registry2.installs) | Where-Object { $null -ne $_.PSObject.Properties['recordType'] -and [string]$_.recordType -eq 'discovered' })
     Check 'a rescan updates in place instead of duplicating' ($discovered2.Count -eq $discovered.Count) (
         'first=' + $discovered.Count + ' second=' + $discovered2.Count)
@@ -89,7 +96,7 @@
     # demoted to notSeen by a later partial scan.
     if ($enforced) {
         Invoke-Scan -Root $permRoot -Persist | Out-Null
-        $permRegistry = [System.IO.File]::ReadAllText($RegistryPath) | ConvertFrom-Json
+        $permRegistry = Read-InstallRegistry -ToolRoot $ToolRoot
         $notSeen = @(@($permRegistry.installs) | Where-Object {
             $null -ne $_.PSObject.Properties['status'] -and [string]$_.status -eq 'notSeen' })
         Check 'a partial scan never marks a record under an inaccessible subtree as notSeen' (
@@ -106,7 +113,7 @@
     Invoke-Scan -Root $gone -Persist | Out-Null
     Remove-Item -LiteralPath (Join-Path $gone 'Proj\.claude') -Recurse -Force
     Invoke-Scan -Root $gone -Persist | Out-Null
-    $goneRegistry = [System.IO.File]::ReadAllText($RegistryPath) | ConvertFrom-Json
+    $goneRegistry = Read-InstallRegistry -ToolRoot $ToolRoot
     $vanished = @(@($goneRegistry.installs) | Where-Object {
         $null -ne $_.PSObject.Properties['friendlyName'] -and [string]$_.friendlyName -like '*Will-Vanish*' })
     Check 'a covered record that is genuinely gone is demoted to notSeen' (
@@ -125,7 +132,7 @@
         Test-FoundTarget -Result $kiroPersistScan.Result -Fragment 'ZZZ-Kiro-Persist.ps1') (
         ($kiroPersistScan.Result.findings | ConvertTo-Json -Depth 6))
     $kiroRegistry = $null
-    try { $kiroRegistry = [System.IO.File]::ReadAllText($RegistryPath) | ConvertFrom-Json } catch { $kiroRegistry = $null }
+    try { $kiroRegistry = Read-InstallRegistry -ToolRoot $ToolRoot } catch { $kiroRegistry = $null }
     Check 'and the registry is still readable afterwards' ($null -ne $kiroRegistry)
     Check 'and the pre-existing managed record still survives' (
         $null -ne $kiroRegistry -and

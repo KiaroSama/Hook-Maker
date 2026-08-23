@@ -299,7 +299,10 @@
         & $InstallScript -CustomHook $fxRegistryFail -Events @('Stop') -TargetProject $projRegistryFail *> $null
         $recRegistryFail = Get-RecordForScope 'ZZZ-Uninst-Registryfail' $projRegistryFail
         $claudeScriptBefore = Get-BytesOrEmpty ([string]$recRegistryFail.clients.claude.runtimeScript)
-        $registryPath = Join-Path $IsolatedStateDir 'install-registry.json'
+        # The uninstall removes this record by DELETING its own file, so that
+        # is the handle to hold: blocking a single document proved nothing once
+        # the registry became a directory of per-record files.
+        $registryPath = Get-InstallRecordPath -ToolRoot $ToolRoot -Id ([string]$recRegistryFail.id)
 
         $heldRegistry = [System.IO.File]::Open($registryPath, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::Read)
         $rRegistryFail = $null
