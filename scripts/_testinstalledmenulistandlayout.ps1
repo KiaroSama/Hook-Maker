@@ -252,9 +252,16 @@
         Write-Host ''
         Write-Host '--- menu 25 root-folder prompt: what is accepted, and what re-prompts ---' -ForegroundColor Cyan
 
-        $registryPath = Join-Path $IsolatedStateDir 'install-registry.json'
-        $registryBefore = if (Test-Path -LiteralPath $registryPath) { [System.IO.File]::ReadAllBytes($registryPath) } else { $null }
-        $registryWriteBefore = if (Test-Path -LiteralPath $registryPath) { (Get-Item -LiteralPath $registryPath).LastWriteTimeUtc } else { $null }
+        # The registry is a directory of per-record files: its "bytes" are the
+        # concatenation of every record, and its "last write" the newest of them.
+        $registryPath = Get-InstallRegistryDirectory -ToolRoot $ToolRoot
+        $registryBefore = Get-InstallRegistryRawText -ToolRoot $ToolRoot
+        $registryWriteBefore = $null
+        if (Test-Path -LiteralPath $registryPath -PathType Container) {
+            $registryWriteBefore = @(Get-InstallRecordFiles -ToolRoot $ToolRoot |
+                Sort-Object -Property LastWriteTimeUtc -Descending |
+                ForEach-Object { $_.LastWriteTimeUtc })[0]
+        }
 
         $globalQuestion = "Also inspect the current user's global Claude, Codex and Kiro hook locations\?"
 
@@ -295,11 +302,14 @@
         # Asserted here, while every run above cancelled before the scan. The
         # default-No scenario below deliberately runs LAST, because it is the
         # only one that proceeds far enough to hand off to the scanner.
-        $registryAfter = if (Test-Path -LiteralPath $registryPath) { [System.IO.File]::ReadAllBytes($registryPath) } else { $null }
-        $registryWriteAfter = if (Test-Path -LiteralPath $registryPath) { (Get-Item -LiteralPath $registryPath).LastWriteTimeUtc } else { $null }
-        $sameBytes = ($null -eq $registryBefore -and $null -eq $registryAfter) -or
-                     ($null -ne $registryBefore -and $null -ne $registryAfter -and
-                      [Convert]::ToBase64String($registryBefore) -eq [Convert]::ToBase64String($registryAfter))
+        $registryAfter = Get-InstallRegistryRawText -ToolRoot $ToolRoot
+        $registryWriteAfter = $null
+        if (Test-Path -LiteralPath $registryPath -PathType Container) {
+            $registryWriteAfter = @(Get-InstallRecordFiles -ToolRoot $ToolRoot |
+                Sort-Object -Property LastWriteTimeUtc -Descending |
+                ForEach-Object { $_.LastWriteTimeUtc })[0]
+        }
+        $sameBytes = [string]::Equals($registryBefore, $registryAfter, [System.StringComparison]::Ordinal)
         Check 'status: cancelling the scan left the install registry byte-identical' $sameBytes
         Check 'status: cancelling the scan did not rewrite the install registry file' ($registryWriteBefore -eq $registryWriteAfter) ([string]$registryWriteBefore + ' -> ' + [string]$registryWriteAfter)
 

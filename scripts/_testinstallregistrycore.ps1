@@ -153,8 +153,12 @@
     Check '-NoCache always re-parses, so the mutating path never shares the cached object' (
         -not [object]::ReferenceEquals($cacheFirst, $cacheFresh)) 'the mutating path was handed the cached object'
     # Any byte change by ANY process must miss - the key is (path, ticks, length).
-    $cachePath = [string]$cacheFirst.Path
-    (Get-Item -LiteralPath $cachePath -Force).LastWriteTimeUtc = ([DateTime]::UtcNow.AddSeconds(1))
+    # The bytes live in the per-record files, so that is what a foreign writer
+    # would touch - the cache key is built from their (name, ticks, length),
+    # never from the directory's own timestamp, which does not move when a file
+    # is rewritten in place.
+    $cacheTouchTarget = @(Get-InstallRecordFiles -ToolRoot $ToolRoot)[0]
+    (Get-Item -LiteralPath $cacheTouchTarget.FullName -Force).LastWriteTimeUtc = ([DateTime]::UtcNow.AddSeconds(1))
     $cacheAfterTouch = Read-InstallRegistryState -ToolRoot $ToolRoot
     Check 'a changed last-write time invalidates the cache' (
         -not [object]::ReferenceEquals($cacheFirst, $cacheAfterTouch)) 'a stale parse survived a file change'
@@ -389,7 +393,8 @@
         Write-Utf8 (Join-Path (Split-Path -Parent $fixtureSecret) '.env') ('FAKE_SECRET=' + $secretMarker + "`r`n")
         $projSecret = New-Proj 'SecretSafetyProj'
         & $InstallScript -CustomHook $fixtureSecret -Events @('SessionStart') -TargetProject $projSecret *> $null
-        $registryRaw = [System.IO.File]::ReadAllText((Join-Path $IsolatedStateDir 'install-registry.json'))
+        # Storage-shape agnostic: the registry is per-record files now.
+        $registryRaw = Get-InstallRegistryRawText -ToolRoot $ToolRoot
         Check 'the registry file never contains a value from the hook''s own .env' ($registryRaw -notmatch [regex]::Escape($secretMarker))
         Check 'the registry file never contains the literal .env content marker' ($registryRaw -notmatch 'FAKE_SECRET')
     }

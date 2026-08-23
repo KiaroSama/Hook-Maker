@@ -504,11 +504,13 @@
 
     & $InstallScript -CustomHook (Join-Path $RealHooksDir 'Ai-Memory-Check\Ai-Memory-Check.ps1') -Events @('Stop') -TargetProject $isoProj -ClaudeOnly *> $null
 
-    $isoRegPath = Join-Path $env:HOOKMAKER_STATE_DIR 'install-registry.json'
+    # The registry is a directory of per-record files: read and write it
+     # through the library rather than through one document's path.
+    $isoReg = Read-InstallRegistry -ToolRoot $ToolRoot
 
-    $isoReg = Get-Content -LiteralPath $isoRegPath -Raw | ConvertFrom-Json
-
-    $isoOriginal = [System.IO.File]::ReadAllText($isoRegPath)
+    # Kept as an OBJECT, not as one file's text - restoring at the end means
+    # writing this set back, which Save-InstallRegistry reconciles file by file.
+    $isoOriginal = $isoReg | ConvertTo-Json -Depth 50 | ConvertFrom-Json
 
     $isoBroken = [pscustomobject]@{ id = 'broken-isolation'; schema = 2; friendlyName = 'Broken-Hook' }
 
@@ -536,7 +538,7 @@
 
     $isoReg.installs = @($isoBroken, $isoMissingRuntimeRoot, $isoBadTimeout, $isoBadNative) + @($isoReg.installs) + @($isoHealthy2)
 
-    [System.IO.File]::WriteAllText($isoRegPath, ($isoReg | ConvertTo-Json -Depth 50), (New-Object System.Text.UTF8Encoding $false))
+    Save-InstallRegistry -ToolRoot $ToolRoot -Registry $isoReg
 
     $isoEvaluated = 0; $isoSkipped = 0; $isoCrashed = $false
 
@@ -566,11 +568,11 @@
 
     # The updater must not have modified the malformed record.
 
-    $isoAfter = Get-Content -LiteralPath $isoRegPath -Raw | ConvertFrom-Json
+    $isoAfter = Read-InstallRegistry -ToolRoot $ToolRoot
 
     Check 'the malformed record is left untouched, never repaired by guessing' (@($isoAfter.installs | Where-Object { $_.id -eq 'broken-isolation' }).Count -eq 1)
 
-    [System.IO.File]::WriteAllText($isoRegPath, $isoOriginal, (New-Object System.Text.UTF8Encoding $false))
+    Save-InstallRegistry -ToolRoot $ToolRoot -Registry $isoOriginal
 
     # A SEPARATE mixed-registry batch, specifically for the Defect 4 fields:
     # a real installer-written managed nativeGit record (Ignore-Rules-Check,

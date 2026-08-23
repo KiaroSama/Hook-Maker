@@ -87,9 +87,8 @@
         Check 'the launcher forwards the remaining hook arguments untouched' (
             $launcherOutput -match '-ConfigPath C:\\x\.json') $launcherOutput
 
-        $wireRecordJson = ''
-        $wireRegistryFile = Join-Path $env:HOOKMAKER_STATE_DIR 'install-registry.json'
-        if (Test-Path -LiteralPath $wireRegistryFile -PathType Leaf) { $wireRecordJson = Read-Utf8 -Path $wireRegistryFile }
+        # Every record file concatenated, whatever shape the registry is in.
+        $wireRecordJson = Get-InstallRegistryRawText -ToolRoot $ToolRoot
         Check 'the install record carries the per-hook-file fields uninstall needs to prove ownership' (
             $wireRecordJson -match '"registrationKind"\s*:\s*"perHookFile"' -and
             $wireRecordJson -match '"managedEntryNames"' -and

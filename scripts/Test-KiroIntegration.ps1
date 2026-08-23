@@ -74,6 +74,10 @@ $script:TestPreviewLength = 500
 . (Join-Path $PSScriptRoot '_testlib.ps1')
 . $KiroModule    # dot-sources _clientcapability.ps1 itself
 . $HookLib
+# The wiring block reads the install registry back; that lives here, and the
+# registry is a directory of per-record files rather than one document.
+. (Join-Path $PSScriptRoot '_installlib.ps1')
+. (Join-Path $PSScriptRoot '_installregistry.ps1')
 
 $Work = New-TestWorkspace -Prefix 'hookmaker-kirointeg'
 Write-Host ("Workspace: $Work") -ForegroundColor DarkGray

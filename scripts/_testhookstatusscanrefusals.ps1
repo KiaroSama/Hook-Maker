@@ -25,7 +25,8 @@
 
     $refuseRoot = New-Dir (Join-Path $Work 'RefuseRoot')
     New-ClaudeHook -ProjectRoot (New-Dir (Join-Path $refuseRoot 'Proj')) -HookName 'ZZZ-Refuse' | Out-Null
-    $registryBeforeRefusals = [System.IO.File]::ReadAllBytes($RegistryPath)
+    # Storage-shape agnostic: the registry is a directory of per-record files.
+    $registryBeforeRefusals = Get-InstallRegistryRawText -ToolRoot $ToolRoot
     # Real per-user config must be untouched by anything below - note the
     # workspace itself lives under the real profile, which is exactly the shape
     # that has caused scope bugs here before.
@@ -43,7 +44,7 @@
         (Test-ErrNames -Err $insideScanRefusal.Err -Needle $insideResult) -and
         (Test-ErrNames -Err $insideScanRefusal.Err -Needle $refuseRoot)) $insideScanRefusal.Err
     Check 'and nothing was scanned or persisted' (
-        [System.Linq.Enumerable]::SequenceEqual([byte[]]$registryBeforeRefusals, [byte[]][System.IO.File]::ReadAllBytes($RegistryPath)))
+        [string]::Equals($registryBeforeRefusals, (Get-InstallRegistryRawText -ToolRoot $ToolRoot), [System.StringComparison]::Ordinal))
     Check 'and nothing at all was written inside the scanned root' (
         @(Get-ChildItem -LiteralPath $refuseRoot -Recurse -Force -Filter '*.json' |
             Where-Object { $_.FullName -notlike '*\.claude\*' }).Count -eq 0) (
@@ -93,7 +94,7 @@
             @($junctionRootScan.Result.coverage.skippedReparse).Count -eq 0) (
             $(if ($null -ne $junctionRootScan.Result) { ($junctionRootScan.Result.coverage | ConvertTo-Json -Depth 4) } else { 'no document' }))
         Check 'and a refused root persists nothing' (
-            [System.Linq.Enumerable]::SequenceEqual([byte[]]$registryBeforeRefusals, [byte[]][System.IO.File]::ReadAllBytes($RegistryPath)))
+            [string]::Equals($registryBeforeRefusals, (Get-InstallRegistryRawText -ToolRoot $ToolRoot), [System.StringComparison]::Ordinal))
         # The physical target is still a perfectly ordinary root.
         $physicalScan = Invoke-Scan -Root $linkTarget
         Check 'the physical directory the junction points at still scans normally' (

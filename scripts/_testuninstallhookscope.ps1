@@ -180,7 +180,7 @@
         )
         $before = @{}
         foreach ($path in $snapshotPaths) { $before[$path] = Get-BytesOrEmpty $path }
-        $registryBefore = [System.IO.File]::ReadAllBytes((Join-Path $IsolatedStateDir 'install-registry.json'))
+        $registryBefore = Get-InstallRegistryRawText -ToolRoot $ToolRoot
 
         $rWhatIf = Invoke-UninstallProcess -RecordId $recNoop.id -WhatIf
         Check 'a WhatIf run exits 0' ($rWhatIf.Exit -eq 0) $rWhatIf.Err
@@ -188,7 +188,8 @@
         $allUnchangedAfterWhatIf = $true
         foreach ($path in $snapshotPaths) { if (-not (Test-BytesEqual (Get-BytesOrEmpty $path) $before[$path])) { $allUnchangedAfterWhatIf = $false } }
         Check 'a WhatIf run leaves every settings/runtime file byte-for-byte unchanged' $allUnchangedAfterWhatIf
-        Check 'a WhatIf run leaves the registry byte-for-byte unchanged' (Test-BytesEqual ([System.IO.File]::ReadAllBytes((Join-Path $IsolatedStateDir 'install-registry.json'))) $registryBefore)
+        Check 'a WhatIf run leaves the registry byte-for-byte unchanged' (
+            [string]::Equals($registryBefore, (Get-InstallRegistryRawText -ToolRoot $ToolRoot), [System.StringComparison]::Ordinal))
         Check 'a WhatIf run does not remove the record' (@(Get-RecordsFor 'ZZZ-Uninst-Noop').Count -eq 1)
 
         $rGhost = Invoke-UninstallProcess -RecordId ([guid]::NewGuid().ToString('N').Substring(0, 10))

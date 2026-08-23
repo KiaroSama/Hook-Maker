@@ -288,7 +288,8 @@ try {
         $quarantineBytes = [System.IO.File]::ReadAllBytes($quarantineFiles[0].FullName)
         Check 'the quarantined file preserves the corrupt registry byte-for-byte' (Test-BytesEqual $quarantineBytes $corruptBytesBefore)
     }
-    Check 'a fresh, valid registry now exists at the canonical path' (Test-Path -LiteralPath $corruptRegistryPath -PathType Leaf)
+    Check 'a fresh, valid registry now exists at the canonical path' (
+        Test-Path -LiteralPath (Join-Path $CorruptStateDir 'install-registry.d') -PathType Container)
 
     $savedForCorruptCheck = $env:HOOKMAKER_STATE_DIR
     $env:HOOKMAKER_STATE_DIR = $CorruptStateDir
@@ -335,7 +336,7 @@ try {
     # Process A exits here (Start-Process -Wait already returned) before anything below runs.
     Check 'the source file is untouched immediately after Process A installs it (install only ever COPIES from source)' ((Get-FileHash -LiteralPath $fixturePath -Algorithm SHA256).Hash -eq $sourceHashV1)
 
-    $registryRawAfterInstall = [System.IO.File]::ReadAllText((Join-Path $IsolatedStateDir 'install-registry.json'))
+    $registryRawAfterInstall = Get-InstallRegistryRawText -ToolRoot $ToolRoot
     Check 'the registry never stores the neighbouring .env secret value' ($registryRawAfterInstall -notmatch [regex]::Escape($secretMarker))
     Check 'the registry never stores the literal .env content marker' ($registryRawAfterInstall -notmatch 'FAKE_SECRET')
 
@@ -407,9 +408,18 @@ try {
 
     # ---- no second state database is created anywhere in the cycle ----
     $stateDirFiles = @(Get-ChildItem -LiteralPath $IsolatedStateDir -File -Force -ErrorAction SilentlyContinue | ForEach-Object { $_.Name })
-    $unexpectedStateFiles = @($stateDirFiles | Where-Object { $_ -ne 'install-registry.json' -and $_ -notmatch '\.lock$' -and $_ -notmatch '^install-registry\.corrupt-' })
+    # The registry is a DIRECTORY of per-record files; the retired single
+    # document and any quarantine copies may sit beside it, and nothing else may.
+    $unexpectedStateFiles = @($stateDirFiles | Where-Object {
+            $_ -ne 'install-registry.json' -and $_ -notmatch '\.lock$' -and
+            $_ -notmatch '^install-registry\.corrupt-' -and $_ -notmatch '^install-registry\.migrated-' -and
+            $_ -notmatch '^install-record-.*\.corrupt-' })
     Check 'no second tracking database/catalog file exists under the state directory' ($unexpectedStateFiles.Count -eq 0) ($unexpectedStateFiles -join ',')
-    Check 'the one canonical registry file is present' ($stateDirFiles -contains 'install-registry.json')
+    Check 'the one canonical registry store is present' (
+        Test-Path -LiteralPath (Join-Path $IsolatedStateDir 'install-registry.d') -PathType Container)
+    $recordFiles = @(Get-ChildItem -LiteralPath (Join-Path $IsolatedStateDir 'install-registry.d') -File -Force -ErrorAction SilentlyContinue | ForEach-Object { $_.Name })
+    $unexpectedRecordFiles = @($recordFiles | Where-Object { $_ -notmatch '\.json$' })
+    Check 'the registry store holds only record documents' ($unexpectedRecordFiles.Count -eq 0) ($unexpectedRecordFiles -join ',')
     $projFiles = @(Get-ChildItem -LiteralPath $proj -Recurse -File -Force -ErrorAction SilentlyContinue | ForEach-Object { $_.FullName })
     $strayTrackingFiles = @($projFiles | Where-Object { $_ -match '(?i)install-registry|\.sqlite$|\.db$' })
     Check 'no second install-tracking database exists anywhere under the target project' ($strayTrackingFiles.Count -eq 0) ($strayTrackingFiles -join ',')

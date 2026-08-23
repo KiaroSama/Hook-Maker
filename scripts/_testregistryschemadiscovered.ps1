@@ -332,7 +332,7 @@
         $secretMerge = Merge-DiscoveredRecord -Registry $secretRegistry -Record (New-DiscoveredRecordFixture)
         Check 'setup: the discovered record merged into a fresh registry' ($secretMerge.Action -eq 'added')
         Save-InstallRegistry -ToolRoot $secretRoot -Registry $secretRegistry
-        $secretOnDisk = [System.IO.File]::ReadAllText((Get-InstallRegistryPath -ToolRoot $secretRoot))
+        $secretOnDisk = Get-InstallRegistryRawText -ToolRoot $secretRoot
         Check 'the persisted registry file contains no raw command text' (-not ($secretOnDisk -match [regex]::Escape($secretBearingCommand)))
         Check 'the persisted registry file has no "command" field' (-not ($secretOnDisk -match '"command"\s*:'))
         Check 'the persisted discovered record survives the round-trip and still validates' ((Test-DiscoveredRecordValid -Record @((Read-InstallRegistryState -ToolRoot $secretRoot).Registry.installs)[0]).Ok)

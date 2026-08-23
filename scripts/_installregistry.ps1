@@ -92,6 +92,72 @@ function Get-InstallRegistryPath {
     return (Join-Path (Get-InstallStateDirectory -ToolRoot $ToolRoot) 'install-registry.json')
 }
 
+# ---- per-record storage ----------------------------------------------------
+#
+# The registry is stored as ONE FILE PER RECORD under 'install-registry.d',
+# not as a single document. Recording one install used to cost a full parse
+# plus a full serialize of every record: measured on a real 551-record, 5.8 MB
+# registry that is 364 ms + 1041 ms = ~1.4 SECONDS, paid once per hook per
+# client - i.e. ~1650 times during a full update, and growing with every
+# install (O(n) per write, O(n^2) overall). Writing a single record file costs
+# **8.5 ms**. Reading the whole set back costs 498 ms against 364 ms for the
+# single document - 134 ms worse, but that happens about once per run instead
+# of once per install, so the trade is overwhelmingly in favour.
+#
+# The single-document form is still READ (older state directories have one)
+# and is migrated on the first write. Nothing outside this file changed: the
+# public API - Read-InstallRegistryState / Read-InstallRegistry /
+# Save-InstallRegistry / Update-InstallRegistry - keeps its exact shape and
+# still speaks in whole `{version, installs[]}` documents.
+$script:InstallRegistryDirectoryName = 'install-registry.d'
+$script:InstallRegistryMetaName = '_meta.json'
+
+function Get-InstallRegistryDirectory {
+    param([Parameter(Mandatory = $true)][string]$ToolRoot)
+    return (Join-Path (Get-InstallStateDirectory -ToolRoot $ToolRoot) $script:InstallRegistryDirectoryName)
+}
+
+# A record id becomes a FILE NAME. Every id this tool mints is a Get-ShortHash
+# hex string, but a record can also arrive from an older or hand-edited
+# registry, so this fails CLOSED rather than letting a crafted id ('..',
+# 'a/b', a drive letter) escape the directory or collide with the meta file.
+function Test-InstallRecordIdSafe {
+    param([string]$Id)
+    if ([string]::IsNullOrWhiteSpace($Id)) { return $false }
+    if ($Id -notmatch '^[A-Za-z0-9._-]{1,64}$') { return $false }
+    if ($Id -match '^\.+$') { return $false }
+    return -not [string]::Equals($Id + '.json', $script:InstallRegistryMetaName, [System.StringComparison]::OrdinalIgnoreCase)
+}
+
+function Get-InstallRecordPath {
+    param([Parameter(Mandatory = $true)][string]$ToolRoot, [Parameter(Mandatory = $true)][string]$Id)
+    if (-not (Test-InstallRecordIdSafe -Id $Id)) { throw ('Unsafe install-record id (cannot be used as a file name): ' + $Id) }
+    return (Join-Path (Get-InstallRegistryDirectory -ToolRoot $ToolRoot) ($Id + '.json'))
+}
+
+# Metadata for the whole set: the only thing that is not per-record.
+function Write-InstallRegistryMeta {
+    param([Parameter(Mandatory = $true)][string]$ToolRoot)
+    $directory = Get-InstallRegistryDirectory -ToolRoot $ToolRoot
+    if (-not (Test-Path -LiteralPath $directory -PathType Container)) {
+        New-Item -ItemType Directory -Path $directory -Force | Out-Null
+    }
+    Write-JsonFileAtomic -Value ([pscustomobject][ordered]@{ version = $script:InstallRegistrySchemaVersion }) `
+        -Path (Join-Path $directory $script:InstallRegistryMetaName)
+}
+
+# Every record file, newest-metadata-first so the caller can build a cache key
+# without parsing anything. Sorted by name so the assembled `installs` order is
+# deterministic across runs and filesystems.
+function Get-InstallRecordFiles {
+    param([Parameter(Mandatory = $true)][string]$ToolRoot)
+    $directory = Get-InstallRegistryDirectory -ToolRoot $ToolRoot
+    if (-not (Test-Path -LiteralPath $directory -PathType Container)) { return @() }
+    $files = @(Get-ChildItem -LiteralPath $directory -Filter '*.json' -File -Force -ErrorAction SilentlyContinue |
+        Where-Object { -not [string]::Equals($_.Name, $script:InstallRegistryMetaName, [System.StringComparison]::OrdinalIgnoreCase) })
+    return @($files | Sort-Object -Property Name)
+}
+
 function New-EmptyInstallRegistry {
     return [pscustomobject][ordered]@{ version = $script:InstallRegistrySchemaVersion; installs = @() }
 }
@@ -154,6 +220,94 @@ function Test-InstallRegistryShape {
 # would report it as persisted. Update-InstallRegistry therefore passes -NoCache
 # and always parses fresh under the lock.
 $script:InstallRegistryCache = $null
+
+# Assembles the whole `{version, installs[]}` document from the per-record
+# files. ONE unreadable or unparsable record file makes the WHOLE state
+# corrupt, exactly as a damaged single document did: a partial registry that
+# reads back as "these are all the installs" would let a real installation be
+# silently forgotten and then overwritten, which is the precise failure the
+# corrupt state exists to prevent. The reason names the offending file.
+function Read-InstallRegistryFromDirectory {
+    param([Parameter(Mandatory = $true)][string]$ToolRoot, [switch]$NoCache)
+    $directory = Get-InstallRegistryDirectory -ToolRoot $ToolRoot
+    $files = @(Get-InstallRecordFiles -ToolRoot $ToolRoot)
+    # Metadata only - no parsing - so an unchanged set is served from cache for
+    # the price of a directory listing instead of a 498 ms reparse.
+    $stamp = ''
+    try {
+        $parts = New-Object System.Collections.Generic.List[string]
+        foreach ($file in $files) { [void]$parts.Add($file.Name + '|' + $file.LastWriteTimeUtc.Ticks + '|' + $file.Length) }
+        $stamp = $directory + '||' + ($parts.ToArray() -join ';')
+    }
+    catch { $stamp = '' }
+    if (-not $NoCache -and -not [string]::IsNullOrEmpty($stamp) -and $null -ne $script:InstallRegistryCache -and
+        [string]$script:InstallRegistryCache.Stamp -ceq $stamp) {
+        return $script:InstallRegistryCache.State
+    }
+    $version = $script:InstallRegistrySchemaVersion
+    $metaPath = Join-Path $directory $script:InstallRegistryMetaName
+    if (Test-Path -LiteralPath $metaPath -PathType Leaf) {
+        try {
+            $meta = [System.IO.File]::ReadAllText($metaPath, [System.Text.Encoding]::UTF8) | ConvertFrom-Json
+            if ($null -ne $meta -and $null -ne $meta.PSObject.Properties['version']) {
+                $parsedVersion = 0
+                if ([int]::TryParse([string]$meta.version, [ref]$parsedVersion)) { $version = $parsedVersion }
+            }
+        }
+        catch {
+            return [pscustomobject]@{ State = 'corrupt'; Registry = $null; Path = $directory; Reason = 'the registry metadata file is not valid JSON' }
+        }
+    }
+    $records = New-Object System.Collections.Generic.List[object]
+    foreach ($file in $files) {
+        $raw = ''
+        try { $raw = [System.IO.File]::ReadAllText($file.FullName, [System.Text.Encoding]::UTF8) }
+        catch { return [pscustomobject]@{ State = 'corrupt'; Registry = $null; Path = $directory; Reason = ('a record file could not be read: ' + $file.Name) } }
+        if ([string]::IsNullOrWhiteSpace($raw)) {
+            return [pscustomobject]@{ State = 'corrupt'; Registry = $null; Path = $directory; Reason = ('a record file exists but is empty (interrupted or truncated write): ' + $file.Name) }
+        }
+        $record = $null
+        try { $record = $raw | ConvertFrom-Json }
+        catch { return [pscustomobject]@{ State = 'corrupt'; Registry = $null; Path = $directory; Reason = ('a record file is not valid JSON: ' + $file.Name) } }
+        if ($null -eq $record -or $record -isnot [System.Management.Automation.PSCustomObject]) {
+            return [pscustomobject]@{ State = 'corrupt'; Registry = $null; Path = $directory; Reason = ('a record file does not contain a record object: ' + $file.Name) }
+        }
+        [void]$records.Add($record)
+    }
+    $registry = [pscustomobject][ordered]@{ version = $version; installs = @($records.ToArray()) }
+    $shape = Test-InstallRegistryShape -Registry $registry
+    if (-not $shape.Ok) {
+        return [pscustomobject]@{ State = 'corrupt'; Registry = $null; Path = $directory; Reason = $shape.Reason }
+    }
+    $state = [pscustomobject]@{ State = 'ok'; Registry = $registry; Path = $directory; Reason = '' }
+    if (-not $NoCache -and -not [string]::IsNullOrEmpty($stamp)) {
+        $script:InstallRegistryCache = [pscustomobject]@{ Stamp = $stamp; State = $state }
+    }
+    return $state
+}
+
+# The registry's RAW TEXT, whatever shape it is stored in: every record file
+# concatenated, or the single pre-migration document. For callers that must
+# prove something about the BYTES rather than the parsed records - that no
+# secret was ever written, that a -WhatIf run changed nothing - and that would
+# otherwise have to know which storage shape is in use.
+function Get-InstallRegistryRawText {
+    param([Parameter(Mandatory = $true)][string]$ToolRoot)
+    $directory = Get-InstallRegistryDirectory -ToolRoot $ToolRoot
+    if (Test-Path -LiteralPath $directory -PathType Container) {
+        $parts = New-Object System.Collections.Generic.List[string]
+        foreach ($file in @(Get-InstallRecordFiles -ToolRoot $ToolRoot)) {
+            try { [void]$parts.Add([System.IO.File]::ReadAllText($file.FullName, [System.Text.Encoding]::UTF8)) }
+            catch { }
+        }
+        return ($parts.ToArray() -join "`n")
+    }
+    $path = Get-InstallRegistryPath -ToolRoot $ToolRoot
+    if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { return '' }
+    try { return [System.IO.File]::ReadAllText($path, [System.Text.Encoding]::UTF8) }
+    catch { return '' }
+}
+
 function Read-InstallRegistryState {
     param(
         [Parameter(Mandatory = $true)][string]$ToolRoot,
@@ -161,6 +315,11 @@ function Read-InstallRegistryState {
         # owning the returned object. See the note above.
         [switch]$NoCache
     )
+    # The per-record directory is authoritative once it exists; the single
+    # document below is the pre-migration form and is still read as-is.
+    if (Test-Path -LiteralPath (Get-InstallRegistryDirectory -ToolRoot $ToolRoot) -PathType Container) {
+        return (Read-InstallRegistryFromDirectory -ToolRoot $ToolRoot -NoCache:$NoCache)
+    }
     $path = Get-InstallRegistryPath -ToolRoot $ToolRoot
     if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
         return [pscustomobject]@{ State = 'missing'; Registry = (New-EmptyInstallRegistry); Path = $path; Reason = '' }
@@ -212,27 +371,138 @@ function Read-InstallRegistry {
     return (New-EmptyInstallRegistry)
 }
 
+# Retires the pre-migration single document once the per-record directory is
+# authoritative. The bytes are KEPT under a dated name - never deleted - so a
+# migration can always be inspected or reversed by hand.
+function Complete-InstallRegistryMigration {
+    param([Parameter(Mandatory = $true)][string]$ToolRoot)
+    $path = Get-InstallRegistryPath -ToolRoot $ToolRoot
+    if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { return '' }
+    $directory = Split-Path -Parent $path
+    $stamp = [DateTime]::UtcNow.ToString('yyyyMMdd-HHmmss')
+    $candidate = Join-Path $directory ('install-registry.migrated-' + $stamp + '.json')
+    $suffix = 1
+    while (Test-Path -LiteralPath $candidate) {
+        $candidate = Join-Path $directory ('install-registry.migrated-' + $stamp + '-' + $suffix + '.json')
+        $suffix++
+        if ($suffix -gt 100) { return '' }
+    }
+    try { Move-Item -LiteralPath $path -Destination $candidate -Force; return $candidate }
+    catch { return '' }
+}
+
+# Writes a WHOLE document back as per-record files. Used by the batch callers
+# (uninstall, rescan, tests); the per-install hot path uses
+# Update-InstallRegistry instead and never comes through here.
+#
+# Records absent from $Registry.installs have their files DELETED - that is how
+# a removal reaches disk. Unchanged records are not rewritten: serialising and
+# comparing is far cheaper than 551 atomic writes, and it keeps mtimes (and so
+# the read cache) stable for everything the caller did not actually touch.
 function Save-InstallRegistry {
     param([Parameter(Mandatory = $true)][string]$ToolRoot, [Parameter(Mandatory = $true)]$Registry)
     Set-ObjectProperty -Object $Registry -Name 'version' -Value $script:InstallRegistrySchemaVersion
-    $path = Get-InstallRegistryPath -ToolRoot $ToolRoot
-    # A previous interrupted write can leave a stale .tmp beside the registry;
-    # Write-JsonFileAtomic overwrites it, but clear it first so a partially
-    # written file is never mistaken for real state by anything else.
-    $stale = $path + '.tmp'
-    if (Test-Path -LiteralPath $stale -PathType Leaf) { Remove-Item -LiteralPath $stale -Force -ErrorAction SilentlyContinue }
-    # Belt and braces beside the (path, ticks, length) key: drop the cached parse
-    # before the bytes change, so no reader can be served a pre-write document
-    # even if a filesystem's timestamp granularity ever failed to move.
+    $directory = Get-InstallRegistryDirectory -ToolRoot $ToolRoot
+    if (-not (Test-Path -LiteralPath $directory -PathType Container)) {
+        New-Item -ItemType Directory -Path $directory -Force | Out-Null
+    }
+    # Belt and braces beside the metadata key: drop the cached parse before the
+    # bytes change, so no reader can be served a pre-write document even if a
+    # filesystem's timestamp granularity ever failed to move.
     $script:InstallRegistryCache = $null
-    Write-JsonFileAtomic -Value $Registry -Path $path
+    $keep = @{}
+    foreach ($record in @($Registry.installs)) {
+        $id = ''
+        if ($null -ne $record -and $null -ne $record.PSObject.Properties['id']) { $id = [string]$record.id }
+        if (-not (Test-InstallRecordIdSafe -Id $id)) {
+            throw ('An install record has an id that cannot be stored as a file name: ' + $id)
+        }
+        $keep[$id + '.json'] = $true
+        $recordPath = Get-InstallRecordPath -ToolRoot $ToolRoot -Id $id
+        # Compared only when there is something to compare against. Serialising
+        # to decide whether to serialise is pure waste on a first write, and a
+        # first write is every record during the one-off migration.
+        $existing = $null
+        if (Test-Path -LiteralPath $recordPath -PathType Leaf) {
+            try { $existing = [System.IO.File]::ReadAllText($recordPath, [System.Text.Encoding]::UTF8) }
+            catch { $existing = $null }
+        }
+        # -Depth 50 mirrors Write-JsonFileAtomic exactly; a mismatch here would
+        # only ever cost an unnecessary rewrite, never a wrong file.
+        if ($null -eq $existing -or -not [string]::Equals($existing, ($record | ConvertTo-Json -Depth 50), [System.StringComparison]::Ordinal)) {
+            $stale = $recordPath + '.tmp'
+            if (Test-Path -LiteralPath $stale -PathType Leaf) { Remove-Item -LiteralPath $stale -Force -ErrorAction SilentlyContinue }
+            Write-JsonFileAtomic -Value $record -Path $recordPath
+        }
+    }
+    foreach ($file in @(Get-InstallRecordFiles -ToolRoot $ToolRoot)) {
+        if (-not $keep.ContainsKey($file.Name)) {
+            # Deliberately NOT -ErrorAction SilentlyContinue. A deletion that
+            # cannot land means the record is STILL TRACKED, and swallowing it
+            # would let an uninstall report success while the registry still
+            # lists the hook - a silent false success, which is the exact
+            # failure the uninstaller's registry component exists to report.
+            Remove-Item -LiteralPath $file.FullName -Force -ErrorAction Stop
+        }
+    }
+    Write-InstallRegistryMeta -ToolRoot $ToolRoot
+    [void](Complete-InstallRegistryMigration -ToolRoot $ToolRoot)
+    $script:InstallRegistryCache = $null
 }
 
 # Preserves a corrupt registry's exact bytes under a collision-safe name
 # instead of destroying it. Returns the quarantine path, or throws so the
 # caller can leave the original untouched and report tracking failure.
+# Moves ONE unreadable record file out of the set, so a single damaged record
+# cannot make every other installation unrecordable. The bytes are kept.
+function Move-CorruptInstallRecord {
+    param([Parameter(Mandatory = $true)][string]$ToolRoot, [Parameter(Mandatory = $true)][string]$Id)
+    $recordPath = Get-InstallRecordPath -ToolRoot $ToolRoot -Id $Id
+    if (-not (Test-Path -LiteralPath $recordPath -PathType Leaf)) { return '' }
+    # Quarantined OUTSIDE the record directory: a '*.json' left inside it would
+    # be read back as a record on the next scan.
+    $stateDirectory = Get-InstallStateDirectory -ToolRoot $ToolRoot
+    $stamp = [DateTime]::UtcNow.ToString('yyyyMMdd-HHmmss')
+    $candidate = Join-Path $stateDirectory ('install-record-' + $Id + '.corrupt-' + $stamp + '.json')
+    $suffix = 1
+    while (Test-Path -LiteralPath $candidate) {
+        $candidate = Join-Path $stateDirectory ('install-record-' + $Id + '.corrupt-' + $stamp + '-' + $suffix + '.json')
+        $suffix++
+        if ($suffix -gt 100) { throw 'Could not find a free quarantine name for the corrupt install record.' }
+    }
+    Move-Item -LiteralPath $recordPath -Destination $candidate -Force
+    return $candidate
+}
+
 function Move-CorruptInstallRegistry {
     param([Parameter(Mandatory = $true)][string]$ToolRoot)
+    # Directory shape: rename the whole set aside. Its identity is hashed from
+    # the file LISTING, never from the contents - quarantining must not depend
+    # on reading files that are, by definition, possibly unreadable.
+    $directory = Get-InstallRegistryDirectory -ToolRoot $ToolRoot
+    if (Test-Path -LiteralPath $directory -PathType Container) {
+        $parts = New-Object System.Collections.Generic.List[string]
+        try {
+            foreach ($file in @(Get-ChildItem -LiteralPath $directory -File -Force -ErrorAction SilentlyContinue | Sort-Object -Property Name)) {
+                [void]$parts.Add($file.Name + '|' + $file.Length)
+            }
+        }
+        catch { }
+        $stamp = [DateTime]::UtcNow.ToString('yyyyMMdd-HHmmss')
+        $shortHash = Get-ShortHash (($parts.ToArray() -join ';'))
+        $parent = Split-Path -Parent $directory
+        $candidate = Join-Path $parent ('install-registry.corrupt-' + $stamp + '-' + $shortHash + '.d')
+        $suffix = 1
+        while (Test-Path -LiteralPath $candidate) {
+            $candidate = Join-Path $parent ('install-registry.corrupt-' + $stamp + '-' + $shortHash + '-' + $suffix + '.d')
+            $suffix++
+            if ($suffix -gt 100) { throw 'Could not find a free quarantine name for the corrupt install registry.' }
+        }
+        Move-Item -LiteralPath $directory -Destination $candidate -Force
+        if (Test-Path -LiteralPath $directory) { throw 'The corrupt install registry directory could not be moved aside.' }
+        $script:InstallRegistryCache = $null
+        return $candidate
+    }
     $path = Get-InstallRegistryPath -ToolRoot $ToolRoot
     if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { return '' }
     $bytes = [System.IO.File]::ReadAllBytes($path)
@@ -714,7 +984,18 @@ function Set-InstallRecord {
     }
     if ($existingIndex -ge 0) {
         $existing = $existingList[$existingIndex]
-        Set-ObjectProperty -Object $Record -Name 'createdUtc' -Value (ConvertTo-RegistryUtcTimestamp -Value $existing.createdUtc)
+        # Read defensively, like lastResult/lastReason above: StrictMode throws
+        # on a missing property, and an existing record without createdUtc is
+        # reachable - a hand-edited or pre-schema record file, which the
+        # per-record storage makes an ordinary thing to encounter. Falling back
+        # to "now" records the record we are writing rather than aborting the
+        # whole install over a field the previous writer never set.
+        $existingCreated = ''
+        if ($null -ne $existing -and $null -ne $existing.PSObject.Properties['createdUtc']) {
+            $existingCreated = [string]$existing.createdUtc
+        }
+        if ([string]::IsNullOrWhiteSpace($existingCreated)) { $existingCreated = $nowIso }
+        Set-ObjectProperty -Object $Record -Name 'createdUtc' -Value (ConvertTo-RegistryUtcTimestamp -Value $existingCreated)
         # Carry forward every client subrecord this invocation did NOT touch.
         #
         # Derived from the capability table, NOT a literal pair. It was
@@ -762,67 +1043,146 @@ function Set-InstallRecord {
 # Returns a result the caller must report honestly - tracking can fail while
 # the hook itself is correctly installed, and that must never be reported as a
 # fully tracked install.
+# Records ONE install outcome. This is the hot path: called once per hook per
+# client - about 1650 times during a full update of a 551-record registry - so
+# it must not be O(n) in the number of records. It reads and writes exactly one
+# record file (~8.5 ms) instead of parsing and re-serialising the whole
+# document (~1.4 s measured on the real registry).
+#
+# DELIBERATE SEMANTIC NARROWING, worth knowing before debugging a surprise:
+# this path validates ONLY the record it is about to write. It no longer parses
+# the other 550 records, so it cannot notice that one of THEM is damaged - and
+# should not have to, since recording this installation does not depend on
+# them. Whole-set validation still happens in Read-InstallRegistryState for
+# every caller that reads the whole registry.
 function Update-InstallRegistry {
     param(
         [Parameter(Mandatory = $true)][string]$ToolRoot,
         [Parameter(Mandatory = $true)]$Record
     )
     return (Invoke-WithInstallRegistryLock -ToolRoot $ToolRoot -Action {
-        # -NoCache: this path mutates the document it is handed and then saves it.
-        $state = Read-InstallRegistryState -ToolRoot $ToolRoot -NoCache
         $quarantinePath = ''
         $warning = ''
-        $registry = $null
-        if ($state.State -eq 'corrupt') {
-            try {
-                $quarantinePath = Move-CorruptInstallRegistry -ToolRoot $ToolRoot
+        $directory = Get-InstallRegistryDirectory -ToolRoot $ToolRoot
+
+        # ---- one-off migration from the pre-record-per-file document --------
+        if (-not (Test-Path -LiteralPath $directory -PathType Container)) {
+            # -NoCache: this path mutates the document it is handed and saves it.
+            $state = Read-InstallRegistryState -ToolRoot $ToolRoot -NoCache
+            if ($state.State -eq 'corrupt') {
+                try { $quarantinePath = Move-CorruptInstallRegistry -ToolRoot $ToolRoot }
+                catch {
+                    return [pscustomobject]@{
+                        Ok = $false
+                        QuarantinePath = ''
+                        Warning = ('The install registry is unreadable (' + $state.Reason + ') and could not be quarantined: ' + $_.Exception.Message + '. It was left untouched and this installation was NOT recorded.')
+                    }
+                }
+                $warning = 'The install registry was unreadable (' + $state.Reason + '). Its exact contents were preserved at: ' + $quarantinePath + ' - a new registry was started, so previously tracked installations are no longer listed.'
+                New-Item -ItemType Directory -Path $directory -Force | Out-Null
+                Write-InstallRegistryMeta -ToolRoot $ToolRoot
             }
-            catch {
-                return [pscustomobject]@{
-                    Ok = $false
-                    QuarantinePath = ''
-                    Warning = ('The install registry is unreadable (' + $state.Reason + ') and could not be quarantined: ' + $_.Exception.Message + '. It was left untouched and this installation was NOT recorded.')
+            else {
+                # Splits the single document into per-record files and retires
+                # it under a dated name. Paid once, not once per install.
+                Save-InstallRegistry -ToolRoot $ToolRoot -Registry (ConvertTo-InstallRegistryCurrent -Registry $state.Registry)
+            }
+        }
+
+        # ---- the O(1) path --------------------------------------------------
+        $id = ''
+        if ($null -ne $Record.PSObject.Properties['id']) { $id = [string]$Record.id }
+        if (-not (Test-InstallRecordIdSafe -Id $id)) {
+            return [pscustomobject]@{
+                Ok             = $false
+                QuarantinePath = $quarantinePath
+                Warning        = ('the record has an id that cannot be stored (' + $id + ') - this installation was NOT recorded')
+            }
+        }
+        $recordPath = Get-InstallRecordPath -ToolRoot $ToolRoot -Id $id
+
+        # The EXISTING record is needed, and only it: Set-InstallRecord keeps
+        # its createdUtc, its history and the OTHER client's subrecord, so
+        # installing Claude-only must never drop what Codex registered.
+        $existingRecord = $null
+        if (Test-Path -LiteralPath $recordPath -PathType Leaf) {
+            $raw = ''
+            $readable = $true
+            try { $raw = [System.IO.File]::ReadAllText($recordPath, [System.Text.Encoding]::UTF8) }
+            catch { $readable = $false }
+            if ($readable -and -not [string]::IsNullOrWhiteSpace($raw)) {
+                try { $existingRecord = $raw | ConvertFrom-Json }
+                catch { $existingRecord = $null; $readable = $false }
+            }
+            elseif ($readable) { $readable = $false }
+            if (-not $readable -or $null -eq $existingRecord -or $existingRecord -isnot [System.Management.Automation.PSCustomObject]) {
+                # Only THIS record is damaged. Preserve its bytes and carry on:
+                # the merge below then starts from nothing for this id, which is
+                # the same outcome as a first install, and every other record is
+                # untouched.
+                $existingRecord = $null
+                try {
+                    $recordQuarantine = Move-CorruptInstallRecord -ToolRoot $ToolRoot -Id $id
+                    if (-not [string]::IsNullOrEmpty($recordQuarantine)) {
+                        if ([string]::IsNullOrEmpty($quarantinePath)) { $quarantinePath = $recordQuarantine }
+                        $warning = ('The previous record for this installation was unreadable. Its exact contents were preserved at: ' + $recordQuarantine + ' - its install history was not carried forward.')
+                    }
+                }
+                catch {
+                    return [pscustomobject]@{
+                        Ok             = $false
+                        QuarantinePath = $quarantinePath
+                        Warning        = ('the previous record for this installation is unreadable and could not be quarantined: ' + $_.Exception.Message + ' - this installation was NOT recorded')
+                    }
                 }
             }
-            $warning = 'The install registry was unreadable (' + $state.Reason + '). Its exact contents were preserved at: ' + $quarantinePath + ' - a new registry was started, so previously tracked installations are no longer listed.'
-            $registry = New-EmptyInstallRegistry
         }
-        else {
-            $registry = ConvertTo-InstallRegistryCurrent -Registry $state.Registry
+
+        # A one-record document, so Set-InstallRecord and the schema migration
+        # are reused UNCHANGED - they only ever look at $Registry.installs.
+        $existingList = @()
+        if ($null -ne $existingRecord) { $existingList = @($existingRecord) }
+        $scratch = ConvertTo-InstallRegistryCurrent -Registry ([pscustomobject][ordered]@{
+                version  = $script:InstallRegistrySchemaVersion
+                installs = $existingList
+            })
+        Set-InstallRecord -Registry $scratch -Record $Record
+        $merged = @($scratch.installs)
+        if ($merged.Count -lt 1) {
+            return [pscustomobject]@{
+                Ok             = $false
+                QuarantinePath = $quarantinePath
+                Warning        = 'the record could not be merged - this installation was NOT recorded'
+            }
         }
-        Set-InstallRecord -Registry $registry -Record $Record
-        Save-InstallRegistry -ToolRoot $ToolRoot -Registry $registry
+        $script:InstallRegistryCache = $null
+        $stale = $recordPath + '.tmp'
+        if (Test-Path -LiteralPath $stale -PathType Leaf) { Remove-Item -LiteralPath $stale -Force -ErrorAction SilentlyContinue }
+        Write-JsonFileAtomic -Value $merged[0] -Path $recordPath
+        # The set's version marker, written only when it is actually absent -
+        # an extra atomic write per install would give back part of what this
+        # whole change is for.
+        if (-not (Test-Path -LiteralPath (Join-Path $directory $script:InstallRegistryMetaName) -PathType Leaf)) {
+            Write-InstallRegistryMeta -ToolRoot $ToolRoot
+        }
 
         # PERSISTENCE IS VERIFIED, NOT ASSUMED. Writing without checking let a
         # silent failure look like success: when a DIRECTORY occupied the
         # registry path, the atomic write moved the temp file INSIDE it and
-        # reported ok, so the install was never actually tracked. Read the
-        # registry back and confirm this exact record is really there.
-        $registryPath = Get-InstallRegistryPath -ToolRoot $ToolRoot
-        if (-not (Test-Path -LiteralPath $registryPath -PathType Leaf)) {
+        # reported ok, so the install was never actually tracked.
+        if (-not (Test-Path -LiteralPath $recordPath -PathType Leaf)) {
             return [pscustomobject]@{
                 Ok             = $false
                 QuarantinePath = $quarantinePath
-                Warning        = ('the registry could not be written to ' + $registryPath + ' (the path is not a writable file) - this installation was NOT recorded')
+                Warning        = ('the registry could not be written to ' + $recordPath + ' (the path is not a writable file) - this installation was NOT recorded')
             }
         }
-        # Verify by reading the BYTES back, not by re-parsing the whole document.
-        # A full Read-InstallRegistryState here cost ~960 ms against a 4.7 MB
-        # registry while the raw read costs ~17 ms, and Update-InstallRegistry is
-        # called once per hook per project - 105 times for a 21-hook install into
-        # 5 projects. Re-parsing to confirm a write we just serialised ourselves
-        # was the single largest cost in the install path.
-        #
-        # The guarantee is preserved. What this check exists for (see above) is a
-        # write that silently went somewhere else - the directory-at-the-path
-        # case - and that is caught by the -PathType Leaf test plus finding this
-        # record's id in the bytes actually on disk. What it never proved is that
-        # the JSON is semantically valid: Save-InstallRegistry serialised it from
-        # an in-memory object one statement earlier, so a parse here could only
-        # fail if the atomic write itself corrupted bytes, and that would equally
-        # break the id check below.
+        # Verified by reading the BYTES back, not by re-parsing: the document
+        # was serialised from an in-memory object one statement earlier, so a
+        # parse could only fail if the atomic write corrupted bytes - which the
+        # id check below would equally catch.
         $verifyText = ''
-        try { $verifyText = [System.IO.File]::ReadAllText($registryPath, [System.Text.Encoding]::UTF8) }
+        try { $verifyText = [System.IO.File]::ReadAllText($recordPath, [System.Text.Encoding]::UTF8) }
         catch {
             return [pscustomobject]@{
                 Ok             = $false
@@ -839,7 +1199,7 @@ function Update-InstallRegistry {
         }
         # The id is written as a JSON string value, so match it with its quotes:
         # a bare substring could hit an unrelated field that merely contains it.
-        if ($verifyText -notmatch ('"' + [regex]::Escape([string]$Record.id) + '"')) {
+        if ($verifyText -notmatch ('"' + [regex]::Escape($id) + '"')) {
             return [pscustomobject]@{
                 Ok             = $false
                 QuarantinePath = $quarantinePath
@@ -849,4 +1209,3 @@ function Update-InstallRegistry {
         return [pscustomobject]@{ Ok = $true; QuarantinePath = $quarantinePath; Warning = $warning }
     })
 }
-
