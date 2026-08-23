@@ -125,10 +125,15 @@ $script:ReviewOnlyFilePatterns = @('.coverage', 'coverage.xml')
 # runtime state, dependency stores, and build/compiler output roots. '.kiro' is
 # a client config/runtime directory exactly like '.claude' and '.codex' - it
 # must never be mistaken for test residue.
+# '.cache' is the odd one out historically: Secrets-Check, Test-Plan-Check,
+# Utf8-Encoding-Check and Docs-Freshness-Check all prune it and this hook did
+# not, so a project's pip HTTP cache (.cache/pip/http-v2/<hash fan-out>) was
+# walked and its 5-level hash fan-out tripped MAX_SCAN_DEPTH on its own - a
+# PARTIAL baseline that had nothing to do with the project's own residue.
 $script:HardPruneNames = @(
     '.git', '.ai', '.claude', '.codex', '.kiro', 'node_modules', '.venv', 'venv', 'env',
     '__pypackages__', 'vendor', 'target', 'dist', 'build', 'out', '.next',
-    '.nuxt', '.tox', '.svn', '.hg', 'graphify-out', 'logs'
+    '.nuxt', '.tox', '.svn', '.hg', 'graphify-out', 'logs', '.cache'
 )
 # Bounds the per-candidate size walk so one pathological tree cannot make the
 # hook slow. ENTRIES, not files: a tree of empty directories contains no files
@@ -254,9 +259,18 @@ function Get-CleanupScan {
             # Hard prune first: never surfaced, never descended, whatever config says.
             if ($pruneSet.Contains($entry.Name)) { continue }
             # Same standing as a hard prune, and checked before classification so
-            # that a virtualenv can never be OFFERED for deletion either: it is
-            # recognized by its PEP 405 marker rather than by name, because
-            # '.venv'/'venv'/'env' above are only the conventional spellings.
+            # that a marker-bearing directory can never be OFFERED for deletion
+            # either. Recognized by a MARKER FILE it contains rather than by
+            # name, because the names above are only the conventional spellings:
+            #
+            #   pyvenv.cfg     any virtualenv, whatever the folder is called
+            #                  ('spotdl-env' is as legal as 'venv')
+            #   CACHEDIR.TAG   any tool's regenerable cache
+            #
+            # The marker list itself lives in _hooklib.ps1 beside this file
+            # ($script:PruneMarkerFiles) - named here too so that grepping THIS
+            # file for 'pyvenv' or 'CACHEDIR.TAG' finds the behaviour instead of
+            # reporting it missing.
             if (Test-IsMarkerPrunedDirectory $entry.FullName) { continue }
             $kind = ''
             if ($taskCreatedSet.Contains($entry.Name)) { $kind = 'task-created-dir' }

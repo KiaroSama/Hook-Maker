@@ -194,10 +194,52 @@ function Test-KeyMatchesOverride {
 }
 $secretKeysRaw = ''
 if ($config.ContainsKey('SECRET_KEYS')) { $secretKeysRaw = $config['SECRET_KEYS'] }
+# Hook Maker's OWN documented configuration keys, treated as public config by
+# default so that every installation does not have to rediscover that its own
+# numeric ceilings are not credentials. A project that configures a hook has a
+# .env full of these, and each one was previously reported as Unknown - an
+# advisory asking the operator to classify keys this tool itself documents.
+#
+# WHY THIS IS SAFE, and it is the precedence in Get-KeyValueClassification that
+# makes it so, not this list: the PUBLIC_CONFIG_KEYS tier is consulted only
+# AFTER a definite credential VALUE format and after credential-like KEY
+# evidence. A real token pasted into MAX_SCAN_ENTRIES is still classified
+# Secret by its value. A project's own SECRET_KEYS is checked first of all, so
+# any of these can still be forced back to Secret locally.
+#
+# ONLY keys whose documented default is a NUMBER or a BOOLEAN are listed - a
+# value shape that categorically cannot carry a credential. Free-form keys of
+# ours (DEPLOY_COMMAND, SYNC_PROJECTS, EXTRA_* patterns, the *_DIR paths, and
+# SECRET_KEYS/PUBLIC_CONFIG_KEYS themselves) are deliberately ABSENT: their
+# values are arbitrary text, so Unknown-and-advisory remains the honest answer.
+# Generated from the shipped hooks/*/.env.example defaults; a key that appears
+# anywhere with a free-form default is excluded even if another hook gives it a
+# numeric one.
+$script:BuiltInPublicConfigKeys = @(
+    'AUTO_APPEND', 'COOLDOWN_MINUTES', 'ENABLE_SUBAGENT_STOP',
+    'EXTERNAL_BLOCKER_RECHECK_MINUTES', 'EXTERNAL_BLOCKER_TTL_MINUTES',
+    'FAILURE_COOLDOWN_MINUTES', 'LINE_THRESHOLD', 'MAX_CHANGED_FILES', 'MAX_CHARS',
+    'MAX_DIRECTORIES', 'MAX_DOC_FILES', 'MAX_FILES', 'MAX_FINDINGS', 'MAX_SCAN_DEPTH',
+    'MAX_SCAN_ENTRIES', 'MAX_SCAN_SECONDS', 'MIN_SECRET_LENGTH', 'PENDING_COOLDOWN_MINUTES',
+    'PR_LIMIT', 'REQUIRE_ACKNOWLEDGEMENT', 'TEST_COMPLETION_ADVISORY_ONLY',
+    'TEST_COMPLETION_ALWAYS_REQUIRE_NOTE', 'TEST_COMPLETION_COORDINATION_WAIT_SECONDS',
+    'TEST_COMPLETION_EVIDENCE_MINUTES', 'TEST_GUARD_ADVISORY_ONLY',
+    'TEST_GUARD_HEARTBEAT_SECONDS', 'TEST_GUARD_IDLE_TIMEOUT_SECONDS',
+    'TEST_GUARD_MAX_BLIND_SLEEP_SECONDS', 'TEST_GUARD_MAX_MEMORY_MB',
+    'TEST_GUARD_WALL_TIMEOUT_SECONDS', 'TEST_PLAN_ALWAYS_REPORT', 'TEST_PLAN_COOLDOWN_MINUTES',
+    'TEST_PLAN_MAX_DIRS', 'TEST_PLAN_MAX_FILES', 'TEST_PLAN_MAX_FILE_KB',
+    'TEST_PLAN_MAX_FINDINGS', 'TEST_PLAN_MAX_SCAN_SECONDS', 'UNUSED_SCAN_COOLDOWN_MINUTES',
+    'UTF8_ADVISORY_ONLY', 'UTF8_MAX_DIRECTORIES', 'UTF8_MAX_FILES', 'UTF8_MAX_FILE_KB',
+    'UTF8_MAX_FINDINGS', 'UTF8_MAX_SCAN_SECONDS'
+)
+
 $publicConfigKeysRaw = ''
 if ($config.ContainsKey('PUBLIC_CONFIG_KEYS')) { $publicConfigKeysRaw = $config['PUBLIC_CONFIG_KEYS'] }
 $secretKeyOverrides = @(Get-KeyOverrideList $secretKeysRaw)
-$publicConfigKeyOverrides = @(Get-KeyOverrideList $publicConfigKeysRaw)
+# The project's own list first, then ours. @(...) around BOTH halves: this
+# file already documents that a bare list return collapses to a scalar under
+# StrictMode when it holds 0 or 1 items.
+$publicConfigKeyOverrides = @(@(Get-KeyOverrideList $publicConfigKeysRaw) + @($script:BuiltInPublicConfigKeys))
 
 $script:PublicKeyPrefixes = @('NEXT_PUBLIC_', 'PUBLIC_', 'VITE_', 'REACT_APP_')
 $script:PublicKeySuffixes = @(

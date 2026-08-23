@@ -394,6 +394,43 @@ try {
     Check 'advisory-only pre-push is quiet' ([string]::IsNullOrWhiteSpace($r.Out) -and [string]::IsNullOrWhiteSpace($r.Err)) ($r.Out + $r.Err)
 
     # =====================================================================
+    Write-Host '--- Hook Maker''s own numeric/boolean config keys are public by default ---' -ForegroundColor Cyan
+    # A project that configures any hook has a .env full of these, and every one
+    # of them used to come back as Unknown - an advisory asking the operator to
+    # classify keys this tool itself documents. They are public config now.
+    # The LAST two cases are the ones that matter: the built-in list sits BELOW
+    # both credential tiers, so one of OUR OWN keys holding a real token is still
+    # Secret, and a genuine credential key is untouched. If those ever pass, the
+    # list has become a way to smuggle a secret past the scanner.
+    $projOwnKeys = New-GitProj 'OwnConfigKeys'
+    Write-Utf8 (Join-Path $projOwnKeys '.gitignore') ".env`nsecrets.md`n"
+    Write-Utf8 (Join-Path $projOwnKeys '.env') (
+        "MAX_SCAN_ENTRIES=40000`r`n" +
+        "MAX_SCAN_DEPTH=10`r`n" +
+        "MAX_FINDINGS=20`r`n" +
+        "ENABLE_SUBAGENT_STOP=false`r`n" +
+        "MAX_CHARS=sk" + "_live_aBcDeFgHiJkLmNoPqRsTuVwXyZ0123456789`r`n" +
+        "API_TOKEN=ghp_aBcDeFgHiJkLmNoPqRsTuVwXyZ0123456789`r`n")
+    Add-Commit $projOwnKeys 'seed'
+    $rOwn = Fire -Cwd $projOwnKeys -EventName 'SessionStart'
+    foreach ($ownKey in @('MAX_SCAN_ENTRIES', 'MAX_SCAN_DEPTH', 'MAX_FINDINGS', 'ENABLE_SUBAGENT_STOP')) {
+        Check ('a documented numeric/boolean config key of ours is not reported: ' + $ownKey) (
+            $rOwn.Out -notmatch [regex]::Escape($ownKey)) $rOwn.Out
+    }
+    Check 'one of OUR OWN keys holding a real token is STILL reported (value beats the built-in list)' (
+        $rOwn.Out -match 'MAX_CHARS') $rOwn.Out
+    Check 'a genuine credential key is still reported alongside it' (
+        $rOwn.Out -match 'API_TOKEN') $rOwn.Out
+    # A free-form key of ours is deliberately NOT in the list: its value is
+    # arbitrary text, so Unknown-and-advisory stays the honest answer.
+    $projFreeForm = New-GitProj 'OwnFreeFormKey'
+    Write-Utf8 (Join-Path $projFreeForm '.gitignore') ".env`nsecrets.md`n"
+    Write-Utf8 (Join-Path $projFreeForm '.env') "DEPLOY_COMMAND=npx wrangler deploy --api-token abcdef0123456789abcdef0123456789`r`n"
+    Add-Commit $projFreeForm 'seed'
+    $rFree = Fire -Cwd $projFreeForm -EventName 'SessionStart'
+    Check 'a free-form config key of ours is NOT silently made public' (
+        $rFree.Out -match 'DEPLOY_COMMAND') $rFree.Out
+
     Write-Host '--- regression guards: the three hard blocks stay hard ---' -ForegroundColor Cyan
 
     # These three are the load-bearing blocks. Detection of each is asserted in
