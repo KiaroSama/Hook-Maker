@@ -46,17 +46,43 @@ function Write-Utf8 { param([string]$Path, [string]$Content) [System.IO.File]::W
 # Every ping pid a fixture records, so cleanup can guarantee none is left alive.
 $script:SpawnedPids = New-Object System.Collections.Generic.List[string]
 
+# A PID IS NOT AN IDENTITY. Windows reuses pids aggressively, and the parallel
+# matrix spawns thousands of processes across its workers, so a pid this suite
+# recorded and then proved dead can belong to something else entirely by the time
+# the end-of-suite sweep runs. Asking only "does this pid exist" produced a
+# failure in 2 of 7 matrix runs while the guarded runner's own process-tree
+# tracker reported leakedProcessIds=[] every single time - the check was wrong,
+# not the world. Worse, the finally block taskkills whatever it believes is still
+# alive, so a recycled pid meant killing an unrelated process.
+#
+# Same guard the crash-aware registry lock already uses: a recorded pid whose
+# live process has a DIFFERENT start time is not the process we recorded.
+$script:SpawnedStartTicks = @{}
+
+function Test-IsRecordedProcess {
+    param([int]$Target)
+    $live = $null
+    try { $live = Get-Process -Id $Target -ErrorAction Stop } catch { return $false }
+    $key = [string]$Target
+    if (-not $script:SpawnedStartTicks.ContainsKey($key)) { return $true }
+    $recorded = [long]$script:SpawnedStartTicks[$key]
+    if ($recorded -le 0) { return $true }
+    # An unreadable StartTime (a process we no longer have rights to, or one
+    # exiting right now) is NOT evidence that our process is still running.
+    try { return ([long]$live.StartTime.Ticks -eq $recorded) } catch { return $false }
+}
+
 function Test-PidAlive {
     param([string]$ProcId, [int]$MaxWaitSeconds = 0)
     if ([string]::IsNullOrWhiteSpace($ProcId)) { return $false }
     $target = 0
     if (-not [int]::TryParse($ProcId, [ref]$target)) { return $false }
     if ($MaxWaitSeconds -le 0) {
-        try { $null = Get-Process -Id $target -ErrorAction Stop; return $true } catch { return $false }
+        return (Test-IsRecordedProcess -Target $target)
     }
     $deadline = [DateTime]::UtcNow.AddSeconds($MaxWaitSeconds)
     while ([DateTime]::UtcNow -lt $deadline) {
-        try { $null = Get-Process -Id $target -ErrorAction Stop } catch { return $false }
+        if (-not (Test-IsRecordedProcess -Target $target)) { return $false }
         Start-Sleep -Milliseconds 100
     }
     return $true
@@ -164,7 +190,9 @@ $psi.FileName = 'ping.exe'
 foreach ($a in @('-n', '__N__', '127.0.0.1')) { [void]$psi.ArgumentList.Add($a) }
 $psi.UseShellExecute = $false
 $c = [System.Diagnostics.Process]::Start($psi)
-Set-Content -LiteralPath '__PIDFILE__' -Value $c.Id
+$startTicks = 0
+try { $startTicks = $c.StartTime.Ticks } catch { }
+Set-Content -LiteralPath '__PIDFILE__' -Value ($c.Id.ToString() + '|' + $startTicks)
 __TAIL__
 '@
     $content = $content.Replace('__N__', [string]$PingSeconds).Replace('__PIDFILE__', $pidFile).Replace('__TAIL__', $Tail)
@@ -172,11 +200,25 @@ __TAIL__
     return [pscustomobject]@{ Suite = $suite; PidFile = $pidFile }
 }
 
+# Returns the BARE pid, as every caller expects, and records the (pid, start
+# time) pair so Test-PidAlive can tell our process from a recycled pid. A file
+# written by an older fixture shape carries no start time; that degrades to the
+# old existence-only behaviour rather than failing.
 function Get-RecordedPid {
     param([string]$PidFile)
-    $procId = ''
-    if (Test-Path -LiteralPath $PidFile) { try { $procId = (Get-Content -LiteralPath $PidFile -Raw).Trim() } catch { } }
-    if ($procId -ne '') { [void]$script:SpawnedPids.Add($procId) }
+    $raw = ''
+    if (Test-Path -LiteralPath $PidFile) { try { $raw = (Get-Content -LiteralPath $PidFile -Raw).Trim() } catch { } }
+    if ($raw -eq '') { return '' }
+    $parts = $raw.Split('|')
+    $procId = $parts[0].Trim()
+    if ($procId -eq '') { return '' }
+    if ($parts.Count -gt 1) {
+        $ticks = 0L
+        if ([long]::TryParse($parts[1].Trim(), [ref]$ticks) -and $ticks -gt 0) {
+            $script:SpawnedStartTicks[$procId] = $ticks
+        }
+    }
+    [void]$script:SpawnedPids.Add($procId)
     return $procId
 }
 
@@ -394,8 +436,44 @@ try {
     }
 
     # =====================================================================
+    Write-Host '--- a recycled pid is not our process (HM-02 scope 4b/5) ---' -ForegroundColor Cyan
+    # Deterministic stand-in for what the parallel matrix produced by accident:
+    # a pid this suite recorded, still present, but now belonging to something
+    # else. Forced by recording a start time that cannot match, rather than by
+    # waiting for Windows to reuse a pid - which is not reproducible on demand.
+    $selfId = [string]$PID
+    $selfTicks = (Get-Process -Id $PID).StartTime.Ticks
+    $savedSelf = $null
+    if ($script:SpawnedStartTicks.ContainsKey($selfId)) { $savedSelf = $script:SpawnedStartTicks[$selfId] }
+    try {
+        $script:SpawnedStartTicks[$selfId] = [long]$selfTicks
+        Check 'a live pid WITH the recorded start time is our process' (Test-PidAlive $selfId 0) $selfId
+        $script:SpawnedStartTicks[$selfId] = [long]1
+        Check 'a live pid with a DIFFERENT start time is NOT our process (pid reuse)' (
+            -not (Test-PidAlive $selfId 0)) ($selfId + ' was reported alive despite a mismatched start time')
+        # The waiting form must apply the same identity test, or the per-fixture
+        # assertions would still be fooled by a pid recycled within their window.
+        Check 'the waiting form also rejects a mismatched start time' (
+            -not (Test-PidAlive $selfId 1)) ($selfId + ' was reported alive by the waiting form')
+    }
+    finally {
+        if ($null -ne $savedSelf) { $script:SpawnedStartTicks[$selfId] = $savedSelf }
+        else { [void]$script:SpawnedStartTicks.Remove($selfId) }
+    }
+
+    # =====================================================================
     Write-Host '--- no process or temp file leaked across the whole run (HM-02 scope 5/5) ---' -ForegroundColor Cyan
     $anyAlive = @($script:SpawnedPids | Where-Object { Test-PidAlive $_ 0 })
+    # Printed unconditionally: Check only shows its Actual under
+    # HOOKMAKER_TEST_DEBUG, so the two matrix failures that produced this
+    # assertion left no record of WHICH pid, which is why it took a second
+    # occurrence to diagnose.
+    foreach ($aliveId in $anyAlive) {
+        $liveName = '(unreadable)'
+        try { $liveName = (Get-Process -Id ([int]$aliveId) -ErrorAction Stop).ProcessName } catch { }
+        Write-Host ('  still alive: pid ' + $aliveId + ' is ' + $liveName +
+            ' recordedStartTicks=' + [string]$script:SpawnedStartTicks[[string]$aliveId]) -ForegroundColor DarkYellow
+    }
     Check 'every ping descendant a fixture spawned is gone' ($anyAlive.Count -eq 0) ('still alive: ' + ($anyAlive -join ','))
 }
 finally {
