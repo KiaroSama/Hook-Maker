@@ -77,6 +77,19 @@ $script:MaxHookTimeoutSeconds = 600
 $script:ManagedRuntimeMutablePaths = @()
 # Never copied into a runtime, so never part of a manifest.
 $script:ManagedSourceExcludedNames = @('.env.example')
+# USER CONFIGURATION, by LEAF NAME, at the root of a hook's runtime directory.
+# A hook reads its own '.env' from $PSScriptRoot - that is the documented way to
+# set MAX_SCAN_ENTRIES, MAX_SCAN_DEPTH, ENABLE_SUBAGENT_STOP and friends, and the
+# hooks themselves tell the user to edit it. It is authored by the USER and never
+# planned by the installer, so it must be neither tracked as a managed artifact
+# nor discarded when the runtime directory is replaced.
+#
+# Both halves are required, and the bug was the pair of them: an unplanned file
+# made the record read as 'unexpected managed file: <hook>/.env', so the record
+# drifted the moment a user configured it; the update that drift triggered then
+# rebuilt the directory from the plan alone and deleted the file. Configuring a
+# hook could therefore never survive - reproduced end to end before this fix.
+$script:ManagedRuntimeUserConfigNames = @('.env')
 
 # Registry-persistence layer (storage, validation, locking, migration, and
 # upsert of install records) lives in its own file. Dot-sourced HERE, after

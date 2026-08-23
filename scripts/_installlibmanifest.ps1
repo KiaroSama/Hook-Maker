@@ -32,6 +32,17 @@ function Test-ManagedRuntimeFileTracked {
     foreach ($mutable in $script:ManagedRuntimeMutablePaths) {
         if ([string]::Equals($normalized, ([string]$mutable).Replace('\', '/'), [System.StringComparison]::OrdinalIgnoreCase)) { return $false }
     }
+    # User configuration is not a managed artifact. Matched by LEAF NAME, because
+    # no fixed path list could name it: the caller passes a path relative to the
+    # HOOK directory, so the hook's own config arrives as exactly '.env'. The
+    # single-segment test keeps it narrow - a '.env' nested inside a packaged
+    # subdirectory is a shipped file and stays tracked.
+    $segments = @($normalized.Split('/') | Where-Object { $_ -ne '' })
+    if ($segments.Count -eq 1) {
+        foreach ($userConfig in $script:ManagedRuntimeUserConfigNames) {
+            if ([string]::Equals($segments[0], [string]$userConfig, [System.StringComparison]::OrdinalIgnoreCase)) { return $false }
+        }
+    }
     return $true
 }
 
