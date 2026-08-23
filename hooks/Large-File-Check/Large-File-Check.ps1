@@ -252,7 +252,7 @@ while ($stack.Count -gt 0) {
             $leaf = Split-Path -Leaf $childDir
             if ($excludedDirs -contains $leaf.ToLowerInvariant()) { continue }
             # A virtualenv is pruned by its PEP 405 marker, not its name (see _hooklib.ps1).
-            if (Test-IsVirtualEnvDirectory $childDir) { continue }
+            if (Test-IsMarkerPrunedDirectory $childDir) { continue }
             # Never follow a reparse point (junction/symlink): it can escape the
             # project or loop back on it. Skip before descent.
             if (([System.IO.File]::GetAttributes($childDir) -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) { continue }

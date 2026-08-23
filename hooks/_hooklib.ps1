@@ -55,22 +55,41 @@ function Test-PathInside {
     return $candidatePath.StartsWith($prefix, [System.StringComparison]::OrdinalIgnoreCase)
 }
 
-# A virtualenv is identified by the marker file PEP 405 puts in its root, not by
-# its directory NAME. Every prune/exclude list in this project lists only the
-# conventional spellings ('.venv', 'venv', 'env'), and a project is free to name
-# it anything: a real 'tools/spotdl-env' held 9,815 of a 13,559-entry walk - 72%
-# of the budget spent counting third-party bytecode, so the scan hit its ceiling
-# and could only report PARTIAL. One stat per directory prunes the whole subtree.
-# Deliberately NOT generalized to the rest of those lists: 'node_modules' and
-# '.git' are named by their own tools and cannot be renamed, so a marker probe
-# there buys nothing, and 'build'/'out'/'dist' have no marker to probe for.
+# A directory identified by what it CONTAINS, not by what it is called. Names are
+# a convention: `python -m venv <anything>` is legal, so a virtualenv called
+# 'spotdl-env' is invisible to a name list - a real one held 9,817 of a 13,562
+# entry walk. The markers are authoritative instead:
+#
+#   pyvenv.cfg    PEP 405 puts it at the root of every virtualenv, any folder name.
+#   CACHEDIR.TAG  the cross-tool "this directory is a regenerable cache" standard
+#                 (Bazel, Cargo, borg, restic, rsnapshot...), which is exactly the
+#                 class every walk here wants to skip.
+#
+# Deliberately NOT extended to '.git' or 'node_modules': those names are fixed by
+# their own tools and cannot be renamed, so the name lists already catch them and
+# a marker probe would only add a stat.
+#
+# A REPARSE POINT IS NEVER PROBED. Following a junction would stat outside the
+# scanned tree, which every caller here promises not to do; callers skip links by
+# their own rule immediately afterwards, so refusing here changes no outcome.
+#
 # Never throws - an invalid, too-long or unreadable path is simply $false, so a
 # walk can never break here.
-function Test-IsVirtualEnvDirectory {
+$script:PruneMarkerFiles = @('pyvenv.cfg', 'CACHEDIR.TAG')
+
+function Test-IsMarkerPrunedDirectory {
     param([string]$Path)
     if ([string]::IsNullOrWhiteSpace($Path)) { return $false }
-    try { return [System.IO.File]::Exists([System.IO.Path]::Combine($Path, 'pyvenv.cfg')) }
+    try {
+        $attributes = [System.IO.File]::GetAttributes($Path)
+        if (($attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) { return $false }
+    }
     catch { return $false }
+    foreach ($marker in $script:PruneMarkerFiles) {
+        try { if ([System.IO.File]::Exists([System.IO.Path]::Combine($Path, $marker))) { return $true } }
+        catch { }
+    }
+    return $false
 }
 
 function Set-ObjectProperty {

@@ -131,7 +131,7 @@ while ($stack.Count -gt 0 -and $visited -lt 4000) {
             $leaf = Split-Path -Leaf $dir
             if ($excludedDirs -contains $leaf) { continue }
             # A virtualenv is pruned by its PEP 405 marker, not its name (see _hooklib.ps1).
-            if (Test-IsVirtualEnvDirectory $dir) { continue }
+            if (Test-IsMarkerPrunedDirectory $dir) { continue }
             $item = Get-Item -LiteralPath $dir -Force -ErrorAction SilentlyContinue
             if ($null -eq $item -or $item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) { continue }
             $stack.Push($dir)

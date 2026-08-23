@@ -257,7 +257,7 @@ function Get-CleanupScan {
             # that a virtualenv can never be OFFERED for deletion either: it is
             # recognized by its PEP 405 marker rather than by name, because
             # '.venv'/'venv'/'env' above are only the conventional spellings.
-            if (Test-IsVirtualEnvDirectory $entry.FullName) { continue }
+            if (Test-IsMarkerPrunedDirectory $entry.FullName) { continue }
             $kind = ''
             if ($taskCreatedSet.Contains($entry.Name)) { $kind = 'task-created-dir' }
             elseif ($candidateSet.Contains($entry.Name)) { $kind = 'cache-dir' }
