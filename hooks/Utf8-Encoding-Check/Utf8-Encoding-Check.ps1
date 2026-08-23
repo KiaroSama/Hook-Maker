@@ -278,7 +278,7 @@ function Invoke-Utf8Walk {
                 $dir = Get-Item -LiteralPath $dirPath -Force -ErrorAction SilentlyContinue
                 if ($null -eq $dir -or ($dir.Attributes -band [System.IO.FileAttributes]::ReparsePoint)) { continue }
                 # A virtualenv is pruned by its PEP 405 marker, not its name (see _hooklib.ps1).
-                if (Test-IsVirtualEnvDirectory $dir.FullName) { continue }
+                if (Test-IsMarkerPrunedDirectory $dir.FullName) { continue }
                 if ($script:ExcludedDirs -notcontains $dir.Name.ToLowerInvariant()) { $stack.Push($dir.FullName) }
             }
         }
