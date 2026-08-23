@@ -450,15 +450,24 @@
         & $InstallScript -CustomHook $fixtureMan -Events @('Stop') -TargetProject $projMan -ClaudeOnly *> $null
         $recMan = (Get-RecordsFor 'ZZZ-Regtest-Manifest')[0]
         $manPaths = @($recMan.sourceManifest | ForEach-Object { $_.path })
-        Check 'the manifest includes the hook-local .env' (@($manPaths | Where-Object { $_ -like '*/.env' }).Count -eq 1)
+        # '.env' is the USER's local configuration - README: ".env.example
+        # (tracked) + .env (your local copy, git-ignored)" - so it is never a
+        # managed artifact. It used to be one, and that was a data-loss bug in
+        # two halves: a user who configured a hook made the record read as
+        # "unexpected managed file: <hook>/.env", and the update that drift
+        # triggered rebuilt the runtime from the plan alone and deleted it.
+        Check 'the manifest EXCLUDES a hook-local .env (user configuration, never managed)' (
+            @($manPaths | Where-Object { $_ -like '*/.env' }).Count -eq 0) ($manPaths -join ',')
         Check 'the manifest includes a copied helper file' (@($manPaths | Where-Object { $_ -like '*/helper.ps1' }).Count -eq 1)
         Check 'the manifest excludes .env.example (never copied by the installer)' (@($manPaths | Where-Object { $_ -like '*.env.example' }).Count -eq 0)
         Check 'baseline manifest install is current' ((Get-InstallIntegrity -Record $recMan -ToolRoot $ToolRoot).Status -eq 'current')
 
-        # 1. .env-only source change must trigger update
+        # 1. a .env-only SOURCE change changes nothing: it is never packaged,
+        # so it cannot make an installation stale. Shipping it would also push
+        # the hook author's own local configuration into every target project.
         Write-Utf8 (Join-Path $manDir '.env') "EVENTS=Stop`nEXTRA=1`n"
         $m = Get-InstallIntegrity -Record $recMan -ToolRoot $ToolRoot
-        Check 'a .env-only source change triggers an update' ($m.Status -eq 'update' -and $m.Detail -match '\.env') $m.Detail
+        Check 'a .env-only source change does NOT trigger an update' ($m.Status -eq 'current') $m.Detail
         Write-Utf8 (Join-Path $manDir '.env') "EVENTS=Stop`n"
 
         # 2. helper-only source change must trigger update
@@ -480,12 +489,29 @@
         Write-Utf8 (Join-Path $manDir 'helper.ps1') "# helper v1`n"
         Check 'restoring source returns the install to current' ((Get-InstallIntegrity -Record $recMan -ToolRoot $ToolRoot).Status -eq 'current')
 
-        # 5. the INSTALLED .env corrupted (source untouched)
-        $installedEnv = Join-Path ([string]$recMan.clients.claude.runtimeRoot) 'ZZZ-Regtest-Manifest\.env'
-        Add-Content -LiteralPath $installedEnv -Value 'TAMPERED=1'
+        # 5. a corrupted INSTALLED managed file (source untouched) is still
+        # drift. This used to be asserted with '.env', which is exactly the file
+        # that must NOT be managed - so it now uses a genuinely packaged one.
+        $installedHelper = Join-Path ([string]$recMan.clients.claude.runtimeRoot) 'ZZZ-Regtest-Manifest\helper.ps1'
+        Add-Content -LiteralPath $installedHelper -Value '# TAMPERED'
         $m = Get-InstallIntegrity -Record $recMan -ToolRoot $ToolRoot
-        Check 'a corrupted installed .env triggers an update' ($m.Status -eq 'update' -and $m.Detail -match 'installed file modified') $m.Detail
-        Write-Utf8 $installedEnv "EVENTS=Stop`n"
+        Check 'a corrupted installed managed file triggers an update' ($m.Status -eq 'update' -and $m.Detail -match 'installed file modified') $m.Detail
+        Write-Utf8 $installedHelper "# helper v1`n"
+        Check 'restoring the installed managed file returns to current' ((Get-InstallIntegrity -Record $recMan -ToolRoot $ToolRoot).Status -eq 'current')
+
+        # 5b. THE CONTRACT THAT WAS BROKEN: a user's own .env in the installed
+        # runtime is not drift, and survives the reinstall an update performs.
+        $userEnv = Join-Path ([string]$recMan.clients.claude.runtimeRoot) 'ZZZ-Regtest-Manifest\.env'
+        Write-Utf8 $userEnv "MAX_SCAN_DEPTH=10`nMAX_SCAN_ENTRIES=40000`n"
+        Check 'a user-written .env in an installed runtime is NOT drift' (
+            (Get-InstallIntegrity -Record $recMan -ToolRoot $ToolRoot).Status -eq 'current') (
+            (Get-InstallIntegrity -Record $recMan -ToolRoot $ToolRoot).Detail)
+        & $InstallScript -CustomHook $fixtureMan -Events @('Stop') -TargetProject $projMan -ClaudeOnly *> $null
+        Check 'the user .env survives the reinstall an update performs' (Test-Path -LiteralPath $userEnv)
+        Check 'the user .env keeps its exact contents across the reinstall' (
+            (Get-Content -LiteralPath $userEnv -Raw) -match 'MAX_SCAN_ENTRIES=40000') (
+            $(if (Test-Path -LiteralPath $userEnv) { Get-Content -LiteralPath $userEnv -Raw } else { '(deleted)' }))
+        Remove-Item -LiteralPath $userEnv -Force -ErrorAction SilentlyContinue
 
         # 6. An UNEXPECTED file inside a managed runtime directory is drift.
         # The old behaviour excluded .log/.tmp/.bak by extension - a second

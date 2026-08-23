@@ -98,7 +98,12 @@ function Test-IsVirtualEnvDirectory {
 # they appear inside a legitimate package folder.
 $script:PlanForbiddenDirectoryNames = @('.git', '.svn', '.hg', '.ai', '.claude', '.codex', '.agents', 'node_modules', '.venv', 'venv', '__pycache__', 'dist', 'build', 'out', 'target', 'bin', 'obj', '.cross-project-sync')
 # Files a package never ships into its runtime.
-$script:PlanExcludedFileNames = @('.env.example', '.env.sample', '.env.template', '.env.dist', 'secrets.md')
+# '.env' is the USER's local, git-ignored configuration (README: ".env.example
+# (tracked) + .env (your local copy)"), not something a package ships - all 23
+# shipped hooks carry a .env.example and none carries a .env. Packaging one
+# would overwrite the target project's own configuration on every install, and
+# would contradict the installed-manifest rule that never tracks it.
+$script:PlanExcludedFileNames = @('.env', '.env.example', '.env.sample', '.env.template', '.env.dist', 'secrets.md')
 
 # Decides how a hook source is installed.
 #   Package    - the script lives in <hooksRoot>\<Name>\<Name>.ps1; the folder
