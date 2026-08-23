@@ -501,6 +501,27 @@ try {
     Check 'a real candidate OUTSIDE the virtualenv is still reported (the scan did not just go blind)' (
         $r6.Out -match 'pytest_cache' -and (Test-Path -LiteralPath $realCache)) $r6.Out
 
+    # The other marker: CACHEDIR.TAG is the cross-tool "regenerable cache"
+    # standard (Bazel, Cargo, borg, restic...), so a directory carrying it is
+    # skipped whatever it is called - the same reasoning as pyvenv.cfg.
+    $hc7 = New-IsolatedHookCopy
+    $proj7 = New-GitRepo 'MarkerPruned'
+    Add-Commit $proj7 'init'
+    Fire -HookPath $hc7.Script -Cwd $proj7 -EventName 'SessionStart' -LocalAppData $hc7.LocalAppData | Out-Null
+    $tagged = New-Dir (Join-Path $proj7 'buildcache')
+    Write-Utf8 (Join-Path $tagged 'CACHEDIR.TAG') "Signature: 8a477f597d28d172789f06886806bc55`r`n"
+    $taggedNested = New-Cache $tagged '.mypy_cache'
+    # An ordinary source directory with NO marker must still be walked, or the
+    # probe would be over-pruning rather than pruning.
+    $plainNested = New-Cache (New-Dir (Join-Path $proj7 'src')) '.pytest_cache'
+    $r7 = Fire -HookPath $hc7.Script -Cwd $proj7 -EventName 'Stop' -LocalAppData $hc7.LocalAppData
+    Check 'a cache nested inside a CACHEDIR.TAG directory is never discovered' ($r7.Out -notmatch 'mypy_cache') $r7.Out
+    Check 'the CACHEDIR.TAG directory itself is never surfaced as a candidate' ($r7.Out -notmatch 'buildcache') $r7.Out
+    Check 'the marker directory and its contents still exist on disk' (
+        (Test-Path -LiteralPath (Join-Path $tagged 'CACHEDIR.TAG')) -and (Test-Path -LiteralPath $taggedNested))
+    Check 'an ordinary directory with NO marker is still walked (the probe does not over-prune)' (
+        $r7.Out -match 'pytest_cache' -and (Test-Path -LiteralPath $plainNested)) $r7.Out
+
     # =====================================================================
     Write-Host '--- STATIC: the hook AST contains no project-mutation primitive ---' -ForegroundColor Cyan
     # Parsed, not grepped: a COMMENT mentioning Remove-Item must not fail this,

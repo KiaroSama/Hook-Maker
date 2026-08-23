@@ -161,7 +161,7 @@ function Invoke-ScanWalk {
                 # registration. Reported under the MARKER name rather than the
                 # directory's own, so the distinct-names contract stays a small
                 # stable set instead of gaining an entry per oddly named venv.
-                if (Test-IsVirtualEnvDirectory -Path $entry.FullName) {
+                if (Test-IsMarkerPrunedDirectory -Path $entry.FullName) {
                     $script:PrunedDirectoryCount++
                     [void]$script:PrunedDirectoryNamesSeen.Add('pyvenv.cfg')
                     continue
