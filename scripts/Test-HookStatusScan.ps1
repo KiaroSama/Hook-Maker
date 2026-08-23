@@ -63,6 +63,13 @@ $script:TestPreviewLength = 800
 # the installer would produce - the same reason the native fixtures use the
 # canonical wrapper generator.
 . (Join-Path $ScriptRoot '_installkiro.ps1')
+# The persistence block reads the registry back in THIS scope; it is a
+# directory of per-record files, and these helpers are what read it.
+# _hooklib first: _installregistry.ps1 uses Set-ObjectProperty and
+# Write-JsonFileAtomic from it.
+. (Join-Path (Split-Path -Parent $ScriptRoot) 'hooks\_hooklib.ps1')
+. (Join-Path $ScriptRoot '_installlib.ps1')
+. (Join-Path $ScriptRoot '_installregistry.ps1')
 
 $Work = Join-Path ([System.IO.Path]::GetTempPath()) ('hookmaker-statusscan-' + [guid]::NewGuid().ToString('N').Substring(0, 8))
 

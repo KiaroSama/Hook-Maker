@@ -74,8 +74,10 @@
         $claudeSettingsMig = [string]$recMig.clients.claude.settingsPath
 
         # Rebuild the on-disk registry as a genuine v1 record for this hook.
-        $registryPath = Join-Path $IsolatedStateDir 'install-registry.json'
-        $liveRegistry = Get-Content -LiteralPath $registryPath -Raw | ConvertFrom-Json
+        # The registry is per-record files, so the fixture is written as this
+        # record's own file plus a v1 marker in the set metadata - the same
+        # thing a genuinely old state directory would contain.
+        $liveRegistry = Read-InstallRegistry -ToolRoot $ToolRoot
         $v1Record = [pscustomobject][ordered]@{
             id = [string]$recMig.id; internalName = 'ZZZ-Regtest-Migrate'; friendlyName = 'ZZZ-Regtest-Migrate'
             hookType = 'CustomHook'; sourceScript = $fixtureMig; sourceDir = (Split-Path -Parent $fixtureMig)
@@ -87,9 +89,11 @@
             lastInstalledUtc = '2026-01-01T00:00:00.0000000Z'; lastUpdatedUtc = ''; lastResult = 'ok'; lastError = ''
             createdUtc = '2026-01-01T00:00:00.0000000Z'; history = @()
         }
-        $liveRegistry.installs = @(@($liveRegistry.installs | Where-Object { [string]$_.id -ne [string]$recMig.id }) + @($v1Record))
-        $liveRegistry.version = 1
-        [System.IO.File]::WriteAllText($registryPath, ($liveRegistry | ConvertTo-Json -Depth 50), (New-Object System.Text.UTF8Encoding $false))
+        $registryPath = Get-InstallRecordPath -ToolRoot $ToolRoot -Id ([string]$recMig.id)
+        [System.IO.File]::WriteAllText($registryPath, ($v1Record | ConvertTo-Json -Depth 50), (New-Object System.Text.UTF8Encoding $false))
+        [System.IO.File]::WriteAllText(
+            (Join-Path (Get-InstallRegistryDirectory -ToolRoot $ToolRoot) '_meta.json'),
+            ('{"version":1}'), (New-Object System.Text.UTF8Encoding $false))
 
         $migrated = @((Read-InstallRegistry -ToolRoot $ToolRoot).installs | Where-Object { [string]$_.id -eq [string]$recMig.id })[0]
         Check 'a v1 record is migrated to schema 2 on read' ([int]$migrated.schema -eq 2)
@@ -150,52 +154,88 @@
         Check 'a new valid registry exists only after quarantine succeeded' (@($recovered.installs).Count -eq 1 -and [string]$recovered.installs[0].id -eq 'quarantine-probe')
         Check 'no raw file contents or secrets appear in the quarantine warning' ($result.Warning -notmatch 'this is not valid json')
 
-        # 2. valid JSON, wrong field types
-        Write-Utf8 $corruptRegistry '{"version":2,"installs":"not-an-array-of-records"}'
-        $state = Read-InstallRegistryState -ToolRoot $corruptRoot
-        Check 'valid JSON with a wrong installs type is reported as corrupt' ($state.State -eq 'corrupt')
+        # From here on the registry is the PER-RECORD directory that step 1 just
+        # created, so every case below damages what is actually read: a record
+        # file, or the set's own metadata. Writing a corrupt single document
+        # would prove nothing - it is no longer the file anything consults.
+        $corruptDir = Get-InstallRegistryDirectory -ToolRoot $corruptRoot
+        $probePath = Get-InstallRecordPath -ToolRoot $corruptRoot -Id 'quarantine-probe'
+        $corruptMeta = Join-Path $corruptDir '_meta.json'
 
-        Write-Utf8 $corruptRegistry '{"version":2,"installs":[{"friendlyName":"NoId"}]}'
+        # 2. a record file that parses but is not a record
+        Write-Utf8 $probePath '"not-a-record-object"'
+        $state = Read-InstallRegistryState -ToolRoot $corruptRoot
+        Check 'valid JSON that is not a record object is reported as corrupt' ($state.State -eq 'corrupt') $state.Reason
+        Check 'the corrupt-record reason names the offending file' ($state.Reason -match 'quarantine-probe') $state.Reason
+
+        Write-Utf8 $probePath '{"friendlyName":"NoId"}'
         $state = Read-InstallRegistryState -ToolRoot $corruptRoot
         Check 'a record with no id is reported as corrupt' ($state.State -eq 'corrupt' -and $state.Reason -match 'no id') $state.Reason
 
-        # 3. unsupported (newer) schema version
-        Write-Utf8 $corruptRegistry '{"version":99,"installs":[]}'
+        # 3. unsupported (newer) schema version, now carried by the set metadata
+        Write-Utf8 $probePath ((New-CorruptRecord) | ConvertTo-Json -Depth 50)
+        Write-Utf8 $corruptMeta '{"version":99}'
         $state = Read-InstallRegistryState -ToolRoot $corruptRoot
         Check 'an unsupported newer schema version is rejected explicitly' ($state.State -eq 'corrupt' -and $state.Reason -match 'newer than this Hook Maker supports') $state.Reason
+        Write-Utf8 $corruptMeta '{"version":3}'
 
-        # 4. a truncated .tmp beside a valid registry is cleaned up, not read
-        Write-Utf8 $corruptRegistry '{"version":2,"installs":[]}'
-        Write-Utf8 ($corruptRegistry + '.tmp') '{"version":2,"insta'
-        $result = Update-InstallRegistry -ToolRoot $corruptRoot -Record (New-CorruptRecord)
-        Check 'a valid registry with a stale .tmp still updates cleanly' ($result.Ok -eq $true)
-        Check 'the stale .tmp file is removed by the atomic write' (-not (Test-Path -LiteralPath ($corruptRegistry + '.tmp')))
+        # 3b. unparsable set metadata is corrupt too - never "no version, assume ours"
+        Write-Utf8 $corruptMeta '{ not json'
+        $state = Read-InstallRegistryState -ToolRoot $corruptRoot
+        Check 'unparsable set metadata is reported as corrupt' ($state.State -eq 'corrupt') $state.Reason
+        Write-Utf8 $corruptMeta '{"version":3}'
 
-        # 5. quarantine collision gets a unique name
-        Write-Utf8 $corruptRegistry '{ corrupt again'
+        # 4. a truncated .tmp beside a valid record is cleaned up, not read
+        Write-Utf8 ($probePath + '.tmp') '{"id":"quarantine-pro'
         $result = Update-InstallRegistry -ToolRoot $corruptRoot -Record (New-CorruptRecord)
-        Write-Utf8 $corruptRegistry '{ corrupt again'
+        Check 'a valid registry with a stale .tmp still updates cleanly' ($result.Ok -eq $true) $result.Warning
+        Check 'the stale .tmp file is removed by the atomic write' (-not (Test-Path -LiteralPath ($probePath + '.tmp')))
+
+        # 5. ONE damaged record is quarantined per-record - the other records
+        #    are not touched, which the single-document form could not do.
+        $bystander = New-CorruptRecord
+        Set-ObjectProperty -Object $bystander -Name 'id' -Value 'bystander1'
+        [void](Update-InstallRegistry -ToolRoot $corruptRoot -Record $bystander)
+        $bystanderPath = Get-InstallRecordPath -ToolRoot $corruptRoot -Id 'bystander1'
+        $bystanderBytes = [System.IO.File]::ReadAllBytes($bystanderPath)
+
+        Write-Utf8 $probePath '{ corrupt again'
+        $result = Update-InstallRegistry -ToolRoot $corruptRoot -Record (New-CorruptRecord)
+        Write-Utf8 $probePath '{ corrupt again'
         $result2 = Update-InstallRegistry -ToolRoot $corruptRoot -Record (New-CorruptRecord)
-        $allQuarantined = @(Get-ChildItem -LiteralPath (Split-Path -Parent $corruptRegistry) -Filter 'install-registry.corrupt-*.json')
-        Check 'identical corrupt content quarantined twice yields two distinct files' ($allQuarantined.Count -ge 3 -and $result.Ok -and $result2.Ok)
-        Check 'quarantine names are unique (no overwrite)' ((@($allQuarantined | ForEach-Object { $_.Name }) | Sort-Object -Unique).Count -eq $allQuarantined.Count)
+        $recordQuarantined = @(Get-ChildItem -LiteralPath (Split-Path -Parent $corruptRegistry) -Filter 'install-record-*.corrupt-*.json')
+        Check 'a damaged record is quarantined per record, not by scrapping the set' (
+            $recordQuarantined.Count -ge 2 -and $result.Ok -and $result2.Ok) (
+            [string]$recordQuarantined.Count + '|' + [string]$result.Warning)
+        Check 'record quarantine names are unique (no overwrite)' (
+            (@($recordQuarantined | ForEach-Object { $_.Name }) | Sort-Object -Unique).Count -eq $recordQuarantined.Count)
+        Check 'an unrelated record is byte-for-byte untouched by another record''s quarantine' (
+            (Test-Path -LiteralPath $bystanderPath) -and
+            ([System.IO.File]::ReadAllBytes($bystanderPath).Length -eq $bystanderBytes.Length))
+        Check 'the set is readable again after a per-record quarantine' (
+            (Read-InstallRegistryState -ToolRoot $corruptRoot).State -eq 'ok')
 
         # 6. quarantine failure leaves the original untouched
-        Write-Utf8 $corruptRegistry '{ unquarantinable'
-        $lockedBytes = [System.IO.File]::ReadAllBytes($corruptRegistry)
-        $held = [System.IO.File]::Open($corruptRegistry, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::Read)
+        Write-Utf8 $probePath '{ unquarantinable'
+        $lockedBytes = [System.IO.File]::ReadAllBytes($probePath)
+        $held = [System.IO.File]::Open($probePath, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::Read)
         try {
             $failResult = Update-InstallRegistry -ToolRoot $corruptRoot -Record (New-CorruptRecord)
-            Check 'a failed quarantine reports tracking failure instead of claiming success' ($failResult.Ok -eq $false)
+            Check 'a failed quarantine reports tracking failure instead of claiming success' ($failResult.Ok -eq $false) $failResult.Warning
             Check 'a failed quarantine explains that nothing was recorded' ($failResult.Warning -match 'NOT recorded') $failResult.Warning
         }
         finally { $held.Dispose() }
         Check 'a failed quarantine leaves the original file byte-for-byte intact' (
-            (Test-Path -LiteralPath $corruptRegistry) -and
-            ([System.IO.File]::ReadAllBytes($corruptRegistry).Length -eq $lockedBytes.Length))
+            (Test-Path -LiteralPath $probePath) -and
+            ([System.IO.File]::ReadAllBytes($probePath).Length -eq $lockedBytes.Length))
+        Remove-Item -LiteralPath $probePath -Force -ErrorAction SilentlyContinue
 
-        # 7. concurrent read-modify-write must not lose records
-        Write-Utf8 $corruptRegistry '{"version":2,"installs":[]}'
+        # 7. concurrent writers must not lose each other's records.
+        # "Start from empty" now means an empty record DIRECTORY - writing an
+        # empty single document would leave every file from the cases above in
+        # place and the count below would be measuring the wrong thing.
+        Get-ChildItem -LiteralPath $corruptDir -Filter '*.json' -File | Remove-Item -Force
+        Write-Utf8 $corruptMeta '{"version":3}'
         $concurrentScript = Join-Path $Work 'concurrent-writer.ps1'
         Write-Utf8 $concurrentScript @"
 Set-StrictMode -Version 2.0
@@ -390,9 +430,12 @@ for (`$i = 0; `$i -lt 8; `$i++) {
     $savedStateDir = $env:HOOKMAKER_STATE_DIR
     $blockedStateDir = Join-Path $Work 'blocked-state'
     New-Item -ItemType Directory -Path $blockedStateDir -Force | Out-Null
-    # A DIRECTORY where the registry file must be makes the registry write fail
-    # while runtime and settings still succeed.
-    New-Item -ItemType Directory -Path (Join-Path $blockedStateDir 'install-registry.json') -Force | Out-Null
+    # A FILE where the per-record registry DIRECTORY must be makes the registry
+    # write fail while runtime and settings still succeed. (It used to be a
+    # directory where the single registry file went; the shape moved, the point
+    # did not - a write that cannot land must be reported, never assumed.)
+    [System.IO.File]::WriteAllText((Join-Path $blockedStateDir 'install-registry.d'), 'not a directory',
+        (New-Object System.Text.UTF8Encoding $false))
     try {
         $env:HOOKMAKER_STATE_DIR = $blockedStateDir
         & $InstallScript -CustomHook (Join-Path $RealHooksDir 'Ai-Memory-Check\Ai-Memory-Check.ps1') -Events @('Stop') -TargetProject $partialProj -ClaudeOnly -ResultPath $partialResultFile *> $null
