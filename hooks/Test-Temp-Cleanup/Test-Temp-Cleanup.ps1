@@ -51,8 +51,8 @@
 # delete and never weaken a protection.
 #
 # Optional .env next to this script (copy .env.example):
-#   MAX_SCAN_ENTRIES       filesystem entries the scan may examine (default 5000)
-#   MAX_SCAN_DEPTH         directory depth the scan may descend (default 8)
+#   MAX_SCAN_ENTRIES       filesystem entries the scan may examine (default 15000)
+#   MAX_SCAN_DEPTH         directory depth the scan may descend (default 12)
 #   MAX_FINDINGS           how many candidate lines the report may list (default 20)
 #   ENABLE_SUBAGENT_STOP   also evaluate on SubagentStop (default false)
 #   EXTRA_CANDIDATE_NAMES  extra literal leaf names to DETECT (semicolon separated)
@@ -512,8 +512,17 @@ function Get-IntConfig {
     return $Default
 }
 
-$maxScanEntries = Get-IntConfig 'MAX_SCAN_ENTRIES' 5000 1 1000000
-$maxScanDepth = Get-IntConfig 'MAX_SCAN_DEPTH' 8 1 64
+# Raised from 5000/8 after measuring 14 real project trees: twelve of them
+# never exceed depth 4, so a deeper ceiling costs them literally nothing -
+# the walk simply never descends that far. The two that DO go deeper reach
+# depth 10 through ordinary vendored content (an Android SDK's
+# build-tools/.../renderscript/lib/bc/<abi>), and one of them also passed
+# 5000 entries, so both reported PARTIAL for structure that is genuinely
+# theirs. A PARTIAL nobody can act on trains readers to ignore the signal.
+# The entry ceiling is what actually bounds the work; depth is a secondary
+# guard, which is why raising it is the cheaper half of this change.
+$maxScanEntries = Get-IntConfig 'MAX_SCAN_ENTRIES' 15000 1 1000000
+$maxScanDepth = Get-IntConfig 'MAX_SCAN_DEPTH' 12 1 64
 $maxFindings = Get-IntConfig 'MAX_FINDINGS' 20 1 1000
 $enableSubagentStop = Get-BoolConfig 'ENABLE_SUBAGENT_STOP' $false
 $extraCandidateNames = @()
