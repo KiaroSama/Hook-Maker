@@ -523,6 +523,25 @@ try {
         $r7.Out -match 'pytest_cache' -and (Test-Path -LiteralPath $plainNested)) $r7.Out
 
     # =====================================================================
+    Write-Host '--- the shipped scan ceilings are the measured ones ---' -ForegroundColor Cyan
+    # Pinned as VALUES, not as behaviour: these defaults were chosen against 14
+    # real project trees (twelve never exceed depth 4, two reach depth 10 through
+    # ordinary vendored content and one of those also passed 5000 entries). A
+    # silent revert to 5000/8 would put those two back to reporting PARTIAL for
+    # structure that is genuinely theirs, and nothing else in the suite would
+    # notice. The .env.example must agree, or the documented default is a lie.
+    $ceilingSource = Get-Content -LiteralPath $Hook -Raw
+    Check 'MAX_SCAN_ENTRIES still defaults to 15000' (
+        $ceilingSource -match "Get-IntConfig 'MAX_SCAN_ENTRIES' 15000 ") 'default changed'
+    Check 'MAX_SCAN_DEPTH still defaults to 12' (
+        $ceilingSource -match "Get-IntConfig 'MAX_SCAN_DEPTH' 12 ") 'default changed'
+    $envExample = Join-Path (Split-Path -Parent $Hook) '.env.example'
+    $envText = Get-Content -LiteralPath $envExample -Raw
+    Check 'the shipped .env.example agrees with both defaults' (
+        ($envText -match '(?m)^MAX_SCAN_ENTRIES=15000\s*$') -and
+        ($envText -match '(?m)^MAX_SCAN_DEPTH=12\s*$')) $envText
+
+    # =====================================================================
     Write-Host '--- STATIC: the hook AST contains no project-mutation primitive ---' -ForegroundColor Cyan
     # Parsed, not grepped: a COMMENT mentioning Remove-Item must not fail this,
     # and a real invocation must not slip through as a differently spelled string.
