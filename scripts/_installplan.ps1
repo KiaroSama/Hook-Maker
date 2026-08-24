@@ -304,7 +304,7 @@ exit $LASTEXITCODE
 # and Get-NativePrePushSourceManifest/Get-NativePrePushInstalledManifest stay in
 # agreement without any change.
 $script:RuntimeMetadataFileName = '.hookmaker-runtime.json'
-$script:RuntimeMetadataSchemaVersion = 1
+$script:RuntimeMetadataSchemaVersion = 2
 # runtimeManifest is BOUNDED at this many entries. Every shipped hook plans 3-6
 # artifacts, so the cap is unreachable in practice; it exists so a pathological
 # custom-hook package cannot grow this file without limit. The artifact named by
@@ -465,6 +465,24 @@ function Get-RuntimeMetadataContent {
     for ($index = 0; $index -lt $entryLines.Count; $index++) {
         $suffix = if ($index -lt $entryLines.Count - 1) { ',' } else { '' }
         [void]$lines.Add($entryLines[$index] + $suffix)
+    }
+    [void]$lines.Add('  ],')
+    # Named here because this document is where a reader goes to ask "what does
+    # an update do to this directory?", and the honest answer has two halves.
+    # runtimeManifest above is what the update REPLACES; these are what it
+    # CARRIES ACROSS. A user's .env is deliberately absent from the manifest -
+    # listing it there would make every configured hook read as drift - so
+    # without this field the guarantee is invisible exactly where it is looked
+    # for, and its absence reads as "not protected". It was reported that way
+    # three times.
+    [void]$lines.Add('  "preservedUserConfig": [')
+    $preservedLines = New-Object System.Collections.Generic.List[string]
+    foreach ($configName in @($script:ManagedRuntimeUserConfigNames)) {
+        [void]$preservedLines.Add('    ' + (ConvertTo-PlanJsonStringLiteral ([string]$configName)))
+    }
+    for ($index = 0; $index -lt $preservedLines.Count; $index++) {
+        $suffix = if ($index -lt $preservedLines.Count - 1) { ',' } else { '' }
+        [void]$lines.Add($preservedLines[$index] + $suffix)
     }
     [void]$lines.Add('  ]')
     [void]$lines.Add('}')
