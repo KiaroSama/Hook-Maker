@@ -576,7 +576,7 @@
         $planText -match [regex]::Escape('.hookmaker-runtime.json') -and
         $cfText -match [regex]::Escape('.hookmaker-runtime.json')) '.hookmaker-runtime.json'
     Check 'both sides agree on schemaVersion 1' (
-        $planText -match [regex]::Escape('RuntimeMetadataSchemaVersion = 1') -and
+        $planText -match [regex]::Escape('RuntimeMetadataSchemaVersion = 2') -and
         $cfText -match [regex]::Escape("CleanupMetadataSchemaVersion = '1'")) 'schemaVersion 1'
     foreach ($metadataField in @('schemaVersion', 'recordId', 'friendlyName', 'client', 'scope',
             'projectKey', 'registrationName', 'runtimeScriptRelativePath', 'runtimeManifest')) {
