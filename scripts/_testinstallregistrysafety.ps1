@@ -155,6 +155,35 @@
     finally { Remove-FixtureHook 'ZZZ-Regtest-VenvPkg' }
 
     # =====================================================================
+    # The runtime metadata must state BOTH halves of what an update does.
+    # runtimeManifest is what gets replaced; preservedUserConfig is what gets
+    # carried across. A reader inspecting .hookmaker-runtime.json to ask "is my
+    # .env safe?" finds only the manifest otherwise, reads its absence as "not
+    # protected", and reports the bug again - which happened three times.
+    Write-Host '--- runtime metadata names the preserved user config, not just the managed files ---' -ForegroundColor Cyan
+    $metaFixture = New-FixtureHook 'ZZZ-Regtest-Metadoc' "exit 0`n"
+    try {
+        $projMeta = New-Proj 'MetaConfigProj'
+        & $InstallScript -CustomHook $metaFixture -Events @('Stop') -TargetProject $projMeta -ClaudeOnly *> $null
+        # No internal CamelCase in the fixture name on purpose: the installer
+        # derives the friendly name by splitting CamelCase, so a 'MetaConfig'
+        # fixture installs as 'Meta-Config' and a hand-built path misses it.
+        $metaPath = Join-Path $projMeta '.claude\hooks\Hook-Maker\ZZZ-Regtest-Metadoc\.hookmaker-runtime.json'
+        Check 'the runtime metadata document exists' (Test-Path -LiteralPath $metaPath -PathType Leaf) $metaPath
+        $metaDoc = Get-Content -LiteralPath $metaPath -Raw | ConvertFrom-Json
+        Check 'it declares the schema version that carries the field' ([int]$metaDoc.schemaVersion -ge 2) ([string]$metaDoc.schemaVersion)
+        Check 'it names .env as preserved user config' (
+            @($metaDoc.preservedUserConfig) -contains '.env') (@($metaDoc.preservedUserConfig) -join ',')
+        # The two halves must stay DISJOINT: a path in both would be replaced and
+        # preserved at once, and a .env inside runtimeManifest is exactly the
+        # drift-on-every-configured-hook bug this pair exists to prevent.
+        $managedPaths = @(@($metaDoc.runtimeManifest) | ForEach-Object { [string]$_.path })
+        Check 'no preserved path is also a managed manifest entry' (
+            @($managedPaths | Where-Object { $_ -like '*.env' }).Count -eq 0) ($managedPaths -join ',')
+    }
+    finally { Remove-FixtureHook 'ZZZ-Regtest-Metadoc' }
+
+    # =====================================================================
     # The managed manifest must cover EVERY file the installer copies, not
     # just the main script + _hooklib + sync config.
     # =====================================================================
@@ -226,15 +255,18 @@
         }
 
         # ---- the contract: EXACTLY these fields, nothing more -------------
+        # schemaVersion 2 added 'preservedUserConfig' as the LAST field. The order
+        # is part of the contract, so a new field goes at the end and the version
+        # moves with it - a consumer pinned to 1 must not silently read a 2.
         $ownExpectedFields = @('schemaVersion', 'recordId', 'friendlyName', 'client', 'scope', 'projectKey',
-            'registrationName', 'runtimeScriptRelativePath', 'runtimeManifest')
+            'registrationName', 'runtimeScriptRelativePath', 'runtimeManifest', 'preservedUserConfig')
         foreach ($ownClient in @('claude', 'codex', 'kiro')) {
             $ownJson = $ownDocuments[$ownClient].Json
             $ownFields = @($ownJson.PSObject.Properties | ForEach-Object { $_.Name })
             Check ('the ' + $ownClient + ' metadata carries exactly the contract fields, in order') (
                 (($ownFields) -join ',') -ceq (($ownExpectedFields) -join ',')) (($ownFields) -join ',')
-            Check ('the ' + $ownClient + ' metadata states schemaVersion 1, this record id, this hook and this client') (
-                $ownJson.schemaVersion -eq 1 -and
+            Check ('the ' + $ownClient + ' metadata states schemaVersion 2, this record id, this hook and this client') (
+                $ownJson.schemaVersion -eq 2 -and
                 ([string]$ownJson.recordId) -ceq ([string]$ownRecord.id) -and
                 ([string]$ownJson.friendlyName) -ceq $ownFixtureName -and
                 ([string]$ownJson.client) -ceq $ownClient -and
@@ -392,7 +424,7 @@
                 @{ Name = 'a foreign client'; From = '"client": "claude"'; To = '"client": "codex"' },
                 @{ Name = 'a foreign scope'; From = '"scope": "project"'; To = '"scope": "global"' },
                 @{ Name = 'a foreign hook name'; From = ('"friendlyName": "' + $ownFixtureName + '"'); To = '"friendlyName": "Some-Other-Hook"' },
-                @{ Name = 'an unknown schema version'; From = '"schemaVersion": 1'; To = '"schemaVersion": 99' },
+                @{ Name = 'an unknown schema version'; From = '"schemaVersion": 2'; To = '"schemaVersion": 99' },
                 @{ Name = 'a registrationName no record id would produce'; From = ('"registrationName": "Hook-Maker/' + $ownFixtureName + '"'); To = '"registrationName": "Hook-Maker/Some-Other-Hook"' },
                 @{ Name = 'a manifest hash that does not match the installed file'; From = '"sha256": "'; To = '"sha256": "0000' })) {
             $ownTampered = $ownSiblingDoc.Replace([string]$ownTamper.From, [string]$ownTamper.To)
