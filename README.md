@@ -708,7 +708,8 @@ step — for when the config has accumulated stale groups and you want a clean s
 group (id, name, route count) first, then asks one `y/n` question defaulting to **no** (Enter
 cancels; nothing is changed on decline). A timestamped backup
 (`sync-hooks.json.backup-<stamp>`) is written beside the config before anything is removed, the
-disabled `example-sync-profile` template is kept, and the result is re-validated. This changes
+legacy `example-sync-profile` is kept if an older version seeded one, and the result is
+re-validated. This changes
 routing **configuration only**: no hook is uninstalled and no file in any project is touched — use
 item `27` for that.
 
