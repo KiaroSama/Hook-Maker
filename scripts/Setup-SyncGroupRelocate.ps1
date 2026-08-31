@@ -65,9 +65,16 @@ function Get-RelocationCandidate {
     return $candidates.ToArray()
 }
 
-# Every project root either end of a sync route names, deduplicated. Read-only,
-# and silent about a missing or unreadable config: a relocation must still be
-# offered for the registry's own missing roots when no sync config exists.
+# Every project root either end of an ENABLED sync route names, deduplicated.
+# Read-only, and silent about a missing or unreadable config: a relocation must
+# still be offered for the registry's own missing roots when no sync config
+# exists.
+#
+# Disabled profiles and routes are skipped deliberately. Nothing syncs through
+# them, so a root they name being absent is not a fault to repair - and the
+# shipped `example-sync-profile` is disabled and points at `D:\Projects\Project
+# A|B`, which would otherwise put two permanent phantom entries in front of
+# every user. Re-enable the group first if you do want its paths repaired.
 function Get-SyncConfigRoot {
     param([string]$ConfigPath)
 
@@ -78,8 +85,10 @@ function Get-SyncConfigRoot {
     $seen = @{}
     foreach ($profile in @($config.profiles)) {
         if ($null -eq $profile -or $null -eq $profile.PSObject.Properties['routes']) { continue }
+        if ($null -ne $profile.PSObject.Properties['enabled'] -and -not $profile.enabled) { continue }
         foreach ($route in @($profile.routes)) {
             if ($null -eq $route) { continue }
+            if ($null -ne $route.PSObject.Properties['enabled'] -and -not $route.enabled) { continue }
             foreach ($side in @('source', 'destination')) {
                 if ($null -eq $route.PSObject.Properties[$side]) { continue }
                 $end = $route.$side
