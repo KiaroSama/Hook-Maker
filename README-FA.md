@@ -377,7 +377,7 @@ exit 0                       # اگر حرفی نداری
 }
 ```
 
-برای ساخت profile دستی، profile نمونه‌ی غیرفعال داخل `sync-hooks.json` را کپی کن و موارد زیر را عوض کن (البته روش ساده‌تر همان ساخت گروه سینک از ویزارد است):
+برای ساخت profile دستی از الگوی زیر شروع کن (روش ساده‌تر همان ساخت گروه سینک از ویزارد است). `id` و `name` و آرایه‌ی `routes` اجباری‌اند — بقیه اختیاری:
 
 - `id`: شناسه یکتا و ثابت، فقط با حروف انگلیسی، عدد، خط تیره یا زیرخط
 - `name`: نام نمایشی
@@ -395,13 +395,13 @@ exit 0                       # اگر حرفی نداری
   "enabled": true,
   "source": {
     "name": "Source Project",
-    "root": "D:\\Projects\\Source Project",
+    "root": "C:\\Code\\Source Project",
     "directory": ".ai",
     "aliases": []
   },
   "destination": {
     "name": "Destination Project",
-    "root": "D:\\Projects\\Destination Project",
+    "root": "C:\\Code\\Destination Project",
     "directory": ".ai",
     "aliases": []
   }
