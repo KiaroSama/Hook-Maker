@@ -12,6 +12,7 @@
 #   _testwizardmenu.ps1      menu structure, sync groups, real hook installs
 #   _testwizardselectall.ps1 Select All + installer idempotency
 #   _testwizardprompts.ps1   prompt robustness, numbering, malformed config
+#   _testwizardrelocate.ps1  the renamed/moved-project repair decisions
 #
 # Usage:  pwsh -NoLogo -NoProfile -File .\scripts\Test-Wizard.ps1 [-KeepArtifacts]
 # Exit code is the number of failed assertions (0 = all passed).
@@ -57,6 +58,17 @@ try {
 
     # Prompt robustness, hierarchical numbering, and malformed configuration.
     . (Join-Path $PSScriptRoot '_testwizardprompts.ps1')
+
+    # "Fix a renamed or moved project". Its decision functions are called
+    # DIRECTLY - they choose which files inside a user's project get deleted,
+    # and a stdin-driven run cannot put a half-moved project on disk
+    # deterministically. Loading the module here is what makes them reachable;
+    # the wizard itself is a separate process in every other block.
+    . (Join-Path (Split-Path -Parent $PSScriptRoot) 'hooks\_hooklib.ps1')
+    . (Join-Path $PSScriptRoot '_installlib.ps1')
+    . (Join-Path $PSScriptRoot '_installregistry.ps1')
+    . (Join-Path $PSScriptRoot 'Setup-SyncGroupRelocate.ps1')
+    . (Join-Path $PSScriptRoot '_testwizardrelocate.ps1')
 }
 finally {
     if (-not $KeepArtifacts) {

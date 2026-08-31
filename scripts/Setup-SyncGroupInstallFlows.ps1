@@ -48,11 +48,13 @@ function Invoke-InstallExistingHook {
         #   1                      Select all hooks (aggregate action)
         #   2                      the sync group (its own multi-project flow)
         #   3 .. 2+S               the S SHIPPED hooks, in $script:HookMeta.Order
-        #   3+S                    Update installed hooks    (management action)
-        #   4+S                    Get hook status           (management action)
-        #   5+S                    Uninstall installed hooks (management action)
-        #   6+S ..                 user-created/custom hooks, deterministic order
-        # The THREE management rows are placed AFTER the shipped block and
+        #   3+S                    Update installed hooks       (management action)
+        #   4+S                    Get hook status              (management action)
+        #   5+S                    Uninstall installed hooks    (management action)
+        #   6+S                    Reset sync groups            (management action)
+        #   7+S                    Fix a renamed/moved project  (management action)
+        #   8+S ..                 user-created/custom hooks, deterministic order
+        # The FIVE management rows are placed AFTER the shipped block and
         # BEFORE the custom block deliberately: discovering a new custom hook
         # under hooks\ must never shift the management rows, because those
         # numbers are documented UI. Every index below is derived from
@@ -70,7 +72,8 @@ function Invoke-InstallExistingHook {
         $statusIndex = $shippedHooks.Count + 4
         $uninstallIndex = $shippedHooks.Count + 5
         $resetIndex = $shippedHooks.Count + 6
-        $customStartIndex = $shippedHooks.Count + 7
+        $relocateIndex = $shippedHooks.Count + 7
+        $customStartIndex = $shippedHooks.Count + 8
         $maxIndex = $customStartIndex + $customHooks.Count - 1
 
         # The hook numbers are NOT one contiguous run: the three management rows
@@ -92,10 +95,11 @@ function Invoke-InstallExistingHook {
         Write-Host ('  ' + (Get-Painted ([string]$statusIndex + '.') $C.LightBlue) + ' ' + (Get-Painted 'Get hook status' $C.Bold) + $script:MenuSep + (Get-Painted '[manage]' $C.Teal) + $script:MenuSep + (Get-Painted 'scan a path for installed hooks (skips dependency caches) and track results' $C.HintYellow))
         Write-Host ('  ' + (Get-Painted ([string]$uninstallIndex + '.') $C.LightBlue) + ' ' + (Get-Painted 'Uninstall installed hooks' $C.Bold) + $script:MenuSep + (Get-Painted '[manage]' $C.Teal) + $script:MenuSep + (Get-Painted 'list and remove installed hooks; never deletes hook sources' $C.HintYellow))
         Write-Host ('  ' + (Get-Painted ([string]$resetIndex + '.') $C.LightBlue) + ' ' + (Get-Painted 'Reset sync groups' $C.Bold) + $script:MenuSep + (Get-Painted '[manage]' $C.Teal) + $script:MenuSep + (Get-Painted 'remove every sync group from the config; installs and files untouched' $C.HintYellow))
+        Write-Host ('  ' + (Get-Painted ([string]$relocateIndex + '.') $C.LightBlue) + ' ' + (Get-Painted 'Fix a renamed or moved project' $C.Bold) + $script:MenuSep + (Get-Painted '[manage]' $C.Teal) + $script:MenuSep + (Get-Painted 'repoint hooks whose project folder was renamed or moved' $C.HintYellow))
         for ($i = 0; $i -lt $customHooks.Count; $i++) {
             Write-HookMenuLine ($customStartIndex + $i) $customHooks[$i].Name
         }
-        Write-NoteLine ('  Tip: use lists and ranges, e.g. 3-8 (1 alone runs everything: the sync group AND every hook). Hooks are ' + $hookSpans + '; ' + $updateIndex + '/' + $statusIndex + '/' + $uninstallIndex + '/' + $resetIndex + ' are management actions - pick one on its own.')
+        Write-NoteLine ('  Tip: use lists and ranges, e.g. 3-8 (1 alone runs everything: the sync group AND every hook). Hooks are ' + $hookSpans + '; ' + $updateIndex + '/' + $statusIndex + '/' + $uninstallIndex + '/' + $resetIndex + '/' + $relocateIndex + ' are management actions - pick one on its own.')
         $value = Read-Answer (New-QuestionPrompt 'Select a hook (number, list, or range)' $null '2') 'select custom hook'
         if ($value -eq '0') { return 'back' }
         if ($value -eq '') { $value = '2' }
@@ -114,10 +118,10 @@ function Invoke-InstallExistingHook {
         # The management rows are actions, not hook selections: mixing them with
         # hooks (or with each other) has no coherent meaning, so it is rejected
         # explicitly rather than silently doing half of what was typed.
-        $managementPicked = @($indices | Where-Object { $_ -eq $updateIndex -or $_ -eq $statusIndex -or $_ -eq $uninstallIndex -or $_ -eq $resetIndex })
+        $managementPicked = @($indices | Where-Object { $_ -eq $updateIndex -or $_ -eq $statusIndex -or $_ -eq $uninstallIndex -or $_ -eq $resetIndex -or $_ -eq $relocateIndex })
         if ($managementPicked.Count -gt 0) {
             if ($indices.Count -ne 1) {
-                Write-ErrorLine ('Select ' + $updateIndex + ' (update), ' + $statusIndex + ' (status), ' + $uninstallIndex + ' (uninstall) or ' + $resetIndex + ' (reset sync groups) on its own - it cannot be combined with hook selections or with each other.')
+                Write-ErrorLine ('Select ' + $updateIndex + ' (update), ' + $statusIndex + ' (status), ' + $uninstallIndex + ' (uninstall), ' + $resetIndex + ' (reset sync groups) or ' + $relocateIndex + ' (fix a renamed project) on its own - it cannot be combined with hook selections or with each other.')
                 continue
             }
             if ($indices[0] -eq $updateIndex) {
@@ -130,6 +134,10 @@ function Invoke-InstallExistingHook {
             }
             if ($indices[0] -eq $resetIndex) {
                 if ((Invoke-ResetSyncGroups -ConfigPath $ConfigPath -ValidateScript $ValidateScript) -eq 'done') { return 'done' }
+                continue
+            }
+            if ($indices[0] -eq $relocateIndex) {
+                if ((Invoke-FixRelocatedProject) -eq 'done') { return 'done' }
                 continue
             }
             if ((Invoke-UninstallInstalledHooks) -eq 'done') { return 'done' }

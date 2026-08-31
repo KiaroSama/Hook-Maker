@@ -46,6 +46,9 @@ $ValidateScript = Join-Path $ScriptRoot 'Validate-Config.ps1'
 # The create-or-install sub-menu flows: installing existing hooks, installing
 # every hook a profile config names, updating previously installed hooks, and
 # the sub-menu that dispatches them alongside "Create a new hook".
+# Repointing a project whose folder was renamed or moved. Loaded BEFORE the
+# install flows because the menu dispatches into it.
+. (Join-Path $ScriptRoot 'Setup-SyncGroupRelocate.ps1')
 . (Join-Path $ScriptRoot 'Setup-SyncGroupInstallFlows.ps1')
 $UninstallScript = Join-Path $ScriptRoot 'Uninstall-Hook.ps1'
 $StatusScript = Join-Path $ScriptRoot 'Get-HookStatus.ps1'

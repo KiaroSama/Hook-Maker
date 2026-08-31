@@ -29,7 +29,7 @@ starts the user's task.
 | `scripts/Test-CiStatusCheck.ps1` | Offline test suite for the Ci-Status-Check hook (mocks git state and `gh`, no network/account; exact-SHA binding, external-blocker record/recheck/retire, client-aware notice shapes, and annotation-proven, pagination-safe account-billing auto-detection with its fail-closed paths; 83 assertions). |
 | `scripts/Test-GithubBaselineCheck.ps1` | Offline test suite for the Github-Baseline-Check hook, incl. false-positive/negative trigger audit (mocks git state and `gh`, no network/account; 35 assertions). Split with the two suites above from one combined `Test-GitHubHooks.ps1` since the three hooks share no production code, only a common `gh` mock harness. |
 | `scripts/Test-RulesCheck.ps1` | Offline test suite for the Rules-Check hook and per-client install targeting (33 assertions). |
-| `scripts/Test-Wizard.ps1` | Drives the interactive wizard end-to-end via stdin (menu incl. "Update previously installed hooks", hook listing, list/range multi-select, Select All = sync group + every hook, client targeting, real self-contained installs, single-hook installs defaulting to that hook's own recommended events, a valid non-empty timing tag for every shipped hook, an unwritable project `.ai` directory failing safely with no partial rollback left behind and pre-existing `.ai` directories untouched, hierarchical `<parent>-<slot>` numbering for repeated project-path prompts, **shared project paths** — the sync group's project list reused as the install targets for every other hook in the same batch so paths are entered once, **transitive sync-group merge** — creating a group that overlaps an existing one produces one full-mesh profile over the union reusing the larger group's id, installer/idempotency + source-hash verification for the menu-affected hooks) against temp projects (192 assertions). |
+| `scripts/Test-Wizard.ps1` | Drives the interactive wizard end-to-end via stdin (menu incl. "Update previously installed hooks", hook listing, list/range multi-select, Select All = sync group + every hook, client targeting, real self-contained installs, single-hook installs defaulting to that hook's own recommended events, a valid non-empty timing tag for every shipped hook, a project `.ai` directory that cannot be created failing safely with no partial rollback left behind and pre-existing `.ai` directories untouched, hierarchical `<parent>-<slot>` numbering for repeated project-path prompts, **shared project paths** — the sync group's project list reused as the install targets for every other hook in the same batch so paths are entered once, **transitive sync-group merge** — creating a group that overlaps an existing one produces one full-mesh profile over the union reusing the larger group's id, installer/idempotency + source-hash verification for the menu-affected hooks, and the **fix a renamed or moved project** flow — which roots are offered, which per-hook documents are safe to remove, and which sync-route fields are rewritten) against temp projects (292 assertions). |
 | `scripts/Test-SecretsCheck.ps1` | Offline test suite for the Secrets-Check hook (nested env discovery, Secret/PublicConfig/Unknown classification precedence, PUBLIC_CONFIG_KEYS-cannot-declassify-a-credential, AUTH/OAUTH token-boundary matching, critical-only-blocks Stop policy, ignore/tracked/staged/index leak, outgoing-commit + committed-then-removed `.env*`/`secrets.md` history scan, fail-closed incomplete-scan handling via real bare-remote pushes, a real secret leaked into a tracked template file, throttled unused scan, the entropy heuristic being overridable while identified credentials are not, e-mail values never treated as credentials, and by-value grouping of the leak scan; real throwaway git repos, 137 assertions). |
 | `scripts/Test-AiMemoryLoad.ps1` | Offline test suite for Ai-Memory-Load and Graph-Read-Check (content fingerprinting, whole-.ai/ file listing, truncation, graph-exists gate, English + Persian codebase-structure relevance gating, missing-graph create-then-query guidance, non-executing availability check, session/graph-version fingerprint suppression; 40 assertions). |
 | `scripts/Test-AiMemoryCheck.ps1` | Offline test suite for the Ai-Memory-Check hook (missing/stale memory.md, real specialized-file enumeration, cooldown; real throwaway git repos, 11 assertions). |
@@ -197,7 +197,7 @@ you add or create hooks:
 
 | Item | What it is |
 | --- | --- |
-| `1` | Select all hooks — the sync group **and** every hook below (shipped + your own). Never runs `25`–`28`. |
+| `1` | Select all hooks — the sync group **and** every hook below (shipped + your own). Never runs `25`–`29`. |
 | `2` | Create or update a sync group |
 | `3`–`23` | The 21 shipped hooks, in a pinned order (`9` is `Docs-Freshness-Check`; `20`–`22` are the three test-health hooks; `23` is `Utf8-Encoding-Check`) |
 | `24` | `Cloudflare-Deploy` |
@@ -205,12 +205,13 @@ you add or create hooks:
 | `26` | **Get hook status** |
 | `27` | **Uninstall installed hooks** |
 | `28` | **Reset sync groups** |
-| `29`+ | Your own created/custom hooks under `hooks\`, in deterministic name order |
+| `29` | **Fix a renamed or moved project** |
+| `30`+ | Your own created/custom hooks under `hooks\`, in deterministic name order |
 
-Discovering or creating a custom hook adds rows from `29` onward and **never shifts `25`–`28`**.
+Discovering or creating a custom hook adds rows from `30` onward and **never shifts `25`–`29`**.
 
 Selections accept a single number, a comma list, and inclusive ascending ranges — `1`, `1,2`,
-`1,2,3-6`. `25`–`28` are management actions, not hook selections: each must be chosen on
+`1,2,3-6`. `25`–`29` are management actions, not hook selections: each must be chosen on
 its own, and combining any of them with hook numbers (`3,25`, `24-26`, `1,26`, `25,27`) is rejected
 rather than half-executed.
 
@@ -693,6 +694,14 @@ A Hook-Maker-managed installation in some other, unreferenced project can't be d
 reinstall it there once (any method) and it enters the registry going forward.
 
 ## Resetting sync groups (`28`)
+
+Item **`29` Fix a renamed or moved project** repairs the installs of a project whose folder was
+renamed or moved. It lists only the project roots the registry names that are no longer on disk,
+asks where each one went, and then reinstalls every hook at the new path, drops the stale records,
+removes per-hook documents that travelled with the folder and are now superseded, and repoints any
+sync-group route that named the old root. It never guesses the new location — a missing folder can
+equally mean *deleted* — and a document it cannot identify safely is named for you rather than
+removed. Hook sources are never touched.
 
 Item **`28` Reset sync groups** removes every sync group from `sync-hooks.json` in one confirmed
 step — for when the config has accumulated stale groups and you want a clean start. It lists each
