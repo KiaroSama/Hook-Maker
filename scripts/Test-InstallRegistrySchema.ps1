@@ -54,7 +54,6 @@ $Work = New-TestWorkspace -Prefix 'hookmaker-regschema'
 Write-Host ("Workspace: $Work") -ForegroundColor DarkGray
 
 function New-Proj { param([string]$Name) $p = Join-Path $Work $Name; New-Item -ItemType Directory -Path $p -Force | Out-Null; return $p }
-function Write-Utf8 { param([string]$Path, [string]$Content) [System.IO.File]::WriteAllText($Path, $Content, (New-Object System.Text.UTF8Encoding $false)) }
 
 # Keeps every install and registry write inside this workspace, away from the
 # real checkout's own state\install-registry.json.

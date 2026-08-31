@@ -39,8 +39,6 @@ $script:TestPreviewLength = 900
 $Work = New-TestWorkspace -Prefix 'hookmaker-timingtest'
 Write-Host ("Workspace: $Work") -ForegroundColor DarkGray
 
-function Write-Utf8 { param([string]$Path, [string]$Content) [System.IO.File]::WriteAllText($Path, $Content, (New-Object System.Text.UTF8Encoding $false)) }
-
 # WRITE side: extract the REAL functions from the runner into a shared module so
 # the suite and every concurrent child call the SAME code (never a re-implementation).
 $rAst = [System.Management.Automation.Language.Parser]::ParseFile($Runner, [ref]$null, [ref]$null)

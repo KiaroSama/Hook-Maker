@@ -70,7 +70,6 @@ $script:TestPreviewLength = 500
 $Work = New-TestWorkspace -Prefix 'hookmaker-statepersist'
 Write-Host ("Workspace: $Work") -ForegroundColor DarkGray
 
-function Write-Utf8 { param([string]$Path, [string]$Content) [System.IO.File]::WriteAllText($Path, $Content, (New-Object System.Text.UTF8Encoding $false)) }
 function New-Proj { param([string]$Name) $p = Join-Path $Work $Name; New-Item -ItemType Directory -Path $p -Force | Out-Null; return $p }
 function Test-BytesEqual { param([byte[]]$A, [byte[]]$B) return [System.Linq.Enumerable]::SequenceEqual([byte[]]$A, [byte[]]$B) }
 $HostExecutable = (Get-Process -Id $PID).Path

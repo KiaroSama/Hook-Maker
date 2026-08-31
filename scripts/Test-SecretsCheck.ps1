@@ -92,11 +92,6 @@ function New-GitProj {
     return $repo
 }
 
-function Write-Utf8 {
-    param([string]$Path, [string]$Content)
-    [System.IO.File]::WriteAllText($Path, $Content, (New-Object System.Text.UTF8Encoding $false))
-}
-
 function Add-Commit {
     param([string]$Repo, [string]$Message = 'c')
     & git -C $Repo add -A 2>$null | Out-Null

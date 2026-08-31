@@ -88,17 +88,6 @@ New-Item -ItemType Directory -Path (Join-Path $FakeToolRoot 'hooks') -Force | Ou
 # run just as easily. What it does instead is fail with the evidence needed to
 # identify the deleter next time - whether the workspace root and the immediate
 # directory still existed at the moment of the write.
-function Write-Utf8 { param([string]$Path, [string]$Content)
-    $directory = Split-Path -Parent $Path
-    if (-not (Test-Path -LiteralPath $directory -PathType Container)) { New-Item -ItemType Directory -Path $directory -Force | Out-Null }
-    try { [System.IO.File]::WriteAllText($Path, $Content, (New-Object System.Text.UTF8Encoding $false)) }
-    catch {
-        throw ('Write-Utf8 failed for ' + $Path + ' :: ' + $_.Exception.Message +
-            ' [workspace exists=' + (Test-Path -LiteralPath $Work -PathType Container) +
-            '; parent exists=' + (Test-Path -LiteralPath $directory -PathType Container) +
-            '; utc=' + [DateTime]::UtcNow.ToString('o') + ']')
-    }
-}
 # Comma-wrapped: a bare `return [byte[]]@()` enumerates to $null, which would
 # make the "unchanged" comparison throw instead of failing the assertion.
 function Get-BytesOrEmpty { param([string]$Path) if (Test-Path -LiteralPath $Path -PathType Leaf) { return , ([System.IO.File]::ReadAllBytes($Path)) } return , ([byte[]]@()) }
