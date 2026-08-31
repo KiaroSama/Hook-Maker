@@ -192,6 +192,41 @@ try {
     [System.IO.File]::WriteAllText($relBadJson, '{ not json', (New-Object System.Text.UTF8Encoding $false))
     Check 'relocate: an unparsable config is silent, never fatal' (
         @(Get-SyncConfigRoot -ConfigPath $relBadJson).Count -eq 0)
+
+    # Nothing syncs through a disabled profile or route, so a root it names
+    # being absent is not a fault to repair. The shipped `example-sync-profile`
+    # is disabled and points at paths that never exist, and without this it put
+    # two permanent phantom entries at the top of every user's list.
+    $relDisabled = Join-Path $relWork 'disabled.json'
+    $disabledDoc = @{
+        version  = 1
+        profiles = @(
+            @{ id = 'off-profile'; name = 'Disabled group'; enabled = $false
+                routes = @(@{ id = 'x'; enabled = $true
+                        source      = @{ name = 'Phantom'; root = 'D:\Projects\Project A'; directory = '.ai'; aliases = @() }
+                        destination = @{ name = 'moved'; root = $relNew; directory = '.ai'; aliases = @() }
+                    })
+            },
+            @{ id = 'on-profile'; name = 'Live group'; enabled = $true
+                routes = @(
+                    @{ id = 'y'; enabled = $false
+                        source      = @{ name = 'OffRoute'; root = 'D:\Projects\Project B'; directory = '.ai'; aliases = @() }
+                        destination = @{ name = 'moved'; root = $relNew; directory = '.ai'; aliases = @() }
+                    },
+                    @{ id = 'z'; enabled = $true
+                        source      = @{ name = 'Real'; root = $relGoneRoot; directory = '.ai'; aliases = @() }
+                        destination = @{ name = 'moved'; root = $relNew; directory = '.ai'; aliases = @() }
+                    })
+            })
+    }
+    [System.IO.File]::WriteAllText($relDisabled, ($disabledDoc | ConvertTo-Json -Depth 12), (New-Object System.Text.UTF8Encoding $false))
+    $disabledRoots = @(Get-SyncConfigRoot -ConfigPath $relDisabled)
+    Check 'relocate: a disabled profile contributes no candidate' (
+        $disabledRoots -notcontains 'D:\Projects\Project A') ($disabledRoots -join ' ; ')
+    Check 'relocate: a disabled route contributes no candidate' (
+        $disabledRoots -notcontains 'D:\Projects\Project B') ($disabledRoots -join ' ; ')
+    Check 'relocate: an enabled route in the same config still does' (
+        $disabledRoots -contains $relGoneRoot) ($disabledRoots -join ' ; ')
 }
 finally {
     if (-not (Remove-TestWorkspace $relWork)) { $script:Fail++ }
