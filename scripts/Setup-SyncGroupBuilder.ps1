@@ -15,10 +15,11 @@
 # so this is a normal one-directional dependency, not a layering violation.
 # ---------------------------------------------------------------------------
 
-# The one profile that ships in sync-hooks.example.json. It is disabled and its
-# routes point at placeholder paths, so it can never match a real project - which
-# is why the reset action keeps it as the editable template while removing every
-# wizard-created group.
+# A legacy id: sync-hooks.example.json used to seed one disabled profile whose
+# routes pointed at placeholder paths (D:\Projects\Project A|B). It no longer
+# ships, but a config seeded by an older version still carries it, and the reset
+# action must not delete something the user may since have edited into a real
+# group - so it stays filtered out of "wizard-created groups" here.
 $script:ExampleProfileId = 'example-sync-profile'
 
 # ----------------------------------------------------------- input phase ----

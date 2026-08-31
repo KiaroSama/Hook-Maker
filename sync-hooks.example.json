@@ -73,38 +73,5 @@
       "Never transfer secrets, credentials, environment-specific values, logs, generated indexes, temporary task status, or unrelated project facts."
     ]
   },
-  "profiles": [
-    {
-      "id": "example-sync-profile",
-      "name": "Editable sync profile",
-      "enabled": false,
-      "events": [
-        "SessionStart",
-        "UserPromptSubmit"
-      ],
-      "initialSyncMode": "review",
-      "reviewInstructions": [
-        "Only import information relevant to this destination.",
-        "Preserve destination-specific architecture, naming, and constraints."
-      ],
-      "routes": [
-        {
-          "id": "project-a-to-project-b",
-          "enabled": true,
-          "source": {
-            "name": "Project A",
-            "root": "D:\\Projects\\Project A",
-            "directory": ".ai",
-            "aliases": []
-          },
-          "destination": {
-            "name": "Project B",
-            "root": "D:\\Projects\\Project B",
-            "directory": ".ai",
-            "aliases": []
-          }
-        }
-      ]
-    }
-  ]
+  "profiles": []
 }
