@@ -8,7 +8,6 @@
 # Dot-sourced by Test-TestCompletionCheck.ps1 into the caller's scope (uses
 # its $Work / $Hook / $HookLib) - not a standalone suite.
 
-function Write-Utf8 { param([string]$Path, [string]$Content) [System.IO.File]::WriteAllText($Path, $Content, (New-Object System.Text.UTF8Encoding $false)) }
 function New-Proj { param([string]$Name) $p = Join-Path $Work $Name; New-Item -ItemType Directory -Path $p -Force | Out-Null; return $p }
 function New-GitRepo {
     param([string]$Name)

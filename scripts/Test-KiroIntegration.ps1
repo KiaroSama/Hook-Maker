@@ -82,7 +82,6 @@ $script:TestPreviewLength = 500
 $Work = New-TestWorkspace -Prefix 'hookmaker-kirointeg'
 Write-Host ("Workspace: $Work") -ForegroundColor DarkGray
 
-function Write-Utf8 { param([string]$Path, [string]$Content) [System.IO.File]::WriteAllText($Path, $Content, (New-Object System.Text.UTF8Encoding $false)) }
 function Read-Utf8 { param([string]$Path) return [System.IO.File]::ReadAllText($Path, [System.Text.Encoding]::UTF8) }
 function Compact { param($Value) return ($Value | ConvertTo-Json -Depth 20 -Compress) }
 function Get-Rejection { param([scriptblock]$Action) try { & $Action; return '' } catch { return [string]$_.Exception.Message } }

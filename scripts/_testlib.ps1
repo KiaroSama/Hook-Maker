@@ -183,3 +183,44 @@ public static class HookMakerTestPrivilege {
     }
     return $true
 }
+# The one UTF-8 (no BOM) writer every suite uses. Two things a bare
+# WriteAllText does not do, and 28 hand-rolled copies disagreed about:
+#
+#   * create the parent directory - 8 copies did, 20 did not;
+#   * survive a transient share violation. An external reader (AV, indexer,
+#     search) can hold a just-written file for a few milliseconds, and a
+#     single-shot write turns that into a failed suite. It cost one full
+#     matrix a red `Test-DiscoveredUninstall` that passed on the re-run.
+#
+# Only IOException is retried: a bad path or a denied ACL raises something
+# else and must surface immediately instead of being delayed five times.
+function Write-Utf8 {
+    # NOT [Parameter(Mandatory)]: a missing argument would make PowerShell
+    # PROMPT, and a test process with no console is the worst place to wait for
+    # one. Check it and throw instead.
+    param([string]$Path, [string]$Content = '')
+    if ([string]::IsNullOrWhiteSpace($Path)) { throw 'Write-Utf8 called without a path.' }
+    $directory = Split-Path -Parent $Path
+    if (-not [string]::IsNullOrEmpty($directory) -and
+        -not (Test-Path -LiteralPath $directory -PathType Container)) {
+        New-Item -ItemType Directory -Path $directory -Force | Out-Null
+    }
+    $encoding = New-Object System.Text.UTF8Encoding $false
+    for ($attempt = 1; $attempt -le 5; $attempt++) {
+        try {
+            [System.IO.File]::WriteAllText($Path, $Content, $encoding)
+            return
+        }
+        catch [System.IO.IOException] {
+            if ($attempt -eq 5) {
+                throw ('Write-Utf8 failed for ' + $Path + ' after ' + $attempt + ' attempt(s) :: ' +
+                    $_.Exception.Message + ' [parent exists=' +
+                    (Test-Path -LiteralPath $directory -PathType Container) +
+                    '; utc=' + [DateTime]::UtcNow.ToString('o') + ']')
+            }
+            # No signal exists for "the other process closed its handle", so a
+            # short bounded back-off is the only option. Worst case 500 ms.
+            Start-Sleep -Milliseconds (50 * $attempt)
+        }
+    }
+}

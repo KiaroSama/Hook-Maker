@@ -5,8 +5,6 @@
 # Dot-sourced by Test-TestRunGuard.ps1 into the caller's scope (uses its
 # $Work / $Hook / $HookLib) - not a standalone suite.
 
-function Write-Utf8 { param([string]$Path, [string]$Content) [System.IO.File]::WriteAllText($Path, $Content, (New-Object System.Text.UTF8Encoding $false)) }
-
 # Filename-safe runId, matching Test-Run-Guard.ps1/Run-Tests-Guarded.ps1's
 # Get-SafeRunId - the per-run suffix of every coordination file.
 function Get-SafeRunId { param([string]$Id) $s = ([string]$Id).ToLowerInvariant() -replace '[^a-z0-9]', ''; if ($s -eq '') { $s = [guid]::NewGuid().ToString('N') } return $s }

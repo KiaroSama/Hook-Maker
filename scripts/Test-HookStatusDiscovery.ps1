@@ -62,11 +62,6 @@ $SavedStateDir = $env:HOOKMAKER_STATE_DIR
 $env:HOOKMAKER_STATE_DIR = Join-Path $Work 'state'
 
 function New-Dir { param([string]$Path) New-Item -ItemType Directory -Path $Path -Force | Out-Null; return $Path }
-function Write-Utf8 {
-    param([string]$Path, [string]$Content)
-    New-Item -ItemType Directory -Path (Split-Path -Parent $Path) -Force | Out-Null
-    [System.IO.File]::WriteAllText($Path, $Content, (New-Object System.Text.UTF8Encoding $false))
-}
 function Write-JsonFixture { param([string]$Path, $Value) Write-Utf8 -Path $Path -Content ($Value | ConvertTo-Json -Depth 30) }
 
 # Runs the scanner in a FRESH process, exactly as the UI layer will.

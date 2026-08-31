@@ -53,7 +53,6 @@ $Work = New-TestWorkspace -Prefix 'hookmaker-cleanuptest'
 Write-Host ("Workspace: $Work") -ForegroundColor DarkGray
 
 function New-Proj { param([string]$Name) $p = Join-Path $Work $Name; New-Item -ItemType Directory -Path $p -Force | Out-Null; return $p }
-function Write-Utf8 { param([string]$Path, [string]$Content) [System.IO.File]::WriteAllText($Path, $Content, (New-Object System.Text.UTF8Encoding $false)) }
 function New-Dir { param([string]$Path) New-Item -ItemType Directory -Path $Path -Force | Out-Null; return $Path }
 function New-GitRepo {
     param([string]$Name)

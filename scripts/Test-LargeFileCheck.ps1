@@ -53,12 +53,6 @@ $RealStateDir = Join-Path $env:LOCALAPPDATA 'HookMaker\state'
 $RealStateBefore = @(Get-ChildItem -LiteralPath $RealStateDir -Filter 'LargeFileCheck-*.txt' -ErrorAction SilentlyContinue | ForEach-Object { $_.Name })
 
 function New-Proj { param([string]$Name) $p = Join-Path $Work $Name; New-Item -ItemType Directory -Path $p -Force | Out-Null; return $p }
-function Write-Utf8 {
-    param([string]$Path, [string]$Content)
-    $dir = Split-Path -Parent $Path
-    if (-not (Test-Path -LiteralPath $dir -PathType Container)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
-    [System.IO.File]::WriteAllText($Path, $Content, (New-Object System.Text.UTF8Encoding $false))
-}
 # A source file with EXACTLY $LineCount lines (ReadLines yields $LineCount entries).
 function New-SourceFile {
     param([string]$Path, [int]$LineCount, [int]$Width = 4)

@@ -42,7 +42,6 @@ $script:TestPreviewLength = 500
 $Work = New-TestWorkspace -Prefix 'hookmaker-kiro'
 Write-Host ("Workspace: $Work") -ForegroundColor DarkGray
 
-function Write-Utf8 { param([string]$Path, [string]$Content) [System.IO.File]::WriteAllText($Path, $Content, (New-Object System.Text.UTF8Encoding $false)) }
 function Compact { param($Value) return ($Value | ConvertTo-Json -Depth 20 -Compress) }
 
 # Every rejection assertion must also prove nothing reached disk, so each one

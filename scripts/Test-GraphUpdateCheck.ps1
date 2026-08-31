@@ -25,7 +25,6 @@ $FakeLocalAppData = Join-Path $Work '_fakelocal'
 New-Item -ItemType Directory -Path $FakeLocalAppData -Force | Out-Null
 
 function New-Proj { param([string]$Name) $p = Join-Path $Work $Name; New-Item -ItemType Directory -Path $p -Force | Out-Null; return $p }
-function Write-Utf8 { param([string]$Path, [string]$Content) [System.IO.File]::WriteAllText($Path, $Content, (New-Object System.Text.UTF8Encoding $false)) }
 function New-GitRepo {
     param([string]$Name)
     $p = New-Proj $Name

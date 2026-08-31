@@ -120,11 +120,6 @@ $script:DeniedDirectories = New-Object System.Collections.Generic.List[string]
 $script:Junctions = New-Object System.Collections.Generic.List[string]
 
 function New-Dir { param([string]$Path) New-Item -ItemType Directory -Path $Path -Force | Out-Null; return $Path }
-function Write-Utf8 {
-    param([string]$Path, [string]$Content)
-    New-Item -ItemType Directory -Path (Split-Path -Parent $Path) -Force | Out-Null
-    [System.IO.File]::WriteAllText($Path, $Content, (New-Object System.Text.UTF8Encoding $false))
-}
 
 # One Claude registration pointing at a real script inside the given project.
 function New-ClaudeHook {
