@@ -54,11 +54,6 @@ $SavedClaudeProjectDir = $env:CLAUDE_PROJECT_DIR
 $env:CLAUDE_PROJECT_DIR = ''
 
 function New-Proj { param([string]$Name) $p = Join-Path $Work $Name; New-Item -ItemType Directory -Path $p -Force | Out-Null; return $p }
-function Write-Utf8 { param([string]$Path, [string]$Content)
-    $dir = Split-Path -Parent $Path
-    if (-not (Test-Path -LiteralPath $dir -PathType Container)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
-    [System.IO.File]::WriteAllText($Path, $Content, (New-Object System.Text.UTF8Encoding $false))
-}
 function New-GitRepo {
     param([string]$Name)
     $p = New-Proj $Name

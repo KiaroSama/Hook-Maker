@@ -41,8 +41,6 @@ $script:TestPreviewLength = 900
 $Work = New-TestWorkspace -Prefix 'hookmaker-runteststest'
 Write-Host ("Workspace: $Work") -ForegroundColor DarkGray
 
-function Write-Utf8 { param([string]$Path, [string]$Content) [System.IO.File]::WriteAllText($Path, $Content, (New-Object System.Text.UTF8Encoding $false)) }
-
 # Every ping pid a fixture records, so cleanup can guarantee none is left alive.
 $script:SpawnedPids = New-Object System.Collections.Generic.List[string]
 

@@ -68,8 +68,6 @@ function Fire {
     return [pscustomobject]@{ Exit = $proc.ExitCode; Out = $out; Err = $err }
 }
 
-function Write-Utf8 { param([string]$Path, [string]$Content) [System.IO.File]::WriteAllText($Path, $Content, (New-Object System.Text.UTF8Encoding $false)) }
-
 function New-GitProj {
     param([string]$Name)
     $repo = Join-Path $Work $Name

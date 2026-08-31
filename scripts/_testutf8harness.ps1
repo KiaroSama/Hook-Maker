@@ -50,13 +50,6 @@ function Get-RefUpdateLine {
     return ('refs/heads/' + $Branch + ' ' + $local + ' refs/heads/' + $Branch + ' ' + $remote + "`n")
 }
 
-function Write-Utf8 {
-    param([string]$Path, [string]$Content)
-    $dir = Split-Path -Parent $Path
-    if (-not (Test-Path -LiteralPath $dir -PathType Container)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
-    [System.IO.File]::WriteAllText($Path, $Content, (New-Object System.Text.UTF8Encoding $false))
-}
-
 # Raw-byte writer: the whole suite is about exact bytes, so fixtures are
 # always written with WriteAllBytes, never through a text encoder implicitly.
 function Write-Bytes {

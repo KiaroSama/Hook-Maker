@@ -124,12 +124,6 @@ function New-Proj {
     New-Item -ItemType Directory -Path $p -Force | Out-Null
     return $p
 }
-function Write-Utf8 {
-    param([string]$Path, [string]$Content)
-    $dir = Split-Path -Parent $Path
-    if (-not (Test-Path -LiteralPath $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
-    [System.IO.File]::WriteAllText($Path, $Content, (New-Object System.Text.UTF8Encoding $false))
-}
 
 function Fire {
     param([string]$Cwd, [string]$EventName = 'SessionStart', [string]$Prompt = '', [string]$SessionId = 't', [string]$Exe = '')
