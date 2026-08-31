@@ -723,6 +723,78 @@ item `27` for that.
   agent receives review instructions plus an acknowledgement command to run afterwards.
 - An empty, never-synced source is recorded silently as a baseline (no empty review packages).
 
+## Editing `sync-hooks.json`
+
+The wizard writes this file for you — menu `1` -> **Create or update a sync group** builds a
+full mesh over the projects you list. Hand-editing is only for shapes the wizard does not
+produce, such as a one-directional route or several sources feeding one destination.
+
+```json
+{
+  "version": 2,
+  "defaults": { },
+  "profiles": [ ]
+}
+```
+
+A profile requires `id` (unique, stable) and `name`, plus a `routes` array — which may be
+empty. It may also carry `enabled`, `events`, `initialSyncMode` and `reviewInstructions`.
+
+A route requires `id` (unique within its profile) and both endpoints, each with a non-empty
+`root` and `name`:
+
+```json
+{
+  "id": "source-to-destination",
+  "enabled": true,
+  "source": {
+    "name": "Source Project",
+    "root": "C:\\Code\\Source Project",
+    "directory": ".ai",
+    "aliases": []
+  },
+  "destination": {
+    "name": "Destination Project",
+    "root": "C:\\Code\\Destination Project",
+    "directory": ".ai",
+    "aliases": []
+  }
+}
+```
+
+`directory` is optional and defaults to `.ai`. `enabled` is optional too, on both profiles and
+routes: it is on unless you write an explicit `false`, and a disabled profile or route neither
+syncs nor is offered by `29` when its folder goes missing. Settings resolve **route ->
+profile -> defaults**, so a route can override its profile and a profile can override the file.
+
+A route is one-directional. For two-way sync add a second route with `source` and
+`destination` swapped — which is exactly what the wizard's full mesh does.
+
+### Several sources into one destination
+
+Add three independent routes: `A -> D`, `B -> D`, `C -> D`. When the agent starts work inside
+Project D all three are evaluated, and only a source that really changed since the last
+acknowledgement reaches the context.
+
+### `aliases`
+
+When the same project is reachable by more than one path, list the alternatives. Windows
+environment variables are expanded:
+
+```json
+"aliases": [
+  "D:\\Worktrees\\Project A",
+  "%USERPROFILE%\\Projects\\Project A"
+]
+```
+
+### `initialSyncMode`
+
+- `review` (the default): on the first run every eligible file in the source is offered as an
+  initial package to review.
+- `baseline`: the first run records a fingerprint only and sends nothing to the model. Only
+  later changes are reviewed.
+
 ## Writing your own hooks
 
 The easiest path is launcher menu `1` -> **Create a new hook**: name it, pick a
