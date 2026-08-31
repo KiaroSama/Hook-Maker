@@ -15,7 +15,7 @@
 # Part 2 - the fixed menu numbering itself: shipped hooks occupy exactly 3..24
 # (the three test-health hooks at 20/21/22, Utf8-Encoding-Check at 23, and
 # Cloudflare-Deploy last at 24), 25 is Update, 26 is Get hook status, 27 is
-# Uninstall, Reset sync groups, custom hooks start at 29, adding a custom hook shifts NONE of the
+# Uninstall, Reset sync groups, Fix a renamed/moved project, custom hooks start at 30, adding a custom hook shifts NONE of the
 # three management rows, each management action must be selected alone, and
 # item 1 ("Select all") expands to the sync group plus every hook while
 # excluding all three management indices.
@@ -151,10 +151,10 @@
 
             # The fixture is the only custom hook, so the custom block starts at
             # 28 - i.e. adding a custom hook did NOT shift 20-27 at all.
-            Check 'menu: custom hooks start at 29' ([string]$rows[29] -match 'ZZZ-Menusuite-Fixture') ([string]$rows[29])
+            Check 'menu: custom hooks start at 30' ([string]$rows[30] -match 'ZZZ-Menusuite-Fixture') ([string]$rows[30])
             Check 'menu: adding a custom hook did not shift the management rows' (([string]$rows[25] -match 'Update') -and ([string]$rows[26] -match 'Get hook status') -and ([string]$rows[27] -match 'Uninstall')) (($indices | Sort-Object) -join ',')
             Check 'menu: adding a custom hook did not shift the three new shipped rows' (([string]$rows[20] -match 'Test-Plan-Check') -and ([string]$rows[21] -match 'Test-Run-Guard') -and ([string]$rows[22] -match 'Test-Completion-Check')) (($indices | Sort-Object) -join ',')
-            Check 'menu: the Tip line names all four management indices' ($menu.Out -match '25/26/27/28 are management actions') $menu.Out
+            Check 'menu: the Tip line names all five management indices' ($menu.Out -match '25/26/27/28/29 are management actions') $menu.Out
 
             # Each newly inserted row (the three test-health hooks and
             # Utf8-Encoding-Check) must render on ONE line, within the budget
@@ -199,9 +199,9 @@
             Check 'immunity: every row this suite reads is unchanged' (
                 (Get-RowSignature $probeRows) -eq $beforeSignature) ((Get-RowSignature $probeRows) + "`n--- expected ---`n" + $beforeSignature)
             Check 'immunity: the hook total is unchanged' (
-                (@($probeRows.Keys).Count - 6) -eq 23) ('total hooks: ' + (@($probeRows.Keys).Count - 6))
-            Check 'immunity: the custom block still starts at 29 with this suite''s own fixture' (
-                [string]$probeRows[29] -match 'ZZZ-Menusuite-Fixture') ([string]$probeRows[29])
+                (@($probeRows.Keys).Count - 7) -eq 23) ('total hooks: ' + (@($probeRows.Keys).Count - 7))
+            Check 'immunity: the custom block still starts at 30 with this suite''s own fixture' (
+                [string]$probeRows[30] -match 'ZZZ-Menusuite-Fixture') ([string]$probeRows[30])
             Check 'immunity: the foreign fixture is absent from the filtered view' (
                 @(@($probeRows.Values) | Where-Object { $_ -match [regex]::Escape($probeName) }).Count -eq 0) (Get-RowSignature $probeRows)
         }
@@ -222,7 +222,7 @@
         Check 'mix: the rejection run exits 0' ($reject.Exit -eq 0) $reject.Err
         $rejectionCount = ([regex]::Matches($reject.Out, [regex]::Escape('on its own - it cannot be combined'))).Count
         Check 'mix: all four illegal selections were rejected (3,26 / 25-27 / 1,27 / 26,28)' ($rejectionCount -eq 4) ('rejections seen: ' + $rejectionCount)
-        Check 'mix: the rejection names all four management indices' ($reject.Out -match 'Select 25 \(update\), 26 \(status\), 27 \(uninstall\) or 28 \(reset sync groups\)') $reject.Out
+        Check 'mix: the rejection names all five management indices' ($reject.Out -match 'Select 25 \(update\), 26 \(status\), 27 \(uninstall\), 28 \(reset sync groups\) or 29 \(fix a renamed project\)') $reject.Out
         # None of the three management screens may have been entered. The
         # comparison is CASE-SENSITIVE on purpose: the phase headers ("Get Hook
         # Status") differ from the menu rows ("Get hook status") only by case,
@@ -237,7 +237,7 @@
         # and custom hook. The wizard announces the remaining count right before
         # it hands off to the sync-group flow, which is exactly the expansion.
         $totalHooks = 0
-        if ($null -ne $rows) { $totalHooks = @($rows.Keys).Count - 6 }  # minus items 1, 2 and the 4 management rows
+        if ($null -ne $rows) { $totalHooks = @($rows.Keys).Count - 7 }  # minus items 1, 2 and the 5 management rows
         $all = Invoke-Wizard -Config $cfg -Answers @('1', '1', '1', '0', '0', '0', '0', 'exit') -WorkingDirectory $proj
         Check 'select-all: the run exits 0' ($all.Exit -eq 0) $all.Err
         Check 'select-all: 22 shipped + 1 custom hook were counted from the menu' ($totalHooks -eq 23) ('total hooks: ' + $totalHooks)
