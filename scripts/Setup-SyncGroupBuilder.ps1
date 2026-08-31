@@ -619,6 +619,14 @@ function Invoke-CreateGroup {
         if (-not $project.AiExists) {
             try {
                 New-Item -ItemType Directory -Path $project.AiPath -Force -ErrorAction Stop | Out-Null
+                # -Force reports SUCCESS when the name is already taken by a
+                # file: it neither creates the directory nor throws, so the
+                # call alone is not evidence. Without this the wizard printed
+                # "+ created", wrote the profile, and left the sync engine
+                # pointed at something that is not a directory.
+                if (-not (Test-Path -LiteralPath $project.AiPath -PathType Container)) {
+                    throw ('Path exists but is not a directory: ' + $project.AiPath)
+                }
                 [void]$aiCreatedThisRun.Add($project.AiPath)
                 Write-Host ('  ' + (Get-Painted '+ created' $C.Green) + ' ' + (Get-Painted $project.AiPath $C.LightBlue))
                 Write-Log 'INFO' 'CONFIG' ('Created knowledge directory: ' + $project.AiPath)

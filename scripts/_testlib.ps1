@@ -118,3 +118,68 @@ function Remove-TestWorkspace {
     }
     return $allGone
 }
+# An ACL fixture is worthless while the test process can bypass DACLs. A token
+# holding SeBackupPrivilege / SeRestorePrivilege ENABLED is granted file access
+# regardless of any deny ACE, so `icacls /deny` and Set-Acl report success, the
+# denial is really in place, and the operation succeeds anyway. Those two are
+# normally present-but-disabled; some launchers hand a shell a token with them
+# already enabled, and every ACL-based fixture then silently stops denying -
+# observed here as six Test-Wizard failures and three in Test-TestTempCleanup.
+#
+# Disabling them costs nothing when they are already off, and child processes
+# inherit the token's privilege state, so a suite that spawns the wizard or a
+# hook gets an enforced DACL too. Call this BEFORE building any ACL fixture.
+function Disable-DaclBypassPrivilege {
+    if (-not ('HookMakerTestPrivilege' -as [type])) {
+        # Pack = 4 is load-bearing: LUID_AND_ATTRIBUTES packs the 8-byte LUID on
+        # a 4-byte boundary. Default packing puts Attributes in the wrong place
+        # and AdjustTokenPrivileges quietly refuses.
+        Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+public static class HookMakerTestPrivilege {
+    [StructLayout(LayoutKind.Sequential, Pack = 4)]
+    struct TOKEN_PRIVILEGES { public int Count; public long Luid; public int Attributes; }
+    [DllImport("advapi32.dll", SetLastError = true)]
+    static extern bool OpenProcessToken(IntPtr process, uint access, out IntPtr token);
+    [DllImport("advapi32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+    static extern bool LookupPrivilegeValue(string system, string name, out long luid);
+    [DllImport("advapi32.dll", SetLastError = true)]
+    static extern bool AdjustTokenPrivileges(IntPtr token, bool disableAll, ref TOKEN_PRIVILEGES state, int length, IntPtr previous, IntPtr returned);
+    [DllImport("kernel32.dll", SetLastError = true)]
+    static extern bool CloseHandle(IntPtr handle);
+    [DllImport("kernel32.dll")]
+    static extern IntPtr GetCurrentProcess();
+    public static bool Disable(string name) {
+        IntPtr token = IntPtr.Zero;
+        if (!OpenProcessToken(GetCurrentProcess(), 0x0020u | 0x0008u, out token)) { return false; }
+        try {
+            long luid;
+            if (!LookupPrivilegeValue(null, name, out luid)) { return false; }
+            TOKEN_PRIVILEGES state = new TOKEN_PRIVILEGES();
+            state.Count = 1; state.Luid = luid; state.Attributes = 0;
+            if (!AdjustTokenPrivileges(token, false, ref state, Marshal.SizeOf(typeof(TOKEN_PRIVILEGES)), IntPtr.Zero, IntPtr.Zero)) { return false; }
+            return Marshal.GetLastWin32Error() == 0;
+        }
+        finally { CloseHandle(token); }
+    }
+}
+'@
+    }
+    $stubborn = @()
+    foreach ($name in @('SeBackupPrivilege', 'SeRestorePrivilege')) {
+        # A privilege the token does not hold cannot be disabled and does not
+        # need to be - Disable() reporting false there is not a problem.
+        if (-not [HookMakerTestPrivilege]::Disable($name)) { $stubborn += $name }
+    }
+    if ($stubborn.Count -gt 0) {
+        $priv = & "$env:SystemRoot\System32\whoami.exe" /priv 2>$null
+        $held = @($stubborn | Where-Object { $n = $_; @($priv) -match ($n + '.*Enabled') })
+        if ($held.Count -gt 0) {
+            Write-Host ('  (warning: could not disable ' + ($held -join ', ') +
+                ' - ACL fixtures in this suite cannot deny anything)') -ForegroundColor DarkYellow
+            return $false
+        }
+    }
+    return $true
+}

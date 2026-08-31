@@ -1,5 +1,5 @@
-# Test-Wizard.ps1 scenario block: PROMPT ROBUSTNESS - an unwritable project
-# .ai directory reported without crashing (with rollback of an earlier
+# Test-Wizard.ps1 scenario block: PROMPT ROBUSTNESS - a project .ai
+# directory that cannot be created reported without crashing
 # project's just-created directory and a pre-existing one left untouched),
 # hierarchical <parent>-<slot> prompt numbering across invalid/duplicate/
 # overlapping/undo answers, back navigation from a child slot, sync-group
@@ -10,62 +10,64 @@
 # helpers and workspace) - not a standalone suite.
 
     # =====================================================================
-    Write-Host '--- an unwritable project .ai directory must not crash the wizard ---' -ForegroundColor Cyan
+    Write-Host '--- a project .ai directory that cannot be created must not crash the wizard ---' -ForegroundColor Cyan
     # Real regression: a project whose .ai directory cannot be created
-    # (permission denied / read-only location) raised a terminating
-    # UnauthorizedAccessException that propagated out of Invoke-CreateGroup ->
-    # Invoke-InstallExistingHook -> the main menu -> run.ps1, killing the whole
-    # wizard and ejecting the user. It must instead report the failure, change
-    # nothing, and return to the hook list. The denial is created with a real
-    # ACL (icacls "add subdirectory" deny), matching the reported failure.
-    $cfgAcl = Join-Path $Work 'cfg-acl.json'; New-Config $cfgAcl
-    $aclOk = New-Proj 'AclOkProj'
-    $aclBlocked = New-Proj 'AclBlockedProj'
+    # (permission denied, a read-only location, or the name already taken by
+    # something that is not a directory) raised a terminating exception that
+    # propagated out of Invoke-CreateGroup -> Invoke-InstallExistingHook ->
+    # the main menu -> run.ps1, killing the whole wizard and ejecting the
+    # user. It must instead report the failure, change nothing, and return to
+    # the hook list.
+    #
+    # The denial used to be a real ACL (icacls "add subdirectory" deny). That
+    # fixture is NOT portable: a token holding SeBackupPrivilege /
+    # SeRestorePrivilege bypasses DACL checks outright, so on such a machine
+    # icacls reported success, the directory was created anyway, and this
+    # whole block became six failures. A file already occupying the .ai name
+    # blocks creation for every caller on every machine, needs no privilege,
+    # and reaches the same catch.
+    $cfgDeny = Join-Path $Work 'cfg-deny.json'; New-Config $cfgDeny
+    $denyOk = New-Proj 'DenyOkProj'
+    $denyBlocked = New-Proj 'DenyBlockedProj'
     # A third project whose .ai already existed BEFORE this run (with real
     # content) - it must survive untouched regardless of the later failure.
-    $aclPreExisting = New-Proj 'AclPreExistingProj'
-    $aclPreExistingAi = Join-Path $aclPreExisting '.ai'
-    New-Item -ItemType Directory -Path $aclPreExistingAi -Force | Out-Null
-    [System.IO.File]::WriteAllText((Join-Path $aclPreExistingAi 'memory.md'), 'pre-existing content', (New-Object System.Text.UTF8Encoding $false))
-    $aclUser = $env:USERNAME
-    $aclApplied = $false
-    try {
-        & icacls $aclBlocked /deny "${aclUser}:(AD)" *> $null
-        $aclApplied = ($LASTEXITCODE -eq 0)
-        if ($aclApplied) {
-            # Confirm the denial actually reproduces the reported exception.
-            $aclRepro = $false
-            try { New-Item -ItemType Directory -Path (Join-Path $aclBlocked '.ai') -Force -ErrorAction Stop | Out-Null }
-            catch { $aclRepro = ($_.Exception -is [System.UnauthorizedAccessException]) }
-            Check 'ACL fixture reproduces the reported UnauthorizedAccessException' $aclRepro
+    $denyPreExisting = New-Proj 'DenyPreExistingProj'
+    $denyPreExistingAi = Join-Path $denyPreExisting '.ai'
+    New-Item -ItemType Directory -Path $denyPreExistingAi -Force | Out-Null
+    [System.IO.File]::WriteAllText((Join-Path $denyPreExistingAi 'memory.md'), 'pre-existing content', (New-Object System.Text.UTF8Encoding $false))
+    $denyBlockedAi = Join-Path $denyBlocked '.ai'
+    [System.IO.File]::WriteAllText($denyBlockedAi, 'a file, not a directory', (New-Object System.Text.UTF8Encoding $false))
+    # Confirm the fixture really does prevent a .ai DIRECTORY, checked the way
+    # the builder checks it, so this block can never quietly go vacuous the
+    # way the ACL one did. New-Item -Force returns success here WITHOUT
+    # creating anything - which is exactly why the builder verifies the path.
+    New-Item -ItemType Directory -Path $denyBlockedAi -Force -ErrorAction SilentlyContinue | Out-Null
+    Check 'the fixture really prevents a .ai directory' (
+        (Test-Path -LiteralPath $denyBlockedAi -PathType Leaf) -and
+        -not (Test-Path -LiteralPath $denyBlockedAi -PathType Container))
 
-            # Order matters: aclOk (succeeds first), aclPreExisting (already
-            # has .ai, untouched), aclBlocked (fails last) - proves a LATER
-            # project's failure rolls back an EARLIER project's already-
-            # created empty .ai directory from the SAME run.
-            $rAcl = Invoke-Wizard -Config $cfgAcl -Answers @('1', '1', '2', $aclOk, $aclPreExisting, $aclBlocked, 'done', '1', '', '0', 'exit')
-            Check 'an unwritable .ai directory does NOT crash the wizard (exit 0, no fatal)' ($rAcl.Exit -eq 0 -and $rAcl.Err -notmatch 'UnauthorizedAccessException') ($rAcl.Err)
-            Check 'the failing project path is reported' ($rAcl.Out -match 'Could not create 1 knowledge' -and $rAcl.Out -match 'AclBlockedProj') $rAcl.Out
-            Check 'it states nothing was changed' ($rAcl.Out -match 'Nothing was changed') $rAcl.Out
-            Check 'the wizard returns to the hook list instead of exiting' ((([regex]::Matches($rAcl.Out, 'Available hooks')).Count) -ge 2) $rAcl.Out
-            $profAcl = @((Get-Content $cfgAcl -Raw | ConvertFrom-Json).profiles)
-            Check 'no sync profile is written when a .ai directory could not be created' ($profAcl.Count -eq 0)
-            # Regression: a LATER project's failure must not leave an EARLIER
-            # project's just-created empty .ai directory behind while the
-            # wizard claims "nothing was changed".
-            Check 'an earlier project''s just-created .ai directory is rolled back (not left behind)' (-not (Test-Path -LiteralPath (Join-Path $aclOk '.ai')))
-            # A pre-existing .ai directory (present before this run) must never
-            # be touched, rolled back, or have its content altered.
-            Check 'a pre-existing .ai directory is never touched by the rollback' ((Test-Path -LiteralPath $aclPreExistingAi -PathType Container) -and (Test-Path -LiteralPath (Join-Path $aclPreExistingAi 'memory.md')))
-            Check 'a pre-existing .ai directory''s content is unmodified' ([System.IO.File]::ReadAllText((Join-Path $aclPreExistingAi 'memory.md')) -eq 'pre-existing content')
-        }
-        else {
-            Write-Host '[SKIP] icacls deny could not be applied; skipping the unwritable-.ai regression' -ForegroundColor Yellow
-        }
-    }
-    finally {
-        if ($aclApplied) { & icacls $aclBlocked /remove:d "$aclUser" *> $null }
-    }
+    # Order matters: denyOk (succeeds first), denyPreExisting (already has
+    # .ai, untouched), denyBlocked (fails last) - proves a LATER project's
+    # failure rolls back an EARLIER project's already-created empty .ai
+    # directory from the SAME run.
+    $rDeny = Invoke-Wizard -Config $cfgDeny -Answers @('1', '1', '2', $denyOk, $denyPreExisting, $denyBlocked, 'done', '1', '', '0', 'exit')
+    Check 'a .ai directory that cannot be created does NOT crash the wizard (exit 0, no fatal)' ($rDeny.Exit -eq 0 -and $rDeny.Err -notmatch 'not a directory') ($rDeny.Err)
+    Check 'the failing project path is reported' ($rDeny.Out -match 'Could not create 1 knowledge' -and $rDeny.Out -match 'DenyBlockedProj') $rDeny.Out
+    Check 'it states nothing was changed' ($rDeny.Out -match 'Nothing was changed') $rDeny.Out
+    Check 'the wizard returns to the hook list instead of exiting' ((([regex]::Matches($rDeny.Out, 'Available hooks')).Count) -ge 2) $rDeny.Out
+    $profDeny = @((Get-Content $cfgDeny -Raw | ConvertFrom-Json).profiles)
+    Check 'no sync profile is written when a .ai directory could not be created' ($profDeny.Count -eq 0)
+    # Regression: a LATER project's failure must not leave an EARLIER
+    # project's just-created empty .ai directory behind while the wizard
+    # claims "nothing was changed".
+    Check 'an earlier project''s just-created .ai directory is rolled back (not left behind)' (-not (Test-Path -LiteralPath (Join-Path $denyOk '.ai')))
+    # A pre-existing .ai directory (present before this run) must never be
+    # touched, rolled back, or have its content altered.
+    Check 'a pre-existing .ai directory is never touched by the rollback' ((Test-Path -LiteralPath $denyPreExistingAi -PathType Container) -and (Test-Path -LiteralPath (Join-Path $denyPreExistingAi 'memory.md')))
+    Check 'a pre-existing .ai directory''s content is unmodified' ([System.IO.File]::ReadAllText((Join-Path $denyPreExistingAi 'memory.md')) -eq 'pre-existing content')
+    # The occupying file belongs to the user: a failed create must not
+    # replace, empty or delete it.
+    Check 'the file occupying the .ai name is left exactly as it was' ([System.IO.File]::ReadAllText($denyBlockedAi) -eq 'a file, not a directory')
 
     # =====================================================================
     Write-Host '--- repeated project prompts + confirmation back navigation ---' -ForegroundColor Cyan

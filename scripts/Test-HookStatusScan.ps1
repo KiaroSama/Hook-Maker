@@ -59,6 +59,7 @@ $script:Pass = 0
 $script:Fail = 0
 $script:TestPreviewLength = 800
 . (Join-Path $ScriptRoot '_testlib.ps1')
+[void](Disable-DaclBypassPrivilege)
 # The real Kiro registration writer, so a Kiro fixture is byte-identical to what
 # the installer would produce - the same reason the native fixtures use the
 # canonical wrapper generator.

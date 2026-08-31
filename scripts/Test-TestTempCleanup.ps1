@@ -44,6 +44,7 @@ $script:Pass = 0
 $script:Fail = 0
 $script:TestPreviewLength = 900
 . (Join-Path $PSScriptRoot '_testlib.ps1')
+[void](Disable-DaclBypassPrivilege)
 # Get-ShortHash / Normalize-Path / Get-Field, so the suite can locate and read
 # the hook's own state files exactly the way its consumers do.
 . $HookLib
