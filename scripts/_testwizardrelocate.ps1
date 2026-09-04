@@ -20,6 +20,23 @@ Check 'relocate: an unrelated path is not found' (
     -not (Test-TextNamesRoot -Text '{"c":"G:\\Program Files\\Other\\x"}' -Root $relRoot))
 Check 'relocate: empty text is not a match' (-not (Test-TextNamesRoot -Text '' -Root $relRoot))
 
+# The rename that broke it for real: `...\Numera` -> `...\Numera Browser`, where
+# the OLD root is a PREFIX of the NEW one. A plain substring match calls every
+# fresh document stale, which empties the replacement set and leaves every stale
+# document on disk. A space must never end a path for this reason.
+$relPrefixOld = 'G:\Program Files\Numera'
+$relPrefixNew = 'G:\Program Files\Numera Browser'
+Check 'relocate: a longer sibling path is NOT the old root' (
+    -not (Test-TextNamesRoot -Text ('x "' + $relPrefixNew + '\.kiro\a.ps1"') -Root $relPrefixOld))
+Check 'relocate: the old root itself still matches' (
+    Test-TextNamesRoot -Text ('x "' + $relPrefixOld + '\.kiro\a.ps1"') -Root $relPrefixOld)
+Check 'relocate: a longer sibling is not matched JSON-escaped either' (
+    -not (Test-TextNamesRoot -Text ('{"c":"' + $relPrefixNew.Replace('\', '\\') + '\\a"}') -Root $relPrefixOld))
+Check 'relocate: the root alone, with nothing after it, matches' (
+    Test-TextNamesRoot -Text $relPrefixOld -Root $relPrefixOld)
+Check 'relocate: a quoted bare root matches' (
+    Test-TextNamesRoot -Text ('cmd "' + $relPrefixOld + '"') -Root $relPrefixOld)
+
 Write-Host ''
 Write-Host '--- relocate: the hook slug is read back off a document name ---' -ForegroundColor Cyan
 Check 'relocate: slug drops the prefix and the record id' (
@@ -78,6 +95,33 @@ try {
     Check 'relocate: nothing was deleted by the INSPECTION itself' (
         @(Get-ChildItem -LiteralPath $relKiro -Filter '*.json' -File).Count -eq 6) (
         [string]@(Get-ChildItem -LiteralPath $relKiro -Filter '*.json' -File).Count)
+
+    Write-Host ''
+    Write-Host '--- relocate: a new root that EXTENDS the old one ---' -ForegroundColor Cyan
+    # Same shape as the real failure: the folder was renamed to a longer name, so
+    # every fresh document contains the old root as a prefix. Before the path-
+    # boundary fix this left 22 stale documents behind in a real project.
+    $relExtRoot = Join-Path $relWork 'Numera'
+    $relExtNew = $relExtRoot + ' Browser'
+    $relExtKiro = Join-Path $relExtNew '.kiro\hooks'
+    New-Item -ItemType Directory -Path $relExtKiro -Force | Out-Null
+    foreach ($pair in @(@{ n = 'hookmaker-ext-1111111111.json'; r = $relExtRoot },
+            @{ n = 'hookmaker-ext-2222222222.json'; r = $relExtNew })) {
+        $extDoc = @{ version = 'v1'; hooks = @(@{ name = 'h'; action = @{ type = 'command'
+                        command                            = ('powershell -File "' + $pair.r + '\.kiro\hook-runtime\x.ps1"')
+                    }
+                })
+        }
+        [System.IO.File]::WriteAllText((Join-Path $relExtKiro $pair.n), ($extDoc | ConvertTo-Json -Depth 8), (New-Object System.Text.UTF8Encoding $false))
+    }
+    $extOrphans = Get-OrphanedClientDocument -NewRoot $relExtNew -OldRoot $relExtRoot
+    $extRemovable = @(@($extOrphans.Removable) | ForEach-Object { $_.Name })
+    Check 'relocate: the stale document is removable even though the new root extends the old' (
+        $extRemovable.Count -eq 1 -and $extRemovable[0] -eq 'hookmaker-ext-1111111111.json') (
+        $extRemovable -join ',')
+    Check 'relocate: the fresh document under the longer root is never touched' (
+        @($extOrphans.Ambiguous) -notcontains 'hookmaker-ext-2222222222.json' -and
+        $extRemovable -notcontains 'hookmaker-ext-2222222222.json') (@($extOrphans.Ambiguous) -join ',')
 
     Write-Host ''
     Write-Host '--- relocate: a project with no per-hook-file client is simply empty ---' -ForegroundColor Cyan
