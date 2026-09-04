@@ -195,12 +195,28 @@ function Get-DocumentHookSlug {
 
 # A path inside JSON is stored with its separators DOUBLED, so searching a raw
 # document for the literal path never matches. Compare against both spellings.
+# A root must match as a PATH, not as a substring. Renaming `...\Numera` to
+# `...\Numera Browser` makes the old root a PREFIX of the new one, so a plain
+# IndexOf reports every FRESH document as naming the old root too - which
+# emptied the replacement set and left all 22 stale documents on disk in a real
+# relocation. A hit therefore only counts when the next character ends the path:
+# a separator, a closing quote, or end of text. A space never ends it, because
+# that is exactly the character the collision turns on.
 function Test-TextNamesRoot {
     param([string]$Text, [Parameter(Mandatory = $true)][string]$Root)
     if ([string]::IsNullOrEmpty($Text)) { return $false }
-    if ($Text.IndexOf($Root, [System.StringComparison]::OrdinalIgnoreCase) -ge 0) { return $true }
-    $escaped = $Root.Replace('\', '\\')
-    return ($Text.IndexOf($escaped, [System.StringComparison]::OrdinalIgnoreCase) -ge 0)
+    $boundary = [char[]]@('\', '/', '"', [char]0x27)
+    foreach ($spelling in @($Root, $Root.Replace('\', '\\'))) {
+        if ([string]::IsNullOrEmpty($spelling)) { continue }
+        $index = $Text.IndexOf($spelling, [System.StringComparison]::OrdinalIgnoreCase)
+        while ($index -ge 0) {
+            $after = $index + $spelling.Length
+            if ($after -ge $Text.Length) { return $true }
+            if ([System.Array]::IndexOf($boundary, $Text[$after]) -ge 0) { return $true }
+            $index = $Text.IndexOf($spelling, $after, [System.StringComparison]::OrdinalIgnoreCase)
+        }
+    }
+    return $false
 }
 
 # Rewrites every sync-group route end that named the old root, and the display
@@ -318,7 +334,9 @@ function Invoke-FixRelocatedProject {
         Write-NoteLine '  Any it cannot identify safely is LEFT for you, and named at the end.'
     }
     Write-NoteLine '  Hook SOURCES are never touched. Nothing outside these two folders is written.'
-    if (-not (Read-YesNo (New-QuestionPrompt 'Proceed?' $null 'n') $false 'relocate confirm')) {
+    # Defaults to YES: the user already picked the project and typed the new
+    # path, so Enter should carry that through rather than throw it away.
+    if (-not (Read-YesNo (New-QuestionPrompt 'Proceed?' $null 'y') $true 'relocate confirm')) {
         Write-NoteLine '  Cancelled - nothing was changed.'
         return 'back'
     }
