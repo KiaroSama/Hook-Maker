@@ -22,18 +22,18 @@
     # The optional " and N-M" group is NOT slack in the shipped span: it absorbs a
     # sibling suite's ZZZ-* fixture (or an aborted run's leftover), which the
     # wizard correctly renders as a SECOND span. The shipped span itself is still
-    # pinned exactly at 3-24, and the both-spans rendering is asserted positively
+    # pinned exactly at 3-25, and the both-spans rendering is asserted positively
     # by the ZZZ-MenuSpan case below - so nothing this line used to prove is lost
     # except "no custom hook exists right now", which is not this suite's to own.
-    Check 'select-all is list item 1 and the shipped span is exactly 3-24' (
-        $r.Out -match '(?m)^  1\. Select all hooks \| \[all\] \| run the sync group \(2\) and install every hook below \(3-24( and \d+-\d+)?\)\s*$') $r.Out
+    Check 'select-all is list item 1 and the shipped span is exactly 3-25' (
+        $r.Out -match '(?m)^  1\. Select all hooks \| \[all\] \| run the sync group \(2\) and install every hook below \(3-25( and \d+-\d+)?\)\s*$') $r.Out
     # The hook numbers are NOT contiguous once a custom hook exists: three
     # management rows sit between the shipped and custom blocks. The old hint
     # printed one '3-N' span computed as shipped+custom+2, which BOTH swept the
     # management rows in and stopped short of the custom hook. It read correctly
     # only while no custom hook existed - which is all this fixture had, so the
     # assertion above agreed with the bug. The real span is asserted below.
-    Check 'the tip states where the hooks actually are' ($r.Out -match 'Hooks are 3-24( and \d+-\d+)?; 25/26/27/28/29 are management actions') $r.Out
+    Check 'the tip states where the hooks actually are' ($r.Out -match 'Hooks are 3-25( and \d+-\d+)?; 26/27/28/29/30 are management actions') $r.Out
     Check 'sync group is list item 2' ($r.Out -match '2\. Create or update a sync group')
     Check 'context hook menu names match their whole-.ai scope' ($r.Out -match 'Ai-Context-Check' -and $r.Out -match 'Ai-Context-Load')
     Check 'old memory-only menu names are hidden' ($r.Out -notmatch 'Ai-Memory-(Check|Load)')
@@ -95,7 +95,7 @@
         ($r.Out -match '(?m)^  26\. Get hook status \| \[manage\] \|') -and
         ($r.Out -match '(?m)^  27\. Uninstall installed hooks \| \[manage\] \|')) $r.Out
     # THE case the old fixture never had. With a custom hook present the hook
-    # numbers are two spans - shipped 3-24 and custom 28+ - separated by the
+    # numbers are two spans - shipped 3-25 and custom 31+ - separated by the
     # management rows. A single computed '3-N' claimed 25/26/27 were hooks and
     # left the custom one out; only a fixture with a custom hook can catch that.
     $spanHook = Join-Path (Join-Path (Split-Path -Parent $PSScriptRoot) 'hooks') 'ZZZ-MenuSpan'
@@ -104,11 +104,11 @@
         [System.IO.File]::WriteAllText((Join-Path $spanHook 'ZZZ-MenuSpan.ps1'), '# span fixture', (New-Object System.Text.UTF8Encoding $false))
         $rSpan = Invoke-Wizard -Config $cfg1 -NoInstall -Answers @('1', '1', '0', '0')
         Check 'with a custom hook the select-all hint lists BOTH spans, not one run' (
-            $rSpan.Out -match 'install every hook below \(3-24 and 30-30\)') $rSpan.Out
+            $rSpan.Out -match 'install every hook below \(3-25 and 31-31\)') $rSpan.Out
         Check 'the hint no longer claims the management rows are hooks' (
-            $rSpan.Out -notmatch 'install every hook below \(3-25\)') $rSpan.Out
-        Check 'the custom hook really is listed at 30, after the management rows' (
-            $rSpan.Out -match '(?m)^  30\. ZZZ-') $rSpan.Out
+            $rSpan.Out -notmatch 'install every hook below \(3-26\)') $rSpan.Out
+        Check 'the custom hook really is listed at 31, after the management rows' (
+            $rSpan.Out -match '(?m)^  31\. ZZZ-') $rSpan.Out
         Check 'the management rows stay at 25/26/27/28 regardless of custom hooks' (
             $rSpan.Out -match '(?m)^  25\. Update installed hooks \|') $rSpan.Out
 
