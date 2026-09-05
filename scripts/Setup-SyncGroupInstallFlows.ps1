@@ -562,51 +562,22 @@ function Invoke-UpdateInstalledHooks {
     }
 
     # ---- evaluate each record: up to date / needs update / skip reason ----
-    $plan = New-Object System.Collections.Generic.List[object]
-    # PER-RECORD ISOLATION. Every record is validated before any of its fields
-    # are read, and its whole evaluation runs inside try/catch. Under StrictMode
-    # a single malformed record (e.g. one missing sourceScript) previously threw
-    # and aborted the entire run, so every healthy record after it was never
-    # evaluated. A bad record is now an isolated, precisely-reported entry and
-    # nothing about it is modified or guessed at.
-    foreach ($record in $allRecords) {
-        $status = ''
-        $components = @()
-        $detail = ''
-        try {
-            $validation = Test-InstallRecordValid -Record $record
-            if (-not $validation.Ok) {
-                $status = 'skip'; $detail = 'invalid registry record (manual repair): ' + $validation.Reason
-            }
-            elseif (-not (Test-Path -LiteralPath $record.sourceScript -PathType Leaf)) {
-                $status = 'skip'; $detail = 'source script no longer found: ' + $record.sourceScript
-            }
-            elseif (($record.scope -ne 'global') -and -not (Test-Path -LiteralPath $record.targetProjectRoot -PathType Container)) {
-                $status = 'skip'; $detail = 'target project no longer found: ' + $record.targetProjectRoot
-            }
-            elseif ($record.hookType -eq 'Engine' -and -not (Test-Path -LiteralPath $record.configPath -PathType Leaf)) {
-                $status = 'skip'; $detail = 'sync config no longer found: ' + $record.configPath
-            }
-            elseif ($record.hookType -eq 'Engine') {
-                $engineConfig = Read-JsonFile $record.configPath
-                $profileExists = ($null -ne $engineConfig) -and ($null -ne $engineConfig.PSObject.Properties['profiles']) -and (@($engineConfig.profiles | Where-Object { [string]$_.id -eq [string]$record.profile }).Count -gt 0)
-                if (-not $profileExists) { $status = 'skip'; $detail = 'profile no longer exists in the sync config: ' + $record.profile }
-            }
-            if ($status -eq '') {
-                $evaluation = Get-InstallIntegrity -Record $record -ToolRoot $ToolRoot
-                $status = $evaluation.Status
-                $detail = $evaluation.Detail
-                # Per-component breakdown drives targeted repair below.
-                if ($null -ne $evaluation.PSObject.Properties['Components']) { $components = @($evaluation.Components) }
-            }
-        }
-        catch {
-            # Never let one record's failure end the run.
-            $status = 'skip'
-            $detail = 'could not evaluate this record (manual repair): ' + $_.Exception.Message
-        }
-        [void]$plan.Add([pscustomobject]@{ Record = $record; Status = $status; Detail = $detail; Components = $components })
-    }
+    # PER-RECORD ISOLATION lives in Get-RecordUpdateState: every record is
+    # validated before any of its fields are read, and its whole evaluation runs
+    # inside try/catch. Under StrictMode a single malformed record (e.g. one
+    # missing sourceScript) previously threw and aborted the entire run, so
+    # every healthy record after it was never evaluated. A bad record is an
+    # isolated, precisely-reported entry and nothing about it is guessed at.
+    #
+    # The evaluation is read-only, so it is spread across a bounded runspace
+    # pool. A 627-record registry took ~2 minutes to evaluate in one thread.
+    $evaluationTimer = [System.Diagnostics.Stopwatch]::StartNew()
+    Write-NoteLine ('  Evaluating ' + $allRecords.Count + ' tracked installation(s)...')
+    $plan = Get-UpdateEvaluationPlan -Records $allRecords -ToolRoot $ToolRoot
+    $evaluationTimer.Stop()
+    Write-Log 'INFO' 'UPDATE' ('Evaluated ' + $allRecords.Count + ' record(s) in ' +
+        $evaluationTimer.Elapsed.TotalSeconds.ToString('N1') + 's using ' +
+        (Get-UpdateEvaluationWorkerCount) + ' worker(s).')
 
     Write-MenuTitle 'Plan:'
     for ($i = 0; $i -lt $plan.Count; $i++) {

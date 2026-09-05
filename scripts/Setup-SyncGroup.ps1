@@ -49,6 +49,7 @@ $ValidateScript = Join-Path $ScriptRoot 'Validate-Config.ps1'
 # Repointing a project whose folder was renamed or moved. Loaded BEFORE the
 # install flows because the menu dispatches into it.
 . (Join-Path $ScriptRoot 'Setup-SyncGroupRelocate.ps1')
+. (Join-Path $ScriptRoot '_installevaluate.ps1')
 . (Join-Path $ScriptRoot 'Setup-SyncGroupInstallFlows.ps1')
 $UninstallScript = Join-Path $ScriptRoot 'Uninstall-Hook.ps1'
 $StatusScript = Join-Path $ScriptRoot 'Get-HookStatus.ps1'
