@@ -64,6 +64,7 @@ $script:TestPreviewLength = 500
 # canonical plan defined there.
 . (Join-Path $ScriptRoot '_installplan.ps1')
 . (Join-Path $ScriptRoot '_installlib.ps1')
+. (Join-Path $ScriptRoot '_installevaluate.ps1')
 
 $Work = New-TestWorkspace -Prefix 'hookmaker-registrytest'
 Write-Host ("Workspace: $Work") -ForegroundColor DarkGray
@@ -188,6 +189,7 @@ try {
     . (Join-Path $ScriptRoot '_testinstallregistrydrift.ps1')
     . (Join-Path $ScriptRoot '_testinstallregistryregressions.ps1')
     . (Join-Path $ScriptRoot '_testinstallregistrykiro.ps1')
+    . (Join-Path $ScriptRoot '_testinstallevaluate.ps1')
 
     # =====================================================================
     # The persisted record's verdict must equal the install's actual outcome.
