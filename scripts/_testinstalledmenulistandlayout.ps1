@@ -138,7 +138,8 @@
             Check 'menu: 21 is Test-Run-Guard' ([string]$rows[21] -match '^Test-Run-Guard \| \[pre\+post-task\] \|') ([string]$rows[21])
             Check 'menu: 22 is Test-Completion-Check' ([string]$rows[22] -match '^Test-Completion-Check \| \[post-task\] \|') ([string]$rows[22])
             Check 'menu: 23 is Utf8-Encoding-Check' ([string]$rows[23] -match '^Utf8-Encoding-Check \| \[pre\+post-task\] \|') ([string]$rows[23])
-            Check 'menu: 24 is Cloudflare-Deploy (still the last individual entry)' ([string]$rows[24] -match '^Cloudflare-Deploy \| \[post-task\] \|') ([string]$rows[24])
+            Check 'menu: 24 is Synapse-Rules-Check (directly before Cloudflare-Deploy)' ([string]$rows[24] -match '^Synapse-Rules-Check \| \[pre\+post-task\] \|') ([string]$rows[24])
+            Check 'menu: 25 is Cloudflare-Deploy (still the last individual entry)' ([string]$rows[25] -match '^Cloudflare-Deploy \| \[post-task\] \|') ([string]$rows[25])
 
             Check 'menu: 25 is Update installed hooks' ([string]$rows[25] -match '^Update installed hooks \| \[manage\] \|') ([string]$rows[25])
             # The exact contract wording for the two rows the task pins. Row 26
@@ -151,10 +152,10 @@
 
             # The fixture is the only custom hook, so the custom block starts at
             # 28 - i.e. adding a custom hook did NOT shift 20-27 at all.
-            Check 'menu: custom hooks start at 30' ([string]$rows[30] -match 'ZZZ-Menusuite-Fixture') ([string]$rows[30])
+            Check 'menu: custom hooks start at 31' ([string]$rows[31] -match 'ZZZ-Menusuite-Fixture') ([string]$rows[31])
             Check 'menu: adding a custom hook did not shift the management rows' (([string]$rows[25] -match 'Update') -and ([string]$rows[26] -match 'Get hook status') -and ([string]$rows[27] -match 'Uninstall')) (($indices | Sort-Object) -join ',')
             Check 'menu: adding a custom hook did not shift the three new shipped rows' (([string]$rows[20] -match 'Test-Plan-Check') -and ([string]$rows[21] -match 'Test-Run-Guard') -and ([string]$rows[22] -match 'Test-Completion-Check')) (($indices | Sort-Object) -join ',')
-            Check 'menu: the Tip line names all five management indices' ($menu.Out -match '25/26/27/28/29 are management actions') $menu.Out
+            Check 'menu: the Tip line names all five management indices' ($menu.Out -match '26/27/28/29/30 are management actions') $menu.Out
 
             # Each newly inserted row (the three test-health hooks and
             # Utf8-Encoding-Check) must render on ONE line, within the budget
@@ -199,9 +200,9 @@
             Check 'immunity: every row this suite reads is unchanged' (
                 (Get-RowSignature $probeRows) -eq $beforeSignature) ((Get-RowSignature $probeRows) + "`n--- expected ---`n" + $beforeSignature)
             Check 'immunity: the hook total is unchanged' (
-                (@($probeRows.Keys).Count - 7) -eq 23) ('total hooks: ' + (@($probeRows.Keys).Count - 7))
-            Check 'immunity: the custom block still starts at 30 with this suite''s own fixture' (
-                [string]$probeRows[30] -match 'ZZZ-Menusuite-Fixture') ([string]$probeRows[30])
+                (@($probeRows.Keys).Count - 7) -eq 24) ('total hooks: ' + (@($probeRows.Keys).Count - 7))
+            Check 'immunity: the custom block still starts at 31 with this suite''s own fixture' (
+                [string]$probeRows[31] -match 'ZZZ-Menusuite-Fixture') ([string]$probeRows[31])
             Check 'immunity: the foreign fixture is absent from the filtered view' (
                 @(@($probeRows.Values) | Where-Object { $_ -match [regex]::Escape($probeName) }).Count -eq 0) (Get-RowSignature $probeRows)
         }
@@ -222,7 +223,7 @@
         Check 'mix: the rejection run exits 0' ($reject.Exit -eq 0) $reject.Err
         $rejectionCount = ([regex]::Matches($reject.Out, [regex]::Escape('on its own - it cannot be combined'))).Count
         Check 'mix: all four illegal selections were rejected (3,26 / 25-27 / 1,27 / 26,28)' ($rejectionCount -eq 4) ('rejections seen: ' + $rejectionCount)
-        Check 'mix: the rejection names all five management indices' ($reject.Out -match 'Select 25 \(update\), 26 \(status\), 27 \(uninstall\), 28 \(reset sync groups\) or 29 \(fix a renamed project\)') $reject.Out
+        Check 'mix: the rejection names all five management indices' ($reject.Out -match 'Select 26 \(update\), 27 \(status\), 28 \(uninstall\), 29 \(reset sync groups\) or 30 \(fix a renamed project\)') $reject.Out
         # None of the three management screens may have been entered. The
         # comparison is CASE-SENSITIVE on purpose: the phase headers ("Get Hook
         # Status") differ from the menu rows ("Get hook status") only by case,

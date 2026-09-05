@@ -109,7 +109,7 @@ each hook's recommended events with a shared client/projects answer. You do **no
 type `2` — `1` alone always includes the sync group. The individual-hook set is derived dynamically
 from the hooks actually shipped (never a hard-coded count), so adding or removing a hook folder
 changes it automatically; the sync group always runs exactly once even if `2` is also listed
-explicitly (e.g. `1,2`), and it never runs the management actions (`25`–`28`). List item `2` is
+explicitly (e.g. `1,2`), and it never runs the management actions (`26`–`30`). List item `2` is
 the **sync group** on its own. Individual hooks start at `3`, each showing a colored timing tag and
 a one-line description, with `Cloudflare-Deploy` fixed as the **last** individual entry. The menu
 uses five distinct tag colors so they never blur together: `[pre-task]` (mint), `[post-task]`
@@ -197,25 +197,26 @@ you add or create hooks:
 
 | Item | What it is |
 | --- | --- |
-| `1` | Select all hooks — the sync group **and** every hook below (shipped + your own). Never runs `25`–`29`. |
+| `1` | Select all hooks — the sync group **and** every hook below (shipped + your own). Never runs `26`–`30`. |
 | `2` | Create or update a sync group |
 | `3`–`23` | The 21 shipped hooks, in a pinned order (`9` is `Docs-Freshness-Check`; `20`–`22` are the three test-health hooks; `23` is `Utf8-Encoding-Check`) |
-| `24` | `Cloudflare-Deploy` |
-| `25` | **Update installed hooks** |
-| `26` | **Get hook status** |
-| `27` | **Uninstall installed hooks** |
-| `28` | **Reset sync groups** |
-| `29` | **Fix a renamed or moved project** |
-| `30`+ | Your own created/custom hooks under `hooks\`, in deterministic name order |
+| `24` | `Synapse-Rules-Check` |
+| `25` | `Cloudflare-Deploy` |
+| `26` | **Update installed hooks** |
+| `27` | **Get hook status** |
+| `28` | **Uninstall installed hooks** |
+| `29` | **Reset sync groups** |
+| `30` | **Fix a renamed or moved project** |
+| `31`+ | Your own created/custom hooks under `hooks\`, in deterministic name order |
 
-Discovering or creating a custom hook adds rows from `30` onward and **never shifts `25`–`29`**.
+Discovering or creating a custom hook adds rows from `31` onward and **never shifts `26`–`30`**.
 
 Selections accept a single number, a comma list, and inclusive ascending ranges — `1`, `1,2`,
-`1,2,3-6`. `25`–`29` are management actions, not hook selections: each must be chosen on
-its own, and combining any of them with hook numbers (`3,25`, `24-26`, `1,26`, `25,27`) is rejected
+`1,2,3-6`. `26`–`30` are management actions, not hook selections: each must be chosen on
+its own, and combining any of them with hook numbers (`3,26`, `25-27`, `1,27`, `26,28`) is rejected
 rather than half-executed.
 
-## Updating installed hooks (`25`)
+## Updating installed hooks (`26`)
 
 Because installs are self-contained copies, editing a hook's source under `hooks/` (or updating
 Hook Maker itself) does **not** change any copy you already installed — the copies are frozen at
@@ -232,7 +233,7 @@ source was moved or deleted it is reported as missing and skipped — no other p
 never installs a hook that was never installed, never touches unrelated settings-file content, and
 a second run with nothing changed reports everything as already current (no-op).
 
-## Getting hook status (`26`)
+## Getting hook status (`27`)
 
 Item **`26` Get hook status** scans a path you choose, reports every installed hook it can find —
 **Hook Maker's own and third-party alike** — and records the verified results. It is an explicit,
@@ -278,7 +279,7 @@ earlier scan had discovered left a duplicate row in the uninstall list that coul
 Findings are reported as either **status-only** or **safely removable**. Anything ambiguous, shared
 between hooks, or outside a recognised hook root is shown but never auto-deleted.
 
-## Uninstalling installed hooks (`27`)
+## Uninstalling installed hooks (`28`)
 
 Item **`27` Uninstall installed hooks** removes tracked installations — Hook Maker's own plus
 anything item `26` discovered. It accepts the same `1` / `1,2` / `1,2,3-6` syntax, and shows each
@@ -693,9 +694,9 @@ already referenced by your sync config's profiles — the only scopes a durable 
 A Hook-Maker-managed installation in some other, unreferenced project can't be discovered this way;
 reinstall it there once (any method) and it enters the registry going forward.
 
-## Resetting sync groups (`28`)
+## Resetting sync groups (`29`)
 
-Item **`29` Fix a renamed or moved project** repairs the installs of a project whose folder was
+Item **`30` Fix a renamed or moved project** repairs the installs of a project whose folder was
 renamed or moved. It lists only project roots that are no longer on disk — both the ones the
 registry names and the ones only an **enabled** sync route names (shown as `sync routes only`,
 since those carry no records to reinstall) — asks where each one went, and then reinstalls every
@@ -706,7 +707,7 @@ new path. It never guesses the new location — a missing folder can equally mea
 document it cannot identify safely is named for you rather than removed. Hook sources are never
 touched.
 
-Item **`28` Reset sync groups** removes every sync group from `sync-hooks.json` in one confirmed
+Item **`29` Reset sync groups** removes every sync group from `sync-hooks.json` in one confirmed
 step — for when the config has accumulated stale groups and you want a clean start. It lists each
 group (id, name, route count) first, then asks one `y/n` question defaulting to **no** (Enter
 cancels; nothing is changed on decline). A timestamped backup

@@ -245,10 +245,16 @@ $script:HookMeta = @{
     # before Cloudflare-Deploy. It is also the third native pre-push chain
     # stage (Ignore -> Secrets -> Utf8 -> preserved user hook).
     'Utf8-Encoding-Check'              = @{ Order = 22; When = 'both'; Text = 'blocks new/changed non-UTF-8 text; pre-push chain stage'; Events = @('SessionStart', 'Stop'); Timeout = 30 }
+    # Menu 24, immediately before Cloudflare-Deploy, per an explicit user
+    # requirement. SessionStart loads the user's standing rules out of Synapse;
+    # Stop/SubagentStop ask what this session should write back. NOT
+    # UserPromptSubmit (the digest is a once-per-session read) and NOT
+    # SessionEnd (by then the agent can no longer act on the answer).
+    'Synapse-Rules-Check'              = @{ Order = 23; When = 'both'; Text = 'loads the user''s standing rules from Synapse, and writes back what the session taught'; Events = @('SessionStart', 'Stop', 'SubagentStop'); Timeout = 10 }
     # Cloudflare-Deploy is deliberately kept LAST among individual hook
     # entries (Order = highest value) per an explicit user requirement, not
     # filesystem/alphabetical order - see Test-Wizard.ps1 for the pinned order.
-    'Cloudflare-Deploy'                = @{ Order = 23; When = 'post'; Text = 'suggests deploying in Cloudflare Workers projects, gated on release readiness' }
+    'Cloudflare-Deploy'                = @{ Order = 24; When = 'post'; Text = 'suggests deploying in Cloudflare Workers projects, gated on release readiness' }
 }
 # The "[pre-task]" / "[post-task]" tag, colored by phase (a different color than
 # the description, FFmWiz-style, so timing reads at a glance).
