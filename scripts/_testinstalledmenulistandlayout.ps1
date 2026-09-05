@@ -12,9 +12,9 @@
 # native-Git ownership status in the confirmation screen - and that declining
 # the final confirmation mutates nothing (the record survives in the registry).
 #
-# Part 2 - the fixed menu numbering itself: shipped hooks occupy exactly 3..24
+# Part 2 - the fixed menu numbering itself: shipped hooks occupy exactly 3..25
 # (the three test-health hooks at 20/21/22, Utf8-Encoding-Check at 23, and
-# Cloudflare-Deploy last at 24), 25 is Update, 26 is Get hook status, 27 is
+# Synapse-Rules-Check at 24, Cloudflare-Deploy last at 25), 26 is Update, 27 is Get hook status, 28 is
 # Uninstall, Reset sync groups, Fix a renamed/moved project, custom hooks start at 31, adding a custom hook shifts NONE of the
 # three management rows, each management action must be selected alone, and
 # item 1 ("Select all") expands to the sync group plus every hook while
@@ -141,19 +141,19 @@
             Check 'menu: 24 is Synapse-Rules-Check (directly before Cloudflare-Deploy)' ([string]$rows[24] -match '^Synapse-Rules-Check \| \[pre\+post-task\] \|') ([string]$rows[24])
             Check 'menu: 25 is Cloudflare-Deploy (still the last individual entry)' ([string]$rows[25] -match '^Cloudflare-Deploy \| \[post-task\] \|') ([string]$rows[25])
 
-            Check 'menu: 25 is Update installed hooks' ([string]$rows[25] -match '^Update installed hooks \| \[manage\] \|') ([string]$rows[25])
+            Check 'menu: 26 is Update installed hooks' ([string]$rows[26] -match '^Update installed hooks \| \[manage\] \|') ([string]$rows[26])
             # The exact contract wording for the two rows the task pins. Row 26
             # gained '; skips dependency caches' when the scan started pruning
             # node_modules/.next/... - the row states what the scan DOES, and a
             # scan that no longer walks those trees must say so rather than let
             # the reader assume full coverage.
-            Check 'menu: 26 renders EXACTLY the contract row' ([string]$rows[26] -eq 'Get hook status | [manage] | scan a path for installed hooks (skips dependency caches) and track results') ([string]$rows[26])
-            Check 'menu: 27 renders EXACTLY the contract row' ([string]$rows[27] -eq 'Uninstall installed hooks | [manage] | list and remove installed hooks; never deletes hook sources') ([string]$rows[27])
+            Check 'menu: 27 renders EXACTLY the contract row' ([string]$rows[27] -eq 'Get hook status | [manage] | scan a path for installed hooks (skips dependency caches) and track results') ([string]$rows[27])
+            Check 'menu: 28 renders EXACTLY the contract row' ([string]$rows[28] -eq 'Uninstall installed hooks | [manage] | list and remove installed hooks; never deletes hook sources') ([string]$rows[28])
 
             # The fixture is the only custom hook, so the custom block starts at
             # 28 - i.e. adding a custom hook did NOT shift 20-27 at all.
             Check 'menu: custom hooks start at 31' ([string]$rows[31] -match 'ZZZ-Menusuite-Fixture') ([string]$rows[31])
-            Check 'menu: adding a custom hook did not shift the management rows' (([string]$rows[25] -match 'Update') -and ([string]$rows[26] -match 'Get hook status') -and ([string]$rows[27] -match 'Uninstall')) (($indices | Sort-Object) -join ',')
+            Check 'menu: adding a custom hook did not shift the management rows' (([string]$rows[26] -match 'Update') -and ([string]$rows[27] -match 'Get hook status') -and ([string]$rows[28] -match 'Uninstall')) (($indices | Sort-Object) -join ',')
             Check 'menu: adding a custom hook did not shift the three new shipped rows' (([string]$rows[20] -match 'Test-Plan-Check') -and ([string]$rows[21] -match 'Test-Run-Guard') -and ([string]$rows[22] -match 'Test-Completion-Check')) (($indices | Sort-Object) -join ',')
             Check 'menu: the Tip line names all five management indices' ($menu.Out -match '26/27/28/29/30 are management actions') $menu.Out
 
@@ -241,7 +241,7 @@
         if ($null -ne $rows) { $totalHooks = @($rows.Keys).Count - 7 }  # minus items 1, 2 and the 5 management rows
         $all = Invoke-Wizard -Config $cfg -Answers @('1', '1', '1', '0', '0', '0', '0', 'exit') -WorkingDirectory $proj
         Check 'select-all: the run exits 0' ($all.Exit -eq 0) $all.Err
-        Check 'select-all: 22 shipped + 1 custom hook were counted from the menu' ($totalHooks -eq 23) ('total hooks: ' + $totalHooks)
+        Check 'select-all: 23 shipped + 1 custom hook were counted from the menu' ($totalHooks -eq 24) ('total hooks: ' + $totalHooks)
         # The wizard counts what it will actually install, foreign fixtures
         # included, so the number it PRINTS is the unfiltered one.
         Check 'select-all: item 1 expanded to the sync group plus every hook' ($all.Out -match ('Running the sync group first, then installing ' + ($totalHooks + $foreignRowCount) + ' more hook\(s\)')) $all.Out
