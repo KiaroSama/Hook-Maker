@@ -98,13 +98,15 @@
     $null = Invoke-Wizard -Config $cfgAllCodex -Answers @('1', '1', '2,3', $coX, $coY, 'done', '2', '', '1', '2', '', '0')
     Check 'a shared-path sync+hook install honors Codex-only client scoping' ((Test-Path (Join-Path $coX '.codex\hooks.json')) -and -not (Test-Path (Join-Path $coX '.claude')))
 
-    # Selecting the second-to-last individual entry installs Utf8-Encoding-Check
-    # (menu item 23, immediately before Cloudflare-Deploy).
+    # Selecting the second-to-last individual entry installs Synapse-Rules-Check
+    # (menu item 24, immediately before Cloudflare-Deploy). The point of the
+    # assertion is the BOUNDARY - the entry just before the last one - so it
+    # follows whichever hook currently sits there, not a pinned name.
     $cfgPenult = Join-Path $Work 'cfg-penult.json'; New-Config $cfgPenult
     $penultProj = New-Proj 'PenultEntryProj'
     # Answers after the hook item are events '2', then client '1' (= Claude).
     $rPenult = Invoke-Wizard -Config $cfgPenult -Answers @('1', '1', ($shippedHookCount + 1).ToString(), '2', '1', $penultProj, 'done', '', '0')
-    Check 'selecting the second-to-last individual entry installs Utf8-Encoding-Check' (Test-Path (Join-Path $penultProj '.claude\hooks\Hook-Maker\Utf8-Encoding-Check\Utf8-Encoding-Check.ps1'))
+    Check 'selecting the second-to-last individual entry installs Synapse-Rules-Check' (Test-Path (Join-Path $penultProj '.claude\hooks\Hook-Maker\Synapse-Rules-Check\Synapse-Rules-Check.ps1'))
     Check 'did not install the neighboring Cloudflare-Deploy hook instead' (-not (Test-Path (Join-Path $penultProj '.claude\hooks\Hook-Maker\Cloudflare-Deploy')))
 
     # Selecting the LAST individual entry (a single-hook pick, no aggregate)

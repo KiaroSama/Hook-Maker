@@ -81,19 +81,20 @@
         '13\. Mcp-Usage-Check', '14\. Rules-Check', '15\. Skills-Check',
         '16\. Secrets-Check', '17\. Ignore-Rules-Check', '18\. Dependency-Version-Check',
         '19\. Test-Temp-Cleanup', '20\. Test-Plan-Check', '21\. Test-Run-Guard',
-        '22\. Test-Completion-Check', '23\. Utf8-Encoding-Check', '24\. Cloudflare-Deploy'
+        '22\. Test-Completion-Check', '23\. Utf8-Encoding-Check',
+        '24\. Synapse-Rules-Check', '25\. Cloudflare-Deploy'
     ) -join '[\s\S]*'
-    Check 'hooks follow the requested menu order (Select all -> sync group -> hooks -> test-health at 20/21/22 -> Utf8-Encoding-Check at 23 -> Cloudflare-Deploy last at 24)' ($r.Out -match $menuOrder)
+    Check 'hooks follow the requested menu order (Select all -> sync group -> hooks -> test-health at 20/21/22 -> Utf8-Encoding-Check at 23 -> Synapse-Rules-Check at 24 -> Cloudflare-Deploy last at 25)' ($r.Out -match $menuOrder)
     # The three test-health hooks (24.txt) render one line each, with the tag
     # their canonical When value demands - a value Get-HookTimingTag does not
     # recognize silently renders NO tag at all.
     Check 'Test-Plan-Check renders the [pre-task] tag' ($r.Out -match '(?m)^  20\. Test-Plan-Check \| \[pre-task\] \| \S') $r.Out
     Check 'Test-Run-Guard renders the [pre+post-task] tag' ($r.Out -match '(?m)^  21\. Test-Run-Guard \| \[pre\+post-task\] \| \S') $r.Out
     Check 'Test-Completion-Check renders the [post-task] tag' ($r.Out -match '(?m)^  22\. Test-Completion-Check \| \[post-task\] \| \S') $r.Out
-    Check 'the three management rows follow the shipped block at 25/26/27' (
-        ($r.Out -match '(?m)^  25\. Update installed hooks \| \[manage\] \|') -and
-        ($r.Out -match '(?m)^  26\. Get hook status \| \[manage\] \|') -and
-        ($r.Out -match '(?m)^  27\. Uninstall installed hooks \| \[manage\] \|')) $r.Out
+    Check 'the three management rows follow the shipped block at 26/27/28' (
+        ($r.Out -match '(?m)^  26\. Update installed hooks \| \[manage\] \|') -and
+        ($r.Out -match '(?m)^  27\. Get hook status \| \[manage\] \|') -and
+        ($r.Out -match '(?m)^  28\. Uninstall installed hooks \| \[manage\] \|')) $r.Out
     # THE case the old fixture never had. With a custom hook present the hook
     # numbers are two spans - shipped 3-25 and custom 31+ - separated by the
     # management rows. A single computed '3-N' claimed 25/26/27 were hooks and
@@ -109,8 +110,8 @@
             $rSpan.Out -notmatch 'install every hook below \(3-26\)') $rSpan.Out
         Check 'the custom hook really is listed at 31, after the management rows' (
             $rSpan.Out -match '(?m)^  31\. ZZZ-') $rSpan.Out
-        Check 'the management rows stay at 25/26/27/28 regardless of custom hooks' (
-            $rSpan.Out -match '(?m)^  25\. Update installed hooks \|') $rSpan.Out
+        Check 'the management rows stay at 26/27/28/29/30 regardless of custom hooks' (
+            $rSpan.Out -match '(?m)^  26\. Update installed hooks \|') $rSpan.Out
 
         # ZZZ-* IMMUNITY (this suite counts the REAL hooks\ directory, which
         # sibling suites write throwaway fixtures into). A leftover
@@ -474,7 +475,7 @@
     #        (reaches Claude + Codex in one pass; Kiro installs alongside them
     #        and is asserted in Test-KiroIntegration.ps1, not here)
     #        -> target -> done -> start -> exit
-    $r = Invoke-Wizard -Config $cfg4 -Answers @('1', '1', '3-8,16,24', '1', '4', $m, 'done', '', '0')
+    $r = Invoke-Wizard -Config $cfg4 -Answers @('1', '1', '3-8,16,25', '1', '4', $m, 'done', '', '0')
     Check 'exit 0' ($r.Exit -eq 0)
     Check 'no stderr' ($r.Err -eq '')
     Check 'selection accepts a range combined with a single item' ($r.Out -notmatch 'Enter number\(s\)')
