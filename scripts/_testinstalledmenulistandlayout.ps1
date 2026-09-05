@@ -15,7 +15,7 @@
 # Part 2 - the fixed menu numbering itself: shipped hooks occupy exactly 3..24
 # (the three test-health hooks at 20/21/22, Utf8-Encoding-Check at 23, and
 # Cloudflare-Deploy last at 24), 25 is Update, 26 is Get hook status, 27 is
-# Uninstall, Reset sync groups, Fix a renamed/moved project, custom hooks start at 30, adding a custom hook shifts NONE of the
+# Uninstall, Reset sync groups, Fix a renamed/moved project, custom hooks start at 31, adding a custom hook shifts NONE of the
 # three management rows, each management action must be selected alone, and
 # item 1 ("Select all") expands to the sync group plus every hook while
 # excluding all three management indices.
@@ -31,7 +31,7 @@
 # suite's harness (Check, $script:Pass/$script:Fail), helpers, fixtures and
 # workspace. NOT a standalone suite: run scripts\Test-InstalledHooksMenu.ps1.
 
-    Write-Host '--- menu 26 lists the full install identity and the confirmation screen repeats it ---' -ForegroundColor Cyan
+    Write-Host '--- menu 27 lists the full install identity and the confirmation screen repeats it ---' -ForegroundColor Cyan
 
     # ZZZ-Regtest-* throwaway fixture, no internal lower->upper case transition
     # (Get-HookFriendlyName hyphenates PascalCase boundaries; this name already
@@ -56,7 +56,7 @@
         # main menu 1 -> submenu 1 -> hook list 27 (Uninstall) -> scope menu 2
         # (every installed hook) -> select row 1 (the fixture record) -> decline
         # the confirmation -> exit the main menu.
-        $r = Invoke-Wizard -Config $cfg -Answers @('1', '1', '27', '2', '1', 'n', '0') -WorkingDirectory $proj
+        $r = Invoke-Wizard -Config $cfg -Answers @('1', '1', '28', '2', '1', 'n', '0') -WorkingDirectory $proj
         Check 'the wizard run exits 0' ($r.Exit -eq 0) $r.Err
 
         # ---- list screen: everything Get-InstalledHookSnapshot collects ----
@@ -268,7 +268,7 @@
 
         # -- a missing path re-prompts instead of scanning -------------------
         $missingPath = Join-Path $Work 'no-such-folder-here'
-        $bad = Invoke-Wizard -Config $cfg -Answers @('1', '1', '26', $missingPath, '0', '0', '0', 'exit') -WorkingDirectory $proj
+        $bad = Invoke-Wizard -Config $cfg -Answers @('1', '1', '27', $missingPath, '0', '0', '0', 'exit') -WorkingDirectory $proj
         Check 'status: the invalid-path run exits 0' ($bad.Exit -eq 0) $bad.Err
         Check 'status: a missing folder is rejected with the exact path' ($bad.Out -match [regex]::Escape('Folder not found: ' + $missingPath)) $bad.Out
         Check 'status: the root prompt was shown again after the rejection' (([regex]::Matches($bad.Out, 'Root folder to scan')).Count -ge 2) $bad.Out
@@ -277,7 +277,7 @@
 
         # -- a quoted path containing spaces is accepted ---------------------
         $spaceDir = New-Proj 'Status Root With Spaces'
-        $quoted = Invoke-Wizard -Config $cfg -Answers @('1', '1', '26', ('"' + $spaceDir + '"'), '0', '0', '0', '0', 'exit') -WorkingDirectory $proj
+        $quoted = Invoke-Wizard -Config $cfg -Answers @('1', '1', '27', ('"' + $spaceDir + '"'), '0', '0', '0', '0', 'exit') -WorkingDirectory $proj
         Check 'status: the quoted-path run exits 0' ($quoted.Exit -eq 0) $quoted.Err
         Check 'status: a quoted path containing spaces is accepted' ($quoted.Out -match $globalQuestion) $quoted.Out
         # 0 at the global question goes BACK to the root prompt: that is the
@@ -286,7 +286,7 @@
         Check 'status: cancelling never started a scan' ($quoted.Out -notmatch 'Roots to scan:') $quoted.Out
 
         # -- a plain project root is accepted --------------------------------
-        $projRoot = Invoke-Wizard -Config $cfg -Answers @('1', '1', '26', $proj, '0', '0', '0', '0', 'exit') -WorkingDirectory $proj
+        $projRoot = Invoke-Wizard -Config $cfg -Answers @('1', '1', '27', $proj, '0', '0', '0', '0', 'exit') -WorkingDirectory $proj
         Check 'status: the project-root run exits 0' ($projRoot.Exit -eq 0) $projRoot.Err
         Check 'status: a project root is accepted' ($projRoot.Out -match $globalQuestion) $projRoot.Out
 
@@ -295,7 +295,7 @@
         # directory well inside the project has to work too.
         $subtree = Join-Path $proj '.claude\hooks\Hook-Maker'
         New-Item -ItemType Directory -Path $subtree -Force | Out-Null
-        $sub = Invoke-Wizard -Config $cfg -Answers @('1', '1', '26', $subtree, '0', '0', '0', '0', 'exit') -WorkingDirectory $proj
+        $sub = Invoke-Wizard -Config $cfg -Answers @('1', '1', '27', $subtree, '0', '0', '0', '0', 'exit') -WorkingDirectory $proj
         Check 'status: the .claude\hooks\Hook-Maker run exits 0' ($sub.Exit -eq 0) $sub.Err
         Check 'status: a .claude\hooks\Hook-Maker direct subtree is accepted' ($sub.Out -match $globalQuestion) $sub.Out
 
@@ -317,7 +317,7 @@
         # -- the global question defaults to No on a bare Enter ---------------
         # Enter answers No, so the roots screen must say the global locations
         # are excluded and must list only the chosen root.
-        $defaultNo = Invoke-Wizard -Config $cfg -Answers @('1', '1', '26', $proj, '', '0', 'exit') -WorkingDirectory $proj
+        $defaultNo = Invoke-Wizard -Config $cfg -Answers @('1', '1', '27', $proj, '', '0', 'exit') -WorkingDirectory $proj
         Check 'status: the default-No run exits 0' ($defaultNo.Exit -eq 0) $defaultNo.Err
         Check 'status: Enter at the global question means No' ($defaultNo.Out -match [regex]::Escape('Global Claude/Codex/Kiro locations are NOT included in this scan.')) $defaultNo.Out
         Check 'status: the canonical root is shown before the scan starts' ($defaultNo.Out -match [regex]::Escape($proj)) $defaultNo.Out
