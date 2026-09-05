@@ -250,7 +250,7 @@ $script:HookMeta = @{
     # Stop/SubagentStop ask what this session should write back. NOT
     # UserPromptSubmit (the digest is a once-per-session read) and NOT
     # SessionEnd (by then the agent can no longer act on the answer).
-    'Synapse-Rules-Check'              = @{ Order = 23; When = 'both'; Text = 'loads the user''s standing rules from Synapse, and writes back what the session taught'; Events = @('SessionStart', 'Stop', 'SubagentStop'); Timeout = 10 }
+    'Synapse-Rules-Check'              = @{ Order = 23; When = 'both'; Text = 'loads the user''s rules from Synapse; asks what to write back'; Events = @('SessionStart', 'Stop', 'SubagentStop'); Timeout = 10 }
     # Cloudflare-Deploy is deliberately kept LAST among individual hook
     # entries (Order = highest value) per an explicit user requirement, not
     # filesystem/alphabetical order - see Test-Wizard.ps1 for the pinned order.
