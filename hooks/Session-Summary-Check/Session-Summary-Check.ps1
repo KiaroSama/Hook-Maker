@@ -20,16 +20,21 @@
 # summary as the CLOSING SECTION of the reply - after the "MCP used:",
 # "Skills used:" and rules-confirmation lines the sibling hooks ask for.
 #
-# NO COOLDOWN AND NO FINGERPRINT, deliberately, unlike every other post-task
-# hook in this set. Those exist to stop a hook repeating an unchanged warning.
-# Here the "unchanged" case is precisely the case that must still be reported:
-# a session that skips the wrap-up because it looks like the last one is the
-# exact failure this hook was asked to fix. It runs on every Stop.
+# ONCE PER SESSION. An earlier revision emitted on every Stop, reasoning that
+# the "unchanged" case is the one that must still be reported. That was wrong,
+# and it produced a loop in practice: other gates block, the agent works and
+# stops again, this hook re-asks for the summary, and the agent writes it
+# again - the same DONE/REMAINING block appeared four times in one turn.
 #
-# It also does NOT exit on stop_hook_active. Every other Stop hook does, to
-# avoid re-firing on its own block - but this hook cannot loop, because it
-# never blocks. Exiting there would silence it on precisely the continuation
-# Stops where another gate has just sent the agent back to work.
+# The requirement only has to ARRIVE once. Repeating it does not improve
+# compliance; it manufactures the repetition it exists to produce cleanly. So
+# the first Stop of a session delivers it and every later Stop of that same
+# session stays silent.
+#
+# It still does NOT exit on stop_hook_active: that flag is set for ANY gate's
+# block, so honouring it would skip the very first Stop whenever some other
+# gate happened to fire first. Session identity is the correct key, not the
+# shared flag.
 
 Set-StrictMode -Version 2.0
 $ErrorActionPreference = 'Stop'
@@ -80,6 +85,48 @@ function Get-BlockedGateNames {
     return @($names | Sort-Object -Unique)
 }
 
+# Speak once per session. Without this the hook re-asks on every Stop, and
+# because other gates keep blocking, the agent restates the whole summary
+# each time.
+function Test-AlreadyDelivered {
+    param([AllowEmptyString()][string]$ProjectRoot, [AllowEmptyString()][string]$SessionId)
+    $stateDir = Join-Path $env:LOCALAPPDATA 'HookMaker\state'
+    $key = Get-ShortHash ([string]$ProjectRoot).ToLowerInvariant()
+    $path = Join-Path $stateDir ('SessionSummary-' + $key + '.txt')
+    $recorded = $null
+    try { if (Test-Path -LiteralPath $path -PathType Leaf) { $recorded = ([System.IO.File]::ReadAllText($path)).Trim() } }
+    catch { $recorded = $null }
+
+    if (-not [string]::IsNullOrWhiteSpace($SessionId)) {
+        # Session identity is the reliable key: a new session must be told
+        # again, the same session must not be.
+        if ($null -ne $recorded -and $recorded -eq $SessionId) { return $true }
+        try {
+            New-Item -ItemType Directory -Path $stateDir -Force | Out-Null
+            [System.IO.File]::WriteAllText($path, $SessionId)
+        }
+        catch { }
+        return $false
+    }
+
+    # No session id: dedup by identity is impossible, so fall back to a short
+    # time window. An unbounded repeat is the worse failure of the two.
+    $nowUtc = [DateTime]::UtcNow
+    if ($null -ne $recorded) {
+        $lastUtc = [DateTime]::MinValue
+        if ([DateTime]::TryParse($recorded, [ref]$lastUtc)) {
+            if (($nowUtc - $lastUtc.ToUniversalTime()).TotalMinutes -lt 60) { return $true }
+        }
+    }
+    try {
+        New-Item -ItemType Directory -Path $stateDir -Force | Out-Null
+        [System.IO.File]::WriteAllText($path, $nowUtc.ToString('o'))
+    }
+    catch { }
+    return $false
+}
+
+if (Test-AlreadyDelivered -ProjectRoot $cwd -SessionId $sessionId) { exit 0 }
 $blocked = @(Get-BlockedGateNames -ProjectRoot $cwd -SessionId $sessionId)
 
 $lines = New-Object System.Collections.ArrayList
