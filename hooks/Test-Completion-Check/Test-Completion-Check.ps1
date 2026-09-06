@@ -14,7 +14,10 @@
 # not a check.
 #
 # WHAT IT BLOCKS ON (each one confirmed from recorded evidence, never inferred):
-#   1. a guarded run is STILL ACTIVE (its recorded owner pid is alive);
+#   1. a guarded run is STILL ACTIVE (the recorded owner process - pid AND its
+#      recorded start time, never the pid alone - is the one running now);
+#  1b. a guarded run DIED without recording how it ended: its owner is gone and
+#      no result document exists, so the outcome is unknown and unrecoverable;
 #   2. the guarded result says `terminated` (wallTimeout / idleTimeout /
 #      memoryLimit) and that incident is not yet resolved;
 #   3. the guarded result carries a non-empty `leakedProcessIds`;
@@ -49,9 +52,22 @@
 #                                           run identity runId/commandFingerprint/
 #                                           projectFingerprint).
 #   read  TestRunGuard-active-<key>-<runId>.json     { ownerPid, ownerProcessStartUtc,
-#                                           ownerExecutablePath, ... } while THAT
-#                                           run holds a live child. A dead/recycled
-#                                           pid makes the marker stale, not active.
+#                                           ownerExecutablePath, markerCreatedUtc,
+#                                           ... } while THAT run holds a live child.
+#                                           LIVENESS NEEDS THE WHOLE IDENTITY: pids
+#                                           are recycled, so a marker is 'live' only
+#                                           when the process at ownerPid still has
+#                                           the recorded start time (and executable).
+#                                           There is NO pid-only fallback - a marker
+#                                           that cannot be pinned is not a live run.
+#                                           An unpinnable/dead owner with a result on
+#                                           record is leftover; with none it DIED
+#                                           (blocks, case 1b) until its note clears
+#                                           it, or - past
+#                                           TEST_COMPLETION_ACTIVE_MARKER_MAX_HOURS -
+#                                           it is an earlier session's record, which
+#                                           is reconciled into the ledger and dropped
+#                                           rather than blocking this task forever.
 #   read  TestRunGuard-observed-<key>-<runId>.json   { observedUtc, projectFingerprint,
 #                                           runId, guarded } - a test command was
 #                                           seen running for that repo-state.
@@ -122,6 +138,9 @@
 #   TEST_COMPLETION_ADVISORY_ONLY              1 = report, never block (default 0)
 #   TEST_COMPLETION_ALWAYS_REQUIRE_NOTE        1 = a note after every run (default 0)
 #   TEST_COMPLETION_COORDINATION_WAIT_SECONDS  bounded same-Stop wait (default 2)
+#   TEST_COMPLETION_ACTIVE_MARKER_MAX_HOURS    hours an ownerless, result-less active
+#                                              record can still describe this task
+#                                              before it is expired (default 12)
 # An invalid value is reported in plain text with the output it is attached to
 # and the fallback is applied so it can only ever NARROW what is blocked on -
 # never widen it. A malformed setting must not turn this gate into a nag.
@@ -178,6 +197,21 @@ if ($config.ContainsKey('TEST_COMPLETION_ALWAYS_REQUIRE_NOTE')) {
     if ($raw -eq '1') { $alwaysRequireNote = $true }
     elseif ($raw -ne '0' -and -not [string]::IsNullOrWhiteSpace($raw)) {
         [void]$configWarnings.Add('TEST_COMPLETION_ALWAYS_REQUIRE_NOTE must be 0 or 1; using the default 0 (a note is required only after an incident).')
+    }
+}
+
+# How long an ACTIVE marker whose owner is gone and that never produced a result
+# may still describe the current work. Past it the record is an earlier session's
+# leftover: reconciled and dropped with a trace, never a block on this task.
+$activeMarkerMaxHours = 12
+if ($config.ContainsKey('TEST_COMPLETION_ACTIVE_MARKER_MAX_HOURS')) {
+    $raw = [string]$config['TEST_COMPLETION_ACTIVE_MARKER_MAX_HOURS']
+    $parsed = -1
+    if ([int]::TryParse($raw, [ref]$parsed) -and $parsed -ge 1 -and $parsed -le 168) {
+        $activeMarkerMaxHours = $parsed
+    }
+    elseif (-not [string]::IsNullOrWhiteSpace($raw)) {
+        [void]$configWarnings.Add('TEST_COMPLETION_ACTIVE_MARKER_MAX_HOURS is not an integer in 1..168; using the default 12.')
     }
 }
 
@@ -295,6 +329,20 @@ $script:MinNoteBytes = 80
 $script:IncidentTagPrefix = 'Test incident: '
 function Get-IncidentTag { param([string]$Key) return ($script:IncidentTagPrefix + $Key) }
 
+# The stable incident identity of an ABANDONED active marker (a run whose owner
+# died without recording a result). Derived only from fields the marker file
+# already carries and never rewrites, so the same leftover hashes to the same key
+# on every later Stop - which is what lets one tagged note resolve it for good
+# instead of the finding re-appearing under a new identity each time. Namespaced
+# by the 'abandoned|' prefix so it can never collide with a result incident key.
+function Get-AbandonedIncidentKey {
+    param($Doc)
+    $rid = [string](Get-Field $Doc 'runId')
+    $opid = [string](Get-Field $Doc 'ownerPid')
+    $created = [string](Get-Field $Doc 'markerCreatedUtc')
+    return (Get-ShortHash ('abandoned|' + $rid + '|' + $opid + '|' + $created))
+}
+
 function Get-NoteBytes {
     param([string]$Root)
     $total = 0L
@@ -410,6 +458,12 @@ if ([string]::IsNullOrWhiteSpace($stateFingerprint)) { $stateFingerprint = Get-S
 # blocking paths do the same). An advisory is CLIENT-AWARE and never a block:
 # on Codex `decision:block` at Stop forces a new prompt, which for an advisory
 # would be an infinite loop.
+# Abandoned active markers reconciled during THIS invocation. The durable trace
+# lives in the ledger; this is the human-visible half, and it rides an output the
+# hook is already emitting rather than breaking silence on its own - an earlier
+# session's leftover is not an actionable signal for the current task.
+$script:expiredNow = New-Object System.Collections.Generic.List[string]
+
 function Write-Finding {
     param([string[]]$Lines, [bool]$Blocking)
     $all = New-Object System.Collections.Generic.List[string]
@@ -429,6 +483,11 @@ function Write-Finding {
         if ($ddReason -eq '') { $ddReason = 'unresolved test-completion evidence' }
         [void]$all.Add('')
         [void]$all.Add('DEEP DEBUG: BLOCKED (' + $ddReason + ')')
+    }
+    if ($script:expiredNow.Count -gt 0) {
+        [void]$all.Add('')
+        [void]$all.Add('Also reconciled (not a block, and not part of this task): ' + $script:expiredNow.Count +
+            ' abandoned guarded-run record(s) from an earlier session were expired and dropped - ' + (@($script:expiredNow) -join '; ') + '.')
     }
     if ($script:configWarnings.Count -gt 0) {
         [void]$all.Add('')
@@ -537,17 +596,52 @@ foreach ($path in @($prunedObservedPaths)) { try { Remove-Item -LiteralPath $pat
 if ($prunedResultPaths.Count -gt 0) { $resultEntries = @($resultEntries | Where-Object { -not $prunedResultPaths.Contains($_.Path) }) }
 if ($prunedObservedPaths.Count -gt 0) { $observedEntries = @($observedEntries | Where-Object { -not $prunedObservedPaths.Contains($_.Path) }) }
 
-# ---- 1. any live active marker across all runs ----
-# Set $activePid from the first genuinely-alive owner; drop every marker whose
-# owner is proven DEAD or pid-reused. A marker whose owner PROCESS is alive is
-# NEVER removed (C1) - not on a fingerprint change, not because one run finished:
-# a running test blocks completion regardless of the current working-tree state.
+# ---- 1. classify every active marker across all runs ----
+# Four outcomes, each acted on differently (Get-ActiveMarkerState is the
+# authority on how they are told apart):
+#   live      -> $activePid. A marker whose owner PROCESS is genuinely alive is
+#                NEVER removed (C1) - not on a fingerprint change, not because
+#                another run finished: a running test blocks completion whatever
+#                the working tree now looks like.
+#   finished  -> the run recorded a result; the marker is leftover, drop it and
+#                let the normal result path judge the outcome.
+#   died      -> the owner is gone and NOTHING recorded how the run ended. The
+#                marker is KEPT (it is the evidence) and blocks at 1b below, once
+#                its owed durable note has not already resolved it.
+#   expired   -> the same, but past the abandoned-record horizon, so it cannot
+#                describe this task. Reconciled into the ledger - a trace, never
+#                a silent delete - and dropped so it can never block forever.
 $activePid = 0
+$abandonedRuns = New-Object System.Collections.Generic.List[object]
 foreach ($ae in $activeEntries) {
-    $p = Resolve-ActiveOwnerPid -Doc $ae.Doc
-    if ($p -gt 0) { if ($activePid -eq 0) { $activePid = $p } }
-    else { try { Remove-Item -LiteralPath $ae.Path -Force -ErrorAction SilentlyContinue } catch { } }
+    $ms = Get-ActiveMarkerState -Doc $ae.Doc -Path $ae.Path -MaxAgeHours $activeMarkerMaxHours -ResultEntries $resultEntries
+    if ($ms.State -eq 'live') {
+        if ($activePid -eq 0) { $activePid = $ms.OwnerPid }
+        continue
+    }
+    if ($ms.State -eq 'died') {
+        # Its durable note is the real resolution (the marker file is only the
+        # blunt one), so honour a satisfied note here exactly as case 6 does -
+        # otherwise 1b would preempt case 6 forever and the note could never clear.
+        $ak = Get-AbandonedIncidentKey -Doc $ae.Doc
+        if (Test-PendingNoteSatisfied -Key $ak) { Add-ResolvedIncident $ak }
+        if (-not (Test-IncidentResolved $ak)) {
+            [void]$abandonedRuns.Add([pscustomobject]@{ Key = $ak; RunId = $ms.RunId; Detail = $ms.Detail; Path = $ae.Path })
+            continue
+        }
+    }
+    if ($ms.State -eq 'expired') {
+        Add-ExpiredMarker -RunId $ms.RunId -Detail $ms.Detail
+        [void]$script:expiredNow.Add($(if ($ms.RunId -ne '') { 'run id ' + $ms.RunId } else { 'a record with no run id' }) + ' (' + $ms.Detail + ')')
+    }
+    try { Remove-Item -LiteralPath $ae.Path -Force -ErrorAction SilentlyContinue } catch { }
 }
+
+# Persist the reconciliation NOW. Several paths below exit silently (no test work
+# recorded, an already-resolved incident, the cleanup deferral), and the trace of
+# an expired abandoned record has to survive every one of them - a record dropped
+# with no trace is the exact blind spot this classification exists to close.
+if ($script:expiredNow.Count -gt 0) { Save-CompletionState }
 
 # ---- build the candidate runs for the CURRENT state ----
 $currentObserved = @($observedEntries | Where-Object { (Get-ObservedFingerprint $_.Doc) -eq $stateFingerprint })
@@ -791,7 +885,7 @@ if ($null -ne $rep -and $null -ne $rep.Run.ResultEntry) {
 # UNLESS ::deep-debug is active for this session: the workflow's completion
 # gate REQUIRES fresh guarded evidence, so its total absence is itself a
 # blocked state (once per session per unchanged state - anti-loop).
-if ($null -eq $result -and -not $observedCurrent -and $activePid -eq 0 -and $script:pendingNotes.Count -eq 0) {
+if ($null -eq $result -and -not $observedCurrent -and $activePid -eq 0 -and $abandonedRuns.Count -eq 0 -and $script:pendingNotes.Count -eq 0) {
     if ($script:DeepDebugActive -and (Test-DdGateShouldReport ('noevidence|' + $stateFingerprint))) {
         Write-Finding -Blocking $true -Lines @(
             'TEST COMPLETION CHECK: ::deep-debug is active for this session but NO guarded test evidence exists for the current project state - no observed run, no guarded result, nothing active.',
@@ -804,7 +898,7 @@ if ($null -eq $result -and -not $observedCurrent -and $activePid -eq 0 -and $scr
 # session this still lacks CURRENT clean evidence, so it is the same blocked
 # no-evidence state (its own once-per-session token).
 if ($incidentKey -ne '' -and (Test-IncidentResolved $incidentKey) -and $script:pendingNotes.Count -eq 0 -and
-    -not $observedCurrent -and $activePid -eq 0) {
+    -not $observedCurrent -and $activePid -eq 0 -and $abandonedRuns.Count -eq 0) {
     if ($script:DeepDebugActive -and (Test-DdGateShouldReport ('resolvedonly|' + $stateFingerprint))) {
         Write-Finding -Blocking $true -Lines @(
             'TEST COMPLETION CHECK: ::deep-debug is active for this session, and while a past incident is resolved, no CURRENT-state guarded test evidence exists.',
@@ -846,6 +940,30 @@ if ($activePid -gt 0) {
     Write-Finding -Blocking $true -Lines @(
         'TEST COMPLETION CHECK: a guarded test run is STILL ACTIVE (owner process ' + $activePid + ' is alive). The work cannot be complete while its result is unknown.',
         'Recovery: wait for that run to finish and read its result document, or stop it deliberately with the guarded runner and record how it ended. Do not declare the task complete, and do not claim any test outcome until the run has actually ended.')
+}
+
+# ---- 1b. a guarded run DIED without recording how it ended (OWNERLESS) -----
+# The owner process is gone (or, when it cannot be proven to be the recorded one,
+# is not this run's owner at all) and no result document was ever written. The
+# runner writes a terminal result in `finally` on every path it can intercept, so
+# this state means the process was terminated outright - a stuck run that was
+# killed, a torn-down session, a machine that went down mid-suite. The outcome is
+# not merely unknown, it is unrecoverable: nothing will ever produce it. That is a
+# genuine finding, not an absence of one, and it is exactly the ownerless leftover
+# that used to be deleted in silence (or, worse, read as a LIVE run once its pid
+# was recycled). It fails closed and names both ways out.
+if ($abandonedRuns.Count -gt 0) {
+    $ab = $abandonedRuns[0]
+    Register-PendingNote -Key $ab.Key -Reason ('a guarded test run (' + $(if ($ab.RunId -ne '') { 'run id ' + $ab.RunId } else { 'no recorded run id' }) + ') died without recording how it ended')
+    Save-CompletionState
+    Write-Finding -Blocking $true -Lines @(
+        'TEST COMPLETION CHECK: a guarded test run DIED without recording how it ended - it is OWNERLESS. ' +
+            $(if ($abandonedRuns.Count -gt 1) { 'There are ' + $abandonedRuns.Count + ' such runs; the first is reported here. ' } else { '' }) +
+            'Evidence: ' + $ab.Detail + ', and no guarded result document exists for ' + $(if ($ab.RunId -ne '') { 'run id ' + $ab.RunId } else { 'this marker' }) + '.',
+        'Its result is UNKNOWN AND UNRECOVERABLE: the guarded runner records a terminal result on every exit path it can intercept, so nothing was recorded means the process was killed outright, and no later run will ever fill that gap. Do not treat it as a pass, and do not claim any test outcome from it.',
+        'Recovery: re-run the affected suite through scripts\Run-Tests-Guarded.ps1 so a real result document exists, then record a durable note in .ai/ (BUGS.md, TESTING_NOTES.md, COMMANDS.md and/or LESSON.md) covering what killed the run, why nothing detected it at the time, and the verified guard that now catches it.',
+        'Tag that note with a line `' + (Get-IncidentTag $ab.Key) + '` (exactly) to clear THIS incident; a bare acknowledgement will not.',
+        'If the run genuinely belonged to abandoned work and there is nothing to learn from it, delete its record instead - the exact file is: ' + $ab.Path)
 }
 
 # ---- 2/3. a terminated or leaking run -------------------------------------

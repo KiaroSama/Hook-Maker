@@ -25,9 +25,10 @@
 # reports immediately, ignoring the cooldown - that is the whole point.
 #
 # Reported risks are only ever things this hook can POINT AT (file + line) in
-# the repository as it exists right now: a minute-scale blind sleep in a test
-# file, an unbounded wait, an unbounded polling loop, a child process started
-# with no visible wall/idle bound. Never a theoretical warning.
+# the repository as it exists right now: a fixed blind sleep at or over the
+# blind-wait ceiling in a test file, an unbounded wait, an unbounded polling
+# loop, a child process started with no visible wall/idle bound. Never a
+# theoretical warning.
 #
 # Output shape comes from the shared Write-HookResult adapter in _hooklib.ps1,
 # so this hook does not hand-roll a client branch. This hook only ever runs on
@@ -50,6 +51,7 @@
 #   TEST_PLAN_MAX_FILE_KB        KB read from any one file               (default 400)
 #   TEST_PLAN_MAX_SCAN_SECONDS   total wall time for the whole scan      (default 5)
 #   TEST_PLAN_MAX_FINDINGS       findings emitted before it stops        (default 8)
+#   TEST_PLAN_MAX_BLIND_SLEEP_SECONDS  fixed sleep treated as blind, 0=off (default 30)
 # An invalid value is reported in plain text inside the advisory and the
 # default is used - a malformed setting must never block or crash a session.
 # Hitting any ceiling (or an unreadable directory) makes the scan PARTIAL, and
@@ -146,6 +148,16 @@ $maxFiles     = Read-BoundedIntSetting 'TEST_PLAN_MAX_FILES'          200 1 1000
 $maxFileBytes = 1KB * (Read-BoundedIntSetting 'TEST_PLAN_MAX_FILE_KB' 400 1 1048576)
 $maxSeconds   = Read-BoundedIntSetting 'TEST_PLAN_MAX_SCAN_SECONDS'     5 1 3600
 $maxFindings  = Read-BoundedIntSetting 'TEST_PLAN_MAX_FINDINGS'         8 1 1000
+
+# NOT a scan ceiling: the threshold at or above which a FIXED literal sleep in
+# a test file counts as a blind wait. 0 disables the check, exactly as
+# TEST_GUARD_MAX_BLIND_SLEEP_SECONDS does in Test-Run-Guard - and the default
+# is deliberately the SAME 30. It used to be a hard-coded 60 here, so the
+# BEFORE stage stayed silent about a 45-second sleep that the DURING stage then
+# denied outright: two stages of one system disagreeing about what a blind
+# sleep is, with the disagreement only surfacing at the moment the run was
+# already blocked. Change one and change the other.
+$maxBlindSleepSeconds = Read-BoundedIntSetting 'TEST_PLAN_MAX_BLIND_SLEEP_SECONDS' 30 0 86400
 
 # TEST-ONLY seam (NO effect in production; deliberately absent from .env.example).
 # Mirrors Large-File-Check's LARGEFILECHECK_TEST_TRIP_TIME_AFTER_FILES: when set to
@@ -300,14 +312,14 @@ foreach ($file in $testFiles) {
         if ($line -match '(?i)-(c?match|notmatch|c?replace|c?like|notlike)\b') { continue }
         $where = $relative + ':' + ($i + 1)
 
-        # 1. minute-scale blind sleep in a test file
+        # 1. a fixed blind sleep at or over the blind-wait ceiling
         $seconds = -1
         if ($line -match '(?i)\bStart-Sleep\s+(?:-Seconds\s+)?(\d+)\b') { $seconds = [int]$Matches[1] }
         elseif ($line -match '(?i)\bStart-Sleep\s+-Milliseconds\s+(\d+)\b') { $seconds = [int]([int]$Matches[1] / 1000) }
         elseif ($line -match '(?i)\b(?:time\.)?sleep\(\s*(\d+)') { $seconds = [int]$Matches[1] }
         elseif ($line -match '(?i)^\s*sleep\s+(\d+)\b') { $seconds = [int]$Matches[1] }
-        if ($seconds -ge 60) {
-            [void]$findings.Add($where + ' - blind sleep of ' + $seconds + 's in a test file. Wait on a deterministic signal or bounded polling instead.')
+        if ($maxBlindSleepSeconds -gt 0 -and $seconds -ge $maxBlindSleepSeconds) {
+            [void]$findings.Add($where + ' - blind sleep of ' + $seconds + 's in a test file (>= the ' + $maxBlindSleepSeconds + 's blind-wait ceiling). Wait on a deterministic signal or bounded polling instead.')
         }
 
         # 2. an explicitly unbounded wait
@@ -399,7 +411,7 @@ catch { }
 $lines = New-Object System.Collections.Generic.List[string]
 [void]$lines.Add('TEST PLAN CHECK - test-health policy for this task. Advisory only: this hook never runs a test and never edits a file.')
 [void]$lines.Add('- Give every test run a bounded WALL timeout AND an idle/no-progress timeout. A run with no bound is a defect, not a slow test.')
-[void]$lines.Add('- No long blind sleeps. Wait on a deterministic signal, a readiness check, or bounded polling - never a minute-scale sleep.')
+[void]$lines.Add('- No long blind sleeps. Wait on a deterministic signal, a readiness check, or bounded polling - never a fixed multi-second delay.')
 [void]$lines.Add('- Keep parallelism resource-aware: max(2, min(8, cores-2)) workers, no nested oversubscription; do not re-serialize slow independent suites.')
 [void]$lines.Add('- Terminate the whole owned process tree and clean temp/state in finally. A leaked worker, port, lock or temp directory is a failed run.')
 [void]$lines.Add('- Discover suites instead of hardcoding a list, and keep every suite on disk mapped to a CI bucket.')

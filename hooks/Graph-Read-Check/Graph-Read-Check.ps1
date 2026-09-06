@@ -44,6 +44,19 @@ $eventName = [string](Get-Field $hookInput 'hook_event_name')
 if ([string]::IsNullOrWhiteSpace($eventName)) { $eventName = 'SessionStart' }
 if ($eventName -ne 'SessionStart' -and $eventName -ne 'UserPromptSubmit') { exit 0 }
 
+# COORDINATION: Codebase Memory is the PRIMARY code graph. When CBM is
+# installed and this project is indexed there, stay silent - Cbm-Read-Check
+# already asks for the same thing, and two hooks pointing at two different
+# graphs on one prompt is noise rather than redundancy. Graphify keeps the
+# ground it is better at: projects CBM has no index for, and non-code inputs.
+$cbmCacheDir = Get-CbmCacheDir -Config (Read-HookEnv (Join-Path $PSScriptRoot '.env'))
+if (Test-CbmInstalled -CacheDir $cbmCacheDir) {
+    try {
+        if (Test-Path -LiteralPath (Get-CbmProjectDbPath -ProjectRoot $cwd -CacheDir $cbmCacheDir) -PathType Leaf) { exit 0 }
+    }
+    catch { }
+}
+
 $graphPath = Join-Path $cwd 'graphify-out\graph.json'
 $graphExists = Test-Path -LiteralPath $graphPath -PathType Leaf
 
@@ -65,37 +78,13 @@ if ($eventName -eq 'SessionStart') {
 # ---- UserPromptSubmit: relevance-gated (English + Persian). ----
 $prompt = [string](Get-Field $hookInput 'prompt')
 
-# English relevance: whole meaningful terms that signal codebase-wide work.
-$relevantEn = $prompt -match '(?i)\b(architecture|refactor|cross-file|cross file|call path|call graph|dependenc|where is|used by|impact|structure|entry point|module|integrat|codebase|call site|caller|callers|inherit)'
+# Relevance (English + Persian) now lives in Test-CodebaseStructurePrompt in
+# _hooklib.ps1: Cbm-Read-Check asks the same question, and two copies of one
+# definition are two answers waiting to disagree. The patterns moved
+# byte-for-byte.
+$relevant = Test-CodebaseStructurePrompt -Prompt $prompt
 
-# Persian relevance: the same request classes as \uXXXX regex escapes (ASCII
-# source - see the header). Whole meaningful terms/phrases only, conservative,
-# so a lone common word does not trigger the reminder. One alternative per
-# request class, in order: architecture, structure, dependency, invocation /
-# call path, "calling", "where used", impact (hamza + plain spelling), module,
-# relation, entry point, rewrite, refactor, codebase, "whole project",
-# "whole repo". \s+ tolerates any spacing inside the two-word phrases.
-$persianPattern = @(
-    '\u0645\u0639\u0645\u0627\u0631\u06cc',                             # architecture (memari)
-    '\u0633\u0627\u062e\u062a\u0627\u0631',                             # structure (sakhtar)
-    '\u0648\u0627\u0628\u0633\u062a\u06af\u06cc',                       # dependency (vabastegi)
-    '\u0641\u0631\u0627\u062e\u0648\u0627\u0646\u06cc',                 # invocation / call path (farakhani)
-    '\u0635\u062f\u0627\s+\u0632\u062f\u0646',                          # calling (seda zadan)
-    '\u06a9\u062c\u0627\s+\u0627\u0633\u062a\u0641\u0627\u062f\u0647',   # where used (koja estefade)
-    '\u062a\u0623\u062b\u06cc\u0631',                                   # impact - hamza (ta'sir)
-    '\u062a\u0627\u062b\u06cc\u0631',                                   # impact - plain (tasir)
-    '\u0645\u0627\u0698\u0648\u0644',                                   # module (mazhul)
-    '\u0627\u0631\u062a\u0628\u0627\u0637',                             # relation (ertebat)
-    '\u0646\u0642\u0637\u0647\s+\u0648\u0631\u0648\u062f',              # entry point (noghte-ye vorud)
-    '\u0628\u0627\u0632\u0646\u0648\u06cc\u0633\u06cc',                 # rewrite (baznevisi)
-    '\u0631\u06cc\u0641\u06a9\u062a\u0648\u0631',                       # refactor (refaktor)
-    '\u06a9\u062f\u0628\u06cc\u0633',                                   # codebase
-    '\u06a9\u0644\s+\u067e\u0631\u0648\u0698\u0647',                    # whole project (kol-e proje)
-    '\u06a9\u0644\s+\u0645\u062e\u0632\u0646'                           # whole repo (kol-e makhzan)
-) -join '|'
-$relevantFa = $prompt -match $persianPattern
-
-if (-not ($relevantEn -or $relevantFa)) { exit 0 }
+if (-not $relevant) { exit 0 }
 
 # Choose the note and a graph token (part of the fingerprint) by graph state.
 if ($graphExists) {

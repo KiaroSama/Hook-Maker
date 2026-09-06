@@ -24,7 +24,10 @@ if ($null -eq $hookInput) { exit 0 }
 $eventName = [string](Get-Field $hookInput 'hook_event_name')
 if ($eventName -notin @('SessionStart', 'Stop', 'SubagentStop', 'GitPrePush')) { exit 0 }
 $isStopEvent = ($eventName -eq 'Stop' -or $eventName -eq 'SubagentStop')
-if ($isStopEvent -and (Get-Field $hookInput 'stop_hook_active') -eq $true) { exit 0 }
+# Stand down only on THIS hook's own re-entry: `stop_hook_active` is set
+# for ANY gate's block, and exiting on it alone let one block silence the
+# other twelve on the same Stop.
+if ($isStopEvent -and (Test-StopStandDown -HookInput $hookInput -HookName 'Ignore-Rules-Check')) { exit 0 }
 $cwd = [string](Get-Field $hookInput 'cwd')
 if ([string]::IsNullOrWhiteSpace($cwd) -or -not (Test-Path -LiteralPath $cwd -PathType Container)) { exit 0 }
 if ($null -eq (Get-Command git -ErrorAction SilentlyContinue)) { exit 0 }
@@ -159,6 +162,9 @@ if ($GitPrePush) {
     exit 1
 }
 if ($isStopEvent) {
+    # Record the block so THIS hook's own re-entry is recognised; another
+    # gate's block must not mute it, and its own must not repeat.
+    Set-StopBlockMarker -HookInput $hookInput -HookName 'Ignore-Rules-Check'
     $emit = Write-HookResult -EventName $eventName -Kind 'block' -Reason $reason
     exit $emit.ExitCode
 }

@@ -135,7 +135,7 @@ try {
     Check 'stop: the unread message still says how to write back' ($rMissed.Out -match 'memory_write') $rMissed.Out
 
     # Consulted: the same shape, with a real tool name in it.
-    $used = New-Transcript 'transcript-used.jsonl' '{"role":"assistant","tool":"mcp__synapse__memory_digest"}'
+    $used = New-Transcript 'transcript-used.jsonl' '{"role":"assistant","name":"mcp__synapse__memory_digest"}'
     $rUsed = Fire -Cwd (New-Proj 'Used') -EventName 'Stop' -SessionId 's-used' -TranscriptPath $used
     Check 'stop: a consulted store gets the WRITE-BACK half instead' (
         $rUsed.Exit -eq 0 -and $rUsed.Out -match 'SYNAPSE WRITE-BACK' -and $rUsed.Out -notmatch 'never queried') ($rUsed.Out + $rUsed.Err)
@@ -151,7 +151,7 @@ try {
     # The tail window is bounded, so the marker is the only thing that can carry
     # "already read" across a session long enough to push the call out of it.
     $longProj = New-Proj 'LongSession'
-    $early = New-Transcript 'transcript-early.jsonl' '{"tool":"mcp__synapse__memory_retrieve"}'
+    $early = New-Transcript 'transcript-early.jsonl' '{"tool_name":"mcp__synapse__memory_retrieve"}'
     $rFirst = Fire -Cwd $longProj -EventName 'Stop' -SessionId 's-long' -TranscriptPath $early
     Check 'marker: the first Stop sees the call and says write-back' ($rFirst.Out -match 'SYNAPSE WRITE-BACK') $rFirst.Out
     # Same session, same project, but the call has now scrolled away entirely.

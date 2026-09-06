@@ -20,7 +20,9 @@
 # The suite is split by scenario into dot-sourced helper blocks (they run in
 # this script's scope; execution order is the file order below):
 #   _testcompletionharness.ps1   shared fixture builders + state-document writers
-#   _testcompletiongate.ps1      the core gate: evidence, identity, active runs
+#   _testcompletiongate.ps1      the core gate: evidence, identity, and the
+#                                active-record state machine (live / finished /
+#                                died / expired, incl. pid reuse)
 #   _testcompletionledger.ps1    incident ledger, pruning and retention (C/D/R)
 #   _testcompletionnotes.ps1     state migration, the durable .ai/ note, the race
 #   _testcompletionoutput.ps1    client shapes, .env validation, JSON, 5.1

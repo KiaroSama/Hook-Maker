@@ -1,12 +1,25 @@
-# DependencyVersionCheck - ADVISORY pre-task hook (SessionStart, UserPromptSubmit) that helps the
-# coding agent notice outdated dependencies/runtimes/build tools/CI actions/base images and prefer
-# the latest STABLE, compatible version for new work. It never modifies manifests, lockfiles,
-# workflows, Dockerfiles, or source code, never runs an upgrade, never auto-merges Dependabot PRs,
-# and never blocks completion - it only provides evidence and instructs the agent to verify safety
-# (release notes, breaking changes, peer/runtime constraints, security advisories) before updating,
-# and to update in small verified batches rather than one large uncontrolled one. A newer version is
-# never assumed safer or better; when no safe update is identified the agent may keep the current
-# version.
+# DependencyVersionCheck - ADVISORY hook (SessionStart, UserPromptSubmit, Stop, SubagentStop) that
+# helps the coding agent notice outdated dependencies/runtimes/build tools/CI actions/base images
+# and prefer the latest STABLE, compatible version for new work. It never modifies manifests,
+# lockfiles, workflows, Dockerfiles, or source code, never runs an upgrade, never auto-merges
+# Dependabot PRs, and NEVER BLOCKS - it only provides evidence and instructs the agent to verify
+# safety (release notes, breaking changes, peer/runtime constraints, security advisories) before
+# updating, and to update in small verified batches rather than one large uncontrolled one. A newer
+# version is never assumed safer or better; when no safe update is identified the agent may keep the
+# current version.
+#
+# ROLE (global-hook-rules.md, "Hook Roles" + Integration Matrix): DETECTOR/ADVISORY, on every event
+# including the closing ones. Whether to upgrade is the user's decision and a judgement the hook
+# cannot make, so there is deliberately NO gate here - not on Stop, not anywhere. What changed is
+# the OUTPUT CONTRACT, not the scanning: the report now states exactly what the agent must do with
+# each finding (decide, and name the decision), and the closing half re-surfaces the findings once
+# per session so the report cannot simply scroll out of context unanswered. The weakness this
+# addresses was never detection - it was that a correct report was trivially ignorable.
+#
+# THE REQUESTED LINE: when findings exist, the closing summary should carry a line starting
+# "Dependency decisions:" answering each reported finding with update / keep / defer and a reason.
+# It is requested, never enforced - an unanswered finding is reported as an unreviewed risk rather
+# than as a refusal to stop.
 #
 # Relationship to other hooks: Dependabot-Check reports EXISTING verified Dependabot PRs (this hook
 # never duplicates that listing). Github-Baseline-Check verifies the CI/Dependabot BASELINE
@@ -18,8 +31,10 @@
 #   versions; exits 1 when outdated packages are found (NOT a failure - only exit codes >1 or the
 #   command being missing are treated as a real error).
 # - Python pip (requirements*.txt / a bare pyproject.toml without uv.lock): `pip list --outdated
-#   --format=json` - real pip command with stable JSON output. LIMITATION: this inspects whatever
-#   `pip`/`pip3` resolves to on PATH (the currently active environment's INSTALLED packages), not
+#   --format=json` - real pip command with stable JSON output. It runs THIS PROJECT's interpreter
+#   (.venv/venv, or VIRTUAL_ENV when that points inside the project), never whatever `pip` resolves
+#   to on PATH: the global environment's packages are not this project's dependencies. No project
+#   environment means the check is reported INCOMPLETE, never answered from global. It reads INSTALLED
 #   the versions declared in requirements.txt directly - if no venv is activated or nothing is
 #   installed yet, there is nothing to report (not the same as "everything current").
 # - Go (go.mod): `go list -u -m all` - real, built into the Go toolchain; a trailing `[newver]` on a
@@ -45,11 +60,14 @@
 # expired; UserPromptSubmit reuses the cached findings and additionally injects "prefer latest
 # stable compatible version" guidance when the prompt looks like it is adding a dependency,
 # framework, runtime, build tool, GitHub Action, Docker image, SDK, or CLI, or starting a project
-# from scratch.
+# from scratch. Stop/SubagentStop replay the cached report only, once per session per report state:
+# they still do the local manifest walk that keys the cache (the same bounded, pruned traversal the
+# pre-task events do), but they never invoke npm/pip/go and never re-derive findings.
 #
 # Optional .env next to this script (copy .env.example):
 #   COOLDOWN_MINUTES  minutes between full scans when the project fingerprint is unchanged (default 10080 = 7 days)
 #   MAX_FINDINGS      maximum findings included in one report (default 12)
+#   CLOSING_REMINDER  1 (default) to replay unanswered findings at Stop, 0 to stay pre-task only
 
 Set-StrictMode -Version 2.0
 $ErrorActionPreference = 'Stop'
@@ -59,7 +77,15 @@ $ErrorActionPreference = 'Stop'
 $hookInput = Read-HookInput
 if ($null -eq $hookInput) { exit 0 }
 $eventName = [string](Get-Field $hookInput 'hook_event_name')
-if ($eventName -notin @('SessionStart', 'UserPromptSubmit')) { exit 0 }
+if ($eventName -notin @('SessionStart', 'UserPromptSubmit', 'Stop', 'SubagentStop')) { exit 0 }
+$closing = ($eventName -eq 'Stop' -or $eventName -eq 'SubagentStop')
+# This hook never blocks, so it can never provoke the re-entry itself - but a
+# blocking hook on the same event can, and doing the work twice for one stop is
+# waste. Every Stop handler honours the flag.
+if ($closing) {
+    $stopActive = Get-Field $hookInput 'stop_hook_active'
+    if ($null -ne $stopActive -and [bool]$stopActive) { exit 0 }
+}
 $cwd = [string](Get-Field $hookInput 'cwd')
 if ([string]::IsNullOrWhiteSpace($cwd) -or -not (Test-Path -LiteralPath $cwd -PathType Container)) { exit 0 }
 
@@ -68,6 +94,16 @@ $cooldownMinutes = 10080
 if ($config.ContainsKey('COOLDOWN_MINUTES')) { try { $cooldownMinutes = [int]$config['COOLDOWN_MINUTES'] } catch { } }
 $maxFindings = 12
 if ($config.ContainsKey('MAX_FINDINGS')) { try { $maxFindings = [int]$config['MAX_FINDINGS'] } catch { } }
+$closingReminder = $true
+if ($config.ContainsKey('CLOSING_REMINDER')) {
+    $raw = ([string]$config['CLOSING_REMINDER']).Trim()
+    if ($raw -eq '0') { $closingReminder = $false }
+}
+if ($closing -and -not $closingReminder) { exit 0 }
+
+# The exact wording the closing summary is asked to carry. One definition, used
+# by the report footer and by the closing reminder, so they cannot drift apart.
+$script:DependencyDecisionLine = 'Dependency decisions: <name>=update|keep|defer (<reason>), ... (or "Dependency decisions: none - <one-line reason>")'
 
 # ---- known-minimum-major table for common official GitHub Actions (conservative: only flags
 # CLEARLY old majors; an action at/above the minimum is never asserted to be the latest) ----
@@ -223,6 +259,47 @@ function Save-CachedState {
     [System.IO.File]::WriteAllLines($statePath, $lines)
 }
 
+# ---- Stop/SubagentStop: replay the cached findings once, never scan, never block ----
+# The closing half exists because a correct pre-task report is trivially ignorable: it lands at the
+# top of a session and is gone by the time anything is decided. This replays only what was already
+# measured - no npm/go/pip invocation, no traversal - and only when there are real FINDINGS.
+# An "incomplete checks" report alone is not replayed: there is nothing at the end of a task to
+# decide about a check that could not run.
+if ($closing) {
+    $cached = Read-CachedState
+    if ($null -eq $cached -or $cached.Fingerprint -ne $fingerprint -or [string]::IsNullOrWhiteSpace($cached.Report)) { exit 0 }
+    $findingLines = @($cached.Report -split "`n" | Where-Object { $_ -match '^\- ' -and $_ -match '\[(patch|minor|major|prerelease|EOL|unknown)\]\s*$' })
+    if ($findingLines.Count -eq 0) { exit 0 }
+
+    # Say it once per session per report state: an unchanged report does not repeat on every Stop of
+    # the same session, while a changed one is reported immediately.
+    $sessionId = [string](Get-Field $hookInput 'session_id')
+    $closeGatePath = Join-Path $stateDir ('DependencyVersionCheck-close-' + (Get-ShortHash $cwd.ToLowerInvariant()) + '.txt')
+    $closeFingerprint = Get-ShortHash ($sessionId + '|' + $eventName + '|' + $fingerprint + '|' + $findingLines.Count)
+    if (Test-Path -LiteralPath $closeGatePath -PathType Leaf) {
+        try { if (([System.IO.File]::ReadAllText($closeGatePath)).Trim() -eq $closeFingerprint) { exit 0 } } catch { }
+    }
+    try {
+        New-Item -ItemType Directory -Path $stateDir -Force | Out-Null
+        [System.IO.File]::WriteAllText($closeGatePath, $closeFingerprint, (New-Object System.Text.UTF8Encoding $false))
+    }
+    catch { }
+
+    # End-of-life and clearly-old-major entries are separated out because they are the two classes
+    # where "leave it" needs a stated reason rather than silence.
+    $urgent = @($findingLines | Where-Object { $_ -match '\[(EOL|major)\]\s*$' })
+    $closeLines = New-Object System.Collections.Generic.List[string]
+    [void]$closeLines.Add('DEPENDENCY VERSION CHECK - ' + $findingLines.Count + ' finding(s) were reported for this project at the start of the session and are still on the table:')
+    foreach ($f in @($findingLines | Select-Object -First $maxFindings)) { [void]$closeLines.Add($f) }
+    if ($urgent.Count -gt 0) {
+        [void]$closeLines.Add('Of those, ' + $urgent.Count + ' are end-of-life or a clearly old major version - those two classes need a stated reason to leave in place, not silence.')
+    }
+    [void]$closeLines.Add('Answer each one in the final summary on its own line: ' + $script:DependencyDecisionLine)
+    [void]$closeLines.Add('An unanswered finding is an UNREVIEWED RISK, not an accepted one - if the task was unrelated to dependencies, say exactly that. This hook never upgrades anything and never blocks: the decision is the user''s.')
+    $null = Write-HookResult -EventName $eventName -Kind 'advisory' -Message ($closeLines.ToArray() -join "`n")
+    exit 0
+}
+
 # ---- UserPromptSubmit: new-dependency/new-feature guidance + cached findings, no fresh scan ----
 if ($eventName -eq 'UserPromptSubmit') {
     $prompt = [string](Get-Field $hookInput 'prompt')
@@ -315,13 +392,52 @@ elseif ($manifestPaths.ContainsKey('npm')) {
     [void]$incomplete.Add('npm detected but the `npm` CLI is not available - run `npm outdated` to check.')
 }
 
+# Resolve THIS PROJECT's Python interpreter. `pip` on PATH is the machine's
+# global environment, whose packages are not this project's dependencies -
+# reporting them is noise at best and wrong at worst (a project venv can be
+# AHEAD of global, so a global read invents an "outdated" package that is
+# actually newer here).
+#
+# Only a venv INSIDE the project counts. VIRTUAL_ENV is honoured just when it
+# points into this project, so a shell that happens to have some other
+# project's venv active cannot leak into this report.
+function Get-ProjectPythonExecutable {
+    param([Parameter(Mandatory = $true)][string]$ProjectRoot)
+    $candidates = New-Object System.Collections.ArrayList
+    $active = [string]$env:VIRTUAL_ENV
+    if (-not [string]::IsNullOrWhiteSpace($active)) {
+        try {
+            $activeFull = [System.IO.Path]::GetFullPath($active)
+            $rootFull = [System.IO.Path]::GetFullPath($ProjectRoot)
+            # Physical containment, and on a real boundary - a sibling
+            # directory sharing a name prefix is not "inside".
+            if ($activeFull.StartsWith($rootFull.TrimEnd([char]92) + [char]92, [System.StringComparison]::OrdinalIgnoreCase)) {
+                [void]$candidates.Add($activeFull)
+            }
+        }
+        catch { }
+    }
+    foreach ($name in @('.venv', 'venv', '.env', 'env')) { [void]$candidates.Add((Join-Path $ProjectRoot $name)) }
+    foreach ($base in $candidates) {
+        # .cmd/.bat are not a test convenience: pyenv-win installs shim batch
+        # files and some managed layouts do the same, so a project interpreter
+        # is legitimately not always a native .exe.
+        foreach ($relative in @('Scripts\python.exe', 'Scripts\python.cmd', 'Scripts\python.bat', 'bin/python3', 'bin/python')) {
+            $exe = Join-Path $base $relative
+            try { if (Test-Path -LiteralPath $exe -PathType Leaf) { return $exe } } catch { }
+        }
+    }
+    return $null
+}
 # ---- pip ----
 # pip's exit code for "outdated packages found" is not documented (unlike npm/pnpm's confirmed
 # exit 1) - never gate on exit code here, only on whether the output actually parses as JSON.
 if ($manifestPaths.ContainsKey('pip')) {
-    $pipCmd = if (Get-Command pip -ErrorAction SilentlyContinue) { 'pip' } elseif (Get-Command pip3 -ErrorAction SilentlyContinue) { 'pip3' } else { $null }
+    # PROJECT interpreter only - never the global one on PATH.
+    $projectPython = Get-ProjectPythonExecutable -ProjectRoot $cwd
+    $pipCmd = $projectPython
     if ($null -ne $pipCmd) {
-        $raw = Invoke-QuietCommand -FilePath $pipCmd -ArgumentList @('list', '--outdated', '--format=json')
+        $raw = Invoke-QuietCommand -FilePath $pipCmd -ArgumentList @('-m', 'pip', 'list', '--outdated', '--format=json')
         $text = ($raw -join "`n").Trim()
         if ([string]::IsNullOrWhiteSpace($text)) {
             if ($LASTEXITCODE -gt 1) { [void]$incomplete.Add('Python (pip) - `' + $pipCmd + ' list --outdated --format=json` failed (exit ' + $LASTEXITCODE + ').') }
@@ -353,7 +469,7 @@ if ($manifestPaths.ContainsKey('pip')) {
             catch { [void]$incomplete.Add('Python (pip) - could not parse `pip list --outdated --format=json` output.') }
         }
     }
-    else { [void]$incomplete.Add('Python dependencies detected but no `pip`/`pip3` CLI is available - run `pip list --outdated --format=json` to check.') }
+    else { [void]$incomplete.Add('Python (pip) - this project has Python manifests but no project environment (.venv/venv) was found, and the global interpreter is NOT this project''s dependency set. Create the project venv, or run `python -m pip list --outdated --format=json` inside it.') }
 }
 
 # ---- Poetry / uv / pnpm / yarn / bun / .NET / Java / Rust / PHP / Ruby: detected, but not given a
@@ -500,11 +616,21 @@ if ($findings.Count -gt 0) {
 }
 if ($incomplete.Count -gt 0) {
     if ($reportLines.Count -eq 0) { [void]$reportLines.Add('DEPENDENCY VERSION CHECK (' + $cwd + '):') }
-    [void]$reportLines.Add('Incomplete checks (do not assume these are current):')
+    # Deliberately avoids the phrase this project's own guard greps for as a
+    # currency claim: the line must forbid such a claim, not contain one.
+    [void]$reportLines.Add('Incomplete checks - these are UNKNOWN, and UNKNOWN is not the same as fine. Do not describe this project as fully checked while any of these stand:')
     foreach ($i in @($incomplete | Sort-Object -Unique)) { [void]$reportLines.Add('- ' + $i) }
 }
+# The response contract. The scan above is evidence; these lines say what must be DONE with it,
+# because a report with no stated obligation is the one that gets skimmed and dropped.
 if ($reportLines.Count -gt 0) {
-    [void]$reportLines.Add('This is advisory only: verify safety (release notes, breaking changes, runtime/peer compatibility, security advisories) before updating, prefer the latest STABLE compatible version (never a prerelease/beta/RC/nightly by default), update in small verified batches with validation after each, and keep the current version when no safe update is identified.')
+    [void]$reportLines.Add('WHAT TO DO WITH THIS - every finding above needs a DECISION, not agreement:')
+    [void]$reportLines.Add('1. Verify before changing anything: release notes/changelog, breaking changes, runtime and peer constraints, security advisories. Prefer the latest STABLE compatible version - never a prerelease/beta/RC/nightly/canary by default.')
+    [void]$reportLines.Add('2. Decide per finding: update (then update the lockfile and run the project''s real checks), keep (the current version is correct here), or defer (name what blocks it). "Keep" and "defer" are legitimate answers; silence is not.')
+    [void]$reportLines.Add('3. Update in small verified batches with validation after each - never one large uncontrolled bump, and never a major version without a breaking-change review.')
+    [void]$reportLines.Add('4. An [EOL] entry or a clearly old major needs an explicit stated reason to leave in place.')
+    [void]$reportLines.Add('5. Report the outcome in the final summary on its own line: ' + $script:DependencyDecisionLine)
+    [void]$reportLines.Add('This hook never edits a manifest, never runs an upgrade and never blocks completion - whether to upgrade is the user''s call. What it does require is that the call be made and stated rather than left unread.')
 }
 $report = $reportLines.ToArray() -join "`n"
 Save-CachedState -Report $report

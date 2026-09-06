@@ -126,9 +126,10 @@ function New-Proj {
 }
 
 function Fire {
-    param([string]$Cwd, [string]$EventName = 'SessionStart', [string]$Prompt = '', [string]$SessionId = 't', [string]$Exe = '')
+    param([string]$Cwd, [string]$EventName = 'SessionStart', [string]$Prompt = '', [string]$SessionId = 't', [string]$Exe = '', [switch]$StopActive, [string]$HookPath = '')
     $obj = @{ session_id = $SessionId; cwd = $Cwd; hook_event_name = $EventName }
     if ($EventName -eq 'UserPromptSubmit') { $obj['prompt'] = $Prompt }
+    if ($StopActive) { $obj['stop_hook_active'] = $true }
     $payload = $obj | ConvertTo-Json
     $token = [guid]::NewGuid().ToString('N').Substring(0, 8)
     $inFile = Join-Path $Work ('in-' + $token + '.json')
@@ -136,7 +137,8 @@ function Fire {
     $errFile = Join-Path $Work ('err-' + $token + '.txt')
     [System.IO.File]::WriteAllText($inFile, $payload, (New-Object System.Text.UTF8Encoding $false))
     $file = if ([string]::IsNullOrWhiteSpace($Exe)) { (Get-Process -Id $PID).Path } else { $Exe }
-    $argLine = '-NoLogo -NoProfile -ExecutionPolicy Bypass -File "' + $Hook + '"'
+    $target = if ([string]::IsNullOrWhiteSpace($HookPath)) { $Hook } else { $HookPath }
+    $argLine = '-NoLogo -NoProfile -ExecutionPolicy Bypass -File "' + $target + '"'
     $startArgs = @{
         FilePath = $file; ArgumentList = $argLine; RedirectStandardInput = $inFile
         RedirectStandardOutput = $outFile; RedirectStandardError = $errFile
@@ -198,6 +200,12 @@ try {
     Write-Host '--- pip: Python outdated packages ---' -ForegroundColor Cyan
     $pipProj = New-Proj 'PipProj'
     Write-Utf8 (Join-Path $pipProj 'requirements.txt') 'requests==2.0.0'
+    # The hook queries THIS PROJECT's interpreter, never `pip` on PATH, so the
+    # fixture needs a venv of its own. A .cmd that prints the same mock file the
+    # old PATH shim used keeps Set-Mock the single place the payload is defined.
+    $pipVenv = Join-Path $pipProj '.venv\Scripts'
+    New-Item -ItemType Directory -Path $pipVenv -Force | Out-Null
+    Write-Utf8 (Join-Path $pipVenv 'python.cmd') ('@echo off' + [Environment]::NewLine + 'type ' + [char]34 + (Join-Path $MockDir 'pip_outdated.json') + [char]34 + [Environment]::NewLine)
     Set-Mock -PipExit 0 -PipJson '[{"name":"requests","version":"2.0.0","latest_version":"2.5.0","latest_filetype":"wheel"}]'
     $r = Fire -Cwd $pipProj
     Check 'pip outdated packages are reported' ($r.Out -match 'pip: requests 2\.0\.0 -> 2\.5\.0') $r.Out
@@ -330,11 +338,120 @@ try {
     Check 'Windows PowerShell 5.1 runs cleanly and classifies the update' ($r.Exit -eq 0 -and $r.Out -match 'pkg-5 1\.0\.0 -(>|\\u003e) 1\.1\.0 \[minor\]') $r.Err
 
     # =====================================================================
-    Write-Host '--- shipped .env.example registers the correct pre-task events ---' -ForegroundColor Cyan
+    Write-Host '--- output contract: every finding needs a stated DECISION ---' -ForegroundColor Cyan
+    # The scan was never the weak half - an ignorable report was. These assert
+    # the response contract, which is what the report now carries.
+    $contractProj = New-Proj 'ContractProj'
+    Write-Utf8 (Join-Path $contractProj 'package.json') '{"name":"fixture","dependencies":{"pkg-old":"1.0.0"}}'
+    Set-Mock -NpmExit 1 -NpmJson '{"pkg-old":{"current":"1.0.0","latest":"3.0.0"}}'
+    $rc = Fire -Cwd $contractProj -SessionId 'contract-1'
+    Check 'the report demands a decision per finding, not agreement' ($rc.Out -match 'needs a DECISION, not agreement') $rc.Out
+    Check 'update / keep / defer are all named as legitimate answers' (
+        $rc.Out -match 'update \(then update the lockfile' -and $rc.Out -match 'keep \(' -and $rc.Out -match 'defer \(') $rc.Out
+    Check 'silence is explicitly NOT an answer' ($rc.Out -match 'silence is not') $rc.Out
+    Check 'EOL / clearly-old-major needs a stated reason to leave in place' ($rc.Out -match 'explicit stated reason to leave in place') $rc.Out
+    Check 'the report names the exact closing line to write' ($rc.Out -match 'Dependency decisions:') $rc.Out
+    Check 'the report still disclaims any authority to upgrade or block' (
+        $rc.Out -match 'never runs an upgrade and never blocks completion' -and $rc.Out -notmatch '"decision"') $rc.Out
+
+    # =====================================================================
+    Write-Host '--- Stop/SubagentStop: replays unanswered findings, never scans, never blocks ---' -ForegroundColor Cyan
+    Reset-CallLog
+    $r = Fire -Cwd $contractProj -EventName 'Stop' -SessionId 'contract-1'
+    Check 'the closing half replays the still-unanswered finding' ($r.Out -match 'pkg-old' -and $r.Out -match 'still on the table') $r.Out
+    Check 'the closing half asks for the decision line' ($r.Out -match 'Dependency decisions:') $r.Out
+    Check 'an unanswered finding is named an UNREVIEWED RISK, not an accepted one' ($r.Out -match 'UNREVIEWED RISK') $r.Out
+    Check 'the closing half never blocks (advisory shape only)' ($r.Out -notmatch '"decision"') $r.Out
+    Check 'the closing half separates out the EOL/major class' ($r.Out -match 'end-of-life or a clearly old major') $r.Out
+    Check 'the closing half runs NO scan (no npm invocation at Stop)' ((Get-NpmCallCount) -eq 0) ('npm calls=' + (Get-NpmCallCount))
+    $r2 = Fire -Cwd $contractProj -EventName 'Stop' -SessionId 'contract-1'
+    Check 'an unchanged report does not repeat on the next Stop of the same session' ($r2.Exit -eq 0 -and $r2.Out -eq '') $r2.Out
+    $r3 = Fire -Cwd $contractProj -EventName 'Stop' -SessionId 'contract-2'
+    Check 'a NEW session replays it again' ($r3.Out -match 'pkg-old') $r3.Out
+    $r4 = Fire -Cwd $contractProj -EventName 'SubagentStop' -SessionId 'contract-3'
+    Check 'SubagentStop replays it too' ($r4.Out -match 'pkg-old') $r4.Out
+    $r5 = Fire -Cwd $contractProj -EventName 'Stop' -SessionId 'contract-4' -StopActive
+    Check 'stop_hook_active short-circuits the closing half' ($r5.Exit -eq 0 -and $r5.Out -eq '') $r5.Out
+    # A project with nothing cached has nothing to replay.
+    $quietProj = New-Proj 'QuietStopProj'
+    Write-Utf8 (Join-Path $quietProj 'Cargo.toml') "[package]`nname = `"fixture`""
+    $r6 = Fire -Cwd $quietProj -EventName 'Stop' -SessionId 'quiet-1'
+    Check 'a project with no cached findings stays silent at Stop' ($r6.Exit -eq 0 -and $r6.Out -eq '') $r6.Out
+    # An incomplete-only report is not replayed: there is nothing at the end of a
+    # task to DECIDE about a check that could not run.
+    $null = Fire -Cwd $quietProj -SessionId 'quiet-2'
+    $r7 = Fire -Cwd $quietProj -EventName 'Stop' -SessionId 'quiet-3'
+    Check 'an incomplete-only report is not replayed at Stop' ($r7.Exit -eq 0 -and $r7.Out -eq '') $r7.Out
+
+    # =====================================================================
+    Write-Host '--- CLOSING_REMINDER=0 keeps the hook pre-task only ---' -ForegroundColor Cyan
+    $offDir = Join-Path $Work 'depcopy-off'
+    New-Item -ItemType Directory -Path $offDir -Force | Out-Null
+    Copy-Item $Hook (Join-Path $offDir 'Dependency-Version-Check.ps1')
+    Copy-Item (Join-Path (Split-Path -Parent $Hook) '..\_hooklib.ps1') (Join-Path $Work '_hooklib.ps1') -Force
+    Write-Utf8 (Join-Path $offDir '.env') "CLOSING_REMINDER=0`r`n"
+    $offHook = Join-Path $offDir 'Dependency-Version-Check.ps1'
+    $r = Fire -Cwd $contractProj -EventName 'Stop' -SessionId 'off-1' -HookPath $offHook
+    Check 'CLOSING_REMINDER=0 silences the closing half' ($r.Exit -eq 0 -and $r.Out -eq '') $r.Out
+    $r = Fire -Cwd $contractProj -EventName 'UserPromptSubmit' -Prompt 'add a new dependency' -SessionId 'off-2' -HookPath $offHook
+    Check 'CLOSING_REMINDER=0 leaves the pre-task halves working' ($r.Out -match 'latest STABLE') $r.Out
+
+    # =====================================================================
+    Write-Host '--- shipped .env.example registers the correct events ---' -ForegroundColor Cyan
     $envExample = Join-Path (Split-Path -Parent $Hook) '.env.example'
-    Check 'the shipped .env.example registers SessionStart and UserPromptSubmit only' (
-        (Test-Path -LiteralPath $envExample -PathType Leaf) -and
-        ([System.IO.File]::ReadAllText($envExample)) -match 'EVENTS=SessionStart,UserPromptSubmit')
+    $envText = if (Test-Path -LiteralPath $envExample -PathType Leaf) { [System.IO.File]::ReadAllText($envExample) } else { '' }
+    # Anchored: a substring match would still pass if a stale pre-task-only line
+    # were left behind, or if extra events were appended unnoticed.
+    Check 'the shipped .env.example registers the pre-task AND closing events' (
+        $envText -match '(?m)^EVENTS=SessionStart,UserPromptSubmit,Stop,SubagentStop\s*$') $envText
+    Check 'the shipped .env.example documents CLOSING_REMINDER' ($envText -match '(?m)^CLOSING_REMINDER=1\s*$') $envText
+
+    # =====================================================================
+    Write-Host '--- pip is scoped to the PROJECT, never the machine-wide Python ---' -ForegroundColor Cyan
+    # Reported from a real machine: the hook listed anyio, boto3, click, Faker,
+    # huggingface_hub and importlib_metadata - none of them dependencies of the
+    # project it was reporting on - because Get-Command pip resolves the
+    # GLOBAL interpreter. Worse than noise: it called cryptography outdated at
+    # 50.0.0 while the project's own venv already had 50.0.1, so the one
+    # actionable-looking finding was backwards.
+    #
+    # The resolver is extracted from the shipped source and exercised directly:
+    # a stub interpreter cannot be a real .exe, and asserting the resolver is
+    # what actually decides which environment gets queried.
+    $scopeSrc = [System.IO.File]::ReadAllText($Hook)
+    $scopeFn = [regex]::Match($scopeSrc, '(?s)function Get-ProjectPythonExecutable \{.*?\n\}')
+    Check 'the hook resolves a PROJECT interpreter rather than PATH pip' ($scopeFn.Success) 'Get-ProjectPythonExecutable not found'
+    Check 'the hook never falls back to bare pip/pip3 on PATH' ($scopeSrc -notmatch 'Get-Command pip3? -ErrorAction SilentlyContinue') 'a PATH pip fallback is still present'
+    if ($scopeFn.Success) {
+        Invoke-Expression $scopeFn.Value
+        $scopeWork = Join-Path $Work 'pipscope'
+        $withEnv = Join-Path $scopeWork 'withenv'
+        $noEnv = Join-Path $scopeWork 'noenv'
+        New-Item -ItemType Directory -Path (Join-Path $withEnv '.venv\Scripts'), $noEnv -Force | Out-Null
+        Set-Content -LiteralPath (Join-Path $withEnv '.venv\Scripts\python.exe') -Value 'stub' -Encoding ascii
+
+        $resolved = Get-ProjectPythonExecutable -ProjectRoot $withEnv
+        Check 'it resolves the project venv interpreter' (
+            $null -ne $resolved -and ([string]$resolved).StartsWith($withEnv, [System.StringComparison]::OrdinalIgnoreCase)) ([string]$resolved)
+
+        # The whole point: no environment of its own means NO answer, not the
+        # machine's answer.
+        Check 'a project with no venv resolves to nothing (no global fallback)' (
+            $null -eq (Get-ProjectPythonExecutable -ProjectRoot $noEnv)) ([string](Get-ProjectPythonExecutable -ProjectRoot $noEnv))
+
+        # A shell with SOME OTHER project's venv active must not leak into this
+        # project's report.
+        $previousVirtualEnv = $env:VIRTUAL_ENV
+        $env:VIRTUAL_ENV = (Join-Path $withEnv '.venv')
+        try {
+            Check 'another project''s active VIRTUAL_ENV does not leak in' (
+                $null -eq (Get-ProjectPythonExecutable -ProjectRoot $noEnv)) ([string](Get-ProjectPythonExecutable -ProjectRoot $noEnv))
+        }
+        finally {
+            if ($null -eq $previousVirtualEnv) { Remove-Item Env:\VIRTUAL_ENV -ErrorAction SilentlyContinue }
+            else { $env:VIRTUAL_ENV = $previousVirtualEnv }
+        }
+    }
 }
 finally {
     $env:PATH = $OriginalPath

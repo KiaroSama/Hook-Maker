@@ -441,7 +441,13 @@ try {
     Fire -HookPath $hc17.Script -Cwd $proj17 -EventName 'SessionStart' -LocalAppData $hc17.LocalAppData | Out-Null
     Write-Utf8 (Join-Path $proj17 'a.ps1') "function A { 2 }`n"
     $r = Fire -HookPath $hc17.Script -Cwd $proj17 -EventName 'Stop' -StopHookActive -LocalAppData $hc17.LocalAppData
-    Check 'stop_hook_active suppresses the review request' ($r.Exit -eq 0 -and $r.Out -eq '') $r.Out
+    # stop_hook_active means "a Stop gate blocked and the agent is coming
+    # back" - NOT "YOU blocked". Thirteen gates share the one flag, so a gate
+    # standing down on it alone went silent for somebody else's block, and
+    # the next Stop ran with the secret-leak, UTF-8 and CI gates all muted.
+    # Each gate now stands down only on its OWN re-entry, proven by a marker
+    # it writes itself immediately before it blocks.
+    Check 'stop_hook_active ALONE does not suppress the review request (another gate blocked, not this one)' ($r.Exit -eq 0 -and $r.Out -ne '') $r.Out
 
     # =====================================================================
     Write-Host '--- the hook never edits a doc file itself ---' -ForegroundColor Cyan
