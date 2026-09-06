@@ -922,16 +922,184 @@ function Test-TimingRegression {
 # Claude client). Only relaxing $ErrorActionPreference around the call works.
 # Returns stdout lines (redirecting stderr away); $LASTEXITCODE is left intact
 # for the caller exactly as a raw `&` call would leave it.
+# Runs a child process quietly and, above all, BOUNDED.
+#
+# This is the only place a hook starts a process, and it carries every network
+# call in the hook set (gh api, gh run list, npm outdated, pip list
+# --outdated, go list -u -m all). Without a deadline a single stalled request
+# held the whole Stop hostage for its timeout and left the child running after
+# the client gave up on the hook - the exact "terminate owned child process
+# trees, leave no orphaned workers" case in global-hook-rules.md.
+#
+# TimeoutSeconds is a CEILING, not an expected duration: a local git call
+# returns in milliseconds. On expiry the whole process TREE is killed (a
+# `gh` that spawned a helper leaves nothing behind), and the caller gets $null
+# with a non-zero $LASTEXITCODE - which every caller already treats as "no
+# answer", so a timeout degrades to silence rather than to a wrong claim.
+# Build a Win32 command line the way CommandLineToArgvW parses it back.
+#
+# Only Windows PowerShell 5.1 needs this - pwsh 7 has
+# ProcessStartInfo.ArgumentList and does it itself. Joining arguments with
+# spaces is NOT equivalent: a repo path like
+#   G:\Program Files\Portable\Scripts\Hook Maker
+# would arrive as four separate arguments, which is exactly the situation
+# every hook here runs in.
+#
+# The backslash rule is the non-obvious half: a run of backslashes is
+# literal UNLESS it meets a quote, where each one must be doubled. So a
+# trailing separator becomes "C:\dir\\" - doubling only the
+# run that collides with the closing quote.
+function ConvertTo-Win32ArgumentString {
+    param([Parameter(Mandatory = $true)][AllowEmptyCollection()][AllowEmptyString()][string[]]$ArgumentList)
+    $quote = [char]34
+    $slash = [char]92
+    $sb = New-Object System.Text.StringBuilder
+    foreach ($argument in @($ArgumentList)) {
+        $text = [string]$argument
+        if ($sb.Length -gt 0) { [void]$sb.Append(' ') }
+        # No space, tab or quote means no quoting needed - but an EMPTY
+        # argument still needs quotes or it vanishes from the command line.
+        if ($text.Length -gt 0 -and -not ($text.Contains(' ') -or $text.Contains([char]9) -or $text.Contains($quote))) {
+            [void]$sb.Append($text)
+            continue
+        }
+        [void]$sb.Append($quote)
+        $pending = 0
+        foreach ($ch in $text.ToCharArray()) {
+            if ($ch -eq $slash) { $pending++; continue }
+            if ($ch -eq $quote) {
+                [void]$sb.Append([string]$slash * ($pending * 2 + 1))
+                $pending = 0
+            }
+            elseif ($pending -gt 0) {
+                [void]$sb.Append([string]$slash * $pending)
+                $pending = 0
+            }
+            [void]$sb.Append($ch)
+        }
+        # Trailing backslashes meet the closing quote, so they double.
+        if ($pending -gt 0) { [void]$sb.Append([string]$slash * ($pending * 2)) }
+        [void]$sb.Append($quote)
+    }
+    return $sb.ToString()
+}
+
 function Invoke-QuietCommand {
-    param([Parameter(Mandatory = $true)][string]$FilePath, [Parameter(Mandatory = $true)][string[]]$ArgumentList)
+    param(
+        [Parameter(Mandatory = $true)][string]$FilePath,
+        [Parameter(Mandatory = $true)][string[]]$ArgumentList,
+        [int]$TimeoutSeconds = 20
+    )
     $savedPreference = $ErrorActionPreference
     $ErrorActionPreference = 'SilentlyContinue'
+    $process = $null
     try {
-        return & $FilePath @ArgumentList 2>$null
+        # Resolve the command the way `&` did before this function was made
+        # bounded. Process.Start needs a real executable IMAGE: it cannot run
+        # a .ps1 or .cmd, while `&` resolved both through PATH + PATHEXT. A
+        # `gh.ps1` shim on PATH is exactly the shape the test suites use, and
+        # a user wrapping git/gh would have hit the same wall in production.
+        $targetPath = $FilePath
+        $targetArgs = @($ArgumentList)
+        try {
+            $resolved = @(Get-Command -Name $FilePath -ErrorAction SilentlyContinue |
+                Where-Object { $_.CommandType -eq 'Application' -or $_.CommandType -eq 'ExternalScript' })
+            if ($resolved.Count -gt 0 -and -not [string]::IsNullOrWhiteSpace([string]$resolved[0].Source)) {
+                $targetPath = [string]$resolved[0].Source
+                $extension = [System.IO.Path]::GetExtension($targetPath).ToLowerInvariant()
+                if ($extension -eq '.ps1') {
+                    # Run it on the SAME host this hook is running on, so a 5.1
+                    # hook does not silently get pwsh semantics or vice versa.
+                    $targetArgs = @('-NoLogo', '-NoProfile', '-File', $targetPath) + $targetArgs
+                    $targetPath = [string](Get-Process -Id $PID).Path
+                }
+                elseif ($extension -eq '.cmd' -or $extension -eq '.bat') {
+                    $targetArgs = @('/c', $targetPath) + $targetArgs
+                    $targetPath = (Join-Path $env:SystemRoot 'System32\cmd.exe')
+                }
+            }
+        }
+        catch { }
+        $info = New-Object System.Diagnostics.ProcessStartInfo
+        $info.FileName = $targetPath
+        # Inherit the CALLER's directory. Push-Location moves PowerShell's
+        # provider location but NOT [Environment]::CurrentDirectory, which is
+        # what ProcessStartInfo inherits - so without this a caller that did
+        # Push-Location <module dir> to scope a `go list` or `npm outdated`
+        # silently ran the child in the wrong directory and got the wrong
+        # answer. Invoking through `&` never had this gap.
+        try {
+            $callerDir = (Get-Location -PSProvider FileSystem -ErrorAction SilentlyContinue)
+            if ($null -ne $callerDir -and -not [string]::IsNullOrWhiteSpace([string]$callerDir.ProviderPath)) {
+                $info.WorkingDirectory = [string]$callerDir.ProviderPath
+            }
+        }
+        catch { }
+        # ArgumentList (not a joined string) so a path with spaces survives -
+        # but ONLY pwsh 7 has it. ProcessStartInfo.ArgumentList arrived in
+        # .NET Core; on .NET Framework 4.x, which is what Windows PowerShell
+        # 5.1 runs on, the property does not exist. Measured, not assumed:
+        # $info.PSObject.Properties.Name -contains 'ArgumentList' is False on
+        # 5.1 and True on pwsh 7. Under StrictMode the 5.1 call threw inside
+        # this function's own try, which returned $null - so every git/gh
+        # call a hook made on 5.1 failed SILENTLY and read as "no answer".
+        # An earlier revision of this comment asserted the property existed
+        # on both hosts. It does not, and that claim is what hid the bug.
+        if ($info.PSObject.Properties.Name -contains 'ArgumentList') {
+            foreach ($argument in @($targetArgs)) { [void]$info.ArgumentList.Add([string]$argument) }
+        }
+        else {
+            $info.Arguments = ConvertTo-Win32ArgumentString -ArgumentList @($targetArgs)
+        }
+        $info.RedirectStandardOutput = $true
+        $info.RedirectStandardError = $true
+        # No window, no inherited stdin: a child that decides to prompt would
+        # otherwise wait for input nobody is there to give.
+        $info.RedirectStandardInput = $true
+        $info.UseShellExecute = $false
+        $info.CreateNoWindow = $true
+        $process = [System.Diagnostics.Process]::Start($info)
+        if ($null -eq $process) { $global:LASTEXITCODE = 1; return $null }
+        $process.StandardInput.Close()
+        # Read stdout asynchronously BEFORE waiting: a child that fills the pipe
+        # buffer while we block on WaitForExit deadlocks with us forever.
+        $stdoutTask = $process.StandardOutput.ReadToEndAsync()
+        $stderrTask = $process.StandardError.ReadToEndAsync()
+        if (-not $process.WaitForExit([int]([Math]::Max(1, $TimeoutSeconds) * 1000))) {
+            try { Stop-ProcessTree -ProcessId $process.Id } catch { }
+            $global:LASTEXITCODE = 124
+            return $null
+        }
+        $output = ''
+        try { $output = $stdoutTask.GetAwaiter().GetResult() } catch { $output = '' }
+        try { [void]$stderrTask.GetAwaiter().GetResult() } catch { }
+        $global:LASTEXITCODE = $process.ExitCode
+        if ([string]::IsNullOrEmpty($output)) { return @() }
+        return ($output -split "`r?`n" | Where-Object { $_ -ne '' })
+    }
+    catch {
+        $global:LASTEXITCODE = 1
+        return $null
     }
     finally {
+        if ($null -ne $process) { try { $process.Dispose() } catch { } }
         $ErrorActionPreference = $savedPreference
     }
+}
+
+# Kill a process AND everything it started. A `gh` that spawned a helper, or a
+# package manager that shelled out, leaves the real work running if only the
+# parent is killed.
+function Stop-ProcessTree {
+    param([Parameter(Mandatory = $true)][int]$ProcessId)
+    try {
+        $children = @(Get-CimInstance -ClassName Win32_Process -Filter ("ParentProcessId=" + $ProcessId) -ErrorAction SilentlyContinue)
+        foreach ($child in $children) {
+            if ($null -ne $child -and [int]$child.ProcessId -ne $ProcessId) { Stop-ProcessTree -ProcessId ([int]$child.ProcessId) }
+        }
+    }
+    catch { }
+    try { Stop-Process -Id $ProcessId -Force -ErrorAction SilentlyContinue } catch { }
 }
 
 function Get-GitHubRepository {
@@ -1056,6 +1224,243 @@ function Get-LatestWorkTimeUtc {
         return $null
     }
     return $latest
+}
+
+# ---- Stop re-entry: whose block was it? ------------------------------------
+# `stop_hook_active` means "a Stop hook blocked and the agent is coming back",
+# NOT "YOU blocked". Thirteen gates share that one flag, so a gate that exits
+# on it alone stands down for somebody else's block - and the next Stop runs
+# with the secret-leak, UTF-8 and CI gates all silent. Measured consequence,
+# not theory: it is why a missing "Skills used:" line could wave a real leak
+# through.
+#
+# The rule each gate needs is narrower: stand down only on ITS OWN re-entry.
+# A gate that has not spoken yet still gets its turn on a continuation Stop.
+# Worst case is therefore one block per gate per session - bounded by the hook
+# count, never a loop - and each is cleared the normal way, by fixing what it
+# named.
+#
+# Deliberately NOT for advisory hooks: their message already went out, and
+# repeating it on every continuation Stop is noise. Gates only.
+function Test-StopStandDown {
+    param(
+        [Parameter(Mandatory = $true)]$HookInput,
+        [Parameter(Mandatory = $true)][string]$HookName
+    )
+    $stopActive = Get-Field $HookInput 'stop_hook_active'
+    if ($null -eq $stopActive -or -not [bool]$stopActive) { return $false }
+    # A continuation Stop. Only the hook that blocked stands down.
+    $sessionId = [string](Get-Field $HookInput 'session_id')
+    $cwd = [string](Get-Field $HookInput 'cwd')
+    $markerPath = Get-StopBlockMarkerPath -HookName $HookName -ProjectRoot $cwd
+    if (-not (Test-Path -LiteralPath $markerPath -PathType Leaf)) { return $false }
+    try {
+        $recorded = ([System.IO.File]::ReadAllText($markerPath)).Trim()
+        # Session-scoped: a marker from an earlier session must not mute this one.
+        return ($recorded -ne '' -and $recorded -eq $sessionId)
+    }
+    catch { return $false }
+}
+
+# Called by a gate immediately before it emits a block, so its own next
+# re-entry is recognised.
+function Set-StopBlockMarker {
+    param(
+        [Parameter(Mandatory = $true)]$HookInput,
+        [Parameter(Mandatory = $true)][string]$HookName
+    )
+    $sessionId = [string](Get-Field $HookInput 'session_id')
+    $cwd = [string](Get-Field $HookInput 'cwd')
+    $markerPath = Get-StopBlockMarkerPath -HookName $HookName -ProjectRoot $cwd
+    try {
+        New-Item -ItemType Directory -Path (Split-Path -Parent $markerPath) -Force | Out-Null
+        [System.IO.File]::WriteAllText($markerPath, $sessionId)
+    }
+    catch { }
+}
+
+function Get-StopBlockMarkerPath {
+    param(
+        [Parameter(Mandatory = $true)][string]$HookName,
+        [AllowEmptyString()][string]$ProjectRoot = ''
+    )
+    $projectKey = Get-ShortHash ([string]$ProjectRoot).ToLowerInvariant()
+    $safeName = [System.Text.RegularExpressions.Regex]::Replace($HookName, '[^A-Za-z0-9]+', '')
+    return (Join-Path (Join-Path $env:LOCALAPPDATA 'HookMaker\state') ('StopBlock-' + $safeName + '-' + $projectKey + '.txt'))
+}
+
+# ---- Codebase Memory MCP (CBM) ---------------------------------------------
+# CBM keeps ONE SQLite file per indexed project directly in its cache
+# directory: <cache>\<project-name>.db, beside _config.db and logs\. These
+# helpers only look at the filesystem - no hook ever runs the CBM binary
+# (measured at ~1.9 s per call, which no hook budget can afford), exactly as
+# the Graphify hooks only test for graphify-out\graph.json.
+
+# Resolution order, most specific first: the hook's own .env, then the
+# environment the MCP server itself is configured with, then the binary's
+# documented default.
+function Get-CbmCacheDir {
+    param($Config)
+    if ($null -ne $Config -and $Config.ContainsKey('CBM_CACHE_DIR')) {
+        $configured = [string]$Config['CBM_CACHE_DIR']
+        if (-not [string]::IsNullOrWhiteSpace($configured)) { return $configured.Trim() }
+    }
+    if (-not [string]::IsNullOrWhiteSpace([string]$env:CBM_CACHE_DIR)) { return ([string]$env:CBM_CACHE_DIR).Trim() }
+    return (Join-Path $env:USERPROFILE '.cache\codebase-memory-mcp')
+}
+
+# _config.db is CBM's own registry and exists as soon as the server has run
+# once. Without it the server was never set up on this machine, and a hook
+# that nags about a tool the user does not have is pure noise.
+function Test-CbmInstalled {
+    param([string]$CacheDir)
+    if ([string]::IsNullOrWhiteSpace($CacheDir)) { return $false }
+    try { return (Test-Path -LiteralPath (Join-Path $CacheDir '_config.db') -PathType Leaf) }
+    catch { return $false }
+}
+
+# CBM derives the default project name from the FULL root path: every run of
+# characters outside [A-Za-z0-9] collapses to a single '-', then the ends are
+# trimmed. Verified 2026-09-06 against a real index: the root
+# ...\G--Program-Files-Portable-Scripts-Hook-Maker\<id>\scratchpad\cbm name probe
+# produced C-Users-...-G-Program-Files-Portable-Scripts-Hook-Maker-<id>-scratchpad-cbm-name-probe.db
+# - note the doubled separator collapsing to one dash and the space becoming
+# one. A caller CAN override this with index_repository(name=...); a hook
+# cannot see that, so an overridden project reads as un-indexed here. That is
+# the documented limitation, and it fails toward silence rather than a wrong
+# claim.
+function Get-CbmProjectName {
+    param([Parameter(Mandatory = $true)][string]$ProjectRoot)
+    $collapsed = [System.Text.RegularExpressions.Regex]::Replace([string]$ProjectRoot, '[^A-Za-z0-9]+', '-')
+    return $collapsed.Trim('-')
+}
+
+function Get-CbmProjectDbPath {
+    param(
+        [Parameter(Mandatory = $true)][string]$ProjectRoot,
+        [Parameter(Mandatory = $true)][string]$CacheDir
+    )
+    return (Join-Path $CacheDir ((Get-CbmProjectName -ProjectRoot $ProjectRoot) + '.db'))
+}
+
+# ---- shared prompt relevance ------------------------------------------------
+# "Does this prompt need codebase-WIDE understanding?" - one definition for
+# every hook that asks it, so a graph hook and a CBM hook can never disagree
+# about whether the same prompt was structural. Lives here rather than in one
+# hook because the second caller is what makes a shared definition necessary;
+# the patterns are byte-for-byte the ones Graph-Read-Check used alone.
+#
+# Persian terms are \uXXXX escapes so the source stays ASCII. Whole meaningful
+# terms/phrases only, conservative, so a lone common word never triggers. One
+# alternative per request class, in order: architecture, structure, dependency,
+# invocation / call path, "calling", "where used", impact (hamza + plain
+# spelling), module, relation, entry point, rewrite, refactor, codebase,
+# "whole project", "whole repo". \s+ tolerates any spacing inside phrases.
+function Test-CodebaseStructurePrompt {
+    param([string]$Prompt)
+    if ([string]::IsNullOrWhiteSpace($Prompt)) { return $false }
+    if ($Prompt -match '(?i)\b(architecture|refactor|cross-file|cross file|call path|call graph|dependenc|where is|used by|impact|structure|entry point|module|integrat|codebase|call site|caller|callers|inherit)') { return $true }
+    $persianPattern = @(
+        '\u0645\u0639\u0645\u0627\u0631\u06cc',                             # architecture (memari)
+        '\u0633\u0627\u062e\u062a\u0627\u0631',                             # structure (sakhtar)
+        '\u0648\u0627\u0628\u0633\u062a\u06af\u06cc',                       # dependency (vabastegi)
+        '\u0641\u0631\u0627\u062e\u0648\u0627\u0646\u06cc',                 # invocation / call path (farakhani)
+        '\u0635\u062f\u0627\s+\u0632\u062f\u0646',                          # calling (seda zadan)
+        '\u06a9\u062c\u0627\s+\u0627\u0633\u062a\u0641\u0627\u062f\u0647',   # where used (koja estefade)
+        '\u062a\u0623\u062b\u06cc\u0631',                                   # impact - hamza (ta'sir)
+        '\u062a\u0627\u062b\u06cc\u0631',                                   # impact - plain (tasir)
+        '\u0645\u0627\u0698\u0648\u0644',                                   # module (mazhul)
+        '\u0627\u0631\u062a\u0628\u0627\u0637',                             # relation (ertebat)
+        '\u0646\u0642\u0637\u0647\s+\u0648\u0631\u0648\u062f',              # entry point (noghte-ye vorud)
+        '\u0628\u0627\u0632\u0646\u0648\u06cc\u0633\u06cc',                 # rewrite (baznevisi)
+        '\u0631\u06cc\u0641\u06a9\u062a\u0648\u0631',                       # refactor (refaktor)
+        '\u06a9\u062f\u0628\u06cc\u0633',                                   # codebase
+        '\u06a9\u0644\s+\u067e\u0631\u0648\u0698\u0647',                    # whole project (kol-e proje)
+        '\u06a9\u0644\s+\u0645\u062e\u0632\u0646'                           # whole repo (kol-e makhzan)
+    ) -join '|'
+    return ($Prompt -match $persianPattern)
+}
+
+# ---- Claude Code transcript --------------------------------------------------
+# Parses the JSONL a Stop hook is handed in `transcript_path` into an ordered
+# list of @{ Role; Text; SkillCalls }.
+#
+# WHAT IT DELIBERATELY DROPS: <system-reminder> blocks and <command-...> local
+# command echoes are stripped from user text. Both are injected BY the client,
+# not typed by the user, and both routinely quote a hook's own reminder text -
+# so a hook matching its own words in a reminder would find "evidence" it
+# planted itself.
+#
+# BOUNDED, and honest about it: reading stops after $MaxBytes and the result
+# reports Partial = $true. A caller must never turn a partial read into a
+# block or an all-clear - it saw only part of the session.
+function Read-ClaudeTranscript {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [int]$MaxBytes = 20000000
+    )
+    $result = [pscustomobject]@{ Entries = @(); Partial = $false; Ok = $false }
+    if ([string]::IsNullOrWhiteSpace($Path) -or -not (Test-Path -LiteralPath $Path -PathType Leaf)) { return $result }
+    $entries = New-Object System.Collections.Generic.List[object]
+    $consumed = 0
+    $partial = $false
+    try {
+        # Shared read: a live client is still appending to this file.
+        $stream = [System.IO.File]::Open($Path, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::ReadWrite)
+        try {
+            $reader = New-Object System.IO.StreamReader($stream, (New-Object System.Text.UTF8Encoding $false))
+            try {
+                while (-not $reader.EndOfStream) {
+                    $line = $reader.ReadLine()
+                    if ($null -eq $line) { break }
+                    $consumed += $line.Length + 1
+                    if ($consumed -gt $MaxBytes) { $partial = $true; break }
+                    if ([string]::IsNullOrWhiteSpace($line)) { continue }
+                    $doc = $null
+                    try { $doc = $line | ConvertFrom-Json } catch { continue }
+                    if ($null -eq $doc -or $null -eq $doc.PSObject.Properties['message'] -or $null -eq $doc.message) { continue }
+                    $role = ''
+                    if ($null -ne $doc.message.PSObject.Properties['role']) { $role = [string]$doc.message.role }
+                    if ($role -ne 'user' -and $role -ne 'assistant') { continue }
+                    $content = $null
+                    if ($null -ne $doc.message.PSObject.Properties['content']) { $content = $doc.message.content }
+                    $text = ''
+                    $skills = New-Object System.Collections.Generic.List[string]
+                    if ($content -is [string]) {
+                        $text = [string]$content
+                    }
+                    elseif ($null -ne $content) {
+                        foreach ($part in @($content)) {
+                            if ($null -eq $part -or $null -eq $part.PSObject.Properties['type']) { continue }
+                            $partType = [string]$part.type
+                            if ($partType -eq 'text' -and $null -ne $part.PSObject.Properties['text']) {
+                                $text = $text + "`n" + [string]$part.text
+                            }
+                            elseif ($partType -eq 'tool_use' -and $null -ne $part.PSObject.Properties['name'] -and [string]$part.name -eq 'Skill') {
+                                if ($null -ne $part.PSObject.Properties['input'] -and $null -ne $part.input -and
+                                    $null -ne $part.input.PSObject.Properties['skill']) {
+                                    $skillName = [string]$part.input.skill
+                                    if (-not [string]::IsNullOrWhiteSpace($skillName)) { [void]$skills.Add($skillName) }
+                                }
+                            }
+                        }
+                    }
+                    if ($role -eq 'user' -and $text -ne '') {
+                        $text = [System.Text.RegularExpressions.Regex]::Replace($text, '(?is)<system-reminder>.*?</system-reminder>', ' ')
+                        $text = [System.Text.RegularExpressions.Regex]::Replace($text, '(?is)<command-[a-z-]+>.*?</command-[a-z-]+>', ' ')
+                    }
+                    [void]$entries.Add([pscustomobject]@{ Role = $role; Text = $text.Trim(); SkillCalls = @($skills.ToArray()) })
+                }
+            }
+            finally { $reader.Dispose() }
+        }
+        finally { $stream.Dispose() }
+    }
+    catch {
+        # Unreadable transcript is NOT an all-clear: Ok stays false.
+        return $result
+    }
+    return [pscustomobject]@{ Entries = @($entries.ToArray()); Partial = $partial; Ok = $true }
 }
 
 # Friendly, hyphen-separated hook name. The shipped hook folders are already

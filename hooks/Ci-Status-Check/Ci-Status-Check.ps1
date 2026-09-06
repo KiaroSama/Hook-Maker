@@ -383,7 +383,10 @@ $eventName = [string](Get-Field $hookInput 'hook_event_name')
 if ($eventName -ne 'Stop' -and $eventName -ne 'SubagentStop') {
     exit 0
 }
-if ((Get-Field $hookInput 'stop_hook_active') -eq $true) {
+# Stand down only on THIS hook's own re-entry: `stop_hook_active` is set
+# for ANY gate's block, and exiting on it alone let one block silence the
+# other twelve on the same Stop.
+if (Test-StopStandDown -HookInput $hookInput -HookName 'Ci-Status-Check') {
     exit 0
 }
 $cwd = [string](Get-Field $hookInput 'cwd')
@@ -432,6 +435,9 @@ function Save-State {
 function Write-Block {
     param([string]$Outcome, [string]$Reason)
     Save-State -Outcome $Outcome
+    # Record the block so THIS hook's own re-entry is recognised; another
+    # gate's block must not mute it, and its own must not repeat.
+    Set-StopBlockMarker -HookInput $hookInput -HookName 'Ci-Status-Check'
     exit (Write-HookResult -EventName $script:eventName -Kind 'block' -Reason $Reason).ExitCode
 }
 
@@ -552,9 +558,15 @@ if ($null -eq $prefetchedSnapshot -and $stateSha -eq $sha) {
     }
     $ageMinutes = ([DateTime]::UtcNow - $stateTime).TotalMinutes
     if ($stateOutcome -eq 'failed' -and $ageMinutes -lt $failureCooldown) {
+        # Record the block so THIS hook's own re-entry is recognised; another
+        # gate's block must not mute it, and its own must not repeat.
+        Set-StopBlockMarker -HookInput $hookInput -HookName 'Ci-Status-Check'
         exit (Write-HookResult -EventName $eventName -Kind 'block' -Reason ('CI CHECK: pushed commit ' + $sha7 + ' still has failed checks. Detailed failure guidance was recently reported; completion remains blocked until a replacement commit is pushed or the failure is reported as an external/manual blocker.')).ExitCode
     }
     if ($stateOutcome -eq 'pending' -and $ageMinutes -lt $pendingCooldown) {
+        # Record the block so THIS hook's own re-entry is recognised; another
+        # gate's block must not mute it, and its own must not repeat.
+        Set-StopBlockMarker -HookInput $hookInput -HookName 'Ci-Status-Check'
         exit (Write-HookResult -EventName $eventName -Kind 'block' -Reason ('CI CHECK: pushed commit ' + $sha7 + ' is still awaiting terminal checks. Detailed status was recently reported; completion remains blocked.')).ExitCode
     }
 }

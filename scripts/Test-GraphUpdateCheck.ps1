@@ -22,6 +22,8 @@ $script:TestPreviewLength = 500
 $Work = New-TestWorkspace -Prefix 'hookmaker-graphtest'
 Write-Host ("Workspace: $Work") -ForegroundColor DarkGray
 $FakeLocalAppData = Join-Path $Work '_fakelocal'
+# The production marker-path helper, so the stand-down fixture uses the real naming.
+$HookLib = Join-Path (Split-Path -Parent $PSScriptRoot) 'hooks\_hooklib.ps1'
 New-Item -ItemType Directory -Path $FakeLocalAppData -Force | Out-Null
 
 function New-Proj { param([string]$Name) $p = Join-Path $Work $Name; New-Item -ItemType Directory -Path $p -Force | Out-Null; return $p }
@@ -128,8 +130,20 @@ try {
     New-StaleGraph $guard | Out-Null
     Write-Utf8 (Join-Path $guard 'src.ps1') 'function Bar {}'
     Add-Commit $guard 'add Bar'
+    # stop_hook_active means "a Stop gate blocked and the agent is coming
+    # back" - NOT "YOU blocked". Thirteen gates share the one flag, so a gate
+    # standing down on it alone went silent for somebody else's block, and
+    # the next Stop ran with the secret-leak, UTF-8 and CI gates all muted.
+    # Each gate now stands down only on its OWN re-entry.
     $r3 = Fire -Cwd $guard -StopHookActive
-    Check 'stop_hook_active short-circuits before any graph/git inspection' ($r3.Exit -eq 0 -and $r3.Out -eq '')
+    Check 'stop_hook_active ALONE does not silence it (another gate blocked, not this one)' ($r3.Exit -eq 0 -and $r3.Out -ne '') $r3.Out
+    # Its OWN marker, named by CALLING the production helper rather than by
+    # retyping its path format, so the fixture cannot drift from the real one.
+    $markerPath = & pwsh -NoProfile -Command ". '$HookLib'; $env:LOCALAPPDATA = '$FakeLocalAppData'; Get-StopBlockMarkerPath -HookName 'Graph-Update-Check' -ProjectRoot '$guard'"
+    New-Item -ItemType Directory -Path (Split-Path -Parent $markerPath) -Force | Out-Null
+    [System.IO.File]::WriteAllText($markerPath, 't')
+    $r4 = Fire -Cwd $guard -StopHookActive
+    Check 'stop_hook_active PLUS its own marker for this session -> silent (own re-entry)' ($r4.Exit -eq 0 -and $r4.Out -eq '') $r4.Out
 
     # =====================================================================
     Write-Host '--- Windows PowerShell 5.1 ---' -ForegroundColor Cyan

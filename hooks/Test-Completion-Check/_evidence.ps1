@@ -120,40 +120,120 @@ function Test-ResultSuperseded {
     return $false
 }
 
-# Is a live guarded run recorded by THIS active marker? Returns the owner pid, or
-# 0. LIVENESS IS PROVEN BY PROCESS IDENTITY ONLY (C1): the owner pid must be alive
-# AND still carry the recorded process start time AND executable path (the
-# PID-REUSE-resistant check). The marker's projectFingerprint is DELIBERATELY not
-# consulted here - a test process is running regardless of what the working tree
-# looks like now, so editing an unrelated file mid-run (which moves the repo
-# fingerprint) must never make a genuinely-live marker read as stale and be
-# deleted. The fingerprint governs only whether a RESULT is current-state
-# evidence, never whether a running process exists.
-function Resolve-ActiveOwnerPid {
-    param($Doc)
+# What state is the run behind THIS active marker in? Returns
+# { State; OwnerPid; RunId; Detail } where State is one of:
+#
+#   live      the recorded owner is PROVABLY the process running right now, so a
+#             test is genuinely executing. Blocks completion.
+#   finished  the owner is gone and a result document exists for this runId - the
+#             run ended and its outcome is on record. The marker is leftover.
+#   died      the owner is gone (or cannot be proven to be the recorded one) and
+#             NO result exists. The run was killed before it could record how it
+#             ended: the outcome is unknown and unrecoverable. Blocks.
+#   expired   the same, but the marker is older than the abandoned-record horizon,
+#             so it belongs to a previous session and cannot describe this task.
+#             Reconciled and dropped with a trace; never blocks the current work.
+#
+# IDENTITY MUST BE FULLY PINNED OR THE MARKER IS NEVER 'live'. Windows reuses
+# pids freely, so "pid 38004 is alive" proves nothing on its own: what has to
+# match is the PROCESS, i.e. the pid AND the start time it was recorded with
+# (and the executable, when both sides know it). The older form of this check
+# treated the start time as optional and fell back to the pid alone whenever the
+# field was absent, empty or unparseable - and the executable is no
+# discriminator, because whatever recycles a pwsh pid is almost always another
+# pwsh. That is how a marker whose owner had long since died blocked completion
+# on a brand-new guarded runner that merely inherited its pid. There is now no
+# pid-only path: an unpinnable marker is not evidence that anything is running.
+#
+# The marker's projectFingerprint is DELIBERATELY not consulted - a test process
+# is running regardless of what the working tree looks like now, so editing an
+# unrelated file mid-run must never make a genuinely-live marker read as stale.
+function Get-ActiveMarkerState {
+    param($Doc, [string]$Path, [int]$MaxAgeHours, $ResultEntries)
+    $runId = [string](Get-Field $Doc 'runId')
+
+    # ---- is the recorded owner provably the process running right now? ----
     $ownerPidRaw = Get-Field $Doc 'ownerPid'
-    if ($null -eq $ownerPidRaw) { $ownerPidRaw = Get-Field $Doc 'pid' }   # schema-1 fallback
+    if ($null -eq $ownerPidRaw) { $ownerPidRaw = Get-Field $Doc 'pid' }   # schema-1 field name
     $candidate = 0
-    if (-not [int]::TryParse([string]$ownerPidRaw, [ref]$candidate) -or $candidate -le 0) { return 0 }
-    $liveProcess = $null
-    try { $liveProcess = Get-Process -Id $candidate -ErrorAction Stop } catch { $liveProcess = $null }
-    if ($null -eq $liveProcess) { return 0 }
-    $markerStartUtc = ConvertTo-UtcTime (Get-Field $Doc 'ownerProcessStartUtc')
-    $markerExe = [string](Get-Field $Doc 'ownerExecutablePath')
-    if ($null -eq $markerStartUtc -and $markerExe -eq '') { return $candidate }   # schema-1 marker: best-effort legacy
-    $identityOk = $true
-    if ($null -ne $markerStartUtc) {
-        $liveStart = $null
-        try { $liveStart = $liveProcess.StartTime.ToUniversalTime() } catch { $liveStart = $null }
-        if ($null -eq $liveStart -or [Math]::Abs(($liveStart - $markerStartUtc).TotalSeconds) -gt 2) { $identityOk = $false }
+    [void][int]::TryParse([string]$ownerPidRaw, [ref]$candidate)
+
+    $detail = ''
+    $isLive = $false
+    if ($candidate -le 0) {
+        $detail = 'the marker records no usable owner process id'
     }
-    if ($identityOk -and $markerExe -ne '') {
-        $liveExe = ''
-        try { $liveExe = [string]$liveProcess.Path } catch { $liveExe = '' }
-        if ($liveExe -ne '' -and -not [string]::Equals($liveExe, $markerExe, [System.StringComparison]::OrdinalIgnoreCase)) { $identityOk = $false }
+    else {
+        # PID + start time is the MINIMUM identity. No parseable start time means
+        # the recorded process can never be told apart from whatever inherited
+        # its pid, so the marker cannot prove a run is live - schema-1 markers
+        # and markers whose owner lookup failed at write time included.
+        $markerStartUtc = ConvertTo-UtcTime (Get-Field $Doc 'ownerProcessStartUtc')
+        if ($null -eq $markerStartUtc) {
+            $detail = 'the marker records no parseable owner start time, so process ' + $candidate +
+                ' cannot be proven to be the process that started this run (a recycled pid is indistinguishable without it)'
+        }
+        else {
+            $liveProcess = $null
+            try { $liveProcess = Get-Process -Id $candidate -ErrorAction Stop } catch { $liveProcess = $null }
+            if ($null -eq $liveProcess) {
+                $detail = 'owner process ' + $candidate + ' is gone'
+            }
+            else {
+                $liveStart = $null
+                try { $liveStart = $liveProcess.StartTime.ToUniversalTime() } catch { $liveStart = $null }
+                if ($null -eq $liveStart) {
+                    $detail = 'process ' + $candidate + ' is alive but its start time cannot be read, so it cannot be confirmed to be the owner of this run'
+                }
+                elseif ([Math]::Abs(($liveStart - $markerStartUtc).TotalSeconds) -gt 2) {
+                    $detail = 'process ' + $candidate + ' is alive but started at ' + $liveStart.ToString('o') +
+                        ', not the recorded ' + $markerStartUtc.ToString('o') + ' - the pid was recycled by an unrelated process'
+                }
+                else {
+                    $markerExe = [string](Get-Field $Doc 'ownerExecutablePath')
+                    $liveExe = ''
+                    try { $liveExe = [string]$liveProcess.Path } catch { $liveExe = '' }
+                    if ($markerExe -ne '' -and $liveExe -ne '' -and -not [string]::Equals($liveExe, $markerExe, [System.StringComparison]::OrdinalIgnoreCase)) {
+                        $detail = 'process ' + $candidate + ' is alive but is running ' + $liveExe + ', not the recorded owner executable'
+                    }
+                    else { $isLive = $true }
+                }
+            }
+        }
     }
-    if ($identityOk) { return $candidate }
-    return 0
+    if ($isLive) { return [pscustomobject]@{ State = 'live'; OwnerPid = $candidate; RunId = $runId; Detail = '' } }
+
+    # ---- the owner is not running. Did the run record how it ended? ----
+    if ($runId -ne '') {
+        # @() around an EMPTY array parameter still yields one $null element under
+        # PowerShell's unrolling, and StrictMode then throws on $re.Doc - which is
+        # exactly the no-results case this branch exists to answer. Skip nulls.
+        foreach ($re in @($ResultEntries)) {
+            if ($null -eq $re) { continue }
+            if (([string](Get-Field $re.Doc 'runId')) -eq $runId) {
+                return [pscustomobject]@{ State = 'finished'; OwnerPid = 0; RunId = $runId; Detail = $detail }
+            }
+        }
+    }
+
+    # ---- no result: killed. The bounded lifetime decides died vs expired ----
+    # The runner writes a terminal result in `finally` on every path it can
+    # intercept, so "no result" is not "not finished yet" - it is a process that
+    # was terminated outright. That is a real finding while it can still belong
+    # to the current work, and a previous session's leftover once it cannot.
+    # An UNDATABLE record fails CLOSED (died): a record that cannot be placed in
+    # time is genuine uncertainty, and its named recovery still resolves it.
+    $created = ConvertTo-UtcTime (Get-Field $Doc 'markerCreatedUtc')
+    if ($null -eq $created -and -not [string]::IsNullOrWhiteSpace($Path)) {
+        try { $created = (Get-Item -LiteralPath $Path -Force).LastWriteTimeUtc } catch { $created = $null }
+    }
+    if ($null -ne $created -and $created -lt [DateTime]::UtcNow.AddHours(-[Math]::Abs($MaxAgeHours))) {
+        $age = [int][Math]::Floor(([DateTime]::UtcNow - $created).TotalHours)
+        return [pscustomobject]@{ State = 'expired'; OwnerPid = 0; RunId = $runId
+            Detail = $detail + ', and the marker is ' + $age + 'h old (past the ' + [Math]::Abs($MaxAgeHours) + 'h abandoned-record horizon), so it belongs to an earlier session'
+        }
+    }
+    return [pscustomobject]@{ State = 'died'; OwnerPid = $candidate; RunId = $runId; Detail = $detail }
 }
 
 # ONE-TO-ONE observed->result assignment (C3). Each guarded result may satisfy AT

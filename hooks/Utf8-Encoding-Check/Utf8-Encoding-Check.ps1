@@ -155,7 +155,10 @@ if ($GitPrePush) {
 }
 
 # ---- recursion guard: FIRST, before anything else is evaluated ----
-if (-not $GitPrePush -and (Get-Field $hookInput 'stop_hook_active') -eq $true) { exit 0 }
+# Stand down only on THIS hook's own re-entry: `stop_hook_active` is set
+# for ANY gate's block, and exiting on it alone let one block silence the
+# other twelve on the same Stop.
+if (-not $GitPrePush -and (Test-StopStandDown -HookInput $hookInput -HookName 'Utf8-Encoding-Check')) { exit 0 }
 
 $eventName = [string](Get-Field $hookInput 'hook_event_name')
 if ([string]::IsNullOrWhiteSpace($eventName)) { $eventName = 'SessionStart' }
@@ -344,6 +347,9 @@ function Write-HookMessage {
     }
     $message = ($all.ToArray() -join "`n")
     if ($Blocking -and -not $advisoryOnly) {
+        # Record the block so THIS hook's own re-entry is recognised; another
+        # gate's block must not mute it, and its own must not repeat.
+        Set-StopBlockMarker -HookInput $hookInput -HookName 'Utf8-Encoding-Check'
         exit (Write-HookResult -EventName $eventName -Kind 'block' -Reason $message).ExitCode
     }
     if ($Blocking -and $advisoryOnly) { $message = 'UTF8_ADVISORY_ONLY is set - reported, not blocked:' + "`n" + $message }

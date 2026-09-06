@@ -111,7 +111,10 @@ if ([string]::IsNullOrWhiteSpace($eventName)) {
 $isStopEvent = ($eventName -eq 'Stop' -or $eventName -eq 'SubagentStop')
 
 # Never loop: if this stop was already continued by a hook, stay silent.
-if ($isStopEvent -and (Get-Field $hookInput 'stop_hook_active') -eq $true) {
+# Stand down only on THIS hook's own re-entry: `stop_hook_active` is set
+# for ANY gate's block, and exiting on it alone let one block silence the
+# other twelve on the same Stop.
+if ($isStopEvent -and (Test-StopStandDown -HookInput $hookInput -HookName 'Git-Sync-Check')) {
     exit 0
 }
 
@@ -548,4 +551,7 @@ if ($blockingExtra.Count -gt 0) {
     $operationalInstruction += "`n`nAlso reconcile every task-created or task-changed branch and worktree reported above before finishing: merge or otherwise incorporate each into " + $destinationWording + " when that is its purpose, push any that are meant to be shared (a branch that is pushed but not yet merged into the destination is acceptable on its own and is not itself a blocker), and remove a worktree with 'git worktree remove' only once its purpose is complete - never one that still holds unreconciled or uncommitted work. Never force-push or rewrite history without explicit authorization. If reconciling a branch or worktree is unsafe or impossible, preserve it and report the exact reason instead of claiming it is resolved."
 }
 $reason = $message + $operationalInstruction
+# Record the block so THIS hook's own re-entry is recognised; another
+# gate's block must not mute it, and its own must not repeat.
+Set-StopBlockMarker -HookInput $hookInput -HookName 'Git-Sync-Check'
 exit (Write-HookResult -EventName $eventName -Kind 'block' -Reason $reason).ExitCode

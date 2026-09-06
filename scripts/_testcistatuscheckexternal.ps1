@@ -165,11 +165,13 @@
     $r = Fire -HookPath $shortTtlHook -Cwd $ext3 -EventName 'Stop'
     Check 'expired exception is rejected - falls back to normal (blocking) evaluation' ($r.Out -match '"decision":"block"' -and $r.Out -match 'FAILED') $r.Out
 
-    # stop_hook_active still prevents recursion, even with a live exception on file.
+    # stop_hook_active means ANY gate blocked, not this one - so with a live
+    # exception on file the notice must STILL be emitted. Recursion is
+    # prevented by this gate's own marker, not by the shared flag.
     $ext4 = New-GitRepo 'ext4'
     $extSha4 = Get-HeadSha $ext4
     Set-Mock -RunJson '[{"databaseId":87,"name":"CI","workflowName":"CI","status":"completed","conclusion":"stale"}]' -ExpectedSha $extSha4
     $r = FireExternalBlocker -Cwd $ext4 -Classification 'manual-approval-required' -Reason 'awaiting a required environment approval the agent cannot grant'
     Check 'records an exception for ext4' ($r.Exit -eq 0) $r.Err
     $r = Fire -HookPath $CiHook -Cwd $ext4 -EventName 'Stop' -Extra @{ stop_hook_active = $true }
-    Check 'stop_hook_active still short-circuits before any exception/gh logic' ($r.Out -eq '') $r.Out
+    Check 'stop_hook_active ALONE does not short-circuit the exception notice (another gate blocked, not this one)' ($r.Out -ne '') $r.Out
