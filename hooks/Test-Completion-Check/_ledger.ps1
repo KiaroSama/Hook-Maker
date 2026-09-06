@@ -29,6 +29,14 @@
 # is always written. Bounded (caps below) and secret-free, still plain JSON.
 $script:MaxResolvedIncidents = 50
 $script:MaxPendingNotes = 50
+# An ABANDONED active marker that has aged past the horizon is reconciled, not
+# silently deleted: the run it described really did die without recording how,
+# and erasing that with no trace is exactly the ownerless-task blind spot this
+# gate exists to close. It is a TRACE, not an obligation - a previous session's
+# leftover must not block the current task - so it lives here rather than in
+# pendingNotes, bounded and oldest-first-capped like everything else.
+$script:MaxExpiredMarkers = 20
+$script:expiredMarkers = New-Object System.Collections.Generic.List[object]
 $script:resolvedIncidents = New-Object System.Collections.Generic.List[string]
 $script:pendingNotes = New-Object System.Collections.Specialized.OrderedDictionary
 # Set when a newly-seen incident could NOT be tracked because the ledger is full
@@ -69,9 +77,32 @@ if ($null -ne $previous) {
             $script:pendingNotes[$legacyKey] = [pscustomobject]@{ reason = [string](Get-Field $previous 'pendingNoteReason'); baseline = $lb }
         }
     }
+    $rawExpired = Get-Field $previous 'expiredMarkers'
+    if ($null -ne $rawExpired) {
+        foreach ($e in @($rawExpired)) {
+            $er = [string](Get-Field $e 'runId')
+            if ($er -eq '') { continue }   # the empty-array-as-'' JSON quirk, as resolvedIncidents guards it
+            [void]$script:expiredMarkers.Add([pscustomobject]@{ runId = $er; detail = [string](Get-Field $e 'detail'); expiredUtc = [string](Get-Field $e 'expiredUtc') })
+        }
+        while ($script:expiredMarkers.Count -gt $script:MaxExpiredMarkers) { $script:expiredMarkers.RemoveAt(0) }
+    }
     $deferredFingerprint = [string](Get-Field $previous 'deferredFingerprint')
 }
 $script:deferredFingerprint = $deferredFingerprint
+
+# Record that an abandoned active marker was expired and dropped. Deduplicated by
+# runId so re-seeing the same leftover cannot grow the ledger; bounded oldest-first.
+function Add-ExpiredMarker {
+    param([string]$RunId, [string]$Detail)
+    $key = if ([string]::IsNullOrWhiteSpace($RunId)) { '(no run id)' } else { $RunId }
+    # .ToArray(), NOT @($list): the array subexpression over a List[object]
+    # throws `Argument types do not match` on both Windows PowerShell 5.1 and
+    # pwsh 7 (List[string] is fine, which is why the sibling loops below can use
+    # it). Snapshotting is still the point - the loop may Add on the same list.
+    foreach ($e in $script:expiredMarkers.ToArray()) { if ([string]$e.runId -eq $key) { return } }
+    [void]$script:expiredMarkers.Add([pscustomobject]@{ runId = $key; detail = $Detail; expiredUtc = [DateTime]::UtcNow.ToString('o') })
+    while ($script:expiredMarkers.Count -gt $script:MaxExpiredMarkers) { $script:expiredMarkers.RemoveAt(0) }
+}
 
 function Test-IncidentResolved {
     param([string]$Key)
@@ -179,6 +210,10 @@ function Merge-DiskLedger {
             }
         }
     }
+    $diskExpired = Get-Field $disk 'expiredMarkers'
+    if ($null -ne $diskExpired) {
+        foreach ($e in @($diskExpired)) { Add-ExpiredMarker -RunId ([string](Get-Field $e 'runId')) -Detail ([string](Get-Field $e 'detail')) }
+    }
     foreach ($rk in @($script:resolvedIncidents)) { if ($script:pendingNotes.Contains($rk)) { $script:pendingNotes.Remove($rk) } }
     # ponytail: a merged union >MaxPendingNotes only in the pathological >50-distinct
     # -incident case the concurrent-Stop race never reaches; keep it bounded.
@@ -221,6 +256,7 @@ function Save-CompletionState {
             }
             Write-JsonFileAtomic -Value ([pscustomobject]@{
                     resolvedIncidents   = @($script:resolvedIncidents.ToArray())
+                    expiredMarkers      = @($script:expiredMarkers.ToArray())
                     pendingNotes        = @($notes.ToArray())
                     deferredFingerprint = $Deferred
                     updatedUtc          = [DateTime]::UtcNow.ToString('o')

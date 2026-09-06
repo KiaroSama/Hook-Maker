@@ -138,7 +138,10 @@ if ([string]::IsNullOrWhiteSpace($eventName)) {
     $eventName = 'SessionStart'
 }
 $isStopEvent = ($GitPrePush -or $eventName -eq 'Stop' -or $eventName -eq 'SubagentStop')
-if (-not $GitPrePush -and $isStopEvent -and (Get-Field $hookInput 'stop_hook_active') -eq $true) {
+# Stand down only on THIS hook's own re-entry: `stop_hook_active` is set
+# for ANY gate's block, and exiting on it alone let one block silence the
+# other twelve on the same Stop.
+if (-not $GitPrePush -and $isStopEvent -and (Test-StopStandDown -HookInput $hookInput -HookName 'Secrets-Check')) {
     exit 0
 }
 
@@ -939,6 +942,9 @@ if ($GitPrePush) {
 # client-aware exactly like every other advisory hook in this project.
 $hasBlockingFindings = ($critical.Count -gt 0)
 if ($isStopEvent -and $hasBlockingFindings) {
+    # Record the block so THIS hook's own re-entry is recognised; another
+    # gate's block must not mute it, and its own must not repeat.
+    Set-StopBlockMarker -HookInput $hookInput -HookName 'Secrets-Check'
     $emit = Write-HookResult -EventName $eventName -Kind 'block' -Reason $message
     exit $emit.ExitCode
 }

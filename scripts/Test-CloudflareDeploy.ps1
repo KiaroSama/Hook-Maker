@@ -219,8 +219,21 @@ try {
     $r2 = Fire -Cwd $cf
     Check 'repeated Stop within the cooldown window (same unchanged commit) stays silent' ($r2.Exit -eq 0 -and $r2.Out -eq '') $r2.Out
     $cf2 = New-ReadyWorkersRepo 'CfProjGuard'
+    # stop_hook_active means "a Stop gate blocked and the agent is coming
+    # back" - NOT "YOU blocked". Thirteen gates share the one flag, so a gate
+    # standing down on it alone went silent for somebody else's block, and
+    # the next Stop ran with the secret-leak, UTF-8 and CI gates all muted.
+    # Each gate now stands down only on its OWN re-entry.
     $r3 = Fire -Cwd $cf2 -StopHookActive
-    Check 'stop_hook_active short-circuits before any wrangler/git inspection' ($r3.Exit -eq 0 -and $r3.Out -eq '')
+    Check 'stop_hook_active ALONE does not silence it (another gate blocked, not this one)' ($r3.Exit -eq 0 -and $r3.Out -ne '') $r3.Out
+    $savedLocalForMarker = $env:LOCALAPPDATA
+    $env:LOCALAPPDATA = $FakeLocalAppData
+    try { $markerPath = Get-StopBlockMarkerPath -HookName 'Cloudflare-Deploy' -ProjectRoot $cf2 }
+    finally { $env:LOCALAPPDATA = $savedLocalForMarker }
+    New-Item -ItemType Directory -Path (Split-Path -Parent $markerPath) -Force | Out-Null
+    [System.IO.File]::WriteAllText($markerPath, 't')
+    $r4 = Fire -Cwd $cf2 -StopHookActive
+    Check 'stop_hook_active PLUS its own marker for this session -> silent (own re-entry)' ($r4.Exit -eq 0 -and $r4.Out -eq '') $r4.Out
 
     # =====================================================================
     Write-Host '--- release-readiness gate: never shown when the repo/CI/cleanup state is not ready ---' -ForegroundColor Cyan

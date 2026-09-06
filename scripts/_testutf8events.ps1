@@ -271,7 +271,13 @@
     $r = Fire -HookPath $hcSub.Script -Cwd $projSub -EventName 'SubagentStop' -SessionId 'u1' -LocalAppData $hcSub.LocalAppData
     Check 'SubagentStop blocks exactly like Stop' ((Test-StopBlocks $r.Out) -and (Get-Message $r.Out) -match 'sub\.txt') $r.Out
     $r = Fire -HookPath $hcSub.Script -Cwd $projSub -EventName 'Stop' -SessionId 'u2' -LocalAppData $hcSub.LocalAppData -StopHookActive
-    Check 'stop_hook_active is honoured FIRST (recursion guard, even with live findings)' ($r.Exit -eq 0 -and $r.Out -eq '') $r.Out
+    # stop_hook_active means "a Stop gate blocked and the agent is coming
+    # back" - NOT "YOU blocked". Thirteen gates share the one flag, so a gate
+    # standing down on it alone went silent for somebody else's block, and
+    # the next Stop ran with the secret-leak, UTF-8 and CI gates all muted.
+    # Each gate now stands down only on its OWN re-entry, proven by a marker
+    # it writes itself immediately before it blocks.
+    Check 'stop_hook_active ALONE does not mute live findings (another gate blocked, not this one)' ($r.Exit -eq 0 -and $r.Out -ne '') $r.Out
     $r = Fire -HookPath $hcSub.Script -Cwd $projSub -EventName 'PreToolUse' -SessionId 'u3' -LocalAppData $hcSub.LocalAppData
     Check 'an event this hook does not own is silent' ($r.Exit -eq 0 -and $r.Out -eq '') $r.Out
 

@@ -1,7 +1,34 @@
-# RulesCheck - before work starts (SessionStart, UserPromptSubmit), verifies
-# that the configured rules directories were read: the user's GLOBAL rules
-# (~\.claude\rules or ~\.codex\rules) and the current project's LOCAL rules
+# RulesCheck - the configured rules at BOTH ends of the task.
+#
+# BEFORE work starts (SessionStart, UserPromptSubmit) it lists the rules that
+# govern this project: the user's GLOBAL rules (~\.claude\rules or
+# ~\.codex\rules) and the current project's LOCAL rules
 # (<project>\.claude\rules or <project>\.codex\rules).
+#
+# AFTER the work (Stop, SubagentStop) it checks that the closing summary
+# actually CONFIRMS which of those rules were read and applied. Listing rules at
+# the start is a request; this half is the verification, and it is the reason
+# the hook exists at all - the pre-task note alone was routinely acknowledged
+# and then ignored.
+#
+# ROLE (global-hook-rules.md, "Hook Roles"): DETECTOR/ADVISORY before, GATE
+# after - and the gate is narrow on purpose. It blocks on one confirmed,
+# reproducible condition: rule files exist for this project, the session
+# transcript shows this session actually EDITED files, and the closing summary
+# carries no line starting "Rules applied:". All three are facts the hook read.
+# A read-only or advice-only session gets a non-blocking advisory instead,
+# because the hook cannot prove the rules were load-bearing there.
+#
+# The required line names WHICH rule files governed the work (the block message
+# lists the exact candidates), so it is evidence, not the bare "done"
+# acknowledgement the rules forbid. "Rules applied: none - <reason>" is a valid
+# answer when nothing applied.
+#
+# WHY THE MATCH IS ANCHORED: this hook's own output lands in the transcript it
+# later reads, so an unanchored search would be satisfied by the hook's own
+# instruction text. The pattern requires the token at the START of a transcript
+# line (a literal \n escape inside a JSONL string, or a real line break), and no
+# line this hook emits ever starts with it.
 #
 # Client awareness: Claude Code exports CLAUDE_PROJECT_DIR on every spawned
 # hook process (official docs), Codex does not - so the hook auto-detects
@@ -37,9 +64,15 @@
 # DETECTOR/ADVISORY only: the hook reminds and routes; it never executes a
 # slash command, codeword, or skill.
 #
+# FAIL-OPEN / UNKNOWN: an absent or unreadable transcript is UNKNOWN, never an
+# all-clear and never a block - the requirement is then stated as a plain
+# advisory that says so. Same for a client whose transcript this hook cannot
+# parse: no edit evidence means advisory, never a gate.
+#
 # Optional .env next to this script (copy .env.example):
 #   GLOBAL_RULES_DIR  overrides the global rules directory (default:
 #                     <home>\.claude\rules or <home>\.codex\rules by client)
+#   RULES_CONFIRMATION_ENFORCEMENT  block (default) | advisory | off
 
 param(
     # 'claude', 'codex', or '' for auto-detection via CLAUDE_PROJECT_DIR.
@@ -63,9 +96,17 @@ $eventName = [string](Get-Field $hookInput 'hook_event_name')
 if ([string]::IsNullOrWhiteSpace($eventName)) {
     $eventName = 'SessionStart'
 }
-# Context injection only makes sense for context events.
-if ($eventName -eq 'Stop' -or $eventName -eq 'SubagentStop') {
+if ($eventName -notin @('SessionStart', 'UserPromptSubmit', 'Stop', 'SubagentStop')) {
     exit 0
+}
+$closing = ($eventName -eq 'Stop' -or $eventName -eq 'SubagentStop')
+# A Stop hook that re-fires on its own block is the classic hook loop; the
+# client sets this flag on the re-entry and every Stop handler must honour it.
+if ($closing) {
+    # Stand down only on THIS hook's own re-entry: `stop_hook_active` is set
+    # for ANY gate's block, and exiting on it alone let one block silence the
+    # other twelve on the same Stop.
+    if (Test-StopStandDown -HookInput $hookInput -HookName 'Rules-Check') { exit 0 }
 }
 
 # ---- which client is running? ----
@@ -123,6 +164,155 @@ foreach ($set in $ruleSets) {
 
 # ---- state (per project + client) ----
 $stateDir = Join-Path $env:LOCALAPPDATA 'HookMaker\state'
+
+# The exact wording the closing summary must carry. One definition, shared by
+# the pre-task instruction, the closing block message and the detector, so they
+# cannot drift apart.
+$script:RulesRequiredLine = 'Rules applied: <rule files that governed this task>   (or exactly "Rules applied: none - <one-line reason>")'
+$script:RulesRequirement = 'CLOSING REQUIREMENT - end the final task summary with its own line starting "Rules applied:" naming the rule files above that actually governed this work and, in a few words, how. If none applied, write "Rules applied: none - <one-line reason>". Listing a rule that was not read or not followed is worse than admitting it was skipped.'
+
+# ============================ CLOSING HALF ==================================
+# Stop / SubagentStop: was the rule set actually read and applied, and does the
+# summary say so? Everything below is read-only; nothing here writes into the
+# scanned project.
+if ($closing) {
+    $sessionId = [string](Get-Field $hookInput 'session_id')
+    $projectKey = Get-ShortHash $cwd.ToLowerInvariant()
+    $gatePath = Join-Path $stateDir ('RulesCheck-close-' + $Client + '-' + $projectKey + '.txt')
+
+    $enforcement = 'block'
+    if ($config.ContainsKey('RULES_CONFIRMATION_ENFORCEMENT')) {
+        $raw = ([string]$config['RULES_CONFIRMATION_ENFORCEMENT']).Trim().ToLowerInvariant()
+        if ($raw -eq 'block' -or $raw -eq 'advisory' -or $raw -eq 'off') { $enforcement = $raw }
+    }
+    if ($enforcement -eq 'off') { exit 0 }
+
+    # Relevance gate: no rule files anywhere means nothing governed this task,
+    # so there is nothing to confirm and nothing to say.
+    if ($currentEntries.Count -eq 0) { exit 0 }
+
+    # ---- bounded transcript probe -----------------------------------------
+    # A private copy rather than a shared helper: hooks\_hooklib.ps1 is owned
+    # elsewhere in this change. Shared read (a live writer is never blocked),
+    # bounded tail; the text is only searched - never stored, printed or hashed.
+    # $null means UNKNOWN, which must never become an all-clear.
+    function Get-TranscriptTailText {
+        param([string]$Path, [int]$TailBytes = 262144)
+        if ([string]::IsNullOrWhiteSpace($Path) -or -not (Test-Path -LiteralPath $Path -PathType Leaf)) { return $null }
+        try {
+            $stream = [System.IO.File]::Open($Path, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::ReadWrite)
+            try {
+                $take = [int][Math]::Min([int64]$TailBytes, $stream.Length)
+                if ($take -le 0) { return $null }
+                if ($stream.Length -gt $take) { [void]$stream.Seek(-$take, [System.IO.SeekOrigin]::End) }
+                $buffer = New-Object byte[] $take
+                # Read in a LOOP: a single Read may legally return fewer bytes
+                # than asked for, and a short read would look like a missing
+                # confirmation line - i.e. it would produce a FALSE BLOCK.
+                $filled = 0
+                while ($filled -lt $take) {
+                    $chunk = $stream.Read($buffer, $filled, $take - $filled)
+                    if ($chunk -le 0) { break }
+                    $filled += $chunk
+                }
+                if ($filled -le 0) { return $null }
+                return [System.Text.Encoding]::UTF8.GetString($buffer, 0, $filled)
+            }
+            finally { $stream.Dispose() }
+        }
+        catch { return $null }
+    }
+
+    # Once per session per STATE token: an unchanged answer stays silent on the
+    # next Stop of the same session; a changed one reports immediately.
+    function Test-ShouldReportClosing {
+        param([string]$StateToken)
+        $fp = Get-ShortHash ($sessionId + '|' + $eventName + '|' + $StateToken)
+        try {
+            if (Test-Path -LiteralPath $gatePath -PathType Leaf) {
+                if (([System.IO.File]::ReadAllText($gatePath)).Trim() -eq $fp) { return $false }
+            }
+        }
+        catch { }
+        try {
+            New-Item -ItemType Directory -Path $stateDir -Force | Out-Null
+            [System.IO.File]::WriteAllText($gatePath, $fp, (New-Object System.Text.UTF8Encoding $false))
+        }
+        catch { }
+        return $true
+    }
+
+    # The candidate menu the confirmation must be drawn from: rule FILE NAMES,
+    # capped, so the message stays one screen even with a large rules directory.
+    $ruleNames = @($currentEntries.Keys | ForEach-Object { [System.IO.Path]::GetFileName($_) } | Sort-Object -Unique)
+    $shownRules = @($ruleNames | Select-Object -First 14)
+    $ruleMenu = ($shownRules -join ', ')
+    if ($ruleNames.Count -gt $shownRules.Count) {
+        $ruleMenu += ', +' + ($ruleNames.Count - $shownRules.Count) + ' more'
+    }
+
+    $tail = Get-TranscriptTailText ([string](Get-Field $hookInput 'transcript_path'))
+    if ($null -eq $tail) {
+        # UNKNOWN - no transcript, unreadable, or a client that supplies none.
+        if (-not (Test-ShouldReportClosing 'unverified')) { exit 0 }
+        $note = @(
+            ('RULES CHECK (' + $Client + ') - the session transcript was not available to this hook, so rule compliance could NOT be verified (this is not an all-clear).'),
+            ('Governing rule files: ' + $ruleMenu + '.'),
+            $script:RulesRequirement,
+            ('Required line: ' + $script:RulesRequiredLine)
+        ) -join "`n"
+        $emit = Write-HookResult -EventName $eventName -Kind 'advisory' -Message $note
+        exit $emit.ExitCode
+    }
+
+    # Anchored at the start of a transcript line, so this hook's own instruction
+    # text can never satisfy it. A short markdown prefix is tolerated.
+    $confirmPattern = '(?i)(\\n|[\r\n])[ \t]{0,8}(?:[-*>#]+[ \t]{0,4})?(?:\*\*)?Rules[ \t]+(?:applied|followed|read)[ \t]*:'
+    if ($tail -match $confirmPattern) { exit 0 }
+
+    # Did this session actually change files? That is what makes the rules
+    # load-bearing and is the ONLY condition this hook gates on. The pattern is
+    # the client's own tool-call record; a client whose transcript does not
+    # carry it simply yields no evidence, and the branch below degrades to an
+    # advisory rather than guessing.
+    $editEvidence = ($tail -match '"name"[ \t]*:[ \t]*"(Edit|Write|MultiEdit|NotebookEdit|str_replace[A-Za-z_]*)"')
+
+    if ($editEvidence) {
+        if (-not (Test-ShouldReportClosing 'missing-after-edit')) { exit 0 }
+        $reason = @(
+            ('RULES CHECK (' + $Client + ') - this session edited files and the closing summary does not confirm which rules governed the change.'),
+            ('Governing rule files: ' + $ruleMenu + '.'),
+            # The example is deliberately kept INLINE and quoted rather than on a
+            # line of its own: this message lands in the same transcript the next
+            # Stop reads, and an example at the start of a line would satisfy the
+            # detector - the hook would then clear its own block.
+            'TO CLEAR THIS: add one line to the final summary, on its own line, starting exactly with "Rules applied:" and naming the rule files that actually governed this work - e.g. "Rules applied: global-hook-rules.md (hook roles, gate conditions), global-test-rules.md (bounded test runs)".',
+            'If a listed rule was genuinely not read, say so instead of naming it. "Rules applied: none - <one-line reason>" is a valid answer.'
+        ) -join "`n"
+        if ($enforcement -eq 'advisory') {
+            $emit = Write-HookResult -EventName $eventName -Kind 'advisory' -Message $reason
+            exit $emit.ExitCode
+        }
+        # Record the block so THIS hook's own re-entry is recognised; another
+        # gate's block must not mute it, and its own must not repeat.
+        Set-StopBlockMarker -HookInput $hookInput -HookName 'Rules-Check'
+        $emit = Write-HookResult -EventName $eventName -Kind 'block' -Reason $reason
+        exit $emit.ExitCode
+    }
+
+    # No file changes observed: the hook cannot show the rules were load-bearing
+    # here, so it advises and never blocks.
+    if (-not (Test-ShouldReportClosing 'missing-no-edit')) { exit 0 }
+    $note = @(
+        ('RULES CHECK (' + $Client + ') - no rule-compliance confirmation found in this session.'),
+        ('Governing rule files: ' + $ruleMenu + '.'),
+        $script:RulesRequirement
+    ) -join "`n"
+    $emit = Write-HookResult -EventName $eventName -Kind 'advisory' -Message $note
+    exit $emit.ExitCode
+}
+# ========================== end CLOSING HALF ================================
+
 $statePath = Join-Path $stateDir ('RulesCheck-' + $Client + '-' + (Get-ShortHash $cwd.ToLowerInvariant()) + '.txt')
 $firstRun = -not (Test-Path -LiteralPath $statePath -PathType Leaf)
 $previousEntries = @{}
@@ -235,6 +425,8 @@ if ($rulesMoved) {
         [void]$lines.Add('WARNING - version-suffixed rule filename(s) present (an uploaded copy is NOT canonical; follow the canonical installed name instead): ' + ($suffixedNames -join ', '))
     }
     [void]$lines.Add('Rules already loaded in context only need a confirmation, not a re-read. This check stays silent until a rules file changes again.')
+    # Stated up front so the closing gate is never a surprise at Stop.
+    [void]$lines.Add($script:RulesRequirement)
 }
 if ($deepDebug) {
     [void]$lines.Add('RULES CHECK (' + $Client + ') - standalone ::deep-debug codeword detected. Workflow bounds (WORKFLOWS.md "Deep Debug Orchestrator" + CODEWORDS.md):')

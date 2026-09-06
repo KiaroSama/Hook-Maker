@@ -335,6 +335,134 @@ try {
         $r.Out -notlike '*/goal*') $r.Out
 
     # =====================================================================
+    Write-Host '--- closing half: the "Rules applied:" confirmation at Stop/SubagentStop ---' -ForegroundColor Cyan
+    # A JSONL session transcript, written the way a client writes one: each entry
+    # is a JSON object on its own line, so a real newline inside a message
+    # arrives as the two-character \n ESCAPE. The closing detector is anchored on
+    # exactly that, so the fixtures must reproduce it rather than write flat text.
+    function New-RulesTranscript {
+        param([string]$Name, [string]$ToolName, [string]$FinalText)
+        $path = Join-Path $Work ($Name + '.jsonl')
+        $lines = New-Object System.Collections.Generic.List[string]
+        if ($ToolName -ne '') {
+            $lines.Add((@{ type = 'assistant'; message = @{ content = @(@{ type = 'tool_use'; name = $ToolName; input = @{ file_path = 'a.ps1' } }) } } | ConvertTo-Json -Compress -Depth 8)) | Out-Null
+        }
+        $lines.Add((@{ type = 'assistant'; message = @{ content = @(@{ type = 'text'; text = $FinalText }) } } | ConvertTo-Json -Compress -Depth 8)) | Out-Null
+        [System.IO.File]::WriteAllText($path, (($lines.ToArray() -join "`n") + "`n"), (New-Object System.Text.UTF8Encoding $false))
+        return $path
+    }
+    function New-StopStdin {
+        param([string]$Cwd, [string]$Transcript = '', [string]$SessionId = 't', [string]$EventName = 'Stop', [bool]$StopActive = $false)
+        $o = @{ session_id = $SessionId; cwd = $Cwd; hook_event_name = $EventName }
+        if ($Transcript -ne '') { $o['transcript_path'] = $Transcript }
+        if ($StopActive) { $o['stop_hook_active'] = $true }
+        return ($o | ConvertTo-Json)
+    }
+    # A hook copy with its own .env, so the enforcement switch can be exercised
+    # without writing a .env next to the real shipped hook.
+    function New-ConfiguredRulesHookCopy {
+        param([string]$Enforcement)
+        $dir = Join-Path $Work ('rulescopy-' + [guid]::NewGuid().ToString('N').Substring(0, 6))
+        New-Item -ItemType Directory -Path $dir -Force | Out-Null
+        Copy-Item $Hook (Join-Path $dir 'Rules-Check.ps1')
+        Copy-Item (Join-Path (Split-Path -Parent $Hook) '..\_hooklib.ps1') (Join-Path $Work '_hooklib.ps1') -Force
+        [System.IO.File]::WriteAllText((Join-Path $dir '.env'), ("RULES_CONFIRMATION_ENFORCEMENT=" + $Enforcement + "`r`n"))
+        return (Join-Path $dir 'Rules-Check.ps1')
+    }
+
+    $closeProj = Join-Path $Work 'projClose'; New-Item -ItemType Directory -Path $closeProj -Force | Out-Null
+    New-RuleFile (Join-Path $closeProj '.claude\rules') 'project-rule.md'
+    $tEdit = New-RulesTranscript 'rc-edit' 'Edit' "Done.`nI changed a file."
+    $tEditConfirmed = New-RulesTranscript 'rc-edit-ok' 'Edit' "Done.`nRules applied: project-rule.md (naming), alpha.md (structure)"
+    $tReadOnly = New-RulesTranscript 'rc-readonly' 'Read' "Here is the answer."
+
+    $r = Fire -Cwd $closeProj -RawStdin (New-StopStdin -Cwd $closeProj -Transcript $tEdit -SessionId 'close-b1')
+    Check 'edits + no confirmation -> a real block decision' ($r.Out -match '"decision"\s*:\s*"block"') $r.Out
+    Check 'the block lists the governing rule files it checked' ($r.Out -match 'Governing rule files:' -and $r.Out -match 'project-rule\.md') $r.Out
+    Check 'the block names the exact single action that clears it' (
+        $r.Out -match 'TO CLEAR THIS' -and $r.Out -match 'starting exactly with .{0,3}Rules applied:') $r.Out
+    Check '"none - <reason>" is offered as a legitimate answer, not a forced claim' (
+        $r.Out -match 'Rules applied: none - <one-line reason>') $r.Out
+    # An unchanged failure blocks ONCE per session (global-hook-rules.md: a gate
+    # must not loop on the same unchanged state).
+    $r2 = Fire -Cwd $closeProj -RawStdin (New-StopStdin -Cwd $closeProj -Transcript $tEdit -SessionId 'close-b1')
+    Check 'the SAME unchanged failure does not block twice in one session' ($r2.Exit -eq 0 -and $r2.Out -eq '') $r2.Out
+    $r3 = Fire -Cwd $closeProj -RawStdin (New-StopStdin -Cwd $closeProj -Transcript $tEdit -SessionId 'close-b2')
+    Check 'a NEW session with the same failure blocks again' ($r3.Out -match '"decision"\s*:\s*"block"') $r3.Out
+
+    $r = Fire -Cwd $closeProj -RawStdin (New-StopStdin -Cwd $closeProj -Transcript $tEditConfirmed -SessionId 'close-ok')
+    Check 'the confirmation line present -> silent, no block' ($r.Exit -eq 0 -and $r.Out -eq '') $r.Out
+
+    # SELF-SATISFACTION PROBE: this hook's own output lands in the transcript it
+    # later reads. A transcript containing ONLY the hook's instruction text must
+    # NOT count as the agent having written the confirmation, or the hook clears
+    # its own block on the next stop.
+    $ownText = 'CLOSING REQUIREMENT - end the final task summary with its own line starting "Rules applied:" naming the rule files above that actually governed this work. TO CLEAR THIS: add one line to the final summary, on its own line, starting exactly with "Rules applied:" and naming the rule files - e.g. "Rules applied: global-hook-rules.md (gate conditions)".'
+    $tSelf = New-RulesTranscript 'rc-self' 'Edit' $ownText
+    $r = Fire -Cwd $closeProj -RawStdin (New-StopStdin -Cwd $closeProj -Transcript $tSelf -SessionId 'close-self')
+    Check 'the hook''s OWN instruction text in the transcript never satisfies the gate' ($r.Out -match '"decision"\s*:\s*"block"') $r.Out
+
+    # No observed file change -> the hook cannot show the rules were load-bearing,
+    # so it advises and must never block.
+    $r = Fire -Cwd $closeProj -RawStdin (New-StopStdin -Cwd $closeProj -Transcript $tReadOnly -SessionId 'close-ro')
+    Check 'a read-only session is advised, never blocked' (
+        $r.Out -match 'no rule-compliance confirmation found' -and $r.Out -notmatch '"decision"') $r.Out
+
+    # UNKNOWN transcript: never an all-clear, never a block.
+    $r = Fire -Cwd $closeProj -RawStdin (New-StopStdin -Cwd $closeProj -Transcript (Join-Path $Work 'no-such-transcript.jsonl') -SessionId 'close-u1')
+    Check 'a missing transcript reports UNVERIFIED, never an all-clear and never a block' (
+        $r.Out -match 'could NOT be verified' -and $r.Out -match 'not an all-clear' -and $r.Out -notmatch '"decision"') $r.Out
+    $r = Fire -Cwd $closeProj -RawStdin (New-StopStdin -Cwd $closeProj -SessionId 'close-u2')
+    Check 'no transcript_path at all is treated the same way (unverified, not silent)' (
+        $r.Out -match 'could NOT be verified' -and $r.Out -notmatch '"decision"') $r.Out
+
+    $r = Fire -Cwd $closeProj -RawStdin (New-StopStdin -Cwd $closeProj -Transcript $tEdit -SessionId 'close-sa' -StopActive $true)
+    # stop_hook_active means "a Stop gate blocked and the agent is coming
+    # back" - NOT "YOU blocked". Thirteen gates share the one flag, so a gate
+    # standing down on it alone went silent for somebody else's block, and
+    # the next Stop ran with the secret-leak, UTF-8 and CI gates all muted.
+    # Each gate now stands down only on its OWN re-entry, proven by a marker
+    # it writes itself immediately before it blocks.
+    Check 'stop_hook_active ALONE does not silence the gate (another hook blocked, not this one)' ($r.Exit -eq 0 -and $r.Out -ne '') $r.Out
+
+    $r = Fire -Cwd $closeProj -RawStdin (New-StopStdin -Cwd $closeProj -Transcript $tEdit -SessionId 'close-sub' -EventName 'SubagentStop')
+    Check 'SubagentStop gets the same gate as Stop' ($r.Out -match '"decision"\s*:\s*"block"') $r.Out
+
+    # Relevance gate: with no rules anywhere there is nothing to confirm.
+    $noRulesProj = Join-Path $Work 'projCloseNoRules'; New-Item -ItemType Directory -Path $noRulesProj -Force | Out-Null
+    $emptyHome = Join-Path $Work 'empty-home'; New-Item -ItemType Directory -Path $emptyHome -Force | Out-Null
+    $savedFakeHome = $FakeHome
+    $FakeHome = $emptyHome
+    $r = Fire -Cwd $noRulesProj -RawStdin (New-StopStdin -Cwd $noRulesProj -Transcript $tEdit -SessionId 'close-nr')
+    Check 'no rule files anywhere -> silent at Stop (nothing governed this task)' ($r.Exit -eq 0 -and $r.Out -eq '') $r.Out
+    $FakeHome = $savedFakeHome
+
+    # The enforcement switch.
+    $advHook = New-ConfiguredRulesHookCopy 'advisory'
+    $r = Fire -Cwd $closeProj -HookPath $advHook -RawStdin (New-StopStdin -Cwd $closeProj -Transcript $tEdit -SessionId 'close-adv')
+    Check 'advisory mode reports the same finding without a block decision' (
+        $r.Out -match 'this session edited files' -and $r.Out -notmatch '"decision"') $r.Out
+    $offHook = New-ConfiguredRulesHookCopy 'off'
+    $r = Fire -Cwd $closeProj -HookPath $offHook -RawStdin (New-StopStdin -Cwd $closeProj -Transcript $tEdit -SessionId 'close-off')
+    Check 'off mode skips the closing check entirely' ($r.Exit -eq 0 -and $r.Out -eq '') $r.Out
+    $badHook = New-ConfiguredRulesHookCopy 'nonsense-value'
+    $r = Fire -Cwd $closeProj -HookPath $badHook -RawStdin (New-StopStdin -Cwd $closeProj -Transcript $tEdit -SessionId 'close-bad')
+    Check 'an invalid enforcement value falls back to the block default' ($r.Out -match '"decision"\s*:\s*"block"') $r.Out
+
+    # The requirement is stated BEFORE the work, so the gate is never the first
+    # the agent hears of it.
+    $preProj = Join-Path $Work 'projClosePre'; New-Item -ItemType Directory -Path $preProj -Force | Out-Null
+    New-RuleFile (Join-Path $preProj '.claude\rules') 'pre-rule.md'
+    $r = Fire -Cwd $preProj
+    Check 'the pre-task note states the closing "Rules applied:" requirement up front' (
+        $r.Out -match 'CLOSING REQUIREMENT' -and $r.Out -match 'Rules applied:') $r.Out
+
+    # 5.1 host parity for the gate.
+    $r = Fire -Cwd $closeProj -Exe 'powershell.exe' -RawStdin (New-StopStdin -Cwd $closeProj -Transcript $tEdit -SessionId 'close-51')
+    Check '5.1 host: the Stop gate produces the same block decision' (
+        $r.Exit -eq 0 -and $r.Err -eq '' -and $r.Out -match '"decision"\s*:\s*"block"') $r.Out
+
+    # =====================================================================
     Write-Host '--- E-01: static safety + installed-runtime parity ---' -ForegroundColor Cyan
     # The hook only REFERENCES native commands as text; it must never gain an
     # execution path (same static assertion style as the Test-Run-Guard suite).

@@ -228,7 +228,10 @@ if ($eventName -eq 'SessionStart') {
 # ==========================================================================
 # Stop: task-delta detection -> ranked candidates -> mandatory acknowledgement.
 # ==========================================================================
-if ((Get-Field $hookInput 'stop_hook_active') -eq $true) { exit 0 }
+# Stand down only on THIS hook's own re-entry: `stop_hook_active` is set
+# for ANY gate's block, and exiting on it alone let one block silence the
+# other twelve on the same Stop.
+if (Test-StopStandDown -HookInput $hookInput -HookName 'Docs-Freshness-Check') { exit 0 }
 
 try {
     $baseline = Read-JsonFile -Path $baselinePath
@@ -376,6 +379,9 @@ try {
     [void]$lines.Add('Update ONLY the tracked public .md/.txt files actually made stale by this task - do not edit unrelated docs merely for consistency or wording.')
     [void]$lines.Add('Then run exactly one acknowledgement command to clear this: ' + $ackCommand + ' (use -Result NoUpdate -Reason "<why no doc became inaccurate>" instead if nothing needs updating).')
     $reason = $lines.ToArray() -join "`n"
+    # Record the block so THIS hook's own re-entry is recognised; another
+    # gate's block must not mute it, and its own must not repeat.
+    Set-StopBlockMarker -HookInput $hookInput -HookName 'Docs-Freshness-Check'
     exit (Write-HookResult -EventName $eventName -Kind 'block' -Reason $reason).ExitCode
 }
 catch {

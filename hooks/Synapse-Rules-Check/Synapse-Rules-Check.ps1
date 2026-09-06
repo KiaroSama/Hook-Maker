@@ -90,7 +90,14 @@ if (-not [string]::IsNullOrWhiteSpace($transcriptPath) -and (Test-Path -LiteralP
             if ($stream.Length -gt $tailBytes) { [void]$stream.Seek(-$tailBytes, [System.IO.SeekOrigin]::End) }
             $buffer = New-Object byte[] $tailBytes
             $read = $stream.Read($buffer, 0, $tailBytes)
-            if ($read -gt 0 -and ([System.Text.Encoding]::UTF8.GetString($buffer, 0, $read)) -match '(?i)memory_(digest|retrieve|write)') { $consulted = $true }
+            # MATCH THE CLIENT'S TOOL-CALL RECORD, NOT THE BARE TOKEN. This
+            # hook's own SessionStart note names memory_digest, memory_retrieve
+            # AND memory_write, and that note lands in the very transcript read
+            # here - a bare token search is satisfied by the hook's own words
+            # and reports "consulted" for a session that never queried
+            # anything, which makes the whole reminder unreachable. Only a
+            # "name": "mcp__synapse__memory_*" entry is evidence of a real call.
+            if ($read -gt 0 -and ([System.Text.Encoding]::UTF8.GetString($buffer, 0, $read)) -match '(?i)"(?:name|tool_name)"[ 	]*:[ 	]*"mcp__[A-Za-z0-9_.\-]*synapse[A-Za-z0-9_.\-]*__memory_(digest|retrieve|write)"') { $consulted = $true }
         }
         finally { $stream.Dispose() }
     }

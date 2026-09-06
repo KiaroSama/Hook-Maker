@@ -9,6 +9,38 @@
 # The underscore prefix keeps it out of the runner's Test-*.ps1 glob, so it
 # needs no ci.yml bucket entry of its own.
 
+    # A JSONL session transcript, written the way a client writes one: each
+    # entry is a JSON object on its own line, so a real newline inside a message
+    # arrives as the two-character \n ESCAPE. That distinction is the whole point
+    # of the anchored detectors in Mcp-Usage-Check / Rules-Check / Skills-Check,
+    # so the fixtures must reproduce it rather than writing plain text.
+    function New-Transcript {
+        param([string]$Name, [string[]]$Entries)
+        $path = Join-Path $Work ($Name + '.jsonl')
+        $lines = New-Object System.Collections.Generic.List[string]
+        foreach ($e in $Entries) { [void]$lines.Add(($e | ConvertTo-Json -Compress)) }
+        Write-Utf8 $path (($lines.ToArray() -join "`n") + "`n")
+        return $path
+    }
+    function New-ToolTranscript {
+        param([string]$Name, [string]$ToolName, [string]$FinalText)
+        $path = Join-Path $Work ($Name + '.jsonl')
+        $lines = New-Object System.Collections.Generic.List[string]
+        if ($ToolName -ne '') {
+            [void]$lines.Add((@{ type = 'assistant'; message = @{ content = @(@{ type = 'tool_use'; name = $ToolName; input = @{ a = 1 } }) } } | ConvertTo-Json -Compress -Depth 8))
+        }
+        [void]$lines.Add((@{ type = 'assistant'; message = @{ content = @(@{ type = 'text'; text = $FinalText }) } } | ConvertTo-Json -Compress -Depth 8))
+        Write-Utf8 $path (($lines.ToArray() -join "`n") + "`n")
+        return $path
+    }
+    function New-StopStdin {
+        param([string]$Cwd, [string]$Transcript = '', [string]$SessionId = 't', [string]$EventName = 'Stop', [bool]$StopActive = $false)
+        $o = @{ session_id = $SessionId; cwd = $Cwd; hook_event_name = $EventName }
+        if ($Transcript -ne '') { $o['transcript_path'] = $Transcript }
+        if ($StopActive) { $o['stop_hook_active'] = $true }
+        return ($o | ConvertTo-Json)
+    }
+
     # =====================================================================
     Write-Host '--- Mcp-Usage-Check: input handling ---' -ForegroundColor Cyan
     $plain = New-Proj 'Plain'
@@ -16,10 +48,15 @@
     Check 'empty stdin -> silent exit 0' ($r.Exit -eq 0 -and $r.Out -eq '') $r.Out
     $r = Fire -HookPath $McpHook -Cwd $plain -RawStdin 'garbage'
     Check 'garbage stdin -> silent exit 0' ($r.Exit -eq 0 -and $r.Out -eq '') $r.Out
+    $r = Fire -HookPath $McpHook -Cwd $plain -EventName 'PreToolUse'
+    Check 'an unregistered event -> silent' ($r.Exit -eq 0 -and $r.Out -eq '') $r.Out
+    # Stop IS registered now, but a session with no transcript and no recorded
+    # MCP relevance has no evidence to report - and an evidence-free Stop must
+    # stay silent rather than nag.
     $r = Fire -HookPath $McpHook -Cwd $plain -EventName 'Stop'
-    Check 'Stop event -> silent (no longer a registered event)' ($r.Exit -eq 0 -and $r.Out -eq '') $r.Out
+    Check 'Stop with no transcript and no recorded relevance -> silent' ($r.Exit -eq 0 -and $r.Out -eq '') $r.Out
     $r = Fire -HookPath $McpHook -Cwd $plain -EventName 'SubagentStop'
-    Check 'SubagentStop event -> silent' ($r.Exit -eq 0 -and $r.Out -eq '') $r.Out
+    Check 'SubagentStop with no evidence -> silent' ($r.Exit -eq 0 -and $r.Out -eq '') $r.Out
 
     # =====================================================================
     Write-Host '--- Mcp-Usage-Check: always reminds on SessionStart (cheap, no gate) ---' -ForegroundColor Cyan
@@ -28,7 +65,12 @@
     try { $parsed = $r.Out | ConvertFrom-Json } catch { }
     Check 'emits a valid hookSpecificOutput on SessionStart' ($null -ne $parsed -and [string]$parsed.hookSpecificOutput.hookEventName -eq 'SessionStart')
     Check 'mentions MCP USAGE CHECK' ($r.Out -like '*MCP USAGE CHECK*') $r.Out
-    Check 'note stays short (under ~600 chars, matching the "3-4 lines" design)' ($null -ne $parsed -and ([string]$parsed.hookSpecificOutput.additionalContext).Length -lt 600)
+    # Budget raised from 600 to 800: the note now also states the CLOSING
+    # requirement up front, which is deliberate - the Stop gate must never be the
+    # first time the agent hears about the "MCP used:" line. Measured 687 chars;
+    # 800 leaves headroom without letting the note grow into a policy dump.
+    Check 'note stays short (under 800 chars: 4 lines + the closing requirement)' ($null -ne $parsed -and ([string]$parsed.hookSpecificOutput.additionalContext).Length -lt 800) ([string]$parsed.hookSpecificOutput.additionalContext).Length
+    Check 'SessionStart states the closing "MCP used:" requirement up front' ($r.Out -match 'CLOSING REQUIREMENT' -and $r.Out -match 'MCP used:') $r.Out
     $r2 = Fire -HookPath $McpHook -Cwd $plain
     Check 'fires again next session too (no state file on SessionStart by design)' ($r2.Out -like '*MCP USAGE CHECK*') $r2.Out
 
@@ -47,9 +89,104 @@
     Check 'a NEW session with a relevant prompt reminds again' ($r3.Out -like '*MCP USAGE CHECK*') $r3.Out
 
     # =====================================================================
+    Write-Host '--- Mcp-Usage-Check: Stop gate verifies the "MCP used:" summary line ---' -ForegroundColor Cyan
+    # The gate fires on ONE confirmed condition: MCP tool names really are in the
+    # transcript AND the summary carries no line reporting them. Everything else
+    # is advisory or silent.
+    $mcpStop = New-Proj 'McpStop'
+    $tMcpNoSum = New-ToolTranscript 'mcp-nosum' 'mcp__context7__query-docs' "Done.`nI changed a file."
+    $tMcpSum = New-ToolTranscript 'mcp-sum' 'mcp__context7__query-docs' "Done.`nMCP used: context7"
+    $tNoMcp = New-ToolTranscript 'mcp-none' 'Read' "Done."
+
+    $r = Fire -HookPath $McpHook -Cwd $mcpStop -RawStdin (New-StopStdin -Cwd $mcpStop -Transcript $tMcpNoSum -SessionId 'mcp-b1')
+    Check 'MCP called + no summary line -> a real block decision' ($r.Out -match '"decision"\s*:\s*"block"') $r.Out
+    Check 'the block names the servers it actually observed' ($r.Out -match 'Servers observed in this session: context7') $r.Out
+    Check 'the block names the exact single action that clears it' ($r.Out -match 'TO CLEAR THIS' -and $r.Out -match 'starting exactly with .{0,3}MCP used:') $r.Out
+    # An unchanged failure blocks ONCE per session (global-hook-rules.md: a gate
+    # must not loop on the same unchanged state).
+    $r2 = Fire -HookPath $McpHook -Cwd $mcpStop -RawStdin (New-StopStdin -Cwd $mcpStop -Transcript $tMcpNoSum -SessionId 'mcp-b1')
+    Check 'the SAME unchanged failure does not block twice in one session' ($r2.Exit -eq 0 -and $r2.Out -eq '') $r2.Out
+    $r3 = Fire -HookPath $McpHook -Cwd $mcpStop -RawStdin (New-StopStdin -Cwd $mcpStop -Transcript $tMcpNoSum -SessionId 'mcp-b2')
+    Check 'a NEW session with the same failure blocks again' ($r3.Out -match '"decision"\s*:\s*"block"') $r3.Out
+
+    $r = Fire -HookPath $McpHook -Cwd $mcpStop -RawStdin (New-StopStdin -Cwd $mcpStop -Transcript $tMcpSum -SessionId 'mcp-ok')
+    Check 'MCP called + the summary line present -> silent, no block' ($r.Exit -eq 0 -and $r.Out -eq '') $r.Out
+
+    # SELF-SATISFACTION PROBE: the hook's own output lands in the transcript it
+    # later reads. A transcript containing ONLY this hook's instruction text must
+    # NOT count as the agent having written the line, or the hook clears its own
+    # block on the next stop.
+    $ownText = 'CLOSING REQUIREMENT - end the final task summary with its own line starting "MCP used:" naming every connected MCP server actually called this task. TO CLEAR THIS: add one line to the final summary, on its own line, starting exactly with "MCP used:" and naming the servers actually used - e.g. "MCP used: context7".'
+    $tSelf = New-ToolTranscript 'mcp-self' 'mcp__context7__query-docs' $ownText
+    $r = Fire -HookPath $McpHook -Cwd $mcpStop -RawStdin (New-StopStdin -Cwd $mcpStop -Transcript $tSelf -SessionId 'mcp-self1')
+    Check 'the hook''s OWN instruction text in the transcript never satisfies the gate' ($r.Out -match '"decision"\s*:\s*"block"') $r.Out
+
+    $r = Fire -HookPath $McpHook -Cwd $mcpStop -RawStdin (New-StopStdin -Cwd $mcpStop -Transcript $tNoMcp -SessionId 'mcp-n1')
+    Check 'no MCP call and no recorded relevance -> silent (never a block on suspicion)' ($r.Exit -eq 0 -and $r.Out -eq '') $r.Out
+
+    # A tool name MENTIONED in prose is not a tool CALL. Matching a bare token
+    # anywhere in the transcript would make a conversation ABOUT MCP look like
+    # one that used it - a false positive, and a gate that fires on one is worse
+    # than no gate at all.
+    $tMentionOnly = New-ToolTranscript 'mcp-mention' 'Read' "I considered calling mcp__context7__query-docs but read the local docs instead."
+    $r = Fire -HookPath $McpHook -Cwd $mcpStop -RawStdin (New-StopStdin -Cwd $mcpStop -Transcript $tMentionOnly -SessionId 'mcp-m1')
+    Check 'a tool name merely MENTIONED in prose is not treated as a call' ($r.Exit -eq 0 -and $r.Out -eq '') $r.Out
+
+    $r = Fire -HookPath $McpHook -Cwd $mcpStop -RawStdin (New-StopStdin -Cwd $mcpStop -Transcript $tMcpNoSum -SessionId 'mcp-sa' -StopActive $true)
+    # stop_hook_active means "a Stop gate blocked and the agent is coming
+    # back" - NOT "YOU blocked". Thirteen gates share the one flag, so a gate
+    # standing down on it alone went silent for somebody else's block, and
+    # the next Stop ran with the secret-leak, UTF-8 and CI gates all muted.
+    # Each gate now stands down only on its OWN re-entry, proven by a marker
+    # it writes itself immediately before it blocks.
+    Check 'stop_hook_active ALONE does not silence the gate (another hook blocked, not this one)' ($r.Exit -eq 0 -and $r.Out -ne '') $r.Out
+
+    # UNKNOWN transcript: a missing or unreadable transcript is never an
+    # all-clear and never a block - it is reported as unverified, and only for a
+    # session the prompt half recorded as MCP-relevant.
+    $mcpUnk = New-Proj 'McpUnknown'
+    $r = Fire -HookPath $McpHook -Cwd $mcpUnk -RawStdin (New-PromptStdin -Cwd $mcpUnk -EventName 'UserPromptSubmit' -Prompt 'read the payments API docs' -SessionId 'mcp-u1')
+    Check 'a relevant prompt records the session as MCP-relevant (reminder emitted)' ($r.Out -match 'MCP USAGE CHECK') $r.Out
+    $r = Fire -HookPath $McpHook -Cwd $mcpUnk -RawStdin (New-StopStdin -Cwd $mcpUnk -Transcript (Join-Path $Work 'no-such-transcript.jsonl') -SessionId 'mcp-u1')
+    Check 'a missing transcript reports UNVERIFIED, never an all-clear and never a block' (
+        $r.Out -match 'could NOT be verified' -and $r.Out -match 'not an all-clear' -and $r.Out -notmatch '"decision"') $r.Out
+    $r = Fire -HookPath $McpHook -Cwd $mcpUnk -RawStdin (New-StopStdin -Cwd $mcpUnk -Transcript $tNoMcp -SessionId 'mcp-u1')
+    Check 'a relevant session that called no MCP tool gets an advisory, not a block' (
+        $r.Out -match 'no connected MCP server tool was called' -and $r.Out -notmatch '"decision"') $r.Out
+
+    # =====================================================================
+    Write-Host '--- Mcp-Usage-Check: MCP_SUMMARY_ENFORCEMENT downgrades and disables the gate ---' -ForegroundColor Cyan
+    function New-ConfiguredMcpHookCopy {
+        param([string]$Enforcement)
+        $dir = Join-Path $Work ('mcpcopy-' + [guid]::NewGuid().ToString('N').Substring(0, 6))
+        New-Item -ItemType Directory -Path $dir -Force | Out-Null
+        Copy-Item $McpHook (Join-Path $dir 'Mcp-Usage-Check.ps1')
+        Copy-Item (Join-Path (Split-Path -Parent $McpHook) '..\_hooklib.ps1') (Join-Path $Work '_hooklib.ps1') -Force
+        Write-Utf8 (Join-Path $dir '.env') ("MCP_SUMMARY_ENFORCEMENT=" + $Enforcement + "`r`n")
+        return (Join-Path $dir 'Mcp-Usage-Check.ps1')
+    }
+    $advHook = New-ConfiguredMcpHookCopy 'advisory'
+    $mcpAdv = New-Proj 'McpAdvisory'
+    $r = Fire -HookPath $advHook -Cwd $mcpAdv -RawStdin (New-StopStdin -Cwd $mcpAdv -Transcript $tMcpNoSum -SessionId 'mcp-a1')
+    Check 'advisory mode reports the same finding without a block decision' (
+        $r.Out -match 'Servers observed in this session: context7' -and $r.Out -notmatch '"decision"') $r.Out
+    $offHook = New-ConfiguredMcpHookCopy 'off'
+    $mcpOff = New-Proj 'McpOff'
+    $r = Fire -HookPath $offHook -Cwd $mcpOff -RawStdin (New-StopStdin -Cwd $mcpOff -Transcript $tMcpNoSum -SessionId 'mcp-o1')
+    Check 'off mode skips the closing check entirely' ($r.Exit -eq 0 -and $r.Out -eq '') $r.Out
+    $r = Fire -HookPath $offHook -Cwd $mcpOff
+    Check 'off mode still runs the pre-task half' ($r.Out -match 'MCP USAGE CHECK') $r.Out
+    $badHook = New-ConfiguredMcpHookCopy 'nonsense-value'
+    $mcpBad = New-Proj 'McpBadConfig'
+    $r = Fire -HookPath $badHook -Cwd $mcpBad -RawStdin (New-StopStdin -Cwd $mcpBad -Transcript $tMcpNoSum -SessionId 'mcp-x1')
+    Check 'an invalid enforcement value falls back to the block default' ($r.Out -match '"decision"\s*:\s*"block"') $r.Out
+
+    # =====================================================================
     Write-Host '--- Mcp-Usage-Check: Windows PowerShell 5.1 host ---' -ForegroundColor Cyan
     $r = Fire -HookPath $McpHook -Cwd $plain -Exe 'powershell.exe'
     Check '5.1 host: emits cleanly, no crash' ($r.Exit -eq 0 -and $r.Err -eq '' -and $r.Out -like '*MCP USAGE CHECK*') $r.Out
+    $r = Fire -HookPath $McpHook -Cwd $mcpStop -Exe 'powershell.exe' -RawStdin (New-StopStdin -Cwd $mcpStop -Transcript $tMcpNoSum -SessionId 'mcp-51')
+    Check '5.1 host: the Stop gate produces the same block decision' ($r.Exit -eq 0 -and $r.Err -eq '' -and $r.Out -match '"decision"\s*:\s*"block"') $r.Out
 
     # =====================================================================
     # Force Claude routing for the .claude-based Skills-Check cases below; the
@@ -59,16 +196,18 @@
     $splain = New-Proj 'SkillsPlain'
     $r = Fire -HookPath $SkillsHook -Cwd $splain -RawStdin ''
     Check 'empty stdin -> silent exit 0' ($r.Exit -eq 0 -and $r.Out -eq '') $r.Out
-    $r = Fire -HookPath $SkillsHook -Cwd $splain -EventName 'SubagentStop'
-    Check 'SubagentStop event -> silent' ($r.Exit -eq 0 -and $r.Out -eq '') $r.Out
-    # No copied skills, no .ai/SKILLS.md, and the DEFAULT library path does not
-    # exist on a throwaway machine path - override SKILLS_DIR to something
-    # guaranteed absent so this run is deterministic regardless of the real host.
+    $r = Fire -HookPath $SkillsHook -Cwd $splain -EventName 'PreToolUse'
+    Check 'an unregistered event -> silent' ($r.Exit -eq 0 -and $r.Out -eq '') $r.Out
+    # No copied skills, no .ai/SKILLS.md, and the library / global / plugin paths
+    # are all overridden to guaranteed-absent locations, so this run is
+    # deterministic regardless of what the host machine actually has installed.
     $noSourceHook = New-ConfiguredSkillsHookCopy -EnvOverrides @{ SKILLS_DIR = (Join-Path $Work 'no-such-library') }
     $r = Fire -HookPath $noSourceHook -Cwd $splain
     Check 'no skill source anywhere -> silent on SessionStart, zero tokens' ($r.Exit -eq 0 -and $r.Out -eq '') $r.Out
     $r = Fire -HookPath $noSourceHook -Cwd $splain -EventName 'Stop'
     Check 'no skill source anywhere -> silent on Stop too' ($r.Exit -eq 0 -and $r.Out -eq '') $r.Out
+    $r = Fire -HookPath $noSourceHook -Cwd $splain -EventName 'SubagentStop'
+    Check 'no skill source anywhere -> silent on SubagentStop too' ($r.Exit -eq 0 -and $r.Out -eq '') $r.Out
 
     # =====================================================================
     Write-Host '--- Skills-Check: reports copied project skills (SessionStart discovery) ---' -ForegroundColor Cyan
@@ -77,7 +216,11 @@
     $hook1 = New-ConfiguredSkillsHookCopy -EnvOverrides @{ SKILLS_DIR = (Join-Path $Work 'no-such-library') }
     $r = Fire -HookPath $hook1 -Cwd $proj1
     Check 'lists the copied skill folder name' ($r.Out -like '*SKILL POLICY CHECK*' -and $r.Out -like '*my-skill*') $r.Out
-    Check 'SessionStart points to the Stop reminder rather than repeating the full policy text' ($r.Out -match 'see the Stop reminder') $r.Out
+    # The closing requirement is now stated up front, so the Stop gate can never
+    # be the first the agent hears of it (it used to just point at the Stop
+    # reminder, which meant the requirement arrived only after the work).
+    Check 'SessionStart states the closing "Skills used:" requirement up front' (
+        $r.Out -match 'CLOSING REQUIREMENT' -and $r.Out -match 'Skills used:') $r.Out
 
     # =====================================================================
     Write-Host '--- Skills-Check: Stop requires the "Skills used:" summary line ---' -ForegroundColor Cyan
@@ -85,12 +228,57 @@
     Check 'Stop requires a final "Skills used:" summary line for skills actually used' ($r.Out -match 'Skills used:') $r.Out
     Check 'the policy explicitly excludes merely-installed/available/considered/copied-but-unused skills' (
         $r.Out -match 'never a skill that was merely installed, available, discovered, copied, considered, or read but not used') $r.Out
-    Check 'the policy requires omitting the line entirely when no skill was used' ($r.Out -match 'Omit the line entirely if no skill was actually used') $r.Out
+    Check 'no skill used is answered with an explicit "none" plus a reason, not by dropping the line' (
+        $r.Out -match 'Skills used: none - <one-line reason>') $r.Out
     Check 'the policy forbids listing the whole library' ($r.Out -match 'never the whole library') $r.Out
     Check 'the policy does not force a skill for trivial tasks merely to produce the line' ($r.Out -match 'do not force a skill for trivial tasks') $r.Out
+    Check 'a session with no skill invoked is advised, never blocked' ($r.Out -notmatch '"decision"') $r.Out
     $stopHookActiveStdin = @{ session_id = 't'; cwd = $proj1; hook_event_name = 'Stop'; stop_hook_active = $true } | ConvertTo-Json
     $r = Fire -HookPath $hook1 -Cwd $proj1 -EventName 'Stop' -RawStdin $stopHookActiveStdin
     Check 'stop_hook_active short-circuits the Stop reminder' ($r.Exit -eq 0 -and $r.Out -eq '') $r.Out
+
+    # =====================================================================
+    Write-Host '--- Skills-Check: the Stop gate fires only on a skill that was really invoked ---' -ForegroundColor Cyan
+    $skStop = New-Proj 'SkillsStopGate'
+    New-Item -ItemType Directory -Path (Join-Path $skStop '.claude\skills\gate-skill') -Force | Out-Null
+    $skStopHook = New-ConfiguredSkillsHookCopy -EnvOverrides @{ SKILLS_DIR = (Join-Path $Work 'no-such-library') }
+    $tSkillNoLine = New-ToolTranscript 'sk-nosum' 'Skill' "Done.`nI finished the change."
+    $tSkillLine = New-ToolTranscript 'sk-sum' 'Skill' "Done.`nSkills used: gate-skill"
+    $tNoSkill = New-ToolTranscript 'sk-none' 'Read' "Done."
+
+    $r = Fire -HookPath $skStopHook -Cwd $skStop -RawStdin (New-StopStdin -Cwd $skStop -Transcript $tSkillNoLine -SessionId 'sk-b1')
+    Check 'skill invoked + no summary line -> a real block decision' ($r.Out -match '"decision"\s*:\s*"block"') $r.Out
+    Check 'the block names the exact single action that clears it' ($r.Out -match 'TO CLEAR THIS' -and $r.Out -match 'starting exactly with .{0,3}Skills used:') $r.Out
+    $r2 = Fire -HookPath $skStopHook -Cwd $skStop -RawStdin (New-StopStdin -Cwd $skStop -Transcript $tSkillNoLine -SessionId 'sk-b1')
+    Check 'the SAME unchanged failure does not block twice in one session' ($r2.Exit -eq 0 -and $r2.Out -eq '') $r2.Out
+    $r = Fire -HookPath $skStopHook -Cwd $skStop -RawStdin (New-StopStdin -Cwd $skStop -Transcript $tSkillLine -SessionId 'sk-ok')
+    Check 'skill invoked + the summary line present -> silent, no block' ($r.Exit -eq 0 -and $r.Out -eq '') $r.Out
+    $r = Fire -HookPath $skStopHook -Cwd $skStop -RawStdin (New-StopStdin -Cwd $skStop -Transcript $tNoSkill -SessionId 'sk-n1')
+    Check 'no skill invoked -> advisory only (whether one was NEEDED is not the hook''s call)' (
+        $r.Out -match 'no skill was invoked this session' -and $r.Out -notmatch '"decision"') $r.Out
+    # SELF-SATISFACTION PROBE, same reasoning as the Mcp-Usage-Check one above.
+    $skOwnText = 'CLOSING REQUIREMENT - end the final task summary with its own line starting "Skills used:" naming ONLY the exact skill names actually invoked. TO CLEAR THIS: add one line to the final summary, on its own line, starting exactly with "Skills used:" - e.g. "Skills used: superpowers:systematic-debugging".'
+    $tSkSelf = New-ToolTranscript 'sk-self' 'Skill' $skOwnText
+    $r = Fire -HookPath $skStopHook -Cwd $skStop -RawStdin (New-StopStdin -Cwd $skStop -Transcript $tSkSelf -SessionId 'sk-self1')
+    Check 'the hook''s OWN instruction text in the transcript never satisfies the gate' ($r.Out -match '"decision"\s*:\s*"block"') $r.Out
+    $r = Fire -HookPath $skStopHook -Cwd $skStop -RawStdin (New-StopStdin -Cwd $skStop -Transcript (Join-Path $Work 'no-such-transcript.jsonl') -SessionId 'sk-u1')
+    Check 'a missing transcript reports UNVERIFIED, never an all-clear and never a block' (
+        $r.Out -match 'could NOT be verified' -and $r.Out -match 'not an all-clear' -and $r.Out -notmatch '"decision"') $r.Out
+    $r = Fire -HookPath $skStopHook -Cwd $skStop -RawStdin (New-StopStdin -Cwd $skStop -Transcript $tSkillNoLine -SessionId 'sk-sub' -EventName 'SubagentStop')
+    Check 'SubagentStop gets the same gate as Stop' ($r.Out -match '"decision"\s*:\s*"block"') $r.Out
+    $skAdvHook = New-ConfiguredSkillsHookCopy -EnvOverrides @{ SKILLS_DIR = (Join-Path $Work 'no-such-library'); SKILLS_SUMMARY_ENFORCEMENT = 'advisory' }
+    $skAdvProj = New-Proj 'SkillsStopAdvisory'
+    New-Item -ItemType Directory -Path (Join-Path $skAdvProj '.claude\skills\gate-skill') -Force | Out-Null
+    $r = Fire -HookPath $skAdvHook -Cwd $skAdvProj -RawStdin (New-StopStdin -Cwd $skAdvProj -Transcript $tSkillNoLine -SessionId 'sk-a1')
+    Check 'advisory mode reports the same finding without a block decision' (
+        $r.Out -match 'invoked at least one skill' -and $r.Out -notmatch '"decision"') $r.Out
+    $skOffHook = New-ConfiguredSkillsHookCopy -EnvOverrides @{ SKILLS_DIR = (Join-Path $Work 'no-such-library'); SKILLS_SUMMARY_ENFORCEMENT = 'off' }
+    $skOffProj = New-Proj 'SkillsStopOff'
+    New-Item -ItemType Directory -Path (Join-Path $skOffProj '.claude\skills\gate-skill') -Force | Out-Null
+    $r = Fire -HookPath $skOffHook -Cwd $skOffProj -RawStdin (New-StopStdin -Cwd $skOffProj -Transcript $tSkillNoLine -SessionId 'sk-o1')
+    Check 'off mode skips the closing check entirely' ($r.Exit -eq 0 -and $r.Out -eq '') $r.Out
+    $r = Fire -HookPath $skOffHook -Cwd $skOffProj
+    Check 'off mode still runs the pre-task half' ($r.Out -match 'SKILL POLICY CHECK') $r.Out
 
     # =====================================================================
     Write-Host '--- Skills-Check: UserPromptSubmit task-relevance nudge, once per session ---' -ForegroundColor Cyan
@@ -200,6 +388,163 @@
     Check 'record guidance: .ai/SKILLS.md is local-only and secret-free' ($rg.Out -match 'local-only, secret-free') $rg.Out
 
     # =====================================================================
+    Write-Host '--- Skills-Check: all THREE installed sources are enumerated (global, project, plugin) ---' -ForegroundColor Cyan
+    # A plugin cache laid out the way the client lays one out:
+    #   <root>\<marketplace>\<plugin>\<version>\skills\<skill>
+    # The plugin id is the SECOND segment, and the client addresses these skills
+    # as "<plugin>:<skill>" - so that is what the inventory has to report.
+    function New-PluginCache {
+        param([string]$Name, [hashtable]$Plugins)
+        $root = Join-Path $Work $Name
+        foreach ($plugin in $Plugins.Keys) {
+            foreach ($skill in $Plugins[$plugin]) {
+                New-Item -ItemType Directory -Path (Join-Path $root ('market\' + $plugin + '\1.0.0\skills\' + $skill)) -Force | Out-Null
+            }
+        }
+        return $root
+    }
+    $threeProj = New-Proj 'ThreeSources'
+    New-Item -ItemType Directory -Path (Join-Path $threeProj '.claude\skills\proj-only-skill') -Force | Out-Null
+    $threeGlobal = Join-Path $Work 'three-global-skills'
+    New-Item -ItemType Directory -Path (Join-Path $threeGlobal 'global-only-skill') -Force | Out-Null
+    $threePlugins = New-PluginCache 'three-plugin-cache' @{ 'superpowers' = @('brainstorming', 'writing-plans'); 'ponytail' = @('ponytail-audit') }
+    $threeHook = New-ConfiguredSkillsHookCopy -EnvOverrides @{
+        SKILLS_DIR         = (Join-Path $Work 'no-such-library')
+        GLOBAL_SKILLS_DIR  = $threeGlobal
+        PLUGIN_SKILLS_ROOT = $threePlugins
+    }
+    $r3s = Fire -HookPath $threeHook -Cwd $threeProj
+    Check 'the project source is enumerated' ($r3s.Out -match 'proj-only-skill \[project\]') $r3s.Out
+    Check 'the global source is enumerated' ($r3s.Out -match 'global-only-skill \[global\]') $r3s.Out
+    Check 'the plugin source is enumerated and counted' (
+        $r3s.Out -match 'Plugin skills: 3 across 2 plugins' -and
+        $r3s.Out -match 'ponytail \(1\)' -and $r3s.Out -match 'superpowers \(2\)') $r3s.Out
+    Check 'plugin skills are addressed as <plugin>:<skill>, the form the client uses' (
+        $r3s.Out -match 'Address these as <plugin>:<skill>') $r3s.Out
+    # Several hundred plugin skill names would be a token bill, not information -
+    # the inventory names PLUGINS, and individual plugin skills surface only in
+    # the per-prompt shortlist below.
+    Check 'the inventory does not dump every plugin skill name' ($r3s.Out -notmatch 'writing-plans') $r3s.Out
+    $emptyPluginRoot = Join-Path $Work 'empty-plugin-cache'
+    New-Item -ItemType Directory -Path $emptyPluginRoot -Force | Out-Null
+    $emptyPluginHook = New-ConfiguredSkillsHookCopy -EnvOverrides @{
+        SKILLS_DIR = (Join-Path $Work 'no-such-library'); GLOBAL_SKILLS_DIR = $threeGlobal; PLUGIN_SKILLS_ROOT = $emptyPluginRoot
+    }
+    $r = Fire -HookPath $emptyPluginHook -Cwd $threeProj
+    Check 'an existing but empty plugin cache is reported as empty, not silently omitted' (
+        $r.Out -match 'Plugin skills: none found under') $r.Out
+    # A plugin skill counts as INSTALLED for ::deep-debug capability coverage.
+    $ddPlugins = New-PluginCache 'dd-plugin-cache' @{ 'superpowers' = @('systematic-debugging', 'test-driven-development', 'requesting-code-review', 'verification-before-completion') }
+    $ddPluginHook = New-ConfiguredSkillsHookCopy -EnvOverrides @{
+        SKILLS_DIR = (Join-Path $Work 'no-such-library'); PLUGIN_SKILLS_ROOT = $ddPlugins
+    }
+    $ddPluginProj = New-Proj 'DeepDebugViaPlugins'
+    $r = Fire -HookPath $ddPluginHook -Cwd $ddPluginProj -RawStdin (New-PromptStdin -Cwd $ddPluginProj -EventName 'UserPromptSubmit' -Prompt '::deep-debug' -SessionId 'ddp-1')
+    Check 'core capabilities provided by PLUGINS are not reported as missing' (
+        $r.Out -match 'capability routing' -and $r.Out -notmatch 'NOT VISIBLE') $r.Out
+
+    # =====================================================================
+    Write-Host '--- Skills-Check: the library is searched against the PROMPT, with an exact import command ---' -ForegroundColor Cyan
+    $libProj = New-Proj 'LibraryMatch'
+    $matchLib = Join-Path $Work 'match-library'
+    # Mixed layout, exactly like the real library: some skills sit at the root,
+    # others under a category folder. Both must be found.
+    foreach ($rel in @('telegram-bot-builder', 'security\api-security-testing', 'development\powershell-windows', 'unrelated\basket-weaving')) {
+        $d = Join-Path $matchLib $rel
+        New-Item -ItemType Directory -Path $d -Force | Out-Null
+        Write-Utf8 (Join-Path $d 'SKILL.md') ("---`nname: " + (Split-Path -Leaf $rel) + "`n---`nbody")
+    }
+    $libHook = New-ConfiguredSkillsHookCopy -EnvOverrides @{ SKILLS_DIR = $matchLib }
+    # Every path in the emitted message is JSON-escaped (each backslash doubled),
+    # so path assertions run against the DECODED context, not the raw stdout.
+    function Get-Context {
+        param([string]$RawOut)
+        try {
+            $doc = $RawOut | ConvertFrom-Json
+            if ($null -ne $doc -and $null -ne $doc.PSObject.Properties['hookSpecificOutput']) {
+                return [string]$doc.hookSpecificOutput.additionalContext
+            }
+        }
+        catch { }
+        return ''
+    }
+    $libDirsBefore = @(Get-ChildItem -LiteralPath $matchLib -Recurse -Directory).Count
+    $rl = Fire -HookPath $libHook -Cwd $libProj -RawStdin (New-PromptStdin -Cwd $libProj -EventName 'UserPromptSubmit' -Prompt 'build a telegram bot and run api security testing on it' -SessionId 'lib-1')
+    Check 'a library skill matching the prompt is named' ($rl.Out -match 'telegram-bot-builder') $rl.Out
+    Check 'a library skill in a CATEGORY subfolder is found too' ($rl.Out -match 'api-security-testing') $rl.Out
+    Check 'an unrelated library skill is not suggested' ($rl.Out -notmatch 'basket-weaving') $rl.Out
+    Check 'each suggestion carries a ready-to-run copy command with the exact source path' (
+        $rl.Out -match 'Copy-Item -LiteralPath' -and $rl.Out -match 'telegram-bot-builder') $rl.Out
+    $rlCtx = Get-Context $rl.Out
+    Check 'the destination is the client-routed project skills directory' (
+        $rlCtx -like '*Destination for this project*' -and
+        $rlCtx -like ('*' + (Join-Path $libProj '.claude\skills') + '*')) $rlCtx
+    Check 'importing is named as an AUTHORIZED operation the user must approve first' (
+        $rl.Out -match 'AUTHORIZED operation' -and $rl.Out -match 'ask the user first') $rl.Out
+    Check 'the hook states it never copies anything itself' ($rl.Out -match 'never copies anything itself') $rl.Out
+    Check 'the import safety boundary travels with the command' (
+        $rl.Out -match 'never reparse points' -and $rl.Out -match 'secrets/caches/VCS metadata' -and
+        $rl.Out -match 'never overwrite a modified project skill silently' -and
+        $rl.Out -match 'source/destination/hash/agent/reason') $rl.Out
+    # THE POLICY BOUNDARY, asserted as behaviour and not just as wording: after a
+    # run that recommends an import, nothing may have been copied.
+    Check 'the hook copied NOTHING - the destination directory was not even created' (
+        -not (Test-Path -LiteralPath (Join-Path $libProj '.claude\skills'))) $null
+    Check 'the library itself is untouched' (
+        (@(Get-ChildItem -LiteralPath $matchLib -Recurse -Directory)).Count -eq $libDirsBefore) $null
+    $rlSame = Fire -HookPath $libHook -Cwd $libProj -RawStdin (New-PromptStdin -Cwd $libProj -EventName 'UserPromptSubmit' -Prompt 'build a telegram bot and run api security testing on it' -SessionId 'lib-1')
+    Check 'an unchanged shortlist is fingerprint-suppressed in the same session' ($rlSame.Exit -eq 0 -and $rlSame.Out -eq '') $rlSame.Out
+    $rlDiff = Fire -HookPath $libHook -Cwd $libProj -RawStdin (New-PromptStdin -Cwd $libProj -EventName 'UserPromptSubmit' -Prompt 'now write powershell windows scripts' -SessionId 'lib-1')
+    Check 'a DIFFERENT prompt with different matches re-reports in the same session' (
+        $rlDiff.Out -match 'powershell-windows' -and $rlDiff.Out -notmatch 'basket-weaving') $rlDiff.Out
+    # An already-installed skill must not be offered as an import: that would ask
+    # for an authorization that buys nothing.
+    $instProj = New-Proj 'LibraryAlreadyInstalled'
+    New-Item -ItemType Directory -Path (Join-Path $instProj '.claude\skills\telegram-bot-builder') -Force | Out-Null
+    $rInst = Fire -HookPath $libHook -Cwd $instProj -RawStdin (New-PromptStdin -Cwd $instProj -EventName 'UserPromptSubmit' -Prompt 'build a telegram bot' -SessionId 'lib-2')
+    Check 'an already-installed match is offered for ACTIVATION, not for import' (
+        $rInst.Out -match 'INSTALLED and matching this prompt' -and
+        $rInst.Out -match 'telegram-bot-builder \[project\]' -and
+        $rInst.Out -notmatch 'Copy-Item') $rInst.Out
+    $rNo = Fire -HookPath $libHook -Cwd $libProj -RawStdin (New-PromptStdin -Cwd $libProj -EventName 'UserPromptSubmit' -Prompt 'zzzz qqqq wwww' -SessionId 'lib-3')
+    Check 'no name match is reported as a name-level miss, never as "no skill applies"' (
+        $rNo.Out -match 'No skill name matched this prompt' -and
+        $rNo.Out -match 'not proof that no skill applies') $rNo.Out
+
+    # =====================================================================
+    Write-Host '--- Skills-Check: the cached index is written, re-read, and expiry-checked ---' -ForegroundColor Cyan
+    # The plugin glob and the ~1000-entry library walk cost roughly two seconds
+    # together, so they are cached. Proving the READ path is not cosmetic: if it
+    # silently fell through to a rebuild, every prompt would pay that cost again.
+    # It is isolated by removing the library AFTER the index is built - a rebuild
+    # would then find nothing, so a surviving match can only have come from the
+    # cache. A non-zero TTL is used here so the expiry arithmetic runs too (the
+    # suite default pins TTL to 0 to keep other cases timing-independent).
+    $cacheProj = New-Proj 'IndexCache'
+    New-Item -ItemType Directory -Path (Join-Path $cacheProj '.claude\skills\anchor-skill') -Force | Out-Null
+    $cacheLib = Join-Path $Work 'cache-library'
+    $cacheSkill = Join-Path $cacheLib 'category\cached-telemetry-skill'
+    New-Item -ItemType Directory -Path $cacheSkill -Force | Out-Null
+    Write-Utf8 (Join-Path $cacheSkill 'SKILL.md') "---`nname: cached-telemetry-skill`n---`nbody"
+    $cacheHook = New-ConfiguredSkillsHookCopy -EnvOverrides @{ SKILLS_DIR = $cacheLib; LIBRARY_INDEX_TTL_MINUTES = '600' }
+    $rc1 = Fire -HookPath $cacheHook -Cwd $cacheProj -RawStdin (New-PromptStdin -Cwd $cacheProj -EventName 'UserPromptSubmit' -Prompt 'add telemetry to the app' -SessionId 'cache-1')
+    Check 'the first prompt builds the index and matches the library skill' ($rc1.Out -match 'cached-telemetry-skill') $rc1.Out
+    Remove-Item -LiteralPath $cacheLib -Recurse -Force
+    $rc2 = Fire -HookPath $cacheHook -Cwd $cacheProj -RawStdin (New-PromptStdin -Cwd $cacheProj -EventName 'UserPromptSubmit' -Prompt 'add telemetry to the app' -SessionId 'cache-2')
+    Check 'a later prompt is served from the cached index, not a fresh walk' ($rc2.Out -match 'cached-telemetry-skill') $rc2.Out
+    $rc51 = Fire -HookPath $cacheHook -Cwd $cacheProj -Exe 'powershell.exe' -RawStdin (New-PromptStdin -Cwd $cacheProj -EventName 'UserPromptSubmit' -Prompt 'add telemetry to the app' -SessionId 'cache-3')
+    Check '5.1 host: reads the same cached index, including the TTL arithmetic' (
+        $rc51.Exit -eq 0 -and $rc51.Err -eq '' -and $rc51.Out -match 'cached-telemetry-skill') ($rc51.Err + ' | ' + $rc51.Out)
+    # A changed source configuration invalidates the index rather than serving a
+    # foreign one: the same project, pointed at a different library, must not
+    # keep reporting the old library's skills.
+    $otherLib = Join-Path $Work 'other-library'
+    New-Item -ItemType Directory -Path $otherLib -Force | Out-Null
+    $otherHook = New-ConfiguredSkillsHookCopy -EnvOverrides @{ SKILLS_DIR = $otherLib; LIBRARY_INDEX_TTL_MINUTES = '600' }
+    $rc3 = Fire -HookPath $otherHook -Cwd $cacheProj -RawStdin (New-PromptStdin -Cwd $cacheProj -EventName 'UserPromptSubmit' -Prompt 'add telemetry to the app' -SessionId 'cache-4')
+    Check 'a changed library path rebuilds the index instead of serving the old one' ($rc3.Out -notmatch 'cached-telemetry-skill') $rc3.Out
+
+    # =====================================================================
     Write-Host '--- Skills-Check: ::deep-debug capability routing (claude shape) ---' -ForegroundColor Cyan
     Set-ClaudeProjectDir $Work
     $ddProj = New-Proj 'SkillsDeepDebug'
@@ -261,7 +606,7 @@
         $r.Out -match 'finishing-a-development-branch only when work really occurred' -and
         $r.Out -match 'exactly ONCE' -and $r.Out -match 'never a second pass') $r.Out
     Check 'missing core capability is SURFACED (verification-before-completion), workflow blocked/partial' (
-        $r.Out -match 'NOT VISIBLE in the enumerated project/global skill sources: verification-before-completion\.' -and
+        $r.Out -match 'NOT VISIBLE in the enumerated project/global/plugin skill sources: verification-before-completion\.' -and
         $r.Out -match 'REPORTED as missing' -and $r.Out -match 'blocked/partial' -and
         $r.Out -match 'never silently skipped') $r.Out
     Check 'no silent install/copy/refresh/remove/enable, task-relevant subset only' (

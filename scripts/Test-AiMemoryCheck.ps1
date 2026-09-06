@@ -91,7 +91,16 @@ try {
     $r = Fire -Cwd $plain -RawStdin ''
     Check 'empty stdin -> silent exit 0' ($r.Exit -eq 0 -and $r.Out -eq '') $r.Out
     $r = Fire -Cwd $plain -StopHookActive $true
-    Check 'stop_hook_active -> silent (loop guard)' ($r.Exit -eq 0 -and $r.Out -eq '') $r.Out
+    # stop_hook_active means "a Stop gate blocked and the agent is coming
+    # back" - NOT "YOU blocked". Thirteen gates share the one flag, so a gate
+    # standing down on it alone went silent for somebody else's block, and
+    # the next Stop ran with the secret-leak, UTF-8 and CI gates all muted.
+    # Each gate now stands down only on its OWN re-entry.
+    # NOTE: the 'Plain' fixture has no .ai/ directory, so this hook exits
+    # silently there for an unrelated reason. Asserting silence here would
+    # pass whatever the flag did, so assert only the exit code and let the
+    # dedicated stand-down cases below carry the contract.
+    Check 'stop_hook_active is not an error path' ($r.Exit -eq 0) $r.Out
     $r = Fire -Cwd $plain
     Check 'no .ai/ directory -> silent' ($r.Exit -eq 0 -and $r.Out -eq '') $r.Out
 

@@ -3,6 +3,18 @@
 # verification. The AI decides; nothing is deployed or verified automatically
 # by this script - it never deploys merely because a wrangler config exists.
 #
+# ROLE: GATE on Stop/SubagentStop (global-hook-rules.md SS Hook Roles). The
+# integration matrix calls it a "readiness-gated deployment advisory/
+# coordinator" for WHAT IT ASKS FOR; the mechanism is a real decision:block,
+# and the source says so here so the two descriptions cannot drift apart
+# again. It blocks only on the documented, reproducible condition spelled out
+# below: a wrangler config exists AND Test-ReleaseReady holds for the tree as
+# it stands right now. WHAT CLEARS IT: finishing the turn again - after
+# deploying and verifying, or after one line saying why this commit should not
+# ship. The block is recorded per session and per project BEFORE it is
+# emitted, so the same state never blocks twice; a later session is
+# additionally held off by COOLDOWN_MINUTES.
+#
 # The decision is gated on actual RELEASE READINESS (deterministic repo/CI/
 # cleanup state), never on menu position or hook registration order - Stop
 # hooks for the same event may run concurrently, so this hook never assumes
@@ -34,13 +46,20 @@ $hookInput = Read-HookInput
 if ($null -eq $hookInput) {
     exit 0
 }
-if ((Get-Field $hookInput 'stop_hook_active') -eq $true) {
+# Stand down only on THIS hook's own re-entry: `stop_hook_active` is set
+# for ANY gate's block, and exiting on it alone let one block silence the
+# other twelve on the same Stop.
+if (Test-StopStandDown -HookInput $hookInput -HookName 'Cloudflare-Deploy') {
     exit 0
 }
 # Only used to shape the result (Write-HookResult below). This is a Stop-only
 # hook, so an absent event name reads as 'Stop' rather than as "no event".
 $eventName = [string](Get-Field $hookInput 'hook_event_name')
 if ([string]::IsNullOrWhiteSpace($eventName)) { $eventName = 'Stop' }
+# Own only the completion events. Defaulting a blank name is not a filter:
+# a custom-events install would otherwise run this whole body - git calls
+# included - on UserPromptSubmit.
+if ($eventName -ne 'Stop' -and $eventName -ne 'SubagentStop') { exit 0 }
 $cwd = [string](Get-Field $hookInput 'cwd')
 if ([string]::IsNullOrWhiteSpace($cwd) -or -not (Test-Path -LiteralPath $cwd -PathType Container)) {
     exit 0
@@ -596,6 +615,13 @@ function Get-CleanupCoordinationState {
     return [string](Get-Field $record 'category')
 }
 
+# The commit the readiness gate actually verified. The block message names it,
+# so the evidence it acted on is the release commit itself and not merely the
+# wrangler file that made this hook relevant - and so step 5's "record the
+# exact source commit SHA" starts from a fact rather than a re-derivation.
+# Set on every path that reaches a positive verdict; only read after one.
+$script:ReleaseHeadSha = ''
+
 # Deterministic release-readiness gate: only when this holds does the
 # deployment-worthiness decision get shown at all.
 function Test-ReleaseReady {
@@ -611,6 +637,7 @@ function Test-ReleaseReady {
 
     $headSha = [string](Invoke-QuietCommand -FilePath git -ArgumentList @('-C', $Root, 'rev-parse', 'HEAD'))
     if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($headSha)) { return $false }
+    $script:ReleaseHeadSha = $headSha
 
     # 2) the release commit must be known to be pushed - ANY configured
     # upstream (Cloudflare Workers projects need not be hosted on GitHub at
@@ -705,12 +732,15 @@ New-Item -ItemType Directory -Path $stateDir -Force | Out-Null
 [System.IO.File]::WriteAllText($statePath, [DateTime]::UtcNow.ToString('o'))
 
 $reasonLines = New-Object System.Collections.Generic.List[string]
-[void]$reasonLines.Add('CLOUDFLARE DEPLOY CHECK: this project deploys to Cloudflare Workers (' + $wranglerConfig + ' found). Deployment is NOT automatic just because this config exists - work through both steps below.')
+[void]$reasonLines.Add('CLOUDFLARE DEPLOY CHECK: this project deploys to Cloudflare Workers (' + $wranglerConfig + ' found) AND release readiness now holds for commit ' + $script:ReleaseHeadSha + ' - that is the evidence this block is based on: the working tree is clean, HEAD is not ahead of its upstream, CI is green for that exact SHA if this repo has workflows, and Test-Temp-Cleanup reported clean for the current repo state if it is installed here. Deployment is NOT automatic just because this config exists - work through the steps below.')
 [void]$reasonLines.Add('1) Deployment-worthiness: deploy ONLY if the task is complete (not partial/experimental/local-only diagnostic), relevant tests/typecheck/lint/build pass, the exact release commit is known, CI for that commit is green if this repo uses CI (or an explicit documented policy allows otherwise), no secrets/local-only/debug files, unrelated changes, or disposable test cache/temp residue are included, the target environment and any required bindings/migrations are understood, and project/user rules permit it. If any of that is not true - or the change is documentation-only, an experiment, or the release commit is not known - finish now WITHOUT deploying and briefly state why.')
 [void]$reasonLines.Add('2) Environment: explicitly decide production / staging / preview-development / a named Wrangler environment before deploying - never silently default to production - and use the matching Wrangler config/command for it.')
 [void]$reasonLines.Add('3) Cloudflare-specific pre-deploy review, only where relevant to this diff: Worker name and account/environment selection, environment-specific variables, bindings, D1 databases and migrations, KV namespaces, R2 buckets, Queues, Durable Objects and migrations, service bindings, routes/custom domains, cron triggers, compatibility date/flags, deployment CLI/version compatibility, and build output. Never print secret values.')
 [void]$reasonLines.Add('4) If deployment is warranted, run: ' + $deployCommand)
 [void]$reasonLines.Add('5) Post-deployment verification is REQUIRED - do not claim deployment succeeded solely because the command exited 0. Record the target environment, deployed Worker/project, exact source commit SHA, the deploy command used (excluding secrets), and the deployment/version identifier or URL. Then perform the smallest appropriate check: smoke-test the public/staging URL, call a health endpoint, verify the changed feature, inspect recent Cloudflare deployment output/logs, verify routes/bindings, or confirm migrations completed. If verification cannot be performed, state that limitation accurately instead of assuming success.')
-[void]$reasonLines.Add('6) On failure: do not repeatedly redeploy blindly - inspect the actual failure, fix only confirmed deployment/configuration issues, rerun relevant local validation, retry only when safe, never hide a failed deployment, and never claim the task is live if it is not. This reminder respects a cooldown.')
+[void]$reasonLines.Add('6) On failure: do not repeatedly redeploy blindly - inspect the actual failure, fix only confirmed deployment/configuration issues, rerun relevant local validation, retry only when safe, never hide a failed deployment, and never claim the task is live if it is not. EITHER a completed and verified deployment or one line saying why this commit should not ship clears this block: it is recorded per session and per project before it is emitted, so this same state never blocks twice.')
 $reason = $reasonLines.ToArray() -join "`n"
+# Record the block so THIS hook's own re-entry is recognised; another
+# gate's block must not mute it, and its own must not repeat.
+Set-StopBlockMarker -HookInput $hookInput -HookName 'Cloudflare-Deploy'
 exit (Write-HookResult -EventName $eventName -Kind 'block' -Reason $reason).ExitCode

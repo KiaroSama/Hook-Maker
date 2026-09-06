@@ -98,15 +98,15 @@
     $null = Invoke-Wizard -Config $cfgAllCodex -Answers @('1', '1', '2,3', $coX, $coY, 'done', '2', '', '1', '2', '', '0')
     Check 'a shared-path sync+hook install honors Codex-only client scoping' ((Test-Path (Join-Path $coX '.codex\hooks.json')) -and -not (Test-Path (Join-Path $coX '.claude')))
 
-    # Selecting the second-to-last individual entry installs Synapse-Rules-Check
-    # (menu item 24, immediately before Cloudflare-Deploy). The point of the
+    # Selecting the second-to-last individual entry installs Session-Summary-Check
+    # (menu item 28, immediately before Cloudflare-Deploy). The point of the
     # assertion is the BOUNDARY - the entry just before the last one - so it
     # follows whichever hook currently sits there, not a pinned name.
     $cfgPenult = Join-Path $Work 'cfg-penult.json'; New-Config $cfgPenult
     $penultProj = New-Proj 'PenultEntryProj'
     # Answers after the hook item are events '2', then client '1' (= Claude).
     $rPenult = Invoke-Wizard -Config $cfgPenult -Answers @('1', '1', ($shippedHookCount + 1).ToString(), '2', '1', $penultProj, 'done', '', '0')
-    Check 'selecting the second-to-last individual entry installs Synapse-Rules-Check' (Test-Path (Join-Path $penultProj '.claude\hooks\Hook-Maker\Synapse-Rules-Check\Synapse-Rules-Check.ps1'))
+    Check 'selecting the second-to-last individual entry installs Session-Summary-Check' (Test-Path (Join-Path $penultProj '.claude\hooks\Hook-Maker\Session-Summary-Check\Session-Summary-Check.ps1'))
     Check 'did not install the neighboring Cloudflare-Deploy hook instead' (-not (Test-Path (Join-Path $penultProj '.claude\hooks\Hook-Maker\Cloudflare-Deploy')))
 
     # Selecting the LAST individual entry (a single-hook pick, no aggregate)
@@ -147,13 +147,13 @@
 
     # =====================================================================
     Write-Host '--- installer/idempotency check: Docs-Freshness-Check (new menu item 9) ---' -ForegroundColor Cyan
-    # Selected together with its neighbor (10) so this goes through the
+    # Selected together with its neighbor (13) so this goes through the
     # multi-hook "recommended events per hook" mode (a single-item selection
     # instead takes the fixed 4-choice event menu, which has no "recommended"
     # option - see Read-HookConfig/Read-EventSelection).
     $cfgDocs = Join-Path $Work 'cfg-docs.json'; New-Config $cfgDocs
     $docsProj = New-Proj 'DocsFreshnessProj'
-    $rDocs = Invoke-Wizard -Config $cfgDocs -Answers @('1', '1', '9,10', '1', '1', $docsProj, 'done', '', '0')
+    $rDocs = Invoke-Wizard -Config $cfgDocs -Answers @('1', '1', '12,13', '1', '1', $docsProj, 'done', '', '0')
     Check 'exit 0 (installing Docs-Freshness-Check)' ($rDocs.Exit -eq 0)
     Check 'Docs-Freshness-Check installed at its own friendly folder' (Test-Path (Join-Path $docsProj '.claude\hooks\Hook-Maker\Docs-Freshness-Check\Docs-Freshness-Check.ps1'))
     $docsEvents = @(Get-RegisteredEvents (Join-Path $docsProj '.claude\settings.local.json') 'Docs-Freshness-Check' | Sort-Object) -join ','
@@ -167,13 +167,13 @@
     Check 'reinstall keeps exactly one Docs-Freshness-Check folder (no duplicate)' (@($docsFoldersAgain | Where-Object { $_ -eq 'Docs-Freshness-Check' }).Count -eq 1)
 
     # =====================================================================
-    Write-Host '--- installer/idempotency check: the two menu-affected hooks (19, 23) ---' -ForegroundColor Cyan
-    # Test-Temp-Cleanup keeps its stable index 19 (the three new test-health
-    # hooks were inserted AFTER it); Cloudflare-Deploy stays the last entry and
-    # therefore moved 20 -> 23, i.e. $shippedHookCount + 2.
+    Write-Host '--- installer/idempotency check: the two menu-affected hooks (22, 28) ---' -ForegroundColor Cyan
+    # Test-Temp-Cleanup is at 22 (three hooks were inserted above it at 9-11);
+    # Cloudflare-Deploy stays the last entry, i.e. $shippedHookCount + 2, which
+    # is why it is computed rather than written.
     $cfgAffected = Join-Path $Work 'cfg-affected.json'; New-Config $cfgAffected
     $affectedProj = New-Proj 'AffectedHooksProj'
-    $affectedSelection = '19,' + ($shippedHookCount + 2).ToString()
+    $affectedSelection = '22,' + ($shippedHookCount + 2).ToString()
     $rAffected = Invoke-Wizard -Config $cfgAffected -Answers @('1', '1', $affectedSelection, '1', '1', $affectedProj, 'done', '', '0')
     Check 'exit 0 (installing Test-Temp-Cleanup + Cloudflare-Deploy together)' ($rAffected.Exit -eq 0)
     Check 'both affected hooks installed' (
@@ -223,7 +223,7 @@
     # mode '1' (recommended events per hook), then client '4' = All clients - the
     # only single pick that reaches Claude AND Codex, which the per-client
     # assertions below require. The kiro component is recorded failed and dropped.
-    $rHealth = Invoke-Wizard -Config $cfgHealth -Answers @('1', '1', '20-22', '1', '4', $healthProj, 'done', '', '0')
+    $rHealth = Invoke-Wizard -Config $cfgHealth -Answers @('1', '1', '23-25', '1', '4', $healthProj, 'done', '', '0')
     Check 'exit 0 (installing the three test-health hooks)' ($rHealth.Exit -eq 0) $rHealth.Err
     Check 'no stderr (installing the three test-health hooks)' ($rHealth.Err -eq '')
     $healthClaude = Join-Path $healthProj '.claude\settings.local.json'

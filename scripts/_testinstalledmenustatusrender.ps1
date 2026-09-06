@@ -15,7 +15,7 @@
     # is dot-sourced on top of them, and Show-HookStatusResult is handed a
     # contract-shaped document covering every group at once.
     Write-Host ''
-    Write-Host '--- menu 25 result screen groups findings and reports partial coverage ---' -ForegroundColor Cyan
+    Write-Host '--- the hook-status result screen groups findings and reports partial coverage ---' -ForegroundColor Cyan
 
     $render = & {
         $script:Captured = New-Object System.Collections.Generic.List[string]

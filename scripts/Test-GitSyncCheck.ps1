@@ -198,7 +198,13 @@ try {
     $recursion = New-PushedRepo 'recursion'
     [System.IO.File]::WriteAllText((Join-Path $recursion 'new.txt'), 'uncommitted', (New-Object System.Text.UTF8Encoding $false))
     $r = Fire -Cwd $recursion -StopHookActive
-    Check 'stop_hook_active short-circuits before any git inspection or state write' ($r.Exit -eq 0 -and $r.Out -eq '')
+    # stop_hook_active means "a Stop gate blocked and the agent is coming
+    # back" - NOT "YOU blocked". Thirteen gates share the one flag, so a gate
+    # standing down on it alone went silent for somebody else's block, and
+    # the next Stop ran with the secret-leak, UTF-8 and CI gates all muted.
+    # Each gate now stands down only on its OWN re-entry, proven by a marker
+    # it writes itself immediately before it blocks.
+    Check 'stop_hook_active ALONE does not short-circuit it (another gate blocked, not this one)' ($r.Exit -eq 0 -and $r.Out -ne '') $r.Out
 
     # =====================================================================
     Write-Host '--- SessionStart/UserPromptSubmit context (non-blocking, non-destructive) ---' -ForegroundColor Cyan

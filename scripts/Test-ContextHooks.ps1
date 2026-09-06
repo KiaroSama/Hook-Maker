@@ -69,10 +69,14 @@ function Fire {
 function New-Proj { param([string]$Name) $p = Join-Path $Work $Name; New-Item -ItemType Directory -Path $p -Force | Out-Null; return $p }
 
 # Copies Skills-Check + a custom .env into an isolated folder, so SKILLS_DIR /
-# GLOBAL_SKILLS_DIR overrides never touch the real machine-wide skill library or
-# the real per-user global skills directory. The global skills dir is defaulted
-# to a guaranteed-absent path unless the caller overrides it, keeping every case
-# hermetic regardless of the host.
+# GLOBAL_SKILLS_DIR / PLUGIN_SKILLS_ROOT overrides never touch the real
+# machine-wide skill library, the real per-user global skills directory, or the
+# real plugin cache. All three are defaulted to guaranteed-absent paths unless
+# the caller overrides them, keeping every case hermetic regardless of the host
+# - without the PLUGIN_SKILLS_ROOT default, every "no skill source" case would
+# pick up whatever plugins happen to be installed on the machine running the
+# suite, which is exactly the kind of host-dependent green this suite exists to
+# avoid.
 function New-ConfiguredSkillsHookCopy {
     param([hashtable]$EnvOverrides)
     $dir = Join-Path $Work ('hookcopy-' + [guid]::NewGuid().ToString('N').Substring(0, 6))
@@ -83,6 +87,16 @@ function New-ConfiguredSkillsHookCopy {
     foreach ($k in $EnvOverrides.Keys) { $merged[$k] = $EnvOverrides[$k] }
     if (-not $merged.ContainsKey('GLOBAL_SKILLS_DIR')) {
         $merged['GLOBAL_SKILLS_DIR'] = (Join-Path $Work 'no-such-global-skills')
+    }
+    if (-not $merged.ContainsKey('PLUGIN_SKILLS_ROOT')) {
+        $merged['PLUGIN_SKILLS_ROOT'] = (Join-Path $Work 'no-such-plugin-cache')
+    }
+    # The cached index is keyed by library + plugin root + client, and each copy
+    # gets its own paths, so a stale index from a previous case can never leak
+    # into another - but pin the TTL anyway so a long suite cannot expire one
+    # mid-run and turn a deterministic assertion into a timing one.
+    if (-not $merged.ContainsKey('LIBRARY_INDEX_TTL_MINUTES')) {
+        $merged['LIBRARY_INDEX_TTL_MINUTES'] = '0'
     }
     $lines = New-Object System.Collections.Generic.List[string]
     foreach ($key in $merged.Keys) { [void]$lines.Add($key + '=' + $merged[$key]) }

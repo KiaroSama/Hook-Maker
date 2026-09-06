@@ -342,8 +342,21 @@ try {
     Check 'non-git -> silent' ($r.Out -eq '')
     $r = Fire -HookPath $CiHook -Cwd $ci -EventName 'SessionStart'
     Check 'context event -> silent (Stop-only hook)' ($r.Out -eq '')
-    $r = Fire -HookPath $CiHook -Cwd $ci -EventName 'Stop' -Extra @{ stop_hook_active = $true }
-    Check 'stop_hook_active -> silent' ($r.Out -eq '')
+    # stop_hook_active means "a Stop gate blocked and the agent is coming
+    # back" - NOT "YOU blocked". Thirteen gates share the one flag, so a gate
+    # standing down on it alone went silent for somebody else's block. This
+    # gate now stands down only on its OWN re-entry.
+    #
+    # DEDICATED repo, deliberately not $ci: under the old contract this fired
+    # and exited before touching anything. A hook that runs the full path now
+    # VERIFIES the commit and saves state, which would make the later
+    # "exact pushed SHA queried" assertion skip its gh query and find no
+    # received_sha.txt. A pending run keeps the hook demonstrably speaking,
+    # so silence here could never pass for an unrelated reason.
+    $standDown = New-GitRepo 'ci-standdown'
+    Set-Mock -RunJson '[{"databaseId":99,"name":"CI","workflowName":"CI","status":"in_progress","conclusion":null}]'
+    $r = Fire -HookPath $CiHook -Cwd $standDown -EventName 'Stop' -Extra @{ stop_hook_active = $true }
+    Check 'stop_hook_active ALONE does not stand the gate down (another gate blocked, not this one)' ($r.Out -ne '') $r.Out
 
     $aheadRepo = New-GitRepo 'ci-ahead' -PushState 'ahead'
     Set-Mock -RunJson '[{"databaseId":1,"name":"CI","workflowName":"CI","status":"completed","conclusion":"success"}]'

@@ -22,18 +22,18 @@
     # The optional " and N-M" group is NOT slack in the shipped span: it absorbs a
     # sibling suite's ZZZ-* fixture (or an aborted run's leftover), which the
     # wizard correctly renders as a SECOND span. The shipped span itself is still
-    # pinned exactly at 3-25, and the both-spans rendering is asserted positively
+    # pinned exactly at 3-29, and the both-spans rendering is asserted positively
     # by the ZZZ-MenuSpan case below - so nothing this line used to prove is lost
     # except "no custom hook exists right now", which is not this suite's to own.
-    Check 'select-all is list item 1 and the shipped span is exactly 3-25' (
-        $r.Out -match '(?m)^  1\. Select all hooks \| \[all\] \| run the sync group \(2\) and install every hook below \(3-25( and \d+-\d+)?\)\s*$') $r.Out
+    Check 'select-all is list item 1 and the shipped span is exactly 3-29' (
+        $r.Out -match '(?m)^  1\. Select all hooks \| \[all\] \| run the sync group \(2\) and install every hook below \(3-29( and \d+-\d+)?\)\s*$') $r.Out
     # The hook numbers are NOT contiguous once a custom hook exists: three
     # management rows sit between the shipped and custom blocks. The old hint
     # printed one '3-N' span computed as shipped+custom+2, which BOTH swept the
     # management rows in and stopped short of the custom hook. It read correctly
     # only while no custom hook existed - which is all this fixture had, so the
     # assertion above agreed with the bug. The real span is asserted below.
-    Check 'the tip states where the hooks actually are' ($r.Out -match 'Hooks are 3-25( and \d+-\d+)?; 26/27/28/29/30 are management actions') $r.Out
+    Check 'the tip states where the hooks actually are' ($r.Out -match 'Hooks are 3-29( and \d+-\d+)?; 30/31/32/33/34 are management actions') $r.Out
     Check 'sync group is list item 2' ($r.Out -match '2\. Create or update a sync group')
     Check 'context hook menu names match their whole-.ai scope' ($r.Out -match 'Ai-Context-Check' -and $r.Out -match 'Ai-Context-Load')
     Check 'old memory-only menu names are hidden' ($r.Out -notmatch 'Ai-Memory-(Check|Load)')
@@ -71,32 +71,33 @@
     # $allShippedHookCount, but this single render of the hook list still
     # shows it exactly once alongside the real per-hook entries.
     Check 'every shipped hook renders exactly one valid, non-empty timing tag' (($preTagCount + $postTagCount + $bothTagCount) -eq ($allShippedHookCount + 1)) ('pre=' + $preTagCount + ' post=' + $postTagCount + ' both=' + $bothTagCount + ' expected=' + ($allShippedHookCount + 1))
-    Check 'listing shows short descriptions' ($r.Out -match 'relevant \.ai context files' -and $r.Out -match 'checks global \+ project rules')
+    Check 'listing shows short descriptions' ($r.Out -match 'relevant \.ai context files' -and $r.Out -match 'checks the rules were read')
     Check 'menu parts are pipe-separated' ($r.Out -match 'Create or update a sync group \| \[pre-task\] \| cross-project \.ai knowledge sync')
     $menuOrder = @(
         '1\. Select all hooks', '2\. Create or update a sync group', '3\. Ai-Context-Check',
         '4\. Ai-Context-Load', '5\. Ci-Status-Check', '6\. Dependabot-Check',
-        '7\. Github-Baseline-Check', '8\. Git-Sync-Check', '9\. Docs-Freshness-Check',
-        '10\. Graph-Read-Check', '11\. Graph-Update-Check', '12\. Large-File-Check',
-        '13\. Mcp-Usage-Check', '14\. Rules-Check', '15\. Skills-Check',
-        '16\. Secrets-Check', '17\. Ignore-Rules-Check', '18\. Dependency-Version-Check',
-        '19\. Test-Temp-Cleanup', '20\. Test-Plan-Check', '21\. Test-Run-Guard',
-        '22\. Test-Completion-Check', '23\. Utf8-Encoding-Check',
-        '24\. Synapse-Rules-Check', '25\. Cloudflare-Deploy'
+        '7\. Github-Baseline-Check', '8\. Git-Sync-Check',
+        '9\. Feature-Request-Check', '10\. Cbm-Read-Check', '11\. Cbm-Update-Check',
+        '12\. Docs-Freshness-Check', '13\. Graph-Read-Check', '14\. Graph-Update-Check',
+        '15\. Large-File-Check', '16\. Mcp-Usage-Check', '17\. Rules-Check',
+        '18\. Skills-Check', '19\. Secrets-Check', '20\. Ignore-Rules-Check',
+        '21\. Dependency-Version-Check', '22\. Test-Temp-Cleanup', '23\. Test-Plan-Check',
+        '24\. Test-Run-Guard', '25\. Test-Completion-Check', '26\. Utf8-Encoding-Check',
+        '27\. Synapse-Rules-Check', '28\. Session-Summary-Check', '29\. Cloudflare-Deploy'
     ) -join '[\s\S]*'
-    Check 'hooks follow the requested menu order (Select all -> sync group -> hooks -> test-health at 20/21/22 -> Utf8-Encoding-Check at 23 -> Synapse-Rules-Check at 24 -> Cloudflare-Deploy last at 25)' ($r.Out -match $menuOrder)
+    Check 'hooks follow the requested menu order (Select all -> sync group -> hooks -> test-health at 23/24/25 -> Utf8-Encoding-Check at 26 -> Synapse-Rules-Check at 27 -> Session-Summary-Check at 28 -> Cloudflare-Deploy last at 29)' ($r.Out -match $menuOrder)
     # The three test-health hooks (24.txt) render one line each, with the tag
     # their canonical When value demands - a value Get-HookTimingTag does not
     # recognize silently renders NO tag at all.
-    Check 'Test-Plan-Check renders the [pre-task] tag' ($r.Out -match '(?m)^  20\. Test-Plan-Check \| \[pre-task\] \| \S') $r.Out
-    Check 'Test-Run-Guard renders the [pre+post-task] tag' ($r.Out -match '(?m)^  21\. Test-Run-Guard \| \[pre\+post-task\] \| \S') $r.Out
-    Check 'Test-Completion-Check renders the [post-task] tag' ($r.Out -match '(?m)^  22\. Test-Completion-Check \| \[post-task\] \| \S') $r.Out
-    Check 'the three management rows follow the shipped block at 26/27/28' (
-        ($r.Out -match '(?m)^  26\. Update installed hooks \| \[manage\] \|') -and
-        ($r.Out -match '(?m)^  27\. Get hook status \| \[manage\] \|') -and
-        ($r.Out -match '(?m)^  28\. Uninstall installed hooks \| \[manage\] \|')) $r.Out
+    Check 'Test-Plan-Check renders the [pre-task] tag' ($r.Out -match '(?m)^  23\. Test-Plan-Check \| \[pre-task\] \| \S') $r.Out
+    Check 'Test-Run-Guard renders the [pre+post-task] tag' ($r.Out -match '(?m)^  24\. Test-Run-Guard \| \[pre\+post-task\] \| \S') $r.Out
+    Check 'Test-Completion-Check renders the [post-task] tag' ($r.Out -match '(?m)^  25\. Test-Completion-Check \| \[post-task\] \| \S') $r.Out
+    Check 'the three management rows follow the shipped block at 29/30/31' (
+        ($r.Out -match '(?m)^  30\. Update installed hooks \| \[manage\] \|') -and
+        ($r.Out -match '(?m)^  31\. Get hook status \| \[manage\] \|') -and
+        ($r.Out -match '(?m)^  32\. Uninstall installed hooks \| \[manage\] \|')) $r.Out
     # THE case the old fixture never had. With a custom hook present the hook
-    # numbers are two spans - shipped 3-25 and custom 31+ - separated by the
+    # numbers are two spans - shipped 3-29 and custom 35+ - separated by the
     # management rows. A single computed '3-N' claimed 25/26/27 were hooks and
     # left the custom one out; only a fixture with a custom hook can catch that.
     $spanHook = Join-Path (Join-Path (Split-Path -Parent $PSScriptRoot) 'hooks') 'ZZZ-MenuSpan'
@@ -105,13 +106,13 @@
         [System.IO.File]::WriteAllText((Join-Path $spanHook 'ZZZ-MenuSpan.ps1'), '# span fixture', (New-Object System.Text.UTF8Encoding $false))
         $rSpan = Invoke-Wizard -Config $cfg1 -NoInstall -Answers @('1', '1', '0', '0')
         Check 'with a custom hook the select-all hint lists BOTH spans, not one run' (
-            $rSpan.Out -match 'install every hook below \(3-25 and 31-31\)') $rSpan.Out
+            $rSpan.Out -match 'install every hook below \(3-29 and 35-35\)') $rSpan.Out
         Check 'the hint no longer claims the management rows are hooks' (
-            $rSpan.Out -notmatch 'install every hook below \(3-26\)') $rSpan.Out
-        Check 'the custom hook really is listed at 31, after the management rows' (
-            $rSpan.Out -match '(?m)^  31\. ZZZ-') $rSpan.Out
-        Check 'the management rows stay at 26/27/28/29/30 regardless of custom hooks' (
-            $rSpan.Out -match '(?m)^  26\. Update installed hooks \|') $rSpan.Out
+            $rSpan.Out -notmatch 'install every hook below \(3-30\)') $rSpan.Out
+        Check 'the custom hook really is listed at 34, after the management rows' (
+            $rSpan.Out -match '(?m)^  35\. ZZZ-') $rSpan.Out
+        Check 'the management rows stay at 30/31/32/33/34 regardless of custom hooks' (
+            $rSpan.Out -match '(?m)^  30\. Update installed hooks \|') $rSpan.Out
 
         # ZZZ-* IMMUNITY (this suite counts the REAL hooks\ directory, which
         # sibling suites write throwaway fixtures into). A leftover
@@ -410,7 +411,7 @@
     $cfgRecBoth = Join-Path $Work 'cfg-rec-both.json'; New-Config $cfgRecBoth
     $recBothProj = New-Proj 'RecommendedSessionStartStop'
     # item 9 = Docs-Freshness-Check (recommended events: SessionStart,Stop).
-    $rRecBoth = Invoke-Wizard -Config $cfgRecBoth -Answers @('1', '1', '9', '', '1', $recBothProj, 'done', '', '0')
+    $rRecBoth = Invoke-Wizard -Config $cfgRecBoth -Answers @('1', '1', '12', '', '1', $recBothProj, 'done', '', '0')
     Check 'exit 0 (recommended-events single-hook install, SessionStart+Stop)' ($rRecBoth.Exit -eq 0) $rRecBoth.Err
     Check 'the recommended-events choice names both actual events' ($rRecBoth.Out -match 'This hook''s recommended events.*\(SessionStart, Stop\)')
     $recBothClaude = Join-Path $recBothProj '.claude\settings.local.json'
@@ -465,17 +466,17 @@
     Write-Host '--- multi-select install (range + list, recommended events) ---' -ForegroundColor Cyan
     $cfg4 = Join-Path $Work 'cfg4.json'; New-Config $cfg4
     $m = New-Proj 'Multi'
-    # main 1 -> sub 1 -> "3-8,16,24" (eight advisory hooks incl. Cloudflare-Deploy,
-    #        still the LAST individual entry (Docs-Freshness-Check inserted at 9
-    #        shifted Secrets-Check 15->16, the three test-health hooks at
-    #        20/21/22 and Utf8-Encoding-Check at 23 shifted Cloudflare-Deploy
-    #        to 24); the engine is excluded from this list entirely, see the
-    #        guard test below)
+    # main 1 -> sub 1 -> "3-8,19,29" (eight advisory hooks incl. Cloudflare-Deploy,
+    #        still the LAST individual entry). The two picked by number move
+    #        whenever the shipped set changes - Secrets-Check is at 19 and
+    #        Cloudflare-Deploy at 29 after Session-Summary-Check was inserted at 28.
+    #        The engine is excluded from this list entirely, see the guard
+    #        test below.
     #        -> mode 1 (recommended events per hook) -> client 4 = All clients
     #        (reaches Claude + Codex in one pass; Kiro installs alongside them
     #        and is asserted in Test-KiroIntegration.ps1, not here)
     #        -> target -> done -> start -> exit
-    $r = Invoke-Wizard -Config $cfg4 -Answers @('1', '1', '3-8,16,25', '1', '4', $m, 'done', '', '0')
+    $r = Invoke-Wizard -Config $cfg4 -Answers @('1', '1', '3-8,19,29', '1', '4', $m, 'done', '', '0')
     Check 'exit 0' ($r.Exit -eq 0)
     Check 'no stderr' ($r.Err -eq '')
     Check 'selection accepts a range combined with a single item' ($r.Out -notmatch 'Enter number\(s\)')
