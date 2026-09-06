@@ -30,11 +30,21 @@ $Hook = Join-Path $HooksRoot 'Session-Summary-Check\Session-Summary-Check.ps1'
 $FakeLocalAppData = Join-Path $Work 'localappdata'
 $StateDir = Join-Path $FakeLocalAppData 'HookMaker\state'
 
+# The hook speaks ONCE PER SESSION (it looped otherwise - see the hook
+# header). Every case below wants a fresh first Stop, so the delivery marker
+# is cleared by default. -KeepDelivered opts out, which is how the
+# once-per-session behaviour itself is asserted.
 function Invoke-SummaryHook {
     param(
         [Parameter(Mandatory = $true)][hashtable]$Payload,
-        [switch]$AsClaude
+        [switch]$AsClaude,
+        [switch]$KeepDelivered
     )
+    if (-not $KeepDelivered) {
+        $deliveredKey = Get-ShortHash ([string]$Payload['cwd']).ToLowerInvariant()
+        $deliveredPath = Join-Path $StateDir ('SessionSummary-' + $deliveredKey + '.txt')
+        Remove-Item -LiteralPath $deliveredPath -Force -ErrorAction SilentlyContinue
+    }
     $json = ($Payload | ConvertTo-Json -Depth 8 -Compress)
     $prevLocal = $env:LOCALAPPDATA
     $prevClaude = $env:CLAUDE_PROJECT_DIR
@@ -99,12 +109,18 @@ try {
 
     # =====================================================================
     Write-Host '--- stop_hook_active must NOT silence it (the differentiator) ---' -ForegroundColor Cyan
-    # Every other Stop hook here exits on this flag to avoid re-firing on its
-    # own block. This one cannot loop - it never blocks - and exiting would
-    # silence it on precisely the continuation Stops where another gate has
-    # just sent the agent back to work, which is when a wrap-up matters most.
+    # Every other Stop hook exits on this flag to avoid re-firing on its own
+    # block. This one keys on SESSION IDENTITY instead, because the flag is set
+    # for ANY gate's block: honouring it would skip the very first Stop
+    # whenever some other gate happened to fire first, which is exactly when a
+    # wrap-up matters most.
+    #
+    # An earlier comment here claimed this hook "cannot loop - it never
+    # blocks". That was wrong and it is why the loop shipped: a hook does not
+    # need to BLOCK to loop, it only needs to keep asking. See the
+    # once-per-session block below.
     $r = Invoke-SummaryHook @{ hook_event_name = 'Stop'; cwd = $proj; session_id = $sid; stop_hook_active = $true }
-    Check 'summary: still speaks on a continuation Stop' ($r.Out -match 'SESSION SUMMARY') $r.Out
+    Check 'summary: stop_hook_active alone does not silence a first Stop' ($r.Out -match 'SESSION SUMMARY') $r.Out
 
     # =====================================================================
     Write-Host '--- the requirement itself ---' -ForegroundColor Cyan
@@ -151,10 +167,39 @@ try {
     $null = Invoke-SummaryHook @{ hook_event_name = 'Stop'; cwd = $proj; session_id = $sid }
     $after = @(Get-ChildItem -LiteralPath $StateDir -File | Sort-Object Name | ForEach-Object { $_.Name + ':' + $_.Length }) -join '|'
     Check 'summary: leaves every marker byte-for-byte untouched' ($before -eq $after) ($before + ' -> ' + $after)
-    Check 'summary: writes no state file of its own' (
-        @(Get-ChildItem -LiteralPath $StateDir -File | Where-Object { $_.Name -notlike 'StopBlock-*' }).Count -eq 0) $after
+    # It writes exactly ONE file of its own: the once-per-session delivery
+    # marker that stops it re-asking on every Stop. Anything BEYOND that would
+    # mean it had started keeping state it has no business keeping - the
+    # sibling gates' StopBlock markers are read-only to it, asserted above.
+    Check 'summary: writes only its own delivery marker, nothing else' (
+        @(Get-ChildItem -LiteralPath $StateDir -File | Where-Object {
+                $_.Name -notlike 'StopBlock-*' -and $_.Name -notlike 'SessionSummary-*'
+            }).Count -eq 0) $after
 
     # =====================================================================
+    # =====================================================================
+    Write-Host '--- once per session: the loop this hook caused in production ---' -ForegroundColor Cyan
+    # An earlier revision emitted on EVERY Stop. Other gates block, the agent
+    # works and stops again, this hook re-asks for the summary, and the agent
+    # rewrites the whole DONE/REMAINING block. The user saw it four times in
+    # one turn. The requirement only has to arrive once.
+    $loopProj = Join-Path $Work 'loop-proj'
+    New-Item -ItemType Directory -Path $loopProj -Force | Out-Null
+    $first = Invoke-SummaryHook @{ hook_event_name = 'Stop'; cwd = $loopProj; session_id = 'loop-a' }
+    Check 'summary: the first Stop of a session delivers the requirement' ($first.Out -match 'SESSION SUMMARY') $first.Out
+    $second = Invoke-SummaryHook -KeepDelivered -Payload @{ hook_event_name = 'Stop'; cwd = $loopProj; session_id = 'loop-a' }
+    Check 'summary: a SECOND Stop of the same session says nothing' ($second.Out.Trim() -eq '') $second.Out
+    $third = Invoke-SummaryHook -KeepDelivered -Payload @{ hook_event_name = 'Stop'; cwd = $loopProj; session_id = 'loop-a' }
+    Check 'summary: a THIRD Stop stays silent too (no slow re-arming)' ($third.Out.Trim() -eq '') $third.Out
+    # ...but a genuinely new session must still be told, or the guard would
+    # simply have disabled the hook after its first use ever.
+    $newSession = Invoke-SummaryHook -KeepDelivered -Payload @{ hook_event_name = 'Stop'; cwd = $loopProj; session_id = 'loop-b' }
+    Check 'summary: a NEW session is told again' ($newSession.Out -match 'SESSION SUMMARY') $newSession.Out
+    # stop_hook_active must not be used as the key: it is set for ANY gate's
+    # block, so honouring it would skip the first Stop whenever another gate
+    # happened to fire first.
+    $flagged = Invoke-SummaryHook @{ hook_event_name = 'Stop'; cwd = $loopProj; session_id = 'loop-c'; stop_hook_active = $true }
+    Check 'summary: a first Stop still delivers even when another gate blocked' ($flagged.Out -match 'SESSION SUMMARY') $flagged.Out
     Write-Host '--- client output shapes ---' -ForegroundColor Cyan
     $r = Invoke-SummaryHook -Payload @{ hook_event_name = 'Stop'; cwd = $proj; session_id = $sid } -AsClaude
     Check 'summary: Claude gets model-visible additionalContext' (
