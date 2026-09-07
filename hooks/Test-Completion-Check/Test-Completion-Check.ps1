@@ -8,10 +8,11 @@
 #   never runs a test, never spawns a process, and never edits a file. Its own
 #   state lives under %LOCALAPPDATA%\HookMaker\state - never in the project.
 #
-# THE RECURSION GUARD COMES FIRST. `stop_hook_active` is checked and exited on
-# before anything else is read or evaluated (the pattern proven by
-# Ci-Status-Check.ps1:235). A Stop gate that can re-trigger itself is a hang,
-# not a check.
+# THE RECURSION GUARD COMES FIRST, and it is THIS hook's own block marker, not
+# the shared `stop_hook_active` flag: that flag is set for any gate's block, so
+# keying on it makes one gate silence the rest. Standing down on its own
+# re-entry bounds this gate at one block per session - a gate that can refuse
+# completion on every Stop for ever is a hang, not a check.
 #
 # WHAT IT BLOCKS ON (each one confirmed from recorded evidence, never inferred):
 #   1. a guarded run is STILL ACTIVE (the recorded owner process - pid AND its
@@ -154,7 +155,12 @@ $hookInput = Read-HookInput
 if ($null -eq $hookInput) { exit 0 }
 
 # ---- recursion guard: FIRST, before anything is read or evaluated ----
-if ((Get-Field $hookInput 'stop_hook_active') -eq $true) { exit 0 }
+# Stand down only on THIS hook's OWN re-entry. `stop_hook_active` is set for
+# ANY gate's block, so exiting on it alone let one gate silence the other
+# twelve on the same Stop - and leaving it UNGUARDED, as this hook was, means
+# blocking on every Stop for ever with no per-session bound. Neither is right:
+# the marker written immediately before this gate blocks is the correct key.
+if (Test-StopStandDown -HookInput $hookInput -HookName 'Test-Completion-Check') { exit 0 }
 
 $eventName = [string](Get-Field $hookInput 'hook_event_name')
 if ($eventName -ne 'Stop' -and $eventName -ne 'SubagentStop') { exit 0 }
@@ -502,6 +508,10 @@ function Write-Finding {
     # degraded, which is what 'degraded-stop-gate' means - never a fake gate.
     $kind = 'advisory'
     if ($Blocking -and -not $script:advisoryOnly) { $kind = 'block' }
+    # Record the block so this gate's own re-entry is recognised. Without it
+    # the gate has no memory of having spoken and refuses completion on every
+    # Stop; an ADVISORY is not recorded, because it never stopped anything.
+    if ($kind -eq 'block') { Set-StopBlockMarker -HookInput $hookInput -HookName 'Test-Completion-Check' }
     $emit = Write-HookResult -EventName $script:eventName -Kind $kind -Message $message -Reason $message
     exit $emit.ExitCode
 }
