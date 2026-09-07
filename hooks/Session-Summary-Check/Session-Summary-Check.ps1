@@ -88,49 +88,74 @@ function Get-BlockedGateNames {
 # Speak once per session. Without this the hook re-asks on every Stop, and
 # because other gates keep blocking, the agent restates the whole summary
 # each time.
-function Test-AlreadyDelivered {
-    param([AllowEmptyString()][string]$ProjectRoot, [AllowEmptyString()][string]$SessionId)
+# Re-arm on a COOLDOWN rather than latching once per session.
+#
+# A once-per-session latch delivered the requirement at the first Stop -
+# usually an intermediate one - and then went quiet, so the turn that
+# actually ended the work carried no reminder and the user got no summary.
+# A cooldown still collapses the loop it was introduced to stop (a burst of
+# blocked Stops arrives seconds apart, well inside one window) while making
+# sure a long session is reminded again near its end.
+function Test-WithinCooldown {
+    param(
+        [AllowEmptyString()][string]$ProjectRoot,
+        [AllowEmptyString()][string]$SessionId,
+        [int]$CooldownMinutes
+    )
     $stateDir = Join-Path $env:LOCALAPPDATA 'HookMaker\state'
     $key = Get-ShortHash ([string]$ProjectRoot).ToLowerInvariant()
     $path = Join-Path $stateDir ('SessionSummary-' + $key + '.txt')
+    $nowUtc = [DateTime]::UtcNow
+
     $recorded = $null
     try { if (Test-Path -LiteralPath $path -PathType Leaf) { $recorded = ([System.IO.File]::ReadAllText($path)).Trim() } }
     catch { $recorded = $null }
 
-    if (-not [string]::IsNullOrWhiteSpace($SessionId)) {
-        # Session identity is the reliable key: a new session must be told
-        # again, the same session must not be.
-        if ($null -ne $recorded -and $recorded -eq $SessionId) { return $true }
-        try {
-            New-Item -ItemType Directory -Path $stateDir -Force | Out-Null
-            [System.IO.File]::WriteAllText($path, $SessionId)
-        }
-        catch { }
-        return $false
-    }
-
-    # No session id: dedup by identity is impossible, so fall back to a short
-    # time window. An unbounded repeat is the worse failure of the two.
-    $nowUtc = [DateTime]::UtcNow
-    if ($null -ne $recorded) {
+    $quiet = $false
+    if (-not [string]::IsNullOrWhiteSpace($recorded)) {
+        # "<sessionId>|<iso timestamp>" - a DIFFERENT session is always told,
+        # however recently the last one was.
+        $parts = $recorded.Split('|')
+        $lastSession = [string]$parts[0]
         $lastUtc = [DateTime]::MinValue
-        if ([DateTime]::TryParse($recorded, [ref]$lastUtc)) {
-            if (($nowUtc - $lastUtc.ToUniversalTime()).TotalMinutes -lt 60) { return $true }
+        if ($parts.Count -ge 2 -and [DateTime]::TryParse([string]$parts[1], [ref]$lastUtc)) {
+            if ($lastSession -eq [string]$SessionId -and
+                ($nowUtc - $lastUtc.ToUniversalTime()).TotalMinutes -lt $CooldownMinutes) { $quiet = $true }
         }
     }
+    if ($quiet) { return $true }
+
     try {
         New-Item -ItemType Directory -Path $stateDir -Force | Out-Null
-        [System.IO.File]::WriteAllText($path, $nowUtc.ToString('o'))
+        [System.IO.File]::WriteAllText($path, ([string]$SessionId + '|' + $nowUtc.ToString('o')))
     }
     catch { }
     return $false
 }
 
-if (Test-AlreadyDelivered -ProjectRoot $cwd -SessionId $sessionId) { exit 0 }
+$config = Read-HookEnv (Join-Path $PSScriptRoot '.env')
+$cooldownMinutes = 15
+if ($config.ContainsKey('COOLDOWN_MINUTES')) {
+    $parsedCooldown = 0
+    if ([int]::TryParse([string]$config['COOLDOWN_MINUTES'], [ref]$parsedCooldown) -and
+        $parsedCooldown -ge 0 -and $parsedCooldown -le 1440) { $cooldownMinutes = $parsedCooldown }
+}
+if (Test-WithinCooldown -ProjectRoot $cwd -SessionId $sessionId -CooldownMinutes $cooldownMinutes) { exit 0 }
 $blocked = @(Get-BlockedGateNames -ProjectRoot $cwd -SessionId $sessionId)
 
 $lines = New-Object System.Collections.ArrayList
-[void]$lines.Add('SESSION SUMMARY - the CLOSING section of your reply. It goes after every other')
+[void]$lines.Add('SESSION SUMMARY - the CLOSING section of the reply that HANDS THE WORK BACK.')
+[void]$lines.Add('')
+[void]$lines.Add('WHEN: only in the message where you actually finish. If you are still working,')
+[void]$lines.Add('waiting on a background run, or another gate has just sent you back, do NOT')
+[void]$lines.Add('write it yet - say what you are doing and carry on. A summary written mid-work')
+[void]$lines.Add('is wrong twice over: it reports work that has not happened, and it trains the')
+[void]$lines.Add('reader to skip the real one.')
+[void]$lines.Add('')
+[void]$lines.Add('ONCE: if you already gave this summary and nothing material changed since, do')
+[void]$lines.Add('not restate it. Repeating it is not thoroughness, it is noise.')
+[void]$lines.Add('')
+[void]$lines.Add('It goes after every other')
 [void]$lines.Add('hook requirement (the "MCP used:" line, the "Skills used:" line, the rules')
 [void]$lines.Add('confirmation). Nothing of yours comes after it.')
 [void]$lines.Add('')
