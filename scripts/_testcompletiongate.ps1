@@ -37,17 +37,27 @@
     }
 
     # =====================================================================
-    Write-Host '--- the recursion guard runs before anything is evaluated ---' -ForegroundColor Cyan
+    Write-Host '--- the recursion guard is this gate''s OWN marker, not the shared flag ---' -ForegroundColor Cyan
     $c = New-IsolatedHookCopy
     $p = New-GitRepo 'Recursion'
-    # A blocking condition IS present; stop_hook_active must still win.
+    # A blocking condition IS present throughout this block.
+    #
+    # stop_hook_active is set for ANY gate's block, so a gate that stood down
+    # on it alone went silent for somebody else's block - one block muting the
+    # other twelve on the same Stop. This gate had the opposite defect: NO
+    # marker at all, so it refused completion on every Stop for ever, which is
+    # what the user watched happen. Both are fixed by keying on the marker it
+    # writes immediately before it blocks.
     Write-GuardedResult -Copy $c -Root $p -Overall 'terminated' -ExitCode 124 -TerminateReason 'wallTimeout' -TerminateDetail 'exceeded the 1800s wall ceiling'
     $r = Fire -Copy $c -Cwd $p -StopHookActive
-    Check 'stop_hook_active -> immediate silent exit even with a blocking finding present' ($r.Exit -eq 0 -and $r.Out -eq '') $r.Out
-    Check 'stop_hook_active -> nothing was evaluated (no state file was written)' (
-        -not (Test-Path -LiteralPath (Join-Path (Get-StateDir $c) ('TestCompletionCheck-' + (Get-ProjectKey $p) + '.json')))) $r.Out
-    $r = Fire -Copy $c -Cwd $p -EventName 'SubagentStop' -StopHookActive
-    Check 'stop_hook_active on SubagentStop is honoured identically' ($r.Exit -eq 0 -and $r.Out -eq '') $r.Out
+    Check 'stop_hook_active ALONE does not silence it (another gate blocked, not this one)' ($r.Out -ne '') $r.Out
+
+    # ...and its own re-entry DOES stand it down, so one unchanged finding
+    # blocks once per session rather than on every Stop.
+    $r2 = Fire -Copy $c -Cwd $p -StopHookActive
+    Check 'its own re-entry stands it down (bounded at one block per session)' ($r2.Out -eq '') $r2.Out
+    $r3 = Fire -Copy $c -Cwd $p -StopHookActive
+    Check 'a third Stop stays silent too - no slow re-arming' ($r3.Out -eq '') $r3.Out
     $r = Fire -Copy $c -Cwd $p -EventName 'PreToolUse'
     Check 'an unrelated event is ignored entirely' ($r.Exit -eq 0 -and $r.Out -eq '') $r.Out
 
