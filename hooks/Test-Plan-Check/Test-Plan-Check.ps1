@@ -310,6 +310,14 @@ foreach ($file in $testFiles) {
         # literal) is not a risk - this keeps detector code, lint rules and
         # this hook's own source out of the findings.
         if ($line -match '(?i)-(c?match|notmatch|c?replace|c?like|notlike)\b') { continue }
+        # A delay handed to a CHILD process is not this file waiting. The
+        # shape that matters:
+        #   Start-Process ... -ArgumentList @('-Command','Start-Sleep -Seconds 45')
+        # spawns a long-lived sentinel to stand in for a live PID and kills it;
+        # the suite never blocks. Test-Run-Guard documents the same narrowness
+        # for the commands it inspects - a delay inside a nested quoted string
+        # is not parsed as a wait - and the file scanner now agrees with it.
+        if ($line -match '(?i)\b(Start-Process|Invoke-Command|ssh|docker\s+run)\b') { continue }
         $where = $relative + ':' + ($i + 1)
 
         # 1. a fixed blind sleep at or over the blind-wait ceiling
