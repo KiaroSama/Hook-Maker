@@ -790,7 +790,13 @@ try {
     Fire -HookPath $hc13.Script -Cwd $proj13 -EventName 'SessionStart' -LocalAppData $hc13.LocalAppData | Out-Null
     $guardCache = New-Cache $proj13
     $rGuard = Fire -HookPath $hc13.Script -Cwd $proj13 -EventName 'Stop' -LocalAppData $hc13.LocalAppData -StopHookActive
-    Check 'stop_hook_active short-circuits before any scan' ($rGuard.Exit -eq 0 -and $rGuard.Out -eq '' -and (Test-Path -LiteralPath $guardCache))
+    # stop_hook_active is set for ANY gate's block, so it must not silence
+    # this one - that is what let a single block mute the other gates on the
+    # same Stop. This gate stands down on its OWN marker instead. What the
+    # assertion is really about is unchanged and still checked: the cache this
+    # hook must never delete is still there afterwards.
+    Check 'stop_hook_active ALONE does not silence it, and it still deletes nothing' (
+        $rGuard.Exit -eq 0 -and (Test-Path -LiteralPath $guardCache)) $rGuard.Out
     $rSub = Fire -HookPath $hc13.Script -Cwd $proj13 -EventName 'SubagentStop' -LocalAppData $hc13.LocalAppData
     Check 'SubagentStop is silent by default (ENABLE_SUBAGENT_STOP=false)' ($rSub.Exit -eq 0 -and $rSub.Out -eq '' -and (Test-Path -LiteralPath $guardCache))
 
