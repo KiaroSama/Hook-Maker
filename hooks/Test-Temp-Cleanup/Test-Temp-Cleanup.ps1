@@ -485,6 +485,9 @@ function Write-ClientMessage {
     if ([string]::IsNullOrWhiteSpace($Message)) { return }
     $kind = 'advisory'
     if ($Blocking) { $kind = 'block' }
+    # Record the block so this gate's own re-entry is recognised; an advisory
+    # is not recorded, because it never stopped anything.
+    if ($kind -eq 'block') { Set-StopBlockMarker -HookInput $script:hookInput -HookName 'Test-Temp-Cleanup' }
     $emit = Write-HookResult -EventName $EventName -Kind $kind -Message $Message -Reason $Message
     if ($emit.ExitCode -ne 0) { exit $emit.ExitCode }
 }
@@ -602,7 +605,13 @@ if ($eventName -eq 'SessionStart') {
 # Stop / SubagentStop: rescan, classify, instruct, gate. Still no mutation of
 # any project file.
 # ==========================================================================
-if ((Get-Field $hookInput 'stop_hook_active') -eq $true) { exit 0 }
+# Stand down only on THIS hook's OWN re-entry. The shared `stop_hook_active`
+# flag is set for ANY gate's block, so keying on it lets one gate silence the
+# rest; keying on nothing at all - which this hook did - means blocking on
+# every Stop for ever. The marker written just before the block is the key.
+if (Test-StopStandDown -HookInput $hookInput -HookName 'Test-Temp-Cleanup') { exit 0 }
+# Reachable from Write-ClientMessage, which records the block marker.
+$script:hookInput = $hookInput
 
 $gitAvailable = Test-GitWorkTree $projectRoot
 
