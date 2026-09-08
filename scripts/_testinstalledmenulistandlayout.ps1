@@ -190,7 +190,7 @@
             Check 'menu: 25 is Test-Completion-Check' ([string]$rows[25] -match '^Test-Completion-Check \| \[post-task\] \|') ([string]$rows[25])
             Check 'menu: 26 is Utf8-Encoding-Check' ([string]$rows[26] -match '^Utf8-Encoding-Check \| \[pre\+post-task\] \|') ([string]$rows[26])
             Check 'menu: 27 is Synapse-Rules-Check (directly before Cloudflare-Deploy)' ([string]$rows[27] -match '^Synapse-Rules-Check \| \[pre\+post-task\] \|') ([string]$rows[27])
-            Check 'menu: 28 is Session-Summary-Check (directly before Cloudflare-Deploy)' ([string]$rows[28] -match '^Session-Summary-Check \| \[post-task\] \|') ([string]$rows[28])
+            Check 'menu: 28 is Session-Summary-Check (directly before Cloudflare-Deploy)' ([string]$rows[28] -match '^Session-Summary-Check \| \[pre-task\] \|') ([string]$rows[28])
             Check 'menu: 29 is Cloudflare-Deploy (still the last individual entry)' ([string]$rows[29] -match '^Cloudflare-Deploy \| \[post-task\] \|') ([string]$rows[29])
 
             Check 'menu: 30 is Update installed hooks' ([string]$rows[30] -match '^Update installed hooks \| \[manage\] \|') ([string]$rows[30])
