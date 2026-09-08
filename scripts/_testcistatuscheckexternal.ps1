@@ -63,7 +63,8 @@
     # systemMessage field - no hookSpecificOutput/additionalContext (undocumented
     # for Codex Stop) and never decision:block (which in Codex Stop would FORCE
     # continuation instead of allowing completion).
-    $rCodex = Fire -HookPath $CiHook -Cwd $ext1 -EventName 'Stop' -Client 'codex'
+    # A session of its own: the Claude fire above already told session 't'.
+    $rCodex = Fire -HookPath $CiHook -Cwd $ext1 -EventName 'Stop' -Client 'codex' -Extra @{ session_id = 'codex-shape' }
     Check 'Codex: Stop uses the supported systemMessage shape (no hookSpecificOutput/additionalContext)' ($rCodex.Out -match '"systemMessage"' -and $rCodex.Out -notmatch 'additionalContext' -and $rCodex.Out -notmatch 'hookSpecificOutput') $rCodex.Out
     Check 'Codex: the notice is non-blocking (no decision:block)' ($rCodex.Out -notmatch '"decision":"block"') $rCodex.Out
     Check 'Codex: the notice explicitly says CI is NOT verified green' ($rCodex.Out -match 'CI NOT VERIFIED GREEN' -and $rCodex.Out -match 'not a successful CI run') $rCodex.Out
@@ -78,7 +79,7 @@
 
     # Throttled re-check, same observed fingerprint -> still allowed (refreshed, not retired) + still non-blocking notice.
     $recheckHook = New-ConfiguredCiHookCopy @{ EXTERNAL_BLOCKER_RECHECK_MINUTES = '0' }
-    $r = Fire -HookPath $recheckHook -Cwd $ext1 -EventName 'Stop'
+    $r = Fire -HookPath $recheckHook -Cwd $ext1 -EventName 'Stop' -Extra @{ session_id = 'recheck-same-fp' }
     Check 'recheck with the identical CI fingerprint keeps completion allowed with the notice' ($r.Out -notmatch '"decision":"block"' -and $r.Out -match 'CI NOT VERIFIED GREEN') $r.Out
 
     # Item 4: same run id/status/conclusion but a CHANGED attempt/updatedAt
@@ -94,7 +95,7 @@
     $r = FireExternalBlocker -Cwd $ext1 -Classification 'github-outage' -Reason 'GitHub Actions status page reports a full outage'
     Check 'records an exception over a two-run snapshot' ($r.Exit -eq 0) $r.Err
     Set-Mock -RunJson '[{"databaseId":70,"attempt":1,"name":"Lint","workflowName":"Lint","status":"completed","conclusion":"cancelled","updatedAt":"2026-07-16T10:00:00Z"},{"databaseId":81,"attempt":1,"name":"CI","workflowName":"CI","status":"completed","conclusion":"cancelled","updatedAt":"2026-07-16T10:00:00Z"}]' -ExpectedSha $extSha1
-    $r = Fire -HookPath $recheckHook -Cwd $ext1 -EventName 'Stop'
+    $r = Fire -HookPath $recheckHook -Cwd $ext1 -EventName 'Stop' -Extra @{ session_id = 'recheck-reordered' }
     Check 'reordered but identical snapshot keeps the exception (order-independent fingerprint)' ($r.Out -notmatch '"decision":"block"' -and $r.Out -match 'CI NOT VERIFIED GREEN') $r.Out
 
     # Throttled re-check, CI turned GREEN -> exception retired, verified normally
@@ -175,3 +176,13 @@
     Check 'records an exception for ext4' ($r.Exit -eq 0) $r.Err
     $r = Fire -HookPath $CiHook -Cwd $ext4 -EventName 'Stop' -Extra @{ stop_hook_active = $true }
     Check 'stop_hook_active ALONE does not short-circuit the exception notice (another gate blocked, not this one)' ($r.Out -ne '') $r.Out
+
+    # The notice is delivered ONCE per session per blocker. On Claude Code a Stop
+    # additionalContext re-invokes the model, so a notice on every Stop was the
+    # loop the user watched: answer, stop, re-invoke, answer, until interrupted.
+    $r = Fire -HookPath $CiHook -Cwd $ext4 -EventName 'Stop'
+    Check 'the same session is not told the same blocker twice (silent, not blocked)' ($r.Out -eq '') $r.Out
+    $r = Fire -HookPath $CiHook -Cwd $ext4 -EventName 'Stop' -Extra @{ session_id = 'ext4-later' }
+    Check 'a new session is told the blocker again (once)' ($r.Out -match 'CI NOT VERIFIED GREEN' -and $r.Out -notmatch '"decision":"block"') $r.Out
+    $r = Fire -HookPath $CiHook -Cwd $ext4 -EventName 'Stop' -Extra @{ session_id = 'ext4-later' }
+    Check 'and stays silent for the rest of that session' ($r.Out -eq '') $r.Out

@@ -385,6 +385,24 @@ try {
     exit (Write-HookResult -EventName $eventName -Kind 'block' -Reason $reason).ExitCode
 }
 catch {
+    # Once per session. A detection error that persists (a corrupt state file,
+    # a failing git) would otherwise re-emit on every Stop, and on Claude Code
+    # a Stop additionalContext re-invokes the model - a loop with nothing to
+    # act on. A new session is warned again.
+    $errStampPath = Join-Path $stateDir ('DocsFreshnessCheck-error-' + $projectKey + '.txt')
+    $errTold = $false
+    try {
+        if ($sessionId -ne '' -and (Test-Path -LiteralPath $errStampPath -PathType Leaf)) {
+            $errTold = (([System.IO.File]::ReadAllText($errStampPath)).Trim() -eq $sessionId)
+        }
+    }
+    catch { $errTold = $false }
+    if ($errTold) { exit 0 }
+    try {
+        New-Item -ItemType Directory -Path $stateDir -Force | Out-Null
+        [System.IO.File]::WriteAllText($errStampPath, $sessionId)
+    }
+    catch { }
     $errMsg = 'DOCS FRESHNESS CHECK: could not reliably determine whether documentation needs review this time (detection error) - do not assume documentation is current; review tracked README/CHANGELOG/docs manually if this task changed user-visible behavior.'
     # Client-aware through the shared adapter: Codex does not render
     # hookSpecificOutput.additionalContext at Stop (only systemMessage), so an
