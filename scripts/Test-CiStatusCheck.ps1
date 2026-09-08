@@ -475,9 +475,18 @@ try {
     $billRecorded = $false
     foreach ($f in $billStateFile) { if ([System.IO.File]::ReadAllText($f.FullName) -match 'account-billing') { $billRecorded = $true } }
     Check 'billing block -> an external blocker was auto-recorded as account-billing' $billRecorded
-    # the recorded exception persists on the very next stop (throttled recheck), still non-blocking
+    # The recorded exception persists on the very next Stop (throttled recheck)
+    # and still never blocks - but the notice is NOT repeated to the same
+    # session. On Claude Code a Stop additionalContext re-invokes the model, so
+    # a notice on every Stop was an unbounded loop: the agent answered, stopped,
+    # was re-invoked, answered again, until the user interrupted.
     $r = Fire -HookPath $CiHook -Cwd $ciBill -EventName 'Stop'
-    Check 'billing block -> recorded exception persists on the next stop (no re-block)' ($r.Out -notmatch '"decision":"block"' -and $r.Out -match 'CI NOT VERIFIED GREEN') $r.Out
+    Check 'billing block -> recorded exception persists on the next stop (no re-block)' ($r.Out -notmatch '"decision":"block"') $r.Out
+    Check 'billing block -> the SAME session is not told twice (a Stop advisory re-invokes the model - bounded like a block)' ($r.Out -eq '') $r.Out
+    $r = Fire -HookPath $CiHook -Cwd $ciBill -EventName 'Stop' -Extra @{ session_id = 'a-later-session' }
+    Check 'billing block -> a NEW session is told again, still non-blocking' ($r.Out -notmatch '"decision":"block"' -and $r.Out -match 'CI NOT VERIFIED GREEN') $r.Out
+    $r = Fire -HookPath $CiHook -Cwd $ciBill -EventName 'Stop' -Extra @{ session_id = 'a-later-session' }
+    Check 'billing block -> that session is then silent too (no slow re-arming)' ($r.Out -eq '') $r.Out
     # same case surfaces correctly in the Claude client shape too
     $ciBillC = New-GitRepo 'ci-bill-claude'
     $shaBillC = Get-HeadSha $ciBillC
@@ -743,7 +752,8 @@ try {
         Check '-ReportExternalBlocker under 5.1' ($r.Exit -eq 0 -and $r.Out -match 'EXTERNAL CI blocker')
         $r = Fire -HookPath $CiHook -Cwd $ps51ci -EventName 'Stop' -Exe 'powershell.exe' -Client 'codex'
         Check 'external-blocker exception honored under 5.1 (Codex: non-blocking systemMessage, CI not green)' ($r.Exit -eq 0 -and $r.Out -notmatch '"decision":"block"' -and $r.Out -match '"systemMessage"' -and $r.Out -match 'CI NOT VERIFIED GREEN')
-        $r = Fire -HookPath $CiHook -Cwd $ps51ci -EventName 'Stop' -Exe 'powershell.exe' -Client 'claude'
+        # Its own session: the Codex fire above already told session 't' (once per session).
+        $r = Fire -HookPath $CiHook -Cwd $ps51ci -EventName 'Stop' -Exe 'powershell.exe' -Client 'claude' -Extra @{ session_id = 'ps51-claude' }
         Check 'external-blocker exception honored under 5.1 (Claude: non-blocking additionalContext, CI not green)' ($r.Exit -eq 0 -and $r.Out -notmatch '"decision":"block"' -and $r.Out -match 'additionalContext' -and $r.Out -match 'CI NOT VERIFIED GREEN')
     }
     else {

@@ -145,11 +145,35 @@
     Write-Host '--- Stop fingerprint: unchanged state re-blocks once per session, changed state at once ---' -ForegroundColor Cyan
     $r = Fire -HookPath $hcFresh.Script -Cwd $projFresh -EventName 'Stop' -SessionId 's1' -LocalAppData $hcFresh.LocalAppData
     Check 'the SAME unchanged violation in the SAME session does not re-block' (-not (Test-StopBlocks $r.Out)) $r.Out
-    Check 'the repeat is an honest advisory, not silence pretending all-clear' ((Get-Message $r.Out) -match '(?i)unchanged' -and (Get-Message $r.Out) -match '(?i)not an all-clear') $r.Out
+    # The repeat used to be a short "unchanged, still unresolved" advisory. On
+    # Claude Code a Stop additionalContext re-invokes the model, so that
+    # advisory re-invoked the agent on EVERY Stop while the file stayed unfixed
+    # - a loop. The block already said it once this session; the repeat is
+    # silent, and a NEW session is blocked again.
+    Check 'the repeat is SILENT - a Stop advisory re-invokes the model, so repeating it would loop' ($r.Out -eq '') $r.Out
+    $r = Fire -HookPath $hcFresh.Script -Cwd $projFresh -EventName 'Stop' -SessionId 's2' -LocalAppData $hcFresh.LocalAppData
+    Check 'a NEW session with the same unresolved violation is blocked again' (Test-StopBlocks $r.Out) $r.Out
     Write-Bytes (Join-Path $projFresh 'fresh2.txt') (Get-InvalidUtf8Bytes 'SECONDMARKER')
     $r = Fire -HookPath $hcFresh.Script -Cwd $projFresh -EventName 'Stop' -SessionId 's1' -LocalAppData $hcFresh.LocalAppData
     Check 'CHANGED state (a second invalid file) re-evaluates and blocks immediately' (
         (Test-StopBlocks $r.Out) -and (Get-Message $r.Out) -match 'fresh2\.txt') $r.Out
+
+    # =====================================================================
+    Write-Host '--- Stop: an unverified (oversized) file is reported once per session, never on every Stop ---' -ForegroundColor Cyan
+    # Unverified files that stay unverified used to be reported on every Stop.
+    # On Claude Code that is a model re-invocation per Stop - a loop with
+    # nothing new to act on. Once per session per unchanged set.
+    $hcUnk = New-IsolatedHookCopy -EnvContent "UTF8_MAX_FILE_KB=1`n"
+    $projUnk = New-GitRepo 'UnknownOnce'
+    Write-Utf8 (Join-Path $projUnk 'base.txt') "seed`n"
+    Add-Commit $projUnk 'seed'
+    Write-Utf8 (Join-Path $projUnk 'big.txt') (('a' * 3000) + "`n")
+    $r = Fire -HookPath $hcUnk.Script -Cwd $projUnk -EventName 'Stop' -SessionId 'u1' -LocalAppData $hcUnk.LocalAppData
+    Check 'an oversized new text file yields the NOT-verified advisory (not a block, not silence)' (-not (Test-StopBlocks $r.Out) -and (Get-Message $r.Out) -match 'could NOT be verified') $r.Out
+    $r = Fire -HookPath $hcUnk.Script -Cwd $projUnk -EventName 'Stop' -SessionId 'u1' -LocalAppData $hcUnk.LocalAppData
+    Check 'the same unverified set in the same session is silent on the next Stop' ($r.Out -eq '') $r.Out
+    $r = Fire -HookPath $hcUnk.Script -Cwd $projUnk -EventName 'Stop' -SessionId 'u2' -LocalAppData $hcUnk.LocalAppData
+    Check 'a NEW session is told about the unverified file again' ((Get-Message $r.Out) -match 'could NOT be verified') $r.Out
 
     # =====================================================================
     Write-Host '--- Stop: valid->invalid modification blocks; the fix clears immediately ---' -ForegroundColor Cyan
