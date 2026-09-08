@@ -204,9 +204,14 @@ function Convert-FileRecordsToMap {
 
     $map = @{}
     foreach ($record in @($Records)) {
-        if ($null -ne $record) {
-            $map[[string]$record.path] = $record
-        }
+        # Only a record that names a file is a record. Three real state files
+        # carried `lastAppliedFiles` as an empty OBJECT instead of an array;
+        # wrapped by Get-SafeArrayField that is one property-less element, and
+        # reading .path on it is a StrictMode crash on every prompt. Skipping
+        # it means "nothing applied yet": the next run re-stages everything and
+        # rewrites a well-formed state.
+        if ($null -eq $record -or $null -eq $record.PSObject.Properties['path']) { continue }
+        $map[[string]$record.path] = $record
     }
     return $map
 }
