@@ -263,12 +263,13 @@ $script:HookMeta = @{
     'Synapse-Rules-Check'              = @{ Order = 26; When = 'both'; Text = 'loads the user''s rules from Synapse; asks what to write back'; Events = @('SessionStart', 'Stop', 'SubagentStop'); Timeout = 10 }
     # Session-Summary-Check sits between Synapse-Rules-Check and
     # Cloudflare-Deploy per an explicit user requirement. That number is only
-    # where it is LISTED: hooks matching one event run CONCURRENTLY, so no
-    # Order value can make a hook execute last, and none is claimed to. It is
-    # advisory and asks for the summary as the closing section of the AGENT'S
-    # reply, which is the part whose order is actually controllable - see the
-    # hook header for why a BLOCKING summary hook could never be the last word.
-    'Session-Summary-Check'            = @{ Order = 27; When = 'post'; Text = 'closes the session with a done / still-open summary'; Events = @('Stop', 'SubagentStop'); Timeout = 10 }
+    # where it is LISTED. It is advisory and asks for the summary as the
+    # closing section of the AGENT'S reply - and it asks BEFORE the task
+    # (SessionStart, UserPromptSubmit), never at Stop: on Claude Code a Stop
+    # additionalContext re-invokes the model, so a summary asked for at Stop
+    # always arrived as one more turn after the work, which is the loop it
+    # shipped with twice. See the hook header.
+    'Session-Summary-Check'            = @{ Order = 27; When = 'pre'; Text = 'asks the closing reply for a done / still-open summary'; Events = @('SessionStart', 'UserPromptSubmit'); Timeout = 10 }
     # Cloudflare-Deploy is deliberately kept LAST among individual hook
     # entries (Order = highest value) per an explicit user requirement, not
     # filesystem/alphabetical order - see Test-Wizard.ps1 for the pinned order.

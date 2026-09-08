@@ -1,5 +1,6 @@
 # Offline suite for Session-Summary-Check - the closing "what shipped / what
-# is left" report.
+# is left" report, delivered BEFORE the task (SessionStart, UserPromptSubmit)
+# and silent at Stop.
 #
 # HERMETIC BY REDIRECTING LOCALAPPDATA. The hook reads the sibling gates'
 # stop-block markers out of %LOCALAPPDATA%\HookMaker\state, which on a real
@@ -30,10 +31,9 @@ $Hook = Join-Path $HooksRoot 'Session-Summary-Check\Session-Summary-Check.ps1'
 $FakeLocalAppData = Join-Path $Work 'localappdata'
 $StateDir = Join-Path $FakeLocalAppData 'HookMaker\state'
 
-# The hook speaks ONCE PER SESSION (it looped otherwise - see the hook
-# header). Every case below wants a fresh first Stop, so the delivery marker
-# is cleared by default. -KeepDelivered opts out, which is how the
-# once-per-session behaviour itself is asserted.
+# The hook re-delivers on a cooldown, keyed by session. Every case below wants
+# a fresh first delivery, so the stamp is cleared by default. -KeepDelivered
+# opts out, which is how the cooldown itself is asserted.
 function Invoke-SummaryHook {
     param(
         [Parameter(Mandatory = $true)][hashtable]$Payload,
@@ -84,64 +84,53 @@ try {
     $sid = 'session-under-test'
 
     # =====================================================================
-    Write-Host '--- events: it speaks on the two stop events and nowhere else ---' -ForegroundColor Cyan
-    $r = Invoke-SummaryHook @{ hook_event_name = 'Stop'; cwd = $proj; session_id = $sid }
-    Check 'summary: Stop produces the closing requirement' ($r.Out -match 'SESSION SUMMARY') $r.Out
-    Check 'summary: Stop exits 0' ($r.Exit -eq 0) ([string]$r.Exit)
+    Write-Host '--- events: it speaks BEFORE the task and nowhere else ---' -ForegroundColor Cyan
+    $r = Invoke-SummaryHook @{ hook_event_name = 'SessionStart'; cwd = $proj; session_id = $sid }
+    Check 'summary: SessionStart delivers the closing requirement' ($r.Out -match 'SESSION SUMMARY') $r.Out
+    Check 'summary: SessionStart exits 0' ($r.Exit -eq 0) ([string]$r.Exit)
+    $r = Invoke-SummaryHook @{ hook_event_name = 'UserPromptSubmit'; cwd = $proj; session_id = $sid }
+    Check 'summary: UserPromptSubmit delivers it too' ($r.Out -match 'SESSION SUMMARY') $r.Out
 
-    $r = Invoke-SummaryHook @{ hook_event_name = 'SubagentStop'; cwd = $proj; session_id = $sid }
-    Check 'summary: SubagentStop produces it too' ($r.Out -match 'SESSION SUMMARY') $r.Out
-
-    foreach ($quiet in @('SessionStart', 'UserPromptSubmit', 'PreToolUse', 'PostToolUse', 'SessionEnd')) {
-        $r = Invoke-SummaryHook @{ hook_event_name = $quiet; cwd = $proj; session_id = $sid }
-        Check ('summary: silent on ' + $quiet) ($r.Out.Trim() -eq '') $r.Out
+    # Stop is the event this hook shipped on twice, and looped on twice: on
+    # Claude Code a Stop additionalContext re-invokes the model, so a summary
+    # asked for at Stop always arrives as one more turn AFTER the work - and
+    # when nothing is left to say, that turn is "waiting." / "done.". It is
+    # silent there now, whatever the session, even when nothing was delivered
+    # yet - the loop assertion of this suite.
+    foreach ($quiet in @('Stop', 'SubagentStop', 'PreToolUse', 'PostToolUse', 'SessionEnd')) {
+        $r = Invoke-SummaryHook @{ hook_event_name = $quiet; cwd = $proj; session_id = ('fresh-' + $quiet) }
+        Check ('summary: silent on ' + $quiet + ' (exit 0, no output)') ($r.Exit -eq 0 -and $r.Out.Trim() -eq '') $r.Out
     }
+    $r = Invoke-SummaryHook @{ hook_event_name = 'Stop'; cwd = $proj; session_id = $sid; stop_hook_active = $true }
+    Check 'summary: Stop stays silent with stop_hook_active too' ($r.Out.Trim() -eq '') $r.Out
 
     # =====================================================================
     Write-Host '--- it is ADVISORY: a block would guarantee something comes after it ---' -ForegroundColor Cyan
-    # This is the whole design premise, so it is asserted rather than assumed:
-    # a gate that blocks sends the agent back to work, and whatever it does
-    # next lands after the summary - which is exactly what this hook exists to
-    # prevent. If it ever starts blocking, the hook has defeated itself.
-    $r = Invoke-SummaryHook @{ hook_event_name = 'Stop'; cwd = $proj; session_id = $sid }
+    $r = Invoke-SummaryHook @{ hook_event_name = 'UserPromptSubmit'; cwd = $proj; session_id = $sid }
     Check 'summary: never emits a block decision' ($r.Out -notmatch '"decision"') $r.Out
     Check 'summary: never uses the blocking exit code 2' ($r.Exit -ne 2) ([string]$r.Exit)
 
     # =====================================================================
-    Write-Host '--- stop_hook_active must NOT silence it (the differentiator) ---' -ForegroundColor Cyan
-    # Every other Stop hook exits on this flag to avoid re-firing on its own
-    # block. This one keys on SESSION IDENTITY instead, because the flag is set
-    # for ANY gate's block: honouring it would skip the very first Stop
-    # whenever some other gate happened to fire first, which is exactly when a
-    # wrap-up matters most.
-    #
-    # An earlier comment here claimed this hook "cannot loop - it never
-    # blocks". That was wrong and it is why the loop shipped: a hook does not
-    # need to BLOCK to loop, it only needs to keep asking. See the
-    # once-per-session block below.
-    $r = Invoke-SummaryHook @{ hook_event_name = 'Stop'; cwd = $proj; session_id = $sid; stop_hook_active = $true }
-    Check 'summary: stop_hook_active alone does not silence a first Stop' ($r.Out -match 'SESSION SUMMARY') $r.Out
-
-    # =====================================================================
     Write-Host '--- the requirement itself ---' -ForegroundColor Cyan
-    $r = Invoke-SummaryHook @{ hook_event_name = 'Stop'; cwd = $proj; session_id = $sid }
     Check 'summary: asks for a DONE section' ($r.Out -match 'DONE') $r.Out
     Check 'summary: asks for a REMAINING section' ($r.Out -match 'REMAINING') $r.Out
-    Check 'summary: places itself as the CLOSING section of the reply' ($r.Out -match 'CLOSING section') $r.Out
+    Check 'summary: places itself as the CLOSING section of the final message' ($r.Out -match 'CLOSING section') $r.Out
+    Check 'summary: states WHEN (only the message that finishes) and ONCE' (($r.Out -match 'WHEN:') -and ($r.Out -match 'ONCE:')) $r.Out
     Check 'summary: names the sibling requirements it must follow' (
         ($r.Out -match 'MCP used') -and ($r.Out -match 'Skills used')) $r.Out
     Check 'summary: demands failures and untested paths be included' ($r.Out -match 'untested') $r.Out
+    Check 'summary: demands every blocking gate be accounted for' ($r.Out -match 'accounted for') $r.Out
 
     # =====================================================================
     Write-Host '--- with no markers there is no gate list at all ---' -ForegroundColor Cyan
-    Check 'summary: says nothing about gates when none blocked' ($r.Out -notmatch 'blocked this session') $r.Out
+    Check 'summary: says nothing about gates when none blocked' ($r.Out -notmatch 'blocked earlier in this session') $r.Out
 
     # =====================================================================
     Write-Host '--- gate markers: this session only ---' -ForegroundColor Cyan
     $null = New-BlockMarker -HookName 'Secrets-Check' -ProjectRoot $proj -SessionId $sid
     $null = New-BlockMarker -HookName 'Ci-Status-Check' -ProjectRoot $proj -SessionId $sid
-    $r = Invoke-SummaryHook @{ hook_event_name = 'Stop'; cwd = $proj; session_id = $sid }
-    Check 'summary: reports that gates blocked this session' ($r.Out -match 'blocked this session') $r.Out
+    $r = Invoke-SummaryHook @{ hook_event_name = 'UserPromptSubmit'; cwd = $proj; session_id = $sid }
+    Check 'summary: reports that gates blocked earlier this session' ($r.Out -match 'blocked earlier in this session') $r.Out
     Check 'summary: names both gates, sorted' ($r.Out -match 'CiStatusCheck, SecretsCheck') $r.Out
     Check 'summary: asks for each blocked gate to be accounted for' ($r.Out -match 'Account for each one') $r.Out
 
@@ -149,7 +138,7 @@ try {
     # that session, not this one. Reporting it would accuse the current session
     # of a block it never hit.
     $null = New-BlockMarker -HookName 'Docs-Freshness-Check' -ProjectRoot $proj -SessionId 'an-older-session'
-    $r = Invoke-SummaryHook @{ hook_event_name = 'Stop'; cwd = $proj; session_id = $sid }
+    $r = Invoke-SummaryHook @{ hook_event_name = 'UserPromptSubmit'; cwd = $proj; session_id = $sid }
     Check 'summary: ignores a marker from a different session' ($r.Out -notmatch 'DocsFreshnessCheck') $r.Out
     Check 'summary: still names this session''s own gates' ($r.Out -match 'CiStatusCheck, SecretsCheck') $r.Out
 
@@ -158,54 +147,64 @@ try {
     $otherProj = Join-Path $Work 'other-proj'
     New-Item -ItemType Directory -Path $otherProj -Force | Out-Null
     $null = New-BlockMarker -HookName 'Large-File-Check' -ProjectRoot $otherProj -SessionId $sid
-    $r = Invoke-SummaryHook @{ hook_event_name = 'Stop'; cwd = $proj; session_id = $sid }
+    $r = Invoke-SummaryHook @{ hook_event_name = 'UserPromptSubmit'; cwd = $proj; session_id = $sid }
     Check 'summary: ignores a marker belonging to another project' ($r.Out -notmatch 'LargeFileCheck') $r.Out
 
     # =====================================================================
     Write-Host '--- it is read-only: the state directory is not its to write ---' -ForegroundColor Cyan
     $before = @(Get-ChildItem -LiteralPath $StateDir -File | Sort-Object Name | ForEach-Object { $_.Name + ':' + $_.Length }) -join '|'
-    $null = Invoke-SummaryHook @{ hook_event_name = 'Stop'; cwd = $proj; session_id = $sid }
+    $null = Invoke-SummaryHook @{ hook_event_name = 'UserPromptSubmit'; cwd = $proj; session_id = $sid }
     $after = @(Get-ChildItem -LiteralPath $StateDir -File | Sort-Object Name | ForEach-Object { $_.Name + ':' + $_.Length }) -join '|'
     Check 'summary: leaves every marker byte-for-byte untouched' ($before -eq $after) ($before + ' -> ' + $after)
-    # It writes exactly ONE file of its own: the once-per-session delivery
-    # marker that stops it re-asking on every Stop. Anything BEYOND that would
-    # mean it had started keeping state it has no business keeping - the
-    # sibling gates' StopBlock markers are read-only to it, asserted above.
-    Check 'summary: writes only its own delivery marker, nothing else' (
+    # It writes exactly ONE file of its own: the delivery stamp behind the
+    # cooldown. Anything BEYOND that would mean it had started keeping state
+    # it has no business keeping - the sibling gates' StopBlock markers are
+    # read-only to it, asserted above.
+    Check 'summary: writes only its own delivery stamp, nothing else' (
         @(Get-ChildItem -LiteralPath $StateDir -File | Where-Object {
                 $_.Name -notlike 'StopBlock-*' -and $_.Name -notlike 'SessionSummary-*'
             }).Count -eq 0) $after
 
     # =====================================================================
-    # =====================================================================
-    Write-Host '--- once per session: the loop this hook caused in production ---' -ForegroundColor Cyan
-    # An earlier revision emitted on EVERY Stop. Other gates block, the agent
-    # works and stops again, this hook re-asks for the summary, and the agent
-    # rewrites the whole DONE/REMAINING block. The user saw it four times in
-    # one turn. The requirement only has to arrive once.
+    Write-Host '--- cooldown: once per window on prompts, always on SessionStart ---' -ForegroundColor Cyan
+    # A long session is reminded again before it ends; a burst of prompts is
+    # not. And a new session id is always told, whatever the last one did.
     $loopProj = Join-Path $Work 'loop-proj'
     New-Item -ItemType Directory -Path $loopProj -Force | Out-Null
-    $first = Invoke-SummaryHook @{ hook_event_name = 'Stop'; cwd = $loopProj; session_id = 'loop-a' }
-    Check 'summary: the first Stop of a session delivers the requirement' ($first.Out -match 'SESSION SUMMARY') $first.Out
-    $second = Invoke-SummaryHook -KeepDelivered -Payload @{ hook_event_name = 'Stop'; cwd = $loopProj; session_id = 'loop-a' }
-    Check 'summary: a SECOND Stop of the same session says nothing' ($second.Out.Trim() -eq '') $second.Out
-    $third = Invoke-SummaryHook -KeepDelivered -Payload @{ hook_event_name = 'Stop'; cwd = $loopProj; session_id = 'loop-a' }
-    Check 'summary: a THIRD Stop stays silent too (no slow re-arming)' ($third.Out.Trim() -eq '') $third.Out
-    # ...but a genuinely new session must still be told, or the guard would
-    # simply have disabled the hook after its first use ever.
-    $newSession = Invoke-SummaryHook -KeepDelivered -Payload @{ hook_event_name = 'Stop'; cwd = $loopProj; session_id = 'loop-b' }
+    $first = Invoke-SummaryHook @{ hook_event_name = 'UserPromptSubmit'; cwd = $loopProj; session_id = 'loop-a' }
+    Check 'summary: the first prompt of a session delivers the requirement' ($first.Out -match 'SESSION SUMMARY') $first.Out
+    $second = Invoke-SummaryHook -KeepDelivered -Payload @{ hook_event_name = 'UserPromptSubmit'; cwd = $loopProj; session_id = 'loop-a' }
+    Check 'summary: a SECOND prompt inside the window says nothing' ($second.Out.Trim() -eq '') $second.Out
+    $third = Invoke-SummaryHook -KeepDelivered -Payload @{ hook_event_name = 'UserPromptSubmit'; cwd = $loopProj; session_id = 'loop-a' }
+    Check 'summary: a THIRD prompt stays silent too (no slow re-arming)' ($third.Out.Trim() -eq '') $third.Out
+    $newSession = Invoke-SummaryHook -KeepDelivered -Payload @{ hook_event_name = 'UserPromptSubmit'; cwd = $loopProj; session_id = 'loop-b' }
     Check 'summary: a NEW session is told again' ($newSession.Out -match 'SESSION SUMMARY') $newSession.Out
-    # stop_hook_active must not be used as the key: it is set for ANY gate's
-    # block, so honouring it would skip the first Stop whenever another gate
-    # happened to fire first.
-    $flagged = Invoke-SummaryHook @{ hook_event_name = 'Stop'; cwd = $loopProj; session_id = 'loop-c'; stop_hook_active = $true }
-    Check 'summary: a first Stop still delivers even when another gate blocked' ($flagged.Out -match 'SESSION SUMMARY') $flagged.Out
+    # SessionStart is a rebuilt context (startup, resume, clear, compaction):
+    # it always delivers, inside the window or not, and it stamps the window so
+    # the very next prompt does not repeat it.
+    $restart = Invoke-SummaryHook -KeepDelivered -Payload @{ hook_event_name = 'SessionStart'; cwd = $loopProj; session_id = 'loop-b' }
+    Check 'summary: SessionStart delivers even inside the window (rebuilt context)' ($restart.Out -match 'SESSION SUMMARY') $restart.Out
+    $afterRestart = Invoke-SummaryHook -KeepDelivered -Payload @{ hook_event_name = 'UserPromptSubmit'; cwd = $loopProj; session_id = 'loop-b' }
+    Check 'summary: the prompt right after a SessionStart does not repeat it' ($afterRestart.Out.Trim() -eq '') $afterRestart.Out
+    # The window is real: an expired stamp re-delivers on the next prompt.
+    $stampPath = Join-Path $StateDir ('SessionSummary-' + (Get-ShortHash ([string]$loopProj).ToLowerInvariant()) + '.txt')
+    [System.IO.File]::WriteAllText($stampPath, ('loop-b|' + [DateTime]::UtcNow.AddMinutes(-16).ToString('o')))
+    $expired = Invoke-SummaryHook -KeepDelivered -Payload @{ hook_event_name = 'UserPromptSubmit'; cwd = $loopProj; session_id = 'loop-b' }
+    Check 'summary: a prompt after the window expired is reminded again' ($expired.Out -match 'SESSION SUMMARY') $expired.Out
+
+    # =====================================================================
     Write-Host '--- client output shapes ---' -ForegroundColor Cyan
-    $r = Invoke-SummaryHook -Payload @{ hook_event_name = 'Stop'; cwd = $proj; session_id = $sid } -AsClaude
-    Check 'summary: Claude gets model-visible additionalContext' (
-        ($r.Out -match 'hookSpecificOutput') -and ($r.Out -match 'additionalContext')) $r.Out
-    $r = Invoke-SummaryHook @{ hook_event_name = 'Stop'; cwd = $proj; session_id = $sid }
-    Check 'summary: Codex gets systemMessage' ($r.Out -match 'systemMessage') $r.Out
+    # UserPromptSubmit is a context event for BOTH clients: Claude and Codex
+    # each get hookSpecificOutput.additionalContext (Codex's systemMessage is
+    # Stop-scoped, and this hook no longer speaks at Stop).
+    $r = Invoke-SummaryHook -Payload @{ hook_event_name = 'UserPromptSubmit'; cwd = $proj; session_id = $sid } -AsClaude
+    Check 'summary: Claude gets model-visible additionalContext on the prompt' (
+        ($r.Out -match 'hookSpecificOutput') -and ($r.Out -match 'additionalContext') -and ($r.Out -match '"hookEventName":"UserPromptSubmit"')) $r.Out
+    $r = Invoke-SummaryHook @{ hook_event_name = 'UserPromptSubmit'; cwd = $proj; session_id = $sid }
+    Check 'summary: Codex gets additionalContext too (systemMessage is Stop-only)' (
+        ($r.Out -match 'additionalContext') -and ($r.Out -notmatch 'systemMessage')) $r.Out
+    $r = Invoke-SummaryHook -Payload @{ hook_event_name = 'SessionStart'; cwd = $proj; session_id = $sid } -AsClaude
+    Check 'summary: SessionStart carries its own event name in the shape' ($r.Out -match '"hookEventName":"SessionStart"') $r.Out
 
     # =====================================================================
     Write-Host '--- degrades quietly on bad or missing input ---' -ForegroundColor Cyan
@@ -220,14 +219,14 @@ try {
     # Without a session id the markers cannot be scoped, and an unscoped list
     # would report other sessions' blocks as this one's. It still delivers the
     # requirement - that part needs no session - but names no gates.
-    $r = Invoke-SummaryHook @{ hook_event_name = 'Stop'; cwd = $proj }
+    $r = Invoke-SummaryHook @{ hook_event_name = 'UserPromptSubmit'; cwd = $proj }
     Check 'summary: no session id still yields the requirement' ($r.Out -match 'SESSION SUMMARY') $r.Out
-    Check 'summary: no session id names no gates rather than guessing' ($r.Out -notmatch 'blocked this session') $r.Out
+    Check 'summary: no session id names no gates rather than guessing' ($r.Out -notmatch 'blocked earlier in this session') $r.Out
 
     # An empty marker must not match an empty/absent session id and quietly
     # report a gate that never blocked.
     $null = New-BlockMarker -HookName 'Rules-Check' -ProjectRoot $proj -SessionId ''
-    $r = Invoke-SummaryHook @{ hook_event_name = 'Stop'; cwd = $proj }
+    $r = Invoke-SummaryHook @{ hook_event_name = 'UserPromptSubmit'; cwd = $proj }
     Check 'summary: an empty marker is not matched by a missing session id' ($r.Out -notmatch 'RulesCheck') $r.Out
 
     # A state directory that does not exist yet is the normal first-run case.
@@ -236,7 +235,7 @@ try {
     $prevLocal = $env:LOCALAPPDATA
     $env:LOCALAPPDATA = $emptyLocal
     try {
-        $json = (@{ hook_event_name = 'Stop'; cwd = $proj; session_id = $sid } | ConvertTo-Json -Compress)
+        $json = (@{ hook_event_name = 'UserPromptSubmit'; cwd = $proj; session_id = $sid } | ConvertTo-Json -Compress)
         $out = ($json | & pwsh -NoProfile -File $Hook 2>&1) -join "`n"
         Check 'summary: no state directory at all is not an error' (($LASTEXITCODE -eq 0) -and ($out -match 'SESSION SUMMARY')) ($out + ' exit=' + $LASTEXITCODE)
     }
