@@ -75,7 +75,8 @@
 #   (databaseId/attempt/workflowName/status/conclusion/updatedAt) and stored.
 # This never marks the commit verified/green. While an exception authorizes
 # completion, Stop emits a NON-BLOCKING "CI NOT VERIFIED GREEN" context notice
-# so the final task context can never misrepresent CI as successful. The
+# - ONCE per session per blocker, see Write-ExternalBlockerContext - so the
+# final task context can never misrepresent CI as successful. The
 # notice shape is CLIENT-AWARE (see Write-ExternalBlockerContext below):
 # Claude Code gets `hookSpecificOutput.additionalContext` (documented
 # model-visible on Stop); Codex gets `systemMessage` (its only documented
@@ -460,8 +461,36 @@ function Write-Block {
 # Client detection and the per-client wrapper both come from the shared
 # Write-HookResult adapter. Neither output can claim CI success; the message
 # text is identical for every client, only the JSON wrapper differs.
+#
+# ONCE PER SESSION PER BLOCKER. On Claude Code a Stop hook's additionalContext
+# is not a passive note: the client re-invokes the model with it (observed
+# in Claude Code 2.1.260 on 2026-09-07 - a hook_additional_context transcript
+# entry followed by a fresh assistant turn seconds later, with no user input
+# between them). Emitted on every Stop, this notice therefore re-invoked the
+# agent on every Stop: it answered, stopped, was re-invoked, answered again,
+# until the user interrupted - and a billing blocker stays valid for a day
+# in every repository that has one. A Stop advisory is a soft block and is
+# bounded like one: the same (repo, sha, classification) is delivered once
+# per session; a new session, a new pushed commit or a changed blocker is
+# told again.
 function Write-ExternalBlockerContext {
     param([string]$Classification, [string]$Reason, [string]$Sha7, [string]$RepoSlug, [string]$EventName)
+    $noticeStamp = ([string](Get-Field $hookInput 'session_id')) + '|' +
+        (Get-ShortHash ($RepoSlug.ToLowerInvariant() + '|' + $Sha7 + '|' + $Classification))
+    $noticePath = Join-Path $stateDir ('CiStatusCheck-Notice-' + (Get-ShortHash ($cwd.ToLowerInvariant() + '|' + $RepoSlug.ToLowerInvariant())) + '.txt')
+    $alreadyTold = $false
+    try {
+        if (Test-Path -LiteralPath $noticePath -PathType Leaf) {
+            $alreadyTold = (([System.IO.File]::ReadAllText($noticePath)).Trim() -eq $noticeStamp)
+        }
+    }
+    catch { $alreadyTold = $false }
+    if ($alreadyTold) { exit 0 }
+    try {
+        New-Item -ItemType Directory -Path $stateDir -Force | Out-Null
+        [System.IO.File]::WriteAllText($noticePath, $noticeStamp)
+    }
+    catch { }
     $message = 'CI NOT VERIFIED GREEN. Completion is allowed only because a recorded EXTERNAL CI blocker is in effect for ' +
         $RepoSlug + '@' + $Sha7 + ' [' + $Classification + ']: ' + $Reason +
         '. This is a documented external blocker, not a successful CI run - report it accurately and do not claim CI passed.'

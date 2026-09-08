@@ -513,6 +513,13 @@ try {
         [string]$codexParsed.systemMessage -match 'DOCS FRESHNESS CHECK') $rCodex.Out
     Check 'Codex output never uses hookSpecificOutput.additionalContext for this warning' (
         $null -ne $codexParsed -and $null -eq $codexParsed.PSObject.Properties['hookSpecificOutput']) $rCodex.Out
+    # Once per session: on Claude Code a Stop additionalContext re-invokes the
+    # model, so a persistent detection error repeated on every Stop was a loop
+    # with nothing to act on. The corrupt baseline is still in place here.
+    $rAgain = Fire -HookPath $hcErr.Script -Cwd $projErr -EventName 'Stop' -LocalAppData $hcErr.LocalAppData
+    Check 'the detection-error warning is NOT repeated to the same session (exit 0, silent)' ($rAgain.Exit -eq 0 -and $rAgain.Out -eq '') $rAgain.Out
+    $rNew = Fire -HookPath $hcErr.Script -Cwd $projErr -EventName 'Stop' -SessionId 'sess2' -LocalAppData $hcErr.LocalAppData
+    Check 'a NEW session is warned again' ($rNew.Out -match 'DOCS FRESHNESS CHECK') $rNew.Out
 
     # =====================================================================
     Write-Host '--- Install-Hook.ps1: self-contained Claude + Codex copies ---' -ForegroundColor Cyan

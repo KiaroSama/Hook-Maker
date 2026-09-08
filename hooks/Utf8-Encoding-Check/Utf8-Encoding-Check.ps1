@@ -757,12 +757,14 @@ function Save-StopState {
 
 if ($violations.Count -gt 0) {
     # Fingerprint of the ACTIONABLE state, session-scoped: the same unchanged
-    # block is emitted once per session (repeats become a short advisory);
-    # any change - a new finding, a fix, a new session - re-evaluates at once.
+    # block is emitted once per session; any change - a new finding, a fix, a
+    # new session - re-evaluates at once. The repeat is SILENT, not a short
+    # advisory: on Claude Code a Stop additionalContext re-invokes the model,
+    # so an "unchanged, still unresolved" advisory on every Stop re-invoked the
+    # agent on every Stop for as long as one non-UTF-8 file stayed unfixed - a
+    # loop, not a reminder. The block already said it once this session.
     $fingerprint = Get-ShortHash ($sessionId + '|' + (($violations.ToArray() | Sort-Object) -join ';') + '|' + (($unknownNotes.ToArray() | Sort-Object) -join ';'))
-    if ($fingerprint -eq $lastBlockFingerprint) {
-        Write-HookMessage -Lines @('UTF-8 ENCODING CHECK - the non-UTF-8 findings already reported this session are unchanged and still unresolved. (Not an all-clear.)') -Blocking $false
-    }
+    if ($fingerprint -eq $lastBlockFingerprint) { exit 0 }
     Save-StopState -Fingerprint $fingerprint
     $lines = New-Object System.Collections.Generic.List[string]
     [void]$lines.Add('UTF-8 ENCODING CHECK - non-UTF-8 text was created or modified during this task:')
@@ -781,7 +783,13 @@ if ($violations.Count -gt 0) {
 }
 
 if ($unknownNotes.Count -gt 0) {
-    if ($lastBlockFingerprint -ne '') { Save-StopState -Fingerprint '' }
+    # Same bound as the block above, for the same reason: files that stay
+    # unverified would otherwise be reported - and on Claude re-invoke the
+    # model - on every Stop. Once per session per unchanged set; the state
+    # field holds whichever fingerprint was emitted last, block or advisory.
+    $fingerprint = Get-ShortHash ($sessionId + '|unknown|' + (($unknownNotes.ToArray() | Sort-Object) -join ';'))
+    if ($fingerprint -eq $lastBlockFingerprint) { exit 0 }
+    Save-StopState -Fingerprint $fingerprint
     $lines = New-Object System.Collections.Generic.List[string]
     [void]$lines.Add('UTF-8 ENCODING CHECK - some files changed in this task could NOT be verified as UTF-8 (this is NOT an all-clear):')
     foreach ($note in $unknownNotes.ToArray()) { [void]$lines.Add('- ' + $note) }
