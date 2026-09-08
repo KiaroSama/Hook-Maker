@@ -249,6 +249,15 @@ function Get-SafeArrayField {
     # not a valid array shape for these fields (foreach would otherwise treat
     # a string as a scalar element, and downstream code indexes/enumerates
     # these as collections of records) - discard rather than propagate it.
+    #
+    # CALLERS WRAP THE CALL IN @(). A function that returns an EMPTY array
+    # returns nothing (AutomationNull), and Windows PowerShell 5.1's
+    # ConvertTo-Json writes that singleton as `{}` - pwsh 7 writes `null`.
+    # Assigned straight into a state field, the first re-write of a state
+    # with no applied files under 5.1 (the host the Claude registration runs
+    # on) turned `[]` into `{}`, which read back as one property-less record
+    # and crashed every prompt. Only the caller's @() keeps an empty array
+    # an array across the function boundary.
     if ($null -eq $Value -or $Value -is [string]) { return $Default }
     return @($Value)
 }
@@ -272,7 +281,7 @@ function ConvertTo-NormalizedPending {
     return [pscustomobject][ordered]@{
         sourceQuickFingerprint   = Get-SafeStringField (Get-Field $Pending 'sourceQuickFingerprint') ''
         sourceContentFingerprint = Get-SafeStringField (Get-Field $Pending 'sourceContentFingerprint') ''
-        sourceFiles              = Get-SafeArrayField (Get-Field $Pending 'sourceFiles') @()
+        sourceFiles              = @(Get-SafeArrayField (Get-Field $Pending 'sourceFiles') @())
         packageRoot              = Get-SafeStringField (Get-Field $Pending 'packageRoot') ''
         manifestPath             = Get-SafeStringField (Get-Field $Pending 'manifestPath') ''
         filesRoot                = Get-SafeStringField (Get-Field $Pending 'filesRoot') ''
@@ -314,7 +323,7 @@ function ConvertTo-NormalizedState {
         sourceRoot                    = Get-SafeStringField (Get-Field $State 'sourceRoot') $defaults.sourceRoot
         lastAppliedQuickFingerprint   = Get-SafeStringField (Get-Field $State 'lastAppliedQuickFingerprint') $defaults.lastAppliedQuickFingerprint
         lastAppliedContentFingerprint = Get-SafeStringField (Get-Field $State 'lastAppliedContentFingerprint') $defaults.lastAppliedContentFingerprint
-        lastAppliedFiles              = Get-SafeArrayField (Get-Field $State 'lastAppliedFiles') $defaults.lastAppliedFiles
+        lastAppliedFiles              = @(Get-SafeArrayField (Get-Field $State 'lastAppliedFiles') $defaults.lastAppliedFiles)
         pending                       = ConvertTo-NormalizedPending (Get-Field $State 'pending')
         lastNotifiedSessionId         = Get-SafeStringField (Get-Field $State 'lastNotifiedSessionId') $defaults.lastNotifiedSessionId
         lastNotifiedAtUtc             = Get-SafeStringField (Get-Field $State 'lastNotifiedAtUtc') $defaults.lastNotifiedAtUtc
