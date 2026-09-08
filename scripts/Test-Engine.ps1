@@ -302,6 +302,30 @@ try {
     $stateAfterOlderSchema = Get-Content -LiteralPath $olderSchemaStateFile.FullName -Raw | ConvertFrom-Json
     Check 'leaner top-level schema: pending packageRoot preserved byte-for-byte' ([string]$stateAfterOlderSchema.pending.packageRoot -eq $olderOriginalPackageRoot) ([string]$stateAfterOlderSchema.pending.packageRoot)
     Check 'leaner top-level schema: routeId repaired (non-empty)' (-not [string]::IsNullOrWhiteSpace([string]$stateAfterOlderSchema.routeId))
+
+    # --- Scenario 15: lastAppliedFiles serialized as an empty OBJECT ---
+    # Seen in three real state files: `"lastAppliedFiles": {}` instead of an
+    # array. Get-SafeArrayField wraps it into one property-less element and
+    # the applied-files map crashed on `.path` under StrictMode - on EVERY
+    # prompt, as a non-blocking hook error the user saw each time. The record
+    # is skipped as "nothing applied", so the run re-stages and rewrites a
+    # well-formed state.
+    $EmptyObjSrc = New-Project 'EmptyObjSrc'
+    $EmptyObjDest = New-Project 'EmptyObjDest'
+    Set-Content -LiteralPath (Join-Path $EmptyObjSrc '.ai\NOTE.md') 'empty-object fixture' -Encoding utf8
+    $cfgEmptyObj = Join-Path $Work 'cfg-empty-obj.json'
+    Write-Config -Path $cfgEmptyObj -Routes @((New-Route 'empty-obj-route' (New-Endpoint 'Src' $EmptyObjSrc) (New-Endpoint 'Dest' $EmptyObjDest))) -Extensions @('.md')
+    $rEmptyObjSeed = Fire -Cwd $EmptyObjDest -Config $cfgEmptyObj
+    Check 'empty-object fixture: seed run emits review' ($rEmptyObjSeed.Out -match 'REVIEW REQUIRED')
+    $emptyObjStateFile = Get-ChildItem -LiteralPath (Join-Path $EmptyObjDest '.ai\.cross-project-sync\state') -Filter '*.json' -ErrorAction SilentlyContinue | Select-Object -First 1
+    Check 'empty-object fixture: state file exists' ($null -ne $emptyObjStateFile)
+    $emptyObjText = Get-Content -LiteralPath $emptyObjStateFile.FullName -Raw
+    $emptyObjText = [regex]::Replace($emptyObjText, '"lastAppliedFiles"\s*:\s*\[[^\]]*\]', '"lastAppliedFiles": {}')
+    Check 'empty-object fixture: the malformed field was actually written' ($emptyObjText -match '"lastAppliedFiles": \{\}')
+    [System.IO.File]::WriteAllText($emptyObjStateFile.FullName, $emptyObjText, (New-Object System.Text.UTF8Encoding $false))
+    $rEmptyObj = Fire -Cwd $EmptyObjDest -Config $cfgEmptyObj -SessionId 'empty-obj-session'
+    Check 'lastAppliedFiles as an empty object: exit 0 (no StrictMode crash on .path)' ($rEmptyObj.Exit -eq 0) $rEmptyObj.Out
+    Check 'lastAppliedFiles as an empty object: the run still reports the review' ($rEmptyObj.Out -match 'REVIEW REQUIRED') $rEmptyObj.Out
 }
 finally {
     if ($KeepArtifacts) {
