@@ -326,6 +326,34 @@ try {
     $rEmptyObj = Fire -Cwd $EmptyObjDest -Config $cfgEmptyObj -SessionId 'empty-obj-session'
     Check 'lastAppliedFiles as an empty object: exit 0 (no StrictMode crash on .path)' ($rEmptyObj.Exit -eq 0) $rEmptyObj.Out
     Check 'lastAppliedFiles as an empty object: the run still reports the review' ($rEmptyObj.Out -match 'REVIEW REQUIRED') $rEmptyObj.Out
+
+    # --- Scenario 16: the ORIGIN of the empty object - a 5.1 re-write --------
+    # A function that returns an EMPTY array returns AutomationNull, and
+    # Windows PowerShell 5.1's ConvertTo-Json writes that as `{}` (pwsh 7
+    # writes `null`). Both normalizers assigned array fields straight from
+    # Get-SafeArrayField, so the first state re-write under 5.1 - a route with
+    # an open package re-notified in a NEW session, exactly the three real
+    # files - turned `[]` into `{}`. The seed runs under pwsh; the re-write
+    # runs under powershell.exe, the host the Claude registration uses.
+    if (Get-Command powershell.exe -ErrorAction SilentlyContinue) {
+        $Ps51Src = New-Project 'Ps51Src'
+        $Ps51Dest = New-Project 'Ps51Dest'
+        Set-Content -LiteralPath (Join-Path $Ps51Src '.ai\NOTE.md') '5.1 re-write fixture' -Encoding utf8
+        $cfgPs51 = Join-Path $Work 'cfg-ps51.json'
+        Write-Config -Path $cfgPs51 -Routes @((New-Route 'ps51-route' (New-Endpoint 'Src' $Ps51Src) (New-Endpoint 'Dest' $Ps51Dest))) -Extensions @('.md')
+        $rPs51Seed = Fire -Cwd $Ps51Dest -Config $cfgPs51 -SessionId 'ps51-first'
+        Check '5.1 re-write: seed run (pwsh) emits review' ($rPs51Seed.Out -match 'REVIEW REQUIRED') $rPs51Seed.Out
+        $ps51StateFile = Get-ChildItem -LiteralPath (Join-Path $Ps51Dest '.ai\.cross-project-sync\state') -Filter '*.json' -ErrorAction SilentlyContinue | Select-Object -First 1
+        Check '5.1 re-write: state file exists after the seed' ($null -ne $ps51StateFile)
+        $rPs51Again = Fire -Cwd $Ps51Dest -Config $cfgPs51 -SessionId 'ps51-second' -Exe 'powershell'
+        Check '5.1 re-write: a new session under powershell.exe re-notifies (exit 0)' ($rPs51Again.Exit -eq 0 -and $rPs51Again.Out -match 'REVIEW REQUIRED') $rPs51Again.Out
+        $ps51Text = Get-Content -LiteralPath $ps51StateFile.FullName -Raw
+        Check '5.1 re-write: lastAppliedFiles is still a JSON ARRAY, not {}' ($ps51Text -match '"lastAppliedFiles":\s*\[') ($ps51Text -replace '\s+', ' ')
+        Check '5.1 re-write: pending.sourceFiles is still a JSON ARRAY' ($ps51Text -match '"sourceFiles":\s*\[') ($ps51Text -replace '\s+', ' ')
+        $rPs51Third = Fire -Cwd $Ps51Dest -Config $cfgPs51 -SessionId 'ps51-third' -Exe 'powershell'
+        Check '5.1 re-write: a third session still runs cleanly (exit 0, review re-notified)' ($rPs51Third.Exit -eq 0 -and $rPs51Third.Out -match 'REVIEW REQUIRED') $rPs51Third.Out
+    }
+    else { Write-Host '[SKIP] powershell.exe not available for the 5.1 re-write scenario' -ForegroundColor Yellow }
 }
 finally {
     if ($KeepArtifacts) {
