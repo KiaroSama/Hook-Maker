@@ -25,7 +25,7 @@
 #             record subkeys and path derivation. Changing one breaks records.
 #   SELECTION PascalCase ('Claude') - what the wizard menu returns and what a
 #             CLIENTS= config value holds. User-facing.
-$script:HookMakerClientIds = @('claude', 'codex', 'kiro')
+$script:HookMakerClientIds = @('claude', 'codex')
 
 # ---- canonical logical events ----------------------------------------------
 # Hook Maker's OWN event vocabulary. A client maps these to its physical names.
@@ -106,141 +106,6 @@ $script:HookMakerClientCapabilities = @{
             'SessionEnd and Notification support is not confirmed by primary Codex documentation.'
         )
     }
-
-    'kiro' = [ordered]@{
-        id                    = 'kiro'
-        selectionValue        = 'Kiro'
-        displayName           = 'Kiro'
-        # One managed JSON file per logical install under .kiro/hooks/. The
-        # runtime must NOT live there: that directory is Kiro's hook-config
-        # discovery root, so a copied .ps1 tree inside it would be scanned as
-        # configuration.
-        registrationKind      = 'perHookFile'
-        projectRegistration   = '.kiro\hooks'
-        globalRegistration    = '.kiro\hooks'
-        runtimeRelativeRoot   = '.kiro\hook-runtime\Hook-Maker'
-        timeoutField          = 'timeout'
-        timeoutUnits          = 'seconds'
-        matcherSupported      = $true
-        # A bare matcherSupported=$true is TRUE BUT MISLEADING for Kiro, and a
-        # caller acting on it alone would attach a matcher where Kiro silently
-        # ignores it - a filter that does nothing reads as a restriction that is
-        # in force. Kiro evaluates a matcher only on these triggers; everywhere
-        # else it is not consulted. Documented in .ai/KIRO_PROTOCOL.md.
-        #
-        # This lives in the table rather than only inside the Kiro writer
-        # because that is the drift this table exists to prevent: the writer
-        # already enforced it, but a second caller reading the table would not
-        # have known.
-        matcherEvaluatingEvents = @('PreToolUse', 'PostToolUse')
-        actionTypes           = @('command', 'agent')
-        # Kiro IDE documents NO stdin JSON and no cwd/session_id/tool_name for
-        # shell-command hooks - only USER_PROMPT, and only on UserPromptSubmit.
-        # CLI v3 does send stdin JSON but does not publish its field names. So
-        # event identity is passed EXPLICITLY on the launcher command line and
-        # stdin is strict-decoded only when present. See .ai/KIRO_PROTOCOL.md.
-        inputProtocol         = 'explicitTriggerArgument'
-        outputProtocol        = 'kiroExitCodeStdoutAndStderrWarning'
-        # Logical -> physical. Identity mappings today, but the indirection is
-        # load-bearing: Kiro renamed every trigger between CLI v2 (camelCase)
-        # and the current v1 schema (PascalCase).
-        physicalEventMap      = @{
-            'SessionStart'     = 'SessionStart'
-            'UserPromptSubmit' = 'UserPromptSubmit'
-            'PreToolUse'       = 'PreToolUse'
-            'PostToolUse'      = 'PostToolUse'
-            'Stop'             = 'Stop'
-        }
-        # Only these five have a documented Kiro equivalent. The other seven are
-        # NOT silently dropped and NOT remapped onto Stop - callers must report
-        # them as an explicit degraded component result.
-        supportedEvents       = @('SessionStart', 'UserPromptSubmit', 'PreToolUse', 'PostToolUse', 'Stop')
-        # A trigger EXISTING is not the same as a hook being able to do its job
-        # on it. Kiro fires PreToolUse/PostToolUse, but a hook that needs the
-        # tool payload may run and immediately exit - present, registered, and
-        # useless. Callers must weigh this per HOOK, against what that hook
-        # actually reads, not per event name.
-        #
-        # NOT named 'unavailable', and that is the whole point. ONE kiro id
-        # covers TWO surfaces whose EVIDENCE differs, and the previous name
-        # flattened them into a single confirmed absence:
-        #
-        #   Kiro IDE   - its documented input surface is USER_PROMPT on
-        #                UserPromptSubmit and nothing else, so for every field
-        #                below the absence IS what the primary docs describe.
-        #   Kiro CLI v3- inputProtocol above already records that v3 DOES send
-        #                stdin JSON. It just does not publish the field names or
-        #                casing (.ai/KIRO_PROTOCOL.md, CRITICAL UNKNOWN 4). So a
-        #                field here may well arrive on v3; we cannot verify it.
-        #
-        # Calling the v3 half "unavailable" recorded an unverified fact as a
-        # confirmed one, and the installer then repeated it to users as fact.
-        # BEHAVIOUR IS UNCHANGED - an unverified field still degrades, because
-        # registering a hook that silently cannot work is the worse error. Only
-        # the claim is corrected.
-        #
-        # ONE list, not two, because the split is per SURFACE and not per field:
-        # today every entry is documented-absent on IDE and unverified on v3.
-        # Two identical per-field buckets would be fake precision. If a future
-        # round ever confirms a field on one surface but not the other, THAT is
-        # when this splits - and until then the name no longer lies.
-        #
-        # Field names are the normalized ones Read-HookInput produces. 'prompt'
-        # is absent from this list because USER_PROMPT genuinely supplies it on
-        # UserPromptSubmit.
-        unverifiedInputFields = @{
-            'PreToolUse'  = @('tool_name', 'tool_input', 'session_id')
-            'PostToolUse' = @('tool_name', 'tool_input', 'tool_result', 'session_id')
-            'SessionStart' = @('session_id')
-            'Stop'        = @('session_id')
-            'UserPromptSubmit' = @('session_id')
-        }
-        # ONE client id, TWO evidence surfaces (C-05). The 'kiro' id, the menu
-        # entry and the install records stay singular - splitting the CLIENT
-        # would churn every record for no user-visible gain - but the EVIDENCE
-        # for what each surface delivers is not the same kind and is recorded
-        # per surface: the IDE's input silence is what its primary docs
-        # describe (documented-absent), while CLI v3 demonstrably sends stdin
-        # JSON whose field names are simply unpublished (unverified). The
-        # per-FIELD classification is identical across both surfaces today,
-        # which is why unverifiedInputFields stays ONE list; the day a field is
-        # confirmed on one surface only, that list splits per surface too.
-        surfaces = @{
-            'kiro-ide' = @{
-                displayName   = 'Kiro IDE'
-                inputEvidence = 'documented-absent'
-                stdinJson     = $false
-                promptChannel = 'USER_PROMPT'
-            }
-            'kiro-cli-v3' = @{
-                displayName   = 'Kiro CLI v3'
-                inputEvidence = 'unverified'
-                stdinJson     = $true
-                promptChannel = 'unverified'
-            }
-        }
-        # The evidence sentence lives HERE, beside the data it qualifies, and is
-        # reported verbatim by the installer. Keeping the claim in the table is
-        # what stops a consumer paraphrasing it back into a flat assertion -
-        # which is exactly how the previous wording came to overstate v3.
-        # Test-KiroIntegration asserts this sentence AGREES with the surfaces
-        # above (names both, in evidence order), so the two cannot drift.
-        unverifiedInputFieldsNote = 'not supplied by Kiro IDE; unverified on Kiro CLI v3'
-        # Stop is ABSENT on purpose and it is the most consequential entry in
-        # this file. Kiro IDE's trigger table says Stop cannot block, and CLI v3
-        # dropped v2's stdout decision JSON entirely. Only the legacy CLI v2
-        # embedded format could block at Stop, and Hook Maker does not target
-        # it. Every Stop-gate hook must therefore record degraded-stop-gate for
-        # Kiro permanently rather than conditionally.
-        blockCapableEvents    = @('PreToolUse', 'UserPromptSubmit')
-        capabilityNotes       = @(
-            'Stop is advisory only: Kiro IDE and CLI v3 both document Stop as non-blocking.',
-            'Kiro IDE hook input is undocumented beyond USER_PROMPT; session id is normally absent, so session-keyed deduplication degrades instead of pairing wrongly.',
-            'The global hooks path ~/.kiro/hooks is CONFIRMED by Kiro''s own CLI changelog. It was previously recorded as inferred; the path never changed, only this classification was stale.',
-            'Kiro-only triggers PreTaskExec, PostTaskExec, PostFileCreate, PostFileSave and PostFileDelete have no Hook Maker logical equivalent and are not installed.',
-            'The Manual trigger is never emitted: Kiro documentation contradicts itself on whether the IDE still accepts it.'
-        )
-    }
 }
 
 function Get-HookMakerClientIds {
@@ -286,29 +151,29 @@ function Get-HookMakerClientCapability {
 # "both", so a typo like CLIENTS=Cluade installed MORE clients than asked for.
 # An unknown value now throws before anything is written.
 #
-# 'Both' keeps its historical meaning - Claude + Codex, never Kiro - because
-# existing .env files and recorded installs contain it. 'All' is the new value
-# that includes Kiro.
+# 'Both' and 'All' both mean Claude + Codex. They are kept as ACCEPTED INPUT,
+# not as two concepts: existing .env files and recorded installs contain either
+# word, and refusing them would break every configuration written while a third
+# client existed.
 function Resolve-HookMakerClientSet {
     param([Parameter(Mandatory = $true)][AllowEmptyString()][string]$Value)
     $raw = ([string]$Value).Trim()
     if ([string]::IsNullOrWhiteSpace($raw)) {
-        throw 'A client selection is required. Accepted values: Claude, Codex, Kiro, All (legacy: Both = Claude + Codex).'
+        throw 'A client selection is required. Accepted values: Claude, Codex, All (legacy: Both = Claude + Codex).'
     }
     switch ($raw.ToLowerInvariant()) {
         'claude' { return @('claude') }
         'codex' { return @('codex') }
-        'kiro' { return @('kiro') }
-        'all' { return @('claude', 'codex', 'kiro') }
+        'all' { return @('claude', 'codex') }
         'both' { return @('claude', 'codex') }
         default {
-            throw ("Unknown client selection '" + $raw + "'. Accepted values: Claude, Codex, Kiro, All (legacy: Both = Claude + Codex).")
+            throw ("Unknown client selection '" + $raw + "'. Accepted values: Claude, Codex, All (legacy: Both = Claude + Codex).")
         }
     }
 }
 
 function Get-HookMakerClientSelectionValues {
-    return @('Claude', 'Codex', 'Kiro', 'All')
+    return @('Claude', 'Codex', 'All')
 }
 
 # Per-client breakdown of a requested event list.
