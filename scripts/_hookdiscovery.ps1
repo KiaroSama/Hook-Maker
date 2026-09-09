@@ -115,7 +115,16 @@ function Get-FileSha256Hex {
     if ([string]::IsNullOrWhiteSpace($Path)) { return '' }
     try {
         if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { return '' }
-        return (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToLowerInvariant()
+        # .NET rather than Get-FileHash: the cmdlet is in a MODULE that a 5.1
+        # child of a pwsh 7 parent can fail to resolve (see
+        # Get-PlanArtifactExpectedHash in _installplan.ps1). Same digest.
+        $sha = [System.Security.Cryptography.SHA256]::Create()
+        try {
+            $stream = [System.IO.File]::Open($Path, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::ReadWrite)
+            try { return ([System.BitConverter]::ToString($sha.ComputeHash($stream))).Replace('-', '').ToLowerInvariant() }
+            finally { $stream.Dispose() }
+        }
+        finally { $sha.Dispose() }
     }
     catch { return '' }
 }
