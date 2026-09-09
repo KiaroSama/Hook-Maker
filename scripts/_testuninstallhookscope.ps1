@@ -266,7 +266,7 @@
         $shadowDir = Join-Path $Work 'headuninstall'
         New-Item -ItemType Directory -Path $shadowDir -Force | Out-Null
         # The whole _*.ps1 set: the uninstaller's dot-source closure
-        # (_installplan -> _clientcapability/_installkiro/..., _installlib ->
+        # (_installplan -> _clientcapability/..., _installlib ->
         # _installdiscovered -> _hookdiscovery, _uninstallownership) is entirely
         # underscore-prefixed, so one wildcard copy covers it without the test
         # having to track that graph.

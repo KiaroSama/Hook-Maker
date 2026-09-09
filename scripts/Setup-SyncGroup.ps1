@@ -332,11 +332,7 @@ function Read-ClientChoice {
             # permanent facts of Kiro's own documentation, not build state - see
             # .ai\KIRO_PROTOCOL.md. The event list is read from the capability
             # table so this note cannot rot the way its predecessor did.
-            if (@(Resolve-HookMakerClientSet $choice) -contains 'kiro') {
-                $kiroEvents = @((Get-HookMakerClientCapability -ClientId 'kiro').supportedEvents)
-                Write-NoteLine ('  NOTE: Kiro supports only these events: ' + ($kiroEvents -join ', ') + '.')
-                Write-NoteLine '  Kiro cannot hard-block at Stop, so a Stop gate installs as an advisory only.'
-            }
+
             return $choice
         }
         Write-ErrorLine ('Enter a number between 1 and ' + $selections.Count + ', or 0.')
@@ -383,7 +379,6 @@ function Get-ClientInstallLabel {
     }
     return ('per project: ' + ($paths -join ' + ') + $suffix)
 }
-
 
 # Reads an event selection (or a custom list). Returns an events array, or
 # $null when the user backs out. When $RecommendedEvents is non-empty (the

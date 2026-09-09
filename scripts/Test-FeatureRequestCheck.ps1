@@ -92,8 +92,7 @@ function Fire {
         [hashtable]$Payload,
         [string]$HookPath = '',
         [string]$Client = 'claude',
-        [string]$Exe = 'pwsh',
-        [string]$KiroTrigger = ''
+        [string]$Exe = 'pwsh'
     )
     if ($HookPath -eq '') { $HookPath = $Hook }
     $json = ConvertTo-AsciiJson ($Payload | ConvertTo-Json -Depth 8 -Compress)
@@ -106,11 +105,9 @@ function Fire {
     else { $file = 'powershell.exe'; $argLine = '-NoLogo -NoProfile -ExecutionPolicy Bypass -File "' + $HookPath + '"' }
     $savedLocal = $env:LOCALAPPDATA
     $savedClient = $env:HOOKMAKER_CLIENT
-    $savedTrigger = $env:HOOKMAKER_KIRO_TRIGGER
     try {
         $env:LOCALAPPDATA = $FakeLocalAppData
         $env:HOOKMAKER_CLIENT = $Client
-        $env:HOOKMAKER_KIRO_TRIGGER = $KiroTrigger
         $startArgs = @{
             FilePath               = $file
             ArgumentList           = $argLine
@@ -126,7 +123,6 @@ function Fire {
     finally {
         $env:LOCALAPPDATA = $savedLocal
         $env:HOOKMAKER_CLIENT = $savedClient
-        $env:HOOKMAKER_KIRO_TRIGGER = $savedTrigger
     }
     $out = if (Test-Path -LiteralPath $outFile) { ([System.IO.File]::ReadAllText($outFile)).Trim() } else { '' }
     $err = if (Test-Path -LiteralPath $errFile) { ([System.IO.File]::ReadAllText($errFile)).Trim() } else { '' }
@@ -401,7 +397,7 @@ try {
         $rNone.Exit -eq 0 -and $rNone.Out -eq '') ($rNone.Out + $rNone.Err)
 
     # No transcript is NO EVIDENCE, in either direction - never an all-clear
-    # and never a violation. Codex and Kiro do not supply one at all.
+    # and never a violation. Codex does not supply one at all.
     $rNoTranscript = Fire (New-StopPayload -Cwd (New-Proj 'GateNoTranscript') -SessionId 'g6')
     Check 'gate: no transcript_path at all is silent, not a block' (
         $rNoTranscript.Exit -eq 0 -and $rNoTranscript.Out -eq '') ($rNoTranscript.Out + $rNoTranscript.Err)
@@ -530,15 +526,6 @@ try {
     $rFits = Fire (New-StopPayload -Cwd (New-Proj 'PartialControl') -Transcript $tFeature -SessionId 'p2') -HookPath $partialHook
     Check 'partial control: the same copy still blocks on a transcript that fits' (
         Test-Blocked $rFits.Out) ($rFits.Out + $rFits.Err)
-
-    # =====================================================================
-    Write-Host ''
-    Write-Host '--- Kiro cannot block at Stop, and says so instead of pretending ---' -ForegroundColor Cyan
-    $rKiro = Fire (New-StopPayload -Cwd (New-Proj 'Kiro') -Transcript $tFeature -SessionId 'k1') -Client 'kiro' -KiroTrigger 'Stop'
-    Check 'kiro: the same text is delivered as advice, never as decision:block' (
-        -not (Test-Blocked $rKiro.Out) -and $rKiro.Err -match 'FEATURE REQUEST CHECK') ($rKiro.Out + '|' + $rKiro.Err)
-    Check 'kiro: the degradation is named rather than passed off as parity' (
-        $rKiro.Err -match 'degraded-stop-gate') $rKiro.Err
 
     # =====================================================================
     Write-Host ''

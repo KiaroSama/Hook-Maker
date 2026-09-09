@@ -7,8 +7,7 @@
 # CHANGED state reports immediately); the client output shapes this hook's two
 # events can produce (Claude AND Codex both take
 # hookSpecificOutput.additionalContext off Stop - Codex's systemMessage is
-# Stop-scoped and must never appear here - while Kiro takes plain stdout);
-# SessionStart and
+# Stop-scoped and must never appear here); SessionStart and
 # UserPromptSubmit; pointable findings (minute-scale sleep, unbounded wait);
 # a malformed .env falling back to the default with a message instead of
 # crashing; output being a single valid JSON document; the HM-04 per-entry
@@ -195,22 +194,6 @@ try {
         -not [string]::IsNullOrWhiteSpace([string]$parsed2.hookSpecificOutput.additionalContext) -and
         [string]$parsed2.hookSpecificOutput.hookEventName -eq 'SessionStart') $r.Out
     Check 'the advisory never emits decision:block (this hook may never block)' ($r.Out -notmatch '(?i)"decision"') $r.Out
-
-    # The one client whose shape is observably different on this hook's events:
-    # Kiro takes PLAIN stdout on SessionStart/UserPromptSubmit, never JSON. It is
-    # reachable only through Get-HookClientId, so this fails outright if the hook
-    # ever goes back to deciding the client for itself. The real kiro-launch
-    # registration always sets HOOKMAKER_KIRO_TRIGGER beside HOOKMAKER_CLIENT;
-    # without it Read-HookInput now refuses to run (fail closed), so the faithful
-    # launcher simulation passes BOTH.
-    $hcKiro = New-IsolatedHookCopy
-    $rKiro = Fire -HookPath $hcKiro.Script -Cwd $proj2 -EventName 'SessionStart' -LocalAppData $hcKiro.LocalAppData -ExtraEnv @{ HOOKMAKER_CLIENT = 'kiro'; HOOKMAKER_KIRO_TRIGGER = 'SessionStart' }
-    $parsedKiro = $null
-    try { $parsedKiro = $rKiro.Out | ConvertFrom-Json } catch { $parsedKiro = $null }
-    Check 'HOOKMAKER_CLIENT=kiro selects plain stdout, not either JSON envelope' (
-        $rKiro.Exit -eq 0 -and $rKiro.Err -eq '' -and $null -eq $parsedKiro -and
-        $rKiro.Out -match '(?i)TEST PLAN CHECK' -and $rKiro.Out -notmatch '(?i)hookSpecificOutput' -and
-        $rKiro.Out -notmatch '(?i)systemMessage') ($rKiro.Out + $rKiro.Err)
 
     $hc3 = New-IsolatedHookCopy
     $proj3 = New-GitRepo 'ClaudeEnv'

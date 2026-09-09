@@ -57,14 +57,13 @@ byte change; a backup is pruned to ONE per file, never touching a neighbour that
 | `scripts/_installlegacy.ps1` | Pre-registry discovery: finds live registrations the registry never recorded (`Get-LegacyScanScopes`, `Get-ScopeSettingsPaths`, `Find-ManagedCommands`, `Get-LegacyHookCandidates`). Exercised by `Test-LegacyDiscovery.ps1`. |
 | `scripts/_installregistry.ps1` | The registry-persistence layer split out of `_installlib.ps1` (which dot-sources it, so consumers need no change): registry path/shape/quarantine, crash-aware locking, record identity and per-client subrecords, v1→v2 migration, and the locked atomic record upsert. |
 | `scripts/_installlibmanifest.ps1` | Manifest building/comparison and native pre-push state, split out of `_installlib.ps1` (which dot-sources it). |
-| `scripts/_installlibregistration.ps1` | Registration inspection for the shared-settings clients and Kiro side by side, split out of `_installlib.ps1` (which dot-sources it). |
-| `scripts/_hookstatusscanregistrations.ps1` | Claude/Codex settings parsing and Kiro per-hook-file parsing, split out of `_hookstatusscan.ps1` (which dot-sources it). |
+| `scripts/_installlibregistration.ps1` | Registration inspection for the shared-settings clients, split out of `_installlib.ps1` (which dot-sources it). |
+| `scripts/_hookstatusscanregistrations.ps1` | Claude/Codex settings parsing, split out of `_hookstatusscan.ps1` (which dot-sources it). |
 | `scripts/_hookstatusscangit.ps1` | Native Git pre-push discovery, split out of `_hookstatusscan.ps1` (which dot-sources it). |
 | `scripts/_installdiscovered.ps1` | The other record kind sharing that file, split out of `_installregistry.ps1` (which dot-sources it): a *discovered* record is one the read-only status scan found rather than one Hook Maker installed, so it has its own stable id derivation, its own field validators (including the rule that a raw command line is never persisted), and its own merge against the managed set. Exercised by `Test-InstallRegistrySchema.ps1`. |
 | `scripts/_installruntime.ps1` | Runtime materialization split out of `Install-Hook.ps1` (which dot-sources it): building the self-contained runtime copy a registration points at — the planned, hash-verified, transactional swap plus its post-commit legacy cleanup — and the two command lines (Windows PowerShell / pwsh) that invoke that copy. |
 | `scripts/_installclientsettings.ps1` | Client settings mutation split out of `Install-Hook.ps1` (which dot-sources it): the read-modify-write of one client's settings file — pruning only handlers this install provably owns, inserting the handler group, backing the file up, and replacing it transactionally after re-parsing the serialized JSON from disk. |
 | `scripts/_installnativegit.ps1` | The native Git pre-push chain split out of `Install-Hook.ps1` (which dot-sources it): for the one hook that also manages a real `.git/hooks/pre-push` wrapper, it stages the managed runtime and its chain companions through the same canonical plan, preserves any pre-existing user hook as opaque bytes, regenerates only the owned wrapper, and records what the chain manages so the updater can detect companion drift. |
-| `scripts/_installkiroclient.ps1` | The Kiro client install FLOW split out of `Install-Hook.ps1` — distinct from `_installkiro.ps1`, which is the pure document format. This file owns every Kiro filesystem write: the runtime rollback snapshot, the ordered commit of runtime then registration, the lock around the registration write, and the degradation reporting. It is dot-sourced at the position the Kiro phase runs (it carries the phase's top-level block, not only functions). |
 | `state/` | **Machine-local and git-ignored.** `install-registry.json` — what Hook Maker has installed and where (see "Updating previously installed hooks"); never holds secret/`.env`/prompt content or file contents. A damaged registry is preserved beside it as `install-registry.corrupt-<UTC timestamp>-<short hash>.json` instead of being overwritten. |
 
 ## Shipped hooks
@@ -160,7 +159,7 @@ disabled stays disabled after the merge; it is never silently re-enabled.
 
 ## Where the hook lives — installs are self-contained
 
-Every install **copies the hook runtime into the target itself** (Kiro-style): the script, the
+Every install **copies the hook runtime into the target itself**: the script, the
 shared `_hooklib.ps1`, its `.env` (if present) and — for the sync engine — a copy of the routing
 config plus `SYNC-PROJECTS.txt` (the readable project names and paths of every sync group **this
 project** belongs to — one runtime directory is shared by all of them, so its content is keyed by
@@ -276,8 +275,7 @@ scan updates the same record rather than duplicating it; two hooks with the same
 paths stay separate. A cancelled or failed scan writes nothing.
 
 A hook Hook Maker itself installs is never also kept as a discovered one. Coverage is proved by the
-exact paths the managed record registered — including a Kiro registration, which points at the
-hook's `kiro-launch.ps1` shim rather than at the hook script — and a discovered record for that same
+exact paths the managed record registered — and a discovered record for that same
 artifact is retired the next time it is recognised. Without that, reinstalling over a path an
 earlier scan had discovered left a duplicate row in the uninstall list that could never be removed.
 

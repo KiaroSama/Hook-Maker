@@ -111,12 +111,8 @@ $script:ManagedRuntimeUserConfigNames = @('.env')
 # derives canonical registration paths from it instead of an if/else that made
 # every non-Claude client mean Codex.
 . (Join-Path $PSScriptRoot '_clientcapability.ps1')
-# The Kiro per-hook-file document, path and ownership module, on exactly the
-# same terms: the integrity check below needs it to evaluate a 'perHookFile'
-# client, and Uninstall-Hook.ps1 needs it to prove which files it owns. Both
-# already dot-source only THIS file, so it is loaded here rather than in each
+
 # consumer. It is a pure module - it defines functions and touches no state.
-. (Join-Path $PSScriptRoot '_installkiro.ps1')
 . (Join-Path $PSScriptRoot '_installvalidate.ps1')
 . (Join-Path $PSScriptRoot '_installlegacy.ps1')
 # The manifest / native-pre-push concern (_installlibmanifest.ps1) and the
@@ -158,8 +154,7 @@ function Get-InstallRecordById {
 # The per-run rule already stopped a settings file collecting one copy per HOOK,
 # but nothing ever removed a PREVIOUS run's copy, so they accumulated for ever -
 # 464 files / 6.5 MB across one machine's projects, most of them from repeated
-# wizard runs, and Kiro multiplies it because it is per-hook-file (one document,
-# and therefore one backup, per hook per project).
+# wizard runs.
 #
 # Scope is deliberately narrow: only siblings named exactly
 # "<this file's name>.backup-*", in this file's own directory, and never the one
@@ -425,7 +420,7 @@ function Get-InstallIntegrity {
     if ($null -ne $Record.PSObject.Properties['targetProjectRoot']) { $recordProjectRoot = [string]$Record.targetProjectRoot }
     # CLIENT-AGNOSTIC on purpose: this manifest answers "did the hook's SOURCE
     # change since it was installed?" and is compared against the recorded one.
-    # The per-client artifacts (kiro-launch.ps1, the ownership metadata) are NOT
+    # The per-client artifacts (the ownership metadata) are NOT
     # source, so including them here would make the source verdict depend on which
     # client is asked and would mark every existing record's source as changed.
     $currentSource = @(Get-ManagedSourceManifest -ToolRoot $ToolRoot `
@@ -480,13 +475,13 @@ function Get-InstallIntegrity {
             continue
         }
         # THIS client's expected content, not the shared source manifest: only a
-        # per-client plan can describe kiro-launch.ps1 and the client's own
-        # .hookmaker-runtime.json, and comparing on-disk reality against a manifest
-        # that cannot describe two of its files is a permanent update loop.
+        # per-client plan can describe the client's own .hookmaker-runtime.json,
+        # and comparing on-disk reality against a manifest that cannot describe
+        # one of its files is a permanent update loop.
         #
-        # Wrapped, because deriving it can legitimately refuse (a Kiro record whose
-        # managed id yields no provable identity). A refusal must skip ONE client,
-        # exactly like an unresolvable Kiro scope below - letting it throw would
+        # Wrapped, because deriving it can legitimately refuse (a record whose
+        # managed id yields no provable identity). A refusal must skip ONE client -
+        # letting it throw would
         # abort the whole update run and leave every healthy record after this one
         # unevaluated, a regression this codebase has already had once.
         $expectedForClient = @()
@@ -560,59 +555,6 @@ function Get-InstallIntegrity {
                 $reason = 'unexpected managed file: ' + $difference.Unexpected[0]
             }
             Add-Component -Name $client -Status 'update' -Detail $reason
-            continue
-        }
-
-        # A per-hook-file client is evaluated by its OWN registration check.
-        # Pointing the shared-settings one at a Kiro document would report
-        # "registration missing" every time (its hooks are an array, not an
-        # object keyed by event), so this client would be reinstalled on every
-        # update run for ever.
-        if ([string](Get-HookMakerClientCapability -ClientId $client).registrationKind -ceq 'perHookFile') {
-            $kiroDirectory = ''
-            try { $kiroDirectory = Get-KiroRecordRegistrationDirectory -Record $Record }
-            catch {
-                # An unresolvable scope is not repairable by reinstalling on top
-                # of it - it needs a human, exactly like a missing user-owned
-                # native wrapper.
-                Add-Component -Name $client -Status 'skip' -Detail ('registration location cannot be resolved: ' + $_.Exception.Message)
-                continue
-            }
-            $kiroManagedId = ''
-            if ($null -ne $subrecord.PSObject.Properties['managedId']) { $kiroManagedId = [string]$subrecord.managedId }
-            if ([string]::IsNullOrWhiteSpace($kiroManagedId)) { $kiroManagedId = [string]$Record.id }
-            $kiroEntryNames = @()
-            if ($null -ne $subrecord.PSObject.Properties['managedEntryNames'] -and $null -ne $subrecord.managedEntryNames) {
-                $kiroEntryNames = @(@($subrecord.managedEntryNames) | ForEach-Object { [string]$_ })
-            }
-            if ($kiroEntryNames.Count -eq 0) {
-                Add-Component -Name $client -Status 'skip' -Detail 'record does not name the hook entries it installed - reinstall this hook once to repair tracking'
-                continue
-            }
-            $kiroTriggers = @()
-            if ($null -ne $subrecord.PSObject.Properties['physicalTriggers'] -and $null -ne $subrecord.physicalTriggers) {
-                $kiroTriggers = @($subrecord.physicalTriggers)
-            }
-            $kiroEnabled = $true
-            if ($null -ne $subrecord.PSObject.Properties['enabled']) { $kiroEnabled = ($subrecord.enabled -eq $true) }
-            $kiroTimeout = $script:DefaultHookTimeoutSeconds
-            if ($null -ne $subrecord.PSObject.Properties['timeout']) { $kiroTimeout = [int]$subrecord.timeout }
-            $kiroCommand = ''
-            if ($null -ne $subrecord.PSObject.Properties['command']) { $kiroCommand = [string]$subrecord.command }
-            $kiroState = Test-KiroRegistrationState `
-                -RegistrationDirectory $kiroDirectory `
-                -ManagedId $kiroManagedId `
-                -ExpectedEntryNames @($kiroEntryNames) `
-                -ExpectedEvents @($subrecord.events) `
-                -PhysicalTriggers $kiroTriggers `
-                -ExpectedCommand $kiroCommand `
-                -ExpectedTimeout $kiroTimeout `
-                -ExpectedEnabled $kiroEnabled
-            if (-not $kiroState.Ok) {
-                Add-Component -Name $client -Status 'update' -Detail ($kiroState.Reason + ' (' + $kiroState.Detail + ')')
-                continue
-            }
-            Add-Component -Name $client -Status 'current' -Detail ''
             continue
         }
 

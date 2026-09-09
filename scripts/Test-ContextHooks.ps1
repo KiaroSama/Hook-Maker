@@ -126,8 +126,8 @@ function New-PromptStdin {
 # Runs the shared output adapter in a REAL child hook process (either host), so
 # byte-comparisons below are against genuinely emitted bytes rather than an
 # in-process reconstruction. stdout stays byte-pure for the comparison, stderr
-# stays free for the Kiro exit-2 channel, and the returned result object is
-# handed back through a file named in the stdin payload.
+# stays free for diagnostics, and the returned result object is handed back
+# through a file named in the stdin payload.
 $HookResultProbe = Join-Path $Work 'hookresult-probe.ps1'
 $hookResultProbeBody = @'
 Set-StrictMode -Version 2.0

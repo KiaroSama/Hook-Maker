@@ -1,9 +1,7 @@
 # Dot-sourced scenario block of Test-HookStatusScan.ps1: TRAVERSAL - an
-# arbitrary ancestor root finds nested Claude/Codex/Kiro/git hooks; a direct
-# runtime subtree (.claude and .kiro shapes) finds the NEAREST related
-# settings by bounded upward lookup; Kiro per-hook-file registration
-# directories are recognised by position (and a plain 'hooks' directory is
-# not); NO default depth cap (-MaxDepth is the only thing that caps it);
+# arbitrary ancestor root finds nested Claude/Codex/git hooks; a direct
+# runtime subtree finds the NEAREST related settings by bounded upward
+# lookup; NO default depth cap (-MaxDepth is the only thing that caps it);
 # access-denied and a directory vanishing mid-scan are isolated, never fatal;
 # reparse points - including a '.git' junction - are never followed; noisily
 # spelled roots canonicalize to the same scan; and a full-drive-shaped
@@ -55,83 +53,6 @@
         -not (Test-FoundTarget -Result $directScan.Result -Fragment 'ZZZ-Nested-Claude.ps1'))
     Check 'the registration found upward is recorded exactly once' (
         @(@($directScan.Result.findings) | Where-Object { @($_.clients).Count -gt 0 }).Count -eq 1)
-
-    Write-Host '--- a Kiro runtime subtree resolves its enclosing project context ---' -ForegroundColor Cyan
-    # Kiro's runtime root is .kiro\hook-runtime\Hook-Maker (deliberately NOT
-    # .kiro\hooks, which is Kiro's own config-discovery root). A scan aimed at
-    # that tree must resolve the enclosing project exactly as the .claude case
-    # above does; before .kiro became an upward marker it resolved NOTHING, so
-    # the enclosing registration and git repository were both invisible.
-    $kiroProj = New-Dir (Join-Path $Work 'KiroRuntimeProject')
-    $kiroRuntimeScript = Join-Path $kiroProj '.kiro\hook-runtime\Hook-Maker\ZZZ-Kiro\ZZZ-Kiro.ps1'
-    Write-Utf8 -Path $kiroRuntimeScript -Content '# kiro runtime'
-    New-ClaudeHook -ProjectRoot $kiroProj -HookName 'ZZZ-Kiro-Enclosing' | Out-Null
-    New-GitHookRepo -RepositoryRoot $kiroProj -HookName 'pre-commit' | Out-Null
-    # ...and the Kiro registration that names that runtime. It lives in a
-    # DIFFERENT directory from the runtime (.kiro\hooks vs .kiro\hook-runtime),
-    # so only the upward hop can connect the two.
-    New-KiroHook -ProjectRoot $kiroProj -HookName 'ZZZ-Kiro-Upward' -TargetScript $kiroRuntimeScript | Out-Null
-
-    $kiroScan = Invoke-Scan -Root (Join-Path $kiroProj '.kiro\hook-runtime\Hook-Maker')
-    Check 'scanning a .kiro runtime subtree exits 0' ($kiroScan.Exit -eq 0) $kiroScan.Err
-    Check 'scanning ...\.kiro\hook-runtime\Hook-Maker finds the enclosing registration' (
-        Test-FoundTarget -Result $kiroScan.Result -Fragment 'ZZZ-Kiro-Enclosing.ps1') (
-        ($kiroScan.Result | ConvertTo-Json -Depth 6))
-    Check 'the .kiro upward lookup also reads the enclosing .kiro\hooks registrations' (
-        @(@($kiroScan.Result.findings) | Where-Object {
-                @(@($_.clients) | Where-Object { [string]$_.client -eq 'kiro' }).Count -gt 0 }).Count -eq 1) (
-        ($kiroScan.Result.findings | ConvertTo-Json -Depth 6))
-    Check 'the .kiro upward lookup also reaches the enclosing git repository' (
-        [int]$kiroScan.Result.counts.gitRepositories -eq 1) ([string]$kiroScan.Result.counts.gitRepositories)
-    Check 'the .kiro upward lookup does not wander into sibling projects' (
-        -not (Test-FoundTarget -Result $kiroScan.Result -Fragment 'ZZZ-Nested-Claude.ps1'))
-
-    Write-Host '--- Kiro per-hook-file registrations are reached by the walk ---' -ForegroundColor Cyan
-    # Kiro registers one JSON document per installation under .kiro\hooks
-    # instead of a shared settings file, so the walk has to recognise the
-    # DIRECTORY by position and open every *.json in it - and an unreadable one
-    # has to degrade into partial coverage exactly like any other directory.
-    $kiroWalkRoot = New-Dir (Join-Path $Work 'KiroWalkRoot')
-    $kiroDeep = New-Dir (Join-Path $kiroWalkRoot 'org\team\Service')
-    New-KiroHook -ProjectRoot $kiroDeep -HookName 'ZZZ-Kiro-Deep' | Out-Null
-    New-ClaudeHook -ProjectRoot (New-Dir (Join-Path $kiroWalkRoot 'org\other\Web')) -HookName 'ZZZ-Kiro-Sibling-Claude' | Out-Null
-    # A directory called 'hooks' that is NOT under .kiro must never be treated
-    # as a registration directory.
-    Write-Utf8 -Path (Join-Path $kiroWalkRoot 'org\team\Service\hooks\decoy.json') -Content (@{
-            version = 'v1'
-            hooks   = @(@{ name = 'decoy'; trigger = 'Stop'; action = @{ type = 'command'; command = 'pwsh -File "C:\ZZZ-Kiro-Decoy.ps1"' } })
-        } | ConvertTo-Json -Depth 20)
-
-    $kiroWalkScan = Invoke-Scan -Root $kiroWalkRoot
-    Check 'a nested Kiro registration is found from an arbitrary ancestor' (
-        Test-FoundTarget -Result $kiroWalkScan.Result -Fragment 'ZZZ-Kiro-Deep.ps1') (
-        ($kiroWalkScan.Result.findings | ConvertTo-Json -Depth 6))
-    Check 'a sibling Claude project beside it is still found' (
-        Test-FoundTarget -Result $kiroWalkScan.Result -Fragment 'ZZZ-Kiro-Sibling-Claude.ps1')
-    Check 'a plain "hooks" directory outside .kiro is NOT read as a Kiro registration' (
-        -not (Test-FoundTarget -Result $kiroWalkScan.Result -Fragment 'ZZZ-Kiro-Decoy.ps1')) (
-        ($kiroWalkScan.Result.findings | ConvertTo-Json -Depth 6))
-
-    $kiroDeniedProj = New-Dir (Join-Path $kiroWalkRoot 'org\team\Locked')
-    New-KiroHook -ProjectRoot $kiroDeniedProj -HookName 'ZZZ-Kiro-Locked' | Out-Null
-    $kiroDeniedEnforced = Deny-Directory -Path (Join-Path $kiroDeniedProj '.kiro\hooks')
-    if ($kiroDeniedEnforced) {
-        $kiroDeniedScan = Invoke-Scan -Root $kiroWalkRoot
-        Check 'an unreadable .kiro\hooks directory does not fail the scan' (
-            $kiroDeniedScan.Exit -eq 0) $kiroDeniedScan.Err
-        Check 'an unreadable .kiro\hooks directory is recorded in coverage.inaccessible' (
-            @(@($kiroDeniedScan.Result.coverage.inaccessible) | Where-Object { $_ -like '*Locked*' }).Count -ge 1) (
-            (@($kiroDeniedScan.Result.coverage.inaccessible)) -join ',')
-        Check 'and the scan reports partial coverage, never a false all-clear' (
-            $kiroDeniedScan.Result.coverage.complete -eq $false -and
-            [string]$kiroDeniedScan.Result.overall -eq 'partial') (
-            'complete=' + [string]$kiroDeniedScan.Result.coverage.complete + ' overall=' + [string]$kiroDeniedScan.Result.overall)
-        Check 'and the readable Kiro registration beside it is still reported' (
-            Test-FoundTarget -Result $kiroDeniedScan.Result -Fragment 'ZZZ-Kiro-Deep.ps1')
-    }
-    else {
-        Write-Host '[SKIP] deny ACL was not enforceable for this account; Kiro partial-coverage assertions skipped' -ForegroundColor Yellow
-    }
 
     Write-Host '--- no default depth cap ---' -ForegroundColor Cyan
     $deepRoot = New-Dir (Join-Path $Work 'DeepTree')

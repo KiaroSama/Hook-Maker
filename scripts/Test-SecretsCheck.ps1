@@ -555,47 +555,6 @@ try {
     Check 'the force-tracked .venv leak report never prints the raw value' ($r.Out -notlike '*venvleakvalue1234567890*') $r.Out
 
     # =====================================================================
-    # GUARD (counter-assertion, not an exclusion): a Kiro client tree gets NO
-    # blanket exemption. '.kiro' is deliberately absent from the hook's
-    # $excludedDirs, which bounds only where .env* files are HARVESTED as value
-    # sources - so adding it would silently stop a real .env inside a Kiro tree
-    # from ever seeding the leak scan. There is no .claude\hooks / .codex\hooks
-    # subtree carve-out to model a narrower exclusion on, and inventing one in a
-    # secret scanner is worse than leaving it. Both halves below fail if anyone
-    # excludes .kiro.
-    Write-Host '--- .kiro is never blanket-excluded from the secret scan ---' -ForegroundColor Cyan
-
-    # (a) Tracked Kiro configuration is ordinary tracked content: a real secret
-    # force-tracked there must still be caught, exactly as for .venv above.
-    $kiroLeak = New-GitProj 'KiroForceTrackedLeak'
-    Write-Utf8 (Join-Path $kiroLeak '.gitignore') ".env`nsecrets.md`n.kiro/`n"
-    Write-Utf8 (Join-Path $kiroLeak '.env') "KIROLEAK_SECRET=kiroleakvalue1234567890`r`n"
-    $kiroLeakDir = Join-Path $kiroLeak '.kiro\hooks'
-    New-Item -ItemType Directory -Path $kiroLeakDir -Force | Out-Null
-    Write-Utf8 (Join-Path $kiroLeakDir 'deploy-hook.json') "{ `"command`": `"deploy --token kiroleakvalue1234567890`" }`r`n"
-    & git -C $kiroLeak add -f '.kiro/hooks/deploy-hook.json' 2>$null | Out-Null
-    Add-Commit $kiroLeak 'force-track a .kiro hook config carrying a real secret'
-    $r = Fire -Cwd $kiroLeak -EventName 'Stop'
-    Check 'a REAL secret force-tracked inside .kiro is still caught' (
-        $r.Out -like '*KIROLEAK_SECRET*appears in a git-tracked file*deploy-hook.json*') $r.Out
-    Check 'the force-tracked .kiro leak report never prints the raw value' ($r.Out -notlike '*kiroleakvalue1234567890*') $r.Out
-
-    # (b) The harvest walk must still DESCEND into .kiro: a real .env living in
-    # the Kiro runtime tree is what makes the leak below discoverable at all.
-    # Pruning .kiro would leave this value unknown and the leak unreported.
-    $kiroEnv = New-GitProj 'KiroRuntimeEnvHarvest'
-    Write-Utf8 (Join-Path $kiroEnv '.gitignore') ".env`nsecrets.md`n"
-    $kiroEnvDir = Join-Path $kiroEnv '.kiro\hook-runtime\Hook-Maker\Kiro-Hook'
-    New-Item -ItemType Directory -Path $kiroEnvDir, (Join-Path $kiroEnv 'src') -Force | Out-Null
-    Write-Utf8 (Join-Path $kiroEnvDir '.env') "KIRORUNTIME_SECRET=kiroruntimevalue1234567890`r`n"
-    Write-Utf8 (Join-Path $kiroEnv 'src\config.py') "TOKEN = `"kiroruntimevalue1234567890`"`r`n"
-    Add-Commit $kiroEnv 'track a source file leaking a value defined in the .kiro runtime .env'
-    $r = Fire -Cwd $kiroEnv -EventName 'Stop'
-    Check 'an .env inside the .kiro runtime tree is still harvested (walk descends into .kiro)' (
-        $r.Out -like '*KIRORUNTIME_SECRET*appears in a git-tracked file*config.py*') $r.Out
-    Check 'the .kiro runtime .env leak report never prints the raw value' ($r.Out -notlike '*kiroruntimevalue1234567890*') $r.Out
-
-    # =====================================================================
     Write-Host '--- Install-Hook.ps1: self-contained copy ---' -ForegroundColor Cyan
     $tgt = New-Proj 'Install'
     & $InstallScript -CustomHook $Hook -Events @('SessionStart', 'Stop') -TargetProject $tgt -ClaudeOnly *> $null

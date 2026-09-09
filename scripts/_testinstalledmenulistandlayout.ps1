@@ -346,7 +346,7 @@
                 ForEach-Object { $_.LastWriteTimeUtc })[0]
         }
 
-        $globalQuestion = "Also inspect the current user's global Claude, Codex and Kiro hook locations\?"
+        $globalQuestion = "Also inspect the current user's global Claude and Codex hook locations\?"
 
         # -- a missing path re-prompts instead of scanning -------------------
         $missingPath = Join-Path $Work 'no-such-folder-here'
@@ -401,7 +401,7 @@
         # are excluded and must list only the chosen root.
         $defaultNo = Invoke-Wizard -Config $cfg -Answers @('1', '1', [string]$statusIndex, $proj, '', '0', 'exit') -WorkingDirectory $proj
         Check 'status: the default-No run exits 0' ($defaultNo.Exit -eq 0) $defaultNo.Err
-        Check 'status: Enter at the global question means No' ($defaultNo.Out -match [regex]::Escape('Global Claude/Codex/Kiro locations are NOT included in this scan.')) $defaultNo.Out
+        Check 'status: Enter at the global question means No' ($defaultNo.Out -match [regex]::Escape('Global Claude/Codex locations are NOT included in this scan.')) $defaultNo.Out
         Check 'status: the canonical root is shown before the scan starts' ($defaultNo.Out -match [regex]::Escape($proj)) $defaultNo.Out
         Check 'status: the roots screen states reparse points are not followed' ($defaultNo.Out -match 'Reparse points .* are not followed') $defaultNo.Out
     }

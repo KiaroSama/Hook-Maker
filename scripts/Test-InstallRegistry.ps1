@@ -27,8 +27,6 @@
 #                                         corruption/locking, drift and repair
 #   _testinstallregistryregressions.ps1 - D1-D4 defect regressions, per-hook
 #                                         timeouts, handler preservation
-#   _testinstallregistrykiro.ps1        - the perHookFile client: enumeration,
-#                                         registration drift, update wiring
 #
 # Usage:  pwsh -NoLogo -NoProfile -File .\scripts\Test-InstallRegistry.ps1 [-KeepArtifacts]
 # Exit code is the number of failed assertions (0 = all passed).
@@ -190,7 +188,6 @@ try {
     . (Join-Path $ScriptRoot '_testinstallregistrysafety.ps1')
     . (Join-Path $ScriptRoot '_testinstallregistrydrift.ps1')
     . (Join-Path $ScriptRoot '_testinstallregistryregressions.ps1')
-    . (Join-Path $ScriptRoot '_testinstallregistrykiro.ps1')
     . (Join-Path $ScriptRoot '_testinstallevaluate.ps1')
 
     # =====================================================================
@@ -238,29 +235,10 @@ try {
             $verdictOk.Overall -ceq 'ok' -and $verdictOk.Recorded -ceq 'ok' -and
             $verdictOk.Reason -ceq 'installed') $verdictOk.Details
 
-        # Kiro documents no PreCompact trigger, so that event is dropped and the
-        # component lands 'ok' with reason 'degraded' - less than was asked for.
-        $verdictPartial = Get-InstallVerdict -ProjectName 'verdict-partial' -Clients @('kiro') -Events @('SessionStart', 'PreCompact')
-        Check 'a degraded install reports partial and records partial, never ok' (
-            $verdictPartial.Overall -ceq 'partial' -and $verdictPartial.Recorded -ceq 'partial') $verdictPartial.Details
-
-        # Kiro is the only client asked for and NO requested event has a Kiro
-        # trigger, so the component fails outright and nothing is installed. The
-        # bookkeeping 'registry' component is still ok - it tracked the failure
-        # successfully - which is exactly what used to downgrade this to
-        # 'partial' and let the record claim 'ok'.
-        $verdictFailed = Get-InstallVerdict -ProjectName 'verdict-failed' -Clients @('kiro') -Events @('PreCompact')
-        Check 'an install where the only requested client failed reports failed and records failed' (
-            $verdictFailed.Overall -ceq 'failed' -and $verdictFailed.Recorded -ceq 'failed') $verdictFailed.Details
-        Check 'the recorded reason states that nothing the caller asked for was installed' (
-            $verdictFailed.Reason -match 'no requested client') $verdictFailed.Reason
-        # The load-bearing property, stated once over all three: whatever the
-        # verdict is, both sides of the install say the same thing.
+        # The load-bearing property: whatever the verdict is, both sides of the
+        # install say the same thing.
         Check 'the record and the result document never disagree about the outcome' (
-            $verdictOk.Overall -ceq $verdictOk.Recorded -and
-            $verdictPartial.Overall -ceq $verdictPartial.Recorded -and
-            $verdictFailed.Overall -ceq $verdictFailed.Recorded) (
-            $verdictOk.Details + ' // ' + $verdictPartial.Details + ' // ' + $verdictFailed.Details)
+            $verdictOk.Overall -ceq $verdictOk.Recorded) $verdictOk.Details
     }
     finally {
         Remove-FixtureHook -Name $verdictFixtureName

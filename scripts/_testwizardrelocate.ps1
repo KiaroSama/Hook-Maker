@@ -13,7 +13,7 @@ Write-Host '--- relocate: a path inside JSON has its separators doubled ---' -Fo
 # 'G:\x\y' can never match the 'G:\\x\\y' a JSON document actually stores.
 $relRoot = 'G:\Program Files\Old Name'
 Check 'relocate: the plain spelling is found' (
-    Test-TextNamesRoot -Text ('command: ' + $relRoot + '\.kiro') -Root $relRoot)
+    Test-TextNamesRoot -Text ('command: ' + $relRoot + '\hooks') -Root $relRoot)
 Check 'relocate: the JSON-escaped spelling is found too' (
     Test-TextNamesRoot -Text ('{"c":"' + $relRoot.Replace('\', '\\') + '\\x"}') -Root $relRoot)
 Check 'relocate: an unrelated path is not found' (
@@ -27,9 +27,9 @@ Check 'relocate: empty text is not a match' (-not (Test-TextNamesRoot -Text '' -
 $relPrefixOld = 'G:\Program Files\Numera'
 $relPrefixNew = 'G:\Program Files\Numera Browser'
 Check 'relocate: a longer sibling path is NOT the old root' (
-    -not (Test-TextNamesRoot -Text ('x "' + $relPrefixNew + '\.kiro\a.ps1"') -Root $relPrefixOld))
+    -not (Test-TextNamesRoot -Text ('x "' + $relPrefixNew + '\hooks\a.ps1"') -Root $relPrefixOld))
 Check 'relocate: the old root itself still matches' (
-    Test-TextNamesRoot -Text ('x "' + $relPrefixOld + '\.kiro\a.ps1"') -Root $relPrefixOld)
+    Test-TextNamesRoot -Text ('x "' + $relPrefixOld + '\hooks\a.ps1"') -Root $relPrefixOld)
 Check 'relocate: a longer sibling is not matched JSON-escaped either' (
     -not (Test-TextNamesRoot -Text ('{"c":"' + $relPrefixNew.Replace('\', '\\') + '\\a"}') -Root $relPrefixOld))
 Check 'relocate: the root alone, with nothing after it, matches' (
@@ -38,98 +38,13 @@ Check 'relocate: a quoted bare root matches' (
     Test-TextNamesRoot -Text ('cmd "' + $relPrefixOld + '"') -Root $relPrefixOld)
 
 Write-Host ''
-Write-Host '--- relocate: the hook slug is read back off a document name ---' -ForegroundColor Cyan
-Check 'relocate: slug drops the prefix and the record id' (
-    (Get-DocumentHookSlug -FileName 'hookmaker-ai-memory-check-e84c6df413.json') -eq 'ai-memory-check')
-Check 'relocate: a hyphenated hook name survives intact' (
-    (Get-DocumentHookSlug -FileName 'hookmaker-cross-project-ai-knowledge-sync-a7816458de.json') -eq 'cross-project-ai-knowledge-sync')
-Check 'relocate: a foreign document yields no slug' (
-    (Get-DocumentHookSlug -FileName 'something-else.json') -eq '')
-
-Write-Host ''
-Write-Host '--- relocate: an orphaned document is removable only on ALL THREE conditions ---' -ForegroundColor Cyan
 $relWork = New-TestWorkspace -Prefix 'hookmaker-relocate'
 try {
     $relOld = 'G:\Program Files\Gone Away'
     $relNew = Join-Path $relWork 'moved'
-    $relKiro = Join-Path $relNew '.kiro\hooks'
-    New-Item -ItemType Directory -Path $relKiro -Force | Out-Null
-
-    function New-RelocDocument {
-        param([string]$Name, [string]$Root, [int]$Commands = 1)
-        $hooks = @()
-        for ($i = 0; $i -lt $Commands; $i++) {
-            $hooks += @{ name = ('h' + $i); action = @{ type = 'command'; command = ('powershell -File "' + $Root + '\.kiro\hook-runtime\x.ps1"') } }
-        }
-        $doc = @{ version = 'v1'; hooks = $hooks }
-        [System.IO.File]::WriteAllText((Join-Path $relKiro $Name), ($doc | ConvertTo-Json -Depth 8), (New-Object System.Text.UTF8Encoding $false))
-    }
-
-    # stale + a replacement exists -> removable
-    New-RelocDocument 'hookmaker-alpha-1111111111.json' $relOld
-    New-RelocDocument 'hookmaker-alpha-2222222222.json' $relNew
-    # stale but NOTHING replaces it -> must be left alone, or the project loses
-    # the hook entirely instead of being repointed
-    New-RelocDocument 'hookmaker-beta-3333333333.json' $relOld
-    # mixed commands: one still points at the new root, so it is not purely
-    # stale and this must not guess
-    $mixed = @{ version = 'v1'; hooks = @(
-            @{ name = 'a'; action = @{ type = 'command'; command = ('x "' + $relOld + '\a.ps1"') } },
-            @{ name = 'b'; action = @{ type = 'command'; command = ('x "' + $relNew + '\b.ps1"') } }) }
-    [System.IO.File]::WriteAllText((Join-Path $relKiro 'hookmaker-gamma-4444444444.json'), ($mixed | ConvertTo-Json -Depth 8), (New-Object System.Text.UTF8Encoding $false))
-    New-RelocDocument 'hookmaker-gamma-5555555555.json' $relNew
-    # a document that names neither -> untouched, never even considered
-    New-RelocDocument 'hookmaker-delta-6666666666.json' $relNew
-
-    $orphans = Get-OrphanedClientDocument -NewRoot $relNew -OldRoot $relOld
-    $removableNames = @(@($orphans.Removable) | ForEach-Object { $_.Name })
-    Check 'relocate: exactly the stale-with-a-replacement document is removable' (
-        $removableNames.Count -eq 1 -and $removableNames[0] -eq 'hookmaker-alpha-1111111111.json') ($removableNames -join ',')
-    Check 'relocate: a stale document with NO replacement is reported, not removed' (
-        @($orphans.Ambiguous) -contains 'hookmaker-beta-3333333333.json') (@($orphans.Ambiguous) -join ',')
-    Check 'relocate: a document whose commands are not ALL old is reported, not removed' (
-        @($orphans.Ambiguous) -contains 'hookmaker-gamma-4444444444.json') (@($orphans.Ambiguous) -join ',')
-    Check 'relocate: a document naming neither root is not considered at all' (
-        $removableNames -notcontains 'hookmaker-delta-6666666666.json' -and
-        @($orphans.Ambiguous) -notcontains 'hookmaker-delta-6666666666.json') (@($orphans.Ambiguous) -join ',')
-    Check 'relocate: nothing was deleted by the INSPECTION itself' (
-        @(Get-ChildItem -LiteralPath $relKiro -Filter '*.json' -File).Count -eq 6) (
-        [string]@(Get-ChildItem -LiteralPath $relKiro -Filter '*.json' -File).Count)
-
-    Write-Host ''
-    Write-Host '--- relocate: a new root that EXTENDS the old one ---' -ForegroundColor Cyan
-    # Same shape as the real failure: the folder was renamed to a longer name, so
-    # every fresh document contains the old root as a prefix. Before the path-
-    # boundary fix this left 22 stale documents behind in a real project.
-    $relExtRoot = Join-Path $relWork 'Numera'
-    $relExtNew = $relExtRoot + ' Browser'
-    $relExtKiro = Join-Path $relExtNew '.kiro\hooks'
-    New-Item -ItemType Directory -Path $relExtKiro -Force | Out-Null
-    foreach ($pair in @(@{ n = 'hookmaker-ext-1111111111.json'; r = $relExtRoot },
-            @{ n = 'hookmaker-ext-2222222222.json'; r = $relExtNew })) {
-        $extDoc = @{ version = 'v1'; hooks = @(@{ name = 'h'; action = @{ type = 'command'
-                        command                            = ('powershell -File "' + $pair.r + '\.kiro\hook-runtime\x.ps1"')
-                    }
-                })
-        }
-        [System.IO.File]::WriteAllText((Join-Path $relExtKiro $pair.n), ($extDoc | ConvertTo-Json -Depth 8), (New-Object System.Text.UTF8Encoding $false))
-    }
-    $extOrphans = Get-OrphanedClientDocument -NewRoot $relExtNew -OldRoot $relExtRoot
-    $extRemovable = @(@($extOrphans.Removable) | ForEach-Object { $_.Name })
-    Check 'relocate: the stale document is removable even though the new root extends the old' (
-        $extRemovable.Count -eq 1 -and $extRemovable[0] -eq 'hookmaker-ext-1111111111.json') (
-        $extRemovable -join ',')
-    Check 'relocate: the fresh document under the longer root is never touched' (
-        @($extOrphans.Ambiguous) -notcontains 'hookmaker-ext-2222222222.json' -and
-        $extRemovable -notcontains 'hookmaker-ext-2222222222.json') (@($extOrphans.Ambiguous) -join ',')
-
-    Write-Host ''
-    Write-Host '--- relocate: a project with no per-hook-file client is simply empty ---' -ForegroundColor Cyan
-    $relBare = Join-Path $relWork 'bare'
-    New-Item -ItemType Directory -Path $relBare -Force | Out-Null
-    $bareOrphans = Get-OrphanedClientDocument -NewRoot $relBare -OldRoot $relOld
-    Check 'relocate: a missing .kiro\hooks directory yields nothing, and does not throw' (
-        @($bareOrphans.Removable).Count -eq 0 -and @($bareOrphans.Ambiguous).Count -eq 0)
+    # The new root must EXIST: the candidate filter below offers only roots that
+    # are gone, so a missing directory here would make that assertion vacuous.
+    New-Item -ItemType Directory -Path $relNew -Force | Out-Null
 
     Write-Host ''
     Write-Host '--- relocate: sync routes are repointed; ids are deliberately NOT ---' -ForegroundColor Cyan

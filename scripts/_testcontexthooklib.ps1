@@ -77,9 +77,9 @@ if ($null -ne $in) { $prompt = [string](Get-Field $in 'prompt') }
     Check 'the probe hook still exits cleanly with nothing on stderr' (
         $probeProc.ExitCode -eq 0 -and $probeErr.Trim() -eq '') ('exit=' + $probeProc.ExitCode + ' err=' + $probeErr)
 
-    Write-Host '--- _hooklib: client identity is explicit and never defaults a third client to Codex ---' -ForegroundColor Cyan
+    Write-Host '--- _hooklib: client identity is explicit, never inferred inline ---' -ForegroundColor Cyan
     # Hooks used to decide the client inline as "CLAUDE_PROJECT_DIR present ->
-    # Claude, otherwise -> Codex". With a third client that silently hands Kiro
+    # Claude, otherwise -> Codex", which hands any client without that variable
     # Codex's rules, skills, paths and output protocol. Get-HookClientId is the
     # one place that decision is made now.
     #
@@ -89,23 +89,27 @@ if ($null -ne $in) { $prompt = [string](Get-Field $in 'prompt') }
         if (Test-Path Env:\HOOKMAKER_CLIENT) { Remove-Item Env:\HOOKMAKER_CLIENT -ErrorAction SilentlyContinue }
         Set-ClaudeProjectDir 'C:\some\project'
         $cidClaude = & { . $HookLib; Get-HookClientId }
-        $cidKiroBeatsClaude = & { . $HookLib; Get-HookClientId -Explicit 'kiro' }
+        # CLAUDE_PROJECT_DIR is set, so a default would be claude: codex here can
+        # only have come from the explicit argument.
+        $cidExplicitBeatsClaude = & { . $HookLib; Get-HookClientId -Explicit 'codex' }
         Set-ClaudeProjectDir ''
         $cidLegacyCodex = & { . $HookLib; Get-HookClientId }
         $cidUnknownName = & { . $HookLib; Get-HookClientId -Explicit 'gemini' }
-        $cidLooseCase = & { . $HookLib; Get-HookClientId -Explicit '  KIRO ' }
-        $env:HOOKMAKER_CLIENT = 'kiro'
+        # No CLAUDE_PROJECT_DIR now, so a default would be codex: claude can only
+        # have come from the trimmed, case-folded value.
+        $cidLooseCase = & { . $HookLib; Get-HookClientId -Explicit '  CLAUDE ' }
+        $env:HOOKMAKER_CLIENT = 'claude'
         $cidEnvMarker = & { . $HookLib; Get-HookClientId }
         $env:HOOKMAKER_CLIENT = 'nonsense'
         $cidBadEnvMarker = & { . $HookLib; Get-HookClientId }
         Remove-Item Env:\HOOKMAKER_CLIENT -ErrorAction SilentlyContinue
 
         Check 'CLAUDE_PROJECT_DIR present resolves to claude' ($cidClaude -eq 'claude') $cidClaude
-        Check 'an explicit client id overrides CLAUDE_PROJECT_DIR' ($cidKiroBeatsClaude -eq 'kiro') $cidKiroBeatsClaude
+        Check 'an explicit client id overrides CLAUDE_PROJECT_DIR' ($cidExplicitBeatsClaude -eq 'codex') $cidExplicitBeatsClaude
         Check 'no signal at all still resolves to codex (existing installs unchanged)' ($cidLegacyCodex -eq 'codex') $cidLegacyCodex
         Check 'an UNRECOGNISED explicit client is unknown, never codex' ($cidUnknownName -eq 'unknown') $cidUnknownName
-        Check 'an explicit client id tolerates case and surrounding space' ($cidLooseCase -eq 'kiro') $cidLooseCase
-        Check 'HOOKMAKER_CLIENT identifies a client that passes no argument' ($cidEnvMarker -eq 'kiro') $cidEnvMarker
+        Check 'an explicit client id tolerates case and surrounding space' ($cidLooseCase -eq 'claude') $cidLooseCase
+        Check 'HOOKMAKER_CLIENT identifies a client that passes no argument' ($cidEnvMarker -eq 'claude') $cidEnvMarker
         Check 'an unrecognised HOOKMAKER_CLIENT is unknown, never codex' ($cidBadEnvMarker -eq 'unknown') $cidBadEnvMarker
 
         # An installed runtime is self-contained: the installer rewrites
@@ -116,19 +120,6 @@ if ($null -ne $in) { $prompt = [string](Get-Field $in 'prompt') }
         $cidTableIds = & { . (Join-Path $ScriptRoot '_clientcapability.ps1'); @(Get-HookMakerClientIds) -join ',' }
         Check '_hooklib client ids match the canonical capability table exactly' (
             $cidLibIds -eq $cidTableIds) ('hooklib=' + $cidLibIds + ' table=' + $cidTableIds)
-
-        # Same forced-mirror guard for the Kiro trigger list. This one is also a
-        # TRUST BOUNDARY, not just a lookup: Read-HookInput accepts an
-        # environment-supplied trigger only if it appears in this list, so a
-        # drifted copy would either reject a real Kiro event or admit one the
-        # capability table never sanctioned.
-        $cidLibTriggers = & { . $HookLib; @($script:HookKiroTriggers) -join ',' }
-        $cidTableTriggers = & {
-            . (Join-Path $ScriptRoot '_clientcapability.ps1')
-            @((Get-HookMakerClientCapability -ClientId 'kiro').supportedEvents) -join ','
-        }
-        Check '_hooklib Kiro triggers match the capability table supportedEvents exactly' (
-            $cidLibTriggers -eq $cidTableTriggers) ('hooklib=' + $cidLibTriggers + ' table=' + $cidTableTriggers)
     }
     finally {
         Set-ClaudeProjectDir $cidOrigCpd
@@ -136,13 +127,8 @@ if ($null -ne $in) { $prompt = [string](Get-Field $in 'prompt') }
     }
 
     # =====================================================================
-    Write-Host '--- _hooklib Read-HookInput: the Kiro normalizer ---' -ForegroundColor Cyan
-    # Without this every hook is dead on arrival under Kiro IDE, which documents
-    # NO stdin JSON: Read-HookInput returned $null and all 23 hooks took their
-    # `if ($null -eq $hookInput) { exit 0 }` path. The Claude/Codex paths must
-    # stay byte-identical, so they are asserted here too.
+    Write-Host '--- _hooklib Read-HookInput: the Claude/Codex paths ---' -ForegroundColor Cyan
     $riOrigClient = $env:HOOKMAKER_CLIENT
-    $riOrigTrigger = $env:HOOKMAKER_KIRO_TRIGGER
     $riOrigCpd = $env:CLAUDE_PROJECT_DIR
     try {
         Set-ClaudeProjectDir ''
@@ -162,9 +148,8 @@ if ($null -ne $in) { $prompt = [string](Get-Field $in 'prompt') }
             return (($Object.PSObject.Properties | ForEach-Object { $_.Name + '=' + [string]$_.Value }) -join ';')
         }
         function Invoke-ReadHookInput {
-            param([string]$Client, [string]$Trigger, [string]$Stdin)
+            param([string]$Client, [string]$Stdin)
             $env:HOOKMAKER_CLIENT = $Client
-            $env:HOOKMAKER_KIRO_TRIGGER = $Trigger
             $previousIn = [Console]::In
             try {
                 # stdin is redirected INSIDE the child scope, AFTER _hooklib is
@@ -183,352 +168,14 @@ if ($null -ne $in) { $prompt = [string](Get-Field $in 'prompt') }
             finally { [Console]::SetIn($previousIn) }
         }
 
-        $riCodex = Invoke-ReadHookInput -Client 'codex' -Trigger '' -Stdin ''
+        $riCodex = Invoke-ReadHookInput -Client 'codex' -Stdin ''
         Check 'codex with empty stdin still yields nothing, exactly as before' ($null -eq $riCodex) 'codex'
-        $riClaude = Invoke-ReadHookInput -Client 'claude' -Trigger '' -Stdin ''
+        $riClaude = Invoke-ReadHookInput -Client 'claude' -Stdin ''
         Check 'claude with empty stdin still yields nothing, exactly as before' ($null -eq $riClaude) 'claude'
-        $riClaudeJson = Invoke-ReadHookInput -Client 'claude' -Trigger '' -Stdin '{"hook_event_name":"Stop","session_id":"s1"}'
+        $riClaudeJson = Invoke-ReadHookInput -Client 'claude' -Stdin '{"hook_event_name":"Stop","session_id":"s1"}'
         Check 'a claude payload passes through untouched, session id included' (
             [string](Get-RiField $riClaudeJson 'hook_event_name') -ceq 'Stop' -and
             [string](Get-RiField $riClaudeJson 'session_id') -ceq 's1') (Show-Ri $riClaudeJson)
-
-        $riKiro = Invoke-ReadHookInput -Client 'kiro' -Trigger 'PreToolUse' -Stdin ''
-        Check 'kiro with empty stdin is normalized from the launcher trigger, not dropped' (
-            $null -ne $riKiro -and [string](Get-RiField $riKiro 'hook_event_name') -ceq 'PreToolUse') (Show-Ri $riKiro)
-        Check 'the normalized kiro input carries a cwd taken from the process' (
-            -not [string]::IsNullOrWhiteSpace([string](Get-RiField $riKiro 'cwd'))) (Show-Ri $riKiro)
-        # Protocol rule: never invent a persistent identity. An absent session id
-        # disables session-keyed dedup; a fabricated one silently mispairs it.
-        Check 'no session id is invented for kiro' (
-            [string]::IsNullOrWhiteSpace([string](Get-RiField $riKiro 'session_id'))) (Show-Ri $riKiro)
-        Check 'no stop_hook_active is fabricated, which would suppress the hook' (
-            [string]::IsNullOrWhiteSpace([string](Get-RiField $riKiro 'stop_hook_active'))) (Show-Ri $riKiro)
-
-        # A missing or unknown launcher trigger now REFUSES with exit 1 (round
-        # 31: registrationless stdin must never select a branch), so those
-        # cases live in the child-probe refusal section below - an in-process
-        # call would take this suite down with the exit.
-
-        $riKiroPartial = Invoke-ReadHookInput -Client 'kiro' -Trigger 'Stop' -Stdin '{"cwd":"C:\\w"}'
-        Check 'a kiro payload with no event name is completed from the launcher trigger' (
-            [string](Get-RiField $riKiroPartial 'hook_event_name') -ceq 'Stop' -and
-            [string](Get-RiField $riKiroPartial 'cwd') -ceq 'C:\w') (Show-Ri $riKiroPartial)
-        # The payload no longer simply "wins": launcher and payload must AGREE on
-        # which event fired, or the hook refuses (asserted in the refusal section
-        # below). A different SPELLING of the same event is NOT a disagreement -
-        # CLI v2 spelled every trigger camelCase and v3 does not re-publish its
-        # casing - so it is resolved and normalized to the canonical name, which
-        # is what keeps every hook's `-ceq 'PreToolUse'` branch working.
-        $riKiroCasing = Invoke-ReadHookInput -Client 'kiro' -Trigger 'PreToolUse' -Stdin '{"hook_event_name":"preToolUse"}'
-        Check 'a payload spelling the SAME event differently is normalized, never refused' (
-            [string](Get-RiField $riKiroCasing 'hook_event_name') -ceq 'PreToolUse') (Show-Ri $riKiroCasing)
-        $riKiroLooseLauncher = Invoke-ReadHookInput -Client 'kiro' -Trigger 'pretooluse' -Stdin ''
-        Check 'the launcher trigger also resolves case-insensitively to the canonical event' (
-            [string](Get-RiField $riKiroLooseLauncher 'hook_event_name') -ceq 'PreToolUse') (Show-Ri $riKiroLooseLauncher)
-
-        # --- USER_PROMPT is the ONE input channel Kiro documents ---------------
-        # Omitting it left every prompt-driven hook blind on Kiro IDE:
-        # Rules-Check, Skills-Check and the ::deep-debug detection all read
-        # 'prompt', so they ran and silently did nothing.
-        $riOrigUserPrompt = $env:USER_PROMPT
-        try {
-            $env:USER_PROMPT = 'KIRO-PROMPT-TEXT'
-            $riKiroPrompt = Invoke-ReadHookInput -Client 'kiro' -Trigger 'UserPromptSubmit' -Stdin ''
-            Check 'kiro UserPromptSubmit carries the prompt from USER_PROMPT' (
-                (Get-RiField $riKiroPrompt 'prompt') -ceq 'KIRO-PROMPT-TEXT') (Show-Ri $riKiroPrompt)
-            # Scoped to the one trigger Kiro documents it for: a prompt left over
-            # in the environment on SessionStart would be stale, and acting on a
-            # stale prompt is worse than having none.
-            $riKiroNoPrompt = Invoke-ReadHookInput -Client 'kiro' -Trigger 'SessionStart' -Stdin ''
-            Check 'no prompt is attached on a trigger Kiro does not document it for' (
-                [string]::IsNullOrEmpty((Get-RiField $riKiroNoPrompt 'prompt'))) (Show-Ri $riKiroNoPrompt)
-            # Same precedence rule as the event name: the environment is the
-            # fallback, never an override of what the client actually sent.
-            $riPromptWins = Invoke-ReadHookInput -Client 'kiro' -Trigger 'UserPromptSubmit' -Stdin '{"prompt":"FROM-PAYLOAD"}'
-            Check 'a real payload prompt WINS over the environment fallback' (
-                (Get-RiField $riPromptWins 'prompt') -ceq 'FROM-PAYLOAD') (Show-Ri $riPromptWins)
-            # USER_PROMPT is a Kiro-only channel; no other client may inherit it.
-            $riCodexPrompt = Invoke-ReadHookInput -Client 'codex' -Trigger '' -Stdin '{"hook_event_name":"UserPromptSubmit"}'
-            Check 'USER_PROMPT is never injected for a non-Kiro client' (
-                [string]::IsNullOrEmpty((Get-RiField $riCodexPrompt 'prompt'))) (Show-Ri $riCodexPrompt)
-
-            # Every other hook input arrives as client-framed stdin JSON; this one
-            # is an environment variable nothing bounds. An OVERSIZED prompt is
-            # WITHHELD ENTIRELY (round 31, review + user decision): a truncated
-            # prefix is a prompt the user did not type, and prompt-driven hooks
-            # regex-match on it as if it were - so no prefix may ever reach them.
-            # Withheld = the same documented degradation as an absent USER_PROMPT.
-            $env:USER_PROMPT = ('x' * 70000)
-            $riHuge = Invoke-ReadHookInput -Client 'kiro' -Trigger 'UserPromptSubmit' -Stdin ''
-            Check 'an oversized USER_PROMPT is withheld entirely - no prefix ever reaches the hooks' (
-                [string]::IsNullOrEmpty([string](Get-RiField $riHuge 'prompt'))) (Show-Ri $riHuge)
-            # The bound is a ceiling, not a shrink ray: exactly at the cap still
-            # passes whole. 65536 ASCII chars are exactly 65536 UTF-8 bytes.
-            $env:USER_PROMPT = ('y' * 65536)
-            $riAtCap = Invoke-ReadHookInput -Client 'kiro' -Trigger 'UserPromptSubmit' -Stdin ''
-            Check 'a prompt exactly at the byte cap passes through intact' (
-                ([string](Get-RiField $riAtCap 'prompt')).Length -eq 65536) (
-                'len=' + ([string](Get-RiField $riAtCap 'prompt')).Length)
-        }
-        finally {
-            if ([string]::IsNullOrEmpty($riOrigUserPrompt)) {
-                if (Test-Path Env:\USER_PROMPT) { Remove-Item Env:\USER_PROMPT -ErrorAction SilentlyContinue }
-            }
-            else { $env:USER_PROMPT = $riOrigUserPrompt }
-        }
-
-        # --- a payload event name that CONTRADICTS the launcher ---------------
-        # The launcher argument is written by the INSTALLER into the .kiro\hooks
-        # registration, so a real disagreement means the registration and the
-        # client disagree about what fired - and NEITHER side can then be trusted
-        # to choose the code path a hook takes.
-        #
-        # This used to let the payload win and record 'hookmaker_trigger_mismatch'
-        # on the object. NOTHING read that field, so it was swallowing with extra
-        # steps: a PreToolUse registration whose payload said Stop handed the hook
-        # a Stop event, the hook ran its Stop branch, and nothing said so.
-        #
-        # The refusal is an EXIT CODE plus stderr, so these cases MUST run as real
-        # child hook processes - an in-process call would take this suite down
-        # along with the hook, and the exit code is itself the safety property
-        # being asserted. Both hosts, because Claude launches powershell.exe (5.1)
-        # and Codex pwsh 7, and cross-host differences are this repo's #1 shipped
-        # bug source.
-        $riProbe = Join-Path $Work 'kiro-normalize-probe.ps1'
-        $riProbeBody = @'
-Set-StrictMode -Version 2.0
-$ErrorActionPreference = 'Stop'
-. (Join-Path '__LIBDIR__' '_hooklib.ps1')
-$in = Read-HookInput
-$ev = ''
-$pr = ''
-if ($null -ne $in) {
-    $ev = [string](Get-Field $in 'hook_event_name')
-    $pr = [string](Get-Field $in 'prompt')
-}
-$enc = [System.Text.Encoding]::UTF8
-# An unpaired surrogate is not encodable as UTF-8 - GetBytes turns it into
-# U+FFFD - so a failed round trip IS the split-surrogate detector.
-$utf8Ok = ($enc.GetString($enc.GetBytes($pr)) -ceq $pr)
-$marker = "`n[hook-maker: prompt truncated at"
-$body = $pr
-$cut = $pr.IndexOf($marker)
-if ($cut -ge 0) { $body = $pr.Substring(0, $cut) }
-[Console]::Out.WriteLine('RAN;EVENT=' + $ev + ';BODYBYTES=' + $enc.GetByteCount($body) +
-    ';CHARS=' + $pr.Length + ';UTF8OK=' + $utf8Ok + ';TRUNC=' + ($cut -ge 0))
-'@
-        Write-Utf8 $riProbe ($riProbeBody.Replace('__LIBDIR__', (Split-Path -Parent $HookLib)))
-
-        # The enclosing finally blocks restore all three variables, so these are
-        # set and left for the next call rather than saved per invocation.
-        function Invoke-KiroProbe {
-            param([string]$Client, [string]$Trigger, [string]$Stdin, [string]$UserPrompt = '', [string]$Exe = 'pwsh')
-            $env:HOOKMAKER_CLIENT = $Client
-            $env:HOOKMAKER_KIRO_TRIGGER = $Trigger
-            $env:USER_PROMPT = $UserPrompt
-            return (Fire -HookPath $riProbe -Cwd $Work -RawStdin $Stdin -Exe $Exe)
-        }
-        function Get-RiPart {
-            param([string]$Text, [string]$Key)
-            $m = [regex]::Match($Text, ';' + $Key + '=([^;]*)')
-            if ($m.Success) { return $m.Groups[1].Value }
-            return ''
-        }
-
-        try {
-            foreach ($riExe in @('pwsh', 'powershell.exe')) {
-                $riTag = $(if ($riExe -eq 'pwsh') { 'pwsh 7' } else { '5.1' })
-
-                $riMismatch = Invoke-KiroProbe -Client 'kiro' -Trigger 'PreToolUse' -Stdin '{"hook_event_name":"Stop"}' -Exe $riExe
-                Check ($riTag + ': a contradicting payload REFUSES to run and says so on stderr') (
-                    $riMismatch.Out -notmatch 'RAN' -and $riMismatch.Exit -ne 0 -and
-                    $riMismatch.Err -match 'PreToolUse' -and $riMismatch.Err -match 'Stop') (
-                    'exit=' + $riMismatch.Exit + ' out=[' + $riMismatch.Out + '] err=[' + $riMismatch.Err + ']')
-                # THE safety line. Kiro's exit-code table: stdout is added to
-                # context only on SessionStart/UserPromptSubmit (so a stdout
-                # refusal would be silent on exactly the PreToolUse/PostToolUse/
-                # Stop events where a wrong branch does damage), 2 BLOCKS, and any
-                # other non-zero exit shows stderr to the user and proceeds. A
-                # configuration fault is the USER's to repair, not the agent's to
-                # be blocked by - and Kiro cannot block at Stop at all.
-                Check ($riTag + ': the refusal never uses exit 2, Kiro''s block code') (
-                    $riMismatch.Exit -ne 2) ([string]$riMismatch.Exit)
-                # A real Kiro trigger with no Hook Maker equivalent is a genuine
-                # disagreement too, not a spelling difference. The old code passed
-                # it straight through as the hook's event name - an event name
-                # arriving from stdin that is not even a Hook Maker logical event.
-                $riUnknownPayload = Invoke-KiroProbe -Client 'kiro' -Trigger 'PreToolUse' -Stdin '{"hook_event_name":"PostFileSave"}' -Exe $riExe
-                Check ($riTag + ': an unresolvable payload event is refused, never passed through') (
-                    $riUnknownPayload.Out -notmatch 'RAN' -and $riUnknownPayload.Exit -ne 0 -and
-                    $riUnknownPayload.Exit -ne 2) ('exit=' + $riUnknownPayload.Exit + ' out=[' + $riUnknownPayload.Out + ']')
-                # Same event, different spelling: must RUN, and canonically.
-                $riCasing = Invoke-KiroProbe -Client 'kiro' -Trigger 'PreToolUse' -Stdin '{"hook_event_name":"preToolUse"}' -Exe $riExe
-                Check ($riTag + ': a casing-only difference runs and normalizes, so CLI v3 is not broken') (
-                    $riCasing.Exit -eq 0 -and (Get-RiPart $riCasing.Out 'EVENT') -ceq 'PreToolUse') (
-                    'exit=' + $riCasing.Exit + ' out=[' + $riCasing.Out + ']')
-                # Agreement and fill-in stay ordinary, non-refusing paths.
-                $riAgree = Invoke-KiroProbe -Client 'kiro' -Trigger 'Stop' -Stdin '{"hook_event_name":"Stop"}' -Exe $riExe
-                Check ($riTag + ': an agreeing payload runs normally') (
-                    $riAgree.Exit -eq 0 -and (Get-RiPart $riAgree.Out 'EVENT') -ceq 'Stop') (
-                    'exit=' + $riAgree.Exit + ' out=[' + $riAgree.Out + ']')
-                $riFilled = Invoke-KiroProbe -Client 'kiro' -Trigger 'Stop' -Stdin '{"cwd":"C:\\w"}' -Exe $riExe
-                Check ($riTag + ': completing a MISSING event name is not a contradiction') (
-                    $riFilled.Exit -eq 0 -and (Get-RiPart $riFilled.Out 'EVENT') -ceq 'Stop') (
-                    'exit=' + $riFilled.Exit + ' out=[' + $riFilled.Out + ']')
-                # Claude and Codex must be byte-identical to before, even with a
-                # stray Kiro trigger sitting in the environment.
-                foreach ($riOther in @('claude', 'codex')) {
-                    $riOtherResult = Invoke-KiroProbe -Client $riOther -Trigger 'PreToolUse' -Stdin '{"hook_event_name":"Stop"}' -Exe $riExe
-                    Check ($riTag + ': ' + $riOther + ' is untouched by a contradicting Kiro trigger') (
-                        $riOtherResult.Exit -eq 0 -and (Get-RiPart $riOtherResult.Out 'EVENT') -ceq 'Stop' -and
-                        $riOtherResult.Err -eq '') (
-                        'exit=' + $riOtherResult.Exit + ' out=[' + $riOtherResult.Out + '] err=[' + $riOtherResult.Err + ']')
-                }
-
-                # --- an oversized prompt is WITHHELD, on every channel ---------
-                # Round 30 truncated to a prefix + marker; round 31 (review +
-                # user decision) withholds entirely: a prefix is a prompt the
-                # user did not type, and prompt-driven hooks regex-match on it
-                # as if it were. The hook still RUNS (exit 0) - it takes the
-                # documented no-prompt degradation - and a one-line stderr
-                # notice says the prompt was withheld, so it is never silent.
-                # 40000 CJK characters are 120000 UTF-8 bytes: the bound is
-                # BYTES, so this must trip it even at 40000 characters.
-                $riCjk = ([string][char]0x4E00) * 40000
-                $riCjkResult = Invoke-KiroProbe -Client 'kiro' -Trigger 'UserPromptSubmit' -Stdin '' -UserPrompt $riCjk -Exe $riExe
-                Check ($riTag + ': an oversized CJK USER_PROMPT is withheld (byte bound), hook still runs') (
-                    $riCjkResult.Exit -eq 0 -and $riCjkResult.Out -match 'RAN' -and
-                    (Get-RiPart $riCjkResult.Out 'CHARS') -eq '0' -and
-                    $riCjkResult.Err -match 'withheld') ('out=[' + $riCjkResult.Out + '] err=[' + $riCjkResult.Err + ']')
-                $riPayloadPromptJson = '{"hook_event_name":"UserPromptSubmit","prompt":"' + ('A' * 70000) + '"}'
-                $riPayloadBig = Invoke-KiroProbe -Client 'kiro' -Trigger 'UserPromptSubmit' -Stdin $riPayloadPromptJson -Exe $riExe
-                Check ($riTag + ': an oversized PAYLOAD prompt is withheld by the same rule as USER_PROMPT') (
-                    $riPayloadBig.Exit -eq 0 -and $riPayloadBig.Out -match 'RAN' -and
-                    (Get-RiPart $riPayloadBig.Out 'CHARS') -eq '0') ('out=[' + $riPayloadBig.Out + ']')
-                # THE precedence bug: withholding an oversized payload prompt
-                # emptied the field, and the environment fallback then read that
-                # emptiness as "the payload had none" and substituted USER_PROMPT
-                # - so a huge CLI v3 prompt could be replaced by small or STALE
-                # environment text, which is how an unintended ::deep-debug
-                # could fire. Supplied-but-withheld is a DECISION, not absence.
-                $riPayloadBigEnv = Invoke-KiroProbe -Client 'kiro' -Trigger 'UserPromptSubmit' `
-                    -Stdin $riPayloadPromptJson -UserPrompt '::deep-debug' -Exe $riExe
-                Check ($riTag + ': a withheld payload prompt is NEVER replaced by USER_PROMPT') (
-                    $riPayloadBigEnv.Exit -eq 0 -and $riPayloadBigEnv.Out -match 'RAN' -and
-                    (Get-RiPart $riPayloadBigEnv.Out 'CHARS') -eq '0') ('out=[' + $riPayloadBigEnv.Out + ']')
-                # ...and the fallback still works when the payload genuinely
-                # carried no prompt at all, so the fix did not disable it.
-                $riNoPayloadPrompt = Invoke-KiroProbe -Client 'kiro' -Trigger 'UserPromptSubmit' `
-                    -Stdin '{"hook_event_name":"UserPromptSubmit"}' -UserPrompt 'FROM-ENV' -Exe $riExe
-                Check ($riTag + ': the env fallback still fills a payload that carried NO prompt') (
-                    $riNoPayloadPrompt.Exit -eq 0 -and
-                    [int](Get-RiPart $riNoPayloadPrompt.Out 'CHARS') -eq 8) ('out=[' + $riNoPayloadPrompt.Out + ']')
-
-                # --- precedence is PROPERTY PRESENCE, not non-whitespace text --
-                # `IsNullOrWhiteSpace` could not tell "the client sent no prompt"
-                # from "the client sent an empty, whitespace-only or null one", so
-                # all three fell through to USER_PROMPT. Measured on both hosts:
-                # a `::deep-debug` sitting in the environment fired for every one
-                # of them. A client that sent a prompt has spoken, even when what
-                # it sent is empty; a NON-STRING value is `invalid` and likewise
-                # never falls back. Only a genuinely ABSENT property may.
-                foreach ($riPresent in @(
-                        @{ Label = 'an EMPTY string'; Json = '{"hook_event_name":"UserPromptSubmit","prompt":""}' },
-                        @{ Label = 'WHITESPACE only'; Json = '{"hook_event_name":"UserPromptSubmit","prompt":"   "}' },
-                        @{ Label = 'JSON null'; Json = '{"hook_event_name":"UserPromptSubmit","prompt":null}' },
-                        @{ Label = 'a NON-STRING object'; Json = '{"hook_event_name":"UserPromptSubmit","prompt":{"a":1}}' })) {
-                    $riPresentResult = Invoke-KiroProbe -Client 'kiro' -Trigger 'UserPromptSubmit' `
-                        -Stdin ([string]$riPresent.Json) -UserPrompt '::deep-debug' -Exe $riExe
-                    Check ($riTag + ': a payload prompt property holding ' + [string]$riPresent.Label +
-                        ' is NEVER replaced by USER_PROMPT') (
-                        $riPresentResult.Exit -eq 0 -and $riPresentResult.Out -match 'RAN' -and
-                        (Get-RiPart $riPresentResult.Out 'CHARS') -eq '0') ('out=[' + $riPresentResult.Out + ']')
-                }
-                # Byte-exactness of an ACCEPTED prompt, across scripts that need
-                # it most: Persian, an astral emoji (surrogate pair) and a
-                # combining sequence must survive resolution unchanged.
-                $riExactText = 'معماری پروژه ' + [string]::Concat([char]0xD83D, [char]0xDE00) + ' e' + [string][char]0x0301
-                $riExact = Invoke-KiroProbe -Client 'kiro' -Trigger 'UserPromptSubmit' -Stdin '' -UserPrompt $riExactText -Exe $riExe
-                Check ($riTag + ': an accepted prompt survives byte-exact (Persian + emoji + combining mark)') (
-                    [int](Get-RiPart $riExact.Out 'CHARS') -eq $riExactText.Length -and
-                    (Get-RiPart $riExact.Out 'UTF8OK') -eq 'True') (
-                    'chars=' + (Get-RiPart $riExact.Out 'CHARS') + ' expected=' + $riExactText.Length)
-
-                # --- no launcher trigger -> NOTHING runs, unconditionally ------
-                # Round 30 let a payload event run here when it resolved inside
-                # the five-trigger trust list; the review and the user rejected
-                # that: a Hook Maker registration ALWAYS passes -Trigger, so a
-                # Kiro invocation without one has no registration identity, and
-                # stdin alone - however well-formed - must never select the
-                # branch a hook takes. Visible refusal on every variant.
-                foreach ($riNoTrigCase in @(
-                        @{ Label = 'a VALID payload event'; Stdin = '{"hook_event_name":"stop"}' },
-                        @{ Label = 'an unknown payload event'; Stdin = '{"hook_event_name":"PostFileSave"}' },
-                        @{ Label = 'an empty stdin'; Stdin = '' })) {
-                    $riNoTrig = Invoke-KiroProbe -Client 'kiro' -Trigger '' -Stdin ([string]$riNoTrigCase.Stdin) -Exe $riExe
-                    Check ($riTag + ': no launcher trigger + ' + [string]$riNoTrigCase.Label + ' is refused visibly, nothing runs') (
-                        $riNoTrig.Out -notmatch 'RAN' -and $riNoTrig.Exit -ne 0 -and $riNoTrig.Exit -ne 2 -and
-                        $riNoTrig.Err -match '-Trigger') (
-                        'exit=' + $riNoTrig.Exit + ' out=[' + $riNoTrig.Out + '] err=[' + $riNoTrig.Err + ']')
-                }
-                # An UNRESOLVABLE trigger value (PostFileSave is a real Kiro
-                # trigger with no Hook Maker equivalent) is the same no-identity
-                # state as an absent one, and refuses the same way.
-                $riBadTrig = Invoke-KiroProbe -Client 'kiro' -Trigger 'PostFileSave' -Stdin '' -Exe $riExe
-                Check ($riTag + ': a trigger outside the capability table refuses identically to an absent one') (
-                    $riBadTrig.Out -notmatch 'RAN' -and $riBadTrig.Exit -ne 0 -and $riBadTrig.Exit -ne 2) (
-                    'exit=' + $riBadTrig.Exit + ' out=[' + $riBadTrig.Out + ']')
-
-                # --- corrupt stdin is not the same thing as empty stdin --------
-                # Non-empty-but-unparseable used to collapse into the SAME $null
-                # an empty IDE stdin produces, and the synthesize branch then
-                # built a healthy-looking event from it - corrupt input laundered
-                # into a normal invocation. It refuses visibly now, on Kiro only.
-                $riCorrupt = Invoke-KiroProbe -Client 'kiro' -Trigger 'SessionStart' -Stdin '{not json!!' -Exe $riExe
-                Check ($riTag + ': corrupt stdin JSON on Kiro refuses visibly instead of synthesizing an event') (
-                    $riCorrupt.Out -notmatch 'RAN' -and $riCorrupt.Exit -ne 0 -and $riCorrupt.Exit -ne 2 -and
-                    $riCorrupt.Err -match 'JSON') (
-                    'exit=' + $riCorrupt.Exit + ' out=[' + $riCorrupt.Out + '] err=[' + $riCorrupt.Err + ']')
-                foreach ($riOtherCorrupt in @('claude', 'codex')) {
-                    $riOtherCorruptResult = Invoke-KiroProbe -Client $riOtherCorrupt -Trigger '' -Stdin '{not json!!' -Exe $riExe
-                    Check ($riTag + ': corrupt stdin on ' + $riOtherCorrupt + ' stays the silent no-op it always was') (
-                        $riOtherCorruptResult.Exit -eq 0 -and (Get-RiPart $riOtherCorruptResult.Out 'EVENT') -ceq '' -and
-                        $riOtherCorruptResult.Err -eq '') (
-                        'exit=' + $riOtherCorruptResult.Exit + ' err=[' + $riOtherCorruptResult.Err + ']')
-                }
-
-                # --- the refusal diagnostic is itself bounded and single-line --
-                # The payload event name is untrusted text headed for a
-                # user-visible warning: unbounded, a 5 KB name with embedded
-                # newlines flooded the diagnostic and let payload text pose as
-                # additional diagnostic lines.
-                $riNoisyEvent = '{"hook_event_name":"Stop\nFAKE-DIAGNOSTIC-LINE' + ('X' * 5000) + '"}'
-                $riNoise = Invoke-KiroProbe -Client 'kiro' -Trigger 'PreToolUse' -Stdin $riNoisyEvent -Exe $riExe
-                $riNoiseLines = @($riNoise.Err -split "`r?`n" | Where-Object { $_ -ne '' })
-                Check ($riTag + ': a hostile event name cannot flood or line-break the refusal diagnostic') (
-                    $riNoise.Exit -ne 0 -and $riNoise.Exit -ne 2 -and
-                    $riNoiseLines.Count -eq 1 -and $riNoiseLines[0].Length -lt 600) (
-                    'exit=' + $riNoise.Exit + ' errLines=' + $riNoiseLines.Count + ' len=' + $(if ($riNoiseLines.Count -gt 0) { $riNoiseLines[0].Length } else { 0 }))
-
-                # --- a leading BOM is transport, not payload -------------------
-                # A .NET Framework parent's StreamWriter emits the encoding
-                # preamble into a redirected child stdin, and 5.1's
-                # ConvertFrom-Json throws on the resulting leading U+FEFF while
-                # pwsh 7 tolerates it - so without the trim the SAME healthy
-                # payload parsed on one host and read as corrupt on the other.
-                $riBomPayload = [string][char]0xFEFF + '{"hook_event_name":"Stop"}'
-                $riBom = Invoke-KiroProbe -Client 'kiro' -Trigger 'Stop' -Stdin $riBomPayload -Exe $riExe
-                Check ($riTag + ': a BOM-prefixed healthy payload runs normally on both hosts') (
-                    $riBom.Exit -eq 0 -and (Get-RiPart $riBom.Out 'EVENT') -ceq 'Stop') (
-                    'exit=' + $riBom.Exit + ' out=[' + $riBom.Out + '] err=[' + $riBom.Err + ']')
-            }
-        }
-        finally {
-            if ([string]::IsNullOrEmpty($riOrigUserPrompt)) {
-                if (Test-Path Env:\USER_PROMPT) { Remove-Item Env:\USER_PROMPT -ErrorAction SilentlyContinue }
-            }
-            else { $env:USER_PROMPT = $riOrigUserPrompt }
-        }
     }
     finally {
         Set-ClaudeProjectDir $riOrigCpd
@@ -536,10 +183,6 @@ if ($cut -ge 0) { $body = $pr.Substring(0, $cut) }
             if (Test-Path Env:\HOOKMAKER_CLIENT) { Remove-Item Env:\HOOKMAKER_CLIENT -ErrorAction SilentlyContinue }
         }
         else { $env:HOOKMAKER_CLIENT = $riOrigClient }
-        if ([string]::IsNullOrEmpty($riOrigTrigger)) {
-            if (Test-Path Env:\HOOKMAKER_KIRO_TRIGGER) { Remove-Item Env:\HOOKMAKER_KIRO_TRIGGER -ErrorAction SilentlyContinue }
-        }
-        else { $env:HOOKMAKER_KIRO_TRIGGER = $riOrigTrigger }
     }
 
     # =====================================================================
@@ -632,36 +275,11 @@ if ($cut -ge 0) { $body = $pr.Substring(0, $cut) }
             $hrCodexDeny.Out -match '"systemMessage"' -and $hrCodexDeny.Out -notmatch 'permissionDecision' -and
             $hrCodexDeny.Result.ExitCode -eq 2 -and $hrCodexDeny.Err -match 'DENY-REASON') (
             $hrCodexDeny.Out + ' | err=' + $hrCodexDeny.Err)
-        $hrKiroDeny = Invoke-HookResult -Call @{ kind = 'deny'; event = 'PreToolUse'; reason = 'DENY-REASON'; client = 'kiro' }
-        Check 'kiro deny on a block-capable trigger is exit 2 + stderr, with nothing on stdout' (
-            $hrKiroDeny.Result.Shape -eq 'kiroExit2Stderr' -and $hrKiroDeny.Result.ExitCode -eq 2 -and
-            $hrKiroDeny.Out -eq '' -and $hrKiroDeny.Err -match 'DENY-REASON') (
-            $hrKiroDeny.Out + ' | err=' + $hrKiroDeny.Err)
-        # Kiro cannot refuse at Stop on either surface Hook Maker targets, so a
-        # deny there must never be emitted as if it were enforced.
-        $hrKiroDenyStop = Invoke-HookResult -Call @{ kind = 'deny'; event = 'Stop'; reason = 'DENY-REASON'; client = 'kiro' }
-        Check 'a kiro deny on a non-block-capable event is never emitted as a gate' (
-            $hrKiroDenyStop.Result.ExitCode -ne 2 -and $hrKiroDenyStop.Result.Degraded -eq $true) (
-            $hrKiroDenyStop.Out + ' | ' + [string]$hrKiroDenyStop.Result.DegradedReason)
         # allow is the same mechanism answering yes - it must never exit 2.
         $hrClaudeAllow = Invoke-HookResult -Call @{ kind = 'allow'; event = 'PreToolUse'; message = 'ALLOW-REASON'; client = 'claude' }
         Check 'claude allow keeps permissionDecision allow and exits 0' (
             $hrClaudeAllow.Out -match '"permissionDecision"\s*:\s*"allow"' -and
             $hrClaudeAllow.Result.ExitCode -eq 0) $hrClaudeAllow.Out
-        # This branch emitted NOTHING AT ALL, which silently deleted every
-        # PreToolUse advisory on Kiro: an allow is not block-capable and
-        # PreToolUse is not a context trigger, so it fell straight through.
-        # Test-Run-Guard routes its PreToolUse advisories through 'allow', so
-        # TEST_GUARD_ADVISORY_ONLY announced advisory mode to nobody.
-        $hrKiroAllow = Invoke-HookResult -Call @{ kind = 'allow'; event = 'PreToolUse'; message = 'ALLOW-REASON'; client = 'kiro' }
-        Check 'a kiro allow REACHES the user instead of vanishing' (
-            $hrKiroAllow.Result.Emitted -eq $true -and $hrKiroAllow.Err -match 'ALLOW-REASON' -and
-            $hrKiroAllow.Result.Shape -eq 'kiroStderrWarning') (
-            $hrKiroAllow.Out + ' | err=' + $hrKiroAllow.Err)
-        # THE safety line: an approval carrying Kiro's refusal code would enforce
-        # the exact opposite of what it says.
-        Check 'a kiro allow never exits 2 - an approval must not read as a refusal' (
-            $hrKiroAllow.Result.ExitCode -ne 2) ([string]$hrKiroAllow.Result.ExitCode)
         # The early-return path has its own unknown/blank guards; without them it
         # would fall through to the Codex arm and refuse on a guessed shape.
         $hrDenyUnknown = Invoke-HookResult -Call @{ kind = 'deny'; event = 'PreToolUse'; reason = 'DENY-REASON'; client = 'gemini' }
@@ -677,70 +295,9 @@ if ($cut -ge 0) { $body = $pr.Substring(0, $cut) }
             $hrUnknown.Out + ' | ' + [string]$hrUnknown.Result.DegradedReason)
 
         # --- a block on a non-block-capable event is downgraded, never faked ---
-        # Kiro Stop cannot block on either surface Hook Maker targets, so the
-        # gate is downgraded to the strongest advisory available and BOTH facts
-        # are reported - that is what lets a caller record degraded-stop-gate
-        # instead of claiming a gate it never got.
-        #
-        # These two assertions previously required TOTAL silence here. That was
-        # wrong and it hid a real defect: Kiro discards stdout on Stop, but a
-        # non-zero exit other than 2 surfaces stderr to the user. Demanding
-        # silence meant a failed gate told the user nothing at all. What must
-        # actually be guaranteed is that it is not mistaken for a gate - so the
-        # exit code, not the presence of output, is the safety property.
-        $hrKiroStopBlock = Invoke-HookResult -Call @{ kind = 'block'; event = 'Stop'; reason = 'KIRO-STOP-GATE'; client = 'kiro' }
-        Check 'a block on Kiro Stop is DOWNGRADED to a warning, never a fake block' (
-            $hrKiroStopBlock.Out -eq '' -and $hrKiroStopBlock.Out -notmatch 'decision' -and
-            $hrKiroStopBlock.Err -match 'KIRO-STOP-GATE' -and
-            $hrKiroStopBlock.Result.Shape -eq 'kiroStderrWarning') (
-            $hrKiroStopBlock.Out + ' | ' + $hrKiroStopBlock.Err)
-        # THE safety property: 2 is Kiro's refusal code. A downgraded gate that
-        # exited 2 would enforce exactly the block we just proved Kiro cannot do.
-        Check 'the downgraded gate never exits with Kiro''s refusal code' (
-            $hrKiroStopBlock.Result.ExitCode -ne 2) ([string]$hrKiroStopBlock.Result.ExitCode)
-        Check 'the downgrade REPORTS Degraded with both reasons (no block mechanism, stdout discarded)' (
-            $hrKiroStopBlock.Result.Degraded -eq $true -and
-            $hrKiroStopBlock.Result.DegradedReason -match 'no block mechanism on Stop' -and
-            $hrKiroStopBlock.Result.DegradedReason -match 'NOT an enforced gate' -and
-            $hrKiroStopBlock.Result.DegradedReason -match 'discards hook stdout') ([string]$hrKiroStopBlock.Result.DegradedReason)
-
-        # --- a block on a block-capable Kiro event is a REAL block ---
-        $hrKiroRealBlock = Invoke-HookResult -Call @{ kind = 'block'; event = 'UserPromptSubmit'; reason = 'KIRO-REAL-GATE'; client = 'kiro' }
-        Check 'a block on a block-capable Kiro event is exit 2 + stderr, and is NOT degraded' (
-            $hrKiroRealBlock.Out -eq '' -and $hrKiroRealBlock.Err -match 'KIRO-REAL-GATE' -and
-            $hrKiroRealBlock.Result.Emitted -eq $true -and $hrKiroRealBlock.Result.Shape -eq 'kiroExit2Stderr' -and
-            $hrKiroRealBlock.Result.ExitCode -eq 2 -and $hrKiroRealBlock.Result.Degraded -eq $false) (
-            $hrKiroRealBlock.Out + ' | ' + $hrKiroRealBlock.Err)
-
-        # --- Kiro context lands only where Kiro documents it ---
-        $hrKiroCtx = Invoke-HookResult -Call @{ kind = 'context'; event = 'SessionStart'; message = 'KIRO-CTX-TEXT'; client = 'kiro' }
-        Check 'Kiro context on a documented trigger is plain stdout, never a Claude/Codex JSON shape' (
-            $hrKiroCtx.Out -ceq 'KIRO-CTX-TEXT' -and $hrKiroCtx.Result.Shape -eq 'kiroStdout' -and
-            $hrKiroCtx.Result.Emitted -eq $true -and $hrKiroCtx.Result.Degraded -eq $false) $hrKiroCtx.Out
-        # Changed deliberately, not silently. This used to assert TOTAL silence
-        # off Kiro's two context triggers, and that pinned a real defect: Kiro
-        # discards stdout there, but a non-zero exit code other than 2 surfaces
-        # stderr to the user and lets execution continue. Asserting silence meant
-        # every Stop and PostToolUse message was thrown away on Kiro and the test
-        # certified it. The message now reaches the user via that channel.
-        $hrKiroCtxIgnored = Invoke-HookResult -Call @{ kind = 'context'; event = 'PostToolUse'; message = 'KIRO-IGNORED'; client = 'kiro' }
-        Check 'Kiro off its context triggers warns on stderr instead of vanishing' (
-            $hrKiroCtxIgnored.Out -eq '' -and $hrKiroCtxIgnored.Err -match 'KIRO-IGNORED' -and
-            $hrKiroCtxIgnored.Result.Shape -eq 'kiroStderrWarning' -and
-            $hrKiroCtxIgnored.Result.Emitted -eq $true) (
-            $hrKiroCtxIgnored.Out + ' | err=' + $hrKiroCtxIgnored.Err)
-        # Exit 1, never 2: 2 is Kiro's refusal code, so reusing it here would
-        # turn a non-blocking notice into a block on a block-capable trigger.
-        Check 'the Kiro warning uses exit 1, never the refusal code 2' (
-            $hrKiroCtxIgnored.Result.ExitCode -eq 1) ([string]$hrKiroCtxIgnored.Result.ExitCode)
-        # It must still be reported as WEAKER than the context channel: this
-        # reaches the user, not the model. Calling it parity would be a lie.
-        Check 'the stderr warning is still reported as degraded, not as context parity' (
-            $hrKiroCtxIgnored.Result.Degraded -eq $true -and
-            $hrKiroCtxIgnored.Result.DegradedReason -match 'NOT injected into model context') (
-            [string]$hrKiroCtxIgnored.Result.DegradedReason)
-
-        # --- the same downgrade rule applies to Claude, not just Kiro ---
+        # The gate is downgraded to the strongest advisory available and the
+        # downgrade is REPORTED - that is what lets a caller record a degraded
+        # gate instead of claiming one it never got.
         $hrClaudeSsBlock = Invoke-HookResult -Call @{ kind = 'block'; event = 'SessionStart'; reason = 'CLAUDE-SS-GATE'; client = 'claude' }
         Check 'a block on Claude SessionStart downgrades to the advisory shape and reports it' (
             $hrClaudeSsBlock.Out -notmatch '"decision"' -and $hrClaudeSsBlock.Out -match 'additionalContext' -and
@@ -781,13 +338,6 @@ if ($cut -ge 0) { $body = $pr.Substring(0, $cut) }
         $hrMirrorParts = $hrMirrorShape.Split('|')
         Check 'the mirror covers exactly the canonical clients and names no unknown event' (
             $hrMirrorParts[0] -eq $hrMirrorParts[1] -and $hrMirrorParts[2] -eq '') $hrMirrorShape
-
-        # Kiro's context-capable triggers come from .ai/KIRO_PROTOCOL.md (exit 0:
-        # stdout is added to context ONLY on SessionStart and UserPromptSubmit).
-        # There is no canonical table to mirror, so this pins the constant.
-        $hrKiroCtxEvents = & { . $HookLib; @($script:HookKiroContextEvents) -join ',' }
-        Check 'Kiro context triggers stay exactly the two the protocol documents' (
-            $hrKiroCtxEvents -eq 'SessionStart,UserPromptSubmit') $hrKiroCtxEvents
     }
     finally {
         Set-ClaudeProjectDir $hrOrigCpd

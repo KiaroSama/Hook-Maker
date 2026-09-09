@@ -470,7 +470,6 @@ function Remove-ClientComponent {
 # HERE, deliberately: those functions read the record identity and $WhatIf from
 # this scope and call the settings/runtime helpers defined just above, so this
 # line must stay after them and before the first call below.
-. (Join-Path $PSScriptRoot '_uninstallkiro.ps1')
 
 # ---- native Git pre-push integration ----------------------------------------
 # Both removers edit the one generated pre-push wrapper under the same
@@ -544,8 +543,6 @@ $codexResult = Remove-ClientComponent -ClientName 'codex'
 # shared settings document to prune, and its ownership is per-file AND
 # per-entry. A record without a kiro subrecord reports 'skipped' and nothing
 # about the two shared clients changes.
-$script:CurrentPhase = 'kiro'
-$kiroResult = Remove-KiroClientComponent
 
 if ($WhatIf) {
     Set-ComponentResult -Component 'registry' -Status 'ok' -ReasonCode 'wouldRemove'
@@ -565,7 +562,6 @@ if ($anyFailed.Count -gt 0 -or $anyManual.Count -gt 0) {
     # it was, never guessed at or silently restored.
     if ($claudeResult.Removed) { Set-ObjectProperty -Object $record.clients -Name 'claude' -Value $null }
     if ($codexResult.Removed) { Set-ObjectProperty -Object $record.clients -Name 'codex' -Value $null }
-    if ($kiroResult.Removed) { Set-ObjectProperty -Object $record.clients -Name 'kiro' -Value $null }
     if ($nativeGitResult.Removed -and $null -ne $record.PSObject.Properties['nativeGit']) {
         Set-ObjectProperty -Object $record -Name 'nativeGit' -Value $null
     }
@@ -659,7 +655,6 @@ if (-not $removeResult.Ok) {
     # is worse than one honestly marked as needing its tracking entry cleared.
     Set-ObjectProperty -Object $record.clients -Name 'claude' -Value $null
     Set-ObjectProperty -Object $record.clients -Name 'codex' -Value $null
-    Set-ObjectProperty -Object $record.clients -Name 'kiro' -Value $null
     if ($null -ne $record.PSObject.Properties['nativeGit']) { Set-ObjectProperty -Object $record -Name 'nativeGit' -Value $null }
     Set-ObjectProperty -Object $record -Name 'needsManualRepair' -Value $true
     Set-ObjectProperty -Object $record -Name 'lastResult' -Value 'partial'

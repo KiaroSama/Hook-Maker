@@ -57,17 +57,6 @@
                     runtimeArtifacts = @([pscustomobject]@{ path = 'C:\Proj\B\.codex\old-runtime.ps1'; kind = 'script'; classification = 'orphanRuntimeCandidate'; deleteEligibility = 'preserve'; deleteReason = 'not proven unreferenced' })
                     clients = @([pscustomobject]@{ client = 'codex'; settingsPath = 'C:\Proj\B\.codex\hooks.json'; events = @('Stop'); parsedTargets = @(); registrationStatus = 'targetMissing' })
                 }
-                # Kiro is a perHookFile client: its registration is one JSON
-                # document under .kiro\hooks, not an entry in a shared settings
-                # file. It must be grouped and labelled as Kiro - it used to be
-                # filed under the External Claude heading and rendered as a bare
-                # lowercase 'kiro'.
-                [pscustomobject]@{
-                    friendlyName = 'kiro-lint'; hookType = 'KiroRegistration'; scope = 'project'
-                    targetProjectRoot = 'C:\Proj\D'; status = 'active'; statusReason = ''; managedBy = 'external'
-                    removalPolicy = 'registrationOnly'; needsManualRepair = $false; nativeGit = $null; runtimeArtifacts = @()
-                    clients = @([pscustomobject]@{ client = 'kiro'; settingsPath = 'C:\Proj\D\.kiro\hooks\kiro-lint.kiro.hook'; events = @('PreToolUse'); parsedTargets = @('C:\Proj\D\tools\lint.ps1'); registrationStatus = 'parsed' })
-                }
                 [pscustomobject]@{
                     friendlyName = 'pre-push'; hookType = 'NativeGitHook'; scope = 'project'
                     targetProjectRoot = 'C:\Proj\C'; status = 'active'; statusReason = ''; managedBy = 'external'

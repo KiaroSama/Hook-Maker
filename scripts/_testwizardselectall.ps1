@@ -220,10 +220,10 @@
     # regression this pins).
     $cfgHealth = Join-Path $Work 'cfg-health.json'; New-Config $cfgHealth
     $healthProj = New-Proj 'TestHealthHooksProj'
-    # mode '1' (recommended events per hook), then client '4' = All clients - the
+    # mode '1' (recommended events per hook), then client '3' = All clients - the
     # only single pick that reaches Claude AND Codex, which the per-client
-    # assertions below require. The kiro component is recorded failed and dropped.
-    $rHealth = Invoke-Wizard -Config $cfgHealth -Answers @('1', '1', '23-25', '1', '4', $healthProj, 'done', '', '0')
+    # assertions below require.
+    $rHealth = Invoke-Wizard -Config $cfgHealth -Answers @('1', '1', '23-25', '1', '3', $healthProj, 'done', '', '0')
     Check 'exit 0 (installing the three test-health hooks)' ($rHealth.Exit -eq 0) $rHealth.Err
     Check 'no stderr (installing the three test-health hooks)' ($rHealth.Err -eq '')
     $healthClaude = Join-Path $healthProj '.claude\settings.local.json'

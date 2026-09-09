@@ -41,7 +41,7 @@
     # which install owns this directory. Anything else appearing here is either a
     # new planned artifact (update this list in the same change) or a file the
     # installer is writing that no plan accounts for - the defect that made the
-    # updater reinstall Kiro for ever.
+    # updater reinstall a client for ever.
     # ORDINAL sort, not Sort-Object: Sort-Object compares culture-sensitively and
     # orders '_hooklib.ps1' BEFORE '.hookmaker-runtime.json' on an en-US host, so a
     # culture-dependent expected string here would be a latent flake.
@@ -218,7 +218,7 @@
         $ownEnvValue = 'REGTEST-ENVVALUE-' + [guid]::NewGuid().ToString('N').Substring(0, 8)
         Write-Utf8 (Join-Path $ownSourceDir '.env') ('TOKEN=' + $ownEnvValue + "`n")
         $ownProject = New-Proj 'OwnershipMetaProj'
-        & $InstallScript -CustomHook $ownFixture -Events @('SessionStart') -TargetProject $ownProject -Clients @('claude', 'codex', 'kiro') *> $null
+        & $InstallScript -CustomHook $ownFixture -Events @('SessionStart') -TargetProject $ownProject -Clients @('claude', 'codex') *> $null
         $ownRecord = @(Get-RecordsFor $ownFixtureName | Where-Object { [string]$_.targetProjectRoot -eq $ownProject })[0]
 
         # ---- planned, not side-written ------------------------------------
@@ -242,11 +242,11 @@
             @($ownSourceManifest | Where-Object { $_.path -like '*hookmaker-runtime.json' }).Count -eq 0)
 
         # ---- present for every client, with that client's own identity ----
-        # Same source, three runtimes: the ONLY difference between them is what
+        # Same source, two runtimes: the ONLY difference between them is what
         # this file says, which is exactly why the expected manifest has to be
         # per-client rather than shared.
         $ownDocuments = @{}
-        foreach ($ownClient in @('claude', 'codex', 'kiro')) {
+        foreach ($ownClient in @('claude', 'codex')) {
             $ownRuntimeRoot = [string]$ownRecord.clients.$ownClient.runtimeRoot
             $ownPath = Join-Path (Join-Path $ownRuntimeRoot $ownFixtureName) '.hookmaker-runtime.json'
             Check ('the ' + $ownClient + ' runtime carries ownership metadata') (Test-Path -LiteralPath $ownPath -PathType Leaf) $ownPath
@@ -260,7 +260,7 @@
         # moves with it - a consumer pinned to 1 must not silently read a 2.
         $ownExpectedFields = @('schemaVersion', 'recordId', 'friendlyName', 'client', 'scope', 'projectKey',
             'registrationName', 'runtimeScriptRelativePath', 'runtimeManifest', 'preservedUserConfig')
-        foreach ($ownClient in @('claude', 'codex', 'kiro')) {
+        foreach ($ownClient in @('claude', 'codex')) {
             $ownJson = $ownDocuments[$ownClient].Json
             $ownFields = @($ownJson.PSObject.Properties | ForEach-Object { $_.Name })
             Check ('the ' + $ownClient + ' metadata carries exactly the contract fields, in order') (
@@ -281,7 +281,7 @@
         # production, which is exactly how this project shipped three sites keying
         # one state file three different ways.
         $ownRecomputed = Get-ShortHash ((Normalize-Path $ownProject).ToLowerInvariant())
-        foreach ($ownClient in @('claude', 'codex', 'kiro')) {
+        foreach ($ownClient in @('claude', 'codex')) {
             Check ('the ' + $ownClient + ' projectKey recomputes from the project root') (
                 ([string]$ownDocuments[$ownClient].Json.projectKey) -ceq $ownRecomputed) (
                 [string]$ownDocuments[$ownClient].Json.projectKey + ' vs ' + $ownRecomputed)
@@ -301,25 +301,13 @@
             ([string]$ownDocuments['claude'].Json.registrationName) -ceq ('Hook-Maker/' + $ownFixtureName) -and
             ([string]$ownDocuments['codex'].Json.registrationName) -ceq ('Hook-Maker/' + $ownFixtureName)) (
             [string]$ownDocuments['claude'].Json.registrationName)
-        # Kiro registers one entry per physical trigger, so no single entry name
-        # identifies the install; the shared managed-name prefix does, and it is the
-        # same prefix Test-KiroOwnership and the record validator prove ownership
-        # with. Every name the install actually wrote must start with it.
-        $ownKiroPrefix = Get-KiroManagedNamePrefix -ManagedId ([string]$ownRecord.id)
-        $ownKiroNames = @(@($ownRecord.clients.kiro.managedEntryNames) | ForEach-Object { [string]$_ })
-        Check 'the kiro registrationName is the managed entry-name prefix this install actually registered under' (
-            ([string]$ownDocuments['kiro'].Json.registrationName).StartsWith($ownKiroPrefix, [System.StringComparison]::Ordinal) -and
-            $ownKiroNames.Count -gt 0 -and
-            @($ownKiroNames | Where-Object { $_.StartsWith([string]$ownDocuments['kiro'].Json.registrationName, [System.StringComparison]::OrdinalIgnoreCase) }).Count -eq $ownKiroNames.Count) (
-            [string]$ownDocuments['kiro'].Json.registrationName + ' vs ' + ($ownKiroNames -join ', '))
-        Check 'claude/codex name <hook>.ps1 as the runtime script, kiro names kiro-launch.ps1 (what its registration invokes)' (
+        Check 'claude/codex name <hook>.ps1 as the runtime script their registration invokes' (
             ([string]$ownDocuments['claude'].Json.runtimeScriptRelativePath) -ceq ($ownFixtureName + '/' + $ownFixtureName + '.ps1') -and
-            ([string]$ownDocuments['codex'].Json.runtimeScriptRelativePath) -ceq ($ownFixtureName + '/' + $ownFixtureName + '.ps1') -and
-            ([string]$ownDocuments['kiro'].Json.runtimeScriptRelativePath) -ceq ($ownFixtureName + '/kiro-launch.ps1')) (
-            [string]$ownDocuments['kiro'].Json.runtimeScriptRelativePath)
+            ([string]$ownDocuments['codex'].Json.runtimeScriptRelativePath) -ceq ($ownFixtureName + '/' + $ownFixtureName + '.ps1')) (
+            [string]$ownDocuments['claude'].Json.runtimeScriptRelativePath)
 
         # ---- runtimeManifest: bounded, covers the runtime script, excludes itself
-        foreach ($ownClient in @('claude', 'codex', 'kiro')) {
+        foreach ($ownClient in @('claude', 'codex')) {
             $ownJson = $ownDocuments[$ownClient].Json
             $ownEntries = @($ownJson.runtimeManifest)
             $ownHookDir = Split-Path -Parent $ownDocuments[$ownClient].Path
@@ -345,13 +333,11 @@
             Check ('the ' + $ownClient + ' manifest paths are runtime-relative, never absolute') (
                 @($ownEntries | Where-Object { ([string]$_.path).Contains(':') -or ([string]$_.path).StartsWith('/') -or ([string]$_.path).StartsWith('\') }).Count -eq 0)
         }
-        Check 'the kiro manifest covers the launcher AND the hook script (both are installed)' (
-            @(@($ownDocuments['kiro'].Json.runtimeManifest) | Where-Object { ([string]$_.path) -ceq ($ownFixtureName + '/' + $ownFixtureName + '.ps1') }).Count -eq 1)
 
         # ---- FORBIDDEN content -------------------------------------------
         # Never: a command line, an absolute path, a .env value, prompt or tool
         # input, secrets, source content, log text. The file is identity ONLY.
-        foreach ($ownClient in @('claude', 'codex', 'kiro')) {
+        foreach ($ownClient in @('claude', 'codex')) {
             $ownRaw = $ownDocuments[$ownClient].Raw
             Check ('the ' + $ownClient + ' metadata contains no absolute path') ($ownRaw -notmatch '[A-Za-z]:\\|[A-Za-z]:/|^\\\\') $ownRaw
             Check ('the ' + $ownClient + ' metadata contains no command line') (

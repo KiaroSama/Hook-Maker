@@ -102,85 +102,6 @@ function Get-SyncConfigRoot {
     return @($seen.Keys | Sort-Object)
 }
 
-# Documents a per-hook-file client left behind in the NEW directory that belong
-# to the OLD records. They travelled with the folder, so they are physically
-# here while the record that owns them points at the vanished path - which is
-# exactly why the uninstaller cannot see them.
-#
-# Three independent conditions, all required, because this deletes files inside
-# the user's project: the document must name the old root, EVERY command in it
-# must point into that old root, and a replacement document for the same hook
-# must already exist. A document failing any of them is reported, never removed.
-function Get-OrphanedClientDocument {
-    param(
-        [Parameter(Mandatory = $true)][string]$NewRoot,
-        [Parameter(Mandatory = $true)][string]$OldRoot
-    )
-    $result = [pscustomobject]@{ Removable = @(); Ambiguous = @() }
-    $hooksDir = Join-Path $NewRoot '.kiro\hooks'
-    if (-not (Test-Path -LiteralPath $hooksDir -PathType Container)) { return $result }
-
-    $documents = @(Get-ChildItem -LiteralPath $hooksDir -Filter '*.json' -File -ErrorAction SilentlyContinue)
-    $freshSlugs = @{}
-    foreach ($document in $documents) {
-        $text = ''
-        try { $text = [System.IO.File]::ReadAllText($document.FullName, [System.Text.Encoding]::UTF8) } catch { continue }
-        if (Test-TextNamesRoot -Text $text -Root $OldRoot) { continue }
-        $slug = Get-DocumentHookSlug -FileName $document.Name
-        if ($slug -ne '') { $freshSlugs[$slug] = $true }
-    }
-
-    $removable = New-Object System.Collections.Generic.List[object]
-    $ambiguous = New-Object System.Collections.Generic.List[string]
-    foreach ($document in $documents) {
-        $text = ''
-        try { $text = [System.IO.File]::ReadAllText($document.FullName, [System.Text.Encoding]::UTF8) } catch { continue }
-        if (-not (Test-TextNamesRoot -Text $text -Root $OldRoot)) { continue }
-
-        $commands = @()
-        try {
-            $parsed = $text | ConvertFrom-Json
-            foreach ($hook in @($parsed.hooks)) {
-                $command = ''
-                if ($null -ne $hook -and $null -ne $hook.PSObject.Properties['action'] -and $null -ne $hook.action) {
-                    if ($null -ne $hook.action.PSObject.Properties['command']) { $command = [string]$hook.action.command }
-                }
-                $commands += $command
-            }
-        }
-        catch { $commands = @() }
-
-        $allOld = ($commands.Count -gt 0)
-        foreach ($command in $commands) {
-            if (-not (Test-TextNamesRoot -Text $command -Root $OldRoot)) { $allOld = $false; break }
-        }
-        $slug = Get-DocumentHookSlug -FileName $document.Name
-        $hasReplacement = ($slug -ne '' -and $freshSlugs.ContainsKey($slug))
-        if ($allOld -and $hasReplacement) { [void]$removable.Add($document) }
-        else { [void]$ambiguous.Add($document.Name) }
-    }
-    return [pscustomobject]@{ Removable = @($removable.ToArray()); Ambiguous = @($ambiguous.ToArray()) }
-}
-
-# How many documents name the old root at all - the number worth REPORTING
-# before anything is written. Whether each is safely removable cannot be known
-# until its replacement exists, so this deliberately answers the easy question.
-function Get-StaleDocumentCandidate {
-    param(
-        [Parameter(Mandatory = $true)][string]$NewRoot,
-        [Parameter(Mandatory = $true)][string]$OldRoot
-    )
-    $hooksDir = Join-Path $NewRoot '.kiro\hooks'
-    if (-not (Test-Path -LiteralPath $hooksDir -PathType Container)) { return @() }
-    $stale = New-Object System.Collections.Generic.List[string]
-    foreach ($document in @(Get-ChildItem -LiteralPath $hooksDir -Filter '*.json' -File -ErrorAction SilentlyContinue)) {
-        $text = ''
-        try { $text = [System.IO.File]::ReadAllText($document.FullName, [System.Text.Encoding]::UTF8) } catch { continue }
-        if (Test-TextNamesRoot -Text $text -Root $OldRoot) { [void]$stale.Add($document.Name) }
-    }
-    return $stale.ToArray()
-}
-
 # 'hookmaker-<slug>-<recordId>.json' -> '<slug>'. The record id is the last
 # hyphen-separated token; the slug is everything between the prefix and it.
 function Get-DocumentHookSlug {
@@ -318,21 +239,13 @@ function Invoke-FixRelocatedProject {
     $records = @($chosen.Records)
     $clientCount = 0
     foreach ($record in $records) { $clientCount += @(Get-InstalledClientNames -Record $record).Count }
-    # An ESTIMATE only. The removable set cannot be decided yet: a document is
-    # removable only once its replacement exists, and the replacements are
-    # written by the reinstall below. Deciding here made every document look
-    # unsafe and left 25 broken registrations behind on the first real run.
-    $staleEstimate = @(Get-StaleDocumentCandidate -NewRoot $newRoot -OldRoot $oldRoot).Count
 
     Write-Host ''
     Write-NoteLine ('  From: ' + $oldRoot)
     Write-NoteLine ('  To  : ' + $newRoot)
     Write-NoteLine ('  Reinstall ' + $records.Count + ' hook(s) across ' + $clientCount + ' client registration(s) at the new path.')
     Write-NoteLine ('  Drop ' + $records.Count + ' stale registry record(s) naming the old path.')
-    if ($staleEstimate -gt 0) {
-        Write-NoteLine ('  Examine ' + $staleEstimate + ' per-hook document(s) that travelled with the folder, and remove the ones the reinstall replaces.')
-        Write-NoteLine '  Any it cannot identify safely is LEFT for you, and named at the end.'
-    }
+
     Write-NoteLine '  Hook SOURCES are never touched. Nothing outside these two folders is written.'
     # Defaults to YES: the user already picked the project and typed the new
     # path, so Enter should carry that through rather than throw it away.
@@ -389,16 +302,10 @@ function Invoke-FixRelocatedProject {
         }
     }
 
-    # NOW the replacements exist, so "is this document superseded?" finally has
-    # a truthful answer. Still before the records are dropped: while a record
-    # exists the uninstaller owns that id, and a half-removed pair is worse than
-    # either alone.
-    $orphans = Get-OrphanedClientDocument -NewRoot $newRoot -OldRoot $oldRoot
+    # No supported client writes a per-hook document, so relocation has nothing
+    # of that shape to supersede: the reinstall below rewrites the shared
+    # settings files in place.
     $documentsRemoved = 0
-    foreach ($document in @($orphans.Removable)) {
-        try { Remove-Item -LiteralPath $document.FullName -Force -ErrorAction Stop; $documentsRemoved++ }
-        catch { [void]$failures.Add('document ' + $document.Name + ': ' + $_.Exception.Message) }
-    }
 
     $dropped = 0; $dropFailed = 0
     foreach ($record in $records) {
@@ -427,10 +334,6 @@ function Invoke-FixRelocatedProject {
     Write-NoteLine ('  Reinstalled at the new path : ' + $installed + ' registration(s)')
     Write-NoteLine ('  Stale records dropped       : ' + $dropped + ' of ' + $records.Count)
     if ($documentsRemoved -gt 0) { Write-NoteLine ('  Stale documents removed     : ' + $documentsRemoved) }
-    if (@($orphans.Ambiguous).Count -gt 0) {
-        Write-NoteLine ('  Left for you to inspect     : ' + @($orphans.Ambiguous).Count + ' document(s) naming the old path that nothing replaced')
-        foreach ($name in @($orphans.Ambiguous)) { Write-NoteLine ('    ' + $name) }
-    }
     if ($configChange.Roots -gt 0 -or $configChange.Names -gt 0) {
         Write-NoteLine ('  Sync routes repointed       : ' + $configChange.Roots + ' root(s), ' + $configChange.Names + ' name(s)')
         Write-NoteLine '  Run "Update installed hooks" so every other project in that group picks the change up.'

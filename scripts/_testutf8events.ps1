@@ -59,37 +59,6 @@
     Check 'CLAUDE_PROJECT_DIR alone also selects the Claude shape' (
         $null -ne $parsedCl2 -and $null -ne $parsedCl2.PSObject.Properties['hookSpecificOutput']) $r.Out
 
-    # =====================================================================
-    # THE KIRO SHAPES (adapter-provided, the strict improvement over the old
-    # hand-rolled branch that sent Kiro a Codex-shaped JSON payload it cannot
-    # read). Kiro adds hook stdout to model context ONLY on SessionStart/
-    # UserPromptSubmit; on Stop stdout is read and DISCARDED and Kiro documents
-    # no block mechanism at all. So: SessionStart advisory -> PLAIN stdout
-    # (never a JSON envelope); a Stop finding -> the degraded path - the text
-    # on STDERR with exit 1 (a user-visible warning), NEVER decision:block
-    # JSON, and NEVER the refusal code 2 Kiro reserves for real gates.
-    # The real kiro-launch registration always sets HOOKMAKER_KIRO_TRIGGER
-    # beside HOOKMAKER_CLIENT; without it Read-HookInput refuses to run (fail
-    # closed), so the faithful launcher simulation passes BOTH.
-    Write-Host '--- Kiro: SessionStart is plain stdout; a Stop finding degrades to a stderr warning ---' -ForegroundColor Cyan
-    $hcKiroSh = New-IsolatedHookCopy
-    $rKiroSh = Fire -HookPath $hcKiroSh.Script -Cwd $projLeg -EventName 'SessionStart' -LocalAppData $hcKiroSh.LocalAppData -ExtraEnv @{ HOOKMAKER_CLIENT = 'kiro'; HOOKMAKER_KIRO_TRIGGER = 'SessionStart' }
-    $parsedKiroSh = $null
-    try { $parsedKiroSh = $rKiroSh.Out | ConvertFrom-Json } catch { $parsedKiroSh = $null }
-    Check 'HOOKMAKER_CLIENT=kiro on SessionStart gets PLAIN stdout naming the file - no JSON envelope, exit 0' (
-        $rKiroSh.Exit -eq 0 -and $rKiroSh.Err -eq '' -and $null -eq $parsedKiroSh -and
-        $rKiroSh.Out -match 'old\.txt' -and $rKiroSh.Out -notmatch '(?i)hookSpecificOutput' -and
-        $rKiroSh.Out -notmatch '(?i)systemMessage') ($rKiroSh.Out + '|' + $rKiroSh.Err)
-    $hcKiroSh2 = New-IsolatedHookCopy
-    $projKiroSh = New-GitRepo 'KiroStopShape'
-    Write-Utf8 (Join-Path $projKiroSh 'base.txt') "seed`n"
-    Add-Commit $projKiroSh 'seed'
-    Write-Bytes (Join-Path $projKiroSh 'kbad.txt') (Get-InvalidUtf8Bytes 'KIROSTOPMARKER')
-    $rKiroSh2 = Fire -HookPath $hcKiroSh2.Script -Cwd $projKiroSh -EventName 'Stop' -SessionId 'ks1' -LocalAppData $hcKiroSh2.LocalAppData -ExtraEnv @{ HOOKMAKER_CLIENT = 'kiro'; HOOKMAKER_KIRO_TRIGGER = 'Stop' }
-    Check 'kiro Stop: the finding reaches STDERR naming the file; stdout carries no JSON Kiro cannot read' (
-        $rKiroSh2.Err -match 'kbad\.txt' -and $rKiroSh2.Out -eq '' -and -not (Test-StopBlocks $rKiroSh2.Out)) ($rKiroSh2.Out + '|' + $rKiroSh2.Err)
-    Check 'kiro Stop: exit 1 (a visible non-blocking warning), never the refusal code 2' ($rKiroSh2.Exit -eq 1) ([string]$rKiroSh2.Exit)
-
     Write-Host '--- a clean project baseline is silent (but still recorded) ---' -ForegroundColor Cyan
     $hcClean = New-IsolatedHookCopy
     $projClean = New-GitRepo 'CleanBase'
@@ -202,27 +171,6 @@
     Check 'invalid bytes living only in the git INDEX (staged, worktree reverted) still block' (
         (Test-StopBlocks $r.Out) -and (Get-Message $r.Out) -match 's\.txt \(staged content\)') $r.Out
     Check 'the staged-content block never leaks the staged bytes' ((Get-Message $r.Out) -notmatch 'STAGEDMARKER') $r.Out
-
-    # =====================================================================
-    # GUARD (counter-assertion, not an exclusion): Kiro keeps its hook
-    # configuration in tracked .kiro\hooks\*.json - project text that is part of
-    # the deliverable, so the encoding gate MUST still see it. Only Kiro's
-    # private runtime tree would ever be a candidate for exclusion, and no
-    # equivalent .claude\hooks / .codex\hooks carve-out exists to justify one, so
-    # .kiro is deliberately absent from $script:ExcludedDirs. This block fails
-    # the moment anyone adds it, because Test-PathExcluded is applied to the
-    # tracked/staged candidate set itself.
-    Write-Host '--- Stop: a non-UTF-8 file inside .kiro is STILL caught (never blanket-excluded) ---' -ForegroundColor Cyan
-    $hcKiro = New-IsolatedHookCopy
-    $projKiro = New-GitRepo 'KiroStillScanned'
-    Write-Utf8 (Join-Path $projKiro 'base.txt') "seed`n"
-    Add-Commit $projKiro 'seed'
-    Write-Bytes (Join-Path $projKiro '.kiro\hooks\kiro-hook.json') (Get-InvalidUtf8Bytes 'KIROMARKER')
-    $r = Fire -HookPath $hcKiro.Script -Cwd $projKiro -EventName 'Stop' -SessionId 'k1' -LocalAppData $hcKiro.LocalAppData
-    Check 'invalid UTF-8 in tracked .kiro\hooks config still blocks at Stop' (
-        (Test-StopBlocks $r.Out) -and (Get-Message $r.Out) -match 'kiro-hook\.json') $r.Out
-    Check 'the .kiro block names the path but never leaks its bytes' (
-        (Get-Message $r.Out) -notmatch 'KIROMARKER') $r.Out
 
     # =====================================================================
     Write-Host '--- Stop: a deleted file is handled without a crash or a block ---' -ForegroundColor Cyan

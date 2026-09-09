@@ -56,7 +56,7 @@ foreach ($name in @('AGENTS.md', 'CLAUDE.md')) {
     $path = Join-Path $cwd $name
     if (Test-Path -LiteralPath $path -PathType Leaf) { [void]$ruleFiles.Add($path) }
 }
-foreach ($relativeDir in @('.agents\rules', '.claude\rules', '.codex\rules', '.cursor\rules', '.cline\rules', '.kiro\rules')) {
+foreach ($relativeDir in @('.agents\rules', '.claude\rules', '.codex\rules', '.cursor\rules', '.cline\rules')) {
     $dir = Join-Path $cwd $relativeDir
     if (-not (Test-Path -LiteralPath $dir -PathType Container)) { continue }
     foreach ($file in @(Get-ChildItem -LiteralPath $dir -File -Recurse -ErrorAction SilentlyContinue)) {

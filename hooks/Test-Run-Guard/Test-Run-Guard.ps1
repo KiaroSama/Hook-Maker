@@ -228,9 +228,8 @@ function Get-PerRunStateEntries {
 # ---- output -----------------------------------------------------------------
 # Client identity and wire shape now both live in Write-HookResult. The local
 # Test-IsClaudeClient / Write-HookJson pair that used to serialise here is gone:
-# it answered only "is it Claude", which was exactly the two-shape assumption
-# that left Kiro receiving a payload it cannot read. Its own scope note said
-# giving Kiro a real shape belonged to the output adapter - it now does.
+# it answered only "is it Claude", so every shape decision had to be re-derived
+# at each call site instead of once in the output adapter.
 
 # A real gate decision. Claude gets the documented permissionDecision; Codex
 # does not document one for PreToolUse, so it gets the documented systemMessage
@@ -242,9 +241,7 @@ function Get-PerRunStateEntries {
 # and refuses by exiting 2 with the reason on stderr - so emitting decision:block
 # here would not refuse a Claude tool call at all. The adapter reproduces both
 # clients' bytes exactly, including the second top-level systemMessage key and
-# Codex's exit 2; what it adds is Kiro, which documents exit 2 + stderr on its
-# block-capable triggers and previously received a Codex-shaped payload it
-# cannot read.
+# Codex's exit 2.
 function Write-Deny {
     param([string]$Message)
     exit (Write-HookResult -EventName 'PreToolUse' -Kind 'deny' -Reason $Message).ExitCode

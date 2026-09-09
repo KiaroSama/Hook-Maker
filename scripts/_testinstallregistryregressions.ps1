@@ -657,9 +657,8 @@
 
         # ONE backup per file AT A TIME. The per-run rule above stops copies
         # piling up WITHIN a run; nothing used to stop them piling up ACROSS
-        # runs, so a machine accumulated 464 backup files (6.5 MB) - and Kiro
-        # multiplies it, being one document, and therefore one backup, per hook
-        # per project. A later run must now leave exactly its own copy.
+        # runs, so a machine accumulated 464 backup files (6.5 MB). A later run
+        # must now leave exactly its own copy.
         $env:HOOKMAKER_BACKUP_RUN = '20260728-020304'
         & $InstallScript -CustomHook $fixtureBackupA -Events @('Stop') -TargetProject $projBackupRun -ClaudeOnly *> $null
         $afterSecondRun = @(Get-ChildItem -LiteralPath $backupRunDir -Filter 'settings.local.json.backup-*' -File -ErrorAction SilentlyContinue)

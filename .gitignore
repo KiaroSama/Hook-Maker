@@ -6,7 +6,6 @@
 /AGENTS.md
 /.agents/
 /.claude/
-/.kiro/
 /.codex/
 /.cursor/
 /.cline/
@@ -34,6 +33,7 @@ logs/
 /state/
 
 # Hook Maker: local/private files (auto-managed)
+/.kiro/
 /.env
 /.env.*
 !/.env.dist
@@ -47,8 +47,3 @@ logs/
 
 # Local assistant skill state - machine-specific, not part of the tool
 /skills-lock.json
-
-!/.env.example
-!/.env.sample
-!/.env.template
-!/.env.dist

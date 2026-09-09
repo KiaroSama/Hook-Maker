@@ -135,12 +135,6 @@ function Invoke-ScanWalk {
         # and recognised by POSITION (leaf name plus containing directory name),
         # so an ordinary folder called 'hooks' elsewhere is never mistaken for
         # one. Ownership is still proven per document inside the reader.
-        foreach ($shape in $script:PerHookFileDirectoryShapes) {
-            if ($parentName -eq $shape.Leaf -and $grandParentName -eq $shape.Parent) {
-                Read-PerHookFileDirectory -Path $current.Path -Client ([string]$shape.Client)
-                break
-            }
-        }
 
         foreach ($entry in $entries) {
             if ($script:Canceled) { return }
@@ -245,7 +239,7 @@ function Find-UpwardContext {
     $segments = @($canonical.Split([char[]]@('\', '/')))
     $markerIndex = -1
     for ($i = 0; $i -lt $segments.Count; $i++) {
-        if ($segments[$i] -eq '.claude' -or $segments[$i] -eq '.codex' -or $segments[$i] -eq '.kiro' -or $segments[$i] -eq '.git') { $markerIndex = $i; break }
+        if ($segments[$i] -eq '.claude' -or $segments[$i] -eq '.codex' -or $segments[$i] -eq '.git') { $markerIndex = $i; break }
     }
     # No client/native component in the path: -ScanRoot is an ordinary directory
     # and the downward walk already covers everything reachable from it.
@@ -260,14 +254,7 @@ function Find-UpwardContext {
     }
     $codexCandidate = Join-Path $contextRoot '.codex\hooks.json'
     if (Test-Path -LiteralPath $codexCandidate -PathType Leaf) { Read-SettingsRegistrations -SettingsPath $codexCandidate -Client 'codex' }
-    # Each perHookFile client's registration directory under the same context
-    # root, derived from the capability table rather than named again here.
-    foreach ($shape in $script:PerHookFileDirectoryShapes) {
-        $perHookCandidate = Join-Path (Join-Path $contextRoot ([string]$shape.Parent)) ([string]$shape.Leaf)
-        if (Test-Path -LiteralPath $perHookCandidate -PathType Container) {
-            Read-PerHookFileDirectory -Path $perHookCandidate -Client ([string]$shape.Client)
-        }
-    }
+
     $contextGitPath = Join-Path $contextRoot '.git'
     # Same reparse guard as the downward walk: a '.git' DIRECTORY reached by
     # this single upward hop must not be followed if it is itself a junction.
