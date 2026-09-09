@@ -271,6 +271,45 @@ try {
     $r = Fire -Cwd $ps5 -Exe 'powershell.exe'
     Check 'Windows PowerShell 5.1 auto-fix works' ($r.Exit -eq 0 -and (Test-Path -LiteralPath (Join-Path $ps5 '.gitignore'))) $r.Err
 
+    Write-Host '--- batching: one git check-ignore per batch, not per file ---' -ForegroundColor Cyan
+    # A git.ps1 shim on PATH (same convention as Test-CiStatusCheck.ps1's gh.ps1)
+    # counts check-ignore spawns and forwards everything to the real git. The
+    # directories holding git.exe are removed from PATH for the duration of
+    # the fire, so the hook can only find the shim; the shim itself calls the
+    # real binary by absolute path.
+    $bigRepo = New-Repo 'big'
+    for ($i = 0; $i -lt 300; $i++) {
+        [System.IO.File]::WriteAllText((Join-Path $bigRepo ('file-' + $i + '.txt')), 'x', (New-Object System.Text.UTF8Encoding $false))
+    }
+    [System.IO.File]::WriteAllText((Join-Path $bigRepo 'AGENTS.md'), 'private', (New-Object System.Text.UTF8Encoding $false))
+    & git -C $bigRepo add -A
+    & git -C $bigRepo commit -q -m c
+    $shimDir = Join-Path $Work 'gitshim'
+    New-Item -ItemType Directory -Path $shimDir -Force | Out-Null
+    $callLog = Join-Path $Work 'check-ignore-calls.txt'
+    # Git for Windows ships git.exe twice (cmd\ and mingw64\bin\), so Get-Command
+    # returns BOTH; take the first, or the shim forwards to the two paths joined
+    # by a space and every git call it wraps fails silently.
+    $realGit = @(Get-Command git.exe -CommandType Application -ErrorAction Stop)[0].Source
+    $shimBody = @(
+        '# Counts check-ignore spawns, then forwards everything to the real git.',
+        ("if (`$args -contains 'check-ignore') { [System.IO.File]::AppendAllText('" + $callLog + "', 'x' + [Environment]::NewLine) }"),
+        ("& '" + $realGit + "' @args"),
+        'exit $LASTEXITCODE'
+    ) -join "`r`n"
+    [System.IO.File]::WriteAllText((Join-Path $shimDir 'git.ps1'), $shimBody, (New-Object System.Text.UTF8Encoding $false))
+    $savedPath = $env:PATH
+    $pathWithoutRealGit = @($env:PATH -split ';' | Where-Object {
+        $_ -ne '' -and -not (Test-Path -LiteralPath (Join-Path $_ 'git.exe') -PathType Leaf)
+    })
+    $env:PATH = (@($shimDir) + $pathWithoutRealGit) -join ';'
+    try { $r = Fire -Cwd $bigRepo } finally { $env:PATH = $savedPath }
+    $spawns = 0
+    if (Test-Path -LiteralPath $callLog -PathType Leaf) { $spawns = @([System.IO.File]::ReadAllLines($callLog)).Count }
+    Check 'batching: 301 tracked files need at most 3 check-ignore spawns' ($spawns -ge 1 -and $spawns -le 3) ('spawns=' + $spawns)
+    Check 'batching: the tracked protected file is still reported' ($r.Out -match 'TRACKED' -and $r.Out -match 'AGENTS\.md') $r.Out
+    Check 'batching: no unprotected file is reported' ($r.Out -notmatch 'file-\d+\.txt') $r.Out
+
     Write-Host '--- native git pre-push enforcement ---' -ForegroundColor Cyan
     $pushRepo = New-Repo 'pre push'
     & git -C $pushRepo config core.autocrlf false
