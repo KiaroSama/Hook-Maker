@@ -69,8 +69,37 @@ try {
         Check 'cbm: an empty .env value falls through to the environment' (
             (Get-CbmCacheDir -Config @{ 'CBM_CACHE_DIR' = '  ' }) -eq 'G:\from-env') (Get-CbmCacheDir -Config @{ 'CBM_CACHE_DIR' = '  ' })
         $env:CBM_CACHE_DIR = ''
-        Check 'cbm: with neither set it is the binary default under the profile' (
-            (Get-CbmCacheDir -Config @{}) -eq (Join-Path $env:USERPROFILE '.cache\codebase-memory-mcp'))
+        # A fabricated client config, never the developer's own: the real
+        # ~/.claude.json holds whichever MCP servers that machine happens to
+        # have, so reading it here would make the result depend on the machine.
+        $missingConfig = Join-Path $Work 'no-such-client-config.json'
+        Check 'cbm: with nothing set anywhere it is the binary default under the profile' (
+            (Get-CbmCacheDir -Config @{} -ClientConfigPaths @($missingConfig)) -eq (Join-Path $env:USERPROFILE '.cache\codebase-memory-mcp'))
+
+        # The step that was missing entirely: CBM_CACHE_DIR is normally set only
+        # inside the MCP server's own env block in the client config, so the
+        # server has it and a hook process never does. Before this, the hook
+        # watched the binary default while the server wrote somewhere else and
+        # "no index yet" was reported for ever.
+        $clientConfig = Join-Path $Work 'client-config.json'
+        # Single-quoted here, so what lands in the file is exactly these bytes:
+        # JSON "G:\\Server\\cache", i.e. the path G:\Server\cache once unescaped.
+        Write-Utf8 $clientConfig '{"mcpServers":{"codebase-memory-mcp":{"command":"cbm.exe","env":{"CBM_CACHE_DIR":"G:\\Server\\cache"}}}}'
+        Check 'cbm: the cache dir is read from the MCP server record in the client config' (
+            (Get-CbmCacheDir -Config @{} -ClientConfigPaths @($clientConfig)) -eq 'G:\Server\cache') (Get-CbmCacheDir -Config @{} -ClientConfigPaths @($clientConfig))
+        Check 'cbm: the .env override still beats the client config' (
+            (Get-CbmCacheDir -Config @{ 'CBM_CACHE_DIR' = 'G:\from-dotenv' } -ClientConfigPaths @($clientConfig)) -eq 'G:\from-dotenv')
+        $env:CBM_CACHE_DIR = 'G:\from-env'
+        Check 'cbm: the environment variable still beats the client config' (
+            (Get-CbmCacheDir -Config @{} -ClientConfigPaths @($clientConfig)) -eq 'G:\from-env')
+        $env:CBM_CACHE_DIR = ''
+
+        # A config with no CBM server at all must not hand back a stray match
+        # from some other server's env block.
+        $otherConfig = Join-Path $Work 'client-config-other.json'
+        Write-Utf8 $otherConfig '{"mcpServers":{"something-else":{"env":{"SOME_TOKEN":"redacted"}}}}'
+        Check 'cbm: a client config without the key falls through to the default' (
+            (Get-CbmCacheDir -Config @{} -ClientConfigPaths @($otherConfig)) -eq (Join-Path $env:USERPROFILE '.cache\codebase-memory-mcp'))
     }
     finally { $env:CBM_CACHE_DIR = $previousEnv }
 

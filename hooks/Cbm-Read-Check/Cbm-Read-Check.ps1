@@ -72,7 +72,13 @@ else {
     $note = @(
         ('CBM READ CHECK - this project has no Codebase Memory index yet (expected at ' + $dbPath + ').'),
         ('Unless this session is documentation-only, index it once now: index_repository(repo_path="' + $cwd + '", mode="moderate") - local, seconds, and a background watcher keeps it fresh afterwards.'),
-        'Then query the graph before browsing files: get_architecture, search_graph, trace_path, get_code_snippet.'
+        'Then query the graph before browsing files: get_architecture, search_graph, trace_path, get_code_snippet.',
+        # Without this, an agent hits the refusal, has no idea it is a one-time
+        # authorization rather than a broken tool, and every later session
+        # repeats the attempt. Found 2026-09-09: every project under this
+        # machine's tools directory was refused, so NOTHING had ever been indexed
+        # while this hook asked in every session.
+        ('If index_repository REFUSES with "path is a home or credential directory", CBM has classified this root as sensitive and will never index it until it is approved once: codebase-memory-mcp allow-root --approve-sensitive "' + $cwd + '". That is a security decision for the user - report it and move on, do not run it unasked, and do not keep retrying the index.')
     ) -join "`n"
 }
 
