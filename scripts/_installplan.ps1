@@ -809,7 +809,21 @@ function Get-PlanArtifactExpectedHash {
         finally { $sha.Dispose() }
     }
     if (-not (Test-Path -LiteralPath $Artifact.sourcePath -PathType Leaf)) { return '' }
-    return (Get-FileHash -LiteralPath $Artifact.sourcePath -Algorithm SHA256).Hash
+    # .NET, NOT Get-FileHash. That cmdlet lives in the Microsoft.PowerShell.Utility
+    # MODULE, and a Windows PowerShell 5.1 process started underneath a pwsh 7
+    # parent can come up unable to resolve it - "The term 'Get-FileHash' is not
+    # recognized" - which made EVERY 5.1 run of the install path die here. It was
+    # invisible because the suites run under pwsh 7, where the cmdlet resolves.
+    # The Generated branch above already hashes with .NET; this returns the same
+    # upper-case SHA-256 hex Get-FileHash did, so no stored manifest changes.
+    # Shared read: hashing must not fail on a file something else has open.
+    $sha = [System.Security.Cryptography.SHA256]::Create()
+    try {
+        $stream = [System.IO.File]::Open($Artifact.sourcePath, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::ReadWrite)
+        try { return ([System.BitConverter]::ToString($sha.ComputeHash($stream))).Replace('-', '').ToUpperInvariant() }
+        finally { $stream.Dispose() }
+    }
+    finally { $sha.Dispose() }
 }
 
 # path+hash manifest derived from the plan (never file contents).
