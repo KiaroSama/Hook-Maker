@@ -393,11 +393,11 @@
     Check 'a hook already tracked as a managed install is NOT duplicated' ($coveredMerge.Action -eq 'coveredByManaged') $coveredMerge.Reason
     Check 'nothing was written for the managed-covered hook' (@($coverageRegistry.installs).Count -eq 1)
 
-    # A per-hook-file client (Kiro) registers the hook's LAUNCHER shim, so the
-    # managed record's runtimeScript and the path it actually registered are
+    # A client that registers a LAUNCHER shim rather than the hook script makes
+    # the managed record's runtimeScript and the path it actually registered two
     # different files. Matching runtimeScript alone missed every one of them, and
-    # each Kiro install was then kept as a second, unremovable discovered record.
-    $launcherScript = Join-Path $fixtureProjectClaudeRuntimeRoot 'F\kiro-launch.ps1'
+    # each such install was then kept as a second, unremovable discovered record.
+    $launcherScript = Join-Path $fixtureProjectClaudeRuntimeRoot 'F\launch-shim.ps1'
     $launcherRegistry = New-EmptyInstallRegistry
     $launcherManaged = Copy-Record $goodProjectRecord
     $launcherManaged.clients.claude.command = 'powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "' + $launcherScript + '"'

@@ -3,8 +3,7 @@
 # fake home, never the real one); the global finding is scoped global; a
 # global root already inside the scan root is not scanned twice; and
 # declining -IncludeGlobal is honored on EVERY code path (the downward walk
-# over the home, the direct-subtree upward lookup, and Kiro's global
-# registration DIRECTORY shape).
+# over the home and the direct-subtree upward lookup).
 # NOT a standalone suite: dot-sourced into the entry suite's scope; rescans
 # the $ancestor fixture built by the traversal block. Run
 # scripts\Test-HookStatusScan.ps1 instead.
@@ -77,25 +76,6 @@
             ((@($homeRootScan.Result.findings) | ForEach-Object { [string]$_.friendlyName }) -join ','))
         Check 'but a project inside the home directory is still discovered' (
             Test-FoundTarget -Result $homeRootScan.Result -Fragment 'ZZZ-HomeProject.ps1')
-
-        # The same gate for the OTHER client shape. Kiro's global location is a
-        # DIRECTORY (~\.kiro\hooks), not a settings file, so it needs its own
-        # proof that declining -IncludeGlobal is honored - this is exactly the
-        # code path that leaked once already for Claude.
-        New-KiroHook -ProjectRoot $fakeHome -HookName 'ZZZ-KiroHome' | Out-Null
-        $kiroHomeNoGlobal = Invoke-Scan -Root $fakeHome -Environment $globalEnv
-        Check 'without -IncludeGlobal the global .kiro\hooks directory is not read' (
-            -not (Test-FoundTarget -Result $kiroHomeNoGlobal.Result -Fragment 'ZZZ-KiroHome.ps1')) (
-            ((@($kiroHomeNoGlobal.Result.findings) | ForEach-Object { [string]$_.friendlyName }) -join ','))
-        $kiroHomeWithGlobal = Invoke-Scan -Root $fakeHome -IncludeGlobal -Environment $globalEnv
-        Check 'with -IncludeGlobal the global .kiro\hooks directory IS read' (
-            Test-FoundTarget -Result $kiroHomeWithGlobal.Result -Fragment 'ZZZ-KiroHome.ps1') (
-            ((@($kiroHomeWithGlobal.Result.findings) | ForEach-Object { [string]$_.friendlyName }) -join ','))
-        Check 'and the global Kiro finding is scoped global, not project' (
-            @(@($kiroHomeWithGlobal.Result.findings) | Where-Object {
-                    [string]$_.scope -eq 'global' -and [string]$_.friendlyName -like '*ZZZ-KiroHome*' }).Count -eq 1) (
-            ((@($kiroHomeWithGlobal.Result.findings) | ForEach-Object {
-                    [string]$_.friendlyName + '=' + [string]$_.scope }) -join ','))
     }
     else {
         Write-Host '[SKIP] Start-Process -Environment unavailable; -IncludeGlobal assertions skipped' -ForegroundColor Yellow

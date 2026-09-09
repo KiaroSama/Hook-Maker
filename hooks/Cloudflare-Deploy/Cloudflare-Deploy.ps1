@@ -152,9 +152,9 @@ function Get-CleanupResultPath {
 #   fingerprint-current record ALONE   -> a state file was installation proof.
 #
 # The chain below replaces all five. Per (client, scope):
-#   0. locate the client's Stop registration specifically - the hooks.<Event> key
-#      for Claude/Codex, the entry's own trigger for Kiro - because only a Stop
-#      handler can produce the result this gate then waits for;
+#   0. locate the client's Stop registration specifically - the hooks.<Event>
+#      key - because only a Stop handler can produce the result this gate then
+#      waits for;
 #   1. parse the client's REAL schema and read only real command/action fields -
 #      never a recursive walk looking for command-SHAPED strings;
 #   2. take that command's quoted -File target, canonicalize it, and require
@@ -186,13 +186,11 @@ function Get-CleanupResultPath {
 # runtime - a runtime is copied out of the tool folder and does not know where
 # it came from - so recordId is NOT cross-checked against the registry. It is
 # carried in the ownership metadata and checked for INTERNAL agreement only:
-# non-empty for every client, and for Kiro additionally proven by the managed
-# entry's own [hookmaker:<recordId>] description marker, the only client
-# document that carries a managed identity at all. Claude and Codex handler
-# entries have neither a name nor an id, so there recordId stays
-# recorded-but-unverifiable in-process (registrationName is still checked - see
-# its two shapes below); what binds those installs to THIS project is the
-# recomputed projectKey, the containment check and the manifest hash.
+# it must be non-empty. A Claude or Codex handler entry has neither a name nor
+# an id, so recordId stays recorded-but-unverifiable in-process
+# (registrationName is still checked - see below); what binds those installs to
+# THIS project is the recomputed projectKey, the containment check and the
+# manifest hash.
 $script:CleanupHookName = 'Test-Temp-Cleanup'
 $script:CleanupRuntimeMetadataFile = '.hookmaker-runtime.json'
 $script:CleanupMetadataSchemaVersion = '1'
@@ -202,9 +200,8 @@ $script:CleanupMetadataSchemaVersion = '1'
 # waits for - and the reminder parks forever behind a result that registration
 # is structurally incapable of producing. That is the same permanently-dead gate
 # the ownership rewrite set out to eliminate, reached by a different route.
-# Case-EXACT on both clients: Claude/Codex match the hooks.<Event> key literally,
-# and .ai\KIRO_PROTOCOL.md records Kiro's triggers as confirmed exact casing, so
-# a 'stop' key fires nothing and must not count as an active gate.
+# Case-EXACT on both clients: Claude and Codex match the hooks.<Event> key
+# literally, so a 'stop' key fires nothing and must not count as an active gate.
 #
 # SubagentStop is deliberately NOT accepted, though the producer can write a
 # record there too: it only does so when its own ENABLE_SUBAGENT_STOP is true,
@@ -220,34 +217,26 @@ $script:CleanupGateEvent = 'Stop'
 $script:CleanupManifestCap = 64
 # The executables an installed runtime cannot run without, mirrored from the
 # Add-Artifact calls in scripts\_installplan.ps1: every client stages
-# <hook>\_hooklib.ps1 and <hook>\<hook>.ps1, and Kiro additionally stages the
-# <hook>\kiro-launch.ps1 its registration points at.
+# <hook>\_hooklib.ps1 and <hook>\<hook>.ps1.
 #
 # Held INDEPENDENTLY of the metadata, which is the whole point. A manifest
 # DESCRIBES ITSELF: verifying every entry it happens to list says nothing about
 # what it left out, and an omitted dependency is not merely unverified, it is
-# never looked at. Claude/Codex could drop _hooklib.ps1 and Kiro could drop the
-# main hook script behind the launcher, and a manifest whose remaining entries
-# all hashed correctly would still have vouched for a runtime whose executing
-# body was never checked. Only a required set this hook knows on its own can
-# turn that omission into a rejection.
+# never looked at. An install could drop _hooklib.ps1 and a manifest whose
+# remaining entries all hashed correctly would still have vouched for a runtime
+# whose executing body was never checked. Only a required set this hook knows on
+# its own can turn that omission into a rejection.
 $script:CleanupRequiredRuntimeLeaves = @{
     'claude' = @('_hooklib.ps1')
     'codex'  = @('_hooklib.ps1')
-    'kiro'   = @('_hooklib.ps1', 'kiro-launch.ps1')
 }
-# Mirrors Test-KiroManagedFileName in scripts\_installkiro.ps1: Hook Maker owns
-# ONLY .kiro\hooks\hookmaker-<slug>.json. Anything else in that directory -
-# above all a shared hooks.json - belongs to someone else and is never parsed
-# for ownership at all.
-$script:CleanupKiroManagedFilePattern = '^hookmaker-[a-z0-9-]+\.json$'
 
 # Mirrored from scripts\_clientcapability.ps1 for the same structural reason as
 # ever: an installed runtime is self-contained and cannot dot-source the
-# capability table. Test-CloudflareDeploy.ps1 asserts all three mirrors still
-# EQUAL the table - registration files, the Kiro registration directory, and the
-# per-client runtime roots - which is what keeps the duplication honest instead
-# of rotting into a stale hardcoded list. A runtime-root mirror is back here on
+# capability table. Test-CloudflareDeploy.ps1 asserts both mirrors still
+# EQUAL the table - the registration files and the per-client runtime roots -
+# which is what keeps the duplication honest instead of rotting into a stale
+# hardcoded list. A runtime-root mirror is back here on
 # purpose: it is a CONTAINMENT bound now, never evidence on its own, so the
 # reason the previous one was deleted (a directory listing proving nothing) does
 # not apply - but the reason it ROTTED does, hence the equality test.
@@ -255,11 +244,9 @@ $script:CleanupRegistrationFiles = @{
     'claude' = @{ 'project' = '.claude\settings.local.json'; 'global' = '.claude\settings.json' }
     'codex'  = @{ 'project' = '.codex\hooks.json'; 'global' = '.codex\hooks.json' }
 }
-$script:CleanupKiroRegistrationDir = '.kiro\hooks'
 $script:CleanupRuntimeRoots = @{
     'claude' = '.claude\hooks\Hook-Maker'
     'codex'  = '.codex\hooks\Hook-Maker'
-    'kiro'   = '.kiro\hook-runtime\Hook-Maker'
 }
 # The property names a Claude/Codex handler entry actually carries a command in.
 # Read on the HANDLER, never searched for at arbitrary depth.
@@ -305,12 +292,10 @@ function Test-CleanupReparseEscape {
 #
 # The registered target is only the ENTRY POINT of the runtime, never the whole
 # of it. Claude and Codex register <hook>\<hook>.ps1, which dot-sources
-# <hook>\_hooklib.ps1; Kiro registers <hook>\kiro-launch.ps1, which runs the main
-# hook, which dot-sources that same library. Hashing the entry point alone left
-# everything BEHIND it unverified, so a tampered _hooklib.ps1 - or, under Kiro, a
-# tampered main hook, the entire body of what executes - still read as proven
-# ownership. The install plan already stages all of them as Immutable artifacts
-# and records all of them here, so verify all of them.
+# <hook>\_hooklib.ps1. Hashing the entry point alone left everything BEHIND it
+# unverified, so a tampered _hooklib.ps1 - the library every hook executes -
+# still read as proven ownership. The install plan already stages both as
+# Immutable artifacts and records both here, so verify both.
 function Test-CleanupRuntimeManifest {
     param($Metadata, [string]$RuntimeRoot, [string]$Client, [string]$RegisteredRelativePath)
     $manifest = Get-Field $Metadata 'runtimeManifest'
@@ -386,13 +371,11 @@ function Test-CleanupRuntimeManifest {
 # $Base is the SCOPE base the registration was found under (the project root, or
 # the user profile for a global install) and $ExpectedProjectKey the key that
 # base must claim - recomputed here, never read from the metadata, which is what
-# catches a runtime copied in from another project. $RegistrationName and
-# $IdentityText carry the managed identity for the one client whose document has
-# one (Kiro); both are '' for Claude/Codex.
+# catches a runtime copied in from another project.
 function Test-CleanupManagedCommand {
     param(
         [string]$Command, [string]$Client, [string]$Scope, [string]$Base,
-        [string]$ExpectedProjectKey, [string]$RegistrationName = '', [string]$IdentityText = ''
+        [string]$ExpectedProjectKey
     )
     $target = Get-RegisteredFileTarget -Command $Command
     if ([string]::IsNullOrWhiteSpace($target)) { return $false }
@@ -435,37 +418,14 @@ function Test-CleanupManagedCommand {
     if ([string](Get-Field $metadata 'projectKey') -ne $ExpectedProjectKey) { return $false }
     $recordId = [string](Get-Field $metadata 'recordId')
     if ([string]::IsNullOrWhiteSpace($recordId)) { return $false }
-    # registrationName has TWO shapes, because the two registration kinds have two
-    # kinds of identity, and getting this wrong is not theoretical - an exact
-    # equality check here would have rejected every real Kiro install:
-    #
-    #   kiro  - the managed entry-name PREFIX shared by every entry the install
-    #           wrote (hookmaker-<recordIdSlug>-<friendlySlug>). A Kiro install
-    #           registers ONE entry per physical trigger, so no single entry name
-    #           identifies the install; only the prefix does. The located entry's
-    #           name must therefore START WITH the recorded value, not equal it.
-    #   claude/codex - a handler entry has no name at all; its identity is the
-    #           command, which must never be copied into the metadata. The
-    #           installer records the managed runtime SEGMENT PAIR instead
-    #           ('Hook-Maker/<hook>'), derived below from the same runtime-root
-    #           mirror the containment check uses, so there is no fourth literal.
+    # A Claude or Codex handler entry has no name at all; its identity is the
+    # command, which must never be copied into the metadata. The installer
+    # records the managed runtime SEGMENT PAIR instead ('Hook-Maker/<hook>'),
+    # derived here from the same runtime-root mirror the containment check uses,
+    # so there is no second literal to keep in step.
     $recordedRegistrationName = [string](Get-Field $metadata 'registrationName')
     if ([string]::IsNullOrWhiteSpace($recordedRegistrationName)) { return $false }
-    if ([string]::IsNullOrWhiteSpace($RegistrationName)) {
-        if ($recordedRegistrationName -ne ((Split-Path -Leaf $script:CleanupRuntimeRoots[$Client]) + '/' + $script:CleanupHookName)) { return $false }
-    }
-    else {
-        # A bare or truncated prefix must not match every managed entry, so the
-        # recorded value has to be a managed prefix in the first place.
-        if ($recordedRegistrationName -notlike 'hookmaker-*') { return $false }
-        if (-not $RegistrationName.StartsWith($recordedRegistrationName, [System.StringComparison]::OrdinalIgnoreCase)) { return $false }
-        # ...and the entry must independently prove the same recordId. Mirrors
-        # Get-KiroManagedMarker in scripts\_installkiro.ps1 - one of the two
-        # ownership proofs the Kiro writer embeds in every managed entry. A
-        # hand-edited description therefore degrades VISIBLY (the decision is
-        # shown), which is the safe direction; it never silences the reminder.
-        if ($IdentityText -notmatch [regex]::Escape('[hookmaker:' + $recordId + ']')) { return $false }
-    }
+    if ($recordedRegistrationName -ne ((Split-Path -Leaf $script:CleanupRuntimeRoots[$Client]) + '/' + $script:CleanupHookName)) { return $false }
 
     # The registered target must BE the runtime script the metadata names -
     # relative to the runtime root, exactly as the metadata records it.
@@ -521,52 +481,6 @@ function Test-CleanupSettingsRegistration {
     return $false
 }
 
-# Kiro registers one managed FILE per logical install under .kiro\hooks, in the
-# v1 shape { version:'v1', hooks:[ { name, description, trigger,
-# action:{type,command}, timeout, enabled } ] }. The managed entry is located by
-# its NAME, and that name must be the one the ownership metadata records - a
-# foreign entry sitting in the same file cannot borrow it.
-function Test-CleanupKiroRegistration {
-    param([string]$Scope, [string]$Base, [string]$ExpectedProjectKey)
-    $dir = ''
-    try { $dir = Join-Path $Base $script:CleanupKiroRegistrationDir }
-    catch { return $false }
-    if (-not (Test-Path -LiteralPath $dir -PathType Container)) { return $false }
-    $files = @()
-    try { $files = @(Get-ChildItem -LiteralPath $dir -Filter '*.json' -File -ErrorAction Stop) }
-    catch { return $false }
-    foreach ($file in $files) {
-        if ($file.Name -notmatch $script:CleanupKiroManagedFilePattern) { continue }
-        $document = $null
-        try { $document = (([System.IO.File]::ReadAllText($file.FullName, [System.Text.Encoding]::UTF8) | ConvertFrom-Json)) }
-        catch { continue }
-        # The v1 document shape is REQUIRED. A legacy .kiro.hook / 0.x document
-        # is not something this hook can reason about, so it is not evidence.
-        if ([string](Get-Field $document 'version') -ne 'v1') { continue }
-        $entries = Get-Field $document 'hooks'
-        if ($null -eq $entries) { continue }
-        foreach ($entry in @($entries)) {
-            if ((Get-Field $entry 'enabled') -eq $false) { continue }
-            # A Kiro install writes one entry PER trigger into this one file, so
-            # the file existing says nothing about which events are registered -
-            # only this field does. See $script:CleanupGateEvent.
-            if ([string](Get-Field $entry 'trigger') -cne $script:CleanupGateEvent) { continue }
-            $entryName = [string](Get-Field $entry 'name')
-            if ([string]::IsNullOrWhiteSpace($entryName)) { continue }
-            $action = Get-Field $entry 'action'
-            # 'command' only: an 'agent' action spawns no subprocess, so a
-            # runtime registered that way would never run.
-            if ([string](Get-Field $action 'type') -ne 'command') { continue }
-            $command = [string](Get-Field $action 'command')
-            if ([string]::IsNullOrWhiteSpace($command)) { continue }
-            if (Test-CleanupManagedCommand -Command $command -Client 'kiro' -Scope $Scope -Base $Base `
-                    -ExpectedProjectKey $ExpectedProjectKey -RegistrationName $entryName `
-                    -IdentityText ([string](Get-Field $entry 'description'))) { return $true }
-        }
-    }
-    return $false
-}
-
 # Is Test-Temp-Cleanup ACTIVELY installed, with proven Hook Maker ownership, for
 # this project? Evaluated per (client, scope): project scope against the project
 # root, global scope against the user profile.
@@ -597,7 +511,6 @@ function Test-CleanupInstalled {
             if (Test-CleanupSettingsRegistration -Client $client -Scope $scope -Base $base `
                     -ExpectedProjectKey $expectedProjectKey) { return $true }
         }
-        if (Test-CleanupKiroRegistration -Scope $scope -Base $base -ExpectedProjectKey $expectedProjectKey) { return $true }
     }
     return $false
 }

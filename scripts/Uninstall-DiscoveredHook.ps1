@@ -192,14 +192,7 @@ $script:EvidenceBlockComponent = 'evidence'
 # This became reachable the moment 'KiroRegistration'/'kiro' were added to the
 # discovered enums in _installdiscovered.ps1; before that a Kiro record could
 # not persist at all, so this guard and that change belong together.
-if ($HookType -eq 'KiroRegistration') {
-    $script:EvidenceBlocked = $true
-    $script:EvidenceBlockComponent = 'kiro'
-    $script:EvidenceBlockDetail = 'Kiro registers one JSON document per hook and its ownership is proved per entry, ' +
-    'which this discovered-record remover does not implement. Nothing was changed. ' +
-    'Remove a Hook Maker managed Kiro install with the normal uninstall action instead.'
-}
-elseif ($HookType -ne 'NativeGitHook') {
+if ($HookType -ne 'NativeGitHook') {
     foreach ($clientEvidence in @(Get-RecordArray $record 'clients')) {
         $clientName = Get-RecordString $clientEvidence 'client'
         $scan = Get-DiscoveredSettingsScan -ClientEvidence $clientEvidence

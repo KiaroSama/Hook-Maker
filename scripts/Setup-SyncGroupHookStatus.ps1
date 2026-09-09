@@ -295,7 +295,7 @@ function Invoke-GetHookStatus {
         # Default No: the global locations belong to the user's whole machine,
         # not to the folder they just named, so including them is an explicit
         # opt-in rather than something Enter does by accident.
-        $answer = Read-YesNo (New-QuestionPrompt "Also inspect the current user's global Claude, Codex and Kiro hook locations?" 'y/n' 'n') $false 'hook status include global'
+        $answer = Read-YesNo (New-QuestionPrompt "Also inspect the current user's global Claude and Codex hook locations?" 'y/n' 'n') $false 'hook status include global'
         if ($null -eq $answer) {
             $stage = 0
             continue
@@ -339,7 +339,7 @@ function Invoke-GetHookStatus {
         }
     }
     else {
-        Write-NoteLine '  Global Claude/Codex/Kiro locations are NOT included in this scan.'
+        Write-NoteLine '  Global Claude/Codex locations are NOT included in this scan.'
     }
     Write-NoteLine '  Reparse points (symlinks, junctions, mount points) are not followed; they are'
     Write-NoteLine '  reported as skipped instead, so the scan cannot wander outside these roots.'

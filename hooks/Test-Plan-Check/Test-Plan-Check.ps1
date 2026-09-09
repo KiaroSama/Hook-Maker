@@ -35,8 +35,8 @@
 # SessionStart/UserPromptSubmit, and OFF Stop both Claude Code and Codex take
 # `hookSpecificOutput.additionalContext`; Codex's `systemMessage` is a
 # Stop-scoped exception that never applies here, and emitting it anyway sent
-# Codex a field it does not document for these events. Kiro takes plain stdout
-# on exactly these two triggers. The client comes from Get-HookClientId
+# Codex a field it does not document for these events. The client comes from
+# Get-HookClientId
 # (HOOKMAKER_CLIENT, else CLAUDE_PROJECT_DIR, else Codex) - `hookSpecificOutput`
 # in the INPUT event is NOT a client signal and was never a documented one.
 # No path ever emits `decision:block` - on Codex a Stop-style block FORCES

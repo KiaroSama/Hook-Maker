@@ -21,9 +21,6 @@
 #                                         fixture lifecycle.
 #   _testinstalledmenustatusrender.ps1    the status result screen and its
 #                                         totals/partial-coverage reporting.
-#   _testinstalledmenustatuskiro.ps1      Kiro grouping/labelling/location,
-#                                         section order, global roots, and a
-#                                         failed scan reporting honestly.
 #   _testinstalledmenuuninstallrows.ps1   uninstall row selection, the project
 #                                         scope filter, and location text.
 #
@@ -207,7 +204,6 @@ function Get-HookListRows {
 try {
     . (Join-Path $ScriptRoot '_testinstalledmenulistandlayout.ps1')
     . (Join-Path $ScriptRoot '_testinstalledmenustatusrender.ps1')
-    . (Join-Path $ScriptRoot '_testinstalledmenustatuskiro.ps1')
     . (Join-Path $ScriptRoot '_testinstalledmenuuninstallrows.ps1')
 
 }

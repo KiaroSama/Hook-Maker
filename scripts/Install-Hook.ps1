@@ -153,7 +153,6 @@ $ToolRoot = Split-Path -Parent $PSScriptRoot
 # and merges documents but never touches the filesystem. The locking, rollback
 # and every actual Kiro write live in _installkiroclient.ps1, which is
 # dot-sourced further down AT the point the Kiro phase runs.
-. (Join-Path $PSScriptRoot '_installkiro.ps1')
 # The native Git pre-push chain (Install-IgnorePrePush), for the one hook that
 # also manages a real .git/hooks/pre-push wrapper. Defines a function only; the
 # phase that calls it runs near the end of this script.
@@ -231,7 +230,6 @@ else {
 }
 $InstallClaude = ($resolvedClients -contains 'claude')
 $InstallCodex = ($resolvedClients -contains 'codex')
-$InstallKiro = ($resolvedClients -contains 'kiro')
 
 # Components are independent: a request for three clients where two succeed is
 # 'partial', not a total refusal. That rule is why an unsupported Kiro request
@@ -354,15 +352,12 @@ if (-not [string]::IsNullOrWhiteSpace($TargetProject)) {
     $ClaudeSettings = Join-Path $projectRoot '.claude\settings.local.json'
     $CodexHooks = Join-Path $projectRoot '.codex\hooks.json'
     $ScopeLabel = 'project'
-    # Kiro resolves its own roots from the capability table, so it takes the
-    # project root rather than a path assembled here.
-    $KiroTargetRoot = $projectRoot
+
 }
 else {
     $ClaudeSettings = Join-Path $HOME '.claude\settings.json'
     $CodexHooks = Join-Path $HOME '.codex\hooks.json'
     $ScopeLabel = 'global'
-    $KiroTargetRoot = ''
 }
 $Timestamp = (Get-Date).ToString('yyyyMMdd-HHmmss')
 # Hoisted above the client phases because Kiro needs it DURING its install, not
@@ -532,7 +527,6 @@ if ($InstallCodex) {
 # the Codex block above and the native-git phase below. It also defines the
 # runtime rollback the phase depends on. See the file's own header for why it
 # is separate from _installkiro.ps1.
-. (Join-Path $PSScriptRoot '_installkiroclient.ps1')
 
 $script:CurrentPhase = 'nativeGit'
 Install-IgnorePrePush
@@ -602,29 +596,6 @@ try {
             -StatusMessage $status `
             -Timeout $script:EffectiveTimeout `
             -InstalledManifest @(Get-InstalledManifest -RuntimeRoot $codexRuntimeRoot -FriendlyName $FriendlyName))
-    }
-    # Recorded ONLY when the registration file was actually written. A failed or
-    # refused Kiro component leaves $kiroRegistrationPath empty and writes no
-    # subrecord, so uninstall can never be handed a path nothing was installed
-    # at. registrationKind/registrationPath/managedEntryNames are what make a
-    # per-hook-file client removable: there is no shared settings document to
-    # scan, so the entry names ARE the ownership proof.
-    if ($InstallKiro -and -not [string]::IsNullOrWhiteSpace($kiroRegistrationPath) -and $kiroManagedNames.Count -gt 0) {
-        $kiroRuntimeRoot = Split-Path -Parent (Split-Path -Parent $kiroRuntime.Script)
-        Set-ObjectProperty -Object $clientSubrecords -Name 'kiro' -Value (New-ClientSubrecord `
-            -SettingsPath $kiroRegistrationPath `
-            -RuntimeRoot $kiroRuntimeRoot `
-            -RuntimeScript $kiroRuntime.Script `
-            -Events @($kiroSupported) `
-            -Command $kiroCommands.Windows `
-            -HandlerType 'command' `
-            -Timeout $script:EffectiveTimeout `
-            -RegistrationKind 'perHookFile' `
-            -RegistrationPath $kiroRegistrationPath `
-            -ManagedEntryNames @($kiroManagedNames) `
-            -UnsupportedEvents @($kiroUnsupported) `
-            -DegradedReasons @($kiroDegraded) `
-            -InstalledManifest @(Get-InstalledManifest -RuntimeRoot $kiroRuntimeRoot -FriendlyName $FriendlyName))
     }
 
     $nativeGit = $null

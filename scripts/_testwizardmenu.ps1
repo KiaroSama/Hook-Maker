@@ -363,7 +363,7 @@
     # choice 1 in the single-hook event menu is now that recommendation; choice
     # 3 is the explicit "Session Start" alone this test actually wants) ->
     # events Session Start (explicit, not the recommendation) -> client Claude
-    # (menu item 1 since the client menu became Claude/Codex/Kiro/All) -> target
+    # (menu item 1 since the client menu became Claude/Codex/All) -> target
     # -> done -> start
     $r = Invoke-Wizard -Config $cfg2 -Answers @('1', '1', '3', '3', '1', $t, 'done', '', '0')
     Check 'exit 0' ($r.Exit -eq 0)
@@ -422,11 +422,10 @@
     Write-Host '--- sync group with a real install (both clients) ---' -ForegroundColor Cyan
     $cfg3 = Join-Path $Work 'cfg3.json'; New-Config $cfg3
     $a3 = New-Proj 'A3'; $b3 = New-Proj 'B3'
-    # Client answer '4' = "All clients". The menu has no Claude+Codex entry, so
+    # Client answer '3' = "All clients". The menu has no Claude+Codex entry, so
     # All is how one pass reaches both, and Claude + Codex install exactly as the
-    # legacy 'Both' did. Hence the codex assertions below. (Kiro installs too;
-    # Test-KiroIntegration.ps1 owns proving that, so it is not re-asserted here.)
-    $r = Invoke-Wizard -Config $cfg3 -Answers @('1', '1', '2', $a3, $b3, 'done', '4', '', '0')
+    # legacy 'Both' did. Hence the codex assertions below.
+    $r = Invoke-Wizard -Config $cfg3 -Answers @('1', '1', '2', $a3, $b3, 'done', '3', '', '0')
     Check 'exit 0' ($r.Exit -eq 0)
     Check 'no stderr' ($r.Err -eq '')
     $profId3 = (@((Get-Content $cfg3 -Raw | ConvertFrom-Json).profiles)[0]).id
@@ -472,11 +471,10 @@
     #        Cloudflare-Deploy at 29 after Session-Summary-Check was inserted at 28.
     #        The engine is excluded from this list entirely, see the guard
     #        test below.
-    #        -> mode 1 (recommended events per hook) -> client 4 = All clients
-    #        (reaches Claude + Codex in one pass; Kiro installs alongside them
-    #        and is asserted in Test-KiroIntegration.ps1, not here)
+    #        -> mode 1 (recommended events per hook) -> client 3 = All clients
+    #        (reaches Claude + Codex in one pass)
     #        -> target -> done -> start -> exit
-    $r = Invoke-Wizard -Config $cfg4 -Answers @('1', '1', '3-8,19,29', '1', '4', $m, 'done', '', '0')
+    $r = Invoke-Wizard -Config $cfg4 -Answers @('1', '1', '3-8,19,29', '1', '3', $m, 'done', '', '0')
     Check 'exit 0' ($r.Exit -eq 0)
     Check 'no stderr' ($r.Err -eq '')
     Check 'selection accepts a range combined with a single item' ($r.Out -notmatch 'Enter number\(s\)')

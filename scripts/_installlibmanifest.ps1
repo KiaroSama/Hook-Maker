@@ -146,7 +146,7 @@ function Get-ManagedClientManifest {
     $identity = New-RuntimeIdentity -Client $Client -Scope $Scope -RecordId $RecordId -ProjectRoot $ProjectRoot
     $plan = Get-InstallPlanFor -HookScript $HookScript -ToolRoot $ToolRoot -FriendlyNameOverride $FriendlyName `
         -ProfileId $ProfileId -ConfigPath $ConfigPath -IsEngine:$IncludeConfig -AllowMissing `
-        -IncludeKiroLauncher:($Client -ceq 'kiro') -RuntimeIdentity $identity
+        -RuntimeIdentity $identity
     return ConvertTo-ManifestArray (Get-PlanManifest -Plan $plan)
 }
 
