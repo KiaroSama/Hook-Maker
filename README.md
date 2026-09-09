@@ -851,7 +851,7 @@ Manual install without the wizard:
 
 - Codex requires trusting new hooks: run `/hooks` inside each project and trust the command.
 - Restart clients after installing — hooks load at session start.
-- Each wizard execution writes a log to `logs/` (`Setup-SyncGroup_YYYY-MM-DD_HH-mm-ss_UTC.log`).
+- Each wizard execution writes a log to `logs/` (`Setup-SyncGroup_YYYY-MM-DD_HH-mm-ss_UTC.log`). Only the newest 200 wizard logs are kept; older ones are pruned at the start of the next run. `HOOKMAKER_LOG_DIR` redirects the directory (the test suites set it so their runs never land in `logs/`).
 - `scripts\Setup-SyncGroup.ps1 -NoInstall` updates only the configuration without installing hooks.
 - Run the engine smoke test with `pwsh -File scripts\Test-Engine.ps1` (works under PowerShell 5.1 too).
 - Persian guide: `README-FA.md`.

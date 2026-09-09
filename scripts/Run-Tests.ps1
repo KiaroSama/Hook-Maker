@@ -114,6 +114,27 @@ if (-not [string]::IsNullOrWhiteSpace($env:HOOKMAKER_MAX_TEST_WORKERS)) {
     }
 }
 
+# The per-suite failure diagnostics written further down (logs\failed-<suite>-
+# <stamp>_UTC.err/out.log) accumulated exactly like the wizard's own logs did -
+# 124 had piled up and nothing ever removed them. Keep the newest 200 and prune
+# the rest, once per invocation rather than per suite, and best-effort like
+# Remove-SupersededBackups in _installlib.ps1: a file that cannot be deleted is
+# left alone rather than failing the matrix. Ordered by LastWriteTime, NOT by
+# name - these names start with the SUITE, so sorting by name sorts by suite.
+# The StartsWith guard keeps this to this runner's own diagnostics: never the
+# wizard's Setup-SyncGroup_*.log files sitting in the same directory.
+try {
+    $diagnosticsDir = Join-Path (Split-Path -Parent $ScriptRoot) 'logs'
+    $oldDiagnostics = @(Get-ChildItem -LiteralPath $diagnosticsDir -File -ErrorAction SilentlyContinue |
+        Where-Object { $_.Name.StartsWith('failed-', [System.StringComparison]::Ordinal) } |
+        Sort-Object LastWriteTime -Descending |
+        Select-Object -Skip 200)
+    foreach ($diagnostic in $oldDiagnostics) {
+        try { Remove-Item -LiteralPath $diagnostic.FullName -Force -ErrorAction Stop } catch { }
+    }
+}
+catch { }
+
 Write-Host ('Running ' + $all.Count + ' suite(s): ' + $isolatedSuites.Count + ' parallel + ' + $exclusiveSuites.Count + ' exclusive-first. Per-suite timeout ' + $TimeoutSeconds + 's.') -ForegroundColor Cyan
 $stopwatch = [System.Diagnostics.Stopwatch]::StartNew()
 $host7 = (Get-Process -Id $PID).Path

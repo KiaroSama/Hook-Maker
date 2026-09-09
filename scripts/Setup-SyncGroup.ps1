@@ -63,10 +63,20 @@ else {
 # --------------------------------------------------------------- logging ----
 $script:LogPath = $null
 $script:EmptyReads = 0
+# Wizard logs kept per directory. A log per run with no retention grew to 5,000+
+# files (50 MB) in six weeks, nearly all from the test suites driving the wizard
+# end to end. Only this wizard's own "Setup-SyncGroup_*.log" files are pruned,
+# oldest first by name (the name carries the UTC stamp) - never the "failed-*"
+# diagnostics Run-Tests.ps1 leaves beside them, never anything else.
+$script:LogRetentionCount = 200
 
 function Initialize-Log {
     try {
         $logDir = Join-Path $ToolRoot 'logs'
+        # The test suites point this at their throwaway workspace so their
+        # runs never land in the real logs/ (same convention as HOOKMAKER_STATE_DIR
+        # for the install registry).
+        if (-not [string]::IsNullOrWhiteSpace($env:HOOKMAKER_LOG_DIR)) { $logDir = $env:HOOKMAKER_LOG_DIR }
         if (-not (Test-Path -LiteralPath $logDir -PathType Container)) {
             New-Item -ItemType Directory -Path $logDir -Force | Out-Null
         }
@@ -80,11 +90,35 @@ function Initialize-Log {
         }
         [System.IO.File]::WriteAllText($candidate, '', $Utf8NoBom)
         $script:LogPath = $candidate
+        Remove-OldWizardLogs -Directory $logDir -KeepPath $candidate
     }
     catch {
         $script:LogPath = $null
         Write-NoteLine ('Warning: file logging is unavailable: ' + $_.Exception.Message)
     }
+}
+
+# Best-effort, like Remove-SupersededBackups in _installlib.ps1: a log that
+# cannot be deleted is left alone rather than failing the run.
+function Remove-OldWizardLogs {
+    param(
+        [Parameter(Mandatory = $true)][string]$Directory,
+        [Parameter(Mandatory = $true)][string]$KeepPath
+    )
+    try {
+        $old = @(Get-ChildItem -LiteralPath $Directory -File -Filter 'Setup-SyncGroup_*.log' -ErrorAction SilentlyContinue |
+            Where-Object { -not [string]::Equals($_.FullName, $KeepPath, [System.StringComparison]::OrdinalIgnoreCase) } |
+            Sort-Object Name -Descending |
+            Select-Object -Skip ($script:LogRetentionCount - 1))
+        $removed = 0
+        foreach ($file in $old) {
+            try { Remove-Item -LiteralPath $file.FullName -Force -ErrorAction Stop; $removed++ } catch { }
+        }
+        if ($removed -gt 0) {
+            Write-Log 'INFO' 'LOG' ('Pruned ' + $removed + ' log file(s) older than the newest ' + $script:LogRetentionCount)
+        }
+    }
+    catch { }
 }
 
 function Write-Log {

@@ -12,6 +12,7 @@
 #   _testwizardmenu.ps1      menu structure, sync groups, real hook installs
 #   _testwizardselectall.ps1 Select All + installer idempotency
 #   _testwizardprompts.ps1   prompt robustness, numbering, malformed config
+#   _testwizardlogs.ps1      log retention + the HOOKMAKER_LOG_DIR redirect
 #   _testwizardrelocate.ps1  the renamed/moved-project repair decisions
 #
 # Usage:  pwsh -NoLogo -NoProfile -File .\scripts\Test-Wizard.ps1 [-KeepArtifacts]
@@ -46,6 +47,12 @@ Write-Host ("Workspace: $Work") -ForegroundColor DarkGray
 # checkout's own registry - shared for the whole file's Invoke-Wizard calls,
 # same convention as an isolated LOCALAPPDATA elsewhere in this test suite.
 $IsolatedStateDir = Join-Path $Work 'state'
+$SavedHookMakerLogDir = $env:HOOKMAKER_LOG_DIR
+$env:HOOKMAKER_LOG_DIR = Join-Path $Work 'logs'
+# Counted BEFORE any wizard run: the log block asserts the real logs/ gained
+# nothing while this suite drove the wizard dozens of times.
+$RealLogDir = Join-Path (Split-Path -Parent $PSScriptRoot) 'logs'
+$RealWizardLogCount = @(Get-ChildItem -LiteralPath $RealLogDir -File -Filter 'Setup-SyncGroup_*.log' -ErrorAction SilentlyContinue).Count
 
 . (Join-Path $PSScriptRoot '_testwizardharness.ps1')
 
@@ -59,6 +66,9 @@ try {
     # Prompt robustness, hierarchical numbering, and malformed configuration.
     . (Join-Path $PSScriptRoot '_testwizardprompts.ps1')
 
+    # Log retention and the log-directory redirect (uses the harness's Invoke-Wizard).
+    . (Join-Path $PSScriptRoot '_testwizardlogs.ps1')
+
     # "Fix a renamed or moved project". Its decision functions are called
     # DIRECTLY - they choose which files inside a user's project get deleted,
     # and a stdin-driven run cannot put a half-moved project on disk
@@ -71,6 +81,7 @@ try {
     . (Join-Path $PSScriptRoot '_testwizardrelocate.ps1')
 }
 finally {
+    $env:HOOKMAKER_LOG_DIR = $SavedHookMakerLogDir
     if (-not $KeepArtifacts) {
         if (-not (Remove-TestWorkspace $Work)) { $script:Fail++ }
     }
