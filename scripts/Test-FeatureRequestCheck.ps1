@@ -324,6 +324,29 @@ try {
 
     # =====================================================================
     Write-Host ''
+    Write-Host '--- Stop: the byte cap is applied before the transcript is read ---' -ForegroundColor Cyan
+    # The cap is documented in BYTES. Persian letters are one UTF-16 character
+    # but two UTF-8 bytes, so a transcript padded with them can be over the
+    # byte cap while under the reader's old character count - exactly the
+    # case the length pre-check decides differently from a line-by-line read.
+    $capHook = New-IsolatedHookCopy "MAX_TRANSCRIPT_BYTES=100000`n"
+    $capUserLine = (New-UserEntry $FeaturePrompt) | ConvertTo-Json -Depth 8 -Compress
+    $padOver = '{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"' + [string]::new([char]0x0641, 60000) + '"}]}}'
+    $tOver = Join-Path $Work 'cap-over.jsonl'
+    Write-Utf8 $tOver ($capUserLine + "`n" + $padOver + "`n")
+    $overBytes = (New-Object System.IO.FileInfo($tOver)).Length
+    Check 'cap fixture: the over-cap transcript is really more than 100000 bytes' ($overBytes -gt 100000) ('bytes=' + $overBytes)
+    $rOver = Fire (New-StopPayload -Cwd (New-Proj 'CapOver') -Transcript $tOver -SessionId 'cap-over') -HookPath $capHook
+    Check 'cap: a transcript over the byte cap is PARTIAL - the gate stays silent' (
+        $rOver.Exit -eq 0 -and $rOver.Out -eq '' -and $rOver.Err -eq '') ($rOver.Out + $rOver.Err)
+    $padUnder = '{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"' + [string]::new([char]0x0641, 40000) + '"}]}}'
+    $tUnder = Join-Path $Work 'cap-under.jsonl'
+    Write-Utf8 $tUnder ($capUserLine + "`n" + $padUnder + "`n")
+    $rUnder = Fire (New-StopPayload -Cwd (New-Proj 'CapUnder') -Transcript $tUnder -SessionId 'cap-under') -HookPath $capHook
+    Check 'cap: a transcript under the byte cap is still evaluated - the gate blocks' (Test-Blocked $rUnder.Out) ($rUnder.Out + $rUnder.Err)
+
+    # =====================================================================
+    Write-Host ''
     Write-Host '--- Stop: the gate, and the evidence it refuses to invent ---' -ForegroundColor Cyan
     $tFeature = New-Transcript 'feature-no-chain' @(
         (New-UserEntry $FeaturePrompt),

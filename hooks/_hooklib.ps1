@@ -1300,13 +1300,54 @@ function Get-StopBlockMarkerPath {
 # environment the MCP server itself is configured with, then the binary's
 # documented default.
 function Get-CbmCacheDir {
-    param($Config)
+    param($Config, [string[]]$ClientConfigPaths)
     if ($null -ne $Config -and $Config.ContainsKey('CBM_CACHE_DIR')) {
         $configured = [string]$Config['CBM_CACHE_DIR']
         if (-not [string]::IsNullOrWhiteSpace($configured)) { return $configured.Trim() }
     }
     if (-not [string]::IsNullOrWhiteSpace([string]$env:CBM_CACHE_DIR)) { return ([string]$env:CBM_CACHE_DIR).Trim() }
+    $fromClient = Get-CbmCacheDirFromClientConfig -ConfigPaths $ClientConfigPaths
+    if (-not [string]::IsNullOrWhiteSpace($fromClient)) { return $fromClient }
     return (Join-Path $env:USERPROFILE '.cache\codebase-memory-mcp')
+}
+
+# The step the resolution order above always promised and did not implement.
+# CBM_CACHE_DIR is normally set INSIDE the MCP server's own `env` block in the
+# client config, which means the server process has it and a hook process never
+# does. So the hook fell through to the binary default and watched the wrong
+# directory for ever: on the machine where this was found the server wrote to
+# G:\...\cache while the hook checked %USERPROFILE%\.cache, so "no index yet"
+# was reported in every project no matter what was indexed, and the freshness
+# half of Cbm-Update-Check could never fire at all.
+#
+# A REGEX over the raw text, deliberately not ConvertFrom-Json: the client
+# config also holds other servers' env blocks, which can contain API keys, and
+# the only value that may ever leave this function is this one path. It is also
+# far cheaper than building the object graph of a large config on every event.
+# First match wins; a second server defining the same key is not disambiguated.
+#
+# $ConfigPaths exists so the suite can point this at fabricated files: the real
+# paths are the developer's own client config, and a test that read those would
+# pass or fail depending on which MCP servers that developer happens to have.
+function Get-CbmCacheDirFromClientConfig {
+    param([string[]]$ConfigPaths)
+    if ($null -eq $ConfigPaths -or @($ConfigPaths).Count -eq 0) {
+        $ConfigPaths = @((Join-Path $env:USERPROFILE '.claude.json'), (Join-Path (Get-Location).Path '.mcp.json'))
+    }
+    foreach ($candidate in @($ConfigPaths)) {
+        try {
+            if ([string]::IsNullOrWhiteSpace($candidate) -or -not (Test-Path -LiteralPath $candidate -PathType Leaf)) { continue }
+            $raw = [System.IO.File]::ReadAllText($candidate)
+            $match = [regex]::Match($raw, '"CBM_CACHE_DIR"\s*:\s*"((?:[^"\\]|\\.)*)"')
+            if (-not $match.Success) { continue }
+            # JSON string escapes: the value is a Windows path, so \\ is the one
+            # that actually occurs. Unescape it rather than handing back "G:\\x".
+            $value = $match.Groups[1].Value.Replace('\\', '\')
+            if (-not [string]::IsNullOrWhiteSpace($value)) { return $value.Trim() }
+        }
+        catch { continue }
+    }
+    return ''
 }
 
 # _config.db is CBM's own registry and exists as soon as the server has run
@@ -1401,6 +1442,16 @@ function Read-ClaudeTranscript {
     )
     $result = [pscustomobject]@{ Entries = @(); Partial = $false; Ok = $false }
     if ([string]::IsNullOrWhiteSpace($Path) -or -not (Test-Path -LiteralPath $Path -PathType Leaf)) { return $result }
+    # The cap is in BYTES and is applied to the file's length BEFORE anything is
+    # read. A 47 MB live transcript used to be parsed line by line up to the cap
+    # at every Stop - about ten seconds - only to be reported Partial and
+    # discarded. Over the cap the answer is already known: Partial, nothing read.
+    try {
+        if ((New-Object System.IO.FileInfo($Path)).Length -gt $MaxBytes) {
+            return [pscustomobject]@{ Entries = @(); Partial = $true; Ok = $true }
+        }
+    }
+    catch { return $result }
     $entries = New-Object System.Collections.Generic.List[object]
     $consumed = 0
     $partial = $false
