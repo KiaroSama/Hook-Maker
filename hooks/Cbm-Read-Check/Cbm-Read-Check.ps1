@@ -69,6 +69,10 @@ if ($indexed) {
     ) -join "`n"
 }
 else {
+    # Resolved BEFORE the message is assembled - an assignment cannot live inside
+    # the array literal below.
+    $cbmExe = Get-CbmServerCommandFromClientConfig
+    if ([string]::IsNullOrWhiteSpace($cbmExe)) { $cbmExe = 'codebase-memory-mcp' }
     $note = @(
         ('CBM READ CHECK - this project has no Codebase Memory index yet (expected at ' + $dbPath + ').'),
         ('Unless this session is documentation-only, index it once now: index_repository(repo_path="' + $cwd + '", mode="moderate") - local, seconds, and a background watcher keeps it fresh afterwards.'),
@@ -78,7 +82,18 @@ else {
         # repeats the attempt. Found 2026-09-09: every project under this
         # machine's tools directory was refused, so NOTHING had ever been indexed
         # while this hook asked in every session.
-        ('If index_repository REFUSES with "path is a home or credential directory", CBM has classified this root as sensitive and will never index it until it is approved once: codebase-memory-mcp allow-root --approve-sensitive "' + $cwd + '". That is a security decision for the user - report it and move on, do not run it unasked, and do not keep retrying the index.')
+        #
+        # The three things that make the tool's OWN advice fail, all measured
+        # while clearing it by hand - the message is useless without them:
+        #   1. `codebase-memory-mcp` is not on PATH; the exe path comes from the
+        #      client's own MCP server record.
+        #   2. `allow-root` obeys CBM_CACHE_DIR. Run without it, the approval is
+        #      written where the SERVER does not read it and nothing changes.
+        #   3. The server reads its allowed-roots list once, at start. After
+        #      approving, it must be restarted before an index can succeed.
+        ('If index_repository REFUSES with "path is a home or credential directory": CBM classifies this root as sensitive and will not index it until the root is approved ONCE. Approve THIS project root, then report that a restart is needed - the exact working command, which is not the one the tool prints (its binary is not on PATH, and the approval must be written where the server reads it):'),
+        ('  $env:CBM_CACHE_DIR = "' + $cacheDir + '"; & "' + $cbmExe + '" allow-root --approve-sensitive "' + ($cwd -replace '\\', '/') + '"'),
+        'Then STOP: the server only reads its allowed-roots list at start-up, so indexing keeps failing until the client is restarted. Do not re-run the approval and do not retry the index in this session - say plainly that a restart is required. Note also that recording any root CONFINES CBM to the recorded roots, so a project outside the list needs its own approval line.'
     ) -join "`n"
 }
 
