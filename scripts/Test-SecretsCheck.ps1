@@ -373,6 +373,41 @@ try {
     Check 'Unknown-only Stop output still surfaces the advisory context' ($r.Out -like '*Classification unclear*WIDGET_ID*') $r.Out
     Check 'Unknown-only Stop exits zero' ($r.Exit -eq 0) $r.Out
 
+    Write-Host '--- the advisory names WHICH .env, and that answer is true ---' -ForegroundColor Cyan
+    # "Classify explicitly via ... in .env" used to name no file. A reader takes
+    # that as the PROJECT's .env - the very file being complained about - where
+    # the keys have no effect and nothing says why. These assertions pin both
+    # halves: the message names the config path, and the two .env files really
+    # do behave the way it claims.
+    # Matched against the RAW JSON, so the path is compared in its JSON-escaped
+    # form (every backslash doubled) rather than round-tripping through a
+    # parser - the same style as the sibling assertions above.
+    $configEnvPath = Join-Path (Split-Path -Parent $Hook) '.env'
+    $configEnvJson = $configEnvPath.Replace('\', '\\')
+    Check 'the advisory prints the FULL path of the .env it actually reads' (
+        $r.Out -like ('*' + $configEnvJson + '*')) $r.Out
+    Check 'the advisory says explicitly that the scanned project .env is not it' (
+        $r.Out -like '*NOT in the scanned project .env*') $r.Out
+
+    # The claim under test: keys in the SCANNED project .env change nothing.
+    $projWrongEnv = New-GitProj 'ClassifyInProjectEnv'
+    Write-Utf8 (Join-Path $projWrongEnv '.gitignore') ".env`nsecrets.md`n"
+    Write-Utf8 (Join-Path $projWrongEnv '.env') "WIDGET_ID=abc123`r`nPUBLIC_CONFIG_KEYS=WIDGET_ID`r`n"
+    Add-Commit $projWrongEnv 'seed'
+    $rWrong = Fire -Cwd $projWrongEnv -EventName 'Stop'
+    Check 'PUBLIC_CONFIG_KEYS in the scanned project .env does NOT classify the key' (
+        $rWrong.Out -like '*Classification unclear*WIDGET_ID*') $rWrong.Out
+
+    # The other half: the same key in the hook's own .env does classify it.
+    $rightHook = New-ConfiguredHookCopy @{ PUBLIC_CONFIG_KEYS = 'WIDGET_ID' }
+    $projRightEnv = New-GitProj 'ClassifyInHookEnv'
+    Write-Utf8 (Join-Path $projRightEnv '.gitignore') ".env`nsecrets.md`n"
+    Write-Utf8 (Join-Path $projRightEnv '.env') "WIDGET_ID=abc123`r`n"
+    Add-Commit $projRightEnv 'seed'
+    $rRight = Fire -Cwd $projRightEnv -EventName 'Stop' -HookPath $rightHook
+    Check 'PUBLIC_CONFIG_KEYS in the hook''s own .env DOES classify the key' (
+        $rRight.Out -notlike '*Classification unclear*WIDGET_ID*') $rRight.Out
+
     Write-Host '--- Stop event: a successful auto-add alone never blocks (advisory only) ---' -ForegroundColor Cyan
     $projAutoAddStop = New-Proj 'AutoAddStopNonBlocking'
     Write-Utf8 (Join-Path $projAutoAddStop '.env') "STOP_TOKEN=abcdefghij1234567890`r`n"
