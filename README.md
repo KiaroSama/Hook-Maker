@@ -1,6 +1,6 @@
 # Hook Maker
 
-Build, install, and manage Claude Code / Codex CLI / Kiro hooks — including a ready-made
+Build, install, and manage Claude Code / Codex CLI hooks — including a ready-made
 cross-project knowledge sync: it keeps the `.ai` knowledge directories of related projects
 in sync. When a source project's knowledge changes, the hook stages the changed files inside
 the destination project and asks the agent to review and import what is durable — before it
@@ -251,7 +251,7 @@ It asks two questions:
    drive root such as `G:\`. Quoted paths, paths with spaces and environment variables all work, and
    the path is canonicalised before scanning. You do **not** have to supply the exact project root:
    given `...\.claude\hooks\Hook-Maker` it looks upward for the matching registration.
-2. **`Also inspect the current user's global Claude, Codex and Kiro hook locations?`** — **defaults to
+2. **`Also inspect the current user's global Claude and Codex hook locations?`** — **defaults to
    No** (Enter means No). Answering Yes inspects only the canonical current-user `.claude`/`.codex`
    settings locations; it never walks your whole home directory. Answering No means those files are
    **not opened at all**, by any code path.
@@ -423,7 +423,7 @@ are deliberately excluded so they never cause permanent false drift.
 
 ### Per-client semantics
 
-Claude, Codex and Kiro are tracked **separately** inside one logical installation. Installing a hook
+Claude and Codex are tracked **separately** inside one logical installation. Installing a hook
 for Claude on `SessionStart` and later for Codex on `Stop` in the same project is a supported
 combination: each client keeps its own events, matcher, command, timeout, status message, runtime
 paths, and manifest, and the updater repairs each client with **its own** saved parameters. Adding,
@@ -433,49 +433,6 @@ install time — never guessed from which runtime files happen to exist on disk.
 Clients are **independent components**. If one cannot be installed, the others still are, and the
 overall result is `partial` rather than `failed` — reporting `failed` would tell a caller to discard
 two installations that genuinely succeeded. Only a request where *nothing* landed is `failed`.
-
-### Kiro
-
-Kiro registers **one JSON document per hook** under `.kiro\hooks\hookmaker-<hook>-<id>.json`, not a
-shared settings file. Hook Maker owns individual **entries**, proven by a `[hookmaker:<id>]` marker,
-so foreign entries in the same document are carried across untouched and a document at our own path
-that turns out to be someone else's is refused rather than overwritten. The runtime is copied to
-`.kiro\hook-runtime\Hook-Maker\` — deliberately **not** under `.kiro\hooks`, which Kiro scans as
-configuration.
-
-Four Kiro facts shape the install and are not worked around:
-
-- **The input surface differs between Kiro's two surfaces, and that difference is not flattened.**
-  Kiro IDE documents only `USER_PROMPT`, only on `UserPromptSubmit`. Kiro CLI v3 *does* send stdin
-  JSON — it simply does not publish its field names or casing. So each entry's command ends in
-  `-Trigger <trigger>` and runs through a generated `kiro-launch.ps1`, which supplies the event and
-  the client identity through the environment and then runs the hook in-process, so stdin and the
-  real exit code still pass through. No `session_id` is invented — session-keyed behaviour degrades
-  instead of silently mispairing.
-- **An input Kiro may not deliver is reported as _unverified_, never as confirmed-absent.** The
-  install still degrades on it — registering a hook that silently cannot work is the worse error —
-  but the report does not claim more than the documentation supports. Saying "Kiro cannot supply
-  this" would state an unverified CLI v3 fact as a confirmed one.
-- **A registration that disagrees with Kiro — or supplies no `-Trigger` at all — is refused, not
-  guessed.** If the trigger recorded in the `.kiro\hooks` registration and the event Kiro reports
-  resolve to two *different* events, or the invocation carries no resolvable `-Trigger` (every Hook
-  Maker registration passes one, so its absence means the registration is not ours or was altered),
-  the hook writes a bounded warning to stderr and exits non-zero instead of letting stdin select a
-  branch. Corrupt (non-empty, unparseable) stdin refuses the same way. Different spellings of the
-  *same* event are normalized first, so an undocumented CLI v3 casing never trips it.
-- **Kiro cannot block at `Stop`** on either targeted surface, and only `SessionStart` and
-  `UserPromptSubmit` add stdout to context. Stop-gating hooks therefore record `degraded-stop-gate`
-  permanently, and events Kiro has no trigger for are reported by name — never dropped in silence and
-  never remapped onto a different trigger.
-
-A prompt over 64 KB of **UTF-8 bytes** (whether it arrived via `USER_PROMPT` or inside a CLI v3
-stdin payload) is **withheld from hooks entirely, never truncated**: a truncated prefix is a prompt
-the user did not type, and prompt-driven checks would match on it as if it were. Hooks take their
-documented no-prompt degradation instead, and a one-line stderr notice reports the withholding so
-it is never silent.
-
-Kiro supports `SessionStart`, `UserPromptSubmit`, `PreToolUse`, `PostToolUse` and `Stop`; any other
-requested event is reported as unsupported for Kiro while still installing for the other clients.
 
 ### Native Git pre-push
 
