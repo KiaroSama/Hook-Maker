@@ -131,22 +131,46 @@ $tracked = New-Object System.Collections.Generic.List[string]
 $staged = New-Object System.Collections.Generic.List[string]
 $trackedFiles = @(Invoke-QuietCommand -FilePath git -ArgumentList @('-C', $cwd, 'ls-files') | Where-Object { $_ })
 $stagedFiles = @(Invoke-QuietCommand -FilePath git -ArgumentList @('-C', $cwd, 'diff', '--cached', '--name-only') | Where-Object { $_ })
+# One `git check-ignore -v` per BATCH of paths, never per path: a process spawn
+# costs ~40 ms, so a 200-file repository paid ~9 s here at every Stop. The paths
+# go on the command line (Windows caps it at 32,767 characters), so batches are
+# cut by accumulated length. `-v` prints `<source>:<line>:<pattern><TAB><path>`
+# for each MATCHING path and nothing for the rest; exit 1 only means "nothing
+# in this batch matched", anything above 1 is a real error and the batch is
+# skipped rather than guessed at.
+$batchCharLimit = 8000
+$batches = New-Object System.Collections.Generic.List[object]
+$current = New-Object System.Collections.Generic.List[string]
+$currentChars = 0
 foreach ($file in @($trackedFiles + $stagedFiles | Sort-Object -Unique)) {
-    $detail = @(Invoke-QuietCommand -FilePath git -ArgumentList @('-C', $cwd, 'check-ignore', '--no-index', '-v', '--', $file))
-    if ($LASTEXITCODE -ne 0 -or $detail.Count -eq 0) { continue }
-    $text = [string]$detail[0]
-    $tab = $text.IndexOf("`t")
-    if ($tab -lt 0) { continue }
-    $source = $text.Substring(0, $tab)
-    $colon = $source.LastIndexOf(':')
-    if ($colon -lt 0) { continue }
-    $matchedPattern = $source.Substring($colon + 1)
-    # The effective (last-matching) rule is a negation - Git explicitly allows this path
-    # to stay tracked (e.g. `.env.example` against `!/.env.example`). Never protected.
-    if ($matchedPattern.StartsWith('!')) { continue }
-    if ($protectedPatterns -notcontains $matchedPattern) { continue }
-    if ($trackedFiles -contains $file) { [void]$tracked.Add($file) }
-    if ($stagedFiles -contains $file) { [void]$staged.Add($file) }
+    if ($current.Count -gt 0 -and ($currentChars + $file.Length + 3) -gt $batchCharLimit) {
+        [void]$batches.Add($current.ToArray())
+        $current = New-Object System.Collections.Generic.List[string]
+        $currentChars = 0
+    }
+    [void]$current.Add($file)
+    $currentChars += $file.Length + 3
+}
+if ($current.Count -gt 0) { [void]$batches.Add($current.ToArray()) }
+foreach ($paths in $batches) {
+    $detail = @(Invoke-QuietCommand -FilePath git -ArgumentList (@('-C', $cwd, 'check-ignore', '--no-index', '-v', '--') + @($paths)))
+    if ($LASTEXITCODE -gt 1 -or $detail.Count -eq 0) { continue }
+    foreach ($line in $detail) {
+        $text = [string]$line
+        $tab = $text.IndexOf("`t")
+        if ($tab -lt 0) { continue }
+        $source = $text.Substring(0, $tab)
+        $file = $text.Substring($tab + 1)
+        $colon = $source.LastIndexOf(':')
+        if ($colon -lt 0) { continue }
+        $matchedPattern = $source.Substring($colon + 1)
+        # The effective (last-matching) rule is a negation - Git explicitly allows this path
+        # to stay tracked (e.g. `.env.example` against `!/.env.example`). Never protected.
+        if ($matchedPattern.StartsWith('!')) { continue }
+        if ($protectedPatterns -notcontains $matchedPattern) { continue }
+        if ($trackedFiles -contains $file) { [void]$tracked.Add($file) }
+        if ($stagedFiles -contains $file) { [void]$staged.Add($file) }
+    }
 }
 
 if ($missing.Count -eq 0 -and $tracked.Count -eq 0 -and $staged.Count -eq 0) { exit 0 }
