@@ -82,7 +82,17 @@ function Install-PlannedRuntime {
                 throw ("Staged artifact missing after copy: " + $artifact.relativePath)
             }
             $expected = Get-PlanArtifactExpectedHash -Artifact $artifact
-            $actual = (Get-FileHash -LiteralPath $targetPath -Algorithm SHA256).Hash
+            # .NET rather than Get-FileHash: the cmdlet is in a MODULE that a 5.1
+            # child of a pwsh 7 parent can fail to resolve (see
+            # Get-PlanArtifactExpectedHash in _installplan.ps1). Same digest, and
+            # it must match that function's casing exactly for the compare below.
+            $actualSha = [System.Security.Cryptography.SHA256]::Create()
+            try {
+                $actualStream = [System.IO.File]::Open($targetPath, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::ReadWrite)
+                try { $actual = ([System.BitConverter]::ToString($actualSha.ComputeHash($actualStream))).Replace('-', '').ToUpperInvariant() }
+                finally { $actualStream.Dispose() }
+            }
+            finally { $actualSha.Dispose() }
             if ($expected -ne $actual) {
                 throw ("Staged artifact does not match its source: " + $artifact.relativePath)
             }
