@@ -6,6 +6,7 @@
 /AGENTS.md
 /.agents/
 /.claude/
+/.kiro/
 /.codex/
 /.cursor/
 /.cline/
@@ -33,14 +34,13 @@ logs/
 /state/
 
 # Hook Maker: local/private files (auto-managed)
-/.kiro/
+/graphify-out/
 /.env
 /.env.*
-!/.env.dist
 !/.env.example
 !/.env.sample
 !/.env.template
-/graphify-out/
+!/.env.dist
 
 # Advisor handoff plans (local working notes, not part of the tool)
 /plans/
