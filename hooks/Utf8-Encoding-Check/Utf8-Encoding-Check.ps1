@@ -163,7 +163,6 @@ if (-not $GitPrePush -and (Test-StopStandDown -HookInput $hookInput -HookName 'U
 $eventName = [string](Get-Field $hookInput 'hook_event_name')
 if ([string]::IsNullOrWhiteSpace($eventName)) { $eventName = 'SessionStart' }
 if ($eventName -ne 'SessionStart' -and $eventName -ne 'Stop' -and $eventName -ne 'SubagentStop' -and $eventName -ne 'GitPrePush') { exit 0 }
-$isStopLike = ($eventName -eq 'Stop' -or $eventName -eq 'SubagentStop')
 
 $cwd = [string](Get-Field $hookInput 'cwd')
 if ([string]::IsNullOrWhiteSpace($cwd) -or -not (Test-Path -LiteralPath $cwd -PathType Container)) { exit 0 }
