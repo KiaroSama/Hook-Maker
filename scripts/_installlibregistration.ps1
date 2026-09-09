@@ -1,11 +1,11 @@
 # ---------------------------------------------------------------------------
 # Registration inspection: is ONE installation still registered exactly as
 # its record says? The shared-settings walk (Claude/Codex: an object keyed
-# by event name) and the per-hook-file walk (Kiro: {version, hooks:[...]}
-# with hooks as an ARRAY) live side by side here because they answer the
-# same question in the same Reason vocabulary - 'registration missing' |
-# 'duplicate registration' | 'registration drifted' | 'stale registration'
-# | 'current' - and must never be pointed at each other's file shape.
+# by event name) is the only registration shape this tool writes. The Reason
+# vocabulary is fixed - 'registration missing' | 'duplicate registration' |
+# 'registration drifted' | 'stale registration' | 'current' - so every caller
+# reads one answer set however the walk grows.
+#
 #
 # Split out of _installlib.ps1 (the registration-inspection concern) so that
 # file could stay a manageable size. _installlib.ps1 dot-sources this file
@@ -15,16 +15,16 @@
 # Load-order contract (this file is never dot-sourced standalone - it is
 # always pulled in from inside _installlib.ps1, which enforces the order):
 #   1. hooks\_hooklib.ps1            (Read-JsonFile)
-#   2. scripts\_clientcapability.ps1 and scripts\_installkiro.ps1
-#      (Get-HookMakerClientCapability, Test-HookMakerEventMatcher,
-#       Resolve-KiroScopeRoot, Test-KiroManagedFileName, Test-KiroManagedFile,
-#       Get-KiroEntryField - _installlib.ps1 dot-sources both before this
-#       file, and everything resolves at CALL time)
+#   2. scripts\_clientcapability.ps1
+#      (Get-HookMakerClientCapability, Test-HookMakerEventMatcher -
+#       _installlib.ps1 dot-sources it before this file, and
+#       everything resolves at CALL time)
+#
 #   3. scripts\_installlib.ps1       (defines $script:DefaultHookTimeoutSeconds
 #                                      in its header, THEN dot-sources this file)
 #
 # Nothing here mutates anything: read-only judgements over settings files
-# and Kiro hook documents. Foreign entries are ignored completely - they are
+# and their entries. Foreign entries are ignored completely - they are
 # not this installation's to be current or stale.
 # ---------------------------------------------------------------------------
 
@@ -177,186 +177,4 @@ function Test-ClientRegistrationState {
         }
     }
     return [pscustomobject]@{ Ok = $true; Reason = 'current'; Detail = '' }
-}
-
-# ---- Kiro: the per-hook-file registration ---------------------------------
-
-# The ONE .kiro hooks directory a record's own scope resolves to.
-#
-# Derived, never read back from the record: a record that has drifted must not
-# be able to point an update (or an uninstall) at some other directory. The
-# persisted registrationPath is cross-checked against THIS value by the caller
-# that needs the proof, rather than being used as the location to act on.
-function Get-KiroRecordRegistrationDirectory {
-    param([Parameter(Mandatory = $true)]$Record)
-    $capability = Get-HookMakerClientCapability -ClientId 'kiro'
-    $scope = [string]$Record.scope
-    $targetProjectRoot = ''
-    if ($null -ne $Record.PSObject.Properties['targetProjectRoot']) { $targetProjectRoot = [string]$Record.targetProjectRoot }
-    $root = Resolve-KiroScopeRoot -Scope $scope -TargetProjectRoot $targetProjectRoot
-    $relative = if ($scope -eq 'project') { [string]$capability.projectRegistration } else { [string]$capability.globalRegistration }
-    return (Join-Path $root $relative)
-}
-
-# Is ONE Kiro installation still registered exactly as its record says?
-#
-# The shared-settings equivalent (Test-ClientRegistrationState) cannot be used
-# here and must never be pointed at a Kiro file: a Kiro document is
-# {version, hooks:[...]} with hooks as an ARRAY, whereas Get-HookRegistrations
-# walks an object keyed by event name. It would find nothing, report
-# "registration missing" on every evaluation, and the updater would reinstall
-# Kiro on every single run - drift detection that always says "drifted" is the
-# same as none.
-#
-# Everything asserted here comes from the RECORD, exactly as the shared check
-# does it: a field an older record does not carry is not asserted rather than
-# being reported as drift. Foreign entries in a shared file are ignored
-# completely - they are not this installation's to be current or stale.
-#
-# Returns { Ok; Reason; Detail } with the same Reason vocabulary the shared
-# check uses, so the updater's plan text does not have to special-case Kiro:
-# 'registration missing' | 'duplicate registration' | 'registration drifted' |
-# 'stale registration' | 'current'.
-function Test-KiroRegistrationState {
-    param(
-        [Parameter(Mandatory = $true)][AllowEmptyString()][string]$RegistrationDirectory,
-        [Parameter(Mandatory = $true)][string]$ManagedId,
-        [Parameter(Mandatory = $true)][AllowEmptyCollection()][string[]]$ExpectedEntryNames,
-        [Parameter(Mandatory = $true)][AllowEmptyCollection()][string[]]$ExpectedEvents,
-        # Persisted logical->physical trigger pairs. Kiro renamed every trigger
-        # between its CLI v2 and v1 schemas, so the mapping is data: a record
-        # that carries it is checked against what it actually wrote, and one
-        # that does not falls back to the canonical table.
-        $PhysicalTriggers = @(),
-        [string]$ExpectedCommand = '',
-        [int]$ExpectedTimeout = $script:DefaultHookTimeoutSeconds,
-        [bool]$ExpectedEnabled = $true
-    )
-    function New-KiroRegistrationVerdict {
-        param([string]$Reason, [string]$Detail)
-        return [pscustomobject]@{ Ok = ($Reason -eq 'current'); Reason = $Reason; Detail = $Detail }
-    }
-
-    if ([string]::IsNullOrWhiteSpace($RegistrationDirectory) -or -not (Test-Path -LiteralPath $RegistrationDirectory -PathType Container)) {
-        return (New-KiroRegistrationVerdict 'registration missing' 'the .kiro hooks directory no longer exists')
-    }
-
-    # Which files in that directory can this installation prove are its own?
-    $managedFiles = New-Object System.Collections.Generic.List[object]
-    foreach ($file in @(Get-ChildItem -LiteralPath $RegistrationDirectory -File -Force -ErrorAction SilentlyContinue)) {
-        if (-not (Test-KiroManagedFileName -Path $file.FullName)) { continue }
-        $classification = Test-KiroManagedFile -Path $file.FullName -ManagedId $ManagedId
-        if ([string]$classification.Reason -ne 'managed') { continue }
-        [void]$managedFiles.Add([pscustomobject]@{ Path = $file.FullName; Entries = @($classification.ManagedEntries) })
-    }
-    if ($managedFiles.Count -eq 0) {
-        return (New-KiroRegistrationVerdict 'registration missing' 'no managed hook file carries this installation''s identity')
-    }
-    if ($managedFiles.Count -gt 1) {
-        # Two files both claiming this identity fire the hook twice.
-        return (New-KiroRegistrationVerdict 'duplicate registration' ($managedFiles.Count.ToString() + ' hook files carry this installation''s identity'))
-    }
-
-    $entries = @($managedFiles[0].Entries)
-    $expectedNameSet = New-Object System.Collections.Generic.HashSet[string]([System.StringComparer]::OrdinalIgnoreCase)
-    foreach ($name in @($ExpectedEntryNames)) { [void]$expectedNameSet.Add($name) }
-
-    $seenNames = New-Object System.Collections.Generic.HashSet[string]([System.StringComparer]::OrdinalIgnoreCase)
-    foreach ($entry in $entries) {
-        $entryName = [string](Get-KiroEntryField -Entry $entry -Name 'name')
-        if (-not $expectedNameSet.Contains($entryName)) {
-            return (New-KiroRegistrationVerdict 'stale registration' ('leftover managed entry ' + $entryName))
-        }
-        if (-not $seenNames.Add($entryName)) {
-            return (New-KiroRegistrationVerdict 'duplicate registration' ('two entries named ' + $entryName))
-        }
-    }
-    foreach ($name in @($ExpectedEntryNames)) {
-        if (-not $seenNames.Contains($name)) {
-            return (New-KiroRegistrationVerdict 'registration missing' ('no registration for ' + $name))
-        }
-    }
-
-    # Expected physical triggers, and the logical event each maps back to (the
-    # matcher rule is keyed by the LOGICAL event, not by Kiro's own name).
-    $expectedTriggers = @{}
-    foreach ($pair in @($PhysicalTriggers)) {
-        if ($null -eq $pair) { continue }
-        $logical = [string](Get-KiroEntryField -Entry $pair -Name 'logical')
-        $physical = [string](Get-KiroEntryField -Entry $pair -Name 'physical')
-        if ([string]::IsNullOrWhiteSpace($logical) -or [string]::IsNullOrWhiteSpace($physical)) { continue }
-        $expectedTriggers[$physical] = $logical
-    }
-    if ($expectedTriggers.Count -eq 0) {
-        $capability = Get-HookMakerClientCapability -ClientId 'kiro'
-        foreach ($eventName in @($ExpectedEvents)) {
-            $physical = $eventName
-            if ($capability.physicalEventMap.ContainsKey($eventName)) { $physical = [string]$capability.physicalEventMap[$eventName] }
-            $expectedTriggers[$physical] = $eventName
-        }
-    }
-
-    $seenTriggers = New-Object System.Collections.Generic.HashSet[string]([System.StringComparer]::Ordinal)
-    foreach ($entry in $entries) {
-        $entryName = [string](Get-KiroEntryField -Entry $entry -Name 'name')
-        $trigger = [string](Get-KiroEntryField -Entry $entry -Name 'trigger')
-        if (-not $expectedTriggers.ContainsKey($trigger)) {
-            return (New-KiroRegistrationVerdict 'registration drifted' ('trigger changed on ' + $entryName))
-        }
-        if (-not $seenTriggers.Add($trigger)) {
-            return (New-KiroRegistrationVerdict 'duplicate registration' ($trigger + ' is registered twice'))
-        }
-
-        # An 'agent' action spawns no subprocess, so a Hook Maker runtime
-        # registered that way would never run: the type is owned, not incidental.
-        $action = Get-KiroEntryField -Entry $entry -Name 'action'
-        if ($null -eq $action -or [string](Get-KiroEntryField -Entry $action -Name 'type') -cne 'command') {
-            return (New-KiroRegistrationVerdict 'registration drifted' ('action type changed on ' + $entryName))
-        }
-        # Kiro entries do NOT all carry the same command: KIRO_PROTOCOL requires
-        # the physical trigger to be passed explicitly (Kiro IDE documents no
-        # stdin JSON, so a hook cannot infer which event fired), so the record's
-        # persisted command is the shared LAUNCHER command and each entry
-        # appends its own ' -Trigger <physical>' (Install-Hook.ps1, where the
-        # per-trigger command is built). Both halves are owned: a wrong prefix
-        # means the entry no longer targets our runtime, and a wrong or missing
-        # trigger argument means the launcher would hand the hook the wrong
-        # event - live registrations that look healthy and behave wrongly.
-        if (-not [string]::IsNullOrWhiteSpace($ExpectedCommand)) {
-            $actualCommand = [string](Get-KiroEntryField -Entry $action -Name 'command')
-            if (-not $actualCommand.StartsWith($ExpectedCommand, [System.StringComparison]::Ordinal)) {
-                return (New-KiroRegistrationVerdict 'registration drifted' ('command changed on ' + $entryName))
-            }
-            $commandSuffix = $actualCommand.Substring($ExpectedCommand.Length).Trim()
-            if ($commandSuffix -cne ('-Trigger ' + $trigger)) {
-                return (New-KiroRegistrationVerdict 'registration drifted' ('trigger argument changed on ' + $entryName))
-            }
-        }
-        if ($ExpectedTimeout -gt 0) {
-            $actualTimeout = -1
-            if (-not [int]::TryParse([string](Get-KiroEntryField -Entry $entry -Name 'timeout'), [ref]$actualTimeout) -or $actualTimeout -ne $ExpectedTimeout) {
-                return (New-KiroRegistrationVerdict 'registration drifted' ('timeout changed on ' + $entryName))
-            }
-        }
-        # Absent means Kiro's own default, which is enabled.
-        $enabledValue = Get-KiroEntryField -Entry $entry -Name 'enabled'
-        $actualEnabled = $true
-        if ($null -ne $enabledValue) { $actualEnabled = [bool]$enabledValue }
-        if ($actualEnabled -ne $ExpectedEnabled) {
-            return (New-KiroRegistrationVerdict 'registration drifted' ('enabled changed on ' + $entryName))
-        }
-        # The matcher expectation is the canonical one for the LOGICAL event,
-        # blanked wherever Kiro does not actually evaluate a matcher on that
-        # trigger - a filter the client ignores must not be written, and one
-        # that appears later is drift either way.
-        $expectedMatcher = ''
-        if (Test-HookMakerEventMatcher -ClientId 'kiro' -EventName ([string]$expectedTriggers[$trigger])) {
-            $expectedMatcher = Get-ExpectedMatcher -EventName ([string]$expectedTriggers[$trigger])
-        }
-        if ([string](Get-KiroEntryField -Entry $entry -Name 'matcher') -ne $expectedMatcher) {
-            return (New-KiroRegistrationVerdict 'registration drifted' ('matcher changed on ' + $entryName))
-        }
-    }
-
-    return (New-KiroRegistrationVerdict 'current' '')
 }

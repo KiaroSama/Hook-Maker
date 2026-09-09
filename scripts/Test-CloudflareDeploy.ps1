@@ -347,7 +347,7 @@ try {
         param([string]$Root)
         $excludeDir = Join-Path $Root '.git\info'
         if (-not (Test-Path -LiteralPath $excludeDir -PathType Container)) { return }
-        Add-Content -LiteralPath (Join-Path $excludeDir 'exclude') -Value "/.claude/`n/.codex/`n/.kiro/`n/tools/" -Encoding UTF8
+        Add-Content -LiteralPath (Join-Path $excludeDir 'exclude') -Value "/.claude/`n/.codex/`n/tools/" -Encoding UTF8
     }
 
     # ---- THE managed-install fixture ----------------------------------------
@@ -355,8 +355,8 @@ try {
     # runtime script, the ownership metadata beside it
     # (<runtimeRoot>\Test-Temp-Cleanup\.hookmaker-runtime.json), and a
     # registration document in that client's REAL schema - Claude/Codex
-    # hooks.<Event>[].hooks[] with type='command', Kiro a v1 per-hook file with a
-    # named entry and action.command. Every negative case deviates exactly ONE
+    # hooks.<Event>[].hooks[] with type='command'. Every negative case deviates
+    # exactly ONE
     # axis from this, which is what makes each of them prove its own rule instead
     # of failing for an unrelated reason.
     #
@@ -367,7 +367,7 @@ try {
     function New-ManagedCleanupInstall {
         param(
             [Parameter(Mandatory = $true)][string]$Base,
-            [ValidateSet('claude', 'codex', 'kiro')][string]$Client = 'claude',
+            [ValidateSet('claude', 'codex')][string]$Client = 'claude',
             [ValidateSet('project', 'global')][string]$Scope = 'project',
             [string]$ProjectRoot = '',
             [hashtable]$Metadata = @{},
@@ -390,46 +390,31 @@ try {
             # pass merely because the entry point failed its own lookup - the
             # extra entries are the only thing left to reject.
             [object[]]$ManifestExtra = @(),
-            # The event the registration is written under: the hooks.<Event> key
-            # for Claude/Codex, the entry's trigger for Kiro. Only Stop can
-            # produce the result the gate waits for.
+            # The event the registration is written under: the hooks.<Event> key.
+            # Only Stop can produce the result the gate waits for.
             [string]$RegisteredEvent = 'Stop',
             [ValidateSet('absolute', 'relative', 'escape', 'outside', 'nonCommandField', 'nameDrop', 'malformed', 'none')]
-            [string]$CommandForm = 'absolute',
-            [string]$KiroVersion = 'v1',
-            [string]$KiroEntryName = '',
-            [string]$KiroFileName = ''
+            [string]$CommandForm = 'absolute'
         )
         if ([string]::IsNullOrWhiteSpace($ProjectRoot)) { $ProjectRoot = $Base }
         $capability = Get-HookMakerClientCapability -ClientId $Client
         $runtimeRelativeRoot = [string]$capability.runtimeRelativeRoot
         $runtimeRoot = Join-Path $Base $runtimeRelativeRoot
         $hookDir = Join-Path $runtimeRoot 'Test-Temp-Cleanup'
-        # Kiro registers the LAUNCHER, not the hook script - the ownership
-        # metadata is what says which, so the fixture must differ per client too.
-        $scriptName = if ($Client -eq 'kiro') { 'kiro-launch.ps1' } else { 'Test-Temp-Cleanup.ps1' }
+        $scriptName = 'Test-Temp-Cleanup.ps1'
         $scriptRelative = 'Test-Temp-Cleanup/' + $scriptName
         $scriptPath = Join-Path $hookDir $scriptName
         $recordId = 'rec-' + $Client + '-' + $Scope
-        # EXACTLY the two shapes scripts\_installplan.ps1's
-        # Get-RuntimeMetadataRegistrationName produces. The Kiro value is the
-        # entry-name PREFIX every entry of one install shares, NOT any single
-        # entry name - a Kiro install writes one entry per physical trigger - so
-        # the fixture's entry name is deliberately LONGER than the recorded value.
-        # A fixture that recorded the full name would let an equality check in the
-        # consumer pass here and reject every real install.
-        $managedNamePrefix = 'hookmaker-' + $recordId + '-test-temp-cleanup'
-        $managedEntryName = $managedNamePrefix + '-stop'
+        # EXACTLY the shape scripts\_installplan.ps1's
+        # Get-RuntimeMetadataRegistrationName produces.
 
         New-Item -ItemType Directory -Path $hookDir -Force | Out-Null
         # A real install NEVER stages the entry point alone. Per
         # scripts\_installplan.ps1, every client gets <hook>\_hooklib.ps1 (the
-        # library the entry point dot-sources) and <hook>\<hook>.ps1, and Kiro
-        # additionally gets the kiro-launch.ps1 its registration actually names.
+        # library the entry point dot-sources) and <hook>\<hook>.ps1.
         # The fixture stages the same set so the positive cases prove MULTI-entry
         # verification and the completeness negatives have real files to omit.
         $runtimeLeaves = @('_hooklib.ps1', 'Test-Temp-Cleanup.ps1')
-        if ($Client -eq 'kiro') { $runtimeLeaves += 'kiro-launch.ps1' }
         foreach ($leaf in $runtimeLeaves) {
             # -MissingRuntime removes only the REGISTERED script; the rest of the
             # runtime stays, so that case still fails for its own reason.
@@ -464,7 +449,7 @@ try {
             if ($ManifestExtra.Count -gt 0) { $manifest = @($manifest) + @($ManifestExtra) }
             # A global install serves every project and records no project key.
             $projectKey = if ($Scope -eq 'project') { Get-ShortHash (Normalize-Path $ProjectRoot).ToLowerInvariant() } else { '' }
-            $registrationName = if ($Client -eq 'kiro') { $managedNamePrefix } else { 'Hook-Maker/Test-Temp-Cleanup' }
+            $registrationName = 'Hook-Maker/Test-Temp-Cleanup'
             $record = [ordered]@{
                 schemaVersion             = 1
                 recordId                  = $recordId
@@ -519,29 +504,12 @@ try {
             # JSON-escaped \\ form the parser has to survive.
             $escapedTarget = $commandTarget.Replace('\', '\\')
             $commandString = 'powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File \"' + $escapedTarget + '\"'
-            $document = ''
-            if ($Client -eq 'kiro') {
-                $entryName = if ([string]::IsNullOrWhiteSpace($KiroEntryName)) { $managedEntryName } else { $KiroEntryName }
-                $registrationFileName = if ([string]::IsNullOrWhiteSpace($KiroFileName)) { 'hookmaker-test-temp-cleanup-' + $recordId + '.json' } else { $KiroFileName }
-                $registrationPath = Join-Path (Join-Path $Base '.kiro\hooks') $registrationFileName
-                # description carries Get-KiroManagedMarker's [hookmaker:<id>],
-                # one of the two ownership proofs the Kiro writer embeds.
-                $entryBody = '"name":"' + $entryName + '","description":"Test-Temp-Cleanup - managed by Hook Maker; edit through Hook Maker, not by hand. [hookmaker:' + $recordId + ']","trigger":"' + $RegisteredEvent + '"'
-                $document = switch ($CommandForm) {
-                    'nameDrop' { '{"version":"' + $KiroVersion + '","hooks":[{' + $entryBody + ',"timeout":45,"enabled":true}]}' }
-                    'malformed' { '{"version":"v1","hooks":[{"name":"Test-Temp-Cleanup' }
-                    'nonCommandField' { '{"version":"' + $KiroVersion + '","hooks":[{' + $entryBody + ',"action":{"type":"command","notes":"example: ' + $commandString + '"},"timeout":45,"enabled":true}]}' }
-                    default { '{"version":"' + $KiroVersion + '","hooks":[{' + $entryBody + ',"action":{"type":"command","command":"' + $commandString + '"},"timeout":45,"enabled":true}]}' }
-                }
-            }
-            else {
-                $registrationPath = Join-Path $Base ([string]$capability.($Scope + 'Registration'))
-                $document = switch ($CommandForm) {
-                    'nameDrop' { '{"description":"this document only mentions Test-Temp-Cleanup by name","hooks":{}}' }
-                    'malformed' { '{"hooks": broken json naming Test-Temp-Cleanup' }
-                    'nonCommandField' { '{"hooks":{"' + $RegisteredEvent + '":[{"hooks":[{"type":"command","notes":"example: ' + $commandString + '"}]}]}}' }
-                    default { '{"hooks":{"' + $RegisteredEvent + '":[{"hooks":[{"type":"command","command":"' + $commandString + '","timeout":45}]}]}}' }
-                }
+            $registrationPath = Join-Path $Base ([string]$capability.($Scope + 'Registration'))
+            $document = switch ($CommandForm) {
+                'nameDrop' { '{"description":"this document only mentions Test-Temp-Cleanup by name","hooks":{}}' }
+                'malformed' { '{"hooks": broken json naming Test-Temp-Cleanup' }
+                'nonCommandField' { '{"hooks":{"' + $RegisteredEvent + '":[{"hooks":[{"type":"command","notes":"example: ' + $commandString + '"}]}]}}' }
+                default { '{"hooks":{"' + $RegisteredEvent + '":[{"hooks":[{"type":"command","command":"' + $commandString + '","timeout":45}]}]}}' }
             }
             New-Item -ItemType Directory -Path (Split-Path -Parent $registrationPath) -Force | Out-Null
             Write-Utf8 $registrationPath $document

@@ -122,16 +122,15 @@ $script:ReviewOnlyNames = @('coverage', 'htmlcov', 'test-results', 'playwright-r
 $script:ReviewOnlyFilePatterns = @('.coverage', 'coverage.xml')
 # Never surfaced as a candidate and never descended into, whatever any config
 # says: source control, this tool's and every supported client's own config and
-# runtime state, dependency stores, and build/compiler output roots. '.kiro' is
-# a client config/runtime directory exactly like '.claude' and '.codex' - it
-# must never be mistaken for test residue.
+# runtime state, dependency stores, and build/compiler output roots. A client's
+# config/runtime directory must never be mistaken for test residue.
 # '.cache' is the odd one out historically: Secrets-Check, Test-Plan-Check,
 # Utf8-Encoding-Check and Docs-Freshness-Check all prune it and this hook did
 # not, so a project's pip HTTP cache (.cache/pip/http-v2/<hash fan-out>) was
 # walked and its 5-level hash fan-out tripped MAX_SCAN_DEPTH on its own - a
 # PARTIAL baseline that had nothing to do with the project's own residue.
 $script:HardPruneNames = @(
-    '.git', '.ai', '.claude', '.codex', '.kiro', 'node_modules', '.venv', 'venv', 'env',
+    '.git', '.ai', '.claude', '.codex', 'node_modules', '.venv', 'venv', 'env',
     '__pypackages__', 'vendor', 'target', 'dist', 'build', 'out', '.next',
     '.nuxt', '.tox', '.svn', '.hg', 'graphify-out', 'logs', '.cache'
 )

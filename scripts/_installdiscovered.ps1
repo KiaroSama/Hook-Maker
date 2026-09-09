@@ -37,11 +37,11 @@
 # a managed record but the file it is stored in, and has its own id derivation,
 # its own validator, and its own merge rules.
 
-$script:DiscoveredHookTypes = @('ClaudeRegistration', 'CodexRegistration', 'KiroRegistration', 'NativeGitHook')
+$script:DiscoveredHookTypes = @('ClaudeRegistration', 'CodexRegistration', 'NativeGitHook')
 $script:DiscoveredStatuses = @('active', 'missingTarget', 'registrationOnly', 'sharedRuntime', 'orphanCandidate', 'ambiguous', 'manualRepair', 'notSeen')
 $script:DiscoveredManagedByValues = @('hookMaker', 'external', 'unknown')
 $script:DiscoveredRemovalPolicies = @('full', 'registrationOnly', 'nativeFileOnly', 'unavailable')
-$script:DiscoveredClientNames = @('claude', 'codex', 'kiro')
+$script:DiscoveredClientNames = @('claude', 'codex')
 $script:DiscoveredRegistrationStatuses = @('parsed', 'unparsedCommand', 'fieldsDisagree', 'targetMissing')
 $script:DiscoveredNativeClassifications = @('hookMakerWrapper', 'externalNativeHook', 'ambiguous')
 $script:DiscoveredArtifactClassifications = @('registeredRuntime', 'sharedRuntime', 'registrationOnly', 'missingTarget', 'orphanRuntimeCandidate', 'ambiguous')

@@ -60,10 +60,6 @@ $script:Fail = 0
 $script:TestPreviewLength = 800
 . (Join-Path $ScriptRoot '_testlib.ps1')
 [void](Disable-DaclBypassPrivilege)
-# The real Kiro registration writer, so a Kiro fixture is byte-identical to what
-# the installer would produce - the same reason the native fixtures use the
-# canonical wrapper generator.
-. (Join-Path $ScriptRoot '_installkiro.ps1')
 # The persistence block reads the registry back in THIS scope; it is a
 # directory of per-record files, and these helpers are what read it.
 # _hooklib first: _installregistry.ps1 uses Set-ObjectProperty and
@@ -139,24 +135,6 @@ function New-CodexHook {
     Write-Utf8 -Path (Join-Path $ProjectRoot '.codex\hooks.json') -Content (@{
         hooks = @{ Stop = @(@{ hooks = @(@{ type = 'command'; command = ('pwsh -File "' + $target + '"') }) }) }
     } | ConvertTo-Json -Depth 20)
-    return $target
-}
-# One Kiro registration document under <project>\.kiro\hooks, built by the real
-# writer so ownership is genuinely provable rather than fixture-shaped.
-function New-KiroHook {
-    param([string]$ProjectRoot, [string]$HookName, [string]$TargetScript = '')
-    $target = $TargetScript
-    if ([string]::IsNullOrWhiteSpace($target)) {
-        $runtimeDir = New-Dir (Join-Path $ProjectRoot ('.kiro\hook-runtime\Hook-Maker\' + $HookName))
-        $target = Join-Path $runtimeDir ($HookName + '.ps1')
-        Write-Utf8 -Path $target -Content ('# ' + $HookName)
-    }
-    $managedId = 'zzz-' + ([string]$HookName).ToLowerInvariant()
-    $document = New-KiroHookDocument -FriendlyName $HookName -Command ('pwsh -NoProfile -File "' + $target + '"') `
-        -Triggers @('SessionStart') -TimeoutSeconds 30 -ManagedId $managedId
-    $registrationPath = Get-KiroRegistrationPath -Scope 'project' -FriendlyName $HookName `
-        -StableId $managedId -TargetProjectRoot $ProjectRoot
-    Write-Utf8 -Path $registrationPath -Content (ConvertTo-KiroHookJson -Document $document)
     return $target
 }
 function New-GitHookRepo {

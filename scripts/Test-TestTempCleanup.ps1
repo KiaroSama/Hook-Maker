@@ -4,7 +4,7 @@
 #
 # Covers: nothing on disk is ever mutated (a real .pytest_cache created AFTER
 # the baseline still exists after Stop; review artifacts, tracked/staged
-# candidates, junction targets and .kiro all survive); .kiro is hard-pruned and
+# candidates and junction targets all survive); hard-pruned directories are
 # never descended into; the AST of the hook contains no reachable project-
 # mutation command and no mutating git subcommand; the report always instructs
 # the agent to inspect before deleting; a missing baseline is conservative; the
@@ -461,20 +461,16 @@ try {
         $rUnchanged51.Out -match 'at-session-start=yes \| during-session=unchanged') $rUnchanged51.Out
 
     # =====================================================================
-    Write-Host '--- .kiro is hard-pruned: never surfaced, never descended into ---' -ForegroundColor Cyan
+    Write-Host '--- node_modules is hard-pruned: never surfaced, never descended into ---' -ForegroundColor Cyan
     $hc5 = New-IsolatedHookCopy
-    $proj5 = New-GitRepo 'KiroPruned'
+    $proj5 = New-GitRepo 'HardPruned'
     Add-Commit $proj5 'init'
     Fire -HookPath $hc5.Script -Cwd $proj5 -EventName 'SessionStart' -LocalAppData $hc5.LocalAppData | Out-Null
-    $kiroDir = New-Dir (Join-Path $proj5 '.kiro')
-    Write-Utf8 (Join-Path $kiroDir 'settings.json') '{}'
-    $kiroNested = New-Cache (Join-Path $proj5 '.kiro') '.pytest_cache'
     $nodeNested = New-Cache (New-Dir (Join-Path $proj5 'node_modules')) '.pytest_cache'
     $r = Fire -HookPath $hc5.Script -Cwd $proj5 -EventName 'Stop' -LocalAppData $hc5.LocalAppData
-    Check '.kiro itself is never surfaced as a candidate' ($r.Out -notmatch '\.kiro') $r.Out
-    Check 'a cache nested inside .kiro is never discovered (not descended into)' ($r.Out -notmatch 'pytest_cache') $r.Out
-    Check '.kiro and its nested cache still exist on disk' ((Test-Path -LiteralPath (Join-Path $kiroDir 'settings.json')) -and (Test-Path -LiteralPath $kiroNested))
-    Check 'a cache nested inside node_modules is still never discovered either' ((Test-Path -LiteralPath $nodeNested) -and $r.Out -notmatch 'node_modules') $r.Out
+    Check 'node_modules itself is never surfaced as a candidate' ($r.Out -notmatch 'node_modules') $r.Out
+    Check 'a cache nested inside node_modules is never discovered (not descended into)' (
+        (Test-Path -LiteralPath $nodeNested) -and $r.Out -notmatch 'pytest_cache') $r.Out
     Check 'with only hard-pruned content present the state is clean and silent' (
         $r.Out -eq '' -and (Get-RecordedCategory $hc5.LocalAppData $proj5) -eq 'clean') ((Get-RecordedCategory $hc5.LocalAppData $proj5) + '|' + $r.Out)
 
@@ -773,13 +769,9 @@ try {
     # The gate shape is identical for both supported clients, so a blocking
     # message needs no per-client branch - proven by the residue block above.
     Check 'the blocking gate shape is client-independent (decision:block)' ($r2.Out -match '"decision":"block"') $r2.Out
-    # TODO(kiro): a third client (Kiro) is being added to Hook Maker in a
-    # separate workstream and its output protocol is not settled. No Kiro shape
-    # is asserted here because inventing one would encode a guess. The semantic
-    # contract is already covered host-independently by Test-HasFullInstruction:
-    # when the Kiro branch lands, add one Fire case with its detection signal and
-    # assert Test-HasFullInstruction on the result - nothing else should change.
-    Check 'the semantic instruction is asserted independently of any JSON envelope (Kiro-ready)' (
+    # The semantic contract is covered host-independently by
+    # Test-HasFullInstruction, so it holds inside whatever envelope a client uses.
+    Check 'the semantic instruction is asserted independently of any JSON envelope' (
         (Test-HasFullInstruction $rClaude.Out) -and (Test-HasFullInstruction $rCodex.Out))
 
     # =====================================================================

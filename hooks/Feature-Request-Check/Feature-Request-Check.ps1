@@ -11,8 +11,8 @@
 # the wrong requirements, and that is only discovered once it is finished.
 #
 # WHAT IT WILL NOT DO, on purpose:
-# - It never blocks without EVIDENCE. No transcript (Codex, Kiro, an unknown
-#   client) means no claim in either direction: silent, not an all-clear.
+# - It never blocks without EVIDENCE. No transcript (Codex, an unknown client)
+#   means no claim in either direction: silent, not an all-clear.
 # - A partial transcript read never produces a block - it saw part of the
 #   session and cannot know what the rest holds.
 # - It blocks ONCE per set of feature prompts. The same unchanged set passes
@@ -127,7 +127,7 @@ if ($eventName -eq 'UserPromptSubmit') {
 if (Test-StopStandDown -HookInput $hookInput -HookName 'Feature-Request-Check') { exit 0 }
 
 # No transcript is NOT an all-clear and NOT a violation: it is no evidence.
-# Codex and Kiro do not supply one, so this half is Claude-only by nature.
+# Codex does not supply one, so this half is Claude-only by nature.
 $transcriptPath = [string](Get-Field $hookInput 'transcript_path')
 if ([string]::IsNullOrWhiteSpace($transcriptPath)) { exit 0 }
 
@@ -188,15 +188,6 @@ $blockMessage = @(
     'Either run it now - grilling + domain-modeling, then spec, then tickets, then implement ticket by ticket -',
     'or state in one line why this was not a feature, and finish. Both clear this.'
 ) -join "`n"
-
-# Kiro cannot block at Stop; the same text goes out as advice there so the
-# message is never silently lost, and the difference is recorded rather than
-# pretended away.
-$client = Get-HookClientId
-if ($client -eq 'kiro') {
-    $emit = Write-HookResult -EventName $eventName -Kind 'context' -Message ($blockMessage + "`n(Advisory here: this client cannot block at Stop - degraded-stop-gate.)")
-    exit $emit.ExitCode
-}
 
 # Record the block so THIS hook's own re-entry is recognised; another
 # gate's block must not mute it, and its own must not repeat.

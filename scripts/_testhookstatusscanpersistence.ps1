@@ -5,8 +5,7 @@
 # place without duplicating; firstSeenUtc is set once; a pre-existing managed
 # record is never touched; a partial scan never demotes records under an
 # inaccessible subtree, while a covered record that is genuinely gone IS
-# demoted to notSeen; a Kiro installation persists without ever corrupting
-# the registry.
+# demoted to notSeen.
 # NOT a standalone suite: dot-sourced into the entry suite's scope; reuses
 # the $ancestor and $permRoot/$enforced fixtures built by the traversal
 # block. Run scripts\Test-HookStatusScan.ps1 instead.
@@ -119,21 +118,3 @@
     Check 'a covered record that is genuinely gone is demoted to notSeen' (
         $vanished.Count -eq 1 -and [string]$vanished[0].status -eq 'notSeen') (
         $(if ($vanished.Count -eq 1) { [string]$vanished[0].status } else { 'count=' + $vanished.Count }))
-
-    # A persisting scan over a Kiro installation must survive whatever the
-    # registry layer decides about it: the record is either stored or reported
-    # as not stored, but the scan never crashes, never corrupts the registry,
-    # and never loses a managed record.
-    $kiroPersistRoot = New-Dir (Join-Path $Work 'KiroPersistRoot')
-    New-KiroHook -ProjectRoot (New-Dir (Join-Path $kiroPersistRoot 'Proj')) -HookName 'ZZZ-Kiro-Persist' | Out-Null
-    $kiroPersistScan = Invoke-Scan -Root $kiroPersistRoot -Persist
-    Check 'a persisting scan over a Kiro installation exits 0' ($kiroPersistScan.Exit -eq 0) $kiroPersistScan.Err
-    Check 'and the Kiro installation is reported in the scan result' (
-        Test-FoundTarget -Result $kiroPersistScan.Result -Fragment 'ZZZ-Kiro-Persist.ps1') (
-        ($kiroPersistScan.Result.findings | ConvertTo-Json -Depth 6))
-    $kiroRegistry = $null
-    try { $kiroRegistry = Read-InstallRegistry -ToolRoot $ToolRoot } catch { $kiroRegistry = $null }
-    Check 'and the registry is still readable afterwards' ($null -ne $kiroRegistry)
-    Check 'and the pre-existing managed record still survives' (
-        $null -ne $kiroRegistry -and
-        @(@($kiroRegistry.installs) | Where-Object { [string]$_.id -eq 'zzz-managed-fixture' }).Count -eq 1)

@@ -106,68 +106,11 @@ function Set-ObjectProperty {
     }
 }
 
-# Resolves any spelling of a Kiro trigger to Hook Maker's canonical logical
-# event name, or '' when it is not one of the five Kiro documents.
-#
-# Case-INSENSITIVE in, canonical OUT - deliberately the same contract
-# Resolve-HookMakerLogicalEvent already has in scripts\_clientcapability.ps1,
-# and it is load-bearing rather than cosmetic. Kiro renamed every trigger
-# between CLI v2 (camelCase 'preToolUse') and the v1 schema (PascalCase
-# 'PreToolUse'), and CLI v3 sends stdin JSON WITHOUT re-publishing its field
-# names or casing (.ai/KIRO_PROTOCOL.md, critical unknown 4). Comparing raw
-# spellings instead of resolved events would call 'preToolUse' and 'PreToolUse'
-# a contradiction and refuse every CLI v3 hook.
-#
-# One list resolves BOTH sides because Kiro's physicalEventMap is identity for
-# all five triggers - the physical trigger name and the logical event name are
-# the same string - so there is no second table to translate through.
-# Test-ContextHooks asserts $script:HookKiroTriggers still equals the capability
-# table's kiro supportedEvents, which is what keeps that true.
-function Resolve-KiroTrigger {
-    param([string]$Name)
-    if ([string]::IsNullOrWhiteSpace($Name)) { return '' }
-    # -eq on strings is case-insensitive in PowerShell; the RETURNED value is
-    # always the canonical spelling from the list, never the caller's.
-    $match = @($script:HookKiroTriggers | Where-Object { $_ -eq ([string]$Name).Trim() })
-    if ($match.Count -eq 0) { return '' }
-    return $match[0]
-}
-
-# Makes an untrusted value safe to embed in a one-line user-visible diagnostic.
-# Control characters (newlines included) become spaces and the length is
-# capped, so a hostile or accidental multi-kilobyte event name can neither
-# flood the warning nor smuggle line breaks into it that would let attacker
-# text masquerade as separate diagnostic lines.
-function Get-HookSafeDiagnosticText {
-    param([string]$Text, [int]$MaxChars = 80)
-    if ([string]::IsNullOrEmpty($Text)) { return '' }
-    $clean = ([regex]::Replace($Text, '[\x00-\x1f\x7f]', ' ')).Trim()
-    if ($clean.Length -gt $MaxChars) { return ($clean.Substring(0, $MaxChars) + '...') }
-    return $clean
-}
-
-# Reads the hook event JSON from stdin. Returns the parsed object, or $null on
-# genuinely EMPTY input (the caller then exits silently). Non-empty stdin that
-# fails to parse is corrupt input; on Kiro it refuses visibly rather than
-# collapsing into the same $null an empty stdin produces.
-#
-# On Kiro it also NORMALIZES, and without that every hook is dead on arrival:
-# Kiro IDE documents no stdin JSON at all (only USER_PROMPT, and only on
-# UserPromptSubmit), so stdin is empty, this returned $null, and all 23 hooks
-# took their `if ($null -eq $hookInput) { exit 0 }` path and did nothing. The
-# installed Kiro launcher supplies the one thing that cannot be recovered from
-# an empty stdin - which trigger fired - and the rest is read from the process.
-#
-# Deliberately NOT synthesized (see .ai/KIRO_PROTOCOL.md):
-#   * session_id - inventing a persistent identity would silently mispair
-#     session-keyed baselines. Absent means session-dependent dedup disables
-#     itself, which is the documented degradation.
-#   * stop_hook_active - absent reads as $false, the correct default; a
-#     fabricated $true would suppress the hook entirely.
-#   * tool_name / tool_input - Kiro documents no channel for them.
+# Reads the hook event JSON from stdin. Returns the parsed object, or $null when
+# stdin carried nothing usable - genuinely empty, or bytes that are not JSON.
+# Both mean the same thing to a hook: there is no event to act on.
 function Read-HookInput {
     $parsed = $null
-    $stdinParseFailed = $false
     try {
         $raw = [Console]::In.ReadToEnd()
         # A leading U+FEFF is a byte-order mark, not payload: a client that
@@ -178,166 +121,9 @@ function Read-HookInput {
         # trim the same healthy payload parses on one host and reads as
         # "corrupt" on the other. Semantically empty, so stripping is lossless.
         if ($null -ne $raw) { $raw = $raw.TrimStart([char]0xFEFF) }
-        if (-not [string]::IsNullOrWhiteSpace($raw)) {
-            # The inner try exists so that "stdin carried bytes that are not
-            # JSON" stays distinguishable from "stdin was empty". Collapsing
-            # the two is harmless on Claude/Codex (both mean: nothing to do)
-            # but NOT on Kiro, where an empty stdin is the documented IDE
-            # normal and gets a synthesized event - a corrupt payload must
-            # never be laundered into that healthy-looking shape.
-            try { $parsed = ($raw | ConvertFrom-Json) }
-            catch { $parsed = $null; $stdinParseFailed = $true }
-        }
+        if (-not [string]::IsNullOrWhiteSpace($raw)) { $parsed = ($raw | ConvertFrom-Json) }
     }
     catch { $parsed = $null }
-
-    if ((Get-HookClientId) -cne 'kiro') { return $parsed }
-
-    if ($stdinParseFailed) {
-        # Non-empty stdin that does not parse is corrupt input, and on Kiro the
-        # $null it used to collapse into is exactly what the "IDE sent nothing"
-        # branch below synthesizes a VALID event from - so corrupt input became
-        # a seemingly healthy invocation. Refuse visibly instead: same channel
-        # as the trigger contradiction below (stderr + exit 1, never 2), same
-        # reason - nothing about this invocation can be trusted to pick a code
-        # path, and only the user can fix what is sending broken JSON.
-        [Console]::Error.WriteLine('Hook Maker: not running this hook. Kiro sent data on stdin that is not ' +
-            'valid JSON, so this invocation cannot be trusted to select an event. If this repeats, ' +
-            're-install the hook and check what is writing to its stdin.')
-        exit 1
-    }
-
-    # Trust boundary: the trigger arrives through the environment, so it is
-    # accepted ONLY when it resolves to one of the events Kiro actually
-    # documents. An unrecognized value is dropped rather than passed to hooks as
-    # an event name, which would let anything that can set an env var choose the
-    # code path a hook takes.
-    $kiroTrigger = Resolve-KiroTrigger ([string]$env:HOOKMAKER_KIRO_TRIGGER)
-    if ($kiroTrigger -eq '') {
-        # No trusted launcher trigger -> NOTHING runs, unconditionally.
-        #
-        # Every Hook Maker registration passes -Trigger, and kiro-launch.ps1 is
-        # what sets the client identity this branch is gated on - so a Kiro
-        # invocation with no resolvable trigger means the registration is not
-        # ours, is half-copied, or the environment was tampered with. Round 30
-        # let a payload event run here if it resolved inside the five-trigger
-        # trust list; the review (and the user) rejected that: without the
-        # registration's identity, stdin alone must never select the branch a
-        # hook takes - a well-formed payload naming 'Stop' is exactly what a
-        # spoofed invocation would carry. Fail closed, visibly (stderr + exit 1,
-        # never 2), on the SAME channel as every other refusal here.
-        $registrationlessEventRaw = ''
-        if ($null -ne $parsed) { $registrationlessEventRaw = [string](Get-Field $parsed 'hook_event_name') }
-        $registrationlessDetail = if ([string]::IsNullOrWhiteSpace($registrationlessEventRaw)) {
-            'and stdin supplies no event identity to check it against'
-        }
-        else {
-            'so the stdin payload''s event name "' + (Get-HookSafeDiagnosticText $registrationlessEventRaw) +
-            '" cannot be trusted to select a code path'
-        }
-        [Console]::Error.WriteLine('Hook Maker: not running this hook. It is running under Kiro without a ' +
-            '-Trigger from its registration, ' + $registrationlessDetail +
-            '. Re-install the hook so its .kiro\hooks registration passes -Trigger.')
-        exit 1
-    }
-
-    if ($null -eq $parsed) {
-        # cwd from the process, canonicalized. Kiro launches the hook in the
-        # workspace directory; there is no documented cwd field to read.
-        $kiroCwd = ''
-        try { $kiroCwd = [System.IO.Path]::GetFullPath((Get-Location).Path) } catch { $kiroCwd = '' }
-        $synthesized = [pscustomobject]@{ hook_event_name = $kiroTrigger }
-        if (-not [string]::IsNullOrWhiteSpace($kiroCwd)) {
-            Set-ObjectProperty -Object $synthesized -Name 'cwd' -Value $kiroCwd
-        }
-        # USER_PROMPT is the ONE input channel Kiro documents, and omitting it
-        # left every prompt-driven hook blind on Kiro IDE: Rules-Check,
-        # Skills-Check and the ::deep-debug detection all read 'prompt', so they
-        # silently did nothing there. Scoped to UserPromptSubmit because that is
-        # the only trigger Kiro documents it for - carrying a stale prompt into
-        # SessionStart or PreToolUse would be worse than having none.
-        if ($kiroTrigger -ceq 'UserPromptSubmit') {
-            $kiroPrompt = Get-KiroPromptFromEnvironment
-            if (-not [string]::IsNullOrWhiteSpace($kiroPrompt)) {
-                Set-ObjectProperty -Object $synthesized -Name 'prompt' -Value $kiroPrompt
-            }
-        }
-        return $synthesized
-    }
-
-    # CLI v3 DOES send stdin JSON, but does not re-publish its field names or
-    # casing, so a payload may arrive with no usable event name, with the same
-    # event spelled differently, or - the case that matters - naming a
-    # GENUINELY DIFFERENT event than the launcher.
-    #
-    # The launcher argument is written by Hook Maker's own installer into the
-    # .kiro\hooks registration, so a real disagreement means the registration
-    # and the client disagree about what fired, and NEITHER side can then be
-    # trusted to select the code path a hook takes.
-    $parsedEventRaw = [string](Get-Field $parsed 'hook_event_name')
-    if ([string]::IsNullOrWhiteSpace($parsedEventRaw)) {
-        # Nothing to contradict - fill in what the payload never carried.
-        Set-ObjectProperty -Object $parsed -Name 'hook_event_name' -Value $kiroTrigger
-    }
-    elseif ((Resolve-KiroTrigger $parsedEventRaw) -ceq $kiroTrigger) {
-        # The SAME event, possibly spelled differently. Normalize to the
-        # canonical name so every hook's `-ceq 'PreToolUse'` branch keeps
-        # working on a client whose casing is undocumented.
-        Set-ObjectProperty -Object $parsed -Name 'hook_event_name' -Value $kiroTrigger
-    }
-    else {
-        # Two genuinely different events. REFUSE to run rather than guess.
-        #
-        # This used to let the payload win and record 'hookmaker_trigger_mismatch'
-        # on the object - a field NOTHING reads, which is the same as swallowing
-        # it: a PreToolUse registration whose payload said Stop handed the hook a
-        # Stop event, the hook ran its Stop branch, and nothing said so.
-        #
-        # The refusal has to be VISIBLE or it is that defect in a new place.
-        # Returning $null would make every hook take its
-        # `if ($null -eq $hookInput) { exit 0 }` path in total silence. Per the
-        # CONFIRMED exit-code table in .ai/KIRO_PROTOCOL.md: exit 0 adds stdout
-        # to context ONLY on SessionStart/UserPromptSubmit and discards it
-        # everywhere else - so a stdout message would be silent on exactly the
-        # PreToolUse/PostToolUse/Stop events where a wrong branch does damage -
-        # exit 2 blocks on the block-capable events, and ANY OTHER non-zero exit
-        # shows stderr to the user and lets execution proceed. That last channel
-        # is right on the merits, not merely available: a registration/client
-        # disagreement is a configuration fault only the USER can repair.
-        #
-        # Exit 1, NEVER 2. 2 is Kiro's refusal code; blocking the user's tool
-        # call over a Hook Maker configuration fault is not this function's
-        # decision to make, and Stop cannot block on either Kiro surface anyway.
-        # The payload value is untrusted and goes into a user-visible line, so
-        # it is sanitized and bounded - an unbounded print would let a huge or
-        # newline-carrying event name flood or reshape the very diagnostic that
-        # exists to explain the refusal.
-        [Console]::Error.WriteLine('Hook Maker: not running this hook. Its Kiro registration says the trigger is "' +
-            $kiroTrigger + '" but Kiro reported "' + (Get-HookSafeDiagnosticText $parsedEventRaw) + '". The two ' +
-            'disagree about what fired, so the hook refused to guess which branch to run. Re-install the hook so ' +
-            'its .kiro\hooks registration matches the trigger Kiro fires.')
-        exit 1
-    }
-
-    # The byte bound applies to the prompt WHEREVER it arrived from. Capping
-    # only USER_PROMPT left a hole the capability table itself predicts: CLI v3
-    # DOES send stdin JSON, so the same oversized prompt arriving inside the
-    # payload won ("payload wins") with no limit at all - the documented 64 KB
-    # bound applied only to the channel that happened to be smaller. Truncation
-    # stays REPORTED via the same in-text marker.
-    # ONE resolution of which prompt this invocation carries, so no later reader
-    # has to re-interpret an empty value. The environment is offered as a
-    # fallback only on the trigger Kiro documents USER_PROMPT for - carrying a
-    # leftover prompt into SessionStart or PreToolUse would be worse than none.
-    $kiroPromptSource = Resolve-KiroPromptSource -Payload $parsed `
-        -AllowEnvironmentFallback:($kiroTrigger -ceq 'UserPromptSubmit')
-    # Written unconditionally: the resolved text is authoritative, and an
-    # empty/oversized/invalid outcome must OVERWRITE whatever the raw payload
-    # held so nothing downstream can read the unresolved value by accident.
-    if ($kiroPromptSource.SourcePresent) {
-        Set-ObjectProperty -Object $parsed -Name 'prompt' -Value ([string]$kiroPromptSource.Text)
-    }
-
     return $parsed
 }
 
@@ -349,31 +135,21 @@ function Read-HookInput {
 # does not copy sibling files from scripts\. So the list cannot be shared by
 # dot-sourcing. Test-ContextHooks asserts the two lists are identical, which is
 # how the duplication is kept honest.
-$script:HookClientIds = @('claude', 'codex', 'kiro')
+$script:HookClientIds = @('claude', 'codex')
 
 # Which client is running this hook.
 #
-# Hooks used to decide this inline as
-#   CLAUDE_PROJECT_DIR present -> Claude, otherwise -> Codex
-# which was fine while Codex was the only other client and becomes wrong the
-# moment a third one exists: Kiro would be handed Codex's rules, skills, paths
-# and output protocol with nothing reporting a problem.
-#
 # Resolution order, and why:
-#   1. An EXPLICIT id always wins. Kiro is identified this way because Kiro IDE
-#      documents no hook input at all beyond USER_PROMPT - there is nothing to
-#      infer from - so its generated command carries the id. That costs no
-#      compatibility: Kiro installs are new, so no existing command text or
-#      ownership hash changes. An explicit id that is NOT a known client returns
-#      'unknown' rather than falling through to a guess, because a wrong
-#      confident answer is worse than an admitted unknown.
+#   1. An EXPLICIT id always wins - a caller that already knows which client it
+#      is speaking for must not be overruled by a heuristic. An explicit id that
+#      is NOT a known client returns 'unknown' rather than falling through to a
+#      guess, because a wrong confident answer is worse than an admitted unknown.
 #   2. CLAUDE_PROJECT_DIR is Claude's own documented signal - a positive test,
 #      not an absence.
 #   3. Codex remains the default ONLY for a runtime carrying no explicit id.
 #      That is the pre-existing behaviour for every Claude/Codex install made
 #      before this function existed, and preserving it is deliberate: changing
-#      it would silently break working Codex installs to satisfy a rule aimed at
-#      a client that always identifies itself explicitly anyway.
+#      it would silently break working Codex installs.
 function Get-HookClientId {
     param([string]$Explicit = '')
     $candidate = $Explicit
@@ -399,23 +175,7 @@ function Get-HookClientId {
 $script:HookBlockCapableEvents = @{
     'claude' = @('UserPromptSubmit', 'PreToolUse', 'PostToolUse', 'Stop', 'SubagentStop', 'PreCompact', 'PermissionRequest')
     'codex'  = @('UserPromptSubmit', 'PreToolUse', 'Stop', 'SubagentStop')
-    'kiro'   = @('PreToolUse', 'UserPromptSubmit')
 }
-
-# Kiro adds hook stdout to the model's context ONLY on these triggers; on every
-# other one stdout is read and DISCARDED (.ai/KIRO_PROTOCOL.md, exit-code
-# section). Writing context anywhere else is a silent no-op, so Write-HookResult
-# reports it as degraded rather than pretending it landed.
-$script:HookKiroContextEvents = @('SessionStart', 'UserPromptSubmit')
-
-# The triggers Kiro documents, mirrored from the capability table's kiro
-# supportedEvents for the same self-contained-runtime reason as
-# $script:HookClientIds above. Read-HookInput accepts an environment-supplied
-# trigger ONLY if it appears here, so this list is a trust boundary, not just a
-# lookup. Kiro's physicalEventMap is identity for all five, which is why no
-# physical-to-logical translation is needed. Test-ContextHooks asserts this
-# matches the capability table.
-$script:HookKiroTriggers = @('SessionStart', 'UserPromptSubmit', 'PreToolUse', 'PostToolUse', 'Stop')
 
 # The ONLY events where Codex takes systemMessage instead of
 # hookSpecificOutput.additionalContext. Codex does not document
@@ -423,118 +183,6 @@ $script:HookKiroTriggers = @('SessionStart', 'UserPromptSubmit', 'PreToolUse', '
 # else - so this is a Stop-scoped exception, not a Codex-wide output shape.
 # Getting that backwards silently rewrites every pre-task hook's Codex output.
 $script:HookCodexSystemMessageEvents = @('Stop', 'SubagentStop')
-
-# Ceiling on the prompt taken from Kiro's USER_PROMPT environment variable.
-#
-# Every other hook input arrives as stdin JSON, which the client frames; this
-# one arrives as an environment variable whose size nothing bounds. A pasted
-# file or a machine-generated prompt therefore lands in memory whole, in a hook
-# process that runs on every submission. 64 KB is far above any real prompt and
-# far below anything that matters for a short-lived process.
-#
-# The bound is UTF-8 BYTES, not characters - it exists to cap MEMORY, and this
-# repo measures text in UTF-8 bytes everywhere else. A CHARACTER cap silently
-# admits up to three times the stated limit (65536 CJK characters are ~192 KB).
-#
-# An OVERSIZED prompt is WITHHELD ENTIRELY, never truncated (review + user
-# decision, round 31). Round 30 kept the prefix with an in-text marker, but a
-# prefix is a prompt the user did not type, and every prompt-driven hook
-# regex-matches on it as if it were - so semantic decisions (codeword routing,
-# relevance gating) ran on fabricated text. With the prompt withheld, those
-# hooks take their documented no-prompt degradation path instead, exactly as on
-# Kiro IDE when USER_PROMPT is absent - and a one-line stderr notice says so,
-# once, so the withholding is never silent.
-$script:HookMaxPromptBytes = 65536
-$script:HookPromptWithheldNoticed = $false
-
-# The one prompt-bounding implementation, applied to EVERY channel a Kiro
-# prompt can arrive on (USER_PROMPT env and a CLI v3 stdin payload alike) so
-# the two channels cannot drift to different bounds.
-function Limit-KiroPromptText {
-    param([string]$Text)
-    $raw = [string]$Text
-    if ([string]::IsNullOrWhiteSpace($raw)) { return '' }
-    if ([System.Text.Encoding]::UTF8.GetByteCount($raw) -le $script:HookMaxPromptBytes) { return $raw }
-    if (-not $script:HookPromptWithheldNoticed) {
-        $script:HookPromptWithheldNoticed = $true
-        try {
-            [Console]::Error.WriteLine('Hook Maker: the submitted prompt exceeds ' +
-                [string]$script:HookMaxPromptBytes + ' UTF-8 bytes and was withheld from hooks; ' +
-                'prompt-driven checks will not run for this submission.')
-        }
-        catch { }
-    }
-    return ''
-}
-
-function Get-KiroPromptFromEnvironment {
-    return (Limit-KiroPromptText ([string]$env:USER_PROMPT))
-}
-
-# Resolves WHICH prompt a Kiro invocation carries, as an explicit decision
-# rather than a value whose emptiness later has to be re-interpreted.
-#
-# Returns: SourcePresent (bool), Source (payload|environment|none),
-#          Status (ok|empty|oversized|invalid|absent), Text (exact or '').
-#
-# The load-bearing rule is PROPERTY PRESENCE, not non-whitespace text. Payload
-# precedence used to be decided with IsNullOrWhiteSpace, which cannot tell
-# "the client sent no prompt" from "the client sent an empty, whitespace-only or
-# null one" - so `{"prompt":""}`, `{"prompt":"   "}` and `{"prompt":null}` all
-# fell through to USER_PROMPT and could be replaced by unrelated or STALE
-# environment text (measured: a `::deep-debug` in the environment fired for all
-# three). A client that sent a prompt has spoken, even when what it sent is
-# empty; only a genuinely ABSENT property may fall back.
-#
-# A non-string value is `invalid`, not text: it never reaches a semantic matcher
-# and never falls back either - substituting the environment for a payload the
-# client did supply would be the same precedence break by another route.
-function Resolve-KiroPromptSource {
-    param($Payload, [switch]$AllowEnvironmentFallback)
-
-    $result = [pscustomobject]@{
-        SourcePresent = $false
-        Source        = 'none'
-        Status        = 'absent'
-        Text          = ''
-    }
-
-    $property = $null
-    if ($null -ne $Payload -and $null -ne $Payload.PSObject) { $property = $Payload.PSObject.Properties['prompt'] }
-    if ($null -ne $property) {
-        # Verified on both hosts: ConvertFrom-Json CREATES the property for a
-        # JSON null, so presence is a real signal and not an artefact.
-        $result.SourcePresent = $true
-        $result.Source = 'payload'
-        $value = $property.Value
-        if ($null -eq $value) { $result.Status = 'empty' }
-        elseif ($value -isnot [string]) { $result.Status = 'invalid' }
-        elseif ([string]::IsNullOrWhiteSpace($value)) { $result.Status = 'empty' }
-        else {
-            $bounded = Limit-KiroPromptText $value
-            if ([string]::IsNullOrEmpty($bounded)) { $result.Status = 'oversized' }
-            else {
-                $result.Status = 'ok'
-                $result.Text = $bounded   # byte-exact when within the bound
-            }
-        }
-        return $result
-    }
-
-    if (-not $AllowEnvironmentFallback) { return $result }
-
-    $raw = [string]$env:USER_PROMPT
-    if ([string]::IsNullOrWhiteSpace($raw)) { return $result }
-    $result.SourcePresent = $true
-    $result.Source = 'environment'
-    $bounded = Limit-KiroPromptText $raw
-    if ([string]::IsNullOrEmpty($bounded)) { $result.Status = 'oversized' }
-    else {
-        $result.Status = 'ok'
-        $result.Text = $bounded
-    }
-    return $result
-}
 
 # The ONE place a semantic hook result becomes a client-specific output shape.
 #
@@ -554,23 +202,15 @@ function Resolve-KiroPromptSource {
 #   codex        context/advisory -> systemMessage (Codex documents no model-visible Stop context)
 #   claude/codex block            -> {decision:'block', reason} - the shape every
 #                                    existing block site emits for both clients
-#   kiro         context/advisory -> plain stdout + exit 0, but ONLY on the
-#                                    triggers Kiro documents for it; elsewhere
-#                                    nothing is written and the result says so
-#   kiro         block            -> exit 2 with the reason on stderr, and ONLY
-#                                    on a block-capable trigger
 #   unknown      -> nothing at all, reported. Never guess a shape.
 #
 # A block on an event the client cannot block is DOWNGRADED to the strongest
-# available advisory and reported - never emitted as a fake gate. Kiro Stop can
-# block on neither surface Hook Maker targets, so a Kiro Stop gate is permanently
-# degraded; on Stop its advisory cannot reach model context either, so it is
-# surfaced as a non-blocking stderr warning (exit 1, never the refusal code 2).
+# available advisory and reported - never emitted as a fake gate.
 #
 # Returns @{ Emitted; Shape; ExitCode; Degraded; DegradedReason } so a caller can
 # honestly record 'degraded-stop-gate' instead of claiming enforcement it did not
-# get. ExitCode is what the CALLER must exit with (0 everywhere except a real
-# Kiro block, which needs 2); this function never exits on its own.
+# get. ExitCode is what the CALLER must exit with (0 everywhere except a Codex
+# deny, which needs 2); this function never exits on its own.
 function Write-HookResult {
     param(
         [Parameter(Mandatory = $true)][string]$EventName,
@@ -606,7 +246,7 @@ function Write-HookResult {
         # payload. That Codex payload is deliberately NOT changed to
         # additionalContext: unlike a context emission, this pairs with exit 2,
         # and nothing in the sources documents the context shape as correct for
-        # a refusal. Only the kiro branch is new.
+        # a refusal.
         if ($Kind -eq 'deny' -or $Kind -eq 'allow') {
             # These two guards are duplicated from the common path below on
             # purpose: this branch returns early, so it would otherwise fall
@@ -622,56 +262,17 @@ function Write-HookResult {
             else {
                 $decision = $(if ($Kind -eq 'deny') { 'deny' } else { 'allow' })
                 if ($clientId -eq 'claude') {
-                $permissionPayload = @{
-                    hookSpecificOutput = @{
-                        hookEventName            = $EventName
-                        permissionDecision       = $decision
-                        permissionDecisionReason = $text
+                    $permissionPayload = @{
+                        hookSpecificOutput = @{
+                            hookEventName            = $EventName
+                            permissionDecision       = $decision
+                            permissionDecisionReason = $text
+                        }
+                        systemMessage      = $text
                     }
-                    systemMessage      = $text
+                    [Console]::Out.WriteLine(($permissionPayload | ConvertTo-Json -Depth 6 -Compress))
+                    $emitted = $true; $shape = ('claudePermission' + $decision)
                 }
-                [Console]::Out.WriteLine(($permissionPayload | ConvertTo-Json -Depth 6 -Compress))
-                $emitted = $true; $shape = ('claudePermission' + $decision)
-            }
-            elseif ($clientId -eq 'kiro') {
-                # Kiro documents exit 2 + stderr on its block-capable triggers.
-                # There is no documented "allow with a reason", so an allow is a
-                # plain advisory: it must never be emitted as a refusal.
-                if ($Kind -eq 'deny' -and
-                    $script:HookBlockCapableEvents.ContainsKey('kiro') -and
-                    @($script:HookBlockCapableEvents['kiro'] | Where-Object { $_ -ceq $EventName }).Count -gt 0) {
-                    [Console]::Error.WriteLine($text)
-                    $emitted = $true; $shape = 'kiroExit2Stderr'; $exitCode = 2
-                }
-                elseif (@($script:HookKiroContextEvents | Where-Object { $_ -ceq $EventName }).Count -gt 0) {
-                    [Console]::Out.WriteLine($text)
-                    $emitted = $true; $shape = 'kiroStdout'
-                    if ($Kind -eq 'deny') {
-                        $degradedParts += ('kiro documents no refusal on ' + $EventName +
-                            '; emitted as context instead - this is NOT an enforced gate')
-                    }
-                }
-                else {
-                    # This branch used to emit NOTHING, and that silently
-                    # deleted every PreToolUse advisory on Kiro. An 'allow' is
-                    # not block-capable and PreToolUse is not one of Kiro's two
-                    # context triggers, so it fell straight through here.
-                    # Test-Run-Guard routes its PreToolUse advisories through
-                    # 'allow', so TEST_GUARD_ADVISORY_ONLY produced no output at
-                    # all on Kiro - the guard announced it was in advisory mode
-                    # to nobody.
-                    #
-                    # Kiro surfaces stderr as a warning for a non-zero exit other
-                    # than 2, so the text reaches the user here. Exit 1, NEVER 2:
-                    # an approval carrying the refusal code would enforce the
-                    # exact opposite of what it says.
-                    [Console]::Error.WriteLine($text)
-                    $emitted = $true; $shape = 'kiroStderrWarning'; $exitCode = 1
-                    $degradedParts += ('kiro neither refuses nor adds context on ' + $EventName +
-                        '; surfaced as a non-blocking warning on stderr - visible to the user, ' +
-                        'NOT injected into model context')
-                }
-            }
                 else {
                     [Console]::Out.WriteLine((@{ systemMessage = $text } | ConvertTo-Json -Depth 6 -Compress))
                     $emitted = $true; $shape = ('codexPermission' + $decision)
@@ -707,68 +308,37 @@ function Write-HookResult {
                         '; downgraded to the strongest available advisory - this is NOT an enforced gate')
                 }
             }
-            if ($clientId -eq 'kiro') {
-                if ($effectiveKind -eq 'block') {
-                    [Console]::Error.WriteLine($text)    # exit 2 returns stderr to the agent
-                    $emitted = $true; $shape = 'kiroExit2Stderr'; $exitCode = 2
-                }
-                elseif (@($script:HookKiroContextEvents | Where-Object { $_ -ceq $EventName }).Count -gt 0) {
-                    [Console]::Out.WriteLine($text)
-                    $emitted = $true; $shape = 'kiroStdout'
-                }
-                else {
-                    # Kiro DISCARDS stdout here, but it is not silent: a non-zero
-                    # exit code other than 2 surfaces stderr as a warning and
-                    # lets execution proceed. This branch used to emit nothing at
-                    # all, which threw away every Stop and PostToolUse message on
-                    # Kiro - the hook ran and the user never learned why.
-                    #
-                    # Exit 1, NOT 2: 2 is the refusal code, and using it here
-                    # would turn an advisory into a block on a block-capable
-                    # trigger. The degradation is real and named: this reaches
-                    # the user, not the model, so it is weaker than the context
-                    # channel Claude and Codex get - never report it as parity.
-                    [Console]::Error.WriteLine($text)
-                    $emitted = $true; $shape = 'kiroStderrWarning'; $exitCode = 1
-                    $degradedParts += ('kiro discards hook stdout on ' + $EventName +
-                        ' (context is added only on ' + ($script:HookKiroContextEvents -join '/') +
-                        '), so this was surfaced as a non-blocking warning on stderr - visible to the ' +
-                        'user, NOT injected into model context')
-                }
+            if ($effectiveKind -eq 'block') {
+                $payload = @{ decision = 'block'; reason = $text }
+                $shape = 'decisionBlock'
+            }
+            elseif ($clientId -eq 'claude') {
+                $payload = @{ hookSpecificOutput = @{ hookEventName = $EventName; additionalContext = $text } }
+                $shape = 'claudeContext'
+            }
+            elseif (@($script:HookCodexSystemMessageEvents | Where-Object { $_ -ceq $EventName }).Count -gt 0) {
+                # Codex Stop/SubagentStop ONLY. Codex does not document
+                # additionalContext/hookSpecificOutput for Stop at all, so
+                # systemMessage is the only common field there.
+                $payload = @{ systemMessage = $text }
+                $shape = 'codexSystemMessage'
             }
             else {
-                if ($effectiveKind -eq 'block') {
-                    $payload = @{ decision = 'block'; reason = $text }
-                    $shape = 'decisionBlock'
-                }
-                elseif ($clientId -eq 'claude') {
-                    $payload = @{ hookSpecificOutput = @{ hookEventName = $EventName; additionalContext = $text } }
-                    $shape = 'claudeContext'
-                }
-                elseif (@($script:HookCodexSystemMessageEvents | Where-Object { $_ -ceq $EventName }).Count -gt 0) {
-                    # Codex Stop/SubagentStop ONLY. Codex does not document
-                    # additionalContext/hookSpecificOutput for Stop at all, so
-                    # systemMessage is the only common field there.
-                    $payload = @{ systemMessage = $text }
-                    $shape = 'codexSystemMessage'
-                }
-                else {
-                    # Codex on every OTHER event honours additionalContext, and
-                    # every shipped pre-task hook already emits exactly this -
-                    # verified in an earlier round as correct, NOT a bug.
-                    #
-                    # This branch used to be a bare else, so Codex got
-                    # systemMessage everywhere. Wiring the shipped hooks onto
-                    # this adapter with that in place would have silently
-                    # changed Codex output at ~47 call sites and dropped the
-                    # event name Claude's shape carries. The systemMessage rule
-                    # is Stop-scoped; it is not a Codex-wide rule.
-                    $payload = @{ hookSpecificOutput = @{ hookEventName = $EventName; additionalContext = $text } }
-                    $shape = 'codexContext'
-                }
-                [Console]::Out.WriteLine(($payload | ConvertTo-Json -Depth 5 -Compress))
-                $emitted = $true
+                # Codex on every OTHER event honours additionalContext, and
+                # every shipped pre-task hook already emits exactly this -
+                # verified in an earlier round as correct, NOT a bug.
+                #
+                # This branch used to be a bare else, so Codex got
+                # systemMessage everywhere. Wiring the shipped hooks onto
+                # this adapter with that in place would have silently
+                # changed Codex output at ~47 call sites and dropped the
+                # event name Claude's shape carries. The systemMessage rule
+                # is Stop-scoped; it is not a Codex-wide rule.
+                $payload = @{ hookSpecificOutput = @{ hookEventName = $EventName; additionalContext = $text } }
+                $shape = 'codexContext'
             }
+            [Console]::Out.WriteLine(($payload | ConvertTo-Json -Depth 5 -Compress))
+            $emitted = $true
         }
     }
 

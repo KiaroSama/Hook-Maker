@@ -203,7 +203,7 @@ if (Test-Path -LiteralPath $statePath -PathType Leaf) {
 # (binary/generated), streaming line reads, and the walk is bounded on THREE
 # independent axes - source files (MAX_FILES), directories traversed
 # (MAX_DIRECTORIES), and wall time (MAX_SCAN_SECONDS) - so it can never run away.
-$excludedDirs = @('.git', 'node_modules', '.ai', 'graphify-out', 'logs', 'dist', 'build', 'out', 'target', 'vendor', '__pycache__', '.venv', 'venv', '.claude', '.codex', '.kiro', 'bin', 'obj', '.cross-project-sync')
+$excludedDirs = @('.git', 'node_modules', '.ai', 'graphify-out', 'logs', 'dist', 'build', 'out', 'target', 'vendor', '__pycache__', '.venv', 'venv', '.claude', '.codex', 'bin', 'obj', '.cross-project-sync')
 $offenders = New-Object System.Collections.Generic.List[object]
 $stack = New-Object System.Collections.Generic.Stack[string]
 # A reparse-point ROOT (cwd itself a junction/symlink) is refused outright: its

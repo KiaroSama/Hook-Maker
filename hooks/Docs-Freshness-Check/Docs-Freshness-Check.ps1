@@ -25,7 +25,7 @@
 # committed, and never authorizes anything beyond the fingerprint it matches.
 #
 # Hard exclusions (never requested for review regardless of config):
-# .git/.ai/.claude/.codex/.kiro/.agents/.cross-project-sync, secrets.md, generated/
+# .git/.ai/.claude/.codex/.agents/.cross-project-sync, secrets.md, generated/
 # vendor/build/cache directories (node_modules, dist, build, out, target,
 # venv, __pycache__, coverage, graphify-out, logs, ...), fixture/snapshot/
 # golden-file directories, and LICENSE*/NOTICE*/COPYING* legal text.
@@ -76,7 +76,7 @@ $extraExclude = @()
 if ($config.ContainsKey('EXTRA_EXCLUDE_PATTERNS')) { $extraExclude = @($config['EXTRA_EXCLUDE_PATTERNS'].Split(';') | Where-Object { $_.Trim() -ne '' } | ForEach-Object { $_.Trim() }) }
 
 $script:HardExcludeDirs = @(
-    '.git', '.ai', '.claude', '.codex', '.kiro', '.agents', '.cross-project-sync',
+    '.git', '.ai', '.claude', '.codex', '.agents', '.cross-project-sync',
     'node_modules', 'vendor', 'vendors', 'dist', 'build', 'out', 'target',
     'coverage', '.cache', 'cache', '__pycache__', '.venv', 'venv', 'env',
     'bin', 'obj', 'graphify-out', 'logs', '.next', '.nuxt', '.tox'

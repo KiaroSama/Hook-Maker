@@ -15,12 +15,7 @@
     # =====================================================================
     Write-Host '--- managed ownership: every client, both scopes ---' -ForegroundColor Cyan
     # The gate must apply on EVERY supported client's REAL registration schema,
-    # and only when the runtime behind it is ownership-proven. Kiro's
-    # registration is a per-hook v1 file under .kiro\hooks - the same directory
-    # its RUNTIME deliberately stays out of - and it registers kiro-launch.ps1,
-    # not the hook script, so the ownership metadata is what says which file the
-    # command must point at.
-    foreach ($client in @('claude', 'codex', 'kiro')) {
+    foreach ($client in @('claude', 'codex')) {
         $gatedRepo = New-ReadyWorkersRepo ('CleanupOn-' + $client)
         New-ManagedCleanupInstall -Base $gatedRepo -Client $client | Out-Null
         Write-CleanupResult -Root $gatedRepo -Category 'review-required'
@@ -119,26 +114,6 @@
             Build = { param($Repo) New-ManagedCleanupInstall -Base $Repo -CommandForm 'nonCommandField' | Out-Null }
         }
         [pscustomobject]@{
-            Name  = 'a Kiro action carrying the command under a non-command key'
-            Why   = 'action.command is the only field a Kiro command action runs'
-            Build = { param($Repo) New-ManagedCleanupInstall -Base $Repo -Client 'kiro' -CommandForm 'nonCommandField' | Out-Null }
-        }
-        [pscustomobject]@{
-            Name  = 'a FOREIGN Kiro entry holding a real managed command'
-            Why   = 'the entry name must be the one the ownership metadata records; a neighbour cannot borrow it'
-            Build = { param($Repo) New-ManagedCleanupInstall -Base $Repo -Client 'kiro' -KiroEntryName 'someone-elses-hook-stop' | Out-Null }
-        }
-        [pscustomobject]@{
-            Name  = 'a real managed command in a Kiro file Hook Maker does not own'
-            Why   = 'only .kiro\hooks\hookmaker-<slug>.json is ours; a shared/foreign document is never parsed for ownership'
-            Build = { param($Repo) New-ManagedCleanupInstall -Base $Repo -Client 'kiro' -KiroFileName 'foreign-hook.json' | Out-Null }
-        }
-        [pscustomobject]@{
-            Name  = 'a Kiro document that is not the v1 shape'
-            Why   = 'a legacy 0.x/.kiro.hook document is not something this hook can reason about'
-            Build = { param($Repo) New-ManagedCleanupInstall -Base $Repo -Client 'kiro' -KiroVersion 'v0' | Out-Null }
-        }
-        [pscustomobject]@{
             Name  = 'a runtime copied in by hand under a path carrying both magic segments'
             Why   = '\Hook-Maker\ + \Test-Temp-Cleanup\ in a path spelling is not containment under the client''s runtime root'
             Build = { param($Repo) New-ManagedCleanupInstall -Base $Repo -CommandForm 'outside' | Out-Null }
@@ -169,11 +144,6 @@
             Build = { param($Repo) New-ManagedCleanupInstall -Base $Repo -Metadata @{ projectKey = '' } | Out-Null }
         }
         [pscustomobject]@{
-            Name  = 'a Kiro install whose recordId disagrees with the entry''s own marker'
-            Why   = 'recordId cannot be cross-checked against the tool-root registry, so it is proven against the entry that carries it'
-            Build = { param($Repo) New-ManagedCleanupInstall -Base $Repo -Client 'kiro' -Metadata @{ recordId = 'rec-someone-else' } | Out-Null }
-        }
-        [pscustomobject]@{
             Name  = 'ownership metadata with no recordId at all'
             Why   = 'an install with no managed identity is not a managed install'
             Build = { param($Repo) New-ManagedCleanupInstall -Base $Repo -Metadata @{ recordId = '<remove>' } | Out-Null }
@@ -182,16 +152,6 @@
             Name  = 'ownership metadata with no registrationName'
             Why   = 'the metadata must say which registration it belongs to'
             Build = { param($Repo) New-ManagedCleanupInstall -Base $Repo -Metadata @{ registrationName = '<remove>' } | Out-Null }
-        }
-        [pscustomobject]@{
-            Name  = 'a Kiro install whose registrationName prefix does not match the entry'
-            Why   = 'metadata and the located entry must be the same registration'
-            Build = { param($Repo) New-ManagedCleanupInstall -Base $Repo -Client 'kiro' -Metadata @{ registrationName = 'hookmaker-other-install-something' } | Out-Null }
-        }
-        [pscustomobject]@{
-            Name  = 'a Kiro registrationName truncated to a prefix that would match anything managed'
-            Why   = 'a startsWith test must not be satisfiable by degrading the recorded value'
-            Build = { param($Repo) New-ManagedCleanupInstall -Base $Repo -Client 'kiro' -Metadata @{ registrationName = 'h' } | Out-Null }
         }
         [pscustomobject]@{
             Name  = 'a Claude registrationName that is not the managed runtime segment pair'
@@ -242,35 +202,19 @@
             Build = { param($Repo) New-ManagedCleanupInstall -Base $Repo -RegisteredEvent 'SessionStart' | Out-Null }
         }
         [pscustomobject]@{
-            Name  = 'a fully ownership-proven Kiro install whose only entry triggers on SessionStart'
-            Why   = 'a Kiro file holds one entry PER trigger, so the file existing says nothing about Stop'
-            Build = { param($Repo) New-ManagedCleanupInstall -Base $Repo -Client 'kiro' -RegisteredEvent 'SessionStart' | Out-Null }
-        }
-        [pscustomobject]@{
             Name  = 'a Claude registration under a lower-case "stop" key'
             Why   = 'the client matches the event key literally, so a mis-cased key fires nothing'
             Build = { param($Repo) New-ManagedCleanupInstall -Base $Repo -RegisteredEvent 'stop' | Out-Null }
         }
-        [pscustomobject]@{
-            Name  = 'a Kiro entry whose trigger is lower-case "stop"'
-            Why   = 'KIRO_PROTOCOL.md records the triggers as confirmed exact casing'
-            Build = { param($Repo) New-ManagedCleanupInstall -Base $Repo -Client 'kiro' -RegisteredEvent 'stop' | Out-Null }
-        }
         # ---- the whole runtime, not just its entry point ---------------------
         # The registration names ONE file, but that file is a door, not the room:
-        # Claude/Codex run <hook>.ps1 which dot-sources _hooklib.ps1, and Kiro
-        # runs kiro-launch.ps1 which runs the hook which loads the same library.
+        # <hook>.ps1 is registered, and it dot-sources _hooklib.ps1.
         # Verifying only the named file left the entire body of executing code
         # unchecked.
         [pscustomobject]@{
             Name  = 'a library BEHIND an untouched Claude entry point, modified after the manifest'
             Why   = 'the registered script still hashes correctly; only whole-manifest verification sees this'
             Build = { param($Repo) New-ManagedCleanupInstall -Base $Repo -TamperLibrary | Out-Null }
-        }
-        [pscustomobject]@{
-            Name  = 'a library behind an untouched Kiro LAUNCHER, modified after the manifest'
-            Why   = 'Kiro registers the launcher, so everything it goes on to run sits behind the one recorded path'
-            Build = { param($Repo) New-ManagedCleanupInstall -Base $Repo -Client 'kiro' -TamperLibrary | Out-Null }
         }
         [pscustomobject]@{
             Name  = 'a manifest entry whose path climbs out of the runtime root with ..'
@@ -290,16 +234,6 @@
             Name  = 'a Claude manifest that simply OMITS _hooklib.ps1 while the file still sits there'
             Why   = 'the entry point dot-sources it, so dropping its entry hides the library from the check entirely'
             Build = { param($Repo) New-ManagedCleanupInstall -Base $Repo -OmitFromManifest @('_hooklib.ps1') | Out-Null }
-        }
-        [pscustomobject]@{
-            Name  = 'a Kiro manifest that OMITS the main hook script behind the launcher'
-            Why   = 'Kiro registers kiro-launch.ps1, so the hook it runs is exactly the part an omission can hide'
-            Build = { param($Repo) New-ManagedCleanupInstall -Base $Repo -Client 'kiro' -OmitFromManifest @('Test-Temp-Cleanup.ps1') | Out-Null }
-        }
-        [pscustomobject]@{
-            Name  = 'a Kiro manifest that omits _hooklib.ps1 two levels behind the registration'
-            Why   = 'launcher -> hook -> library: the deepest dependency is the easiest one to leave unlisted'
-            Build = { param($Repo) New-ManagedCleanupInstall -Base $Repo -Client 'kiro' -OmitFromManifest @('_hooklib.ps1') | Out-Null }
         }
         [pscustomobject]@{
             Name  = 'a required dependency deleted from disk AND from the manifest'
@@ -476,8 +410,7 @@
             ForEach-Object { $_.Value } | Where-Object { $_ -like '*\*' } | Sort-Object -Unique)
     }
     # Expected: every project+global registration FILE of every shared-settings
-    # client, deduplicated (Codex uses one path for both scopes). Kiro is a
-    # DIRECTORY of per-hook files and is mirrored separately.
+    # client, deduplicated (Codex uses one path for both scopes).
     $tableRegs = @()
     $tableRuntimeRoots = @()
     foreach ($cfClientId in @(Get-HookMakerClientIds)) {
@@ -496,17 +429,6 @@
     Check 'the RUNTIME-ROOT mirror equals the capability table exactly (the list that rotted last time)' (
         ($mirroredRuntimeRoots -join '|') -eq ($tableRuntimeRoots -join '|')) (
         'mirror=[' + ($mirroredRuntimeRoots -join ', ') + '] table=[' + ($tableRuntimeRoots -join ', ') + ']')
-    $mirroredKiroDir = Get-MirroredPaths '$script:CleanupKiroRegistrationDir'
-    Check 'the Kiro registration DIRECTORY mirror equals the table (per-hook files under .kiro\hooks)' (
-        ($mirroredKiroDir -join '|') -eq [string](Get-HookMakerClientCapability -ClientId 'kiro').projectRegistration) (
-        $mirroredKiroDir -join ', ')
-    # The Kiro managed-FILENAME rule is owned by scripts\_installkiro.ps1
-    # (Test-KiroManagedFileName), not by the capability table, so it is pinned
-    # against that file directly.
-    $kiroInstallText = [System.IO.File]::ReadAllText((Join-Path $PSScriptRoot '_installkiro.ps1'))
-    $kiroFilePattern = '^hookmaker-[a-z0-9-]+\.json$'
-    Check 'the Kiro managed-filename mirror equals the installer''s own ownership rule' (
-        $cfText -match [regex]::Escape($kiroFilePattern) -and $kiroInstallText -match [regex]::Escape($kiroFilePattern)) $kiroFilePattern
     # The manifest-entry cap is a fourth mirror: the hook refuses a manifest
     # longer than the plan can emit, which is only meaningful while the two
     # numbers agree. Raise the writer's cap alone and the hook starts rejecting
@@ -553,13 +475,6 @@
     Check 'the REQUIRED-executable mirror equals what the install plan actually stages for a hook' (
         $plannedLeaves.Count -gt 0 -and ($requiredLeaves -join '|') -eq ($plannedLeaves -join '|')) (
         'required=[' + ($requiredLeaves -join ', ') + '] planned=[' + ($plannedLeaves -join ', ') + ']')
-    # ...and Kiro must require the launcher its registration names, which the
-    # union above cannot show on its own.
-    $kiroRequired = ''
-    if ($requiredAst.Count -eq 1) {
-        $kiroRequired = [string]($requiredAst[0].Right.Extent.Text -match "kiro'\s*=\s*@\([^)]*kiro-launch\.ps1")
-    }
-    Check 'the Kiro required set specifically includes kiro-launch.ps1' ($kiroRequired -eq 'True') $kiroRequired
 
     # =====================================================================
     Write-Host '--- the ownership-metadata contract has two sides that must agree ---' -ForegroundColor Cyan
@@ -567,7 +482,7 @@
     # scripts\_installplan.ps1; THE CONSUMER is this hook. Nothing else connects
     # them - the file is written by the installer and read by a runtime that
     # cannot reach the installer - so the field names, the schema version and the
-    # two registration-identity SHAPES are pinned here, in one place, exactly the
+    # registration-identity SHAPE are pinned here, in one place, exactly the
     # way the shared result-category list above is. This suite's own fixtures are
     # hand-built, so without this guard a rename on either side would leave the
     # fixtures green and every real install unrecognized.
@@ -584,8 +499,6 @@
             $planText -match [regex]::Escape('"' + $metadataField + '"') -and
             $cfText -match [regex]::Escape("'" + $metadataField + "'")) $metadataField
     }
-    Check 'the producer records the Kiro registration identity as an entry-name PREFIX (not one entry name)' (
-        $planText -match [regex]::Escape('(Get-KiroManagedNamePrefix -ManagedId $RecordId) + (ConvertTo-KiroSlug -Text $FriendlyName)')) $planText
     Check 'the producer records the Claude/Codex registration identity as the managed runtime segment pair' (
         $planText -match [regex]::Escape("('Hook-Maker/' + `$FriendlyName)")) $planText
     Check 'the producer hashes the project key with the same Normalize-Path/Get-ShortHash pair this consumer recomputes' (
