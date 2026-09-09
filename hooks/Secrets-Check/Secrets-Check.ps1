@@ -7,11 +7,34 @@
 #                  never blocks a push merely for appearing in tracked files.
 #   Unknown      - mixed/insufficient evidence - reported as an ADVISORY asking
 #                  for explicit classification (SECRET_KEYS/PUBLIC_CONFIG_KEYS
-#                  in .env), never silently treated as safe, never a confirmed
+#                  in THIS HOOK'S OWN .env - see "which .env" below), never
+#                  silently treated as safe, never a confirmed
 #                  leak from a bare value match alone, and NEVER blocking on
 #                  its own (only a real critical finding - a confirmed leak,
 #                  tracked/staged secrets.md or real .env*, or a fail-closed
 #                  outgoing scan - can produce decision:block on Stop).
+#
+# WHICH .env - the question that cost a user a debugging session. There are two
+# and they are NOT interchangeable:
+#   * CONFIG (read):    <this script's folder>\.env - Read-HookEnv $PSScriptRoot
+#                       below. In an install that is
+#                       <project>\.claude\hooks\Hook-Maker\Secrets-Check\.env.
+#                       SECRET_KEYS / PUBLIC_CONFIG_KEYS and every other setting
+#                       come from HERE and nowhere else.
+#   * SCANNED (input):  the project's own .env / .env.local / ... found by the
+#                       walk below. This is the artifact being classified.
+# The advisory used to say only "in .env", so operators put the keys in the file
+# the message was complaining about, saw no effect, and had no way to tell why.
+# The message now prints the config path in full.
+#
+# Keeping them separate is a SECURITY boundary, not a convenience: if the
+# scanned .env could declare its own keys PublicConfig, the artifact under
+# examination would be classifying itself and any writer of that file could
+# silence the leak guard. The config .env lives under the client config
+# directory, which the scan walk excludes, so it is never scanned input. An
+# install or update never writes or removes it either (.env is on
+# PlanExcludedFileNames), so a hand-written classification survives upgrades.
+#
 # Classification order (precedence, strongest first):
 #   SECRET_KEYS override > DEFINITE credential VALUE format > credential-like
 #   KEY evidence > PUBLIC_CONFIG_KEYS override > entropy-HEURISTIC value
@@ -921,7 +944,12 @@ if ($unused.Count -gt 0) {
     [void]$lines.Add('In secrets.md but not referenced elsewhere in the tracked project (verify before removing - never auto-removed): ' + ($unused.ToArray() -join ', '))
 }
 if ($needsClassification.Count -gt 0) {
-    [void]$lines.Add('Classification unclear (neither confirmed Secret nor confirmed PublicConfig) - not registered, not treated as a confirmed leak, and never blocking on its own: ' + ($needsClassification.ToArray() -join ', ') + '. Classify explicitly via SECRET_KEYS or PUBLIC_CONFIG_KEYS in .env if this recurs.')
+    # NAME THE FILE. "in .env" sent operators to the PROJECT's .env - the file
+    # this hook is complaining about - where the keys have no effect at all,
+    # with nothing to tell them why. The config .env is this hook's own, beside
+    # the installed script; it is inside the client config directory, which the
+    # scan excludes, so it can never be mistaken for scanned input.
+    [void]$lines.Add('Classification unclear (neither confirmed Secret nor confirmed PublicConfig) - not registered, not treated as a confirmed leak, and never blocking on its own: ' + ($needsClassification.ToArray() -join ', ') + '. Classify explicitly via SECRET_KEYS or PUBLIC_CONFIG_KEYS in THIS HOOK''S OWN .env - ' + (Join-Path $PSScriptRoot '.env') + ' - and NOT in the scanned project .env, which is the input being classified. Create that file if it does not exist; installs and updates never overwrite it.')
 }
 if ($removedPublicConfigKeys.Count -gt 0) {
     [void]$lines.Add('Removed ' + $removedPublicConfigKeys.Count + ' previously auto-added secrets.md entr' + $(if ($removedPublicConfigKeys.Count -eq 1) { 'y' } else { 'ies' }) + ' now classified as public config, not a secret: ' + ($removedPublicConfigKeys -join ', ') + '.')
