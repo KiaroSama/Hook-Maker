@@ -100,6 +100,21 @@ try {
         Write-Utf8 $otherConfig '{"mcpServers":{"something-else":{"env":{"SOME_TOKEN":"redacted"}}}}'
         Check 'cbm: a client config without the key falls through to the default' (
             (Get-CbmCacheDir -Config @{} -ClientConfigPaths @($otherConfig)) -eq (Join-Path $env:USERPROFILE '.cache\codebase-memory-mcp'))
+
+        # The refusal advice has to name a command that actually RUNS. The CBM
+        # binary is not on PATH in a normal install, so quoting the tool's own
+        # "run codebase-memory-mcp allow-root ..." fails with "not recognized"
+        # for everyone; the server record is where the real path lives.
+        Check 'cbm: the server executable is read from the client config' (
+            (Get-CbmServerCommandFromClientConfig -ConfigPaths @($clientConfig)) -eq 'cbm.exe') (Get-CbmServerCommandFromClientConfig -ConfigPaths @($clientConfig))
+        Check 'cbm: no CBM server in the config yields no command, never another server''s' (
+            (Get-CbmServerCommandFromClientConfig -ConfigPaths @($otherConfig)) -eq '') (Get-CbmServerCommandFromClientConfig -ConfigPaths @($otherConfig))
+        # Anchored on the server NAME: a different server listed FIRST must not
+        # have its command picked up for CBM.
+        $twoServers = Join-Path $Work 'client-config-two.json'
+        Write-Utf8 $twoServers '{"mcpServers":{"aaa-other":{"command":"wrong.exe"},"codebase-memory-mcp":{"command":"right.exe"}}}'
+        Check 'cbm: the command is matched to the CBM server, not the first one listed' (
+            (Get-CbmServerCommandFromClientConfig -ConfigPaths @($twoServers)) -eq 'right.exe') (Get-CbmServerCommandFromClientConfig -ConfigPaths @($twoServers))
     }
     finally { $env:CBM_CACHE_DIR = $previousEnv }
 
