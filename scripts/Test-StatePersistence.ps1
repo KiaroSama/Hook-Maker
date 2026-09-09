@@ -81,6 +81,8 @@ $HostExecutable = (Get-Process -Id $PID).Path
 $SavedHookMakerStateDir = $env:HOOKMAKER_STATE_DIR
 $IsolatedStateDir = Join-Path $Work 'state'
 $env:HOOKMAKER_STATE_DIR = $IsolatedStateDir
+$SavedHookMakerLogDir = $env:HOOKMAKER_LOG_DIR
+$env:HOOKMAKER_LOG_DIR = Join-Path $Work 'logs'
 
 $SafeCwd = Join-Path $Work 'safe-cwd'
 New-Item -ItemType Directory -Path $SafeCwd -Force | Out-Null
@@ -451,6 +453,7 @@ try {
 }
 finally {
     $env:HOOKMAKER_STATE_DIR = $SavedHookMakerStateDir
+    $env:HOOKMAKER_LOG_DIR = $SavedHookMakerLogDir
     if (-not $KeepArtifacts) {
         if (-not (Remove-TestWorkspace $Work)) { $script:Fail++ }
     }

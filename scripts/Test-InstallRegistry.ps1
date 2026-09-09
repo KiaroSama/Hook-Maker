@@ -81,6 +81,8 @@ function New-Proj { param([string]$Name) $p = Join-Path $Work $Name; New-Item -I
 $SavedHookMakerStateDir = $env:HOOKMAKER_STATE_DIR
 $IsolatedStateDir = Join-Path $Work 'state'
 $env:HOOKMAKER_STATE_DIR = $IsolatedStateDir
+$SavedHookMakerLogDir = $env:HOOKMAKER_LOG_DIR
+$env:HOOKMAKER_LOG_DIR = Join-Path $Work 'logs'
 
 function Get-Registry {
     return Read-InstallRegistry -ToolRoot $ToolRoot
@@ -266,6 +268,7 @@ try {
 }
 finally {
     $env:HOOKMAKER_STATE_DIR = $SavedHookMakerStateDir
+    $env:HOOKMAKER_LOG_DIR = $SavedHookMakerLogDir
     if (-not $KeepArtifacts) {
         if (-not (Remove-TestWorkspace $Work)) { $script:Fail++ }
     }
