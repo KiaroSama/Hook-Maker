@@ -1350,6 +1350,33 @@ function Get-CbmCacheDirFromClientConfig {
     return ''
 }
 
+# The CBM executable as the CLIENT records it. Needed because the binary is NOT
+# on PATH in a normal install - the refusal advice used to quote the tool's own
+# "run codebase-memory-mcp allow-root ..." verbatim, and that command fails with
+# "not recognized" for everyone. The server record already knows the full path,
+# so the hook can hand over something that actually runs.
+#
+# Anchored on the server NAME so another server's command can never be picked
+# up, and bounded so a malformed config cannot make this scan run away.
+function Get-CbmServerCommandFromClientConfig {
+    param([string[]]$ConfigPaths)
+    if ($null -eq $ConfigPaths -or @($ConfigPaths).Count -eq 0) {
+        $ConfigPaths = @((Join-Path $env:USERPROFILE '.claude.json'), (Join-Path (Get-Location).Path '.mcp.json'))
+    }
+    foreach ($candidate in @($ConfigPaths)) {
+        try {
+            if ([string]::IsNullOrWhiteSpace($candidate) -or -not (Test-Path -LiteralPath $candidate -PathType Leaf)) { continue }
+            $raw = [System.IO.File]::ReadAllText($candidate)
+            $match = [regex]::Match($raw, '"codebase-memory-mcp"[\s\S]{0,400}?"command"\s*:\s*"((?:[^"\\]|\\.)*)"')
+            if (-not $match.Success) { continue }
+            $value = $match.Groups[1].Value.Replace('\\', '\')
+            if (-not [string]::IsNullOrWhiteSpace($value)) { return $value.Trim() }
+        }
+        catch { continue }
+    }
+    return ''
+}
+
 # _config.db is CBM's own registry and exists as soon as the server has run
 # once. Without it the server was never set up on this machine, and a hook
 # that nags about a tool the user does not have is pure noise.
