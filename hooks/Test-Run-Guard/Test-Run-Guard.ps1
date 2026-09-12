@@ -375,7 +375,10 @@ if ($eventName -eq 'PreToolUse') {
         # so the observed record matches what the runner will write. A guarded
         # command typed directly (no -RunId) cannot be bound by runId - mark it
         # uncontrolled so the consumer binds on command+project+time instead.
-        $identity = Get-GuardedInvocationIdentity -Tokens $tokens
+        $identity = Get-GuardedInvocationIdentity -Tokens $tokens -RawCommand $rawCommand
+        if ([string]::IsNullOrWhiteSpace($identity.CommandFingerprint)) {
+            Write-Advisory -EventName 'PreToolUse' -Message ('TEST RUN GUARD: this guarded command uses a dynamic or unsupported executable/argument expression, so its run identity cannot be established from the command text. No unmatchable test obligation was recorded. Use a literal -FilePath and literal -Arguments or -ArgumentsJson when correlated evidence is required.' + $configNote)
+        }
         $runIdControlled = -not [string]::IsNullOrWhiteSpace($identity.RunId)
         $runId = if ($runIdControlled) { $identity.RunId } else { [guid]::NewGuid().ToString('N') }
         $observedPath = Get-PerRunStatePath -StateDirectory $stateDirectory -Kind 'observed' -ProjectKey $projectKey -RunId $runId
@@ -485,10 +488,12 @@ if ($verdict.Kind -eq 'none') {
 $stateFingerprint = Get-StateFingerprintFor -ProjectRoot $projectRoot
 $thisRunId = ''
 $thisCommandFp = ''
+$identityUnresolved = $false
 if ($verdict.Kind -eq 'guarded') {
-    $identity = Get-GuardedInvocationIdentity -Tokens $tokens
+    $identity = Get-GuardedInvocationIdentity -Tokens $tokens -RawCommand $rawCommand
     $thisRunId = [string]$identity.RunId
     $thisCommandFp = [string]$identity.CommandFingerprint
+    $identityUnresolved = [string]::IsNullOrWhiteSpace($thisCommandFp)
 }
 elseif ($verdict.Kind -eq 'raw') {
     $thisCommandFp = Get-CommandFingerprint -ExecutablePath $verdict.Command.FilePath -ArgumentList $verdict.Command.Arguments
@@ -537,17 +542,18 @@ $identityMatches = $true
 if ($null -ne $observed) {
     $identityMatches = (Test-ResultMatchesObserved -Result $result -Observed $observed -CurrentStateFingerprint $stateFingerprint)
 }
-$isStale = ($null -eq $result -or -not $identityMatches -or $resultAgeMinutes -gt 60)
+$isStale = ($identityUnresolved -or $null -eq $result -or -not $identityMatches -or $resultAgeMinutes -gt 60)
 
 if ($isStale) {
     # NEVER claims the run was fine. It says exactly what is missing.
-    $reason = if ($null -eq $result) { 'no guarded result document exists for it' }
+    $reason = if ($identityUnresolved) { 'its executable/arguments cannot be recovered from supported literals; an unrelated result cannot establish this run identity' }
+    elseif ($null -eq $result) { 'no guarded result document exists for it' }
     elseif (-not $identityMatches) { 'the only guarded result on record is for a DIFFERENT run, command, or repository state (its run identity does not match this observation), so it says nothing about how THIS run ended' }
     else { 'the guarded result document is stale (last written ' + [Math]::Round($resultAgeMinutes) + ' minutes ago)' }
     $message = 'TEST RUN GUARD: a test command ran, but ' + $reason + '. There is therefore NO evidence about how ' +
     'that run ended - do not report it as passing. Re-run it through scripts\Run-Tests-Guarded.ps1 (the Test-Run-Guard ' +
     'gate supplies the exact bounded command with a per-run -ResultPath) to get a verifiable result.' + $configNote
-    if (Test-ShouldReport -StatePath $reportStatePath -Fingerprint (Get-ShortHash ('stale|' + $verdict.Kind + '|' + [string]$identityMatches + '|' + [Math]::Round($resultAgeMinutes / 10)))) {
+    if (Test-ShouldReport -StatePath $reportStatePath -Fingerprint (Get-ShortHash ('stale|' + $verdict.Kind + '|' + [string]$identityUnresolved + '|' + [string]$identityMatches + '|' + [Math]::Round($resultAgeMinutes / 10)))) {
         Write-Advisory -EventName 'PostToolUse' -Message $message
     }
     exit 0

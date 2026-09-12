@@ -156,7 +156,7 @@
 
     # =====================================================================
     Write-Host '--- an already-guarded command passes untouched (no double wrap) ---' -ForegroundColor Cyan
-    $guardedCommand = 'pwsh -NoProfile -File .\scripts\Run-Tests-Guarded.ps1 -FilePath pwsh -ArgumentsJson ''["-File",".\scripts\Run-Tests.ps1"]'' -TimeoutSeconds 900'
+    $guardedCommand = 'pwsh -NoProfile -File .\scripts\Run-Tests-Guarded.ps1 -FilePath pwsh -ArgumentsJson ''["-File",".\\scripts\\Run-Tests.ps1"]'' -TimeoutSeconds 900'
     $r = Fire -HookPath $hc.Script -Cwd $Proj -EventName 'PreToolUse' -Command $guardedCommand -LocalAppData $hc.LocalAppData
     Check 'an already-guarded invocation is silent, never re-wrapped' ($r.Exit -eq 0 -and $r.Out -eq '') $r.Out
     $r = Fire -HookPath $hc.Script -Cwd $Proj -EventName 'PreToolUse' -Command 'pwsh -File scripts\Run-Tests-Guarded.ps1 -FilePath pytest -ArgumentsJson ''["-q"]''' -LocalAppData $hc.LocalAppData

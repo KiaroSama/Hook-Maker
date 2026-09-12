@@ -47,7 +47,7 @@
     $p = New-GitRepoAi 'DdNoEvidence'
     # Activation signal 3: a marker from an earlier Stop of the SAME session.
     Write-Utf8 (Join-Path (Get-StateDir $c) ('TestCompletionCheck-deepdebug-' + (Get-ProjectKey $p) + '.json')) (
-        (@{ schema = 1; sessionId = 'sess1'; detectedUtc = [DateTime]::UtcNow.ToString('o') } | ConvertTo-Json))
+        (@{ schema = 2; activationSource = 'explicit-user-command'; sessionId = 'sess1'; detectedUtc = [DateTime]::UtcNow.ToString('o') } | ConvertTo-Json))
     $r = Fire -Copy $c -Cwd $p
     $reason = Get-BlockReason $r.Out
     Check 'deep-debug active with NO guarded evidence -> blocks' ($r.Out -match '"decision":"block"') $r.Out
@@ -64,14 +64,14 @@
     Check 'changed state (fresh clean evidence) upgrades to the COMPLETE advisory immediately' (
         $null -ne $doc -and $null -eq $doc.PSObject.Properties['decision'] -and
         [string]$doc.hookSpecificOutput.additionalContext -match '(?m)^DEEP DEBUG: COMPLETE$') $r.Out
-    # A marker from a DIFFERENT session is stale: removed, never activates.
+    # A marker from a DIFFERENT session remains evidence, but never activates.
     $c = New-IsolatedHookCopy
     $p = New-GitRepoAi 'DdStaleMarker'
     $staleMarkerPath = Join-Path (Get-StateDir $c) ('TestCompletionCheck-deepdebug-' + (Get-ProjectKey $p) + '.json')
-    Write-Utf8 $staleMarkerPath ((@{ schema = 1; sessionId = 'some-other-session'; detectedUtc = [DateTime]::UtcNow.ToString('o') } | ConvertTo-Json))
+    Write-Utf8 $staleMarkerPath ((@{ schema = 2; activationSource = 'explicit-user-command'; sessionId = 'some-other-session'; detectedUtc = [DateTime]::UtcNow.ToString('o') } | ConvertTo-Json))
     $r = Fire -Copy $c -Cwd $p
     Check 'a different-session marker never activates the gate (no output)' ($r.Exit -eq 0 -and $r.Out -eq '') $r.Out
-    Check 'the stale marker is removed' (-not (Test-Path -LiteralPath $staleMarkerPath))
+    Check 'the stale marker is preserved as evidence' (Test-Path -LiteralPath $staleMarkerPath)
 
     # =====================================================================
     Write-Host '--- E-05: existing blocks carry the BLOCKED line only under deep-debug ---' -ForegroundColor Cyan
@@ -88,7 +88,7 @@
     $c = New-IsolatedHookCopy
     $p = New-GitRepoAi 'DdOnTerminated'
     Write-Utf8 (Join-Path (Get-StateDir $c) ('TestCompletionCheck-deepdebug-' + (Get-ProjectKey $p) + '.json')) (
-        (@{ schema = 1; sessionId = 'sess1'; detectedUtc = [DateTime]::UtcNow.ToString('o') } | ConvertTo-Json))
+        (@{ schema = 2; activationSource = 'explicit-user-command'; sessionId = 'sess1'; detectedUtc = [DateTime]::UtcNow.ToString('o') } | ConvertTo-Json))
     Write-GuardedResult -Copy $c -Root $p -Overall 'terminated' -ExitCode 124 -TerminateReason 'wallTimeout' -TerminateDetail 'exceeded the 1800s wall ceiling'
     $r = Fire -Copy $c -Cwd $p
     $reason = Get-BlockReason $r.Out
@@ -102,7 +102,7 @@
     $c = New-IsolatedHookCopy
     $p = New-GitRepoAi 'DdStaleResult'
     Write-Utf8 (Join-Path (Get-StateDir $c) ('TestCompletionCheck-deepdebug-' + (Get-ProjectKey $p) + '.json')) (
-        (@{ schema = 1; sessionId = 'sess1'; detectedUtc = [DateTime]::UtcNow.ToString('o') } | ConvertTo-Json))
+        (@{ schema = 2; activationSource = 'explicit-user-command'; sessionId = 'sess1'; detectedUtc = [DateTime]::UtcNow.ToString('o') } | ConvertTo-Json))
     Write-GuardedResult -Copy $c -Root $p -Overall 'ok' -AgeMinutes 200   # stale: > default 180 evidence window
     $r = Fire -Copy $c -Cwd $p
     $reason = Get-BlockReason $r.Out
@@ -117,7 +117,7 @@
     $c = New-IsolatedHookCopy
     $p = New-GitRepoAi 'DdCodex'
     Write-Utf8 (Join-Path (Get-StateDir $c) ('TestCompletionCheck-deepdebug-' + (Get-ProjectKey $p) + '.json')) (
-        (@{ schema = 1; sessionId = 'sess1'; detectedUtc = [DateTime]::UtcNow.ToString('o') } | ConvertTo-Json))
+        (@{ schema = 2; activationSource = 'explicit-user-command'; sessionId = 'sess1'; detectedUtc = [DateTime]::UtcNow.ToString('o') } | ConvertTo-Json))
     Write-GuardedResult -Copy $c -Root $p -Overall 'ok'
     $r = Fire -Copy $c -Cwd $p -Codex
     $doc = ConvertFrom-HookOutput $r.Out
@@ -162,7 +162,7 @@
         $preCopy = [pscustomobject]@{ Script = $tccPreHook; LocalAppData = $tccPreLocal }
         $pRed = New-GitRepoAi 'DdRed'
         Write-Utf8 (Join-Path (Get-StateDir $preCopy) ('TestCompletionCheck-deepdebug-' + (Get-ProjectKey $pRed) + '.json')) (
-            (@{ schema = 1; sessionId = 'sess1'; detectedUtc = [DateTime]::UtcNow.ToString('o') } | ConvertTo-Json))
+            (@{ schema = 2; activationSource = 'explicit-user-command'; sessionId = 'sess1'; detectedUtc = [DateTime]::UtcNow.ToString('o') } | ConvertTo-Json))
         Write-GuardedResult -Copy $preCopy -Root $pRed -Overall 'ok'
         $ddRedTranscript = Join-Path $Work 'transcript-dd-red.jsonl'
         Write-Utf8 $ddRedTranscript ('{"type":"user","message":{"role":"user","content":"::deep-debug the parser"}}' + "`n")

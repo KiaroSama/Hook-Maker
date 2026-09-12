@@ -98,24 +98,22 @@ function Install-PlannedRuntime {
             }
         }
 
+        # User configuration is outside the managed plan. Carry it into staging
+        # BEFORE the swap: a copy failure must leave the only original intact.
+        foreach ($userConfig in $script:ManagedRuntimeUserConfigNames) {
+            $previousConfig = Join-Path $destination ([string]$userConfig)
+            if (-not (Test-Path -LiteralPath $previousConfig -PathType Leaf)) { continue }
+            $stagedConfig = Join-Path $stagingHookDir ([string]$userConfig)
+            if (Test-Path -LiteralPath $stagedConfig) { continue }
+            Copy-Item -LiteralPath $previousConfig -Destination $stagedConfig -Force
+        }
+
         if (Test-Path -LiteralPath $destination) {
             Move-Item -LiteralPath $destination -Destination $setAside -Force
         }
         try {
             Move-Item -LiteralPath $stagingHookDir -Destination $destination -Force
             $swapped = $true
-            # The staged tree is built from the PLAN, which never contains the
-            # user's own '.env'. Without this, replacing the runtime silently
-            # deleted the only supported way to configure a hook. Copied from the
-            # set-aside copy of the previous runtime, before the finally block
-            # removes it, and never over a file the plan actually shipped.
-            foreach ($userConfig in $script:ManagedRuntimeUserConfigNames) {
-                $previousConfig = Join-Path $setAside ([string]$userConfig)
-                if (-not (Test-Path -LiteralPath $previousConfig -PathType Leaf)) { continue }
-                $restoredConfig = Join-Path $destination ([string]$userConfig)
-                if (Test-Path -LiteralPath $restoredConfig) { continue }
-                Copy-Item -LiteralPath $previousConfig -Destination $restoredConfig -Force
-            }
         }
         catch {
             # Put the previous runtime back so the installation keeps working.

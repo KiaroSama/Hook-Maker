@@ -256,13 +256,20 @@ function Invoke-FixRelocatedProject {
 
     $installed = 0; $installFailed = 0
     $failures = New-Object System.Collections.Generic.List[string]
+    $replacedRecords = New-Object System.Collections.Generic.List[object]
     foreach ($record in $records) {
         $friendly = [string]$record.friendlyName
-        foreach ($client in @(Get-InstalledClientNames -Record $record)) {
+        $recordClients = @(Get-InstalledClientNames -Record $record)
+        $recordReplaced = ($recordClients.Count -gt 0)
+        if (-not $recordReplaced) {
+            [void]$failures.Add($friendly + ': no recorded clients; original record retained')
+        }
+        foreach ($client in $recordClients) {
             $subrecord = Get-ClientSubrecord -Record $record -Client $client
             $events = @()
             if ($null -ne $subrecord -and $null -ne $subrecord.PSObject.Properties['events']) { $events = @($subrecord.events) }
             if ($events.Count -eq 0) {
+                $recordReplaced = $false
                 $installFailed++; [void]$failures.Add($friendly + '/' + $client + ': no recorded events'); continue
             }
             # Per client, with that client's OWN events - the shape the updater
@@ -283,23 +290,38 @@ function Invoke-FixRelocatedProject {
                 foreach ($line in @($output)) { Write-Log 'INFO' 'RELOCATE' ([string]$line) }
                 $result = $null
                 if (Test-Path -LiteralPath $resultPath -PathType Leaf) {
-                    $result = Get-Content -LiteralPath $resultPath -Raw | ConvertFrom-Json
+                    $result = Get-Content -LiteralPath $resultPath -Raw -Encoding utf8 | ConvertFrom-Json
                 }
                 $overall = ''
                 if ($null -ne $result) { $overall = [string]$result.overall }
-                if ($overall -eq 'ok' -or $overall -eq 'partial') { $installed++ }
+                $detail = if ($overall -eq '') { 'no result document' } else { $overall }
+                $components = @()
+                if ($null -ne $result -and $null -ne $result.PSObject.Properties['components']) { $components = @($result.components) }
+                $accepted = ($overall -eq 'ok')
+                if ($overall -eq 'partial') {
+                    $verdict = Get-PartialInstallVerdict -Components $components
+                    $accepted = -not $verdict.IsFailure
+                    $detail = [string]$verdict.Summary
+                }
+                # A runtime without its tracking record cannot replace the old
+                # retry metadata. Prove both outcomes for THIS client first.
+                $clientInstalled = @($components | Where-Object { $_.component -eq $client -and $_.status -eq 'ok' }).Count -eq 1
+                $tracked = @($components | Where-Object { $_.component -eq 'registry' -and $_.status -eq 'ok' }).Count -eq 1
+                if ($accepted -and $clientInstalled -and $tracked) { $installed++ }
                 else {
+                    $recordReplaced = $false
                     $installFailed++
-                    $detail = 'no result document'
-                    if ($overall -ne '') { $detail = $overall }
+                    if ($accepted) { $detail = 'replacement installation and tracking were not confirmed' }
                     [void]$failures.Add($friendly + '/' + $client + ': ' + $detail)
                 }
             }
             catch {
+                $recordReplaced = $false
                 $installFailed++; [void]$failures.Add($friendly + '/' + $client + ': ' + $_.Exception.Message)
             }
             finally { Remove-Item -LiteralPath $resultPath -Force -ErrorAction SilentlyContinue }
         }
+        if ($recordReplaced) { [void]$replacedRecords.Add($record) }
     }
 
     # No supported client writes a per-hook document, so relocation has nothing
@@ -308,7 +330,9 @@ function Invoke-FixRelocatedProject {
     $documentsRemoved = 0
 
     $dropped = 0; $dropFailed = 0
-    foreach ($record in $records) {
+    # Keep the complete original record if ANY client failed. It remains a
+    # relocation candidate, preserving each client's events for a later retry.
+    foreach ($record in $replacedRecords) {
         $resultPath = Join-Path ([System.IO.Path]::GetTempPath()) ('hookmaker-relocate-un-' + [guid]::NewGuid().ToString('N').Substring(0, 10) + '.json')
         try {
             & $UninstallScript -RecordId ([string]$record.id) -ResultPath $resultPath *> $null
@@ -333,6 +357,9 @@ function Invoke-FixRelocatedProject {
     Write-Host ''
     Write-NoteLine ('  Reinstalled at the new path : ' + $installed + ' registration(s)')
     Write-NoteLine ('  Stale records dropped       : ' + $dropped + ' of ' + $records.Count)
+    if ($replacedRecords.Count -lt $records.Count) {
+        Write-NoteLine ('  Records retained for retry  : ' + ($records.Count - $replacedRecords.Count))
+    }
     if ($documentsRemoved -gt 0) { Write-NoteLine ('  Stale documents removed     : ' + $documentsRemoved) }
     if ($configChange.Roots -gt 0 -or $configChange.Names -gt 0) {
         Write-NoteLine ('  Sync routes repointed       : ' + $configChange.Roots + ' root(s), ' + $configChange.Names + ' name(s)')

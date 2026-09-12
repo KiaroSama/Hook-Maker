@@ -34,7 +34,7 @@ if ([string]::IsNullOrWhiteSpace($cwd)) { exit 0 }
 try { if (-not (Test-Path -LiteralPath $cwd -PathType Container)) { exit 0 } } catch { exit 0 }
 
 $config = Read-HookEnv (Join-Path $PSScriptRoot '.env')
-$cacheDir = Get-CbmCacheDir -Config $config
+$cacheDir = Get-CbmCacheDir -Config $config -ProjectRoot $cwd
 if (-not (Test-CbmInstalled -CacheDir $cacheDir)) { exit 0 }
 
 # No index for this project is Cbm-Read-Check's message to deliver, at the
@@ -90,7 +90,7 @@ $message = @(
     ('CBM UPDATE CHECK - code changed after the Codebase Memory index was last written (index: ' +
         $dbUtc.ToString('yyyy-MM-dd HH:mm:ss') + ' UTC, newest work: ' + $workUtc.ToString('yyyy-MM-dd HH:mm:ss') + ' UTC).'),
     'The background watcher normally keeps it fresh, so a gap this size means it is lagging or this project was never registered with it.',
-    ('Before relying on any graph answer, call index_status; if it does not reflect the change, run index_repository(repo_path="' + $cwd + '").'),
+    ('Before relying on any graph answer, call index_status; if it does not reflect the change, run index_repository(repo_path=' + ($cwd | ConvertTo-Json -Compress) + ', mode="moderate", persistence=true).'),
     'Judge by STRUCTURE, not by file count: a changed symbol, export, import, call/inheritance edge or entry point matters; docs, formatting and generated output do not - skip it then.'
 ) -join "`n"
 
