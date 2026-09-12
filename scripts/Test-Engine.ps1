@@ -89,7 +89,15 @@ function Fire {
     try {
         # Windows PowerShell 5.1 otherwise loses ExitCode for redirected children.
         $null = $proc.Handle
-        if (-not $proc.WaitForExit(10000)) { throw 'Engine event exceeded its 10-second wall/idle limit.' }
+        # 60 s, not 10 s. This waits on a whole PowerShell child starting and
+        # dot-sourcing _hooklib.ps1; measured alone the entire suite is 48.4 s
+        # for 72 checks, so a normal call is well under a second. The cost that
+        # breaks the bound is PROCESS START under load, which does not scale
+        # with the work: at 3 matrix workers on 2026-09-12 the sibling call
+        # below exceeded 10 s and failed the suite, while the same suite run
+        # alone passed in 48.4 s. 60 s stays a real hang ceiling (60x+ the
+        # measured normal) instead of a contention tripwire.
+        if (-not $proc.WaitForExit(60000)) { throw 'Engine event exceeded its 60-second wall/idle limit.' }
         return [pscustomobject]@{
             Exit = $proc.ExitCode
             Out = [System.IO.File]::ReadAllText($outFile, [System.Text.Encoding]::UTF8).Trim()
@@ -111,7 +119,9 @@ function Run-Acknowledgement {
     $proc = Start-Process -FilePath (Get-Process -Id $PID).Path -ArgumentList ($Command -replace '^powershell\.exe ', '') -RedirectStandardOutput $outFile -RedirectStandardError $errFile -WindowStyle Hidden -PassThru
     try {
         $null = $proc.Handle
-        if (-not $proc.WaitForExit(10000)) { throw 'Acknowledgement exceeded its 10-second wall/idle limit.' }
+        # 60 s for the same reason as the engine-event bound above - this is the
+        # call that actually exceeded 10 s under matrix load on 2026-09-12.
+        if (-not $proc.WaitForExit(60000)) { throw 'Acknowledgement exceeded its 60-second wall/idle limit.' }
         return [pscustomobject]@{
             Exit = $proc.ExitCode
             Out = [System.IO.File]::ReadAllText($outFile, [System.Text.Encoding]::UTF8)
