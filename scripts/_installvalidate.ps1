@@ -32,8 +32,8 @@
 #   * Get-CanonicalPathOrNull below is also called from _installregistry.ps1,
 #     so it must stay reachable from that file's scope (it is - same scope).
 #   * Get-HookMakerClientIds / Get-HookMakerClientCapability live in
-#     _clientcapability.ps1, and Test-KiroManagedFileName /
-#     Get-KiroManagedNamePrefix in _installkiro.ps1 - the per-hook-file
+#     _clientcapability.ps1, and, for a per-hook-file client, that client's own
+#     managed-name producers - the per-hook-file
 #     ownership and naming rules are USED from here, never re-implemented.
 #     _installlib.ps1 dot-sources both files before this one.
 # ---------------------------------------------------------------------------
@@ -177,7 +177,7 @@ function Test-InstallRecordValid {
     }
     # Derived from the canonical client table, never a hardcoded pair. The old
     # @('claude', 'codex') did not REJECT a third client's subrecord - it
-    # `continue`d straight past it, so a kiro subrecord was persisted, updated
+    # `continue`d straight past it, so an untouched subrecord was persisted, updated
     # and uninstalled without a single field of it ever being proved.
     foreach ($clientName in @(Get-HookMakerClientIds)) {
         $client = Get-RecordField -Object $clients -Name $clientName

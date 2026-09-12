@@ -284,18 +284,18 @@ function Get-HookRecommendedEvents {
 }
 
 # Asks which client(s) the hook is installed for. Returns one canonical selection
-# value ('Claude', 'Codex', 'Kiro', 'All'), or $null when the user backs out.
+# value ('Claude', 'Codex', 'All'), or $null when the user backs out.
 #
 # The entries, their order and their spelling all come from the capability table
 # instead of a local list, so a client added there shows up here automatically and
 # the menu can never spell a client differently from a CLIENTS= value.
 #
-# Kiro is ONE entry covering both its surfaces (IDE and CLI). They share a single
-# registrationKind and runtimeRelativeRoot, so a separate "Kiro IDE"/"Kiro CLI"
-# pair would offer a distinction the installer cannot act on.
+# A client with more than one surface gets ONE entry when those surfaces share a
+# registrationKind and runtimeRelativeRoot, because a per-surface pair would
+# offer a distinction the installer cannot act on.
 #
 # 'Both' is deliberately NOT offered: it survives only as a legacy CLIENTS= value
-# meaning Claude + Codex, and 'All' is the selection that also includes Kiro.
+# meaning Claude + Codex, which is what 'All' now selects.
 function Read-ClientChoice {
     $selections = @(Get-HookMakerClientSelectionValues)
     # 'All' is the last entry and the default - the historical default ('Both')
@@ -325,14 +325,6 @@ function Read-ClientChoice {
         $picked = 0
         if ([int]::TryParse($value, [ref]$picked) -and $picked -ge 1 -and $picked -le $selections.Count) {
             $choice = $selections[$picked - 1]
-            # Kiro DOES install (the registration writer has been wired up since
-            # e914f5d), but it is not the equal of Claude or Codex and the user
-            # should learn that while the choice is still on screen rather than
-            # from a degraded result afterwards. Both limitations below are
-            # permanent facts of Kiro's own documentation, not build state - see
-            # .ai\KIRO_PROTOCOL.md. The event list is read from the capability
-            # table so this note cannot rot the way its predecessor did.
-
             return $choice
         }
         Write-ErrorLine ('Enter a number between 1 and ' + $selections.Count + ', or 0.')

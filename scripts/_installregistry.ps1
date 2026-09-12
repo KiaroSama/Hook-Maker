@@ -670,10 +670,10 @@ function New-ClientSubrecord {
         # ---- registration shape ------------------------------------------
         # 'sharedSettingsFile' (Claude, Codex): ONE settings document holds every
         # hook, so $SettingsPath is that document and ownership is per-handler.
-        # 'perHookFile' (Kiro): each logical installation owns its OWN file, so
-        # ownership is per-file AND per-entry.
+        # 'perHookFile': each logical installation owns its OWN file, so ownership
+        # is per-file AND per-entry. No shipped client uses it; records do.
         #
-        # Kiro is NOT forced into the settingsPath model. A synthesised
+        # Such a client is NOT forced into the settingsPath model. A synthesised
         # "settings path" for a per-hook-file client would be a fake that every
         # later consumer would treat as real, which is exactly how an updater
         # ends up rewriting the wrong file. Instead the shape is recorded
@@ -681,8 +681,8 @@ function New-ClientSubrecord {
         [ValidateSet('sharedSettingsFile', 'perHookFile')][string]$RegistrationKind = 'sharedSettingsFile',
         [string]$RegistrationPath = '',
         # Logical -> physical trigger names actually written, so a later reader
-        # never has to re-derive the mapping (Kiro renamed every trigger between
-        # its CLI v2 and v1 schemas - the mapping is data, not a constant).
+        # never has to re-derive the mapping (a client that renames its triggers
+        # between schema versions makes the mapping data, not a constant).
         $PhysicalTriggers = @(),
         # Events the caller REQUESTED that this client cannot support, named
         # individually. An empty array means full parity; a non-empty one is why
@@ -998,18 +998,18 @@ function Set-InstallRecord {
         Set-ObjectProperty -Object $Record -Name 'createdUtc' -Value (ConvertTo-RegistryUtcTimestamp -Value $existingCreated)
         # Carry forward every client subrecord this invocation did NOT touch.
         #
-        # Derived from the capability table, NOT a literal pair. It was
-        # @('claude','codex'), so a kiro subrecord was silently DROPPED the next
-        # time the same record id was installed for claude/codex only - and it
-        # took registrationPath and managedEntryNames with it, which are Kiro
-        # uninstall's only proof of what it owns. The result is an orphaned
-        # .kiro\hooks registration nothing can ever prove is removable.
+        # Derived from the capability table, NOT a literal pair. When it was
+        # hardcoded, a subrecord for any client outside that pair was silently
+        # DROPPED the next time the same record id was installed - taking
+        # registrationPath and managedEntryNames with it, which are a
+        # per-hook-file client's only proof of what it owns, and leaving an
+        # orphaned registration nothing can ever prove is removable.
         #
         # This file already derives the client list this way in
         # Get-InstalledClientNames, with a comment explaining why; the two were
         # inconsistent. Note the OTHER literal pair above (the legacy migration
-        # loop) is correct and must stay: its $legacyClients vocabulary only
-        # ever held Both/Claude/Codex, so there is no kiro to migrate.
+        # loop) is correct and must stay: its $legacyClients vocabulary only ever
+        # held Both/Claude/Codex, so it has nothing else to migrate.
         foreach ($client in @(Get-HookMakerClientIds)) {
             if (@($touchedClients) -contains $client) { continue }
             $previous = $null

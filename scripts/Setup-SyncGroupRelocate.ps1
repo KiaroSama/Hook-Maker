@@ -8,7 +8,7 @@
 #     so update/uninstall/status all operate on nothing;
 #   * the registrations that TRAVELLED WITH the folder still invoke the old
 #     path, so every hook in the moved project is silently dead;
-#   * a per-hook-file client (Kiro) carries its own documents along, so the
+#   * a per-hook-file client carries its own documents along, so the
 #     moved directory ends up holding stale documents that no record owns -
 #     invisible to uninstall, because the record points somewhere else.
 #
@@ -274,7 +274,7 @@ function Invoke-FixRelocatedProject {
             }
             # Per client, with that client's OWN events - the shape the updater
             # uses to repair a record. A union would re-add events a reduced
-            # client (Kiro has no SubagentStop) never had.
+            # client that lacks the event never had.
             $installArgs = @{ Events = @($events); TargetProject = $newRoot }
             if ([string]$record.hookType -eq 'Engine') {
                 $installArgs['Profile'] = [string]$record.profile

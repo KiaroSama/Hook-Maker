@@ -107,7 +107,7 @@ function Resolve-ScanRoot {
 # expression in scripts\_hookstatusrecords.ps1), so the group key, the heading
 # and the hookType that selects them all follow the same table entry. A client
 # added to the table therefore gets its own section automatically - which is
-# what a hardcoded switch failed to do for Kiro, filing a Kiro finding under
+# what a hardcoded switch failed to do for a newly added client, filing its finding under
 # the External Claude heading and attributing it to the wrong client. Claude's
 # and Codex's keys and headings are byte-identical to the previous literals.
 function Get-ExternalClientGroups {
@@ -310,7 +310,7 @@ function Invoke-GetHookStatus {
     Write-Host ('  ' + (Get-Painted $scanRoot $C.White))
     if ($includeGlobal) {
         # Every client the capability table knows, in table order - not a second
-        # hardcoded pair, which left Kiro's global location out of a screen whose
+        # hardcoded pair, which left a third client's global location out of a screen whose
         # whole job is to state exactly what will be read.
         #
         # The two client shapes name different things, and this MIRRORS
@@ -428,7 +428,7 @@ function Show-HookStatusResult {
 
     $findings = @(Get-StatusList $Document 'findings')
     # Managed first, then one section per client in capability-table order
-    # (Claude, Codex, Kiro), then the two client-independent sections. The
+    # (Claude, Codex), then the two client-independent sections. The
     # per-client rows come from the same helper Get-StatusGroupKey files
     # findings with, so a key can never exist without a heading to print it
     # under.

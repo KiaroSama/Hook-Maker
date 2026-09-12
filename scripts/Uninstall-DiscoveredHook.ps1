@@ -178,20 +178,11 @@ $script:EvidenceBlocked = $false
 $script:EvidenceBlockDetail = ''
 $script:EvidenceBlockComponent = 'evidence'
 
-# A KiroRegistration record is refused OUTRIGHT, before any evidence is read.
-#
-# Kiro is registrationKind 'perHookFile': its registrations are per-hook JSON
-# documents whose ownership is proved per ENTRY, not handlers inside a shared
-# settings file. Get-DiscoveredSettingsScan below only understands the shared
-# shape, so it would almost certainly return Ok=$false and block anyway - but
-# "almost certainly blocks" is not a safety property for a path that deletes
-# files. Discovered-record removal for Kiro is simply not implemented, so it
-# says so, explicitly and fail-closed. Managed Kiro installs are removed by
-# Uninstall-Hook.ps1, which does understand the format.
-#
-# This became reachable the moment 'KiroRegistration'/'kiro' were added to the
-# discovered enums in _installdiscovered.ps1; before that a Kiro record could
-# not persist at all, so this guard and that change belong together.
+# Get-DiscoveredSettingsScan below understands only the SHARED settings shape.
+# If a per-hook-file client is ever added to $script:DiscoveredHookTypes in
+# _installdiscovered.ps1, its records must be refused here OUTRIGHT, before any
+# evidence is read: that scan would probably return Ok=$false and block anyway,
+# but "probably blocks" is not a safety property for a path that deletes files.
 if ($HookType -ne 'NativeGitHook') {
     foreach ($clientEvidence in @(Get-RecordArray $record 'clients')) {
         $clientName = Get-RecordString $clientEvidence 'client'

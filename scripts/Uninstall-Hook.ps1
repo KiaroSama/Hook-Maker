@@ -1,8 +1,8 @@
 # ---------------------------------------------------------------------------
 # Noninteractive, record-based uninstaller: given a registry record id, removes
 # EXACTLY that logical installation's artifacts (Claude settings registration,
-# Codex settings registration, Kiro per-hook-file registration, per-client
-# runtime copy, native Git pre-push integration) and then its registry record.
+# Codex settings registration, per-client runtime copy, native Git pre-push
+# integration) and then its registry record.
 # A separate UI layer calls this; it never prompts.
 #
 # Mirrors Install-Hook.ps1's conventions: the same -ResultPath structured-
@@ -15,10 +15,6 @@
 #   - Ownership of a settings handler is proven by managed runtime PATH SHAPE
 #     via Test-HandlerBelongsToInstall - never by basename or friendly name
 #     alone.
-#   - Ownership of a Kiro per-hook file is proven by the record's own persisted
-#     managed id and entry names, re-classified through _installkiro.ps1's
-#     Test-KiroManagedFile immediately before each mutation - never by the
-#     filename, which that module treats as a hint and never as evidence.
 #   - Runtime directories are staged aside (sibling rename) BEFORE any
 #     irreversible delete, and restored if the matching settings/native commit
 #     fails - so a partial failure never leaves a hook half-removed.
@@ -259,8 +255,7 @@ $script:UninstallTimestamp = (Get-Date).ToString('yyyyMMdd-HHmmss')
 # operation is part of the name, so an install run and an uninstall run in the
 # same wizard session never satisfy each other's backup.
 # Where THIS run's backup of a settings file lives. Split out so a caller that
-# deletes the file it just backed up can find that copy again (see the Kiro
-# per-hook-file path in _uninstallkiro.ps1).
+# deletes the file it just backed up can find that copy again.
 function Get-SettingsBackupPath {
     param([Parameter(Mandatory = $true)][string]$Path)
     $stamp = $script:UninstallTimestamp
@@ -464,16 +459,12 @@ function Remove-ClientComponent {
     return [pscustomobject]@{ Removed = $true }
 }
 
-# ---- Kiro: the per-hook-file client ----------------------------------------
-# Its ownership is per-FILE and per-ENTRY rather than per-handler inside a
-# shared document, so the whole client lives in its own module. Dot-sourced
-# HERE, deliberately: those functions read the record identity and $WhatIf from
-# this scope and call the settings/runtime helpers defined just above, so this
-# line must stay after them and before the first call below.
-
 # ---- native Git pre-push integration ----------------------------------------
 # Both removers edit the one generated pre-push wrapper under the same
-# ownership proof, so they share a module. Same dot-source contract as above.
+# ownership proof, so they share a module. Dot-sourced HERE, deliberately:
+# those functions read the record identity and $WhatIf from this scope and call
+# the settings/runtime helpers defined just above, so this line must stay after
+# them and before the first call below.
 . (Join-Path $PSScriptRoot '_uninstallnative.ps1')
 
 # ---- Test-Temp-Cleanup's per-project coordination record -------------------
@@ -539,10 +530,6 @@ $script:CurrentPhase = 'claude'
 $claudeResult = Remove-ClientComponent -ClientName 'claude'
 $script:CurrentPhase = 'codex'
 $codexResult = Remove-ClientComponent -ClientName 'codex'
-# Kiro has its own remover because it is the per-hook-file client: there is no
-# shared settings document to prune, and its ownership is per-file AND
-# per-entry. A record without a kiro subrecord reports 'skipped' and nothing
-# about the two shared clients changes.
 
 if ($WhatIf) {
     Set-ComponentResult -Component 'registry' -Status 'ok' -ReasonCode 'wouldRemove'

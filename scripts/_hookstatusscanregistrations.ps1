@@ -7,12 +7,12 @@ $script:ScanKnownToolRoots = $null
 # directly.
 #
 # Responsibility: turn ONE known candidate location into raw registration
-# findings - a Claude/Codex shared settings file, or a Kiro per-hook-file
+# findings - a Claude/Codex shared settings file, or a per-hook-file
 # registration directory/document. Deciding WHICH locations are opened is the
 # walk's job (_hookstatusscan.ps1); native Git discovery is
 # _hookstatusscangit.ps1's.
 #
-# ONE dot-source, deliberately: scripts\_installkiro.ps1. Kiro registrations
+# ONE dot-source, deliberately. Per-hook-file registrations
 # are per-hook FILES, and their ownership proof lives in that module - the same
 # one the installer and uninstaller use. Reimplementing "is this document ours"
 # here would be a second, drifting copy of an ownership rule, which is exactly
@@ -22,7 +22,7 @@ $script:ScanKnownToolRoots = $null
 # is kept anyway: it states the dependency where it is actually used instead of
 # inheriting it from a file that has no reason to guarantee it. Dot-sourcing is
 # idempotent, the module is pure (it defines functions, writes nothing, and
-# touches disk only inside Test-KiroManagedFile), and it pulls in only
+# touches disk only inside the managed-file test), and it pulls in only
 # _clientcapability.ps1, which the entry script has already loaded - so this
 # cannot reorder anything.
 # ---------------------------------------------------------------------------
@@ -31,7 +31,7 @@ $script:ScanKnownToolRoots = $null
 
 # Every client fact below comes from _clientcapability.ps1, because that table
 # is where the installer decides the same things. A second copy here is exactly
-# the drift that made Kiro invisible to this scanner in the first place.
+# the drift that made a whole client invisible to this scanner in the first place.
 
 # The client-root directory names ('.claude', '.codex'), used to find
 # the project root of a registration path.
@@ -53,7 +53,7 @@ foreach ($clientId in @(Get-HookMakerClientIds)) {
 # The old form was "the settings file's grandparent", which is correct only
 # while every registration sits exactly one level under its client directory.
 # It is wrong for any nested registration directory: for
-# <root>\.kiro\hooks\x.json it answered <root>\.kiro, i.e. it named the client
+# <root>\.client\hooks\x.json it answered <root>\.client, i.e. it named the client
 # directory as the project. Deriving the answer from the client-root component
 # fixes that shape generally rather than special-casing one client, and gives a
 # byte-identical result for .claude\settings.json and .codex\hooks.json, whose
@@ -131,7 +131,7 @@ function Get-SettingsScopeInfo {
         return [pscustomobject]@{ Scope = 'global'; ProjectRoot = '' }
     }
     # <root>\.claude\settings.local.json -> <root>
-    # <root>\.kiro\hooks\hookmaker-x.json -> <root>
+    # <root>\.client\hooks\hookmaker-x.json -> <root>
     $projectRoot = Get-ProjectRootForRegistrationPath -Path $SettingsPath
     if ([string]::IsNullOrWhiteSpace($projectRoot)) {
         # No client-root component at all. Kept as the original grandparent rule

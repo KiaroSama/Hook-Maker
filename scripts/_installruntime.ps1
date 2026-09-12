@@ -33,7 +33,7 @@ function Copy-HookRuntime {
     param(
         [Parameter(Mandatory = $true)][string]$ClientDir,
         [string]$RuntimeRootOverride,
-        # Kiro only - see Get-ManagedInstallPlan. Planning the launcher rather
+        # Per-hook-file clients only - see Get-ManagedInstallPlan. Planning the launcher rather
         # than writing it afterwards is what keeps it inside the manifest and
         # out of the updater's "unexpected managed file" path.
         # Which install this runtime copy belongs to (New-RuntimeIdentity). Passed

@@ -12,7 +12,7 @@
 # dot-sourced below into this same scope. Each script file's $PSScriptRoot is
 # its OWN directory even inside a dot-source chain, so the siblings resolve
 # correctly no matter where the entry script was loaded from:
-#   _hookstatusscanregistrations.ps1 - Claude/Codex settings parsing and Kiro
+#   _hookstatusscanregistrations.ps1 - Claude/Codex settings parsing and
 #                                      per-hook-file registration parsing
 #   _hookstatusscangit.ps1           - native Git hook discovery
 #
@@ -215,17 +215,14 @@ function Invoke-ScanWalk {
 # UPWARD - but in exactly ONE bounded hop, not by climbing.
 #
 # The hop is derived from the root's own path components: the OUTERMOST
-# `.claude` / `.codex` / `.kiro` / `.git` component in -ScanRoot marks the tree
+# `.claude` / `.codex` / `.git` component in -ScanRoot marks the tree
 # the user pointed inside, and its parent is that tree's project root. Only that
 # one directory is inspected, and only at its known settings/git locations - no
 # ancestor is ever enumerated.
 #
-# `.kiro` is a marker because Kiro's runtime root is `.kiro\hook-runtime\
-# Hook-Maker`, so a scan aimed there was previously left with NO enclosing
-# context at all. It resolves the same project root the other two do, and its
-# own registrations - one JSON per install under `.kiro\hooks` - are read here
-# as a bounded directory pass, the perHookFile equivalent of the two known
-# settings leaves.
+# A client whose runtime root sits deeper than its settings leaf needs its own
+# marker component here, or a scan aimed at that runtime is left with NO
+# enclosing context at all.
 #
 # Deriving the hop instead of walking up until something is found is what keeps
 # this from silently becoming an unrestricted scan outside the user's root: a

@@ -492,13 +492,13 @@ function Get-RecordDisplayField {
 #
 # 'partial' covers three different outcomes: tracking failed, one component
 # failed while another landed, or a component installed with REDUCED CAPABILITY
-# (Kiro drops events it has no documented trigger for, and can never gate Stop).
+# (a client drops events it has no documented trigger for, or cannot gate Stop).
 #
-# Only the first two are failures. `degraded` is Kiro stating what it does not
-# support: permanent, documented, and identical on every future run. Counting it
-# as a failure made a clean update impossible to reach - a real 572-record run
-# reported failed=21 in which every single one was
-# "claude: ok; codex: ok; kiro: partial - kiro (degraded)". A failure count that
+# Only the first two are failures. `degraded` is a client stating what it does
+# not support: permanent, documented, and identical on every future run.
+# Counting it as a failure made a clean update impossible to reach - a real
+# 572-record run reported failed=21 in which every single one was a component
+# reporting "partial - (degraded)" for that reason. A failure count that
 # can never be zero hides the failures that matter, which is the opposite of
 # what it is for.
 #
@@ -671,7 +671,7 @@ function Invoke-UpdateInstalledHooks {
             }
             # The POSITIVE client set, never the -*Only shims. Those are
             # consumed as double negations, so "anything that is not claude"
-            # meant CodexOnly - a repair of a kiro (or any future) subrecord
+            # meant CodexOnly - a repair of any future subrecord
             # would have reinstalled CODEX, i.e. installed a client this record
             # may never have had, and left the damaged one untouched. -Clients
             # names exactly the one client being repaired and fails closed on

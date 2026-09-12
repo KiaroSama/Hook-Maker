@@ -400,10 +400,10 @@ function Test-DiscoveredRecordValid {
 # Every path a managed client subrecord actually REGISTERED, taken from the
 # command it wrote rather than from runtimeScript alone.
 #
-# For a per-hook-file client (Kiro) those two are deliberately different: the
-# registration launches the hook's shim, `<hook>\kiro-launch.ps1`, while
+# For a per-hook-file client those two are deliberately different: the
+# registration launches the hook's shim, `<hook>\<client>-launch.ps1`, while
 # runtimeScript names the hook script itself. Comparing only runtimeScript
-# therefore never matched a Kiro registration, so every Kiro install was ALSO
+# therefore never matched such a registration, so every affected install was ALSO
 # kept as a `discovered` record - a duplicate of Hook Maker's own hook that the
 # uninstall screen then listed as unremovable ("per-hook-file removal is not
 # implemented"). A real registry had 510 of them, and they were most of the

@@ -8,14 +8,14 @@ param(
     # Path to a standalone hook script (from the hooks/ folder). Installs it plain,
     # without the sync engine's -ConfigPath/-Profile arguments.
     [string]$CustomHook,
-    # The canonical, POSITIVE client selection: -Clients claude,codex,kiro.
+    # The canonical, POSITIVE client selection: -Clients claude,codex.
     #
     # The two -*Only switches below are kept as backward-compatible shims for
     # existing scripts and tests, but they cannot be the core model: they were
     # consumed as DOUBLE NEGATIONS (`if (-not $CodexOnly)` meaning "install
-    # Claude"), so a third client was silently IGNORED rather than rejected.
-    # Three negative flags do not compose. Everything resolves into one explicit
-    # set before any mutation.
+    # Claude"), so any client the switch did not know about was silently
+    # IGNORED rather than rejected. Negative flags do not compose. Everything
+    # resolves into one explicit set before any mutation.
     [string[]]$Clients,
     [switch]$ClaudeOnly,
     [switch]$CodexOnly,
@@ -103,17 +103,17 @@ function Get-OverallInstallResult {
     # component's. That distinction is deliberate, so degradation is read off the
     # REASON CODE instead:
     #   degraded              installed, but with unsupported events dropped and/or
-    #                         a gate that can only ever be advisory (Kiro Stop)
+    #                         a gate the client can only ever run as advisory
     #   postRegistrationError the registration IS live, but a later step failed -
     #                         the one that must never read as a clean 'ok'
     $degraded = @($script:ComponentResults | Where-Object {
             $_.status -eq 'ok' -and @('degraded', 'postRegistrationError') -contains [string]$_.reason })
     # ONLY CLIENT components answer "did anything the caller asked for actually
     # land". 'registry' and 'nativeGit' are BOOKKEEPING, and counting them as
-    # landed work inverted the verdict: a kiro-only install whose kiro component
-    # FAILED still had an ok 'registry' component, so the total failure was
-    # downgraded to 'partial' - telling the caller to keep an installation that
-    # does not exist. The client set is derived from the capability table, never
+    # landed work inverted the verdict: a single-client install whose ONLY client
+    # component FAILED still had an ok 'registry' component, so the total failure
+    # was downgraded to 'partial' - telling the caller to keep an installation
+    # that does not exist. The client set is derived from the capability table, never
     # a third hardcoded list beside the two this repo already keeps in sync.
     $clientIds = @(Get-HookMakerClientIds)
     $okClients = @($script:ComponentResults | Where-Object {
@@ -149,10 +149,6 @@ $ToolRoot = Split-Path -Parent $PSScriptRoot
 # The read-modify-write of one client settings file: stale-handler pruning,
 # handler-group insertion, backup, and the transactional JSON replace.
 . (Join-Path $PSScriptRoot '_installclientsettings.ps1')
-# Kiro's per-hook-file registration format. A PURE module: it builds, classifies
-# and merges documents but never touches the filesystem. The locking, rollback
-# and every actual Kiro write live in _installkiroclient.ps1, which is
-# dot-sourced further down AT the point the Kiro phase runs.
 # The native Git pre-push chain (Install-IgnorePrePush), for the one hook that
 # also manages a real .git/hooks/pre-push wrapper. Defines a function only; the
 # phase that calls it runs near the end of this script.
@@ -197,7 +193,7 @@ if ($ClaudeOnly -and $CodexOnly) {
 }
 
 # ---- resolve ONE canonical client set --------------------------------------
-# Every later decision reads $InstallClaude/$InstallCodex/$InstallKiro. Nothing
+# Every later decision reads $InstallClaude/$InstallCodex. Nothing
 # below re-derives the selection from a switch, so a client can no longer be
 # silently skipped by a negation that does not know about it.
 $legacyOnlySwitchUsed = ($ClaudeOnly -or $CodexOnly)
@@ -232,10 +228,10 @@ $InstallClaude = ($resolvedClients -contains 'claude')
 $InstallCodex = ($resolvedClients -contains 'codex')
 
 # Components are independent: a request for three clients where two succeed is
-# 'partial', not a total refusal. That rule is why an unsupported Kiro request
-# fails ONE component instead of throwing - the client menu offers Claude,
-# Codex, Kiro and All with no Claude+Codex entry, so throwing on kiro also broke
-# 'All clients' and left no way to install two clients in one pass.
+# 'partial', not a total refusal. That rule is why an unsupported request fails
+# ONE component instead of throwing - the client menu offers each client and
+# All, so throwing on one of them also broke 'All clients' and left no way to
+# install the remaining clients in one pass.
 $ValidEvents = @(Get-HookMakerLogicalEvents)
 $normalizedEvents = New-Object System.Collections.Generic.List[string]
 foreach ($rawEvent in @($Events)) {
@@ -360,12 +356,12 @@ else {
     $ScopeLabel = 'global'
 }
 $Timestamp = (Get-Date).ToString('yyyyMMdd-HHmmss')
-# Hoisted above the client phases because Kiro needs it DURING its install, not
-# only when the registry is written: it is the ManagedId that makes each Kiro
-# entry provably ours, and the StableId its filename is derived from. The
-# registry block below reuses this exact value - computing it twice would let
-# the recorded id and the registered id drift apart, and ownership is the one
-# thing uninstall cannot re-derive from anywhere else.
+# Hoisted above the client phases: it was originally needed DURING a client's
+# install, by a per-hook-file client this tool no longer supports. It stays
+# hoisted for the reason that still binds - the registry block below reuses this
+# exact value, and computing it twice would let the recorded id and the
+# registered id drift apart, which is the one thing uninstall cannot re-derive
+# from anywhere else.
 $ScopeKey = if ($ScopeLabel -eq 'project') { $projectRoot.ToLowerInvariant() } else { 'global' }
 $RecordId = Get-InstallRecordId -FriendlyName $FriendlyName -ScopeKey $ScopeKey -ProfileId ([string]$Profile)
 # Hoisted for the same reason as $RecordId: $projectRoot is assigned ONLY on the
@@ -520,14 +516,6 @@ if ($InstallCodex) {
     Write-Host "Codex runtime copy: $($codexRuntime.Script)"
 }
 
-# ---- kiro -----------------------------------------------------------------
-# Dot-sourced HERE rather than with the module group at the top, because this
-# module is not only function definitions: it carries the whole `if
-# ($InstallKiro)` phase, so this line is WHERE the Kiro install runs - between
-# the Codex block above and the native-git phase below. It also defines the
-# runtime rollback the phase depends on. See the file's own header for why it
-# is separate from _installkiro.ps1.
-
 $script:CurrentPhase = 'nativeGit'
 Install-IgnorePrePush
 # Native chain is only part of some installs; record which.
@@ -547,8 +535,8 @@ $script:CurrentPhase = 'registry'
 # Stores paths and content hashes only - never .env values, secrets, hook
 # stdin, prompt text, tool input, or any copied file's contents.
 try {
-    # $ScopeKey/$RecordId are computed once near the top, because Kiro needs the
-    # record id DURING its install as the ManagedId that proves entry ownership.
+    # $ScopeKey/$RecordId are computed once near the top so the recorded id and
+    # the registered id cannot drift apart.
     # They are used directly here rather than copied into $scopeKey/$recordId:
     # PowerShell variable names are case-INSENSITIVE, so those would be the SAME
     # variables, and this project has already shipped one bug from exactly that

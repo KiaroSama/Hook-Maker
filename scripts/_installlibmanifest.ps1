@@ -114,15 +114,15 @@ function Get-ManagedSourceManifest {
 
 # What ONE CLIENT's managed runtime should contain: the client-agnostic source
 # manifest above PLUS the two artifacts that only exist per client -
-# kiro-launch.ps1 (Kiro only) and the .hookmaker-runtime.json ownership metadata
+# a client-specific launcher and the .hookmaker-runtime.json ownership metadata
 # (every client, with that client's own identity inside it).
 #
 # This is the manifest to compare against Get-InstalledManifest.
 # Get-ManagedSourceManifest is NOT: it deliberately stays client-agnostic because
 # it answers a different question ("did the hook's SOURCE change since install?"),
 # and the answer to that must not flip depending on which client is asked. Using
-# it for the on-disk comparison is what made every real Kiro install report
-# "unexpected managed file: <hook>/kiro-launch.ps1" on every single evaluation -
+# it for the on-disk comparison is what made every affected install report
+# "unexpected managed file: <hook>/<launcher>.ps1" on every single evaluation -
 # a permanent update loop, because the launcher IS installed and was describable
 # by no expected manifest.
 function Get-ManagedClientManifest {
@@ -138,9 +138,9 @@ function Get-ManagedClientManifest {
         [switch]$IncludeConfig,
         [string]$ProfileId = ''
     )
-    # 'kiro' by NAME, not by registrationKind: the launcher exists because Kiro
+    # by client NAME, not by registrationKind: such a launcher exists because one
     # supplies neither the client identity nor the physical trigger to the hook it
-    # runs, which is a Kiro fact - not a property of per-hook-file registration in
+    # client needs it - not a property of per-hook-file registration in
     # general. New-RuntimeIdentity validates the client id, so an unknown one is a
     # refusal here rather than a silently launcher-less plan.
     $identity = New-RuntimeIdentity -Client $Client -Scope $Scope -RecordId $RecordId -ProjectRoot $ProjectRoot
