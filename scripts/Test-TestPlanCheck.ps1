@@ -696,6 +696,9 @@ New-Item -ItemType File -Path (Join-Path $PSScriptRoot 'EXECUTED-MARKER.txt') -F
         Check 'the repaired runtime emits the current ::deep-debug guidance' ((Get-Message $rParRepaired.Out) -match '::deep-debug detected') (Get-Message $rParRepaired.Out)
     }
     finally { $env:HOOKMAKER_STATE_DIR = $savedHmStateDir }
+
+    # The always-emitted advisory text contract (every policy bullet, in order).
+    . (Join-Path $PSScriptRoot '_testplanadvisorytext.ps1')
 }
 finally {
     $env:CLAUDE_PROJECT_DIR = $SavedClaudeProjectDir

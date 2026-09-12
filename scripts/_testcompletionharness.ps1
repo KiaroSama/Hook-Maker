@@ -1,5 +1,6 @@
 # Test-TestCompletionCheck.ps1 shared harness: fixture builders (throwaway
-# git repos with and without a git-ignored .ai/), the isolated hook copy +
+# git repos with and without a git-ignored .ai/, stamped out of a per-run
+# template instead of re-running git), the isolated hook copy +
 # fake LOCALAPPDATA factory, the writers for every coordination document the
 # hook reads (guarded result, observed record, active marker, cleanup
 # result), the durable-note helpers, the process-readiness poll, the Fire
@@ -9,32 +10,72 @@
 # its $Work / $Hook / $HookLib) - not a standalone suite.
 
 function New-Proj { param([string]$Name) $p = Join-Path $Work $Name; New-Item -ItemType Directory -Path $p -Force | Out-Null; return $p }
-function New-GitRepo {
-    param([string]$Name)
-    $p = New-Proj $Name
-    & git -C $p init -q -b main
-    & git -C $p config user.email 't@t'
-    & git -C $p config user.name 't'
-    Write-Utf8 (Join-Path $p 'readme.txt') 'x'
-    & git -C $p add -A
-    & git -C $p commit -q -m 'init'
-    return $p
+
+# Whole-directory copy through raw .NET calls. Every fixture tree here is plain
+# files - no reparse points, no ACL requirements - and Copy-Item's provider
+# overhead dominates at these sizes (measured on this repo: the 5-file hook
+# package is ~67ms through Copy-Item against ~28ms through this).
+function Copy-Tree {
+    param([string]$Source, [string]$Destination)
+    [void][System.IO.Directory]::CreateDirectory($Destination)
+    foreach ($dir in [System.IO.Directory]::GetDirectories($Source, '*', 'AllDirectories')) {
+        [void][System.IO.Directory]::CreateDirectory($Destination + $dir.Substring($Source.Length))
+    }
+    foreach ($file in [System.IO.Directory]::GetFiles($Source, '*', 'AllDirectories')) {
+        [System.IO.File]::Copy($file, ($Destination + $file.Substring($Source.Length)), $true)
+    }
+    return $Destination
 }
 
-# A repo that git-ignores .ai/, so writing a durable note between Stops does NOT
-# move the porcelain-based repo fingerprint. The D1/D2 ledger cases need incident
-# results recorded before the note to stay CURRENT-state across the note write.
+# ONE template repo per shape, built on first use; each fixture is then a copy of
+# it. A real init+config+add+commit is five git subprocesses (~810ms measured
+# here) against ~90ms for the copy, and a full run builds ~170 of them.
+#
+# A copied repo is fully independent: `git init` writes no absolute path into
+# .git/config, so each fixture owns its own .git, index, refs, objects and
+# working tree exactly as a freshly-initialised one does - nothing mutable is
+# shared. What a template DOES equalise is the commit SHA, and with it the
+# HEAD+porcelain fingerprint. Nothing depends on two fixtures differing there:
+# every 'a different project state' case passes an explicit literal
+# -ProjectFingerprint/-Fingerprint, and the run id, command fingerprint and
+# state-file key are all derived from the fixture PATH, which stays unique. (The
+# fixtures were already content-identical, so two built inside the same second
+# already shared a SHA - no test could have relied on that difference.)
+$script:RepoTemplates = @{}
+function Get-RepoTemplate {
+    param([string]$Shape)
+    if (-not $script:RepoTemplates.ContainsKey($Shape)) {
+        $t = New-Proj ('_template-repo-' + $Shape)
+        & git -C $t init -q -b main
+        & git -C $t config user.email 't@t'
+        & git -C $t config user.name 't'
+        Write-Utf8 (Join-Path $t 'readme.txt') 'x'
+        # .ai/ git-ignored, so writing a durable note between Stops does NOT move
+        # the porcelain-based repo fingerprint. The D1/D2 ledger cases need
+        # incident results recorded before the note to stay CURRENT-state across
+        # the note write.
+        if ($Shape -eq 'ai') { Write-Utf8 (Join-Path $t '.gitignore') ".ai/`n" }
+        & git -C $t add -A
+        & git -C $t commit -q -m 'init'
+        # The 13 sample hooks `git init` leaves behind are most of the files in
+        # the tree and no fixture ever runs a git hook. Dropped AFTER the commit,
+        # so the committed state is exactly what it was before.
+        Remove-Item -LiteralPath (Join-Path $t '.git\hooks') -Recurse -Force -ErrorAction SilentlyContinue
+        $script:RepoTemplates[$Shape] = $t
+    }
+    return $script:RepoTemplates[$Shape]
+}
+
+function New-GitRepo {
+    param([string]$Name)
+    return (Copy-Tree (Get-RepoTemplate 'plain') (Join-Path $Work $Name))
+}
+
+# A repo that git-ignores .ai/ - see Get-RepoTemplate for why the D1/D2 ledger
+# cases need it.
 function New-GitRepoAi {
     param([string]$Name)
-    $p = New-Proj $Name
-    & git -C $p init -q -b main
-    & git -C $p config user.email 't@t'
-    & git -C $p config user.name 't'
-    Write-Utf8 (Join-Path $p 'readme.txt') 'x'
-    Write-Utf8 (Join-Path $p '.gitignore') ".ai/`n"
-    & git -C $p add -A
-    & git -C $p commit -q -m 'init'
-    return $p
+    return (Copy-Tree (Get-RepoTemplate 'ai') (Join-Path $Work $Name))
 }
 
 # The completion hook's own project-keyed state document (resolvedIncidents /
@@ -59,27 +100,44 @@ function Get-PendingCount {
     return @(@($Doc.pendingNotes) | Where-Object { $null -ne $_ -and $null -ne $_.PSObject.Properties['key'] -and -not [string]::IsNullOrWhiteSpace([string]$_.key) }).Count
 }
 
+# The hook package plus an EMPTY fake LOCALAPPDATA, built once per run. Both the
+# template and every copy sit directly under $Work, so the single _hooklib.ps1
+# one level up serves all of them - the hook dot-sources '..\_hooklib.ps1'. That
+# file was already written to this one shared path on every call; it is
+# read-only input no case mutates, so writing it once drops ~173 redundant 71 KB
+# copies and shares nothing that was not already shared.
+$script:HookCopyTemplate = ''
+function Get-HookCopyTemplate {
+    if ($script:HookCopyTemplate -eq '') {
+        $t = New-Proj '_template-hookcopy'
+        # The whole hook PACKAGE - the installer stages every .ps1 beside the entry
+        # point, so a single-file copy would exercise a runtime that cannot exist.
+        foreach ($pkgFile in @(Get-ChildItem -LiteralPath (Split-Path -Parent $Hook) -File -Filter '*.ps1')) {
+            Copy-Item $pkgFile.FullName (Join-Path $t $pkgFile.Name) -Force
+        }
+        New-Item -ItemType Directory -Path (Join-Path $t '_fakelocal\HookMaker\state') -Force | Out-Null
+        Copy-Item $HookLib (Join-Path $Work '_hooklib.ps1') -Force
+        $script:HookCopyTemplate = $t
+    }
+    return $script:HookCopyTemplate
+}
+
 # Isolated hook copy + fake LOCALAPPDATA per case, so coordination state files
-# never collide between cases or with the real machine. _hooklib.ps1 is placed
-# one level above the copy because the hook dot-sources '..\_hooklib.ps1'.
+# never collide between cases or with the real machine. Still one private
+# directory and one private, EMPTY fake LOCALAPPDATA per call - byte-for-byte
+# the layout the per-call build produced. The copies are deliberately never
+# pooled: cases such as D3 count every TestRunGuard-*.json in their own state
+# directory, and a shared one would let another case's files answer that.
 function New-IsolatedHookCopy {
     param([hashtable]$EnvOverrides = @{})
     $dir = Join-Path $Work ('hookcopy-' + [guid]::NewGuid().ToString('N').Substring(0, 6))
-    New-Item -ItemType Directory -Path $dir -Force | Out-Null
-    # The whole hook PACKAGE - the installer stages every .ps1 beside the entry
-    # point, so a single-file copy would exercise a runtime that cannot exist.
-    foreach ($pkgFile in @(Get-ChildItem -LiteralPath (Split-Path -Parent $Hook) -File -Filter '*.ps1')) {
-        Copy-Item $pkgFile.FullName (Join-Path $dir $pkgFile.Name) -Force
-    }
-    Copy-Item $HookLib (Join-Path $Work '_hooklib.ps1') -Force
+    [void](Copy-Tree (Get-HookCopyTemplate) $dir)
     if ($EnvOverrides.Count -gt 0) {
         $lines = New-Object System.Collections.Generic.List[string]
         foreach ($key in $EnvOverrides.Keys) { [void]$lines.Add($key + '=' + $EnvOverrides[$key]) }
         Write-Utf8 (Join-Path $dir '.env') (($lines.ToArray() -join "`r`n") + "`r`n")
     }
-    $fakeLocal = Join-Path $dir '_fakelocal'
-    New-Item -ItemType Directory -Path (Join-Path $fakeLocal 'HookMaker\state') -Force | Out-Null
-    return [pscustomobject]@{ Script = (Join-Path $dir 'Test-Completion-Check.ps1'); LocalAppData = $fakeLocal }
+    return [pscustomobject]@{ Script = (Join-Path $dir 'Test-Completion-Check.ps1'); LocalAppData = (Join-Path $dir '_fakelocal') }
 }
 
 function Get-StateDir { param($Copy) return (Join-Path $Copy.LocalAppData 'HookMaker\state') }

@@ -9,25 +9,34 @@
 # The underscore prefix keeps it out of the runner's Test-*.ps1 glob, so it
 # needs no ci.yml bucket entry of its own.
 
-    # =====================================================================
-    Write-Host '--- Large-File-Check: pre-task anti-fragmentation wording ---' -ForegroundColor Cyan
-    $lfProj = New-Proj 'LargeFilePlain'
-    $r = Fire -HookPath $LargeFileHook -Cwd $lfProj
-    Check 'pre-task note mentions the threshold is a review signal, not a rule' ($r.Out -match 'REVIEW SIGNAL, not an architectural law') $r.Out
-    Check 'pre-task note explicitly forbids wrappers/forwarding/arbitrary fragmentation' (
-        $r.Out -match 'wrappers, forwarding files, arbitrary fragments, or one-function files') $r.Out
-    Check 'pre-task note allows appending when the code shares the same responsibility' ($r.Out -match 'appending is correct when the new code genuinely belongs') $r.Out
-
-    # =====================================================================
-    Write-Host '--- Large-File-Check: Stop report is a client-aware, non-blocking advisory (never decision:block) ---' -ForegroundColor Cyan
-    # The AI owns the split decision, so the Stop report is an advisory, never a
-    # decision:block (on Codex a Stop block coerces a new prompt). Cooldown state is
-    # redirected under $Work so this section leaves NO residue in the real
-    # LOCALAPPDATA, and each client shape uses its OWN project so the per-project
-    # cooldown never suppresses the second fire.
+    # Hook state (the cooldown timestamp AND the SessionStart baseline) is
+    # redirected under $Work for the WHOLE section, so neither the pre-task fire
+    # below nor the Stop fires leave residue in the real LOCALAPPDATA. It used to
+    # be set only around the Stop block, from when SessionStart wrote no state.
     $lfOrigLocalAppData = $env:LOCALAPPDATA
     $env:LOCALAPPDATA = (Join-Path $Work 'lf-fakelocal')
     New-Item -ItemType Directory -Path $env:LOCALAPPDATA -Force | Out-Null
+
+    # =====================================================================
+    Write-Host '--- Large-File-Check: pre-task hard-ceiling wording ---' -ForegroundColor Cyan
+    $lfProj = New-Proj 'LargeFilePlain'
+    $r = Fire -HookPath $LargeFileHook -Cwd $lfProj
+    # These three replace the assertions on the wording the 800-line hard-ceiling
+    # rule retired ("REVIEW SIGNAL, not an architectural law", "wrappers,
+    # forwarding files, arbitrary fragments...", "appending is correct when ...").
+    Check 'pre-task note states the ceiling is HARD and enforced at write time' ($r.Out -match 'HARD CEILING per source file, enforced when you write') $r.Out
+    Check 'pre-task note explicitly forbids a wrapper/forwarding file/fragment that ducks the number' (
+        $r.Out -match 'never a thin wrapper, forwarding file, or fragment created to duck the number') $r.Out
+    Check 'pre-task note closes a near-ceiling file to new code instead of allowing an append' ($r.Out -match 'is CLOSED to new code') $r.Out
+
+    # =====================================================================
+    Write-Host '--- Large-File-Check: Stop report is a client-aware, non-blocking advisory (never decision:block) ---' -ForegroundColor Cyan
+    # A file that was already oversized is the AI's call, so that Stop report is an
+    # advisory, never a decision:block (on Codex a Stop block coerces a new
+    # prompt). No SessionStart baseline is taken below, so the one Stop gate -
+    # files this task pushed past the ceiling - cannot fire here either. Each
+    # client shape uses its OWN project so the per-project cooldown never
+    # suppresses the second fire.
     try {
         $lfHookLowThreshold = Join-Path $Work ('lfhookcopy-' + [guid]::NewGuid().ToString('N').Substring(0, 6))
         New-Item -ItemType Directory -Path $lfHookLowThreshold -Force | Out-Null
@@ -51,11 +60,11 @@
             $null -ne $lfClaudeDoc -and $null -ne $lfClaudeDoc.PSObject.Properties['hookSpecificOutput'] -and
             [string]$lfClaudeDoc.hookSpecificOutput.hookEventName -eq 'Stop' -and $r.Out -notmatch '"decision"') $r.Out
         Check 'an oversized file is still detected and reported' ($lfClaudeMsg -match 'LARGE FILE CHECK' -and $lfClaudeMsg -match 'big\.ps1') $lfClaudeMsg
-        Check 'the reason says no split is mandatory' ($lfClaudeMsg -match 'No split is mandatory - this is advisory') $lfClaudeMsg
-        Check 'the reason repeats the review-signal-not-a-rule framing' ($lfClaudeMsg -match 'a REVIEW SIGNAL, not proof of bad architecture') $lfClaudeMsg
-        Check 'the reason forbids thin wrappers/pass-through/arbitrary fragments here too' ($lfClaudeMsg -match 'never create thin wrappers, pass-through modules, or arbitrary fragments') $lfClaudeMsg
+        Check 'the reason says a pre-existing oversized file is advisory and blocks nothing' ($lfClaudeMsg -match 'this is advisory and nothing here blocks') $lfClaudeMsg
+        Check 'the reason states the ceiling binds what you WRITE, not what already exists' ($lfClaudeMsg -match 'the ceiling binds what you WRITE' -and $lfClaudeMsg -match 'the gate fires only on a file this task itself pushed past it') $lfClaudeMsg
+        Check 'the reason forbids thin wrappers/pass-through/arbitrary fragments here too' ($lfClaudeMsg -match 'never create a thin wrapper, pass-through module or arbitrary fragment') $lfClaudeMsg
         Check 'the reason forbids starting an unrelated refactor merely because a file is large' ($lfClaudeMsg -match 'never start a refactor unrelated to the current task') $lfClaudeMsg
-        Check 'a safe/no-split outcome remains explicitly valid' ($lfClaudeMsg -match 'finish with no split') $lfClaudeMsg
+        Check 'a pre-existing oversized file is told to stop growing, not to be split on the spot' ($lfClaudeMsg -match 'stop growing' -and $lfClaudeMsg -match 'extract from the file rather than adding to it') $lfClaudeMsg
         # BYTE-COMPATIBILITY (real emission site 2 of 4): Large-File-Check's own
         # Write-Advisory Claude branch, fed the message it actually produced.
         # Run on the 5.1 host: hookSpecificOutput has TWO keys and .NET Core
