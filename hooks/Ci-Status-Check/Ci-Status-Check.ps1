@@ -222,35 +222,57 @@ function Test-CiBillingBlocked {
         }
     }
     if ($failingIds.Count -eq 0) { return $false }               # nothing failing here - not our case
+    # GitHub attaches the billing annotation to ONE check-run; its siblings in
+    # the same blocked run fail carrying NO annotations at all. Demanding the
+    # annotation on EVERY failing check-run therefore can never be satisfied by
+    # a multi-job workflow - measured 2026-09-12 on this repository's 7-job
+    # matrix, exactly 1 of 7 carried it and the other 6 had none, so the whole
+    # auto-detection was dead for any matrix build.
+    #
+    # "No annotations" is INCONCLUSIVE on its own, not disqualifying. A
+    # DIFFERENT failure annotation still hard-blocks, which is the property the
+    # stricter rule existed to protect: a broken workflow file also yields zero
+    # steps, but it yields its own annotation, so it can never be read as
+    # billing. Billing therefore needs one positive and zero contradictions.
+    $sawBilling = $false
     foreach ($id in $failingIds) {
-        if (-not (Test-CheckRunHasBillingAnnotation -RepoSlug $RepoSlug -CheckRunId $id -MaxPages $maxPages -PerPage $perPage)) {
-            return $false                                        # a failing run not explained by billing (or unverifiable) - real failure
-        }
+        $verdict = Get-CheckRunBillingVerdict -RepoSlug $RepoSlug -CheckRunId $id -MaxPages $maxPages -PerPage $perPage
+        if ($verdict -eq 'billing') { $sawBilling = $true; continue }
+        if ($verdict -eq 'none') { continue }                     # unannotated sibling of the blocked run
+        return $false                                            # 'other' (a real annotated failure) or 'unverifiable' - fail closed
     }
-    return $true    # every failing check-run in the COMPLETE verified set is billing-annotated
+    return $sawBilling
 }
 
-# True ONLY when one check-run's annotations (across every page, up to the same
-# strict bound) include GitHub's billing/payment failure annotation. Fails CLOSED
-# (returns $false) on any query error, an unparseable page, or exceeding the page
-# bound without an empty terminating page (truncation); an empty page reached
-# with no billing annotation found means a genuine, non-billing failure.
-function Test-CheckRunHasBillingAnnotation {
+# One check-run's annotations, as a three-state verdict across every page up to
+# the same strict bound:
+#   'billing'      - carries GitHub's billing/payment failure annotation
+#   'none'         - reached a terminating empty page with no failure annotation
+#   'other'        - carries a failure annotation that is NOT billing
+#   'unverifiable' - query error, unparseable page, or the page bound was hit
+# Only 'billing' is positive evidence; 'other' and 'unverifiable' are treated as
+# a genuine failure by the caller, so the function still fails CLOSED.
+function Get-CheckRunBillingVerdict {
     param([string]$RepoSlug, [string]$CheckRunId, [int]$MaxPages, [int]$PerPage)
+    $sawOtherFailure = $false
     for ($page = 1; $page -le $MaxPages; $page++) {
         $annJson = Invoke-QuietCommand -FilePath gh -ArgumentList @('api', ('repos/' + $RepoSlug + '/check-runs/' + $CheckRunId + '/annotations?per_page=' + $PerPage + '&page=' + $page))
-        if ($LASTEXITCODE -ne 0) { return $false }              # query error - fail closed
+        if ($LASTEXITCODE -ne 0) { return 'unverifiable' }       # query error - fail closed
         try { $annotations = @(((@($annJson) -join "`n") | ConvertFrom-Json)) }
-        catch { return $false }                                 # unparseable - fail closed
-        if ($annotations.Count -eq 0) { return $false }          # end of annotations, no billing found
+        catch { return 'unverifiable' }                          # unparseable - fail closed
+        if ($annotations.Count -eq 0) {
+            if ($sawOtherFailure) { return 'other' }
+            return 'none'                                        # no annotations at all - inconclusive, not disqualifying
+        }
         foreach ($ann in $annotations) {
             if ($null -eq $ann) { continue }
             $level = ([string](Get-Field $ann 'annotation_level')).ToLowerInvariant()
             $message = [string](Get-Field $ann 'message')
-            if ($level -eq 'failure' -and $message -match $script:BillingAnnotationPattern) { return $true }
+            if ($level -eq 'failure' -and $message -match $script:BillingAnnotationPattern) { return 'billing' }
+            if ($level -eq 'failure') { $sawOtherFailure = $true }
         }
     }
-    return $false    # exceeded the page bound without a terminating empty page - fail closed
+    return 'unverifiable'    # exceeded the page bound without a terminating empty page - fail closed
 }
 
 function Get-CiRunSnapshot {

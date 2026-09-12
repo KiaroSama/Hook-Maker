@@ -14,6 +14,13 @@
 # Usage:  pwsh -NoLogo -NoProfile -File .\scripts\Run-Tests.ps1 [-ThrottleLimit N] [-Only <name,...>]
 # Exit code is the number of FAILED SUITES (0 = all green).
 
+# Strict parameter binding. Without it a plain param() silently drops an
+# unknown flag into $args: `-MaxWorkers 4` bound NOTHING and three matrix
+# runs were reported at a worker count they never used (2026-09-12). The
+# worker parameter is -ThrottleLimit; -MaxWorkers belongs to the GUARDED
+# runner, which exports it as HOOKMAKER_MAX_TEST_WORKERS for this script
+# to clamp against. A wrong flag must fail loudly, not be ignored.
+[CmdletBinding()]
 param(
     [int]$ThrottleLimit = 0,
     [string]$Only = '',

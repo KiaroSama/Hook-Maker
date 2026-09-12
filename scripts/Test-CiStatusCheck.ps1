@@ -170,8 +170,9 @@ function Set-Mock {
 }
 
 # GitHub's exact billing annotation, plus a canned check-runs list builder so the
-# billing tests read like the real API. A billing block annotates EVERY failing
-# check-run identically.
+# billing tests read like the real API. GitHub annotates ONE failing check-run
+# when a billing block stops a run; its siblings fail with NO annotations, so
+# both shapes are exercised below.
 $script:BillingMessage = "The job was not started because recent account payments have failed or your spending limit needs to be increased. Please check the 'Billing & plans' section in your settings"
 function New-CheckRunsJson {
     param([hashtable[]]$Runs)   # each: @{ id = '1'; conclusion = 'failure' }
@@ -483,6 +484,50 @@ try {
     $r = Fire -HookPath $CiHook -Cwd $ciBill -EventName 'Stop'
     Check 'billing block -> recorded exception persists on the next stop (no re-block)' ($r.Out -notmatch '"decision":"block"') $r.Out
     Check 'billing block -> the SAME session is not told twice (a Stop advisory re-invokes the model - bounded like a block)' ($r.Out -eq '') $r.Out
+
+    # GitHub's REAL shape on a multi-job workflow: it annotates ONE check-run
+    # and the rest fail carrying NO annotations at all. The original rule -
+    # every failing check-run must carry the annotation - could therefore never
+    # be satisfied by a matrix build, so the exception was dead exactly where it
+    # was needed most. Measured on this repository 2026-09-12: 7 failing
+    # check-runs, 1 annotated, 6 with none, while 21 single-job repositories on
+    # the same account recorded their billing blocker correctly.
+    $ciBillMulti = New-GitRepo 'ci-bill-multi'
+    $shaBillMulti = Get-HeadSha $ciBillMulti
+    Set-Mock -RunJson '[{"databaseId":91,"name":"CI","workflowName":"CI","status":"completed","conclusion":"failure"}]' `
+        -ExpectedSha $shaBillMulti `
+        -CheckRunsJson (New-CheckRunsJson @(@{id = '91'; conclusion = 'failure' }, @{id = '92'; conclusion = 'failure' }, @{id = '93'; conclusion = 'failure' })) `
+        -Annotations @{ '91' = (New-BillingAnnotations); '92' = '[]'; '93' = '[]' }
+    $r = Fire -HookPath $CiHook -Cwd $ciBillMulti -EventName 'Stop'
+    Check 'multi-job billing: one annotated sibling is enough, unannotated ones do not veto' (
+        $r.Out -notmatch '"decision":"block"' -and $r.Out -match 'account-billing') $r.Out
+
+    # ...and the safety property the strict rule protected is UNCHANGED: a
+    # failing check-run carrying its OWN, different failure annotation is a real
+    # failure and still hard blocks, even alongside a billing-annotated sibling.
+    # Without this the relaxation would let a genuine red build pass as billing.
+    $ciBillMixed = New-GitRepo 'ci-bill-mixed'
+    $shaBillMixed = Get-HeadSha $ciBillMixed
+    Set-Mock -RunJson '[{"databaseId":95,"name":"CI","workflowName":"CI","status":"completed","conclusion":"failure"}]' `
+        -ExpectedSha $shaBillMixed `
+        -CheckRunsJson (New-CheckRunsJson @(@{id = '95'; conclusion = 'failure' }, @{id = '96'; conclusion = 'failure' })) `
+        -Annotations @{ '95' = (New-BillingAnnotations); '96' = (New-RealFailureAnnotations) }
+    $r = Fire -HookPath $CiHook -Cwd $ciBillMixed -EventName 'Stop'
+    Check 'a real annotated failure beside a billing one still HARD BLOCKS' ($r.Out -match '"decision":"block"') $r.Out
+    Check 'that mixed case is never recorded as an external blocker' ($r.Out -notmatch 'account-billing') $r.Out
+
+    # No billing annotation anywhere - unannotated failures alone prove nothing
+    # and must stay a genuine failure, so the relaxation cannot turn silence
+    # into an excuse.
+    $ciBillNone = New-GitRepo 'ci-bill-none'
+    $shaBillNone = Get-HeadSha $ciBillNone
+    Set-Mock -RunJson '[{"databaseId":97,"name":"CI","workflowName":"CI","status":"completed","conclusion":"failure"}]' `
+        -ExpectedSha $shaBillNone `
+        -CheckRunsJson (New-CheckRunsJson @(@{id = '97'; conclusion = 'failure' }, @{id = '98'; conclusion = 'failure' })) `
+        -Annotations @{ '97' = '[]'; '98' = '[]' }
+    $r = Fire -HookPath $CiHook -Cwd $ciBillNone -EventName 'Stop'
+    Check 'failures with NO annotations at all are still a hard block, never billing' (
+        $r.Out -match '"decision":"block"' -and $r.Out -notmatch 'account-billing') $r.Out
     $r = Fire -HookPath $CiHook -Cwd $ciBill -EventName 'Stop' -Extra @{ session_id = 'a-later-session' }
     Check 'billing block -> a NEW session is told again, still non-blocking' ($r.Out -notmatch '"decision":"block"' -and $r.Out -match 'CI NOT VERIFIED GREEN') $r.Out
     $r = Fire -HookPath $CiHook -Cwd $ciBill -EventName 'Stop' -Extra @{ session_id = 'a-later-session' }
