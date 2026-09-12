@@ -42,7 +42,7 @@ $script:HookMakerLogicalEvents = @(
 )
 
 # ---- per-client capability records -----------------------------------------
-# registrationKind is the field that stops Kiro being forced into a
+# registrationKind is the field that stops a per-hook-file client being forced into a
 # Claude/Codex shape:
 #   sharedSettingsFile - ONE settings file holds every hook for that client, so
 #                        installing is a read-modify-write of a shared document
