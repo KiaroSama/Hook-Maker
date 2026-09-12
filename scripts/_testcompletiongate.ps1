@@ -76,6 +76,37 @@
     Check 'a cwd that does not exist -> silent, never an error' ($r.Exit -eq 0 -and $r.Out -eq '') $r.Err
 
     # =====================================================================
+    # A SUBAGENT IS NEVER BLOCKED. On Claude a Stop/SubagentStop
+    # `decision:block` FORCES CONTINUATION: the reason becomes the subagent's
+    # next instruction, so it abandons what it was dispatched to do and the
+    # parent receives this gate's text instead of the result - every finding
+    # the subagent had produced is lost. This gate's conditions are TASK-level
+    # (guarded evidence for the whole task), which a subagent neither caused
+    # nor can clear, so blocking one also breaks the rule that every block must
+    # name the action that clears it. The identical condition must still hard
+    # block on the main agent's Stop, which is the only place it belongs.
+    Write-Host '--- the same blocking condition: Stop blocks, SubagentStop never does ---' -ForegroundColor Cyan
+    $c = New-IsolatedHookCopy
+    $p = New-GitRepo 'SubagentNeverBlocked'
+    Write-GuardedResult -Copy $c -Root $p -Overall 'terminated' -ExitCode 124 -TerminateReason 'wallTimeout' -TerminateDetail 'exceeded the 1800s wall ceiling'
+    $rStop = Fire -Copy $c -Cwd $p
+    Check 'the condition really does block on Stop (control)' ($rStop.Out -match '"decision"\s*:\s*"block"') $rStop.Out
+    $c = New-IsolatedHookCopy
+    $p = New-GitRepo 'SubagentNeverBlocked2'
+    Write-GuardedResult -Copy $c -Root $p -Overall 'terminated' -ExitCode 124 -TerminateReason 'wallTimeout' -TerminateDetail 'exceeded the 1800s wall ceiling'
+    $rSub = Fire -Copy $c -Cwd $p -EventName 'SubagentStop'
+    Check 'the SAME condition never emits decision:block at SubagentStop' ($rSub.Out -notmatch '"decision"\s*:\s*"block"') $rSub.Out
+    Check 'SubagentStop still exits 0 and never fails the subagent' ($rSub.Exit -eq 0) $rSub.Err
+    Check 'the finding is still delivered, as a non-blocking advisory' (
+        $rSub.Out -match 'additionalContext' -and $rSub.Out -match 'TEST COMPLETION CHECK') $rSub.Out
+    $c = New-IsolatedHookCopy
+    $p = New-GitRepo 'SubagentNeverBlockedCodex'
+    Write-GuardedResult -Copy $c -Root $p -Overall 'terminated' -ExitCode 124 -TerminateReason 'wallTimeout' -TerminateDetail 'exceeded the 1800s wall ceiling'
+    $rSubCodex = Fire -Copy $c -Cwd $p -EventName 'SubagentStop' -Codex
+    Check 'the Codex shape is non-blocking at SubagentStop too' (
+        $rSubCodex.Exit -eq 0 -and $rSubCodex.Out -notmatch '"decision"\s*:\s*"block"') $rSubCodex.Out
+
+    # =====================================================================
     Write-Host '--- a fresh clean guarded result allows completion ---' -ForegroundColor Cyan
     $c = New-IsolatedHookCopy
     $p = New-GitRepo 'CleanRun'

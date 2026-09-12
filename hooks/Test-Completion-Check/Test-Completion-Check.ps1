@@ -481,7 +481,18 @@ function Write-Finding {
     # gate has its block downgraded to the strongest advisory and reported as
     # degraded, which is what 'degraded-stop-gate' means - never a fake gate.
     $kind = 'advisory'
-    if ($Blocking -and -not $script:advisoryOnly) { $kind = 'block' }
+    # NEVER block a SUBAGENT. On Claude a Stop/SubagentStop `decision:block`
+    # FORCES CONTINUATION: the reason arrives as the subagent's next
+    # instruction, so it abandons the work it was dispatched to do and the
+    # parent receives this gate's text instead of the result. Everything the
+    # subagent had produced is lost. This gate's conditions are TASK-level -
+    # guarded evidence for the whole task, which a subagent neither caused nor
+    # can clear - so blocking one violates the rule that every block must name
+    # the safe action that clears it. Reproduced 2026-09-12: a SubagentStop
+    # payload emitted a byte-identical block to Stop, for a test command the
+    # MAIN agent had run. The advisory still reaches the model (Claude honours
+    # additionalContext here) and the real gate still holds on the main Stop.
+    if ($Blocking -and -not $script:advisoryOnly -and $script:eventName -ne 'SubagentStop') { $kind = 'block' }
     # Record the block so this gate's own re-entry is recognised. Without it
     # the gate has no memory of having spoken and refuses completion on every
     # Stop; an ADVISORY is not recorded, because it never stopped anything.
