@@ -504,6 +504,10 @@ function Write-Finding {
 # ---- read the recorded evidence (AGGREGATED across per-run files) ----------
 . (Join-Path $PSScriptRoot '_evidence.ps1')
 . (Join-Path $PSScriptRoot '_recovery.ps1')
+# Possible orphaned test processes: ADVISORY ONLY, never a block, never a kill.
+# Write-SurvivorAdvisory is called ONLY where this hook is about to go silent,
+# so it can never pre-empt a gate: every block below still speaks first.
+. (Join-Path $PSScriptRoot '_survivors.ps1')
 
 # Explicit recovery is a narrowly scoped executor. It validates and records an
 # association before the ordinary gate/prune paths, preserving historical receipts.
@@ -899,6 +903,7 @@ if ($null -eq $result -and -not $observedCurrent -and $activePid -eq 0 -and $aba
             'TEST COMPLETION CHECK: ::deep-debug is active for this session but NO guarded test evidence exists for the current project state - no observed run, no guarded result, nothing active.',
             'The deep-debug completion gate consumes only fresh scoped evidence: run the affected suites through scripts\Run-Tests-Guarded.ps1 (the Test-Run-Guard gate supplies the exact bounded command) so a verifiable result document exists, then finish.')
     }
+    Write-SurvivorAdvisory
     exit 0
 }
 # A recorded incident that was already resolved, no pending note, nothing
@@ -912,6 +917,7 @@ if ($incidentKey -ne '' -and (Test-IncidentResolved $incidentKey) -and $script:p
             'TEST COMPLETION CHECK: ::deep-debug is active for this session, and while a past incident is resolved, no CURRENT-state guarded test evidence exists.',
             'Run the affected suites through scripts\Run-Tests-Guarded.ps1 so a fresh clean result document exists for the current project state, then finish.')
     }
+    Write-SurvivorAdvisory
     exit 0
 }
 
@@ -1111,4 +1117,5 @@ if ($script:DeepDebugActive) {
     }
 }
 if ($timingRegressionLines.Count -gt 0) { Write-Finding -Blocking $false -Lines $timingRegressionLines }
+Write-SurvivorAdvisory
 exit 0

@@ -405,10 +405,27 @@ function Write-JsonFileAtomic {
     if (-not (Test-Path -LiteralPath $directory -PathType Container)) {
         New-Item -ItemType Directory -Path $directory -Force | Out-Null
     }
-    $temporaryPath = $Path + '.tmp'
+    # A directory occupying the target would fail the publish below in a way
+    # the caller cannot tell apart from a write error.
+    if (Test-Path -LiteralPath $Path -PathType Container) {
+        throw ('Cannot write JSON over a directory: ' + $Path)
+    }
+    # Each writer owns ITS OWN temporary. The shared '<target>.tmp' let two
+    # unlocked concurrent writers trade bytes: A wrote its temp, B overwrote
+    # that same file, A published B's bytes as its own, and B's publish then
+    # failed on a file A had already moved away. Nothing reported an error.
+    $temporaryPath = $Path + '.' + [guid]::NewGuid().ToString('N').Substring(0, 8) + '.tmp'
     $json = $Value | ConvertTo-Json -Depth 50
-    [System.IO.File]::WriteAllText($temporaryPath, $json, [System.Text.UTF8Encoding]::new($false))
-    Move-Item -LiteralPath $temporaryPath -Destination $Path -Force
+    try {
+        [System.IO.File]::WriteAllText($temporaryPath, $json, [System.Text.UTF8Encoding]::new($false))
+        Move-Item -LiteralPath $temporaryPath -Destination $Path -Force
+    }
+    finally {
+        # Only ever this writer's own temporary, never another writer's.
+        if (Test-Path -LiteralPath $temporaryPath -PathType Leaf) {
+            Remove-Item -LiteralPath $temporaryPath -Force -ErrorAction SilentlyContinue
+        }
+    }
 }
 
 # ---- HM-07: bounded rolling test-timing history (READ side) -----------------
@@ -776,22 +793,27 @@ function Get-LatestWorkTimeUtc {
     if ($LASTEXITCODE -eq 0 -and $commitUnix) {
         $latest = [DateTimeOffset]::FromUnixTimeSeconds([int64]([string]$commitUnix)).UtcDateTime
     }
-    $status = Invoke-QuietCommand -FilePath git -ArgumentList @('-C', $ProjectRoot, 'status', '--porcelain')
+    # -z, NOT plain --porcelain. With core.quotepath at its default git
+    # OCTAL-ESCAPES any non-ASCII path in the human-readable form, so a modified
+    # Persian or CJK filename arrived as "\331\276..." - a path that does not
+    # exist, whose timestamp was therefore silently missed and the project looked
+    # untouched since its last commit. Reproduced 2026-09-12: the hook reported the
+    # commit time while a Persian file edited 2 s earlier sat on disk. -z emits the
+    # real path bytes, NUL-separated and never quoted, so nothing needs unescaping.
+    $status = Invoke-QuietCommand -FilePath git -ArgumentList @('-C', $ProjectRoot, 'status', '--porcelain', '-z')
     if ($LASTEXITCODE -eq 0) {
-        foreach ($line in @($status)) {
-            if ([string]::IsNullOrWhiteSpace([string]$line)) { continue }
-            $lineText = [string]$line
-            # A rename/copy line is "XY old -> new" (X or Y = R/C) instead of "XY path" -
-            # only the destination half exists on disk. Treating the raw "old -> new" text
-            # as one literal path embeds the arrow's '>' via Join-Path below, and
-            # Test-Path -LiteralPath then throws on PS 5.1 ('>' is an illegal path char).
+        # The helper drops empty lines, so rejoin before splitting on the real
+        # separator; -z output carries no newlines of its own.
+        $records = @((([string]::Join("`n", @($status))) -split [char]0) | Where-Object { $_ -ne '' })
+        for ($recordIndex = 0; $recordIndex -lt $records.Count; $recordIndex++) {
+            $lineText = [string]$records[$recordIndex]
+            if ($lineText.Length -lt 4) { continue }
+            # Under -z a rename/copy is TWO records: 'XY <new>' then '<old>'. Only
+            # the destination exists on disk, so consume and discard the original
+            # rather than testing a path that was moved away.
             $code = $lineText.Substring(0, 2)
             $relative = $lineText.Substring(3)
-            if ($code.Contains('R') -or $code.Contains('C')) {
-                $arrowIndex = $relative.IndexOf(' -> ')
-                if ($arrowIndex -ge 0) { $relative = $relative.Substring($arrowIndex + 4) }
-            }
-            $relative = $relative.Trim('"')
+            if ($code.Contains('R') -or $code.Contains('C')) { $recordIndex++ }
             if ($relative -like '.ai/*' -or $relative -like 'graphify-out/*' -or $relative -like 'logs/*') { continue }
             try {
                 $full = Join-Path $ProjectRoot ($relative.Replace('/', '\'))

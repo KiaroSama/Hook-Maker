@@ -18,6 +18,29 @@
         $msgDd -match 'exit-code propagation' -and $msgDd -match 'no ad hoc sleeps') $msgDd
     Check 'the deny tells the model to use only a documented native timeout flag, never a guessed one' (
         $msgDd -match 'documents its OWN native timeout flag' -and $msgDd -match 'never a guessed one') $msgDd
+    # E-04 cadence: the note states WHEN the replacement belongs, so a refusal
+    # mid-implementation does not turn into a guarded run after every edit.
+    Check 'the deny states the verification cadence (defer to the single heavy pass, light checks until then)' (
+        $msgDd -match 'Cadence: if code is still being written' -and
+        $msgDd -match 'defer this suite to the single heavy pass after ALL edits' -and
+        $msgDd -match 'use light checks until then') $msgDd
+    Check 'the cadence sentence names the three exceptions that justify running now' (
+        $msgDd -match 'only if this is that final pass' -and
+        $msgDd -match '::test-audit timing, a suite-only failure' -and
+        $msgDd -match 'the user asked for it') $msgDd
+
+    # The same note carries the other two preconditions the rules put on a run:
+    # it must already be optimized, and the guarded runner must be its only owner.
+    Check 'the deny requires the suite to be optimized BEFORE it may run' (
+        $msgDd -match 'Every test that will run must already be optimized' -and
+        $msgDd -match 'Test Optimization Before Any Run') $msgDd
+    Check 'the deny names the guarded runner as the only permitted owner (no background job)' (
+        $msgDd -match 'the guarded runner is the only owner this run may have' -and
+        $msgDd -match 'never wrap it in a background job') $msgDd
+    # The cadence text is GUIDANCE on the note: it never reaches the command.
+    $replDd = Get-Replacement $msgDd
+    Check 'the cadence line rides the note, never the replacement command' (
+        $replDd -match 'Run-Tests-Guarded\.ps1' -and $replDd -notmatch 'Cadence') $replDd
     Check 'a command with no file redirect gets NO UTF-8 output note' ($msgDd -notmatch 'WRITES textual output') $msgDd
 
     # =====================================================================

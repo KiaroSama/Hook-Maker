@@ -1,9 +1,13 @@
-# Offline test suite for Large-File-Check - the two-stage, advisory-only
-# oversized-source detector.
+# Offline test suite for Large-File-Check - the two-stage oversized-source
+# detector: advisory guidance and report, plus the ONE Stop gate.
 #
-# Covers the 27.txt contract: the pre-task preventive guidance (design correctly
-# from the start, uses the effective threshold, cohesion-first / anti-wrapper, AI
-# owns the decision); the Stop scan (strict greater-than so 800 is silent and 801
+# This entry file owns the harness, fixtures and summary. The gate's own cases -
+# the block, its exact recovery text, the once-per-fingerprint bound and what
+# must never block - live in the companion `_testlargefileceiling.ps1`.
+#
+# Covers the 27.txt contract: the pre-task guidance (the hard ceiling at write
+# time, the effective threshold, a near-ceiling file closed to new code, the
+# anti-wrapper rule); the Stop scan (strict greater-than so 800 is silent and 801
 # is reported but never forced to split, largest-first ordering + remaining count,
 # cooldown, stop_hook_active recursion guard, excluded trees, reparse points not
 # followed, >3 MB files skipped, honest PARTIAL wording when the scan ceiling is
@@ -157,13 +161,17 @@ try {
         $null -ne $parsed1 -and $null -ne $parsed1.PSObject.Properties['hookSpecificOutput'] -and
         [string]$parsed1.hookSpecificOutput.hookEventName -eq 'SessionStart') $r.Out
     $msg1 = Get-Advisory $r.Out
-    Check '1. SessionStart carries "design correctly from the start" guidance' ($msg1 -match '(?i)design correctly from the start') $msg1
-    Check '2. it says not to postpone decomposition until the file is large' ($msg1 -match '(?i)postpone decomposition') $msg1
+    # Re-pointed onto the hard-ceiling wording: what they pinned before ("review
+    # signal", "small overage", "appending is correct") is now the opposite rule.
+    Check '1. SessionStart states the ceiling is HARD and enforced when you write' (
+        $msg1 -match '(?i)HARD CEILING per source file, enforced when you write') $msg1
+    Check '2. it says decomposition is never needed later' ($msg1 -match '(?i)decomposition is never needed later') $msg1
     Check '4. default threshold 800 appears in the guidance' ($msg1 -match '\b800\b') $msg1
-    Check '6a. cohesion-first guidance remains' ($msg1 -match '(?i)cohesion') $msg1
-    Check '6b. anti-wrapper guidance remains' ($msg1 -match '(?i)wrappers') $msg1
-    Check '7. it states architectural judgment is the AI agent''s, not the hook''s' (
-        $msg1 -match '(?i)architectural' -and $msg1 -match '(?i)AI agent') $msg1
+    Check '6a. a file at or near the ceiling is declared CLOSED to new code' (
+        $msg1 -match '(?i)about 700 lines or more\) is CLOSED to new code') $msg1
+    Check '6b. anti-wrapper guidance remains' ($msg1 -match '(?i)wrapper') $msg1
+    Check '7. the guidance carries the ceiling to test files and subagents' (
+        $msg1 -match '(?i)Test files count too' -and $msg1 -match '(?i)subagent brief') $msg1
 
     # =====================================================================
     Write-Host '--- Pre-task uses the CONFIGURED threshold; invalid falls back to 800 ---' -ForegroundColor Cyan
@@ -208,8 +216,8 @@ try {
     $r = Fire -HookPath $hc6.Script -Cwd $proj6 -EventName 'Stop' -LocalAppData $hc6.LocalAppData
     $msg6 = Get-Advisory $r.Out
     Check '9. 801 lines is reported' ($msg6 -match 'a\.py \(801 lines\)') $msg6
-    Check '10. 801 does not mandate a split' ($msg6 -match '(?i)No split is mandatory' -and $msg6 -match '(?i)REVIEW SIGNAL') $msg6
-    Check '10b. the report defers the decision to the AI (cohesion outranks line count)' ($msg6 -match '(?i)Cohesion outranks raw line count') $msg6
+    Check '10. an already-oversized file is advisory: it blocks nothing and mandates no split' ($msg6 -match '(?i)this is advisory and nothing here blocks' -and $msg6 -match '(?i)the ceiling binds what you WRITE') $msg6
+    Check '10b. the report still defers the split decision to a real responsibility boundary' ($msg6 -match '(?i)Split by a real responsibility, cohesive module, layer or public boundary') $msg6
 
     $hc7 = New-IsolatedHookCopy
     $proj7 = New-Proj 'ClearlyLarger'
@@ -664,10 +672,13 @@ try {
     New-SourceFile (Join-Path $proj23 'src\a.py') 1100
     $rPre = Fire -HookPath $hc23.Script -Cwd $proj23 -EventName 'SessionStart' -LocalAppData $hc23.LocalAppData -Exe 'powershell.exe'
     Check '30a. 5.1 host: pre-task guidance works' (
-        $rPre.Exit -eq 0 -and (Get-Advisory $rPre.Out) -match '(?i)design correctly from the start') ($rPre.Out + $rPre.Err)
+        $rPre.Exit -eq 0 -and (Get-Advisory $rPre.Out) -match '(?i)HARD CEILING per source file') ($rPre.Out + $rPre.Err)
     $rStop = Fire -HookPath $hc23.Script -Cwd $proj23 -EventName 'Stop' -LocalAppData $hc23.LocalAppData -Exe 'powershell.exe'
     Check '30b. 5.1 host: Stop scan reports the oversized file' (
         $rStop.Exit -eq 0 -and (Get-Advisory $rStop.Out) -match 'a\.py \(1100 lines\)') ($rStop.Out + $rStop.Err)
+
+    # The Stop gate's own cases (see the header) - in this scope, this harness.
+    . (Join-Path $ScriptRoot '_testlargefileceiling.ps1')
 
     # =====================================================================
     Write-Host '--- No residue in the REAL HookMaker state dir ---' -ForegroundColor Cyan

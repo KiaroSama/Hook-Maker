@@ -27,6 +27,7 @@
 #   _testcompletionledger.ps1    incident ledger, pruning and retention (C/D/R)
 #   _testcompletionnotes.ps1     state migration, the durable .ai/ note, the race
 #   _testcompletionoutput.ps1    client shapes, .env validation, JSON, 5.1
+#   _testcompletionsurvivors.ps1 the advisory-only possible-orphan process list
 #   _testcompletiondeepdebug.ps1 the E-05 ::deep-debug verdicts + E-13 safety
 #
 # Usage:  pwsh -NoLogo -NoProfile -File .\scripts\Test-TestCompletionCheck.ps1 [-KeepArtifacts] [-RecoveryOnly]
@@ -74,6 +75,9 @@ try {
 
     # Client output shapes, .env validation, JSON shape, and 5.1.
     . (Join-Path $PSScriptRoot '_testcompletionoutput.ps1')
+
+    # The advisory-only list of possible orphaned test processes.
+    . (Join-Path $PSScriptRoot '_testcompletionsurvivors.ps1')
 
     # The E-05 ::deep-debug verdicts and the E-13 static-safety proofs.
     . (Join-Path $PSScriptRoot '_testcompletiondeepdebug.ps1')

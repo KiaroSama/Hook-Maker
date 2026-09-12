@@ -27,6 +27,7 @@ else {
 }
 
 . (Join-Path $ScriptRoot '..\_hooklib.ps1')
+. (Join-Path $ScriptRoot '_packageguard.ps1')
 
 function Get-PropertyValue {
     param(
@@ -381,14 +382,6 @@ function Get-AcknowledgementCommand {
     return 'powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "' + $HookScriptPath + '" -Acknowledge -ProjectRoot "' + $Context.destinationRoot + '" -Profile "' + $Context.profileId + '" -Route "' + $Context.routeId + '" -ConfigPath "' + $ConfigPath + '" -ContentFingerprint "' + $Fingerprint + '"'
 }
 
-function Remove-DirectorySafe {
-    param([string]$Path)
-
-    if (-not [string]::IsNullOrWhiteSpace($Path) -and (Test-Path -LiteralPath $Path -PathType Container)) {
-        Remove-Item -LiteralPath $Path -Recurse -Force -ErrorAction SilentlyContinue
-    }
-}
-
 function Get-MatchingRoutes {
     param(
         [Parameter(Mandatory = $true)]$Config,
@@ -503,7 +496,9 @@ function New-PendingPackage {
     $modified = $modified.ToArray()
     $deleted = $deleted.ToArray()
 
-    Remove-DirectorySafe $StatePaths.inboxRoot
+    # Rebuilding this route's whole staging area is the one case where the
+    # inbox root itself is the legitimate target.
+    [void](Remove-OwnedPackageDirectory -Path $StatePaths.inboxRoot -OwnedRoot $StatePaths.inboxRoot -AllowRootItself)
     $packageRoot = Join-Path $StatePaths.inboxRoot ([string]$ContentSnapshot.fingerprint).Substring(0, 16)
     $filesRoot = Join-Path $packageRoot 'files'
     New-Item -ItemType Directory -Path $filesRoot -Force | Out-Null
@@ -656,7 +651,9 @@ if ($Acknowledge) {
         Set-ObjectProperty -Object $state -Name 'lastNotifiedSessionId' -Value ''
         Set-ObjectProperty -Object $state -Name 'lastNotifiedAtUtc' -Value ''
         Write-JsonFileAtomic -Value $state -Path $statePaths.statePath
-        Remove-DirectorySafe $pendingPackageRoot
+        # packageRoot comes back from persisted state, so it is bounded by the
+        # inbox root this route owns before anything is deleted.
+        [void](Remove-OwnedPackageDirectory -Path $pendingPackageRoot -OwnedRoot $statePaths.inboxRoot)
         [Console]::Out.WriteLine('Review acknowledged. The current source fingerprint is marked as processed.')
         exit 0
     }
@@ -771,7 +768,7 @@ foreach ($context in $contexts) {
 
         if ([string]$state.lastAppliedContentFingerprint -eq [string]$contentSnapshot.fingerprint) {
             if ($null -ne $state.pending) {
-                Remove-DirectorySafe ([string]$state.pending.packageRoot)
+                [void](Remove-OwnedPackageDirectory -Path ([string]$state.pending.packageRoot) -OwnedRoot $statePaths.inboxRoot)
             }
             Set-ObjectProperty -Object $state -Name 'lastAppliedQuickFingerprint' -Value $quickFingerprint
             Set-ObjectProperty -Object $state -Name 'lastAppliedFiles' -Value @($contentSnapshot.files)
