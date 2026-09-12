@@ -57,9 +57,9 @@ if ($eventName -ne 'Stop' -and $eventName -ne 'SubagentStop') { exit 0 }
 # code graph, so when this project is indexed there, do not ask for a
 # graphify graph to be refreshed. Without this the read half would call
 # graphify superseded while this half kept demanding its upkeep.
-$cbmCacheDir = Get-CbmCacheDir -Config (Read-HookEnv (Join-Path $PSScriptRoot '.env'))
+$cbmCwd = [string](Get-Field $hookInput 'cwd')
+$cbmCacheDir = Get-CbmCacheDir -Config (Read-HookEnv (Join-Path $PSScriptRoot '.env')) -ProjectRoot $cbmCwd
 if (Test-CbmInstalled -CacheDir $cbmCacheDir) {
-    $cbmCwd = [string](Get-Field $hookInput 'cwd')
     if (-not [string]::IsNullOrWhiteSpace($cbmCwd)) {
         try {
             if (Test-Path -LiteralPath (Get-CbmProjectDbPath -ProjectRoot $cbmCwd -CacheDir $cbmCacheDir) -PathType Leaf) { exit 0 }

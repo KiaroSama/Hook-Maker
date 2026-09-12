@@ -186,6 +186,128 @@ try {
         $disabledRoots -notcontains 'D:\Projects\Project B') ($disabledRoots -join ' ; ')
     Check 'relocate: an enabled route in the same config still does' (
         $disabledRoots -contains $relGoneRoot) ($disabledRoots -join ' ; ')
+
+    Write-Host '--- relocate: failed replacements retain their retry records ---' -ForegroundColor Cyan
+    & {
+        # Exercise the real orchestration and registry. Only prompts and the
+        # installer outcomes are controlled; no real client installation runs.
+        . (Join-Path $PSScriptRoot 'Setup-SyncGroupInstallFlows.ps1')
+        $savedRelocationStateDir = $env:HOOKMAKER_STATE_DIR
+        $env:HOOKMAKER_STATE_DIR = Join-Path $relWork 'recovery-state'
+        try {
+            $ToolRoot = $relWork
+            $ConfigPath = Join-Path $relWork 'recovery-config.json'
+            $recoveryOldRoot = Join-Path $relWork 'old recovery project'
+            $recoveryNewRoot = Join-Path $relWork 'new recovery project'
+            New-Item -ItemType Directory -Path $recoveryNewRoot -Force | Out-Null
+            Write-JsonFileAtomic -Path $ConfigPath -Value ([pscustomobject]@{
+                version = 2; profiles = @([pscustomobject]@{
+                    id = 'recovery'; name = 'Recovery'; enabled = $true
+                    routes = @([pscustomobject]@{
+                        id = 'recovery-route'; enabled = $true
+                        source = [pscustomobject]@{ root = $recoveryOldRoot; name = 'old recovery project' }
+                        destination = [pscustomobject]@{ root = $recoveryNewRoot; name = 'new recovery project' }
+                    })
+                })
+            })
+            $recoveryRecords = @('complete', 'failed', 'mixed') | ForEach-Object {
+                $clientRecords = [pscustomobject]@{ claude = [pscustomobject]@{ events = @('Stop'); timeout = 60 } }
+                if ($_ -eq 'mixed') {
+                    $clientRecords | Add-Member -MemberType NoteProperty -Name codex -Value ([pscustomobject]@{ events = @('UserPromptSubmit'); timeout = 60 })
+                }
+                [pscustomobject]@{
+                    schema = 2; recordType = 'managed'; origin = 'hookMaker'
+                    id = $_; friendlyName = $_; profile = ''; scope = 'project'; hookType = 'CustomHook'
+                    sourceScript = Join-Path $relWork ($_ + '.ps1'); targetProjectRoot = $recoveryOldRoot
+                    clients = $clientRecords
+                }
+            }
+            Save-InstallRegistry -ToolRoot $ToolRoot -Registry ([pscustomobject]@{ version = 3; installs = @($recoveryRecords) })
+            $recoveryCalls = New-Object System.Collections.Generic.List[string]
+            $recoveryDrops = New-Object System.Collections.Generic.List[string]
+            $recoveryMessages = New-Object System.Collections.Generic.List[string]
+            $recoveryRetry = $false
+            $C = [pscustomobject]@{ Input = ''; LightBlue = ''; Bold = ''; HintYellow = '' }
+            $script:MenuSep = ' | '
+            function Write-Log { param($Level, $Component, $Message) }
+            function Write-PhaseHeader { param($Title, $Color, $Character) }
+            function Write-MenuTitle { param($Text) }
+            function Write-NoteLine { param($Text) [void]$recoveryMessages.Add([string]$Text) }
+            function Write-ErrorLine { param($Text) [void]$recoveryMessages.Add([string]$Text) }
+            function Get-Painted { param($Text, $Color) return $Text }
+            function New-QuestionPrompt { param($Text, $Details, $Default) return $Text }
+            function Read-Answer { param($Prompt, $Key) if ($Key -eq 'relocate pick') { return '1' }; return $recoveryNewRoot }
+            function Read-YesNo { param($Prompt, $Default, $Key) return $true }
+            $InstallScript = {
+                param($Events, $TargetProject, $CustomHook, $ResultPath, $Clients)
+                $name = [System.IO.Path]::GetFileNameWithoutExtension($CustomHook)
+                $client = [string]$Clients[0]
+                [void]$recoveryCalls.Add($name + '/' + $client)
+                $overall = 'ok'
+                $components = @([pscustomobject]@{ component = $client; status = 'ok'; reason = '' })
+                if (-not $recoveryRetry -and $name -eq 'failed') {
+                    $overall = 'failed'
+                    $components = @([pscustomobject]@{ component = $client; status = 'failed'; reason = 'fixtureFailure' })
+                }
+                elseif (-not $recoveryRetry -and $name -eq 'mixed' -and $client -eq 'codex') {
+                    $overall = 'partial'
+                    $components += [pscustomobject]@{ component = 'registry'; status = 'trackingFailed'; reason = 'registryWriteFailed' }
+                }
+                if ($overall -eq 'ok') {
+                    $live = Read-InstallRegistry -ToolRoot $ToolRoot
+                    $replacement = @($live.installs | Where-Object { $_.id -eq ('new-' + $name) }) | Select-Object -First 1
+                    if ($null -eq $replacement) {
+                        $replacement = $recoveryRecords | Where-Object { $_.id -eq $name } | ConvertTo-Json -Depth 20 | ConvertFrom-Json
+                        $replacement.id = 'new-' + $name
+                        $replacement.targetProjectRoot = $TargetProject
+                        $replacement.clients = [pscustomobject]@{}
+                        $live.installs = @($live.installs) + @($replacement)
+                    }
+                    Set-ObjectProperty -Object $replacement.clients -Name $client -Value ([pscustomobject]@{ events = @($Events); timeout = 60 })
+                    Save-InstallRegistry -ToolRoot $ToolRoot -Registry $live
+                    $components += [pscustomobject]@{ component = 'registry'; status = 'ok'; reason = '' }
+                }
+                Write-JsonFileAtomic -Path $ResultPath -Value ([pscustomobject]@{ overall = $overall; components = @($components) })
+            }
+            $UninstallScript = {
+                param($RecordId, $ResultPath)
+                [void]$recoveryDrops.Add([string]$RecordId)
+                $live = Read-InstallRegistry -ToolRoot $ToolRoot
+                $live.installs = @($live.installs | Where-Object { $_.id -ne $RecordId })
+                Save-InstallRegistry -ToolRoot $ToolRoot -Registry $live
+                Write-JsonFileAtomic -Path $ResultPath -Value ([pscustomobject]@{ overall = 'ok' })
+            }
+
+            $null = Invoke-FixRelocatedProject
+            $afterRecovery = Read-InstallRegistry -ToolRoot $ToolRoot
+            $retainedIds = @($afterRecovery.installs | ForEach-Object { [string]$_.id })
+            Check 'relocate: only a fully installed and tracked record is dropped' (
+                ($recoveryDrops.ToArray() -join ',') -eq 'complete') (($recoveryDrops.ToArray() -join ',') + ' | ' + ($recoveryMessages.ToArray() -join '; '))
+            Check 'relocate: a failed installation keeps the original record' ($retainedIds -contains 'failed')
+            Check 'relocate: one tracking failure keeps the mixed-client record' ($retainedIds -contains 'mixed')
+            $mixedRetained = @($afterRecovery.installs | Where-Object { $_.id -eq 'mixed' }) | Select-Object -First 1
+            Check 'relocate: the retained record still names both clients and their own events' (
+                $null -ne $mixedRetained -and
+                (@(Get-InstalledClientNames -Record $mixedRetained) -join ',') -eq 'claude,codex' -and
+                (@($mixedRetained.clients.codex.events) -join ',') -eq 'UserPromptSubmit')
+            Check 'relocate: a tracking failure is reported as a problem' (
+                ($recoveryMessages.ToArray() -join "`n") -match 'registryWriteFailed') ($recoveryMessages.ToArray() -join '; ')
+            Check 'relocate: incomplete replacements remain selectable for retry' (
+                @(Get-RelocationCandidate -ToolRoot $ToolRoot -ConfigPath $ConfigPath | Where-Object { $_.Root -eq $recoveryOldRoot }).Count -eq 1)
+
+            $recoveryRetry = $true
+            $recoveryCalls.Clear()
+            $null = Invoke-FixRelocatedProject
+            $afterRetry = Read-InstallRegistry -ToolRoot $ToolRoot
+            Check 'relocate: retry installs the failed client again' ($recoveryCalls.Contains('failed/claude'))
+            Check 'relocate: retry installs the untracked client again' ($recoveryCalls.Contains('mixed/codex'))
+            Check 'relocate: a verified retry retires all old records' (
+                @($afterRetry.installs | Where-Object { $_.targetProjectRoot -eq $recoveryOldRoot }).Count -eq 0)
+            Check 'relocate: successful replacements remain tracked at the new root' (
+                @($afterRetry.installs | Where-Object { $_.targetProjectRoot -eq $recoveryNewRoot }).Count -eq 3)
+        }
+        finally { $env:HOOKMAKER_STATE_DIR = $savedRelocationStateDir }
+    }
 }
 finally {
     if (-not (Remove-TestWorkspace $relWork)) { $script:Fail++ }

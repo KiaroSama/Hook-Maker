@@ -10,6 +10,7 @@
 /.codex/
 /.cursor/
 /.cline/
+/.codebase-memory/
 graphify-out/
 .ignoreme
 **/.ignoreme

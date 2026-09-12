@@ -38,7 +38,8 @@ function Invoke-SummaryHook {
     param(
         [Parameter(Mandatory = $true)][hashtable]$Payload,
         [switch]$AsClaude,
-        [switch]$KeepDelivered
+        [switch]$KeepDelivered,
+        [string]$Exe = 'pwsh'
     )
     if (-not $KeepDelivered) {
         $deliveredKey = Get-ShortHash ([string]$Payload['cwd']).ToLowerInvariant()
@@ -51,7 +52,7 @@ function Invoke-SummaryHook {
     $env:LOCALAPPDATA = $FakeLocalAppData
     if ($AsClaude) { $env:CLAUDE_PROJECT_DIR = [string]$Payload['cwd'] } else { Remove-Item Env:\CLAUDE_PROJECT_DIR -ErrorAction SilentlyContinue }
     try {
-        $out = ($json | & pwsh -NoProfile -File $Hook 2>&1) -join "`n"
+        $out = ($json | & $Exe -NoProfile -File $Hook 2>&1) -join "`n"
         return [pscustomobject]@{ Out = $out; Exit = $LASTEXITCODE }
     }
     finally {
@@ -120,6 +121,13 @@ try {
         ($r.Out -match 'MCP used') -and ($r.Out -match 'Skills used')) $r.Out
     Check 'summary: demands failures and untested paths be included' ($r.Out -match 'untested') $r.Out
     Check 'summary: demands every blocking gate be accounted for' ($r.Out -match 'accounted for') $r.Out
+    $summaryMessage = [string](($r.Out | ConvertFrom-Json).hookSpecificOutput.additionalContext)
+    Check 'summary: successful checks and resolved blockers belong in DONE' (
+        $summaryMessage -match '(?m)^  DONE.*successful.*resolved') $summaryMessage
+    Check 'summary: REMAINING contains only unresolved required work' (
+        $summaryMessage -match '(?m)^  REMAINING.*ONLY.*unresolved.*required') $summaryMessage
+    Check 'summary: completed items must not be relisted as remaining' (
+        $summaryMessage -match 'Never put completed.*REMAINING') $summaryMessage
 
     # =====================================================================
     Write-Host '--- with no markers there is no gate list at all ---' -ForegroundColor Cyan
@@ -133,6 +141,8 @@ try {
     Check 'summary: reports that gates blocked earlier this session' ($r.Out -match 'blocked earlier in this session') $r.Out
     Check 'summary: names both gates, sorted' ($r.Out -match 'CiStatusCheck, SecretsCheck') $r.Out
     Check 'summary: asks for each blocked gate to be accounted for' ($r.Out -match 'Account for each one') $r.Out
+    Check 'summary: old gate markers are history, not evidence of an open blocker' (
+        $r.Out -match 'history only' -and $r.Out -match 'do not prove.*still open') $r.Out
 
     # A marker left by an EARLIER session in the same project is evidence about
     # that session, not this one. Reporting it would accuse the current session
@@ -246,6 +256,10 @@ try {
     # The hook ships to both hosts, so a pwsh-only construct is a real defect.
     $parse = powershell.exe -NoLogo -NoProfile -Command "`$e=`$null; `$null=[System.Management.Automation.Language.Parser]::ParseFile('$Hook',[ref]`$null,[ref]`$e); if(`$e -and `$e.Count){'FAIL'}else{'OK'}"
     Check 'summary: parses under Windows PowerShell 5.1' (([string]$parse).Trim() -eq 'OK') ([string]$parse)
+    $r51 = Invoke-SummaryHook -Payload @{ hook_event_name = 'UserPromptSubmit'; cwd = $proj; session_id = $sid } -Exe 'powershell.exe'
+    Check 'summary: Windows PowerShell 5.1 emits the same open-work classification' (
+        $r51.Exit -eq 0 -and $r51.Out -match 'Never put completed.*REMAINING' -and
+        $r51.Out -match 'history only') $r51.Out
 
     # The hook is shipped source: it must stay pure ASCII, like every other
     # hook in this set (Persian is carried as \uXXXX escapes and decoded at

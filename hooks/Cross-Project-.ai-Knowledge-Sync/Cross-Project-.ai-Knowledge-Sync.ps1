@@ -3,7 +3,8 @@ param(
     [string]$ProjectRoot,
     [string]$Profile,
     [string]$Route,
-    [string]$ConfigPath
+    [string]$ConfigPath,
+    [string]$ContentFingerprint
 )
 
 Set-StrictMode -Version 2.0
@@ -179,7 +180,15 @@ function Get-ContentSnapshot {
     $builder = New-Object System.Text.StringBuilder
 
     foreach ($file in @($Files)) {
-        $hash = (Get-FileHash -LiteralPath $file.FullPath -Algorithm SHA256).Hash.ToLowerInvariant()
+        # Get-FileHash's module can be absent in a nested Windows PowerShell 5.1
+        # process. Hash the same bytes to the same lower-case SHA-256 via .NET.
+        $sha256 = [System.Security.Cryptography.SHA256]::Create()
+        try {
+            $stream = [System.IO.File]::OpenRead($file.FullPath)
+            try { $hash = ([System.BitConverter]::ToString($sha256.ComputeHash($stream))).Replace('-', '').ToLowerInvariant() }
+            finally { $stream.Dispose() }
+        }
+        finally { $sha256.Dispose() }
         $record = [pscustomobject][ordered]@{
             path = $file.Path
             sha256 = $hash
@@ -347,6 +356,31 @@ function Get-StatePaths {
     }
 }
 
+function Enter-RouteStateLock {
+    param([Parameter(Mandatory = $true)][string]$StatePath)
+
+    # Both entry points own this lock from the first state read through package
+    # cleanup. Atomic file replacement alone cannot protect a read/modify/write.
+    $key = Get-StringHash -Text (Normalize-Path $StatePath).ToUpperInvariant()
+    $mutex = $null
+    try {
+        $mutex = [System.Threading.Mutex]::new($false, ('Global\HookMakerSync-' + $key))
+        try { $acquired = $mutex.WaitOne(5000) }
+        catch [System.Threading.AbandonedMutexException] { $acquired = $true }
+        if (-not $acquired) { throw 'The sync route is busy. Retry after its current operation finishes.' }
+        return $mutex
+    }
+    catch {
+        if ($null -ne $mutex) { $mutex.Dispose() }
+        throw ('Could not acquire the sync route lock: ' + $_.Exception.Message)
+    }
+}
+
+function Get-AcknowledgementCommand {
+    param($Context, [string]$Fingerprint)
+    return 'powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "' + $HookScriptPath + '" -Acknowledge -ProjectRoot "' + $Context.destinationRoot + '" -Profile "' + $Context.profileId + '" -Route "' + $Context.routeId + '" -ConfigPath "' + $ConfigPath + '" -ContentFingerprint "' + $Fingerprint + '"'
+}
+
 function Remove-DirectorySafe {
     param([string]$Path)
 
@@ -484,7 +518,7 @@ function New-PendingPackage {
         Copy-Item -LiteralPath $sourcePath -Destination $destinationPath -Force
     }
 
-    $ackCommand = 'powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "' + $HookScriptPath + '" -Acknowledge -ProjectRoot "' + $Context.destinationRoot + '" -Profile "' + $Context.profileId + '" -Route "' + $Context.routeId + '" -ConfigPath "' + $ConfigPath + '"'
+    $ackCommand = Get-AcknowledgementCommand -Context $Context -Fingerprint $ContentSnapshot.fingerprint
 
     $manifest = [pscustomobject][ordered]@{
         version = 2
@@ -554,7 +588,7 @@ Before starting the user's new task:
 Configured review rules:
 $($instructionLines.ToString())
 After the review is complete, even when nothing relevant was imported, run exactly:
-$($Pending.acknowledgementCommand)
+$(Get-AcknowledgementCommand -Context $Context -Fingerprint $Pending.sourceContentFingerprint)
 "@
 }
 
@@ -592,28 +626,44 @@ if ($Acknowledge) {
 
     $context = $resolvedRoutes[0]
     $statePaths = Get-StatePaths -DestinationDirectory $context.destinationDirectory -ProfileId $context.profileId -RouteId $context.routeId -SourceRoot $context.sourceRoot
-    $state = Read-JsonFile $statePaths.statePath
-    # ConvertTo-NormalizedState guarantees 'pending' is a real property
-    # (possibly $null) below - a raw $state.pending read here, before any
-    # shape guard, used to throw under StrictMode 2.0 for any state missing
-    # the property entirely (e.g. a bare "{}").
-    $state = ConvertTo-NormalizedState -State $state -ProfileId $context.profileId -RouteId $context.routeId -SourceRoot $context.sourceRoot
-    if ($null -eq $state.pending) {
-        [Console]::Out.WriteLine('No pending review exists for this profile and route.')
+    $routeLock = Enter-RouteStateLock -StatePath $statePaths.statePath
+    try {
+        $state = Read-JsonFile $statePaths.statePath
+        # ConvertTo-NormalizedState guarantees 'pending' is a real property
+        # (possibly $null) below - a raw $state.pending read here, before any
+        # shape guard, used to throw under StrictMode 2.0 for any state missing
+        # the property entirely (e.g. a bare "{}").
+        $state = ConvertTo-NormalizedState -State $state -ProfileId $context.profileId -RouteId $context.routeId -SourceRoot $context.sourceRoot
+        if ($null -eq $state.pending) {
+            [Console]::Out.WriteLine('No pending review exists for this profile and route.')
+            exit 0
+        }
+
+        if ($ContentFingerprint -notmatch '^[a-fA-F0-9]{64}$') {
+            Write-Error ('Acknowledgement requires -ContentFingerprint from the reviewed package. Review "' + $state.pending.manifestPath + '" and its staged files, then start a new session to receive the current acknowledgement command.')
+            exit 1
+        }
+        if (-not [string]::Equals($ContentFingerprint, [string]$state.pending.sourceContentFingerprint, [System.StringComparison]::OrdinalIgnoreCase)) {
+            Write-Error ('The pending review has changed. Review "' + $state.pending.manifestPath + '" and its staged files, then start a new session to receive the current acknowledgement command.')
+            exit 1
+        }
+
+        $pendingPackageRoot = [string]$state.pending.packageRoot
+        Set-ObjectProperty -Object $state -Name 'lastAppliedQuickFingerprint' -Value ([string]$state.pending.sourceQuickFingerprint)
+        Set-ObjectProperty -Object $state -Name 'lastAppliedContentFingerprint' -Value ([string]$state.pending.sourceContentFingerprint)
+        Set-ObjectProperty -Object $state -Name 'lastAppliedFiles' -Value @($state.pending.sourceFiles)
+        Set-ObjectProperty -Object $state -Name 'pending' -Value $null
+        Set-ObjectProperty -Object $state -Name 'lastNotifiedSessionId' -Value ''
+        Set-ObjectProperty -Object $state -Name 'lastNotifiedAtUtc' -Value ''
+        Write-JsonFileAtomic -Value $state -Path $statePaths.statePath
+        Remove-DirectorySafe $pendingPackageRoot
+        [Console]::Out.WriteLine('Review acknowledged. The current source fingerprint is marked as processed.')
         exit 0
     }
-
-    $pendingPackageRoot = [string]$state.pending.packageRoot
-    Set-ObjectProperty -Object $state -Name 'lastAppliedQuickFingerprint' -Value ([string]$state.pending.sourceQuickFingerprint)
-    Set-ObjectProperty -Object $state -Name 'lastAppliedContentFingerprint' -Value ([string]$state.pending.sourceContentFingerprint)
-    Set-ObjectProperty -Object $state -Name 'lastAppliedFiles' -Value @($state.pending.sourceFiles)
-    Set-ObjectProperty -Object $state -Name 'pending' -Value $null
-    Set-ObjectProperty -Object $state -Name 'lastNotifiedSessionId' -Value ''
-    Set-ObjectProperty -Object $state -Name 'lastNotifiedAtUtc' -Value ''
-    Write-JsonFileAtomic -Value $state -Path $statePaths.statePath
-    Remove-DirectorySafe $pendingPackageRoot
-    [Console]::Out.WriteLine('Review acknowledged. The current source fingerprint is marked as processed.')
-    exit 0
+    finally {
+        $routeLock.ReleaseMutex()
+        $routeLock.Dispose()
+    }
 }
 
 $hookInput = Read-HookInput
@@ -646,96 +696,103 @@ foreach ($context in $contexts) {
     }
 
     $statePaths = Get-StatePaths -DestinationDirectory $context.destinationDirectory -ProfileId $context.profileId -RouteId $context.routeId -SourceRoot $context.sourceRoot
-    $state = Read-JsonFile $statePaths.statePath
-    # ConvertTo-NormalizedState repairs every partial/damaged shape (missing
-    # file, "{}", a missing top-level field, a non-null 'pending' missing
-    # ONE of its own fields, ...) into the full New-State shape in one pass,
-    # so every $state.*/$state.pending.* read below is guaranteed to succeed
-    # under Set-StrictMode 2.0 without ever discarding a value that was
-    # already valid.
-    $state = ConvertTo-NormalizedState -State $state -ProfileId $context.profileId -RouteId $context.routeId -SourceRoot $context.sourceRoot
+    $routeLock = Enter-RouteStateLock -StatePath $statePaths.statePath
+    try {
+        $state = Read-JsonFile $statePaths.statePath
+        # ConvertTo-NormalizedState repairs every partial/damaged shape (missing
+        # file, "{}", a missing top-level field, a non-null 'pending' missing
+        # ONE of its own fields, ...) into the full New-State shape in one pass,
+        # so every $state.*/$state.pending.* read below is guaranteed to succeed
+        # under Set-StrictMode 2.0 without ever discarding a value that was
+        # already valid.
+        $state = ConvertTo-NormalizedState -State $state -ProfileId $context.profileId -RouteId $context.routeId -SourceRoot $context.sourceRoot
 
-    # @() around the call: an empty result would otherwise unwrap to $null.
-    $eligibleFiles = @(Get-EligibleFiles -SourceDirectory $context.sourceDirectory -RouteConfig $context.route -ProfileConfig $context.profile -Defaults $context.defaults)
-    $quickFingerprint = Get-QuickSnapshot -Files $eligibleFiles
+        # @() around the call: an empty result would otherwise unwrap to $null.
+        $eligibleFiles = @(Get-EligibleFiles -SourceDirectory $context.sourceDirectory -RouteConfig $context.route -ProfileConfig $context.profile -Defaults $context.defaults)
+        $quickFingerprint = Get-QuickSnapshot -Files $eligibleFiles
 
-    if ($null -ne $state.pending -and [string]$state.pending.sourceQuickFingerprint -eq $quickFingerprint) {
-        if (-not [string]::IsNullOrWhiteSpace($sessionId) -and [string]$state.lastNotifiedSessionId -eq $sessionId) {
-            continue
-        }
+        if ($null -ne $state.pending -and [string]$state.pending.sourceQuickFingerprint -eq $quickFingerprint) {
+            if (-not [string]::IsNullOrWhiteSpace($sessionId) -and [string]$state.lastNotifiedSessionId -eq $sessionId) {
+                continue
+            }
 
-        Set-ObjectProperty -Object $state -Name 'lastNotifiedSessionId' -Value $sessionId
-        Set-ObjectProperty -Object $state -Name 'lastNotifiedAtUtc' -Value ([DateTime]::UtcNow.ToString('o'))
-        Write-JsonFileAtomic -Value $state -Path $statePaths.statePath
-        [void]$messages.Add((New-ReviewMessage -Context $context -Pending $state.pending))
-        continue
-    }
-
-    if ($null -eq $state.pending -and [string]$state.lastAppliedQuickFingerprint -eq $quickFingerprint) {
-        continue
-    }
-
-    $contentSnapshot = Get-ContentSnapshot -Files $eligibleFiles
-
-    # An empty source that was never synced is recorded silently as a baseline:
-    # a review package with zero staged files would only add noise (this is the
-    # normal state right after a sync group is created with fresh directories).
-    if (@($eligibleFiles).Count -eq 0 -and $null -eq $state.pending -and [string]::IsNullOrWhiteSpace([string]$state.lastAppliedContentFingerprint)) {
-        Set-ObjectProperty -Object $state -Name 'lastAppliedQuickFingerprint' -Value $quickFingerprint
-        Set-ObjectProperty -Object $state -Name 'lastAppliedContentFingerprint' -Value ([string]$contentSnapshot.fingerprint)
-        Set-ObjectProperty -Object $state -Name 'lastAppliedFiles' -Value @($contentSnapshot.files)
-        Write-JsonFileAtomic -Value $state -Path $statePaths.statePath
-        continue
-    }
-
-    if ($null -ne $state.pending -and [string]$state.pending.sourceContentFingerprint -eq [string]$contentSnapshot.fingerprint) {
-        Set-ObjectProperty -Object $state.pending -Name 'sourceQuickFingerprint' -Value $quickFingerprint
-        Set-ObjectProperty -Object $state.pending -Name 'sourceFiles' -Value @($contentSnapshot.files)
-        Set-ObjectProperty -Object $state -Name 'pending' -Value $state.pending
-
-        if (-not [string]::IsNullOrWhiteSpace($sessionId) -and [string]$state.lastNotifiedSessionId -eq $sessionId) {
+            Set-ObjectProperty -Object $state -Name 'lastNotifiedSessionId' -Value $sessionId
+            Set-ObjectProperty -Object $state -Name 'lastNotifiedAtUtc' -Value ([DateTime]::UtcNow.ToString('o'))
             Write-JsonFileAtomic -Value $state -Path $statePaths.statePath
+            [void]$messages.Add((New-ReviewMessage -Context $context -Pending $state.pending))
             continue
         }
 
-        Set-ObjectProperty -Object $state -Name 'lastNotifiedSessionId' -Value $sessionId
-        Set-ObjectProperty -Object $state -Name 'lastNotifiedAtUtc' -Value ([DateTime]::UtcNow.ToString('o'))
-        Write-JsonFileAtomic -Value $state -Path $statePaths.statePath
-        [void]$messages.Add((New-ReviewMessage -Context $context -Pending $state.pending))
-        continue
-    }
+        if ($null -eq $state.pending -and [string]$state.lastAppliedQuickFingerprint -eq $quickFingerprint) {
+            continue
+        }
 
-    if ([string]::IsNullOrWhiteSpace([string]$state.lastAppliedContentFingerprint)) {
-        $initialSyncMode = [string](Get-PropertyValue -Primary $context.route -Secondary $context.profile -Tertiary $context.defaults -Name 'initialSyncMode' -Fallback 'review')
-        if ([string]::Equals($initialSyncMode, 'baseline', [System.StringComparison]::OrdinalIgnoreCase)) {
+        $contentSnapshot = Get-ContentSnapshot -Files $eligibleFiles
+
+        # An empty source that was never synced is recorded silently as a baseline:
+        # a review package with zero staged files would only add noise (this is the
+        # normal state right after a sync group is created with fresh directories).
+        if (@($eligibleFiles).Count -eq 0 -and $null -eq $state.pending -and [string]::IsNullOrWhiteSpace([string]$state.lastAppliedContentFingerprint)) {
             Set-ObjectProperty -Object $state -Name 'lastAppliedQuickFingerprint' -Value $quickFingerprint
             Set-ObjectProperty -Object $state -Name 'lastAppliedContentFingerprint' -Value ([string]$contentSnapshot.fingerprint)
             Set-ObjectProperty -Object $state -Name 'lastAppliedFiles' -Value @($contentSnapshot.files)
-            Set-ObjectProperty -Object $state -Name 'pending' -Value $null
             Write-JsonFileAtomic -Value $state -Path $statePaths.statePath
             continue
         }
-    }
 
-    if ([string]$state.lastAppliedContentFingerprint -eq [string]$contentSnapshot.fingerprint) {
-        if ($null -ne $state.pending) {
-            Remove-DirectorySafe ([string]$state.pending.packageRoot)
+        if ($null -ne $state.pending -and [string]$state.pending.sourceContentFingerprint -eq [string]$contentSnapshot.fingerprint) {
+            Set-ObjectProperty -Object $state.pending -Name 'sourceQuickFingerprint' -Value $quickFingerprint
+            Set-ObjectProperty -Object $state.pending -Name 'sourceFiles' -Value @($contentSnapshot.files)
+            Set-ObjectProperty -Object $state -Name 'pending' -Value $state.pending
+
+            if (-not [string]::IsNullOrWhiteSpace($sessionId) -and [string]$state.lastNotifiedSessionId -eq $sessionId) {
+                Write-JsonFileAtomic -Value $state -Path $statePaths.statePath
+                continue
+            }
+
+            Set-ObjectProperty -Object $state -Name 'lastNotifiedSessionId' -Value $sessionId
+            Set-ObjectProperty -Object $state -Name 'lastNotifiedAtUtc' -Value ([DateTime]::UtcNow.ToString('o'))
+            Write-JsonFileAtomic -Value $state -Path $statePaths.statePath
+            [void]$messages.Add((New-ReviewMessage -Context $context -Pending $state.pending))
+            continue
         }
-        Set-ObjectProperty -Object $state -Name 'lastAppliedQuickFingerprint' -Value $quickFingerprint
-        Set-ObjectProperty -Object $state -Name 'lastAppliedFiles' -Value @($contentSnapshot.files)
-        Set-ObjectProperty -Object $state -Name 'pending' -Value $null
-        Set-ObjectProperty -Object $state -Name 'lastNotifiedSessionId' -Value ''
-        Set-ObjectProperty -Object $state -Name 'lastNotifiedAtUtc' -Value ''
-        Write-JsonFileAtomic -Value $state -Path $statePaths.statePath
-        continue
-    }
 
-    $pending = New-PendingPackage -Context $context -State $state -StatePaths $statePaths -QuickFingerprint $quickFingerprint -ContentSnapshot $contentSnapshot
-    Set-ObjectProperty -Object $state -Name 'pending' -Value $pending
-    Set-ObjectProperty -Object $state -Name 'lastNotifiedSessionId' -Value $sessionId
-    Set-ObjectProperty -Object $state -Name 'lastNotifiedAtUtc' -Value ([DateTime]::UtcNow.ToString('o'))
-    Write-JsonFileAtomic -Value $state -Path $statePaths.statePath
-    [void]$messages.Add((New-ReviewMessage -Context $context -Pending $pending))
+        if ([string]::IsNullOrWhiteSpace([string]$state.lastAppliedContentFingerprint)) {
+            $initialSyncMode = [string](Get-PropertyValue -Primary $context.route -Secondary $context.profile -Tertiary $context.defaults -Name 'initialSyncMode' -Fallback 'review')
+            if ([string]::Equals($initialSyncMode, 'baseline', [System.StringComparison]::OrdinalIgnoreCase)) {
+                Set-ObjectProperty -Object $state -Name 'lastAppliedQuickFingerprint' -Value $quickFingerprint
+                Set-ObjectProperty -Object $state -Name 'lastAppliedContentFingerprint' -Value ([string]$contentSnapshot.fingerprint)
+                Set-ObjectProperty -Object $state -Name 'lastAppliedFiles' -Value @($contentSnapshot.files)
+                Set-ObjectProperty -Object $state -Name 'pending' -Value $null
+                Write-JsonFileAtomic -Value $state -Path $statePaths.statePath
+                continue
+            }
+        }
+
+        if ([string]$state.lastAppliedContentFingerprint -eq [string]$contentSnapshot.fingerprint) {
+            if ($null -ne $state.pending) {
+                Remove-DirectorySafe ([string]$state.pending.packageRoot)
+            }
+            Set-ObjectProperty -Object $state -Name 'lastAppliedQuickFingerprint' -Value $quickFingerprint
+            Set-ObjectProperty -Object $state -Name 'lastAppliedFiles' -Value @($contentSnapshot.files)
+            Set-ObjectProperty -Object $state -Name 'pending' -Value $null
+            Set-ObjectProperty -Object $state -Name 'lastNotifiedSessionId' -Value ''
+            Set-ObjectProperty -Object $state -Name 'lastNotifiedAtUtc' -Value ''
+            Write-JsonFileAtomic -Value $state -Path $statePaths.statePath
+            continue
+        }
+
+        $pending = New-PendingPackage -Context $context -State $state -StatePaths $statePaths -QuickFingerprint $quickFingerprint -ContentSnapshot $contentSnapshot
+        Set-ObjectProperty -Object $state -Name 'pending' -Value $pending
+        Set-ObjectProperty -Object $state -Name 'lastNotifiedSessionId' -Value $sessionId
+        Set-ObjectProperty -Object $state -Name 'lastNotifiedAtUtc' -Value ([DateTime]::UtcNow.ToString('o'))
+        Write-JsonFileAtomic -Value $state -Path $statePaths.statePath
+        [void]$messages.Add((New-ReviewMessage -Context $context -Pending $pending))
+    }
+    finally {
+        $routeLock.ReleaseMutex()
+        $routeLock.Dispose()
+    }
 }
 
 if ($messages.Count -gt 0) {

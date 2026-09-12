@@ -27,7 +27,7 @@
 # Usage:  pwsh -NoLogo -NoProfile -File .\scripts\Test-TestRunGuard.ps1 [-KeepArtifacts]
 # Exit code is the number of failed assertions (0 = all passed).
 
-param([switch]$KeepArtifacts)
+param([switch]$KeepArtifacts, [switch]$RunnerHostsOnly)
 
 Set-StrictMode -Version 2.0
 $ErrorActionPreference = 'Stop'
@@ -59,6 +59,8 @@ New-Item -ItemType Directory -Path (Join-Path $Proj 'scripts') -Force | Out-Null
 Copy-Item $Runner (Join-Path $Proj 'scripts\Run-Tests-Guarded.ps1')
 
 try {
+    . (Join-Path $PSScriptRoot '_testrunguardhosts.ps1')
+    if (-not $RunnerHostsOnly) {
     # PreToolUse recognition, the false-positive guard, and the replacement.
     . (Join-Path $PSScriptRoot '_testrunguardrecognition.ps1')
 
@@ -68,11 +70,15 @@ try {
     # The observed-record handoff and the run-identity contract.
     . (Join-Path $PSScriptRoot '_testrunguardcoordination.ps1')
 
+    # Literal PowerShell argument arrays and observer/runner identity parity.
+    . (Join-Path $PSScriptRoot '_testrunguardidentity.ps1')
+
     # The real Run-Tests-Guarded.ps1 runner, driven end to end.
     . (Join-Path $PSScriptRoot '_testrunguardrunner.ps1')
 
     # Deny-text guidance, static safety, and the Windows PowerShell 5.1 host.
     . (Join-Path $PSScriptRoot '_testrunguardpolicy.ps1')
+    }
 }
 finally {
     if ($KeepArtifacts) {

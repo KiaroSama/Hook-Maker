@@ -21,7 +21,19 @@ param(
     # blocks on stdin if its scripted answers run out, which would otherwise
     # hang the whole run with no output. A timed-out suite is killed and
     # reported as a failure rather than being allowed to stall everything.
-    [int]$TimeoutSeconds = 600
+    #
+    # 900 s, the same number ci.yml uses, so local and CI cannot disagree about
+    # what counts as too slow. It was 600 s until the slowest suite outgrew it:
+    # measured 2026-09-12, Test-TestCompletionCheck takes 590.7 s ALONE on an
+    # idle machine, leaving 1.6% margin - so the default run killed it even
+    # with no contention at all. 900 s restores ~34% margin over that measured
+    # worst case.
+    #
+    # This is NOT the answer to a suite that times out under PARALLEL load:
+    # that is oversubscription, the cure is fewer workers, and TESTING_NOTES.md
+    # records why raising the cap for it would only hide a real hang. Raise
+    # this number only when a suite's cost MEASURED ALONE has genuinely grown.
+    [int]$TimeoutSeconds = 900
 )
 
 Set-StrictMode -Version 2.0
