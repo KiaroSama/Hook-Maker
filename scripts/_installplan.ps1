@@ -9,12 +9,10 @@
 #
 # Dot-sourced by Install-Hook.ps1 and Setup-SyncGroup.ps1 AFTER
 # hooks\_hooklib.ps1 (needs Get-HookFriendlyName / Get-ShortHash /
-# Normalize-Path). The runtime-metadata block below additionally resolves
-# _installkiro.ps1's Get-KiroManagedNamePrefix / ConvertTo-KiroSlug at CALL time,
-# and only for a Kiro identity - deliberately reusing the real producer of the
-# managed entry name rather than re-deriving it here, because two sites deriving
-# one identity differently is this project's most repeated defect
-# (see .ai/LESSON_INSTALL.md).
+# Normalize-Path). Where the runtime-metadata block below needs a registration
+# identity it resolves it from the real producer rather than re-deriving it
+# here, because two sites deriving one identity differently is this project's
+# most repeated defect (see .ai/LESSON_INSTALL.md).
 #
 # Security boundary: a hook source is either a PACKAGE (a folder that is a
 # direct child of a recognized hooks root, whose contents are intentionally
@@ -259,7 +257,7 @@ function New-PlanArtifact {
 # recomputed from the project root with the SAME helpers the hooks use, so a
 # mismatch is proof of a foreign copy.
 #
-# It is a PLANNED 'Generated' artifact, exactly like the Kiro launcher: staged
+# It is a PLANNED 'Generated' artifact: staged
 # transactionally, hash-verified before the swap, restored on rollback, covered by
 # the source-vs-installed manifest comparison, and therefore drift-detectable when
 # it is edited or deleted.
@@ -270,7 +268,7 @@ function New-PlanArtifact {
 # never the root itself, so no user directory name reaches an installed runtime.
 #
 # NOT planned for the native Git pre-push chain. That chain is not a client
-# registration - it has no claude/codex/kiro identity to record - so
+# registration - it has no claude/codex identity to record - so
 # Install-IgnorePrePush passes no identity, its runtimes carry no metadata file,
 # and Get-NativePrePushSourceManifest/Get-NativePrePushInstalledManifest stay in
 # agreement without any change.
@@ -323,12 +321,6 @@ function Get-RuntimeMetadataProjectKey {
 }
 
 # The registration identity this install wrote, per client.
-#   kiro   - the managed entry-name PREFIX every entry this install registered
-#            shares. A Kiro install writes ONE entry per physical trigger, so no
-#            single entry name identifies the install; the prefix does, and it is
-#            exactly what Test-KiroOwnership and _installvalidate.ps1 already
-#            prove ownership with. Taken from the real producers so it cannot
-#            drift from the names actually written.
 #   claude / codex - these clients have no entry NAME: their handler identity is
 #            the command, which must never be copied into this file. The marker
 #            the installer already writes instead is the managed runtime segment
@@ -471,11 +463,6 @@ function Get-ManagedInstallPlan {
         # would make "no generated list" indistinguishable from "empty list"
         # and plan a bogus empty SYNC-PROJECTS.txt for every custom hook.
         $SyncProjectListContent = $null,
-        # Kiro ONLY. Deliberately opt-in rather than always-on: adding this file
-        # to every runtime would change the manifest of every already-installed
-        # Claude and Codex hook, and the updater would then see all of them as
-        # drifted and reinstall the lot.
-
         # The install identity the runtime metadata file describes, or $null for
         # no metadata artifact at all.
         #
@@ -520,22 +507,6 @@ function Get-ManagedInstallPlan {
     # planned artifact. Repository sources are never modified.
     $mainScriptContent = Get-PrivateLibraryScriptContent -SourceScriptPath $SourceInfo.ScriptPath
     Add-Artifact (New-PlanArtifact -RelativePath ($FriendlyName + '/' + $FriendlyName + '.ps1') -Kind 'Generated' -GeneratedContent $mainScriptContent)
-
-    # Kiro's launcher is PLANNED, not written beside the runtime afterwards.
-    #
-    # It was originally written directly by Install-Hook.ps1 after the plan had
-    # already been committed. That put a real file in the managed hook directory
-    # that no artifact accounted for, so Get-InstalledManifest saw it,
-    # Compare-Manifest reported "unexpected managed file" on EVERY evaluation,
-    # and the updater reinstalled the hook forever - the permanent-update-loop
-    # failure this file's header warns about. Planning it fixes the loop and
-    # buys the same guarantees every other artifact has: staged transactionally,
-    # hash-verified, restored on rollback, and drift-detectable if edited.
-    #
-    # The alternative - excluding it via $script:ManagedRuntimeMutablePaths -
-    # was rejected: that list is for files the RUNTIME rewrites at execution
-    # time, and using it here would permanently blind drift detection for a file
-    # that must never change on its own.
 
     # Test-Run-Guard's gate is only real if scripts\Run-Tests-Guarded.ps1 travels
     # WITH it. In a freshly-set-up target project the runner exists nowhere else,
@@ -738,8 +709,9 @@ function Get-InstallPlanFor {
         [switch]$AllowMissing,
         # Both forwarded straight through, so a VERIFICATION caller can ask for the
         # exact same plan a client install produced. Before this existed the
-        # updater's expected manifest could not describe kiro-launch.ps1 at all, so
-        # every real Kiro install reported "unexpected managed file" for ever.
+        # updater's expected manifest could not describe a client-specific planned
+        # artifact at all, so such installs reported "unexpected managed file" for
+        # ever.
 
         # Which project this plan is FOR. The generated SYNC-PROJECTS.txt is keyed
         # by it, and the source and client manifests must therefore both supply

@@ -133,7 +133,7 @@ function Build-RegistrationRecords {
         if (@(@($findings) | Where-Object { [string]$_.ManagedBy -eq 'hookMaker' }).Count -gt 0) { $managedBy = 'hookMaker' }
         elseif (@(@($findings) | Where-Object { [string]$_.ManagedBy -eq 'external' }).Count -gt 0) { $managedBy = 'external' }
 
-        # A perHookFile client (Kiro) registers its own JSON document per
+        # A perHookFile client registers its own JSON document per
         # installation. The discovered remover only knows how to prune a handler
         # out of a SHARED settings file, so offering any removal for one of
         # these would promise an operation that does not exist - or, worse,
@@ -393,10 +393,10 @@ function Save-DiscoveredRecords {
                     # The finding IS removable - just not by the DISCOVERED-record
                     # remover, whose limits produced the policy on this record. A
                     # managed install owns it, and the normal uninstall action
-                    # handles that, including Kiro's per-hook-file format.
+                    # handles that, including the per-hook-file format.
                     #
                     # Without this restamp the report kept the discovered-side
-                    # verdict, so every managed Kiro hook was printed as
+                    # verdict, so every managed per-hook-file hook was printed as
                     # "automatic uninstall: unavailable - per-hook-file removal is
                     # not implemented". On a real machine that was ~1500 rows of
                     # the user's OWN hooks described as unremovable while menu 27
