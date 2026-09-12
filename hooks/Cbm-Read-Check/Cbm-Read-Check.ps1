@@ -45,7 +45,8 @@ try { if (-not (Test-Path -LiteralPath $cwd -PathType Container)) { exit 0 } } c
 # Silent on a machine with no Codebase Memory server. Nagging about a tool the
 # user has not installed is the fastest way to teach them to ignore hooks.
 $config = Read-HookEnv (Join-Path $PSScriptRoot '.env')
-$cacheDir = Get-CbmCacheDir -Config $config
+$service = Get-CbmServiceConfig -Config $config -ProjectRoot $cwd
+$cacheDir = $service.Environment['CBM_CACHE_DIR']
 if (-not (Test-CbmInstalled -CacheDir $cacheDir)) { exit 0 }
 
 $dbPath = Get-CbmProjectDbPath -ProjectRoot $cwd -CacheDir $cacheDir
@@ -69,31 +70,25 @@ if ($indexed) {
     ) -join "`n"
 }
 else {
-    # Resolved BEFORE the message is assembled - an assignment cannot live inside
-    # the array literal below.
-    $cbmExe = Get-CbmServerCommandFromClientConfig
-    if ([string]::IsNullOrWhiteSpace($cbmExe)) { $cbmExe = 'codebase-memory-mcp' }
+    $inspectCommand = Get-CbmCliAdvice -Service $service -Arguments @('allow-root', '--list')
+    $approveCommand = Get-CbmCliAdvice -Service $service -Arguments @('allow-root', '--approve-sensitive', $cwd)
+    $manualAdvice = if ($inspectCommand -ne '') {
+        "Manual inspection in an authorized owner-account shell (the hook never executes it):`n  " + $inspectCommand +
+        "`nOnly for an absent approval of THIS user-authorized root, and only if it is classified as sensitive:`n  " + $approveCommand
+    }
+    else { 'No safe raw CLI invocation was resolved. Use the connected MCP tools or verify the configured launcher and its CLI arguments in an authorized owner-account shell; do not guess an executable or launcher mode.' }
+    $rootJson = $cwd | ConvertTo-Json -Compress
     $note = @(
         ('CBM READ CHECK - this project has no Codebase Memory index yet (expected at ' + $dbPath + ').'),
-        ('Unless this session is documentation-only, index it once now: index_repository(repo_path="' + $cwd + '", mode="moderate") - local, seconds, and a background watcher keeps it fresh afterwards.'),
+        ('Unless this session is documentation-only, index it once now: index_repository(repo_path=' + $rootJson + ', mode="moderate", persistence=true). A background watcher normally keeps it fresh.'),
         'Then query the graph before browsing files: get_architecture, search_graph, trace_path, get_code_snippet.',
-        # Without this, an agent hits the refusal, has no idea it is a one-time
-        # authorization rather than a broken tool, and every later session
-        # repeats the attempt. Found 2026-09-09: every project under this
-        # machine's tools directory was refused, so NOTHING had ever been indexed
-        # while this hook asked in every session.
-        #
-        # The three things that make the tool's OWN advice fail, all measured
-        # while clearing it by hand - the message is useless without them:
-        #   1. `codebase-memory-mcp` is not on PATH; the exe path comes from the
-        #      client's own MCP server record.
-        #   2. `allow-root` obeys CBM_CACHE_DIR. Run without it, the approval is
-        #      written where the SERVER does not read it and nothing changes.
-        #   3. The server reads its allowed-roots list once, at start. After
-        #      approving, it must be restarted before an index can succeed.
-        ('If index_repository REFUSES with "path is a home or credential directory": CBM classifies this root as sensitive and will not index it until the root is approved ONCE. Approve THIS project root, then report that a restart is needed - the exact working command, which is not the one the tool prints (its binary is not on PATH, and the approval must be written where the server reads it):'),
-        ('  $env:CBM_CACHE_DIR = "' + $cacheDir + '"; & "' + $cbmExe + '" allow-root --approve-sensitive "' + ($cwd -replace '\\', '/') + '"'),
-        'Then STOP: the server only reads its allowed-roots list at start-up, so indexing keeps failing until the client is restarted. Do not re-run the approval and do not retry the index in this session - say plainly that a restart is required. Note also that recording any root CONFINES CBM to the recorded roots, so a project outside the list needs its own approval line.'
+        'If indexing refuses, diagnose the specific cause using global-mcp-rules.md, Windows CMM installation and correct usage:',
+        '- Outside the allowed root / absent approval: verify the selected service environment and exact project root. Enroll only a root the user authorized; a hook reminder never authorizes wider access.',
+        '- Approved but still sensitive on 0.10.8: approval equality is separator-sensitive. Compare backslash and forward-slash spellings and the approval marker. Preserve every grant; add only the equivalent spelling of the same approved root, with a backup, concurrent-change detection and atomic publication. Do not move project sources or use parent grants/junction escapes.',
+        '- OS/sandbox access denial: a shell refusal does not prove the connected MCP service is broken. Use the connected tool or authorized escalation; do not grant sandbox identities write access to the private service.',
+        '- cache-private / untrusted identity / secure-coordination failure: inspect the exact path and SID in the newest worker log, including cache/runtime ancestor ACLs. Keep the private service outside writable workspaces; repeatedly tightening a workspace ACL or weakening security checks is not a repair.',
+        $manualAdvice,
+        'CMM 0.10.8 reads grants during authorization; approval alone does not require a restart. Reload a client only when evidence shows obsolete executable/environment settings or a dead connection. Confirm recovery with an actual tool result, index_status and a scoped query; parser warnings still require source inspection.'
     ) -join "`n"
 }
 
@@ -102,7 +97,7 @@ else {
 # suppressed by the earlier "index it" note.
 $sessionId = [string](Get-Field $hookInput 'session_id')
 $projectKey = Get-ShortHash ([string]$cwd).ToLowerInvariant()
-$fingerprint = Get-ShortHash ($sessionId + '|' + $eventName + '|' + [string]$indexed)
+$fingerprint = Get-ShortHash ($sessionId + '|' + $eventName + '|' + [string]$indexed + '|' + $dbPath + '|' + $note)
 $stateDir = Join-Path $env:LOCALAPPDATA 'HookMaker\state'
 $statePath = Join-Path $stateDir ('CbmReadCheck-' + $projectKey + '.txt')
 if (Test-Path -LiteralPath $statePath -PathType Leaf) {

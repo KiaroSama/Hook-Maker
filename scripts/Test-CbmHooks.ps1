@@ -25,24 +25,34 @@ $script:TestPreviewLength = 700
 . (Join-Path $HooksRoot '_hooklib.ps1')
 
 $Work = New-TestWorkspace -Prefix 'hookmaker-cbm'
+$savedSuiteEnvironment = @{}
+foreach ($key in @('USERPROFILE', 'CODEX_HOME', 'LOCALAPPDATA', 'CBM_CACHE_DIR', 'CBM_RUNTIME_DIR')) {
+    $savedSuiteEnvironment[$key] = [Environment]::GetEnvironmentVariable($key)
+}
+$env:USERPROFILE = Join-Path $Work 'suite-profile'
+$env:CODEX_HOME = Join-Path $Work 'suite-codex'
+$env:LOCALAPPDATA = Join-Path $Work 'suite-state'
+$env:CBM_CACHE_DIR = ''; $env:CBM_RUNTIME_DIR = ''
 
 function Invoke-CbmHook {
     param(
         [Parameter(Mandatory = $true)][string]$HookRelativePath,
         [Parameter(Mandatory = $true)][hashtable]$Payload,
-        [Parameter(Mandatory = $true)][string]$CacheDir
+        [Parameter(Mandatory = $true)][AllowEmptyString()][string]$CacheDir
     )
     $json = ($Payload | ConvertTo-Json -Depth 8 -Compress)
     $previous = $env:CBM_CACHE_DIR
     $env:CBM_CACHE_DIR = $CacheDir
     try {
-        $out = ($json | & pwsh -NoProfile -File (Join-Path $HooksRoot $HookRelativePath) 2>&1) -join "`n"
+        $hostExe = (Get-Process -Id $PID).Path
+        $out = ($json | & $hostExe -NoProfile -File (Join-Path $HooksRoot $HookRelativePath) 2>&1) -join "`n"
         return [pscustomobject]@{ Out = $out; Exit = $LASTEXITCODE }
     }
     finally { $env:CBM_CACHE_DIR = $previous }
 }
 
 try {
+    . (Join-Path $ScriptRoot '_testcbmconfiguration.ps1')
     # =====================================================================
     Write-Host '--- the derived project name matches a real CBM database name ---' -ForegroundColor Cyan
     # Pinned to the sample verified on 2026-09-06 by indexing a real directory
@@ -135,12 +145,11 @@ try {
     Check 'read: completely silent when Codebase Memory is not installed' ($r.Out.Trim() -eq '') $r.Out
 
     $r = Invoke-CbmHook 'Cbm-Read-Check\Cbm-Read-Check.ps1' @{ hook_event_name = 'SessionStart'; cwd = $proj; session_id = 'a2' } $cache
-    # The hook emits JSON, so every backslash in the path arrives DOUBLED. A
-    # test that searches for the plain spelling finds nothing and blames the
-    # hook - this project has already lost time to exactly that mistake twice.
-    $projInJson = [regex]::Escape($proj.Replace(([char]92).ToString(), ([char]92).ToString() + ([char]92).ToString()))
+    # Decode the hook envelope first: the suggested repo_path is itself a
+    # JSON-quoted argument, so inspecting raw stdout conflates two encodings.
+    $indexNote = [string](($r.Out | ConvertFrom-Json).hookSpecificOutput.additionalContext)
     Check 'read: an unindexed project is told to index once, with the real path' (
-        $r.Out -match 'no Codebase Memory index yet' -and $r.Out -match 'index_repository' -and $r.Out -match $projInJson) $r.Out
+        $indexNote -match 'no Codebase Memory index yet' -and $indexNote.Contains('index_repository(repo_path=' + ($proj | ConvertTo-Json -Compress))) $r.Out
 
     $dbPath = Get-CbmProjectDbPath -ProjectRoot $proj -CacheDir $cache
     [System.IO.File]::WriteAllText($dbPath, 'x')
@@ -204,6 +213,7 @@ try {
     Check 'update: silent outside a git repository (no work time to compare)' ($r.Out.Trim() -eq '') $r.Out
 }
 finally {
+    foreach ($key in $savedSuiteEnvironment.Keys) { [Environment]::SetEnvironmentVariable($key, $savedSuiteEnvironment[$key]) }
     if (-not $KeepArtifacts) {
         if (-not (Remove-TestWorkspace $Work)) { $script:Fail++ }
     }

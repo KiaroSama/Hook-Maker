@@ -257,29 +257,143 @@ function Test-LiteralIdentityToken {
     return ($Value -match '^[A-Za-z0-9._-]+$')
 }
 
+# Whitelisted syntax only. Never SafeGetValue/GetScriptBlock/Invoke: variables,
+# interpolation, commands, casts and expressions are not literal argv evidence.
+function Get-GuardedLiteralValue {
+    param($Node, [int]$Depth = 0)
+    $unknown = [pscustomobject]@{ Known = $false; Values = @() }
+    if ($null -eq $Node -or $Depth -gt 32) { return $unknown }
+    if ($Node -is [System.Management.Automation.Language.StringConstantExpressionAst] -or
+        $Node -is [System.Management.Automation.Language.ConstantExpressionAst]) {
+        return [pscustomobject]@{ Known = $true; Values = @([string]$Node.Value) }
+    }
+    if ($Node -is [System.Management.Automation.Language.ExpandableStringExpressionAst]) {
+        if ($Node.NestedExpressions.Count -gt 0) { return $unknown }
+        return [pscustomobject]@{ Known = $true; Values = @([string]$Node.Value) }
+    }
+    if ($Node -is [System.Management.Automation.Language.VariableExpressionAst]) {
+        $value = switch ($Node.VariablePath.UserPath.ToLowerInvariant()) { 'true' { 'True' } 'false' { 'False' } 'null' { '' } default { return $unknown } }
+        return [pscustomobject]@{ Known = $true; Values = @([string]$value) }
+    }
+    $children = @()
+    if ($Node -is [System.Management.Automation.Language.ArrayLiteralAst]) { $children = @($Node.Elements) }
+    elseif ($Node -is [System.Management.Automation.Language.ArrayExpressionAst]) { $children = @($Node.SubExpression.Statements) }
+    elseif ($Node -is [System.Management.Automation.Language.ParenExpressionAst]) { $children = @($Node.Pipeline) }
+    elseif ($Node -is [System.Management.Automation.Language.PipelineAst] -and $Node.PipelineElements.Count -eq 1 -and
+        $Node.PipelineElements[0] -is [System.Management.Automation.Language.CommandExpressionAst] -and $Node.PipelineElements[0].Redirections.Count -eq 0) {
+        $children = @($Node.PipelineElements[0].Expression)
+    }
+    else { return $unknown }
+    $values = New-Object System.Collections.Generic.List[string]
+    foreach ($child in $children) {
+        $literal = Get-GuardedLiteralValue -Node $child -Depth ($Depth + 1)
+        if (-not $literal.Known) { return $unknown }
+        if ($Node -is [System.Management.Automation.Language.ArrayLiteralAst] -and $literal.Values.Count -ne 1) { return $unknown }
+        foreach ($value in $literal.Values) { [void]$values.Add([string]$value) }
+        if ($values.Count -gt 4096) { return $unknown }
+    }
+    return [pscustomobject]@{ Known = $true; Values = @($values.ToArray()) }
+}
+
 function Get-GuardedInvocationIdentity {
-    param([string[]]$Tokens)
-    $t = @($Tokens)
-    $runId = ''; $projFp = ''; $filePath = ''; $argsJson = ''
-    for ($i = 0; $i -lt $t.Count - 1; $i++) {
-        switch ($t[$i].ToLowerInvariant()) {
-            '-runid' { if (Test-LiteralIdentityToken $t[$i + 1]) { $runId = $t[$i + 1] } }
-            '-projectfingerprint' { if (Test-LiteralIdentityToken $t[$i + 1]) { $projFp = $t[$i + 1] } }
-            '-filepath' { $filePath = $t[$i + 1] }
-            '-argumentsjson' { $argsJson = $t[$i + 1] }
+    param([string[]]$Tokens, $RawCommand = $null)
+    $identity = [pscustomobject]@{ RunId = ''; ProjectFingerprint = ''; CommandFingerprint = '' }
+    $parameters = @{}
+    $names = @('runid', 'projectfingerprint', 'filepath', 'arguments', 'argumentsjson')
+    if ($RawCommand -is [string]) {
+        if ($RawCommand.Length -gt 262144) { return $identity }
+        $parseTokens = $null; $parseErrors = $null
+        $ast = [System.Management.Automation.Language.Parser]::ParseInput($RawCommand, [ref]$parseTokens, [ref]$parseErrors)
+        if ($parseErrors.Count -gt 0) { return $identity }
+        $candidates = New-Object System.Collections.Generic.List[object]
+        foreach ($command in @($ast.FindAll({param($n) $n -is [System.Management.Automation.Language.CommandAst]}, $false))) {
+            $program = [string]$command.GetCommandName()
+            if ($program -eq '') { continue }
+            $elements = @($command.CommandElements)
+            if ((Get-ProgramName $program) -eq 'run-tests-guarded.ps1') {
+                [void]$candidates.Add([pscustomobject]@{ Elements = $elements; Start = 1 })
+            }
+            elseif ($script:PowerShellPrograms -contains (Get-ProgramName $program)) {
+                for ($i = 1; $i -lt $elements.Count - 1; $i++) {
+                    if ($elements[$i] -isnot [System.Management.Automation.Language.CommandParameterAst] -or $elements[$i].ParameterName -ne 'File') { continue }
+                    $target = Get-GuardedLiteralValue $elements[$i + 1]
+                    if ($target.Known -and $target.Values.Count -eq 1 -and (Get-ProgramName $target.Values[0]) -eq 'run-tests-guarded.ps1') {
+                        [void]$candidates.Add([pscustomobject]@{ Elements = $elements; Start = ($i + 2) })
+                    }
+                    break
+                }
+            }
+        }
+        if ($candidates.Count -ne 1) { return $identity }
+        $elements = $candidates[0].Elements
+        for ($i = $candidates[0].Start; $i -lt $elements.Count; $i++) {
+            $parameter = $elements[$i]
+            if ($parameter -isnot [System.Management.Automation.Language.CommandParameterAst]) { return $identity }
+            $name = $parameter.ParameterName.ToLowerInvariant()
+            $valueNode = $parameter.Argument
+            if ($null -eq $valueNode -and $i + 1 -lt $elements.Count -and $elements[$i + 1] -isnot [System.Management.Automation.Language.CommandParameterAst]) { $valueNode = $elements[++$i] }
+            if ($names -notcontains $name) {
+                # PowerShell binds abbreviated parameters. Unsupported identity
+                # abbreviations are unknown, never an omitted argument list.
+                if (@($names | Where-Object { $_.StartsWith($name, [StringComparison]::OrdinalIgnoreCase) }).Count -gt 0) { return $identity }
+                continue
+            }
+            if ($parameters.ContainsKey($name)) { return $identity }
+            $parameters[$name] = Get-GuardedLiteralValue $valueNode
         }
     }
-    $innerArgs = @()
-    if (-not [string]::IsNullOrWhiteSpace($argsJson)) {
-        try {
-            $parsed = $argsJson | ConvertFrom-Json
-            if ($null -ne $parsed -and -not ($parsed -is [string])) { $innerArgs = @(@($parsed) | ForEach-Object { [string]$_ }) }
+    else {
+        # A real argv array needs no shell parsing. Without raw syntax, however,
+        # -Arguments cannot be reconstructed by guessing where its array ends.
+        $t = @($Tokens)
+        for ($i = 0; $i -lt $t.Count; $i++) {
+            $name = $t[$i].TrimStart('-').ToLowerInvariant()
+            if (-not $t[$i].StartsWith('-')) { continue }
+            if ($names -notcontains $name) {
+                if (@($names | Where-Object { $_.StartsWith($name, [StringComparison]::OrdinalIgnoreCase) }).Count -gt 0) { return $identity }
+                continue
+            }
+            if ($parameters.ContainsKey($name)) { return $identity }
+            $known = ($i + 1 -lt $t.Count -and $name -ne 'arguments')
+            $parameters[$name] = [pscustomobject]@{ Known = $known; Values = @($(if ($i + 1 -lt $t.Count) { $t[$i + 1] })) }
+            if ($i + 1 -lt $t.Count) { $i++ }
         }
-        catch { }
     }
-    $commandFp = ''
-    if (-not [string]::IsNullOrWhiteSpace($filePath)) { $commandFp = Get-CommandFingerprint -ExecutablePath $filePath -ArgumentList $innerArgs }
-    return [pscustomobject]@{ RunId = $runId; ProjectFingerprint = $projFp; CommandFingerprint = $commandFp }
+    foreach ($pair in @(@('runid','RunId'), @('projectfingerprint','ProjectFingerprint'))) {
+        if ($parameters.ContainsKey($pair[0])) {
+            $literal = $parameters[$pair[0]]
+            if ($literal.Known -and $literal.Values.Count -eq 1 -and (Test-LiteralIdentityToken $literal.Values[0])) { $identity.($pair[1]) = $literal.Values[0] }
+        }
+    }
+    if (-not $parameters.ContainsKey('filepath')) { return $identity }
+    $file = $parameters['filepath']
+    if (-not $file.Known -or $file.Values.Count -ne 1 -or [string]::IsNullOrWhiteSpace($file.Values[0])) { return $identity }
+    $innerArgs = @(); $jsonWins = $false
+    if ($parameters.ContainsKey('argumentsjson')) {
+        $json = $parameters['argumentsjson']
+        if (-not $json.Known -or $json.Values.Count -ne 1) { return $identity }
+        $argsJson = [string]$json.Values[0]
+        if (-not [string]::IsNullOrWhiteSpace($argsJson)) {
+            # Match the runner's textual array check and primitive conversion;
+            # a single JSON string element must not be mistaken for a scalar.
+            $jsonText = $argsJson.TrimStart([char[]]@(' ', "`t", "`r", "`n", [char]0xFEFF))
+            if (-not $jsonText.StartsWith('[')) { return $identity }
+            try { $parsed = $argsJson | ConvertFrom-Json -ErrorAction Stop } catch { return $identity }
+            if ($null -eq $parsed) { $parsed = @() }
+            foreach ($element in @($parsed)) {
+                if ($null -ne $element -and (($element -is [System.Collections.IEnumerable] -and $element -isnot [string]) -or
+                    $element.PSObject.TypeNames -contains 'System.Management.Automation.PSCustomObject')) { return $identity }
+            }
+            $innerArgs = @(@($parsed) | ForEach-Object { [string]$_ })
+            $jsonWins = $true
+        }
+    }
+    if (-not $jsonWins -and $parameters.ContainsKey('arguments')) {
+        if (-not $parameters['arguments'].Known) { return $identity }
+        $innerArgs = @($parameters['arguments'].Values)
+    }
+    $identity.CommandFingerprint = Get-CommandFingerprint -ExecutablePath $file.Values[0] -ArgumentList $innerArgs
+    return $identity
 }
 
 # Parse a JSON UTC timestamp to a real UTC DateTime (same reasoning as
@@ -628,4 +742,3 @@ function Find-GuardedRunner {
     }
     return ''
 }
-

@@ -546,7 +546,7 @@ function Test-ReleaseReady {
 
     # 1) no uncommitted task changes.
     $status = @((Invoke-QuietCommand -FilePath git -ArgumentList @('-C', $Root, 'status', '--porcelain')) | Where-Object { $_ })
-    if ($status.Count -gt 0) { return $false }
+    if ($LASTEXITCODE -ne 0 -or $status.Count -gt 0) { return $false }
 
     $headSha = [string](Invoke-QuietCommand -FilePath git -ArgumentList @('-C', $Root, 'rev-parse', 'HEAD'))
     if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($headSha)) { return $false }

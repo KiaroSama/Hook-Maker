@@ -190,7 +190,7 @@
     Write-Host '--- an unexpanded shell variable is not a run identity ---' -ForegroundColor Cyan
     $hcVar = New-IsolatedHookCopy
     $varCommand = 'pwsh -NoProfile -File .\scripts\Run-Tests-Guarded.ps1 -FilePath pwsh ' +
-        '-ArgumentsJson ''["-File",".\scripts\Run-Tests.ps1"]'' -RunId "$RUNID" -ProjectFingerprint "$FP" -TimeoutSeconds 900'
+        '-ArgumentsJson ''["-File",".\\scripts\\Run-Tests.ps1"]'' -RunId "$RUNID" -ProjectFingerprint "$FP" -TimeoutSeconds 900'
     # PreToolUse: that is where an already-guarded command's observed record is
     # written (the identity has to exist before the run, not after it).
     $rVar = Fire -HookPath $hcVar.Script -Cwd $Proj -EventName 'PreToolUse' -Command $varCommand -LocalAppData $hcVar.LocalAppData

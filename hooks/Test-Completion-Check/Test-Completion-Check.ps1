@@ -2,11 +2,16 @@
 # architecture (global-test-rules.md SS Three-Stage Test Enforcement /
 # global-hook-rules.md SS Test Hook Architecture).
 #
-# ROLE: GATE (global-hook-rules.md SS Hook Roles).
+# ROLE: GATE, plus an explicit recovery EXECUTOR (global-hook-rules.md SS Hook Roles).
 #   Events: Stop, SubagentStop.
 #   It blocks completion ONLY on a CONFIRMED, CURRENT-state condition, and it
-#   never runs a test, never spawns a process, and never edits a file. Its own
+#   never runs a test, never spawns a process, and never edits project files. Its own
 #   state lives under %LOCALAPPDATA%\HookMaker\state - never in the project.
+#   -ResolveIncident/-RecoveryRunId/-ProjectRoot/-Reason associates one verified
+#   newer clean same-project receipt with a substantively documented incident.
+#   The ledger pins both receipt hashes, identities, scope/repair reason and UTC
+#   time under its bounded mutex; note-only, unrelated and still-active work do
+#   not resolve. Historical associations never certify today's product state.
 #
 # THE RECURSION GUARD COMES FIRST, and it is THIS hook's own block marker, not
 # the shared `stop_hook_active` flag: that flag is set for any gate's block, so
@@ -115,20 +120,15 @@
 # security review, the single Ponytail pass, UTF-8 file validation, Git/exact-
 # SHA CI) are reported honestly as not verifiable by this hook - they belong to
 # their own gates.
-#   ACTIVATION SIGNALS (documented honestly - no client exposes a perfect
-#   Stop-side "::deep-debug was invoked earlier" receipt):
-#     1. a `prompt` field in THIS hook's own stdin carrying the STANDALONE
-#        token (rare at Stop, but the strongest direct signal when present);
-#     2. a readable `transcript_path` in this hook's own stdin whose BOUNDED
-#        tail (last 64KB) contains the standalone token - only the token is
-#        searched for; transcript contents are never stored, printed, hashed
-#        into state, or exposed;
-#     3. a marker file TestCompletionCheck-deepdebug-<projectKey>.json written
-#        by an EARLIER Stop of this hook for the SAME session (schema-versioned,
-#        session-bound; a different session's marker is stale and removed).
-#   Prose "deep debug" never activates it (CODEWORDS.md: standalone ::-token
-#   only), lifecycle-hook independence is preserved (no other hook's state
-#   layout is read), and the hook still never executes a codeword, slash
+#   Activation requires a parsed Claude user message or Codex user event/message
+#   whose text starts with the explicit command ::deep-debug. Quoted examples,
+#   instructions, annotations, assistant/tool/hook records and arbitrary Stop
+#   prompt fields cannot activate it. The transcript read is bounded to 64KB;
+#   incomplete/malformed records are ignored, and transcript text is never stored.
+#   Schema-2 markers retain validated intent for the same session after the
+#   command leaves the tail. Schema-1 markers lack provenance: preserved but
+#   inactive until a real command validates them (original marker retained).
+#   This hook never executes a codeword, slash
 #   command, skill, or discovered hook. Anti-loop: the dd-specific outputs
 #   (COMPLETE advisory / no-evidence BLOCKED) are emitted once per session per
 #   unchanged state; the pre-existing condition-1..6 blocks keep their own
@@ -146,12 +146,22 @@
 # and the fallback is applied so it can only ever NARROW what is blocked on -
 # never widen it. A malformed setting must not turn this gate into a nag.
 
+param([string]$ResolveIncident = '', [string]$RecoveryRunId = '', [string]$ProjectRoot = '', [string]$Reason = '')
+
 Set-StrictMode -Version 2.0
 $ErrorActionPreference = 'Stop'
 
 . (Join-Path $PSScriptRoot '..\_hooklib.ps1')
 
-$hookInput = Read-HookInput
+$recoveryMode = ($ResolveIncident -ne '' -or $RecoveryRunId -ne '' -or $ProjectRoot -ne '' -or $Reason -ne '')
+if ($recoveryMode) {
+    if ($ResolveIncident -notmatch '^[a-f0-9]{10}$' -or $RecoveryRunId -notmatch '^[A-Za-z0-9._-]{1,128}$' -or [string]::IsNullOrWhiteSpace($ProjectRoot) -or [System.Text.Encoding]::UTF8.GetByteCount($Reason.Trim()) -lt 80) {
+        throw 'Recovery requires -ResolveIncident <incident key>, -RecoveryRunId <verified run id>, -ProjectRoot, and a substantive -Reason of at least 80 UTF-8 bytes describing the equivalent test scope and verified repair.'
+    }
+    $ResolveIncident = $ResolveIncident.ToLowerInvariant()
+    $hookInput = [pscustomobject]@{ hook_event_name = 'Stop'; cwd = $ProjectRoot; session_id = '' }
+}
+else { $hookInput = Read-HookInput }
 if ($null -eq $hookInput) { exit 0 }
 
 # ---- recursion guard: FIRST, before anything is read or evaluated ----
@@ -160,13 +170,16 @@ if ($null -eq $hookInput) { exit 0 }
 # twelve on the same Stop - and leaving it UNGUARDED, as this hook was, means
 # blocking on every Stop for ever with no per-session bound. Neither is right:
 # the marker written immediately before this gate blocks is the correct key.
-if (Test-StopStandDown -HookInput $hookInput -HookName 'Test-Completion-Check') { exit 0 }
+if (-not $recoveryMode -and (Test-StopStandDown -HookInput $hookInput -HookName 'Test-Completion-Check')) { exit 0 }
 
 $eventName = [string](Get-Field $hookInput 'hook_event_name')
 if ($eventName -ne 'Stop' -and $eventName -ne 'SubagentStop') { exit 0 }
 
 $cwd = [string](Get-Field $hookInput 'cwd')
-if ([string]::IsNullOrWhiteSpace($cwd) -or -not (Test-Path -LiteralPath $cwd -PathType Container)) { exit 0 }
+if ([string]::IsNullOrWhiteSpace($cwd) -or -not (Test-Path -LiteralPath $cwd -PathType Container)) {
+    if ($recoveryMode) { throw 'The recovery project directory does not exist.' }
+    exit 0
+}
 
 # ---- optional .env (invalid -> reported + a NON-WIDENING fallback) ----
 $configWarnings = New-Object System.Collections.Generic.List[string]
@@ -257,48 +270,9 @@ $ddMarkerPath = Join-Path $stateDir ('TestCompletionCheck-deepdebug-' + $project
 $ddGatePath = Join-Path $stateDir ('TestCompletionCheck-ddgate-' + $projectKey + '.txt')
 $sessionId = [string](Get-Field $hookInput 'session_id')
 
-# ---- ::deep-debug session detection (E-05; signals documented in the header) --
-# The token must be STANDALONE (::-prefixed); the boundary class includes the
-# JSON-string delimiters a transcript line wraps a prompt in, so `"::deep-debug"`
-# inside a transcript matches while prose "deep debug" (no ::) never can.
-$script:DeepDebugActive = $false
-$ddTokenPattern = '(?i)(^|[\s"])::deep-debug([\s.,;:!?"\\]|$)'
-$ddSeenNow = $false
-$ddPromptField = [string](Get-Field $hookInput 'prompt')
-if (-not [string]::IsNullOrWhiteSpace($ddPromptField) -and $ddPromptField -match $ddTokenPattern) { $ddSeenNow = $true }
-if (-not $ddSeenNow) {
-    $ddTranscriptPath = [string](Get-Field $hookInput 'transcript_path')
-    if (-not [string]::IsNullOrWhiteSpace($ddTranscriptPath) -and (Test-Path -LiteralPath $ddTranscriptPath -PathType Leaf)) {
-        # BOUNDED tail read (64KB), shared-read so a live writer is never blocked.
-        # Only the token is searched; the text is discarded, never stored/printed.
-        try {
-            $ddStream = [System.IO.File]::Open($ddTranscriptPath, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::ReadWrite)
-            try {
-                $ddTailBytes = [int][Math]::Min([int64]65536, $ddStream.Length)
-                if ($ddStream.Length -gt $ddTailBytes) { [void]$ddStream.Seek(-$ddTailBytes, [System.IO.SeekOrigin]::End) }
-                $ddBuffer = New-Object byte[] $ddTailBytes
-                $ddRead = $ddStream.Read($ddBuffer, 0, $ddTailBytes)
-                if ($ddRead -gt 0 -and ([System.Text.Encoding]::UTF8.GetString($ddBuffer, 0, $ddRead)) -match $ddTokenPattern) { $ddSeenNow = $true }
-            }
-            finally { $ddStream.Dispose() }
-        }
-        catch { }
-    }
-}
-if ($ddSeenNow) {
-    # Persist the session-bound marker so LATER Stops of this session stay in
-    # deep-debug mode even if the token has scrolled out of the bounded tail.
-    try { Write-JsonFileAtomic -Path $ddMarkerPath -Value ([pscustomobject]@{ schema = 1; sessionId = $sessionId; detectedUtc = [DateTime]::UtcNow.ToString('o') }) } catch { }
-    $script:DeepDebugActive = $true
-}
-else {
-    $ddMarker = $null
-    try { $ddMarker = Read-JsonFile $ddMarkerPath } catch { $ddMarker = $null }
-    if ($null -ne $ddMarker) {
-        if ($sessionId -ne '' -and [string](Get-Field $ddMarker 'sessionId') -eq $sessionId) { $script:DeepDebugActive = $true }
-        else { try { Remove-Item -LiteralPath $ddMarkerPath -Force -ErrorAction SilentlyContinue } catch { } }
-    }
-}
+# ---- Explicit user-command activation; transcript data never executes. ----
+. (Join-Path $PSScriptRoot '_deepdebug.ps1')
+Initialize-DeepDebugActivation
 
 # Once-per-session-per-state gate for the dd-specific outputs (anti-loop): an
 # unchanged state token reports once; a changed token or a new session reports
@@ -387,7 +361,7 @@ function Test-NoteTagPresent {
     if ([string]::IsNullOrWhiteSpace($Key)) { return $false }
     $text = Get-NoteText -Root $Root
     if ([string]::IsNullOrWhiteSpace($text)) { return $false }
-    return ($text -match ('Test incident:\s*' + [regex]::Escape($Key)))
+    return ($text -match ('(?m)^[ \t]*Test incident:[ \t]*' + [regex]::Escape($Key) + '[ \t]*\r?$'))
 }
 
 # Normalises a timestamp read back out of JSON to a genuine UTC DateTime.
@@ -518,6 +492,18 @@ function Write-Finding {
 
 # ---- read the recorded evidence (AGGREGATED across per-run files) ----------
 . (Join-Path $PSScriptRoot '_evidence.ps1')
+. (Join-Path $PSScriptRoot '_recovery.ps1')
+
+# Explicit recovery is a narrowly scoped executor. It validates and records an
+# association before the ordinary gate/prune paths, preserving historical receipts.
+if ($recoveryMode) {
+    Save-CompletionState -ResolveIncidentKey $ResolveIncident -RecoveryRunId $RecoveryRunId -RecoveryReason $Reason
+    $saved = Read-JsonFile $statePath
+    $savedAssociation = @(@(Get-Field $saved 'recoveryAssociations') | Where-Object { [string](Get-Field $_ 'incidentKey') -eq $ResolveIncident -and [string](Get-Field $_ 'recoveryRunId') -eq $RecoveryRunId })
+    if ($savedAssociation.Count -ne 1 -or -not (@(Get-Field $saved 'resolvedIncidents') -contains $ResolveIncident)) { throw 'The verified recovery association was not persisted.' }
+    [Console]::Out.WriteLine('Recovery association recorded for incident ' + $ResolveIncident + '. Current-run evidence checks remain independent.')
+    exit 0
+}
 
 # The evidence is loaded BEFORE pruning so pruning can read each file's content.
 $resultEntries = Get-CompletionStateEntries 'result'
@@ -570,6 +556,7 @@ $prunedObservedPaths = New-Object System.Collections.Generic.HashSet[string]
 foreach ($re in $resultEntries) {
     $mtime = Get-FileMtimeUtc $re.Path
     if ($null -eq $mtime -or $mtime -ge $pruneCutoff) { continue }   # keep anything not yet 24h old
+    if (Test-RecoveryReceiptRetained -RunId ([string](Get-Field $re.Doc 'runId'))) { continue }
     $ov = ([string](Get-Field $re.Doc 'overall')).ToLowerInvariant()
     $lk = @(@(Get-Field $re.Doc 'leakedProcessIds') | Where-Object { $null -ne $_ -and [string]$_ -ne '' })
     $isNegative = ((@('terminated', 'failed', 'error', 'unknown') -contains $ov) -or $lk.Count -gt 0)
@@ -998,6 +985,7 @@ if ($incidentKey -ne '' -and -not (Test-IncidentResolved $incidentKey) -and $res
     }
     [void]$lines.Add('Then record a durable note in .ai/ (BUGS.md, TESTING_NOTES.md, COMMANDS.md and/or LESSON.md as appropriate) covering WHY this was not detected earlier and the verified prevention/recovery guard. A bare acknowledgement is not a note.')
     [void]$lines.Add('Tag that note with a line `' + (Get-IncidentTag $incidentKey) + '` (exactly) so THIS specific incident is cleared - a note without this tag will not resolve it, and a second concurrent incident needs its own separately tagged note.')
+    [void]$lines.Add('If the verified repair changes the command or the old receipt lacks identity, explicitly associate its newer clean receipt: powershell.exe -NoProfile -File "' + $PSCommandPath + '" -ResolveIncident ' + $incidentKey + ' -RecoveryRunId "<verified recovery run id>" -ProjectRoot "' + $cwd + '" -Reason "<substantive equivalent test scope and verified repair, at least 80 UTF-8 bytes>". This still requires the incident note and verified process cleanup.')
     [void]$lines.Add('Report only what the evidence shows: this hook has seen one guarded run for this project and cannot confirm any broader test scope passed.')
     Write-Finding -Blocking $true -Lines $lines.ToArray()
 }

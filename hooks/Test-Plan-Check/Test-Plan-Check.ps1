@@ -278,24 +278,83 @@ while ($stack.Count -gt 0) {
 
 $testFiles = @($candidates.ToArray() | Sort-Object FullName | Select-Object -First $maxFiles)
 
+# Parse PowerShell as data: strings describing a command are not invocations,
+# while commands inside an expandable string's subexpression really do run.
+function Get-PowerShellRiskLines {
+    param([string]$Source)
+    $tokens = $null; $parseErrors = $null
+    $ast = [System.Management.Automation.Language.Parser]::ParseInput($Source, [ref]$tokens, [ref]$parseErrors)
+    $result = New-Object 'string[]' (($Source -split "`n").Count)
+    if (@($parseErrors).Count -gt 0) { return [pscustomobject]@{ Lines = $result; Complete = $false } }
+    $nodes = $ast.FindAll({ param($node)
+        $node -is [System.Management.Automation.Language.CommandAst] -or
+        $node -is [System.Management.Automation.Language.InvokeMemberExpressionAst] -or
+        $node -is [System.Management.Automation.Language.WhileStatementAst]
+    }, $true)
+    foreach ($node in $nodes) {
+        $risk = ''
+        if ($node -is [System.Management.Automation.Language.CommandAst]) {
+            $name = ([string]$node.GetCommandName() -split '\\')[-1]
+            if ($name -eq 'Start-Process') { $risk = 'Start-Process' }
+            elseif ($name -eq 'Start-Sleep' -or $name -eq 'sleep') {
+                $parts = New-Object System.Collections.Generic.List[string]
+                [void]$parts.Add('Start-Sleep')
+                foreach ($element in @($node.CommandElements | Select-Object -Skip 1)) {
+                    $value = $element
+                    if ($element -is [System.Management.Automation.Language.CommandParameterAst]) {
+                        [void]$parts.Add('-' + $element.ParameterName)
+                        $value = $element.Argument
+                        if ($null -eq $value) { continue }
+                    }
+                    if ($value -is [System.Management.Automation.Language.ConstantExpressionAst] -and
+                        [string]$value.Value -match '^\d+(?:\.\d+)?$') { [void]$parts.Add([string]$value.Value) }
+                    else { [void]$parts.Add('<dynamic>') }
+                }
+                $risk = $parts -join ' '
+            }
+        }
+        elseif ($node -is [System.Management.Automation.Language.InvokeMemberExpressionAst]) {
+            if ($node.Member -is [System.Management.Automation.Language.StringConstantExpressionAst] -and
+                $node.Member.Value -eq 'WaitForExit' -and
+                ($null -eq $node.Arguments -or $node.Arguments.Count -eq 0)) { $risk = 'WaitForExit()' }
+        }
+        elseif ($node.Condition.Extent.Text -match '^\s*\$true\s*$') { $risk = 'while ($true)' }
+        if ($risk -ne '') { $result[$node.Extent.StartLineNumber - 1] += ' ' + $risk }
+    }
+    return [pscustomobject]@{ Lines = $result; Complete = $true }
+}
+
 # A file that shows ANY of these is treated as having a visible bound, so the
 # no-bound findings stay conservative (a false silence beats a false warning).
 $boundTokenPattern = '(?i)(timeout|deadline|elapsed|stopwatch|maxwait|max_wait|max-wait|maxattempt|max_attempt|waitforexit\(\s*[^)\s]|-wait\b|cancellationtoken|SIGALRM|ctrl\+c)'
 
 $findings = New-Object System.Collections.Generic.List[string]
 $signatureParts = New-Object System.Collections.Generic.List[string]
+$oversizedFiles = 0
+$unparsedFiles = 0
 
 foreach ($file in $testFiles) {
     if ($scanTimer.Elapsed.TotalSeconds -ge $maxSeconds) { $timeLimitReached = $true; break }
     if ($file.Length -gt $maxFileBytes) {
         [void]$signatureParts.Add($file.FullName + ':oversize:' + $file.Length)
+        $oversizedFiles++
         continue
     }
     $lines = @()
-    try { $lines = [System.IO.File]::ReadAllLines($file.FullName) }
-    catch { continue }
+    try { $lines = [System.IO.File]::ReadAllLines($file.FullName, (New-Object System.Text.UTF8Encoding($false, $true))) }
+    catch {
+        $scanIncomplete = $true
+        [void]$signatureParts.Add($file.FullName + ':unreadable')
+        continue
+    }
     $text = $lines -join "`n"
     $hasBound = $text -match $boundTokenPattern
+    $isPowerShell = $file.Extension -match '(?i)^\.(ps1|psm1)$'
+    if ($isPowerShell) {
+        $parsedRisk = Get-PowerShellRiskLines -Source $text
+        if (-not $parsedRisk.Complete) { $unparsedFiles++; continue }
+        $lines = @($parsedRisk.Lines)
+    }
     $relative = $file.FullName
     if ($relative.StartsWith($cwd, [System.StringComparison]::OrdinalIgnoreCase)) {
         $relative = $relative.Substring($cwd.Length).TrimStart('\', '/')
@@ -317,7 +376,7 @@ foreach ($file in $testFiles) {
         # the suite never blocks. Test-Run-Guard documents the same narrowness
         # for the commands it inspects - a delay inside a nested quoted string
         # is not parsed as a wait - and the file scanner now agrees with it.
-        if ($line -match '(?i)\b(Start-Process|Invoke-Command|ssh|docker\s+run)\b') { continue }
+        if (-not $isPowerShell -and $line -match '(?i)\b(Invoke-Command|ssh|docker\s+run)\b') { continue }
         $where = $relative + ':' + ($i + 1)
 
         # 1. a fixed blind sleep at or over the blind-wait ceiling
@@ -362,6 +421,8 @@ if ($dirLimitReached) { [void]$causes.Add('a directory ceiling of ' + $maxDirs +
 if ($timeLimitReached) { [void]$causes.Add('a scan time limit of ' + $maxSeconds + ' seconds was reached') }
 if ($findingsLimitReached) { [void]$causes.Add('a findings ceiling of ' + $maxFindings + ' was reached') }
 if ($scanIncomplete) { [void]$causes.Add('one or more files or directories could not be read') }
+if ($oversizedFiles -gt 0) { [void]$causes.Add($oversizedFiles.ToString() + ' file(s) exceeded the per-file size limit of ' + ($maxFileBytes / 1KB) + ' KB') }
+if ($unparsedFiles -gt 0) { [void]$causes.Add($unparsedFiles.ToString() + ' PowerShell file(s) could not be parsed') }
 $partialScan = $causes.Count -gt 0
 $partialCause = $causes -join ' and '
 

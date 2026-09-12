@@ -20,6 +20,7 @@
 # The suite is split by scenario into dot-sourced helper blocks (they run in
 # this script's scope; execution order is the file order below):
 #   _testcompletionharness.ps1   shared fixture builders + state-document writers
+#   _testcompletionrecovery.ps1  explicit historical recovery and audit/ownership checks
 #   _testcompletiongate.ps1      the core gate: evidence, identity, and the
 #                                active-record state machine (live / finished /
 #                                died / expired, incl. pid reuse)
@@ -28,10 +29,10 @@
 #   _testcompletionoutput.ps1    client shapes, .env validation, JSON, 5.1
 #   _testcompletiondeepdebug.ps1 the E-05 ::deep-debug verdicts + E-13 safety
 #
-# Usage:  pwsh -NoLogo -NoProfile -File .\scripts\Test-TestCompletionCheck.ps1 [-KeepArtifacts]
+# Usage:  pwsh -NoLogo -NoProfile -File .\scripts\Test-TestCompletionCheck.ps1 [-KeepArtifacts] [-RecoveryOnly]
 # Exit code is the number of failed assertions (0 = all passed).
 
-param([switch]$KeepArtifacts)
+param([switch]$KeepArtifacts, [switch]$RecoveryOnly, [switch]$ActivationOnly)
 
 Set-StrictMode -Version 2.0
 $ErrorActionPreference = 'Stop'
@@ -55,6 +56,12 @@ Write-Host ("Workspace: $Work") -ForegroundColor DarkGray
 
 $sentinel = $null
 try {
+    if ($ActivationOnly) {
+        . (Join-Path $PSScriptRoot '_testcompletionactivation.ps1')
+    }
+    else {
+    . (Join-Path $PSScriptRoot '_testcompletionrecovery.ps1')
+    if (-not $RecoveryOnly) {
     # The core gate: recursion guard, evidence freshness, run identity, active
     # markers, missing results, and concurrent runs in one project.
     . (Join-Path $PSScriptRoot '_testcompletiongate.ps1')
@@ -70,6 +77,7 @@ try {
 
     # The E-05 ::deep-debug verdicts and the E-13 static-safety proofs.
     . (Join-Path $PSScriptRoot '_testcompletiondeepdebug.ps1')
+    . (Join-Path $PSScriptRoot '_testcompletionactivation.ps1')
 
     # =====================================================================
     Write-Host '--- the real user environment is never touched ---' -ForegroundColor Cyan
@@ -78,6 +86,8 @@ try {
             Where-Object { $_.FullName -notmatch '_fakelocal' }).Count -eq 0)
     Check 'no fixture ever created a .claude/settings.json' (
         @(Get-ChildItem -LiteralPath $Work -Recurse -Filter 'settings.json' -File -ErrorAction SilentlyContinue).Count -eq 0)
+    }
+    }
 }
 finally {
     if ($null -ne $sentinel) {

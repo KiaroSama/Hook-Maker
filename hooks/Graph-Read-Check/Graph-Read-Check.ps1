@@ -49,7 +49,7 @@ if ($eventName -ne 'SessionStart' -and $eventName -ne 'UserPromptSubmit') { exit
 # already asks for the same thing, and two hooks pointing at two different
 # graphs on one prompt is noise rather than redundancy. Graphify keeps the
 # ground it is better at: projects CBM has no index for, and non-code inputs.
-$cbmCacheDir = Get-CbmCacheDir -Config (Read-HookEnv (Join-Path $PSScriptRoot '.env'))
+$cbmCacheDir = Get-CbmCacheDir -Config (Read-HookEnv (Join-Path $PSScriptRoot '.env')) -ProjectRoot $cwd
 if (Test-CbmInstalled -CacheDir $cbmCacheDir) {
     try {
         if (Test-Path -LiteralPath (Get-CbmProjectDbPath -ProjectRoot $cwd -CacheDir $cbmCacheDir) -PathType Leaf) { exit 0 }

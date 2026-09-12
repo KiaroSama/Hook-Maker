@@ -7,8 +7,8 @@
 # - SessionStart: injects the current-repo status as additional context (as
 #   before, non-blocking) AND silently captures a local, SANITIZED baseline
 #   snapshot of this repo's worktrees and local branches (paths/names + HEAD
-#   shas + a short per-worktree DIRTY FINGERPRINT hash of `git status
-#   --porcelain` output - never file contents or secret values). One baseline per repo
+#   shas + a short per-worktree DIRTY FINGERPRINT of status, index blob ids and
+#   dirty-file bytes - only hashes are persisted, never contents). One baseline per repo
 #   per session (keyed by session_id, stored once): a resumed session keeps
 #   its original "before this task" baseline; a new session overwrites it.
 #   Never modifies the repository at session start.
@@ -35,7 +35,7 @@
 #     same HEAD) existed UNCHANGED before this task -> advisory context only,
 #     never a completion blocker. For a WORKTREE, path+HEAD alone are NOT
 #     proof of "untouched": its current dirty fingerprint (a hash of `git
-#     status --porcelain` output) must also match the baseline one - a
+#     status and bounded dirty-file content) must also match the baseline one - a
 #     differing fingerprint means its UNCOMMITTED contents changed during
 #     this task, which is task-scoped and blocking. An UNKNOWN fingerprint
 #     (status failed at capture or now, or a baseline written before the
@@ -127,9 +127,9 @@ $MaxScanSeconds = 5
 
 # ---- git inspection (always runs - no time-only early exit before this) ----
 function Invoke-Git {
-    param([Parameter(Mandatory = $true)][string[]]$GitArgs, [string]$RepoPath = $cwd)
+    param([Parameter(Mandatory = $true)][string[]]$GitArgs, [string]$RepoPath = $cwd, [int]$TimeoutSeconds = 20)
 
-    $output = Invoke-QuietCommand -FilePath git -ArgumentList (@('-C', $RepoPath) + $GitArgs)
+    $output = Invoke-QuietCommand -FilePath git -ArgumentList (@('-C', $RepoPath) + $GitArgs) -TimeoutSeconds $TimeoutSeconds
     return [pscustomobject]@{ Ok = ($LASTEXITCODE -eq 0); ExitCode = $LASTEXITCODE; Output = @($output) }
 }
 
@@ -171,6 +171,12 @@ function Get-WorktreeList {
             if ($null -ne $current) { [void]$items.Add([pscustomobject]$current) }
             $current = $null
             continue
+        }
+        # Invoke-QuietCommand drops empty lines, so a header must also end the
+        # preceding record. Otherwise every worktree overwrites the first one.
+        if ($text.StartsWith('worktree ') -and $null -ne $current) {
+            [void]$items.Add([pscustomobject]$current)
+            $current = $null
         }
         if ($null -eq $current) {
             $current = [ordered]@{
@@ -216,17 +222,80 @@ function Get-LocalBranchList {
     return @($items.ToArray())
 }
 
-# Short, sanitized fingerprint of a worktree's uncommitted state: a hash of
-# its sorted `git status --porcelain` lines (paths + XY codes only - never
-# file contents or secret values). '' is an explicit UNKNOWN sentinel returned
-# when the status command fails; UNKNOWN must never later be treated as
-# "unchanged". A clean worktree hashes the empty string, which is a real,
-# distinct value - so clean, dirty, and unknown never collide.
+# Status alone cannot detect a second edit to an already-dirty path. Porcelain
+# v2 supplies index blob ids; bounded file reads cover working/untracked bytes.
+# Persist only the final digest. Failure, links, submodules, conflicts or any
+# exceeded bound return UNKNOWN, never a partial digest that looks unchanged.
 function Get-WorktreeDirtyFingerprint {
     param([Parameter(Mandatory = $true)][string]$WorktreePath)
-    $result = Invoke-Git @('status', '--porcelain') -RepoPath $WorktreePath
-    if (-not $result.Ok) { return '' }
-    return Get-ShortHash ((@($result.Output | Where-Object { $_ }) | Sort-Object) -join "`n")
+    $timer = [System.Diagnostics.Stopwatch]::StartNew()
+    $result = Invoke-Git @('status', '--porcelain=v2', '-z', '--untracked-files=all') -RepoPath $WorktreePath -TimeoutSeconds 5
+    if (-not $result.Ok -or $timer.ElapsedMilliseconds -ge 5000) { return '' }
+    $records = ([string]($result.Output -join "`n")).Split([char]0)
+    $partsToHash = New-Object System.Collections.Generic.List[string]
+    $totalBytes = 0L
+    $fileCount = 0
+    $root = Normalize-Path $WorktreePath
+    for ($i = 0; $i -lt $records.Count; $i++) {
+        $record = $records[$i]
+        if ($record -eq '') { continue }
+        if (++$fileCount -gt 500 -or $timer.ElapsedMilliseconds -ge 5000) { return '' }
+        $xy = ''
+        if ($record.StartsWith('? ')) { $relative = $record.Substring(2) }
+        elseif ($record.StartsWith('1 ') -or $record.StartsWith('2 ')) {
+            $fieldCount = if ($record.StartsWith('2 ')) { 10 } else { 9 }
+            $fields = $record -split ' ', $fieldCount
+            if ($fields.Count -ne $fieldCount -or $fields[2] -ne 'N...') { return '' }
+            $xy = $fields[1]
+            $relative = $fields[$fieldCount - 1]
+            if ($fieldCount -eq 10) {
+                if (++$i -ge $records.Count -or $records[$i] -eq '') { return '' }
+                $record += "`0from:" + $records[$i]
+            }
+        }
+        else { return '' }
+        $stream = $null
+        $hasher = $null
+        try {
+            $full = Normalize-Path (Join-Path $root $relative)
+            if (-not (Test-PathInside -Candidate $full -Parent $root)) { return '' }
+            if (-not [System.IO.File]::Exists($full)) {
+                if ($xy.Contains('D')) { [void]$partsToHash.Add($record + "`0deleted"); continue }
+                return ''
+            }
+            for ($ancestor = $full; $ancestor -ne $root; $ancestor = [System.IO.Path]::GetDirectoryName($ancestor)) {
+                if (([System.IO.File]::GetAttributes($ancestor) -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) { return '' }
+            }
+            $stream = New-Object System.IO.FileStream($full, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read,
+                [System.IO.FileShare]::Read, 65536, [System.IO.FileOptions]::Asynchronous)
+            if ($totalBytes + $stream.Length -gt 16MB) { return '' }
+            $hasher = [System.Security.Cryptography.SHA256]::Create()
+            $buffer = New-Object byte[] 65536
+            while ($true) {
+                $remaining = [int][Math]::Max(0, 5000 - $timer.ElapsedMilliseconds)
+                if ($remaining -eq 0) { return '' }
+                $read = $stream.ReadAsync($buffer, 0, $buffer.Length)
+                if (-not $read.Wait($remaining)) { return '' }
+                $count = $read.GetAwaiter().GetResult()
+                if ($count -eq 0) { break }
+                $totalBytes += $count
+                if ($totalBytes -gt 16MB) { return '' }
+                [void]$hasher.TransformBlock($buffer, 0, $count, $buffer, 0)
+            }
+            [void]$hasher.TransformFinalBlock([byte[]]@(), 0, 0)
+            [void]$partsToHash.Add($record + "`0" + [BitConverter]::ToString($hasher.Hash).Replace('-', ''))
+        }
+        catch { return '' }
+        finally {
+            if ($null -ne $stream) { $stream.Dispose() }
+            if ($null -ne $hasher) { $hasher.Dispose() }
+        }
+    }
+    # Git leaves porcelain-v2 record order unspecified. Keep each digest bound
+    # to its path/status while sorting, so swapped file contents still differ.
+    $hashRecords = $partsToHash.ToArray()
+    [System.Array]::Sort($hashRecords, [System.StringComparer]::Ordinal)
+    return ('v2:' + (Get-ShortHash ($hashRecords -join "`0")))
 }
 
 if ($null -eq (Get-Command git -ErrorAction SilentlyContinue)) {
@@ -422,7 +491,7 @@ if ($haveBaseline) {
             $inspectedWorktrees++
             $baselineDirty = [string]$baselineWorktreeDirty[$normPath]
             $currentDirty = Get-WorktreeDirtyFingerprint $wt.Path
-            if ($baselineDirty -eq '' -or $currentDirty -eq '') {
+            if ($baselineDirty -notmatch '^v2:[a-f0-9]+$' -or $currentDirty -eq '') {
                 # UNKNOWN on either side (status failed at capture or now, or
                 # a baseline written before the fingerprint field existed):
                 # never claim unchanged, and never hard-block on unknown alone.

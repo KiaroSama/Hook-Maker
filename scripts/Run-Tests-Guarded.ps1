@@ -43,7 +43,8 @@ param(
     [Parameter(Mandatory = $true)][string]$FilePath,
 
     # Arguments as an ARRAY, one element per argument. Each is added to
-    # ArgumentList individually and quoted by .NET, so an argument containing
+    # ArgumentList individually and quoted by .NET (or equivalent Win32
+    # quoting on Windows PowerShell 5.1), so an argument containing
     # spaces, quotes, &, |, ; or > stays exactly one argument.
     #
     # Usable from PowerShell callers. NOT usable from a `pwsh -File` command
@@ -906,7 +907,18 @@ try {
     $script:Result.fileName = $resolvedFilePath
     $psi = New-Object System.Diagnostics.ProcessStartInfo
     $psi.FileName = $resolvedFilePath
-    foreach ($argument in @($Arguments)) { [void]$psi.ArgumentList.Add([string]$argument) }
+    if ($null -ne $psi.PSObject.Properties['ArgumentList']) {
+        foreach ($argument in @($Arguments)) { [void]$psi.ArgumentList.Add([string]$argument) }
+    }
+    else {
+        # .NET Framework has only Arguments. Preserve the standalone runner
+        # contract with the same Win32 escaping as ConvertTo-Win32ArgumentString:
+        # double backslashes before quotes and before the closing quote.
+        $psi.Arguments = (@(foreach ($argument in @($Arguments)) {
+            $escaped = [regex]::Replace([string]$argument, '(\\*)"', '$1$1\"')
+            '"' + [regex]::Replace($escaped, '(\\+)$', '$1$1') + '"'
+        }) -join ' ')
+    }
     $psi.WorkingDirectory = $WorkingDirectory
     $psi.UseShellExecute = $false          # no shell: nothing re-parses the args
     $psi.RedirectStandardOutput = $true

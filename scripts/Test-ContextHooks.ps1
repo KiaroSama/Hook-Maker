@@ -230,6 +230,7 @@ try {
     . (Join-Path $PSScriptRoot '_testcontextlargefile.ps1')
     . (Join-Path $PSScriptRoot '_testcontextaimemory.ps1')
     . (Join-Path $PSScriptRoot '_testcontexthooklib.ps1')
+    . (Join-Path $PSScriptRoot '_testcontextprocess.ps1')
 }
 finally {
     Set-ClaudeProjectDir $OrigClaudeProjectDir

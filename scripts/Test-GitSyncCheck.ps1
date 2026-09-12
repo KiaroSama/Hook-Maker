@@ -84,6 +84,7 @@ function Fire {
 }
 
 try {
+    . (Join-Path $PSScriptRoot '_testgitsyncregressions.ps1')
     if (-not (Test-Path -LiteralPath $Hook -PathType Leaf)) {
         Write-Host 'Hook not found (expected RED before implementation).' -ForegroundColor Red
         exit 1

@@ -74,6 +74,7 @@ function Fire {
     $token = [guid]::NewGuid().ToString('N').Substring(0, 8)
     $inFile = Join-Path $Work ('in-' + $token + '.json')
     $outFile = Join-Path $Work ('out-' + $token + '.txt')
+    $errFile = Join-Path $Work ('err-' + $token + '.txt')
     [System.IO.File]::WriteAllText($inFile, $payload, (New-Object System.Text.UTF8Encoding $false))
 
     if ($Exe -eq 'pwsh') {
@@ -84,9 +85,43 @@ function Fire {
         $file = 'powershell.exe'
         $argLine = '-NoLogo -NoProfile -ExecutionPolicy Bypass -File "' + $Engine + '" -ConfigPath "' + $Config + '"'
     }
-    $proc = Start-Process -FilePath $file -ArgumentList $argLine -RedirectStandardInput $inFile -RedirectStandardOutput $outFile -Wait -NoNewWindow -PassThru
-    $out = if (Test-Path -LiteralPath $outFile) { [System.IO.File]::ReadAllText($outFile) } else { '' }
-    return [pscustomobject]@{ Exit = $proc.ExitCode; Out = $out.Trim() }
+    $proc = Start-Process -FilePath $file -ArgumentList $argLine -RedirectStandardInput $inFile -RedirectStandardOutput $outFile -RedirectStandardError $errFile -WindowStyle Hidden -PassThru
+    try {
+        # Windows PowerShell 5.1 otherwise loses ExitCode for redirected children.
+        $null = $proc.Handle
+        if (-not $proc.WaitForExit(10000)) { throw 'Engine event exceeded its 10-second wall/idle limit.' }
+        return [pscustomobject]@{
+            Exit = $proc.ExitCode
+            Out = [System.IO.File]::ReadAllText($outFile, [System.Text.Encoding]::UTF8).Trim()
+            Error = [System.IO.File]::ReadAllText($errFile, [System.Text.Encoding]::UTF8)
+        }
+    }
+    finally {
+        if (-not $proc.HasExited) { $proc.Kill(); [void]$proc.WaitForExit(5000) }
+        $proc.Dispose()
+    }
+}
+
+function Run-Acknowledgement {
+    param([string]$Command)
+    $token = [guid]::NewGuid().ToString('N')
+    $outFile = Join-Path $Work ('ack-' + $token + '.out')
+    $errFile = Join-Path $Work ('ack-' + $token + '.err')
+    # Execute the generated argument string as process arguments, never as PowerShell code.
+    $proc = Start-Process -FilePath (Get-Process -Id $PID).Path -ArgumentList ($Command -replace '^powershell\.exe ', '') -RedirectStandardOutput $outFile -RedirectStandardError $errFile -WindowStyle Hidden -PassThru
+    try {
+        $null = $proc.Handle
+        if (-not $proc.WaitForExit(10000)) { throw 'Acknowledgement exceeded its 10-second wall/idle limit.' }
+        return [pscustomobject]@{
+            Exit = $proc.ExitCode
+            Out = [System.IO.File]::ReadAllText($outFile, [System.Text.Encoding]::UTF8)
+            Error = [System.IO.File]::ReadAllText($errFile, [System.Text.Encoding]::UTF8)
+        }
+    }
+    finally {
+        if (-not $proc.HasExited) { $proc.Kill(); [void]$proc.WaitForExit(5000) }
+        $proc.Dispose()
+    }
 }
 
 try {
@@ -130,8 +165,10 @@ try {
 
     # --- Scenario 5: acknowledge clears the pending review -----------------
     $currentHost = (Get-Process -Id $PID).Path
-    $ack = & $currentHost -NoLogo -NoProfile -File $Engine -Acknowledge -ProjectRoot $B -Profile 'grp' -Route 'a-to-b' -ConfigPath $cfg1 2>&1
-    Check 'acknowledge: succeeds' ($LASTEXITCODE -eq 0 -and (($ack | Out-String) -match 'acknowledged'))
+    $reviewManifest = Get-ChildItem -LiteralPath $inboxRoot -Recurse -Filter 'manifest.json' | Select-Object -First 1
+    $review = Get-Content -LiteralPath $reviewManifest.FullName -Raw -Encoding UTF8 | ConvertFrom-Json
+    $ack = Run-Acknowledgement -Command $review.acknowledgementCommand
+    Check 'acknowledge: succeeds' ($ack.Exit -eq 0 -and $ack.Out -match 'acknowledged') $ack.Error
     $stagedAfter = @(Get-ChildItem -LiteralPath $inboxRoot -Recurse -File -ErrorAction SilentlyContinue)
     Check 'acknowledge: inbox cleaned' ($stagedAfter.Count -eq 0)
     $rAfterAck = Fire -Cwd $B -Config $cfg1
@@ -354,6 +391,78 @@ try {
         Check '5.1 re-write: a third session still runs cleanly (exit 0, review re-notified)' ($rPs51Third.Exit -eq 0 -and $rPs51Third.Out -match 'REVIEW REQUIRED') $rPs51Third.Out
     }
     else { Write-Host '[SKIP] powershell.exe not available for the 5.1 re-write scenario' -ForegroundColor Yellow }
+
+    # --- Scenario 17: an old review command cannot approve a newer package ---
+    $StaleSrc = New-Project 'Stale review source'
+    $StaleDest = New-Project 'Stale review destination'
+    $cfgStale = Join-Path $Work 'cfg-stale.json'
+    Write-Config -Path $cfgStale -Routes @((New-Route 'stale-route' (New-Endpoint 'Src' $StaleSrc) (New-Endpoint 'Dest' $StaleDest))) -Extensions @('.md')
+    $staleSourceFile = Join-Path $StaleSrc '.ai\NOTE.md'
+    [System.IO.File]::WriteAllText($staleSourceFile, 'abc', [System.Text.UTF8Encoding]::new($false))
+    $seedA = Fire -Cwd $StaleDest -Config $cfgStale
+    Check 'stale acknowledgement: package A is staged' ($seedA.Exit -eq 0 -and $seedA.Out -match 'REVIEW REQUIRED')
+    $staleStateFile = Get-ChildItem -LiteralPath (Join-Path $StaleDest '.ai\.cross-project-sync\state') -Filter '*.json' | Select-Object -First 1
+    $packageA = (Get-Content -LiteralPath $staleStateFile.FullName -Raw -Encoding UTF8 | ConvertFrom-Json).pending
+    Check 'content digest: standard abc SHA-256 stays lower-case and byte-identical' ($packageA.sourceFiles[0].sha256 -ceq 'ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad')
+    $commandA = [string]$packageA.acknowledgementCommand
+
+    Set-Content -LiteralPath $staleSourceFile 'Unreviewed replacement package B' -Encoding UTF8
+    $seedB = Fire -Cwd $StaleDest -Config $cfgStale -EventName 'UserPromptSubmit'
+    Check 'stale acknowledgement: package B replaces A' ($seedB.Exit -eq 0 -and $seedB.Out -match 'REVIEW REQUIRED')
+    $stateBeforeStale = Get-Content -LiteralPath $staleStateFile.FullName -Raw -Encoding UTF8
+    $packageB = ($stateBeforeStale | ConvertFrom-Json).pending
+    Check 'stale acknowledgement: fixture fingerprints differ' ($packageA.sourceContentFingerprint -ne $packageB.sourceContentFingerprint)
+    $staleAck = Run-Acknowledgement -Command $commandA
+    Check 'stale acknowledgement: old A command fails' ($staleAck.Exit -ne 0) $staleAck.Out
+    Check 'stale acknowledgement: B state is unchanged' ((Get-Content -LiteralPath $staleStateFile.FullName -Raw -Encoding UTF8) -ceq $stateBeforeStale)
+    Check 'stale acknowledgement: B package remains available' (Test-Path -LiteralPath $packageB.manifestPath -PathType Leaf)
+
+    $legacyCommand = [regex]::Replace([string]$packageB.acknowledgementCommand, ' -ContentFingerprint "[^"]*"', '')
+    $legacyAck = Run-Acknowledgement -Command $legacyCommand
+    Check 'legacy acknowledgement: unbound command fails' ($legacyAck.Exit -ne 0) $legacyAck.Out
+    Check 'legacy acknowledgement: B state is unchanged' ((Get-Content -LiteralPath $staleStateFile.FullName -Raw -Encoding UTF8) -ceq $stateBeforeStale)
+
+    # Hold the route lock as a competing process would. Both entry points must
+    # time out without writing, even though their inputs would otherwise mutate state.
+    $lockHasher = [System.Security.Cryptography.SHA256]::Create()
+    try {
+        $lockHash = [BitConverter]::ToString($lockHasher.ComputeHash([Text.Encoding]::UTF8.GetBytes($staleStateFile.FullName.ToUpperInvariant()))).Replace('-', '').ToLowerInvariant()
+    }
+    finally { $lockHasher.Dispose() }
+    $routeMutex = [System.Threading.Mutex]::new($false, ('Global\HookMakerSync-' + $lockHash))
+    $lockAcquired = $false
+    try {
+        $lockAcquired = $routeMutex.WaitOne(0)
+        if (-not $lockAcquired) { throw 'The isolated route lock could not be acquired for the contention fixture.' }
+        $lockedAck = Run-Acknowledgement -Command $packageB.acknowledgementCommand
+        Check 'route contention: acknowledgement refuses on lock timeout' ($lockedAck.Exit -ne 0 -and $lockedAck.Error -match 'route is busy') $lockedAck.Error
+        Check 'route contention: acknowledgement preserves pending B state' ((Get-Content -LiteralPath $staleStateFile.FullName -Raw -Encoding UTF8) -ceq $stateBeforeStale)
+        $lockedEvent = Fire -Cwd $StaleDest -Config $cfgStale -EventName 'UserPromptSubmit'
+        Check 'route contention: normal event uses the same lock' ($lockedEvent.Exit -ne 0 -and $lockedEvent.Error -match 'route is busy') $lockedEvent.Error
+        Check 'route contention: normal event preserves pending B state' ((Get-Content -LiteralPath $staleStateFile.FullName -Raw -Encoding UTF8) -ceq $stateBeforeStale)
+        Check 'route contention: package B remains available' (Test-Path -LiteralPath $packageB.manifestPath -PathType Leaf)
+    }
+    finally {
+        if ($lockAcquired) { $routeMutex.ReleaseMutex() }
+        $routeMutex.Dispose()
+    }
+
+    # An installed upgrade can encounter a cached unbound command. A fresh
+    # notification must provide a usable bound command without dropping its package.
+    $legacyState = Get-Content -LiteralPath $staleStateFile.FullName -Raw -Encoding UTF8 | ConvertFrom-Json
+    $legacyState.pending.acknowledgementCommand = $legacyCommand
+    $legacyState | ConvertTo-Json -Depth 50 | Set-Content -LiteralPath $staleStateFile.FullName -Encoding UTF8
+    $migratedEvent = Fire -Cwd $StaleDest -Config $cfgStale
+    $migratedContext = [string]($migratedEvent.Out | ConvertFrom-Json).hookSpecificOutput.additionalContext
+    $migratedCommand = [regex]::Match($migratedContext, '(?m)^powershell\.exe .*').Value.Trim()
+    Check 'legacy pending package: notification regenerates a bound command' ($migratedCommand -match ('-ContentFingerprint "' + $packageB.sourceContentFingerprint + '"'))
+    Check 'legacy pending package: staged review is retained' (Test-Path -LiteralPath $packageB.manifestPath -PathType Leaf)
+    $currentAck = Run-Acknowledgement -Command $migratedCommand
+    $appliedB = Get-Content -LiteralPath $staleStateFile.FullName -Raw -Encoding UTF8 | ConvertFrom-Json
+    Check 'current acknowledgement: generated B command succeeds' ($currentAck.Exit -eq 0 -and $currentAck.Out -match 'acknowledged') $currentAck.Error
+    Check 'current acknowledgement: only B fingerprint is applied' ($null -eq $appliedB.pending -and $appliedB.lastAppliedContentFingerprint -eq $packageB.sourceContentFingerprint)
+    $repeatB = Run-Acknowledgement -Command $packageB.acknowledgementCommand
+    Check 'current acknowledgement: repeated B command is an idempotent no-op' ($repeatB.Exit -eq 0 -and $repeatB.Out -match 'No pending review exists')
 }
 finally {
     if ($KeepArtifacts) {

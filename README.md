@@ -606,7 +606,8 @@ rather than followed out of the declared boundary.
 ### Transactional install and update
 
 Replacing a runtime is staged, not destructive: the new tree is built in a sibling staging
-directory and every planned artifact is hash-verified **before** anything live is touched, then
+directory, every planned artifact is hash-verified, and existing user configuration is copied
+into staging **before** anything live is touched, then
 swapped into place; if the swap itself fails the previous runtime is restored. A failure at any
 earlier point leaves the existing installation exactly as it was, and abandoned staging directories
 from an interrupted run are cleaned up on the next install. Settings files are written the same
@@ -667,6 +668,11 @@ new path. It never guesses the new location — a missing folder can equally mea
 document it cannot identify safely is named for you rather than removed. Hook sources are never
 touched.
 
+A record is retired only after every required client has a verified, tracked replacement. Failed
+installs and tracking failures retain the original record and its client/event choices for retry.
+Sync routes still move to the selected destination; a partial repair does not roll back that
+configuration change.
+
 Item **`33` Reset sync groups** removes every sync group from `sync-hooks.json` in one confirmed
 step — for when the config has accumulated stale groups and you want a clean start. It lists each
 group (id, name, route count) first, then asks one `y/n` question defaulting to **no** (Enter
@@ -677,6 +683,24 @@ re-validated. This changes
 routing **configuration only**: no hook is uninstalled and no file in any project is touched — use
 item `32` for that.
 
+## Codebase Memory configuration
+
+The CMM read/update hooks and the Graphify coordination checks resolve the selected client's
+matching `codebase-memory-mcp` record. Claude JSON and Codex TOML are supported; project Codex
+configuration takes precedence over its global counterpart. They never borrow another server's
+environment. Hook configuration and explicit `CBM_*` process overrides remain authoritative.
+
+Manual CLI advice preserves `CBM_CACHE_DIR`, `CBM_RUNTIME_DIR`, `TEMP` and `TMP`; the configured
+service temp directories take precedence over generic shell temp defaults. Unknown launcher
+dispatch or credential-like arguments are withheld rather than converted into a guessed command.
+Configuration reads are strict UTF-8 and capped at 1 MB. The focused TOML reader supports basic
+and literal strings, string argument arrays, and inline or separate environment tables.
+
+Refusal guidance distinguishes absent authorization, separator-sensitive approvals in CMM
+0.10.8, shell access denial and insecure cache/runtime ancestors. The hooks never execute CMM,
+approve roots, edit grants or ACLs, move services or restart clients. Approval alone does not
+require a restart; reload is appropriate only for an obsolete or dead connection.
+
 ## How syncing works
 
 - On `SessionStart` and `UserPromptSubmit` the hook checks, for the project you are working
@@ -685,6 +709,14 @@ item `32` for that.
   quick fingerprint moves; a pending review is shown at most once per session.
 - Real changes are staged under `<project>/.ai/.cross-project-sync/` with a manifest, and the
   agent receives review instructions plus an acknowledgement command to run afterwards.
+- The command includes `-ContentFingerprint` for the exact reviewed package. If another prompt
+  stages newer changes, the old command refuses without changing state. Review the current
+  manifest and start a new session to receive a fresh command; legacy commands without this
+  argument also refuse while a review is pending. Repeated acknowledgement with no pending
+  review remains harmless.
+- Each route serializes staging and acknowledgement with a named mutex. A busy route fails
+  after five seconds without running its state changes unlocked; retry after the current
+  operation finishes.
 - An empty, never-synced source is recorded silently as a baseline (no empty review packages).
 
 ## Editing `sync-hooks.json`
@@ -814,3 +846,7 @@ Manual install without the wizard:
 ## License
 
 Proprietary — all rights reserved. See `LICENSE`.
+
+Claude CMM scope precedence is local (the matching project entry in the user
+profile), then the project's .mcp.json, then the user-level record. An explicit
+disable at the selected scope remains terminal. See the hook tests for both hosts.

@@ -181,6 +181,7 @@ function Fire {
 }
 
 try {
+    . (Join-Path $PSScriptRoot '_testcloudflarereadiness.ps1')
     # =====================================================================
     Write-Host '--- non-Workers projects stay silent ---' -ForegroundColor Cyan
     $plain = New-GitRepo 'Plain'

@@ -127,6 +127,8 @@
     }
     finally { Remove-FixtureHook 'ZZZ-Regtest-Transaction' }
 
+    . (Join-Path $PSScriptRoot '_testinstallruntimeconfig.ps1')
+
     # =====================================================================
     # A virtualenv inside a package is excluded by its PEP 405 MARKER, not by
     # its name. '.venv'/'venv' in $script:PlanForbiddenDirectoryNames are only

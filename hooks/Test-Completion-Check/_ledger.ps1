@@ -25,6 +25,8 @@
 #                       snapshot taken when IT was registered, so two concurrent
 #                       incidents demand two DISTINCT notes and resolving one
 #                       never forgets the other.
+#   recoveryAssociations : bounded, audited explicit links from an incident to
+#                       an equivalent verified recovery; merged with every writer.
 # The old single-value shape is migrated forward on read; the collection shape
 # is always written. Bounded (caps below) and secret-free, still plain JSON.
 $script:MaxResolvedIncidents = 50
@@ -39,6 +41,7 @@ $script:MaxExpiredMarkers = 20
 $script:expiredMarkers = New-Object System.Collections.Generic.List[object]
 $script:resolvedIncidents = New-Object System.Collections.Generic.List[string]
 $script:pendingNotes = New-Object System.Collections.Specialized.OrderedDictionary
+$script:recoveryAssociations = New-Object System.Collections.Specialized.OrderedDictionary
 # Set when a newly-seen incident could NOT be tracked because the ledger is full
 # of UNRESOLVED obligations. An unresolved note is never silently dropped to make
 # room; the overflow is surfaced (a bounded block) so the backlog is cleared
@@ -49,6 +52,10 @@ $deferredFingerprint = ''
 $previous = $null
 try { $previous = Read-JsonFile $statePath } catch { $previous = $null }
 if ($null -ne $previous) {
+    foreach ($association in @(Get-Field $previous 'recoveryAssociations')) {
+        $associationKey = [string](Get-Field $association 'incidentKey')
+        if ($associationKey -ne '') { $script:recoveryAssociations[$associationKey] = $association }
+    }
     $rawResolved = Get-Field $previous 'resolvedIncidents'
     if ($null -ne $rawResolved) {
         foreach ($k in @($rawResolved)) { $ks = [string]$k; if ($ks -ne '' -and -not $script:resolvedIncidents.Contains($ks)) { [void]$script:resolvedIncidents.Add($ks) } }
@@ -185,6 +192,10 @@ function Merge-DiskLedger {
     $disk = $null
     try { $disk = Read-JsonFile $script:statePath } catch { $disk = $null }
     if ($null -eq $disk) { return }
+    foreach ($association in @(Get-Field $disk 'recoveryAssociations')) {
+        $associationKey = [string](Get-Field $association 'incidentKey')
+        if ($associationKey -ne '') { $script:recoveryAssociations[$associationKey] = $association }
+    }
     $diskResolved = Get-Field $disk 'resolvedIncidents'
     if ($null -ne $diskResolved) {
         foreach ($k in @($diskResolved)) {
@@ -228,12 +239,12 @@ function Merge-DiskLedger {
 # cross-process Mutex (the shared crash-aware-lock idea from
 # scripts\_installregistry.ps1's registry lock) so concurrent Stops on one project
 # cannot lose each other's incidents. The mutex is global-namespaced from the
-# project key; acquisition is bounded and best-effort - if it cannot be taken we
-# still merge and write rather than corrupt or deadlock. An AbandonedMutexException
+# project key; acquisition is bounded. Never write without ownership of the lock.
+# Explicit recovery also validates its request under this same lock. An AbandonedMutexException
 # means a previous holder died mid-write; we then own it, exactly like the file
 # lock reclaiming an orphan.
 function Save-CompletionState {
-    param([string]$Deferred)
+    param([string]$Deferred, [string]$ResolveIncidentKey = '', [string]$RecoveryRunId = '', [string]$RecoveryReason = '')
     if ($null -eq $Deferred) { $Deferred = $script:deferredFingerprint }
     $script:deferredFingerprint = $Deferred
     $mutex = $null
@@ -244,9 +255,15 @@ function Save-CompletionState {
             try { $acquired = $mutex.WaitOne([TimeSpan]::FromSeconds(5)) }
             catch [System.Threading.AbandonedMutexException] { $acquired = $true }
         }
-        catch { $mutex = $null; $acquired = $false }
+        catch { $acquired = $false }
+
+        if (-not $acquired) {
+            if ($ResolveIncidentKey -ne '') { throw 'The incident ledger is busy or inaccessible. Retry recovery after the current writer finishes.' }
+            return
+        }
 
         Merge-DiskLedger
+        if ($ResolveIncidentKey -ne '') { Set-VerifiedIncidentRecovery -IncidentKey $ResolveIncidentKey -RecoveryRunId $RecoveryRunId -Reason $RecoveryReason }
 
         try {
             $notes = New-Object System.Collections.Generic.List[object]
@@ -258,11 +275,12 @@ function Save-CompletionState {
                     resolvedIncidents   = @($script:resolvedIncidents.ToArray())
                     expiredMarkers      = @($script:expiredMarkers.ToArray())
                     pendingNotes        = @($notes.ToArray())
+                    recoveryAssociations = @($script:recoveryAssociations.Values)
                     deferredFingerprint = $Deferred
                     updatedUtc          = [DateTime]::UtcNow.ToString('o')
                 }) -Path $script:statePath
         }
-        catch { }
+        catch { if ($ResolveIncidentKey -ne '') { throw } }
     }
     finally {
         if ($null -ne $mutex) {
