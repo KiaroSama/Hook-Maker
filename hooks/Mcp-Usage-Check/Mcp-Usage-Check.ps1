@@ -140,7 +140,11 @@ $summaryLinePattern = '(?im)(?:^|\\n)[ \t]{0,8}(?:[-*>#]+[ \t]{0,4})?(?:\*\*)?MC
 # the next Stop of the same session, a changed one is reported immediately.
 function Test-ShouldReport {
     param([string]$StateToken)
-    $fingerprint = Get-ShortHash ($sessionId + '|' + $eventName + '|' + $StateToken)
+    # Session ALONE let a previous task's stamp mute the same missing
+    # requirement on the next genuine one, and made a parent and its subagent
+    # share one slot. The identity carries the agent and the continuation
+    # chain too, so a new task is a new question.
+    $fingerprint = Get-ShortHash ((Get-HookSuppressionIdentity -HookInput $hookInput) + '|' + $eventName + '|' + $StateToken)
     try {
         if (Test-Path -LiteralPath $gatePath -PathType Leaf) {
             if (([System.IO.File]::ReadAllText($gatePath)).Trim() -eq $fingerprint) { return $false }

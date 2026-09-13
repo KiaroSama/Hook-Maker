@@ -58,11 +58,25 @@ function Get-BlockedGateNames {
     param([AllowEmptyString()][string]$ProjectKey, [AllowEmptyString()][string]$SessionId)
     $names = New-Object System.Collections.ArrayList
     if ([string]::IsNullOrWhiteSpace($SessionId)) { return @() }
-    if (-not (Test-Path -LiteralPath $stateDir -PathType Container)) { return @() }
+    # THE LEDGER IS THE PRODUCER NOW. A successful block registration writes the
+    # shared stop ledger, not a StopBlock-*.txt marker, so reading markers alone
+    # reported no gate history at all on any current runtime. The marker sweep
+    # below is kept for a runtime installed before the ledger existed, and for
+    # entries a legacy hook still leaves; the two sets are merged and deduped.
+    if ($null -ne (Get-Command Get-StopSessionGateHistory -ErrorAction SilentlyContinue)) {
+        try {
+            foreach ($hook in @(Get-StopSessionGateHistory -ProjectRoot $cwd -SessionId $SessionId)) {
+                $safe = [System.Text.RegularExpressions.Regex]::Replace([string]$hook, '[^A-Za-z0-9]+', '')
+                if (-not [string]::IsNullOrWhiteSpace($safe)) { [void]$names.Add($safe) }
+            }
+        }
+        catch { }
+    }
+    if (-not (Test-Path -LiteralPath $stateDir -PathType Container)) { return @($names | Sort-Object -Unique) }
     try {
         $markers = @(Get-ChildItem -LiteralPath $stateDir -Filter ('StopBlock-*-' + $ProjectKey + '.txt') -File -ErrorAction SilentlyContinue)
     }
-    catch { return @() }
+    catch { return @($names | Sort-Object -Unique) }
     foreach ($marker in $markers) {
         $recorded = ''
         try { $recorded = ([System.IO.File]::ReadAllText($marker.FullName)).Trim() } catch { continue }
@@ -76,28 +90,59 @@ function Get-BlockedGateNames {
     return @($names | Sort-Object -Unique)
 }
 
-# The delivery stamp is "<sessionId>|<iso timestamp>". A DIFFERENT session is
-# always told, however recently the last one was; the SAME session is told
-# again on a prompt once COOLDOWN_MINUTES have passed. SessionStart never
-# consults it - every SessionStart is a rebuilt context - but does stamp it,
-# so the first prompt after a start does not repeat what was just delivered.
+# ONE STAMP PER SESSION, not one per project.
+#
+# The file used to hold a single "<sessionId>|<timestamp>", so two sessions
+# working in the same project took turns overwriting it and each one read the
+# OTHER's id, concluded "not mine" and delivered again: A/B/A was reminded three
+# times inside a single cooldown. It is a small bounded map now - one line per
+# session, newest kept - so a session's own cooldown survives another session
+# speaking in between.
+#
+# SessionStart never consults it (every SessionStart is a rebuilt context) but
+# does stamp it, so the first prompt after a start does not repeat what was just
+# delivered.
+$script:DeliveryMaxSessions = 12
+
+function Get-DeliveryStamps {
+    $map = @{}
+    try {
+        if (-not (Test-Path -LiteralPath $deliveryPath -PathType Leaf)) { return $map }
+        foreach ($line in @([System.IO.File]::ReadAllLines($deliveryPath))) {
+            $text = ([string]$line).Trim()
+            if ($text -eq '') { continue }
+            $parts = $text.Split('|')
+            if ($parts.Count -lt 2) { continue }
+            $map[[string]$parts[0]] = [string]$parts[1]
+        }
+    }
+    catch { return @{} }
+    return $map
+}
+
 function Test-WithinCooldown {
     param([AllowEmptyString()][string]$SessionId, [int]$CooldownMinutes)
-    $recorded = $null
-    try { if (Test-Path -LiteralPath $deliveryPath -PathType Leaf) { $recorded = ([System.IO.File]::ReadAllText($deliveryPath)).Trim() } }
-    catch { return $false }
-    if ([string]::IsNullOrWhiteSpace($recorded)) { return $false }
-    $parts = $recorded.Split('|')
-    if ($parts.Count -lt 2 -or [string]$parts[0] -ne $SessionId) { return $false }
+    if ([string]::IsNullOrWhiteSpace($SessionId)) { return $false }
+    $map = Get-DeliveryStamps
+    if (-not $map.ContainsKey($SessionId)) { return $false }
     $lastUtc = [DateTime]::MinValue
-    if (-not [DateTime]::TryParse([string]$parts[1], [ref]$lastUtc)) { return $false }
+    if (-not [DateTime]::TryParse([string]$map[$SessionId], [ref]$lastUtc)) { return $false }
     return (([DateTime]::UtcNow - $lastUtc.ToUniversalTime()).TotalMinutes -lt $CooldownMinutes)
 }
+
 function Write-DeliveryStamp {
     param([AllowEmptyString()][string]$SessionId)
     try {
         New-Item -ItemType Directory -Path $stateDir -Force | Out-Null
-        [System.IO.File]::WriteAllText($deliveryPath, ($SessionId + '|' + [DateTime]::UtcNow.ToString('o')))
+        $map = Get-DeliveryStamps
+        $map[$SessionId] = [DateTime]::UtcNow.ToString('o')
+        # Bounded: keep the most recent sessions and drop the rest, so a
+        # long-lived project cannot grow this file without limit.
+        $lines = @()
+        foreach ($key in @($map.Keys | Sort-Object -Property @{ Expression = { $map[$_] }; Descending = $true } | Select-Object -First $script:DeliveryMaxSessions)) {
+            $lines += ([string]$key + '|' + [string]$map[$key])
+        }
+        [System.IO.File]::WriteAllLines($deliveryPath, [string[]]$lines)
     }
     catch { }
 }

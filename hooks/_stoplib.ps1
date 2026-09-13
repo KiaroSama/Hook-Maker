@@ -346,10 +346,11 @@ function Invoke-StopAdmission {
         }
         if ([int]$chain.blocks -ge (Get-StopCorrectionBudget)) {
             Set-ObjectProperty -Object $ledger.unresolved -Name $keys.EntryKey -Value ([pscustomobject]@{
-                    hook     = $HookName
-                    chain    = [string]$chain.id
-                    reason   = 'budget-spent'
-                    lastUtc  = [DateTime]::UtcNow.ToString('o')
+                    hook    = $HookName
+                    chain   = [string]$chain.id
+                    session = [string](Get-Field $HookInput 'session_id')
+                    reason  = 'budget-spent'
+                    lastUtc = [DateTime]::UtcNow.ToString('o')
                 })
             return [pscustomobject]@{ Admitted = $false; Reason = 'budget-spent' }
         }
@@ -361,11 +362,15 @@ function Invoke-StopAdmission {
                 blockedUtc = [DateTime]::UtcNow.ToString('o')
             })
         # A gate that blocks is by definition reporting something unresolved.
+        # The session is stored rather than parsed back out of the key, so the
+        # summary hook can ask "what blocked in THIS session" without having to
+        # know how an entry key is spelled.
         Set-ObjectProperty -Object $ledger.unresolved -Name $keys.EntryKey -Value ([pscustomobject]@{
-                hook     = $HookName
-                chain    = [string]$chain.id
-                reason   = 'blocked'
-                lastUtc  = [DateTime]::UtcNow.ToString('o')
+                hook    = $HookName
+                chain   = [string]$chain.id
+                session = [string](Get-Field $HookInput 'session_id')
+                reason  = 'blocked'
+                lastUtc = [DateTime]::UtcNow.ToString('o')
             })
         return [pscustomobject]@{ Admitted = $true; Reason = 'admitted' }
     }
@@ -407,10 +412,53 @@ function Get-StopUnresolvedHistory {
     foreach ($prop in @($ledger.unresolved.PSObject.Properties)) {
         $v = $prop.Value
         if ($null -eq $v) { continue }
-        $out += [pscustomobject]@{ Hook = [string]$v.hook; Reason = [string]$v.reason; LastUtc = [string]$v.lastUtc }
+        $out += [pscustomobject]@{ Hook = [string]$v.hook; Reason = [string]$v.reason; LastUtc = [string]$v.lastUtc; Session = [string]$v.session }
         if ($out.Count -ge 40) { break }
     }
     return $out
+}
+
+# The gates that blocked in ONE session, for that session's closing summary.
+# History, never a live verdict: an entry says a gate DID block, not that the
+# condition is still open now - which is why the summary asks the agent to
+# account for each rather than asserting any of them is unresolved.
+function Get-StopSessionGateHistory {
+    param([AllowEmptyString()][string]$ProjectRoot = '', [AllowEmptyString()][string]$SessionId = '')
+    if ([string]::IsNullOrWhiteSpace($SessionId)) { return @() }
+    $names = @()
+    foreach ($row in @(Get-StopUnresolvedHistory -ProjectRoot $ProjectRoot)) {
+        if ([string]$row.Session -ne [string]$SessionId) { continue }
+        if ([string]::IsNullOrWhiteSpace([string]$row.Hook)) { continue }
+        if ($names -contains [string]$row.Hook) { continue }
+        $names += [string]$row.Hook
+    }
+    return ($names | Sort-Object)
+}
+
+# The continuation chain this event belongs to, or '' when there is none yet.
+# TASK IDENTITY for a secondary guard: a per-hook fingerprint keyed on session
+# alone let a PREVIOUS task suppress the same missing requirement on the next
+# genuine one. Read-only - asking must not mint a chain.
+function Get-StopChainId {
+    param([Parameter(Mandatory = $true)]$HookInput)
+    $path = Get-StopLedgerPath -ProjectRoot ([string](Get-Field $HookInput 'cwd'))
+    if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { return '' }
+    $ledger = Read-StopLedger -Path $path
+    $keys = Get-StopLedgerKeys -HookInput $HookInput -HookName 'chain-probe'
+    if ($null -eq $ledger.chains.PSObject.Properties[$keys.ChainKey]) { return '' }
+    return [string]$ledger.chains.($keys.ChainKey).id
+}
+
+# The identity a secondary (per-hook) suppression fingerprint must carry so it
+# cannot leak across tasks or between a parent and its subagent. Safe on a
+# runtime with no ledger: the chain is simply empty and the rest still applies.
+function Get-StopSuppressionIdentity {
+    param([Parameter(Mandatory = $true)]$HookInput)
+    $session = [string](Get-Field $HookInput 'session_id')
+    $agent = Get-StopAgentKey -HookInput $HookInput
+    $chain = ''
+    try { $chain = Get-StopChainId -HookInput $HookInput } catch { $chain = '' }
+    return ($session + '|' + $agent + '|' + $chain)
 }
 
 # ---- Stop-time evidence: the CURRENT final assistant response --------------

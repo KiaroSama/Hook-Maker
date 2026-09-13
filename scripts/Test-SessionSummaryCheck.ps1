@@ -222,6 +222,56 @@ try {
     Check 'summary: a prompt after the window expired is reminded again' ($expired.Out -match 'SESSION SUMMARY') $expired.Out
 
     # =====================================================================
+    Write-Host '--- R03: two sessions in one project keep separate cooldowns ---' -ForegroundColor Cyan
+    # A single project-wide stamp held ONE session id, so two sessions took
+    # turns overwriting it: each then read the OTHER's id, concluded "not
+    # mine" and delivered again. A/B/A was reminded three times in one window.
+    $abProj = Join-Path $Work 'ab-proj'
+    New-Item -ItemType Directory -Path $abProj -Force | Out-Null
+    $abA1 = Invoke-SummaryHook @{ hook_event_name = 'UserPromptSubmit'; cwd = $abProj; session_id = 'ab-a' }
+    Check 'summary: session A is told first' ($abA1.Out -match 'SESSION SUMMARY') $abA1.Out
+    $abB1 = Invoke-SummaryHook -KeepDelivered -Payload @{ hook_event_name = 'UserPromptSubmit'; cwd = $abProj; session_id = 'ab-b' }
+    Check 'summary: session B is told too, however recent A was' ($abB1.Out -match 'SESSION SUMMARY') $abB1.Out
+    $abA2 = Invoke-SummaryHook -KeepDelivered -Payload @{ hook_event_name = 'UserPromptSubmit'; cwd = $abProj; session_id = 'ab-a' }
+    Check 'summary: A/B/A - session A is NOT told again inside its own window' ($abA2.Out.Trim() -eq '') $abA2.Out
+    $abB2 = Invoke-SummaryHook -KeepDelivered -Payload @{ hook_event_name = 'UserPromptSubmit'; cwd = $abProj; session_id = 'ab-b' }
+    Check 'summary: and B is not told again either' ($abB2.Out.Trim() -eq '') $abB2.Out
+    $abC = Invoke-SummaryHook -KeepDelivered -Payload @{ hook_event_name = 'UserPromptSubmit'; cwd = $abProj; session_id = 'ab-c' }
+    Check 'negative control: a THIRD, never-seen session is still told' ($abC.Out -match 'SESSION SUMMARY') $abC.Out
+
+    # =====================================================================
+    Write-Host '--- R03: gate history comes from the REAL producer ---' -ForegroundColor Cyan
+    # Registering a block writes the shared stop LEDGER, not a StopBlock-*.txt
+    # marker, so a reader that only enumerated markers reported no gate history
+    # at all on any current runtime. This drives the production helper itself
+    # rather than fabricating the files the old path used to read.
+    $ledProj = Join-Path $Work 'ledger-proj'
+    New-Item -ItemType Directory -Path $ledProj -Force | Out-Null
+    $ledKey = Get-ShortHash ([string]$ledProj).ToLowerInvariant()
+    $prevLedgerLocal = $env:LOCALAPPDATA
+    $env:LOCALAPPDATA = $FakeLocalAppData
+    try {
+        $gateIn = [pscustomobject]@{ session_id = 'led-1'; cwd = $ledProj; hook_event_name = 'Stop'; stop_hook_active = $false }
+        $secretsAdmit = Set-StopBlockMarker -HookInput $gateIn -HookName 'Secrets-Check'
+        $ciAdmit = Set-StopBlockMarker -HookInput $gateIn -HookName 'Ci-Status-Check'
+    }
+    finally { $env:LOCALAPPDATA = $prevLedgerLocal }
+    Check 'the producer admitted both gates (the fixture is real, not assumed)' (
+        $secretsAdmit.Admitted -and $ciAdmit.Admitted) ([string]$secretsAdmit.Reason + '/' + [string]$ciAdmit.Reason)
+    Check 'the producer wrote NO legacy marker file for this project' (
+        @(Get-ChildItem -LiteralPath $StateDir -Filter ('StopBlock-*-' + $ledKey + '.txt') -File -ErrorAction SilentlyContinue).Count -eq 0)
+    $rLed = Invoke-SummaryHook @{ hook_event_name = 'UserPromptSubmit'; cwd = $ledProj; session_id = 'led-1' }
+    Check 'summary: gates that really blocked are reported, sorted' ($rLed.Out -match 'CiStatusCheck, SecretsCheck') $rLed.Out
+    Check 'summary: they are named as history to account for, not as open blockers' (
+        $rLed.Out -match 'history only' -or $rLed.Out -match 'Account for each one') $rLed.Out
+    $rLedOther = Invoke-SummaryHook @{ hook_event_name = 'UserPromptSubmit'; cwd = $ledProj; session_id = 'led-other' }
+    Check 'summary: ANOTHER session in the same project is not handed those gates' (
+        $rLedOther.Out -notmatch 'SecretsCheck') $rLedOther.Out
+    $rLedElsewhere = Invoke-SummaryHook @{ hook_event_name = 'UserPromptSubmit'; cwd = $proj; session_id = 'led-1' }
+    Check 'summary: the same session in ANOTHER project is not handed them either' (
+        $rLedElsewhere.Out -notmatch 'SecretsCheck') $rLedElsewhere.Out
+
+    # =====================================================================
     Write-Host '--- client output shapes ---' -ForegroundColor Cyan
     # UserPromptSubmit is a context event for BOTH clients: Claude and Codex
     # each get hookSpecificOutput.additionalContext (Codex's systemMessage is
