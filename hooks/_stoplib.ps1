@@ -221,11 +221,13 @@ function Get-EvidenceTranscriptPath {
     param([Parameter(Mandatory = $true)]$HookInput)
     $event = [string](Get-Field $HookInput 'hook_event_name')
     if ($event -eq 'SubagentStop') {
+        # agent_transcript_path is NOT a documented client field - prefer it when a
+        # client does supply one, but never require it. On a SubagentStop the
+        # documented transcript_path IS the subagent's own transcript, so treating
+        # its absence as UNKNOWN disabled every closing gate on every real subagent
+        # stop: the evidence came back empty and nothing could ever block.
         $child = [string](Get-Field $HookInput 'agent_transcript_path')
-        # A child event with no child transcript is UNKNOWN, not "use the
-        # parent's": the parent's text is a different agent's answer.
         if (-not [string]::IsNullOrWhiteSpace($child)) { return $child }
-        return ''
     }
     return [string](Get-Field $HookInput 'transcript_path')
 }
