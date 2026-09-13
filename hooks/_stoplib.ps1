@@ -164,26 +164,28 @@ function Test-StopStandDownLedger {
     # projects the gate had nothing to say about and put a locked
     # read-modify-write on the hottest path there is. Only a block writes now.
     if (-not $IsContinuation) { return $false }
-    $keys = Get-StopLedgerKeys -HookInput $HookInput -HookName $HookName
+    # READ-ONLY from here. One shared read, no lock, no write: a question must
+    # not change the thing it asks about, and this one runs in every cooperating
+    # gate on every continuation.
     $path = Get-StopLedgerPath -ProjectRoot ([string](Get-Field $HookInput 'cwd'))
-    $verdict = Invoke-StopLedgerUpdate -Path $path -Mutate {
-        param($ledger)
-        $chain = Resolve-StopChain -Ledger $ledger -ChainKey $keys.ChainKey -IsContinuation $IsContinuation
-        # Budget spent: every cooperating gate stands down, so the chain ends
-        # instead of forcing another answer for ever.
-        if ([int]$chain.blocks -ge (Get-StopCorrectionBudget)) { return 'budget' }
-        if (-not $IsContinuation) { return 'arm' }
-        $entry = $null
-        # Parenthesised on purpose: $ledger.entries.$keys.EntryKey would read
-        # ($ledger.entries.$keys).EntryKey, not the property NAMED by the key.
-        if ($null -ne $ledger.entries.PSObject.Properties[$keys.EntryKey]) { $entry = $ledger.entries.($keys.EntryKey) }
-        if ($null -ne $entry -and [string]$entry.chain -eq [string]$chain.id) { return 'standdown' }
-        return 'arm'
-    }
-    # A null verdict means persistence was unavailable. Standing DOWN is the
-    # honest answer there: it cannot loop, where arming could.
-    if ($null -eq $verdict) { return $true }
-    return ($verdict -eq 'standdown' -or $verdict -eq 'budget')
+    # Read-StopLedger returns an EMPTY ledger for a missing or damaged file, which
+    # arms the gate - the trade-off this file already documents. So there is no
+    # separate persistence-failure branch to keep here.
+    $ledger = Read-StopLedger -Path $path
+    $keys = Get-StopLedgerKeys -HookInput $HookInput -HookName $HookName
+    $chain = $null
+    if ($null -ne $ledger.chains.PSObject.Properties[$keys.ChainKey]) { $chain = $ledger.chains.($keys.ChainKey) }
+    # No chain yet means no prior block in it - nothing to stand down for. The old
+    # path minted one here purely as a side effect of asking.
+    if ($null -eq $chain) { return $false }
+    # Budget spent: every cooperating gate stands down, so the chain ends instead
+    # of forcing another answer for ever.
+    if ([int]$chain.blocks -ge (Get-StopCorrectionBudget)) { return $true }
+    $entry = $null
+    # Parenthesised on purpose: $ledger.entries.$keys.EntryKey would read
+    # ($ledger.entries.$keys).EntryKey, not the property NAMED by the key.
+    if ($null -ne $ledger.entries.PSObject.Properties[$keys.EntryKey]) { $entry = $ledger.entries.($keys.EntryKey) }
+    return ($null -ne $entry -and [string]$entry.chain -eq [string]$chain.id)
 }
 
 # Record this gate's block and spend one unit of the chain's shared budget.
