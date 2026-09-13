@@ -788,7 +788,13 @@ $evidenceFingerprint = Get-ShortHash ($evidenceParts.ToArray() -join '|')
 # bound to the CURRENT repo state (concurrent lifecycle hooks; registration
 # order is display-only and never an execution order). ----
 $record = [ordered]@{
+    # Versioned handoff identity; contract in _cleanupevidence.ps1, mirrored (not
+    # shared - an installed runtime is self-contained) and revalidated there.
+    schemaVersion = 2
+    producerGeneration = 2
     sessionId = $sessionId
+    # A CACHE HINT, never proof: it hashes HEAD plus porcelain STRINGS, so two
+    # contents behind one ' M path' hash alike and an IGNORED path never appears.
     fingerprint = (Get-RepoStateFingerprint -ProjectRoot $projectRoot)
     category = $category
     scanComplete = ($allCauses.Count -eq 0)

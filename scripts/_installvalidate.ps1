@@ -481,3 +481,13 @@ function Test-InstallRecordValid {
     }
     return [pscustomobject]@{ Ok = $true; Reason = '' }
 }
+
+# ---------------------------------------------------------------------------
+# Installed-runtime binding inspection and the versioned migration of retired
+# DEFAULT event bindings (36.md F11). Loaded from here, LAST, because it is
+# read-only judgement over a persisted record in the same sense this file is,
+# and because _installlib.ps1 already pulls this file in for every consumer -
+# so nothing else has to learn a new dot-source. Every cross-file call it makes
+# resolves at CALL time in this one shared script scope, so being last costs
+# nothing.
+. (Join-Path $PSScriptRoot '_installeventmigration.ps1')

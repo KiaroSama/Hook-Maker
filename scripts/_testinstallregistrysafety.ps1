@@ -37,7 +37,8 @@
     $standaloneFiles = @(Get-ChildItem -LiteralPath $standaloneRoot -Recurse -Force -File -ErrorAction SilentlyContinue)
     $standaloneNames = @($standaloneFiles | ForEach-Object { $_.Name })
     # The EXACT shipped artifact set. Every entry is deliberate: the private
-    # library copy, the hook script itself, and the ownership metadata that says
+    # library copy, its Stop-ledger sibling _stoplib.ps1 (which _hooklib.ps1
+    # dot-sources optionally), the hook script itself, and the ownership metadata that says
     # which install owns this directory. Anything else appearing here is either a
     # new planned artifact (update this list in the same change) or a file the
     # installer is writing that no plan accounts for - the defect that made the
@@ -48,7 +49,7 @@
     $standaloneSorted = @($standaloneNames)
     [System.Array]::Sort($standaloneSorted, [System.StringComparer]::Ordinal)
     Check 'a standalone hook installs its own script, the shared library and its ownership metadata' (
-        (($standaloneSorted) -join ',') -ceq '.hookmaker-runtime.json,_hooklib.ps1,zzz-standalone-hook.ps1') (($standaloneSorted) -join ',')
+        (($standaloneSorted) -join ',') -ceq '.hookmaker-runtime.json,_hooklib.ps1,_stoplib.ps1,zzz-standalone-hook.ps1') (($standaloneSorted) -join ',')
     Check 'the neighbouring project .env is never copied' (@($standaloneNames | Where-Object { $_ -eq '.env' }).Count -eq 0)
     Check 'the neighbouring project secrets.md is never copied' (@($standaloneNames | Where-Object { $_ -eq 'secrets.md' }).Count -eq 0)
     Check 'git metadata is never copied' (@($standaloneFiles | Where-Object { $_.FullName -like '*.git*' -and $_.Name -eq 'config' }).Count -eq 0)
