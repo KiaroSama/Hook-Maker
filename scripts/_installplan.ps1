@@ -512,6 +512,16 @@ function Get-ManagedInstallPlan {
         Add-Artifact (New-PlanArtifact -RelativePath ($FriendlyName + '/_stoplib.ps1') -Kind 'File' -SourcePath $stopLib)
     }
 
+    # Cloudflare-Deploy dot-sources _cleanupevidence.ps1 as a sibling. It lives in
+    # the HOOK's own folder, not hooks\, so the two library rules above miss it and
+    # the installed runtime loaded a hook whose dot-source could not resolve: the
+    # release-readiness gate then evaluated nothing and showed the deploy decision
+    # regardless of cleanup state. Any future per-hook sibling needs a rule here.
+    $cleanupEvidence = Join-Path (Split-Path -Parent $SourceInfo.ScriptPath) '_cleanupevidence.ps1'
+    if (Test-Path -LiteralPath $cleanupEvidence -PathType Leaf) {
+        Add-Artifact (New-PlanArtifact -RelativePath ($FriendlyName + '/_cleanupevidence.ps1') -Kind 'File' -SourcePath $cleanupEvidence)
+    }
+
     # The installed main script is GENERATED (source bytes + a deterministic
     # dot-source rewrite), so it is hashed and verified exactly like any other
     # planned artifact. Repository sources are never modified.
