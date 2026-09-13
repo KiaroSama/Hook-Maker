@@ -95,6 +95,15 @@ jobs:
       - name: Engine smoke test (Windows PowerShell 5.1)
         shell: powershell
         run: .\scripts\Test-Engine.ps1
+      # The anti-loop ledger decides whether a gate may force another answer, so
+      # a host-specific defect in it is a continuation storm on that host and
+      # nothing on the other. It ran on pwsh 7 only (its suites bucket); the 5.1
+      # run below is what proved File.Replace needs [NullString]::Value rather
+      # than $null, which 7 tolerates no better but only this job would catch on
+      # a host the suites matrix never exercises.
+      - name: Stop ledger, anti-loop admission (Windows PowerShell 5.1)
+        shell: powershell
+        run: .\scripts\Test-StopLedger.ps1
 
   # The suites run as PARALLEL BUCKETS rather than one long serial job.
   #
