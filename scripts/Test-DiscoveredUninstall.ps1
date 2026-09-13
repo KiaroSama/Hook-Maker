@@ -227,7 +227,16 @@ function Invoke-DiscoveredUninstall {
     $p = Start-Process @startArgs
     if ($null -ne $WhileRunning) {
         try { & $WhileRunning }
-        finally { $p.WaitForExit(); $p.Refresh() }
+        # Bounded, and it must NOT throw: this is a finally, so an exception here
+        # would replace whatever sent us into it. A child still alive after the
+        # ceiling is killed rather than waited on for ever.
+        finally {
+            if (-not $p.WaitForExit(120000)) {
+                try { Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue } catch { }
+                Write-Host ('  [warn] uninstall child ' + $p.Id + ' did not exit within 120s; terminated') -ForegroundColor Yellow
+            }
+            $p.Refresh()
+        }
     }
     $out = ''; if (Test-Path $outF) { $out = [System.IO.File]::ReadAllText($outF) }
     $err = ''; if (Test-Path $errF) { $err = ([System.IO.File]::ReadAllText($errF)).Trim() }
