@@ -259,7 +259,14 @@ for (`$i = 0; `$i -lt 8; `$i++) {
         foreach ($tag in @('writerA', 'writerB')) {
             $jobs += Start-Process -FilePath $hostExe -ArgumentList ('-NoLogo -NoProfile -File "' + $concurrentScript + '" ' + $tag) -NoNewWindow -PassThru
         }
-        foreach ($job in $jobs) { $job.WaitForExit() }
+        # Lock contention is exactly what this case provokes, so an unbounded wait
+        # here would hang on the defect it exists to catch.
+        foreach ($job in $jobs) {
+            if (-not $job.WaitForExit(120000)) {
+                try { Stop-Process -Id $job.Id -Force -ErrorAction SilentlyContinue } catch { }
+                throw ('concurrent registry writer ' + $job.Id + ' did not exit within 120s (terminated) - suspect a lock never released')
+            }
+        }
         $afterConcurrent = Read-InstallRegistry -ToolRoot $corruptRoot
         Check 'concurrent writers do not lose each other''s records (lock held)' (@($afterConcurrent.installs).Count -eq 16) ('records=' + @($afterConcurrent.installs).Count)
         Check 'no lock file is left behind after concurrent writes' (-not (Test-Path -LiteralPath (Join-Path $corruptRoot 'state\install-registry.lock')))
@@ -476,8 +483,14 @@ for (`$i = 0; `$i -lt 8; `$i++) {
         # Launch both, THEN wait: they must genuinely overlap.
         $procA = Start-ConcurrentInstall -HookPath $fixtureA -OutFile $concOutA -ErrFile $concErrA
         $procB = Start-ConcurrentInstall -HookPath $fixtureB -OutFile $concOutB -ErrFile $concErrB
-        $procA.WaitForExit()
-        $procB.WaitForExit()
+        # Same reason as the concurrent writers above: these two overlap on purpose,
+        # so the wait that proves they finished must itself be bounded.
+        foreach ($proc in @(@{ N = 'A'; P = $procA }, @{ N = 'B'; P = $procB })) {
+            if (-not $proc.P.WaitForExit(120000)) {
+                try { Stop-Process -Id $proc.P.Id -Force -ErrorAction SilentlyContinue } catch { }
+                throw ('concurrent install ' + $proc.N + ' did not exit within 120s (terminated)')
+            }
+        }
 
         Check 'concurrent install A exited 0' ($procA.ExitCode -eq 0) ([System.IO.File]::ReadAllText($concErrA))
         Check 'concurrent install B exited 0' ($procB.ExitCode -eq 0) ([System.IO.File]::ReadAllText($concErrB))

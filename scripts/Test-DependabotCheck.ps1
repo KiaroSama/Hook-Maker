@@ -130,13 +130,20 @@ function Fire {
     $startArgs = @{
         FilePath = $file; ArgumentList = $argLine; RedirectStandardInput = $inFile
         RedirectStandardOutput = $outFile; RedirectStandardError = $errFile
-        Wait = $true; NoNewWindow = $true; PassThru = $true
+        NoNewWindow = $true; PassThru = $true
     }
     if ((Get-Command Start-Process).Parameters.ContainsKey('Environment')) {
         $claudeProjectDir = if ($Client -eq 'claude') { $Cwd } else { '' }
         $startArgs.Environment = @{ PATH = $env:PATH; GH_MOCK_DIR = $env:GH_MOCK_DIR; LOCALAPPDATA = $env:LOCALAPPDATA; CLAUDE_PROJECT_DIR = $claudeProjectDir }
     }
     $proc = Start-Process @startArgs
+    # Bounded: -Wait has no ceiling. A hook that blocks on stdin or deadlocks
+    # would otherwise hang this suite until the bucket's blunt per-suite limit
+    # killed it, which reports a timed-out SUITE instead of this child.
+    if (-not $proc.WaitForExit(180000)) {
+        try { Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue } catch { }
+        throw ('the hook child (pid ' + $proc.Id + ') did not exit within 180s and was terminated')
+    }
     $out = ''
     if (Test-Path -LiteralPath $outFile) { $out = ([System.IO.File]::ReadAllText($outFile)).Trim() }
     $err = ''
