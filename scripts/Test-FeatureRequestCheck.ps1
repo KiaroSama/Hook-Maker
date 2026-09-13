@@ -363,30 +363,49 @@ try {
     $tRan = New-Transcript 'feature-chain-ran' @(
         (New-UserEntry $FeaturePrompt),
         (New-SkillEntry 'grilling'),
+        (New-SkillEntry 'domain-modeling'),
         (New-AssistantEntry 'wrote the spec')
     )
     $rRan = Fire (New-StopPayload -Cwd (New-Proj 'GateRan') -Transcript $tRan -SessionId 'g2')
-    Check 'gate: a grilling Skill call in the transcript keeps it silent' (
+    Check 'gate: the COMPLETE chain (grilling + domain-modeling) keeps it silent' (
         $rRan.Exit -eq 0 -and $rRan.Out -eq '') ($rRan.Out + $rRan.Err)
 
     # The hook accepts the plugin-qualified spelling as well as the bare one;
     # in a real Claude session it is the qualified one that appears.
     $tQualified = New-Transcript 'feature-chain-qualified' @(
         (New-UserEntry $FeaturePrompt),
-        (New-SkillEntry 'mattpocock-skills:grilling')
+        (New-SkillEntry 'mattpocock-skills:grilling'),
+        (New-SkillEntry 'mattpocock-skills:domain-modeling')
     )
     $rQualified = Fire (New-StopPayload -Cwd (New-Proj 'GateQualified') -Transcript $tQualified -SessionId 'g3')
-    Check 'gate: "mattpocock-skills:grilling" counts too' (
+    Check 'gate: the plugin-qualified spelling counts for both halves' (
         $rQualified.Exit -eq 0 -and $rQualified.Out -eq '') ($rQualified.Out + $rQualified.Err)
 
-    # grilling is the marker, and only grilling: the chain starts there.
+    # HALF a chain is not the chain: either half alone still blocks, and the
+    # block names the one that is missing so the reply does not have to guess.
     $tOther = New-Transcript 'feature-other-skill' @(
         (New-UserEntry $FeaturePrompt),
         (New-SkillEntry 'domain-modeling')
     )
     $rOther = Fire (New-StopPayload -Cwd (New-Proj 'GateOther') -Transcript $tOther -SessionId 'g4')
-    Check 'gate: another skill is not a substitute for grilling' (
+    Check 'gate: domain-modeling WITHOUT grilling still blocks' (
         Test-Blocked $rOther.Out) ($rOther.Out + $rOther.Err)
+    Check 'gate: that block names the missing half (grilling), not the one that ran' (
+        (Get-Message $rOther.Out) -match 'no Skill call to "grilling"') $rOther.Out
+
+    # The mirror case: grilling ran, domain-modeling did not.
+    $tHalf = New-Transcript 'feature-half-chain' @(
+        (New-UserEntry $FeaturePrompt),
+        (New-SkillEntry 'grilling')
+    )
+    $rHalf = Fire (New-StopPayload -Cwd (New-Proj 'GateHalf') -Transcript $tHalf -SessionId 'g4b')
+    Check 'gate: grilling WITHOUT domain-modeling still blocks' (
+        Test-Blocked $rHalf.Out) ($rHalf.Out + $rHalf.Err)
+    Check 'gate: that block names domain-modeling as the missing half' (
+        (Get-Message $rHalf.Out) -match 'no Skill call to "domain-modeling"') $rHalf.Out
+    Check 'gate: the block states the chain ORDER, not just the two names' (
+        (Get-Message $rHalf.Out) -match 'IN ORDER' -and
+        (Get-Message $rHalf.Out) -match 'then to-spec, then to-tickets') $rHalf.Out
 
     $tNone = New-Transcript 'no-feature' @(
         (New-UserEntry 'fix the crash on the login page'),
