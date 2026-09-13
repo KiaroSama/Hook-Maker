@@ -12,6 +12,18 @@
     $rDd = Fire -HookPath $hcDd.Script -Cwd $Proj -EventName 'PreToolUse' -Command 'pytest -q tests/' -LocalAppData $hcDd.LocalAppData
     $msgDd = Get-Message $rDd.Out
     Check 'the deny still denies (guard behavior unchanged by the guidance line)' ($rDd.Out -match '"permissionDecision":"deny"') $rDd.Out
+    # CI first comes BEFORE the local command is handed over: a heavy local run is
+    # the exception now, so the refusal says so rather than implying this machine.
+    Check 'the deny opens with CI first: a suite CI runs is not run here' (
+        $msgDd -match 'CI first: a suite that GitHub CI runs is not run here' -and
+        $msgDd -match 'push and read the CI result for that SHA instead') $msgDd
+    Check 'the deny says what the LOCAL guarded command is still for' (
+        $msgDd -match 'only for a light single-test run' -and
+        $msgDd -match 'a live gh query has shown CI cannot execute it') $msgDd
+    Check 'CI first is stated BEFORE the deep-debug bounds, not appended after them' (
+        $msgDd.IndexOf('CI first: a suite that GitHub CI runs') -ge 0 -and
+        $msgDd.IndexOf('CI first: a suite that GitHub CI runs') -lt
+        $msgDd.IndexOf('Deep-debug/test-policy bounds')) $msgDd
     Check 'the deny names the deep-debug bounds the replacement enforces' (
         $msgDd -match 'Deep-debug/test-policy bounds' -and $msgDd -match 'outer wall \+ idle' -and
         $msgDd -match 'shared worker ceiling' -and $msgDd -match 'process-tree cleanup' -and
@@ -40,7 +52,8 @@
     # The cadence text is GUIDANCE on the note: it never reaches the command.
     $replDd = Get-Replacement $msgDd
     Check 'the cadence line rides the note, never the replacement command' (
-        $replDd -match 'Run-Tests-Guarded\.ps1' -and $replDd -notmatch 'Cadence') $replDd
+        $replDd -match 'Run-Tests-Guarded\.ps1' -and $replDd -notmatch 'Cadence' -and
+        $replDd -notmatch 'CI first') $replDd
     Check 'a command with no file redirect gets NO UTF-8 output note' ($msgDd -notmatch 'WRITES textual output') $msgDd
 
     # =====================================================================

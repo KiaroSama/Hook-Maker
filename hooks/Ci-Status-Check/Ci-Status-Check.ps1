@@ -515,7 +515,8 @@ function Write-ExternalBlockerContext {
     catch { }
     $message = 'CI NOT VERIFIED GREEN. Completion is allowed only because a recorded EXTERNAL CI blocker is in effect for ' +
         $RepoSlug + '@' + $Sha7 + ' [' + $Classification + ']: ' + $Reason +
-        '. This is a documented external blocker, not a successful CI run - report it accurately and do not claim CI passed.'
+        '. This is a documented external blocker, not a successful CI run - report it accurately and do not claim CI passed.' + "`n" +
+    'CI cannot execute this run (external blocker above). Under CI First this is the one case where the heavy pass runs locally: run it once through the guarded runner on the final tree, record the blocker (command, evidence, time) in .ai/TESTING_NOTES.md as an observation - re-verify it next task, never treat it as standing - and say in the completion report that CI was unavailable and why.'
     $null = Write-HookResult -EventName $EventName -Kind 'advisory' -Message $message
     exit 0
 }
