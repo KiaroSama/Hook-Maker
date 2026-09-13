@@ -428,8 +428,10 @@ exit 0                       # اگر حرفی نداری
 ## پیکربندی Codebase Memory
 
 هوک‌های CMM و هماهنگی Graphify فقط رکورد `codebase-memory-mcp` مربوط به کلاینت را می‌خوانند؛
-JSON کلود و TOML کدکس پشتیبانی می‌شوند و محیط یک سرور دیگر استفاده نمی‌شود. تنظیم پروژهٔ کدکس
-بر تنظیم سراسری مقدم است. override صریح هوک و متغیرهای فرایندی `CBM_*` حفظ می‌شوند.
+JSON کلود و TOML کدکس پشتیبانی می‌شوند و محیط یک سرور دیگر استفاده نمی‌شود. برای کلود ترتیب
+چنین است: ورودی local در پروفایل کاربر، سپس `.mcp.json` پروژه، سپس رکورد سطح کاربر؛ برای کدکس
+تنظیم پروژه بر تنظیم سراسری مقدم است. یک `"enabled": false` صریح در همان scope نهایی است و
+جست‌وجو همان‌جا می‌ایستد، نه اینکه به سرور با اولویت پایین‌تر برسد. override صریح هوک و متغیرهای فرایندی `CBM_*` حفظ می‌شوند.
 دستور CLI پیشنهادی، cache، runtime، `TEMP` و `TMP` سرویس را نگه می‌دارد؛ نحو اجرای ناشناخته
 به دستور حدسی تبدیل نمی‌شود. خواندن تنظیمات UTF-8 سخت‌گیرانه و محدود به یک مگابایت است.
 
@@ -503,6 +505,22 @@ pwsh -NoLogo -NoProfile -File ".\scripts\Test-Engine.ps1"
 - اگر می‌خواهی هر profile در `/hooks` به‌صورت command جدا دیده شود، `Install-Hook.ps1` را یک‌بار برای هر profile با پارامتر `-Profile` اجرا کن.
 - این نرم‌افزار رایگان نیست — همه‌ی حقوق محفوظ است (فایل `LICENSE`).
 
-Claude CMM scope precedence is local (the matching project entry in the user
-profile), then the project's .mcp.json, then the user-level record. An explicit
-disable at the selected scope remains terminal. See the hook tests for both hosts.
+## نویسنده
+
+نویسنده: Kiaro Sama
+گیت‌هاب: https://github.com/KiaroSama
+
+## حمایت مالی
+
+اگر این پروژه برایت مفید بوده، حمایت مالی باعث دلگرمی است.
+
+| ارز | شبکه | آدرس |
+| --- | --- | --- |
+| Bitcoin (BTC) | Bitcoin | `bc1qmth5m03pu5hujw5xw5jmywam3jj3sqwqupesdt` |
+| USDT, BNB, USDC, etc. | BEP20 | `0x0Bd0BA443a8B9cf15922bf7f0Bb0a4b495fD06Ef` |
+| USDT, TRX, USDC, etc. | TRC20 | `TWBA3xFTqgZAeAYMxqo85xWnzvty3DcAhw` |
+| Ethereum (ETH) | ERC20 | `0x0Bd0BA443a8B9cf15922bf7f0Bb0a4b495fD06Ef` |
+| TON | TON | `UQCN8Umo_OfOWqImZetQsrNStPcmLkMAKajFyiCOhso23NDb` |
+| Litecoin (LTC) | LTC | `ltc1qntqnnrunadurnw4cshv3qgspywrueyyeyngwuy` |
+| Solana (SOL) | Solana | `7B2wkczUjmkDhETwQuknBL8sUsbuV7nErxc317TmQuwR` |
+| Polygon (POL) | Polygon | `0x0Bd0BA443a8B9cf15922bf7f0Bb0a4b495fD06Ef` |
