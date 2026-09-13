@@ -78,11 +78,17 @@ foreach ($hostName in @('pwsh', 'powershell.exe')) {
             }
             catch [System.ArgumentException] { $rootExited = $true }
             Check ($hostName + ': direct child exits before its pipe-owning descendant') $rootExited
-            $returned = $probe.WaitForExit(6000)
+            # 12s, not 6s. The budget is 4s and the holder sleeps 20s, so ANY ceiling
+            # between them proves the same thing: the inherited pipes did not extend the
+            # deadline. 6s left under a second for host startup, the kill and teardown
+            # (measured 5.2-5.5s), so a loaded runner failed a bound that was correct.
+            $returned = $probe.WaitForExit(12000)
             Check ($hostName + ': inherited pipes cannot extend the command deadline') $returned
-            $descendantTerminated = $returned -and $holderProcess.WaitForExit(2000)
+            # 5s: the holder would otherwise live 20s, so this still proves the kill
+            # landed - it just stops being a race against runner scheduling.
+            $descendantTerminated = $returned -and $holderProcess.WaitForExit(5000)
             if (-not $returned) { [void]$release.Set(); [void]$probe.WaitForExit(5000) }
-            $captureComplete = $outTask.Wait(2000) -and $errTask.Wait(2000)
+            $captureComplete = $outTask.Wait(5000) -and $errTask.Wait(5000)
             $result = $null
             if ($captureComplete) {
                 try { $result = $outTask.GetAwaiter().GetResult() | ConvertFrom-Json } catch { }
