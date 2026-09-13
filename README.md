@@ -690,8 +690,11 @@ item `32` for that.
 ## Codebase Memory configuration
 
 The CMM read/update hooks and the Graphify coordination checks resolve the selected client's
-matching `codebase-memory-mcp` record. Claude JSON and Codex TOML are supported; project Codex
-configuration takes precedence over its global counterpart. They never borrow another server's
+matching `codebase-memory-mcp` record. Claude JSON and Codex TOML are supported. For Claude the order is the local entry in
+the user profile, then the project's `.mcp.json`, then the user-level record; for Codex,
+project configuration takes precedence over its global counterpart. An explicit
+`"enabled": false` at the selected scope is terminal - the search stops there rather than
+falling through to a lower-priority server. They never borrow another server's
 environment. Hook configuration and explicit `CBM_*` process overrides remain authoritative.
 
 Manual CLI advice preserves `CBM_CACHE_DIR`, `CBM_RUNTIME_DIR`, `TEMP` and `TMP`; the configured
@@ -851,6 +854,22 @@ Manual install without the wizard:
 
 Proprietary — all rights reserved. See `LICENSE`.
 
-Claude CMM scope precedence is local (the matching project entry in the user
-profile), then the project's .mcp.json, then the user-level record. An explicit
-disable at the selected scope remains terminal. See the hook tests for both hosts.
+## Author
+
+Author: Kiaro Sama
+GitHub: https://github.com/KiaroSama
+
+## Donate
+
+If this project helps you, donations are appreciated.
+
+| Currency | Network | Address |
+| --- | --- | --- |
+| Bitcoin (BTC) | Bitcoin | `bc1qmth5m03pu5hujw5xw5jmywam3jj3sqwqupesdt` |
+| USDT, BNB, USDC, etc. | BEP20 | `0x0Bd0BA443a8B9cf15922bf7f0Bb0a4b495fD06Ef` |
+| USDT, TRX, USDC, etc. | TRC20 | `TWBA3xFTqgZAeAYMxqo85xWnzvty3DcAhw` |
+| Ethereum (ETH) | ERC20 | `0x0Bd0BA443a8B9cf15922bf7f0Bb0a4b495fD06Ef` |
+| TON | TON | `UQCN8Umo_OfOWqImZetQsrNStPcmLkMAKajFyiCOhso23NDb` |
+| Litecoin (LTC) | LTC | `ltc1qntqnnrunadurnw4cshv3qgspywrueyyeyngwuy` |
+| Solana (SOL) | Solana | `7B2wkczUjmkDhETwQuknBL8sUsbuV7nErxc317TmQuwR` |
+| Polygon (POL) | Polygon | `0x0Bd0BA443a8B9cf15922bf7f0Bb0a4b495fD06Ef` |
