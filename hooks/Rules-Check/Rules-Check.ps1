@@ -292,7 +292,11 @@ function Get-EvidenceTranscriptFallbackPath {
     # the client's own tool-call record; a client whose transcript does not
     # carry it simply yields no evidence, and the branch below degrades to an
     # advisory rather than guessing.
-    $editEvidence = ($tail -match '"name"[ \t]*:[ \t]*"(Edit|Write|MultiEdit|NotebookEdit|str_replace[A-Za-z_]*)"')
+    # RAW transcript, not $tail. A tool CALL is a JSONL record, and the closing
+    # assistant response $tail now holds carries none - reading $tail here is what
+    # silently disarmed this gate: it observed nothing and so never blocked.
+    $rawTail = [string](Get-TranscriptTailText (Get-EvidenceTranscriptFallbackPath $hookInput))
+    $editEvidence = ($rawTail -match '"name"[ \t]*:[ \t]*"(Edit|Write|MultiEdit|NotebookEdit|str_replace[A-Za-z_]*)"')
 
     if ($editEvidence) {
         if (-not (Test-ShouldReportClosing 'missing-after-edit')) { exit 0 }

@@ -241,6 +241,11 @@ if ($null -eq $tail) {
 
 $hasSummaryLine = ($tail -match $summaryLinePattern)
 
+# The requirement is met. Nothing to say - and nothing to repeat. Checked
+# BEFORE the transcript is scanned below, so a compliant session does no
+# extra IO at all.
+if ($hasSummaryLine) { exit 0 }
+
 # Server ids actually seen. Matched as a tool CALL - the client's own
 # "name": "<tool>" record - not as a bare token anywhere in the text. A prompt
 # or a code comment that merely MENTIONS a tool name must never be read as
@@ -251,16 +256,17 @@ $hasSummaryLine = ($tail -match $summaryLinePattern)
 #
 # Deliberately reported WITHOUT the tool-name prefix this hook searched for, so
 # the next Stop cannot detect "MCP was used" from this hook's own message.
+# RAW transcript, not $tail: a tool CALL is a JSONL record and the closing
+# assistant response $tail holds carries none, so scanning $tail here saw no
+# servers at all and silently disarmed this gate.
+$rawTail = [string](Get-TranscriptTailText (Get-EvidenceTranscriptFallbackPath $hookInput))
 $servers = New-Object System.Collections.Generic.List[string]
-foreach ($m in [regex]::Matches($tail, '"(?:name|tool_name)"[ \t]*:[ \t]*"mcp__([A-Za-z0-9_.\-]+?)__')) {
+foreach ($m in [regex]::Matches($rawTail, '"(?:name|tool_name)"[ \t]*:[ \t]*"mcp__([A-Za-z0-9_.\-]+?)__')) {
     $id = $m.Groups[1].Value
     if ($id -ne '' -and -not $servers.Contains($id)) { [void]$servers.Add($id) }
     if ($servers.Count -ge 8) { break }
 }
 $usedMcp = ($servers.Count -gt 0)
-
-# The requirement is met. Nothing to say - and nothing to repeat.
-if ($hasSummaryLine) { exit 0 }
 
 if ($usedMcp) {
     $names = (@($servers) | Sort-Object) -join ', '

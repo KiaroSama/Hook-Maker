@@ -472,7 +472,11 @@ if ($closing) {
     # Was a skill actually invoked? The client's own tool-call record is the
     # evidence; a client whose transcript does not carry it yields no evidence,
     # and the branch below degrades to an advisory rather than guessing.
-    $skillInvoked = ($tail -match '"name"[ \t]*:[ \t]*"Skill"')
+    # RAW transcript, not $tail. A tool CALL is a JSONL record, and the closing
+    # assistant response $tail now holds carries none - reading $tail here is what
+    # silently disarmed this gate: it observed nothing and so never blocked.
+    $rawTail = [string](Get-TranscriptTailText (Get-EvidenceTranscriptFallbackPath $hookInput))
+    $skillInvoked = ($rawTail -match '"name"[ \t]*:[ \t]*"Skill"')
     if ($skillInvoked) {
         if (-not (Test-ShouldReportClosing 'missing-after-invoke')) { exit 0 }
         $reason = @(
