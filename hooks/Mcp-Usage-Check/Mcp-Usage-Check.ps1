@@ -122,7 +122,10 @@ function Get-TranscriptTailText {
 function Get-EvidenceTranscriptFallbackPath {
     param($HookInput)
     if ([string](Get-Field $HookInput 'hook_event_name') -eq 'SubagentStop') {
-        return [string](Get-Field $HookInput 'agent_transcript_path')
+        # Prefer a client-supplied child path, but never require it: on a
+        # SubagentStop the documented transcript_path is the subagent's own.
+        $child = [string](Get-Field $HookInput 'agent_transcript_path')
+        if (-not [string]::IsNullOrWhiteSpace($child)) { return $child }
     }
     return [string](Get-Field $HookInput 'transcript_path')
 }
@@ -131,7 +134,7 @@ function Get-EvidenceTranscriptFallbackPath {
 # Anchored at the start of a transcript line so this hook's own instruction
 # text (where the token never begins a line) can never satisfy it. A short
 # markdown prefix - bullet, quote, heading, bold - is tolerated.
-$summaryLinePattern = '(?im)^[ \t]{0,8}(?:[-*>#]+[ \t]{0,4})?(?:\*\*)?MCP[ \t]+(?:servers?[ \t]+|tools?[ \t]+)?used[ \t]*:'
+$summaryLinePattern = '(?im)(?:^|\\n)[ \t]{0,8}(?:[-*>#]+[ \t]{0,4})?(?:\*\*)?MCP[ \t]+(?:servers?[ \t]+|tools?[ \t]+)?used[ \t]*:'
 
 # Reports once per session per STATE token: an unchanged answer stays silent on
 # the next Stop of the same session, a changed one is reported immediately.

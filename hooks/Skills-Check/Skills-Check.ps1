@@ -408,7 +408,10 @@ function Get-TranscriptTailText {
 function Get-EvidenceTranscriptFallbackPath {
     param($HookInput)
     if ([string](Get-Field $HookInput 'hook_event_name') -eq 'SubagentStop') {
-        return [string](Get-Field $HookInput 'agent_transcript_path')
+        # Prefer a client-supplied child path, but never require it: on a
+        # SubagentStop the documented transcript_path is the subagent's own.
+        $child = [string](Get-Field $HookInput 'agent_transcript_path')
+        if (-not [string]::IsNullOrWhiteSpace($child)) { return $child }
     }
     return [string](Get-Field $HookInput 'transcript_path')
 }
@@ -467,7 +470,7 @@ if ($closing) {
 
     # Anchored at the start of a transcript line so this hook's own instruction
     # text can never satisfy it.
-    if ($tail -match '(?im)^[ \t]{0,8}(?:[-*>#]+[ \t]{0,4})?(?:\*\*)?Skills?[ \t]+used[ \t]*:') { exit 0 }
+    if ($tail -match '(?im)(?:^|\\n)[ \t]{0,8}(?:[-*>#]+[ \t]{0,4})?(?:\*\*)?Skills?[ \t]+used[ \t]*:') { exit 0 }
 
     # Was a skill actually invoked? The client's own tool-call record is the
     # evidence; a client whose transcript does not carry it yields no evidence,
