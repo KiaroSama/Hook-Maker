@@ -283,7 +283,7 @@
     # =====================================================================
     Write-Host '--- Skills-Check: UserPromptSubmit task-relevance nudge, once per session ---' -ForegroundColor Cyan
     $r = Fire -HookPath $hook1 -Cwd $proj1 -RawStdin (New-PromptStdin -Cwd $proj1 -EventName 'UserPromptSubmit' -Prompt 'anything' -SessionId 'skills-s1')
-    Check 'UserPromptSubmit emits a short task-relevance nudge' ($r.Out -match 'SKILL POLICY CHECK' -and $r.Out -match 'THIS task') $r.Out
+    Check 'UserPromptSubmit emits the mandatory-skill-check nudge' ($r.Out -match 'SKILL POLICY CHECK' -and $r.Out -match 'skill use is MANDATORY') $r.Out
     $r2 = Fire -HookPath $hook1 -Cwd $proj1 -RawStdin (New-PromptStdin -Cwd $proj1 -EventName 'UserPromptSubmit' -Prompt 'anything else' -SessionId 'skills-s1')
     Check 'the SAME session does not repeat the nudge' ($r2.Exit -eq 0 -and $r2.Out -eq '') $r2.Out
     $r3 = Fire -HookPath $hook1 -Cwd $proj1 -RawStdin (New-PromptStdin -Cwd $proj1 -EventName 'UserPromptSubmit' -Prompt 'anything' -SessionId 'skills-s2')
@@ -558,7 +558,7 @@
     $ddHook = New-ConfiguredSkillsHookCopy -EnvOverrides @{ SKILLS_DIR = (Join-Path $Work 'no-such-library') }
     $r = Fire -HookPath $ddHook -Cwd $ddProj -RawStdin (New-PromptStdin -Cwd $ddProj -EventName 'UserPromptSubmit' -Prompt 'please deep debug the login flow, maybe deep-debug harder' -SessionId 'sdd-prose')
     Check 'ordinary prose "deep debug" never surfaces the capability graph (generic nudge only)' (
-        $r.Out -notmatch 'capability routing' -and $r.Out -match 'THIS task') $r.Out
+        $r.Out -notmatch 'capability routing' -and $r.Out -match 'skill use is MANDATORY') $r.Out
     $r = Fire -HookPath $ddHook -Cwd $ddProj -RawStdin (New-PromptStdin -Cwd $ddProj -EventName 'UserPromptSubmit' -Prompt '::deep-debug the login flow' -SessionId 'sdd-c1')
     Check 'standalone ::deep-debug surfaces the phase-routed capability graph' (
         $r.Out -match 'SKILL POLICY CHECK \(claude\) - ::deep-debug capability routing' -and
