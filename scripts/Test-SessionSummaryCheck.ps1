@@ -162,10 +162,29 @@ try {
 
     # =====================================================================
     Write-Host '--- it is read-only: the state directory is not its to write ---' -ForegroundColor Cyan
-    $before = @(Get-ChildItem -LiteralPath $StateDir -File | Sort-Object Name | ForEach-Object { $_.Name + ':' + $_.Length }) -join '|'
+    # NAME + LENGTH is not byte-for-byte (F09): same-length content corruption
+    # passes it silently, which is exactly what a marker rewrite would look like.
+    # Hash the CONTENT.
+    function Get-StateFingerprint {
+        param([string]$Dir)
+        $sha = [System.Security.Cryptography.SHA256]::Create()
+        try {
+            # The hook IS entitled to write its own SessionSummary-* stamp (asserted
+            # immediately below); what must be byte-identical is every SIBLING gate's
+            # marker. Hashing its own stamp too would fail on a legitimate rewrite -
+            # which is what name+length used to hide, in both directions.
+            $parts = @(Get-ChildItem -LiteralPath $Dir -File | Where-Object { $_.Name -notlike 'SessionSummary-*' } | Sort-Object Name | ForEach-Object {
+                    $bytes = [System.IO.File]::ReadAllBytes($_.FullName)
+                    $_.Name + ':' + [System.BitConverter]::ToString($sha.ComputeHash($bytes)).Replace('-', '')
+                })
+            return ($parts -join '|')
+        }
+        finally { $sha.Dispose() }
+    }
+    $before = Get-StateFingerprint -Dir $StateDir
     $null = Invoke-SummaryHook @{ hook_event_name = 'UserPromptSubmit'; cwd = $proj; session_id = $sid }
-    $after = @(Get-ChildItem -LiteralPath $StateDir -File | Sort-Object Name | ForEach-Object { $_.Name + ':' + $_.Length }) -join '|'
-    Check 'summary: leaves every marker byte-for-byte untouched' ($before -eq $after) ($before + ' -> ' + $after)
+    $after = Get-StateFingerprint -Dir $StateDir
+    Check 'summary: leaves every marker byte-for-byte untouched (SHA-256, not name+length)' ($before -eq $after) ($before + ' -> ' + $after)
     # It writes exactly ONE file of its own: the delivery stamp behind the
     # cooldown. Anything BEYOND that would mean it had started keeping state
     # it has no business keeping - the sibling gates' StopBlock markers are

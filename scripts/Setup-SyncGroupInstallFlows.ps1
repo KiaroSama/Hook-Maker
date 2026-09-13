@@ -661,16 +661,15 @@ function Invoke-UpdateInstalledHooks {
         }
         $anyFailed = $false
         foreach ($client in $clientsToRepair) {
-            $events = @()
-            $subrecord = Get-ClientSubrecord -Record $record -Client $client
-            if ($null -ne $subrecord) { $events = @($subrecord.events) }
-            elseif ($null -ne $record.PSObject.Properties['events']) { $events = @($record.events) }
-            if (@($events).Count -eq 0) {
-                $anyFailed = $true
-                [void]$clientResults.Add($client + ': no recorded events')
-                continue
-            }
-            $installArgs = @{ Events = @($events) }
+            # F11. The recorded binding is reused UNCHANGED - the historical
+            # behaviour - unless it is provably a RETIRED SHIPPED DEFAULT, in
+            # which case the update also moves it to the current one. A custom
+            # or hand-edited binding is reported here and never rewritten; the
+            # whole judgement lives in scripts\_installeventmigration.ps1.
+            $eventPlan = Resolve-UpdateEventsForClient -Record $record -Client $client
+            if ($eventPlan.Note -ne '') { [void]$clientResults.Add($client + ': ' + $eventPlan.Note); Write-NoteLine ('    ' + $displayName + ' / ' + $client + ': ' + $eventPlan.Note); Write-Log 'INFO' 'UPDATE' ($displayName + ' / ' + $client + ': ' + $eventPlan.Note) }
+            if (@($eventPlan.Events).Count -eq 0) { $anyFailed = $true; continue }
+            $installArgs = @{ Events = @($eventPlan.Events) }
             if ($record.scope -eq 'project') { $installArgs['TargetProject'] = $record.targetProjectRoot }
             if ($record.hookType -eq 'Engine') {
                 $installArgs['Profile'] = $record.profile

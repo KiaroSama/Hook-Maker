@@ -833,62 +833,60 @@ function Get-LatestWorkTimeUtc {
 
 # ---- Stop re-entry: whose block was it? ------------------------------------
 # `stop_hook_active` means "a Stop hook blocked and the agent is coming back",
-# NOT "YOU blocked". Thirteen gates share that one flag, so a gate that exits
-# on it alone stands down for somebody else's block - and the next Stop runs
-# with the secret-leak, UTF-8 and CI gates all silent. Measured consequence,
-# not theory: it is why a missing "Skills used:" line could wave a real leak
-# through.
+# NOT "YOU blocked". Many gates share that one flag, so a gate that exits on it
+# alone stands down for somebody ELSE's block - measured, not theory: it is why
+# a missing "Skills used:" line could wave a real secret leak through.
 #
-# The rule each gate needs is narrower: stand down only on ITS OWN re-entry.
-# A gate that has not spoken yet still gets its turn on a continuation Stop.
-# Worst case is therefore one block per gate per session - bounded by the hook
-# count, never a loop - and each is cleared the normal way, by fixing what it
-# named.
-#
-# Deliberately NOT for advisory hooks: their message already went out, and
-# repeating it on every continuation Stop is noise. Gates only.
+# Stand down only on ITS OWN re-entry, and only while the chain's shared
+# correction budget lasts. The identity that decides "its own", the budget and
+# the atomic claim live in _stoplib.ps1, which owns that design and records why
+# one file per project+hook was the original defect. Gates only, never advisory
+# hooks. _stoplib.ps1 loads OPTIONALLY so a runtime copied before it existed
+# keeps the single-marker fallback below instead of failing to start.
+$script:StopLedgerReady = $false
+try {
+    $stopLibPath = Join-Path $PSScriptRoot '_stoplib.ps1'
+    if (Test-Path -LiteralPath $stopLibPath -PathType Leaf) { . $stopLibPath; $script:StopLedgerReady = $true }
+}
+catch { $script:StopLedgerReady = $false }
+
 function Test-StopStandDown {
-    param(
-        [Parameter(Mandatory = $true)]$HookInput,
-        [Parameter(Mandatory = $true)][string]$HookName
-    )
+    param([Parameter(Mandatory = $true)]$HookInput, [Parameter(Mandatory = $true)][string]$HookName)
     $stopActive = Get-Field $HookInput 'stop_hook_active'
-    if ($null -eq $stopActive -or -not [bool]$stopActive) { return $false }
-    # A continuation Stop. Only the hook that blocked stands down.
-    $sessionId = [string](Get-Field $HookInput 'session_id')
-    $cwd = [string](Get-Field $HookInput 'cwd')
-    $markerPath = Get-StopBlockMarkerPath -HookName $HookName -ProjectRoot $cwd
+    $isContinuation = ($null -ne $stopActive -and [bool]$stopActive)
+    if ($script:StopLedgerReady) {
+        return (Test-StopStandDownLedger -HookInput $HookInput -HookName $HookName -IsContinuation $isContinuation)
+    }
+    if (-not $isContinuation) { return $false }
+    $markerPath = Get-StopBlockMarkerPath -HookName $HookName -ProjectRoot ([string](Get-Field $HookInput 'cwd'))
     if (-not (Test-Path -LiteralPath $markerPath -PathType Leaf)) { return $false }
     try {
         $recorded = ([System.IO.File]::ReadAllText($markerPath)).Trim()
-        # Session-scoped: a marker from an earlier session must not mute this one.
-        return ($recorded -ne '' -and $recorded -eq $sessionId)
+        return ($recorded -ne '' -and $recorded -eq [string](Get-Field $HookInput 'session_id'))
     }
     catch { return $false }
 }
 
-# Called by a gate immediately before it emits a block, so its own next
-# re-entry is recognised.
+# Called by a gate immediately before it blocks, so its own next re-entry is
+# recognised and the chain's shared budget is spent.
 function Set-StopBlockMarker {
-    param(
-        [Parameter(Mandatory = $true)]$HookInput,
-        [Parameter(Mandatory = $true)][string]$HookName
-    )
-    $sessionId = [string](Get-Field $HookInput 'session_id')
-    $cwd = [string](Get-Field $HookInput 'cwd')
-    $markerPath = Get-StopBlockMarkerPath -HookName $HookName -ProjectRoot $cwd
+    param([Parameter(Mandatory = $true)]$HookInput, [Parameter(Mandatory = $true)][string]$HookName)
+    $stopActive = Get-Field $HookInput 'stop_hook_active'
+    if ($script:StopLedgerReady) {
+        Register-StopBlockLedger -HookInput $HookInput -HookName $HookName -IsContinuation ($null -ne $stopActive -and [bool]$stopActive)
+        return
+    }
+    $markerPath = Get-StopBlockMarkerPath -HookName $HookName -ProjectRoot ([string](Get-Field $HookInput 'cwd'))
     try {
         New-Item -ItemType Directory -Path (Split-Path -Parent $markerPath) -Force | Out-Null
-        [System.IO.File]::WriteAllText($markerPath, $sessionId)
+        [System.IO.File]::WriteAllText($markerPath, [string](Get-Field $HookInput 'session_id'))
     }
     catch { }
 }
 
+# The fallback marker path, used by a runtime with no _stoplib.ps1 beside it.
 function Get-StopBlockMarkerPath {
-    param(
-        [Parameter(Mandatory = $true)][string]$HookName,
-        [AllowEmptyString()][string]$ProjectRoot = ''
-    )
+    param([Parameter(Mandatory = $true)][string]$HookName, [AllowEmptyString()][string]$ProjectRoot = '')
     $projectKey = Get-ShortHash ([string]$ProjectRoot).ToLowerInvariant()
     $safeName = [System.Text.RegularExpressions.Regex]::Replace($HookName, '[^A-Za-z0-9]+', '')
     return (Join-Path (Join-Path $env:LOCALAPPDATA 'HookMaker\state') ('StopBlock-' + $safeName + '-' + $projectKey + '.txt'))

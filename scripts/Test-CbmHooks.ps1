@@ -55,7 +55,10 @@ try {
     . (Join-Path $ScriptRoot '_testcbmconfiguration.ps1')
     # =====================================================================
     Write-Host '--- the derived project name matches a real CBM database name ---' -ForegroundColor Cyan
-    # Pinned to the sample verified on 2026-09-06 by indexing a real directory
+    # Pinned to the sample verified on 2026-09-06 by indexing a real directory,
+    # with the user name and session id replaced by neutral values on BOTH sides
+    # of the pair - neither contains a character the normaliser treats specially,
+    # so the rules this case exercises are unchanged.
     # and reading back the file CBM created. If CBM ever changes its
     # normalisation this assertion is the thing that notices.
     $verifiedRoot = 'C:\Users\example\AppData\Local\Temp\claude\G--Program-Files-Portable-Scripts-Hook-Maker\00000000-0000-4000-8000-000000000000\scratchpad\cbm name probe'

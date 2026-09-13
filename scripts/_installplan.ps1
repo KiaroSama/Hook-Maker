@@ -502,6 +502,16 @@ function Get-ManagedInstallPlan {
         Add-Artifact (New-PlanArtifact -RelativePath ($FriendlyName + '/_hooklib.ps1') -Kind 'File' -SourcePath $hookLib)
     }
 
+    # _stoplib.ps1 travels WITH _hooklib.ps1, which dot-sources it as a sibling.
+    # It is loaded optionally there, so a runtime installed before this file
+    # existed keeps the single-marker fallback instead of failing to start - but
+    # a runtime installed FROM HERE must get it, or the Stop ledger silently
+    # degrades to the behaviour it was written to replace.
+    $stopLib = Join-Path $ToolRoot 'hooks\_stoplib.ps1'
+    if (Test-Path -LiteralPath $stopLib -PathType Leaf) {
+        Add-Artifact (New-PlanArtifact -RelativePath ($FriendlyName + '/_stoplib.ps1') -Kind 'File' -SourcePath $stopLib)
+    }
+
     # The installed main script is GENERATED (source bytes + a deterministic
     # dot-source rewrite), so it is hashed and verified exactly like any other
     # planned artifact. Repository sources are never modified.

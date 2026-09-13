@@ -117,10 +117,21 @@ function Get-TranscriptTailText {
     catch { return $null }
 }
 
+# Which transcript the FALLBACK reader should open when _stoplib.ps1 is absent.
+# A subagent event must never be answered from the parent's transcript.
+function Get-EvidenceTranscriptFallbackPath {
+    param($HookInput)
+    if ([string](Get-Field $HookInput 'hook_event_name') -eq 'SubagentStop') {
+        return [string](Get-Field $HookInput 'agent_transcript_path')
+    }
+    return [string](Get-Field $HookInput 'transcript_path')
+}
+
+
 # Anchored at the start of a transcript line so this hook's own instruction
 # text (where the token never begins a line) can never satisfy it. A short
 # markdown prefix - bullet, quote, heading, bold - is tolerated.
-$summaryLinePattern = '(?i)(\\n|[\r\n])[ \t]{0,8}(?:[-*>#]+[ \t]{0,4})?(?:\*\*)?MCP[ \t]+(?:servers?[ \t]+|tools?[ \t]+)?used[ \t]*:'
+$summaryLinePattern = '(?im)^[ \t]{0,8}(?:[-*>#]+[ \t]{0,4})?(?:\*\*)?MCP[ \t]+(?:servers?[ \t]+|tools?[ \t]+)?used[ \t]*:'
 
 # Reports once per session per STATE token: an unchanged answer stays silent on
 # the next Stop of the same session, a changed one is reported immediately.
@@ -191,7 +202,19 @@ if ($eventName -eq 'UserPromptSubmit') {
 # ---- Stop / SubagentStop: verify, then require -----------------------------
 if ($enforcement -eq 'off') { exit 0 }
 
-$tail = Get-TranscriptTailText ([string](Get-Field $hookInput 'transcript_path'))
+# EVIDENCE SOURCE (F03). The raw session tail is not this task's answer: a user
+# example, a previous task's line, or this hook's own injected text all live in
+# it, and the old regex also required a preceding newline so a valid line at the
+# very start of the response was missed. Get-ClosingAssistantText returns the
+# CURRENT final assistant response - from the event when the client supplies it,
+# otherwise the last assistant entry parsed out of the transcript (the CHILD
+# transcript for a subagent event). Unknown stays unknown.
+$evidence = $null
+if ($null -ne (Get-Command Get-ClosingAssistantText -ErrorAction SilentlyContinue)) {
+    $evidence = Get-ClosingAssistantText -HookInput $hookInput
+}
+if ($null -ne $evidence -and $evidence.Known) { $tail = [string]$evidence.Text }
+else { $tail = Get-TranscriptTailText (Get-EvidenceTranscriptFallbackPath $hookInput) }
 
 # Was this session recorded as MCP-relevant by the pre-task half?
 $sessionRelevant = $false

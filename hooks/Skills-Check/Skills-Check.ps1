@@ -8,7 +8,7 @@
 #   PLUGIN  <home>\.claude\plugins\cache\<marketplace>\<plugin>\<version>\skills\*
 #           reported as "<plugin>:<skill>", which is how the client addresses it.
 # Plus a FOURTH, uninstalled source: the external skill library named by
-# SKILLS_DIR / AI_SKILLS_DIR (default G:\Program Files\Portable\Scripts\.SKILLS),
+# SKILLS_DIR / AI_SKILLS_DIR (no built-in default),
 # which is searched AGAINST THE CURRENT PROMPT and reported as ready-to-run
 # import instructions.
 #
@@ -117,7 +117,11 @@ elseif ($env:AI_SKILLS_DIR) {
     $libraryDir = $env:AI_SKILLS_DIR
 }
 else {
-    $libraryDir = 'G:\Program Files\Portable\Scripts\.SKILLS'
+    # NO default. The Skill Policy is explicit that an unset library location is
+    # asked about, never guessed, and a hard-coded absolute path is both a guess
+    # and one machine's disk layout baked into shipped source. Unset means there
+    # is no library here, and the library half of this hook stays silent.
+    $libraryDir = ''
 }
 $hasLibrary = Test-Path -LiteralPath $libraryDir -PathType Container
 
@@ -399,6 +403,17 @@ function Get-TranscriptTailText {
     catch { return $null }
 }
 
+# Which transcript the FALLBACK reader should open when _stoplib.ps1 is absent.
+# A subagent event must never be answered from the parent's transcript.
+function Get-EvidenceTranscriptFallbackPath {
+    param($HookInput)
+    if ([string](Get-Field $HookInput 'hook_event_name') -eq 'SubagentStop') {
+        return [string](Get-Field $HookInput 'agent_transcript_path')
+    }
+    return [string](Get-Field $HookInput 'transcript_path')
+}
+
+
 # ============================ CLOSING HALF ==================================
 if ($closing) {
     $enforcement = 'block'
@@ -426,7 +441,19 @@ if ($closing) {
         return $true
     }
 
-    $tail = Get-TranscriptTailText ([string](Get-Field $hookInput 'transcript_path'))
+    # EVIDENCE SOURCE (F03). The raw session tail is not this task's answer: a user
+    # example, a previous task's line, or this hook's own injected text all live in
+    # it, and the old regex also required a preceding newline so a valid line at the
+    # very start of the response was missed. Get-ClosingAssistantText returns the
+    # CURRENT final assistant response - from the event when the client supplies it,
+    # otherwise the last assistant entry parsed out of the transcript (the CHILD
+    # transcript for a subagent event). Unknown stays unknown.
+    $evidence = $null
+    if ($null -ne (Get-Command Get-ClosingAssistantText -ErrorAction SilentlyContinue)) {
+        $evidence = Get-ClosingAssistantText -HookInput $hookInput
+    }
+    if ($null -ne $evidence -and $evidence.Known) { $tail = [string]$evidence.Text }
+    else { $tail = Get-TranscriptTailText (Get-EvidenceTranscriptFallbackPath $hookInput) }
     if ($null -eq $tail) {
         # UNKNOWN - no transcript, unreadable, or a client that supplies none.
         if (-not (Test-ShouldReportClosing 'unverified')) { exit 0 }
@@ -440,7 +467,7 @@ if ($closing) {
 
     # Anchored at the start of a transcript line so this hook's own instruction
     # text can never satisfy it.
-    if ($tail -match '(?i)(\\n|[\r\n])[ \t]{0,8}(?:[-*>#]+[ \t]{0,4})?(?:\*\*)?Skills?[ \t]+used[ \t]*:') { exit 0 }
+    if ($tail -match '(?im)^[ \t]{0,8}(?:[-*>#]+[ \t]{0,4})?(?:\*\*)?Skills?[ \t]+used[ \t]*:') { exit 0 }
 
     # Was a skill actually invoked? The client's own tool-call record is the
     # evidence; a client whose transcript does not carry it yields no evidence,

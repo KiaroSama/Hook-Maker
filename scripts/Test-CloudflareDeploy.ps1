@@ -527,7 +527,23 @@ try {
         $key = Get-ShortHash (Normalize-Path $Root).ToLowerInvariant()
         $stateDir = Join-Path $FakeLocalAppData 'HookMaker\state'
         New-Item -ItemType Directory -Path $stateDir -Force | Out-Null
-        $record = [ordered]@{ sessionId = 't'; fingerprint = $fingerprint; category = $Category; timestampUtc = [DateTime]::UtcNow.ToString('o') }
+        # The full versioned contract the consumer revalidates (F04). A record
+        # missing any required field is 'unknown' by design, so a fixture that
+        # writes only four fields tests the REJECTION path, not the happy one.
+        $record = [ordered]@{
+            schemaVersion       = 2
+            producerGeneration  = 2
+            sessionId           = 't'
+            fingerprint         = $fingerprint
+            category            = $Category
+            scanComplete        = $true
+            partialCauses       = @()
+            candidateCount      = 0
+            reviewCount         = 0
+            residueCount        = 0
+            evidenceFingerprint = 'fixture-evidence'
+            timestampUtc        = [DateTime]::UtcNow.ToString('o')
+        }
         ($record | ConvertTo-Json) | Set-Content -LiteralPath (Join-Path $stateDir ('TestTempCleanup-result-' + $key + '.json')) -Encoding utf8
     }
 

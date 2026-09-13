@@ -122,15 +122,15 @@ jobs:
       matrix:
         include:
           - name: registry
-            suites: Test-InstallRegistry,Test-InstallRegistrySchema,Test-InstallInvoke,Test-LegacyDiscovery,Test-StatePersistence,Test-InstalledHooksMenu,Test-HookStatusDiscovery,Test-TestPlanCheck,Test-TestPlanScanner
+            suites: Test-InstallRegistry,Test-InstallRegistrySchema,Test-InstallInvoke,Test-InstalledRuntimeMigration,Test-LegacyDiscovery,Test-StatePersistence,Test-InstalledHooksMenu,Test-HookStatusDiscovery,Test-TestPlanCheck,Test-TestPlanScanner
           - name: uninstall
             suites: Test-UninstallHook,Test-NativePrePushInstall,Test-RulesCheck,Test-DiscoveredUninstall,Test-HookStatusScan,Test-TestCompletionCheck,Test-CbmHooks
           - name: wizard
-            suites: Test-Wizard,Test-ContextHooks,Test-GraphUpdateCheck,Test-TestRunGuard,Test-RunTests,Test-TimingHistory,Test-SyncGroupMerge
+            suites: Test-Wizard,Test-ContextHooks,Test-GraphUpdateCheck,Test-TestRunGuard,Test-RunTests,Test-TimingHistory,Test-SyncGroupMerge,Test-CleanupFreshness
           - name: secrets
             suites: Test-SecretsCheck,Test-IgnoreRulesCheck,Test-GitSyncCheck,Test-AiMemoryCheck,Test-LargeFileCheck,Test-Utf8EncodingCheck,Test-FeatureRequestCheck
           - name: hooks
-            suites: Test-DocsFreshnessCheck,Test-CloudflareDeploy,Test-DependencyVersionCheck,Test-TestTempCleanup,Test-DependabotCheck,Test-CiStatusCheck,Test-GithubBaselineCheck,Test-AiMemoryLoad,Test-SynapseRulesCheck,Test-SessionSummaryCheck
+            suites: Test-StopLedger,Test-DocsFreshnessCheck,Test-CloudflareDeploy,Test-DependencyVersionCheck,Test-TestTempCleanup,Test-DependabotCheck,Test-CiStatusCheck,Test-GithubBaselineCheck,Test-AiMemoryLoad,Test-SynapseRulesCheck,Test-SessionSummaryCheck
     name: suites (${{ matrix.name }})
     steps:
       - uses: actions/checkout@v7
