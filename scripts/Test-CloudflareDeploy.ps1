@@ -415,7 +415,11 @@ try {
         # library the entry point dot-sources) and <hook>\<hook>.ps1.
         # The fixture stages the same set so the positive cases prove MULTI-entry
         # verification and the completeness negatives have real files to omit.
-        $runtimeLeaves = @('_hooklib.ps1', 'Test-Temp-Cleanup.ps1')
+        # _stoplib.ps1 joined the planned set when the Stop ledger landed, and the
+        # consumer's CleanupRequiredRuntimeLeaves was updated with it - this fixture
+        # was not, so it staged a runtime a real install no longer produces and every
+        # positive case below silently became "cleanup not installed".
+        $runtimeLeaves = @('_hooklib.ps1', '_stoplib.ps1', 'Test-Temp-Cleanup.ps1')
         foreach ($leaf in $runtimeLeaves) {
             # -MissingRuntime removes only the REGISTERED script; the rest of the
             # runtime stays, so that case still fails for its own reason.
