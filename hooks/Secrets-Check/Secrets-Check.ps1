@@ -972,8 +972,7 @@ $hasBlockingFindings = ($critical.Count -gt 0)
 if ($isStopEvent -and $hasBlockingFindings) {
     # Record the block so THIS hook's own re-entry is recognised; another
     # gate's block must not mute it, and its own must not repeat.
-    Set-StopBlockMarker -HookInput $hookInput -HookName 'Secrets-Check'
-    $emit = Write-HookResult -EventName $eventName -Kind 'block' -Reason $message
+    $emit = Write-StopBlockResult -HookInput $hookInput -HookName 'Secrets-Check' -EventName $eventName -Reason $message
     exit $emit.ExitCode
 }
 if ($isStopEvent) {

@@ -484,9 +484,15 @@ function Write-ClientMessage {
     if ([string]::IsNullOrWhiteSpace($Message)) { return }
     $kind = 'advisory'
     if ($Blocking) { $kind = 'block' }
-    # Record the block so this gate's own re-entry is recognised; an advisory
-    # is not recorded, because it never stopped anything.
-    if ($kind -eq 'block') { Set-StopBlockMarker -HookInput $script:hookInput -HookName 'Test-Temp-Cleanup' }
+    # A block must be ADMITTED before it is emitted, so the shared correction
+    # allowance cannot be overspent; a refusal emits nothing and the finding
+    # stays recorded as unresolved. An advisory claims nothing - it never
+    # stopped anything - so it goes straight out.
+    if ($kind -eq 'block') {
+        $emit = Write-StopBlockResult -HookInput $script:hookInput -HookName 'Test-Temp-Cleanup' -EventName $EventName -Reason $Message
+        if ($emit.ExitCode -ne 0) { exit $emit.ExitCode }
+        return
+    }
     $emit = Write-HookResult -EventName $EventName -Kind $kind -Message $Message -Reason $Message
     if ($emit.ExitCode -ne 0) { exit $emit.ExitCode }
 }

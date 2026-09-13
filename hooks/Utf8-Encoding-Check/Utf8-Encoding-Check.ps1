@@ -348,8 +348,8 @@ function Write-HookMessage {
     if ($Blocking -and -not $advisoryOnly) {
         # Record the block so THIS hook's own re-entry is recognised; another
         # gate's block must not mute it, and its own must not repeat.
-        Set-StopBlockMarker -HookInput $hookInput -HookName 'Utf8-Encoding-Check'
-        exit (Write-HookResult -EventName $eventName -Kind 'block' -Reason $message).ExitCode
+        $emit = Write-StopBlockResult -HookInput $hookInput -HookName 'Utf8-Encoding-Check' -EventName $eventName -Reason $message
+        exit $emit.ExitCode
     }
     if ($Blocking -and $advisoryOnly) { $message = 'UTF8_ADVISORY_ONLY is set - reported, not blocked:' + "`n" + $message }
     exit (Write-HookResult -EventName $eventName -Kind 'advisory' -Message $message).ExitCode

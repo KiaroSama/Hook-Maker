@@ -114,5 +114,5 @@ New-Item -ItemType Directory -Path $stateDir -Force | Out-Null
 $reason = 'GRAPH UPDATE CHECK: graphify-out/graph.json predates the latest project changes. Decide for yourself based on STRUCTURAL impact, not the number of files changed - a single-file change can still be graph-relevant (e.g. an added/removed/renamed function or class, a changed export, import, call, or inheritance relationship, a new entry point, a changed cross-file dependency), while a multi-file change can be graph-irrelevant (prose/comments/formatting only, a literal or config value change, generated output, tests only unless test architecture is intentionally represented in the graph). If this task changed graph-relevant structure, run: graphify update .  (AST-only, no API cost). Otherwise finish now without updating and say so in one line. EITHER answer clears this block: it is recorded per session and per project before it is emitted, so this same state never blocks twice, and it returns only after future changes.'
 # Record the block so THIS hook's own re-entry is recognised; another
 # gate's block must not mute it, and its own must not repeat.
-Set-StopBlockMarker -HookInput $hookInput -HookName 'Graph-Update-Check'
-exit (Write-HookResult -EventName $eventName -Kind 'block' -Reason $reason).ExitCode
+$emit = Write-StopBlockResult -HookInput $hookInput -HookName 'Graph-Update-Check' -EventName $eventName -Reason $reason
+exit $emit.ExitCode

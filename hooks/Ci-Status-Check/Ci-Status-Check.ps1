@@ -460,8 +460,8 @@ function Write-Block {
     Save-State -Outcome $Outcome
     # Record the block so THIS hook's own re-entry is recognised; another
     # gate's block must not mute it, and its own must not repeat.
-    Set-StopBlockMarker -HookInput $hookInput -HookName 'Ci-Status-Check'
-    exit (Write-HookResult -EventName $script:eventName -Kind 'block' -Reason $Reason).ExitCode
+    $emit = Write-StopBlockResult -HookInput $hookInput -HookName 'Ci-Status-Check' -EventName $script:eventName -Reason $Reason
+    exit $emit.ExitCode
 }
 
 # Emits a NON-BLOCKING completion-context notice while a valid external-blocker
@@ -612,14 +612,14 @@ if ($null -eq $prefetchedSnapshot -and $stateSha -eq $sha) {
     if ($stateOutcome -eq 'failed' -and $ageMinutes -lt $failureCooldown) {
         # Record the block so THIS hook's own re-entry is recognised; another
         # gate's block must not mute it, and its own must not repeat.
-        Set-StopBlockMarker -HookInput $hookInput -HookName 'Ci-Status-Check'
-        exit (Write-HookResult -EventName $eventName -Kind 'block' -Reason ('CI CHECK: pushed commit ' + $sha7 + ' still has failed checks. Detailed failure guidance was recently reported; completion remains blocked until a replacement commit is pushed or the failure is reported as an external/manual blocker.')).ExitCode
+        $emit = Write-StopBlockResult -HookInput $hookInput -HookName 'Ci-Status-Check' -EventName $eventName -Reason ('CI CHECK: pushed commit ' + $sha7 + ' still has failed checks. Detailed failure guidance was recently reported; completion remains blocked until a replacement commit is pushed or the failure is reported as an external/manual blocker.')
+        exit $emit.ExitCode
     }
     if ($stateOutcome -eq 'pending' -and $ageMinutes -lt $pendingCooldown) {
         # Record the block so THIS hook's own re-entry is recognised; another
         # gate's block must not mute it, and its own must not repeat.
-        Set-StopBlockMarker -HookInput $hookInput -HookName 'Ci-Status-Check'
-        exit (Write-HookResult -EventName $eventName -Kind 'block' -Reason ('CI CHECK: pushed commit ' + $sha7 + ' is still awaiting terminal checks. Detailed status was recently reported; completion remains blocked.')).ExitCode
+        $emit = Write-StopBlockResult -HookInput $hookInput -HookName 'Ci-Status-Check' -EventName $eventName -Reason ('CI CHECK: pushed commit ' + $sha7 + ' is still awaiting terminal checks. Detailed status was recently reported; completion remains blocked.')
+        exit $emit.ExitCode
     }
 }
 

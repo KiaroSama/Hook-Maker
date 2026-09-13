@@ -493,10 +493,15 @@ function Write-Finding {
     # MAIN agent had run. The advisory still reaches the model (Claude honours
     # additionalContext here) and the real gate still holds on the main Stop.
     if ($Blocking -and -not $script:advisoryOnly -and $script:eventName -ne 'SubagentStop') { $kind = 'block' }
-    # Record the block so this gate's own re-entry is recognised. Without it
-    # the gate has no memory of having spoken and refuses completion on every
-    # Stop; an ADVISORY is not recorded, because it never stopped anything.
-    if ($kind -eq 'block') { Set-StopBlockMarker -HookInput $hookInput -HookName 'Test-Completion-Check' }
+    # A block must be ADMITTED before it is emitted: the claim is what gives the
+    # gate a memory of having spoken, and it also spends one unit of the shared
+    # correction allowance, so it cannot be taken without being granted. A
+    # refusal emits nothing and leaves the finding recorded as unresolved. An
+    # ADVISORY claims nothing, because it never stopped anything.
+    if ($kind -eq 'block') {
+        $emit = Write-StopBlockResult -HookInput $hookInput -HookName 'Test-Completion-Check' -EventName $script:eventName -Reason $message
+        exit $emit.ExitCode
+    }
     $emit = Write-HookResult -EventName $script:eventName -Kind $kind -Message $message -Reason $message
     exit $emit.ExitCode
 }

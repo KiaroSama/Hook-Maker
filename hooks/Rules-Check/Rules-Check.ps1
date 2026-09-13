@@ -319,8 +319,7 @@ function Get-EvidenceTranscriptFallbackPath {
         }
         # Record the block so THIS hook's own re-entry is recognised; another
         # gate's block must not mute it, and its own must not repeat.
-        Set-StopBlockMarker -HookInput $hookInput -HookName 'Rules-Check'
-        $emit = Write-HookResult -EventName $eventName -Kind 'block' -Reason $reason
+        $emit = Write-StopBlockResult -HookInput $hookInput -HookName 'Rules-Check' -EventName $eventName -Reason $reason
         exit $emit.ExitCode
     }
 

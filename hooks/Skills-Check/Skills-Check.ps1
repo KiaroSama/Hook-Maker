@@ -408,8 +408,7 @@ if ($closing) {
     if ($decision.Kind -eq 'block' -and $enforcement -eq 'block') {
         # Record the block so THIS hook's own re-entry is recognised; another
         # gate's block must not mute it, and its own must not repeat.
-        Set-StopBlockMarker -HookInput $hookInput -HookName 'Skills-Check'
-        $emit = Write-HookResult -EventName $eventName -Kind 'block' -Reason $decision.Text
+        $emit = Write-StopBlockResult -HookInput $hookInput -HookName 'Skills-Check' -EventName $eventName -Reason $decision.Text
         exit $emit.ExitCode
     }
     $emit = Write-HookResult -EventName $eventName -Kind 'advisory' -Message $decision.Text
