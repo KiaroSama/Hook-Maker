@@ -48,3 +48,8 @@ logs/
 
 # Local assistant skill state - machine-specific, not part of the tool
 /skills-lock.json
+
+# Throwaway hook fixtures the test suites create inside the real hooks\ directory
+# and delete again. One survived an aborted run and was committed, which put a
+# second "custom hook" in every menu render CI saw.
+/hooks/ZZZ-*/
