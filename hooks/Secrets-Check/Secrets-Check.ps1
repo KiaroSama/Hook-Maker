@@ -467,7 +467,7 @@ function Remove-StalePublicConfigEntries {
 }
 
 # ---- discover real .env* files in active project trees ----
-$excludedDirs = @('.git', 'node_modules', 'vendor', 'vendors', 'dist', 'build', 'out', 'target', 'coverage', '.cache', 'cache', '__pycache__', '.venv', 'venv', 'env', '.ai', 'graphify-out', '.claude', '.codex', '.agents', 'bin', 'obj')
+$excludedDirs = @('.git', 'node_modules', 'vendor', 'vendors', 'dist', 'build', 'out', 'target', 'coverage', '.cache', 'cache', '__pycache__', '.venv', 'venv', 'env', '.ai', 'graphify-out', '.claude', '.codex', '.agents', 'bin', 'obj', '.ci-runner')
 $envFiles = New-Object System.Collections.Generic.List[object]
 $rootFull = (Get-Item -LiteralPath $cwd).FullName.TrimEnd('\', '/')
 $stack = New-Object System.Collections.Generic.Stack[string]

@@ -177,7 +177,7 @@ if (-not [string]::IsNullOrWhiteSpace($env:TESTPLANCHECK_TEST_TRIP_TIME_AFTER_FI
 
 # Directory names pruned BEFORE descent - mirrors Secrets-Check.ps1 $excludedDirs
 # (plus .tox/site-packages that this scan has always skipped).
-$excludedDirs = @('.git', 'node_modules', 'vendor', 'vendors', 'dist', 'build', 'out', 'target', 'coverage', '.cache', 'cache', '__pycache__', '.venv', 'venv', 'env', '.ai', 'graphify-out', '.claude', '.codex', '.agents', 'bin', 'obj', '.tox', 'site-packages')
+$excludedDirs = @('.git', 'node_modules', 'vendor', 'vendors', 'dist', 'build', 'out', 'target', 'coverage', '.cache', 'cache', '__pycache__', '.venv', 'venv', 'env', '.ai', 'graphify-out', '.claude', '.codex', '.agents', 'bin', 'obj', '.ci-runner', '.tox', 'site-packages')
 $extRegex = '(?i)^\.(ps1|psm1|py|js|mjs|cjs|ts|sh|rb|go)$'
 
 # Partial-coverage flags - each names a DISTINCT reason the walk stopped short, so
