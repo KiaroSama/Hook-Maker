@@ -104,7 +104,12 @@
     for ($i = 0; $i -lt 60; $i++) { New-Dir (Join-Path $doomed ('filler' + $i + '\a\b\c')) | Out-Null }
     $async = Invoke-Scan -Root $raceRoot -Async
     Remove-Item -LiteralPath $doomed -Recurse -Force -ErrorAction SilentlyContinue
-    $async.Process.WaitForExit()
+    # The scan is the thing under test, so a hang here is a RESULT, not a wait to
+    # sit through: bound it, kill the tree, and say so.
+    if (-not $async.Process.WaitForExit(120000)) {
+        try { Stop-Process -Id $async.Process.Id -Force -ErrorAction SilentlyContinue } catch { }
+        throw 'the async scan did not exit within 120s (terminated); a mid-scan deletion must never block it'
+    }
     $raceResult = $null
     if (Test-Path -LiteralPath $async.ResultPath) { $raceResult = [System.IO.File]::ReadAllText($async.ResultPath) | ConvertFrom-Json }
     Check 'a directory vanishing mid-scan does not fail the run' ($async.Process.ExitCode -eq 0) (
