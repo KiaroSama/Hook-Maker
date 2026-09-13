@@ -156,6 +156,14 @@ function Test-StopStandDownLedger {
         [Parameter(Mandatory = $true)][string]$HookName,
         [bool]$IsContinuation
     )
+    # A genuine Stop is the task boundary. Resolve-StopChain always mints a
+    # FRESH chain (blocks = 0) for one, so the budget test cannot trip and the
+    # verdict is always 'arm' - computable without reading anything. Returning
+    # here keeps a QUERY from mutating: the old path took a lock and rewrote the
+    # ledger in every gate on every Stop, which created Hook Maker state in
+    # projects the gate had nothing to say about and put a locked
+    # read-modify-write on the hottest path there is. Only a block writes now.
+    if (-not $IsContinuation) { return $false }
     $keys = Get-StopLedgerKeys -HookInput $HookInput -HookName $HookName
     $path = Get-StopLedgerPath -ProjectRoot ([string](Get-Field $HookInput 'cwd'))
     $verdict = Invoke-StopLedgerUpdate -Path $path -Mutate {
