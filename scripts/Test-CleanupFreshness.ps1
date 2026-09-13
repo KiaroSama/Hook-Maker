@@ -178,6 +178,34 @@ try {
         (@($producerPrune | Sort-Object) -join '|') -eq (@($consumerPrune | Sort-Object) -join '|')) (
         'producer=[' + ($producerPrune -join ',') + '] consumer=[' + ($consumerPrune -join ',') + ']')
 
+    # A registered GitHub Actions runner lives INSIDE the project as .ci-runner and
+    # is CI runtime state, not this project's residue - the same category as .cache
+    # before it. It vendors thousands of third-party files, among them names this
+    # witness treats as cleanup-relevant. Unpruned, the walk descends into it, reads a
+    # vendored __pycache__ newer than the record as fresh residue, and reports the
+    # evidence stale - silencing the deploy gate over a tree the PRODUCER never
+    # classified. Its own root on purpose: dropping a fresh cache into the shared repo
+    # fixture would change what every later case observes.
+    $runnerProj = Join-Path $Work 'ci-runner-project'
+    # NO already-pruned segment on this path. An earlier draft routed it through
+    # node_modules, which the witness prunes anyway, so the walk stopped before the
+    # cache and the assertion passed while the .ci-runner prune did not yet exist -
+    # a green that proved nothing. Real runner trees carry such paths (_work/_temp).
+    $runnerDeep = Join-Path $runnerProj '.ci-runner\windows\_work\_temp\artifacts\__pycache__'
+    New-Item -ItemType Directory -Path $runnerDeep -Force | Out-Null
+    Write-Utf8 (Join-Path $runnerDeep 'vendored.pyc') 'third-party byte code'
+    Check '.ci-runner is never descended into: a vendored cache newer than the record is not residue' (
+        Test-CleanupEvidenceStillCurrent -Root $runnerProj -RecordedUtc ([DateTime]::UtcNow.AddMinutes(-5))) (
+        'the witness walked into .ci-runner and read CI runtime state as project residue')
+    # Positive control: the SAME fresh cache outside .ci-runner must still be seen,
+    # so the assertion above cannot pass by the witness simply never looking.
+    $plainCache = Join-Path $runnerProj 'src\__pycache__'
+    New-Item -ItemType Directory -Path $plainCache -Force | Out-Null
+    Write-Utf8 (Join-Path $plainCache 'own.pyc') 'our own byte code'
+    Check 'control: an identical cache OUTSIDE .ci-runner is still observed as newer' (
+        -not (Test-CleanupEvidenceStillCurrent -Root $runnerProj -RecordedUtc ([DateTime]::UtcNow.AddMinutes(-5)))) (
+        'the witness missed real residue - the prune is too broad')
+
     # The coordination record the producer actually emits, read from its AST.
     $recordHash = $ProducerAst.Find({
             $args[0] -is [System.Management.Automation.Language.HashtableAst] -and
