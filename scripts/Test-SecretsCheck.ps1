@@ -439,6 +439,13 @@ try {
         "MAX_SCAN_DEPTH=10`r`n" +
         "MAX_FINDINGS=20`r`n" +
         "ENABLE_SUBAGENT_STOP=false`r`n" +
+        # The Stripe-shaped fixture is CONCATENATED, never a contiguous literal.
+        # GitHub push protection matches sk_live_ by PATTERN, not by entropy, so
+        # any literal here blocks every push of this repository for ever - an
+        # obviously-synthetic value is blocked exactly like a real one. The hook
+        # under test receives the assembled value, so what this case proves is
+        # unchanged: a credential-SHAPED value beats our own-key allowlist.
+        # Do not "simplify" this back into a single string.
         "MAX_CHARS=sk" + "_live_aBcDeFgHiJkLmNoPqRsTuVwXyZ0123456789`r`n" +
         "API_TOKEN=ghp_aBcDeFgHiJkLmNoPqRsTuVwXyZ0123456789`r`n")
     Add-Commit $projOwnKeys 'seed'
