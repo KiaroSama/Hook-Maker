@@ -33,15 +33,19 @@
 # hash identically, and an IGNORED path never appears in porcelain at all, so
 # creating a .pytest_cache after a clean scan leaves it completely unchanged. It
 # stays a cheap CACHE HINT below; the proof is Test-CleanupEvidenceStillCurrent.
-$script:CleanupResultSchemaVersion = 2
-$script:CleanupResultProducerGeneration = 2
+$script:CleanupResultSchemaVersion = 3
+$script:CleanupResultProducerGeneration = 3
 # Checked as a SET, before the versions: the field shape is a fact about the
 # document, a version is only an assertion inside it, and a record from another
 # build cannot fake a shape it never had.
 $script:CleanupResultRequiredFields = @(
     'schemaVersion', 'producerGeneration', 'sessionId', 'fingerprint', 'category',
     'scanComplete', 'partialCauses', 'candidateCount', 'reviewCount', 'residueCount',
-    'evidenceFingerprint', 'timestampUtc'
+    'evidenceFingerprint', 'timestampUtc',
+    # Generation 3: the freshness reference and the detection configuration
+    # the verdict was produced under. A record without them is from an older
+    # producer and cannot be revalidated the way this consumer revalidates.
+    'scanStartedUtc', 'extraCandidateNames', 'extraReviewNames'
 )
 # A freshness BACKSTOP, never the freshness signal - no TTL notices a
 # .pytest_cache created one second after a clean scan. It only bounds how long
@@ -60,11 +64,14 @@ $script:CleanupResultSkewSeconds = 2
 # EQUAL those tables, the same arrangement that keeps the registration and
 # runtime-root mirrors in the entry point from rotting into stale lists.
 #
-# SHIPPED names only: EXTRA_CANDIDATE_NAMES / EXTRA_REVIEW_NAMES live in the
-# producer's installed .env, unreadable from this separate runtime. Mirroring
-# only what ships keeps this observation a SUBSET of the producer's, so a
-# configured extra name can never make the two disagree and park this gate in
-# permanent silence - and the subset still covers what motivated it.
+# The SHIPPED names are the floor. EXTRA_CANDIDATE_NAMES / EXTRA_REVIEW_NAMES
+# live in the producer's installed .env, which this separate runtime cannot
+# read - so mirroring only what ships made the observation a strict SUBSET of
+# the producer's. Safe against false rejection, and wrong the other way: a
+# configured extra candidate appearing after the scan was a name this witness
+# never looked for, so a stale verdict stayed 'clean'. The record carries the
+# effective configuration now (generation 3) and Get-CleanupWitnessNames widens
+# this set to match the scan that actually ran.
 $script:CleanupWitnessNames = @(
     '.pytest_cache', '.mypy_cache', '.ruff_cache', '.hypothesis', '.nyc_output',
     '.test-tmp', '.test-temp', 'test-tmp', 'test-temp', '.jest-cache', '.vitest-cache',
@@ -85,11 +92,33 @@ $script:CleanupWitnessPruneNames = @(
 $script:CleanupWitnessMaxEntries = 60000
 $script:CleanupWitnessMaxSeconds = 5
 
+# The names this witness must look for: the shipped set plus whatever extra
+# names the record says the scan was configured with. Bounded, and every entry
+# is a literal leaf name - the producer validates them before use and they are
+# only ever compared, never expanded or executed.
+function Get-CleanupWitnessNames {
+    param($Record)
+    $names = @($script:CleanupWitnessNames)
+    foreach ($field in @('extraCandidateNames', 'extraReviewNames')) {
+        foreach ($extra in @(Get-Field $Record $field)) {
+            $name = ([string]$extra).Trim()
+            if ($name -eq '' -or $name.Length -gt 64) { continue }
+            if ($name.IndexOfAny([System.IO.Path]::GetInvalidFileNameChars()) -ge 0) { continue }
+            if ($names -contains $name) { continue }
+            $names += $name
+            if ($names.Count -ge 200) { return $names }
+        }
+    }
+    return $names
+}
+
 # Does a cleanup-relevant leaf name match? Case-insensitive, like the producer's
 # own name sets; the file patterns apply to files only, exactly as they do there.
 function Test-CleanupWitnessMatch {
-    param([string]$Name, [bool]$IsDir)
-    if ($script:CleanupWitnessNames -contains $Name) { return $true }
+    param([string]$Name, [bool]$IsDir, [string[]]$Names = @())
+    $set = $Names
+    if (@($set).Count -eq 0) { $set = $script:CleanupWitnessNames }
+    if ($set -contains $Name) { return $true }
     if (-not $IsDir) {
         foreach ($pattern in $script:CleanupWitnessFilePatterns) {
             if ($Name -like $pattern) { return $true }
@@ -111,7 +140,7 @@ function Test-CleanupWitnessMatch {
 # point and never descends into a matched candidate: the producer does neither,
 # and a cache tree is the shape that would burn the entry bound.
 function Test-CleanupEvidenceStillCurrent {
-    param([string]$Root, [DateTime]$RecordedUtc)
+    param([string]$Root, [DateTime]$RecordedUtc, [string[]]$WitnessNames = @())
     $rootInfo = $null
     try { $rootInfo = New-Object System.IO.DirectoryInfo ($Root) }
     catch { return $false }
@@ -132,7 +161,14 @@ function Test-CleanupEvidenceStillCurrent {
             $isDir = (($attributes -band [System.IO.FileAttributes]::Directory) -ne 0)
             $isLink = (($attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0)
             if ($isDir -and ($script:CleanupWitnessPruneNames -contains $entry.Name)) { continue }
-            if (Test-CleanupWitnessMatch -Name $entry.Name -IsDir $isDir) {
+            # The producer also prunes by MARKER FILE - pyvenv.cfg for a
+            # virtualenv under any name, CACHEDIR.TAG for any regenerable
+            # cache - and this witness did not, so it descended into trees the
+            # scan never entered and rejected evidence over paths the producer
+            # had deliberately excluded: a permanent 'unknown' no cleanup could
+            # clear. Same helper, same rule.
+            if ($isDir -and -not $isLink -and (Test-IsMarkerPrunedDirectory $entry.FullName)) { continue }
+            if (Test-CleanupWitnessMatch -Name $entry.Name -IsDir $isDir -Names $WitnessNames) {
                 $stamp = [DateTime]::MinValue
                 try {
                     $stamp = $entry.LastWriteTimeUtc
@@ -199,7 +235,13 @@ function Get-CleanupEvidenceVerdict {
         if ($reviewCount -ne 0 -or $residueCount -ne 0) { return 'unknown' }
     }
 
-    # 5) FRESHNESS backstop, and the timestamp step 7 measures against.
+    # 5) FRESHNESS backstop, and the instant step 7 measures against.
+    #
+    # The reference is scanStartedUtc, not the completion stamp. A candidate
+    # created after its own directory had been visited but before the record
+    # was written is OLDER than a completion stamp, so it slipped through a
+    # witness that compared against one - evidence accepted for a path the scan
+    # never inspected. The start instant cannot be beaten that way.
     #
     # ConvertFrom-Json is NOT type-stable across hosts, and casting to [string]
     # first is what breaks. Measured on pwsh 7.6.5 and Windows PowerShell
@@ -213,7 +255,7 @@ function Get-CleanupEvidenceVerdict {
     # comes and normalize by KIND instead: an Unspecified value here carries the
     # UTC wall clock the producer wrote ([DateTime]::UtcNow.ToString('o')), so
     # assuming "local" would move it.
-    $rawStamp = Get-Field $record 'timestampUtc'
+    $rawStamp = Get-Field $record 'scanStartedUtc'
     $recordedUtc = [DateTime]::MinValue
     if ($rawStamp -is [DateTime]) { $recordedUtc = $rawStamp }
     elseif (-not [DateTime]::TryParse([string]$rawStamp,
@@ -232,7 +274,7 @@ function Get-CleanupEvidenceVerdict {
     if ([string](Get-Field $record 'fingerprint') -ne (Get-RepoStateFingerprint -ProjectRoot $Root)) { return 'unknown' }
 
     # 7) REVALIDATION against the filesystem the verdict is about.
-    if (-not (Test-CleanupEvidenceStillCurrent -Root $Root -RecordedUtc $recordedUtc)) { return 'unknown' }
+    if (-not (Test-CleanupEvidenceStillCurrent -Root $Root -RecordedUtc $recordedUtc -WitnessNames (Get-CleanupWitnessNames -Record $record))) { return 'unknown' }
 
     return $category
 }
