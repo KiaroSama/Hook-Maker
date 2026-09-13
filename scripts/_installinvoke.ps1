@@ -21,6 +21,129 @@
 # rendered.
 # ---------------------------------------------------------------------------
 
+# The schema this build understands, and the vocabularies it was written
+# against. A NEWER installer is not an error and not a success either - it is
+# unknown, and saying so is the point.
+$script:InstallResultSchema = 1
+$script:InstallOverallValues = @('ok', 'partial', 'failed')
+$script:InstallComponentStatuses = @('ok', 'failed', 'skipped', 'trackingFailed')
+
+# Read a property WITHOUT throwing on a shape that does not have it.
+#
+# Direct access is not safe here: the document comes from another process, and
+# under StrictMode a missing property on a malformed shape (an array, a bare
+# string, a JSON scalar) throws instead of returning nothing - so a malformed
+# result crashed the wizard rather than being reported as unknown.
+function Get-ResultProperty {
+    param($Document, [string]$Name)
+    if ($null -eq $Document) { return $null }
+    try {
+        if ($Document -is [System.Collections.IDictionary]) {
+            if ($Document.Contains($Name)) { return $Document[$Name] }
+            return $null
+        }
+        $prop = $Document.PSObject.Properties[$Name]
+        if ($null -eq $prop) { return $null }
+        return $prop.Value
+    }
+    catch { return $null }
+}
+
+# Is this document one this build can read AT ALL, and does it agree with
+# itself? `{"overall":"ok"}` used to be accepted on the strength of that one
+# field - no schema, no components, nothing to contradict it - and a document
+# claiming overall=ok while carrying a failed component passed just as easily.
+#
+# Returns @{ Ok; Summary }. Ok=$false means the document is not usable as proof
+# of anything; the caller reports 'unknown', never success.
+function Test-InstallResultDocument {
+    param($Document, [string[]]$RequiredComponents = @())
+    if ($null -eq $Document) { return [pscustomobject]@{ Ok = $false; Summary = 'no structured result from the installer' } }
+    if ($Document -is [string] -or $Document -is [System.Array] -or $Document -is [System.ValueType]) {
+        return [pscustomobject]@{ Ok = $false; Summary = 'install result is not a result document' }
+    }
+
+    $schema = Get-ResultProperty -Document $Document -Name 'schema'
+    if ($null -eq $schema) { return [pscustomobject]@{ Ok = $false; Summary = 'install result carries no schema' } }
+    $schemaNumber = 0
+    if (-not [int]::TryParse([string]$schema, [ref]$schemaNumber)) {
+        return [pscustomobject]@{ Ok = $false; Summary = ('install result schema is not a number: ' + [string]$schema) }
+    }
+    if ($schemaNumber -ne $script:InstallResultSchema) {
+        # Deliberately not "corrupt": a newer installer is a real thing, and
+        # guessing at its meaning is how an older wizard reports a green install
+        # it never understood.
+        return [pscustomobject]@{ Ok = $false; Summary = ('install result schema ' + $schemaNumber + ' is newer than this build understands (' + $script:InstallResultSchema + ')') }
+    }
+
+    $overall = [string](Get-ResultProperty -Document $Document -Name 'overall')
+    if ($script:InstallOverallValues -notcontains $overall) {
+        return [pscustomobject]@{ Ok = $false; Summary = ('unrecognized install outcome: ' + $(if ([string]::IsNullOrWhiteSpace($overall)) { '(missing)' } else { $overall })) }
+    }
+
+    $componentsRaw = Get-ResultProperty -Document $Document -Name 'components'
+    if ($null -eq $componentsRaw) { return [pscustomobject]@{ Ok = $false; Summary = 'install result lists no components' } }
+    $components = @($componentsRaw)
+    if ($components.Count -eq 0) { return [pscustomobject]@{ Ok = $false; Summary = 'install result lists no components' } }
+
+    $names = @()
+    foreach ($component in $components) {
+        $name = [string](Get-ResultProperty -Document $component -Name 'component')
+        $status = [string](Get-ResultProperty -Document $component -Name 'status')
+        if ([string]::IsNullOrWhiteSpace($name)) { return [pscustomobject]@{ Ok = $false; Summary = 'install result has a component with no name' } }
+        if ($script:InstallComponentStatuses -notcontains $status) {
+            return [pscustomobject]@{ Ok = $false; Summary = ('install result component ' + $name + ' has an unrecognized status: ' + $(if ([string]::IsNullOrWhiteSpace($status)) { '(missing)' } else { $status })) }
+        }
+        $names += $name
+    }
+
+    # AGREEMENT. `overall` is the installer's summary of the components, so a
+    # summary its own components contradict proves the document wrong, not the
+    # install good.
+    $broken = @($components | Where-Object {
+            $s = [string](Get-ResultProperty -Document $_ -Name 'status')
+            $s -eq 'failed' -or $s -eq 'trackingFailed'
+        })
+    if ($overall -eq 'ok' -and $broken.Count -gt 0) {
+        $brokenNames = @($broken | ForEach-Object { [string](Get-ResultProperty -Document $_ -Name 'component') })
+        return [pscustomobject]@{ Ok = $false; Summary = ('install result claims ok while reporting failed component(s): ' + ($brokenNames -join ', ')) }
+    }
+    if ($overall -eq 'failed' -and $broken.Count -eq 0) {
+        return [pscustomobject]@{ Ok = $false; Summary = 'install result claims failed but reports no failed component' }
+    }
+
+    # COVERAGE. A client that was asked for and is absent from the components is
+    # not "installed by default" - nothing said anything about it at all.
+    foreach ($required in @($RequiredComponents)) {
+        # An EMPTY entry is not a requirement. PowerShell unrolls an empty array
+        # on return, so "nothing was requested" arrives here as $null, and
+        # @($null) is one $null element - which read as a requested client with
+        # no name and failed every install that asked for no client in
+        # particular.
+        if ([string]::IsNullOrWhiteSpace([string]$required)) { continue }
+        if ($names -notcontains $required) {
+            return [pscustomobject]@{ Ok = $false; Summary = ('install result never mentions the requested client: ' + $required) }
+        }
+    }
+    return [pscustomobject]@{ Ok = $true; Summary = 'ok' }
+}
+
+# Which clients this invocation EXPLICITLY asked for, so their absence from the
+# result is a finding rather than a silence.
+#
+# Only the explicit switches count. With neither, the installer chooses from
+# what is actually present on the machine, so demanding both would fail a
+# perfectly good install on a box that has only one client - a stricter check
+# that is simply wrong. Silence about an unrequested client is not a defect.
+function Get-RequestedInstallClients {
+    param([hashtable]$InstallArgs)
+    $requested = @()
+    if ($null -eq $InstallArgs) { return $requested }
+    if ($InstallArgs.ContainsKey('ClaudeOnly') -and [bool]$InstallArgs['ClaudeOnly']) { $requested += 'claude' }
+    if ($InstallArgs.ContainsKey('CodexOnly') -and [bool]$InstallArgs['CodexOnly']) { $requested += 'codex' }
+    return $requested
+}
+
 # Classify an `overall = partial` install. Partial is the installer's way of
 # saying "components disagreed", and the components are what decide whether a
 # human needs to act.
@@ -110,17 +233,24 @@ function Invoke-HookInstaller {
     # NO structured result is 'unknown', never success. The installer exiting
     # quietly with nothing to say is exactly the shape a stubbed or crashed
     # installer has, and it is the case this whole function was added for.
-    if ($null -eq $result) {
+    #
+    # A result that EXISTS still has to be a result: readable schema, a known
+    # outcome, components that exist, carry known statuses and do not contradict
+    # the outcome, and coverage of every client this invocation asked for. Trust
+    # used to stop at the `overall` field, so `{"overall":"ok"}` was a green
+    # install and a malformed shape threw instead of reporting unknown.
+    $validation = Test-InstallResultDocument -Document $result -RequiredComponents (Get-RequestedInstallClients -InstallArgs $InstallArgs)
+    if (-not $validation.Ok) {
         return [pscustomobject]@{
             Ok      = $false
             Status  = 'unknown'
-            Summary = 'no structured result from the installer'
-            Result  = $null
+            Summary = [string]$validation.Summary
+            Result  = $result
             Output  = $output
         }
     }
 
-    $overall = [string]$result.overall
+    $overall = [string](Get-ResultProperty -Document $result -Name 'overall')
     if ($overall -eq 'failed') {
         $failedNames = @(@($result.components) | Where-Object { [string]$_.status -eq 'failed' } | ForEach-Object { [string]$_.component })
         $detail = if ($failedNames.Count -gt 0) { ' (' + ($failedNames -join ', ') + ')' } else { '' }
@@ -146,9 +276,10 @@ function Invoke-HookInstaller {
         return [pscustomobject]@{ Ok = $true; Status = 'ok'; Summary = 'ok'; Result = $result; Output = $output }
     }
 
-    # A result document that exists but carries an overall value this build does
-    # not know is unknown, not ok - a newer installer must not be read as green
-    # by an older wizard.
+    # Unreachable while validation runs first - an unknown `overall` is refused
+    # up there, with the schema and the components. Kept as the fail-closed
+    # floor: if validation is ever narrowed, the fallthrough is still 'unknown'
+    # rather than an implicit success.
     return [pscustomobject]@{
         Ok      = $false
         Status  = 'unknown'

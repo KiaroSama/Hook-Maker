@@ -64,14 +64,29 @@ function New-ResultStub {
     return New-Stub -Name $Name -Body ('[System.IO.File]::WriteAllText($ResultPath, ' + "'" + ($Json -replace "'", "''") + "'" + ')')
 }
 
-$okJson = '{"overall":"ok","components":[{"component":"claude","status":"ok","reason":""}]}'
-$degradedJson = '{"overall":"partial","components":[{"component":"claude","status":"ok","reason":"degraded"}]}'
-$failedComponentJson = '{"overall":"partial","components":[{"component":"claude","status":"failed","reason":"settingsWriteFailed"}]}'
-$trackingJson = '{"overall":"partial","components":[{"component":"registry","status":"trackingFailed","reason":"registryUnavailable"}]}'
-$postRegJson = '{"overall":"partial","components":[{"component":"claude","status":"ok","reason":"postRegistrationError"}]}'
-$hardFailJson = '{"overall":"failed","components":[{"component":"codex","status":"failed","reason":"settingsWriteFailed"}]}'
-$unknownOverallJson = '{"overall":"something-new","components":[]}'
-$emptyPartialJson = '{"overall":"partial","components":[]}'
+# Every fixture carries its schema, because every real result does: the stubs
+# used to model the `overall` field alone, which is precisely the trust the
+# validator refuses now.
+$okJson = '{"schema":1,"overall":"ok","components":[{"component":"claude","status":"ok","reason":""}]}'
+$degradedJson = '{"schema":1,"overall":"partial","components":[{"component":"claude","status":"ok","reason":"degraded"}]}'
+$failedComponentJson = '{"schema":1,"overall":"partial","components":[{"component":"claude","status":"failed","reason":"settingsWriteFailed"}]}'
+$trackingJson = '{"schema":1,"overall":"partial","components":[{"component":"registry","status":"trackingFailed","reason":"registryUnavailable"}]}'
+$postRegJson = '{"schema":1,"overall":"partial","components":[{"component":"claude","status":"ok","reason":"postRegistrationError"}]}'
+$hardFailJson = '{"schema":1,"overall":"failed","components":[{"component":"codex","status":"failed","reason":"settingsWriteFailed"}]}'
+$unknownOverallJson = '{"schema":1,"overall":"something-new","components":[{"component":"claude","status":"ok"}]}'
+$emptyPartialJson = '{"schema":1,"overall":"partial","components":[{"component":"claude","status":"skipped","reason":"mystery"}]}'
+
+# ---- R09: a document that exists is not automatically a result -------------
+$bareOkJson = '{"overall":"ok"}'
+$noSchemaJson = '{"overall":"ok","components":[{"component":"claude","status":"ok"}]}'
+$futureSchemaJson = '{"schema":99,"overall":"ok","components":[{"component":"claude","status":"ok"}]}'
+$noComponentsJson = '{"schema":1,"overall":"ok","components":[]}'
+$contradictoryJson = '{"schema":1,"overall":"ok","components":[{"component":"claude","status":"ok"},{"component":"registry","status":"trackingFailed","reason":"registryUnavailable"}]}'
+$failedNoComponentJson = '{"schema":1,"overall":"failed","components":[{"component":"claude","status":"ok"}]}'
+$badStatusJson = '{"schema":1,"overall":"ok","components":[{"component":"claude","status":"installed-probably"}]}'
+$namelessJson = '{"schema":1,"overall":"ok","components":[{"status":"ok"}]}'
+$arrayJson = '[{"schema":1,"overall":"ok"}]'
+$scalarJson = '"ok"'
 
 # ---- the table: stub -> expected verdict -----------------------------------
 # Ok is the only thing a caller is allowed to print a green line from.
@@ -88,6 +103,18 @@ $cases = @(
     @{ Name = 'malformed JSON is unknown, not ok'; Stub = (New-Stub 'malformed' '[System.IO.File]::WriteAllText($ResultPath, ''{not json'')'); ExpectOk = $false; ExpectStatus = 'unknown' }
     @{ Name = 'an empty result file is unknown, not ok'; Stub = (New-Stub 'emptyfile' '[System.IO.File]::WriteAllText($ResultPath, [string]::Empty)'); ExpectOk = $false; ExpectStatus = 'unknown' }
     @{ Name = 'a throwing installer is a failure, not unknown'; Stub = (New-Stub 'throws' "throw 'installer exploded'"); ExpectOk = $false; ExpectStatus = 'failed' }
+    # R09: every one of these WAS accepted, or threw, on the strength of a
+    # single `overall` field. None of them is evidence of an install.
+    @{ Name = 'a bare {overall:ok} with no schema and no components is unknown'; Stub = (New-ResultStub 'bareok' $bareOkJson); ExpectOk = $false; ExpectStatus = 'unknown' }
+    @{ Name = 'a schema-less document is unknown'; Stub = (New-ResultStub 'noschema' $noSchemaJson); ExpectOk = $false; ExpectStatus = 'unknown' }
+    @{ Name = 'a FUTURE schema is unknown, never read as green'; Stub = (New-ResultStub 'futureschema' $futureSchemaJson); ExpectOk = $false; ExpectStatus = 'unknown' }
+    @{ Name = 'ok with no components at all is unknown'; Stub = (New-ResultStub 'nocomponents' $noComponentsJson); ExpectOk = $false; ExpectStatus = 'unknown' }
+    @{ Name = 'ok CONTRADICTED by a failed component is unknown'; Stub = (New-ResultStub 'contradictory' $contradictoryJson); ExpectOk = $false; ExpectStatus = 'unknown' }
+    @{ Name = 'failed with no failed component is unknown'; Stub = (New-ResultStub 'failednocomp' $failedNoComponentJson); ExpectOk = $false; ExpectStatus = 'unknown' }
+    @{ Name = 'an unrecognized component status is unknown'; Stub = (New-ResultStub 'badstatus' $badStatusJson); ExpectOk = $false; ExpectStatus = 'unknown' }
+    @{ Name = 'a component with no name is unknown'; Stub = (New-ResultStub 'nameless' $namelessJson); ExpectOk = $false; ExpectStatus = 'unknown' }
+    @{ Name = 'a JSON ARRAY is unknown, and does not throw'; Stub = (New-ResultStub 'arraydoc' $arrayJson); ExpectOk = $false; ExpectStatus = 'unknown' }
+    @{ Name = 'a bare JSON scalar is unknown, and does not throw'; Stub = (New-ResultStub 'scalardoc' $scalarJson); ExpectOk = $false; ExpectStatus = 'unknown' }
 )
 
 foreach ($case in $cases) {
@@ -96,6 +123,21 @@ foreach ($case in $cases) {
     Check ($case.Name + ' -> Status=' + $case.ExpectStatus) ([string]$verdict.Status -eq $case.ExpectStatus) ('got ' + $verdict.Status)
     Check ($case.Name + ' -> Summary is never empty') (-not [string]::IsNullOrWhiteSpace([string]$verdict.Summary)) ''
 }
+
+# ---- R09: a client that was ASKED FOR must appear in the result ------------
+# Silence about a requested client is not 'installed by default'; nothing said
+# anything about it at all. A client that was NOT asked for is a different
+# matter - with neither switch the installer picks from what the machine has,
+# so demanding both would fail a good install on a one-client box.
+$codexOnlyResult = New-ResultStub 'codexonly' '{"schema":1,"overall":"ok","components":[{"component":"claude","status":"ok"}]}'
+$v = Invoke-HookInstaller -InstallScript $codexOnlyResult -InstallArgs @{ CustomHook = 'x.ps1'; TargetProject = $Work; CodexOnly = $true }
+Check 'a result that never mentions the REQUESTED client is unknown' (
+    -not $v.Ok -and [string]$v.Status -eq 'unknown') ('got ' + $v.Status + ': ' + $v.Summary)
+Check 'and the summary names the client it never heard about' ($v.Summary -match 'codex') $v.Summary
+$v = Invoke-HookInstaller -InstallScript $codexOnlyResult -InstallArgs @{ CustomHook = 'x.ps1'; TargetProject = $Work; ClaudeOnly = $true }
+Check 'the same document IS accepted when claude is the requested client' ($v.Ok) ('got ' + $v.Status + ': ' + $v.Summary)
+$v = Invoke-HookInstaller -InstallScript $codexOnlyResult -InstallArgs @{ CustomHook = 'x.ps1'; TargetProject = $Work }
+Check 'negative control: with NO client requested, one-client coverage is fine' ($v.Ok) ('got ' + $v.Status + ': ' + $v.Summary)
 
 # ---- the result file is OURS and is always cleaned up ----------------------
 # A caller-supplied ResultPath would let one flow opt out of the very check this
