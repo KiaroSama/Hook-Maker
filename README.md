@@ -164,7 +164,7 @@ disabled stays disabled after the merge; it is never silently re-enabled.
 ## Where the hook lives — installs are self-contained
 
 Every install **copies the hook runtime into the target itself**: the script, the
-shared `_hooklib.ps1`, its `.env` (if present) and — for the sync engine — a copy of the routing
+shared `_hooklib.ps1` and `_stoplib.ps1`, its `.env` (if present) and — for the sync engine — a copy of the routing
 config plus `SYNC-PROJECTS.txt` (the readable project names and paths of every sync group **this
 project** belongs to — one runtime directory is shared by all of them, so its content is keyed by
 the project, not by the group that happened to install last) land in
@@ -417,7 +417,7 @@ byte-for-byte. Uninstall ownership is unchanged: it still proves a record owns w
 ### Managed files
 
 The manifest covers **every** file the installer copies for that hook — the main script, the shared
-`_hooklib.ps1`, the hook's own `.env` (hashed as a whole file; its values are never read or stored),
+`_hooklib.ps1` and `_stoplib.ps1`, the hook's own `.env` (hashed as a whole file; its values are never read or stored),
 any other helper/data file in the hook's source folder, and the sync engine's copied config. So a
 change to only a hook's `.env` or only a copied helper still triggers an update. Files the installer
 does not copy (`.env.example`) and files generated or mutated at runtime (`SYNC-PROJECTS.txt`, logs)
