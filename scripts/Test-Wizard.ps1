@@ -77,6 +77,9 @@ try {
     . (Join-Path (Split-Path -Parent $PSScriptRoot) 'hooks\_hooklib.ps1')
     . (Join-Path $PSScriptRoot '_installlib.ps1')
     . (Join-Path $PSScriptRoot '_installregistry.ps1')
+    # Relocate reads install outcomes through the shared invoker's verdict
+    # helper, so that module loads first here exactly as the wizard loads it.
+    . (Join-Path $PSScriptRoot '_installinvoke.ps1')
     . (Join-Path $PSScriptRoot 'Setup-SyncGroupRelocate.ps1')
     . (Join-Path $PSScriptRoot '_testwizardrelocate.ps1')
 }

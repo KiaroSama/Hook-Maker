@@ -153,8 +153,13 @@ function Get-InstallRecordFiles {
     param([Parameter(Mandatory = $true)][string]$ToolRoot)
     $directory = Get-InstallRegistryDirectory -ToolRoot $ToolRoot
     if (-not (Test-Path -LiteralPath $directory -PathType Container)) { return @() }
+    # Both reserved names live in this directory and end in .json. Neither is a
+    # record, and reading either as one would inject a bogus install.
     $files = @(Get-ChildItem -LiteralPath $directory -Filter '*.json' -File -Force -ErrorAction SilentlyContinue |
-        Where-Object { -not [string]::Equals($_.Name, $script:InstallRegistryMetaName, [System.StringComparison]::OrdinalIgnoreCase) })
+        Where-Object {
+            -not [string]::Equals($_.Name, $script:InstallRegistryMetaName, [System.StringComparison]::OrdinalIgnoreCase) -and
+            -not [string]::Equals($_.Name, $script:InstallRegistryWritingMarkerName, [System.StringComparison]::OrdinalIgnoreCase)
+        })
     return @($files | Sort-Object -Property Name)
 }
 
@@ -162,71 +167,6 @@ function New-EmptyInstallRegistry {
     return [pscustomobject][ordered]@{ version = $script:InstallRegistrySchemaVersion; installs = @() }
 }
 
-# Structural validation, not merely "did JSON parse". A registry whose version
-# is unsupported, or whose installs is not an array of records with a usable
-# identity, is CORRUPT - it must never be silently treated as "nothing tracked
-# yet" and then overwritten (that would destroy real install history).
-function Test-InstallRegistryShape {
-    param($Registry)
-    if ($null -eq $Registry) { return [pscustomobject]@{ Ok = $false; Reason = 'registry is empty or unparsable' } }
-    if ($Registry -isnot [System.Management.Automation.PSCustomObject]) { return [pscustomobject]@{ Ok = $false; Reason = 'registry root is not an object' } }
-    if ($null -eq $Registry.PSObject.Properties['version']) { return [pscustomobject]@{ Ok = $false; Reason = 'registry has no version field' } }
-    $version = 0
-    if (-not [int]::TryParse([string]$Registry.version, [ref]$version)) {
-        return [pscustomobject]@{ Ok = $false; Reason = ('registry version is not a number: ' + [string]$Registry.version) }
-    }
-    if ($version -lt 1) { return [pscustomobject]@{ Ok = $false; Reason = ('registry version is out of range: ' + $version) } }
-    if ($version -gt $script:InstallRegistrySchemaVersion) {
-        return [pscustomobject]@{ Ok = $false; Reason = ('registry schema version ' + $version + ' is newer than this Hook Maker supports (' + $script:InstallRegistrySchemaVersion + ')') }
-    }
-    if ($null -eq $Registry.PSObject.Properties['installs'] -or $null -eq $Registry.installs) {
-        return [pscustomobject]@{ Ok = $false; Reason = 'registry has no installs list' }
-    }
-    foreach ($record in @($Registry.installs)) {
-        if ($null -eq $record -or $record -isnot [System.Management.Automation.PSCustomObject]) {
-            return [pscustomobject]@{ Ok = $false; Reason = 'registry contains a non-object install record' }
-        }
-        if ($null -eq $record.PSObject.Properties['id'] -or [string]::IsNullOrWhiteSpace([string]$record.id)) {
-            return [pscustomobject]@{ Ok = $false; Reason = 'registry contains an install record with no id' }
-        }
-        if ($null -eq $record.PSObject.Properties['friendlyName'] -or [string]::IsNullOrWhiteSpace([string]$record.friendlyName)) {
-            return [pscustomobject]@{ Ok = $false; Reason = ('install record ' + [string]$record.id + ' has no friendlyName') }
-        }
-    }
-    return [pscustomobject]@{ Ok = $true; Reason = ''; Version = $version }
-}
-
-# Reads and validates without writing anything. State is one of:
-#   missing | ok | corrupt
-# A corrupt registry keeps its ORIGINAL bytes available to the caller so they
-# can be preserved verbatim on quarantine.
-# Parsed-registry cache for READ-ONLY callers, valid only while the file on disk
-# is provably unchanged.
-#
-# Measured against the real 5.0 MB / 525-record registry: ONE install parses the
-# whole document THREE times - Get-KnownToolRoots, Get-InstallRecordById, and
-# Update-InstallRegistry - at ~700-990 ms each, and Install-Hook.ps1 runs 105
-# times in a 21-hook x 5-project wizard run. The first two only READ (a toolRoot
-# string and a timeout int); they were paying a full parse for it.
-#
-# The key is (path, last-write ticks, length), so ANY change by any process -
-# including another Hook Maker - misses and re-parses. It is not a TTL and never
-# guesses.
-#
-# WHY THE MUTATING PATH MUST BYPASS IT: ConvertTo-InstallRegistryCurrent mutates
-# the registry object IN PLACE and returns it, and Set-InstallRecord then adds to
-# it. Handing the cached document to that path would leave an unsaved record
-# sitting in the cache if the write failed, and a later read in the same process
-# would report it as persisted. Update-InstallRegistry therefore passes -NoCache
-# and always parses fresh under the lock.
-$script:InstallRegistryCache = $null
-
-# Assembles the whole `{version, installs[]}` document from the per-record
-# files. ONE unreadable or unparsable record file makes the WHOLE state
-# corrupt, exactly as a damaged single document did: a partial registry that
-# reads back as "these are all the installs" would let a real installation be
-# silently forgotten and then overwritten, which is the precise failure the
-# corrupt state exists to prevent. The reason names the offending file.
 function Read-InstallRegistryFromDirectory {
     param([Parameter(Mandatory = $true)][string]$ToolRoot, [switch]$NoCache)
     $directory = Get-InstallRegistryDirectory -ToolRoot $ToolRoot
@@ -237,28 +177,45 @@ function Read-InstallRegistryFromDirectory {
     try {
         $parts = New-Object System.Collections.Generic.List[string]
         foreach ($file in $files) { [void]$parts.Add($file.Name + '|' + $file.LastWriteTimeUtc.Ticks + '|' + $file.Length) }
-        $stamp = $directory + '||' + ($parts.ToArray() -join ';')
+        # METADATA IS PART OF THE IDENTITY OF THIS SNAPSHOT. Leaving it out meant a
+        # metadata-only change - a schema bump, or corruption - was served from a
+        # cache built before it, so the guards below never saw the new bytes.
+        $metaStamp = 'none'
+        $metaFile = Join-Path $directory $script:InstallRegistryMetaName
+        if (Test-Path -LiteralPath $metaFile -PathType Leaf) {
+            $metaItem = Get-Item -LiteralPath $metaFile -Force
+            $metaStamp = [string]$metaItem.LastWriteTimeUtc.Ticks + '|' + [string]$metaItem.Length
+        }
+        $stamp = $directory + '||' + ($parts.ToArray() -join ';') + '||meta:' + $metaStamp
     }
     catch { $stamp = '' }
     if (-not $NoCache -and -not [string]::IsNullOrEmpty($stamp) -and $null -ne $script:InstallRegistryCache -and
         [string]$script:InstallRegistryCache.Stamp -ceq $stamp) {
         return $script:InstallRegistryCache.State
     }
+    # SCHEMA VERSION. The bug was never a missing validator - Test-InstallRegistryShape
+    # below already rejects a non-numeric, out-of-range or newer-than-supported version.
+    # The bug was that this reader did not PASS THE STORED VALUE THROUGH: on an
+    # unparseable version it silently left $version at the CURRENT schema, so the
+    # validator was handed a valid number and had nothing to reject - unknown data
+    # promoted to "this is my schema". An absent metadata FILE stays the documented
+    # legacy shape; a metadata file that exists must carry a version, and whatever it
+    # carries goes to the validator verbatim.
     $version = $script:InstallRegistrySchemaVersion
     $metaPath = Join-Path $directory $script:InstallRegistryMetaName
     if (Test-Path -LiteralPath $metaPath -PathType Leaf) {
-        try {
-            $meta = [System.IO.File]::ReadAllText($metaPath, [System.Text.Encoding]::UTF8) | ConvertFrom-Json
-            if ($null -ne $meta -and $null -ne $meta.PSObject.Properties['version']) {
-                $parsedVersion = 0
-                if ([int]::TryParse([string]$meta.version, [ref]$parsedVersion)) { $version = $parsedVersion }
-            }
-        }
+        $meta = $null
+        try { $meta = [System.IO.File]::ReadAllText($metaPath, [System.Text.Encoding]::UTF8) | ConvertFrom-Json }
         catch {
             return [pscustomobject]@{ State = 'corrupt'; Registry = $null; Path = $directory; Reason = 'the registry metadata file is not valid JSON' }
         }
+        if ($null -eq $meta -or $null -eq $meta.PSObject.Properties['version']) {
+            return [pscustomobject]@{ State = 'corrupt'; Registry = $null; Path = $directory; Reason = 'the registry metadata file carries no schema version' }
+        }
+        $version = $meta.version
     }
     $records = New-Object System.Collections.Generic.List[object]
+    $seenIds = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::OrdinalIgnoreCase)
     foreach ($file in $files) {
         $raw = ''
         try { $raw = [System.IO.File]::ReadAllText($file.FullName, [System.Text.Encoding]::UTF8) }
@@ -271,6 +228,16 @@ function Read-InstallRegistryFromDirectory {
         catch { return [pscustomobject]@{ State = 'corrupt'; Registry = $null; Path = $directory; Reason = ('a record file is not valid JSON: ' + $file.Name) } }
         if ($null -eq $record -or $record -isnot [System.Management.Automation.PSCustomObject]) {
             return [pscustomobject]@{ State = 'corrupt'; Registry = $null; Path = $directory; Reason = ('a record file does not contain a record object: ' + $file.Name) }
+        }
+        # "It parsed as an object" never established that aaa.json holds the record
+        # whose id is aaa. Without this, a file is served under an id it does not
+        # carry and every id-keyed lookup answers with the wrong installation.
+        $agreement = Test-InstallRecordFileAgreement -FileName $file.Name -Record $record
+        if (-not $agreement.Ok) {
+            return [pscustomobject]@{ State = 'corrupt'; Registry = $null; Path = $directory; Reason = $agreement.Reason }
+        }
+        if (-not $seenIds.Add([string]$record.id)) {
+            return [pscustomobject]@{ State = 'corrupt'; Registry = $null; Path = $directory; Reason = ('two record files carry the same id: ' + [string]$record.id) }
         }
         [void]$records.Add($record)
     }
@@ -315,10 +282,29 @@ function Read-InstallRegistryState {
         # owning the returned object. See the note above.
         [switch]$NoCache
     )
-    # The per-record directory is authoritative once it exists; the single
-    # document below is the pre-migration form and is still read as-is.
+    # The per-record directory is authoritative once it holds a COMPLETE
+    # generation; the single document below is the pre-migration form and is
+    # still read as-is.
+    #
+    # "The directory exists" was the old test, and it was wrong: Save creates the
+    # directory before writing the first record, so an interrupted save published
+    # a SUBSET as the whole registry while the intact legacy document sat beside
+    # it, ignored. A write now leaves a marker until it has finished, and an
+    # unfinished generation falls back to the old snapshot rather than being
+    # believed.
     if (Test-Path -LiteralPath (Get-InstallRegistryDirectory -ToolRoot $ToolRoot) -PathType Container) {
-        return (Read-InstallRegistryFromDirectory -ToolRoot $ToolRoot -NoCache:$NoCache)
+        $generation = Get-InstallRegistryGenerationState -ToolRoot $ToolRoot
+        if ($generation.Complete) {
+            return (Read-InstallRegistryFromDirectory -ToolRoot $ToolRoot -NoCache:$NoCache)
+        }
+        $legacyPath = Get-InstallRegistryPath -ToolRoot $ToolRoot
+        if (-not (Test-Path -LiteralPath $legacyPath -PathType Leaf)) {
+            # No older snapshot to fall back to. Reporting the partial set as ok
+            # is the one thing that must not happen, so this is corrupt - which
+            # routes callers into quarantine-and-report instead of silent loss.
+            return [pscustomobject]@{ State = 'corrupt'; Registry = $null; Path = (Get-InstallRegistryDirectory -ToolRoot $ToolRoot); Reason = $generation.Reason }
+        }
+        # Fall through: the legacy document is still the last COMPLETE snapshot.
     }
     $path = Get-InstallRegistryPath -ToolRoot $ToolRoot
     if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
@@ -402,6 +388,13 @@ function Complete-InstallRegistryMigration {
 function Save-InstallRegistry {
     param([Parameter(Mandatory = $true)][string]$ToolRoot, [Parameter(Mandatory = $true)]$Registry)
     Set-ObjectProperty -Object $Registry -Name 'version' -Value $script:InstallRegistrySchemaVersion
+    # VALIDATE THE WHOLE SNAPSHOT FIRST, before the directory is even created. A
+    # snapshot that cannot be stored safely must fail with nothing on disk
+    # changed - the difference between "the save was rejected" and "the save half
+    # happened". Duplicate ids matter as much as unsafe ones: two records sharing
+    # an id collapse into one file, silently erasing the first.
+    $snapshot = Test-InstallRegistrySnapshot -Registry $Registry
+    if (-not $snapshot.Ok) { throw $snapshot.Reason }
     $directory = Get-InstallRegistryDirectory -ToolRoot $ToolRoot
     if (-not (Test-Path -LiteralPath $directory -PathType Container)) {
         New-Item -ItemType Directory -Path $directory -Force | Out-Null
@@ -410,13 +403,15 @@ function Save-InstallRegistry {
     # bytes change, so no reader can be served a pre-write document even if a
     # filesystem's timestamp granularity ever failed to move.
     $script:InstallRegistryCache = $null
+    # From here the directory is MID-WRITE and no reader may trust it. The marker
+    # clears only after metadata lands, so any failure below leaves a detectable
+    # incomplete generation instead of an authoritative subset.
+    [void](Start-InstallRegistryGeneration -ToolRoot $ToolRoot -ExpectedFileNames @($snapshot.FileNames))
     $keep = @{}
     foreach ($record in @($Registry.installs)) {
-        $id = ''
-        if ($null -ne $record -and $null -ne $record.PSObject.Properties['id']) { $id = [string]$record.id }
-        if (-not (Test-InstallRecordIdSafe -Id $id)) {
-            throw ('An install record has an id that cannot be stored as a file name: ' + $id)
-        }
+        # Proved safe AND unique by Test-InstallRegistrySnapshot above, before
+        # anything was written.
+        $id = [string]$record.id
         $keep[$id + '.json'] = $true
         $recordPath = Get-InstallRecordPath -ToolRoot $ToolRoot -Id $id
         # Compared only when there is something to compare against. Serialising
@@ -446,6 +441,11 @@ function Save-InstallRegistry {
         }
     }
     Write-InstallRegistryMeta -ToolRoot $ToolRoot
+    # ACTIVATION: everything this generation promised is on disk, so the directory
+    # becomes authoritative HERE and not one statement earlier.
+    Complete-InstallRegistryGeneration -ToolRoot $ToolRoot
+    # Only now may the legacy single document be retired - until activation it was
+    # the last COMPLETE snapshot and the reader's fallback.
     [void](Complete-InstallRegistryMigration -ToolRoot $ToolRoot)
     $script:InstallRegistryCache = $null
 }
@@ -1197,13 +1197,13 @@ function Update-InstallRegistry {
                 Warning        = 'the registry was empty when read back after writing - this installation was NOT recorded'
             }
         }
-        # The id is written as a JSON string value, so match it with its quotes:
-        # a bare substring could hit an unrelated field that merely contains it.
-        if ($verifyText -notmatch ('"' + [regex]::Escape($id) + '"')) {
+        # Compare the id FIELD - see Test-InstallRecordWriteVerified for why a quoted-id match was not proof.
+        $written = Test-InstallRecordWriteVerified -Text $verifyText -ExpectedId $id
+        if (-not $written.Ok) {
             return [pscustomobject]@{
                 Ok             = $false
                 QuarantinePath = $quarantinePath
-                Warning        = 'the record was not found in the registry after writing - this installation was NOT recorded'
+                Warning        = ($written.Reason + ' - this installation was NOT recorded')
             }
         }
         return [pscustomobject]@{ Ok = $true; QuarantinePath = $quarantinePath; Warning = $warning }

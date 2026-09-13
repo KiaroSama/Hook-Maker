@@ -191,6 +191,7 @@ try {
     & {
         # Exercise the real orchestration and registry. Only prompts and the
         # installer outcomes are controlled; no real client installation runs.
+        . (Join-Path $PSScriptRoot '_installinvoke.ps1')
         . (Join-Path $PSScriptRoot 'Setup-SyncGroupInstallFlows.ps1')
         $savedRelocationStateDir = $env:HOOKMAKER_STATE_DIR
         $env:HOOKMAKER_STATE_DIR = Join-Path $relWork 'recovery-state'
