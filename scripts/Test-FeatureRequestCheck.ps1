@@ -118,7 +118,7 @@ function Fire {
             NoNewWindow            = $true
             PassThru               = $true
         }
-        $proc = Start-Process @startArgs
+        $proc = Start-BoundedProcess @startArgs
     }
     finally {
         $env:LOCALAPPDATA = $savedLocal

@@ -53,7 +53,7 @@ function Fire {
     }
     $env:LOCALAPPDATA = $FakeAppData
     try {
-        $proc = Start-Process -FilePath $file -ArgumentList $argLine -RedirectStandardInput $inFile -RedirectStandardOutput $outFile -RedirectStandardError $errFile -Wait -NoNewWindow -PassThru
+        $proc = Start-BoundedProcess -FilePath $file -ArgumentList $argLine -RedirectStandardInput $inFile -RedirectStandardOutput $outFile -RedirectStandardError $errFile -Wait -NoNewWindow -PassThru
     }
     finally {
         $env:LOCALAPPDATA = $SavedLocalAppData

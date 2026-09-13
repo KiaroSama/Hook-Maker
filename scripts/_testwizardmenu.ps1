@@ -333,7 +333,7 @@
     $inFire = Join-Path $Work 'fire-anchor.json'; $outFire = "$inFire.out"; $errFire = "$inFire.err"
     [System.IO.File]::WriteAllText($inFire, (@{ session_id = 'wiztest-anchor'; cwd = $rmA; hook_event_name = 'SessionStart' } | ConvertTo-Json -Compress), (New-Object System.Text.UTF8Encoding $false))
     $fireHost = (Get-Process -Id $PID).Path
-    $pFire = Start-Process $fireHost -ArgumentList ('-NoLogo -NoProfile -NonInteractive -File "' + $rmAEngineScript + '" -ConfigPath "' + $cfgReal + '" -Profile "' + $anchorProfId + '"') -RedirectStandardInput $inFire -RedirectStandardOutput $outFire -RedirectStandardError $errFire -Wait -NoNewWindow -PassThru
+    $pFire = Start-BoundedProcess $fireHost -ArgumentList ('-NoLogo -NoProfile -NonInteractive -File "' + $rmAEngineScript + '" -ConfigPath "' + $cfgReal + '" -Profile "' + $anchorProfId + '"') -RedirectStandardInput $inFire -RedirectStandardOutput $outFire -RedirectStandardError $errFire -Wait -NoNewWindow -PassThru
     $fireOut = ''; if (Test-Path $outFire) { $fireOut = [System.IO.File]::ReadAllText($outFire) }
     $fireErr = ''; if (Test-Path $errFire) { $fireErr = ([System.IO.File]::ReadAllText($errFire)).Trim() }
     Check 'real-merge (point 7): anchor''s installed engine runs cleanly against the live merged config' ($pFire.ExitCode -eq 0 -and $fireErr -eq '') $fireErr
@@ -456,7 +456,7 @@
         $inE = Join-Path $Work ('eng-' + $name + '.json'); $outE = "$inE.out"; $errE = "$inE.err"
         [System.IO.File]::WriteAllText($inE, (@{ session_id = 'wiztest'; cwd = $proj; hook_event_name = 'SessionStart' } | ConvertTo-Json -Compress), (New-Object System.Text.UTF8Encoding $false))
         $engineHost = (Get-Process -Id $PID).Path
-        $pe = Start-Process $engineHost -ArgumentList ('-NoLogo -NoProfile -NonInteractive -File "' + $localEngine + '" -ConfigPath "' + $localCfg + '" -Profile "' + $profId3 + '"') -RedirectStandardInput $inE -RedirectStandardOutput $outE -RedirectStandardError $errE -Wait -NoNewWindow -PassThru
+        $pe = Start-BoundedProcess $engineHost -ArgumentList ('-NoLogo -NoProfile -NonInteractive -File "' + $localEngine + '" -ConfigPath "' + $localCfg + '" -Profile "' + $profId3 + '"') -RedirectStandardInput $inE -RedirectStandardOutput $outE -RedirectStandardError $errE -Wait -NoNewWindow -PassThru
         $errText = ''; if (Test-Path $errE) { $errText = ([System.IO.File]::ReadAllText($errE)).Trim() }
         Check "$name local engine copy runs cleanly" ($pe.ExitCode -eq 0 -and $errText -eq '')
     }

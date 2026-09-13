@@ -151,7 +151,7 @@ function Invoke-UninstallProcess {
             'so USERPROFILE cannot be redirected and the test would operate on the real user profile. ' +
             'Run this suite under pwsh 7.')
     }
-    $p = Start-Process @startArgs
+    $p = Start-BoundedProcess @startArgs
     $out = ''; if (Test-Path $outF) { $out = [System.IO.File]::ReadAllText($outF) }
     $err = ''; if (Test-Path $errF) { $err = ([System.IO.File]::ReadAllText($errF)).Trim() }
     $doc = $null
@@ -217,7 +217,7 @@ function Invoke-InstallProcess {
             'so USERPROFILE cannot be redirected and the test would operate on the real user profile. ' +
             'Run this suite under pwsh 7.')
     }
-    $p = Start-Process @startArgs
+    $p = Start-BoundedProcess @startArgs
     $out = ''; if (Test-Path $outF) { $out = [System.IO.File]::ReadAllText($outF) }
     $err = ''; if (Test-Path $errF) { $err = ([System.IO.File]::ReadAllText($errF)).Trim() }
     return [pscustomobject]@{ Exit = $p.ExitCode; Out = $out; Err = $err }

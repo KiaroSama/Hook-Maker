@@ -65,7 +65,7 @@ function Fire {
         # -GitPrePush resolves cwd from the PROCESS's actual working directory
         # (Get-Location), not from any stdin field - WorkingDirectory must be
         # set explicitly so the hook inspects the intended repo.
-        $proc = Start-Process -FilePath $file -ArgumentList $argLine -WorkingDirectory $Cwd -RedirectStandardInput $inFile -RedirectStandardOutput $outFile -RedirectStandardError $errFile -Wait -NoNewWindow -PassThru
+        $proc = Start-BoundedProcess -FilePath $file -ArgumentList $argLine -WorkingDirectory $Cwd -RedirectStandardInput $inFile -RedirectStandardOutput $outFile -RedirectStandardError $errFile -Wait -NoNewWindow -PassThru
     }
     finally {
         $env:LOCALAPPDATA = $SavedLocalAppData
@@ -146,7 +146,7 @@ function FireGitPrePush {
     }
     $env:LOCALAPPDATA = $FakeAppData
     try {
-        $proc = Start-Process -FilePath $file -ArgumentList $argLine -WorkingDirectory $Cwd -RedirectStandardInput $inFile -RedirectStandardOutput $outFile -RedirectStandardError $errFile -Wait -NoNewWindow -PassThru
+        $proc = Start-BoundedProcess -FilePath $file -ArgumentList $argLine -WorkingDirectory $Cwd -RedirectStandardInput $inFile -RedirectStandardOutput $outFile -RedirectStandardError $errFile -Wait -NoNewWindow -PassThru
     }
     finally {
         $env:LOCALAPPDATA = $SavedLocalAppData
