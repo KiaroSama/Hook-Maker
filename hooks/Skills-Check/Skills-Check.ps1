@@ -665,7 +665,7 @@ if ($eventName -eq 'UserPromptSubmit') {
     [System.IO.File]::WriteAllText($statePath, $fingerprint)
 
     $lines = New-Object System.Collections.Generic.List[string]
-    [void]$lines.Add('SKILL POLICY CHECK (' + $client + ') - decide NOW whether a skill materially helps this task; skip only for trivial edits. Sources searched: project, global, plugin, and the shared library.')
+    [void]$lines.Add('SKILL POLICY CHECK (' + $client + ') - skill use is MANDATORY (skill-policy: Core Principle), not a judgement call: run this check at task start and again whenever the work becomes a new kind of job. Every step a skill covers runs THROUGH that skill, never by hand because it looks simple; a matched library skill is COPIED into the project under the standing authorization (exact command below) and recorded in .ai/SKILLS.md; a feature request runs the mattpocock chain (grilling + domain-modeling first). Sources searched: project, global, plugin, and the shared library.')
     if ($topInstalled.Count -gt 0) {
         [void]$lines.Add('INSTALLED and matching this prompt - activate the relevant ones by the exact name: in their SKILL.md (no authorization needed, they are already loadable):')
         foreach ($m in $topInstalled) { [void]$lines.Add('- ' + $m.Name + ' [' + $m.Where + ']') }
@@ -690,7 +690,7 @@ if ($eventName -eq 'UserPromptSubmit') {
 
 # ---- SessionStart: compact routed inventory of all three installed sources --
 $lines = New-Object System.Collections.Generic.List[string]
-[void]$lines.Add('SKILL POLICY CHECK (' + $client + ') - before working, decide whether a skill materially helps this task (skip trivial edits). A relevant INSTALLED skill may be activated without asking; installing, copying, updating or removing one may not.')
+[void]$lines.Add('SKILL POLICY CHECK (' + $client + ') - skill use is MANDATORY (skill-policy: Core Principle): check at task start and at every change of job kind, then do each covered step THROUGH its skill. A relevant INSTALLED skill may be activated without asking; installing, copying, updating or removing one may not.')
 if ($skillLines.Count -gt 0) {
     [void]$lines.Add('Project + global skills (deduped by name:):')
     foreach ($sl in $skillLines) { [void]$lines.Add($sl) }

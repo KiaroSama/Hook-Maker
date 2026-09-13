@@ -143,7 +143,8 @@ if (-not $transcript.Ok) { exit 0 }
 if ($transcript.Partial) { exit 0 }
 
 $featurePrompts = New-Object System.Collections.Generic.List[string]
-$chainRan = $false
+$ranGrilling = $false
+$ranDomainModeling = $false
 foreach ($entry in @($transcript.Entries)) {
     if ($entry.Role -eq 'user') {
         # NEVER count this hook's own words. The advisory it emits says
@@ -159,10 +160,15 @@ foreach ($entry in @($transcript.Entries)) {
     }
     foreach ($skill in @($entry.SkillCalls)) {
         # Plugin-qualified or bare: "mattpocock-skills:grilling" and "grilling".
-        if ($skill -match '(?i)(^|:)grilling$') { $chainRan = $true }
+        # BOTH halves are the chain's opening: grilling finds the real requirement,
+        # domain-modeling fixes the words it will be built in. One without the other
+        # is half an interview, so each is tracked separately.
+        if ($skill -match '(?i)(^|:)grilling$') { $ranGrilling = $true }
+        if ($skill -match '(?i)(^|:)domain-modeling$') { $ranDomainModeling = $true }
     }
 }
 
+$chainRan = ($ranGrilling -and $ranDomainModeling)
 if ($featurePrompts.Count -eq 0 -or $chainRan) { exit 0 }
 
 # Fingerprint the SET of feature prompts: the same unfinished business must not
@@ -183,9 +189,15 @@ $firstPrompt = [string]$featurePrompts[0]
 if ($firstPrompt.Length -gt 120) { $firstPrompt = $firstPrompt.Substring(0, 120) + '...' }
 $firstPrompt = $firstPrompt -replace '\s+', ' '
 
+# Name the half that is actually absent, so the reply does not have to guess.
+$missing = New-Object System.Collections.Generic.List[string]
+if (-not $ranGrilling) { [void]$missing.Add('"grilling"') }
+if (-not $ranDomainModeling) { [void]$missing.Add('"domain-modeling"') }
+$missingNames = ($missing.ToArray() -join ' and ')
+
 $blockMessage = @(
-    ('FEATURE REQUEST CHECK - a feature request was detected in this session (first match: "' + $firstPrompt + '") but the mattpocock chain did not run: the transcript holds no Skill call to "grilling".'),
-    'Either run it now - grilling + domain-modeling, then spec, then tickets, then implement ticket by ticket -',
+    ('FEATURE REQUEST CHECK - a feature request was detected in this session (first match: "' + $firstPrompt + '") but the mattpocock chain did not run: the transcript holds no Skill call to ' + $missingNames + '.'),
+    'Either run it now IN ORDER - grilling + domain-modeling first, then to-spec, then to-tickets, then implement ticket by ticket (Skill tool, exact name:, e.g. mattpocock-skills:grilling) -',
     'or state in one line why this was not a feature, and finish. Both clear this.'
 ) -join "`n"
 
