@@ -203,6 +203,5 @@ $blockMessage = @(
 
 # Record the block so THIS hook's own re-entry is recognised; another
 # gate's block must not mute it, and its own must not repeat.
-Set-StopBlockMarker -HookInput $hookInput -HookName 'Feature-Request-Check'
-$emit = Write-HookResult -EventName $eventName -Kind 'block' -Message $blockMessage
+$emit = Write-StopBlockResult -HookInput $hookInput -HookName 'Feature-Request-Check' -EventName $eventName -Message $blockMessage
 exit $emit.ExitCode

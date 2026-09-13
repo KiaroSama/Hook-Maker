@@ -869,19 +869,60 @@ function Test-StopStandDown {
 
 # Called by a gate immediately before it blocks, so its own next re-entry is
 # recognised and the chain's shared budget is spent.
+# Claim the right to emit ONE continuation, and record the block that spends it.
+#
+# RETURNS A DECISION THE CALLER MUST CONSUME: emit the block only when
+# .Admitted is $true. It used to return nothing, so a failed registration was
+# indistinguishable from a successful one and the gate blocked anyway - which is
+# exactly how an untracked continuation storm starts. .Reason says which refusal
+# it was (already-claimed, budget-spent, persistence-failed, busy) and .Degraded
+# marks the ones caused by the ledger being unusable rather than by policy.
 function Set-StopBlockMarker {
     param([Parameter(Mandatory = $true)]$HookInput, [Parameter(Mandatory = $true)][string]$HookName)
     $stopActive = Get-Field $HookInput 'stop_hook_active'
     if ($script:StopLedgerReady) {
-        Register-StopBlockLedger -HookInput $HookInput -HookName $HookName -IsContinuation ($null -ne $stopActive -and [bool]$stopActive)
-        return
+        return (Register-StopBlockLedger -HookInput $HookInput -HookName $HookName -IsContinuation ($null -ne $stopActive -and [bool]$stopActive))
     }
+    # LEGACY RUNTIME, no _stoplib.ps1 beside this file. The single marker cannot
+    # express a budget, so it cannot promise one either: admission is reported as
+    # degraded, and the write failing is reported rather than swallowed.
     $markerPath = Get-StopBlockMarkerPath -HookName $HookName -ProjectRoot ([string](Get-Field $HookInput 'cwd'))
     try {
         New-Item -ItemType Directory -Path (Split-Path -Parent $markerPath) -Force | Out-Null
         [System.IO.File]::WriteAllText($markerPath, [string](Get-Field $HookInput 'session_id'))
+        if (-not (Test-Path -LiteralPath $markerPath -PathType Leaf)) { throw 'marker not written' }
+        return [pscustomobject]@{ Admitted = $true; Reason = 'legacy-marker'; Degraded = $true }
     }
-    catch { }
+    catch {
+        return [pscustomobject]@{ Admitted = $false; Reason = 'persistence-failed'; Degraded = $true }
+    }
+}
+
+# Claim admission and emit the block in ONE step, so no gate can emit a
+# continuation it was not admitted for. That pairing used to be the caller's to
+# remember, and every caller forgot it: the marker was written, its result
+# dropped, and the block emitted regardless.
+#
+# A REFUSAL EMITS NOTHING. The finding is already recorded as unresolved in the
+# ledger, and forcing another answer once the shared allowance is spent is the
+# loop this whole mechanism exists to stop. .Emitted says which happened, so a
+# caller that needs to know can tell a refusal from a delivered block.
+function Write-StopBlockResult {
+    param(
+        [Parameter(Mandatory = $true)]$HookInput,
+        [Parameter(Mandatory = $true)][string]$HookName,
+        [Parameter(Mandatory = $true)][string]$EventName,
+        [AllowEmptyString()][string]$Reason = '',
+        [AllowEmptyString()][string]$Message = ''
+    )
+    $admit = Set-StopBlockMarker -HookInput $HookInput -HookName $HookName
+    if ($null -eq $admit -or -not $admit.Admitted) {
+        return [pscustomobject]@{ ExitCode = 0; Emitted = $false; Admission = $admit }
+    }
+    $text = $Reason
+    if ([string]::IsNullOrEmpty($text)) { $text = $Message }
+    $emit = Write-HookResult -EventName $EventName -Kind 'block' -Reason $text -Message $text
+    return [pscustomobject]@{ ExitCode = $emit.ExitCode; Emitted = $true; Admission = $admit }
 }
 
 # The fallback marker path, used by a runtime with no _stoplib.ps1 beside it.
