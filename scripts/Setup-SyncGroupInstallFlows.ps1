@@ -302,19 +302,42 @@ function Invoke-InstallExistingHook {
 
         # ---- install ----
         Write-PhaseHeader 'Applying Changes' $C.Process '-'
+        # Every install below is judged by the installer's STRUCTURED result, not
+        # by "it did not throw". Invoke-HookInstaller owns that contract.
+        $installFailures = New-Object System.Collections.Generic.List[string]
+        $installedCount = 0
         foreach ($plan in $plans) {
             $clientArgs = Get-ClientInstallArgs $plan.Config.Clients
             $timeoutArgs = Get-HookTimeoutArgs $plan.Hook.Name
-            foreach ($target in $plan.Config.Targets) {
-                $installOutput = & $InstallScript -CustomHook $plan.Hook.ScriptPath -Events @($plan.Config.Events) -TargetProject $target.Root @clientArgs @timeoutArgs *>&1
-                foreach ($line in @($installOutput)) { Write-Log 'INFO' 'INSTALL' ([string]$line) }
-                Write-Host ('  ' + (Get-Painted '+ installed' $C.Green) + ' ' + (Get-Painted (Get-HookFriendlyName $plan.Hook.Name) $C.Bold) + ' -> ' + (Get-Painted $target.Name $C.Bold) + '  ' + (Get-Painted ('(' + $plan.Config.Clients + ', ' + ($plan.Config.Events -join '+') + ')') $C.Gray))
+            $batch = Invoke-HookInstallForTargets -InstallScript $InstallScript -Targets $plan.Config.Targets -BaseArgs @{ CustomHook = $plan.Hook.ScriptPath; Events = @($plan.Config.Events) } -ExtraArgs @($clientArgs, $timeoutArgs)
+            # The completion line counts HOOKS, which is documented UI two suites
+            # assert on - not hook-x-target installs. A hook counts as installed
+            # only when EVERY one of its targets succeeded.
+            if ($batch.Failures.Count -eq 0) { $installedCount++ }
+            foreach ($entry in @($batch.Results)) {
+                foreach ($line in @($entry.Verdict.Output)) { Write-Log 'INFO' 'INSTALL' ([string]$line) }
+                $label = (Get-HookFriendlyName $plan.Hook.Name) + ' -> ' + $entry.Target.Name
+                if ($entry.Verdict.Ok) {
+                    $note = $(if ([string]$entry.Verdict.Summary -eq 'ok') { '' } else { '  ' + [string]$entry.Verdict.Summary })
+                    Write-Host ('  ' + (Get-Painted '+ installed' $C.Green) + ' ' + (Get-Painted (Get-HookFriendlyName $plan.Hook.Name) $C.Bold) + ' -> ' + (Get-Painted $entry.Target.Name $C.Bold) + '  ' + (Get-Painted ('(' + $plan.Config.Clients + ', ' + ($plan.Config.Events -join '+') + ')') $C.Gray) + (Get-Painted $note $C.HintYellow))
+                }
+                else {
+                    [void]$installFailures.Add($label + ': ' + [string]$entry.Verdict.Summary)
+                    Write-ErrorLine ('  x NOT installed  ' + $label + '  (' + [string]$entry.Verdict.Summary + ')')
+                    Write-Log 'ERROR' 'INSTALL' ('Install did not succeed: ' + $label + ' | ' + [string]$entry.Verdict.Summary)
+                }
             }
-            Write-Log 'INFO' 'INSTALL' ('Installed ' + $plan.Hook.Name + ' | client=' + $plan.Config.Clients + ' | events=' + ($plan.Config.Events -join ',') + ' | projects=' + $plan.Config.Targets.Count)
+            Write-Log 'INFO' 'INSTALL' ('Processed ' + $plan.Hook.Name + ' | client=' + $plan.Config.Clients + ' | events=' + ($plan.Config.Events -join ',') + ' | projects=' + $plan.Config.Targets.Count)
         }
         Write-PhaseHeader 'Completed' $C.Done '='
-        $doneMsg = if ($ranSyncGroup) { '  Sync group + ' + $plans.Count + ' hook(s) installed.' } else { '  Installed ' + $plans.Count + ' hook(s).' }
+        # NEVER an unconditional green line: the count is the hooks that fully
+        # landed, and anything short of that is listed underneath.
+        $doneMsg = $(if ($ranSyncGroup) { '  Sync group + ' + $installedCount + ' hook(s) installed.' } else { '  Installed ' + $installedCount + ' hook(s).' })
         Write-Host (Get-Painted ($doneMsg + ' Restart the Claude/Codex clients and review /hooks inside each project.') $C.White)
+        if ($installFailures.Count -gt 0) {
+            Write-ErrorLine ('  ' + $installFailures.Count + ' install(s) did NOT succeed:')
+            foreach ($failure in $installFailures) { Write-ErrorLine ('    - ' + $failure) }
+        }
         Write-NoteLine '  Codex: run /hooks in each project and trust the new command before it runs.'
         Write-Log 'INFO' 'DONE' ('Multi-hook install complete: ' + $plans.Count + ' hook(s)' + $(if ($ranSyncGroup) { ' + sync group' } else { '' }) + '.')
         return 'done'
@@ -454,15 +477,31 @@ function Invoke-InstallHookFromConfig {
         Write-PhaseHeader 'Applying Changes' $C.Process '-'
         $clientArgs = Get-ClientInstallArgs $clients
         $timeoutArgs = Get-HookTimeoutArgs $hook.Name
-        foreach ($target in $targets) {
-            $installOutput = & $InstallScript -CustomHook $hook.ScriptPath -Events @($events) -TargetProject $target.Root @clientArgs @timeoutArgs *>&1
-            foreach ($line in @($installOutput)) {
+        # Same structured-result contract as every other install path.
+        $installFailures = New-Object System.Collections.Generic.List[string]
+        $installedCount = 0
+        $batch = Invoke-HookInstallForTargets -InstallScript $InstallScript -Targets $targets -BaseArgs @{ CustomHook = $hook.ScriptPath; Events = @($events) } -ExtraArgs @($clientArgs, $timeoutArgs)
+        $installedCount = $batch.InstalledCount
+        foreach ($failure in @($batch.Failures)) { [void]$installFailures.Add($failure) }
+        foreach ($entry in @($batch.Results)) {
+            foreach ($line in @($entry.Verdict.Output)) {
                 Write-Log 'INFO' 'INSTALL' ([string]$line)
             }
-            Write-Host ('  ' + (Get-Painted '+ hook installed in' $C.Green) + ' ' + (Get-Painted $target.Name $C.Bold) + '  ' + (Get-Painted $target.Root $C.Gray))
+            if ($entry.Verdict.Ok) {
+                $note = $(if ([string]$entry.Verdict.Summary -eq 'ok') { '' } else { '  ' + [string]$entry.Verdict.Summary })
+                Write-Host ('  ' + (Get-Painted '+ hook installed in' $C.Green) + ' ' + (Get-Painted $entry.Target.Name $C.Bold) + '  ' + (Get-Painted $entry.Target.Root $C.Gray) + (Get-Painted $note $C.HintYellow))
+            }
+            else {
+                Write-ErrorLine ('  x NOT installed in ' + $entry.Target.Name + '  (' + [string]$entry.Verdict.Summary + ')')
+                Write-Log 'ERROR' 'INSTALL' ('Install did not succeed in ' + $entry.Target.Root + ' | ' + [string]$entry.Verdict.Summary)
+            }
         }
         Write-PhaseHeader 'Completed' $C.Done '='
-        Write-Host (Get-Painted ('  ' + $hook.Name + ' installed for: ' + ($events -join ', ') + ' (' + $clients + ')') $C.White)
+        Write-Host (Get-Painted ('  ' + $hook.Name + ' installed in ' + $installedCount + ' of ' + @($targets).Count + ' project(s) for: ' + ($events -join ', ') + ' (' + $clients + ')') $C.White)
+        if ($installFailures.Count -gt 0) {
+            Write-ErrorLine ('  ' + $installFailures.Count + ' install(s) did NOT succeed:')
+            foreach ($failure in $installFailures) { Write-ErrorLine ('    - ' + $failure) }
+        }
         Write-Host (Get-Painted '  Restart the Claude/Codex clients and review /hooks inside each project.' $C.White)
         Write-NoteLine '  Codex: run /hooks in each project and trust the new command before it runs.'
         Write-Log 'INFO' 'DONE' ('Config install: ' + $hook.ScriptPath + ' | events=' + ($events -join ',') + ' | clients=' + $clients + ' | projects=' + $targets.Count)
@@ -504,35 +543,6 @@ function Get-RecordDisplayField {
 #
 # A component that is BOTH a real problem and degraded is a real problem: the
 # reduced capability is reported alongside, never instead.
-function Get-PartialInstallVerdict {
-    param($Components)
-    $realProblems = @(@($Components) |
-        Where-Object {
-            [string]$_.status -eq 'failed' -or [string]$_.status -eq 'trackingFailed' -or
-            [string]$_.reason -eq 'postRegistrationError'
-        } | ForEach-Object { [string]$_.component + ' (' + [string]$_.reason + ')' })
-    $capabilityOnly = @(@($Components) |
-        Where-Object {
-            [string]$_.reason -eq 'degraded' -and
-            -not ([string]$_.status -eq 'failed' -or [string]$_.status -eq 'trackingFailed')
-        } | ForEach-Object { [string]$_.component })
-
-    if ($realProblems.Count -gt 0) {
-        $notes = @($realProblems) + @($capabilityOnly | ForEach-Object { $_ + ' (degraded)' })
-        return [pscustomobject]@{ IsFailure = $true; Summary = ('partial - ' + ($notes -join ', ')) }
-    }
-    if ($capabilityOnly.Count -gt 0) {
-        # Installed, and honest about what the client cannot do.
-        return [pscustomobject]@{ IsFailure = $false; Summary = ('ok (reduced capability: ' + ($capabilityOnly -join ', ') + ')') }
-    }
-    # 'partial' with nothing this function recognizes is NOT quietly an success:
-    # an unknown reason is exactly the case that must reach a human.
-    $unknown = @(@($Components) | Where-Object { [string]$_.status -ne 'ok' } |
-        ForEach-Object { [string]$_.component + ' (' + [string]$_.reason + ')' })
-    if ($unknown.Count -eq 0) { $unknown = @('reason not reported') }
-    return [pscustomobject]@{ IsFailure = $true; Summary = ('partial - ' + ($unknown -join ', ')) }
-}
-
 function Invoke-UpdateInstalledHooks {
     Write-Log 'INFO' 'UPDATE' 'Update previously installed hooks started.'
     Write-PhaseHeader 'Update Previously Installed Hooks' $C.Input '-'
@@ -678,37 +688,18 @@ function Invoke-UpdateInstalledHooks {
             # anything it does not recognise.
             $clientArgs = @{ Clients = @($client) }
             try {
-                # STRUCTURED OUTCOME: the installer writes a machine-readable
-                # result document. Success is read from that, never inferred
-                # from console text or from "no exception was thrown" - an
-                # install whose runtime and settings landed but whose tracking
-                # failed must not be reported as fully updated.
-                $resultFile = Join-Path ([System.IO.Path]::GetTempPath()) ('hookmaker-install-result-' + [guid]::NewGuid().ToString('N').Substring(0, 10) + '.json')
-                $installArgs['ResultPath'] = $resultFile
-                $installOutput = & $InstallScript @installArgs @clientArgs *>&1
-                foreach ($line in @($installOutput)) { Write-Log 'INFO' 'INSTALL' ([string]$line) }
-                $installResult = $null
-                if (Test-Path -LiteralPath $resultFile -PathType Leaf) {
-                    try { $installResult = Get-Content -LiteralPath $resultFile -Raw | ConvertFrom-Json } catch { $installResult = $null }
-                    Remove-Item -LiteralPath $resultFile -Force -ErrorAction SilentlyContinue
-                }
-                if ($null -eq $installResult) {
-                    $anyFailed = $true
-                    [void]$clientResults.Add($client + ': no structured result from the installer')
-                }
-                elseif ([string]$installResult.overall -eq 'failed') {
-                    $anyFailed = $true
-                    $failedNames = @(@($installResult.components) | Where-Object { $_.status -eq 'failed' } | ForEach-Object { [string]$_.component })
-                    [void]$clientResults.Add($client + ': failed (' + ($failedNames -join ', ') + ')')
-                }
-                elseif ([string]$installResult.overall -eq 'partial') {
-                    $verdict = Get-PartialInstallVerdict -Components $installResult.components
-                    if ($verdict.IsFailure) { $anyFailed = $true }
-                    [void]$clientResults.Add($client + ': ' + $verdict.Summary)
-                }
-                else {
-                    [void]$clientResults.Add($client + ': ok')
-                }
+                # STRUCTURED OUTCOME, through the one shared contract: success is
+                # read from the installer's result document, never inferred from
+                # console text or from "no exception was thrown". This flow always
+                # had that protection; Invoke-HookInstaller is where it now lives, so
+                # the fresh and config-driven flows cannot end up lacking it again.
+                $mergedArgs = @{}
+                foreach ($key in @($installArgs.Keys)) { $mergedArgs[$key] = $installArgs[$key] }
+                foreach ($key in @($clientArgs.Keys)) { $mergedArgs[$key] = $clientArgs[$key] }
+                $verdict = Invoke-HookInstaller -InstallScript $InstallScript -InstallArgs $mergedArgs
+                foreach ($line in @($verdict.Output)) { Write-Log 'INFO' 'INSTALL' ([string]$line) }
+                if (-not $verdict.Ok) { $anyFailed = $true }
+                [void]$clientResults.Add($client + ': ' + [string]$verdict.Summary)
             }
             catch {
                 $anyFailed = $true
