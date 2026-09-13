@@ -58,6 +58,16 @@
     Check 'Claude: the completion context explicitly says CI is NOT verified green' ($r.Out -match 'CI NOT VERIFIED GREEN' -and $r.Out -match 'external' ) $r.Out
     Check 'Claude: the context names repo, short sha, classification and sanitized reason' ($r.Out -match 'testowner/testrepo-ext1' -and $r.Out -match ($extSha1.Substring(0, 7)) -and $r.Out -match 'github-outage' -and $r.Out -match 'status page reports a full outage') $r.Out
     Check 'Claude: the context denies success and instructs not to claim CI passed' ($r.Out -match 'not a successful CI run' -and $r.Out -match 'do not claim CI passed') $r.Out
+    # F14: a confirmed blocker is the ONE case the rules let the heavy pass run
+    # locally, so the notice says what to do next instead of only naming the blocker.
+    Check 'Claude: the notice states the CI-First local fallback and its conditions' (
+        $r.Out -match 'CI cannot execute this run' -and
+        $r.Out -match 'the one case where the heavy pass runs locally' -and
+        $r.Out -match 'once through the guarded runner on the final tree') $r.Out
+    Check 'Claude: the notice requires the blocker recorded as a re-verified observation' (
+        $r.Out -match 'record the blocker' -and
+        $r.Out -match 're-verify it next task, never treat it as standing' -and
+        $r.Out -match 'CI was unavailable and why') $r.Out
 
     # Codex: same message text, but through the officially supported common
     # systemMessage field - no hookSpecificOutput/additionalContext (undocumented
@@ -186,3 +196,22 @@
     Check 'a new session is told the blocker again (once)' ($r.Out -match 'CI NOT VERIFIED GREEN' -and $r.Out -notmatch '"decision":"block"') $r.Out
     $r = Fire -HookPath $CiHook -Cwd $ext4 -EventName 'Stop' -Extra @{ session_id = 'ext4-later' }
     Check 'and stays silent for the rest of that session' ($r.Out -eq '') $r.Out
+
+    # =====================================================================
+    Write-Host '--- the CI-First fallback text rides ONLY a confirmed blocker ---' -ForegroundColor Cyan
+    # No exception on file: green, failed, in-progress and an unusable answer must
+    # each stay free of it. Telling an agent to run the heavy pass on this machine
+    # while CI can run it is exactly the instruction CI First exists to remove.
+    $ext5 = New-GitRepo 'ext5'
+    $extSha5 = Get-HeadSha $ext5
+    $fallbackText = 'the one case where the heavy pass runs locally'
+    foreach ($case in @(
+            @{ Label = 'green'; Json = '[{"databaseId":90,"name":"CI","workflowName":"CI","status":"completed","conclusion":"success"}]' },
+            @{ Label = 'red'; Json = '[{"databaseId":91,"name":"CI","workflowName":"CI","status":"completed","conclusion":"failure"}]' },
+            @{ Label = 'pending'; Json = '[{"databaseId":92,"name":"CI","workflowName":"CI","status":"in_progress","conclusion":""}]' },
+            @{ Label = 'unknown'; Json = '[]' })) {
+        Set-Mock -RunJson $case.Json -ExpectedSha $extSha5
+        $rNo = Fire -HookPath $CiHook -Cwd $ext5 -EventName 'Stop' -Extra @{ session_id = ('ext5-' + $case.Label) }
+        Check ('no CI-First fallback text on a ' + $case.Label + ' outcome') (
+            $rNo.Out -notmatch [regex]::Escape($fallbackText)) $rNo.Out
+    }

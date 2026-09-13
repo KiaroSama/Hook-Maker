@@ -78,6 +78,27 @@
         $msgAdv -match 'On Windows check pid AND start time and exclude your own shell') $msgAdv
 
     # =====================================================================
+    Write-Host '--- advisory text: the CI-first bullet ---' -ForegroundColor Cyan
+    # The three bullets above say HOW a run must behave; this one says WHERE it
+    # happens. Without it an agent reading only the hook still defaults to running
+    # the heavy pass on this machine.
+    Check 'ci-first: the heavy pass runs in GitHub CI, on the pushed commit' (
+        $msgAdv -match '- CI first: every test that can run in GitHub CI runs there' -and
+        $msgAdv -match 'on the pushed commit') $msgAdv
+    Check 'ci-first: local execution is confined to the light loop' (
+        $msgAdv -match 'Keep local execution to the light loop' -and
+        $msgAdv -match 'at most one narrowly scoped test') $msgAdv
+    Check 'ci-first: never run locally what CI runs - push and read that exact SHA' (
+        $msgAdv -match 'Never run locally a test that CI runs' -and
+        $msgAdv -match 'read its result for that exact SHA') $msgAdv
+    Check 'ci-first: a gap in the workflow is EXTENDED, not worked around locally' (
+        $msgAdv -match 'extend the workflow - do not run the suite locally instead') $msgAdv
+    Check 'ci-first: the local fallback needs a LIVE query and a timestamped record' (
+        $msgAdv -match 'only when a live gh query shows CI cannot execute it' -and
+        $msgAdv -match 'billing/quota, no runner, workflow disabled, no remote' -and
+        $msgAdv -match 'timestamped observation in \.ai/TESTING_NOTES\.md') $msgAdv
+
+    # =====================================================================
     Write-Host '--- advisory text: both new lines sit in the ALWAYS-emitted block ---' -ForegroundColor Cyan
     # Order pins the documented insertion point: ... timing -> cadence ->
     # efficiency -> (optional ::deep-debug section).
@@ -85,21 +106,25 @@
     $idxCadence = $msgAdv.IndexOf('- Cadence: while code')
     $idxOptimization = $msgAdv.IndexOf('- Optimization before any run')
     $idxOrphan = $msgAdv.IndexOf('- No orphaned test process')
-    Check 'the three new bullets sit in order after the timing bullet' (
+    $idxCiFirst = $msgAdv.IndexOf('- CI first: every test that can run')
+    Check 'the four new bullets sit in order after the timing bullet' (
         $idxTiming -ge 0 -and $idxCadence -gt $idxTiming -and
-        $idxOptimization -gt $idxCadence -and $idxOrphan -gt $idxOptimization) (
+        $idxOptimization -gt $idxCadence -and $idxOrphan -gt $idxOptimization -and
+        $idxCiFirst -gt $idxOrphan) (
         'timing=' + $idxTiming + ' cadence=' + $idxCadence +
-        ' optimization=' + $idxOptimization + ' orphan=' + $idxOrphan)
+        ' optimization=' + $idxOptimization + ' orphan=' + $idxOrphan +
+        ' cifirst=' + $idxCiFirst)
     # Not gated behind ::deep-debug: an ordinary test prompt carries them too.
     $hcAdvPlain = New-IsolatedHookCopy
     $projAdvPlain = New-GitRepo 'AdvisoryTextPlain'
     $rAdvPlain = Fire -HookPath $hcAdvPlain.Script -Cwd $projAdvPlain -EventName 'UserPromptSubmit' -Prompt $TestRelatedPrompt -LocalAppData $hcAdvPlain.LocalAppData
     $msgAdvPlain = Get-Message $rAdvPlain.Out
-    Check 'a plain test prompt (no ::deep-debug) still carries all three new lines' (
+    Check 'a plain test prompt (no ::deep-debug) still carries all four new lines' (
         $msgAdvPlain -notmatch '::deep-debug detected' -and
         $msgAdvPlain -match '- Cadence: while code is still being written' -and
         $msgAdvPlain -match '- Optimization before any run' -and
-        $msgAdvPlain -match '- No orphaned test process') $msgAdvPlain
+        $msgAdvPlain -match '- No orphaned test process' -and
+        $msgAdvPlain -match '- CI first: every test that can run') $msgAdvPlain
 
     # =====================================================================
     Write-Host '--- advisory text: both client shapes render the new lines in FULL ---' -ForegroundColor Cyan
@@ -111,14 +136,16 @@
     $parsedAdvCl = $null
     try { $parsedAdvCl = $rAdvCl.Out | ConvertFrom-Json } catch { $parsedAdvCl = $null }
     $msgAdvCl = Get-Message $rAdvCl.Out
-    Check 'Claude shape carries all three new lines whole (additionalContext, no decision)' (
+    Check 'Claude shape carries all four new lines whole (additionalContext, no decision)' (
         $null -ne $parsedAdvCl -and $null -ne $parsedAdvCl.PSObject.Properties['hookSpecificOutput'] -and
         $rAdvCl.Out -notmatch '"decision"' -and
         $msgAdvCl -match 'Never re-run a suite because one more file changed' -and
         $msgAdvCl -match 'Record suite/date/before-after timing in \.ai/TESTING_NOTES\.md' -and
-        $msgAdvCl -match 'exclude your own shell') $rAdvCl.Out
-    Check 'Codex OFF-Stop shape carries all three new lines whole (never systemMessage)' (
+        $msgAdvCl -match 'exclude your own shell' -and
+        $msgAdvCl -match 'timestamped observation in \.ai/TESTING_NOTES\.md') $rAdvCl.Out
+    Check 'Codex OFF-Stop shape carries all four new lines whole (never systemMessage)' (
         $rAdv.Out -notmatch 'systemMessage' -and
         $msgAdv -match 'Never re-run a suite because one more file changed' -and
         $msgAdv -match 'Record suite/date/before-after timing in \.ai/TESTING_NOTES\.md' -and
-        $msgAdv -match 'exclude your own shell') $rAdv.Out
+        $msgAdv -match 'exclude your own shell' -and
+        $msgAdv -match 'timestamped observation in \.ai/TESTING_NOTES\.md') $rAdv.Out
