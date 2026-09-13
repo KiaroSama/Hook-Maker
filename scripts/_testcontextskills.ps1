@@ -281,6 +281,11 @@
     Check 'off mode still runs the pre-task half' ($r.Out -match 'SKILL POLICY CHECK') $r.Out
 
     # =====================================================================
+    # The rest of the closing gate lives in its own file - this one had reached
+    # the size ceiling. Dot-sourced here so it shares this scope and harness,
+    # and here specifically so it runs while the ambient client is still Claude.
+    . (Join-Path $PSScriptRoot '_testskillstopgate.ps1')
+
     Write-Host '--- Skills-Check: UserPromptSubmit task-relevance nudge, once per session ---' -ForegroundColor Cyan
     $r = Fire -HookPath $hook1 -Cwd $proj1 -RawStdin (New-PromptStdin -Cwd $proj1 -EventName 'UserPromptSubmit' -Prompt 'anything' -SessionId 'skills-s1')
     Check 'UserPromptSubmit emits the mandatory-skill-check nudge' ($r.Out -match 'SKILL POLICY CHECK' -and $r.Out -match 'skill use is MANDATORY') $r.Out
