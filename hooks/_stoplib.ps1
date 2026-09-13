@@ -168,9 +168,23 @@ function Test-StopStandDownLedger {
     # not change the thing it asks about, and this one runs in every cooperating
     # gate on every continuation.
     $path = Get-StopLedgerPath -ProjectRoot ([string](Get-Field $HookInput 'cwd'))
-    # Read-StopLedger returns an EMPTY ledger for a missing or damaged file, which
-    # arms the gate - the trade-off this file already documents. So there is no
-    # separate persistence-failure branch to keep here.
+    # Persistence has to be AVAILABLE before arming is safe. Not for the read -
+    # Read-StopLedger degrades to an empty ledger by design - but for the write
+    # that follows: a gate that arms, blocks, and then cannot RECORD the block
+    # arms again on the next continuation and blocks again, for ever. Standing
+    # DOWN is the only answer that cannot loop. Checked here, on the continuation
+    # path only, so a genuine Stop still creates nothing anywhere.
+    $ledgerDir = Split-Path -Parent $path
+    if (-not (Test-Path -LiteralPath $ledgerDir -PathType Container)) {
+        # -Force creates a deep NEW path happily, so 'does not exist' is not
+        # 'unwritable'. But it also REPORTS SUCCESS AND CREATES NOTHING when an
+        # ancestor is a file - measured: no throw, no directory, the blocking file
+        # left intact. So neither the return value nor a catch proves anything;
+        # only looking for the directory afterwards does.
+        try { New-Item -ItemType Directory -Path $ledgerDir -Force -ErrorAction SilentlyContinue | Out-Null }
+        catch { }
+        if (-not (Test-Path -LiteralPath $ledgerDir -PathType Container)) { return $true }
+    }
     $ledger = Read-StopLedger -Path $path
     $keys = Get-StopLedgerKeys -HookInput $HookInput -HookName $HookName
     $chain = $null
