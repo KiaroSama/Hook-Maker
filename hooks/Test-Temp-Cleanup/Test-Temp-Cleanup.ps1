@@ -506,6 +506,10 @@ $cwd = [string](Get-Field $hookInput 'cwd')
 if ([string]::IsNullOrWhiteSpace($cwd) -or -not (Test-Path -LiteralPath $cwd -PathType Container)) { exit 0 }
 $projectRoot = Normalize-Path $cwd
 $sessionId = [string](Get-Field $hookInput 'session_id')
+
+# The handoff document is its own responsibility, and this file is past the
+# size ceiling. The installer stages a hook's whole folder, so it ships here.
+. (Join-Path $PSScriptRoot '_cleanuprecord.ps1')
 $eventName = [string](Get-Field $hookInput 'hook_event_name')
 if ([string]::IsNullOrWhiteSpace($eventName)) { $eventName = 'SessionStart' }
 
@@ -662,6 +666,10 @@ if ($null -ne $hookState -and [string](Get-Field $hookState 'sessionId') -eq $se
     }
 }
 
+# BEFORE the walk, not after it: a candidate created while the scan was
+# already past its directory is newer than a completion stamp would be,
+# so the consumer would accept evidence that never inspected it.
+$scanStartedUtc = [DateTime]::UtcNow.ToString('o')
 $scan = Get-CleanupScan -Root $projectRoot -ExtraCandidateNames $extraCandidateNames -ExtraReviewNames $extraReviewNames -MaxEntries $maxScanEntries -MaxDepth $maxScanDepth
 foreach ($cause in @($scan.PartialCauses)) { $causes[$cause] = $true }
 
@@ -793,24 +801,7 @@ $evidenceFingerprint = Get-ShortHash ($evidenceParts.ToArray() -join '|')
 # suppressed, because Cloudflare-Deploy and Test-Completion-Check need a result
 # bound to the CURRENT repo state (concurrent lifecycle hooks; registration
 # order is display-only and never an execution order). ----
-$record = [ordered]@{
-    # Versioned handoff identity; contract in _cleanupevidence.ps1, mirrored (not
-    # shared - an installed runtime is self-contained) and revalidated there.
-    schemaVersion = 2
-    producerGeneration = 2
-    sessionId = $sessionId
-    # A CACHE HINT, never proof: it hashes HEAD plus porcelain STRINGS, so two
-    # contents behind one ' M path' hash alike and an IGNORED path never appears.
-    fingerprint = (Get-RepoStateFingerprint -ProjectRoot $projectRoot)
-    category = $category
-    scanComplete = ($allCauses.Count -eq 0)
-    partialCauses = $allCauses
-    candidateCount = $foundList.Count
-    reviewCount = $reviewNeeded.Count
-    residueCount = $residueNow.Count
-    evidenceFingerprint = $evidenceFingerprint
-    timestampUtc = [DateTime]::UtcNow.ToString('o')
-}
+$record = New-CleanupCoordinationRecord -SessionId $sessionId -Category $category -Fingerprint (Get-RepoStateFingerprint -ProjectRoot $projectRoot) -ScanComplete ($allCauses.Count -eq 0) -PartialCauses $allCauses -CandidateCount $foundList.Count -ReviewCount $reviewNeeded.Count -ResidueCount $residueNow.Count -EvidenceFingerprint $evidenceFingerprint -ScanStartedUtc $scanStartedUtc -ExtraCandidateNames $extraCandidateNames -ExtraReviewNames $extraReviewNames
 Write-JsonFileAtomic -Value $record -Path $resultPath
 
 Write-JsonFileAtomic -Path $hookStatePath -Value ([ordered]@{

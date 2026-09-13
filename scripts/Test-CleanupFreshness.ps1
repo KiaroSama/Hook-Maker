@@ -30,6 +30,10 @@ $HookLib = Join-Path $RepoRoot 'hooks\_hooklib.ps1'
 $Consumer = Join-Path $RepoRoot 'hooks\Cloudflare-Deploy\Cloudflare-Deploy.ps1'
 $Evidence = Join-Path $RepoRoot 'hooks\Cloudflare-Deploy\_cleanupevidence.ps1'
 $Producer = Join-Path $RepoRoot 'hooks\Test-Temp-Cleanup\Test-Temp-Cleanup.ps1'
+# The record document is its own sibling now (the entry point is past the size
+# ceiling). An assertion pointed at the entry point alone would cover a
+# fraction of the contract while still reporting green.
+$RecordBuilder = Join-Path $RepoRoot 'hooks\Test-Temp-Cleanup\_cleanuprecord.ps1'
 foreach ($required in @($HookLib, $Consumer, $Evidence, $Producer)) {
     if (-not (Test-Path -LiteralPath $required -PathType Leaf)) {
         Write-Host "Required file not found: $required" -ForegroundColor Red
@@ -55,6 +59,8 @@ Write-Host ("Workspace: $Work") -ForegroundColor DarkGray
 # ---- the real code under test -------------------------------------------
 $ConsumerAst = [System.Management.Automation.Language.Parser]::ParseFile($Consumer, [ref]$null, [ref]$null)
 $ProducerAst = [System.Management.Automation.Language.Parser]::ParseFile($Producer, [ref]$null, [ref]$null)
+$RecordAst = [System.Management.Automation.Language.Parser]::ParseFile($RecordBuilder, [ref]$null, [ref]$null)
+$RecordText = [System.IO.File]::ReadAllText($RecordBuilder)
 
 function Get-AstFunction {
     param($Ast, [string]$Name)
@@ -100,7 +106,11 @@ Write-Utf8 (Join-Path $Repo 'src\app.py') "print('hi')`r`n"
 # The candidate names this suite creates must be genuinely IGNORED, or the
 # defect it pins cannot be reproduced: an ignored path is exactly what the repo
 # fingerprint cannot see.
-Write-Utf8 (Join-Path $Repo '.gitignore') ".pytest_cache/`r`n__pycache__/`r`n*.pyc`r`ncoverage`r`n"
+# The last four are R05 fixtures. They hold real files (a marker, a config
+# name), so git would report the directory as untracked and the repo-state
+# HINT would reject the record long before the filesystem witness ran - the
+# test would pass for the wrong reason, or fail for one.
+Write-Utf8 (Join-Path $Repo '.gitignore') ".pytest_cache/`r`n__pycache__/`r`n*.pyc`r`ncoverage`r`nmy-scratch-cache/`r`nspotdl-env/`r`nweird-cache-name/`r`nplain-dir/`r`n"
 & git -C $Repo init -q 2>&1 | Out-Null
 & git -C $Repo -c user.email='t@example.invalid' -c user.name='T' add -A 2>&1 | Out-Null
 & git -C $Repo -c user.email='t@example.invalid' -c user.name='T' commit -q -m 'init' 2>&1 | Out-Null
@@ -119,8 +129,8 @@ function Get-BaseFingerprint {
 function New-ValidRecord {
     param([hashtable]$Override = @{}, [string[]]$Remove = @())
     $record = [ordered]@{
-        schemaVersion = 2
-        producerGeneration = 2
+        schemaVersion = 3
+        producerGeneration = 3
         sessionId = $SessionId
         fingerprint = (Get-BaseFingerprint)
         category = 'clean'
@@ -130,6 +140,11 @@ function New-ValidRecord {
         reviewCount = 0
         residueCount = 0
         evidenceFingerprint = 'evfp0000'
+        # Generation 3. scanStartedUtc is the freshness reference; the two name
+        # lists are the detection configuration the scan actually ran under.
+        scanStartedUtc = ([DateTime]::UtcNow.ToString('o'))
+        extraCandidateNames = @()
+        extraReviewNames = @()
         timestampUtc = ([DateTime]::UtcNow.ToString('o'))
     }
     foreach ($key in @($Override.Keys)) { $record[$key] = $Override[$key] }
@@ -207,7 +222,7 @@ try {
         'the witness missed real residue - the prune is too broad')
 
     # The coordination record the producer actually emits, read from its AST.
-    $recordHash = $ProducerAst.Find({
+    $recordHash = $RecordAst.Find({
             $args[0] -is [System.Management.Automation.Language.HashtableAst] -and
             @($args[0].KeyValuePairs | ForEach-Object { $_.Item1.Extent.Text }) -contains 'evidenceFingerprint' }, $true)
     Check 'the producer''s coordination record is locatable in its source' ($null -ne $recordHash)
@@ -223,12 +238,22 @@ try {
         if ($pair.Count -ne 1) { return '<not found>' }
         return ([string]$pair[0].Item2.Extent.Text).Trim()
     }
+    # The two versions are named constants in the builder rather than literals
+    # inside the hashtable, so read them where they are declared.
+    function Get-RecordVersion {
+        param([string]$Name)
+        $m = [regex]::Match($RecordText, ('(?m)^\$script:' + [regex]::Escape($Name) + '\s*=\s*(\d+)\s*$'))
+        if (-not $m.Success) { return '<not found>' }
+        return $m.Groups[1].Value
+    }
     Check 'the producer stamps the schemaVersion this consumer accepts' (
-        (Get-RecordLiteral 'schemaVersion') -eq [string]$script:CleanupResultSchemaVersion) (
-        'producer=' + (Get-RecordLiteral 'schemaVersion') + ' consumer=' + $script:CleanupResultSchemaVersion)
+        (Get-RecordVersion 'CleanupRecordSchemaVersion') -eq [string]$script:CleanupResultSchemaVersion) (
+        'producer=' + (Get-RecordVersion 'CleanupRecordSchemaVersion') + ' consumer=' + $script:CleanupResultSchemaVersion)
     Check 'the producer stamps the producerGeneration this consumer accepts' (
-        (Get-RecordLiteral 'producerGeneration') -eq [string]$script:CleanupResultProducerGeneration) (
-        'producer=' + (Get-RecordLiteral 'producerGeneration') + ' consumer=' + $script:CleanupResultProducerGeneration)
+        (Get-RecordVersion 'CleanupRecordProducerGeneration') -eq [string]$script:CleanupResultProducerGeneration) (
+        'producer=' + (Get-RecordVersion 'CleanupRecordProducerGeneration') + ' consumer=' + $script:CleanupResultProducerGeneration)
+    Check 'the entry point loads the record builder rather than inlining it' (
+        ([System.IO.File]::ReadAllText($Producer)) -match [regex]::Escape("'_cleanuprecord.ps1'"))
     Check 'the entry point loads the evidence module rather than inlining it' (
         ([System.IO.File]::ReadAllText($Consumer)) -match [regex]::Escape("'_cleanupevidence.ps1'"))
 
@@ -291,13 +316,14 @@ try {
     Write-Record (New-ValidRecord -Override @{ reviewCount = 'lots' })
     Check 'an unparseable count on a clean record -> unknown' ((Get-Verdict) -eq 'unknown') (Get-Verdict)
 
-    # FRESHNESS backstop.
-    Write-Record (New-ValidRecord -Override @{ timestampUtc = 'yesterday-ish' })
+    # FRESHNESS backstop, measured on scanStartedUtc - the instant the scan
+    # BEGAN is what the filesystem witness compares against.
+    Write-Record (New-ValidRecord -Override @{ scanStartedUtc = 'yesterday-ish' })
     Check 'an unusable timestamp -> unknown' ((Get-Verdict) -eq 'unknown') (Get-Verdict)
-    Write-Record (New-ValidRecord -Override @{ timestampUtc = ([DateTime]::UtcNow.AddMinutes(30).ToString('o')) })
+    Write-Record (New-ValidRecord -Override @{ scanStartedUtc = ([DateTime]::UtcNow.AddMinutes(30).ToString('o')) })
     Check 'a future-dated record -> unknown' ((Get-Verdict) -eq 'unknown') (Get-Verdict)
     Write-Record (New-ValidRecord -Override @{
-            timestampUtc = ([DateTime]::UtcNow.AddMinutes(-($script:CleanupResultMaxAgeMinutes + 5)).ToString('o')) })
+            scanStartedUtc = ([DateTime]::UtcNow.AddMinutes(-($script:CleanupResultMaxAgeMinutes + 5)).ToString('o')) })
     Check 'a record older than the max age -> unknown' ((Get-Verdict) -eq 'unknown') (Get-Verdict)
 
     # The cache hint is still checked - it was never wrong, only insufficient.
@@ -309,12 +335,16 @@ try {
     # The record is dated five minutes ago, so the cache directory created below
     # is unambiguously newer than the scan it describes. No sleeping.
     $scanUtc = [DateTime]::UtcNow.AddMinutes(-5)
-    Write-Record (New-ValidRecord -Override @{ timestampUtc = $scanUtc.ToString('o') })
+    Write-Record (New-ValidRecord -Override @{ scanStartedUtc = $scanUtc.ToString('o') })
     Check 'baseline: the clean record is evidence before any residue appears' ((Get-Verdict) -eq 'clean') (Get-Verdict)
 
+    # No CACHEDIR.TAG in it: the producer prunes any directory holding one, so
+    # a tagged fixture describes a tree the scan deliberately never entered
+    # rather than residue the scan missed. The tagged case is asserted on its
+    # own below, where it belongs.
     $cache = Join-Path $Repo '.pytest_cache'
     New-Item -ItemType Directory -Path $cache -Force | Out-Null
-    Write-Utf8 (Join-Path $cache 'CACHEDIR.TAG') "Signature: 8a477f597d28d172789f06886806bc55`r`n"
+    Write-Utf8 (Join-Path $cache 'lastfailed') '{}'
     $porcelain = @(& git -C $Repo status --porcelain 2>&1 | Where-Object { $_ })
     Check 'PREMISE: the new cache directory is IGNORED - git porcelain is still empty' (
         $porcelain.Count -eq 0) ($porcelain -join ' / ')
@@ -331,7 +361,7 @@ try {
 
     # A candidate the producer DID see must not silence the gate for ever - that
     # would be the dead gate this project has shipped twice before.
-    Set-StampUtc -Path (Join-Path $cache 'CACHEDIR.TAG') -Utc $scanUtc.AddMinutes(-10)
+    Set-StampUtc -Path (Join-Path $cache 'lastfailed') -Utc $scanUtc.AddMinutes(-10)
     Set-StampUtc -Path $cache -Utc $scanUtc.AddMinutes(-10)
     Check 'a candidate that predates the scan is covered by it - still evidence, not a dead gate' (
         (Get-Verdict) -eq 'clean') (Get-Verdict)
@@ -357,6 +387,85 @@ try {
 
     # An unreadable directory is missing coverage, and missing coverage is never
     # an all-clear.
+    # =====================================================================
+    Write-Host '--- R05: the witness observes the same scan the record describes ---' -ForegroundColor Cyan
+
+    # 1. A CONFIGURED extra candidate name. The witness mirrored only the
+    # SHIPPED names, so a name the scan was configured to look for was invisible
+    # to it - and residue under that name left a stale verdict reading 'clean'.
+    Write-Record (New-ValidRecord)
+    Check 'POSITIVE CONTROL: the generation-3 record is evidence to begin with' ((Get-Verdict) -eq 'clean') (Get-Verdict)
+    $extraDir = Join-Path $Repo 'my-scratch-cache'
+    New-Item -ItemType Directory -Path $extraDir -Force | Out-Null
+    Set-StampUtc -Path $extraDir -Utc ([DateTime]::UtcNow.AddMinutes(1))
+    Write-Record (New-ValidRecord)
+    Check 'PREMISE: an unconfigured extra name is not the witness''s business - still clean' (
+        (Get-Verdict) -eq 'clean') (Get-Verdict)
+    Write-Record (New-ValidRecord -Override @{ extraCandidateNames = @('my-scratch-cache') })
+    Check 'THE FIX: the same residue under a CONFIGURED name now invalidates the record' (
+        (Get-Verdict) -eq 'unknown') (Get-Verdict)
+    Write-Record (New-ValidRecord -Override @{ extraReviewNames = @('my-scratch-cache') })
+    Check 'a configured REVIEW name counts the same way' ((Get-Verdict) -eq 'unknown') (Get-Verdict)
+    Set-StampUtc -Path $extraDir -Utc ([DateTime]::UtcNow.AddMinutes(-30))
+    Write-Record (New-ValidRecord -Override @{ extraCandidateNames = @('my-scratch-cache') })
+    Check 'and backdating it restores the verdict - it is the timestamp, not the name' (
+        (Get-Verdict) -eq 'clean') (Get-Verdict)
+    Remove-Item -LiteralPath $extraDir -Recurse -Force
+
+    # 2. MARKER PRUNING. The producer skips any directory holding pyvenv.cfg or
+    # CACHEDIR.TAG, whatever it is called. The witness did not, so it descended
+    # into a custom-named virtualenv and rejected evidence over paths the scan
+    # had deliberately excluded - a permanent 'unknown' no cleanup could clear.
+    $venv = Join-Path $Repo 'spotdl-env'
+    New-Item -ItemType Directory -Path $venv -Force | Out-Null
+    Write-Utf8 (Join-Path $venv 'pyvenv.cfg') 'home = C:\Python'
+    $venvCache = Join-Path $venv '.pytest_cache'
+    New-Item -ItemType Directory -Path $venvCache -Force | Out-Null
+    Set-StampUtc -Path $venvCache -Utc ([DateTime]::UtcNow.AddMinutes(1))
+    Write-Record (New-ValidRecord)
+    Check 'a cache inside a MARKER-pruned virtualenv does not invalidate the record' (
+        (Get-Verdict) -eq 'clean') (Get-Verdict)
+    $tagged = Join-Path $Repo 'weird-cache-name'
+    New-Item -ItemType Directory -Path $tagged -Force | Out-Null
+    Write-Utf8 (Join-Path $tagged 'CACHEDIR.TAG') 'Signature: 8a477f597d28d172789f06886806bc55'
+    $taggedCache = Join-Path $tagged '.mypy_cache'
+    New-Item -ItemType Directory -Path $taggedCache -Force | Out-Null
+    Set-StampUtc -Path $taggedCache -Utc ([DateTime]::UtcNow.AddMinutes(1))
+    Write-Record (New-ValidRecord)
+    Check 'a cache inside a CACHEDIR.TAG tree does not invalidate it either' (
+        (Get-Verdict) -eq 'clean') (Get-Verdict)
+    # NEGATIVE CONTROL: the same cache OUTSIDE a marked tree still does.
+    $plainCache = Join-Path $Repo 'plain-dir\.mypy_cache'
+    New-Item -ItemType Directory -Path $plainCache -Force | Out-Null
+    Set-StampUtc -Path $plainCache -Utc ([DateTime]::UtcNow.AddMinutes(1))
+    Write-Record (New-ValidRecord)
+    Check 'NEGATIVE CONTROL: the same cache outside a marked tree DOES invalidate it' (
+        (Get-Verdict) -eq 'unknown') (Get-Verdict)
+    Remove-Item -LiteralPath $venv -Recurse -Force
+    Remove-Item -LiteralPath $tagged -Recurse -Force
+    Remove-Item -LiteralPath (Join-Path $Repo 'plain-dir') -Recurse -Force
+
+    # 3. THE SCAN WINDOW. The reference is when the scan STARTED, so a path
+    # created while the walk was already past its directory - earlier than the
+    # completion stamp, later than the start - is correctly uninspected.
+    $raced = Join-Path $Repo '.ruff_cache'
+    New-Item -ItemType Directory -Path $raced -Force | Out-Null
+    $midScan = [DateTime]::UtcNow.AddMinutes(-5)
+    Set-StampUtc -Path $raced -Utc $midScan
+    Write-Record (New-ValidRecord -Override @{
+            scanStartedUtc = ([DateTime]::UtcNow.AddMinutes(-10).ToString('o'))
+            timestampUtc   = ([DateTime]::UtcNow.AddMinutes(-1).ToString('o'))
+        })
+    Check 'a path created DURING the scan is uninspected -> unknown, not clean' (
+        (Get-Verdict) -eq 'unknown') (Get-Verdict)
+    Write-Record (New-ValidRecord -Override @{
+            scanStartedUtc = ([DateTime]::UtcNow.AddMinutes(-3).ToString('o'))
+            timestampUtc   = ([DateTime]::UtcNow.AddMinutes(-1).ToString('o'))
+        })
+    Check 'a path that predates the scan START is covered by it - still clean' (
+        (Get-Verdict) -eq 'clean') (Get-Verdict)
+    Remove-Item -LiteralPath $raced -Recurse -Force
+
     Check 'a root that does not exist -> not current (no all-clear on absent coverage)' (
         -not (Test-CleanupEvidenceStillCurrent -Root (Join-Path $Work 'no-such-project') -RecordedUtc ([DateTime]::UtcNow)))
 
@@ -379,9 +488,11 @@ $env:LOCALAPPDATA = $AppData
 . $Entry
 . $Evidence
 $record = [ordered]@{
-    schemaVersion = 2; producerGeneration = 2; sessionId = $Session; fingerprint = $Fingerprint
+    schemaVersion = 3; producerGeneration = 3; sessionId = $Session; fingerprint = $Fingerprint
     category = 'clean'; scanComplete = $true; partialCauses = @(); candidateCount = 0
     reviewCount = 0; residueCount = 0; evidenceFingerprint = 'evfp0000'
+    scanStartedUtc = ([DateTime]::UtcNow.ToString('o'))
+    extraCandidateNames = @(); extraReviewNames = @()
     timestampUtc = ([DateTime]::UtcNow.ToString('o'))
 }
 [System.IO.File]::WriteAllText((Get-CleanupResultPath -Root $Root), ($record | ConvertTo-Json), (New-Object System.Text.UTF8Encoding $false))

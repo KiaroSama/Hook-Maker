@@ -81,7 +81,11 @@ function New-IsolatedHookCopy {
     param([hashtable]$EnvOverrides = @{})
     $dir = Join-Path $Work ('hookcopy-' + [guid]::NewGuid().ToString('N').Substring(0, 6))
     New-Item -ItemType Directory -Path $dir -Force | Out-Null
-    Copy-Item $Hook (Join-Path $dir 'Test-Temp-Cleanup.ps1')
+    # The whole folder, not just the entry script: the installer stages a hook's
+    # own directory recursively, so a sibling it dot-sources ships with it.
+    # Copying one file would test a runtime that is never installed - and the
+    # hook would simply fail to load.
+    Copy-Item (Join-Path (Split-Path -Parent $Hook) '*.ps1') $dir
     Copy-Item $HookLib (Join-Path $Work '_hooklib.ps1') -Force
     if ($EnvOverrides.Count -gt 0) {
         $lines = New-Object System.Collections.Generic.List[string]
