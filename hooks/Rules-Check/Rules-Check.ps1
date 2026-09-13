@@ -222,7 +222,10 @@ if ($closing) {
 function Get-EvidenceTranscriptFallbackPath {
     param($HookInput)
     if ([string](Get-Field $HookInput 'hook_event_name') -eq 'SubagentStop') {
-        return [string](Get-Field $HookInput 'agent_transcript_path')
+        # Prefer a client-supplied child path, but never require it: on a
+        # SubagentStop the documented transcript_path is the subagent's own.
+        $child = [string](Get-Field $HookInput 'agent_transcript_path')
+        if (-not [string]::IsNullOrWhiteSpace($child)) { return $child }
     }
     return [string](Get-Field $HookInput 'transcript_path')
 }
@@ -284,7 +287,7 @@ function Get-EvidenceTranscriptFallbackPath {
 
     # Anchored at the start of a transcript line, so this hook's own instruction
     # text can never satisfy it. A short markdown prefix is tolerated.
-    $confirmPattern = '(?im)^[ \t]{0,8}(?:[-*>#]+[ \t]{0,4})?(?:\*\*)?Rules[ \t]+(?:applied|followed|read)[ \t]*:'
+    $confirmPattern = '(?im)(?:^|\\n)[ \t]{0,8}(?:[-*>#]+[ \t]{0,4})?(?:\*\*)?Rules[ \t]+(?:applied|followed|read)[ \t]*:'
     if ($tail -match $confirmPattern) { exit 0 }
 
     # Did this session actually change files? That is what makes the rules
@@ -460,7 +463,11 @@ if ($deepDebug) {
 
 # ---- persist state, then report ----
 try {
-    if (-not (Test-Path -LiteralPath $stateDir -PathType Container)) {
+    # Create the directory only when something is actually going to be written.
+    # Creating it first meant a project with no rule files - which writes nothing
+    # and says nothing - still left Hook Maker state on the machine.
+    $writesState = $rulesMoved -or ($deepDebug -and $sessionId -ne '')
+    if ($writesState -and -not (Test-Path -LiteralPath $stateDir -PathType Container)) {
         New-Item -ItemType Directory -Path $stateDir -Force | Out-Null
     }
     if ($rulesMoved) {
