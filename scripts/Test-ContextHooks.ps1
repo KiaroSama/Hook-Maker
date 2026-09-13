@@ -81,7 +81,10 @@ function New-ConfiguredSkillsHookCopy {
     param([hashtable]$EnvOverrides)
     $dir = Join-Path $Work ('hookcopy-' + [guid]::NewGuid().ToString('N').Substring(0, 6))
     New-Item -ItemType Directory -Path $dir -Force | Out-Null
-    Copy-Item $SkillsHook (Join-Path $dir 'Skills-Check.ps1')
+    # The whole folder, not just the entry script: the installer stages a hook's
+    # own directory recursively, so a sibling module the hook dot-sources ships
+    # with it. Copying one file would test a runtime that is never installed.
+    Copy-Item (Join-Path (Split-Path -Parent $SkillsHook) '*.ps1') $dir
     Copy-Item (Join-Path (Split-Path -Parent $SkillsHook) '..\_hooklib.ps1') (Join-Path $Work '_hooklib.ps1') -Force
     $merged = @{}
     foreach ($k in $EnvOverrides.Keys) { $merged[$k] = $EnvOverrides[$k] }

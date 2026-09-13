@@ -194,11 +194,8 @@ foreach ($src in $enumSources) {
 # event" that global-hook-rules.md forbids, so the result is cached in a local
 # index keyed by the source configuration and bounded by a TTL.
 #
-# Flat lines, not JSON: ~1200 entries parse in milliseconds this way, and the
-# file is only ever produced and consumed here.
-#   header  HookMakerSkillsIndex|1|<configHash>|<builtUtcTicks>
-#   plugin  p|<plugin>|<skill folder>|<full path>
-#   library l|<skill folder>|<full path>
+# The reader, the writer and the on-disk format live in _skillindex.ps1; the
+# three settings below are read from here by both of them.
 $indexPath = Join-Path $stateDir ('SkillsCheck-index-' + $projectKey + '.txt')
 $indexTtlMinutes = 1440
 if ($config.ContainsKey('LIBRARY_INDEX_TTL_MINUTES')) {
@@ -209,93 +206,10 @@ if ($config.ContainsKey('LIBRARY_INDEX_TTL_MINUTES')) {
 }
 $indexConfigHash = Get-ShortHash (($libraryDir + '|' + $pluginRoot + '|' + $client).ToLowerInvariant())
 
-# Reads the index when it is present, current and built from THIS configuration.
-# Returns $null otherwise - a stale or foreign index is rebuilt, never trusted.
-function Read-SkillIndex {
-    if (-not (Test-Path -LiteralPath $indexPath -PathType Leaf)) { return $null }
-    try {
-        $lines = [System.IO.File]::ReadAllLines($indexPath)
-        if ($lines.Count -lt 1) { return $null }
-        $head = $lines[0].Split('|')
-        if ($head.Count -lt 4 -or $head[0] -ne 'HookMakerSkillsIndex' -or $head[1] -ne '1') { return $null }
-        if ($head[2] -ne $indexConfigHash) { return $null }
-        $ticks = 0L
-        if (-not [int64]::TryParse($head[3], [ref]$ticks)) { return $null }
-        if ($indexTtlMinutes -gt 0) {
-            $age = ([DateTime]::UtcNow - [DateTime]::new($ticks, [DateTimeKind]::Utc)).TotalMinutes
-            if ($age -lt 0 -or $age -gt $indexTtlMinutes) { return $null }
-        }
-        $plugin = New-Object System.Collections.Generic.List[object]
-        $library = New-Object System.Collections.Generic.List[object]
-        for ($i = 1; $i -lt $lines.Count; $i++) {
-            $parts = $lines[$i].Split('|')
-            if ($parts[0] -eq 'p' -and $parts.Count -ge 4) {
-                [void]$plugin.Add([pscustomobject]@{ Plugin = $parts[1]; Leaf = $parts[2]; Path = $parts[3] })
-            }
-            elseif ($parts[0] -eq 'l' -and $parts.Count -ge 3) {
-                [void]$library.Add([pscustomobject]@{ Leaf = $parts[1]; Path = $parts[2] })
-            }
-        }
-        return [pscustomobject]@{ Plugin = $plugin; Library = $library }
-    }
-    catch { return $null }
-}
-
-# Walks both expensive sources and writes the index. Bounded on both sides; a
-# source that is absent or unreadable simply contributes nothing, and the
-# resulting partial coverage is reported rather than presented as complete.
-function Build-SkillIndex {
-    $plugin = New-Object System.Collections.Generic.List[object]
-    $library = New-Object System.Collections.Generic.List[object]
-    $maxPlugin = 600
-    $maxLibrary = 4000
-
-    if ($hasPluginRoot) {
-        try {
-            foreach ($skillsDir in @(Get-ChildItem -Path (Join-Path $pluginRoot '*\*\*\skills') -Directory -ErrorAction SilentlyContinue)) {
-                # <root>\<marketplace>\<plugin>\<version>\skills -> the plugin
-                # name is three levels up, which is the id the client prefixes.
-                $pluginName = ''
-                try { $pluginName = (Get-Item -LiteralPath (Split-Path -Parent (Split-Path -Parent $skillsDir.FullName))).Name } catch { $pluginName = '' }
-                if ($pluginName -eq '') { continue }
-                foreach ($d in @(Get-ChildItem -LiteralPath $skillsDir.FullName -Directory -ErrorAction SilentlyContinue)) {
-                    if (($d.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -eq [System.IO.FileAttributes]::ReparsePoint) { continue }
-                    [void]$plugin.Add([pscustomobject]@{ Plugin = $pluginName; Leaf = $d.Name; Path = $d.FullName })
-                    if ($plugin.Count -ge $maxPlugin) { break }
-                }
-                if ($plugin.Count -ge $maxPlugin) { break }
-            }
-        }
-        catch { }
-    }
-
-    if ($hasLibrary) {
-        # A skill is a directory holding SKILL.md. The library mixes flat skills
-        # and category\skill layouts, so depth 2 covers both. -Recurse does not
-        # follow reparse points, which is the containment guarantee wanted here.
-        try {
-            foreach ($f in @(Get-ChildItem -LiteralPath $libraryDir -Recurse -Depth 2 -Filter 'SKILL.md' -File -ErrorAction SilentlyContinue)) {
-                $dir = Split-Path -Parent $f.FullName
-                [void]$library.Add([pscustomobject]@{ Leaf = (Split-Path -Leaf $dir); Path = $dir })
-                if ($library.Count -ge $maxLibrary) { break }
-            }
-        }
-        catch { }
-    }
-
-    $lines = New-Object System.Collections.Generic.List[string]
-    [void]$lines.Add('HookMakerSkillsIndex|1|' + $indexConfigHash + '|' + [DateTime]::UtcNow.Ticks)
-    foreach ($p in $plugin) { [void]$lines.Add('p|' + $p.Plugin + '|' + $p.Leaf + '|' + $p.Path) }
-    foreach ($l in $library) { [void]$lines.Add('l|' + $l.Leaf + '|' + $l.Path) }
-    try {
-        New-Item -ItemType Directory -Path $stateDir -Force | Out-Null
-        $tmp = $indexPath + '.tmp'
-        [System.IO.File]::WriteAllLines($tmp, [string[]]$lines.ToArray(), (New-Object System.Text.UTF8Encoding $false))
-        Move-Item -LiteralPath $tmp -Destination $indexPath -Force
-    }
-    catch { }
-    return [pscustomobject]@{ Plugin = $plugin; Library = $library }
-}
+# Skill discovery and indexing. A sibling, not inline: it is its own
+# responsibility and this file had reached the size ceiling. The installer
+# stages a hook's whole folder, so it travels with the runtime.
+. (Join-Path $PSScriptRoot '_skillindex.ps1')
 
 # SessionStart is the natural refresh point (once per session); every other
 # event reuses the index and only rebuilds when it is missing or expired.
@@ -610,9 +524,9 @@ if ($eventName -eq 'UserPromptSubmit') {
         if ($tokens.Count -ge 14) { break }
     }
 
-    # Score one skill folder name against the prompt tokens. A word-for-word hit
-    # is worth more than a substring hit, and a substring hit needs 5+ characters
-    # so that "test" cannot drag in every name containing "latest".
+    # Score one piece of text against the prompt tokens. A word-for-word hit is
+    # worth more than a partial one, and a partial hit needs 5+ characters so
+    # that "test" cannot drag in every name containing "latest".
     function Get-PromptMatchScore {
         param([string]$Leaf)
         $normalized = ($Leaf -replace '[^A-Za-z0-9]+', ' ').ToLowerInvariant().Trim()
@@ -621,7 +535,35 @@ if ($eventName -eq 'UserPromptSubmit') {
         $score = 0
         foreach ($t in $tokens) {
             if ($words -contains $t) { $score += 2; continue }
-            if ($t.Length -ge 5 -and $normalized.Contains($t)) { $score += 1 }
+            # A partial hit must START a word. Plain Contains() matched a token
+            # anywhere inside one, so "engineering" pulled up "glycoengineering"
+            # and every such folder became a suggestion for unrelated prompts.
+            if ($t.Length -ge 5) {
+                foreach ($w in $words) { if ($w.StartsWith($t)) { $score += 1; break } }
+            }
+        }
+        return $score
+    }
+
+    # A skill is addressed by the name: in its SKILL.md, and what it is FOR is
+    # in the description. Scoring the folder alone missed every skill whose
+    # folder shares no token with the prompt, however exactly its description
+    # matched. The description is deliberately worth less than the name: it is
+    # long, so incidental words in it must not outrank a real name match.
+    function Get-SkillMatchScore {
+        param([string]$Leaf, [string]$Name, [string]$Description)
+        $score = Get-PromptMatchScore $Leaf
+        if (-not [string]::IsNullOrWhiteSpace($Name)) {
+            $nameScore = Get-PromptMatchScore $Name
+            if ($nameScore -gt $score) { $score = $nameScore }
+        }
+        if (-not [string]::IsNullOrWhiteSpace($Description)) {
+            $descText = ($Description -replace '[^A-Za-z0-9]+', ' ').ToLowerInvariant().Trim()
+            $descWords = @($descText.Split(' ') | Where-Object { $_ -ne '' })
+            $hits = 0
+            foreach ($t in $tokens) { if ($descWords -contains $t) { $hits++ } }
+            if ($hits -gt 2) { $hits = 2 }
+            $score += $hits
         }
         return $score
     }
@@ -634,14 +576,14 @@ if ($eventName -eq 'UserPromptSubmit') {
             if ($s -gt 0) { [void]$installedMatches.Add([pscustomobject]@{ Name = $byName[$key].Name; Score = $s; Where = ((@($byName[$key].Sources) | Sort-Object) -join '+') }) }
         }
         foreach ($p in $index.Plugin) {
-            $s = Get-PromptMatchScore $p.Leaf
+            $s = Get-SkillMatchScore -Leaf $p.Leaf -Name $p.Name -Description $p.Description
             if ($s -gt 0) { [void]$installedMatches.Add([pscustomobject]@{ Name = ($p.Plugin + ':' + $p.Leaf); Score = $s; Where = 'plugin' }) }
         }
         foreach ($l in $index.Library) {
             # Already available somewhere: importing it again is noise, and
             # suggesting an install the policy would have to authorize is worse.
             if ($installedNames.ContainsKey(([string]$l.Leaf).ToLowerInvariant())) { continue }
-            $s = Get-PromptMatchScore $l.Leaf
+            $s = Get-SkillMatchScore -Leaf $l.Leaf -Name $l.Name -Description $l.Description
             if ($s -gt 0) { [void]$libraryMatches.Add([pscustomobject]@{ Name = $l.Leaf; Score = $s; Path = $l.Path }) }
         }
     }
