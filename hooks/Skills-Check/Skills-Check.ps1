@@ -19,11 +19,19 @@
 # and an exact instruction are the most this hook may do. The .ai/SKILLS.md
 # record is the agent's to update, not the hook's.
 #
-# The Stop gate is narrow on purpose. It blocks on one confirmed, reproducible
-# condition: the session transcript shows a skill was actually INVOKED and the
-# closing summary carries no line starting "Skills used:". Whether a skill
-# SHOULD have been used is a judgement the hook cannot make, so that case stays
-# a non-blocking advisory.
+# The Stop gate blocks only on confirmed, reproducible conditions, and the
+# decision lives in _skillstop.ps1. Three of them:
+#  1. a skill was actually INVOKED and the closing summary carries no line
+#     starting "Skills used:";
+#  2. the session CHANGED FILES - the client's own record of a file-mutating
+#     tool call - and carries no such line either. Without this, using no
+#     skill at all was the cheapest way past the policy;
+#  3. an INSTALLED skill this hook shortlisted for the prompt earlier in the
+#     same session was neither invoked nor named on the line. Library matches
+#     are never gated: importing one is an authorized operation, so demanding
+#     it would force an authorization the user never gave.
+# A session that only read and answered is advised, never blocked - whether a
+# skill SHOULD have been used is a judgement the hook cannot make from that.
 #
 # WHY THE MATCH IS ANCHORED: this hook's own output lands in the transcript it
 # later reads, so an unanchored search would be satisfied by the hook's own
@@ -40,7 +48,8 @@
 #                     exact destination path). A standalone `::deep-debug`
 #                     codeword instead surfaces the composite capability graph.
 #                     Fingerprint-gated so unchanged guidance shows once.
-# - Stop/SubagentStop verifies the "Skills used:" line. Honours stop_hook_active.
+# - Stop/SubagentStop verifies the "Skills used:" line against what the session
+#                     actually did and was shown. Honours stop_hook_active.
 #
 # Token- and time-efficient by design:
 # - Silent when no skill source exists at all (checked once, all four events).
@@ -210,6 +219,10 @@ $indexConfigHash = Get-ShortHash (($libraryDir + '|' + $pluginRoot + '|' + $clie
 # responsibility and this file had reached the size ceiling. The installer
 # stages a hook's whole folder, so it travels with the runtime.
 . (Join-Path $PSScriptRoot '_skillindex.ps1')
+
+# The Stop/SubagentStop decision. Same reason it is a sibling: it is its own
+# responsibility, and this file has no room for it.
+. (Join-Path $PSScriptRoot '_skillstop.ps1')
 
 # SessionStart is the natural refresh point (once per session); every other
 # event reuses the index and only rebuilds when it is missing or expired.
@@ -382,49 +395,24 @@ if ($closing) {
         exit $emit.ExitCode
     }
 
-    # Anchored at the start of a transcript line so this hook's own instruction
-    # text can never satisfy it.
-    if ($tail -match '(?im)(?:^|\\n)[ \t]{0,8}(?:[-*>#]+[ \t]{0,4})?(?:\*\*)?Skills?[ \t]+used[ \t]*:') { exit 0 }
-
-    # Was a skill actually invoked? The client's own tool-call record is the
-    # evidence; a client whose transcript does not carry it yields no evidence,
-    # and the branch below degrades to an advisory rather than guessing.
-    # RAW transcript, not $tail. A tool CALL is a JSONL record, and the closing
-    # assistant response $tail now holds carries none - reading $tail here is what
-    # silently disarmed this gate: it observed nothing and so never blocked.
+    # The client's own tool-call record is the evidence for what happened, and
+    # that is a JSONL record: the closing assistant response $tail holds carries
+    # none. Reading $tail for it is what silently disarmed this gate once - it
+    # observed nothing and so never blocked.
     $rawTail = [string](Get-TranscriptTailText (Get-EvidenceTranscriptFallbackPath $hookInput))
-    $skillInvoked = ($rawTail -match '"name"[ \t]*:[ \t]*"Skill"')
-    if ($skillInvoked) {
-        if (-not (Test-ShouldReportClosing 'missing-after-invoke')) { exit 0 }
-        $reason = @(
-            'SKILL POLICY CHECK - this session invoked at least one skill and the closing summary does not report which.',
-            # The example is deliberately kept INLINE and quoted rather than on a
-            # line of its own: this message lands in the same transcript the next
-            # Stop reads, and an example at the start of a line would satisfy the
-            # detector - the hook would then clear its own block.
-            'TO CLEAR THIS: add one line to the final summary, on its own line, starting exactly with "Skills used:" and naming the exact skill name(s) invoked or materially followed - e.g. "Skills used: superpowers:systematic-debugging, powershell-windows".',
-            'Name only skills that actually shaped the work; a skill that was opened and then not followed does not count.'
-        ) -join "`n"
-        if ($enforcement -eq 'advisory') {
-            $emit = Write-HookResult -EventName $eventName -Kind 'advisory' -Message $reason
-            exit $emit.ExitCode
-        }
+    $shortlist = Get-SkillShortlist (Get-SkillShortlistPath $stateDir $projectKey $sessionId)
+    $invoked = ($rawTail -match '"name"[ \t]*:[ \t]*"Skill"')
+    $decision = Get-SkillClosingDecision -ClosingText $tail -RawTranscript $rawTail -Shortlist $shortlist -SkillInvoked $invoked
+    if ($decision.Kind -eq 'silent') { exit 0 }
+    if (-not (Test-ShouldReportClosing $decision.Token)) { exit 0 }
+    if ($decision.Kind -eq 'block' -and $enforcement -eq 'block') {
         # Record the block so THIS hook's own re-entry is recognised; another
         # gate's block must not mute it, and its own must not repeat.
         Set-StopBlockMarker -HookInput $hookInput -HookName 'Skills-Check'
-        $emit = Write-HookResult -EventName $eventName -Kind 'block' -Reason $reason
+        $emit = Write-HookResult -EventName $eventName -Kind 'block' -Reason $decision.Text
         exit $emit.ExitCode
     }
-
-    # No skill invoked: whether one was NEEDED is a judgement the hook cannot
-    # make, so this never blocks.
-    if (-not (Test-ShouldReportClosing 'none-invoked')) { exit 0 }
-    $note = @(
-        'SKILL POLICY CHECK - no skill was invoked this session.',
-        'If the task touched a specialised domain (debugging, testing, security review, UI/UX, a specific stack) an installed skill probably applied and was skipped - a relevant INSTALLED skill may be activated without asking.',
-        ('Either way the summary must carry the line: ' + $script:SkillsRequiredLine)
-    ) -join "`n"
-    $emit = Write-HookResult -EventName $eventName -Kind 'advisory' -Message $note
+    $emit = Write-HookResult -EventName $eventName -Kind 'advisory' -Message $decision.Text
     exit $emit.ExitCode
 }
 # ========================== end CLOSING HALF ================================
@@ -589,6 +577,11 @@ if ($eventName -eq 'UserPromptSubmit') {
     }
     $topInstalled = @($installedMatches | Sort-Object -Property @{ Expression = 'Score'; Descending = $true }, @{ Expression = 'Name' } | Select-Object -First 6)
     $topLibrary = @($libraryMatches | Sort-Object -Property @{ Expression = 'Score'; Descending = $true }, @{ Expression = 'Name' } | Select-Object -First 5)
+
+    # Remember what was shown, so the Stop gate can ask whether it was used.
+    # Before the fingerprint check below, not after: a repeat prompt exits there
+    # and the shortlist it was already shown still has to be accountable.
+    Save-SkillShortlist (Get-SkillShortlistPath $stateDir $projectKey $sessionId) @($topInstalled | ForEach-Object { $_.Name })
 
     # Fingerprint = session + client + everything the message would say. An
     # unchanged answer shows once; a new prompt with different matches, or a
