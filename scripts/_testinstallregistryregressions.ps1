@@ -93,7 +93,7 @@
         NoNewWindow = $true; PassThru = $true; Wait = $true
     }
     if ((Get-Command Start-Process).Parameters.ContainsKey('Environment')) { $d1SpStart.Environment = @{ HOOKMAKER_STATE_DIR = $IsolatedStateDir } }
-    $d1SpProc = Start-Process @d1SpStart
+    $d1SpProc = Start-BoundedProcess @d1SpStart
     Check 'a spawned failing install exits non-zero' ($d1SpProc.ExitCode -ne 0)
     Check 'a spawned failing install still writes a result document' (Test-Path -LiteralPath $d1SpResult)
     Check 'a spawned failing install does not swallow the original error text' ((Get-Content -LiteralPath $d1SpErr -Raw) -match 'ClaudeOnly.*CodexOnly|mutually exclusive|both.*Claude.*Codex')

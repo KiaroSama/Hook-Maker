@@ -224,3 +224,46 @@ function Write-Utf8 {
         }
     }
 }
+
+# Start-Process, but with a ceiling. -Wait waits FOR EVER, so a child that
+# blocks on stdin or deadlocks takes the whole CI bucket to its per-suite limit
+# and the failure reads "suite timed out" instead of naming this child. Accepts
+# -Wait and -PassThru so an existing splat needs no edit: waiting IS what this
+# function does, and it always returns the process.
+#
+# -Environment is pwsh-only (it does not exist on Windows PowerShell 5.1), so it
+# is forwarded only where the host actually has it - the same guard the call
+# sites used to carry.
+function Start-BoundedProcess {
+    param(
+        [Parameter(Mandatory = $true, Position = 0)][string]$FilePath,
+        # Untyped on purpose: an unbound [string] binds to  , not $null, and a
+        # caller that passes no arguments must not become one empty argument.
+        $ArgumentList,
+        [string]$WorkingDirectory,
+        [string]$RedirectStandardInput,
+        [string]$RedirectStandardOutput,
+        [string]$RedirectStandardError,
+        [hashtable]$Environment,
+        [switch]$NoNewWindow,
+        [switch]$PassThru,
+        [switch]$Wait,
+        [int]$TimeoutMs = 180000
+    )
+    $spArgs = @{ FilePath = $FilePath; NoNewWindow = $true; PassThru = $true }
+    foreach ($key in @('ArgumentList', 'WorkingDirectory', 'RedirectStandardInput',
+            'RedirectStandardOutput', 'RedirectStandardError')) {
+        if ($PSBoundParameters.ContainsKey($key)) { $spArgs[$key] = $PSBoundParameters[$key] }
+    }
+    if ($PSBoundParameters.ContainsKey('Environment') -and
+        (Get-Command Start-Process).Parameters.ContainsKey('Environment')) {
+        $spArgs.Environment = $Environment
+    }
+    $proc = Start-Process @spArgs
+    if (-not $proc.WaitForExit($TimeoutMs)) {
+        try { Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue } catch { }
+        throw ('child process ' + $proc.Id + ' (' + (Split-Path -Leaf $FilePath) +
+            ') did not exit within ' + [int]($TimeoutMs / 1000) + 's and was terminated')
+    }
+    return $proc
+}

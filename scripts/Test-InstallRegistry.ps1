@@ -115,7 +115,7 @@ function Invoke-Wizard {
         foreach ($key in $ExtraEnv.Keys) { $env[$key] = $ExtraEnv[$key] }
         $startArgs.Environment = $env
     }
-    $p = Start-Process @startArgs
+    $p = Start-BoundedProcess @startArgs
     $out = ''; if (Test-Path $outF) { $out = [System.IO.File]::ReadAllText($outF) }
     $err = ''; if (Test-Path $errF) { $err = ([System.IO.File]::ReadAllText($errF)).Trim() }
     return [pscustomobject]@{ Exit = $p.ExitCode; Out = [regex]::Replace($out, "\x1b\[[0-9;]*m", ''); Err = $err }
@@ -157,7 +157,7 @@ function Invoke-InstallProcess {
             'so USERPROFILE cannot be redirected and the install would write to the real user profile. ' +
             'Run this suite under pwsh 7.')
     }
-    $p = Start-Process @startArgs
+    $p = Start-BoundedProcess @startArgs
     $out = ''; if (Test-Path $outF) { $out = [System.IO.File]::ReadAllText($outF) }
     $err = ''; if (Test-Path $errF) { $err = ([System.IO.File]::ReadAllText($errF)).Trim() }
     return [pscustomobject]@{ Exit = $p.ExitCode; Out = $out; Err = $err }

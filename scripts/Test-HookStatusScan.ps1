@@ -166,7 +166,7 @@ function Invoke-Scan {
     $environmentToUse = @{ HOOKMAKER_STATE_DIR = $env:HOOKMAKER_STATE_DIR }
     if ($null -ne $Environment) { foreach ($k in $Environment.Keys) { $environmentToUse[$k] = $Environment[$k] } }
     if ((Get-Command Start-Process).Parameters.ContainsKey('Environment')) { $startArgs.Environment = $environmentToUse }
-    $process = Start-Process @startArgs
+    $process = Start-BoundedProcess @startArgs
     if ($Async) { return [pscustomobject]@{ Process = $process; ResultPath = $resultPath; ErrFile = $errFile } }
     $document = $null
     if (Test-Path -LiteralPath $resultPath) { $document = [System.IO.File]::ReadAllText($resultPath) | ConvertFrom-Json }

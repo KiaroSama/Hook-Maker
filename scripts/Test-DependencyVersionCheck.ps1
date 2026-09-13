@@ -147,7 +147,7 @@ function Fire {
     if ((Get-Command Start-Process).Parameters.ContainsKey('Environment')) {
         $startArgs.Environment = @{ PATH = $env:PATH; LOCALAPPDATA = $FakeLocalAppData; DEPVER_MOCK_DIR = $MockDir }
     }
-    $proc = Start-Process @startArgs
+    $proc = Start-BoundedProcess @startArgs
     $out = if (Test-Path -LiteralPath $outFile) { ([System.IO.File]::ReadAllText($outFile)).Trim() } else { '' }
     $err = if (Test-Path -LiteralPath $errFile) { ([System.IO.File]::ReadAllText($errFile)).Trim() } else { '' }
     return [pscustomobject]@{ Exit = $proc.ExitCode; Out = $out; Err = $err }

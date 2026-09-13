@@ -135,7 +135,7 @@ function Fire {
         $claudeProjectDir = if ($Client -eq 'claude') { $Cwd } else { '' }
         $startArgs.Environment = @{ PATH = $env:PATH; GH_MOCK_DIR = $env:GH_MOCK_DIR; LOCALAPPDATA = $env:LOCALAPPDATA; CLAUDE_PROJECT_DIR = $claudeProjectDir }
     }
-    $proc = Start-Process @startArgs
+    $proc = Start-BoundedProcess @startArgs
     $out = ''
     if (Test-Path -LiteralPath $outFile) { $out = ([System.IO.File]::ReadAllText($outFile)).Trim() }
     $err = ''

@@ -349,7 +349,7 @@ function Fire {
         $childEnv['CLAUDE_PROJECT_DIR'] = if ($Codex) { '' } else { $Cwd }
         $startArgs.Environment = $childEnv
     }
-    $proc = Start-Process @startArgs
+    $proc = Start-BoundedProcess @startArgs
     $out = if (Test-Path -LiteralPath $outFile) { ([System.IO.File]::ReadAllText($outFile)).Trim() } else { '' }
     $err = if (Test-Path -LiteralPath $errFile) { ([System.IO.File]::ReadAllText($errFile)).Trim() } else { '' }
     return [pscustomobject]@{ Exit = $proc.ExitCode; Out = $out; Err = $err }

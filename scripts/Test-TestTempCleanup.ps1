@@ -130,7 +130,7 @@ function Fire {
         $env:LOCALAPPDATA = $LocalAppData
         $env:CLAUDE_PROJECT_DIR = if ($NoClaudeProjectDir) { '' } else { $Cwd }
         $env:TESTTEMPCLEANUP_TEST_SIZE_WALK_MAX_SECONDS = $SizeWalkSeconds
-        $proc = Start-Process @startArgs
+        $proc = Start-BoundedProcess @startArgs
     }
     finally {
         $env:LOCALAPPDATA = $savedLocalAppData

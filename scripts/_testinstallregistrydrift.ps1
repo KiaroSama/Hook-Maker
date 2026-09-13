@@ -308,6 +308,12 @@ for (`$i = 0; `$i -lt 8; `$i++) {
     $compCodexJson = [System.IO.File]::ReadAllText($compCodexSettings)
     $compCodexSettingsMtime = (Get-Item -LiteralPath $compCodexSettings).LastWriteTimeUtc
     $compCodexBackups = @(Get-ChildItem -LiteralPath (Split-Path -Parent $compCodexSettings) -Filter '*.backup-*' -ErrorAction SilentlyContinue).Count
+    # Necessary timing, not a readiness guess: the assertions below prove that an
+    # untouched component kept its ORIGINAL LastWriteTimeUtc, and NTFS timestamp
+    # resolution means a repair written in the same tick would be indistinguishable
+    # from no write at all. There is no signal to wait on - the gap itself is the
+    # thing being created. (Deterministic alternative for a future pass: back-date
+    # the snapshot files instead of sleeping.)
     Start-Sleep -Milliseconds 1200
 
     $compDamaged = @($compEval2.Components |
