@@ -100,6 +100,7 @@
         # uses for every record) lives in Setup-SyncGroupInstallFlows.ps1, which
         # defines functions only. The real one is loaded rather than stubbed:
         # its fallback behaviour is part of what the row model relies on.
+        . (Join-Path $ScriptRoot '_installinvoke.ps1')
         . (Join-Path $ScriptRoot 'Setup-SyncGroupInstallFlows.ps1')
         . (Join-Path $ScriptRoot 'Setup-SyncGroupInstalledHooks.ps1')
 

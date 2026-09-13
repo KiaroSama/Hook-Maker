@@ -100,6 +100,10 @@ $script:ManagedRuntimeUserConfigNames = @('.env')
 # discovered-record identity/validation/merge rules), so the whole registry
 # concern still arrives through this single dot-source.
 . (Join-Path $PSScriptRoot '_installregistry.ps1')
+# Completeness/identity guards for that registry: the generation marker that
+# stops an interrupted write being read as the whole registry, plus the id,
+# filename and schema-version validators. Loaded WITH it, never separately.
+. (Join-Path $PSScriptRoot '_installregistrygeneration.ps1')
 
 # Record validation (the shape one persisted managed record must prove before
 # any field of it is read) and legacy pre-registry discovery live in their own
