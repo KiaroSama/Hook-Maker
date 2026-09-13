@@ -535,8 +535,8 @@ try {
         # missing any required field is 'unknown' by design, so a fixture that
         # writes only four fields tests the REJECTION path, not the happy one.
         $record = [ordered]@{
-            schemaVersion       = 2
-            producerGeneration  = 2
+            schemaVersion       = 3
+            producerGeneration  = 3
             sessionId           = 't'
             fingerprint         = $fingerprint
             category            = $Category
@@ -546,6 +546,11 @@ try {
             reviewCount         = 0
             residueCount        = 0
             evidenceFingerprint = 'fixture-evidence'
+            # Generation 3: the freshness reference is when the scan STARTED, and
+            # the detection configuration travels with the verdict.
+            scanStartedUtc      = [DateTime]::UtcNow.ToString('o')
+            extraCandidateNames = @()
+            extraReviewNames    = @()
             timestampUtc        = [DateTime]::UtcNow.ToString('o')
         }
         ($record | ConvertTo-Json) | Set-Content -LiteralPath (Join-Path $stateDir ('TestTempCleanup-result-' + $key + '.json')) -Encoding utf8

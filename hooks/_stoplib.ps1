@@ -341,7 +341,21 @@ function Invoke-StopAdmission {
         $chain = Resolve-StopChain -Ledger $ledger -ChainKey $keys.ChainKey -IsContinuation $IsContinuation -EventId $eventId
         $entry = $null
         if ($null -ne $ledger.entries.PSObject.Properties[$keys.EntryKey]) { $entry = $ledger.entries.($keys.EntryKey) }
-        if ($null -ne $entry -and [string]$entry.chain -eq [string]$chain.id) {
+        # A DUPLICATE CLAIM is the same gate claiming the SAME EVENT twice -
+        # one event delivered twice, or a global and a project registration of
+        # one hook both firing. It is NOT "this gate already spoke in this
+        # chain": a gate whose evidence CHANGED must be evaluated immediately
+        # and must be able to refuse again, and a standing safety refusal (a
+        # tracked secret, CI still red, an unreconciled branch) has to survive
+        # for as long as the condition does. Refusing those was measured as six
+        # broken gates across three hooks - completion allowed while the finding
+        # was still open, which is the opposite of what a budget is for.
+        #
+        # Requires a KNOWN event identity. Without one, two claims cannot be
+        # told apart from one repeated claim, and the safe reading of an unknown
+        # is to admit and spend budget rather than to drop a refusal.
+        if ($null -ne $entry -and [string]$entry.chain -eq [string]$chain.id -and
+            $eventId -ne '' -and [string]$entry.event -eq $eventId) {
             return [pscustomobject]@{ Admitted = $false; Reason = 'already-claimed' }
         }
         if ([int]$chain.blocks -ge (Get-StopCorrectionBudget)) {
@@ -359,6 +373,7 @@ function Invoke-StopAdmission {
         Set-ObjectProperty -Object $ledger.entries -Name $keys.EntryKey -Value ([pscustomobject]@{
                 chain      = [string]$chain.id
                 hook       = $HookName
+                event      = $eventId
                 blockedUtc = [DateTime]::UtcNow.ToString('o')
             })
         # A gate that blocks is by definition reporting something unresolved.
