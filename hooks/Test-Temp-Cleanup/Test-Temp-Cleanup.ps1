@@ -124,15 +124,15 @@ $script:ReviewOnlyFilePatterns = @('.coverage', 'coverage.xml')
 # says: source control, this tool's and every supported client's own config and
 # runtime state, dependency stores, and build/compiler output roots. A client's
 # config/runtime directory must never be mistaken for test residue.
-# '.cache' is the odd one out historically: Secrets-Check, Test-Plan-Check,
-# Utf8-Encoding-Check and Docs-Freshness-Check all prune it and this hook did
-# not, so a project's pip HTTP cache (.cache/pip/http-v2/<hash fan-out>) was
-# walked and its 5-level hash fan-out tripped MAX_SCAN_DEPTH on its own - a
-# PARTIAL baseline that had nothing to do with the project's own residue.
+# '.cache' and '.ci-runner' are the same lesson twice. A pip HTTP cache
+# (.cache/pip/http-v2/<hash fan-out>) and a registered Actions runner checked out
+# in the project (.ci-runner - measured at 21,050 entries and 16 levels, 79% of
+# one project's directories) each blow the entry/depth ceilings on their own, for
+# a PARTIAL baseline describing CI or package-manager runtime state, not residue.
 $script:HardPruneNames = @(
     '.git', '.ai', '.claude', '.codex', 'node_modules', '.venv', 'venv', 'env',
     '__pypackages__', 'vendor', 'target', 'dist', 'build', 'out', '.next',
-    '.nuxt', '.tox', '.svn', '.hg', 'graphify-out', 'logs', '.cache'
+    '.nuxt', '.tox', '.svn', '.hg', 'graphify-out', 'logs', '.cache', '.ci-runner'
 )
 # Bounds the per-candidate size walk so one pathological tree cannot make the
 # hook slow. ENTRIES, not files: a tree of empty directories contains no files

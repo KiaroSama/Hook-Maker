@@ -211,7 +211,7 @@ if ($config.ContainsKey('UTF8_EXCEPTION_FILE') -and -not [string]::IsNullOrWhite
 
 # ---- constants --------------------------------------------------------------
 # Directory names pruned BEFORE descent (Secrets-Check.ps1 $excludedDirs).
-$script:ExcludedDirs = @('.git', 'node_modules', 'vendor', 'vendors', 'dist', 'build', 'out', 'target', 'coverage', '.cache', 'cache', '__pycache__', '.venv', 'venv', 'env', '.ai', 'graphify-out', '.claude', '.codex', '.agents', 'bin', 'obj', '.tox', 'site-packages')
+$script:ExcludedDirs = @('.git', 'node_modules', 'vendor', 'vendors', 'dist', 'build', 'out', 'target', 'coverage', '.cache', 'cache', '__pycache__', '.venv', 'venv', 'env', '.ai', 'graphify-out', '.claude', '.codex', '.agents', 'bin', 'obj', '.ci-runner', '.tox', 'site-packages')
 # Extensions that may DOWNGRADE an ambiguous 'invalid'/'oversized' result to
 # binary. Never consulted before the bytes themselves have been examined.
 $script:KnownBinaryExtensions = @('.png', '.jpg', '.jpeg', '.gif', '.bmp', '.ico', '.webp', '.avif', '.pdf', '.zip', '.gz', '.tgz', '.bz2', '.xz', '.7z', '.rar', '.jar', '.war', '.exe', '.dll', '.so', '.dylib', '.pdb', '.lib', '.a', '.o', '.obj', '.bin', '.dat', '.db', '.sqlite', '.sqlite3', '.mdb', '.mp3', '.mp4', '.m4a', '.avi', '.mov', '.mkv', '.wav', '.ogg', '.flac', '.woff', '.woff2', '.ttf', '.otf', '.eot', '.class', '.pyc', '.pyo', '.pyd', '.wasm', '.node', '.iso', '.dmg', '.msi', '.cab', '.nupkg', '.snupkg', '.whl', '.egg', '.parquet', '.xls', '.xlsx', '.doc', '.docx', '.ppt', '.pptx', '.swf', '.psd', '.ai0')

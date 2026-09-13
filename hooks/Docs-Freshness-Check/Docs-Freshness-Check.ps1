@@ -79,7 +79,7 @@ $script:HardExcludeDirs = @(
     '.git', '.ai', '.claude', '.codex', '.agents', '.cross-project-sync',
     'node_modules', 'vendor', 'vendors', 'dist', 'build', 'out', 'target',
     'coverage', '.cache', 'cache', '__pycache__', '.venv', 'venv', 'env',
-    'bin', 'obj', 'graphify-out', 'logs', '.next', '.nuxt', '.tox'
+    'bin', 'obj', 'graphify-out', 'logs', '.next', '.nuxt', '.tox', '.ci-runner'
 )
 $script:HardExcludeNameFragments = @('fixture', 'snapshot', 'golden', '__snapshots__')
 $script:LegalNamePattern = '^(LICENSE|NOTICE|COPYING)'
