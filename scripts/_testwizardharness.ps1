@@ -26,7 +26,7 @@ function Invoke-Wizard {
         # this only adds HOOKMAKER_STATE_DIR, everything else stays inherited.
         $startArgs.Environment = @{ HOOKMAKER_STATE_DIR = $IsolatedStateDir }
     }
-    $p = Start-Process @startArgs
+    $p = Start-BoundedProcess @startArgs
     $out = ''; if (Test-Path $outF) { $out = [System.IO.File]::ReadAllText($outF) }
     $err = ''; if (Test-Path $errF) { $err = ([System.IO.File]::ReadAllText($errF)).Trim() }
     return [pscustomobject]@{ Exit = $p.ExitCode; Out = [regex]::Replace($out, "\x1b\[[0-9;]*m", ''); Err = $err }

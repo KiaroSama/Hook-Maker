@@ -167,7 +167,7 @@ function Fire {
         # references Test-Temp-Cleanup - every "not installed" fixture would
         # silently read as installed against the real profile.
         $env:USERPROFILE = $FakeUserProfile
-        $proc = Start-Process @startArgs
+        $proc = Start-BoundedProcess @startArgs
     }
     finally {
         $env:PATH = $savedPath

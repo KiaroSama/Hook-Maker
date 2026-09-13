@@ -24,7 +24,7 @@
     $prevOrphanEnv = $env:ORPHAN_PIDFILE
     $env:ORPHAN_PIDFILE = $orphanPidFile
     try {
-        $rp = Start-Process -FilePath (Get-Process -Id $PID).Path -Wait -NoNewWindow -PassThru -ArgumentList @(
+        $rp = Start-BoundedProcess -FilePath (Get-Process -Id $PID).Path -Wait -NoNewWindow -PassThru -ArgumentList @(
             '-NoLogo', '-NoProfile', '-File', $orphanWrapper)
     }
     finally { $env:ORPHAN_PIDFILE = $prevOrphanEnv }
@@ -102,7 +102,7 @@
     $cleanStable = $true
     $cleanDetail = ('all ' + $cleanIterations + ' iterations propagated 7 with no false orphan')
     for ($ci = 1; $ci -le $cleanIterations; $ci++) {
-        $rpClean = Start-Process -FilePath (Get-Process -Id $PID).Path -Wait -NoNewWindow -PassThru -ArgumentList @(
+        $rpClean = Start-BoundedProcess -FilePath (Get-Process -Id $PID).Path -Wait -NoNewWindow -PassThru -ArgumentList @(
             '-NoLogo', '-NoProfile', '-File', $cleanWrapper)
         $cleanDoc = $null
         try { $cleanDoc = Get-Content -LiteralPath $cleanResult -Raw | ConvertFrom-Json } catch { }
@@ -128,7 +128,7 @@
     Write-Utf8 $busyWrapper (
         "& '$Runner' -FilePath 'pwsh' -Arguments @('-NoProfile','-File','$busySuite') " +
         "-TimeoutSeconds 30 -IdleTimeoutSeconds 2 -HeartbeatSeconds 1 -ResultPath '$busyResult' -Quiet`nexit `$LASTEXITCODE`n")
-    $rp = Start-Process -FilePath (Get-Process -Id $PID).Path -Wait -NoNewWindow -PassThru -ArgumentList @(
+    $rp = Start-BoundedProcess -FilePath (Get-Process -Id $PID).Path -Wait -NoNewWindow -PassThru -ArgumentList @(
         '-NoLogo', '-NoProfile', '-File', $busyWrapper)
     $busyDoc = $null
     try { $busyDoc = Get-Content -LiteralPath $busyResult -Raw | ConvertFrom-Json } catch { }
@@ -279,7 +279,7 @@
             "& '$Runner' -FilePath 'pwsh' -ArgumentsJson '" + ([string]$argCase.Json).Replace("'", "''") + "' " +
             "-TimeoutSeconds 60 -IdleTimeoutSeconds 30 -ResultPath '$argResult' -Quiet`nexit `$LASTEXITCODE`n")
         $argOut = Join-Path $Work ('argjson-out-' + [guid]::NewGuid().ToString('N').Substring(0, 8) + '.txt')
-        $null = Start-Process -FilePath (Get-Process -Id $PID).Path -Wait -NoNewWindow -PassThru `
+        $null = Start-BoundedProcess -FilePath (Get-Process -Id $PID).Path -Wait -NoNewWindow -PassThru `
             -RedirectStandardError $argOut -ArgumentList @('-NoLogo', '-NoProfile', '-File', $argWrapper)
         $argErr = ''
         try { $argErr = [System.IO.File]::ReadAllText($argOut) } catch { }
@@ -315,7 +315,7 @@
     Write-Utf8 $fpWrapper (
         "& '$Runner' -FilePath 'tools/localhost-runner.exe' -WorkingDirectory '$fpDir' " +
         "-ArgumentsJson '[]' -TimeoutSeconds 60 -ResultPath '$fpResult' -Quiet`nexit `$LASTEXITCODE`n")
-    $null = Start-Process -FilePath (Get-Process -Id $PID).Path -Wait -NoNewWindow -PassThru `
+    $null = Start-BoundedProcess -FilePath (Get-Process -Id $PID).Path -Wait -NoNewWindow -PassThru `
         -ArgumentList @('-NoLogo', '-NoProfile', '-File', $fpWrapper)
     $fpDoc = $null
     try { $fpDoc = Get-Content -LiteralPath $fpResult -Raw | ConvertFrom-Json } catch { }
@@ -334,7 +334,7 @@
     Write-Utf8 $fpMissWrapper (
         "& '$Runner' -FilePath './nope/pwsh.exe' -WorkingDirectory '$fpDir' " +
         "-ArgumentsJson '[""-NoProfile"",""-Command"",""exit 0""]' -TimeoutSeconds 60 -ResultPath '$fpMissResult' -Quiet`nexit `$LASTEXITCODE`n")
-    $null = Start-Process -FilePath (Get-Process -Id $PID).Path -Wait -NoNewWindow -PassThru `
+    $null = Start-BoundedProcess -FilePath (Get-Process -Id $PID).Path -Wait -NoNewWindow -PassThru `
         -RedirectStandardError $fpMissErr -ArgumentList @('-NoLogo', '-NoProfile', '-File', $fpMissWrapper)
     $fpMissText = ''
     try { $fpMissText = [System.IO.File]::ReadAllText($fpMissErr) } catch { }
@@ -361,7 +361,7 @@
         "`$env:PATH = '$pathExtDir' + ';' + `$env:PATH`n" +
         "& '$Runner' -FilePath 'zzzprobe' -Arguments @() " +
         "-TimeoutSeconds 60 -IdleTimeoutSeconds 30 -ResultPath '$bareResult' -Quiet`nexit `$LASTEXITCODE`n")
-    $null = Start-Process -FilePath (Get-Process -Id $PID).Path -Wait -NoNewWindow -PassThru -ArgumentList @(
+    $null = Start-BoundedProcess -FilePath (Get-Process -Id $PID).Path -Wait -NoNewWindow -PassThru -ArgumentList @(
         '-NoLogo', '-NoProfile', '-File', $bareWrapper)
     $bareDoc = $null
     try { $bareDoc = Get-Content -LiteralPath $bareResult -Raw | ConvertFrom-Json } catch { }
@@ -391,7 +391,7 @@
         "Invoke-Expression `$body`n" +
         "foreach (`$root in @(0, 4)) { Write-Output (`$root.ToString() + '=' + (@(Get-OwnedProcessTree -RootId `$root).Count)) }`n")
     $treeOut = Join-Path $Work 'tree-probe-out.txt'
-    $null = Start-Process -FilePath (Get-Process -Id $PID).Path -Wait -NoNewWindow -PassThru `
+    $null = Start-BoundedProcess -FilePath (Get-Process -Id $PID).Path -Wait -NoNewWindow -PassThru `
         -RedirectStandardOutput $treeOut -ArgumentList @('-NoLogo', '-NoProfile', '-File', $treeProbe)
     $treeText = ''
     try { $treeText = [System.IO.File]::ReadAllText($treeOut) } catch { }
