@@ -497,6 +497,24 @@
     $rlDiff = Fire -HookPath $libHook -Cwd $libProj -RawStdin (New-PromptStdin -Cwd $libProj -EventName 'UserPromptSubmit' -Prompt 'now write powershell windows scripts' -SessionId 'lib-1')
     Check 'a DIFFERENT prompt with different matches re-reports in the same session' (
         $rlDiff.Out -match 'powershell-windows' -and $rlDiff.Out -notmatch 'basket-weaving') $rlDiff.Out
+    # A skill is addressed by the name: and description: in its SKILL.md, so the
+    # shortlist scores those - not the folder name alone. Its own library, so the
+    # index is keyed by a configuration these two fixtures are actually in.
+    $idProj = New-Proj 'LibraryIdentity'
+    $idLib = Join-Path $Work 'identity-library'
+    foreach ($row in @(
+            @('analysis\fzzlebrk', 'fzzlebrk', 'Render vector tile basemaps for offline mapping'),
+            @('science\glycoengineering', 'glycoengineering', 'Metabolic pathway work on glycans'))) {
+        $d = Join-Path $idLib $row[0]
+        New-Item -ItemType Directory -Path $d -Force | Out-Null
+        Write-Utf8 (Join-Path $d 'SKILL.md') ("---`nname: " + $row[1] + "`ndescription: " + $row[2] + "`n---`nbody")
+    }
+    $idHook = New-ConfiguredSkillsHookCopy -EnvOverrides @{ SKILLS_DIR = $idLib }
+    $rid = Fire -HookPath $idHook -Cwd $idProj -RawStdin (New-PromptStdin -Cwd $idProj -EventName 'UserPromptSubmit' -Prompt 'render offline basemaps and review the engineering plan' -SessionId 'id-1')
+    Check 'a library skill is found by its DESCRIPTION when its folder shares no token with the prompt' (
+        $rid.Out -match 'fzzlebrk') $rid.Out
+    Check 'a folder that merely CONTAINS a prompt token is no longer offered for it' (
+        $rid.Out -notmatch 'glycoengineering') $rid.Out
     # An already-installed skill must not be offered as an import: that would ask
     # for an authorization that buys nothing.
     $instProj = New-Proj 'LibraryAlreadyInstalled'
