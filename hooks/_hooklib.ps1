@@ -898,6 +898,21 @@ function Set-StopBlockMarker {
     }
 }
 
+# The identity a hook's OWN "I already said this" fingerprint must carry.
+#
+# A fingerprint keyed on the session alone leaks across task boundaries: the
+# same missing requirement on the NEXT genuine task reads the previous task's
+# stamp and stays silent, and a parent and its subagent share one slot. Session
+# plus agent plus the current continuation chain separates all three.
+#
+# Degrades to session+agent on a runtime with no ledger beside it - narrower
+# than before, never wider.
+function Get-HookSuppressionIdentity {
+    param([Parameter(Mandatory = $true)]$HookInput)
+    if ($script:StopLedgerReady) { return (Get-StopSuppressionIdentity -HookInput $HookInput) }
+    return ([string](Get-Field $HookInput 'session_id') + '|main|')
+}
+
 # Claim admission and emit the block in ONE step, so no gate can emit a
 # continuation it was not admitted for. That pairing used to be the caller's to
 # remember, and every caller forgot it: the marker was written, its result

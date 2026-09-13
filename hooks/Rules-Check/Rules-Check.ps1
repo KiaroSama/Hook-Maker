@@ -235,7 +235,10 @@ function Get-EvidenceTranscriptFallbackPath {
     # next Stop of the same session; a changed one reports immediately.
     function Test-ShouldReportClosing {
         param([string]$StateToken)
-        $fp = Get-ShortHash ($sessionId + '|' + $eventName + '|' + $StateToken)
+        # Session ALONE let a previous task's stamp mute the same finding on
+        # the next genuine task, and merged a parent with its subagent. The
+        # identity carries the agent and the continuation chain too.
+        $fp = Get-ShortHash ((Get-HookSuppressionIdentity -HookInput $hookInput) + '|' + $eventName + '|' + $StateToken)
         try {
             if (Test-Path -LiteralPath $gatePath -PathType Leaf) {
                 if (([System.IO.File]::ReadAllText($gatePath)).Trim() -eq $fp) { return $false }
