@@ -22,11 +22,13 @@
 # stays completely silent (no reminder at all this Stop) when the working
 # tree is dirty, the branch is ahead/unpushed, the exact release commit isn't
 # known to be pushed, CI exists but is not verified green for that exact SHA,
-# or Test-Temp-Cleanup (when installed for this project) has not reported a
-# fresh `clean` result for the CURRENT repo state. If Test-Temp-Cleanup races
-# on the same Stop and hasn't recorded yet, this hook simply stays silent and
-# re-evaluates on the next Stop - it never loops or retries within one
-# invocation.
+# or Test-Temp-Cleanup (when installed for this project) has not left a
+# coordination record this hook can still VERIFY - current schema and producer
+# generation, this session, a complete scan, recent, internally consistent, and
+# with no cleanup-relevant path on disk newer than the scan it describes. If
+# Test-Temp-Cleanup races on the same Stop and hasn't recorded yet, this hook
+# simply stays silent and re-evaluates on the next Stop - it never loops or
+# retries within one invocation.
 #
 # Token-efficient by design:
 # - Fires only in projects with a wrangler config (wrangler.toml/.json/.jsonc)
@@ -60,6 +62,11 @@ if ([string]::IsNullOrWhiteSpace($eventName)) { $eventName = 'Stop' }
 # a custom-events install would otherwise run this whole body - git calls
 # included - on UserPromptSubmit.
 if ($eventName -ne 'Stop' -and $eventName -ne 'SubagentStop') { exit 0 }
+# This task's identity, read once. Get-CleanupEvidenceVerdict uses it as the
+# producer/consumer barrier: a coordination record written by an EARLIER session
+# describes a task that has already ended, however current its repo fingerprint
+# still looks.
+$script:CleanupSessionId = [string](Get-Field $hookInput 'session_id')
 $cwd = [string](Get-Field $hookInput 'cwd')
 if ([string]::IsNullOrWhiteSpace($cwd) -or -not (Test-Path -LiteralPath $cwd -PathType Container)) {
     exit 0
@@ -102,6 +109,11 @@ $script:CleanupCategories = @('clean', 'review-required', 'residue-confirmed', '
 # unresolved or unproven, so none of them may show a deployment decision. An
 # unrecognized value (an older or newer producer) is treated the same way.
 $script:CleanupReleaseReadyCategories = @('clean')
+
+# The record-as-evidence contract and its filesystem revalidation live in a
+# sibling file, which the install plan stages beside this one. Everything that
+# reads this hook as SOURCE must read both - see that file's header.
+. (Join-Path $PSScriptRoot '_cleanupevidence.ps1')
 
 # (Install evidence is exact managed OWNERSHIP - see Test-CleanupInstalled and
 # the ownership header below. A runtime directory listing never was evidence and
@@ -227,8 +239,8 @@ $script:CleanupManifestCap = 64
 # whose executing body was never checked. Only a required set this hook knows on
 # its own can turn that omission into a rejection.
 $script:CleanupRequiredRuntimeLeaves = @{
-    'claude' = @('_hooklib.ps1')
-    'codex'  = @('_hooklib.ps1')
+    'claude' = @('_hooklib.ps1', '_stoplib.ps1')
+    'codex'  = @('_hooklib.ps1', '_stoplib.ps1')
 }
 
 # Mirrored from scripts\_clientcapability.ps1 for the same structural reason as
@@ -515,18 +527,6 @@ function Test-CleanupInstalled {
     return $false
 }
 
-# Reads Test-Temp-Cleanup's coordination state, only trusting it when its
-# recorded repo-state fingerprint still matches the CURRENT state (never a
-# stale/racing read from an earlier Stop).
-function Get-CleanupCoordinationState {
-    param([string]$Root)
-    $record = Read-JsonFile -Path (Get-CleanupResultPath -Root $Root)
-    if ($null -eq $record) { return $null }
-    $recordedFingerprint = [string](Get-Field $record 'fingerprint')
-    if ([string]::IsNullOrWhiteSpace($recordedFingerprint)) { return $null }
-    if ($recordedFingerprint -ne (Get-RepoStateFingerprint -ProjectRoot $Root)) { return $null }
-    return [string](Get-Field $record 'category')
-}
 
 # The commit the readiness gate actually verified. The block message names it,
 # so the evidence it acted on is the release commit itself and not merely the
@@ -600,7 +600,8 @@ function Test-ReleaseReady {
     #
     #     prove an ACTIVE MANAGED installation
     #       -> only then read coordination state
-    #       -> require its fingerprint to match the CURRENT repo state
+    #       -> require a CURRENT, THIS-SESSION, COMPLETE, RECENT record whose
+    #          cleanup-relevant filesystem evidence is still true right now
     #       -> require category 'clean'
     #
     # A coordination record is NEVER installation evidence on its own. It used to
@@ -611,10 +612,10 @@ function Test-ReleaseReady {
     # registration and the installed runtime, and the record is then read only to
     # answer WHAT it currently says.
     if (Test-CleanupInstalled -Root $Root) {
-        $cleanupCategory = Get-CleanupCoordinationState -Root $Root
-        # Missing/stale ($null), a non-ready category, and an unrecognized
-        # category all keep this hook silent until a later Stop.
-        if ($script:CleanupCategories -notcontains $cleanupCategory) { return $false }
+        # Missing, unusable, stale and unrecognized all arrive here as
+        # 'unknown', so one check covers every one of them: anything that is not
+        # positively release-ready keeps this hook silent until a later Stop.
+        $cleanupCategory = Get-CleanupEvidenceVerdict -Root $Root -SessionId $script:CleanupSessionId
         if ($script:CleanupReleaseReadyCategories -notcontains $cleanupCategory) { return $false }
     }
 
