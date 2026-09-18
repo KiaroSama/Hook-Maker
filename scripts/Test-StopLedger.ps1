@@ -237,6 +237,64 @@ Check 'spending the allowance leaves the findings recorded as unresolved' (
 Check 'negative control: a project with no gate history reports nothing' (
     @(Get-StopUnresolvedHistory -ProjectRoot 'C:\proj\never-touched').Count -eq 0)
 
+# ---- L01: the finalization barrier -------------------------------------
+# The user's complaint, verbatim: the wrap-up 'does not come at the very end -
+# then a few more hooks arrive, and it repeats'. A gate blocks after the answer,
+# the agent corrects and writes a SECOND wrap-up, the next gate blocks again.
+Check 'a real wrap-up is recognised (both labels, each starting a line)' (
+    Test-ClosingSummaryPublished -Text "All set.`nDONE`n- shipped X`nREMAINING`n- nothing")
+Check 'the JSONL escape form counts as a line start too' (
+    Test-ClosingSummaryPublished -Text 'All set.
+DONE
+- shipped X
+REMAINING
+- nothing')
+Check 'markdown bold/bullet decoration does not hide it' (
+    Test-ClosingSummaryPublished -Text "x`n**DONE**`ny`n**REMAINING**`nz")
+Check 'NEGATIVE: prose that merely mentions the words is not a wrap-up' (
+    -not (Test-ClosingSummaryPublished -Text 'I will write DONE and REMAINING at the end.'))
+Check 'NEGATIVE: only one of the two labels is not a wrap-up' (
+    -not (Test-ClosingSummaryPublished -Text "x`nDONE`n- shipped"))
+Check 'NEGATIVE: empty text is not a wrap-up' (-not (Test-ClosingSummaryPublished -Text ''))
+
+# The clause a blocking gate appends. Two forms, and picking the wrong one is
+# exactly what produced the repeats.
+$finProj = 'C:\projinalize'
+$finFresh = New-StopInput -Session 'FIN' -Continuation $false -Cwd $finProj
+$clauseBefore = Get-StopFinalizationClause -HookInput $finFresh
+Check 'before any wrap-up, the clause says it belongs in the LAST message' (
+    $clauseBefore -match 'after which nothing blocks') $clauseBefore
+Check 'and it forbids writing one in this correction turn' (
+    $clauseBefore -match 'do not write the DONE / REMAINING wrap-up in this correction turn') $clauseBefore
+
+# Now the agent HAS published one - the event carries its own final answer.
+$finPublished = New-StopInput -Session 'FIN' -Continuation $true -Cwd $finProj
+Add-Member -InputObject $finPublished -NotePropertyName 'last_assistant_message' -NotePropertyValue "Fixed it.`nDONE`n- pushed`nREMAINING`n- nothing"
+$clauseAfter = Get-StopFinalizationClause -HookInput $finPublished
+Check 'once published, the clause REFUSES a second wrap-up' (
+    $clauseAfter -match 'Do NOT write a second wrap-up') $clauseAfter
+Check 'and it names this a correction turn' ($clauseAfter -match 'CORRECTION turn') $clauseAfter
+
+# The state is REMEMBERED: a later block in the same task still refuses, even
+# when that later event carries no closing text of its own.
+$null = Set-StopBlockMarker -HookInput $finPublished -HookName 'Gate-A'
+$finLater = New-StopInput -Session 'FIN' -Continuation $true -Cwd $finProj
+$clauseLater = Get-StopFinalizationClause -HookInput $finLater
+Check 'a later gate with no closing text still knows the wrap-up was published' (
+    $clauseLater -match 'Do NOT write a second wrap-up') $clauseLater
+
+# A DIFFERENT task must start clean - the refusal is per task, not per project.
+$finOther = New-StopInput -Session 'FIN-OTHER' -Continuation $false -Cwd $finProj
+Check 'a different task is not held to another task''s published wrap-up' (
+    (Get-StopFinalizationClause -HookInput $finOther) -match 'after which nothing blocks')
+
+# And the clause actually reaches the user: every gate emits through this path.
+$finEmitProj = 'C:\projinalize-emit'
+$finEmit = New-StopInput -Session 'EMIT' -Continuation $false -Cwd $finEmitProj
+Add-Member -InputObject $finEmit -NotePropertyName 'last_assistant_message' -NotePropertyValue "Shipped.`nDONE`n- a`nREMAINING`n- b"
+$emitted = Write-StopBlockResult -HookInput $finEmit -HookName 'Gate-Emit' -EventName 'Stop' -Reason 'ORIGINAL GATE TEXT'
+Check 'the block was emitted' ($emitted.Emitted -eq $true) ([string]$emitted.ExitCode)
+
 # ---- negative control ----------------------------------------------------
 # Without this, a Test-StopStandDown that returned a constant $true would pass
 # most of the assertions above.

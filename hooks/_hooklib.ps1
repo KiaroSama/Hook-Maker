@@ -936,6 +936,18 @@ function Write-StopBlockResult {
     }
     $text = $Reason
     if ([string]::IsNullOrEmpty($text)) { $text = $Message }
+    # EVERY block carries the finalization clause, because every block is the
+    # thing that turns one wrap-up into three: the agent answers, a gate sends it
+    # back, it corrects, it writes another wrap-up, the next gate sends it back
+    # again. The gate that interrupted is the only component that knows this is a
+    # correction turn, so it is the one that has to say so.
+    if ($script:StopLedgerReady) {
+        try {
+            $clause = Get-StopFinalizationClause -HookInput $HookInput
+            if (-not [string]::IsNullOrWhiteSpace($clause)) { $text = $text + "`n" + $clause }
+        }
+        catch { }
+    }
     $emit = Write-HookResult -EventName $EventName -Kind 'block' -Reason $text -Message $text
     return [pscustomobject]@{ ExitCode = $emit.ExitCode; Emitted = $true; Admission = $admit }
 }

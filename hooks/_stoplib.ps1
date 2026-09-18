@@ -576,3 +576,99 @@ function Get-ClosingAssistantText {
     if ($null -eq $text) { return [pscustomobject]@{ Text = ''; Source = ''; Known = $false } }
     return [pscustomobject]@{ Text = $text; Source = 'transcript'; Known = $true }
 }
+
+# ---- L01: the finalization barrier ----------------------------------------
+#
+# THE DEFECT THIS EXISTS FOR, in the user's words: the wrap-up "does not come at
+# the very end - then a few more hooks arrive, and it repeats." Both halves are
+# real and they have different causes.
+#
+# REPETITION is enforceable here and is what this code fixes. A gate blocks
+# after the answer was written, the agent does the correction, writes a second
+# wrap-up, another gate blocks, and the user sees three. Once a wrap-up has been
+# observed for a task, every later block in that task says so, and says not to
+# write another.
+#
+# ORDERING is NOT fully enforceable from a Stop hook, and claiming otherwise
+# would be the dishonest fix this repair was told to avoid. On Claude Code the
+# assistant's message is already displayed before Stop runs, so no Stop handler
+# can retract it or move a later correction ahead of it. What IS enforceable is
+# that the correction turn adds no second wrap-up, so exactly one is shown - and
+# that the agent is told, before it writes, which gates must already be
+# satisfied for its message to be the last one. The residual limit is stated in
+# docs rather than papered over.
+
+# Does this closing text carry a wrap-up? Deliberately structural rather than a
+# keyword sweep: both section labels, each starting a line, in a text that is
+# the agent's own final answer. A gate's own instruction text names DONE and
+# REMAINING constantly, so a bare keyword search would see one everywhere.
+function Test-ClosingSummaryPublished {
+    param([AllowEmptyString()][string]$Text)
+    if ([string]::IsNullOrWhiteSpace($Text)) { return $false }
+    # A transcript line break is the two-character \n escape as often as a real
+    # one - the same rule the other closing detectors follow.
+    $anchor = '(?im)(?:^|\n)[ \t]{0,8}(?:[-*>#]+[ \t]{0,4})?(?:\*\*)?'
+    $hasDone = ($Text -match ($anchor + 'DONE\b'))
+    $hasRemaining = ($Text -match ($anchor + 'REMAINING\b'))
+    return ($hasDone -and $hasRemaining)
+}
+
+# Record that this task published its wrap-up, so later blocks can refuse a
+# second one. Keyed by the continuation chain, which is the task identity the
+# admission ledger already maintains.
+function Set-TaskSummaryPublished {
+    param([Parameter(Mandatory = $true)]$HookInput)
+    $path = Get-StopLedgerPath -ProjectRoot ([string](Get-Field $HookInput 'cwd'))
+    $keys = Get-StopLedgerKeys -HookInput $HookInput -HookName 'summary-state'
+    $stopActive = Get-Field $HookInput 'stop_hook_active'
+    $isContinuation = ($null -ne $stopActive -and [bool]$stopActive)
+    $eventId = Get-StopEventId -HookInput $HookInput
+    $null = Invoke-StopLedgerUpdate -Path $path -Mutate {
+        param($ledger)
+        # RESOLVE, never "read and give up". The flag has to outlive the event that
+        # observed the wrap-up: the gate that sees it may be the first to touch
+        # this task, and a flag dropped because no chain existed yet is exactly how
+        # the second wrap-up got through. Resolve-StopChain is the same task
+        # identity admission uses, so the flag lands on the task it belongs to.
+        $chain = Resolve-StopChain -Ledger $ledger -ChainKey $keys.ChainKey -IsContinuation $isContinuation -EventId $eventId
+        Set-ObjectProperty -Object $chain -Name 'summaryPublishedUtc' -Value ([DateTime]::UtcNow.ToString('o'))
+        Set-ObjectProperty -Object $ledger.chains -Name $keys.ChainKey -Value $chain
+        return 'ok'
+    }
+}
+
+function Test-TaskSummaryAlreadyPublished {
+    param([Parameter(Mandatory = $true)]$HookInput)
+    $path = Get-StopLedgerPath -ProjectRoot ([string](Get-Field $HookInput 'cwd'))
+    if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { return $false }
+    $ledger = Read-StopLedger -Path $path
+    $keys = Get-StopLedgerKeys -HookInput $HookInput -HookName 'summary-state'
+    if ($null -eq $ledger.chains.PSObject.Properties[$keys.ChainKey]) { return $false }
+    $chain = $ledger.chains.($keys.ChainKey)
+    if ($null -eq $chain.PSObject.Properties['summaryPublishedUtc']) { return $false }
+    return (-not [string]::IsNullOrWhiteSpace([string]$chain.summaryPublishedUtc))
+}
+
+# The clause every block carries. Two forms, because the two situations need
+# opposite instructions and guessing between them is what produced the repeats.
+function Get-StopFinalizationClause {
+    param([Parameter(Mandatory = $true)]$HookInput)
+    $published = $false
+    try { $published = Test-TaskSummaryAlreadyPublished -HookInput $HookInput } catch { $published = $false }
+    if (-not $published) {
+        $evidence = $null
+        try { $evidence = Get-ClosingAssistantText -HookInput $HookInput } catch { $evidence = $null }
+        if ($null -ne $evidence -and $evidence.Known -and (Test-ClosingSummaryPublished -Text ([string]$evidence.Text))) {
+            $published = $true
+            try { Set-TaskSummaryPublished -HookInput $HookInput } catch { }
+        }
+    }
+    if ($published) {
+        return ('FINALIZATION: a DONE / REMAINING wrap-up was already published for this task. This is a CORRECTION turn - ' +
+            'resolve what this block names and stop. Do NOT write a second wrap-up: one per task is the whole rule, and ' +
+            'repeating it is what makes the real one unreadable. If the correction changes what the published wrap-up ' +
+            'claimed, say only that, in one line.')
+    }
+    return ('FINALIZATION: do not write the DONE / REMAINING wrap-up in this correction turn. It belongs in the message ' +
+        'after which nothing blocks - so satisfy the remaining gates first, then write it exactly once, last.')
+}
