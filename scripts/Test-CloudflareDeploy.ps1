@@ -419,7 +419,7 @@ try {
         # consumer's CleanupRequiredRuntimeLeaves was updated with it - this fixture
         # was not, so it staged a runtime a real install no longer produces and every
         # positive case below silently became "cleanup not installed".
-        $runtimeLeaves = @('_hooklib.ps1', '_stoplib.ps1', 'Test-Temp-Cleanup.ps1')
+        $runtimeLeaves = @('_hooklib.ps1', '_stoplib.ps1', '_evidencelib.ps1', 'Test-Temp-Cleanup.ps1')
         foreach ($leaf in $runtimeLeaves) {
             # -MissingRuntime removes only the REGISTERED script; the rest of the
             # runtime stays, so that case still fails for its own reason.
