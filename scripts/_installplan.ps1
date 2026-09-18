@@ -512,6 +512,15 @@ function Get-ManagedInstallPlan {
         Add-Artifact (New-PlanArtifact -RelativePath ($FriendlyName + '/_stoplib.ps1') -Kind 'File' -SourcePath $stopLib)
     }
 
+    # _evidencelib.ps1 travels with them for the same reason: _hooklib.ps1
+    # dot-sources it as an optional sibling, so a runtime installed FROM HERE
+    # must get it or the closing gates fall back to the prefix-only test this
+    # file was written to replace.
+    $evidenceLib = Join-Path $ToolRoot 'hooks\_evidencelib.ps1'
+    if (Test-Path -LiteralPath $evidenceLib -PathType Leaf) {
+        Add-Artifact (New-PlanArtifact -RelativePath ($FriendlyName + '/_evidencelib.ps1') -Kind 'File' -SourcePath $evidenceLib)
+    }
+
     # The installed main script is GENERATED (source bytes + a deterministic
     # dot-source rewrite), so it is hashed and verified exactly like any other
     # planned artifact. Repository sources are never modified.
