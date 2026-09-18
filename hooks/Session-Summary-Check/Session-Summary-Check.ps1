@@ -40,8 +40,20 @@ if ($eventName -ne 'SessionStart' -and $eventName -ne 'UserPromptSubmit') { exit
 $cwd = [string](Get-Field $hookInput 'cwd')
 $sessionId = [string](Get-Field $hookInput 'session_id')
 $stateDir = Join-Path $env:LOCALAPPDATA 'HookMaker\state'
+# The LEGACY marker glob below must keep using this raw key: that is how
+# Get-StopBlockMarkerPath spells the files it wrote, and changing it here would
+# stop matching them.
 $projectKey = Get-ShortHash ([string]$cwd).ToLowerInvariant()
-$deliveryPath = Join-Path $stateDir ('SessionSummary-' + $projectKey + '.txt')
+# This hook's OWN state uses the canonical key (L04). A raw lowercased path gives
+# a different key for "C:\p", "C:\p\" and "C:/p" - the same project arriving
+# under a different spelling would keep its own separate cooldown and be
+# reminded twice. Falls back to the raw key on a runtime with no ledger beside
+# it, which is narrower than before, never wider.
+$stateKey = $projectKey
+if ($null -ne (Get-Command Get-StopProjectKey -ErrorAction SilentlyContinue)) {
+    try { $stateKey = Get-StopProjectKey -ProjectRoot $cwd } catch { $stateKey = $projectKey }
+}
+$deliveryPath = Join-Path $stateDir ('SessionSummary-' + $stateKey + '.txt')
 
 # Which sibling GATES have blocked so far in this session. Every gate in this
 # set records a marker immediately before it emits a block (Set-StopBlockMarker
