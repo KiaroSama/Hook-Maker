@@ -382,12 +382,19 @@ try {
     $spaces = New-Object System.Collections.Generic.List[string]
     $prevRoot = $env:HOOKMAKER_TEST_TEMP_ROOT
     try {
-        $tempRoot = ([System.IO.Path]::GetTempPath()).TrimEnd('\', '/')
+        $tempRoot = ([System.IO.Path]::GetTempPath()).TrimEnd('', '/')
+        $projectWorkRoot = Join-Path (Join-Path (Split-Path -Parent $PSScriptRoot) '.ci-work') 'windows'
 
+        # THE DEFAULT IS THE OWNING PROJECT, not the machine's shared temp
+        # (global-environment-rules.md). This assertion used to pin the
+        # opposite, which is how the policy violation stayed invisible.
         $env:HOOKMAKER_TEST_TEMP_ROOT = $null
         $w1 = New-TestWorkspace -Prefix 'hookmaker-nwtest'
         [void]$spaces.Add($w1)
-        Check 'unset: the workspace lands directly under %TEMP% (unchanged default)' ((Split-Path -Parent $w1) -eq $tempRoot) $w1
+        Check 'unset: the workspace lands under the PROJECT work root, not %TEMP%' (
+            (Split-Path -Parent $w1) -eq $projectWorkRoot) ($w1 + ' want-parent ' + $projectWorkRoot)
+        Check 'unset: and it is nowhere under the machine-wide temp directory' (
+            -not $w1.StartsWith($tempRoot, [System.StringComparison]::OrdinalIgnoreCase)) $w1
         Check 'unset: the returned path is an existing directory named for the prefix' (
             (Test-Path -LiteralPath $w1 -PathType Container) -and (Split-Path -Leaf $w1).StartsWith('hookmaker-nwtest-')) $w1
 
@@ -398,25 +405,30 @@ try {
         $env:HOOKMAKER_TEST_TEMP_ROOT = '   '
         $w2 = New-TestWorkspace -Prefix 'hookmaker-nwtest'
         [void]$spaces.Add($w2)
-        Check 'blank: whitespace is treated as unset, not as a root named " "' ((Split-Path -Parent $w2) -eq $tempRoot) $w2
+        Check 'blank: whitespace is treated as unset, so the project root is used' (
+            (Split-Path -Parent $w2) -eq $projectWorkRoot) $w2
 
         $customRoot = Join-Path $Work 'relocated'
         New-Item -ItemType Directory -Path $customRoot -Force | Out-Null
         $env:HOOKMAKER_TEST_TEMP_ROOT = $customRoot
         $w3 = New-TestWorkspace -Prefix 'hookmaker-nwtest'
         [void]$spaces.Add($w3)
-        Check 'configured: the workspace moves OUT of %TEMP% and under the configured root' (
+        Check 'configured: an explicit override relocates the workspace' (
             (Split-Path -Parent $w3) -eq $customRoot -and (Test-Path -LiteralPath $w3 -PathType Container)) $w3
 
         # A relocation root nobody created yet must not be a reason to fail.
-        $autoRoot = Join-Path $Work 'relocated-auto\nested'
+        $autoRoot = Join-Path $Work 'relocated-auto
+ested'
         $env:HOOKMAKER_TEST_TEMP_ROOT = $autoRoot
         $w4 = New-TestWorkspace -Prefix 'hookmaker-nwtest'
         [void]$spaces.Add($w4)
         Check 'configured: a not-yet-existing root is created rather than rejected' (
             (Split-Path -Parent $w4) -eq $autoRoot -and (Test-Path -LiteralPath $w4 -PathType Container)) $w4
 
-        # Uncreatable: a directory cannot exist under a FILE, so New-Item throws.
+        # AN UNUSABLE ROOT FAILS. It used to fall back to %TEMP%, which is
+        # exactly the silent relocation outside the owning project that the
+        # policy forbids: a suite quietly writing somewhere else is the defect,
+        # not the error message.
         $blocker = Join-Path $Work 'not-a-dir.txt'
         Write-Utf8 $blocker 'blocker'
         $env:HOOKMAKER_TEST_TEMP_ROOT = (Join-Path $blocker 'child')
@@ -424,9 +436,9 @@ try {
         $w5 = ''
         try { $w5 = New-TestWorkspace -Prefix 'hookmaker-nwtest' } catch { $threw = $true }
         if ($w5 -ne '') { [void]$spaces.Add($w5) }
-        Check 'unusable root: the helper does NOT throw (a diagnostic setting must never fail a suite)' (-not $threw) 'threw'
-        Check 'unusable root: it falls back to %TEMP% and still returns an existing directory' (
-            $w5 -ne '' -and (Split-Path -Parent $w5) -eq $tempRoot -and (Test-Path -LiteralPath $w5 -PathType Container)) $w5
+        Check 'unusable root: the helper FAILS instead of silently relocating the run' ($threw) $w5
+        Check 'unusable root: and it never quietly returns a path under %TEMP%' (
+            $w5 -eq '') $w5
     }
     finally {
         $env:HOOKMAKER_TEST_TEMP_ROOT = $prevRoot

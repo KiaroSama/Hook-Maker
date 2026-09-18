@@ -36,6 +36,10 @@ logs/
 
 # Hook Maker: local/private files (auto-managed)
 /graphify-out/
+# Project-owned test/CI working data (global-environment-rules.md): every
+# Windows test artifact lives inside its owning project root rather than the
+# machine's shared temp, so the path is generated and never tracked.
+/.ci-work/
 /.env
 /.env.*
 !/.env.example
