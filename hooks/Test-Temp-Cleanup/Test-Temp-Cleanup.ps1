@@ -101,7 +101,8 @@ $script:CoverageCauses = @(
     'max-scan-depth-reached',          # MAX_SCAN_DEPTH prevented required coverage
     'directory-unreadable',            # a directory could not be enumerated
     'candidate-metadata-unreadable',   # a candidate's size/mtime could not be read
-    'classification-incomplete'        # a required classification could not finish
+    'classification-incomplete',       # a required classification could not finish
+    'extra-names-unsupported'          # a configured extra name exceeded the shared handoff bounds
 )
 $script:EvidenceCauses = @(
     'git-state-unknown',               # git status unknown for at least one candidate
@@ -186,6 +187,11 @@ function Test-CandidateNameToken {
     if ([string]::IsNullOrWhiteSpace($Token)) { return $false }
     $t = $Token.Trim()
     if ($t -match '[\\/]' -or $t -match '\.\.' -or $t -match '^[A-Za-z]:' -or $t.StartsWith('\\') -or $t -match '[%$]') { return $false }
+    # The handoff's accepted length, enforced HERE so this side never scans for a
+    # name it cannot hand to the consumer intact. The witness silently dropped
+    # anything longer than this, so a 65-character configured name was scanned
+    # here, invisible there, and residue under it left a stale 'clean' standing.
+    if ($t.Length -gt $script:CleanupExtraNameMaxLength) { return $false }
     return $true
 }
 
@@ -537,10 +543,29 @@ $maxScanEntries = Get-IntConfig 'MAX_SCAN_ENTRIES' 15000 1 1000000
 $maxScanDepth = Get-IntConfig 'MAX_SCAN_DEPTH' 12 1 64
 $maxFindings = Get-IntConfig 'MAX_FINDINGS' 20 1 1000
 $enableSubagentStop = Get-BoolConfig 'ENABLE_SUBAGENT_STOP' $false
+# A configured name this hook cannot hand over intact is REJECTED rather than
+# quietly scanned: Test-CandidateNameToken enforces the shared length, and the
+# shared count is applied here. $script:ExtraNamesTruncated records that it
+# happened, so a scan run under a configuration the handoff could not carry is
+# never reported as complete coverage - the caller learns the configuration is
+# unsupported instead of reading a confident verdict built on half of it.
+$script:ExtraNamesTruncated = $false
+function Select-BoundedNames {
+    param([AllowEmptyCollection()][string[]]$Names)
+    $accepted = @(@($Names) | ForEach-Object { ([string]$_).Trim() } | Where-Object { Test-CandidateNameToken $_ })
+    if (@($Names).Count -gt 0 -and @($accepted).Count -lt @(@($Names) | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) }).Count) {
+        $script:ExtraNamesTruncated = $true
+    }
+    if (@($accepted).Count -gt $script:CleanupExtraNameMaxCount) {
+        $script:ExtraNamesTruncated = $true
+        $accepted = @($accepted | Select-Object -First $script:CleanupExtraNameMaxCount)
+    }
+    return @($accepted)
+}
 $extraCandidateNames = @()
-if ($config.ContainsKey('EXTRA_CANDIDATE_NAMES')) { $extraCandidateNames = @($config['EXTRA_CANDIDATE_NAMES'].Split(';') | Where-Object { Test-CandidateNameToken $_ }) }
+if ($config.ContainsKey('EXTRA_CANDIDATE_NAMES')) { $extraCandidateNames = Select-BoundedNames -Names @($config['EXTRA_CANDIDATE_NAMES'].Split(';')) }
 $extraReviewNames = @()
-if ($config.ContainsKey('EXTRA_REVIEW_NAMES')) { $extraReviewNames = @($config['EXTRA_REVIEW_NAMES'].Split(';') | Where-Object { Test-CandidateNameToken $_ }) }
+if ($config.ContainsKey('EXTRA_REVIEW_NAMES')) { $extraReviewNames = Select-BoundedNames -Names @($config['EXTRA_REVIEW_NAMES'].Split(';')) }
 
 if ($eventName -ne 'SessionStart' -and $eventName -ne 'Stop' -and -not ($eventName -eq 'SubagentStop' -and $enableSubagentStop)) {
     exit 0
@@ -669,6 +694,7 @@ if ($null -ne $hookState -and [string](Get-Field $hookState 'sessionId') -eq $se
 # BEFORE the walk, not after it: a candidate created while the scan was
 # already past its directory is newer than a completion stamp would be,
 # so the consumer would accept evidence that never inspected it.
+if ($script:ExtraNamesTruncated) { $causes['extra-names-unsupported'] = $true }
 $scanStartedUtc = [DateTime]::UtcNow.ToString('o')
 $scan = Get-CleanupScan -Root $projectRoot -ExtraCandidateNames $extraCandidateNames -ExtraReviewNames $extraReviewNames -MaxEntries $maxScanEntries -MaxDepth $maxScanDepth
 foreach ($cause in @($scan.PartialCauses)) { $causes[$cause] = $true }
