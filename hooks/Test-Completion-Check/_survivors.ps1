@@ -19,6 +19,15 @@
 # whether one of these is yours" is not that, so this reports and the agent
 # sweeps. Every block condition of the hook is untouched by this file.
 #
+# ADVISORY IS NOT FREE, WHICH THIS FILE LEARNED THE EXPENSIVE WAY. On Claude a
+# Stop emission of ANY shape sends the turn back to the model: the client counts
+# hookSpecificOutput.additionalContext at Stop as the turn being blocked from
+# ending, exactly as it counts decision:block. So the cost of speaking here is a
+# whole extra turn, and speaking repeatedly is a loop the client ends by
+# overriding the hook. Two rules follow and both are load-bearing: never inside a
+# continuation, and never twice for the same set of processes - where the SET
+# must exclude the client's own cohort, whose pids are new on every event.
+#
 # BOUNDS. Exactly ONE Get-CimInstance Win32_Process call with its own operation
 # timeout, a capped number of printed rows, a capped pattern count, and a
 # bounded ancestor walk. A refused or timed-out query FAILS OPEN with an honest
@@ -119,10 +128,30 @@ function Get-SurvivorSnapshot {
         $current = $parents[$key]
     }
 
+    # SIBLINGS ARE INFRASTRUCTURE TOO. Excluding only the ancestor chain leaves
+    # everything the CLIENT starts beside this hook: the other Stop hooks of the
+    # same dispatch, the MCP servers, the tool shell. Their pids are new on every
+    # event, so the report's own fingerprint changed on every Stop and the
+    # advisory repeated - measured at 13 consecutive Stops in one session, each
+    # repeat a forced turn (a Stop emission is never free on Claude), until the
+    # client's block cap ended the task. Not one of the rows was a test process.
+    #
+    # ONE HOP ONLY, and that is the whole distinction: a DIRECT child of an
+    # ancestor of mine was started by the client, while a deeper descendant - a
+    # test the agent started through the tool shell - is this task's and is still
+    # reported. Uses the same snapshot, so it costs no extra query.
+    $cohort = @{}
+    foreach ($key in $excluded.Keys) { $cohort[$key] = $true }
+    foreach ($process in $processes) {
+        $childId = [int](Get-Field $process 'ProcessId')
+        if ($childId -le 0) { continue }
+        if ($excluded.ContainsKey([string][int](Get-Field $process 'ParentProcessId'))) { $cohort[[string]$childId] = $true }
+    }
+
     $rows = New-Object System.Collections.Generic.List[object]
     foreach ($process in $processes) {
         $processId = [int](Get-Field $process 'ProcessId')
-        if ($processId -le 0 -or $excluded.ContainsKey([string]$processId)) { continue }
+        if ($processId -le 0 -or $cohort.ContainsKey([string]$processId)) { continue }
         $name = [string](Get-Field $process 'Name')
         if ($name -eq '') { continue }
         $matched = $false
@@ -185,6 +214,14 @@ function Test-SurvivorShouldReport {
 # own Write-Finding -Blocking $false, so the client shapes come from the shared
 # Write-HookResult adapter (Kind 'advisory') and nothing here hand-rolls JSON.
 function Write-SurvivorAdvisory {
+    # NEVER DURING A CONTINUATION. On Claude a Stop emission is not free: even
+    # hookSpecificOutput.additionalContext sends the turn back to the model, so
+    # an advisory at Stop costs exactly what a block costs. This one has nothing
+    # new to say inside a chain it started - the sweep instruction is the same
+    # sentence every time - and saying it again is the loop above. It speaks on a
+    # genuine Stop or not at all.
+    $stopActive = Get-Field $hookInput 'stop_hook_active'
+    if ($null -ne $stopActive -and [bool]$stopActive) { return }
     $patterns = @(Get-SurvivorPatterns)
     if ($patterns.Count -eq 0) { return }
     $since = Get-SessionBaselineUtc
@@ -201,7 +238,11 @@ function Write-SurvivorAdvisory {
     $rows = @($snapshot.Rows)
     if ($rows.Count -eq 0) { return }
 
-    $token = 'survivors|' + ((@($rows | ForEach-Object { [string]$_.Pid + ':' + $_.Started.Ticks })) -join ',')
+    # THE IDENTITY OF THE FINDING IS THE SET OF PROCESSES, nothing else. Start
+    # ticks used to be in here as well, which made two readings of the same
+    # process differ whenever the clock source did, and the rows beyond the
+    # printed cap churned with every transient process on the machine.
+    $token = 'survivors|' + ((@($rows | ForEach-Object { [string]$_.Pid }) | Sort-Object) -join ',')
     if (-not (Test-SurvivorShouldReport $token)) { return }
 
     $lines = New-Object System.Collections.Generic.List[string]
