@@ -466,6 +466,55 @@ try {
         (Get-Verdict) -eq 'clean') (Get-Verdict)
     Remove-Item -LiteralPath $raced -Recurse -Force
 
+    # =====================================================================
+    Write-Host '--- L06: producer and consumer accept the SAME configuration ---' -ForegroundColor Cyan
+    # The producer accepted an extra leaf of any length and any count; the
+    # witness silently dropped anything over 64 and stopped at 200. A
+    # 65-character configured name was therefore scanned and never looked for,
+    # so residue under it left a stale 'clean' standing.
+    $prodBoundsText = [System.IO.File]::ReadAllText($RecordBuilder)
+    function Get-BoundLiteral {
+        param([string]$Text, [string]$Name)
+        $m = [regex]::Match($Text, ('(?m)^\$script:' + [regex]::Escape($Name) + '\s*=\s*(\d+)\s*$'))
+        if (-not $m.Success) { return '<not found>' }
+        return $m.Groups[1].Value
+    }
+    Check 'the accepted NAME LENGTH is the same on both sides' (
+        (Get-BoundLiteral $prodBoundsText 'CleanupExtraNameMaxLength') -eq [string]$script:CleanupWitnessNameMaxLength) (
+        'producer=' + (Get-BoundLiteral $prodBoundsText 'CleanupExtraNameMaxLength') + ' consumer=' + $script:CleanupWitnessNameMaxLength)
+    Check 'the accepted NAME COUNT is the same on both sides' (
+        (Get-BoundLiteral $prodBoundsText 'CleanupExtraNameMaxCount') -eq [string]$script:CleanupWitnessNameMaxCount) (
+        'producer=' + (Get-BoundLiteral $prodBoundsText 'CleanupExtraNameMaxCount') + ' consumer=' + $script:CleanupWitnessNameMaxCount)
+
+    $name64 = ('a' * 64)
+    $name65 = ('a' * 65)
+    Write-Record (New-ValidRecord -Override @{ extraCandidateNames = @($name64) })
+    Check 'a 64-character configured name is accepted and revalidated' (
+        $null -ne (Get-CleanupWitnessNames -Record ((Get-Content -LiteralPath $ResultPath -Raw) | ConvertFrom-Json)))
+    Check 'and the record with it is still usable evidence' ((Get-Verdict) -eq 'clean') (Get-Verdict)
+
+    Write-Record (New-ValidRecord -Override @{ extraCandidateNames = @($name65) })
+    Check 'a 65-character name is REFUSED, not silently dropped' (
+        $null -eq (Get-CleanupWitnessNames -Record ((Get-Content -LiteralPath $ResultPath -Raw) | ConvertFrom-Json)))
+    Check 'and the verdict is unknown, never a stale clean' ((Get-Verdict) -eq 'unknown') (Get-Verdict)
+
+    # The count bound behaves the same way at its boundary.
+    $manyNames = @(1..$script:CleanupWitnessNameMaxCount | ForEach-Object { 'cfg-name-' + $_ })
+    Write-Record (New-ValidRecord -Override @{ extraCandidateNames = $manyNames })
+    Check 'exactly the accepted number of names is still usable' (
+        $null -ne (Get-CleanupWitnessNames -Record ((Get-Content -LiteralPath $ResultPath -Raw) | ConvertFrom-Json)))
+    $tooMany = @(1..($script:CleanupWitnessNameMaxCount + 1) | ForEach-Object { 'cfg-name-' + $_ })
+    Write-Record (New-ValidRecord -Override @{ extraCandidateNames = $tooMany })
+    Check 'one name past the cap is REFUSED rather than truncated' (
+        $null -eq (Get-CleanupWitnessNames -Record ((Get-Content -LiteralPath $ResultPath -Raw) | ConvertFrom-Json)))
+    Check 'and that record is unknown too' ((Get-Verdict) -eq 'unknown') (Get-Verdict)
+
+    # NEGATIVE CONTROL: an ordinary configured name still works end to end,
+    # so the bound is a bound and not a blanket refusal.
+    Write-Record (New-ValidRecord -Override @{ extraCandidateNames = @('my-scratch-cache') })
+    Check 'NEGATIVE CONTROL: an ordinary configured extra name is still accepted' (
+        (Get-Verdict) -eq 'clean') (Get-Verdict)
+
     Check 'a root that does not exist -> not current (no all-clear on absent coverage)' (
         -not (Test-CleanupEvidenceStillCurrent -Root (Join-Path $Work 'no-such-project') -RecordedUtc ([DateTime]::UtcNow)))
 
