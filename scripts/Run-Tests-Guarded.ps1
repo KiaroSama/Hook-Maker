@@ -607,18 +607,54 @@ $script:Result = [pscustomobject][ordered]@{
 # is written to disk and read by a hook, so it stays free of anything that could
 # be a secret. The count is kept because "did it get the arguments I expected"
 # is answerable without the values.
-function Write-GuardedResult {
-    if ([string]::IsNullOrWhiteSpace($ResultPath)) { return }
-    try {
-        $dir = Split-Path -Parent $ResultPath
-        if (-not [string]::IsNullOrWhiteSpace($dir) -and -not (Test-Path -LiteralPath $dir)) {
-            New-Item -ItemType Directory -Path $dir -Force | Out-Null
-        }
-        $json = $script:Result | ConvertTo-Json -Depth 6
-        [System.IO.File]::WriteAllText($ResultPath, $json, (New-Object System.Text.UTF8Encoding($false)))
+function Write-GuardedResultFile {
+    param([Parameter(Mandatory = $true)][string]$Path, [Parameter(Mandatory = $true)][string]$Json)
+    $dir = Split-Path -Parent $Path
+    if (-not [string]::IsNullOrWhiteSpace($dir) -and -not (Test-Path -LiteralPath $dir)) {
+        New-Item -ItemType Directory -Path $dir -Force | Out-Null
     }
-    catch {
-        Write-Warning ('the guarded result document could not be written: ' + $_.Exception.Message)
+    # Same bytes, published atomically: a consumer must never read a half-written
+    # result and conclude the run produced nothing.
+    $tmp = $Path + '.' + [guid]::NewGuid().ToString('N').Substring(0, 8) + '.tmp'
+    [System.IO.File]::WriteAllText($tmp, $Json, (New-Object System.Text.UTF8Encoding($false)))
+    try {
+        if (Test-Path -LiteralPath $Path -PathType Leaf) {
+            [System.IO.File]::Replace($tmp, $Path, [NullString]::Value)
+        }
+        else {
+            [System.IO.File]::Move($tmp, $Path)
+        }
+    }
+    finally {
+        if (Test-Path -LiteralPath $tmp -PathType Leaf) { Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue }
+    }
+}
+
+# The result is published to the CALLER'S path and, always, to the canonical
+# per-run evidence path.
+#
+# THE DEFECT THIS FIXES: a caller may choose its own -ResultPath (a suite's own
+# r.json, a project's logs\a01-acceptance.json). The observing hook enumerates
+# only %LOCALAPPDATA%\HookMaker\state\TestRunGuard-result-<key>-*.json, so a real
+# completed run wrote its evidence somewhere the consumer never looks and the
+# gate reported "no guarded result document exists" for a run that had finished
+# cleanly. Producer and consumer disagreed about WHERE, not about what.
+#
+# Writing both keeps the caller's file exactly where it asked for it - nothing
+# that reads it today breaks - while making every terminal result discoverable
+# through the one path the hook knows. Same document, same schema, same run id.
+function Write-GuardedResult {
+    $json = $script:Result | ConvertTo-Json -Depth 6
+    $written = @{}
+    foreach ($target in @($ResultPath, $script:CanonicalResultPath)) {
+        if ([string]::IsNullOrWhiteSpace($target)) { continue }
+        $key = $target.ToLowerInvariant()
+        if ($written.ContainsKey($key)) { continue }
+        $written[$key] = $true
+        try { Write-GuardedResultFile -Path $target -Json $json }
+        catch {
+            Write-Warning ('the guarded result document could not be written to ' + $target + ': ' + $_.Exception.Message)
+        }
     }
 }
 
@@ -797,6 +833,27 @@ if (-not [string]::IsNullOrWhiteSpace($ResultPath)) {
         $ResultPath = if ([string]::IsNullOrWhiteSpace($resultDir)) { $resultName } else { Join-Path $resultDir $resultName }
     }
 }
+
+# THE CANONICAL EVIDENCE PATH, computed with the same key and naming the
+# observing hook uses to enumerate results. Every terminal result is published
+# here as well as to whatever path the caller chose, so a caller-selected file
+# stops being invisible to the gate that has to read it.
+$script:CanonicalResultPath = ''
+try {
+    $stateDir = [string]$env:HOOKMAKER_STATE_DIR
+    if ([string]::IsNullOrWhiteSpace($stateDir)) { $stateDir = (Join-Path $env:LOCALAPPDATA 'HookMaker\state') }
+    if (-not [string]::IsNullOrWhiteSpace($stateDir)) {
+        # Get-StateKey (10 chars), NOT $script:Result.projectKey (12). Both are
+        # intentional and they are NOT interchangeable: the result document's
+        # metadata key is 12, while every coordination FILENAME the consumer
+        # enumerates is keyed by Get-ShortHash's 10. Publishing under the metadata
+        # key would put the canonical copy somewhere the hook still never looks -
+        # the original bug wearing a different hat.
+        $script:CanonicalResultPath = Join-Path $stateDir (
+            'TestRunGuard-result-' + (Get-StateKey $WorkingDirectory) + '-' + (Get-SafeRunId $RunId) + '.json')
+    }
+}
+catch { $script:CanonicalResultPath = '' }
 $script:Result.projectFingerprint = $ProjectFingerprint
 # Command fingerprint is RECOMPUTED from what actually runs. If a value was
 # passed and disagrees, fail closed rather than persist a spoofable identity.

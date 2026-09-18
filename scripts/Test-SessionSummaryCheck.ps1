@@ -116,7 +116,17 @@ try {
     Check 'summary: asks for a DONE section' ($r.Out -match 'DONE') $r.Out
     Check 'summary: asks for a REMAINING section' ($r.Out -match 'REMAINING') $r.Out
     Check 'summary: places itself as the CLOSING section of the final message' ($r.Out -match 'CLOSING section') $r.Out
-    Check 'summary: states WHEN (only the message that finishes) and ONCE' (($r.Out -match 'WHEN:') -and ($r.Out -match 'ONCE:')) $r.Out
+    Check 'summary: states WHEN (only the message that finishes) and ONCE' (
+        ($r.Out -match 'WHEN:') -and ($r.Out -match 'ONCE, STRICTLY:')) $r.Out
+    # L01: wording alone was tried and did not hold - the rule now has to say
+    # that a correction turn adds NOTHING, because that is the turn that used to
+    # produce the second and third wrap-up.
+    Check 'summary: a gate that blocks afterwards is a CORRECTION turn, not a reason to restate' (
+        $r.Out -match 'CORRECTION' -and $r.Out -match 'do not write another') $r.Out
+    Check 'summary: it is once per TASK, not once per message or per gate' (
+        $r.Out -match 'once per TASK') $r.Out
+    Check 'summary: names the preconditions that make the carrying message the last one' (
+        $r.Out -match 'committed and pushed' -and $r.Out -match 'nothing will interrupt') $r.Out
     Check 'summary: names the sibling requirements it must follow' (
         ($r.Out -match 'MCP used') -and ($r.Out -match 'Skills used')) $r.Out
     Check 'summary: demands failures and untested paths be included' ($r.Out -match 'untested') $r.Out

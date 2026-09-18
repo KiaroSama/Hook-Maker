@@ -397,3 +397,58 @@
     try { $treeText = [System.IO.File]::ReadAllText($treeOut) } catch { }
     Check 'root 0 (System Idle) owns no processes' ($treeText -match '(?m)^0=0\s*$') $treeText
     Check 'root 4 (System) owns no processes' ($treeText -match '(?m)^4=0\s*$') $treeText
+
+# =====================================================================
+Write-Host '--- a caller-selected result path is ALSO published canonically ---' -ForegroundColor Cyan
+# THE DEFECT: a caller may pass its own -ResultPath (a suite's r.json, a
+# project's logs\a01-acceptance.json). The observing hook enumerates only
+# TestRunGuard-result-<key>-*.json under the state directory, so a run that
+# finished cleanly wrote its evidence somewhere the consumer never looks and the
+# gate reported "no guarded result document exists" for it. Producer and
+# consumer disagreed about WHERE, not about what.
+$callerDir = Join-Path $Work 'caller-results'
+$callerResult = Join-Path $callerDir 'a01-acceptance.json'
+$canonState = Join-Path $Work 'canon-state'
+New-Item -ItemType Directory -Path $canonState -Force | Out-Null
+$canonProj = Join-Path $Work 'canon-proj'
+New-Item -ItemType Directory -Path $canonProj -Force | Out-Null
+$savedStateDir = $env:HOOKMAKER_STATE_DIR
+$env:HOOKMAKER_STATE_DIR = $canonState
+try {
+    # A wrapper script, the way every other runner case here invokes it: an
+    # -ArgumentsJson value handed through Start-Process -ArgumentList loses its
+    # quoting before the runner ever parses it.
+    $canonWrapper = Join-Path $Work ('run-canon-' + [guid]::NewGuid().ToString('N').Substring(0, 8) + '.ps1')
+    $canonExe = (Get-Process -Id $PID).Path
+    Write-Utf8 $canonWrapper (
+        "& '$Runner' -FilePath '$canonExe' -WorkingDirectory '$canonProj' " +
+        "-ArgumentsJson '[""-NoProfile"",""-Command"",""exit 0""]' -TimeoutSeconds 120 " +
+        "-ResultPath '$callerResult' -RunId 'a01-acceptance' -Quiet`nexit `$LASTEXITCODE`n")
+    $null = Start-BoundedProcess -FilePath $canonExe -Wait -NoNewWindow -PassThru `
+        -ArgumentList @('-NoLogo', '-NoProfile', '-File', $canonWrapper)
+}
+finally { $env:HOOKMAKER_STATE_DIR = $savedStateDir }
+
+Check 'the caller still gets the file it asked for, where it asked for it' (
+    Test-Path -LiteralPath $callerResult -PathType Leaf) $callerResult
+
+# The key is derived the way the CONSUMER derives it, not copied from the
+# producer: the result metadata's project key is 12 chars and every coordination
+# FILENAME is keyed by Get-ShortHash's 10, and publishing under the wrong one
+# would be the same bug wearing a different hat.
+$consumerKey = Get-ShortHash (Normalize-Path $canonProj).ToLowerInvariant()
+$canonExpected = Join-Path $canonState ('TestRunGuard-result-' + $consumerKey + '-a01acceptance.json')
+Check 'and a canonical copy exists under the key the hook enumerates' (
+    Test-Path -LiteralPath $canonExpected -PathType Leaf) $canonExpected
+if ((Test-Path -LiteralPath $callerResult -PathType Leaf) -and (Test-Path -LiteralPath $canonExpected -PathType Leaf)) {
+    Check 'the two are byte-identical - one document, two locations' (
+        (Get-FileHash -LiteralPath $callerResult -Algorithm SHA256).Hash -eq
+        (Get-FileHash -LiteralPath $canonExpected -Algorithm SHA256).Hash)
+    $canonDoc = $null
+    try { $canonDoc = Read-JsonFile $canonExpected } catch { $canonDoc = $null }
+    Check 'the canonical copy is a complete, parseable terminal result' (
+        $null -ne $canonDoc -and -not [string]::IsNullOrWhiteSpace([string]$canonDoc.overall)) (
+        'overall=' + $(if ($null -eq $canonDoc) { 'unreadable' } else { [string]$canonDoc.overall }))
+    Check 'NEGATIVE CONTROL: no stray .tmp publication artifact is left behind' (
+        @(Get-ChildItem -LiteralPath $canonState -Filter '*.tmp' -File -ErrorAction SilentlyContinue).Count -eq 0)
+}
