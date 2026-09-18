@@ -726,8 +726,16 @@ function Test-GuardedRunnerMarker {
 function Find-GuardedRunner {
     param([string]$ProjectRoot)
     $candidates = New-Object System.Collections.Generic.List[string]
+    # THREE LEVELS, because exactly two layouts put a runner above this hook:
+    # the managed install, where the installer plants it at depth 0 beside the
+    # hook, and a run straight out of the tool checkout, where hooks/<Hook>/ is
+    # two below the runner's scripts/. Every other layout is served by the
+    # explicit ProjectRoot fallback below. The walk used to climb five, which
+    # served no layout and let a hook adopt the guarded runner of an UNRELATED
+    # project it merely happened to sit inside - ownership by ancestry, which is
+    # exactly what a runner may not be chosen by.
     $walk = $PSScriptRoot
-    for ($depth = 0; $depth -lt 5 -and -not [string]::IsNullOrWhiteSpace($walk); $depth++) {
+    for ($depth = 0; $depth -lt 3 -and -not [string]::IsNullOrWhiteSpace($walk); $depth++) {
         [void]$candidates.Add((Join-Path $walk 'scripts\Run-Tests-Guarded.ps1'))
         $walk = Split-Path -Parent $walk
     }
