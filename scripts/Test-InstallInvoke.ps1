@@ -41,7 +41,7 @@ function Check {
     }
 }
 
-$Work = Join-Path ([System.IO.Path]::GetTempPath()) ('hookmaker-invoke-' + [guid]::NewGuid().ToString('N').Substring(0, 8))
+$Work = New-TestWorkspace -Prefix 'hookmaker-invoke'
 [void](New-Item -ItemType Directory -Path $Work -Force)
 
 # Each stub is a real script the function invokes exactly as it invokes the
