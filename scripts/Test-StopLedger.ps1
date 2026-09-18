@@ -221,14 +221,45 @@ $corProj = 'C:\proj\corrupt'
 $corLedger = Get-StopLedgerPath -ProjectRoot $corProj
 [void](New-Item -ItemType Directory -Path (Split-Path -Parent $corLedger) -Force)
 [System.IO.File]::WriteAllText($corLedger, '{ this is not json')
+# MID-TASK, a corrupt ledger must NOT be rebuilt: an empty document has
+# blocks = 0, so rebuilding one here refunds the allowance the chain already
+# spent and restores the very loop it bounds.
 $cIn = New-StopInput -Session 'COR' -Continuation $true -Cwd $corProj
 $cAdmit = Set-StopBlockMarker -HookInput $cIn -HookName 'Rules-Check'
-Check 'a corrupt ledger still admits (rebuilt), and the write succeeds' ($cAdmit.Admitted) ([string]$cAdmit.Reason)
+Check 'a corrupt ledger REFUSES admission during a continuation (no refund)' (
+    -not $cAdmit.Admitted -and $cAdmit.Reason -eq 'ledger-corrupt') ([string]$cAdmit.Reason)
+Check 'and the refusal is reported as degraded, not as policy' ($cAdmit.Degraded -eq $true) ([string]$cAdmit.Reason)
+Check 'the damaged file is left alone mid-task, not silently replaced' (
+    ([System.IO.File]::ReadAllText($corLedger)) -eq '{ this is not json')
+$corStorm = 0
+foreach ($n in 1..8) { if ((Set-StopBlockMarker -HookInput $cIn -HookName ('COR' + $n)).Admitted) { $corStorm++ } }
+Check 'eight more gates on the corrupt ledger admit ZERO continuations' ($corStorm -eq 0) ('admitted=' + $corStorm)
+
+# AT A TASK BOUNDARY the same damage is recoverable: a genuine Stop is already
+# entitled to a fresh chain, so quarantining costs nothing and stops the
+# project being wedged for ever.
+$cFresh = New-StopInput -Session 'COR' -Continuation $false -Cwd $corProj
+$cFreshAdmit = Set-StopBlockMarker -HookInput $cFresh -HookName 'Rules-Check'
+Check 'a genuine Stop recovers from the damage and admits' ($cFreshAdmit.Admitted) ([string]$cFreshAdmit.Reason)
+Check 'the damaged file was quarantined, not deleted' (
+    @(Get-ChildItem -LiteralPath (Split-Path -Parent $corLedger) -Filter '*.corrupt-*' -File -ErrorAction SilentlyContinue).Count -ge 1)
 $corOk = $false
 try { $corOk = ($null -ne ((Get-Content -LiteralPath $corLedger -Raw) | ConvertFrom-Json)) } catch { $corOk = $false }
-Check 'the rebuilt ledger is valid JSON on disk' ($corOk) (Get-Content -LiteralPath $corLedger -Raw)
-Check 'and the gate is suppressed on its next continuation' (
+Check 'and the replacement ledger is valid JSON on disk' ($corOk) (Get-Content -LiteralPath $corLedger -Raw)
+Check 'the gate is then suppressed on its next continuation' (
     (Test-StopStandDown -HookInput $cIn -HookName 'Rules-Check') -eq $true)
+
+# A ledger from a NEWER build is not damaged and is never rewritten.
+$futProj = 'C:\projuture'
+$futLedger = Get-StopLedgerPath -ProjectRoot $futProj
+[void](New-Item -ItemType Directory -Path (Split-Path -Parent $futLedger) -Force)
+[System.IO.File]::WriteAllText($futLedger, '{"version":99,"chains":{},"entries":{},"unresolved":{}}')
+$futIn = New-StopInput -Session 'FUT' -Continuation $false -Cwd $futProj
+$futAdmit = Set-StopBlockMarker -HookInput $futIn -HookName 'Rules-Check'
+Check 'a FUTURE-schema ledger refuses admission rather than being reset' (
+    -not $futAdmit.Admitted -and $futAdmit.Reason -eq 'ledger-unsupported') ([string]$futAdmit.Reason)
+Check 'and the newer build''s ledger is left byte-for-byte alone' (
+    ([System.IO.File]::ReadAllText($futLedger)) -match '"version":99')
 
 # ---- R01: a refusal is recorded, not forgotten --------------------------
 $hist = @(Get-StopUnresolvedHistory -ProjectRoot 'C:\proj\budget')

@@ -147,24 +147,53 @@ function New-StopLedgerDocument {
     return [pscustomobject]@{ version = 1; chains = [pscustomobject]@{}; entries = [pscustomobject]@{}; unresolved = [pscustomobject]@{} }
 }
 
-function Read-StopLedger {
+$script:StopLedgerVersion = 1
+
+# THE STATE OF THE LEDGER, named rather than collapsed into a document (L03).
+# Returns @{ Doc; State } with State one of: absent, valid, corrupt, unsupported.
+#
+# WHY IT MATTERS: every non-valid state used to return a FRESH EMPTY document,
+# and a fresh document has blocks = 0. Corruption therefore refunded the
+# correction allowance in the middle of a task - the exact loop the allowance
+# exists to bound - and a ledger written by a NEWER build was read as current
+# and mutated under this build's assumptions.
+function Get-StopLedgerState {
     param([Parameter(Mandatory = $true)][string]$Path)
-    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { return (New-StopLedgerDocument) }
+    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
+        return [pscustomobject]@{ Doc = (New-StopLedgerDocument); State = 'absent' }
+    }
     try {
         $parsed = [System.IO.File]::ReadAllText($Path, [System.Text.Encoding]::UTF8) | ConvertFrom-Json
         if ($null -eq $parsed -or $null -eq $parsed.PSObject.Properties['entries']) { throw 'shape' }
+        if ($null -ne $parsed.PSObject.Properties['version']) {
+            $v = 0
+            if (-not [int]::TryParse([string]$parsed.version, [ref]$v)) { throw 'version' }
+            # A NEWER ledger is not corrupt and must not be rewritten under this
+            # build's rules; an older one has no upgrade path yet, so both are
+            # 'unsupported' and both fail closed rather than being reset.
+            if ($v -ne $script:StopLedgerVersion) {
+                return [pscustomobject]@{ Doc = (New-StopLedgerDocument); State = 'unsupported' }
+            }
+        }
         if ($null -eq $parsed.PSObject.Properties['chains']) { Set-ObjectProperty -Object $parsed -Name 'chains' -Value ([pscustomobject]@{}) }
         if ($null -eq $parsed.PSObject.Properties['unresolved']) { Set-ObjectProperty -Object $parsed -Name 'unresolved' -Value ([pscustomobject]@{}) }
-        return $parsed
+        return [pscustomobject]@{ Doc = $parsed; State = 'valid' }
     }
     catch {
-        # A damaged ledger is rebuilt, never trusted. Losing suppression state
-        # costs at most one extra block per gate; trusting a corrupt one could
-        # mute a real finding. A TORN read cannot reach here any more - the
-        # publish below is atomic, so a reader sees one whole version or the
-        # other, never the seam between them.
-        return (New-StopLedgerDocument)
+        # A TORN read cannot reach here any more - publication is atomic, so a
+        # reader sees one whole version or the other, never the seam. Reaching
+        # this means the file really is damaged.
+        return [pscustomobject]@{ Doc = (New-StopLedgerDocument); State = 'corrupt' }
     }
+}
+
+# The document alone, for the read-only paths that only need suppression hints.
+# A damaged or unsupported ledger yields an EMPTY document here on purpose: a
+# hint that finds nothing simply arms the gate, which is the safe direction.
+# The paths that can SPEND something use Get-StopLedgerState and refuse.
+function Read-StopLedger {
+    param([Parameter(Mandatory = $true)][string]$Path)
+    return (Get-StopLedgerState -Path $Path).Doc
 }
 
 # Publish atomically. File.Copy(overwrite) is what let an unlocked reader see a
@@ -336,6 +365,35 @@ function Invoke-StopAdmission {
     $keys = Get-StopLedgerKeys -HookInput $HookInput -HookName $HookName
     $path = Get-StopLedgerPath -ProjectRoot ([string](Get-Field $HookInput 'cwd'))
     $eventId = Get-StopEventId -HookInput $HookInput
+
+    # CORRUPT OR UNSUPPORTED IS NOT 'FRESH' (L03). An empty document has
+    # blocks = 0, so mutating from one hands the chain a full allowance again -
+    # a refund in the middle of a task, which is the loop the allowance exists
+    # to bound.
+    #
+    # Recovery happens at a TASK BOUNDARY and nowhere else. A genuine Stop is
+    # already entitled to a fresh chain, so quarantining a damaged file there
+    # costs nothing and stops the project being wedged for ever; during a
+    # continuation the same act would BE the refund, so it refuses instead. A
+    # NEWER build's ledger is never quarantined at all - it is not damaged, it
+    # is simply not ours to rewrite.
+    $ledgerState = (Get-StopLedgerState -Path $path).State
+    if ($ledgerState -eq 'unsupported') {
+        return [pscustomobject]@{ Admitted = $false; Reason = 'ledger-unsupported'; Degraded = $true }
+    }
+    if ($ledgerState -eq 'corrupt') {
+        if ($IsContinuation) {
+            return [pscustomobject]@{ Admitted = $false; Reason = 'ledger-corrupt'; Degraded = $true }
+        }
+        try {
+            $quarantine = $path + '.corrupt-' + ([DateTime]::UtcNow.ToString('yyyyMMddHHmmss'))
+            Move-Item -LiteralPath $path -Destination $quarantine -Force -ErrorAction SilentlyContinue
+        }
+        catch { }
+        if ((Get-StopLedgerState -Path $path).State -eq 'corrupt') {
+            return [pscustomobject]@{ Admitted = $false; Reason = 'ledger-corrupt'; Degraded = $true }
+        }
+    }
     $outcome = Invoke-StopLedgerUpdate -Path $path -Mutate {
         param($ledger)
         $chain = Resolve-StopChain -Ledger $ledger -ChainKey $keys.ChainKey -IsContinuation $IsContinuation -EventId $eventId
