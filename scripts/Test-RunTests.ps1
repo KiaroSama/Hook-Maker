@@ -420,8 +420,10 @@ try {
             (Split-Path -Parent $w3) -eq $customRoot -and (Test-Path -LiteralPath $w3 -PathType Container)) $w3
 
         # A relocation root nobody created yet must not be a reason to fail.
-        $autoRoot = Join-Path $Work 'relocated-auto
-ested'
+        # 'relocated-auto' + separator + 'nested': written as an escape once, which
+        # left a real newline INSIDE the string literal and a directory name that
+        # cannot exist. [char]92 cannot be eaten by whatever writes this file.
+        $autoRoot = Join-Path $Work ('relocated-auto' + [char]92 + 'nested')
         $env:HOOKMAKER_TEST_TEMP_ROOT = $autoRoot
         $w4 = New-TestWorkspace -Prefix 'hookmaker-nwtest'
         [void]$spaces.Add($w4)
