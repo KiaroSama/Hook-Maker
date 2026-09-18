@@ -133,7 +133,7 @@ $script:ReviewOnlyFilePatterns = @('.coverage', 'coverage.xml')
 $script:HardPruneNames = @(
     '.git', '.ai', '.claude', '.codex', 'node_modules', '.venv', 'venv', 'env',
     '__pypackages__', 'vendor', 'target', 'dist', 'build', 'out', '.next',
-    '.nuxt', '.tox', '.svn', '.hg', 'graphify-out', 'logs', '.cache', '.ci-runner'
+    '.nuxt', '.tox', '.svn', '.hg', 'graphify-out', 'logs', '.cache', '.ci-runner', '.ci-work'
 )
 # Bounds the per-candidate size walk so one pathological tree cannot make the
 # hook slow. ENTRIES, not files: a tree of empty directories contains no files

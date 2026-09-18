@@ -21,39 +21,64 @@ function Check {
 # - Join-Path (GetTempPath) (<prefix> + '-' + <8 hex chars>) - written once, plus
 # one escape hatch.
 #
-# HOOKMAKER_TEST_TEMP_ROOT exists because a full-matrix run twice had a LIVE
-# workspace deleted underneath it by something outside this repo (no code here
-# sweeps %TEMP%; Storage Sense, a scanner and the harness are all still suspects)
-# and the suite then crashed at its own file writer. Relocating the workspaces
-# turns "is the deleter %TEMP%-specific?" into an experiment instead of a guess.
+# WHERE A TEST WORKSPACE LIVES (global-environment-rules.md). Every
+# user-managed Windows test artifact belongs inside its OWNING project root -
+# runner, working copy, fixture, temp file, cache and output - never a global
+# test folder. The default is therefore <project>\.ci-work\windows, and the
+# policy is explicit that an unavailable project-local root is a FAILURE, not
+# permission to fall back to the operating system's temp directory.
 #
-# It is a DIAGNOSTIC switch, never a new default: unset or blank keeps the old
-# %TEMP% behaviour byte-for-byte. An unusable value - a path that cannot be
-# created, a permission denial, garbage - falls back to %TEMP% rather than
-# throwing, because a suite failing over a diagnostic setting would be a worse
-# bug than the one it was set to diagnose. The returned path is always a
-# directory that exists.
-function New-TestWorkspace {
-    param([Parameter(Mandatory)][string]$Prefix)
-
-    $root = ''
+# That policy is also the fix for a bug this repository already hit: a
+# full-matrix run twice had a LIVE workspace deleted underneath it while it was
+# still writing, and the suite crashed at its own file writer. Nothing here
+# sweeps %TEMP%; Storage Sense, a scanner and the harness were all suspects and
+# none could be ruled out, because %TEMP% is shared with every other program on
+# the machine. A project-owned root has no such neighbours.
+#
+# HOOKMAKER_TEST_TEMP_ROOT remains as an explicit override for a deliberately
+# relocated workspace. It is validated the same way and, like the default, an
+# unusable value FAILS rather than silently relocating the run somewhere the
+# policy forbids - a suite that quietly wrote outside its project would be the
+# defect, not the error message.
+function Get-TestWorkspaceRoot {
     $configured = [string]$env:HOOKMAKER_TEST_TEMP_ROOT
     if (-not [string]::IsNullOrWhiteSpace($configured)) {
+        $candidate = ''
+        try { $candidate = [System.IO.Path]::GetFullPath($configured) } catch { $candidate = '' }
+        if ($candidate -eq '') { throw ('HOOKMAKER_TEST_TEMP_ROOT is not a usable path: ' + $configured) }
         try {
-            $candidate = [System.IO.Path]::GetFullPath($configured)
             if (-not (Test-Path -LiteralPath $candidate -PathType Container)) {
                 New-Item -ItemType Directory -Path $candidate -Force -ErrorAction Stop | Out-Null
             }
-            # Trust the filesystem, not the absence of an exception: New-Item
-            # -Force is a SILENT no-op for some unusable targets (a path under a
-            # FILE returns nothing and throws nothing), which would otherwise hand
-            # back a workspace that does not exist - the very crash this helper is
-            # meant to be diagnosing.
-            if (Test-Path -LiteralPath $candidate -PathType Container) { $root = $candidate }
         }
-        catch { $root = '' }
+        catch { throw ('HOOKMAKER_TEST_TEMP_ROOT could not be created: ' + $candidate) }
+        # Trust the filesystem, not the absence of an exception: New-Item -Force
+        # is a SILENT no-op for some unusable targets (a path under a FILE
+        # returns nothing and throws nothing).
+        if (-not (Test-Path -LiteralPath $candidate -PathType Container)) {
+            throw ('HOOKMAKER_TEST_TEMP_ROOT could not be created: ' + $candidate)
+        }
+        return $candidate
     }
-    if ($root -eq '') { $root = [System.IO.Path]::GetTempPath() }
+    # The owning project is this repository: _testlib.ps1 lives in scripts\.
+    $projectRoot = Split-Path -Parent $PSScriptRoot
+    $root = Join-Path (Join-Path $projectRoot '.ci-work') 'windows'
+    try {
+        if (-not (Test-Path -LiteralPath $root -PathType Container)) {
+            New-Item -ItemType Directory -Path $root -Force -ErrorAction Stop | Out-Null
+        }
+    }
+    catch { throw ('The project-local test workspace root could not be created: ' + $root) }
+    if (-not (Test-Path -LiteralPath $root -PathType Container)) {
+        throw ('The project-local test workspace root could not be created: ' + $root)
+    }
+    return $root
+}
+
+function New-TestWorkspace {
+    param([Parameter(Mandatory)][string]$Prefix)
+
+    $root = Get-TestWorkspaceRoot
 
     $path = Join-Path $root ($Prefix + '-' + [guid]::NewGuid().ToString('N').Substring(0, 8))
     New-Item -ItemType Directory -Path $path -Force | Out-Null
