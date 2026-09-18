@@ -40,6 +40,30 @@ function Check {
 # unusable value FAILS rather than silently relocating the run somewhere the
 # policy forbids - a suite that quietly wrote outside its project would be the
 # defect, not the error message.
+# GIT DISCOVERY STOPS AT THE WORKSPACE ROOT. The root now sits INSIDE this
+# repository, and git discovery walks UP: from any path under the root it reaches this
+# project and answers every question as if the fixture were part of it. Three
+# suites assert the opposite premise and broke the moment the workspace moved
+# in-project - a deliberately non-git fixture classified as a real repository, a
+# non-git encoding baseline taking the git path, and an exception recorded
+# against this repository's own pushed commit. Under %TEMP% the premise held by
+# accident; here it has to be stated.
+#
+# GIT_CEILING_DIRECTORIES is git's own mechanism for exactly this and what its
+# own test suite uses: the walk stops BEFORE entering a listed directory, so a
+# fixture below the root still finds its own .git while nothing above the root
+# is reachable. Set on this process, so every suite child - hook, runner, git -
+# inherits it. An existing value is preserved, never replaced.
+function Set-TestGitCeiling {
+    param([Parameter(Mandatory = $true)][string]$Root)
+    $parts = New-Object System.Collections.Generic.List[string]
+    [void]$parts.Add($Root)
+    foreach ($part in (([string]$env:GIT_CEILING_DIRECTORIES) -split ';')) {
+        if (-not [string]::IsNullOrWhiteSpace($part) -and $part -ne $Root) { [void]$parts.Add($part) }
+    }
+    $env:GIT_CEILING_DIRECTORIES = ($parts.ToArray() -join ';')
+}
+
 function Get-TestWorkspaceRoot {
     $configured = [string]$env:HOOKMAKER_TEST_TEMP_ROOT
     if (-not [string]::IsNullOrWhiteSpace($configured)) {
@@ -58,6 +82,7 @@ function Get-TestWorkspaceRoot {
         if (-not (Test-Path -LiteralPath $candidate -PathType Container)) {
             throw ('HOOKMAKER_TEST_TEMP_ROOT could not be created: ' + $candidate)
         }
+        Set-TestGitCeiling -Root $candidate
         return $candidate
     }
     # The owning project is this repository: _testlib.ps1 lives in scripts\.
@@ -72,6 +97,7 @@ function Get-TestWorkspaceRoot {
     if (-not (Test-Path -LiteralPath $root -PathType Container)) {
         throw ('The project-local test workspace root could not be created: ' + $root)
     }
+    Set-TestGitCeiling -Root $root
     return $root
 }
 
