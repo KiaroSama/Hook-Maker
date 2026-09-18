@@ -111,6 +111,17 @@ function Test-InstallResultDocument {
     if ($overall -eq 'failed' -and $broken.Count -eq 0) {
         return [pscustomobject]@{ Ok = $false; Summary = 'install result claims failed but reports no failed component' }
     }
+    # postRegistrationError is a REASON, not a status, so a component can carry
+    # it while still reading 'ok'. Get-PartialInstallVerdict already treats it as
+    # a real problem on the partial path; an overall=ok document carrying one was
+    # the only way it reached a caller unexamined.
+    if ($overall -eq 'ok') {
+        $postReg = @($components | Where-Object { [string](Get-ResultProperty -Document $_ -Name 'reason') -eq 'postRegistrationError' })
+        if ($postReg.Count -gt 0) {
+            $postRegNames = @($postReg | ForEach-Object { [string](Get-ResultProperty -Document $_ -Name 'component') })
+            return [pscustomobject]@{ Ok = $false; Summary = ('install result claims ok while reporting a post-registration error on: ' + ($postRegNames -join ', ')) }
+        }
+    }
 
     # COVERAGE. A client that was asked for and is absent from the components is
     # not "installed by default" - nothing said anything about it at all.
@@ -124,24 +135,47 @@ function Test-InstallResultDocument {
         if ($names -notcontains $required) {
             return [pscustomobject]@{ Ok = $false; Summary = ('install result never mentions the requested client: ' + $required) }
         }
+        # NAMED IS NOT INSTALLED. A requested client reported as 'skipped' was
+        # deliberately not installed, and an overall=ok carrying it used to pass
+        # coverage purely because the name appeared. The caller asked for that
+        # client; a document saying "asked for, not done, all fine" disagrees
+        # with itself exactly the way a failed component does.
+        if ($overall -eq 'ok') {
+            $requiredComponent = @($components | Where-Object { [string](Get-ResultProperty -Document $_ -Name 'component') -eq $required })[0]
+            $requiredStatus = [string](Get-ResultProperty -Document $requiredComponent -Name 'status')
+            if ($requiredStatus -ne 'ok') {
+                return [pscustomobject]@{ Ok = $false; Summary = ('install result claims ok while the requested client ' + $required + ' is ' + $requiredStatus) }
+            }
+        }
     }
     return [pscustomobject]@{ Ok = $true; Summary = 'ok' }
 }
 
-# Which clients this invocation EXPLICITLY asked for, so their absence from the
-# result is a finding rather than a silence.
+# Which clients this invocation asked for, derived the SAME way
+# Install-Hook.ps1 derives them. Two earlier readings were wrong in the same
+# direction: recognising only the legacy -ClaudeOnly/-CodexOnly switches missed
+# the canonical -Clients array entirely, and treating "no switch" as "nothing
+# requested" missed the installer's own documented default.
 #
-# Only the explicit switches count. With neither, the installer chooses from
-# what is actually present on the machine, so demanding both would fail a
-# perfectly good install on a box that has only one client - a stricter check
-# that is simply wrong. Silence about an unrequested client is not a defect.
+# The installer resolves clients from the REQUEST, never from what happens to be
+# on the machine ($InstallClaude = $resolvedClients -contains 'claude'), so the
+# default genuinely asks for both and records a component for each. A coverage
+# check that demands nothing is a coverage check that cannot fail.
 function Get-RequestedInstallClients {
     param([hashtable]$InstallArgs)
-    $requested = @()
-    if ($null -eq $InstallArgs) { return $requested }
-    if ($InstallArgs.ContainsKey('ClaudeOnly') -and [bool]$InstallArgs['ClaudeOnly']) { $requested += 'claude' }
-    if ($InstallArgs.ContainsKey('CodexOnly') -and [bool]$InstallArgs['CodexOnly']) { $requested += 'codex' }
-    return $requested
+    if ($null -eq $InstallArgs) { return @('claude', 'codex') }
+    if ($InstallArgs.ContainsKey('Clients')) {
+        $named = @(@($InstallArgs['Clients']) | ForEach-Object { ([string]$_).Trim().ToLowerInvariant() } | Where-Object { $_ -ne '' })
+        # An explicitly empty -Clients is a caller error the installer throws
+        # on; reporting no requirement here would hide it behind a green result.
+        if ($named.Count -gt 0) { return @($named | Select-Object -Unique) }
+        return @('claude', 'codex')
+    }
+    $claudeOnly = ($InstallArgs.ContainsKey('ClaudeOnly') -and [bool]$InstallArgs['ClaudeOnly'])
+    $codexOnly = ($InstallArgs.ContainsKey('CodexOnly') -and [bool]$InstallArgs['CodexOnly'])
+    if ($claudeOnly -and -not $codexOnly) { return @('claude') }
+    if ($codexOnly -and -not $claudeOnly) { return @('codex') }
+    return @('claude', 'codex')
 }
 
 # Classify an `overall = partial` install. Partial is the installer's way of
@@ -149,16 +183,25 @@ function Get-RequestedInstallClients {
 # human needs to act.
 function Get-PartialInstallVerdict {
     param($Components)
+    # Every field read through Get-ResultProperty, never a direct $_.reason.
+    # The document comes from another process and a component is not obliged to
+    # carry every optional field; under StrictMode a direct access on one that
+    # does not THROWS, which turned a readable-but-sparse result into a crashed
+    # wizard instead of the 'unknown' it should report.
     $realProblems = @(@($Components) |
         Where-Object {
-            [string]$_.status -eq 'failed' -or [string]$_.status -eq 'trackingFailed' -or
-            [string]$_.reason -eq 'postRegistrationError'
-        } | ForEach-Object { [string]$_.component + ' (' + [string]$_.reason + ')' })
+            $s = [string](Get-ResultProperty -Document $_ -Name 'status')
+            $r = [string](Get-ResultProperty -Document $_ -Name 'reason')
+            $s -eq 'failed' -or $s -eq 'trackingFailed' -or $r -eq 'postRegistrationError'
+        } | ForEach-Object {
+            [string](Get-ResultProperty -Document $_ -Name 'component') + ' (' +
+            [string](Get-ResultProperty -Document $_ -Name 'reason') + ')' })
     $capabilityOnly = @(@($Components) |
         Where-Object {
-            [string]$_.reason -eq 'degraded' -and
-            -not ([string]$_.status -eq 'failed' -or [string]$_.status -eq 'trackingFailed')
-        } | ForEach-Object { [string]$_.component })
+            $s = [string](Get-ResultProperty -Document $_ -Name 'status')
+            [string](Get-ResultProperty -Document $_ -Name 'reason') -eq 'degraded' -and
+            -not ($s -eq 'failed' -or $s -eq 'trackingFailed')
+        } | ForEach-Object { [string](Get-ResultProperty -Document $_ -Name 'component') })
 
     if ($realProblems.Count -gt 0) {
         $notes = @($realProblems) + @($capabilityOnly | ForEach-Object { $_ + ' (degraded)' })
@@ -170,8 +213,10 @@ function Get-PartialInstallVerdict {
     }
     # 'partial' with nothing this function recognizes is NOT quietly a success:
     # an unknown reason is exactly the case that must reach a human.
-    $unknown = @(@($Components) | Where-Object { [string]$_.status -ne 'ok' } |
-        ForEach-Object { [string]$_.component + ' (' + [string]$_.reason + ')' })
+    $unknown = @(@($Components) | Where-Object { [string](Get-ResultProperty -Document $_ -Name 'status') -ne 'ok' } |
+        ForEach-Object {
+            [string](Get-ResultProperty -Document $_ -Name 'component') + ' (' +
+            [string](Get-ResultProperty -Document $_ -Name 'reason') + ')' })
     if ($unknown.Count -eq 0) { $unknown = @('reason not reported') }
     return [pscustomobject]@{ IsFailure = $true; Summary = ('partial - ' + ($unknown -join ', ')) }
 }

@@ -67,24 +67,24 @@ function New-ResultStub {
 # Every fixture carries its schema, because every real result does: the stubs
 # used to model the `overall` field alone, which is precisely the trust the
 # validator refuses now.
-$okJson = '{"schema":1,"overall":"ok","components":[{"component":"claude","status":"ok","reason":""}]}'
-$degradedJson = '{"schema":1,"overall":"partial","components":[{"component":"claude","status":"ok","reason":"degraded"}]}'
-$failedComponentJson = '{"schema":1,"overall":"partial","components":[{"component":"claude","status":"failed","reason":"settingsWriteFailed"}]}'
-$trackingJson = '{"schema":1,"overall":"partial","components":[{"component":"registry","status":"trackingFailed","reason":"registryUnavailable"}]}'
-$postRegJson = '{"schema":1,"overall":"partial","components":[{"component":"claude","status":"ok","reason":"postRegistrationError"}]}'
-$hardFailJson = '{"schema":1,"overall":"failed","components":[{"component":"codex","status":"failed","reason":"settingsWriteFailed"}]}'
-$unknownOverallJson = '{"schema":1,"overall":"something-new","components":[{"component":"claude","status":"ok"}]}'
-$emptyPartialJson = '{"schema":1,"overall":"partial","components":[{"component":"claude","status":"skipped","reason":"mystery"}]}'
+$okJson = '{"schema":1,"overall":"ok","components":[{"component":"claude","status":"ok","reason":""},{"component":"codex","status":"ok","reason":""}]}'
+$degradedJson = '{"schema":1,"overall":"partial","components":[{"component":"claude","status":"ok","reason":"degraded"},{"component":"codex","status":"ok","reason":""}]}'
+$failedComponentJson = '{"schema":1,"overall":"partial","components":[{"component":"claude","status":"failed","reason":"settingsWriteFailed"},{"component":"codex","status":"ok","reason":""}]}'
+$trackingJson = '{"schema":1,"overall":"partial","components":[{"component":"claude","status":"ok"},{"component":"codex","status":"ok"},{"component":"registry","status":"trackingFailed","reason":"registryUnavailable"}]}'
+$postRegJson = '{"schema":1,"overall":"partial","components":[{"component":"claude","status":"ok","reason":"postRegistrationError"},{"component":"codex","status":"ok","reason":""}]}'
+$hardFailJson = '{"schema":1,"overall":"failed","components":[{"component":"claude","status":"ok"},{"component":"codex","status":"failed","reason":"settingsWriteFailed"}]}'
+$unknownOverallJson = '{"schema":1,"overall":"something-new","components":[{"component":"claude","status":"ok"},{"component":"codex","status":"ok"}]}'
+$emptyPartialJson = '{"schema":1,"overall":"partial","components":[{"component":"claude","status":"skipped","reason":"mystery"},{"component":"codex","status":"ok"}]}'
 
 # ---- R09: a document that exists is not automatically a result -------------
 $bareOkJson = '{"overall":"ok"}'
-$noSchemaJson = '{"overall":"ok","components":[{"component":"claude","status":"ok"}]}'
-$futureSchemaJson = '{"schema":99,"overall":"ok","components":[{"component":"claude","status":"ok"}]}'
+$noSchemaJson = '{"overall":"ok","components":[{"component":"claude","status":"ok"},{"component":"codex","status":"ok"}]}'
+$futureSchemaJson = '{"schema":99,"overall":"ok","components":[{"component":"claude","status":"ok"},{"component":"codex","status":"ok"}]}'
 $noComponentsJson = '{"schema":1,"overall":"ok","components":[]}'
-$contradictoryJson = '{"schema":1,"overall":"ok","components":[{"component":"claude","status":"ok"},{"component":"registry","status":"trackingFailed","reason":"registryUnavailable"}]}'
-$failedNoComponentJson = '{"schema":1,"overall":"failed","components":[{"component":"claude","status":"ok"}]}'
-$badStatusJson = '{"schema":1,"overall":"ok","components":[{"component":"claude","status":"installed-probably"}]}'
-$namelessJson = '{"schema":1,"overall":"ok","components":[{"status":"ok"}]}'
+$contradictoryJson = '{"schema":1,"overall":"ok","components":[{"component":"claude","status":"ok"},{"component":"codex","status":"ok"},{"component":"registry","status":"trackingFailed","reason":"registryUnavailable"}]}'
+$failedNoComponentJson = '{"schema":1,"overall":"failed","components":[{"component":"claude","status":"ok"},{"component":"codex","status":"ok"}]}'
+$badStatusJson = '{"schema":1,"overall":"ok","components":[{"component":"claude","status":"installed-probably"},{"component":"codex","status":"ok"}]}'
+$namelessJson = '{"schema":1,"overall":"ok","components":[{"status":"ok"},{"component":"codex","status":"ok"}]}'
 $arrayJson = '[{"schema":1,"overall":"ok"}]'
 $scalarJson = '"ok"'
 
@@ -124,6 +124,43 @@ foreach ($case in $cases) {
     Check ($case.Name + ' -> Summary is never empty') (-not [string]::IsNullOrWhiteSpace([string]$verdict.Summary)) ''
 }
 
+# ---- L09: requested clients come from the SAME resolver the installer uses -
+# Legacy switches were the only form recognised, so the canonical -Clients array
+# named a client nothing then checked for; and "no switch" was read as "nothing
+# requested", although Install-Hook.ps1 defaults to claude+codex.
+$clientCases = @(
+    @{ Name = 'no switches -> the installer default, both clients'; Args = @{}; Expect = @('claude', 'codex') }
+    @{ Name = 'legacy -ClaudeOnly'; Args = @{ ClaudeOnly = $true }; Expect = @('claude') }
+    @{ Name = 'legacy -CodexOnly'; Args = @{ CodexOnly = $true }; Expect = @('codex') }
+    @{ Name = 'canonical -Clients with one id'; Args = @{ Clients = @('codex') }; Expect = @('codex') }
+    @{ Name = 'canonical -Clients with both'; Args = @{ Clients = @('claude', 'codex') }; Expect = @('claude', 'codex') }
+    @{ Name = 'canonical -Clients is case- and space-tolerant'; Args = @{ Clients = @(' Claude ') }; Expect = @('claude') }
+    @{ Name = 'duplicate ids collapse'; Args = @{ Clients = @('claude', 'claude') }; Expect = @('claude') }
+)
+foreach ($case in $clientCases) {
+    $got = @(Get-RequestedInstallClients -InstallArgs $case.Args)
+    Check ('requested clients: ' + $case.Name) (
+        ((@($got) | Sort-Object) -join ',') -eq ((@($case.Expect) | Sort-Object) -join ',')) (
+        'got [' + ($got -join ',') + '] want [' + ($case.Expect -join ',') + ']')
+}
+
+# A NAMED client is not an INSTALLED client.
+$skippedClientJson = '{"schema":1,"overall":"ok","components":[{"component":"claude","status":"ok"},{"component":"codex","status":"skipped","reason":"notSelected"}]}'
+$skippedStub = New-ResultStub 'skippedclient' $skippedClientJson
+$v = Invoke-HookInstaller -InstallScript $skippedStub -InstallArgs @{ CustomHook = 'x.ps1'; TargetProject = $Work }
+Check 'a requested client reported SKIPPED does not satisfy overall=ok' (
+    -not $v.Ok -and [string]$v.Status -eq 'unknown') ('got ' + $v.Status + ': ' + $v.Summary)
+Check 'and the summary names the client and its actual status' (
+    $v.Summary -match 'codex' -and $v.Summary -match 'skipped') $v.Summary
+$v = Invoke-HookInstaller -InstallScript $skippedStub -InstallArgs @{ CustomHook = 'x.ps1'; TargetProject = $Work; ClaudeOnly = $true }
+Check 'the same document IS fine when only claude was requested' ($v.Ok) ('got ' + $v.Status + ': ' + $v.Summary)
+
+# postRegistrationError is a REASON, so it rode along inside an overall=ok.
+$postRegOkJson = '{"schema":1,"overall":"ok","components":[{"component":"claude","status":"ok","reason":"postRegistrationError"},{"component":"codex","status":"ok"}]}'
+$v = Invoke-HookInstaller -InstallScript (New-ResultStub 'postregok' $postRegOkJson) -InstallArgs @{ CustomHook = 'x.ps1'; TargetProject = $Work }
+Check 'a post-registration error inside an overall=ok document is not success' (
+    -not $v.Ok -and [string]$v.Status -eq 'unknown') ('got ' + $v.Status + ': ' + $v.Summary)
+
 # ---- R09: a client that was ASKED FOR must appear in the result ------------
 # Silence about a requested client is not 'installed by default'; nothing said
 # anything about it at all. A client that was NOT asked for is a different
@@ -137,7 +174,11 @@ Check 'and the summary names the client it never heard about' ($v.Summary -match
 $v = Invoke-HookInstaller -InstallScript $codexOnlyResult -InstallArgs @{ CustomHook = 'x.ps1'; TargetProject = $Work; ClaudeOnly = $true }
 Check 'the same document IS accepted when claude is the requested client' ($v.Ok) ('got ' + $v.Status + ': ' + $v.Summary)
 $v = Invoke-HookInstaller -InstallScript $codexOnlyResult -InstallArgs @{ CustomHook = 'x.ps1'; TargetProject = $Work }
-Check 'negative control: with NO client requested, one-client coverage is fine' ($v.Ok) ('got ' + $v.Status + ': ' + $v.Summary)
+# With NO switch the installer asks for BOTH clients, so a document naming only
+# one is incomplete rather than fine. This assertion used to claim the opposite,
+# which is exactly the reading L09 corrects: "no switch" is a real request.
+Check 'with NO switch the default request is both, so a one-client result is incomplete' (
+    -not $v.Ok -and $v.Summary -match 'codex') ('got ' + $v.Status + ': ' + $v.Summary)
 
 # ---- the result file is OURS and is always cleaned up ----------------------
 # A caller-supplied ResultPath would let one flow opt out of the very check this
