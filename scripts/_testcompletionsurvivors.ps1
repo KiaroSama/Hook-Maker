@@ -42,6 +42,7 @@ function Get-AdvisoryText {
     Write-Host '--- possible orphaned test processes: advisory only, never a gate ---' -ForegroundColor Cyan
 
 $survivorSentinel = $null
+$cohortSentinel = $null
 try {
     # ---- (a) a matching image started AFTER the baseline is named ----------
     # The window is anchored one second before the child's OWN start time, so on
@@ -49,8 +50,36 @@ try {
     # start time) and cannot be pushed out of the printed cap.
     $c = New-IsolatedHookCopy
     $p = New-GitRepo 'SurvivorSeen'
-    $survivorSentinel = Start-Process -FilePath 'powershell.exe' -ArgumentList '-NoLogo -NoProfile -Command Start-Sleep 30' -PassThru -WindowStyle Hidden
+    # THE SENTINEL IS A GRANDCHILD, started by a launcher that exits at once -
+    # the shape a real survivor has (the client starts a tool shell, the tool
+    # shell starts the test, the shell goes away). A process started DIRECTLY by
+    # this suite is a direct child of one of the fired hook's own ancestors,
+    # which is the CLIENT'S OWN COHORT: the other hooks of the same dispatch, the
+    # MCP servers, the tool shell. That cohort is excluded by design, and the
+    # $cohortSentinel below is the case that proves it.
+    $sentinelPidFile = Join-Path $Work ('survivor-pid-' + [guid]::NewGuid().ToString('N').Substring(0, 6) + '.txt')
+    $launcherPath = Join-Path $Work ('survivor-launch-' + [guid]::NewGuid().ToString('N').Substring(0, 6) + '.ps1')
+    Write-Utf8 $launcherPath (
+        "$child = Start-Process -FilePath 'powershell.exe' -ArgumentList '-NoLogo', '-NoProfile', '-Command', 'Start-Sleep 30' -PassThru -WindowStyle Hidden" + [Environment]::NewLine +
+        "Set-Content -LiteralPath '" + $sentinelPidFile + "' -Value " + '$child' + ".Id" + [Environment]::NewLine)
+    Start-Process -FilePath 'powershell.exe' -ArgumentList '-NoLogo', '-NoProfile', '-File', $launcherPath -WindowStyle Hidden | Out-Null
+    # Bounded wait on the real readiness signal (the pid file), never a blind sleep.
+    $sentinelPid = 0
+    for ($attempt = 0; $attempt -lt 100 -and $sentinelPid -le 0; $attempt++) {
+        $raw = ''
+        try { if (Test-Path -LiteralPath $sentinelPidFile -PathType Leaf) { $raw = ([System.IO.File]::ReadAllText($sentinelPidFile)).Trim() } } catch { $raw = '' }
+        $parsed = 0
+        if ([int]::TryParse($raw, [ref]$parsed) -and $parsed -gt 0) { $sentinelPid = $parsed }
+        if ($sentinelPid -le 0) { Start-Sleep -Milliseconds 100 }
+    }
+    Check 'the sentinel grandchild started and reported its pid' ($sentinelPid -gt 0) $sentinelPidFile
+    if ($sentinelPid -le 0) { throw 'the survivor sentinel could not be started' }
+    $survivorSentinel = Get-Process -Id $sentinelPid -ErrorAction Stop
     [void](Wait-ProcessReady -ProcessId $survivorSentinel.Id)
+    # The negative fixture: the client's own cohort, started the way the 18 Stop
+    # hooks of one dispatch are - a direct child of an ancestor of the hook.
+    $cohortSentinel = Start-Process -FilePath 'powershell.exe' -ArgumentList '-NoLogo -NoProfile -Command Start-Sleep 30' -PassThru -WindowStyle Hidden
+    [void](Wait-ProcessReady -ProcessId $cohortSentinel.Id)
     $survivorWindow = [datetime]::UtcNow.AddSeconds(-3)
     try { $survivorWindow = $survivorSentinel.StartTime.ToUniversalTime().AddSeconds(-1) } catch { }
     Write-SessionBaseline -Copy $c -Root $p -Utc $survivorWindow
@@ -68,8 +97,31 @@ try {
         $text -match 'Run the survivor sweep before finishing \(global-test-rules\.md -> No Orphaned Test Processes\)') $r.Out
     Check 'the survivor advisory NEVER blocks: no decision, exit 0' (
         $r.Exit -eq 0 -and $null -ne $doc -and $null -eq $doc.PSObject.Properties['decision']) $r.Out
+    # The loop this cost: 13 consecutive Stops in one measured session, each
+    # emission a forced turn, because the client's own cohort churns the row set
+    # and with it the repeat-suppression fingerprint. Neither half may return.
+    Check 'the client cohort (a direct child of the hook''s own ancestor) is NOT listed as a survivor' (
+        [string]$text -notmatch ('(?m)^  pid ' + $cohortSentinel.Id + ' ')) $r.Out
     Check 'it is bounded per session: the repeat-suppression fingerprint is recorded' (
         (Test-Path -LiteralPath (Join-Path (Get-StateDir $c) ('TestCompletionCheck-survivors-' + (Get-ProjectKey $p) + '.txt')) -PathType Leaf))
+
+    # A CONTINUATION IS NOT A NEW EVENT. On Claude a Stop emission is never free:
+    # even hookSpecificOutput.additionalContext sends the turn back to the model,
+    # so an advisory that speaks again inside the chain it started is a loop, not
+    # a reminder. Measured: 13 consecutive Stops, one forced turn each, until the
+    # client's own block cap ended the task. The sweep instruction does not change
+    # between them, so there is nothing to say.
+    $cCont = New-IsolatedHookCopy
+    $pCont = New-GitRepo 'SurvivorContinuation'
+    Write-SessionBaseline -Copy $cCont -Root $pCont -Utc $survivorWindow
+    $r = Fire -Copy $cCont -Cwd $pCont -StopHookActive
+    Check 'during a continuation the survivor advisory says nothing, so it cannot repeat itself into a loop' (
+        $r.Exit -eq 0 -and [string]$r.Out -eq '') $r.Out
+    # ... and the genuine Stop that follows still reports, so the guard suppresses
+    # the repeat and not the finding.
+    $r = Fire -Copy $cCont -Cwd $pCont
+    Check 'the next genuine Stop still names the survivor (the guard drops repeats, not findings)' (
+        (Get-AdvisoryText $r.Out) -match ('(?m)^  pid ' + $survivorSentinel.Id + ' ')) $r.Out
 
     # Same finding on Codex: the Stop advisory shape, never decision:block
     # (a Codex Stop block forces a new prompt - an advisory loop).
@@ -161,9 +213,10 @@ try {
 finally {
     # The rule this feature is about applies to this suite first: terminate the
     # child it started, then VERIFY it is gone rather than assuming the kill worked.
-    if ($null -ne $survivorSentinel) {
-        try { $survivorSentinel.Kill(); [void]$survivorSentinel.WaitForExit(10000) } catch { }
+    foreach ($sentinel in @($survivorSentinel, $cohortSentinel)) {
+        if ($null -eq $sentinel) { continue }
+        try { $sentinel.Kill(); [void]$sentinel.WaitForExit(10000) } catch { }
         Check 'the suite leaves no survivor of its own (sentinel verified terminated)' (
-            $null -eq (Get-Process -Id $survivorSentinel.Id -ErrorAction SilentlyContinue))
+            $null -eq (Get-Process -Id $sentinel.Id -ErrorAction SilentlyContinue))
     }
 }
