@@ -850,6 +850,18 @@ try {
 }
 catch { $script:StopLedgerReady = $false }
 
+# _evidencelib.ps1 loads the same way and for the same reason: what a closing
+# declaration has to contain before it counts as a claim is its own
+# responsibility, and a runtime copied before it existed must degrade rather
+# than fail to start. A gate checks $script:EvidenceLibReady before relying on
+# it and keeps its older prefix test otherwise.
+$script:EvidenceLibReady = $false
+try {
+    $evidenceLibPath = Join-Path $PSScriptRoot '_evidencelib.ps1'
+    if (Test-Path -LiteralPath $evidenceLibPath -PathType Leaf) { . $evidenceLibPath; $script:EvidenceLibReady = $true }
+}
+catch { $script:EvidenceLibReady = $false }
+
 function Test-StopStandDown {
     param([Parameter(Mandatory = $true)]$HookInput, [Parameter(Mandatory = $true)][string]$HookName)
     $stopActive = Get-Field $HookInput 'stop_hook_active'

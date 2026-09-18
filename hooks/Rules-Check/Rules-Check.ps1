@@ -291,7 +291,13 @@ function Get-EvidenceTranscriptFallbackPath {
     # Anchored at the start of a transcript line, so this hook's own instruction
     # text can never satisfy it. A short markdown prefix is tolerated.
     $confirmPattern = '(?im)(?:^|\\n)[ \t]{0,8}(?:[-*>#]+[ \t]{0,4})?(?:\*\*)?Rules[ \t]+(?:applied|followed|read)[ \t]*:'
-    if ($tail -match $confirmPattern) { exit 0 }
+    # SUBSTANTIVE, not merely present (L05): an empty 'Rules applied:' line
+    # used to clear this gate, as did one inside a fenced example.
+    if ($script:EvidenceLibReady) {
+        $rulesDeclaration = Test-ClosingDeclaration -Text $tail -LabelPattern 'Rules[ 	]+(?:applied|followed|read)'
+        if ($rulesDeclaration.Substantive) { exit 0 }
+    }
+    elseif ($tail -match $confirmPattern) { exit 0 }
 
     # Did this session actually change files? That is what makes the rules
     # load-bearing and is the ONLY condition this hook gates on. The pattern is

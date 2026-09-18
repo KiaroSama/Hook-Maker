@@ -326,6 +326,53 @@ Add-Member -InputObject $finEmit -NotePropertyName 'last_assistant_message' -Not
 $emitted = Write-StopBlockResult -HookInput $finEmit -HookName 'Gate-Emit' -EventName 'Stop' -Reason 'ORIGINAL GATE TEXT'
 Check 'the block was emitted' ($emitted.Emitted -eq $true) ([string]$emitted.ExitCode)
 
+# ---- L05: a closing declaration must CLAIM something, not just look like one
+# The three closing gates tested for a PREFIX. 'MCP used:' with nothing after
+# it satisfied the gate, so did a bare 'none', and so did a line inside a
+# fenced block the agent wrote to SHOW the format rather than to claim it.
+Check 'the evidence library loaded beside the ledger' ($script:EvidenceLibReady -eq $true)
+
+$mcpLabel = 'MCP[ 	]+(?:servers?[ 	]+|tools?[ 	]+)?used'
+$decCases = @(
+    @{ Name = 'a real list is substantive'; Text = "done`nMCP used: synapse, github"; Want = $true }
+    @{ Name = 'the JSONL escape form counts as a line start'; Text = 'done
+MCP used: synapse'; Want = $true }
+    @{ Name = 'bold decoration does not hide it'; Text = "done`n**MCP used:** synapse"; Want = $true }
+    @{ Name = 'none WITH a reason is a real answer'; Text = "done`nMCP used: none - nothing the task needed"; Want = $true }
+    @{ Name = 'an EMPTY declaration claims nothing'; Text = "done`nMCP used:"; Want = $false }
+    @{ Name = 'whitespace only claims nothing'; Text = "done`nMCP used:    "; Want = $false }
+    @{ Name = 'a bare none claims nothing'; Text = "done`nMCP used: none"; Want = $false }
+    @{ Name = 'none with only a dash claims nothing'; Text = "done`nMCP used: none -"; Want = $false }
+    @{ Name = 'a bracketed template is a placeholder'; Text = "done`nMCP used: <server names>"; Want = $false }
+    @{ Name = 'TBD is a placeholder'; Text = "done`nMCP used: TBD"; Want = $false }
+    @{ Name = 'the label never appearing is absent, not substantive'; Text = 'done, nothing to report'; Want = $false }
+)
+foreach ($c in $decCases) {
+    $d = Test-ClosingDeclaration -Text $c.Text -LabelPattern $mcpLabel
+    Check ('declaration: ' + $c.Name) ([bool]$d.Substantive -eq [bool]$c.Want) (
+        'substantive=' + [string]$d.Substantive + ' reason=' + [string]$d.Reason)
+}
+
+# A FENCED example is the format being shown, not a claim being made.
+$fenced = "Here is the shape:`n``````n MCP used: synapse`n```````nI have not finished yet."
+$fencedResult = Test-ClosingDeclaration -Text $fenced -LabelPattern $mcpLabel
+Check 'a declaration inside a fenced example does not count as a claim' (
+    -not $fencedResult.Substantive) ('reason=' + [string]$fencedResult.Reason)
+
+# A real claim AFTER a fenced example still counts - the fence skips one match,
+# it does not disable the check.
+$afterFence = "Shape:`n``````n MCP used: <names>`n```````ndone`nMCP used: synapse, github"
+Check 'a real claim after a fenced example is still found' (
+    (Test-ClosingDeclaration -Text $afterFence -LabelPattern $mcpLabel).Substantive)
+
+# The capture stops at the line, so a name mentioned in later prose is not
+# swallowed into the claim.
+$laterProse = 'done
+MCP used:
+I considered synapse and did not use it.'
+Check 'prose on the NEXT line is not absorbed into an empty declaration' (
+    -not (Test-ClosingDeclaration -Text $laterProse -LabelPattern $mcpLabel).Substantive)
+
 # ---- negative control ----------------------------------------------------
 # Without this, a Test-StopStandDown that returned a constant $true would pass
 # most of the assertions above.

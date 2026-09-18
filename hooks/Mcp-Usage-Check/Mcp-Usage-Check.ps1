@@ -246,7 +246,15 @@ if ($null -eq $tail) {
     exit $emit.ExitCode
 }
 
+# SUBSTANTIVE, not merely present (L05). 'MCP used:' with nothing after it, a
+# bare 'none', or the line inside a fenced example the agent wrote to SHOW the
+# format all satisfied a prefix test. A prefix is a shape; a claim needs
+# content. Falls back to the prefix test on a runtime with no _evidencelib.
 $hasSummaryLine = ($tail -match $summaryLinePattern)
+if ($script:EvidenceLibReady) {
+    $mcpDeclaration = Test-ClosingDeclaration -Text $tail -LabelPattern 'MCP[ 	]+(?:servers?[ 	]+|tools?[ 	]+)?used'
+    $hasSummaryLine = [bool]$mcpDeclaration.Substantive
+}
 
 # The requirement is met. Nothing to say - and nothing to repeat. Checked
 # BEFORE the transcript is scanned below, so a compliant session does no
