@@ -101,9 +101,56 @@ function Get-TestWorkspaceRoot {
     return $root
 }
 
+# PHYSICAL CONTAINMENT, checked rather than assumed. A workspace is created
+# INSIDE the root and is later deleted whole, so the leaf may never navigate out
+# of it: a prefix carrying a separator, a traversal segment or a drive qualifier
+# would put the tree - and everything cleanup then removes - somewhere the caller
+# never named. GetInvalidFileNameChars covers both separators and the colon, so
+# one check refuses all three shapes.
+function Assert-TestWorkspacePrefix {
+    param([Parameter(Mandatory = $true)][AllowEmptyString()][string]$Prefix)
+    if ([string]::IsNullOrWhiteSpace($Prefix)) { throw 'A test workspace prefix cannot be empty.' }
+    if ($Prefix -eq '.' -or $Prefix -eq '..' -or $Prefix.Contains('..')) {
+        throw ('A test workspace prefix may not contain a traversal segment: ' + $Prefix)
+    }
+    if ($Prefix.IndexOfAny([System.IO.Path]::GetInvalidFileNameChars()) -ge 0) {
+        throw ('A test workspace prefix may not contain a path separator or an invalid name character: ' + $Prefix)
+    }
+}
+
+# Containment compares the separator-terminated root, so a SIBLING whose name
+# merely starts with the root's name (...\windows2 beside ...\windows) can never
+# look contained. A reparse point anywhere on either side is resolved first when
+# the platform can, and an unresolvable one FAILS: an unverifiable boundary is
+# not a boundary, and this one decides what a recursive delete may touch.
+function Get-ResolvedRealPath {
+    param([Parameter(Mandatory = $true)][string]$Path)
+    $full = [System.IO.Path]::GetFullPath($Path)
+    try {
+        $item = Get-Item -LiteralPath $full -Force -ErrorAction Stop
+        if (($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -eq [System.IO.FileAttributes]::ReparsePoint) {
+            $target = [string]$item.Target
+            if ([string]::IsNullOrWhiteSpace($target)) {
+                throw ('A reparse point on the test workspace path could not be resolved: ' + $full)
+            }
+            $full = [System.IO.Path]::GetFullPath($target)
+        }
+    }
+    catch [System.Management.Automation.ItemNotFoundException] { }
+    return $full
+}
+
+function Test-TestWorkspaceContained {
+    param([Parameter(Mandatory = $true)][string]$Root, [Parameter(Mandatory = $true)][string]$Path)
+    $resolvedRoot = (Get-ResolvedRealPath -Path $Root).TrimEnd([char]92)
+    $resolvedPath = Get-ResolvedRealPath -Path $Path
+    return $resolvedPath.StartsWith($resolvedRoot + [char]92, [System.StringComparison]::OrdinalIgnoreCase)
+}
+
 function New-TestWorkspace {
     param([Parameter(Mandatory)][string]$Prefix)
 
+    Assert-TestWorkspacePrefix -Prefix $Prefix
     $root = Get-TestWorkspaceRoot
 
     $path = Join-Path $root ($Prefix + '-' + [guid]::NewGuid().ToString('N').Substring(0, 8))
@@ -117,6 +164,12 @@ function New-TestWorkspace {
     # from "deleted underneath us" without waiting for a rare reproduction.
     if (-not (Test-Path -LiteralPath $path -PathType Container)) {
         throw ('Test workspace could not be created: ' + $path)
+    }
+    # Proven AFTER creation, because only then can a reparse point on the real
+    # path be resolved. A workspace that is not physically inside its root is
+    # never handed back - the caller would delete it recursively later.
+    if (-not (Test-TestWorkspaceContained -Root $root -Path $path)) {
+        throw ('The test workspace is not physically contained in its root: ' + $path + ' (root ' + $root + ')')
     }
     return $path
 }
