@@ -68,7 +68,7 @@ $script:TestPreviewLength = 800
 . (Join-Path $ScriptRoot '_installlib.ps1')
 . (Join-Path $ScriptRoot '_installregistry.ps1')
 
-$Work = Join-Path ([System.IO.Path]::GetTempPath()) ('hookmaker-statusscan-' + [guid]::NewGuid().ToString('N').Substring(0, 8))
+$Work = New-TestWorkspace -Prefix 'hookmaker-statusscan'
 
 # Sweep workspaces an INTERRUPTED earlier run left behind, before making a new
 # one. The finally block below undoes every deny ACL it created, but a run that
@@ -83,7 +83,7 @@ function Clear-StaleStatusScanWorkspaces {
     param([string]$Except = '')
     $swept = 0
     $identity = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
-    foreach ($stale in @(Get-ChildItem -LiteralPath ([System.IO.Path]::GetTempPath()) -Directory -Filter 'hookmaker-statusscan-*' -ErrorAction SilentlyContinue)) {
+    foreach ($stale in @(Get-ChildItem -LiteralPath (Get-TestWorkspaceRoot) -Directory -Filter 'hookmaker-statusscan-*' -ErrorAction SilentlyContinue)) {
         if ($Except -ne '' -and [string]::Equals($stale.FullName, $Except, [System.StringComparison]::OrdinalIgnoreCase)) { continue }
         foreach ($directory in (@($stale) + @(Get-ChildItem -LiteralPath $stale.FullName -Recurse -Directory -Force -ErrorAction SilentlyContinue))) {
             try {

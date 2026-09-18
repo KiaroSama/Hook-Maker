@@ -206,9 +206,14 @@ try {
     $pipVenv = Join-Path $pipProj '.venv\Scripts'
     New-Item -ItemType Directory -Path $pipVenv -Force | Out-Null
     Write-Utf8 (Join-Path $pipVenv 'python.cmd') ('@echo off' + [Environment]::NewLine + 'type ' + [char]34 + (Join-Path $MockDir 'pip_outdated.json') + [char]34 + [Environment]::NewLine)
-    Set-Mock -PipExit 0 -PipJson '[{"name":"requests","version":"2.0.0","latest_version":"2.5.0","latest_filetype":"wheel"}]'
+    # boto3 is outdated IN THE ENVIRONMENT but is not declared by this project -
+    # the exact shape that made a real report list anyio, boto3, click, Faker and
+    # huggingface_hub as this project's findings once the environment inherited
+    # system site-packages. It must be inspected and then left out.
+    Set-Mock -PipExit 0 -PipJson '[{"name":"requests","version":"2.0.0","latest_version":"2.5.0","latest_filetype":"wheel"},{"name":"boto3","version":"1.0.0","latest_version":"1.9.0","latest_filetype":"wheel"}]'
     $r = Fire -Cwd $pipProj
     Check 'pip outdated packages are reported' ($r.Out -match 'pip: requests 2\.0\.0 -> 2\.5\.0') $r.Out
+    Check 'an outdated package this project does not declare is NOT reported' ($r.Out -notmatch 'boto3') $r.Out
 
     # =====================================================================
     Write-Host '--- go: go.mod detected, `go list -u -m all` runs in the module dir without crashing ---' -ForegroundColor Cyan
@@ -438,6 +443,56 @@ try {
         # machine's answer.
         Check 'a project with no venv resolves to nothing (no global fallback)' (
             $null -eq (Get-ProjectPythonExecutable -ProjectRoot $noEnv)) ([string](Get-ProjectPythonExecutable -ProjectRoot $noEnv))
+
+        # AN EXPLICITLY CONFIGURED SHARED BASE. A project with no venv of its
+        # own may deliberately run on a shared interpreter; refusing to look at
+        # it made this hook permanently silent for those projects. It counts
+        # only because the project named it and the path verifies - which is
+        # exactly what `pip` off PATH never is.
+        $sharedBase = Join-Path $scopeWork 'shared-python.exe'
+        Set-Content -LiteralPath $sharedBase -Value 'stub' -Encoding ascii
+        $script:config = @{ PYTHON_EXECUTABLE = $sharedBase }
+        try {
+            Check 'a configured shared interpreter is used when the project has no venv' (
+                (Get-ProjectPythonExecutable -ProjectRoot $noEnv) -eq (
+                    [System.IO.Path]::GetFullPath($sharedBase))) ([string](Get-ProjectPythonExecutable -ProjectRoot $noEnv))
+            $script:config = @{ PYTHON_EXECUTABLE = (Join-Path $scopeWork 'does-not-exist.exe') }
+            Check 'a configured interpreter that does not verify resolves to nothing, never to PATH' (
+                $null -eq (Get-ProjectPythonExecutable -ProjectRoot $noEnv)) ([string](Get-ProjectPythonExecutable -ProjectRoot $noEnv))
+            # The project's OWN venv still wins over the configured base.
+            $script:config = @{ PYTHON_EXECUTABLE = $sharedBase }
+            Check 'the project venv still wins over a configured shared base' (
+                ([string](Get-ProjectPythonExecutable -ProjectRoot $withEnv)).StartsWith($withEnv, [System.StringComparison]::OrdinalIgnoreCase)) ([string](Get-ProjectPythonExecutable -ProjectRoot $withEnv))
+        }
+        finally { $script:config = @{} }
+
+        # ---- the declared dependency SET -------------------------------------
+        # With inherited system site-packages, `pip list --outdated` reports the
+        # machine. Findings are restricted to what the project declares plus its
+        # transitive closure, and an undeterminable scope reports nothing.
+        . (Join-Path (Split-Path -Parent $Hook) '_pythonscope.ps1')
+        $declProj = Join-Path $scopeWork 'declared'
+        New-Item -ItemType Directory -Path $declProj -Force | Out-Null
+        Write-Utf8 (Join-Path $declProj 'requirements.txt') (
+            '# a comment' + [Environment]::NewLine +
+            '-r other.txt' + [Environment]::NewLine +
+            'Flask_SQLAlchemy>=3.0' + [Environment]::NewLine +
+            'requests[security]==2.0.0 ; python_version > "3.8"' + [Environment]::NewLine)
+        Write-Utf8 (Join-Path $declProj 'pyproject.toml') (
+            '[project]' + [Environment]::NewLine +
+            'dependencies = ["httpx>=0.27", "rich"]' + [Environment]::NewLine)
+        $declared = Get-DeclaredPythonPackages -ProjectRoot $declProj
+        $declaredNames = @($declared.Names)
+        Check 'requirement names are normalised (PEP 503) and extras/markers stripped' (
+            $declaredNames -contains 'flask-sqlalchemy' -and $declaredNames -contains 'requests') ($declaredNames -join ',')
+        Check 'option lines and comments declare nothing' (
+            -not ($declaredNames -contains 'r') -and -not ($declaredNames -contains 'a')) ($declaredNames -join ',')
+        Check 'pyproject dependencies are part of the declared set' (
+            $declaredNames -contains 'httpx' -and $declaredNames -contains 'rich') ($declaredNames -join ',')
+        $emptyProj = Join-Path $scopeWork 'nodecl'
+        New-Item -ItemType Directory -Path $emptyProj -Force | Out-Null
+        Check 'a project that declares nothing yields an empty scope, never everything' (
+            @((Get-DeclaredPythonPackages -ProjectRoot $emptyProj).Names).Count -eq 0) ''
 
         # A shell with SOME OTHER project's venv active must not leak into this
         # project's report.

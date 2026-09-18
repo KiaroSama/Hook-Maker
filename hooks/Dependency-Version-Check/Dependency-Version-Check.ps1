@@ -73,6 +73,17 @@ Set-StrictMode -Version 2.0
 $ErrorActionPreference = 'Stop'
 
 . (Join-Path $PSScriptRoot '..\_hooklib.ps1')
+# Interpreter selection and dependency scope live beside this hook: which
+# environment speaks for the project, and which packages of it are the project's
+# (an inherited global set is the machine's, not this project's). Loaded
+# OPTIONALLY so a runtime copied before it existed still starts - the pip branch
+# then degrades to declared-only scope and says so.
+$script:PythonScopeReady = $false
+try {
+    $pythonScopePath = Join-Path $PSScriptRoot '_pythonscope.ps1'
+    if (Test-Path -LiteralPath $pythonScopePath -PathType Leaf) { . $pythonScopePath; $script:PythonScopeReady = $true }
+}
+catch { $script:PythonScopeReady = $false }
 
 $hookInput = Read-HookInput
 if ($null -eq $hookInput) { exit 0 }
@@ -418,6 +429,29 @@ function Get-ProjectPythonExecutable {
         catch { }
     }
     foreach ($name in @('.venv', 'venv', '.env', 'env')) { [void]$candidates.Add((Join-Path $ProjectRoot $name)) }
+    # AN EXPLICITLY CONFIGURED SHARED BASE, last. A project may legitimately run
+    # on a shared interpreter instead of owning a venv (global-environment-rules
+    # .md allows a verified base with --system-site-packages), and refusing to
+    # look at it made this hook silent for exactly those projects. It is honoured
+    # only because the PROJECT named it in its own .env and the path verifies -
+    # which is the whole difference from picking up `pip` off PATH, an
+    # environment that belongs to the machine and not to this project.
+    # Read defensively: this resolver is also extracted and exercised on its own
+    # by the suite, where no hook config exists, and under StrictMode an absent
+    # variable THROWS rather than reading as null.
+    $configuredBase = ''
+    $configTable = $null
+    try { $configTable = $script:config } catch { $configTable = $null }
+    if ($null -ne $configTable -and $configTable.ContainsKey('PYTHON_EXECUTABLE')) {
+        $configuredBase = ([string]$configTable['PYTHON_EXECUTABLE']).Trim()
+    }
+    if ($configuredBase -ne '') {
+        try {
+            $configuredFull = [System.IO.Path]::GetFullPath([Environment]::ExpandEnvironmentVariables($configuredBase))
+            if (Test-Path -LiteralPath $configuredFull -PathType Leaf) { return $configuredFull }
+        }
+        catch { }
+    }
     foreach ($base in $candidates) {
         # .cmd/.bat are not a test convenience: pyenv-win installs shim batch
         # files and some managed layouts do the same, so a project interpreter
@@ -454,22 +488,62 @@ if ($manifestPaths.ContainsKey('pip')) {
                 # what makes the wrapped shape look healthy.
                 # `@((...))` enumerates on both hosts.
                 $items = @(($text | ConvertFrom-Json))
+                # THE SCOPE. An environment that inherits system site-packages
+                # lists the MACHINE's packages, so an unfiltered report turns
+                # every unrelated global into a project finding. Findings are
+                # restricted to what this project DECLARES plus that set's
+                # transitive closure; a scope that cannot be determined is
+                # reported as incomplete, never widened back to everything.
+                $inScope = $null
+                if ($script:PythonScopeReady) {
+                    $declared = Get-DeclaredPythonPackages -ProjectRoot $cwd
+                    if (@($declared.Unreadable).Count -gt 0) {
+                        [void]$incomplete.Add('Python (pip) - could not read the declared dependencies of: ' + (@($declared.Unreadable) -join ', ') + '; packages outside the readable set were not inspected.')
+                    }
+                    if (@($declared.Names).Count -gt 0) {
+                        $closure = Expand-PythonDependencyClosure -PythonExecutable $pipCmd -Names @($declared.Names)
+                        if ($null -eq $closure) {
+                            [void]$incomplete.Add('Python (pip) - the installed metadata could not be read, so transitive dependencies were not inspected; only directly declared packages are reported.')
+                            $inScope = @($declared.Names)
+                        }
+                        else { $inScope = @(@($declared.Names) + @($closure) | Sort-Object -Unique) }
+                    }
+                    elseif (@($declared.Unreadable).Count -eq 0) {
+                        [void]$incomplete.Add('Python (pip) - Python manifests exist but declare no dependency this hook can parse, so the project scope is unknown and nothing was reported as outdated.')
+                        $inScope = @()
+                    }
+                    else { $inScope = @() }
+                }
+                else {
+                    [void]$incomplete.Add('Python (pip) - the dependency-scope module is missing from this runtime, so the report could not be restricted to this project''s own packages.')
+                    $inScope = @()
+                }
+                $scopeIndex = @{}
+                foreach ($scoped in @($inScope)) { $scopeIndex[[string]$scoped] = $true }
                 $count = 0
+                $outOfScope = 0
                 foreach ($item in $items) {
                     if ($count -ge $maxFindings) { break }
                     $name = [string](Get-Field $item 'name')
                     $version = [string](Get-Field $item 'version')
                     $latestVersion = [string](Get-Field $item 'latest_version')
                     if ($name -eq '') { continue }
+                    $normalized = ''
+                    if ($script:PythonScopeReady) { $normalized = Get-NormalizedPythonName -Name $name }
+                    if (-not $scopeIndex.ContainsKey($normalized)) { $outOfScope++; continue }
                     $cls = Get-UpdateClassification $version $latestVersion
                     [void]$findings.Add('pip: ' + $name + ' ' + $version + ' -> ' + $latestVersion + ' [' + $cls + ']')
                     $count++
                 }
+                # $outOfScope is deliberately NOT reported as incomplete: those
+                # packages were inspected and consciously excluded as the
+                # machine's rather than this project's, which is the opposite of
+                # missing coverage. Silence about them is the correct report.
             }
             catch { [void]$incomplete.Add('Python (pip) - could not parse `pip list --outdated --format=json` output.') }
         }
     }
-    else { [void]$incomplete.Add('Python (pip) - this project has Python manifests but no project environment (.venv/venv) was found, and the global interpreter is NOT this project''s dependency set. Create the project venv, or run `python -m pip list --outdated --format=json` inside it.') }
+    else { [void]$incomplete.Add('Python (pip) - this project has Python manifests but no project environment (.venv/venv) was found, and an arbitrary interpreter on PATH is NOT this project''s dependency set. Either use the project venv, or - when this project deliberately runs on a shared base interpreter - name that interpreter in this hook''s .env as PYTHON_EXECUTABLE=<full path>; findings stay restricted to the declared dependencies either way.') }
 }
 
 # ---- Poetry / uv / pnpm / yarn / bun / .NET / Java / Rust / PHP / Ruby: detected, but not given a

@@ -45,13 +45,12 @@ $script:TestPreviewLength = 800
 . (Join-Path $ToolRoot 'hooks\_hooklib.ps1')
 . (Join-Path $ScriptRoot '_installplan.ps1')
 
-$WorkToken = [guid]::NewGuid().ToString('N').Substring(0, 8)
-$Work = Join-Path ([System.IO.Path]::GetTempPath()) ('hookmaker-statusdisc-' + $WorkToken)
+$Work = New-TestWorkspace -Prefix 'hookmaker-statusdisc'
 # A SIBLING of $Work, never inside it: $Work is the tree these tests scan, and
-# the scanner refuses to write its result document into a scanned root.
-$Artifacts = Join-Path ([System.IO.Path]::GetTempPath()) ('hookmaker-statusdisc-art-' + $WorkToken)
-New-Item -ItemType Directory -Path $Work -Force | Out-Null
-New-Item -ItemType Directory -Path $Artifacts -Force | Out-Null
+# the scanner refuses to write its result document into a scanned root. Sibling
+# inside the SAME project-owned workspace root, so both trees stay where the
+# environment policy puts test artifacts.
+$Artifacts = New-TestWorkspace -Prefix 'hookmaker-statusdisc-art'
 Write-Host ("Workspace: $Work") -ForegroundColor DarkGray
 
 $SavedStateDir = $env:HOOKMAKER_STATE_DIR

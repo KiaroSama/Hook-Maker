@@ -38,7 +38,7 @@ function Check {
     }
 }
 
-$Work = Join-Path ([System.IO.Path]::GetTempPath()) ('hookmaker-ledger-' + [guid]::NewGuid().ToString('N').Substring(0, 8))
+$Work = New-TestWorkspace -Prefix 'hookmaker-ledger'
 [void](New-Item -ItemType Directory -Path $Work -Force)
 $savedLocalAppData = $env:LOCALAPPDATA
 $savedBudget = $env:HOOKMAKER_STOP_CORRECTION_BUDGET

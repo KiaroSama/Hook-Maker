@@ -373,12 +373,13 @@ try {
     }
 
     # =====================================================================
-    Write-Host '--- _testlib New-TestWorkspace: %TEMP% by default, relocatable for diagnosis, never fatal ---' -ForegroundColor Cyan
-    # The whole point of the env var is that a full matrix can be re-run OUT of
-    # %TEMP% to test whether the external deleter that twice removed a live
-    # workspace is %TEMP%-specific. So both halves matter: unset must be the old
-    # behaviour exactly, and a broken value must degrade to the old behaviour
-    # rather than take the suite down with it.
+    Write-Host '--- _testlib New-TestWorkspace: the OWNING PROJECT by default, relocatable for diagnosis, never silently elsewhere ---' -ForegroundColor Cyan
+    # The default is the owning project's own work root (global-environment-rules
+    # .md). The env var stays as an EXPLICIT relocation for diagnosis - a full
+    # matrix can be re-run out of the project to test whether the external
+    # deleter that twice removed a live workspace is location-specific - and an
+    # unusable value FAILS rather than quietly relocating the run, which is the
+    # half that used to fall back to %TEMP%.
     $spaces = New-Object System.Collections.Generic.List[string]
     $prevRoot = $env:HOOKMAKER_TEST_TEMP_ROOT
     try {
@@ -444,6 +445,24 @@ try {
         Check 'unusable root: the helper FAILS instead of silently relocating the run' ($threw) $w5
         Check 'unusable root: and it never quietly returns a path under %TEMP%' (
             $w5 -eq '') $w5
+
+        # CONTAINMENT. The leaf is built from the caller's prefix, so a prefix
+        # that navigates puts the tree - and the recursive delete that follows
+        # it - outside the root nobody named.
+        $env:HOOKMAKER_TEST_TEMP_ROOT = $prevRoot
+        foreach ($badPrefix in @('..', 'a..b', ('sub' + [char]92 + 'deep'), 'sub/deep', 'C:evil', '')) {
+            $escaped = ''
+            $refused = $false
+            try { $escaped = New-TestWorkspace -Prefix $badPrefix } catch { $refused = $true }
+            if ($escaped -ne '') { [void]$spaces.Add($escaped) }
+            Check ('a prefix that could leave the root is refused: [' + $badPrefix + ']') ($refused -and $escaped -eq '') $escaped
+        }
+        # A SIBLING whose name merely starts with the root's name is not inside it.
+        $siblingRoot = Join-Path $Work 'boundary'
+        Check 'containment compares whole segments, so a sibling-prefix path is NOT contained' (
+            -not (Test-TestWorkspaceContained -Root $siblingRoot -Path ($siblingRoot + '2' + [char]92 + 'x'))) $siblingRoot
+        Check 'containment accepts a real child' (
+            Test-TestWorkspaceContained -Root $siblingRoot -Path (Join-Path $siblingRoot 'x')) $siblingRoot
     }
     finally {
         $env:HOOKMAKER_TEST_TEMP_ROOT = $prevRoot
