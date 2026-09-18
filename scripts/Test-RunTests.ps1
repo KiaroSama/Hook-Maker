@@ -382,7 +382,10 @@ try {
     $spaces = New-Object System.Collections.Generic.List[string]
     $prevRoot = $env:HOOKMAKER_TEST_TEMP_ROOT
     try {
-        $tempRoot = ([System.IO.Path]::GetTempPath()).TrimEnd('', '/')
+        # [char] literals, not quoted strings: the separator written as a quoted
+        # escape was lost once already and left TrimEnd('', '/') here - an empty
+        # string is not a char, so the whole block threw at its first line.
+        $tempRoot = ([System.IO.Path]::GetTempPath()).TrimEnd([char]92, [char]47)
         $projectWorkRoot = Join-Path (Join-Path (Split-Path -Parent $PSScriptRoot) '.ci-work') 'windows'
 
         # THE DEFAULT IS THE OWNING PROJECT, not the machine's shared temp
