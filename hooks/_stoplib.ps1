@@ -475,7 +475,7 @@ function Register-StopBlockLedger {
 # pre-task summary advisory. History, not a live verdict: a recorded block is
 # what HAPPENED, never proof that it is still unresolved now.
 function Get-StopUnresolvedHistory {
-    param([AllowEmptyString()][string]$ProjectRoot = '')
+    param([AllowEmptyString()][string]$ProjectRoot = '', [AllowEmptyString()][string]$SessionId = '')
     $path = Get-StopLedgerPath -ProjectRoot $ProjectRoot
     if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { return @() }
     $ledger = Read-StopLedger -Path $path
@@ -485,6 +485,12 @@ function Get-StopUnresolvedHistory {
     foreach ($prop in @($ledger.unresolved.PSObject.Properties)) {
         $v = $prop.Value
         if ($null -eq $v) { continue }
+        # FILTER BEFORE BOUNDING (L04). The cap used to be applied to every
+        # entry in the project and the session filter afterwards, so a busy
+        # project could fill all 40 rows with OLDER sessions and hide the live
+        # one's gates entirely - the caller then reported no history at all for
+        # the session that actually had some.
+        if (-not [string]::IsNullOrWhiteSpace($SessionId) -and [string]$v.session -ne $SessionId) { continue }
         $out += [pscustomobject]@{ Hook = [string]$v.hook; Reason = [string]$v.reason; LastUtc = [string]$v.lastUtc; Session = [string]$v.session }
         if ($out.Count -ge 40) { break }
     }
@@ -499,8 +505,7 @@ function Get-StopSessionGateHistory {
     param([AllowEmptyString()][string]$ProjectRoot = '', [AllowEmptyString()][string]$SessionId = '')
     if ([string]::IsNullOrWhiteSpace($SessionId)) { return @() }
     $names = @()
-    foreach ($row in @(Get-StopUnresolvedHistory -ProjectRoot $ProjectRoot)) {
-        if ([string]$row.Session -ne [string]$SessionId) { continue }
+    foreach ($row in @(Get-StopUnresolvedHistory -ProjectRoot $ProjectRoot -SessionId $SessionId)) {
         if ([string]::IsNullOrWhiteSpace([string]$row.Hook)) { continue }
         if ($names -contains [string]$row.Hook) { continue }
         $names += [string]$row.Hook
