@@ -343,9 +343,26 @@ $FriendlyName = Get-HookFriendlyName $SourceName
 
 if (-not [string]::IsNullOrWhiteSpace($TargetProject)) {
     $projectRoot = [System.IO.Path]::GetFullPath([Environment]::ExpandEnvironmentVariables($TargetProject))
-    # settings.local.json (not settings.json): the command holds a machine-specific
-    # absolute path, so it must stay out of source control.
+    # settings.local.json (not settings.json) BY DEFAULT: the command holds a
+    # machine-specific absolute path, so a fresh install must not put it into a
+    # tracked file.
+    #
+    # BUT INSTALL WHERE THIS PROJECT'S HOOKS ALREADY ARE. A project whose
+    # Hook-Maker registrations already sit in settings.json used to get a second
+    # settings.local.json beside them, so one hook set was split across two files -
+    # the same hook could end up registered in both, /hooks showed duplicates, and
+    # uninstall cleaned only one side. Following the existing file is what the
+    # "update the same config" rule means in practice, and it adds no absolute
+    # path to a tracked file that did not already carry one.
     $ClaudeSettings = Join-Path $projectRoot '.claude\settings.local.json'
+    $trackedSettings = Join-Path $projectRoot '.claude\settings.json'
+    if (Test-Path -LiteralPath $trackedSettings -PathType Leaf) {
+        $trackedText = ''
+        try { $trackedText = [System.IO.File]::ReadAllText($trackedSettings) } catch { $trackedText = '' }
+        # The marker this tool's own registrations always carry, so a project that
+        # merely has unrelated hooks in settings.json is left alone.
+        if ($trackedText -match 'Hook-Maker') { $ClaudeSettings = $trackedSettings }
+    }
     $CodexHooks = Join-Path $projectRoot '.codex\hooks.json'
     $ScopeLabel = 'project'
 
