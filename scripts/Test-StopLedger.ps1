@@ -250,7 +250,7 @@ Check 'the gate is then suppressed on its next continuation' (
     (Test-StopStandDown -HookInput $cIn -HookName 'Rules-Check') -eq $true)
 
 # A ledger from a NEWER build is not damaged and is never rewritten.
-$futProj = 'C:\projuture'
+$futProj = 'C:\proj\future'
 $futLedger = Get-StopLedgerPath -ProjectRoot $futProj
 [void](New-Item -ItemType Directory -Path (Split-Path -Parent $futLedger) -Force)
 [System.IO.File]::WriteAllText($futLedger, '{"version":99,"chains":{},"entries":{},"unresolved":{}}')
@@ -290,7 +290,7 @@ Check 'NEGATIVE: empty text is not a wrap-up' (-not (Test-ClosingSummaryPublishe
 
 # The clause a blocking gate appends. Two forms, and picking the wrong one is
 # exactly what produced the repeats.
-$finProj = 'C:\projinalize'
+$finProj = 'C:\proj\finalize'
 $finFresh = New-StopInput -Session 'FIN' -Continuation $false -Cwd $finProj
 $clauseBefore = Get-StopFinalizationClause -HookInput $finFresh
 Check 'before any wrap-up, the clause says it belongs in the LAST message' (
@@ -320,7 +320,7 @@ Check 'a different task is not held to another task''s published wrap-up' (
     (Get-StopFinalizationClause -HookInput $finOther) -match 'after which nothing blocks')
 
 # And the clause actually reaches the user: every gate emits through this path.
-$finEmitProj = 'C:\projinalize-emit'
+$finEmitProj = 'C:\proj\finalize-emit'
 $finEmit = New-StopInput -Session 'EMIT' -Continuation $false -Cwd $finEmitProj
 Add-Member -InputObject $finEmit -NotePropertyName 'last_assistant_message' -NotePropertyValue "Shipped.`nDONE`n- a`nREMAINING`n- b"
 $emitted = Write-StopBlockResult -HookInput $finEmit -HookName 'Gate-Emit' -EventName 'Stop' -Reason 'ORIGINAL GATE TEXT'
