@@ -33,6 +33,12 @@
 # hash identically, and an IGNORED path never appears in porcelain at all, so
 # creating a .pytest_cache after a clean scan leaves it completely unchanged. It
 # stays a cheap CACHE HINT below; the proof is Test-CleanupEvidenceStillCurrent.
+# The handoff's accepted configuration, MIRRORED from the producer's
+# _cleanuprecord.ps1 (an installed runtime is self-contained, so the value is
+# copied rather than shared - and Test-CleanupFreshness asserts the two agree).
+$script:CleanupWitnessNameMaxLength = 64
+$script:CleanupWitnessNameMaxCount = 200
+
 $script:CleanupResultSchemaVersion = 3
 $script:CleanupResultProducerGeneration = 3
 # Checked as a SET, before the versions: the field shape is a fact about the
@@ -99,14 +105,27 @@ $script:CleanupWitnessMaxSeconds = 5
 function Get-CleanupWitnessNames {
     param($Record)
     $names = @($script:CleanupWitnessNames)
+    # The cap counts CONFIGURED names only, exactly as the producer's does. The
+    # shipped table is not part of anyone's configuration, and counting it here
+    # would refuse a configuration the producer accepted - the same
+    # producer/consumer disagreement in the opposite direction.
+    $extraCount = 0
     foreach ($field in @('extraCandidateNames', 'extraReviewNames')) {
         foreach ($extra in @(Get-Field $Record $field)) {
             $name = ([string]$extra).Trim()
-            if ($name -eq '' -or $name.Length -gt 64) { continue }
-            if ($name.IndexOfAny([System.IO.Path]::GetInvalidFileNameChars()) -ge 0) { continue }
+            if ($name -eq '') { continue }
+            # DROPPING A NAME HERE IS NOT SAFE. The witness looks for exactly the
+            # names the scan looked for; silently skipping one it cannot carry
+            # leaves residue under that name invisible and a stale verdict
+            # standing. The producer enforces the same bounds, so a record that
+            # still exceeds them is from a configuration this side cannot
+            # revalidate - the caller is told, and $null says so.
+            if ($name.Length -gt $script:CleanupWitnessNameMaxLength) { return $null }
+            if ($name.IndexOfAny([System.IO.Path]::GetInvalidFileNameChars()) -ge 0) { return $null }
+            $extraCount++
+            if ($extraCount -gt $script:CleanupWitnessNameMaxCount) { return $null }
             if ($names -contains $name) { continue }
             $names += $name
-            if ($names.Count -ge 200) { return $names }
         }
     }
     return $names
@@ -274,7 +293,11 @@ function Get-CleanupEvidenceVerdict {
     if ([string](Get-Field $record 'fingerprint') -ne (Get-RepoStateFingerprint -ProjectRoot $Root)) { return 'unknown' }
 
     # 7) REVALIDATION against the filesystem the verdict is about.
-    if (-not (Test-CleanupEvidenceStillCurrent -Root $Root -RecordedUtc $recordedUtc -WitnessNames (Get-CleanupWitnessNames -Record $record))) { return 'unknown' }
+    # A configuration this side cannot revalidate is UNKNOWN, never clean: the
+    # witness would otherwise be looking for fewer names than the scan did.
+    $witnessNames = Get-CleanupWitnessNames -Record $record
+    if ($null -eq $witnessNames) { return 'unknown' }
+    if (-not (Test-CleanupEvidenceStillCurrent -Root $Root -RecordedUtc $recordedUtc -WitnessNames $witnessNames)) { return 'unknown' }
 
     return $category
 }

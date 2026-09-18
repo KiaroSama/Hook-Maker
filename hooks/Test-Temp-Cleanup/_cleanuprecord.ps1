@@ -25,6 +25,18 @@
 #    candidate appearing after the scan was a name the witness never looked for,
 #    so a stale verdict stayed "clean". The effective configuration travels in
 #    the record now, and the consumer widens its witness to match.
+#
+# THE ACCEPTED CONFIGURATION, shared so producer and consumer cannot disagree
+# about it. They did: this side accepted an extra leaf name of any length and
+# any count, while the witness silently dropped names longer than 64 and stopped
+# at 200. A 65-character configured name was therefore scanned here and invisible
+# there, so residue under it left a stale 'clean' verdict standing. Silently
+# shrinking correctness-bearing coverage is the one thing neither side may do:
+# a name that cannot be handed over intact is REJECTED here and reported, and a
+# record whose lists exceed these bounds is unknown there.
+$script:CleanupExtraNameMaxLength = 64
+$script:CleanupExtraNameMaxCount = 200
+
 $script:CleanupRecordSchemaVersion = 3
 $script:CleanupRecordProducerGeneration = 3
 
