@@ -503,6 +503,48 @@ finally {
     }
 }
 
+    # =====================================================================
+    Write-Host '--- the project install follows the config its hooks are already in ---' -ForegroundColor Cyan
+    # A fresh project gets settings.local.json: the registration holds a
+    # machine-specific absolute path and must not enter a tracked file. But a
+    # project whose Hook-Maker registrations already sit in settings.json used to
+    # get a SECOND settings.local.json beside them, splitting one hook set across
+    # two files - the same hook registered twice, /hooks showing duplicates, and
+    # uninstall cleaning only one side.
+    $freshProj = Join-Path $Work 'SettingsFresh'
+    New-Item -ItemType Directory -Path $freshProj -Force | Out-Null
+    & git -C $freshProj init -q *> $null
+    & $InstallScript -CustomHook (Join-Path $RealHooksDir 'Large-File-Check\Large-File-Check.ps1') -Events @('Stop') -TargetProject $freshProj -ClaudeOnly *> $null
+    Check 'a FRESH project still installs into the untracked settings.local.json' (
+        (Test-Path -LiteralPath (Join-Path $freshProj '.claude\settings.local.json') -PathType Leaf) -and
+        -not (Test-Path -LiteralPath (Join-Path $freshProj '.claude\settings.json') -PathType Leaf))
+
+    $existingProj = Join-Path $Work 'SettingsExisting'
+    New-Item -ItemType Directory -Path (Join-Path $existingProj '.claude') -Force | Out-Null
+    & git -C $existingProj init -q *> $null
+    $trackedSettings = Join-Path $existingProj '.claude\settings.json'
+    Write-Utf8 $trackedSettings ('{"hooks":{"Stop":[{"matcher":"*","hooks":[{"type":"command","command":"powershell -File C:/x/Hook-Maker/Secrets-Check/Secrets-Check.ps1"}]}]},"someUserSetting":"must survive"}')
+    & $InstallScript -CustomHook (Join-Path $RealHooksDir 'Large-File-Check\Large-File-Check.ps1') -Events @('Stop') -TargetProject $existingProj -ClaudeOnly *> $null
+    Check 'a project whose Hook-Maker hooks are in settings.json gets NO second config file' (
+        -not (Test-Path -LiteralPath (Join-Path $existingProj '.claude\settings.local.json') -PathType Leaf))
+    $existingDoc = $null
+    try { $existingDoc = (Get-Content -LiteralPath $trackedSettings -Raw) | ConvertFrom-Json } catch { $existingDoc = $null }
+    Check 'the new hook joined the SAME file, beside the one already there' (
+        $null -ne $existingDoc -and @($existingDoc.hooks.Stop).Count -eq 2) (
+        'entries=' + $(if ($null -eq $existingDoc) { 'unreadable' } else { [string]@($existingDoc.hooks.Stop).Count }))
+    Check 'and the user''s unrelated setting in that file survived' (
+        $null -ne $existingDoc -and [string]$existingDoc.someUserSetting -eq 'must survive')
+
+    # NEGATIVE CONTROL: a project with only FOREIGN hooks in settings.json is not
+    # this tool's file to write into - it keeps the untracked default.
+    $foreignProj = Join-Path $Work 'SettingsForeign'
+    New-Item -ItemType Directory -Path (Join-Path $foreignProj '.claude') -Force | Out-Null
+    & git -C $foreignProj init -q *> $null
+    Write-Utf8 (Join-Path $foreignProj '.claude\settings.json') ('{"hooks":{"Stop":[{"matcher":"*","hooks":[{"type":"command","command":"node C:/them/their-hook.js"}]}]}}')
+    & $InstallScript -CustomHook (Join-Path $RealHooksDir 'Large-File-Check\Large-File-Check.ps1') -Events @('Stop') -TargetProject $foreignProj -ClaudeOnly *> $null
+    Check 'NEGATIVE CONTROL: a foreign-only settings.json is left alone, default still used' (
+        Test-Path -LiteralPath (Join-Path $foreignProj '.claude\settings.local.json') -PathType Leaf)
+
 Write-Host ''
 Write-Host ("Passed: $script:Pass  Failed: $script:Fail") -ForegroundColor $(if ($script:Fail -eq 0) { 'Green' } else { 'Red' })
 exit $script:Fail
