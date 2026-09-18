@@ -567,7 +567,7 @@ function New-ReviewMessage {
 CROSS-PROJECT KNOWLEDGE REVIEW REQUIRED
 
 Profile: $($Context.profileId)
-Route: $($Context.routeId)
+Route: $($Context.routeId) [identity key, fixed when the route was created: it keeps the name the source project had then, because every ack, pending review and registry record is filed under it. The CURRENT projects are the two paths below.]
 Destination project: $($Context.destinationRoot)
 Source project: $($Context.sourceRoot)
 Change manifest: $($Pending.manifestPath)

@@ -60,7 +60,7 @@ try {
     $sentinelPidFile = Join-Path $Work ('survivor-pid-' + [guid]::NewGuid().ToString('N').Substring(0, 6) + '.txt')
     $launcherPath = Join-Path $Work ('survivor-launch-' + [guid]::NewGuid().ToString('N').Substring(0, 6) + '.ps1')
     Write-Utf8 $launcherPath (
-        "$child = Start-Process -FilePath 'powershell.exe' -ArgumentList '-NoLogo', '-NoProfile', '-Command', 'Start-Sleep 30' -PassThru -WindowStyle Hidden" + [Environment]::NewLine +
+        '$child' + " = Start-Process -FilePath 'powershell.exe' -ArgumentList '-NoLogo', '-NoProfile', '-Command', 'Start-Sleep 30' -PassThru -WindowStyle Hidden" + [Environment]::NewLine +
         "Set-Content -LiteralPath '" + $sentinelPidFile + "' -Value " + '$child' + ".Id" + [Environment]::NewLine)
     Start-Process -FilePath 'powershell.exe' -ArgumentList '-NoLogo', '-NoProfile', '-File', $launcherPath -WindowStyle Hidden | Out-Null
     # Bounded wait on the real readiness signal (the pid file), never a blind sleep.
