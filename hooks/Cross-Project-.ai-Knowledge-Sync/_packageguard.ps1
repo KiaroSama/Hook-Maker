@@ -67,6 +67,16 @@ function Remove-OwnedPackageDirectory {
     try {
         $target = Normalize-Path $Path
         if (-not (Test-Path -LiteralPath $target -PathType Container)) { return $true }
+        # Windows PowerShell providers differ on recursive link removal.
+        # Refuse a redirected descendant before any deletion; never traverse it.
+        $pending = New-Object 'System.Collections.Generic.Stack[string]'
+        $pending.Push($target); $visited = 0
+        while ($pending.Count -gt 0) {
+            foreach ($child in (New-Object IO.DirectoryInfo($pending.Pop())).EnumerateFileSystemInfos()) {
+                if (++$visited -gt 20000 -or ($child.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { return $false }
+                if (($child.Attributes -band [IO.FileAttributes]::Directory) -ne 0) { $pending.Push($child.FullName) }
+            }
+        }
         Remove-Item -LiteralPath $target -Recurse -Force -ErrorAction Stop
         return $true
     }
@@ -78,7 +88,7 @@ function Test-StagedFilesVerified {
     param([Parameter(Mandatory = $true)][string]$FilesRoot, [Parameter(Mandatory = $true)][AllowEmptyCollection()]$Records)
     try {
         $root = Normalize-Path $FilesRoot
-        if (-not [IO.Directory]::Exists($root)) { return $false }
+        if (-not [IO.Directory]::Exists($root) -or ([IO.File]::GetAttributes($root) -band [IO.FileAttributes]::ReparsePoint) -ne 0) { return $false }
         $seen = @{}; $totalBytes = 0L
         foreach ($record in @($Records)) {
             $relative = [string](Get-Field $record 'path')
