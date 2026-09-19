@@ -247,7 +247,26 @@
         Where-Object { $_.Trim() -notmatch '^#' }) -join "`n"
     Check 'no Invoke-Expression' ($hookCode -notmatch 'Invoke-Expression')
     Check 'no iex alias' ($hookCode -notmatch '(^|[^\w-])iex([^\w-]|$)')
-    Check 'no Start-Process' ($hookCode -notmatch 'Start-Process')
+    # AST, not a substring. The property is "this hook never EXECUTES anything
+    # through Start-Process"; the NAME appearing inside a string is data, and
+    # _visibility.ps1 has to carry it in both a comparison token and the refusal
+    # text in order to detect it in someone else's command. A regex cannot tell
+    # those apart, so it was failing on the hook that exists to ban the thing.
+    # The AST form is also strictly stronger: it catches the `saps` alias, which
+    # the substring check never saw.
+    $startProcessCalls = New-Object System.Collections.Generic.List[string]
+    foreach ($packageFile in @(Get-ChildItem -LiteralPath (Split-Path -Parent $Hook) -File -Filter '*.ps1')) {
+        $fileAst = [System.Management.Automation.Language.Parser]::ParseFile($packageFile.FullName, [ref]$null, [ref]$null)
+        foreach ($call in @($fileAst.FindAll({ $args[0] -is [System.Management.Automation.Language.CommandAst] }, $true))) {
+            $name = $call.GetCommandName()
+            if ($null -eq $name) { continue }
+            if (@('start-process', 'saps') -contains $name.ToLowerInvariant()) {
+                [void]$startProcessCalls.Add($packageFile.Name + ':' + $call.Extent.StartLineNumber)
+            }
+        }
+    }
+    Check 'no Start-Process INVOCATION anywhere in the hook package (the name as data is fine)' (
+        $startProcessCalls.Count -eq 0) ($startProcessCalls.ToArray() -join ', ')
     Check 'no Invoke-Command / Invoke-Item' ($hookCode -notmatch 'Invoke-Command' -and $hookCode -notmatch 'Invoke-Item')
     Check 'no ScriptBlock creation' ($hookCode -notmatch 'ScriptBlock')
     Check 'no call operator on a variable' ($hookCode -notmatch '&\s*\$')

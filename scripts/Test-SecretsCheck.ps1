@@ -165,7 +165,11 @@ function New-ConfiguredHookCopy {
     Copy-Item $Hook (Join-Path $dir 'Secrets-Check.ps1')
     # The copy dot-sources "..\_hooklib.ps1" relative to itself, which resolves
     # to $Work\_hooklib.ps1 since $dir sits one level under $Work.
-    Copy-Item (Join-Path (Split-Path -Parent $Hook) '..\_hooklib.ps1') (Join-Path $Work '_hooklib.ps1') -Force
+    # Copy-TestRuntimeLibraries, not a hand-written Copy-Item: it DERIVES the set
+    # from the real install payload, so a new shared library reaches this fixture
+    # the day it is added. The hand-written form silently staged an incomplete
+    # runtime when _scope.ps1 landed and the hook could not dot-source it.
+    Copy-TestRuntimeLibraries -SourceHookLib (Join-Path (Split-Path -Parent $Hook) '..\_hooklib.ps1') -Destination (Join-Path $Work '_hooklib.ps1')
     $lines = New-Object System.Collections.Generic.List[string]
     foreach ($key in $EnvOverrides.Keys) { [void]$lines.Add($key + '=' + $EnvOverrides[$key]) }
     Write-Utf8 (Join-Path $dir '.env') (($lines.ToArray() -join "`r`n") + "`r`n")
