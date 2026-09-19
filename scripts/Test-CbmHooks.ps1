@@ -1,6 +1,6 @@
 # Offline suite for the two Codebase Memory hooks and the shared CBM helpers
-# in _hooklib.ps1, plus the coordination guard that makes Graph-Read-Check
-# yield to them.
+# in _hooklib.ps1, plus the coordination guard that keeps Graph-Read-Check
+# speaking alongside them: every project carries BOTH graphs.
 #
 # Everything runs against a FABRICATED cache directory: the hooks only ever
 # look at <cache>\_config.db and <cache>\<project>.db, so a real Codebase
