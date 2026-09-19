@@ -17,8 +17,7 @@ try {
     $engineDir = Join-Path $repo 'hooks\Cross-Project-.ai-Knowledge-Sync'
     . (Join-Path $engineDir '_packageguard.ps1')
     . (Join-Path $engineDir '_packagebuild.ps1')
-    # Import the production pure mapping function, not a translated model and
-    # not the stdin-driven entry point. The source is this exact checked-out SHA.
+    # Import the real pure mapping function from the checked-out production AST.
     $errors = $null
     $ast = [Management.Automation.Language.Parser]::ParseFile((Join-Path $engineDir 'Cross-Project-.ai-Knowledge-Sync.ps1'), [ref]$null, [ref]$errors)
     if ($errors.Count -gt 0) { throw 'Engine source does not parse.' }
@@ -80,10 +79,11 @@ try {
     [IO.File]::WriteAllText((Join-Path $outside 'sentinel.txt'), 'preserve', $utf8)
     $null = New-Item -ItemType Junction -Path $link -Target $outside
     Check-Package 'an internal junction invalidates the reviewed tree' (-not (Test-PendingPackageIntact $second $context $paths))
-    Remove-Item -LiteralPath $link -Force
+    # Delete only the test-owned link, not recursively through its target.
+    [IO.Directory]::Delete($link)
     Check-Package 'the external junction target is not modified by verification' ([IO.File]::ReadAllText((Join-Path $outside 'sentinel.txt')) -ceq 'preserve')
 }
-catch { Check-Package 'suite completes without an unexpected exception' $false $_.Exception.Message }
+catch { Check-Package 'suite completes without an unexpected exception' $false ($_.Exception.Message + ' | ' + $_.ScriptStackTrace) }
 finally {
     if ([IO.Directory]::Exists($work)) { Remove-Item -LiteralPath $work -Recurse -Force -ErrorAction SilentlyContinue }
     Check-Package 'all owned test artifacts are removed' (-not [IO.Directory]::Exists($work))
