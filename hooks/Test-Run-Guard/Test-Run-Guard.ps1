@@ -116,6 +116,14 @@ function Get-ListSetting {
 
 # ---- command analysis and run identity ------------------------------------
 . (Join-Path $PSScriptRoot '_commandanalysis.ps1')
+# Active-run correlation: whether a run that has no result yet is STILL GOING.
+# Optional, like every other sibling module, so a runtime copied before it
+# existed keeps the older behaviour (warn) instead of failing to start.
+try {
+    $activeOwnerPath = Join-Path $PSScriptRoot '_activeowner.ps1'
+    if (Test-Path -LiteralPath $activeOwnerPath -PathType Leaf) { . $activeOwnerPath }
+}
+catch { }
 
 # ---- state -----------------------------------------------------------------
 
@@ -545,6 +553,27 @@ if ($null -ne $observed) {
     $identityMatches = (Test-ResultMatchesObserved -Result $result -Observed $observed -CurrentStateFingerprint $stateFingerprint)
 }
 $isStale = ($identityUnresolved -or $null -eq $result -or -not $identityMatches -or $resultAgeMinutes -gt 60)
+
+# STILL EXECUTING IS NOT MISSING EVIDENCE. On a client whose shell call returns
+# before the child does, the result document legitimately does not exist yet at
+# PostToolUse. Accusing that run of leaving no evidence is wrong and teaches the
+# reader to ignore the message that matters. Deferral is granted ONLY on an
+# owned active marker that matches this run/command/repository and whose
+# recorded owner is provably the process running right now; anything weaker
+# stays unknown and keeps the warning below. Defer never means passed.
+if ($isStale -and $null -eq $result) {
+    $activeEntries = Get-PerRunStateEntries -StateDirectory $stateDirectory -Kind 'active' -ProjectKey $projectKey
+    $stillRunning = Get-DeferringActiveRun -ActiveEntries $activeEntries -RunId $thisRunId -CommandFingerprint $thisCommandFp -StateFingerprint $stateFingerprint -Observed $observed
+    if ($null -ne $stillRunning) {
+        $deferMessage = 'TEST RUN GUARD: the guarded run is STILL EXECUTING (owner process ' + [string](Get-Field $stillRunning 'ownerPid') +
+        ' is alive and is the process that started it), so its result document does not exist yet. That is not evidence of anything: ' +
+        'wait for the run to finish and read its result before reporting how it ended.' + $configNote
+        if (Test-ShouldReport -StatePath $reportStatePath -Fingerprint (Get-ShortHash ('active|' + [string](Get-Field $stillRunning 'runId')))) {
+            Write-Advisory -EventName 'PostToolUse' -Message $deferMessage
+        }
+        exit 0
+    }
+}
 
 if ($isStale) {
     # NEVER claims the run was fine. It says exactly what is missing.
