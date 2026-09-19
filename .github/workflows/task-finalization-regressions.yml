@@ -12,26 +12,26 @@ jobs:
   task-identity:
     runs-on: windows-latest
     timeout-minutes: 10
-    strategy:
-      fail-fast: false
-      matrix:
-        shell: [pwsh, powershell]
     steps:
       - uses: actions/checkout@v7
-      - name: Native task and ledger regression cases
-        shell: ${{ matrix.shell }}
-        run: ./scripts/regression/Test-TaskIdentityIsolation.ps1 -ResultPath '${{ runner.temp }}/task-evidence/results.json'
+      - name: Native task and ledger cases (PowerShell 7)
+        shell: pwsh
+        run: ./scripts/regression/Test-TaskIdentityIsolation.ps1 -ResultPath "$env:RUNNER_TEMP/task-evidence/pwsh.json"
+      - name: Native task and ledger cases (Windows PowerShell 5.1)
+        if: always()
+        shell: powershell
+        run: ./scripts/regression/Test-TaskIdentityIsolation.ps1 -ResultPath "$env:RUNNER_TEMP/task-evidence/powershell.json"
       - name: Archive exact tested source
         if: always()
         shell: pwsh
         run: |
-          New-Item -ItemType Directory -Force '${{ runner.temp }}/task-evidence' | Out-Null
-          git archive --format=zip --output='${{ runner.temp }}/task-evidence/source.zip' HEAD
-          git rev-parse HEAD | Set-Content -Encoding utf8 '${{ runner.temp }}/task-evidence/commit.txt'
-      - uses: actions/upload-artifact@v4
+          New-Item -ItemType Directory -Force "$env:RUNNER_TEMP/task-evidence" | Out-Null
+          git archive --format=zip --output="$env:RUNNER_TEMP/task-evidence/source.zip" HEAD
+          git rev-parse HEAD | Set-Content -Encoding utf8 "$env:RUNNER_TEMP/task-evidence/commit.txt"
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
-          name: task-evidence-${{ matrix.shell }}
+          name: task-evidence
           path: ${{ runner.temp }}/task-evidence
           retention-days: 3
           if-no-files-found: error
