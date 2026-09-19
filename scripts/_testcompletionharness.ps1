@@ -116,7 +116,7 @@ function Get-HookCopyTemplate {
             Copy-Item $pkgFile.FullName (Join-Path $t $pkgFile.Name) -Force
         }
         New-Item -ItemType Directory -Path (Join-Path $t '_fakelocal\HookMaker\state') -Force | Out-Null
-        Copy-Item $HookLib (Join-Path $Work '_hooklib.ps1') -Force
+        Copy-TestRuntimeLibraries -SourceHookLib $HookLib -Destination (Join-Path $Work '_hooklib.ps1')
         $script:HookCopyTemplate = $t
     }
     return $script:HookCopyTemplate

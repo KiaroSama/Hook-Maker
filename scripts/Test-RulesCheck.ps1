@@ -191,7 +191,7 @@ try {
     $hookCopyDir = Join-Path $Work 'hookcopy'
     New-Item -ItemType Directory -Path $hookCopyDir -Force | Out-Null
     Copy-Item $Hook (Join-Path $hookCopyDir 'Rules-Check.ps1')
-    Copy-Item (Join-Path (Split-Path -Parent $Hook) '..\_hooklib.ps1') (Join-Path $Work '_hooklib.ps1')
+    Copy-TestRuntimeLibraries -SourceHookLib (Join-Path (Split-Path -Parent $Hook) '..\_hooklib.ps1') -Destination (Join-Path $Work '_hooklib.ps1')
     $customRules = Join-Path $Work 'customrules'
     New-RuleFile $customRules 'special.md'
     [System.IO.File]::WriteAllText((Join-Path $hookCopyDir '.env'), "GLOBAL_RULES_DIR=$customRules`r`n")
@@ -373,7 +373,7 @@ try {
         $dir = Join-Path $Work ('rulescopy-' + [guid]::NewGuid().ToString('N').Substring(0, 6))
         New-Item -ItemType Directory -Path $dir -Force | Out-Null
         Copy-Item $Hook (Join-Path $dir 'Rules-Check.ps1')
-        Copy-Item (Join-Path (Split-Path -Parent $Hook) '..\_hooklib.ps1') (Join-Path $Work '_hooklib.ps1') -Force
+        Copy-TestRuntimeLibraries -SourceHookLib (Join-Path (Split-Path -Parent $Hook) '..\_hooklib.ps1') -Destination (Join-Path $Work '_hooklib.ps1')
         [System.IO.File]::WriteAllText((Join-Path $dir '.env'), ("RULES_CONFIRMATION_ENFORCEMENT=" + $Enforcement + "`r`n"))
         return (Join-Path $dir 'Rules-Check.ps1')
     }

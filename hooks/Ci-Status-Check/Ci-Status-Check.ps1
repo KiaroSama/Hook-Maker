@@ -458,9 +458,12 @@ function Save-State {
 function Write-Block {
     param([string]$Outcome, [string]$Reason)
     Save-State -Outcome $Outcome
+    $evidence = Get-Variable -Name snapshot -ValueOnly -ErrorAction SilentlyContinue
+    $evidenceKey = $script:sha + '|' + $Outcome
+    if ($null -ne $evidence) { $evidenceKey += '|' + [string](Get-Field $evidence 'Fingerprint') }
     # Record the block so THIS hook's own re-entry is recognised; another
     # gate's block must not mute it, and its own must not repeat.
-    $emit = Write-StopBlockResult -HookInput $hookInput -HookName 'Ci-Status-Check' -EventName $script:eventName -Reason $Reason
+    $emit = Write-StopBlockResult -HookInput $hookInput -HookName 'Ci-Status-Check' -EventName $script:eventName -Reason $Reason -FindingFingerprint (Get-ShortHash $evidenceKey)
     exit $emit.ExitCode
 }
 
