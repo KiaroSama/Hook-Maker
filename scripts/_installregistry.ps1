@@ -278,7 +278,23 @@ function Get-InstallRegistryRawText {
     catch { return '' }
 }
 
+# Snapshot readers use the same lock as writers; nested calls on this runspace
+# are reentrant, so an update cannot deadlock when it consults the registry.
 function Read-InstallRegistryState {
+    param([Parameter(Mandatory = $true)][string]$ToolRoot, [switch]$NoCache)
+    $directory = Get-InstallStateDirectory $ToolRoot
+    if (-not [IO.Directory]::Exists($directory)) { return (Read-InstallRegistryStateUnlocked -ToolRoot $ToolRoot -NoCache:$NoCache) }
+    return (Invoke-WithInstallRegistryLock -ToolRoot $ToolRoot -Action {
+        try {
+            $journal = Read-RegistryJournal $ToolRoot
+            if ($null -ne $journal) { return (Read-RegistryBeforeState -ToolRoot $ToolRoot -Journal $journal) }
+            return (Read-InstallRegistryStateUnlocked -ToolRoot $ToolRoot -NoCache:$NoCache)
+        }
+        catch { return [pscustomobject]@{ State = 'corrupt'; Registry = $null; Path = $directory; Reason = $_.Exception.Message } }
+    })
+}
+
+function Read-InstallRegistryStateUnlocked {
     param(
         [Parameter(Mandatory = $true)][string]$ToolRoot,
         # Required by any caller that will mutate, save, or otherwise rely on
@@ -398,6 +414,20 @@ function Complete-InstallRegistryMigration {
 # comparing is far cheaper than 551 atomic writes, and it keeps mtimes (and so
 # the read cache) stable for everything the caller did not actually touch.
 function Save-InstallRegistry {
+    param([Parameter(Mandatory = $true)][string]$ToolRoot, [Parameter(Mandatory = $true)]$Registry)
+    $snapshot = Test-InstallRegistrySnapshot $Registry
+    if (-not $snapshot.Ok) { throw $snapshot.Reason }
+    Invoke-WithInstallRegistryLock -ToolRoot $ToolRoot -Action {
+        if (-not (Get-InstallRegistryGenerationState $ToolRoot).Complete) {
+            $recovery = Repair-InterruptedInstallRegistryGeneration $ToolRoot
+            if (-not $recovery.Ok) { throw $recovery.Reason }
+        }
+        Assert-RegistryMetadataSupported (Get-InstallRegistryDirectory $ToolRoot)
+        Save-InstallRegistryUnlocked -ToolRoot $ToolRoot -Registry $Registry
+    }
+}
+
+function Save-InstallRegistryUnlocked {
     param([Parameter(Mandatory = $true)][string]$ToolRoot, [Parameter(Mandatory = $true)]$Registry)
     Set-ObjectProperty -Object $Registry -Name 'version' -Value $script:InstallRegistrySchemaVersion
     # VALIDATE THE WHOLE SNAPSHOT FIRST, before the directory is even created. A
@@ -629,21 +659,20 @@ function Invoke-WithResourceLock {
 # Bounded exclusive lock around registry read-modify-write so two installs
 # running near-simultaneously cannot lose each other's records.
 function Invoke-WithInstallRegistryLock {
-    param(
-        [Parameter(Mandatory = $true)][string]$ToolRoot,
-        [Parameter(Mandatory = $true)][scriptblock]$Action,
-        [int]$TimeoutSeconds = 10
-    )
+    param([Parameter(Mandatory = $true)][string]$ToolRoot, [Parameter(Mandatory = $true)][scriptblock]$Action, [int]$TimeoutSeconds = 10)
     $directory = Get-InstallStateDirectory -ToolRoot $ToolRoot
-    if (-not (Test-Path -LiteralPath $directory -PathType Container)) {
-        New-Item -ItemType Directory -Path $directory -Force | Out-Null
-    }
+    [void][IO.Directory]::CreateDirectory($directory)
     $lockPath = Join-Path $directory 'install-registry.lock'
+    if ($null -eq (Get-Variable -Name InstallRegistryHeldLocks -Scope Script -ErrorAction SilentlyContinue)) { $script:InstallRegistryHeldLocks = @{} }
+    $ownerKey = [IO.Path]::GetFullPath($lockPath).ToUpperInvariant() + '|' + [Threading.Thread]::CurrentThread.ManagedThreadId
+    if ($script:InstallRegistryHeldLocks.ContainsKey($ownerKey)) { return (& $Action) }
     $stream = Open-CrashAwareLock -LockPath $lockPath -TimeoutSeconds $TimeoutSeconds
+    $script:InstallRegistryHeldLocks[$ownerKey] = $stream
     try { return (& $Action) }
     finally {
-        try { $stream.Dispose() } catch { }
-        try { Remove-Item -LiteralPath $lockPath -Force -ErrorAction SilentlyContinue } catch { }
+        $script:InstallRegistryHeldLocks.Remove($ownerKey)
+        if ($null -ne $stream) { $stream.Dispose() }
+        # Leave the inode stable; a waiting writer may already hold this file.
     }
 }
 
@@ -1075,6 +1104,12 @@ function Update-InstallRegistry {
         $quarantinePath = ''
         $warning = ''
         $directory = Get-InstallRegistryDirectory -ToolRoot $ToolRoot
+
+        if ([IO.File]::Exists((Get-RegistryJournalPath $ToolRoot))) {
+            $recovery = Repair-InterruptedInstallRegistryGeneration $ToolRoot
+            if (-not $recovery.Ok) { return [pscustomobject]@{ Ok = $false; QuarantinePath = ''; Warning = $recovery.Reason } }
+            $warning = $recovery.Reason
+        }
 
         # ---- one-off migration from the pre-record-per-file document --------
         if (-not (Test-Path -LiteralPath $directory -PathType Container)) {
