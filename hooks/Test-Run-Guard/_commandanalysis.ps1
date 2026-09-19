@@ -565,6 +565,9 @@ function Get-RecognizedTestCommand {
         for ($i = 0; $i -lt $rest.Count - 1; $i++) {
             if ($rest[$i].ToLowerInvariant() -ne '-file') { continue }
             $target = Get-ProgramName $rest[$i + 1]
+            # This tool's OWN hooks are condition scripts, not suites, and one of
+            # them prints a recovery command that this guard used to refuse.
+            if (Test-IsOwnHookScript $rest[$i + 1]) { break }
             if ($target -eq 'run-tests.ps1' -or $target -match '^test-[a-z0-9._-]+\.ps1$') {
                 $label = $program + ' -File ' + $target
             }
@@ -584,7 +587,7 @@ function Get-RecognizedTestCommand {
     # A .ps1 cannot be launched directly by ProcessStartInfo, so it is normalised
     # to `pwsh -NoLogo -NoProfile -File <script> <original args>`, exactly the
     # shape the guarded runner and the fingerprint both consume.
-    if ($label -eq '') {
+    if ($label -eq '' -and -not (Test-IsOwnHookScript $tokens[0])) {
         $leaf = Get-ProgramName $tokens[0]
         if ($leaf -eq 'run-tests.ps1' -or $leaf -match '^test-[a-z0-9._-]+\.ps1$') {
             return [pscustomobject]@{

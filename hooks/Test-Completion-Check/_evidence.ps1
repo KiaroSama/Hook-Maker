@@ -68,7 +68,11 @@ function Get-ResultIncidentKey {
     $ov = ([string](Get-Field $Doc 'overall')).ToLowerInvariant()
     $tr = [string](Get-Field $Doc 'terminateReason')
     $lk = @(@(Get-Field $Doc 'leakedProcessIds') | Where-Object { $null -ne $_ -and [string]$_ -ne '' })
-    if ($ov -ne 'terminated' -and $lk.Count -eq 0) { return '' }
+    # ANY non-ok outcome gets a key. It used to be minted only for a termination
+    # or a leak, so a plain assertion failure blocked while the block's own
+    # recovery text demanded an incident key that was never created - the
+    # documented way out could not be taken. A key costs nothing when unused.
+    if ($ov -eq 'ok' -and $lk.Count -eq 0) { return '' }
     $t = Get-ResultRecordedTime -Doc $Doc -Path $Path
     $ticks = if ($null -ne $t) { [string]$t.Ticks } else { '0' }
     return (Get-ShortHash ($ticks + '|' + $ov + '|' + $tr + '|' + (@($lk) -join ',')))
@@ -96,24 +100,34 @@ function Get-IncidentReasonFromDoc {
     return ''
 }
 
-# Has a NEGATIVE result been SUPERSEDED by a strictly-newer clean run for the same
-# command AND project state? A clean (overall=ok, no leak) result recorded after
-# the negative one means the same work was re-run green, so the old incident's
-# files are safe to prune (this is the C2/C4 supersede rule).
+# Has a NEGATIVE result been SUPERSEDED by a strictly-newer clean run of the same
+# COMMAND? A clean (overall=ok, no leak) result recorded after the negative one
+# means the same work was re-run green, so the old incident's files are safe to
+# prune (this is the C2/C4 supersede rule).
+#
+# Deliberately NOT also matched on projectFingerprint. That fingerprint is a hash
+# of HEAD plus `git status --porcelain`, so it changes on every commit and every
+# edit - and fixing the failure is itself an edit. Requiring it made the rule
+# unsatisfiable for its own main case: a green run could never supersede the
+# failure it had just repaired, and the gate cited that failure until the 24h
+# prune horizon. "Same project" is not lost by dropping it: Get-CompletionStateEntries
+# globs by projectKey, so $AllResults is already one project's runs and nothing
+# else can appear here. See docs/adr/0001-supersede-by-project-not-tree-state.md.
+#
+# The commandFingerprint match is unchanged, and it covers the whole argument
+# vector - so a run of three suites does not supersede a one-suite failure.
 # ponytail: O(n*m) over one project's per-run files, which are 24h-bounded and few.
 function Test-ResultSuperseded {
     param($NegDoc, $NegTime, $AllResults)
     if ($null -eq $NegDoc -or $null -eq $NegTime) { return $false }
     $cmd = [string](Get-Field $NegDoc 'commandFingerprint')
-    $proj = [string](Get-Field $NegDoc 'projectFingerprint')
-    if ($cmd -eq '' -or $proj -eq '') { return $false }
+    if ($cmd -eq '') { return $false }
     foreach ($re in @($AllResults)) {
         $ov = ([string](Get-Field $re.Doc 'overall')).ToLowerInvariant()
         if ($ov -ne 'ok') { continue }
         $lk = @(@(Get-Field $re.Doc 'leakedProcessIds') | Where-Object { $null -ne $_ -and [string]$_ -ne '' })
         if ($lk.Count -gt 0) { continue }
         if (([string](Get-Field $re.Doc 'commandFingerprint')) -ne $cmd) { continue }
-        if (([string](Get-Field $re.Doc 'projectFingerprint')) -ne $proj) { continue }
         $t = Get-ResultRecordedTime -Doc $re.Doc -Path $re.Path
         if ($null -ne $t -and $t -gt $NegTime) { return $true }
     }
