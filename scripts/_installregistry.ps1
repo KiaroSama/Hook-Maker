@@ -356,7 +356,16 @@ function Read-InstallRegistryState {
 function Read-InstallRegistry {
     param([Parameter(Mandatory = $true)][string]$ToolRoot)
     $state = Read-InstallRegistryState -ToolRoot $ToolRoot
-    if ($state.State -eq 'ok') { return (ConvertTo-InstallRegistryCurrent -Registry $state.Registry) }
+    # ALWAYS AN OBJECT WITH AN installs LIST. A caller reading `.installs` off
+    # the result is the normal shape, and returning $null - which a state that
+    # reports ok with no registry would do - turns that read into a StrictMode
+    # failure several frames away from the cause. An empty registry says the
+    # same thing without the crash; the STATE, not this function, is where
+    # unreadable is reported.
+    if ($null -ne $state -and [string]$state.State -eq 'ok' -and $null -ne $state.Registry) {
+        $current = ConvertTo-InstallRegistryCurrent -Registry $state.Registry
+        if ($null -ne $current) { return $current }
+    }
     return (New-EmptyInstallRegistry)
 }
 
