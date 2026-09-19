@@ -11,9 +11,8 @@
 # integration matrix files it under "freshness" for WHAT IT ASKS ABOUT; the
 # mechanism is a real decision:block, and the source says so here so the two
 # descriptions cannot drift apart again. It blocks only on the documented,
-# reproducible condition below: graphify-out\graph.json exists, this project
-# has no Codebase Memory index (that graph supersedes graphify), and the
-# newest project work is more than two minutes newer than graph.json.
+# reproducible condition below: graphify-out\graph.json exists, and the newest
+# project work is more than two minutes newer than graph.json.
 # WHAT CLEARS IT: finishing the turn again - after `graphify update .`, or
 # after one line saying the change was not structural. The block is recorded
 # per session and per project BEFORE it is emitted, so the same state never
@@ -53,20 +52,10 @@ if ([string]::IsNullOrWhiteSpace($eventName)) { $eventName = 'Stop' }
 # included - on UserPromptSubmit.
 if ($eventName -ne 'Stop' -and $eventName -ne 'SubagentStop') { exit 0 }
 
-# COORDINATION, matching Graph-Read-Check: Codebase Memory is the primary
-# code graph, so when this project is indexed there, do not ask for a
-# graphify graph to be refreshed. Without this the read half would call
-# graphify superseded while this half kept demanding its upkeep.
-$cbmCwd = [string](Get-Field $hookInput 'cwd')
-$cbmCacheDir = Get-CbmCacheDir -Config (Read-HookEnv (Join-Path $PSScriptRoot '.env')) -ProjectRoot $cbmCwd
-if (Test-CbmInstalled -CacheDir $cbmCacheDir) {
-    if (-not [string]::IsNullOrWhiteSpace($cbmCwd)) {
-        try {
-            if (Test-Path -LiteralPath (Get-CbmProjectDbPath -ProjectRoot $cbmCwd -CacheDir $cbmCacheDir) -PathType Leaf) { exit 0 }
-        }
-        catch { }
-    }
-}
+# COORDINATION, matching Graph-Read-Check: every project carries BOTH graphs,
+# so a Codebase Memory index does not supersede the graphify one and its upkeep
+# is still asked for here. The read half keeps graphify for the material it
+# alone covers and its cross-cutting views; this half keeps that graph current.
 $cwd = [string](Get-Field $hookInput 'cwd')
 if ([string]::IsNullOrWhiteSpace($cwd) -or -not (Test-Path -LiteralPath $cwd -PathType Container)) {
     exit 0

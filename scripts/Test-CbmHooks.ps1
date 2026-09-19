@@ -182,11 +182,12 @@ try {
     Check 'read: silent when cwd does not exist' ($r.Out.Trim() -eq '') $r.Out
 
     # =====================================================================
-    Write-Host '--- Graph-Read-Check yields to Codebase Memory ---' -ForegroundColor Cyan
+    Write-Host '--- Graph-Read-Check speaks alongside Codebase Memory ---' -ForegroundColor Cyan
     New-Item -ItemType Directory -Path (Join-Path $proj 'graphify-out') -Force | Out-Null
     [System.IO.File]::WriteAllText((Join-Path $proj 'graphify-out\graph.json'), '{}')
     $r = Invoke-CbmHook 'Graph-Read-Check\Graph-Read-Check.ps1' @{ hook_event_name = 'SessionStart'; cwd = $proj; session_id = 'g1' } $cache
-    Check 'graph: silent when this project has a CBM index' ($r.Out.Trim() -eq '') $r.Out
+    Check 'graph: still advises when this project has a CBM index' ($r.Out -match 'GRAPH READ CHECK') $r.Out
+    Check 'graph: the advisory names both graphs' ($r.Out -match 'BOTH graphs') $r.Out
     Remove-Item -LiteralPath $dbPath -Force
     $r = Invoke-CbmHook 'Graph-Read-Check\Graph-Read-Check.ps1' @{ hook_event_name = 'SessionStart'; cwd = $proj; session_id = 'g2' } $cache
     Check 'graph: unchanged behaviour when there is no CBM index' ($r.Out -match 'GRAPH READ CHECK') $r.Out
