@@ -27,6 +27,44 @@
 
 $script:InstallRegistryWritingMarkerName = '_writing.json'
 
+# Names a record id may never take, whatever the caller says.
+#
+# `_writing` was accepted, so a hook whose record id was `_writing` stored
+# itself AS the generation marker - and activation then DELETED that record as
+# its last step. The reserved device names are the same class of defect one
+# layer down: `CON.json`, `NUL.json` and the COM/LPT family do not behave like
+# files on Windows, so a record with such an id is written to a device and read
+# back as something else, or not at all.
+$script:InstallRegistryReservedIds = @(
+    'con', 'prn', 'aux', 'nul',
+    'com1', 'com2', 'com3', 'com4', 'com5', 'com6', 'com7', 'com8', 'com9',
+    'lpt1', 'lpt2', 'lpt3', 'lpt4', 'lpt5', 'lpt6', 'lpt7', 'lpt8', 'lpt9'
+)
+
+function Test-InstallRecordIdReserved {
+    param([AllowEmptyString()][string]$Id)
+    $text = ([string]$Id).Trim().ToLowerInvariant()
+    if ($text -eq '') { return $true }
+    if ([string]::Equals(($text + '.json'), $script:InstallRegistryWritingMarkerName, [System.StringComparison]::OrdinalIgnoreCase)) { return $true }
+    # A device name is reserved with ANY extension, so the check is on the stem.
+    $stem = $text
+    $dot = $stem.IndexOf('.')
+    if ($dot -ge 0) { $stem = $stem.Substring(0, $dot) }
+    return ($script:InstallRegistryReservedIds -contains $stem)
+}
+
+# The digest of one record's intended bytes. Not Get-FileHash: that cmdlet lives
+# in a MODULE, and a Windows PowerShell 5.1 process started under a pwsh 7
+# parent can come up without it - which is exactly the shape an install runs in.
+function Get-InstallRecordDigest {
+    param([AllowEmptyString()][string]$Text)
+    $sha = [System.Security.Cryptography.SHA256]::Create()
+    try {
+        return ([System.BitConverter]::ToString($sha.ComputeHash([System.Text.Encoding]::UTF8.GetBytes([string]$Text)))).Replace('-', '').ToLowerInvariant()
+    }
+    finally { $sha.Dispose() }
+}
+
 function Get-InstallRegistryMarkerPath {
     param([Parameter(Mandatory = $true)][string]$ToolRoot)
     return (Join-Path (Get-InstallRegistryDirectory -ToolRoot $ToolRoot) $script:InstallRegistryWritingMarkerName)
@@ -40,6 +78,7 @@ function Get-InstallRegistryMarkerPath {
 function Test-InstallRegistrySnapshot {
     param($Registry)
     $names = New-Object System.Collections.Generic.List[string]
+    $intended = New-Object System.Collections.Generic.List[object]
     $seen = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::OrdinalIgnoreCase)
     foreach ($record in @($Registry.installs)) {
         $id = ''
@@ -53,8 +92,18 @@ function Test-InstallRegistrySnapshot {
             return [pscustomobject]@{ Ok = $false; Reason = ('two install records share the id: ' + $id); FileNames = @() }
         }
         [void]$names.Add($id + '.json')
+        # THE INTENDED BYTES, decided here and carried into the marker. A
+        # generation that promises "these file names exist" cannot tell a file
+        # that already received its new bytes from one still holding the old
+        # ones, so an interrupted batch read back as complete while being half
+        # old and half new. -Depth 50 mirrors Write-JsonFileAtomic exactly, so
+        # the digest is of the bytes the writer will actually produce.
+        [void]$intended.Add([pscustomobject]@{
+                name   = ($id + '.json')
+                sha256 = (Get-InstallRecordDigest -Text ($record | ConvertTo-Json -Depth 50))
+            })
     }
-    return [pscustomobject]@{ Ok = $true; Reason = ''; FileNames = @($names.ToArray()) }
+    return [pscustomobject]@{ Ok = $true; Reason = ''; FileNames = @($names.ToArray()); Expected = @($intended.ToArray()) }
 }
 
 # Announce that the directory is mid-write. Written BEFORE the first record and
@@ -63,14 +112,28 @@ function Test-InstallRegistrySnapshot {
 function Start-InstallRegistryGeneration {
     param(
         [Parameter(Mandatory = $true)][string]$ToolRoot,
-        [string[]]$ExpectedFileNames = @()
+        [string[]]$ExpectedFileNames = @(),
+        # Each entry { name, sha256 }: the bytes this generation INTENDS each
+        # file to hold. Optional only so an older caller still works; without it
+        # completeness can only be judged by existence, which is what let a
+        # half-rewritten batch read back as whole.
+        [object[]]$ExpectedRecords = @()
     )
+    $directory = Get-InstallRegistryDirectory -ToolRoot $ToolRoot
+    # THE MARKER IS THE FIRST THING IN THE DIRECTORY. Creating the directory in
+    # the caller and the marker here left a window where an empty, unmarked
+    # directory existed - and an unmarked directory is authoritative by
+    # definition, so a crash in that window published "no installs at all".
+    if (-not (Test-Path -LiteralPath $directory -PathType Container)) {
+        New-Item -ItemType Directory -Path $directory -Force | Out-Null
+    }
     $marker = Get-InstallRegistryMarkerPath -ToolRoot $ToolRoot
     $payload = [pscustomobject][ordered]@{
         generation   = [guid]::NewGuid().ToString('N')
         startedUtc   = [DateTime]::UtcNow.ToString('o')
         ownerPid     = $PID
         expectedFiles = @($ExpectedFileNames)
+        expectedRecords = @($ExpectedRecords)
     }
     # Deliberately NOT atomic-written: a marker that fails to appear must fail
     # the save, and a torn marker is still a marker - any content at this path
@@ -109,12 +172,14 @@ function Get-InstallRegistryGenerationState {
     # genuinely partial snapshot that must never be reported as the registry.
     $detail = ''
     $expected = @()
+    $expectedRecords = @()
     $known = $false
     try {
         $parsed = [System.IO.File]::ReadAllText($marker, [System.Text.Encoding]::UTF8) | ConvertFrom-Json
         if ($null -ne $parsed) {
             if ($null -ne $parsed.PSObject.Properties['startedUtc']) { $detail = ' (started ' + [string]$parsed.startedUtc + ')' }
             if ($null -ne $parsed.PSObject.Properties['expectedFiles']) { $expected = @($parsed.expectedFiles); $known = $true }
+            if ($null -ne $parsed.PSObject.Properties['expectedRecords']) { $expectedRecords = @($parsed.expectedRecords) }
         }
     }
     catch { $detail = ' (the marker itself is unreadable, which is still an incomplete write)' }
@@ -122,9 +187,32 @@ function Get-InstallRegistryGenerationState {
         $directory = Get-InstallRegistryDirectory -ToolRoot $ToolRoot
         $missing = @(@($expected) | Where-Object { -not (Test-Path -LiteralPath (Join-Path $directory ([string]$_)) -PathType Leaf) })
         if ($missing.Count -eq 0) {
-            return [pscustomobject]@{ Complete = $true; Reason = ''; MarkerPath = $marker }
+            # EXISTENCE IS NOT COMPLETENESS when records are being REWRITTEN. A
+            # batch that updates two existing records and dies after the first
+            # leaves both files present, one new and one old - a mixed snapshot
+            # that the existence test declared whole. Compare the bytes against
+            # what this generation said it intended; a file still holding its
+            # old content is the unfinished half.
+            $stale = 0
+            foreach ($entry in @($expectedRecords)) {
+                $name = ''
+                $digest = ''
+                if ($null -ne $entry) {
+                    if ($null -ne $entry.PSObject.Properties['name']) { $name = [string]$entry.name }
+                    if ($null -ne $entry.PSObject.Properties['sha256']) { $digest = [string]$entry.sha256 }
+                }
+                if ($name -eq '' -or $digest -eq '') { continue }
+                $actual = ''
+                try { $actual = Get-InstallRecordDigest -Text ([System.IO.File]::ReadAllText((Join-Path $directory $name), [System.Text.Encoding]::UTF8)) }
+                catch { $actual = '' }
+                if (-not [string]::Equals($actual, $digest, [System.StringComparison]::OrdinalIgnoreCase)) { $stale++ }
+            }
+            if ($stale -eq 0) {
+                return [pscustomobject]@{ Complete = $true; Reason = ''; MarkerPath = $marker }
+            }
+            $detail += ' (' + [string]$stale + ' record file(s) still hold their previous bytes, so this batch is half written)'
         }
-        $detail += ' (missing ' + [string]$missing.Count + ' expected record file(s))'
+        else { $detail += ' (missing ' + [string]$missing.Count + ' expected record file(s))' }
     }
     return [pscustomobject]@{
         Complete   = $false
@@ -229,7 +317,20 @@ $script:InstallRegistryCache = $null
 # Quoting established that the value was a JSON string; it never established
 # which FIELD it was. Parse, then compare the id field exactly.
 function Test-InstallRecordWriteVerified {
-    param([string]$Text, [Parameter(Mandatory = $true)][string]$ExpectedId)
+    param(
+        [string]$Text,
+        [Parameter(Mandatory = $true)][string]$ExpectedId,
+        # The digest of the bytes the caller meant to write. The id proves WHICH
+        # record landed; only this proves it is the record that was composed -
+        # an older generation of the same id passes every id check there is.
+        [AllowEmptyString()][string]$ExpectedSha256 = ''
+    )
+    if (-not [string]::IsNullOrWhiteSpace($ExpectedSha256)) {
+        $actualDigest = Get-InstallRecordDigest -Text $Text
+        if (-not [string]::Equals($actualDigest, $ExpectedSha256, [System.StringComparison]::OrdinalIgnoreCase)) {
+            return [pscustomobject]@{ Ok = $false; Reason = 'the record read back after writing does not match the bytes that were composed for it' }
+        }
+    }
     $record = $null
     try { $record = $Text | ConvertFrom-Json } catch { $record = $null }
     if ($null -eq $record -or $record -isnot [System.Management.Automation.PSCustomObject]) {
@@ -240,6 +341,51 @@ function Test-InstallRecordWriteVerified {
     }
     if (-not [string]::Equals([string]$record.id, $ExpectedId, [System.StringComparison]::Ordinal)) {
         return [pscustomobject]@{ Ok = $false; Reason = ('the record read back after writing holds a different id: ' + [string]$record.id) }
+    }
+    return [pscustomobject]@{ Ok = $true; Reason = '' }
+}
+
+# MAY THIS DIRECTORY BE MUTATED AT ALL? The per-record upsert is the hot path
+# and it used to walk straight into writing: it never asked whether the
+# directory held a COMPLETE generation, nor whether its metadata came from a
+# NEWER Hook Maker. Writing one record into a half-written batch cements the
+# mixed snapshot as the registry; writing into a future schema silently
+# downgrades state this build does not understand.
+#
+# Both answers are REFUSALS, not repairs. A future version is not damage and is
+# never quarantined - it is simply not ours to rewrite - and an interrupted
+# generation is recovered by the process that owns it (or by a full save),
+# never by adding one more record on top of it.
+function Test-InstallRegistryMutable {
+    param([Parameter(Mandatory = $true)][string]$ToolRoot)
+    $directory = Get-InstallRegistryDirectory -ToolRoot $ToolRoot
+    if (-not (Test-Path -LiteralPath $directory -PathType Container)) {
+        return [pscustomobject]@{ Ok = $true; Reason = '' }
+    }
+    $generation = Get-InstallRegistryGenerationState -ToolRoot $ToolRoot
+    if (-not $generation.Complete) {
+        return [pscustomobject]@{ Ok = $false; Reason = $generation.Reason }
+    }
+    $metaPath = Join-Path $directory $script:InstallRegistryMetaName
+    if (-not (Test-Path -LiteralPath $metaPath -PathType Leaf)) {
+        # No metadata yet is the documented legacy/first-write shape.
+        return [pscustomobject]@{ Ok = $true; Reason = '' }
+    }
+    $meta = $null
+    try { $meta = [System.IO.File]::ReadAllText($metaPath, [System.Text.Encoding]::UTF8) | ConvertFrom-Json }
+    catch { return [pscustomobject]@{ Ok = $false; Reason = 'the registry metadata file is not valid JSON' } }
+    if ($null -eq $meta -or $null -eq $meta.PSObject.Properties['version']) {
+        return [pscustomobject]@{ Ok = $false; Reason = 'the registry metadata file carries no schema version' }
+    }
+    $version = 0
+    if (-not [int]::TryParse([string]$meta.version, [ref]$version)) {
+        return [pscustomobject]@{ Ok = $false; Reason = ('the registry metadata version is not a number: ' + [string]$meta.version) }
+    }
+    if ($version -gt $script:InstallRegistrySchemaVersion) {
+        return [pscustomobject]@{ Ok = $false; Reason = ('the registry was written by a newer Hook Maker (schema ' + $version + ' > ' + $script:InstallRegistrySchemaVersion + ') and was left untouched') }
+    }
+    if ($version -lt 1) {
+        return [pscustomobject]@{ Ok = $false; Reason = ('the registry metadata version is out of range: ' + $version) }
     }
     return [pscustomobject]@{ Ok = $true; Reason = '' }
 }

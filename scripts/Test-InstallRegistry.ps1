@@ -188,6 +188,7 @@ try {
     . (Join-Path $ScriptRoot '_testinstallregistrysafety.ps1')
     . (Join-Path $ScriptRoot '_testinstallregistrydrift.ps1')
     . (Join-Path $ScriptRoot '_testinstallregistryregressions.ps1')
+    . (Join-Path $ScriptRoot '_testinstallregistrytransaction.ps1')
     . (Join-Path $ScriptRoot '_testinstallevaluate.ps1')
 
     # =====================================================================
