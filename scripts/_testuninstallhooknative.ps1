@@ -321,7 +321,15 @@
         # is the accepted limitation this project documents (no full
         # machine-crash atomicity). What must NEVER happen is a SILENT
         # deletion: the record is still there for a human/retry to find.
-        Check 'the record was never silently deleted while its removal could not be persisted' (@(@(Get-Registry).installs | Where-Object { $_.id -eq $recRegistryFail.id }).Count -eq 1)
+        # THE RECORD FILE IS THE EVIDENCE. Since the registry write became a
+        # transaction, a half-finished batch is reported as UNAVAILABLE rather
+        # than served as the whole registry - so reading the assembled document
+        # here would conflate "could not be read" with "was deleted", which are
+        # the two things this case exists to tell apart. The file on disk
+        # answers it directly, and keeps answering it however the state is
+        # reported.
+        Check 'the record was never silently deleted while its removal could not be persisted' (
+            Test-Path -LiteralPath $registryPath -PathType Leaf) $registryPath
 
         # Retry after releasing the lock must finish the job (prove nothing
         # got permanently stuck, and no data was corrupted along the way).
