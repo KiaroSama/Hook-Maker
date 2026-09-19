@@ -14,6 +14,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           ref: ${{ github.sha }}
+          fetch-depth: 0
       - name: Integrate tests and remove one-shot mechanisms
         shell: bash
         run: |
@@ -31,17 +32,10 @@ jobs:
           s=p.read_text()
           anchor='      - name: Record tested revision'
           assert anchor in s
-          extra='''      - name: Byte verification and publication failures (PowerShell 7)
-                  if: always()
-                  shell: pwsh
-                  run: ./scripts/regression/Test-PackagePublication.ps1 -ResultPath "$env:RUNNER_TEMP/storage-evidence/packages-pwsh.json"
-                - name: Byte verification and publication failures (Windows PowerShell 5.1)
-                  if: always()
-                  shell: powershell
-                  run: ./scripts/regression/Test-PackagePublication.ps1 -ResultPath "$env:RUNNER_TEMP/storage-evidence/packages-powershell.json"
-          '''
-          extra='\n'.join(line[10:] if line.startswith('          ') else line for line in extra.splitlines())+'\n'
-          p.write_text(s.replace(anchor,extra+anchor),encoding='utf-8')
+          lines=[]
+          for label,shell,out in [('PowerShell 7','pwsh','pwsh'),('Windows PowerShell 5.1','powershell','powershell')]:
+              lines += ['      - name: Byte verification and publication failures ('+label+')', '        if: always()', '        shell: '+shell, '        run: ./scripts/regression/Test-PackagePublication.ps1 -ResultPath "$env:RUNNER_TEMP/storage-evidence/packages-'+out+'.json"']
+          p.write_text(s.replace(anchor,'\n'.join(lines)+'\n'+anchor),encoding='utf-8')
           PY
           git add hooks/Cross-Project-.ai-Knowledge-Sync/_packageguard.ps1 .github/workflows/storage-integrity-regressions.yml
           git rm .github/workflows/apply-storage-once.yml .github/workflows/complete-storage-tests-once.yml
