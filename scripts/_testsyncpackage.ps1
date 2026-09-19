@@ -23,6 +23,10 @@
     # The guard is exercised directly: these are refusals, and a refusal that is
     # only observed through an end-to-end side effect is indistinguishable from
     # the operation never being attempted.
+    # _hooklib.ps1 FIRST: the guard calls Normalize-Path and Test-PathInside from
+    # it, and without them every containment answer degrades to "refused" - which
+    # passes every negative assertion below for entirely the wrong reason.
+    . (Join-Path (Split-Path -Parent (Split-Path -Parent $Engine)) '_hooklib.ps1')
     . (Join-Path (Split-Path -Parent $Engine) '_packageguard.ps1')
 
     $guardRoot = Join-Path $Work 'guard'

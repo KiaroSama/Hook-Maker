@@ -429,13 +429,27 @@ function Get-ProjectPythonExecutable {
         catch { }
     }
     foreach ($name in @('.venv', 'venv', '.env', 'env')) { [void]$candidates.Add((Join-Path $ProjectRoot $name)) }
-    # AN EXPLICITLY CONFIGURED SHARED BASE, last. A project may legitimately run
-    # on a shared interpreter instead of owning a venv (global-environment-rules
-    # .md allows a verified base with --system-site-packages), and refusing to
-    # look at it made this hook silent for exactly those projects. It is honoured
-    # only because the PROJECT named it in its own .env and the path verifies -
-    # which is the whole difference from picking up `pip` off PATH, an
-    # environment that belongs to the machine and not to this project.
+
+    # The project's OWN environment is resolved first and wins outright.
+    foreach ($base in $candidates) {
+        # .cmd/.bat are not a test convenience: pyenv-win installs shim batch
+        # files and some managed layouts do the same, so a project interpreter
+        # is legitimately not always a native .exe.
+        foreach ($relative in @('Scripts\python.exe', 'Scripts\python.cmd', 'Scripts\python.bat', 'bin/python3', 'bin/python')) {
+            $exe = Join-Path $base $relative
+            try { if (Test-Path -LiteralPath $exe -PathType Leaf) { return $exe } } catch { }
+        }
+    }
+    # ONLY THEN an explicitly configured shared base. A project may legitimately
+    # run on a shared interpreter instead of owning a venv
+    # (global-environment-rules.md allows a verified base with
+    # --system-site-packages), and refusing to look at it made this hook silent
+    # for exactly those projects. It is honoured because the PROJECT named it in
+    # its own .env and the path verifies - which is the whole difference from
+    # picking up `pip` off PATH, an environment that belongs to the machine. It
+    # is LAST, because a project that owns an environment has already answered
+    # the question.
+    #
     # Read defensively: this resolver is also extracted and exercised on its own
     # by the suite, where no hook config exists, and under StrictMode an absent
     # variable THROWS rather than reading as null.
@@ -451,15 +465,6 @@ function Get-ProjectPythonExecutable {
             if (Test-Path -LiteralPath $configuredFull -PathType Leaf) { return $configuredFull }
         }
         catch { }
-    }
-    foreach ($base in $candidates) {
-        # .cmd/.bat are not a test convenience: pyenv-win installs shim batch
-        # files and some managed layouts do the same, so a project interpreter
-        # is legitimately not always a native .exe.
-        foreach ($relative in @('Scripts\python.exe', 'Scripts\python.cmd', 'Scripts\python.bat', 'bin/python3', 'bin/python')) {
-            $exe = Join-Path $base $relative
-            try { if (Test-Path -LiteralPath $exe -PathType Leaf) { return $exe } } catch { }
-        }
     }
     return $null
 }
