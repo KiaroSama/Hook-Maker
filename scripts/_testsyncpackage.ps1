@@ -120,13 +120,17 @@
     Set-Content -LiteralPath (Join-Path $src '.ai\LESSON.md') "# two`nsecond" -Encoding utf8
     $r2 = Fire -Cwd $dst -Config $pkgCfg
     Check 'the changed source is announced again' ($r2.Out -match 'CROSS-PROJECT KNOWLEDGE REVIEW REQUIRED') $r2.Out
-    $secondGeneration = @(Get-ChildItem -LiteralPath $pkgInbox -Directory -ErrorAction SilentlyContinue |
+    # -Recurse: the inbox holds one directory PER ROUTE, and the generations live
+    # inside that. Listing only the top level finds the route directory, which
+    # carries no manifest - and then finds no generation at all.
+    $secondGeneration = @(Get-ChildItem -LiteralPath $pkgInbox -Recurse -Directory -ErrorAction SilentlyContinue |
             Where-Object { Test-Path -LiteralPath (Join-Path $_.FullName 'manifest.json') })
     Check 'the replacement is a NEW generation, and the superseded one is retired only after it exists' (
         $secondGeneration.Count -eq 1 -and $secondGeneration[0].FullName -ne $firstRoot) (
         (@($secondGeneration | ForEach-Object { $_.Name }) -join ',') + ' first=' + (Split-Path -Leaf $firstRoot))
 
     # ---- the ACK is bound to the generation on disk ----------------------
+    if ($secondGeneration.Count -ne 1) { throw ('the package fixture is broken: ' + $secondGeneration.Count + ' generation(s) under ' + $pkgInbox) }
     $ackManifest = Join-Path $secondGeneration[0].FullName 'manifest.json'
     $ackCommand = [string](Get-Content -LiteralPath $ackManifest -Raw | ConvertFrom-Json).acknowledgementCommand
     Check 'the manifest carries its own acknowledgement command' (-not [string]::IsNullOrWhiteSpace($ackCommand)) $ackCommand
@@ -157,7 +161,7 @@
     $r3 = Fire -Cwd $dst -Config $pkgCfg
     Check 'a pending record whose package is gone is rebuilt, not announced as a dead path' (
         $r3.Out -match 'CROSS-PROJECT KNOWLEDGE REVIEW REQUIRED') $r3.Out
-    $rebuilt = @(Get-ChildItem -LiteralPath $pkgInbox -Directory -ErrorAction SilentlyContinue |
+    $rebuilt = @(Get-ChildItem -LiteralPath $pkgInbox -Recurse -Directory -ErrorAction SilentlyContinue |
             Where-Object { Test-Path -LiteralPath (Join-Path $_.FullName 'manifest.json') })
     Check 'and the rebuilt generation really exists on disk' ($rebuilt.Count -eq 1) ([string]$rebuilt.Count)
     $rebuiltFiles = @(Get-ChildItem -LiteralPath (Join-Path $rebuilt[0].FullName 'files') -Recurse -File -ErrorAction SilentlyContinue)
