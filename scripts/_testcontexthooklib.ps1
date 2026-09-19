@@ -253,9 +253,9 @@ if ($null -ne $in) { $prompt = [string](Get-Field $in 'prompt') }
             # Claude keeps additionalContext on Stop - it IS documented there as
             # model-visible, so the two clients legitimately diverge on Stop.
             $hrClaudeStop = Invoke-HookResult -Call @{ kind = 'context'; event = $hrStopEvent; message = 'claude-stop'; client = 'claude' }
-            Check ("claude " + $hrStopEvent + ' still uses additionalContext, so the clients diverge only on Stop') (
-                $hrClaudeStop.Result.Shape -eq 'claudeContext' -and
-                $hrClaudeStop.Out -match '"additionalContext"\s*:\s*"claude-stop"') $hrClaudeStop.Out
+            Check ("claude " + $hrStopEvent + ' uses a non-continuing systemMessage, never model context') (
+                $hrClaudeStop.Result.Shape -eq 'claudeSystemMessage' -and
+                $hrClaudeStop.Out -match '"systemMessage"\s*:\s*"claude-stop"' -and $hrClaudeStop.Out -notmatch 'hookSpecificOutput|decision') $hrClaudeStop.Out
         }
 
         # --- the PreToolUse permission mechanism is NOT block/advisory --------

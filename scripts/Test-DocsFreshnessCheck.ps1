@@ -62,7 +62,7 @@ function New-IsolatedHookCopy {
     $dir = Join-Path $Work ('hookcopy-' + [guid]::NewGuid().ToString('N').Substring(0, 6))
     New-Item -ItemType Directory -Path $dir -Force | Out-Null
     Copy-Item $Hook (Join-Path $dir 'Docs-Freshness-Check.ps1')
-    Copy-Item $HookLib (Join-Path $Work '_hooklib.ps1') -Force
+    Copy-TestRuntimeLibraries -SourceHookLib $HookLib -Destination (Join-Path $Work '_hooklib.ps1')
     $fakeLocal = Join-Path $dir '_fakelocal'
     New-Item -ItemType Directory -Path $fakeLocal -Force | Out-Null
     return [pscustomobject]@{ Script = (Join-Path $dir 'Docs-Freshness-Check.ps1'); LocalAppData = $fakeLocal }

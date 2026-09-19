@@ -41,7 +41,7 @@
         $lfHookLowThreshold = Join-Path $Work ('lfhookcopy-' + [guid]::NewGuid().ToString('N').Substring(0, 6))
         New-Item -ItemType Directory -Path $lfHookLowThreshold -Force | Out-Null
         Copy-Item $LargeFileHook (Join-Path $lfHookLowThreshold 'Large-File-Check.ps1')
-        Copy-Item (Join-Path (Split-Path -Parent $LargeFileHook) '..\_hooklib.ps1') (Join-Path $Work '_hooklib.ps1') -Force
+        Copy-TestRuntimeLibraries -SourceHookLib (Join-Path (Split-Path -Parent $LargeFileHook) '..\_hooklib.ps1') -Destination (Join-Path $Work '_hooklib.ps1')
         Write-Utf8 (Join-Path $lfHookLowThreshold '.env') "LINE_THRESHOLD=50`r`n"
         $lfHook = Join-Path $lfHookLowThreshold 'Large-File-Check.ps1'
         # 60 lines against a threshold of 50 (the smallest LINE_THRESHOLD the hook
@@ -55,10 +55,10 @@
         $r = Fire -HookPath $lfHook -Cwd $lfClaudeProj -EventName 'Stop'
         $lfClaudeDoc = $null
         try { $lfClaudeDoc = $r.Out | ConvertFrom-Json } catch { $lfClaudeDoc = $null }
-        $lfClaudeMsg = if ($null -ne $lfClaudeDoc -and $null -ne $lfClaudeDoc.PSObject.Properties['hookSpecificOutput']) { [string]$lfClaudeDoc.hookSpecificOutput.additionalContext } else { '' }
-        Check 'Stop on CLAUDE emits hookSpecificOutput.additionalContext (event Stop), never decision:block' (
-            $null -ne $lfClaudeDoc -and $null -ne $lfClaudeDoc.PSObject.Properties['hookSpecificOutput'] -and
-            [string]$lfClaudeDoc.hookSpecificOutput.hookEventName -eq 'Stop' -and $r.Out -notmatch '"decision"') $r.Out
+        $lfClaudeMsg = if ($null -ne $lfClaudeDoc -and $null -ne $lfClaudeDoc.PSObject.Properties['systemMessage']) { [string]$lfClaudeDoc.systemMessage } else { '' }
+        Check 'Stop on CLAUDE emits systemMessage (no model continuation), never decision:block' (
+            $null -ne $lfClaudeDoc -and $null -ne $lfClaudeDoc.PSObject.Properties['systemMessage'] -and
+            $r.Out -notmatch 'hookSpecificOutput' -and $r.Out -notmatch '"decision"') $r.Out
         Check 'an oversized file is still detected and reported' ($lfClaudeMsg -match 'LARGE FILE CHECK' -and $lfClaudeMsg -match 'big\.ps1') $lfClaudeMsg
         Check 'the reason says a pre-existing oversized file is advisory and blocks nothing' ($lfClaudeMsg -match 'this is advisory and nothing here blocks') $lfClaudeMsg
         Check 'the reason states the ceiling binds what you WRITE, not what already exists' ($lfClaudeMsg -match 'the ceiling binds what you WRITE' -and $lfClaudeMsg -match 'the gate fires only on a file this task itself pushed past it') $lfClaudeMsg
@@ -76,11 +76,11 @@
         $lfR51 = Fire -HookPath $lfHook -Cwd $lfClaudeProj51 -EventName 'Stop' -Exe 'powershell.exe'
         $lfClaudeDoc51 = $null
         try { $lfClaudeDoc51 = $lfR51.Out | ConvertFrom-Json } catch { }
-        $lfClaudeMsg51 = if ($null -ne $lfClaudeDoc51 -and $null -ne $lfClaudeDoc51.PSObject.Properties['hookSpecificOutput']) { [string]$lfClaudeDoc51.hookSpecificOutput.additionalContext } else { '' }
+        $lfClaudeMsg51 = if ($null -ne $lfClaudeDoc51 -and $null -ne $lfClaudeDoc51.PSObject.Properties['systemMessage']) { [string]$lfClaudeDoc51.systemMessage } else { '' }
         $lfClaudeAdapted = Invoke-HookResult -Call @{ kind = 'advisory'; event = 'Stop'; message = $lfClaudeMsg51; client = 'claude' } -Exe 'powershell.exe'
         Check '5.1 host: Write-HookResult reproduces the real CLAUDE Stop advisory byte-for-byte' (
             $lfClaudeMsg51 -ne '' -and $lfClaudeAdapted.Out -ceq $lfR51.Out -and
-            $lfClaudeAdapted.Result.Shape -eq 'claudeContext' -and $lfClaudeAdapted.Result.Emitted -eq $true) (
+            $lfClaudeAdapted.Result.Shape -eq 'claudeSystemMessage' -and $lfClaudeAdapted.Result.Emitted -eq $true) (
             'hook=[' + $lfR51.Out + '] adapter=[' + $lfClaudeAdapted.Out + ']')
 
         # --- Codex route: systemMessage, never a block (a block would loop Codex) ---
@@ -93,7 +93,7 @@
         $lfCodexMsg = if ($null -ne $lfCodexDoc -and $null -ne $lfCodexDoc.PSObject.Properties['systemMessage']) { [string]$lfCodexDoc.systemMessage } else { '' }
         Check 'Stop on CODEX emits systemMessage (not hookSpecificOutput, not decision:block)' (
             $null -ne $lfCodexDoc -and $null -ne $lfCodexDoc.PSObject.Properties['systemMessage'] -and
-            $null -eq $lfCodexDoc.PSObject.Properties['hookSpecificOutput'] -and $rx.Out -notmatch '"decision"') $rx.Out
+            $null -eq $lfCodexDoc.PSObject.Properties['systemMessage'] -and $rx.Out -notmatch '"decision"') $rx.Out
         Check 'the CODEX advisory still carries the oversized-file report' ($lfCodexMsg -match 'LARGE FILE CHECK' -and $lfCodexMsg -match 'big\.ps1') $lfCodexMsg
         # BYTE-COMPATIBILITY (real emission site 3 of 4): the same hook's Codex
         # branch - the one shape a Codex client actually understands at Stop.

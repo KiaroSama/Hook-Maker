@@ -103,6 +103,10 @@ function Register-UserTaskBoundary {
     param([Parameter(Mandatory = $true)]$HookInput)
     $event = [string](Get-Field $HookInput 'hook_event_name')
     if ($event -notin @('UserPromptSubmit', 'Stop')) { return }
+    if ($event -eq 'Stop') {
+        $scope = Get-TaskScope $HookInput
+        if ($null -eq $scope -or -not [IO.File]::Exists($scope.Path)) { return }
+    }
     $prompt = [string](Get-Field $HookInput 'prompt')
     if ([string]::IsNullOrWhiteSpace($prompt)) { $prompt = [string](Get-Field $HookInput 'user_prompt') }
     $fingerprint = Get-TaskPromptFingerprint $prompt

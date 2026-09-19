@@ -156,7 +156,7 @@
         New-Item -ItemType Directory -Path $tccPreDir -Force | Out-Null
         $tccPreHook = Join-Path $tccPreDir 'Test-Completion-Check.ps1'
         [System.IO.File]::WriteAllText($tccPreHook, $tccPreText, (New-Object System.Text.UTF8Encoding $false))
-        Copy-Item $HookLib (Join-Path $Work '_hooklib.ps1') -Force
+        Copy-TestRuntimeLibraries -SourceHookLib $HookLib -Destination (Join-Path $Work '_hooklib.ps1')
         $tccPreLocal = Join-Path $tccPreDir '_fakelocal-prefix'
         New-Item -ItemType Directory -Path (Join-Path $tccPreLocal 'HookMaker\state') -Force | Out-Null
         $preCopy = [pscustomobject]@{ Script = $tccPreHook; LocalAppData = $tccPreLocal }
