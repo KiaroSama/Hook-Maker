@@ -673,7 +673,12 @@ New-Item -ItemType File -Path (Join-Path $PSScriptRoot 'EXECUTED-MARKER.txt') -F
         # identity is proven on the decoded text after applying exactly that
         # documented rewrite, and the repair proof below uses the runtime's own
         # canonical installed hash.
-        $tpcExpectedRuntimeText = ([System.IO.File]::ReadAllText($Hook)).Replace('''..\_hooklib.ps1''', '''_hooklib.ps1''')
+        # DERIVED from the installer's own rewrite table, not a hand-written
+        # Replace. The hand-written form knew only about _hooklib.ps1, so the day
+        # this hook also started dot-sourcing ..\_scope.ps1 the expectation was
+        # a rewrite short and the assertion failed on a correct install.
+        . (Join-Path $ScriptRoot '_installplan.ps1')
+        $tpcExpectedRuntimeText = Get-PrivateLibraryScriptContent -SourceScriptPath $Hook
         Check 'the installed runtime matches source content (BOM + dot-source rewrite are the only differences)' (
             [System.IO.File]::ReadAllText($tpcRuntime) -eq $tpcExpectedRuntimeText)
         $canonHash = (Get-FileHash -LiteralPath $tpcRuntime -Algorithm SHA256).Hash
