@@ -536,13 +536,13 @@ try {
         ($claudeJson -like '*hooks\\Hook-Maker\\Docs-Freshness-Check\\Docs-Freshness-Check.ps1*') -and
         (Test-Path (Join-Path $tgt '.claude\hooks\Hook-Maker\Docs-Freshness-Check\Docs-Freshness-Check.ps1')) -and
         (Test-Path (Join-Path $tgt '.claude\hooks\Hook-Maker\Docs-Freshness-Check\_hooklib.ps1')))
-    Check 'Claude command does not reference the tool folder' ($claudeJson -notlike '*Hook Maker*')
+    Check 'Claude command does not point back at the tool''s own hooks directory' ($claudeJson -notlike ('*' + ((Split-Path -Parent $PSScriptRoot) + '\hooks\').Replace('\', '\\') + '*'))
     $codexJson = ''
     if (Test-Path (Join-Path $tgt '.codex\hooks.json')) { $codexJson = [System.IO.File]::ReadAllText((Join-Path $tgt '.codex\hooks.json')) }
     Check 'Codex gets a self-contained runtime copy' (
         ($codexJson -like '*hooks\\Hook-Maker\\Docs-Freshness-Check\\Docs-Freshness-Check.ps1*') -and
         (Test-Path (Join-Path $tgt '.codex\hooks\Hook-Maker\Docs-Freshness-Check\Docs-Freshness-Check.ps1')))
-    Check 'Codex command does not reference the tool folder' ($codexJson -notlike '*Hook Maker*')
+    Check 'Codex command does not point back at the tool''s own hooks directory' ($codexJson -notlike ('*' + ((Split-Path -Parent $PSScriptRoot) + '\hooks\').Replace('\', '\\') + '*'))
 }
 finally {
     $env:HOOKMAKER_STATE_DIR = $SavedHookMakerStateDir

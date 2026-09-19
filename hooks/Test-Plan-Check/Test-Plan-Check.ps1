@@ -61,6 +61,7 @@ Set-StrictMode -Version 2.0
 $ErrorActionPreference = 'Stop'
 
 . (Join-Path $PSScriptRoot '..\_hooklib.ps1')
+. (Join-Path $PSScriptRoot '..\_scope.ps1')
 
 $hookInput = Read-HookInput
 if ($null -eq $hookInput) { exit 0 }
@@ -177,7 +178,13 @@ if (-not [string]::IsNullOrWhiteSpace($env:TESTPLANCHECK_TEST_TRIP_TIME_AFTER_FI
 
 # Directory names pruned BEFORE descent - mirrors Secrets-Check.ps1 $excludedDirs
 # (plus .tox/site-packages that this scan has always skipped).
-$excludedDirs = @('.git', 'node_modules', 'vendor', 'vendors', 'dist', 'build', 'out', 'target', 'coverage', '.cache', 'cache', '__pycache__', '.venv', 'venv', 'env', '.ai', 'graphify-out', '.claude', '.codex', '.agents', 'bin', 'obj', '.ci-runner', '.tox', 'site-packages')
+# The shared base (..\_scope.ps1) plus only what THIS hook needs on top. The
+# base carries the four project-owned CI directories: a project that keeps its
+# self-hosted runner inside its own root was having the runner's second
+# checkout, and the vendored third-party actions under it, read as its own
+# source. Nothing this hook excluded before was dropped - see _scope.ps1 for
+# why the base is the intersection of the five hooks' lists and not their union.
+$excludedDirs = @(Get-HookExcludedDirs -Extra @('vendors', 'coverage', '.cache', 'cache', 'env', '.agents', '.tox', 'site-packages'))
 $extRegex = '(?i)^\.(ps1|psm1|py|js|mjs|cjs|ts|sh|rb|go)$'
 
 # Partial-coverage flags - each names a DISTINCT reason the walk stopped short, so

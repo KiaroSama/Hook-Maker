@@ -73,6 +73,7 @@ Set-StrictMode -Version 2.0
 $ErrorActionPreference = 'Stop'
 
 . (Join-Path $PSScriptRoot '..\_hooklib.ps1')
+. (Join-Path $PSScriptRoot '..\_scope.ps1')
 # Interpreter selection and dependency scope live beside this hook: which
 # environment speaks for the project, and which packages of it are the project's
 # (an inherited global set is the machine's, not this project's). Loaded
@@ -143,7 +144,13 @@ $script:DockerEolBaseImages = @(
 
 # ---- ecosystem + fixture detection (pruned local traversal, same convention as
 # Github-Baseline-Check.ps1) ----
-$excludedDirs = @('.git', 'node_modules', '.ai', 'graphify-out', 'logs', 'dist', 'build', 'out', 'target', 'vendor', '__pycache__', '.venv', 'venv', '.claude', '.codex', 'bin', 'obj', '.cross-project-sync')
+# The shared base (..\_scope.ps1) plus only what THIS hook needs on top. The
+# base carries the four project-owned CI directories: a project that keeps its
+# self-hosted runner inside its own root was having the runner's second
+# checkout, and the vendored third-party actions under it, read as its own
+# source. Nothing this hook excluded before was dropped - see _scope.ps1 for
+# why the base is the intersection of the five hooks' lists and not their union.
+$excludedDirs = @(Get-HookExcludedDirs -Extra @('logs', '.cross-project-sync'))
 $rootFull = (Get-Item -LiteralPath $cwd).FullName.TrimEnd('\', '/')
 
 function Get-RelDir {

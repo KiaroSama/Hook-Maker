@@ -1,7 +1,37 @@
+# THE ORIGINATING USER TASK.
+#
 # User-task identity is scoped by project, client and session. A dispatch is
 # not a task: Codex can replay a Stop refusal in a new turn. All mutations use
 # one stable lock inode and publish an atomic, bounded document. No prompt text
 # is persisted. Unknown provenance never adopts another session's identity.
+#
+# WHY IT IS MINTED AT A USER PROMPT AND NOWHERE ELSE. Event identity used to be
+# a hash of the transcript's path, length and write time, and it failed in both
+# directions. Two gates handling the SAME dispatch could observe different stats
+# while the transcript was still flushing, so one event minted two chains and the
+# pair could block each other for ever; and a genuinely NEW task could observe
+# unchanged or lagging stats and be treated as the old one. Twelve deliveries
+# with no new user request were admitted as twelve new chains in the replay that
+# found this. Atomic reservation cannot repair a wrong identity - it only makes
+# the wrong answer consistent.
+#
+# A task begins when the USER says something. That is an explicit lifecycle
+# boundary the client already reports, and it is the only event that means "a new
+# thing was asked for". So the id is minted THERE, once, into a durable record,
+# and every later handler READS it. Transcript growth, hook text, tool output,
+# elapsed time, a retry, compaction and a changed turn id all leave it untouched,
+# because none of them is a user asking for something new. Nothing in this file
+# may go back to deriving identity from a mutable statistic.
+#
+# CODEX REPLAYS A REFUSAL AS THE NEXT PROMPT. Rotating there would hand every
+# refusal a fresh chain and a fresh allowance - the loop the allowance exists to
+# bound. Each emitted block therefore registers an opaque receipt, and a prompt
+# carrying that receipt is recognised as the continuation it is. An exact match
+# is the whole rule: if a client ever wraps the text, the prompt does not match,
+# a new task starts, and that is the SAFE direction - a fresh bounded chain.
+#
+# DEGRADATION IS VISIBLE, NEVER GUESSED. With no record, the caller is told the
+# identity is degraded. Nothing here invents a task id.
 $script:TaskIdentitySchema = 2
 $script:TaskIdentityMaxBlockFingerprints = 16
 

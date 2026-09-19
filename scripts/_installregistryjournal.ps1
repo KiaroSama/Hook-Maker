@@ -3,6 +3,32 @@
 # The marker lives OUTSIDE the live directory, closing the first-save window.
 # Caller serialization is shared with the O(1) per-record updater. No credentials
 # or hook content is added: backups contain only existing registry metadata.
+#
+# THE THREE DEFECTS THIS REPLACED, each reproducible before it existed:
+#
+# 1. EXISTENCE IS NOT COMPLETENESS. Completeness was "every expected FILE
+#    EXISTS", so a batch that rewrote two existing records and died after the
+#    first read back as whole - one file new, one still holding its old bytes.
+#    A mixed snapshot was served as the registry. Activation now requires the
+#    complete intended file set AND each record's intended digest
+#    (Test-RegistryIntendedSnapshot), so a half-written batch cannot activate.
+#
+# 2. THE DIRECTORY WAS CREATED BEFORE THE MARKER. A crash in that window left an
+#    empty, unmarked directory - authoritative by definition - which published
+#    "nothing is installed". The marker is published FIRST and lives outside the
+#    live directory, so there is no window in which an empty directory is
+#    believed.
+#
+# 3. RECOVERY PROMOTED SURVIVORS. Whatever record files happened to survive a
+#    partial rewrite became the registry. That is a coherent set but not the one
+#    anybody intended, and it silently lost the batch's changes. Recovery now
+#    restores the previous COMMITTED snapshot, verified against recorded
+#    digests, and preserves the failed generation separately for inspection
+#    rather than deleting it.
+#
+# A FUTURE SCHEMA IS NEVER RECOVERED, downgraded or rewritten - it is not
+# damaged, it is not ours, and rewriting its metadata is exactly the destructive
+# act the version guard exists to prevent.
 
 function Get-RegistryJournalPath {
     param([string]$ToolRoot)

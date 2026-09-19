@@ -224,45 +224,46 @@ $script:HookMeta = @{
     # Cbm-* pair answers for code structure while the Graph-* pair answers for
     # what graphify alone covers and its cross-cutting views.
     'Feature-Request-Check'            = @{ Order = 8;  When = 'both'; Text = 'a feature request runs the grilling chain, not straight to code'; Events = @('UserPromptSubmit', 'Stop', 'SubagentStop'); Timeout = 15 }
-    'Cbm-Read-Check'                   = @{ Order = 9;  When = 'pre';  Text = 'query the Codebase Memory index before browsing files'; Events = @('SessionStart', 'UserPromptSubmit'); Timeout = 10 }
-    'Cbm-Update-Check'                 = @{ Order = 10; When = 'post'; Text = 'reports a Codebase Memory index lagging behind the code'; Events = @('Stop', 'SubagentStop'); Timeout = 15 }
-    'Docs-Freshness-Check'             = @{ Order = 11;  When = 'both'; Text = 'checks tracked docs after changes; requires ack' }
-    'Graph-Read-Check'                 = @{ Order = 12;  When = 'pre';  Text = 'suggests graphify queries when a graph exists and the task needs it' }
-    'Graph-Update-Check'               = @{ Order = 13; When = 'post'; Text = 'suggests graphify update when the graph is stale' }
-    'Large-File-Check'                 = @{ Order = 14; When = 'both'; Text = 'small-files policy + oversized-file scan' }
+    'Speckit-Check'                    = @{ Order = 9;  When = 'pre';  Text = 'route the task through Spec Kit before writing code'; Events = @('SessionStart', 'UserPromptSubmit'); Timeout = 10 }
+    'Cbm-Read-Check'                   = @{ Order = 10; When = 'pre';  Text = 'query the Codebase Memory index before browsing files'; Events = @('SessionStart', 'UserPromptSubmit'); Timeout = 10 }
+    'Cbm-Update-Check'                 = @{ Order = 11; When = 'post'; Text = 'reports a Codebase Memory index lagging behind the code'; Events = @('Stop', 'SubagentStop'); Timeout = 15 }
+    'Docs-Freshness-Check'             = @{ Order = 12;  When = 'both'; Text = 'checks tracked docs after changes; requires ack' }
+    'Graph-Read-Check'                 = @{ Order = 13;  When = 'pre';  Text = 'suggests graphify queries when a graph exists and the task needs it' }
+    'Graph-Update-Check'               = @{ Order = 14; When = 'post'; Text = 'suggests graphify update when the graph is stale' }
+    'Large-File-Check'                 = @{ Order = 15; When = 'both'; Text = 'small-files policy + oversized-file scan' }
     # 'both', not 'pre': these three now VERIFY at Stop as well as remind at
     # the start, and two of them block. A menu tag that still said pre-task
     # would promise a hook that cannot refuse anything.
-    'Mcp-Usage-Check'                  = @{ Order = 15; When = 'both'; Text = 'MCP reminder, and an "MCP used:" line at the end'; Events = @('SessionStart', 'UserPromptSubmit', 'Stop', 'SubagentStop'); Timeout = 10 }
-    'Rules-Check'                      = @{ Order = 16; When = 'both'; Text = 'checks the rules were read, and confirmed at the end'; Events = @('SessionStart', 'UserPromptSubmit', 'Stop', 'SubagentStop'); Timeout = 15 }
+    'Mcp-Usage-Check'                  = @{ Order = 16; When = 'both'; Text = 'MCP reminder, and an "MCP used:" line at the end'; Events = @('SessionStart', 'UserPromptSubmit', 'Stop', 'SubagentStop'); Timeout = 10 }
+    'Rules-Check'                      = @{ Order = 17; When = 'both'; Text = 'checks the rules were read, and confirmed at the end'; Events = @('SessionStart', 'UserPromptSubmit', 'Stop', 'SubagentStop'); Timeout = 15 }
     # Skills-Check's real recommended EVENTS are SessionStart,UserPromptSubmit,Stop
     # (the Stop event carries the "Skills used:" summary requirement) - When must
     # be 'both', not 'pre' alone, or the menu tag disagrees with its actual timing.
-    'Skills-Check'                     = @{ Order = 17; When = 'both'; Text = 'finds global/project/plugin skills, and names those used'; Events = @('SessionStart', 'UserPromptSubmit', 'Stop', 'SubagentStop'); Timeout = 20 }
-    'Secrets-Check'                    = @{ Order = 18; When = 'both'; Text = 'keeps secrets.md accurate and checks for leaks' }
+    'Skills-Check'                     = @{ Order = 18; When = 'both'; Text = 'finds global/project/plugin skills, and names those used'; Events = @('SessionStart', 'UserPromptSubmit', 'Stop', 'SubagentStop'); Timeout = 20 }
+    'Secrets-Check'                    = @{ Order = 19; When = 'both'; Text = 'keeps secrets.md accurate and checks for leaks' }
     # 'both' (not 'pre+post') - Get-HookTimingTag's switch only recognizes
     # pre/post/both; an unrecognized value silently rendered NO timing tag at all.
-    'Ignore-Rules-Check'               = @{ Order = 19; When = 'both'; Text = 'auto-fixes required local/private gitignore rules before and after tasks' }
-    'Dependency-Version-Check'         = @{ Order = 20; When = 'both'; Text = 'flags outdated dependencies; requires a stated decision'; Events = @('SessionStart', 'UserPromptSubmit', 'Stop', 'SubagentStop') }
-    'Test-Temp-Cleanup'                = @{ Order = 21; When = 'both'; Text = 'cleans safe test cache/temp residue; keeps diagnostics' }
+    'Ignore-Rules-Check'               = @{ Order = 20; When = 'both'; Text = 'auto-fixes required local/private gitignore rules before and after tasks' }
+    'Dependency-Version-Check'         = @{ Order = 21; When = 'both'; Text = 'flags outdated dependencies; requires a stated decision'; Events = @('SessionStart', 'UserPromptSubmit', 'Stop', 'SubagentStop') }
+    'Test-Temp-Cleanup'                = @{ Order = 22; When = 'both'; Text = 'cleans safe test cache/temp residue; keeps diagnostics' }
     # The three-stage test-health hooks (24.txt). Events/Timeout are the
     # CANONICAL per-hook values - Get-HookRecommendedEvents and the install call
     # read them from here, so name/order/timing/events/timeout cannot drift into
     # a second table. Text stays short for the same single-line reason as
     # Docs-Freshness-Check above.
-    'Test-Plan-Check'                  = @{ Order = 22; When = 'pre';  Text = 'surfaces test-health policy before test or CI work'; Events = @('SessionStart', 'UserPromptSubmit'); Timeout = 15 }
-    'Test-Run-Guard'                   = @{ Order = 23; When = 'both'; Text = 'requires a bounded runner for recognised test commands'; Events = @('PreToolUse', 'PostToolUse'); Timeout = 10 }
-    'Test-Completion-Check'            = @{ Order = 24; When = 'post'; Text = 'verifies test evidence and cleanup before finishing'; Events = @('Stop', 'SubagentStop'); Timeout = 20 }
+    'Test-Plan-Check'                  = @{ Order = 23; When = 'pre';  Text = 'surfaces test-health policy before test or CI work'; Events = @('SessionStart', 'UserPromptSubmit'); Timeout = 15 }
+    'Test-Run-Guard'                   = @{ Order = 24; When = 'both'; Text = 'requires a bounded runner for recognised test commands'; Events = @('PreToolUse', 'PostToolUse'); Timeout = 10 }
+    'Test-Completion-Check'            = @{ Order = 25; When = 'post'; Text = 'verifies test evidence and cleanup before finishing'; Events = @('Stop', 'SubagentStop'); Timeout = 20 }
     # Utf8-Encoding-Check is also the third native pre-push chain stage
     # (Ignore -> Secrets -> Utf8 -> preserved user hook). Its position is
     # relative, not absolute - the numbers here went stale twice already.
-    'Utf8-Encoding-Check'              = @{ Order = 25; When = 'both'; Text = 'blocks new/changed non-UTF-8 text; pre-push chain stage'; Events = @('SessionStart', 'Stop', 'SubagentStop'); Timeout = 30 }
+    'Utf8-Encoding-Check'              = @{ Order = 26; When = 'both'; Text = 'blocks new/changed non-UTF-8 text; pre-push chain stage'; Events = @('SessionStart', 'Stop', 'SubagentStop'); Timeout = 30 }
     # Directly before Cloudflare-Deploy, per an explicit user requirement.
     # SessionStart loads the user's standing rules out of Synapse;
     # Stop/SubagentStop ask what this session should write back. NOT
     # UserPromptSubmit (the digest is a once-per-session read) and NOT
     # SessionEnd (by then the agent can no longer act on the answer).
-    'Synapse-Rules-Check'              = @{ Order = 26; When = 'both'; Text = 'loads the user''s rules from Synapse; asks what to write back'; Events = @('SessionStart', 'Stop', 'SubagentStop'); Timeout = 10 }
+    'Synapse-Rules-Check'              = @{ Order = 27; When = 'both'; Text = 'loads the user''s rules from Synapse; asks what to write back'; Events = @('SessionStart', 'Stop', 'SubagentStop'); Timeout = 10 }
     # Session-Summary-Check sits between Synapse-Rules-Check and
     # Cloudflare-Deploy per an explicit user requirement. That number is only
     # where it is LISTED. It is advisory and asks for the summary as the
@@ -271,11 +272,11 @@ $script:HookMeta = @{
     # additionalContext re-invokes the model, so a summary asked for at Stop
     # always arrived as one more turn after the work, which is the loop it
     # shipped with twice. See the hook header.
-    'Session-Summary-Check'            = @{ Order = 27; When = 'pre'; Text = 'asks the closing reply for a done / still-open summary'; Events = @('SessionStart', 'UserPromptSubmit'); Timeout = 10 }
+    'Session-Summary-Check'            = @{ Order = 28; When = 'pre'; Text = 'asks the closing reply for a done / still-open summary'; Events = @('SessionStart', 'UserPromptSubmit'); Timeout = 10 }
     # Cloudflare-Deploy is deliberately kept LAST among individual hook
     # entries (Order = highest value) per an explicit user requirement, not
     # filesystem/alphabetical order - see Test-Wizard.ps1 for the pinned order.
-    'Cloudflare-Deploy'                = @{ Order = 28; When = 'post'; Text = 'suggests deploying in Cloudflare Workers projects, gated on release readiness' }
+    'Cloudflare-Deploy'                = @{ Order = 29; When = 'post'; Text = 'suggests deploying in Cloudflare Workers projects, gated on release readiness' }
 }
 # The "[pre-task]" / "[post-task]" tag, colored by phase (a different color than
 # the description, FFmWiz-style, so timing reads at a glance).
