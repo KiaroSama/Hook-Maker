@@ -88,6 +88,10 @@ function Get-DeferringActiveRun {
     if ($null -ne $Observed) { $observedRunId = [string](Get-Field $Observed 'runId') }
 
     foreach ($entry in @($ActiveEntries)) {
+        # @() around an EMPTY result yields one $null element, and reading a
+        # property off it throws under StrictMode - which took the whole hook
+        # down on the ordinary path where no run is active at all.
+        if ($null -eq $entry) { continue }
         $doc = $entry.Doc
         if ($null -eq $doc) { continue }
         $markerRunId = [string](Get-Field $doc 'runId')

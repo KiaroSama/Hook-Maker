@@ -28,6 +28,19 @@
 
     $txRoot = Join-Path $Work 'registry-tx'
     New-Item -ItemType Directory -Path $txRoot -Force | Out-Null
+    # HOOKMAKER_STATE_DIR OVERRIDES THE TOOL ROOT, which is how this block first
+    # went wrong: the suite points every registry at one isolated state
+    # directory, so a "fake tool root" passed as -ToolRoot resolved straight
+    # back onto the SUITE'S OWN registry - and the half-written generations
+    # below then broke the suites that share it. Each case therefore redirects
+    # the state directory as well, and the suite's value is restored at the end.
+    $txSavedStateDir = $env:HOOKMAKER_STATE_DIR
+    function Use-TxToolRoot {
+        param([Parameter(Mandatory = $true)][string]$Path)
+        New-Item -ItemType Directory -Path $Path -Force | Out-Null
+        $env:HOOKMAKER_STATE_DIR = (Join-Path $Path 'state')
+        return $Path
+    }
 
     # ---- reserved ids ----------------------------------------------------
     Check 'the generation marker name is not a legal record id' (
@@ -49,8 +62,7 @@
         -not $reservedSnapshot.Ok) $reservedSnapshot.Reason
 
     # ---- the marker creates the directory it marks -----------------------
-    $txA = Join-Path $txRoot 'a'
-    New-Item -ItemType Directory -Path $txA -Force | Out-Null
+    $txA = Use-TxToolRoot -Path (Join-Path $txRoot 'a')
     $txADir = Get-InstallRegistryDirectory -ToolRoot $txA
     Check 'the registry directory does not exist yet' (-not (Test-Path -LiteralPath $txADir)) $txADir
     [void](Start-InstallRegistryGeneration -ToolRoot $txA -ExpectedFileNames @('x.json'))
@@ -61,8 +73,7 @@
         -not (Get-InstallRegistryGenerationState -ToolRoot $txA).Complete) ''
 
     # ---- a half-rewritten batch is INCOMPLETE, not merely present ---------
-    $txB = Join-Path $txRoot 'b'
-    New-Item -ItemType Directory -Path $txB -Force | Out-Null
+    $txB = Use-TxToolRoot -Path (Join-Path $txRoot 'b')
     $first = [pscustomobject][ordered]@{ id = 'rec-one'; friendlyName = 'One'; schema = 2 }
     $second = [pscustomobject][ordered]@{ id = 'rec-two'; friendlyName = 'Two'; schema = 2 }
     Save-InstallRegistry -ToolRoot $txB -Registry ([pscustomobject][ordered]@{ version = 2; installs = @($first, $second) })
@@ -99,8 +110,7 @@
         (Get-InstallRegistryGenerationState -ToolRoot $txB).Complete) ''
 
     # ---- a future schema is left untouched, never quarantined ------------
-    $txC = Join-Path $txRoot 'c'
-    New-Item -ItemType Directory -Path $txC -Force | Out-Null
+    $txC = Use-TxToolRoot -Path (Join-Path $txRoot 'c')
     Save-InstallRegistry -ToolRoot $txC -Registry ([pscustomobject][ordered]@{ version = 2; installs = @($first) })
     $futureMeta = Join-Path (Get-InstallRegistryDirectory -ToolRoot $txC) '_meta.json'
     Write-JsonFileAtomic -Value ([pscustomobject]@{ version = 99 }) -Path $futureMeta
@@ -124,3 +134,6 @@
     Check 'with the intended digest, the wrong payload is caught' (-not $withDigest.Ok) $withDigest.Reason
     $exact = Test-InstallRecordWriteVerified -Text $wantedText -ExpectedId 'rec-one' -ExpectedSha256 (Get-InstallRecordDigest -Text $wantedText)
     Check 'and the record that WAS composed verifies' ($exact.Ok) $exact.Reason
+
+    # The suite's own registry is the one every other block asserts against.
+    $env:HOOKMAKER_STATE_DIR = $txSavedStateDir
