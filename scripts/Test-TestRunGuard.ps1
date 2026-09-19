@@ -67,6 +67,10 @@ try {
     # PostToolUse reporting, the client shapes, and runner discovery.
     . (Join-Path $PSScriptRoot '_testrunguardposttool.ps1')
 
+    # An asynchronous run that has not finished yet (order 42): deferral on a
+    # provably live owner, and the client envelope as actually observed.
+    . (Join-Path $PSScriptRoot '_testrunguardasync.ps1')
+
     # The observed-record handoff and the run-identity contract.
     . (Join-Path $PSScriptRoot '_testrunguardcoordination.ps1')
 
