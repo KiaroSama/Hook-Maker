@@ -253,7 +253,15 @@ try {
     $migJson = [System.IO.File]::ReadAllText((Join-Path $tgtMig '.claude\settings.local.json'))
     Check 'a PROVEN old tool-folder registration is pruned on migration' ($migJson -notmatch [regex]::Escape((Join-Path (Split-Path -Parent $ScriptRoot) 'hooks\Rules-Check\Rules-Check.ps1')))
     Check 'an unprovable same-shape registration is PRESERVED, not deleted' ($migJson -like '*SomeoneElsesProject*')
-    Check 'the new self-contained registration is present exactly once' (([regex]::Matches($migJson, 'Hook-Maker')).Count -eq 1)
+    # Counted on the INSTALLED RUNTIME PATH, not on the bare string 'Hook-Maker':
+    # the repository is itself called Hook-Maker on the CI runner (its checkout
+    # path repeats that name), and the test workspace now lives inside the
+    # project, so the bare string appears in every fixture path. What
+    # "self-contained" means is the project-local runtime, and that is what is
+    # counted.
+    $selfContainedLeaf = (Join-Path '.claude' (Join-Path 'hooks' (Join-Path 'Hook-Maker' (Join-Path 'Rules-Check' 'Rules-Check.ps1'))))
+    $selfContained = [regex]::Escape($selfContainedLeaf.Replace([string][char]92, [string][char]92 + [string][char]92))
+    Check 'the new self-contained registration is present exactly once' (([regex]::Matches($migJson, $selfContained)).Count -eq 1) $migJson
 
     # =====================================================================
     Write-Host '--- E-01: canonical rule routing + UTF-8 guidance (claude) ---' -ForegroundColor Cyan
