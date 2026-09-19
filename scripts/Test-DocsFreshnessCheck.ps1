@@ -69,8 +69,9 @@ function New-IsolatedHookCopy {
 }
 
 function Fire {
-    param([string]$HookPath, [string]$Cwd, [string]$EventName, [string]$SessionId = 'sess1', [string]$LocalAppData, [switch]$StopHookActive, [string]$Exe = 'pwsh')
+    param([string]$HookPath, [string]$Cwd, [string]$EventName, [string]$SessionId = 'sess1', [string]$LocalAppData, [switch]$StopHookActive, [string]$Exe = 'pwsh', [string]$Prompt = '')
     $obj = @{ session_id = $SessionId; cwd = $Cwd; hook_event_name = $EventName }
+    if ($Prompt -ne '') { $obj['prompt'] = $Prompt }
     if ($StopHookActive) { $obj['stop_hook_active'] = $true }
     $payload = $obj | ConvertTo-Json
     $token = [guid]::NewGuid().ToString('N').Substring(0, 8)
@@ -352,7 +353,14 @@ try {
     $rGeneric2 = FireAck -HookPath $hc12.Script -ProjectRoot $proj12 -Fingerprint $fp12 -Result NoUpdate -Reason '' -LocalAppData $hc12.LocalAppData
     Check 'an empty NoUpdate reason is rejected' ($rGeneric2.Exit -ne 0) ($rGeneric2.Out + $rGeneric2.Err)
     $rStillBlocked = Fire -HookPath $hc12.Script -Cwd $proj12 -EventName 'Stop' -LocalAppData $hc12.LocalAppData
-    Check 'a rejected acknowledgement never clears the block' ($rStillBlocked.Out -match '"decision":"block"') $rStillBlocked.Out
+    Check 'an unchanged rejected review does not create repeated correction turns' (
+        $rStillBlocked.Exit -eq 0 -and $rStillBlocked.Out -eq '' -and $rStillBlocked.Err -eq '') $rStillBlocked.Out
+    Check 'a rejected acknowledgement writes no approval record' (
+        @(Get-ChildItem -LiteralPath (Join-Path $hc12.LocalAppData 'HookMaker\state') -Filter 'DocsFreshnessCheck-ack-*.json').Count -eq 0)
+    $null = Fire -HookPath $hc12.Script -Cwd $proj12 -EventName 'UserPromptSubmit' -Prompt 'Recheck the rejected review' -LocalAppData $hc12.LocalAppData
+    $rRecheck = Fire -HookPath $hc12.Script -Cwd $proj12 -EventName 'Stop' -LocalAppData $hc12.LocalAppData -StopHookActive
+    Check 'a genuine new task still blocks the identical unacknowledged documentation evidence' (
+        $rRecheck.Out -match '"decision":"block"' -and (Get-Fingerprint $rRecheck.Out) -eq $fp12) $rRecheck.Out
 
     # =====================================================================
     Write-Host '--- acknowledgement rejection: out-of-root, private, and untracked paths ---' -ForegroundColor Cyan
@@ -388,7 +396,12 @@ try {
     $wrongFp = 'a' * 10
     $rWrongFp = FireAck -HookPath $hc14.Script -ProjectRoot $proj14 -Fingerprint $wrongFp -Result Updated -Files 'README.md' -Reason 'acknowledging against a made-up fingerprint' -LocalAppData $hc14.LocalAppData
     $rAfterWrongFp = Fire -HookPath $hc14.Script -Cwd $proj14 -EventName 'Stop' -LocalAppData $hc14.LocalAppData
-    Check 'a mismatched/stale fingerprint acknowledgement never clears the block' ($rAfterWrongFp.Out -match '"decision":"block"') $rAfterWrongFp.Out
+    Check 'an unchanged mismatched review is deduplicated, not repeatedly emitted' (
+        $rAfterWrongFp.Exit -eq 0 -and $rAfterWrongFp.Out -eq '' -and $rAfterWrongFp.Err -eq '') $rAfterWrongFp.Out
+    $null = Fire -HookPath $hc14.Script -Cwd $proj14 -EventName 'UserPromptSubmit' -Prompt 'Recheck the stale review' -LocalAppData $hc14.LocalAppData
+    $rRecheck = Fire -HookPath $hc14.Script -Cwd $proj14 -EventName 'Stop' -LocalAppData $hc14.LocalAppData -StopHookActive
+    Check 'a mismatched approval still cannot clear the gate when the task is reevaluated' (
+        $rRecheck.Out -match '"decision":"block"' -and (Get-Fingerprint $rRecheck.Out) -ne $wrongFp) $rRecheck.Out
 
     # =====================================================================
     Write-Host '--- a later non-document change invalidates a previous acknowledgement ---' -ForegroundColor Cyan

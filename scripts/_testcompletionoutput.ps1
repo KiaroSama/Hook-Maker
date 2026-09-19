@@ -31,11 +31,11 @@
     Write-GuardedResult -Copy $c -Root $p -Overall 'terminated' -ExitCode 124 -TerminateReason 'wallTimeout' -TerminateDetail 'exceeded the 1800s wall ceiling'
     $r = Fire -Copy $c -Cwd $p
     $doc = ConvertFrom-HookOutput $r.Out
-    Check 'ADVISORY_ONLY on Claude: reported through additionalContext, never blocked' (
+    Check 'ADVISORY_ONLY on Claude: reported through non-continuing systemMessage, never blocked' (
         $r.Exit -eq 0 -and $null -ne $doc -and $null -eq $doc.PSObject.Properties['decision'] -and
-        $doc.hookSpecificOutput.additionalContext -match 'wallTimeout') $r.Out
-    Check 'ADVISORY_ONLY on Claude: the advisory carries the correct hookEventName' (
-        $null -ne $doc -and $doc.hookSpecificOutput.hookEventName -eq 'Stop') $r.Out
+        $doc.systemMessage -match 'wallTimeout') $r.Out
+    Check 'ADVISORY_ONLY on Claude: the advisory does not inject hookSpecificOutput' (
+        $null -ne $doc -and $null -eq $doc.PSObject.Properties['hookSpecificOutput']) $r.Out
     $c2 = New-IsolatedHookCopy @{ TEST_COMPLETION_ADVISORY_ONLY = '1' }
     Write-GuardedResult -Copy $c2 -Root $p -Overall 'terminated' -ExitCode 124 -TerminateReason 'wallTimeout' -TerminateDetail 'x'
     $r = Fire -Copy $c2 -Cwd $p -Codex
@@ -66,7 +66,7 @@
     $doc = ConvertFrom-HookOutput $r.Out
     Check 'an invalid ADVISORY_ONLY falls back to advisory - a typo can never widen blocking' (
         $null -ne $doc -and $null -eq $doc.PSObject.Properties['decision'] -and
-        $doc.hookSpecificOutput.additionalContext -match 'ADVISORY_ONLY must be 0 or 1') $r.Out
+        $doc.systemMessage -match 'ADVISORY_ONLY must be 0 or 1') $r.Out
     $c = New-IsolatedHookCopy @{ TEST_COMPLETION_ALWAYS_REQUIRE_NOTE = '1' }
     $p3 = New-GitRepo 'AlwaysNote'
     Write-GuardedResult -Copy $c -Root $p3 -Overall 'ok'
