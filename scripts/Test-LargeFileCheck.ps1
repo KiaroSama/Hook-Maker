@@ -69,7 +69,7 @@ function New-IsolatedHookCopy {
     $dir = Join-Path $Work ('hookcopy-' + [guid]::NewGuid().ToString('N').Substring(0, 6))
     New-Item -ItemType Directory -Path $dir -Force | Out-Null
     Copy-Item $Hook (Join-Path $dir 'Large-File-Check.ps1')
-    Copy-Item $HookLib (Join-Path $Work '_hooklib.ps1') -Force
+    Copy-TestRuntimeLibraries -SourceHookLib $HookLib -Destination (Join-Path $Work '_hooklib.ps1')
     if ($null -ne $EnvContent) { Write-Utf8 (Join-Path $dir '.env') $EnvContent }
     $fakeLocal = Join-Path $dir '_fakelocal'
     New-Item -ItemType Directory -Path $fakeLocal -Force | Out-Null
@@ -427,10 +427,10 @@ try {
     $rClaude = Fire -HookPath $hcClaude.Script -Cwd $projClaude -EventName 'Stop' -LocalAppData $hcClaude.LocalAppData -ClaudeProjectDir $projClaude
     $parsedClaude = $null
     try { $parsedClaude = $rClaude.Out | ConvertFrom-Json } catch { $parsedClaude = $null }
-    Check 'S2a. offender report on CLAUDE uses hookSpecificOutput.additionalContext with the event name' (
-        $null -ne $parsedClaude -and $null -ne $parsedClaude.PSObject.Properties['hookSpecificOutput'] -and
-        [string]$parsedClaude.hookSpecificOutput.hookEventName -eq 'Stop' -and
-        ([string]$parsedClaude.hookSpecificOutput.additionalContext) -match 'a\.py \(900 lines\)') $rClaude.Out
+    Check 'S2a. offender report on CLAUDE uses non-continuing systemMessage' (
+        $null -ne $parsedClaude -and $null -ne $parsedClaude.PSObject.Properties['systemMessage'] -and
+        $null -eq $parsedClaude.PSObject.Properties['hookSpecificOutput'] -and
+        ([string]$parsedClaude.systemMessage) -match 'a\.py \(900 lines\)') $rClaude.Out
     Check 'S2b. the CLAUDE offender report is NOT a decision:block' ($rClaude.Out -notmatch '"decision"') $rClaude.Out
 
     # =====================================================================
@@ -454,9 +454,9 @@ try {
     $rPartC = Fire -HookPath $hcPartC.Script -Cwd $projPartC -EventName 'Stop' -LocalAppData $hcPartC.LocalAppData -ClaudeProjectDir $projPartC
     $parsedPartC = $null
     try { $parsedPartC = $rPartC.Out | ConvertFrom-Json } catch { $parsedPartC = $null }
-    Check 'S4. partial no-offender advisory on CLAUDE uses hookSpecificOutput and is not a block' (
-        $null -ne $parsedPartC -and $null -ne $parsedPartC.PSObject.Properties['hookSpecificOutput'] -and
-        ([string]$parsedPartC.hookSpecificOutput.additionalContext) -match '(?i)coverage was INCOMPLETE' -and
+    Check 'S4. partial no-offender advisory on CLAUDE uses non-continuing systemMessage and is not a block' (
+        $null -ne $parsedPartC -and $null -ne $parsedPartC.PSObject.Properties['systemMessage'] -and
+        ([string]$parsedPartC.systemMessage) -match '(?i)coverage was INCOMPLETE' -and
         $rPartC.Out -notmatch '"decision"') $rPartC.Out
 
     # =====================================================================

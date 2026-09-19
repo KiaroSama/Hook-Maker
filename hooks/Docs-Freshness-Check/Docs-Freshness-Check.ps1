@@ -381,7 +381,7 @@ try {
     $reason = $lines.ToArray() -join "`n"
     # Record the block so THIS hook's own re-entry is recognised; another
     # gate's block must not mute it, and its own must not repeat.
-    $emit = Write-StopBlockResult -HookInput $hookInput -HookName 'Docs-Freshness-Check' -EventName $eventName -Reason $reason
+    $emit = Write-StopBlockResult -HookInput $hookInput -HookName 'Docs-Freshness-Check' -FindingFingerprint $impactFingerprint -EventName $eventName -Reason $reason
     exit $emit.ExitCode
 }
 catch {

@@ -62,16 +62,19 @@
         $reason -match 'BUGS\.md' -and $reason -match 'TESTING_NOTES\.md' -and $reason -match 'COMMANDS\.md' -and $reason -match 'LESSON\.md') $reason
     Add-AiNote -Root $p -Text 'done'
     $r = Fire -Copy $c -Cwd $p
-    Check 'the word "done" does NOT satisfy the durable-note requirement' ($r.Out -match '"decision":"block"') $r.Out
-    Check 'the block says a bare acknowledgement will not clear it' ((Get-BlockReason $r.Out) -match 'bare acknowledgement') $r.Out
+    Check 'the word "done" leaves the durable-note obligation pending without repeating output' (
+        $r.Exit -eq 0 -and $r.Out -eq '' -and (Get-PendingCount (Get-CompletionStateDoc -Copy $c -Root $p)) -eq 1) $r.Out
+    Check 'the original block says a bare acknowledgement will not clear it' ($reason -match 'bare acknowledgement') $reason
     # An UNTAGGED real note (long enough to clear the byte floor) still does NOT
     # satisfy it - the incident's own tag is required.
     Add-AiNote -Root $p -Text ('Idle-timeout hang in the integration suite: the runner reported no output for 300s. ' +
         'Not detected earlier because no idle bound existed at all. Guard: Run-Tests-Guarded.ps1 -IdleTimeoutSeconds 300, verified by re-running the suite.')
     $r = Fire -Copy $c -Cwd $p
-    Check 'a long but UNTAGGED note does not satisfy the requirement - the incident tag is required' ($r.Out -match '"decision":"block"') $r.Out
-    # Now write the SAME note tagged with the incident key the block names.
-    Add-TaggedNote -Root $p -Reason (Get-BlockReason $r.Out) -Body ('Idle-timeout hang in the integration suite (tagged); guard Run-Tests-Guarded.ps1 -IdleTimeoutSeconds 300.')
+    Check 'an untagged note cannot resolve the pending incident even when output is deduplicated' (
+        $r.Exit -eq 0 -and $r.Out -eq '' -and (Get-PendingCount (Get-CompletionStateDoc -Copy $c -Root $p)) -eq 1 -and
+        (Get-ResolvedCount (Get-CompletionStateDoc -Copy $c -Root $p)) -eq 0) $r.Out
+    # Retain the originally delivered incident key; silence is not a new receipt.
+    Add-TaggedNote -Root $p -Reason $reason -Body ('Idle-timeout hang in the integration suite (tagged); guard Run-Tests-Guarded.ps1 -IdleTimeoutSeconds 300.')
     $r = Fire -Copy $c -Cwd $p
     Check 'a real durable note satisfies the requirement -> completion allowed' ($r.Exit -eq 0 -and $r.Out -eq '') $r.Out
     $r = Fire -Copy $c -Cwd $p

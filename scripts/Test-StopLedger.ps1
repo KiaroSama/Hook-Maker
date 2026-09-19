@@ -159,6 +159,7 @@ Check 'duplicate delivery of the same event is refused, not re-admitted' (
 # A genuinely LATER task appends to the transcript, so its event identity
 # differs and the chain rotates - the budget is not inherited.
 [System.IO.File]::AppendAllText($evtTranscript, '{"type":"assistant"}' + "`n")
+Register-UserTaskBoundary -HookInput ([pscustomobject]@{ hook_event_name = 'UserPromptSubmit'; session_id = 'EVT'; cwd = 'C:\proj\evt'; prompt = 'A genuinely new task' })
 $e2 = New-EventInput -Session 'EVT' -Continuation $false
 $admit3 = Set-StopBlockMarker -HookInput $e2 -HookName 'Gate-One'
 Check 'a genuinely new task re-admits the same gate' ($admit3.Admitted) ([string]$admit3.Reason)
@@ -235,19 +236,14 @@ $corStorm = 0
 foreach ($n in 1..8) { if ((Set-StopBlockMarker -HookInput $cIn -HookName ('COR' + $n)).Admitted) { $corStorm++ } }
 Check 'eight more gates on the corrupt ledger admit ZERO continuations' ($corStorm -eq 0) ('admitted=' + $corStorm)
 
-# AT A TASK BOUNDARY the same damage is recoverable: a genuine Stop is already
-# entitled to a fresh chain, so quarantining costs nothing and stops the
-# project being wedged for ever.
+# A false continuation flag cannot authorize destruction of other sessions'
+# state. Corrupt data requires explicit recovery, never an implicit budget reset.
 $cFresh = New-StopInput -Session 'COR' -Continuation $false -Cwd $corProj
 $cFreshAdmit = Set-StopBlockMarker -HookInput $cFresh -HookName 'Rules-Check'
-Check 'a genuine Stop recovers from the damage and admits' ($cFreshAdmit.Admitted) ([string]$cFreshAdmit.Reason)
-Check 'the damaged file was quarantined, not deleted' (
-    @(Get-ChildItem -LiteralPath (Split-Path -Parent $corLedger) -Filter '*.corrupt-*' -File -ErrorAction SilentlyContinue).Count -ge 1)
-$corOk = $false
-try { $corOk = ($null -ne ((Get-Content -LiteralPath $corLedger -Raw) | ConvertFrom-Json)) } catch { $corOk = $false }
-Check 'and the replacement ledger is valid JSON on disk' ($corOk) (Get-Content -LiteralPath $corLedger -Raw)
-Check 'the gate is then suppressed on its next continuation' (
-    (Test-StopStandDown -HookInput $cIn -HookName 'Rules-Check') -eq $true)
+Check 'a non-continuation flag alone cannot erase a corrupt shared ledger' (
+    -not $cFreshAdmit.Admitted -and $cFreshAdmit.Reason -eq 'ledger-corrupt') ([string]$cFreshAdmit.Reason)
+Check 'corruption remains available for explicit recovery' (
+    ([System.IO.File]::ReadAllText($corLedger)) -ceq '{ this is not json')
 
 # A ledger from a NEWER build is not damaged and is never rewritten.
 $futProj = 'C:\proj\future'
