@@ -49,8 +49,10 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
-          fetch-depth: 0
-      - name: Prove the historical implementation fails the exact replay scenarios
+          # The proof must also work after squash/rebase integration, when old
+          # PR commits are not ancestors of the default branch checkout.
+          fetch-depth: 1
+      - name: Prove historical failures without relying on local branch history
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
@@ -58,12 +60,30 @@ jobs:
           $evidence = Join-Path $env:RUNNER_TEMP 'task-red-proof'
           $baseline = Join-Path $env:GITHUB_WORKSPACE '.ci-work/task-red-proof'
           New-Item -ItemType Directory -Force $evidence, $baseline | Out-Null
-          git archive --format=zip --output="$evidence/baseline.zip" d37619c1d780a3467d976dfb92b56a563135512e
+          $baselineSha = 'd37619c1d780a3467d976dfb92b56a563135512e'
+          $scenarioSha = '6932f58092ea1f812071c221a0cb8ef47de52325'
+          $shallow = git rev-parse --is-shallow-repository
+          if ($LASTEXITCODE -ne 0 -or $shallow -cne 'true') { throw 'The shallow-history control was not established.' }
+          $availability = @()
+          foreach ($sha in @($baselineSha, $scenarioSha)) {
+            git cat-file -e "$sha`^{commit}" 2>$null
+            $wasPresent = ($LASTEXITCODE -eq 0)
+            $availability += [ordered]@{ sha = $sha; presentBeforeFetch = $wasPresent }
+            if ($wasPresent) { throw 'An old object was already present; this would not prove history independence.' }
+            # Fetch exact recorded objects, not the mutable audit branch. Fetch
+            # failure is a verification failure, never a skipped red proof.
+            git -c protocol.version=2 fetch --no-tags --depth=1 origin $sha
+            if ($LASTEXITCODE -ne 0) { throw ('Cannot obtain the recorded historical object ' + $sha) }
+            git cat-file -e "$sha`^{commit}"
+            if ($LASTEXITCODE -ne 0) { throw 'Fetched historical commit is unavailable.' }
+          }
+          $availability | ConvertTo-Json -Depth 4 | Set-Content -Encoding utf8 "$evidence/fetch-provenance.json"
+          git archive --format=zip --output="$evidence/baseline.zip" $baselineSha
           if ($LASTEXITCODE -ne 0) { throw 'Historical source archive failed.' }
           Expand-Archive -LiteralPath "$evidence/baseline.zip" -DestinationPath $baseline
-          # Pin both the baseline and its test so later new cases cannot change
-          # the meaning of this retained red proof. The current tree is tested above.
-          $scenario = git show '6932f58092ea1f812071c221a0cb8ef47de52325:scripts/regression/Test-TaskIdentityIsolation.ps1'
+          # Freeze the test as well as the baseline: future unrelated new cases
+          # must not silently change the meaning of this historical control.
+          $scenario = git show ($scenarioSha + ':scripts/regression/Test-TaskIdentityIsolation.ps1')
           if ($LASTEXITCODE -ne 0) { throw 'Historical scenario extraction failed.' }
           $scenario | Set-Content -Encoding utf8 "$baseline/scripts/regression/Test-TaskIdentityIsolation.ps1"
           try {
@@ -81,14 +101,14 @@ jobs:
             if ($exitCode -ne 1 -or $report.cases.Count -ne 15 -or ($expected -join '|') -cne ($actual -join '|')) {
               throw 'The baseline did not reproduce exactly the five recorded defects.'
             }
-            'baseline=d37619c1d780a3467d976dfb92b56a563135512e; scenarios=6932f58092ea1f812071c221a0cb8ef47de52325' | Set-Content -Encoding utf8 "$evidence/provenance.txt"
+            ('baseline=' + $baselineSha + '; scenarios=' + $scenarioSha + '; explicitFetch=true; initialShallow=true') | Set-Content -Encoding utf8 "$evidence/provenance.txt"
           }
           finally {
             . ./scripts/_testlib.ps1
             if (-not (Remove-TestWorkspace -Path $baseline)) { throw 'Baseline proof workspace cleanup failed.' }
           }
-          # The child is required to fail. After checking its exact failures and
-          # cleanup, do not leak that expected exit code into the CI shell wrapper.
+          # The child must fail. Only the exact verified expected failures and
+          # successful cleanup permit the enclosing CI step to succeed.
           exit 0
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         if: always()
