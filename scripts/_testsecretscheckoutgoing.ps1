@@ -252,9 +252,16 @@
     # would be a genuinely broken ruleset (dead negations), so Ignore-Rules-Check
     # would repair it and block first - and this test would stop exercising the
     # Secrets-Check outgoing-commit path it exists to prove.
+    # This fixture's whole point is a repository that ALREADY carries the full
+    # required set, so the pre-push chain reaches Secrets-Check with nothing for
+    # Ignore-Rules-Check to add. It must therefore track the set in
+    # Ignore-Rules-Check.ps1 exactly - it went four patterns short on 2026-09-19
+    # and the chain stopped short of the assertion below.
     $e2eIgnore = @(
-        '/.ai/', '/secrets.md', '/explain-AI.md', '/reference.md', '/CLAUDE.md', '/AGENTS.md',
+        '/.ai/', '/.specify/', '/specs/', '/secrets.md', '/explain-AI.md', '/reference.md',
+        '/CLAUDE.md', '/AGENTS.md',
         '/.agents/', '/.claude/', '/.kiro/', '/.codex/', '/.cursor/', '/.cline/', '/graphify-out/',
+        '/.codebase-memory/', '/plans/',
         '.ignoreme', '**/.ignoreme', '/.env', '/.env.*', '!/.env.example', '!/.env.sample',
         '!/.env.template', '!/.env.dist'
     ) -join "`r`n"
