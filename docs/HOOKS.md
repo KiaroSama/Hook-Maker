@@ -6,13 +6,19 @@ past what a front page can carry.
 
 **One client fact decides the shape of every Stop-time advisory in this set.** On Claude Code a Stop
 hook's `hookSpecificOutput.additionalContext` is not a passive note: the client re-invokes the model
-with it (observed in Claude Code 2.1.260, 2026-09-07 — a `hook_additional_context` transcript entry
+with it (observed in Claude Code 2.1.260, 2026-09-07 - a `hook_additional_context` transcript entry
 followed by a fresh assistant turn seconds later, with no user input between them). A Stop advisory
-is therefore a soft block and is bounded exactly like one — once per session per unchanged state —
-because an advisory repeated on every Stop re-invokes the agent on every Stop: it answers, stops, is
-re-invoked, answers again, until the user interrupts. Requirements that concern the *closing reply*
-(`MCP used:`, `Skills used:`, the session summary) are delivered **before** the task instead, at
-SessionStart and on the prompt, so the reply that ends the task carries them with no extra turn.
+emitted that way is a soft block, and an advisory repeated on every Stop re-invokes the agent on
+every Stop: it answers, stops, is re-invoked, answers again, until the user interrupts.
+
+So no hook in this set emits `additionalContext` on `Stop`/`SubagentStop` any more. The shared
+adapter (`Write-HookResult`) emits **`systemMessage`** there, which the client shows to the user
+without starting another model turn; every other event keeps its documented shape, and a genuine
+refusal is still `decision:block`. The bound stays as well - once per session per unchanged state -
+because a repeated message is noise even when it costs no turn. Requirements that concern the
+*closing reply* (`MCP used:`, `Skills used:`, the session summary) are delivered **before** the task
+instead, at SessionStart and on the prompt, so the reply that ends the task carries them with no
+extra turn.
 
 
 | Hook | Runs | What it does |
