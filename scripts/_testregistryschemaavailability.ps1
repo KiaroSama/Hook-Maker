@@ -63,7 +63,14 @@
 
         Check 'an orphan lock from a killed writer is reclaimed, not fatal forever' $reclaimed
 
-        Check 'the lock file is released after the write' (-not (Test-Path -LiteralPath $availLock))
+        $released = $false; $lockProbe = $null
+        try {
+            $lockProbe = [IO.File]::Open($availLock, 'Open', 'ReadWrite', 'None')
+            $released = $true
+        }
+        catch { $released = $false }
+        finally { if ($null -ne $lockProbe) { $lockProbe.Dispose() } }
+        Check 'a completed registry write leaves the stable lock available for the next writer' $released
 
     }
 

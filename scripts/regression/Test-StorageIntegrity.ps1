@@ -2,7 +2,8 @@ param([string]$ResultPath = '')
 Set-StrictMode -Version 2.0
 $ErrorActionPreference = 'Stop'
 $repo = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
-$work = Join-Path ([IO.Path]::GetTempPath()) ('hookmaker-storage-' + [guid]::NewGuid().ToString('N'))
+. (Join-Path $repo 'scripts\_testlib.ps1')
+$work = New-TestWorkspace -Prefix 'hookmaker-storage'
 $savedState = $env:HOOKMAKER_STATE_DIR
 $savedLocal = $env:LOCALAPPDATA
 $cases = New-Object System.Collections.Generic.List[object]

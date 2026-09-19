@@ -137,13 +137,30 @@ try {
     # Each gate now stands down only on its OWN re-entry.
     $r3 = Fire -Cwd $guard -StopHookActive
     Check 'stop_hook_active ALONE does not silence it (another gate blocked, not this one)' ($r3.Exit -eq 0 -and $r3.Out -ne '') $r3.Out
-    # Its OWN marker, named by CALLING the production helper rather than by
-    # retyping its path format, so the fixture cannot drift from the real one.
-    $markerPath = & pwsh -NoProfile -Command ". '$HookLib'; $env:LOCALAPPDATA = '$FakeLocalAppData'; Get-StopBlockMarkerPath -HookName 'Graph-Update-Check' -ProjectRoot '$guard'"
-    New-Item -ItemType Directory -Path (Split-Path -Parent $markerPath) -Force | Out-Null
-    [System.IO.File]::WriteAllText($markerPath, 't')
-    $r4 = Fire -Cwd $guard -StopHookActive
-    Check 'stop_hook_active PLUS its own marker for this session -> silent (own re-entry)' ($r4.Exit -eq 0 -and $r4.Out -eq '') $r4.Out
+    # A separate project has no cooldown stamp: only the real ledger claim
+    # below can suppress it. The environment assignment is code, never text
+    # expanded on the left-hand side of a nested PowerShell command.
+    $ownedGuard = New-GitRepo 'OwnedGuard'
+    New-StaleGraph $ownedGuard | Out-Null
+    Write-Utf8 (Join-Path $ownedGuard 'src.ps1') 'function Owned {}'
+    Add-Commit $ownedGuard 'add Owned'
+    $savedMarkerLocal = $env:LOCALAPPDATA
+    try {
+        $env:LOCALAPPDATA = $FakeLocalAppData
+        . $HookLib
+        $claim = Set-StopBlockMarker -HookInput ([pscustomobject]@{
+            session_id = 't'; cwd = $ownedGuard; hook_event_name = 'Stop'
+        }) -HookName 'Graph-Update-Check'
+        Check 'the production helper actually admitted the isolated graph claim' $claim.Admitted $claim.Reason
+        $ledgerPath = Get-StopLedgerPath -ProjectRoot $ownedGuard
+        Check 'the graph claim is persisted inside the owned test state directory' (
+            (Test-PathInside -Candidate $ledgerPath -Parent $FakeLocalAppData) -and
+            [IO.File]::Exists($ledgerPath)) $ledgerPath
+    }
+    finally { $env:LOCALAPPDATA = $savedMarkerLocal }
+    $r4 = Fire -Cwd $ownedGuard -StopHookActive
+    Check 'own re-entry is silent without a cooldown stamp and without stderr' (
+        $r4.Exit -eq 0 -and $r4.Out -eq '' -and $r4.Err -eq '') ($r4.Out + $r4.Err)
 
     # =====================================================================
     Write-Host '--- Windows PowerShell 5.1 ---' -ForegroundColor Cyan
