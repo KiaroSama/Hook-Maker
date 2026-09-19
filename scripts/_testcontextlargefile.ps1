@@ -93,7 +93,7 @@
         $lfCodexMsg = if ($null -ne $lfCodexDoc -and $null -ne $lfCodexDoc.PSObject.Properties['systemMessage']) { [string]$lfCodexDoc.systemMessage } else { '' }
         Check 'Stop on CODEX emits systemMessage (not hookSpecificOutput, not decision:block)' (
             $null -ne $lfCodexDoc -and $null -ne $lfCodexDoc.PSObject.Properties['systemMessage'] -and
-            $null -eq $lfCodexDoc.PSObject.Properties['systemMessage'] -and $rx.Out -notmatch '"decision"') $rx.Out
+            $null -eq $lfCodexDoc.PSObject.Properties['hookSpecificOutput'] -and $rx.Out -notmatch '"decision"') $rx.Out
         Check 'the CODEX advisory still carries the oversized-file report' ($lfCodexMsg -match 'LARGE FILE CHECK' -and $lfCodexMsg -match 'big\.ps1') $lfCodexMsg
         # BYTE-COMPATIBILITY (real emission site 3 of 4): the same hook's Codex
         # branch - the one shape a Codex client actually understands at Stop.

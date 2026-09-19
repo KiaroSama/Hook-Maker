@@ -305,7 +305,7 @@ try {
     $rClaude = Fire -Cwd $wtLockClaude -SessionId 'wt-lock-sess'
     Check 'a locked worktree with nothing else wrong does not block completion (advisory only)' ($rClaude.Out -notmatch '"decision":"block"') $rClaude.Out
     Check 'the locked worktree is reported with its lock reason' ($rClaude.Out -match 'locked' -and $rClaude.Out -match 'manual test lock') $rClaude.Out
-    Check 'the Claude client gets additionalContext for the non-blocking advisory, not systemMessage' ($rClaude.Out -match '"additionalContext"' -and $rClaude.Out -notmatch '"systemMessage"') $rClaude.Out
+    Check 'the Claude Stop advisory is user-visible without injecting a model turn' ($rClaude.Out -match '"systemMessage"' -and $rClaude.Out -notmatch '"hookSpecificOutput"') $rClaude.Out
 
     $wtLockCodex = New-PushedRepo 'wt-locked-codex'
     Fire -Cwd $wtLockCodex -EventName 'SessionStart' -SessionId 'wt-lock-sess' -Codex | Out-Null

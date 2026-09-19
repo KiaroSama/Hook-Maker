@@ -116,14 +116,14 @@ function Register-UserTaskBoundary {
     $result = Invoke-TaskIdentityUpdate -HookInput $HookInput -Mutate {
         param($record, $scope)
         if ($event -eq 'Stop') {
-            if ($null -ne $record -and ($turn -eq '' -or @($record.turnIds) -ccontains $turn)) {
+            if ($null -ne $record -and ($turn -eq '' -or $record.dispatchId -ceq $turn)) {
                 $record.phase = 'stopped'
             }
             return $record
         }
         if ($null -ne $record) {
             # A known dispatch is a duplicate even if a delayed handler arrives.
-            if ($turn -ne '' -and $record.dispatchId -ceq $turn) { return $record }
+            if ($turn -ne '' -and @($record.turnIds) -ccontains $turn) { return $record }
             $receiptKey = $fingerprint
             if ($prompt -match '^\[HOOKMAKER-CORRECTION:([a-f0-9]{32})\](?:\r?\n|$)') { $receiptKey = 'token:' + $Matches[1] }
             $continuation = @($record.blockFingerprints) -ccontains $receiptKey

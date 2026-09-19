@@ -33,7 +33,8 @@ if ($Mode -ne '') {
     catch { [Console]::Error.WriteLine($_.Exception.Message); exit 1 }
 }
 
-$work = Join-Path ([IO.Path]::GetTempPath()) ('hookmaker-concurrency space-' + [guid]::NewGuid().ToString('N'))
+. (Join-Path $repo 'scripts\_testlib.ps1')
+$work = New-TestWorkspace -Prefix 'hookmaker-concurrency'
 $savedLocal = $env:LOCALAPPDATA; $savedClient = $env:HOOKMAKER_CLIENT; $savedBudget = $env:HOOKMAKER_STOP_CORRECTION_BUDGET
 $cases = New-Object System.Collections.Generic.List[object]
 function Check-Case {

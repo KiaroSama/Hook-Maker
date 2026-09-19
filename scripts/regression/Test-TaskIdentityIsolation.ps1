@@ -2,7 +2,8 @@ param([string]$ResultPath = '')
 Set-StrictMode -Version 2.0
 $ErrorActionPreference = 'Stop'
 $repo = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
-$work = Join-Path ([IO.Path]::GetTempPath()) ('hookmaker-task-regression-' + [guid]::NewGuid().ToString('N'))
+. (Join-Path $repo 'scripts\_testlib.ps1')
+$work = New-TestWorkspace -Prefix 'hookmaker-task-regression'
 $savedLocal = $env:LOCALAPPDATA
 $savedClient = $env:HOOKMAKER_CLIENT
 $results = New-Object System.Collections.Generic.List[object]
@@ -19,7 +20,7 @@ function New-TaskInput {
     return [pscustomobject]@{ hook_event_name = 'UserPromptSubmit'; cwd = $work; session_id = $Session; prompt = $Prompt; turn_id = $Turn }
 }
 try {
-    [void](New-Item -ItemType Directory -Path $work)
+    [void](New-Item -ItemType Directory -Path $work -Force)
     $env:LOCALAPPDATA = $work
     $env:HOOKMAKER_CLIENT = 'codex'
     . (Join-Path $repo 'hooks\_hooklib.ps1')
@@ -45,6 +46,42 @@ try {
     Assert-Case 'another client cannot replace the Codex task' { (Get-CurrentUserTaskIdentity $repeat).TaskId -eq $beforeClient }
     $missingSession = New-TaskInput '' 'No provenance' 'unknown'
     Assert-Case 'missing session never adopts another session identity' { (Get-CurrentUserTaskIdentity $missingSession).Degraded }
+
+
+    # A delayed handler must not roll back the active dispatch or refill its task.
+    $p = New-TaskInput 'late-dispatch' 'first user turn' 'late-1'
+    Register-UserTaskBoundary $p
+    $taskBefore = (Get-CurrentUserTaskIdentity $p).TaskId
+    $receipt = Register-TaskContinuation -HookInput $p -Reason 'repair the original finding'
+    $next = New-TaskInput 'late-dispatch' $receipt.Text 'late-2'
+    Register-UserTaskBoundary $next
+    $null = Set-StopBlockMarker -HookInput $next -HookName 'Late-Gate' -FindingFingerprint 'same'
+    Register-UserTaskBoundary $p
+    Assert-Case 'a delayed original dispatch cannot mint a replacement task' {
+        (Get-CurrentUserTaskIdentity $next).TaskId -ceq $taskBefore
+    }
+    $p.hook_event_name = 'Stop'
+    Register-UserTaskBoundary $p
+    $state = Read-TaskIdentityRecord -Path (Get-TaskScope $next).Path
+    Assert-Case 'a delayed Stop cannot seal a newer active dispatch' { $state.phase -ceq 'working' -and $state.dispatchId -ceq 'late-2' }
+    Set-ObjectProperty -Object $next -Name 'stop_hook_active' -Value $true
+    Assert-Case 'a known-task continuation evaluates current evidence before admission' { -not (Test-StopStandDown -HookInput $next -HookName 'Late-Gate') }
+    $duplicate = Set-StopBlockMarker -HookInput $next -HookName 'Late-Gate' -FindingFingerprint 'same'
+    Assert-Case 'a delayed dispatch does not refund an already-claimed finding' { -not $duplicate.Admitted -and $duplicate.Reason -ceq 'already-claimed' }
+    $changed = Set-StopBlockMarker -HookInput $next -HookName 'Late-Gate' -FindingFingerprint 'changed'
+    Assert-Case 'changed continuation evidence is evaluated within the same task allowance' { $changed.Admitted }
+    $fresh = New-TaskInput 'late-dispatch' 'a genuinely new task' 'late-3'
+    Register-UserTaskBoundary $fresh
+    Set-ObjectProperty -Object $fresh -Name 'stop_hook_active' -Value $true
+    Assert-Case 'a new task is not suppressed by an earlier tasks continuation hint' { -not (Test-StopStandDown -HookInput $fresh -HookName 'Late-Gate') }
+    $scope = Get-TaskScope $fresh
+    $held = [IO.File]::Open(($scope.Path + '.lock'), 'Open', 'ReadWrite', 'None')
+    try {
+        $beforeBytes = [IO.File]::ReadAllText($scope.Path)
+        $blocked = Register-TaskContinuation -HookInput $fresh -Reason 'must be persisted'
+        Assert-Case 'a held task lock refuses a correction receipt without altering task state' { -not $blocked.Ok -and [IO.File]::ReadAllText($scope.Path) -ceq $beforeBytes }
+    }
+    finally { $held.Dispose() }
 
     # Exercise the actual write transaction, not a translated model.
     $ledgerPath = Join-Path $work 'corrupt-ledger.json'

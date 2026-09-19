@@ -341,6 +341,10 @@ function Test-StopStandDownLedger {
     # Stop, creating Hook Maker state in projects the gate had nothing to say
     # about. Only a block writes now.
     if (-not $IsContinuation) { return $false }
+    # A known task must be reevaluated: a shared continuation flag says nothing
+    # about its current evidence. Atomic admission below, not this early hint,
+    # deduplicates unchanged findings and enforces the finite task allowance.
+    if ((Get-StopEventId -HookInput $HookInput) -like 't:*') { return $false }
     $path = Get-StopLedgerPath -ProjectRoot ([string](Get-Field $HookInput 'cwd'))
     # Persistence has to be AVAILABLE before arming is safe: a gate that arms,
     # blocks, and then cannot RECORD the block arms again on the next
