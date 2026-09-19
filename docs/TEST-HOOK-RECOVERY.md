@@ -34,9 +34,17 @@ The observer reports the unsupported identity instead of creating an impossible
 observation or borrowing another run's successful result. Existing failure,
 freshness, incomplete-run and process-cleanup checks still apply.
 
-Historical incidents normally resolve through exact newer clean evidence. For a
-legacy missing fingerprint or a repaired cleanup wrapper with a different command
-identity, an operator who has independently verified equivalent test scope can use:
+Historical incidents normally resolve through exact newer clean evidence, and
+since 2026-09-20 that covers strictly more than it used to: supersession matches on
+the COMMAND and no longer requires the later clean receipt to carry the same
+project fingerprint. A failure therefore clears when you fix it and re-run the same
+command green, even though the fix changed the working tree, and a receipt written
+without a fingerprint at all is no longer permanently unclearable. See
+`docs/adr/0001-supersede-by-project-not-tree-state.md`.
+
+The manual association below is now only for the case a re-run cannot reproduce:
+a repaired wrapper whose COMMAND identity legitimately changed. An operator who has
+independently verified equivalent test scope can use:
 
 ```powershell
 & '<installed runtime>\Test-Completion-Check.ps1' `
