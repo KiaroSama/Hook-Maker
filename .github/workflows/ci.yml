@@ -139,7 +139,7 @@ jobs:
           - name: secrets
             suites: Test-SecretsCheck,Test-IgnoreRulesCheck,Test-GitSyncCheck,Test-AiMemoryCheck,Test-LargeFileCheck,Test-Utf8EncodingCheck,Test-FeatureRequestCheck
           - name: hooks
-            suites: Test-StopLedger,Test-DocsFreshnessCheck,Test-CloudflareDeploy,Test-DependencyVersionCheck,Test-TestTempCleanup,Test-DependabotCheck,Test-CiStatusCheck,Test-GithubBaselineCheck,Test-AiMemoryLoad,Test-SynapseRulesCheck,Test-SessionSummaryCheck
+            suites: Test-StopLedger,Test-DocsFreshnessCheck,Test-CloudflareDeploy,Test-DependencyVersionCheck,Test-TestTempCleanup,Test-DependabotCheck,Test-CiStatusCheck,Test-GithubBaselineCheck,Test-AiMemoryLoad,Test-SynapseRulesCheck,Test-SessionSummaryCheck,Test-SpeckitCheck
     name: suites (${{ matrix.name }})
     steps:
       - uses: actions/checkout@v7

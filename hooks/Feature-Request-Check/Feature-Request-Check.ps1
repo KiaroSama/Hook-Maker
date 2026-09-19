@@ -35,51 +35,11 @@ $ErrorActionPreference = 'Stop'
 
 . (Join-Path $PSScriptRoot '..\_hooklib.ps1')
 
-# ---- feature detection ------------------------------------------------------
-# Kept in this hook rather than _hooklib.ps1: no second caller exists, and a
-# shared definition earns its place when something else needs the same answer.
-$script:FeatureBugPattern = @(
-    '(?i)\b(fix|bug|error|crash|typo|broken|fails|failing|regression|stack ?trace)\b',
-    '\u0628\u0627\u06af',                                       # bug (bag)
-    '\u062e\u0637\u0627',                                       # error (khata)
-    '\u0627\u0631\u0648\u0631',                                 # error, loan word (eror)
-    '\u06a9\u0631\u0634',                                       # crash (kerash)
-    '\u062e\u0631\u0627\u0628'                                  # broken (kharab)
-) -join '|'
-
-$script:FeatureExplicitPattern = @(
-    '(?i)\bfeature\b',
-    '(?i)\bfeature request\b',
-    '(?i)\bnew capability\b',
-    '(?i)\bas a user\b',
-    '(?i)\bshould be able to\b',
-    '(?i)\bmake it possible\b',
-    '\u0641\u06cc\u0686\u0631',                                 # feature, loan word (ficher)
-    '\u0642\u0627\u0628\u0644\u06cc\u062a',                     # capability (ghabeliyat)
-    '\u067e\u06cc\u0627\u062f\u0647\u200c?\s?\u0633\u0627\u0632\u06cc'  # implementation (piade-sazi), ZWNJ or space
-) -join '|'
-
-# Verb + object within 60 characters. The window is what stops "add" in
-# "add a comment explaining why" from reading as a feature request.
-$script:FeatureVerbPattern = @(
-    '(?i)\b(add|implement|build|create|introduce|support)\b[\s\S]{0,60}\b(feature|capability|command|button|page|screen|endpoint|api|option|setting|flag|mode|panel|menu|dialog|report|export|import|filter|search|login|auth|dashboard|hook|integration)\b',
-    '\u0627\u0636\u0627\u0641\u0647\s+\u06a9\u0646',            # add (ezafe kon)
-    '\u0627\u0636\u0627\u0641\u0647\s+\u06a9\u0646\u06cc\u0645', # let us add (ezafe konim)
-    '\u0628\u0633\u0627\u0632',                                 # build (besaz)
-    '\u0627\u06cc\u062c\u0627\u062f\s+\u06a9\u0646',            # create (ijad kon)
-    '\u062f\u0631\u0633\u062a\s+\u06a9\u0646'                   # make (dorost kon)
-) -join '|'
-
-function Test-FeatureRequestPrompt {
-    param([string]$Prompt)
-    if ([string]::IsNullOrWhiteSpace($Prompt)) { return $false }
-    # An explicit phrase is decisive on its own - "the feature request is broken"
-    # is still about a feature.
-    if ($Prompt -match $script:FeatureExplicitPattern) { return $true }
-    # Otherwise a build verb only counts when nothing says "this is a defect".
-    if ($Prompt -match $script:FeatureBugPattern) { return $false }
-    return ($Prompt -match $script:FeatureVerbPattern)
-}
+# The feature-detection patterns and Test-FeatureRequestPrompt moved to
+# ..\_scope.ps1 when Speckit-Check became their second caller - the exact
+# condition the comment here used to name for keeping them local. Behaviour
+# is unchanged: the patterns moved byte-for-byte.
+. (Join-Path $PSScriptRoot '..\_scope.ps1')
 
 $hookInput = Read-HookInput
 if ($null -eq $hookInput) { exit 0 }
@@ -93,13 +53,20 @@ $projectKey = Get-ShortHash ([string]$cwd).ToLowerInvariant()
 $stateDir = Join-Path $env:LOCALAPPDATA 'HookMaker\state'
 $config = Read-HookEnv (Join-Path $PSScriptRoot '.env')
 
+# The closing carve-out line that used to sit here ("not a feature - a fix, a
+# one-file change, a question? say so and carry on") was DELETED on
+# 2026-09-19: the rules withdrew it. A bug fix now takes the spec-driven
+# route too - diagnose first, then converge on a spec-bearing feature or the
+# full chain - so telling the reader a fix is exempt would send them past the
+# workflow the rules put them on. Speckit-Check names that route; this hook
+# stays on the interview, which is the part a transcript can actually prove.
 $chainNote = @(
-    'FEATURE REQUEST CHECK - this prompt reads as a feature request, so run the mattpocock chain instead of coding straight from it:',
+    'FEATURE REQUEST CHECK - this prompt reads as a feature request, so run the chain instead of coding straight from it:',
     '1. Call the Skill tool twice: "grilling" (interrogate the request until the real requirement is known) and "domain-modeling".',
     '2. If docs/agents/issue-tracker.md is missing, run the setup procedure for those skills first.',
-    '3. Write the spec, then split it into tickets.',
-    '4. Implement ticket by ticket: tdd, then code-review, then commit.',
-    'Not a feature - a fix, a one-file change, a question? Say so in one line and carry on; that is a complete answer.'
+    '3. Then Spec Kit, in order: speckit-specify, speckit-clarify, speckit-plan, speckit-tasks, speckit-analyze, speckit-implement.',
+    '4. Inside speckit-implement: tdd at the agreed seams, then code-review, then commit.',
+    'Every question any step raises goes to the user and the work waits for the answer - never a plausible default.'
 ) -join "`n"
 
 # ---- UserPromptSubmit: advise, once per prompt -------------------------------
@@ -197,7 +164,7 @@ $missingNames = ($missing.ToArray() -join ' and ')
 
 $blockMessage = @(
     ('FEATURE REQUEST CHECK - a feature request was detected in this session (first match: "' + $firstPrompt + '") but the mattpocock chain did not run: the transcript holds no Skill call to ' + $missingNames + '.'),
-    'Either run it now IN ORDER - grilling + domain-modeling first, then to-spec, then to-tickets, then implement ticket by ticket (Skill tool, exact name:, e.g. mattpocock-skills:grilling) -',
+    'Either run it now IN ORDER - grilling + domain-modeling first, then Spec Kit in order: speckit-specify, clarify, plan, tasks, analyze, implement (Skill tool, exact name:, e.g. mattpocock-skills:grilling) -',
     'or state in one line why this was not a feature, and finish. Both clear this.'
 ) -join "`n"
 
