@@ -460,7 +460,16 @@
     #                                  what the entry point can LOAD. A data file
     #                                  is out of its scope, stated rather than
     #                                  silently dropped.
-    $plannedLeaves = @([regex]::Matches($planText, '\$FriendlyName \+ ''/([^'']+)''') |
+    # The planner DELEGATES the runtime payload (the private library copies and
+    # the one companion executable) to _installruntimepayload.ps1, so the staged
+    # set is spread across both files. Reading only the planner made this mirror
+    # compare against an empty list the moment that responsibility moved out.
+    $payloadPath = Join-Path $PSScriptRoot '_installruntimepayload.ps1'
+    $stagingText = $planText
+    if (Test-Path -LiteralPath $payloadPath -PathType Leaf) {
+        $stagingText = $planText + [Environment]::NewLine + [System.IO.File]::ReadAllText($payloadPath)
+    }
+    $plannedLeaves = @([regex]::Matches($stagingText, '\$FriendlyName \+ ''/([^'']+)''') |
         ForEach-Object { $_.Groups[1].Value } |
         Where-Object { $_ -like '*.ps1' -and $_ -ne 'scripts/Run-Tests-Guarded.ps1' } | Sort-Object -Unique)
     $requiredAst = @($cfAst.FindAll({
