@@ -140,7 +140,10 @@
     # was found in %TEMP% during a closure pass. The suite now sweeps its own
     # leftovers at startup; this proves the sweep really clears that shape, and
     # that it cannot eat the workspace the suite is currently standing on.
-    $staleWork = Join-Path ([System.IO.Path]::GetTempPath()) ('hookmaker-statusscan-' + [guid]::NewGuid().ToString('N').Substring(0, 8))
+    # Planted in the PROJECT-OWNED workspace root, which is where the sweep now
+    # looks - test artifacts live inside their owning project, not in the
+    # machine's shared temp (global-environment-rules.md).
+    $staleWork = Join-Path (Get-TestWorkspaceRoot) ('hookmaker-statusscan-' + [guid]::NewGuid().ToString('N').Substring(0, 8))
     $staleDenied = New-Dir (Join-Path $staleWork 'FakeDrive\Windows\System32-ish')
     [System.IO.File]::WriteAllText((Join-Path $staleDenied 'left-behind.json'), '{}')
     $staleEnforced = Deny-Directory -Path $staleDenied
