@@ -269,7 +269,14 @@ for (`$i = 0; `$i -lt 8; `$i++) {
         }
         $afterConcurrent = Read-InstallRegistry -ToolRoot $corruptRoot
         Check 'concurrent writers do not lose each other''s records (lock held)' (@($afterConcurrent.installs).Count -eq 16) ('records=' + @($afterConcurrent.installs).Count)
-        Check 'no lock file is left behind after concurrent writes' (-not (Test-Path -LiteralPath (Join-Path $corruptRoot 'state\install-registry.lock')))
+        $released = $false; $lockProbe = $null
+        try {
+            $lockProbe = [IO.File]::Open((Join-Path $corruptRoot 'state\install-registry.lock'), 'Open', 'ReadWrite', 'None')
+            $released = $true
+        }
+        catch { $released = $false }
+        finally { if ($null -ne $lockProbe) { $lockProbe.Dispose() } }
+        Check 'concurrent writers release the lock handle and preserve its stable inode' $released
     }
     finally {
         $env:HOOKMAKER_STATE_DIR = $savedStateDir

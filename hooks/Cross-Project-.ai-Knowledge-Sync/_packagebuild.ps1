@@ -53,35 +53,34 @@ function New-PendingPackage {
     # The generation is named for its own content fingerprint, so a new one
     # never collides with the one under review. The old generations are retired
     # only AFTER this one is built and verified.
-    $packageRoot = Join-Path $StatePaths.inboxRoot ([string]$ContentSnapshot.fingerprint).Substring(0, 16)
+    $packageRoot = Join-Path $StatePaths.inboxRoot (([string]$ContentSnapshot.fingerprint).Substring(0, 16) + '-' + [guid]::NewGuid().ToString('N'))
     $filesRoot = Join-Path $packageRoot 'files'
     if (-not (Test-OwnedStagingChain -TrustedRoot $Context.destinationRoot -OwnedRoot $StatePaths.inboxRoot -Target $packageRoot)) {
         # The staging path is not provably inside the configured destination -
         # a link somewhere on the chain, or a root that moved. Refuse to write.
         return $null
     }
-    # A half-built generation from an interrupted earlier run is the one thing
-    # that may be removed here, and only because it carries THIS fingerprint and
-    # has just been proven to be ours.
-    if (Test-Path -LiteralPath $packageRoot -PathType Container) {
-        if (-not (Remove-OwnedPackageDirectory -Path $packageRoot -OwnedRoot $StatePaths.inboxRoot -TrustedRoot $Context.destinationRoot)) { return $null }
-    }
+    # A unique generation never replaces a still-published package in place.
     New-Item -ItemType Directory -Path $filesRoot -Force | Out-Null
 
     foreach ($relativePath in ($added + $modified)) {
+        if (-not (Test-PackageRelativePath $relativePath)) { throw 'Unsafe relative path in the source snapshot.' }
         $sourcePath = Join-Path $Context.sourceDirectory ($relativePath.Replace('/', [System.IO.Path]::DirectorySeparatorChar))
         $destinationPath = Join-Path $filesRoot ($relativePath.Replace('/', [System.IO.Path]::DirectorySeparatorChar))
         $destinationParent = Split-Path -Parent $destinationPath
         if (-not (Test-Path -LiteralPath $destinationParent -PathType Container)) {
             New-Item -ItemType Directory -Path $destinationParent -Force | Out-Null
         }
-        Copy-Item -LiteralPath $sourcePath -Destination $destinationPath -Force
+        if (-not (Test-OwnedStagingChain -TrustedRoot $Context.sourceDirectory -OwnedRoot $Context.sourceDirectory -Target $Context.sourceDirectory -AllowRootItself)) { throw 'Source root is redirected or unreadable.' }
+        if (-not (Test-OwnedStagingChain -TrustedRoot $Context.sourceDirectory -OwnedRoot $Context.sourceDirectory -Target (Split-Path -Parent $sourcePath) -AllowRootItself)) { throw 'Source ancestry is redirected or unreadable.' }
+        if (([IO.File]::GetAttributes($sourcePath) -band [IO.FileAttributes]::ReparsePoint) -ne 0) { throw 'Source file is redirected.' }
+        Copy-Item -LiteralPath $sourcePath -Destination $destinationPath -Force -ErrorAction Stop
     }
 
     $ackCommand = Get-AcknowledgementCommand -Context $Context -Fingerprint $ContentSnapshot.fingerprint
 
     $manifest = [pscustomobject][ordered]@{
-        version = 2
+        version = 3
         profileId = $Context.profileId
         profileName = if ($null -ne $Context.profile.PSObject.Properties['name']) { [string]$Context.profile.name } else { $Context.profileId }
         routeId = $Context.routeId
@@ -116,20 +115,34 @@ function New-PendingPackage {
     $manifestPath = Join-Path $packageRoot 'manifest.json'
     Write-JsonFileAtomic -Value $manifest -Path $manifestPath
 
-    # Only now is the previous generation disposable. A refusal is carried out
-    # to the caller as DEFERRED CLEANUP rather than swallowed: staging that
-    # could not be retired is a different outcome from a review that failed.
-    $deferredCleanup = @(Remove-SupersededGenerations -InboxRoot $StatePaths.inboxRoot -TrustedRoot $Context.destinationRoot -KeepPackageRoot $packageRoot)
-
+    # State publication owns retirement. Building a package does not make its
+    # predecessor disposable: a later state write can still fail.
     return [pscustomobject][ordered]@{
         sourceQuickFingerprint = $QuickFingerprint
         sourceContentFingerprint = $ContentSnapshot.fingerprint
         sourceFiles = @($ContentSnapshot.files)
+        stagedFiles = @($stagedRecords)
+        manifestSha256 = Get-PackageFileDigest $manifestPath
         packageRoot = $packageRoot
         manifestPath = $manifestPath
         filesRoot = $filesRoot
         acknowledgementCommand = $ackCommand
         createdAtUtc = [DateTime]::UtcNow.ToString('o')
-        deferredCleanup = @($deferredCleanup)
+        deferredCleanup = @()
     }
+}
+
+# The durable state pointer commits first. Cleanup is a separate post-commit
+# outcome; failure can leave disposable old generations but cannot lose review.
+function Publish-PendingPackage {
+    param($Context, $State, $StatePaths, $Pending, [string]$SessionId)
+    if (-not (Test-PendingPackageIntact $Pending $Context $StatePaths)) { throw 'Refusing to publish an unverified review package.' }
+    $next = $State.PSObject.Copy()
+    Set-ObjectProperty -Object $next -Name 'pending' -Value $Pending
+    Set-ObjectProperty -Object $next -Name 'lastNotifiedSessionId' -Value $SessionId
+    Set-ObjectProperty -Object $next -Name 'lastNotifiedAtUtc' -Value ([DateTime]::UtcNow.ToString('o'))
+    Write-JsonFileAtomic -Value $next -Path $StatePaths.statePath
+    $deferred = @(Remove-SupersededGenerations -InboxRoot $StatePaths.inboxRoot -TrustedRoot $Context.destinationRoot -KeepPackageRoot $Pending.packageRoot)
+    Set-ObjectProperty -Object $Pending -Name 'deferredCleanup' -Value $deferred
+    return $next
 }

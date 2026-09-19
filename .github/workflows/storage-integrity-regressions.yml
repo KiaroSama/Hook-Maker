@@ -1,0 +1,88 @@
+name: Storage integrity regressions
+on:
+  pull_request:
+  push:
+    branches: [main]
+permissions:
+  contents: read
+concurrency:
+  group: storage-integrity-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  native-storage:
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Transaction and package regressions (PowerShell 7)
+        shell: pwsh
+        run: ./scripts/regression/Test-StorageIntegrity.ps1 -ResultPath "$env:RUNNER_TEMP/storage-evidence/pwsh.json"
+      - name: Transaction and package regressions (Windows PowerShell 5.1)
+        if: always()
+        shell: powershell
+        run: ./scripts/regression/Test-StorageIntegrity.ps1 -ResultPath "$env:RUNNER_TEMP/storage-evidence/powershell.json"
+      - name: Byte verification and publication failures (PowerShell 7)
+        if: always()
+        shell: pwsh
+        run: ./scripts/regression/Test-PackagePublication.ps1 -ResultPath "$env:RUNNER_TEMP/storage-evidence/packages-pwsh.json"
+      - name: Byte verification and publication failures (Windows PowerShell 5.1)
+        if: always()
+        shell: powershell
+        run: ./scripts/regression/Test-PackagePublication.ps1 -ResultPath "$env:RUNNER_TEMP/storage-evidence/packages-powershell.json"
+      - name: Record tested revision
+        if: always()
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force "$env:RUNNER_TEMP/storage-evidence" | Out-Null
+          git archive --format=zip --output="$env:RUNNER_TEMP/storage-evidence/source.zip" HEAD
+          git rev-parse HEAD | Set-Content -Encoding utf8 "$env:RUNNER_TEMP/storage-evidence/commit.txt"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        if: always()
+        with:
+          name: storage-evidence
+          path: ${{ runner.temp }}/storage-evidence
+          retention-days: 7
+          if-no-files-found: error
+  native-runner:
+    runs-on: windows-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Exercise both guarded-runner hosts with fresh per-case evidence
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $false
+          $ownedRoot = Join-Path $env:GITHUB_WORKSPACE '.ci-work/runner-proof'
+          $evidence = Join-Path $env:RUNNER_TEMP 'runner-evidence'
+          New-Item -ItemType Directory -Force $ownedRoot, $evidence | Out-Null
+          $savedRoot = $env:HOOKMAKER_TEST_TEMP_ROOT
+          $exitCode = -1
+          try {
+            $env:HOOKMAKER_TEST_TEMP_ROOT = $ownedRoot
+            # Keep the original command deadlines. A timeout remains a failure;
+            # this job retains its evidence instead of retrying it into green.
+            & pwsh -NoProfile -File ./scripts/Test-TestRunGuard.ps1 -RunnerHostsOnly -KeepArtifacts
+            $exitCode = $LASTEXITCODE
+          }
+          finally {
+            $env:HOOKMAKER_TEST_TEMP_ROOT = $savedRoot
+            $diagnostics = @(Get-ChildItem -LiteralPath $ownedRoot -Recurse -Filter '*.diagnostics.json' -File)
+            $cases = @($diagnostics | ForEach-Object { Get-Content -LiteralPath $_.FullName -Raw | ConvertFrom-Json })
+            [ordered]@{ suiteExit = $exitCode; cases = $cases; expectedCases = 4 } |
+              ConvertTo-Json -Depth 12 | Set-Content -Encoding utf8 "$evidence/canaries.json"
+            git rev-parse HEAD | Set-Content -Encoding utf8 "$evidence/commit.txt"
+            . ./scripts/_testlib.ps1
+            $cleaned = Remove-TestWorkspace -Path $ownedRoot
+            if (-not $cleaned) { throw 'The isolated runner proof left an owned workspace behind.' }
+          }
+          if ($exitCode -ne 0 -or $diagnostics.Count -ne 4) {
+            throw 'One of the four native runner cases failed or did not produce its evidence.'
+          }
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        if: always()
+        with:
+          name: runner-evidence
+          path: ${{ runner.temp }}/runner-evidence
+          retention-days: 7
+          if-no-files-found: error
