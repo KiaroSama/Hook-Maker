@@ -2,7 +2,8 @@ param([string]$ResultPath = '')
 Set-StrictMode -Version 2.0
 $ErrorActionPreference = 'Stop'
 $repo = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
-$work = Join-Path ([IO.Path]::GetTempPath()) ('hookmaker-publication-' + [guid]::NewGuid().ToString('N'))
+. (Join-Path $repo 'scripts\_testlib.ps1')
+$work = New-TestWorkspace -Prefix 'hookmaker-publication'
 $utf8 = New-Object Text.UTF8Encoding($false)
 $cases = New-Object 'System.Collections.Generic.List[object]'
 function Check-Package {
@@ -79,9 +80,22 @@ try {
     [IO.File]::WriteAllText((Join-Path $outside 'sentinel.txt'), 'preserve', $utf8)
     $null = New-Item -ItemType Junction -Path $link -Target $outside
     Check-Package 'an internal junction invalidates the reviewed tree' (-not (Test-PendingPackageIntact $second $context $paths))
+    Check-Package 'retirement refuses a tree containing an internal junction' (
+        -not (Remove-OwnedPackageDirectory -Path $second.packageRoot -OwnedRoot $paths.inboxRoot -TrustedRoot $destination))
+    Check-Package 'a refused retirement preserves both the package and its external target' (
+        [IO.File]::Exists($second.manifestPath) -and [IO.File]::ReadAllText((Join-Path $outside 'sentinel.txt')) -ceq 'preserve')
     # Delete only the test-owned link, not recursively through its target.
     [IO.Directory]::Delete($link)
     Check-Package 'the external junction target is not modified by verification' ([IO.File]::ReadAllText((Join-Path $outside 'sentinel.txt')) -ceq 'preserve')
+    $emptyTarget = Join-Path $work 'empty-external-target'
+    [void][IO.Directory]::CreateDirectory($emptyTarget)
+    [IO.Directory]::Delete($empty.filesRoot)
+    $null = New-Item -ItemType Junction -Path $empty.filesRoot -Target $emptyTarget
+    try {
+        Check-Package 'an empty redirected files root is not accepted as an empty reviewed set' (
+            -not (Test-PendingPackageIntact $empty $context $paths))
+    }
+    finally { [IO.Directory]::Delete($empty.filesRoot) }
 }
 catch { Check-Package 'suite completes without an unexpected exception' $false ($_.Exception.Message + ' | ' + $_.ScriptStackTrace) }
 finally {
