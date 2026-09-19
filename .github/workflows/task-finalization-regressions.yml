@@ -43,3 +43,54 @@ jobs:
           path: ${{ runner.temp }}/task-evidence
           retention-days: 7
           if-no-files-found: error
+  baseline-red-proof:
+    runs-on: windows-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+      - name: Prove the historical implementation fails the exact replay scenarios
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $false
+          $evidence = Join-Path $env:RUNNER_TEMP 'task-red-proof'
+          $baseline = Join-Path $env:GITHUB_WORKSPACE '.ci-work/task-red-proof'
+          New-Item -ItemType Directory -Force $evidence, $baseline | Out-Null
+          git archive --format=zip --output="$evidence/baseline.zip" d37619c1d780a3467d976dfb92b56a563135512e
+          if ($LASTEXITCODE -ne 0) { throw 'Historical source archive failed.' }
+          Expand-Archive -LiteralPath "$evidence/baseline.zip" -DestinationPath $baseline
+          # Pin both the baseline and its test so later new cases cannot change
+          # the meaning of this retained red proof. The current tree is tested above.
+          $scenario = git show '6932f58092ea1f812071c221a0cb8ef47de52325:scripts/regression/Test-TaskIdentityIsolation.ps1'
+          if ($LASTEXITCODE -ne 0) { throw 'Historical scenario extraction failed.' }
+          $scenario | Set-Content -Encoding utf8 "$baseline/scripts/regression/Test-TaskIdentityIsolation.ps1"
+          try {
+            & pwsh -NoProfile -File "$baseline/scripts/regression/Test-TaskIdentityIsolation.ps1" -ResultPath "$evidence/red.json"
+            $exitCode = $LASTEXITCODE
+            $report = Get-Content -LiteralPath "$evidence/red.json" -Raw | ConvertFrom-Json
+            $expected = @(
+              'a delayed original dispatch cannot mint a replacement task',
+              'a delayed Stop cannot seal a newer active dispatch',
+              'a known-task continuation evaluates current evidence before admission',
+              'a delayed dispatch does not refund an already-claimed finding',
+              'a new task is not suppressed by an earlier tasks continuation hint'
+            ) | Sort-Object
+            $actual = @($report.cases | Where-Object { -not $_.passed } | ForEach-Object name | Sort-Object)
+            if ($exitCode -ne 1 -or $report.cases.Count -ne 15 -or ($expected -join '|') -cne ($actual -join '|')) {
+              throw 'The baseline did not reproduce exactly the five recorded defects.'
+            }
+            'baseline=d37619c1d780a3467d976dfb92b56a563135512e; scenarios=6932f58092ea1f812071c221a0cb8ef47de52325' | Set-Content -Encoding utf8 "$evidence/provenance.txt"
+          }
+          finally {
+            . ./scripts/_testlib.ps1
+            if (-not (Remove-TestWorkspace -Path $baseline)) { throw 'Baseline proof workspace cleanup failed.' }
+          }
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        if: always()
+        with:
+          name: task-red-proof
+          path: ${{ runner.temp }}/task-red-proof
+          retention-days: 7
+          if-no-files-found: error
