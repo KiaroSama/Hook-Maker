@@ -26,6 +26,7 @@
 # ---------------------------------------------------------------------------
 
 $script:InstallRegistryWritingMarkerName = '_writing.json'
+. (Join-Path $PSScriptRoot '_installregistryjournal.ps1')
 
 # Names a record id may never take, whatever the caller says.
 #
@@ -67,7 +68,7 @@ function Get-InstallRecordDigest {
 
 function Get-InstallRegistryMarkerPath {
     param([Parameter(Mandatory = $true)][string]$ToolRoot)
-    return (Join-Path (Get-InstallRegistryDirectory -ToolRoot $ToolRoot) $script:InstallRegistryWritingMarkerName)
+    return (Get-RegistryJournalPath $ToolRoot)
 }
 
 # Validate the WHOLE proposed snapshot before any byte is written.
@@ -110,115 +111,23 @@ function Test-InstallRegistrySnapshot {
 # removed only after metadata, so its presence means exactly "this generation is
 # not complete".
 function Start-InstallRegistryGeneration {
-    param(
-        [Parameter(Mandatory = $true)][string]$ToolRoot,
-        [string[]]$ExpectedFileNames = @(),
-        # Each entry { name, sha256 }: the bytes this generation INTENDS each
-        # file to hold. Optional only so an older caller still works; without it
-        # completeness can only be judged by existence, which is what let a
-        # half-rewritten batch read back as whole.
-        [object[]]$ExpectedRecords = @()
-    )
-    $directory = Get-InstallRegistryDirectory -ToolRoot $ToolRoot
-    # THE MARKER IS THE FIRST THING IN THE DIRECTORY. Creating the directory in
-    # the caller and the marker here left a window where an empty, unmarked
-    # directory existed - and an unmarked directory is authoritative by
-    # definition, so a crash in that window published "no installs at all".
-    if (-not (Test-Path -LiteralPath $directory -PathType Container)) {
-        New-Item -ItemType Directory -Path $directory -Force | Out-Null
-    }
-    $marker = Get-InstallRegistryMarkerPath -ToolRoot $ToolRoot
-    $payload = [pscustomobject][ordered]@{
-        generation   = [guid]::NewGuid().ToString('N')
-        startedUtc   = [DateTime]::UtcNow.ToString('o')
-        ownerPid     = $PID
-        expectedFiles = @($ExpectedFileNames)
-        expectedRecords = @($ExpectedRecords)
-    }
-    # Deliberately NOT atomic-written: a marker that fails to appear must fail
-    # the save, and a torn marker is still a marker - any content at this path
-    # means "incomplete", so its bytes never have to parse.
-    [System.IO.File]::WriteAllText($marker, ($payload | ConvertTo-Json -Depth 5), (New-Object System.Text.UTF8Encoding($false)))
-    return $payload.generation
+    param([Parameter(Mandatory = $true)][string]$ToolRoot, [string[]]$ExpectedFileNames = @(), [object[]]$ExpectedRecords = @())
+    return (Start-RegistryJournal -ToolRoot $ToolRoot -ExpectedFileNames $ExpectedFileNames -ExpectedRecords $ExpectedRecords)
 }
 
 # Activation. After this returns the directory is a complete generation.
 function Complete-InstallRegistryGeneration {
     param([Parameter(Mandatory = $true)][string]$ToolRoot)
-    $marker = Get-InstallRegistryMarkerPath -ToolRoot $ToolRoot
-    if (Test-Path -LiteralPath $marker -PathType Leaf) {
-        # -ErrorAction Stop: a marker that will not clear means the generation
-        # cannot be declared complete, and reporting success then would restore
-        # the exact false-authority bug this file exists to prevent.
-        Remove-Item -LiteralPath $marker -Force -ErrorAction Stop
-    }
+    Complete-RegistryJournal -ToolRoot $ToolRoot
 }
 
 # What a READER needs to know before trusting the directory.
 function Get-InstallRegistryGenerationState {
     param([Parameter(Mandatory = $true)][string]$ToolRoot)
-    $marker = Get-InstallRegistryMarkerPath -ToolRoot $ToolRoot
-    if (-not (Test-Path -LiteralPath $marker -PathType Leaf)) {
-        return [pscustomobject]@{ Complete = $true; Reason = ''; MarkerPath = $marker }
-    }
-    # A marker alone does not prove the record SET is partial. The write may have
-    # failed at the deletion, metadata or activation step with every record file
-    # already on disk - and calling that corrupt would make surviving records
-    # UNREADABLE, destroying the documented recovery path where a record that
-    # could not be removed is left stale but still findable by a human or a retry.
-    #
-    # expectedFiles is what distinguishes the two. Every expected record present
-    # means the set is whole and may be read; a MISSING expected record is the
-    # genuinely partial snapshot that must never be reported as the registry.
-    $detail = ''
-    $expected = @()
-    $expectedRecords = @()
-    $known = $false
-    try {
-        $parsed = [System.IO.File]::ReadAllText($marker, [System.Text.Encoding]::UTF8) | ConvertFrom-Json
-        if ($null -ne $parsed) {
-            if ($null -ne $parsed.PSObject.Properties['startedUtc']) { $detail = ' (started ' + [string]$parsed.startedUtc + ')' }
-            if ($null -ne $parsed.PSObject.Properties['expectedFiles']) { $expected = @($parsed.expectedFiles); $known = $true }
-            if ($null -ne $parsed.PSObject.Properties['expectedRecords']) { $expectedRecords = @($parsed.expectedRecords) }
-        }
-    }
-    catch { $detail = ' (the marker itself is unreadable, which is still an incomplete write)' }
-    if ($known) {
-        $directory = Get-InstallRegistryDirectory -ToolRoot $ToolRoot
-        $missing = @(@($expected) | Where-Object { -not (Test-Path -LiteralPath (Join-Path $directory ([string]$_)) -PathType Leaf) })
-        if ($missing.Count -eq 0) {
-            # EXISTENCE IS NOT COMPLETENESS when records are being REWRITTEN. A
-            # batch that updates two existing records and dies after the first
-            # leaves both files present, one new and one old - a mixed snapshot
-            # that the existence test declared whole. Compare the bytes against
-            # what this generation said it intended; a file still holding its
-            # old content is the unfinished half.
-            $stale = 0
-            foreach ($entry in @($expectedRecords)) {
-                $name = ''
-                $digest = ''
-                if ($null -ne $entry) {
-                    if ($null -ne $entry.PSObject.Properties['name']) { $name = [string]$entry.name }
-                    if ($null -ne $entry.PSObject.Properties['sha256']) { $digest = [string]$entry.sha256 }
-                }
-                if ($name -eq '' -or $digest -eq '') { continue }
-                $actual = ''
-                try { $actual = Get-InstallRecordDigest -Text ([System.IO.File]::ReadAllText((Join-Path $directory $name), [System.Text.Encoding]::UTF8)) }
-                catch { $actual = '' }
-                if (-not [string]::Equals($actual, $digest, [System.StringComparison]::OrdinalIgnoreCase)) { $stale++ }
-            }
-            if ($stale -eq 0) {
-                return [pscustomobject]@{ Complete = $true; Reason = ''; MarkerPath = $marker }
-            }
-            $detail += ' (' + [string]$stale + ' record file(s) still hold their previous bytes, so this batch is half written)'
-        }
-        else { $detail += ' (missing ' + [string]$missing.Count + ' expected record file(s))' }
-    }
-    return [pscustomobject]@{
-        Complete   = $false
-        Reason     = ('the registry directory holds an INCOMPLETE generation' + $detail + ' - an interrupted write, so its record set is not the whole registry')
-        MarkerPath = $marker
-    }
+    $marker = Get-RegistryJournalPath $ToolRoot
+    $legacy = Join-Path (Get-InstallRegistryDirectory $ToolRoot) '_writing.json'
+    $incomplete = [IO.File]::Exists($marker) -or [IO.Directory]::Exists($marker) -or [IO.File]::Exists($legacy)
+    return [pscustomobject]@{ Complete = (-not $incomplete); MarkerPath = $marker; Reason = $(if ($incomplete) { 'The registry transaction is half written or not activated; use its previous committed snapshot.' } else { '' }) }
 }
 
 # A record file named aaa.json must contain the record whose id is aaa.
@@ -390,49 +299,9 @@ function Test-InstallRegistryMutable {
     return [pscustomobject]@{ Ok = $true; Reason = '' }
 }
 
-# RECOVER an interrupted generation, rather than refusing for ever.
-#
-# Refusing was half the answer and the wrong half: an interrupted write left the
-# marker standing, and every later upsert then declined, so ONE blocked deletion
-# wedged the registry until a human deleted a file. The transaction's purpose is
-# that a half-written batch is never SERVED as the whole registry - not that the
-# tool stops working.
-#
-# What recovery can honestly do: the per-record files are individually atomic, so
-# whatever is on disk is a coherent set of records - it is simply not the set the
-# interrupted batch intended. Recovery therefore ACCEPTS what survived: it writes
-# the metadata, clears the marker, and deletes nothing. The batch's intent is
-# lost (it was never completed), the prior valid records are all still there, and
-# the registry is readable again.
-#
-# A FUTURE SCHEMA IS NEVER RECOVERED - it is not damaged, it is not ours, and
-# rewriting its metadata is precisely the destructive act the version guard
-# exists to prevent.
+# Recover only a verified previous committed snapshot. A future schema is
+# untouched; a legacy partial batch with no journal is explicitly unavailable.
 function Repair-InterruptedInstallRegistryGeneration {
     param([Parameter(Mandatory = $true)][string]$ToolRoot)
-    $directory = Get-InstallRegistryDirectory -ToolRoot $ToolRoot
-    if (-not (Test-Path -LiteralPath $directory -PathType Container)) {
-        return [pscustomobject]@{ Ok = $true; Recovered = $false; Reason = '' }
-    }
-    $generation = Get-InstallRegistryGenerationState -ToolRoot $ToolRoot
-    if ($generation.Complete) { return [pscustomobject]@{ Ok = $true; Recovered = $false; Reason = '' } }
-
-    # Every surviving record must still be readable and still agree with its own
-    # file name before this directory may be declared complete. A file that does
-    # not is real corruption, and recovery is not the place to paper over it.
-    foreach ($file in @(Get-InstallRecordFiles -ToolRoot $ToolRoot)) {
-        $record = $null
-        try { $record = [System.IO.File]::ReadAllText($file.FullName, [System.Text.Encoding]::UTF8) | ConvertFrom-Json }
-        catch { return [pscustomobject]@{ Ok = $false; Recovered = $false; Reason = ('a surviving record file is not valid JSON: ' + $file.Name) } }
-        $agreement = Test-InstallRecordFileAgreement -FileName $file.Name -Record $record
-        if (-not $agreement.Ok) { return [pscustomobject]@{ Ok = $false; Recovered = $false; Reason = $agreement.Reason } }
-    }
-    try {
-        Write-InstallRegistryMeta -ToolRoot $ToolRoot
-        Complete-InstallRegistryGeneration -ToolRoot $ToolRoot
-    }
-    catch { return [pscustomobject]@{ Ok = $false; Recovered = $false; Reason = ('the interrupted generation could not be recovered: ' + $_.Exception.Message) } }
-    $after = Get-InstallRegistryGenerationState -ToolRoot $ToolRoot
-    if (-not $after.Complete) { return [pscustomobject]@{ Ok = $false; Recovered = $false; Reason = $after.Reason } }
-    return [pscustomobject]@{ Ok = $true; Recovered = $true; Reason = ('an interrupted registry write was recovered: the records that survived it are now the registry, and nothing was deleted (' + $generation.Reason + ')') }
+    return (Restore-RegistryJournal -ToolRoot $ToolRoot)
 }
