@@ -28,6 +28,7 @@ else {
 
 . (Join-Path $ScriptRoot '..\_hooklib.ps1')
 . (Join-Path $ScriptRoot '_packageguard.ps1')
+. (Join-Path $ScriptRoot '_packagebuild.ps1')
 
 function Get-PropertyValue {
     param(
@@ -464,91 +465,6 @@ function Get-MatchingRoutes {
     return $routeMatches.ToArray()
 }
 
-function New-PendingPackage {
-    param(
-        [Parameter(Mandatory = $true)]$Context,
-        [Parameter(Mandatory = $true)]$State,
-        [Parameter(Mandatory = $true)]$StatePaths,
-        [Parameter(Mandatory = $true)][string]$QuickFingerprint,
-        [Parameter(Mandatory = $true)]$ContentSnapshot
-    )
-
-    $previousMap = Convert-FileRecordsToMap $State.lastAppliedFiles
-    $currentMap = Convert-FileRecordsToMap $ContentSnapshot.files
-    $added = New-Object System.Collections.Generic.List[string]
-    $modified = New-Object System.Collections.Generic.List[string]
-    $deleted = New-Object System.Collections.Generic.List[string]
-
-    foreach ($path in @($currentMap.Keys | Sort-Object)) {
-        if (-not $previousMap.ContainsKey($path)) {
-            [void]$added.Add($path)
-        }
-        elseif (-not [string]::Equals([string]$previousMap[$path].sha256, [string]$currentMap[$path].sha256, [System.StringComparison]::OrdinalIgnoreCase)) {
-            [void]$modified.Add($path)
-        }
-    }
-    foreach ($path in @($previousMap.Keys | Sort-Object)) {
-        if (-not $currentMap.ContainsKey($path)) {
-            [void]$deleted.Add($path)
-        }
-    }
-    $added = $added.ToArray()
-    $modified = $modified.ToArray()
-    $deleted = $deleted.ToArray()
-
-    # Rebuilding this route's whole staging area is the one case where the
-    # inbox root itself is the legitimate target.
-    [void](Remove-OwnedPackageDirectory -Path $StatePaths.inboxRoot -OwnedRoot $StatePaths.inboxRoot -AllowRootItself)
-    $packageRoot = Join-Path $StatePaths.inboxRoot ([string]$ContentSnapshot.fingerprint).Substring(0, 16)
-    $filesRoot = Join-Path $packageRoot 'files'
-    New-Item -ItemType Directory -Path $filesRoot -Force | Out-Null
-
-    foreach ($relativePath in ($added + $modified)) {
-        $sourcePath = Join-Path $Context.sourceDirectory ($relativePath.Replace('/', [System.IO.Path]::DirectorySeparatorChar))
-        $destinationPath = Join-Path $filesRoot ($relativePath.Replace('/', [System.IO.Path]::DirectorySeparatorChar))
-        $destinationParent = Split-Path -Parent $destinationPath
-        if (-not (Test-Path -LiteralPath $destinationParent -PathType Container)) {
-            New-Item -ItemType Directory -Path $destinationParent -Force | Out-Null
-        }
-        Copy-Item -LiteralPath $sourcePath -Destination $destinationPath -Force
-    }
-
-    $ackCommand = Get-AcknowledgementCommand -Context $Context -Fingerprint $ContentSnapshot.fingerprint
-
-    $manifest = [pscustomobject][ordered]@{
-        version = 2
-        profileId = $Context.profileId
-        profileName = if ($null -ne $Context.profile.PSObject.Properties['name']) { [string]$Context.profile.name } else { $Context.profileId }
-        routeId = $Context.routeId
-        sourceName = if ($null -ne $Context.route.source.PSObject.Properties['name']) { [string]$Context.route.source.name } else { $Context.sourceRoot }
-        sourceRoot = $Context.sourceRoot
-        sourceDirectory = $Context.sourceDirectory
-        destinationName = if ($null -ne $Context.route.destination.PSObject.Properties['name']) { [string]$Context.route.destination.name } else { $Context.destinationRoot }
-        destinationRoot = $Context.destinationRoot
-        destinationDirectory = $Context.destinationDirectory
-        detectedAtUtc = [DateTime]::UtcNow.ToString('o')
-        sourceQuickFingerprint = $QuickFingerprint
-        sourceContentFingerprint = $ContentSnapshot.fingerprint
-        added = $added
-        modified = $modified
-        deleted = $deleted
-        acknowledgementCommand = $ackCommand
-    }
-    $manifestPath = Join-Path $packageRoot 'manifest.json'
-    Write-JsonFileAtomic -Value $manifest -Path $manifestPath
-
-    return [pscustomobject][ordered]@{
-        sourceQuickFingerprint = $QuickFingerprint
-        sourceContentFingerprint = $ContentSnapshot.fingerprint
-        sourceFiles = @($ContentSnapshot.files)
-        packageRoot = $packageRoot
-        manifestPath = $manifestPath
-        filesRoot = $filesRoot
-        acknowledgementCommand = $ackCommand
-        createdAtUtc = [DateTime]::UtcNow.ToString('o')
-    }
-}
-
 function New-ReviewMessage {
     param(
         [Parameter(Mandatory = $true)]$Context,
@@ -644,6 +560,17 @@ if ($Acknowledge) {
         }
 
         $pendingPackageRoot = [string]$state.pending.packageRoot
+        # THE ACK IS BOUND TO THE GENERATION ON DISK, not to a matching string.
+        # The fingerprint above proves which review the caller MEANT; this
+        # proves that review still exists and still describes itself the same
+        # way. A package deleted by a cleaner, half-rebuilt by an interrupted
+        # run, or edited after the announcement is not a reviewed package, and
+        # accepting it would mark the source processed on the strength of
+        # nothing.
+        if (-not (Test-PackageGenerationIntact -PackageRoot $pendingPackageRoot -Fingerprint ([string]$state.pending.sourceContentFingerprint))) {
+            Write-Error ('The reviewed package is no longer intact at "' + $pendingPackageRoot + '". Nothing was marked as processed; the route will stage the current source again on the next event.')
+            exit 1
+        }
         Set-ObjectProperty -Object $state -Name 'lastAppliedQuickFingerprint' -Value ([string]$state.pending.sourceQuickFingerprint)
         Set-ObjectProperty -Object $state -Name 'lastAppliedContentFingerprint' -Value ([string]$state.pending.sourceContentFingerprint)
         Set-ObjectProperty -Object $state -Name 'lastAppliedFiles' -Value @($state.pending.sourceFiles)
@@ -652,9 +579,16 @@ if ($Acknowledge) {
         Set-ObjectProperty -Object $state -Name 'lastNotifiedAtUtc' -Value ''
         Write-JsonFileAtomic -Value $state -Path $statePaths.statePath
         # packageRoot comes back from persisted state, so it is bounded by the
-        # inbox root this route owns before anything is deleted.
-        [void](Remove-OwnedPackageDirectory -Path $pendingPackageRoot -OwnedRoot $statePaths.inboxRoot)
+        # inbox root this route owns AND by the configured destination above it
+        # before anything is deleted.
+        $retired = Remove-OwnedPackageDirectory -Path $pendingPackageRoot -OwnedRoot $statePaths.inboxRoot -TrustedRoot $context.destinationRoot
         [Console]::Out.WriteLine('Review acknowledged. The current source fingerprint is marked as processed.')
+        if (-not $retired) {
+            # Distinct from a failed review: the review SUCCEEDED and only the
+            # disposable staging outlived it. Saying so keeps the next run's
+            # leftover directory from looking like an unreviewed package.
+            [Console]::Out.WriteLine('Cleanup deferred: the reviewed staging directory could not be removed and will be retired on a later run.')
+        }
         exit 0
     }
     finally {
@@ -707,6 +641,21 @@ foreach ($context in $contexts) {
         # @() around the call: an empty result would otherwise unwrap to $null.
         $eligibleFiles = @(Get-EligibleFiles -SourceDirectory $context.sourceDirectory -RouteConfig $context.route -ProfileConfig $context.profile -Defaults $context.defaults)
         $quickFingerprint = Get-QuickSnapshot -Files $eligibleFiles
+
+        if ($null -ne $state.pending -and [string]$state.pending.sourceQuickFingerprint -eq $quickFingerprint) {
+            # NEVER ANNOUNCE A DEAD PATH. The package can be gone or damaged
+            # while the record that points at it survives - a cleaner, an
+            # interrupted rebuild, a hand-edit. Announcing it sends the reviewer
+            # to files that are not there, and the ACK would then be refused
+            # forever. Dropping the record instead lets the normal build path
+            # below stage the current source again.
+            if (-not (Test-PackageGenerationIntact -PackageRoot ([string]$state.pending.packageRoot) -Fingerprint ([string]$state.pending.sourceContentFingerprint))) {
+                Set-ObjectProperty -Object $state -Name 'pending' -Value $null
+                Set-ObjectProperty -Object $state -Name 'lastNotifiedSessionId' -Value ''
+                Write-JsonFileAtomic -Value $state -Path $statePaths.statePath
+                $state = ConvertTo-NormalizedState -State $state -ProfileId $context.profileId -RouteId $context.routeId -SourceRoot $context.sourceRoot
+            }
+        }
 
         if ($null -ne $state.pending -and [string]$state.pending.sourceQuickFingerprint -eq $quickFingerprint) {
             if (-not [string]::IsNullOrWhiteSpace($sessionId) -and [string]$state.lastNotifiedSessionId -eq $sessionId) {
@@ -768,7 +717,12 @@ foreach ($context in $contexts) {
 
         if ([string]$state.lastAppliedContentFingerprint -eq [string]$contentSnapshot.fingerprint) {
             if ($null -ne $state.pending) {
-                [void](Remove-OwnedPackageDirectory -Path ([string]$state.pending.packageRoot) -OwnedRoot $statePaths.inboxRoot)
+                # A refusal here leaves the directory alone, which is correct -
+                # but the pending record still goes, because the SOURCE has been
+                # applied. The staging outlives it as disposable residue and the
+                # next build retires it; nothing re-announces it, because the
+                # record it was announced from is gone.
+                [void](Remove-OwnedPackageDirectory -Path ([string]$state.pending.packageRoot) -OwnedRoot $statePaths.inboxRoot -TrustedRoot $context.destinationRoot)
             }
             Set-ObjectProperty -Object $state -Name 'lastAppliedQuickFingerprint' -Value $quickFingerprint
             Set-ObjectProperty -Object $state -Name 'lastAppliedFiles' -Value @($contentSnapshot.files)
@@ -780,6 +734,13 @@ foreach ($context in $contexts) {
         }
 
         $pending = New-PendingPackage -Context $context -State $state -StatePaths $statePaths -QuickFingerprint $quickFingerprint -ContentSnapshot $contentSnapshot
+        if ($null -eq $pending) {
+            # Staging refused: the path was not provably inside the configured
+            # destination, or the copied bytes did not match the snapshot. The
+            # PREVIOUS state stands - nothing is announced, nothing is marked
+            # applied, and the next event tries again.
+            continue
+        }
         Set-ObjectProperty -Object $state -Name 'pending' -Value $pending
         Set-ObjectProperty -Object $state -Name 'lastNotifiedSessionId' -Value $sessionId
         Set-ObjectProperty -Object $state -Name 'lastNotifiedAtUtc' -Value ([DateTime]::UtcNow.ToString('o'))

@@ -473,6 +473,10 @@ try {
     Check 'current acknowledgement: only B fingerprint is applied' ($null -eq $appliedB.pending -and $appliedB.lastAppliedContentFingerprint -eq $packageB.sourceContentFingerprint)
     $repeatB = Run-Acknowledgement -Command $packageB.acknowledgementCommand
     Check 'current acknowledgement: repeated B command is an idempotent no-op' ($repeatB.Exit -eq 0 -and $repeatB.Out -match 'No pending review exists')
+
+    # Owned package generations (L08): containment from the trusted
+    # destination, verified staging, generational replacement, bound ACK.
+    . (Join-Path $ScriptRoot '_testsyncpackage.ps1')
 }
 finally {
     if ($KeepArtifacts) {
