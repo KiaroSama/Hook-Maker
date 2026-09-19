@@ -718,7 +718,7 @@ try {
         Check 'external-blocker exception honored under 5.1 (Codex: non-blocking systemMessage, CI not green)' ($r.Exit -eq 0 -and $r.Out -notmatch '"decision":"block"' -and $r.Out -match '"systemMessage"' -and $r.Out -match 'CI NOT VERIFIED GREEN')
         # Its own session: the Codex fire above already told session 't' (once per session).
         $r = Fire -HookPath $CiHook -Cwd $ps51ci -EventName 'Stop' -Exe 'powershell.exe' -Client 'claude' -Extra @{ session_id = 'ps51-claude' }
-        Check 'external-blocker exception honored under 5.1 (Claude: non-blocking additionalContext, CI not green)' ($r.Exit -eq 0 -and $r.Out -notmatch '"decision":"block"' -and $r.Out -match 'additionalContext' -and $r.Out -match 'CI NOT VERIFIED GREEN')
+        Check 'external-blocker exception honored under 5.1 (Claude: non-continuing systemMessage, CI not green)' ($r.Exit -eq 0 -and $r.Out -notmatch '"decision":"block"' -and $r.Out -match 'systemMessage' -and $r.Out -notmatch 'hookSpecificOutput' -and $r.Out -match 'CI NOT VERIFIED GREEN')
     }
     else {
         Write-Host '[SKIP] powershell.exe not available' -ForegroundColor Yellow
