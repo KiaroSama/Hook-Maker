@@ -146,14 +146,14 @@
     Check 'reinstall does not duplicate a hook''s registration' ($aiMemHandlerCount -eq 1)
 
     # =====================================================================
-    Write-Host '--- installer/idempotency check: Docs-Freshness-Check (new menu item 9) ---' -ForegroundColor Cyan
-    # Selected together with its neighbor (13) so this goes through the
+    Write-Host '--- installer/idempotency check: Docs-Freshness-Check (menu item 13) ---' -ForegroundColor Cyan
+    # Selected together with its neighbor (14) so this goes through the
     # multi-hook "recommended events per hook" mode (a single-item selection
     # instead takes the fixed 4-choice event menu, which has no "recommended"
     # option - see Read-HookConfig/Read-EventSelection).
     $cfgDocs = Join-Path $Work 'cfg-docs.json'; New-Config $cfgDocs
     $docsProj = New-Proj 'DocsFreshnessProj'
-    $rDocs = Invoke-Wizard -Config $cfgDocs -Answers @('1', '1', '12,13', '1', '1', $docsProj, 'done', '', '0')
+    $rDocs = Invoke-Wizard -Config $cfgDocs -Answers @('1', '1', '13,14', '1', '1', $docsProj, 'done', '', '0')
     Check 'exit 0 (installing Docs-Freshness-Check)' ($rDocs.Exit -eq 0)
     Check 'Docs-Freshness-Check installed at its own friendly folder' (Test-Path (Join-Path $docsProj '.claude\hooks\Hook-Maker\Docs-Freshness-Check\Docs-Freshness-Check.ps1'))
     $docsEvents = @(Get-RegisteredEvents (Join-Path $docsProj '.claude\settings.local.json') 'Docs-Freshness-Check' | Sort-Object) -join ','
@@ -161,19 +161,19 @@
     $docsSourceHash = Get-PlanArtifactExpectedHash -Artifact (New-PlanArtifact -RelativePath 'expected' -Kind 'Generated' -GeneratedContent (Get-PrivateLibraryScriptContent -SourceScriptPath (Join-Path $RealHooksDir 'Docs-Freshness-Check\Docs-Freshness-Check.ps1')))
     $docsInstalledHash = (Get-FileHash -LiteralPath (Join-Path $docsProj '.claude\hooks\Hook-Maker\Docs-Freshness-Check\Docs-Freshness-Check.ps1') -Algorithm SHA256).Hash
     Check 'the installed Docs-Freshness-Check copy matches its planned content byte-for-byte' ($docsSourceHash -eq $docsInstalledHash)
-    $rDocsAgain = Invoke-Wizard -Config $cfgDocs -Answers @('1', '1', '9,10', '1', '1', $docsProj, 'done', '', '0')
+    $rDocsAgain = Invoke-Wizard -Config $cfgDocs -Answers @('1', '1', '13,14', '1', '1', $docsProj, 'done', '', '0')
     Check 'exit 0 (reinstalling Docs-Freshness-Check)' ($rDocsAgain.Exit -eq 0)
     $docsFoldersAgain = @(Get-ChildItem -LiteralPath (Join-Path $docsProj '.claude\hooks\Hook-Maker') -Directory -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Name)
     Check 'reinstall keeps exactly one Docs-Freshness-Check folder (no duplicate)' (@($docsFoldersAgain | Where-Object { $_ -eq 'Docs-Freshness-Check' }).Count -eq 1)
 
     # =====================================================================
-    Write-Host '--- installer/idempotency check: the two menu-affected hooks (22, 28) ---' -ForegroundColor Cyan
-    # Test-Temp-Cleanup is at 22 (three hooks were inserted above it at 9-11);
+    Write-Host '--- installer/idempotency check: the two menu-affected hooks (23, last) ---' -ForegroundColor Cyan
+    # Test-Temp-Cleanup is at 23 (four hooks now sit above it at 9-12);
     # Cloudflare-Deploy stays the last entry, i.e. $shippedHookCount + 2, which
     # is why it is computed rather than written.
     $cfgAffected = Join-Path $Work 'cfg-affected.json'; New-Config $cfgAffected
     $affectedProj = New-Proj 'AffectedHooksProj'
-    $affectedSelection = '22,' + ($shippedHookCount + 2).ToString()
+    $affectedSelection = '23,' + ($shippedHookCount + 2).ToString()
     $rAffected = Invoke-Wizard -Config $cfgAffected -Answers @('1', '1', $affectedSelection, '1', '1', $affectedProj, 'done', '', '0')
     Check 'exit 0 (installing Test-Temp-Cleanup + Cloudflare-Deploy together)' ($rAffected.Exit -eq 0)
     Check 'both affected hooks installed' (
@@ -223,7 +223,7 @@
     # mode '1' (recommended events per hook), then client '3' = All clients - the
     # only single pick that reaches Claude AND Codex, which the per-client
     # assertions below require.
-    $rHealth = Invoke-Wizard -Config $cfgHealth -Answers @('1', '1', '23-25', '1', '3', $healthProj, 'done', '', '0')
+    $rHealth = Invoke-Wizard -Config $cfgHealth -Answers @('1', '1', '24-26', '1', '3', $healthProj, 'done', '', '0')
     Check 'exit 0 (installing the three test-health hooks)' ($rHealth.Exit -eq 0) $rHealth.Err
     Check 'no stderr (installing the three test-health hooks)' ($rHealth.Err -eq '')
     $healthClaude = Join-Path $healthProj '.claude\settings.local.json'

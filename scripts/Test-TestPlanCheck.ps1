@@ -71,7 +71,11 @@ function New-IsolatedHookCopy {
     $dir = Join-Path $Work ('hookcopy-' + [guid]::NewGuid().ToString('N').Substring(0, 6))
     New-Item -ItemType Directory -Path $dir -Force | Out-Null
     Copy-Item $Hook (Join-Path $dir 'Test-Plan-Check.ps1')
-    Copy-Item $HookLib (Join-Path $Work '_hooklib.ps1') -Force
+    # Copy-TestRuntimeLibraries, not a hand-written Copy-Item: it DERIVES the set
+    # from the real install payload, so a new shared library reaches this fixture
+    # the day it is added. The hand-written form silently staged an incomplete
+    # runtime when _scope.ps1 landed and the hook could not dot-source it.
+    Copy-TestRuntimeLibraries -SourceHookLib $HookLib -Destination (Join-Path $Work '_hooklib.ps1')
     if ($null -ne $EnvContent) { Write-Utf8 (Join-Path $dir '.env') $EnvContent }
     $fakeLocal = Join-Path $dir '_fakelocal'
     New-Item -ItemType Directory -Path $fakeLocal -Force | Out-Null
@@ -640,7 +644,7 @@ New-Item -ItemType File -Path (Join-Path $PSScriptRoot 'EXECUTED-MARKER.txt') -F
         New-Item -ItemType Directory -Path $tpcPreDir -Force | Out-Null
         $tpcPreHook = Join-Path $tpcPreDir 'Test-Plan-Check.ps1'
         [System.IO.File]::WriteAllText($tpcPreHook, $tpcPreText, (New-Object System.Text.UTF8Encoding $false))
-        Copy-Item $HookLib (Join-Path $Work '_hooklib.ps1') -Force   # '..\_hooklib.ps1' resolves to $Work
+        Copy-TestRuntimeLibraries -SourceHookLib $HookLib -Destination (Join-Path $Work '_hooklib.ps1')   # '..\_hooklib.ps1' resolves to $Work
         $tpcPreLocal = Join-Path $tpcPreDir '_fakelocal'
         New-Item -ItemType Directory -Path $tpcPreLocal -Force | Out-Null
         $projRed = New-GitRepo 'DeepDebugRed'
@@ -669,7 +673,12 @@ New-Item -ItemType File -Path (Join-Path $PSScriptRoot 'EXECUTED-MARKER.txt') -F
         # identity is proven on the decoded text after applying exactly that
         # documented rewrite, and the repair proof below uses the runtime's own
         # canonical installed hash.
-        $tpcExpectedRuntimeText = ([System.IO.File]::ReadAllText($Hook)).Replace('''..\_hooklib.ps1''', '''_hooklib.ps1''')
+        # DERIVED from the installer's own rewrite table, not a hand-written
+        # Replace. The hand-written form knew only about _hooklib.ps1, so the day
+        # this hook also started dot-sourcing ..\_scope.ps1 the expectation was
+        # a rewrite short and the assertion failed on a correct install.
+        . (Join-Path $ScriptRoot '_installplan.ps1')
+        $tpcExpectedRuntimeText = Get-PrivateLibraryScriptContent -SourceScriptPath $Hook
         Check 'the installed runtime matches source content (BOM + dot-source rewrite are the only differences)' (
             [System.IO.File]::ReadAllText($tpcRuntime) -eq $tpcExpectedRuntimeText)
         $canonHash = (Get-FileHash -LiteralPath $tpcRuntime -Algorithm SHA256).Hash

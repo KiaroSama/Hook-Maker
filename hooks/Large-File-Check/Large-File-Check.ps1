@@ -64,6 +64,7 @@ $ErrorActionPreference = 'Stop'
 if ($GitPrePush) { exit 0 }
 
 . (Join-Path $PSScriptRoot '..\_hooklib.ps1')
+. (Join-Path $PSScriptRoot '..\_scope.ps1')
 
 $hookInput = Read-HookInput
 if ($null -eq $hookInput) {
@@ -226,7 +227,13 @@ $baselinePath = Join-Path $stateDir ('LargeFileCheckBaseline-' + (Get-ShortHash 
 # (binary/generated), streaming line reads, and the walk is bounded on THREE
 # independent axes - source files (MAX_FILES), directories traversed
 # (MAX_DIRECTORIES), and wall time (MAX_SCAN_SECONDS) - so it can never run away.
-$excludedDirs = @('.git', 'node_modules', '.ai', 'graphify-out', 'logs', 'dist', 'build', 'out', 'target', 'vendor', '__pycache__', '.venv', 'venv', '.claude', '.codex', 'bin', 'obj', '.cross-project-sync')
+# The shared base (..\_scope.ps1) plus only what THIS hook needs on top. The
+# base carries the four project-owned CI directories: a project that keeps its
+# self-hosted runner inside its own root was having the runner's second
+# checkout, and the vendored third-party actions under it, read as its own
+# source. Nothing this hook excluded before was dropped - see _scope.ps1 for
+# why the base is the intersection of the five hooks' lists and not their union.
+$excludedDirs = @(Get-HookExcludedDirs -Extra @('logs', '.cross-project-sync'))
 $offenders = New-Object System.Collections.Generic.List[object]
 # Baseline rows, filled only on the SessionStart pass: relative path + line count,
 # nothing else. Never populated at Stop, where only the offenders matter.
