@@ -67,6 +67,64 @@
         Test-Path -LiteralPath (Get-RunStateFile -Copy $c -Root $p -Kind 'result' -RunId $rSupOk)) $r.Out
 
     # =====================================================================
+    Write-Host '--- C2b: a failure a later green run REPAIRED must stop blocking (2026-09-20) ---' -ForegroundColor Cyan
+    # The supersede used to demand the SAME projectFingerprint, which is a hash of
+    # HEAD + `git status --porcelain`. Fixing a failure edits the tree, so the
+    # green run could never carry the failure's fingerprint and the gate cited it
+    # until the 24h horizon. Reported from a consumer project and reproduced here
+    # four times in one afternoon. Scope is still the command: see S3.
+    $c = New-IsolatedHookCopy
+    $p = New-GitRepo 'C2bSupersede'
+    $key = Get-ProjectKey $p
+
+    # S1: a plain FAILED record with NO project fingerprint at all. The old code
+    # returned $false before scanning anything, so nothing could ever clear it.
+    $rEmpty = 'c2b-empty-' + $key
+    Write-GuardedResult -Copy $c -Root $p -Overall 'failed' -ExitCode 1 -RunId $rEmpty -CommandFingerprint ('cmdempty' + $key) -AgeMinutes 200
+    $emptyPath = Get-RunStateFile -Copy $c -Root $p -Kind 'result' -RunId $rEmpty
+    $emptyDoc = Get-Content -LiteralPath $emptyPath -Raw | ConvertFrom-Json
+    $emptyDoc.projectFingerprint = ''
+    Write-Utf8 $emptyPath ($emptyDoc | ConvertTo-Json -Depth 6)
+    (Get-Item -LiteralPath $emptyPath).LastWriteTimeUtc = [DateTime]::UtcNow.AddHours(-25)
+    Write-GuardedResult -Copy $c -Root $p -Overall 'ok' -RunId ('c2b-emptyok-' + $key) -CommandFingerprint ('cmdempty' + $key) -AgeMinutes 5
+
+    # S2: a plain FAILED record that DOES carry a fingerprint, repaired by a green
+    # run on a DIFFERENT tree state - the shape every real fix produces.
+    $rMoved = 'c2b-moved-' + $key
+    Write-GuardedResult -Copy $c -Root $p -Overall 'failed' -ExitCode 1 -RunId $rMoved -CommandFingerprint ('cmdmoved' + $key) -ProjectFingerprint 'tree-before-the-fix' -AgeMinutes 200
+    (Get-Item -LiteralPath (Get-RunStateFile -Copy $c -Root $p -Kind 'result' -RunId $rMoved)).LastWriteTimeUtc = [DateTime]::UtcNow.AddHours(-25)
+    Write-GuardedResult -Copy $c -Root $p -Overall 'ok' -RunId ('c2b-movedok-' + $key) -CommandFingerprint ('cmdmoved' + $key) -ProjectFingerprint 'tree-after-the-fix' -AgeMinutes 5
+
+    # S3: the negative control. A green run of DIFFERENT work must not clear it.
+    $rOther = 'c2b-other-' + $key
+    Write-GuardedResult -Copy $c -Root $p -Overall 'failed' -ExitCode 1 -RunId $rOther -CommandFingerprint ('cmdother' + $key) -ProjectFingerprint 'tree-x' -AgeMinutes 200
+    (Get-Item -LiteralPath (Get-RunStateFile -Copy $c -Root $p -Kind 'result' -RunId $rOther)).LastWriteTimeUtc = [DateTime]::UtcNow.AddHours(-25)
+    Write-GuardedResult -Copy $c -Root $p -Overall 'ok' -RunId ('c2b-otherok-' + $key) -CommandFingerprint ('cmdUNRELATED' + $key) -AgeMinutes 5
+
+    $r = Fire -Copy $c -Cwd $p
+    Check 'C2b/S1: a failure with an EMPTY project fingerprint is superseded by a later green run' (
+        -not (Test-Path -LiteralPath $emptyPath)) $r.Out
+    Check 'C2b/S2: a failure is superseded even though the tree changed (the fix itself changed it)' (
+        -not (Test-Path -LiteralPath (Get-RunStateFile -Copy $c -Root $p -Kind 'result' -RunId $rMoved))) $r.Out
+    Check 'C2b/S3: a green run of a DIFFERENT command does NOT supersede it' (
+        Test-Path -LiteralPath (Get-RunStateFile -Copy $c -Root $p -Kind 'result' -RunId $rOther)) $r.Out
+
+    # =====================================================================
+    Write-Host '--- C2c: a plain assertion failure is nameable, so the printed recovery can be taken ---' -ForegroundColor Cyan
+    # The block text tells the reader to resolve an incident by key; the key used
+    # to be minted only for a termination or a leak, so an ordinary failing suite
+    # produced a block whose own instruction could not be followed.
+    $c = New-IsolatedHookCopy
+    $p = New-GitRepo 'C2cKey'
+    $key = Get-ProjectKey $p
+    Write-GuardedResult -Copy $c -Root $p -Overall 'failed' -ExitCode 1 -RunId ('c2c-fail-' + $key) -CommandFingerprint ('cmdc2c' + $key)
+    $r = Fire -Copy $c -Cwd $p
+    $reason = Get-BlockReason $r.Out
+    Check 'C2c: a plain failed run blocks' ($r.Out -match '"decision":"block"') $r.Out
+    Check 'C2c: and the block carries a resolvable incident key, not an empty one' (
+        $reason -match 'ResolveIncident\s+[0-9a-fA-F]{6,}') $reason
+
+    # =====================================================================
     Write-Host '--- C3: two uncontrolled runs cannot share one green result (one-to-one pairing) ---' -ForegroundColor Cyan
     $c = New-IsolatedHookCopy
     $p = New-GitRepo 'C3OneToOne'
