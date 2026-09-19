@@ -1106,10 +1106,21 @@ function Update-InstallRegistry {
         # would be finding it out too late.
         $mutable = Test-InstallRegistryMutable -ToolRoot $ToolRoot
         if (-not $mutable.Ok) {
-            return [pscustomobject]@{
-                Ok             = $false
-                QuarantinePath = $quarantinePath
-                Warning        = ($mutable.Reason + ' - this installation was NOT recorded and the registry was left exactly as it was')
+            # RECOVER FIRST. An interrupted batch must not wedge the registry:
+            # the records that survived it are a coherent set, so they become the
+            # registry and nothing is deleted. A future schema is refused here
+            # and is never recovered - it is not ours to rewrite.
+            $repair = Repair-InterruptedInstallRegistryGeneration -ToolRoot $ToolRoot
+            if ($repair.Recovered) {
+                if ([string]::IsNullOrWhiteSpace($warning)) { $warning = $repair.Reason }
+                $mutable = Test-InstallRegistryMutable -ToolRoot $ToolRoot
+            }
+            if (-not $mutable.Ok) {
+                return [pscustomobject]@{
+                    Ok             = $false
+                    QuarantinePath = $quarantinePath
+                    Warning        = ($mutable.Reason + ' - this installation was NOT recorded and the registry was left exactly as it was')
+                }
             }
         }
 

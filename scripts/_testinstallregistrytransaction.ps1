@@ -95,19 +95,24 @@
     Check 'and the reason says the batch is half written, not that a file is missing' (
         $halfState.Reason -match 'half written') $halfState.Reason
 
-    # ---- an upsert refuses to write on top of that -----------------------
-    $blockedUpsert = Update-InstallRegistry -ToolRoot $txB -Record ([pscustomobject][ordered]@{
+    # ---- an upsert RECOVERS the interrupted batch, it does not wedge ------
+    # Refusing for ever was half the answer and the wrong half: one interrupted
+    # write would have stopped every later install until a human deleted a file.
+    # The records that survived the batch are a coherent set, so they BECOME the
+    # registry - nothing is deleted, and the batch's lost intent stays lost.
+    $recoveringUpsert = Update-InstallRegistry -ToolRoot $txB -Record ([pscustomobject][ordered]@{
             id = 'rec-three'; friendlyName = 'Three'; schema = 2 })
-    Check 'a per-record upsert into an incomplete generation is REFUSED' (-not $blockedUpsert.Ok) $blockedUpsert.Warning
-    Check 'and it says the registry was left exactly as it was' (
-        $blockedUpsert.Warning -match 'left exactly as it was') $blockedUpsert.Warning
-    Check 'the refused record was not written' (
-        -not (Test-Path -LiteralPath (Join-Path (Get-InstallRegistryDirectory -ToolRoot $txB) 'rec-three.json'))) ''
-
-    # Finishing the batch makes it complete again - recovery, not repair.
-    Write-JsonFileAtomic -Value $newSecond -Path (Get-InstallRecordPath -ToolRoot $txB -Id 'rec-two')
-    Check 'writing the remaining record completes the generation' (
+    Check 'an upsert after an interrupted batch RECOVERS instead of refusing for ever' ($recoveringUpsert.Ok) $recoveringUpsert.Warning
+    Check 'the generation is complete again afterwards' (
         (Get-InstallRegistryGenerationState -ToolRoot $txB).Complete) ''
+    Check 'the new record was written' (
+        Test-Path -LiteralPath (Join-Path (Get-InstallRegistryDirectory -ToolRoot $txB) 'rec-three.json')) ''
+    Check 'and every record that survived the interrupted batch is still there' (
+        (Test-Path -LiteralPath (Get-InstallRecordPath -ToolRoot $txB -Id 'rec-one')) -and
+        (Test-Path -LiteralPath (Get-InstallRecordPath -ToolRoot $txB -Id 'rec-two'))) ''
+    $recoveredIds = @((Read-InstallRegistry -ToolRoot $txB).installs | ForEach-Object { [string]$_.id } | Sort-Object)
+    Check 'the recovered registry reads back with all three records' (
+        ($recoveredIds -join ',') -eq 'rec-one,rec-three,rec-two') ($recoveredIds -join ',')
 
     # ---- a future schema is left untouched, never quarantined ------------
     $txC = Use-TxToolRoot -Path (Join-Path $txRoot 'c')

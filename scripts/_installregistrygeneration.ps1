@@ -389,3 +389,50 @@ function Test-InstallRegistryMutable {
     }
     return [pscustomobject]@{ Ok = $true; Reason = '' }
 }
+
+# RECOVER an interrupted generation, rather than refusing for ever.
+#
+# Refusing was half the answer and the wrong half: an interrupted write left the
+# marker standing, and every later upsert then declined, so ONE blocked deletion
+# wedged the registry until a human deleted a file. The transaction's purpose is
+# that a half-written batch is never SERVED as the whole registry - not that the
+# tool stops working.
+#
+# What recovery can honestly do: the per-record files are individually atomic, so
+# whatever is on disk is a coherent set of records - it is simply not the set the
+# interrupted batch intended. Recovery therefore ACCEPTS what survived: it writes
+# the metadata, clears the marker, and deletes nothing. The batch's intent is
+# lost (it was never completed), the prior valid records are all still there, and
+# the registry is readable again.
+#
+# A FUTURE SCHEMA IS NEVER RECOVERED - it is not damaged, it is not ours, and
+# rewriting its metadata is precisely the destructive act the version guard
+# exists to prevent.
+function Repair-InterruptedInstallRegistryGeneration {
+    param([Parameter(Mandatory = $true)][string]$ToolRoot)
+    $directory = Get-InstallRegistryDirectory -ToolRoot $ToolRoot
+    if (-not (Test-Path -LiteralPath $directory -PathType Container)) {
+        return [pscustomobject]@{ Ok = $true; Recovered = $false; Reason = '' }
+    }
+    $generation = Get-InstallRegistryGenerationState -ToolRoot $ToolRoot
+    if ($generation.Complete) { return [pscustomobject]@{ Ok = $true; Recovered = $false; Reason = '' } }
+
+    # Every surviving record must still be readable and still agree with its own
+    # file name before this directory may be declared complete. A file that does
+    # not is real corruption, and recovery is not the place to paper over it.
+    foreach ($file in @(Get-InstallRecordFiles -ToolRoot $ToolRoot)) {
+        $record = $null
+        try { $record = [System.IO.File]::ReadAllText($file.FullName, [System.Text.Encoding]::UTF8) | ConvertFrom-Json }
+        catch { return [pscustomobject]@{ Ok = $false; Recovered = $false; Reason = ('a surviving record file is not valid JSON: ' + $file.Name) } }
+        $agreement = Test-InstallRecordFileAgreement -FileName $file.Name -Record $record
+        if (-not $agreement.Ok) { return [pscustomobject]@{ Ok = $false; Recovered = $false; Reason = $agreement.Reason } }
+    }
+    try {
+        Write-InstallRegistryMeta -ToolRoot $ToolRoot
+        Complete-InstallRegistryGeneration -ToolRoot $ToolRoot
+    }
+    catch { return [pscustomobject]@{ Ok = $false; Recovered = $false; Reason = ('the interrupted generation could not be recovered: ' + $_.Exception.Message) } }
+    $after = Get-InstallRegistryGenerationState -ToolRoot $ToolRoot
+    if (-not $after.Complete) { return [pscustomobject]@{ Ok = $false; Recovered = $false; Reason = $after.Reason } }
+    return [pscustomobject]@{ Ok = $true; Recovered = $true; Reason = ('an interrupted registry write was recovered: the records that survived it are now the registry, and nothing was deleted (' + $generation.Reason + ')') }
+}
