@@ -171,6 +171,27 @@ function New-TestWorkspace {
     if (-not (Test-TestWorkspaceContained -Root $root -Path $path)) {
         throw ('The test workspace is not physically contained in its root: ' + $path + ' (root ' + $root + ')')
     }
+    # Isolate the install registry to THIS workspace unless the suite already
+    # chose its own state directory.
+    #
+    # A suite that installs a hook calls the real scripts\Install-Hook.ps1, so
+    # without this the record lands in the SHARED registry at the tool root
+    # while -TargetProject points at a throwaway directory. The directory is
+    # cleaned up, the record is not, and it then shows up in the user's own
+    # "Fix a renamed or moved project" screen as a project they never had -
+    # which is exactly how this was found, with 8 such records across 7 dead
+    # fixture roots. Suites run as separate processes (Run-Tests.ps1 starts each
+    # one with ProcessStartInfo), so this binds to one suite and cannot leak
+    # into the next.
+    #
+    # Only when UNSET: 13 suites already set it themselves, some before calling
+    # this helper, and overwriting their choice would point them at the wrong
+    # state directory.
+    if ([string]::IsNullOrWhiteSpace($env:HOOKMAKER_STATE_DIR)) {
+        $stateDir = Join-Path $path '_state'
+        New-Item -ItemType Directory -Path $stateDir -Force | Out-Null
+        $env:HOOKMAKER_STATE_DIR = $stateDir
+    }
     return $path
 }
 
