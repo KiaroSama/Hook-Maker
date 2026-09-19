@@ -38,7 +38,16 @@ function Test-TokenIn {
 }
 
 # $null when nothing is unmistakably visible, otherwise a finding carrying the
-# exact silent form to use instead.
+# exact silent form to use instead, plus `InnerTokens`.
+#
+# WHY InnerTokens EXISTS, and it is the whole reason this is not a one-liner.
+# A visible launcher HIDES the test from recognition: in `wt pwsh -File
+# Run-Tests.ps1` the program token is `wt`, so `Get-RecognizedTestCommand`
+# sees no test command and the caller's verdict is 'none'. Gating the refusal on
+# that verdict alone means the check never fires on exactly the commands it
+# exists for. So each launcher class also reports what it was launching, and the
+# caller re-runs recognition on THAT. `Start-Process notepad.exe` strips to
+# `notepad.exe`, which is not a test command, and is correctly left alone.
 function Get-VisibleInvocationFinding {
     param([string[]]$Tokens)
     $tokens = @($Tokens)
@@ -60,9 +69,17 @@ function Get-VisibleInvocationFinding {
             if ($lower[$i] -eq '-windowstyle' -and ($i + 1) -lt $lower.Count -and $lower[$i + 1] -eq 'hidden') { $silent = $true; break }
         }
         if (-not $silent) {
+            # What it was launching, with Start-Process's OWN parameter names
+            # dropped so the caller can ask whether THAT is a test command.
+            $inner = New-Object System.Collections.Generic.List[string]
+            for ($i = $startProcessAt + 1; $i -lt $tokens.Count; $i++) {
+                if ($lower[$i] -eq '-filepath' -or $lower[$i] -eq '-argumentlist') { continue }
+                [void]$inner.Add([string]$tokens[$i])
+            }
             return [pscustomobject]@{
-                Reason   = 'this starts the test with Start-Process and neither -Wait, -NoNewWindow nor -WindowStyle Hidden, so it detaches into a NEW WINDOW on the user''s screen - and a detached run is also unowned, so nothing reaps it'
-                SafeForm = 'Run it in the current session instead (no Start-Process at all), or if a separate process is genuinely needed add -Wait -NoNewWindow.'
+                Reason      = 'this starts the test with Start-Process and neither -Wait, -NoNewWindow nor -WindowStyle Hidden, so it detaches into a NEW WINDOW on the user''s screen - and a detached run is also unowned, so nothing reaps it'
+                SafeForm    = 'Run it in the current session instead (no Start-Process at all), or if a separate process is genuinely needed add -Wait -NoNewWindow.'
+                InnerTokens = $inner.ToArray()
             }
         }
     }
@@ -70,9 +87,12 @@ function Get-VisibleInvocationFinding {
     # ---- class 2: an explicitly headed browser flag.
     foreach ($token in $lower) {
         if (Test-TokenIn -Token $token -Set $script:VisibleHeadedTokens) {
+            # No launcher here: the caller's own recognition already saw the
+            # program, so there is no inner command to hand back.
             return [pscustomobject]@{
-                Reason   = ('this passes ' + $token + ', which asks for a VISIBLE browser window')
-                SafeForm = 'Drop the flag - headless is the default, and it is what the rule requires unless a human has to watch this run live.'
+                Reason      = ('this passes ' + $token + ', which asks for a VISIBLE browser window')
+                SafeForm    = 'Drop the flag - headless is the default, and it is what the rule requires unless a human has to watch this run live.'
+                InnerTokens = $null
             }
         }
     }
@@ -81,16 +101,22 @@ function Get-VisibleInvocationFinding {
     # Only the PROGRAM position counts. `cmd /c start ...` is the same thing
     # spelled through cmd, so the pair is checked explicitly.
     if (Test-TokenIn -Token $lower[0] -Set $script:VisibleLauncherPrograms) {
+        $inner = @()
+        if ($tokens.Count -gt 1) { $inner = @($tokens[1..($tokens.Count - 1)]) }
         return [pscustomobject]@{
-            Reason   = ('this launches the test through ' + $lower[0] + ', a terminal host whose whole job is to open a new window')
-            SafeForm = 'Invoke the interpreter directly (pwsh / python / node) in the current session so the output is captured instead of displayed.'
+            Reason      = ('this launches the test through ' + $lower[0] + ', a terminal host whose whole job is to open a new window')
+            SafeForm    = 'Invoke the interpreter directly (pwsh / python / node) in the current session so the output is captured instead of displayed.'
+            InnerTokens = $inner
         }
     }
     if (($lower[0] -eq 'cmd' -or $lower[0] -eq 'cmd.exe') -and $lower.Count -ge 3) {
         if (($lower[1] -eq '/c' -or $lower[1] -eq '/k') -and $lower[2] -eq 'start') {
+            $inner = @()
+            if ($tokens.Count -gt 3) { $inner = @($tokens[3..($tokens.Count - 1)]) }
             return [pscustomobject]@{
-                Reason   = 'this launches the test through `cmd /c start`, which opens a new console window'
-                SafeForm = 'Invoke the interpreter directly (pwsh / python / node) in the current session so the output is captured instead of displayed.'
+                Reason      = 'this launches the test through `cmd /c start`, which opens a new console window'
+                SafeForm    = 'Invoke the interpreter directly (pwsh / python / node) in the current session so the output is captured instead of displayed.'
+                InnerTokens = $inner
             }
         }
     }
@@ -100,8 +126,9 @@ function Get-VisibleInvocationFinding {
         foreach ($token in $lower) {
             if ($token -eq '-noexit') {
                 return [pscustomobject]@{
-                    Reason   = 'this passes -NoExit, which holds a PowerShell window open after the run so a human can read it'
-                    SafeForm = 'Drop -NoExit and let the process exit; read the captured output instead.'
+                    Reason      = 'this passes -NoExit, which holds a PowerShell window open after the run so a human can read it'
+                    SafeForm    = 'Drop -NoExit and let the process exit; read the captured output instead.'
+                    InnerTokens = $null
                 }
             }
         }
