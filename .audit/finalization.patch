@@ -1,0 +1,314 @@
+diff --git a/hooks/_hooklib.ps1 b/hooks/_hooklib.ps1
+index aa6d48f..bdda17a 100644
+--- a/hooks/_hooklib.ps1
++++ b/hooks/_hooklib.ps1
+@@ -321,6 +321,10 @@ function Write-HookResult {
+                 $payload = @{ decision = 'block'; reason = $text }
+                 $shape = 'decisionBlock'
+             }
++            elseif ($EventName -in @('Stop', 'SubagentStop')) {
++                $payload = @{ systemMessage = $text }
++                $shape = $clientId + 'SystemMessage'
++            }
+             elseif ($clientId -eq 'claude') {
+                 $payload = @{ hookSpecificOutput = @{ hookEventName = $EventName; additionalContext = $text } }
+                 $shape = 'claudeContext'
+@@ -976,12 +980,25 @@ function Write-StopBlockResult {
+     # a clause that varies cannot make an unchanged finding look new.
+     $text = $Reason
+     if ([string]::IsNullOrEmpty($text)) { $text = $Message }
++    if ([string]::IsNullOrWhiteSpace($text) -or (Get-HookClientId) -eq 'unknown') {
++        return [pscustomobject]@{ ExitCode = 0; Emitted = $false; Admission = $null }
++    }
+     $finding = ''
+     if (-not [string]::IsNullOrWhiteSpace($text)) { $finding = Get-ShortHash ($HookName + '|' + $text) }
+     $admit = Set-StopBlockMarker -HookInput $HookInput -HookName $HookName -FindingFingerprint $finding
+     if ($null -eq $admit -or -not $admit.Admitted) {
++        if ($null -ne $admit -and $admit.Reason -ne 'already-claimed') {
++            $notice = 'Hook Maker stopped automatic corrections (' + $admit.Reason + '). This finding is NOT resolved: ' + $text
++            [Console]::Out.WriteLine((@{ continue = $false; stopReason = $notice; systemMessage = $notice } | ConvertTo-Json -Compress))
++            return [pscustomobject]@{ ExitCode = 0; Emitted = $true; Admission = $admit }
++        }
+         return [pscustomobject]@{ ExitCode = 0; Emitted = $false; Admission = $admit }
+     }
++    if (-not $script:StopLedgerReady) {
++        $notice = 'Hook Maker requires its installed Stop library to continue safely. Repair this runtime. Unresolved: ' + $text
++        [Console]::Out.WriteLine((@{ continue = $false; stopReason = $notice; systemMessage = $notice } | ConvertTo-Json -Compress))
++        return [pscustomobject]@{ ExitCode = 0; Emitted = $true; Admission = $admit; Degraded = $true }
++    }
+     # EVERY block carries the finalization clause, because every block is the
+     # thing that turns one wrap-up into three: the agent answers, a gate sends it
+     # back, it corrects, it writes another wrap-up, the next gate sends it back
+@@ -998,10 +1015,19 @@ function Write-StopBlockResult {
+     # replays a refusal as the next user prompt (Codex does) is recognised as the
+     # continuation it is rather than minting a task and refilling the allowance.
+     if ($script:TaskIdentityReady) {
+-        try { Add-TaskBlockFingerprint -HookInput $HookInput -Reason $text } catch { }
++        $identity = Get-CurrentUserTaskIdentity -HookInput $HookInput
++        if (-not $identity.Degraded) {
++            $receipt = Register-TaskContinuation -HookInput $HookInput -Reason $text
++            if (-not $receipt.Ok) {
++                $notice = 'Hook Maker could not durably record the correction; completion is unverified. ' + $text
++                [Console]::Out.WriteLine((@{ continue = $false; stopReason = $notice; systemMessage = $notice } | ConvertTo-Json -Compress))
++                return [pscustomobject]@{ ExitCode = 0; Emitted = $true; Admission = $admit; Degraded = $true }
++            }
++            $text = $receipt.Text
++        }
+     }
+     $emit = Write-HookResult -EventName $EventName -Kind 'block' -Reason $text -Message $text
+-    return [pscustomobject]@{ ExitCode = $emit.ExitCode; Emitted = $true; Admission = $admit }
++    return [pscustomobject]@{ ExitCode = $emit.ExitCode; Emitted = $emit.Emitted; Admission = $admit }
+ }
+ 
+ # The fallback marker path, used by a runtime with no _stoplib.ps1 beside it.
+diff --git a/hooks/_stoplib.ps1 b/hooks/_stoplib.ps1
+index e1a34df..5e40ee8 100644
+--- a/hooks/_stoplib.ps1
++++ b/hooks/_stoplib.ps1
+@@ -109,15 +109,10 @@ function Get-StopEventId {
+             return ('t:' + [string]$identity.TaskId)
+         }
+     }
+-    $path = ''
+-    try { $path = [string](Get-EvidenceTranscriptPath -HookInput $HookInput) } catch { $path = '' }
+-    if ([string]::IsNullOrWhiteSpace($path)) { $path = [string](Get-Field $HookInput 'transcript_path') }
+-    if ([string]::IsNullOrWhiteSpace($path) -or -not (Test-Path -LiteralPath $path -PathType Leaf)) { return '' }
+-    try {
+-        $item = Get-Item -LiteralPath $path -ErrorAction Stop
+-        return (Get-ShortHash ($path.ToLowerInvariant() + '|' + [string]$item.Length + '|' + [string]$item.LastWriteTimeUtc.Ticks))
+-    }
+-    catch { return '' }
++    # No provenance is not a new task. Keep one bounded degraded chain for
++    # this actor until a genuine UserPromptSubmit supplies a durable identity.
++    $scope = (Get-HookClientId) + '|' + [string](Get-Field $HookInput 'session_id') + '|' + (Get-StopAgentKey $HookInput)
++    return ('unknown:' + (Get-ShortHash $scope))
+ }
+ 
+ # How long two genuine Stops with NO usable event identity are treated as one
+@@ -146,7 +141,7 @@ function Test-StopLedgerWritable {
+     # Probe a SIDECAR, never the ledger itself: File.Replace below needs the
+     # destination to have no open handles, and a probe that opened it would race
+     # every concurrent gate's publication for no extra information.
+-    $probePath = $Path + '.probe'
++    $probePath = $Path + '.' + [guid]::NewGuid().ToString('N') + '.probe'
+     try {
+         [System.IO.File]::WriteAllText($probePath, 'x')
+         Remove-Item -LiteralPath $probePath -Force -ErrorAction SilentlyContinue
+@@ -171,12 +166,27 @@ $script:StopLedgerVersion = 1
+ # and mutated under this build's assumptions.
+ function Get-StopLedgerState {
+     param([Parameter(Mandatory = $true)][string]$Path)
++    if (Test-Path -LiteralPath $Path -PathType Container) {
++        return [pscustomobject]@{ Doc = (New-StopLedgerDocument); State = 'corrupt' }
++    }
+     if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
+         return [pscustomobject]@{ Doc = (New-StopLedgerDocument); State = 'absent' }
+     }
+     try {
++        if ((Get-Item -LiteralPath $Path -ErrorAction Stop).Length -gt 2097152) { throw 'ledger size bound' }
+         $parsed = [System.IO.File]::ReadAllText($Path, [System.Text.Encoding]::UTF8) | ConvertFrom-Json
+-        if ($null -eq $parsed -or $null -eq $parsed.PSObject.Properties['entries']) { throw 'shape' }
++        if ($null -eq $parsed -or $parsed -isnot [System.Management.Automation.PSCustomObject]) { throw 'shape' }
++        if ($null -eq $parsed.PSObject.Properties['version']) { throw 'version' }
++        foreach ($field in @('entries', 'chains', 'unresolved')) {
++            if ($null -eq $parsed.PSObject.Properties[$field] -or $parsed.$field -isnot [System.Management.Automation.PSCustomObject]) { throw 'map shape' }
++            if (@($parsed.$field.PSObject.Properties).Count -gt 4096) { throw 'map bound' }
++        }
++        foreach ($property in @($parsed.chains.PSObject.Properties)) {
++            $chain = $property.Value
++            $blocks = 0
++            if ($null -eq $chain -or [string]::IsNullOrWhiteSpace([string](Get-Field $chain 'id')) -or
++                -not [int]::TryParse([string](Get-Field $chain 'blocks'), [ref]$blocks) -or $blocks -lt 0 -or $blocks -gt 50) { throw 'chain shape' }
++        }
+         if ($null -ne $parsed.PSObject.Properties['version']) {
+             $v = 0
+             if (-not [int]::TryParse([string]$parsed.version, [ref]$v)) { throw 'version' }
+@@ -250,7 +260,11 @@ function Invoke-StopLedgerUpdate {
+     if ($null -eq $stream) { return [pscustomobject]@{ Ok = $false; State = 'busy'; Result = $null } }
+     $tmp = $Path + '.' + [guid]::NewGuid().ToString('N').Substring(0, 8) + '.tmp'
+     try {
+-        $ledger = Read-StopLedger -Path $Path
++        $state = Get-StopLedgerState -Path $Path
++        if ($state.State -notin @('absent', 'valid')) {
++            return [pscustomobject]@{ Ok = $false; State = ('ledger-' + $state.State); Result = $null }
++        }
++        $ledger = $state.Doc
+         $result = & $Mutate $ledger
+         $json = $ledger | ConvertTo-Json -Depth 10
+         [System.IO.File]::WriteAllText($tmp, $json, (New-Object System.Text.UTF8Encoding($false)))
+@@ -263,7 +277,7 @@ function Invoke-StopLedgerUpdate {
+     finally {
+         try { if (Test-Path -LiteralPath $tmp -PathType Leaf) { Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue } } catch { }
+         try { $stream.Dispose() } catch { }
+-        try { Remove-Item -LiteralPath $lockPath -Force -ErrorAction SilentlyContinue } catch { }
++        # Keep the lock inode stable for other waiting writers.
+     }
+ }
+ 
+@@ -282,20 +296,8 @@ function Resolve-StopChain {
+     $existing = $null
+     if ($null -ne $Ledger.chains.PSObject.Properties[$ChainKey]) { $existing = $Ledger.chains.$ChainKey }
+     $hasExisting = ($null -ne $existing -and -not [string]::IsNullOrWhiteSpace([string]$existing.id))
+-    if ($IsContinuation -and $hasExisting) { return $existing }
+-    if ($hasExisting -and -not $IsContinuation) {
+-        if ($EventId -ne '' -and [string]$existing.event -eq $EventId) { return $existing }
+-        if ($EventId -eq '' -or [string]::IsNullOrWhiteSpace([string]$existing.event)) {
+-            # No usable identity on one side. Bounded degradation rather than a
+-            # guessed reset: inside the window this is another handler of the
+-            # same dispatch, outside it a new task.
+-            try {
+-                $age = ([DateTime]::UtcNow - [DateTime]::Parse([string]$existing.eventUtc, $null, [System.Globalization.DateTimeStyles]::RoundtripKind)).TotalSeconds
+-                if ($age -ge 0 -and $age -le $script:StopEventDegradedWindowSeconds) { return $existing }
+-            }
+-            catch { }
+-        }
+-    }
++    if ($hasExisting -and [string]$existing.event -ceq $EventId) { return $existing }
++    if ($hasExisting -and $EventId -like 'unknown:*') { return $existing }
+     $fresh = [pscustomobject]@{
+         id        = [guid]::NewGuid().ToString('N')
+         blocks    = 0
+@@ -385,34 +387,7 @@ function Invoke-StopAdmission {
+     $path = Get-StopLedgerPath -ProjectRoot ([string](Get-Field $HookInput 'cwd'))
+     $eventId = Get-StopEventId -HookInput $HookInput
+ 
+-    # CORRUPT OR UNSUPPORTED IS NOT 'FRESH' (L03). An empty document has
+-    # blocks = 0, so mutating from one hands the chain a full allowance again -
+-    # a refund in the middle of a task, which is the loop the allowance exists
+-    # to bound.
+-    #
+-    # Recovery happens at a TASK BOUNDARY and nowhere else. A genuine Stop is
+-    # already entitled to a fresh chain, so quarantining a damaged file there
+-    # costs nothing and stops the project being wedged for ever; during a
+-    # continuation the same act would BE the refund, so it refuses instead. A
+-    # NEWER build's ledger is never quarantined at all - it is not damaged, it
+-    # is simply not ours to rewrite.
+-    $ledgerState = (Get-StopLedgerState -Path $path).State
+-    if ($ledgerState -eq 'unsupported') {
+-        return [pscustomobject]@{ Admitted = $false; Reason = 'ledger-unsupported'; Degraded = $true }
+-    }
+-    if ($ledgerState -eq 'corrupt') {
+-        if ($IsContinuation) {
+-            return [pscustomobject]@{ Admitted = $false; Reason = 'ledger-corrupt'; Degraded = $true }
+-        }
+-        try {
+-            $quarantine = $path + '.corrupt-' + ([DateTime]::UtcNow.ToString('yyyyMMddHHmmss'))
+-            Move-Item -LiteralPath $path -Destination $quarantine -Force -ErrorAction SilentlyContinue
+-        }
+-        catch { }
+-        if ((Get-StopLedgerState -Path $path).State -eq 'corrupt') {
+-            return [pscustomobject]@{ Admitted = $false; Reason = 'ledger-corrupt'; Degraded = $true }
+-        }
+-    }
++    # Validation is authoritative only inside Invoke-StopLedgerUpdate's lock.
+     $outcome = Invoke-StopLedgerUpdate -Path $path -Mutate {
+         param($ledger)
+         $chain = Resolve-StopChain -Ledger $ledger -ChainKey $keys.ChainKey -IsContinuation $IsContinuation -EventId $eventId
+@@ -563,11 +538,8 @@ function Get-StopChainId {
+ # runtime with no ledger: the chain is simply empty and the rest still applies.
+ function Get-StopSuppressionIdentity {
+     param([Parameter(Mandatory = $true)]$HookInput)
+-    $session = [string](Get-Field $HookInput 'session_id')
+-    $agent = Get-StopAgentKey -HookInput $HookInput
+-    $chain = ''
+-    try { $chain = Get-StopChainId -HookInput $HookInput } catch { $chain = '' }
+-    return ($session + '|' + $agent + '|' + $chain)
++    return ((Get-HookClientId) + '|' + [string](Get-Field $HookInput 'session_id') + '|' +
++        (Get-StopAgentKey $HookInput) + '|' + (Get-StopEventId $HookInput))
+ }
+ 
+ # ---- Stop-time evidence: the CURRENT final assistant response --------------
+@@ -739,6 +711,7 @@ function Test-TaskSummaryAlreadyPublished {
+     $keys = Get-StopLedgerKeys -HookInput $HookInput -HookName 'summary-state'
+     if ($null -eq $ledger.chains.PSObject.Properties[$keys.ChainKey]) { return $false }
+     $chain = $ledger.chains.($keys.ChainKey)
++    if ([string]$chain.event -cne (Get-StopEventId $HookInput)) { return $false }
+     if ($null -eq $chain.PSObject.Properties['summaryPublishedUtc']) { return $false }
+     return (-not [string]::IsNullOrWhiteSpace([string]$chain.summaryPublishedUtc))
+ }
+diff --git a/hooks/_taskidentity.ps1 b/hooks/_taskidentity.ps1
+index 2c38058..b6f4e7e 100644
+--- a/hooks/_taskidentity.ps1
++++ b/hooks/_taskidentity.ps1
+@@ -120,10 +120,12 @@ function Register-UserTaskBoundary {
+         if ($null -ne $record) {
+             # A known dispatch is a duplicate even if a delayed handler arrives.
+             if ($turn -ne '' -and $record.dispatchId -ceq $turn) { return $record }
+-            $continuation = @($record.blockFingerprints) -ccontains $fingerprint
++            $receiptKey = $fingerprint
++            if ($prompt -match '^\[HOOKMAKER-CORRECTION:([a-f0-9]{32})\](?:\r?\n|$)') { $receiptKey = 'token:' + $Matches[1] }
++            $continuation = @($record.blockFingerprints) -ccontains $receiptKey
+             if ($continuation) {
+                 # Consume a receipt once; duplicate handlers use dispatch identity.
+-                $record.blockFingerprints = @($record.blockFingerprints | Where-Object { $_ -cne $fingerprint })
++                $record.blockFingerprints = @($record.blockFingerprints | Where-Object { $_ -cne $receiptKey })
+                 $record.dispatchId = $turn
+                 $record.promptFingerprint = $fingerprint
+                 $record.phase = 'working'
+@@ -159,8 +161,14 @@ function Get-CurrentUserTaskIdentity {
+ }
+ 
+ function Register-TaskContinuation {
+-    param($HookInput, [AllowEmptyString()][string]$Reason)
++    param($HookInput, [AllowEmptyString()][string]$Reason, [bool]$AddHeader = $true)
++    $text = $Reason
+     $fingerprint = Get-TaskPromptFingerprint $Reason
++    if ($AddHeader -and $fingerprint -ne '') {
++        $token = [guid]::NewGuid().ToString('N')
++        $fingerprint = 'token:' + $token
++        $text = '[HOOKMAKER-CORRECTION:' + $token + "]`n" + $Reason
++    }
+     $identity = Get-CurrentUserTaskIdentity $HookInput
+     if ($fingerprint -eq '' -or $identity.Degraded) { return [pscustomobject]@{ Ok = $false; State = 'identity-unavailable' } }
+     $result = Invoke-TaskIdentityUpdate -HookInput $HookInput -Mutate {
+@@ -171,10 +179,10 @@ function Register-TaskContinuation {
+         }
+         return $record
+     }
+-    return [pscustomobject]@{ Ok = $result.Ok; State = $result.State }
++    return [pscustomobject]@{ Ok = $result.Ok; State = $result.State; Text = $text }
+ }
+ 
+ function Add-TaskBlockFingerprint {
+     param([Parameter(Mandatory = $true)]$HookInput, [Parameter(Mandatory = $true)][AllowEmptyString()][string]$Reason)
+-    $null = Register-TaskContinuation -HookInput $HookInput -Reason $Reason
++    $null = Register-TaskContinuation -HookInput $HookInput -Reason $Reason -AddHeader $false
+ }
+diff --git a/scripts/Test-StopLedger.ps1 b/scripts/Test-StopLedger.ps1
+index b26e13d..fdee5d6 100644
+--- a/scripts/Test-StopLedger.ps1
++++ b/scripts/Test-StopLedger.ps1
+@@ -159,6 +159,7 @@ Check 'duplicate delivery of the same event is refused, not re-admitted' (
+ # A genuinely LATER task appends to the transcript, so its event identity
+ # differs and the chain rotates - the budget is not inherited.
+ [System.IO.File]::AppendAllText($evtTranscript, '{"type":"assistant"}' + "`n")
++Register-UserTaskBoundary -HookInput ([pscustomobject]@{ hook_event_name = 'UserPromptSubmit'; session_id = 'EVT'; cwd = 'C:\proj\evt'; prompt = 'A genuinely new task' })
+ $e2 = New-EventInput -Session 'EVT' -Continuation $false
+ $admit3 = Set-StopBlockMarker -HookInput $e2 -HookName 'Gate-One'
+ Check 'a genuinely new task re-admits the same gate' ($admit3.Admitted) ([string]$admit3.Reason)
+@@ -235,19 +236,14 @@ $corStorm = 0
+ foreach ($n in 1..8) { if ((Set-StopBlockMarker -HookInput $cIn -HookName ('COR' + $n)).Admitted) { $corStorm++ } }
+ Check 'eight more gates on the corrupt ledger admit ZERO continuations' ($corStorm -eq 0) ('admitted=' + $corStorm)
+ 
+-# AT A TASK BOUNDARY the same damage is recoverable: a genuine Stop is already
+-# entitled to a fresh chain, so quarantining costs nothing and stops the
+-# project being wedged for ever.
++# A false continuation flag cannot authorize destruction of other sessions'
++# state. Corrupt data requires explicit recovery, never an implicit budget reset.
+ $cFresh = New-StopInput -Session 'COR' -Continuation $false -Cwd $corProj
+ $cFreshAdmit = Set-StopBlockMarker -HookInput $cFresh -HookName 'Rules-Check'
+-Check 'a genuine Stop recovers from the damage and admits' ($cFreshAdmit.Admitted) ([string]$cFreshAdmit.Reason)
+-Check 'the damaged file was quarantined, not deleted' (
+-    @(Get-ChildItem -LiteralPath (Split-Path -Parent $corLedger) -Filter '*.corrupt-*' -File -ErrorAction SilentlyContinue).Count -ge 1)
+-$corOk = $false
+-try { $corOk = ($null -ne ((Get-Content -LiteralPath $corLedger -Raw) | ConvertFrom-Json)) } catch { $corOk = $false }
+-Check 'and the replacement ledger is valid JSON on disk' ($corOk) (Get-Content -LiteralPath $corLedger -Raw)
+-Check 'the gate is then suppressed on its next continuation' (
+-    (Test-StopStandDown -HookInput $cIn -HookName 'Rules-Check') -eq $true)
++Check 'a non-continuation flag alone cannot erase a corrupt shared ledger' (
++    -not $cFreshAdmit.Admitted -and $cFreshAdmit.Reason -eq 'ledger-corrupt') ([string]$cFreshAdmit.Reason)
++Check 'corruption remains available for explicit recovery' (
++    ([System.IO.File]::ReadAllText($corLedger)) -ceq '{ this is not json')
+ 
+ # A ledger from a NEWER build is not damaged and is never rewritten.
+ $futProj = 'C:\proj\future'
