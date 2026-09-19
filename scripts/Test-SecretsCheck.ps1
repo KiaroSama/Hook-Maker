@@ -568,7 +568,7 @@ try {
     $claudeJson = ''
     if (Test-Path (Join-Path $tgt '.claude\settings.local.json')) { $claudeJson = [System.IO.File]::ReadAllText((Join-Path $tgt '.claude\settings.local.json')) }
     Check 'installs as a self-contained local copy' (($claudeJson -like '*hooks\\Hook-Maker\\Secrets-Check\\Secrets-Check.ps1*') -and (Test-Path (Join-Path $tgt '.claude\hooks\Hook-Maker\Secrets-Check\Secrets-Check.ps1')) -and (Test-Path (Join-Path $tgt '.claude\hooks\Hook-Maker\Secrets-Check\_hooklib.ps1')))
-    Check 'does not reference the tool folder' ($claudeJson -notlike '*Hook Maker*')
+    Check 'does not point back at the tool''s own hooks directory' ($claudeJson -notlike ('*' + ((Split-Path -Parent $PSScriptRoot) + '\hooks\').Replace('\', '\\') + '*'))
 
     # =====================================================================
     # =====================================================================

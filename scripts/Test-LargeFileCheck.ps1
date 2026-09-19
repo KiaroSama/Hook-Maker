@@ -680,6 +680,9 @@ try {
     # The Stop gate's own cases (see the header) - in this scope, this harness.
     . (Join-Path $ScriptRoot '_testlargefileceiling.ps1')
 
+    # A project-owned CI runner is not this project's source.
+    . (Join-Path $ScriptRoot '_testlargefilecirunner.ps1')
+
     # =====================================================================
     Write-Host '--- No residue in the REAL HookMaker state dir ---' -ForegroundColor Cyan
     $RealStateAfter = @(Get-ChildItem -LiteralPath $RealStateDir -Filter 'LargeFileCheck-*.txt' -ErrorAction SilentlyContinue | ForEach-Object { $_.Name })
