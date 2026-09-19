@@ -59,3 +59,8 @@ logs/
 # and delete again. One survived an aborted run and was committed, which put a
 # second "custom hook" in every menu render CI saw.
 /hooks/ZZZ-*/
+
+!/.env.example
+!/.env.sample
+!/.env.template
+!/.env.dist
