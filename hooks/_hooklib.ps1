@@ -971,7 +971,8 @@ function Write-StopBlockResult {
         [Parameter(Mandatory = $true)][string]$HookName,
         [Parameter(Mandatory = $true)][string]$EventName,
         [AllowEmptyString()][string]$Reason = '',
-        [AllowEmptyString()][string]$Message = ''
+        [AllowEmptyString()][string]$Message = '',
+        [AllowEmptyString()][string]$FindingFingerprint = ''
     )
     # The TEXT is composed before admission, because the text IS the finding: a
     # gate that refuses for a different reason is making a different claim and
@@ -983,8 +984,10 @@ function Write-StopBlockResult {
     if ([string]::IsNullOrWhiteSpace($text) -or (Get-HookClientId) -eq 'unknown') {
         return [pscustomobject]@{ ExitCode = 0; Emitted = $false; Admission = $null }
     }
-    $finding = ''
-    if (-not [string]::IsNullOrWhiteSpace($text)) { $finding = Get-ShortHash ($HookName + '|' + $text) }
+    # Prefer the detector's semantic evidence identity. Equal message text is
+    # not equal evidence: another edit can change bytes behind one dirty path.
+    $finding = $FindingFingerprint
+    if ([string]::IsNullOrWhiteSpace($finding)) { $finding = Get-ShortHash ($HookName + '|' + $text) }
     $admit = Set-StopBlockMarker -HookInput $HookInput -HookName $HookName -FindingFingerprint $finding
     if ($null -eq $admit -or -not $admit.Admitted) {
         if ($null -ne $admit -and $admit.Reason -ne 'already-claimed') {

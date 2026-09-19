@@ -111,7 +111,7 @@ function New-IsolatedHookCopy {
     foreach ($pkgFile in @(Get-ChildItem -LiteralPath (Split-Path -Parent $Hook) -File -Filter '*.ps1')) {
         Copy-Item $pkgFile.FullName (Join-Path $dir $pkgFile.Name) -Force
     }
-    Copy-Item $HookLib (Join-Path $Work '_hooklib.ps1') -Force
+    Copy-TestRuntimeLibraries -SourceHookLib $HookLib -Destination (Join-Path $Work '_hooklib.ps1')
     if ($null -ne $EnvContent) { Write-Utf8 (Join-Path $dir '.env') $EnvContent }
     $fakeLocal = Join-Path $dir '_fakelocal'
     New-Item -ItemType Directory -Path $fakeLocal -Force | Out-Null

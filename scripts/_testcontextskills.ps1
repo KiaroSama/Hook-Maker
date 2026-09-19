@@ -161,7 +161,7 @@
         $dir = Join-Path $Work ('mcpcopy-' + [guid]::NewGuid().ToString('N').Substring(0, 6))
         New-Item -ItemType Directory -Path $dir -Force | Out-Null
         Copy-Item $McpHook (Join-Path $dir 'Mcp-Usage-Check.ps1')
-        Copy-Item (Join-Path (Split-Path -Parent $McpHook) '..\_hooklib.ps1') (Join-Path $Work '_hooklib.ps1') -Force
+        Copy-TestRuntimeLibraries -SourceHookLib (Join-Path (Split-Path -Parent $McpHook) '..\_hooklib.ps1') -Destination (Join-Path $Work '_hooklib.ps1')
         Write-Utf8 (Join-Path $dir '.env') ("MCP_SUMMARY_ENFORCEMENT=" + $Enforcement + "`r`n")
         return (Join-Path $dir 'Mcp-Usage-Check.ps1')
     }

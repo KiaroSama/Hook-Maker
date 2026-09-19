@@ -34,7 +34,7 @@
         $renameHookDir = Join-Path $Work ('hookcopy-' + [guid]::NewGuid().ToString('N').Substring(0, 6))
         New-Item -ItemType Directory -Path $renameHookDir -Force | Out-Null
         Copy-Item $AiMemoryHook (Join-Path $renameHookDir 'Ai-Memory-Check.ps1')
-        Copy-Item $HookLib (Join-Path $Work '_hooklib.ps1') -Force
+        Copy-TestRuntimeLibraries -SourceHookLib $HookLib -Destination (Join-Path $Work '_hooklib.ps1')
 
         $r = Fire -HookPath (Join-Path $renameHookDir 'Ai-Memory-Check.ps1') -Cwd $renameProj -EventName 'Stop' -Exe 'powershell.exe'
         Check '5.1 host: a staged rename never crashes Get-LatestWorkTimeUtc (clean exit, no StrictMode/illegal-path error)' (
