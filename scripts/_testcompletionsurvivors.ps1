@@ -28,14 +28,14 @@ function Write-SessionBaseline {
     Write-Utf8 (Join-Path (Get-StateDir $Copy) ('TestTempCleanup-baseline-' + (Get-ProjectKey $Root) + '.json')) ($doc | ConvertTo-Json -Depth 5)
 }
 
-# The advisory text of a non-blocking Claude emission ('' when there is none).
+# Stop advisories use the same non-continuing systemMessage on both clients.
 # Get-Field throughout: under Set-StrictMode 2.0 a missing property THROWS, and
 # a regression must show up as a failed assertion, never as an aborted module.
 function Get-AdvisoryText {
     param([string]$Text)
     $doc = ConvertFrom-HookOutput $Text
     if ($null -eq $doc) { return '' }
-    return [string](Get-Field (Get-Field $doc 'hookSpecificOutput') 'additionalContext')
+    return [string](Get-Field $doc 'systemMessage')
 }
 
     # =====================================================================
@@ -96,7 +96,10 @@ try {
     Check 'the advisory instructs the survivor sweep and cites the rule' (
         $text -match 'Run the survivor sweep before finishing \(global-test-rules\.md -> No Orphaned Test Processes\)') $r.Out
     Check 'the survivor advisory NEVER blocks: no decision, exit 0' (
-        $r.Exit -eq 0 -and $null -ne $doc -and $null -eq $doc.PSObject.Properties['decision']) $r.Out
+        $r.Exit -eq 0 -and $r.Err -eq '' -and $null -ne $doc -and
+        $null -ne $doc.PSObject.Properties['systemMessage'] -and
+        $null -eq $doc.PSObject.Properties['hookSpecificOutput'] -and
+        $null -eq $doc.PSObject.Properties['decision']) $r.Out
     # The loop this cost: 13 consecutive Stops in one measured session, each
     # emission a forced turn, because the client's own cohort churns the row set
     # and with it the repeat-suppression fingerprint. Neither half may return.
@@ -105,12 +108,9 @@ try {
     Check 'it is bounded per session: the repeat-suppression fingerprint is recorded' (
         (Test-Path -LiteralPath (Join-Path (Get-StateDir $c) ('TestCompletionCheck-survivors-' + (Get-ProjectKey $p) + '.txt')) -PathType Leaf))
 
-    # A CONTINUATION IS NOT A NEW EVENT. On Claude a Stop emission is never free:
-    # even hookSpecificOutput.additionalContext sends the turn back to the model,
-    # so an advisory that speaks again inside the chain it started is a loop, not
-    # a reminder. Measured: 13 consecutive Stops, one forced turn each, until the
-    # client's own block cap ended the task. The sweep instruction does not change
-    # between them, so there is nothing to say.
+    # The historical model-context advisory could force another turn. The
+    # current wire output does not, but unchanged continuation delivery remains
+    # suppressed: a new envelope is not a reason to repeat the same sweep note.
     $cCont = New-IsolatedHookCopy
     $pCont = New-GitRepo 'SurvivorContinuation'
     Write-SessionBaseline -Copy $cCont -Root $pCont -Utc $survivorWindow
@@ -182,7 +182,10 @@ try {
         $text -match '\.\.\. and \d+ more matching process\(es\) not listed' -and
         $text -match 'capped at 10 rows, so the coverage shown here is PARTIAL') $r.Out
     Check 'a capped list still never blocks' (
-        $r.Exit -eq 0 -and $null -ne $doc -and $null -eq $doc.PSObject.Properties['decision']) $r.Out
+        $r.Exit -eq 0 -and $r.Err -eq '' -and $null -ne $doc -and
+        $null -ne $doc.PSObject.Properties['systemMessage'] -and
+        $null -eq $doc.PSObject.Properties['hookSpecificOutput'] -and
+        $null -eq $doc.PSObject.Properties['decision']) $r.Out
 
     # ---- the advisory never displaces a real gate -------------------------
     # A terminated guarded result blocks exactly as before WITH a live candidate
