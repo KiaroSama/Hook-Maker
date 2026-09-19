@@ -44,18 +44,13 @@ $eventName = [string](Get-Field $hookInput 'hook_event_name')
 if ([string]::IsNullOrWhiteSpace($eventName)) { $eventName = 'SessionStart' }
 if ($eventName -ne 'SessionStart' -and $eventName -ne 'UserPromptSubmit') { exit 0 }
 
-# COORDINATION: Codebase Memory is the PRIMARY code graph. When CBM is
-# installed and this project is indexed there, stay silent - Cbm-Read-Check
-# already asks for the same thing, and two hooks pointing at two different
-# graphs on one prompt is noise rather than redundancy. Graphify keeps the
-# ground it is better at: projects CBM has no index for, and non-code inputs.
-$cbmCacheDir = Get-CbmCacheDir -Config (Read-HookEnv (Join-Path $PSScriptRoot '.env')) -ProjectRoot $cwd
-if (Test-CbmInstalled -CacheDir $cbmCacheDir) {
-    try {
-        if (Test-Path -LiteralPath (Get-CbmProjectDbPath -ProjectRoot $cwd -CacheDir $cbmCacheDir) -PathType Leaf) { exit 0 }
-    }
-    catch { }
-}
+# COORDINATION: every project carries BOTH graphs, so a Codebase Memory index
+# does NOT supersede the graphify one and this hook keeps speaking in an
+# indexed project. The two have distinct jobs on one prompt: Cbm-Read-Check
+# answers for code structure, this one for the material graphify alone covers
+# (docs, specs, papers, images, video) and its cross-cutting query/path/explain
+# views. One graph per question - consult the one that fits, not both for one
+# answer.
 
 $graphPath = Join-Path $cwd 'graphify-out\graph.json'
 $graphExists = Test-Path -LiteralPath $graphPath -PathType Leaf
@@ -65,7 +60,8 @@ $haveGraphNote = @(
     'GRAPH READ CHECK - this project has a graphify knowledge graph (graphify-out/graph.json). If, and only if, this task needs codebase understanding (architecture, cross-file relationships, "where is X used", call paths, refactor scope, impact), prefer a scoped query over broad file browsing:',
     '- graphify query "<question>" for a specific question.',
     '- graphify path "<A>" "<B>" for a relationship; graphify explain "<concept>" for a focused concept.',
-    '- Confirm important findings in the actual source before acting. Skip this entirely for isolated edits, docs, config, secrets, or small local fixes - not querying is a fine and expected outcome.'
+    '- Confirm important findings in the actual source before acting. Skip this entirely for isolated edits, docs, config, secrets, or small local fixes - not querying is a fine and expected outcome.',
+    '- This project keeps BOTH graphs. A Codebase Memory index does not replace this one: ask Codebase Memory about code structure, and graphify about docs/specs/papers/images/video and whole-project query, path and explain views. A graph that is built and never read is a defect; keep it current with graphify update . whenever the material it covers has moved.'
 ) -join "`n"
 
 # ---- SessionStart: only meaningful when a graph already exists. ----

@@ -212,7 +212,8 @@ TMP = __TEMP__
     foreach ($hookName in @('Graph-Read-Check', 'Graph-Update-Check')) {
         $event = if ($hookName -eq 'Graph-Read-Check') {'SessionStart'} else {'Stop'}
         $r = Invoke-CbmHook ($hookName + '\' + $hookName + '.ps1') @{hook_event_name=$event;cwd=$configuredProj;session_id=$hookName} ''
-        Check ($hookName + ' yields to the Codex-configured CMM index') ($r.Exit -eq 0 -and $r.Out.Trim() -eq '') $r.Out
+        Check ($hookName + ' still speaks beside the Codex-configured CMM index') (
+            $r.Exit -eq 0 -and $r.Out -match ($hookName.Replace('-', ' ').ToUpperInvariant())) $r.Out
     }
     Write-Utf8 (Join-Path $configuredProj '.codex\config.toml') "[mcp_servers.codebase-memory-mcp]`nenabled = false`n"
     Check 'a disabled project CMM record cannot fall back to the enabled global record' (
@@ -225,6 +226,10 @@ TMP = __TEMP__
     Write-Utf8 $cooldownPath ([DateTime]::UtcNow.AddHours(-2).ToString('o'))
     $r = Invoke-CbmHook 'Cbm-Update-Check\Cbm-Update-Check.ps1' @{hook_event_name='Stop';cwd=$configuredProj;session_id='disabled-update'} ''
     Check 'explicitly disabled CMM produces no freshness advice' ($r.Exit -eq 0 -and $r.Out.Trim() -eq '') $r.Out
+    # Graph-Update-Check emitted in the loop above (every project keeps BOTH
+    # graphs), so its per-project cooldown would mute the case below. Age it,
+    # the same way the Cbm-Update-Check case above does.
+    Write-Utf8 (Join-Path $env:LOCALAPPDATA ('HookMaker\state\GraphUpdateCheck-' + (Get-ShortHash $configuredProj.ToLowerInvariant()) + '.txt')) ([DateTime]::UtcNow.AddHours(-2).ToString('o'))
     foreach ($hookName in @('Graph-Read-Check', 'Graph-Update-Check')) {
         $event = if ($hookName -eq 'Graph-Read-Check') {'SessionStart'} else {'Stop'}
         $r = Invoke-CbmHook ($hookName + '\' + $hookName + '.ps1') @{hook_event_name=$event;cwd=$configuredProj;session_id=('disabled-' + $hookName)} ''

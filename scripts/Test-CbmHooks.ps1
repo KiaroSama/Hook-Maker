@@ -1,6 +1,6 @@
 # Offline suite for the two Codebase Memory hooks and the shared CBM helpers
-# in _hooklib.ps1, plus the coordination guard that makes Graph-Read-Check
-# yield to them.
+# in _hooklib.ps1, plus the coordination guard that keeps Graph-Read-Check
+# speaking alongside them: every project carries BOTH graphs.
 #
 # Everything runs against a FABRICATED cache directory: the hooks only ever
 # look at <cache>\_config.db and <cache>\<project>.db, so a real Codebase
@@ -182,11 +182,12 @@ try {
     Check 'read: silent when cwd does not exist' ($r.Out.Trim() -eq '') $r.Out
 
     # =====================================================================
-    Write-Host '--- Graph-Read-Check yields to Codebase Memory ---' -ForegroundColor Cyan
+    Write-Host '--- Graph-Read-Check speaks alongside Codebase Memory ---' -ForegroundColor Cyan
     New-Item -ItemType Directory -Path (Join-Path $proj 'graphify-out') -Force | Out-Null
     [System.IO.File]::WriteAllText((Join-Path $proj 'graphify-out\graph.json'), '{}')
     $r = Invoke-CbmHook 'Graph-Read-Check\Graph-Read-Check.ps1' @{ hook_event_name = 'SessionStart'; cwd = $proj; session_id = 'g1' } $cache
-    Check 'graph: silent when this project has a CBM index' ($r.Out.Trim() -eq '') $r.Out
+    Check 'graph: still advises when this project has a CBM index' ($r.Out -match 'GRAPH READ CHECK') $r.Out
+    Check 'graph: the advisory names both graphs' ($r.Out -match 'BOTH graphs') $r.Out
     Remove-Item -LiteralPath $dbPath -Force
     $r = Invoke-CbmHook 'Graph-Read-Check\Graph-Read-Check.ps1' @{ hook_event_name = 'SessionStart'; cwd = $proj; session_id = 'g2' } $cache
     Check 'graph: unchanged behaviour when there is no CBM index' ($r.Out -match 'GRAPH READ CHECK') $r.Out
