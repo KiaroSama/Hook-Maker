@@ -172,9 +172,16 @@ try {
     # SEMANTIC, not cosmetic: gitignore is last-match-wins, so every `!` negation
     # must sit AFTER the broader positive pattern it un-ignores. Asserting only
     # presence would pass on a file where every negation is dead.
+    # The 2026-09-19 additions sit in CANONICAL POSITIONS, not at the end: both
+    # Spec Kit directories straight after /.ai/, the regenerated code index after
+    # /graphify-out/, and the local plans directory after that. Appending them
+    # instead would still pass a presence check while putting them on the wrong
+    # side of a later negation, which is the failure this block exists to catch.
     $StableIgnoreSet = @(
-        '/.ai/', '/secrets.md', '/explain-AI.md', '/reference.md', '/CLAUDE.md', '/AGENTS.md',
+        '/.ai/', '/.specify/', '/specs/', '/secrets.md', '/explain-AI.md', '/reference.md',
+        '/CLAUDE.md', '/AGENTS.md',
         '/.agents/', '/.claude/', '/.kiro/', '/.codex/', '/.cursor/', '/.cline/', '/graphify-out/',
+        '/.codebase-memory/', '/plans/',
         '.ignoreme', '**/.ignoreme', '/.env', '/.env.*', '!/.env.example', '!/.env.sample',
         '!/.env.template', '!/.env.dist'
     )
