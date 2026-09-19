@@ -126,7 +126,10 @@ function Test-InstallRecordIdSafe {
     if ([string]::IsNullOrWhiteSpace($Id)) { return $false }
     if ($Id -notmatch '^[A-Za-z0-9._-]{1,64}$') { return $false }
     if ($Id -match '^\.+$') { return $false }
-    return -not [string]::Equals($Id + '.json', $script:InstallRegistryMetaName, [System.StringComparison]::OrdinalIgnoreCase)
+    if ([string]::Equals($Id + '.json', $script:InstallRegistryMetaName, [System.StringComparison]::OrdinalIgnoreCase)) { return $false }
+    # The generation marker and the Windows device names live in the same
+    # namespace as record files; _installregistrygeneration.ps1 owns that list.
+    return -not (Test-InstallRecordIdReserved -Id $Id)
 }
 
 function Get-InstallRecordPath {
@@ -395,18 +398,17 @@ function Save-InstallRegistry {
     # an id collapse into one file, silently erasing the first.
     $snapshot = Test-InstallRegistrySnapshot -Registry $Registry
     if (-not $snapshot.Ok) { throw $snapshot.Reason }
-    $directory = Get-InstallRegistryDirectory -ToolRoot $ToolRoot
-    if (-not (Test-Path -LiteralPath $directory -PathType Container)) {
-        New-Item -ItemType Directory -Path $directory -Force | Out-Null
-    }
     # Belt and braces beside the metadata key: drop the cached parse before the
     # bytes change, so no reader can be served a pre-write document even if a
     # filesystem's timestamp granularity ever failed to move.
     $script:InstallRegistryCache = $null
     # From here the directory is MID-WRITE and no reader may trust it. The marker
     # clears only after metadata lands, so any failure below leaves a detectable
-    # incomplete generation instead of an authoritative subset.
-    [void](Start-InstallRegistryGeneration -ToolRoot $ToolRoot -ExpectedFileNames @($snapshot.FileNames))
+    # incomplete generation instead of an authoritative subset. Creating the
+    # DIRECTORY is part of that step now: doing it here left a window in which an
+    # empty unmarked directory existed, and an unmarked directory is
+    # authoritative - it published "nothing is installed".
+    [void](Start-InstallRegistryGeneration -ToolRoot $ToolRoot -ExpectedFileNames @($snapshot.FileNames) -ExpectedRecords @($snapshot.Expected))
     $keep = @{}
     foreach ($record in @($Registry.installs)) {
         # Proved safe AND unique by Test-InstallRegistrySnapshot above, before
@@ -1089,6 +1091,19 @@ function Update-InstallRegistry {
             }
         }
 
+        # PRECONDITIONS ON AN EXISTING DIRECTORY. Asked here, before the merge
+        # reads anything: an incomplete generation or a future schema means this
+        # build must not write, and finding that out AFTER composing the record
+        # would be finding it out too late.
+        $mutable = Test-InstallRegistryMutable -ToolRoot $ToolRoot
+        if (-not $mutable.Ok) {
+            return [pscustomobject]@{
+                Ok             = $false
+                QuarantinePath = $quarantinePath
+                Warning        = ($mutable.Reason + ' - this installation was NOT recorded and the registry was left exactly as it was')
+            }
+        }
+
         # ---- the O(1) path --------------------------------------------------
         $id = ''
         if ($null -ne $Record.PSObject.Properties['id']) { $id = [string]$Record.id }
@@ -1158,6 +1173,13 @@ function Update-InstallRegistry {
         $script:InstallRegistryCache = $null
         $stale = $recordPath + '.tmp'
         if (Test-Path -LiteralPath $stale -PathType Leaf) { Remove-Item -LiteralPath $stale -Force -ErrorAction SilentlyContinue }
+        # The digest of the bytes this write INTENDS, taken from the same
+        # serialisation Write-JsonFileAtomic performs (-Depth 50), so the
+        # readback below proves the composed record landed - not merely that
+        # something carrying the right id is there, which an older generation of
+        # the same record satisfies.
+        $intendedText = ($merged[0] | ConvertTo-Json -Depth 50)
+        $intendedDigest = Get-InstallRecordDigest -Text $intendedText
         Write-JsonFileAtomic -Value $merged[0] -Path $recordPath
         # The set's version marker, written only when it is actually absent -
         # an extra atomic write per install would give back part of what this
@@ -1198,7 +1220,7 @@ function Update-InstallRegistry {
             }
         }
         # Compare the id FIELD - see Test-InstallRecordWriteVerified for why a quoted-id match was not proof.
-        $written = Test-InstallRecordWriteVerified -Text $verifyText -ExpectedId $id
+        $written = Test-InstallRecordWriteVerified -Text $verifyText -ExpectedId $id -ExpectedSha256 $intendedDigest
         if (-not $written.Ok) {
             return [pscustomobject]@{
                 Ok             = $false
