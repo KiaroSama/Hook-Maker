@@ -470,6 +470,42 @@ try {
     }
 
     # =====================================================================
+    Write-Host '--- New-TestWorkspace isolates the install registry, without overriding a suite that chose one ---' -ForegroundColor Cyan
+    # A suite that installs a hook calls the REAL Install-Hook.ps1, so an
+    # un-isolated state directory puts the record in the shared registry at the
+    # tool root while -TargetProject is a throwaway directory. The directory is
+    # cleaned up and the record is not, and it then surfaces in the user's own
+    # "Fix a renamed or moved project" screen. That is not hypothetical: 8 such
+    # records across 7 dead fixture roots were found there on 2026-09-19.
+    $prevState = $env:HOOKMAKER_STATE_DIR
+    $isoSpaces = New-Object System.Collections.Generic.List[string]
+    try {
+        $env:HOOKMAKER_STATE_DIR = ''
+        $isoA = New-TestWorkspace -Prefix 'hookmaker-runtests-iso'
+        [void]$isoSpaces.Add($isoA)
+        Check 'an unset state dir is pointed INSIDE the new workspace' (
+            -not [string]::IsNullOrWhiteSpace($env:HOOKMAKER_STATE_DIR) -and
+            (Test-TestWorkspaceContained -Root $isoA -Path $env:HOOKMAKER_STATE_DIR)) $env:HOOKMAKER_STATE_DIR
+        Check 'that state directory actually exists' (
+            Test-Path -LiteralPath $env:HOOKMAKER_STATE_DIR -PathType Container) $env:HOOKMAKER_STATE_DIR
+
+        # The other half, and the reason this is conditional: 13 suites set the
+        # variable themselves, some BEFORE creating their workspace. Overwriting
+        # their choice would point them at the wrong state directory.
+        $chosen = Join-Path $isoA 'chosen-state'
+        New-Item -ItemType Directory -Path $chosen -Force | Out-Null
+        $env:HOOKMAKER_STATE_DIR = $chosen
+        $isoB = New-TestWorkspace -Prefix 'hookmaker-runtests-iso'
+        [void]$isoSpaces.Add($isoB)
+        Check "a suite's own state dir is left alone" (
+            $env:HOOKMAKER_STATE_DIR -eq $chosen) $env:HOOKMAKER_STATE_DIR
+    }
+    finally {
+        $env:HOOKMAKER_STATE_DIR = $prevState
+        if ($isoSpaces.Count -gt 0) { if (-not (Remove-TestWorkspace $isoSpaces.ToArray())) { $script:Fail++ } }
+    }
+
+    # =====================================================================
     Write-Host '--- a recycled pid is not our process (HM-02 scope 4b/5) ---' -ForegroundColor Cyan
     # Deterministic stand-in for what the parallel matrix produced by accident:
     # a pid this suite recorded, still present, but now belonging to something
