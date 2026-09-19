@@ -22,8 +22,9 @@ $ToolRoot = Split-Path -Parent $ScriptRoot
 $HooksRoot = Join-Path $ToolRoot 'hooks'
 $Hook = Join-Path $HooksRoot 'Feature-Request-Check\Feature-Request-Check.ps1'
 $HookLib = Join-Path $HooksRoot '_hooklib.ps1'
+$Scope = Join-Path $HooksRoot '_scope.ps1'
 $EnvExample = Join-Path $HooksRoot 'Feature-Request-Check\.env.example'
-foreach ($required in @($Hook, $HookLib, $EnvExample)) {
+foreach ($required in @($Hook, $HookLib, $Scope, $EnvExample)) {
     if (-not (Test-Path -LiteralPath $required -PathType Leaf)) {
         Write-Host ('Required file not found: ' + $required) -ForegroundColor Red
         exit 1
@@ -200,27 +201,30 @@ function New-IsolatedHookCopy {
 }
 
 $FeaturePrompt = 'add a dark mode option to the settings page'
-$Banner = 'FEATURE REQUEST CHECK - this prompt reads as a feature request, so run the mattpocock chain instead of coding straight from it:'
+# The banner the hook emits is READ OUT OF THE LIVE SOURCE, never transcribed.
+# The self-recognition assertions below are only worth anything if this really
+# is the text the hook writes; a copy kept passing here once while the hook's
+# wording had already moved on.
+$bannerPattern = '(?ms)^\$chainNote\s*=\s*@\(\s*\r?\n\s*''([^'']*)'''
+$bannerMatch = [regex]::Match([System.IO.File]::ReadAllText($Hook), $bannerPattern)
+if (-not $bannerMatch.Success) {
+    Write-Host 'Could not read the hook''s own banner out of its chain note.' -ForegroundColor Red
+    exit 1
+}
+$Banner = $bannerMatch.Groups[1].Value
 
 try {
     # =====================================================================
     Write-Host ''
     Write-Host '--- the detector, tested against the LIVE hook source ---' -ForegroundColor Cyan
-    # The pattern block and Test-FeatureRequestPrompt are cut out of the
-    # shipped file between two stable markers and dot-sourced. Transcribing the
-    # regexes into this file would keep passing while the hook drifted; this
-    # cannot, and it fails loudly if either marker ever disappears.
-    $HookText = [System.IO.File]::ReadAllText($Hook)
-    $startIndex = $HookText.IndexOf('# ---- feature detection')
-    $endIndex = $HookText.IndexOf('$hookInput = Read-HookInput')
-    if ($startIndex -lt 0 -or $endIndex -le $startIndex) {
-        Write-Host 'Could not cut the detector block out of the hook: its markers changed.' -ForegroundColor Red
-        exit 1
-    }
-    $detectorProbe = Join-Path $Work 'detector-probe.ps1'
-    Write-Utf8 $detectorProbe $HookText.Substring($startIndex, $endIndex - $startIndex)
-    . $detectorProbe
-    Check 'detector: the block really was extracted (all three patterns + the function)' (
+    # The classifier moved out of this hook into ..\_scope.ps1 the day
+    # Speckit-Check became its second caller, so the old marker-cut is gone and
+    # the SHIPPED library is dot-sourced whole instead. _scope.ps1 is pure -
+    # patterns and functions, no I/O - so loading it here is safe, and it is
+    # still the live source: transcribing the regexes into this file would keep
+    # passing while the hook drifted.
+    . $Scope
+    Check 'detector: the shipped library really loaded (all three patterns + the function)' (
         -not [string]::IsNullOrWhiteSpace($script:FeatureBugPattern) -and
         -not [string]::IsNullOrWhiteSpace($script:FeatureExplicitPattern) -and
         -not [string]::IsNullOrWhiteSpace($script:FeatureVerbPattern) -and
@@ -302,8 +306,14 @@ try {
         $r.Exit -eq 0 -and $r.Err -eq '' -and $msg -match 'FEATURE REQUEST CHECK') ($r.Out + $r.Err)
     Check 'advisory: it names grilling and domain-modeling, not just "a skill"' (
         $msg -match 'grilling' -and $msg -match 'domain-modeling') $msg
-    Check 'advisory: "not a feature" is offered as a complete answer' (
-        $msg -match '(?i)Not a feature') $msg
+    # FR-005: the rules WITHDREW the "not a feature, carry on" carve-out, so the
+    # advisory must no longer offer it - this assertion was inverted the day the
+    # carve-out went, and it is the inversion that enforces the requirement.
+    Check 'advisory: the withdrawn carve-out is NOT offered any more' (
+        $msg -notmatch '(?i)not a feature') $msg
+    Check 'advisory: it routes on to Spec Kit, naming no retired step' (
+        $msg -match 'speckit-specify' -and $msg -notmatch '(?i)to-spec\b' -and
+        $msg -notmatch '(?i)to-tickets') $msg
     Check 'advisory: UserPromptSubmit NEVER emits decision:block' (
         -not (Test-Blocked $r.Out)) $r.Out
     $rSame = Fire (@{ session_id = 'u1'; cwd = $projAdvise; hook_event_name = 'UserPromptSubmit'; prompt = $FeaturePrompt })
@@ -403,9 +413,12 @@ try {
         Test-Blocked $rHalf.Out) ($rHalf.Out + $rHalf.Err)
     Check 'gate: that block names domain-modeling as the missing half' (
         (Get-Message $rHalf.Out) -match 'no Skill call to "domain-modeling"') $rHalf.Out
+    # The chain's tail is Spec Kit now, not the to-spec/to-tickets wrappers:
+    # speckit-specify supersedes to-spec and speckit-tasks supersedes
+    # to-tickets, so the block has to send the reader to the steps that exist.
     Check 'gate: the block states the chain ORDER, not just the two names' (
         (Get-Message $rHalf.Out) -match 'IN ORDER' -and
-        (Get-Message $rHalf.Out) -match 'then to-spec, then to-tickets') $rHalf.Out
+        (Get-Message $rHalf.Out) -match 'then Spec Kit in order: speckit-specify') $rHalf.Out
 
     $tNone = New-Transcript 'no-feature' @(
         (New-UserEntry 'fix the crash on the login page'),
@@ -549,13 +562,20 @@ try {
     # =====================================================================
     Write-Host ''
     Write-Host '--- the shipped source contract ---' -ForegroundColor Cyan
-    # Persian lives in the hook as \uXXXX escapes that the .NET regex engine
+    # Persian lives in the source as \uXXXX escapes that the .NET regex engine
     # decodes. The moment a real Persian character is pasted in, the file stops
     # reading identically on 5.1 and pwsh 7 - so ASCII is an assertion, not a
-    # style preference.
+    # style preference. It now covers _scope.ps1 too: that is where the Persian
+    # patterns actually live since the classifier moved out of the hook, and a
+    # check that only watched the hook would have stopped watching them.
+    $HookText = [System.IO.File]::ReadAllText($Hook)
+    $ScopeText = [System.IO.File]::ReadAllText($Scope)
     $nonAscii = @([regex]::Matches($HookText, '[^\x00-\x7F]'))
     Check 'source: the shipped hook is pure ASCII (Persian stays \uXXXX)' (
         $nonAscii.Count -eq 0) ([string]$nonAscii.Count)
+    $scopeNonAscii = @([regex]::Matches($ScopeText, '[^\x00-\x7F]'))
+    Check 'source: the shared classifier library is pure ASCII too' (
+        $scopeNonAscii.Count -eq 0) ([string]$scopeNonAscii.Count)
     $exampleText = [System.IO.File]::ReadAllText($EnvExample)
     $declared = @([regex]::Matches($exampleText, '(?m)^([A-Z0-9_]+)=') | ForEach-Object { $_.Groups[1].Value })
     Check '.env.example documents MAX_TRANSCRIPT_BYTES' (

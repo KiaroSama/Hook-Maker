@@ -221,6 +221,10 @@
     # reminder, which meant the requirement arrived only after the work).
     Check 'SessionStart states the closing "Skills used:" requirement up front' (
         $r.Out -match 'CLOSING REQUIREMENT' -and $r.Out -match 'Skills used:') $r.Out
+    # Both advisories carry the route, not just the prompt-time one: a session
+    # that never submits a matching prompt would otherwise never hear it.
+    Check 'SessionStart also names the Spec Kit route' (
+        $r.Out -match 'Spec Kit routes every task') $r.Out
 
     # =====================================================================
     Write-Host '--- Skills-Check: Stop requires the "Skills used:" summary line ---' -ForegroundColor Cyan
@@ -289,6 +293,13 @@
     Write-Host '--- Skills-Check: UserPromptSubmit task-relevance nudge, once per session ---' -ForegroundColor Cyan
     $r = Fire -HookPath $hook1 -Cwd $proj1 -RawStdin (New-PromptStdin -Cwd $proj1 -EventName 'UserPromptSubmit' -Prompt 'anything' -SessionId 'skills-s1')
     Check 'UserPromptSubmit emits the mandatory-skill-check nudge' ($r.Out -match 'SKILL POLICY CHECK' -and $r.Out -match 'skill use is MANDATORY') $r.Out
+    # The skills inventory is the SET a task may use; Spec Kit is the ROUTE the
+    # task takes. Naming only the set reads as though the set were the whole
+    # policy, which is what the 2026-09-19 rules stopped being true.
+    Check 'the nudge also names the Spec Kit route' (
+        $r.Out -match 'Spec Kit routes every task' -and $r.Out -match 'speckit-converge') $r.Out
+    # Advisory only: naming a route must not turn this hook into a second gate.
+    Check 'and naming it adds no blocking decision' ($r.Out -notmatch '"decision":"block"') $r.Out
     $r2 = Fire -HookPath $hook1 -Cwd $proj1 -RawStdin (New-PromptStdin -Cwd $proj1 -EventName 'UserPromptSubmit' -Prompt 'anything else' -SessionId 'skills-s1')
     Check 'the SAME session does not repeat the nudge' ($r2.Exit -eq 0 -and $r2.Out -eq '') $r2.Out
     $r3 = Fire -HookPath $hook1 -Cwd $proj1 -RawStdin (New-PromptStdin -Cwd $proj1 -EventName 'UserPromptSubmit' -Prompt 'anything' -SessionId 'skills-s2')

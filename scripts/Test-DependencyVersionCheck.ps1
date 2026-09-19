@@ -393,7 +393,11 @@ try {
     $offDir = Join-Path $Work 'depcopy-off'
     New-Item -ItemType Directory -Path $offDir -Force | Out-Null
     Copy-Item $Hook (Join-Path $offDir 'Dependency-Version-Check.ps1')
-    Copy-Item (Join-Path (Split-Path -Parent $Hook) '..\_hooklib.ps1') (Join-Path $Work '_hooklib.ps1') -Force
+    # Copy-TestRuntimeLibraries, not a hand-written Copy-Item: it DERIVES the set
+    # from the real install payload, so a new shared library reaches this fixture
+    # the day it is added. The hand-written form silently staged an incomplete
+    # runtime when _scope.ps1 landed and the hook could not dot-source it.
+    Copy-TestRuntimeLibraries -SourceHookLib (Join-Path (Split-Path -Parent $Hook) '..\_hooklib.ps1') -Destination (Join-Path $Work '_hooklib.ps1')
     Write-Utf8 (Join-Path $offDir '.env') "CLOSING_REMINDER=0`r`n"
     $offHook = Join-Path $offDir 'Dependency-Version-Check.ps1'
     $r = Fire -Cwd $contractProj -EventName 'Stop' -SessionId 'off-1' -HookPath $offHook

@@ -20,6 +20,7 @@
 #   _testrunguardharness.ps1      shared fixture builders + the process runner
 #   _testrunguardrecognition.ps1  PreToolUse recognition + the replacement
 #   _testrunguardposttool.ps1     PostToolUse reporting + runner discovery
+#   _testrunguardvisibility.ps1   Silent Execution: visible invocations refused
 #   _testrunguardcoordination.ps1 the observed-record handoff + run identity
 #   _testrunguardrunner.ps1       the real guarded runner, end to end
 #   _testrunguardpolicy.ps1       deny-text guidance, static safety, 5.1
@@ -66,6 +67,10 @@ try {
 
     # PostToolUse reporting, the client shapes, and runner discovery.
     . (Join-Path $PSScriptRoot '_testrunguardposttool.ps1')
+
+    # Silent Execution: a recognised test command whose invocation would open a
+    # window is refused with the exact silent form; an ambiguous one is not.
+    . (Join-Path $PSScriptRoot '_testrunguardvisibility.ps1')
 
     # An asynchronous run that has not finished yet (order 42): deferral on a
     # provably live owner, and the client envelope as actually observed.

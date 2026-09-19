@@ -13,7 +13,11 @@ $hookRoot = Join-Path (Split-Path -Parent $PSScriptRoot) 'hooks'
 $hookCopy = Join-Path $Work 'hook'
 New-Item -ItemType Directory -Path $hookCopy -Force | Out-Null
 Copy-Item -LiteralPath (Join-Path $hookRoot 'Test-Plan-Check\Test-Plan-Check.ps1') -Destination $hookCopy
-Copy-Item -LiteralPath (Join-Path $hookRoot '_hooklib.ps1') -Destination $Work
+# The hook dot-sources its shared siblings from '..' , so they go beside $hookCopy,
+# not inside it. Copy-TestRuntimeLibraries DERIVES the set from the real install
+# payload - a hand-written list here went a library short the day _scope.ps1
+# landed and every case in this suite died on the missing sibling.
+Copy-TestRuntimeLibraries -SourceHookLib (Join-Path $hookRoot '_hooklib.ps1') -Destination (Join-Path $Work '_hooklib.ps1')
 
 function Invoke-Scanner {
     param([string]$Project, [string]$Config = '')

@@ -203,7 +203,9 @@ function Get-HookSourceInfo {
 # uses neither is returned unchanged (nothing to rewrite).
 $script:PrivateLibraryRewrites = @(
     @{ From = ". (Join-Path `$PSScriptRoot '..\_hooklib.ps1')"; To = ". (Join-Path `$PSScriptRoot '_hooklib.ps1')" },
-    @{ From = ". (Join-Path `$ScriptRoot '..\_hooklib.ps1')";   To = ". (Join-Path `$ScriptRoot '_hooklib.ps1')" }
+    @{ From = ". (Join-Path `$ScriptRoot '..\_hooklib.ps1')";   To = ". (Join-Path `$ScriptRoot '_hooklib.ps1')" },
+    @{ From = ". (Join-Path `$PSScriptRoot '..\_scope.ps1')";    To = ". (Join-Path `$PSScriptRoot '_scope.ps1')" },
+    @{ From = ". (Join-Path `$ScriptRoot '..\_scope.ps1')";      To = ". (Join-Path `$ScriptRoot '_scope.ps1')" }
 )
 
 function Get-PrivateLibraryScriptContent {

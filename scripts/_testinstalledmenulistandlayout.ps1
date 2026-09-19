@@ -179,34 +179,35 @@
             $strayManagement = @($shippedRange | Where-Object { $rows.Contains($_) -and [string]$rows[$_] -match '\[manage\]' })
             Check ('menu: no management row appears inside the shipped range 3..' + ($updateIndex - 1)) ($strayManagement.Count -eq 0) ('stray: ' + ($strayManagement -join ','))
 
-            # The order contract, PINNED: the three test-health hooks (24.txt)
-            # sit at 23/24/25 IN THAT ORDER, then Utf8-Encoding-Check at 26
-            # (30.md), then Synapse-Rules-Check, Session-Summary-Check and
-            # Cloudflare-Deploy, which stays the last individual entry. These
-            # numbers are literal on purpose - derive them and nothing is left
-            # protecting the order.
-            Check 'menu: 23 is Test-Plan-Check' ([string]$rows[23] -match '^Test-Plan-Check \| \[pre-task\] \|') ([string]$rows[23])
-            Check 'menu: 24 is Test-Run-Guard' ([string]$rows[24] -match '^Test-Run-Guard \| \[pre\+post-task\] \|') ([string]$rows[24])
-            Check 'menu: 25 is Test-Completion-Check' ([string]$rows[25] -match '^Test-Completion-Check \| \[post-task\] \|') ([string]$rows[25])
-            Check 'menu: 26 is Utf8-Encoding-Check' ([string]$rows[26] -match '^Utf8-Encoding-Check \| \[pre\+post-task\] \|') ([string]$rows[26])
-            Check 'menu: 27 is Synapse-Rules-Check (directly before Cloudflare-Deploy)' ([string]$rows[27] -match '^Synapse-Rules-Check \| \[pre\+post-task\] \|') ([string]$rows[27])
-            Check 'menu: 28 is Session-Summary-Check (directly before Cloudflare-Deploy)' ([string]$rows[28] -match '^Session-Summary-Check \| \[pre-task\] \|') ([string]$rows[28])
-            Check 'menu: 29 is Cloudflare-Deploy (still the last individual entry)' ([string]$rows[29] -match '^Cloudflare-Deploy \| \[post-task\] \|') ([string]$rows[29])
+            # The order contract, PINNED: Speckit-Check at 10 (order 48), the
+            # three test-health hooks (24.txt) at 24/25/26 IN THAT ORDER, then
+            # Utf8-Encoding-Check at 27 (30.md), then Synapse-Rules-Check,
+            # Session-Summary-Check and Cloudflare-Deploy, which stays the last
+            # individual entry. These numbers are literal on purpose - derive
+            # them and nothing is left protecting the order.
+            Check 'menu: 10 is Speckit-Check' ([string]$rows[10] -match '^Speckit-Check \| \[pre-task\] \|') ([string]$rows[10])
+            Check 'menu: 24 is Test-Plan-Check' ([string]$rows[24] -match '^Test-Plan-Check \| \[pre-task\] \|') ([string]$rows[23])
+            Check 'menu: 25 is Test-Run-Guard' ([string]$rows[25] -match '^Test-Run-Guard \| \[pre\+post-task\] \|') ([string]$rows[25])
+            Check 'menu: 26 is Test-Completion-Check' ([string]$rows[26] -match '^Test-Completion-Check \| \[post-task\] \|') ([string]$rows[26])
+            Check 'menu: 27 is Utf8-Encoding-Check' ([string]$rows[27] -match '^Utf8-Encoding-Check \| \[pre\+post-task\] \|') ([string]$rows[27])
+            Check 'menu: 28 is Synapse-Rules-Check (directly before Cloudflare-Deploy)' ([string]$rows[28] -match '^Synapse-Rules-Check \| \[pre\+post-task\] \|') ([string]$rows[28])
+            Check 'menu: 29 is Session-Summary-Check (directly before Cloudflare-Deploy)' ([string]$rows[29] -match '^Session-Summary-Check \| \[pre-task\] \|') ([string]$rows[29])
+            Check 'menu: 30 is Cloudflare-Deploy (still the last individual entry)' ([string]$rows[30] -match '^Cloudflare-Deploy \| \[post-task\] \|') ([string]$rows[30])
 
-            Check 'menu: 30 is Update installed hooks' ([string]$rows[30] -match '^Update installed hooks \| \[manage\] \|') ([string]$rows[30])
+            Check 'menu: 31 is Update installed hooks' ([string]$rows[31] -match '^Update installed hooks \| \[manage\] \|') ([string]$rows[31])
             # The exact contract wording for the two rows the task pins. The
             # status row gained '; skips dependency caches' when it started pruning
             # node_modules/.next/... - the row states what the scan DOES, and a
             # scan that no longer walks those trees must say so rather than let
             # the reader assume full coverage.
-            Check 'menu: 31 renders EXACTLY the contract row' ([string]$rows[31] -eq 'Get hook status | [manage] | scan a path for installed hooks (skips dependency caches) and track results') ([string]$rows[31])
-            Check 'menu: 32 renders EXACTLY the contract row' ([string]$rows[32] -eq 'Uninstall installed hooks | [manage] | list and remove installed hooks; never deletes hook sources') ([string]$rows[32])
+            Check 'menu: 32 renders EXACTLY the contract row' ([string]$rows[32] -eq 'Get hook status | [manage] | scan a path for installed hooks (skips dependency caches) and track results') ([string]$rows[32])
+            Check 'menu: 33 renders EXACTLY the contract row' ([string]$rows[33] -eq 'Uninstall installed hooks | [manage] | list and remove installed hooks; never deletes hook sources') ([string]$rows[33])
 
             # The fixture is the only custom hook, so the custom block starts at
-            # 35 - i.e. adding a custom hook did NOT shift 3-34 at all.
-            Check 'menu: custom hooks start at 35' ([string]$rows[35] -match 'ZZZ-Menusuite-Fixture') ([string]$rows[35])
-            Check 'menu: adding a custom hook did not shift the management rows' (([string]$rows[30] -match 'Update') -and ([string]$rows[31] -match 'Get hook status') -and ([string]$rows[32] -match 'Uninstall')) (($indices | Sort-Object) -join ',')
-            Check 'menu: adding a custom hook did not shift the three new shipped rows' (([string]$rows[23] -match 'Test-Plan-Check') -and ([string]$rows[24] -match 'Test-Run-Guard') -and ([string]$rows[25] -match 'Test-Completion-Check')) (($indices | Sort-Object) -join ',')
+            # 36 - i.e. adding a custom hook did NOT shift 3-35 at all.
+            Check 'menu: custom hooks start at 36' ([string]$rows[36] -match 'ZZZ-Menusuite-Fixture') ([string]$rows[35])
+            Check 'menu: adding a custom hook did not shift the management rows' (([string]$rows[31] -match 'Update') -and ([string]$rows[32] -match 'Get hook status') -and ([string]$rows[33] -match 'Uninstall')) (($indices | Sort-Object) -join ',')
+            Check 'menu: adding a custom hook did not shift the three new shipped rows' (([string]$rows[24] -match 'Test-Plan-Check') -and ([string]$rows[25] -match 'Test-Run-Guard') -and ([string]$rows[26] -match 'Test-Completion-Check')) (($indices | Sort-Object) -join ',')
             # The Tip line is what tells a user which numbers are actions, so it
             # has to agree with the rows actually rendered above it - compare it
             # against those rows rather than against a second hand-kept literal.
@@ -219,7 +220,7 @@
             # shipped rows already respect (the longest pre-existing row is the
             # yardstick - no new row may be the one that starts wrapping).
             # Located BY NAME: pinning their numbers here is what went stale.
-            $newRowNames = @('Test-Plan-Check', 'Test-Run-Guard', 'Test-Completion-Check',
+            $newRowNames = @('Speckit-Check', 'Test-Plan-Check', 'Test-Run-Guard', 'Test-Completion-Check',
                 'Utf8-Encoding-Check', 'Synapse-Rules-Check', 'Session-Summary-Check')
             $newRowNumbers = @($newRowNames | ForEach-Object { Get-RenderedIndex $rows ('^' + [regex]::Escape($_) + ' \|') })
             Check 'menu: every short-by-design row was located by name' (

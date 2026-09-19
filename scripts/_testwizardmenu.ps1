@@ -22,18 +22,18 @@
     # The optional " and N-M" group is NOT slack in the shipped span: it absorbs a
     # sibling suite's ZZZ-* fixture (or an aborted run's leftover), which the
     # wizard correctly renders as a SECOND span. The shipped span itself is still
-    # pinned exactly at 3-29, and the both-spans rendering is asserted positively
+    # pinned exactly at 3-30, and the both-spans rendering is asserted positively
     # by the ZZZ-MenuSpan case below - so nothing this line used to prove is lost
     # except "no custom hook exists right now", which is not this suite's to own.
-    Check 'select-all is list item 1 and the shipped span is exactly 3-29' (
-        $r.Out -match '(?m)^  1\. Select all hooks \| \[all\] \| run the sync group \(2\) and install every hook below \(3-29( and \d+-\d+)?\)\s*$') $r.Out
+    Check 'select-all is list item 1 and the shipped span is exactly 3-30' (
+        $r.Out -match '(?m)^  1\. Select all hooks \| \[all\] \| run the sync group \(2\) and install every hook below \(3-30( and \d+-\d+)?\)\s*$') $r.Out
     # The hook numbers are NOT contiguous once a custom hook exists: three
     # management rows sit between the shipped and custom blocks. The old hint
     # printed one '3-N' span computed as shipped+custom+2, which BOTH swept the
     # management rows in and stopped short of the custom hook. It read correctly
     # only while no custom hook existed - which is all this fixture had, so the
     # assertion above agreed with the bug. The real span is asserted below.
-    Check 'the tip states where the hooks actually are' ($r.Out -match 'Hooks are 3-29( and \d+-\d+)?; 30/31/32/33/34 are management actions') $r.Out
+    Check 'the tip states where the hooks actually are' ($r.Out -match 'Hooks are 3-30( and \d+-\d+)?; 31/32/33/34/35 are management actions') $r.Out
     Check 'sync group is list item 2' ($r.Out -match '2\. Create or update a sync group')
     Check 'context hook menu names match their whole-.ai scope' ($r.Out -match 'Ai-Context-Check' -and $r.Out -match 'Ai-Context-Load')
     Check 'old memory-only menu names are hidden' ($r.Out -notmatch 'Ai-Memory-(Check|Load)')
@@ -77,27 +77,28 @@
         '1\. Select all hooks', '2\. Create or update a sync group', '3\. Ai-Context-Check',
         '4\. Ai-Context-Load', '5\. Ci-Status-Check', '6\. Dependabot-Check',
         '7\. Github-Baseline-Check', '8\. Git-Sync-Check',
-        '9\. Feature-Request-Check', '10\. Cbm-Read-Check', '11\. Cbm-Update-Check',
-        '12\. Docs-Freshness-Check', '13\. Graph-Read-Check', '14\. Graph-Update-Check',
-        '15\. Large-File-Check', '16\. Mcp-Usage-Check', '17\. Rules-Check',
-        '18\. Skills-Check', '19\. Secrets-Check', '20\. Ignore-Rules-Check',
-        '21\. Dependency-Version-Check', '22\. Test-Temp-Cleanup', '23\. Test-Plan-Check',
-        '24\. Test-Run-Guard', '25\. Test-Completion-Check', '26\. Utf8-Encoding-Check',
-        '27\. Synapse-Rules-Check', '28\. Session-Summary-Check', '29\. Cloudflare-Deploy'
+        '9\. Feature-Request-Check', '10\. Speckit-Check', '11\. Cbm-Read-Check',
+        '12\. Cbm-Update-Check', '13\. Docs-Freshness-Check', '14\. Graph-Read-Check',
+        '15\. Graph-Update-Check', '16\. Large-File-Check', '17\. Mcp-Usage-Check',
+        '18\. Rules-Check', '19\. Skills-Check', '20\. Secrets-Check',
+        '21\. Ignore-Rules-Check', '22\. Dependency-Version-Check', '23\. Test-Temp-Cleanup',
+        '24\. Test-Plan-Check', '25\. Test-Run-Guard', '26\. Test-Completion-Check',
+        '27\. Utf8-Encoding-Check', '28\. Synapse-Rules-Check', '29\. Session-Summary-Check',
+        '30\. Cloudflare-Deploy'
     ) -join '[\s\S]*'
-    Check 'hooks follow the requested menu order (Select all -> sync group -> hooks -> test-health at 23/24/25 -> Utf8-Encoding-Check at 26 -> Synapse-Rules-Check at 27 -> Session-Summary-Check at 28 -> Cloudflare-Deploy last at 29)' ($r.Out -match $menuOrder)
+    Check 'hooks follow the requested menu order (Select all -> sync group -> hooks -> Speckit-Check at 10 -> test-health at 24/25/26 -> Utf8-Encoding-Check at 27 -> Synapse-Rules-Check at 28 -> Session-Summary-Check at 29 -> Cloudflare-Deploy last at 30)' ($r.Out -match $menuOrder)
     # The three test-health hooks (24.txt) render one line each, with the tag
     # their canonical When value demands - a value Get-HookTimingTag does not
     # recognize silently renders NO tag at all.
-    Check 'Test-Plan-Check renders the [pre-task] tag' ($r.Out -match '(?m)^  23\. Test-Plan-Check \| \[pre-task\] \| \S') $r.Out
-    Check 'Test-Run-Guard renders the [pre+post-task] tag' ($r.Out -match '(?m)^  24\. Test-Run-Guard \| \[pre\+post-task\] \| \S') $r.Out
-    Check 'Test-Completion-Check renders the [post-task] tag' ($r.Out -match '(?m)^  25\. Test-Completion-Check \| \[post-task\] \| \S') $r.Out
-    Check 'the three management rows follow the shipped block at 29/30/31' (
-        ($r.Out -match '(?m)^  30\. Update installed hooks \| \[manage\] \|') -and
-        ($r.Out -match '(?m)^  31\. Get hook status \| \[manage\] \|') -and
-        ($r.Out -match '(?m)^  32\. Uninstall installed hooks \| \[manage\] \|')) $r.Out
+    Check 'Test-Plan-Check renders the [pre-task] tag' ($r.Out -match '(?m)^  24\. Test-Plan-Check \| \[pre-task\] \| \S') $r.Out
+    Check 'Test-Run-Guard renders the [pre+post-task] tag' ($r.Out -match '(?m)^  25\. Test-Run-Guard \| \[pre\+post-task\] \| \S') $r.Out
+    Check 'Test-Completion-Check renders the [post-task] tag' ($r.Out -match '(?m)^  26\. Test-Completion-Check \| \[post-task\] \| \S') $r.Out
+    Check 'the three management rows follow the shipped block at 31/32/33' (
+        ($r.Out -match '(?m)^  31\. Update installed hooks \| \[manage\] \|') -and
+        ($r.Out -match '(?m)^  32\. Get hook status \| \[manage\] \|') -and
+        ($r.Out -match '(?m)^  33\. Uninstall installed hooks \| \[manage\] \|')) $r.Out
     # THE case the old fixture never had. With a custom hook present the hook
-    # numbers are two spans - shipped 3-29 and custom 35+ - separated by the
+    # numbers are two spans - shipped 3-30 and custom 36+ - separated by the
     # management rows. A single computed '3-N' claimed 25/26/27 were hooks and
     # left the custom one out; only a fixture with a custom hook can catch that.
     $spanHook = Join-Path (Join-Path (Split-Path -Parent $PSScriptRoot) 'hooks') 'ZZZ-MenuSpan'
@@ -106,13 +107,13 @@
         [System.IO.File]::WriteAllText((Join-Path $spanHook 'ZZZ-MenuSpan.ps1'), '# span fixture', (New-Object System.Text.UTF8Encoding $false))
         $rSpan = Invoke-Wizard -Config $cfg1 -NoInstall -Answers @('1', '1', '0', '0')
         Check 'with a custom hook the select-all hint lists BOTH spans, not one run' (
-            $rSpan.Out -match 'install every hook below \(3-29 and 35-35\)') $rSpan.Out
+            $rSpan.Out -match 'install every hook below \(3-30 and 36-36\)') $rSpan.Out
         Check 'the hint no longer claims the management rows are hooks' (
             $rSpan.Out -notmatch 'install every hook below \(3-30\)') $rSpan.Out
-        Check 'the custom hook really is listed at 34, after the management rows' (
-            $rSpan.Out -match '(?m)^  35\. ZZZ-') $rSpan.Out
-        Check 'the management rows stay at 30/31/32/33/34 regardless of custom hooks' (
-            $rSpan.Out -match '(?m)^  30\. Update installed hooks \|') $rSpan.Out
+        Check 'the custom hook really is listed at 36, after the management rows' (
+            $rSpan.Out -match '(?m)^  36\. ZZZ-') $rSpan.Out
+        Check 'the management rows stay at 31/32/33/34/35 regardless of custom hooks' (
+            $rSpan.Out -match '(?m)^  31\. Update installed hooks \|') $rSpan.Out
 
         # ZZZ-* IMMUNITY (this suite counts the REAL hooks\ directory, which
         # sibling suites write throwaway fixtures into). A leftover
@@ -379,7 +380,13 @@
     # Self-contained install: the command points at a runtime copy INSIDE the
     # project, named with the friendly hyphenated hook name.
     Check 'command points at the project-local copy' ($j2 -like '*hooks\\Hook-Maker\\Ai-Memory-Check\\Ai-Memory-Check.ps1*')
-    Check 'command does not reference the tool folder' ($j2 -notlike '*Hook Maker*')
+    # NOT a substring test on the tool FOLDER NAME. Test workspaces live inside
+    # the repository now (.ci-work\windows\, per the project-owned test artifact
+    # rule), so every fixture path contains that name and the old proxy failed
+    # locally while passing in CI, where the checkout is spelled with a hyphen.
+    # What the assertion actually means is "the registered command must not point
+    # back at the TOOL'S OWN hooks directory", so it compares that path.
+    Check 'command does not point back at the tool''s own hooks directory' ($j2 -notlike ('*' + ((Split-Path -Parent $PSScriptRoot) + '\hooks\').Replace('\', '\\') + '*'))
     Check 'runtime copy of the hook exists' (Test-Path (Join-Path $t '.claude\hooks\Hook-Maker\Ai-Memory-Check\Ai-Memory-Check.ps1'))
     Check 'each hook gets its own PRIVATE _hooklib copy' (Test-Path (Join-Path $t '.claude\hooks\Hook-Maker\Ai-Memory-Check\_hooklib.ps1'))
     Check 'no shared library is left at the runtime root' (-not (Test-Path (Join-Path $t '.claude\hooks\Hook-Maker\_hooklib.ps1')))
@@ -410,8 +417,8 @@
 
     $cfgRecBoth = Join-Path $Work 'cfg-rec-both.json'; New-Config $cfgRecBoth
     $recBothProj = New-Proj 'RecommendedSessionStartStop'
-    # item 9 = Docs-Freshness-Check (recommended events: SessionStart,Stop).
-    $rRecBoth = Invoke-Wizard -Config $cfgRecBoth -Answers @('1', '1', '12', '', '1', $recBothProj, 'done', '', '0')
+    # item 13 = Docs-Freshness-Check (recommended events: SessionStart,Stop).
+    $rRecBoth = Invoke-Wizard -Config $cfgRecBoth -Answers @('1', '1', '13', '', '1', $recBothProj, 'done', '', '0')
     Check 'exit 0 (recommended-events single-hook install, SessionStart+Stop)' ($rRecBoth.Exit -eq 0) $rRecBoth.Err
     Check 'the recommended-events choice names both actual events' ($rRecBoth.Out -match 'This hook''s recommended events.*\(SessionStart, Stop\)')
     $recBothClaude = Join-Path $recBothProj '.claude\settings.local.json'
@@ -441,7 +448,7 @@
         $eng = 'hooks\Hook-Maker\Cross-Project-.ai-Knowledge-Sync\Cross-Project-.ai-Knowledge-Sync.ps1'
         $engCfg = 'hooks\Hook-Maker\Cross-Project-.ai-Knowledge-Sync\sync-hooks.json'
         $engProjects = 'hooks\Hook-Maker\Cross-Project-.ai-Knowledge-Sync\SYNC-PROJECTS.txt'
-        Check "$name command uses the local engine copy" ($jc -like ('*' + $eng.Replace('\', '\\') + '*') -and $jc -notlike '*Hook Maker*')
+        Check "$name command uses the local engine copy" ($jc -like ('*' + $eng.Replace('\', '\\') + '*') -and $jc -notlike ('*' + ((Split-Path -Parent $PSScriptRoot) + '\hooks\').Replace('\', '\\') + '*'))
         Check "$name claude runtime copy complete" ((Test-Path (Join-Path $proj (Join-Path '.claude' $eng))) -and (Test-Path (Join-Path $proj '.claude\hooks\Hook-Maker\Cross-Project-.ai-Knowledge-Sync\_hooklib.ps1')) -and (Test-Path (Join-Path $proj (Join-Path '.claude' $engCfg))))
         Check "$name codex runtime copy complete" ((Test-Path (Join-Path $proj (Join-Path '.codex' $eng))) -and (Test-Path (Join-Path $proj (Join-Path '.codex' $engCfg))))
         foreach ($clientDir in @('.claude', '.codex')) {
@@ -465,16 +472,16 @@
     Write-Host '--- multi-select install (range + list, recommended events) ---' -ForegroundColor Cyan
     $cfg4 = Join-Path $Work 'cfg4.json'; New-Config $cfg4
     $m = New-Proj 'Multi'
-    # main 1 -> sub 1 -> "3-8,19,29" (eight advisory hooks incl. Cloudflare-Deploy,
+    # main 1 -> sub 1 -> "3-8,20,30" (eight advisory hooks incl. Cloudflare-Deploy,
     #        still the LAST individual entry). The two picked by number move
-    #        whenever the shipped set changes - Secrets-Check is at 19 and
-    #        Cloudflare-Deploy at 29 after Session-Summary-Check was inserted at 28.
+    #        whenever the shipped set changes - Secrets-Check is at 20 and
+    #        Cloudflare-Deploy at 30 after Speckit-Check was inserted at 10.
     #        The engine is excluded from this list entirely, see the guard
     #        test below.
     #        -> mode 1 (recommended events per hook) -> client 3 = All clients
     #        (reaches Claude + Codex in one pass)
     #        -> target -> done -> start -> exit
-    $r = Invoke-Wizard -Config $cfg4 -Answers @('1', '1', '3-8,19,29', '1', '3', $m, 'done', '', '0')
+    $r = Invoke-Wizard -Config $cfg4 -Answers @('1', '1', '3-8,20,30', '1', '3', $m, 'done', '', '0')
     Check 'exit 0' ($r.Exit -eq 0)
     Check 'no stderr' ($r.Err -eq '')
     Check 'selection accepts a range combined with a single item' ($r.Out -notmatch 'Enter number\(s\)')

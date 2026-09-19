@@ -88,7 +88,8 @@ $script:CleanupWitnessFilePatterns = @('*.pyc', '*.pyo', '.coverage', 'coverage.
 $script:CleanupWitnessPruneNames = @(
     '.git', '.ai', '.claude', '.codex', 'node_modules', '.venv', 'venv', 'env',
     '__pypackages__', 'vendor', 'target', 'dist', 'build', 'out', '.next',
-    '.nuxt', '.tox', '.svn', '.hg', 'graphify-out', 'logs', '.cache', '.ci-runner', '.ci-work'
+    '.nuxt', '.tox', '.svn', '.hg', 'graphify-out', 'logs', '.cache', '.ci-runner', '.ci-work',
+    '.ci-runner-win', '.ci-cache', '.codebase-memory', '.specify'
 )
 # Bounds, so one pathological tree cannot slow a Stop hook. Generous against the
 # producer's own 15000-entry default on purpose: hitting a bound reads as

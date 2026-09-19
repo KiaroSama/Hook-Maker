@@ -130,10 +130,23 @@ $script:ReviewOnlyFilePatterns = @('.coverage', 'coverage.xml')
 # in the project (.ci-runner - measured at 21,050 entries and 16 levels, 79% of
 # one project's directories) each blow the entry/depth ceilings on their own, for
 # a PARTIAL baseline describing CI or package-manager runtime state, not residue.
+# The 2026-09-19 additions are the same lesson a third time. '.codebase-memory'
+# is rewritten wholesale on every index and one team measured it at ~6 GB, and
+# '.ci-runner-win' and '.ci-cache' are the other two spellings the environment
+# rules give project-owned CI artifacts - each blows the entry/depth ceilings
+# on its own, for a PARTIAL baseline describing runtime state, not residue.
+# '.specify' joins them as local-only planning infrastructure.
+#
+# 'specs' and 'plans' are deliberately NOT here. This list matches by NAME at
+# any depth, which is broader than the rooted '/specs/' and '/plans/' ignore
+# patterns, and both are plausible names for ordinary project directories that
+# could hold real residue. Nothing is lost by walking them: a candidate is only
+# ever surfaced from the named lists above, so neither can be deleted either way.
 $script:HardPruneNames = @(
     '.git', '.ai', '.claude', '.codex', 'node_modules', '.venv', 'venv', 'env',
     '__pypackages__', 'vendor', 'target', 'dist', 'build', 'out', '.next',
-    '.nuxt', '.tox', '.svn', '.hg', 'graphify-out', 'logs', '.cache', '.ci-runner', '.ci-work'
+    '.nuxt', '.tox', '.svn', '.hg', 'graphify-out', 'logs', '.cache', '.ci-runner', '.ci-work',
+    '.ci-runner-win', '.ci-cache', '.codebase-memory', '.specify'
 )
 # Bounds the per-candidate size walk so one pathological tree cannot make the
 # hook slow. ENTRIES, not files: a tree of empty directories contains no files

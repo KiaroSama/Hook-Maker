@@ -391,7 +391,20 @@ function Invoke-StopAdmission {
     $path = Get-StopLedgerPath -ProjectRoot ([string](Get-Field $HookInput 'cwd'))
     $eventId = Get-StopEventId -HookInput $HookInput
 
-    # Validation is authoritative only inside Invoke-StopLedgerUpdate's lock.
+    # CORRUPT OR UNSUPPORTED IS NOT 'FRESH', and the check that decides it lives
+    # inside Invoke-StopLedgerUpdate's lock - not here.
+    #
+    # An empty document has blocks = 0, so reconstructing one from damaged bytes
+    # hands the chain a full allowance again: a refund in the middle of a task,
+    # which is the loop the allowance exists to bound. Validating outside the
+    # write lock did not protect the read-modify-write either, so the decision
+    # was made on state that could change before it was used.
+    #
+    # Damaged state is now REFUSED, never rewritten, and never quarantined out of
+    # the way to make a gate quiet - the bytes survive for whoever has to look at
+    # them, and Write-StopBlockResult says out loud that corrections stopped and
+    # the finding is unresolved. A ledger from a NEWER build is not damaged at
+    # all and is never touched.
     $outcome = Invoke-StopLedgerUpdate -Path $path -Mutate {
         param($ledger)
         $chain = Resolve-StopChain -Ledger $ledger -ChainKey $keys.ChainKey -IsContinuation $IsContinuation -EventId $eventId

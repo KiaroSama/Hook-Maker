@@ -57,6 +57,16 @@ function Add-SharedRuntimeLibraryArtifacts {
     if (Test-Path -LiteralPath $taskIdentityLib -PathType Leaf) {
         Add-Artifact (New-PlanArtifact -RelativePath ($FriendlyName + '/_taskidentity.ps1') -Kind 'File' -SourcePath $taskIdentityLib)
     }
+
+    # _scope.ps1 is dot-sourced DIRECTLY by the hooks that need it, not by
+    # _hooklib.ps1 - but the contract is the same: an installed runtime that
+    # lacks it cannot answer "is this prompt project work?" or "is this
+    # directory the project's own source?", and both consumers would throw on a
+    # missing sibling rather than degrade.
+    $scopeLib = Join-Path $ToolRoot 'hooks\_scope.ps1'
+    if (Test-Path -LiteralPath $scopeLib -PathType Leaf) {
+        Add-Artifact (New-PlanArtifact -RelativePath ($FriendlyName + '/_scope.ps1') -Kind 'File' -SourcePath $scopeLib)
+    }
 }
 
 # The companion EXECUTABLE one hook cannot work without.

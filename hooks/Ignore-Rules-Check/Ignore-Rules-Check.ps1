@@ -35,9 +35,18 @@ $inside = Invoke-QuietCommand -FilePath git -ArgumentList @('-C', $cwd, 'rev-par
 if ($LASTEXITCODE -ne 0 -or [string]$inside -ne 'true') { exit 0 }
 
 $patterns = New-Object System.Collections.Generic.List[string]
+# ORDER IS SEMANTIC, so nothing here is ever reordered or removed - the set is
+# declared stable and last-match/negation behaviour depends on the positions.
+# The 2026-09-19 additions go in their canonical places: both Spec Kit
+# directories straight after /.ai/ (infrastructure AND the per-feature
+# spec/plan/tasks - the tracking half was reversed on the same day, so neither
+# is committed), then the regenerated code index after /graphify-out/, then the
+# local plans directory.
 @(
-    '/.ai/', '/secrets.md', '/explain-AI.md', '/reference.md', '/CLAUDE.md', '/AGENTS.md',
+    '/.ai/', '/.specify/', '/specs/', '/secrets.md', '/explain-AI.md', '/reference.md',
+    '/CLAUDE.md', '/AGENTS.md',
     '/.agents/', '/.claude/', '/.kiro/', '/.codex/', '/.cursor/', '/.cline/', '/graphify-out/',
+    '/.codebase-memory/', '/plans/',
     '.ignoreme', '**/.ignoreme', '/.env', '/.env.*', '!/.env.example', '!/.env.sample',
     '!/.env.template', '!/.env.dist'
 ) | ForEach-Object { [void]$patterns.Add($_) }
