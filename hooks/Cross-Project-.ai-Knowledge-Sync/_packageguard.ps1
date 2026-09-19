@@ -70,9 +70,12 @@ function Test-OwnedStagingChain {
     foreach ($segment in $chain) {
         try {
             $attributes = [System.IO.File]::GetAttributes($segment)
-            if (($attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) { return $false }
+            if (($attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0 -or
+                ($attributes -band [System.IO.FileAttributes]::Directory) -eq 0) { return $false }
         }
-        catch { continue }   # not created yet: nothing can be redirecting through it
+        catch [System.IO.FileNotFoundException] { continue }
+        catch [System.IO.DirectoryNotFoundException] { continue }
+        catch { return $false }  # Unreadable is not equivalent to absent.
     }
     return $true
 }
@@ -116,29 +119,42 @@ function Remove-OwnedPackageDirectory {
 # the package is the only thing the reviewer ever reads - so the hash is taken
 # from what actually landed, not from what was asked for.
 function Test-StagedFilesVerified {
-    param(
-        [Parameter(Mandatory = $true)][string]$FilesRoot,
-        [Parameter(Mandatory = $true)]$Records
-    )
-    foreach ($record in @($Records)) {
-        $relative = [string](Get-Field $record 'path')
-        $expected = [string](Get-Field $record 'sha256')
-        if ([string]::IsNullOrWhiteSpace($relative) -or [string]::IsNullOrWhiteSpace($expected)) { return $false }
-        $staged = Join-Path $FilesRoot ($relative.Replace('/', [System.IO.Path]::DirectorySeparatorChar))
-        try {
-            if (-not (Test-Path -LiteralPath $staged -PathType Leaf)) { return $false }
-            $sha256 = [System.Security.Cryptography.SHA256]::Create()
-            try {
-                $stream = [System.IO.File]::OpenRead($staged)
-                try { $actual = ([System.BitConverter]::ToString($sha256.ComputeHash($stream))).Replace('-', '').ToLowerInvariant() }
-                finally { $stream.Dispose() }
-            }
-            finally { $sha256.Dispose() }
-            if (-not [string]::Equals($actual, $expected, [System.StringComparison]::OrdinalIgnoreCase)) { return $false }
+    param([Parameter(Mandatory = $true)][string]$FilesRoot, [Parameter(Mandatory = $true)][AllowEmptyCollection()]$Records)
+    try {
+        $root = Normalize-Path $FilesRoot
+        if (-not [IO.Directory]::Exists($root)) { return $false }
+        $seen = @{}; $totalBytes = 0L
+        foreach ($record in @($Records)) {
+            $relative = [string](Get-Field $record 'path')
+            $expected = [string](Get-Field $record 'sha256')
+            if (-not (Test-PackageRelativePath $relative) -or $expected -notmatch '^[a-fA-F0-9]{64}$' -or $seen.ContainsKey($relative)) { return $false }
+            $seen[$relative] = $true
+            $staged = [IO.Path]::GetFullPath((Join-Path $root $relative))
+            if (-not (Test-PathInside -Candidate $staged -Parent $root)) { return $false }
+            $parent = [IO.Path]::GetDirectoryName($staged)
+            if (-not (Test-OwnedStagingChain -TrustedRoot $root -OwnedRoot $root -Target $parent -AllowRootItself)) { return $false }
+            $attributes = [IO.File]::GetAttributes($staged)
+            if (($attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 -or ($attributes -band [IO.FileAttributes]::Directory) -ne 0) { return $false }
+            $totalBytes += (Get-Item -LiteralPath $staged -ErrorAction Stop).Length
+            if ($totalBytes -gt 536870912 -or $seen.Count -gt 10000) { return $false }
+            if ((Get-PackageFileDigest $staged) -ine $expected) { return $false }
         }
-        catch { return $false }
+        # A reviewed generation has an exact file set; a newly injected file is
+        # not part of the reviewed snapshot even when every expected file exists.
+        $stack = New-Object 'System.Collections.Generic.Stack[string]'
+        $stack.Push($root); $count = 0; $visited = 0
+        while ($stack.Count -gt 0) {
+            foreach ($item in @(Get-ChildItem -LiteralPath $stack.Pop() -Force -ErrorAction Stop)) {
+                if (++$visited -gt 20000 -or ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { return $false }
+                if ($item.PSIsContainer) { $stack.Push($item.FullName); continue }
+                $relative = $item.FullName.Substring($root.Length).TrimStart('\', '/').Replace('\', '/')
+                if (-not $seen.ContainsKey($relative)) { return $false }
+                $count++
+            }
+        }
+        return ($count -eq $seen.Count)
     }
-    return $true
+    catch { return $false }
 }
 
 # Is the generation a reviewer was pointed at still the one they reviewed?
@@ -149,19 +165,61 @@ function Test-StagedFilesVerified {
 function Test-PackageGenerationIntact {
     param(
         [Parameter(Mandatory = $true)][AllowEmptyString()][string]$PackageRoot,
-        [Parameter(Mandatory = $true)][AllowEmptyString()][string]$Fingerprint
+        [Parameter(Mandatory = $true)][AllowEmptyString()][string]$Fingerprint,
+        [string]$ExpectedManifestSha256 = '', [AllowEmptyCollection()]$Records = @(),
+        [string]$TrustedRoot = '', [string]$OwnedRoot = ''
     )
-    if ([string]::IsNullOrWhiteSpace($PackageRoot) -or [string]::IsNullOrWhiteSpace($Fingerprint)) { return $false }
+    # A legacy manifest's self-declared fingerprint is not evidence. Legacy
+    # pending generations are rebuilt by the normal event path, never ACKed blind.
+    if ($ExpectedManifestSha256 -notmatch '^[a-fA-F0-9]{64}$' -or $Fingerprint -notmatch '^[a-fA-F0-9]{64}$') { return $false }
+    if (-not (Test-OwnedStagingChain -TrustedRoot $TrustedRoot -OwnedRoot $OwnedRoot -Target $PackageRoot)) { return $false }
     try {
-        if (-not (Test-Path -LiteralPath $PackageRoot -PathType Container)) { return $false }
         $manifestPath = Join-Path $PackageRoot 'manifest.json'
-        if (-not (Test-Path -LiteralPath $manifestPath -PathType Leaf)) { return $false }
-        $manifest = Read-JsonFile -Path $manifestPath
-        if ($null -eq $manifest) { return $false }
-        $manifestFingerprint = [string](Get-Field $manifest 'sourceContentFingerprint')
-        return [string]::Equals($manifestFingerprint, $Fingerprint, [System.StringComparison]::OrdinalIgnoreCase)
+        $attributes = [IO.File]::GetAttributes($manifestPath)
+        if (($attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 -or ($attributes -band [IO.FileAttributes]::Directory) -ne 0) { return $false }
+        if ((Get-Item -LiteralPath $manifestPath -ErrorAction Stop).Length -gt 4194304) { return $false }
+        if ((Get-PackageFileDigest $manifestPath) -ine $ExpectedManifestSha256) { return $false }
+        $manifest = Read-JsonFile $manifestPath
+        if ([string](Get-Field $manifest 'version') -ne '3' -or [string](Get-Field $manifest 'sourceContentFingerprint') -ine $Fingerprint) { return $false }
+        return (Test-StagedFilesVerified -FilesRoot (Join-Path $PackageRoot 'files') -Records $Records)
     }
     catch { return $false }
+}
+
+function Test-PendingPackageIntact {
+    param($Pending, $Context, $StatePaths)
+    if ($null -eq $Pending) { return $false }
+    $root = [string](Get-Field $Pending 'packageRoot')
+    try {
+        if ((Normalize-Path ([string](Get-Field $Pending 'manifestPath'))) -ine (Normalize-Path (Join-Path $root 'manifest.json'))) { return $false }
+        if ((Normalize-Path ([string](Get-Field $Pending 'filesRoot'))) -ine (Normalize-Path (Join-Path $root 'files'))) { return $false }
+    }
+    catch { return $false }
+    $records = Get-Field $Pending 'stagedFiles'
+    if ($null -eq $Pending.PSObject.Properties['stagedFiles'] -or $records -isnot [System.Array]) { return $false }
+    return (Test-PackageGenerationIntact -PackageRoot $root -Fingerprint ([string](Get-Field $Pending 'sourceContentFingerprint')) `
+        -ExpectedManifestSha256 ([string](Get-Field $Pending 'manifestSha256')) -Records $records `
+        -TrustedRoot $Context.destinationRoot -OwnedRoot $StatePaths.inboxRoot)
+}
+
+function Test-PackageRelativePath {
+    param([string]$Path)
+    if ([string]::IsNullOrWhiteSpace($Path) -or [IO.Path]::IsPathRooted($Path) -or $Path -match '[:\\]') { return $false }
+    foreach ($part in $Path.Split('/')) {
+        if ($part -eq '' -or $part -eq '.' -or $part -eq '..' -or $part.IndexOfAny([IO.Path]::GetInvalidFileNameChars()) -ge 0) { return $false }
+    }
+    return $true
+}
+
+function Get-PackageFileDigest {
+    param([string]$Path)
+    $sha = [Security.Cryptography.SHA256]::Create()
+    try {
+        $stream = [IO.File]::Open($Path, 'Open', 'Read', 'Read')
+        try { return ([BitConverter]::ToString($sha.ComputeHash($stream))).Replace('-', '').ToLowerInvariant() }
+        finally { $stream.Dispose() }
+    }
+    finally { $sha.Dispose() }
 }
 
 # Retire every generation under the inbox EXCEPT the one just published. Each

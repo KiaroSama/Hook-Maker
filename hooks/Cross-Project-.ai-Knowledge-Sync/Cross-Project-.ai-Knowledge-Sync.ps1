@@ -293,6 +293,8 @@ function ConvertTo-NormalizedPending {
         sourceQuickFingerprint   = Get-SafeStringField (Get-Field $Pending 'sourceQuickFingerprint') ''
         sourceContentFingerprint = Get-SafeStringField (Get-Field $Pending 'sourceContentFingerprint') ''
         sourceFiles              = @(Get-SafeArrayField (Get-Field $Pending 'sourceFiles') @())
+        stagedFiles              = @(Get-SafeArrayField (Get-Field $Pending 'stagedFiles') @())
+        manifestSha256           = Get-SafeStringField (Get-Field $Pending 'manifestSha256') ''
         packageRoot              = Get-SafeStringField (Get-Field $Pending 'packageRoot') ''
         manifestPath             = Get-SafeStringField (Get-Field $Pending 'manifestPath') ''
         filesRoot                = Get-SafeStringField (Get-Field $Pending 'filesRoot') ''
@@ -567,7 +569,7 @@ if ($Acknowledge) {
         # run, or edited after the announcement is not a reviewed package, and
         # accepting it would mark the source processed on the strength of
         # nothing.
-        if (-not (Test-PackageGenerationIntact -PackageRoot $pendingPackageRoot -Fingerprint ([string]$state.pending.sourceContentFingerprint))) {
+        if (-not (Test-PendingPackageIntact -Pending $state.pending -Context $context -StatePaths $statePaths)) {
             Write-Error ('The reviewed package is no longer intact at "' + $pendingPackageRoot + '". Nothing was marked as processed; the route will stage the current source again on the next event.')
             exit 1
         }
@@ -649,7 +651,7 @@ foreach ($context in $contexts) {
             # to files that are not there, and the ACK would then be refused
             # forever. Dropping the record instead lets the normal build path
             # below stage the current source again.
-            if (-not (Test-PackageGenerationIntact -PackageRoot ([string]$state.pending.packageRoot) -Fingerprint ([string]$state.pending.sourceContentFingerprint))) {
+            if (-not (Test-PendingPackageIntact -Pending $state.pending -Context $context -StatePaths $statePaths)) {
                 Set-ObjectProperty -Object $state -Name 'pending' -Value $null
                 Set-ObjectProperty -Object $state -Name 'lastNotifiedSessionId' -Value ''
                 Write-JsonFileAtomic -Value $state -Path $statePaths.statePath
@@ -710,26 +712,22 @@ foreach ($context in $contexts) {
                 Set-ObjectProperty -Object $state -Name 'lastAppliedContentFingerprint' -Value ([string]$contentSnapshot.fingerprint)
                 Set-ObjectProperty -Object $state -Name 'lastAppliedFiles' -Value @($contentSnapshot.files)
                 Set-ObjectProperty -Object $state -Name 'pending' -Value $null
-                Write-JsonFileAtomic -Value $state -Path $statePaths.statePath
+                # Keep the disk record until a replacement can be committed.
                 continue
             }
         }
 
         if ([string]$state.lastAppliedContentFingerprint -eq [string]$contentSnapshot.fingerprint) {
-            if ($null -ne $state.pending) {
-                # A refusal here leaves the directory alone, which is correct -
-                # but the pending record still goes, because the SOURCE has been
-                # applied. The staging outlives it as disposable residue and the
-                # next build retires it; nothing re-announces it, because the
-                # record it was announced from is gone.
-                [void](Remove-OwnedPackageDirectory -Path ([string]$state.pending.packageRoot) -OwnedRoot $statePaths.inboxRoot -TrustedRoot $context.destinationRoot)
-            }
+            $retireRoot = if ($null -ne $state.pending) { [string]$state.pending.packageRoot } else { '' }
             Set-ObjectProperty -Object $state -Name 'lastAppliedQuickFingerprint' -Value $quickFingerprint
             Set-ObjectProperty -Object $state -Name 'lastAppliedFiles' -Value @($contentSnapshot.files)
             Set-ObjectProperty -Object $state -Name 'pending' -Value $null
             Set-ObjectProperty -Object $state -Name 'lastNotifiedSessionId' -Value ''
             Set-ObjectProperty -Object $state -Name 'lastNotifiedAtUtc' -Value ''
             Write-JsonFileAtomic -Value $state -Path $statePaths.statePath
+            if ($retireRoot -ne '' -and -not (Remove-OwnedPackageDirectory -Path $retireRoot -OwnedRoot $statePaths.inboxRoot -TrustedRoot $context.destinationRoot)) {
+                [void]$messages.Add('Sync review state was committed; obsolete package cleanup was deferred.')
+            }
             continue
         }
 
@@ -741,10 +739,7 @@ foreach ($context in $contexts) {
             # applied, and the next event tries again.
             continue
         }
-        Set-ObjectProperty -Object $state -Name 'pending' -Value $pending
-        Set-ObjectProperty -Object $state -Name 'lastNotifiedSessionId' -Value $sessionId
-        Set-ObjectProperty -Object $state -Name 'lastNotifiedAtUtc' -Value ([DateTime]::UtcNow.ToString('o'))
-        Write-JsonFileAtomic -Value $state -Path $statePaths.statePath
+        $state = Publish-PendingPackage -Context $context -State $state -StatePaths $statePaths -Pending $pending -SessionId $sessionId
         [void]$messages.Add((New-ReviewMessage -Context $context -Pending $pending))
     }
     finally {
