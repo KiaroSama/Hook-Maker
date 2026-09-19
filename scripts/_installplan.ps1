@@ -521,6 +521,15 @@ function Get-ManagedInstallPlan {
         Add-Artifact (New-PlanArtifact -RelativePath ($FriendlyName + '/_evidencelib.ps1') -Kind 'File' -SourcePath $evidenceLib)
     }
 
+    # _taskidentity.ps1, same contract again: _hooklib.ps1 dot-sources it as an
+    # optional sibling and mints the task boundary through it. A runtime
+    # installed FROM HERE without it would derive Stop identity from transcript
+    # statistics, which is the bounded degraded path, not the intended one.
+    $taskIdentityLib = Join-Path $ToolRoot 'hooks\_taskidentity.ps1'
+    if (Test-Path -LiteralPath $taskIdentityLib -PathType Leaf) {
+        Add-Artifact (New-PlanArtifact -RelativePath ($FriendlyName + '/_taskidentity.ps1') -Kind 'File' -SourcePath $taskIdentityLib)
+    }
+
     # The installed main script is GENERATED (source bytes + a deterministic
     # dot-source rewrite), so it is hashed and verified exactly like any other
     # planned artifact. Repository sources are never modified.

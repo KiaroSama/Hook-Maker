@@ -97,6 +97,18 @@ function Get-StopAgentKey {
 # caller degrades within a bounded window rather than guessing a reset.
 function Get-StopEventId {
     param([Parameter(Mandatory = $true)]$HookInput)
+    # THE ORIGINATING USER TASK FIRST. Minted once at UserPromptSubmit and read
+    # by every handler of every later event in that task, so two gates in one
+    # dispatch cannot disagree and a growing transcript cannot look like a new
+    # request. _taskidentity.ps1 carries the whole argument; the derivation
+    # below stays as the bounded degraded path for a runtime without it.
+    if (Get-Command -Name 'Get-CurrentUserTaskIdentity' -ErrorAction SilentlyContinue) {
+        $identity = $null
+        try { $identity = Get-CurrentUserTaskIdentity -HookInput $HookInput } catch { $identity = $null }
+        if ($null -ne $identity -and -not $identity.Degraded -and -not [string]::IsNullOrWhiteSpace([string]$identity.TaskId)) {
+            return ('t:' + [string]$identity.TaskId)
+        }
+    }
     $path = ''
     try { $path = [string](Get-EvidenceTranscriptPath -HookInput $HookInput) } catch { $path = '' }
     if ([string]::IsNullOrWhiteSpace($path)) { $path = [string](Get-Field $HookInput 'transcript_path') }
@@ -360,7 +372,14 @@ function Invoke-StopAdmission {
     param(
         [Parameter(Mandatory = $true)]$HookInput,
         [Parameter(Mandatory = $true)][string]$HookName,
-        [bool]$IsContinuation
+        [bool]$IsContinuation,
+        # WHAT this gate is refusing about, as distinct from WHICH delivery is
+        # refusing it. With identity pinned to the user task, a gate speaks once
+        # per task per FINDING: the same unchanged complaint is not asked for a
+        # second time (it stays recorded as unresolved and the summary reports
+        # it), while evidence that actually changed produces a different
+        # fingerprint and is evaluated immediately.
+        [AllowEmptyString()][string]$FindingFingerprint = ''
     )
     $keys = Get-StopLedgerKeys -HookInput $HookInput -HookName $HookName
     $path = Get-StopLedgerPath -ProjectRoot ([string](Get-Field $HookInput 'cwd'))
@@ -414,7 +433,17 @@ function Invoke-StopAdmission {
         # is to admit and spend budget rather than to drop a refusal.
         if ($null -ne $entry -and [string]$entry.chain -eq [string]$chain.id -and
             $eventId -ne '' -and [string]$entry.event -eq $eventId) {
-            return [pscustomobject]@{ Admitted = $false; Reason = 'already-claimed' }
+            # Same gate, same event. Whether that is a DUPLICATE or a second,
+            # different refusal is decided by the finding: an unchanged one has
+            # already been said, a changed one is new evidence and must be able
+            # to speak. An entry from before findings were recorded has none, so
+            # it keeps the old behaviour and refuses.
+            $recordedFinding = ''
+            if ($null -ne $entry.PSObject.Properties['finding']) { $recordedFinding = [string]$entry.finding }
+            if ($FindingFingerprint -eq '' -or $recordedFinding -eq '' -or
+                [string]::Equals($recordedFinding, $FindingFingerprint, [System.StringComparison]::Ordinal)) {
+                return [pscustomobject]@{ Admitted = $false; Reason = 'already-claimed' }
+            }
         }
         if ([int]$chain.blocks -ge (Get-StopCorrectionBudget)) {
             Set-ObjectProperty -Object $ledger.unresolved -Name $keys.EntryKey -Value ([pscustomobject]@{
@@ -432,6 +461,7 @@ function Invoke-StopAdmission {
                 chain      = [string]$chain.id
                 hook       = $HookName
                 event      = $eventId
+                finding    = $FindingFingerprint
                 blockedUtc = [DateTime]::UtcNow.ToString('o')
             })
         # A gate that blocks is by definition reporting something unresolved.
@@ -466,9 +496,10 @@ function Register-StopBlockLedger {
     param(
         [Parameter(Mandatory = $true)]$HookInput,
         [Parameter(Mandatory = $true)][string]$HookName,
-        [bool]$IsContinuation
+        [bool]$IsContinuation,
+        [AllowEmptyString()][string]$FindingFingerprint = ''
     )
-    return (Invoke-StopAdmission -HookInput $HookInput -HookName $HookName -IsContinuation $IsContinuation)
+    return (Invoke-StopAdmission -HookInput $HookInput -HookName $HookName -IsContinuation $IsContinuation -FindingFingerprint $FindingFingerprint)
 }
 
 # The gates that blocked or ran out of allowance in this project, for the

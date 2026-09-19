@@ -124,6 +124,15 @@ function Read-HookInput {
         if (-not [string]::IsNullOrWhiteSpace($raw)) { $parsed = ($raw | ConvertFrom-Json) }
     }
     catch { $parsed = $null }
+    # THE TASK BOUNDARY IS MINTED HERE, and nowhere else. Every hook of every
+    # client passes through this function on every event, so one call covers the
+    # whole set without eighteen call sites to keep in step - and the write is
+    # idempotent, so the first hook of a dispatch mints the task and the rest
+    # read it back. Silent by contract: a hook must never fail because identity
+    # bookkeeping could not be written (_taskidentity.ps1 explains why).
+    if ($null -ne $parsed -and $script:TaskIdentityReady) {
+        try { Register-UserTaskBoundary -HookInput $parsed } catch { }
+    }
     return $parsed
 }
 
@@ -862,6 +871,18 @@ try {
 }
 catch { $script:EvidenceLibReady = $false }
 
+# _taskidentity.ps1 owns WHICH USER TASK an event belongs to - the durable
+# lifecycle boundary that replaced deriving identity from transcript statistics.
+# Optional for the same reason as the two above: a runtime copied before it
+# existed keeps the older derivation, which _stoplib.ps1 still carries as its
+# bounded degraded path.
+$script:TaskIdentityReady = $false
+try {
+    $taskIdentityPath = Join-Path $PSScriptRoot '_taskidentity.ps1'
+    if (Test-Path -LiteralPath $taskIdentityPath -PathType Leaf) { . $taskIdentityPath; $script:TaskIdentityReady = $true }
+}
+catch { $script:TaskIdentityReady = $false }
+
 function Test-StopStandDown {
     param([Parameter(Mandatory = $true)]$HookInput, [Parameter(Mandatory = $true)][string]$HookName)
     $stopActive = Get-Field $HookInput 'stop_hook_active'
@@ -890,10 +911,16 @@ function Test-StopStandDown {
 # it was (already-claimed, budget-spent, persistence-failed, busy) and .Degraded
 # marks the ones caused by the ledger being unusable rather than by policy.
 function Set-StopBlockMarker {
-    param([Parameter(Mandatory = $true)]$HookInput, [Parameter(Mandatory = $true)][string]$HookName)
+    param(
+        [Parameter(Mandatory = $true)]$HookInput,
+        [Parameter(Mandatory = $true)][string]$HookName,
+        # What this gate is refusing about. Empty from a caller that does not
+        # compute one, which keeps the older duplicate rule exactly as it was.
+        [AllowEmptyString()][string]$FindingFingerprint = ''
+    )
     $stopActive = Get-Field $HookInput 'stop_hook_active'
     if ($script:StopLedgerReady) {
-        return (Register-StopBlockLedger -HookInput $HookInput -HookName $HookName -IsContinuation ($null -ne $stopActive -and [bool]$stopActive))
+        return (Register-StopBlockLedger -HookInput $HookInput -HookName $HookName -IsContinuation ($null -ne $stopActive -and [bool]$stopActive) -FindingFingerprint $FindingFingerprint)
     }
     # LEGACY RUNTIME, no _stoplib.ps1 beside this file. The single marker cannot
     # express a budget, so it cannot promise one either: admission is reported as
@@ -942,12 +969,19 @@ function Write-StopBlockResult {
         [AllowEmptyString()][string]$Reason = '',
         [AllowEmptyString()][string]$Message = ''
     )
-    $admit = Set-StopBlockMarker -HookInput $HookInput -HookName $HookName
+    # The TEXT is composed before admission, because the text IS the finding: a
+    # gate that refuses for a different reason is making a different claim and
+    # must be allowed to make it, while the same words twice in one task are the
+    # same request repeated. Composed without the finalization clause below, so
+    # a clause that varies cannot make an unchanged finding look new.
+    $text = $Reason
+    if ([string]::IsNullOrEmpty($text)) { $text = $Message }
+    $finding = ''
+    if (-not [string]::IsNullOrWhiteSpace($text)) { $finding = Get-ShortHash ($HookName + '|' + $text) }
+    $admit = Set-StopBlockMarker -HookInput $HookInput -HookName $HookName -FindingFingerprint $finding
     if ($null -eq $admit -or -not $admit.Admitted) {
         return [pscustomobject]@{ ExitCode = 0; Emitted = $false; Admission = $admit }
     }
-    $text = $Reason
-    if ([string]::IsNullOrEmpty($text)) { $text = $Message }
     # EVERY block carries the finalization clause, because every block is the
     # thing that turns one wrap-up into three: the agent answers, a gate sends it
     # back, it corrects, it writes another wrap-up, the next gate sends it back
@@ -959,6 +993,12 @@ function Write-StopBlockResult {
             if (-not [string]::IsNullOrWhiteSpace($clause)) { $text = $text + "`n" + $clause }
         }
         catch { }
+    }
+    # The text about to be emitted is recorded as this task's, so a client that
+    # replays a refusal as the next user prompt (Codex does) is recognised as the
+    # continuation it is rather than minting a task and refilling the allowance.
+    if ($script:TaskIdentityReady) {
+        try { Add-TaskBlockFingerprint -HookInput $HookInput -Reason $text } catch { }
     }
     $emit = Write-HookResult -EventName $EventName -Kind 'block' -Reason $text -Message $text
     return [pscustomobject]@{ ExitCode = $emit.ExitCode; Emitted = $true; Admission = $admit }
