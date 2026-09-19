@@ -115,6 +115,15 @@ function Get-ListSetting {
 }
 
 # ---- command analysis and run identity ------------------------------------
+# Loaded BEFORE _commandanalysis.ps1, which calls it. Optional like every
+# sibling module: a runtime copied before this file existed must keep starting,
+# and the fallback returns $false, which is exactly the old behaviour (nothing
+# excluded) rather than a silently wider or narrower guard.
+$ownScriptsPath = Join-Path $PSScriptRoot '_ownscripts.ps1'
+if (Test-Path -LiteralPath $ownScriptsPath -PathType Leaf) { . $ownScriptsPath }
+if ($null -eq (Get-Command -Name 'Test-IsOwnHookScript' -ErrorAction SilentlyContinue)) {
+    function Test-IsOwnHookScript { param([string]$Path) return $false }
+}
 . (Join-Path $PSScriptRoot '_commandanalysis.ps1')
 # Silent Execution (global-test-rules.md): would this INVOCATION open a window,
 # whatever the runner does inside it? Optional, like every sibling module, so a
