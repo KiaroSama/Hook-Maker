@@ -120,10 +120,12 @@ function Register-UserTaskBoundary {
         if ($null -ne $record) {
             # A known dispatch is a duplicate even if a delayed handler arrives.
             if ($turn -ne '' -and $record.dispatchId -ceq $turn) { return $record }
-            $continuation = @($record.blockFingerprints) -ccontains $fingerprint
+            $receiptKey = $fingerprint
+            if ($prompt -match '^\[HOOKMAKER-CORRECTION:([a-f0-9]{32})\](?:\r?\n|$)') { $receiptKey = 'token:' + $Matches[1] }
+            $continuation = @($record.blockFingerprints) -ccontains $receiptKey
             if ($continuation) {
                 # Consume a receipt once; duplicate handlers use dispatch identity.
-                $record.blockFingerprints = @($record.blockFingerprints | Where-Object { $_ -cne $fingerprint })
+                $record.blockFingerprints = @($record.blockFingerprints | Where-Object { $_ -cne $receiptKey })
                 $record.dispatchId = $turn
                 $record.promptFingerprint = $fingerprint
                 $record.phase = 'working'
@@ -159,8 +161,14 @@ function Get-CurrentUserTaskIdentity {
 }
 
 function Register-TaskContinuation {
-    param($HookInput, [AllowEmptyString()][string]$Reason)
+    param($HookInput, [AllowEmptyString()][string]$Reason, [bool]$AddHeader = $true)
+    $text = $Reason
     $fingerprint = Get-TaskPromptFingerprint $Reason
+    if ($AddHeader -and $fingerprint -ne '') {
+        $token = [guid]::NewGuid().ToString('N')
+        $fingerprint = 'token:' + $token
+        $text = '[HOOKMAKER-CORRECTION:' + $token + "]`n" + $Reason
+    }
     $identity = Get-CurrentUserTaskIdentity $HookInput
     if ($fingerprint -eq '' -or $identity.Degraded) { return [pscustomobject]@{ Ok = $false; State = 'identity-unavailable' } }
     $result = Invoke-TaskIdentityUpdate -HookInput $HookInput -Mutate {
@@ -171,10 +179,10 @@ function Register-TaskContinuation {
         }
         return $record
     }
-    return [pscustomobject]@{ Ok = $result.Ok; State = $result.State }
+    return [pscustomobject]@{ Ok = $result.Ok; State = $result.State; Text = $text }
 }
 
 function Add-TaskBlockFingerprint {
     param([Parameter(Mandatory = $true)]$HookInput, [Parameter(Mandatory = $true)][AllowEmptyString()][string]$Reason)
-    $null = Register-TaskContinuation -HookInput $HookInput -Reason $Reason
+    $null = Register-TaskContinuation -HookInput $HookInput -Reason $Reason -AddHeader $false
 }
