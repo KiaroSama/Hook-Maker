@@ -115,6 +115,10 @@ $script:SkillsRequirement = 'CLOSING REQUIREMENT - end the final task summary wi
 # The import safety boundary, stated wherever an import is suggested. Copying a
 # skill is an AUTHORIZED operation under the Skill Policy and this hook never
 # performs one - so every place that names a copy command also names its rules.
+# One line, both advisories. Spec Kit is the ROUTE a task takes; the skills
+# inventory above is the SET a task may use. Naming the route here costs a
+# line and stops the inventory reading as the whole policy.
+$script:SpecKitRouting = 'Spec Kit routes every task that changes the project: no .specify/ yet -> speckit-init then speckit-constitution; a feature or behaviour change -> speckit-specify, clarify, plan, tasks, analyze, implement, in that order; a bug -> diagnose, then speckit-converge on a spec-bearing feature or the full chain otherwise; resumed work or doubt about completeness -> speckit-converge. Run each to the letter.'
 $script:ImportGuidance = 'Import guidance: copy the minimal set (1-5) as real folders (never reparse points, junctions or shortcuts), exclude secrets/caches/VCS metadata, never overwrite a modified project skill silently, and record source/destination/hash/agent/reason in .ai/SKILLS.md.'
 
 # ---- shared skill library (searched by prompt, never enumerated into output) --
@@ -620,6 +624,7 @@ if ($eventName -eq 'UserPromptSubmit') {
         [void]$lines.Add('No skill name matched this prompt in any of the four sources. That is a name-level match only, not proof that no skill applies - if the task is clearly specialised, look through the sources yourself before deciding.')
         if ($hasLibrary) { [void]$lines.Add('Library: ' + $libraryDir) }
     }
+    [void]$lines.Add($script:SpecKitRouting)
     [void]$lines.Add($script:SkillsRequirement)
     $emit = Write-HookResult -EventName $eventName -Kind 'context' -Message ($lines.ToArray() -join "`n")
     exit $emit.ExitCode
@@ -658,6 +663,7 @@ if ($hasLibrary) {
     [void]$lines.Add('- ' + $script:ImportGuidance)
 }
 [void]$lines.Add('- Select only the minimal relevant set (1-5). Follows ' + $policyFile + '.')
+[void]$lines.Add($script:SpecKitRouting)
 [void]$lines.Add($script:SkillsRequirement)
 
 $emit = Write-HookResult -EventName $eventName -Kind 'context' -Message ($lines.ToArray() -join "`n")

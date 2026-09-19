@@ -1,6 +1,25 @@
 # Owned package generations: trusted containment, verified bytes and retirement.
 # Persisted paths and a manifest's self-declared fingerprint are not proof of
 # ownership or reviewed content. Refusals preserve data and reach the caller.
+#
+# CONTAINMENT RUNS FROM THE TRUSTED CONFIGURED DESTINATION DOWN, never from the
+# inbox. The check used to compare a target against the inbox, and a junction on
+# an INTERNAL staging ancestor redirected every write and delete out of the
+# project while each path still read as contained. Every ancestor between the
+# trusted root and the target is inspected, and a reparse point anywhere on that
+# chain is a refusal - including on the files root itself, which an empty record
+# set would otherwise never cause anyone to look at.
+#
+# A FILE ANCESTOR IS NOT A MISSING DIRECTORY. Attribute failures were treated
+# like nonexistent paths, so a file where a directory belonged read as "nothing
+# there" instead of as the malformed tree it is. Absent, unreadable and
+# wrong-kind are now three different answers.
+#
+# THE ACK IS BOUND TO THE BYTES ON DISK. Comparing the fingerprint inside
+# manifest.json against the expected fingerprint proves only that the manifest
+# agrees with itself: tampered, deleted or injected files were acknowledged.
+# The staged file set, each file's digest and its containment are all verified
+# against the snapshot that described them.
 
 function Get-OwnedPathChain {
     param([Parameter(Mandatory = $true)][string]$TrustedRoot, [Parameter(Mandatory = $true)][string]$Target)

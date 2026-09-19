@@ -116,6 +116,19 @@ function Get-ListSetting {
 
 # ---- command analysis and run identity ------------------------------------
 . (Join-Path $PSScriptRoot '_commandanalysis.ps1')
+# Silent Execution (global-test-rules.md): would this INVOCATION open a window,
+# whatever the runner does inside it? Optional, like every sibling module, so a
+# runtime copied before it existed keeps the older behaviour rather than failing
+# to start.
+$script:VisibilityReady = $false
+try {
+    $visibilityPath = Join-Path $PSScriptRoot '_visibility.ps1'
+    if (Test-Path -LiteralPath $visibilityPath -PathType Leaf) {
+        . $visibilityPath
+        $script:VisibilityReady = $true
+    }
+}
+catch { $script:VisibilityReady = $false }
 # Active-run correlation: whether a run that has no result yet is STILL GOING.
 # Optional, like every other sibling module, so a runtime copied before it
 # existed keeps the older behaviour (warn) instead of failing to start.
@@ -357,6 +370,31 @@ if ($eventName -eq 'PreToolUse') {
         $blindMsg = 'TEST RUN GUARD: ' + $blindWait.Reason + '. ' + $blindWait.SafePattern + $configNote
         if ($advisoryOnly) { Write-Advisory -EventName 'PreToolUse' -Message ('ADVISORY ONLY (TEST_GUARD_ADVISORY_ONLY=1) - ' + $blindMsg) }
         Write-Deny -Message $blindMsg
+    }
+
+    # SILENT EXECUTION. Only a RECOGNISED test command is this hook's business,
+    # and only an unmistakably visible form is refused - an ambiguous one emits
+    # nothing and is never rewritten, exactly like every other uncertain case
+    # here. A guarded command counts too: wrapping Run-Tests-Guarded.ps1 in a
+    # detached Start-Process puts a window on the screen no matter what the
+    # runner sets internally.
+    if ($script:VisibilityReady) {
+        $visible = Get-VisibleInvocationFinding -Tokens $tokens
+        # A LAUNCHER HIDES THE TEST. `wt pwsh -File Run-Tests.ps1` has `wt` in
+        # the program position, so ordinary recognition returns nothing and the
+        # verdict is 'none' - on exactly the commands this check exists for.
+        # So when the finding reports what it was launching, recognition is run
+        # again on THAT. `Start-Process notepad.exe` strips to `notepad.exe`,
+        # which is not a test command, and stays untouched.
+        $launchesTest = ($verdict.Kind -ne 'none')
+        if ($null -ne $visible -and -not $launchesTest -and $null -ne $visible.InnerTokens -and @($visible.InnerTokens).Count -gt 0) {
+            $launchesTest = ($null -ne (Get-RecognizedTestCommand -Tokens @($visible.InnerTokens) -ExtraFragments $extraFragments))
+        }
+        if ($null -ne $visible -and $launchesTest) {
+            $visibleMsg = 'TEST RUN GUARD: ' + $visible.Reason + '. Everything this task starts runs out of the user''s sight. ' + $visible.SafeForm + $configNote
+            if ($advisoryOnly) { Write-Advisory -EventName 'PreToolUse' -Message ('ADVISORY ONLY (TEST_GUARD_ADVISORY_ONLY=1) - ' + $visibleMsg) }
+            Write-Deny -Message $visibleMsg
+        }
     }
 
     $stateFingerprint = Get-StateFingerprintFor -ProjectRoot $projectRoot
