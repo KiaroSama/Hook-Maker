@@ -85,7 +85,7 @@ function New-ConfiguredSkillsHookCopy {
     # own directory recursively, so a sibling module the hook dot-sources ships
     # with it. Copying one file would test a runtime that is never installed.
     Copy-Item (Join-Path (Split-Path -Parent $SkillsHook) '*.ps1') $dir
-    Copy-Item (Join-Path (Split-Path -Parent $SkillsHook) '..\_hooklib.ps1') (Join-Path $Work '_hooklib.ps1') -Force
+    Copy-TestRuntimeLibraries -SourceHookLib (Join-Path (Split-Path -Parent $SkillsHook) '..\_hooklib.ps1') -Destination (Join-Path $Work '_hooklib.ps1')
     $merged = @{}
     foreach ($k in $EnvOverrides.Keys) { $merged[$k] = $EnvOverrides[$k] }
     if (-not $merged.ContainsKey('GLOBAL_SKILLS_DIR')) {
@@ -178,8 +178,8 @@ function Get-AdapterBytes {
 # The literal expressions the shipped hooks emit today (Mcp-Usage-Check.ps1:35,
 # Large-File-Check.ps1:187/190, Ci-Status-Check.ps1:435/467/471, and ~59 more).
 $pairs = @(
-    @{ label = 'claudeContext'; hook = (@{ hookSpecificOutput = @{ hookEventName = $ev; additionalContext = $text } } | ConvertTo-Json -Depth 5 -Compress); adapter = (Get-AdapterBytes -Kind 'context' -Client 'claude') },
-    @{ label = 'claudeAdvisory'; hook = (@{ hookSpecificOutput = @{ hookEventName = $ev; additionalContext = $text } } | ConvertTo-Json -Depth 5 -Compress); adapter = (Get-AdapterBytes -Kind 'advisory' -Client 'claude') },
+    @{ label = 'claudeContext'; hook = (@{ systemMessage = $text } | ConvertTo-Json -Depth 5 -Compress); adapter = (Get-AdapterBytes -Kind 'context' -Client 'claude') },
+    @{ label = 'claudeAdvisory'; hook = (@{ systemMessage = $text } | ConvertTo-Json -Depth 5 -Compress); adapter = (Get-AdapterBytes -Kind 'advisory' -Client 'claude') },
     @{ label = 'codexSystemMessage'; hook = (@{ systemMessage = $text } | ConvertTo-Json -Depth 5 -Compress); adapter = (Get-AdapterBytes -Kind 'advisory' -Client 'codex') },
     @{ label = 'decisionBlockClaude'; hook = (@{ decision = 'block'; reason = $text } | ConvertTo-Json -Compress); adapter = (Get-AdapterBytes -Kind 'block' -Client 'claude') },
     @{ label = 'decisionBlockCodex'; hook = (@{ decision = 'block'; reason = $text } | ConvertTo-Json -Compress); adapter = (Get-AdapterBytes -Kind 'block' -Client 'codex') }

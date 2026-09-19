@@ -1,160 +1,192 @@
-# THE ORIGINATING USER TASK (L02).
-#
-# WHAT WAS WRONG. Event identity was a hash of the transcript's path, length and
-# write time. Both directions failed. Two gates handling the SAME dispatch could
-# observe different stats while the transcript was still flushing, so one event
-# minted two chains and the pair could block each other for ever; and a
-# genuinely NEW task could observe unchanged or lagging stats and be treated as
-# the old one. Twelve deliveries with no new user request were admitted as
-# twelve new chains in the source-derived replay. Atomic reservation cannot
-# repair a wrong identity - it only makes the wrong answer consistent.
-#
-# WHAT IDENTITY ACTUALLY IS. A task begins when the USER says something. That is
-# an explicit lifecycle boundary the client already reports - UserPromptSubmit -
-# and it is the only event that means "a new thing was asked for". So the task
-# id is minted THERE, once, into a durable record, and every later handler READS
-# it instead of deriving one. Transcript growth, hook text, tool output, elapsed
-# time, a retry, compaction and a changed turn id all leave it untouched,
-# because none of them is a user asking for something new.
-#
-# CODEX. On Codex a Stop continuation arrives as a new user prompt: the client
-# replays the gate's own refusal text as the next input. Rotating there would
-# hand every refusal a fresh chain and a fresh allowance, which is the loop the
-# allowance exists to bound. Each emitted block therefore records the
-# fingerprint of its own text, and a prompt matching one of those fingerprints
-# is recognised as the continuation it is. An exact match is the whole rule: if
-# a client ever wraps the text, the prompt does not match, a new task starts,
-# and that is the SAFE direction - a fresh bounded chain, exactly as today.
-#
-# DEGRADATION IS VISIBLE, NEVER GUESSED. With no record (hooks installed
-# mid-session, a client that sends no UserPromptSubmit), the caller is told the
-# identity is degraded and falls back to the older, weaker derivation inside its
-# own bounded window. Nothing here invents a task id.
-
-$script:TaskIdentitySchema = 1
-$script:TaskIdentityMaxBlockFingerprints = 16   # bounded: a chain cannot grow this record without limit
+# User-task identity is scoped by project, client and session. A dispatch is
+# not a task: Codex can replay a Stop refusal in a new turn. All mutations use
+# one stable lock inode and publish an atomic, bounded document. No prompt text
+# is persisted. Unknown provenance never adopts another session's identity.
+$script:TaskIdentitySchema = 2
+$script:TaskIdentityMaxBlockFingerprints = 16
 
 function Get-TaskIdentityPath {
-    param([AllowEmptyString()][string]$ProjectRoot = '')
-    return (Join-Path (Join-Path $env:LOCALAPPDATA 'HookMaker\state') ('TaskIdentity-' + (Get-StopProjectKey -ProjectRoot $ProjectRoot) + '.json'))
+    param([AllowEmptyString()][string]$ProjectRoot = '', [string]$SessionId = '', [string]$Client = '')
+    $stem = 'TaskIdentity-' + (Get-StopProjectKey -ProjectRoot $ProjectRoot)
+    if ($SessionId -ne '' -and $Client -ne '') {
+        $stem += '-' + (Get-ShortHash ($Client + '|' + $SessionId))
+    }
+    return (Join-Path (Join-Path $env:LOCALAPPDATA 'HookMaker\state') ($stem + '.json'))
 }
 
 function Get-TaskPromptFingerprint {
     param([AllowEmptyString()][string]$Prompt)
-    $text = ([string]$Prompt)
-    # Whitespace-normalised so a trailing newline the client adds is not a
-    # different question. Nothing else is touched: two prompts that differ by a
-    # single word are two different tasks.
-    $text = [System.Text.RegularExpressions.Regex]::Replace($text, '\s+', ' ').Trim()
-    if ($text -eq '') { return '' }
-    return (Get-ShortHash $text)
+    # Preserve meaningful whitespace inside code, paths and quoted arguments.
+    $text = ([string]$Prompt).TrimEnd([char[]]@([char]13, [char]10))
+    if ([string]::IsNullOrWhiteSpace($text)) { return '' }
+    $sha = [Security.Cryptography.SHA256]::Create()
+    try { return ([BitConverter]::ToString($sha.ComputeHash([Text.Encoding]::UTF8.GetBytes($text)))).Replace('-', '').ToLowerInvariant() }
+    finally { $sha.Dispose() }
+}
+
+function Get-TaskScope {
+    param($HookInput)
+    $session = [string](Get-Field $HookInput 'session_id')
+    $client = Get-HookClientId
+    $root = [string](Get-Field $HookInput 'cwd')
+    if ([string]::IsNullOrWhiteSpace($session) -or $client -eq 'unknown' -or [string]::IsNullOrWhiteSpace($root)) { return $null }
+    return [pscustomobject]@{ Session = $session; Client = $client; Path = (Get-TaskIdentityPath -ProjectRoot $root -SessionId $session -Client $client) }
+}
+
+function Get-TaskIdentityState {
+    param([string]$Path)
+    try {
+        if ([IO.Directory]::Exists($Path)) { return [pscustomobject]@{ State = 'corrupt'; Record = $null } }
+        if (-not [IO.File]::Exists($Path)) { return [pscustomobject]@{ State = 'absent'; Record = $null } }
+        if ((Get-Item -LiteralPath $Path -ErrorAction Stop).Length -gt 65536) { throw 'oversized task record' }
+        $doc = Read-JsonFile -Path $Path
+        if ($null -eq $doc -or $doc -isnot [System.Management.Automation.PSCustomObject]) { throw 'task shape' }
+        $version = 0
+        if (-not [int]::TryParse([string](Get-Field $doc 'schema'), [ref]$version)) { throw 'task version' }
+        if ($version -ne $script:TaskIdentitySchema) { return [pscustomobject]@{ State = 'unsupported'; Record = $null } }
+        foreach ($name in @('sessionId', 'client', 'taskId', 'promptFingerprint', 'dispatchId', 'phase', 'blockFingerprints', 'turnIds')) {
+            if ($null -eq $doc.PSObject.Properties[$name]) { throw ('missing task field: ' + $name) }
+        }
+        if ([string]::IsNullOrWhiteSpace([string]$doc.sessionId) -or [string]::IsNullOrWhiteSpace([string]$doc.taskId)) { throw 'empty task identity' }
+        if ($doc.client -notin @('claude', 'codex') -or $doc.phase -notin @('working', 'stopped')) { throw 'task vocabulary' }
+        foreach ($field in @('blockFingerprints', 'turnIds')) {
+            if ($doc.$field -isnot [System.Array] -or @($doc.$field).Count -gt 32) { throw 'unbounded task collection' }
+            foreach ($value in @($doc.$field)) { if ($value -isnot [string] -or $value.Length -gt 256) { throw 'invalid task collection element' } }
+        }
+        return [pscustomobject]@{ State = 'valid'; Record = $doc }
+    }
+    catch { return [pscustomobject]@{ State = 'corrupt'; Record = $null } }
 }
 
 function Read-TaskIdentityRecord {
     param([Parameter(Mandatory = $true)][string]$Path)
-    try {
-        if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { return $null }
-        $doc = Read-JsonFile -Path $Path
-        if ($null -eq $doc) { return $null }
-        if ([int](Get-Field $doc 'schema') -ne $script:TaskIdentitySchema) { return $null }
-        return $doc
-    }
-    catch { return $null }
+    return (Get-TaskIdentityState -Path $Path).Record
 }
 
-# Called on UserPromptSubmit by every hook, through Read-HookInput, and
-# IDEMPOTENT on purpose: the first hook of a dispatch mints the task, the other
-# seventeen read the same one back. That is what "shared once per dispatch"
-# means - the alternative, each handler deriving its own, is the defect.
+function Invoke-TaskIdentityUpdate {
+    param($HookInput, [scriptblock]$Mutate)
+    $scope = Get-TaskScope $HookInput
+    if ($null -eq $scope) { return [pscustomobject]@{ Ok = $false; State = 'identity-unavailable'; Record = $null } }
+    $handle = $null; $temp = ''
+    try {
+        [void][IO.Directory]::CreateDirectory((Split-Path -Parent $scope.Path))
+        $deadline = [DateTime]::UtcNow.AddSeconds(2)
+        do {
+            try { $handle = [IO.File]::Open(($scope.Path + '.lock'), 'OpenOrCreate', 'ReadWrite', 'None') }
+            catch { if ([DateTime]::UtcNow -ge $deadline) { throw 'task identity lock timeout' }; Start-Sleep -Milliseconds 20 }
+        } while ($null -eq $handle)
+        $state = Get-TaskIdentityState -Path $scope.Path
+        if ($state.State -notin @('absent', 'valid')) { return [pscustomobject]@{ Ok = $false; State = $state.State; Record = $null } }
+        $record = $state.Record
+        if ($null -ne $record -and ($record.sessionId -cne $scope.Session -or $record.client -cne $scope.Client)) { throw 'task scope mismatch' }
+        $before = if ($null -eq $record) { '' } else { $record | ConvertTo-Json -Depth 8 -Compress }
+        $record = & $Mutate $record $scope
+        if ($null -eq $record) { return [pscustomobject]@{ Ok = $true; State = 'unchanged'; Record = $null } }
+        $after = $record | ConvertTo-Json -Depth 8 -Compress
+        if ($before -cne $after) {
+            $temp = $scope.Path + '.' + [guid]::NewGuid().ToString('N') + '.tmp'
+            [IO.File]::WriteAllText($temp, $after, (New-Object Text.UTF8Encoding($false)))
+            if ([IO.File]::Exists($scope.Path)) { [IO.File]::Replace($temp, $scope.Path, [NullString]::Value) }
+            else { [IO.File]::Move($temp, $scope.Path) }
+        }
+        return [pscustomobject]@{ Ok = $true; State = 'valid'; Record = $record }
+    }
+    catch { return [pscustomobject]@{ Ok = $false; State = 'persistence-failed'; Record = $null } }
+    finally {
+        if ($temp -ne '' -and [IO.File]::Exists($temp)) { try { [IO.File]::Delete($temp) } catch { } }
+        if ($null -ne $handle) { $handle.Dispose() }
+        # Do not unlink a lock file after releasing it: another writer may own it.
+    }
+}
+
 function Register-UserTaskBoundary {
     param([Parameter(Mandatory = $true)]$HookInput)
     $event = [string](Get-Field $HookInput 'hook_event_name')
-    if (-not [string]::Equals($event, 'UserPromptSubmit', [System.StringComparison]::OrdinalIgnoreCase)) { return }
+    if ($event -notin @('UserPromptSubmit', 'Stop')) { return }
+    if ($event -eq 'Stop') {
+        $scope = Get-TaskScope $HookInput
+        if ($null -eq $scope -or -not [IO.File]::Exists($scope.Path)) { return }
+    }
     $prompt = [string](Get-Field $HookInput 'prompt')
     if ([string]::IsNullOrWhiteSpace($prompt)) { $prompt = [string](Get-Field $HookInput 'user_prompt') }
-    $fingerprint = Get-TaskPromptFingerprint -Prompt $prompt
-    # A prompt this hook cannot see is not evidence that a task started. Silence
-    # here leaves the previous record standing, which degrades to the old
-    # behaviour instead of rotating on nothing.
-    if ($fingerprint -eq '') { return }
-
-    $sessionId = [string](Get-Field $HookInput 'session_id')
-    $projectRoot = [string](Get-Field $HookInput 'cwd')
-    $path = Get-TaskIdentityPath -ProjectRoot $projectRoot
-    $existing = Read-TaskIdentityRecord -Path $path
-
-    if ($null -ne $existing -and
-        [string]::Equals([string](Get-Field $existing 'sessionId'), $sessionId, [System.StringComparison]::Ordinal)) {
-        # Same dispatch: the task is already minted, nothing to do.
-        if ([string]::Equals([string](Get-Field $existing 'promptFingerprint'), $fingerprint, [System.StringComparison]::Ordinal)) { return }
-        # The client replaying a gate's own refusal is NOT a new task.
-        $blockFingerprints = @()
-        try { $blockFingerprints = @(Get-Field $existing 'blockFingerprints') } catch { $blockFingerprints = @() }
-        if (@($blockFingerprints) -contains $fingerprint) { return }
-    }
-
-    $sequence = 0
-    if ($null -ne $existing) { try { $sequence = [int](Get-Field $existing 'taskSeq') } catch { $sequence = 0 } }
-    $sequence++
-    $record = [pscustomobject][ordered]@{
-        schema            = $script:TaskIdentitySchema
-        sessionId         = $sessionId
-        taskSeq           = $sequence
-        taskId            = ('t' + [string]$sequence + '-' + (Get-ShortHash ($sessionId + '|' + [string]$sequence + '|' + $fingerprint)))
-        startedUtc        = [DateTime]::UtcNow.ToString('o')
-        promptFingerprint = $fingerprint
-        blockFingerprints = @()
-    }
-    try {
-        $directory = Split-Path -Parent $path
-        if (-not (Test-Path -LiteralPath $directory -PathType Container)) {
-            New-Item -ItemType Directory -Path $directory -Force | Out-Null
+    $fingerprint = Get-TaskPromptFingerprint $prompt
+    $turn = [string](Get-Field $HookInput 'turn_id')
+    if ($turn.Length -gt 256) { return }
+    if ($event -eq 'UserPromptSubmit' -and $fingerprint -eq '') { return }
+    $result = Invoke-TaskIdentityUpdate -HookInput $HookInput -Mutate {
+        param($record, $scope)
+        if ($event -eq 'Stop') {
+            if ($null -ne $record -and ($turn -eq '' -or $record.dispatchId -ceq $turn)) {
+                $record.phase = 'stopped'
+            }
+            return $record
         }
-        Write-JsonFileAtomic -Value $record -Path $path
+        if ($null -ne $record) {
+            # A known dispatch is a duplicate even if a delayed handler arrives.
+            if ($turn -ne '' -and @($record.turnIds) -ccontains $turn) { return $record }
+            $receiptKey = $fingerprint
+            if ($prompt -match '^\[HOOKMAKER-CORRECTION:([a-f0-9]{32})\](?:\r?\n|$)') { $receiptKey = 'token:' + $Matches[1] }
+            $continuation = @($record.blockFingerprints) -ccontains $receiptKey
+            if ($continuation) {
+                # Consume a receipt once; duplicate handlers use dispatch identity.
+                $record.blockFingerprints = @($record.blockFingerprints | Where-Object { $_ -cne $receiptKey })
+                $record.dispatchId = $turn
+                $record.promptFingerprint = $fingerprint
+                $record.phase = 'working'
+                if ($turn -ne '' -and @($record.turnIds) -cnotcontains $turn) { $record.turnIds = @(@($record.turnIds) + $turn | Select-Object -Last 32) }
+                return $record
+            }
+            # Claude has no documented turn_id. Co-delivered handlers are joined
+            # while work is active; a main Stop ends that phase. No timer or
+            # mutable transcript statistics are used as an invented task boundary.
+            if ($turn -eq '' -and $record.phase -eq 'working' -and $record.promptFingerprint -ceq $fingerprint) { return $record }
+        }
+        return [pscustomobject][ordered]@{
+            schema = $script:TaskIdentitySchema; sessionId = $scope.Session; client = $scope.Client
+            taskId = [guid]::NewGuid().ToString('N'); startedUtc = [DateTime]::UtcNow.ToString('o')
+            dispatchId = $turn; promptFingerprint = $fingerprint; phase = 'working'
+            blockFingerprints = @(); turnIds = @(@($turn) | Where-Object { $_ -ne '' })
+        }
     }
-    catch { }
+    if (-not $result.Ok) { Set-ObjectProperty -Object $HookInput -Name 'hookmaker_identity_error' -Value $result.State }
+    # Read-HookInput depends on this function writing nothing to the pipeline.
 }
 
-# The identity every Stop handler of this task must agree on.
-# Degraded=$true means "no provenance", never "a new task".
 function Get-CurrentUserTaskIdentity {
     param([Parameter(Mandatory = $true)]$HookInput)
-    $projectRoot = [string](Get-Field $HookInput 'cwd')
-    $record = Read-TaskIdentityRecord -Path (Get-TaskIdentityPath -ProjectRoot $projectRoot)
-    if ($null -eq $record) { return [pscustomobject]@{ TaskId = ''; Degraded = $true } }
-    $sessionId = [string](Get-Field $HookInput 'session_id')
-    $recordSession = [string](Get-Field $record 'sessionId')
-    # A record from ANOTHER session says nothing about this one. Reporting it
-    # would bind two sessions into one chain and one shared allowance.
-    if (-not [string]::IsNullOrEmpty($sessionId) -and -not [string]::Equals($recordSession, $sessionId, [System.StringComparison]::Ordinal)) {
-        return [pscustomobject]@{ TaskId = ''; Degraded = $true }
-    }
-    $taskId = [string](Get-Field $record 'taskId')
-    if ([string]::IsNullOrWhiteSpace($taskId)) { return [pscustomobject]@{ TaskId = ''; Degraded = $true } }
-    return [pscustomobject]@{ TaskId = $taskId; Degraded = $false }
+    $unknown = [pscustomobject]@{ TaskId = ''; Degraded = $true }
+    $scope = Get-TaskScope $HookInput
+    if ($null -eq $scope) { return $unknown }
+    $record = Read-TaskIdentityRecord -Path $scope.Path
+    if ($null -eq $record -or $record.sessionId -cne $scope.Session -or $record.client -cne $scope.Client) { return $unknown }
+    $turn = [string](Get-Field $HookInput 'turn_id')
+    if ($turn -ne '' -and @($record.turnIds) -cnotcontains $turn) { return $unknown }
+    return [pscustomobject]@{ TaskId = [string]$record.taskId; Degraded = $false }
 }
 
-# Record the text a gate just refused with, so the client replaying it as the
-# next prompt is recognised instead of starting a task. Bounded, and a failure
-# to write is silent by design: the worst case is one extra task boundary, which
-# is the behaviour before this file existed.
-function Add-TaskBlockFingerprint {
-    param(
-        [Parameter(Mandatory = $true)]$HookInput,
-        [Parameter(Mandatory = $true)][AllowEmptyString()][string]$Reason
-    )
-    $fingerprint = Get-TaskPromptFingerprint -Prompt $Reason
-    if ($fingerprint -eq '') { return }
-    $path = Get-TaskIdentityPath -ProjectRoot ([string](Get-Field $HookInput 'cwd'))
-    $record = Read-TaskIdentityRecord -Path $path
-    if ($null -eq $record) { return }
-    $existing = @()
-    try { $existing = @(Get-Field $record 'blockFingerprints') } catch { $existing = @() }
-    if (@($existing) -contains $fingerprint) { return }
-    $updated = @(@($existing) + @($fingerprint))
-    if ($updated.Count -gt $script:TaskIdentityMaxBlockFingerprints) {
-        $updated = @($updated[($updated.Count - $script:TaskIdentityMaxBlockFingerprints)..($updated.Count - 1)])
+function Register-TaskContinuation {
+    param($HookInput, [AllowEmptyString()][string]$Reason, [bool]$AddHeader = $true)
+    $text = $Reason
+    $fingerprint = Get-TaskPromptFingerprint $Reason
+    if ($AddHeader -and $fingerprint -ne '') {
+        $token = [guid]::NewGuid().ToString('N')
+        $fingerprint = 'token:' + $token
+        $text = '[HOOKMAKER-CORRECTION:' + $token + "]`n" + $Reason
     }
-    Set-ObjectProperty -Object $record -Name 'blockFingerprints' -Value $updated
-    try { Write-JsonFileAtomic -Value $record -Path $path } catch { }
+    $identity = Get-CurrentUserTaskIdentity $HookInput
+    if ($fingerprint -eq '' -or $identity.Degraded) { return [pscustomobject]@{ Ok = $false; State = 'identity-unavailable' } }
+    $result = Invoke-TaskIdentityUpdate -HookInput $HookInput -Mutate {
+        param($record, $scope)
+        if ($null -eq $record -or $record.taskId -cne $identity.TaskId) { throw 'task changed before continuation registration' }
+        if (@($record.blockFingerprints) -cnotcontains $fingerprint) {
+            $record.blockFingerprints = @(@($record.blockFingerprints) + $fingerprint | Select-Object -Last $script:TaskIdentityMaxBlockFingerprints)
+        }
+        return $record
+    }
+    return [pscustomobject]@{ Ok = $result.Ok; State = $result.State; Text = $text }
+}
+
+function Add-TaskBlockFingerprint {
+    param([Parameter(Mandatory = $true)]$HookInput, [Parameter(Mandatory = $true)][AllowEmptyString()][string]$Reason)
+    $null = Register-TaskContinuation -HookInput $HookInput -Reason $Reason -AddHeader $false
 }
