@@ -1,31 +1,9 @@
-# OWNED PACKAGE GENERATIONS: containment, verified staging, and retirement.
-#
-# Why this exists: the previous helper deleted whatever directory path it was
-# handed, recursively, with no ownership check at all. Two of its three callers
-# pass `state.pending.packageRoot` - a path read back out of a JSON file on
-# disk. A corrupted, hand-edited or forged state record therefore selected the
-# directory to destroy, and nothing stopped it pointing outside the inbox.
-#
-# The rule here is ownership, not string shape: a deletion is permitted only
-# when the target is physically contained in a root this route actually owns,
-# that root is itself contained in the TRUSTED CONFIGURED DESTINATION, and no
-# reparse point anywhere on the chain from the trusted root down to the target
-# could redirect the walk somewhere else. Checking only target-to-inbox was not
-# enough: a junction on `inbox` itself - or on `.ai`, or on `.cross-project-sync`
-# - redirects every write and every delete out of the project while each
-# individual path still looks contained.
-#
-# A refusal returns $false rather than throwing, because failing to delete
-# disposable staging is always preferable to deleting something that was never
-# ours - and every caller now reports it instead of discarding it.
+# Owned package generations: trusted containment, verified bytes and retirement.
+# Persisted paths and a manifest's self-declared fingerprint are not proof of
+# ownership or reviewed content. Refusals preserve data and reach the caller.
 
-# The chain from the trusted root down to the target, ending AT the trusted
-# root. Returns $null when the target is not under the trusted root at all.
 function Get-OwnedPathChain {
-    param(
-        [Parameter(Mandatory = $true)][string]$TrustedRoot,
-        [Parameter(Mandatory = $true)][string]$Target
-    )
+    param([Parameter(Mandatory = $true)][string]$TrustedRoot, [Parameter(Mandatory = $true)][string]$Target)
     $chain = New-Object System.Collections.Generic.List[string]
     $cursor = $Target
     for ($hop = 0; $hop -lt 64; $hop++) {
@@ -38,10 +16,6 @@ function Get-OwnedPathChain {
     return $null
 }
 
-# $true only when every existing segment between the trusted root and the target
-# is a real directory rather than a reparse point. A segment that does not exist
-# yet is skipped: a generation about to be created cannot be redirected by a
-# link that is not there, and its parents are checked on the same walk.
 function Test-OwnedStagingChain {
     param(
         [Parameter(Mandatory = $true)][AllowEmptyString()][string]$TrustedRoot,
@@ -56,15 +30,12 @@ function Test-OwnedStagingChain {
         $target = Normalize-Path $Target
     }
     catch { return $false }
-
     $ownedIsTrusted = [string]::Equals($owned, $trusted, [System.StringComparison]::OrdinalIgnoreCase)
     if (-not $ownedIsTrusted -and -not (Test-PathInside -Candidate $owned -Parent $trusted)) { return $false }
-
     if ([string]::Equals($target, $owned, [System.StringComparison]::OrdinalIgnoreCase)) {
         if (-not $AllowRootItself) { return $false }
     }
     elseif (-not (Test-PathInside -Candidate $target -Parent $owned)) { return $false }
-
     $chain = Get-OwnedPathChain -TrustedRoot $trusted -Target $target
     if ($null -eq $chain) { return $false }
     foreach ($segment in $chain) {
@@ -84,40 +55,25 @@ function Remove-OwnedPackageDirectory {
     param(
         [Parameter(Mandatory = $true)][AllowEmptyString()][string]$Path,
         [Parameter(Mandatory = $true)][AllowEmptyString()][string]$OwnedRoot,
-        # The trusted configured destination. Optional only so a runtime copied
-        # before this parameter existed keeps working; when it is absent the
-        # owned root is trusted as its own ancestor, which is the older, weaker
-        # rule this parameter exists to replace.
         [AllowEmptyString()][string]$TrustedRoot = '',
-        # The inbox root itself is a legitimate target when a route rebuilds its
-        # whole staging area; a package generation underneath it never is.
         [switch]$AllowRootItself
     )
-
     if ([string]::IsNullOrWhiteSpace($Path) -or [string]::IsNullOrWhiteSpace($OwnedRoot)) { return $false }
     $trusted = $TrustedRoot
+    # Legacy direct callers retain their old boundary; current engine mutations
+    # explicitly supply the configured destination as their trusted boundary.
     if ([string]::IsNullOrWhiteSpace($trusted)) { $trusted = $OwnedRoot }
-
     if (-not (Test-OwnedStagingChain -TrustedRoot $trusted -OwnedRoot $OwnedRoot -Target $Path -AllowRootItself:$AllowRootItself)) { return $false }
-
     try {
         $target = Normalize-Path $Path
-        # Absent is success: the generation this caller wanted gone is gone.
         if (-not (Test-Path -LiteralPath $target -PathType Container)) { return $true }
         Remove-Item -LiteralPath $target -Recurse -Force -ErrorAction Stop
         return $true
     }
-    catch {
-        # Report the refusal rather than pretending the generation was retired;
-        # a caller that believes stale staging is gone will trust it next run.
-        return $false
-    }
+    catch { return $false }
 }
 
-# The staged bytes, proven against the snapshot that described them. Copy-Item
-# reports success for a file that was truncated or replaced underneath it, and
-# the package is the only thing the reviewer ever reads - so the hash is taken
-# from what actually landed, not from what was asked for.
+# Verify the bytes and exact file set, including empty/deletion-only packages.
 function Test-StagedFilesVerified {
     param([Parameter(Mandatory = $true)][string]$FilesRoot, [Parameter(Mandatory = $true)][AllowEmptyCollection()]$Records)
     try {
@@ -139,8 +95,6 @@ function Test-StagedFilesVerified {
             if ($totalBytes -gt 536870912 -or $seen.Count -gt 10000) { return $false }
             if ((Get-PackageFileDigest $staged) -ine $expected) { return $false }
         }
-        # A reviewed generation has an exact file set; a newly injected file is
-        # not part of the reviewed snapshot even when every expected file exists.
         $stack = New-Object 'System.Collections.Generic.Stack[string]'
         $stack.Push($root); $count = 0; $visited = 0
         while ($stack.Count -gt 0) {
@@ -157,11 +111,6 @@ function Test-StagedFilesVerified {
     catch { return $false }
 }
 
-# Is the generation a reviewer was pointed at still the one they reviewed?
-# An ACK arrives long after the announcement, and between the two the package
-# can be deleted by a cleaner, half-rebuilt by an interrupted run, or edited.
-# The fingerprint in the state record proves only what was INTENDED; this proves
-# what is on disk.
 function Test-PackageGenerationIntact {
     param(
         [Parameter(Mandatory = $true)][AllowEmptyString()][string]$PackageRoot,
@@ -169,8 +118,7 @@ function Test-PackageGenerationIntact {
         [string]$ExpectedManifestSha256 = '', [AllowEmptyCollection()]$Records = @(),
         [string]$TrustedRoot = '', [string]$OwnedRoot = ''
     )
-    # A legacy manifest's self-declared fingerprint is not evidence. Legacy
-    # pending generations are rebuilt by the normal event path, never ACKed blind.
+    # Legacy state lacking proof is rebuilt by normal delivery, never ACKed blind.
     if ($ExpectedManifestSha256 -notmatch '^[a-fA-F0-9]{64}$' -or $Fingerprint -notmatch '^[a-fA-F0-9]{64}$') { return $false }
     if (-not (Test-OwnedStagingChain -TrustedRoot $TrustedRoot -OwnedRoot $OwnedRoot -Target $PackageRoot)) { return $false }
     try {
@@ -195,8 +143,11 @@ function Test-PendingPackageIntact {
         if ((Normalize-Path ([string](Get-Field $Pending 'filesRoot'))) -ine (Normalize-Path (Join-Path $root 'files'))) { return $false }
     }
     catch { return $false }
-    $records = Get-Field $Pending 'stagedFiles'
-    if ($null -eq $Pending.PSObject.Properties['stagedFiles'] -or $records -isnot [System.Array]) { return $false }
+    # Pipeline output unwraps collections. Read the property value directly so
+    # a one-file package and an empty package keep their JSON array provenance.
+    $property = $Pending.PSObject.Properties['stagedFiles']
+    if ($null -eq $property -or $property.Value -isnot [System.Array]) { return $false }
+    $records = $property.Value
     return (Test-PackageGenerationIntact -PackageRoot $root -Fingerprint ([string](Get-Field $Pending 'sourceContentFingerprint')) `
         -ExpectedManifestSha256 ([string](Get-Field $Pending 'manifestSha256')) -Records $records `
         -TrustedRoot $Context.destinationRoot -OwnedRoot $StatePaths.inboxRoot)
@@ -222,10 +173,6 @@ function Get-PackageFileDigest {
     finally { $sha.Dispose() }
 }
 
-# Retire every generation under the inbox EXCEPT the one just published. Each
-# refusal is returned rather than swallowed, so a caller can report that cleanup
-# was deferred - which is a different outcome from a failed review, and the two
-# used to be indistinguishable.
 function Remove-SupersededGenerations {
     param(
         [Parameter(Mandatory = $true)][string]$InboxRoot,
@@ -244,9 +191,7 @@ function Remove-SupersededGenerations {
         $full = ''
         try { $full = Normalize-Path $child.FullName } catch { continue }
         if ($keep -ne '' -and [string]::Equals($full, $keep, [System.StringComparison]::OrdinalIgnoreCase)) { continue }
-        if (-not (Remove-OwnedPackageDirectory -Path $full -OwnedRoot $InboxRoot -TrustedRoot $TrustedRoot)) {
-            [void]$deferred.Add($child.Name)
-        }
+        if (-not (Remove-OwnedPackageDirectory -Path $full -OwnedRoot $InboxRoot -TrustedRoot $TrustedRoot)) { [void]$deferred.Add($child.Name) }
     }
     return @($deferred.ToArray())
 }
