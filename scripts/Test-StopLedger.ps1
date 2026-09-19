@@ -373,6 +373,9 @@ I considered synapse and did not use it.'
 Check 'prose on the NEXT line is not absorbed into an empty declaration' (
     -not (Test-ClosingDeclaration -Text $laterProse -LabelPattern $mcpLabel).Substantive)
 
+# ---- the originating user task (L02) --------------------------------------
+. (Join-Path $PSScriptRoot '_teststoptaskidentity.ps1')
+
 # ---- negative control ----------------------------------------------------
 # Without this, a Test-StopStandDown that returned a constant $true would pass
 # most of the assertions above.
