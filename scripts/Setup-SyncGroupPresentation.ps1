@@ -220,7 +220,9 @@ $script:HookMeta = @{
     # Menu 9-11, inserted above the documentation and graph hooks. The first
     # is a GATE at Stop (the only shipped hook that blocks on a skill chain);
     # the two Cbm-* hooks mirror the Graph-* pair for the Codebase Memory
-    # index, which is the primary code graph where one exists.
+    # index. Both pairs stay live: every project carries BOTH graphs, and the
+    # Cbm-* pair answers for code structure while the Graph-* pair answers for
+    # what graphify alone covers and its cross-cutting views.
     'Feature-Request-Check'            = @{ Order = 8;  When = 'both'; Text = 'a feature request runs the grilling chain, not straight to code'; Events = @('UserPromptSubmit', 'Stop', 'SubagentStop'); Timeout = 15 }
     'Cbm-Read-Check'                   = @{ Order = 9;  When = 'pre';  Text = 'query the Codebase Memory index before browsing files'; Events = @('SessionStart', 'UserPromptSubmit'); Timeout = 10 }
     'Cbm-Update-Check'                 = @{ Order = 10; When = 'post'; Text = 'reports a Codebase Memory index lagging behind the code'; Events = @('Stop', 'SubagentStop'); Timeout = 15 }

@@ -17,10 +17,10 @@
 # "index it once" is cheap advice for any code project. A graphify graph is a
 # heavier, deliberate artifact, so that hook only reacts to one that exists.
 #
-# COORDINATION with Graph-Read-Check: when CBM is installed AND this project
-# is indexed, that hook stays silent - the CBM graph is the primary code
-# graph, and two hooks asking for two different graphs on the same prompt is
-# noise, not redundancy.
+# COORDINATION with Graph-Read-Check: every project carries BOTH graphs, so
+# that hook keeps speaking in an indexed project too. The two answer different
+# questions on one prompt - this one for code structure, that one for the
+# material graphify alone covers and its cross-cutting views.
 #
 # KNOWN LIMITATION, deliberately not worked around: a caller may override the
 # project name with index_repository(name=...). A hook cannot see that, so
