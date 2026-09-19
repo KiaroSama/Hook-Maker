@@ -13,14 +13,22 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v7
-      - name: Native task and ledger cases (PowerShell 7)
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Task and ledger regressions (PowerShell 7)
         shell: pwsh
         run: ./scripts/regression/Test-TaskIdentityIsolation.ps1 -ResultPath "$env:RUNNER_TEMP/task-evidence/pwsh.json"
-      - name: Native task and ledger cases (Windows PowerShell 5.1)
+      - name: Task and ledger regressions (Windows PowerShell 5.1)
         if: always()
         shell: powershell
         run: ./scripts/regression/Test-TaskIdentityIsolation.ps1 -ResultPath "$env:RUNNER_TEMP/task-evidence/powershell.json"
+      - name: Native concurrency and wire output (PowerShell 7)
+        if: always()
+        shell: pwsh
+        run: ./scripts/regression/Test-StopConcurrency.ps1 -ResultPath "$env:RUNNER_TEMP/task-evidence/concurrency-pwsh.json"
+      - name: Native concurrency and wire output (Windows PowerShell 5.1)
+        if: always()
+        shell: powershell
+        run: ./scripts/regression/Test-StopConcurrency.ps1 -ResultPath "$env:RUNNER_TEMP/task-evidence/concurrency-powershell.json"
       - name: Archive exact tested source
         if: always()
         shell: pwsh
@@ -28,10 +36,10 @@ jobs:
           New-Item -ItemType Directory -Force "$env:RUNNER_TEMP/task-evidence" | Out-Null
           git archive --format=zip --output="$env:RUNNER_TEMP/task-evidence/source.zip" HEAD
           git rev-parse HEAD | Set-Content -Encoding utf8 "$env:RUNNER_TEMP/task-evidence/commit.txt"
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         if: always()
         with:
           name: task-evidence
           path: ${{ runner.temp }}/task-evidence
-          retention-days: 3
+          retention-days: 7
           if-no-files-found: error
