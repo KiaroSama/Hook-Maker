@@ -109,15 +109,10 @@ function Get-StopEventId {
             return ('t:' + [string]$identity.TaskId)
         }
     }
-    $path = ''
-    try { $path = [string](Get-EvidenceTranscriptPath -HookInput $HookInput) } catch { $path = '' }
-    if ([string]::IsNullOrWhiteSpace($path)) { $path = [string](Get-Field $HookInput 'transcript_path') }
-    if ([string]::IsNullOrWhiteSpace($path) -or -not (Test-Path -LiteralPath $path -PathType Leaf)) { return '' }
-    try {
-        $item = Get-Item -LiteralPath $path -ErrorAction Stop
-        return (Get-ShortHash ($path.ToLowerInvariant() + '|' + [string]$item.Length + '|' + [string]$item.LastWriteTimeUtc.Ticks))
-    }
-    catch { return '' }
+    # No provenance is not a new task. Keep one bounded degraded chain for
+    # this actor until a genuine UserPromptSubmit supplies a durable identity.
+    $scope = (Get-HookClientId) + '|' + [string](Get-Field $HookInput 'session_id') + '|' + (Get-StopAgentKey $HookInput)
+    return ('unknown:' + (Get-ShortHash $scope))
 }
 
 # How long two genuine Stops with NO usable event identity are treated as one
@@ -146,7 +141,7 @@ function Test-StopLedgerWritable {
     # Probe a SIDECAR, never the ledger itself: File.Replace below needs the
     # destination to have no open handles, and a probe that opened it would race
     # every concurrent gate's publication for no extra information.
-    $probePath = $Path + '.probe'
+    $probePath = $Path + '.' + [guid]::NewGuid().ToString('N') + '.probe'
     try {
         [System.IO.File]::WriteAllText($probePath, 'x')
         Remove-Item -LiteralPath $probePath -Force -ErrorAction SilentlyContinue
@@ -171,12 +166,27 @@ $script:StopLedgerVersion = 1
 # and mutated under this build's assumptions.
 function Get-StopLedgerState {
     param([Parameter(Mandatory = $true)][string]$Path)
+    if (Test-Path -LiteralPath $Path -PathType Container) {
+        return [pscustomobject]@{ Doc = (New-StopLedgerDocument); State = 'corrupt' }
+    }
     if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
         return [pscustomobject]@{ Doc = (New-StopLedgerDocument); State = 'absent' }
     }
     try {
+        if ((Get-Item -LiteralPath $Path -ErrorAction Stop).Length -gt 2097152) { throw 'ledger size bound' }
         $parsed = [System.IO.File]::ReadAllText($Path, [System.Text.Encoding]::UTF8) | ConvertFrom-Json
-        if ($null -eq $parsed -or $null -eq $parsed.PSObject.Properties['entries']) { throw 'shape' }
+        if ($null -eq $parsed -or $parsed -isnot [System.Management.Automation.PSCustomObject]) { throw 'shape' }
+        if ($null -eq $parsed.PSObject.Properties['version']) { throw 'version' }
+        foreach ($field in @('entries', 'chains', 'unresolved')) {
+            if ($null -eq $parsed.PSObject.Properties[$field] -or $parsed.$field -isnot [System.Management.Automation.PSCustomObject]) { throw 'map shape' }
+            if (@($parsed.$field.PSObject.Properties).Count -gt 4096) { throw 'map bound' }
+        }
+        foreach ($property in @($parsed.chains.PSObject.Properties)) {
+            $chain = $property.Value
+            $blocks = 0
+            if ($null -eq $chain -or [string]::IsNullOrWhiteSpace([string](Get-Field $chain 'id')) -or
+                -not [int]::TryParse([string](Get-Field $chain 'blocks'), [ref]$blocks) -or $blocks -lt 0 -or $blocks -gt 50) { throw 'chain shape' }
+        }
         if ($null -ne $parsed.PSObject.Properties['version']) {
             $v = 0
             if (-not [int]::TryParse([string]$parsed.version, [ref]$v)) { throw 'version' }
@@ -250,7 +260,11 @@ function Invoke-StopLedgerUpdate {
     if ($null -eq $stream) { return [pscustomobject]@{ Ok = $false; State = 'busy'; Result = $null } }
     $tmp = $Path + '.' + [guid]::NewGuid().ToString('N').Substring(0, 8) + '.tmp'
     try {
-        $ledger = Read-StopLedger -Path $Path
+        $state = Get-StopLedgerState -Path $Path
+        if ($state.State -notin @('absent', 'valid')) {
+            return [pscustomobject]@{ Ok = $false; State = ('ledger-' + $state.State); Result = $null }
+        }
+        $ledger = $state.Doc
         $result = & $Mutate $ledger
         $json = $ledger | ConvertTo-Json -Depth 10
         [System.IO.File]::WriteAllText($tmp, $json, (New-Object System.Text.UTF8Encoding($false)))
@@ -263,7 +277,7 @@ function Invoke-StopLedgerUpdate {
     finally {
         try { if (Test-Path -LiteralPath $tmp -PathType Leaf) { Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue } } catch { }
         try { $stream.Dispose() } catch { }
-        try { Remove-Item -LiteralPath $lockPath -Force -ErrorAction SilentlyContinue } catch { }
+        # Keep the lock inode stable for other waiting writers.
     }
 }
 
@@ -282,20 +296,8 @@ function Resolve-StopChain {
     $existing = $null
     if ($null -ne $Ledger.chains.PSObject.Properties[$ChainKey]) { $existing = $Ledger.chains.$ChainKey }
     $hasExisting = ($null -ne $existing -and -not [string]::IsNullOrWhiteSpace([string]$existing.id))
-    if ($IsContinuation -and $hasExisting) { return $existing }
-    if ($hasExisting -and -not $IsContinuation) {
-        if ($EventId -ne '' -and [string]$existing.event -eq $EventId) { return $existing }
-        if ($EventId -eq '' -or [string]::IsNullOrWhiteSpace([string]$existing.event)) {
-            # No usable identity on one side. Bounded degradation rather than a
-            # guessed reset: inside the window this is another handler of the
-            # same dispatch, outside it a new task.
-            try {
-                $age = ([DateTime]::UtcNow - [DateTime]::Parse([string]$existing.eventUtc, $null, [System.Globalization.DateTimeStyles]::RoundtripKind)).TotalSeconds
-                if ($age -ge 0 -and $age -le $script:StopEventDegradedWindowSeconds) { return $existing }
-            }
-            catch { }
-        }
-    }
+    if ($hasExisting -and [string]$existing.event -ceq $EventId) { return $existing }
+    if ($hasExisting -and $EventId -like 'unknown:*') { return $existing }
     $fresh = [pscustomobject]@{
         id        = [guid]::NewGuid().ToString('N')
         blocks    = 0
@@ -339,6 +341,10 @@ function Test-StopStandDownLedger {
     # Stop, creating Hook Maker state in projects the gate had nothing to say
     # about. Only a block writes now.
     if (-not $IsContinuation) { return $false }
+    # A known task must be reevaluated: a shared continuation flag says nothing
+    # about its current evidence. Atomic admission below, not this early hint,
+    # deduplicates unchanged findings and enforces the finite task allowance.
+    if ((Get-StopEventId -HookInput $HookInput) -like 't:*') { return $false }
     $path = Get-StopLedgerPath -ProjectRoot ([string](Get-Field $HookInput 'cwd'))
     # Persistence has to be AVAILABLE before arming is safe: a gate that arms,
     # blocks, and then cannot RECORD the block arms again on the next
@@ -385,34 +391,7 @@ function Invoke-StopAdmission {
     $path = Get-StopLedgerPath -ProjectRoot ([string](Get-Field $HookInput 'cwd'))
     $eventId = Get-StopEventId -HookInput $HookInput
 
-    # CORRUPT OR UNSUPPORTED IS NOT 'FRESH' (L03). An empty document has
-    # blocks = 0, so mutating from one hands the chain a full allowance again -
-    # a refund in the middle of a task, which is the loop the allowance exists
-    # to bound.
-    #
-    # Recovery happens at a TASK BOUNDARY and nowhere else. A genuine Stop is
-    # already entitled to a fresh chain, so quarantining a damaged file there
-    # costs nothing and stops the project being wedged for ever; during a
-    # continuation the same act would BE the refund, so it refuses instead. A
-    # NEWER build's ledger is never quarantined at all - it is not damaged, it
-    # is simply not ours to rewrite.
-    $ledgerState = (Get-StopLedgerState -Path $path).State
-    if ($ledgerState -eq 'unsupported') {
-        return [pscustomobject]@{ Admitted = $false; Reason = 'ledger-unsupported'; Degraded = $true }
-    }
-    if ($ledgerState -eq 'corrupt') {
-        if ($IsContinuation) {
-            return [pscustomobject]@{ Admitted = $false; Reason = 'ledger-corrupt'; Degraded = $true }
-        }
-        try {
-            $quarantine = $path + '.corrupt-' + ([DateTime]::UtcNow.ToString('yyyyMMddHHmmss'))
-            Move-Item -LiteralPath $path -Destination $quarantine -Force -ErrorAction SilentlyContinue
-        }
-        catch { }
-        if ((Get-StopLedgerState -Path $path).State -eq 'corrupt') {
-            return [pscustomobject]@{ Admitted = $false; Reason = 'ledger-corrupt'; Degraded = $true }
-        }
-    }
+    # Validation is authoritative only inside Invoke-StopLedgerUpdate's lock.
     $outcome = Invoke-StopLedgerUpdate -Path $path -Mutate {
         param($ledger)
         $chain = Resolve-StopChain -Ledger $ledger -ChainKey $keys.ChainKey -IsContinuation $IsContinuation -EventId $eventId
@@ -563,11 +542,8 @@ function Get-StopChainId {
 # runtime with no ledger: the chain is simply empty and the rest still applies.
 function Get-StopSuppressionIdentity {
     param([Parameter(Mandatory = $true)]$HookInput)
-    $session = [string](Get-Field $HookInput 'session_id')
-    $agent = Get-StopAgentKey -HookInput $HookInput
-    $chain = ''
-    try { $chain = Get-StopChainId -HookInput $HookInput } catch { $chain = '' }
-    return ($session + '|' + $agent + '|' + $chain)
+    return ((Get-HookClientId) + '|' + [string](Get-Field $HookInput 'session_id') + '|' +
+        (Get-StopAgentKey $HookInput) + '|' + (Get-StopEventId $HookInput))
 }
 
 # ---- Stop-time evidence: the CURRENT final assistant response --------------
@@ -739,6 +715,7 @@ function Test-TaskSummaryAlreadyPublished {
     $keys = Get-StopLedgerKeys -HookInput $HookInput -HookName 'summary-state'
     if ($null -eq $ledger.chains.PSObject.Properties[$keys.ChainKey]) { return $false }
     $chain = $ledger.chains.($keys.ChainKey)
+    if ([string]$chain.event -cne (Get-StopEventId $HookInput)) { return $false }
     if ($null -eq $chain.PSObject.Properties['summaryPublishedUtc']) { return $false }
     return (-not [string]::IsNullOrWhiteSpace([string]$chain.summaryPublishedUtc))
 }

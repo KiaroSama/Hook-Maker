@@ -371,3 +371,22 @@ function Start-BoundedProcess {
     }
     return $proc
 }
+
+# Copy the shared runtime payload chosen by the real production planner, rather
+# than fabricating a runtime containing only _hooklib.ps1. The sibling hook
+# scripts keep their repository-relative dot-source path in these fixtures.
+function Copy-TestRuntimeLibraries {
+    param([Parameter(Mandatory = $true)][string]$SourceHookLib, [Parameter(Mandatory = $true)][string]$Destination)
+    $tool = Split-Path -Parent (Split-Path -Parent ([IO.Path]::GetFullPath($SourceHookLib)))
+    $target = Split-Path -Parent $Destination
+    . (Join-Path $tool 'scripts\_installruntimepayload.ps1')
+    function New-PlanArtifact {
+        param([string]$RelativePath, [string]$Kind, [string]$SourcePath)
+        return [pscustomobject]@{ RelativePath = $RelativePath; SourcePath = $SourcePath }
+    }
+    function Add-Artifact {
+        param($Artifact)
+        Copy-Item -LiteralPath $Artifact.SourcePath -Destination (Join-Path $target ([IO.Path]::GetFileName($Artifact.RelativePath))) -Force -ErrorAction Stop
+    }
+    Add-SharedRuntimeLibraryArtifacts -ToolRoot $tool -FriendlyName 'TestRuntime'
+}

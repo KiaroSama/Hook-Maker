@@ -244,7 +244,7 @@ function New-ConfiguredCiHookCopy {
     $dir = Join-Path $Work ('cihookcopy-' + [guid]::NewGuid().ToString('N').Substring(0, 6))
     New-Item -ItemType Directory -Path $dir -Force | Out-Null
     Copy-Item $CiHook (Join-Path $dir 'Ci-Status-Check.ps1')
-    Copy-Item (Join-Path $HooksRoot '_hooklib.ps1') (Join-Path $Work '_hooklib.ps1') -Force
+    Copy-TestRuntimeLibraries -SourceHookLib (Join-Path $HooksRoot '_hooklib.ps1') -Destination (Join-Path $Work '_hooklib.ps1')
     $lines = New-Object System.Collections.Generic.List[string]
     foreach ($key in $EnvOverrides.Keys) { [void]$lines.Add($key + '=' + $EnvOverrides[$key]) }
     Set-Content -Path (Join-Path $dir '.env') -Value ($lines.ToArray() -join "`r`n") -Encoding utf8
@@ -459,7 +459,7 @@ try {
         -CheckRunsJson (New-CheckRunsJson @(@{id = '83'; conclusion = 'failure' })) `
         -Annotations @{ '83' = (New-BillingAnnotations) }
     $r = Fire -HookPath $CiHook -Cwd $ciBillC -EventName 'Stop' -Client 'claude'
-    Check 'billing block (Claude) -> model-visible additionalContext, not a block' ($r.Out -match 'additionalContext' -and $r.Out -match 'account-billing' -and $r.Out -notmatch '"decision":"block"') $r.Out
+    Check 'billing block (Claude) -> non-continuing systemMessage, not a block' ($r.Out -match 'systemMessage' -and $r.Out -match 'account-billing' -and $r.Out -notmatch '"decision":"block"') $r.Out
 
     # a genuine failure (check-run present, annotation is a real error) still hard-blocks
     $ciReal = New-GitRepo 'ci-real'
@@ -718,7 +718,7 @@ try {
         Check 'external-blocker exception honored under 5.1 (Codex: non-blocking systemMessage, CI not green)' ($r.Exit -eq 0 -and $r.Out -notmatch '"decision":"block"' -and $r.Out -match '"systemMessage"' -and $r.Out -match 'CI NOT VERIFIED GREEN')
         # Its own session: the Codex fire above already told session 't' (once per session).
         $r = Fire -HookPath $CiHook -Cwd $ps51ci -EventName 'Stop' -Exe 'powershell.exe' -Client 'claude' -Extra @{ session_id = 'ps51-claude' }
-        Check 'external-blocker exception honored under 5.1 (Claude: non-blocking additionalContext, CI not green)' ($r.Exit -eq 0 -and $r.Out -notmatch '"decision":"block"' -and $r.Out -match 'additionalContext' -and $r.Out -match 'CI NOT VERIFIED GREEN')
+        Check 'external-blocker exception honored under 5.1 (Claude: non-continuing systemMessage, CI not green)' ($r.Exit -eq 0 -and $r.Out -notmatch '"decision":"block"' -and $r.Out -match 'systemMessage' -and $r.Out -notmatch 'hookSpecificOutput' -and $r.Out -match 'CI NOT VERIFIED GREEN')
     }
     else {
         Write-Host '[SKIP] powershell.exe not available' -ForegroundColor Yellow

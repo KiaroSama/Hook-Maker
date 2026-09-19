@@ -98,7 +98,7 @@
     Check 'the SAME condition never emits decision:block at SubagentStop' ($rSub.Out -notmatch '"decision"\s*:\s*"block"') $rSub.Out
     Check 'SubagentStop still exits 0 and never fails the subagent' ($rSub.Exit -eq 0) $rSub.Err
     Check 'the finding is still delivered, as a non-blocking advisory' (
-        $rSub.Out -match 'additionalContext' -and $rSub.Out -match 'TEST COMPLETION CHECK') $rSub.Out
+        $rSub.Out -match 'systemMessage' -and $rSub.Out -notmatch 'hookSpecificOutput' -and $rSub.Out -match 'TEST COMPLETION CHECK') $rSub.Out
     $c = New-IsolatedHookCopy
     $p = New-GitRepo 'SubagentNeverBlockedCodex'
     Write-GuardedResult -Copy $c -Root $p -Overall 'terminated' -ExitCode 124 -TerminateReason 'wallTimeout' -TerminateDetail 'exceeded the 1800s wall ceiling'
@@ -516,7 +516,7 @@
         $r.Out -match '"decision":"block"' -and (Get-BlockReason $r.Out) -match 'STILL ACTIVE') $r.Out
     # ...and age never overrides liveness: a running test blocks however old its record.
     Set-MarkerAge -Copy $c -Root $p -AgeHours 240
-    $r = Fire -Copy $c -Cwd $p
+    $r = Fire -Copy $c -Cwd $p -SessionId 'recheck-live-owner'
     Check 'an ANCIENT marker whose owner is genuinely alive still blocks (age never expires a live run)' (
         $r.Out -match '"decision":"block"' -and (Get-BlockReason $r.Out) -match 'STILL ACTIVE') $r.Out
     Check 'a live marker is never expired away' (
@@ -551,9 +551,15 @@
     Check 'the marker is KEPT while it blocks - it is the evidence, not litter' (
         (Test-Path -LiteralPath (Get-RunStateFile -Copy $c -Root $p -Kind 'active'))) $reason
 
-    # The same finding blocks again on the next Stop: nothing has changed.
+    # Deduplication concerns emission, not whether the incident is resolved.
     $r2 = Fire -Copy $c -Cwd $p
-    Check 'it does not evaporate on the next Stop' ($r2.Out -match '"decision":"block"') $r2.Out
+    Check 'ownerless evidence remains pending while repeated output is suppressed' (
+        $r2.Exit -eq 0 -and $r2.Out -eq '' -and
+        [IO.File]::Exists((Get-RunStateFile -Copy $c -Root $p -Kind 'active')) -and
+        (Get-PendingCount (Get-CompletionStateDoc -Copy $c -Root $p)) -eq 1) $r2.Out
+    $rRecheck = Fire -Copy $c -Cwd $p -SessionId 'recheck-ownerless'
+    Check 'an independent session still sees the unresolved ownerless incident' (
+        $rRecheck.Out -match '"decision":"block"' -and (Get-BlockReason $rRecheck.Out) -match 'OWNERLESS') $rRecheck.Out
     # ...and the tagged durable note resolves it, so the gate cannot loop forever.
     Add-TaggedNote -Root $p -Reason $reason -Body 'The guarded runner was killed by the session teardown before it could write its result. Nothing detected it because the active record was deleted unread. Guard: the completion gate now classifies an ownerless record instead of dropping it.'
     $r3 = Fire -Copy $c -Cwd $p

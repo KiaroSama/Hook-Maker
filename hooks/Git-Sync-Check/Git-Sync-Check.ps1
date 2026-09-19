@@ -622,5 +622,5 @@ if ($blockingExtra.Count -gt 0) {
 $reason = $message + $operationalInstruction
 # Record the block so THIS hook's own re-entry is recognised; another
 # gate's block must not mute it, and its own must not repeat.
-$emit = Write-StopBlockResult -HookInput $hookInput -HookName 'Git-Sync-Check' -EventName $eventName -Reason $reason
+$emit = Write-StopBlockResult -HookInput $hookInput -HookName 'Git-Sync-Check' -FindingFingerprint $fingerprint -EventName $eventName -Reason $reason
 exit $emit.ExitCode

@@ -230,8 +230,8 @@
     $parsedCap = $null
     try { $parsedCap = $r.Out | ConvertFrom-Json } catch { $parsedCap = $null }
     Check 'the Stop advisory uses the Claude shape when CLAUDE_PROJECT_DIR is set' (
-        $null -ne $parsedCap -and $null -ne $parsedCap.PSObject.Properties['hookSpecificOutput'] -and
-        [string]$parsedCap.hookSpecificOutput.hookEventName -eq 'Stop') $r.Out
+        $null -ne $parsedCap -and $null -ne $parsedCap.PSObject.Properties['systemMessage'] -and
+        $null -eq $parsedCap.PSObject.Properties['hookSpecificOutput']) $r.Out
 
     # =====================================================================
     Write-Host '--- Stop: SubagentStop behaves like Stop; guards and foreign events are silent ---' -ForegroundColor Cyan

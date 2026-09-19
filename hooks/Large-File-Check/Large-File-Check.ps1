@@ -432,7 +432,7 @@ if ($baselineUsable -and -not $partial) {
             [void]$blockLines.Add('Do that for each file above - a real responsibility, never a thin wrapper, forwarding file, or fragment created to duck the number - then stop again. This block clears as soon as each file above is back at or under ' + $lineThreshold + ' lines.')
             # Record the block the way every sibling Stop gate does, so
             # Session-Summary-Check can account for it.
-            $emit = Write-StopBlockResult -HookInput $hookInput -HookName 'Large-File-Check' -EventName $eventName -Reason ($blockLines.ToArray() -join "`n")
+            $emit = Write-StopBlockResult -HookInput $hookInput -HookName 'Large-File-Check' -FindingFingerprint $fingerprint -EventName $eventName -Reason ($blockLines.ToArray() -join "`n")
             exit $emit.ExitCode
         }
     }

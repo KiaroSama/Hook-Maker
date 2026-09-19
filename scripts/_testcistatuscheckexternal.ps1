@@ -53,8 +53,8 @@
     # docs): Claude Stop supports model-visible hookSpecificOutput.additionalContext;
     # Codex Stop supports only the common systemMessage field.
     $r = Fire -HookPath $CiHook -Cwd $ext1 -EventName 'Stop' -Client 'claude'
-    Check 'Claude: active exception authorizes completion with a NON-BLOCKING context (not decision:block)' ($r.Out -notmatch '"decision":"block"' -and $r.Out -match 'additionalContext') $r.Out
-    Check 'Claude: Stop uses the model-visible hookSpecificOutput/additionalContext shape' ($r.Out -match '"hookSpecificOutput"' -and $r.Out -match '"hookEventName":"Stop"' -and $r.Out -notmatch '"systemMessage"') $r.Out
+    Check 'Claude: active exception authorizes completion with a NON-BLOCKING context (not decision:block)' ($r.Out -notmatch '"decision":"block"' -and $r.Out -match 'systemMessage') $r.Out
+    Check 'Claude: Stop uses the non-continuing user-visible systemMessage shape' ($r.Out -match '"systemMessage"' -and $r.Out -notmatch 'hookSpecificOutput|additionalContext|decision') $r.Out
     Check 'Claude: the completion context explicitly says CI is NOT verified green' ($r.Out -match 'CI NOT VERIFIED GREEN' -and $r.Out -match 'external' ) $r.Out
     Check 'Claude: the context names repo, short sha, classification and sanitized reason' ($r.Out -match 'testowner/testrepo-ext1' -and $r.Out -match ($extSha1.Substring(0, 7)) -and $r.Out -match 'github-outage' -and $r.Out -match 'status page reports a full outage') $r.Out
     Check 'Claude: the context denies success and instructs not to claim CI passed' ($r.Out -match 'not a successful CI run' -and $r.Out -match 'do not claim CI passed') $r.Out

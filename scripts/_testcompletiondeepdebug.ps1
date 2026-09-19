@@ -28,8 +28,8 @@
     $doc = ConvertFrom-HookOutput $r.Out
     Check 'standalone ::deep-debug + clean fresh evidence -> non-blocking COMPLETE advisory (Claude shape)' (
         $null -ne $doc -and $null -eq $doc.PSObject.Properties['decision'] -and
-        [string]$doc.hookSpecificOutput.additionalContext -match '(?m)^DEEP DEBUG: COMPLETE$') $r.Out
-    $ddCtx = [string]$doc.hookSpecificOutput.additionalContext
+        [string]$doc.systemMessage -match '(?m)^DEEP DEBUG: COMPLETE$') $r.Out
+    $ddCtx = [string]$doc.systemMessage
     Check 'COMPLETE names the verified test-evidence scope' ($ddCtx -match 'Test-evidence scope verified' -and $ddCtx -match 'fresh clean result') $ddCtx
     Check 'COMPLETE honestly lists what this hook CANNOT verify (goal/integration/review/Ponytail/UTF-8/CI)' (
         $ddCtx -match 'NOT verifiable by this hook' -and $ddCtx -match '/goal' -and $ddCtx -match 'Ponytail' -and
@@ -63,7 +63,7 @@
     $doc = ConvertFrom-HookOutput $r.Out
     Check 'changed state (fresh clean evidence) upgrades to the COMPLETE advisory immediately' (
         $null -ne $doc -and $null -eq $doc.PSObject.Properties['decision'] -and
-        [string]$doc.hookSpecificOutput.additionalContext -match '(?m)^DEEP DEBUG: COMPLETE$') $r.Out
+        [string]$doc.systemMessage -match '(?m)^DEEP DEBUG: COMPLETE$') $r.Out
     # A marker from a DIFFERENT session remains evidence, but never activates.
     $c = New-IsolatedHookCopy
     $p = New-GitRepoAi 'DdStaleMarker'
@@ -156,7 +156,7 @@
         New-Item -ItemType Directory -Path $tccPreDir -Force | Out-Null
         $tccPreHook = Join-Path $tccPreDir 'Test-Completion-Check.ps1'
         [System.IO.File]::WriteAllText($tccPreHook, $tccPreText, (New-Object System.Text.UTF8Encoding $false))
-        Copy-Item $HookLib (Join-Path $Work '_hooklib.ps1') -Force
+        Copy-TestRuntimeLibraries -SourceHookLib $HookLib -Destination (Join-Path $Work '_hooklib.ps1')
         $tccPreLocal = Join-Path $tccPreDir '_fakelocal-prefix'
         New-Item -ItemType Directory -Path (Join-Path $tccPreLocal 'HookMaker\state') -Force | Out-Null
         $preCopy = [pscustomobject]@{ Script = $tccPreHook; LocalAppData = $tccPreLocal }

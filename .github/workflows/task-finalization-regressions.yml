@@ -1,0 +1,119 @@
+name: Task finalization regressions
+on:
+  pull_request:
+  push:
+    branches: [main]
+permissions:
+  contents: read
+concurrency:
+  group: task-finalization-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  task-identity:
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Task and ledger regressions (PowerShell 7)
+        shell: pwsh
+        run: ./scripts/regression/Test-TaskIdentityIsolation.ps1 -ResultPath "$env:RUNNER_TEMP/task-evidence/pwsh.json"
+      - name: Task and ledger regressions (Windows PowerShell 5.1)
+        if: always()
+        shell: powershell
+        run: ./scripts/regression/Test-TaskIdentityIsolation.ps1 -ResultPath "$env:RUNNER_TEMP/task-evidence/powershell.json"
+      - name: Native concurrency and wire output (PowerShell 7)
+        if: always()
+        shell: pwsh
+        run: ./scripts/regression/Test-StopConcurrency.ps1 -ResultPath "$env:RUNNER_TEMP/task-evidence/concurrency-pwsh.json"
+      - name: Native concurrency and wire output (Windows PowerShell 5.1)
+        if: always()
+        shell: powershell
+        run: ./scripts/regression/Test-StopConcurrency.ps1 -ResultPath "$env:RUNNER_TEMP/task-evidence/concurrency-powershell.json"
+      - name: Archive exact tested source
+        if: always()
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force "$env:RUNNER_TEMP/task-evidence" | Out-Null
+          git archive --format=zip --output="$env:RUNNER_TEMP/task-evidence/source.zip" HEAD
+          git rev-parse HEAD | Set-Content -Encoding utf8 "$env:RUNNER_TEMP/task-evidence/commit.txt"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        if: always()
+        with:
+          name: task-evidence
+          path: ${{ runner.temp }}/task-evidence
+          retention-days: 7
+          if-no-files-found: error
+  baseline-red-proof:
+    runs-on: windows-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          # The proof must also work after squash/rebase integration, when old
+          # PR commits are not ancestors of the default branch checkout.
+          fetch-depth: 1
+      - name: Prove historical failures without relying on local branch history
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $false
+          $evidence = Join-Path $env:RUNNER_TEMP 'task-red-proof'
+          $baseline = Join-Path $env:GITHUB_WORKSPACE '.ci-work/task-red-proof'
+          New-Item -ItemType Directory -Force $evidence, $baseline | Out-Null
+          $baselineSha = 'd37619c1d780a3467d976dfb92b56a563135512e'
+          $scenarioSha = '6932f58092ea1f812071c221a0cb8ef47de52325'
+          $shallow = git rev-parse --is-shallow-repository
+          if ($LASTEXITCODE -ne 0 -or $shallow -cne 'true') { throw 'The shallow-history control was not established.' }
+          $availability = @()
+          foreach ($sha in @($baselineSha, $scenarioSha)) {
+            git cat-file -e "$sha`^{commit}" 2>$null
+            $wasPresent = ($LASTEXITCODE -eq 0)
+            $availability += [ordered]@{ sha = $sha; presentBeforeFetch = $wasPresent }
+            if ($wasPresent) { throw 'An old object was already present; this would not prove history independence.' }
+            # Fetch exact recorded objects, not the mutable audit branch. Fetch
+            # failure is a verification failure, never a skipped red proof.
+            git -c protocol.version=2 fetch --no-tags --depth=1 origin $sha
+            if ($LASTEXITCODE -ne 0) { throw ('Cannot obtain the recorded historical object ' + $sha) }
+            git cat-file -e "$sha`^{commit}"
+            if ($LASTEXITCODE -ne 0) { throw 'Fetched historical commit is unavailable.' }
+          }
+          $availability | ConvertTo-Json -Depth 4 | Set-Content -Encoding utf8 "$evidence/fetch-provenance.json"
+          git archive --format=zip --output="$evidence/baseline.zip" $baselineSha
+          if ($LASTEXITCODE -ne 0) { throw 'Historical source archive failed.' }
+          Expand-Archive -LiteralPath "$evidence/baseline.zip" -DestinationPath $baseline
+          # Freeze the test as well as the baseline: future unrelated new cases
+          # must not silently change the meaning of this historical control.
+          $scenario = git show ($scenarioSha + ':scripts/regression/Test-TaskIdentityIsolation.ps1')
+          if ($LASTEXITCODE -ne 0) { throw 'Historical scenario extraction failed.' }
+          $scenario | Set-Content -Encoding utf8 "$baseline/scripts/regression/Test-TaskIdentityIsolation.ps1"
+          try {
+            & pwsh -NoProfile -File "$baseline/scripts/regression/Test-TaskIdentityIsolation.ps1" -ResultPath "$evidence/red.json"
+            $exitCode = $LASTEXITCODE
+            $report = Get-Content -LiteralPath "$evidence/red.json" -Raw | ConvertFrom-Json
+            $expected = @(
+              'a delayed original dispatch cannot mint a replacement task',
+              'a delayed Stop cannot seal a newer active dispatch',
+              'a known-task continuation evaluates current evidence before admission',
+              'a delayed dispatch does not refund an already-claimed finding',
+              'a new task is not suppressed by an earlier tasks continuation hint'
+            ) | Sort-Object
+            $actual = @($report.cases | Where-Object { -not $_.passed } | ForEach-Object name | Sort-Object)
+            if ($exitCode -ne 1 -or $report.cases.Count -ne 15 -or ($expected -join '|') -cne ($actual -join '|')) {
+              throw 'The baseline did not reproduce exactly the five recorded defects.'
+            }
+            ('baseline=' + $baselineSha + '; scenarios=' + $scenarioSha + '; explicitFetch=true; initialShallow=true') | Set-Content -Encoding utf8 "$evidence/provenance.txt"
+          }
+          finally {
+            . ./scripts/_testlib.ps1
+            if (-not (Remove-TestWorkspace -Path $baseline)) { throw 'Baseline proof workspace cleanup failed.' }
+          }
+          # The child must fail. Only the exact verified expected failures and
+          # successful cleanup permit the enclosing CI step to succeed.
+          exit 0
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        if: always()
+        with:
+          name: task-red-proof
+          path: ${{ runner.temp }}/task-red-proof
+          retention-days: 7
+          if-no-files-found: error

@@ -86,7 +86,7 @@ function New-IsolatedHookCopy {
     # Copying one file would test a runtime that is never installed - and the
     # hook would simply fail to load.
     Copy-Item (Join-Path (Split-Path -Parent $Hook) '*.ps1') $dir
-    Copy-Item $HookLib (Join-Path $Work '_hooklib.ps1') -Force
+    Copy-TestRuntimeLibraries -SourceHookLib $HookLib -Destination (Join-Path $Work '_hooklib.ps1')
     if ($EnvOverrides.Count -gt 0) {
         $lines = New-Object System.Collections.Generic.List[string]
         foreach ($key in $EnvOverrides.Keys) { [void]$lines.Add($key + '=' + $EnvOverrides[$key]) }
@@ -747,8 +747,8 @@ try {
     Fire -HookPath $hc11.Script -Cwd $proj11 -EventName 'SessionStart' -LocalAppData $hc11.LocalAppData | Out-Null
     New-Cache $proj11 | Out-Null
     $rClaude = Fire -HookPath $hc11.Script -Cwd $proj11 -EventName 'Stop' -LocalAppData $hc11.LocalAppData
-    Check 'Claude advisory uses hookSpecificOutput.additionalContext, not decision:block' (
-        $rClaude.Out -match '"additionalContext"' -and $rClaude.Out -notmatch '"decision"') $rClaude.Out
+    Check 'Claude advisory uses non-continuing systemMessage, not decision:block' (
+        $rClaude.Out -match '"systemMessage"' -and $rClaude.Out -notmatch 'hookSpecificOutput' -and $rClaude.Out -notmatch '"decision"') $rClaude.Out
     Check 'Claude advisory carries the full instruction' (Test-HasFullInstruction $rClaude.Out) $rClaude.Out
 
     $hc12 = New-IsolatedHookCopy

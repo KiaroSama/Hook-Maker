@@ -194,7 +194,7 @@ function New-IsolatedHookCopy {
     $dir = Join-Path $Work ('hookcopy-' + [guid]::NewGuid().ToString('N').Substring(0, 6))
     New-Item -ItemType Directory -Path $dir -Force | Out-Null
     Copy-Item $Hook (Join-Path $dir 'Feature-Request-Check.ps1')
-    Copy-Item $HookLib (Join-Path $Work '_hooklib.ps1') -Force
+    Copy-TestRuntimeLibraries -SourceHookLib $HookLib -Destination (Join-Path $Work '_hooklib.ps1')
     if ($null -ne $EnvContent) { Write-Utf8 (Join-Path $dir '.env') $EnvContent }
     return (Join-Path $dir 'Feature-Request-Check.ps1')
 }
