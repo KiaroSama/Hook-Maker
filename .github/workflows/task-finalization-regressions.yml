@@ -87,6 +87,9 @@ jobs:
             . ./scripts/_testlib.ps1
             if (-not (Remove-TestWorkspace -Path $baseline)) { throw 'Baseline proof workspace cleanup failed.' }
           }
+          # The child is required to fail. After checking its exact failures and
+          # cleanup, do not leak that expected exit code into the CI shell wrapper.
+          exit 0
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         if: always()
         with:
