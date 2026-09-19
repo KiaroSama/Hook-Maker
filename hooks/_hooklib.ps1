@@ -321,6 +321,10 @@ function Write-HookResult {
                 $payload = @{ decision = 'block'; reason = $text }
                 $shape = 'decisionBlock'
             }
+            elseif ($EventName -in @('Stop', 'SubagentStop')) {
+                $payload = @{ systemMessage = $text }
+                $shape = $clientId + 'SystemMessage'
+            }
             elseif ($clientId -eq 'claude') {
                 $payload = @{ hookSpecificOutput = @{ hookEventName = $EventName; additionalContext = $text } }
                 $shape = 'claudeContext'
@@ -976,11 +980,24 @@ function Write-StopBlockResult {
     # a clause that varies cannot make an unchanged finding look new.
     $text = $Reason
     if ([string]::IsNullOrEmpty($text)) { $text = $Message }
+    if ([string]::IsNullOrWhiteSpace($text) -or (Get-HookClientId) -eq 'unknown') {
+        return [pscustomobject]@{ ExitCode = 0; Emitted = $false; Admission = $null }
+    }
     $finding = ''
     if (-not [string]::IsNullOrWhiteSpace($text)) { $finding = Get-ShortHash ($HookName + '|' + $text) }
     $admit = Set-StopBlockMarker -HookInput $HookInput -HookName $HookName -FindingFingerprint $finding
     if ($null -eq $admit -or -not $admit.Admitted) {
+        if ($null -ne $admit -and $admit.Reason -ne 'already-claimed') {
+            $notice = 'Hook Maker stopped automatic corrections (' + $admit.Reason + '). This finding is NOT resolved: ' + $text
+            [Console]::Out.WriteLine((@{ continue = $false; stopReason = $notice; systemMessage = $notice } | ConvertTo-Json -Compress))
+            return [pscustomobject]@{ ExitCode = 0; Emitted = $true; Admission = $admit }
+        }
         return [pscustomobject]@{ ExitCode = 0; Emitted = $false; Admission = $admit }
+    }
+    if (-not $script:StopLedgerReady) {
+        $notice = 'Hook Maker requires its installed Stop library to continue safely. Repair this runtime. Unresolved: ' + $text
+        [Console]::Out.WriteLine((@{ continue = $false; stopReason = $notice; systemMessage = $notice } | ConvertTo-Json -Compress))
+        return [pscustomobject]@{ ExitCode = 0; Emitted = $true; Admission = $admit; Degraded = $true }
     }
     # EVERY block carries the finalization clause, because every block is the
     # thing that turns one wrap-up into three: the agent answers, a gate sends it
@@ -998,10 +1015,19 @@ function Write-StopBlockResult {
     # replays a refusal as the next user prompt (Codex does) is recognised as the
     # continuation it is rather than minting a task and refilling the allowance.
     if ($script:TaskIdentityReady) {
-        try { Add-TaskBlockFingerprint -HookInput $HookInput -Reason $text } catch { }
+        $identity = Get-CurrentUserTaskIdentity -HookInput $HookInput
+        if (-not $identity.Degraded) {
+            $receipt = Register-TaskContinuation -HookInput $HookInput -Reason $text
+            if (-not $receipt.Ok) {
+                $notice = 'Hook Maker could not durably record the correction; completion is unverified. ' + $text
+                [Console]::Out.WriteLine((@{ continue = $false; stopReason = $notice; systemMessage = $notice } | ConvertTo-Json -Compress))
+                return [pscustomobject]@{ ExitCode = 0; Emitted = $true; Admission = $admit; Degraded = $true }
+            }
+            $text = $receipt.Text
+        }
     }
     $emit = Write-HookResult -EventName $EventName -Kind 'block' -Reason $text -Message $text
-    return [pscustomobject]@{ ExitCode = $emit.ExitCode; Emitted = $true; Admission = $admit }
+    return [pscustomobject]@{ ExitCode = $emit.ExitCode; Emitted = $emit.Emitted; Admission = $admit }
 }
 
 # The fallback marker path, used by a runtime with no _stoplib.ps1 beside it.
