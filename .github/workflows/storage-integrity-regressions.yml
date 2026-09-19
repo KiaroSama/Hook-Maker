@@ -21,6 +21,14 @@ jobs:
         if: always()
         shell: powershell
         run: ./scripts/regression/Test-StorageIntegrity.ps1 -ResultPath "$env:RUNNER_TEMP/storage-evidence/powershell.json"
+      - name: Byte verification and publication failures (PowerShell 7)
+        if: always()
+        shell: pwsh
+        run: ./scripts/regression/Test-PackagePublication.ps1 -ResultPath "$env:RUNNER_TEMP/storage-evidence/packages-pwsh.json"
+      - name: Byte verification and publication failures (Windows PowerShell 5.1)
+        if: always()
+        shell: powershell
+        run: ./scripts/regression/Test-PackagePublication.ps1 -ResultPath "$env:RUNNER_TEMP/storage-evidence/packages-powershell.json"
       - name: Record tested revision
         if: always()
         shell: pwsh
