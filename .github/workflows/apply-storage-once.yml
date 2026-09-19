@@ -1,0 +1,31 @@
+name: Apply prepared storage repair once
+on:
+  push:
+    branches: [fix/audit-20260919-storage-integrity]
+    paths: [.github/workflows/apply-storage-once.yml]
+permissions:
+  contents: write
+jobs:
+  apply:
+    if: github.repository == 'KiaroSama/Hook-Maker' && github.actor == 'KiaroSama'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.sha }}
+      - name: Apply exact baseline transformations without touching the default branch
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD:scripts/_installregistry.ps1)" = 0f4a1a274a5c75a17d25d2f440197260181d5fe9
+          test "$(git rev-parse HEAD:scripts/_installregistrygeneration.ps1)" = da32b3635fb3086ac91230d1c6b89e88809158ff
+          test "$(git rev-parse HEAD:hooks/Cross-Project-.ai-Knowledge-Sync/_packageguard.ps1)" = 02be9842083265b736fbc2d2f137d25a6937c2c8
+          test "$(git rev-parse HEAD:hooks/Cross-Project-.ai-Knowledge-Sync/_packagebuild.ps1)" = 7dac3d57a0f89c5127536dbc4f9e29cc6a9063e1
+          test "$(git rev-parse HEAD:hooks/Cross-Project-.ai-Knowledge-Sync/Cross-Project-.ai-Knowledge-Sync.ps1)" = 9839e3a38bcf755fb78d3d3823be90462e03cf16
+          python .audit/apply-storage.py
+          git add scripts/_installregistry.ps1 scripts/_installregistrygeneration.ps1 hooks/Cross-Project-.ai-Knowledge-Sync
+          git rm .audit/apply-storage.py
+          git diff --cached --check
+          git -c user.name='github-actions[bot]' -c user.email='41898282+github-actions[bot]@users.noreply.github.com' commit -m 'fix: recover committed registry generations and bind sync acknowledgement to verified bytes'
+          git push origin HEAD:refs/heads/fix/audit-20260919-storage-integrity
