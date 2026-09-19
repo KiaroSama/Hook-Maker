@@ -426,6 +426,59 @@ try {
     ) | Where-Object { Test-Path -LiteralPath $_ -PathType Leaf }
     $leaked = @($realUserConfigs | Where-Object { [System.IO.File]::ReadAllText($_) -like ('*' + $Work + '*') })
     Check 'no fixture path ever leaks into the real ~\.claude / ~\.codex config' ($leaked.Count -eq 0) ($leaked -join ', ')
+    # =====================================================================
+    Write-Host ''
+    Write-Host '--- an anchored mid-file negation is EFFECTIVE, so nothing is added (2026-09-20) ---' -ForegroundColor Cyan
+    # The old liveness rule compared the negation's position against EVERY managed
+    # positive that precedes it in the canonical list - including ones that cannot
+    # possibly re-ignore the path, such as /plans/. Because the hook appends its own
+    # block at the END, its own positives landed after a user's correctly-anchored
+    # negations, so every run judged them dead and appended again, for ever. It was
+    # reported from a consumer project and reproduced in this repository's own
+    # .gitignore the same day.
+    $anchored = New-Repo 'anchored'
+    $anchoredIgnore = Join-Path $anchored '.gitignore'
+    # The negations sit immediately after the rule they negate - correct gitignore -
+    # and a managed positive that CANNOT match .env.example sits AFTER them.
+    Write-Utf8 $anchoredIgnore (@(
+            '/.ai/', '/secrets.md', '/.claude/', '/graphify-out/', '/.codebase-memory/',
+            '/.specify/', '/specs/', '/explain-AI.md', '/reference.md', '/CLAUDE.md',
+            '/AGENTS.md', '/.agents/', '/.kiro/', '/.codex/', '/.cursor/', '/.cline/',
+            '.ignoreme', '**/.ignoreme',
+            '/.env', '/.env.*',
+            '!/.env.example', '!/.env.sample', '!/.env.template', '!/.env.dist',
+            '/plans/'
+        ) -join "`n")
+    $before = [System.IO.File]::ReadAllText($anchoredIgnore)
+    $r = Fire -Cwd $anchored -EventName 'SessionStart'
+    $after = [System.IO.File]::ReadAllText($anchoredIgnore)
+    Check 'anchored: the hook reports no missing pattern' (
+        $r.Out -notmatch 'Auto-added') $r.Out
+    Check 'anchored: the file is not modified at all' ($before -eq $after) (
+        'len ' + $before.Length + ' -> ' + $after.Length)
+    Check 'anchored: exactly one copy of each negation remains' (
+        ([regex]::Matches($after, [regex]::Escape('!/.env.example'))).Count -eq 1) $after
+
+    # Idempotence: a second consecutive run must also change nothing. The reported
+    # symptom was accumulation - three copies after two runs.
+    $r2 = Fire -Cwd $anchored -EventName 'SessionStart'
+    $after2 = [System.IO.File]::ReadAllText($anchoredIgnore)
+    Check 'anchored: a second run is idempotent' ($after -eq $after2) (
+        'copies: ' + ([regex]::Matches($after2, [regex]::Escape('!/.env.example'))).Count)
+    Check 'anchored: still exactly one copy after two runs' (
+        ([regex]::Matches($after2, [regex]::Escape('!/.env.example'))).Count -eq 1) $after2
+
+    # The negative control: a negation that git says is NOT effective (sorted above
+    # its own ignore rule) is still re-added, which is what the rule exists for.
+    $sorted = New-Repo 'sorted'
+    $sortedIgnore = Join-Path $sorted '.gitignore'
+    Write-Utf8 $sortedIgnore (@(
+            '!/.env.example', '!/.env.sample', '!/.env.template', '!/.env.dist',
+            '/.env', '/.env.*'
+        ) -join "`n")
+    $rs = Fire -Cwd $sorted -EventName 'SessionStart'
+    Check 'sorted: a negation hoisted above its ignore rule IS re-added' (
+        $rs.Out -match 'Auto-added' -and $rs.Out -match '!/\.env\.example') $rs.Out
 }
 finally {
     $env:HOOKMAKER_STATE_DIR = $SavedHookMakerStateDir

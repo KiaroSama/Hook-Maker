@@ -104,26 +104,53 @@ if (Test-Path -LiteralPath $ignorePath -PathType Leaf) {
     $existing = [System.IO.File]::ReadAllText($ignorePath)
 }
 $existingLines = @($existing -split '\r?\n' | ForEach-Object { $_.Trim() })
-# A managed negation is only ALIVE if it sits after every managed positive pattern that
-# precedes it in insertion order - gitignore is last-match-wins. Presence alone is not
-# enough: sorting an existing .gitignore (common tooling behaviour) hoists every '!' line
-# above '/.env.*' ('!' < '/' in ASCII), which silently re-ignores the public templates AND
-# makes an already-tracked .env.example match the protected '/.env.*' pattern, producing a
-# false "TRACKED protected paths" block. A dead negation is therefore treated as missing
-# and re-appended, restoring precedence without removing or weakening any existing rule.
+# Is a managed negation actually DOING anything? Presence alone is not enough: sorting an
+# existing .gitignore (common tooling behaviour) hoists every '!' line above '/.env.*'
+# ('!' < '/' in ASCII), which silently re-ignores the public templates AND makes an
+# already-tracked .env.example match the protected '/.env.*' pattern, producing a false
+# "TRACKED protected paths" block. A dead negation is treated as missing and re-appended.
+#
+# ASK GIT, do not re-derive gitignore semantics. This used to compare positions against
+# every managed positive that precedes the negation in the canonical list, which was far
+# too strong: `/plans/` cannot re-ignore `.env.example`, yet a `/plans/` line sitting later
+# in the file than a correctly-anchored negation condemned it. And the hook appends its own
+# block at the END, so its own positives landed after the user's mid-file negations - every
+# run then judged them dead and appended again, for ever. Reported from a consumer project
+# on 2026-09-20 and reproduced in this repository's own .gitignore the same day
+# (`/plans/` at line 53 killing `!/.env.example` at line 47). `git check-ignore` answers
+# the only question that matters - "is this path ignored right now" - including
+# last-match-wins, and removes the whole ordered comparison. See `.ai/BUGS_HOOKS.md`.
 function Test-NegationLive {
-    param([string]$Negation, [string[]]$Ordered, [string[]]$Lines)
-    $at = [array]::LastIndexOf($Lines, $Negation)
-    if ($at -lt 0) { return $false }
-    foreach ($pattern in $Ordered) {
-        if ($pattern -eq $Negation) { break }
-        if ($pattern.StartsWith('!')) { continue }
-        if ([array]::LastIndexOf($Lines, $pattern) -gt $at) { return $false }
+    param([string]$Negation, [string[]]$Lines, [string]$Root, [string[]]$Ordered)
+    if ([array]::LastIndexOf($Lines, $Negation) -lt 0) { return $false }
+    $path = $Negation.TrimStart('!').TrimStart('/')
+    if ($path -eq '') { return $false }
+    # A project that deliberately re-protects this exact path with its own
+    # POSITIVE pattern wins. EXTRA_PATTERNS are appended after the defaults, so
+    # such an override sits later in the canonical order than the negation it
+    # overrides. Without this, git would report the path as ignored (correctly,
+    # because the override is doing its job), the negation would be judged dead,
+    # and re-appending it would silently defeat the override the project asked
+    # for. Pinned by 'an explicit project-specific positive rule still blocks
+    # .env.example'.
+    $negAt = [array]::IndexOf($Ordered, $Negation)
+    if ($negAt -ge 0) {
+        $override = '/' + $path
+        $overrideAt = [array]::LastIndexOf($Ordered, $override)
+        if ($overrideAt -gt $negAt) { return $true }
     }
+    # No git: presence is the whole answer. A machine that cannot run git cannot
+    # push either, and guessing here is what used to loop.
+    if ($null -eq (Get-Command git -ErrorAction SilentlyContinue)) { return $true }
+    Invoke-QuietCommand -FilePath git -ArgumentList @('-C', $Root, 'check-ignore', '--no-index', '-q', '--', $path) | Out-Null
+    # 0 = git still ignores it, so the negation is NOT effective and is re-added.
+    # 1 = not ignored, the negation is doing its job wherever it sits.
+    # anything else is a git error: treat present as enough rather than loop.
+    if ($LASTEXITCODE -eq 0) { return $false }
     return $true
 }
 $missing = @($patterns | Where-Object {
-        if ($_.StartsWith('!')) { -not (Test-NegationLive -Negation $_ -Ordered $patterns -Lines $existingLines) }
+        if ($_.StartsWith('!')) { -not (Test-NegationLive -Negation $_ -Lines $existingLines -Root $cwd -Ordered $patterns) }
         else { $existingLines -notcontains $_ }
     })
 if ($missing.Count -gt 0) {
