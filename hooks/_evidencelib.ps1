@@ -25,15 +25,19 @@ $script:ClosingPlaceholders = @('tbd', 'todo', 'n/a', 'na', 'none yet', 'tbc', '
 function Get-ClosingDeclarationLine {
     param([AllowEmptyString()][string]$Text, [Parameter(Mandatory = $true)][string]$LabelPattern)
     if ([string]::IsNullOrWhiteSpace($Text)) { return $null }
-    $pattern = '(?im)(?:^|\\n)[ \t]{0,8}(?:[-*>#]+[ \t]{0,4})?(?:\*\*)?' + $LabelPattern + '[ \t]*:((?:(?!\\n)[^\r\n])*)'
-    foreach ($match in @([regex]::Matches($Text, $pattern))) {
-        # A match inside a fenced block is an EXAMPLE of the format, not a claim
-        # in it. Counting the fences before the match is enough: an odd number
-        # means the match sits inside one.
-        $before = $Text.Substring(0, $match.Index)
-        $fences = ([regex]::Matches($before, '```')).Count
-        if (($fences % 2) -eq 1) { continue }
-        return [string]$match.Groups[1].Value
+    $pattern = '^ {0,3}(?:[-*#]+[ \t]{0,4})?(?:\*\*)?' + $LabelPattern + '[ \t]*:(.*)$'
+    $fenceChar = ''; $fenceLength = 0
+    foreach ($line in @($Text -split '(?:\r?\n|\\n)')) {
+        # Quoted examples and indented code are not the assistant's declaration.
+        if ($line -match '^[ \t]*>') { continue }
+        if ($line -match '^ {0,3}(`{3,}|~{3,})(.*)$') {
+            $marker = $matches[1]; $rest = $matches[2]
+            if ($fenceChar -eq '') { $fenceChar = $marker.Substring(0, 1); $fenceLength = $marker.Length }
+            elseif ($marker.Substring(0, 1) -ceq $fenceChar -and $marker.Length -ge $fenceLength -and $rest.Trim() -eq '') { $fenceChar = ''; $fenceLength = 0 }
+            continue
+        }
+        if ($fenceChar -ne '') { continue }
+        if ($line -match $pattern) { return [string]$matches[1] }
     }
     return $null
 }
@@ -70,9 +74,12 @@ function Test-ClosingDeclaration {
         $rest = $trimmed.Substring(4).Trim()
         # Any separator the instructions suggest, then a real reason.
         $rest = $rest.TrimStart([char[]]@('-', [char]0x2013, [char]0x2014, ':', ',', '.', ' '))
-        if (-not $AllowNoneWithReason -or $rest.Length -lt 3) {
+        if (-not $AllowNoneWithReason -or $rest.Length -lt 3 -or $script:ClosingPlaceholders -contains $rest.ToLowerInvariant()) {
             return [pscustomobject]@{ Present = $true; Value = $trimmed; Substantive = $false; Reason = 'none-without-reason' }
         }
     }
     return [pscustomobject]@{ Present = $true; Value = $trimmed; Substantive = $true; Reason = 'ok' }
 }
+
+# Informational delivery is a separate transaction from Stop admission.
+. (Join-Path $PSScriptRoot '_deliverylib.ps1')

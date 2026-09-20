@@ -54,13 +54,17 @@ function Set-ComponentResult {
         [string]$Message = ''
     )
     # Sanitized message only: never raw file contents, .env values or stdin.
-    [void]$script:ComponentResults.Add([pscustomobject][ordered]@{
+    $entry = [pscustomobject][ordered]@{
         component = $Component
         status    = $Status
         reason    = $ReasonCode
         message   = $Message
         atUtc     = [DateTime]::UtcNow.ToString('o')
-    })
+    }
+    for ($i = 0; $i -lt $script:ComponentResults.Count; $i++) {
+        if ($script:ComponentResults[$i].component -eq $Component) { $script:ComponentResults[$i] = $entry; return }
+    }
+    [void]$script:ComponentResults.Add($entry)
 }
 function Write-InstallResult {
     param([string]$Overall)
@@ -153,6 +157,7 @@ $ToolRoot = Split-Path -Parent $PSScriptRoot
 # also manages a real .git/hooks/pre-push wrapper. Defines a function only; the
 # phase that calls it runs near the end of this script.
 . (Join-Path $PSScriptRoot '_installnativegit.ps1')
+. (Join-Path $PSScriptRoot '_installverification.ps1')
 
 # ---- guarantee a structured result on ANY terminal outcome -----------------
 # A validation/runtime/settings/native failure used to exit before
@@ -486,6 +491,8 @@ if ($InstallClaude) {
         }
         Backup-File $ClaudeSettings
         Write-JsonFile -Value $claude -Path $ClaudeSettings
+        Assert-InstalledClientReadback -Runtime $claudeRuntime -Client 'claude' -SettingsPath $ClaudeSettings `
+            -Commands $claudeCommands -Events @($Events) -Timeout $script:EffectiveTimeout -StatusMessage $status -ProfileId ([string]$Profile)
     }
     Set-ComponentResult -Component 'claude' -Status 'ok'
     Write-Host "Claude hook ($ScopeLabel) installed in: $ClaudeSettings"
@@ -527,6 +534,8 @@ if ($InstallCodex) {
         }
         Backup-File $CodexHooks
         Write-JsonFile -Value $codex -Path $CodexHooks
+        Assert-InstalledClientReadback -Runtime $codexRuntime -Client 'codex' -SettingsPath $CodexHooks `
+            -Commands $codexCommands -Events @($Events) -Timeout $script:EffectiveTimeout -StatusMessage $status -ProfileId ([string]$Profile)
     }
     Set-ComponentResult -Component 'codex' -Status 'ok'
     Write-Host "Codex hook ($ScopeLabel) installed in: $CodexHooks"
@@ -536,7 +545,11 @@ if ($InstallCodex) {
 $script:CurrentPhase = 'nativeGit'
 Install-IgnorePrePush
 # Native chain is only part of some installs; record which.
-if ($null -ne $script:NativeGitState) { Set-ComponentResult -Component 'nativeGit' -Status 'ok' }
+if ($null -ne $script:NativeGitState) {
+    $nativeCheck = Test-NativePrePushState -NativeRecord $script:NativeGitState -PrimaryFriendlyName $FriendlyName
+    if ($nativeCheck.Ok) { Set-ComponentResult -Component 'nativeGit' -Status 'ok' }
+    else { Set-ComponentResult -Component 'nativeGit' -Status 'failed' -ReasonCode 'verificationFailed' -Message $nativeCheck.Detail }
+}
 else { Set-ComponentResult -Component 'nativeGit' -Status 'skipped' -ReasonCode 'notApplicable' }
 
 $script:CurrentPhase = 'registry'

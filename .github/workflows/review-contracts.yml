@@ -1,0 +1,95 @@
+name: Review contract regressions
+on:
+  pull_request:
+  push:
+    branches: [main]
+permissions:
+  contents: read
+concurrency:
+  group: review-contracts-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  contracts:
+    name: contracts (${{ matrix.host }}, ${{ matrix.subject }})
+    runs-on: windows-latest
+    timeout-minutes: 12
+    strategy:
+      fail-fast: false
+      matrix:
+        host: [pwsh, powershell]
+        subject: [current, baseline]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 1
+      - name: Prepare the exact subject and evidence directories
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $false
+          $evidence = Join-Path $env:RUNNER_TEMP 'review-evidence'
+          New-Item -ItemType Directory -Force $evidence | Out-Null
+          $subject = $env:GITHUB_WORKSPACE
+          if ('${{ matrix.subject }}' -eq 'baseline') {
+            $sha = 'b0d1e030bec815892aacffa174bdfc5025fe2b98'
+            git -c protocol.version=2 fetch --no-tags --depth=1 origin $sha
+            if ($LASTEXITCODE -ne 0) { throw 'Exact historical source fetch failed.' }
+            git archive --format=zip --output="$evidence/baseline.zip" $sha
+            if ($LASTEXITCODE -ne 0) { throw 'Historical source archive failed.' }
+            $subject = Join-Path $env:GITHUB_WORKSPACE '.ci-work/review-baseline'
+            Expand-Archive -LiteralPath "$evidence/baseline.zip" -DestinationPath $subject
+          }
+          "REVIEW_SUBJECT=$subject" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "REVIEW_EVIDENCE=$evidence" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          git rev-parse HEAD | Set-Content -Encoding utf8 "$evidence/tested-commit.txt"
+          if ($LASTEXITCODE -ne 0) { throw 'Cannot identify tested source.' }
+      - name: Evidence, capacity, and outcome contracts
+        shell: pwsh
+        run: |
+          $PSNativeCommandUseErrorActionPreference = $false
+          $arguments = @('-NoLogo','-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-File','./scripts/regression/Test-ReviewContracts.ps1','-SourceRoot',$env:REVIEW_SUBJECT,'-ResultPath',(Join-Path $env:REVIEW_EVIDENCE 'contracts.json'))
+          if ('${{ matrix.subject }}' -eq 'baseline') { $arguments += '-Baseline' }
+          & '${{ matrix.host }}' @arguments
+          exit $LASTEXITCODE
+      - name: Concurrent callers and real installer fault injection
+        if: ${{ !cancelled() }}
+        shell: pwsh
+        run: |
+          $PSNativeCommandUseErrorActionPreference = $false
+          $arguments = @('-NoLogo','-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-File','./scripts/regression/Test-ReviewIntegration.ps1','-SourceRoot',$env:REVIEW_SUBJECT,'-ResultPath',(Join-Path $env:REVIEW_EVIDENCE 'integration.json'))
+          if ('${{ matrix.subject }}' -eq 'baseline') { $arguments += '-Baseline' }
+          & '${{ matrix.host }}' @arguments
+          exit $LASTEXITCODE
+      - name: Require complete machine-readable evidence
+        if: ${{ !cancelled() }}
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          foreach ($name in @('contracts', 'integration')) {
+            $report = Get-Content -LiteralPath (Join-Path $env:REVIEW_EVIDENCE ($name + '.json')) -Raw | ConvertFrom-Json
+            if ($report.unexpected -ne 0 -or @($report.cases).Count -lt 5) { throw "Incomplete or unexpected $name evidence." }
+            if ('${{ matrix.subject }}' -eq 'current' -and $report.failed -ne 0) { throw 'Current product failed.' }
+            if ('${{ matrix.subject }}' -eq 'baseline' -and $report.failed -eq 0) { throw 'Historical defects were not reproduced.' }
+            if (@($report.cases | Where-Object { $_.name -like 'HARNESS no unhandled*' -or $_.assertionThrew }).Count) { throw 'A harness exception cannot count as a historical defect.' }
+          }
+      - name: Preserve tested source and clean the historical checkout
+        if: always()
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $evidence = Join-Path $env:RUNNER_TEMP 'review-evidence'
+          New-Item -ItemType Directory -Force $evidence | Out-Null
+          git archive --format=zip --output="$evidence/source.zip" HEAD
+          if ($LASTEXITCODE -ne 0) { throw 'Tested source archive failed.' }
+          if ('${{ matrix.subject }}' -eq 'baseline') {
+            . ./scripts/_testlib.ps1
+            $subject = Join-Path $env:GITHUB_WORKSPACE '.ci-work/review-baseline'
+            if ((Test-Path -LiteralPath $subject) -and -not (Remove-TestWorkspace -Path $subject)) { throw 'Historical checkout cleanup failed.' }
+          }
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        if: always()
+        with:
+          name: review-${{ matrix.host }}-${{ matrix.subject }}
+          path: ${{ runner.temp }}/review-evidence
+          retention-days: 14
+          if-no-files-found: error

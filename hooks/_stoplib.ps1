@@ -268,6 +268,12 @@ function Invoke-StopLedgerUpdate {
         $result = & $Mutate $ledger
         $json = $ledger | ConvertTo-Json -Depth 10
         [System.IO.File]::WriteAllText($tmp, $json, (New-Object System.Text.UTF8Encoding($false)))
+        # Do not commit a generation this very reader will reject on its next
+        # invocation. Capacity refusal preserves active chains and obligations;
+        # deleting arbitrary old entries would refund their correction budgets.
+        if ((Get-StopLedgerState -Path $tmp).State -ne 'valid') {
+            return [pscustomobject]@{ Ok = $false; State = 'mutation-invalid-or-capacity'; Result = $null }
+        }
         Publish-StopLedgerFile -TempPath $tmp -Path $Path
         return [pscustomobject]@{ Ok = $true; State = 'ok'; Result = $result }
     }
@@ -559,105 +565,118 @@ function Get-StopSuppressionIdentity {
         (Get-StopAgentKey $HookInput) + '|' + (Get-StopEventId $HookInput))
 }
 
-# ---- Stop-time evidence: the CURRENT final assistant response --------------
-#
-# Returns [pscustomobject]@{ Text; Source; Known }.
-#   Known = $false  -> UNKNOWN. Never an all-clear and never a fabricated
-#                      failure; the caller must say it could not verify.
-#   Source          -> 'event' | 'transcript' | '' (for the record/diagnostics)
-#
-# Preference order, and why:
-#   1. the event's own last_assistant_message - it IS the final response, so no
-#      parsing can drag in a previous task, a user example or hook output;
-#   2. the LAST assistant entry parsed out of the transcript - still scoped to
-#      one response, unlike the raw tail the old readers searched;
-#   3. unknown.
-#
-# For a child event the transcript is agent_transcript_path: reading the parent
-# transcript_path there answers about the wrong agent entirely.
+# ---- Current-response evidence, never a convenient earlier answer ----------
+# Stop fields are the preferred public interface. Transcript fallback accepts
+# only recognized message envelopes; it is not a stable Codex protocol API.
+# UNKNOWN must propagate to consumers, never become a search of raw JSON text.
 function Get-EvidenceTranscriptPath {
     param([Parameter(Mandatory = $true)]$HookInput)
-    $event = [string](Get-Field $HookInput 'hook_event_name')
-    if ($event -eq 'SubagentStop') {
-        # agent_transcript_path is NOT a documented client field - prefer it when a
-        # client does supply one, but never require it. On a SubagentStop the
-        # documented transcript_path IS the subagent's own transcript, so treating
-        # its absence as UNKNOWN disabled every closing gate on every real subagent
-        # stop: the evidence came back empty and nothing could ever block.
-        $child = [string](Get-Field $HookInput 'agent_transcript_path')
-        if (-not [string]::IsNullOrWhiteSpace($child)) { return $child }
-    }
-    return [string](Get-Field $HookInput 'transcript_path')
+    $name = if ([string](Get-Field $HookInput 'hook_event_name') -eq 'SubagentStop') { 'agent_transcript_path' } else { 'transcript_path' }
+    $value = Get-Field $HookInput $name
+    # Both clients document transcript_path as the PARENT session on a child
+    # stop. No child path means no child transcript evidence, never the parent.
+    if ($value -is [string]) { return $value }
+    return ''
 }
 
-# The text of the last assistant entry in a JSONL transcript tail.
 function Get-LastAssistantTextFromJsonl {
     param([string]$Tail, [switch]$Truncated)
     if ([string]::IsNullOrWhiteSpace($Tail)) { return $null }
-    $lines = $Tail -split "`n"
-    # Only a TRUNCATED tail has a half record at the front. Dropping the first
-    # line unconditionally discarded the ONLY record of a transcript small
-    # enough to be read whole - which is every subagent transcript.
-    if ($Truncated -and $lines.Count -gt 1) { $lines = $lines[1..($lines.Count - 1)] }
+    $lines = @($Tail -split "`n")
+    if ($Truncated) {
+        if ($lines.Count -le 1) { return $null }
+        $lines = $lines[1..($lines.Count - 1)]
+    }
     for ($i = $lines.Count - 1; $i -ge 0; $i--) {
-        $line = ([string]$lines[$i]).Trim()
-        if ($line.Length -lt 2 -or $line[0] -ne '{') { continue }
-        $record = $null
-        try { $record = $line | ConvertFrom-Json } catch { continue }
-        if ($null -eq $record -or $null -eq $record.PSObject.Properties['type']) { continue }
-        if ([string]$record.type -ne 'assistant') { continue }
-        if ($null -eq $record.PSObject.Properties['message'] -or $null -eq $record.message) { continue }
-        $message = $record.message
-        if ($null -eq $message.PSObject.Properties['content']) { continue }
-        $parts = New-Object System.Collections.Generic.List[string]
-        foreach ($block in @($message.content)) {
-            if ($null -eq $block) { continue }
-            if ($block -is [string]) { [void]$parts.Add([string]$block); continue }
-            if ($null -ne $block.PSObject.Properties['type'] -and [string]$block.type -ne 'text') { continue }
-            if ($null -ne $block.PSObject.Properties['text']) { [void]$parts.Add([string]$block.text) }
+        $line = ([string]$lines[$i]).Trim().TrimStart([char]0xFEFF)
+        if ($line -eq '') { continue }
+        try { $record = $line | ConvertFrom-Json -ErrorAction Stop } catch { return $null }
+        if ($record -isnot [System.Management.Automation.PSCustomObject]) { return $null }
+        $type = [string](Get-Field $record 'type')
+        $message = $null
+        if ($type -eq 'user') { return $null }
+        if ($type -eq 'assistant') { $message = Get-Field $record 'message' }
+        elseif ($type -eq 'response_item') {
+            $payload = Get-Field $record 'payload'
+            if ([string](Get-Field $payload 'type') -ne 'message' -or [string](Get-Field $payload 'role') -ne 'assistant') { return $null }
+            $message = $payload
         }
-        if ($parts.Count -gt 0) { return ($parts.ToArray() -join "`n") }
+        elseif ($type -eq 'event_msg') {
+            $payload = Get-Field $record 'payload'
+            if ([string](Get-Field $payload 'type') -ne 'agent_message') { return $null }
+            $value = Get-Field $payload 'message'
+            if ($value -is [string] -and -not [string]::IsNullOrWhiteSpace($value)) { return $value }
+            return $null
+        }
+        elseif ($type -in @('progress', 'file-history-snapshot', 'queue-operation')) { continue }
+        else { return $null }
+        # The newest assistant is a boundary even when it has no usable text.
+        # Never step over it, a new user, an unknown envelope, or malformed JSON.
+        $content = Get-Field $message 'content'
+        $parts = New-Object System.Collections.Generic.List[string]
+        if ($content -is [string]) { [void]$parts.Add($content) }
+        else {
+            foreach ($block in @($content)) {
+                if ($block -is [string]) { [void]$parts.Add($block); continue }
+                $kind = [string](Get-Field $block 'type')
+                $value = Get-Field $block 'text'
+                if ($kind -in @('text', 'output_text') -and $value -is [string]) { [void]$parts.Add($value) }
+            }
+        }
+        $answer = $parts.ToArray() -join "`n"
+        if ([string]::IsNullOrWhiteSpace($answer)) { return $null }
+        return $answer
     }
     return $null
 }
 
 function Get-ClosingAssistantText {
     param([Parameter(Mandatory = $true)]$HookInput, [int]$TailBytes = 262144)
-    $direct = [string](Get-Field $HookInput 'last_assistant_message')
-    if (-not [string]::IsNullOrWhiteSpace($direct)) {
+    $unknown = [pscustomobject]@{ Text = ''; Source = ''; Known = $false }
+    $hasDirect = if ($HookInput -is [System.Collections.IDictionary]) { $HookInput.Contains('last_assistant_message') } else { $null -ne $HookInput.PSObject.Properties['last_assistant_message'] }
+    if ($hasDirect) {
+        $direct = Get-Field $HookInput 'last_assistant_message'
+        # Explicit null/empty/invalid current evidence cannot resurrect a prior
+        # transcript answer. Only an ABSENT field permits legacy fallback.
+        if ($direct -isnot [string] -or [string]::IsNullOrWhiteSpace($direct)) { return $unknown }
         return [pscustomobject]@{ Text = $direct; Source = 'event'; Known = $true }
     }
+    if ($TailBytes -le 0 -or $TailBytes -gt 1048576) { return $unknown }
     $path = Get-EvidenceTranscriptPath -HookInput $HookInput
-    if ([string]::IsNullOrWhiteSpace($path) -or -not (Test-Path -LiteralPath $path -PathType Leaf)) {
-        return [pscustomobject]@{ Text = ''; Source = ''; Known = $false }
-    }
-    $tail = $null
+    if ([string]::IsNullOrWhiteSpace($path)) { return $unknown }
     try {
-        $stream = [System.IO.File]::Open($path, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::ReadWrite)
+        $stream = [IO.File]::Open($path, 'Open', 'Read', 'ReadWrite')
         try {
-            $take = [int][Math]::Min([int64]$TailBytes, $stream.Length)
-            if ($take -le 0) { return [pscustomobject]@{ Text = ''; Source = ''; Known = $false } }
-            $wasTruncated = ($stream.Length -gt $take)
-            if ($stream.Length -gt $take) { [void]$stream.Seek(-$take, [System.IO.SeekOrigin]::End) }
+            $length = $stream.Length
+            $take = [int][Math]::Min([int64]$TailBytes, $length)
+            if ($take -le 0) { return $unknown }
+            $truncated = ($length -gt $take)
+            if ($truncated) { [void]$stream.Seek(-$take, 'End') }
             $buffer = New-Object byte[] $take
-            # Looped read: one Read may legally return fewer bytes than asked,
-            # and a short read would look like a missing line - a FALSE BLOCK.
             $filled = 0
             while ($filled -lt $take) {
-                $chunk = $stream.Read($buffer, $filled, $take - $filled)
-                if ($chunk -le 0) { break }
-                $filled += $chunk
+                $n = $stream.Read($buffer, $filled, $take - $filled)
+                if ($n -le 0) { break }
+                $filled += $n
             }
-            if ($filled -le 0) { return [pscustomobject]@{ Text = ''; Source = ''; Known = $false } }
-            $tail = [System.Text.Encoding]::UTF8.GetString($buffer, 0, $filled)
+            if ($filled -ne $take -or $stream.Length -ne $length) { return $unknown }
+            $offset = 0
+            # Drop the partial record as BYTES before strict UTF-8 decoding, so
+            # splitting a multibyte character does not corrupt a later full line.
+            if ($truncated) {
+                while ($offset -lt $filled -and $buffer[$offset] -ne 10) { $offset++ }
+                $offset++
+            }
+            if ($offset -ge $filled) { return $unknown }
+            $decoder = New-Object Text.UTF8Encoding($false, $true)
+            $tail = $decoder.GetString($buffer, $offset, $filled - $offset)
         }
         finally { $stream.Dispose() }
     }
-    catch { return [pscustomobject]@{ Text = ''; Source = ''; Known = $false } }
-
-    $text = Get-LastAssistantTextFromJsonl -Tail $tail -Truncated:$wasTruncated
-    if ($null -eq $text) { return [pscustomobject]@{ Text = ''; Source = ''; Known = $false } }
-    return [pscustomobject]@{ Text = $text; Source = 'transcript'; Known = $true }
+    catch { return $unknown }
+    $answer = Get-LastAssistantTextFromJsonl -Tail $tail
+    if ($null -eq $answer) { return $unknown }
+    return [pscustomobject]@{ Text = $answer; Source = 'transcript'; Known = $true }
 }
 
 # ---- L01: the finalization barrier ----------------------------------------

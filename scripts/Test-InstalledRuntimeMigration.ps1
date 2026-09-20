@@ -100,7 +100,7 @@ function Invoke-HookInstaller {
 $FixtureToolRoot = Join-Path $Work 'tool'
 $FixtureHooksDir = Join-Path $FixtureToolRoot 'hooks'
 New-Item -ItemType Directory -Path $FixtureHooksDir -Force | Out-Null
-Copy-Item -LiteralPath $HookLib -Destination (Join-Path $FixtureHooksDir '_hooklib.ps1') -Force
+Copy-TestRuntimeLibraries -SourceHookLib $HookLib -Destination (Join-Path $FixtureHooksDir '_hooklib.ps1')
 
 # 'Session-Summary-Check' is the name the SHIPPED migration table is keyed by,
 # so these assertions exercise the real entry rather than an invented one.
@@ -138,7 +138,7 @@ function New-InstalledFixture {
     New-Item -ItemType Directory -Path $hookDir -Force | Out-Null
     $runtimeScript = Join-Path $hookDir ($Hook + '.ps1')
     Copy-Item -LiteralPath (Join-Path $FixtureHooksDir ($Hook + '\' + $Hook + '.ps1')) -Destination $runtimeScript -Force
-    Copy-Item -LiteralPath $HookLib -Destination (Join-Path $hookDir '_hooklib.ps1') -Force
+    Copy-TestRuntimeLibraries -SourceHookLib $HookLib -Destination (Join-Path $hookDir '_hooklib.ps1')
     Set-Content -LiteralPath (Join-Path $hookDir '.hookmaker-runtime.json') `
         -Value ('{"schemaVersion":2,"friendlyName":"' + $Hook + '"}') -Encoding UTF8
 
