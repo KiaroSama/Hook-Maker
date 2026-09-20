@@ -58,6 +58,15 @@ function Add-SharedRuntimeLibraryArtifacts {
         Add-Artifact (New-PlanArtifact -RelativePath ($FriendlyName + '/_taskidentity.ps1') -Kind 'File' -SourcePath $taskIdentityLib)
     }
 
+    # _processtree.ps1 travels with _hooklib.ps1 for the same reason as the rest:
+    # it owns terminating an owned process tree, and _hooklib.ps1 dot-sources it as
+    # a sibling. A runtime without it falls back to killing the root alone, which
+    # leaves the descendants that the bounded walk exists to catch.
+    $processTreeLib = Join-Path $ToolRoot 'hooks\_processtree.ps1'
+    if (Test-Path -LiteralPath $processTreeLib -PathType Leaf) {
+        Add-Artifact (New-PlanArtifact -RelativePath ($FriendlyName + '/_processtree.ps1') -Kind 'File' -SourcePath $processTreeLib)
+    }
+
     $deliveryLib = Join-Path $ToolRoot 'hooks\_deliverylib.ps1'
     if (-not (Test-Path -LiteralPath $deliveryLib -PathType Leaf)) { throw 'The shared delivery library is missing from this checkout.' }
     Add-Artifact (New-PlanArtifact -RelativePath ($FriendlyName + '/_deliverylib.ps1') -Kind 'File' -SourcePath $deliveryLib)
