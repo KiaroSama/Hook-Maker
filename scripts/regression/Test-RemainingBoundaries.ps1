@@ -137,9 +137,25 @@ try {
     $script:payload.Clear(); $caught = ''
     try { Add-CompanionRuntimeArtifacts -ToolRoot $tool -FriendlyName 'Test-Run-Guard' } catch { $caught=$_.Exception.Message }
     Check-Boundary 'I03 missing guarded runner is rejected, not silently omitted' { $caught -match 'Run-Tests-Guarded.ps1' -and $script:payload.Count -eq 0 } $true
+    # The runner was split into three siblings it refuses to start without, so a
+    # PARTIAL set must be rejected exactly like a missing entry point. Staging only
+    # the entry file proves that: an installer that shipped it alone would make
+    # every guarded run in that project an immediate refusal.
     [IO.File]::WriteAllText((Join-Path $tool 'scripts/Run-Tests-Guarded.ps1'),'# test fixture')
+    $script:payload.Clear(); $caught = ''
+    try { Add-CompanionRuntimeArtifacts -ToolRoot $tool -FriendlyName 'Test-Run-Guard' } catch { $caught=$_.Exception.Message }
+    Check-Boundary 'I03b a partial guarded-runner set is rejected too' { $caught -match '_guarded' -and $script:payload.Count -eq 0 } $true
+    foreach ($leaf in @('_guardedtiming.ps1','_guardedstate.ps1','_guardedprocess.ps1')) {
+        [IO.File]::WriteAllText((Join-Path $tool ('scripts/' + $leaf)),'# test fixture')
+    }
+    $script:payload.Clear()
     Add-CompanionRuntimeArtifacts -ToolRoot $tool -FriendlyName 'Test-Run-Guard'
-    Check-Boundary 'I04 present guarded runner retains its exact destination' { $script:payload.Count -eq 1 -and $script:payload[0].Path -ceq 'Test-Run-Guard/scripts/Run-Tests-Guarded.ps1' }
+    $companionNames = New-Object System.Collections.Generic.List[string]
+    foreach ($artifact in $script:payload.ToArray()) { [void]$companionNames.Add([string]$artifact.Path) }
+    $companionPaths = @($companionNames.ToArray() | Sort-Object)
+    Check-Boundary 'I04 the complete guarded-runner set retains its exact destinations' {
+        ($companionPaths -join ',') -ceq 'Test-Run-Guard/scripts/_guardedprocess.ps1,Test-Run-Guard/scripts/_guardedstate.ps1,Test-Run-Guard/scripts/_guardedtiming.ps1,Test-Run-Guard/scripts/Run-Tests-Guarded.ps1'
+    } $true
 }
 catch {
     $message=$_.Exception.Message + ' ' + $_.ScriptStackTrace

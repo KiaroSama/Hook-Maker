@@ -39,8 +39,18 @@ function Add-CompanionRuntimeArtifacts {
         [Parameter(Mandatory = $true)][string]$FriendlyName
     )
     if ([string]::Equals($FriendlyName, 'Test-Run-Guard', [StringComparison]::OrdinalIgnoreCase)) {
-        $relative = 'scripts/Run-Tests-Guarded.ps1'
-        Assert-RuntimeSourcesAvailable -ToolRoot $ToolRoot -RelativePaths @($relative)
-        Add-Artifact (New-PlanArtifact -RelativePath ($FriendlyName + '/' + $relative) -Kind 'File' -SourcePath (Join-Path $ToolRoot $relative))
+        # All four, or none. The runner refuses to start without its siblings
+        # rather than run a test it cannot watch, so shipping a partial set would
+        # turn every guarded run in that project into an immediate refusal.
+        $relatives = @(
+            'scripts/Run-Tests-Guarded.ps1',
+            'scripts/_guardedtiming.ps1',
+            'scripts/_guardedstate.ps1',
+            'scripts/_guardedprocess.ps1'
+        )
+        Assert-RuntimeSourcesAvailable -ToolRoot $ToolRoot -RelativePaths $relatives
+        foreach ($relative in $relatives) {
+            Add-Artifact (New-PlanArtifact -RelativePath ($FriendlyName + '/' + $relative) -Kind 'File' -SourcePath (Join-Path $ToolRoot $relative))
+        }
     }
 }

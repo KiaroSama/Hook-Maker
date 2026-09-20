@@ -51,6 +51,10 @@ logs/
 
 # Advisor handoff plans (local working notes, not part of the tool)
 /plans/
+# Browser-automation scratch written into the repo root by tooling runs.
+# Ignored rather than deleted: another session may still be writing them.
+/.playwright-mcp/
+/real-dark-fa.png
 
 # Local assistant skill state - machine-specific, not part of the tool
 /skills-lock.json
