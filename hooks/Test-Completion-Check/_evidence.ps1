@@ -329,13 +329,3 @@ function Get-ObservedResultAssignment {
     }
     return [pscustomobject]@{ SortedObserved = $sortedObserved; Map = $map; AssignedPaths = $assigned }
 }
-
-# Derive a result document's incident key AND register the note it owes, in one
-# step. Separating the two is how a blocking case came to print a key the ledger
-# had never heard of, leaving its own -ResolveIncident instruction unusable.
-function Register-ResultIncident {
-    param($Doc, [AllowEmptyString()][string]$Path, [AllowEmptyString()][string]$Reason)
-    $key = Get-ResultIncidentKey -Doc $Doc -Path $Path
-    if ($key -ne '') { Register-PendingNote -Key $key -Reason $Reason }
-    return $key
-}
