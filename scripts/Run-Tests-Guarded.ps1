@@ -101,6 +101,9 @@ param(
     # The observing hook's repository-state fingerprint, persisted verbatim so the
     # consumer can reject a result produced for a different repository/state. Not
     # recomputed here: the hook owns the git-state derivation.
+    # Absent, the receipt records an empty one and is not usable as recovery
+    # evidence (_recovery.ps1 requires it and now says so by name). The guard's
+    # own replacement command always supplies it; a hand-typed run must too.
     [string]$ProjectFingerprint = '',
 
     # Optional, for audit only. The command fingerprint is RECOMPUTED below from
