@@ -1,5 +1,9 @@
 name: Review contract regressions
 on:
+  # Lets a branch be verified in CI without opening a pull request. Without
+  # this, a pushed branch has no CI run at all, and the only way to get the
+  # heavy pass is to run suites locally - which the project forbids.
+  workflow_dispatch:
   pull_request:
   push:
     branches: [main]
