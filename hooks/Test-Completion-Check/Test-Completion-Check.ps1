@@ -1013,19 +1013,19 @@ if ($incidentKey -ne '' -and -not (Test-AnyIncidentResolved $incidentKey $incide
 
 # ---- 4. the run completed but failed --------------------------------------
 if ($null -ne $result -and $overall -eq 'failed' -and $resultIsCurrentEvidence -and -not $repAccounted) {
-    Save-CompletionState
+    # Derived once, because the -ResolveIncident line below must print the SAME key
+    # recovery looks for. The identity above covers termination and leaks only.
     $exitCode = [string](Get-Field $result 'exitCode')
+    $failureKey = Get-ResultIncidentKey -Doc $result -Path $resultEntryPath
+    Save-CompletionState
     Write-Finding -Blocking $true -Lines @(
         'TEST COMPLETION CHECK: the latest guarded test run for this project FAILED (exit code ' + $exitCode + '). The work is not verifiably complete.',
         $(if ($lastProgress -ne '') { 'Last recorded progress: ' + $lastProgress } else { 'The result document records no final progress line.' }),
         'Recovery: inspect the actual failure, fix the root cause, and re-run the suite through scripts\Run-Tests-Guarded.ps1 until the result reports overall=ok. Do not weaken, skip, or delete tests to make it pass, and do not claim tests passed while this result stands.',
-        # A re-run clears this on its own: the supersede matches on the COMMAND,
-        # not on the tree state, so the edit that fixed the failure does not
-        # disqualify the green run that proves it. Stated because the opposite
-        # used to be true and cost a reader a day of unclearable blocks. The
-        # escape hatch below is for the case a re-run genuinely cannot reproduce
-        # the identity - a changed command, or a receipt written without one.
-        'Re-running the SAME command green supersedes this automatically, even though your fix changed the working tree. Only if the command itself had to change, or the old receipt carries no command identity, associate the newer clean receipt explicitly: powershell.exe -NoProfile -File "' + $PSCommandPath + '" -ResolveIncident ' + (Get-ResultIncidentKey -Doc $result -Path $resultEntryPath) + ' -RecoveryRunId "<verified recovery run id>" -ProjectRoot "' + $cwd + '" -Reason "<substantive equivalent test scope and verified repair, at least 80 UTF-8 bytes>".',
+        # The supersede matches the COMMAND, not the tree state, so the edit that
+        # fixed the failure does not disqualify the green run proving it. The escape
+        # hatch is for when a re-run cannot reproduce the identity at all.
+        'Re-running the SAME command green supersedes this automatically, even though your fix changed the working tree. Only if the command itself had to change, or the old receipt carries no command identity, associate the newer clean receipt explicitly: powershell.exe -NoProfile -File "' + $PSCommandPath + '" -ResolveIncident ' + $failureKey + ' -RecoveryRunId "<verified recovery run id>" -ProjectRoot "' + $cwd + '" -Reason "<substantive equivalent test scope and verified repair, at least 80 UTF-8 bytes>".',
         'Note: the supersede matches the WHOLE argument vector, so a run covering three suites does not supersede a one-suite failure.')
 }
 
