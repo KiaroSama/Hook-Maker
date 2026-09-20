@@ -662,6 +662,7 @@ function Invoke-QuietCommand {
         $info.CreateNoWindow = $true
         $process = [System.Diagnostics.Process]::Start($info)
         if ($null -eq $process) { $global:LASTEXITCODE = 1; return $null }
+        $ownedProcessCreated = $process.StartTime.ToUniversalTime()
         $process.StandardInput.Close()
         # Read stdout asynchronously BEFORE waiting: a child that fills the pipe
         # buffer while we block on WaitForExit deadlocks with us forever.
@@ -669,7 +670,7 @@ function Invoke-QuietCommand {
         $stderrTask = $process.StandardError.ReadToEndAsync()
         $remainingMs = [int][Math]::Max(0, $timeoutMs - $commandTimer.ElapsedMilliseconds)
         if (-not $process.WaitForExit($remainingMs)) {
-            try { $null = Stop-ProcessTree -ProcessId $process.Id } catch { }
+            try { $null = Stop-ProcessTree -ProcessId $process.Id -RootCreated $ownedProcessCreated } catch { }
             $global:LASTEXITCODE = 124
             return $null
         }
@@ -678,7 +679,7 @@ function Invoke-QuietCommand {
         # and spend only the remaining command budget waiting for both EOFs.
         $remainingMs = [int][Math]::Max(0, $timeoutMs - $commandTimer.ElapsedMilliseconds)
         if (-not [System.Threading.Tasks.Task]::WaitAll([System.Threading.Tasks.Task[]]@($stdoutTask, $stderrTask), $remainingMs)) {
-            try { $null = Stop-ProcessTree -ProcessId $process.Id } catch { }
+            try { $null = Stop-ProcessTree -ProcessId $process.Id -RootCreated $ownedProcessCreated } catch { }
             $global:LASTEXITCODE = 124
             return $null
         }
@@ -846,7 +847,7 @@ function Get-LatestWorkTimeUtc {
 # runtime falls back to killing the root alone, which is all it managed before.
 $processTreePath = Join-Path $PSScriptRoot '_processtree.ps1'
 if (Test-Path -LiteralPath $processTreePath -PathType Leaf) { . $processTreePath }
-else { function Stop-ProcessTree { param([int]$ProcessId, [int]$TimeoutMilliseconds = 0) if ($ProcessId -ne $PID) { try { Stop-Process -Id $ProcessId -Force -ErrorAction SilentlyContinue } catch { } } } }
+else { function Stop-ProcessTree { param([int]$ProcessId, [int]$TimeoutMilliseconds = 0, [object]$RootCreated = $null) if ($ProcessId -ne $PID) { try { Stop-Process -Id $ProcessId -Force -ErrorAction SilentlyContinue } catch { } } } }
 
 # the atomic claim live in _stoplib.ps1, which owns that design and records why
 # one file per project+hook was the original defect. Gates only, never advisory
