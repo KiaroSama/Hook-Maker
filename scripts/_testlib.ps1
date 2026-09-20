@@ -437,6 +437,29 @@ function Start-BoundedProcess {
     return $proc
 }
 
+# Stage the guarded runner INTO a fixture's scripts directory - all four files.
+#
+# The runner fails closed: a copy that cannot load its siblings exits 3 rather
+# than running a test with no wall ceiling, no idle ceiling and no tree cleanup.
+# So a fixture that copies only the entry point produces "no result" on every
+# assertion downstream, and none of those messages names the missing file.
+# Four call sites got this wrong the day the runner was split; this exists so
+# there is one place to be right.
+function Copy-GuardedRunner {
+    param(
+        [Parameter(Mandatory = $true)][string]$RepoRoot,
+        [Parameter(Mandatory = $true)][string]$DestinationScriptsDir
+    )
+    [void][IO.Directory]::CreateDirectory($DestinationScriptsDir)
+    foreach ($leaf in @('Run-Tests-Guarded.ps1', '_guardedprocess.ps1', '_guardedstate.ps1', '_guardedtiming.ps1')) {
+        $source = Join-Path $RepoRoot (Join-Path 'scripts' $leaf)
+        if (-not (Test-Path -LiteralPath $source -PathType Leaf)) {
+            throw ('Copy-GuardedRunner: missing ' + $leaf + ' at ' + $source)
+        }
+        Copy-Item -LiteralPath $source -Destination (Join-Path $DestinationScriptsDir $leaf) -Force
+    }
+}
+
 # Copy the shared runtime payload chosen by the real production planner, rather
 # than fabricating a runtime containing only _hooklib.ps1. The sibling hook
 # scripts keep their repository-relative dot-source path in these fixtures.
