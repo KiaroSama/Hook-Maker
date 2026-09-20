@@ -23,19 +23,20 @@ jobs:
           python - <<'PY'
           from pathlib import Path
           import subprocess
+          # Git stores normalized LF blobs; the native evidence archive uses CRLF.
           expected = {
-              'hooks/Skills-Check/Skills-Check.ps1': '97773b19c084fc99aaa4bcb23ae750f66e05f004',
-              'hooks/Cloudflare-Deploy/Cloudflare-Deploy.ps1': '23c3c17b62ff7e2405a8434c12679996200a4bdd',
-              'scripts/Test-CloudflareDeploy.ps1': '3f17f01cdaccc0c73b8d2a6f56d6aa02d78f4c8a',
-              'scripts/_testinstallregistrysafety.ps1': '6988405f3111e67a324d1343eb6d79da41b4840b',
-              'scripts/Test-InstalledRuntimeMigration.ps1': 'dda48b68cc009fd5b81b8d6992f351bf24edc3b6',
-              'scripts/regression/Test-ReviewContracts.ps1': '05f2f3d78664106f069092674047a70245170112',
-              'scripts/_testcloudflareownership.ps1': '2d4c7deaa1b119af68b154f9450c7390d56b6f24',
+              'hooks/Skills-Check/Skills-Check.ps1': '8eab26bdfad790074d1085783b28f2c220e18e3d',
+              'hooks/Cloudflare-Deploy/Cloudflare-Deploy.ps1': '464dff3402a3aac739f526aa8b283783dec052ac',
+              'scripts/Test-CloudflareDeploy.ps1': '448a3bc2d4f218588ddc7161c9367af71b59f9da',
+              'scripts/_testinstallregistrysafety.ps1': '7688216b0936400b3e5965fcd85bebd6fe585611',
+              'scripts/Test-InstalledRuntimeMigration.ps1': '41d7f1891496bed9d8940a3a4acad0b4612984bf',
+              'scripts/regression/Test-ReviewContracts.ps1': '5e781a15edefe74b3d99890b8509c8ccbb0a3dfa',
+              'scripts/_testcloudflareownership.ps1': '89d3a505e696910344a9b745ef7c806a1ff51bbe',
           }
           for name, sha in expected.items():
               actual = subprocess.check_output(['git', 'rev-parse', 'HEAD:' + name], text=True).strip()
               if actual != sha:
-                  raise RuntimeError('Source changed: ' + name)
+                  raise RuntimeError('Source changed: ' + name + ' actual=' + actual)
           def replace(name, old, new, count=1):
               path = Path(name)
               raw = path.read_bytes()
