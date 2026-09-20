@@ -448,52 +448,51 @@
     $readerCap = ([regex]::Match($cfText, '\$script:CleanupManifestCap\s*=\s*(\d+)')).Groups[1].Value
     Check 'the manifest-entry cap mirror equals the install plan''s own writer cap' (
         $writerCap -ne '' -and $writerCap -eq $readerCap) ('writer=[' + $writerCap + '] reader=[' + $readerCap + ']')
-    # A fifth mirror, and the one most likely to rot silently: the required
-    # executables. If the plan starts staging a new shared artifact, a required
-    # set frozen at today's two names would go on accepting a manifest that
-    # omits the new one - the exact hole this check exists to close. So derive
-    # what the plan ACTUALLY stages for any hook and require the hook's set to
-    # match it.
-    #
-    # Three exclusions, each for a stated reason rather than to make the numbers
-    # agree:
-    #   '/'                            the fragment of the main-script expression
-    #                                  ($FriendlyName + '/' + $FriendlyName +
-    #                                  '.ps1'); the hook derives that name from
-    #                                  its own hook-name constant.
-    #   scripts/Run-Tests-Guarded.ps1  staged ONLY for Test-Run-Guard, so it is
-    #                                  never part of a Test-Temp-Cleanup runtime.
-    #   non-.ps1                       sync-hooks.json and SYNC-PROJECTS.txt are
-    #                                  DATA staged only for the sync-engine
-    #                                  hooks. This check - and the disk scan it
-    #                                  backs - is deliberately about executables:
-    #                                  what the entry point can LOAD. A data file
-    #                                  is out of its scope, stated rather than
-    #                                  silently dropped.
-    # The planner DELEGATES the runtime payload (the private library copies and
-    # the one companion executable) to _installruntimepayload.ps1, so the staged
-    # set is spread across both files. Reading only the planner made this mirror
-    # compare against an empty list the moment that responsibility moved out.
-    $payloadPath = Join-Path $PSScriptRoot '_installruntimepayload.ps1'
-    $stagingText = $planText
-    if (Test-Path -LiteralPath $payloadPath -PathType Leaf) {
-        $stagingText = $planText + [Environment]::NewLine + [System.IO.File]::ReadAllText($payloadPath)
-    }
-    $plannedLeaves = @([regex]::Matches($stagingText, '\$FriendlyName \+ ''/([^'']+)''') |
-        ForEach-Object { $_.Groups[1].Value } |
-        Where-Object { $_ -like '*.ps1' -and $_ -ne 'scripts/Run-Tests-Guarded.ps1' } | Sort-Object -Unique)
+    # Validate the consumer's independent required set against the ACTUAL
+    # production plan, not regex matches of how its source builds strings. A
+    # standalone probe excludes hook-specific siblings, data and companions:
+    # these are the shared executable libraries every ordinary runtime needs.
+    # Loading the planner in a child scope cannot replace this suite's helpers.
+    $commonPlan = @(& {
+        . (Join-Path $PSScriptRoot '_installplan.ps1')
+        $toolRoot = Split-Path -Parent $PSScriptRoot
+        $probeSource = [pscustomobject]@{
+  Kind = 'Standalone'
+  ScriptPath = Join-Path $HooksRoot 'Test-Temp-Cleanup/Test-Temp-Cleanup.ps1'
+        }
+        Get-ManagedInstallPlan -SourceInfo $probeSource -FriendlyName 'RuntimeProbe' -ToolRoot $toolRoot
+    })
+    $plannedLeaves = @($commonPlan | Where-Object {
+        $_.relativePath -like 'RuntimeProbe/*.ps1' -and
+        $_.relativePath -cne 'RuntimeProbe/RuntimeProbe.ps1'
+    } | ForEach-Object { $_.relativePath.Substring('RuntimeProbe/'.Length) } | Sort-Object)
+    Check 'the required-library probe includes its generated entrypoint exactly once' (
+        @($commonPlan | Where-Object { $_.relativePath -ceq 'RuntimeProbe/RuntimeProbe.ps1' -and $_.kind -eq 'Generated' }).Count -eq 1)
+    Check 'the required-library probe is nonempty and has no duplicate destinations' (
+        $plannedLeaves.Count -gt 0 -and @($plannedLeaves | Sort-Object -Unique).Count -eq $plannedLeaves.Count)
     $requiredAst = @($cfAst.FindAll({
-                $args[0] -is [System.Management.Automation.Language.AssignmentStatementAst] -and
-                $args[0].Left.Extent.Text -eq '$script:CleanupRequiredRuntimeLeaves' }, $true))
-    $requiredLeaves = @()
+        $args[0] -is [System.Management.Automation.Language.AssignmentStatementAst] -and
+        $args[0].Left.Extent.Text -eq '$script:CleanupRequiredRuntimeLeaves'
+    }, $true))
+    $requiredMap = @{}
     if ($requiredAst.Count -eq 1) {
-        $requiredLeaves = @($requiredAst[0].Right.FindAll({
-                    $args[0] -is [System.Management.Automation.Language.StringConstantExpressionAst] }, $true) |
-            ForEach-Object { $_.Value } | Where-Object { $_ -like '*.ps1' } | Sort-Object -Unique)
+        $literal = $requiredAst[0].Right.Find({
+  param($node) $node -is [System.Management.Automation.Language.HashtableAst]
+        }, $true)
+        if ($null -ne $literal) { $requiredMap = $literal.SafeGetValue() }
     }
-    Check 'the REQUIRED-executable mirror equals what the install plan actually stages for a hook' (
-        $plannedLeaves.Count -gt 0 -and ($requiredLeaves -join '|') -eq ($plannedLeaves -join '|')) (
-        'required=[' + ($requiredLeaves -join ', ') + '] planned=[' + ($plannedLeaves -join ', ') + ']')
+    $expectedClients = @(Get-HookMakerClientIds | Sort-Object)
+    Check 'the required-library mirror covers exactly the supported clients' (
+        (@($requiredMap.Keys | Sort-Object) -join '|') -ceq ($expectedClients -join '|'))
+    # A union across clients would let one complete client hide another's
+    # omitted dependency. Compare each independently, keeping duplicate checks.
+    foreach ($cfClientId in $expectedClients) {
+        $requiredLeaves = @($requiredMap[$cfClientId] | Sort-Object)
+        Check ($cfClientId + ': required executables equal the actual production plan') (
+  $plannedLeaves.Count -gt 0 -and
+  ($requiredLeaves -join '|') -ceq ($plannedLeaves -join '|')) (
+  'required=[' + ($requiredLeaves -join ', ') + '] planned=[' + ($plannedLeaves -join ', ') + ']')
+    }
 
     # =====================================================================
     Write-Host '--- the ownership-metadata contract has two sides that must agree ---' -ForegroundColor Cyan
