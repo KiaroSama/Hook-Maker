@@ -216,6 +216,44 @@ try {
     Check 'an outdated package this project does not declare is NOT reported' ($r.Out -notmatch 'boto3') $r.Out
 
     # =====================================================================
+    Write-Host '--- pip: a probe slower than the shared command default still reports ---' -ForegroundColor Cyan
+    # Measured on a real project: this exact probe took 32s and exited 0 on a
+    # venv created with --system-site-packages, where pip asks PyPI about every
+    # visible package. Invoke-QuietCommand's shared default is 20s, so it was
+    # killed (exit 124) and reported as a failed check on every single run.
+    # The delay here is real wall time - a timeout cannot be exercised any other
+    # way - so it is kept just over the old 20s default rather than at the
+    # measured 32s, and it applies ONLY to the -m pip list --outdated probe
+    # (%~1 = -m); the -c metadata query that follows stays instant.
+    $pipSlowProj = New-Proj 'PipSlowProj'
+    Write-Utf8 (Join-Path $pipSlowProj 'requirements.txt') 'requests==2.0.0'
+    $pipSlowVenv = Join-Path $pipSlowProj '.venv\Scripts'
+    New-Item -ItemType Directory -Path $pipSlowVenv -Force | Out-Null
+    Write-Utf8 (Join-Path $pipSlowVenv 'python.cmd') (
+        '@echo off' + [Environment]::NewLine +
+        'if "%~1"=="-m" "%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe" -NoLogo -NoProfile -Command "Start-Sleep -Seconds 22"' + [Environment]::NewLine +
+        'type ' + [char]34 + (Join-Path $MockDir 'pip_outdated.json') + [char]34 + [Environment]::NewLine)
+    Set-Mock -PipExit 0 -PipJson '[{"name":"requests","version":"2.0.0","latest_version":"2.5.0","latest_filetype":"wheel"}]'
+    $r = Fire -Cwd $pipSlowProj
+    Check 'a slow but successful pip probe is a finding, not a timed-out incomplete check' (
+        $r.Out -match 'pip: requests 2\.0\.0 -> 2\.5\.0' -and $r.Out -notmatch 'exit 124') $r.Out
+
+    # =====================================================================
+    Write-Host '--- pip: a failed probe names the command that actually ran ---' -ForegroundColor Cyan
+    # The failure text is built from the same argument array the call passes.
+    # Hand-written a second time, it dropped -m pip and told whoever read it
+    # that the hook had run `<python> list --outdated --format=json` - a
+    # malformed command, and a false explanation for the failure it reported.
+    $pipFailProj = New-Proj 'PipFailProj'
+    Write-Utf8 (Join-Path $pipFailProj 'requirements.txt') 'requests==2.0.0'
+    $pipFailVenv = Join-Path $pipFailProj '.venv\Scripts'
+    New-Item -ItemType Directory -Path $pipFailVenv -Force | Out-Null
+    Write-Utf8 (Join-Path $pipFailVenv 'python.cmd') ('@echo off' + [Environment]::NewLine + 'exit /b 2' + [Environment]::NewLine)
+    $r = Fire -Cwd $pipFailProj
+    Check 'a failed pip probe names the command it actually ran, including -m pip' (
+        $r.Out -match '-m pip list --outdated --format=json') $r.Out
+
+    # =====================================================================
     Write-Host '--- go: go.mod detected, `go list -u -m all` runs in the module dir without crashing ---' -ForegroundColor Cyan
     # Regression: Invoke-QuietCommand has no -WorkingDirectory parameter, so the
     # previous `-WorkingDirectory $dir` argument threw a ParameterBindingException
