@@ -52,9 +52,15 @@
     if ([System.Environment]::OSVersion.Platform.ToString().StartsWith('Win')) {
         $jobTestOk = $false
         $jobTestDetail = 'not run'
-        $runnerText = Get-Content -LiteralPath $Runner -Raw
+        # The C# lives in _guardedprocess.ps1, not in the entry point - the runner
+        # was split and this slice follows the CODE. Pointed at the entry point
+        # $csStart is -1 and IndexOf then THROWS on a negative start index, which
+        # is how this surfaced: an exception, not a failed assertion.
+        $runnerText = ''
+        $processModule = Join-Path (Split-Path -Parent $Runner) '_guardedprocess.ps1'
+        if (Test-Path -LiteralPath $processModule -PathType Leaf) { $runnerText = Get-Content -LiteralPath $processModule -Raw }
         $csStart = $runnerText.IndexOf('using System;')
-        $csEnd = $runnerText.IndexOf("'@", $csStart)
+        $csEnd = if ($csStart -ge 0) { $runnerText.IndexOf("'@", $csStart) } else { -1 }
         if ($csStart -ge 0 -and $csEnd -gt $csStart -and -not ('HookMaker.JobNative' -as [type])) {
             try { Add-Type -TypeDefinition $runnerText.Substring($csStart, $csEnd - $csStart) } catch { $jobTestDetail = 'Add-Type failed: ' + $_.Exception.Message }
         }
