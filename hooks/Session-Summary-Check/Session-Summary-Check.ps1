@@ -35,7 +35,15 @@ $hookInput = Read-HookInput
 if ($null -eq $hookInput) { exit 0 }
 $eventName = [string](Get-Field $hookInput 'hook_event_name')
 if ([string]::IsNullOrWhiteSpace($eventName)) { $eventName = 'SessionStart' }
-if ($eventName -ne 'SessionStart' -and $eventName -ne 'UserPromptSubmit') { exit 0 }
+
+# THE STORE IS OPTIONAL, LIKE EVERY SIBLING LIBRARY. Without it every call
+# below is absent and this hook behaves exactly as it did before - a runtime
+# copied before the file existed degrades rather than failing to start.
+$generationPath = Join-Path $PSScriptRoot '_generation.ps1'
+if (Test-Path -LiteralPath $generationPath -PathType Leaf) { . $generationPath }
+
+$isStopEvent = ($eventName -eq 'Stop' -or $eventName -eq 'SubagentStop')
+if (-not $isStopEvent -and $eventName -ne 'SessionStart' -and $eventName -ne 'UserPromptSubmit') { exit 0 }
 
 $cwd = [string](Get-Field $hookInput 'cwd')
 $sessionId = [string](Get-Field $hookInput 'session_id')
@@ -102,6 +110,24 @@ function Get-BlockedGateNames {
     return @($names | Sort-Object -Unique)
 }
 
+# RECORDING IS NOT SPEAKING. Stop stays SILENT - the header above explains at
+# length why speaking there costs an extra assistant turn - but Stop is the only
+# moment at which the summary has actually been published, so it is the only
+# moment at which that fact can be recorded. It is written here and NAMED later,
+# at the next delivery, which is the one place this hook already speaks without
+# costing a turn. Nothing is emitted from this branch.
+if ($isStopEvent) {
+    if ($null -ne (Get-Command Publish-GenerationSummary -ErrorAction SilentlyContinue)) {
+        try {
+            $stopBlocked = @(Get-BlockedGateNames -ProjectKey $projectKey -SessionId $sessionId)
+            $verdict = Test-GenerationReady -HookInput $hookInput -Objections $stopBlocked
+            $null = Publish-GenerationSummary -HookInput $hookInput -Ready ([bool]$verdict.Ready) -Missing @($verdict.Missing)
+        }
+        catch { }
+    }
+    exit 0
+}
+
 # Client/session/actor reservations replace the old client-less text stamps.
 $config = Read-HookEnv (Join-Path $PSScriptRoot '.env')
 $cooldownMinutes = 15
@@ -160,6 +186,21 @@ $lines = New-Object System.Collections.ArrayList
 [void]$lines.Add('  verified resolved gates go in DONE; still-open gates go in REMAINING with the reason.')
 [void]$lines.Add('- Do not invent remaining work from unrequested actions or non-blocking informational limits.')
 [void]$lines.Add('- If nothing remains, say that in one line instead of padding the section.')
+
+# A summary that went out while a gate was still open. Stated ONCE, as a fact
+# about what already happened, and never turned into a demand for a correction
+# line: the client displays the summary before any hook runs, so such a demand
+# necessarily arrives AFTER the summary and breaks the rule it enforces. That is
+# precisely what the previous attempt at this got wrong.
+if ($null -ne (Get-Command Read-GenerationFailureOnce -ErrorAction SilentlyContinue)) {
+    $pastFailure = ''
+    try { $pastFailure = Read-GenerationFailureOnce -HookInput $hookInput } catch { $pastFailure = '' }
+    if (-not [string]::IsNullOrWhiteSpace($pastFailure)) {
+        [void]$lines.Add('')
+        [void]$lines.Add('NOTED ONCE, NO ACTION NEEDED: the previous wrap-up went out while ' + $pastFailure + ' was still open.')
+        [void]$lines.Add('This is recorded, not a correction to make - the summary was already displayed by then.')
+    }
+}
 
 if ($blocked.Count -gt 0) {
     [void]$lines.Add('')
