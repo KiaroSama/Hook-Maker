@@ -483,10 +483,20 @@ if ($manifestPaths.ContainsKey('pip')) {
     $projectPython = Get-ProjectPythonExecutable -ProjectRoot $cwd
     $pipCmd = $projectPython
     if ($null -ne $pipCmd) {
-        $raw = Invoke-QuietCommand -FilePath $pipCmd -ArgumentList @('-m', 'pip', 'list', '--outdated', '--format=json')
+        # ONE array for both the call and the failure text below. Written out
+        # twice, they drifted: the message named `<python> list --outdated`,
+        # dropping the -m pip this call actually passes - a malformed command
+        # that looked like it explained the failure and cost a debugging session.
+        #
+        # 120s, not _hooklib's 20s default: this same command was measured at 32s
+        # (exit 0) on a venv created with --system-site-packages, where pip asks
+        # PyPI about every visible package rather than the project's own dozen. At
+        # 20s it was killed (exit 124) every run and reported as a failed check.
+        $pipArgs = @('-m', 'pip', 'list', '--outdated', '--format=json')
+        $raw = Invoke-QuietCommand -FilePath $pipCmd -ArgumentList $pipArgs -TimeoutSeconds 120
         $text = ($raw -join "`n").Trim()
         if ([string]::IsNullOrWhiteSpace($text)) {
-            if ($LASTEXITCODE -gt 1) { [void]$incomplete.Add('Python (pip) - `' + $pipCmd + ' list --outdated --format=json` failed (exit ' + $LASTEXITCODE + ').') }
+            if ($LASTEXITCODE -gt 1) { [void]$incomplete.Add('Python (pip) - `' + $pipCmd + ' ' + ($pipArgs -join ' ') + '` failed (exit ' + $LASTEXITCODE + ').') }
         }
         else {
             try {
