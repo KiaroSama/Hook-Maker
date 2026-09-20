@@ -177,7 +177,11 @@ function Test-OwnedTreeCleared {
 # so every -Parallel runspace shares the AppDomain-loaded type and a compile error
 # surfaces here, not inside each runspace. The source string is threaded into each
 # runspace as a body argument so the body is self-contained if the type is absent.
-$guardedRunnerPath = Join-Path $ScriptRoot 'Run-Tests-Guarded.ps1'
+# The C# moved to _guardedprocess.ps1 when the runner was split; this extraction
+# reads that file now. It fails SILENTLY if pointed at the wrong one (the Add-Type
+# below sits in a catch), and the symptom would be parallel suites quietly losing
+# job ownership - so this path and that file move together, always.
+$guardedRunnerPath = Join-Path $ScriptRoot '_guardedprocess.ps1'
 $jobCSharp = ''
 try {
     $guardedText = Get-Content -LiteralPath $guardedRunnerPath -Raw
