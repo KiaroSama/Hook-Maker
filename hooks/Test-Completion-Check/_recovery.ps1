@@ -87,15 +87,24 @@ function Set-VerifiedIncidentRecovery {
     }
     # This proves a historical repair, not today's product state. A genuine
     # recovery does not expire with the separate current-evidence time window.
-    # Two different problems, and only the second is the reader's to fix.
-    if (-not $script:pendingNotes.Contains($IncidentKey)) { throw 'No incident with this key is tracked in the durable-note ledger for this project, so there is nothing here to recover. Check it against the key the block printed; if it matches exactly, the gate printed a key it never registered - report that as a defect in this hook rather than writing another note.' }
-    if (-not (Test-PendingNoteSatisfied -Key $IncidentKey)) { throw 'The incident still requires its own exact tag and a substantive durable note beyond its recorded baseline.' }
-    $notePattern = '(?ms)^[ \t]*Test incident:[ \t]*' + [regex]::Escape($IncidentKey) + '[ \t]*\r?\n(?<body>.*?)(?=^[ \t]*(?:Test incident:|#{1,6}[ \t])|\z)'
-    $substantive = $false
-    foreach ($match in [regex]::Matches((Get-NoteText -Root $script:cwd), $notePattern)) {
-        if ([System.Text.Encoding]::UTF8.GetByteCount($match.Groups['body'].Value.Trim()) -ge $script:MinNoteBytes) { $substantive = $true; break }
+    # A note is required only where one is actually OWED. The ledger records an
+    # obligation for a termination or a leak - findings whose lesson outlives the run -
+    # and those still demand their tagged note here. A plain assertion failure owes
+    # none, and demanding one anyway made this whole path unreachable: the failed-run
+    # block prints a -ResolveIncident command, and it was refused on arrival because
+    # its key had never been registered. The incident is already PROVEN at this point
+    # by the single matching receipt found above; the ledger is not a second proof.
+    if ($script:pendingNotes.Contains($IncidentKey) -and -not (Test-PendingNoteSatisfied -Key $IncidentKey)) {
+        throw 'This incident owes a durable note (it was a termination or a leak), and still needs its own exact tag plus substantive content beyond its recorded baseline.'
     }
-    if (-not $substantive) { throw 'The incident tag must accompany its own substantive recovery explanation, not only unrelated note growth.' }
+    if ($script:pendingNotes.Contains($IncidentKey)) {
+        $notePattern = '(?ms)^[ \t]*Test incident:[ \t]*' + [regex]::Escape($IncidentKey) + '[ \t]*\r?\n(?<body>.*?)(?=^[ \t]*(?:Test incident:|#{1,6}[ \t])|\z)'
+        $substantive = $false
+        foreach ($match in [regex]::Matches((Get-NoteText -Root $script:cwd), $notePattern)) {
+            if ([System.Text.Encoding]::UTF8.GetByteCount($match.Groups['body'].Value.Trim()) -ge $script:MinNoteBytes) { $substantive = $true; break }
+        }
+        if (-not $substantive) { throw 'The incident tag must accompany its own substantive recovery explanation, not only unrelated note growth.' }
+    }
     if ([System.Text.Encoding]::UTF8.GetByteCount($Reason.Trim()) -lt 80) { throw 'Recovery needs a substantive reason describing equivalent scope and the verified repair.' }
     $script:recoveryAssociations[$IncidentKey] = [pscustomobject][ordered]@{
         incidentKey = $IncidentKey

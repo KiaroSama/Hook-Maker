@@ -1013,10 +1013,10 @@ if ($incidentKey -ne '' -and -not (Test-AnyIncidentResolved $incidentKey $incide
 
 # ---- 4. the run completed but failed --------------------------------------
 if ($null -ne $result -and $overall -eq 'failed' -and $resultIsCurrentEvidence -and -not $repAccounted) {
-    # Registering is what makes the -ResolveIncident line below reachable: recovery
-    # refuses a key the ledger never heard of, and this case used to register none.
+    # Derived once, because the -ResolveIncident line below must print the SAME key
+    # recovery looks for. The identity above covers termination and leaks only.
     $exitCode = [string](Get-Field $result 'exitCode')
-    $failureKey = Register-ResultIncident -Doc $result -Path $resultEntryPath -Reason ('a guarded test run FAILED (exit code ' + $exitCode + ')')
+    $failureKey = Get-ResultIncidentKey -Doc $result -Path $resultEntryPath
     Save-CompletionState
     Write-Finding -Blocking $true -Lines @(
         'TEST COMPLETION CHECK: the latest guarded test run for this project FAILED (exit code ' + $exitCode + '). The work is not verifiably complete.',
