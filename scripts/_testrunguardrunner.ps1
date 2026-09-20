@@ -161,7 +161,10 @@
     try {
         $env:LOCALAPPDATA = $activeLocal
         $env:HOOKMAKER_ACTIVE_GO = $activeGo
-        $activeProc = Start-Process -FilePath (Get-Process -Id $PID).Path -NoNewWindow -PassThru -ArgumentList @('-NoLogo', '-NoProfile', '-File', $activeWrapper)
+        # Deliberately NOT Start-BoundedProcess: this child must stay running
+        # while the marker is polled. The argument line is escaped, or a
+        # workspace path holding a space splits and the wrapper never runs.
+        $activeProc = Start-Process -FilePath (Get-Process -Id $PID).Path -NoNewWindow -PassThru -ArgumentList (ConvertTo-ProcessArgumentString @('-NoLogo', '-NoProfile', '-File', $activeWrapper))
         $deadline = [DateTime]::UtcNow.AddSeconds(20)
         while ([DateTime]::UtcNow -lt $deadline) {
             $m = @(Get-ChildItem -LiteralPath $activeStateDir -Filter 'TestRunGuard-active-*.json' -File -ErrorAction SilentlyContinue)
@@ -227,7 +230,7 @@
     try {
         $env:LOCALAPPDATA = $wdLocal
         $env:HOOKMAKER_WD_GO = $wdGo
-        $wdProc = Start-Process -FilePath (Get-Process -Id $PID).Path -NoNewWindow -PassThru -WorkingDirectory $wdA -ArgumentList @('-NoLogo', '-NoProfile', '-File', $wdWrapper)
+        $wdProc = Start-Process -FilePath (Get-Process -Id $PID).Path -NoNewWindow -PassThru -WorkingDirectory $wdA -ArgumentList (ConvertTo-ProcessArgumentString @('-NoLogo', '-NoProfile', '-File', $wdWrapper))
         $deadline = [DateTime]::UtcNow.AddSeconds(20)
         while ([DateTime]::UtcNow -lt $deadline) {
             $m = @(Get-ChildItem -LiteralPath $wdStateDir -Filter 'TestRunGuard-active-*.json' -File -ErrorAction SilentlyContinue)
