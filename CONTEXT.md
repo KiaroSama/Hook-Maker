@@ -43,9 +43,16 @@ changes — a commit, an edit, a staged file. It identifies a moment, never a pr
 
 ## Incident
 
-A guarded run whose outcome demands acknowledgement before work can be called complete. An incident
-carries a key so a human can name it when resolving it; a run with no key cannot be addressed by the
-documented recovery path.
+A FINDING that demands acknowledgement before work can be called complete - not a run, and not a
+receipt. Identity comes from what the run found: the command it executed plus how that ended. So
+repeated evidence of one defect is ONE incident however many receipts it leaves, while a different
+command or a different failure mode is a different incident. An incident carries a key so a human
+can name it when resolving it; a run with no key cannot be addressed by the documented recovery
+path.
+
+Keying it to the receipt instead was a defect: one repair once owed four separately tagged notes
+because it had left four receipts. See `docs/adr/0001-supersede-by-project-not-tree-state.md` for
+the sibling decision about what "the same run" means.
 
 ## Superseded
 
