@@ -40,7 +40,15 @@ function Set-VerifiedIncidentRecovery {
     $negativeId = [string](Get-Field $negative.Doc 'runId')
     $recoveryFp = [string](Get-Field $recovery.Doc 'projectFingerprint')
     $recoveryCmd = [string](Get-Field $recovery.Doc 'commandFingerprint')
-    if ([string]::IsNullOrWhiteSpace($negativeId) -or $negativeId -eq $RecoveryRunId -or [string]::IsNullOrWhiteSpace($recoveryFp) -or [string]::IsNullOrWhiteSpace($recoveryCmd)) { throw 'The recovery receipt must have its own complete run, command and project identity.' }
+    # One message for four causes told the reader to look at the wrong field.
+    # The projectFingerprint case is not hypothetical: Run-Tests-Guarded.ps1
+    # takes -ProjectFingerprint from the observing hook and writes it verbatim,
+    # so a run typed by hand rather than taken from the guard's own replacement
+    # records an empty one and is disqualified here - silently, until now.
+    if ([string]::IsNullOrWhiteSpace($negativeId)) { throw 'The original incident receipt records no runId, so it cannot be told apart from the recovery run.' }
+    if ($negativeId -eq $RecoveryRunId) { throw 'The recovery run ID is the incident''s own run ID. Recovery needs a SEPARATE later clean run, not the failing one.' }
+    if ([string]::IsNullOrWhiteSpace($recoveryCmd)) { throw 'The recovery receipt records no commandFingerprint, so what it actually ran cannot be established. Re-run through scripts\Run-Tests-Guarded.ps1 and use the new run ID.' }
+    if ([string]::IsNullOrWhiteSpace($recoveryFp)) { throw 'The recovery receipt records no projectFingerprint. Run-Tests-Guarded.ps1 persists whatever -ProjectFingerprint it was given, so a hand-typed invocation leaves it empty. Re-run using the replacement command Test-Run-Guard prints (it supplies the value), or pass -ProjectFingerprint yourself, then use that new run ID.' }
     $exitCode = -1
     $rawExit = Get-Field $recovery.Doc 'exitCode'
     $leakProperty = $recovery.Doc.PSObject.Properties['leakedProcessIds']
@@ -79,13 +87,24 @@ function Set-VerifiedIncidentRecovery {
     }
     # This proves a historical repair, not today's product state. A genuine
     # recovery does not expire with the separate current-evidence time window.
-    if (-not (Test-PendingNoteSatisfied -Key $IncidentKey)) { throw 'The incident still requires its own exact tag and a substantive durable note beyond its recorded baseline.' }
-    $notePattern = '(?ms)^[ \t]*Test incident:[ \t]*' + [regex]::Escape($IncidentKey) + '[ \t]*\r?\n(?<body>.*?)(?=^[ \t]*(?:Test incident:|#{1,6}[ \t])|\z)'
-    $substantive = $false
-    foreach ($match in [regex]::Matches((Get-NoteText -Root $script:cwd), $notePattern)) {
-        if ([System.Text.Encoding]::UTF8.GetByteCount($match.Groups['body'].Value.Trim()) -ge $script:MinNoteBytes) { $substantive = $true; break }
+    # A note is required only where one is actually OWED. The ledger records an
+    # obligation for a termination or a leak - findings whose lesson outlives the run -
+    # and those still demand their tagged note here. A plain assertion failure owes
+    # none, and demanding one anyway made this whole path unreachable: the failed-run
+    # block prints a -ResolveIncident command, and it was refused on arrival because
+    # its key had never been registered. The incident is already PROVEN at this point
+    # by the single matching receipt found above; the ledger is not a second proof.
+    if ($script:pendingNotes.Contains($IncidentKey) -and -not (Test-PendingNoteSatisfied -Key $IncidentKey)) {
+        throw 'This incident owes a durable note (it was a termination or a leak), and still needs its own exact tag plus substantive content beyond its recorded baseline.'
     }
-    if (-not $substantive) { throw 'The incident tag must accompany its own substantive recovery explanation, not only unrelated note growth.' }
+    if ($script:pendingNotes.Contains($IncidentKey)) {
+        $notePattern = '(?ms)^[ \t]*Test incident:[ \t]*' + [regex]::Escape($IncidentKey) + '[ \t]*\r?\n(?<body>.*?)(?=^[ \t]*(?:Test incident:|#{1,6}[ \t])|\z)'
+        $substantive = $false
+        foreach ($match in [regex]::Matches((Get-NoteText -Root $script:cwd), $notePattern)) {
+            if ([System.Text.Encoding]::UTF8.GetByteCount($match.Groups['body'].Value.Trim()) -ge $script:MinNoteBytes) { $substantive = $true; break }
+        }
+        if (-not $substantive) { throw 'The incident tag must accompany its own substantive recovery explanation, not only unrelated note growth.' }
+    }
     if ([System.Text.Encoding]::UTF8.GetByteCount($Reason.Trim()) -lt 80) { throw 'Recovery needs a substantive reason describing equivalent scope and the verified repair.' }
     $script:recoveryAssociations[$IncidentKey] = [pscustomobject][ordered]@{
         incidentKey = $IncidentKey

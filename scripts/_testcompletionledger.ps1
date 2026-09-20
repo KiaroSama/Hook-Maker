@@ -499,3 +499,124 @@ Write-Doc (Join-Path $StateDir ('TestRunGuard-result-' + $ProjectKey + '-' + $sa
     $msgE = [string]$rE.Out
     Check 'C2d/S2: a DIFFERENT command that failed is still a separate finding' (
         $msgE -match 'TEST COMPLETION CHECK') $msgE
+
+    # =====================================================================
+    # The block for a FAILED run prints a -ResolveIncident command, and recovery
+    # used to refuse it on arrival: its first gate demanded the key be present in
+    # the durable-note ledger, and a plain failure registers nothing there. So a
+    # failure whose command no longer exists - a withdrawn TDD red, which the
+    # automatic supersede matches on the command and therefore never clears - had
+    # no exit at all. A note is owed for a TERMINATION or a LEAK, whose lesson
+    # outlives the run; the receipt found below is what proves a plain failure.
+    Write-Host '--- C2f: the printed -ResolveIncident command can actually be taken ---' -ForegroundColor Cyan
+
+    function Invoke-Resolve {
+        param([object]$Copy, [string]$Root, [string]$Key, [string]$RecoveryRunId, [string]$Reason)
+        $tok = [guid]::NewGuid().ToString('N').Substring(0, 8)
+        $o = Join-Path $Work ('res-' + $tok + '.txt')
+        $e = Join-Path $Work ('rese-' + $tok + '.txt')
+        # Recovery mode branches before Read-HookInput, so stdin is deliberately
+        # not redirected here.
+        $sp = @{
+            FilePath               = (Get-Process -Id $PID).Path
+            ArgumentList           = '-NoLogo -NoProfile -File "' + $Copy.Script + '" -ResolveIncident ' + $Key +
+                                     ' -RecoveryRunId "' + $RecoveryRunId + '" -ProjectRoot "' + $Root + '" -Reason "' + $Reason + '"'
+            RedirectStandardOutput = $o; RedirectStandardError = $e
+            Wait                   = $true; NoNewWindow = $true; PassThru = $true
+        }
+        if ((Get-Command Start-Process).Parameters.ContainsKey('Environment')) {
+            $sp.Environment = @{ PATH = $env:PATH; LOCALAPPDATA = $Copy.LocalAppData; CLAUDE_PROJECT_DIR = $Root }
+        }
+        $proc = Start-BoundedProcess @sp
+        $out = if (Test-Path -LiteralPath $o) { ([System.IO.File]::ReadAllText($o)).Trim() } else { '' }
+        $err = if (Test-Path -LiteralPath $e) { ([System.IO.File]::ReadAllText($e)).Trim() } else { '' }
+        return [pscustomobject]@{ Exit = $proc.ExitCode; Out = $out; Err = $err; Text = ([string]$out + ' ' + [string]$err) }
+    }
+    function Clear-ReceiptField {
+        param([object]$Copy, [string]$Root, [string]$RunId, [string]$Field)
+        $path = Get-RunStateFile -Copy $Copy -Root $Root -Kind 'result' -RunId $RunId
+        $doc = (Get-Content -LiteralPath $path -Raw) | ConvertFrom-Json
+        $doc.$Field = ''
+        Write-Utf8 $path ($doc | ConvertTo-Json -Depth 6)
+    }
+    function Write-IncidentNote {
+        param([string]$Root, [string]$Key)
+        $dir = Join-Path $Root '.ai'
+        New-Item -ItemType Directory -Path $dir -Force | Out-Null
+        $body = 'Nothing detected the termination while it was happening; the guarded runner now bounds the wait and the prevention guard was verified against the same scenario.'
+        Write-Utf8 (Join-Path $dir 'TESTING_NOTES.md') ('# Testing notes' + [char]10 + [char]10 + 'Test incident: ' + $Key + [char]10 + $body + [char]10)
+    }
+    function Get-PrintedIncidentKey {
+        param([string]$Out)
+        $m = [regex]::Match((Get-BlockReason $Out), 'ResolveIncident[ ]+([0-9a-f]{10})')
+        if ($m.Success) { return $m.Groups[1].Value }
+        return 'nokey'
+    }
+    $resolveReason = 'The failing command was withdrawn together with the defect it proved; the replacement suite covers the same scope and ran clean through the guarded runner, which is the equivalent verified repair.'
+
+    $cF = New-IsolatedHookCopy
+    $pF = New-GitRepo 'C2fResolve'
+    $keyF = Get-ProjectKey $pF
+    Write-GuardedResult -Copy $cF -Root $pF -Overall 'failed' -ExitCode 1 -RunId ('c2f-fail-' + $keyF) -CommandFingerprint ('cmdc2fold' + $keyF) -AgeMinutes 9
+    $rF = Fire -Copy $cF -Cwd $pF
+    Check 'C2f: a plain failed run blocks' ($rF.Out -match '"decision":"block"') $rF.Out
+    $incF = Get-PrintedIncidentKey $rF.Out
+    Check 'C2f: and prints a well-formed incident key' ($incF -ne 'nokey') $rF.Out
+
+    # A later clean run under a DIFFERENT command - the case the automatic
+    # supersede cannot cover, which is the only reason this path exists.
+    $greenF = 'c2f-green-' + $keyF
+    Write-GuardedResult -Copy $cF -Root $pF -Overall 'ok' -ExitCode 0 -RunId $greenF -CommandFingerprint ('cmdc2fnew' + $keyF)
+    $resF = Invoke-Resolve -Copy $cF -Root $pF -Key $incF -RecoveryRunId $greenF -Reason $resolveReason
+    Check 'C2f: running the printed recovery command SUCCEEDS' (
+        $resF.Exit -eq 0 -and $resF.Out -match 'Recovery association recorded') ('key ' + $incF + ' exit ' + $resF.Exit + ' :: ' + $resF.Text)
+    # No note was written above, and none was demanded: a plain assertion failure
+    # owes nothing durable, and demanding one anyway is what made this unreachable.
+    Check 'C2f: and it needed no durable note, because a plain failure owes none' (
+        $resF.Text -notmatch 'durable note') $resF.Text
+    $ledgerF = Get-Content -LiteralPath (Join-Path (Get-StateDir $cF) ('TestCompletionCheck-' + $keyF + '.json')) -Raw
+    Check 'C2f: the incident is left resolved, with its recovery association pinned' (
+        $ledgerF -match [regex]::Escape($greenF)) $ledgerF
+
+    # =====================================================================
+    # The waiver is narrow. A TERMINATION registers a durable-note obligation
+    # when it blocks, and recovery must still hold it to that - the lesson of a
+    # hang outlives the run that hung, which a plain assertion failure's does not.
+    Write-Host '--- C2g: a termination still owes its note; a plain failure never did ---' -ForegroundColor Cyan
+    $cT = New-IsolatedHookCopy
+    $pT = New-GitRepo 'C2gTerminated'
+    $keyT = Get-ProjectKey $pT
+    Write-GuardedResult -Copy $cT -Root $pT -Overall 'terminated' -ExitCode 124 -TerminateReason 'wallTimeout' -RunId ('c2g-term-' + $keyT) -CommandFingerprint ('cmdc2gold' + $keyT) -AgeMinutes 9
+    $rT = Fire -Copy $cT -Cwd $pT
+    $incT = Get-PrintedIncidentKey $rT.Out
+    Check 'C2g: a terminated run blocks and names its incident' ($incT -ne 'nokey') $rT.Out
+    $greenT = 'c2g-green-' + $keyT
+    Write-GuardedResult -Copy $cT -Root $pT -Overall 'ok' -ExitCode 0 -RunId $greenT -CommandFingerprint ('cmdc2gnew' + $keyT)
+    $resT1 = Invoke-Resolve -Copy $cT -Root $pT -Key $incT -RecoveryRunId $greenT -Reason $resolveReason
+    Check 'C2g: recovery REFUSES a termination while its note is unwritten' (
+        $resT1.Exit -ne 0 -and $resT1.Text -match 'owes a durable note') ('key ' + $incT + ' :: ' + $resT1.Text)
+    Write-IncidentNote -Root $pT -Key $incT
+    $resT2 = Invoke-Resolve -Copy $cT -Root $pT -Key $incT -RecoveryRunId $greenT -Reason $resolveReason
+    Check 'C2g: and accepts it once the tagged note exists' (
+        $resT2.Exit -eq 0 -and $resT2.Out -match 'Recovery association recorded') ('key ' + $incT + ' exit ' + $resT2.Exit + ' :: ' + $resT2.Text)
+
+    # =====================================================================
+    # One message for four causes told the reader to look at the wrong field. The
+    # projectFingerprint case is the one that actually bites: the guarded runner
+    # persists whatever -ProjectFingerprint it was handed, so a hand-typed run
+    # records an empty one and its receipt was disqualified without saying why.
+    Write-Host '--- C2h: each recovery refusal names the field that is actually absent ---' -ForegroundColor Cyan
+    foreach ($field in @('projectFingerprint', 'commandFingerprint')) {
+        $cH = New-IsolatedHookCopy
+        $pH = New-GitRepo ('C2h' + $field)
+        $keyH = Get-ProjectKey $pH
+        Write-GuardedResult -Copy $cH -Root $pH -Overall 'failed' -ExitCode 1 -RunId ('c2h-fail-' + $keyH) -CommandFingerprint ('cmdc2hold' + $keyH) -AgeMinutes 9
+        $rH = Fire -Copy $cH -Cwd $pH
+        $incH = Get-PrintedIncidentKey $rH.Out
+        $greenH = 'c2h-green-' + $keyH
+        Write-GuardedResult -Copy $cH -Root $pH -Overall 'ok' -ExitCode 0 -RunId $greenH -CommandFingerprint ('cmdc2hnew' + $keyH)
+        Clear-ReceiptField -Copy $cH -Root $pH -RunId $greenH -Field $field
+        $resH = Invoke-Resolve -Copy $cH -Root $pH -Key $incH -RecoveryRunId $greenH -Reason $resolveReason
+        Check ('C2h: an absent ' + $field + ' is refused BY NAME, not as a generic identity failure') (
+            $resH.Exit -ne 0 -and $resH.Text -match ('no ' + $field)) ('key ' + $incH + ' :: ' + $resH.Text)
+    }
