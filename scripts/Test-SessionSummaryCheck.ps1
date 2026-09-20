@@ -44,7 +44,7 @@ function Invoke-SummaryHook {
     if (-not $KeepDelivered) {
         $deliveredKey = Get-ShortHash ([string]$Payload['cwd']).ToLowerInvariant()
         $deliveredPath = Join-Path $StateDir ('SessionSummary-' + $deliveredKey + '.txt')
-        Remove-Item -LiteralPath $deliveredPath -Force -ErrorAction SilentlyContinue
+        Remove-Item -LiteralPath $deliveredPath, ($deliveredPath + '.claims.json') -Force -ErrorAction SilentlyContinue
     }
     $json = ($Payload | ConvertTo-Json -Depth 8 -Compress)
     $prevLocal = $env:LOCALAPPDATA
@@ -227,7 +227,13 @@ try {
     Check 'summary: the prompt right after a SessionStart does not repeat it' ($afterRestart.Out.Trim() -eq '') $afterRestart.Out
     # The window is real: an expired stamp re-delivers on the next prompt.
     $stampPath = Join-Path $StateDir ('SessionSummary-' + (Get-ShortHash ([string]$loopProj).ToLowerInvariant()) + '.txt')
-    [System.IO.File]::WriteAllText($stampPath, ('loop-b|' + [DateTime]::UtcNow.AddMinutes(-16).ToString('o')))
+    $claimPath = $stampPath + '.claims.json'
+    $claimDocument = [IO.File]::ReadAllText($claimPath) | ConvertFrom-Json
+    foreach ($entry in @($claimDocument.entries.PSObject.Properties)) {
+        $entry.Value.reservedTicks = [string][DateTime]::UtcNow.AddMinutes(-16).Ticks
+        $entry.Value.expiresTicks = [string][DateTime]::UtcNow.AddMinutes(-1).Ticks
+    }
+    [IO.File]::WriteAllText($claimPath, ($claimDocument | ConvertTo-Json -Depth 5))
     $expired = Invoke-SummaryHook -KeepDelivered -Payload @{ hook_event_name = 'UserPromptSubmit'; cwd = $loopProj; session_id = 'loop-b' }
     Check 'summary: a prompt after the window expired is reminded again' ($expired.Out -match 'SESSION SUMMARY') $expired.Out
 
