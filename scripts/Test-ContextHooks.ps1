@@ -229,6 +229,10 @@ try {
     # ---- sections, dot-sourced so they share this scope and harness -------
     # Split by hook-under-test. Each file is a pure relocation; the assertion
     # set and its order are unchanged.
+    # Fixtures FIRST: the two section files below use its transcript and stdin
+    # builders, and a dot-source only defines what has already been read.
+    . (Join-Path $PSScriptRoot '_testcontextfixtures.ps1')
+    . (Join-Path $PSScriptRoot '_testcontextmcp.ps1')
     . (Join-Path $PSScriptRoot '_testcontextskills.ps1')
     . (Join-Path $PSScriptRoot '_testskillprompt.ps1')
     . (Join-Path $PSScriptRoot '_testcontextlargefile.ps1')
