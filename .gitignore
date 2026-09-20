@@ -55,6 +55,7 @@ logs/
 # Ignored rather than deleted: another session may still be writing them.
 /.playwright-mcp/
 /real-dark-fa.png
+/after_*.png
 
 # Local assistant skill state - machine-specific, not part of the tool
 /skills-lock.json
