@@ -41,11 +41,17 @@ Write-Host ("Workspace: $Work") -ForegroundColor DarkGray
 
 # WRITE side: extract the REAL functions from the runner into a shared module so
 # the suite and every concurrent child call the SAME code (never a re-implementation).
-$rAst = [System.Management.Automation.Language.Parser]::ParseFile($Runner, [ref]$null, [ref]$null)
+#
+# The functions live in _guardedtiming.ps1, not in the entry point: the runner was
+# split and this AST parse follows the CODE. Pointed at the entry point it finds
+# nothing and the suite exits 1 - which is the fifth consumer in this repo that
+# reads the guarded runner's source rather than importing it.
+$timingModule = Join-Path (Split-Path -Parent $Runner) '_guardedtiming.ps1'
+$rAst = [System.Management.Automation.Language.Parser]::ParseFile($timingModule, [ref]$null, [ref]$null)
 $addFn = $rAst.Find({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq 'Add-TimingSample' }, $true)
 $pruneFn = $rAst.Find({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq 'Remove-StaleTimingKeys' }, $true)
 if ($null -eq $addFn -or $null -eq $pruneFn) {
-    Write-Host 'could not locate Add-TimingSample / Remove-StaleTimingKeys in Run-Tests-Guarded.ps1' -ForegroundColor Red
+    Write-Host 'could not locate Add-TimingSample / Remove-StaleTimingKeys in _guardedtiming.ps1' -ForegroundColor Red
     exit 1
 }
 $writerModule = Join-Path $Work 'timingwriter.ps1'

@@ -165,7 +165,7 @@
     New-Item -ItemType Directory -Path (Join-Path $shipDir 'scripts') -Force | Out-Null
     Copy-HookPackage -Destination $shipDir
     Copy-Item $HookLib (Join-Path (Split-Path -Parent $shipDir) '_hooklib.ps1') -Force
-    Copy-Item $Runner (Join-Path $shipDir 'scripts\Run-Tests-Guarded.ps1')   # <- shipped by the installer
+    Copy-GuardedRunner -RepoRoot $RepoRoot -DestinationScriptsDir (Join-Path $shipDir 'scripts')   # <- shipped by the installer
     $shipFakeLocal = Join-Path $shipDir '_fakelocal'; New-Item -ItemType Directory -Path $shipFakeLocal -Force | Out-Null
     $bare2 = Join-Path $Work 'BareProject2'; New-Item -ItemType Directory -Path $bare2 -Force | Out-Null
     $r = Fire -HookPath (Join-Path $shipDir 'Test-Run-Guard.ps1') -Cwd $bare2 -EventName 'PreToolUse' -Command 'pytest -q' -LocalAppData $shipFakeLocal
@@ -191,7 +191,7 @@
     New-Item -ItemType Directory -Path (Join-Path $mgDir 'scripts') -Force | Out-Null
     Copy-HookPackage -Destination $mgDir
     Copy-Item $HookLib (Join-Path (Split-Path -Parent $mgDir) '_hooklib.ps1') -Force
-    Copy-Item $Runner (Join-Path $mgDir 'scripts\Run-Tests-Guarded.ps1')     # managed - has the marker
+    Copy-GuardedRunner -RepoRoot $RepoRoot -DestinationScriptsDir (Join-Path $mgDir 'scripts')     # managed - has the marker
     $mgHook = Join-Path $mgDir 'Test-Run-Guard.ps1'
     $mgLocal = Join-Path $mgDir '_fakelocal'; New-Item -ItemType Directory -Path $mgLocal -Force | Out-Null
     $mgRunner = Join-Path $mgDir 'scripts\Run-Tests-Guarded.ps1'
@@ -208,7 +208,7 @@
     # A project runner that DOES carry the marker still loses to the managed one.
     $projWithMarker = Join-Path $Work ('projmarker-' + [guid]::NewGuid().ToString('N').Substring(0, 6))
     New-Item -ItemType Directory -Path (Join-Path $projWithMarker 'scripts') -Force | Out-Null
-    Copy-Item $Runner (Join-Path $projWithMarker 'scripts\Run-Tests-Guarded.ps1')     # marker present
+    Copy-GuardedRunner -RepoRoot $RepoRoot -DestinationScriptsDir (Join-Path $projWithMarker 'scripts')     # marker present
     $r = Fire -HookPath $mgHook -Cwd $projWithMarker -EventName 'PreToolUse' -Command 'pytest -q' -LocalAppData $mgLocal
     $runnerUsed = Get-RunnerPath (Get-Message $r.Out)
     Check 'even a marker-carrying project runner loses to the managed shipped-beside runner' ($runnerUsed -eq $mgRunner) $runnerUsed
