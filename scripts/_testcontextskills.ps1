@@ -692,11 +692,15 @@
     Write-Host '--- Skills-Check: static safety (the hook never executes anything) ---' -ForegroundColor Cyan
     # Same static-assertion style as the Test-Run-Guard suite: the DETECTOR/
     # ADVISORY hook must have no execution primitives at all - it references
-    # skills and native commands as text only.
-    $skillsText = [System.IO.File]::ReadAllText($SkillsHook)
-    Check 'Skills-Check source has NO Start-Process / Invoke-Expression / iex / call-operator-on-data' (
-        $skillsText -notmatch 'Start-Process' -and $skillsText -notmatch 'Invoke-Expression' -and
-        $skillsText -notmatch '(?i)\biex\b' -and $skillsText -notmatch '&\s*\$') $null
+    # skills and native commands as text only. EVERY .ps1 in the package, not
+    # only the entry point: a hook-private sibling is installed and dot-sourced
+    # with the hook, so reading one file would go green over a fraction of it.
+    $skillsFiles = @(Get-ChildItem -LiteralPath (Split-Path -Parent $SkillsHook) -Filter '*.ps1' -File | Sort-Object Name)
+    $skillsText = (@($skillsFiles | ForEach-Object { [System.IO.File]::ReadAllText($_.FullName) }) -join "`r`n")
+    $execOffenders = @($skillsFiles | Where-Object { $t = [System.IO.File]::ReadAllText($_.FullName)
+            $t -match 'Start-Process' -or $t -match 'Invoke-Expression' -or $t -match '(?i)\biex\b' -or $t -match '&\s*\$' } | ForEach-Object { $_.Name })
+    Check ('Skills-Check package (' + $skillsFiles.Count + ' .ps1) has NO Start-Process / Invoke-Expression / iex / call-operator-on-data') (
+        $skillsFiles.Count -ge 4 -and $execOffenders.Count -eq 0) ($execOffenders -join ', ')
     Check 'Skills-Check references skills/commands as text (routing graph present in source)' (
         $skillsText -match 'capability routing' -and $skillsText -match 'ponytail-audit')
 
