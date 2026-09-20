@@ -350,6 +350,46 @@ function Write-Utf8 {
     }
 }
 
+# Start-Process joins an -ArgumentList ARRAY with single spaces and quotes
+# NOTHING, on pwsh 7 and on 5.1 alike. So an element holding a space - which is
+# every workspace path on a machine whose repository lives under a directory
+# such as "Program Files" - splits into two arguments, and the child is launched
+# with a truncated -File it cannot open. Measured: the child exits 64 ("not
+# recognized as the name of a script file") instead of running at all, which
+# reads in a suite as "the process the test launched did nothing".
+#
+# So an array is escaped here to ONE Win32 command line. A caller that built its
+# own command line passes a STRING and it is handed through untouched.
+function ConvertTo-ProcessArgumentString {
+    param($ArgumentList)
+    if ($null -eq $ArgumentList) { return '' }
+    if ($ArgumentList -is [string]) { return $ArgumentList }
+    $quote = [char]34
+    $slash = [char]92
+    $parts = New-Object System.Collections.Generic.List[string]
+    foreach ($argument in @($ArgumentList)) {
+        $text = [string]$argument
+        if ($text.Length -gt 0 -and -not ($text.Contains(' ') -or $text.Contains([char]9) -or $text.Contains($quote))) {
+            [void]$parts.Add($text)
+            continue
+        }
+        $sb = New-Object System.Text.StringBuilder
+        [void]$sb.Append($quote)
+        $pending = 0
+        foreach ($ch in $text.ToCharArray()) {
+            if ($ch -eq $slash) { $pending++; continue }
+            if ($ch -eq $quote) { [void]$sb.Append([string]$slash * ($pending * 2 + 1)); $pending = 0 }
+            elseif ($pending -gt 0) { [void]$sb.Append([string]$slash * $pending); $pending = 0 }
+            [void]$sb.Append($ch)
+        }
+        # Trailing backslashes meet the closing quote, so they double.
+        if ($pending -gt 0) { [void]$sb.Append([string]$slash * ($pending * 2)) }
+        [void]$sb.Append($quote)
+        [void]$parts.Add($sb.ToString())
+    }
+    return ($parts.ToArray() -join ' ')
+}
+
 # Start-Process, but with a ceiling. -Wait waits FOR EVER, so a child that
 # blocks on stdin or deadlocks takes the whole CI bucket to its per-suite limit
 # and the failure reads "suite timed out" instead of naming this child. Accepts
@@ -376,9 +416,13 @@ function Start-BoundedProcess {
         [int]$TimeoutMs = 180000
     )
     $spArgs = @{ FilePath = $FilePath; NoNewWindow = $true; PassThru = $true }
-    foreach ($key in @('ArgumentList', 'WorkingDirectory', 'RedirectStandardInput',
+    foreach ($key in @('WorkingDirectory', 'RedirectStandardInput',
             'RedirectStandardOutput', 'RedirectStandardError')) {
         if ($PSBoundParameters.ContainsKey($key)) { $spArgs[$key] = $PSBoundParameters[$key] }
+    }
+    if ($PSBoundParameters.ContainsKey('ArgumentList')) {
+        $argumentLine = ConvertTo-ProcessArgumentString $PSBoundParameters['ArgumentList']
+        if ($argumentLine -ne '') { $spArgs.ArgumentList = $argumentLine }
     }
     if ($PSBoundParameters.ContainsKey('Environment') -and
         (Get-Command Start-Process).Parameters.ContainsKey('Environment')) {
