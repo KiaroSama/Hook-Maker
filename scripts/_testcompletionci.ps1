@@ -45,13 +45,19 @@
         $c = New-IsolatedHookCopy
         $p = Initialize-CiRepo $Name
         $k = Get-ProjectKey $p
+        # The dirt goes in BEFORE the result is recorded, because the result
+        # carries the repo fingerprint of the tree it ran on. Dirtying afterwards
+        # makes the FAILURE stale rather than testing the CI check at all - the
+        # hook then has no current evidence to act on and stays silent, which is
+        # pre-existing behaviour and not what this case is about. A suite that
+        # fails while the tree is already dirty is also the realistic scenario.
+        if ($Dirty) { Write-Utf8 (Join-Path $p 'uncommitted.txt') 'an edit CI has never seen' }
         Write-GuardedResult -Copy $c -Root $p -Overall $Overall -ExitCode $ExitCode -RunId ($Name + '-' + $k) -CommandFingerprint ('cmd' + $Name + $k) -AgeMinutes 30
         if ($null -ne $Record) {
             $recArgs = @{ Copy = $c; Root = $p } + $Record
             if (-not $recArgs.ContainsKey('Sha')) { $recArgs['Sha'] = (Get-CiHead $p) }
             $null = Write-CiRecord @recArgs
         }
-        if ($Dirty) { Write-Utf8 (Join-Path $p 'uncommitted.txt') 'an edit CI has never seen' }
         $r = Fire -Copy $c -Cwd $p
         return [pscustomobject]@{ Out = [string]$r.Out; Blocked = ([string]$r.Out -match '"decision":"block"'); Root = $p; Copy = $c }
     }
