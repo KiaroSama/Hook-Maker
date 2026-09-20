@@ -24,6 +24,7 @@
 # The schema this build understands, and the vocabularies it was written
 # against. A NEWER installer is not an error and not a success either - it is
 # unknown, and saying so is the point.
+. (Join-Path $PSScriptRoot '_clientcapability.ps1')
 $script:InstallResultSchema = 1
 $script:InstallOverallValues = @('ok', 'partial', 'failed')
 $script:InstallComponentStatuses = @('ok', 'failed', 'skipped', 'trackingFailed')
@@ -35,15 +36,16 @@ $script:InstallComponentStatuses = @('ok', 'failed', 'skipped', 'trackingFailed'
 # string, a JSON scalar) throws instead of returning nothing - so a malformed
 # result crashed the wizard rather than being reported as unknown.
 function Get-ResultProperty {
-    param($Document, [string]$Name)
+    param($Document, [string]$Name, [switch]$PreserveCollection)
     if ($null -eq $Document) { return $null }
     try {
         if ($Document -is [System.Collections.IDictionary]) {
-            if ($Document.Contains($Name)) { return $Document[$Name] }
+            if ($Document.Contains($Name)) { if ($PreserveCollection) { return ,$Document[$Name] }; return $Document[$Name] }
             return $null
         }
         $prop = $Document.PSObject.Properties[$Name]
         if ($null -eq $prop) { return $null }
+        if ($PreserveCollection) { return ,$prop.Value }
         return $prop.Value
     }
     catch { return $null }
@@ -63,7 +65,10 @@ function Test-InstallResultDocument {
         return [pscustomobject]@{ Ok = $false; Summary = 'install result is not a result document' }
     }
 
-    $schema = Get-ResultProperty -Document $Document -Name 'schema'
+    $schema = Get-ResultProperty -Document $Document -Name 'schema' -PreserveCollection
+    if ($null -ne $schema -and $schema -isnot [int] -and $schema -isnot [long]) {
+        return [pscustomobject]@{ Ok = $false; Summary = 'install result schema must be an integer' }
+    }
     if ($null -eq $schema) { return [pscustomobject]@{ Ok = $false; Summary = 'install result carries no schema' } }
     $schemaNumber = 0
     if (-not [int]::TryParse([string]$schema, [ref]$schemaNumber)) {
@@ -76,24 +81,41 @@ function Test-InstallResultDocument {
         return [pscustomobject]@{ Ok = $false; Summary = ('install result schema ' + $schemaNumber + ' is newer than this build understands (' + $script:InstallResultSchema + ')') }
     }
 
-    $overall = [string](Get-ResultProperty -Document $Document -Name 'overall')
+    $outcomeValue = Get-ResultProperty -Document $Document -Name 'overall' -PreserveCollection
+    if ($outcomeValue -isnot [string]) { return [pscustomobject]@{ Ok = $false; Summary = 'install outcome must be a string' } }
+    $overall = [string]$outcomeValue
     if ($script:InstallOverallValues -notcontains $overall) {
         return [pscustomobject]@{ Ok = $false; Summary = ('unrecognized install outcome: ' + $(if ([string]::IsNullOrWhiteSpace($overall)) { '(missing)' } else { $overall })) }
     }
 
-    $componentsRaw = Get-ResultProperty -Document $Document -Name 'components'
+    # Access the property without pipeline unrolling: one JSON object is not
+    # a one-element JSON array, and an empty array must keep its provenance.
+    $componentsRaw = if ($Document -is [System.Collections.IDictionary]) { ,$Document['components'] } else { $property = $Document.PSObject.Properties['components']; if ($null -ne $property) { ,$property.Value } }
+    if ($componentsRaw -isnot [System.Array]) { return [pscustomobject]@{ Ok = $false; Summary = 'install result components must be an array' } }
     if ($null -eq $componentsRaw) { return [pscustomobject]@{ Ok = $false; Summary = 'install result lists no components' } }
     $components = @($componentsRaw)
     if ($components.Count -eq 0) { return [pscustomobject]@{ Ok = $false; Summary = 'install result lists no components' } }
 
     $names = @()
+    $seen = @{}
     foreach ($component in $components) {
+        if ($component -isnot [System.Management.Automation.PSCustomObject] -and $component -isnot [System.Collections.IDictionary]) {
+            return [pscustomobject]@{ Ok = $false; Summary = 'install result has a non-object component' }
+        }
+        if ((Get-ResultProperty $component 'component' -PreserveCollection) -isnot [string] -or (Get-ResultProperty $component 'status' -PreserveCollection) -isnot [string]) {
+            return [pscustomobject]@{ Ok = $false; Summary = 'install component names and statuses must be strings' }
+        }
         $name = [string](Get-ResultProperty -Document $component -Name 'component')
         $status = [string](Get-ResultProperty -Document $component -Name 'status')
         if ([string]::IsNullOrWhiteSpace($name)) { return [pscustomobject]@{ Ok = $false; Summary = 'install result has a component with no name' } }
         if ($script:InstallComponentStatuses -notcontains $status) {
             return [pscustomobject]@{ Ok = $false; Summary = ('install result component ' + $name + ' has an unrecognized status: ' + $(if ([string]::IsNullOrWhiteSpace($status)) { '(missing)' } else { $status })) }
         }
+        if ((@(Get-HookMakerClientIds) + @('validation', 'nativeGit', 'registry', 'unknown')) -notcontains $name) {
+            return [pscustomobject]@{ Ok = $false; Summary = ('unrecognized install component: ' + $name) }
+        }
+        if ($seen.ContainsKey($name)) { return [pscustomobject]@{ Ok = $false; Summary = ('duplicate install component: ' + $name) } }
+        $seen[$name] = $true
         $names += $name
     }
 
@@ -182,7 +204,13 @@ function Get-RequestedInstallClients {
 # saying "components disagreed", and the components are what decide whether a
 # human needs to act.
 function Get-PartialInstallVerdict {
-    param($Components)
+    param($Components, [string[]]$RequiredComponents = @())
+    foreach ($required in @($RequiredComponents)) {
+        $matching = @($Components | Where-Object { (Get-ResultProperty $_ 'component') -eq $required })
+        if ($matching.Count -ne 1 -or (Get-ResultProperty $matching[0] 'status') -ne 'ok') {
+            return [pscustomobject]@{ IsFailure = $true; Summary = ('partial - requested client not installed: ' + $required) }
+        }
+    }
     # Every field read through Get-ResultProperty, never a direct $_.reason.
     # The document comes from another process and a component is not obliged to
     # carry every optional field; under StrictMode a direct access on one that
@@ -192,7 +220,8 @@ function Get-PartialInstallVerdict {
         Where-Object {
             $s = [string](Get-ResultProperty -Document $_ -Name 'status')
             $r = [string](Get-ResultProperty -Document $_ -Name 'reason')
-            $s -eq 'failed' -or $s -eq 'trackingFailed' -or $r -eq 'postRegistrationError'
+            $s -eq 'failed' -or $s -eq 'trackingFailed' -or $r -eq 'postRegistrationError' -or
+            ($s -eq 'skipped' -and $r -notin @('notApplicable', 'notSelected', 'notInstalled'))
         } | ForEach-Object {
             [string](Get-ResultProperty -Document $_ -Name 'component') + ' (' +
             [string](Get-ResultProperty -Document $_ -Name 'reason') + ')' })
@@ -200,7 +229,7 @@ function Get-PartialInstallVerdict {
         Where-Object {
             $s = [string](Get-ResultProperty -Document $_ -Name 'status')
             [string](Get-ResultProperty -Document $_ -Name 'reason') -eq 'degraded' -and
-            -not ($s -eq 'failed' -or $s -eq 'trackingFailed')
+            $s -eq 'ok'
         } | ForEach-Object { [string](Get-ResultProperty -Document $_ -Name 'component') })
 
     if ($realProblems.Count -gt 0) {
@@ -308,7 +337,7 @@ function Invoke-HookInstaller {
         }
     }
     if ($overall -eq 'partial') {
-        $verdict = Get-PartialInstallVerdict -Components $result.components
+        $verdict = Get-PartialInstallVerdict -Components $result.components -RequiredComponents (Get-RequestedInstallClients -InstallArgs $InstallArgs)
         return [pscustomobject]@{
             Ok      = (-not $verdict.IsFailure)
             Status  = $(if ($verdict.IsFailure) { 'failed' } else { 'ok' })

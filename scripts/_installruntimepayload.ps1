@@ -58,6 +58,10 @@ function Add-SharedRuntimeLibraryArtifacts {
         Add-Artifact (New-PlanArtifact -RelativePath ($FriendlyName + '/_taskidentity.ps1') -Kind 'File' -SourcePath $taskIdentityLib)
     }
 
+    $deliveryLib = Join-Path $ToolRoot 'hooks\_deliverylib.ps1'
+    if (-not (Test-Path -LiteralPath $deliveryLib -PathType Leaf)) { throw 'The shared delivery library is missing from this checkout.' }
+    Add-Artifact (New-PlanArtifact -RelativePath ($FriendlyName + '/_deliverylib.ps1') -Kind 'File' -SourcePath $deliveryLib)
+
     # _scope.ps1 is dot-sourced DIRECTLY by the hooks that need it, not by
     # _hooklib.ps1 - but the contract is the same: an installed runtime that
     # lacks it cannot answer "is this prompt project work?" or "is this

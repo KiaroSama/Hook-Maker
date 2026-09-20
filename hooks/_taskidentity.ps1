@@ -116,12 +116,18 @@ function Invoke-TaskIdentityUpdate {
         if ($before -cne $after) {
             $temp = $scope.Path + '.' + [guid]::NewGuid().ToString('N') + '.tmp'
             [IO.File]::WriteAllText($temp, $after, (New-Object Text.UTF8Encoding($false)))
+            if ((Get-TaskIdentityState -Path $temp).State -ne 'valid') {
+                return [pscustomobject]@{ Ok = $false; State = 'mutation-invalid-or-capacity'; Record = $null }
+            }
             if ([IO.File]::Exists($scope.Path)) { [IO.File]::Replace($temp, $scope.Path, [NullString]::Value) }
             else { [IO.File]::Move($temp, $scope.Path) }
         }
         return [pscustomobject]@{ Ok = $true; State = 'valid'; Record = $record }
     }
-    catch { return [pscustomobject]@{ Ok = $false; State = 'persistence-failed'; Record = $null } }
+    catch {
+        $failure = if ($_.Exception.Message -like 'task-*-capacity') { 'capacity' } else { 'persistence-failed' }
+        return [pscustomobject]@{ Ok = $false; State = $failure; Record = $null }
+    }
     finally {
         if ($temp -ne '' -and [IO.File]::Exists($temp)) { try { [IO.File]::Delete($temp) } catch { } }
         if ($null -ne $handle) { $handle.Dispose() }
@@ -158,12 +164,13 @@ function Register-UserTaskBoundary {
             if ($prompt -match '^\[HOOKMAKER-CORRECTION:([a-f0-9]{32})\](?:\r?\n|$)') { $receiptKey = 'token:' + $Matches[1] }
             $continuation = @($record.blockFingerprints) -ccontains $receiptKey
             if ($continuation) {
+                if ($turn -ne '' -and @($record.turnIds) -cnotcontains $turn -and @($record.turnIds).Count -ge 32) { throw 'task-turn-capacity' }
                 # Consume a receipt once; duplicate handlers use dispatch identity.
                 $record.blockFingerprints = @($record.blockFingerprints | Where-Object { $_ -cne $receiptKey })
                 $record.dispatchId = $turn
                 $record.promptFingerprint = $fingerprint
                 $record.phase = 'working'
-                if ($turn -ne '' -and @($record.turnIds) -cnotcontains $turn) { $record.turnIds = @(@($record.turnIds) + $turn | Select-Object -Last 32) }
+                if ($turn -ne '' -and @($record.turnIds) -cnotcontains $turn) { $record.turnIds = @(@($record.turnIds) + $turn) }
                 return $record
             }
             # Claude has no documented turn_id. Co-delivered handlers are joined
@@ -209,7 +216,10 @@ function Register-TaskContinuation {
         param($record, $scope)
         if ($null -eq $record -or $record.taskId -cne $identity.TaskId) { throw 'task changed before continuation registration' }
         if (@($record.blockFingerprints) -cnotcontains $fingerprint) {
-            $record.blockFingerprints = @(@($record.blockFingerprints) + $fingerprint | Select-Object -Last $script:TaskIdentityMaxBlockFingerprints)
+            # An outstanding receipt may still arrive. Evicting it relabels its
+            # delayed correction as a new human task and refunds the allowance.
+            if (@($record.blockFingerprints).Count -ge $script:TaskIdentityMaxBlockFingerprints) { throw 'task-receipt-capacity' }
+            $record.blockFingerprints = @(@($record.blockFingerprints) + $fingerprint)
         }
         return $record
     }

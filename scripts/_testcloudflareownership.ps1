@@ -236,6 +236,16 @@
             Build = { param($Repo) New-ManagedCleanupInstall -Base $Repo -OmitFromManifest @('_hooklib.ps1') | Out-Null }
         }
         [pscustomobject]@{
+            Name  = 'the delivery helper deleted from a Claude runtime AND its manifest'
+            Why   = 'the independent consumer must know the complete required runtime set'
+            Build = { param($Repo) New-ManagedCleanupInstall -Base $Repo -RemoveLeaf @('_deliverylib.ps1') | Out-Null }
+        }
+        [pscustomobject]@{
+            Name  = 'the delivery helper deleted from a Codex runtime AND its manifest'
+            Why   = 'Codex must enforce the same independently required dependency'
+            Build = { param($Repo) New-ManagedCleanupInstall -Base $Repo -Client 'codex' -RemoveLeaf @('_deliverylib.ps1') | Out-Null }
+        }
+        [pscustomobject]@{
             Name  = 'a required dependency deleted from disk AND from the manifest'
             Why   = 'nothing on disk contradicts the manifest, so only a required set known independently catches it'
             Build = { param($Repo) New-ManagedCleanupInstall -Base $Repo -RemoveLeaf @('_hooklib.ps1') | Out-Null }
