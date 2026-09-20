@@ -149,8 +149,11 @@ Add-TimingSample -StateDir $StateDir -ProjectKey $Key -CommandFingerprint $Cmd -
     $procs = New-Object System.Collections.Generic.List[object]
     $n = 8
     for ($i = 1; $i -le $n; $i++) {
-        $p = Start-Process -FilePath $exe -PassThru -WindowStyle Hidden -ArgumentList @(
-            '-NoLogo', '-NoProfile', '-File', $concChild, '-Module', $writerModule, '-StateDir', $StateDir, '-Key', $PK, '-Cmd', $CMD, '-RunId', ('conc{0:D2}' -f $i))
+        # Concurrent on purpose, so Start-BoundedProcess (which waits) cannot be
+        # used - but the argument line still needs escaping, or a workspace path
+        # holding a space splits. See ConvertTo-ProcessArgumentString.
+        $p = Start-Process -FilePath $exe -PassThru -WindowStyle Hidden -ArgumentList (ConvertTo-ProcessArgumentString @(
+                '-NoLogo', '-NoProfile', '-File', $concChild, '-Module', $writerModule, '-StateDir', $StateDir, '-Key', $PK, '-Cmd', $CMD, '-RunId', ('conc{0:D2}' -f $i)))
         [void]$procs.Add($p)
     }
     foreach ($p in $procs) { [void]$p.WaitForExit(30000) }
