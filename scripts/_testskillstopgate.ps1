@@ -112,8 +112,12 @@
     # above; here the question is whether answering reduces the demand, and that
     # is a property of the decision plus the session record, not of the envelope.
     . (Join-Path (Split-Path -Parent $SkillsHook) '_skillstop.ps1')
-    if ($null -eq $script:SkillsRequiredLine) { $script:SkillsRequiredLine = 'Skills used: <names>' }
-    if ($null -eq $script:SkillsRequirement) { $script:SkillsRequirement = 'x' }
+    # Set, never TESTED with -eq $null: under StrictMode reading a variable
+    # that was never assigned throws, so the defensive check was itself the
+    # defect. These are placeholders for a branch these assertions do not
+    # reach, and the suite's own Skills-Check blocks have already run above.
+    if (-not (Get-Variable -Name 'SkillsRequiredLine' -Scope Script -ErrorAction SilentlyContinue)) { $script:SkillsRequiredLine = 'Skills used: <names>' }
+    if (-not (Get-Variable -Name 'SkillsRequirement' -Scope Script -ErrorAction SilentlyContinue)) { $script:SkillsRequirement = 'x' }
 
     $gateFile = Join-Path $Work ('skillgate-' + [guid]::NewGuid().ToString('N').Substring(0, 6) + '.txt')
     $gateOffered = @('alpha-one', 'beta-two', 'gamma-three', 'delta-four', 'epsilon-five',
