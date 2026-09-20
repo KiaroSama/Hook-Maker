@@ -102,63 +102,7 @@ function Get-BlockedGateNames {
     return @($names | Sort-Object -Unique)
 }
 
-# ONE STAMP PER SESSION, not one per project.
-#
-# The file used to hold a single "<sessionId>|<timestamp>", so two sessions
-# working in the same project took turns overwriting it and each one read the
-# OTHER's id, concluded "not mine" and delivered again: A/B/A was reminded three
-# times inside a single cooldown. It is a small bounded map now - one line per
-# session, newest kept - so a session's own cooldown survives another session
-# speaking in between.
-#
-# SessionStart never consults it (every SessionStart is a rebuilt context) but
-# does stamp it, so the first prompt after a start does not repeat what was just
-# delivered.
-$script:DeliveryMaxSessions = 12
-
-function Get-DeliveryStamps {
-    $map = @{}
-    try {
-        if (-not (Test-Path -LiteralPath $deliveryPath -PathType Leaf)) { return $map }
-        foreach ($line in @([System.IO.File]::ReadAllLines($deliveryPath))) {
-            $text = ([string]$line).Trim()
-            if ($text -eq '') { continue }
-            $parts = $text.Split('|')
-            if ($parts.Count -lt 2) { continue }
-            $map[[string]$parts[0]] = [string]$parts[1]
-        }
-    }
-    catch { return @{} }
-    return $map
-}
-
-function Test-WithinCooldown {
-    param([AllowEmptyString()][string]$SessionId, [int]$CooldownMinutes)
-    if ([string]::IsNullOrWhiteSpace($SessionId)) { return $false }
-    $map = Get-DeliveryStamps
-    if (-not $map.ContainsKey($SessionId)) { return $false }
-    $lastUtc = [DateTime]::MinValue
-    if (-not [DateTime]::TryParse([string]$map[$SessionId], [ref]$lastUtc)) { return $false }
-    return (([DateTime]::UtcNow - $lastUtc.ToUniversalTime()).TotalMinutes -lt $CooldownMinutes)
-}
-
-function Write-DeliveryStamp {
-    param([AllowEmptyString()][string]$SessionId)
-    try {
-        New-Item -ItemType Directory -Path $stateDir -Force | Out-Null
-        $map = Get-DeliveryStamps
-        $map[$SessionId] = [DateTime]::UtcNow.ToString('o')
-        # Bounded: keep the most recent sessions and drop the rest, so a
-        # long-lived project cannot grow this file without limit.
-        $lines = @()
-        foreach ($key in @($map.Keys | Sort-Object -Property @{ Expression = { $map[$_] }; Descending = $true } | Select-Object -First $script:DeliveryMaxSessions)) {
-            $lines += ([string]$key + '|' + [string]$map[$key])
-        }
-        [System.IO.File]::WriteAllLines($deliveryPath, [string[]]$lines)
-    }
-    catch { }
-}
-
+# Client/session/actor reservations replace the old client-less text stamps.
 $config = Read-HookEnv (Join-Path $PSScriptRoot '.env')
 $cooldownMinutes = 15
 if ($config.ContainsKey('COOLDOWN_MINUTES')) {
@@ -166,8 +110,15 @@ if ($config.ContainsKey('COOLDOWN_MINUTES')) {
     if ([int]::TryParse([string]$config['COOLDOWN_MINUTES'], [ref]$parsedCooldown) -and
         $parsedCooldown -ge 0 -and $parsedCooldown -le 1440) { $cooldownMinutes = $parsedCooldown }
 }
-if ($eventName -eq 'UserPromptSubmit' -and (Test-WithinCooldown -SessionId $sessionId -CooldownMinutes $cooldownMinutes)) { exit 0 }
-Write-DeliveryStamp -SessionId $sessionId
+$claim = Invoke-DeliveryClaim -Path ($deliveryPath + '.claims.json') -Identity (Get-DeliveryIdentity $hookInput) `
+    -Fingerprint 'session-summary-policy-v2' -CooldownMinutes $cooldownMinutes -Force:($eventName -eq 'SessionStart')
+if (-not $claim.Ok) {
+    # No reservation means no claim that the policy was delivered. This display
+    # warning is non-continuing; a later real event can retry the unchanged state.
+    [Console]::Out.WriteLine((@{ systemMessage = ('SESSION SUMMARY: reminder reservation is unverified (' + $claim.Reason + '). No task completion was recorded.') } | ConvertTo-Json -Compress))
+    exit 0
+}
+if (-not $claim.Admitted) { exit 0 }
 $blocked = @(Get-BlockedGateNames -ProjectKey $projectKey -SessionId $sessionId)
 
 $lines = New-Object System.Collections.ArrayList
