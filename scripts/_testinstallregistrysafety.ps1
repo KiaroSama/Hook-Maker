@@ -49,7 +49,7 @@
     $standaloneSorted = @($standaloneNames)
     [System.Array]::Sort($standaloneSorted, [System.StringComparer]::Ordinal)
     Check 'a standalone hook installs its own script, the shared library and its ownership metadata' (
-        (($standaloneSorted) -join ',') -ceq '.hookmaker-runtime.json,_deliverylib.ps1,_evidencelib.ps1,_hooklib.ps1,_scope.ps1,_stoplib.ps1,_taskidentity.ps1,zzz-standalone-hook.ps1') (($standaloneSorted) -join ',')
+        (($standaloneSorted) -join ',') -ceq '.hookmaker-runtime.json,_deliverylib.ps1,_evidencelib.ps1,_hooklib.ps1,_processtree.ps1,_scope.ps1,_stoplib.ps1,_taskidentity.ps1,zzz-standalone-hook.ps1') (($standaloneSorted) -join ',')
     Check 'the neighbouring project .env is never copied' (@($standaloneNames | Where-Object { $_ -eq '.env' }).Count -eq 0)
     Check 'the neighbouring project secrets.md is never copied' (@($standaloneNames | Where-Object { $_ -eq 'secrets.md' }).Count -eq 0)
     Check 'git metadata is never copied' (@($standaloneFiles | Where-Object { $_.FullName -like '*.git*' -and $_.Name -eq 'config' }).Count -eq 0)

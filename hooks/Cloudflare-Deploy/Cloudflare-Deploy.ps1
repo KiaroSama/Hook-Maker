@@ -239,8 +239,8 @@ $script:CleanupManifestCap = 64
 # whose executing body was never checked. Only a required set this hook knows on
 # its own can turn that omission into a rejection.
 $script:CleanupRequiredRuntimeLeaves = @{
-    'claude' = @('_hooklib.ps1', '_stoplib.ps1', '_evidencelib.ps1', '_taskidentity.ps1', '_scope.ps1', '_deliverylib.ps1')
-    'codex'  = @('_hooklib.ps1', '_stoplib.ps1', '_evidencelib.ps1', '_taskidentity.ps1', '_scope.ps1', '_deliverylib.ps1')
+    'claude' = @('_hooklib.ps1', '_stoplib.ps1', '_evidencelib.ps1', '_taskidentity.ps1', '_scope.ps1', '_deliverylib.ps1', '_processtree.ps1')
+    'codex'  = @('_hooklib.ps1', '_stoplib.ps1', '_evidencelib.ps1', '_taskidentity.ps1', '_scope.ps1', '_deliverylib.ps1', '_processtree.ps1')
 }
 
 # Mirrored from scripts\_clientcapability.ps1 for the same structural reason as
