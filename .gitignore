@@ -54,8 +54,12 @@ logs/
 # Browser-automation scratch written into the repo root by tooling runs.
 # Ignored rather than deleted: another session may still be writing them.
 /.playwright-mcp/
-/real-dark-fa.png
-/after_*.png
+# Screenshots dropped into the repository ROOT by browser-automation runs.
+# No PNG has ever been tracked anywhere in this repository, so a root-level
+# rule costs nothing and stops each new filename dirtying the tree - which
+# matters because a dirty tree is what stops a green CI result from clearing
+# the completion gate. Named files were being added one at a time before this.
+/*.png
 
 # Local assistant skill state - machine-specific, not part of the tool
 /skills-lock.json
