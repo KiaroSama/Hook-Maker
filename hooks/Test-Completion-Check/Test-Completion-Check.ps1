@@ -509,6 +509,7 @@ function Write-Finding {
 # ---- read the recorded evidence (AGGREGATED across per-run files) ----------
 . (Join-Path $PSScriptRoot '_evidence.ps1')
 . (Join-Path $PSScriptRoot '_recovery.ps1')
+. (Join-Path $PSScriptRoot '_failedrun.ps1')
 # Possible orphaned test processes: ADVISORY ONLY, never a block, never a kill.
 # Write-SurvivorAdvisory is called ONLY where this hook is about to go silent,
 # so it can never pre-empt a gate: every block below still speaks first.
@@ -1012,21 +1013,12 @@ if ($incidentKey -ne '' -and -not (Test-AnyIncidentResolved $incidentKey $incide
 }
 
 # ---- 4. the run completed but failed --------------------------------------
+# Two answers, both in _failedrun.ps1: a green CI result for this exact commit
+# on a clean tree clears it, anything else blocks exactly as before.
 if ($null -ne $result -and $overall -eq 'failed' -and $resultIsCurrentEvidence -and -not $repAccounted) {
-    # Derived once, because the -ResolveIncident line below must print the SAME key
-    # recovery looks for. The identity above covers termination and leaks only.
-    $exitCode = [string](Get-Field $result 'exitCode')
-    $failureKey = Get-ResultIncidentKey -Doc $result -Path $resultEntryPath
+    $verdict = Resolve-FailedRunVerdict -Doc $result -Path $resultEntryPath -LastProgress $lastProgress -ProjectRoot $cwd -HookPath $PSCommandPath
     Save-CompletionState
-    Write-Finding -Blocking $true -Lines @(
-        'TEST COMPLETION CHECK: the latest guarded test run for this project FAILED (exit code ' + $exitCode + '). The work is not verifiably complete.',
-        $(if ($lastProgress -ne '') { 'Last recorded progress: ' + $lastProgress } else { 'The result document records no final progress line.' }),
-        'Recovery: inspect the actual failure, fix the root cause, and re-run the suite through scripts\Run-Tests-Guarded.ps1 until the result reports overall=ok. Do not weaken, skip, or delete tests to make it pass, and do not claim tests passed while this result stands.',
-        # The supersede matches the COMMAND, not the tree state, so the edit that
-        # fixed the failure does not disqualify the green run proving it. The escape
-        # hatch is for when a re-run cannot reproduce the identity at all.
-        'Re-running the SAME command green supersedes this automatically, even though your fix changed the working tree. Only if the command itself had to change, or the old receipt carries no command identity, associate the newer clean receipt explicitly: powershell.exe -NoProfile -File "' + $PSCommandPath + '" -ResolveIncident ' + $failureKey + ' -RecoveryRunId "<verified recovery run id>" -ProjectRoot "' + $cwd + '" -Reason "<substantive equivalent test scope and verified repair, at least 80 UTF-8 bytes>".',
-        'Note: the supersede matches the WHOLE argument vector, so a run covering three suites does not supersede a one-suite failure.')
+    Write-Finding -Blocking $verdict.Blocking -Lines $verdict.Lines
 }
 
 # ---- 5. a test ran but there is no current proof of how it ended ----------

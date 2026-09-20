@@ -449,10 +449,18 @@ $stateDir = Join-Path $env:LOCALAPPDATA 'HookMaker\state'
 $statePath = Join-Path $stateDir ('CiStatusCheck-' + (Get-ShortHash ($cwd.ToLowerInvariant() + '|' + $repoSlug.ToLowerInvariant())) + '.txt')
 $externalStatePath = Join-Path $stateDir ('CiStatusCheck-External-' + (Get-ShortHash ($cwd.ToLowerInvariant() + '|' + $repoSlug.ToLowerInvariant())) + '.txt')
 
+# The record is sha / outcome / timestamp / evidence. The fourth line exists
+# because 'verified' is written for two different facts: CI was observed all
+# green, and this project has no CI to observe. Test-Completion-Check consumes
+# this to decide whether a green run supersedes a local failure, and the second
+# fact must never clear anything - a project without workflows would otherwise
+# have its completion gate silently disabled. Readers take Count -ge 3 and index
+# 0..2, so an old runtime ignores line 3 and a new consumer treats its absence as
+# 'not green', which fails closed in both directions.
 function Save-State {
-    param([string]$Outcome)
+    param([string]$Outcome, [string]$Evidence = '')
     New-Item -ItemType Directory -Path $script:stateDir -Force | Out-Null
-    [System.IO.File]::WriteAllLines($script:statePath, @($script:sha, $Outcome, [DateTime]::UtcNow.ToString('o')))
+    [System.IO.File]::WriteAllLines($script:statePath, @($script:sha, $Outcome, [DateTime]::UtcNow.ToString('o'), $Evidence))
 }
 
 function Write-Block {
@@ -569,7 +577,7 @@ if (Test-Path -LiteralPath $externalStatePath -PathType Leaf) {
             # CI recovered - retire the exception and verify normally (green,
             # not "excused"); no external wording.
             Remove-Item -LiteralPath $externalStatePath -Force -ErrorAction SilentlyContinue
-            Save-State -Outcome 'verified'
+            Save-State -Outcome 'verified' -Evidence 'ci-green'    # a re-queried all-success snapshot
             exit 0
         }
         if ($recheck.Fingerprint -eq $extFingerprint) {
@@ -644,7 +652,9 @@ if ($snapshot.Runs.Count -eq 0) {
         $hasWorkflows = (@(Get-ChildItem -LiteralPath $workflowsDir -File -ErrorAction SilentlyContinue | Where-Object { $_.Extension -in @('.yml', '.yaml') }).Count -gt 0)
     }
     if (-not $hasWorkflows) {
-        Save-State -Outcome 'verified'    # no CI configured - nothing to verify
+        # NOT 'ci-green'. Nothing was observed to pass here; there was simply
+        # nothing to observe, and a consumer must not read the two as the same.
+        Save-State -Outcome 'verified' -Evidence 'no-ci'    # no CI configured - nothing to verify
         exit 0
     }
     Write-Block -Outcome 'pending' -Reason ('CI CHECK: workflows exist but no runs are registered yet for pushed commit ' + $sha7 + ' (' + $repoSlug + '). Do not declare the work complete: wait briefly, then verify the checks for this exact commit with: gh run list --commit ' + $sha)
@@ -692,5 +702,5 @@ if ($snapshot.FailedRuns.Count -gt 0 -or $snapshot.InfraRuns.Count -gt 0) {
 }
 
 # All runs for this exact commit completed successfully.
-Save-State -Outcome 'verified'
+Save-State -Outcome 'verified' -Evidence 'ci-green'    # every run for this exact commit succeeded
 exit 0
