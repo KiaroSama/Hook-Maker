@@ -499,3 +499,125 @@ Write-Doc (Join-Path $StateDir ('TestRunGuard-result-' + $ProjectKey + '-' + $sa
     $msgE = [string]$rE.Out
     Check 'C2d/S2: a DIFFERENT command that failed is still a separate finding' (
         $msgE -match 'TEST COMPLETION CHECK') $msgE
+
+    # =====================================================================
+    # The block for a FAILED run prints a -ResolveIncident command. Recovery's
+    # first gate rejects any key the ledger never heard of, and this case
+    # registered none - so the product printed an instruction it would always
+    # refuse, and a failure whose command no longer exists (a withdrawn TDD
+    # red) could never be cleared by any means at all.
+    Write-Host '--- C2f: the printed -ResolveIncident command can actually be taken ---' -ForegroundColor Cyan
+
+    function Invoke-Resolve {
+        param([object]$Copy, [string]$Root, [string]$Key, [string]$RecoveryRunId, [string]$Reason)
+        $tok = [guid]::NewGuid().ToString('N').Substring(0, 8)
+        $o = Join-Path $Work ('res-' + $tok + '.txt')
+        $e = Join-Path $Work ('rese-' + $tok + '.txt')
+        # Recovery mode never reads stdin (the hook branches before Read-HookInput),
+        # so this deliberately does not redirect it.
+        $sp = @{
+            FilePath               = (Get-Process -Id $PID).Path
+            ArgumentList           = '-NoLogo -NoProfile -File "' + $Copy.Script + '" -ResolveIncident ' + $Key +
+                                     ' -RecoveryRunId "' + $RecoveryRunId + '" -ProjectRoot "' + $Root + '" -Reason "' + $Reason + '"'
+            RedirectStandardOutput = $o; RedirectStandardError = $e
+            Wait                   = $true; NoNewWindow = $true; PassThru = $true
+        }
+        if ((Get-Command Start-Process).Parameters.ContainsKey('Environment')) {
+            $sp.Environment = @{ PATH = $env:PATH; LOCALAPPDATA = $Copy.LocalAppData; CLAUDE_PROJECT_DIR = $Root }
+        }
+        $proc = Start-BoundedProcess @sp
+        $out = if (Test-Path -LiteralPath $o) { ([System.IO.File]::ReadAllText($o)).Trim() } else { '' }
+        $err = if (Test-Path -LiteralPath $e) { ([System.IO.File]::ReadAllText($e)).Trim() } else { '' }
+        return [pscustomobject]@{ Exit = $proc.ExitCode; Out = $out; Err = $err }
+    }
+    function Clear-ReceiptField {
+        param([object]$Copy, [string]$Root, [string]$RunId, [string]$Field)
+        $path = Get-RunStateFile -Copy $Copy -Root $Root -Kind 'result' -RunId $RunId
+        $doc = (Get-Content -LiteralPath $path -Raw) | ConvertFrom-Json
+        $doc.$Field = ''
+        Write-Utf8 $path ($doc | ConvertTo-Json -Depth 6)
+    }
+    function Write-IncidentNote {
+        param([string]$Root, [string]$Key)
+        $dir = Join-Path $Root '.ai'
+        New-Item -ItemType Directory -Path $dir -Force | Out-Null
+        $body = 'The suite this failure belonged to was withdrawn together with the defect it proved, so its exact argument vector can never run green again. Equivalent scope now lives in the replacement suite, which ran clean.'
+        Write-Utf8 (Join-Path $dir 'TESTING_NOTES.md') ('# Testing notes' + [char]10 + [char]10 + 'Test incident: ' + $Key + [char]10 + $body + [char]10)
+    }
+    $resolveReason = 'The failing command was withdrawn together with the defect it proved; the replacement suite covers the same scope and ran clean through the guarded runner, which is the equivalent verified repair.'
+
+    $cF = New-IsolatedHookCopy
+    $pF = New-GitRepo 'C2fResolve'
+    $keyF = Get-ProjectKey $pF
+    Write-GuardedResult -Copy $cF -Root $pF -Overall 'failed' -ExitCode 1 -RunId ('c2f-fail-' + $keyF) -CommandFingerprint ('cmdc2fold' + $keyF) -AgeMinutes 9
+    $rF = Fire -Copy $cF -Cwd $pF
+    Check 'C2f: a plain failed run blocks' ($rF.Out -match '"decision":"block"') $rF.Out
+    $mF = [regex]::Match((Get-BlockReason $rF.Out), 'ResolveIncident[ ]+([0-9a-f]{10})')
+    Check 'C2f: and prints a well-formed incident key' ($mF.Success) $rF.Out
+    $incF = if ($mF.Success) { $mF.Groups[1].Value } else { 'nokey' }
+
+    # THE defect, in one assertion: the key it printed must be one the ledger
+    # KNOWS. Before the repair it was printed and never registered.
+    $ledgerF = Join-Path (Get-StateDir $cF) ('TestCompletionCheck-' + $keyF + '.json')
+    $stateF = if (Test-Path -LiteralPath $ledgerF) { Get-Content -LiteralPath $ledgerF -Raw } else { '' }
+    Check 'C2f: the printed key is REGISTERED in the ledger, not merely printed' (
+        $stateF -match [regex]::Escape($incF)) ('key ' + $incF + ' state ' + $stateF)
+
+    # And the whole path a reader would walk: write the tagged note (after the
+    # block, so it counts as growth over the baseline the registration captured),
+    # record a later clean run under a DIFFERENT command, then run verbatim the
+    # command the block printed.
+    Write-IncidentNote -Root $pF -Key $incF
+    $greenF = 'c2f-green-' + $keyF
+    Write-GuardedResult -Copy $cF -Root $pF -Overall 'ok' -ExitCode 0 -RunId $greenF -CommandFingerprint ('cmdc2fnew' + $keyF)
+    $resF = Invoke-Resolve -Copy $cF -Root $pF -Key $incF -RecoveryRunId $greenF -Reason $resolveReason
+    Check 'C2f: running the printed recovery command SUCCEEDS' (
+        $resF.Exit -eq 0 -and $resF.Out -match 'Recovery association recorded') ('exit ' + $resF.Exit + ' out ' + $resF.Out + ' err ' + $resF.Err)
+    $stateF2 = Get-Content -LiteralPath $ledgerF -Raw
+    Check 'C2f: and the incident is left resolved, with its association pinned' (
+        $stateF2 -match [regex]::Escape($greenF)) $stateF2
+
+    # =====================================================================
+    # One message for four causes told the reader to look at the wrong field.
+    # The projectFingerprint case is the one that actually bites: the guarded
+    # runner writes whatever -ProjectFingerprint it was given, so a hand-typed
+    # invocation records an empty one and its receipt is disqualified here.
+    Write-Host '--- C2g: each recovery refusal names the cause that is actually present ---' -ForegroundColor Cyan
+    foreach ($case in @(
+            @{ Name = 'projectFingerprint'; Expect = 'no projectFingerprint' },
+            @{ Name = 'commandFingerprint'; Expect = 'no commandFingerprint' })) {
+        $cG = New-IsolatedHookCopy
+        $pG = New-GitRepo ('C2g' + $case.Name)
+        $keyG = Get-ProjectKey $pG
+        Write-GuardedResult -Copy $cG -Root $pG -Overall 'failed' -ExitCode 1 -RunId ('c2g-fail-' + $keyG) -CommandFingerprint ('cmdc2gold' + $keyG) -AgeMinutes 9
+        $rG = Fire -Copy $cG -Cwd $pG
+        $mG = [regex]::Match((Get-BlockReason $rG.Out), 'ResolveIncident[ ]+([0-9a-f]{10})')
+        $incG = if ($mG.Success) { $mG.Groups[1].Value } else { 'nokey' }
+        Write-IncidentNote -Root $pG -Key $incG
+        $greenG = 'c2g-green-' + $keyG
+        Write-GuardedResult -Copy $cG -Root $pG -Overall 'ok' -ExitCode 0 -RunId $greenG -CommandFingerprint ('cmdc2gnew' + $keyG)
+        Clear-ReceiptField -Copy $cG -Root $pG -RunId $greenG -Field $case.Name
+        $resG = Invoke-Resolve -Copy $cG -Root $pG -Key $incG -RecoveryRunId $greenG -Reason $resolveReason
+        $textG = [string]$resG.Out + ' ' + [string]$resG.Err
+        Check ('C2g: an absent ' + $case.Name + ' is refused BY NAME, not as a generic identity failure') (
+            $resG.Exit -ne 0 -and $textG -match [regex]::Escape($case.Expect)) ('key ' + $incG + ' exit ' + $resG.Exit + ' :: ' + $textG)
+    }
+
+    # A key the ledger does not track is a different problem from a note the
+    # reader has not written, and only the second is theirs to fix.
+    $cH = New-IsolatedHookCopy
+    $pH = New-GitRepo 'C2gUntracked'
+    $keyH = Get-ProjectKey $pH
+    Write-GuardedResult -Copy $cH -Root $pH -Overall 'failed' -ExitCode 1 -RunId ('c2h-fail-' + $keyH) -CommandFingerprint ('cmdc2hold' + $keyH) -AgeMinutes 9
+    $rH = Fire -Copy $cH -Cwd $pH
+    $mH = [regex]::Match((Get-BlockReason $rH.Out), 'ResolveIncident[ ]+([0-9a-f]{10})')
+    $incH = if ($mH.Success) { $mH.Groups[1].Value } else { 'nokey' }
+    Write-IncidentNote -Root $pH -Key $incH
+    $greenH = 'c2h-green-' + $keyH
+    Write-GuardedResult -Copy $cH -Root $pH -Overall 'ok' -ExitCode 0 -RunId $greenH -CommandFingerprint ('cmdc2hnew' + $keyH)
+    # The ledger is discarded, so the receipts remain but the key is untracked.
+    Remove-Item -LiteralPath (Join-Path (Get-StateDir $cH) ('TestCompletionCheck-' + $keyH + '.json')) -Force
+    $resH = Invoke-Resolve -Copy $cH -Root $pH -Key $incH -RecoveryRunId $greenH -Reason $resolveReason
+    $textH = [string]$resH.Out + ' ' + [string]$resH.Err
+    Check 'C2g: an untracked key is refused as untracked, not as a missing note' (
+        $resH.Exit -ne 0 -and $textH -match 'not tracked in the durable-note ledger') ('key ' + $incH + ' exit ' + $resH.Exit + ' :: ' + $textH + ' :: block ' + $rH.Out)

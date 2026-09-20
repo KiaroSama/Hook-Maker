@@ -40,7 +40,15 @@ function Set-VerifiedIncidentRecovery {
     $negativeId = [string](Get-Field $negative.Doc 'runId')
     $recoveryFp = [string](Get-Field $recovery.Doc 'projectFingerprint')
     $recoveryCmd = [string](Get-Field $recovery.Doc 'commandFingerprint')
-    if ([string]::IsNullOrWhiteSpace($negativeId) -or $negativeId -eq $RecoveryRunId -or [string]::IsNullOrWhiteSpace($recoveryFp) -or [string]::IsNullOrWhiteSpace($recoveryCmd)) { throw 'The recovery receipt must have its own complete run, command and project identity.' }
+    # One message for four causes told the reader to look at the wrong field.
+    # The projectFingerprint case is not hypothetical: Run-Tests-Guarded.ps1
+    # takes -ProjectFingerprint from the observing hook and writes it verbatim,
+    # so a run typed by hand rather than taken from the guard's own replacement
+    # records an empty one and is disqualified here - silently, until now.
+    if ([string]::IsNullOrWhiteSpace($negativeId)) { throw 'The original incident receipt records no runId, so it cannot be told apart from the recovery run.' }
+    if ($negativeId -eq $RecoveryRunId) { throw 'The recovery run ID is the incident''s own run ID. Recovery needs a SEPARATE later clean run, not the failing one.' }
+    if ([string]::IsNullOrWhiteSpace($recoveryCmd)) { throw 'The recovery receipt records no commandFingerprint, so what it actually ran cannot be established. Re-run through scripts\Run-Tests-Guarded.ps1 and use the new run ID.' }
+    if ([string]::IsNullOrWhiteSpace($recoveryFp)) { throw 'The recovery receipt records no projectFingerprint. Run-Tests-Guarded.ps1 persists whatever -ProjectFingerprint it was given, so a hand-typed invocation leaves it empty. Re-run using the replacement command Test-Run-Guard prints (it supplies the value), or pass -ProjectFingerprint yourself, then use that new run ID.' }
     $exitCode = -1
     $rawExit = Get-Field $recovery.Doc 'exitCode'
     $leakProperty = $recovery.Doc.PSObject.Properties['leakedProcessIds']
@@ -79,6 +87,8 @@ function Set-VerifiedIncidentRecovery {
     }
     # This proves a historical repair, not today's product state. A genuine
     # recovery does not expire with the separate current-evidence time window.
+    # Two different problems, and only the second is the reader's to fix.
+    if (-not $script:pendingNotes.Contains($IncidentKey)) { throw 'No incident with this key is tracked in the durable-note ledger for this project, so there is nothing here to recover. Check it against the key the block printed; if it matches exactly, the gate printed a key it never registered - report that as a defect in this hook rather than writing another note.' }
     if (-not (Test-PendingNoteSatisfied -Key $IncidentKey)) { throw 'The incident still requires its own exact tag and a substantive durable note beyond its recorded baseline.' }
     $notePattern = '(?ms)^[ \t]*Test incident:[ \t]*' + [regex]::Escape($IncidentKey) + '[ \t]*\r?\n(?<body>.*?)(?=^[ \t]*(?:Test incident:|#{1,6}[ \t])|\z)'
     $substantive = $false
