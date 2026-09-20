@@ -136,7 +136,10 @@ else {
     # is no library here, and the library half of this hook stays silent.
     $libraryDir = ''
 }
-$hasLibrary = Test-Path -LiteralPath $libraryDir -PathType Container
+$hasLibrary = $false
+if (-not [string]::IsNullOrWhiteSpace($libraryDir)) {
+    $hasLibrary = Test-Path -LiteralPath $libraryDir -PathType Container -ErrorAction SilentlyContinue
+}
 
 # ---- client-routed project + global skill directories ----
 if ($client -eq 'codex') {

@@ -149,7 +149,13 @@ try {
     foreach ($name in @('Mcp-Usage-Check','Rules-Check','Skills-Check')) {
         $payload=[pscustomobject]@{cwd=$project;session_id=('consumer-'+$name);hook_event_name='UserPromptSubmit';prompt='Review the library API documentation'}
         $path=Join-Path $SourceRoot ('hooks\'+$name+'\'+$name+'.ps1')
-        $null=Invoke-ReviewHook $path $payload
+        $promptWire=Invoke-ReviewHook $path $payload
+        if ($name -eq 'Skills-Check') {
+            $legacyUnsetFails = $PSVersionTable.PSVersion.Major -le 5
+            Check-Contract 'E18 an unset optional library does not disable the Skills prompt consumer' {
+                $promptWire.Exit -eq 0 -and $promptWire.Err -eq '' -and $promptWire.Out -match 'Skills used:'
+            } $legacyUnsetFails
+        }
         $payload.hook_event_name='Stop'; Set-ObjectProperty $payload 'transcript_path' $transcript
         Set-ObjectProperty $payload 'last_assistant_message' ''
         $wire=Invoke-ReviewHook $path $payload
