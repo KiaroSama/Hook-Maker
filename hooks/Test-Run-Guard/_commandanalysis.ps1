@@ -24,10 +24,18 @@
 function Split-CommandTokens {
     param([string]$Text)
     $tokens = New-Object System.Collections.Generic.List[string]
-    foreach ($match in [regex]::Matches($Text, '"([^"]*)"|''([^'']*)''|(\S+)')) {
+    # A NEWLINE is a token, because it is a separator. $script:SeparatorTokens
+    # has always listed it - but `\S+` cannot match whitespace, so one was
+    # never emitted and every line of a multi-line command collapsed into a
+    # single segment. The line after a heredoc terminator therefore glued
+    # itself to the program that opened the block, and no command written
+    # under another could ever be recognised. Ordered last in the
+    # alternation, which is safe: `\S+` cannot match a newline anyway.
+    foreach ($match in [regex]::Matches($Text, '"([^"]*)"|''([^'']*)''|(\S+)|(\r?\n)')) {
         if ($match.Groups[1].Success) { [void]$tokens.Add($match.Groups[1].Value) }
         elseif ($match.Groups[2].Success) { [void]$tokens.Add($match.Groups[2].Value) }
-        else { [void]$tokens.Add($match.Groups[3].Value) }
+        elseif ($match.Groups[3].Success) { [void]$tokens.Add($match.Groups[3].Value) }
+        else { [void]$tokens.Add("`n") }
     }
     return $tokens.ToArray()
 }
@@ -476,6 +484,15 @@ $script:NodeRunners = @('npm', 'pnpm', 'yarn', 'bun')
 $script:PythonPrograms = @('python', 'python3', 'py')
 $script:PythonTestModules = @('pytest', 'unittest', 'nose2')
 $script:PowerShellPrograms = @('pwsh', 'powershell')
+
+# Programs that EXECUTE their standard input, and programs that merely pass a
+# command along. _datablocks.ps1 asks both: the body of a fed-in block is data
+# unless a shell is what receives it, and a shell reached through a wrapper is
+# still a shell. They live here, with the other program lists, rather than
+# beside their only caller - splitting one kind of knowledge across two files
+# to save two lines is the wrapper-shaped change the constitution forbids.
+$script:ShellPrograms = @('bash', 'sh', 'zsh', 'dash', 'ksh', 'ash', 'busybox', 'pwsh', 'powershell', 'cmd')
+$script:TransparentWrappers = @('sudo', 'env', 'doas', 'nice', 'time', 'nohup', 'stdbuf', 'command', 'exec')
 
 # Does this segment already go through the bounded runner? Matched on the
 # runner's FILE NAME anywhere in the segment, so any invocation style counts.

@@ -101,15 +101,30 @@
     Check 'the replacement wrote its result document to the hook-declared -ResultPath' ($probeResultFile.Count -eq 1)
     Check 'the result filename is PER-RUN (key + runId), so concurrent runs never collide' (
         $probeResultFile.Count -eq 1 -and $probeResultFile[0].Name -match '^TestRunGuard-result-[a-z0-9]+-[a-z0-9]+\.json$') $(if ($probeResultFile.Count -eq 1) { $probeResultFile[0].Name } else { 'none' })
-    $probeDoc = Get-Content -LiteralPath $probeResultFile[0].FullName -Raw | ConvertFrom-Json
-    Check 'the result document records the failure, not a pass' ($probeDoc.overall -eq 'failed' -and $probeDoc.exitCode -eq 7) $probeDoc.overall
-    Check 'the metacharacter argument survived as ONE argument, unevaluated' ($probeDoc.lastProgress -match 'tag=a b\|c&d') $probeDoc.lastProgress
-    Check 'the result document records no argument VALUES' (($probeDoc | ConvertTo-Json -Depth 6) -notmatch '-Tag') ([string]$probeDoc.argumentCount)
-    Check 'HOOKMAKER_MAX_TEST_WORKERS clamps the reported worker budget' ($probeDoc.workerBudget -eq 1) ([string]$probeDoc.workerBudget)
+    # Everything below needs the probe's document. Indexing [0] on an empty
+    # array THROWS under StrictMode, and the throw escapes this dot-sourced
+    # module - so a single failed probe silently deleted every later assertion
+    # in this file, including the whole redirection block. That is a false
+    # green in the shape of a crash: the suite reported 3 failures and simply
+    # never mentioned the ~15 checks it had stopped running. The three Checks
+    # above already report the missing document; this guard keeps the module
+    # alive so the rest of the file still speaks. Found 2026-09-20, on a
+    # project path containing a space, which is why CI never showed it.
+    if ($probeResultFile.Count -ne 1) {
+        Check 'the probe document exists, so the checks that read it can run' $false (
+            'no result document: ' + $probeResultFile.Count + ' found - the checks that read it were SKIPPED, not passed')
+    }
+    else {
+        $probeDoc = Get-Content -LiteralPath $probeResultFile[0].FullName -Raw | ConvertFrom-Json
+        Check 'the result document records the failure, not a pass' ($probeDoc.overall -eq 'failed' -and $probeDoc.exitCode -eq 7) $probeDoc.overall
+        Check 'the metacharacter argument survived as ONE argument, unevaluated' ($probeDoc.lastProgress -match 'tag=a b\|c&d') $probeDoc.lastProgress
+        Check 'the result document records no argument VALUES' (($probeDoc | ConvertTo-Json -Depth 6) -notmatch '-Tag') ([string]$probeDoc.argumentCount)
+        Check 'HOOKMAKER_MAX_TEST_WORKERS clamps the reported worker budget' ($probeDoc.workerBudget -eq 1) ([string]$probeDoc.workerBudget)
 
-    # ... and the very next PostToolUse consumes exactly that document.
-    $r = Fire -HookPath $hcProbe.Script -Cwd $Proj -EventName 'PostToolUse' -Command $probeCommand -LocalAppData $hcProbe.LocalAppData
-    Check 'PostToolUse reads the real document the replacement produced' ((Get-Message $r.Out) -match 'exit code 7') $r.Out
+        # ... and the very next PostToolUse consumes exactly that document.
+        $r = Fire -HookPath $hcProbe.Script -Cwd $Proj -EventName 'PostToolUse' -Command $probeCommand -LocalAppData $hcProbe.LocalAppData
+        Check 'PostToolUse reads the real document the replacement produced' ((Get-Message $r.Out) -match 'exit code 7') $r.Out
+    }
 
     # =====================================================================
     # HM-05: the resolved worker ceiling is ENFORCED end-to-end, not just advised.
@@ -150,9 +165,18 @@
     Check 'the export replacement ran and propagated the child exit code (0)' ($expProc.ExitCode -eq 0) ([string]$expProc.ExitCode)
     $expFile = @(Get-ChildItem -LiteralPath (Join-Path $hcExport.LocalAppData 'HookMaker\state') -Filter 'TestRunGuard-result-*.json' -ErrorAction SilentlyContinue)
     Check 'the export run wrote its result document' ($expFile.Count -eq 1)
-    $expDoc = Get-Content -LiteralPath $expFile[0].FullName -Raw | ConvertFrom-Json
-    Check 'the runner resolved the ceiling from -MaxWorkers alone (workerBudget=1)' ($expDoc.workerBudget -eq 1) ([string]$expDoc.workerBudget)
-    Check 'the exported ceiling reached the real child (child saw HOOKMAKER_MAX_TEST_WORKERS=1)' ($expDoc.lastProgress -match 'WORKERS=1') $expDoc.lastProgress
+    # Same guard as the probe block above, same reason: a missing document must
+    # fail loudly here and let the rest of the file run, never throw out of a
+    # dot-sourced module and delete the assertions that follow it.
+    if ($expFile.Count -ne 1) {
+        Check 'the export document exists, so the checks that read it can run' $false (
+            'no result document: ' + $expFile.Count + ' found - the checks that read it were SKIPPED, not passed')
+    }
+    else {
+        $expDoc = Get-Content -LiteralPath $expFile[0].FullName -Raw | ConvertFrom-Json
+        Check 'the runner resolved the ceiling from -MaxWorkers alone (workerBudget=1)' ($expDoc.workerBudget -eq 1) ([string]$expDoc.workerBudget)
+        Check 'the exported ceiling reached the real child (child saw HOOKMAKER_MAX_TEST_WORKERS=1)' ($expDoc.lastProgress -match 'WORKERS=1') $expDoc.lastProgress
+    }
 
     # =====================================================================
     Write-Host '--- an already-guarded command passes untouched (no double wrap) ---' -ForegroundColor Cyan
@@ -340,3 +364,87 @@
     $redirQuotedReplacement = Get-Replacement (Get-Message $rRedirQuoted.Out)
     Check 'a redirection character inside a QUOTED argument is preserved' (
         $redirQuotedReplacement -match 'a>b') $redirQuotedReplacement
+
+    # =====================================================================
+    # Inline data blocks: a span of a command that is CONTENT, not instruction.
+    # Recognition used to tokenise the whole text, so a command that merely
+    # WROTE a file whose prose named a runner was blocked, and the replacement
+    # it suggested was assembled out of that prose. The receiving program is
+    # what decides: a shell executes its standard input and everything else
+    # does not. See hooks/Test-Run-Guard/_datablocks.ps1.
+    Write-Host '--- inline data blocks are data, not commands ---' -ForegroundColor Cyan
+    $hcData = New-IsolatedHookCopy
+    $nlD = [string][char]10
+    $qD = [string][char]39
+
+    function Test-DataBlockCase {
+        param([string]$Name, [string]$Command, [bool]$ExpectRecognised)
+        $rd = Fire -HookPath $hcData.Script -Cwd $Proj -EventName 'PreToolUse' -Command $Command -LocalAppData $hcData.LocalAppData
+        $msg = Get-Message $rd.Out
+        $seen = ($msg -match 'TEST RUN GUARD')
+        Check $Name ($seen -eq $ExpectRecognised) ('recognised=' + $seen + ' want=' + $ExpectRecognised + ' | ' + $msg)
+        return $msg
+    }
+
+    # US1 - the reported failure: writing a file whose text names a runner.
+    $writeBody = "python - <<'PY'" + $nlD + "s = 'run the suite: pytest -q'" + $nlD + "open('n.md','w').write(s)" + $nlD + 'PY'
+    [void](Test-DataBlockCase 'a non-shell heredoc body is NOT a test command' $writeBody $false)
+
+    # US1/AC3 + FR-006 - the exclusion ends where the block ends, and no
+    # fragment of the body may reach the replacement.
+    $afterBlock = $writeBody + $nlD + 'pytest -q tests/'
+    $msgAfter = Test-DataBlockCase 'a real run AFTER the terminator is still recognised' $afterBlock $true
+    $jsonAfter = ''
+    if ((Get-Replacement $msgAfter) -match "-ArgumentsJson\s+'([^']*)'") { $jsonAfter = $Matches[1] }
+    Check 'no fragment of the excluded body reaches the replacement' (
+        $jsonAfter -eq '["-q","tests/"]') ('got ' + $jsonAfter)
+
+    # US2 + SC-005 - the guard must not be weakened. A shell really does run
+    # what it is fed, directly or behind a wrapper that passes a command along.
+    [void](Test-DataBlockCase 'a SHELL heredoc body is still scanned' (
+        "bash <<'SH'" + $nlD + 'pytest -q' + $nlD + 'SH') $true)
+    [void](Test-DataBlockCase 'a shell behind sudo is still a shell' (
+        "sudo bash <<'SH'" + $nlD + 'pytest -q' + $nlD + 'SH') $true)
+    [void](Test-DataBlockCase 'a wrapper switch taking an argument does not derail it' (
+        "sudo -u root bash <<'SH'" + $nlD + 'pytest -q' + $nlD + 'SH') $true)
+    [void](Test-DataBlockCase 'an env-assignment wrapper still resolves to the shell' (
+        "env FOO=1 sh <<'SH'" + $nlD + 'pytest -q' + $nlD + 'SH') $true)
+    # An unknown program is NOT transparent: the walk stops at it, and its body
+    # is data. Failing this way costs a false positive, never a missed run.
+    [void](Test-DataBlockCase 'an unknown program is not treated as transparent' (
+        "frobnicate <<'SH'" + $nlD + 'pytest -q' + $nlD + 'SH') $false)
+
+    # US3 - a PowerShell here-string is a VALUE, whoever receives it.
+    $hereOpen = '$x = @' + $qD
+    $hereClose = $qD + '@'
+    $hereString = $hereOpen + $nlD + 'run pytest -q' + $nlD + $hereClose + $nlD + 'Set-Content n.md $x'
+    [void](Test-DataBlockCase 'a here-string is not a test command' $hereString $false)
+    [void](Test-DataBlockCase 'a real run after a here-string is recognised' (
+        $hereString + $nlD + 'pytest -q') $true)
+    # Here-strings are removed FIRST, so text inside one cannot open a phantom
+    # heredoc that swallows the rest of the command.
+    [void](Test-DataBlockCase 'a here-string cannot open a phantom heredoc' (
+        $hereOpen + $nlD + "cat <<'EOF'" + $nlD + $hereClose + $nlD + 'pytest -q') $true)
+
+    # Edge cases that belong to no single story.
+    [void](Test-DataBlockCase 'an unterminated opener consumes the remainder' (
+        "python - <<'PY'" + $nlD + 'pytest -q' + $nlD + '(no terminator)') $false)
+    [void](Test-DataBlockCase 'two blocks: both removed, the text between them kept' (
+        "cat <<'A'" + $nlD + 'pytest' + $nlD + 'A' + $nlD + 'pytest -q' + $nlD +
+        "cat <<'B'" + $nlD + 'pytest' + $nlD + 'B') $true)
+    [void](Test-DataBlockCase 'the <<- form allows an indented terminator' (
+        "cat <<-'EOF'" + $nlD + '  pytest' + $nlD + '  EOF' + $nlD + 'pytest -q') $true)
+    # A command with no block at all must be unchanged - this is SC-004 in one
+    # line: if the exclusion is too wide, ordinary work breaks.
+    [void](Test-DataBlockCase 'a plain test command is unaffected by the exclusion' 'pytest -q tests/' $true)
+
+    # FR-009 - identifying blocks is linear in the text length. The bound is
+    # deliberately loose: it catches catastrophic backtracking, it does not
+    # measure performance, so it must not become a timing-flaky assertion.
+    $bigBody = ((1..3000 | ForEach-Object { 'line ' + $_ + ' mentioning pytest' }) -join $nlD)
+    $swData = [System.Diagnostics.Stopwatch]::StartNew()
+    [void](Test-DataBlockCase 'a 3000-line fed-in body is still silent' (
+        "python - <<'PY'" + $nlD + $bigBody + $nlD + 'PY') $false)
+    $swData.Stop()
+    Check ('a large fed-in body stays cheap (' + $swData.ElapsedMilliseconds + ' ms)') (
+        $swData.ElapsedMilliseconds -lt 60000) ([string]$swData.ElapsedMilliseconds + ' ms')
