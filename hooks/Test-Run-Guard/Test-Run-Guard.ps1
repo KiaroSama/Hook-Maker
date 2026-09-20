@@ -124,6 +124,15 @@ if (Test-Path -LiteralPath $ownScriptsPath -PathType Leaf) { . $ownScriptsPath }
 if ($null -eq (Get-Command -Name 'Test-IsOwnHookScript' -ErrorAction SilentlyContinue)) {
     function Test-IsOwnHookScript { param([string]$Path) return $false }
 }
+# Which spans of the command are DATA rather than instruction? Loaded BEFORE
+# _commandanalysis.ps1 because it uses that file's program lists at CALL time,
+# and optional like every sibling: the fallback returns the text untouched,
+# which is exactly the old behaviour rather than a wider or narrower guard.
+$dataBlocksPath = Join-Path $PSScriptRoot '_datablocks.ps1'
+if (Test-Path -LiteralPath $dataBlocksPath -PathType Leaf) { . $dataBlocksPath }
+if ($null -eq (Get-Command -Name 'Remove-InlineDataBlocks' -ErrorAction SilentlyContinue)) {
+    function Remove-InlineDataBlocks { param([string]$Text) return $Text }
+}
 . (Join-Path $PSScriptRoot '_commandanalysis.ps1')
 # Silent Execution (global-test-rules.md): would this INVOCATION open a window,
 # whatever the runner does inside it? Optional, like every sibling module, so a
@@ -311,7 +320,12 @@ if ($null -eq $rawCommand) { exit 0 }
 $tokens = @()
 if ($rawCommand -is [string]) {
     if ([string]::IsNullOrWhiteSpace($rawCommand)) { exit 0 }
-    $tokens = @(Split-CommandTokens -Text ([string]$rawCommand))
+    # The ONE place raw command text becomes tokens, so this is the one place
+    # the data spans have to go. Everything downstream - segmentation,
+    # recognition, the fingerprint and the suggested replacement - then sees
+    # the same cleaned text, which is what keeps prose out of a replacement
+    # command without a second guard for it.
+    $tokens = @(Split-CommandTokens -Text (Remove-InlineDataBlocks -Text ([string]$rawCommand)))
 }
 elseif ($rawCommand -is [System.Collections.IEnumerable]) {
     $tokens = @(@($rawCommand) | ForEach-Object { [string]$_ } | Where-Object { $_ -ne '' })
