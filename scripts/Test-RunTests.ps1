@@ -13,7 +13,7 @@
 # The REAL body is extracted from Run-Tests.ps1 via the AST (never a copy) and run
 # against real ping-spawning fixtures inside a BOUNDED child, so a regression that
 # reintroduces the unbounded wait shows up as the child overrunning its wall bound
-# rather than hanging this suite. The Job Object C# is read from Run-Tests-Guarded.
+# rather than hanging this suite. The Job Object C# is read from _guardedprocess.ps1.
 #
 # Usage:  pwsh -NoLogo -NoProfile -File .\scripts\Test-RunTests.ps1 [-KeepArtifacts]
 # Exit code is the number of failed assertions (0 = all passed).
@@ -25,7 +25,12 @@ $ErrorActionPreference = 'Stop'
 
 $RepoRoot = Split-Path -Parent $PSScriptRoot
 $RunTests = Join-Path $RepoRoot 'scripts\Run-Tests.ps1'
-$Guarded = Join-Path $RepoRoot 'scripts\Run-Tests-Guarded.ps1'
+# The Job Object C# moved into _guardedprocess.ps1 when the runner was split.
+# This suite is the SECOND consumer that slices it out of source text (Run-Tests.ps1
+# is the first), so it follows the C# rather than the entry point - pointing it at
+# the entry file yields an empty slice, the body runs with no job, and the failure
+# is eight assertions reporting 'no result' rather than anything naming the cause.
+$Guarded = Join-Path $RepoRoot 'scripts\_guardedprocess.ps1'
 foreach ($required in @($RunTests, $Guarded)) {
     if (-not (Test-Path -LiteralPath $required -PathType Leaf)) {
         Write-Host "Required file not found: $required" -ForegroundColor Red
@@ -558,6 +563,32 @@ finally {
         if (-not (Remove-TestWorkspace $Work)) { $script:Fail++ }
     }
 }
+
+# ---- the C# extraction Run-Tests.ps1 performs on _guardedprocess.ps1 --------
+# Run-Tests.ps1 recovers HookMaker.JobNative by slicing SOURCE TEXT out of the
+# guarded runner's process module, and its Add-Type sits in a catch - so every
+# way this can break is SILENT, and the only symptom is parallel suites quietly
+# losing job ownership. It broke twice already: once when the runner was split
+# and the path still pointed at the old file, and once when a new header comment
+# in the module happened to contain the using-directive's literal text, so the
+# search matched prose instead of code. Both produced a green run with no job.
+# This asserts the real consumer's real slice against the real file.
+$guardedModule = Join-Path $PSScriptRoot '_guardedprocess.ps1'
+Check 'the process module ships where Run-Tests.ps1 looks for it' (Test-Path -LiteralPath $guardedModule -PathType Leaf) $guardedModule
+$moduleText = ''
+if (Test-Path -LiteralPath $guardedModule -PathType Leaf) { $moduleText = Get-Content -LiteralPath $guardedModule -Raw }
+$csStart = $moduleText.IndexOf('using System;')
+$csEnd = if ($csStart -ge 0) { $moduleText.IndexOf("'@", $csStart) } else { -1 }
+$extracted = if ($csStart -ge 0 -and $csEnd -gt $csStart) { $moduleText.Substring($csStart, $csEnd - $csStart) } else { '' }
+Check 'the extraction recovers a non-trivial C# body, not a comment' (
+    $extracted.Length -gt 500 -and $extracted -match 'class\s+JobNative' -and $extracted -notmatch '(?m)^\s*#'
+) ('length=' + $extracted.Length)
+$compiled = $false
+if ($extracted -ne '') {
+    if ('HookMaker.JobNative' -as [type]) { $compiled = $true }
+    else { try { Add-Type -TypeDefinition $extracted -ErrorAction Stop; $compiled = [bool]('HookMaker.JobNative' -as [type]) } catch { $compiled = $false } }
+}
+Check 'the extracted C# actually compiles to HookMaker.JobNative' $compiled ('compiled=' + $compiled)
 
 Write-Host ''
 Write-Host ('Passed: ' + $script:Pass + '  Failed: ' + $script:Fail) -ForegroundColor $(if ($script:Fail -eq 0) { 'Green' } else { 'Red' })
