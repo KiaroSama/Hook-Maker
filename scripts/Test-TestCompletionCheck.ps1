@@ -69,6 +69,7 @@ try {
 
     # The incident ledger, its pruning rules and its retention bounds.
     . (Join-Path $PSScriptRoot '_testcompletionledger.ps1')
+    . (Join-Path $PSScriptRoot '_testcompletionci.ps1')
 
     # State migration, the durable .ai/ note, and the cleanup-race deferral.
     . (Join-Path $PSScriptRoot '_testcompletionnotes.ps1')
