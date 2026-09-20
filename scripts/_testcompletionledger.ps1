@@ -464,3 +464,51 @@ Write-Doc (Join-Path $StateDir ('TestRunGuard-result-' + $ProjectKey + '-' + $sa
     Check 'R3: BOTH concurrent incidents survive in the merged ledger - no lost update' (
         (Get-PendingCount $st) -eq 2) ('pending=' + (Get-PendingCount $st))
 
+    # =====================================================================
+    Write-Host '--- C2d: one DEFECT owes one note, however many receipts it left (2026-09-20) ---' -ForegroundColor Cyan
+    # The obligation used to be keyed on the receipt's own timestamp, so the
+    # same defect seen twice owed two separately tagged notes. Measured in this
+    # project: one repair minted 4 incident ids while 74 receipts sat on disk.
+    # Identity now comes from what the run FOUND - the command it ran plus the
+    # outcome - so repeated evidence of one defect collapses, while a different
+    # command or a different failure mode still earns its own obligation.
+    $cD = New-IsolatedHookCopy
+    $pD = New-GitRepo 'C2dOneNote'
+    $keyD = Get-ProjectKey $pD
+    $sameCmd = 'cmdsame' + $keyD
+
+    # Two terminated receipts of the SAME command, minutes apart: one defect.
+    Write-GuardedResult -Copy $cD -Root $pD -Overall 'terminated' -ExitCode 124 -RunId ('c2d-a-' + $keyD) -CommandFingerprint $sameCmd -AgeMinutes 12
+    Write-GuardedResult -Copy $cD -Root $pD -Overall 'terminated' -ExitCode 124 -RunId ('c2d-b-' + $keyD) -CommandFingerprint $sameCmd -AgeMinutes 4
+    $rD = Fire -HookPath $cD.Script -Cwd $pD -EventName 'Stop' -LocalAppData $cD.LocalAppData
+    $msgD = Get-Message $rD.Out
+    # The literal prefix is $script:IncidentTagPrefix inside the hook; it is
+    # spelled out here because the test runs outside the hook's scope, and a
+    # rename there must fail this assertion rather than pass vacuously.
+    $tagsD = @([regex]::Matches($msgD, 'Test incident: [a-z0-9]+') | ForEach-Object { $_.Value } | Sort-Object -Unique)
+    Check 'C2d/S1: two receipts of ONE defect owe exactly one tagged note' (
+        $tagsD.Count -le 1) ('tags: ' + ($tagsD -join ', '))
+
+    # A DIFFERENT command failing is a different finding and keeps its own note.
+    $pE = New-GitRepo 'C2dTwoNotes'
+    $keyE = Get-ProjectKey $pE
+    $cE = New-IsolatedHookCopy
+    Write-GuardedResult -Copy $cE -Root $pE -Overall 'terminated' -ExitCode 124 -RunId ('c2e-a-' + $keyE) -CommandFingerprint ('cmdone' + $keyE) -AgeMinutes 12
+    Write-GuardedResult -Copy $cE -Root $pE -Overall 'terminated' -ExitCode 124 -RunId ('c2e-b-' + $keyE) -CommandFingerprint ('cmdtwo' + $keyE) -AgeMinutes 4
+    $rE = Fire -HookPath $cE.Script -Cwd $pE -EventName 'Stop' -LocalAppData $cE.LocalAppData
+    $msgE = Get-Message $rE.Out
+    Check 'C2d/S2: a DIFFERENT command that failed is still a separate finding' (
+        $msgE -match 'TEST COMPLETION CHECK') $msgE
+
+    # FR-006 / SC-004 (feature 002, T022): the hook-script exclusion must not
+    # have widened into ordinary suites. A suite is only excluded when its
+    # parent directory equals its own base name AND a `hooks` segment sits
+    # above it; neither of these does, so both must still be guarded.
+    $cF = New-IsolatedHookCopy
+    $pF = New-GitRepo 'C2dStillGuarded'
+    foreach ($stillGuarded in @('pwsh -NoProfile -File .\scripts\Test-Wizard.ps1',
+                                'pwsh -NoProfile -File .\tests\Test-Foo\Test-Foo.ps1')) {
+        $rF = Fire -HookPath $cF.Script -Cwd $pF -EventName 'PreToolUse' -Command $stillGuarded -LocalAppData $cF.LocalAppData
+        Check ('FR-006: a suite outside a hook layout is still refused: ' + $stillGuarded) (
+            (Get-Message $rF.Out) -match 'TEST RUN GUARD') $rF.Out
+    }
