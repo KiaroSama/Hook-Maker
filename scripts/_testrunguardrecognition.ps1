@@ -448,3 +448,18 @@
     $swData.Stop()
     Check ('a large fed-in body stays cheap (' + $swData.ElapsedMilliseconds + ' ms)') (
         $swData.ElapsedMilliseconds -lt 60000) ([string]$swData.ElapsedMilliseconds + ' ms')
+
+    # FR-006 / SC-004 of feature 002 (T022): the hook-script exclusion added
+    # there must not have widened into ordinary suites. A script is excluded
+    # only when its parent directory equals its own base name AND a `hooks`
+    # segment sits above it; neither of these qualifies, so both must still be
+    # guarded. Nothing asserted this before, so nothing would have failed if a
+    # later edit relaxed the rule.
+    Write-Host '--- the hook-script exclusion did not widen into real suites ---' -ForegroundColor Cyan
+    $hcExcl = New-IsolatedHookCopy
+    foreach ($stillGuarded in @('pwsh -NoProfile -File .\scripts\Test-Wizard.ps1',
+                                'pwsh -NoProfile -File .\tests\Test-Foo\Test-Foo.ps1')) {
+        $rExcl = Fire -HookPath $hcExcl.Script -Cwd $Proj -EventName 'PreToolUse' -Command $stillGuarded -LocalAppData $hcExcl.LocalAppData
+        Check ('FR-006: a suite outside a hook layout is still refused: ' + $stillGuarded) (
+            (Get-Message $rExcl.Out) -match 'TEST RUN GUARD') $rExcl.Out
+    }
