@@ -1,5 +1,25 @@
 # Real pipe-lifetime regression. Named events coordinate child readiness and
 # release; every process has a deadline and a finally-owned cleanup handle.
+#
+# NO ASSERTION HERE DEPENDS ON A WALL-CLOCK MARGIN. It used to: the holder
+# lived 20s on its own, the command budget was 4s, and the test asserted the
+# probe returned inside a ceiling BETWEEN the two - so "the deadline fired"
+# was really "the deadline beat the holder's own lifetime", a race that a
+# loaded CI runner lost (three assertions went red on a commit that changed one
+# markdown file and green on a rerun of the same tree, 2026-09-20). The same
+# design could also go green for the wrong reason: past 20s the holder exits by
+# itself and "the cleanup terminated it" is satisfied by a holder nobody killed.
+#
+# So the holder no longer ends on its own inside any time this test can reach:
+# it waits on the release event, which ONLY the cleanup block sets. The probe
+# can therefore return for exactly one reason - its own command deadline - and
+# the holder can exit for exactly one reason - the timeout cleanup killing it.
+# Every remaining wait is a HANG CEILING, not a margin: no correct run comes
+# near it, and reaching one is a real failure to report, never a lost race.
+# 60s is ~11x the measured kill-and-teardown cost (5.2-5.5s) and 5x the bound
+# that lost the race, while a genuine regression still costs at most three of
+# these per host - inside the 900s per-suite CI ceiling.
+$PipeHangCeilingMs = 60000
 . $HookLib
 $pipeHolder = Join-Path $Work 'pipe-holder.ps1'
 $pipeRoot = Join-Path $Work 'pipe-root.ps1'
@@ -13,7 +33,10 @@ try {
     [Console]::Out.WriteLine('holder stdout')
     [Console]::Error.WriteLine('holder stderr')
     [void]$ready.Set()
-    [void]$release.WaitOne(20000)
+    # Released only by the test's cleanup block. The long bound is an orphan
+    # safety net for a test that dies before its finally runs - never a
+    # lifetime the assertions race against.
+    [void]$release.WaitOne(300000)
 }
 finally { $ready.Dispose(); $release.Dispose() }
 '@
@@ -67,28 +90,37 @@ foreach ($hostName in @('pwsh', 'powershell.exe')) {
         $probe = [System.Diagnostics.Process]::Start($info)
         $outTask = $probe.StandardOutput.ReadToEndAsync()
         $errTask = $probe.StandardError.ReadToEndAsync()
-        $holderReady = $ready.WaitOne(10000)
+        # The holder signals when it holds both inherited pipes. An event, not a
+        # sleep: the ceiling is only there so a child that never starts fails
+        # instead of hanging the suite.
+        $holderReady = $ready.WaitOne($PipeHangCeilingMs)
         Check ($hostName + ': real descendant starts and holds inherited stdout/stderr') $holderReady
         if ($holderReady) {
             $holderProcess = [System.Diagnostics.Process]::GetProcessById([int][System.IO.File]::ReadAllText($holderPidFile))
             $null = $holderProcess.Handle
             try {
                 $rootProcess = [System.Diagnostics.Process]::GetProcessById([int][System.IO.File]::ReadAllText($rootPidFile))
-                $rootExited = $rootProcess.WaitForExit(3000)
+                # The root's own wait on the ready event has already returned, so
+                # it is on its way out; this waits for that exit, it does not
+                # require it to happen inside some margin.
+                $rootExited = $rootProcess.WaitForExit($PipeHangCeilingMs)
             }
             catch [System.ArgumentException] { $rootExited = $true }
             Check ($hostName + ': direct child exits before its pipe-owning descendant') $rootExited
-            # 12s, not 6s. The budget is 4s and the holder sleeps 20s, so ANY ceiling
-            # between them proves the same thing: the inherited pipes did not extend the
-            # deadline. 6s left under a second for host startup, the kill and teardown
-            # (measured 5.2-5.5s), so a loaded runner failed a bound that was correct.
-            $returned = $probe.WaitForExit(12000)
+            # The holder is still holding both pipes and nothing has released it,
+            # so the ONLY thing that can end the probe is the command deadline it
+            # was given. Returning at all is therefore the proof - no ceiling
+            # between the budget and a holder lifetime, because the holder has no
+            # lifetime of its own any more.
+            $returned = $probe.WaitForExit($PipeHangCeilingMs)
             Check ($hostName + ': inherited pipes cannot extend the command deadline') $returned
-            # 5s: the holder would otherwise live 20s, so this still proves the kill
-            # landed - it just stops being a race against runner scheduling.
-            $descendantTerminated = $returned -and $holderProcess.WaitForExit(5000)
-            if (-not $returned) { [void]$release.Set(); [void]$probe.WaitForExit(5000) }
-            $captureComplete = $outTask.Wait(5000) -and $errTask.Wait(5000)
+            # Likewise: the holder cannot exit on its own, so an exit here is the
+            # timeout cleanup killing the process tree and nothing else.
+            $descendantTerminated = $returned -and $holderProcess.WaitForExit($PipeHangCeilingMs)
+            if (-not $returned) { [void]$release.Set(); [void]$probe.WaitForExit($PipeHangCeilingMs) }
+            # Only now can the reads finish: the holder owned the write ends, so
+            # EOF arrives with its death, not after some interval.
+            $captureComplete = $outTask.Wait($PipeHangCeilingMs) -and $errTask.Wait($PipeHangCeilingMs)
             $result = $null
             if ($captureComplete) {
                 try { $result = $outTask.GetAwaiter().GetResult() | ConvertFrom-Json } catch { }
@@ -104,7 +136,7 @@ foreach ($hostName in @('pwsh', 'powershell.exe')) {
             if ($null -eq $ownedProcess) { continue }
             try {
                 if (-not $ownedProcess.HasExited) { $ownedProcess.Kill() }
-                Check ($hostName + ': owned fixture process has exited') ($ownedProcess.WaitForExit(5000))
+                Check ($hostName + ': owned fixture process has exited') ($ownedProcess.WaitForExit($PipeHangCeilingMs))
             }
             finally { $ownedProcess.Dispose() }
         }

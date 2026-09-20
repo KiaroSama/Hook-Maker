@@ -40,12 +40,25 @@ function Test-ActiveMarkerOwnerLive {
 
     # A start time is the MINIMUM discriminator. Without one the recorded
     # process cannot be told apart from whatever inherited its pid.
+    #
+    # NEVER read this field through [string]. The marker stores a round-trip
+    # 'o' stamp, but ConvertFrom-Json on pwsh 7 hands back a [DateTime] (5.1
+    # leaves it a string), and stringifying that DateTime renders it in the
+    # CURRENT CULTURE with no zone marker - "09/20/2026 13:31:31". TryParse
+    # then reads that as LOCAL time and ToUniversalTime() shifts it by the
+    # machine's UTC offset, so the pinning failed by exactly that offset and no
+    # asynchronous run was ever deferred. Invisible on a UTC machine (CI) and
+    # on 5.1, which is why it took a +03:30 workstation to surface it.
     $recordedStart = $null
-    $rawStart = [string](Get-Field $Doc 'ownerProcessStartUtc')
-    if ([string]::IsNullOrWhiteSpace($rawStart)) { return $false }
-    $parsedStart = [DateTime]::MinValue
-    if (-not [DateTime]::TryParse($rawStart, $null, [System.Globalization.DateTimeStyles]::RoundtripKind, [ref]$parsedStart)) { return $false }
-    $recordedStart = $parsedStart.ToUniversalTime()
+    $rawStart = Get-Field $Doc 'ownerProcessStartUtc'
+    if ($rawStart -is [DateTime]) { $recordedStart = ([DateTime]$rawStart).ToUniversalTime() }
+    else {
+        $startText = [string]$rawStart
+        if ([string]::IsNullOrWhiteSpace($startText)) { return $false }
+        $parsedStart = [DateTime]::MinValue
+        if (-not [DateTime]::TryParse($startText, $null, [System.Globalization.DateTimeStyles]::RoundtripKind, [ref]$parsedStart)) { return $false }
+        $recordedStart = $parsedStart.ToUniversalTime()
+    }
 
     $process = $null
     try { $process = Get-Process -Id $ownerPid -ErrorAction Stop }
