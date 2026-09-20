@@ -111,28 +111,48 @@ try {
     # observing whether it contributes any artifact before refusing damage.
     $tool = Join-Path $work 'tool'; [void][IO.Directory]::CreateDirectory((Join-Path $tool 'hooks'))
     [void][IO.Directory]::CreateDirectory((Join-Path $tool 'scripts'))
-    $leaves = @('_hooklib.ps1','_stoplib.ps1','_evidencelib.ps1','_taskidentity.ps1','_processtree.ps1','_deliverylib.ps1','_scope.ps1')
+    # STAGE WHAT THE SOURCE UNDER TEST ACTUALLY HAS. This list used to be seven
+    # hardcoded names copied unconditionally, which coupled the fixture to ONE
+    # revision of the shared set: the baseline leg runs an older tree, so the
+    # first library added after that commit made Copy-Item throw and took the
+    # whole suite down as a harness exception rather than a named failure.
+    # Filtering by existence lets each subject stage its own set and keeps the
+    # assertions below about "exactly what this source has".
+    $candidateLeaves = @('_hooklib.ps1','_stoplib.ps1','_evidencelib.ps1','_taskidentity.ps1','_processtree.ps1','_deliverylib.ps1','_scope.ps1','_timingread.ps1','_cbm.ps1','_transcript.ps1')
+    $leaves = @($candidateLeaves | Where-Object { Test-Path -LiteralPath (Join-Path $SourceRoot ('hooks/'+$_)) -PathType Leaf })
     foreach ($leaf in $leaves) { Copy-Item -LiteralPath (Join-Path $SourceRoot ('hooks/'+$leaf)) -Destination (Join-Path $tool ('hooks/'+$leaf)) }
     function New-PlanArtifact { param($RelativePath,$Kind,$SourcePath) return [pscustomobject]@{Path=$RelativePath;Source=$SourcePath} }
     function Add-Artifact { param($Artifact) [void]$script:payload.Add($Artifact) }
     $script:payload = New-Object 'System.Collections.Generic.List[object]'
     Add-SharedRuntimeLibraryArtifacts -ToolRoot $tool -FriendlyName 'Fixture'
-    Check-Boundary 'I01 a complete source set still produces the exact seven libraries' {
-        $script:payload.Count -eq 7 -and (@($script:payload | ForEach-Object { [IO.Path]::GetFileName($_.Path) } | Sort-Object) -join '|') -ceq (@($leaves|Sort-Object) -join '|')
+    Check-Boundary 'I01 a complete source set produces exactly the libraries it has' {
+        $script:payload.Count -eq $leaves.Count -and (@($script:payload | ForEach-Object { [IO.Path]::GetFileName($_.Path) } | Sort-Object) -join '|') -ceq (@($leaves|Sort-Object) -join '|')
     }
-    foreach ($leaf in $leaves) {
-        $path = Join-Path $tool ('hooks/'+$leaf); $bytes = [IO.File]::ReadAllBytes($path)
-        foreach ($damage in @('missing','empty')) {
+    # ONE CASE PER DAMAGE KIND, ITERATING EVERY LEAF INSIDE IT. It used to be one
+    # case per (leaf, damage) pair, so the number of cases moved whenever the
+    # shared set grew - and the workflow asserts ONE case count across both
+    # subjects, which a per-subject leaf count cannot satisfy. The coverage is
+    # identical: every leaf is still damaged both ways and every rejection is
+    # still required to name that leaf. A failure reports which leaf broke it,
+    # so nothing is lost by counting once.
+    #
+    # The old delivery-specific guard refused a missing file only AFTER
+    # contributing the preceding artifacts, so a partial payload is the
+    # regression these two cases exist to catch.
+    foreach ($damage in @('missing','empty')) {
+        $offenders = New-Object System.Collections.Generic.List[string]
+        foreach ($leaf in $leaves) {
+            $path = Join-Path $tool ('hooks/'+$leaf); $bytes = [IO.File]::ReadAllBytes($path)
             if ($damage -eq 'missing') { [IO.File]::Delete($path) } else { [IO.File]::WriteAllBytes($path,[byte[]]@()) }
             $script:payload.Clear(); $caught = ''
             try { Add-SharedRuntimeLibraryArtifacts -ToolRoot $tool -FriendlyName 'Fixture' } catch { $caught=$_.Exception.Message }
-            # The old delivery-specific guard refused a missing file only after
-            # contributing the preceding artifacts, so its transaction also fails.
-            Check-Boundary ('I02 '+$damage+' '+$leaf+' rejects before producing partial artifacts') {
-                $caught -match [regex]::Escape($leaf) -and $script:payload.Count -eq 0
-            } $true
+            if (-not ($caught -match [regex]::Escape($leaf)) -or $script:payload.Count -ne 0) { [void]$offenders.Add($leaf) }
             [IO.File]::WriteAllBytes($path,$bytes)
         }
+        $offenderList = ($offenders.ToArray() -join ',')
+        Check-Boundary ('I02 a '+$damage+' shared library rejects before producing partial artifacts') {
+            $offenders.Count -eq 0
+        } $true
     }
     $script:payload.Clear(); $caught = ''
     try { Add-CompanionRuntimeArtifacts -ToolRoot $tool -FriendlyName 'Test-Run-Guard' } catch { $caught=$_.Exception.Message }

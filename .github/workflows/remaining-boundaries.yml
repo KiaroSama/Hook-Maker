@@ -52,8 +52,8 @@ jobs:
           & '${{ matrix.host }}' @arguments
           if ($LASTEXITCODE -ne 0) { throw 'Unexpected assertion or test exception.' }
           $report = Get-Content -LiteralPath "$env:BOUNDARY_EVIDENCE/results.json" -Raw | ConvertFrom-Json
-          $expectedFailed = if ('${{ matrix.subject }}' -eq 'baseline') { 24 } else { 0 }
-          if ($report.cases.Count -ne 36 -or $report.unexpected -ne 0 -or $report.failed -ne $expectedFailed) { throw 'Incomplete or unexpected native evidence.' }
+          $expectedFailed = if ('${{ matrix.subject }}' -eq 'baseline') { 12 } else { 0 }
+          if ($report.cases.Count -ne 24 -or $report.unexpected -ne 0 -or $report.failed -ne $expectedFailed) { throw 'Incomplete or unexpected native evidence.' }
           exit 0
       - name: Preserve exact source and remove historical workspace
         if: always()
