@@ -431,14 +431,16 @@ if ($eventName -eq 'UserPromptSubmit') {
         # guidance shows once per session; a skill-set change re-reports at once.
         $ddFingerprint = Get-ShortHash ($sessionId + '|deepdebug|' + $client + '|' + $sig)
         $ddStatePath = Join-Path $stateDir ('SkillsCheck-deepdebug-' + $projectKey + '.txt')
-        if (Test-Path -LiteralPath $ddStatePath -PathType Leaf) {
-            try {
-                if (([System.IO.File]::ReadAllText($ddStatePath)).Trim() -eq $ddFingerprint) { exit 0 }
-            }
-            catch { }
-        }
-        New-Item -ItemType Directory -Path $stateDir -Force | Out-Null
-        [System.IO.File]::WriteAllText($ddStatePath, $ddFingerprint)
+        # RESERVE, DO NOT CHECK-THEN-WRITE. Reading the stamp, comparing it and
+        # then writing it is three steps with two gaps: two handlers of one
+        # event both read the old value, both conclude they are first, and both
+        # speak. That is the same defect _deliverylib.ps1 exists to close, and
+        # the gate path in this very file already uses it. The claim validates,
+        # reserves and publishes under one lock, and its key carries client,
+        # session and actor - so a second session no longer overwrites the
+        # first's stamp in a single project-wide slot either.
+        $ddClaim = Invoke-DeliveryClaim -Path ($ddStatePath + '.claims.json') -Identity (Get-DeliveryIdentity $hookInput) -Fingerprint $ddFingerprint
+        if (-not $ddClaim.Admitted) { exit 0 }
 
         # Only the NATIVE invocation references differ per client; the graph and
         # the skill identities (exact name: in each installed SKILL.md) are the
@@ -513,14 +515,11 @@ if ($eventName -eq 'UserPromptSubmit') {
                 (@($topLibrary | ForEach-Object { $_.Name + '@' + $_.Score }) -join ',')
     $fingerprint = Get-ShortHash ($sessionId + '|' + $client + '|' + $hasLibrary + '|' + $libraryDir + '|' + $hasRecord + '|' + $sig + '|' + $matchSig)
     $statePath = Join-Path $stateDir ('SkillsCheck-prompt-' + $projectKey + '.txt')
-    if (Test-Path -LiteralPath $statePath -PathType Leaf) {
-        try {
-            if (([System.IO.File]::ReadAllText($statePath).Trim()) -eq $fingerprint) { exit 0 }
-        }
-        catch { }
-    }
-    New-Item -ItemType Directory -Path $stateDir -Force | Out-Null
-    [System.IO.File]::WriteAllText($statePath, $fingerprint)
+    # Same reservation as the deep-debug stamp above, and for the same reason:
+    # the shortlist is what the agent acts on, so emitting it twice for one
+    # prompt is the visible half of the race.
+    $promptClaim = Invoke-DeliveryClaim -Path ($statePath + '.claims.json') -Identity (Get-DeliveryIdentity $hookInput) -Fingerprint $fingerprint
+    if (-not $promptClaim.Admitted) { exit 0 }
 
     $lines = New-Object System.Collections.Generic.List[string]
     [void]$lines.Add('SKILL POLICY CHECK (' + $client + ') - skill use is MANDATORY (skill-policy: Core Principle), not a judgement call: run this check at task start and again whenever the work becomes a new kind of job. Every step a skill covers runs THROUGH that skill, never by hand because it looks simple; a matched library skill is COPIED into the project under the standing authorization (exact command below) and recorded in .ai/SKILLS.md; a feature request runs the mattpocock chain (grilling + domain-modeling first). Sources searched: project, global, plugin, and the shared library.')

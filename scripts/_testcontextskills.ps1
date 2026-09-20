@@ -129,6 +129,15 @@
     Check 'the SAME session does not repeat the nudge' ($r2.Exit -eq 0 -and $r2.Out -eq '') $r2.Out
     $r3 = Fire -HookPath $hook1 -Cwd $proj1 -RawStdin (New-PromptStdin -Cwd $proj1 -EventName 'UserPromptSubmit' -Prompt 'anything' -SessionId 'skills-s2')
     Check 'a NEW session gets the nudge again' ($r3.Out -match 'SKILL POLICY CHECK') $r3.Out
+    # A/B/A. The stamp used to be ONE project-wide file holding one fingerprint,
+    # so session two's write erased session one's and session one was told the
+    # stamp was not its own - the identical single-slot defect Session-Summary-Check
+    # already had to fix. The reservation keys by client, session and actor, so
+    # each session keeps its own answer and interleaving changes nothing.
+    $r4 = Fire -HookPath $hook1 -Cwd $proj1 -RawStdin (New-PromptStdin -Cwd $proj1 -EventName 'UserPromptSubmit' -Prompt 'anything else' -SessionId 'skills-s1')
+    Check 'the first session stays suppressed after another session spoke' ($r4.Exit -eq 0 -and $r4.Out -eq '') $r4.Out
+    $r5 = Fire -HookPath $hook1 -Cwd $proj1 -RawStdin (New-PromptStdin -Cwd $proj1 -EventName 'UserPromptSubmit' -Prompt 'anything' -SessionId 'skills-s2')
+    Check 'and the second session stays suppressed too' ($r5.Exit -eq 0 -and $r5.Out -eq '') $r5.Out
 
     # =====================================================================
     Write-Host '--- Skills-Check: reports .ai/SKILLS.md record ---' -ForegroundColor Cyan
