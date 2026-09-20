@@ -389,10 +389,16 @@
     # their children - and reported them as processes the run had left alive.
     # Reproduced exactly as "0, 4, 236, 280, 928".
     Write-Host '--- runner: a non-positive root owns nothing (no system-pid false leak) ---' -ForegroundColor Cyan
+    # Get-OwnedProcessTree lives in _guardedprocess.ps1 since the runner was split.
+    # Slicing it out of the entry point yields IndexOf -1, Substring(-1) THROWS in
+    # the probe child, and both assertions below then fail with empty output - a
+    # failure that names the assertion and not the cause. Same class as the C#
+    # slice higher in this file; this file alone reads that source twice.
+    $ProcessModule = Join-Path (Split-Path -Parent $Runner) '_guardedprocess.ps1'
     $treeProbe = Join-Path $Work 'tree-probe.ps1'
     Write-Utf8 $treeProbe (
         "`$ErrorActionPreference = 'Stop'`n" +
-        "`$src = Get-Content -LiteralPath '$Runner' -Raw`n" +
+        "`$src = Get-Content -LiteralPath '$ProcessModule' -Raw`n" +
         "`$start = `$src.IndexOf('function Get-OwnedProcessTree')`n" +
         "`$body = `$src.Substring(`$start)`n" +
         "`$end = `$body.IndexOf(""`nfunction "", 1)`n" +
