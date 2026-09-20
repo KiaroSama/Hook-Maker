@@ -221,13 +221,7 @@ if ($closing) {
 # A subagent event must never be answered from the parent's transcript.
 function Get-EvidenceTranscriptFallbackPath {
     param($HookInput)
-    if ([string](Get-Field $HookInput 'hook_event_name') -eq 'SubagentStop') {
-        # Prefer a client-supplied child path, but never require it: on a
-        # SubagentStop the documented transcript_path is the subagent's own.
-        $child = [string](Get-Field $HookInput 'agent_transcript_path')
-        if (-not [string]::IsNullOrWhiteSpace($child)) { return $child }
-    }
-    return [string](Get-Field $HookInput 'transcript_path')
+    return (Get-EvidenceTranscriptPath -HookInput $HookInput)
 }
 
 
@@ -235,22 +229,12 @@ function Get-EvidenceTranscriptFallbackPath {
     # next Stop of the same session; a changed one reports immediately.
     function Test-ShouldReportClosing {
         param([string]$StateToken)
-        # Session ALONE let a previous task's stamp mute the same finding on
-        # the next genuine task, and merged a parent with its subagent. The
-        # identity carries the agent and the continuation chain too.
-        $fp = Get-ShortHash ((Get-HookSuppressionIdentity -HookInput $hookInput) + '|' + $eventName + '|' + $StateToken)
-        try {
-            if (Test-Path -LiteralPath $gatePath -PathType Leaf) {
-                if (([System.IO.File]::ReadAllText($gatePath)).Trim() -eq $fp) { return $false }
-            }
+        $fingerprint = (Get-HookSuppressionIdentity -HookInput $hookInput) + '|' + $eventName + '|' + $StateToken
+        $claim = Invoke-DeliveryClaim -Path ($gatePath + '.claims.json') -Identity (Get-DeliveryIdentity $hookInput) -Fingerprint $fingerprint
+        if (-not $claim.Ok) {
+            [Console]::Out.WriteLine((@{ systemMessage = ('Closing reminder reservation is unverified (' + $claim.Reason + '); no approval or completion was recorded.') } | ConvertTo-Json -Compress))
         }
-        catch { }
-        try {
-            New-Item -ItemType Directory -Path $stateDir -Force | Out-Null
-            [System.IO.File]::WriteAllText($gatePath, $fp, (New-Object System.Text.UTF8Encoding $false))
-        }
-        catch { }
-        return $true
+        return $claim.Admitted
     }
 
     # The candidate menu the confirmation must be drawn from: rule FILE NAMES,
@@ -274,7 +258,7 @@ function Get-EvidenceTranscriptFallbackPath {
         $evidence = Get-ClosingAssistantText -HookInput $hookInput
     }
     if ($null -ne $evidence -and $evidence.Known) { $tail = [string]$evidence.Text }
-    else { $tail = Get-TranscriptTailText (Get-EvidenceTranscriptFallbackPath $hookInput) }
+    else { $tail = $null } # UNKNOWN is not permission to search raw transcript text.
     if ($null -eq $tail) {
         # UNKNOWN - no transcript, unreadable, or a client that supplies none.
         if (-not (Test-ShouldReportClosing 'unverified')) { exit 0 }

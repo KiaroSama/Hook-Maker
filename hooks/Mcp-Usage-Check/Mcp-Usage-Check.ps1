@@ -121,13 +121,7 @@ function Get-TranscriptTailText {
 # A subagent event must never be answered from the parent's transcript.
 function Get-EvidenceTranscriptFallbackPath {
     param($HookInput)
-    if ([string](Get-Field $HookInput 'hook_event_name') -eq 'SubagentStop') {
-        # Prefer a client-supplied child path, but never require it: on a
-        # SubagentStop the documented transcript_path is the subagent's own.
-        $child = [string](Get-Field $HookInput 'agent_transcript_path')
-        if (-not [string]::IsNullOrWhiteSpace($child)) { return $child }
-    }
-    return [string](Get-Field $HookInput 'transcript_path')
+    return (Get-EvidenceTranscriptPath -HookInput $HookInput)
 }
 
 
@@ -140,23 +134,12 @@ $summaryLinePattern = '(?im)(?:^|\\n)[ \t]{0,8}(?:[-*>#]+[ \t]{0,4})?(?:\*\*)?MC
 # the next Stop of the same session, a changed one is reported immediately.
 function Test-ShouldReport {
     param([string]$StateToken)
-    # Session ALONE let a previous task's stamp mute the same missing
-    # requirement on the next genuine one, and made a parent and its subagent
-    # share one slot. The identity carries the agent and the continuation
-    # chain too, so a new task is a new question.
-    $fingerprint = Get-ShortHash ((Get-HookSuppressionIdentity -HookInput $hookInput) + '|' + $eventName + '|' + $StateToken)
-    try {
-        if (Test-Path -LiteralPath $gatePath -PathType Leaf) {
-            if (([System.IO.File]::ReadAllText($gatePath)).Trim() -eq $fingerprint) { return $false }
-        }
+    $fingerprint = (Get-HookSuppressionIdentity -HookInput $hookInput) + '|' + $eventName + '|' + $StateToken
+    $claim = Invoke-DeliveryClaim -Path ($gatePath + '.claims.json') -Identity (Get-DeliveryIdentity $hookInput) -Fingerprint $fingerprint
+    if (-not $claim.Ok) {
+        [Console]::Out.WriteLine((@{ systemMessage = ('Closing reminder reservation is unverified (' + $claim.Reason + '); no approval or completion was recorded.') } | ConvertTo-Json -Compress))
     }
-    catch { }
-    try {
-        New-Item -ItemType Directory -Path $stateDir -Force | Out-Null
-        [System.IO.File]::WriteAllText($gatePath, $fingerprint, (New-Object System.Text.UTF8Encoding $false))
-    }
-    catch { }
-    return $true
+    return $claim.Admitted
 }
 
 # ---- SessionStart: the policy AND the closing requirement -------------------
@@ -221,7 +204,7 @@ if ($null -ne (Get-Command Get-ClosingAssistantText -ErrorAction SilentlyContinu
     $evidence = Get-ClosingAssistantText -HookInput $hookInput
 }
 if ($null -ne $evidence -and $evidence.Known) { $tail = [string]$evidence.Text }
-else { $tail = Get-TranscriptTailText (Get-EvidenceTranscriptFallbackPath $hookInput) }
+else { $tail = $null } # UNKNOWN is not permission to search raw transcript text.
 
 # Was this session recorded as MCP-relevant by the pre-task half?
 $sessionRelevant = $false
