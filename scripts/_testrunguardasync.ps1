@@ -146,3 +146,12 @@
     $sourceText = [System.IO.File]::ReadAllText((Join-Path (Split-Path -Parent $Hook) '_activeowner.ps1'))
     Check 'the correlation module never reads tool_response (stdout is output, not protocol)' (
         $sourceText -notmatch "Get-Field .*'tool_response'") 'tool_response is read somewhere in _activeowner.ps1'
+    # The owner start time must not be stringified. ConvertFrom-Json on pwsh 7
+    # returns a [DateTime] for the marker's 'o' stamp; [string] renders it in the
+    # current culture WITHOUT a zone marker, TryParse then reads it as local, and
+    # the pinning fails by the machine's UTC offset - so no asynchronous run is
+    # ever deferred anywhere but UTC. The behaviour cannot be reproduced on a UTC
+    # runner, which is why this is asserted against the source instead.
+    $stringifiedStart = '[string](Get-Field $Doc ' + [char]39 + 'ownerProcessStartUtc' + [char]39 + ')'
+    Check 'the owner start time is not read through [string] (it would be parsed as LOCAL time)' (
+        $sourceText.IndexOf($stringifiedStart, [System.StringComparison]::Ordinal) -lt 0) $stringifiedStart
