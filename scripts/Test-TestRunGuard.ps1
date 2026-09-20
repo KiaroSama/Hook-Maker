@@ -57,7 +57,7 @@ Write-Host ("Workspace: $Work") -ForegroundColor DarkGray
 $Proj = Join-Path $Work 'Project'
 New-Item -ItemType Directory -Path $Proj -Force | Out-Null
 New-Item -ItemType Directory -Path (Join-Path $Proj 'scripts') -Force | Out-Null
-Copy-Item $Runner (Join-Path $Proj 'scripts\Run-Tests-Guarded.ps1')
+Copy-GuardedRunner -RepoRoot $RepoRoot -DestinationScriptsDir (Join-Path $Proj 'scripts')
 
 try {
     . (Join-Path $PSScriptRoot '_testrunguardhosts.ps1')
