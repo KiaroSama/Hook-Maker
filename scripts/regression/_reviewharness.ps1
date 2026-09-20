@@ -2,11 +2,14 @@
 # This file is a harness, not a test suite and never executes repository hooks on load.
 function Check-Contract {
     param([string]$Name, [scriptblock]$Test, [bool]$FailsOnBaseline = $false)
-    $detail = ''; $passed = $false
-    try { $passed = [bool](& $Test) } catch { $detail = $_.Exception.Message }
+    $detail = ''; $passed = $false; $threw = $false
+    try { $passed = [bool](& $Test) } catch { $threw = $true; $detail = $_.Exception.Message }
     $expected = -not ($Baseline -and $FailsOnBaseline)
-    [void]$cases.Add([pscustomobject]@{ name=$Name; passed=$passed; expectedPass=$expected; matched=($passed -eq $expected); detail=$detail })
-    $level = if ($passed -eq $expected) { 'INFO' } else { 'ERROR' }
+    # A historical failure must be an observed contract violation, never an
+    # unrelated exception in the assertion or its fixture.
+    $matched = -not $threw -and $passed -eq $expected
+    [void]$cases.Add([pscustomobject]@{ name=$Name; passed=$passed; expectedPass=$expected; matched=$matched; assertionThrew=$threw; detail=$detail })
+    $level = if ($matched) { 'INFO' } else { 'ERROR' }
     Write-Host ('[' + [DateTime]::UtcNow.ToString('o') + '] [' + $level + '] ' + $Name + ' actual=' + $passed + ' expected=' + $expected + ' ' + $detail)
 }
 function Put-ReviewText {
