@@ -91,6 +91,22 @@ try {
     Check-Boundary 'C11 a changed PID identity between snapshot and kill is preserved' { -not $otherChild.HasExited } $true
     Check-Boundary 'C12 the actually owned root was terminated' { $rootChild.WaitForExit(1000) }
 
+    # The process query itself being unavailable is a REAL outcome, not an error:
+    # cleanup falls back to the one process it can address directly and reports
+    # partial coverage. It must never read as a cleared tree, and it must never
+    # fall back to matching by process name, which cannot tell ours from anyone's.
+    $snapshotless = Start-Process -FilePath $exe -ArgumentList @('-NoProfile','-Command','Start-Sleep -Seconds 45') -PassThru -WindowStyle Hidden
+    [void]$fixtureProcesses.Add($snapshotless)
+    $null = $snapshotless.Handle
+    $vNoSnap = & {
+        function Get-ProcessSnapshot { param($TimeoutSeconds) return $null }
+        Stop-ProcessTree -ProcessId $snapshotless.Id -TimeoutMilliseconds 5000
+    }
+    Check-Boundary 'C13 an unavailable process query still terminates the owned root' { $snapshotless.WaitForExit(1000) }
+    Check-Boundary 'C14 and reports partial coverage rather than a cleared tree' {
+        $vNoSnap.Truncated -and -not $vNoSnap.Cleared
+    } $true
+
     # Exercise the actual payload producer with an isolated complete checkout,
     # observing whether it contributes any artifact before refusing damage.
     $tool = Join-Path $work 'tool'; [void][IO.Directory]::CreateDirectory((Join-Path $tool 'hooks'))
