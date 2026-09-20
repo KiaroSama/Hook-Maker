@@ -59,3 +59,42 @@ the sibling decision about what "the same run" means.
 A failed run is superseded when the **same work has since been re-run clean**. "The same work" means
 the same command in the same project — deliberately not the same tree state, because fixing the
 failure necessarily changes the tree. See `docs/adr/0001-supersede-by-project-not-tree-state.md`.
+
+## Generation
+
+One unit of the user's work, from the request that starts it to the summary that hands it back. A
+hook that sends the assistant back for a correction does **not** start a new one: the correction
+belongs to the generation it corrects, which is what stops a gate from refilling a task's correction
+allowance by blocking it. A resumed task after an interruption is the same generation too. Only
+genuine new work from the user begins another.
+
+Deliberately not "session" and not "turn": a session holds many generations, and one generation
+spans many turns.
+
+## Terminal
+
+A generation is terminal when the finalization path has **recorded** that it ended — either its
+summary was published, or it ended without that and the outcome says so. Terminality is written, never
+inferred: an old timestamp, a quiet store or a vanished process is not evidence that work finished.
+A generation that is merely stale is still live.
+
+## Finalized
+
+The state a generation reaches when its summary has been published for it. It is one of the two ways
+to become **terminal**; the other is ending unverified. Finalized says only that the summary was
+published, never that it was published against settled evidence — a summary published while a gate
+was still open is finalized too, and carries the record of that failure with it.
+
+## Collection
+
+Removing terminal generations from the store so new work can be recorded. It never removes a live
+generation, an unresolved finding or an unpublished receipt, whatever their age, and **age alone
+never makes anything collectable**. When the store is full and nothing is terminal, the refusal is
+explicit — evicting the oldest entry would discard an active correction chain and refund its
+allowance, which is the failure this rule exists to prevent.
+
+## Tombstone
+
+What a collected generation leaves behind: enough to recognise a late event from it and reject it as
+retired, and nothing more. Without one, a delayed receipt arriving after collection reads as a brand
+new generation.
