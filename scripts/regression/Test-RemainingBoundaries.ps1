@@ -105,7 +105,7 @@ try {
     Check-Boundary 'C13 an unavailable process query still terminates the owned root' { $snapshotless.WaitForExit(1000) }
     Check-Boundary 'C14 and reports partial coverage rather than a cleared tree' {
         $vNoSnap.Truncated -and -not $vNoSnap.Cleared
-    } $true
+    }
 
     # Exercise the actual payload producer with an isolated complete checkout,
     # observing whether it contributes any artifact before refusing damage.
