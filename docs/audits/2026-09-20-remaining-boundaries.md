@@ -16,7 +16,7 @@ The new helper validates each direct edge and retains `{Id, Created}` identities
 
 `Invoke-QuietCommand` records the root's creation time while its retained child handle is available and supplies it to both timeout and inherited-pipe cleanup. The optional legacy fallback accepts the argument without claiming the modern helper's guarantees. These changes do not remove bounded command waits or reinterpret exit 124 as successful work.
 
-The tests combine deterministic graph cases with two explicitly test-owned, self-expiring native processes. A deliberately stale snapshot must preserve the replacement identity while terminating the actual owned root. Access denial is injected only in a test-local function scope. No unrelated user process is a fixture.
+The tests combine deterministic graph cases with three explicitly test-owned, self-expiring native processes. A deliberately stale snapshot must preserve the replacement identity while terminating the actual owned root. Access denial is injected only in a test-local function scope. No unrelated user process is a fixture.
 
 ## Complete runtime source preflight
 
@@ -32,7 +32,7 @@ The assertion now consumes the actual production `Get-ManagedInstallPlan` output
 
 ## Verification and closure
 
-`remaining-boundaries.yml` runs the actual current and exact-baseline source on Windows PowerShell 5.1 and PowerShell 7. Each subject must produce all 32 case records and no unexpected outcome or harness exception. Current runs require zero failures; historical runs require exactly the 22 documented expected failures. Those historical failures are not included in current-product pass counts. Both owned processes and the project-owned workspace have explicit cleanup checks.
+`remaining-boundaries.yml` runs the actual current and exact-baseline source on Windows PowerShell 5.1 and PowerShell 7. Each subject must produce all 35 case records and no unexpected outcome or harness exception. Current runs require zero failures; historical runs require exactly the 22 documented expected failures. Those historical failures are not included in current-product pass counts. Both owned processes and the project-owned workspace have explicit cleanup checks.
 
 Require the final-head full CI and the independent review, task and storage workflows as well. Pending, cancelled, absent or failed checks are not successes. Exact final commit/run/artifact identities belong in the PR conversation after completion. The one-shot branch-local publishers remove themselves; only read-only verification remains in the proposed tree. Existing GitHub Actions Dependabot coverage is retained.
 
