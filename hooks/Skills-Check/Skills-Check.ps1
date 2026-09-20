@@ -575,12 +575,18 @@ if ($eventName -eq 'UserPromptSubmit') {
             $s = Get-PromptMatchScore $byName[$key].Name
             if ($s -gt 0) { [void]$installedMatches.Add([pscustomobject]@{ Name = $byName[$key].Name; Score = $s; Where = ((@($byName[$key].Sources) | Sort-Object) -join '+') }) }
         }
-        # A description-only hit does NOT qualify. One incidental word in a long
-        # description used to admit a skill, which is how a statistics skill and a
-        # design-tool skill attached to a prompt about a messaging integration and
-        # then had to be accounted for. The description may STRENGTHEN a skill
-        # that already matches by leaf or name - which is exactly what the comment
-        # above says it is for - but may not qualify one on its own.
+        # A description-only hit does NOT qualify an INSTALLED skill. One incidental
+        # word in a long description used to admit one, which is how a statistics
+        # skill and a design-tool skill attached to a prompt about a messaging
+        # integration - and an installed skill that is offered must then be
+        # ACCOUNTED FOR at Stop, so noise here costs the agent real turns.
+        #
+        # The LIBRARY loop below is deliberately NOT tightened the same way. A
+        # library match is a suggestion to import, never gated (see the note at
+        # the top of _skillstop.ps1), so finding one by its description costs
+        # nothing and is the whole point: a skill whose folder shares no token
+        # with the prompt is invisible without it. Accountability is what makes
+        # the difference, not the scoring.
         foreach ($p in $index.Plugin) {
             $identitySignal = [math]::Max((Get-PromptMatchScore $p.Leaf), (Get-PromptMatchScore $p.Name))
             if ($identitySignal -le 0) { continue }
@@ -591,7 +597,6 @@ if ($eventName -eq 'UserPromptSubmit') {
             # Already available somewhere: importing it again is noise, and
             # suggesting an install the policy would have to authorize is worse.
             if ($installedNames.ContainsKey(([string]$l.Leaf).ToLowerInvariant())) { continue }
-            if (([math]::Max((Get-PromptMatchScore $l.Leaf), (Get-PromptMatchScore $l.Name))) -le 0) { continue }
             $s = Get-SkillMatchScore -Leaf $l.Leaf -Name $l.Name -Description $l.Description
             if ($s -gt 0) { [void]$libraryMatches.Add([pscustomobject]@{ Name = $l.Leaf; Score = $s; Path = $l.Path }) }
         }
