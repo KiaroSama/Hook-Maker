@@ -73,9 +73,52 @@ function Get-ResultIncidentKey {
     # recovery text demanded an incident key that was never created - the
     # documented way out could not be taken. A key costs nothing when unused.
     if ($ov -eq 'ok' -and $lk.Count -eq 0) { return '' }
+    # Identity comes from what the run FOUND, never from when its receipt was
+    # written. Keyed on the receipt's own timestamp, ONE defect produced one
+    # obligation per receipt: a single repair in this project minted 4 incident
+    # ids while 74 receipts sat on disk, each demanding its own tagged note, so
+    # the obligation multiplied with evidence instead of with findings. The
+    # command fingerprint plus the outcome collapses repeated evidence of the
+    # same defect into one obligation, while a different command or a different
+    # failure mode still earns its own.
+    $cf = [string](Get-Field $Doc 'commandFingerprint')
+    if ($cf -eq '') {
+        # A receipt with no command identity cannot be grouped by command, so
+        # it falls back to its own timestamp - one obligation, as before.
+        $t = Get-ResultRecordedTime -Doc $Doc -Path $Path
+        $cf = if ($null -ne $t) { 'ticks:' + [string]$t.Ticks } else { 'ticks:0' }
+    }
+    return (Get-ShortHash ($cf + '|' + $ov + '|' + $tr + '|' + (@($lk) -join ',')))
+}
+
+# The key this hook used BEFORE identity moved to the finding. Nothing mints it
+# any more; it exists so an incident resolved under the old scheme stays
+# resolved, and it stops being reachable once those receipts age out.
+function Get-ResultIncidentKeyLegacy {
+    param($Doc, [string]$Path)
+    if ($null -eq $Doc) { return '' }
+    $ov = ([string](Get-Field $Doc 'overall')).ToLowerInvariant()
+    $tr = [string](Get-Field $Doc 'terminateReason')
+    $lk = @(@(Get-Field $Doc 'leakedProcessIds') | Where-Object { $null -ne $_ -and [string]$_ -ne '' })
+    if ($ov -eq 'ok' -and $lk.Count -eq 0) { return '' }
     $t = Get-ResultRecordedTime -Doc $Doc -Path $Path
     $ticks = if ($null -ne $t) { [string]$t.Ticks } else { '0' }
     return (Get-ShortHash ($ticks + '|' + $ov + '|' + $tr + '|' + (@($lk) -join ',')))
+}
+
+# Resolved under EITHER scheme. Every resolution test goes through this, so a
+# key change can never silently re-open something the developer already closed.
+function Test-AnyIncidentResolved {
+    param([string]$Key, [string]$LegacyKey)
+    if ($Key -ne '' -and (Test-IncidentResolved $Key)) { return $true }
+    if ($LegacyKey -ne '' -and (Test-IncidentResolved $LegacyKey)) { return $true }
+    return $false
+}
+
+# The same question asked of a RESULT document, which is what most callers hold.
+function Test-ResultIncidentResolved {
+    param($Doc, [string]$Path)
+    return (Test-AnyIncidentResolved (Get-ResultIncidentKey -Doc $Doc -Path $Path) (Get-ResultIncidentKeyLegacy -Doc $Doc -Path $Path))
 }
 
 # The human-readable incident reason for a RESULT document (byte-for-byte the

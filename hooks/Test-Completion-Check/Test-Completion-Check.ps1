@@ -542,7 +542,7 @@ $activeEntries = Get-CompletionStateEntries 'active'
 # block, so only the about-to-be-pruned ones need this pass.
 foreach ($re in $resultEntries) {
     $ik = Get-ResultIncidentKey -Doc $re.Doc -Path $re.Path
-    if ($ik -eq '' -or (Test-IncidentResolved $ik) -or $script:pendingNotes.Contains($ik)) { continue }
+    if ($ik -eq '' -or (Test-ResultIncidentResolved -Doc $re.Doc -Path $re.Path) -or $script:pendingNotes.Contains($ik)) { continue }
     $rProjFp = [string](Get-Field $re.Doc 'projectFingerprint')
     $isCurrentState = ($rProjFp -eq '' -or $rProjFp -eq $stateFingerprint)
     if (-not $isCurrentState) { continue }
@@ -582,7 +582,7 @@ foreach ($re in $resultEntries) {
     $isNegative = ((@('terminated', 'failed', 'error', 'unknown') -contains $ov) -or $lk.Count -gt 0)
     if (-not $isNegative) { [void]$prunedResultPaths.Add($re.Path); continue }   # clean ok run -> prunable
     $ik = Get-ResultIncidentKey -Doc $re.Doc -Path $re.Path
-    $resolved = (Test-IncidentResolved $ik)
+    $resolved = (Test-ResultIncidentResolved -Doc $re.Doc -Path $re.Path)
     $superseded = Test-ResultSuperseded -NegDoc $re.Doc -NegTime (Get-ResultRecordedTime -Doc $re.Doc -Path $re.Path) -AllResults $resultEntries
     if ($resolved -or $superseded) { [void]$prunedResultPaths.Add($re.Path); continue }
     # An unresolved, un-superseded negative. CURRENT-state -> KEEP however old
@@ -753,7 +753,7 @@ function Test-RunNegativeAccounted {
     $doc = $Run.ResultEntry.Doc
     $path = $Run.ResultEntry.Path
     $ik = Get-ResultIncidentKey -Doc $doc -Path $path
-    if (Test-IncidentResolved $ik) { return $true }
+    if (Test-ResultIncidentResolved -Doc $Run.ResultEntry.Doc -Path $path) { return $true }
     return (Test-ResultSuperseded -NegDoc $doc -NegTime (Get-ResultRecordedTime -Doc $doc -Path $path) -AllResults $AllResults)
 }
 $classified = @($runs | ForEach-Object { [pscustomobject]@{ Run = $_; Class = (Get-RunClass $_) } })
@@ -773,7 +773,7 @@ $classified = @($runs | ForEach-Object { [pscustomobject]@{ Run = $_; Class = (G
 foreach ($cl in $classified) {
     if ($cl.Class -ne 'incident' -or $null -eq $cl.Run.ResultEntry) { continue }
     $ikSeen = Get-ResultIncidentKey -Doc $cl.Run.ResultEntry.Doc -Path $cl.Run.ResultEntry.Path
-    if ($ikSeen -eq '' -or (Test-IncidentResolved $ikSeen) -or $script:pendingNotes.Contains($ikSeen)) { continue }
+    if ($ikSeen -eq '' -or (Test-ResultIncidentResolved -Doc $cl.Run.ResultEntry.Doc -Path $cl.Run.ResultEntry.Path) -or $script:pendingNotes.Contains($ikSeen)) { continue }
     if (Test-RunNegativeAccounted -Run $cl.Run -AllResults $resultEntries) {
         Register-PendingNote -Key $ikSeen -Reason (Get-IncidentReasonFromDoc $cl.Run.ResultEntry.Doc)
     }
@@ -868,6 +868,7 @@ if ($null -ne $result -and $elapsedSeconds -gt 0) {
 # Keyed on what actually happened, so re-reading the same document never
 # re-opens a resolved incident and a NEW run always produces a new key.
 $incidentKey = ''
+$incidentKeyLegacy = ''
 $incidentReason = ''
 if ($null -ne $result) {
     if ($overall -eq 'terminated') {
@@ -879,11 +880,9 @@ if ($null -ne $result) {
         $incidentReason = 'the guarded run LEAKED process(es) ' + (@($leaked) -join ', ') + ' that survived termination'
     }
     if ($incidentReason -ne '') {
-        # Identity uses normalised UTC TICKS, never a culture-formatted date
-        # string: the key must be byte-identical across hosts and locales or a
-        # resolved incident would silently re-open on the next event.
-        $incidentKey = Get-ShortHash (
-            $script:ResultTicks + '|' + $overall + '|' + $terminateReason + '|' + (@($leaked) -join ','))
+        # One derivation, in _evidence.ps1, so the two can never drift apart.
+        $incidentKey = Get-ResultIncidentKey -Doc $result -Path $resultEntryPath
+        $incidentKeyLegacy = Get-ResultIncidentKeyLegacy -Doc $result -Path $resultEntryPath
     }
 }
 
@@ -915,7 +914,7 @@ if ($null -eq $result -and -not $observedCurrent -and $activePid -eq 0 -and $aba
 # current to prove, nothing running: also silence. Under an active ::deep-debug
 # session this still lacks CURRENT clean evidence, so it is the same blocked
 # no-evidence state (its own once-per-session token).
-if ($incidentKey -ne '' -and (Test-IncidentResolved $incidentKey) -and $script:pendingNotes.Count -eq 0 -and
+if ($incidentKey -ne '' -and (Test-AnyIncidentResolved $incidentKey $incidentKeyLegacy) -and $script:pendingNotes.Count -eq 0 -and
     -not $observedCurrent -and $activePid -eq 0 -and $abandonedRuns.Count -eq 0) {
     if ($script:DeepDebugActive -and (Test-DdGateShouldReport ('resolvedonly|' + $stateFingerprint))) {
         Write-Finding -Blocking $true -Lines @(
@@ -989,7 +988,7 @@ if ($abandonedRuns.Count -gt 0) {
 # Gated on identity, not age: an incident from a DIFFERENT run/state is not this
 # run's problem and must not block the current state; a real incident for THIS
 # run still blocks however old its file is.
-if ($incidentKey -ne '' -and -not (Test-IncidentResolved $incidentKey) -and $resultRunMatches -and -not $repAccounted) {
+if ($incidentKey -ne '' -and -not (Test-AnyIncidentResolved $incidentKey $incidentKeyLegacy) -and $resultRunMatches -and -not $repAccounted) {
     # Register the owed durable note (its own byte baseline is captured now, so a
     # bare "done" cannot satisfy it later and a second concurrent incident demands
     # its own distinct note). No-op when this incident already owes one.
