@@ -362,7 +362,11 @@ try {
     function New-StopStdin {
         param([string]$Cwd, [string]$Transcript = '', [string]$SessionId = 't', [string]$EventName = 'Stop', [bool]$StopActive = $false)
         $o = @{ session_id = $SessionId; cwd = $Cwd; hook_event_name = $EventName }
-        if ($Transcript -ne '') { $o['transcript_path'] = $Transcript }
+        if ($Transcript -ne '') {
+            $o['transcript_path'] = $Transcript
+            # The child final response belongs to its documented child path.
+            if ($EventName -eq 'SubagentStop') { $o['agent_transcript_path'] = $Transcript; $o['agent_id'] = 'fixture-child' }
+        }
         if ($StopActive) { $o['stop_hook_active'] = $true }
         return ($o | ConvertTo-Json)
     }
