@@ -545,16 +545,37 @@ try {
     Write-Host '--- STATIC: the hook AST contains no project-mutation primitive ---' -ForegroundColor Cyan
     # Parsed, not grepped: a COMMENT mentioning Remove-Item must not fail this,
     # and a real invocation must not slip through as a differently spelled string.
-    $parseErrors = $null
-    $hookAst = [System.Management.Automation.Language.Parser]::ParseFile($Hook, [ref]$null, [ref]$parseErrors)
-    Check 'the hook parses with no errors' (@($parseErrors).Count -eq 0) (@($parseErrors) -join '; ')
-    $commandAsts = @($hookAst.FindAll({ $args[0] -is [System.Management.Automation.Language.CommandAst] }, $true))
+    # EVERY .ps1 in the hook PACKAGE, not just the entry point. The installer
+    # stages the whole folder, so a companion module is reachable code as well -
+    # and a safety check that read only the entry point would keep reporting
+    # green while covering a fraction of the hook.
+    $astFiles = @(Get-ChildItem -LiteralPath (Split-Path -Parent $Hook) -File -Filter '*.ps1')
+    $astCommands = New-Object System.Collections.Generic.List[object]
+    $astParseFailures = New-Object System.Collections.Generic.List[string]
+    $hookAst = $null
+    foreach ($astFile in $astFiles) {
+        $parseErrors = $null
+        $fileAst = [System.Management.Automation.Language.Parser]::ParseFile($astFile.FullName, [ref]$null, [ref]$parseErrors)
+        if (@($parseErrors).Count -gt 0) { [void]$astParseFailures.Add($astFile.Name + ': ' + (@($parseErrors) -join '; ')) }
+        # The entry point's own AST is still needed on its own below, for the
+        # state-location check: state lives under %LOCALAPPDATA%, and the entry
+        # script is where that is resolved.
+        if ([string]::Equals($astFile.FullName, (Resolve-Path -LiteralPath $Hook).Path, [System.StringComparison]::OrdinalIgnoreCase)) { $hookAst = $fileAst }
+        foreach ($node in $fileAst.FindAll({ $args[0] -is [System.Management.Automation.Language.CommandAst] }, $true)) {
+            [void]$astCommands.Add($node)
+        }
+    }
+    Check 'every file in the hook package parses with no errors' ($astParseFailures.Count -eq 0) (($astParseFailures.ToArray()) -join ' | ')
+    Check 'the package really is more than the entry point (the scan is not silently narrow)' ($astFiles.Count -ge 1) ([string]$astFiles.Count)
+    # .ToArray(), never @($list): a List[object] built with New-Object comes back
+    # PSObject-wrapped and @() on it throws on both hosts.
+    $commandAsts = $astCommands.ToArray()
     $forbiddenCmdlets = @('Remove-Item', 'Move-Item', 'Rename-Item', 'Set-Content', 'Add-Content', 'Out-File', 'Clear-Content')
     $mutating = New-Object System.Collections.Generic.List[string]
     foreach ($commandAst in $commandAsts) {
         $name = $commandAst.GetCommandName()
         if ([string]::IsNullOrWhiteSpace($name)) { continue }
-        if ($forbiddenCmdlets -contains $name) { [void]$mutating.Add($commandAst.Extent.StartLineNumber.ToString() + ':' + $name) }
+        if ($forbiddenCmdlets -contains $name) { [void]$mutating.Add([System.IO.Path]::GetFileName([string]$commandAst.Extent.File) + ':' + $commandAst.Extent.StartLineNumber.ToString() + ':' + $name) }
     }
     Check 'no Remove/Move/Rename/Set-Content/Add-Content/Out-File invocation exists in reachable code' (
         $mutating.Count -eq 0) (($mutating.ToArray()) -join ', ')
@@ -575,7 +596,7 @@ try {
         foreach ($value in $strings) {
             # Case-sensitive: git subcommands are lowercase, and a .NET member
             # named Add must never be mistaken for `git add`.
-            if ($gitMutating -ccontains $value) { [void]$gitOffenders.Add($commandAst.Extent.StartLineNumber.ToString() + ':git ' + $value) }
+            if ($gitMutating -ccontains $value) { [void]$gitOffenders.Add([System.IO.Path]::GetFileName([string]$commandAst.Extent.File) + ':' + $commandAst.Extent.StartLineNumber.ToString() + ':git ' + $value) }
         }
     }
     Check 'no git invocation uses clean/reset/rm/add/restore/checkout/stash' ($gitOffenders.Count -eq 0) (($gitOffenders.ToArray()) -join ', ')
@@ -616,7 +637,10 @@ try {
         $requiredKeys = @('EVENTS', 'CLIENTS', 'TARGET_PROJECTS', 'MAX_SCAN_ENTRIES', 'MAX_SCAN_DEPTH', 'MAX_FINDINGS', 'ENABLE_SUBAGENT_STOP', 'EXTRA_CANDIDATE_NAMES', 'EXTRA_REVIEW_NAMES')
         $missing = @($requiredKeys | Where-Object { $envText -notmatch ('(?m)^\s*' + [regex]::Escape($_) + '\s*=') })
         Check 'the final setting set is documented in .env.example' ($missing.Count -eq 0) ($missing -join ', ')
-        $hookText = [System.IO.File]::ReadAllText($Hook)
+        # The whole package, for the same reason the AST scan reads it all: a
+        # setting moved into a companion module must not vanish from this check.
+        $hookText = (@(Get-ChildItem -LiteralPath (Split-Path -Parent $Hook) -File -Filter '*.ps1' |
+                    ForEach-Object { [System.IO.File]::ReadAllText($_.FullName) }) -join "`n")
         $readsRemoved = @($removedKeys | Where-Object { $hookText -match [regex]::Escape($_) })
         Check 'the hook itself no longer mentions any deletion setting' ($readsRemoved.Count -eq 0) ($readsRemoved -join ', ')
     }
