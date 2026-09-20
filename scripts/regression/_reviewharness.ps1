@@ -40,7 +40,16 @@ function Invoke-ReviewHook {
         $process.StandardInput.WriteLine(($Payload | ConvertTo-Json -Depth 8 -Compress)); $process.StandardInput.Close()
         if (-not $process.WaitForExit(20000)) { throw 'hook process deadline exceeded' }
         if (-not $stdout.Wait(2000) -or -not $stderr.Wait(2000)) { throw 'hook pipe drain deadline exceeded' }
-        return [pscustomobject]@{ Exit=$process.ExitCode; Out=$stdout.Result.Trim(); Err=$stderr.Result.Trim() }
+        $wire = [pscustomobject]@{ Exit=$process.ExitCode; Out=$stdout.Result.Trim(); Err=$stderr.Result.Trim() }
+        # These are test-owned fixture responses, never arbitrary user input.
+        # Keep bounded traces independently of the verdict so an absent result
+        # or host-specific failure is diagnosable instead of retried into green.
+        if (-not [string]::IsNullOrWhiteSpace($env:REVIEW_EVIDENCE)) {
+            [void][IO.Directory]::CreateDirectory($env:REVIEW_EVIDENCE)
+            $trace = [ordered]@{ timestampUtc=[DateTime]::UtcNow.ToString('o'); hostVersion=$PSVersionTable.PSVersion.ToString(); script=(Split-Path -Leaf $ScriptPath); client=$Client; event=[string]$Payload.hook_event_name; exit=$wire.Exit; stdout=$wire.Out.Substring(0,[Math]::Min(16384,$wire.Out.Length)); stderr=$wire.Err.Substring(0,[Math]::Min(8192,$wire.Err.Length)); truncated=($wire.Out.Length -gt 16384 -or $wire.Err.Length -gt 8192) }
+            [IO.File]::AppendAllText((Join-Path $env:REVIEW_EVIDENCE 'hook-traces.jsonl'), (($trace | ConvertTo-Json -Compress) + [Environment]::NewLine), (New-Object Text.UTF8Encoding($false)))
+        }
+        return $wire
     }
     finally {
         if ($started -and -not $process.HasExited) { $process.Kill(); if (-not $process.WaitForExit(5000)) { throw 'hook cleanup not proven' } }
