@@ -1,0 +1,74 @@
+name: Remaining boundary regressions
+on:
+  pull_request:
+  push:
+    branches: [main]
+permissions:
+  contents: read
+concurrency:
+  group: remaining-boundaries-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  boundaries:
+    runs-on: windows-latest
+    timeout-minutes: 6
+    strategy:
+      fail-fast: false
+      matrix:
+        host: [pwsh, powershell]
+        subject: [current, baseline]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Prepare exact source and preserve its identity
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $evidence = Join-Path $env:RUNNER_TEMP 'boundary-evidence'
+          New-Item -ItemType Directory -Force $evidence | Out-Null
+          $subject = $env:GITHUB_WORKSPACE
+          if ('${{ matrix.subject }}' -eq 'baseline') {
+            $sha = '2d42d10196163b538fd47fae70e15b41b2827907'
+            git -c protocol.version=2 fetch --no-tags --depth=1 origin $sha
+            if ($LASTEXITCODE -ne 0) { throw 'Historical source fetch failed.' }
+            git archive --format=zip --output="$evidence/baseline.zip" $sha
+            if ($LASTEXITCODE -ne 0) { throw 'Historical archive failed.' }
+            $subject = Join-Path $env:GITHUB_WORKSPACE '.ci-work/remaining-baseline'
+            Expand-Archive -LiteralPath "$evidence/baseline.zip" -DestinationPath $subject
+          }
+          "BOUNDARY_SUBJECT=$subject" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "BOUNDARY_EVIDENCE=$evidence" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          git rev-parse HEAD | Set-Content -Encoding utf8 "$evidence/tested-commit.txt"
+      - name: Run the actual source through bounded native cases
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $false
+          $arguments = @('-NoLogo','-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-File','./scripts/regression/Test-RemainingBoundaries.ps1','-SourceRoot',$env:BOUNDARY_SUBJECT,'-ResultPath',(Join-Path $env:BOUNDARY_EVIDENCE 'results.json'))
+          if ('${{ matrix.subject }}' -eq 'baseline') { $arguments += '-Baseline' }
+          & '${{ matrix.host }}' @arguments
+          if ($LASTEXITCODE -ne 0) { throw 'Unexpected assertion or test exception.' }
+          $report = Get-Content -LiteralPath "$env:BOUNDARY_EVIDENCE/results.json" -Raw | ConvertFrom-Json
+          $expectedFailed = if ('${{ matrix.subject }}' -eq 'baseline') { 22 } else { 0 }
+          if ($report.cases.Count -ne 32 -or $report.unexpected -ne 0 -or $report.failed -ne $expectedFailed) { throw 'Incomplete or unexpected native evidence.' }
+          exit 0
+      - name: Preserve exact source and remove historical workspace
+        if: always()
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $evidence = Join-Path $env:RUNNER_TEMP 'boundary-evidence'
+          New-Item -ItemType Directory -Force $evidence | Out-Null
+          git archive --format=zip --output="$evidence/source.zip" HEAD
+          if ($LASTEXITCODE -ne 0) { throw 'Tested source archive failed.' }
+          if ('${{ matrix.subject }}' -eq 'baseline') {
+            . ./scripts/_testlib.ps1
+            $subject = Join-Path $env:GITHUB_WORKSPACE '.ci-work/remaining-baseline'
+            if ((Test-Path -LiteralPath $subject) -and -not (Remove-TestWorkspace -Path $subject)) { throw 'Historical workspace cleanup failed.' }
+          }
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        if: always()
+        with:
+          name: boundaries-${{ matrix.host }}-${{ matrix.subject }}
+          path: ${{ runner.temp }}/boundary-evidence
+          retention-days: 14
+          if-no-files-found: error
