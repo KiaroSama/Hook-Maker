@@ -407,9 +407,15 @@ if ($closing) {
     # none. Reading $tail for it is what silently disarmed this gate once - it
     # observed nothing and so never blocked.
     $rawTail = [string](Get-TranscriptTailText (Get-EvidenceTranscriptFallbackPath $hookInput))
-    $shortlist = Get-SkillShortlist (Get-SkillShortlistPath $stateDir $projectKey $sessionId)
+    $shortlistPath = Get-SkillShortlistPath $stateDir $projectKey $sessionId
+    $shortlist = Get-SkillShortlist $shortlistPath
+    $accounted = Get-SkillAccounted $shortlistPath
     $invoked = ($rawTail -match '"name"[ \t]*:[ \t]*"Skill"')
-    $decision = Get-SkillClosingDecision -ClosingText $tail -RawTranscript $rawTail -Shortlist $shortlist -SkillInvoked $invoked
+    $decision = Get-SkillClosingDecision -ClosingText $tail -RawTranscript $rawTail -Shortlist $shortlist -Accounted $accounted -SkillInvoked $invoked
+    # Write the answer down BEFORE deciding what to do with it. This is the whole
+    # repair: an answer that is not remembered is an answer that has to be given
+    # again, and the demand then outruns it forever.
+    if ($null -ne $decision.PSObject.Properties['Answered']) { Save-SkillAccounted $shortlistPath @($decision.Answered) }
     if ($decision.Kind -eq 'silent') { exit 0 }
     if (-not (Test-ShouldReportClosing $decision.Token)) { exit 0 }
     if ($decision.Kind -eq 'block' -and $enforcement -eq 'block') {
@@ -569,7 +575,15 @@ if ($eventName -eq 'UserPromptSubmit') {
             $s = Get-PromptMatchScore $byName[$key].Name
             if ($s -gt 0) { [void]$installedMatches.Add([pscustomobject]@{ Name = $byName[$key].Name; Score = $s; Where = ((@($byName[$key].Sources) | Sort-Object) -join '+') }) }
         }
+        # A description-only hit does NOT qualify. One incidental word in a long
+        # description used to admit a skill, which is how a statistics skill and a
+        # design-tool skill attached to a prompt about a messaging integration and
+        # then had to be accounted for. The description may STRENGTHEN a skill
+        # that already matches by leaf or name - which is exactly what the comment
+        # above says it is for - but may not qualify one on its own.
         foreach ($p in $index.Plugin) {
+            $identitySignal = [math]::Max((Get-PromptMatchScore $p.Leaf), (Get-PromptMatchScore $p.Name))
+            if ($identitySignal -le 0) { continue }
             $s = Get-SkillMatchScore -Leaf $p.Leaf -Name $p.Name -Description $p.Description
             if ($s -gt 0) { [void]$installedMatches.Add([pscustomobject]@{ Name = ($p.Plugin + ':' + $p.Leaf); Score = $s; Where = 'plugin' }) }
         }
@@ -577,6 +591,7 @@ if ($eventName -eq 'UserPromptSubmit') {
             # Already available somewhere: importing it again is noise, and
             # suggesting an install the policy would have to authorize is worse.
             if ($installedNames.ContainsKey(([string]$l.Leaf).ToLowerInvariant())) { continue }
+            if (([math]::Max((Get-PromptMatchScore $l.Leaf), (Get-PromptMatchScore $l.Name))) -le 0) { continue }
             $s = Get-SkillMatchScore -Leaf $l.Leaf -Name $l.Name -Description $l.Description
             if ($s -gt 0) { [void]$libraryMatches.Add([pscustomobject]@{ Name = $l.Leaf; Score = $s; Path = $l.Path }) }
         }

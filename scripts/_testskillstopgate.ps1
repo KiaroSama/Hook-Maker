@@ -97,3 +97,77 @@
     $offHook = New-ConfiguredSkillsHookCopy -EnvOverrides @{ SKILLS_DIR = (Join-Path $Work 'no-such-library'); SKILLS_SUMMARY_ENFORCEMENT = 'off' }
     $r = Fire -HookPath $offHook -Cwd $wkProj -RawStdin (New-StopStdin -Cwd $wkProj -Transcript $tWrote -SessionId 'sk-off')
     Check 'off mode skips the closing check entirely' ($r.Exit -eq 0 -and $r.Out -eq '') $r.Out
+
+    # =====================================================================
+    # The gate must TERMINATE. It used to demand an accounting of a set that
+    # grew faster than the accounting could drain it: the offered set unions
+    # every prompt's matches and never retracts, the block names six, and the
+    # answer was matched only against the CURRENT message - so naming six
+    # merely surfaced the next six. A live session banked 51 names and faced
+    # nine more forced turns no matter what it said. The repair is the missing
+    # half: remember the answer, and subtract it.
+    Write-Host '--- Skills-Check: answering the gate ENDS it ---' -ForegroundColor Cyan
+    # These assertions drive the closing DECISION directly, which is where the
+    # termination property lives. The hook file itself is exercised end to end
+    # above; here the question is whether answering reduces the demand, and that
+    # is a property of the decision plus the session record, not of the envelope.
+    . (Join-Path (Split-Path -Parent $SkillsHook) '_skillstop.ps1')
+    if ($null -eq $script:SkillsRequiredLine) { $script:SkillsRequiredLine = 'Skills used: <names>' }
+    if ($null -eq $script:SkillsRequirement) { $script:SkillsRequirement = 'x' }
+
+    $gateFile = Join-Path $Work ('skillgate-' + [guid]::NewGuid().ToString('N').Substring(0, 6) + '.txt')
+    $gateOffered = @('alpha-one', 'beta-two', 'gamma-three', 'delta-four', 'epsilon-five',
+        'zeta-six', 'eta-seven', 'theta-eight', 'iota-nine')
+    Save-SkillShortlist $gateFile $gateOffered
+
+    # Turn 1 answers the six it was shown. Three remain, and the six are credited.
+    $gd1 = Get-SkillClosingDecision -ClosingText 'Skills used: none - alpha-one, beta-two, gamma-three, delta-four, epsilon-five, zeta-six do not apply' -RawTranscript '' -Shortlist @(Get-SkillShortlist $gateFile) -Accounted @(Get-SkillAccounted $gateFile) -SkillInvoked $false
+    Check 'the gate still blocks while three offered skills are unanswered' ($gd1.Kind -eq 'block') $gd1.Kind
+    Check 'the six that WERE answered are credited, not re-asked' (@($gd1.Answered).Count -eq 6) ([string]@($gd1.Answered).Count)
+    Save-SkillAccounted $gateFile @($gd1.Answered)
+    Check 'the answer is written down, so the next turn can see it' (@(Get-SkillAccounted $gateFile).Count -eq 6) ([string]@(Get-SkillAccounted $gateFile).Count)
+
+    # Turn 2: the demand must have SHRUNK. Before the repair it was resampled,
+    # and the same six came back around.
+    $gd2 = Get-SkillClosingDecision -ClosingText 'Skills used: none - nothing applied' -RawTranscript '' -Shortlist @(Get-SkillShortlist $gateFile) -Accounted @(Get-SkillAccounted $gateFile) -SkillInvoked $false
+    Check 'the next turn demands ONLY what was never answered' (
+        $gd2.Text -match 'eta-seven' -and $gd2.Text -notmatch 'alpha-one' -and $gd2.Text -notmatch 'beta-two') $gd2.Text
+
+    # Turn 3: answering the rest ends it. This is the property the whole feature
+    # exists for - before the repair there was no third turn, only a fourth.
+    $gd3 = Get-SkillClosingDecision -ClosingText 'Skills used: none - eta-seven, theta-eight, iota-nine do not apply either' -RawTranscript '' -Shortlist @(Get-SkillShortlist $gateFile) -Accounted @(Get-SkillAccounted $gateFile) -SkillInvoked $false
+    Check 'answering the remainder makes the gate SILENT' ($gd3.Kind -eq 'silent') $gd3.Kind
+
+    # One line covering everything clears it in a single turn.
+    $gateFile2 = Join-Path $Work ('skillgate2-' + [guid]::NewGuid().ToString('N').Substring(0, 6) + '.txt')
+    Save-SkillShortlist $gateFile2 $gateOffered
+    $gd4 = Get-SkillClosingDecision -ClosingText ('Skills used: none - ' + ($gateOffered -join ', ') + ' are unrelated') -RawTranscript '' -Shortlist @(Get-SkillShortlist $gateFile2) -Accounted @(Get-SkillAccounted $gateFile2) -SkillInvoked $false
+    Check 'naming every outstanding skill in ONE line clears the gate at once' ($gd4.Kind -eq 'silent') $gd4.Kind
+
+    # The block says how big the obligation really is, and lists all of it.
+    # Six shown out of nine, with no count, is what made a finite demand read
+    # as endless.
+    $gateFile3 = Join-Path $Work ('skillgate3-' + [guid]::NewGuid().ToString('N').Substring(0, 6) + '.txt')
+    Save-SkillShortlist $gateFile3 $gateOffered
+    $gd5 = Get-SkillClosingDecision -ClosingText 'Skills used: none - unrelated work' -RawTranscript '' -Shortlist @(Get-SkillShortlist $gateFile3) -Accounted @(Get-SkillAccounted $gateFile3) -SkillInvoked $false
+    Check 'the block states the TOTAL outstanding, not only the six it lists' ($gd5.Text -match '9 outstanding in total') $gd5.Text
+    Check 'and it carries every outstanding name, so one line can cover them all' (
+        $gd5.Text -match 'iota-nine' -and $gd5.Text -match 'eta-seven') $gd5.Text
+
+    # The check is NOT softened: an offered skill nobody answered for still blocks.
+    $gateFile4 = Join-Path $Work ('skillgate4-' + [guid]::NewGuid().ToString('N').Substring(0, 6) + '.txt')
+    Save-SkillShortlist $gateFile4 @('omega-unanswered')
+    $gd6 = Get-SkillClosingDecision -ClosingText 'Skills used: none - something else entirely' -RawTranscript '' -Shortlist @(Get-SkillShortlist $gateFile4) -Accounted @(Get-SkillAccounted $gateFile4) -SkillInvoked $false
+    Check 'a genuinely unanswered skill still BLOCKS (the loop went, the check stayed)' (
+        $gd6.Kind -eq 'block' -and $gd6.Text -match 'omega-unanswered') $gd6.Kind
+
+    # Accounting is per SESSION: a different session's file grants nothing.
+    $gateFile5 = Join-Path $Work ('skillgate5-' + [guid]::NewGuid().ToString('N').Substring(0, 6) + '.txt')
+    Check 'a fresh session starts with nothing offered' (@(Get-SkillShortlist $gateFile5).Count -eq 0) ([string]@(Get-SkillShortlist $gateFile5).Count)
+    Check 'and nothing accounted for' (@(Get-SkillAccounted $gateFile5).Count -eq 0) ([string]@(Get-SkillAccounted $gateFile5).Count)
+
+    # An answered name is not re-demanded when a LATER prompt adds to the set.
+    Save-SkillShortlist $gateFile @('kappa-ten', 'alpha-one')
+    $gd7 = Get-SkillClosingDecision -ClosingText 'Skills used: none - nothing applied' -RawTranscript '' -Shortlist @(Get-SkillShortlist $gateFile) -Accounted @(Get-SkillAccounted $gateFile) -SkillInvoked $false
+    Check 'a NEW offer is demanded' ($gd7.Text -match 'kappa-ten') $gd7.Text
+    Check 'but an already-answered one is not asked again' ($gd7.Text -notmatch 'alpha-one') $gd7.Text
