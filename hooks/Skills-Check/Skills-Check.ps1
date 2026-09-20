@@ -501,9 +501,27 @@ if ($eventName -eq 'UserPromptSubmit') {
         'while', 'these', 'those', 'then', 'than', 'them', 'they', 'your', 'yours', 'just',
         'also', 'only', 'very', 'much', 'many', 'more', 'most', 'some', 'each', 'other',
         'over', 'under', 'after', 'before', 'again', 'still', 'even', 'ever', 'never',
-        'please', 'thanks', 'does', 'done', 'need', 'want', 'make', 'made', 'here', 'must')
+        'please', 'thanks', 'does', 'done', 'need', 'want', 'make', 'made', 'here', 'must',
+        # Ordinary software English that happens to BE some skills' own words. One such token
+        # used to qualify a skill outright, which is how design and presentation skills attached
+        # to a TypeScript refactor. Raising the score floor was measured and rejected: at 3 it
+        # drops a true single-word match (a perfect hit on 'codeql' scores only 2) while still
+        # admitting a name that collects 4 from two incidental words. Genericness separates
+        # them, not the total.
+        'create', 'created', 'file', 'files', 'folder', 'generate', 'generated', 'design',
+        'report', 'update', 'delete', 'write', 'read', 'list', 'check', 'build', 'code', 'data',
+        'text', 'name', 'line', 'page', 'view', 'open', 'close', 'send', 'load', 'save', 'find',
+        'search', 'project', 'directory', 'command', 'script', 'agent', 'tool', 'skill', 'used',
+        'apply', 'work', 'task', 'step')
     $tokens = New-Object System.Collections.Generic.List[string]
-    foreach ($t in @([regex]::Split($prompt.ToLowerInvariant(), '[^a-z0-9]+'))) {
+    # This hook's shortlist returns to it AS PROMPT TEXT whenever the 'Skills used:' line it
+    # demands is quoted back - by the user, by a reply-quote, or by a client that echoes the
+    # previous turn - and the names it just demanded then score highest and are demanded again.
+    # A prompt with no ASCII makes that total: the split keeps only [a-z0-9], so the quoted
+    # English names are the ONLY tokens left. Same reasoning as WHY THE MATCH IS ANCHORED at
+    # the top of this file, applied to the prompt. $prompt stays whole for the other branches.
+    $promptForMatching = [regex]::Replace([string]$prompt, '(?im)^[ \t]*Skills used:.*$', ' ')
+    foreach ($t in @([regex]::Split($promptForMatching.ToLowerInvariant(), '[^a-z0-9]+'))) {
         if ($t.Length -lt 4 -or $t.Length -gt 32) { continue }
         if ($stop -contains $t) { continue }
         if ($tokens.Contains($t)) { continue }
@@ -588,7 +606,11 @@ if ($eventName -eq 'UserPromptSubmit') {
             if ($s -gt 0) { [void]$libraryMatches.Add([pscustomobject]@{ Name = $l.Leaf; Score = $s; Path = $l.Path }) }
         }
     }
-    $topInstalled = @($installedMatches | Sort-Object -Property @{ Expression = 'Score'; Descending = $true }, @{ Expression = 'Name' } | Select-Object -First 6)
+    # Dozens tie at a low score, and settling that by name ranks a skill by where it falls in
+    # the alphabet - the whole reason unrelated plugin skills surfaced. Prefer what this
+    # project installed over what a plugin happens to ship.
+    $bySource = { if ($_.Where -match 'project') { 0 } elseif ($_.Where -match 'global') { 1 } else { 2 } }
+    $topInstalled = @($installedMatches | Sort-Object -Property @{ Expression = 'Score'; Descending = $true }, @{ Expression = $bySource }, @{ Expression = 'Name' } | Select-Object -First 6)
     $topLibrary = @($libraryMatches | Sort-Object -Property @{ Expression = 'Score'; Descending = $true }, @{ Expression = 'Name' } | Select-Object -First 5)
 
     # Remember what was shown, so the Stop gate can ask whether it was used.
