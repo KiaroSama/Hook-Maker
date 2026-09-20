@@ -58,7 +58,14 @@ Write-Host ("Workspace: $Work") -ForegroundColor DarkGray
 
 # ---- the real code under test -------------------------------------------
 $ConsumerAst = [System.Management.Automation.Language.Parser]::ParseFile($Consumer, [ref]$null, [ref]$null)
-$ProducerAst = [System.Management.Automation.Language.Parser]::ParseFile($Producer, [ref]$null, [ref]$null)
+# EVERY .ps1 in the producer's package, not just its entry point - same reason
+# the record document is read from its own sibling above. The detection tables
+# moved into _discovery.ps1 when the entry point was split at the size ceiling,
+# and an AST pointed at the entry point alone stops finding them: it threw here
+# rather than going quietly green, which is the right failure, but the fix is
+# to read what the installer actually ships.
+$ProducerAst = @(Get-ChildItem -LiteralPath (Split-Path -Parent $Producer) -File -Filter '*.ps1' |
+    ForEach-Object { [System.Management.Automation.Language.Parser]::ParseFile($_.FullName, [ref]$null, [ref]$null) })
 $RecordAst = [System.Management.Automation.Language.Parser]::ParseFile($RecordBuilder, [ref]$null, [ref]$null)
 $RecordText = [System.IO.File]::ReadAllText($RecordBuilder)
 
@@ -70,11 +77,19 @@ function Get-AstFunction {
     if ($null -eq $fn) { throw ("function not found in source: " + $Name) }
     return $fn.Extent.Text
 }
+# -Ast takes ONE ast or a whole package of them. "Exactly one" is unchanged and
+# is now asserted across the package, so it still catches a table that vanished
+# AND a table defined twice in two files - the failure mode a split invites.
 function Get-AstAssignment {
     param($Ast, [string]$VariableName)
-    $found = @($Ast.FindAll({
-                $args[0] -is [System.Management.Automation.Language.AssignmentStatementAst] -and
-                $args[0].Left.Extent.Text -eq $VariableName }, $true))
+    $found = New-Object System.Collections.Generic.List[object]
+    foreach ($one in @($Ast)) {
+        foreach ($node in $one.FindAll({
+                    $args[0] -is [System.Management.Automation.Language.AssignmentStatementAst] -and
+                    $args[0].Left.Extent.Text -eq $VariableName }, $true)) {
+            [void]$found.Add($node)
+        }
+    }
     if ($found.Count -ne 1) { throw ("expected exactly one assignment to " + $VariableName + ", found " + $found.Count) }
     return $found[0]
 }

@@ -162,7 +162,13 @@ function New-ConfiguredHookCopy {
     param([hashtable]$EnvOverrides)
     $dir = Join-Path $Work ('hookcopy-' + [guid]::NewGuid().ToString('N').Substring(0, 6))
     New-Item -ItemType Directory -Path $dir -Force | Out-Null
-    Copy-Item $Hook (Join-Path $dir 'Secrets-Check.ps1')
+    # EVERY .ps1 beside the hook, not just the entry point. The real installer
+    # stages the whole hook PACKAGE, so a copy that took one file would exercise
+    # a runtime that cannot exist - and it breaks silently the moment the hook
+    # grows a companion module, which _classify.ps1 now is.
+    foreach ($packageFile in @(Get-ChildItem -LiteralPath (Split-Path -Parent $Hook) -File -Filter '*.ps1')) {
+        Copy-Item $packageFile.FullName (Join-Path $dir $packageFile.Name) -Force
+    }
     # The copy dot-sources "..\_hooklib.ps1" relative to itself, which resolves
     # to $Work\_hooklib.ps1 since $dir sits one level under $Work.
     # Copy-TestRuntimeLibraries, not a hand-written Copy-Item: it DERIVES the set
