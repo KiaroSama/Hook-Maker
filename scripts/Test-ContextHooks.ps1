@@ -230,6 +230,7 @@ try {
     # Split by hook-under-test. Each file is a pure relocation; the assertion
     # set and its order are unchanged.
     . (Join-Path $PSScriptRoot '_testcontextskills.ps1')
+    . (Join-Path $PSScriptRoot '_testskillprompt.ps1')
     . (Join-Path $PSScriptRoot '_testcontextlargefile.ps1')
     . (Join-Path $PSScriptRoot '_testcontextaimemory.ps1')
     . (Join-Path $PSScriptRoot '_testcontexthooklib.ps1')
