@@ -80,14 +80,14 @@ A generation that is merely stale is still live.
 
 ## Finalized
 
-The state a generation reaches when its summary has been published for it. It is one of the two ways
-to become **terminal**; the other is ending unverified. Finalized says only that the summary was
-published, never that it was published against settled evidence — a summary published while a gate
-was still open is finalized too, and carries the record of that failure with it.
+The state recorded when a summary publication has an explicit ready record and no recorded
+unresolved verdict. Observing summary text alone does not establish this state. An unverified
+publication is a different fact from verified finalization, and neither is a claim that the store
+controls what the client displays.
 
 ## Collection
 
-Removing terminal generations from the store so new work can be recorded. It never removes a live
+Compacting eligible verified terminal generations into retained tombstones so new work can be recorded. It never removes a live
 generation, an unresolved finding or an unpublished receipt, whatever their age, and **age alone
 never makes anything collectable**. When the store is full and nothing is terminal, the refusal is
 explicit — evicting the oldest entry would discard an active correction chain and refund its

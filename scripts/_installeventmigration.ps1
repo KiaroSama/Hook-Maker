@@ -83,7 +83,13 @@ $script:InstalledEventMigrations = @(
         Version = 1
         Hook    = 'Session-Summary-Check'
         From    = @('Stop', 'SubagentStop')
-        Reason  = 'the retired shipped default; the hook exits 0 on every event other than SessionStart and UserPromptSubmit, so this binding delivers nothing'
+        Reason  = 'the retired closing-only default; it never delivers the pre-task summary requirement'
+    }
+    [pscustomobject]@{
+        Version = 2
+        Hook    = 'Session-Summary-Check'
+        From    = @('SessionStart', 'UserPromptSubmit')
+        Reason  = 'the prior shipped default delivered policy but never invoked the silent publication observer'
     }
 )
 
