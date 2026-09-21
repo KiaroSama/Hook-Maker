@@ -75,9 +75,33 @@ function Wire {
     $inFile = Join-Path $ioRoot 'in.json'; $outFile = Join-Path $ioRoot 'out.txt'; $errFile = Join-Path $ioRoot 'err.txt'
     [IO.File]::WriteAllText($inFile, ($payload | ConvertTo-Json -Depth 8), $utf8)
     $exe = Join-Path $PSHOME $(if ($PSVersionTable.PSVersion.Major -le 5) { 'powershell.exe' } else { 'pwsh.exe' })
-    $process = Start-BoundedProcess -FilePath $exe -ArgumentList @('-NoLogo', '-NoProfile', '-File', (Join-Path $SourceRoot 'hooks\Session-Summary-Check\Session-Summary-Check.ps1')) `
-        -RedirectStandardInput $inFile -RedirectStandardOutput $outFile -RedirectStandardError $errFile -TimeoutMs 20000
-    return [pscustomobject]@{ Exit = $process.ExitCode; Out = [IO.File]::ReadAllText($outFile); Err = [IO.File]::ReadAllText($errFile) }
+    # Start-Process on 5.1 can return an exited wrapper with no ExitCode.
+    # Retain the child handle ourselves, as the concurrent workers do.
+    $start = New-Object Diagnostics.ProcessStartInfo
+    $start.FileName = $exe
+    $start.Arguments = ConvertTo-ProcessArgumentString @('-NoLogo', '-NoProfile', '-NonInteractive', '-File', (Join-Path $SourceRoot 'hooks\Session-Summary-Check\Session-Summary-Check.ps1'))
+    $start.UseShellExecute = $false; $start.CreateNoWindow = $true
+    $start.RedirectStandardInput = $true; $start.RedirectStandardOutput = $true; $start.RedirectStandardError = $true
+    $process = [Diagnostics.Process]::Start($start)
+    try {
+        $null = $process.Handle
+        $stdout = $process.StandardOutput.ReadToEndAsync(); $stderr = $process.StandardError.ReadToEndAsync()
+        $process.StandardInput.Write(($payload | ConvertTo-Json -Depth 8))
+        $process.StandardInput.Close()
+        if (-not $process.WaitForExit(20000)) { throw 'hook process timeout' }
+        if (-not $stdout.Wait(2000) -or -not $stderr.Wait(2000)) { throw 'hook pipe drain timeout' }
+        $answer = [pscustomobject]@{ Exit = $process.ExitCode; Out = $stdout.Result; Err = $stderr.Result }
+        if ($ResultPath -ne '') {
+  $tracePath = Join-Path (Split-Path -Parent $ResultPath) 'wire.jsonl'
+  [void][IO.Directory]::CreateDirectory((Split-Path -Parent $tracePath))
+  [IO.File]::AppendAllText($tracePath, (([ordered]@{ session = $payload.session_id; event = $payload.hook_event_name; wire = $answer } | ConvertTo-Json -Depth 6 -Compress) + "`n"), $utf8)
+        }
+        return $answer
+    }
+    finally {
+        if (-not $process.HasExited) { $process.Kill(); [void]$process.WaitForExit(5000) }
+        $process.Dispose()
+    }
 }
 function Has-Publication { param($InputDoc) $entry = Get-GenerationRecord $InputDoc; return ($null -ne $entry -and $null -ne $entry.publication) }
 function Concurrent-Publish {
@@ -119,6 +143,18 @@ function Concurrent-Publish {
 }
 
 try {
+    # Retain the original wrapper behavior as a diagnostic, not as a
+    # passing product assertion or an expected-failure substitute.
+    $probeExe = Join-Path $PSHOME $(if ($PSVersionTable.PSVersion.Major -le 5) { 'powershell.exe' } else { 'pwsh.exe' })
+    $legacy = Start-BoundedProcess -FilePath $probeExe -ArgumentList @('-NoProfile','-Command','exit 7') -TimeoutMs 15000
+    try {
+        $probe = [ordered]@{ requestedExit = 7; reportedExit = $legacy.ExitCode; hostVersion = $PSVersionTable.PSVersion.ToString() }
+        if ($ResultPath -ne '') {
+  [void][IO.Directory]::CreateDirectory((Split-Path -Parent $ResultPath))
+  [IO.File]::WriteAllText((Join-Path (Split-Path -Parent $ResultPath) 'legacy-process-probe.json'), ($probe | ConvertTo-Json), $utf8)
+        }
+    }
+    finally { $legacy.Dispose() }
     $h = New-Task 'wire-ordinary'; $w = Wire $h 'I am still checking.'
     Case 'G01 an ordinary Stop does not invent a published summary' { $w.Exit -eq 0 -and $w.Err -eq '' -and $w.Out -eq '' -and -not (Has-Publication $h) } $true
     $h = New-Task 'wire-empty'; $w = Wire $h ''
