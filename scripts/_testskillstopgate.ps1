@@ -175,3 +175,22 @@
     $gd7 = Get-SkillClosingDecision -ClosingText 'Skills used: none - nothing applied' -RawTranscript '' -Shortlist @(Get-SkillShortlist $gateFile) -Accounted @(Get-SkillAccounted $gateFile) -SkillInvoked $false
     Check 'a NEW offer is demanded' ($gd7.Text -match 'kappa-ten') $gd7.Text
     Check 'but an already-answered one is not asked again' ($gd7.Text -notmatch 'alpha-one') $gd7.Text
+
+    # =====================================================================
+    # The instruction and the gate must AGREE. Each half passed its own tests
+    # while teaching and accepting different lines: the pre-task instruction
+    # offered "Skills used: none - <one-line reason>", and the closing decision
+    # rejects exactly that whenever installed skills were shortlisted, because
+    # accounting is per NAME. Following the instruction to the letter therefore
+    # cost one blocked turn and then produced a name list contradicting the
+    # "none" written a moment earlier. Nothing tied the two together; this does.
+    Write-Host '--- Skills-Check: the pre-task instruction teaches the line the gate accepts ---' -ForegroundColor Cyan
+    $rpTaught = Fire -HookPath $slHook -Cwd $slProj -RawStdin (New-PromptStdin -Cwd $slProj -EventName 'UserPromptSubmit' -Prompt 'rebuild the telemetry pipeline ingest path' -SessionId 'sl-taught')
+    Check 'the instruction beside the shortlist says the reason must NAME the shortlisted skills' (
+        $rpTaught.Out -match 'telemetry-pipeline' -and $rpTaught.Out -match 'must NAME them') $rpTaught.Out
+    # ONE turn, and the line is exactly what the instruction above asks for -
+    # no more than an agent reading it could have known to write.
+    $tTaught = New-ToolTranscript 'sl-taught' 'Write' "Done.`nSkills used: none - telemetry-pipeline does not cover a docs-only edit"
+    $r = Fire -HookPath $slHook -Cwd $slProj -RawStdin (New-StopStdin -Cwd $slProj -Transcript $tTaught -SessionId 'sl-taught')
+    Check 'and a closing line in exactly that form clears the gate in a single turn' (
+        $r.Exit -eq 0 -and $r.Out -eq '') $r.Out
