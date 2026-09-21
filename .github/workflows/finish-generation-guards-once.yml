@@ -15,11 +15,11 @@ jobs:
         with:
           ref: ${{ github.sha }}
           fetch-depth: 0
-      - name: Apply guarded edits to this PR only and remove this publisher
+      - name: Apply source edits only to this PR and remove this publisher
         shell: bash
         run: |
           set -euo pipefail
-          git diff --exit-code 02ca4b33f1e3865b041d9eb1b85b2b84f7141f0c HEAD -- hooks/Session-Summary-Check/_generation.ps1 scripts/regression/Test-GenerationSafety.ps1 .github/workflows/generation-safety.yml
+          git diff --exit-code 02ca4b33f1e3865b041d9eb1b85b2b84f7141f0c HEAD -- hooks/Session-Summary-Check/_generation.ps1 scripts/regression/Test-GenerationSafety.ps1
           python - <<'PY'
           from pathlib import Path
           def replace(name, old, new):
@@ -55,11 +55,9 @@ jobs:
 
               $h = New-Task 'terminal'; $null = Set-GenerationState $h 'ready' 'proof' '''.replace('\n          ','\n').rstrip()
           replace('scripts/regression/Test-GenerationSafety.ps1', "    $h = New-Task 'terminal'; $null = Set-GenerationState $h 'ready' 'proof'", replacement)
-          replace('.github/workflows/generation-safety.yml', "{ 27 } else { 0 }", "{ 29 } else { 0 }")
-          replace('.github/workflows/generation-safety.yml', '$report.cases.Count -ne 35', '$report.cases.Count -ne 37')
           PY
           pwsh -NoProfile -Command '$bad=@(); foreach($p in @("hooks/Session-Summary-Check/_generation.ps1","scripts/regression/Test-GenerationSafety.ps1")){ $e=$null; $null=[Management.Automation.Language.Parser]::ParseFile((Join-Path (Get-Location) $p),[ref]$null,[ref]$e);$bad+=$e };if($bad.Count){$bad|Format-List;exit 1}'
-          git add hooks/Session-Summary-Check/_generation.ps1 scripts/regression/Test-GenerationSafety.ps1 .github/workflows/generation-safety.yml
+          git add hooks/Session-Summary-Check/_generation.ps1 scripts/regression/Test-GenerationSafety.ps1
           git rm .github/workflows/finish-generation-guards-once.yml
           git diff --cached --check
           git -c user.name='github-actions[bot]' -c user.email='41898282+github-actions[bot]@users.noreply.github.com' commit -m 'fix: refuse legacy terminal labels as readiness without a verified publication'
