@@ -110,8 +110,15 @@ $projectKey = Get-ShortHash $cwd.ToLowerInvariant()
 
 # The exact wording the closing summary must carry. One definition, shared by
 # the pre-task instruction, the closing block message and the detector.
-$script:SkillsRequiredLine = 'Skills used: <skill names>   (or exactly "Skills used: none - <one-line reason>")'
-$script:SkillsRequirement = 'CLOSING REQUIREMENT - end the final task summary with its own line starting "Skills used:" naming ONLY the exact skill names actually invoked or materially followed - never a skill that was merely installed, available, discovered, copied, considered, or read but not used, and never the whole library. If none were used, write "Skills used: none - <one-line reason>"; do not force a skill for trivial tasks merely to produce the line.'
+#
+# It has to teach the form the Stop gate ACCEPTS, not a shorter one. Accounting
+# there is per NAME (see _skillstop.ps1), so "Skills used: none - nothing
+# applied" is rejected whenever installed skills were shortlisted, and an agent
+# that followed this instruction to the letter was blocked once and then wrote a
+# name list contradicting the "none" it had just written. Both halves passed
+# their own tests; what was missing was that they agreed.
+$script:SkillsRequiredLine = 'Skills used: <skill names>   (or exactly "Skills used: none - <one-line reason>", and that reason names any skills this prompt shortlisted)'
+$script:SkillsRequirement = 'CLOSING REQUIREMENT - end the final task summary with its own line starting "Skills used:" naming ONLY the exact skill names actually invoked or materially followed - never a skill that was merely installed, available, discovered, copied, considered, or read but not used, and never the whole library. If none were used, write "Skills used: none - <one-line reason>", and when INSTALLED skills were shortlisted for this prompt that reason must NAME them - each offered name is accounted for once, so a reason naming none of them leaves every one of them outstanding and costs a further turn. Do not force a skill for trivial tasks merely to produce the line.'
 # The import safety boundary, stated wherever an import is suggested. Copying a
 # skill is an AUTHORIZED operation under the Skill Policy and this hook never
 # performs one - so every place that names a copy command also names its rules.
