@@ -197,6 +197,21 @@ try {
     $publication = Publish-GenerationSummary $h $snapshot.Ready
     Case 'G14 publication rechecks a late refusal under its own lock' { $e = Get-GenerationRecord $h; -not $e.publication.ready -and $publication.Failure -match 'LateGate' } $true
 
+    $hLegacy = New-Task 'legacy-finalized'
+    $legacyDoc = New-Doc $hLegacy
+    $legacyEntry = New-Entry (Get-CurrentUserTaskIdentity $hLegacy).TaskId 'finalized'
+    $legacyEntry.publication = $null
+    $legacyDoc.generations = @($legacyEntry)
+    Put-Doc $hLegacy $legacyDoc
+    Case 'G15 a legacy finalized label without publication is not readiness' {
+        -not (Test-GenerationReady $hLegacy).Ready
+    } $true
+    $hFresh = New-Task 'forged-finalized'
+    $forged = Set-GenerationState $hFresh 'finalized' 'a label is not a receipt'
+    Case 'R10 a fresh task cannot be finalized without a verified publication' {
+        -not $forged.Ok -and -not [IO.File]::Exists((Get-Path $hFresh))
+    } $true
+
     $h = New-Task 'terminal'; $null = Set-GenerationState $h 'ready' 'proof'
     $null = Publish-GenerationSummary $h $true
     $bytes = [IO.File]::ReadAllText((Get-Path $h))
