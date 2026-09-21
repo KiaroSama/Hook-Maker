@@ -18,7 +18,7 @@
 # 1. It detects and attributes a premature summary; it does not prevent one.
 #    Claude Code runs Stop AFTER the response is displayed, and Codex answers a
 #    rejected Stop by synthesising a continuation rather than un-sending a turn
-#    that already finished. Neither client exposes a way to withhold a response.
+#    that already finished. This observer cannot withhold a displayed response.
 #    This passive observer does not own the client's output transport. A
 #    display-level guarantee needs an output-owning integration, not this store.
 #
@@ -375,6 +375,11 @@ function Get-GenerationReadiness {
     if ($null -eq $Entry) { return [pscustomobject]@{ Ready = $false; Missing = @('generation-unknown'); Evidence = '' } }
     if ($Entry.state -cnotin @('ready', 'finalized') -or [string]::IsNullOrWhiteSpace($Entry.evidence)) {
         [void]$missing.Add('validation-not-recorded')
+    }
+    # Old records may carry a terminal label without verified publication.
+    # Preserve those bytes for review, but never turn the label into proof.
+    if ($Entry.state -ceq 'finalized' -and ($null -eq $Entry.publication -or -not $Entry.publication.ready)) {
+        [void]$missing.Add('publication-unverified')
     }
     foreach ($name in @($Objections)) {
         if ($name -cmatch '^[A-Za-z0-9._:-]{1,128}$') { [void]$missing.Add($name) }
