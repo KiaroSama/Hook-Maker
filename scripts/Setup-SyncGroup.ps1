@@ -637,6 +637,15 @@ catch {
     Write-ErrorLine ('Fatal error: ' + $_.Exception.Message)
     Write-Host (Get-Painted $_.ScriptStackTrace $C.Dim)
     Write-Log 'CRITICAL' 'ERROR' ('Fatal: ' + $_.Exception.ToString() + ' | at: ' + $_.ScriptStackTrace)
+    # A window opened by double-click closes the moment this process exits, so
+    # the error above was gone before anyone read it - three windows vanished that
+    # way on 2026-09-25 with the reason only in the log. Wait for a person, and
+    # ONLY for a person: redirected input (tests, CI, scripts) must never block.
+    if (-not [Console]::IsInputRedirected) {
+        Write-Host ''
+        Write-Host 'Press Enter to close this window.'
+        try { [void][Console]::ReadLine() } catch { }
+    }
     exit 1
 }
 
