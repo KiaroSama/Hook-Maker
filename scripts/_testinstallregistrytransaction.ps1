@@ -140,5 +140,57 @@
     $exact = Test-InstallRecordWriteVerified -Text $wantedText -ExpectedId 'rec-one' -ExpectedSha256 (Get-InstallRecordDigest -Text $wantedText)
     Check 'and the record that WAS composed verifies' ($exact.Ok) $exact.Reason
 
+    # ---- the tracking lock waits long enough for several windows (spec 008) ----
+    # Four wizard windows relocating renamed projects at once lost records and
+    # closed on their own: a whole-registry read holds this lock ~2.7 s and a
+    # record write ~1.4 s, while a waiter gave up after 10 s. The bound is read
+    # from the function itself so the assertion follows the code, not a copy.
+    $lockParam = @((Get-Command Invoke-WithInstallRegistryLock).ScriptBlock.Ast.FindAll({
+                param($n) $n -is [System.Management.Automation.Language.ParameterAst] -and
+                $n.Name.VariablePath.UserPath -eq 'TimeoutSeconds' }, $true))
+    $lockDefault = 0
+    if ($lockParam.Count -eq 1 -and $null -ne $lockParam[0].DefaultValue) { $lockDefault = [int]$lockParam[0].DefaultValue.Value }
+    Check 'the tracking lock waits at least 120 s by default (was 10 s)' ($lockDefault -ge 120) ([string]$lockDefault)
+
+    # A REAL second process holds the lock, so the wait path is the one a second
+    # window takes. The hold is the modelled work of the other window, not a
+    # readiness guess: readiness is the marker file, polled against a deadline.
+    $txL = Use-TxToolRoot -Path (Join-Path $txRoot 'lock')
+    $txLockPath = Join-Path (Get-InstallStateDirectory -ToolRoot $txL) 'install-registry.lock'
+    [void][IO.Directory]::CreateDirectory((Split-Path -Parent $txLockPath))
+    $txHeld = Join-Path $txRoot ('lock-held-' + [guid]::NewGuid().ToString('N').Substring(0, 8))
+    $holderScript = "`$s = [IO.File]::Open('" + $txLockPath.Replace("'", "''") + "', 'OpenOrCreate', 'ReadWrite', 'None'); " +
+        "[IO.File]::WriteAllText('" + $txHeld.Replace("'", "''") + "', 'held'); Start-Sleep -Milliseconds 3000; `$s.Dispose()"
+    $psi = New-Object System.Diagnostics.ProcessStartInfo
+    $psi.FileName = (Get-Process -Id $PID).Path
+    $psi.Arguments = '-NoLogo -NoProfile -NonInteractive -EncodedCommand ' + [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($holderScript))
+    $psi.UseShellExecute = $false
+    $psi.CreateNoWindow = $true
+    $holder = [System.Diagnostics.Process]::Start($psi)
+    try {
+        $deadline = [DateTime]::UtcNow.AddSeconds(20)
+        while (-not (Test-Path -LiteralPath $txHeld) -and -not $holder.HasExited -and [DateTime]::UtcNow -lt $deadline) { Start-Sleep -Milliseconds 50 }
+        Check 'the second process holds the tracking lock' (Test-Path -LiteralPath $txHeld) ('holder exited: ' + $holder.HasExited)
+
+        $timedOut = ''
+        try { [void](Invoke-WithInstallRegistryLock -ToolRoot $txL -TimeoutSeconds 1 -Action { 'got' }) }
+        catch { $timedOut = $_.Exception.Message }
+        Check 'a short bound against a live holder still gives up, naming the lock' (
+            $timedOut -match 'Timed out waiting' -and $timedOut -match 'install-registry\.lock') $timedOut
+
+        $waitWatch = [Diagnostics.Stopwatch]::StartNew()
+        $acquired = ''
+        try { $acquired = [string](Invoke-WithInstallRegistryLock -ToolRoot $txL -Action { 'got' }) }
+        catch { $acquired = $_.Exception.Message }
+        Check 'with the default bound a waiter outlasts the holder and gets the lock' ($acquired -eq 'got') $acquired
+        Check 'and it really waited for the holder rather than finding the lock free' (
+            $waitWatch.Elapsed.TotalMilliseconds -ge 500) ([string][int]$waitWatch.Elapsed.TotalMilliseconds)
+    }
+    finally {
+        if (-not $holder.WaitForExit(15000)) { try { $holder.Kill() } catch { } }
+        $holder.Dispose()
+        Remove-Item -LiteralPath $txHeld -Force -ErrorAction SilentlyContinue
+    }
+
     # The suite's own registry is the one every other block asserts against.
     $env:HOOKMAKER_STATE_DIR = $txSavedStateDir
