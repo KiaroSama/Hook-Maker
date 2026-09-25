@@ -29,12 +29,16 @@
         return (Fire -HookPath $spHook -Cwd $spProj -RawStdin (New-PromptStdin -Cwd $spProj -EventName 'UserPromptSubmit' -Prompt $Text -SessionId $SessionId))
     }
 
+    # 'codeql' is matched as a SHORTLIST ENTRY ('- codeql [source]'), not as a bare word: the
+    # fixed security-routing line every advisory now carries names codeql as a scanner, so a
+    # bare-word check would pass for the wrong reason and a bare -notmatch could never pass.
+    $spCodeqlOffered = '- codeql \['
     # The guard first: tightening must not cost a genuine match. A single-word
     # skill name scores only 2 on a perfect hit, which is why a raised score
     # floor was rejected in favour of judging the WORDS.
     $spGood = Invoke-Prompt -Text 'run codeql on this repo' -SessionId 'sp-codeql'
     Check 'a prompt that names a skill''s subject still offers it' (
-        $spGood.Out -match 'codeql') $spGood.Out
+        $spGood.Out -match $spCodeqlOffered) $spGood.Out
     $spGood2 = Invoke-Prompt -Text 'write a powershell windows hook for this' -SessionId 'sp-pwsh'
     Check 'a two-word tool name is still offered' (
         $spGood2.Out -match 'powershell-windows') $spGood2.Out
@@ -48,7 +52,7 @@
     # Before the repair the quoted names scored highest and were re-offered.
     $spEcho = Invoke-Prompt -Text 'Skills used: none - figma-create-new-file, codeql do not apply' -SessionId 'sp-echo'
     Check 'a quoted "Skills used:" line offers nothing back' (
-        $spEcho.Out -notmatch 'figma-create-new-file' -and $spEcho.Out -notmatch 'codeql') $spEcho.Out
+        $spEcho.Out -notmatch 'figma-create-new-file' -and $spEcho.Out -notmatch $spCodeqlOffered) $spEcho.Out
 
     # The same, with a non-Latin prompt around it - the total case. The token
     # split keeps only [a-z0-9], so without the strip the quoted English names
@@ -56,10 +60,10 @@
     $spFarsi = [string]::Join('', [char[]]@(0x0627, 0x06CC, 0x0646, 0x0631, 0x0627, 0x0020, 0x062F, 0x0631, 0x0633, 0x062A, 0x0020, 0x06A9, 0x0646))
     $spMixed = Invoke-Prompt -Text ($spFarsi + [char]10 + 'Skills used: none - figma-create-new-file, codeql do not apply') -SessionId 'sp-mixed'
     Check 'a non-Latin prompt quoting that line offers nothing either' (
-        $spMixed.Out -notmatch 'figma-create-new-file' -and $spMixed.Out -notmatch 'codeql') $spMixed.Out
+        $spMixed.Out -notmatch 'figma-create-new-file' -and $spMixed.Out -notmatch $spCodeqlOffered) $spMixed.Out
 
     # And the line is stripped, not the whole prompt: real subject matter that
     # sits beside a quoted accountability line must still be matched.
     $spBoth = Invoke-Prompt -Text ('Skills used: none - figma-create-new-file do not apply' + [char]10 + 'now run codeql') -SessionId 'sp-both'
     Check 'only the accountability line is removed, not the rest of the prompt' (
-        $spBoth.Out -match 'codeql' -and $spBoth.Out -notmatch 'figma-create-new-file') $spBoth.Out
+        $spBoth.Out -match $spCodeqlOffered -and $spBoth.Out -notmatch 'figma-create-new-file') $spBoth.Out

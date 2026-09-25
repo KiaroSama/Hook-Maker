@@ -12,18 +12,19 @@
 # SKILL.md, which is the identity the Skill Policy actually addresses skills by.
 #
 # Every function here reads $indexPath / $indexConfigHash / $indexTtlMinutes /
-# $hasPluginRoot / $pluginRoot / $hasLibrary / $libraryDir / $stateDir from the
-# caller's scope, exactly as they did when they lived in the hook.
+# $hasPluginRoot / $pluginRoot / $hasLibrary / $libraryDir / $stateDir and
+# $skillDiscovery (_skilldiscovery.ps1) from the caller's scope.
 
 # Index format. Flat lines, not JSON: ~1700 entries parse in milliseconds and the
 # file is only ever produced and consumed here.
-#   header  HookMakerSkillsIndex|2|<configHash>|<builtUtcTicks>
-#   plugin  p|<plugin>|<folder>|<name>|<description>|<full path>
+#   header  HookMakerSkillsIndex|3|<configHash>|<builtUtcTicks>
+#   plugin  p|<plugin>|<folder>|<name>|<description>|<full path>|<source>|<version>|<status>|<explicit>|<invocation>
 #   library l|<folder>|<name>|<description>|<full path>
+#   partial x|<reason>            install key k|<name@market>        install known m|1
 #
-# Version 2 because the shape changed: a v1 file on disk is rebuilt, never
-# misread as a v2 one with empty identity fields.
-$script:SkillIndexVersion = '2'
+# Version 3 because the shape changed again (per-skill discovery, see
+# _skilldiscovery.ps1): an older file on disk is rebuilt, never misread.
+$script:SkillIndexVersion = '3'
 
 # '|' is the field separator and a description may contain anything, so every
 # stored field is flattened first. Lossy on purpose - these values are only ever
@@ -43,7 +44,7 @@ function ConvertTo-SkillIndexField {
 # A file that cannot be read contributes nothing and never throws.
 function Get-SkillIdentity {
     param([string]$SkillFile, [int]$MaxBytes = 4096)
-    $result = [pscustomobject]@{ Name = ''; Description = '' }
+    $result = [pscustomobject]@{ Name = ''; Description = ''; Explicit = $false }
     try {
         $stream = [System.IO.File]::Open($SkillFile, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::ReadWrite)
         try {
@@ -74,9 +75,14 @@ function Get-SkillIdentity {
     if ($fenceEnd -gt 0) { $body = $text.Substring(0, $fenceEnd) }
 
     $nameMatch = [regex]::Match($body, '(?im)^[ \t]*name[ \t]*:[ \t]*(.+)$')
-    if ($nameMatch.Success) { $result.Name = ConvertTo-SkillIndexField ($nameMatch.Groups[1].Value.Trim(([char]34), ([char]39), ' ')) 120 }
+    # Trim() FIRST: with CRLF frontmatter the capture ends in `r, and a quote
+    # before it survived, so `name: "pdf"` indexed as pdf" and matched nothing.
+    if ($nameMatch.Success) { $result.Name = ConvertTo-SkillIndexField ($nameMatch.Groups[1].Value.Trim().Trim(([char]34), ([char]39), ' ')) 120 }
     $descMatch = [regex]::Match($body, '(?im)^[ \t]*description[ \t]*:[ \t]*(.+)$')
-    if ($descMatch.Success) { $result.Description = ConvertTo-SkillIndexField ($descMatch.Groups[1].Value.Trim(([char]34), ([char]39), ' ')) }
+    if ($descMatch.Success) { $result.Description = ConvertTo-SkillIndexField ($descMatch.Groups[1].Value.Trim().Trim(([char]34), ([char]39), ' ')) }
+    # Claude never loads such a skill on its own, so it must never be a skill
+    # the Stop gate holds the agent to (see _promptmatch.ps1).
+    $result.Explicit = ($body -match '(?im)^[ \t]*disable-model-invocation[ \t]*:[ \t]*true\b')
     return $result
 }
 
@@ -99,16 +105,23 @@ function Read-SkillIndex {
         }
         $plugin = New-Object System.Collections.Generic.List[object]
         $library = New-Object System.Collections.Generic.List[object]
+        $partial = New-Object System.Collections.Generic.List[string]
+        $keys = New-Object System.Collections.Generic.List[string]
+        $known = $false
         for ($i = 1; $i -lt $lines.Count; $i++) {
             $parts = $lines[$i].Split('|')
-            if ($parts[0] -eq 'p' -and $parts.Count -ge 6) {
-                [void]$plugin.Add([pscustomobject]@{ Plugin = $parts[1]; Leaf = $parts[2]; Name = $parts[3]; Description = $parts[4]; Path = $parts[5] })
+            if ($parts[0] -eq 'p' -and $parts.Count -ge 11) {
+                [void]$plugin.Add([pscustomobject]@{ Plugin = $parts[1]; Leaf = $parts[2]; Name = $parts[3]; Description = $parts[4]; Path = $parts[5]
+                        Source = $parts[6]; Version = $parts[7]; Status = $parts[8]; Explicit = $parts[9]; Invocation = $parts[10] })
             }
             elseif ($parts[0] -eq 'l' -and $parts.Count -ge 5) {
                 [void]$library.Add([pscustomobject]@{ Leaf = $parts[1]; Name = $parts[2]; Description = $parts[3]; Path = $parts[4] })
             }
+            elseif ($parts[0] -eq 'x' -and $parts.Count -ge 2) { [void]$partial.Add($parts[1]) }
+            elseif ($parts[0] -eq 'k' -and $parts.Count -ge 2) { [void]$keys.Add($parts[1]) }
+            elseif ($parts[0] -eq 'm') { $known = $true }
         }
-        return [pscustomobject]@{ Plugin = $plugin; Library = $library }
+        return [pscustomobject]@{ Plugin = $plugin; Library = $library; Partial = $partial; InstallKeys = $keys; InstallKnown = $known }
     }
     catch { return $null }
 }
@@ -133,13 +146,25 @@ function Build-SkillIndex {
                 foreach ($d in @(Get-ChildItem -LiteralPath $skillsDir.FullName -Directory -ErrorAction SilentlyContinue)) {
                     if (($d.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -eq [System.IO.FileAttributes]::ReparsePoint) { continue }
                     $identity = Get-SkillIdentity (Join-Path $d.FullName 'SKILL.md')
-                    [void]$plugin.Add([pscustomobject]@{ Plugin = $pluginName; Leaf = $d.Name; Name = $identity.Name; Description = $identity.Description; Path = $d.FullName })
+                    [void]$plugin.Add([pscustomobject]@{ Plugin = $pluginName; Leaf = $d.Name; Name = $identity.Name; Description = $identity.Description; Path = $d.FullName
+                            Source = 'cache-walk'; Version = ''; Status = 'enabled'; Explicit = $(if ($identity.Explicit) { '1' } else { '0' }); Invocation = ($pluginName + ':' + $d.Name) })
                     if ($plugin.Count -ge $maxPlugin) { break }
                 }
                 if ($plugin.Count -ge $maxPlugin) { break }
             }
         }
         catch { }
+    }
+
+    # The install records are the primary source; the cache walk above runs only
+    # when PLUGIN_SKILLS_ROOT is set explicitly. A folder both found is kept once.
+    $discovered = Invoke-SkillDiscovery -Discovery $skillDiscovery
+    $seen = @{}
+    foreach ($p in $plugin) { $seen[$p.Path.ToLowerInvariant()] = $true }
+    foreach ($s in $discovered.Skills) {
+        if ($seen.ContainsKey($s.Path.ToLowerInvariant())) { continue }
+        $seen[$s.Path.ToLowerInvariant()] = $true
+        [void]$plugin.Add($s)
     }
 
     if ($hasLibrary) {
@@ -159,8 +184,14 @@ function Build-SkillIndex {
 
     $lines = New-Object System.Collections.Generic.List[string]
     [void]$lines.Add('HookMakerSkillsIndex|' + $script:SkillIndexVersion + '|' + $indexConfigHash + '|' + [DateTime]::UtcNow.Ticks)
-    foreach ($p in $plugin) { [void]$lines.Add('p|' + $p.Plugin + '|' + $p.Leaf + '|' + $p.Name + '|' + $p.Description + '|' + $p.Path) }
+    foreach ($p in $plugin) {
+        [void]$lines.Add('p|' + $p.Plugin + '|' + $p.Leaf + '|' + $p.Name + '|' + $p.Description + '|' + $p.Path + '|' +
+            $p.Source + '|' + (ConvertTo-SkillIndexField $p.Version 60) + '|' + $p.Status + '|' + $p.Explicit + '|' + (ConvertTo-SkillIndexField $p.Invocation 200))
+    }
     foreach ($l in $library) { [void]$lines.Add('l|' + $l.Leaf + '|' + $l.Name + '|' + $l.Description + '|' + $l.Path) }
+    foreach ($reason in $discovered.Partial) { [void]$lines.Add('x|' + (ConvertTo-SkillIndexField $reason)) }
+    foreach ($key in $discovered.InstallKeys) { [void]$lines.Add('k|' + (ConvertTo-SkillIndexField $key)) }
+    if ($discovered.InstallKnown) { [void]$lines.Add('m|1') }
     try {
         New-Item -ItemType Directory -Path $stateDir -Force | Out-Null
         $tmp = $indexPath + '.tmp'
@@ -168,5 +199,5 @@ function Build-SkillIndex {
         Move-Item -LiteralPath $tmp -Destination $indexPath -Force
     }
     catch { }
-    return [pscustomobject]@{ Plugin = $plugin; Library = $library }
+    return [pscustomobject]@{ Plugin = $plugin; Library = $library; Partial = $discovered.Partial; InstallKeys = $discovered.InstallKeys; InstallKnown = $discovered.InstallKnown }
 }
