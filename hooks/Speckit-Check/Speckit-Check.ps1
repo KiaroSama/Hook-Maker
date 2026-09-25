@@ -12,8 +12,11 @@
 # choice has already been made or missed.
 #
 # WHAT IT READS, and nothing else: the presence of .specify\, the presence of
-# its constitution, and one non-recursive listing of specs\ to find the newest
-# feature. It never executes a skill, a binary, or git - the same reason
+# its constitution, the ACTIVE-FEATURE POINTER .specify\feature.json, and one
+# non-recursive listing of specs\ as the fallback when there is no usable
+# pointer. The pointer wins because folder recency is not ownership: an agent
+# that touched an unrelated feature's notes would otherwise re-route the whole
+# project to it. It never executes a skill, a binary, or git - the same reason
 # Cbm-Read-Check tests for a file instead of running the CBM executable, which
 # was measured at ~1.9 s per call.
 #
@@ -54,16 +57,39 @@ try { $hasInfrastructure = Test-Path -LiteralPath $specifyDir -PathType Containe
 $hasConstitution = $false
 try { $hasConstitution = Test-Path -LiteralPath (Join-Path $specifyDir 'memory\constitution.md') -PathType Leaf } catch { $hasConstitution = $false }
 
-# The newest FEATURE, by the write time of its task list. One level deep and
-# one file read: a project with many features must not cost more than a project
-# with one.
+# The ACTIVE feature: .specify\feature.json when it names a spec-bearing
+# folder directly under specs\, otherwise the newest feature by the write time
+# of its task list. One level deep and one file read: a project with many
+# features must not cost more than a project with one.
 $newestFeature = ''
 $newestTasksUtc = $null
 $openTasks = -1
+$featureFromPointer = $false
 $specsDir = Join-Path $cwd 'specs'
 $specsReadable = $true
 try {
-    if (Test-Path -LiteralPath $specsDir -PathType Container) {
+    $pointerPath = Join-Path $specifyDir 'feature.json'
+    if (Test-Path -LiteralPath $pointerPath -PathType Leaf) {
+        $pointer = [System.IO.File]::ReadAllText($pointerPath, [System.Text.Encoding]::UTF8) | ConvertFrom-Json
+        $named = [string]$pointer.feature_directory
+        if (-not [string]::IsNullOrWhiteSpace($named)) {
+            if (-not [System.IO.Path]::IsPathRooted($named)) { $named = Join-Path $cwd $named }
+            $named = [System.IO.Path]::GetFullPath($named)
+            $parent = [System.IO.Path]::GetDirectoryName($named.TrimEnd('\', '/'))
+            if ([string]::Equals($parent, [System.IO.Path]::GetFullPath($specsDir), [System.StringComparison]::OrdinalIgnoreCase) -and
+                (Test-Path -LiteralPath (Join-Path $named 'spec.md') -PathType Leaf)) {
+                $newestFeature = Split-Path -Leaf $named.TrimEnd('\', '/')
+                $featureFromPointer = $true
+                $tasksPointer = Join-Path $named 'tasks.md'
+                $newestTasksUtc = (Get-Item -LiteralPath $named).LastWriteTimeUtc
+                if (Test-Path -LiteralPath $tasksPointer -PathType Leaf) { $newestTasksUtc = (Get-Item -LiteralPath $tasksPointer).LastWriteTimeUtc }
+            }
+        }
+    }
+}
+catch { $newestFeature = ''; $newestTasksUtc = $null; $featureFromPointer = $false }
+try {
+    if (-not $featureFromPointer -and (Test-Path -LiteralPath $specsDir -PathType Container)) {
         foreach ($candidate in @(Get-ChildItem -LiteralPath $specsDir -Directory -ErrorAction Stop)) {
             $specPath = Join-Path $candidate.FullName 'spec.md'
             if (-not (Test-Path -LiteralPath $specPath -PathType Leaf)) { continue }
@@ -97,6 +123,8 @@ if ($newestFeature -ne '') {
 }
 
 # ---- the route ---------------------------------------------------------------
+$featureLabel = 'Newest feature here (no active-feature pointer)'
+if ($featureFromPointer) { $featureLabel = 'Active feature (.specify/feature.json)' }
 $lead = ''
 if (-not $specsReadable) {
     $lead = '- This project''s specs directory could not be read, so the route is UNKNOWN - check it before assuming there is no plan.'
@@ -109,13 +137,13 @@ elseif ($newestFeature -eq '') {
     if (-not $hasConstitution) { $lead += ' The constitution is missing too -> speckit-constitution first.' }
 }
 elseif ($openTasks -lt 0) {
-    $lead = '- Newest feature here: specs/' + $newestFeature + ' - its tasks.md could not be read, so how much is built is UNKNOWN -> speckit-converge before assuming either way.'
+    $lead = '- ' + $featureLabel + ': specs/' + $newestFeature + ' - its tasks.md could not be read, so how much is built is UNKNOWN -> speckit-converge before assuming either way.'
 }
 elseif ($openTasks -gt 0) {
-    $lead = '- Newest feature here: specs/' + $newestFeature + ' - its tasks.md still has ' + [string]$openTasks + ' unchecked item(s) -> finish them with speckit-implement before starting something else.'
+    $lead = '- ' + $featureLabel + ': specs/' + $newestFeature + ' - its tasks.md still has ' + [string]$openTasks + ' unchecked item(s) -> continue them with speckit-implement; a NEW request arriving meanwhile goes through the intake below first.'
 }
 else {
-    $lead = '- Newest feature here: specs/' + $newestFeature + ' - its tasks.md has no unchecked items. New work starts a new feature; resumed work or doubt about completeness -> speckit-converge.'
+    $lead = '- ' + $featureLabel + ': specs/' + $newestFeature + ' - its tasks.md has no unchecked items. New work starts a new feature; resumed work or doubt about completeness -> speckit-converge.'
 }
 
 $note = @(
@@ -124,20 +152,26 @@ $note = @(
     $lead,
     '- A feature or a behaviour change -> speckit-specify, speckit-clarify, speckit-plan, speckit-tasks, speckit-analyze, speckit-implement, in that order.',
     '- A bug or a regression -> diagnose first, then: the feature already has specs/<name>/ -> speckit-converge appends the unmet work to tasks.md and speckit-implement closes it; the fix changes specified behaviour or the area has no spec -> the full chain from speckit-specify.',
+    '- A NEW request mid-task (added scope, changed acceptance, a new bug or constraint) -> record a dated request delta with requirement IDs and acceptance criteria, amend the affected spec/plan/tasks (speckit-specify on the same feature; independent scope gets its own feature), refresh the skill selection, rerun the affected gates, then resume. An earlier Spec Kit run covers only what it recorded. Rule: global-spec-kit-rules.md, Mid-task Request Intake.',
     'Run each skill to the letter: preflight, prerequisite script, extension hooks, gates, completion report.',
-    'Every question any step raises goes to the user and the work waits for the answer - never a plausible default, never a guessed scope.',
+    'Every question any step raises goes to the user - never a plausible default, never a guessed scope. Only the work that depends on the answer waits; independent work continues.',
     'Work that changes nothing - a question, an explanation, a review that writes no code - is answered directly, and so is a trivial edit (a typo, a one-line config value).'
 ) -join "`n"
 
-# One message per (session, project, state, text). Initialising the project
-# mid-session CHANGES the state, so the follow-up route is not suppressed by
-# the "no .specify/ yet" note that preceded it.
+# One message per (session, project, state, text, REQUEST). Initialising the
+# project mid-session CHANGES the state, so the follow-up route is not
+# suppressed by the "no .specify/ yet" note that preceded it. The prompt is part
+# of the key because a new request is exactly the case the intake line exists
+# for: with the task counts unchanged it used to be silenced by the earlier,
+# identical-looking state. The SAME prompt repeated is still said once.
 $sessionId = [string](Get-Field $hookInput 'session_id')
 $projectKey = Get-ShortHash ([string]$cwd).ToLowerInvariant()
 $stamp = ''
 if ($null -ne $newestTasksUtc) { $stamp = $newestTasksUtc.ToString('o') }
+$requestKey = ''
+if ($eventName -eq 'UserPromptSubmit') { $requestKey = Get-ShortHash $prompt }
 $fingerprint = Get-ShortHash ($sessionId + '|' + $eventName + '|' + $cwd + '|' + [string]$hasInfrastructure + '|' +
-    [string]$hasConstitution + '|' + $newestFeature + '|' + $stamp + '|' + [string]$openTasks + '|' + $note)
+    [string]$hasConstitution + '|' + $newestFeature + '|' + $stamp + '|' + [string]$openTasks + '|' + $requestKey + '|' + $note)
 $stateDir = Join-Path $env:LOCALAPPDATA 'HookMaker\state'
 $statePath = Join-Path $stateDir ('SpeckitCheck-' + $projectKey + '.txt')
 if (Test-Path -LiteralPath $statePath -PathType Leaf) {

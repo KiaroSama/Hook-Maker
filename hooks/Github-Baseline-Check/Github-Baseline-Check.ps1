@@ -17,7 +17,9 @@
 #
 # Silent when: not a git repo, no GitHub remote, the baseline already covers
 # the detected structure, or the same findings were reported within the
-# cooldown.
+# cooldown - EXCEPT for the README badge reminder (_readmebadges.ps1), which is
+# owed by every repository, CI or not, remote or not, and is carried through
+# each of those exits once per session and README state.
 #
 # No YAML parser is guaranteed in this environment, so workflow/Dependabot
 # inspection stays a deliberate, bounded regex heuristic (Test-HasWorkflowTrigger,
@@ -80,8 +82,34 @@ $inside = Invoke-QuietCommand -FilePath git -ArgumentList @('-C', $cwd, 'rev-par
 if ($LASTEXITCODE -ne 0 -or [string]$inside -ne 'true') {
     exit 0
 }
+
+# ---- README badges: every repository, before the GitHub-only exits ----
+. (Join-Path $PSScriptRoot '_readmebadges.ps1')
+$badgeNote = ''
+try {
+    $badgeState = Get-ReadmeBadgeState -ProjectRoot $cwd
+    $badgeStateDir = Join-Path $env:LOCALAPPDATA 'HookMaker\state'
+    $badgeStatePath = Join-Path $badgeStateDir ('GithubBaselineCheck-badges-' + (Get-ShortHash $cwd.ToLowerInvariant()) + '.txt')
+    $badgeKey = Get-ShortHash ([string](Get-Field $hookInput 'session_id') + '|' + [string]$badgeState.Found + '|' + [string]$badgeState.Readable + '|' + [string]$badgeState.Count)
+    $badgeSeen = ''
+    if (Test-Path -LiteralPath $badgeStatePath -PathType Leaf) { $badgeSeen = ([System.IO.File]::ReadAllText($badgeStatePath)).Trim() }
+    if ($badgeSeen -ne $badgeKey) {
+        $badgeNote = Get-ReadmeBadgeNote -State $badgeState
+        New-Item -ItemType Directory -Path $badgeStateDir -Force | Out-Null
+        [System.IO.File]::WriteAllText($badgeStatePath, $badgeKey)
+    }
+}
+catch { $badgeNote = '' }
+# Every silent exit below still owes the badge note when one is due.
+function Exit-WithBadgeNote {
+    if (-not [string]::IsNullOrWhiteSpace($badgeNote)) {
+        $null = Write-HookResult -EventName $eventName -Kind 'context' -Message $badgeNote
+    }
+    exit 0
+}
+
 $repository = Get-GitHubRepository -ProjectRoot $cwd
-if ($null -eq $repository) { exit 0 }
+if ($null -eq $repository) { Exit-WithBadgeNote }
 $repoSlug = $repository.Repository
 
 # ---- optional .env ----
@@ -401,7 +429,7 @@ if ($findings.Count -gt 0) {
 }
 
 if ($findings.Count -eq 0) {
-    exit 0
+    Exit-WithBadgeNote
 }
 
 # ---- fingerprint + cooldown so unchanged findings are not repeated ----
@@ -414,7 +442,7 @@ if (Test-Path -LiteralPath $statePath -PathType Leaf) {
         if ($stateLines.Count -ge 2 -and $stateLines[0].Trim() -eq $fingerprint) {
             $lastTime = [DateTime]::Parse($stateLines[1].Trim(), [System.Globalization.CultureInfo]::InvariantCulture, [System.Globalization.DateTimeStyles]::RoundtripKind).ToUniversalTime()
             if (([DateTime]::UtcNow - $lastTime).TotalMinutes -lt $cooldownMinutes) {
-                exit 0
+                Exit-WithBadgeNote
             }
         }
     }
@@ -432,5 +460,6 @@ else {
 $message = 'GITHUB BASELINE CHECK (' + $repoSlug + '): the .github automation baseline does not match the project structure:' + "`n" +
     ($findings -join "`n") + "`n" +
     $scopeNote + ' When a fix does go ahead: inspect the real project first, use its actual commands, and never blindly copy templates or overwrite working project-specific automation.'
+if (-not [string]::IsNullOrWhiteSpace($badgeNote)) { $message += "`n`n" + $badgeNote }
 $null = Write-HookResult -EventName $eventName -Kind 'context' -Message $message
 exit 0

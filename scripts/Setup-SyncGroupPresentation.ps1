@@ -211,8 +211,8 @@ $script:HookMeta = @{
     'Ai-Memory-Load'                   = @{ Order = 3;  Label = 'Ai-Context-Load';  When = 'pre';  Text = 'loads the .ai context router and file index before work starts' }
     'Ci-Status-Check'                  = @{ Order = 4;  When = 'post'; Text = 'verifies GitHub checks of the exact pushed commit' }
     'Dependabot-Check'                 = @{ Order = 5;  When = 'pre';  Text = 'reports pending Dependabot pull requests' }
-    'Github-Baseline-Check'            = @{ Order = 6;  When = 'pre';  Text = 'checks the .github CI/dependabot baseline' }
-    'Git-Sync-Check'                   = @{ Order = 7;  When = 'both'; Text = 'warns when out of sync with the git remote' }
+    'Github-Baseline-Check'            = @{ Order = 6;  When = 'pre';  Text = 'checks the .github CI/dependabot baseline and the README badge set' }
+    'Git-Sync-Check'                   = @{ Order = 7;  When = 'both'; Text = 'warns when out of sync with the git remote; branch disposition and commit identity' }
     # Text kept deliberately short: with the '[pre+post-task]' tag and the
     # separators, the longer wording wrapped so only the tail of the last word
     # landed on a second line. Test-Wizard.ps1 pins the exact concise wording,
@@ -234,7 +234,7 @@ $script:HookMeta = @{
     # 'both', not 'pre': these three now VERIFY at Stop as well as remind at
     # the start, and two of them block. A menu tag that still said pre-task
     # would promise a hook that cannot refuse anything.
-    'Mcp-Usage-Check'                  = @{ Order = 16; When = 'both'; Text = 'MCP reminder, and an "MCP used:" line at the end'; Events = @('SessionStart', 'UserPromptSubmit', 'Stop', 'SubagentStop'); Timeout = 10 }
+    'Mcp-Usage-Check'                  = @{ Order = 16; When = 'both'; Text = 'MCP and research-first reminders, and an "MCP used:" line at the end'; Events = @('SessionStart', 'UserPromptSubmit', 'Stop', 'SubagentStop'); Timeout = 10 }
     'Rules-Check'                      = @{ Order = 17; When = 'both'; Text = 'checks the rules were read, and confirmed at the end'; Events = @('SessionStart', 'UserPromptSubmit', 'Stop', 'SubagentStop'); Timeout = 15 }
     # Skills-Check's real recommended EVENTS are SessionStart,UserPromptSubmit,Stop
     # (the Stop event carries the "Skills used:" summary requirement) - When must

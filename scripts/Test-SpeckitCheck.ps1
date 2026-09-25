@@ -151,6 +151,39 @@ try {
     Check 'initialising the project mid-session re-arms the follow-up route' (
         $r.Out -match 'SPECKIT CHECK' -and $r.Out -notmatch 'No \.specify/ here yet') $r.Out
 
+    # =====================================================================
+    Write-Host '--- mid-task intake (order 55, step 3) ---' -ForegroundColor Cyan
+
+    # A NEW request while a feature is open, with nothing on disk changed: the
+    # earlier fingerprint had no request in it, so this was silenced - exactly
+    # the case the intake line exists for.
+    $r = Invoke-SpeckitHook @{ hook_event_name = 'UserPromptSubmit'; cwd = $open; session_id = 'r3'; prompt = 'also fix the login bug in the api' }
+    Check 'a NEW request mid-task is surfaced although task counts and timestamps are unchanged' (
+        $r.Out -match 'SPECKIT CHECK') $r.Out
+    Check 'and it carries the intake contract: a request delta with requirement IDs and acceptance criteria' (
+        $r.Out -match 'request delta' -and $r.Out -match 'requirement IDs' -and $r.Out -match 'acceptance criteria') $r.Out
+    Check 'only the dependent work waits; independent work continues' ($r.Out -match 'independent work continues') $r.Out
+    Check 'the old "finish existing tasks before starting anything else" is gone' (
+        $r.Out -notmatch 'before starting something else') $r.Out
+
+    # The pointer wins over recency: folder write time is not ownership.
+    $ptr = New-SpeckitProject -Name 'pointer' -WithInfrastructure -WithConstitution -Feature '001-active' -TasksBody '- [ ] T001 open'
+    $newerDir = Join-Path $ptr 'specs\002-unrelated'
+    New-Item -ItemType Directory -Path $newerDir -Force | Out-Null
+    [System.IO.File]::WriteAllText((Join-Path $newerDir 'spec.md'), "# spec`n")
+    [System.IO.File]::WriteAllText((Join-Path $newerDir 'tasks.md'), '- [x] T001 done')
+    (Get-Item -LiteralPath (Join-Path $newerDir 'tasks.md')).LastWriteTimeUtc = [DateTime]::UtcNow.AddMinutes(5)
+    [System.IO.File]::WriteAllText((Join-Path $ptr '.specify\feature.json'), '{"feature_directory":"specs/001-active"}')
+    $r = Invoke-SpeckitHook @{ hook_event_name = 'UserPromptSubmit'; cwd = $ptr; session_id = 'p1'; prompt = 'add an export feature' }
+    Check 'the active-feature pointer wins over a newer unrelated folder' (
+        $r.Out -match 'Active feature \(\.specify/feature\.json\): specs/001-active' -and $r.Out -notmatch '002-unrelated') $r.Out
+    # A pointer to something that is not a spec-bearing folder under specs\
+    # falls back to recency rather than routing to nowhere.
+    [System.IO.File]::WriteAllText((Join-Path $ptr '.specify\feature.json'), '{"feature_directory":"specs/999-missing"}')
+    $r = Invoke-SpeckitHook @{ hook_event_name = 'UserPromptSubmit'; cwd = $ptr; session_id = 'p2'; prompt = 'add an export feature' }
+    Check 'a dangling pointer falls back to the newest feature, labelled as such' (
+        $r.Out -match 'no active-feature pointer' -and $r.Out -match 'specs/002-unrelated') $r.Out
+
     $r = Invoke-SpeckitHook @{ hook_event_name = 'UserPromptSubmit'; cwd = $open; session_id = 'q1'; prompt = 'what does this project do?' }
     Check 'a question-shaped prompt is silent' ($r.Out.Trim() -eq '') $r.Out
     $r = Invoke-SpeckitHook @{ hook_event_name = 'UserPromptSubmit'; cwd = (Join-Path $Work 'no-such-dir'); session_id = 'q2'; prompt = 'add a feature' }
