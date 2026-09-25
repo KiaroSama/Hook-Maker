@@ -601,8 +601,18 @@ function Invoke-WithResourceLock {
 
 # Bounded exclusive lock around registry read-modify-write so two installs
 # running near-simultaneously cannot lose each other's records.
+#
+# The default wait is sized to the HOLDERS, not guessed. A whole-registry read
+# holds this lock ~2.7 s and a record write ~1.4 s (950 records, measured
+# 2026-09-26), and FileShare.None has no queue: a waiter can lose the race to
+# every release. At 10 s, four wizard windows relocating renamed projects at
+# once lost dozens of records and three windows died on their first read. 120 s
+# is a ceiling for that load, not an expected wait; a crashed holder is still
+# reclaimed at once by Open-CrashAwareLock, and a live holder that never lets
+# go still ends in the same timeout error. Resource locks keep their 10 s:
+# their holders are short.
 function Invoke-WithInstallRegistryLock {
-    param([Parameter(Mandatory = $true)][string]$ToolRoot, [Parameter(Mandatory = $true)][scriptblock]$Action, [int]$TimeoutSeconds = 10)
+    param([Parameter(Mandatory = $true)][string]$ToolRoot, [Parameter(Mandatory = $true)][scriptblock]$Action, [int]$TimeoutSeconds = 120)
     $directory = Get-InstallStateDirectory -ToolRoot $ToolRoot
     [void][IO.Directory]::CreateDirectory($directory)
     $lockPath = Join-Path $directory 'install-registry.lock'
