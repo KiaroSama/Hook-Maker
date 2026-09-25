@@ -193,7 +193,45 @@ try {
     $r = Fire -HookPath $BaselineHook -Cwd $plainDir
     Check 'non-git -> silent' ($r.Out -eq '')
     $r = Fire -HookPath $BaselineHook -Cwd $noRemote
-    Check 'no GitHub remote -> silent' ($r.Out -eq '')
+    # The workflow baseline stays silent without a GitHub remote; the README
+    # badge reminder does NOT - the badge rule binds every repository.
+    Check 'no GitHub remote -> no baseline findings' ($r.Out -notmatch 'GITHUB BASELINE CHECK') $r.Out
+    Check 'no GitHub remote, no CI -> the badge guidance still arrives' ($r.Out -match 'README badges: a moderate verified set') $r.Out
+
+    # =====================================================================
+    Write-Host '--- README badges: the moderate verified set (order 55 step 6) ---' -ForegroundColor Cyan
+    function New-BadgeReadme {
+        param([string]$Repo, [int]$Shields, [switch]$WithWorkflowBadge)
+        $row = @(1..$Shields | ForEach-Object { '![b' + $_ + '](https://img.shields.io/badge/fact' + $_ + '-value-blue)' }) -join ' '
+        if ($WithWorkflowBadge) { $row += ' [![ci](https://github.com/o/r/actions/workflows/ci.yml/badge.svg)](https://github.com/o/r/actions)' }
+        # A plain image near the title is NOT a badge and must not be counted.
+        Set-Content -LiteralPath (Join-Path $Repo 'README.md') -Value ($row + "`n![logo](https://example.com/logo.png)`n`n# Title`n") -Encoding utf8
+    }
+    $bd3 = New-GitRepo 'badges3' -GithubRemote:$false
+    New-BadgeReadme -Repo $bd3 -Shields 3
+    $r = Fire -HookPath $BaselineHook -Cwd $bd3
+    Check 'badges: a 3-badge README gets the below-six advisory' ($r.Out -match 'shows 3 badge image\(s\)[^"]*below six') $r.Out
+    Check 'badges: the guidance carries the priority order and the truth floors' (
+        $r.Out -match 'CI status, license, version/release' -and $r.Out -match 'No fabricated status, no private data in badge URLs' -and $r.Out -match 'never padded') $r.Out
+    Check 'badges: advisory only - never a decision' ($r.Out -notmatch '"decision"') $r.Out
+    $bd14 = New-GitRepo 'badges14' -GithubRemote:$false
+    New-BadgeReadme -Repo $bd14 -Shields 14
+    $r = Fire -HookPath $BaselineHook -Cwd $bd14
+    Check 'badges: a 14-badge README gets the above-ten advisory, still no block' (
+        $r.Out -match 'shows 14 badge image\(s\)[^"]*above ten' -and $r.Out -notmatch '"decision"') $r.Out
+    $bd7 = New-GitRepo 'badges7' -GithubRemote:$false
+    New-BadgeReadme -Repo $bd7 -Shields 6 -WithWorkflowBadge
+    $r = Fire -HookPath $BaselineHook -Cwd $bd7
+    Check 'badges: 6 static + 1 workflow badge is in range; the plain logo is not counted' (
+        $r.Out -match 'moderate verified set' -and $r.Out -notmatch 'badge image\(s\) near') $r.Out
+    $r = Fire -HookPath $BaselineHook -Cwd $bd7
+    Check 'badges: the same README state in the same session is said once' ([string]::IsNullOrWhiteSpace([string]$r.Out)) ([string]$r.Out)
+    $r = Fire -HookPath $BaselineHook -Cwd $bd3 -Client 'claude'
+    Check 'badges: an unchanged state stays quiet for the Claude client too' ([string]::IsNullOrWhiteSpace([string]$r.Out)) ([string]$r.Out)
+    $bdClaude = New-GitRepo 'badgesclaude' -GithubRemote:$false
+    $r = Fire -HookPath $BaselineHook -Cwd $bdClaude -Client 'claude'
+    Check 'badges: Claude gets hookSpecificOutput.additionalContext with the guidance' (
+        $r.Out -match '"hookSpecificOutput"' -and $r.Out -match 'additionalContext' -and $r.Out -match 'no root README') $r.Out
 
     # missing .github entirely, npm project
     $b1 = New-GitRepo 'base1'
@@ -251,7 +289,7 @@ updates:
     directory: "/"
 '@
     $r = Fire -HookPath $BaselineHook -Cwd $b4
-    Check 'complete baseline -> silent' ([string]::IsNullOrWhiteSpace([string]$r.Out)) ([string]$r.Out)
+    Check 'complete baseline -> no baseline findings' ([string]$r.Out -notmatch 'GITHUB BASELINE CHECK') ([string]$r.Out)
 
     $deployOnly = New-GitRepo 'deployonly'
     New-Item -ItemType Directory -Path (Join-Path $deployOnly '.github\workflows') -Force | Out-Null
@@ -505,7 +543,7 @@ jobs:
 '@
     Set-Content (Join-Path $directChildPush '.github\dependabot.yml') "version: 2`nupdates:`n  - package-ecosystem: npm`n    directory: /`n  - package-ecosystem: github-actions`n    directory: /"
     $r = Fire -HookPath $BaselineHook -Cwd $directChildPush
-    Check '7.2 a direct-child push: (with nested branches:) is still a trigger; adequate baseline is silent' ([string]::IsNullOrWhiteSpace([string]$r.Out)) ([string]$r.Out)
+    Check '7.2 a direct-child push: (with nested branches:) is still a trigger; adequate baseline reports no findings' ([string]$r.Out -notmatch 'GITHUB BASELINE CHECK') ([string]$r.Out)
 
     # Quoted continue-on-error value.
     $quotedCoe = New-GitRepo 'quotedcoe'

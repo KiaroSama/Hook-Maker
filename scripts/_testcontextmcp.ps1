@@ -57,9 +57,35 @@
     $r = Fire -HookPath $McpHook -Cwd $mcpProj -RawStdin (New-PromptStdin -Cwd $mcpProj -EventName 'UserPromptSubmit' -Prompt 'add the new payments API library and check its docs' -SessionId 's-relevant')
     Check 'a relevant prompt (library/API/docs) emits the reminder' ($r.Out -like '*MCP USAGE CHECK*') $r.Out
     $r2 = Fire -HookPath $McpHook -Cwd $mcpProj -RawStdin (New-PromptStdin -Cwd $mcpProj -EventName 'UserPromptSubmit' -Prompt 'now also update the library docs further' -SessionId 's-relevant')
-    Check 'the SAME session does not repeat the reminder on the next relevant prompt' ($r2.Exit -eq 0 -and $r2.Out -eq '') $r2.Out
+    # The MCP-relevance note is still once per session; the RESEARCH reminder
+    # is per request (order 55 step 5), so a new prompt in the same session
+    # carries the research text and nothing else.
+    Check 'the SAME session does not repeat the MCP-relevance note on the next relevant prompt' (
+        $r2.Exit -eq 0 -and $r2.Out -notmatch 'MCP USAGE CHECK - this task looks like') $r2.Out
+    Check 'but the next, different request DOES get the research reminder' ($r2.Out -match 'RESEARCH CHECK') $r2.Out
     $r3 = Fire -HookPath $McpHook -Cwd $mcpProj -RawStdin (New-PromptStdin -Cwd $mcpProj -EventName 'UserPromptSubmit' -Prompt 'add another library dependency' -SessionId 's-relevant-2')
     Check 'a NEW session with a relevant prompt reminds again' ($r3.Out -like '*MCP USAGE CHECK*') $r3.Out
+
+    Write-Host '--- Mcp-Usage-Check: research before every task (order 55 step 5) ---' -ForegroundColor Cyan
+    $resProj = New-Proj 'McpResearch'
+    # No dependency keyword at all: the old keyword gate stayed silent here.
+    $r = Fire -HookPath $McpHook -Cwd $resProj -RawStdin (New-PromptStdin -Cwd $resProj -EventName 'UserPromptSubmit' -Prompt 'refactor the login handler to fix the crash' -SessionId 'res-1')
+    Check 'research: a plain edit/debug prompt with no dependency keyword gets the fixed research text' (
+        $r.Out -match 'RESEARCH CHECK' -and $r.Out -match 'three passes' -and $r.Out -match '\.ai/RESEARCH/' -and $r.Out -match 'global-research-rules\.md') $r.Out
+    Check 'research: it is advisory context, never a decision' ($r.Out -notmatch '"decision"') $r.Out
+    Check 'research: it never claims research happened, and a bare web call or old note is not proof' (
+        $r.Out -match 'cannot see whether research happened' -and $r.Out -match 'not proof') $r.Out
+    Check 'research: an unreachable source blocks only the dependent work' (
+        $r.Out -match 'blocker for the work that depends on it' -and $r.Out -match 'independent work continues') $r.Out
+    $r = Fire -HookPath $McpHook -Cwd $resProj -RawStdin (New-PromptStdin -Cwd $resProj -EventName 'UserPromptSubmit' -Prompt 'add a retry option to the export command' -SessionId 'res-1')
+    Check 'research: a second, different request in the same session is NOT suppressed' ($r.Out -match 'RESEARCH CHECK') $r.Out
+    $r = Fire -HookPath $McpHook -Cwd $resProj -RawStdin (New-PromptStdin -Cwd $resProj -EventName 'UserPromptSubmit' -Prompt 'add a retry option to the export command' -SessionId 'res-1')
+    Check 'research: the same request repeated is said once' ($r.Exit -eq 0 -and $r.Out -eq '') $r.Out
+    $r = Fire -HookPath $McpHook -Cwd $resProj -RawStdin (New-PromptStdin -Cwd $resProj -EventName 'UserPromptSubmit' -Prompt 'what time is it?' -SessionId 'res-2')
+    Check 'research: chat that is neither work nor a technical question stays silent' ($r.Exit -eq 0 -and $r.Out -eq '') $r.Out
+    $r = Fire -HookPath $McpHook -Cwd $resProj
+    Check 'research: SessionStart points at the rule instead of the old "may have changed" condition' (
+        $r.Out -match 'Research first' -and $r.Out -notmatch 'whose behavior may have changed') $r.Out
 
     # =====================================================================
     Write-Host '--- Mcp-Usage-Check: Stop gate verifies the "MCP used:" summary line ---' -ForegroundColor Cyan

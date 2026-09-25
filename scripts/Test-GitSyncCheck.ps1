@@ -25,7 +25,10 @@ function New-Repo {
     $repo = Join-Path $ReposRoot $Name
     New-Item -ItemType Directory -Path $repo -Force | Out-Null
     & git -C $repo init -q -b main
-    & git -C $repo config user.email 't@t'
+    # The owner's public address: realistic for this owner's repositories, and
+    # it keeps every Stop-silence assertion below about SYNC state - a fixture
+    # on some other address would trip the new session-commit identity advisory.
+    & git -C $repo config user.email 'Kiaro.Sama.Dev@gmail.com'
     & git -C $repo config user.name 't'
     & git -C $repo config core.autocrlf false
     return $repo
@@ -96,7 +99,11 @@ try {
     $r = Fire -Cwd $clean
     Check 'clean synchronized repository stays silent at Stop' ($r.Exit -eq 0 -and $r.Out -eq '') $r.Out
     $r = Fire -Cwd $clean -EventName 'SessionStart'
-    Check 'clean synchronized repository stays silent at SessionStart' ($r.Exit -eq 0 -and $r.Out -eq '') $r.Out
+    # SessionStart speaks EVERY session now - the owner asked for the identity
+    # reminder each time - but a clean repository still reports no sync state.
+    Check 'clean synchronized repository: SessionStart reports no sync state' ($r.Exit -eq 0 -and $r.Out -notmatch 'GIT SYNC STATUS') $r.Out
+    Check 'and it carries the every-session identity reminder, with nothing to fix here' (
+        $r.Out -match 'COMMIT IDENTITY' -and $r.Out -match '0 commit\(s\) across' -and $r.Out -notmatch 'is NOT the public address') $r.Out
 
     # =====================================================================
     Write-Host '--- dirty task repository: mandatory operational Stop instruction ---' -ForegroundColor Cyan
@@ -127,7 +134,7 @@ try {
     # branch, which otherwise leaves the clone on a nonexistent/empty branch.
     & git clone -q --branch main (Join-Path $ReposRoot 'behind-a-remote.git') (Join-Path $ReposRoot 'behind-b') 2>$null | Out-Null
     $behindB = Join-Path $ReposRoot 'behind-b'
-    & git -C $behindB config user.email 't@t'; & git -C $behindB config user.name 't'; & git -C $behindB config core.autocrlf false
+    & git -C $behindB config user.email 'Kiaro.Sama.Dev@gmail.com'; & git -C $behindB config user.name 't'; & git -C $behindB config core.autocrlf false
     [System.IO.File]::WriteAllText((Join-Path $behindA 'f.txt'), 'v2-from-a', (New-Object System.Text.UTF8Encoding $false))
     & git -C $behindA add f.txt
     & git -C $behindA commit -q -m 'advance origin'
@@ -226,7 +233,8 @@ try {
     Write-Host '--- Windows PowerShell 5.1: HM-08 task-scoped worktree path ---' -ForegroundColor Cyan
     $ps5wt = New-PushedRepo 'ps5-wt'
     $rBase = Fire -Cwd $ps5wt -EventName 'SessionStart' -SessionId 'ps5wt-sess' -Exe 'powershell.exe'
-    Check 'Windows PowerShell 5.1: SessionStart baseline capture runs cleanly (silent, no error)' ($rBase.Exit -eq 0 -and $rBase.Out -eq '' -and $rBase.Err -eq '') $rBase.Err
+    Check 'Windows PowerShell 5.1: SessionStart baseline capture runs cleanly (no sync state, no error)' ($rBase.Exit -eq 0 -and $rBase.Out -notmatch 'GIT SYNC STATUS' -and $rBase.Err -eq '') $rBase.Err
+    Check 'Windows PowerShell 5.1: the identity reminder renders there too' ($rBase.Out -match 'COMMIT IDENTITY') $rBase.Out
     $ps5wtExtra = Join-Path $ReposRoot 'ps5-wt-extra'
     & git -C $ps5wt worktree add -q $ps5wtExtra -b ps5-wt-extra 2>$null
     [System.IO.File]::WriteAllText((Join-Path $ps5wtExtra 'new.txt'), 'uncommitted', (New-Object System.Text.UTF8Encoding $false))
@@ -254,7 +262,7 @@ try {
     # proves "existed unchanged before the task", not merely "nothing to see".
     [System.IO.File]::WriteAllText((Join-Path $wtPreOther 'pre.txt'), 'pre-existing dirt', (New-Object System.Text.UTF8Encoding $false))
     $rBaseline = Fire -Cwd $wtPre -EventName 'SessionStart' -SessionId 'wt-pre-sess'
-    Check 'SessionStart baseline capture is silent (no output)' ($rBaseline.Exit -eq 0 -and $rBaseline.Out -eq '') $rBaseline.Out
+    Check 'SessionStart baseline capture reports no sync state (only the identity reminder)' ($rBaseline.Exit -eq 0 -and $rBaseline.Out -notmatch 'GIT SYNC STATUS' -and $rBaseline.Out -match 'COMMIT IDENTITY') $rBaseline.Out
     $r = Fire -Cwd $wtPre -SessionId 'wt-pre-sess'
     Check 'a pre-existing, unchanged worktree (even an already-dirty one) never blocks completion' ($r.Out -notmatch '"decision":"block"') $r.Out
     Check 'a pre-existing, unchanged worktree produces no output at all (main repo clean, nothing task-scoped)' ($r.Exit -eq 0 -and $r.Out -eq '') $r.Out
@@ -480,7 +488,7 @@ try {
     # The bare remote's HEAD still points at the init-default branch, so the
     # clone lands on an unborn branch - switch to the real pushed 'main' first.
     & git -C $vocab3Clone checkout -q main 2>$null
-    & git -C $vocab3Clone config user.email 't@t'
+    & git -C $vocab3Clone config user.email 'Kiaro.Sama.Dev@gmail.com'
     & git -C $vocab3Clone config user.name 't'
     [System.IO.File]::WriteAllText((Join-Path $vocab3Clone 'g.txt'), 'remote work', (New-Object System.Text.UTF8Encoding $false))
     & git -C $vocab3Clone add g.txt
@@ -498,8 +506,68 @@ try {
         $rUnknown.Out -match 'cannot be confirmed unchanged') $rUnknown.Out
 
     # =====================================================================
+    Write-Host '--- order 55 step 2: commit identity and branch disposition ---' -ForegroundColor Cyan
+    # A repository whose history holds another address, a bot and GitHub's own
+    # web-merge committer. Only the first is counted, and NO address is printed.
+    $idRepo = New-PushedRepo 'identity'
+    & git -C $idRepo -c user.email='someone.private@example.invalid' commit -q --allow-empty -m other
+    & git -C $idRepo -c user.name='dependabot[bot]' -c user.email='49699333+dependabot[bot]@users.noreply.github.com' commit -q --allow-empty -m bot
+    & git -C $idRepo -c user.name='GitHub' -c user.email='noreply@github.com' commit -q --allow-empty -m web
+    & git -C $idRepo push -q origin main
+    $r = Fire -Cwd $idRepo -EventName 'SessionStart' -SessionId 'id-sess'
+    Check 'identity: the reminder names the public address and the rewrite obligation' (
+        $r.Out -match 'COMMIT IDENTITY' -and $r.Out -match 'Kiaro\.Sama\.Dev@gmail\.com' -and $r.Out -match 'MUST be rewritten') $r.Out
+    Check 'identity: exactly one commit is counted - the bot and the noreply@ system committer are not' (
+        $r.Out -match '1 commit\(s\) across 4 commit') $r.Out
+    Check 'identity: no other address is ever printed' (
+        $r.Out -notmatch 'example\.invalid' -and $r.Out -notmatch 'dependabot\[bot\]@') $r.Out
+    Check 'identity: .mailmap is named as no fix' ($r.Out -match '\.mailmap does not remove') $r.Out
+
+    $idLocal = New-Repo 'identity-local'
+    & git -C $idLocal config user.email 'not.public@example.invalid'
+    & git -C $idLocal commit -q --allow-empty -m local
+    $r = Fire -Cwd $idLocal -EventName 'SessionStart' -SessionId 'id-local'
+    Check 'identity: a repository WITHOUT a remote still gets the reminder' ($r.Out -match 'COMMIT IDENTITY') $r.Out
+    Check 'identity: the effective identity is reported as not public, without its value' (
+        $r.Out -match 'is NOT the public address' -and $r.Out -notmatch 'not\.public@') $r.Out
+    $r = Fire -Cwd $idLocal -SessionId 'id-local'
+    Check 'identity: no remote is still silent at Stop (nothing to synchronise)' ($r.Exit -eq 0 -and $r.Out -eq '') $r.Out
+
+    # A commit made DURING the session on another address is reported at Stop.
+    $idNew = New-PushedRepo 'identity-new'
+    Fire -Cwd $idNew -EventName 'SessionStart' -SessionId 'id-new' | Out-Null
+    & git -C $idNew -c user.email='someone.private@example.invalid' commit -q --allow-empty -m late
+    & git -C $idNew push -q origin main
+    $r = Fire -Cwd $idNew -SessionId 'id-new'
+    Check 'identity: a session commit on another address is reported at Stop, as advice not a block' (
+        $r.Out -match 'the commits made in this session' -and $r.Out -notmatch '"decision"\s*:\s*"block"') $r.Out
+    Check 'identity: and still without printing the address' ($r.Out -notmatch 'example\.invalid') $r.Out
+
+    # Disposition: a merged stray and a branch holding unique commits.
+    $dispo = New-PushedRepo 'disposition'
+    & git -C $dispo remote set-head origin main
+    & git -C $dispo branch merged-stray
+    & git -C $dispo checkout -q -b has-unique
+    & git -C $dispo commit -q --allow-empty -m unique
+    & git -C $dispo checkout -q main
+    Fire -Cwd $dispo -EventName 'SessionStart' -SessionId 'dispo' | Out-Null
+    & git -C $dispo checkout -q -b task-branch
+    & git -C $dispo commit -q --allow-empty -m task
+    $r = Fire -Cwd $dispo -SessionId 'dispo'
+    Check 'disposition: the Stop instruction states the leave-no-branch-open rule and its floors' (
+        $r.Out -match 'Leave no branch open' -and $r.Out -match 'Never delete a branch with unique unmerged commits') $r.Out
+    Check 'disposition: a merged stray is listed as merged' ($r.Out -match 'merged into origin/main[^\r\n]*merged-stray') $r.Out
+    Check 'disposition: a branch with unique commits is listed as holding them' ($r.Out -match 'holding commits not in origin/main[^\r\n]*has-unique') $r.Out
+    Check 'disposition: nothing was deleted or merged by the hook' (
+        (@(& git -C $dispo for-each-ref --format='%(refname:short)' refs/heads) -join ',') -match 'merged-stray' -and
+        (@(& git -C $dispo for-each-ref --format='%(refname:short)' refs/heads) -join ',') -match 'has-unique') ''
+
+    # =====================================================================
     Write-Host '--- E-13: static safety - the hook reports, it never reconciles ---' -ForegroundColor Cyan
-    $gscText = [System.IO.File]::ReadAllText($Hook)
+    # EVERY file of the hook: it spans three since the identity and branch-
+    # disposition responsibilities moved into siblings, and a check that read
+    # only the entry point would pass while a sibling mutated the repository.
+    $gscText = (@(Get-ChildItem -LiteralPath (Split-Path -Parent $Hook) -Filter '*.ps1' | Sort-Object Name | ForEach-Object { [System.IO.File]::ReadAllText($_.FullName) }) -join "`n")
     # The hook runs only read-only git plumbing; no mutating git verb may appear
     # as an ARGUMENT to its Invoke-Git wrapper. (The words appear in the agent
     # INSTRUCTION text as prose - assert on the @('verb'...) call shape instead.)
