@@ -5,8 +5,10 @@
 # its source was never scanned is the defect this hook exists to prevent:
 #   GLOBAL  <home>\.claude\skills          (Codex: <home>\.agents\skills)
 #   LOCAL   <project>\.claude\skills       (Codex: <project>\.agents\skills)
-#   PLUGIN  <home>\.claude\plugins\cache\<marketplace>\<plugin>\<version>\skills\*
-#           reported as "<plugin>:<skill>", which is how the client addresses it.
+#   PLUGIN  every individual skill the active client really loads, from its
+#           install records (_skilldiscovery.ps1): Claude plugins + Desktop
+#           skills, or Codex enabled plugins + Codex/shared skill folders.
+#           Reported by exact invocation name ("<plugin>:<name>" on Claude).
 # Plus a FOURTH, uninstalled source: the external skill library named by
 # SKILLS_DIR / AI_SKILLS_DIR (no built-in default),
 # which is searched AGAINST THE CURRENT PROMPT and reported as ready-to-run
@@ -125,7 +127,13 @@ $script:SkillsRequirement = 'CLOSING REQUIREMENT - end the final task summary wi
 # One line, both advisories. Spec Kit is the ROUTE a task takes; the skills
 # inventory above is the SET a task may use. Naming the route here costs a
 # line and stops the inventory reading as the whole policy.
-$script:SpecKitRouting = 'Spec Kit routes every task that changes the project: no .specify/ yet -> speckit-init then speckit-constitution; a feature or behaviour change -> speckit-specify, clarify, plan, tasks, analyze, implement, in that order; a bug -> diagnose, then speckit-converge on a spec-bearing feature or the full chain otherwise; resumed work or doubt about completeness -> speckit-converge. Run each to the letter.'
+$script:SpecKitRouting = 'Spec Kit routes every task that changes the project: no .specify/ yet -> speckit-init then speckit-constitution; a feature or behaviour change -> speckit-specify, clarify, plan, tasks, analyze, implement, in that order; a bug -> diagnose, then speckit-converge on a spec-bearing feature or the full chain otherwise; resumed work or doubt about completeness -> speckit-converge. Run each to the letter. A NEW REQUEST MID-TASK (global-spec-kit-rules.md, Mid-task Request Intake): record the request delta with requirement IDs and acceptance criteria, update the affected spec, plan, tasks and skill selection, rerun the affected gates, then resume implementation - only work that depends on the delta waits; independent work continues.'
+# Order 55 step 4a, verbatim. Routing is per SKILL, because an agent sees
+# skills, not plugins; and security work has one entry point.
+$script:SkillRoutingLines = @(
+    '- Every visible skill has its own routing line in global-skill-routing.md; user-level, Desktop and Kiaro template skills are in global-skills-catalogue.md. Route by that line, not by the plugin name; where two skills share a job, the line names the default.',
+    '- Security work enters at the security-audit skill, never at a scanner. semgrep, codeql, SARIF, insecure-defaults and differential-review are evidence that workflow calls for. It runs in guidance mode by default and in full audit mode only on an explicit audit, pen-test, end-to-end review, or a request for report artifacts.'
+)
 $script:ImportGuidance = 'Import guidance: copy the minimal set (1-5) as real folders (never reparse points, junctions or shortcuts), exclude secrets/caches/VCS metadata, never overwrite a modified project skill silently, and record source/destination/hash/agent/reason in .ai/SKILLS.md.'
 
 # ---- shared skill library (searched by prompt, never enumerated into output) --
@@ -174,18 +182,15 @@ else {
     if ($client -eq 'codex') { [void]$globalSkillsDirs.Add('/etc/codex/skills') }
 }
 
-# ---- plugin skill cache -----------------------------------------------------
-# Claude Code installs a plugin as
-# <root>\<marketplace>\<plugin>\<version>\skills\<skill>\, and addresses its
-# skills as "<plugin>:<skill>". Codex documents no plugin cache, so the default
-# is Claude's; an explicit PLUGIN_SKILLS_ROOT overrides it for any client (and
-# keeps the test suite off the real machine's plugins).
+# ---- plugin skill cache walk (explicit override only) -----------------------
+# Plugin skills are discovered from the client's INSTALL RECORDS
+# (_skilldiscovery.ps1): the old default - globbing the whole Claude cache -
+# read uninstalled plugins and stale versions and missed root and declared
+# skills. An explicit PLUGIN_SKILLS_ROOT still walks
+# <root>\<marketplace>\<plugin>\<version>\skills\<skill> for any client.
 $pluginRoot = ''
 if ($config.ContainsKey('PLUGIN_SKILLS_ROOT') -and $config['PLUGIN_SKILLS_ROOT'] -ne '') {
     $pluginRoot = $config['PLUGIN_SKILLS_ROOT']
-}
-elseif ($client -ne 'codex' -and -not [string]::IsNullOrWhiteSpace($homeDir)) {
-    $pluginRoot = Join-Path $homeDir '.claude\plugins\cache'
 }
 $hasPluginRoot = (-not [string]::IsNullOrWhiteSpace($pluginRoot)) -and (Test-Path -LiteralPath $pluginRoot -PathType Container)
 
@@ -227,12 +232,16 @@ if ($config.ContainsKey('LIBRARY_INDEX_TTL_MINUTES')) {
         $indexTtlMinutes = $parsed
     }
 }
-$indexConfigHash = Get-ShortHash (($libraryDir + '|' + $pluginRoot + '|' + $client).ToLowerInvariant())
-
-# Skill discovery and indexing. A sibling, not inline: it is its own
+# Skill discovery and indexing. Siblings, not inline: each is its own
 # responsibility and this file had reached the size ceiling. The installer
-# stages a hook's whole folder, so it travels with the runtime.
+# stages a hook's whole folder, so they travel with the runtime.
 . (Join-Path $PSScriptRoot '_skillindex.ps1')
+. (Join-Path $PSScriptRoot '_skilldiscovery.ps1')
+. (Join-Path $PSScriptRoot '_skilldrift.ps1')
+$skillDiscovery = New-SkillDiscoveryConfig
+# The source-state stamp makes an install, removal or toggle rebuild the index
+# at once instead of after the TTL.
+$indexConfigHash = Get-ShortHash (($libraryDir + '|' + $pluginRoot + '|' + $client + '|' + ($skillDiscovery | ConvertTo-Json -Compress) + '|' + (Get-SkillSourceStamp $skillDiscovery)).ToLowerInvariant())
 
 # The Stop/SubagentStop decision. Same reason it is a sibling: it is its own
 # responsibility, and this file has no room for it.
@@ -305,8 +314,12 @@ foreach ($p in $index.Plugin) {
     $full = $p.Plugin + ':' + $p.Leaf
     $pluginNames[$full.ToLowerInvariant()] = $true
     $pluginNames[([string]$p.Leaf).ToLowerInvariant()] = $true
-    if (-not $pluginsByPlugin.ContainsKey($p.Plugin)) { $pluginsByPlugin[$p.Plugin] = 0 }
-    $pluginsByPlugin[$p.Plugin] = $pluginsByPlugin[$p.Plugin] + 1
+    foreach ($alias in @($p.Name, $p.Invocation)) {
+        if (-not [string]::IsNullOrWhiteSpace([string]$alias)) { $pluginNames[([string]$alias).ToLowerInvariant()] = $true }
+    }
+    $group = if ([string]::IsNullOrWhiteSpace($p.Plugin)) { [string]$p.Source } else { [string]$p.Plugin }
+    if (-not $pluginsByPlugin.ContainsKey($group)) { $pluginsByPlugin[$group] = 0 }
+    $pluginsByPlugin[$group] = $pluginsByPlugin[$group] + 1
 }
 $installedNames = @{}
 foreach ($key in $byName.Keys) { $installedNames[$key] = $true }
@@ -531,8 +544,12 @@ if ($eventName -eq 'UserPromptSubmit') {
     $lines = New-Object System.Collections.Generic.List[string]
     [void]$lines.Add('SKILL POLICY CHECK (' + $client + ') - skill use is MANDATORY (skill-policy: Core Principle), not a judgement call: run this check at task start and again whenever the work becomes a new kind of job. Every step a skill covers runs THROUGH that skill, never by hand because it looks simple; a matched library skill is COPIED into the project under the standing authorization (exact command below) and recorded in .ai/SKILLS.md; a feature request runs the mattpocock chain (grilling + domain-modeling first). Sources searched: project, global, plugin, and the shared library.')
     if ($topInstalled.Count -gt 0) {
-        [void]$lines.Add('INSTALLED and matching this prompt - activate the relevant ones by the exact name: in their SKILL.md (no authorization needed, they are already loadable):')
-        foreach ($m in $topInstalled) { [void]$lines.Add('- ' + $m.Name + ' [' + $m.Where + ']') }
+        [void]$lines.Add('INSTALLED and matching this prompt - a name-match shortlist, not the full inventory. Invoke the relevant ones by the exact name shown (no authorization needed, they are enabled and loadable) and follow the procedure in the SKILL.md named after the arrow:')
+        foreach ($m in $topInstalled) {
+            $where = ''
+            if ($null -ne $m.PSObject.Properties['Path'] -and -not [string]::IsNullOrWhiteSpace([string]$m.Path)) { $where = ' -> ' + (Join-Path $m.Path 'SKILL.md') }
+            [void]$lines.Add('- ' + $m.Name + ' [' + $m.Where + ']' + $where)
+        }
     }
     if ($topLibrary.Count -gt 0) {
         [void]$lines.Add('IN THE LIBRARY but NOT installed - these match this prompt. Importing a skill is an AUTHORIZED operation under ' + $policyFile + ': ask the user first, then run the exact command, then record source/destination/date/reason in .ai/SKILLS.md. This hook never copies anything itself.')
@@ -547,6 +564,7 @@ if ($eventName -eq 'UserPromptSubmit') {
         [void]$lines.Add('No skill name matched this prompt in any of the four sources. That is a name-level match only, not proof that no skill applies - if the task is clearly specialised, look through the sources yourself before deciding.')
         if ($hasLibrary) { [void]$lines.Add('Library: ' + $libraryDir) }
     }
+    foreach ($routingLine in $script:SkillRoutingLines) { [void]$lines.Add($routingLine) }
     [void]$lines.Add($script:SpecKitRouting)
     [void]$lines.Add($script:SkillsRequirement)
     $emit = Write-HookResult -EventName $eventName -Kind 'context' -Message ($lines.ToArray() -join "`n")
@@ -573,9 +591,17 @@ if ($index.Plugin.Count -gt 0) {
     $suffix = ''
     if ($pluginSummary.Count -gt $shown.Count) { $suffix = ', +' + ($pluginSummary.Count - $shown.Count) + ' more plugins' }
     [void]$lines.Add('Plugin skills: ' + $index.Plugin.Count + ' across ' + $pluginsByPlugin.Count + ' plugins - ' + ($shown -join ', ') + $suffix + '. Address these as <plugin>:<skill>.')
+    # Enabled, disabled and explicit-only are different facts; only the first
+    # is ever put on a shortlist (see _promptmatch.ps1).
+    $disabledCount = @($index.Plugin | Where-Object { $_.Status -eq 'disabled' }).Count
+    $explicitCount = @($index.Plugin | Where-Object { $_.Explicit -eq '1' }).Count
+    [void]$lines.Add('Of these: ' + ($index.Plugin.Count - $disabledCount) + ' enabled, ' + $disabledCount + ' disabled (not loadable), ' + $explicitCount + ' explicit-only (only when the user names them).')
 }
 elseif ($hasPluginRoot) {
     [void]$lines.Add('Plugin skills: none found under ' + $pluginRoot + '.')
+}
+if ($index.Partial.Count -gt 0) {
+    [void]$lines.Add('Skill discovery was PARTIAL (the list above is not complete): ' + ((@($index.Partial) | Select-Object -First 6) -join '; ') + '.')
 }
 [void]$lines.Add('- Activate the relevant ones by the exact name: in each SKILL.md - never by folder, plugin, marketplace or category label.')
 if ($hasRecord) {
@@ -586,6 +612,20 @@ if ($hasLibrary) {
     [void]$lines.Add('- ' + $script:ImportGuidance)
 }
 [void]$lines.Add('- Select only the minimal relevant set (1-5). Follows ' + $policyFile + '.')
+foreach ($routingLine in $script:SkillRoutingLines) { [void]$lines.Add($routingLine) }
+
+# Catalogue drift, once per session per unchanged gap. Project-local skills are
+# excluded: they are library copies, and the global rules never route them.
+$driftNames = @(@($index.Plugin | Where-Object { $_.Status -ne 'disabled' } | ForEach-Object { $_.Name }) +
+    @($byName.Values | Where-Object { $_.Sources -contains 'global' } | ForEach-Object { $_.Name }))
+$rulesDir = Get-SkillRulesDirectory -CodexHome $skillDiscovery.CodexHome
+$drift = Get-SkillCatalogueDrift -RulesDir $rulesDir -DiscoveredNames $driftNames -Index $index
+$driftLines = @(Get-SkillDriftLines -Drift $drift -RulesDir $rulesDir)
+if ($driftLines.Count -gt 0) {
+    $driftPrint = if ($null -eq $drift) { 'not-checked|' + $rulesDir } else { $drift.Fingerprint }
+    $driftClaim = Invoke-DeliveryClaim -Path ((Join-Path $stateDir ('SkillsCheck-drift-' + $projectKey + '.txt')) + '.claims.json') -Identity (Get-DeliveryIdentity $hookInput) -Fingerprint $driftPrint
+    if ($driftClaim.Admitted) { foreach ($dl in $driftLines) { [void]$lines.Add($dl) } }
+}
 [void]$lines.Add($script:SpecKitRouting)
 [void]$lines.Add($script:SkillsRequirement)
 
