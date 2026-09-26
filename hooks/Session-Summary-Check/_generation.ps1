@@ -18,16 +18,15 @@
 # 1. It detects and attributes a premature summary; it does not prevent one.
 #    Claude Code runs Stop AFTER the response is displayed, and Codex answers a
 #    rejected Stop by synthesising a continuation rather than un-sending a turn
-#    that already finished. Neither client exposes a way to withhold a response.
-#    A design whose correctness depends on holding the final section back cannot
-#    be built on either supported client, and this one does not pretend to.
+#    that already finished. This observer cannot withhold a displayed response.
+#    This passive observer does not own the client's output transport. A
+#    display-level guarantee needs an output-owning integration, not this store.
 #
-# 2. Readiness proves nothing OBJECTED, not that everything CHECKED. Verdicts
-#    are read from the objections the gates already record, so a required gate
-#    that never ran leaves no objection and is indistinguishable from one that
-#    passed. Strengthening that needs an affirmative registration in every
-#    shipped gate - one coordinated change across all of them - and is
-#    deliberately not done here.
+# 2. A Stop event is not evidence that a summary exists, nor that every gate
+#    passed. The observer requires eligible CURRENT assistant text. Only an
+#    explicit ready record with evidence can support readiness; absent gate
+#    observations stay unverified. Historical blocks are not current verdicts.
+#    This store never authorizes skipping a gate or claims control of a UI.
 #
 # THE ALLOWANCE IS WHY A CONTINUATION IS NOT A NEW GENERATION. A hook-generated
 # correction carries the same task id and therefore lands on the same
@@ -85,27 +84,59 @@ function Get-GenerationIdentity {
 
 function Test-GenerationEntryShape {
     param($Entry)
+    if ($Entry -isnot [System.Management.Automation.PSCustomObject]) { throw 'generation entry shape' }
     foreach ($name in @('taskId', 'actor', 'state', 'evidence', 'verdicts', 'publication', 'endedAt')) {
         if ($null -eq $Entry.PSObject.Properties[$name]) { throw 'missing generation field' }
     }
-    if ([string]::IsNullOrWhiteSpace([string]$Entry.taskId) -or [string]$Entry.taskId -notmatch '^[A-Za-z0-9._-]{1,128}$') { throw 'generation identity' }
-    # An unknown state makes the document unreadable rather than defaulting.
-    # Defaulting to live would make the entry uncollectable for ever; defaulting
-    # to terminal would make it collectable while still in use.
-    if ([string]$Entry.state -notin ($script:GenerationLiveStates + $script:GenerationTerminalStates)) { throw 'generation vocabulary' }
-    $terminal = ([string]$Entry.state) -in $script:GenerationTerminalStates
-    $ended = -not [string]::IsNullOrWhiteSpace([string]$Entry.endedAt)
-    # Either half alone is a corrupt document: a terminal state with no end time
-    # cannot be ordered for collection, and an end time on a live state would
-    # make a working generation collectable.
-    if ($terminal -ne $ended) { throw 'generation terminality' }
+    Test-GenerationKeyShape -Value $Entry
+    if ($Entry.state -isnot [string] -or $Entry.state -cnotin ($script:GenerationLiveStates + $script:GenerationTerminalStates)) { throw 'generation vocabulary' }
+    if ($Entry.evidence -isnot [string] -or $Entry.evidence.Length -gt 4096) { throw 'generation evidence shape' }
+    $terminal = $Entry.state -cin $script:GenerationTerminalStates
+    if ($terminal) { Test-GenerationTimestamp $Entry.endedAt }
+    elseif ($null -ne $Entry.endedAt -and $Entry.endedAt -cne '') { throw 'generation terminality' }
     if ($Entry.verdicts -isnot [System.Array] -or @($Entry.verdicts).Count -gt 64) { throw 'unbounded generation verdicts' }
+    $seen = @{}
     foreach ($verdict in @($Entry.verdicts)) {
+        if ($verdict -isnot [System.Management.Automation.PSCustomObject]) { throw 'generation verdict shape' }
         foreach ($name in @('gate', 'affirmative', 'at')) {
             if ($null -eq $verdict.PSObject.Properties[$name]) { throw 'malformed generation verdict' }
         }
-        if ([string]$verdict.gate -notmatch '^[A-Za-z0-9-]{1,64}$') { throw 'generation verdict name' }
+        if ($verdict.gate -isnot [string] -or $verdict.gate -cnotmatch '^[A-Za-z0-9-]{1,64}$' -or $seen.ContainsKey($verdict.gate)) { throw 'generation verdict name' }
+        if ($verdict.affirmative -isnot [bool]) { throw 'generation verdict boolean' }
+        Test-GenerationTimestamp $verdict.at
+        $seen[$verdict.gate] = $true
     }
+    if ($null -ne $Entry.publication) {
+        $pub = $Entry.publication
+        if ($pub -isnot [System.Management.Automation.PSCustomObject]) { throw 'generation publication shape' }
+        foreach ($name in @('at', 'ready', 'failure', 'reported')) {
+            if ($null -eq $pub.PSObject.Properties[$name]) { throw 'missing publication field' }
+        }
+        Test-GenerationTimestamp $pub.at
+        if ($pub.ready -isnot [bool] -or $pub.reported -isnot [bool] -or $pub.failure -isnot [string] -or $pub.failure.Length -gt 8192) { throw 'generation publication fields' }
+        if (($pub.ready -and $pub.failure -ne '') -or (-not $pub.ready -and [string]::IsNullOrWhiteSpace($pub.failure))) { throw 'generation publication verdict' }
+    }
+}
+
+function Test-GenerationKeyShape {
+    param($Value)
+    foreach ($name in @('taskId', 'actor')) {
+        if ($null -eq $Value.PSObject.Properties[$name] -or $Value.$name -isnot [string]) { throw 'generation key shape' }
+    }
+    if ($Value.taskId -cnotmatch '^[A-Za-z0-9._-]{1,128}$' -or $Value.actor.Length -gt 256) { throw 'generation identity' }
+}
+
+function Test-GenerationTimestamp {
+    param($Value)
+    # Older Core JSON decoders materialize ISO dates; Windows PowerShell keeps
+    # strings. Both representations denote the same timestamp, not a boolean.
+    if ($Value -is [DateTime]) {
+        if ($Value.Kind -eq [DateTimeKind]::Unspecified) { throw 'generation timestamp timezone' }
+        return
+    }
+    $parsed = [DateTime]::MinValue
+    if ($Value -isnot [string] -or -not [DateTime]::TryParseExact($Value, 'o', [Globalization.CultureInfo]::InvariantCulture,
+        [Globalization.DateTimeStyles]::RoundtripKind, [ref]$parsed) -or $parsed.Kind -eq [DateTimeKind]::Unspecified) { throw 'generation timestamp' }
 }
 
 function Get-GenerationDocumentState {
@@ -114,7 +145,9 @@ function Get-GenerationDocumentState {
         if ([IO.Directory]::Exists($Path)) { return [pscustomobject]@{ State = 'corrupt'; Doc = $null } }
         if (-not [IO.File]::Exists($Path)) { return [pscustomobject]@{ State = 'absent'; Doc = $null } }
         if ((Get-Item -LiteralPath $Path -ErrorAction Stop).Length -gt 262144) { throw 'oversized generation document' }
-        $doc = Read-JsonFile -Path $Path
+        $raw = [IO.File]::ReadAllText($Path, (New-Object Text.UTF8Encoding($false, $true)))
+        if ((Get-Command ConvertFrom-Json).Parameters.ContainsKey('DateKind')) { $doc = $raw | ConvertFrom-Json -DateKind String }
+        else { $doc = $raw | ConvertFrom-Json }
         if ($null -eq $doc -or $doc -isnot [System.Management.Automation.PSCustomObject]) { throw 'generation shape' }
         $version = 0
         if (-not [int]::TryParse([string](Get-Field $doc 'schema'), [ref]$version)) { throw 'generation version' }
@@ -122,10 +155,24 @@ function Get-GenerationDocumentState {
         foreach ($name in @('sessionId', 'client', 'generations', 'tombstones')) {
             if ($null -eq $doc.PSObject.Properties[$name]) { throw ('missing generation document field: ' + $name) }
         }
-        if ($doc.client -notin @('claude', 'codex')) { throw 'generation client' }
+        if ($doc.client -isnot [string] -or $doc.client -cnotin @('claude', 'codex') -or $doc.sessionId -isnot [string] -or [string]::IsNullOrWhiteSpace($doc.sessionId)) { throw 'generation client or session' }
         if ($doc.generations -isnot [System.Array] -or @($doc.generations).Count -gt $script:GenerationMaxEntries) { throw 'unbounded generations' }
         if ($doc.tombstones -isnot [System.Array] -or @($doc.tombstones).Count -gt $script:GenerationMaxTombstones) { throw 'unbounded tombstones' }
-        foreach ($entry in @($doc.generations)) { Test-GenerationEntryShape -Entry $entry }
+        $identities = @{}
+        foreach ($entry in @($doc.generations)) {
+            Test-GenerationEntryShape -Entry $entry
+            $key = @($entry.taskId, $entry.actor) | ConvertTo-Json -Compress
+            if ($identities.ContainsKey($key)) { throw 'duplicate generation identity' }
+            $identities[$key] = $true
+        }
+        foreach ($stone in @($doc.tombstones)) {
+            if ($stone -isnot [System.Management.Automation.PSCustomObject]) { throw 'tombstone shape' }
+            Test-GenerationKeyShape $stone
+            Test-GenerationTimestamp (Get-Field $stone 'endedAt')
+            $key = @($stone.taskId, $stone.actor) | ConvertTo-Json -Compress
+            if ($identities.ContainsKey($key)) { throw 'duplicate or resurrected tombstone' }
+            $identities[$key] = $true
+        }
         return [pscustomobject]@{ State = 'valid'; Doc = $doc }
     }
     catch { return [pscustomobject]@{ State = 'corrupt'; Doc = $null } }
@@ -167,7 +214,16 @@ function Invoke-GenerationUpdate {
         if ($docState.State -notin @('absent', 'valid')) { return [pscustomobject]@{ Ok = $false; State = ('document-' + $docState.State); Result = $null } }
         $doc = if ($null -eq $docState.Doc) { New-GenerationDocument -Scope $scope } else { $docState.Doc }
         if ($doc.sessionId -cne $scope.Session -or $doc.client -cne $scope.Client) { return [pscustomobject]@{ Ok = $false; State = 'scope-mismatch'; Result = $null } }
+        # Recheck identity after the wait: do not attribute a delayed mutation to
+        # a task that was replaced while another handler owned this store lock.
+        $current = Get-GenerationIdentity $HookInput
+        if ($null -eq $current -or $current.TaskId -cne $identity.TaskId -or $current.Actor -cne $identity.Actor) {
+            return [pscustomobject]@{ Ok = $false; State = 'identity-changed'; Result = $null }
+        }
+        $before = $doc | ConvertTo-Json -Depth 10 -Compress
         $mutateResult = & $Mutate $doc $identity $Arguments
+        $after = $doc | ConvertTo-Json -Depth 10 -Compress
+        if ($before -ceq $after) { return [pscustomobject]@{ Ok = $true; State = 'ok'; Result = $mutateResult } }
         $temp = $scope.Path + '.' + [guid]::NewGuid().ToString('N') + '.tmp'
         [IO.File]::WriteAllText($temp, ($doc | ConvertTo-Json -Depth 10), (New-Object Text.UTF8Encoding($false)))
         # Re-read what was actually written. Committing a document this very
@@ -186,6 +242,8 @@ function Invoke-GenerationUpdate {
         $failure = switch -Wildcard ($message) {
             'generation-*-capacity' { 'capacity'; break }
             'generation retired' { 'retired'; break }
+            'generation terminal' { 'terminal'; break }
+            'generation invalid transition' { 'invalid-transition'; break }
             default { 'persistence-failed' }
         }
         return [pscustomobject]@{ Ok = $false; State = $failure; Result = $null }
@@ -215,6 +273,7 @@ function Test-GenerationRetired {
 
 function Add-GenerationEntry {
     param($Doc, $Identity, [string]$Evidence)
+    if (Test-GenerationRetired -Doc $Doc -TaskId $Identity.TaskId -Actor $Identity.Actor) { throw 'generation retired' }
     # Collection runs HERE and nowhere else: at the moment of pressure, paid for
     # by the write that needs the room. A hook process lives for milliseconds
     # and has no owner for a background prune.
@@ -237,20 +296,19 @@ function Remove-TerminalGenerations {
     foreach ($stone in @($Doc.tombstones)) { [void]$stones.Add($stone) }
     $collected = 0
     foreach ($entry in @($Doc.generations)) {
-        # Only a RECORDED end qualifies. Age never does: a live generation with
-        # an old timestamp is still somebody's open correction chain, and
-        # deleting it refunds the allowance it already spent.
-        if (([string]$entry.state) -in $script:GenerationTerminalStates) {
-            [void]$stones.Add([pscustomobject][ordered]@{ taskId = [string]$entry.taskId; actor = [string]$entry.actor; endedAt = [string]$entry.endedAt })
+        # Terminality alone is not disposal authority. An unresolved verdict or
+        # an unreported/unknown publication must remain available for review.
+        $eligible = $entry.state -ceq 'finalized' -and $null -ne $entry.publication -and
+            $entry.publication.ready -is [bool] -and $entry.publication.ready -and
+            @($entry.verdicts | Where-Object { -not $_.affirmative }).Count -eq 0
+        if ($eligible -and $stones.Count -lt $script:GenerationMaxTombstones) {
+            [void]$stones.Add([pscustomobject][ordered]@{ taskId = $entry.taskId; actor = $entry.actor; endedAt = $entry.endedAt })
             $collected++
-            continue
         }
-        [void]$kept.Add($entry)
+        else { [void]$kept.Add($entry) }
     }
-    # A tombstone is already the bounded remains of something finished, so
-    # dropping the oldest costs only the ability to recognise a very old late
-    # event - which is why this is the one thing here that may be evicted.
-    while ($stones.Count -gt $script:GenerationMaxTombstones) { $stones.RemoveAt(0) }
+    # Never rotate away replay protection to make room. With no trustworthy
+    # client replay horizon, capacity is an explicit refusal, not eviction.
     $Doc.generations = @($kept.ToArray())
     $Doc.tombstones = @($stones.ToArray())
     return $collected
@@ -261,7 +319,7 @@ function Get-GenerationRecord {
     $identity = Get-GenerationIdentity $HookInput
     if ($null -eq $identity) { return $null }
     $state = Get-GenerationDocumentState -Path $identity.Scope.Path
-    if ($state.State -ne 'valid') { return $null }
+    if ($state.State -ne 'valid' -or $state.Doc.sessionId -cne $identity.Scope.Session -or $state.Doc.client -cne $identity.Scope.Client) { return $null }
     return (Find-GenerationEntry -Doc $state.Doc -TaskId $identity.TaskId -Actor $identity.Actor)
 }
 
@@ -275,6 +333,12 @@ function Set-GenerationState {
         if (Test-GenerationRetired -Doc $doc -TaskId $identity.TaskId -Actor $identity.Actor) { throw 'generation retired' }
         $entry = Find-GenerationEntry -Doc $doc -TaskId $identity.TaskId -Actor $identity.Actor
         if ($null -eq $entry) { $entry = Add-GenerationEntry -Doc $doc -Identity $identity -Evidence $opt.Evidence }
+        if ($entry.state -cin $script:GenerationTerminalStates) {
+            if ($entry.state -cne $opt.Target -or ($opt.Evidence -ne '' -and $entry.evidence -cne $opt.Evidence)) { throw 'generation terminal' }
+            return $entry.state
+        }
+        if ($opt.Target -ceq 'finalized' -and ($null -eq $entry.publication -or -not $entry.publication.ready -or
+            @($entry.verdicts | Where-Object { -not $_.affirmative }).Count -gt 0)) { throw 'generation invalid transition' }
         $entry.state = $opt.Target
         # Terminality and its timestamp are written together so the two can
         # never disagree; the validator rejects a document where they do.
@@ -290,12 +354,13 @@ function Set-GenerationState {
 
 function Register-GenerationVerdict {
     param([Parameter(Mandatory = $true)]$HookInput, [Parameter(Mandatory = $true)][string]$Gate, [bool]$Affirmative)
-    $safe = [System.Text.RegularExpressions.Regex]::Replace($Gate, '[^A-Za-z0-9-]+', '')
-    if ($safe -eq '') { return [pscustomobject]@{ Ok = $false; State = 'invalid-gate' } }
+    $safe = $Gate
+    if ($safe -cnotmatch '^[A-Za-z0-9-]{1,64}$') { return [pscustomobject]@{ Ok = $false; State = 'invalid-gate' } }
     $result = Invoke-GenerationUpdate -HookInput $HookInput -Arguments @{ Gate = $safe; Affirmative = $Affirmative } -Mutate {
         param($doc, $identity, $opt)
         $entry = Find-GenerationEntry -Doc $doc -TaskId $identity.TaskId -Actor $identity.Actor
         if ($null -eq $entry) { $entry = Add-GenerationEntry -Doc $doc -Identity $identity -Evidence '' }
+        if ($entry.state -cin $script:GenerationTerminalStates) { throw 'generation terminal' }
         $kept = @(@($entry.verdicts) | Where-Object { [string]$_.gate -cne $opt.Gate })
         if ($kept.Count -ge 64) { throw 'generation-verdict-capacity' }
         $entry.verdicts = @($kept + [pscustomobject][ordered]@{ gate = $opt.Gate; affirmative = $opt.Affirmative; at = [DateTime]::UtcNow.ToString('o') })
@@ -304,27 +369,33 @@ function Register-GenerationVerdict {
     return [pscustomobject]@{ Ok = $result.Ok; State = $(if ($result.Ok) { 'ok' } else { $result.State }) }
 }
 
+function Get-GenerationReadiness {
+    param($Entry, [string[]]$Objections = @(), [string]$Evidence = '')
+    $missing = New-Object System.Collections.ArrayList
+    if ($null -eq $Entry) { return [pscustomobject]@{ Ready = $false; Missing = @('generation-unknown'); Evidence = '' } }
+    if ($Entry.state -cnotin @('ready', 'finalized') -or [string]::IsNullOrWhiteSpace($Entry.evidence)) {
+        [void]$missing.Add('validation-not-recorded')
+    }
+    # Old records may carry a terminal label without verified publication.
+    # Preserve those bytes for review, but never turn the label into proof.
+    if ($Entry.state -ceq 'finalized' -and ($null -eq $Entry.publication -or -not $Entry.publication.ready)) {
+        [void]$missing.Add('publication-unverified')
+    }
+    foreach ($name in @($Objections)) {
+        if ($name -cmatch '^[A-Za-z0-9._:-]{1,128}$') { [void]$missing.Add($name) }
+        else { [void]$missing.Add('unverified-objection') }
+    }
+    foreach ($verdict in @($Entry.verdicts)) {
+        if (-not $verdict.affirmative) { [void]$missing.Add($verdict.gate) }
+    }
+    if ($Evidence -ne '' -and $Entry.evidence -cne $Evidence) { [void]$missing.Add('evidence-moved') }
+    $unique = @($missing | Sort-Object -Unique)
+    return [pscustomobject]@{ Ready = ($unique.Count -eq 0); Missing = $unique; Evidence = $Entry.evidence }
+}
+
 function Test-GenerationReady {
     param([Parameter(Mandatory = $true)]$HookInput, [string[]]$Objections = @(), [AllowEmptyString()][string]$Evidence = '')
-    $missing = New-Object System.Collections.ArrayList
-    $entry = Get-GenerationRecord -HookInput $HookInput
-    if ($null -eq $entry) { return [pscustomobject]@{ Ready = $false; Missing = @('generation-unknown'); Evidence = '' } }
-    # An outstanding objection from any gate is a refusal. Its ABSENCE is the
-    # affirmative this feature can observe - see the limitation at the top of
-    # this file, which is also stated in the shipped documentation.
-    foreach ($name in @($Objections)) {
-        $safe = [System.Text.RegularExpressions.Regex]::Replace([string]$name, '[^A-Za-z0-9-]+', '')
-        if ($safe -ne '') { [void]$missing.Add($safe) }
-    }
-    foreach ($verdict in @($entry.verdicts)) {
-        if (-not [bool]$verdict.affirmative) { [void]$missing.Add([string]$verdict.gate) }
-    }
-    # Readiness is a claim about ONE state of the evidence. When that state
-    # moves, the claim expires rather than latching - a latch that can be set
-    # early and never rechecked is indistinguishable from having no barrier.
-    if ($Evidence -ne '' -and ([string]$entry.evidence) -cne $Evidence) { [void]$missing.Add('evidence-moved') }
-    $unique = @($missing | Sort-Object -Unique)
-    return [pscustomobject]@{ Ready = ($unique.Count -eq 0); Missing = $unique; Evidence = [string]$entry.evidence }
+    return (Get-GenerationReadiness -Entry (Get-GenerationRecord $HookInput) -Objections $Objections -Evidence $Evidence)
 }
 
 function Publish-GenerationSummary {
@@ -334,16 +405,23 @@ function Publish-GenerationSummary {
         if (Test-GenerationRetired -Doc $doc -TaskId $identity.TaskId -Actor $identity.Actor) { throw 'generation retired' }
         $entry = Find-GenerationEntry -Doc $doc -TaskId $identity.TaskId -Actor $identity.Actor
         if ($null -eq $entry) { $entry = Add-GenerationEntry -Doc $doc -Identity $identity -Evidence '' }
-        # Exactly once per generation. A duplicate or delayed handler resolves
-        # to the record the first one committed instead of writing a second,
-        # which is what stops one generation producing two summaries.
+        # At most one OBSERVATION record per generation. Repeated callback
+        # delivery resolves to the first record; this does not prevent an agent
+        # from displaying a second summary outside this observer's control.
         if ($null -ne $entry.publication) {
             return [pscustomobject]@{ Published = $false; AlreadyPublished = $true; Failure = '' }
         }
-        $named = @(@($opt.Missing) | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) })
+        if ($entry.state -cin $script:GenerationTerminalStates) { throw 'generation terminal' }
+        # The caller's earlier read is advisory. A verdict can arrive before
+        # this lock is acquired; derive the committed decision under this lock.
+        $check = Get-GenerationReadiness -Entry $entry -Objections $opt.Missing
+        $confirmedReady = $opt.Ready -and $check.Ready
+        $named = @($check.Missing)
+        if (@($opt.Missing).Count -gt 0) { $named = @($named | Where-Object { $_ -ne 'validation-not-recorded' }) }
+        if (-not $opt.Ready -and $named.Count -eq 0) { $named = @('readiness-unverified') }
         $failureText = if ($named.Count -eq 0) { 'unknown-verdict' } else { ($named -join ', ') }
-        $entry.publication = [pscustomobject][ordered]@{ at = [DateTime]::UtcNow.ToString('o'); ready = $opt.Ready; failure = $(if ($opt.Ready) { '' } else { $failureText }); reported = $false }
-        if ($opt.Ready) {
+        $entry.publication = [pscustomobject][ordered]@{ at = [DateTime]::UtcNow.ToString('o'); ready = $confirmedReady; failure = $(if ($confirmedReady) { '' } else { $failureText }); reported = $false }
+        if ($confirmedReady) {
             $entry.state = 'finalized'
             $entry.endedAt = [DateTime]::UtcNow.ToString('o')
             return [pscustomobject]@{ Published = $true; AlreadyPublished = $false; Failure = '' }
@@ -372,6 +450,7 @@ function Read-GenerationFailureOnce {
         param($doc, $identity, $opt)
         $pending = ''
         foreach ($entry in @($doc.generations)) {
+            if ($entry.actor -cne $identity.Actor) { continue }
             if ($null -eq $entry.publication) { continue }
             if ([bool]$entry.publication.ready) { continue }
             if ($null -ne $entry.publication.PSObject.Properties['reported'] -and [bool]$entry.publication.reported) { continue }
@@ -395,10 +474,54 @@ function Invoke-GenerationCollection {
             # Explicit, and no budget is refilled by the failure. "Delete the
             # oldest" is what this refusal exists to prevent: the oldest entry
             # is as likely to be an active correction chain as anything else.
-            return [pscustomobject]@{ Collected = 0; Refused = $true; Reason = 'nothing terminal to collect' }
+            return [pscustomobject]@{ Collected = 0; Refused = $true; Reason = 'no safely collectable record or tombstone capacity exhausted' }
         }
         return [pscustomobject]@{ Collected = $collected; Refused = $false; Reason = '' }
     }
     if (-not $result.Ok) { return [pscustomobject]@{ Collected = 0; Refused = $true; Reason = $result.State } }
     return $result.Result
+}
+
+
+function Test-GenerationSummaryText {
+    param([string]$Text)
+    if ([string]::IsNullOrWhiteSpace($Text) -or $Text.Length -gt 1048576) { return $false }
+    $done = '(?:DONE|\u0686\u06cc\s+\u0634\u062f|\u0627\u0646\u062c\u0627\u0645[\s\u200c-]*\u0634\u062f\u0647)'
+    $remaining = '(?:REMAINING|\u0686\u06cc\s+\u0645\u0648\u0646\u062f|\u0628\u0627\u0642\u06cc[\s\u200c-]*\u0645\u0627\u0646\u062f\u0647)'
+    $prefix = '^ {0,3}(?:[-*#]+[ \t]*)?'
+    $suffix = '(?:[ \t]*\*{1,2})?[ \t]*(?::|[-\u2013\u2014]|$)[ \t]*(.*)$'
+    $section = ''; $doneBody = $false; $remainingBody = $false
+    $fence = ''; $fenceLength = 0
+    foreach ($raw in @($Text -split '\r?\n')) {
+        $line = $raw -replace '[\u200e\u200f\u202a-\u202e\u2066-\u2069\ufeff]', ''
+        if ($line -match '^[ \t]*>' -or $line -match '^(?: {4}|\t)') { continue }
+        if ($line -match '^ {0,3}(`{3,}|~{3,})(.*)$') {
+            $marker = $Matches[1]; $rest = $Matches[2]
+            if ($fence -eq '') { $fence = $marker.Substring(0, 1); $fenceLength = $marker.Length }
+            elseif ($marker.StartsWith($fence) -and $marker.Length -ge $fenceLength -and $rest.Trim() -eq '') { $fence = ''; $fenceLength = 0 }
+            continue
+        }
+        if ($fence -ne '') { continue }
+        if ($line -match ($prefix + $done + $suffix)) { $section = 'done'; $line = $Matches[1] }
+        elseif ($line -match ($prefix + $remaining + $suffix)) {
+            if ($section -eq '' -or -not $doneBody) { return $false }
+            $section = 'remaining'; $line = $Matches[1]
+        }
+        $body = $line.Trim().Trim('*', '-', '#', ' ').Trim()
+        if ($body -eq '' -or $body -match '^(?:<[^>]*>|TBD|TODO|\.\.\.)$') { continue }
+        if ($section -eq 'done') { $doneBody = $true }
+        elseif ($section -eq 'remaining') { $remainingBody = $true }
+    }
+    return ($doneBody -and $remainingBody)
+}
+
+function Observe-GenerationSummary {
+    param([Parameter(Mandatory = $true)]$HookInput)
+    # Stop timing is not content evidence. The shared reader enforces current
+    # role and child provenance and never borrows a parent's last response.
+    $closing = Get-ClosingAssistantText -HookInput $HookInput
+    if (-not $closing.Known -or -not (Test-GenerationSummaryText $closing.Text)) { return }
+    # This observer has no complete affirmative gate manifest. Absence of old
+    # objections is not proof of readiness, and old blocks are only history.
+    $null = Publish-GenerationSummary -HookInput $HookInput -Ready $false -Missing @('readiness-unverified')
 }
