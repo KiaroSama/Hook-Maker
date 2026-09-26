@@ -83,7 +83,7 @@ function New-GenEntry {
     if ($State -in @('finalized', 'unverified')) { $endedAt = $(if ($Ended -ne '') { $Ended } else { [DateTime]::UtcNow.ToString('o') }) }
     return [pscustomobject][ordered]@{
         taskId = $TaskId; actor = $Actor; state = $State; evidence = 'e0'
-        verdicts = @(); publication = $null; endedAt = $endedAt
+        verdicts = @(); publication = $(if ($State -eq 'finalized') { [pscustomobject]@{ at = $endedAt; ready = $true; failure = ''; reported = $false } } else { $null }); endedAt = $endedAt
     }
 }
 
@@ -175,7 +175,8 @@ try {
 
     # Parent and child differ only by actor and must end independently.
     $child = New-GenInput -Session 's-gen-3' -Event 'SubagentStop' -Agent 'child-1'
-    $null = Set-GenerationState -HookInput $child -State 'finalized'
+    $null = Set-GenerationState -HookInput $child -State 'ready' -Evidence 'child-proof'
+    $null = Publish-GenerationSummary -HookInput $child -Ready $true
     $parentRecord = Get-GenerationRecord -HookInput $h3
     $childRecord = Get-GenerationRecord -HookInput $child
     Check 'T020b parent and child reach terminal state independently' (
@@ -206,7 +207,7 @@ try {
     # Age alone must never qualify: a live entry dated long ago still survives.
     $aged = New-Object System.Collections.ArrayList
     [void]$aged.Add((New-GenEntry -TaskId 'ancient-live' -State 'working'))
-    [void]$aged.Add((New-GenEntry -TaskId 'ancient-done' -State 'unverified' -Ended '2000-01-01T00:00:00.0000000Z'))
+    [void]$aged.Add((New-GenEntry -TaskId 'ancient-done' -State 'finalized' -Ended '2000-01-01T00:00:00.0000000Z'))
     Write-GenDoc -HookInput $h4 -Doc ([pscustomobject][ordered]@{
             schema = 1; sessionId = 's-gen-4'; client = (Get-HookClientId)
             generations = @($aged.ToArray()); tombstones = @()
@@ -276,11 +277,11 @@ try {
     $ioDir = Join-Path $Work 'hookio'
     [void][IO.Directory]::CreateDirectory($ioDir)
     function Invoke-SummaryHook {
-        param([string]$Event, [string]$Session, [string]$Prompt = 'next prompt')
+        param([string]$Event, [string]$Session, [string]$Prompt = 'next prompt', [string]$Answer = '')
         $inPath = Join-Path $ioDir 'in.json'
         $outPath = Join-Path $ioDir 'out.txt'
         $errPath = Join-Path $ioDir 'err.txt'
-        $payload = [ordered]@{ session_id = $Session; cwd = $Work; hook_event_name = $Event; prompt = $Prompt }
+        $payload = [ordered]@{ session_id = $Session; cwd = $Work; hook_event_name = $Event; prompt = $Prompt; last_assistant_message = $Answer }
         [IO.File]::WriteAllText($inPath, ($payload | ConvertTo-Json -Compress), (New-Object Text.UTF8Encoding($false)))
         $proc = Start-BoundedProcess -FilePath 'pwsh' -ArgumentList @('-NoLogo', '-NoProfile', '-File', $hookScript) `
             -RedirectStandardInput $inPath -RedirectStandardOutput $outPath -RedirectStandardError $errPath `
@@ -299,7 +300,11 @@ try {
 
     $wireInput = New-GenInput -Session $wireSession
     $wireRecord = Get-GenerationRecord -HookInput $wireInput
-    Check 'T032 the hook wrote a publication record at Stop' ($null -ne $wireRecord -and $null -ne $wireRecord.publication) (
+    Check 'T032 an empty Stop does not invent a publication' ($null -eq $wireRecord -or $null -eq $wireRecord.publication)
+    $summaryRun = Invoke-SummaryHook -Event 'Stop' -Session $wireSession -Answer "DONE: verified work`nREMAINING: none"
+    Check 'T032 a real summary observation remains silent' ($summaryRun.ExitCode -eq 0 -and $summaryRun.Text -eq '')
+    $wireRecord = Get-GenerationRecord -HookInput $wireInput
+    Check 'T032 the hook wrote a publication record only for observed summary text' ($null -ne $wireRecord -and $null -ne $wireRecord.publication) (
         $(if ($null -eq $wireRecord) { 'no record' } else { ($wireRecord | ConvertTo-Json -Depth 6 -Compress) }))
 
     # --- Polish: nothing written carries content -----------------------------
