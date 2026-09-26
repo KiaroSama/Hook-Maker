@@ -531,7 +531,7 @@ function Observe-GenerationSummary {
     }
     $required = Get-RequiredStopGates -HookInput $HookInput
     if (-not $required.Known) {
-        $null = Publish-GenerationSummary -HookInput $HookInput -Ready $false -Missing @('gate-registration-unreadable')
+        $null = Publish-GenerationSummary -HookInput $HookInput -Ready $false -Missing @('gate-registration-unknown')
         return
     }
     # A receipt older than this process (less a small skew for gates that

@@ -92,9 +92,55 @@ function Read-StopGateReceipt {
     catch { return $null }
 }
 
+# The client's own registration files for this event, as a list of paths that
+# exist. Shared by the observer check below and by the required-gate parser.
+function Get-StopRegistrationFiles {
+    param([Parameter(Mandatory = $true)]$HookInput)
+    $client = Get-HookClientId
+    $root = [string]$env:CLAUDE_PROJECT_DIR
+    if ($client -ne 'claude' -or [string]::IsNullOrWhiteSpace($root)) { $root = [string](Get-Field $HookInput 'cwd') }
+    if ([string]::IsNullOrWhiteSpace($root)) { return @() }
+    $files = switch ($client) {
+        'claude' { @((Join-Path $root '.claude\settings.local.json'), (Join-Path $root '.claude\settings.json'), (Join-Path $script:GateReceiptGlobalRoot '.claude\settings.json')) }
+        'codex' { @((Join-Path $root '.codex\hooks.json'), (Join-Path $script:GateReceiptGlobalRoot '.codex\hooks.json')) }
+        default { @() }
+    }
+    return @($files | Where-Object { [IO.File]::Exists($_) })
+}
+
+# A receipt is state, and state is only written where something reads it: the
+# summary observer must be registered in this client's own files. A project
+# without it gets no receipt at all (the same rule the Stop ledger follows).
+function Test-StopObserverRegistered {
+    param([Parameter(Mandatory = $true)]$HookInput)
+    foreach ($file in @(Get-StopRegistrationFiles -HookInput $HookInput)) {
+        try {
+            if ([IO.File]::ReadAllText($file) -match '[\\/]+Hook-Maker[\\/]+Session-Summary-Check[\\/]+Session-Summary-Check\.ps1') { return $true }
+        }
+        catch { }
+    }
+    return $false
+}
+
+# Receipts are keyed per session, so a project's old ones are pruned when a new
+# round starts: bounded by project, never a machine-wide sweep.
+function Remove-StaleStopGateReceipts {
+    param([Parameter(Mandatory = $true)][string]$Path)
+    try {
+        $dir = Split-Path -Parent $Path
+        $prefix = ([IO.Path]::GetFileName($Path) -split '-')[0..1] -join '-'
+        $cutoff = [DateTime]::UtcNow.AddDays(-3)
+        foreach ($old in @(Get-ChildItem -LiteralPath $dir -File -Filter ($prefix + '-*.json') -ErrorAction SilentlyContinue | Where-Object { $_.LastWriteTimeUtc -lt $cutoff } | Select-Object -First 200)) {
+            try { Remove-Item -LiteralPath $old.FullName -Force -ErrorAction Stop } catch { }
+        }
+    }
+    catch { }
+}
+
 # Called by a gate once it has its input. Returns $null when this is not a Stop
-# round, or when the gate is standing down on its own re-entry (its block is
-# already the round's verdict and must not be overwritten).
+# round, when no summary observer is registered to read the receipt, or when
+# the gate is standing down on its own re-entry (its block is already the
+# round's verdict and must not be overwritten).
 function Start-StopGateReceipt {
     param([Parameter(Mandatory = $true)]$HookInput, [Parameter(Mandatory = $true)][string]$HookName)
     $eventName = [string](Get-Field $HookInput 'hook_event_name')
@@ -104,7 +150,9 @@ function Start-StopGateReceipt {
     }
     $path = Get-StopGateReceiptPath -HookInput $HookInput -Gate $HookName
     if ($path -eq '') { return $null }
+    if (-not (Test-StopObserverRegistered -HookInput $HookInput)) { return $null }
     $script:StopGateVerdict = ''
+    Remove-StaleStopGateReceipts -Path $path
     Write-StopGateReceiptFile -Path $path -Gate $HookName -Verdict 'running'
     return [pscustomobject]@{ Path = $path; Gate = $HookName; Crashed = $false }
 }
@@ -120,23 +168,17 @@ function Complete-StopGateReceipt {
 
 # The gates the CLIENT registered for this event, read from its own
 # registration files - never guessed from what happens to be installed. Returns
-# Known=$false when a registration file exists but cannot be read: readiness is
-# then unknown, never assumed.
+# Known=$false when no registration file exists or one cannot be read:
+# readiness is then unknown, never assumed.
 function Get-RequiredStopGates {
     param([Parameter(Mandatory = $true)]$HookInput)
     $eventName = [string](Get-Field $HookInput 'hook_event_name')
-    $client = Get-HookClientId
-    $root = [string]$env:CLAUDE_PROJECT_DIR
-    if ($client -ne 'claude' -or [string]::IsNullOrWhiteSpace($root)) { $root = [string](Get-Field $HookInput 'cwd') }
-    $files = switch ($client) {
-        'claude' { @((Join-Path $root '.claude\settings.local.json'), (Join-Path $root '.claude\settings.json'), (Join-Path $script:GateReceiptGlobalRoot '.claude\settings.json')) }
-        'codex' { @((Join-Path $root '.codex\hooks.json'), (Join-Path $script:GateReceiptGlobalRoot '.codex\hooks.json')) }
-        default { @() }
-    }
+    # No registration file at all is UNKNOWN, not "no gates": the observer then
+    # cannot tell a gate-free project from one whose registration it failed to find.
+    $files = @(Get-StopRegistrationFiles -HookInput $HookInput)
     if ($files.Count -eq 0) { return [pscustomobject]@{ Known = $false; Gates = @() } }
     $names = New-Object System.Collections.Generic.HashSet[string]
     foreach ($file in $files) {
-        if (-not [IO.File]::Exists($file)) { continue }
         try {
             $doc = [IO.File]::ReadAllText($file, (New-Object Text.UTF8Encoding($false, $true))) | ConvertFrom-Json
             $hooks = Get-Field $doc 'hooks'

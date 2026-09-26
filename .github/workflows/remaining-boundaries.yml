@@ -53,7 +53,10 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Unexpected assertion or test exception.' }
           $report = Get-Content -LiteralPath "$env:BOUNDARY_EVIDENCE/results.json" -Raw | ConvertFrom-Json
           $expectedFailed = if ('${{ matrix.subject }}' -eq 'baseline') { 24 } else { 0 }
-          if ($report.cases.Count -ne 36 -or $report.unexpected -ne 0 -or $report.failed -ne $expectedFailed) { throw 'Incomplete or unexpected native evidence.' }
+          # 38 for the current subject: the shared library set gained _gatereceipts.ps1
+          # (one missing and one empty I02 case); the baseline predates it and stays at 36.
+          $expectedCases = if ('${{ matrix.subject }}' -eq 'baseline') { 36 } else { 38 }
+          if ($report.cases.Count -ne $expectedCases -or $report.unexpected -ne 0 -or $report.failed -ne $expectedFailed) { throw 'Incomplete or unexpected native evidence.' }
           exit 0
       - name: Preserve exact source and remove historical workspace
         if: always()
