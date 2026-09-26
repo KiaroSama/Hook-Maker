@@ -305,6 +305,16 @@ try {
     Check 'with only hard-pruned content present the state is clean and silent' (
         $r.Out -eq '' -and (Get-RecordedCategory $hc5.LocalAppData $proj5) -eq 'clean') ((Get-RecordedCategory $hc5.LocalAppData $proj5) + '|' + $r.Out)
 
+    # Order 55 step 5: persistent research notes survive every cleanup. .ai is
+    # hard-pruned, so a scratch-shaped name inside .ai/RESEARCH/ is never even
+    # discovered - and the note beside it is never touched.
+    $researchNote = Join-Path (New-Dir (Join-Path $proj5 '.ai\RESEARCH')) 'INDEX.md'
+    [System.IO.File]::WriteAllText($researchNote, "# Research index`n")
+    $researchScratch = New-Cache (Join-Path $proj5 '.ai\RESEARCH') '.pytest_cache'
+    $r = Fire -HookPath $hc5.Script -Cwd $proj5 -EventName 'Stop' -LocalAppData $hc5.LocalAppData
+    Check '.ai/RESEARCH/ is never a cleanup candidate and its notes survive' (
+        $r.Out -notmatch 'RESEARCH' -and (Test-Path -LiteralPath $researchNote) -and (Test-Path -LiteralPath $researchScratch)) $r.Out
+
     # =====================================================================
     Write-Host '--- a virtualenv is pruned by its PEP 405 marker, not by its name ---' -ForegroundColor Cyan
     # The real case: 'tools/spotdl-env' is a virtualenv whose name matches none
