@@ -13,6 +13,7 @@ Set-StrictMode -Version 2.0
 $ErrorActionPreference = 'Stop'
 
 . (Join-Path $PSScriptRoot '..\_hooklib.ps1')
+. (Join-Path $PSScriptRoot '..\_scope.ps1')
 
 $hookInput = if ($GitPrePush) {
     [pscustomobject]@{ cwd = (Get-Location).Path; hook_event_name = 'GitPrePush' }
@@ -33,6 +34,9 @@ if ([string]::IsNullOrWhiteSpace($cwd) -or -not (Test-Path -LiteralPath $cwd -Pa
 if ($null -eq (Get-Command git -ErrorAction SilentlyContinue)) { exit 0 }
 $inside = Invoke-QuietCommand -FilePath git -ArgumentList @('-C', $cwd, 'rev-parse', '--is-inside-work-tree')
 if ($LASTEXITCODE -ne 0 -or [string]$inside -ne 'true') { exit 0 }
+# The .gitignore that carries the protected set is the REPOSITORY's, never a
+# subfolder's that the session's working directory happened to drift into.
+$cwd = Resolve-HookProjectRoot $cwd
 
 $patterns = New-Object System.Collections.Generic.List[string]
 # ORDER IS SEMANTIC, so nothing here is ever reordered or removed - the set is

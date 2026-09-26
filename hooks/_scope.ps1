@@ -132,6 +132,28 @@ $script:HookMakerExcludedDirs = @(
     '.ci-runner', '.ci-runner-win', '.ci-work', '.ci-cache'
 )
 
+# ---- project root ----------------------------------------------------------
+# The repository a hook acts on, which is NOT always the hook input's `cwd`.
+#
+# THE DEFECT THIS EXISTS FOR (2026-09-26, seen in two projects the same day): a
+# session whose working directory had drifted into a subfolder handed that
+# subfolder to Ignore-Rules-Check, which then CREATED `logs\.gitignore` holding
+# the whole protected set - rooted patterns that mean nothing relative to a
+# subfolder - while the root .gitignore already carried every one of them.
+# Secrets-Check keeps its registry beside the same `cwd`. Inside a git work tree
+# the root is the top level; outside one the given folder is all there is, and
+# that case keeps its old behaviour exactly.
+function Resolve-HookProjectRoot {
+    param([string]$Path)
+    if ([string]::IsNullOrWhiteSpace($Path)) { return $Path }
+    if ($null -eq (Get-Command git -ErrorAction SilentlyContinue)) { return $Path }
+    $top = @(Invoke-QuietCommand -FilePath git -ArgumentList @('-C', $Path, 'rev-parse', '--show-toplevel'))
+    if ($LASTEXITCODE -ne 0 -or $top.Count -eq 0 -or [string]::IsNullOrWhiteSpace([string]$top[0])) { return $Path }
+    $root = ([string]$top[0]).Trim().Replace('/', '\')
+    if (-not (Test-Path -LiteralPath $root -PathType Container)) { return $Path }
+    return $root
+}
+
 # The shared base plus this hook's own extras, de-duplicated and order-stable.
 function Get-HookExcludedDirs {
     param([string[]]$Extra = @())
