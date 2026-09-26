@@ -232,7 +232,7 @@ function Write-SurvivorAdvisory {
         if (-not (Test-SurvivorShouldReport 'enumeration-unavailable')) { return }
         Write-Finding -Blocking $false -Lines @(
             'TEST COMPLETION CHECK - the process list could not be read (the query was refused or timed out), so possible orphaned test processes from this session could NOT be checked: coverage here is PARTIAL, not clean.',
-            'Run the survivor sweep yourself before finishing (global-test-rules.md -> No Orphaned Test Processes): list what this task started, terminate every survivor, verify it is gone, and report each pid.')
+            'Run the survivor sweep yourself before finishing (global-test-rules.md -> No Orphaned Test Processes; it loads on demand, so read it in full before this work): list what this task started, terminate every survivor, verify it is gone, and report each pid.')
         return
     }
     $rows = @($snapshot.Rows)
@@ -255,6 +255,6 @@ function Write-SurvivorAdvisory {
         [void]$lines.Add('  ... and ' + ($rows.Count - $shown) + ' more matching process(es) not listed - this list is capped at ' +
             $script:SurvivorMaxRows + ' rows, so the coverage shown here is PARTIAL.')
     }
-    [void]$lines.Add('Run the survivor sweep before finishing (global-test-rules.md -> No Orphaned Test Processes): confirm each pid by start time, terminate what this task started, verify it is gone, and report each in the completion message. A report that says done while one of these is yours and alive is false.')
+    [void]$lines.Add('Run the survivor sweep before finishing (global-test-rules.md -> No Orphaned Test Processes; it loads on demand, so read it in full before this work): confirm each pid by start time, terminate what this task started, verify it is gone, and report each in the completion message. A report that says done while one of these is yours and alive is false.')
     Write-Finding -Blocking $false -Lines $lines.ToArray()
 }

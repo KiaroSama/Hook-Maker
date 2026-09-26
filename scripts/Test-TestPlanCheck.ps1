@@ -213,7 +213,7 @@ try {
     $hc4 = New-IsolatedHookCopy
     $proj4 = New-GitRepo 'Relevance'
     $rRelated = Fire -HookPath $hc4.Script -Cwd $proj4 -EventName 'UserPromptSubmit' -Prompt $TestRelatedPrompt -LocalAppData $hc4.LocalAppData
-    Check 'a clearly test-related prompt produces advice' ((Get-Message $rRelated.Out) -match '(?i)TEST PLAN CHECK') $rRelated.Out
+    Check 'a clearly test-related prompt produces advice naming the on-demand policy file' ((Get-Message $rRelated.Out) -match '(?i)TEST PLAN CHECK' -and (Get-Message $rRelated.Out) -match 'global-test-rules\.md; it loads on demand, so read it in full before this work') $rRelated.Out
 
     $hc5 = New-IsolatedHookCopy
     $proj5 = New-GitRepo 'Irrelevance'

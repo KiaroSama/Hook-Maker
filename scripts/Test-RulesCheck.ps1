@@ -313,7 +313,8 @@ try {
     Check 'a standalone ::deep-debug DOES emit the bounded-workflow guidance' (
         $r.Out -like '*::deep-debug is a BOUNDED composite workflow*' -and
         $r.Out -like '*DEEP DEBUG: COMPLETE or DEEP DEBUG: BLOCKED*' -and
-        $r.Out -like '*never an endless audit/refactor/fix loop*') $r.Out
+        $r.Out -like '*never an endless audit/refactor/fix loop*' -and
+        $r.Out -like '*WORKFLOWS.md and skill-policy-deep-debug.md load on demand, so read it in full before this work*') $r.Out
     Check 'guidance states the fixed ::deep-debug ledger goal, never a NATIVE-command claim (steering V39)' (
         $r.Out -like '*every bug and finding fixed and verified*' -and $r.Out -like '*every phase done*' -and
         $r.Out -like '*first task-ledger entries*' -and $r.Out -notlike '*NATIVE command*') $r.Out

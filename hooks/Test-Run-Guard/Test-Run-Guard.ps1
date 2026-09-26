@@ -500,7 +500,7 @@ if ($eventName -eq 'PreToolUse') {
     ' Deep-debug/test-policy bounds this replacement already covers: bounded runner, outer wall + idle' +
     ' ceilings, one shared worker ceiling, process-tree cleanup, real exit-code propagation, no ad hoc sleeps.' +
     ' Where the framework documents its OWN native timeout flag, pass that too - never a guessed one.' +
-    ' Cadence: if code is still being written, defer this suite to the single heavy pass after ALL edits and use light checks until then; run the replacement now only if this is that final pass, the run itself is the work (::test-audit timing, a suite-only failure), or the user asked for it. Every test that will run must already be optimized (global-test-rules: Test Optimization Before Any Run), and the guarded runner is the only owner this run may have - never wrap it in a background job.'
+    ' Cadence: if code is still being written, defer this suite to the single heavy pass after ALL edits and use light checks until then; run the replacement now only if this is that final pass, the run itself is the work (::test-audit timing, a suite-only failure), or the user asked for it. Every test that will run must already be optimized (global-test-rules.md: Test Optimization Before Any Run; it loads on demand, so read it in full before this work), and the guarded runner is the only owner this run may have - never wrap it in a background job.'
 
     # E-04: maintained-textual-output advisory. Fires ONLY when the raw command
     # VISIBLY writes output to a file (a standalone top-level '>'/'>>' token with
