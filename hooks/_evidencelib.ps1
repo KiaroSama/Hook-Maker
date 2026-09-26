@@ -89,3 +89,7 @@ function Test-ClosingDeclaration {
 # Start-StopGateReceipt, and every gate checks for the command before using it.
 $gateReceiptsPath = Join-Path $PSScriptRoot '_gatereceipts.ps1'
 if (Test-Path -LiteralPath $gateReceiptsPath -PathType Leaf) { . $gateReceiptsPath }
+# The reply-language state (steering V45), optional in the same way: a runtime
+# copied before it existed simply adds no LANGUAGE line.
+$replyLanguagePath = Join-Path $PSScriptRoot '_replylanguage.ps1'
+if (Test-Path -LiteralPath $replyLanguagePath -PathType Leaf) { . $replyLanguagePath }

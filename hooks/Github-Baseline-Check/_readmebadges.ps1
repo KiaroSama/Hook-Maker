@@ -1,5 +1,5 @@
-# Github-Baseline-Check - the README badge reminder (plan 012 step 6, steering V40:
-# at least 12 badges, no cap, the Support/donations badge always).
+# Github-Baseline-Check - the README badge reminder (plan 012 step 6, steering V40,
+# cap V45: 12 to 16 badges, the Support/donations badge always).
 #
 # Dot-sourced by Github-Baseline-Check.ps1; definitions only, no exit.
 #
@@ -13,8 +13,9 @@
 # of the root README. It never fetches an image and never checks what a badge
 # claims - that is the agent's job with the evidence in front of it.
 
-$script:BadgeGuidance = 'README badges: at least 12 verified badges, no upper limit, as many rows as needed, always including [![Support donations](https://img.shields.io/badge/Support-donations-d04a9a)](#donate) linked to the README''s "## Donate" section (copy that section verbatim from another of the user''s repositories when it is missing). Fill in this order: CI status, license, version/release, tests or coverage, runtime versions, platform, downloads/distribution, documentation, a real paper/DOI, activity/community, built-with stack, repository facts. Never padded or fabricated; a real shortfall is reported. No private data in badge URLs. Rule: global-repository-rules.md.'
+$script:BadgeGuidance = 'README badges: 12 to 16 verified badges, as many rows as needed, always including [![Support donations](https://img.shields.io/badge/Support-donations-d04a9a)](#donate) linked to the README''s "## Donate" section (copy that section verbatim from another of the user''s repositories when it is missing). Fill in this order: CI status, license, version/release, tests or coverage, runtime versions, platform, downloads/distribution, documentation, a real paper/DOI, activity/community, built-with stack, repository facts; past 16 the order decides which stay. Never padded or fabricated; a real shortfall is reported. No private data in badge URLs. Rule: global-repository-rules.md.'
 $script:BadgeMinimum = 12
+$script:BadgeMaximum = 16
 # The donation badge and the section it links to. The section is looked for in
 # the whole README (bounded), since it normally sits near the end.
 $script:DonateBadgePattern = '(?i)img\.shields\.io/badge/Support-donations-'
@@ -76,6 +77,9 @@ function Get-ReadmeBadgeNote {
     else {
         if ($State.Count -lt $script:BadgeMinimum) {
             [void]$lines.Add('- The README shows ' + $State.Count + ' badge image(s) near its title - below ' + $script:BadgeMinimum + '. Look for verifiable facts not yet shown; a real shortfall is reported, never padded. This is a prompt, not a defect.')
+        }
+        elseif ($State.Count -gt $script:BadgeMaximum) {
+            [void]$lines.Add('- The README shows ' + $State.Count + ' badge image(s) near its title - above ' + $script:BadgeMaximum + '. Trim by the priority order: keep the higher-priority facts. This is a prompt, not a defect.')
         }
         if (-not $State.DonateBadge) {
             [void]$lines.Add('- The Support-donations badge is missing near the title.')

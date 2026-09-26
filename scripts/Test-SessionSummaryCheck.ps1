@@ -352,6 +352,9 @@ try {
     $bytes = [System.IO.File]::ReadAllBytes($Hook)
     Check 'summary: the shipped hook source is pure ASCII' (
         @($bytes | Where-Object { $_ -gt 127 }).Count -eq 0) ('non-ascii bytes: ' + @($bytes | Where-Object { $_ -gt 127 }).Count)
+
+    # =====================================================================
+    . (Join-Path $PSScriptRoot '_testreplylanguage.ps1')
 }
 finally {
     if (-not $KeepArtifacts) {

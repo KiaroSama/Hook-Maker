@@ -283,7 +283,7 @@ function Get-PerRunStateEntries {
 # Codex's exit 2.
 function Write-Deny {
     param([string]$Message)
-    exit (Write-HookResult -EventName 'PreToolUse' -Kind 'deny' -Reason $Message).ExitCode
+    $langInput = Get-Variable -Name hookInput -Scope Script -ValueOnly -ErrorAction SilentlyContinue; if ($null -ne $langInput -and (Get-Command Get-ReplyLanguageLine -ErrorAction SilentlyContinue)) { $Message += (Get-ReplyLanguageLine -HookInput $langInput -Prefix "`n") }; exit (Write-HookResult -EventName 'PreToolUse' -Kind 'deny' -Reason $Message).ExitCode
 }
 
 function Write-Advisory {

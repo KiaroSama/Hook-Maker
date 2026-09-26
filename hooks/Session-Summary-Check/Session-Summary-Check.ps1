@@ -125,6 +125,25 @@ if ($isStopEvent) {
     exit 0
 }
 
+# REPLY LANGUAGE (steering V45). Recorded from the prompt the user TYPED and
+# repeated at the moments a reply tends to flip to English: every typed prompt,
+# and SessionStart after a compaction or a resume. A skill expansion or other
+# injected text is never detected from and gets no line. Outside the cooldown
+# below on purpose: it is one line, and the flip it prevents happens mid-session.
+$languageLine = ''
+if ($null -ne (Get-Command Update-ReplyLanguage -ErrorAction SilentlyContinue)) {
+    try {
+        if ($eventName -eq 'UserPromptSubmit') {
+            [void](Update-ReplyLanguage -HookInput $hookInput)
+            if (-not (Test-InjectedPromptText ([string](Get-Field $hookInput 'prompt')))) { $languageLine = Get-ReplyLanguageLine -HookInput $hookInput }
+        }
+        elseif (@('compact', 'resume') -contains [string](Get-Field $hookInput 'source')) {
+            $languageLine = Get-ReplyLanguageLine -HookInput $hookInput
+        }
+    }
+    catch { $languageLine = '' }
+}
+
 # Client/session/actor reservations replace the old client-less text stamps.
 $config = Read-HookEnv (Join-Path $PSScriptRoot '.env')
 $cooldownMinutes = 15
@@ -141,10 +160,14 @@ if (-not $claim.Ok) {
     [Console]::Out.WriteLine((@{ systemMessage = ('SESSION SUMMARY: reminder reservation is unverified (' + $claim.Reason + '). No task completion was recorded.') } | ConvertTo-Json -Compress))
     exit 0
 }
-if (-not $claim.Admitted) { exit 0 }
+if (-not $claim.Admitted) {
+    if (-not [string]::IsNullOrEmpty($languageLine)) { exit (Write-HookResult -EventName $eventName -Kind 'context' -Message $languageLine).ExitCode }
+    exit 0
+}
 $blocked = @(Get-BlockedGateNames -ProjectKey $projectKey -SessionId $sessionId)
 
 $lines = New-Object System.Collections.ArrayList
+if (-not [string]::IsNullOrEmpty($languageLine)) { [void]$lines.Add($languageLine); [void]$lines.Add('') }
 [void]$lines.Add('SESSION SUMMARY - the message that HANDS THE WORK BACK ends with a short DONE / REMAINING wrap-up. It is the CLOSING section of that message, in the user''s language.')
 [void]$lines.Add('')
 [void]$lines.Add('WHEN: only in the message that actually finishes the task. While you are still working,')

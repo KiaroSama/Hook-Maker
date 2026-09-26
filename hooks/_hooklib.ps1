@@ -1007,7 +1007,7 @@ function Write-StopBlockResult {
     if ($script:StopLedgerReady) {
         try {
             $clause = Get-StopFinalizationClause -HookInput $HookInput
-            if (-not [string]::IsNullOrWhiteSpace($clause)) { $text = $text + "`n" + $clause }
+            if (-not [string]::IsNullOrWhiteSpace($clause)) { $text = $text + "`n" + $clause }; if (Get-Command Get-ReplyLanguageLine -ErrorAction SilentlyContinue) { $text += (Get-ReplyLanguageLine -HookInput $HookInput -Prefix "`n") }
         }
         catch { }
     }
