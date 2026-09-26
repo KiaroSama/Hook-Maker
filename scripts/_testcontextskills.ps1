@@ -434,8 +434,9 @@
     Check 'identity rule: exact name: in each installed SKILL.md, never folder/plugin/marketplace/category' (
         $r.Out -match 'exact name: in each installed SKILL\.md' -and
         $r.Out -match 'never a folder, plugin, marketplace, or category label') $r.Out
-    Check 'claude shape references native /goal and /ponytail:ponytail-audit' (
-        $r.Out -match 'native /goal' -and $r.Out -match 'native /ponytail:ponytail-audit') $r.Out
+    Check 'claude shape writes the fixed ledger goal first and references native /ponytail:ponytail-audit' (
+        $r.Out -match 'write the fixed goal \(every bug and every phase closed\) into the task ledger first' -and
+        $r.Out -notmatch 'native /goal' -and $r.Out -match 'native /ponytail:ponytail-audit') $r.Out
     Check 'goal/orchestration: ::multi-agent = codeword dependency, parallel/subagent skills, cycle bounds' (
         $r.Out -match '::multi-agent is a codeword dependency, not a skill' -and
         $r.Out -match 'superpowers:dispatching-parallel-agents' -and
@@ -508,7 +509,7 @@
         $rx.Out -match 'superpowers:dispatching-parallel-agents' -and $rx.Out -match 'property-based-testing') $rx.Out
     Check 'codex shape does not require the Claude slash literals (client-native references instead)' (
         $rx.Out -notmatch '/ponytail:ponytail-audit' -and $rx.Out -notmatch '/goal' -and
-        $rx.Out -match 'client-native goal command' -and
+        $rx.Out -match 'write the fixed goal \(every bug and every phase closed\) into the task ledger first' -and
         $rx.Out -match 'ponytail-audit capability via this client' -and
         $rx.Out -match 'supported invocation') $rx.Out
     Check 'codex shape never references Claude locations or the claude policy file' (

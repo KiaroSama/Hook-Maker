@@ -91,6 +91,12 @@ $script:InstalledEventMigrations = @(
         From    = @('SessionStart', 'UserPromptSubmit')
         Reason  = 'the prior shipped default delivered policy but never invoked the silent publication observer'
     }
+    [pscustomobject]@{
+        Version = 3
+        Hook    = 'Git-Sync-Check'
+        From    = @('SessionStart', 'Stop', 'SubagentStop')
+        Reason  = 'the prior shipped default had no PreToolUse, so the side-branch and push-once reminders never ran'
+    }
 )
 
 # Case-insensitive, order-insensitive set equality over event names. Duplicates

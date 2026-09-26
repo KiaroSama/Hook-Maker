@@ -112,13 +112,15 @@ try {
     $tool = Join-Path $work 'tool'; [void][IO.Directory]::CreateDirectory((Join-Path $tool 'hooks'))
     [void][IO.Directory]::CreateDirectory((Join-Path $tool 'scripts'))
     $leaves = @('_hooklib.ps1','_stoplib.ps1','_evidencelib.ps1','_taskidentity.ps1','_processtree.ps1','_deliverylib.ps1','_scope.ps1')
+    # The shared set grew with the gate receipts; a baseline subject predates them.
+    if ([IO.File]::Exists((Join-Path $SourceRoot 'hooks/_gatereceipts.ps1'))) { $leaves += '_gatereceipts.ps1' }
     foreach ($leaf in $leaves) { Copy-Item -LiteralPath (Join-Path $SourceRoot ('hooks/'+$leaf)) -Destination (Join-Path $tool ('hooks/'+$leaf)) }
     function New-PlanArtifact { param($RelativePath,$Kind,$SourcePath) return [pscustomobject]@{Path=$RelativePath;Source=$SourcePath} }
     function Add-Artifact { param($Artifact) [void]$script:payload.Add($Artifact) }
     $script:payload = New-Object 'System.Collections.Generic.List[object]'
     Add-SharedRuntimeLibraryArtifacts -ToolRoot $tool -FriendlyName 'Fixture'
-    Check-Boundary 'I01 a complete source set still produces the exact seven libraries' {
-        $script:payload.Count -eq 7 -and (@($script:payload | ForEach-Object { [IO.Path]::GetFileName($_.Path) } | Sort-Object) -join '|') -ceq (@($leaves|Sort-Object) -join '|')
+    Check-Boundary 'I01 a complete source set still produces the exact shared library set' {
+        $script:payload.Count -eq $leaves.Count -and (@($script:payload | ForEach-Object { [IO.Path]::GetFileName($_.Path) } | Sort-Object) -join '|') -ceq (@($leaves|Sort-Object) -join '|')
     }
     foreach ($leaf in $leaves) {
         $path = Join-Path $tool ('hooks/'+$leaf); $bytes = [IO.File]::ReadAllBytes($path)

@@ -985,7 +985,7 @@ function Write-StopBlockResult {
     # not equal evidence: another edit can change bytes behind one dirty path.
     $finding = $FindingFingerprint
     if ([string]::IsNullOrWhiteSpace($finding)) { $finding = Get-ShortHash ($HookName + '|' + $text) }
-    $admit = Set-StopBlockMarker -HookInput $HookInput -HookName $HookName -FindingFingerprint $finding
+    $script:StopGateVerdict = 'block'; $admit = Set-StopBlockMarker -HookInput $HookInput -HookName $HookName -FindingFingerprint $finding
     if ($null -eq $admit -or -not $admit.Admitted) {
         if ($null -ne $admit -and $admit.Reason -ne 'already-claimed') {
             $notice = 'Hook Maker stopped automatic corrections (' + $admit.Reason + '). This finding is NOT resolved: ' + $text

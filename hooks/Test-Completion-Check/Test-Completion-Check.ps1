@@ -116,7 +116,7 @@
 # (reason)`, judged ONLY from the fresh, scoped, fingerprinted evidence this
 # hook already aggregates (guarded-run results, the incident-note ledger,
 # active/cleanup state). Free-form "done" text is never proof, and points with
-# no machine evidence here (/goal receipts, workstream integration, code/
+# no machine evidence here (the goal ledger receipt, workstream integration, code/
 # security review, the single Ponytail pass, UTF-8 file validation, Git/exact-
 # SHA CI) are reported honestly as not verifiable by this hook - they belong to
 # their own gates.
@@ -162,7 +162,7 @@ if ($recoveryMode) {
     $hookInput = [pscustomobject]@{ hook_event_name = 'Stop'; cwd = $ProjectRoot; session_id = '' }
 }
 else { $hookInput = Read-HookInput }
-if ($null -eq $hookInput) { exit 0 }
+if ($null -eq $hookInput) { exit 0 }; $gateReceipt = if (Get-Command Start-StopGateReceipt -ErrorAction SilentlyContinue) { Start-StopGateReceipt -HookInput $hookInput -HookName 'Test-Completion-Check' } else { $null }; try {
 
 # ---- recursion guard: FIRST, before anything is read or evaluated ----
 # Stand down only on THIS hook's OWN re-entry. `stop_hook_active` is set for
@@ -1106,7 +1106,7 @@ if ($script:DeepDebugActive) {
             $ddLines = New-Object System.Collections.Generic.List[string]
             [void]$ddLines.Add('DEEP DEBUG: COMPLETE')
             [void]$ddLines.Add('Test-evidence scope verified from recorded state: every current-state observed guarded run has a fresh clean result, no run is still active, no owned process leak or unresolved timeout/kill incident remains, and no durable .ai/ incident note is owed.')
-            [void]$ddLines.Add('NOT verifiable by this hook (each has its own gate/evidence; free-form "done" text is never proof): the /goal objective+ledger receipt, one-time workstream integration, code/security review closure, the exactly-one Ponytail pass, UTF-8 file validation (Utf8-Encoding-Check), and Git/exact-final-SHA CI state.')
+            [void]$ddLines.Add('NOT verifiable by this hook (each has its own gate/evidence; free-form "done" text is never proof): the goal ledger receipt (every item closed), one-time workstream integration, code/security review closure, the exactly-one Ponytail pass, UTF-8 file validation (Utf8-Encoding-Check), and Git/exact-final-SHA CI state.')
             if ($timingRegressionLines.Count -gt 0) {
                 [void]$ddLines.Add('')
                 foreach ($trl in $timingRegressionLines) { [void]$ddLines.Add($trl) }
@@ -1122,4 +1122,4 @@ if ($script:DeepDebugActive) {
 }
 if ($timingRegressionLines.Count -gt 0) { Write-Finding -Blocking $false -Lines $timingRegressionLines }
 Write-SurvivorAdvisory
-exit 0
+exit 0 } catch { if ($null -ne $gateReceipt) { $gateReceipt.Crashed = $true }; throw } finally { if ($null -ne $gateReceipt) { Complete-StopGateReceipt $gateReceipt } }

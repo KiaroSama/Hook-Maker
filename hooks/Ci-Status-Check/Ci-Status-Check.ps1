@@ -111,7 +111,7 @@ param(
 Set-StrictMode -Version 2.0
 $ErrorActionPreference = 'Stop'
 
-. (Join-Path $PSScriptRoot '..\_hooklib.ps1')
+. (Join-Path $PSScriptRoot '..\_hooklib.ps1'); . (Join-Path $PSScriptRoot '..\_scope.ps1')
 
 $script:AllowedExternalClassifications = @(
     'github-outage',
@@ -402,6 +402,10 @@ $hookInput = Read-HookInput
 if ($null -eq $hookInput) {
     exit 0
 }
+# Receipt for this Stop round (spec 007 RD-4): running now; pass, block or error
+# when the gate finishes. A timeout kill leaves it running, never a pass.
+$gateReceipt = if (Get-Command Start-StopGateReceipt -ErrorAction SilentlyContinue) { Start-StopGateReceipt -HookInput $hookInput -HookName 'Ci-Status-Check' } else { $null }
+try {
 $eventName = [string](Get-Field $hookInput 'hook_event_name')
 if ($eventName -ne 'Stop' -and $eventName -ne 'SubagentStop') {
     exit 0
@@ -657,6 +661,10 @@ if ($snapshot.Runs.Count -eq 0) {
         Save-State -Outcome 'verified' -Evidence 'no-ci'    # no CI configured - nothing to verify
         exit 0
     }
+    # Self-hosted and manual-only: a push starts no run BY DESIGN (plan 012 step 6b). Never green.
+    if (Test-ManualSelfHostedRepo -ProjectRoot $cwd) {
+        Write-Block -Outcome 'pending' -Reason ('CI CHECK: final CI not yet dispatched for commit ' + $sha7 + ' on ' + $branch + ' (' + $repoSlug + '). This repository runs CI on self-hosted runners, which stay manual: a push starts no run. Dispatch the one final run for this exact SHA (gh workflow run <workflow> --ref ' + $branch + '), then verify it - never for a GitHub- or bot-created branch (Dependabot included). No hook starts, stops or reconfigures a runner.')
+    }
     Write-Block -Outcome 'pending' -Reason ('CI CHECK: workflows exist but no runs are registered yet for pushed commit ' + $sha7 + ' (' + $repoSlug + '). Do not declare the work complete: wait briefly, then verify the checks for this exact commit with: gh run list --commit ' + $sha)
 }
 
@@ -704,3 +712,6 @@ if ($snapshot.FailedRuns.Count -gt 0 -or $snapshot.InfraRuns.Count -gt 0) {
 # All runs for this exact commit completed successfully.
 Save-State -Outcome 'verified' -Evidence 'ci-green'    # every run for this exact commit succeeded
 exit 0
+}
+catch { if ($null -ne $gateReceipt) { $gateReceipt.Crashed = $true }; throw }
+finally { if ($null -ne $gateReceipt) { Complete-StopGateReceipt $gateReceipt } }

@@ -70,6 +70,10 @@ $hookInput = Read-HookInput
 if ($null -eq $hookInput) {
     exit 0
 }
+# Receipt for this Stop round (spec 007 RD-4): running now; pass, block or error
+# when the gate finishes. A timeout kill leaves it running, never a pass.
+$gateReceipt = if (Get-Command Start-StopGateReceipt -ErrorAction SilentlyContinue) { Start-StopGateReceipt -HookInput $hookInput -HookName 'Large-File-Check' } else { $null }
+try {
 $cwd = [string](Get-Field $hookInput 'cwd')
 if ([string]::IsNullOrWhiteSpace($cwd) -or -not (Test-Path -LiteralPath $cwd -PathType Container)) {
     exit 0
@@ -485,3 +489,6 @@ $partialNote = if ($partial) { ' (PARTIAL scan: ' + $partialCause + ', so this l
 $reason = 'LARGE FILE CHECK: ' + $offenders.Count + ' source file(s) exceed ' + $lineThreshold + ' lines: ' + ($fileLines -join '; ') + $more + '.' + $partialNote + ' These were ALREADY over the ceiling before this task, so this is advisory and nothing here blocks: the ceiling binds what you WRITE, and the gate fires only on a file this task itself pushed past it. What the ceiling does require of these files is that they stop growing - put new code in a new file named for the responsibility it carries and wire it in, and extract from the file rather than adding to it. Split by a real responsibility, cohesive module, layer or public boundary that actually exists there; never create a thin wrapper, pass-through module or arbitrary fragment merely to get under the number, and never start a refactor unrelated to the current task just because a file is large. If you do split: keep a single clear entry point, update imports/re-exports, avoid circular dependencies, and run build/tests afterwards. This reminder respects a cooldown.'
 Write-Advisory $reason
 exit 0
+}
+catch { if ($null -ne $gateReceipt) { $gateReceipt.Crashed = $true }; throw }
+finally { if ($null -ne $gateReceipt) { Complete-StopGateReceipt $gateReceipt } }

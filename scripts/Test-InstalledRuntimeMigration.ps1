@@ -72,6 +72,7 @@ $Work = New-TestWorkspace -Prefix 'hookmaker-bindingmigration'
 # NOTHING on purpose, so the "destination unknown" refusal has a case.
 $script:CurrentDefaults = @{
     'Session-Summary-Check' = @('SessionStart', 'UserPromptSubmit')
+    'Git-Sync-Check'        = @('SessionStart', 'PreToolUse', 'Stop', 'SubagentStop')
     'Fixture-Unknown-Check' = @()
 }
 function Get-HookRecommendedEvents {
@@ -234,6 +235,13 @@ Check 'the updater reinstalls a retired default on the NEW events' (
     Test-EventSetEqual $retiredResolved.Events @('SessionStart', 'UserPromptSubmit')) (@($retiredResolved.Events) -join '+')
 Check 'the updater reports the move rather than doing it silently' (
     $retiredResolved.Note -match 'migration v1') ($retiredResolved.Note)
+# Git-Sync-Check's prior shipped default had no PreToolUse, so the side-branch
+# and push-once reminders (plan 012 step 2c) never ran on an existing install.
+$gitSyncRetired = New-InstalledFixture -Hook 'Git-Sync-Check' -ProjectName 'gitsync-retired' -RecordedEvents @('SessionStart', 'Stop', 'SubagentStop')
+$gitSyncVerdict = Get-VerdictFor $gitSyncRetired
+Check 'Git-Sync-Check: the retired default without PreToolUse migrates by v3 to the current set' (
+    $gitSyncVerdict.Status -eq 'migrate' -and $gitSyncVerdict.Version -eq 3 -and
+    (Test-EventSetEqual $gitSyncVerdict.Events @('SessionStart', 'PreToolUse', 'Stop', 'SubagentStop'))) ($gitSyncVerdict.Status + ' / ' + $gitSyncVerdict.Detail)
 
 # ---------------------------------------------------------------------------
 Write-Host ''
