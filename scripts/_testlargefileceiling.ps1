@@ -38,6 +38,36 @@
         $msg1 -notmatch '(?i)appending is correct') $msg1
 
     # =====================================================================
+    Write-Host '--- Spec Kit managed files (.specify/) are never scanned; source still is ---' -ForegroundColor Cyan
+    $hcSk = New-IsolatedHookCopy
+    $projSk = New-Proj 'SpecKitManaged'
+    New-SourceFile (Join-Path $projSk '.specify\scripts\powershell\common.ps1') 796
+    New-SourceFile (Join-Path $projSk '.specify\scripts\powershell\big.ps1') 1200
+    New-SourceFile (Join-Path $projSk 'src\tracked.py') 900
+    $rSkBase = Fire -HookPath $hcSk.Script -Cwd $projSk -EventName 'SessionStart' -LocalAppData $hcSk.LocalAppData
+    $skBaseFiles = @(Get-ChildItem -LiteralPath (Join-Path $hcSk.LocalAppData 'HookMaker\state') -Filter 'LargeFileCheckBaseline-*.json' -ErrorAction SilentlyContinue)
+    $skBaseText = if ($skBaseFiles.Count -eq 1) { [System.IO.File]::ReadAllText($skBaseFiles[0].FullName) } else { '' }
+    Check 'S1a. the SessionStart baseline records no .specify file' (
+        $skBaseText -ne '' -and $skBaseText -notmatch '\.specify' -and $skBaseText -match 'tracked\.py') $skBaseText
+    Check 'S1b. and SessionStart names no .specify file' ((Get-Advisory $rSkBase.Out) -notmatch '\.specify') $rSkBase.Out
+    # The official upgrade grows common.ps1 past the ceiling during the session.
+    New-SourceFile (Join-Path $projSk '.specify\scripts\powershell\common.ps1') 803
+    $rSk = Fire -HookPath $hcSk.Script -Cwd $projSk -EventName 'Stop' -LocalAppData $hcSk.LocalAppData
+    Check 'S2a. growth of a .specify file past the ceiling never blocks' ((Get-BlockReason $rSk.Out) -eq '' -and $rSk.Out -notmatch '"decision"') $rSk.Out
+    $msgSk = Get-Advisory $rSk.Out
+    Check 'S2b. no .specify file is reported at Stop, however large' ($msgSk -notmatch '(?i)common\.ps1|big\.ps1|\.specify') $msgSk
+    Check 'S2c. a source file over the ceiling outside .specify IS still reported' ($msgSk -match 'tracked\.py \(900 lines\)') $msgSk
+    # Twin: the same growth in project source still blocks, so S2a is not a dead gate.
+    New-SourceFile (Join-Path $projSk 'src\grows.ps1') 796
+    $hcSk2 = New-IsolatedHookCopy
+    $null = Fire -HookPath $hcSk2.Script -Cwd $projSk -EventName 'SessionStart' -LocalAppData $hcSk2.LocalAppData
+    New-SourceFile (Join-Path $projSk 'src\grows.ps1') 803
+    $rSk2 = Fire -HookPath $hcSk2.Script -Cwd $projSk -EventName 'Stop' -LocalAppData $hcSk2.LocalAppData
+    Check 'S2d. twin: the same 796 -> 803 growth in project source DOES block' (
+        (Get-BlockReason $rSk2.Out) -match 'src\\grows\.ps1 \(803 lines now, 796 at session start\)' -and
+        (Get-BlockReason $rSk2.Out) -notmatch '\.specify') $rSk2.Out
+
+    # =====================================================================
     Write-Host '--- The Stop GATE: a file this task pushed past the ceiling ---' -ForegroundColor Cyan
     $hcC1 = New-IsolatedHookCopy
     $projC1 = New-Proj 'CeilingGrown'
