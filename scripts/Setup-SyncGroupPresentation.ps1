@@ -271,8 +271,9 @@ $script:HookMeta = @{
     # (SessionStart, UserPromptSubmit), never at Stop: on Claude Code a Stop
     # additionalContext re-invokes the model, so a summary asked for at Stop
     # always arrived as one more turn after the work, which is the loop it
-    # shipped with twice. See the hook header.
-    'Session-Summary-Check'            = @{ Order = 28; When = 'pre'; Text = 'asks the closing reply for a done / still-open summary'; Events = @('SessionStart', 'UserPromptSubmit'); Timeout = 10 }
+    # shipped with twice. Stop events now OBSERVE only and return no output.
+    # Recording must be registered too; the pre-task timing tag names speech.
+    'Session-Summary-Check'            = @{ Order = 28; When = 'pre'; Text = 'asks the closing reply for a done / still-open summary'; Events = @('SessionStart', 'UserPromptSubmit', 'Stop', 'SubagentStop'); Timeout = 10 }
     # Cloudflare-Deploy is deliberately kept LAST among individual hook
     # entries (Order = highest value) per an explicit user requirement, not
     # filesystem/alphabetical order - see Test-Wizard.ps1 for the pinned order.
