@@ -88,6 +88,7 @@ function Fire {
 
 try {
     . (Join-Path $PSScriptRoot '_testgitsyncregressions.ps1')
+    . (Join-Path $PSScriptRoot '_testgitsyncreminders.ps1')
     if (-not (Test-Path -LiteralPath $Hook -PathType Leaf)) {
         Write-Host 'Hook not found (expected RED before implementation).' -ForegroundColor Red
         exit 1
@@ -242,10 +243,10 @@ try {
     Check 'Windows PowerShell 5.1: a new task-scoped worktree with uncommitted changes blocks at SubagentStop' ($rWt.Exit -eq 0 -and $rWt.Out -match '"decision":"block"' -and $rWt.Out -match 'ps5-wt-extra') $rWt.Err
 
     # =====================================================================
-    Write-Host '--- generated Git-sync template includes SessionStart+Stop+SubagentStop registration ---' -ForegroundColor Cyan
+    Write-Host '--- generated Git-sync template includes SessionStart+PreToolUse+Stop+SubagentStop registration ---' -ForegroundColor Cyan
     $templatePath = Join-Path (Split-Path -Parent $Hook) '.env.example'
     $templateText = [System.IO.File]::ReadAllText($templatePath)
-    Check 'the shipped .env.example registers SessionStart, Stop and SubagentStop' ($templateText -match 'EVENTS=SessionStart,Stop,SubagentStop')
+    Check 'the shipped .env.example registers SessionStart, PreToolUse, Stop and SubagentStop' ($templateText -match 'EVENTS=SessionStart,PreToolUse,Stop,SubagentStop')
 
     # =====================================================================
     # HM-08: task-scoped branches/worktrees, without becoming a destructive

@@ -314,9 +314,9 @@ try {
         $r.Out -like '*::deep-debug is a BOUNDED composite workflow*' -and
         $r.Out -like '*DEEP DEBUG: COMPLETE or DEEP DEBUG: BLOCKED*' -and
         $r.Out -like '*never an endless audit/refactor/fix loop*') $r.Out
-    Check 'guidance keeps /goal NATIVE (never shadowed/aliased/codeworded/synthesized)' (
-        $r.Out -like '*/goal is a NATIVE command*' -and
-        $r.Out -like '*never shadowed, aliased, converted into a codeword, or synthetically executed by a hook*') $r.Out
+    Check 'guidance states the fixed ::deep-debug ledger goal, never a NATIVE-command claim (steering V39)' (
+        $r.Out -like '*every bug and finding fixed and verified*' -and $r.Out -like '*every phase done*' -and
+        $r.Out -like '*first task-ledger entries*' -and $r.Out -notlike '*NATIVE command*') $r.Out
     Check 'guidance frames ::multi-agent as ONE integration + final verification' (
         $r.Out -like '*::multi-agent is a workflow dependency*' -and $r.Out -like '*ONE integration*' -and
         $r.Out -like '*final verification on the unified tree*' -and $r.Out -like '*no nested agent trees*') $r.Out
@@ -338,7 +338,7 @@ try {
     $null = Fire -Cwd $projDDx -Claude $false   # consume the codex first-run baseline
     $r = Fire -Cwd $projDDx -Claude $false -RawStdin (New-PromptStdin -Cwd $projDDx -Prompt '::deep-debug' -SessionId 'ddx-s1')
     Check 'codex ::deep-debug guidance uses client-native references, not Claude slash literals' (
-        $r.Out -like '*BOUNDED composite workflow*' -and $r.Out -like '*client-native goal command*' -and
+        $r.Out -like '*BOUNDED composite workflow*' -and $r.Out -like '*first task-ledger entries*' -and $r.Out -notlike '*NATIVE command*' -and
         $r.Out -like '*ponytail-audit capability*' -and $r.Out -notlike '*/ponytail:ponytail-audit*' -and
         $r.Out -notlike '*/goal*') $r.Out
 
@@ -482,8 +482,8 @@ try {
     Check 'hook source has NO execution primitives (Start-Process/Invoke-Expression/iex/call operator on data)' (
         $hookText -notmatch 'Start-Process' -and $hookText -notmatch 'Invoke-Expression' -and
         $hookText -notmatch '(?i)\biex\b' -and $hookText -notmatch '&\s*\$') $hookText.Substring(0, 200)
-    Check 'native /goal and /ponytail:ponytail-audit appear in source as referenced text' (
-        $hookText -like '*/goal*' -and $hookText -like '*/ponytail:ponytail-audit*')
+    Check 'the ledger goal and /ponytail:ponytail-audit appear in source as referenced text, no NATIVE-command goal claim' (
+        $hookText -like '*first task-ledger entries*' -and $hookText -like '*/ponytail:ponytail-audit*' -and $hookText -notlike '*NATIVE command*')
     # Installed-runtime parity: the runtime copy installed above must produce
     # byte-identical ::deep-debug guidance to the source hook (same client,
     # same prompt, fresh per-project state for each).

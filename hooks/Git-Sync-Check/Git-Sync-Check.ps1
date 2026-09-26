@@ -99,11 +99,23 @@ $ErrorActionPreference = 'Stop'
 # open disposition list. Definitions only; both are read-only.
 . (Join-Path $PSScriptRoot '_commitidentity.ps1')
 . (Join-Path $PSScriptRoot '_branchdisposition.ps1')
+. (Join-Path $PSScriptRoot '_branchreminders.ps1')
 
 $hookInput = Read-HookInput
 if ($null -eq $hookInput) {
     exit 0
 }
+# PreToolUse: only the side-branch / push-once reminder, as context (never a
+# permission decision). Nothing else in this hook runs per tool call.
+if ([string](Get-Field $hookInput 'hook_event_name') -eq 'PreToolUse') {
+    $workflowReminder = Get-GitWorkflowReminder -HookInput $hookInput
+    if ($workflowReminder -ne '') { exit (Write-HookResult -EventName 'PreToolUse' -Kind 'context' -Message $workflowReminder).ExitCode }
+    exit 0
+}
+# Receipt for this Stop round (spec 007 RD-4): running now; pass, block or error
+# when the gate finishes. A timeout kill leaves it running, never a pass.
+$gateReceipt = if (Get-Command Start-StopGateReceipt -ErrorAction SilentlyContinue) { Start-StopGateReceipt -HookInput $hookInput -HookName 'Git-Sync-Check' } else { $null }
+try {
 
 $cwd = [string](Get-Field $hookInput 'cwd')
 if ([string]::IsNullOrWhiteSpace($cwd) -or -not (Test-Path -LiteralPath $cwd -PathType Container)) {
@@ -659,8 +671,12 @@ if ($blockingExtra.Count -gt 0) {
     $operationalInstruction += "`n`nAlso reconcile every task-created or task-changed branch and worktree reported above before finishing: merge or otherwise incorporate each into " + $destinationWording + " when that is its purpose, push any that are meant to be shared (a branch that is pushed but not yet merged into the destination is acceptable on its own and is not itself a blocker), and remove a worktree with 'git worktree remove' only once its purpose is complete - never one that still holds unreconciled or uncommitted work. Never force-push or rewrite history without explicit authorization. If reconciling a branch or worktree is unsafe or impossible, preserve it and report the exact reason instead of claiming it is resolved."
 }
 $operationalInstruction += "`n`n" + (Get-BranchDispositionInstruction -Disposition (Get-BranchDisposition -RepoPath $cwd -Fallback $destinationBranch -FetchOk ([bool]$fetch.Ok)))
+$operationalInstruction += "`n" + (Get-OpenPullRequestLine -RepoPath $cwd)
 $reason = $message + $operationalInstruction
 # Record the block so THIS hook's own re-entry is recognised; another
 # gate's block must not mute it, and its own must not repeat.
 $emit = Write-StopBlockResult -HookInput $hookInput -HookName 'Git-Sync-Check' -FindingFingerprint $fingerprint -EventName $eventName -Reason $reason
 exit $emit.ExitCode
+}
+catch { if ($null -ne $gateReceipt) { $gateReceipt.Crashed = $true }; throw }
+finally { if ($null -ne $gateReceipt) { Complete-StopGateReceipt $gateReceipt } }

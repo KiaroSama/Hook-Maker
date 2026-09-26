@@ -48,6 +48,10 @@ $hookInput = Read-HookInput
 if ($null -eq $hookInput) {
     exit 0
 }
+# Receipt for this Stop round (spec 007 RD-4): running now; pass, block or error
+# when the gate finishes. A timeout kill leaves it running, never a pass.
+$gateReceipt = if (Get-Command Start-StopGateReceipt -ErrorAction SilentlyContinue) { Start-StopGateReceipt -HookInput $hookInput -HookName 'Cloudflare-Deploy' } else { $null }
+try {
 # Stand down only on THIS hook's own re-entry: `stop_hook_active` is set
 # for ANY gate's block, and exiting on it alone let one block silence the
 # other twelve on the same Stop.
@@ -239,8 +243,8 @@ $script:CleanupManifestCap = 64
 # whose executing body was never checked. Only a required set this hook knows on
 # its own can turn that omission into a rejection.
 $script:CleanupRequiredRuntimeLeaves = @{
-    'claude' = @('_hooklib.ps1', '_stoplib.ps1', '_evidencelib.ps1', '_taskidentity.ps1', '_scope.ps1', '_deliverylib.ps1', '_processtree.ps1')
-    'codex'  = @('_hooklib.ps1', '_stoplib.ps1', '_evidencelib.ps1', '_taskidentity.ps1', '_scope.ps1', '_deliverylib.ps1', '_processtree.ps1')
+    'claude' = @('_hooklib.ps1', '_stoplib.ps1', '_evidencelib.ps1', '_taskidentity.ps1', '_scope.ps1', '_deliverylib.ps1', '_processtree.ps1', '_gatereceipts.ps1')
+    'codex'  = @('_hooklib.ps1', '_stoplib.ps1', '_evidencelib.ps1', '_taskidentity.ps1', '_scope.ps1', '_deliverylib.ps1', '_processtree.ps1', '_gatereceipts.ps1')
 }
 
 # Mirrored from scripts\_clientcapability.ps1 for the same structural reason as
@@ -658,3 +662,6 @@ $reason = $reasonLines.ToArray() -join "`n"
 # gate's block must not mute it, and its own must not repeat.
 $emit = Write-StopBlockResult -HookInput $hookInput -HookName 'Cloudflare-Deploy' -EventName $eventName -Reason $reason
 exit $emit.ExitCode
+}
+catch { if ($null -ne $gateReceipt) { $gateReceipt.Crashed = $true }; throw }
+finally { if ($null -ne $gateReceipt) { Complete-StopGateReceipt $gateReceipt } }

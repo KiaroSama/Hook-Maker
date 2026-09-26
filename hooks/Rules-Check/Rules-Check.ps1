@@ -57,7 +57,7 @@
 #   are both UTF-8; any non-UTF-8 exception needs narrow scope + exact
 #   encoding + technical reason + forcing system + verification).
 # A standalone `::deep-debug` codeword on UserPromptSubmit additionally gets
-# the bounded composite-workflow guardrails (native /goal preserved,
+# the bounded composite-workflow guardrails (the fixed goal held in the task ledger,
 # ::multi-agent = one integration + final verification, Ponytail exactly once,
 # no post-Ponytail loops), once per session per project+client. Ordinary prose
 # "deep debug" never triggers that path (CODEWORDS.md: standalone :: token).
@@ -88,6 +88,10 @@ $hookInput = Read-HookInput
 if ($null -eq $hookInput) {
     exit 0
 }
+# Receipt for this Stop round (spec 007 RD-4): running now; pass, block or error
+# when the gate finishes. A timeout kill leaves it running, never a pass.
+$gateReceipt = if (Get-Command Start-StopGateReceipt -ErrorAction SilentlyContinue) { Start-StopGateReceipt -HookInput $hookInput -HookName 'Rules-Check' } else { $null }
+try {
 $cwd = [string](Get-Field $hookInput 'cwd')
 if ([string]::IsNullOrWhiteSpace($cwd) -or -not (Test-Path -LiteralPath $cwd -PathType Container)) {
     exit 0
@@ -368,7 +372,7 @@ foreach ($path in @($previousEntries.Keys | Sort-Object)) {
 # ---- ::deep-debug codeword (UserPromptSubmit only) ----
 # CODEWORDS.md: a codeword activates only as a standalone ::-prefixed token;
 # ordinary prose ("let's deep debug this") must never trigger the workflow
-# path. Advisory only - the hook never executes /goal, a codeword, or Ponytail.
+# path. Advisory only - the hook never executes a command, a codeword, or Ponytail.
 $sessionId = [string](Get-Field $hookInput 'session_id')
 $deepDebug = $false
 if ($eventName -eq 'UserPromptSubmit') {
@@ -396,12 +400,10 @@ if (-not $rulesMoved -and -not $deepDebug) {
 # Both stay plain text in the note - this hook never executes them.
 if ($Client -eq 'codex') {
     $policyName = 'skill-policy-codex-optimized.md'
-    $goalRef = 'the client-native goal command'
     $ponytailRef = 'the verified installed ponytail-audit capability (via this client''s supported invocation)'
 }
 else {
     $policyName = 'skill-policy.md'
-    $goalRef = '/goal'
     $ponytailRef = '/ponytail:ponytail-audit (native)'
 }
 $lines = New-Object System.Collections.Generic.List[string]
@@ -447,7 +449,7 @@ if ($rulesMoved) {
 if ($deepDebug) {
     [void]$lines.Add('RULES CHECK (' + $Client + ') - standalone ::deep-debug codeword detected. Workflow bounds (WORKFLOWS.md "Deep Debug Orchestrator" + CODEWORDS.md):')
     [void]$lines.Add('- ::deep-debug is a BOUNDED composite workflow: end as DEEP DEBUG: COMPLETE or DEEP DEBUG: BLOCKED - never an endless audit/refactor/fix loop.')
-    [void]$lines.Add('- ' + $goalRef + ' is a NATIVE command: never shadowed, aliased, converted into a codeword, or synthetically executed by a hook.')
+    [void]$lines.Add('- The ::deep-debug goal is the agent''s own ledger goal: every bug and finding fixed and verified, rejected with evidence, deferred by explicit scope, or blocked with a concrete reason, and every phase done - written as the first task-ledger entries (WORKFLOWS.md Deep Debug Orchestrator, step 1). A goal command is typed only by the user; no rule asks the agent to invoke one.')
     [void]$lines.Add('- ::multi-agent is a workflow dependency: independent owned workstreams, ONE integration of all results, then final verification on the unified tree - no recursive re-runs, no nested agent trees.')
     [void]$lines.Add('- Run ' + $ponytailRef + ' exactly ONCE, only after debugging, testing, security/review work, and integrated verification have completed.')
     [void]$lines.Add('- After Ponytail: only safe accepted simplifications, their targeted regression repair if needed, and final verification - never a new audit/refactor/debug cycle.')
@@ -473,3 +475,6 @@ catch { }
 
 $emit = Write-HookResult -EventName $eventName -Kind 'context' -Message ($lines.ToArray() -join "`n")
 exit $emit.ExitCode
+}
+catch { if ($null -ne $gateReceipt) { $gateReceipt.Crashed = $true }; throw }
+finally { if ($null -ne $gateReceipt) { Complete-StopGateReceipt $gateReceipt } }

@@ -167,6 +167,10 @@ if ($Acknowledge) {
 # ==========================================================================
 $hookInput = Read-HookInput
 if ($null -eq $hookInput) { exit 0 }
+# Receipt for this Stop round (spec 007 RD-4): running now; pass, block or error
+# when the gate finishes. A timeout kill leaves it running, never a pass.
+$gateReceipt = if (Get-Command Start-StopGateReceipt -ErrorAction SilentlyContinue) { Start-StopGateReceipt -HookInput $hookInput -HookName 'Docs-Freshness-Check' } else { $null }
+try {
 $cwd = [string](Get-Field $hookInput 'cwd')
 if ([string]::IsNullOrWhiteSpace($cwd) -or -not (Test-Path -LiteralPath $cwd -PathType Container)) { exit 0 }
 $rootFull = Normalize-Path $cwd
@@ -410,3 +414,6 @@ catch {
     $null = Write-HookResult -EventName $eventName -Kind 'advisory' -Message $errMsg
     exit 0
 }
+}
+catch { if ($null -ne $gateReceipt) { $gateReceipt.Crashed = $true }; throw }
+finally { if ($null -ne $gateReceipt) { Complete-StopGateReceipt $gateReceipt } }

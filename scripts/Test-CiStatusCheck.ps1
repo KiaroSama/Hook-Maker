@@ -702,6 +702,7 @@ try {
 
     # -ReportExternalBlocker exception scenarios (recording, notices, invalidation).
     . (Join-Path $PSScriptRoot '_testcistatuscheckexternal.ps1')
+    . (Join-Path $PSScriptRoot '_testselfhostedrunners.ps1')
 
     # =====================================================================
     if (Get-Command powershell.exe -ErrorAction SilentlyContinue) {

@@ -32,7 +32,7 @@
     $ddCtx = [string]$doc.systemMessage
     Check 'COMPLETE names the verified test-evidence scope' ($ddCtx -match 'Test-evidence scope verified' -and $ddCtx -match 'fresh clean result') $ddCtx
     Check 'COMPLETE honestly lists what this hook CANNOT verify (goal/integration/review/Ponytail/UTF-8/CI)' (
-        $ddCtx -match 'NOT verifiable by this hook' -and $ddCtx -match '/goal' -and $ddCtx -match 'Ponytail' -and
+        $ddCtx -match 'NOT verifiable by this hook' -and $ddCtx -match 'goal ledger receipt \(every item closed\)' -and $ddCtx -notmatch '/goal' -and $ddCtx -match 'Ponytail' -and
         $ddCtx -match 'Utf8-Encoding-Check' -and $ddCtx -match 'exact-final-SHA CI') $ddCtx
     Check 'free-form done text is named as never-proof' ($ddCtx -match '"done" text is never proof') $ddCtx
     Check 'the session-bound marker was written (schema-versioned)' (

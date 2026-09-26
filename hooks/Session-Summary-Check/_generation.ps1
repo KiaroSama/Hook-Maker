@@ -23,9 +23,10 @@
 #    display-level guarantee needs an output-owning integration, not this store.
 #
 # 2. A Stop event is not evidence that a summary exists, nor that every gate
-#    passed. The observer requires eligible CURRENT assistant text. Only an
-#    explicit ready record with evidence can support readiness; absent gate
-#    observations stay unverified. Historical blocks are not current verdicts.
+#    passed. The observer requires eligible CURRENT assistant text, and
+#    readiness requires a `pass` receipt (_gatereceipts.ps1) from every gate the
+#    client registered, written in this Stop round. A missing, running, blocked
+#    or crashed gate keeps the publication not-ready and is named once.
 #    This store never authorizes skipping a gate or claims control of a UI.
 #
 # THE ALLOWANCE IS WHY A CONTINUATION IS NOT A NEW GENERATION. A hook-generated
@@ -516,12 +517,39 @@ function Test-GenerationSummaryText {
 }
 
 function Observe-GenerationSummary {
-    param([Parameter(Mandatory = $true)]$HookInput)
+    param([Parameter(Mandatory = $true)]$HookInput, [object]$Since = $null)
     # Stop timing is not content evidence. The shared reader enforces current
     # role and child provenance and never borrows a parent's last response.
     $closing = Get-ClosingAssistantText -HookInput $HookInput
     if (-not $closing.Known -or -not (Test-GenerationSummaryText $closing.Text)) { return }
-    # This observer has no complete affirmative gate manifest. Absence of old
-    # objections is not proof of readiness, and old blocks are only history.
-    $null = Publish-GenerationSummary -HookInput $HookInput -Ready $false -Missing @('readiness-unverified')
+    # Readiness needs an AFFIRMATIVE receipt from every gate the client
+    # registered for this event, written in THIS Stop round (spec 007 RD-4).
+    # Absence of objections is not proof, and old blocks are only history.
+    if ($null -eq (Get-Command Get-RequiredStopGates -ErrorAction SilentlyContinue)) {
+        $null = Publish-GenerationSummary -HookInput $HookInput -Ready $false -Missing @('readiness-unverified')
+        return
+    }
+    $required = Get-RequiredStopGates -HookInput $HookInput
+    if (-not $required.Known) {
+        $null = Publish-GenerationSummary -HookInput $HookInput -Ready $false -Missing @('gate-registration-unknown')
+        return
+    }
+    # A receipt older than this process (less a small skew for gates that
+    # started first) belongs to an earlier round and is not evidence for this one.
+    $since = if ($Since -is [DateTime]) { $Since.ToUniversalTime() } else { (Get-Process -Id $PID).StartTime.ToUniversalTime().AddSeconds(-3) }
+    $verdicts = @{}
+    if (@($required.Gates).Count -gt 0) { $verdicts = Wait-StopGateReceipts -HookInput $HookInput -Gates @($required.Gates) -Since $since }
+    $missing = New-Object System.Collections.ArrayList
+    foreach ($gate in @($required.Gates)) {
+        $verdict = [string]$verdicts[$gate]
+        $null = Register-GenerationVerdict -HookInput $HookInput -Gate $gate -Affirmative ($verdict -ceq 'pass')
+        if ($verdict -cne 'pass') { [void]$missing.Add($gate + ':' + $verdict) }
+    }
+    if ($missing.Count -gt 0) {
+        $null = Publish-GenerationSummary -HookInput $HookInput -Ready $false -Missing @($missing.ToArray())
+        return
+    }
+    $evidence = 'receipts:' + (Get-ShortHash ((@($required.Gates) -join ',') + '|' + $since.ToString('o')))
+    $null = Set-GenerationState -HookInput $HookInput -State 'ready' -Evidence $evidence
+    $null = Publish-GenerationSummary -HookInput $HookInput -Ready $true
 }
