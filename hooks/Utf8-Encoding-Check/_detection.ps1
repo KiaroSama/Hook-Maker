@@ -30,9 +30,6 @@ $script:KnownBinaryExtensions = @('.png', '.jpg', '.jpeg', '.gif', '.bmp', '.ico
 $script:RecognizedEncodings = @('utf-16le', 'utf-16be', 'windows-1252', 'iso-8859-1', 'latin-1', 'shift_jis', 'euc-jp', 'gb18030')
 $script:PlaceholderReasons = @('todo', 'tbd', 'n/a', 'none', '-', 'x', 'fixme', 'because', 'reason')
 $script:HeuristicWindowBytes = 8192
-# Pre-push commit ceiling. Blobs are bounded by UTF8_MAX_FILES; overflow of
-# either FAILS CLOSED because pre-push coverage is REQUIRED, never sampled.
-$script:MaxOutgoingCommits = 5000
 $script:ViolationClasses = @('invalid', 'utf16le', 'utf16be')
 
 # ---- misc helpers -----------------------------------------------------------
