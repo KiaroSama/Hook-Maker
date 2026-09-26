@@ -284,6 +284,36 @@ try {
         (@($merged | Where-Object { $_ -eq 'logs' }).Count -eq 1) -and
         (@($merged | Where-Object { $_ -eq '.git' }).Count -eq 1) -and
         ($merged.Count -eq $script:HookMakerExcludedDirs.Count + 1)) ($merged -join ',')
+
+    Write-Host '--- monthly Spec Kit refresh advisory (files only) ---' -ForegroundColor Cyan
+    $refreshText = 'Spec Kit refresh due: run `specify integration status`, then `specify integration upgrade <key>` for each installed integration, then `specify extension update`; record the date in .ai/COMMANDS.md.'
+    function New-RefreshProject {
+        param([string]$Name, [AllowNull()][object]$RecordedDaysAgo)
+        $root = New-SpeckitProject -Name $Name -WithInfrastructure -WithConstitution
+        if ($null -ne $RecordedDaysAgo) {
+            New-Item -ItemType Directory -Path (Join-Path $root '.ai') -Force | Out-Null
+            $date = [DateTime]::UtcNow.Date.AddDays(-[int]$RecordedDaysAgo).ToString('yyyy-MM-dd')
+            [System.IO.File]::WriteAllText((Join-Path $root '.ai\COMMANDS.md'), ("# Commands`n- " + $date + " Spec Kit refresh: specify 0.9, upgrade ok`n"))
+        }
+        return $root
+    }
+    function Get-RefreshOut { param([string]$Cwd) (Invoke-SpeckitHook -Payload @{ hook_event_name = 'SessionStart'; cwd = $Cwd; session_id = 'refresh' }).Out }
+    $rfNone = New-RefreshProject -Name 'RefreshNone' -RecordedDaysAgo $null
+    $out = Get-RefreshOut $rfNone
+    $context = ''
+    try { $context = [string](($out | ConvertFrom-Json).hookSpecificOutput.additionalContext) } catch { }
+    Check 'no recorded refresh -> the fixed refresh text, verbatim' ($context.Contains($refreshText)) $out
+    $out = Get-RefreshOut $rfNone
+    Check 'the same recorded state is advised once per project' (-not $out.Contains('Spec Kit refresh due')) $out
+    $out = Get-RefreshOut (New-RefreshProject -Name 'Refresh31' -RecordedDaysAgo 31)
+    Check 'a refresh recorded 31 days ago -> advised' ($out -match 'Spec Kit refresh due') $out
+    $out = Get-RefreshOut (New-RefreshProject -Name 'Refresh5' -RecordedDaysAgo 5)
+    Check 'a refresh recorded 5 days ago -> not advised, route still given' ($out -notmatch 'Spec Kit refresh due' -and $out -match 'SPECKIT CHECK') $out
+    $out = Get-RefreshOut (New-SpeckitProject -Name 'RefreshNoSpecify')
+    Check 'a folder without .specify/ never gets the refresh text' ($out -notmatch 'Spec Kit refresh due') $out
+    $speckitSource = [System.IO.File]::ReadAllText($Hook)
+    Check 'the hook never runs specify (no invocation in its source)' (
+        $speckitSource -notmatch '(?im)^[^#\r\n]*(&\s*[''"]?specify\b|FilePath\s+[''"]?specify\b|Start-Process[^\r\n]*specify\b)') ''
 }
 finally {
     foreach ($key in $savedSuiteEnvironment.Keys) { [Environment]::SetEnvironmentVariable($key, $savedSuiteEnvironment[$key]) }

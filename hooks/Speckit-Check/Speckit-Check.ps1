@@ -12,7 +12,8 @@
 # choice has already been made or missed.
 #
 # WHAT IT READS, and nothing else: the presence of .specify\, the presence of
-# its constitution, the ACTIVE-FEATURE POINTER .specify\feature.json, and one
+# its constitution, the ACTIVE-FEATURE POINTER .specify\feature.json, the
+# last Spec Kit refresh date recorded in .ai\COMMANDS.md, and one
 # non-recursive listing of specs\ as the fallback when there is no usable
 # pointer. The pointer wins because folder recency is not ownership: an agent
 # that touched an unrelated feature's notes would otherwise re-route the whole
@@ -174,14 +175,73 @@ $fingerprint = Get-ShortHash ($sessionId + '|' + $eventName + '|' + $cwd + '|' +
     [string]$hasConstitution + '|' + $newestFeature + '|' + $stamp + '|' + [string]$openTasks + '|' + $requestKey + '|' + $note)
 $stateDir = Join-Path $env:LOCALAPPDATA 'HookMaker\state'
 $statePath = Join-Path $stateDir ('SpeckitCheck-' + $projectKey + '.txt')
+$routeDue = $true
 if (Test-Path -LiteralPath $statePath -PathType Leaf) {
-    try { if (([System.IO.File]::ReadAllText($statePath).Trim()) -eq $fingerprint) { exit 0 } } catch { }
+    try { if (([System.IO.File]::ReadAllText($statePath).Trim()) -eq $fingerprint) { $routeDue = $false } } catch { }
 }
-try {
-    New-Item -ItemType Directory -Path $stateDir -Force | Out-Null
-    [System.IO.File]::WriteAllText($statePath, $fingerprint)
-}
-catch { }
 
-$emit = Write-HookResult -EventName $eventName -Kind 'context' -Message $note
+# ---- monthly Spec Kit refresh (global-spec-kit-rules.md, Monthly project
+# refresh) ----------------------------------------------------------------------
+# The skills update globally, so a project's .specify/ falls behind them. The
+# last refresh is the newest YYYY-MM-DD on a .ai/COMMANDS.md line that names
+# the Spec Kit refresh or `specify integration upgrade`. FILES ONLY: this hook
+# never runs `specify`, never passes --force, never touches .specify/. Said once
+# per project per recorded date (a missing record is the date 'none'); an
+# unreadable COMMANDS.md is unknown, not missing, and says nothing.
+$refreshLine = ''
+$refreshKey = ''
+if ($hasInfrastructure) {
+    $commandsPath = Join-Path $cwd '.ai\COMMANDS.md'
+    $lastRefresh = $null
+    $commandsKnown = $true
+    try {
+        if (Test-Path -LiteralPath $commandsPath -PathType Leaf) {
+            if ((New-Object System.IO.FileInfo($commandsPath)).Length -le 1048576) {
+                foreach ($commandLine in [System.IO.File]::ReadAllLines($commandsPath, [System.Text.Encoding]::UTF8)) {
+                    if ($commandLine -notmatch '(?i)spec[ -]?kit refresh|specify integration upgrade') { continue }
+                    foreach ($m in [System.Text.RegularExpressions.Regex]::Matches($commandLine, '\b(\d{4}-\d{2}-\d{2})\b')) {
+                        $parsed = [datetime]::MinValue
+                        if ([datetime]::TryParseExact($m.Groups[1].Value, 'yyyy-MM-dd', [System.Globalization.CultureInfo]::InvariantCulture, [System.Globalization.DateTimeStyles]::AssumeUniversal -bor [System.Globalization.DateTimeStyles]::AdjustToUniversal, [ref]$parsed)) {
+                            if ($null -eq $lastRefresh -or $parsed -gt $lastRefresh) { $lastRefresh = $parsed }
+                        }
+                    }
+                }
+            }
+            else { $commandsKnown = $false }
+        }
+    }
+    catch { $commandsKnown = $false }
+    if ($commandsKnown -and ($null -eq $lastRefresh -or ([DateTime]::UtcNow.Date - $lastRefresh.Date).TotalDays -ge 30)) {
+        $recorded = 'none'
+        if ($null -ne $lastRefresh) { $recorded = $lastRefresh.ToString('yyyy-MM-dd') }
+        $refreshKey = Get-ShortHash ($cwd.ToLowerInvariant() + '|' + $recorded)
+        $refreshStatePath = Join-Path $stateDir ('SpeckitCheck-refresh-' + $projectKey + '.txt')
+        $refreshSaid = $false
+        if (Test-Path -LiteralPath $refreshStatePath -PathType Leaf) {
+            try { $refreshSaid = (([System.IO.File]::ReadAllText($refreshStatePath).Trim()) -eq $refreshKey) } catch { }
+        }
+        if (-not $refreshSaid) {
+            $refreshLine = 'Spec Kit refresh due: run `specify integration status`, then `specify integration upgrade <key>` for each installed integration, then `specify extension update`; record the date in .ai/COMMANDS.md.'
+            try {
+                New-Item -ItemType Directory -Path $stateDir -Force | Out-Null
+                [System.IO.File]::WriteAllText($refreshStatePath, $refreshKey)
+            }
+            catch { }
+        }
+    }
+}
+
+if (-not $routeDue -and $refreshLine -eq '') { exit 0 }
+if ($routeDue) {
+    try {
+        New-Item -ItemType Directory -Path $stateDir -Force | Out-Null
+        [System.IO.File]::WriteAllText($statePath, $fingerprint)
+    }
+    catch { }
+}
+$message = $note
+if (-not $routeDue) { $message = 'SPECKIT CHECK:' }
+if ($refreshLine -ne '') { $message += "`n" + $refreshLine }
+
+$emit = Write-HookResult -EventName $eventName -Kind 'context' -Message $message
 exit $emit.ExitCode
