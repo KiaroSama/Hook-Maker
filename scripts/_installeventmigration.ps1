@@ -10,13 +10,13 @@
 # no output: the new script is installed and then never triggered, because the
 # only event it is bound to is one it no longer answers on.
 #
-# The worked example is Session-Summary-Check. Its shipped default was
-# @('Stop','SubagentStop') and is now @('SessionStart','UserPromptSubmit') -
-# both spellings are in this repository's own history for that hook, and they
-# are the ONLY two. Its runtime exits 0 on any event that is not SessionStart
-# or UserPromptSubmit, so an installation still bound to the old default is
-# inert: the user sees no benefit and no error. (This says nothing about any
-# particular machine's INSTALLED copy, which is not inspectable from here.)
+# The worked example is Session-Summary-Check, whose shipped default has had
+# three spellings: @('Stop','SubagentStop') (v1 below), then
+# @('SessionStart','UserPromptSubmit') (v2), and now all four events. A v1
+# binding never receives the pre-task instruction; a v2 binding never runs the
+# silent Stop/SubagentStop summary observer. Both fail with no error and no
+# output. (This says nothing about any particular machine's INSTALLED copy,
+# which is not inspectable from here.)
 #
 # TWO CAPABILITIES, DELIBERATELY SEPARATE:
 #
@@ -83,7 +83,13 @@ $script:InstalledEventMigrations = @(
         Version = 1
         Hook    = 'Session-Summary-Check'
         From    = @('Stop', 'SubagentStop')
-        Reason  = 'the retired shipped default; the hook exits 0 on every event other than SessionStart and UserPromptSubmit, so this binding delivers nothing'
+        Reason  = 'the retired closing-only default; it never delivers the pre-task summary requirement'
+    }
+    [pscustomobject]@{
+        Version = 2
+        Hook    = 'Session-Summary-Check'
+        From    = @('SessionStart', 'UserPromptSubmit')
+        Reason  = 'the prior shipped default delivered policy but never invoked the silent publication observer'
     }
 )
 

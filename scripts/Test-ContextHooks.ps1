@@ -94,6 +94,12 @@ function New-ConfiguredSkillsHookCopy {
     if (-not $merged.ContainsKey('PLUGIN_SKILLS_ROOT')) {
         $merged['PLUGIN_SKILLS_ROOT'] = (Join-Path $Work 'no-such-plugin-cache')
     }
+    # Per-skill discovery reads the client's install records, Desktop skills,
+    # Codex home and the deployed rules; every one is pinned absent unless a
+    # case supplies a fixture, for the same host-independence reason.
+    foreach ($absentKey in @('CLAUDE_PLUGINS_FILE', 'CLAUDE_SETTINGS_FILES', 'CLAUDE_DESKTOP_SKILLS_ROOT', 'CODEX_HOME_DIR', 'CODEX_SHARED_SKILLS_DIR', 'SKILL_RULES_DIR')) {
+        if (-not $merged.ContainsKey($absentKey)) { $merged[$absentKey] = (Join-Path $Work ('no-such-' + $absentKey.ToLowerInvariant())) }
+    }
     # The cached index is keyed by library + plugin root + client, and each copy
     # gets its own paths, so a stale index from a previous case can never leak
     # into another - but pin the TTL anyway so a long suite cannot expire one
@@ -235,6 +241,7 @@ try {
     . (Join-Path $PSScriptRoot '_testcontextmcp.ps1')
     . (Join-Path $PSScriptRoot '_testcontextskills.ps1')
     . (Join-Path $PSScriptRoot '_testskillprompt.ps1')
+    . (Join-Path $PSScriptRoot '_testskilldiscovery.ps1')
     . (Join-Path $PSScriptRoot '_testcontextlargefile.ps1')
     . (Join-Path $PSScriptRoot '_testcontextaimemory.ps1')
     . (Join-Path $PSScriptRoot '_testcontexthooklib.ps1')
