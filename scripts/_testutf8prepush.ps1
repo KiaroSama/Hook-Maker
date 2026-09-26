@@ -134,7 +134,10 @@
         $r.Exit -eq 1 -and $r.Err -match 'legacy/report\.txt' -and $r.Err -match 'UTF-16 LE') $r.Err
 
     # =====================================================================
-    Write-Host '--- pre-push: unscannable required coverage FAILS CLOSED ---' -ForegroundColor Cyan
+    Write-Host '--- pre-push: an unknown remote sha widens the scan, never skips it ---' -ForegroundColor Cyan
+    # A remote sha git does not know cannot narrow the range, so everything
+    # the local tip holds beyond the remote-tracking refs is scanned: a clean
+    # change passes, an invalid one still blocks.
     $ppUnres = New-PushableRepo 'PpUnresolvable'
     Write-Utf8 (Join-Path $ppUnres 'base.txt') "seed`n"
     Add-Commit $ppUnres 'baseline'
@@ -143,11 +146,17 @@
     Add-Commit $ppUnres 'clean change'
     $fakeRemote = 'deadbeef' + ('0' * 32)
     $r = FireGitPrePush -Cwd $ppUnres -StdinText (Get-RefUpdateLine -Repo $ppUnres -RemoteSha $fakeRemote) -HookPath $hcPp.Script -LocalAppData $hcPp.LocalAppData
-    Check 'an unresolvable remote sha blocks with an incomplete-coverage message (never treated clean)' (
-        $r.Exit -eq 1 -and $r.Err -match '(?i)not resolvable locally' -and $r.Err -match '(?i)coverage incomplete') $r.Err
-    # Blob-ceiling overflow: more changed blobs than UTF8_MAX_FILES -> the
-    # REQUIRED coverage cannot be completed -> fail closed even though every
-    # file is individually valid.
+    Check 'an unknown remote sha with a clean outgoing change passes' ($r.Exit -eq 0) $r.Err
+    Write-Bytes (Join-Path $ppUnres 'bad.txt') (Get-InvalidUtf8Bytes 'PPUNRESMARKER')
+    Add-Commit $ppUnres 'invalid change'
+    $r = FireGitPrePush -Cwd $ppUnres -StdinText (Get-RefUpdateLine -Repo $ppUnres -RemoteSha $fakeRemote) -HookPath $hcPp.Script -LocalAppData $hcPp.LocalAppData
+    Check 'an unknown remote sha still blocks an invalid outgoing blob' ($r.Exit -eq 1 -and $r.Err -match 'bad\.txt') $r.Err
+
+    # =====================================================================
+    Write-Host '--- pre-push: no file-count ceiling; a rewrite of published content scans nothing ---' -ForegroundColor Cyan
+    # UTF8_MAX_FILES=1 once refused any push of two or more blobs. The gate now
+    # reads every sent blob, so the setting must not limit it: three valid
+    # blobs pass, and an invalid THIRD one still blocks (the scan went past 1).
     $hcPpCap = New-IsolatedHookCopy -EnvContent "UTF8_MAX_FILES=1`n"
     $ppCap = New-PushableRepo 'PpCeiling'
     Write-Utf8 (Join-Path $ppCap 'base.txt') "seed`n"
@@ -156,10 +165,25 @@
     Write-Utf8 (Join-Path $ppCap 'f1.txt') "valid one`n"
     Write-Utf8 (Join-Path $ppCap 'f2.txt') "valid two`n"
     Write-Utf8 (Join-Path $ppCap 'f3.txt') "valid three`n"
-    Add-Commit $ppCap 'three blobs against a ceiling of one'
+    Add-Commit $ppCap 'three blobs, UTF8_MAX_FILES=1'
     $r = FireGitPrePush -Cwd $ppCap -StdinText (Get-RefUpdateLine -Repo $ppCap) -HookPath $hcPpCap.Script -LocalAppData $hcPpCap.LocalAppData
-    Check 'a blob-ceiling overflow of REQUIRED coverage fails closed (exit 1, names UTF8_MAX_FILES)' (
-        $r.Exit -eq 1 -and $r.Err -match 'UTF8_MAX_FILES' -and $r.Err -match '(?i)fail closed') $r.Err
+    Check 'UTF8_MAX_FILES does not cap the pre-push gate (three valid blobs pass)' ($r.Exit -eq 0) $r.Err
+    Write-Bytes (Join-Path $ppCap 'f3.txt') (Get-InvalidUtf8Bytes 'PPCAPMARKER')
+    Write-Utf8 (Join-Path $ppCap 'f4.txt') "valid four`n"
+    Add-Commit $ppCap 'invalid blob among several'
+    $r = FireGitPrePush -Cwd $ppCap -StdinText (Get-RefUpdateLine -Repo $ppCap) -HookPath $hcPpCap.Script -LocalAppData $hcPpCap.LocalAppData
+    Check 'an invalid blob beyond the old ceiling still blocks' ($r.Exit -eq 1 -and $r.Err -match 'f3\.txt' -and $r.Err -notmatch 'UTF8_MAX_FILES') $r.Err
+    # History rewrite: legacy invalid content already published, then only the
+    # commit is rewritten (new sha, same tree). Nothing new is sent, so the
+    # legacy blob is not re-judged; the untouched gate above proves it would be.
+    $ppRewrite = New-PushableRepo 'PpRewrite'
+    Write-Bytes (Join-Path $ppRewrite 'legacy.txt') (Get-InvalidUtf8Bytes 'PPREWRITEMARKER')
+    Add-Commit $ppRewrite 'legacy content'
+    Push-Repo $ppRewrite
+    $publishedSha = ((& git -C $ppRewrite rev-parse HEAD) | Out-String).Trim()
+    & git -C $ppRewrite commit -q --amend -m 'legacy content, rewritten metadata' 2>$null | Out-Null
+    $r = FireGitPrePush -Cwd $ppRewrite -StdinText (Get-RefUpdateLine -Repo $ppRewrite -RemoteSha $publishedSha) -HookPath $hcPpCap.Script -LocalAppData $hcPpCap.LocalAppData
+    Check 'a rewrite that sends no new blob passes, even over published legacy content' ($r.Exit -eq 0) $r.Err
     # Oversized TEXT blob: cannot be fully validated -> fail closed; the same
     # size of BINARY bytes is recognized from its window and passes.
     $hcPpBig = New-IsolatedHookCopy -EnvContent "UTF8_MAX_FILE_KB=1`n"

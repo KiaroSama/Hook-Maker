@@ -169,6 +169,74 @@ function Get-GitBlobBytes {
     return $result
 }
 
+# Many blobs through ONE `git cat-file --batch` child: the pre-push scan used
+# to start two git processes per blob, which is the only reason it ever needed
+# a file-count cap. Request and response alternate one blob at a time, so
+# neither pipe can fill and deadlock. Returns sha -> the Get-GitBlobBytes
+# result shape; an oversized blob keeps only its heuristic window (the rest is
+# drained, never classified). Any protocol error leaves every unanswered blob
+# Failed, which the caller turns into a fail-closed coverage error.
+function Read-GitBlobsBatch {
+    param([string]$Cwd, [string[]]$BlobShas, [int64]$MaxFullBytes)
+    $results = @{}
+    foreach ($sha in $BlobShas) { $results[$sha] = [pscustomobject]@{ Bytes = $null; Truncated = $false; Failed = $true } }
+    $valid = @($BlobShas | Where-Object { $_ -match '^[0-9a-f]{40,64}$' })
+    if ($valid.Count -eq 0) { return $results }
+    $proc = New-Object System.Diagnostics.Process
+    try {
+        $proc.StartInfo.FileName = 'git'
+        $proc.StartInfo.Arguments = 'cat-file --batch'
+        $proc.StartInfo.WorkingDirectory = $Cwd
+        $proc.StartInfo.UseShellExecute = $false
+        $proc.StartInfo.RedirectStandardInput = $true
+        $proc.StartInfo.RedirectStandardOutput = $true
+        $proc.StartInfo.RedirectStandardError = $true
+        $proc.StartInfo.CreateNoWindow = $true
+        [void]$proc.Start()
+        $proc.BeginErrorReadLine()
+        $in = $proc.StandardInput.BaseStream
+        $out = $proc.StandardOutput.BaseStream
+        $header = New-Object System.Collections.Generic.List[byte]
+        $scratch = New-Object byte[] 65536
+        foreach ($sha in $valid) {
+            $request = [System.Text.Encoding]::ASCII.GetBytes($sha + "`n")
+            $in.Write($request, 0, $request.Length)
+            $in.Flush()
+            $header.Clear()
+            while ($true) {
+                $b = $out.ReadByte()
+                if ($b -lt 0) { throw 'cat-file --batch ended early' }
+                if ($b -eq 10) { break }
+                [void]$header.Add([byte]$b)
+            }
+            $parts = @(([System.Text.Encoding]::ASCII.GetString($header.ToArray())) -split ' ')
+            $size = [int64]0
+            if ($parts.Count -ne 3 -or $parts[1] -ne 'blob' -or -not [int64]::TryParse($parts[2], [ref]$size)) { continue }
+            $keep = $size
+            $truncated = $false
+            if ($size -gt $MaxFullBytes) { $keep = [Math]::Min([int64]$script:HeuristicWindowBytes, $size); $truncated = $true }
+            $buffer = New-Object byte[] ([int]$keep)
+            $total = [int64]0
+            # size + 1: git writes an LF after every object body.
+            while ($total -lt $size + 1) {
+                if ($total -lt $keep) { $n = $out.Read($buffer, [int]$total, [int]($keep - $total)) }
+                else { $n = $out.Read($scratch, 0, [int][Math]::Min([int64]$scratch.Length, $size + 1 - $total)) }
+                if ($n -le 0) { throw 'cat-file --batch ended mid-object' }
+                $total += $n
+            }
+            $results[$sha] = [pscustomobject]@{ Bytes = $buffer; Truncated = $truncated; Failed = $false }
+        }
+        $in.Close()
+    }
+    catch { }
+    finally {
+        try { if (-not $proc.HasExited) { $proc.Kill() } } catch { }
+        try { [void]$proc.WaitForExit(2000) } catch { }
+        try { $proc.Dispose() } catch { }
+    }
+    return $results
+}
+
 # ---- exception registry -----------------------------------------------------
 # Loads and STRICTLY validates the optional exception file. Returns only the
 # entries that pass every rule; each rejection lands in $configWarnings and
