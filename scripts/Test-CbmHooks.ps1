@@ -152,7 +152,8 @@ try {
     # JSON-quoted argument, so inspecting raw stdout conflates two encodings.
     $indexNote = [string](($r.Out | ConvertFrom-Json).hookSpecificOutput.additionalContext)
     Check 'read: an unindexed project is told to index once, with the real path' (
-        $indexNote -match 'no Codebase Memory index yet' -and $indexNote.Contains('index_repository(repo_path=' + ($proj | ConvertTo-Json -Compress))) $r.Out
+        $indexNote -match 'no Codebase Memory index yet' -and $indexNote.Contains('index_repository(repo_path=' + ($proj | ConvertTo-Json -Compress)) -and
+        $indexNote.Contains('global-mcp-windows-cmm.md (Windows CMM installation and correct usage)') -and $indexNote.Contains('read it in full before this work')) $r.Out
 
     $dbPath = Get-CbmProjectDbPath -ProjectRoot $proj -CacheDir $cache
     [System.IO.File]::WriteAllText($dbPath, 'x')

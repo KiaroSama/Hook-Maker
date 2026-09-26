@@ -269,7 +269,7 @@ try {
     $b1 = New-GitRepo 'base1'
     Set-Content (Join-Path $b1 'package.json') '{}'
     $r = Fire -HookPath $BaselineHook -Cwd $b1
-    Check 'missing .github -> CI + dependabot findings' ($r.Out -match 'GITHUB BASELINE CHECK' -and $r.Out -match 'No CI workflow' -and $r.Out -match 'No \.github/dependabot\.yml' -and $r.Out -match 'npm at /')
+    Check 'missing .github -> CI + dependabot findings' ($r.Out -match 'GITHUB BASELINE CHECK' -and $r.Out -match 'No CI workflow' -and $r.Out -match 'No \.github/dependabot\.yml' -and $r.Out -match 'npm at /' -and $r.Out -match 'global-github-automation-rules\.md governs it and loads on demand, so read it in full before this work')
     Check 'CodeQL suggested for detected language' ($r.Out -match 'CodeQL')
     Check 'CodeQL is explicitly optional, never mandatory' ($r.Out -match '- Optional: CodeQL') $r.Out
     # Scope: ordinary gaps (missing/weak CI, incomplete Dependabot, optional

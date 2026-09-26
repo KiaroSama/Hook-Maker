@@ -12,7 +12,7 @@
     $sdSavedClaudeDir = $env:CLAUDE_PROJECT_DIR
     # The two order-55 step-4a lines, copied from the ORDER, not from the hook:
     # the assertion must fail if the hook's wording drifts from what was asked.
-    $sdRoutingA = '- Every visible skill has its own routing line in global-skill-routing.md; user-level, Desktop and Kiaro template skills are in global-skills-catalogue.md. Route by that line, not by the plugin name; where two skills share a job, the line names the default.'
+    $sdRoutingA = '- Every visible skill has its own routing line in global-skill-routing.md; user-level, Desktop and Kiaro template skills are in global-skills-catalogue.md. Route by that line, not by the plugin name; where two skills share a job, the line names the default. global-skill-routing.md loads on demand, so read it in full before this work.'
     $sdRoutingB = '- Security work enters at the security-audit skill, never at a scanner. semgrep, codeql, SARIF, insecure-defaults and differential-review are evidence that workflow calls for. It runs in guidance mode by default and in full audit mode only on an explicit audit, pen-test, end-to-end review, or a request for report artifacts.'
 
     function New-SdSkill {

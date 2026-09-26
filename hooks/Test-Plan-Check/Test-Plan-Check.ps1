@@ -485,7 +485,7 @@ catch { }
 
 # ---- the advisory ------------------------------------------------------------
 $lines = New-Object System.Collections.Generic.List[string]
-[void]$lines.Add('TEST PLAN CHECK - test-health policy for this task. Advisory only: this hook never runs a test and never edits a file.')
+[void]$lines.Add('TEST PLAN CHECK - test-health policy for this task. Advisory only: this hook never runs a test and never edits a file. The policy is global-test-rules.md; it loads on demand, so read it in full before this work.')
 [void]$lines.Add('- Give every test run a bounded WALL timeout AND an idle/no-progress timeout. A run with no bound is a defect, not a slow test.')
 [void]$lines.Add('- No long blind sleeps. Wait on a deterministic signal, a readiness check, or bounded polling - never a fixed multi-second delay.')
 [void]$lines.Add('- Keep parallelism resource-aware: max(2, min(8, cores-2)) workers, no nested oversubscription; do not re-serialize slow independent suites.')

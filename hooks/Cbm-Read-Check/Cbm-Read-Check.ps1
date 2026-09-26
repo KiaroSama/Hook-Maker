@@ -82,7 +82,7 @@ else {
         ('CBM READ CHECK - this project has no Codebase Memory index yet (expected at ' + $dbPath + ').'),
         ('Unless this session is documentation-only, index it once now: index_repository(repo_path=' + $rootJson + ', mode="moderate", persistence=true). A background watcher normally keeps it fresh.'),
         'Then query the graph before browsing files: get_architecture, search_graph, trace_path, get_code_snippet.',
-        'If indexing refuses, diagnose the specific cause using global-mcp-rules.md, Windows CMM installation and correct usage:',
+        'If indexing refuses, diagnose the specific cause using global-mcp-windows-cmm.md (Windows CMM installation and correct usage) - it loads on demand, so read it in full before this work:',
         '- Outside the allowed root / absent approval: verify the selected service environment and exact project root. Enroll only a root the user authorized; a hook reminder never authorizes wider access.',
         '- Approved but still sensitive on 0.10.8: approval equality is separator-sensitive. Compare backslash and forward-slash spellings and the approval marker. Preserve every grant; add only the equivalent spelling of the same approved root, with a backup, concurrent-change detection and atomic publication. Do not move project sources or use parent grants/junction escapes.',
         '- OS/sandbox access denial: a shell refusal does not prove the connected MCP service is broken. Use the connected tool or authorized escalation; do not grant sandbox identities write access to the private service.',

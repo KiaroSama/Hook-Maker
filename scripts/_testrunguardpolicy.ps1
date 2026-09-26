@@ -45,7 +45,7 @@
     # it must already be optimized, and the guarded runner must be its only owner.
     Check 'the deny requires the suite to be optimized BEFORE it may run' (
         $msgDd -match 'Every test that will run must already be optimized' -and
-        $msgDd -match 'Test Optimization Before Any Run') $msgDd
+        $msgDd -match 'Test Optimization Before Any Run' -and $msgDd -match 'global-test-rules\.md: .*read it in full before this work') $msgDd
     Check 'the deny names the guarded runner as the only permitted owner (no background job)' (
         $msgDd -match 'the guarded runner is the only owner this run may have' -and
         $msgDd -match 'never wrap it in a background job') $msgDd

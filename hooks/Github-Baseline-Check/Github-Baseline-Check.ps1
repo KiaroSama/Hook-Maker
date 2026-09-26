@@ -479,7 +479,7 @@ else {
 }
 $message = 'GITHUB BASELINE CHECK (' + $repoSlug + '): the .github automation baseline does not match the project structure:' + "`n" +
     ($findings -join "`n") + "`n" +
-    $scopeNote + ' When a fix does go ahead: inspect the real project first, use its actual commands, and never blindly copy templates or overwrite working project-specific automation.'
+    $scopeNote + ' When a fix does go ahead: global-github-automation-rules.md governs it and loads on demand, so read it in full before this work; inspect the real project first, use its actual commands, and never blindly copy templates or overwrite working project-specific automation.'
 if (-not [string]::IsNullOrWhiteSpace($badgeNote)) { $message += "`n`n" + $badgeNote }
 $null = Write-HookResult -EventName $eventName -Kind 'context' -Message $message
 exit 0

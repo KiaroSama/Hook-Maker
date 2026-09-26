@@ -94,7 +94,7 @@ try {
         $text -match 'possible orphaned test processes started during this session' -and
         $text -match 'cannot prove ownership and kills nothing') $r.Out
     Check 'the advisory instructs the survivor sweep and cites the rule' (
-        $text -match 'Run the survivor sweep before finishing \(global-test-rules\.md -> No Orphaned Test Processes\)') $r.Out
+        $text -match 'Run the survivor sweep before finishing \(global-test-rules\.md -> No Orphaned Test Processes; it loads on demand, so read it in full before this work\)') $r.Out
     Check 'the survivor advisory NEVER blocks: no decision, exit 0' (
         $r.Exit -eq 0 -and $r.Err -eq '' -and $null -ne $doc -and
         $null -ne $doc.PSObject.Properties['systemMessage'] -and

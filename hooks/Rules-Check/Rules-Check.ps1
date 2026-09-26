@@ -447,7 +447,7 @@ if ($rulesMoved) {
     [void]$lines.Add($script:RulesRequirement)
 }
 if ($deepDebug) {
-    [void]$lines.Add('RULES CHECK (' + $Client + ') - standalone ::deep-debug codeword detected. Workflow bounds (WORKFLOWS.md "Deep Debug Orchestrator" + CODEWORDS.md):')
+    [void]$lines.Add('RULES CHECK (' + $Client + ') - standalone ::deep-debug codeword detected. Workflow bounds (WORKFLOWS.md "Deep Debug Orchestrator" + skill-policy-deep-debug.md + CODEWORDS.md; WORKFLOWS.md and skill-policy-deep-debug.md load on demand, so read it in full before this work):')
     [void]$lines.Add('- ::deep-debug is a BOUNDED composite workflow: end as DEEP DEBUG: COMPLETE or DEEP DEBUG: BLOCKED - never an endless audit/refactor/fix loop.')
     [void]$lines.Add('- The ::deep-debug goal is the agent''s own ledger goal: every bug and finding fixed and verified, rejected with evidence, deferred by explicit scope, or blocked with a concrete reason, and every phase done - written as the first task-ledger entries (WORKFLOWS.md Deep Debug Orchestrator, step 1). A goal command is typed only by the user; no rule asks the agent to invoke one.')
     [void]$lines.Add('- ::multi-agent is a workflow dependency: independent owned workstreams, ONE integration of all results, then final verification on the unified tree - no recursive re-runs, no nested agent trees.')

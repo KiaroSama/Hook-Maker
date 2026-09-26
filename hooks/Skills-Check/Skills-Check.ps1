@@ -135,7 +135,7 @@ $script:SpecKitRouting = 'Spec Kit routes every task that changes the project: n
 # Order 55 step 4a, verbatim. Routing is per SKILL, because an agent sees
 # skills, not plugins; and security work has one entry point.
 $script:SkillRoutingLines = @(
-    '- Every visible skill has its own routing line in global-skill-routing.md; user-level, Desktop and Kiaro template skills are in global-skills-catalogue.md. Route by that line, not by the plugin name; where two skills share a job, the line names the default.',
+    '- Every visible skill has its own routing line in global-skill-routing.md; user-level, Desktop and Kiaro template skills are in global-skills-catalogue.md. Route by that line, not by the plugin name; where two skills share a job, the line names the default. global-skill-routing.md loads on demand, so read it in full before this work.',
     '- Security work enters at the security-audit skill, never at a scanner. semgrep, codeql, SARIF, insecure-defaults and differential-review are evidence that workflow calls for. It runs in guidance mode by default and in full audit mode only on an explicit audit, pen-test, end-to-end review, or a request for report artifacts.'
 )
 $script:ImportGuidance = 'Import guidance: copy the minimal set (1-5) as real folders (never reparse points, junctions or shortcuts), exclude secrets/caches/VCS metadata, never overwrite a modified project skill silently, and record source/destination/hash/agent/reason in .ai/SKILLS.md.'
