@@ -66,7 +66,8 @@ $chainNote = @(
     '2. If docs/agents/issue-tracker.md is missing, run the setup procedure for those skills first.',
     '3. Then Spec Kit, in order: speckit-specify, speckit-clarify, speckit-plan, speckit-tasks, speckit-analyze, speckit-implement.',
     '4. Inside speckit-implement: tdd at the agreed seams, then code-review, then commit.',
-    'Every question any step raises goes to the user and the work waits for the answer - never a plausible default.'
+    'Arriving mid-task? It is a request delta: record it with requirement IDs and acceptance criteria, amend the active feature''s spec/plan/tasks (independent scope gets its own feature), refresh the skill selection and rerun the affected gates before resuming. An earlier Spec Kit run covers only what it recorded.',
+    'Every question any step raises goes to the user - never a plausible default. Only the work that depends on the answer waits; independent work continues.'
 ) -join "`n"
 
 # ---- UserPromptSubmit: advise, once per prompt -------------------------------

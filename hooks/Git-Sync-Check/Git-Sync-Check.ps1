@@ -94,6 +94,11 @@ Set-StrictMode -Version 2.0
 $ErrorActionPreference = 'Stop'
 
 . (Join-Path $PSScriptRoot '..\_hooklib.ps1')
+# Two responsibilities that grew past what this file could hold under the size
+# ceiling: the owner's public-commit-identity reminder and the leave-no-branch-
+# open disposition list. Definitions only; both are read-only.
+. (Join-Path $PSScriptRoot '_commitidentity.ps1')
+. (Join-Path $PSScriptRoot '_branchdisposition.ps1')
 
 $hookInput = Read-HookInput
 if ($null -eq $hookInput) {
@@ -307,6 +312,12 @@ if (-not $inRepo.Ok -or [string]$inRepo.Output[0] -ne 'true') {
 }
 $remotes = Invoke-Git @('remote')
 if (-not $remotes.Ok -or @($remotes.Output | Where-Object { $_ }).Count -eq 0) {
+    # Nothing to synchronise without a remote, but the owner asked for the
+    # identity reminder EVERY session: history written locally is published
+    # the day a remote is added, with whatever address it already carries.
+    if ($eventName -eq 'SessionStart') {
+        $null = Write-HookResult -EventName $eventName -Kind 'context' -Message (Get-CommitIdentityReminder -Report (Get-CommitIdentityReport -RepoPath $cwd))
+    }
     exit 0
 }
 
@@ -406,12 +417,21 @@ elseif ($branchName -ne '' -and $branchName -ne 'HEAD') {
 }
 
 if (-not $isStopEvent) {
-    if ($findings.Count -eq 0) {
+    $contextParts = New-Object System.Collections.Generic.List[string]
+    if ($findings.Count -gt 0) {
+        $message = 'GIT SYNC STATUS (' + $cwd + "):`n- " + ($findings.ToArray() -join "`n- ")
+        $message += "`nConsider this pre-existing sync state before making further changes; this check does not modify the repository."
+        [void]$contextParts.Add($message)
+    }
+    # EVERY session, clean or not: the owner chose a reminder that always runs
+    # over a gate that fires only on a configured private address.
+    if ($eventName -eq 'SessionStart') {
+        [void]$contextParts.Add((Get-CommitIdentityReminder -Report (Get-CommitIdentityReport -RepoPath $cwd)))
+    }
+    if ($contextParts.Count -eq 0) {
         exit 0
     }
-    $message = 'GIT SYNC STATUS (' + $cwd + "):`n- " + ($findings.ToArray() -join "`n- ")
-    $message += "`nConsider this pre-existing sync state before making further changes; this check does not modify the repository."
-    $null = Write-HookResult -EventName $eventName -Kind 'context' -Message $message
+    $null = Write-HookResult -EventName $eventName -Kind 'context' -Message ($contextParts.ToArray() -join "`n`n")
     exit 0
 }
 
@@ -555,6 +575,25 @@ if ($haveBaseline) {
     }
 }
 
+# New commits made in this session carry the same obligation as the history
+# the SessionStart reminder covered. Advisory: counting is evidence for the
+# agent, and deciding whose address it is needs the agent's judgement.
+$sessionStartHead = ''
+if ($haveBaseline) {
+    foreach ($w in @(Get-Field $baseline 'worktrees')) {
+        $wp = [string](Get-Field $w 'path')
+        if ($wp -ne '' -and [string]::Equals((Normalize-Path $wp), (Normalize-Path $cwd), [System.StringComparison]::OrdinalIgnoreCase)) {
+            $sessionStartHead = [string](Get-Field $w 'head')
+        }
+    }
+}
+if ($sessionStartHead -ne '' -and $headSha -ne '' -and $sessionStartHead -ne $headSha) {
+    $newIdentity = Get-CommitIdentityReport -RepoPath $cwd -Range ($sessionStartHead + '..' + $headSha)
+    if (-not $newIdentity.LogOk -or $newIdentity.OtherCommits -gt 0 -or -not $newIdentity.EffectiveOk) {
+        [void]$advisoryExtra.Add((Get-CommitIdentityReminder -Report $newIdentity -Scope 'session'))
+    }
+}
+
 $blockingFindings = @($findings.ToArray()) + @($blockingExtra.ToArray())
 $advisoryFindings = @($advisoryExtra.ToArray())
 
@@ -619,6 +658,7 @@ if ($blockingExtra.Count -gt 0) {
     $destinationWording = if ($destinationBranch -ne '') { $destinationBranch } else { 'the intended destination branch' }
     $operationalInstruction += "`n`nAlso reconcile every task-created or task-changed branch and worktree reported above before finishing: merge or otherwise incorporate each into " + $destinationWording + " when that is its purpose, push any that are meant to be shared (a branch that is pushed but not yet merged into the destination is acceptable on its own and is not itself a blocker), and remove a worktree with 'git worktree remove' only once its purpose is complete - never one that still holds unreconciled or uncommitted work. Never force-push or rewrite history without explicit authorization. If reconciling a branch or worktree is unsafe or impossible, preserve it and report the exact reason instead of claiming it is resolved."
 }
+$operationalInstruction += "`n`n" + (Get-BranchDispositionInstruction -Disposition (Get-BranchDisposition -RepoPath $cwd -Fallback $destinationBranch -FetchOk ([bool]$fetch.Ok)))
 $reason = $message + $operationalInstruction
 # Record the block so THIS hook's own re-entry is recognised; another
 # gate's block must not mute it, and its own must not repeat.

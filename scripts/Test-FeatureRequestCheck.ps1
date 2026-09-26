@@ -306,6 +306,10 @@ try {
         $r.Exit -eq 0 -and $r.Err -eq '' -and $msg -match 'FEATURE REQUEST CHECK') ($r.Out + $r.Err)
     Check 'advisory: it names grilling and domain-modeling, not just "a skill"' (
         $msg -match 'grilling' -and $msg -match 'domain-modeling') $msg
+    # Order 55 step 3: a feature request arriving mid-task is a request delta.
+    Check 'advisory: a mid-task arrival is routed through the intake (request delta, requirement IDs, acceptance criteria)' (
+        $msg -match 'request delta' -and $msg -match 'requirement IDs' -and $msg -match 'acceptance criteria') $msg
+    Check 'advisory: only the dependent work waits for an answer' ($msg -match 'independent work continues') $msg
     # FR-005: the rules WITHDREW the "not a feature, carry on" carve-out, so the
     # advisory must no longer offer it - this assertion was inverted the day the
     # carve-out went, and it is the inversion that enforces the requirement.
