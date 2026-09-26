@@ -101,6 +101,13 @@ function Read-DiscoveryJson {
     catch { [void]$Partial.Add($Label + ' unreadable'); return $null }
 }
 
+# A plain function, not a scriptblock: the package's static-safety check forbids
+# every call operator on a variable, so nothing here can execute data.
+function Add-UniqueFolder {
+    param($List, [string]$Path)
+    if (-not $List.Contains($Path)) { [void]$List.Add($Path) }
+}
+
 # The skill folders one plugin exposes, exactly as the documented loader scans
 # them: a folder holding SKILL.md is a skill; any other folder is a directory
 # of <name>\SKILL.md folders, one level deep. A category folder (mattpocock's
@@ -109,8 +116,7 @@ function Read-DiscoveryJson {
 function Get-PluginSkillFolders {
     param([string]$Root, $Declared, $Partial, [string]$Label)
     $found = New-Object System.Collections.Generic.List[string]
-    $add = { param($p) if (-not $found.Contains($p)) { [void]$found.Add($p) } }
-    if (Test-Path -LiteralPath (Join-Path $Root 'SKILL.md') -PathType Leaf) { & $add $Root }
+    if (Test-Path -LiteralPath (Join-Path $Root 'SKILL.md') -PathType Leaf) { Add-UniqueFolder $found $Root }
     $dirs = New-Object System.Collections.Generic.List[string]
     [void]$dirs.Add((Join-Path $Root 'skills'))
     foreach ($entry in @($Declared)) {
@@ -123,10 +129,10 @@ function Get-PluginSkillFolders {
     }
     foreach ($dir in $dirs) {
         if (-not (Test-Path -LiteralPath $dir -PathType Container)) { continue }
-        if (Test-Path -LiteralPath (Join-Path $dir 'SKILL.md') -PathType Leaf) { & $add ((Get-Item -LiteralPath $dir).FullName); continue }
+        if (Test-Path -LiteralPath (Join-Path $dir 'SKILL.md') -PathType Leaf) { Add-UniqueFolder $found ((Get-Item -LiteralPath $dir).FullName); continue }
         foreach ($child in @(Get-ChildItem -LiteralPath $dir -Directory -ErrorAction SilentlyContinue)) {
             if ($child.Attributes -band [IO.FileAttributes]::ReparsePoint) { continue }
-            if (Test-Path -LiteralPath (Join-Path $child.FullName 'SKILL.md') -PathType Leaf) { & $add $child.FullName }
+            if (Test-Path -LiteralPath (Join-Path $child.FullName 'SKILL.md') -PathType Leaf) { Add-UniqueFolder $found $child.FullName }
         }
     }
     return @($found.ToArray())
