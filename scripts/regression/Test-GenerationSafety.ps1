@@ -170,8 +170,16 @@ try {
         $e = Get-GenerationRecord $h
         $w.Exit -eq 0 -and $w.Out -eq '' -and $w.Err -eq '' -and $null -ne $e -and $null -ne $e.publication -and -not $e.publication.ready
     }
+    # BYTES ALONE WERE NOT ENOUGH. The historical store rewrites the file on every
+    # update, including a no-op, and whether the rewritten bytes match depends on
+    # the host's JSON date handling - so this case passed on one runner PowerShell
+    # version and failed on the next, with the same subject. "No physical write"
+    # is what the fix actually guarantees, and it does not depend on the host.
+    $beforeWrite = [IO.File]::GetLastWriteTimeUtc((Get-Path $h))
     $before = [IO.File]::ReadAllText((Get-Path $h)); $w = Wire $h "**DONE:** verified work`n**REMAINING:** none"
-    Case 'G07 duplicate observation preserves the first record byte for byte' { [IO.File]::ReadAllText((Get-Path $h)) -ceq $before -and $w.Out -eq '' }
+    Case 'G07 duplicate observation preserves the first record byte for byte, without rewriting it' {
+        [IO.File]::ReadAllText((Get-Path $h)) -ceq $before -and [IO.File]::GetLastWriteTimeUtc((Get-Path $h)) -eq $beforeWrite -and $w.Out -eq ''
+    } $true
     $h = New-Task 'wire-persian'
     $done = -join ([char[]]@(0x0686,0x06cc,0x20,0x0634,0x062f)); $left = -join ([char[]]@(0x0686,0x06cc,0x20,0x0645,0x0648,0x0646,0x062f))
     $w = Wire $h ([char]0x200f + $done + ": verified`n" + [char]0x200f + $left + ': none')
