@@ -21,10 +21,9 @@
 # compaction each rebuild the context); UserPromptSubmit re-delivers on a
 # cooldown so a long session is reminded again before it ends.
 #
-# Stop and SubagentStop are silent. A registration that still names them (an
-# installation predating this change) runs the hook and gets nothing, which
-# is exactly right for a Stop advisory with nothing to act on. Nothing here
-# keys on stop_hook_active: that flag belongs to the gates.
+# Stop and SubagentStop are registered silent observers. They record only a
+# genuine current summary, never infer publication from the event name. Nothing
+# here keys on stop_hook_active: that flag belongs to the gates.
 
 Set-StrictMode -Version 2.0
 $ErrorActionPreference = 'Stop'
@@ -112,16 +111,14 @@ function Get-BlockedGateNames {
 
 # RECORDING IS NOT SPEAKING. Stop stays SILENT - the header above explains at
 # length why speaking there costs an extra assistant turn - but Stop is the only
-# moment at which the summary has actually been published, so it is the only
-# moment at which that fact can be recorded. It is written here and NAMED later,
+# event where a completed response can be inspected. The response must actually
+# contain a summary; the event name is not that proof. It is NAMED later,
 # at the next delivery, which is the one place this hook already speaks without
 # costing a turn. Nothing is emitted from this branch.
 if ($isStopEvent) {
-    if ($null -ne (Get-Command Publish-GenerationSummary -ErrorAction SilentlyContinue)) {
+    if ($null -ne (Get-Command Observe-GenerationSummary -ErrorAction SilentlyContinue)) {
         try {
-            $stopBlocked = @(Get-BlockedGateNames -ProjectKey $projectKey -SessionId $sessionId)
-            $verdict = Test-GenerationReady -HookInput $hookInput -Objections $stopBlocked
-            $null = Publish-GenerationSummary -HookInput $hookInput -Ready ([bool]$verdict.Ready) -Missing @($verdict.Missing)
+            Observe-GenerationSummary -HookInput $hookInput
         }
         catch { }
     }
@@ -197,7 +194,7 @@ if ($null -ne (Get-Command Read-GenerationFailureOnce -ErrorAction SilentlyConti
     try { $pastFailure = Read-GenerationFailureOnce -HookInput $hookInput } catch { $pastFailure = '' }
     if (-not [string]::IsNullOrWhiteSpace($pastFailure)) {
         [void]$lines.Add('')
-        [void]$lines.Add('NOTED ONCE, NO ACTION NEEDED: the previous wrap-up went out while ' + $pastFailure + ' was still open.')
+        [void]$lines.Add('NOTED ONCE, NO ACTION NEEDED: a wrap-up was observed, but its readiness was not verified (' + $pastFailure + ').')
         [void]$lines.Add('This is recorded, not a correction to make - the summary was already displayed by then.')
     }
 }
