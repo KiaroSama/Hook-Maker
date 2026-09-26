@@ -179,6 +179,15 @@ function New-GitRepo {
     return $repo
 }
 
+# A recognized baseline is silent about the BASELINE; the README badge note
+# (order 55 step 6) binds every repository and may still arrive once. Only
+# that note is allowed - any other text, and any baseline finding, fails.
+function Test-NoBaselineFinding {
+    param([AllowNull()][string]$Out)
+    if ([string]::IsNullOrWhiteSpace($Out)) { return $true }
+    return ($Out -notmatch 'GITHUB BASELINE CHECK' -and $Out -match 'README badges: a moderate verified set')
+}
+
 function Get-HeadSha {
     param([string]$Repo)
     return ((& git -C $Repo rev-parse HEAD) | Out-String).Trim()
@@ -312,7 +321,7 @@ updates:
     Set-Content (Join-Path $dirsRepo 'apps\b\package.json') '{}'
     Set-Content (Join-Path $dirsRepo '.github\dependabot.yml') "version: 2`nupdates:`n  - package-ecosystem: npm`n    directories:`n      - /apps/a`n      - /apps/b`n  - package-ecosystem: github-actions`n    directory: /"
     $r = Fire -HookPath $BaselineHook -Cwd $dirsRepo
-    Check 'Dependabot directories list covers multiple package roots' ([string]::IsNullOrWhiteSpace([string]$r.Out)) ([string]$r.Out)
+    Check 'Dependabot directories list covers multiple package roots' (Test-NoBaselineFinding $r.Out) ([string]$r.Out)
 
     # =====================================================================
     Write-Host '--- GithubBaselineCheck: false positive/negative audit (issue 4) ---' -ForegroundColor Cyan
@@ -325,7 +334,7 @@ updates:
     Set-Content (Join-Path $flowTrigger '.github\workflows\ci.yml') "on: [push, pull_request]`njobs:`n  test:`n    steps:`n      - run: npm test"
     Set-Content (Join-Path $flowTrigger '.github\dependabot.yml') "version: 2`nupdates:`n  - package-ecosystem: npm`n    directory: /`n  - package-ecosystem: github-actions`n    directory: /"
     $r = Fire -HookPath $BaselineHook -Cwd $flowTrigger
-    Check 'flow-style trigger array (on: [push, pull_request]) is recognized' ([string]::IsNullOrWhiteSpace([string]$r.Out)) ([string]$r.Out)
+    Check 'flow-style trigger array (on: [push, pull_request]) is recognized' (Test-NoBaselineFinding $r.Out) ([string]$r.Out)
 
     # Quoted "on": key with block-style triggers underneath.
     $quotedOn = New-GitRepo 'quotedon'
@@ -334,7 +343,7 @@ updates:
     Set-Content (Join-Path $quotedOn '.github\workflows\ci.yml') "`"on`":`n  push:`n  pull_request:`njobs:`n  test:`n    steps:`n      - run: npm test"
     Set-Content (Join-Path $quotedOn '.github\dependabot.yml') "version: 2`nupdates:`n  - package-ecosystem: npm`n    directory: /`n  - package-ecosystem: github-actions`n    directory: /"
     $r = Fire -HookPath $BaselineHook -Cwd $quotedOn
-    Check 'quoted "on" key with block-style triggers is recognized' ([string]::IsNullOrWhiteSpace([string]$r.Out)) ([string]$r.Out)
+    Check 'quoted "on" key with block-style triggers is recognized' (Test-NoBaselineFinding $r.Out) ([string]$r.Out)
 
     # Multiline `run: |` block scalar with the real validation command on a
     # SUBSEQUENT, more-indented line - a confirmed false negative (the old
@@ -356,7 +365,7 @@ jobs:
 '@
     Set-Content (Join-Path $multilineRun '.github\dependabot.yml') "version: 2`nupdates:`n  - package-ecosystem: npm`n    directory: /`n  - package-ecosystem: github-actions`n    directory: /"
     $r = Fire -HookPath $BaselineHook -Cwd $multilineRun
-    Check 'multiline run: | block with validation commands is recognized' ([string]::IsNullOrWhiteSpace([string]$r.Out)) ([string]$r.Out)
+    Check 'multiline run: | block with validation commands is recognized' (Test-NoBaselineFinding $r.Out) ([string]$r.Out)
 
     # pyproject.toml classification: Poetry has no distinct Dependabot
     # ecosystem value (stays `pip`); uv DOES (only when uv.lock is present).
@@ -412,7 +421,7 @@ jobs:
 '@
     Set-Content (Join-Path $calledReusable '.github\dependabot.yml') "version: 2`nupdates:`n  - package-ecosystem: npm`n    directory: /`n  - package-ecosystem: github-actions`n    directory: /"
     $r = Fire -HookPath $BaselineHook -Cwd $calledReusable
-    Check 'a workflow_call reusable workflow CALLED by a directly-triggered local workflow counts as CI' ([string]::IsNullOrWhiteSpace([string]$r.Out)) ([string]$r.Out)
+    Check 'a workflow_call reusable workflow CALLED by a directly-triggered local workflow counts as CI' (Test-NoBaselineFinding $r.Out) ([string]$r.Out)
 
     # Unrelated nested key named `push:` (a step's own input, e.g.
     # docker/build-push-action's `push: true`) outside the top-level `on:`
@@ -444,7 +453,7 @@ jobs:
     Set-Content (Join-Path $singleQuotedOn '.github\workflows\ci.yml') "'on':`n  push:`n  pull_request:`njobs:`n  test:`n    steps:`n      - run: npm test"
     Set-Content (Join-Path $singleQuotedOn '.github\dependabot.yml') "version: 2`nupdates:`n  - package-ecosystem: npm`n    directory: /`n  - package-ecosystem: github-actions`n    directory: /"
     $r = Fire -HookPath $BaselineHook -Cwd $singleQuotedOn
-    Check "single-quoted 'on' key with block-style triggers is recognized" ([string]::IsNullOrWhiteSpace([string]$r.Out)) ([string]$r.Out)
+    Check "single-quoted 'on' key with block-style triggers is recognized" (Test-NoBaselineFinding $r.Out) ([string]$r.Out)
 
     # A comment mentioning trigger words, and a run: command whose text
     # contains "push:", must never be mistaken for a real trigger.
@@ -500,7 +509,7 @@ jobs:
 '@
     Set-Content (Join-Path $realAfterComment '.github\dependabot.yml') "version: 2`nupdates:`n  - package-ecosystem: npm`n    directory: /`n  - package-ecosystem: github-actions`n    directory: /"
     $r = Fire -HookPath $BaselineHook -Cwd $realAfterComment
-    Check '7.1 a real validation command after a comment line IS counted as CI' ([string]::IsNullOrWhiteSpace([string]$r.Out)) ([string]$r.Out)
+    Check '7.1 a real validation command after a comment line IS counted as CI' (Test-NoBaselineFinding $r.Out) ([string]$r.Out)
 
     # Item 7.2: a `push` key nested as a workflow_dispatch INPUT (deeper than
     # the direct children of on:) is not a push trigger. Discriminating: the
