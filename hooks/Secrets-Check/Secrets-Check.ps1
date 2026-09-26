@@ -157,6 +157,10 @@ $cwd = [string](Get-Field $hookInput 'cwd')
 if ([string]::IsNullOrWhiteSpace($cwd) -or -not (Test-Path -LiteralPath $cwd -PathType Container)) {
     exit 0
 }
+# secrets.md belongs at the REPOSITORY root, where the rooted /secrets.md ignore
+# rule applies - not in whatever subfolder the session's cwd drifted into.
+# A non-git folder keeps the old behaviour: it is its own root.
+$cwd = Resolve-HookProjectRoot $cwd
 $eventName = [string](Get-Field $hookInput 'hook_event_name')
 if ([string]::IsNullOrWhiteSpace($eventName)) {
     $eventName = 'SessionStart'
