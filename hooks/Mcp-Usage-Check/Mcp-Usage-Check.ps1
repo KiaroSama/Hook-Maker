@@ -47,6 +47,22 @@ Set-StrictMode -Version 2.0
 $ErrorActionPreference = 'Stop'
 
 . (Join-Path $PSScriptRoot '..\_hooklib.ps1')
+# The shared "is this work" classifier, so the research reminder and the
+# Spec Kit hooks can never disagree about whether a prompt described work.
+. (Join-Path $PSScriptRoot '..\_scope.ps1')
+
+# RESEARCH BEFORE EVERY TASK (global-research-rules.md, order 55 step 5). The
+# text is fixed by the order; the hook browses nothing, writes no note and can
+# never tell whether research happened, so it only ever REMINDS - per request,
+# because a new topic in the same session must never be silenced by an earlier
+# one. The single exemption is the one the rule makes: a typo or text-only edit.
+$script:ResearchReminder = @(
+    'RESEARCH CHECK - Research first: every project task and every technical question starts with a live lookup - official docs (Context7, then the docs themselves), then GitHub in three passes: upstream releases and issues, code search for real usage at the installed version, and maintained reference implementations. Record sources and a documentation digest in .ai/RESEARCH/ before dependent work, and refresh on every new request. Only a typo or text-only edit is exempt. Rule: global-research-rules.md.',
+    '- This reminder cannot see whether research happened: a bare web call or an old note is not proof. A source that cannot be reached is recorded as a blocker for the work that depends on it; independent work continues.'
+) -join "`n"
+# ponytail: a keyword test, not a parser - "fix the typo and add a feature" is
+# treated as text-only. Tighten it if that shape is ever seen for real.
+$script:TextOnlyPromptPattern = '(?i)\b(typos?|spelling|misspell\w*|punctuation|wording|rephrase|reword)\b'
 
 $hookInput = Read-HookInput
 if ($null -eq $hookInput) { exit 0 }
@@ -146,7 +162,7 @@ function Test-ShouldReport {
 if ($eventName -eq 'SessionStart') {
     $note = @(
         'MCP USAGE CHECK - before working, consider the connected MCP servers and tools for this task:',
-        '- Docs lookup (e.g. Context7) for any library/framework/API whose behavior may have changed - prefer live docs over memory.',
+        '- Research first on every task and technical question: live docs and GitHub, recorded in .ai/RESEARCH/ (the full rule arrives with each request). Rule: global-research-rules.md.',
         '- Browser automation, database, GitHub, memory and other connectors when they materially help.',
         '- Use the smallest tool surface that completes and verifies the work; if no MCP fits, proceed without and say so.',
         $requirement
@@ -159,7 +175,33 @@ if ($eventName -eq 'SessionStart') {
 if ($eventName -eq 'UserPromptSubmit') {
     $prompt = [string](Get-Field $hookInput 'prompt')
     $relevant = $prompt -match '(?i)\b(library|framework|sdk\b|api\b|package|dependency|dependencies|browser|screenshot|website|webpage|\burl\b|database|\bdb\b|\bsql\b|github|pull request|\bpr\b|issue\b|deploy|endpoint|documentation|\bdocs?\b|integrat|webhook|scrape|crawl)\b'
-    if (-not $relevant) { exit 0 }
+
+    # Research is due on every SUBSTANTIVE prompt - work on the project, or a
+    # technical question - not only on dependency words. Keyed by the request:
+    # the same prompt repeated is said once, a different one is always said.
+    $researchDue = $false
+    if (-not [string]::IsNullOrWhiteSpace($prompt) -and $prompt -notmatch $script:TextOnlyPromptPattern -and
+        ($relevant -or (Test-ProjectChangingPrompt -Prompt $prompt))) {
+        $researchPath = Join-Path $stateDir ('McpUsageCheck-research-' + $projectKey + '.txt')
+        $researchKey = Get-ShortHash ($sessionId + '|' + $prompt)
+        $seen = ''
+        try { if (Test-Path -LiteralPath $researchPath -PathType Leaf) { $seen = ([System.IO.File]::ReadAllText($researchPath)).Trim() } } catch { $seen = '' }
+        if ($seen -ne $researchKey) {
+            $researchDue = $true
+            try {
+                New-Item -ItemType Directory -Path $stateDir -Force | Out-Null
+                [System.IO.File]::WriteAllText($researchPath, $researchKey)
+            }
+            catch { }
+        }
+    }
+    if (-not $relevant) {
+        if ($researchDue) {
+            $emit = Write-HookResult -EventName $eventName -Kind 'context' -Message $script:ResearchReminder
+            exit $emit.ExitCode
+        }
+        exit 0
+    }
 
     # One marker file carries BOTH jobs: the once-per-session anti-repeat, and
     # the record the Stop half reads to tell "no MCP was needed" apart from
@@ -177,14 +219,22 @@ if ($eventName -eq 'UserPromptSubmit') {
             })
     }
     catch { }
-    if ($alreadyReminded) { exit 0 }
+    if ($alreadyReminded) {
+        if ($researchDue) {
+            $emit = Write-HookResult -EventName $eventName -Kind 'context' -Message $script:ResearchReminder
+            exit $emit.ExitCode
+        }
+        exit 0
+    }
 
-    $note = @(
+    $noteLines = @(
         'MCP USAGE CHECK - this task looks like connected MCP tools would materially help (library/API/docs, a page or URL, a database, GitHub, a deployment, durable memory).',
         '- Prefer live docs over recalled versions/APIs; prefer a first-party connector over guessing.',
         '- Use the smallest tool surface that completes AND verifies the work.',
         $requirement
-    ) -join "`n"
+    )
+    if ($researchDue) { $noteLines += $script:ResearchReminder }
+    $note = $noteLines -join "`n"
     $emit = Write-HookResult -EventName $eventName -Kind 'context' -Message $note
     exit $emit.ExitCode
 }
