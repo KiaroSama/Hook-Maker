@@ -233,7 +233,15 @@ $baselinePath = Join-Path $stateDir ('LargeFileCheckBaseline-' + (Get-ShortHash 
 # checkout, and the vendored third-party actions under it, read as its own
 # source. Nothing this hook excluded before was dropped - see _scope.ps1 for
 # why the base is the intersection of the five hooks' lists and not their union.
-$excludedDirs = @(Get-HookExcludedDirs -Extra @('logs', '.cross-project-sync'))
+# .specify holds Spec Kit's MANAGED infrastructure, git-ignored by the protected
+# set and tracked by hash in .specify/integrations/*.manifest.json: the official
+# `specify integration upgrade` rewrote common.ps1 from 796 to 803 lines and
+# this gate then demanded a split that would turn it into a locally modified
+# managed file the next monthly upgrade stops on. It is not project source, so
+# it is never entered. Only here, not in the shared base: Secrets-Check and the
+# others keep their own reasons to read it. specs/ needs nothing - its files
+# are Markdown, which the extension list never counts.
+$excludedDirs = @(Get-HookExcludedDirs -Extra @('logs', '.cross-project-sync', '.specify'))
 $offenders = New-Object System.Collections.Generic.List[object]
 # Baseline rows, filled only on the SessionStart pass: relative path + line count,
 # nothing else. Never populated at Stop, where only the offenders matter.
