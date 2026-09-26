@@ -276,7 +276,10 @@ if ($GitPrePush) {
     # not know is skipped by --ignore-missing, which only makes the scanned
     # set LARGER. So a history rewrite that keeps every file's content sends
     # no new blob and scans none, while a new or changed file is always read
-    # in full. There is no count ceiling: required coverage is never sampled,
+    # in full. `--objects-edge-aggressive`, not `--objects`: plain `--objects`
+    # only excludes trees of uninteresting commits that are ANCESTORS of the tip,
+    # so a rewritten sibling re-listed every published blob. There is no count
+    # ceiling: required coverage is never sampled,
     # and the batch reader keeps the cost per blob tiny.
     $tips = New-Object System.Collections.Generic.List[string]
     $exclude = New-Object System.Collections.Generic.List[string]
@@ -295,7 +298,7 @@ if ($GitPrePush) {
     if ($coverageErrors.Count -eq 0 -and $tips.Count -gt 0) {
         $range = @($tips.ToArray()) + @('--not', '--remotes') + @($exclude.ToArray())
         $sent = New-Object System.Collections.Generic.HashSet[string]
-        $objectLines = @(Invoke-QuietCommand -FilePath git -TimeoutSeconds 300 -ArgumentList (@('-C', $cwd, 'rev-list', '--ignore-missing', '--objects', '--no-object-names', '--filter=object:type=blob') + $range))
+        $objectLines = @(Invoke-QuietCommand -FilePath git -TimeoutSeconds 300 -ArgumentList (@('-C', $cwd, 'rev-list', '--ignore-missing', '--objects-edge-aggressive', '--no-object-names', '--filter=object:type=blob') + $range))
         if ($LASTEXITCODE -ne 0) {
             [void]$coverageErrors.Add('the objects this push sends could not be listed (rev-list failed); refusing to treat it as clean')
         }
