@@ -185,7 +185,7 @@ function New-GitRepo {
 function Test-NoBaselineFinding {
     param([AllowNull()][string]$Out)
     if ([string]::IsNullOrWhiteSpace($Out)) { return $true }
-    return ($Out -notmatch 'GITHUB BASELINE CHECK' -and $Out -match 'README badges: a moderate verified set')
+    return ($Out -notmatch 'GITHUB BASELINE CHECK' -and $Out -match 'README badges: at least 12 verified badges')
 }
 
 function Get-HeadSha {
@@ -205,34 +205,44 @@ try {
     # The workflow baseline stays silent without a GitHub remote; the README
     # badge reminder does NOT - the badge rule binds every repository.
     Check 'no GitHub remote -> no baseline findings' ($r.Out -notmatch 'GITHUB BASELINE CHECK') $r.Out
-    Check 'no GitHub remote, no CI -> the badge guidance still arrives' ($r.Out -match 'README badges: a moderate verified set') $r.Out
+    Check 'no GitHub remote, no CI -> the badge guidance still arrives' ($r.Out -match 'README badges: at least 12 verified badges') $r.Out
 
     # =====================================================================
-    Write-Host '--- README badges: the moderate verified set (order 55 step 6) ---' -ForegroundColor Cyan
+    Write-Host '--- README badges: at least 12, the donation badge always (steering V40) ---' -ForegroundColor Cyan
     function New-BadgeReadme {
-        param([string]$Repo, [int]$Shields, [switch]$WithWorkflowBadge)
+        param([string]$Repo, [int]$Shields, [switch]$WithWorkflowBadge, [switch]$WithDonate)
         $row = @(1..$Shields | ForEach-Object { '![b' + $_ + '](https://img.shields.io/badge/fact' + $_ + '-value-blue)' }) -join ' '
         if ($WithWorkflowBadge) { $row += ' [![ci](https://github.com/o/r/actions/workflows/ci.yml/badge.svg)](https://github.com/o/r/actions)' }
+        if ($WithDonate) { $row += ' [![Support donations](https://img.shields.io/badge/Support-donations-d04a9a)](#donate)' }
+        $tail = if ($WithDonate) { "`n## Donate`n`nFixture section.`n" } else { '' }
         # A plain image near the title is NOT a badge and must not be counted.
-        Set-Content -LiteralPath (Join-Path $Repo 'README.md') -Value ($row + "`n![logo](https://example.com/logo.png)`n`n# Title`n") -Encoding utf8
+        Set-Content -LiteralPath (Join-Path $Repo 'README.md') -Value ($row + "`n![logo](https://example.com/logo.png)`n`n# Title`n" + $tail) -Encoding utf8
     }
     $bd3 = New-GitRepo 'badges3' -GithubRemote:$false
     New-BadgeReadme -Repo $bd3 -Shields 3
     $r = Fire -HookPath $BaselineHook -Cwd $bd3
-    Check 'badges: a 3-badge README gets the below-six advisory' ($r.Out -match 'shows 3 badge image\(s\)[^"]*below six') $r.Out
-    Check 'badges: the guidance carries the priority order and the truth floors' (
-        $r.Out -match 'CI status, license, version/release' -and $r.Out -match 'No fabricated status, no private data in badge URLs' -and $r.Out -match 'never padded') $r.Out
+    Check 'badges: a 3-badge README gets the below-12 prompt' ($r.Out -match 'shows 3 badge image\(s\)[^"]*below 12' -and $r.Out -match 'a prompt, not a defect') $r.Out
+    Check 'badges: the guidance carries the priority order, the donation badge and the truth floors' (
+        $r.Out -match 'CI status, license, version/release' -and $r.Out -match 'built-with stack, repository facts' -and
+        $r.Out -match 'Support-donations-d04a9a' -and $r.Out -match 'Never padded or fabricated' -and $r.Out -match 'No private data in badge URLs') $r.Out
+    Check 'badges: a missing donation badge and Donate section are each named' (
+        $r.Out -match 'Support-donations badge is missing' -and $r.Out -match 'no \\"## Donate\\" section' -and $r.Out -match 'never invent or alter a wallet address') $r.Out
     Check 'badges: advisory only - never a decision' ($r.Out -notmatch '"decision"') $r.Out
     $bd14 = New-GitRepo 'badges14' -GithubRemote:$false
     New-BadgeReadme -Repo $bd14 -Shields 14
     $r = Fire -HookPath $BaselineHook -Cwd $bd14
-    Check 'badges: a 14-badge README gets the above-ten advisory, still no block' (
-        $r.Out -match 'shows 14 badge image\(s\)[^"]*above ten' -and $r.Out -notmatch '"decision"') $r.Out
+    Check 'badges: 14 badges get NO count advisory (no upper limit), still no block' (
+        $r.Out -match 'at least 12 verified badges' -and $r.Out -notmatch 'badge image\(s\) near' -and $r.Out -notmatch 'above' -and $r.Out -notmatch '"decision"') $r.Out
     $bd7 = New-GitRepo 'badges7' -GithubRemote:$false
-    New-BadgeReadme -Repo $bd7 -Shields 6 -WithWorkflowBadge
+    New-BadgeReadme -Repo $bd7 -Shields 10 -WithWorkflowBadge -WithDonate
     $r = Fire -HookPath $BaselineHook -Cwd $bd7
-    Check 'badges: 6 static + 1 workflow badge is in range; the plain logo is not counted' (
-        $r.Out -match 'moderate verified set' -and $r.Out -notmatch 'badge image\(s\) near') $r.Out
+    Check 'badges: 10 static + workflow + donation = 12 with its Donate section -> guidance only; the plain logo is not counted' (
+        $r.Out -match 'at least 12 verified badges' -and $r.Out -notmatch 'badge image\(s\) near' -and
+        $r.Out -notmatch 'badge is missing' -and $r.Out -notmatch 'no \\"## Donate\\" section') $r.Out
+    $bd11 = New-GitRepo 'badges11' -GithubRemote:$false
+    New-BadgeReadme -Repo $bd11 -Shields 9 -WithWorkflowBadge -WithDonate
+    $r = Fire -HookPath $BaselineHook -Cwd $bd11
+    Check 'badges: 11 real badges (logo excluded) still get the below-12 prompt' ($r.Out -match 'shows 11 badge image\(s\)[^"]*below 12') $r.Out
     $r = Fire -HookPath $BaselineHook -Cwd $bd7
     Check 'badges: the same README state in the same session is said once' ([string]::IsNullOrWhiteSpace([string]$r.Out)) ([string]$r.Out)
     $r = Fire -HookPath $BaselineHook -Cwd $bd3 -Client 'claude'
@@ -241,6 +251,19 @@ try {
     $r = Fire -HookPath $BaselineHook -Cwd $bdClaude -Client 'claude'
     Check 'badges: Claude gets hookSpecificOutput.additionalContext with the guidance' (
         $r.Out -match '"hookSpecificOutput"' -and $r.Out -match 'additionalContext' -and $r.Out -match 'no root README') $r.Out
+
+    Write-Host '--- self-hosted runners stay manual (plan 012 step 6b) ---' -ForegroundColor Cyan
+    $shRepo = New-GitRepo 'selfhostedpush' -GithubRemote:$false
+    New-Item -ItemType Directory -Path (Join-Path $shRepo '.github\workflows') -Force | Out-Null
+    Set-Content (Join-Path $shRepo '.github\workflows\ci.yml') "on:`n  push:`n  workflow_dispatch:`njobs:`n  t:`n    runs-on: [self-hosted, windows]`n    steps:`n      - run: echo test"
+    $r = Fire -HookPath $BaselineHook -Cwd $shRepo
+    Check 'self-hosted: a push-triggered self-hosted workflow is named, advisory only' (
+        $r.Out -match 'SELF-HOSTED RUNNERS STAY MANUAL' -and $r.Out -match 'ci\.yml: a self-hosted job is triggered by push' -and $r.Out -notmatch '"decision"') $r.Out
+    $shManual = New-GitRepo 'selfhostedmanual' -GithubRemote:$false
+    New-Item -ItemType Directory -Path (Join-Path $shManual '.github\workflows') -Force | Out-Null
+    Set-Content (Join-Path $shManual '.github\workflows\ci.yml') "on:`n  workflow_dispatch:`njobs:`n  t:`n    runs-on: self-hosted`n    steps:`n      - run: echo test"
+    $r = Fire -HookPath $BaselineHook -Cwd $shManual
+    Check 'self-hosted: a dispatch-only self-hosted workflow gets no runner note (twin)' ($r.Out -notmatch 'SELF-HOSTED RUNNERS') $r.Out
 
     # missing .github entirely, npm project
     $b1 = New-GitRepo 'base1'

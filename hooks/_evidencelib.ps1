@@ -83,3 +83,9 @@ function Test-ClosingDeclaration {
 
 # Informational delivery is a separate transaction from Stop admission.
 . (Join-Path $PSScriptRoot '_deliverylib.ps1')
+
+# Gate receipts (spec 007 RD-4) load from here, optionally, because _hooklib.ps1
+# is past the size ceiling. A runtime copied before the file existed has no
+# Start-StopGateReceipt, and every gate checks for the command before using it.
+$gateReceiptsPath = Join-Path $PSScriptRoot '_gatereceipts.ps1'
+if (Test-Path -LiteralPath $gateReceiptsPath -PathType Leaf) { . $gateReceiptsPath }

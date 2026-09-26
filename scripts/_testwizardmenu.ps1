@@ -504,7 +504,7 @@
         'Ci-Status-Check'       = 'Stop'
         'Dependabot-Check'      = 'SessionStart'
         'Github-Baseline-Check' = 'SessionStart'
-        'Git-Sync-Check'        = 'SessionStart,Stop,SubagentStop'
+        'Git-Sync-Check'        = 'SessionStart,PreToolUse,Stop,SubagentStop'
         'Cloudflare-Deploy'     = 'Stop'
         'Secrets-Check'         = 'SessionStart,Stop'
     }

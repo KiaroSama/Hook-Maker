@@ -22,6 +22,10 @@ else {
     Read-HookInput
 }
 if ($null -eq $hookInput) { exit 0 }
+# Receipt for this Stop round (spec 007 RD-4): running now; pass, block or error
+# when the gate finishes. A timeout kill leaves it running, never a pass.
+$gateReceipt = if (Get-Command Start-StopGateReceipt -ErrorAction SilentlyContinue) { Start-StopGateReceipt -HookInput $hookInput -HookName 'Ignore-Rules-Check' } else { $null }
+try {
 $eventName = [string](Get-Field $hookInput 'hook_event_name')
 if ($eventName -notin @('SessionStart', 'Stop', 'SubagentStop', 'GitPrePush')) { exit 0 }
 $isStopEvent = ($eventName -eq 'Stop' -or $eventName -eq 'SubagentStop')
@@ -233,3 +237,6 @@ if ($isStopEvent) {
 }
 $emit = Write-HookResult -EventName $eventName -Kind 'context' -Message $reason
 exit $emit.ExitCode
+}
+catch { if ($null -ne $gateReceipt) { $gateReceipt.Crashed = $true }; throw }
+finally { if ($null -ne $gateReceipt) { Complete-StopGateReceipt $gateReceipt } }

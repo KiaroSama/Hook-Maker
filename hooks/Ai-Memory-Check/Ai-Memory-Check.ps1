@@ -33,6 +33,10 @@ $hookInput = Read-HookInput
 if ($null -eq $hookInput) {
     exit 0
 }
+# Receipt for this Stop round (spec 007 RD-4): running now; pass, block or error
+# when the gate finishes. A timeout kill leaves it running, never a pass.
+$gateReceipt = if (Get-Command Start-StopGateReceipt -ErrorAction SilentlyContinue) { Start-StopGateReceipt -HookInput $hookInput -HookName 'Ai-Memory-Check' } else { $null }
+try {
 # Stand down only on THIS hook's own re-entry: `stop_hook_active` is set
 # for ANY gate's block, and exiting on it alone let one block silence the
 # other twelve on the same Stop.
@@ -126,3 +130,6 @@ $reason = 'AI MEMORY CHECK: the task is ending but ' + $reasonWhy + '. Per the A
 # gate's block must not mute it, and its own must not repeat.
 $emit = Write-StopBlockResult -HookInput $hookInput -HookName 'Ai-Memory-Check' -EventName $eventName -Reason $reason
 exit $emit.ExitCode
+}
+catch { if ($null -ne $gateReceipt) { $gateReceipt.Crashed = $true }; throw }
+finally { if ($null -ne $gateReceipt) { Complete-StopGateReceipt $gateReceipt } }

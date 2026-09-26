@@ -25,7 +25,7 @@ function Add-SharedRuntimeLibraryArtifacts {
         [Parameter(Mandatory = $true)][string]$ToolRoot,
         [Parameter(Mandatory = $true)][string]$FriendlyName
     )
-    $required = @('_hooklib.ps1', '_stoplib.ps1', '_evidencelib.ps1', '_taskidentity.ps1', '_processtree.ps1', '_deliverylib.ps1', '_scope.ps1')
+    $required = @('_hooklib.ps1', '_stoplib.ps1', '_evidencelib.ps1', '_taskidentity.ps1', '_processtree.ps1', '_deliverylib.ps1', '_scope.ps1', '_gatereceipts.ps1')
     Assert-RuntimeSourcesAvailable -ToolRoot $ToolRoot -RelativePaths @($required | ForEach-Object { 'hooks/' + $_ })
     # Validate the whole shared set BEFORE contributing even one artifact.
     foreach ($leaf in $required) {
