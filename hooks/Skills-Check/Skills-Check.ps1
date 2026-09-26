@@ -79,6 +79,10 @@ $ErrorActionPreference = 'Stop'
 
 $hookInput = Read-HookInput
 if ($null -eq $hookInput) { exit 0 }
+# Receipt for this Stop round (spec 007 RD-4): running now; pass, block or error
+# when the gate finishes. A timeout kill leaves it running, never a pass.
+$gateReceipt = if (Get-Command Start-StopGateReceipt -ErrorAction SilentlyContinue) { Start-StopGateReceipt -HookInput $hookInput -HookName 'Skills-Check' } else { $null }
+try {
 $cwd = [string](Get-Field $hookInput 'cwd')
 if ([string]::IsNullOrWhiteSpace($cwd) -or -not (Test-Path -LiteralPath $cwd -PathType Container)) { exit 0 }
 $eventName = [string](Get-Field $hookInput 'hook_event_name')
@@ -467,11 +471,9 @@ if ($eventName -eq 'UserPromptSubmit') {
         # same. Neither client's syntax is authoritative for the other, and the
         # references stay plain text - this hook never executes them.
         if ($client -eq 'codex') {
-            $goalRef = 'the client-native goal command (this client''s own syntax, never another client''s slash form)'
             $ponytailRef = 'the verified installed ponytail-audit capability via this client''s supported invocation'
         }
         else {
-            $goalRef = 'native /goal'
             $ponytailRef = 'native /ponytail:ponytail-audit'
         }
 
@@ -497,7 +499,7 @@ if ($eventName -eq 'UserPromptSubmit') {
 
         $dd = New-Object System.Collections.Generic.List[string]
         [void]$dd.Add('SKILL POLICY CHECK (' + $client + ') - ::deep-debug capability routing. Activate by PHASE, never everything at once; skill identity is the exact name: in each installed SKILL.md (never a folder, plugin, marketplace, or category label). Inspect installed/loadable skills FIRST; never silently install/copy/refresh/overwrite/remove/enable a skill.')
-        [void]$dd.Add('- Goal/orchestration: ' + $goalRef + ' first; ::multi-agent is a codeword dependency, not a skill; superpowers:dispatching-parallel-agents for independent discovery/debug workstreams; superpowers:subagent-driven-development for a prepared plan with substantially independent tasks. Flatten dependencies once, deduplicate, detect cycles - never recursive re-runs, never nested agent trees.')
+        [void]$dd.Add('- Goal/orchestration: write the fixed goal (every bug and every phase closed) into the task ledger first; ::multi-agent is a codeword dependency, not a skill; superpowers:dispatching-parallel-agents for independent discovery/debug workstreams; superpowers:subagent-driven-development for a prepared plan with substantially independent tasks. Flatten dependencies once, deduplicate, detect cycles - never recursive re-runs, never nested agent trees.')
         [void]$dd.Add('- Understanding/planning: audit-context-building for medium/large/unfamiliar/architecture-heavy/security-heavy scope; Graphify only under its own policy; superpowers:brainstorming only for genuine behavior/design ambiguity; superpowers:writing-plans only when a complex repair lacks an executable plan.')
         [void]$dd.Add('- Known bug: systematic-debugging, test-driven-development, verification-before-completion; runtime evidence -> CHOOSE debugging-code (DAP) OR debug-live (trusted DebugMCP/VS Code), not normally both for one question.')
         [void]$dd.Add('- Existing plan: executing-plans (only when a real plan exists), test-driven-development, requesting-code-review, verification-before-completion.')
@@ -631,3 +633,6 @@ if ($driftLines.Count -gt 0) {
 
 $emit = Write-HookResult -EventName $eventName -Kind 'context' -Message ($lines.ToArray() -join "`n")
 exit $emit.ExitCode
+}
+catch { if ($null -ne $gateReceipt) { $gateReceipt.Crashed = $true }; throw }
+finally { if ($null -ne $gateReceipt) { Complete-StopGateReceipt $gateReceipt } }

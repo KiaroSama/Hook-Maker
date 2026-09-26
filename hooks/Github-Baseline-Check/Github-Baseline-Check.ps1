@@ -90,7 +90,7 @@ try {
     $badgeState = Get-ReadmeBadgeState -ProjectRoot $cwd
     $badgeStateDir = Join-Path $env:LOCALAPPDATA 'HookMaker\state'
     $badgeStatePath = Join-Path $badgeStateDir ('GithubBaselineCheck-badges-' + (Get-ShortHash $cwd.ToLowerInvariant()) + '.txt')
-    $badgeKey = Get-ShortHash ([string](Get-Field $hookInput 'session_id') + '|' + [string]$badgeState.Found + '|' + [string]$badgeState.Readable + '|' + [string]$badgeState.Count)
+    $badgeKey = Get-ShortHash ([string](Get-Field $hookInput 'session_id') + '|' + [string]$badgeState.Found + '|' + [string]$badgeState.Readable + '|' + [string]$badgeState.Count + '|' + [string]$badgeState.DonateBadge + '|' + [string]$badgeState.DonateSection)
     $badgeSeen = ''
     if (Test-Path -LiteralPath $badgeStatePath -PathType Leaf) { $badgeSeen = ([System.IO.File]::ReadAllText($badgeStatePath)).Trim() }
     if ($badgeSeen -ne $badgeKey) {
@@ -100,6 +100,26 @@ try {
     }
 }
 catch { $badgeNote = '' }
+# Self-hosted runners stay MANUAL (plan 012 step 6b): a workflow with a job on
+# a self-hosted runner and any trigger besides workflow_dispatch is named once
+# per session per finding set. Advisory only; this hook never touches a runner.
+try {
+    $selfHostedLines = @(Get-WorkflowRunnerFacts -ProjectRoot $cwd | Where-Object { $_.SelfHosted -and @($_.Triggers | Where-Object { $_ -cne 'workflow_dispatch' }).Count -gt 0 } |
+        ForEach-Object { '- ' + $_.Name + ': a self-hosted job is triggered by ' + ((@($_.Triggers | Where-Object { $_ -cne 'workflow_dispatch' })) -join ', ') })
+    if ($selfHostedLines.Count -gt 0) {
+        $shPath = Join-Path (Join-Path $env:LOCALAPPDATA 'HookMaker\state') ('GithubBaselineCheck-selfhosted-' + (Get-ShortHash $cwd.ToLowerInvariant()) + '.txt')
+        $shKey = Get-ShortHash ([string](Get-Field $hookInput 'session_id') + '|' + ($selfHostedLines -join '|'))
+        $shSeen = ''
+        if (Test-Path -LiteralPath $shPath -PathType Leaf) { $shSeen = ([System.IO.File]::ReadAllText($shPath)).Trim() }
+        if ($shSeen -ne $shKey) {
+            $shNote = 'SELF-HOSTED RUNNERS STAY MANUAL: trigger a workflow that runs on a self-hosted runner only with workflow_dispatch, and dispatch the one final run for the exact final SHA yourself (never for GitHub- or bot-created branches, Dependabot included). Rule: global-github-automation-rules.md.' + "`n" + ($selfHostedLines -join "`n")
+            $badgeNote = @(@($badgeNote, $shNote) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }) -join "`n`n"
+            New-Item -ItemType Directory -Path (Split-Path -Parent $shPath) -Force | Out-Null
+            [System.IO.File]::WriteAllText($shPath, $shKey)
+        }
+    }
+}
+catch { }
 # Every silent exit below still owes the badge note when one is due.
 function Exit-WithBadgeNote {
     if (-not [string]::IsNullOrWhiteSpace($badgeNote)) {

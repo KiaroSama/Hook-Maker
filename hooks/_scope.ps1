@@ -164,3 +164,80 @@ function Get-HookExcludedDirs {
     }
     return $result.ToArray()
 }
+
+# ---- self-hosted runner facts (plan 012 step 6b, steering V38) --------------
+# Self-hosted runners stay MANUAL: a workflow with a job on `runs-on:
+# self-hosted` should be triggered only by workflow_dispatch. Read as DATA with
+# a bounded line heuristic (no YAML parser is guaranteed here); an expression
+# such as `${{ matrix.os }}` is not resolved and never counted as self-hosted.
+function Get-WorkflowTopTriggers {
+    param([AllowEmptyString()][string]$Text)
+    $found = New-Object System.Collections.Generic.List[string]
+    $lines = @($Text -split '\r?\n')
+    for ($i = 0; $i -lt $lines.Count; $i++) {
+        if ($lines[$i] -notmatch '^["'']?on["'']?\s*:\s*(?<rest>.*)$') { continue }
+        $rest = ($Matches['rest'] -replace '\s+#.*$', '').Trim()
+        if ($rest -ne '') {
+            foreach ($item in @($rest.Trim('[', ']') -split ',')) {
+                $name = $item.Trim().Trim('"', "'")
+                if ($name -match '^[A-Za-z_]+$') { [void]$found.Add($name) }
+            }
+            continue
+        }
+        $childIndent = -1
+        for ($j = $i + 1; $j -lt $lines.Count; $j++) {
+            $next = $lines[$j]
+            if ($next.Trim() -eq '' -or $next.Trim().StartsWith('#')) { continue }
+            $nextIndent = $next.Length - $next.TrimStart(' ').Length
+            if ($nextIndent -eq 0) { break }
+            if ($childIndent -lt 0) { $childIndent = $nextIndent }
+            if ($nextIndent -ne $childIndent) { continue }
+            if ($next -match '^\s*-?\s*["'']?([A-Za-z_]+)["'']?\s*:?\s*(#.*)?$' -or $next -match '^\s*["'']?([A-Za-z_]+)["'']?\s*:') { [void]$found.Add($Matches[1]) }
+        }
+    }
+    return @($found | Sort-Object -Unique)
+}
+
+function Test-WorkflowSelfHosted {
+    param([AllowEmptyString()][string]$Text)
+    $lines = @($Text -split '\r?\n')
+    for ($i = 0; $i -lt $lines.Count; $i++) {
+        if ($lines[$i] -notmatch '^(?<indent>\s*)runs-on\s*:\s*(?<rest>.*)$') { continue }
+        if ($Matches['rest'] -match '(?i)\bself-hosted\b') { return $true }
+        if (($Matches['rest'] -replace '\s+#.*$', '').Trim() -ne '') { continue }
+        $indent = $Matches['indent'].Length
+        for ($j = $i + 1; $j -lt $lines.Count; $j++) {
+            $next = $lines[$j]
+            if ($next.Trim() -eq '') { continue }
+            if (($next.Length - $next.TrimStart(' ').Length) -le $indent) { break }
+            if ($next -match '(?i)\bself-hosted\b') { return $true }
+        }
+    }
+    return $false
+}
+
+# One row per workflow file: name, whether a job runs self-hosted, triggers.
+# Bounded: at most 50 files of at most 256 KB each.
+function Get-WorkflowRunnerFacts {
+    param([Parameter(Mandatory = $true)][string]$ProjectRoot)
+    $dir = Join-Path $ProjectRoot '.github\workflows'
+    if (-not (Test-Path -LiteralPath $dir -PathType Container)) { return @() }
+    $rows = New-Object System.Collections.Generic.List[object]
+    foreach ($file in @(Get-ChildItem -LiteralPath $dir -File -ErrorAction SilentlyContinue | Where-Object { $_.Extension -in @('.yml', '.yaml') } | Sort-Object Name | Select-Object -First 50)) {
+        if ($file.Length -gt 262144) { continue }
+        $text = ''
+        try { $text = [IO.File]::ReadAllText($file.FullName, [Text.Encoding]::UTF8) } catch { continue }
+        [void]$rows.Add([pscustomobject]@{ Name = $file.Name; SelfHosted = (Test-WorkflowSelfHosted $text); Triggers = @(Get-WorkflowTopTriggers $text) })
+    }
+    return $rows.ToArray()
+}
+
+# True when the repository runs a job on a self-hosted runner and NO workflow
+# starts on its own (every trigger is workflow_dispatch or workflow_call): a
+# push then starts no run by design, and the final run is dispatched by hand.
+function Test-ManualSelfHostedRepo {
+    param([Parameter(Mandatory = $true)][string]$ProjectRoot)
+    $facts = @(Get-WorkflowRunnerFacts -ProjectRoot $ProjectRoot)
+    if (@($facts | Where-Object { $_.SelfHosted }).Count -eq 0) { return $false }
+    return (@($facts | Where-Object { @($_.Triggers | Where-Object { $_ -cnotin @('workflow_dispatch', 'workflow_call') }).Count -gt 0 }).Count -eq 0)
+}

@@ -137,6 +137,10 @@ else {
 if ($null -eq $hookInput) {
     exit 0
 }
+# Receipt for this Stop round (spec 007 RD-4): running now; pass, block or error
+# when the gate finishes. A timeout kill leaves it running, never a pass.
+$gateReceipt = if (Get-Command Start-StopGateReceipt -ErrorAction SilentlyContinue) { Start-StopGateReceipt -HookInput $hookInput -HookName 'Secrets-Check' } else { $null }
+try {
 # Native `pre-push` hooks receive ref-update lines on stdin:
 # "<local ref> <local sha1> <remote ref> <remote sha1>", one per pushed ref -
 # NOT JSON, so this reads raw text instead of Read-HookInput. The managed
@@ -720,3 +724,6 @@ if ($isStopEvent) {
 
 $emit = Write-HookResult -EventName $eventName -Kind 'context' -Message $message
 exit $emit.ExitCode
+}
+catch { if ($null -ne $gateReceipt) { $gateReceipt.Crashed = $true }; throw }
+finally { if ($null -ne $gateReceipt) { Complete-StopGateReceipt $gateReceipt } }

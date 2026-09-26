@@ -317,6 +317,9 @@ try {
         ($written -notmatch 'sk-live') -and ($written -notmatch 'API_KEY') -and
         ($written -notmatch 'rm -rf') -and ($written -notmatch 'export ')
     ) $written
+
+    # Affirmative gate receipts (spec 007 RD-4) live in their own section file.
+    . (Join-Path $PSScriptRoot '_testgatereceipts.ps1')
 }
 finally {
     $env:LOCALAPPDATA = $SavedLocalAppData
