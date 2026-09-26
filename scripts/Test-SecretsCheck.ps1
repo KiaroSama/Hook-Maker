@@ -202,6 +202,22 @@ try {
     Check 'no state written' (-not (Test-Path (Join-Path $FakeAppData 'HookMaker\state')) -or @(Get-ChildItem (Join-Path $FakeAppData 'HookMaker\state') -Filter 'Secrets-Check-*' -ErrorAction SilentlyContinue).Count -eq 0)
 
     # =====================================================================
+    # cwd drift (2026-09-26): the registry belongs at the REPOSITORY root, where
+    # the rooted /secrets.md ignore rule applies - never in the subfolder a
+    # session's working directory drifted into.
+    Write-Host '--- cwd drift: secrets.md is registered at the repository root ---' -ForegroundColor Cyan
+    $driftRepo = New-GitProj 'DriftSecrets'
+    Write-Utf8 (Join-Path $driftRepo '.gitignore') "/secrets.md`r`n/.env`r`n"
+    Write-Utf8 (Join-Path $driftRepo '.env') "DRIFT_TOKEN=sk-live-drift1234567890abcd`r`n"
+    $driftSub = Join-Path $driftRepo 'logs'
+    New-Item -ItemType Directory -Path $driftSub -Force | Out-Null
+    $r = Fire -Cwd $driftSub
+    Check 'drift: a secret found from a subfolder is registered in the ROOT secrets.md' (
+        (Test-Path (Join-Path $driftRepo 'secrets.md')) -and $r.Out -like '*Auto-added*DRIFT_TOKEN*') $r.Out
+    Check 'drift: no secrets.md is created in the subfolder' (-not (Test-Path (Join-Path $driftSub 'secrets.md'))) $r.Out
+    Check 'drift: the value is still never printed' ($r.Out -notlike '*sk-live-drift1234567890abcd*') $r.Out
+
+    # =====================================================================
     Write-Host '--- auto-append: real secret, value never printed, then silent ---' -ForegroundColor Cyan
     $proj1 = New-Proj 'AutoAppend'
     Write-Utf8 (Join-Path $proj1 '.env') "API_KEY=sk-live-abcdef1234567890`r`n"

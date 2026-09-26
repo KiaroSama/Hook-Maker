@@ -53,7 +53,9 @@ function New-ConfiguredIgnoreHookCopy {
     $dir = Join-Path $Work ('ignorehookcopy-' + [guid]::NewGuid().ToString('N').Substring(0, 6))
     New-Item -ItemType Directory -Path $dir -Force | Out-Null
     Copy-Item $Hook (Join-Path $dir 'Ignore-Rules-Check.ps1')
-    Copy-Item (Join-Path (Split-Path -Parent $Hook) '..\_hooklib.ps1') (Join-Path $Work '_hooklib.ps1') -Force
+    # EVERY shared library, not a hand-picked one: the hook now also dot-sources
+    # ..\_scope.ps1, and a copy that brought only _hooklib.ps1 would fail to load.
+    Copy-TestRuntimeLibraries -SourceHookLib (Join-Path (Split-Path -Parent $Hook) '..\_hooklib.ps1') -Destination (Join-Path $Work '_hooklib.ps1')
     $lines = New-Object System.Collections.Generic.List[string]
     foreach ($key in $EnvOverrides.Keys) { [void]$lines.Add($key + '=' + $EnvOverrides[$key]) }
     [System.IO.File]::WriteAllText((Join-Path $dir '.env'), (($lines.ToArray() -join "`r`n") + "`r`n"), (New-Object System.Text.UTF8Encoding $false))
@@ -479,6 +481,48 @@ try {
     $rs = Fire -Cwd $sorted -EventName 'SessionStart'
     Check 'sorted: a negation hoisted above its ignore rule IS re-added' (
         $rs.Out -match 'Auto-added' -and $rs.Out -match '!/\.env\.example') $rs.Out
+
+    # =====================================================================
+    # A session whose cwd drifted into a SUBFOLDER (2026-09-26, two projects):
+    # the hook created logs\.gitignore with the whole rooted protected set while
+    # the root .gitignore already carried every pattern. The repository root is
+    # the git top level, not the hook input's cwd.
+    Write-Host '--- cwd drift: the repository root is the git top level ---' -ForegroundColor Cyan
+    $drift = New-Repo 'drift'
+    $null = Fire -Cwd $drift -EventName 'SessionStart'
+    $driftRootIgnore = Join-Path $drift '.gitignore'
+    $driftBefore = [System.IO.File]::ReadAllText($driftRootIgnore)
+    $driftSub = Join-Path $drift 'logs'
+    New-Item -ItemType Directory -Path $driftSub -Force | Out-Null
+    $rd = Fire -Cwd $driftSub -EventName 'SessionStart'
+    Check 'drift: a complete root .gitignore -> no .gitignore is created in the subfolder' (
+        -not (Test-Path -LiteralPath (Join-Path $driftSub '.gitignore'))) $rd.Out
+    Check 'drift: the root .gitignore is left byte-for-byte unchanged' (
+        [System.IO.File]::ReadAllText($driftRootIgnore) -ceq $driftBefore) ''
+    Check 'drift: nothing is auto-added when the root is already complete' ($rd.Out -notmatch 'Auto-added') $rd.Out
+    $rd = Fire -Cwd $driftSub
+    Check 'drift: Stop from the subfolder stays silent too' ($rd.Exit -eq 0 -and $rd.Out -eq '' -and
+        -not (Test-Path -LiteralPath (Join-Path $driftSub '.gitignore'))) $rd.Out
+
+    # An INCOMPLETE root reached from a subfolder is repaired AT THE ROOT.
+    $driftIncomplete = New-Repo 'drift-incomplete'
+    $driftDeep = Join-Path $driftIncomplete 'src\deep'
+    New-Item -ItemType Directory -Path $driftDeep -Force | Out-Null
+    $ri = Fire -Cwd $driftDeep -EventName 'SessionStart'
+    $rootText = if (Test-Path -LiteralPath (Join-Path $driftIncomplete '.gitignore')) { [System.IO.File]::ReadAllText((Join-Path $driftIncomplete '.gitignore')) } else { '' }
+    Check 'drift: missing patterns are added to the ROOT .gitignore' ($rootText -match '(?m)^/\.ai/$' -and $rootText -match '(?m)^/secrets\.md$') $ri.Out
+    Check 'drift: and never to the subfolder the session was in' (
+        -not (Test-Path -LiteralPath (Join-Path $driftDeep '.gitignore')) -and
+        -not (Test-Path -LiteralPath (Join-Path $driftIncomplete 'src\.gitignore'))) $ri.Out
+    Check 'drift: the report names the repository root, not the subfolder' (
+        $ri.Out.Replace('\\', '\').Contains('IGNORE RULES CHECK (' + $driftIncomplete + ')')) $ri.Out
+
+    # Outside a git work tree the hook keeps its old behaviour: it does nothing.
+    $plainFolder = Join-Path $Work 'not-a-repo\sub'
+    New-Item -ItemType Directory -Path $plainFolder -Force | Out-Null
+    $rp = Fire -Cwd $plainFolder -EventName 'SessionStart'
+    Check 'drift: a non-git folder is still left alone' ($rp.Exit -eq 0 -and $rp.Out -eq '' -and
+        -not (Test-Path -LiteralPath (Join-Path $plainFolder '.gitignore'))) $rp.Out
 }
 finally {
     $env:HOOKMAKER_STATE_DIR = $SavedHookMakerStateDir
