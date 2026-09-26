@@ -156,3 +156,29 @@
     }
     $r = Fire -HookPath $hc51.Script -Cwd $Proj -EventName 'PostToolUse' -Command 'pytest -q' -LocalAppData $hc51.LocalAppData -Exe 'powershell.exe'
     Check '5.1: PostToolUse reports the termination cleanly' ($r.Exit -eq 0 -and $r.Err -eq '' -and (Get-Message $r.Out) -match 'wallTimeout') ($r.Out + '|' + $r.Err)
+
+    # =====================================================================
+    Write-Host '--- V45: the deny ends with the LANGUAGE line when the session records Persian ---' -ForegroundColor Cyan
+    # Its own parent directory, so the full shared library set (which the other
+    # isolated copies deliberately lack) cannot change their behaviour.
+    $rlRoot = Join-Path $Work 'rl-deny'
+    $rlDir = Join-Path $rlRoot 'Test-Run-Guard'
+    New-Item -ItemType Directory -Path $rlDir -Force | Out-Null
+    Copy-HookPackage -Destination $rlDir
+    Copy-TestRuntimeLibraries -SourceHookLib $HookLib -Destination (Join-Path $rlRoot '_hooklib.ps1')
+    $rlLocal = Join-Path $rlRoot '_fakelocal'
+    $rlState = Join-Path $rlLocal 'HookMaker\state'
+    New-Item -ItemType Directory -Path $rlState -Force | Out-Null
+    $rlKey = & { . $HookLib; Get-ShortHash 'sess1' }
+    [System.IO.File]::WriteAllText((Join-Path $rlState ('ReplyLanguage-' + $rlKey + '.txt')), 'persian')
+    $rRl = Fire -HookPath (Join-Path $rlDir 'Test-Run-Guard.ps1') -Cwd $Proj -EventName 'PreToolUse' -Command 'pytest -q tests/' -LocalAppData $rlLocal
+    $msgRl = Get-Message $rRl.Out
+    Check 'RL-D1 the deny still denies and its text ends with the LANGUAGE line' (
+        $rRl.Out -match '"permissionDecision":"deny"' -and
+        $msgRl.TrimEnd().EndsWith('code, commands, file contents and commit messages stay English.') -and
+        $msgRl -match 'LANGUAGE: the user writes in Persian') $msgRl
+    [System.IO.File]::Delete((Join-Path $rlState ('ReplyLanguage-' + $rlKey + '.txt')))
+    $rRl = Fire -HookPath (Join-Path $rlDir 'Test-Run-Guard.ps1') -Cwd $Proj -EventName 'PreToolUse' -Command 'pytest -q tests/' -LocalAppData $rlLocal
+    Check 'RL-D2 with no recorded language the deny carries no LANGUAGE line' (
+        $rRl.Out -match '"permissionDecision":"deny"' -and (Get-Message $rRl.Out) -notmatch 'LANGUAGE:') $rRl.Out
+

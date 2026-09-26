@@ -114,6 +114,7 @@ try {
     $leaves = @('_hooklib.ps1','_stoplib.ps1','_evidencelib.ps1','_taskidentity.ps1','_processtree.ps1','_deliverylib.ps1','_scope.ps1')
     # The shared set grew with the gate receipts; a baseline subject predates them.
     if ([IO.File]::Exists((Join-Path $SourceRoot 'hooks/_gatereceipts.ps1'))) { $leaves += '_gatereceipts.ps1' }
+    if ([IO.File]::Exists((Join-Path $SourceRoot 'hooks/_replylanguage.ps1'))) { $leaves += '_replylanguage.ps1' }
     foreach ($leaf in $leaves) { Copy-Item -LiteralPath (Join-Path $SourceRoot ('hooks/'+$leaf)) -Destination (Join-Path $tool ('hooks/'+$leaf)) }
     function New-PlanArtifact { param($RelativePath,$Kind,$SourcePath) return [pscustomobject]@{Path=$RelativePath;Source=$SourcePath} }
     function Add-Artifact { param($Artifact) [void]$script:payload.Add($Artifact) }

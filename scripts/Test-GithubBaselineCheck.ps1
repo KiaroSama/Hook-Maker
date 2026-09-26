@@ -185,7 +185,7 @@ function New-GitRepo {
 function Test-NoBaselineFinding {
     param([AllowNull()][string]$Out)
     if ([string]::IsNullOrWhiteSpace($Out)) { return $true }
-    return ($Out -notmatch 'GITHUB BASELINE CHECK' -and $Out -match 'README badges: at least 12 verified badges')
+    return ($Out -notmatch 'GITHUB BASELINE CHECK' -and $Out -match 'README badges: 12 to 16 verified badges')
 }
 
 function Get-HeadSha {
@@ -205,10 +205,10 @@ try {
     # The workflow baseline stays silent without a GitHub remote; the README
     # badge reminder does NOT - the badge rule binds every repository.
     Check 'no GitHub remote -> no baseline findings' ($r.Out -notmatch 'GITHUB BASELINE CHECK') $r.Out
-    Check 'no GitHub remote, no CI -> the badge guidance still arrives' ($r.Out -match 'README badges: at least 12 verified badges') $r.Out
+    Check 'no GitHub remote, no CI -> the badge guidance still arrives' ($r.Out -match 'README badges: 12 to 16 verified badges') $r.Out
 
     # =====================================================================
-    Write-Host '--- README badges: at least 12, the donation badge always (steering V40) ---' -ForegroundColor Cyan
+    Write-Host '--- README badges: 12 to 16, the donation badge always (steering V40, cap V45) ---' -ForegroundColor Cyan
     function New-BadgeReadme {
         param([string]$Repo, [int]$Shields, [switch]$WithWorkflowBadge, [switch]$WithDonate)
         $row = @(1..$Shields | ForEach-Object { '![b' + $_ + '](https://img.shields.io/badge/fact' + $_ + '-value-blue)' }) -join ' '
@@ -231,18 +231,28 @@ try {
     $bd14 = New-GitRepo 'badges14' -GithubRemote:$false
     New-BadgeReadme -Repo $bd14 -Shields 14
     $r = Fire -HookPath $BaselineHook -Cwd $bd14
-    Check 'badges: 14 badges get NO count advisory (no upper limit), still no block' (
-        $r.Out -match 'at least 12 verified badges' -and $r.Out -notmatch 'badge image\(s\) near' -and $r.Out -notmatch 'above' -and $r.Out -notmatch '"decision"') $r.Out
+    Check 'badges: 14 badges get NO count advisory (inside 12-16), still no block' (
+        $r.Out -match '12 to 16 verified badges' -and $r.Out -match 'past 16 the order decides which stay' -and $r.Out -notmatch 'badge image\(s\) near' -and $r.Out -notmatch 'above' -and $r.Out -notmatch '"decision"') $r.Out
     $bd7 = New-GitRepo 'badges7' -GithubRemote:$false
     New-BadgeReadme -Repo $bd7 -Shields 10 -WithWorkflowBadge -WithDonate
     $r = Fire -HookPath $BaselineHook -Cwd $bd7
     Check 'badges: 10 static + workflow + donation = 12 with its Donate section -> guidance only; the plain logo is not counted' (
-        $r.Out -match 'at least 12 verified badges' -and $r.Out -notmatch 'badge image\(s\) near' -and
+        $r.Out -match '12 to 16 verified badges' -and $r.Out -notmatch 'badge image\(s\) near' -and
         $r.Out -notmatch 'badge is missing' -and $r.Out -notmatch 'no \\"## Donate\\" section') $r.Out
     $bd11 = New-GitRepo 'badges11' -GithubRemote:$false
     New-BadgeReadme -Repo $bd11 -Shields 9 -WithWorkflowBadge -WithDonate
     $r = Fire -HookPath $BaselineHook -Cwd $bd11
     Check 'badges: 11 real badges (logo excluded) still get the below-12 prompt' ($r.Out -match 'shows 11 badge image\(s\)[^"]*below 12') $r.Out
+    $bd17 = New-GitRepo 'badges17' -GithubRemote:$false
+    New-BadgeReadme -Repo $bd17 -Shields 16 -WithDonate
+    $r = Fire -HookPath $BaselineHook -Cwd $bd17
+    Check 'badges: 17 badges get the above-16 trim prompt, never a block (steering V45)' (
+        $r.Out -match 'shows 17 badge image\(s\)[^"]*above 16' -and $r.Out -match 'Trim by the priority order' -and
+        $r.Out -match 'a prompt, not a defect' -and $r.Out -notmatch '"decision"') $r.Out
+    $bd16 = New-GitRepo 'badges16' -GithubRemote:$false
+    New-BadgeReadme -Repo $bd16 -Shields 15 -WithDonate
+    $r = Fire -HookPath $BaselineHook -Cwd $bd16
+    Check 'badges: exactly 16 is inside the bounds - no count note' ($r.Out -match '12 to 16 verified badges' -and $r.Out -notmatch 'badge image\(s\) near') $r.Out
     $r = Fire -HookPath $BaselineHook -Cwd $bd7
     Check 'badges: the same README state in the same session is said once' ([string]::IsNullOrWhiteSpace([string]$r.Out)) ([string]$r.Out)
     $r = Fire -HookPath $BaselineHook -Cwd $bd3 -Client 'claude'
