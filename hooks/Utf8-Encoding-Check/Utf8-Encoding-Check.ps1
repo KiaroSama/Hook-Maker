@@ -108,8 +108,9 @@
 #   pre-push   -> human-readable reasons on stderr, exit 1 to block.
 #
 # Optional .env next to this script (copy .env.example):
-#   UTF8_MAX_FILES          files classified per scan; also the changed-file
-#                           and outgoing-blob ceilings          (default 400)
+#   UTF8_MAX_FILES          files classified per SessionStart/Stop scan and
+#                           its changed-file ceiling; never caps the pre-push
+#                           gate, which reads every sent blob   (default 400)
 #   UTF8_MAX_FILE_KB        KB ceiling per file/blob            (default 1024)
 #   UTF8_MAX_DIRECTORIES    directories the walk may visit      (default 4000)
 #   UTF8_MAX_SCAN_SECONDS   wall seconds per scan               (default 10)
@@ -268,85 +269,64 @@ if ($GitPrePush) {
         exit 1
     }
 
-    # -- outgoing commit set (the Secrets-Check Get-OutgoingCommits shape,
-    #    plus an explicit commit ceiling that fails closed on overflow) --
-    $commits = New-Object System.Collections.Generic.HashSet[string]
+    # -- what the push actually transfers --
+    # Every (blob, path) an outgoing commit adds or changes, limited to blobs
+    # the remote does not already have. `--not --remotes` plus the remote side
+    # of each ref exclude what is already published; a remote sha git does
+    # not know is skipped by --ignore-missing, which only makes the scanned
+    # set LARGER. So a history rewrite that keeps every file's content sends
+    # no new blob and scans none, while a new or changed file is always read
+    # in full. There is no count ceiling: required coverage is never sampled,
+    # and the batch reader keeps the cost per blob tiny.
+    $tips = New-Object System.Collections.Generic.List[string]
+    $exclude = New-Object System.Collections.Generic.List[string]
     foreach ($line in $refUpdateLines) {
         $parts = @($line.Trim() -split '\s+')
         if ($parts.Count -lt 4) { continue }
-        $localRef = $parts[0]
-        $localSha = $parts[1]
-        $remoteSha = $parts[3]
-        if ($localSha -eq $allZero) { continue }    # deletion - nothing pushed
-        $revs = @()
-        if ($remoteSha -eq $allZero) {
-            # New branch: scope to commits not already on any remote-tracking
-            # ref, so previously-reviewed history is not rescanned.
-            $revs = @(Invoke-QuietCommand -FilePath git -ArgumentList @('-C', $cwd, 'rev-list', $localSha, '--not', '--remotes') | Where-Object { $_ })
-            if ($LASTEXITCODE -ne 0) {
-                [void]$coverageErrors.Add('new ref ' + $localRef + ' - outgoing commits could not be resolved (rev-list failed); refusing to treat it as clean')
-                continue
-            }
+        if ($parts[1] -notmatch '^[0-9a-f]{40,64}$' -or $parts[3] -notmatch '^[0-9a-f]{40,64}$') {
+            [void]$coverageErrors.Add('ref ' + $parts[0] + ' - the ref-update line is malformed; refusing to treat it as clean')
+            continue
         }
-        else {
-            $null = Invoke-QuietCommand -FilePath git -ArgumentList @('-C', $cwd, 'rev-parse', '--verify', '--quiet', ($remoteSha + '^{commit}'))
-            if ($LASTEXITCODE -ne 0) {
-                $shortRemote = if ($remoteSha.Length -gt 7) { $remoteSha.Substring(0, 7) } else { $remoteSha }
-                [void]$coverageErrors.Add('ref ' + $localRef + ' - remote commit ' + $shortRemote + ' is not resolvable locally, so the outgoing range cannot be bounded; refusing to treat it as clean')
-                continue
-            }
-            $revs = @(Invoke-QuietCommand -FilePath git -ArgumentList @('-C', $cwd, 'rev-list', ($remoteSha + '..' + $localSha)) | Where-Object { $_ })
-            if ($LASTEXITCODE -ne 0) {
-                [void]$coverageErrors.Add('ref ' + $localRef + ' - outgoing commits could not be resolved (rev-list failed); refusing to treat it as clean')
-                continue
-            }
-        }
-        foreach ($rev in $revs) { [void]$commits.Add([string]$rev) }
+        if ($parts[1] -eq $allZero) { continue }    # deletion - nothing pushed
+        [void]$tips.Add($parts[1])
+        if ($parts[3] -ne $allZero) { [void]$exclude.Add($parts[3]) }
     }
-    if ($commits.Count -gt $script:MaxOutgoingCommits) {
-        [void]$coverageErrors.Add('the outgoing range holds ' + $commits.Count + ' commits, over the ' + $script:MaxOutgoingCommits + '-commit ceiling; required coverage would be incomplete, so the push is refused (fail closed)')
-    }
-
-    # -- changed blobs per outgoing commit (diff-tree), deduped by sha+path --
     $blobs = New-Object System.Collections.Generic.List[object]
-    $seenBlobs = New-Object System.Collections.Generic.HashSet[string]
-    $blobOverflow = $false
-    if ($coverageErrors.Count -eq 0) {
-        foreach ($commit in @($commits)) {
-            if ($blobOverflow) { break }
-            $diffLines = @(Invoke-QuietCommand -FilePath git -ArgumentList @('-C', $cwd, 'diff-tree', '-r', '--root', '--no-commit-id', '--diff-filter=d', [string]$commit) | Where-Object { $_ })
-            if ($LASTEXITCODE -ne 0) {
-                $shortCommit = ([string]$commit)
-                if ($shortCommit.Length -gt 7) { $shortCommit = $shortCommit.Substring(0, 7) }
-                [void]$coverageErrors.Add('changed files in outgoing commit ' + $shortCommit + ' could not be enumerated; refusing to treat the push as clean')
-                continue
-            }
-            foreach ($rawLine in $diffLines) {
-                $lineText = [string]$rawLine
-                if (-not $lineText.StartsWith(':')) { continue }
-                $tabIndex = $lineText.IndexOf("`t")
-                if ($tabIndex -lt 0) { continue }
-                $meta = @($lineText.Substring(1, $tabIndex - 1) -split '\s+')
-                if ($meta.Count -lt 5) { continue }
-                $newSha = [string]$meta[3]
-                if ($newSha -eq $allZero) { continue }
-                $blobPath = (ConvertFrom-GitQuotedPath ($lineText.Substring($tabIndex + 1))).Replace('\', '/')
-                if (-not $seenBlobs.Add($newSha + '|' + $blobPath)) { continue }
-                if ($blobs.Count -ge $maxFiles) { $blobOverflow = $true; break }
-                [void]$blobs.Add([pscustomobject]@{ Sha = $newSha; Path = $blobPath })
-            }
+    if ($coverageErrors.Count -eq 0 -and $tips.Count -gt 0) {
+        $range = @($tips.ToArray()) + @('--not', '--remotes') + @($exclude.ToArray())
+        $sent = New-Object System.Collections.Generic.HashSet[string]
+        $objectLines = @(Invoke-QuietCommand -FilePath git -TimeoutSeconds 300 -ArgumentList (@('-C', $cwd, 'rev-list', '--ignore-missing', '--objects', '--no-object-names', '--filter=object:type=blob') + $range))
+        if ($LASTEXITCODE -ne 0) {
+            [void]$coverageErrors.Add('the objects this push sends could not be listed (rev-list failed); refusing to treat it as clean')
         }
-    }
-    if ($blobOverflow) {
-        [void]$coverageErrors.Add('the outgoing range changes more than ' + $maxFiles + ' blobs (UTF8_MAX_FILES); required coverage would be incomplete, so the push is refused (fail closed). Raise UTF8_MAX_FILES or push in smaller batches')
+        foreach ($objectLine in $objectLines) { if ($objectLine) { [void]$sent.Add(([string]$objectLine).Trim()) } }
+        $rawLines = @(Invoke-QuietCommand -FilePath git -TimeoutSeconds 300 -ArgumentList (@('-C', $cwd, 'log', '--ignore-missing', '--root', '--raw', '-r', '--no-abbrev', '--no-renames', '--format=', '--diff-filter=d') + $range))
+        if ($LASTEXITCODE -ne 0) {
+            [void]$coverageErrors.Add('changed files in the outgoing commits could not be enumerated; refusing to treat the push as clean')
+        }
+        $seenBlobs = New-Object System.Collections.Generic.HashSet[string]
+        foreach ($rawLine in $rawLines) {
+            $lineText = [string]$rawLine
+            if (-not $lineText.StartsWith(':')) { continue }
+            $tabIndex = $lineText.IndexOf("`t")
+            if ($tabIndex -lt 0) { continue }
+            $meta = @($lineText.Substring(1, $tabIndex - 1) -split '\s+')
+            if ($meta.Count -lt 5) { continue }
+            $newSha = [string]$meta[3]
+            if ($newSha -eq $allZero -or -not $sent.Contains($newSha)) { continue }
+            $blobPath = (ConvertFrom-GitQuotedPath ($lineText.Substring($tabIndex + 1))).Replace('\', '/')
+            if (-not $seenBlobs.Add($newSha + '|' + $blobPath)) { continue }
+            [void]$blobs.Add([pscustomobject]@{ Sha = $newSha; Path = $blobPath })
+        }
     }
 
     # -- strict validation of every enumerated blob --
     $violatedPaths = New-Object System.Collections.Generic.HashSet[string]
     if ($coverageErrors.Count -eq 0) {
-        foreach ($blob in $blobs.ToArray()) {
-            if (Test-ExceptionMatch -Exceptions $exceptions -RelativePath $blob.Path) { continue }
-            $read = Get-GitBlobBytes -Cwd $cwd -BlobSha $blob.Sha -MaxFullBytes $maxFileBytes
+        $toCheck = @($blobs.ToArray() | Where-Object { -not (Test-ExceptionMatch -Exceptions $exceptions -RelativePath $_.Path) })
+        $reads = Read-GitBlobsBatch -Cwd $cwd -BlobShas @($toCheck | ForEach-Object { $_.Sha } | Select-Object -Unique) -MaxFullBytes $maxFileBytes
+        foreach ($blob in $toCheck) {
+            $read = $reads[$blob.Sha]
             if ($read.Failed) {
                 [void]$coverageErrors.Add('outgoing blob for ' + $blob.Path + ' could not be read; refusing to treat the push as clean')
                 continue
