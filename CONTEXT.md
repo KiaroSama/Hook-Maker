@@ -73,23 +73,24 @@ spans many turns.
 
 ## Terminal
 
-A generation is terminal when the finalization path has **recorded** that it ended — either its
-summary was published, or it ended without that and the outcome says so. Terminality is written, never
+A generation is terminal when the finalization path has **recorded** that it ended — either it was
+**finalized**, or it ended unverified and the outcome says so. An observed summary whose readiness
+was not verified does not by itself make the generation terminal. Terminality is written, never
 inferred: an old timestamp, a quiet store or a vanished process is not evidence that work finished.
 A generation that is merely stale is still live.
 
 ## Finalized
 
-The state a generation reaches when its summary has been published for it. It is one of the two ways
-to become **terminal**; the other is ending unverified. Finalized says only that the summary was
-published, never that it was published against settled evidence — a summary published while a gate
-was still open is finalized too, and carries the record of that failure with it.
+The state recorded when a summary publication has an explicit ready record and no recorded
+unresolved verdict. Observing summary text alone does not establish this state. An unverified
+publication is a different fact from verified finalization, and neither is a claim that the store
+controls what the client displays.
 
 ## Collection
 
-Removing terminal generations from the store so new work can be recorded. It never removes a live
+Compacting eligible verified terminal generations into retained tombstones so new work can be recorded. It never removes a live
 generation, an unresolved finding or an unpublished receipt, whatever their age, and **age alone
-never makes anything collectable**. When the store is full and nothing is terminal, the refusal is
+never makes anything collectable**. When the store is full and nothing is collectable, the refusal is
 explicit — evicting the oldest entry would discard an active correction chain and refund its
 allowance, which is the failure this rule exists to prevent.
 
