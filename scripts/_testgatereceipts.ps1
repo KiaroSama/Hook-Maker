@@ -41,6 +41,11 @@
     }
     function Get-ReceiptVerdict { param($HookInput, [string]$Gate) (Read-StopGateReceipt -Path (Get-StopGateReceiptPath -HookInput $HookInput -Gate $Gate)).Verdict }
 
+    # A receipt is written only where the summary observer is registered.
+    $rn = New-StopInput (Start-GenTask -Session 's-rcpt-noobserver')
+    Check 'R00 no registered observer -> no receipt, no state' ($null -eq (Start-StopGateReceipt -HookInput $rn -HookName 'Git-Sync-Check'))
+    Write-ReceiptRegistration -Gates @('Git-Sync-Check', 'Large-File-Check')
+
     # --- FR-013: the receipt lifecycle -------------------------------------------
     $rb = Start-GenTask -Session 's-rcpt-life'
     $rs = New-StopInput $rb
@@ -123,7 +128,7 @@
     Observe-GenerationSummary -HookInput $unk -Since $since
     $entry = Get-GenerationRecord -HookInput $unk
     Check 'R13 an unreadable registration -> not ready (never assumed)' (
-        $null -ne $entry -and -not $entry.publication.ready -and $entry.publication.failure -match 'gate-registration-unreadable') ($entry | ConvertTo-Json -Depth 6 -Compress)
+        $null -ne $entry -and -not $entry.publication.ready -and $entry.publication.failure -match 'gate-registration-unknown') ($entry | ConvertTo-Json -Depth 6 -Compress)
     Write-ReceiptRegistration -Gates @('Git-Sync-Check', 'Large-File-Check')
 
     # --- FR-016: a READY generation is collectable (T046) -------------------------
