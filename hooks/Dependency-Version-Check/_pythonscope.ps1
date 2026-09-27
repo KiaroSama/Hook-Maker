@@ -196,3 +196,53 @@ function Expand-PythonDependencyClosure {
     }
     catch { return $null }
 }
+
+# 3. WHERE a finding lives (plan 012 step 6f, steering V48). A package the
+#    project's venv inherits from a shared global install is updated THERE,
+#    globally, not in the venv. The interpreter itself is a shared install when
+#    sys.prefix equals sys.base_prefix (no venv); inside a venv, a package whose
+#    location is outside sys.prefix came from the base through
+#    --system-site-packages. Both local calls are bounded and made at most once
+#    per run, and only when there is a finding to mark. Failure means no marker,
+#    never a guessed one.
+$script:PythonGlobalSet = $null
+$script:PythonGlobalSetTried = $false
+
+function Get-PythonGlobalPackageSet {
+    param([Parameter(Mandatory = $true)][string]$PythonExecutable)
+    try {
+        $prefixRaw = Invoke-QuietCommand -FilePath $PythonExecutable -ArgumentList @('-c', 'import sys, json; print(json.dumps([sys.prefix, sys.base_prefix]))') -TimeoutSeconds 10
+        $prefixes = @((($prefixRaw -join "`n").Trim() | ConvertFrom-Json))
+        if ($prefixes.Count -ne 2 -or -not ($prefixes[0] -is [string]) -or -not ($prefixes[1] -is [string])) { return $null }
+        $prefix = [System.IO.Path]::GetFullPath([string]$prefixes[0]).TrimEnd('\', '/')
+        $isVenv = -not [string]::Equals($prefix, [System.IO.Path]::GetFullPath([string]$prefixes[1]).TrimEnd('\', '/'), [System.StringComparison]::OrdinalIgnoreCase)
+        # -v adds location/installer; without --outdated it makes no network call.
+        $listRaw = Invoke-QuietCommand -FilePath $PythonExecutable -ArgumentList @('-m', 'pip', 'list', '--format=json', '-v') -TimeoutSeconds 20
+        $items = @(((($listRaw -join "`n").Trim()) | ConvertFrom-Json))
+        $set = @{}
+        foreach ($item in $items) {
+            $name = [string](Get-Field $item 'name')
+            if ($name -eq '') { continue }
+            $location = [string](Get-Field $item 'location')
+            $inherited = -not $isVenv
+            if ($isVenv -and $location -ne '') {
+                $full = [System.IO.Path]::GetFullPath($location)
+                $inherited = -not $full.StartsWith($prefix + [System.IO.Path]::DirectorySeparatorChar, [System.StringComparison]::OrdinalIgnoreCase)
+            }
+            if ($inherited) { $set[(Get-NormalizedPythonName -Name $name)] = $true }
+        }
+        return $set
+    }
+    catch { return $null }
+}
+
+# ' [global install]' for a finding that lives in a shared global install, else ''.
+function Get-PythonScopeMarker {
+    param([string]$Name, [Parameter(Mandatory = $true)][string]$PythonExecutable)
+    if (-not $script:PythonGlobalSetTried) {
+        $script:PythonGlobalSetTried = $true
+        $script:PythonGlobalSet = Get-PythonGlobalPackageSet -PythonExecutable $PythonExecutable
+    }
+    if ($null -ne $script:PythonGlobalSet -and $script:PythonGlobalSet.ContainsKey($Name)) { return ' [global install]' }
+    return ''
+}

@@ -214,6 +214,39 @@ try {
     $r = Fire -Cwd $pipProj
     Check 'pip outdated packages are reported' ($r.Out -match 'pip: requests 2\.0\.0 -> 2\.5\.0') $r.Out
     Check 'an outdated package this project does not declare is NOT reported' ($r.Out -notmatch 'boto3') $r.Out
+    Check 'V48: without location evidence no finding is marked [global install]' ($r.Out -notmatch 'global install\]') $r.Out
+
+    # V48: a package the venv inherits from a shared global install is marked, so
+    # the answer names the global update. The fake interpreter answers the three
+    # calls by shape: `-c <prefix probe>` (2 args), `-m pip list --outdated`, and
+    # the offline `-m pip list --format=json -v` with locations.
+    # The folder name has SPACES on purpose: a quoted .cmd path plus a quoted
+    # argument used to lose its outer quotes under `cmd /c` (Invoke-QuietCommand
+    # now uses `cmd /s /c "..."`), so the `-c` probes never ran. The CI
+    # workspace path has no spaces of its own, so this name is the regression.
+    $gProj = New-Proj 'Pip Global Proj'
+    Write-Utf8 (Join-Path $gProj 'requirements.txt') ("requests==2.0.0" + [Environment]::NewLine + "localpkg==1.0.0")
+    $gVenv = Join-Path $gProj '.venv\Scripts'
+    New-Item -ItemType Directory -Path $gVenv -Force | Out-Null
+    $gBase = Join-Path $gProj 'fakebase'
+    Write-Utf8 (Join-Path $gVenv 'prefix.json') ((@((Join-Path $gProj '.venv'), $gBase) | ConvertTo-Json -Compress))
+    Write-Utf8 (Join-Path $gVenv 'outdated.json') '[{"name":"requests","version":"2.0.0","latest_version":"2.5.0","latest_filetype":"wheel"},{"name":"localpkg","version":"1.0.0","latest_version":"1.2.0","latest_filetype":"wheel"}]'
+    Write-Utf8 (Join-Path $gVenv 'list.json') ((@(
+                @{ name = 'requests'; version = '2.0.0'; location = (Join-Path $gBase 'Lib\site-packages'); installer = 'pip' },
+                @{ name = 'localpkg'; version = '1.0.0'; location = (Join-Path $gProj '.venv\Lib\site-packages'); installer = 'pip' }
+            ) | ConvertTo-Json -Compress))
+    Write-Utf8 (Join-Path $gVenv 'fake.ps1') (@(
+            '$here = Split-Path -Parent $MyInvocation.MyCommand.Path',
+            'if ($args.Count -ge 1 -and $args[0] -eq ''-c'' -and $args.Count -eq 2) { [IO.File]::ReadAllText((Join-Path $here ''prefix.json'')); exit 0 }',
+            'if ($args -contains ''--outdated'' -or $args[0] -eq ''-c'') { [IO.File]::ReadAllText((Join-Path $here ''outdated.json'')); exit 0 }',
+            '[IO.File]::ReadAllText((Join-Path $here ''list.json'')); exit 0'
+        ) -join [Environment]::NewLine)
+    Write-Utf8 (Join-Path $gVenv 'python.cmd') ('@echo off' + [Environment]::NewLine + '"' + (Get-Process -Id $PID).Path + '" -NoLogo -NoProfile -NonInteractive -File "%~dp0fake.ps1" %*' + [Environment]::NewLine)
+    $r = Fire -Cwd $gProj
+    Check 'V48: an inherited global package is marked [global install], the class tag still last' (
+        $r.Out -match 'pip: requests 2\.0\.0 -> 2\.5\.0 \[global install\] \[') $r.Out
+    Check 'V48: a package installed in the venv itself carries no global marker' (
+        $r.Out -match 'pip: localpkg 1\.0\.0 -> 1\.2\.0 \[' -and $r.Out -notmatch 'localpkg 1\.0\.0 -> 1\.2\.0 \[global') $r.Out
 
     # =====================================================================
     Write-Host '--- pip: a probe slower than the shared command default still reports ---' -ForegroundColor Cyan
@@ -404,6 +437,12 @@ try {
     Check 'the closing half replays the still-unanswered finding' ($r.Out -match 'pkg-old' -and $r.Out -match 'still on the table') $r.Out
     Check 'the closing half asks for the decision line' ($r.Out -match 'Dependency decisions:') $r.Out
     Check 'an unanswered finding is named an UNREVIEWED RISK, not an accepted one' ($r.Out -match 'UNREVIEWED RISK') $r.Out
+    # Steering V48: update to latest, or the nearest non-breaking version; the old
+    # "unrelated to dependencies" escape is gone.
+    Check 'V48: the closing half asks for the update now, with the nearest non-breaking fallback and the global install' (
+        $r.Out -match 'Update each finding now to the latest stable release' -and
+        $r.Out -match 'nearest version below it that does not break' -and $r.Out -match 'updated in the global install' -and
+        $r.Out -match 'Only a recorded reason' -and $r.Out -notmatch 'unrelated to dependencies') $r.Out
     Check 'the closing half never blocks (advisory shape only)' ($r.Out -notmatch '"decision"') $r.Out
     Check 'the closing half separates out the EOL/major class' ($r.Out -match 'end-of-life or a clearly old major') $r.Out
     Check 'the closing half runs NO scan (no npm invocation at Stop)' ((Get-NpmCallCount) -eq 0) ('npm calls=' + (Get-NpmCallCount))
