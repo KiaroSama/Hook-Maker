@@ -126,7 +126,7 @@ function New-Proj {
 }
 
 function Fire {
-    param([string]$Cwd, [string]$EventName = 'SessionStart', [string]$Prompt = '', [string]$SessionId = 't', [string]$Exe = '', [switch]$StopActive, [string]$HookPath = '')
+    param([string]$Cwd, [string]$EventName = 'SessionStart', [string]$Prompt = '', [string]$SessionId = 't', [string]$Exe = '', [switch]$StopActive, [string]$HookPath = '', [string]$Client = '')
     $obj = @{ session_id = $SessionId; cwd = $Cwd; hook_event_name = $EventName }
     if ($EventName -eq 'UserPromptSubmit') { $obj['prompt'] = $Prompt }
     if ($StopActive) { $obj['stop_hook_active'] = $true }
@@ -146,6 +146,7 @@ function Fire {
     }
     if ((Get-Command Start-Process).Parameters.ContainsKey('Environment')) {
         $startArgs.Environment = @{ PATH = $env:PATH; LOCALAPPDATA = $FakeLocalAppData; DEPVER_MOCK_DIR = $MockDir }
+        if ($Client -ne '') { $startArgs.Environment['HOOKMAKER_CLIENT'] = $Client }
     }
     $proc = Start-BoundedProcess @startArgs
     $out = if (Test-Path -LiteralPath $outFile) { ([System.IO.File]::ReadAllText($outFile)).Trim() } else { '' }
@@ -450,6 +451,12 @@ try {
     Check 'an unchanged report does not repeat on the next Stop of the same session' ($r2.Exit -eq 0 -and $r2.Out -eq '') $r2.Out
     $r3 = Fire -Cwd $contractProj -EventName 'Stop' -SessionId 'contract-2'
     Check 'a NEW session replays it again' ($r3.Out -match 'pkg-old') $r3.Out
+    # After the same-session check on purpose: the replay stamp is per project,
+    # so a Stop from another session in between would re-arm it.
+    $rClaude = Fire -Cwd $contractProj -EventName 'Stop' -SessionId 'contract-claude' -Client 'claude'
+    Check 'V48: the Claude client gets the same update request, still advisory' (
+        $rClaude.Out -match 'Update each finding now to the latest stable release' -and
+        $rClaude.Out -notmatch 'unrelated to dependencies' -and $rClaude.Out -notmatch '"decision"') $rClaude.Out
     $r4 = Fire -Cwd $contractProj -EventName 'SubagentStop' -SessionId 'contract-3'
     Check 'SubagentStop replays it too' ($r4.Out -match 'pkg-old') $r4.Out
     $r5 = Fire -Cwd $contractProj -EventName 'Stop' -SessionId 'contract-4' -StopActive
