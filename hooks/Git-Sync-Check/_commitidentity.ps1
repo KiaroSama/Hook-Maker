@@ -14,7 +14,8 @@
 # `noreply@<domain>` system addresses such as GitHub's own web-merge committer
 # or an AI co-author trailer. A user noreply such as `<id>+name@users.noreply.
 # github.com` IS a person's address and IS counted - that is the case the rule
-# exists for.
+# exists for. A trailer whose NAME is a bot (`dependabot[bot] <support@github.com>`,
+# Dependabot's own sign-off) is a bot identity even though its address is not.
 
 $script:PublicCommitEmail = 'Kiaro.Sama.Dev@gmail.com'
 # Bounded: the scan answers "is there anything to check", not "list it all".
@@ -43,6 +44,7 @@ function Measure-CommitIdentityLines {
             $m = [regex]::Match($f, '<([^<>\s]+@[^<>\s]+)>')
             $email = if ($m.Success) { $m.Groups[1].Value } elseif ($f -match '^[^\s<>]+@[^\s<>]+$') { $f } else { '' }
             if ($email -eq '') { continue }
+            if ($m.Success -and $f.Substring(0, $m.Index).Contains('[bot]')) { $system++; continue }
             if ([string]::Equals($email, $script:PublicCommitEmail, [System.StringComparison]::OrdinalIgnoreCase)) { $public++ }
             elseif (Test-SystemCommitEmail $email) { $system++ }
             else { $lineHasOther = $true }

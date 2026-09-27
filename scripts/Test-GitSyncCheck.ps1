@@ -510,9 +510,11 @@ try {
     Write-Host '--- order 55 step 2: commit identity and branch disposition ---' -ForegroundColor Cyan
     # A repository whose history holds another address, a bot and GitHub's own
     # web-merge committer. Only the first is counted, and NO address is printed.
+    # The bot commit carries Dependabot's real sign-off trailer, whose ADDRESS
+    # (support@github.com) has no [bot] in it - only the trailer NAME does.
     $idRepo = New-PushedRepo 'identity'
     & git -C $idRepo -c user.email='someone.private@example.invalid' commit -q --allow-empty -m other
-    & git -C $idRepo -c user.name='dependabot[bot]' -c user.email='49699333+dependabot[bot]@users.noreply.github.com' commit -q --allow-empty -m bot
+    & git -C $idRepo -c user.name='dependabot[bot]' -c user.email='49699333+dependabot[bot]@users.noreply.github.com' commit -q --allow-empty -m bot -m 'Signed-off-by: dependabot[bot] <support@github.com>'
     & git -C $idRepo -c user.name='GitHub' -c user.email='noreply@github.com' commit -q --allow-empty -m web
     & git -C $idRepo push -q origin main
     $r = Fire -Cwd $idRepo -EventName 'SessionStart' -SessionId 'id-sess'
