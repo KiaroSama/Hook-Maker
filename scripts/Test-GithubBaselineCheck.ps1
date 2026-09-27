@@ -208,12 +208,14 @@ try {
     Check 'no GitHub remote, no CI -> the badge guidance still arrives' ($r.Out -match 'README badges: 12 to 16 verified badges') $r.Out
 
     # =====================================================================
-    Write-Host '--- README badges: 12 to 16, the donation badge always (steering V40, cap V45) ---' -ForegroundColor Cyan
+    Write-Host '--- README badges: 12 to 16, centred, the donation badge always (steering V40, V45, V47) ---' -ForegroundColor Cyan
     function New-BadgeReadme {
-        param([string]$Repo, [int]$Shields, [switch]$WithWorkflowBadge, [switch]$WithDonate)
+        param([string]$Repo, [int]$Shields, [switch]$WithWorkflowBadge, [switch]$WithDonate, [switch]$Centred)
         $row = @(1..$Shields | ForEach-Object { '![b' + $_ + '](https://img.shields.io/badge/fact' + $_ + '-value-blue)' }) -join ' '
         if ($WithWorkflowBadge) { $row += ' [![ci](https://github.com/o/r/actions/workflows/ci.yml/badge.svg)](https://github.com/o/r/actions)' }
         if ($WithDonate) { $row += ' [![Support donations](https://img.shields.io/badge/Support-donations-d04a9a)](#donate)' }
+        # V47: the whole set sits in one centred block, blank lines inside it.
+        if ($Centred) { $row = "<div align=`"center`">`n`n" + $row + "`n`n</div>" }
         $tail = if ($WithDonate) { "`n## Donate`n`nFixture section.`n" } else { '' }
         # A plain image near the title is NOT a badge and must not be counted.
         Set-Content -LiteralPath (Join-Path $Repo 'README.md') -Value ($row + "`n![logo](https://example.com/logo.png)`n`n# Title`n" + $tail) -Encoding utf8
@@ -228,16 +230,19 @@ try {
     Check 'badges: a missing donation badge and Donate section are each named' (
         $r.Out -match 'Support-donations badge is missing' -and $r.Out -match 'no \\"## Donate\\" section' -and $r.Out -match 'never invent or alter a wallet address') $r.Out
     Check 'badges: advisory only - never a decision' ($r.Out -notmatch '"decision"') $r.Out
+    Check 'badges: rows outside a centred block are named, with the exact wrapper (steering V47)' (
+        $r.Out -match 'all centred inside one <div align=\\"center\\"> block' -and
+        $r.Out -match 'badge rows are not inside one <div align=\\"center\\"> block' -and $r.Out -match 'blank line after the opening tag') $r.Out
     $bd14 = New-GitRepo 'badges14' -GithubRemote:$false
     New-BadgeReadme -Repo $bd14 -Shields 14
     $r = Fire -HookPath $BaselineHook -Cwd $bd14
     Check 'badges: 14 badges get NO count advisory (inside 12-16), still no block' (
         $r.Out -match '12 to 16 verified badges' -and $r.Out -match 'past 16 the order decides which stay' -and $r.Out -notmatch 'badge image\(s\) near' -and $r.Out -notmatch 'above' -and $r.Out -notmatch '"decision"') $r.Out
     $bd7 = New-GitRepo 'badges7' -GithubRemote:$false
-    New-BadgeReadme -Repo $bd7 -Shields 10 -WithWorkflowBadge -WithDonate
+    New-BadgeReadme -Repo $bd7 -Shields 10 -WithWorkflowBadge -WithDonate -Centred
     $r = Fire -HookPath $BaselineHook -Cwd $bd7
-    Check 'badges: 10 static + workflow + donation = 12 with its Donate section -> guidance only; the plain logo is not counted' (
-        $r.Out -match '12 to 16 verified badges' -and $r.Out -notmatch 'badge image\(s\) near' -and
+    Check 'badges: 10 static + workflow + donation = 12, centred, with its Donate section -> guidance only; the plain logo is not counted' (
+        $r.Out -match '12 to 16 verified badges' -and $r.Out -notmatch 'badge image\(s\) near' -and $r.Out -notmatch 'not inside one' -and
         $r.Out -notmatch 'badge is missing' -and $r.Out -notmatch 'no \\"## Donate\\" section') $r.Out
     $bd11 = New-GitRepo 'badges11' -GithubRemote:$false
     New-BadgeReadme -Repo $bd11 -Shields 9 -WithWorkflowBadge -WithDonate

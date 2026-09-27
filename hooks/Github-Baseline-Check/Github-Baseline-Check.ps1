@@ -90,7 +90,7 @@ try {
     $badgeState = Get-ReadmeBadgeState -ProjectRoot $cwd
     $badgeStateDir = Join-Path $env:LOCALAPPDATA 'HookMaker\state'
     $badgeStatePath = Join-Path $badgeStateDir ('GithubBaselineCheck-badges-' + (Get-ShortHash $cwd.ToLowerInvariant()) + '.txt')
-    $badgeKey = Get-ShortHash ([string](Get-Field $hookInput 'session_id') + '|' + [string]$badgeState.Found + '|' + [string]$badgeState.Readable + '|' + [string]$badgeState.Count + '|' + [string]$badgeState.DonateBadge + '|' + [string]$badgeState.DonateSection)
+    $badgeKey = Get-ShortHash ([string](Get-Field $hookInput 'session_id') + '|' + [string]$badgeState.Found + '|' + [string]$badgeState.Readable + '|' + [string]$badgeState.Count + '|' + [string]$badgeState.DonateBadge + '|' + [string]$badgeState.DonateSection + '|' + [string]$badgeState.Centred)
     $badgeSeen = ''
     if (Test-Path -LiteralPath $badgeStatePath -PathType Leaf) { $badgeSeen = ([System.IO.File]::ReadAllText($badgeStatePath)).Trim() }
     if ($badgeSeen -ne $badgeKey) {
