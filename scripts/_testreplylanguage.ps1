@@ -1,5 +1,5 @@
 # Test-SessionSummaryCheck section: the reply-language line (plan 012 step 6e,
-# steering V45, spec 010 RD-9 / FR-015).
+# steering V45 narrowed V46, spec 010 RD-9 / FR-015).
 #
 # Dot-sourced from Test-SessionSummaryCheck.ps1 INSIDE its try block, after the
 # read-only assertions (this section writes ReplyLanguage-* state on purpose).
@@ -12,7 +12,7 @@
 
     Write-Host '--- V45: replies stay in the language the user TYPED ---' -ForegroundColor Cyan
     $rlFa = -join ([char[]](0x0633, 0x0644, 0x0627, 0x0645, 0x0020, 0x0648, 0x0636, 0x0639, 0x06CC, 0x062A, 0x0020, 0x0686, 0x06CC, 0x0647))
-    $rlLine = 'LANGUAGE: the user writes in Persian. Every message in this turn, progress notes included, is in Persian; code, commands, file contents and commit messages stay English.'
+    $rlLine = 'LANGUAGE: the user writes in Persian. Your reply text and progress notes are Persian; tool-call descriptions (command labels), commands, code, comments, file contents and commit messages stay English. Nothing translates your text: the user reads it as written.'
     . (Join-Path $HooksRoot '_replylanguage.ps1')
     $rlCases = [ordered]@{
         'persian'   = @($rlFa, 'persian')

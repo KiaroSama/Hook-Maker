@@ -175,7 +175,7 @@
     $msgRl = Get-Message $rRl.Out
     Check 'RL-D1 the deny still denies and its text ends with the LANGUAGE line' (
         $rRl.Out -match '"permissionDecision":"deny"' -and
-        $msgRl.TrimEnd().EndsWith('code, commands, file contents and commit messages stay English.') -and
+        $msgRl.TrimEnd().EndsWith('Nothing translates your text: the user reads it as written.') -and
         $msgRl -match 'LANGUAGE: the user writes in Persian') $msgRl
     [System.IO.File]::Delete((Join-Path $rlState ('ReplyLanguage-' + $rlKey + '.txt')))
     $rRl = Fire -HookPath (Join-Path $rlDir 'Test-Run-Guard.ps1') -Cwd $Proj -EventName 'PreToolUse' -Command 'pytest -q tests/' -LocalAppData $rlLocal

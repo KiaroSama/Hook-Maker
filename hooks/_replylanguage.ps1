@@ -1,5 +1,6 @@
-# Reply language (plan 012 step 6e, steering V45, custom-instructions.md SS2):
-# every message to the user is in the language of the user's OWN typed words.
+# Reply language (plan 012 step 6e, steering V45, narrowed V46; custom-instructions.md
+# SS2): reply text and progress notes follow the user's OWN typed language; tool-call
+# descriptions, commands, code, comments, file contents and commits stay English.
 #
 # Dot-sourced by _evidencelib.ps1 (optional, like _gatereceipts.ps1); definitions
 # only. It lives here rather than in _hooklib.ps1 because that file is past the
@@ -21,7 +22,7 @@
 # State: one tiny file per session under %LOCALAPPDATA%\HookMaker\state, keyed by
 # a hash of the session id. Advisory only - nothing here ever blocks.
 
-$script:ReplyLanguageLine = 'LANGUAGE: the user writes in Persian. Every message in this turn, progress notes included, is in Persian; code, commands, file contents and commit messages stay English.'
+$script:ReplyLanguageLine = 'LANGUAGE: the user writes in Persian. Your reply text and progress notes are Persian; tool-call descriptions (command labels), commands, code, comments, file contents and commit messages stay English. Nothing translates your text: the user reads it as written.'
 $script:ReplyLanguageMaxAgeDays = 7
 # Text that reaches UserPromptSubmit without being the user's typing.
 $script:InjectedPromptMarkers = @(
