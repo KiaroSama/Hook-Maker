@@ -1,5 +1,20 @@
 # راهنمای Hook Maker
 
+[![CI](https://github.com/KiaroSama/Hook-Maker/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/KiaroSama/Hook-Maker/actions/workflows/ci.yml)
+[![Storage integrity regressions](https://github.com/KiaroSama/Hook-Maker/actions/workflows/storage-integrity-regressions.yml/badge.svg?branch=main)](https://github.com/KiaroSama/Hook-Maker/actions/workflows/storage-integrity-regressions.yml)
+[![Task finalization regressions](https://github.com/KiaroSama/Hook-Maker/actions/workflows/task-finalization-regressions.yml/badge.svg?branch=main)](https://github.com/KiaroSama/Hook-Maker/actions/workflows/task-finalization-regressions.yml)
+[![Review contract regressions](https://github.com/KiaroSama/Hook-Maker/actions/workflows/review-contracts.yml/badge.svg?branch=main)](https://github.com/KiaroSama/Hook-Maker/actions/workflows/review-contracts.yml)
+[![Generation observation safety](https://github.com/KiaroSama/Hook-Maker/actions/workflows/generation-safety.yml/badge.svg?branch=main)](https://github.com/KiaroSama/Hook-Maker/actions/workflows/generation-safety.yml)
+[![Remaining boundary regressions](https://github.com/KiaroSama/Hook-Maker/actions/workflows/remaining-boundaries.yml/badge.svg?branch=main)](https://github.com/KiaroSama/Hook-Maker/actions/workflows/remaining-boundaries.yml)
+[![مجوز: اختصاصی](https://img.shields.io/badge/license-proprietary-red?style=flat-square)](LICENSE)
+[![PowerShell 5.1 و 7](https://img.shields.io/badge/PowerShell-5.1%20%7C%207-5391FE?style=flat-square)](.github/workflows/ci.yml)
+[![پلتفرم: ویندوز](https://img.shields.io/badge/platform-Windows-lightgrey?style=flat-square)](.github/workflows/ci.yml)
+[![کلاینت‌ها: Claude Code و Codex CLI](https://img.shields.io/badge/clients-Claude%20Code%20%7C%20Codex%20CLI-D97757?style=flat-square)](docs/HOOKS.md)
+[![مستندات: HOOKS.md](https://img.shields.io/badge/docs-HOOKS.md-informational?style=flat-square)](docs/HOOKS.md)
+[![آخرین commit](https://img.shields.io/github/last-commit/KiaroSama/Hook-Maker?style=flat-square)](https://github.com/KiaroSama/Hook-Maker/commits/main)
+[![حجم مخزن](https://img.shields.io/github/repo-size/KiaroSama/Hook-Maker?style=flat-square)](https://github.com/KiaroSama/Hook-Maker)
+[![Support donations](https://img.shields.io/badge/Support-donations-d04a9a)](#حمایت-مالی)
+
 ابزار ساخت، نصب و مدیریت هوک‌های Claude Code و Codex — به‌همراه هوک آماده‌ی همگام‌سازی دانش بین‌پروژه‌ای. هیچ مسیر پروژه‌ای داخل اسکریپت ثابت نشده است. تمام مسیرها، ارتباط‌ها، رویدادها و قوانین از فایل `sync-hooks.json` خوانده می‌شوند. فایل اصلی فقط یک نمونه غیرفعال و عمومی دارد و هیچ مسیر شخصی در آن ثبت نشده است.
 
 ## ساختار پوشه‌ها
