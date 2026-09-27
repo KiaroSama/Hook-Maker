@@ -313,7 +313,7 @@ if ($closing) {
         [void]$closeLines.Add('Of those, ' + $urgent.Count + ' are end-of-life or a clearly old major version - those two classes need a stated reason to leave in place, not silence.')
     }
     [void]$closeLines.Add('Answer each one in the final summary on its own line: ' + $script:DependencyDecisionLine)
-    [void]$closeLines.Add('An unanswered finding is an UNREVIEWED RISK, not an accepted one - if the task was unrelated to dependencies, say exactly that. This hook never upgrades anything and never blocks: the decision is the user''s.')
+    [void]$closeLines.Add('An unanswered finding is an UNREVIEWED RISK, not an accepted one. Update each finding now to the latest stable release, or to the nearest version below it that does not break (record the breaking version and the failure); a globally inherited package ([global install]) is updated in the global install. Only a recorded reason (intentional pin, advisory on the newer release, unsupported runtime, licence change, OS-managed tool) leaves one in place. This hook never upgrades anything and never blocks.')
     $null = Write-HookResult -EventName $eventName -Kind 'advisory' -Message ($closeLines.ToArray() -join "`n")
     exit 0
 }
@@ -554,7 +554,7 @@ if ($manifestPaths.ContainsKey('pip')) {
                     if ($script:PythonScopeReady) { $normalized = Get-NormalizedPythonName -Name $name }
                     if (-not $scopeIndex.ContainsKey($normalized)) { $outOfScope++; continue }
                     $cls = Get-UpdateClassification $version $latestVersion
-                    [void]$findings.Add('pip: ' + $name + ' ' + $version + ' -> ' + $latestVersion + ' [' + $cls + ']')
+                    [void]$findings.Add('pip: ' + $name + ' ' + $version + ' -> ' + $latestVersion + $(if ($script:PythonScopeReady) { Get-PythonScopeMarker -Name $normalized -PythonExecutable $pipCmd } else { '' }) + ' [' + $cls + ']')
                     $count++
                 }
                 # $outOfScope is deliberately NOT reported as incomplete: those

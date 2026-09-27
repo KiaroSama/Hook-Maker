@@ -602,7 +602,7 @@ function Invoke-QuietCommand {
         # `gh.ps1` shim on PATH is exactly the shape the test suites use, and
         # a user wrapping git/gh would have hit the same wall in production.
         $targetPath = $FilePath
-        $targetArgs = @($ArgumentList)
+        $targetArgs = @($ArgumentList); $cmdLine = $null
         try {
             $resolved = @(Get-Command -Name $FilePath -ErrorAction SilentlyContinue |
                 Where-Object { $_.CommandType -eq 'Application' -or $_.CommandType -eq 'ExternalScript' })
@@ -616,7 +616,7 @@ function Invoke-QuietCommand {
                     $targetPath = [string](Get-Process -Id $PID).Path
                 }
                 elseif ($extension -eq '.cmd' -or $extension -eq '.bat') {
-                    $targetArgs = @('/c', $targetPath) + $targetArgs
+                    $cmdLine = '/s /c "' + (ConvertTo-Win32ArgumentString -ArgumentList (@($targetPath) + $targetArgs)) + '"' # /s + outer quotes: a quoted path AND a quoted argument otherwise lose their first and last quote
                     $targetPath = (Join-Path $env:SystemRoot 'System32\cmd.exe')
                 }
             }
@@ -647,7 +647,7 @@ function Invoke-QuietCommand {
         # call a hook made on 5.1 failed SILENTLY and read as "no answer".
         # An earlier revision of this comment asserted the property existed
         # on both hosts. It does not, and that claim is what hid the bug.
-        if ($info.PSObject.Properties.Name -contains 'ArgumentList') {
+        if ($null -ne $cmdLine) { $info.Arguments = $cmdLine } elseif ($info.PSObject.Properties.Name -contains 'ArgumentList') {
             foreach ($argument in @($targetArgs)) { [void]$info.ArgumentList.Add([string]$argument) }
         }
         else {
