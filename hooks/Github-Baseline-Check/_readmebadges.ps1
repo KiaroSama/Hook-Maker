@@ -1,5 +1,6 @@
 # Github-Baseline-Check - the README badge reminder (plan 012 step 6, steering V40,
-# cap V45: 12 to 16 badges, the Support/donations badge always).
+# cap V45, centred V47: 12 to 16 badges inside one <div align="center"> block, the
+# Support/donations badge always).
 #
 # Dot-sourced by Github-Baseline-Check.ps1; definitions only, no exit.
 #
@@ -13,7 +14,7 @@
 # of the root README. It never fetches an image and never checks what a badge
 # claims - that is the agent's job with the evidence in front of it.
 
-$script:BadgeGuidance = 'README badges: 12 to 16 verified badges, as many rows as needed, always including [![Support donations](https://img.shields.io/badge/Support-donations-d04a9a)](#donate) linked to the README''s "## Donate" section (copy that section verbatim from another of the user''s repositories when it is missing). Fill in this order: CI status, license, version/release, tests or coverage, runtime versions, platform, downloads/distribution, documentation, a real paper/DOI, activity/community, built-with stack, repository facts; past 16 the order decides which stay. Never padded or fabricated; a real shortfall is reported. No private data in badge URLs. Rule: global-repository-rules.md.'
+$script:BadgeGuidance = 'README badges: 12 to 16 verified badges, as many rows as needed, all centred inside one <div align="center"> block (blank line after the opening tag and before </div>), always including [![Support donations](https://img.shields.io/badge/Support-donations-d04a9a)](#donate) linked to the README''s "## Donate" section (copy that section verbatim from another of the user''s repositories when it is missing). Fill in this order: CI status, license, version/release, tests or coverage, runtime versions, platform, downloads/distribution, documentation, a real paper/DOI, activity/community, built-with stack, repository facts; past 16 the order decides which stay. Never padded or fabricated; a real shortfall is reported. No private data in badge URLs. Rule: global-repository-rules.md.'
 $script:BadgeMinimum = 12
 $script:BadgeMaximum = 16
 # The donation badge and the section it links to. The section is looked for in
@@ -21,6 +22,10 @@ $script:BadgeMaximum = 16
 $script:DonateBadgePattern = '(?i)img\.shields\.io/badge/Support-donations-'
 $script:DonateSectionPattern = '(?im)^#{1,6}\s*Donate\s*$'
 $script:DonateScanLines = 4000
+# A badge row is centred when it sits between an opening <div align="center"> and
+# its </div>; GitHub keeps that attribute.
+$script:CentreOpenPattern = '(?i)<div\b[^>]*\balign\s*=\s*["'']?center\b'
+$script:DivClosePattern = '(?i)</div\s*>'
 $script:BadgeScanLines = 40
 # Hosts and paths that serve badge images. A GitHub workflow badge is matched by
 # its path, since github.com also serves ordinary images.
@@ -33,7 +38,7 @@ function Get-ReadmeBadgeState {
         $candidate = Join-Path $ProjectRoot $name
         if (Test-Path -LiteralPath $candidate -PathType Leaf) { $readme = $candidate; break }
     }
-    if ($null -eq $readme) { return [pscustomobject]@{ Found = $false; Count = 0; Readable = $true; DonateBadge = $false; DonateSection = $false } }
+    if ($null -eq $readme) { return [pscustomobject]@{ Found = $false; Count = 0; Readable = $true; DonateBadge = $false; DonateSection = $false; Centred = $true } }
     # An explicit reader, disposed here: an enumerator abandoned by
     # Select-Object -First can keep the README open on Windows PowerShell 5.1.
     $lines = New-Object System.Collections.Generic.List[string]
@@ -50,18 +55,25 @@ function Get-ReadmeBadgeState {
             $read++
         }
     }
-    catch { return [pscustomobject]@{ Found = $true; Count = 0; Readable = $false; DonateBadge = $false; DonateSection = $false } }
+    catch { return [pscustomobject]@{ Found = $true; Count = 0; Readable = $false; DonateBadge = $false; DonateSection = $false; Centred = $true } }
     finally { if ($null -ne $reader) { $reader.Dispose() } }
     $urls = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::OrdinalIgnoreCase)
     $donateBadge = $false
+    $inCentre = $false
+    $outsideCentre = 0
     foreach ($line in $lines) {
+        if ([string]$line -match $script:CentreOpenPattern) { $inCentre = $true }
         foreach ($m in [regex]::Matches([string]$line, '!\[[^\]]*\]\(\s*<?([^)\s>]+)|<img\b[^>]*\bsrc\s*=\s*["'']([^"'']+)["'']')) {
             $url = if ($m.Groups[1].Success) { $m.Groups[1].Value } else { $m.Groups[2].Value }
-            if ($url -match $script:BadgeUrlPattern) { [void]$urls.Add($url) }
+            if ($url -match $script:BadgeUrlPattern) {
+                [void]$urls.Add($url)
+                if (-not $inCentre) { $outsideCentre++ }
+            }
             if ($url -match $script:DonateBadgePattern) { $donateBadge = $true }
         }
+        if ([string]$line -match $script:DivClosePattern) { $inCentre = $false }
     }
-    return [pscustomobject]@{ Found = $true; Count = $urls.Count; Readable = $true; DonateBadge = $donateBadge; DonateSection = $donateSection }
+    return [pscustomobject]@{ Found = $true; Count = $urls.Count; Readable = $true; DonateBadge = $donateBadge; DonateSection = $donateSection; Centred = ($outsideCentre -eq 0) }
 }
 
 function Get-ReadmeBadgeNote {
@@ -80,6 +92,9 @@ function Get-ReadmeBadgeNote {
         }
         elseif ($State.Count -gt $script:BadgeMaximum) {
             [void]$lines.Add('- The README shows ' + $State.Count + ' badge image(s) near its title - above ' + $script:BadgeMaximum + '. Trim by the priority order: keep the higher-priority facts. This is a prompt, not a defect.')
+        }
+        if ($State.Count -gt 0 -and -not $State.Centred) {
+            [void]$lines.Add('- The badge rows are not inside one <div align="center"> block: wrap them, with a blank line after the opening tag and before </div>, so the Markdown badges render centred.')
         }
         if (-not $State.DonateBadge) {
             [void]$lines.Add('- The Support-donations badge is missing near the title.')

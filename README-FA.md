@@ -1,5 +1,7 @@
 # راهنمای Hook Maker
 
+<div align="center">
+
 [![CI](https://github.com/KiaroSama/Hook-Maker/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/KiaroSama/Hook-Maker/actions/workflows/ci.yml)
 [![Storage integrity regressions](https://github.com/KiaroSama/Hook-Maker/actions/workflows/storage-integrity-regressions.yml/badge.svg?branch=main)](https://github.com/KiaroSama/Hook-Maker/actions/workflows/storage-integrity-regressions.yml)
 [![Task finalization regressions](https://github.com/KiaroSama/Hook-Maker/actions/workflows/task-finalization-regressions.yml/badge.svg?branch=main)](https://github.com/KiaroSama/Hook-Maker/actions/workflows/task-finalization-regressions.yml)
@@ -14,6 +16,8 @@
 [![آخرین commit](https://img.shields.io/github/last-commit/KiaroSama/Hook-Maker?style=flat-square)](https://github.com/KiaroSama/Hook-Maker/commits/main)
 [![حجم مخزن](https://img.shields.io/github/repo-size/KiaroSama/Hook-Maker?style=flat-square)](https://github.com/KiaroSama/Hook-Maker)
 [![Support donations](https://img.shields.io/badge/Support-donations-d04a9a)](#حمایت-مالی)
+
+</div>
 
 ابزار ساخت، نصب و مدیریت هوک‌های Claude Code و Codex — به‌همراه هوک آماده‌ی همگام‌سازی دانش بین‌پروژه‌ای. هیچ مسیر پروژه‌ای داخل اسکریپت ثابت نشده است. تمام مسیرها، ارتباط‌ها، رویدادها و قوانین از فایل `sync-hooks.json` خوانده می‌شوند. فایل اصلی فقط یک نمونه غیرفعال و عمومی دارد و هیچ مسیر شخصی در آن ثبت نشده است.
 
