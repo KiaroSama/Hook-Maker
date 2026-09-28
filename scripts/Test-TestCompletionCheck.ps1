@@ -21,6 +21,7 @@
 # this script's scope; execution order is the file order below):
 #   _testcompletionharness.ps1   shared fixture builders + state-document writers
 #   _testcompletionrecovery.ps1  explicit historical recovery and audit/ownership checks
+#   _testcompletionorphan.ps1    an unpaired observation vs a later clean paired run
 #   _testcompletiongate.ps1      the core gate: evidence, identity, and the
 #                                active-record state machine (live / finished /
 #                                died / expired, incl. pid reuse)
@@ -33,7 +34,7 @@
 # Usage:  pwsh -NoLogo -NoProfile -File .\scripts\Test-TestCompletionCheck.ps1 [-KeepArtifacts] [-RecoveryOnly]
 # Exit code is the number of failed assertions (0 = all passed).
 
-param([switch]$KeepArtifacts, [switch]$RecoveryOnly, [switch]$ActivationOnly)
+param([switch]$KeepArtifacts, [switch]$RecoveryOnly, [switch]$ActivationOnly, [switch]$OrphanOnly)
 
 Set-StrictMode -Version 2.0
 $ErrorActionPreference = 'Stop'
@@ -60,12 +61,17 @@ try {
     if ($ActivationOnly) {
         . (Join-Path $PSScriptRoot '_testcompletionactivation.ps1')
     }
+    elseif ($OrphanOnly) {
+        . (Join-Path $PSScriptRoot '_testcompletionorphan.ps1')
+    }
     else {
     . (Join-Path $PSScriptRoot '_testcompletionrecovery.ps1')
     if (-not $RecoveryOnly) {
     # The core gate: recursion guard, evidence freshness, run identity, active
     # markers, missing results, and concurrent runs in one project.
     . (Join-Path $PSScriptRoot '_testcompletiongate.ps1')
+    # An unpaired observation and the later run that may clear it.
+    . (Join-Path $PSScriptRoot '_testcompletionorphan.ps1')
 
     # The incident ledger, its pruning rules and its retention bounds.
     . (Join-Path $PSScriptRoot '_testcompletionledger.ps1')

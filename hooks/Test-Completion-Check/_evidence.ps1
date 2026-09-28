@@ -177,6 +177,33 @@ function Test-ResultSuperseded {
     return $false
 }
 
+# An observed run with NO result of its own - a guarded run typed by hand
+# without the full identity, whose result can never pair, or one killed before
+# it wrote a result - is superseded only by a LATER run of the same command for
+# the same current state that finished clean, leaked nothing, and is paired to
+# ITS OWN observation. Without this, the gate's own recovery ("re-run through
+# the guarded runner") could not clear it and only the evidence window did.
+# Pairing is the guard: an unpaired green result - another run's, or a
+# hand-typed one with an empty fingerprint - never clears anything.
+function Test-ObservationSuperseded {
+    param($Observed, $PairedResults, [string]$StateFp)
+    if ($null -eq $Observed -or [string]::IsNullOrWhiteSpace($StateFp)) { return $false }
+    $cmd = [string](Get-Field $Observed 'commandFingerprint')
+    $observedAt = ConvertTo-UtcTime (Get-Field $Observed 'observedUtc')
+    if ($cmd -eq '' -or $null -eq $observedAt) { return $false }
+    foreach ($re in @($PairedResults)) {
+        if ($null -eq $re) { continue }
+        $doc = $re.Doc
+        if (([string](Get-Field $doc 'overall')).ToLowerInvariant() -ne 'ok') { continue }
+        if (@(@(Get-Field $doc 'leakedProcessIds') | Where-Object { $null -ne $_ -and [string]$_ -ne '' }).Count -gt 0) { continue }
+        if (([string](Get-Field $doc 'commandFingerprint')) -ne $cmd) { continue }
+        if (([string](Get-Field $doc 'projectFingerprint')) -ne $StateFp) { continue }
+        $started = ConvertTo-UtcTime (Get-Field $doc 'startedUtc')
+        if ($null -ne $started -and $started -gt $observedAt) { return $true }
+    }
+    return $false
+}
+
 # What state is the run behind THIS active marker in? Returns
 # { State; OwnerPid; RunId; Detail } where State is one of:
 #
