@@ -237,6 +237,9 @@
     $hcBlindAdv = New-IsolatedHookCopy -EnvOverrides @{ TEST_GUARD_ADVISORY_ONLY = '1' }
     $rAdv = Fire -HookPath $hcBlindAdv.Script -Cwd $Proj -EventName 'PreToolUse' -Command 'Start-Sleep -Seconds 300' -LocalAppData $hcBlindAdv.LocalAppData
     Check 'advisory mode reports the blind wait but never denies' ($rAdv.Out -notmatch '"permissionDecision":"deny"' -and (Get-Message $rAdv.Out) -match 'blind wait') $rAdv.Out
+    # Advisory means context only: permissionDecision "allow" would APPROVE the
+    # command on both clients and skip the user's own permission prompt.
+    Check 'advisory mode never approves either (no permissionDecision at all)' ($rAdv.Out -notmatch '"permissionDecision"' -and $rAdv.Exit -eq 0) $rAdv.Out
     # 0 disables the check entirely.
     $hcBlindOff = New-IsolatedHookCopy -EnvOverrides @{ TEST_GUARD_MAX_BLIND_SLEEP_SECONDS = '0' }
     $rOff = Fire -HookPath $hcBlindOff.Script -Cwd $Proj -EventName 'PreToolUse' -Command 'Start-Sleep -Seconds 300' -LocalAppData $hcBlindOff.LocalAppData
@@ -302,6 +305,7 @@
     $r = Fire -HookPath $hcAdvisory.Script -Cwd $Proj -EventName 'PreToolUse' -Command 'pytest -q' -LocalAppData $hcAdvisory.LocalAppData
     $message = Get-Message $r.Out
     Check 'advisory mode never denies' ($r.Out -notmatch '"permissionDecision":"deny"' -and $r.Exit -eq 0) $r.Out
+    Check 'advisory mode never approves: context only, no permissionDecision' ($r.Out -notmatch '"permissionDecision"' -and $r.Out -match '"additionalContext"') $r.Out
     Check 'advisory mode still reports the finding and the replacement' ($message -match 'ADVISORY ONLY' -and $message -match 'Run-Tests-Guarded\.ps1') $message
     Check 'advisory output is one parseable JSON document' (Test-IsSingleJson $r.Out) $r.Out
 

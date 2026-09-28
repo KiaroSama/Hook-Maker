@@ -288,11 +288,11 @@ function Write-Deny {
 
 function Write-Advisory {
     param([string]$EventName, [string]$Message)
-    # PreToolUse advisories are an explicit ALLOW on the same permission
-    # mechanism as the deny above, not ordinary context - hence 'allow', which
-    # keeps Claude's permissionDecision:'allow'.
+    # PreToolUse advisories are CONTEXT ONLY. permissionDecision "allow" is an
+    # approval on Claude Code and Codex alike - it would skip the user's own
+    # permission prompt - so an advisory never carries a decision at all.
     if ($EventName -eq 'PreToolUse') {
-        exit (Write-HookResult -EventName $EventName -Kind 'allow' -Message $Message).ExitCode
+        exit (Write-HookResult -EventName $EventName -Kind 'advisory' -Message $Message).ExitCode
     }
     # Everywhere else this is a plain non-blocking notice, so it takes the
     # ordinary context shape. Codex moves from systemMessage to
