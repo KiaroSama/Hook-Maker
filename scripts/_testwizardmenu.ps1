@@ -84,9 +84,9 @@
         '21\. Ignore-Rules-Check', '22\. Dependency-Version-Check', '23\. Test-Temp-Cleanup',
         '24\. Test-Plan-Check', '25\. Test-Run-Guard', '26\. Test-Completion-Check',
         '27\. Utf8-Encoding-Check', '28\. Synapse-Rules-Check', '29\. Session-Summary-Check',
-        '30\. Cloudflare-Deploy'
+        '30\. Install-Location-Check', '31\. Cloudflare-Deploy'
     ) -join '[\s\S]*'
-    Check 'hooks follow the requested menu order (Select all -> sync group -> hooks -> Speckit-Check at 10 -> test-health at 24/25/26 -> Utf8-Encoding-Check at 27 -> Synapse-Rules-Check at 28 -> Session-Summary-Check at 29 -> Cloudflare-Deploy last at 30)' ($r.Out -match $menuOrder)
+    Check 'hooks follow the requested menu order (Select all -> sync group -> hooks -> Speckit-Check at 10 -> test-health at 24/25/26 -> Utf8-Encoding-Check at 27 -> Synapse-Rules-Check at 28 -> Session-Summary-Check at 29 -> Install-Location-Check at 30 -> Cloudflare-Deploy last at 31)' ($r.Out -match $menuOrder)
     # The three test-health hooks (24.txt) render one line each, with the tag
     # their canonical When value demands - a value Get-HookTimingTag does not
     # recognize silently renders NO tag at all.
