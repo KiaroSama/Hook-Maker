@@ -62,42 +62,8 @@
 #       says so, rather than shelling out by some second route.
 # ---------------------------------------------------------------------------
 
-# ---- the versioned migration table ----------------------------------------
-#
-# One entry per RETIRED DEFAULT binding. `From` is matched as an exact set
-# (case-insensitive, order-insensitive) against a client's recorded events; a
-# record that matches nothing here is left alone. There is no `To`: the
-# destination is always whatever Get-HookRecommendedEvents reports right now,
-# so this table can never disagree with the shipped default.
-#
-# Version is the migration id and is unique. It is reported and logged so a run
-# can be named ("event-binding migration v1"), and so a future retirement of a
-# different set for the same hook is a NEW entry rather than an edit to this
-# one - an edited entry would silently reclassify installs it already moved.
-#
-# Adding an entry requires evidence that the `From` set really was a SHIPPED
-# DEFAULT, not merely a plausible one: a set a user chose by hand is a custom
-# binding and must stay in the "report, do not rewrite" path.
-$script:InstalledEventMigrations = @(
-    [pscustomobject]@{
-        Version = 1
-        Hook    = 'Session-Summary-Check'
-        From    = @('Stop', 'SubagentStop')
-        Reason  = 'the retired closing-only default; it never delivers the pre-task summary requirement'
-    }
-    [pscustomobject]@{
-        Version = 2
-        Hook    = 'Session-Summary-Check'
-        From    = @('SessionStart', 'UserPromptSubmit')
-        Reason  = 'the prior shipped default delivered policy but never invoked the silent publication observer'
-    }
-    [pscustomobject]@{
-        Version = 3
-        Hook    = 'Git-Sync-Check'
-        From    = @('SessionStart', 'Stop', 'SubagentStop')
-        Reason  = 'the prior shipped default had no PreToolUse, so the side-branch and push-once reminders never ran'
-    }
-)
+# ---- the versioned migration table: scripts\_installeventmigrationtable.ps1
+. (Join-Path $PSScriptRoot '_installeventmigrationtable.ps1')
 
 # Case-insensitive, order-insensitive set equality over event names. Duplicates
 # collapse, so @('Stop','Stop') equals @('Stop') - a duplicated entry is a

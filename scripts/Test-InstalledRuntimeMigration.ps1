@@ -73,6 +73,11 @@ $Work = New-TestWorkspace -Prefix 'hookmaker-bindingmigration'
 $script:CurrentDefaults = @{
     'Session-Summary-Check' = @('SessionStart', 'UserPromptSubmit')
     'Git-Sync-Check'        = @('SessionStart', 'PreToolUse', 'Stop', 'SubagentStop')
+    'Skills-Check'          = @('SessionStart', 'UserPromptSubmit', 'Stop', 'SubagentStop')
+    'Rules-Check'           = @('SessionStart', 'UserPromptSubmit', 'Stop', 'SubagentStop')
+    'Mcp-Usage-Check'       = @('SessionStart', 'UserPromptSubmit', 'Stop', 'SubagentStop')
+    'Dependency-Version-Check' = @('SessionStart', 'UserPromptSubmit', 'Stop', 'SubagentStop')
+    'Utf8-Encoding-Check'   = @('SessionStart', 'Stop', 'SubagentStop')
     'Fixture-Unknown-Check' = @()
 }
 function Get-HookRecommendedEvents {
@@ -109,7 +114,7 @@ Copy-TestRuntimeLibraries -SourceHookLib $HookLib -Destination (Join-Path $Fixtu
 # workspace. 'Fixture-Unknown-Check' exists only to give one case a hook whose
 # current default the resolver cannot answer for.
 $HookName = 'Session-Summary-Check'
-foreach ($fixtureHook in @($HookName, 'Git-Sync-Check', 'Fixture-Unknown-Check')) {
+foreach ($fixtureHook in @($HookName, 'Git-Sync-Check', 'Skills-Check', 'Rules-Check', 'Mcp-Usage-Check', 'Dependency-Version-Check', 'Utf8-Encoding-Check', 'Fixture-Unknown-Check')) {
     $dir = Join-Path $FixtureHooksDir $fixtureHook
     New-Item -ItemType Directory -Path $dir -Force | Out-Null
     Set-Content -LiteralPath (Join-Path $dir ($fixtureHook + '.ps1')) -Value "# fixture hook`nexit 0`n" -Encoding UTF8
@@ -242,6 +247,25 @@ $gitSyncVerdict = Get-VerdictFor $gitSyncRetired
 Check 'Git-Sync-Check: the retired default without PreToolUse migrates by v3 to the current set' (
     $gitSyncVerdict.Status -eq 'migrate' -and $gitSyncVerdict.Version -eq 3 -and
     (Test-EventSetEqual $gitSyncVerdict.Events @('SessionStart', 'PreToolUse', 'Stop', 'SubagentStop'))) ($gitSyncVerdict.Status + ' / ' + $gitSyncVerdict.Detail)
+# v4-v8: five hooks whose older shipped default never received a migration, so
+# their Stop/SubagentStop half never ran on an existing install. The exact old
+# set migrates; one event more is a user's choice and stays custom.
+foreach ($retiredCase in @(
+        @{ Hook = 'Skills-Check'; Version = 4; From = @('SessionStart', 'UserPromptSubmit', 'Stop') },
+        @{ Hook = 'Rules-Check'; Version = 5; From = @('SessionStart', 'UserPromptSubmit') },
+        @{ Hook = 'Mcp-Usage-Check'; Version = 6; From = @('SessionStart', 'UserPromptSubmit') },
+        @{ Hook = 'Dependency-Version-Check'; Version = 7; From = @('SessionStart', 'UserPromptSubmit') },
+        @{ Hook = 'Utf8-Encoding-Check'; Version = 8; From = @('SessionStart', 'Stop') })) {
+    $caseHook = [string]$retiredCase.Hook
+    $caseFixture = New-InstalledFixture -Hook $caseHook -ProjectName ('retired-' + $caseHook.ToLowerInvariant()) -RecordedEvents @($retiredCase.From)
+    $caseVerdict = Get-VerdictFor $caseFixture
+    Check ($caseHook + ': the retired default migrates by v' + $retiredCase.Version + ' to the current set') (
+        $caseVerdict.Status -eq 'migrate' -and $caseVerdict.Version -eq $retiredCase.Version -and
+        (Test-EventSetEqual $caseVerdict.Events $script:CurrentDefaults[$caseHook])) ($caseVerdict.Status + ' / ' + $caseVerdict.Detail)
+    $caseCustom = New-InstalledFixture -Hook $caseHook -ProjectName ('custom-' + $caseHook.ToLowerInvariant()) -RecordedEvents (@($retiredCase.From) + @('PreToolUse'))
+    $caseCustomVerdict = Get-VerdictFor $caseCustom
+    Check ($caseHook + ': the old set plus one event is custom, never migrated') ($caseCustomVerdict.Status -ne 'migrate') ($caseCustomVerdict.Status + ' / ' + $caseCustomVerdict.Detail)
+}
 
 # ---------------------------------------------------------------------------
 Write-Host ''
