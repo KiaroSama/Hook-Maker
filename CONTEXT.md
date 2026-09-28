@@ -99,3 +99,21 @@ allowance, which is the failure this rule exists to prevent.
 What a collected generation leaves behind: enough to recognise a late event from it and reject it as
 retired, and nothing more. Without one, a delayed receipt arriving after collection reads as a brand
 new generation.
+
+## Install command
+
+A command that places a program, runtime, global package, tool, or downloaded model **outside the
+project folder**: `winget install`, `npm i -g`, `pip install` into a non-project interpreter,
+`uv tool install`, `ollama pull`. A project-local install (`npm install` without `-g`, `pip install`
+into the project's own virtual environment) is not one.
+
+## Install target
+
+The directory an install command writes into, as the installer itself would choose it: an explicit
+location option, the tool's own configured setting, or the tool's default.
+
+## Physical path
+
+An install target after every junction and symbolic link on it, including links on its parent
+folders, has been followed to the folder that really holds the bytes. `C:\Users\me\.cache\huggingface`
+whose physical path is `H:\AI\.cache\huggingface` is an install target on `H:`, not on `C:`.

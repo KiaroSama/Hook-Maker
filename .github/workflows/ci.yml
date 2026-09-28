@@ -141,7 +141,7 @@ jobs:
           - name: wizard
             suites: Test-Wizard,Test-ContextHooks,Test-GraphUpdateCheck,Test-TestRunGuard,Test-RunTests,Test-TimingHistory,Test-SyncGroupMerge,Test-CleanupFreshness
           - name: secrets
-            suites: Test-SecretsCheck,Test-IgnoreRulesCheck,Test-GitSyncCheck,Test-AiMemoryCheck,Test-LargeFileCheck,Test-Utf8EncodingCheck,Test-FeatureRequestCheck
+            suites: Test-SecretsCheck,Test-IgnoreRulesCheck,Test-GitSyncCheck,Test-AiMemoryCheck,Test-LargeFileCheck,Test-Utf8EncodingCheck,Test-FeatureRequestCheck,Test-InstallLocationCheck
           - name: hooks
             suites: Test-StopLedger,Test-DocsFreshnessCheck,Test-CloudflareDeploy,Test-DependencyVersionCheck,Test-TestTempCleanup,Test-DependabotCheck,Test-CiStatusCheck,Test-GithubBaselineCheck,Test-AiMemoryLoad,Test-SynapseRulesCheck,Test-SessionSummaryCheck,Test-SpeckitCheck,Test-Generation
     name: suites (${{ matrix.name }})

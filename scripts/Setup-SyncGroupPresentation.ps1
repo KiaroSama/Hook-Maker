@@ -277,7 +277,11 @@ $script:HookMeta = @{
     # Cloudflare-Deploy is deliberately kept LAST among individual hook
     # entries (Order = highest value) per an explicit user requirement, not
     # filesystem/alphabetical order - see Test-Wizard.ps1 for the pinned order.
-    'Cloudflare-Deploy'                = @{ Order = 29; When = 'post'; Text = 'suggests deploying in Cloudflare Workers projects, gated on release readiness' }
+    # Install-Location-Check: last before Cloudflare-Deploy per an explicit user
+    # requirement. PreToolUse only - it reads the install command before it runs
+    # and adds context; it never blocks or approves.
+    'Install-Location-Check'           = @{ Order = 29; When = 'pre'; Text = 'asks for an install path off the system drive'; Events = @('PreToolUse'); Timeout = 10 }
+    'Cloudflare-Deploy'                = @{ Order = 30; When = 'post'; Text = 'suggests deploying in Cloudflare Workers projects, gated on release readiness' }
 }
 # The "[pre-task]" / "[post-task]" tag, colored by phase (a different color than
 # the description, FFmWiz-style, so timing reads at a glance).
