@@ -32,6 +32,9 @@ function New-IsolatedHookCopy {
     New-Item -ItemType Directory -Path $dir -Force | Out-Null
     Copy-HookPackage -Destination $dir
     Copy-Item $HookLib (Join-Path $Work '_hooklib.ps1') -Force
+    # The shared tokenizer is a required sibling of _commandanalysis.ps1 since it
+    # moved to hooks\_commandtokens.ps1; the repository layout keeps it one level up.
+    Copy-Item (Join-Path (Split-Path -Parent $HookLib) '_commandtokens.ps1') (Join-Path $Work '_commandtokens.ps1') -Force
     if ($EnvOverrides.Count -gt 0) {
         $lines = New-Object System.Collections.Generic.List[string]
         foreach ($key in $EnvOverrides.Keys) { [void]$lines.Add($key + '=' + $EnvOverrides[$key]) }
