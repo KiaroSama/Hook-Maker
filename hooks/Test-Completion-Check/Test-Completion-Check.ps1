@@ -750,7 +750,7 @@ function Get-RunClass {
 # the run stops outranking everything else).
 function Test-RunNegativeAccounted {
     param($Run, $AllResults)
-    if ($null -eq $Run.ResultEntry) { return (Test-ObservationSuperseded -Observed $Run.Observed -PairedResults @($obsPairs | ForEach-Object { $_.ResEntry }) -StateFp $stateFingerprint) }
+    if ($null -eq $Run.ResultEntry) { return (Test-ObservationSuperseded -Observed $Run.Observed -Pairs $obsPairs.ToArray() -StateFp $stateFingerprint) }
     $doc = $Run.ResultEntry.Doc
     $path = $Run.ResultEntry.Path
     $ik = Get-ResultIncidentKey -Doc $doc -Path $path
