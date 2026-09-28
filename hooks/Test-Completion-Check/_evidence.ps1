@@ -185,15 +185,20 @@ function Test-ResultSuperseded {
 # the guarded runner") could not clear it and only the evidence window did.
 # Pairing is the guard: an unpaired green result - another run's, or a
 # hand-typed one with an empty fingerprint - never clears anything.
+# LATER means the replacement was itself OBSERVED after the orphan: two runs
+# started together are concurrent, and one passing says nothing about the other
+# (a run still going has its active marker, which blocks on its own).
 function Test-ObservationSuperseded {
-    param($Observed, $PairedResults, [string]$StateFp)
+    param($Observed, $Pairs, [string]$StateFp)
     if ($null -eq $Observed -or [string]::IsNullOrWhiteSpace($StateFp)) { return $false }
     $cmd = [string](Get-Field $Observed 'commandFingerprint')
     $observedAt = ConvertTo-UtcTime (Get-Field $Observed 'observedUtc')
     if ($cmd -eq '' -or $null -eq $observedAt) { return $false }
-    foreach ($re in @($PairedResults)) {
-        if ($null -eq $re) { continue }
-        $doc = $re.Doc
+    foreach ($pair in @($Pairs)) {
+        if ($null -eq $pair -or $null -eq $pair.ResEntry) { continue }
+        $pairObservedAt = ConvertTo-UtcTime (Get-Field $pair.Observed 'observedUtc')
+        if ($null -eq $pairObservedAt -or $pairObservedAt -le $observedAt) { continue }
+        $doc = $pair.ResEntry.Doc
         if (([string](Get-Field $doc 'overall')).ToLowerInvariant() -ne 'ok') { continue }
         if (@(@(Get-Field $doc 'leakedProcessIds') | Where-Object { $null -ne $_ -and [string]$_ -ne '' }).Count -gt 0) { continue }
         if (([string](Get-Field $doc 'commandFingerprint')) -ne $cmd) { continue }
