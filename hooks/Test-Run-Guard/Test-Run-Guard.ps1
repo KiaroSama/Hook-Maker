@@ -420,6 +420,7 @@ if ($eventName -eq 'PreToolUse') {
         }
     }
 
+    if ($verdict.Kind -eq 'none') { if ($configNote -ne '') { Write-Advisory -EventName 'PreToolUse' -Message $configNote.Trim() }; exit 0 }
     $stateFingerprint = Get-StateFingerprintFor -ProjectRoot $projectRoot
     # Every recognised test command is handed to Test-Completion-Check, whether
     # it is about to run guarded, run unguarded, or be blocked here. Silent -
@@ -456,8 +457,7 @@ if ($eventName -eq 'PreToolUse') {
             -RunId $runId -RunIdControlled $runIdControlled -CommandFingerprint $identity.CommandFingerprint -ProjectFingerprint $projFp
     }
     if ($verdict.Kind -ne 'raw') {
-        # Unrelated, or already bounded. Nothing to say - and an already-guarded
-        # command is never wrapped a second time.
+        # Already bounded: never wrapped a second time. (Unrelated commands left above.)
         if ($configNote -ne '') { Write-Advisory -EventName 'PreToolUse' -Message $configNote.Trim() }
         exit 0
     }

@@ -60,6 +60,27 @@
         Check ('total silence on: ' + $command) ($r.Exit -eq 0 -and $r.Out -eq '' -and $r.Err -eq '') ($r.Out + '|' + $r.Err)
     }
 
+    # An unrelated command must cost no git process: the repository fingerprint
+    # (three git calls) is taken only for a recognised test command. A counting
+    # git.cmd shim first on PATH proves both halves; the second makes the first
+    # load-bearing (the shim is really on the resolution path).
+    Write-Host '--- an unrelated command spawns no git; a recognised one does ---' -ForegroundColor Cyan
+    $gitShimDir = Join-Path $Work 'gitshim'
+    New-Item -ItemType Directory -Path $gitShimDir -Force | Out-Null
+    $gitCount = Join-Path $Work 'gitshim-count.txt'
+    [System.IO.File]::WriteAllText((Join-Path $gitShimDir 'git.cmd'), ('@echo x>>"' + $gitCount + '"' + "`r`n@exit /b 128`r`n"))
+    $savedPath = $env:PATH
+    try {
+        $env:PATH = $gitShimDir + ';' + $savedPath
+        $r = Fire -HookPath $hc.Script -Cwd $Proj -EventName 'PreToolUse' -Command 'echo pytest' -LocalAppData $hc.LocalAppData
+        $unrelatedGit = if (Test-Path -LiteralPath $gitCount) { @(Get-Content -LiteralPath $gitCount).Count } else { 0 }
+        Check 'an unrelated command runs zero git processes' ($r.Exit -eq 0 -and $unrelatedGit -eq 0) ([string]$unrelatedGit)
+        $r = Fire -HookPath $hc.Script -Cwd $Proj -EventName 'PreToolUse' -Command 'pytest -q tests/' -LocalAppData $hc.LocalAppData
+        $recognisedGit = if (Test-Path -LiteralPath $gitCount) { @(Get-Content -LiteralPath $gitCount).Count } else { 0 }
+        Check 'a recognised test command does fingerprint the repository through git' ($recognisedGit -ge 1) ([string]$recognisedGit)
+    }
+    finally { $env:PATH = $savedPath }
+
     # =====================================================================
     Write-Host '--- a recognised RAW command is blocked with a VALID guarded replacement ---' -ForegroundColor Cyan
     $r = Fire -HookPath $hc.Script -Cwd $Proj -EventName 'PreToolUse' -Command 'pytest -q tests/' -LocalAppData $hc.LocalAppData
