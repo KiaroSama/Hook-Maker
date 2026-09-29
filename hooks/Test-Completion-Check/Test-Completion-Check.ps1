@@ -294,75 +294,10 @@ function Test-DdGateShouldReport {
     return $true
 }
 
-# The four durable-memory files a hang/timeout finding may legitimately be
-# recorded in (AI Context Memory Policy). Any of them growing satisfies the
-# requirement - the hook never dictates which one.
-$script:NoteFiles = @('.ai\BUGS.md', '.ai\TESTING_NOTES.md', '.ai\COMMANDS.md', '.ai\LESSON.md')
-# Net bytes a durable note must add before it counts. A bare acknowledgement
-# ("done", "n/a", "fixed") cannot clear this; a real note trivially does.
-$script:MinNoteBytes = 80
-# Each incident's note must carry THIS exact tag line so one note can no longer
-# resolve two distinct incidents by byte growth alone (a single 80-byte note used
-# to clear every incident that shared its baseline). The block message tells the
-# agent the exact string to write; resolution requires the marker AND the byte
-# floor, so a bare tag with no substance still does not count.
-$script:IncidentTagPrefix = 'Test incident: '
-function Get-IncidentTag { param([string]$Key) return ($script:IncidentTagPrefix + $Key) }
+# The durable-note and incident-tag helpers: a REQUIRED sibling (the gate cannot
+# decide a note obligation without them).
+. (Join-Path $PSScriptRoot '_notes.ps1')
 
-# The stable incident identity of an ABANDONED active marker (a run whose owner
-# died without recording a result). Derived only from fields the marker file
-# already carries and never rewrites, so the same leftover hashes to the same key
-# on every later Stop - which is what lets one tagged note resolve it for good
-# instead of the finding re-appearing under a new identity each time. Namespaced
-# by the 'abandoned|' prefix so it can never collide with a result incident key.
-function Get-AbandonedIncidentKey {
-    param($Doc)
-    $rid = [string](Get-Field $Doc 'runId')
-    $opid = [string](Get-Field $Doc 'ownerPid')
-    $created = [string](Get-Field $Doc 'markerCreatedUtc')
-    return (Get-ShortHash ('abandoned|' + $rid + '|' + $opid + '|' + $created))
-}
-
-function Get-NoteBytes {
-    param([string]$Root)
-    $total = 0L
-    foreach ($relative in $script:NoteFiles) {
-        $path = Join-Path $Root $relative
-        try {
-            if (Test-Path -LiteralPath $path -PathType Leaf) { $total += (Get-Item -LiteralPath $path -Force).Length }
-        }
-        catch { }
-    }
-    return $total
-}
-
-# Concatenated text of the four durable-note files (empty when none exist). Read
-# so an incident's own tag can be searched for; a read failure yields '' rather
-# than throwing, so a locked/absent file never crashes the gate.
-function Get-NoteText {
-    param([string]$Root)
-    $sb = New-Object System.Text.StringBuilder
-    foreach ($relative in $script:NoteFiles) {
-        $path = Join-Path $Root $relative
-        try {
-            if (Test-Path -LiteralPath $path -PathType Leaf) { [void]$sb.AppendLine([System.IO.File]::ReadAllText($path, [System.Text.Encoding]::UTF8)) }
-        }
-        catch { }
-    }
-    return $sb.ToString()
-}
-
-# Is this incident's own tag ("Test incident: <key>") present in the .ai/ notes?
-# Whitespace after the colon is tolerated; the key is regex-escaped so it matches
-# literally. This is the per-incident marker that makes two notes genuinely
-# required for two incidents.
-function Test-NoteTagPresent {
-    param([string]$Root, [string]$Key)
-    if ([string]::IsNullOrWhiteSpace($Key)) { return $false }
-    $text = Get-NoteText -Root $Root
-    if ([string]::IsNullOrWhiteSpace($text)) { return $false }
-    return ($text -match ('(?m)^[ \t]*Test incident:[ \t]*' + [regex]::Escape($Key) + '[ \t]*\r?$'))
-}
 
 # Normalises a timestamp read back out of JSON to a genuine UTC DateTime.
 #
@@ -716,84 +651,10 @@ foreach ($re in $resultEntries) {
     [void]$runs.Add([pscustomobject]@{ Observed = $null; ResultEntry = $re; SameCmdEntry = $null; HasObserved = $false; Matches = $true })
 }
 
-# ---- classify + select the representative (worst) run ----
-function Test-ResultFresh {
-    param($ResEntry)
-    if ($null -eq $ResEntry) { return $false }
-    $t = Get-ResultRecordedTime -Doc $ResEntry.Doc -Path $ResEntry.Path
-    if ($null -eq $t) { return $false }
-    return (([DateTime]::UtcNow - $t).TotalMinutes -lt $script:evidenceMinutes)
-}
-function Get-RunClass {
-    param($Run)
-    $re = $Run.ResultEntry
-    if ($null -ne $re) {
-        $ov = ([string](Get-Field $re.Doc 'overall')).ToLowerInvariant()
-        $lk = @(@(Get-Field $re.Doc 'leakedProcessIds') | Where-Object { $null -ne $_ -and [string]$_ -ne '' })
-        if ($ov -eq 'terminated' -or $lk.Count -gt 0) { return 'incident' }
-        if ($ov -eq 'failed' -and (Test-ResultFresh $re)) { return 'failed' }
-        if ($ov -eq 'ok' -and (Test-ResultFresh $re) -and $lk.Count -eq 0) { return 'clean' }
-        return 'unproven'
-    }
-    return 'noresult'
-}
-# A run whose negative finding is ALREADY ACCOUNTED FOR must not be chosen as a
-# blocking representative (C4). Accounted for means EITHER its incident note was
-# already recorded (its key is in resolvedIncidents) OR it is SUPERSEDED by a
-# strictly-newer clean ok run for the same command/state. This is what lets a green
-# rerun win when an environmental problem is fixed WITHOUT a source change (same
-# fingerprint): the old incident no longer outranks the clean rerun, and it breaks
-# the deadlock where the terminated run's own case-2/3 block would otherwise fire
-# before case 6 could ever process the durable note. A genuinely unresolved,
-# un-superseded incident is NOT excluded and still blocks; the durable-note
-# obligation registered on the first sighting still stands (case 6 enforces it once
-# the run stops outranking everything else).
-function Test-RunNegativeAccounted {
-    param($Run, $AllResults)
-    if ($null -eq $Run.ResultEntry) { return (Test-ObservationSuperseded -Observed $Run.Observed -Pairs $obsPairs.ToArray() -StateFp $stateFingerprint) }
-    $doc = $Run.ResultEntry.Doc
-    $path = $Run.ResultEntry.Path
-    $ik = Get-ResultIncidentKey -Doc $doc -Path $path
-    if (Test-ResultIncidentResolved -Doc $Run.ResultEntry.Doc -Path $path) { return $true }
-    return (Test-ResultSuperseded -NegDoc $doc -NegTime (Get-ResultRecordedTime -Doc $doc -Path $path) -AllResults $AllResults)
-}
-$classified = @($runs | ForEach-Object { [pscustomobject]@{ Run = $_; Class = (Get-RunClass $_) } })
-
-# ---- D2: register the durable-note obligation on FIRST SIGHTING -------------
-# For EVERY current-state incident, the note obligation is registered the first
-# time it is seen - BEFORE the supersede/resolve exclusion is applied to the block
-# decision. A supersede lifts only the RESULT-level block (case 2/3); it never
-# lifts the note requirement. So a hang that self-heals into green BEFORE any Stop
-# still owes its lesson once (case 6 enforces it). Only ACCOUNTED (already
-# superseded) incidents are registered here; an un-superseded incident is left to
-# register when it becomes the blocking representative (case 2/3), which spaces two
-# concurrent incidents' note baselines across Stops so each demands a DISTINCT note.
-# ponytail: two incidents self-healing within ONE Stop would share a baseline and
-# one note could clear both - the byte-growth heuristic's inherent limit; sequential
-# real-world surfacing gives distinct baselines. Upgrade path: per-incident note tags.
-foreach ($cl in $classified) {
-    if ($cl.Class -ne 'incident' -or $null -eq $cl.Run.ResultEntry) { continue }
-    $ikSeen = Get-ResultIncidentKey -Doc $cl.Run.ResultEntry.Doc -Path $cl.Run.ResultEntry.Path
-    if ($ikSeen -eq '' -or (Test-ResultIncidentResolved -Doc $cl.Run.ResultEntry.Doc -Path $cl.Run.ResultEntry.Path) -or $script:pendingNotes.Contains($ikSeen)) { continue }
-    if (Test-RunNegativeAccounted -Run $cl.Run -AllResults $resultEntries) {
-        Register-PendingNote -Key $ikSeen -Reason (Get-IncidentReasonFromDoc $cl.Run.ResultEntry.Doc)
-    }
-}
-
-$rep = $null
-foreach ($wanted in @('incident', 'failed')) {
-    $m = @($classified | Where-Object { $_.Class -eq $wanted -and -not (Test-RunNegativeAccounted -Run $_.Run -AllResults $resultEntries) })
-    if ($m.Count -gt 0) { $rep = $m[0]; break }
-}
-if ($null -eq $rep) {
-    $m = @($classified | Where-Object { $_.Run.HasObserved -and $_.Class -ne 'clean' -and -not (Test-RunNegativeAccounted -Run $_.Run -AllResults $resultEntries) })   # condition 5: observed, not satisfied
-    if ($m.Count -gt 0) { $rep = $m[0] }
-}
-if ($null -eq $rep) {
-    $m = @($classified | Where-Object { $_.Class -eq 'clean' })
-    if ($m.Count -gt 0) { $rep = $m[0] }
-}
-if ($null -eq $rep -and $classified.Count -gt 0) { $rep = $classified[0] }
+# ---- classify + select the representative (worst) run: _runclassify.ps1 (REQUIRED) ----
+. (Join-Path $PSScriptRoot '_runclassify.ps1')
+$selection = Select-RepresentativeRun -Runs $runs
+$classified = $selection.Classified; $rep = $selection.Rep
 
 # ---- project the representative onto the single-run variables ----
 $result = $null
