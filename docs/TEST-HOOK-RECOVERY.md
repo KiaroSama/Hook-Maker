@@ -42,6 +42,17 @@ command green, even though the fix changed the working tree, and a receipt writt
 without a fingerprint at all is no longer permanently unclearable. See
 `docs/adr/0001-supersede-by-project-not-tree-state.md`.
 
+Since 2026-09-29 an observation that never received its receipt - a guarded run started
+without the full identity the hook printed (`-RunId`, `-ProjectFingerprint`, `-ResultPath`),
+or a run killed before it could write one - no longer blocks for ever: it is superseded by a
+LATER guarded run of the same command in the same project state that is paired to its own
+observation, finished ok and left no process behind. A run observed at the same moment
+(started together), an older run, a failed or leaking run, an unpaired run, or a run of a
+different command never clears it. The practical rule: never hand-type the guarded runner
+command, and never append a pipe or redirection to it; run exactly the replacement
+`Test-Run-Guard` prints, because that is the one carrying the identity a later receipt can
+pair with.
+
 The manual association below is now only for the case a re-run cannot reproduce:
 a repaired wrapper whose COMMAND identity legitimately changed. An operator who has
 independently verified equivalent test scope can use:
@@ -62,7 +73,7 @@ not certify the current product state or resolve any other incident.
 
 Focused checks use the existing guarded runner around
 `scripts/Test-TestRunGuard.ps1` and `scripts/Test-TestCompletionCheck.ps1`.
-The latter supports `-ActivationOnly` and `-RecoveryOnly` for scoped regressions.
+The latter supports `-ActivationOnly`, `-RecoveryOnly`, `-OrphanOnly` and `-SurvivorsOnly` for scoped regressions; `-OrphanOnly` runs the five unpaired-observation cases alone.
 
 The activation regression reproduced 28 failing checks before repair, then passed
 50 focused checks across PowerShell 7 and Windows PowerShell 5.1. The combined
