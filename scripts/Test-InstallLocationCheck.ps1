@@ -151,6 +151,22 @@ try {
         @($script:QueryCalls | Where-Object { $_ -eq 'python-user|py|-3.12' }).Count -ge 1 -and @($script:QueryCalls | Where-Object { $_ -like 'npm-prefix|*' }).Count -ge 1) ($script:QueryCalls -join ', ')
 
     # =====================================================================
+    Write-Host '--- an explicit interpreter path is never executed, only a bare name is queried ---' -ForegroundColor Cyan
+    $before = $script:QueryCalls.Count
+    $offC = @(Get-Advice 'D:\downloads\python.exe -m pip install requests')
+    Check 'explicit path off C: is silent and never queried' ($offC.Count -eq 0 -and $script:QueryCalls.Count -eq $before) ($script:QueryCalls -join ', ')
+    $venvC = @(Get-Advice 'C:\Tools\venv\Scripts\python.exe -m pip install requests')
+    Check 'explicit venv interpreter on C: fires with the Scripts parent as target, never queried' (
+        $venvC.Count -eq 1 -and $venvC[0] -match 'requests into C:\\Tools\\venv on C:' -and $script:QueryCalls.Count -eq $before) ($venvC -join ' || ')
+    $projectDrive = [System.IO.Path]::GetPathRoot($Project).TrimEnd('\')
+    $relative = $(try { $script:InstallLocationSystemDrive = $projectDrive; @(Get-Advice '..\tools\py.exe -m pip install x') } finally { $script:InstallLocationSystemDrive = 'C:' })
+    Check 'a relative interpreter path outside the project resolves against the project root, never queried' (
+        $relative.Count -eq 1 -and $relative[0] -match ([regex]::Escape((Join-Path $Work 'tools'))) -and $script:QueryCalls.Count -eq $before) ($relative -join ' || ')
+    $null = Get-Advice 'python -m pip install requests'
+    Check 'a bare interpreter name is still queried once (PATH resolution, by design)' (
+        $script:QueryCalls.Count -eq $before + 1 -and $script:QueryCalls[$before] -eq 'python-prefix|python|') ($script:QueryCalls -join ', ')
+
+    # =====================================================================
     Write-Host '--- physical path: a real junction is followed, through a parent too ---' -ForegroundColor Cyan
     $script:InstallLocationResolver = $null
     $realTarget = Join-Path $Work 'real target'

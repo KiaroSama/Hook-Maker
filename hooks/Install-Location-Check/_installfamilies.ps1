@@ -112,6 +112,16 @@ function Get-PipFindings {
             $full = $Interpreter
             if (-not [System.IO.Path]::IsPathRooted($full)) { $full = Join-Path $ProjectRoot $full }
             if (Test-PathInside -Candidate $full -Parent $ProjectRoot) { return @() }
+            # An explicit interpreter path is DATA from a command the user has not
+            # approved yet: never execute it. The install target is derivable from
+            # where it lives - a base install's python.exe sits in the prefix, a
+            # virtual environment's in <prefix>\Scripts - and the physical path of
+            # that target decides the drive. --user goes to USER_BASE, whose
+            # documented Windows default is %APPDATA%\Python whatever the interpreter.
+            $exeDir = Split-Path -Parent ([System.IO.Path]::GetFullPath($full))
+            $target = $(if ((Split-Path -Leaf $exeDir) -ieq 'Scripts') { Split-Path -Parent $exeDir } else { $exeDir })
+            if (Test-InstallFlag -Tokens $Rest -Names @('--user')) { $target = Join-Path (Get-InstallEnvPath @('APPDATA') '') 'Python' }
+            return @($packages | ForEach-Object { New-InstallFinding -Family 'pip' -Package $_ -Target $target -Query $null })
         }
         $venv = [string]$env:VIRTUAL_ENV
         if (-not [string]::IsNullOrWhiteSpace($venv) -and (Test-PathInside -Candidate $venv -Parent $ProjectRoot)) { return @() }
