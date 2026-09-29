@@ -413,19 +413,19 @@ if ($sha7.Length -gt 7) { $sha7 = $sha7.Substring(0, 7) }
 $config = Read-HookEnv (Join-Path $PSScriptRoot '.env')
 $pendingCooldown = 3
 if ($config.ContainsKey('PENDING_COOLDOWN_MINUTES')) {
-    try { $pendingCooldown = [int]$config['PENDING_COOLDOWN_MINUTES'] } catch { }
+    $parsedSetting = 0; if ([int]::TryParse([string]$config['PENDING_COOLDOWN_MINUTES'], [ref]$parsedSetting) -and $parsedSetting -ge 0 -and $parsedSetting -le 10080) { $pendingCooldown = $parsedSetting }
 }
 $failureCooldown = 30
 if ($config.ContainsKey('FAILURE_COOLDOWN_MINUTES')) {
-    try { $failureCooldown = [int]$config['FAILURE_COOLDOWN_MINUTES'] } catch { }
+    $parsedSetting = 0; if ([int]::TryParse([string]$config['FAILURE_COOLDOWN_MINUTES'], [ref]$parsedSetting) -and $parsedSetting -ge 0 -and $parsedSetting -le 10080) { $failureCooldown = $parsedSetting }
 }
 $externalBlockerTtlMinutes = 1440
 if ($config.ContainsKey('EXTERNAL_BLOCKER_TTL_MINUTES')) {
-    try { $externalBlockerTtlMinutes = [int]$config['EXTERNAL_BLOCKER_TTL_MINUTES'] } catch { }
+    $parsedSetting = 0; if ([int]::TryParse([string]$config['EXTERNAL_BLOCKER_TTL_MINUTES'], [ref]$parsedSetting) -and $parsedSetting -ge 0 -and $parsedSetting -le 10080) { $externalBlockerTtlMinutes = $parsedSetting }
 }
 $externalBlockerRecheckMinutes = 15
 if ($config.ContainsKey('EXTERNAL_BLOCKER_RECHECK_MINUTES')) {
-    try { $externalBlockerRecheckMinutes = [int]$config['EXTERNAL_BLOCKER_RECHECK_MINUTES'] } catch { }
+    $parsedSetting = 0; if ([int]::TryParse([string]$config['EXTERNAL_BLOCKER_RECHECK_MINUTES'], [ref]$parsedSetting) -and $parsedSetting -ge 0 -and $parsedSetting -le 1440) { $externalBlockerRecheckMinutes = $parsedSetting }
 }
 $ghBudgetSeconds = 40
 if ($config.ContainsKey('GH_BUDGET_SECONDS')) { $parsedBudget = 0; if ([int]::TryParse([string]$config['GH_BUDGET_SECONDS'], [ref]$parsedBudget) -and $parsedBudget -gt 0) { $ghBudgetSeconds = $parsedBudget } }

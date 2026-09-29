@@ -106,9 +106,9 @@ if ([string]::IsNullOrWhiteSpace($cwd) -or -not (Test-Path -LiteralPath $cwd -Pa
 
 $config = Read-HookEnv (Join-Path $PSScriptRoot '.env')
 $cooldownMinutes = 10080
-if ($config.ContainsKey('COOLDOWN_MINUTES')) { try { $cooldownMinutes = [int]$config['COOLDOWN_MINUTES'] } catch { } }
+if ($config.ContainsKey('COOLDOWN_MINUTES')) { $parsedSetting = 0; if ([int]::TryParse([string]$config['COOLDOWN_MINUTES'], [ref]$parsedSetting) -and $parsedSetting -ge 0 -and $parsedSetting -le 10080) { $cooldownMinutes = $parsedSetting } }
 $maxFindings = 12
-if ($config.ContainsKey('MAX_FINDINGS')) { try { $maxFindings = [int]$config['MAX_FINDINGS'] } catch { } }
+if ($config.ContainsKey('MAX_FINDINGS')) { $parsedSetting = 0; if ([int]::TryParse([string]$config['MAX_FINDINGS'], [ref]$parsedSetting) -and $parsedSetting -ge 1 -and $parsedSetting -le 1000) { $maxFindings = $parsedSetting } }
 $closingReminder = $true
 if ($config.ContainsKey('CLOSING_REMINDER')) {
     $raw = ([string]$config['CLOSING_REMINDER']).Trim()
