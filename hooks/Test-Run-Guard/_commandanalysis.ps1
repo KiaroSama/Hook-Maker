@@ -253,14 +253,16 @@ function Get-GuardedInvocationIdentity {
         if ($parseErrors.Count -gt 0) { return $identity }
         $candidates = New-Object System.Collections.Generic.List[object]
         foreach ($command in @($ast.FindAll({param($n) $n -is [System.Management.Automation.Language.CommandAst]}, $false))) {
-            $program = [string]$command.GetCommandName()
-            if ($program -eq '') { continue }
             $elements = @($command.CommandElements)
+            # The printed replacement repeats POSIX assignment words (CI=1 pwsh ...).
+            $lead = 0; while ($lead -lt $elements.Count - 1 -and $elements[$lead].Extent.Text -match '^[A-Za-z_][A-Za-z0-9_]*=') { $lead++ }
+            $program = if ($lead -gt 0) { $elements[$lead].Extent.Text.Trim([char[]]"`"'") } else { [string]$command.GetCommandName() }
+            if ($program -eq '') { continue }
             if ((Get-ProgramName $program) -eq 'run-tests-guarded.ps1') {
-                [void]$candidates.Add([pscustomobject]@{ Elements = $elements; Start = 1 })
+                [void]$candidates.Add([pscustomobject]@{ Elements = $elements; Start = ($lead + 1) })
             }
             elseif ($script:PowerShellPrograms -contains (Get-ProgramName $program)) {
-                for ($i = 1; $i -lt $elements.Count - 1; $i++) {
+                for ($i = $lead + 1; $i -lt $elements.Count - 1; $i++) {
                     if ($elements[$i] -isnot [System.Management.Automation.Language.CommandParameterAst] -or $elements[$i].ParameterName -ne 'File') { continue }
                     $target = Get-GuardedLiteralValue $elements[$i + 1]
                     if ($target.Known -and $target.Values.Count -eq 1 -and (Get-ProgramName $target.Values[0]) -eq 'run-tests-guarded.ps1') {
@@ -530,18 +532,10 @@ function Get-RecognizedTestCommand {
         }
     }
 
-    # Direct PowerShell test-script execution, with no `pwsh -File` wrapper:
-    # `.\scripts\Test-Wizard.ps1`, `./scripts/Run-Tests.ps1`, an absolute path
-    # ending in the same, a quoted path (the tokenizer already unquoted it), and
-    # the call-operator form `& ".\scripts\Test-RulesCheck.ps1"` (Split-Command-
-    # Segments treats `&` as a separator, so that segment arrives here as just the
-    # script path). Recognised ONLY when the leaf is EXACTLY run-tests.ps1 or
-    # matches Test-<safe>.ps1 - Get-ProgramName keeps the .ps1 extension, so a
-    # bare program named "test-foo" (no .ps1) and a path merely CONTAINING "test"
-    # (generate-test-fixtures.ps1, contest.ps1, testdata\x.ps1) never match.
-    # A .ps1 cannot be launched directly by ProcessStartInfo, so it is normalised
-    # to `pwsh -NoLogo -NoProfile -File <script> <original args>`, exactly the
-    # shape the guarded runner and the fingerprint both consume.
+    # Direct PowerShell test-script execution with no `pwsh -File` wrapper (also
+    # `& ".\x.ps1"`: `&` is a segment separator). Only a leaf EXACTLY run-tests.ps1
+    # or Test-<safe>.ps1 counts, so generate-test-fixtures.ps1 or testdata\x.ps1
+    # never match. ProcessStartInfo cannot launch a .ps1, hence the pwsh -File shape.
     if ($label -eq '' -and -not (Test-IsOwnHookScript $tokens[0])) {
         $leaf = Get-ProgramName $tokens[0]
         if ($leaf -eq 'run-tests.ps1' -or $leaf -match '^test-[a-z0-9._-]+\.ps1$') {
@@ -583,6 +577,11 @@ function Get-CommandVerdict {
         $segmentTokens = @($segment)
         if ($segmentTokens.Count -eq 0) { continue }
         $segmentText = ($segmentTokens -join ' ')
+        # POSIX: leading NAME=value words are assignments, never the command.
+        # `CI=1 pytest` runs pytest; `F=x.ps1; rm $F` runs nothing here.
+        $assignments = @()
+        while ($segmentTokens.Count -gt 0 -and $segmentTokens[0] -match '^[A-Za-z_][A-Za-z0-9_]*=') { $assignments += $segmentTokens[0]; $segmentTokens = @($segmentTokens | Select-Object -Skip 1) }
+        if ($segmentTokens.Count -eq 0) { continue }
         $skip = $false
         foreach ($fragment in @($NeverGuard)) {
             if ($segmentText.IndexOf($fragment, [System.StringComparison]::OrdinalIgnoreCase) -ge 0) { $skip = $true; break }
@@ -591,6 +590,7 @@ function Get-CommandVerdict {
         if (Test-SegmentIsGuarded -Tokens $segmentTokens) { $guardedSeen = $true; continue }
         $recognized = Get-RecognizedTestCommand -Tokens $segmentTokens -ExtraFragments $ExtraFragments
         if ($null -ne $recognized) {
+            $recognized | Add-Member -NotePropertyName 'Assignments' -NotePropertyValue @($assignments) -Force
             return [pscustomobject]@{ Kind = 'raw'; Command = $recognized }
         }
     }
@@ -618,28 +618,27 @@ function New-GuardedInvocation {
         [int]$MaxWorkers,
         [string]$ResultPath,
         [string]$RunId,
-        [string]$ProjectFingerprint
+        [string]$ProjectFingerprint,
+        [string[]]$AssignmentPrefix = @()
     )
-    # -InputObject with a typed [string[]], NOT a piped unary comma.
-    #
-    # The comma form was host-dependent, and this hook runs under whichever host
-    # the client registered - by default powershell.exe, i.e. 5.1:
-    #   pwsh 7 : , @('-m','pytest') | ConvertTo-Json  ->  ["-m","pytest"]
-    #   5.1    : same expression                      ->  {"value":["-m","pytest"],"Count":2}
-    # 5.1 wraps the comma-built array in a PSObject and serializes the WRAPPER's
-    # value/Count properties. The runner then refuses its own suggested command
-    # with "-ArgumentsJson must be a JSON ARRAY" - so on a 5.1-hosted install the
-    # replacement this hook prints could never work, for any argument count.
-    #
-    # -InputObject passes the array as ONE argument, so nothing enumerates and no
-    # wrapper is introduced; the [string[]] cast keeps a single element an array.
-    # Verified on both hosts for 0, 1, 2 and space-bearing arguments.
+    # -InputObject with a typed [string[]], NOT a piped unary comma: on 5.1 (the
+    # default host) `, @('-m','pytest') | ConvertTo-Json` serializes a PSObject
+    # wrapper ({"value":[...],"Count":2}) and the runner refuses its own suggested
+    # command. The cast keeps a single element an array. Verified on both hosts.
     $json = ConvertTo-Json -InputObject ([string[]]@($Arguments)) -Compress
     if ($null -eq $json) { $json = '[]' }
     # Quoting only - the JSON is data for ConvertFrom-Json on the other side.
     $quotedJson = "'" + $json.Replace("'", "''") + "'"
     $parts = New-Object System.Collections.Generic.List[string]
-    [void]$parts.Add('pwsh -NoLogo -NoProfile -File "' + $RunnerPath + '"')
+    $prefix = ''
+    foreach ($word in @($AssignmentPrefix)) {
+        $eq = $word.IndexOf('=')
+        $name = $word.Substring(0, $eq); $value = $word.Substring($eq + 1)
+        # The tokenizer removed the user's quotes; put safe ones back for the shell.
+        if ($value -match '[^A-Za-z0-9_./:\\-]') { $value = "'" + $value.Replace("'", "'\''") + "'" }
+        $prefix += $name + '=' + $value + ' '
+    }
+    [void]$parts.Add($prefix + 'pwsh -NoLogo -NoProfile -File "' + $RunnerPath + '"')
     [void]$parts.Add('-FilePath "' + $FilePath + '"')
     [void]$parts.Add('-ArgumentsJson ' + $quotedJson)
     [void]$parts.Add('-TimeoutSeconds ' + $WallSeconds)
