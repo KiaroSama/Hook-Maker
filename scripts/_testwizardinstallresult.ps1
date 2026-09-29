@@ -20,7 +20,7 @@
     Check 'sync group: the failures are summarised' ($rGroup.Out -match '2 install\(s\) did NOT succeed') $rGroup.Out
 
     $resHook = 'ZZZ-InstallResult'
-    $resHookFolder = Join-Path (Join-Path (Split-Path -Parent $PSScriptRoot) 'hooks') $resHook
+    $resHookFolder = Join-Path $WizardHooksDir $resHook
     $resC = New-Proj 'ResultC'; $resD = New-Proj 'ResultD'
     try {
         $rCustom = Invoke-Wizard -Config $cfgRes -StateDir $brokenState -Answers @('1', '2', $resHook, '5', 'y', '', $resC, 'done', 'y', '0', '0')

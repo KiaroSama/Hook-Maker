@@ -61,7 +61,7 @@
     # CUSTOM hooks to the wizard (not in $script:HookMeta), so they render after
     # the management rows with no timing tag and never shift a shipped index.
     # Counting them here is what made this suite fail on someone else's fixture.
-    $allShippedHookCount = @(Get-ChildItem -LiteralPath (Join-Path (Split-Path -Parent $PSScriptRoot) 'hooks') -Directory -ErrorAction SilentlyContinue | Where-Object { $_.Name -ne 'Cross-Project-.ai-Knowledge-Sync' -and $_.Name -notlike 'ZZZ-*' }).Count
+    $allShippedHookCount = @(Get-ChildItem -LiteralPath $WizardHooksDir -Directory -ErrorAction SilentlyContinue | Where-Object { $_.Name -ne 'Cross-Project-.ai-Knowledge-Sync' -and $_.Name -notlike 'ZZZ-*' }).Count
     $preTagCount = @([regex]::Matches($r.Out, '\[pre-task\]')).Count
     $postTagCount = @([regex]::Matches($r.Out, '\[post-task\]')).Count
     $bothTagCount = @([regex]::Matches($r.Out, '\[pre\+post-task\]')).Count
@@ -101,7 +101,7 @@
     # numbers are two spans - shipped 3-31 and custom 37+ - separated by the
     # management rows. A single computed '3-N' claimed 25/26/27 were hooks and
     # left the custom one out; only a fixture with a custom hook can catch that.
-    $spanHook = Join-Path (Join-Path (Split-Path -Parent $PSScriptRoot) 'hooks') 'ZZZ-MenuSpan'
+    $spanHook = Join-Path $WizardHooksDir 'ZZZ-MenuSpan'
     try {
         New-Item -ItemType Directory -Path $spanHook -Force | Out-Null
         [System.IO.File]::WriteAllText((Join-Path $spanHook 'ZZZ-MenuSpan.ps1'), '# span fixture', (New-Object System.Text.UTF8Encoding $false))
@@ -123,7 +123,7 @@
         # same numbers with it in place: both must be identical to the clean
         # render. These three ride on the existing fixture on purpose (a second
         # wizard spawn buys nothing) - keep them if that block is ever reworked.
-        $spanShippedCount = @(Get-ChildItem -LiteralPath (Join-Path (Split-Path -Parent $PSScriptRoot) 'hooks') -Directory -ErrorAction SilentlyContinue | Where-Object { $_.Name -ne 'Cross-Project-.ai-Knowledge-Sync' -and $_.Name -notlike 'ZZZ-*' }).Count
+        $spanShippedCount = @(Get-ChildItem -LiteralPath $WizardHooksDir -Directory -ErrorAction SilentlyContinue | Where-Object { $_.Name -ne 'Cross-Project-.ai-Knowledge-Sync' -and $_.Name -notlike 'ZZZ-*' }).Count
         Check 'ZZZ-* immunity: a fixture in the real hooks\ does not change the shipped-hook count' (
             $spanShippedCount -eq $allShippedHookCount) ('withFixture=' + $spanShippedCount + ' clean=' + $allShippedHookCount)
         $spanPre = @([regex]::Matches($rSpan.Out, '\[pre-task\]')).Count
@@ -403,7 +403,7 @@
     # shipped row). A custom hook sits AFTER the three management rows, so
     # counting one here walks the selection straight into "Update installed
     # hooks" and desynchronises every scripted answer that follows.
-    $shippedHookCountForEventsTest = @(Get-ChildItem -LiteralPath (Join-Path (Split-Path -Parent $PSScriptRoot) 'hooks') -Directory -ErrorAction SilentlyContinue | Where-Object { $_.Name -ne 'Cross-Project-.ai-Knowledge-Sync' -and $_.Name -notlike 'ZZZ-*' }).Count
+    $shippedHookCountForEventsTest = @(Get-ChildItem -LiteralPath $WizardHooksDir -Directory -ErrorAction SilentlyContinue | Where-Object { $_.Name -ne 'Cross-Project-.ai-Knowledge-Sync' -and $_.Name -notlike 'ZZZ-*' }).Count
     $cfgRecStop = Join-Path $Work 'cfg-rec-stop.json'; New-Config $cfgRecStop
     $recStopProj = New-Proj 'RecommendedStopOnly'
     # main 1 -> sub 1 -> last individual entry (Cloudflare-Deploy, Stop-only) ->

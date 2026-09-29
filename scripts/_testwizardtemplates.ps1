@@ -7,7 +7,7 @@
 
     Write-Host '--- template 4 (git sync) generates a hook that runs ---' -ForegroundColor Cyan
     $tplName = 'ZZZ-TplGit'
-    $realHooks = Join-Path (Split-Path -Parent $PSScriptRoot) 'hooks'
+    $realHooks = $WizardHooksDir
     $tplFolder = Join-Path $realHooks $tplName
     $cfgTpl = Join-Path $Work 'tpl-config.json'
     New-Config $cfgTpl

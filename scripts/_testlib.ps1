@@ -478,3 +478,21 @@ function Copy-TestRuntimeLibraries {
     }
     Add-SharedRuntimeLibraryArtifacts -ToolRoot $tool -FriendlyName 'TestRuntime'
 }
+
+# A private copy of the tool's hooks\ and scripts\ for suites that count or
+# write under hooks\ (the wizard suites). Running the wizard and installer FROM
+# the copy keeps the installer's package roots consistent (a hook outside
+# <ToolRoot>\hooks would install as a single standalone script) and makes the
+# suite immune to any other suite's fixtures in the shared checkout, which is
+# what used to force Test-Wizard and Test-InstalledHooksMenu to run alone.
+function New-ToolRootCopy {
+    param([Parameter(Mandatory = $true)][string]$Destination)
+    $source = Split-Path -Parent $PSScriptRoot
+    New-Item -ItemType Directory -Path (Join-Path $Destination 'hooks'), (Join-Path $Destination 'scripts') -Force | Out-Null
+    foreach ($item in @(Get-ChildItem -LiteralPath (Join-Path $source 'hooks') -Force | Where-Object { $_.Name -notlike 'ZZZ-*' })) {
+        Copy-Item -LiteralPath $item.FullName -Destination (Join-Path $Destination 'hooks') -Recurse -Force
+    }
+    Copy-Item -Path (Join-Path $source 'scripts\*') -Destination (Join-Path $Destination 'scripts') -Recurse -Force
+    Copy-Item -LiteralPath (Join-Path $source 'sync-hooks.example.json') -Destination $Destination -Force
+    return $Destination
+}

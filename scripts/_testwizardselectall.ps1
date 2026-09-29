@@ -14,7 +14,7 @@
 
     # =====================================================================
     Write-Host '--- Select all hooks (aggregate menu item 1 = sync group + every hook) ---' -ForegroundColor Cyan
-    $RealHooksDir = Join-Path (Split-Path -Parent $PSScriptRoot) 'hooks'
+    $RealHooksDir = $WizardHooksDir
     # TWO different numbers, and conflating them is what let a sibling suite's
     # ZZZ-* fixture (or an aborted run's leftover) break this block:
     #   $hookCount        every hook Select All will configure - shipped AND

@@ -44,6 +44,11 @@ $script:TestPreviewLength = 400
 
 $Work = New-TestWorkspace -Prefix 'hookmaker-wiztest'
 Write-Host ("Workspace: $Work") -ForegroundColor DarkGray
+# The wizard runs from a private copy of the tool, so every fixture this suite
+# writes under hooks\ lands in the copy and no other suite can move its counts.
+$WizardToolRoot = New-ToolRootCopy -Destination (Join-Path $Work 'tool')
+$WizardHooksDir = Join-Path $WizardToolRoot 'hooks'
+$Setup = Join-Path $WizardToolRoot 'scripts\Setup-SyncGroup.ps1'
 # Isolates Install-Hook.ps1's install registry (state\install-registry.json,
 # written whenever the wizard installs anything) away from this real
 # checkout's own registry - shared for the whole file's Invoke-Wizard calls,
