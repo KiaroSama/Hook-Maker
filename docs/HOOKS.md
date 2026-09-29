@@ -39,7 +39,7 @@ them mid-child and leaves the user with no answer at all.
 | [`Graph-Update-Check`](#graph-update-check) | post-task (Stop) | suggests graphify update when the graph is stale |
 | [`Cbm-Read-Check`](#cbm-read-check) | pre-task (SessionStart, UserPromptSubmit) | query the Codebase Memory index before browsing files |
 | [`Cbm-Update-Check`](#cbm-update-check) | post-task (Stop, SubagentStop) | reports a Codebase Memory index lagging behind the code |
-| [`Synapse-Rules-Check`](#synapse-rules-check) | pre-task (SessionStart) + post-task (Stop/SubagentStop) | loads the user's rules from Synapse; asks what to write back |
+| [`Synapse-Rules-Check`](#synapse-rules-check) | pre-task (SessionStart, UserPromptSubmit) + post-task (Stop/SubagentStop) | loads the user's rules from Synapse; reminds once mid-session when files changed unread |
 | [`Session-Summary-Check`](#session-summary-check) | pre-task instructions (SessionStart, UserPromptSubmit); silent observation (Stop, SubagentStop) | asks the closing reply for a done / still-open summary |
 | [`Install-Location-Check`](#install-location-check) | pre-task (PreToolUse) | asks for an install path off the system drive |
 | [`Cloudflare-Deploy`](#cloudflare-deploy) | post-task (Stop) | suggests deploying in Cloudflare Workers projects, gated on release readiness |
@@ -184,11 +184,13 @@ When it does report, it names both timestamps, says to call `index_status` and r
 
 ## `Synapse-Rules-Check`
 
-**Runs:** pre-task (SessionStart) + post-task (Stop/SubagentStop).
+**Runs:** pre-task (SessionStart, UserPromptSubmit) + post-task (Stop/SubagentStop).
 
 Keeps the agent's own operating rules current from the **Synapse** memory store. It is ADVISORY and holds no MCP client of its own — a PowerShell hook cannot call an MCP tool, so it supplies the instruction and the measured settings and the agent does the fetching. **SessionStart** says to call `memory_digest` once with a `tokenBudget`, index the result before reading any of it (the digest returns every memory three times), and read in full only what matches the task; it also carries the retrieval settings that were measured against this store — `minScore` 0.65 unfiltered, `tags: ["project:<slug>"]` to scope, never both together, and how to tell a threshold-clipped hit from noise in the `scoreBreakdown`.
 
 **Stop/SubagentStop** asks the other half: write back what is durable with `memory_write` (an `entityKey` so a new version supersedes the old, plus a `project:` tag), and correct anything the session CONTRADICTED in the same turn — a cleared blocker, a renamed project, a changed environment fact. It detects whether the store was consulted at all from a bounded 256 KB tail of this session's transcript (tool names only; the text is never stored, printed or hashed) plus a session-bound marker, so a long session that read it early still counts.
+
+**UserPromptSubmit** carries one mid-session note, because a Stop advisory reaches the user rather than the model: when the transcript already shows a client-recorded file-changing tool call (`Write`, `Edit`, `MultiEdit`, `NotebookEdit`) and no Synapse read, the agent is told once to call `memory_digest` now — at most once per session, never per prompt (`MID_SESSION_REMINDER=0` turns it off). The Stop note then says plainly when the session changed files unread.
 
 It **never blocks** — it cannot know whether a given session needed the store — and stays completely silent on a machine with no Synapse (`%USERPROFILE%\.synapse\synapse.db`, or `SYNAPSE_HOME` for a non-default layout).
 

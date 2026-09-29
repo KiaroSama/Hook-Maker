@@ -78,6 +78,7 @@ $script:CurrentDefaults = @{
     'Mcp-Usage-Check'       = @('SessionStart', 'UserPromptSubmit', 'Stop', 'SubagentStop')
     'Dependency-Version-Check' = @('SessionStart', 'UserPromptSubmit', 'Stop', 'SubagentStop')
     'Utf8-Encoding-Check'   = @('SessionStart', 'Stop', 'SubagentStop')
+    'Synapse-Rules-Check'   = @('SessionStart', 'UserPromptSubmit', 'Stop', 'SubagentStop')
     'Fixture-Unknown-Check' = @()
 }
 function Get-HookRecommendedEvents {
@@ -114,7 +115,7 @@ Copy-TestRuntimeLibraries -SourceHookLib $HookLib -Destination (Join-Path $Fixtu
 # workspace. 'Fixture-Unknown-Check' exists only to give one case a hook whose
 # current default the resolver cannot answer for.
 $HookName = 'Session-Summary-Check'
-foreach ($fixtureHook in @($HookName, 'Git-Sync-Check', 'Skills-Check', 'Rules-Check', 'Mcp-Usage-Check', 'Dependency-Version-Check', 'Utf8-Encoding-Check', 'Fixture-Unknown-Check')) {
+foreach ($fixtureHook in @($HookName, 'Git-Sync-Check', 'Skills-Check', 'Rules-Check', 'Mcp-Usage-Check', 'Dependency-Version-Check', 'Utf8-Encoding-Check', 'Synapse-Rules-Check', 'Fixture-Unknown-Check')) {
     $dir = Join-Path $FixtureHooksDir $fixtureHook
     New-Item -ItemType Directory -Path $dir -Force | Out-Null
     Set-Content -LiteralPath (Join-Path $dir ($fixtureHook + '.ps1')) -Value "# fixture hook`nexit 0`n" -Encoding UTF8
@@ -247,7 +248,7 @@ $gitSyncVerdict = Get-VerdictFor $gitSyncRetired
 Check 'Git-Sync-Check: the retired default without PreToolUse migrates by v3 to the current set' (
     $gitSyncVerdict.Status -eq 'migrate' -and $gitSyncVerdict.Version -eq 3 -and
     (Test-EventSetEqual $gitSyncVerdict.Events @('SessionStart', 'PreToolUse', 'Stop', 'SubagentStop'))) ($gitSyncVerdict.Status + ' / ' + $gitSyncVerdict.Detail)
-# v4-v8: five hooks whose older shipped default never received a migration, so
+# v4-v9: six hooks whose older shipped default never received a migration, so
 # their Stop/SubagentStop half never ran on an existing install. The exact old
 # set migrates; one event more is a user's choice and stays custom.
 foreach ($retiredCase in @(
@@ -255,7 +256,8 @@ foreach ($retiredCase in @(
         @{ Hook = 'Rules-Check'; Version = 5; From = @('SessionStart', 'UserPromptSubmit') },
         @{ Hook = 'Mcp-Usage-Check'; Version = 6; From = @('SessionStart', 'UserPromptSubmit') },
         @{ Hook = 'Dependency-Version-Check'; Version = 7; From = @('SessionStart', 'UserPromptSubmit') },
-        @{ Hook = 'Utf8-Encoding-Check'; Version = 8; From = @('SessionStart', 'Stop') })) {
+        @{ Hook = 'Utf8-Encoding-Check'; Version = 8; From = @('SessionStart', 'Stop') },
+        @{ Hook = 'Synapse-Rules-Check'; Version = 9; From = @('SessionStart', 'Stop', 'SubagentStop') })) {
     $caseHook = [string]$retiredCase.Hook
     $caseFixture = New-InstalledFixture -Hook $caseHook -ProjectName ('retired-' + $caseHook.ToLowerInvariant()) -RecordedEvents @($retiredCase.From)
     $caseVerdict = Get-VerdictFor $caseFixture

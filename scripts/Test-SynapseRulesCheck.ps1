@@ -120,10 +120,26 @@ try {
     Check 'start: nothing is written to stderr' ($rStart.Err -eq '') $rStart.Err
 
     Write-Host ''
-    Write-Host '--- an unrelated event is not this hook''s business ---' -ForegroundColor Cyan
-    $rOther = Fire -Cwd $proj -EventName 'UserPromptSubmit'
-    Check 'UserPromptSubmit is ignored (the digest is a once-per-session read)' (
-        $rOther.Exit -eq 0 -and $rOther.Out -eq '') ($rOther.Out + $rOther.Err)
+    Write-Host '--- UserPromptSubmit: one mid-session note, only after unread file changes ---' -ForegroundColor Cyan
+    $wroteUnread = New-Transcript 'transcript-wrote.jsonl' '{"type":"tool_use","name":"Write","input":{}}'
+    $midProj = New-Proj 'MidSession'
+    $rMid = Fire -Cwd $midProj -EventName 'UserPromptSubmit' -SessionId 's-mid' -TranscriptPath $wroteUnread
+    Check 'mid: files changed and the store unread -> the one mid-session note' (
+        $rMid.Exit -eq 0 -and $rMid.Out -match 'already changed files' -and $rMid.Out -match 'memory_digest') ($rMid.Out + $rMid.Err)
+    $rMidAgain = Fire -Cwd $midProj -EventName 'UserPromptSubmit' -SessionId 's-mid' -TranscriptPath $wroteUnread
+    Check 'mid: the same session is never told twice' ($rMidAgain.Exit -eq 0 -and $rMidAgain.Out -eq '') $rMidAgain.Out
+    $rQuiet = Fire -Cwd (New-Proj 'MidQuiet') -EventName 'UserPromptSubmit' -SessionId 's-quiet' -TranscriptPath (New-Transcript 'transcript-read-only.jsonl' '{"type":"tool_use","name":"Read","input":{}}')
+    Check 'mid: a session with no file-changing call is silent (no per-prompt noise)' ($rQuiet.Exit -eq 0 -and $rQuiet.Out -eq '') $rQuiet.Out
+    $wroteRead = New-Transcript 'transcript-wrote-read.jsonl' ('{"type":"tool_use","name":"Write","input":{}}' + "`n" + '{"type":"tool_use","name":"mcp__synapse__memory_digest","input":{}}')
+    $rRead = Fire -Cwd (New-Proj 'MidRead') -EventName 'UserPromptSubmit' -SessionId 's-read' -TranscriptPath $wroteRead
+    Check 'mid: a session that read the store is silent' ($rRead.Exit -eq 0 -and $rRead.Out -eq '') $rRead.Out
+    # The hook's own earlier words land in the transcript as an escaped string;
+    # they are prose, never the client's tool-call record, so they prove nothing.
+    $ownNote = New-Transcript 'transcript-own-note.jsonl' (@{ type = 'attachment'; content = $rMid.Out } | ConvertTo-Json -Compress)
+    $rOwn = Fire -Cwd (New-Proj 'MidOwn') -EventName 'UserPromptSubmit' -SessionId 's-own' -TranscriptPath $ownNote
+    Check 'mid: the hook''s own earlier note never counts as a file change' ($rOwn.Exit -eq 0 -and $rOwn.Out -eq '') $rOwn.Out
+    $rMidNone = Fire -Cwd (New-Proj 'MidNone') -EventName 'UserPromptSubmit' -SessionId 's-none' -Profile $FakeProfileWithout -TranscriptPath $wroteUnread
+    Check 'mid: no store -> silent' ($rMidNone.Exit -eq 0 -and $rMidNone.Out -eq '') $rMidNone.Out
 
     Write-Host ''
     Write-Host '--- Stop: was the store actually consulted? ---' -ForegroundColor Cyan
@@ -133,6 +149,10 @@ try {
     Check 'stop: an unread store is reported' (
         $rMissed.Exit -eq 0 -and $rMissed.Out -match 'never queried') ($rMissed.Out + $rMissed.Err)
     Check 'stop: the unread message still says how to write back' ($rMissed.Out -match 'memory_write') $rMissed.Out
+    Check 'stop: a trivial session keeps the conditional wording' ($rMissed.Out -match 'If the session did real work') $rMissed.Out
+    $rWorked = Fire -Cwd (New-Proj 'Worked') -EventName 'Stop' -SessionId 's-worked' -TranscriptPath $wroteUnread
+    Check 'stop: a session that changed files is told so plainly' ($rWorked.Out -match 'changed files and never read the store') $rWorked.Out
+    Check 'stop: never a block, worked or not' ($rWorked.Out -notmatch '"decision"' -and $rMissed.Out -notmatch '"decision"') ($rWorked.Out + $rMissed.Out)
 
     # Consulted: the same shape, with a real tool name in it.
     $used = New-Transcript 'transcript-used.jsonl' '{"role":"assistant","name":"mcp__synapse__memory_digest"}'
@@ -198,6 +218,11 @@ try {
         $rBadAlt = Fire -Cwd (New-Proj 'EnvBogus') -EventName 'SessionStart' -SessionId 's-bad' -Profile $FakeProfileWithout
         Check 'a SYNAPSE_HOME that does not exist keeps the hook silent' (
             $rBadAlt.Exit -eq 0 -and $rBadAlt.Out -eq '') ($rBadAlt.Out + $rBadAlt.Err)
+        Write-Utf8 $envPath 'MID_SESSION_REMINDER=0'
+        $rOff = Fire -Cwd (New-Proj 'MidOff') -EventName 'UserPromptSubmit' -SessionId 's-off' -TranscriptPath $wroteUnread
+        Check 'MID_SESSION_REMINDER=0 turns the mid-session note off' ($rOff.Exit -eq 0 -and $rOff.Out -eq '') $rOff.Out
+        $rOffStop = Fire -Cwd (New-Proj 'MidOffStop') -EventName 'Stop' -SessionId 's-off' -TranscriptPath $wroteUnread
+        Check 'MID_SESSION_REMINDER=0 leaves the Stop note unchanged' ($rOffStop.Out -match 'never queried') $rOffStop.Out
     }
     finally {
         # Never leave a .env behind next to a shipped hook: the installer would
@@ -212,6 +237,7 @@ try {
     Check '.env.example ships beside the hook' (Test-Path -LiteralPath $examplePath -PathType Leaf)
     $exampleText = [System.IO.File]::ReadAllText($examplePath)
     Check '.env.example documents SYNAPSE_HOME' ($exampleText -match '(?m)^SYNAPSE_HOME=') $exampleText
+    Check '.env.example documents MID_SESSION_REMINDER' ($exampleText -match '(?m)^MID_SESSION_REMINDER=1') $exampleText
     $declared = @([regex]::Matches($exampleText, '(?m)^([A-Z0-9_]+)=') | ForEach-Object { $_.Groups[1].Value })
     $hookText = [System.IO.File]::ReadAllText($Hook)
     $undocumented = @($declared | Where-Object { $hookText -notmatch [regex]::Escape($_) })

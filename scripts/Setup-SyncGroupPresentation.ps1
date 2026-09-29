@@ -263,7 +263,7 @@ $script:HookMeta = @{
     # Stop/SubagentStop ask what this session should write back. NOT
     # UserPromptSubmit (the digest is a once-per-session read) and NOT
     # SessionEnd (by then the agent can no longer act on the answer).
-    'Synapse-Rules-Check'              = @{ Order = 27; When = 'both'; Text = 'loads the user''s rules from Synapse; asks what to write back'; Events = @('SessionStart', 'Stop', 'SubagentStop'); Timeout = 10 }
+    'Synapse-Rules-Check'              = @{ Order = 27; When = 'both'; Text = 'loads the user''s rules from Synapse; reminds once mid-session when files changed unread'; Events = @('SessionStart', 'UserPromptSubmit', 'Stop', 'SubagentStop'); Timeout = 10 }
     # Session-Summary-Check sits between Synapse-Rules-Check and
     # Cloudflare-Deploy per an explicit user requirement. That number is only
     # where it is LISTED. It is advisory and asks for the summary as the
