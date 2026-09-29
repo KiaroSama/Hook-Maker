@@ -48,3 +48,35 @@
     Set-Mock -RunJson '[]' -ExpectedSha (Get-HeadSha $flowRepo)
     $r = Fire -HookPath $CiHook -Cwd $flowRepo -EventName 'Stop'
     Check 'a filter this reader cannot read with certainty keeps the block' ($r.Out -match '"decision":"block"') $r.Out
+
+    Write-Host '--- paths filter: patterns this reader cannot evaluate keep the block (DD-12/13/14) ---' -ForegroundColor Cyan
+    $pfUnit = & {
+        . (Join-Path $HooksRoot '_hooklib.ps1'); . (Join-Path $HooksRoot '_scope.ps1'); . (Join-Path $HooksRoot 'Ci-Status-Check\_pathsfilter.ps1')
+        $root = Join-Path $Work ('pfunit-' + [guid]::NewGuid().ToString('N').Substring(0, 6))
+        $wf = Join-Path $root '.github\workflows'; New-Item -ItemType Directory -Path $wf -Force | Out-Null
+        $out = [ordered]@{}
+        foreach ($case in @(
+                @('class', "on:`n  push:`n    paths: ['src/[ab]/**']`njobs: {}`n", 'src/a/x.ps1'),
+                @('plus', "on:`n  push:`n    paths: ['lib+/**']`njobs: {}`n", 'libb/x'),
+                @('optional', "on:`n  push:`n    paths: ['docs?/**']`njobs: {}`n", 'doc/x.md'),
+                @('branchclass', "on:`n  push:`n    branches: ['release/v[0-9]']`n    paths: ['src/**']`njobs: {}`n", 'docs/x.md'),
+                @('plain', "on:`n  push:`n    paths: ['src/**']`njobs: {}`n", 'docs/x.md'))) {
+            Get-ChildItem -LiteralPath $wf | Remove-Item -Force
+            [System.IO.File]::WriteAllText((Join-Path $wf 'ci.yml'), $case[1])
+            $out[$case[0]] = Test-NoWorkflowForChangedPaths -ProjectRoot $root -Branch 'main' -ChangedFiles @($case[2])
+        }
+        # 51 workflow files: the 51st could run on every push; the reader never guesses past its cap.
+        Get-ChildItem -LiteralPath $wf | Remove-Item -Force
+        foreach ($i in 1..51) { [System.IO.File]::WriteAllText((Join-Path $wf ('w' + $i + '.yml')), "on:`n  push:`n    paths: ['src/**']`njobs: {}`n") }
+        $out['cap'] = Test-NoWorkflowForChangedPaths -ProjectRoot $root -Branch 'main' -ChangedFiles @('docs/x.md')
+        Remove-Item -LiteralPath $root -Recurse -Force
+        [pscustomobject]$out
+    }
+    Check 'a [..] class is not read literally: the block is kept' ($pfUnit.class -eq $false)
+    Check 'a + pattern is not read literally: the block is kept' ($pfUnit.plus -eq $false)
+    Check 'a ? (zero or one of the previous character) is not read as any-character: the block is kept' ($pfUnit.optional -eq $false)
+    Check 'a branch filter with a class keeps the block' ($pfUnit.branchclass -eq $false)
+    Check 'a plain filter the push misses is still a note' ($pfUnit.plain -eq $true)
+    Check 'more workflow files than the reader bounds keeps the block' ($pfUnit.cap -eq $false)
+    $pfText = [System.IO.File]::ReadAllText((Join-Path $HooksRoot 'Ci-Status-Check\_pathsfilter.ps1'))
+    Check 'the changed-file diff lists both sides of a rename' ($pfText -match "'--no-renames'")

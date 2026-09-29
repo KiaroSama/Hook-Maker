@@ -10,8 +10,10 @@
 # block: this file can turn a block into a note, never silence a real gap.
 # Dot-sourced by Ci-Status-Check.ps1 (definitions only).
 
-# GitHub filter glob -> anchored regex: `**` any characters, `*` any but `/`,
-# `?` one character but `/` (docs: "Filter pattern cheat sheet").
+# GitHub filter glob -> anchored regex: `**` any characters, `*` any but `/`
+# (docs: "Filter pattern cheat sheet"). `?`, `+` and `[...]` mean something else
+# there (`?` = zero or one of the PREVIOUS character); a pattern carrying them is
+# never evaluated here - Test-NoWorkflowForChangedPaths keeps the block instead.
 function ConvertTo-FilterRegex {
     param([string]$Glob)
     $sb = New-Object System.Text.StringBuilder
@@ -23,7 +25,6 @@ function ConvertTo-FilterRegex {
             else { [void]$sb.Append('.*'); $i += 1 }
         }
         elseif ($c -eq '*') { [void]$sb.Append('[^/]*') }
-        elseif ($c -eq '?') { [void]$sb.Append('[^/]') }
         else { [void]$sb.Append([regex]::Escape([string]$c)) }
     }
     [void]$sb.Append('$')
@@ -113,8 +114,8 @@ function Test-NoWorkflowForChangedPaths {
     param([string]$ProjectRoot, [string]$Branch, [string[]]$ChangedFiles)
     if (@($ChangedFiles).Count -eq 0) { return $false }
     $dir = Join-Path $ProjectRoot '.github\workflows'
-    $files = @(Get-ChildItem -LiteralPath $dir -File -ErrorAction SilentlyContinue | Where-Object { $_.Extension -in @('.yml', '.yaml') } | Select-Object -First 50)
-    if ($files.Count -eq 0) { return $false }
+    $files = @(Get-ChildItem -LiteralPath $dir -File -ErrorAction SilentlyContinue | Where-Object { $_.Extension -in @('.yml', '.yaml') })
+    if ($files.Count -eq 0 -or $files.Count -gt 50) { return $false }    # past the bound, a skipped file could run: never guess
     foreach ($file in $files) {
         if ($file.Length -gt 262144) { return $false }
         $text = ''
@@ -125,6 +126,8 @@ function Test-NoWorkflowForChangedPaths {
         if ($triggers -cnotcontains 'push') { continue }    # manual-only workflow: never runs on a push anyway
         $filter = Get-WorkflowPushFilter $text
         if ($null -eq $filter -or -not $filter.Certain) { return $false }
+        $patterns = @($filter.Branches) + @($filter.BranchesIgnore) + @($filter.Paths) + @($filter.PathsIgnore)
+        if (@($patterns | Where-Object { [string]$_ -match '[?+\[\]]' }).Count -gt 0) { return $false }
         if (@($filter.Branches).Count -gt 0 -and -not (Test-FilterMatch $Branch $filter.Branches)) { return $false }
         if (@($filter.BranchesIgnore).Count -gt 0 -and (Test-FilterMatch $Branch $filter.BranchesIgnore)) { return $false }
         if (@($filter.Paths).Count -eq 0 -and @($filter.PathsIgnore).Count -eq 0) { return $false }
@@ -144,7 +147,7 @@ function Get-PushChangedFiles {
     if ([string]::IsNullOrWhiteSpace($Upstream)) { return @() }
     $before = @(Invoke-QuietCommand -FilePath git -ArgumentList @('-C', $Cwd, 'rev-parse', '--verify', '--quiet', ($Upstream + '@{1}')))
     if ($LASTEXITCODE -ne 0 -or $before.Count -ne 1) { return @() }
-    $files = @(Invoke-QuietCommand -FilePath git -ArgumentList @('-C', $Cwd, '-c', 'core.quotePath=false', 'diff', '--name-only', ([string]$before[0]).Trim(), $Sha))
+    $files = @(Invoke-QuietCommand -FilePath git -ArgumentList @('-C', $Cwd, '-c', 'core.quotePath=false', 'diff', '--name-only', '--no-renames', ([string]$before[0]).Trim(), $Sha))
     if ($LASTEXITCODE -ne 0 -or $files.Count -gt 1000) { return @() }
     return @($files | Where-Object { $_ })
 }
