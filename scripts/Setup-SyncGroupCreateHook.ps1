@@ -135,7 +135,7 @@ $script:HookTemplates = @(
     [pscustomobject]@{ Key = '1'; Label = 'Context note'; Hint = 'injects a fixed note into every session/prompt'; Details = $true; DefaultEvents = @('SessionStart', 'UserPromptSubmit') }
     [pscustomobject]@{ Key = '2'; Label = 'Prompt guard'; Hint = 'blocks prompts containing forbidden words'; Details = $true; DefaultEvents = @('UserPromptSubmit') }
     [pscustomobject]@{ Key = '3'; Label = 'Tool logger'; Hint = 'logs every tool call to a file'; Details = $false; DefaultEvents = @('PreToolUse') }
-    [pscustomobject]@{ Key = '4'; Label = 'Git sync check'; Hint = 'warns when the project is out of sync with its git remote'; Details = $false; DefaultEvents = @('SessionStart') }
+    [pscustomobject]@{ Key = '4'; Label = 'Git sync check'; Hint = 'warns when the project is out of sync with its git remote'; Details = $false; DefaultEvents = @('SessionStart', 'PreToolUse', 'Stop', 'SubagentStop') }
     [pscustomobject]@{ Key = '5'; Label = 'Empty skeleton'; Hint = 'commented template for your own logic'; Details = $false; DefaultEvents = @('SessionStart', 'UserPromptSubmit') }
 )
 
@@ -317,6 +317,16 @@ function Invoke-CreateHook {
                 }
                 New-Item -ItemType Directory -Path $hookFolder -Force | Out-Null
                 [System.IO.File]::WriteAllText($hookPath, $body.Replace("`n", "`r`n"), $Utf8NoBom)
+                if ($template.Key -eq '4') {
+                    # The shipped hook is split into sibling modules under the size
+                    # ceiling; a copy without them dies at dot-source time on every
+                    # event. Copy every private sibling as-is (none carries the
+                    # renamed identifier).
+                    $shippedFolder = Join-Path $HooksDir 'Git-Sync-Check'
+                    foreach ($sibling in @(Get-ChildItem -LiteralPath $shippedFolder -File -Filter '_*.ps1' -ErrorAction Stop)) {
+                        Copy-Item -LiteralPath $sibling.FullName -Destination (Join-Path $hookFolder $sibling.Name) -Force
+                    }
+                }
                 $envExample = '# ' + $hookName + " configuration.`n" +
                     "# Copy this file to `".env`" (same folder) and edit. `".env`" is git-ignored.`n`n" +
                     "# Events to register on (comma separated).`n" +
