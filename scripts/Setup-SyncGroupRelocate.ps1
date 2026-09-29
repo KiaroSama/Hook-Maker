@@ -102,18 +102,6 @@ function Get-SyncConfigRoot {
     return @($seen.Keys | Sort-Object)
 }
 
-# 'hookmaker-<slug>-<recordId>.json' -> '<slug>'. The record id is the last
-# hyphen-separated token; the slug is everything between the prefix and it.
-function Get-DocumentHookSlug {
-    param([Parameter(Mandatory = $true)][string]$FileName)
-    $name = [System.IO.Path]::GetFileNameWithoutExtension($FileName)
-    if (-not $name.StartsWith('hookmaker-')) { return '' }
-    $name = $name.Substring('hookmaker-'.Length)
-    $lastDash = $name.LastIndexOf('-')
-    if ($lastDash -le 0) { return '' }
-    return $name.Substring(0, $lastDash)
-}
-
 # A path inside JSON is stored with its separators DOUBLED, so searching a raw
 # document for the literal path never matches. Compare against both spellings.
 # A root must match as a PATH, not as a substring. Renaming `...\Numera` to

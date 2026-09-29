@@ -98,20 +98,6 @@ function Remove-FixtureHook {
 # the suite now runs from its own copy of the tool, so no other suite's ZZZ-*
 # fixture can appear in the menu it counts.
 
-# One comparable string for a whole row map, so "nothing moved" is provable
-# row-for-row instead of by spot-checking a few indices.
-#
-# Row 1 is excluded: it is the "Select all" aggregate, and its hint quotes the
-# LIVE hook spans ("...install every hook below (3-30 and 36-36)"), so it
-# legitimately changes when a hook exists that this suite filters out - that is
-# the wizard counting correctly, not a row moving. Nothing here pins that hint's
-# text; the assertion on row 1 matches its "Select all hooks" prefix only.
-function Get-RowSignature {
-    param($Rows)
-    if ($null -eq $Rows) { return '<no rows>' }
-    return ((@($Rows.Keys) | Sort-Object | Where-Object { $_ -ne 1 } | ForEach-Object { [string]$_ + '. ' + [string]$Rows[$_] }) -join "`n")
-}
-
 function New-Config {
     param([string]$Path)
     '{"version":2,"defaults":{"events":["SessionStart","UserPromptSubmit"]},"profiles":[]}' | Set-Content -LiteralPath $Path -Encoding utf8

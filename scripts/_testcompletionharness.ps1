@@ -249,13 +249,6 @@ function Write-ActiveMarker {
     Write-Utf8 $path ($doc | ConvertTo-Json -Depth 4)
 }
 
-function Remove-CoordinationFile {
-    param([object]$Copy, [string]$Root, [string]$Kind)
-    foreach ($f in @(Get-ChildItem -LiteralPath (Get-StateDir $Copy) -Filter ('TestRunGuard-' + $Kind + '-' + (Get-ProjectKey $Root) + '-*.json') -File -ErrorAction SilentlyContinue)) {
-        Remove-Item -LiteralPath $f.FullName -Force -ErrorAction SilentlyContinue
-    }
-}
-
 # Marks Test-Temp-Cleanup as INSTALLED for the project (the same detection
 # Cloudflare-Deploy uses) without installing anything real.
 function New-CleanupMarker {
