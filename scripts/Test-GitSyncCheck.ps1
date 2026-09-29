@@ -142,6 +142,26 @@ try {
     & git -C $behindA push -q origin main
     $r = Fire -Cwd $behindB
     Check 'behind repository is reported' ($r.Out -match 'BEHIND origin/main') $r.Out
+
+    # The fetch is rate-limited per repository by a stamp written after a
+    # successful fetch; FETCH_MIN_INTERVAL_MINUTES=0 restores fetch-every-event.
+    $fetchStamps = @(Get-ChildItem -LiteralPath (Join-Path $FakeLocalAppData 'HookMaker\state') -Filter 'GitSyncCheck-fetch-*.txt' -ErrorAction SilentlyContinue)
+    $stampRepo = New-PushedRepo 'fetch-stamp'
+    $null = Fire -Cwd $stampRepo -SessionId 'stamp-1'
+    $stampFile = @(Get-ChildItem -LiteralPath (Join-Path $FakeLocalAppData 'HookMaker\state') -Filter 'GitSyncCheck-fetch-*.txt' | Where-Object { $fetchStamps.FullName -notcontains $_.FullName } | Select-Object -First 1)
+    Check 'a successful fetch writes the per-repository fetch stamp' ($stampFile.Count -eq 1) ('stamps before=' + $fetchStamps.Count)
+    if ($stampFile.Count -eq 1) {
+        $firstStamp = [System.IO.File]::ReadAllText($stampFile[0].FullName)
+        $null = Fire -Cwd $stampRepo -SessionId 'stamp-2'
+        Check 'a second Stop within the interval does not fetch again (stamp unchanged)' ([System.IO.File]::ReadAllText($stampFile[0].FullName) -eq $firstStamp) $firstStamp
+        $everyHookDir = Join-Path $Work 'fetch-every\Git-Sync-Check'
+        New-Item -ItemType Directory -Path $everyHookDir -Force | Out-Null
+        foreach ($packageFile in @(Get-ChildItem -LiteralPath (Split-Path -Parent $Hook) -File -Filter '*.ps1')) { Copy-Item -LiteralPath $packageFile.FullName -Destination $everyHookDir }
+        Copy-TestRuntimeLibraries -SourceHookLib (Join-Path (Split-Path -Parent (Split-Path -Parent $Hook)) '_hooklib.ps1') -Destination (Join-Path $Work 'fetch-every\_hooklib.ps1')
+        [System.IO.File]::WriteAllText((Join-Path $everyHookDir '.env'), "FETCH_MIN_INTERVAL_MINUTES=0`r`n")
+        $null = Fire -Cwd $stampRepo -SessionId 'stamp-3' -HookPath (Join-Path $everyHookDir 'Git-Sync-Check.ps1')
+        Check 'FETCH_MIN_INTERVAL_MINUTES=0 fetches on every event (stamp rewritten)' ([System.IO.File]::ReadAllText($stampFile[0].FullName) -ne $firstStamp) $firstStamp
+    }
     Check 'behind guidance recommends inspection/fast-forward, not a blind merge' ($r.Out -match 'fast-forward-only pull' -and $r.Out -match 'do not blindly pull or merge') $r.Out
 
     # =====================================================================

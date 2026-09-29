@@ -373,10 +373,22 @@ if ($eventName -eq 'SessionStart') {
 
 $findings = New-Object System.Collections.Generic.List[string]
 
-# Refresh remote refs; when offline, fall back to the last fetched state.
-$fetch = Invoke-Git @('fetch', '--quiet')
-if (-not $fetch.Ok) {
-    [void]$findings.Add('The remote could not be fetched (offline?); comparison uses the last known remote state.')
+# Refresh remote refs at most once per interval per repository: a push updates
+# the remote-tracking ref by itself, so a fetch on every Stop bought nothing and
+# cost a network round trip (up to 20 s when the remote is unreachable). The
+# stamp is written only after a SUCCESSFUL fetch, so offline keeps retrying.
+$fetchIntervalMinutes = 5
+$gitSyncConfig = Read-HookEnv (Join-Path $PSScriptRoot '.env')
+if ($gitSyncConfig.ContainsKey('FETCH_MIN_INTERVAL_MINUTES')) { $parsedInterval = 0; if ([int]::TryParse([string]$gitSyncConfig['FETCH_MIN_INTERVAL_MINUTES'], [ref]$parsedInterval) -and $parsedInterval -ge 0 -and $parsedInterval -le 1440) { $fetchIntervalMinutes = $parsedInterval } }
+$fetchStampPath = Join-Path $stateDir ('GitSyncCheck-fetch-' + (Get-ShortHash $repoCommonDir.ToLowerInvariant()) + '.txt')
+$fetchDue = $true
+if ($fetchIntervalMinutes -gt 0) {
+    try { if ((Test-Path -LiteralPath $fetchStampPath -PathType Leaf) -and ((Get-Item -LiteralPath $fetchStampPath).LastWriteTimeUtc -gt [DateTime]::UtcNow.AddMinutes(-$fetchIntervalMinutes))) { $fetchDue = $false } } catch { $fetchDue = $true }
+}
+if ($fetchDue) {
+    $fetch = Invoke-Git @('fetch', '--quiet')
+    if ($fetch.Ok) { try { New-Item -ItemType Directory -Path $stateDir -Force | Out-Null; [System.IO.File]::WriteAllText($fetchStampPath, [DateTime]::UtcNow.ToString('o')) } catch { } }
+    else { [void]$findings.Add('The remote could not be fetched (offline?); comparison uses the last known remote state.') }
 }
 
 $status = Invoke-Git @('status', '--porcelain')
