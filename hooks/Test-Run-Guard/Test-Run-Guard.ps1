@@ -475,7 +475,7 @@ if ($eventName -eq 'PreToolUse') {
     $replacement = New-GuardedInvocation -RunnerPath $runnerPath -FilePath $verdict.Command.FilePath `
         -Arguments $verdict.Command.Arguments -WallSeconds $wallSeconds -IdleSeconds $idleSeconds `
         -HeartbeatSeconds $heartbeatSeconds -MaxMemoryMB $maxMemoryMB -MaxWorkers $maxWorkers -ResultPath $resultPath `
-        -RunId $runId -ProjectFingerprint $stateFingerprint
+        -RunId $runId -ProjectFingerprint $stateFingerprint -AssignmentPrefix @(Get-Field $verdict.Command 'Assignments')
 
     # The cap now travels with the replacement: -MaxWorkers reaches the runner,
     # which exports the resolved ceiling as HOOKMAKER_MAX_TEST_WORKERS so an

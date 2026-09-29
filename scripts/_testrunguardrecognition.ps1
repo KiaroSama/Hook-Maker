@@ -21,7 +21,10 @@
         'dotnet test MySolution.sln',
         'npx --no-install vitest run',
         'pwsh -NoProfile -File .\scripts\Run-Tests.ps1',
-        'pwsh -NoProfile -File .\scripts\Test-RulesCheck.ps1'
+        'pwsh -NoProfile -File .\scripts\Test-RulesCheck.ps1',
+        'CI=1 pytest -q tests/',
+        'NODE_ENV=test npm test',
+        'A=1 B="two words" pwsh -NoProfile -File .\scripts\Test-RulesCheck.ps1'
     )
     foreach ($command in $recognised) {
         $r = Fire -HookPath $hc.Script -Cwd $Proj -EventName 'PreToolUse' -Command $command -LocalAppData $hc.LocalAppData
@@ -46,7 +49,11 @@
         'gh pr list --limit 5',
         'python .\tools\generate-test-fixtures.py',
         'code .\scripts\Test-RulesCheck.ps1',
-        'echo pytest'
+        'echo pytest',
+        'F=hooks/Test-Completion-Check/Test-Completion-Check.ps1; rm -f $F',
+        'F=scripts/Test-RulesCheck.ps1 && cp $F "$TEMP/x.ps1"',
+        'X=1',
+        'CI=1'
     )
     foreach ($command in $unrelated) {
         $r = Fire -HookPath $hc.Script -Cwd $Proj -EventName 'PreToolUse' -Command $command -LocalAppData $hc.LocalAppData
@@ -66,6 +73,15 @@
     Check 'the replacement carries the wall and idle ceilings' ($replacement -match '-TimeoutSeconds 1800' -and $replacement -match '-IdleTimeoutSeconds 300') $replacement
     Check 'the replacement carries a -ResultPath the PostToolUse side can read' ($replacement -match '-ResultPath') $replacement
     Check 'the ArgumentsJson is a JSON ARRAY of the original arguments' ($replacement -match '\[\\?"-q\\?",\\?"tests/\\?"\]' -or $replacement -match '\["-q","tests/"\]') $replacement
+
+    # POSIX assignment words are environment, not the program: the replacement
+    # repeats them in front so the child still sees them.
+    $r = Fire -HookPath $hc.Script -Cwd $Proj -EventName 'PreToolUse' -Command 'CI=1 pytest -q tests/' -LocalAppData $hc.LocalAppData
+    $prefixed = Get-Replacement (Get-Message $r.Out)
+    Check 'an assignment-prefixed command is denied' ($r.Out -match '"permissionDecision":"deny"') $r.Out
+    Check 'the replacement starts with the same assignment' ($prefixed -match '^CI=1 pwsh -NoLogo -NoProfile -File') $prefixed
+    Check 'the replacement runs pytest, not the assignment' ($prefixed -match '-FilePath "pytest"') $prefixed
+    Check 'the prefixed ArgumentsJson holds only the real arguments' ($prefixed -match '\[\\?"-q\\?",\\?"tests/\\?"\]' -or $prefixed -match '\["-q","tests/"\]') $prefixed
 
     # The replacement is not merely plausible - the hook's OWN emitted text is
     # executed verbatim and must work. Bounded: the child exits immediately and
@@ -185,6 +201,8 @@
     Check 'an already-guarded invocation is silent, never re-wrapped' ($r.Exit -eq 0 -and $r.Out -eq '') $r.Out
     $r = Fire -HookPath $hc.Script -Cwd $Proj -EventName 'PreToolUse' -Command 'pwsh -File scripts\Run-Tests-Guarded.ps1 -FilePath pytest -ArgumentsJson ''["-q"]''' -LocalAppData $hc.LocalAppData
     Check 'a guarded invocation whose payload is pytest is still not re-wrapped' ($r.Exit -eq 0 -and $r.Out -eq '') $r.Out
+    $r = Fire -HookPath $hc.Script -Cwd $Proj -EventName 'PreToolUse' -Command 'CI=1 pwsh -NoLogo -NoProfile -File .\scripts\Run-Tests-Guarded.ps1 -FilePath pytest -ArgumentsJson ''["-q"]''' -LocalAppData $hc.LocalAppData
+    Check 'an assignment-prefixed guarded invocation is silent, never re-wrapped' ($r.Exit -eq 0 -and $r.Out -eq '') $r.Out
 
     # =====================================================================
     # HM-06: DIRECT ad hoc blind waits are denied with an EXACT safe pattern; short,

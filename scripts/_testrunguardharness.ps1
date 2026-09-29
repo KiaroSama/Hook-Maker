@@ -113,7 +113,7 @@ function Test-IsSingleJson {
 function Get-Replacement {
     param([string]$Message)
     foreach ($line in ($Message -split "`n")) {
-        if ($line.Trim().StartsWith('pwsh ')) { return $line.Trim() }
+        if ($line.Trim() -match '^([A-Za-z_][A-Za-z0-9_]*=\S+ )*pwsh ') { return $line.Trim() }
     }
     return ''
 }
