@@ -1,4 +1,4 @@
-# Offline test suite for Docs-Freshness-Check - new hook, no prior coverage.
+﻿# Offline test suite for Docs-Freshness-Check - new hook, no prior coverage.
 # Focused on the explicit safety/detection requirements, not an exhaustive
 # per-language matrix: SessionStart baseline is silent; task-delta detection
 # (committed + staged + working-tree, comment/blank-only changes excluded);

@@ -1,4 +1,4 @@
-# Test-ContextHooks section: _hooklib: UTF-8 contract, client identity, Write-HookResult.
+﻿# Test-ContextHooks section: _hooklib: UTF-8 contract, client identity, Write-HookResult.
 #
 # Dot-sourced from Test-ContextHooks.ps1 INSIDE its try block, so it runs in
 # that scope and uses its harness directly: $Work, $Fire, Check, New-Proj,

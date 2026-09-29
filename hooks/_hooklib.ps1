@@ -11,7 +11,7 @@
 # process that has no attached console (a GUI-hosted client, or any parent that
 # spawns it with CreateNoWindow + redirected pipes) reports the machine's OEM
 # page instead. Measured on this repo: such a child sees ibm437, so a prompt of
-# 'معماری پروژه' arrives as box-drawing characters and every relevance regex,
+# 'memari-ye projeh' in Persian script arrives as box-drawing characters and every relevance regex,
 # path, and filename containing non-ASCII silently misses.
 #
 # Pin BOTH directions explicitly rather than trusting the ambient page - the same
@@ -383,7 +383,7 @@ function Read-HookEnv {
     return $values
 }
 
-# 10-char lowercase hex SHA-256 prefix — stable per-project state file keys.
+# 10-char lowercase hex SHA-256 prefix - stable per-project state file keys.
 function Get-ShortHash {
     param([string]$Text)
     $sha = [System.Security.Cryptography.SHA256]::Create()
