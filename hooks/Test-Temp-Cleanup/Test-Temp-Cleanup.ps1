@@ -62,6 +62,16 @@ Set-StrictMode -Version 2.0
 $ErrorActionPreference = 'Stop'
 
 . (Join-Path $PSScriptRoot '..\_hooklib.ps1')
+# Optional sibling: the whole candidate set's git state in three git calls
+# (a runtime installed before it existed keeps the per-path calls).
+$gitStatePath = Join-Path $PSScriptRoot '_gitstate.ps1'
+if (Test-Path -LiteralPath $gitStatePath -PathType Leaf) { . $gitStatePath }
+function Get-CandidateStateTable {
+    param([string]$Root, $Candidates, [bool]$GitAvailable)
+    if ($null -eq (Get-Command -Name 'Get-GitCandidateStateTable' -ErrorAction SilentlyContinue)) { return $null }
+    $rel = @(@($Candidates) | Where-Object { Test-PathInside -Candidate $_.Path -Parent $Root } | ForEach-Object { $_.Path.Substring($Root.Length).TrimStart('\', '/') } | Where-Object { $_ -ne '' })
+    return (Get-GitCandidateStateTable -Root $Root -RelPaths $rel -GitAvailable $GitAvailable)
+}
 
 # ---- SHARED RESULT-CATEGORY CONTRACT -------------------------------------
 # These five strings are the whole vocabulary of the { fingerprint, category }
@@ -334,6 +344,7 @@ if ($eventName -eq 'SessionStart') {
     foreach ($cause in @($scan.PartialCauses)) { $causes[$cause] = $true }
 
     $records = New-Object System.Collections.Generic.List[object]
+    $stateTable = Get-CandidateStateTable -Root $projectRoot -Candidates $scan.Candidates -GitAvailable $gitAvailable
     foreach ($candidate in @($scan.Candidates)) {
         if (-not (Test-PathInside -Candidate $candidate.Path -Parent $projectRoot)) { continue }
         $relPath = $candidate.Path.Substring($projectRoot.Length).TrimStart('\', '/')
@@ -342,7 +353,7 @@ if ($eventName -eq 'SessionStart') {
         $modifiedUtc = ''
         try { $modifiedUtc = (Get-Item -LiteralPath $candidate.Path -Force -ErrorAction Stop).LastWriteTimeUtc.ToString('o') }
         catch { $causes['candidate-metadata-unreadable'] = $true }
-        $gitState = Get-GitCandidateState -Root $projectRoot -RelPath $relPath -GitAvailable $gitAvailable
+        $gitState = $(if ($null -ne $stateTable -and $stateTable.ContainsKey($relPath)) { $stateTable[$relPath] } else { Get-GitCandidateState -Root $projectRoot -RelPath $relPath -GitAvailable $gitAvailable })
         if ($gitState -eq 'unknown') { $causes['git-state-unknown'] = $true }
         # sizeBounded is load-bearing, not decorative: it is what makes the
         # neighbouring sizeBytes a LOWER BOUND rather than a size, and the Stop
@@ -441,6 +452,7 @@ $scan = Get-CleanupScan -Root $projectRoot -ExtraCandidateNames $extraCandidateN
 foreach ($cause in @($scan.PartialCauses)) { $causes[$cause] = $true }
 
 $findings = New-Object System.Collections.Generic.List[object]
+$stateTable = Get-CandidateStateTable -Root $projectRoot -Candidates $scan.Candidates -GitAvailable $gitAvailable
 foreach ($candidate in @($scan.Candidates)) {
     # Nothing outside the canonical project root is ever surfaced.
     if (-not (Test-PathInside -Candidate $candidate.Path -Parent $projectRoot)) { continue }
@@ -454,7 +466,7 @@ foreach ($candidate in @($scan.Candidates)) {
     catch { $metadataOk = $false }
     if (-not $metadataOk) { $causes['candidate-metadata-unreadable'] = $true }
 
-    $gitState = Get-GitCandidateState -Root $projectRoot -RelPath $relPath -GitAvailable $gitAvailable
+    $gitState = $(if ($null -ne $stateTable -and $stateTable.ContainsKey($relPath)) { $stateTable[$relPath] } else { Get-GitCandidateState -Root $projectRoot -RelPath $relPath -GitAvailable $gitAvailable })
     if ($gitState -eq 'unknown') { $causes['git-state-unknown'] = $true }
 
     # Existence at SessionStart, and whether it appeared/changed during the

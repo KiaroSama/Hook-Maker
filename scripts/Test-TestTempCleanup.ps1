@@ -290,6 +290,8 @@ try {
     # _testtempcleanupsizewalk.ps1 (split at the 800-line ceiling). Dot-sourced
     # HERE, into this scope, so it keeps the harness, helpers and workspace.
     . (Join-Path $PSScriptRoot '_testtempcleanupsizewalk.ps1')
+    # The batched git-state table equals the per-path answer (three git calls per set).
+    . (Join-Path $PSScriptRoot '_testtempcleanupgitstate.ps1')
 
     # =====================================================================
     Write-Host '--- node_modules is hard-pruned: never surfaced, never descended into ---' -ForegroundColor Cyan
