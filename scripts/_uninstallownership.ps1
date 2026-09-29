@@ -228,9 +228,12 @@ function Test-HandlerExactlyOwned {
         $info = Get-HookMakerCommandInfo -Command $commandValue -KnownToolRoots $script:KnownToolRoots
         $parsedCanonical = $null
         if ($info.IsHookMaker) { $parsedCanonical = Get-CanonicalPathOrNull $info.RuntimeScript }
+        # The profile is compared exactly, empty included: a profile-less record
+        # (a CustomHook of the sync engine) sharing a runtime with an Engine
+        # record must never claim that record's -Profile handlers.
         if ($null -ne $parsedCanonical -and
             [string]::Equals($parsedCanonical, $CanonicalRuntimeScript, [System.StringComparison]::OrdinalIgnoreCase) -and
-            ([string]::IsNullOrWhiteSpace($ProfileId) -or [string]$info.Profile -eq $ProfileId)) {
+            [string]$info.Profile -ceq [string]$ProfileId) {
             $matching++
         }
         else {
@@ -259,7 +262,9 @@ function Test-HandlerNamesThisInstall {
     param($Info, [string[]]$OwnNames)
     $named = @($OwnNames | Where-Object { [string]::Equals($_, $Info.HookName, [System.StringComparison]::OrdinalIgnoreCase) })
     if ($named.Count -eq 0) { return $false }
-    if (-not [string]::IsNullOrWhiteSpace($ProfileId) -and [string]$Info.Profile -ne $ProfileId) { return $false }
+    # A handler under ANOTHER profile (or with none, for a profiled record) is
+    # another installation's, not a near-match of this one.
+    if ([string]$Info.Profile -cne [string]$ProfileId) { return $false }
     return $true
 }
 
@@ -481,4 +486,33 @@ function Get-RemovableSharedRuntimeRootFiles {
         [void]$files.Add($candidate)
     }
     return @($files.ToArray())
+}
+
+# ---- a hook directory another live record still uses -----------------------
+# A project in a sync group can carry several records of one hook for one
+# client (Engine records of different profiles, or a CustomHook record of the
+# engine script) that all point at ONE runtime directory. Removing one of them
+# must not delete the directory the others still run from. Returns the id of
+# the first OTHER record whose subrecord for this client resolves to the same
+# directory, or '' when none does. The registry is the only source: a name
+# match alone never keeps a directory.
+function Get-RuntimeSharerRecordId {
+    param(
+        [Parameter(Mandatory = $true)][AllowEmptyCollection()][object[]]$Installs,
+        [Parameter(Mandatory = $true)][string]$RecordId,
+        [Parameter(Mandatory = $true)][string]$Client,
+        [Parameter(Mandatory = $true)][string]$CanonicalHookDir
+    )
+    foreach ($other in @($Installs)) {
+        if ($null -eq $other -or $null -eq $other.PSObject.Properties['id'] -or [string]$other.id -ceq $RecordId) { continue }
+        $otherSub = Get-ClientSubrecord -Record $other -Client $Client
+        if ($null -eq $otherSub -or $null -eq $otherSub.PSObject.Properties['runtimeScript']) { continue }
+        $otherScript = [string]$otherSub.runtimeScript
+        if ([string]::IsNullOrWhiteSpace($otherScript)) { continue }
+        $otherDir = Get-CanonicalPathOrNull (Split-Path -Parent $otherScript)
+        if ($null -ne $otherDir -and [string]::Equals($otherDir, $CanonicalHookDir, [System.StringComparison]::OrdinalIgnoreCase)) {
+            return [string]$other.id
+        }
+    }
+    return ''
 }
