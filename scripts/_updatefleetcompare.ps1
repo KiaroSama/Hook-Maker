@@ -43,7 +43,8 @@ function Invoke-FleetCompare {
                         -HookScript (Get-FleetRecordField $record 'sourceScript') -FriendlyName $name `
                         -RecordId (Get-FleetRecordField $record 'id') -Scope $scope -ProjectRoot $target `
                         -ConfigPath (Get-FleetRecordField $record 'configPath') -IncludeConfig:$isEngine `
-                        -ProfileId (Get-FleetRecordField $record 'profile'))
+                        -ProfileId (Get-FleetRecordField $record 'profile') `
+                        -TimeoutSeconds $(if ($null -ne $subrecord -and $null -ne $subrecord.PSObject.Properties['timeout']) { [int]$subrecord.timeout } else { 0 }))
                 $actual = @(Get-InstalledManifest -RuntimeRoot $runtimeRoot -FriendlyName $name)
                 $difference = Compare-Manifest -Expected $expected -Actual $actual
                 $missingCount = @($difference.Missing).Count

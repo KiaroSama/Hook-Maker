@@ -19,9 +19,13 @@ function Initialize-GhBudget {
     $script:GhBudgetExhausted = $false
 }
 
+# The GitHub budget never outlives the hook's own deadline (_budgetlib.ps1,
+# derived from the registered timeout) when that library is loaded.
 function Get-GhRemainingSeconds {
-    if ($script:GhDeadlineUtc -eq [DateTime]::MaxValue) { return [int]::MaxValue }
-    return [int][Math]::Floor(($script:GhDeadlineUtc - [DateTime]::UtcNow).TotalSeconds)
+    $left = [int]::MaxValue
+    if ($script:GhDeadlineUtc -ne [DateTime]::MaxValue) { $left = [int][Math]::Floor(($script:GhDeadlineUtc - [DateTime]::UtcNow).TotalSeconds) }
+    if ($null -ne (Get-Command -Name 'Get-HookRemainingSeconds' -ErrorAction SilentlyContinue) -and $null -ne $script:HookDeadlineUtc) { $left = [Math]::Min($left, (Get-HookRemainingSeconds)) }
+    return $left
 }
 
 # Same contract as Invoke-QuietCommand (output lines; $LASTEXITCODE set), with

@@ -136,14 +136,17 @@ function Get-ManagedClientManifest {
         [AllowEmptyString()][string]$ProjectRoot = '',
         [string]$ConfigPath = '',
         [switch]$IncludeConfig,
-        [string]$ProfileId = ''
+        [string]$ProfileId = '',
+        # The subrecord's registered timeout (0 = none recorded), written into
+        # .hookmaker-runtime.json exactly as the installer wrote it.
+        [int]$TimeoutSeconds = 0
     )
     # by client NAME, not by registrationKind: such a launcher exists because one
     # supplies neither the client identity nor the physical trigger to the hook it
     # client needs it - not a property of per-hook-file registration in
     # general. New-RuntimeIdentity validates the client id, so an unknown one is a
     # refusal here rather than a silently launcher-less plan.
-    $identity = New-RuntimeIdentity -Client $Client -Scope $Scope -RecordId $RecordId -ProjectRoot $ProjectRoot
+    $identity = New-RuntimeIdentity -Client $Client -Scope $Scope -RecordId $RecordId -ProjectRoot $ProjectRoot -TimeoutSeconds $TimeoutSeconds
     $plan = Get-InstallPlanFor -HookScript $HookScript -ToolRoot $ToolRoot -FriendlyNameOverride $FriendlyName `
         -ProfileId $ProfileId -ConfigPath $ConfigPath -IsEngine:$IncludeConfig -AllowMissing `
         -RuntimeIdentity $identity

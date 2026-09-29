@@ -461,7 +461,7 @@ if ($InstallClaude) {
     # Each client gets its own runtime copy so its command has zero dependency
     # on the Hook Maker folder (or on the other client's files).
     $claudeRuntime = Copy-HookRuntime -ClientDir (Split-Path -Parent $ClaudeSettings) `
-        -RuntimeIdentity (New-RuntimeIdentity -Client 'claude' -Scope $ScopeLabel -RecordId $RecordId -ProjectRoot $RecordProjectRoot)
+        -RuntimeIdentity (New-RuntimeIdentity -Client 'claude' -Scope $ScopeLabel -RecordId $RecordId -ProjectRoot $RecordProjectRoot -TimeoutSeconds $script:EffectiveTimeout)
     $claudeCommands = New-HookCommands -Runtime $claudeRuntime
     # The whole read-modify-write is held under a crash-aware lock on THIS
     # settings file, so two installs touching the same file cannot lose each
@@ -502,7 +502,7 @@ if ($InstallClaude) {
 if ($InstallCodex) {
     $script:CurrentPhase = 'codex'
     $codexRuntime = Copy-HookRuntime -ClientDir (Split-Path -Parent $CodexHooks) `
-        -RuntimeIdentity (New-RuntimeIdentity -Client 'codex' -Scope $ScopeLabel -RecordId $RecordId -ProjectRoot $RecordProjectRoot)
+        -RuntimeIdentity (New-RuntimeIdentity -Client 'codex' -Scope $ScopeLabel -RecordId $RecordId -ProjectRoot $RecordProjectRoot -TimeoutSeconds $script:EffectiveTimeout)
     $codexCommands = New-HookCommands -Runtime $codexRuntime
     # The whole read-modify-write is held under a crash-aware lock on THIS
     # settings file, so two installs touching the same file cannot lose each

@@ -21,6 +21,12 @@ instead, at SessionStart and on the prompt, so the reply that ends the task carr
 extra turn.
 
 
+**Hook deadline.** Hooks that adopt the shared `_budgetlib.ps1` (Dependency-Version-Check first;
+Ci-Status-Check folds its GitHub budget into it) derive a deadline from the timeout the installer
+registered - `timeoutSeconds` in the runtime's `.hookmaker-runtime.json`, 5 s of margin, 60 s when
+nothing is recorded - and bound every child process by the time left, so the client never kills
+them mid-child and leaves the user with no answer at all.
+
 | Hook | Runs | What it does |
 | --- | --- | --- |
 | `Cross-Project-.ai-Knowledge-Sync` | pre-task (SessionStart, UserPromptSubmit) | The sync engine: stages changed `.ai` knowledge from related projects for review. Each review is an **owned generation**: the staging directory is proven to sit inside the configured destination through every internal ancestor (a junction on `inbox`, `.ai` or `.cross-project-sync` refuses the whole operation rather than redirecting it out of the project), the new generation is built and its copied bytes verified against the snapshot BEFORE the superseded one is retired, and the acknowledgement is bound to the generation on disk rather than to a matching fingerprint string. A source that changes mid-review therefore queues a new generation instead of deleting the one being read; a package that is gone or tampered with is rebuilt instead of announced as a dead path; and staging that could not be retired is reported as **deferred cleanup**, which is a different outcome from a failed review. |
