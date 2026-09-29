@@ -126,6 +126,13 @@ Set-StrictMode -Version 2.0
 $ErrorActionPreference = 'Stop'
 
 . (Join-Path $PSScriptRoot '..\_hooklib.ps1')
+# Optional sibling: values reach git grep via a pattern file (fallback: as before).
+$patternFilePath = Join-Path $PSScriptRoot '_patternfile.ps1'
+if (Test-Path -LiteralPath $patternFilePath -PathType Leaf) { . $patternFilePath }
+if ($null -eq (Get-Command -Name 'Invoke-GitGrepWithValue' -ErrorAction SilentlyContinue)) {
+    function Invoke-GitGrepWithValue { param([string]$Cwd, [string]$Value, [string[]]$GrepOptions = @(), [string[]]$Trailing = @())
+        $patternArgs = $(if (@($Trailing).Count -eq 1 -and $Trailing[0] -eq '--') { @('--', $Value) } else { @('-e', $Value) + @($Trailing) }); return (Invoke-QuietCommand -FilePath git -ArgumentList (@('-C', $Cwd, 'grep') + @($GrepOptions) + $patternArgs)) }
+}
 . (Join-Path $PSScriptRoot '..\_scope.ps1')
 
 $hookInput = if ($GitPrePush) {
@@ -448,13 +455,9 @@ function Invoke-OutgoingGrepBatched {
     for ($i = 0; $i -lt $Commits.Count; $i += $BatchSize) {
         $end = [Math]::Min($i + $BatchSize, $Commits.Count) - 1
         $batch = @($Commits[$i..$end])
-        # -e marks $Value as the pattern so a value starting with '-' (a PEM
-        # "-----BEGIN..." header, a Django key like "-Abc123...") can't be parsed
-        # as a git option. Unlike the sibling scans below, $batch here is trailing
-        # REVISIONS, not pathspecs - '--' would push them past a pathspec boundary
-        # instead, so the outgoing commits would silently NOT be searched (fail
-        # OPEN). '-e' keeps $batch as revisions while still disambiguating $Value.
-        $out = Invoke-QuietCommand -FilePath git -ArgumentList (@('-C', $Cwd, 'grep', '-Il', '-F', '-e', $Value) + $batch)
+        # $batch stays trailing REVISIONS (never after '--', which would make them
+        # pathspecs and silently skip the outgoing commits - fail OPEN).
+        $out = Invoke-GitGrepWithValue -Cwd $Cwd -Value $Value -GrepOptions @('-Il', '-F') -Trailing $batch
         $code = $LASTEXITCODE
         if ($code -gt 1) { $hadError = $true; continue }
         foreach ($m in @($out | Where-Object { $_ })) { [void]$hits.Add([string]$m) }
@@ -527,17 +530,14 @@ if ($inGitRepo) {
     }
     foreach ($value in @($secretValueGroups.Keys)) {
         $key = ($secretValueGroups[$value].ToArray() -join ', ')
-        # Merge working-tree (git grep) and index/staged (git grep --cached) hits.
-        # A value staged then cleaned from the working copy only - or committed
-        # and later edited away locally without staging that edit - is invisible
-        # to a working-tree-only scan but is still what would actually be pushed
-        # or committed next; only the union of both scans is trustworthy.
+        # Union of working-tree and index hits: a value staged then cleaned from the
+        # working copy only is still what the next commit or push would carry.
         $matchPaths = New-Object System.Collections.Generic.List[string]
-        $worktreeHits = Invoke-QuietCommand -FilePath git -ArgumentList @('-C', $cwd, 'grep', '-Il', '-F', '--', $value)
+        $worktreeHits = Invoke-GitGrepWithValue -Cwd $cwd -Value $value -GrepOptions @('-Il', '-F') -Trailing @('--')
         if ($LASTEXITCODE -eq 0) {
             foreach ($m in @($worktreeHits | Where-Object { $_ })) { [void]$matchPaths.Add([string]$m) }
         }
-        $indexHits = Invoke-QuietCommand -FilePath git -ArgumentList @('-C', $cwd, 'grep', '--cached', '-Il', '-F', '--', $value)
+        $indexHits = Invoke-GitGrepWithValue -Cwd $cwd -Value $value -GrepOptions @('--cached', '-Il', '-F') -Trailing @('--')
         if ($LASTEXITCODE -eq 0) {
             foreach ($m in @($indexHits | Where-Object { $_ })) { [void]$matchPaths.Add([string]$m) }
         }
