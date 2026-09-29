@@ -112,6 +112,15 @@ Set-StrictMode -Version 2.0
 $ErrorActionPreference = 'Stop'
 
 . (Join-Path $PSScriptRoot '..\_hooklib.ps1'); . (Join-Path $PSScriptRoot '..\_scope.ps1')
+# Optional sibling: a runtime installed before _ghbudget.ps1 existed keeps today's behaviour.
+$ghBudgetPath = Join-Path $PSScriptRoot '_ghbudget.ps1'
+if (Test-Path -LiteralPath $ghBudgetPath -PathType Leaf) { . $ghBudgetPath }
+if ($null -eq (Get-Command -Name 'Invoke-GhBounded' -ErrorAction SilentlyContinue)) {
+    function Initialize-GhBudget { param([int]$Seconds) }
+    function Invoke-GhBounded { param([string[]]$ArgumentList) return (Invoke-QuietCommand -FilePath gh -ArgumentList $ArgumentList) }
+    function Test-GhAuthenticated { $null = Invoke-QuietCommand -FilePath gh -ArgumentList @('auth', 'status'); return ($LASTEXITCODE -eq 0) }
+    $script:GhBudgetExhausted = $false
+}
 
 $script:AllowedExternalClassifications = @(
     'github-outage',
@@ -195,7 +204,7 @@ function Test-CiBillingBlocked {
     $checkRuns = New-Object System.Collections.Generic.List[object]
     $totalCount = -1
     for ($page = 1; $page -le $maxPages; $page++) {
-        $listJson = Invoke-QuietCommand -FilePath gh -ArgumentList @('api', ('repos/' + $RepoSlug + '/commits/' + $Sha + '/check-runs?per_page=' + $perPage + '&page=' + $page))
+        $listJson = Invoke-GhBounded -ArgumentList @('api', ('repos/' + $RepoSlug + '/commits/' + $Sha + '/check-runs?per_page=' + $perPage + '&page=' + $page))
         if ($LASTEXITCODE -ne 0) { return $false }              # query error - fail closed
         try { $parsed = ((@($listJson) -join "`n") | ConvertFrom-Json) }
         catch { return $false }                                 # unparseable - fail closed
@@ -244,43 +253,11 @@ function Test-CiBillingBlocked {
     return $sawBilling
 }
 
-# One check-run's annotations, as a three-state verdict across every page up to
-# the same strict bound:
-#   'billing'      - carries GitHub's billing/payment failure annotation
-#   'none'         - reached a terminating empty page with no failure annotation
-#   'other'        - carries a failure annotation that is NOT billing
-#   'unverifiable' - query error, unparseable page, or the page bound was hit
-# Only 'billing' is positive evidence; 'other' and 'unverifiable' are treated as
-# a genuine failure by the caller, so the function still fails CLOSED.
-function Get-CheckRunBillingVerdict {
-    param([string]$RepoSlug, [string]$CheckRunId, [int]$MaxPages, [int]$PerPage)
-    $sawOtherFailure = $false
-    for ($page = 1; $page -le $MaxPages; $page++) {
-        $annJson = Invoke-QuietCommand -FilePath gh -ArgumentList @('api', ('repos/' + $RepoSlug + '/check-runs/' + $CheckRunId + '/annotations?per_page=' + $PerPage + '&page=' + $page))
-        if ($LASTEXITCODE -ne 0) { return 'unverifiable' }       # query error - fail closed
-        try { $annotations = @(((@($annJson) -join "`n") | ConvertFrom-Json)) }
-        catch { return 'unverifiable' }                          # unparseable - fail closed
-        if ($annotations.Count -eq 0) {
-            if ($sawOtherFailure) { return 'other' }
-            return 'none'                                        # no annotations at all - inconclusive, not disqualifying
-        }
-        foreach ($ann in $annotations) {
-            if ($null -eq $ann) { continue }
-            $level = ([string](Get-Field $ann 'annotation_level')).ToLowerInvariant()
-            $message = [string](Get-Field $ann 'message')
-            if ($level -eq 'failure' -and $message -match $script:BillingAnnotationPattern) { return 'billing' }
-            if ($level -eq 'failure') { $sawOtherFailure = $true }
-        }
-    }
-    return 'unverifiable'    # exceeded the page bound without a terminating empty page - fail closed
-}
-
 function Get-CiRunSnapshot {
     param([string]$RepoSlug, [string]$Sha)
     if ($null -eq (Get-Command gh -ErrorAction SilentlyContinue)) { return $null }
-    $null = Invoke-QuietCommand -FilePath gh -ArgumentList @('auth', 'status')
-    if ($LASTEXITCODE -ne 0) { return $null }
-    $rawJson = Invoke-QuietCommand -FilePath gh -ArgumentList @('run', 'list', '--repo', $RepoSlug, '--commit', $Sha, '--json', 'databaseId,attempt,name,workflowName,status,conclusion,updatedAt', '--limit', '50')
+    if (-not (Test-GhAuthenticated)) { return $null }
+    $rawJson = Invoke-GhBounded -ArgumentList @('run', 'list', '--repo', $RepoSlug, '--commit', $Sha, '--json', 'databaseId,attempt,name,workflowName,status,conclusion,updatedAt', '--limit', '50')
     if ($LASTEXITCODE -ne 0) { return $null }
     $runs = @()
     try {
@@ -448,10 +425,14 @@ $externalBlockerRecheckMinutes = 15
 if ($config.ContainsKey('EXTERNAL_BLOCKER_RECHECK_MINUTES')) {
     try { $externalBlockerRecheckMinutes = [int]$config['EXTERNAL_BLOCKER_RECHECK_MINUTES'] } catch { }
 }
+$ghBudgetSeconds = 40
+if ($config.ContainsKey('GH_BUDGET_SECONDS')) { $parsedBudget = 0; if ([int]::TryParse([string]$config['GH_BUDGET_SECONDS'], [ref]$parsedBudget) -and $parsedBudget -gt 0) { $ghBudgetSeconds = $parsedBudget } }
+Initialize-GhBudget -Seconds $ghBudgetSeconds
 
 $stateDir = Join-Path $env:LOCALAPPDATA 'HookMaker\state'
 $statePath = Join-Path $stateDir ('CiStatusCheck-' + (Get-ShortHash ($cwd.ToLowerInvariant() + '|' + $repoSlug.ToLowerInvariant())) + '.txt')
 $externalStatePath = Join-Path $stateDir ('CiStatusCheck-External-' + (Get-ShortHash ($cwd.ToLowerInvariant() + '|' + $repoSlug.ToLowerInvariant())) + '.txt')
+$script:GhAuthProjectKey = Get-ShortHash ($cwd.ToLowerInvariant() + '|' + $repoSlug.ToLowerInvariant()); $script:GhAuthSessionId = [string](Get-Field $hookInput 'session_id')
 
 # The record is sha / outcome / timestamp / evidence. The fourth line exists
 # because 'verified' is written for two different facts: CI was observed all
@@ -643,9 +624,11 @@ if ($null -eq $prefetchedSnapshot -and $stateSha -eq $sha) {
 $snapshot = $prefetchedSnapshot
 if ($null -eq $snapshot) {
     if ($null -eq (Get-Command gh -ErrorAction SilentlyContinue)) { exit 0 }    # silent degradation: never claim verified
-    $null = Invoke-QuietCommand -FilePath gh -ArgumentList @('auth', 'status')
-    if ($LASTEXITCODE -ne 0) { exit 0 }
     $snapshot = Get-CiRunSnapshot -RepoSlug $repoSlug -Sha $sha
+    if ($null -eq $snapshot -and $script:GhBudgetExhausted) {
+        $emit = Write-HookResult -EventName $eventName -Kind 'advisory' -Message ('CI CHECK: could not verify the checks of pushed commit ' + $sha7 + ' (' + $repoSlug + ') within the ' + $ghBudgetSeconds + ' s GitHub budget (GitHub or the network was slow). This is NOT a green result. Verify this exact commit yourself: gh run list --commit ' + $sha)
+        exit $emit.ExitCode
+    }
     if ($null -eq $snapshot) { exit 0 }    # API/permission failure: degrade without claiming anything
 }
 
