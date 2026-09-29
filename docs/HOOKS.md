@@ -318,6 +318,8 @@ Reading the two as the same would have silently disabled that gate in every proj
 
 No hook starts, stops or reconfigures a runner. Every GitHub call shares one budget per run (`GH_BUDGET_SECONDS`, default 40 s, at least 15 s under the registered timeout) and `gh auth status` is asked once per session; when the budget runs out the hook reports "could not verify ... within the budget" as a non-continuing note and never claims green.
 
+A pushed commit with no runs is normally a wait block; the one exception is a push that no workflow can ever run for - every push workflow carries a `paths`/`paths-ignore` filter that none of the pushed files satisfies (read from `.github/workflows/` and the remote-tracking ref's previous value). That commit gets a one-time note recorded as `no-ci-for-ref` - never green, since nothing was built or tested. A pull-request trigger, a branch filter, or a filter the hook cannot read with certainty keeps the block.
+
 ## `Github-Baseline-Check`
 
 **Runs:** pre-task (SessionStart).
