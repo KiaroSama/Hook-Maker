@@ -277,6 +277,18 @@ session transcripts for a project and prints each Stop hook's median, p95 and ma
 how often it reached its registered timeout. It is read-only; the durations come from an
 undocumented client field, so a missing value is counted rather than guessed.
 
+For a whole fleet without prompts, `scripts\Update-Fleet.ps1` is the non-interactive form of `32`:
+the same evaluation and the same installer call, one record/client pair at a time with its own
+recorded events, scope and (for the sync engine) profile/config. With no switch it is a dry run that
+prints counts (current / stale / pending-migration / unreachable / skipped) and changes nothing;
+`-Apply` repairs what is stale, `-OnlyProject <root or folder name>` limits it to one project, and
+each repeatable `-Marker <file>[:<pattern>]` marks a runtime stale when the file (relative to the
+hook's runtime folder) is missing or lacks the text. Its state comes only from the registry and the
+installed files, so an interrupted `-Apply` resumes by running it again. `-Compare` byte-compares
+every managed runtime against its source. Each run writes `logs\Update-Fleet_<UTC>.log`, one line
+per registration; the exit code is the number of failed registrations. A project folder that no
+longer exists is reported as unreachable and never touched.
+
 ## Getting hook status (`33`)
 
 Item **`33` Get hook status** scans a path you choose, reports every installed hook it can find —
