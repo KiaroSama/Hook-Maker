@@ -188,7 +188,7 @@ function Get-ActiveMarkerPath {
 }
 
 function Write-ActiveMarker {
-    param([int]$OwnerPid, [string]$RunId, [string]$ProjectFingerprint, [string]$ProjectPath)
+    param([int]$OwnerPid, [string]$RunId, [string]$ProjectFingerprint, [string]$ProjectPath, [string]$CommandFingerprint = '')
     try {
         $path = Get-ActiveMarkerPath -RunId $RunId -ProjectPath $ProjectPath
         if ([string]::IsNullOrWhiteSpace($path)) { return }
@@ -217,6 +217,7 @@ function Write-ActiveMarker {
             ownerProcessStartUtc = $startUtc
             ownerExecutablePath  = $exePath
             projectFingerprint   = $ProjectFingerprint
+            commandFingerprint   = $CommandFingerprint
             markerCreatedUtc     = (Get-Date).ToUniversalTime().ToString('o')
         }
         # Atomic-ish write: temp + force-move, so a consumer never reads a

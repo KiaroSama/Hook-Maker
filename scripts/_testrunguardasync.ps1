@@ -155,3 +155,18 @@
     $stringifiedStart = '[string](Get-Field $Doc ' + [char]39 + 'ownerProcessStartUtc' + [char]39 + ')'
     Check 'the owner start time is not read through [string] (it would be parsed as LOCAL time)' (
         $sourceText.IndexOf($stringifiedStart, [System.StringComparison]::Ordinal) -lt 0) $stringifiedStart
+
+    # ---- no run identity: the COMMAND must match too (DD-08) -------------
+    # With no runId on either side, the repository state alone used to bind a
+    # live marker, so a DIFFERENT command's run in the same state deferred this
+    # one and silenced its missing-evidence warning.
+    $liveDoc = [pscustomobject]@{ schema = 2; runId = 'r-other'; ownerPid = $PID; ownerProcessStartUtc = $selfStart; ownerExecutablePath = $selfExe; projectFingerprint = 'state-1'; commandFingerprint = 'cmd-B' }
+    $noIdOther = Get-DeferringActiveRun -ActiveEntries @([pscustomobject]@{ Doc = $liveDoc }) -RunId '' -CommandFingerprint 'cmd-A' -StateFingerprint 'state-1'
+    Check 'no run identity: a live marker for ANOTHER command does not defer' ($null -eq $noIdOther)
+    $noIdSame = Get-DeferringActiveRun -ActiveEntries @([pscustomobject]@{ Doc = $liveDoc }) -RunId '' -CommandFingerprint 'cmd-B' -StateFingerprint 'state-1'
+    Check 'no run identity: the same command in the same state still defers' ($null -ne $noIdSame)
+    $legacyDoc = [pscustomobject]@{ schema = 2; runId = 'r-old'; ownerPid = $PID; ownerProcessStartUtc = $selfStart; ownerExecutablePath = $selfExe; projectFingerprint = 'state-1' }
+    $noIdLegacy = Get-DeferringActiveRun -ActiveEntries @([pscustomobject]@{ Doc = $legacyDoc }) -RunId '' -CommandFingerprint 'cmd-A' -StateFingerprint 'state-1'
+    Check 'no run identity: a marker that names no command cannot vouch for this one' ($null -eq $noIdLegacy)
+    $runnerText = [System.IO.File]::ReadAllText((Join-Path (Split-Path -Parent $PSScriptRoot) 'scripts\_guardedstate.ps1'))
+    Check 'the runner records the command fingerprint in its active marker' ($runnerText -match 'commandFingerprint\s*=\s*\$CommandFingerprint')

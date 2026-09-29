@@ -117,11 +117,14 @@ function Get-DeferringActiveRun {
             if (-not [string]::Equals($markerRunId, $wanted, [System.StringComparison]::OrdinalIgnoreCase)) { continue }
         }
         else {
-            # No run identity anywhere: the repository state is then the only
-            # binding left, and without it nothing may be claimed.
-            if ([string]::IsNullOrWhiteSpace($StateFingerprint)) { continue }
+            # No run identity anywhere: the command AND the repository state are
+            # then the only binding left, and without both nothing may be
+            # claimed - a live marker for another command (or one that names no
+            # command, from an older runner) says nothing about this run.
+            if ([string]::IsNullOrWhiteSpace($StateFingerprint) -or [string]::IsNullOrWhiteSpace($CommandFingerprint)) { continue }
             $markerFingerprint = [string](Get-Field $doc 'projectFingerprint')
             if (-not [string]::Equals($markerFingerprint, $StateFingerprint, [System.StringComparison]::OrdinalIgnoreCase)) { continue }
+            if (-not [string]::Equals([string](Get-Field $doc 'commandFingerprint'), $CommandFingerprint, [System.StringComparison]::OrdinalIgnoreCase)) { continue }
         }
         if (-not (Test-ActiveMarkerOwnerLive -Doc $doc)) { continue }
         return $doc

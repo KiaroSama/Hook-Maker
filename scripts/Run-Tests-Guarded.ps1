@@ -411,7 +411,7 @@ try {
     # The run is genuinely live from here on, so the marker goes up now and
     # comes down in finally - never earlier (nothing is running yet) and never
     # later (a crash between start and here would leave it unrecorded).
-    Write-ActiveMarker -OwnerPid $PID -RunId $RunId -ProjectFingerprint $ProjectFingerprint -ProjectPath $WorkingDirectory
+    Write-ActiveMarker -OwnerPid $PID -RunId $RunId -ProjectFingerprint $ProjectFingerprint -ProjectPath $WorkingDirectory -CommandFingerprint $computedCommandFp
     # Detach stdin NOW: an interactive prompt then reads EOF and the test fails
     # fast and honestly, instead of blocking until a timeout hides the cause.
     try { $process.StandardInput.Close() } catch { }
