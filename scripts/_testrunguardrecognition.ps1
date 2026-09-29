@@ -81,6 +81,13 @@
     }
     finally { $env:PATH = $savedPath }
 
+    # A here-string opener is a TOKEN: `user@"` glued to a word is plain text and
+    # must not hide the next line from recognition; a real `= @'` still does.
+    $glued = Fire -HookPath $hc.Script -Cwd $Proj -EventName 'PreToolUse' -Command ('git commit -m "fix: mail me@"' + "`npytest -q tests/") -LocalAppData $hc.LocalAppData
+    Check 'a glued @" is text: the pytest line after it is still recognised' ((Get-Message $glued.Out) -match 'TEST RUN GUARD') $glued.Out
+    $realHere = Fire -HookPath $hc.Script -Cwd $Proj -EventName 'PreToolUse' -Command ("`$x = @'`npytest -q tests/`n'@") -LocalAppData $hc.LocalAppData
+    Check 'a real here-string body is still data, never a command' ($realHere.Exit -eq 0 -and $realHere.Out -eq '') $realHere.Out
+
     # =====================================================================
     Write-Host '--- a recognised RAW command is blocked with a VALID guarded replacement ---' -ForegroundColor Cyan
     $r = Fire -HookPath $hc.Script -Cwd $Proj -EventName 'PreToolUse' -Command 'pytest -q tests/' -LocalAppData $hc.LocalAppData

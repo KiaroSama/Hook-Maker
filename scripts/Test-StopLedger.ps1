@@ -372,6 +372,17 @@ Check 'prose on the NEXT line is not absorbed into an empty declaration' (
 # ---- the originating user task (L02) --------------------------------------
 . (Join-Path $PSScriptRoot '_teststoptaskidentity.ps1')
 
+# ---- the chain key names the client ---------------------------------------
+$savedClient = $env:HOOKMAKER_CLIENT
+try {
+    foreach ($clientId in @('claude', 'codex')) {
+        $env:HOOKMAKER_CLIENT = $clientId
+        $keys = Get-StopLedgerKeys -HookInput (New-StopInput -Session 'KEY' -Continuation $false -Cwd 'C:\proj\keys') -HookName 'Some-Gate'
+        Check ('the chain key is client|session|agent for ' + $clientId) ($keys.ChainKey -like ($clientId + '|KEY|*') -and $keys.EntryKey -like ($keys.ChainKey + '|SomeGate')) ($keys.ChainKey + ' / ' + $keys.EntryKey)
+    }
+}
+finally { $env:HOOKMAKER_CLIENT = $savedClient }
+
 # ---- negative control ----------------------------------------------------
 # Without this, a Test-StopStandDown that returned a constant $true would pass
 # most of the assertions above.

@@ -219,6 +219,15 @@ try {
     Write-Host '--- cooldown and stop_hook_active remain intact ---' -ForegroundColor Cyan
     $r2 = Fire -Cwd $cf
     Check 'repeated Stop within the cooldown window (same unchanged commit) stays silent' ($r2.Exit -eq 0 -and $r2.Out -eq '') $r2.Out
+    # The cooldown starts only when a block was really admitted: an admission the
+    # ledger refuses (here: the same finding already claimed this session) must
+    # not stamp it, or the reminder is silenced for the whole window.
+    $cfStamps = @(Get-ChildItem -LiteralPath (Join-Path $FakeLocalAppData 'HookMaker\state') -Filter 'CloudflareDeploy-*.txt' -ErrorAction SilentlyContinue)
+    Check 'an admitted block starts the cooldown (a stamp exists)' ($cfStamps.Count -ge 1) ''
+    foreach ($stamp in $cfStamps) { Remove-Item -LiteralPath $stamp.FullName -Force }
+    $r3 = Fire -Cwd $cf
+    $cfStampsAfter = @(Get-ChildItem -LiteralPath (Join-Path $FakeLocalAppData 'HookMaker\state') -Filter 'CloudflareDeploy-*.txt' -ErrorAction SilentlyContinue)
+    Check 'a refused admission (finding already claimed) writes no cooldown stamp' ($r3.Out -eq '' -and $cfStampsAfter.Count -eq 0) ($r3.Out + ' stamps=' + $cfStampsAfter.Count)
     $cf2 = New-ReadyWorkersRepo 'CfProjGuard'
     # stop_hook_active means "a Stop gate blocked and the agent is coming
     # back" - NOT "YOU blocked". Thirteen gates share the one flag, so a gate

@@ -113,6 +113,9 @@ function Remove-PowerShellHereStrings {
             if ($at -ge 0 -and ($open -lt 0 -or $at -lt $open)) { $open = $at; $quote = $marker.Substring(1) }
         }
         if ($open -lt 0 -or $line.Substring($open + 2).Trim() -ne '') { [void]$out.Add($line); continue }
+        # An opener is a TOKEN: glued to a word (`user@"`) it is plain text, and
+        # treating it as a here-string hid every following line from recognition.
+        if ($open -gt 0 -and $line[$open - 1] -match '[A-Za-z0-9_.\-]') { [void]$out.Add($line); continue }
         [void]$out.Add($line.Substring(0, $open))
         $closer = $quote + '@'
     }

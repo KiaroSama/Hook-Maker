@@ -320,7 +320,7 @@ function Get-StopLedgerKeys {
     param([Parameter(Mandatory = $true)]$HookInput, [Parameter(Mandatory = $true)][string]$HookName)
     $session = [string](Get-Field $HookInput 'session_id')
     $agent = Get-StopAgentKey -HookInput $HookInput
-    $client = [string](Get-HookClientId -HookInput $HookInput)
+    $client = [string](Get-HookClientId)
     $chainKey = $client + '|' + $session + '|' + $agent
     # The hook's SEMANTIC name, so a global and a project registration of the
     # same hook share one entry instead of double-delivering.
