@@ -703,6 +703,7 @@ try {
     # -ReportExternalBlocker exception scenarios (recording, notices, invalidation).
     . (Join-Path $PSScriptRoot '_testcistatuscheckexternal.ps1')
     . (Join-Path $PSScriptRoot '_testcistatusbudget.ps1')
+    . (Join-Path $PSScriptRoot '_testcistatuspaths.ps1')
     . (Join-Path $PSScriptRoot '_testselfhostedrunners.ps1')
 
     # =====================================================================

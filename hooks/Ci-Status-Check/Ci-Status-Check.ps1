@@ -115,6 +115,7 @@ $ErrorActionPreference = 'Stop'
 # Optional sibling and shared deadline library: a runtime installed before they existed keeps today's behaviour.
 $budgetLibPath = Join-Path $PSScriptRoot '..\_budgetlib.ps1'
 if (Test-Path -LiteralPath $budgetLibPath -PathType Leaf) { . $budgetLibPath; Initialize-HookDeadline -RuntimeDirectory $PSScriptRoot }
+$pathsFilterPath = Join-Path $PSScriptRoot '_pathsfilter.ps1'; if (Test-Path -LiteralPath $pathsFilterPath -PathType Leaf) { . $pathsFilterPath }
 $ghBudgetPath = Join-Path $PSScriptRoot '_ghbudget.ps1'
 if (Test-Path -LiteralPath $ghBudgetPath -PathType Leaf) { . $ghBudgetPath }
 if ($null -eq (Get-Command -Name 'Invoke-GhBounded' -ErrorAction SilentlyContinue)) {
@@ -163,7 +164,7 @@ function Get-PushedHeadInfo {
     }
     $sha = ([string](Invoke-QuietCommand -FilePath git -ArgumentList @('-C', $Cwd, 'rev-parse', 'HEAD'))).Trim()
     if ($LASTEXITCODE -ne 0 -or $sha -eq '') { return $null }
-    return [pscustomobject]@{ RepoSlug = $repository.Repository; Branch = $repository.Branch; Sha = $sha }
+    return [pscustomobject]@{ RepoSlug = $repository.Repository; Branch = $repository.Branch; Sha = $sha; TrackingRef = $repository.TrackingRef }
 }
 
 # Queries the exact-SHA CI state and classifies it identically for the normal
@@ -649,6 +650,12 @@ if ($snapshot.Runs.Count -eq 0) {
     # Self-hosted and manual-only: a push starts no run BY DESIGN (plan 012 step 6b). Never green.
     if (Test-ManualSelfHostedRepo -ProjectRoot $cwd) {
         Write-Block -Outcome 'pending' -Reason ('CI CHECK: final CI not yet dispatched for commit ' + $sha7 + ' on ' + $branch + ' (' + $repoSlug + '). This repository runs CI on self-hosted runners, which stay manual: a push starts no run. Dispatch the one final run for this exact SHA (gh workflow run <workflow> --ref ' + $branch + '), then verify it - never for a GitHub- or bot-created branch (Dependabot included). No hook starts, stops or reconfigures a runner.')
+    }
+    # Every push workflow filters on paths the push did not touch: no wait and no PR
+    # would ever start a run. A note, never green; any other shape keeps the block.
+    if ($null -ne (Get-Command -Name 'Test-NoWorkflowForChangedPaths' -ErrorAction SilentlyContinue) -and (Test-NoWorkflowForChangedPaths -ProjectRoot $cwd -Branch $branch -ChangedFiles @(Get-PushChangedFiles -Cwd $cwd -Upstream $info.TrackingRef -Sha $sha))) {
+        Save-State -Outcome 'verified' -Evidence 'no-ci-for-ref'
+        exit (Write-HookResult -EventName $eventName -Kind 'advisory' -Message ('CI CHECK: no workflow is configured to run for the files pushed commit ' + $sha7 + ' changed (every push workflow in ' + $repoSlug + ' filters on paths this push did not touch), so no run will ever appear. This is NOT a green result: nothing was built or tested.')).ExitCode
     }
     Write-Block -Outcome 'pending' -Reason ('CI CHECK: workflows exist but no runs are registered yet for pushed commit ' + $sha7 + ' (' + $repoSlug + '). Do not declare the work complete: wait briefly, then verify the checks for this exact commit with: gh run list --commit ' + $sha)
 }
