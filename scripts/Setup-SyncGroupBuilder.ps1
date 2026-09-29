@@ -502,11 +502,23 @@ function Invoke-CreateGroup {
         }
         foreach ($project in $installMembers) {
             Write-Log 'INFO' 'INSTALL' ('Installing engine hook -> ' + $project.Name + ' | root=' + $project.Root + ' | profile=' + $groupProfile.id + ' | client=' + $clients + ' | events=' + ($events -join ','))
-            $installOutput = & $InstallScript -Profile $groupProfile.id -ConfigPath $ConfigPath -TargetProject $project.Root @clientArgs *>&1
-            foreach ($line in @($installOutput)) {
-                Write-Log 'INFO' 'INSTALL' ([string]$line)
+        }
+        # Same structured-result contract as every other install path: a partial
+        # or unreadable result is never printed as "+ hook installed".
+        $batch = Invoke-HookInstallForTargets -InstallScript $InstallScript -Targets @($installMembers) -BaseArgs @{ Profile = $groupProfile.id; ConfigPath = $ConfigPath } -ExtraArgs @($clientArgs)
+        foreach ($entry in @($batch.Results)) {
+            foreach ($line in @($entry.Verdict.Output)) { Write-Log 'INFO' 'INSTALL' ([string]$line) }
+            if ($entry.Verdict.Ok) {
+                Write-Host ('  ' + (Get-Painted '+ hook installed in' $C.Green) + ' ' + (Get-Painted $entry.Target.Name $C.Bold) + '  ' + (Get-Painted $entry.Target.Root $C.Gray))
             }
-            Write-Host ('  ' + (Get-Painted '+ hook installed in' $C.Green) + ' ' + (Get-Painted $project.Name $C.Bold) + '  ' + (Get-Painted $project.Root $C.Gray))
+            else {
+                Write-ErrorLine ('  x NOT installed in ' + $entry.Target.Name + '  (' + [string]$entry.Verdict.Summary + ')')
+                Write-Log 'ERROR' 'INSTALL' ('Install did not succeed in ' + $entry.Target.Root + ' | ' + [string]$entry.Verdict.Summary)
+            }
+        }
+        if (@($batch.Failures).Count -gt 0) {
+            Write-ErrorLine ('  ' + @($batch.Failures).Count + ' install(s) did NOT succeed:')
+            foreach ($failure in @($batch.Failures)) { Write-ErrorLine ('    - ' + $failure) }
         }
     }
 
@@ -518,7 +530,7 @@ function Invoke-CreateGroup {
     if ($null -ne $script:LogPath) {
         Write-Host (Get-Painted ('  Log: ' + $script:LogPath) $C.Dim)
     }
-    $installSummary = if ($NoInstall) { 'not installed (-NoInstall)' } else { $clients + ' in ' + @($installMembers).Count + ' of ' + $allMembers.Count + ' project(s)' }
+    $installSummary = if ($NoInstall) { 'not installed (-NoInstall)' } elseif (@($installMembers).Count -eq 0) { $clients + ' in 0 of ' + $allMembers.Count + ' project(s)' } else { $clients + ' in ' + $batch.InstalledCount + ' of ' + $allMembers.Count + ' project(s), ' + @($batch.Failures).Count + ' failed' }
     Write-Log 'INFO' 'DONE' ('Sync group applied: ' + $groupProfile.id + ' | routes=' + $routeCount + ' | events=' + ($events -join ',') + ' | install=' + $installSummary + ' | durationMs=' + $stopwatch.ElapsedMilliseconds)
     $script:LastGroupProjects = @($projects)
     # Carried to the hook flow in the same batch so "which client" is asked once.

@@ -13,6 +13,7 @@
 #   _testwizardselectall.ps1 Select All + installer idempotency
 #   _testwizardprompts.ps1   prompt robustness, numbering, malformed config
 #   _testwizardtemplates.ps1 the guided hook templates, generated and run
+#   _testwizardinstallresult.ps1 install loops honour a partial installer result
 #   _testwizardlogs.ps1      log retention + the HOOKMAKER_LOG_DIR redirect
 #   _testwizardrelocate.ps1  the renamed/moved-project repair decisions
 #
@@ -69,6 +70,9 @@ try {
 
     # The guided templates, generated through the wizard and executed.
     . (Join-Path $PSScriptRoot '_testwizardtemplates.ps1')
+
+    # The install loops read the installer's structured result.
+    . (Join-Path $PSScriptRoot '_testwizardinstallresult.ps1')
 
     # Log retention and the log-directory redirect (uses the harness's Invoke-Wizard).
     . (Join-Path $PSScriptRoot '_testwizardlogs.ps1')
