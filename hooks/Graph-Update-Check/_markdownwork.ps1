@@ -37,6 +37,7 @@ function Get-MarkdownFolderScan {
                 continue
             }
             if ($child.Extension -ne '.md') { continue }
+            if ($FilesLeft.Value -le 0) { $partial = $true; break }    # the cap is per file, not per directory
             $count++; $FilesLeft.Value--
             if ($child.LastWriteTimeUtc -gt $newest) { $newest = $child.LastWriteTimeUtc }
         }

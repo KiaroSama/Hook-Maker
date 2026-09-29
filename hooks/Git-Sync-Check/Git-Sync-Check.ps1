@@ -382,6 +382,7 @@ $gitSyncConfig = Read-HookEnv (Join-Path $PSScriptRoot '.env')
 if ($gitSyncConfig.ContainsKey('FETCH_MIN_INTERVAL_MINUTES')) { $parsedInterval = 0; if ([int]::TryParse([string]$gitSyncConfig['FETCH_MIN_INTERVAL_MINUTES'], [ref]$parsedInterval) -and $parsedInterval -ge 0 -and $parsedInterval -le 1440) { $fetchIntervalMinutes = $parsedInterval } }
 $fetchStampPath = Join-Path $stateDir ('GitSyncCheck-fetch-' + (Get-ShortHash $repoCommonDir.ToLowerInvariant()) + '.txt')
 $fetchDue = $true
+$fetch = [pscustomobject]@{ Ok = $true }    # a skipped fetch: the stamp proves the last one succeeded
 if ($fetchIntervalMinutes -gt 0) {
     try { if ((Test-Path -LiteralPath $fetchStampPath -PathType Leaf) -and ((Get-Item -LiteralPath $fetchStampPath).LastWriteTimeUtc -gt [DateTime]::UtcNow.AddMinutes(-$fetchIntervalMinutes))) { $fetchDue = $false } } catch { $fetchDue = $true }
 }

@@ -261,8 +261,10 @@
         # schemaVersion 2 added 'preservedUserConfig' as the LAST field. The order
         # is part of the contract, so a new field goes at the end and the version
         # moves with it - a consumer pinned to 1 must not silently read a 2.
+        # 'timeoutSeconds' (2026-09-29) is an OPTIONAL trailing field every
+        # consumer reads by name or ignores, so the version stays 2.
         $ownExpectedFields = @('schemaVersion', 'recordId', 'friendlyName', 'client', 'scope', 'projectKey',
-            'registrationName', 'runtimeScriptRelativePath', 'runtimeManifest', 'preservedUserConfig')
+            'registrationName', 'runtimeScriptRelativePath', 'runtimeManifest', 'preservedUserConfig', 'timeoutSeconds')
         foreach ($ownClient in @('claude', 'codex')) {
             $ownJson = $ownDocuments[$ownClient].Json
             $ownFields = @($ownJson.PSObject.Properties | ForEach-Object { $_.Name })

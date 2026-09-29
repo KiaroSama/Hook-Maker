@@ -159,7 +159,7 @@ try {
     Check 'explicit venv interpreter on C: fires with the Scripts parent as target, never queried' (
         $venvC.Count -eq 1 -and $venvC[0] -match 'requests into C:\\Tools\\venv on C:' -and $script:QueryCalls.Count -eq $before) ($venvC -join ' || ')
     $projectDrive = [System.IO.Path]::GetPathRoot($Project).TrimEnd('\')
-    $relative = $(try { $script:InstallLocationSystemDrive = $projectDrive; @(Get-Advice '..\tools\py.exe -m pip install x') } finally { $script:InstallLocationSystemDrive = 'C:' })
+    $relative = @(try { $script:InstallLocationSystemDrive = $projectDrive; Get-Advice '..\tools\py.exe -m pip install x' } finally { $script:InstallLocationSystemDrive = 'C:' })
     Check 'a relative interpreter path outside the project resolves against the project root, never queried' (
         $relative.Count -eq 1 -and $relative[0] -match ([regex]::Escape((Join-Path $Work 'tools'))) -and $script:QueryCalls.Count -eq $before) ($relative -join ' || ')
     $null = Get-Advice 'python -m pip install requests'

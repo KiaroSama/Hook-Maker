@@ -518,7 +518,7 @@ try {
             # JSON-escaped \\ form the parser has to survive.
             $escapedTarget = $commandTarget.Replace('\', '\\')
             $commandString = 'powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File \"' + $escapedTarget + '\"'
-            $registrationPath = Join-Path $Base ([string]$capability.PSObject.Properties[$Scope + 'Registration'].Value)
+            $registrationPath = Join-Path $Base ([string]$capability[$Scope + 'Registration'])
             $document = switch ($CommandForm) {
                 'nameDrop' { '{"description":"this document only mentions Test-Temp-Cleanup by name","hooks":{}}' }
                 'malformed' { '{"hooks": broken json naming Test-Temp-Cleanup' }

@@ -497,7 +497,7 @@ function Get-InstallIntegrity {
                     -Scope ([string]$Record.scope) -ProjectRoot $recordProjectRoot `
                     -ConfigPath $configPath -IncludeConfig:$isEngine `
                     -ProfileId ([string]$Record.profile) `
-                    -TimeoutSeconds $(if ($null -ne $subrecord.PSObject.Properties['timeout']) { [int]$subrecord.timeout } else { 0 }))
+                    -TimeoutSeconds $(if ($null -ne $subrecord.PSObject.Properties['timeout']) { [int]$subrecord.timeout } else { $script:DefaultHookTimeoutSeconds }))
         }
         catch {
             Add-Component -Name $client -Status 'skip' -Detail ('this client''s expected runtime content cannot be derived: ' + $_.Exception.Message)

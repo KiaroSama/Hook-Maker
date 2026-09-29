@@ -141,8 +141,12 @@ try {
     Check 'oversized memory.md is truncated with a note' ($r.Out -like '*truncated at 50 chars*') $r.Out
     # A negative MAX_CHARS used to crash the hook (Substring with a negative
     # length); an out-of-range value now keeps the default of 8,000.
+    # Its own project: the hook stays silent on a memory it already injected.
+    $proj2b = New-Proj 'BigMemoryNegativeCap'
+    New-Item -ItemType Directory -Path (Join-Path $proj2b '.ai') -Force | Out-Null
+    Write-Utf8 (Join-Path $proj2b '.ai\memory.md') ('X' * 500)
     $negativeCapHook = New-ConfiguredHookCopy -SourceHook $MemoryHook -FileName 'Ai-Memory-Load.ps1' -EnvOverrides @{ MAX_CHARS = '-5' }
-    $r = Fire -Cwd $proj2 -HookPath $negativeCapHook
+    $r = Fire -Cwd $proj2b -HookPath $negativeCapHook
     Check 'an out-of-range MAX_CHARS keeps the default (no crash, memory injected untruncated)' (
         $r.Exit -eq 0 -and $r.Err -eq '' -and $r.Out -match 'XXXXXXXXXX' -and $r.Out -notlike '*truncated at*') ($r.Out + '|' + $r.Err)
     # Every numeric .env read across hooks\ is parsed with a range, never cast.
