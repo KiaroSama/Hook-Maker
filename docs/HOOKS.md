@@ -366,6 +366,8 @@ Patterns are written and compared in **insertion order**, never alphabetically s
 
 A project that deliberately re-protects one of those paths with its own positive `EXTRA_PATTERNS` entry still wins. Project installs create a deterministic pre-push chain: Ignore → Secrets → Utf8 → preserved previous hook. Large-File-Check remains advisory and never decides whether a push may proceed. Optional extra patterns can be set in `.env`. Inside a git work tree it always works on the REPOSITORY root (`git rev-parse --show-toplevel`), never on a subfolder the session's working directory drifted into - before this, such a drift planted a stray `.gitignore` full of rooted patterns in that subfolder; outside a work tree it does nothing, as before.
 
+Ignore patterns harvested from the project's own rule files (AGENTS.md, CLAUDE.md and the agent rule folders) are tracked project text, so by default (`RULE_FILE_PATTERNS=advisory`) they are only reported, once per set - never written into `.gitignore` and never grounds for a push block; `write` adds them without protecting them, and `write-and-protect` restores the earlier behaviour. The built-in set and `EXTRA_PATTERNS` are unchanged.
+
 ## `Dependency-Version-Check`
 
 **Runs:** pre-task (SessionStart, UserPromptSubmit) + post-task (Stop, SubagentStop).

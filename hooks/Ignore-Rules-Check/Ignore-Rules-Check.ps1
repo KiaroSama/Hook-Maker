@@ -68,6 +68,12 @@ if ($config.ContainsKey('EXTRA_PATTERNS')) {
 }
 
 # Extract only path-like backtick tokens from explicit ignore/local-only rules.
+# They come from TRACKED project text (a cloned repository's instructions, a typo
+# on a "do not commit" line), so by default they are only REPORTED: written into
+# .gitignore and protected they could hide and push-block the project's own files.
+# RULE_FILE_PATTERNS=write adds them without protecting them; =write-and-protect
+# restores the earlier behaviour.
+$harvested = New-Object System.Collections.Generic.List[string]
 $ruleFiles = New-Object System.Collections.Generic.List[string]
 foreach ($name in @('AGENTS.md', 'CLAUDE.md')) {
     $path = Join-Path $cwd $name
@@ -90,7 +96,7 @@ foreach ($file in $ruleFiles) {
             if ($item.StartsWith('./')) { $item = $item.Substring(2) }
             if (-not $item.StartsWith('/') -and -not $item.StartsWith('**/')) { $item = '/' + $item }
             if ($item -match '^/?[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.*-]+)*/?$' -or $item.StartsWith('**/')) {
-                [void]$patterns.Add($item)
+                [void]$harvested.Add($item)
             }
         }
     }
@@ -100,11 +106,15 @@ foreach ($file in $ruleFiles) {
 # (`!/.env.example`) AFTER the broader ignore it un-ignores (`/.env.*`). An alphabetical
 # sort would move every `!`-prefixed negation before its `/`-prefixed pattern (`!` < `/`
 # in ASCII), silently making every negation exception dead on arrival once written.
+$ruleFileMode = 'advisory'
+if ($config.ContainsKey('RULE_FILE_PATTERNS') -and @('advisory', 'write', 'write-and-protect') -contains ([string]$config['RULE_FILE_PATTERNS']).Trim().ToLowerInvariant()) { $ruleFileMode = ([string]$config['RULE_FILE_PATTERNS']).Trim().ToLowerInvariant() }
+$harvestedOnly = @($harvested | Select-Object -Unique | Where-Object { $patterns -notcontains $_ })
+if ($ruleFileMode -ne 'advisory') { foreach ($item in $harvestedOnly) { [void]$patterns.Add($item) } }
 $patterns = @($patterns | Select-Object -Unique)
 # The PROTECTED set (used to flag a tracked/staged path that must be untracked) excludes
 # negation/allow rules - a negation match means "explicitly allowed to stay tracked", not
 # "protected". Only non-negated positive patterns are ever grounds for a block.
-$protectedPatterns = @($patterns | Where-Object { -not $_.StartsWith('!') })
+$protectedPatterns = @($patterns | Where-Object { -not $_.StartsWith('!') -and -not ($ruleFileMode -eq 'write' -and $harvestedOnly -contains $_) })
 
 $ignorePath = Join-Path $cwd '.gitignore'
 $existing = ''
@@ -233,9 +243,26 @@ foreach ($paths in $batches) {
     }
 }
 
-if ($missing.Count -eq 0 -and $tracked.Count -eq 0 -and $staged.Count -eq 0) { exit 0 }
+# Rule-file patterns in advisory mode: said once per set, never written, never a block.
+$adviceLine = ''
+$ruleAdvice = @($harvestedOnly | Where-Object { $ruleFileMode -eq 'advisory' -and $existingLines -notcontains $_ })
+if ($ruleAdvice.Count -gt 0 -and -not $GitPrePush) {
+    $adviceState = Join-Path $env:LOCALAPPDATA ('HookMaker\state\IgnoreRulesCheck-rules-' + (Get-ShortHash $cwd.ToLowerInvariant()) + '.txt')
+    $adviceFp = Get-ShortHash ((@($ruleAdvice | Sort-Object)) -join '|')
+    $seenFp = ''; try { if (Test-Path -LiteralPath $adviceState -PathType Leaf) { $seenFp = ([System.IO.File]::ReadAllText($adviceState)).Trim() } } catch { }
+    if ($seenFp -ne $adviceFp) {
+        $adviceLine = 'Your rule files (AGENTS.md, CLAUDE.md, agent rules) ask for these ignore patterns; they were NOT written or protected - add them to EXTRA_PATTERNS in this hook''s .env, or to .gitignore yourself, if they are right: ' + ($ruleAdvice -join ', ')
+        try { New-Item -ItemType Directory -Path (Split-Path -Parent $adviceState) -Force | Out-Null; [System.IO.File]::WriteAllText($adviceState, $adviceFp) } catch { }
+    }
+}
+if ($missing.Count -eq 0 -and $tracked.Count -eq 0 -and $staged.Count -eq 0) {
+    if ($adviceLine -eq '') { exit 0 }
+    $emit = Write-HookResult -EventName $eventName -Kind $(if ($isStopEvent) { 'advisory' } else { 'context' }) -Message ('IGNORE RULES CHECK (' + $cwd + '):' + "`n" + $adviceLine)
+    exit $emit.ExitCode
+}
 $lines = New-Object System.Collections.Generic.List[string]
 [void]$lines.Add('IGNORE RULES CHECK (' + $cwd + '):')
+if ($adviceLine -ne '') { [void]$lines.Add($adviceLine) }
 if ($missing.Count -gt 0) { [void]$lines.Add('Auto-added ' + $missing.Count + ' missing pattern(s) to .gitignore: ' + ($missing -join ', ')) }
 if ($tracked.Count -gt 0) { [void]$lines.Add('TRACKED protected paths must be untracked before push (preserve local files): ' + (($tracked | Sort-Object -Unique) -join ', ')) }
 if ($staged.Count -gt 0) { [void]$lines.Add('STAGED protected paths must be removed from the index before push: ' + (($staged | Sort-Object -Unique) -join ', ')) }
