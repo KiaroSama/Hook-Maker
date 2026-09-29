@@ -31,7 +31,7 @@ function New-IsolatedHookCopy {
     $dir = Join-Path $Work ('hookcopy-' + [guid]::NewGuid().ToString('N').Substring(0, 6))
     New-Item -ItemType Directory -Path $dir -Force | Out-Null
     Copy-HookPackage -Destination $dir
-    Copy-Item $HookLib (Join-Path $Work '_hooklib.ps1') -Force
+    Copy-TestRuntimeLibraries -SourceHookLib $HookLib -Destination (Join-Path $Work '_hooklib.ps1')
     # The shared tokenizer is a required sibling of _commandanalysis.ps1 since it
     # moved to hooks\_commandtokens.ps1; the repository layout keeps it one level up.
     Copy-Item (Join-Path (Split-Path -Parent $HookLib) '_commandtokens.ps1') (Join-Path $Work '_commandtokens.ps1') -Force

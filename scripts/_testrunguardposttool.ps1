@@ -164,7 +164,7 @@
     $shipDir = Join-Path $Work ('hookship-' + [guid]::NewGuid().ToString('N').Substring(0, 6))
     New-Item -ItemType Directory -Path (Join-Path $shipDir 'scripts') -Force | Out-Null
     Copy-HookPackage -Destination $shipDir
-    Copy-Item $HookLib (Join-Path (Split-Path -Parent $shipDir) '_hooklib.ps1') -Force
+    Copy-TestRuntimeLibraries -SourceHookLib $HookLib -Destination (Join-Path (Split-Path -Parent $shipDir) '_hooklib.ps1')
     Copy-GuardedRunner -RepoRoot $RepoRoot -DestinationScriptsDir (Join-Path $shipDir 'scripts')   # <- shipped by the installer
     $shipFakeLocal = Join-Path $shipDir '_fakelocal'; New-Item -ItemType Directory -Path $shipFakeLocal -Force | Out-Null
     $bare2 = Join-Path $Work 'BareProject2'; New-Item -ItemType Directory -Path $bare2 -Force | Out-Null
@@ -190,7 +190,7 @@
     $mgDir = Join-Path $Work ('managed-' + [guid]::NewGuid().ToString('N').Substring(0, 6))
     New-Item -ItemType Directory -Path (Join-Path $mgDir 'scripts') -Force | Out-Null
     Copy-HookPackage -Destination $mgDir
-    Copy-Item $HookLib (Join-Path (Split-Path -Parent $mgDir) '_hooklib.ps1') -Force
+    Copy-TestRuntimeLibraries -SourceHookLib $HookLib -Destination (Join-Path (Split-Path -Parent $mgDir) '_hooklib.ps1')
     Copy-GuardedRunner -RepoRoot $RepoRoot -DestinationScriptsDir (Join-Path $mgDir 'scripts')     # managed - has the marker
     $mgHook = Join-Path $mgDir 'Test-Run-Guard.ps1'
     $mgLocal = Join-Path $mgDir '_fakelocal'; New-Item -ItemType Directory -Path $mgLocal -Force | Out-Null
