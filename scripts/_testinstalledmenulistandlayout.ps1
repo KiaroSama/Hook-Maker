@@ -62,11 +62,11 @@
         $menu = Invoke-Wizard -Config $cfg -Answers @('1', '1', '0', '0', 'exit') -WorkingDirectory $proj
         Check 'menu: the render-only run exits 0' ($menu.Exit -eq 0) $menu.Err
         # Foreign ZZZ-* fixtures are removed before ANY count or index below is
-        # taken - see Remove-ForeignFixtureRows. $foreignRowCount is what the
+        # taken - the suite runs from its own tool copy now. $foreignRowCount is what the
         # WIZARD still sees (it installs those hooks too), needed wherever an
         # assertion compares against a number the wizard itself rendered.
         $rawRows = Get-HookListRows $menu.Out
-        $rows = Remove-ForeignFixtureRows $rawRows
+        $rows = $rawRows
         Check 'menu: the hook list block was rendered' ($null -ne $rows) $menu.Out
         $foreignRowCount = 0
         if ($null -ne $rawRows) { $foreignRowCount = @($rawRows.Keys).Count - @($rows.Keys).Count }
@@ -237,48 +237,6 @@
                     $rendered -notmatch "[`r`n]" -and $rendered.Length -le $rowBudget) ($rendered.Length.ToString() + ': ' + $rendered)
             }
         }
-
-        Write-Host ''
-        Write-Host '--- a foreign ZZZ-* fixture in the real hooks\ dir moves nothing this suite reads ---' -ForegroundColor Cyan
-
-        # The failure this pins happened for real: a leftover hooks\ZZZ-* from
-        # another suite's aborted run is a custom hook to the wizard, so it took
-        # an index inside the custom block and pushed this suite's own fixture
-        # down one, breaking the counts above. Create one deliberately, render
-        # the SAME menu again, and require the filtered view to be identical
-        # row for row.
-        $probeName = 'ZZZ-Menu-Immunity-Probe'  # sorts BEFORE ZZZ-Menusuite-Fixture, so it really does shift it
-        $beforeSignature = Get-RowSignature $rows
-        [void](New-FixtureHook $probeName)
-        try {
-            $probe = Invoke-Wizard -Config $cfg -Answers @('1', '1', '0', '0', 'exit') -WorkingDirectory $proj
-            Check 'immunity: the probe render run exits 0' ($probe.Exit -eq 0) $probe.Err
-            $probeRaw = Get-HookListRows $probe.Out
-            # The probe must actually be IN the rendered menu, otherwise the
-            # equality below would prove nothing at all.
-            Check 'immunity: the foreign fixture really did render as one extra row' (
-                $null -ne $probeRaw -and $null -ne $rawRows -and
-                @($probeRaw.Keys).Count -eq (@($rawRows.Keys).Count + 1) -and
-                @(@($probeRaw.Values) | Where-Object { $_ -match [regex]::Escape($probeName) }).Count -eq 1) (Get-RowSignature $probeRaw)
-            $probeRows = Remove-ForeignFixtureRows $probeRaw
-            Check 'immunity: every row this suite reads is unchanged' (
-                (Get-RowSignature $probeRows) -eq $beforeSignature) ((Get-RowSignature $probeRows) + "`n--- expected ---`n" + $beforeSignature)
-            # "Unchanged" means against the render taken before the probe, not
-            # against a literal that has to be edited every time a hook ships.
-            Check 'immunity: the hook total is unchanged' (
-                (@($probeRows.Keys).Count - 7) -eq (@($rows.Keys).Count - 7)) ('total hooks: ' + (@($probeRows.Keys).Count - 7) + ' vs ' + (@($rows.Keys).Count - 7))
-            Check ('immunity: the custom block still starts at ' + $customStartIndex + ' with this suite''s own fixture') (
-                [string]$probeRows[$customStartIndex] -match 'ZZZ-Menusuite-Fixture') ([string]$probeRows[$customStartIndex])
-            Check 'immunity: the foreign fixture is absent from the filtered view' (
-                @(@($probeRows.Values) | Where-Object { $_ -match [regex]::Escape($probeName) }).Count -eq 0) (Get-RowSignature $probeRows)
-        }
-        finally {
-            # A leaked hooks\ZZZ-* corrupts the NEXT run of this suite and of
-            # Test-Wizard, so the removal is mandatory, not best-effort.
-            Remove-FixtureHook $probeName
-        }
-        Check 'immunity: the foreign fixture was removed from the real hooks directory' (
-            -not (Test-Path -LiteralPath (Join-Path $RealHooksDir $probeName))) $probeName
 
         Write-Host ''
         Write-Host '--- each management action must be selected alone ---' -ForegroundColor Cyan

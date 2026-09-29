@@ -1,8 +1,8 @@
 # Parallel local test runner.
 #
-# Suites run in parallel, with ONE exception handled in a first phase - see the
-# `$Exclusive list below for exactly why. Wall clock becomes
-# (that one suite) + (slowest of everything else) instead of the sum of them all.
+# Suites run in parallel; the `$Exclusive list below (empty today) is the one
+# first, serial phase and says when a suite belongs there. Wall clock becomes
+# the slowest suite instead of the sum of them all.
 #
 # The suite list is GLOBBED from disk, so a newly added Test-*.ps1 runs here
 # automatically. CI cannot do that (its buckets are hand-written in ci.yml), so
@@ -53,43 +53,12 @@ if ($PSVersionTable.PSVersion.Major -lt 7) {
 
 $ScriptRoot = $PSScriptRoot
 
-# The suites that COUNT the real hooks\ directory must run alone.
-#
-# Several suites create throwaway fixtures under the real hooks\ directory, but
-# each uses its own unique prefix (ZZZ-Regtest, ZZZ-Ld, ZZZ-Uninst, ...), so they
-# never collide with one another by name. The real constraint is different:
-# these two suites ASSERT ON THE NUMBER of hooks discovered in hooks\, because
-# the menu's index math is derived from it. If anything else adds or removes a
-# fixture while they count, their assertions fail for a reason that has nothing
-# to do with the code under test - Test-InstalledHooksMenu was observed at 76/1
-# in a parallel run and 77/0 alone, purely from that.
-#
-# So these run alone and everything else runs in parallel. An earlier version of
-# this file serialised all six fixture-creating suites, which was over-cautious
-# in the worst possible way: those six are the slowest suites, so serialising
-# them threw away most of the available speedup.
-#
-# DO NOT empty this list because both suites now ignore `ZZZ-*` fixtures.
-# Round 40 made them immune to LEFTOVER fixtures, which is a real fix for the
-# residue flake - but immunity to residue is NOT immunity to concurrency, and
-# the two were measured separately:
-#   * Test-Wizard concurrent with Test-InstalledHooksMenu -> 254/8 (262/0 alone).
-#   * Test-Wizard concurrent with ONLY Test-InstallRegistry, Test-UninstallHook
-#     and Test-DiscoveredUninstall, menu suite absent  -> 258/4.
-# The second run is the important one: the exclusivity is not about the menu
-# suite, it is about ANY suite that creates or removes a fixture under the real
-# hooks\ while a counting suite runs. `_testwizardselectall.ps1` deliberately
-# counts EVERY hook including `ZZZ-*`, because the wizard genuinely configures
-# them - so the count legitimately changes mid-run and no name filter can help.
-# Fixing this for real means giving fixture-creating suites their own copy of
-# hooks\ instead of the shared one. Until then, these two stay exclusive.
-#
-# CI does not need this: each bucket is its own runner with its own checkout,
-# and suites inside a bucket run one after another (see ci.yml).
-$Exclusive = @(
-    'Test-Wizard.ps1',
-    'Test-InstalledHooksMenu.ps1'
-)
+# Suites that must run alone (a first, serial phase). Empty since 2026-09-29: the
+# two suites that COUNT hooks\ (Test-Wizard, Test-InstalledHooksMenu) now run the
+# wizard from their own copy of the tool (New-ToolRootCopy in _testlib.ps1), so
+# no other suite's fixture can move their counts. Put a suite back here only if
+# it counts or rewrites the SHARED hooks\ directory while others may write to it.
+$Exclusive = @()
 
 $all = @(Get-ChildItem -LiteralPath $ScriptRoot -Filter 'Test-*.ps1' -File | Sort-Object Name)
 if (-not [string]::IsNullOrWhiteSpace($Only)) {

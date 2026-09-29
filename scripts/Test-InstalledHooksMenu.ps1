@@ -66,6 +66,12 @@ $script:TestPreviewLength = 500
 
 $Work = New-TestWorkspace -Prefix 'hookmaker-menu22'
 Write-Host ("Workspace: $Work") -ForegroundColor DarkGray
+# The wizard and the installer run from a private copy of the tool: this suite's
+# fixtures land in the copy's hooks\, and no other suite can shift its rows.
+$SuiteToolRoot = New-ToolRootCopy -Destination (Join-Path $Work 'tool')
+$RealHooksDir = Join-Path $SuiteToolRoot 'hooks'
+$Setup = Join-Path $SuiteToolRoot 'scripts\Setup-SyncGroup.ps1'
+$InstallScript = Join-Path $SuiteToolRoot 'scripts\Install-Hook.ps1'
 
 $SavedHookMakerStateDir = $env:HOOKMAKER_STATE_DIR
 $IsolatedStateDir = Join-Path $Work 'state'
@@ -88,45 +94,10 @@ function Remove-FixtureHook {
     if (Test-Path -LiteralPath $dir) { Remove-Item -LiteralPath $dir -Recurse -Force -ErrorAction SilentlyContinue }
 }
 
-# ---- immunity to OTHER suites' throwaway fixtures --------------------------
-# ZZZ- is this project's reserved prefix for throwaway hook fixtures, and
-# several suites create them directly inside the REAL hooks\ directory. Such a
-# directory is a CUSTOM hook to the wizard (it is not in $script:HookMeta), so
-# it takes an index in the custom block and pushes every later row down one - a
-# leftover from an aborted run silently corrupted this suite's counts and row
-# assertions. Every count and index taken off the real hooks\ directory below
-# therefore goes through Remove-ForeignFixtureRows first.
-#
-# This suite's OWN fixtures are kept: they are what the custom-block assertions
-# are about. Everything else starting with ZZZ- belongs to another suite.
-$script:OwnFixtureHooks = @('ZZZ-Menusuite-Fixture')
-function Test-ForeignFixtureRow {
-    param([string]$Label)
-    # -match is case-insensitive, which is the intent: zzz-, Zzz- and ZZZ- are
-    # all the same reserved fixture prefix.
-    if ($Label -notmatch '^ZZZ-') { return $false }
-    foreach ($own in $script:OwnFixtureHooks) {
-        if ($Label -match ('^' + [regex]::Escape($own) + '\b')) { return $false }
-    }
-    return $true
-}
-# Drops foreign fixture rows and shifts the rows after each one down by exactly
-# the number dropped before it, so the surviving rows keep the numbers they
-# would have had on a clean hooks\ directory. It shifts rather than renumbering
-# 1..N on purpose: renumbering would manufacture contiguity and quietly defeat
-# the "rows 3..24 all exist" assertion if a real row ever went missing.
-function Remove-ForeignFixtureRows {
-    param($Rows)
-    if ($null -eq $Rows) { return $null }
-    $dropped = @(@($Rows.Keys) | Where-Object { Test-ForeignFixtureRow ([string]$Rows[$_]) })
-    $out = @{}
-    foreach ($key in @($Rows.Keys)) {
-        if ($dropped -contains $key) { continue }
-        $shift = @($dropped | Where-Object { $_ -lt $key }).Count
-        $out[$key - $shift] = [string]$Rows[$key]
-    }
-    return , $out
-}
+# Remove-ForeignFixtureRows / Test-ForeignFixtureRow were removed on 2026-09-29:
+# the suite now runs from its own copy of the tool, so no other suite's ZZZ-*
+# fixture can appear in the menu it counts.
+
 # One comparable string for a whole row map, so "nothing moved" is provable
 # row-for-row instead of by spot-checking a few indices.
 #
