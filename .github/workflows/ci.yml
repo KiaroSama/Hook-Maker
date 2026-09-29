@@ -117,7 +117,8 @@ jobs:
   # wall-clock win at a fraction of that overhead.
   #
   # Each bucket leads with one of the slow, process-spawning suites so the
-  # buckets finish at roughly the same time. Suites that create throwaway
+  # buckets finish at roughly the same time (rebalanced 2026-09-29 from the measured
+  # per-suite times of run 36491728999: about 10-11 minutes each). Suites that create throwaway
   # fixtures under the real hooks\ directory are safe here: each bucket is its
   # own runner with its own checkout, and within a bucket the suites run one
   # after another. (Locally that isolation does not exist - see
@@ -135,15 +136,15 @@ jobs:
       matrix:
         include:
           - name: registry
-            suites: Test-InstallRegistry,Test-InstallRegistrySchema,Test-InstallInvoke,Test-InstalledRuntimeMigration,Test-LegacyDiscovery,Test-StatePersistence,Test-InstalledHooksMenu,Test-HookStatusDiscovery,Test-TestPlanCheck,Test-TestPlanScanner,Test-ReportHookCost,Test-UpdateFleet,Test-HookBudgetLib,Test-HookDocsParity
+            suites: Test-InstallRegistry,Test-CiStatusCheck,Test-DiscoveredUninstall,Test-InstallRegistrySchema,Test-InstallInvoke,Test-InstalledRuntimeMigration,Test-LegacyDiscovery,Test-StatePersistence,Test-InstalledHooksMenu,Test-HookStatusDiscovery,Test-TestPlanCheck,Test-TestPlanScanner,Test-ReportHookCost,Test-HookBudgetLib,Test-HookDocsParity
           - name: uninstall
-            suites: Test-UninstallHook,Test-NativePrePushInstall,Test-RulesCheck,Test-DiscoveredUninstall,Test-HookStatusScan,Test-TestCompletionCheck,Test-CbmHooks
+            suites: Test-UninstallHook,Test-UpdateFleet,Test-NativePrePushInstall,Test-RulesCheck,Test-HookStatusScan,Test-TestCompletionCheck,Test-CbmHooks
           - name: wizard
-            suites: Test-Wizard,Test-ContextHooks,Test-GraphUpdateCheck,Test-TestRunGuard,Test-RunTests,Test-TimingHistory,Test-SyncGroupMerge,Test-CleanupFreshness
+            suites: Test-Wizard,Test-GraphUpdateCheck,Test-TestRunGuard,Test-RunTests,Test-TimingHistory,Test-SyncGroupMerge,Test-CleanupFreshness
           - name: secrets
             suites: Test-SecretsCheck,Test-IgnoreRulesCheck,Test-GitSyncCheck,Test-AiMemoryCheck,Test-LargeFileCheck,Test-Utf8EncodingCheck,Test-FeatureRequestCheck,Test-InstallLocationCheck
           - name: hooks
-            suites: Test-StopLedger,Test-DocsFreshnessCheck,Test-CloudflareDeploy,Test-DependencyVersionCheck,Test-TestTempCleanup,Test-DependabotCheck,Test-CiStatusCheck,Test-GithubBaselineCheck,Test-AiMemoryLoad,Test-SynapseRulesCheck,Test-SessionSummaryCheck,Test-SpeckitCheck,Test-Generation
+            suites: Test-CloudflareDeploy,Test-ContextHooks,Test-StopLedger,Test-DocsFreshnessCheck,Test-DependencyVersionCheck,Test-TestTempCleanup,Test-DependabotCheck,Test-GithubBaselineCheck,Test-AiMemoryLoad,Test-SynapseRulesCheck,Test-SessionSummaryCheck,Test-SpeckitCheck,Test-Generation
     name: suites (${{ matrix.name }})
     steps:
       - uses: actions/checkout@v7
