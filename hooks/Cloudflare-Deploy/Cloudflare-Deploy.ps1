@@ -646,9 +646,6 @@ if (-not (Test-ReleaseReady $cwd)) {
     exit 0
 }
 
-New-Item -ItemType Directory -Path $stateDir -Force | Out-Null
-[System.IO.File]::WriteAllText($statePath, [DateTime]::UtcNow.ToString('o'))
-
 $reasonLines = New-Object System.Collections.Generic.List[string]
 [void]$reasonLines.Add('CLOUDFLARE DEPLOY CHECK: this project deploys to Cloudflare Workers (' + $wranglerConfig + ' found) AND release readiness now holds for commit ' + $script:ReleaseHeadSha + ' - that is the evidence this block is based on: the working tree is clean, HEAD is not ahead of its upstream, CI is green for that exact SHA if this repo has workflows, and Test-Temp-Cleanup reported clean for the current repo state if it is installed here. Deployment is NOT automatic just because this config exists - work through the steps below.')
 [void]$reasonLines.Add('1) Deployment-worthiness: deploy ONLY if the task is complete (not partial/experimental/local-only diagnostic), relevant tests/typecheck/lint/build pass, the exact release commit is known, CI for that commit is green if this repo uses CI (or an explicit documented policy allows otherwise), no secrets/local-only/debug files, unrelated changes, or disposable test cache/temp residue are included, the target environment and any required bindings/migrations are understood, and project/user rules permit it. If any of that is not true - or the change is documentation-only, an experiment, or the release commit is not known - finish now WITHOUT deploying and briefly state why.')
@@ -661,6 +658,9 @@ $reason = $reasonLines.ToArray() -join "`n"
 # Record the block so THIS hook's own re-entry is recognised; another
 # gate's block must not mute it, and its own must not repeat.
 $emit = Write-StopBlockResult -HookInput $hookInput -HookName 'Cloudflare-Deploy' -EventName $eventName -Reason $reason
+# The cooldown starts only when the block was really admitted and shown: a refused
+# admission used to stamp it anyway and silence the reminder for the whole window.
+if ($null -ne $emit -and $emit.Emitted) { New-Item -ItemType Directory -Path $stateDir -Force | Out-Null; [System.IO.File]::WriteAllText($statePath, [DateTime]::UtcNow.ToString('o')) }
 exit $emit.ExitCode
 }
 catch { if ($null -ne $gateReceipt) { $gateReceipt.Crashed = $true }; throw }
