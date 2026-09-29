@@ -65,14 +65,16 @@ try {
     Start-Process -FilePath 'powershell.exe' -ArgumentList '-NoLogo', '-NoProfile', '-File', $launcherPath -WindowStyle Hidden | Out-Null
     # Bounded wait on the real readiness signal (the pid file), never a blind sleep.
     $sentinelPid = 0
-    for ($attempt = 0; $attempt -lt 100 -and $sentinelPid -le 0; $attempt++) {
+    $startBudgetMs = Get-ProcessStartBudgetMs
+    $startDeadline = [DateTime]::UtcNow.AddMilliseconds($startBudgetMs)
+    while ($sentinelPid -le 0 -and [DateTime]::UtcNow -lt $startDeadline) {
         $raw = ''
         try { if (Test-Path -LiteralPath $sentinelPidFile -PathType Leaf) { $raw = ([System.IO.File]::ReadAllText($sentinelPidFile)).Trim() } } catch { $raw = '' }
         $parsed = 0
         if ([int]::TryParse($raw, [ref]$parsed) -and $parsed -gt 0) { $sentinelPid = $parsed }
         if ($sentinelPid -le 0) { Start-Sleep -Milliseconds 100 }
     }
-    Check 'the sentinel grandchild started and reported its pid' ($sentinelPid -gt 0) $sentinelPidFile
+    Check 'the sentinel grandchild started and reported its pid' ($sentinelPid -gt 0) ('budgetMs=' + $startBudgetMs + ' pidFile=' + $sentinelPidFile)
     if ($sentinelPid -le 0) { throw 'the survivor sentinel could not be started' }
     $survivorSentinel = Get-Process -Id $sentinelPid -ErrorAction Stop
     [void](Wait-ProcessReady -ProcessId $survivorSentinel.Id)

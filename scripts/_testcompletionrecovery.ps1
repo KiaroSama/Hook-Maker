@@ -161,11 +161,11 @@ $writer = $null
 try {
     $writer = Start-Process -FilePath (Get-Process -Id $PID).Path -ArgumentList ('-NoProfile -File "' + $writerPath + '" -Library "' + $HookLib + '" -Ledger "' + (Join-Path (Split-Path -Parent $fixture.Copy.Script) '_ledger.ps1') + '" -StatePath "' + $ledgerPath + '" -ProjectKey ' + (Get-ProjectKey $fixture.Root) + ' -Ready "' + $readyName + '" -Continue "' + $continueName + '"') -WindowStyle Hidden -PassThru
     $null = $writer.Handle
-    if (-not $readyEvent.WaitOne(10000)) { throw 'Concurrent writer did not load its initial ledger within ten seconds.' }
+    if (-not $readyEvent.WaitOne((Get-ProcessStartBudgetMs))) { throw 'Concurrent writer did not load its initial ledger within the measured start budget.' }
     $associated = Invoke-ExplicitRecovery -Fixture $fixture
     Check 'concurrent ledger: explicit recovery succeeds while another writer holds an older snapshot' ($associated.Exit -eq 0) ($associated.Out + $associated.Err)
     [void]$continueEvent.Set()
-    if (-not $writer.WaitForExit(10000)) { throw 'Concurrent writer did not finish within ten seconds.' }
+    if (-not $writer.WaitForExit((Get-ProcessStartBudgetMs))) { throw 'Concurrent writer did not finish within the measured start budget.' }
     $merged = Get-CompletionStateDoc -Copy $fixture.Copy -Root $fixture.Root
     Check 'concurrent ledger: resolved association and independent note both survive' ($writer.ExitCode -eq 0 -and @($merged.resolvedIncidents) -contains $fixture.Key -and @($merged.pendingNotes).Count -eq 1 -and $merged.pendingNotes[0].key -eq 'concurrent-other' -and @($merged.recoveryAssociations).Count -eq 1) ($merged | ConvertTo-Json -Depth 6)
 }
