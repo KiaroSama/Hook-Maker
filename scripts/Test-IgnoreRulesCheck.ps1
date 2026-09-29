@@ -98,6 +98,32 @@ try {
     $r = Fire -Cwd $tracked
     Check 'tracked protected file blocks completion' ($r.Out -match 'TRACKED' -and $r.Out -match 'AGENTS.md') $r.Out
 
+    # Patterns harvested from the project's OWN rule files are tracked project
+    # text: by default they are reported, never written into .gitignore and never
+    # grounds for a push block. RULE_FILE_PATTERNS=write-and-protect opts back in.
+    function New-RuleFileRepo {
+        param([string]$Name)
+        $repo = New-Repo $Name
+        New-Item -ItemType Directory -Path (Join-Path $repo 'src') -Force | Out-Null
+        [System.IO.File]::WriteAllText((Join-Path $repo 'src\a.txt'), 'x', (New-Object System.Text.UTF8Encoding $false))
+        [System.IO.File]::WriteAllText((Join-Path $repo 'CLAUDE.md'), "Rules:`n- ``src`` must not be committed by hand.`n", (New-Object System.Text.UTF8Encoding $false))
+        & git -C $repo add src/a.txt
+        & git -C $repo commit -q -m c
+        return $repo
+    }
+    $ruleRepo = New-RuleFileRepo 'rulefile-advisory'
+    $r = Fire -Cwd $ruleRepo
+    $ruleIgnore = [System.IO.File]::ReadAllText((Join-Path $ruleRepo '.gitignore'))
+    Check 'rule-file pattern: reported, not written into .gitignore' ($ruleIgnore -notmatch '(?m)^/src/?\r?$' -and $r.Out -match 'ask for these ignore patterns' -and $r.Out -match '/src') ($r.Out + ' || ' + $ruleIgnore)
+    Check 'rule-file pattern: a tracked file under it is never push-blocked' ($r.Out -notmatch 'TRACKED protected paths') $r.Out
+    $r = Fire -Cwd $ruleRepo -EventName 'SessionStart'
+    Check 'rule-file advice is said once per set, not on every event' ($r.Out -notmatch 'ask for these ignore patterns') $r.Out
+    $protectHook = New-ConfiguredIgnoreHookCopy -EnvOverrides @{ RULE_FILE_PATTERNS = 'write-and-protect' }
+    $protRepo = New-RuleFileRepo 'rulefile-protect'
+    $r = Fire -Cwd $protRepo -HookPath $protectHook
+    $protIgnore = [System.IO.File]::ReadAllText((Join-Path $protRepo '.gitignore'))
+    Check 'RULE_FILE_PATTERNS=write-and-protect keeps the earlier behaviour (written and protected)' ($protIgnore -match '(?m)^/src\r?$' -and $r.Out -match 'TRACKED protected paths' -and $r.Out -match 'src/a.txt') ($r.Out + ' || ' + $protIgnore)
+
     # =====================================================================
     Write-Host '--- .env.example and other template files are allowed to stay tracked ---' -ForegroundColor Cyan
 
