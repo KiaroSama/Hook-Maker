@@ -272,6 +272,11 @@ source was moved or deleted it is reported as missing and skipped — no other p
 never installs a hook that was never installed, never touches unrelated settings-file content, and
 a second run with nothing changed reports everything as already current (no-op).
 
+`scripts\Report-HookCost.ps1 [-ProjectRoot <dir>] [-Newest 3] [-Json]` reads Claude Code's own
+session transcripts for a project and prints each Stop hook's median, p95 and maximum duration and
+how often it reached its registered timeout. It is read-only; the durations come from an
+undocumented client field, so a missing value is counted rather than guessed.
+
 ## Getting hook status (`33`)
 
 Item **`33` Get hook status** scans a path you choose, reports every installed hook it can find —
