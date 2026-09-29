@@ -117,3 +117,23 @@ location option, the tool's own configured setting, or the tool's default.
 An install target after every junction and symbolic link on it, including links on its parent
 folders, has been followed to the folder that really holds the bytes. `C:\Users\me\.cache\huggingface`
 whose physical path is `H:\AI\.cache\huggingface` is an install target on `H:`, not on `C:`.
+
+## Retired chain
+
+A Stop-ledger chain whose session has been silent for fourteen days and is not the current session.
+No client can continue it, so removing it refunds nothing that could still be spent; a chain that
+could still be continued is never retired.
+_Avoid_: expired chain, stale chain
+
+## Hook deadline
+
+The moment a hook invocation must have finished, derived from the timeout it is registered with.
+Every child process the hook starts is bounded by what is left of it, so the client never kills the
+hook while its child runs on.
+_Avoid_: budget (for the whole invocation), hook timeout (the registered number itself)
+
+## Markdown work time
+
+The newest write time of a Markdown file in the folders the Graphify graph covers beyond Git's view
+(`.ai/`, `specs/`, `.specify/`, `plans/`, and any folder holding ten or more `.md` files). A graph
+older than it is stale even when Git shows no change.
