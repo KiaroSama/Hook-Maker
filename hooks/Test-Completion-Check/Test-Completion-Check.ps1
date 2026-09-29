@@ -473,7 +473,7 @@ function Write-Finding {
         [void]$all.Add('')
         foreach ($warning in $script:configWarnings) { [void]$all.Add('Test-Completion-Check .env: ' + $warning) }
     }
-    $message = ($all.ToArray() -join "`n")
+    $ledgerFailure = [string](Get-Variable -Name LedgerWriteFailed -Scope Script -ValueOnly -ErrorAction SilentlyContinue); if ($ledgerFailure -ne '') { [void]$all.Add('TEST COMPLETION CHECK: its incident ledger could not be written (' + $ledgerFailure + '); recorded notes may be asked for again.') }; $message = ($all.ToArray() -join "`n")
     # The gating DECISION is made above and is unchanged here; Write-HookResult
     # only turns it into the client's wire shape (claude/codex block ->
     # decision:block, claude advisory -> hookSpecificOutput.additionalContext,
@@ -709,7 +709,7 @@ foreach ($op in $obsPairs) {
 # and belongs to that observed run's messaging, not a new run.
 foreach ($re in $resultEntries) {
     $rProjFp = [string](Get-Field $re.Doc 'projectFingerprint')
-    $isCurrentState = if ($rProjFp -ne '') { $rProjFp -eq $stateFingerprint } else { $true }   # legacy result: no identity, age governs
+    $isCurrentState = if ($rProjFp -ne '') { $rProjFp -eq $stateFingerprint } else { $ended = ConvertTo-UtcStamp (Get-Field $re.Doc 'endedUtc'); ($null -ne $ended -and ([DateTime]::UtcNow - $ended).TotalHours -le 24) }   # legacy result: no identity, so the 24 h horizon governs
     if (-not $isCurrentState) { continue }
     $rCmd = [string](Get-Field $re.Doc 'commandFingerprint')
     if ($rCmd -ne '' -and $observedCmdFps.Contains($rCmd)) { continue }
@@ -931,8 +931,8 @@ if ($incidentKey -ne '' -and (Test-AnyIncidentResolved $incidentKey $incidentKey
 # (same detection Cloudflare-Deploy uses). A same-Stop race is resolved by
 # deferring to the NEXT event; a producer that never records cannot silence
 # this gate beyond that single deferral.
-$cleanupInstalled = (Test-Path -LiteralPath (Join-Path $cwd '.claude\hooks\Hook-Maker\Test-Temp-Cleanup') -PathType Container) -or
-    (Test-Path -LiteralPath (Join-Path $cwd '.codex\hooks\Hook-Maker\Test-Temp-Cleanup') -PathType Container)
+$cleanupInstalled = (Test-Path -LiteralPath (Join-Path $cwd '.claude\hooks\Hook-Maker\Test-Temp-Cleanup') -PathType Container) -or (Test-Path -LiteralPath (Join-Path $env:USERPROFILE '.claude\hooks\Hook-Maker\Test-Temp-Cleanup') -PathType Container) -or
+    (Test-Path -LiteralPath (Join-Path $cwd '.codex\hooks\Hook-Maker\Test-Temp-Cleanup') -PathType Container) -or (Test-Path -LiteralPath (Join-Path $env:USERPROFILE '.codex\hooks\Hook-Maker\Test-Temp-Cleanup') -PathType Container)
 if ($cleanupInstalled) {
     $cleanupCurrent = $false
     $deadline = [DateTime]::UtcNow.AddSeconds($coordinationWaitSeconds)

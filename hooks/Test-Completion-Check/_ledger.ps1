@@ -243,6 +243,9 @@ function Merge-DiskLedger {
 # Explicit recovery also validates its request under this same lock. An AbandonedMutexException
 # means a previous holder died mid-write; we then own it, exactly like the file
 # lock reclaiming an orphan.
+# A failed ledger write on the normal path is reported (Write-Finding and the
+# silent tail), never swallowed; the recovery path still throws.
+$script:LedgerWriteFailed = ''
 function Save-CompletionState {
     param([string]$Deferred, [string]$ResolveIncidentKey = '', [string]$RecoveryRunId = '', [string]$RecoveryReason = '')
     if ($null -eq $Deferred) { $Deferred = $script:deferredFingerprint }
@@ -280,7 +283,7 @@ function Save-CompletionState {
                     updatedUtc          = [DateTime]::UtcNow.ToString('o')
                 }) -Path $script:statePath
         }
-        catch { if ($ResolveIncidentKey -ne '') { throw } }
+        catch { if ($ResolveIncidentKey -ne '') { throw }; $script:LedgerWriteFailed = $_.Exception.Message }
     }
     finally {
         if ($null -ne $mutex) {

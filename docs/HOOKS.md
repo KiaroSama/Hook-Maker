@@ -490,6 +490,8 @@ Two hooks used to issue instructions that could not both be followed: the guard 
 
 A run that was TERMINATED or that LEAKED a process keeps blocking whatever CI says, and still owes its tagged note: those are facts about this machine that no CI result speaks to. The notice names the commit it accepted, so the claim can be checked rather than trusted.
 
+A result without a project fingerprint (the legacy shape) counts only within the 24 h horizon; a Test-Temp-Cleanup installed in the user profile (global scope) is recognised for the cleanup-evidence coordination just like a project-scope one; and an incident ledger that cannot be written is reported as a non-blocking note instead of being swallowed.
+
 ## `Utf8-Encoding-Check`
 
 **Runs:** pre-task (SessionStart) + post-task (Stop, SubagentStop) + native Git pre-push.

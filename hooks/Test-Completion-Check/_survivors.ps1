@@ -222,6 +222,8 @@ function Write-SurvivorAdvisory {
     # genuine Stop or not at all.
     $stopActive = Get-Field $hookInput 'stop_hook_active'
     if ($null -ne $stopActive -and [bool]$stopActive) { return }
+    # The otherwise-silent tail still owes the ledger-write failure (once, never a block).
+    if ($script:LedgerWriteFailed -ne '') { Write-Finding -Blocking $false -Lines @('TEST COMPLETION CHECK - advisory only: nothing else needs attention, but its incident ledger could not be written.') }
     $patterns = @(Get-SurvivorPatterns)
     if ($patterns.Count -eq 0) { return }
     $since = Get-SessionBaselineUtc
