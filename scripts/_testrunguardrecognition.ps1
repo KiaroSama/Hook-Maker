@@ -31,6 +31,10 @@
         $message = Get-Message $r.Out
         Check ('recognised as a test command: ' + $command) ($message -match 'TEST RUN GUARD') ($r.Out + '|' + $r.Err)
     }
+    # DD-15: the printed replacement runs in a POSIX shell, where an unquoted
+    # backslash is an escape - C:\tmp\x would reach the runner as C:tmpx.
+    $r = Fire -HookPath $hc.Script -Cwd $Proj -EventName 'PreToolUse' -Command "TMPDIR='C:\tmp\x' pytest -q" -LocalAppData $hc.LocalAppData
+    Check 'a backslash in an assignment value is single-quoted in the replacement' ((Get-Message $r.Out) -match [regex]::Escape("TMPDIR='C:\tmp\x' pwsh ")) ($r.Out + '|' + $r.Err)
 
     # =====================================================================
     Write-Host '--- FALSE-POSITIVE GUARD: unrelated commands are TOTALLY silent ---' -ForegroundColor Cyan

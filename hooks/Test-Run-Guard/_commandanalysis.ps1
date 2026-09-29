@@ -635,7 +635,7 @@ function New-GuardedInvocation {
         $eq = $word.IndexOf('=')
         $name = $word.Substring(0, $eq); $value = $word.Substring($eq + 1)
         # The tokenizer removed the user's quotes; put safe ones back for the shell.
-        if ($value -match '[^A-Za-z0-9_./:\\-]') { $value = "'" + $value.Replace("'", "'\''") + "'" }
+        if ($value -match '[^A-Za-z0-9_./:-]') { $value = "'" + $value.Replace("'", "'\''") + "'" }    # a backslash escapes in the shell
         $prefix += $name + '=' + $value + ' '
     }
     [void]$parts.Add($prefix + 'pwsh -NoLogo -NoProfile -File "' + $RunnerPath + '"')
