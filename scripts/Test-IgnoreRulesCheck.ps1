@@ -252,6 +252,13 @@ try {
     $r2 = Fire -Cwd $sortedRepo
     Check 'the order repair is idempotent (second run is silent)' ($r2.Exit -eq 0 -and $r2.Out -eq '') $r2.Out
 
+    # One git process answers every negation: the per-negation spawn is gone.
+    $hookSource = [System.IO.File]::ReadAllText($Hook)
+    $negFn = [regex]::Match($hookSource, '(?s)function Test-NegationLive \{.*?\r?\n\}').Value
+    $probeAt = $hookSource.IndexOf("'check-ignore', '--no-index', '-v', '--') + `$negationPaths")
+    Check 'source: Test-NegationLive spawns no git itself; one -v probe precedes the missing-pattern block' (
+        $negFn -ne '' -and $negFn -notmatch 'check-ignore' -and $probeAt -gt 0 -and $probeAt -lt $hookSource.IndexOf('$missing = @(')) ('probeAt=' + $probeAt)
+
     # =====================================================================
     Write-Host '--- an ignored .venv stays ignored and untracked ---' -ForegroundColor Cyan
 

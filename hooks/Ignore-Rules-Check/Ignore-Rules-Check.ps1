@@ -147,15 +147,31 @@ function Test-NegationLive {
         $overrideAt = [array]::LastIndexOf($Ordered, $override)
         if ($overrideAt -gt $negAt) { return $true }
     }
-    # No git: presence is the whole answer. A machine that cannot run git cannot
-    # push either, and guessing here is what used to loop.
-    if ($null -eq (Get-Command git -ErrorAction SilentlyContinue)) { return $true }
-    Invoke-QuietCommand -FilePath git -ArgumentList @('-C', $Root, 'check-ignore', '--no-index', '-q', '--', $path) | Out-Null
-    # 0 = git still ignores it, so the negation is NOT effective and is re-added.
-    # 1 = not ignored, the negation is doing its job wherever it sits.
-    # anything else is a git error: treat present as enough rather than loop.
-    if ($LASTEXITCODE -eq 0) { return $false }
+    # No usable git answer (no git, or a git error): presence is the whole answer.
+    # A machine that cannot run git cannot push either, and guessing is what used to loop.
+    if (-not $script:NegationProbeOk) { return $true }
+    # git still ignores it: the negation is NOT effective and is re-added.
+    if ($script:IgnoredNegationPaths.ContainsKey($path)) { return $false }
     return $true
+}
+# One git process answers "is this path ignored right now?" for EVERY negation at
+# once (last-match-wins included). It used to be one process per negation, four
+# per invocation, on every Stop of every project. -v prints the effective rule;
+# a negation as that rule means NOT ignored.
+$negationPaths = @($patterns | Where-Object { $_.StartsWith('!') } | ForEach-Object { $_.TrimStart('!').TrimStart('/') } | Where-Object { $_ -ne '' })
+$script:IgnoredNegationPaths = @{}
+$script:NegationProbeOk = $false
+if ($negationPaths.Count -gt 0 -and $null -ne (Get-Command git -ErrorAction SilentlyContinue)) {
+    $probe = @(Invoke-QuietCommand -FilePath git -ArgumentList (@('-C', $cwd, 'check-ignore', '--no-index', '-v', '--') + $negationPaths))
+    if ($LASTEXITCODE -le 1) {
+        $script:NegationProbeOk = $true
+        foreach ($line in $probe) {
+            $text = [string]$line
+            $tab = $text.IndexOf("`t"); if ($tab -lt 0) { continue }
+            $source = $text.Substring(0, $tab); $colon = $source.LastIndexOf(':'); if ($colon -lt 0) { continue }
+            if (-not $source.Substring($colon + 1).StartsWith('!')) { $script:IgnoredNegationPaths[$text.Substring($tab + 1)] = $true }
+        }
+    }
 }
 $missing = @($patterns | Where-Object {
         if ($_.StartsWith('!')) { -not (Test-NegationLive -Negation $_ -Lines $existingLines -Root $cwd -Ordered $patterns) }
