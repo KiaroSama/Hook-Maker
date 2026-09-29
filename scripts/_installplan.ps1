@@ -413,8 +413,6 @@ function Get-RuntimeMetadataContent {
     [void]$lines.Add('  "registrationName": ' + (ConvertTo-PlanJsonStringLiteral (Get-RuntimeMetadataRegistrationName `
                     -Client $client -FriendlyName $FriendlyName -RecordId ([string]$RuntimeIdentity.RecordId))) + ',')
     [void]$lines.Add('  "runtimeScriptRelativePath": ' + (ConvertTo-PlanJsonStringLiteral $RuntimeScriptRelativePath) + ',')
-    $timeoutProperty = $RuntimeIdentity.PSObject.Properties['TimeoutSeconds']
-    if ($null -ne $timeoutProperty -and [int]$timeoutProperty.Value -gt 0) { [void]$lines.Add('  "timeoutSeconds": ' + [string][int]$timeoutProperty.Value + ',') }
     [void]$lines.Add('  "runtimeManifest": [')
     $entryLines = New-Object System.Collections.Generic.List[string]
     foreach ($artifact in @($ordered.ToArray())) {
@@ -448,7 +446,8 @@ function Get-RuntimeMetadataContent {
         $suffix = if ($index -lt $preservedLines.Count - 1) { ',' } else { '' }
         [void]$lines.Add($preservedLines[$index] + $suffix)
     }
-    [void]$lines.Add('  ]')
+    $timeoutProperty = $RuntimeIdentity.PSObject.Properties['TimeoutSeconds']; $timeout = $(if ($null -ne $timeoutProperty) { [int]$timeoutProperty.Value } else { 0 })
+    [void]$lines.Add('  ]' + $(if ($timeout -gt 0) { ',' + "`n" + '  "timeoutSeconds": ' + [string]$timeout } else { '' }))    # optional trailing field
     [void]$lines.Add('}')
     # LF, chosen once: these bytes are hashed, so the line ending must not depend
     # on the host or on a checkout's autocrlf setting.

@@ -39,7 +39,7 @@ them mid-child and leaves the user with no answer at all.
 | [`Graph-Update-Check`](#graph-update-check) | post-task (Stop) | suggests graphify update when the graph is stale |
 | [`Cbm-Read-Check`](#cbm-read-check) | pre-task (SessionStart, UserPromptSubmit) | query the Codebase Memory index before browsing files |
 | [`Cbm-Update-Check`](#cbm-update-check) | post-task (Stop, SubagentStop) | reports a Codebase Memory index lagging behind the code |
-| [`Synapse-Rules-Check`](#synapse-rules-check) | pre-task (SessionStart, UserPromptSubmit) + post-task (Stop/SubagentStop) | loads the user's rules from Synapse; reminds once mid-session when files changed unread |
+| [`Synapse-Rules-Check`](#synapse-rules-check) | pre-task (SessionStart, UserPromptSubmit) + post-task (Stop/SubagentStop) | loads the user's rules from Synapse; nudges once mid-session |
 | [`Session-Summary-Check`](#session-summary-check) | pre-task instructions (SessionStart, UserPromptSubmit); silent observation (Stop, SubagentStop) | asks the closing reply for a done / still-open summary |
 | [`Install-Location-Check`](#install-location-check) | pre-task (PreToolUse) | asks for an install path off the system drive |
 | [`Cloudflare-Deploy`](#cloudflare-deploy) | post-task (Stop) | suggests deploying in Cloudflare Workers projects, gated on release readiness |

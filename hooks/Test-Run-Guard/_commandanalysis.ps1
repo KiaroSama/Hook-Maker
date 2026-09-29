@@ -578,9 +578,9 @@ function Get-CommandVerdict {
         if ($segmentTokens.Count -eq 0) { continue }
         $segmentText = ($segmentTokens -join ' ')
         # POSIX: leading NAME=value words are assignments, never the command.
-        # `CI=1 pytest` runs pytest; `F=x.ps1; rm $F` runs nothing here.
+        # `CI=1 pytest` runs pytest; `F=x.ps1; rm $F` runs nothing here. B="two words" is rejoined.
         $assignments = @()
-        while ($segmentTokens.Count -gt 0 -and $segmentTokens[0] -match '^[A-Za-z_][A-Za-z0-9_]*=') { $assignments += $segmentTokens[0]; $segmentTokens = @($segmentTokens | Select-Object -Skip 1) }
+        while ($segmentTokens.Count -gt 0 -and $segmentTokens[0] -match '^[A-Za-z_][A-Za-z0-9_]*=') { $word = $segmentTokens[0]; $segmentTokens = @($segmentTokens | Select-Object -Skip 1); while (($word.Split('"').Count % 2 -eq 0 -or $word.Split("'").Count % 2 -eq 0) -and $segmentTokens.Count -gt 0) { $word += ' ' + $segmentTokens[0]; $segmentTokens = @($segmentTokens | Select-Object -Skip 1) }; $assignments += ($word -replace '^([^=]+=)["'']?(.*?)["'']?$', '$1$2') }
         if ($segmentTokens.Count -eq 0) { continue }
         $skip = $false
         foreach ($fragment in @($NeverGuard)) {

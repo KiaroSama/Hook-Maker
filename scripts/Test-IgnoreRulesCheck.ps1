@@ -80,7 +80,8 @@ try {
     $r = Fire -Cwd $repo -EventName 'SessionStart'
     $ignore = [System.IO.File]::ReadAllText((Join-Path $repo '.gitignore'))
     Check 'SessionStart auto-adds required protected patterns' ($ignore -match '(?m)^/\.ai/$' -and $ignore -match '(?m)^/AGENTS\.md$' -and $ignore -match '(?m)^\*\*/\.ignoreme$') $ignore
-    Check 'SessionStart extracts a local-only path from project rules' ($ignore -match '(?m)^/private-cache/$') $ignore
+    # RULE_FILE_PATTERNS=advisory (the default since plan 043): reported, never written.
+    Check 'SessionStart reports a local-only path from project rules without writing it' ($ignore -notmatch '(?m)^/private-cache/$' -and $r.Out -match 'private-cache') ($ignore + ' || ' + $r.Out)
     Check 'pre-task auto-fix reports context' ($r.Out -match '"hookSpecificOutput"' -and $r.Out -match 'Auto-added') $r.Out
     $r = Fire -Cwd $repo
     Check 'clean post-task Stop -> silent' ($r.Exit -eq 0 -and $r.Out -eq '') $r.Out
