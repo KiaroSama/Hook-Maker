@@ -371,6 +371,13 @@ exactly once (deduplicated by record id).
 copies, the client registrations, any native Git integration owned by that record, and the registry
 record itself. The originals under `hooks\` are untouched, so you can reinstall at any time.
 
+**A runtime another record still uses is kept.** When two records of one hook share one installed
+runtime for a client (for example a plain custom-hook record of the sync engine next to its sync-group
+record), removing one takes off only that record's own handlers and its registry row; the runtime
+stays for the other record, and the result says so (`sharedRuntimeKept`, or
+`wouldRemoveHandlersOnly` in a preview). A record without a profile never claims a handler that
+carries one.
+
 **A record Hook Maker cannot interpret can still be dropped — as a tracking row only.** If a record
 is damaged past the point where its client list can be read, nothing can prove what it installed, so
 no file is touched. The row is listed as removable with the capability `registry record only

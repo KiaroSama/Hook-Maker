@@ -549,3 +549,58 @@ try {
     Check 'forget: dropping an id that is already gone is not an error' ([string]$again.Result.overall -eq 'ok') ([string]$again.Result.overall)
 }
 finally { Remove-FixtureHook 'ZZZ-Uninst-Forgetunreadable' }
+
+# =========================================================================
+Write-Host '--- shared runtime: removing a profile-less record keeps the runtime and the -Profile handlers of the record it shares with ---' -ForegroundColor Cyan
+# Reproduced 2026-09-30 in a real project: a CustomHook record of the sync
+# engine next to its Engine record, both on ONE runtime directory. Removing the
+# CustomHook record deleted the directory and the Engine record's -Profile
+# handlers, and still reported ok.
+$fxShared = New-FixtureHook 'ZZZ-Uninst-Sharedruntime'
+try {
+    $projShared = New-Proj 'SharedRuntimeProj'
+    & $InstallScript -CustomHook $fxShared -Events @('Stop') -TargetProject $projShared *> $null
+    $recShared = Get-RecordForScope 'ZZZ-Uninst-Sharedruntime' $projShared
+    $sibling = $recShared | ConvertTo-Json -Depth 30 | ConvertFrom-Json
+    $sibling.id = 'fffffffff1'
+    $sibling.profile = 'sync-group-shared'
+    foreach ($client in @('claude', 'codex')) {
+        $sub = $sibling.clients.$client
+        $sub.command = [string]$sub.command + ' -Profile "sync-group-shared"'
+        if ($null -ne $sub.PSObject.Properties['commandWindows'] -and -not [string]::IsNullOrEmpty([string]$sub.commandWindows)) {
+            $sub.commandWindows = [string]$sub.commandWindows + ' -Profile "sync-group-shared"'
+        }
+        $jsonShared = Get-Content -LiteralPath ([string]$sub.settingsPath) -Raw | ConvertFrom-Json
+        $siblingHandler = (@(@($jsonShared.hooks.Stop)[0].hooks)[0]) | ConvertTo-Json -Depth 10 | ConvertFrom-Json
+        $siblingHandler.command = [string]$sub.command
+        if ($null -ne $siblingHandler.PSObject.Properties['commandWindows']) { $siblingHandler.commandWindows = [string]$sub.commandWindows }
+        $jsonShared.hooks.Stop = @($jsonShared.hooks.Stop) + @([pscustomobject]@{ hooks = @($siblingHandler) })
+        [System.IO.File]::WriteAllText([string]$sub.settingsPath, ($jsonShared | ConvertTo-Json -Depth 50), (New-Object System.Text.UTF8Encoding $false))
+    }
+    $regShared = Get-Registry
+    $regShared.installs = @($regShared.installs) + @($sibling)
+    Save-InstallRegistry -ToolRoot $ToolRoot -Registry $regShared
+    $sharedScript = [string]$recShared.clients.claude.runtimeScript
+
+    $preview = Invoke-UninstallProcess -RecordId $recShared.id -WhatIf
+    Check 'shared runtime: the preview says only handlers would come off' (
+        (Get-ComponentReason $preview.Result 'claude') -eq 'wouldRemoveHandlersOnly' -and
+        (Get-ComponentReason $preview.Result 'codex') -eq 'wouldRemoveHandlersOnly') ($preview.Result | ConvertTo-Json -Depth 5)
+
+    $r = Invoke-UninstallProcess -RecordId $recShared.id
+    Check 'shared runtime: the removal is ok, never ambiguous' ([string]$r.Result.overall -eq 'ok') ($r.Result | ConvertTo-Json -Depth 5)
+    Check 'shared runtime: both clients report the runtime kept for the sharer' (
+        (Get-ComponentReason $r.Result 'claude') -eq 'sharedRuntimeKept' -and
+        (Get-ComponentReason $r.Result 'codex') -eq 'sharedRuntimeKept') ($r.Result | ConvertTo-Json -Depth 5)
+    Check 'shared runtime: the runtime the sibling runs from survives' (Test-Path -LiteralPath $sharedScript -PathType Leaf)
+    Check 'shared runtime: only the removed record is gone' (
+        (@(Get-RecordsFor 'ZZZ-Uninst-Sharedruntime' | ForEach-Object { [string]$_.id }) -join ',') -eq 'fffffffff1')
+    foreach ($client in @('claude', 'codex')) {
+        $stopCommands = @()
+        $jsonAfter = Get-Content -LiteralPath ([string]$recShared.clients.$client.settingsPath) -Raw | ConvertFrom-Json
+        foreach ($g in @($jsonAfter.hooks.Stop)) { foreach ($h in @($g.hooks)) { $stopCommands += [string]$h.command } }
+        Check ('shared runtime: ' + $client + ' keeps exactly the sibling''s -Profile handler') (
+            $stopCommands.Count -eq 1 -and $stopCommands[0] -match '-Profile "sync-group-shared"') ($stopCommands -join ' | ')
+    }
+}
+finally { Remove-FixtureHook 'ZZZ-Uninst-Sharedruntime' }

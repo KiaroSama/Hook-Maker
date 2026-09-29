@@ -387,8 +387,13 @@ function Remove-ClientComponent {
         return [pscustomobject]@{ Removed = $false }
     }
 
+    # Another live record running from this same directory keeps it: only this
+    # record's handlers come off (Get-RuntimeSharerRecordId).
+    $sharerId = Get-RuntimeSharerRecordId -Installs @($registry.installs) -RecordId $RecordId -Client $ClientName -CanonicalHookDir $hookDir
+    if ($sharerId -ne '') { $hasRuntimeDir = $false }
+
     if ($WhatIf) {
-        Set-ComponentResult -Component $ClientName -Status 'ok' -ReasonCode 'wouldRemove'
+        Set-ComponentResult -Component $ClientName -Status 'ok' -ReasonCode $(if ($sharerId -ne '') { 'wouldRemoveHandlersOnly' } else { 'wouldRemove' })
         return [pscustomobject]@{ Removed = $true }
     }
 
@@ -455,6 +460,10 @@ function Remove-ClientComponent {
         }
     }
     Remove-EmptyManagedRoot -Root $runtimeRoot
+    if ($sharerId -ne '') {
+        Set-ComponentResult -Component $ClientName -Status 'ok' -ReasonCode 'sharedRuntimeKept' -Message ('runtime kept: record ' + $sharerId + ' still uses it')
+        return [pscustomobject]@{ Removed = $true }
+    }
     Set-ComponentResult -Component $ClientName -Status 'ok'
     return [pscustomobject]@{ Removed = $true }
 }
