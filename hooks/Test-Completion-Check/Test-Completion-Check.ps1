@@ -425,8 +425,8 @@ function Write-Finding {
     # can clear - so blocking one violates the rule that every block must name
     # the safe action that clears it. Reproduced 2026-09-12: a SubagentStop
     # payload emitted a byte-identical block to Stop, for a test command the
-    # MAIN agent had run. The advisory still reaches the model (Claude honours
-    # additionalContext here) and the real gate still holds on the main Stop.
+    # MAIN agent had run. The advisory is still shown (systemMessage at
+    # SubagentStop) and the real gate still holds on the main Stop.
     if ($Blocking -and -not $script:advisoryOnly -and $script:eventName -ne 'SubagentStop') { $kind = 'block' }
     # A block must be ADMITTED before it is emitted: the claim is what gives the
     # gate a memory of having spoken, and it also spends one unit of the shared

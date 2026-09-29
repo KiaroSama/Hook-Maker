@@ -229,9 +229,9 @@ if ($config.ContainsKey('UTF8_EXCEPTION_FILE') -and -not [string]::IsNullOrWhite
 # HOOKMAKER_CLIENT, else CLAUDE_PROJECT_DIR, else Codex. `hookSpecificOutput`
 # in the INPUT event is NOT a documented client signal and is not consulted.
 # Real block -> decision:block for Claude/Codex (the Ci-Status-Check blocking
-# shape). Advisory -> additionalContext for Claude on any event and for Codex
-# OFF Stop; Codex's `systemMessage` is Stop-scoped, so this hook gets it on
-# Stop/SubagentStop and NOT on SessionStart. Write-HookResult never exits, so
+# shape). Advisory -> additionalContext for both clients OFF Stop, and
+# `systemMessage` for both on Stop/SubagentStop (additionalContext there
+# re-invokes the model on Claude). Write-HookResult never exits, so
 # this helper keeps the exit itself and honours the returned ExitCode.
 function Write-HookMessage {
     param([string[]]$Lines, [bool]$Blocking)
