@@ -65,11 +65,11 @@
 # continuation, which is exactly the intended effect of a genuine completion
 # gate. A non-blocking Stop/SubagentStop advisory (e.g. only a locked/
 # prunable worktree, or a capped scan, with nothing to actually block on) is
-# CLIENT-AWARE and never `decision:block`: Claude Code gets
-# `hookSpecificOutput.additionalContext`, Codex gets `systemMessage` (client
-# detected via `$env:CLAUDE_PROJECT_DIR`, exported by Claude Code on every
-# hook process, not by Codex - same signal Ci-Status-Check/Rules-Check/
-# Secrets-Check/Test-Completion-Check use). Pre-task (SessionStart/
+# never `decision:block`: it is `systemMessage` for BOTH clients (the shared
+# Write-HookResult Stop branch; `additionalContext` at Stop re-invokes the
+# model on Claude Code). Client detection (`$env:CLAUDE_PROJECT_DIR`, exported
+# by Claude Code on every hook process, not by Codex) still decides the
+# pre-task shape. Pre-task (SessionStart/
 # UserPromptSubmit) output stays `additionalContext` on BOTH clients, as for
 # every other pre-task hook in this repo.
 #

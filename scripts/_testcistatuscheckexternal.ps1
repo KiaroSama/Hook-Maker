@@ -49,9 +49,9 @@
     $r = FireExternalBlocker -Cwd $ext1 -Classification 'github-outage' -Reason 'GitHub Actions status page reports a full outage'
     Check 'recording an evidenced external blocker succeeds for an infra-consistent CI state' ($r.Exit -eq 0 -and $r.Out -match 'EXTERNAL CI blocker' -and $r.Out -match 'does NOT mark CI verified') $r.Out
     # Item 5: completion allowed, but Stop surfaces a NON-BLOCKING "CI not green"
-    # notice. The shape is client-aware (verified against the current official
-    # docs): Claude Stop supports model-visible hookSpecificOutput.additionalContext;
-    # Codex Stop supports only the common systemMessage field.
+    # notice. The shape is systemMessage for both clients: on Claude a Stop
+    # additionalContext re-invokes the model, and Codex Stop documents only the
+    # common systemMessage field.
     $r = Fire -HookPath $CiHook -Cwd $ext1 -EventName 'Stop' -Client 'claude'
     Check 'Claude: active exception authorizes completion with a NON-BLOCKING context (not decision:block)' ($r.Out -notmatch '"decision":"block"' -and $r.Out -match 'systemMessage') $r.Out
     Check 'Claude: Stop uses the non-continuing user-visible systemMessage shape' ($r.Out -match '"systemMessage"' -and $r.Out -notmatch 'hookSpecificOutput|additionalContext|decision') $r.Out

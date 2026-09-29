@@ -77,12 +77,12 @@
 # completion, Stop emits a NON-BLOCKING "CI NOT VERIFIED GREEN" context notice
 # - ONCE per session per blocker, see Write-ExternalBlockerContext - so the
 # final task context can never misrepresent CI as successful. The
-# notice shape is CLIENT-AWARE (see Write-ExternalBlockerContext below):
-# Claude Code gets `hookSpecificOutput.additionalContext` (documented
-# model-visible on Stop); Codex gets `systemMessage` (its only documented
-# common Stop field - user/event-visible, not documented as model-visible for
-# Codex). Client is detected the same way Rules-Check does: CLAUDE_PROJECT_DIR
-# present -> Claude, absent -> Codex. Neither shape ever uses `decision:block`.
+# notice goes out through Write-HookResult, which emits `systemMessage` at
+# Stop for BOTH clients (see Write-ExternalBlockerContext below): Claude Code
+# shows it to the user without a new model turn, and it is the only documented
+# common Stop field on Codex. `additionalContext` is never used at Stop - on
+# Claude it re-invokes the model. Neither client ever gets `decision:block`
+# from this notice.
 # Every subsequent Stop performs a THROTTLED (EXTERNAL_BLOCKER_RECHECK_MINUTES)
 # exact-SHA re-evaluation: the same fingerprint keeps completion allowed
 # (reported as an external blocker, not success); CI turning green retires the
@@ -468,20 +468,20 @@ function Write-Block {
 # never misrepresent CI as green - it states explicitly that CI is NOT verified
 # and completion is allowed only because of the recorded external blocker.
 #
-# The output shape is CLIENT-AWARE, using the officially supported non-blocking
-# Stop field for each client (verified against the current Claude Code and Codex
-# hook docs, 2026-07-17):
-# - Claude Code: `hookSpecificOutput.additionalContext` is documented as
-#   MODEL-VISIBLE for Stop/SubagentStop ("at the end of the turn ... so Claude
-#   can act on the feedback"); `systemMessage` there is only shown to the user.
+# The output is `systemMessage` on BOTH clients, from the shared Write-HookResult
+# Stop branch (checked against the Claude Code and Codex hook docs, 2026-09-29):
+# - Claude Code: `hookSpecificOutput.additionalContext` at Stop continues the
+#   conversation - it re-invokes the model (see ONCE PER SESSION below), so a
+#   non-blocking notice must not use it; `systemMessage` is shown to the user
+#   without starting another model turn.
 # - Codex: Stop does NOT document `hookSpecificOutput.additionalContext`; its
 #   supported common field is `systemMessage`, "surfaced as a warning in the UI
 #   or event stream" (user/event-visible, NOT documented as model-visible).
 #   Codex Stop `decision:block` would FORCE CONTINUATION (a new prompt), so it
 #   is never used here.
-# Client detection and the per-client wrapper both come from the shared
-# Write-HookResult adapter. Neither output can claim CI success; the message
-# text is identical for every client, only the JSON wrapper differs.
+# Client detection and the JSON wrapper both come from the shared
+# Write-HookResult adapter. Neither output can claim CI success; at Stop the
+# message text and its `systemMessage` wrapper are the same for every client.
 #
 # ONCE PER SESSION PER BLOCKER. On Claude Code a Stop hook's additionalContext
 # is not a passive note: the client re-invokes the model with it (observed

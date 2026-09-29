@@ -15,8 +15,8 @@
 #    line count is STRICTLY GREATER THAN the threshold (default 800 - so 801 is
 #    reported, exactly 800 is not) and lists the largest offenders. Files already
 #    present before the task are scanned too, and for those the report stays a
-#    CLIENT-AWARE, NON-BLOCKING advisory (Claude:
-#    hookSpecificOutput.additionalContext, Codex: systemMessage) - never
+#    NON-BLOCKING advisory (`systemMessage` at Stop on both clients, from the
+#    shared Write-HookResult adapter) - never
 #    decision:block, which on Codex would coerce a new prompt at Stop. Silent
 #    when nothing is oversized; per-project cooldown; stop_hook_active guard so it
 #    never loops.
@@ -197,9 +197,9 @@ if ($extensions.Count -eq 0) {
 
 # Stop output: NON-BLOCKING advisory, shaped by the shared adapter. The AI owns
 # the split decision, so this hook NEVER emits decision:block (a real Stop gate
-# that on Codex forces a new prompt - a coercive loop). Write-HookResult picks
-# the client shape: Claude gets hookSpecificOutput.additionalContext, Codex gets
-# systemMessage at Stop, and a client with no documented Stop context channel is
+# that on Codex forces a new prompt - a coercive loop). Write-HookResult emits
+# systemMessage at Stop for both clients (additionalContext there re-invokes the
+# model on Claude), and a client with no documented Stop context channel is
 # reported as degraded instead of being handed a shape it cannot read.
 function Write-Advisory {
     param([string]$Message)
