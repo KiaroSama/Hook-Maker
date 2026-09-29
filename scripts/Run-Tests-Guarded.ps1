@@ -453,7 +453,7 @@ try {
     $lastProgressTicks = [DateTime]::UtcNow.Ticks
 
     while (-not $process.HasExited) {
-        Start-Sleep -Milliseconds ([Math]::Max(250, $HeartbeatSeconds * 1000))
+        $null = $process.WaitForExit([int][Math]::Max(250, $HeartbeatSeconds * 1000))
         if ($process.HasExited) { break }
         $heartbeats++
 

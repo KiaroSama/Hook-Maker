@@ -125,6 +125,20 @@
     }
     Check ('a clean exit propagates 7 with no false orphan across ' + $cleanIterations + ' iterations (flake gone)') $cleanStable $cleanDetail
 
+    # The heartbeat wait returns the moment the child exits: it used to be a
+    # blind sleep of a whole heartbeat. With a 30 s heartbeat the old runner
+    # needed >= 30 s for an instant child; 15 s leaves room for a loaded start.
+    $quickResult = Join-Path $Work 'quick-result.json'
+    $quickWrapper = Join-Path $Work 'run-quick.ps1'
+    Write-Utf8 $quickWrapper (
+        "& '$Runner' -FilePath 'cmd.exe' -Arguments @('/c','exit','0') " +
+        "-TimeoutSeconds 60 -IdleTimeoutSeconds 45 -HeartbeatSeconds 30 -ResultPath '$quickResult' -Quiet`nexit `$LASTEXITCODE`n")
+    $quickWatch = [System.Diagnostics.Stopwatch]::StartNew()
+    $rpQuick = Start-BoundedProcess -FilePath (Get-Process -Id $PID).Path -Wait -NoNewWindow -PassThru -ArgumentList @('-NoLogo', '-NoProfile', '-File', $quickWrapper)
+    $quickWatch.Stop()
+    Check 'the runner returns as soon as the child exits, not after a heartbeat' (
+        $rpQuick.ExitCode -eq 0 -and $quickWatch.Elapsed.TotalSeconds -lt 15) ('{0:N1} s, exit {1}' -f $quickWatch.Elapsed.TotalSeconds, $rpQuick.ExitCode)
+
     # =====================================================================
     Write-Host '--- runner: a silent CPU-busy run survives the no-progress limit (scope F) ---' -ForegroundColor Cyan
     $busySuite = Join-Path $Work 'busy-suite.ps1'
