@@ -1,30 +1,22 @@
 # ---------------------------------------------------------------------------
 # The Stop delivery/continuation LEDGER.
 #
-# WHY THIS EXISTS (F01): the old guard was one file per project+hook holding a
-# single session id. Two sessions overwrote each other's marker, so alternating
-# A/B defeated the guard in BOTH directions - each session's continuation Stop
-# read the other's id, concluded "not mine", and blocked again. The audit model
-# produced 60 consecutive blocks with the underlying findings never changing.
+# F01: the old guard was one file per project+hook holding one session id; two
+# sessions overwrote each other's marker, so alternating A/B defeated it in both
+# directions (60 consecutive blocks on unchanged findings in the audit model).
+# F02: a session id is neither a task id nor an agent id - a later task inherited
+# an earlier one's suppression, and a parent and its subagent need separate
+# evidence. So the ledger is keyed by project + hook + client + session + agent +
+# continuation CHAIN, claimed atomically so concurrent Stops lose nothing.
 #
-# WHY THE KEY IS WIDER (F02): a session id is not a task id and not an agent id.
-# A later task in the same session inherited the earlier task's suppression, and
-# a parent and its subagent share a session while needing separate evidence.
+# The CHAIN re-arms a new task and derives from `stop_hook_active`, never from
+# UserPromptSubmit or a turn id: on Codex a Stop block's continuation ARRIVES AS
+# A NEW USER PROMPT, so resetting on a prompt would refund the budget the block
+# just spent. A genuine Stop (stop_hook_active=false) rotates the chain; a
+# continuation keeps it.
 #
-# The ledger is therefore keyed by project + hook + client + session + agent +
-# continuation CHAIN, and it is claimed atomically so concurrent Stops cannot
-# lose each other's entries.
-#
-# THE CHAIN IS WHAT MAKES A NEW TASK RE-ARM, and it is deliberately derived from
-# `stop_hook_active` rather than from UserPromptSubmit or a turn id: on Codex a
-# Stop block generates a continuation that ARRIVES AS A NEW USER PROMPT, so
-# resetting on a new prompt would reset the budget the block just spent and
-# restore the loop. A Stop with stop_hook_active=false is a genuine stop, and it
-# rotates the chain; a continuation Stop keeps it.
-#
-# Loaded optionally by _hooklib.ps1: an installed runtime copied before this
-# file existed has no _stoplib.ps1 beside it and falls back to the old
-# single-marker behaviour, so a stale runtime degrades rather than breaking.
+# Loaded optionally by _hooklib.ps1: a runtime copied before this file existed
+# falls back to the old single-marker behaviour (degrades rather than breaks).
 # ---------------------------------------------------------------------------
 
 # PROJECT IDENTITY (R01). The same project has to produce the same key however
@@ -235,6 +227,29 @@ function Publish-StopLedgerFile {
     }
 }
 
+# RETENTION (maintainer rule, 2026-09-29): a session silent for 14 days cannot
+# be continued by either client, so retiring its chains, entries and unresolved
+# rows refunds nothing that could be spent. The current session is never touched;
+# an unreadable timestamp keeps its session. Keys are client|session|agent[|hook].
+function Remove-RetiredStopChains {
+    param([Parameter(Mandatory = $true)]$Ledger, [AllowEmptyString()][string]$CurrentSession = '')
+    $last = @{}
+    $seen = { param([string]$s, $v) $d = [DateTime]::MaxValue; $p = [DateTime]::MinValue
+        if ($v -is [DateTime]) { $d = $v.ToUniversalTime() }
+        elseif ([DateTime]::TryParse([string]$v, [Globalization.CultureInfo]::InvariantCulture, [Globalization.DateTimeStyles]::RoundtripKind, [ref]$p)) { $d = $p.ToUniversalTime() }
+        if (-not $last.ContainsKey($s) -or $d -gt $last[$s]) { $last[$s] = $d } }
+    $sessionOf = { param($p) $s = [string](Get-Field $p.Value 'session'); if ($s -eq '') { $s = [string]@($p.Name -split '\|')[1] }; $s }
+    foreach ($p in @($Ledger.chains.PSObject.Properties)) { & $seen (& $sessionOf $p) (Get-Field $p.Value 'eventUtc') }
+    foreach ($p in @($Ledger.entries.PSObject.Properties)) { & $seen (& $sessionOf $p) (Get-Field $p.Value 'blockedUtc') }
+    foreach ($p in @($Ledger.unresolved.PSObject.Properties)) { & $seen (& $sessionOf $p) (Get-Field $p.Value 'lastUtc') }
+    $cutoff = [DateTime]::UtcNow.AddDays(-14)
+    $retired = @($last.Keys | Where-Object { $_ -cne $CurrentSession -and $last[$_] -lt $cutoff })
+    if ($retired.Count -eq 0) { return }
+    foreach ($map in @($Ledger.chains, $Ledger.entries, $Ledger.unresolved)) {
+        foreach ($p in @($map.PSObject.Properties)) { if ($retired -ccontains (& $sessionOf $p)) { $map.PSObject.Properties.Remove($p.Name) } }
+    }
+}
+
 # Read-modify-write under an exclusive handle so two Stops racing on the same
 # project cannot lose each other's entry. Returns a typed outcome: Ok carries
 # the mutation's own result, and a failure is REPORTED rather than swallowed -
@@ -243,7 +258,8 @@ function Publish-StopLedgerFile {
 function Invoke-StopLedgerUpdate {
     param(
         [Parameter(Mandatory = $true)][string]$Path,
-        [Parameter(Mandatory = $true)][scriptblock]$Mutate
+        [Parameter(Mandatory = $true)][scriptblock]$Mutate,
+        [AllowEmptyString()][string]$CurrentSession = ''
     )
     if (-not (Test-StopLedgerWritable -Path $Path)) {
         return [pscustomobject]@{ Ok = $false; State = 'persistence-failed'; Result = $null }
@@ -266,11 +282,11 @@ function Invoke-StopLedgerUpdate {
         }
         $ledger = $state.Doc
         $result = & $Mutate $ledger
+        Remove-RetiredStopChains -Ledger $ledger -CurrentSession $CurrentSession
         $json = $ledger | ConvertTo-Json -Depth 10
         [System.IO.File]::WriteAllText($tmp, $json, (New-Object System.Text.UTF8Encoding($false)))
-        # Do not commit a generation this very reader will reject on its next
-        # invocation. Capacity refusal preserves active chains and obligations;
-        # deleting arbitrary old entries would refund their correction budgets.
+        # Never commit a generation this reader will reject next time. Capacity
+        # refusal preserves active chains; only RETIRED sessions are ever removed.
         if ((Get-StopLedgerState -Path $tmp).State -ne 'valid') {
             return [pscustomobject]@{ Ok = $false; State = 'mutation-invalid-or-capacity'; Result = $null }
         }
@@ -397,21 +413,14 @@ function Invoke-StopAdmission {
     $path = Get-StopLedgerPath -ProjectRoot ([string](Get-Field $HookInput 'cwd'))
     $eventId = Get-StopEventId -HookInput $HookInput
 
-    # CORRUPT OR UNSUPPORTED IS NOT 'FRESH', and the check that decides it lives
-    # inside Invoke-StopLedgerUpdate's lock - not here.
-    #
-    # An empty document has blocks = 0, so reconstructing one from damaged bytes
-    # hands the chain a full allowance again: a refund in the middle of a task,
-    # which is the loop the allowance exists to bound. Validating outside the
-    # write lock did not protect the read-modify-write either, so the decision
-    # was made on state that could change before it was used.
-    #
-    # Damaged state is now REFUSED, never rewritten, and never quarantined out of
-    # the way to make a gate quiet - the bytes survive for whoever has to look at
-    # them, and Write-StopBlockResult says out loud that corrections stopped and
-    # the finding is unresolved. A ledger from a NEWER build is not damaged at
-    # all and is never touched.
-    $outcome = Invoke-StopLedgerUpdate -Path $path -Mutate {
+    # CORRUPT OR UNSUPPORTED IS NOT 'FRESH', and that check lives inside
+    # Invoke-StopLedgerUpdate's lock, not here: an empty document has blocks = 0,
+    # so rebuilding one from damaged bytes would refund the allowance mid-task,
+    # and validating outside the lock decided on state that could change before
+    # use. Damaged state is REFUSED, never rewritten or quarantined - the bytes
+    # survive, and Write-StopBlockResult says corrections stopped and the finding
+    # is unresolved. A ledger from a NEWER build is never touched.
+    $outcome = Invoke-StopLedgerUpdate -Path $path -CurrentSession ([string](Get-Field $HookInput 'session_id')) -Mutate {
         param($ledger)
         $chain = Resolve-StopChain -Ledger $ledger -ChainKey $keys.ChainKey -IsContinuation $IsContinuation -EventId $eventId
         $entry = $null
@@ -681,24 +690,14 @@ function Get-ClosingAssistantText {
 
 # ---- L01: the finalization barrier ----------------------------------------
 #
-# THE DEFECT THIS EXISTS FOR, in the user's words: the wrap-up "does not come at
-# the very end - then a few more hooks arrive, and it repeats." Both halves are
-# real and they have different causes.
-#
-# REPETITION is enforceable here and is what this code fixes. A gate blocks
-# after the answer was written, the agent does the correction, writes a second
-# wrap-up, another gate blocks, and the user sees three. Once a wrap-up has been
-# observed for a task, every later block in that task says so, and says not to
-# write another.
-#
-# ORDERING is NOT fully enforceable from a Stop hook, and claiming otherwise
-# would be the dishonest fix this repair was told to avoid. On Claude Code the
-# assistant's message is already displayed before Stop runs, so no Stop handler
-# can retract it or move a later correction ahead of it. What IS enforceable is
-# that the correction turn adds no second wrap-up, so exactly one is shown - and
-# that the agent is told, before it writes, which gates must already be
-# satisfied for its message to be the last one. The residual limit is stated in
-# docs rather than papered over.
+# The defect, in the user's words: the wrap-up "does not come at the very end -
+# then a few more hooks arrive, and it repeats." REPETITION is enforceable here:
+# once a wrap-up has been observed for a task, every later block in that task
+# says so and forbids writing another. ORDERING is NOT fully enforceable from a
+# Stop hook - on Claude Code the message is displayed before Stop runs, so no
+# handler can retract it. What is enforceable is that a correction turn adds no
+# second wrap-up and that the agent is told beforehand which gates must already
+# be satisfied; the residual limit is stated in docs, not papered over.
 
 # Does this closing text carry a wrap-up? Deliberately structural rather than a
 # keyword sweep: both section labels, each starting a line, in a text that is
@@ -725,7 +724,7 @@ function Set-TaskSummaryPublished {
     $stopActive = Get-Field $HookInput 'stop_hook_active'
     $isContinuation = ($null -ne $stopActive -and [bool]$stopActive)
     $eventId = Get-StopEventId -HookInput $HookInput
-    $null = Invoke-StopLedgerUpdate -Path $path -Mutate {
+    $null = Invoke-StopLedgerUpdate -Path $path -CurrentSession ([string](Get-Field $HookInput 'session_id')) -Mutate {
         param($ledger)
         # RESOLVE, never "read and give up". The flag has to outlive the event that
         # observed the wrap-up: the gate that sees it may be the first to touch

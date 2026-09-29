@@ -372,6 +372,9 @@ Check 'prose on the NEXT line is not absorbed into an empty declaration' (
 # ---- the originating user task (L02) --------------------------------------
 . (Join-Path $PSScriptRoot '_teststoptaskidentity.ps1')
 
+# ---- retention of sessions silent for 14 days ----------------------------
+. (Join-Path $PSScriptRoot '_teststopretention.ps1')
+
 # ---- the chain key names the client ---------------------------------------
 $savedClient = $env:HOOKMAKER_CLIENT
 try {
