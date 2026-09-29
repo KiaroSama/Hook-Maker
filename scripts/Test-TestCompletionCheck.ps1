@@ -34,7 +34,7 @@
 # Usage:  pwsh -NoLogo -NoProfile -File .\scripts\Test-TestCompletionCheck.ps1 [-KeepArtifacts] [-RecoveryOnly] [-SurvivorsOnly]
 # Exit code is the number of failed assertions (0 = all passed).
 
-param([switch]$KeepArtifacts, [switch]$RecoveryOnly, [switch]$ActivationOnly, [switch]$OrphanOnly, [switch]$SurvivorsOnly)
+param([switch]$KeepArtifacts, [switch]$RecoveryOnly, [switch]$ActivationOnly, [switch]$OrphanOnly, [switch]$SurvivorsOnly, [switch]$CorrectionsOnly)
 
 Set-StrictMode -Version 2.0
 $ErrorActionPreference = 'Stop'
@@ -67,6 +67,9 @@ try {
     elseif ($SurvivorsOnly) {
         . (Join-Path $PSScriptRoot '_testcompletionsurvivors.ps1')
     }
+    elseif ($CorrectionsOnly) {
+        . (Join-Path $PSScriptRoot '_testcompletioncorrections.ps1')
+    }
     else {
     . (Join-Path $PSScriptRoot '_testcompletionrecovery.ps1')
     if (-not $RecoveryOnly) {
@@ -75,6 +78,8 @@ try {
     . (Join-Path $PSScriptRoot '_testcompletiongate.ps1')
     # An unpaired observation and the later run that may clear it.
     . (Join-Path $PSScriptRoot '_testcompletionorphan.ps1')
+    # Legacy-result horizon, ledger-write failure, global cleanup install.
+    . (Join-Path $PSScriptRoot '_testcompletioncorrections.ps1')
 
     # The incident ledger, its pruning rules and its retention bounds.
     . (Join-Path $PSScriptRoot '_testcompletionledger.ps1')
