@@ -32,6 +32,9 @@ Set-StrictMode -Version 2.0
 $ErrorActionPreference = 'Stop'
 
 . (Join-Path $PSScriptRoot '..\_hooklib.ps1')
+# Optional sibling (a runtime installed before it existed keeps the git-only check).
+$markdownWorkPath = Join-Path $PSScriptRoot '_markdownwork.ps1'
+if (Test-Path -LiteralPath $markdownWorkPath -PathType Leaf) { . $markdownWorkPath }
 
 $hookInput = Read-HookInput
 if ($null -eq $hookInput) {
@@ -91,20 +94,31 @@ if (Test-Path -LiteralPath $statePath -PathType Leaf) {
     catch { }
 }
 
-# ---- staleness: newest CODE work (git-based) vs graph.json ----
+# ---- staleness: newest CODE work (git-based) and newest Markdown work vs graph.json ----
 $workTime = Get-LatestWorkTimeUtc $cwd
-if ($null -eq $workTime) {
-    exit 0
-}
+$markdown = $null
+if ($null -ne (Get-Command -Name 'Get-MarkdownWorkTime' -ErrorAction SilentlyContinue)) { $markdown = Get-MarkdownWorkTime -ProjectRoot $cwd }
 $graphTime = (Get-Item -LiteralPath $graphPath -Force).LastWriteTimeUtc
-if ($workTime -le $graphTime.AddMinutes(2)) {
+$codeStale = ($null -ne $workTime -and $workTime -gt $graphTime.AddMinutes(2))
+$markdownStale = ($null -ne $markdown -and $null -ne $markdown.TimeUtc -and $markdown.TimeUtc -gt $graphTime.AddMinutes(2))
+if (-not $codeStale -and -not $markdownStale) {
+    # A scan that hit its bound proves nothing: say so once per cooldown, never block on it.
+    if ($null -ne $markdown -and $markdown.Partial) {
+        New-Item -ItemType Directory -Path $stateDir -Force | Out-Null
+        [System.IO.File]::WriteAllText($statePath, [DateTime]::UtcNow.ToString('o'))
+        $null = Write-HookResult -EventName $eventName -Kind 'advisory' -Message ('GRAPH UPDATE CHECK: the Markdown folder scan stopped at its bound (' + $markdown.Files + ' files) before covering the whole project, so whether .ai/, specs/, .specify/ or plans/ changed after the graph was built is UNKNOWN - not clean. If they changed in this task, run: graphify update .')
+    }
     exit 0
 }
 
 New-Item -ItemType Directory -Path $stateDir -Force | Out-Null
 [System.IO.File]::WriteAllText($statePath, [DateTime]::UtcNow.ToString('o'))
 
-$reason = 'GRAPH UPDATE CHECK: graphify-out/graph.json predates the latest project changes. Decide for yourself based on STRUCTURAL impact, not the number of files changed - a single-file change can still be graph-relevant (e.g. an added/removed/renamed function or class, a changed export, import, call, or inheritance relationship, a new entry point, a changed cross-file dependency), while a multi-file change can be graph-irrelevant (prose/comments/formatting only, a literal or config value change, generated output, tests only unless test architecture is intentionally represented in the graph). If this task changed graph-relevant structure, run: graphify update .  (AST-only, no API cost). Otherwise finish now without updating and say so in one line. EITHER answer clears this block: it is recorded per session and per project before it is emitted, so this same state never blocks twice, and it returns only after future changes.'
+$markdownNote = ''
+if ($markdownStale -and (-not $codeStale -or $markdown.TimeUtc -gt $workTime)) {
+    $markdownNote = 'Markdown the graph covers beyond Git (.ai/, specs/, .specify/, plans/ or a folder of 10+ .md files) changed after the graph was built; Git does not show these edits. Run: graphify update .  (local, no model). If .ai/ changed, re-run the graphify skill''s semantic pass for the changed .ai/ files only - by the agent itself, never an external model backend. '
+}
+$reason = 'GRAPH UPDATE CHECK: graphify-out/graph.json predates the latest project changes. ' + $markdownNote + 'Decide for yourself based on STRUCTURAL impact, not the number of files changed - a single-file change can still be graph-relevant (e.g. an added/removed/renamed function or class, a changed export, import, call, or inheritance relationship, a new entry point, a changed cross-file dependency), while a multi-file change can be graph-irrelevant (prose/comments/formatting only, a literal or config value change, generated output, tests only unless test architecture is intentionally represented in the graph). If this task changed graph-relevant structure, run: graphify update .  (AST-only, no API cost). Otherwise finish now without updating and say so in one line. EITHER answer clears this block: it is recorded per session and per project before it is emitted, so this same state never blocks twice, and it returns only after future changes.'
 # Record the block so THIS hook's own re-entry is recognised; another
 # gate's block must not mute it, and its own must not repeat.
 $emit = Write-StopBlockResult -HookInput $hookInput -HookName 'Graph-Update-Check' -EventName $eventName -Reason $reason

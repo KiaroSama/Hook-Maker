@@ -163,6 +163,73 @@ try {
         $r4.Exit -eq 0 -and $r4.Out -eq '' -and $r4.Err -eq '') ($r4.Out + $r4.Err)
 
     # =====================================================================
+    # graphify-markdown.md: the git-ignored Markdown folders are part of the
+    # graph, so an edit there makes it stale even though Git shows nothing.
+    Write-Host '--- Markdown work: git-ignored folders count, dependency folders do not ---' -ForegroundColor Cyan
+    function New-MarkdownRepo {
+        param([string]$Name)
+        $repo = New-GitRepo $Name
+        Write-Utf8 (Join-Path $repo '.gitignore') "/.ai/`n/node_modules/`n/graphify-out/`n"
+        Write-Utf8 (Join-Path $repo 'src.ps1') 'function Md {}'
+        Add-Commit $repo 'init'
+        $graph = New-StaleGraph $repo
+        (Get-Item -LiteralPath $graph).LastWriteTimeUtc = [DateTime]::UtcNow.AddMinutes(5)
+        return $repo
+    }
+    $mdRepo = New-MarkdownRepo 'MdStale'
+    New-Item -ItemType Directory -Path (Join-Path $mdRepo '.ai') -Force | Out-Null
+    $mdFile = Join-Path $mdRepo '.ai\x.md'
+    Write-Utf8 $mdFile '# note'
+    (Get-Item -LiteralPath $mdFile).LastWriteTimeUtc = [DateTime]::UtcNow.AddMinutes(20)
+    $r = Fire -Cwd $mdRepo
+    Check 'an edit in a git-ignored .ai/ newer than the graph blocks once' ($r.Out -match '"decision":"block"') $r.Out
+    Check 'the block names the Markdown folders and the local update' (
+        $r.Out -match 'Markdown the graph covers beyond Git' -and $r.Out -match 'graphify update \.' -and $r.Out -match 'never an external model backend') $r.Out
+    $r = Fire -Cwd $mdRepo
+    Check 'the same Markdown state does not block twice' ($r.Exit -eq 0 -and $r.Out -eq '') $r.Out
+
+    $depRepo = New-MarkdownRepo 'MdDependency'
+    New-Item -ItemType Directory -Path (Join-Path $depRepo 'node_modules\pkg') -Force | Out-Null
+    $depFile = Join-Path $depRepo 'node_modules\pkg\README.md'
+    Write-Utf8 $depFile '# dependency'
+    (Get-Item -LiteralPath $depFile).LastWriteTimeUtc = [DateTime]::UtcNow.AddMinutes(20)
+    $r = Fire -Cwd $depRepo
+    Check 'a Markdown edit only inside node_modules stays silent' ($r.Exit -eq 0 -and $r.Out -eq '') $r.Out
+
+    $capRoot = New-Proj 'MdCap'
+    New-Item -ItemType Directory -Path (Join-Path $capRoot 'plans') -Force | Out-Null
+    foreach ($i in 1..5) { Write-Utf8 (Join-Path $capRoot ('plans\p' + $i + '.md')) '# p' }
+    . (Join-Path (Split-Path -Parent $Hook) '_markdownwork.ps1')
+    $capped = Get-MarkdownWorkTime -ProjectRoot $capRoot -MaxFiles 2
+    $whole = Get-MarkdownWorkTime -ProjectRoot $capRoot
+    Check 'a file-cap hit is reported as Partial, never as a complete scan' ($capped.Partial -and -not $whole.Partial -and $whole.Files -eq 5) (
+        'capped=' + $capped.Partial + ' whole=' + $whole.Partial + '/' + $whole.Files)
+
+    Write-Host '--- Graph-Read-Check: a graph built without the Markdown folders ---' -ForegroundColor Cyan
+    $readHook = Join-Path (Split-Path -Parent (Split-Path -Parent $Hook)) 'Graph-Read-Check\Graph-Read-Check.ps1'
+    function Invoke-ReadCheck {
+        param([string]$Cwd, [string]$Session)
+        $in = Join-Path $Work ('read-in-' + $Session + '.json'); $out = Join-Path $Work ('read-out-' + $Session + '.txt')
+        [System.IO.File]::WriteAllText($in, (@{ session_id = $Session; cwd = $Cwd; hook_event_name = 'SessionStart' } | ConvertTo-Json), (New-Object System.Text.UTF8Encoding $false))
+        $startArgs = @{ FilePath = (Get-Process -Id $PID).Path; ArgumentList = ('-NoLogo -NoProfile -File "' + $readHook + '"'); RedirectStandardInput = $in; RedirectStandardOutput = $out; Wait = $true; NoNewWindow = $true; PassThru = $true }
+        if ((Get-Command Start-Process).Parameters.ContainsKey('Environment')) { $startArgs.Environment = @{ PATH = $env:PATH; LOCALAPPDATA = $FakeLocalAppData } }
+        $null = Start-BoundedProcess @startArgs
+        return $(if (Test-Path -LiteralPath $out) { [System.IO.File]::ReadAllText($out) } else { '' })
+    }
+    $readRepo = New-MarkdownRepo 'MdRead'
+    New-Item -ItemType Directory -Path (Join-Path $readRepo '.ai') -Force | Out-Null
+    Write-Utf8 (Join-Path $readRepo '.ai\memory.md') '# memory'
+    $out = Invoke-ReadCheck -Cwd $readRepo -Session 'md-read-1'
+    Check 'read-check: a graph without .graphify_build.json gets the one-time set-up line' ($out -match 'built without the git-ignored Markdown folders' -and $out -match 'graphify-markdown\.md') $out
+    Write-Utf8 (Join-Path $readRepo 'graphify-out\.graphify_build.json') '{"gitignore": false}'
+    $out = Invoke-ReadCheck -Cwd $readRepo -Session 'md-read-2'
+    Check 'read-check: {"gitignore": false} removes the line' ($out -match 'GRAPH READ CHECK' -and $out -notmatch 'built without the git-ignored') $out
+    $plainRepo = New-GitRepo 'MdNone'
+    Write-Utf8 (Join-Path $plainRepo 'a.ps1') 'function A {}'; Add-Commit $plainRepo 'init'
+    New-StaleGraph $plainRepo | Out-Null
+    $out = Invoke-ReadCheck -Cwd $plainRepo -Session 'md-read-3'
+    Check 'read-check: a project without Markdown folders never gets the line' ($out -match 'GRAPH READ CHECK' -and $out -notmatch 'built without the git-ignored') $out
+
     Write-Host '--- Windows PowerShell 5.1 ---' -ForegroundColor Cyan
     $ps5 = New-GitRepo 'Ps5'
     New-StaleGraph $ps5 | Out-Null

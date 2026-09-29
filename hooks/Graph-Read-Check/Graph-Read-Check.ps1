@@ -55,6 +55,29 @@ if ($eventName -ne 'SessionStart' -and $eventName -ne 'UserPromptSubmit') { exit
 $graphPath = Join-Path $cwd 'graphify-out\graph.json'
 $graphExists = Test-Path -LiteralPath $graphPath -PathType Leaf
 
+# graphify-markdown.md: the Markdown folders the agents work from belong in the
+# graph, git-ignored or not, and `graphify update .` follows .gitignore until a
+# one-time set-up stores {"gitignore": false} in .graphify_build.json. Read-only:
+# this looks at files and never runs graphify.
+function Test-GraphMissesMarkdown {
+    param([string]$Root)
+    $hasMarkdown = $false
+    foreach ($name in @('.ai', 'specs', '.specify', 'plans')) {
+        $folder = Join-Path $Root $name
+        if (-not (Test-Path -LiteralPath $folder -PathType Container)) { continue }
+        if (@(Get-ChildItem -LiteralPath $folder -Filter '*.md' -File -Recurse -Depth 3 -ErrorAction SilentlyContinue | Select-Object -First 1).Count -gt 0) { $hasMarkdown = $true; break }
+    }
+    if (-not $hasMarkdown) { return $false }
+    try {
+        $build = [System.IO.File]::ReadAllText((Join-Path $Root 'graphify-out\.graphify_build.json')) | ConvertFrom-Json
+        if ($null -ne $build -and $null -ne $build.PSObject.Properties['gitignore'] -and $build.gitignore -eq $false) { return $false }
+    }
+    catch { }
+    return $true
+}
+$markdownSetupLine = '- This graph was built without the git-ignored Markdown folders (.ai/, specs/, .specify/, plans/) - one-time set-up: graphify-markdown.md (a .graphifyignore, then graphify extract . --no-gitignore --code-only, then graphify update .). This hook never runs graphify.'
+$missesMarkdown = Test-GraphMissesMarkdown -Root $cwd
+
 # Reminder for the graph-EXISTS case (read the graph; do not re-browse the tree).
 $haveGraphNote = @(
     'GRAPH READ CHECK - this project has a graphify knowledge graph (graphify-out/graph.json). If, and only if, this task needs codebase understanding (architecture, cross-file relationships, "where is X used", call paths, refactor scope, impact), prefer a scoped query over broad file browsing:',
@@ -63,6 +86,7 @@ $haveGraphNote = @(
     '- Confirm important findings in the actual source before acting. Skip this entirely for isolated edits, docs, config, secrets, or small local fixes - not querying is a fine and expected outcome.',
     '- This project keeps BOTH graphs. A Codebase Memory index does not replace this one: ask Codebase Memory about code structure, and graphify about docs/specs/papers/images/video and whole-project query, path and explain views. A graph that is built and never read is a defect; keep it current with graphify update . whenever the material it covers has moved.'
 ) -join "`n"
+if ($graphExists -and $missesMarkdown) { $haveGraphNote += "`n" + $markdownSetupLine }
 
 # ---- SessionStart: only meaningful when a graph already exists. ----
 if ($eventName -eq 'SessionStart') {
@@ -85,7 +109,7 @@ if (-not $relevant) { exit 0 }
 # Choose the note and a graph token (part of the fingerprint) by graph state.
 if ($graphExists) {
     $note = $haveGraphNote
-    $graphToken = 'g:' + (Get-Item -LiteralPath $graphPath -Force).LastWriteTimeUtc.Ticks
+    $graphToken = 'g:' + (Get-Item -LiteralPath $graphPath -Force).LastWriteTimeUtc.Ticks + '|md:' + $missesMarkdown
 }
 else {
     # No graph yet, but the task needs codebase-wide understanding. Detect
@@ -104,6 +128,7 @@ else {
             'Skip the graph and fall back to bounded, targeted source inspection - scoped search and reading only the files this task actually touches - rather than an unbounded whole-repo scan. This note will not repeat for this state.'
         ) -join "`n"
     }
+    $note += "`n" + '- When the graph is built, include the Markdown folders the agents work from: graphify-markdown.md.'
     $graphToken = 'nograph'
 }
 
