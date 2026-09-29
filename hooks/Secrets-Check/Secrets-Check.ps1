@@ -188,11 +188,11 @@ if (-not $GitPrePush -and $isStopEvent -and (Test-StopStandDown -HookInput $hook
 $config = Read-HookEnv (Join-Path $PSScriptRoot '.env')
 $cooldownMinutes = 60
 if ($config.ContainsKey('COOLDOWN_MINUTES')) {
-    try { $cooldownMinutes = [int]$config['COOLDOWN_MINUTES'] } catch { }
+    $parsedSetting = 0; if ([int]::TryParse([string]$config['COOLDOWN_MINUTES'], [ref]$parsedSetting) -and $parsedSetting -ge 0 -and $parsedSetting -le 10080) { $cooldownMinutes = $parsedSetting }
 }
 $unusedScanCooldownMinutes = 10080
 if ($config.ContainsKey('UNUSED_SCAN_COOLDOWN_MINUTES')) {
-    try { $unusedScanCooldownMinutes = [int]$config['UNUSED_SCAN_COOLDOWN_MINUTES'] } catch { }
+    $parsedSetting = 0; if ([int]::TryParse([string]$config['UNUSED_SCAN_COOLDOWN_MINUTES'], [ref]$parsedSetting) -and $parsedSetting -ge 0 -and $parsedSetting -le 100000) { $unusedScanCooldownMinutes = $parsedSetting }
 }
 $autoAppend = $true
 if ($config.ContainsKey('AUTO_APPEND') -and $config['AUTO_APPEND'] -match '^(false|0|no)$') {
@@ -200,7 +200,7 @@ if ($config.ContainsKey('AUTO_APPEND') -and $config['AUTO_APPEND'] -match '^(fal
 }
 $minSecretLength = 8
 if ($config.ContainsKey('MIN_SECRET_LENGTH')) {
-    try { $minSecretLength = [int]$config['MIN_SECRET_LENGTH'] } catch { }
+    $parsedSetting = 0; if ([int]::TryParse([string]$config['MIN_SECRET_LENGTH'], [ref]$parsedSetting) -and $parsedSetting -ge 4 -and $parsedSetting -le 4096) { $minSecretLength = $parsedSetting }
 }
 
 # ---- Secret / PublicConfig / Unknown classification ----

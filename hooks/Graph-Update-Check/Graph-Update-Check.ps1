@@ -78,7 +78,7 @@ if (-not (Test-Path -LiteralPath $graphPath -PathType Leaf)) {
 $config = Read-HookEnv (Join-Path $PSScriptRoot '.env')
 $cooldownMinutes = 60
 if ($config.ContainsKey('COOLDOWN_MINUTES')) {
-    try { $cooldownMinutes = [int]$config['COOLDOWN_MINUTES'] } catch { }
+    $parsedSetting = 0; if ([int]::TryParse([string]$config['COOLDOWN_MINUTES'], [ref]$parsedSetting) -and $parsedSetting -ge 0 -and $parsedSetting -le 10080) { $cooldownMinutes = $parsedSetting }
 }
 
 # ---- cooldown (per project) ----

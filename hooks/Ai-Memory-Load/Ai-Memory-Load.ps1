@@ -84,7 +84,7 @@ if ($deepDebug -and $sessionId -ne '' -and (Test-Path -LiteralPath $ddStatePath 
 $config = Read-HookEnv (Join-Path $PSScriptRoot '.env')
 $maxChars = 8000
 if ($config.ContainsKey('MAX_CHARS')) {
-    try { $maxChars = [int]$config['MAX_CHARS'] } catch { }
+    $parsedSetting = 0; if ([int]::TryParse([string]$config['MAX_CHARS'], [ref]$parsedSetting) -and $parsedSetting -ge 1 -and $parsedSetting -le 200000) { $maxChars = $parsedSetting }
 }
 
 # STRICT UTF-8 decode (E-06). The old replacement-character decode would inject

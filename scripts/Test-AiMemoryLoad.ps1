@@ -139,6 +139,17 @@ try {
     $smallCapHook = New-ConfiguredHookCopy -SourceHook $MemoryHook -FileName 'Ai-Memory-Load.ps1' -EnvOverrides @{ MAX_CHARS = '50' }
     $r = Fire -Cwd $proj2 -HookPath $smallCapHook
     Check 'oversized memory.md is truncated with a note' ($r.Out -like '*truncated at 50 chars*') $r.Out
+    # A negative MAX_CHARS used to crash the hook (Substring with a negative
+    # length); an out-of-range value now keeps the default of 8,000.
+    $negativeCapHook = New-ConfiguredHookCopy -SourceHook $MemoryHook -FileName 'Ai-Memory-Load.ps1' -EnvOverrides @{ MAX_CHARS = '-5' }
+    $r = Fire -Cwd $proj2 -HookPath $negativeCapHook
+    Check 'an out-of-range MAX_CHARS keeps the default (no crash, memory injected untruncated)' (
+        $r.Exit -eq 0 -and $r.Err -eq '' -and $r.Out -match 'XXXXXXXXXX' -and $r.Out -notlike '*truncated at*') ($r.Out + '|' + $r.Err)
+    # Every numeric .env read across hooks\ is parsed with a range, never cast.
+    $castSites = @(Get-ChildItem -LiteralPath (Join-Path (Split-Path -Parent $PSScriptRoot) 'hooks') -Recurse -Filter '*.ps1' |
+        Select-String -Pattern '\[int\]\$config\[' | Where-Object { $_.Line -notmatch 'TryParse' } | ForEach-Object { $_.Filename + ':' + $_.LineNumber })
+    Check 'no hook casts a .env value to [int] without a range check' ($castSites.Count -eq 0) ($castSites -join ', ')
+
 
     # =====================================================================
     Write-Host '--- Ai-Memory-Load: Windows PowerShell 5.1 host ---' -ForegroundColor Cyan

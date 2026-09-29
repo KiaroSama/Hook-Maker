@@ -61,11 +61,11 @@ $repoSlug = $repository.Repository
 $config = Read-HookEnv (Join-Path $PSScriptRoot '.env')
 $cooldownMinutes = 120
 if ($config.ContainsKey('COOLDOWN_MINUTES')) {
-    try { $cooldownMinutes = [int]$config['COOLDOWN_MINUTES'] } catch { }
+    $parsedSetting = 0; if ([int]::TryParse([string]$config['COOLDOWN_MINUTES'], [ref]$parsedSetting) -and $parsedSetting -ge 0 -and $parsedSetting -le 10080) { $cooldownMinutes = $parsedSetting }
 }
 $prLimit = 5
 if ($config.ContainsKey('PR_LIMIT')) {
-    try { $prLimit = [int]$config['PR_LIMIT'] } catch { }
+    $parsedSetting = 0; if ([int]::TryParse([string]$config['PR_LIMIT'], [ref]$parsedSetting) -and $parsedSetting -ge 1 -and $parsedSetting -le 100) { $prLimit = $parsedSetting }
 }
 
 # ---- state (fingerprint + timestamp) so unchanged findings are not repeated ----
