@@ -9,7 +9,7 @@
 # Drives the wizard with a list of stdin answers. Returns exit code, ANSI-stripped
 # stdout, and trimmed stderr. A fresh config + project dirs per run keep it isolated.
 function Invoke-Wizard {
-    param([string[]]$Answers, [string]$Config, [switch]$NoInstall)
+    param([string[]]$Answers, [string]$Config, [switch]$NoInstall, [string]$StateDir = $IsolatedStateDir)
     $token = [guid]::NewGuid().ToString('N').Substring(0, 8)
     $inF = Join-Path $Work "in-$token.txt"; $outF = Join-Path $Work "out-$token.txt"; $errF = Join-Path $Work "err-$token.txt"
     [System.IO.File]::WriteAllText($inF, (($Answers -join "`r`n") + "`r`n"), (New-Object System.Text.UTF8Encoding $false))
@@ -24,7 +24,7 @@ function Invoke-Wizard {
     if ((Get-Command Start-Process).Parameters.ContainsKey('Environment')) {
         # -Environment MERGES with the inherited environment (see LESSON.md) -
         # this only adds HOOKMAKER_STATE_DIR, everything else stays inherited.
-        $startArgs.Environment = @{ HOOKMAKER_STATE_DIR = $IsolatedStateDir }
+        $startArgs.Environment = @{ HOOKMAKER_STATE_DIR = $StateDir }
     }
     $p = Start-BoundedProcess @startArgs
     $out = ''; if (Test-Path $outF) { $out = [System.IO.File]::ReadAllText($outF) }

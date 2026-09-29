@@ -195,15 +195,25 @@ function Invoke-CustomHookTargets {
 
         Write-PhaseHeader 'Applying Changes' $C.Process '-'
         $clientArgs = Get-ClientInstallArgs $clients
-        foreach ($target in $targets) {
-            $installOutput = & $InstallScript -CustomHook $HookPath -Events @($Events) -TargetProject $target.Root @clientArgs *>&1
-            foreach ($line in @($installOutput)) {
-                Write-Log 'INFO' 'INSTALL' ([string]$line)
+        $batch = Invoke-HookInstallForTargets -InstallScript $InstallScript -Targets @($targets) -BaseArgs @{ CustomHook = $HookPath; Events = @($Events) } -ExtraArgs @($clientArgs)
+        foreach ($entry in @($batch.Results)) {
+            foreach ($line in @($entry.Verdict.Output)) { Write-Log 'INFO' 'INSTALL' ([string]$line) }
+            if ($entry.Verdict.Ok) {
+                Write-Host ('  ' + (Get-Painted '+ hook installed in' $C.Green) + ' ' + (Get-Painted $entry.Target.Name $C.Bold) + '  ' + (Get-Painted $entry.Target.Root $C.Gray))
             }
-            Write-Host ('  ' + (Get-Painted '+ hook installed in' $C.Green) + ' ' + (Get-Painted $target.Name $C.Bold) + '  ' + (Get-Painted $target.Root $C.Gray))
+            else {
+                Write-ErrorLine ('  x NOT installed in ' + $entry.Target.Name + '  (' + [string]$entry.Verdict.Summary + ')')
+                Write-Log 'ERROR' 'INSTALL' ('Install did not succeed in ' + $entry.Target.Root + ' | ' + [string]$entry.Verdict.Summary)
+            }
         }
         Write-PhaseHeader 'Completed' $C.Done '='
-        Write-Host (Get-Painted ('  ' + $hookName + ' installed for: ' + (@($Events) -join ', ')) $C.White)
+        if (@($batch.Failures).Count -eq 0) {
+            Write-Host (Get-Painted ('  ' + $hookName + ' installed for: ' + (@($Events) -join ', ')) $C.White)
+        }
+        else {
+            Write-ErrorLine ('  ' + $hookName + ' installed in ' + $batch.InstalledCount + ' of ' + @($targets).Count + ' project(s); ' + @($batch.Failures).Count + ' did NOT succeed:')
+            foreach ($failure in @($batch.Failures)) { Write-ErrorLine ('    - ' + $failure) }
+        }
         Write-Host (Get-Painted '  Restart the Claude/Codex clients and review /hooks inside each project.' $C.White)
         Write-NoteLine '  Codex: run /hooks in each project and trust the new command before it runs.'
         Write-Log 'INFO' 'DONE' ('Custom hook installed: ' + $HookPath + ' | events=' + (@($Events) -join ',') + ' | clients=' + $clients + ' | projects=' + $targets.Count)
