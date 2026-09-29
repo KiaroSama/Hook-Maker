@@ -104,7 +104,7 @@ byte change; a backup is pruned to ONE per file, never touching a neighbour that
 
 ## Shipped hooks
 
-27 hooks ship with Hook Maker. The **full per-hook reference** — exact events, behaviour
+29 hooks ship with Hook Maker. The **full per-hook reference** — exact events, behaviour
 contract, protections and config for every hook — lives in [docs/HOOKS.md](docs/HOOKS.md)
 (moved there verbatim; the front page could no longer carry it). The fixed menu list below
 enumerates every hook with a one-line summary, and each hook's own `.env.example` documents
