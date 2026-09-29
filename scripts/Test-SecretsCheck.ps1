@@ -363,6 +363,9 @@ try {
     # Git-boundary scenarios: index/worktree leak scans + the outgoing pre-push gate.
     . (Join-Path $PSScriptRoot '_testsecretscheckoutgoing.ps1')
 
+    # Secret values reach git grep through a pattern file, never the command line.
+    . (Join-Path $PSScriptRoot '_testsecretscheckpatternfile.ps1')
+
     # =====================================================================
     Write-Host '--- unused-secret scan (throttled) ---' -ForegroundColor Cyan
     $proj7 = New-GitProj 'Unused'
