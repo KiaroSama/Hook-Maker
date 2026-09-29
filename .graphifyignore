@@ -1,0 +1,33 @@
+# Graphify reads this file instead of .gitignore (graphify-out/.graphify_build.json
+# stores gitignore=false), so the Markdown folders the agents work from (.ai/, specs/,
+# .specify/, plans/) are part of the graph. Everything else local-only stays out.
+node_modules/
+.venv/
+venv/
+dist/
+build/
+coverage/
+logs/
+.ci-*/
+.codebase-memory/
+graphify-out/
+.playwright-mcp/
+state/
+.claude/
+.codex/
+.agents/
+.kiro/
+.cursor/
+.cline/
+secrets.md
+explain-AI.md
+reference.md
+.env
+.env.*
+!.env.example
+.ignoreme
+**/.ignoreme
+sync-hooks.json
+*.backup-*
+*.log
+*.png
