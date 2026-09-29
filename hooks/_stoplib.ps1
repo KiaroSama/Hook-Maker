@@ -551,20 +551,6 @@ function Get-StopSessionGateHistory {
     return ($names | Sort-Object)
 }
 
-# The continuation chain this event belongs to, or '' when there is none yet.
-# TASK IDENTITY for a secondary guard: a per-hook fingerprint keyed on session
-# alone let a PREVIOUS task suppress the same missing requirement on the next
-# genuine one. Read-only - asking must not mint a chain.
-function Get-StopChainId {
-    param([Parameter(Mandatory = $true)]$HookInput)
-    $path = Get-StopLedgerPath -ProjectRoot ([string](Get-Field $HookInput 'cwd'))
-    if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { return '' }
-    $ledger = Read-StopLedger -Path $path
-    $keys = Get-StopLedgerKeys -HookInput $HookInput -HookName 'chain-probe'
-    if ($null -eq $ledger.chains.PSObject.Properties[$keys.ChainKey]) { return '' }
-    return [string]$ledger.chains.($keys.ChainKey).id
-}
-
 # The identity a secondary (per-hook) suppression fingerprint must carry so it
 # cannot leak across tasks or between a parent and its subagent. Safe on a
 # runtime with no ledger: the chain is simply empty and the rest still applies.

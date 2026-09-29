@@ -247,12 +247,6 @@ try {
         (@($producerFields | Sort-Object) -join '|') -eq (@($requiredFields | Sort-Object) -join '|')) (
         'producer=[' + ($producerFields -join ',') + '] consumer=[' + ($requiredFields -join ',') + ']')
 
-    function Get-RecordLiteral {
-        param([string]$Key)
-        $pair = @($recordHash.KeyValuePairs | Where-Object { [string]$_.Item1.Extent.Text -eq $Key })
-        if ($pair.Count -ne 1) { return '<not found>' }
-        return ([string]$pair[0].Item2.Extent.Text).Trim()
-    }
     # The two versions are named constants in the builder rather than literals
     # inside the hashtable, so read them where they are declared.
     function Get-RecordVersion {
