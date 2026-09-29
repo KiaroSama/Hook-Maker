@@ -112,7 +112,9 @@ Set-StrictMode -Version 2.0
 $ErrorActionPreference = 'Stop'
 
 . (Join-Path $PSScriptRoot '..\_hooklib.ps1'); . (Join-Path $PSScriptRoot '..\_scope.ps1')
-# Optional sibling: a runtime installed before _ghbudget.ps1 existed keeps today's behaviour.
+# Optional sibling and shared deadline library: a runtime installed before they existed keeps today's behaviour.
+$budgetLibPath = Join-Path $PSScriptRoot '..\_budgetlib.ps1'
+if (Test-Path -LiteralPath $budgetLibPath -PathType Leaf) { . $budgetLibPath; Initialize-HookDeadline -RuntimeDirectory $PSScriptRoot }
 $ghBudgetPath = Join-Path $PSScriptRoot '_ghbudget.ps1'
 if (Test-Path -LiteralPath $ghBudgetPath -PathType Leaf) { . $ghBudgetPath }
 if ($null -eq (Get-Command -Name 'Invoke-GhBounded' -ErrorAction SilentlyContinue)) {

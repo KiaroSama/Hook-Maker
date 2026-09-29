@@ -496,7 +496,8 @@ function Get-InstallIntegrity {
                     -RecordId ([string]$Record.id) `
                     -Scope ([string]$Record.scope) -ProjectRoot $recordProjectRoot `
                     -ConfigPath $configPath -IncludeConfig:$isEngine `
-                    -ProfileId ([string]$Record.profile))
+                    -ProfileId ([string]$Record.profile) `
+                    -TimeoutSeconds $(if ($null -ne $subrecord.PSObject.Properties['timeout']) { [int]$subrecord.timeout } else { 0 }))
         }
         catch {
             Add-Component -Name $client -Status 'skip' -Detail ('this client''s expected runtime content cannot be derived: ' + $_.Exception.Message)

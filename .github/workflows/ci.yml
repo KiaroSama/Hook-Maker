@@ -135,7 +135,7 @@ jobs:
       matrix:
         include:
           - name: registry
-            suites: Test-InstallRegistry,Test-InstallRegistrySchema,Test-InstallInvoke,Test-InstalledRuntimeMigration,Test-LegacyDiscovery,Test-StatePersistence,Test-InstalledHooksMenu,Test-HookStatusDiscovery,Test-TestPlanCheck,Test-TestPlanScanner,Test-ReportHookCost,Test-UpdateFleet
+            suites: Test-InstallRegistry,Test-InstallRegistrySchema,Test-InstallInvoke,Test-InstalledRuntimeMigration,Test-LegacyDiscovery,Test-StatePersistence,Test-InstalledHooksMenu,Test-HookStatusDiscovery,Test-TestPlanCheck,Test-TestPlanScanner,Test-ReportHookCost,Test-UpdateFleet,Test-HookBudgetLib
           - name: uninstall
             suites: Test-UninstallHook,Test-NativePrePushInstall,Test-RulesCheck,Test-DiscoveredUninstall,Test-HookStatusScan,Test-TestCompletionCheck,Test-CbmHooks
           - name: wizard

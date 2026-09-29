@@ -73,6 +73,9 @@ Set-StrictMode -Version 2.0
 $ErrorActionPreference = 'Stop'
 
 . (Join-Path $PSScriptRoot '..\_hooklib.ps1')
+$budgetLibPath = Join-Path $PSScriptRoot '..\_budgetlib.ps1'   # shared deadline library; an older runtime lacks it
+if (Test-Path -LiteralPath $budgetLibPath -PathType Leaf) { . $budgetLibPath; Initialize-HookDeadline -RuntimeDirectory $PSScriptRoot }
+else { function Invoke-BoundedCommand { param([string]$FilePath, [string[]]$ArgumentList, [int]$TimeoutSeconds = 20) return (Invoke-QuietCommand -FilePath $FilePath -ArgumentList $ArgumentList -TimeoutSeconds $TimeoutSeconds) } }
 . (Join-Path $PSScriptRoot '..\_scope.ps1')
 # Interpreter selection and dependency scope live beside this hook: which
 # environment speaks for the project, and which packages of it are the project's
@@ -488,12 +491,9 @@ if ($manifestPaths.ContainsKey('pip')) {
         # dropping the -m pip this call actually passes - a malformed command
         # that looked like it explained the failure and cost a debugging session.
         #
-        # 120s, not _hooklib's 20s default: this same command was measured at 32s
-        # (exit 0) on a venv created with --system-site-packages, where pip asks
-        # PyPI about every visible package rather than the project's own dozen. At
-        # 20s it was killed (exit 124) every run and reported as a failed check.
+        # Up to 120 s (pip on a --system-site-packages venv took 32 s), never past the hook deadline.
         $pipArgs = @('-m', 'pip', 'list', '--outdated', '--format=json')
-        $raw = Invoke-QuietCommand -FilePath $pipCmd -ArgumentList $pipArgs -TimeoutSeconds 120
+        $raw = Invoke-BoundedCommand -FilePath $pipCmd -ArgumentList $pipArgs -TimeoutSeconds 120
         $text = ($raw -join "`n").Trim()
         if ([string]::IsNullOrWhiteSpace($text)) {
             if ($LASTEXITCODE -gt 1) { [void]$incomplete.Add('Python (pip) - `' + $pipCmd + ' ' + ($pipArgs -join ' ') + '` failed (exit ' + $LASTEXITCODE + ').') }

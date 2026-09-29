@@ -297,14 +297,12 @@ function New-RuntimeIdentity {
         [Parameter(Mandatory = $true)][ValidateSet('claude', 'codex')][string]$Client,
         [Parameter(Mandatory = $true)][ValidateSet('project', 'global')][string]$Scope,
         [Parameter(Mandatory = $true)][AllowEmptyString()][string]$RecordId,
-        [AllowEmptyString()][string]$ProjectRoot = ''
+        [AllowEmptyString()][string]$ProjectRoot = '',
+        # The registered timeout, recorded for hooks that derive a deadline from
+        # it (_budgetlib.ps1); 0 = not recorded (an older registry record).
+        [int]$TimeoutSeconds = 0
     )
-    return [pscustomobject]@{
-        Client      = $Client
-        Scope       = $Scope
-        RecordId    = $RecordId
-        ProjectRoot = $ProjectRoot
-    }
+    return [pscustomobject]@{ Client = $Client; Scope = $Scope; RecordId = $RecordId; ProjectRoot = $ProjectRoot; TimeoutSeconds = $TimeoutSeconds }
 }
 
 # The project key a runtime hook can RECOMPUTE from the project root it is running
@@ -415,6 +413,8 @@ function Get-RuntimeMetadataContent {
     [void]$lines.Add('  "registrationName": ' + (ConvertTo-PlanJsonStringLiteral (Get-RuntimeMetadataRegistrationName `
                     -Client $client -FriendlyName $FriendlyName -RecordId ([string]$RuntimeIdentity.RecordId))) + ',')
     [void]$lines.Add('  "runtimeScriptRelativePath": ' + (ConvertTo-PlanJsonStringLiteral $RuntimeScriptRelativePath) + ',')
+    $timeoutProperty = $RuntimeIdentity.PSObject.Properties['TimeoutSeconds']
+    if ($null -ne $timeoutProperty -and [int]$timeoutProperty.Value -gt 0) { [void]$lines.Add('  "timeoutSeconds": ' + [string][int]$timeoutProperty.Value + ',') }
     [void]$lines.Add('  "runtimeManifest": [')
     $entryLines = New-Object System.Collections.Generic.List[string]
     foreach ($artifact in @($ordered.ToArray())) {
