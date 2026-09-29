@@ -75,7 +75,7 @@ function New-ConfiguredHookCopy {
     $dir = Join-Path $Work ('hookcopy-' + [guid]::NewGuid().ToString('N').Substring(0, 6))
     New-Item -ItemType Directory -Path $dir -Force | Out-Null
     Copy-Item $SourceHook (Join-Path $dir $FileName)
-    Copy-Item (Join-Path (Split-Path -Parent $SourceHook) '..\_hooklib.ps1') (Join-Path $Work '_hooklib.ps1') -Force
+    Copy-TestRuntimeLibraries -SourceHookLib (Join-Path (Split-Path -Parent $SourceHook) '..\_hooklib.ps1') -Destination (Join-Path $Work '_hooklib.ps1')
     $lines = New-Object System.Collections.Generic.List[string]
     foreach ($key in $EnvOverrides.Keys) { [void]$lines.Add($key + '=' + $EnvOverrides[$key]) }
     Write-Utf8 (Join-Path $dir '.env') (($lines.ToArray() -join "`r`n") + "`r`n")

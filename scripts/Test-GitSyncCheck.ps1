@@ -415,7 +415,7 @@ try {
     else {
         $preFixHook = Join-Path $preFixRoot 'Git-Sync-Check\Git-Sync-Check.ps1'
         [System.IO.File]::WriteAllText($preFixHook, $preFixText, (New-Object System.Text.UTF8Encoding $false))
-        Copy-Item -LiteralPath (Join-Path $repoRoot 'hooks\_hooklib.ps1') -Destination (Join-Path $preFixRoot '_hooklib.ps1') -Force
+        Copy-TestRuntimeLibraries -SourceHookLib (Join-Path $repoRoot 'hooks\_hooklib.ps1') -Destination (Join-Path $preFixRoot '_hooklib.ps1')
         $red = New-PushedRepo 'wt-dirtyfp-red'
         $redExtra = Join-Path $ReposRoot 'wt-dirtyfp-red-extra'
         & git -C $red worktree add -q $redExtra -b wt-dirtyfp-red-extra 2>$null

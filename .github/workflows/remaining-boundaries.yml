@@ -53,10 +53,10 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Unexpected assertion or test exception.' }
           $report = Get-Content -LiteralPath "$env:BOUNDARY_EVIDENCE/results.json" -Raw | ConvertFrom-Json
           $expectedFailed = if ('${{ matrix.subject }}' -eq 'baseline') { 24 } else { 0 }
-          # 44 for the current subject: the shared library set gained _gatereceipts.ps1,
-          # _replylanguage.ps1, _commandtokens.ps1 and _budgetlib.ps1 (one missing and one empty I02 case each);
-          # the baseline predates all four and stays at 36.
-          $expectedCases = if ('${{ matrix.subject }}' -eq 'baseline') { 36 } else { 44 }
+          # 46 for the current subject: the shared library set gained _gatereceipts.ps1,
+          # _replylanguage.ps1, _commandtokens.ps1, _budgetlib.ps1 and _processlib.ps1 (one missing and one empty I02 case each);
+          # the baseline predates all five and stays at 36.
+          $expectedCases = if ('${{ matrix.subject }}' -eq 'baseline') { 36 } else { 46 }
           if ($report.cases.Count -ne $expectedCases -or $report.unexpected -ne 0 -or $report.failed -ne $expectedFailed) { throw 'Incomplete or unexpected native evidence.' }
           exit 0
       - name: Preserve exact source and remove historical workspace
