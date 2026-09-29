@@ -38,7 +38,7 @@
 | [`Graph-Update-Check`](#graph-update-check) | بعد از تسک (Stop) |
 | [`Cbm-Read-Check`](#cbm-read-check) | قبل از تسک (SessionStart, UserPromptSubmit) |
 | [`Cbm-Update-Check`](#cbm-update-check) | بعد از تسک (Stop, SubagentStop) |
-| [`Synapse-Rules-Check`](#synapse-rules-check) | قبل از تسک (SessionStart) + بعد از تسک (Stop/SubagentStop) |
+| [`Synapse-Rules-Check`](#synapse-rules-check) | قبل از تسک (SessionStart, UserPromptSubmit) + بعد از تسک (Stop/SubagentStop) |
 | [`Session-Summary-Check`](#session-summary-check) | دستور پیش از کار (SessionStart, UserPromptSubmit)؛ مشاهدهٔ بی‌صدا در Stop و SubagentStop |
 | [`Install-Location-Check`](#install-location-check) | قبل از تسک (PreToolUse) |
 | [`Cloudflare-Deploy`](#cloudflare-deploy) | بعد از تسک (Stop) |
@@ -168,11 +168,13 @@
 
 ## `Synapse-Rules-Check`
 
-**زمان اجرا:** قبل از تسک (SessionStart) + بعد از تسک (Stop/SubagentStop).
+**زمان اجرا:** قبل از تسک (SessionStart, UserPromptSubmit) + بعد از تسک (Stop/SubagentStop).
 
 قوانینِ کاریِ خودِ ایجنت را از حافظه‌ی **Synapse** به‌روز نگه می‌دارد. این هوک مشورتی است و خودش کلاینت MCP ندارد — یک اسکریپت PowerShell نمی‌تواند ابزار MCP صدا بزند، پس دستورالعمل و تنظیماتِ اندازه‌گیری‌شده را می‌دهد و خواندن را ایجنت انجام می‌دهد. **SessionStart**: یک‌بار `memory_digest` با `tokenBudget`؛ قبل از خواندن، اول ایندکس کن (دایجست هر حافظه را سه بار برمی‌گرداند) و فقط مواردِ مرتبط را کامل بخوان؛ همراه با تنظیماتِ بازیابی — `minScore` ۰٫۶۵ بدون فیلتر، `tags: ["project:<slug>"]` برای محدودکردن، هرگز هر دو با هم، و تشخیصِ نتیجه‌ی قطع‌شده از نویز روی `scoreBreakdown`.
 
 **Stop/SubagentStop**: آنچه ماندگار است با `memory_write` برگردان (`entityKey` تا نسخه‌ی تازه جای قدیم را بگیرد، به‌علاوه‌ی تگ `project:`)، و هر چیزی را که این نشست نقض کرده در همان نوبت اصلاح کن. اینکه اصلاً سراغ Synapse رفته شده یا نه را از ۲۵۶ کیلوبایت انتهاییِ ترانسکریپت تشخیص می‌دهد (فقط نامِ ابزارها؛ متن هرگز ذخیره، چاپ یا هش نمی‌شود) به‌علاوه‌ی یک نشانه‌ی متصل به نشست. **هرگز بلاک نمی‌کند** — نمی‌داند این نشست به حافظه نیاز داشته یا نه — و روی ماشینی که Synapse ندارد کاملاً ساکت است
+
+**UserPromptSubmit** یک یادداشتِ میان‌نشست دارد، چون پیامِ Stop به کاربر می‌رسد نه به مدل: وقتی ترانسکریپت از قبل یک فراخوانیِ ابزارِ تغییردهنده‌ی فایل (`Write`، `Edit`، `MultiEdit`، `NotebookEdit`) ثبت کرده و Synapse خوانده نشده، یک بار به ایجنت گفته می‌شود همین حالا `memory_digest` را صدا بزند — حداکثر یک بار در هر نشست، نه در هر پرامپت (`MID_SESSION_REMINDER=0` خاموشش می‌کند). یادداشتِ Stop هم در این حالت صریح می‌گوید نشست فایل‌ها را تغییر داده و حافظه را نخوانده.
 
 ## `Session-Summary-Check`
 

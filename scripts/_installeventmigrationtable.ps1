@@ -70,4 +70,11 @@ $script:InstalledEventMigrations = @(
         From    = @('SessionStart', 'Stop')
         Reason  = 'the prior shipped default had no SubagentStop, so subagent edits were never validated'
     }
+    # v9: the 2026-09-29 default gained UserPromptSubmit for one mid-session note.
+    [pscustomobject]@{
+        Version = 9
+        Hook    = 'Synapse-Rules-Check'
+        From    = @('SessionStart', 'Stop', 'SubagentStop')
+        Reason  = 'the prior shipped default had no UserPromptSubmit, so the once-per-session mid-session reminder never reached the agent'
+    }
 )
