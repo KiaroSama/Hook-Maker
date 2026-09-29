@@ -26,10 +26,10 @@ jobs:
   # verified cross-platform path pass first.
   static:
     runs-on: windows-latest
-    # Ceilings, not expected durations. This job only parses text and validates
-    # config; it finishes in well under a minute locally. A hung parse means a
-    # defect, not a slow machine, so the ceiling is deliberately tight.
-    timeout-minutes: 10
+    # Ceilings, not expected durations. This job parses text, validates config
+    # and runs PSScriptAnalyzer (about 4-5 minutes over the whole tree locally).
+    # A hung parse means a defect, not a slow machine, so the ceiling stays tight.
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7
 
@@ -55,6 +55,22 @@ jobs:
             }
           }
           if ($failed) { exit 1 }
+
+      # Curated static analysis. The settings file excludes the ten rules that
+      # are project conventions (measured 2026-09-29: 2,116 of 2,127 baseline
+      # warnings) and fails on ANY remaining Warning or Error. -Path takes one
+      # path per call in PSScriptAnalyzer 1.25, hence the loop.
+      - name: PSScriptAnalyzer (curated rule set)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Import-Module PSScriptAnalyzer -ErrorAction Stop
+          $findings = @('.\hooks', '.\scripts', '.\run.ps1' | ForEach-Object { Invoke-ScriptAnalyzer -Path $_ -Recurse -Settings .\PSScriptAnalyzerSettings.psd1 })
+          foreach ($f in $findings) {
+            Write-Host ("::error file={0},line={1}::{2}: {3}" -f $f.ScriptPath, $f.Line, $f.RuleName, $f.Message)
+          }
+          if ($findings.Count -gt 0) { exit 1 }
+          Write-Host 'PSScriptAnalyzer: 0 findings.' -ForegroundColor Green
 
       # The bucket lists in the `suites` matrix below are hand-maintained, so a
       # newly added Test-*.ps1 silently never runs in CI unless someone

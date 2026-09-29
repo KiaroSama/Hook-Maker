@@ -516,7 +516,7 @@ try {
     Check 'the hook resolves a PROJECT interpreter rather than PATH pip' ($scopeFn.Success) 'Get-ProjectPythonExecutable not found'
     Check 'the hook never falls back to bare pip/pip3 on PATH' ($scopeSrc -notmatch 'Get-Command pip3? -ErrorAction SilentlyContinue') 'a PATH pip fallback is still present'
     if ($scopeFn.Success) {
-        Invoke-Expression $scopeFn.Value
+        . ([scriptblock]::Create($scopeFn.Value))    # defines the extracted function in this scope
         $scopeWork = Join-Path $Work 'pipscope'
         $withEnv = Join-Path $scopeWork 'withenv'
         $noEnv = Join-Path $scopeWork 'noenv'

@@ -1,4 +1,4 @@
-# Test-Utf8EncodingCheck.ps1 shared harness: fixture builders (raw-byte
+﻿# Test-Utf8EncodingCheck.ps1 shared harness: fixture builders (raw-byte
 # writers, throwaway git repos + bare remotes), isolated hook copies with a
 # fake LOCALAPPDATA, the Fire / FireGitPrePush process runners, and the
 # output parsers. Dot-sourced by Test-Utf8EncodingCheck.ps1 into the caller's

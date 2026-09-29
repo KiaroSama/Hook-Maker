@@ -191,7 +191,7 @@ $baselinePath = Join-Path $stateDir ('DocsFreshnessCheck-baseline-' + $projectKe
 $ackPath = Join-Path $stateDir ('DocsFreshnessCheck-ack-' + $projectKey + '.json')
 
 # -c core.quotepath=false: without it, git quotes+escapes a non-ASCII tracked
-# name (e.g. "caf\303\251.md" for café.md) - that raw quoted string then flows
+# name (e.g. "caf\303\251.md" for a name ending in e-acute) - that raw quoted string then flows
 # into [System.IO.Path]::GetExtension() at every call site below, and the
 # embedded '"' throws (illegal path character) on PS 5.1, aborting the whole
 # hook. Raw UTF-8 output can never contain that quoting, so it never reaches
