@@ -313,6 +313,21 @@ function Wait-ProcessReady {
     return $false
 }
 
+# How long a freshly spawned PowerShell may take to START on THIS machine,
+# measured once per suite run, never assumed: two 5.1 cold starts exceeded a
+# fixed 10 s on a loaded box (2026-09-29, incident 74c4ba4c26) while the same
+# code passed in CI. Floor 10 s (the old bound), ceiling 90 s, 8x one measured
+# cold start in between (a launcher plus its child is two starts plus slack).
+$script:ProcessStartBudgetMs = 0
+function Get-ProcessStartBudgetMs {
+    if ($script:ProcessStartBudgetMs -gt 0) { return $script:ProcessStartBudgetMs }
+    $watch = [System.Diagnostics.Stopwatch]::StartNew()
+    $null = Start-Process -FilePath 'powershell.exe' -ArgumentList '-NoLogo', '-NoProfile', '-NonInteractive', '-Command', 'exit 0' -PassThru -WindowStyle Hidden -Wait
+    $watch.Stop()
+    $script:ProcessStartBudgetMs = [int][Math]::Min(90000, [Math]::Max(10000, 8 * $watch.ElapsedMilliseconds))
+    return $script:ProcessStartBudgetMs
+}
+
 function Fire {
     param(
         [object]$Copy, [string]$Cwd, [string]$EventName = 'Stop', [string]$SessionId = 'sess1',

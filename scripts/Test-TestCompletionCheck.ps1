@@ -31,10 +31,10 @@
 #   _testcompletionsurvivors.ps1 the advisory-only possible-orphan process list
 #   _testcompletiondeepdebug.ps1 the E-05 ::deep-debug verdicts + E-13 safety
 #
-# Usage:  pwsh -NoLogo -NoProfile -File .\scripts\Test-TestCompletionCheck.ps1 [-KeepArtifacts] [-RecoveryOnly]
+# Usage:  pwsh -NoLogo -NoProfile -File .\scripts\Test-TestCompletionCheck.ps1 [-KeepArtifacts] [-RecoveryOnly] [-SurvivorsOnly]
 # Exit code is the number of failed assertions (0 = all passed).
 
-param([switch]$KeepArtifacts, [switch]$RecoveryOnly, [switch]$ActivationOnly, [switch]$OrphanOnly)
+param([switch]$KeepArtifacts, [switch]$RecoveryOnly, [switch]$ActivationOnly, [switch]$OrphanOnly, [switch]$SurvivorsOnly)
 
 Set-StrictMode -Version 2.0
 $ErrorActionPreference = 'Stop'
@@ -63,6 +63,9 @@ try {
     }
     elseif ($OrphanOnly) {
         . (Join-Path $PSScriptRoot '_testcompletionorphan.ps1')
+    }
+    elseif ($SurvivorsOnly) {
+        . (Join-Path $PSScriptRoot '_testcompletionsurvivors.ps1')
     }
     else {
     . (Join-Path $PSScriptRoot '_testcompletionrecovery.ps1')
