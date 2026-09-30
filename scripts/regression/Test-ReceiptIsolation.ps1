@@ -166,6 +166,35 @@ try {
     $required = Get-RequiredStopGates $h
     Check-Receipt 'P06 Windows override selects one command rather than a union with Unix' { $required.Known -and $required.Gates -contains 'Rules-Check' -and $required.Gates -notcontains 'Git-Sync-Check' } $true
     $env:HOOKMAKER_CLIENT = 'claude'; Registration
+    $h = New-Payload 'config-moved'; $a = Start-StopGateReceipt $h 'Git-Sync-Check'; Finish $a
+    Put-Settings ([pscustomobject]@{ description='new policy revision'; hooks=[pscustomobject]@{ Stop=@([pscustomobject]@{hooks=@((Handler 'Git-Sync-Check'),(Handler 'Session-Summary-Check'))}) } })
+    Check-Receipt 'P07 a configuration revision invalidates an old pass for identical answer text' { $null -eq (Receipt-Value $h) } $true
+    $env:HOOKMAKER_CLIENT = 'codex'; $h = New-Payload 'codex-matcher'; $h.hook_event_name='SubagentStop'
+    Set-ObjectProperty $h 'agent_id' 'review-child'; Set-ObjectProperty $h 'agent_type' 'SeniorExplore'
+    Put-Settings ([pscustomobject]@{hooks=[pscustomobject]@{SubagentStop=@([pscustomobject]@{matcher='Explore';hooks=@((Handler 'Git-Sync-Check'))},[pscustomobject]@{hooks=@((Handler 'Session-Summary-Check'))})}}) 'codex'
+    Check-Receipt 'P08 Codex literal regex matches within the child type' { $set=Get-RequiredStopGates $h; $set.Known -and $set.Gates -contains 'Git-Sync-Check' }
+    $h.agent_type='Plan'
+    Check-Receipt 'P09 Codex nonmatching regex is not required' { $set=Get-RequiredStopGates $h; $set.Known -and $set.Gates.Count -eq 0 } $true
+    $env:HOOKMAKER_CLIENT='claude'; $h.agent_type='SeniorExplore'
+    Put-Settings ([pscustomobject]@{hooks=[pscustomobject]@{SubagentStop=@([pscustomobject]@{matcher='Explore, Plan';hooks=@((Handler 'Git-Sync-Check'))},[pscustomobject]@{hooks=@((Handler 'Session-Summary-Check'))})}})
+    Check-Receipt 'P10 Claude literal alternatives are exact rather than substring matches' { $set=Get-RequiredStopGates $h; $set.Known -and $set.Gates.Count -eq 0 } $true
+    Put-Settings ([pscustomobject]@{hooks=[pscustomobject]@{SubagentStop=@([pscustomobject]@{matcher='code-reviewer';hooks=@((Handler 'Git-Sync-Check'))},[pscustomobject]@{hooks=@((Handler 'Session-Summary-Check'))})}})
+    Check-Receipt 'P11 version-dependent Claude hyphen semantics are not guessed' { -not (Get-RequiredStopGates $h).Known } $true
+    Registration
+
+    # Test the actual subject's shared process wrapper, not a renamed local
+    # copy, and keep historical host differences explicit. This fixes the
+    # source of the existing generation suite's null-ExitCode false failures.
+    foreach ($code in @(0,7)) {
+        $reported = & {
+            param($Subject, $ExitStatus)
+            . (Join-Path $Subject 'scripts\_testlib.ps1')
+            $exe = Join-Path $PSHOME $(if ($PSVersionTable.PSVersion.Major -le 5) { 'powershell.exe' } else { 'pwsh.exe' })
+            $child = Start-BoundedProcess -FilePath $exe -ArgumentList @('-NoProfile','-Command',('Start-Sleep -Milliseconds 100; exit ' + $ExitStatus)) -TimeoutMs 15000
+            try { return [pscustomobject]@{Code=$child.ExitCode; Gone=$child.HasExited} } finally {$child.Dispose()}
+        } $SourceRoot $code
+        Check-Receipt ('H01 real child exit ' + $code + ' survives the bounded wait') { $reported.Gone -and $reported.Code -eq $code } ($PSVersionTable.PSVersion.Major -le 5)
+    }
 
     $h = New-Payload 'promotion'; $null = Set-GenerationState $h 'validating' 'old-proof'; $null = Publish-GenerationSummary $h $false @('Git-Sync-Check:no-receipt')
     $firstAt = (Get-GenerationRecord $h).publication.at

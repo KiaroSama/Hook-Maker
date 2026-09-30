@@ -52,8 +52,8 @@ jobs:
           & '${{ matrix.host }}' @arguments
           if ($LASTEXITCODE -ne 0) { throw 'Unexpected receipt case or infrastructure failure.' }
           $report = Get-Content "$env:RECEIPT_EVIDENCE/results.json" -Raw | ConvertFrom-Json
-          $expected = if ('${{ matrix.subject }}' -eq 'baseline') { 26 } else { 0 }
-          if ($report.cases.Count -ne 34 -or $report.failed -ne $expected -or $report.unexpected -ne 0) { throw 'Incomplete or misclassified test evidence.' }
+          $expected = if ('${{ matrix.subject }}' -eq 'baseline') { if ('${{ matrix.host }}' -eq 'powershell') { 32 } else { 30 } } else { 0 }
+          if ($report.cases.Count -ne 41 -or $report.failed -ne $expected -or $report.unexpected -ne 0) { throw 'Incomplete or misclassified test evidence.' }
           exit 0
       - name: Existing generation integration suite on this host
         if: matrix.subject == 'current'

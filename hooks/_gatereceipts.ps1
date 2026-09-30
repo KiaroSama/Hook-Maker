@@ -40,10 +40,12 @@ function Get-StopReceiptScope {
     $closing = Get-ClosingAssistantText -HookInput $HookInput
     if (-not $closing.Known) { return $null }
     $project = Get-StopProjectKey -ProjectRoot $root
+    $configuration = Get-RequiredStopGates -HookInput $HookInput
+    if (-not $configuration.Known) { return $null }
     # JSON framing prevents separator characters in user-supplied identifiers
     # from aliasing another scope. Raw answers/identifiers never enter the file.
     $key = @($project, $client, $session, $actor, $eventName, $task, $turn,
-        [string](Get-Field $HookInput 'stop_hook_active'), (Get-StopReceiptDigest $closing.Text)) | ConvertTo-Json -Compress
+        [string](Get-Field $HookInput 'stop_hook_active'), (Get-StopReceiptDigest $closing.Text), $configuration.Fingerprint) | ConvertTo-Json -Compress
     return [pscustomobject]@{ Project = $project; Id = (Get-StopReceiptDigest $key) }
 }
 
@@ -168,10 +170,19 @@ function Test-StopReceiptMatcher {
     if ($matcher -isnot [string]) { throw 'matcher type' }
     $agentType = [string](Get-Field $HookInput 'agent_type')
     if ([string]::IsNullOrWhiteSpace($agentType)) { throw 'agent type unavailable' }
-    # Only the common literal alternatives are portable across both clients.
-    # Other matcher dialects require client-side resolution, not .NET guesses.
-    if ($matcher -cnotmatch '^[A-Za-z0-9_|\-]+$') { throw 'matcher needs client resolution' }
-    return (@($matcher -split '[|]'  | ForEach-Object { $_.Trim() }) -ccontains $agentType)
+    # Codex uses unanchored regex, while Claude uses exact literal lists for
+    # simple names. Do not silently give the two clients the same semantics.
+    if ((Get-HookClientId) -ceq 'codex') {
+        if ($matcher -cnotmatch '^[A-Za-z0-9_|\-]+$') { throw 'matcher needs client resolution' }
+        foreach ($part in @($matcher -split '[|]')) {
+            if ($agentType.IndexOf($part, [StringComparison]::Ordinal) -ge 0) { return $true }
+        }
+        return $false
+    }
+    # Hyphens changed semantics in Claude 2.1.195. No authenticated client
+    # version is available here, so that ambiguous case remains UNKNOWN.
+    if ($matcher -cnotmatch '^[A-Za-z0-9_ ,|]+$') { throw 'matcher needs client version/resolution' }
+    return (@($matcher -split '[,|]' | ForEach-Object { $_.Trim() }) -ccontains $agentType)
 }
 
 function Get-RequiredStopGates {

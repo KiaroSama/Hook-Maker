@@ -429,6 +429,9 @@ function Start-BoundedProcess {
         $spArgs.Environment = $Environment
     }
     $proc = Start-Process @spArgs
+    # Keep the process object alive through the wait. Windows PowerShell can
+    # otherwise discard ExitCode for NoNewWindow/redirected children (PS #5421).
+    $null = $proc.Handle
     if (-not $proc.WaitForExit($TimeoutMs)) {
         try { Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue } catch { }
         throw ('child process ' + $proc.Id + ' (' + (Split-Path -Leaf $FilePath) +
