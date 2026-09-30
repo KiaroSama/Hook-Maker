@@ -1110,20 +1110,20 @@ function Test-CbmInstalled {
     catch { return $false }
 }
 
-# CBM derives the default project name from the FULL root path: every run of
-# characters outside [A-Za-z0-9] collapses to a single '-', then the ends are
-# trimmed. Verified 2026-09-06 against a real index: the root
-# ...\G--Program-Files-Portable-Scripts-Hook-Maker\<id>\scratchpad\cbm name probe
-# produced C-Users-...-G-Program-Files-Portable-Scripts-Hook-Maker-<id>-scratchpad-cbm-name-probe.db
-# - note the doubled separator collapsing to one dash and the space becoming
-# one. A caller CAN override this with index_repository(name=...); a hook
-# cannot see that, so an overridden project reads as un-indexed here. That is
-# the documented limitation, and it fails toward silence rather than a wrong
-# claim.
+# CBM's own derivation (DeusData/codebase-memory-mcp fqn.c, cbm_project_name_from_path, read
+# 2026-09-30): keep [A-Za-z0-9._-], a non-ASCII UTF-8 byte -> two lowercase hex digits, any other
+# byte -> '-'; runs of '-' or '.' collapse; leading '-'/'.' and trailing '-' trimmed; over 200
+# chars -> 191 + '-' + FNV-1a-32 of the whole name. An index_repository(name=...) override is
+# invisible here and reads as un-indexed - toward silence, never a wrong claim.
 function Get-CbmProjectName {
     param([Parameter(Mandatory = $true)][string]$ProjectRoot)
-    $collapsed = [System.Text.RegularExpressions.Regex]::Replace([string]$ProjectRoot, '[^A-Za-z0-9]+', '-')
-    return $collapsed.Trim('-')
+    $sb = New-Object System.Text.StringBuilder
+    foreach ($b in [System.Text.Encoding]::UTF8.GetBytes($ProjectRoot)) {
+        if ($b -ge 128) { [void]$sb.Append($b.ToString('x2')) } elseif ([string][char]$b -cmatch '[A-Za-z0-9._-]') { [void]$sb.Append([char]$b) } else { [void]$sb.Append('-') } }
+    $n = ([regex]::Replace($sb.ToString(), '-{2,}', '-') -replace '\.{2,}', '.').TrimStart('-', '.').TrimEnd('-')
+    if ($n -eq '') { return 'root' }; if ($n.Length -le 200) { return $n }
+    [uint64]$h = 2166136261; foreach ($c in [System.Text.Encoding]::ASCII.GetBytes($n)) { $h = (($h -bxor $c) * [uint64]16777619) % [uint64]4294967296 }
+    return $n.Substring(0, 191) + '-' + $h.ToString('x8')
 }
 
 function Get-CbmProjectDbPath {

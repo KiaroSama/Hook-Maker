@@ -71,6 +71,19 @@ try {
         (Get-CbmProjectName -ProjectRoot 'C:\my project') -eq 'C-my-project') (Get-CbmProjectName -ProjectRoot 'C:\my project')
     Check 'cbm: leading and trailing separators are trimmed' (
         (Get-CbmProjectName -ProjectRoot '\\srv\share\p\') -eq 'srv-share-p') (Get-CbmProjectName -ProjectRoot '\\srv\share\p\')
+    # CBM keeps [A-Za-z0-9._-] (upstream fqn.c cbm_project_name_from_path). The
+    # dotted name is the index this machine really holds for that project; the
+    # old [A-Za-z0-9]-only rule looked for ...godverify-com and missed it.
+    Check 'cbm: a dot is kept, as in the real ...-Websites-godverify.com index' (
+        (Get-CbmProjectName -ProjectRoot 'G:\Program Files\Portable\Scripts\Websites\godverify.com') -ceq 'G-Program-Files-Portable-Scripts-Websites-godverify.com') (
+        Get-CbmProjectName -ProjectRoot 'G:\Program Files\Portable\Scripts\Websites\godverify.com')
+    Check 'cbm: an underscore is kept and a run of dots collapses to one' (
+        (Get-CbmProjectName -ProjectRoot 'C:\a_b\c..d') -ceq 'C-a_b-c.d') (Get-CbmProjectName -ProjectRoot 'C:\a_b\c..d')
+    Check 'cbm: a non-ASCII byte becomes two lowercase hex digits' (
+        (Get-CbmProjectName -ProjectRoot ('C:\' + [char]0x00E9)) -ceq 'C-c3a9') (Get-CbmProjectName -ProjectRoot ('C:\' + [char]0x00E9))
+    $cbmLong = Get-CbmProjectName -ProjectRoot ('C:\' + ('a' * 250))
+    Check 'cbm: a name over 200 characters keeps 191 and appends the FNV-1a hash of the whole name' (
+        $cbmLong -ceq (('C-' + ('a' * 189)) + '-cd388257')) $cbmLong
 
     # =====================================================================
     Write-Host '--- cache directory resolution: .env, then env var, then default ---' -ForegroundColor Cyan
