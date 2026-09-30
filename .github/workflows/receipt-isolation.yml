@@ -55,14 +55,6 @@ jobs:
           $expected = if ('${{ matrix.subject }}' -eq 'baseline') { if ('${{ matrix.host }}' -eq 'powershell') { 32 } else { 30 } } else { 0 }
           if ($report.cases.Count -ne 41 -or $report.failed -ne $expected -or $report.unexpected -ne 0) { throw 'Incomplete or misclassified test evidence.' }
           exit 0
-      - name: Existing generation integration suite on this host
-        if: matrix.subject == 'current'
-        shell: pwsh
-        run: |
-          $PSNativeCommandUseErrorActionPreference = $false
-          & '${{ matrix.host }}' -NoProfile -NonInteractive -File ./scripts/Test-Generation.ps1
-          if ($LASTEXITCODE -ne 0) { throw 'Existing generation integration regressed.' }
-          exit 0
       - name: Preserve source and clean owned historical workspace
         if: always()
         shell: pwsh

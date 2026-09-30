@@ -131,6 +131,21 @@
         $null -ne $entry -and -not $entry.publication.ready -and $entry.publication.failure -match 'gate-registration-unknown') ($entry | ConvertTo-Json -Depth 6 -Compress)
     Write-ReceiptRegistration -Gates @('Git-Sync-Check', 'Large-File-Check')
 
+    # Receipt state stays bounded: a retired scope takes its lock with it, while
+    # a recent lock and the lock of a receipt still on disk are left alone.
+    $gcIn = New-StopInput (Start-GenTask -Session 's-rcpt-gc')
+    $gcNew = Get-StopGateReceiptPath -HookInput $gcIn -Gate 'Git-Sync-Check'
+    $gcDir = Split-Path -Parent $gcNew
+    $gcPrefix = [regex]::Match([IO.Path]::GetFileName($gcNew), '^(GateReceipt-v2-[a-f0-9]+)-').Groups[1].Value
+    $gcOldLock = Join-Path $gcDir ($gcPrefix + '-' + ('a' * 64) + '-Git-Sync-Check.json.lock')
+    $gcKeptLock = Join-Path $gcDir ($gcPrefix + '-' + ('b' * 64) + '-Git-Sync-Check.json.lock')
+    $gcRecentLock = Join-Path $gcDir ($gcPrefix + '-' + ('c' * 64) + '-Git-Sync-Check.json.lock')
+    foreach ($p in @($gcOldLock, $gcKeptLock, $gcRecentLock, ($gcKeptLock -replace '\.lock$', ''))) { [IO.File]::WriteAllText($p, '') }
+    foreach ($p in @($gcOldLock, $gcKeptLock)) { [IO.File]::SetLastWriteTimeUtc($p, [DateTime]::UtcNow.AddDays(-4)) }
+    Remove-StaleStopGateReceipts $gcNew
+    Check 'R15 an orphaned lock older than any live scope is retired; a recent lock and a lock with its receipt stay' (
+        -not (Test-Path -LiteralPath $gcOldLock) -and (Test-Path -LiteralPath $gcKeptLock) -and (Test-Path -LiteralPath $gcRecentLock))
+
     # --- FR-016: a READY generation is collectable (T046) -------------------------
     $collected = Invoke-GenerationCollection -HookInput $ok
     Check 'R14 a READY, finalized generation is collected instead of filling the store' (

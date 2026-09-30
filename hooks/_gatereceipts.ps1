@@ -266,6 +266,12 @@ function Remove-StaleStopGateReceipts {
             catch { }
             finally { if ($null -ne $handle) { $handle.Dispose() } }
         }
+        # Every Stop opens a new scope, so without this each gate leaves one
+        # lock file per turn behind for ever. A lock is retired only once its
+        # receipt is gone and it is older than any live scope can be.
+        foreach ($lock in @(Get-ChildItem -LiteralPath (Split-Path -Parent $Path) -File -Filter ($m.Groups[1].Value + '-*.json.lock') -ErrorAction Stop | Where-Object { $_.LastWriteTimeUtc -lt [DateTime]::UtcNow.AddDays(-3) } | Select-Object -First 200)) {
+            if (-not [IO.File]::Exists($lock.FullName.Substring(0, $lock.FullName.Length - 5))) { try { [IO.File]::Delete($lock.FullName) } catch { } }
+        }
     }
     catch { }
 }
