@@ -288,21 +288,24 @@ try {
             -Environment @{ LOCALAPPDATA = $Work; HOOKMAKER_CLIENT = 'claude'; CLAUDE_PROJECT_DIR = '' } -TimeoutMs 60000
         $text = ''
         if (Test-Path -LiteralPath $outPath -PathType Leaf) { $text = [IO.File]::ReadAllText($outPath) }
-        return [pscustomobject]@{ ExitCode = $proc.ExitCode; Text = $text }
+        $stderr = if ([IO.File]::Exists($errPath)) { [IO.File]::ReadAllText($errPath) } else { '' }
+        $answer = [pscustomobject]@{ ExitCode = $proc.ExitCode; Text = $text; ErrorText = $stderr }
+        $proc.Dispose()
+        return $answer
     }
 
     $wireSession = 's-gen-wire'
     $null = Invoke-SummaryHook -Event 'UserPromptSubmit' -Session $wireSession -Prompt 'start the wiring task'
     $stopRun = Invoke-SummaryHook -Event 'Stop' -Session $wireSession
     Check 'T032 the Stop branch records and stays silent' (
-        ($stopRun.ExitCode -eq 0) -and ([string]::IsNullOrWhiteSpace($stopRun.Text))
+        ($stopRun.ExitCode -eq 0) -and ([string]::IsNullOrWhiteSpace($stopRun.Text)) -and $stopRun.ErrorText -eq ''
     ) ([string]$stopRun.ExitCode + '|' + $stopRun.Text)
 
     $wireInput = New-GenInput -Session $wireSession
     $wireRecord = Get-GenerationRecord -HookInput $wireInput
     Check 'T032 an empty Stop does not invent a publication' ($null -eq $wireRecord -or $null -eq $wireRecord.publication)
     $summaryRun = Invoke-SummaryHook -Event 'Stop' -Session $wireSession -Answer "DONE: verified work`nREMAINING: none"
-    Check 'T032 a real summary observation remains silent' ($summaryRun.ExitCode -eq 0 -and $summaryRun.Text -eq '')
+    Check 'T032 a real summary observation remains silent' ($summaryRun.ExitCode -eq 0 -and $summaryRun.Text -eq '' -and $summaryRun.ErrorText -eq '')
     $wireRecord = Get-GenerationRecord -HookInput $wireInput
     Check 'T032 the hook wrote a publication record only for observed summary text' ($null -ne $wireRecord -and $null -ne $wireRecord.publication) (
         $(if ($null -eq $wireRecord) { 'no record' } else { ($wireRecord | ConvertTo-Json -Depth 6 -Compress) }))
