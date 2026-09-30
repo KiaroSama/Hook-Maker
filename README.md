@@ -290,7 +290,15 @@ hook's runtime folder) is missing or lacks the text. Its state comes only from t
 installed files, so an interrupted `-Apply` resumes by running it again. `-Compare` byte-compares
 every managed runtime against its source. Each run writes `logs\Update-Fleet_<UTC>.log`, one line
 per registration; the exit code is the number of failed registrations. A project folder that no
-longer exists is reported as unreachable and never touched.
+longer exists is first looked for: a renamed or moved folder still carries its hooks' record ids in
+their runtime metadata, so exactly one folder carrying them (searched under the nearest existing
+parent, bounded) is a proven move - the dry run announces it (`RELOCATE would move ...`) and
+`-Apply` reinstalls there with each client's own events, drops the old records and repoints sync
+routes, then names the Codex step (open the project, trust it if asked, and trust the changed hooks
+in `/hooks` - Codex ties trust to the exact command). None found, or two folders carrying the same
+ids (a copy), is reported and nothing is touched; the record stays unreachable. `-ConfigPath`
+names the sync config whose routes follow a move (default `sync-hooks.json` in the tool root).
+The wizard's `32` runs the same repair first.
 
 ## Getting hook status (`33`)
 
@@ -726,9 +734,11 @@ since those carry no records to reinstall) — asks where each one went, and the
 hook at the new path, drops the stale records, removes per-hook documents that travelled with the
 folder and are now superseded, and repoints any sync-group route that named the old root. The
 final confirmation defaults to **yes**: by then you have already chosen the project and typed the
-new path. It never guesses the new location — a missing folder can equally mean *deleted* — and a
-document it cannot identify safely is named for you rather than removed. Hook sources are never
-touched.
+new path. It never guesses the new location — a missing folder can equally mean *deleted* — but
+when exactly one folder carries the moved hooks' record ids it is offered as the default answer,
+and a document it cannot identify safely is named for you rather than removed. Hook sources are
+never touched. After the repair it names the Codex step: Codex ties hook trust to the exact
+command, so open the project in Codex and trust the changed hooks in `/hooks`.
 
 A record is retired only after every required client has a verified, tracked replacement. Failed
 installs and tracking failures retain the original record and its client/event choices for retry.

@@ -58,7 +58,7 @@ them mid-child and leaves the user with no answer at all.
 | [`Test-Run-Guard`](#test-run-guard) | pre-task + post-task (PreToolUse, PostToolUse) | requires a bounded runner for recognised test commands |
 | [`Test-Completion-Check`](#test-completion-check) | post-task (Stop, SubagentStop) | verifies test evidence and cleanup before finishing |
 | [`Utf8-Encoding-Check`](#utf8-encoding-check) | pre-task (SessionStart) + post-task (Stop, SubagentStop) + native Git pre-push | blocks new/changed non-UTF-8 text; pre-push chain stage |
-| [`Docs-Freshness-Check`](#docs-freshness-check) | pre-task (SessionStart) + post-task (Stop) | checks tracked docs after changes; requires ack |
+| [`Docs-Freshness-Check`](#docs-freshness-check) | pre-task (SessionStart) + before git push (PreToolUse) + post-task (Stop) | checks tracked docs after changes; requires ack |
 
 All advisory hooks are token-efficient by design: they stay **silent** unless a deterministic
 signal fires (staleness, wrangler config, out-of-sync git, pending Dependabot PR, unverified
@@ -171,6 +171,8 @@ For an indexed project it says to query the graph **before** browsing files (`ge
 Known limitation, deliberately not worked around: a caller may override the project name with `index_repository(name=…)`, which a hook cannot see, so such a project reads as un-indexed here — it fails toward suggesting an index that already exists, never toward a wrong claim about the code. `.env`: `CBM_CACHE_DIR` (blank = the `CBM_CACHE_DIR` environment variable, then the `CBM_CACHE_DIR` recorded in the MCP server's own `env` block in the client config, then the binary's own default `%USERPROFILE%\.cache\codebase-memory-mcp`).
 
 Matches one Claude JSON/Codex TOML CMM record, preserves cache/runtime/TEMP/TMP in safe CLI advice, and distinguishes root approval, separator spelling and sandbox/ancestor-access failures. No unconditional restart instruction; no CMM execution or permission changes.
+
+**Index name, exactly as the server derives it (2026-09-30).** `<project>` follows Codebase Memory's own `cbm_project_name_from_path`: `[A-Za-z0-9._-]` are kept, each non-ASCII UTF-8 byte becomes two lowercase hex digits, every other character becomes `-`, runs of `-` or `.` collapse, a leading `-`/`.` and a trailing `-` are trimmed, and a name over 200 characters keeps 191 plus `-` and the FNV-1a hash of the whole name. The earlier rule also turned `.` and `_` into `-`, so a project such as `...\Websites\godverify.com` was looked for as `...-godverify-com.db` and reported un-indexed although `...-godverify.com.db` existed.
 
 ## `Cbm-Update-Check`
 
@@ -322,6 +324,8 @@ No hook starts, stops or reconfigures a runner. Every GitHub call shares one bud
 
 A pushed commit with no runs is normally a wait block; the one exception is a push that no workflow can ever run for - every push workflow carries a `paths`/`paths-ignore` filter that none of the pushed files satisfies (read from `.github/workflows/` and the remote-tracking ref's previous value). That commit gets a one-time note recorded as `no-ci-for-ref` - never green, since nothing was built or tested. A pull-request trigger, a branch filter, or a filter the hook cannot read with certainty keeps the block. The note is given only for filters built from `*` and `**`: a pattern using `?`, `+` or `[...]` (which GitHub reads as "zero or one of the previous character", "one or more" and a character class) and a directory with more than 50 workflow files keep the block, because an unread pattern must never turn into a permanent "verified".
 
+**A runner left running (2026-09-30).** Once the run for the exact pushed commit has finished - green, red, or no run expected - and a process of THIS project's runner is still alive, Stop blocks once per unchanged (commit, runner) with its own stop command: on Windows the processes whose executable lives under `<project>\.ci-runner-win\`, in WSL a read-only `pgrep -f /srv/ci/runners/<slug>/`, read only when a distribution is already running (a stopped one holds no runner and is never started). A run still queued or in progress never triggers it. **A skip-marked documentation-only commit** (`[skip ci]`, `[ci skip]`, `[no ci]`, `[skip actions]`, `[actions skip]` or a `skip-checks: true` trailer) whose diff against the last commit observed green touches only tracked `.md`/`.txt` documentation gets one note - "tests verified green on <parent>; <sha> changes documentation only" - recorded as `docs-only-carryover`, never `ci-green`, so Test-Completion-Check still accepts only an observed green run. A code, workflow, test, fixture or example file, no marker, a parent that was not observed green, or a branch whose protection requires status checks keeps the wait block.
+
 ## `Github-Baseline-Check`
 
 **Runs:** pre-task (SessionStart).
@@ -462,6 +466,8 @@ Without the distinction, a command that merely WROTE a file whose prose named a 
 
 Leading shell assignments (`CI=1 pytest ...`) are skipped when recognising the program and repeated in front of the printed replacement; a segment that is only assignments (`F=x.ps1; rm $F`) is never a command.
 
+**CI runner stops (2026-09-30).** On PreToolUse a command that stops CI runners by name or wildcard - `taskkill /IM Runner.Listener.exe`, `Stop-Process -Name Runner*`, `Get-Process Runner* | Stop-Process`, `pkill`/`killall` naming `Runner.Listener`, `Runner.Worker` or `run.sh` (also behind `wsl.exe -e`/`--`), `Stop-Service`/`Restart-Service`/`sc.exe stop` with `actions.runner.*`, `systemctl stop 'actions.runner.*'` - is refused with the stop for THIS project's runner only (its `.ci-runner-win` processes, or `pkill -f '/srv/ci/runners/<slug>/'` in WSL), because a by-name stop also stops every other project's runner and its job. A pid-based stop and this project's exact service name pass; `wsl --shutdown`/`--terminate` is advised against, never refused; a quoted string that only contains a runner name is data.
+
 ## `Test-Completion-Check`
 
 **Runs:** post-task (Stop, SubagentStop).
@@ -498,6 +504,8 @@ A run that was TERMINATED or that LEAKED a process keeps blocking whatever CI sa
 
 A result without a project fingerprint (the legacy shape) counts only within the 24 h horizon; a Test-Temp-Cleanup installed in the user profile (global scope) is recognised for the cleanup-evidence coordination just like a project-scope one; and an incident ledger that cannot be written is reported as a non-blocking note instead of being swallowed.
 
+**Another project's CI runner (2026-09-30).** A survivor candidate whose bounded ancestor walk reaches a `Runner.Listener`/`Runner.Worker` whose executable lies outside this project is left out of the advisory and counted as "another project's CI runner job - not this task's; do not terminate them"; a job under this project's own `.ci-runner-win` stays listed.
+
 ## `Utf8-Encoding-Check`
 
 **Runs:** pre-task (SessionStart) + post-task (Stop, SubagentStop) + native Git pre-push.
@@ -510,7 +518,9 @@ As the third native pre-push stage it validates the exact outgoing text blobs (n
 
 ## `Docs-Freshness-Check`
 
-**Runs:** pre-task (SessionStart) + post-task (Stop).
+**Runs:** pre-task (SessionStart) + before `git push` (PreToolUse) + post-task (Stop).
+
+**Before the push (2026-09-30).** PreToolUse recognises a shell `git push` (also `git -C <dir> push` and a push chained after `&&`, `;` or a newline) with the shared tokenizer and runs the same classifier over the task delta plus the commits the upstream lacks. Real non-doc impact with no acknowledgement for that fingerprint denies the push once, with the same candidate list and `-Acknowledge` command, so the documentation lands in the same push and CI runs once; documentation-only outgoing commits pass silently, and the retry is not denied again but acknowledges nothing - Stop still asks for the acknowledgement. When the review is still owed at Stop and Ci-Status-Check recorded the pushed HEAD's exact SHA ci-green, the block also asks for a documentation-only commit with `[skip ci]`, pushed without running a suite, reporting the tests as passed on the parent SHA. The impact fingerprint no longer includes the current HEAD, so committing the reviewed docs keeps the acknowledgement valid (an acknowledgement recorded under the old formula is asked for once more). A push wrapped inside another shell's string (`bash -lc "git push"`) is not recognised - the tokenizer never re-parses a nested shell. Existing installs on the old SessionStart+Stop binding move to the new set through event-binding migration v10 in "Update previously installed hooks".
 
 A mandatory review boundary for whether this task's changes made tracked, published documentation stale — never a prose rewriter: it detects and gates, the agent edits. SessionStart silently records a metadata-only baseline (starting HEAD, repo-state fingerprint, tracked public `.md`/`.txt` paths + content hashes). Stop computes the task delta from that baseline (commits + staged + working-tree changes, so it still works even if the agent already committed), classifies each changed non-doc file as a real content change or comment/blank-only noise (so pure internal refactors and formatting-only edits stay silent), and — only when real, non-excluded impact exists — blocks **once** per distinct impact fingerprint with a bounded, ranked list of candidate tracked `.md`/`.txt` files to review (conventionally-named files and files sharing a directory with the changed code rank first).
 
