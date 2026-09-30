@@ -117,6 +117,7 @@ $budgetLibPath = Join-Path $PSScriptRoot '..\_budgetlib.ps1'
 if (Test-Path -LiteralPath $budgetLibPath -PathType Leaf) { . $budgetLibPath; Initialize-HookDeadline -RuntimeDirectory $PSScriptRoot }
 $pathsFilterPath = Join-Path $PSScriptRoot '_pathsfilter.ps1'; if (Test-Path -LiteralPath $pathsFilterPath -PathType Leaf) { . $pathsFilterPath }
 $ghBudgetPath = Join-Path $PSScriptRoot '_ghbudget.ps1'
+foreach ($siblingName in @('_runneralive.ps1', '_docsonly.ps1')) { $siblingPath = Join-Path $PSScriptRoot $siblingName; if (Test-Path -LiteralPath $siblingPath -PathType Leaf) { . $siblingPath } }
 if (Test-Path -LiteralPath $ghBudgetPath -PathType Leaf) { . $ghBudgetPath }
 if ($null -eq (Get-Command -Name 'Invoke-GhBounded' -ErrorAction SilentlyContinue)) {
     function Initialize-GhBudget { param([int]$Seconds) }
@@ -605,7 +606,7 @@ if (Test-Path -LiteralPath $statePath -PathType Leaf) {
 }
 if ($null -eq $prefetchedSnapshot -and $stateSha -eq $sha) {
     if ($stateOutcome -eq 'verified') {
-        exit 0    # this exact commit was already verified green
+        if (Get-Command -Name 'Invoke-RunnerLeftRunningGate' -ErrorAction SilentlyContinue) { Invoke-RunnerLeftRunningGate -ProjectRoot $cwd -Sha $sha -StateDir $stateDir -HookInput $hookInput -EventName $eventName }; exit 0    # verified green: only a runner left running still blocks
     }
     $ageMinutes = ([DateTime]::UtcNow - $stateTime).TotalMinutes
     if ($stateOutcome -eq 'failed' -and $ageMinutes -lt $failureCooldown) {
@@ -647,6 +648,7 @@ if ($snapshot.Runs.Count -eq 0) {
         Save-State -Outcome 'verified' -Evidence 'no-ci'    # no CI configured - nothing to verify
         exit 0
     }
+    if (Get-Command -Name 'Invoke-DocsOnlyCarryover' -ErrorAction SilentlyContinue) { Invoke-DocsOnlyCarryover -ProjectRoot $cwd -Sha $sha -Branch $branch -RepoSlug $repoSlug -StatePath $statePath -EventName $eventName }
     # Self-hosted and manual-only: a push starts no run BY DESIGN (plan 012 step 6b). Never green.
     if (Test-ManualSelfHostedRepo -ProjectRoot $cwd) {
         Write-Block -Outcome 'pending' -Reason ('CI CHECK: final CI not yet dispatched for commit ' + $sha7 + ' on ' + $branch + ' (' + $repoSlug + '). This repository runs CI on self-hosted runners, which stay manual: a push starts no run. Dispatch the one final run for this exact SHA (gh workflow run <workflow> --ref ' + $branch + '), then verify it - never for a GitHub- or bot-created branch (Dependabot included). No hook starts, stops or reconfigures a runner.')
@@ -697,13 +699,14 @@ if ($snapshot.FailedRuns.Count -gt 0 -or $snapshot.InfraRuns.Count -gt 0) {
     # E-09: completion gates (including a ::deep-debug finish) apply to the EXACT
     # final pushed SHA - any later commit, e.g. an accepted post-Ponytail
     # simplification, restarts this gate on its own SHA.
+    if (Get-Command -Name 'Get-RunnerLeftRunningText' -ErrorAction SilentlyContinue) { $runnerText = Get-RunnerLeftRunningText -ProjectRoot $cwd; if ($runnerText -ne '') { $parts += $runnerText } }
     $parts += 'Completion applies to the EXACT final pushed SHA: any later commit (including accepted post-Ponytail changes in a ::deep-debug workflow) must be pushed and re-verified on its own SHA.'
     Write-Block -Outcome 'failed' -Reason ('CI CHECK for pushed commit ' + $sha7 + ' on ' + $branch + ' (' + $repoSlug + '): ' + ($parts -join ' '))
 }
 
 # All runs for this exact commit completed successfully.
 Save-State -Outcome 'verified' -Evidence 'ci-green'    # every run for this exact commit succeeded
-exit 0
+if (Get-Command -Name 'Invoke-RunnerLeftRunningGate' -ErrorAction SilentlyContinue) { Invoke-RunnerLeftRunningGate -ProjectRoot $cwd -Sha $sha -StateDir $stateDir -HookInput $hookInput -EventName $eventName }; exit 0
 }
 catch { if ($null -ne $gateReceipt) { $gateReceipt.Crashed = $true }; throw }
 finally { if ($null -ne $gateReceipt) { Complete-StopGateReceipt $gateReceipt } }
