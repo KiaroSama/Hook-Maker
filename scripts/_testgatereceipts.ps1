@@ -50,9 +50,9 @@
     $rb = Start-GenTask -Session 's-rcpt-life'
     $rs = New-StopInput $rb
     Check 'R01 a gate outside a Stop round writes no receipt' ($null -eq (Start-StopGateReceipt -HookInput $rb -HookName 'Git-Sync-Check'))
-    $null = Set-Receipt $rs 'Git-Sync-Check' 'running'
+    $startedGit = Set-Receipt $rs 'Git-Sync-Check' 'running'
     Check 'R02 a gate that has only started reads as running, never pass' ((Get-ReceiptVerdict $rs 'Git-Sync-Check') -ceq 'running')
-    $null = Set-Receipt $rs 'Git-Sync-Check' 'pass'
+    Complete-StopGateReceipt $startedGit
     Check 'R03 a gate that finished without a block writes pass' ((Get-ReceiptVerdict $rs 'Git-Sync-Check') -ceq 'pass')
     $null = Set-Receipt $rs 'Large-File-Check' 'block'
     Check 'R04 a gate that blocked writes block' ((Get-ReceiptVerdict $rs 'Large-File-Check') -ceq 'block')

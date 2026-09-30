@@ -116,6 +116,10 @@ function Test-GenerationEntryShape {
         Test-GenerationTimestamp $pub.at
         if ($pub.ready -isnot [bool] -or $pub.reported -isnot [bool] -or $pub.failure -isnot [string] -or $pub.failure.Length -gt 8192) { throw 'generation publication fields' }
         if (($pub.ready -and $pub.failure -ne '') -or (-not $pub.ready -and [string]::IsNullOrWhiteSpace($pub.failure))) { throw 'generation publication verdict' }
+        if ($null -ne $pub.PSObject.Properties['firstFailure']) {
+            if ($pub.firstFailure -isnot [string] -or $pub.firstFailure.Length -gt 8192) { throw 'generation first failure' }
+            Test-GenerationTimestamp (Get-Field $pub 'verifiedAt')
+        }
     }
 }
 
@@ -410,7 +414,19 @@ function Publish-GenerationSummary {
         # delivery resolves to the first record; this does not prevent an agent
         # from displaying a second summary outside this observer's control.
         if ($null -ne $entry.publication) {
-            return [pscustomobject]@{ Published = $false; AlreadyPublished = $true; Failure = '' }
+            # First display remains one historical observation. Fresh affirmative
+            # evidence may finish that SAME task without publishing another reply.
+            $current = Get-GenerationReadiness -Entry $entry -Objections $opt.Missing
+            if (-not $entry.publication.ready -and $entry.state -cin $script:GenerationLiveStates -and $opt.Ready -and $current.Ready) {
+                Set-ObjectProperty -Object $entry.publication -Name 'firstFailure' -Value $entry.publication.failure
+                Set-ObjectProperty -Object $entry.publication -Name 'verifiedAt' -Value ([DateTime]::UtcNow.ToString('o'))
+                $entry.publication.ready = $true
+                $entry.publication.failure = ''
+                $entry.state = 'finalized'
+                $entry.endedAt = [DateTime]::UtcNow.ToString('o')
+                return [pscustomobject]@{ Published = $false; AlreadyPublished = $true; Failure = ''; Revalidated = $true }
+            }
+            return [pscustomobject]@{ Published = $false; AlreadyPublished = $true; Failure = ''; Revalidated = $false }
         }
         if ($entry.state -cin $script:GenerationTerminalStates) { throw 'generation terminal' }
         # The caller's earlier read is advisory. A verdict can arrive before
@@ -538,18 +554,44 @@ function Observe-GenerationSummary {
     # started first) belongs to an earlier round and is not evidence for this one.
     $since = if ($Since -is [DateTime]) { $Since.ToUniversalTime() } else { (Get-Process -Id $PID).StartTime.ToUniversalTime().AddSeconds(-3) }
     $verdicts = @{}
-    if (@($required.Gates).Count -gt 0) { $verdicts = Wait-StopGateReceipts -HookInput $HookInput -Gates @($required.Gates) -Since $since }
-    $missing = New-Object System.Collections.ArrayList
-    foreach ($gate in @($required.Gates)) {
-        $verdict = [string]$verdicts[$gate]
-        $null = Register-GenerationVerdict -HookInput $HookInput -Gate $gate -Affirmative ($verdict -ceq 'pass')
-        if ($verdict -cne 'pass') { [void]$missing.Add($gate + ':' + $verdict) }
-    }
-    if ($missing.Count -gt 0) {
-        $null = Publish-GenerationSummary -HookInput $HookInput -Ready $false -Missing @($missing.ToArray())
+    if (@($required.Gates).Count -gt 0) { $verdicts = Wait-StopGateReceipts -HookInput $HookInput -Gates @($required.Gates) -Since $since -RegistrationFingerprint $required.Fingerprint }
+    # A single store transaction records the whole snapshot; N gates no longer
+    # incur N independent lock waits or leave partially refreshed verdicts.
+    $currentRegistration = Get-RequiredStopGates -HookInput $HookInput
+    if (-not $currentRegistration.Known -or $currentRegistration.Fingerprint -cne $required.Fingerprint) {
+        $null = Publish-GenerationSummary -HookInput $HookInput -Ready $false -Missing @('gate-registration-changed')
         return
     }
-    $evidence = 'receipts:' + (Get-ShortHash ((@($required.Gates) -join ',') + '|' + $since.ToString('o')))
-    $null = Set-GenerationState -HookInput $HookInput -State 'ready' -Evidence $evidence
-    $null = Publish-GenerationSummary -HookInput $HookInput -Ready $true
+    $scope = Get-StopReceiptScope -HookInput $HookInput
+    if ($null -eq $scope) {
+        $null = Publish-GenerationSummary -HookInput $HookInput -Ready $false -Missing @('receipt-identity-unknown')
+        return
+    }
+    $evidence = 'receipts:' + (Get-StopReceiptDigest ($scope.Id + '|' + $required.Fingerprint + '|' + $since.ToString('o')))
+    $snapshot = Set-GenerationReceiptSnapshot -HookInput $HookInput -Gates @($required.Gates) -Verdicts $verdicts -Evidence $evidence
+    if (-not $snapshot.Ok) { return }
+    $null = Publish-GenerationSummary -HookInput $HookInput -Ready $snapshot.Ready -Missing @($snapshot.Missing)
+}
+
+function Set-GenerationReceiptSnapshot {
+    param($HookInput, [string[]]$Gates, [hashtable]$Verdicts, [string]$Evidence)
+    $result = Invoke-GenerationUpdate -HookInput $HookInput -Arguments @{ Gates = $Gates; Verdicts = $Verdicts; Evidence = $Evidence } -Mutate {
+        param($doc, $identity, $opt)
+        $entry = Find-GenerationEntry -Doc $doc -TaskId $identity.TaskId -Actor $identity.Actor
+        if ($null -eq $entry) { $entry = Add-GenerationEntry -Doc $doc -Identity $identity -Evidence $opt.Evidence }
+        if ($entry.state -cin $script:GenerationTerminalStates) { throw 'generation terminal' }
+        $rows = @($entry.verdicts | Where-Object { $opt.Gates -cnotcontains $_.gate })
+        $missing = @()
+        foreach ($gate in $opt.Gates) {
+            $verdict = [string]$opt.Verdicts[$gate]
+            $passed = $verdict -ceq 'pass'
+            $rows += [pscustomobject]@{ gate = $gate; affirmative = $passed; at = [DateTime]::UtcNow.ToString('o') }
+            if (-not $passed) { $missing += $gate + ':' + $verdict }
+        }
+        $entry.verdicts = @($rows)
+        $entry.evidence = $opt.Evidence
+        $entry.state = if ($missing.Count -eq 0) { 'ready' } else { 'validating' }
+        return [pscustomobject]@{ Ready = $missing.Count -eq 0; Missing = @($missing) }
+    }
+    return [pscustomobject]@{ Ok = $result.Ok; Ready = ($result.Ok -and $result.Result.Ready); Missing = $(if ($result.Ok) { @($result.Result.Missing) } else { @($result.State) }) }
 }

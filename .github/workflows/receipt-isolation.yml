@@ -1,0 +1,86 @@
+name: Stop receipt isolation
+on:
+  workflow_dispatch:
+  pull_request:
+  push:
+    branches: [main]
+permissions:
+  contents: read
+concurrency:
+  group: receipt-isolation-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  native:
+    runs-on: windows-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        host: [pwsh, powershell]
+        subject: [current, baseline]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Prepare exact source
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $evidence = Join-Path $env:RUNNER_TEMP 'receipt-evidence'
+          New-Item -ItemType Directory -Force $evidence | Out-Null
+          $subject = $env:GITHUB_WORKSPACE
+          $sha = git rev-parse HEAD
+          if ($LASTEXITCODE -ne 0) { throw 'Missing tested revision.' }
+          $sha | Set-Content -Encoding utf8 "$evidence/tested-commit.txt"
+          if ('${{ matrix.subject }}' -eq 'baseline') {
+            $sha = '1e4102e749126639cebc8bdd168c8b6be70fb198'
+            git fetch --no-tags --depth=1 origin $sha
+            if ($LASTEXITCODE -ne 0) { throw 'Historical source unavailable.' }
+            git archive --format=zip --output="$evidence/baseline.zip" $sha
+            if ($LASTEXITCODE -ne 0) { throw 'Historical archive failed.' }
+            $subject = Join-Path $env:GITHUB_WORKSPACE '.ci-work/receipt-baseline'
+            Expand-Archive -LiteralPath "$evidence/baseline.zip" -DestinationPath $subject
+          }
+          $sha | Set-Content -Encoding utf8 "$evidence/subject-commit.txt"
+          "RECEIPT_SUBJECT=$subject" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
+          "RECEIPT_EVIDENCE=$evidence" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
+      - name: Native isolated positive and negative cases
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $false
+          $arguments = @('-NoLogo','-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-File','./scripts/regression/Test-ReceiptIsolation.ps1','-SourceRoot',$env:RECEIPT_SUBJECT,'-ResultPath',"$env:RECEIPT_EVIDENCE/results.json")
+          if ('${{ matrix.subject }}' -eq 'baseline') { $arguments += '-ExpectBaselineFailures' }
+          & '${{ matrix.host }}' @arguments
+          if ($LASTEXITCODE -ne 0) { throw 'Unexpected receipt case or infrastructure failure.' }
+          $report = Get-Content "$env:RECEIPT_EVIDENCE/results.json" -Raw | ConvertFrom-Json
+          $expected = if ('${{ matrix.subject }}' -eq 'baseline') { 26 } else { 0 }
+          if ($report.cases.Count -ne 34 -or $report.failed -ne $expected -or $report.unexpected -ne 0) { throw 'Incomplete or misclassified test evidence.' }
+          exit 0
+      - name: Existing generation integration suite on this host
+        if: matrix.subject == 'current'
+        shell: pwsh
+        run: |
+          $PSNativeCommandUseErrorActionPreference = $false
+          & '${{ matrix.host }}' -NoProfile -NonInteractive -File ./scripts/Test-Generation.ps1
+          if ($LASTEXITCODE -ne 0) { throw 'Existing generation integration regressed.' }
+          exit 0
+      - name: Preserve source and clean owned historical workspace
+        if: always()
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $evidence = Join-Path $env:RUNNER_TEMP 'receipt-evidence'
+          New-Item -ItemType Directory -Force $evidence | Out-Null
+          git archive --format=zip --output="$evidence/source.zip" HEAD
+          if ($LASTEXITCODE -ne 0) { throw 'Source archive failed.' }
+          $historical = Join-Path $env:GITHUB_WORKSPACE '.ci-work/receipt-baseline'
+          if (Test-Path $historical) {
+            . ./scripts/_testlib.ps1
+            if (-not (Remove-TestWorkspace $historical)) { throw 'Historical workspace was not removed.' }
+          }
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        if: always()
+        with:
+          name: receipts-${{ matrix.host }}-${{ matrix.subject }}
+          path: ${{ runner.temp }}/receipt-evidence
+          retention-days: 14
+          if-no-files-found: error
