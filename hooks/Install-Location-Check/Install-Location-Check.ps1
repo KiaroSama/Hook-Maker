@@ -14,7 +14,9 @@
 # _installfamilies.ps1; each package found gets its install target, which is
 # resolved to its PHYSICAL path (links on the target and on every parent
 # followed - _physicalpath.ps1). One advisory line per package whose physical
-# path is on the system drive and outside the project.
+# path is on the system drive and outside the project. When the tool's location
+# variable is set in the user environment but missing from this process, the
+# line says to set it in the command instead of asking for a path.
 #
 # SILENT WHEN: the physical target is off the system drive; the target is
 # inside the project (node_modules, the project .venv); the same package was
@@ -71,24 +73,41 @@ function Get-InstallAdvisories {
     }
     $Tokens = $split.ToArray()
     foreach ($segment in @(Split-CommandSegments -Tokens $Tokens)) {
-        foreach ($finding in @(Get-InstallFindings -Tokens @($segment) -AllTokens $Tokens -ProjectRoot $ProjectRoot)) {
+        $script:InstallStaleEnv.Clear()
+        $findings = @(Get-InstallFindings -Tokens @($segment) -AllTokens $Tokens -ProjectRoot $ProjectRoot)
+        $stale = @($script:InstallStaleEnv)
+        foreach ($finding in $findings) {
             $fingerprint = Get-ShortHash (($SessionId + '|' + $finding.Family + '|' + $finding.Package).ToLowerInvariant())
             if ($seen.Contains($fingerprint)) { continue }
             $target = $finding.Target
             if ([string]::IsNullOrWhiteSpace($target) -and $null -ne $finding.Query) {
                 $target = Get-CachedInstallQuery -CachePath $cachePath -Kind $finding.Query.Kind -Program $finding.Query.Program -Arguments @($finding.Query.Arguments)
             }
-            if ([string]::IsNullOrWhiteSpace($target)) { continue }
-            if (-not [System.IO.Path]::IsPathRooted($target)) { $target = Join-Path $ProjectRoot $target }
-            $physical = Resolve-PhysicalPath $target
-            if (-not (Test-OnSystemDrive $physical)) { continue }
-            if (Test-PathInside -Candidate $physical -Parent $ProjectRoot) { continue }
+            # Every directory the install writes; the line names those on the system drive.
+            $onDrive = New-Object System.Collections.Generic.List[string]
+            foreach ($candidate in @(@($target) + @($finding.ExtraTargets))) {
+                if ([string]::IsNullOrWhiteSpace($candidate)) { continue }
+                if (-not [System.IO.Path]::IsPathRooted($candidate)) { $candidate = Join-Path $ProjectRoot $candidate }
+                $physical = Resolve-PhysicalPath $candidate
+                if (-not (Test-OnSystemDrive $physical)) { continue }
+                if (Test-PathInside -Candidate $physical -Parent $ProjectRoot) { continue }
+                if (-not $onDrive.Contains($physical)) { [void]$onDrive.Add($physical) }
+            }
+            if ($onDrive.Count -eq 0) { continue }
             [void]$seen.Add($fingerprint)
             [void]$newFingerprints.Add($fingerprint)
-            [void]$lines.Add('INSTALL LOCATION: ' + $finding.Family + ' would install ' + $finding.Package + ' into ' + $physical + ' on ' + $drive +
-                '. Ask the user for the install path first, naming the package and what it is, unless a remembered answer or a stated reason ' +
-                '(installer offers no other location, Windows requires it, the user chose ' + $drive + ') covers it; then point the tool''s own ' +
-                'setting at that path and verify where it landed. Rule: global-environment-rules.md -> Install Locations.')
+            $head = 'INSTALL LOCATION: ' + $finding.Family + ' would install ' + $finding.Package + ' into ' + ($onDrive.ToArray() -join ' and ') + ' on ' + $drive + '. '
+            if (-not [string]::IsNullOrEmpty($finding.Advice)) { [void]$lines.Add($head + $finding.Advice) }
+            elseif ($stale.Count -gt 0) {
+                [void]$lines.Add($head + 'The user already chose a location: set ' + (($stale | ForEach-Object { '`' + $_ + '`' }) -join ' and ') +
+                    ' in this command; the shell predates it (the value is in the user environment, not in this process). Do not ask for a path; ' +
+                    'verify where it landed. Rule: global-environment-rules.md -> Install Locations.')
+            }
+            else {
+                [void]$lines.Add($head + 'Ask the user for the install path first, naming the package and what it is, unless a remembered answer or a stated reason ' +
+                    '(installer offers no other location, Windows requires it, the user chose ' + $drive + ') covers it; then point the tool''s own ' +
+                    'setting at that path and verify where it landed. Rule: global-environment-rules.md -> Install Locations.')
+            }
         }
     }
     if ($newFingerprints.Count -gt 0) {

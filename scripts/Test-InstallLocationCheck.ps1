@@ -43,6 +43,10 @@ $script:InstallLocationSystemDrive = 'C:'
 $script:InstallLocationResolver = { param($Path) if ($Path -like 'C:\Linked\*') { return ('H:\' + $Path.Substring(10)) } return $Path }
 $script:QueryAnswers = @{ 'npm-prefix' = 'C:\Users\u\AppData\Roaming\npm'; 'python-prefix' = 'C:\Python312'; 'python-user' = 'C:\Users\u\AppData\Roaming\Python' }
 $script:InstallLocationQuery = { param($Kind, $Program, $Arguments) [void]$script:QueryCalls.Add($Kind + '|' + $Program + '|' + (@($Arguments) -join ' ')); return $script:QueryAnswers[$Kind] }
+# The user environment (HKCU\Environment) is a fake: the developer's real one
+# can never decide a result, and nothing is ever written to the registry.
+$script:FakeUserEnv = @{}
+$script:InstallLocationUserEnv = { param($Name) return $script:FakeUserEnv[$Name] }
 
 $script:SessionCounter = 0
 function Get-Advice {
@@ -58,7 +62,8 @@ function Get-Advice {
 # so the developer's own settings cannot decide a result.
 $familyEnv = @{}
 foreach ($name in @('ChocolateyInstall', 'SCOOP', 'SCOOP_GLOBAL', 'npm_config_prefix', 'NPM_CONFIG_PREFIX', 'PNPM_HOME', 'PIPX_HOME', 'UV_TOOL_DIR',
-        'UV_PYTHON_INSTALL_DIR', 'CARGO_HOME', 'GOBIN', 'GOPATH', 'HF_HUB_CACHE', 'HF_HOME', 'OLLAMA_MODELS', 'VIRTUAL_ENV')) { $familyEnv[$name] = $null }
+        'UV_PYTHON_INSTALL_DIR', 'CARGO_HOME', 'GOBIN', 'GOPATH', 'HF_HUB_CACHE', 'HF_HOME', 'OLLAMA_MODELS', 'VIRTUAL_ENV',
+        'UV_TOOL_BIN_DIR', 'UV_PYTHON_BIN_DIR', 'XDG_BIN_HOME', 'XDG_DATA_HOME', 'PYTHONUSERBASE', 'PIP_TARGET', 'PIP_PREFIX')) { $familyEnv[$name] = $null }
 $familyEnv['USERPROFILE'] = 'C:\Users\u'; $familyEnv['LOCALAPPDATA'] = 'C:\Users\u\AppData\Local'; $familyEnv['APPDATA'] = 'C:\Users\u\AppData\Roaming'
 $familyEnv['ProgramFiles'] = 'C:\Program Files'; $familyEnv['ProgramData'] = 'C:\ProgramData'
 $savedFamilyEnv = @{}
@@ -78,8 +83,8 @@ try {
         @('pnpm add -g turbo', 'pnpm', 'turbo', 'C:\Users\u\AppData\Local\pnpm'),
         @('yarn global add serve', 'yarn', 'serve', 'C:\Users\u\AppData\Local\Yarn'),
         @('pipx install black', 'pipx', 'black', 'C:\Users\u\pipx'),
-        @('uv tool install ruff', 'uv', 'ruff', 'C:\Users\u\AppData\Roaming\uv\data\tools'),
-        @('uv python install 3.13', 'uv', 'python 3.13', 'C:\Users\u\AppData\Roaming\uv\data\python'),
+        @('uv tool install ruff', 'uv', 'ruff', 'C:\Users\u\AppData\Roaming\uv\data\tools and C:\Users\u\.local\bin'),
+        @('uv python install 3.13', 'uv', 'python 3.13', 'C:\Users\u\AppData\Roaming\uv\data\python and C:\Users\u\.local\bin'),
         @('cargo install ripgrep', 'cargo', 'ripgrep', 'C:\Users\u\.cargo'),
         @('go install golang.org/x/tools/gopls@latest', 'go', 'golang.org/x/tools/gopls@latest', 'C:\Users\u\go\bin'),
         @('dotnet tool install -g dotnet-ef', 'dotnet', 'dotnet-ef', 'C:\Users\u\.dotnet\tools'),
@@ -165,6 +170,68 @@ try {
     $null = Get-Advice 'python -m pip install requests'
     Check 'a bare interpreter name is still queried once (PATH resolution, by design)' (
         $script:QueryCalls.Count -eq $before + 1 -and $script:QueryCalls[$before] -eq 'python-prefix|python|') ($script:QueryCalls -join ', ')
+
+    # =====================================================================
+    Write-Host '--- uv launchers, PYTHONUSERBASE and a stale shell environment ---' -ForegroundColor Cyan
+    $uvBin = @(Get-Advice 'uv tool install ruff' -Env @{ UV_TOOL_DIR = 'G:\uv\tools' })
+    Check 'uv tool: tools off C: but launchers on C: names the bin dir' ($uvBin.Count -eq 1 -and $uvBin[0].StartsWith('INSTALL LOCATION: uv would install ruff into C:\Users\u\.local\bin on C:.')) ($uvBin -join ' || ')
+    Check 'uv tool: both UV_TOOL_DIR and UV_TOOL_BIN_DIR off C: is silent' (@(Get-Advice 'uv tool install ruff' -Env @{ UV_TOOL_DIR = 'G:\uv\tools'; UV_TOOL_BIN_DIR = 'G:\uv\bin' }).Count -eq 0)
+    Check 'uv tool: XDG_DATA_HOME\..\bin decides the launchers without an override' (@(Get-Advice 'uv tool install ruff' -Env @{ UV_TOOL_DIR = 'G:\uv\tools'; XDG_DATA_HOME = 'G:\xdg\data' }).Count -eq 0)
+    $uvPy = @(Get-Advice 'uv python install 3.14' -Env @{ UV_PYTHON_INSTALL_DIR = 'G:\uv\python' })
+    Check 'uv python: install dir off C: but executables on C: names the bin dir' ($uvPy.Count -eq 1 -and $uvPy[0].StartsWith('INSTALL LOCATION: uv would install python 3.14 into C:\Users\u\.local\bin on C:.')) ($uvPy -join ' || ')
+    Check 'uv python: both UV_PYTHON_INSTALL_DIR and UV_PYTHON_BIN_DIR off C: is silent' (@(Get-Advice 'uv python install 3.14' -Env @{ UV_PYTHON_INSTALL_DIR = 'G:\uv\python'; UV_PYTHON_BIN_DIR = 'G:\uv\bin' }).Count -eq 0)
+    $before = $script:QueryCalls.Count
+    Check 'pip --user with an explicit interpreter honours PYTHONUSERBASE off C:, never queried' (
+        @(Get-Advice '"G:\Py 314\python.exe" -m pip install --user httpx' -Env @{ PYTHONUSERBASE = 'G:\pyuser' }).Count -eq 0 -and $script:QueryCalls.Count -eq $before)
+    $userBase = @(Get-Advice '"G:\Py 314\python.exe" -m pip install --user httpx')
+    Check 'pip --user with an explicit interpreter and no PYTHONUSERBASE: %APPDATA%\Python as before' ($userBase.Count -eq 1 -and $userBase[0] -match 'httpx into C:\\Users\\u\\AppData\\Roaming\\Python on C:') ($userBase -join ' || ')
+    $script:FakeUserEnv['OLLAMA_MODELS'] = 'G:\models'
+    try {
+        $stale = @(Get-Advice 'ollama pull llama3')
+        $fresh = @(Get-Advice 'ollama pull llama3' -Env @{ OLLAMA_MODELS = 'C:\models' })
+    }
+    finally { $script:FakeUserEnv.Clear() }
+    Check 'stale: a variable only in the user environment says to set it in this command, not to ask' (
+        $stale.Count -eq 1 -and $stale[0] -match 'set `OLLAMA_MODELS=G:\\models` in this command; the shell predates it' -and $stale[0] -notmatch 'Ask the user') ($stale -join ' || ')
+    Check 'stale: a variable present in this process is not stale' ($fresh.Count -eq 1 -and $fresh[0] -match 'Ask the user' -and $fresh[0] -notmatch 'predates') ($fresh -join ' || ')
+    $script:FakeUserEnv['UV_TOOL_BIN_DIR'] = 'G:\uv\bin'
+    try { $staleBin = @(Get-Advice 'uv tool install ruff' -Env @{ UV_TOOL_DIR = 'G:\uv\tools' }) } finally { $script:FakeUserEnv.Clear() }
+    Check 'stale: the uv launcher override is named for the launcher line' ($staleBin.Count -eq 1 -and $staleBin[0] -match 'set `UV_TOOL_BIN_DIR=G:\\uv\\bin`') ($staleBin -join ' || ')
+
+    # =====================================================================
+    Write-Host '--- CUDA and Python installers, every launch route ---' -ForegroundColor Cyan
+    $installers = @(
+        @('cuda_13.4.0_windows_network.exe', 'C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v13.4'),
+        @('python-3.14.7-amd64.exe', 'C:\Users\u\AppData\Local\Programs\Python\Python314')
+    )
+    foreach ($installer in $installers) {
+        $name = $installer[0]
+        foreach ($form in @(('.\dl\' + $name), ('Start-Process -FilePath .\dl\' + $name), ('explorer.exe ".\dl\' + $name + '"'),
+                ('Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{ CommandLine = ''C:\dl\' + $name + '''' + ' }'),
+                ('Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{CommandLine=''C:\dl\' + $name + ' /x''}'))) {
+            $lines = @(Get-Advice $form)
+            Check ('installer: ' + $form) ($lines.Count -eq 1 -and $lines[0].StartsWith('INSTALL LOCATION: installer would install ' + $name + ' into ' + $installer[1] + ' on C:.')) ($lines -join ' || ')
+        }
+    }
+    $cuda12 = @(Get-Advice '.\dl\cuda_12.9.1_576.57_windows.exe')
+    Check 'installer: the local CUDA package with a driver version in its name' ($cuda12.Count -eq 1 -and $cuda12[0] -match 'CUDA\\v12\.9 on C:') ($cuda12 -join ' || ')
+    Check 'installer: Python with TargetDir= off C: is silent' (@(Get-Advice '.\dl\python-3.14.7-amd64.exe /quiet TargetDir=G:\Python314').Count -eq 0)
+    Check 'installer: Python TargetDir= inside a CIM CommandLine is read too' (
+        @(Get-Advice 'Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{ CommandLine = ''C:\dl\python-3.14.7-amd64.exe /quiet TargetDir=G:\Py'' }').Count -eq 0)
+    $allUsers = @(Get-Advice '.\dl\python-3.14.7-amd64.exe /quiet InstallAllUsers=1')
+    Check 'installer: Python InstallAllUsers=1 defaults under Program Files' ($allUsers.Count -eq 1 -and $allUsers[0] -match 'into C:\\Program Files\\Python314 on C:') ($allUsers -join ' || ')
+    foreach ($silentForm in @('.\dl\cuda_13.4.0_windows_network.exe -s', 'Start-Process .\dl\cuda_13.4.0_windows_network.exe -ArgumentList "-s nvcc_13.4"')) {
+        $silent = @(Get-Advice $silentForm)
+        Check ('cuda -s: the silent-mode route, not a path question: ' + $silentForm) (
+            $silent.Count -eq 1 -and $silent[0] -match 'CUDA silent mode \(-s\) always installs on the system drive' -and $silent[0] -match 'explorer\.exe' -and
+            $silent[0] -match 'untick Driver and NVIDIA App' -and $silent[0] -match 'cu128 -> 12\.x, cu130/cu132 -> 13\.x' -and $silent[0] -notmatch 'Ask the user') ($silent -join ' || ')
+    }
+    $driver = '581.29-desktop-win10-win11-64bit-international-dch-whql.exe'
+    foreach ($form in @(('.\dl\' + $driver), ('Start-Process .\dl\' + $driver), ('explorer.exe .\dl\' + $driver))) {
+        Check ('driver package stays unrecognised: ' + $form) (@(Get-Advice $form).Count -eq 0)
+    }
+    Check 'explorer without an installer is silent' (@(Get-Advice 'explorer.exe .').Count -eq 0)
+    Check 'Invoke-CimMethod without a CommandLine literal is silent' (@(Get-Advice 'Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{ CommandLine = $cmd }').Count -eq 0)
 
     # =====================================================================
     Write-Host '--- physical path: a real junction is followed, through a parent too ---' -ForegroundColor Cyan

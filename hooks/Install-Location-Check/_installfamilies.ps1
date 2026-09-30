@@ -7,12 +7,34 @@
 #   Target  - the directory the installer would write into, or $null
 #   Query   - when Target is $null: @{ Kind; Program; Arguments } for a bounded
 #             read-only query that answers it (_physicalpath.ps1)
+#   ExtraTargets - further directories the same install writes (uv launchers)
+#   Advice  - replaces the ask-for-a-path text when the fix is already known
 # Recognition is conservative: a form not listed here returns nothing, and a
 # nested shell string (`pwsh -Command '...'`) is one token and never parsed.
+# The one exception is the CommandLine literal of Win32_Process.Create, which
+# is tokenized as data because no shell stands between it and the installer.
 
 function New-InstallFinding {
-    param([string]$Family, [string]$Package, [string]$Target, $Query = $null)
-    return [pscustomobject]@{ Family = $Family; Package = $Package; Target = $Target; Query = $Query }
+    param([string]$Family, [string]$Package, [string]$Target, $Query = $null, [string[]]$ExtraTargets = @(), [string]$Advice = $null)
+    return [pscustomobject]@{ Family = $Family; Package = $Package; Target = $Target; Query = $Query; ExtraTargets = $ExtraTargets; Advice = $Advice }
+}
+
+# STALE ENVIRONMENT. A location variable the user set after this shell started
+# lives in HKCU\Environment but not in this process, so the tool would fall
+# back to its C: default although the user already chose a path. Every lookup
+# of a listed variable that misses here is checked there (read-only) and
+# recorded in $script:InstallStaleEnv as NAME=value; the caller clears the list
+# per segment. Seam: $script:InstallLocationUserEnv = { param($Name) <value> }.
+$script:InstallLocationUserEnv = $null
+$script:InstallStaleEnv = New-Object System.Collections.Generic.List[string]
+$script:InstallLocationVariables = @('UV_TOOL_DIR', 'UV_TOOL_BIN_DIR', 'UV_PYTHON_INSTALL_DIR', 'UV_PYTHON_BIN_DIR', 'XDG_BIN_HOME', 'XDG_DATA_HOME',
+    'HF_HOME', 'HF_HUB_CACHE', 'OLLAMA_MODELS', 'PYTHONUSERBASE', 'PIP_TARGET', 'PIP_PREFIX', 'npm_config_prefix', 'NPM_CONFIG_PREFIX',
+    'PNPM_HOME', 'PIPX_HOME', 'CARGO_HOME', 'GOBIN', 'GOPATH', 'SCOOP', 'SCOOP_GLOBAL')
+
+function Get-InstallUserEnvValue {
+    param([string]$Name)
+    if ($null -ne $script:InstallLocationUserEnv) { return [string](& $script:InstallLocationUserEnv $Name) }
+    try { return [Environment]::GetEnvironmentVariable($Name, [EnvironmentVariableTarget]::User) } catch { return $null }
 }
 
 function Get-InstallEnvPath {
@@ -20,8 +42,24 @@ function Get-InstallEnvPath {
     foreach ($name in $Names) {
         $value = [Environment]::GetEnvironmentVariable($name)
         if (-not [string]::IsNullOrWhiteSpace($value)) { return ($value.Split(';')[0]).Trim() }
+        if ($script:InstallLocationVariables -notcontains $name) { continue }
+        $user = Get-InstallUserEnvValue $name
+        if ([string]::IsNullOrWhiteSpace($user) -or @($script:InstallStaleEnv | Where-Object { $_ -like ($name + '=*') }).Count -gt 0) { continue }
+        [void]$script:InstallStaleEnv.Add($name + '=' + ($user.Split(';')[0]).Trim())
     }
     return $Fallback
+}
+
+# uv's executable directory (https://docs.astral.sh/uv/reference/storage/):
+# the tool's own override, else XDG_BIN_HOME, else XDG_DATA_HOME\..\bin, else
+# %USERPROFILE%\.local\bin.
+function Get-UvBinDirectory {
+    param([string]$Override, [string]$UserHome)
+    $bin = Get-InstallEnvPath @($Override, 'XDG_BIN_HOME') $null
+    if ($null -ne $bin) { return $bin }
+    $data = Get-InstallEnvPath @('XDG_DATA_HOME') $null
+    if ($null -ne $data) { return (Join-Path (Split-Path -Parent $data) 'bin') }
+    return (Join-Path $UserHome '.local\bin')
 }
 
 function Get-InstallHome { return (Get-InstallEnvPath @('USERPROFILE', 'HOME') 'C:\Users\Default') }
@@ -75,20 +113,67 @@ function Get-InstallerPropertyPath {
     return $null
 }
 
+# The two installers the rule names whose file names say neither setup nor
+# install: cuda_13.4.0_windows_network.exe, cuda_12.9.1_576.57_windows.exe and
+# python-3.14.7-amd64.exe. NVIDIA driver packages (581.29-desktop-...exe) stay
+# unrecognised: the driver on C: is an accepted exception.
+$script:CudaInstallerPattern = '(?i)^cuda_(\d+\.\d+)[0-9.]*_(?:[0-9.]+_)?windows[a-z0-9_]*\.exe$'
+$script:PythonInstallerPattern = '(?i)^python-(\d+)\.(\d+)[0-9a-z.]*(-amd64|-arm64)?\.exe$'
+
 function Test-InstallerFileName {
     param([string]$Name)
     $leaf = $Name.Replace('/', '\').Split('\')[-1].ToLowerInvariant()
     if ($leaf.EndsWith('.msi')) { return $true }
     if (-not $leaf.EndsWith('.exe')) { return $false }
     if ($leaf.Contains('uninst')) { return $false }
+    if ($leaf -match $script:CudaInstallerPattern -or $leaf -match $script:PythonInstallerPattern) { return $true }
     return ($leaf.Contains('setup') -or $leaf.Contains('install'))
 }
 
 function Get-InstallerFindings {
     param([string]$File, [string[]]$Arguments)
+    $leaf = $File.Replace('/', '\').Split('\')[-1]
+    $programFiles = Get-InstallEnvPath @('ProgramFiles') 'C:\Program Files'
     $target = Get-InstallerPropertyPath -Tokens $Arguments
-    if ($null -eq $target) { $target = Get-InstallEnvPath @('ProgramFiles') 'C:\Program Files' }
-    return @(New-InstallFinding -Family 'installer' -Package ($File.Replace('/', '\').Split('\')[-1]) -Target $target)
+    $advice = $null
+    $cuda = [regex]::Match($leaf, $script:CudaInstallerPattern)
+    $python = [regex]::Match($leaf, $script:PythonInstallerPattern)
+    if ($cuda.Success) {
+        # NVIDIA's documented default; the installer has no location option.
+        $target = Join-Path $programFiles ('NVIDIA GPU Computing Toolkit\CUDA\v' + $cuda.Groups[1].Value)
+        if (Test-InstallFlag -Tokens $Arguments -Names @('-s', '/s')) {
+            $advice = 'CUDA silent mode (-s) always installs on the system drive, so asking for a path does not help. Working route: start the ' +
+                'graphical Custom install through explorer.exe "<installer>", untick Driver and NVIDIA App, choose the location there, and take ' +
+                'the toolkit major version that matches the PyTorch build (cu128 -> 12.x, cu130/cu132 -> 13.x); then verify where it landed. ' +
+                'Rule: global-environment-rules.md -> Install Locations.'
+        }
+    }
+    elseif ($null -eq $target -and $python.Success) {
+        # DefaultJustForMeTargetDir / DefaultAllUsersTargetDir (InstallAllUsers=0 is the default).
+        $xy = $python.Groups[1].Value + $python.Groups[2].Value
+        if ((' ' + ($Arguments -join ' ')) -match '(?i)\sInstallAllUsers=1(\s|$)') { $target = Join-Path $programFiles ('Python' + $xy) }
+        else {
+            $suffix = $(if ($python.Groups[3].Value -ieq '-arm64') { '-arm64' } elseif ($python.Groups[3].Success) { '' } else { '-32' })
+            $target = Join-Path (Get-InstallEnvPath @('LOCALAPPDATA') (Join-Path (Get-InstallHome) 'AppData\Local')) ('Programs\Python\Python' + $xy + $suffix)
+        }
+    }
+    if ($null -eq $target) { $target = $programFiles }
+    return @(New-InstallFinding -Family 'installer' -Package $leaf -Target $target -Advice $advice)
+}
+
+# The CommandLine string of `Invoke-CimMethod ... -Arguments @{ CommandLine = '...' }`,
+# read as DATA: the hashtable is never evaluated. Spaced forms arrive as
+# tokens; a glued `@{CommandLine='x y'}` is read from the rejoined segment.
+function Get-CimCommandLine {
+    param([string[]]$Tokens)
+    for ($index = 0; $index -lt $Tokens.Count; $index++) {
+        $token = $Tokens[$index]
+        if ($token -match '(?i)^(@\{)?CommandLine$' -and ($index + 2) -lt $Tokens.Count -and $Tokens[$index + 1] -eq '=') { return $Tokens[$index + 2] }
+        if ($token -match '(?i)^(@\{)?CommandLine=$' -and ($index + 1) -lt $Tokens.Count) { return $Tokens[$index + 1] }
+    }
+    $match = [regex]::Match((' ' + ($Tokens -join ' ')), '(?i)CommandLine\s*=\s*(?:''([^'']*)''|"([^"]*)")')
+    if (-not $match.Success) { return $null }
+    return $(if ($match.Groups[1].Success) { $match.Groups[1].Value } else { $match.Groups[2].Value })
 }
 
 function Get-PipFindings {
@@ -105,6 +190,8 @@ function Get-PipFindings {
     }
     if ($packages.Count -eq 0) { return @() }
     $explicit = Get-InstallOptionValue -Tokens $Rest -Names @('-t', '--target', '--prefix', '--root')
+    # pip reads PIP_<OPTION> as the option itself.
+    if ($null -eq $explicit) { $explicit = Get-InstallEnvPath @('PIP_TARGET', 'PIP_PREFIX') $null }
     $query = $null
     if ($null -eq $explicit) {
         # An interpreter named by PATH inside the project is the project's own.
@@ -120,12 +207,14 @@ function Get-PipFindings {
             # documented Windows default is %APPDATA%\Python whatever the interpreter.
             $exeDir = Split-Path -Parent ([System.IO.Path]::GetFullPath($full))
             $target = $(if ((Split-Path -Leaf $exeDir) -ieq 'Scripts') { Split-Path -Parent $exeDir } else { $exeDir })
-            if (Test-InstallFlag -Tokens $Rest -Names @('--user')) { $target = Join-Path (Get-InstallEnvPath @('APPDATA') '') 'Python' }
+            if (Test-InstallFlag -Tokens $Rest -Names @('--user')) { $target = Get-InstallEnvPath @('PYTHONUSERBASE') (Join-Path (Get-InstallEnvPath @('APPDATA') '') 'Python') }
             return @($packages | ForEach-Object { New-InstallFinding -Family 'pip' -Package $_ -Target $target -Query $null })
         }
         $venv = [string]$env:VIRTUAL_ENV
         if (-not [string]::IsNullOrWhiteSpace($venv) -and (Test-PathInside -Candidate $venv -Parent $ProjectRoot)) { return @() }
         $kind = $(if (Test-InstallFlag -Tokens $Rest -Names @('--user')) { 'python-user' } else { 'python-prefix' })
+        # Only for the stale-environment check: the query itself answers USER_BASE.
+        if ($kind -eq 'python-user') { $null = Get-InstallEnvPath @('PYTHONUSERBASE') $null }
         $query = @{ Kind = $kind; Program = $Interpreter; Arguments = @($InterpreterArgs) }
     }
     return @($packages | ForEach-Object { New-InstallFinding -Family 'pip' -Package $_ -Target $explicit -Query $query })
@@ -203,7 +292,8 @@ function Get-InstallFindings {
     }
     if ($program -eq 'uv' -and $sub -eq 'tool' -and $rest.Count -gt 0 -and $rest[0] -ieq 'install') {
         $target = Get-InstallEnvPath @('UV_TOOL_DIR') (Join-Path (Get-InstallEnvPath @('APPDATA') (Join-Path $home1 'AppData\Roaming')) 'uv\data\tools')
-        return @(Get-InstallPositionals -Tokens @($rest | Select-Object -Skip 1) -ValueOptions @('--python', '-p', '--with', '--from', '--index-url', '--extra-index-url') | ForEach-Object { New-InstallFinding -Family 'uv' -Package $_ -Target $target })
+        $bin = Get-UvBinDirectory -Override 'UV_TOOL_BIN_DIR' -UserHome $home1
+        return @(Get-InstallPositionals -Tokens @($rest | Select-Object -Skip 1) -ValueOptions @('--python', '-p', '--with', '--from', '--index-url', '--extra-index-url') | ForEach-Object { New-InstallFinding -Family 'uv' -Package $_ -Target $target -ExtraTargets @($bin) })
     }
     if ($program -eq 'uv' -and $sub -eq 'python' -and $rest.Count -gt 0 -and $rest[0] -ieq 'install') {
         $uvRest = @($rest | Select-Object -Skip 1)
@@ -211,7 +301,8 @@ function Get-InstallFindings {
         if ($null -eq $target) { $target = Get-InstallEnvPath @('UV_PYTHON_INSTALL_DIR') (Join-Path (Get-InstallEnvPath @('APPDATA') (Join-Path $home1 'AppData\Roaming')) 'uv\data\python') }
         $versions = @(Get-InstallPositionals -Tokens $uvRest -ValueOptions @('--install-dir', '-i', '--mirror', '--pypy-mirror'))
         if ($versions.Count -eq 0) { $versions = @('python') }
-        return @($versions | ForEach-Object { New-InstallFinding -Family 'uv' -Package ('python ' + $_).Trim() -Target $target })
+        $bin = Get-UvBinDirectory -Override 'UV_PYTHON_BIN_DIR' -UserHome $home1
+        return @($versions | ForEach-Object { New-InstallFinding -Family 'uv' -Package ('python ' + $_).Trim() -Target $target -ExtraTargets @($bin) })
     }
     if ($program -eq 'cargo' -and $sub -eq 'install') {
         $target = Get-InstallOptionValue -Tokens $rest -Names @('--root')
@@ -251,7 +342,18 @@ function Get-InstallFindings {
         if ($null -eq $file) { $file = [string](@(Get-InstallPositionals -Tokens $args1 -ValueOptions @('-ArgumentList', '-Args', '-WorkingDirectory', '-Verb', '-WindowStyle')) | Select-Object -First 1) }
         if ([string]::IsNullOrWhiteSpace($file) -or -not (Test-InstallerFileName $file)) { return @() }
         $installerArgs = [string](Get-InstallOptionValue -Tokens $args1 -Names @('-ArgumentList', '-Args'))
-        return @(Get-InstallerFindings -File $file -Arguments @($installerArgs.Split(@(' ', ','), [System.StringSplitOptions]::RemoveEmptyEntries)))
+        return @(Get-InstallerFindings -File $file -Arguments @($installerArgs.Split([char[]]@(' ', ','), [System.StringSplitOptions]::RemoveEmptyEntries)))
+    }
+    # Launch routes that start an installer outside the agent's own process tree.
+    if ($program -eq 'explorer') {
+        $file = [string](@($args1 | Where-Object { -not $_.StartsWith('/') }) | Select-Object -First 1)
+        if ([string]::IsNullOrWhiteSpace($file) -or -not (Test-InstallerFileName $file)) { return @() }
+        return @(Get-InstallerFindings -File $file -Arguments @())
+    }
+    if ($program -eq 'invoke-cimmethod') {
+        $commandLine = Get-CimCommandLine -Tokens $args1
+        if ([string]::IsNullOrWhiteSpace($commandLine)) { return @() }
+        return @(Get-InstallFindings -Tokens @(Split-CommandTokens -Text $commandLine) -AllTokens $AllTokens -ProjectRoot $ProjectRoot)
     }
     if (Test-InstallerFileName $tokens[0]) { return @(Get-InstallerFindings -File $tokens[0] -Arguments $args1) }
     if (($program -eq 'hf' -or $program -eq 'huggingface-cli') -and $sub -eq 'download') {
