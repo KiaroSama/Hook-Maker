@@ -255,7 +255,7 @@ if ($enforcement -eq 'off') { exit 0 }
 # transcript for a subagent event). Unknown stays unknown.
 $evidence = $null
 if ($null -ne (Get-Command Get-ClosingAssistantText -ErrorAction SilentlyContinue)) {
-    $evidence = Get-ClosingAssistantText -HookInput $hookInput
+    $evidence = if (Get-Command Get-TaskClosingEvidence -ErrorAction SilentlyContinue) { Get-TaskClosingEvidence -HookInput $hookInput } else { Get-ClosingAssistantText -HookInput $hookInput }    # a published wrap-up counts for its task
 }
 if ($null -ne $evidence -and $evidence.Known) { $tail = [string]$evidence.Text }
 else { $tail = $null } # UNKNOWN is not permission to search raw transcript text.

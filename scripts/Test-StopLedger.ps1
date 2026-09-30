@@ -375,6 +375,9 @@ Check 'prose on the NEXT line is not absorbed into an empty declaration' (
 # ---- retention of sessions silent for 14 days ----------------------------
 . (Join-Path $PSScriptRoot '_teststopretention.ps1')
 
+# ---- a published wrap-up counts for its own correction turns (DD-13) --------
+. (Join-Path $PSScriptRoot '_teststoppublishedclosing.ps1')
+
 # ---- the chain key names the client ---------------------------------------
 $savedClient = $env:HOOKMAKER_CLIENT
 try {

@@ -18,7 +18,10 @@ refusal is still `decision:block`. The bound stays as well - once per session pe
 because a repeated message is noise even when it costs no turn. Requirements that concern the
 *closing reply* (`MCP used:`, `Skills used:`, the session summary) are delivered **before** the task
 instead, at SessionStart and on the prompt, so the reply that ends the task carries them with no
-extra turn.
+extra turn. Once a task has published its DONE / REMAINING wrap-up, `Mcp-Usage-Check`, `Skills-Check`
+and `Rules-Check` judge a later correction turn of that same task together with the published
+wrap-up, so a gate that blocks afterwards never makes the agent repeat those lines; a new task never
+inherits them.
 
 
 **Hook deadline.** Hooks that adopt the shared `_budgetlib.ps1` (Dependency-Version-Check first;

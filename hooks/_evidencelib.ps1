@@ -81,6 +81,42 @@ function Test-ClosingDeclaration {
     return [pscustomobject]@{ Present = $true; Value = $trimmed; Substantive = $true; Reason = 'ok' }
 }
 
+# THE CLOSING EVIDENCE OF A TASK, not of one message (DD-13 live trace,
+# 2026-09-30). The closing-line gates read only the newest answer, so once a
+# task had published its wrap-up - declarations included - any later correction
+# turn (a docs acknowledgement, say) was blocked again for lines the task had
+# already given, and the agent was pushed to repeat them for unchanged work.
+# A published wrap-up is kept per task; a later answer in the SAME task (the
+# ledger's own published flag) is judged together with it. A new task never
+# sees it: the flag is scoped to the task's event identity.
+function Get-PublishedSummaryPath {
+    param([Parameter(Mandatory = $true)]$HookInput)
+    $ledger = Get-StopLedgerPath -ProjectRoot ([string](Get-Field $HookInput 'cwd'))
+    $keys = Get-StopLedgerKeys -HookInput $HookInput -HookName 'summary-state'
+    return (Join-Path (Split-Path -Parent $ledger) ('published-summary-' + (Get-ShortHash ([string]$keys.ChainKey)) + '.txt'))
+}
+
+function Get-TaskClosingEvidence {
+    param([Parameter(Mandatory = $true)]$HookInput)
+    $evidence = Get-ClosingAssistantText -HookInput $HookInput
+    if (-not $evidence.Known) { return $evidence }
+    try {
+        $path = Get-PublishedSummaryPath -HookInput $HookInput
+        if (Test-ClosingSummaryPublished -Text ([string]$evidence.Text)) {
+            $text = [string]$evidence.Text
+            if ($text.Length -gt 16384) { $text = $text.Substring($text.Length - 16384) }    # declarations close the answer
+            [void][IO.Directory]::CreateDirectory((Split-Path -Parent $path))
+            [IO.File]::WriteAllText($path, $text, (New-Object Text.UTF8Encoding($false)))
+        }
+        elseif ((Test-TaskSummaryAlreadyPublished -HookInput $HookInput) -and [IO.File]::Exists($path)) {
+            $published = [IO.File]::ReadAllText($path, [Text.Encoding]::UTF8)
+            return [pscustomobject]@{ Text = ([string]$evidence.Text + "`n" + $published); Source = ($evidence.Source + '+published'); Known = $true }
+        }
+    }
+    catch { }
+    return $evidence
+}
+
 # Informational delivery is a separate transaction from Stop admission.
 . (Join-Path $PSScriptRoot '_deliverylib.ps1')
 
