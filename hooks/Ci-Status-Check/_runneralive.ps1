@@ -3,7 +3,7 @@
 # its run has finished, never left running idle, and only by its own identity).
 #
 # THIS project's runner only: on Windows the processes whose executable lives
-# under <project>\.ci-runner-win\ (one bounded CIM query, only when that folder
+# under <project>\.ci-runner-win\ (a Runner.* name lookup, only when that folder
 # exists); in WSL a read-only `pgrep -f /srv/ci/runners/<slug>/`, and only when a
 # distro is ALREADY running - a stopped distro holds no live runner, and this
 # hook never starts one. The hook reports; the agent stops the runner.
@@ -25,14 +25,16 @@ function Get-LiveProjectRunner {
     $folder = Join-Path $ProjectRoot '.ci-runner-win'
     if ([IO.Directory]::Exists($folder)) {
         $prefix = $folder.TrimEnd('\') + '\'
+        # The runner's own binaries are all named Runner.*, so a name lookup finds
+        # them without WMI (a cold WMI enumeration can outlast any sane timeout).
         try {
-            $procs = @(Get-CimInstance -ClassName Win32_Process -Property @('ProcessId', 'Name', 'ExecutablePath') -OperationTimeoutSec 5 -ErrorAction Stop |
-                Where-Object { $exe = [string]$_.ExecutablePath; $exe -ne '' -and $exe.StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase) })
+            $procs = @(Get-Process -Name 'Runner.*' -ErrorAction SilentlyContinue |
+                Where-Object { $exe = [string]$_.Path; $exe -ne '' -and $exe.StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase) })
         }
         catch { return $none }
-        if (@($procs | Where-Object { [string]$_.Name -like 'Runner.Worker*' }).Count -gt 0) { return $idleNone }
+        if (@($procs | Where-Object { [string]$_.ProcessName -like 'Runner.Worker*' }).Count -gt 0) { return $idleNone }
         $pattern = [Management.Automation.WildcardPattern]::Escape($prefix).Replace("'", "''") + '*'
-        return [pscustomobject]@{ Checked = $true; Pids = @($procs | ForEach-Object { [int]$_.ProcessId } | Sort-Object)
+        return [pscustomobject]@{ Checked = $true; Pids = @($procs | ForEach-Object { [int]$_.Id } | Sort-Object)
             Stop = ('Get-CimInstance Win32_Process | Where-Object { $_.ExecutablePath -like ''' + $pattern + ''' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }') }
     }
     if (-not (Test-ManualSelfHostedRepo -ProjectRoot $ProjectRoot)) { return $none }

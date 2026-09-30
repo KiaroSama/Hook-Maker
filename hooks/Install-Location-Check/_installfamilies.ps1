@@ -58,8 +58,10 @@ function Get-UvBinDirectory {
     $bin = Get-InstallEnvPath @($Override, 'XDG_BIN_HOME') $null
     if ($null -ne $bin) { return $bin }
     $data = Get-InstallEnvPath @('XDG_DATA_HOME') $null
-    if ($null -ne $data) { return (Join-Path (Split-Path -Parent $data) 'bin') }
-    return (Join-Path $UserHome '.local\bin')
+    # Path arithmetic only: Join-Path resolves the drive and throws for one that
+    # is not mounted here, and a configured but absent drive must still be judged.
+    if ($null -ne $data) { return [IO.Path]::Combine([IO.Path]::GetDirectoryName($data.TrimEnd('\', '/')), 'bin') }
+    return [IO.Path]::Combine($UserHome, '.local\bin')
 }
 
 function Get-InstallHome { return (Get-InstallEnvPath @('USERPROFILE', 'HOME') 'C:\Users\Default') }
@@ -311,7 +313,7 @@ function Get-InstallFindings {
     }
     if ($program -eq 'go' -and $sub -eq 'install') {
         $gobin = Get-InstallEnvPath @('GOBIN') $null
-        if ($null -eq $gobin) { $gobin = Join-Path (Get-InstallEnvPath @('GOPATH') (Join-Path $home1 'go')) 'bin' }
+        if ($null -eq $gobin) { $gobin = [IO.Path]::Combine((Get-InstallEnvPath @('GOPATH') (Join-Path $home1 'go')), 'bin') }
         return @(Get-InstallPositionals -Tokens $rest | ForEach-Object { New-InstallFinding -Family 'go' -Package $_ -Target $gobin })
     }
     if ($program -eq 'dotnet' -and $sub -eq 'tool' -and $rest.Count -gt 0 -and $rest[0] -ieq 'install') {

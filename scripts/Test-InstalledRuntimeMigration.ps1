@@ -116,7 +116,7 @@ Copy-TestRuntimeLibraries -SourceHookLib $HookLib -Destination (Join-Path $Fixtu
 # workspace. 'Fixture-Unknown-Check' exists only to give one case a hook whose
 # current default the resolver cannot answer for.
 $HookName = 'Session-Summary-Check'
-foreach ($fixtureHook in @($HookName, 'Git-Sync-Check', 'Skills-Check', 'Rules-Check', 'Mcp-Usage-Check', 'Dependency-Version-Check', 'Utf8-Encoding-Check', 'Synapse-Rules-Check', 'Fixture-Unknown-Check')) {
+foreach ($fixtureHook in @($HookName, 'Git-Sync-Check', 'Skills-Check', 'Rules-Check', 'Mcp-Usage-Check', 'Dependency-Version-Check', 'Utf8-Encoding-Check', 'Synapse-Rules-Check', 'Docs-Freshness-Check', 'Fixture-Unknown-Check')) {
     $dir = Join-Path $FixtureHooksDir $fixtureHook
     New-Item -ItemType Directory -Path $dir -Force | Out-Null
     Set-Content -LiteralPath (Join-Path $dir ($fixtureHook + '.ps1')) -Value "# fixture hook`nexit 0`n" -Encoding UTF8
