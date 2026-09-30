@@ -31,7 +31,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Missing tested revision.' }
           $sha | Set-Content -Encoding utf8 "$evidence/tested-commit.txt"
           if ('${{ matrix.subject }}' -eq 'baseline') {
-            $sha = '1e4102e749126639cebc8bdd168c8b6be70fb198'
+            $sha = '23a2f04955e9c6b6a92e22ce409b33d40a43b364'
             git fetch --no-tags --depth=1 origin $sha
             if ($LASTEXITCODE -ne 0) { throw 'Historical source unavailable.' }
             git archive --format=zip --output="$evidence/baseline.zip" $sha

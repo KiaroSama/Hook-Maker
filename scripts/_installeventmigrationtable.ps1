@@ -37,8 +37,8 @@ $script:InstalledEventMigrations = @(
         From    = @('SessionStart', 'Stop', 'SubagentStop')
         Reason  = 'the prior shipped default had no PreToolUse, so the side-branch and push-once reminders never ran'
     }
-    # v4-v8: the pre-2026-09-07 shipped defaults (.env.example EVENTS before a5aeac4;
-    # Utf8-Encoding-Check's metadata Events before 40edad7). Each binding never runs the
+    # v4-v8: the pre-2026-09-07 shipped defaults (.env.example EVENTS before dbdb1b3;
+    # Utf8-Encoding-Check's metadata Events before 55fab80). Each binding never runs the
     # Stop/SubagentStop half the hook gained later, with no error and no output.
     [pscustomobject]@{
         Version = 4
@@ -78,7 +78,7 @@ $script:InstalledEventMigrations = @(
         Reason  = 'the prior shipped default had no UserPromptSubmit, so the once-per-session mid-session reminder never reached the agent'
     }
     # v10: SessionStart,Stop was the only default this hook ever shipped
-    # (.env.example EVENTS since 4fabb1b; no metadata Events before this entry).
+    # (.env.example EVENTS since da0a8cb; no metadata Events before this entry).
     [pscustomobject]@{
         Version = 10
         Hook    = 'Docs-Freshness-Check'

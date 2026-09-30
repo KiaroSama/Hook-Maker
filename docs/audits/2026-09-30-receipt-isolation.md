@@ -2,7 +2,7 @@
 
 **FIRST: fully obey every applicable owner Rules file, global/repository/client instruction, installed hook and the prescribed Spec Kit chain. Never disable a gate, erase an incident or weaken a regression to produce DONE. Every published author and committer email must be exactly `Kiaro.Sama.Dev@gmail.com`. The audit assistant may create/update PRs only; the authorized reviewing agent owns integration, rewriting pre-existing branch/tag history, merge and closure under the actual Rules.**
 
-Code-bearing PR: https://github.com/KiaroSama/Hook-Maker/pull/32 . Baseline: `1e4102e749126639cebc8bdd168c8b6be70fb198`. Work on the existing PR branch, `fix/receipt-isolation-20260930`, unless a real protection/conflict requirement forces another. Do not apply a historical candidate ZIP over the current code.
+Code-bearing PR: https://github.com/KiaroSama/Hook-Maker/pull/32 . Baseline: `23a2f04955e9c6b6a92e22ce409b33d40a43b364`. Work on the existing PR branch, `fix/receipt-isolation-20260930`, unless a real protection/conflict requirement forces another. Do not apply a historical candidate ZIP over the current code.
 
 ## 1. Root causes, implementation and acceptance
 
