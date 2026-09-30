@@ -289,9 +289,9 @@ try {
         $text = ''
         if (Test-Path -LiteralPath $outPath -PathType Leaf) { $text = [IO.File]::ReadAllText($outPath) }
         $stderr = if ([IO.File]::Exists($errPath)) { [IO.File]::ReadAllText($errPath) } else { '' }
-        $answer = [pscustomobject]@{ ExitCode = $proc.ExitCode; Text = $text; ErrorText = $stderr }
+        $wireResult = [pscustomobject]@{ ExitCode = $proc.ExitCode; Text = $text; ErrorText = $stderr }
         $proc.Dispose()
-        return $answer
+        return $wireResult
     }
 
     $wireSession = 's-gen-wire'
