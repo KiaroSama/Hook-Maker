@@ -489,3 +489,7 @@ See [test-hook identity and recovery](TEST-HOOK-RECOVERY.md) for explicit user a
 استثنائات سخت (هرگز صرف‌نظر از کانفیگ درخواست بازبینی نمی‌شوند): `.ai`/`.claude`/`.codex`/`.agents`/`.cross-project-sync`، `secrets.md`، پوشه‌های generated/vendor/build/cache، فایل‌های fixture/snapshot/golden، و `LICENSE*`/`NOTICE*`/`COPYING*`. fingerprint تاثیر فقط از هش محتوای فایل‌های غیرمستندِ تغییریافته ساخته می‌شود، پس یک ویرایش مستندات بی‌ربط هرگز آن را جابه‌جا نمی‌کند. تنها راه رفع بلاک یک دستور acknowledgement مقیدشده به همان fingerprint است (`-Acknowledge -ProjectRoot <مسیر> -ImpactFingerprint <fp> -Result Updated\|NoUpdate -Files <مسیرهای,نسبیِ,مستند> -Reason "<دلیل مشخص>"`): `Updated` حداقل یک فایل `.md`/`.txt` واقعیِ tracked/staged داخل پروژه و غیرمستثنا لازم دارد؛ `NoUpdate` یک دلیل مشخص و غیرکلی می‌خواهد (`none`/`n/a`/`done`/...
 
 رد می‌شوند). acknowledgement فقط state محلی است، هرگز commit نمی‌شود، و هر تغییر غیرمستندیِ بعدی آن را باطل می‌کند و بازبینی تازه لازم می‌شود
+
+### هویت رسیدهای پایان کار
+
+رسید به کار، عامل و پاسخ جاری وابسته است؛ هر اجرای هم‌زمان شناسهٔ تکمیل اختصاصی دارد. دریافت تأیید معتبر بعدی می‌تواند همان مشاهدهٔ نامشخص را بدون انتشار جمع‌بندی دوباره نهایی کند. شناسایی فایل‌های استاندارد، اثبات پوشش تمام افزونه‌ها یا کنترل مسیر نمایش کلاینت نیست. جزئیات در [گزارش فنی](audits/2026-09-30-receipt-isolation.md) است.

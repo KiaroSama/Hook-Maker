@@ -517,3 +517,7 @@ A mandatory review boundary for whether this task's changes made tracked, publis
 Hard exclusions (never requested for review regardless of config): `.ai`/`.claude`/`.codex`/`.agents`/`.cross-project-sync`, `secrets.md`, generated/vendor/build/cache directories, fixture/snapshot/golden files, and `LICENSE*`/`NOTICE*`/`COPYING*`. The impact fingerprint is content-hashed from only the non-doc changed files, so an unrelated documentation edit never shifts it. The only way to clear a block is a fingerprint-bound acknowledgement command (`-Acknowledge -ProjectRoot <path> -ImpactFingerprint <fp> -Result Updated\|NoUpdate -Files <relative,doc,paths> -Reason "<concrete reason>"`): `Updated` requires at least one real, tracked/staged, in-project, non-excluded `.md`/`.txt` file; `NoUpdate` requires a concrete, non-generic reason (`none`/`n/a`/`done`/... are rejected).
 
 Acknowledgement is local-only state, never committed, and a later non-doc change invalidates it, requiring a fresh review.
+
+### Stop receipt provenance (30 September 2026)
+
+Closing evidence is scoped by work, actor and current answer; each concurrent gate invocation owns a completion token. Readiness covers discovered managed bindings only, not an inferred complete plugin/client configuration. Later verified evidence may settle an earlier unverified observation without another summary publication. See [receipt repair and acceptance](audits/2026-09-30-receipt-isolation.md) for the exact guarantees, bounded refusal behavior and live-client display boundary.
