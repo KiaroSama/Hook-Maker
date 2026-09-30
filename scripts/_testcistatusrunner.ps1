@@ -113,6 +113,9 @@ try {
     Set-Mock -RunJson '[{"databaseId":71,"name":"CI","workflowName":"CI","status":"in_progress","conclusion":null}]'
     $r = Fire -HookPath $CiHook -Cwd $rr -EventName 'Stop'
     Check 'i: a run still in progress never names the runner' ($r.Out -notmatch 'still running \(pid') $r.Out
+    # A new commit: the pending report above starts a cooldown for ITS commit, in
+    # which the hook does not ask again - the finished run would never be read.
+    $null = Add-PushedCommit -Repo $rr -Files @{ 'done.txt' = 'x' } -Message 'done'
     Set-Mock -RunJson $green
     $r = Fire -HookPath $CiHook -Cwd $rr -EventName 'Stop'
     Check 'i: finished run + live runner of this project -> one block with its own stop command' (
