@@ -65,6 +65,11 @@ function Invoke-UpdateInstalledHooks {
         Write-Log 'ERROR' 'UPDATE' ('Registry unusable: ' + $registryState.Reason)
         return 'done'
     }
+    # A project renamed or moved since its install is found by the record ids its
+    # hooks carry and reinstalled there first, so this update covers it too.
+    $relocationRows = @(Invoke-FleetRelocations -ToolRoot $ToolRoot -ConfigPath $ConfigPath -InstallScript $InstallScript `
+            -UninstallScript $UninstallScript -Apply -Log { param($Level, $Message) Write-Log $Level 'RELOCATE' $Message })
+    foreach ($line in @(Format-FleetRelocationLines -Rows $relocationRows)) { Write-NoteLine ('  ' + $line) }
     $registry = Read-InstallRegistry -ToolRoot $ToolRoot
     $legacyCandidates = @(Get-LegacyHookCandidates -Registry $registry -ToolRoot $ToolRoot -HooksDir $HooksDir -ConfigPath $ConfigPath)
     $allRecords = @(@($registry.installs) + @($legacyCandidates))

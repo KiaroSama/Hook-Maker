@@ -13,6 +13,10 @@
 #     not redone), and a further -Apply is a no-op;
 #   * a project folder that is gone is reported unreachable, never failed;
 #   * -Compare finds one deliberately altered installed file.
+#   * a project folder that was renamed and moved is found by the record ids
+#     its hooks carry: a dry run announces it, -Apply reinstalls it there and
+#     drops the old records; two folders carrying the same ids (a copy) are
+#     ambiguous and nothing is written.
 #
 # Fixture: two standalone hook sources in the workspace (outside any hooks
 # root, so only the script and the shared runtime library are installed), three
@@ -64,7 +68,7 @@ function Invoke-Fleet {
     $out = Join-Path $Work ('fleet-' + $script:RunIndex + '.out')
     $err = Join-Path $Work ('fleet-' + $script:RunIndex + '.err')
     $proc = Start-BoundedProcess -FilePath $PwshPath -WorkingDirectory $SafeCwd `
-        -ArgumentList (@('-NoLogo', '-NoProfile', '-File', $Fleet, '-LogPath', $log) + $Arguments) `
+        -ArgumentList (@('-NoLogo', '-NoProfile', '-File', $Fleet, '-LogPath', $log, '-ConfigPath', (Join-Path $Work 'sync-hooks.json')) + $Arguments) `
         -RedirectStandardOutput $out -RedirectStandardError $err -TimeoutMs 300000
     $read = { param($p) if (Test-Path -LiteralPath $p) { [System.IO.File]::ReadAllText($p, [System.Text.Encoding]::UTF8) } else { '' } }
     return [pscustomobject]@{ Exit = $proc.ExitCode; Out = (& $read $out); Err = (& $read $err); Log = (& $read $log) }
@@ -212,6 +216,48 @@ try {
     $run = Invoke-Fleet @('-Compare')
     Check '-Compare finds the one altered installed file and names its project' (
         $run.Exit -eq 1 -and $run.Out -match 'COMPARE .*missing=0 different=1 ' -and $run.Out.Contains($p2)) $run.Out
+
+    # ---- a renamed and moved project is found by its record ids and repaired ----
+    $p4 = Join-Path $Work 'fleet-four'
+    New-Item -ItemType Directory -Path $p4 -Force | Out-Null
+    & $InstallScript -CustomHook $beta -Events @('Stop') -TargetProject $p4 -Clients @('claude') *> $null
+    $p4Moved = Join-Path $Work 'grouped\fleet four renamed'
+    New-Item -ItemType Directory -Path (Split-Path -Parent $p4Moved) -Force | Out-Null
+    Move-Item -LiteralPath $p4 -Destination $p4Moved
+    $movedSettings = Join-Path $p4Moved '.claude\settings.local.json'
+    $settingsBefore = [System.IO.File]::ReadAllText($movedSettings)
+    $run = Invoke-Fleet @('-WhatIf')
+    Check 'a moved project is announced with its proven new folder' (
+        $run.Out.Contains('RELOCATE would move 1 record(s): ' + $p4 + ' -> ' + $p4Moved)) $run.Out
+    Check 'a dry run moves nothing' ([System.IO.File]::ReadAllText($movedSettings) -ceq $settingsBefore)
+    $run = Invoke-Fleet @('-Apply')
+    Check '-Apply relocates it' ($run.Exit -eq 0 -and $run.Out.Contains('RELOCATED 1 record(s): ' + $p4 + ' -> ' + $p4Moved)) (
+        'exit=' + $run.Exit + ' ' + $run.Out)
+    $movedCommands = @()
+    foreach ($group in @(([System.IO.File]::ReadAllText($movedSettings) | ConvertFrom-Json).hooks.Stop)) {
+        foreach ($handler in @($group.hooks)) { $movedCommands += [string]$handler.command }
+    }
+    Check 'the moved settings run the hook from the new folder and never the old one' (
+        @($movedCommands | Where-Object { $_.Contains($p4Moved + '\') }).Count -eq 1 -and
+        @($movedCommands | Where-Object { $_.Contains($p4 + '\') }).Count -eq 0) ($movedCommands -join ' | ')
+    $counts = Get-Counts $run.Out
+    Check 'only the deleted project stays unreachable' ($counts['unreachable'] -eq 1) (Format-Counts $counts)
+    Check 'a Claude-only move asks nothing of Codex' (-not $run.Out.Contains('Codex: open')) $run.Out
+
+    # ---- a copied project is ambiguous: nothing is written ----------------------
+    $p5 = Join-Path $Work 'fleet-five'
+    New-Item -ItemType Directory -Path $p5 -Force | Out-Null
+    & $InstallScript -CustomHook $beta -Events @('Stop') -TargetProject $p5 -Clients @('claude') *> $null
+    $p5A = Join-Path $Work 'copies\five a'
+    $p5B = Join-Path $Work 'copies\five b'
+    New-Item -ItemType Directory -Path (Split-Path -Parent $p5A) -Force | Out-Null
+    Move-Item -LiteralPath $p5 -Destination $p5A
+    Copy-Item -LiteralPath $p5A -Destination $p5B -Recurse
+    $copyBefore = Get-TreeSnapshot @($p5A, $p5B)
+    $run = Invoke-Fleet @('-Apply')
+    Check 'two folders carrying the same record ids are reported ambiguous' ($run.Out.Contains('RELOCATE skipped: ' + $p5)) $run.Out
+    Check 'and neither copy is touched' ((Get-TreeSnapshot @($p5A, $p5B)) -ceq $copyBefore)
+    Check 'and the record stays unreachable, never failed' ($run.Exit -eq 0 -and (Get-Counts $run.Out)['unreachable'] -eq 2) $run.Out
 }
 finally {
     if ($null -ne $interrupted -and -not $interrupted.HasExited) { Stop-Process -Id $interrupted.Id -Force -ErrorAction SilentlyContinue }

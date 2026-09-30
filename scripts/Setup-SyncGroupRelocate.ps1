@@ -21,6 +21,10 @@
 # and reinstalling a deleted project's hooks somewhere invented would be worse
 # than leaving the record broken. The user names the new path.
 
+# The search for a moved folder and the non-interactive repair live beside this
+# flow so Update-Fleet and the wizard update run exactly the same steps.
+. (Join-Path $PSScriptRoot '_relocatecore.ps1')
+
 # The set of project roots the registry believes in that are not on disk. That
 # is the only honest candidate list: a root that still exists was not moved,
 # and one that does not may equally have been deleted - which is why this only
@@ -211,7 +215,16 @@ function Invoke-FixRelocatedProject {
     $chosen = $candidates[$pick - 1]
     $oldRoot = [string]$chosen.Root
 
-    $newAnswer = Read-Answer (New-QuestionPrompt 'Its new full path' $null '') 'relocate new path'
+    # A folder that carries one of this root's record ids IS the moved project;
+    # offer it, but the user still confirms (or names another).
+    $suggestion = ''
+    $search = Find-RelocatedProjectRoot -OldRoot $oldRoot -RecordIds @(@($chosen.Records) | ForEach-Object { [string]$_.id })
+    if (@($search.Candidates).Count -eq 1) {
+        $suggestion = [string]$search.Candidates[0]
+        Write-NoteLine ('  Found by its hooks'' record ids: ' + $suggestion)
+    }
+    $newAnswer = Read-Answer (New-QuestionPrompt 'Its new full path' $null $suggestion) 'relocate new path'
+    if ([string]::IsNullOrWhiteSpace($newAnswer)) { $newAnswer = $suggestion }
     if ([string]::IsNullOrWhiteSpace($newAnswer)) { return 'back' }
     $newRoot = $newAnswer.Trim().Trim('"')
     try { $newRoot = Normalize-Path $newRoot } catch { Write-ErrorLine ('Not a usable path: ' + $newAnswer); return 'back' }
@@ -242,116 +255,29 @@ function Invoke-FixRelocatedProject {
         return 'back'
     }
 
-    $installed = 0; $installFailed = 0
-    $failures = New-Object System.Collections.Generic.List[string]
-    $replacedRecords = New-Object System.Collections.Generic.List[object]
-    foreach ($record in $records) {
-        $friendly = [string]$record.friendlyName
-        $recordClients = @(Get-InstalledClientNames -Record $record)
-        $recordReplaced = ($recordClients.Count -gt 0)
-        if (-not $recordReplaced) {
-            [void]$failures.Add($friendly + ': no recorded clients; original record retained')
-        }
-        foreach ($client in $recordClients) {
-            $subrecord = Get-ClientSubrecord -Record $record -Client $client
-            $events = @()
-            if ($null -ne $subrecord -and $null -ne $subrecord.PSObject.Properties['events']) { $events = @($subrecord.events) }
-            if ($events.Count -eq 0) {
-                $recordReplaced = $false
-                $installFailed++; [void]$failures.Add($friendly + '/' + $client + ': no recorded events'); continue
-            }
-            # Per client, with that client's OWN events - the shape the updater
-            # uses to repair a record. A union would re-add events a reduced
-            # client that lacks the event never had.
-            $installArgs = @{ Events = @($events); TargetProject = $newRoot }
-            if ([string]$record.hookType -eq 'Engine') {
-                $installArgs['Profile'] = [string]$record.profile
-                $installArgs['ConfigPath'] = [string]$record.configPath
-            }
-            else {
-                $installArgs['CustomHook'] = [string]$record.sourceScript
-            }
-            $resultPath = Join-Path ([System.IO.Path]::GetTempPath()) ('hookmaker-relocate-' + [guid]::NewGuid().ToString('N').Substring(0, 10) + '.json')
-            $installArgs['ResultPath'] = $resultPath
-            try {
-                $output = & $InstallScript @installArgs -Clients @($client) *>&1
-                foreach ($line in @($output)) { Write-Log 'INFO' 'RELOCATE' ([string]$line) }
-                $result = $null
-                if (Test-Path -LiteralPath $resultPath -PathType Leaf) {
-                    $result = Get-Content -LiteralPath $resultPath -Raw -Encoding utf8 | ConvertFrom-Json
-                }
-                $overall = ''
-                if ($null -ne $result) { $overall = [string]$result.overall }
-                $detail = if ($overall -eq '') { 'no result document' } else { $overall }
-                $components = @()
-                if ($null -ne $result -and $null -ne $result.PSObject.Properties['components']) { $components = @($result.components) }
-                $accepted = ($overall -eq 'ok')
-                if ($overall -eq 'partial') {
-                    $verdict = Get-PartialInstallVerdict -Components $components
-                    $accepted = -not $verdict.IsFailure
-                    $detail = [string]$verdict.Summary
-                }
-                # A runtime without its tracking record cannot replace the old
-                # retry metadata. Prove both outcomes for THIS client first.
-                $clientInstalled = @($components | Where-Object { $_.component -eq $client -and $_.status -eq 'ok' }).Count -eq 1
-                $tracked = @($components | Where-Object { $_.component -eq 'registry' -and $_.status -eq 'ok' }).Count -eq 1
-                if ($accepted -and $clientInstalled -and $tracked) { $installed++ }
-                else {
-                    $recordReplaced = $false
-                    $installFailed++
-                    if ($accepted) { $detail = 'replacement installation and tracking were not confirmed' }
-                    [void]$failures.Add($friendly + '/' + $client + ': ' + $detail)
-                }
-            }
-            catch {
-                $recordReplaced = $false
-                $installFailed++; [void]$failures.Add($friendly + '/' + $client + ': ' + $_.Exception.Message)
-            }
-            finally { Remove-Item -LiteralPath $resultPath -Force -ErrorAction SilentlyContinue }
-        }
-        if ($recordReplaced) { [void]$replacedRecords.Add($record) }
-    }
-
+    $relocation = Invoke-ProjectRelocation -OldRoot $oldRoot -NewRoot $newRoot -Records $records -ConfigPath $ConfigPath `
+        -InstallScript $InstallScript -UninstallScript $UninstallScript -Log { param($Level, $Message) Write-Log $Level 'RELOCATE' $Message }
+    $installed = $relocation.Installed; $installFailed = $relocation.InstallFailed
+    $dropped = $relocation.Dropped; $dropFailed = $relocation.DropFailed
+    $failures = @($relocation.Failures); $configChange = $relocation.ConfigChange
     # No supported client writes a per-hook document, so relocation has nothing
-    # of that shape to supersede: the reinstall below rewrites the shared
-    # settings files in place.
+    # of that shape to supersede: the reinstall rewrites the shared settings
+    # files in place.
     $documentsRemoved = 0
-
-    $dropped = 0; $dropFailed = 0
-    # Keep the complete original record if ANY client failed. It remains a
-    # relocation candidate, preserving each client's events for a later retry.
-    foreach ($record in $replacedRecords) {
-        $resultPath = Join-Path ([System.IO.Path]::GetTempPath()) ('hookmaker-relocate-un-' + [guid]::NewGuid().ToString('N').Substring(0, 10) + '.json')
-        try {
-            & $UninstallScript -RecordId ([string]$record.id) -ResultPath $resultPath *> $null
-            $result = $null
-            if (Test-Path -LiteralPath $resultPath -PathType Leaf) {
-                $result = Get-Content -LiteralPath $resultPath -Raw | ConvertFrom-Json
-            }
-            if ($null -ne $result -and [string]$result.overall -eq 'ok') { $dropped++ }
-            else {
-                $dropFailed++
-                $detail = 'no result document'
-                if ($null -ne $result) { $detail = [string]$result.overall }
-                [void]$failures.Add('record ' + [string]$record.id + ' (' + [string]$record.friendlyName + '): ' + $detail)
-            }
-        }
-        catch { $dropFailed++; [void]$failures.Add('record ' + [string]$record.id + ': ' + $_.Exception.Message) }
-        finally { Remove-Item -LiteralPath $resultPath -Force -ErrorAction SilentlyContinue }
-    }
-
-    $configChange = Update-SyncConfigRoot -ConfigPath $ConfigPath -OldRoot $oldRoot -NewRoot $newRoot
 
     Write-Host ''
     Write-NoteLine ('  Reinstalled at the new path : ' + $installed + ' registration(s)')
     Write-NoteLine ('  Stale records dropped       : ' + $dropped + ' of ' + $records.Count)
-    if ($replacedRecords.Count -lt $records.Count) {
-        Write-NoteLine ('  Records retained for retry  : ' + ($records.Count - $replacedRecords.Count))
+    if ($relocation.Replaced -lt $records.Count) {
+        Write-NoteLine ('  Records retained for retry  : ' + ($records.Count - $relocation.Replaced))
     }
     if ($documentsRemoved -gt 0) { Write-NoteLine ('  Stale documents removed     : ' + $documentsRemoved) }
     if ($configChange.Roots -gt 0 -or $configChange.Names -gt 0) {
         Write-NoteLine ('  Sync routes repointed       : ' + $configChange.Roots + ' root(s), ' + $configChange.Names + ' name(s)')
         Write-NoteLine '  Run "Update installed hooks" so every other project in that group picks the change up.'
+    }
+    if ($relocation.Codex) {
+        Write-NoteLine ('  Codex: open ' + $newRoot + ' in Codex, trust the project if asked, then /hooks -> review and trust the Hook Maker hooks (their commands now name the new path).')
     }
     if ($installFailed -gt 0 -or $dropFailed -gt 0 -or $failures.Count -gt 0) {
         Write-ErrorLine ('  Problems: ' + $failures.Count)

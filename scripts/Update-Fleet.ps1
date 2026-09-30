@@ -30,6 +30,8 @@
 #                  every marker file exists and contains its pattern.
 #   -Compare       Read-only byte compare of every managed runtime against its
 #                  source (after -Apply, with -WhatIf, or alone).
+#   -ConfigPath    The sync-group config whose routes follow a relocated project
+#                  (default: sync-hooks.json in the tool root).
 #   -LogPath       Default logs\Update-Fleet_<UTC>.log under the tool root
 #                  (HOOKMAKER_LOG_DIR overrides the directory). One line per
 #                  registration, flushed as it is written.
@@ -49,7 +51,8 @@ param(
     [string]$OnlyProject = '',
     [string[]]$Marker = @(),
     [switch]$Compare,
-    [string]$LogPath = ''
+    [string]$LogPath = '',
+    [string]$ConfigPath = ''
 )
 
 Set-StrictMode -Version 2.0
@@ -86,6 +89,7 @@ if ($null -eq $resolverAst) { throw 'Get-HookRecommendedEvents was not found in 
 . ([scriptblock]::Create($resolverAst.Extent.Text))
 . (Join-Path $ScriptRoot '_updatefleetmarkers.ps1')
 . (Join-Path $ScriptRoot '_updatefleetcompare.ps1')
+. (Join-Path $ScriptRoot 'Setup-SyncGroupRelocate.ps1')
 
 # ---- logging -----------------------------------------------------------------
 $script:FleetLogPath = $null
@@ -184,6 +188,16 @@ if ([string]$registryState.State -eq 'corrupt') {
     Write-Host ('The install registry cannot be used: ' + $registryState.Reason) -ForegroundColor Red
     Write-FleetLog 'ERROR' 'FLEET' ('Registry unusable: ' + $registryState.Reason)
     exit 1
+}
+# Moved projects first: a record whose folder was renamed or moved is repaired
+# (announced without -Apply) before evaluation, so it is judged at its new path
+# instead of reported unreachable for ever. The folder is proven by the record
+# ids its runtime metadata carries; ambiguous or not found changes nothing.
+if ($evaluate) {
+    $relocationRows = @(Invoke-FleetRelocations -ToolRoot $ToolRoot -ConfigPath $(if ($ConfigPath -ne '') { $ConfigPath } else { Join-Path $ToolRoot 'sync-hooks.json' }) `
+            -InstallScript $InstallScript -UninstallScript (Join-Path $ScriptRoot 'Uninstall-Hook.ps1') -Apply:$Apply -OnlyProject $OnlyProject `
+            -Log { param($Level, $Message) Write-FleetLog $Level 'RELOCATE' $Message })
+    foreach ($line in @(Format-FleetRelocationLines -Rows $relocationRows)) { Write-Host $line; Write-FleetLog 'INFO' 'RELOCATE' $line }
 }
 $records = @(@((Read-InstallRegistry -ToolRoot $ToolRoot).installs) | Where-Object {
         $null -ne $_ -and (Test-IsManagedRecord $_) -and (Test-FleetProjectSelected -Record $_ -OnlyProject $OnlyProject) })
