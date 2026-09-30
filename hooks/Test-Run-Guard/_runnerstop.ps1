@@ -16,6 +16,7 @@
 # Does this value name the runner processes by name or pattern (not by pid)?
 function Test-RunnerImageToken {
     param([string]$Value)
+    if (([string]$Value).Contains(',')) { return (@(([string]$Value).Split(',') | Where-Object { Test-RunnerImageToken $_ }).Count -gt 0) }
     $v = ([string]$Value).Trim().ToLowerInvariant()
     if ($v -eq '') { return $false }
     if ($v -match '^runner\.(listener|worker)(\.exe)?$') { return $true }
@@ -37,7 +38,12 @@ function Get-RunnerSegmentProgramIndex {
     $i = 0
     while ($i -lt $Segment.Count) {
         $name = Get-ProgramName $Segment[$i]
-        if ($name -eq '&' -or $name -eq 'sudo') { $i++; continue }
+        if ($name -eq '&') { $i++; continue }
+        if ($name -eq 'sudo') {
+            $i++
+            while ($i -lt $Segment.Count -and $Segment[$i].StartsWith('-')) { if ($Segment[$i] -in @('-u', '-g', '-C', '-h', '-p', '-U', '-D', '-R', '-T')) { $i += 2 } else { $i++ } }
+            continue
+        }
         if ($name -eq 'wsl') {
             $j = $i + 1
             while ($j -lt $Segment.Count -and $Segment[$j] -notin @('-e', '--exec', '--')) {
@@ -64,7 +70,7 @@ function Get-RunnerStopReplacement {
     if ($Wsl) {
         return 'Stop only this project''s runner: pkill -f ''/srv/ci/runners/' + $slug + '/'' (or kill the pid of the run.sh you started), then confirm it exited.'
     }
-    $folder = (Join-Path $ProjectRoot '.ci-runner-win').TrimEnd('\') + '\*'
+    $folder = [Management.Automation.WildcardPattern]::Escape((Join-Path $ProjectRoot '.ci-runner-win').TrimEnd('\') + '\').Replace("'", "''") + '*'
     return ('Stop only this project''s runner: Get-CimInstance Win32_Process | Where-Object { $_.ExecutablePath -like ''' + $folder +
         ''' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force } (or taskkill /PID <pid of the run.cmd you started> /T), then confirm each exited.')
 }
@@ -90,9 +96,9 @@ function Get-RunnerStopFinding {
                     if ($rest[$k] -in @('/im', '/IM', '-im', '-IM', '/Im', '/iM') -and (Test-RunnerImageToken $rest[$k + 1])) { $byName = $true }
                 }
             }
-            { $_ -in @('stop-process', 'spps') } {
+            { $_ -in @('stop-process', 'spps', 'kill') } {
                 for ($k = 0; $k -lt $rest.Count - 1; $k++) {
-                    if ($rest[$k] -match '^-(name|processname|n)$' -and (Test-RunnerImageToken $rest[$k + 1])) { $byName = $true }
+                    if ($rest[$k] -match '^-(n|na|nam|name|pr|pro|proc|proce|proces|process|processn|processna|processnam|processname)$' -and (Test-RunnerImageToken $rest[$k + 1])) { $byName = $true }
                 }
             }
             { $_ -in @('get-process', 'gps') } {

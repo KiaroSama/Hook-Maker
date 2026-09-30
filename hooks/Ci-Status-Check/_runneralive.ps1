@@ -15,37 +15,52 @@ function Get-RunnerRepositorySlugForRoot {
 }
 
 # Checked=$false means the question could not be answered (never an all-clear).
+# IDLE is the finding: a Runner.Worker exists only while a job runs, so a runner
+# that has one is busy (another branch, a PR, a re-run) and is never flagged -
+# telling the agent to stop it would kill a live job.
 function Get-LiveProjectRunner {
     param([Parameter(Mandatory = $true)][string]$ProjectRoot)
     $none = [pscustomobject]@{ Checked = $false; Pids = @(); Stop = '' }
+    $idleNone = [pscustomobject]@{ Checked = $true; Pids = @(); Stop = '' }
     $folder = Join-Path $ProjectRoot '.ci-runner-win'
     if ([IO.Directory]::Exists($folder)) {
         $prefix = $folder.TrimEnd('\') + '\'
         try {
-            $procs = @(Get-CimInstance -ClassName Win32_Process -Property @('ProcessId', 'ExecutablePath') -OperationTimeoutSec 5 -ErrorAction Stop |
+            $procs = @(Get-CimInstance -ClassName Win32_Process -Property @('ProcessId', 'Name', 'ExecutablePath') -OperationTimeoutSec 5 -ErrorAction Stop |
                 Where-Object { $exe = [string]$_.ExecutablePath; $exe -ne '' -and $exe.StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase) })
         }
         catch { return $none }
+        if (@($procs | Where-Object { [string]$_.Name -like 'Runner.Worker*' }).Count -gt 0) { return $idleNone }
+        $pattern = [Management.Automation.WildcardPattern]::Escape($prefix).Replace("'", "''") + '*'
         return [pscustomobject]@{ Checked = $true; Pids = @($procs | ForEach-Object { [int]$_.ProcessId } | Sort-Object)
-            Stop = ('Get-CimInstance Win32_Process | Where-Object { $_.ExecutablePath -like ''' + $prefix + '*'' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }') }
+            Stop = ('Get-CimInstance Win32_Process | Where-Object { $_.ExecutablePath -like ''' + $pattern + ''' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }') }
     }
     if (-not (Test-ManualSelfHostedRepo -ProjectRoot $ProjectRoot)) { return $none }
     $saved = $env:WSL_UTF8
     try {
         $env:WSL_UTF8 = '1'
         $running = @(Invoke-QuietCommand -FilePath 'wsl.exe' -ArgumentList @('--list', '--running', '--quiet') -TimeoutSeconds 5 |
-            ForEach-Object { ([string]$_).Replace([string][char]0, '').Trim() } | Where-Object { $_ -ne '' })
-        if ($LASTEXITCODE -ne 0) {
-            # wsl.exe answers non-zero when no distribution is running at all.
-            if ($running.Count -eq 0) { return [pscustomobject]@{ Checked = $true; Pids = @(); Stop = '' } }
-            return $none
-        }
-        if ($running.Count -eq 0) { return [pscustomobject]@{ Checked = $true; Pids = @(); Stop = '' } }
+            ForEach-Object { ([string]$_).Replace([string][char]0, '').Trim() } | Where-Object { $_ -match '^[A-Za-z0-9._-]+$' })
+        # wsl.exe answers non-zero when no distribution is running at all.
+        if ($running.Count -eq 0) { return $idleNone }
         $path = '/srv/ci/runners/' + (Get-RunnerRepositorySlugForRoot -ProjectRoot $ProjectRoot) + '/'
-        $found = @(Invoke-QuietCommand -FilePath 'wsl.exe' -ArgumentList @('-e', 'pgrep', '-f', $path) -TimeoutSeconds 5 |
-            ForEach-Object { ([string]$_).Trim() } | Where-Object { $_ -match '^\d+$' })
-        if ($LASTEXITCODE -gt 1) { return $none }
-        return [pscustomobject]@{ Checked = $true; Pids = @($found | ForEach-Object { [int]$_ } | Sort-Object); Stop = ('wsl.exe -e pkill -f ''' + $path + '''') }
+        $found = New-Object System.Collections.Generic.List[int]
+        $stopDistro = ''
+        # Only distributions ALREADY running are asked, each by name: `-e` alone
+        # targets the default distribution and would boot it if it is stopped.
+        foreach ($distro in $running) {
+            $busy = @(Invoke-QuietCommand -FilePath 'wsl.exe' -ArgumentList @('-d', $distro, '-e', 'pgrep', '-f', ($path + '.*Runner.Worker')) -TimeoutSeconds 5 |
+                Where-Object { ([string]$_).Trim() -match '^\d+$' })
+            if ($LASTEXITCODE -gt 1) { return $none }
+            if ($busy.Count -gt 0) { return $idleNone }
+            $pids = @(Invoke-QuietCommand -FilePath 'wsl.exe' -ArgumentList @('-d', $distro, '-e', 'pgrep', '-f', $path) -TimeoutSeconds 5 |
+                ForEach-Object { ([string]$_).Trim() } | Where-Object { $_ -match '^\d+$' })
+            if ($LASTEXITCODE -gt 1) { return $none }
+            if ($pids.Count -gt 0) { foreach ($id in $pids) { [void]$found.Add([int]$id) }; $stopDistro = $distro }
+        }
+        if ($found.Count -eq 0) { return $idleNone }
+        return [pscustomobject]@{ Checked = $true; Pids = @($found.ToArray() | Sort-Object)
+            Stop = ('wsl.exe -d ' + $stopDistro + ' -e pkill -f ''' + $path + '''') }
     }
     catch { return $none }
     finally { $env:WSL_UTF8 = $saved }

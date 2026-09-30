@@ -222,10 +222,10 @@ function Get-RequiredStopGates {
                         foreach ($argument in $argsProperty.Value) { if ($argument -isnot [string]) { return $unknown }; $parts += $argument }
                     }
                     $combined = $parts -join ' '
-                    $matches = [regex]::Matches($combined, '[\\/]Hook-Maker[\\/]([A-Za-z0-9.-]{1,64})[\\/]([A-Za-z0-9.-]{1,64})\.ps1')
-                    if ($matches.Count -eq 0) { continue }
-                    if ($matches.Count -ne 1 -or $matches[0].Groups[1].Value -cne $matches[0].Groups[2].Value) { return $unknown }
-                    $name = $matches[0].Groups[1].Value
+                    $scriptHits = [regex]::Matches($combined, '[\\/]Hook-Maker[\\/]([A-Za-z0-9.-]{1,64})[\\/]([A-Za-z0-9.-]{1,64})\.ps1')
+                    if ($scriptHits.Count -eq 0) { continue }
+                    if ($scriptHits.Count -ne 1 -or $scriptHits[0].Groups[1].Value -cne $scriptHits[0].Groups[2].Value) { return $unknown }
+                    $name = $scriptHits[0].Groups[1].Value
                     if ($name -ceq 'Session-Summary-Check') { $observer = $true; continue }
                     if ($script:ReceiptGateNames -cnotcontains $name) { continue }
                     if ($null -ne (Get-Field $handler 'if') -or (Get-Field $handler 'async') -eq $true) { return $unknown }
@@ -261,7 +261,9 @@ function Remove-StaleStopGateReceipts {
             try {
                 $handle = [IO.File]::Open(($old.FullName + '.lock'), 'OpenOrCreate', 'ReadWrite', 'None')
                 $receipt = Read-StopGateReceipt $old.FullName
-                if ($null -ne $receipt -and $receipt.RunningCount -eq 0 -and $receipt.At -lt [DateTime]::UtcNow.AddDays(-3)) { [IO.File]::Delete($old.FullName) }
+                # A receipt that no longer parses is no evidence for anything; past the
+                # same age it goes too, or it would stay on disk for ever.
+                if (($null -eq $receipt) -or ($receipt.RunningCount -eq 0 -and $receipt.At -lt [DateTime]::UtcNow.AddDays(-3))) { [IO.File]::Delete($old.FullName) }
             }
             catch { }
             finally { if ($null -ne $handle) { $handle.Dispose() } }

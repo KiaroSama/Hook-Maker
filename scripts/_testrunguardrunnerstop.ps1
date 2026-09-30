@@ -17,7 +17,10 @@
             'Get-Process Runner* | Stop-Process',
             'wsl.exe -e pkill -f Runner.Worker',
             'Stop-Service "actions.runner.*"',
-            "systemctl stop 'actions.runner.*'")) {
+            "systemctl stop 'actions.runner.*'",
+            'Stop-Process -Name Runner.Listener,Runner.Worker',
+            'kill -Name Runner*',
+            'sudo -u root pkill -f Runner.Listener')) {
         $r = Fire -HookPath $hcRs.Script -Cwd $Proj -EventName 'PreToolUse' -Command $forbidden -LocalAppData $hcRs.LocalAppData
         $m = Get-Message $r.Out
         Check ('runner stop refused: ' + $forbidden) ($r.Out -match '"permissionDecision":"deny"' -and $m -match 'every other project''s runner') $r.Out

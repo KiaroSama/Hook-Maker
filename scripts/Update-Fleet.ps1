@@ -198,6 +198,7 @@ if ($evaluate) {
             -InstallScript $InstallScript -UninstallScript (Join-Path $ScriptRoot 'Uninstall-Hook.ps1') -Apply:$Apply -OnlyProject $OnlyProject `
             -Log { param($Level, $Message) Write-FleetLog $Level 'RELOCATE' $Message })
     foreach ($line in @(Format-FleetRelocationLines -Rows $relocationRows)) { Write-Host $line; Write-FleetLog 'INFO' 'RELOCATE' $line }
+    $relocationProblems = @($relocationRows | Where-Object { $_.State -eq 'relocated-with-problems' }).Count
 }
 $records = @(@((Read-InstallRegistry -ToolRoot $ToolRoot).installs) | Where-Object {
         $null -ne $_ -and (Test-IsManagedRecord $_) -and (Test-FleetProjectSelected -Record $_ -OnlyProject $OnlyProject) })
@@ -208,6 +209,7 @@ if ($OnlyProject -ne '' -and $records.Count -eq 0) {
 }
 
 $failed = 0
+if ((Get-Variable -Name relocationProblems -ErrorAction SilentlyContinue) -and $relocationProblems -gt 0) { $failed += $relocationProblems }
 if ($evaluate) {
     $timer = [System.Diagnostics.Stopwatch]::StartNew()
     $plan = @(Get-UpdateEvaluationPlan -Records $records -ToolRoot $ToolRoot)

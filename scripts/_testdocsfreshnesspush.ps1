@@ -137,3 +137,10 @@ $ci2 = New-CiScenario 'CiNotRecorded'
 $rNotGreen = Fire -HookPath $ci2.Hook.Script -Cwd $ci2.Repo -EventName 'Stop' -LocalAppData $ci2.Hook.LocalAppData
 Check 'without a ci-green record the block keeps today''s text (no [skip ci])' (
     $rNotGreen.Out -match '"decision":"block"' -and $rNotGreen.Out -notmatch 'skip ci') $rNotGreen.Out
+
+# A -C value no path can hold must not crash the hook on Windows PowerShell 5.1,
+# where .NET Framework's IsPathRooted throws on it; the command is simply not a
+# push this hook can place (review finding, 2026-09-30).
+$badC = New-CiScenario 'BadDashC'
+$rBadC = Fire -HookPath $badC.Hook.Script -Cwd $badC.Repo -EventName 'PreToolUse' -LocalAppData $badC.Hook.LocalAppData -Command 'git -C "a|b" push' -Exe 'powershell'
+Check 'git -C with a character no path can hold exits cleanly on 5.1' ($rBadC.Exit -eq 0 -and $rBadC.Out -notmatch 'deny') ('exit=' + $rBadC.Exit + ' ' + $rBadC.Err)

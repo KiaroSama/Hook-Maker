@@ -19,7 +19,8 @@
 #
 # It NEVER guesses the new location: a missing root can equally mean "deleted",
 # and reinstalling a deleted project's hooks somewhere invented would be worse
-# than leaving the record broken. The user names the new path.
+# than leaving the record broken. Only a folder PROVEN by the record ids its hooks
+# carry (_relocatecore.ps1) is offered here, or repaired unattended by the update.
 
 # The search for a moved folder and the non-interactive repair live beside this
 # flow so Update-Fleet and the wizard update run exactly the same steps.

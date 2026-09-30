@@ -731,8 +731,8 @@ Item **`36` Fix a renamed or moved project** repairs the installs of a project w
 renamed or moved. It lists only project roots that are no longer on disk — both the ones the
 registry names and the ones only an **enabled** sync route names (shown as `sync routes only`,
 since those carry no records to reinstall) — asks where each one went, and then reinstalls every
-hook at the new path, drops the stale records, removes per-hook documents that travelled with the
-folder and are now superseded, and repoints any sync-group route that named the old root. The
+hook at the new path (the installer replaces the handlers that still name the old path), drops the
+stale records, and repoints any sync-group route that named the old root. The
 final confirmation defaults to **yes**: by then you have already chosen the project and typed the
 new path. It never guesses the new location — a missing folder can equally mean *deleted* — but
 when exactly one folder carries the moved hooks' record ids it is offered as the default answer,

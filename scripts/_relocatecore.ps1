@@ -15,6 +15,9 @@
 $script:RelocateSearchDepth = 4
 $script:RelocateSearchDirs = 4000
 $script:RelocateSearchMs = 15000
+# One budget for every missing root of a run, so projects that were really deleted
+# cannot add a full search each to every later update.
+$script:RelocateTotalMs = 30000
 $script:RelocateSkipNames = @('node_modules', 'venv', '__pycache__', 'dist', 'build', 'bin', 'obj', 'target', 'logs')
 
 # The nearest ancestor of the missing root that still exists: a rename keeps
@@ -219,10 +222,18 @@ function Invoke-FleetRelocations {
         [scriptblock]$Log = { param($Level, $Message) }
     )
     $rows = New-Object System.Collections.Generic.List[object]
+    $budget = [Diagnostics.Stopwatch]::StartNew()
+    $perSearch = $script:RelocateSearchMs
     foreach ($candidate in @(Get-RelocationCandidate -ToolRoot $ToolRoot -ConfigPath $ConfigPath)) {
         $records = @($candidate.Records)
         if ($records.Count -eq 0) { continue }
         $oldRoot = [string]$candidate.Root
+        $left = $script:RelocateTotalMs - $budget.ElapsedMilliseconds
+        if ($left -le 0) {
+            [void]$rows.Add([pscustomobject]@{ OldRoot = $oldRoot; NewRoot = ''; State = 'not-found'; Records = $records.Count; Result = $null; Partial = $true })
+            continue
+        }
+        $script:RelocateSearchMs = [int][Math]::Min($perSearch, $left)
         $ids = @($records | ForEach-Object { [string]$_.id })
         $search = Find-RelocatedProjectRoot -OldRoot $oldRoot -RecordIds $ids
         $row = [pscustomobject]@{ OldRoot = $oldRoot; NewRoot = ''; State = 'not-found'; Records = $records.Count; Result = $null; Partial = $search.Partial }
@@ -244,6 +255,7 @@ function Invoke-FleetRelocations {
         }
         [void]$rows.Add($row)
     }
+    $script:RelocateSearchMs = $perSearch
     return @($rows.ToArray())
 }
 

@@ -19,15 +19,18 @@ function Test-CommitHasSkipMarker {
     return ($Message -match '(?im)^skip-checks:\s*true\s*$')
 }
 
-# Tracked public documentation only: a .md/.txt outside workflow, test,
-# fixture and example paths. A README a check consumes would need that check,
-# so a path that looks like a fixture or an example never counts.
+# Tracked public documentation only: Markdown, plus a .txt that is plainly prose
+# (under docs/, or a README/CHANGELOG/NOTICE/AUTHORS/CONTRIBUTING file). A .txt
+# elsewhere is usually build or dependency input (requirements.txt, CMakeLists.txt),
+# and nothing under .github or a test, fixture or example path ever counts.
 function Test-DocumentationOnlyPath {
     param([string]$Path)
     $p = ([string]$Path).Replace('\', '/').ToLowerInvariant()
-    if ($p -notmatch '\.(md|txt)$') { return $false }
-    if ($p.StartsWith('.github/')) { return $false }
-    return ($p -notmatch '(^|/)(tests?|fixtures?|examples?|samples?|testdata)(/|$)' -and $p -notmatch '\.example\.')
+    if ($p.StartsWith('.github/') -or $p -match '(^|/)(tests?|fixtures?|examples?|samples?|testdata)(/|$)' -or $p -match '\.example\.') { return $false }
+    if ($p.EndsWith('.md')) { return $true }
+    if (-not $p.EndsWith('.txt')) { return $false }
+    $leaf = $p.Substring($p.LastIndexOf('/') + 1)
+    return ($p.StartsWith('docs/') -or $leaf -match '^(readme|changelog|changes|history|notice|authors|contributing)([._-].*)?\.txt$')
 }
 
 # The last SHA observed green: this commit's own record when it says
@@ -58,19 +61,32 @@ function Get-DocsOnlyCarryover {
         ForEach-Object { ([string]$_).Trim() } | Where-Object { $_ -ne '' })
     if ($LASTEXITCODE -ne 0 -or $files.Count -eq 0) { return $null }
     if (@($files | Where-Object { -not (Test-DocumentationOnlyPath -Path $_) }).Count -gt 0) { return $null }
-    # Required status checks would stay pending on a skipped commit. No
-    # protection (404 / "not protected") is the only answer that lets it through.
-    $protection = @(Invoke-GhBounded -ArgumentList @('api', ('repos/' + $RepoSlug + '/branches/' + $Branch + '/protection/required_status_checks'))) -join "`n"
-    if ($LASTEXITCODE -eq 0) {
-        try {
-            $doc = $protection | ConvertFrom-Json
-            $required = @(@(Get-Field $doc 'contexts') + @(Get-Field $doc 'checks') | Where-Object { $null -ne $_ })
-            if ($required.Count -gt 0) { return $null }
-        }
-        catch { return $null }
-    }
-    elseif ($script:GhBudgetExhausted -or $protection -notmatch '(?i)(not protected|not found|404)') { return $null }
+    # Required status checks would stay pending on a skipped commit. Both places
+    # GitHub keeps them are read - classic protection through the branch (readable
+    # without admin rights) and rulesets - and any answer that is not a clear
+    # "none" keeps today's behaviour. A 404 is never read as "unprotected".
+    if (-not (Test-NoRequiredStatusChecks -RepoSlug $RepoSlug -Branch $Branch)) { return $null }
     return [pscustomobject]@{ Parent = $base; Files = @($files) }
+}
+
+function Test-NoRequiredStatusChecks {
+    param([string]$RepoSlug, [string]$Branch)
+    $encoded = [uri]::EscapeDataString($Branch)
+    try {
+        $branchDoc = (@(Invoke-GhBounded -ArgumentList @('api', ('repos/' + $RepoSlug + '/branches/' + $encoded))) -join "`n") | ConvertFrom-Json
+        if ($LASTEXITCODE -ne 0 -or $null -eq $branchDoc) { return $false }
+        if ([bool](Get-Field $branchDoc 'protected')) {
+            $checks = Get-Field (Get-Field $branchDoc 'protection') 'required_status_checks'
+            if ($null -ne $checks) {
+                $level = [string](Get-Field $checks 'enforcement_level')
+                if (@(Get-Field $checks 'contexts' | Where-Object { $null -ne $_ }).Count -gt 0 -or ($level -ne '' -and $level -ne 'off')) { return $false }
+            }
+        }
+        $rules = (@(Invoke-GhBounded -ArgumentList @('api', ('repos/' + $RepoSlug + '/rules/branches/' + $encoded))) -join "`n") | ConvertFrom-Json
+        if ($LASTEXITCODE -ne 0) { return $false }
+        return (@(@($rules) | Where-Object { $null -ne $_ -and [string](Get-Field $_ 'type') -eq 'required_status_checks' }).Count -eq 0)
+    }
+    catch { return $false }
 }
 
 # Writes the carry-over record and exits with the note, or returns quietly.

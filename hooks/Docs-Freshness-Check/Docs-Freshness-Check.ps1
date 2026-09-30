@@ -218,7 +218,8 @@ function Get-GitPushDirectory {
                 if ($i + 1 -ge $seg.Count) { break }
                 if ($seg[$i] -ceq '-C') {
                     $value = $seg[$i + 1]
-                    $dir = if ([System.IO.Path]::IsPathRooted($value)) { $value } else { Join-Path $dir $value }
+                    # .NET Framework throws on characters a path cannot hold (`a|b`): not a push this hook can place.
+                    try { $dir = if ([System.IO.Path]::IsPathRooted($value)) { $value } else { Join-Path $dir $value } } catch { return '' }
                 }
                 $i += 2
                 continue

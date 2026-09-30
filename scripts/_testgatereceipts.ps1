@@ -142,7 +142,10 @@
     $gcRecentLock = Join-Path $gcDir ($gcPrefix + '-' + ('c' * 64) + '-Git-Sync-Check.json.lock')
     foreach ($p in @($gcOldLock, $gcKeptLock, $gcRecentLock, ($gcKeptLock -replace '\.lock$', ''))) { [IO.File]::WriteAllText($p, '') }
     foreach ($p in @($gcOldLock, $gcKeptLock)) { [IO.File]::SetLastWriteTimeUtc($p, [DateTime]::UtcNow.AddDays(-4)) }
+    $gcBadReceipt = Join-Path $gcDir ($gcPrefix + '-' + ('e' * 64) + '-Git-Sync-Check.json')
+    [IO.File]::WriteAllText($gcBadReceipt, 'not json'); [IO.File]::SetLastWriteTimeUtc($gcBadReceipt, [DateTime]::UtcNow.AddDays(-4))
     Remove-StaleStopGateReceipts $gcNew
+    Check 'R15b an old receipt that no longer parses is retired too' (-not (Test-Path -LiteralPath $gcBadReceipt))
     Check 'R15 an orphaned lock older than any live scope is retired; a recent lock and a lock with its receipt stay' (
         -not (Test-Path -LiteralPath $gcOldLock) -and (Test-Path -LiteralPath $gcKeptLock) -and (Test-Path -LiteralPath $gcRecentLock))
 
