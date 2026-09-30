@@ -155,6 +155,9 @@ try {
     if (Test-Path -LiteralPath $activeOwnerPath -PathType Leaf) { . $activeOwnerPath }
 }
 catch { }
+# CI runner stops by name or wildcard (_runnerstop.ps1). Optional like every sibling.
+try { $runnerStopPath = Join-Path $PSScriptRoot '_runnerstop.ps1'; if (Test-Path -LiteralPath $runnerStopPath -PathType Leaf) { . $runnerStopPath } }
+catch { }
 
 # ---- state -----------------------------------------------------------------
 
@@ -393,6 +396,12 @@ if ($eventName -eq 'PreToolUse') {
         $blindMsg = 'TEST RUN GUARD: ' + $blindWait.Reason + '. ' + $blindWait.SafePattern + $configNote
         if ($advisoryOnly) { Write-Advisory -EventName 'PreToolUse' -Message ('ADVISORY ONLY (TEST_GUARD_ADVISORY_ONLY=1) - ' + $blindMsg) }
         Write-Deny -Message $blindMsg
+    }
+    $runnerStop = $null
+    if (Get-Command -Name 'Get-RunnerStopFinding' -ErrorAction SilentlyContinue) { $runnerStop = Get-RunnerStopFinding -Tokens $tokens -ProjectRoot $projectRoot }
+    if ($null -ne $runnerStop) {
+        if ($runnerStop.Deny -and -not $advisoryOnly) { Write-Deny -Message ($runnerStop.Message + $configNote) }
+        Write-Advisory -EventName 'PreToolUse' -Message ($runnerStop.Message + $configNote)
     }
 
     # SILENT EXECUTION. Only a RECOGNISED test command is this hook's business,

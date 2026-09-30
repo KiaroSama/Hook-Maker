@@ -24,6 +24,7 @@
 #   _testrunguardcoordination.ps1 the observed-record handoff + run identity
 #   _testrunguardrunner.ps1       the real guarded runner, end to end
 #   _testrunguardpolicy.ps1       deny-text guidance, static safety, 5.1
+#   _testrunguardrunnerstop.ps1   CI runner stops by name/wildcard refused
 #
 # Usage:  pwsh -NoLogo -NoProfile -File .\scripts\Test-TestRunGuard.ps1 [-KeepArtifacts]
 # Exit code is the number of failed assertions (0 = all passed).
@@ -87,6 +88,9 @@ try {
 
     # Deny-text guidance, static safety, and the Windows PowerShell 5.1 host.
     . (Join-Path $PSScriptRoot '_testrunguardpolicy.ps1')
+
+    # CI runner stops: by name or wildcard refused, by identity allowed.
+    . (Join-Path $PSScriptRoot '_testrunguardrunnerstop.ps1')
     }
 }
 finally {
