@@ -77,4 +77,12 @@ $script:InstalledEventMigrations = @(
         From    = @('SessionStart', 'Stop', 'SubagentStop')
         Reason  = 'the prior shipped default had no UserPromptSubmit, so the once-per-session mid-session reminder never reached the agent'
     }
+    # v10: SessionStart,Stop was the only default this hook ever shipped
+    # (.env.example EVENTS since 4fabb1b; no metadata Events before this entry).
+    [pscustomobject]@{
+        Version = 10
+        Hook    = 'Docs-Freshness-Check'
+        From    = @('SessionStart', 'Stop')
+        Reason  = 'the prior shipped default had no PreToolUse, so the documentation review arrived only after the push and its CI run'
+    }
 )

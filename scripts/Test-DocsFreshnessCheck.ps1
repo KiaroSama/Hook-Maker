@@ -69,10 +69,11 @@ function New-IsolatedHookCopy {
 }
 
 function Fire {
-    param([string]$HookPath, [string]$Cwd, [string]$EventName, [string]$SessionId = 'sess1', [string]$LocalAppData, [switch]$StopHookActive, [string]$Exe = 'pwsh', [string]$Prompt = '')
+    param([string]$HookPath, [string]$Cwd, [string]$EventName, [string]$SessionId = 'sess1', [string]$LocalAppData, [switch]$StopHookActive, [string]$Exe = 'pwsh', [string]$Prompt = '', [string]$Command = '', [string]$Client = '')
     $obj = @{ session_id = $SessionId; cwd = $Cwd; hook_event_name = $EventName }
     if ($Prompt -ne '') { $obj['prompt'] = $Prompt }
     if ($StopHookActive) { $obj['stop_hook_active'] = $true }
+    if ($Command -ne '') { $obj['tool_name'] = 'Bash'; $obj['tool_input'] = @{ command = $Command } }
     $payload = $obj | ConvertTo-Json
     $token = [guid]::NewGuid().ToString('N').Substring(0, 8)
     $inFile = Join-Path $Work ('in-' + $token + '.json')
@@ -88,6 +89,7 @@ function Fire {
     }
     if ((Get-Command Start-Process).Parameters.ContainsKey('Environment')) {
         $startArgs.Environment = @{ PATH = $env:PATH; LOCALAPPDATA = $LocalAppData }
+        if ($Client -ne '') { $startArgs.Environment['HOOKMAKER_CLIENT'] = $Client }
     }
     $proc = Start-BoundedProcess @startArgs
     $out = if (Test-Path -LiteralPath $outFile) { ([System.IO.File]::ReadAllText($outFile)).Trim() } else { '' }
@@ -525,6 +527,9 @@ try {
     Check 'the detection-error warning is NOT repeated to the same session (exit 0, silent)' ($rAgain.Exit -eq 0 -and $rAgain.Out -eq '') $rAgain.Out
     $rNew = Fire -HookPath $hcErr.Script -Cwd $projErr -EventName 'Stop' -SessionId 'sess2' -LocalAppData $hcErr.LocalAppData
     Check 'a NEW session is warned again' ($rNew.Out -match 'DOCS FRESHNESS CHECK') $rNew.Out
+
+    # PreToolUse `git push` gate and the Stop [skip ci] advice.
+    . (Join-Path $PSScriptRoot '_testdocsfreshnesspush.ps1')
 
     # =====================================================================
     Write-Host '--- Install-Hook.ps1: self-contained Claude + Codex copies ---' -ForegroundColor Cyan

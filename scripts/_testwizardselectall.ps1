@@ -157,7 +157,7 @@
     Check 'exit 0 (installing Docs-Freshness-Check)' ($rDocs.Exit -eq 0)
     Check 'Docs-Freshness-Check installed at its own friendly folder' (Test-Path (Join-Path $docsProj '.claude\hooks\Hook-Maker\Docs-Freshness-Check\Docs-Freshness-Check.ps1'))
     $docsEvents = @(Get-RegisteredEvents (Join-Path $docsProj '.claude\settings.local.json') 'Docs-Freshness-Check' | Sort-Object) -join ','
-    Check 'Docs-Freshness-Check gets its recommended SessionStart,Stop events' ($docsEvents -eq 'SessionStart,Stop') $docsEvents
+    Check 'Docs-Freshness-Check gets its recommended SessionStart,PreToolUse,Stop events' ($docsEvents -eq 'PreToolUse,SessionStart,Stop') $docsEvents
     $docsSourceHash = Get-PlanArtifactExpectedHash -Artifact (New-PlanArtifact -RelativePath 'expected' -Kind 'Generated' -GeneratedContent (Get-PrivateLibraryScriptContent -SourceScriptPath (Join-Path $RealHooksDir 'Docs-Freshness-Check\Docs-Freshness-Check.ps1')))
     $docsInstalledHash = (Get-FileHash -LiteralPath (Join-Path $docsProj '.claude\hooks\Hook-Maker\Docs-Freshness-Check\Docs-Freshness-Check.ps1') -Algorithm SHA256).Hash
     Check 'the installed Docs-Freshness-Check copy matches its planned content byte-for-byte' ($docsSourceHash -eq $docsInstalledHash)

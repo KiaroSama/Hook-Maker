@@ -417,13 +417,13 @@
 
     $cfgRecBoth = Join-Path $Work 'cfg-rec-both.json'; New-Config $cfgRecBoth
     $recBothProj = New-Proj 'RecommendedSessionStartStop'
-    # item 13 = Docs-Freshness-Check (recommended events: SessionStart,Stop).
+    # item 13 = Docs-Freshness-Check (recommended events: SessionStart,PreToolUse,Stop).
     $rRecBoth = Invoke-Wizard -Config $cfgRecBoth -Answers @('1', '1', '13', '', '1', $recBothProj, 'done', '', '0')
-    Check 'exit 0 (recommended-events single-hook install, SessionStart+Stop)' ($rRecBoth.Exit -eq 0) $rRecBoth.Err
-    Check 'the recommended-events choice names both actual events' ($rRecBoth.Out -match 'This hook''s recommended events.*\(SessionStart, Stop\)')
+    Check 'exit 0 (recommended-events single-hook install, SessionStart+PreToolUse+Stop)' ($rRecBoth.Exit -eq 0) $rRecBoth.Err
+    Check 'the recommended-events choice names all three actual events' ($rRecBoth.Out -match 'This hook''s recommended events.*\(SessionStart, PreToolUse, Stop\)')
     $recBothClaude = Join-Path $recBothProj '.claude\settings.local.json'
     Check 'Docs-Freshness-Check installed' (Test-Path $recBothClaude)
-    Check 'a bare Enter on the recommended-events choice registers exactly SessionStart+Stop' (@(@(Get-RegisteredEvents $recBothClaude 'Docs-Freshness-Check') | Sort-Object) -join ',' -eq 'SessionStart,Stop')
+    Check 'a bare Enter on the recommended-events choice registers exactly SessionStart+PreToolUse+Stop' (@(@(Get-RegisteredEvents $recBothClaude 'Docs-Freshness-Check') | Sort-Object) -join ',' -eq 'PreToolUse,SessionStart,Stop')
 
     # =====================================================================
     Write-Host '--- sync group with a real install (both clients) ---' -ForegroundColor Cyan

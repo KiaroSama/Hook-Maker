@@ -227,7 +227,9 @@ $script:HookMeta = @{
     'Speckit-Check'                    = @{ Order = 9;  When = 'pre';  Text = 'route the task through Spec Kit before writing code'; Events = @('SessionStart', 'UserPromptSubmit'); Timeout = 10 }
     'Cbm-Read-Check'                   = @{ Order = 10; When = 'pre';  Text = 'query the Codebase Memory index before browsing files'; Events = @('SessionStart', 'UserPromptSubmit'); Timeout = 10 }
     'Cbm-Update-Check'                 = @{ Order = 11; When = 'post'; Text = 'reports a Codebase Memory index lagging behind the code'; Events = @('Stop', 'SubagentStop'); Timeout = 15 }
-    'Docs-Freshness-Check'             = @{ Order = 12;  When = 'both'; Text = 'checks tracked docs after changes; requires ack' }
+    # PreToolUse holds a `git push` once for the review, so the docs land in
+    # that one push; the migration table's v10 moves the old SessionStart+Stop.
+    'Docs-Freshness-Check'             = @{ Order = 12;  When = 'both'; Text = 'checks tracked docs after changes; requires ack'; Events = @('SessionStart', 'PreToolUse', 'Stop') }
     'Graph-Read-Check'                 = @{ Order = 13;  When = 'pre';  Text = 'suggests graphify queries when a graph exists and the task needs it' }
     'Graph-Update-Check'               = @{ Order = 14; When = 'post'; Text = 'suggests graphify update when the graph is stale' }
     'Large-File-Check'                 = @{ Order = 15; When = 'both'; Text = 'small-files policy + oversized-file scan' }
