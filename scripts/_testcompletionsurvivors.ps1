@@ -215,6 +215,33 @@ try {
     Check 'enumeration is ONE bounded CIM call with its own operation timeout' (
         (@($survivorCode | Where-Object { $_ -match 'Get-CimInstance' }).Count -eq 1) -and
         $survivorSrc -match 'OperationTimeoutSec') $survivorSrc.Substring(0, 200)
+
+    # ---- another project's CI runner job is never this task's survivor -------
+    # Pure function over a fake snapshot (plan 046 item h): a descendant of a
+    # Runner.Listener/Worker whose executable lies outside this project is left
+    # out; one under this project's own runner folder is not; a cycle ends.
+    $foreign = & {
+        . (Join-Path (Split-Path -Parent $Hook) '_survivors.ps1')
+        $mk = { param($id, $parent, $name, $exe) [pscustomobject]@{ ProcessId = $id; ParentProcessId = $parent; Name = $name; ExecutablePath = $exe } }
+        $snap = @(
+            (& $mk 10 1 'Runner.Listener.exe' 'G:\other\.ci-runner-win\bin\Runner.Listener.exe'),
+            (& $mk 11 10 'Runner.Worker.exe' 'G:\other\.ci-runner-win\bin\Runner.Worker.exe'),
+            (& $mk 12 11 'node.exe' 'C:\node\node.exe'),
+            (& $mk 20 1 'Runner.Listener.exe' 'G:\proj one\.ci-runner-win\bin\Runner.Listener.exe'),
+            (& $mk 21 20 'python.exe' 'C:\py\python.exe'),
+            (& $mk 30 31 'node.exe' 'C:\node\node.exe'),
+            (& $mk 31 30 'pwsh.exe' 'C:\pwsh\pwsh.exe'))
+        $parents = @{}; $byId = @{}
+        foreach ($x in $snap) { $parents[[string]$x.ProcessId] = $x.ParentProcessId; $byId[[string]$x.ProcessId] = $x }
+        [pscustomobject]@{
+            Foreign = (Test-ForeignRunnerDescendant -ProcessId 12 -Parents $parents -ById $byId -ProjectRoot 'G:\proj one')
+            Own     = (Test-ForeignRunnerDescendant -ProcessId 21 -Parents $parents -ById $byId -ProjectRoot 'G:\proj one')
+            Cycle   = (Test-ForeignRunnerDescendant -ProcessId 30 -Parents $parents -ById $byId -ProjectRoot 'G:\proj one')
+        }
+    }
+    Check 'a job under another project''s runner is left out as not this task''s' ($foreign.Foreign -eq $true) ($foreign | ConvertTo-Json -Compress)
+    Check 'a job under this project''s own runner folder stays listed' ($foreign.Own -eq $false) ($foreign | ConvertTo-Json -Compress)
+    Check 'a parent cycle with no runner ends and is not left out' ($foreign.Cycle -eq $false) ($foreign | ConvertTo-Json -Compress)
 }
 finally {
     # The rule this feature is about applies to this suite first: terminate the

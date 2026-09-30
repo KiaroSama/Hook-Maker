@@ -106,7 +106,7 @@ function Get-SurvivorSnapshot {
     try {
         $cimArgs = @{
             ClassName           = 'Win32_Process'
-            Property            = @('ProcessId', 'ParentProcessId', 'Name', 'CreationDate', 'CommandLine')
+            Property            = @('ProcessId', 'ParentProcessId', 'Name', 'CreationDate', 'CommandLine', 'ExecutablePath')
             OperationTimeoutSec = $script:SurvivorTimeoutSec
             ErrorAction         = 'Stop'
         }
@@ -114,9 +114,10 @@ function Get-SurvivorSnapshot {
     }
     catch { return [pscustomobject]@{ Ok = $false; Rows = @() } }
 
-    $parents = @{}
+    $parents = @{}; $byId = @{}
     foreach ($process in $processes) {
         $parents[[string][int](Get-Field $process 'ProcessId')] = [int](Get-Field $process 'ParentProcessId')
+        $byId[[string][int](Get-Field $process 'ProcessId')] = $process
     }
     $excluded = @{}
     $current = $PID
@@ -149,6 +150,7 @@ function Get-SurvivorSnapshot {
     }
 
     $rows = New-Object System.Collections.Generic.List[object]
+    $foreignRunner = 0
     foreach ($process in $processes) {
         $processId = [int](Get-Field $process 'ProcessId')
         if ($processId -le 0 -or $cohort.ContainsKey([string]$processId)) { continue }
@@ -166,13 +168,38 @@ function Get-SurvivorSnapshot {
         # An unreadable start time cannot be placed inside the session window, and
         # listing it would be a guess. Skipped, not reported as a survivor.
         if ($null -eq $started -or $started -le $SinceUtc) { continue }
+        if (Test-ForeignRunnerDescendant -ProcessId $processId -Parents $parents -ById $byId -ProjectRoot ([string]$script:cwd)) { $foreignRunner++; continue }
         [void]$rows.Add([pscustomobject]@{
                 Pid     = $processId
                 Started = $started
                 Text    = (Format-SurvivorCommand -Name $name -CommandLine ([string](Get-Field $process 'CommandLine')))
             })
     }
-    return [pscustomobject]@{ Ok = $true; Rows = @($rows.ToArray() | Sort-Object Started, Pid) }
+    return [pscustomobject]@{ Ok = $true; Rows = @($rows.ToArray() | Sort-Object Started, Pid); ForeignRunner = $foreignRunner }
+}
+
+# Another project's CI runner job is never this task's survivor (global-test-rules.md
+# -> No Orphaned Test Processes): a candidate whose bounded ancestor walk reaches a
+# Runner.Listener/Runner.Worker whose executable lies OUTSIDE this project is left
+# out. A runner under this project's own folder is this project's and stays listed.
+function Test-ForeignRunnerDescendant {
+    param([int]$ProcessId, [hashtable]$Parents, [hashtable]$ById, [string]$ProjectRoot)
+    $root = ''
+    try { $root = (Normalize-Path $ProjectRoot).TrimEnd('\') + '\' } catch { return $false }
+    $current = $ProcessId
+    for ($hop = 0; $hop -lt $script:SurvivorMaxHops; $hop++) {
+        $key = [string]$current
+        if ($current -le 0 -or -not $ById.ContainsKey($key)) { return $false }
+        $name = [string](Get-Field $ById[$key] 'Name')
+        if ($name -like 'Runner.Listener*' -or $name -like 'Runner.Worker*') {
+            $exe = [string](Get-Field $ById[$key] 'ExecutablePath')
+            if ($exe -eq '') { return $false }
+            return (-not $exe.StartsWith($root, [StringComparison]::OrdinalIgnoreCase))
+        }
+        if (-not $Parents.ContainsKey($key)) { return $false }
+        $current = $Parents[$key]
+    }
+    return $false
 }
 
 # One display line's command text: control characters flattened so a row can
@@ -256,6 +283,9 @@ function Write-SurvivorAdvisory {
     if ($rows.Count -gt $shown) {
         [void]$lines.Add('  ... and ' + ($rows.Count - $shown) + ' more matching process(es) not listed - this list is capped at ' +
             $script:SurvivorMaxRows + ' rows, so the coverage shown here is PARTIAL.')
+    }
+    if ($snapshot.ForeignRunner -gt 0) {
+        [void]$lines.Add('  (' + $snapshot.ForeignRunner + ' more process(es) left out: another project''s CI runner job - not this task''s; do not terminate them.)')
     }
     [void]$lines.Add('Run the survivor sweep before finishing (global-test-rules.md -> No Orphaned Test Processes; it loads on demand, so read it in full before this work): confirm each pid by start time, terminate what this task started, verify it is gone, and report each in the completion message. A report that says done while one of these is yours and alive is false.')
     Write-Finding -Blocking $false -Lines $lines.ToArray()
