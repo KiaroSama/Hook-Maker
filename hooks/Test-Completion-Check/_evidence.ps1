@@ -14,8 +14,11 @@
 # result/observed/active are PER-RUN (TestRunGuard-<kind>-<key>-<runId>.json), so
 # two runs in one project each own their own files and never overwrite each other.
 # Completion is accepted only when EVERY current-state observed run is satisfied
-# and none is unfinished; it is BLOCKED when ANY run is active, terminated/leaked/
-# failed, or observed-with-no-result. Older-STATE runs are not current evidence
+# and none is unfinished. A fully matched historical ok is finished, but cannot
+# supply fresh proof or displace a fresh clean run; historical-only stays STALE.
+# Missing/malformed pairs and unresolved negatives keep priority; active,
+# terminated/leaked/failed or observed-with-no-result runs still block.
+# Older-STATE runs are not current evidence
 # and never block. The single representative run selected below drives the exact
 # same conditions 1-6 the single-file path used, so one-run behaviour is unchanged.
 

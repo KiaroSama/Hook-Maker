@@ -25,16 +25,17 @@
 #   _testcompletiongate.ps1      the core gate: evidence, identity, and the
 #                                active-record state machine (live / finished /
 #                                died / expired, incl. pid reuse)
+#   _testcompletionselection.ps1 historical success vs fresh proof, unresolved priority
 #   _testcompletionledger.ps1    incident ledger, pruning and retention (C/D/R)
 #   _testcompletionnotes.ps1     state migration, the durable .ai/ note, the race
 #   _testcompletionoutput.ps1    client shapes, .env validation, JSON, 5.1
 #   _testcompletionsurvivors.ps1 the advisory-only possible-orphan process list
 #   _testcompletiondeepdebug.ps1 the E-05 ::deep-debug verdicts + E-13 safety
 #
-# Usage:  pwsh -NoLogo -NoProfile -File .\scripts\Test-TestCompletionCheck.ps1 [-KeepArtifacts] [-RecoveryOnly] [-SurvivorsOnly]
+# Usage:  pwsh -NoLogo -NoProfile -File .\scripts\Test-TestCompletionCheck.ps1 [-KeepArtifacts] [-RecoveryOnly] [-SurvivorsOnly] [-EvidenceSelectionOnly]
 # Exit code is the number of failed assertions (0 = all passed).
 
-param([switch]$KeepArtifacts, [switch]$RecoveryOnly, [switch]$ActivationOnly, [switch]$OrphanOnly, [switch]$SurvivorsOnly, [switch]$CorrectionsOnly)
+param([switch]$KeepArtifacts, [switch]$RecoveryOnly, [switch]$ActivationOnly, [switch]$OrphanOnly, [switch]$SurvivorsOnly, [switch]$CorrectionsOnly, [switch]$EvidenceSelectionOnly)
 
 Set-StrictMode -Version 2.0
 $ErrorActionPreference = 'Stop'
@@ -70,12 +71,16 @@ try {
     elseif ($CorrectionsOnly) {
         . (Join-Path $PSScriptRoot '_testcompletioncorrections.ps1')
     }
+    elseif ($EvidenceSelectionOnly) {
+        . (Join-Path $PSScriptRoot '_testcompletionselection.ps1')
+    }
     else {
     . (Join-Path $PSScriptRoot '_testcompletionrecovery.ps1')
     if (-not $RecoveryOnly) {
     # The core gate: recursion guard, evidence freshness, run identity, active
     # markers, missing results, and concurrent runs in one project.
     . (Join-Path $PSScriptRoot '_testcompletiongate.ps1')
+    . (Join-Path $PSScriptRoot '_testcompletionselection.ps1')
     # An unpaired observation and the later run that may clear it.
     . (Join-Path $PSScriptRoot '_testcompletionorphan.ps1')
     # Legacy-result horizon, ledger-write failure, global cleanup install.

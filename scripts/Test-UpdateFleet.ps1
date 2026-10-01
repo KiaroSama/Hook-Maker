@@ -244,6 +244,15 @@ try {
     Check 'only the deleted project stays unreachable' ($counts['unreachable'] -eq 1) (Format-Counts $counts)
     Check 'a Claude-only move asks nothing of Codex' (-not $run.Out.Contains('Codex: open')) $run.Out
 
+    # A per-search deadline must not mutate the default used by the wizard.
+    & {
+        . (Join-Path $ScriptRoot '_relocatecore.ps1')
+        $defaultBudget = $script:RelocateSearchMs
+        $search = Find-RelocatedProjectRoot -OldRoot $p4 -RecordIds @('timeout-fixture') -TimeoutMs 0
+        Check 'zero per-search budget returns partial without changing the shared default' (
+            $search.Partial -and @($search.Candidates).Count -eq 0 -and $script:RelocateSearchMs -eq $defaultBudget)
+    }
+
     # ---- a copied project is ambiguous: nothing is written ----------------------
     $p5 = Join-Path $Work 'fleet-five'
     New-Item -ItemType Directory -Path $p5 -Force | Out-Null

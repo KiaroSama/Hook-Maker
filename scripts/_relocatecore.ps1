@@ -59,7 +59,8 @@ function Get-FolderRuntimeRecordIds {
 function Find-RelocatedProjectRoot {
     param(
         [Parameter(Mandatory = $true)][string]$OldRoot,
-        [Parameter(Mandatory = $true)][AllowEmptyCollection()][string[]]$RecordIds
+        [Parameter(Mandatory = $true)][AllowEmptyCollection()][string[]]$RecordIds,
+        [ValidateRange(0, 2147483647)][int]$TimeoutMs = $script:RelocateSearchMs
     )
     $result = [pscustomobject]@{ Candidates = @(); Partial = $false; SearchRoot = '' }
     $searchRoot = Get-RelocationSearchRoot -OldRoot $OldRoot
@@ -73,7 +74,7 @@ function Find-RelocatedProjectRoot {
     $visited = 0
     $clock = [Diagnostics.Stopwatch]::StartNew()
     while ($queue.Count -gt 0) {
-        if ($visited -ge $script:RelocateSearchDirs -or $clock.ElapsedMilliseconds -ge $script:RelocateSearchMs) { $result.Partial = $true; break }
+        if ($visited -ge $script:RelocateSearchDirs -or $clock.ElapsedMilliseconds -ge $TimeoutMs) { $result.Partial = $true; break }
         $item = $queue.Dequeue()
         $visited++
         $isProject = $false
@@ -233,9 +234,8 @@ function Invoke-FleetRelocations {
             [void]$rows.Add([pscustomobject]@{ OldRoot = $oldRoot; NewRoot = ''; State = 'not-found'; Records = $records.Count; Result = $null; Partial = $true })
             continue
         }
-        $script:RelocateSearchMs = [int][Math]::Min($perSearch, $left)
         $ids = @($records | ForEach-Object { [string]$_.id })
-        $search = Find-RelocatedProjectRoot -OldRoot $oldRoot -RecordIds $ids
+        $search = Find-RelocatedProjectRoot -OldRoot $oldRoot -RecordIds $ids -TimeoutMs ([int][Math]::Min($perSearch, $left))
         $row = [pscustomobject]@{ OldRoot = $oldRoot; NewRoot = ''; State = 'not-found'; Records = $records.Count; Result = $null; Partial = $search.Partial }
         if (@($search.Candidates).Count -gt 1) { $row.State = 'ambiguous' }
         elseif (@($search.Candidates).Count -eq 1) { $row.NewRoot = [string]$search.Candidates[0]; $row.State = 'proven' }
@@ -255,7 +255,6 @@ function Invoke-FleetRelocations {
         }
         [void]$rows.Add($row)
     }
-    $script:RelocateSearchMs = $perSearch
     return @($rows.ToArray())
 }
 

@@ -18,7 +18,15 @@ function Get-RunClass {
         $lk = @(@(Get-Field $re.Doc 'leakedProcessIds') | Where-Object { $null -ne $_ -and [string]$_ -ne '' })
         if ($ov -eq 'terminated' -or $lk.Count -gt 0) { return 'incident' }
         if ($ov -eq 'failed' -and (Test-ResultFresh $re)) { return 'failed' }
-        if ($ov -eq 'ok' -and (Test-ResultFresh $re) -and $lk.Count -eq 0) { return 'clean' }
+        if ($ov -eq 'ok' -and $lk.Count -eq 0) {
+            if (Test-ResultFresh $re) { return 'clean' }
+            # A matched historical SUCCESS is finished, not fresh proof and not
+            # an unfinished observation. Revalidate identity: a stale malformed
+            # result must not gain this exemption merely by claiming overall=ok.
+            if ($Run.HasObserved -and $Run.Matches -and
+                (Test-ResultMatchesObserved -Result $re.Doc -Observed $Run.Observed -CurrentStateFingerprint $stateFingerprint) -and
+                $null -ne (Get-ResultRecordedTime -Doc $re.Doc -Path $re.Path)) { return 'historical-success' }
+        }
         return 'unproven'
     }
     return 'noresult'
@@ -79,7 +87,7 @@ function Select-RepresentativeRun {
         if ($m.Count -gt 0) { $rep = $m[0]; break }
     }
     if ($null -eq $rep) {
-        $m = @($classified | Where-Object { $_.Run.HasObserved -and $_.Class -ne 'clean' -and -not (Test-RunNegativeAccounted -Run $_.Run -AllResults $resultEntries) })   # condition 5: observed, not satisfied
+        $m = @($classified | Where-Object { $_.Run.HasObserved -and $_.Class -notin @('clean', 'historical-success') -and -not (Test-RunNegativeAccounted -Run $_.Run -AllResults $resultEntries) })   # condition 5: observed, not satisfied
         if ($m.Count -gt 0) { $rep = $m[0] }
     }
     if ($null -eq $rep) {

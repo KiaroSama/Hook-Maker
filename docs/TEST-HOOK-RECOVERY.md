@@ -73,7 +73,7 @@ not certify the current product state or resolve any other incident.
 
 Focused checks use the existing guarded runner around
 `scripts/Test-TestRunGuard.ps1` and `scripts/Test-TestCompletionCheck.ps1`.
-The latter supports `-ActivationOnly`, `-RecoveryOnly`, `-OrphanOnly` and `-SurvivorsOnly` for scoped regressions; `-OrphanOnly` runs the five unpaired-observation cases alone.
+The latter supports `-ActivationOnly`, `-RecoveryOnly`, `-OrphanOnly`, `-SurvivorsOnly` and `-EvidenceSelectionOnly` for scoped regressions; `-OrphanOnly` runs the five unpaired-observation cases alone. `-EvidenceSelectionOnly` checks historical versus fresh paired success, both input orders, historical-only STALE and unresolved unsafe evidence for Claude and Codex, plus one-to-one pairing and same-command supersession, with isolated state and artificial ages.
 
 The activation regression reproduced 28 failing checks before repair, then passed
 50 focused checks across PowerShell 7 and Windows PowerShell 5.1. The combined
