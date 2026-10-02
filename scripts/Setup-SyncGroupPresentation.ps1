@@ -212,7 +212,7 @@ $script:HookMeta = @{
     'Ci-Status-Check'                  = @{ Order = 4;  When = 'post'; Text = 'verifies GitHub checks of the exact pushed commit' }
     'Dependabot-Check'                 = @{ Order = 5;  When = 'pre';  Text = 'reports pending Dependabot pull requests' }
     'Github-Baseline-Check'            = @{ Order = 6;  When = 'pre';  Text = 'checks the .github CI/dependabot baseline and the README badge set' }
-    'Git-Sync-Check'                   = @{ Order = 7;  When = 'both'; Text = 'warns when out of sync with the git remote; branch disposition and commit identity' }
+    'Git-Sync-Check'                   = @{ Order = 7;  When = 'both'; Text = 'checks remote sync, branch status and commit identity' }
     # Text kept deliberately short: with the '[pre+post-task]' tag and the
     # separators, the longer wording wrapped so only the tail of the last word
     # landed on a second line. Test-Wizard.ps1 pins the exact concise wording,
