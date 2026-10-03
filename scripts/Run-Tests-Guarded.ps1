@@ -624,6 +624,7 @@ try {
 catch {
     $script:Result.overall = 'error'
     $script:Result.terminateDetail += ' - ownership/cleanup unproven: ' + $_.Exception.Message
+    [Console]::Error.WriteLine('Run-Tests-Guarded: ' + $_.Exception.Message)
     # Cleanup errors must not erase the timeout contract or its diagnostic.
     if ($script:Result.terminated) { $script:Result.exitCode = 124; exit 124 }
     $script:Result.exitCode = 3
