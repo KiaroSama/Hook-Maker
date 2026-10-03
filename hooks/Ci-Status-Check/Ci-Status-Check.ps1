@@ -446,11 +446,7 @@ $script:GhAuthProjectKey = Get-ShortHash ($cwd.ToLowerInvariant() + '|' + $repoS
 # have its completion gate silently disabled. Readers take Count -ge 3 and index
 # 0..2, so an old runtime ignores line 3 and a new consumer treats its absence as
 # 'not green', which fails closed in both directions.
-function Save-State {
-    param([string]$Outcome, [string]$Evidence = '')
-    New-Item -ItemType Directory -Path $script:stateDir -Force | Out-Null
-    [System.IO.File]::WriteAllLines($script:statePath, @($script:sha, $Outcome, [DateTime]::UtcNow.ToString('o'), $Evidence))
-}
+. (Join-Path $PSScriptRoot "_cistate.ps1")
 
 function Write-Block {
     param([string]$Outcome, [string]$Reason)
@@ -588,40 +584,8 @@ if (Test-Path -LiteralPath $externalStatePath -PathType Leaf) {
     }
 }
 
-# ---- per-repo state: sha / outcome / timestamp (skipped when a fresh
-# snapshot was just fetched above - act on that, not a stale cooldown) ----
-$stateSha = ''
-$stateOutcome = ''
-$stateTime = [DateTime]::MinValue
-if (Test-Path -LiteralPath $statePath -PathType Leaf) {
-    try {
-        $stateLines = [System.IO.File]::ReadAllLines($statePath)
-        if ($stateLines.Count -ge 3) {
-            $stateSha = $stateLines[0].Trim()
-            $stateOutcome = $stateLines[1].Trim()
-            $stateTime = [DateTime]::Parse($stateLines[2].Trim(), [System.Globalization.CultureInfo]::InvariantCulture, [System.Globalization.DateTimeStyles]::RoundtripKind).ToUniversalTime()
-        }
-    }
-    catch { }
-}
-if ($null -eq $prefetchedSnapshot -and $stateSha -eq $sha) {
-    if ($stateOutcome -eq 'verified') {
-        if (Get-Command -Name 'Invoke-RunnerLeftRunningGate' -ErrorAction SilentlyContinue) { Invoke-RunnerLeftRunningGate -ProjectRoot $cwd -Sha $sha -StateDir $stateDir -HookInput $hookInput -EventName $eventName }; exit 0    # verified green: only a runner left running still blocks
-    }
-    $ageMinutes = ([DateTime]::UtcNow - $stateTime).TotalMinutes
-    if ($stateOutcome -eq 'failed' -and $ageMinutes -lt $failureCooldown) {
-        # Record the block so THIS hook's own re-entry is recognised; another
-        # gate's block must not mute it, and its own must not repeat.
-        $emit = Write-StopBlockResult -HookInput $hookInput -HookName 'Ci-Status-Check' -EventName $eventName -Reason ('CI CHECK: pushed commit ' + $sha7 + ' still has failed checks. Detailed failure guidance was recently reported; completion remains blocked until a replacement commit is pushed or the failure is reported as an external/manual blocker.')
-        exit $emit.ExitCode
-    }
-    if ($stateOutcome -eq 'pending' -and $ageMinutes -lt $pendingCooldown) {
-        # Record the block so THIS hook's own re-entry is recognised; another
-        # gate's block must not mute it, and its own must not repeat.
-        $emit = Write-StopBlockResult -HookInput $hookInput -HookName 'Ci-Status-Check' -EventName $eventName -Reason ('CI CHECK: pushed commit ' + $sha7 + ' is still awaiting terminal checks. Detailed status was recently reported; completion remains blocked.')
-        exit $emit.ExitCode
-    }
-}
+# ---- per-repo state and cooldown/recovery ----
+Invoke-CiStateGate
 
 # ---- workflow runs for the EXACT pushed commit (reuse a just-invalidated
 # exception's freshly-fetched snapshot when available, never query gh twice) ----

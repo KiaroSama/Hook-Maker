@@ -243,7 +243,7 @@ function New-ConfiguredCiHookCopy {
     param([hashtable]$EnvOverrides)
     $dir = Join-Path $Work ('cihookcopy-' + [guid]::NewGuid().ToString('N').Substring(0, 6))
     New-Item -ItemType Directory -Path $dir -Force | Out-Null
-    Copy-Item $CiHook (Join-Path $dir 'Ci-Status-Check.ps1')
+    foreach ($module in @(Get-ChildItem -LiteralPath (Split-Path -Parent $CiHook) -Filter '*.ps1' -File)) { Copy-Item $module.FullName (Join-Path $dir $module.Name) }
     Copy-TestRuntimeLibraries -SourceHookLib (Join-Path $HooksRoot '_hooklib.ps1') -Destination (Join-Path $Work '_hooklib.ps1')
     $lines = New-Object System.Collections.Generic.List[string]
     foreach ($key in $EnvOverrides.Keys) { [void]$lines.Add($key + '=' + $EnvOverrides[$key]) }

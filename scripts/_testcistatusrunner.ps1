@@ -54,6 +54,28 @@ try {
                 '    $f = Join-Path $env:GH_MOCK_DIR ''branch.json''',
                 '    if (Test-Path $f) { Write-Output (Get-Content $f -Raw) } else { Write-Output ''{"name":"main","protected":false}'' }; exit 0',
                 '}') -join "`n") + "`n" + $ghShimOriginal)
+    $shim = [IO.File]::ReadAllText($ghShimPath)
+    $ancestorShim = @'
+if ($args.Count -ge 2 -and $args[0] -eq 'api' -and [string]$args[1] -match '^repos/([^/]+/[^/]+)/(actions/runs|commits/[^/]+/(check-runs|status))') {
+    $endpoint = [string]$args[1]; $slug = $Matches[1]; $sha = ''
+    if ($endpoint -match 'head_sha=([a-f0-9]{40})') { $sha = $Matches[1] }
+    elseif ($endpoint -match '/commits/([a-f0-9]{40})/') { $sha = $Matches[1] }
+    $baseFixture = Join-Path $env:GH_MOCK_DIR 'independent_base.txt'
+    $greenBase = (Test-Path $baseFixture) -and ([IO.File]::ReadAllText($baseFixture).Trim() -eq $sha)
+    foreach ($stateFile in @(Get-ChildItem (Join-Path $env:LOCALAPPDATA 'HookMaker/state') -Filter 'CiStatusCheck-*.txt' -File)) {
+        $lines = @([IO.File]::ReadAllLines($stateFile.FullName))
+        if ($lines.Count -ge 4 -and $lines[1] -eq 'verified' -and (($lines[3] -eq 'ci-green' -and $lines[0] -eq $sha) -or ($lines.Count -ge 5 -and $lines[3] -eq 'docs-only-carryover' -and $lines[4] -eq $sha))) { $greenBase = $true }
+    }
+    if ($endpoint -match '/actions/runs') {
+        if (-not $greenBase) { Write-Output '{"total_count":0,"workflow_runs":[]}' }
+        else { Write-Output (@{total_count=1;workflow_runs=@(@{head_sha=$sha;head_repository=@{full_name=$slug};status='completed';conclusion='success';path='.github/workflows/ci.yml';event='push'})}|ConvertTo-Json -Depth 6) }
+    }
+    elseif ($endpoint -match '/check-runs') { Write-Output (@{total_count=1;check_runs=@(@{head_sha=$sha;status='completed';conclusion='success'})}|ConvertTo-Json -Depth 5) }
+    else { Write-Output (@{sha=$sha;total_count=0;statuses=@()}|ConvertTo-Json -Depth 4) }
+    exit 0
+}
+'@
+    [IO.File]::WriteAllText($ghShimPath, $ancestorShim + "`n" + $shim, (New-Object Text.UTF8Encoding $false))
     $green = '[{"databaseId":70,"name":"CI","workflowName":"CI","status":"completed","conclusion":"success"}]'
 
     # =====================================================================
@@ -101,6 +123,27 @@ try {
     Set-Mock -RunJson '[]'
     $r = Fire -HookPath $CiHook -Cwd $unverified -EventName 'Stop'
     Check 'k: an unverified parent keeps the wait block' ($r.Out -match '"decision"' -and $r.Out -match 'no runs are registered yet') $r.Out
+
+    foreach ($client in @('claude', 'codex')) {
+        $isolated = New-PushedCiRepo ('ci-docs-missing-' + $client)
+        $baseSha = Get-HeadSha $isolated
+        $head = Add-PushedCommit $isolated @{ 'README.md' = 'prose' } 'docs [skip ci]'
+        Set-Mock -RunJson '[]'
+        Set-Content (Join-Path $MockDir 'independent_base.txt') $baseSha -Encoding utf8
+        if ($client -eq 'codex') {
+            # The real gate wrote pending before it could discover ancestor CI.
+            . (Join-Path $HooksRoot '_hooklib.ps1')
+            $sp = Join-Path $env:LOCALAPPDATA ('HookMaker/state/CiStatusCheck-' + (Get-ShortHash ($isolated.ToLowerInvariant() + '|testowner/testrepo-ci-docs-missing-codex')) + '.txt')
+            [IO.File]::WriteAllLines($sp, @($head, 'pending', [DateTime]::UtcNow.ToString('o'), ''), (New-Object Text.UTF8Encoding $false))
+        }
+        $r = Fire -HookPath $CiHook -Cwd $isolated -EventName 'Stop' -Client $client
+        Check ($client + ': missing cache entry emits systemMessage with exact remote-verified ancestor') (
+            $r.Exit -eq 0 -and $r.Err -eq '' -and $r.Out -notmatch '"decision"' -and (Get-CiNote $r.Out).Contains($baseSha)) $r.Out
+        $r = Fire -HookPath $CiHook -Cwd $isolated -EventName 'Stop' -Client $client
+        Check ($client + ': repeated carryover stays silent') ($r.Exit -eq 0 -and $r.Out -eq '' -and $r.Err -eq '') $r.Out
+        $lines = @(Get-CiStateLines $head)
+        Check ($client + ': no final-SHA green fabricated') ($lines.Count -eq 5 -and $lines[3] -eq 'docs-only-carryover' -and $lines[4] -eq $baseSha)
+    }
 
     # =====================================================================
     Write-Host '--- i: this project''s runner left running after its run finished ---' -ForegroundColor Cyan
