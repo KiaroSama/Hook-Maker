@@ -183,8 +183,10 @@ function New-ConfiguredHookCopy {
 }
 
 try {
-    . (Join-Path $PSScriptRoot '_testsecretspublicmodel.ps1')
-    if ($PublicModelOnly) { Write-Host "Passed: $script:Pass Failed: $script:Fail"; exit $script:Fail }
+    if ($PublicModelOnly) {
+        . (Join-Path $PSScriptRoot '_testsecretspublicmodel.ps1')
+        Write-Host "Passed: $script:Pass Failed: $script:Fail"; exit $script:Fail
+    }
     # =====================================================================
     Write-Host '--- input handling ---' -ForegroundColor Cyan
     $plain = New-Proj 'Plain'
@@ -361,6 +363,7 @@ try {
 
     # Classification scenarios (PublicConfig/Secret/Unknown, overrides, grouping).
     . (Join-Path $PSScriptRoot '_testsecretscheckclassify.ps1')
+    . (Join-Path $PSScriptRoot '_testsecretspublicmodel.ps1')
 
     # Git-boundary scenarios: index/worktree leak scans + the outgoing pre-push gate.
     . (Join-Path $PSScriptRoot '_testsecretscheckoutgoing.ps1')
