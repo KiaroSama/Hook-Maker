@@ -197,6 +197,8 @@
         $trgRunner = @($trgPlan | Where-Object { $_.relativePath -eq 'Test-Run-Guard/scripts/Run-Tests-Guarded.ps1' })
         Check 'the install plan ships scripts/Run-Tests-Guarded.ps1 inside the Test-Run-Guard runtime' ($trgRunner.Count -eq 1) (($trgPlan | ForEach-Object { $_.relativePath }) -join ', ')
         Check 'the shipped runner is an Immutable managed artifact (drift-repairable)' ($trgRunner.Count -eq 1 -and $trgRunner[0].ownership -eq 'Immutable') ([string]$trgRunner[0].ownership)
+        $trgIdentity = @($trgPlan | Where-Object { $_.relativePath -eq 'Test-Run-Guard/scripts/_processtree.ps1' })
+        Check 'guarded runner ships the canonical birth-checked process helper as an Immutable sibling' ($trgIdentity.Count -eq 1 -and $trgIdentity[0].ownership -eq 'Immutable' -and $trgIdentity[0].sourcePath -eq (Join-Path $ToolRoot 'hooks/_processtree.ps1'))
         # No OTHER hook drags the runner along.
         $secHook = Join-Path $RealHooksDir 'Secrets-Check\Secrets-Check.ps1'
         if (Test-Path -LiteralPath $secHook -PathType Leaf) {

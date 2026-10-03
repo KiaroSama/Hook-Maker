@@ -83,7 +83,8 @@ try {
     # Literal PowerShell argument arrays and observer/runner identity parity.
     . (Join-Path $PSScriptRoot '_testrunguardidentity.ps1')
 
-    # The real Run-Tests-Guarded.ps1 runner, driven end to end.
+    # Deterministic PID-reuse ownership seam, then the real runner end to end.
+    . (Join-Path $PSScriptRoot '_testrunguardownership.ps1')
     . (Join-Path $PSScriptRoot '_testrunguardrunner.ps1')
 
     # Deny-text guidance, static safety, and the Windows PowerShell 5.1 host.

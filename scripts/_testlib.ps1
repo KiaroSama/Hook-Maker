@@ -461,6 +461,7 @@ function Copy-GuardedRunner {
         }
         Copy-Item -LiteralPath $source -Destination (Join-Path $DestinationScriptsDir $leaf) -Force
     }
+    Copy-Item -LiteralPath (Join-Path $RepoRoot 'hooks/_processtree.ps1') -Destination (Join-Path $DestinationScriptsDir '_processtree.ps1') -Force
 }
 
 # Copy the shared runtime payload chosen by the real production planner, rather

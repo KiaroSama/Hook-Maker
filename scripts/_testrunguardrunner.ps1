@@ -72,22 +72,77 @@
                 if ($jobHandle -ne [IntPtr]::Zero) {
                     $emptyIds = @([HookMaker.JobNative]::GetProcessIds($jobHandle))
                     $jobChild = Start-Process -FilePath 'ping.exe' -ArgumentList @('-n', '30', '127.0.0.1') -PassThru -WindowStyle Hidden
-                    [void][HookMaker.JobNative]::Assign($jobHandle, $jobChild.Handle)
-                    Start-Sleep -Milliseconds 200
+                    if (-not [HookMaker.JobNative]::Assign($jobHandle, $jobChild.Handle)) { throw 'Job child assignment failed' }
                     $liveIds = @([HookMaker.JobNative]::GetProcessIds($jobHandle))
                     $jobTestOk = ($emptyIds.Count -eq 0 -and ($liveIds -contains $jobChild.Id) -and (-not ($liveIds -contains $PID)))
                     $jobTestDetail = ('empty=' + $emptyIds.Count + ' live=[' + ($liveIds -join ',') + '] child=' + $jobChild.Id + ' me=' + $PID)
+                    # This unassigned child is ours too, but foreign to THIS Job.
+                    # Pass its live PID as the cleanup root: the Job must still
+                    # be the sole authority, and the sentinel must survive.
+                    $jobSentinel = $null
+                    try {
+                        $jobSentinel = Start-Process -FilePath 'ping.exe' -ArgumentList @('-n', '30', '127.0.0.1') -PassThru -WindowStyle Hidden
+                        $null = $jobSentinel.Handle
+                        & {
+                            . $processModule
+                            $owned = Get-OwnedProcessTree -RootId $jobSentinel.Id -JobHandle $jobHandle
+                            $sample = Get-TreeResourceSample -ProcessIds $owned.Ids -JobHandle $jobHandle -Identities $owned.Identities
+                            Check 'Job accounting includes the assigned child, not the foreign sentinel' ($sample.Alive -eq 1 -and ($owned.Ids -contains $jobChild.Id) -and -not ($owned.Ids -contains $jobSentinel.Id))
+                            $remaining = @(Stop-OwnedProcessTree -RootId $jobSentinel.Id -JobHandle $jobHandle)
+                            Check 'Job cleanup kills the assigned child and preserves the foreign root sentinel' ($remaining.Count -eq 0 -and $jobChild.WaitForExit(5000) -and -not $jobSentinel.HasExited)
+                        }
+                    }
+                    finally {
+                        if ($null -ne $jobSentinel) {
+                            if (-not $jobSentinel.HasExited) { $jobSentinel.Kill() }
+                            if (-not $jobSentinel.WaitForExit(5000)) { throw 'Owned sentinel cleanup failed' }
+                            $jobSentinel.Dispose()
+                        }
+                    }
                 }
                 else { $jobTestDetail = 'CreateKillOnClose returned NULL' }
             }
-            catch { $jobTestDetail = 'threw: ' + $_.Exception.Message }
+            catch { $jobTestOk = $false; $jobTestDetail = 'threw: ' + $_.Exception.Message }
             finally {
                 try { if ($jobHandle -ne [IntPtr]::Zero) { [void][HookMaker.JobNative]::Terminate($jobHandle); [void][HookMaker.JobNative]::Close($jobHandle) } } catch { }
-                try { if ($null -ne $jobChild -and -not $jobChild.HasExited) { & taskkill.exe /PID $jobChild.Id /T /F *> $null } } catch { }
+                if ($null -ne $jobChild) {
+                    if (-not $jobChild.HasExited) { $jobChild.Kill() }
+                    if (-not $jobChild.WaitForExit(5000)) { throw 'Owned Job child cleanup failed' }
+                    $jobChild.Dispose()
+                }
             }
         }
         else { $jobTestDetail = 'HookMaker.JobNative type unavailable' }
         Check 'GetProcessIds lists a live assigned child and excludes an unrelated process (pid-reuse-proof)' $jobTestOk $jobTestDetail
+    }
+
+    # Boundary faults use copied runtime modules, never installed hooks/state.
+    # Two cases cover the receipt/cleanup wiring the pure roster cannot exercise.
+    foreach ($fault in @('timeout-cleanup', 'exited-root')) {
+        $faultDir = Join-Path $Work ('ownership-fault-' + $fault)
+        [void][IO.Directory]::CreateDirectory($faultDir)
+        Copy-GuardedRunner -RepoRoot $RepoRoot -DestinationScriptsDir $faultDir
+        $faultModule = Join-Path $faultDir '_guardedprocess.ps1'
+        $injection = if ($fault -eq 'timeout-cleanup') {
+            "`nfunction Stop-OwnedProcessTree { throw 'synthetic cleanup query failure' }`n"
+        } else {
+            "`nfunction Initialize-JobObjectType { return `$false }`n" +
+            "function Get-OwnedProcessTree { if(-not `$process.HasExited){ return [pscustomobject]@{Ids=@();Identities=@()} }; throw 'synthetic incomplete ownership' }`n" +
+            "function Stop-OwnedProcessTree { [IO.File]::WriteAllText('$faultDir/cleanup-called.txt','called',[Text.Encoding]::UTF8); return @(900001) }`n"
+        }
+        [IO.File]::AppendAllText($faultModule, $injection, [Text.Encoding]::UTF8)
+        $faultResult = Join-Path $faultDir 'result.json'
+        $faultWrapper = Join-Path $faultDir 'invoke.ps1'
+        $faultExe = if ($fault -eq 'timeout-cleanup') { 'ping.exe' } else { 'cmd.exe' }
+        $faultArgs = if ($fault -eq 'timeout-cleanup') { "@('-n','30','127.0.0.1')" } else { "@('/c','exit','0')" }
+        Write-Utf8 $faultWrapper ("& '$faultDir/Run-Tests-Guarded.ps1' -FilePath '$faultExe' -Arguments $faultArgs -TimeoutSeconds 2 -IdleTimeoutSeconds 5 -HeartbeatSeconds 1 -ResultPath '$faultResult' -Quiet`nexit `$LASTEXITCODE`n")
+        $faultProc = Start-BoundedProcess -FilePath (Get-Process -Id $PID).Path -ArgumentList @('-NoLogo','-NoProfile','-File',$faultWrapper) -Wait -NoNewWindow -PassThru -TimeoutMs 30000
+        $faultDoc = [IO.File]::ReadAllText($faultResult, [Text.Encoding]::UTF8) | ConvertFrom-Json
+        if ($fault -eq 'timeout-cleanup') {
+            Check 'cleanup failure keeps timeout exit124 and explicit unproven receipt' ($faultProc.ExitCode -eq 124 -and $faultDoc.exitCode -eq 124 -and $faultDoc.terminated -and $faultDoc.overall -eq 'error' -and $faultDoc.terminateDetail -match 'unproven.*synthetic cleanup query failure')
+        } else {
+            Check 'exited-root ownership error still attempts bounded cleanup and fails visibly' ($faultProc.ExitCode -eq 3 -and $faultDoc.overall -eq 'error' -and $faultDoc.terminateDetail -match 'unproven' -and @($faultDoc.leakedProcessIds) -contains 900001 -and (Test-Path (Join-Path $faultDir 'cleanup-called.txt')))
+        }
     }
 
     # =====================================================================

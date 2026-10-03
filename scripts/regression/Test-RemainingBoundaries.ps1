@@ -160,7 +160,7 @@ try {
     foreach ($artifact in $script:payload.ToArray()) { [void]$companionNames.Add([string]$artifact.Path) }
     $companionPaths = @($companionNames.ToArray() | Sort-Object)
     Check-Boundary 'I04 the complete guarded-runner set retains its exact destinations' {
-        ($companionPaths -join ',') -ceq 'Test-Run-Guard/scripts/_guardedprocess.ps1,Test-Run-Guard/scripts/_guardedstate.ps1,Test-Run-Guard/scripts/_guardedtiming.ps1,Test-Run-Guard/scripts/Run-Tests-Guarded.ps1'
+        ($companionPaths -join ',') -ceq 'Test-Run-Guard/scripts/_guardedprocess.ps1,Test-Run-Guard/scripts/_guardedstate.ps1,Test-Run-Guard/scripts/_guardedtiming.ps1,Test-Run-Guard/scripts/_processtree.ps1,Test-Run-Guard/scripts/Run-Tests-Guarded.ps1'
     } $true
 }
 catch {

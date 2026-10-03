@@ -408,6 +408,7 @@ try {
             $script:Result.processOwnership = 'degraded'
         }
     }
+    $script:GuardedRootCreated = $process.StartTime.ToUniversalTime()
     # The run is genuinely live from here on, so the marker goes up now and
     # comes down in finally - never earlier (nothing is running yet) and never
     # later (a crash between start and here would leave it unrecorded).
@@ -457,10 +458,10 @@ try {
         if ($process.HasExited) { break }
         $heartbeats++
 
-        $tree = @(Get-OwnedProcessTree -RootId $process.Id)
-        $sample = Get-TreeResourceSample -ProcessIds $tree
+        $tree = Get-OwnedProcessTree -RootId $process.Id -JobHandle $script:JobHandle
+        $sample = Get-TreeResourceSample -ProcessIds $tree.Ids -JobHandle $script:JobHandle -Identities $tree.Identities
         if ($sample.MemoryMB -gt $peakMemory) { $peakMemory = $sample.MemoryMB }
-        if ($tree.Count -gt $peakTree) { $peakTree = $tree.Count }
+        if ($sample.Alive -gt $peakTree) { $peakTree = $sample.Alive }
         $cpuSeconds = $sample.CpuSeconds
 
         $bytes = 0L
@@ -475,11 +476,11 @@ try {
         $madeProgress = $false
         if ($bytes -ne $lastBytes) { $madeProgress = $true }
         if ($lastCpu -ge 0 -and ($sample.CpuSeconds - $lastCpu) -ge $cpuProgressEpsilon) { $madeProgress = $true }
-        if ($lastTreeCount -ge 0 -and $tree.Count -ne $lastTreeCount) { $madeProgress = $true }
+        if ($lastTreeCount -ge 0 -and $sample.Alive -ne $lastTreeCount) { $madeProgress = $true }
         if ($progressFileTicks -gt $lastProgressFileTicks) { $madeProgress = $true }
         # First sample establishes the baselines without counting as progress.
         if ($lastBytes -lt 0 -or $lastCpu -lt 0 -or $lastTreeCount -lt 0) { $madeProgress = $true }
-        $lastBytes = $bytes; $lastCpu = $sample.CpuSeconds; $lastTreeCount = $tree.Count; $lastProgressFileTicks = $progressFileTicks
+        $lastBytes = $bytes; $lastCpu = $sample.CpuSeconds; $lastTreeCount = $sample.Alive; $lastProgressFileTicks = $progressFileTicks
         if ($madeProgress) { $lastProgressTicks = [DateTime]::UtcNow.Ticks }
 
         $noProgressSeconds = ([DateTime]::UtcNow.Ticks - $lastProgressTicks) / 10000000.0
@@ -489,7 +490,7 @@ try {
 
         if (-not $Quiet) {
             Write-Host ('  [guard] ' + [Math]::Round($stopwatch.Elapsed.TotalSeconds) + 's  no-progress ' +
-                [Math]::Round($noProgressSeconds) + 's  tree ' + $tree.Count + '  mem ' + $sample.MemoryMB +
+                [Math]::Round($noProgressSeconds) + 's  tree ' + $sample.Alive + '  mem ' + $sample.MemoryMB +
                 'MB  cpu ' + $sample.CpuSeconds + 's') -ForegroundColor DarkGray
         }
 
@@ -560,28 +561,11 @@ try {
     # never be 'ok' while a descendant the parent leaked is still alive, so a
     # found orphan forces overall away from 'ok' even on exit 0.
     #
-    # OWNERSHIP IS PROVEN BY THE JOB OBJECT, NOT A PPID WALK. Once the root exits
-    # its pid can be recycled; a ppid walk over Win32_Process would then find an
-    # UNRELATED process's children hanging off the reused pid and call them
-    # "orphans of the child" - a pid-reuse false leak that flipped a clean exit to
-    # 'failed' and made the exit-code assertion flake. The job's assigned-process
-    # list cannot do that: a recycled pid was never assigned to THIS job, so it is
-    # structurally excluded, while a genuine leaked descendant is still in the job
-    # and still alive and is still reported. The ppid walk survives ONLY as the
-    # degraded fallback when there is no job (processOwnership='degraded'), where it
-    # remains pid-reuse-vulnerable - the reason the job list is preferred.
+    # Use exactly the accounting ownership selector: failed Job queries remain
+    # unknown; only a no-Job run may use the birth-checked bounded fallback.
     if (-not $script:Result.terminated) {
-        $jobOwned = Get-JobOwnedProcessIds -JobHandle $script:JobHandle
-        if ($jobOwned.Available) {
-            $orphans = @(@($jobOwned.Ids) |
-                Where-Object { $_ -ne $process.Id } |
-                Where-Object { try { $null = Get-Process -Id $_ -ErrorAction Stop; $true } catch { $false } })
-        }
-        else {
-            $orphans = @(@(Get-OwnedProcessTree -RootId $process.Id) |
-                Where-Object { $_ -ne $process.Id } |
-                Where-Object { try { $null = Get-Process -Id $_ -ErrorAction Stop; $true } catch { $false } })
-        }
+        $owned = Get-OwnedProcessTree -RootId $process.Id -JobHandle $script:JobHandle
+        $orphans = @($owned.Ids | Where-Object { $_ -ne $process.Id })
         if ($orphans.Count -gt 0) {
             $script:Result.leakedProcessIds = @($orphans)
             $survivors = @(Stop-OwnedProcessTree -RootId $process.Id -JobHandle $script:JobHandle)
@@ -637,19 +621,15 @@ try {
     }
     exit $exitCode
 }
+catch {
+    $script:Result.overall = 'error'
+    $script:Result.terminateDetail += ' - ownership/cleanup unproven: ' + $_.Exception.Message
+    # Cleanup errors must not erase the timeout contract or its diagnostic.
+    if ($script:Result.terminated) { $script:Result.exitCode = 124; exit 124 }
+    $script:Result.exitCode = 3
+    exit 3
+}
 finally {
-    # A result document must exist on EVERY terminal path. If an unexpected error
-    # above skipped the normal write, persist what is known now (overall stays
-    # 'unknown' / whatever was set) so the consumer sees an honest incomplete
-    # record rather than nothing - silence would read as "no run happened".
-    if (-not $script:ResultWritten) {
-        if ($script:Result.overall -eq 'unknown') { $script:Result.overall = 'error' }
-        if ([string]::IsNullOrWhiteSpace([string]$script:Result.endedUtc)) {
-            $script:Result.endedUtc = (Get-Date).ToUniversalTime().ToString('o')
-        }
-        try { Write-GuardedResult } catch { }
-        try { Save-TimingSample } catch { }
-    }
     # The marker must never outlive this process: a stale one would make
     # Test-Completion-Check block completion on a run that ended long ago.
     Remove-ActiveMarker
@@ -659,14 +639,28 @@ finally {
     # found this way: its guard had exited and it was still spinning. The kill
     # therefore lives here, on every path out, not only in the timeout branch.
     try {
-        if ($null -ne $process -and -not $process.HasExited) {
+        if ($null -ne $process -and $null -ne $script:GuardedRootCreated -and
+            (-not $script:ResultWritten -or -not $process.HasExited)) {
             $survivors = @(Stop-OwnedProcessTree -RootId $process.Id -JobHandle $script:JobHandle)
             if (@($survivors).Count -gt 0) {
+                $script:Result.leakedProcessIds = @(@($script:Result.leakedProcessIds) + @($survivors) | Sort-Object -Unique)
+                $script:Result.overall = 'error'
                 Write-Warning ('guarded run left process(es) alive: ' + (@($survivors) -join ', '))
             }
         }
     }
-    catch { }
+    catch {
+        $script:Result.overall = 'error'
+        $script:Result.terminateDetail += ' - final cleanup unproven: ' + $_.Exception.Message
+    }
+    # A terminal error is published AFTER bounded cleanup, including exited-root
+    # descendants; issuing termination alone is never a successful receipt.
+    if (-not $script:ResultWritten) {
+        if ($script:Result.overall -eq 'unknown') { $script:Result.overall = 'error' }
+        $script:Result.endedUtc = (Get-Date).ToUniversalTime().ToString('o')
+        try { Write-GuardedResult } catch { }
+        try { Save-TimingSample } catch { }
+    }
     # Close the Job Object handle LAST. With KILL_ON_JOB_CLOSE, closing the final
     # handle makes the OS terminate anything still in the job - the crash-proof
     # backstop that catches whatever an exception above skipped, even a descendant
