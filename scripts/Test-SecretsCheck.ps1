@@ -9,7 +9,7 @@
 # Usage:  pwsh -NoLogo -NoProfile -File .\scripts\Test-SecretsCheck.ps1 [-KeepArtifacts]
 # Exit code is the number of failed assertions (0 = all passed).
 
-param([switch]$KeepArtifacts)
+param([switch]$KeepArtifacts, [switch]$PublicModelOnly)
 
 Set-StrictMode -Version 2.0
 $ErrorActionPreference = 'Stop'
@@ -183,6 +183,8 @@ function New-ConfiguredHookCopy {
 }
 
 try {
+    . (Join-Path $PSScriptRoot '_testsecretspublicmodel.ps1')
+    if ($PublicModelOnly) { Write-Host "Passed: $script:Pass Failed: $script:Fail"; exit $script:Fail }
     # =====================================================================
     Write-Host '--- input handling ---' -ForegroundColor Cyan
     $plain = New-Proj 'Plain'
@@ -598,6 +600,11 @@ try {
     if (Test-Path (Join-Path $tgt '.claude\settings.local.json')) { $claudeJson = [System.IO.File]::ReadAllText((Join-Path $tgt '.claude\settings.local.json')) }
     Check 'installs as a self-contained local copy' (($claudeJson -like '*hooks\\Hook-Maker\\Secrets-Check\\Secrets-Check.ps1*') -and (Test-Path (Join-Path $tgt '.claude\hooks\Hook-Maker\Secrets-Check\Secrets-Check.ps1')) -and (Test-Path (Join-Path $tgt '.claude\hooks\Hook-Maker\Secrets-Check\_hooklib.ps1')))
     Check 'does not point back at the tool''s own hooks directory' ($claudeJson -notlike ('*' + ((Split-Path -Parent $PSScriptRoot) + '\hooks\').Replace('\', '\\') + '*'))
+    $clientConfig = Join-Path $tgt '.claude\hooks\Hook-Maker\Secrets-Check\.env'
+    Write-Utf8 $clientConfig "# retained user configuration`r`nPUBLIC_CONFIG_KEYS=MODEL_1_ID`r`nSECRET_KEYS=USER_SECRET`r`nCOOLDOWN_MINUTES=19`r`n"
+    $clientConfigHash = (Get-FileHash -LiteralPath $clientConfig -Algorithm SHA256).Hash
+    & $InstallScript -CustomHook $Hook -Events @('SessionStart', 'Stop') -TargetProject $tgt *> $null
+    Check 'client reinstall preserves exact public/secret user configuration bytes' ((Get-FileHash -LiteralPath $clientConfig -Algorithm SHA256).Hash -eq $clientConfigHash)
 
     # =====================================================================
     # =====================================================================

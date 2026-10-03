@@ -263,11 +263,9 @@ function Get-KeyValueClassification {
     return 'Unknown'
 }
 
-# Conservative cleanup of entries THIS hook itself previously auto-added (the
-# "(auto-added by Secrets-Check)" marker) that now classify as PublicConfig.
-# Never touches a user-authored entry, and never removes anything whose
-# provenance is unclear - only exact auto-added blocks for a key that
-# currently classifies as PublicConfig are dropped.
+# A marker/current key alone cannot prove the OLD value or user edits safe.
+# Remove only the complete original generated shape, identical current/stored
+# public value and source; modified, credential and ambiguous blocks stay intact.
 function Remove-StalePublicConfigEntries {
     param([string]$Content, [hashtable]$Discovered)
     if ($Content -notmatch '\(auto-added by Secrets-Check\)') {
@@ -279,11 +277,23 @@ function Remove-StalePublicConfigEntries {
     foreach ($part in $parts) {
         if ($part -notmatch '(?m)^## (\S+)') { [void]$kept.Add($part); continue }
         $blockKey = $Matches[1]
-        $isAutoAdded = $part -match '\(auto-added by Secrets-Check\)'
-        $classification = if ($Discovered.ContainsKey($blockKey)) { $Discovered[$blockKey].Classification } else { $null }
-        if ($isAutoAdded -and $classification -eq 'PublicConfig') {
-            [void]$removed.Add($blockKey)
-            continue
+        if ($Discovered.ContainsKey($blockKey)) {
+            $entry = $Discovered[$blockKey]
+            # Match the writer's five fields, not just a marker somewhere in a
+            # manually maintained block. Extra fields/notes remain user-owned.
+            $pattern = '\A## ' + [regex]::Escape($blockKey) + '\r?\n' +
+                '- Purpose: TODO - describe what this secret is used for\r?\n' +
+                '- Used by: \(auto-detected from ' + [regex]::Escape($entry.Source) + '; update if used elsewhere\)\r?\n' +
+                '- Source: ' + [regex]::Escape($entry.SourcePath) + '\r?\n' +
+                '- Created: \d{4}-\d{2}-\d{2} \(auto-added by Secrets-Check\)\r?\n' +
+                '- Value: (?<value>[^\r\n]+)\r?\n(?:\r?\n)*\z'
+            $original = [regex]::Match($part, $pattern)
+            if ($entry.Classification -eq 'PublicConfig' -and $original.Success -and
+                $original.Groups['value'].Value -ceq $entry.Value -and
+                (Get-KeyValueClassification $blockKey $original.Groups['value'].Value) -eq 'PublicConfig') {
+                [void]$removed.Add($blockKey)
+                continue
+            }
         }
         [void]$kept.Add($part)
     }

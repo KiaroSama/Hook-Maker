@@ -109,7 +109,7 @@
     Write-Host '--- classification: conservative registry cleanup for stale auto-added public config ---' -ForegroundColor Cyan
     $projCleanup = New-GitProj 'RegistryCleanup'
     Write-Utf8 (Join-Path $projCleanup '.gitignore') "secrets.md`n"
-    $staleContent = "# Secrets`n`nLocal-only registry.`n`n## NEXT_PUBLIC_APP_URL`n- Purpose: TODO`n- Used by: (auto-detected from .env; update if used elsewhere)`n- Source: x`n- Created: 2026-01-01 (auto-added by Secrets-Check)`n- Value: https://example.com`n`n## MANUAL_SECRET`n- Purpose: a real, user-authored secret`n- Value: keepme123`n"
+    $staleContent = "# Secrets`n`nLocal-only registry.`n`n## NEXT_PUBLIC_APP_URL`n- Purpose: TODO - describe what this secret is used for`n- Used by: (auto-detected from .env; update if used elsewhere)`n- Source: $(Join-Path $projCleanup '.env')`n- Created: 2026-01-01 (auto-added by Secrets-Check)`n- Value: https://example.com`n`n## MANUAL_SECRET`n- Purpose: a real, user-authored secret`n- Value: keepme123`n"
     Write-Utf8 (Join-Path $projCleanup 'secrets.md') $staleContent
     Write-Utf8 (Join-Path $projCleanup '.env') "NEXT_PUBLIC_APP_URL=https://example.com`r`n"
     $r = Fire -Cwd $projCleanup

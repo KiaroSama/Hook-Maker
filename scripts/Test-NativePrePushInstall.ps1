@@ -143,6 +143,10 @@ try {
     $preservedPath = Join-Path $existingPrePushDir 'pre-push.hookmaker-existing'
 
     $preservedBytesBefore = [System.IO.File]::ReadAllBytes($preservedPath)
+    $nativeSecretsConfig = Join-Path (Split-Path -Parent $companionSecretsScript) '.env'
+    $nativeConfigText = "# user settings`r`nPUBLIC_CONFIG_KEYS=MODEL_1_ID`r`nSECRET_KEYS=INTERNAL_CODE`r`nCOOLDOWN_MINUTES=17`r`n"
+    Write-Utf8 $nativeSecretsConfig $nativeConfigText
+    $nativeConfigHash = (Get-FileHash -LiteralPath $nativeSecretsConfig -Algorithm SHA256).Hash
 
 
 
@@ -212,6 +216,7 @@ try {
     Check 'exit 0 (updating Ignore-Rules-Check refreshes its pre-push chain)' ($rPrePushUpdate.Exit -eq 0) $rPrePushUpdate.Err
 
     Check 'the stale native companion is repaired back to the current source' ((Get-FileHash -LiteralPath $companionSecretsScript -Algorithm SHA256).Hash -eq $realSecretsHash)
+    Check 'native companion update preserves exact user public/secret settings bytes' ((Get-FileHash -LiteralPath $nativeSecretsConfig -Algorithm SHA256).Hash -eq $nativeConfigHash)
 
 
 
