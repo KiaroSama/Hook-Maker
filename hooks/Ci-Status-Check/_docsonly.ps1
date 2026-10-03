@@ -104,7 +104,7 @@ function Test-NoRequiredStatusChecks {
         }
         $rawRules = @(Invoke-GhBounded -ArgumentList @('api', ('repos/' + $RepoSlug + '/rules/branches/' + $encoded + '?per_page=100'))) -join "`n"
         if ($LASTEXITCODE -ne 0 -or -not $rawRules.TrimStart().StartsWith('[')) { return $false }
-        $rules = @($rawRules | ConvertFrom-Json)
+        $rules = @($rawRules | ConvertFrom-Json | ForEach-Object { $_ })
         if ($rules.Count -ge 100) { return $false }
         foreach ($rule in $rules) {
             $type = [string](Get-Field $rule 'type')

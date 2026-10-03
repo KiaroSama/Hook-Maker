@@ -102,6 +102,13 @@ try {
     Check 'state still names exact ancestor, never final SHA ci-green' (([IO.File]::ReadAllLines($publication) -join '|') -ceq ($stateLines -join '|'))
     # Real simultaneous writers (two bounded, captured child processes) exercise
     # the mutex and atomic replace on both hosts; no synthetic concurrency claim.
+    $emptyRulesProbe = Join-Path $Work 'empty-rules.ps1'
+    $emptyRulesBody = '. ''' + (Join-Path $HookRoot '_hooklib.ps1').Replace("'", "''") + "'`n. '" + (Join-Path $HookRoot 'Ci-Status-Check\_docsonly.ps1').Replace("'", "''") + "'`n" +
+        'function Invoke-GhBounded { param($ArgumentList) $global:LASTEXITCODE=0; if($ArgumentList[1] -match ''/rules/''){return ''[]''}; return ''{"name":"main","protected":false}'' }; if(-not(Test-NoRequiredStatusChecks owner/repo main)){exit 1}; Write-Host ''EmptyRulesAccepted'''
+    [IO.File]::WriteAllText($emptyRulesProbe, $emptyRulesBody, (New-Object Text.UTF8Encoding $false))
+    $emptyOut = Join-Path $Work 'empty-rules.out'; $emptyErr = Join-Path $Work 'empty-rules.err'
+    $emptyProc = Start-BoundedProcess -FilePath powershell.exe -ArgumentList @('-NoLogo','-NoProfile','-NonInteractive','-File',$emptyRulesProbe) -Wait -NoNewWindow -TimeoutMs 30000 -RedirectStandardOutput $emptyOut -RedirectStandardError $emptyErr
+    Check '5.1 empty applied-rules array is flattened, not a malformed rule' ($emptyProc.ExitCode -eq 0 -and [IO.File]::ReadAllText($emptyOut).Contains('EmptyRulesAccepted') -and [IO.File]::ReadAllText($emptyErr) -eq '')
     $writer = Join-Path $Work 'writer.ps1'
     $module = Join-Path $HookRoot 'Ci-Status-Check\_cistate.ps1'
     $shared = Join-Path $HookRoot '_hooklib.ps1'
