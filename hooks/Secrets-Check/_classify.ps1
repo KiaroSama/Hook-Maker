@@ -141,7 +141,7 @@ function Test-CredentialLikeValue {
     if ($Value -match '^[^@\s]+@[^@\s]+\.[A-Za-z]{2,}$') { return $false }    # an address is not a credential
     if ($Value -notmatch '\s' -and $Value.Length -ge 24 -and
         $Value -notmatch '^[A-Za-z][A-Za-z0-9+.-]*://' -and
-        $Value -match '[A-Z]' -and $Value -match '[a-z]' -and $Value -match '[0-9]') {
+        $Value -cmatch '[A-Z]' -and $Value -cmatch '[a-z]' -and $Value -match '[0-9]') {
         return $true
     }
     return $false

@@ -34,6 +34,18 @@ $secretKeyOverrides = @('MODEL_1_ID')
 Check 'explicit secret model key beats the public override' ((Get-KeyValueClassification MODEL_1_ID $modelValue) -eq 'Secret')
 $secretKeyOverrides = @(); $publicConfigKeyOverrides = @()
 Check 'unconfigured model key remains conservative Secret' ((Get-KeyValueClassification MODEL_1_ID $modelValue) -eq 'Secret')
+foreach ($value in @('antigravity/gemini-3-pro-image', 'models/gemini-3-pro-image-preview', 'gemini-3-pro-image-preview', 'LOWERCASEIDENTIFIERONLY2026', 'lowercaseidentifieronly2026')) {
+    Check 'single-case public or custom ID does not satisfy mixed-case entropy' (-not (Test-CredentialLikeValue $value))
+    Check 'unverified model ID stays advisory Unknown without override' ((Get-KeyValueClassification MODEL_4_ID $value) -eq 'Unknown')
+}
+Check 'genuinely mixed-case opaque ID still satisfies conservative entropy' (Test-CredentialLikeValue 'MixedCaseOpaqueIdentifier2026')
+$publicConfigKeyOverrides = @('MODEL_2_ID','MODEL_4_ID','MODEL_5_ID')
+foreach ($key in @('MODEL_2_ID','MODEL_4_ID','MODEL_5_ID')) {
+    Check 'exact verified model key is PublicConfig' ((Get-KeyValueClassification $key 'antigravity/gemini-3-pro-image-preview') -eq 'PublicConfig')
+    foreach ($value in @('eyJsynthetic.eyJsynthetic.synthetic', 'ghp_SYNTHETICabcdefghijklmnopqrst2026', 'Bearer synthetic-credential', '-----BEGIN PRIVATE KEY-----')) {
+        Check 'strong model credential beats exact public override' ((Get-KeyValueClassification $key $value) -eq 'Secret')
+    }
+}
 if ($PublicModelOnly) { return }
 
 Write-Host '--- exact model configuration: Stop and native pre-push ---' -ForegroundColor Cyan
@@ -54,6 +66,24 @@ Write-Utf8 $registryPath ($prefix + $modelBlock + $manualBlock)
 $r = FireGitPrePush -Cwd $modelRepo -HookPath $modelHook -StdinText (Get-RefUpdateLine -Repo $modelRepo)
 Check 'native public outgoing model example passes with stale registry' ($r.Exit -eq 0 -and $r.Err -notmatch 'CRITICAL|incomplete')
 Check 'native safely removes stale auto model and retains manual entry' ([IO.File]::ReadAllText($registryPath, [Text.Encoding]::UTF8) -ceq ($prefix + $manualBlock))
+$slotHook = New-ConfiguredHookCopy @{ PUBLIC_CONFIG_KEYS = 'MODEL_2_ID,MODEL_4_ID,MODEL_5_ID,MODEL_4_ENABLED,MODEL_4_NAME,MODEL_4_OUTPUT_FORMAT,MODEL_4_QUALITY,MODEL_4_SIZE'; COOLDOWN_MINUTES = '0' }
+$slotRepo = New-GitProj 'PublicModelSlots'
+Write-Utf8 (Join-Path $slotRepo '.gitignore') ".env`nsecrets.md`n"
+$slotEnv = "MODEL_2_ID=antigravity/gemini-3-pro-image`nMODEL_4_ID=models/gemini-3-pro-image-preview`nMODEL_5_ID=gemini-3-pro-image-preview`nMODEL_4_ENABLED=true`nMODEL_4_NAME=Public model display name`nMODEL_4_OUTPUT_FORMAT=png`nMODEL_4_QUALITY=high`nMODEL_4_SIZE=2048x2048`n"
+Write-Utf8 (Join-Path $slotRepo '.env') $slotEnv
+Write-Utf8 (Join-Path $slotRepo 'public-models.txt') $slotEnv
+Add-Commit $slotRepo 'public routing identifiers'
+$r = Fire -Cwd $slotRepo -HookPath $slotHook -EventName Stop
+Check 'verified slot2/4/other public settings do not block real Stop entry' ($r.Exit -eq 0 -and $r.Err -eq '' -and $r.Out -notmatch '"decision"|CRITICAL')
+$r = FireGitPrePush -Cwd $slotRepo -HookPath $slotHook -StdinText (Get-RefUpdateLine -Repo $slotRepo)
+Check 'verified public settings survive exact outgoing native scan' ($r.Exit -eq 0 -and $r.Err -notmatch 'CRITICAL|incomplete')
+$boundaryRepo = New-GitProj 'ScannedConfigCannotOverride'
+Write-Utf8 (Join-Path $boundaryRepo '.gitignore') ".env`nsecrets.md`n"
+Write-Utf8 (Join-Path $boundaryRepo '.env') "PUBLIC_CONFIG_KEYS=MODEL_4_ID`nMODEL_4_ID=MixedCaseOpaqueIdentifier2026`n"
+Write-Utf8 (Join-Path $boundaryRepo 'leak.txt') 'MixedCaseOpaqueIdentifier2026'
+Add-Commit $boundaryRepo 'synthetic untrusted override'
+$r = Fire -Cwd $boundaryRepo -EventName Stop
+Check 'scanned application env cannot classify its own mixed-case model value' ($r.Out -match '"decision"\s*:\s*"block"')
 foreach ($credential in @(@{ Key = 'MODEL_1_ID'; Value = 'ghp_SYNTHETICabcdefghijklmnopqrst2026' }, @{ Key = 'API_KEY'; Value = 'synthetic-api-credential-2026' })) {
     # Each leak has its own repository/session gate; a previous Stop block must
     # not make the next negative control silently stand down.
