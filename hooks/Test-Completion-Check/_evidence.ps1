@@ -59,12 +59,9 @@ function Get-ObservedFingerprint {
     return $fp
 }
 
-# The stable incident identity of a RESULT document, or '' when it is not an
-# incident. Only a TERMINATED run or one carrying leaked process ids is an
-# incident (a plain non-zero `failed` creates no durable-note obligation). The key
-# is byte-identical to the one the main flow records into resolvedIncident, so a
-# resolved incident can be recognised again per-run - used by the content-aware
-# prune (C2) and the resolved-incident representative exclusion (C4).
+# Recovery identity is NOT note eligibility. Every negative needs a name for
+# verified recovery; only a substantive incident cause can require a note.
+# Keep the key stable for existing recovery/resolution history.
 function Get-ResultIncidentKey {
     param($Doc, [string]$Path)
     if ($null -eq $Doc) { return '' }
@@ -75,7 +72,7 @@ function Get-ResultIncidentKey {
     # or a leak, so a plain assertion failure blocked while the block's own
     # recovery text demanded an incident key that was never created - the
     # documented way out could not be taken. A key costs nothing when unused.
-    if ($ov -eq 'ok' -and $lk.Count -eq 0) { return '' }
+    if ($ov -eq 'ok' -and $lk.Count -eq 0 -and (Get-Field $Doc 'terminated') -ne $true) { return '' }
     # Identity comes from what the run FOUND, never from when its receipt was
     # written. Keyed on the receipt's own timestamp, ONE defect produced one
     # obligation per receipt: a single repair in this project minted 4 incident
@@ -103,7 +100,7 @@ function Get-ResultIncidentKeyLegacy {
     $ov = ([string](Get-Field $Doc 'overall')).ToLowerInvariant()
     $tr = [string](Get-Field $Doc 'terminateReason')
     $lk = @(@(Get-Field $Doc 'leakedProcessIds') | Where-Object { $null -ne $_ -and [string]$_ -ne '' })
-    if ($ov -eq 'ok' -and $lk.Count -eq 0) { return '' }
+    if ($ov -eq 'ok' -and $lk.Count -eq 0 -and (Get-Field $Doc 'terminated') -ne $true) { return '' }
     $t = Get-ResultRecordedTime -Doc $Doc -Path $Path
     $ticks = if ($null -ne $t) { [string]$t.Ticks } else { '0' }
     return (Get-ShortHash ($ticks + '|' + $ov + '|' + $tr + '|' + (@($lk) -join ',')))
@@ -135,7 +132,7 @@ function Get-IncidentReasonFromDoc {
     $tr = [string](Get-Field $Doc 'terminateReason')
     $td = [string](Get-Field $Doc 'terminateDetail')
     $lk = @(@(Get-Field $Doc 'leakedProcessIds') | Where-Object { $null -ne $_ -and [string]$_ -ne '' })
-    if ($ov -eq 'terminated') {
+    if ($ov -eq 'terminated' -or (Get-Field $Doc 'terminated') -eq $true) {
         return 'the guarded run was TERMINATED (' +
             $(if ($tr -ne '') { $tr } else { 'unknown reason' }) + ')' +
             $(if ($td -ne '') { ': ' + $td } else { '' })
@@ -170,7 +167,7 @@ function Test-ResultSuperseded {
     if ($cmd -eq '') { return $false }
     foreach ($re in @($AllResults)) {
         $ov = ([string](Get-Field $re.Doc 'overall')).ToLowerInvariant()
-        if ($ov -ne 'ok') { continue }
+        if ($ov -ne 'ok' -or (Get-Field $re.Doc 'terminated') -eq $true) { continue }
         $lk = @(@(Get-Field $re.Doc 'leakedProcessIds') | Where-Object { $null -ne $_ -and [string]$_ -ne '' })
         if ($lk.Count -gt 0) { continue }
         if (([string](Get-Field $re.Doc 'commandFingerprint')) -ne $cmd) { continue }

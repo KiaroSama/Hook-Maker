@@ -483,6 +483,10 @@ Leading shell assignments (`CI=1 pytest ...`) are skipped when recognising the p
 
 ## `Test-Completion-Check`
 
+**Recovery identity is not note eligibility.** An ordinary assertion failure keeps its recovery key and blocks while unresolved, but a newer matching clean success creates no incident note. Termination (including `overall=error` with `terminated=true`), leaks, ownerless runs and explicitly enabled always-note mode remain eligible. New obligations carry a substantive cause and a project/command/run/outcome origin with receipt path and SHA-256; the snapshot survives receipt pruning. Note prompts show at most five causes/origins plus the total count.
+
+Legacy reconciliation runs under the existing project mutex before pruning. A byte-verified local backup is kept under `state/completion-backups` before changes. Only an empty-cause obligation uniquely matched to an exact-project ordinary failed receipt is retired, with evidence and backup recorded separately from resolved-run history. Uncorrelatable entries remain UNKNOWN, preserved and not resolved: a once-per-unchanged-state `systemMessage` reports at most five keys without requesting an invented lesson or continuing Stop. Genuine evidence gates and each hook's own repeat guard are unchanged. Backups are local diagnostics; retain them until reconciliation is understood, never publish them.
+
 **Runs:** post-task (Stop, SubagentStop).
 
 The **after** stage of the three-stage test-health architecture, and a **gate**: it blocks completion only on a confirmed, current-state condition, and it never runs a test, never spawns a process and never edits a file — its own state lives under `%LOCALAPPDATA%\HookMaker\state`, never in the project. The recursion guard comes first: `stop_hook_active` is deliberately NOT the guard: it is set for **any** gate's block, so exiting on it would make one gate silence the others. This gate stands down on **its own** block marker instead.

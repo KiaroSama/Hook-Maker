@@ -200,6 +200,14 @@ function Write-GuardedResult {
     Write-Utf8 $path ($doc | ConvertTo-Json -Depth 6)
 }
 
+# Build a genuine synthetic fixture origin from its receipt, not an arbitrary tag.
+function New-NoteFixtureOrigin {
+    param($Copy, [string]$Root, [string]$RunId)
+    Write-GuardedResult -Copy $Copy -Root $Root -Overall terminated -ExitCode 124 -TerminateReason wallTimeout -RunId $RunId -ProjectFingerprint 'historical-fixture'
+    $path = Get-RunStateFile $Copy $Root 'result' $RunId
+    return [pscustomobject]@{ kind='result'; projectKey=(Get-ProjectKey $Root); workingDirectory=$Root; receiptPath=$path; receiptSha256=(Get-FileHash $path -Algorithm SHA256).Hash.ToLowerInvariant(); runId=$RunId; commandFingerprint=(Get-TestCommandFp $Root); overall='terminated' }
+}
+
 function Write-ObservedRecord {
     param(
         [object]$Copy, [string]$Root, [bool]$Guarded = $true, [string]$Fingerprint = '',

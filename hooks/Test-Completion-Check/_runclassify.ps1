@@ -16,7 +16,7 @@ function Get-RunClass {
     if ($null -ne $re) {
         $ov = ([string](Get-Field $re.Doc 'overall')).ToLowerInvariant()
         $lk = @(@(Get-Field $re.Doc 'leakedProcessIds') | Where-Object { $null -ne $_ -and [string]$_ -ne '' })
-        if ($ov -eq 'terminated' -or $lk.Count -gt 0) { return 'incident' }
+        if (-not [string]::IsNullOrWhiteSpace((Get-IncidentReasonFromDoc $re.Doc))) { return 'incident' }
         if ($ov -eq 'failed' -and (Test-ResultFresh $re)) { return 'failed' }
         if ($ov -eq 'ok' -and $lk.Count -eq 0) {
             if (Test-ResultFresh $re) { return 'clean' }
@@ -77,7 +77,7 @@ function Select-RepresentativeRun {
         $ikSeen = Get-ResultIncidentKey -Doc $cl.Run.ResultEntry.Doc -Path $cl.Run.ResultEntry.Path
         if ($ikSeen -eq '' -or (Test-ResultIncidentResolved -Doc $cl.Run.ResultEntry.Doc -Path $cl.Run.ResultEntry.Path) -or $script:pendingNotes.Contains($ikSeen)) { continue }
         if (Test-RunNegativeAccounted -Run $cl.Run -AllResults $resultEntries) {
-            Register-PendingNote -Key $ikSeen -Reason (Get-IncidentReasonFromDoc $cl.Run.ResultEntry.Doc)
+            Register-PendingNote -Key $ikSeen -Reason (Get-IncidentReasonFromDoc $cl.Run.ResultEntry.Doc) -Origin (New-NoteOrigin -Kind result -Path $cl.Run.ResultEntry.Path)
         }
     }
 

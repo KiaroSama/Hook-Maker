@@ -181,70 +181,7 @@ if ([string]::IsNullOrWhiteSpace($cwd) -or -not (Test-Path -LiteralPath $cwd -Pa
     exit 0
 }
 
-# ---- optional .env (invalid -> reported + a NON-WIDENING fallback) ----
-$configWarnings = New-Object System.Collections.Generic.List[string]
-$config = Read-HookEnv (Join-Path $PSScriptRoot '.env')
-
-$evidenceMinutes = 180
-if ($config.ContainsKey('TEST_COMPLETION_EVIDENCE_MINUTES')) {
-    $raw = [string]$config['TEST_COMPLETION_EVIDENCE_MINUTES']
-    $parsed = 0
-    if ([int]::TryParse($raw, [ref]$parsed) -and $parsed -ge 1 -and $parsed -le 10080) {
-        $evidenceMinutes = $parsed
-    }
-    elseif (-not [string]::IsNullOrWhiteSpace($raw)) {
-        [void]$configWarnings.Add('TEST_COMPLETION_EVIDENCE_MINUTES is not an integer in 1..10080; using the default 180.')
-    }
-}
-
-# An invalid value here falls back to ADVISORY (1), not to the blocking default:
-# the setting was clearly meant to be changed, and a typo must never make this
-# hook block on MORE than it would have. Reported, never silent.
-$advisoryOnly = $false
-if ($config.ContainsKey('TEST_COMPLETION_ADVISORY_ONLY')) {
-    $raw = [string]$config['TEST_COMPLETION_ADVISORY_ONLY']
-    if ($raw -eq '1') { $advisoryOnly = $true }
-    elseif ($raw -ne '0' -and -not [string]::IsNullOrWhiteSpace($raw)) {
-        $advisoryOnly = $true
-        [void]$configWarnings.Add('TEST_COMPLETION_ADVISORY_ONLY must be 0 or 1; falling back to advisory-only (1) so a malformed value can never widen what is blocked on.')
-    }
-}
-
-$alwaysRequireNote = $false
-if ($config.ContainsKey('TEST_COMPLETION_ALWAYS_REQUIRE_NOTE')) {
-    $raw = [string]$config['TEST_COMPLETION_ALWAYS_REQUIRE_NOTE']
-    if ($raw -eq '1') { $alwaysRequireNote = $true }
-    elseif ($raw -ne '0' -and -not [string]::IsNullOrWhiteSpace($raw)) {
-        [void]$configWarnings.Add('TEST_COMPLETION_ALWAYS_REQUIRE_NOTE must be 0 or 1; using the default 0 (a note is required only after an incident).')
-    }
-}
-
-# How long an ACTIVE marker whose owner is gone and that never produced a result
-# may still describe the current work. Past it the record is an earlier session's
-# leftover: reconciled and dropped with a trace, never a block on this task.
-$activeMarkerMaxHours = 12
-if ($config.ContainsKey('TEST_COMPLETION_ACTIVE_MARKER_MAX_HOURS')) {
-    $raw = [string]$config['TEST_COMPLETION_ACTIVE_MARKER_MAX_HOURS']
-    $parsed = -1
-    if ([int]::TryParse($raw, [ref]$parsed) -and $parsed -ge 1 -and $parsed -le 168) {
-        $activeMarkerMaxHours = $parsed
-    }
-    elseif (-not [string]::IsNullOrWhiteSpace($raw)) {
-        [void]$configWarnings.Add('TEST_COMPLETION_ACTIVE_MARKER_MAX_HOURS is not an integer in 1..168; using the default 12.')
-    }
-}
-
-$coordinationWaitSeconds = 2
-if ($config.ContainsKey('TEST_COMPLETION_COORDINATION_WAIT_SECONDS')) {
-    $raw = [string]$config['TEST_COMPLETION_COORDINATION_WAIT_SECONDS']
-    $parsed = -1
-    if ([int]::TryParse($raw, [ref]$parsed) -and $parsed -ge 0 -and $parsed -le 30) {
-        $coordinationWaitSeconds = $parsed
-    }
-    elseif (-not [string]::IsNullOrWhiteSpace($raw)) {
-        [void]$configWarnings.Add('TEST_COMPLETION_COORDINATION_WAIT_SECONDS is not an integer in 0..30; using the default 2.')
-    }
-}
+. (Join-Path $PSScriptRoot '_config.ps1')
 
 # ---- paths ----
 $stateDir = Join-Path $env:LOCALAPPDATA 'HookMaker\state'
@@ -273,26 +210,6 @@ $sessionId = [string](Get-Field $hookInput 'session_id')
 # ---- Explicit user-command activation; transcript data never executes. ----
 . (Join-Path $PSScriptRoot '_deepdebug.ps1')
 Initialize-DeepDebugActivation
-
-# Once-per-session-per-state gate for the dd-specific outputs (anti-loop): an
-# unchanged state token reports once; a changed token or a new session reports
-# again immediately. Never consulted for the pre-existing condition-1..6 blocks.
-function Test-DdGateShouldReport {
-    param([string]$StateToken)
-    $ddFp = Get-ShortHash ($StateToken + '|' + $script:sessionId)
-    try {
-        if (Test-Path -LiteralPath $script:ddGatePath -PathType Leaf) {
-            if (([System.IO.File]::ReadAllText($script:ddGatePath)).Trim() -eq $ddFp) { return $false }
-        }
-    }
-    catch { }
-    try {
-        if (-not (Test-Path -LiteralPath $script:stateDir -PathType Container)) { New-Item -ItemType Directory -Path $script:stateDir -Force | Out-Null }
-        [System.IO.File]::WriteAllText($script:ddGatePath, $ddFp, (New-Object System.Text.UTF8Encoding($false)))
-    }
-    catch { }
-    return $true
-}
 
 # The durable-note and incident-tag helpers: a REQUIRED sibling (the gate cannot
 # decide a note obligation without them).
@@ -368,82 +285,12 @@ if ([string]::IsNullOrWhiteSpace($stateFingerprint)) { $stateFingerprint = Get-S
 # ---- this hook's own state: the per-incident LEDGER ------------------------
 . (Join-Path $PSScriptRoot '_ledger.ps1')
 
-# ---- output ---------------------------------------------------------------
-# A real block uses `decision:block` for both clients (Ci-Status-Check's
-# blocking paths do the same). An advisory is CLIENT-AWARE and never a block:
-# on Codex `decision:block` at Stop forces a new prompt, which for an advisory
-# would be an infinite loop.
-# Abandoned active markers reconciled during THIS invocation. The durable trace
-# lives in the ledger; this is the human-visible half, and it rides an output the
-# hook is already emitting rather than breaking silence on its own - an earlier
-# session's leftover is not an actionable signal for the current task.
-$script:expiredNow = New-Object System.Collections.Generic.List[string]
-
-function Write-Finding {
-    param([string[]]$Lines, [bool]$Blocking)
-    $all = New-Object System.Collections.Generic.List[string]
-    foreach ($line in $Lines) { [void]$all.Add($line) }
-    # E-05: while ::deep-debug is active, every blocking finding also carries the
-    # exact workflow verdict line with a concise reason derived from the first
-    # finding line. Constant text riding an EXISTING block - it adds no new loop
-    # path; the dd-specific outputs have their own once-per-session gate.
-    if ($Blocking -and $script:DeepDebugActive) {
-        $ddReason = ''
-        if (@($Lines).Count -gt 0) {
-            $ddReason = ([string]$Lines[0]) -replace '^TEST COMPLETION CHECK:\s*', ''
-            $ddDot = $ddReason.IndexOf('. ')
-            if ($ddDot -gt 0) { $ddReason = $ddReason.Substring(0, $ddDot) }
-            if ($ddReason.Length -gt 160) { $ddReason = $ddReason.Substring(0, 160) }
-        }
-        if ($ddReason -eq '') { $ddReason = 'unresolved test-completion evidence' }
-        [void]$all.Add('')
-        [void]$all.Add('DEEP DEBUG: BLOCKED (' + $ddReason + ')')
-    }
-    if ($script:expiredNow.Count -gt 0) {
-        [void]$all.Add('')
-        [void]$all.Add('Also reconciled (not a block, and not part of this task): ' + $script:expiredNow.Count +
-            ' abandoned guarded-run record(s) from an earlier session were expired and dropped - ' + (@($script:expiredNow) -join '; ') + '.')
-    }
-    if ($script:configWarnings.Count -gt 0) {
-        [void]$all.Add('')
-        foreach ($warning in $script:configWarnings) { [void]$all.Add('Test-Completion-Check .env: ' + $warning) }
-    }
-    $ledgerFailure = [string](Get-Variable -Name LedgerWriteFailed -Scope Script -ValueOnly -ErrorAction SilentlyContinue); if ($ledgerFailure -ne '') { [void]$all.Add('TEST COMPLETION CHECK: its incident ledger could not be written (' + $ledgerFailure + '); recorded notes may be asked for again.') }; $message = ($all.ToArray() -join "`n")
-    # The gating DECISION is made above and is unchanged here; Write-HookResult
-    # only turns it into the client's wire shape (claude/codex block ->
-    # decision:block, claude advisory -> hookSpecificOutput.additionalContext,
-    # codex Stop advisory -> systemMessage). A client that documents no Stop
-    # gate has its block downgraded to the strongest advisory and reported as
-    # degraded, which is what 'degraded-stop-gate' means - never a fake gate.
-    $kind = 'advisory'
-    # NEVER block a SUBAGENT. On Claude a Stop/SubagentStop `decision:block`
-    # FORCES CONTINUATION: the reason arrives as the subagent's next
-    # instruction, so it abandons the work it was dispatched to do and the
-    # parent receives this gate's text instead of the result. Everything the
-    # subagent had produced is lost. This gate's conditions are TASK-level -
-    # guarded evidence for the whole task, which a subagent neither caused nor
-    # can clear - so blocking one violates the rule that every block must name
-    # the safe action that clears it. Reproduced 2026-09-12: a SubagentStop
-    # payload emitted a byte-identical block to Stop, for a test command the
-    # MAIN agent had run. The advisory is still shown (systemMessage at
-    # SubagentStop) and the real gate still holds on the main Stop.
-    if ($Blocking -and -not $script:advisoryOnly -and $script:eventName -ne 'SubagentStop') { $kind = 'block' }
-    # A block must be ADMITTED before it is emitted: the claim is what gives the
-    # gate a memory of having spoken, and it also spends one unit of the shared
-    # correction allowance, so it cannot be taken without being granted. A
-    # refusal emits nothing and leaves the finding recorded as unresolved. An
-    # ADVISORY claims nothing, because it never stopped anything.
-    if ($kind -eq 'block') {
-        $emit = Write-StopBlockResult -HookInput $hookInput -HookName 'Test-Completion-Check' -EventName $script:eventName -Reason $message
-        exit $emit.ExitCode
-    }
-    $emit = Write-HookResult -EventName $script:eventName -Kind $kind -Message $message -Reason $message
-    exit $emit.ExitCode
-}
+. (Join-Path $PSScriptRoot '_output.ps1')
 
 # ---- read the recorded evidence (AGGREGATED across per-run files) ----------
 . (Join-Path $PSScriptRoot '_evidence.ps1')
 . (Join-Path $PSScriptRoot '_recovery.ps1')
+. (Join-Path $PSScriptRoot '_noteobligations.ps1')
 . (Join-Path $PSScriptRoot '_failedrun.ps1')
 # Possible orphaned test processes: ADVISORY ONLY, never a block, never a kill.
 # Write-SurvivorAdvisory is called ONLY where this hook is about to go silent,
@@ -465,89 +312,10 @@ if ($recoveryMode) {
 $resultEntries = Get-CompletionStateEntries 'result'
 $observedEntries = Get-CompletionStateEntries 'observed'
 $activeEntries = Get-CompletionStateEntries 'active'
+# Reconcile before pruning can remove the only original receipt.
+if ($script:pendingNotes.Count -gt 0) { Save-CompletionState }
 
-# ---- R1: register note obligations BEFORE pruning can delete a superseded run --
-# The prune below removes a superseded negative (a hang that later re-ran green for
-# the same command+state). A supersede lifts the RESULT-level block but NEVER the
-# durable-note requirement (D2). If the superseded run's files were pruned before
-# its obligation was recorded - e.g. the first Stop fires >24h after a self-heal -
-# the lesson would be lost forever. So every CURRENT-state, unresolved, superseded
-# incident has its note demanded here, before the prune can erase it. Its
-# obligation then lives in the ledger independent of the result file. Un-superseded
-# current-state negatives are KEPT by the prune and register normally when they
-# block, so only the about-to-be-pruned ones need this pass.
-foreach ($re in $resultEntries) {
-    $ik = Get-ResultIncidentKey -Doc $re.Doc -Path $re.Path
-    if ($ik -eq '' -or (Test-ResultIncidentResolved -Doc $re.Doc -Path $re.Path) -or $script:pendingNotes.Contains($ik)) { continue }
-    $rProjFp = [string](Get-Field $re.Doc 'projectFingerprint')
-    $isCurrentState = ($rProjFp -eq '' -or $rProjFp -eq $stateFingerprint)
-    if (-not $isCurrentState) { continue }
-    if (Test-ResultSuperseded -NegDoc $re.Doc -NegTime (Get-ResultRecordedTime -Doc $re.Doc -Path $re.Path) -AllResults $resultEntries) {
-        Register-PendingNote -Key $ik -Reason (Get-IncidentReasonFromDoc $re.Doc)
-    }
-}
-
-# ---- bounded, CONTENT-AWARE state growth control (C2 / D3 / D4) -------------
-# Age alone must never erase a NEGATIVE finding. Staleness weakens only POSITIVE
-# evidence (see this file's header): a run that TERMINATED, FAILED, LEAKED, errored
-# or was OBSERVED-WITHOUT-A-RESULT for the current state is an incident whose
-# obligation survives until it is RESOLVED (a durable note recorded, tracked in
-# resolvedIncidents) or SUPERSEDED (a strictly-newer clean ok run for the same
-# command+state - which also underlies the C4 fix). A CURRENT-state unresolved
-# negative is NEVER pruned by age. Only clean ok runs, resolved/superseded
-# negatives, OLD-STATE clutter past a longer bound (D4), and old-STATE observations
-# carrying no current obligation are pruned, so a hang whose Stop hook never fired
-# within 24h can never be silently deleted before it is seen. Best-effort: a read
-# or delete failure never blocks the gate.
-$pruneCutoff = [DateTime]::UtcNow.AddHours(-24)
-# D4: an OLD-STATE (fingerprint != current) negative can NEVER become current
-# evidence and can never block, yet a plain `failed` has no incident key to ever
-# resolve and, being old-state, is never superseded - so without a bound it would
-# accumulate forever across states. Give old-state negatives a longer, safe
-# retention and prune past it. The CURRENT-state guarantee above is untouched.
-$oldStateNegativeCutoff = [DateTime]::UtcNow.AddDays(-7)
-function Get-FileMtimeUtc { param([string]$Path) try { return (Get-Item -LiteralPath $Path -Force).LastWriteTimeUtc } catch { return $null } }
-$prunedResultPaths = New-Object System.Collections.Generic.HashSet[string]
-$prunedObservedPaths = New-Object System.Collections.Generic.HashSet[string]
-foreach ($re in $resultEntries) {
-    $mtime = Get-FileMtimeUtc $re.Path
-    if ($null -eq $mtime -or $mtime -ge $pruneCutoff) { continue }   # keep anything not yet 24h old
-    if (Test-RecoveryReceiptRetained -RunId ([string](Get-Field $re.Doc 'runId'))) { continue }
-    $ov = ([string](Get-Field $re.Doc 'overall')).ToLowerInvariant()
-    $lk = @(@(Get-Field $re.Doc 'leakedProcessIds') | Where-Object { $null -ne $_ -and [string]$_ -ne '' })
-    $isNegative = ((@('terminated', 'failed', 'error', 'unknown') -contains $ov) -or $lk.Count -gt 0)
-    if (-not $isNegative) { [void]$prunedResultPaths.Add($re.Path); continue }   # clean ok run -> prunable
-    $ik = Get-ResultIncidentKey -Doc $re.Doc -Path $re.Path
-    $resolved = (Test-ResultIncidentResolved -Doc $re.Doc -Path $re.Path)
-    $superseded = Test-ResultSuperseded -NegDoc $re.Doc -NegTime (Get-ResultRecordedTime -Doc $re.Doc -Path $re.Path) -AllResults $resultEntries
-    if ($resolved -or $superseded) { [void]$prunedResultPaths.Add($re.Path); continue }
-    # An unresolved, un-superseded negative. CURRENT-state -> KEEP however old
-    # (round-19 guarantee). OLD-state clutter -> bounded retention (D4).
-    $rProjFp = [string](Get-Field $re.Doc 'projectFingerprint')
-    $isCurrentState = ($rProjFp -eq '' -or $rProjFp -eq $stateFingerprint)
-    if (-not $isCurrentState -and $mtime -lt $oldStateNegativeCutoff) { [void]$prunedResultPaths.Add($re.Path) }
-}
-# D3: prune observations by the SAME one-to-one assignment the main flow uses. An
-# observation whose ONE assigned result is a pruned clean/resolved run is fully
-# accounted for; an observation with NO independently-assigned result is an
-# unfinished incident and must NOT be pruned as if a shared result covered it.
-$currentObservedPre = @($observedEntries | Where-Object { (Get-ObservedFingerprint $_.Doc) -eq $stateFingerprint })
-$pruneAssign = Get-ObservedResultAssignment -CurrentObserved $currentObservedPre -ResultEntries $resultEntries -StateFp $stateFingerprint
-$assignedResultForObserved = @{}
-for ($i = 0; $i -lt $pruneAssign.SortedObserved.Count; $i++) {
-    if ($pruneAssign.Map.ContainsKey($i)) { $assignedResultForObserved[$pruneAssign.SortedObserved[$i].Path] = $pruneAssign.Map[$i].Path }
-}
-foreach ($oe in $observedEntries) {
-    $mtime = Get-FileMtimeUtc $oe.Path
-    if ($null -eq $mtime -or $mtime -ge $pruneCutoff) { continue }
-    if ((Get-ObservedFingerprint $oe.Doc) -ne $stateFingerprint) { [void]$prunedObservedPaths.Add($oe.Path); continue }   # old-STATE: no current obligation
-    if (-not $assignedResultForObserved.ContainsKey($oe.Path)) { continue }   # unpaired -> unfinished incident, KEEP
-    if ($prunedResultPaths.Contains($assignedResultForObserved[$oe.Path])) { [void]$prunedObservedPaths.Add($oe.Path) }   # its ONE assigned result is a pruned clean/resolved run
-}
-foreach ($path in @($prunedResultPaths)) { try { Remove-Item -LiteralPath $path -Force -ErrorAction SilentlyContinue } catch { } }
-foreach ($path in @($prunedObservedPaths)) { try { Remove-Item -LiteralPath $path -Force -ErrorAction SilentlyContinue } catch { } }
-if ($prunedResultPaths.Count -gt 0) { $resultEntries = @($resultEntries | Where-Object { -not $prunedResultPaths.Contains($_.Path) }) }
-if ($prunedObservedPaths.Count -gt 0) { $observedEntries = @($observedEntries | Where-Object { -not $prunedObservedPaths.Contains($_.Path) }) }
+. (Join-Path $PSScriptRoot '_pruning.ps1')
 
 # ---- 1. classify every active marker across all runs ----
 # Four outcomes, each acted on differently (Get-ActiveMarkerState is the
@@ -733,16 +501,8 @@ $incidentKey = ''
 $incidentKeyLegacy = ''
 $incidentReason = ''
 if ($null -ne $result) {
-    if ($overall -eq 'terminated') {
-        $incidentReason = 'the guarded run was TERMINATED (' +
-            $(if ($terminateReason -ne '') { $terminateReason } else { 'unknown reason' }) + ')' +
-            $(if ($terminateDetail -ne '') { ': ' + $terminateDetail } else { '' })
-    }
-    elseif ($leaked.Count -gt 0) {
-        $incidentReason = 'the guarded run LEAKED process(es) ' + (@($leaked) -join ', ') + ' that survived termination'
-    }
+    $incidentReason = Get-IncidentReasonFromDoc $result
     if ($incidentReason -ne '') {
-        # One derivation, in _evidence.ps1, so the two can never drift apart.
         $incidentKey = Get-ResultIncidentKey -Doc $result -Path $resultEntryPath
         $incidentKeyLegacy = Get-ResultIncidentKeyLegacy -Doc $result -Path $resultEntryPath
     }
@@ -769,6 +529,7 @@ if ($null -eq $result -and -not $observedCurrent -and $activePid -eq 0 -and $aba
             'TEST COMPLETION CHECK: ::deep-debug is active for this session but NO guarded test evidence exists for the current project state - no observed run, no guarded result, nothing active.',
             'The deep-debug completion gate consumes only fresh scoped evidence: run the affected suites through scripts\Run-Tests-Guarded.ps1 (the Test-Run-Guard gate supplies the exact bounded command) so a verifiable result document exists, then finish.')
     }
+    Write-UnknownNoteDiagnostic
     Write-SurvivorAdvisory
     exit 0
 }
@@ -783,6 +544,7 @@ if ($incidentKey -ne '' -and (Test-AnyIncidentResolved $incidentKey $incidentKey
             'TEST COMPLETION CHECK: ::deep-debug is active for this session, and while a past incident is resolved, no CURRENT-state guarded test evidence exists.',
             'Run the affected suites through scripts\Run-Tests-Guarded.ps1 so a fresh clean result document exists for the current project state, then finish.')
     }
+    Write-UnknownNoteDiagnostic
     Write-SurvivorAdvisory
     exit 0
 }
@@ -834,7 +596,7 @@ if ($activePid -gt 0) {
 # was recycled). It fails closed and names both ways out.
 if ($abandonedRuns.Count -gt 0) {
     $ab = $abandonedRuns[0]
-    Register-PendingNote -Key $ab.Key -Reason ('a guarded test run (' + $(if ($ab.RunId -ne '') { 'run id ' + $ab.RunId } else { 'no recorded run id' }) + ') died without recording how it ended')
+    Register-PendingNote -Key $ab.Key -Reason ('a guarded test run (' + $(if ($ab.RunId -ne '') { 'run id ' + $ab.RunId } else { 'no recorded run id' }) + ') died without recording how it ended') -Origin (New-NoteOrigin -Kind ownerless -Path $ab.Path)
     Save-CompletionState
     Write-Finding -Blocking $true -Lines @(
         'TEST COMPLETION CHECK: a guarded test run DIED without recording how it ended - it is OWNERLESS. ' +
@@ -854,7 +616,7 @@ if ($incidentKey -ne '' -and -not (Test-AnyIncidentResolved $incidentKey $incide
     # Register the owed durable note (its own byte baseline is captured now, so a
     # bare "done" cannot satisfy it later and a second concurrent incident demands
     # its own distinct note). No-op when this incident already owes one.
-    Register-PendingNote -Key $incidentKey -Reason $incidentReason
+    Register-PendingNote -Key $incidentKey -Reason $incidentReason -Origin (New-NoteOrigin -Kind result -Path $resultEntryPath)
     Save-CompletionState
     $lines = New-Object System.Collections.Generic.List[string]
     [void]$lines.Add('TEST COMPLETION CHECK: ' + $incidentReason + '. This is a confirmed finding from the guarded runner''s own result document, not an inference.')
@@ -911,46 +673,13 @@ if ($observedCurrent -and -not ($resultIsCurrentEvidence -and $overall -eq 'ok')
 # when configured, register the always-on note requirement.
 if ($null -ne $result -and $resultIsCurrentEvidence -and $overall -eq 'ok') {
     if ($incidentKey -ne '') { Add-ResolvedIncident $incidentKey }
-    if ($alwaysRequireNote -and $script:pendingNotes.Count -eq 0) {
+    if ($alwaysRequireNote -and @($script:pendingNotes.Values | Where-Object { Test-NoteObligationActionable $_ }).Count -eq 0) {
         $runKey = Get-ShortHash ('run|' + $script:ResultTicks + '|' + $projectKey)
-        Register-PendingNote -Key $runKey -Reason 'a guarded test run completed and TEST_COMPLETION_ALWAYS_REQUIRE_NOTE is enabled'
+        Register-PendingNote -Key $runKey -Reason 'a guarded test run completed and TEST_COMPLETION_ALWAYS_REQUIRE_NOTE is enabled' -Origin (New-NoteOrigin -Kind always -Path $resultEntryPath)
     }
 }
 
-# ---- 6. every durable note that is still owed ------------------------------
-# EVERY pending incident is enforced, not one: a satisfied note (its OWN tag present
-# AND real added content past its byte baseline) is resolved and dropped; any
-# still-owed note keeps blocking. The tag is what makes two concurrent incidents
-# each require their OWN note - one 80-byte note can no longer clear both by byte
-# growth alone. Resolving one never forgets the other.
-if ($script:pendingNotes.Count -gt 0 -or $script:pendingOverflow) {
-    $owed = New-Object System.Collections.Generic.List[object]
-    foreach ($k in @($script:pendingNotes.Keys)) {
-        if (Test-PendingNoteSatisfied -Key ([string]$k)) { Add-ResolvedIncident ([string]$k) }   # satisfied -> resolved, dropped
-        else { [void]$owed.Add([pscustomobject]@{ Key = [string]$k; Reason = [string]$script:pendingNotes[$k].reason }) }
-    }
-    if ($script:pendingOverflow -and $owed.Count -gt 0) {
-        # R2b: the ledger is full of UNRESOLVED obligations and a newer incident
-        # could not be tracked without discarding one. Surface it - never drop a
-        # live lesson - and keep blocking until the backlog is cleared.
-        Save-CompletionState
-        Write-Finding -Blocking $true -Lines @(
-            'TEST COMPLETION CHECK: the durable-note ledger is FULL (' + $script:MaxPendingNotes + ' unresolved test-incident notes are already owed) and another incident was seen that cannot be tracked without discarding one.',
-            'No unresolved note is being dropped - completion stays blocked until the backlog clears. Write the owed .ai/ notes (each tagged with its own `' + $script:IncidentTagPrefix + '<key>` line as instructed on the Stop that first reported it) so their obligations resolve, then re-run so the newest incident can be recorded.')
-    }
-    if ($owed.Count -gt 0) {
-        Save-CompletionState
-        Write-Finding -Blocking $true -Lines @(
-            'TEST COMPLETION CHECK: a durable .ai/ note is still owed because ' + $owed[0].Reason + '.',
-            'Write it into .ai/BUGS.md, .ai/TESTING_NOTES.md, .ai/COMMANDS.md and/or .ai/LESSON.md, whichever fits. It must state WHY the problem was not detected earlier and the verified prevention/recovery guard that now catches it - concretely enough that a later session can act on it.',
-            'Tag it with a line `' + (Get-IncidentTag $owed[0].Key) + '` (exactly) so THIS specific incident is cleared; a note without this tag, or a bare tag with no real content, will not clear it, and each other owed incident needs its own tagged note.',
-            'A bare acknowledgement ("done", "n/a", "fixed") does not satisfy this and will not clear it; the check looks for the tag plus real added content in those files.')
-    }
-    # Every owed note is now satisfied: the incident(s) and their notes are closed.
-    Save-CompletionState
-    if ($timingRegressionLines.Count -gt 0) { Write-Finding -Blocking $false -Lines $timingRegressionLines }
-    exit 0
-}
+. (Join-Path $PSScriptRoot '_notegate.ps1')
 
 # Everything accounted for. If this run was a meaningful timing regression, surface
 # it now as advisory context (never a block); otherwise stay silent.
@@ -982,5 +711,6 @@ if ($script:DeepDebugActive) {
     }
 }
 if ($timingRegressionLines.Count -gt 0) { Write-Finding -Blocking $false -Lines $timingRegressionLines }
+Write-UnknownNoteDiagnostic
 Write-SurvivorAdvisory
 exit 0 } catch { if ($null -ne $gateReceipt) { $gateReceipt.Crashed = $true }; throw } finally { if ($null -ne $gateReceipt) { Complete-StopGateReceipt $gateReceipt } }

@@ -13,10 +13,11 @@
     $c = New-IsolatedHookCopy
     $p = New-GitRepoAi 'MigrateLegacyNote'
     $legacyPath = Join-Path (Get-StateDir $c) ('TestCompletionCheck-' + (Get-ProjectKey $p) + '.json')
+    $fixtureOrigin = New-NoteFixtureOrigin $c $p 'legacy-key-xyz'
     Write-Utf8 $legacyPath (([ordered]@{
-                resolvedIncident = ''; pendingNoteKey = 'legacy-key-xyz'; pendingNoteReason = 'a legacy migrated incident'
+                pendingNoteOrigin = $fixtureOrigin; resolvedIncident = ''; pendingNoteKey = 'legacy-key-xyz'; pendingNoteReason = 'a legacy migrated incident'
                 pendingNoteBaseline = 0; deferredFingerprint = ''; updatedUtc = [DateTime]::UtcNow.ToString('o')
-            }) | ConvertTo-Json)
+            }) | ConvertTo-Json -Depth 8)
     $r = Fire -Copy $c -Cwd $p
     Check 'migration: a legacy single-value pendingNoteKey is still enforced as an owed note' (
         $r.Out -match '"decision":"block"' -and (Get-BlockReason $r.Out) -match 'a legacy migrated incident') $r.Out

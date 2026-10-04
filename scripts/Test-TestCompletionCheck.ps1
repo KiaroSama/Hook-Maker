@@ -35,7 +35,7 @@
 # Usage:  pwsh -NoLogo -NoProfile -File .\scripts\Test-TestCompletionCheck.ps1 [-KeepArtifacts] [-RecoveryOnly] [-SurvivorsOnly] [-EvidenceSelectionOnly]
 # Exit code is the number of failed assertions (0 = all passed).
 
-param([switch]$KeepArtifacts, [switch]$RecoveryOnly, [switch]$ActivationOnly, [switch]$OrphanOnly, [switch]$SurvivorsOnly, [switch]$CorrectionsOnly, [switch]$EvidenceSelectionOnly)
+param([switch]$KeepArtifacts, [switch]$RecoveryOnly, [switch]$ActivationOnly, [switch]$OrphanOnly, [switch]$SurvivorsOnly, [switch]$CorrectionsOnly, [switch]$EvidenceSelectionOnly, [switch]$ObligationsOnly)
 
 Set-StrictMode -Version 2.0
 $ErrorActionPreference = 'Stop'
@@ -59,7 +59,11 @@ Write-Host ("Workspace: $Work") -ForegroundColor DarkGray
 
 $sentinel = $null
 try {
-    if ($ActivationOnly) {
+    if ($ObligationsOnly) {
+        . (Join-Path $PSScriptRoot '_testcompletionobligations.ps1')
+        Invoke-NoteObligationRegression -RepoRoot (Split-Path -Parent $PSScriptRoot)
+    }
+    elseif ($ActivationOnly) {
         . (Join-Path $PSScriptRoot '_testcompletionactivation.ps1')
     }
     elseif ($OrphanOnly) {
@@ -75,6 +79,9 @@ try {
         . (Join-Path $PSScriptRoot '_testcompletionselection.ps1')
     }
     else {
+    . (Join-Path $PSScriptRoot '_testcompletionobligations.ps1')
+    Invoke-NoteObligationRegression -RepoRoot (Split-Path -Parent $PSScriptRoot)
+    Invoke-NoteObligationEntryRegression
     . (Join-Path $PSScriptRoot '_testcompletionrecovery.ps1')
     if (-not $RecoveryOnly) {
     # The core gate: recursion guard, evidence freshness, run identity, active

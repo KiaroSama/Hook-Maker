@@ -372,7 +372,7 @@
     $p = New-GitRepoAi 'R2bOverflow'
     $key = Get-ProjectKey $p
     $seed = New-Object System.Collections.Generic.List[object]
-    for ($i = 0; $i -lt 50; $i++) { [void]$seed.Add([pscustomobject]@{ key = ('seed-' + $i + '-' + $key); reason = ('seeded unresolved incident ' + $i); baseline = 100000000 }) }
+    for ($i = 0; $i -lt 50; $i++) { [void]$seed.Add([pscustomobject]@{ key = ('seed-' + $i + '-' + $key); reason = ('seeded unresolved incident ' + $i); baseline = 100000000; origin = (New-NoteFixtureOrigin $c $p ('seed-' + $i)) }) }
     Write-Utf8 (Join-Path (Get-StateDir $c) ('TestCompletionCheck-' + $key + '.json')) (
         ([pscustomobject]@{ resolvedIncidents = @(); pendingNotes = @($seed.ToArray()); deferredFingerprint = ''; updatedUtc = [DateTime]::UtcNow.ToString('o') }) | ConvertTo-Json -Depth 6)
     $cmd = 'r2bcmd-' + $key
@@ -392,8 +392,8 @@
     Add-AiNote -Root $p -Text ('Test incident: sat-0-' + $key + "`n" +
         'This seeded obligation already has its tagged note written with real substantial content well over the byte floor so it is satisfiable and evictable.')
     $seed = New-Object System.Collections.Generic.List[object]
-    [void]$seed.Add([pscustomobject]@{ key = ('sat-0-' + $key); reason = 'seeded SATISFIED incident 0'; baseline = 0 })
-    for ($i = 1; $i -lt 50; $i++) { [void]$seed.Add([pscustomobject]@{ key = ('seed-' + $i + '-' + $key); reason = ('seeded unresolved incident ' + $i); baseline = 100000000 }) }
+    [void]$seed.Add([pscustomobject]@{ key = ('sat-0-' + $key); reason = 'seeded SATISFIED incident 0'; baseline = 0; origin = (New-NoteFixtureOrigin $c $p 'sat-0') })
+    for ($i = 1; $i -lt 50; $i++) { [void]$seed.Add([pscustomobject]@{ key = ('seed-' + $i + '-' + $key); reason = ('seeded unresolved incident ' + $i); baseline = 100000000; origin = (New-NoteFixtureOrigin $c $p ('seed-' + $i)) }) }
     Write-Utf8 (Join-Path (Get-StateDir $c) ('TestCompletionCheck-' + $key + '.json')) (
         ([pscustomobject]@{ resolvedIncidents = @(); pendingNotes = @($seed.ToArray()); deferredFingerprint = ''; updatedUtc = [DateTime]::UtcNow.ToString('o') }) | ConvertTo-Json -Depth 6)
     $cmd = 'r2bcmd2-' + $key
@@ -423,18 +423,18 @@
     # the hook so it runs against the same stdin/env this test provides.
     $wrapper = Join-Path $Work 'r3-concurrent-writer.ps1'
     Write-Utf8 $wrapper @'
-param([string]$Hook, [string]$StateDir, [string]$ProjectKey, [string]$Fp, [string]$Cmd, [string]$TermRunId, [string]$GreenRunId, [string]$TerminateReason)
+param([string]$Hook, [string]$StateDir, [string]$ProjectKey, [string]$Fp, [string]$Cmd, [string]$TermRunId, [string]$GreenRunId, [string]$TerminateReason, [string]$Root)
 function Write-Doc { param($Path, $Obj) [System.IO.File]::WriteAllText($Path, ($Obj | ConvertTo-Json -Depth 6), (New-Object System.Text.UTF8Encoding $false)) }
 $safeTerm = ($TermRunId.ToLowerInvariant() -replace '[^a-z0-9]', '')
 $safeGreen = ($GreenRunId.ToLowerInvariant() -replace '[^a-z0-9]', '')
 $termEnded = [DateTime]::UtcNow.AddMinutes(-5).ToString('o')
 $greenEnded = [DateTime]::UtcNow.ToString('o')
 Write-Doc (Join-Path $StateDir ('TestRunGuard-result-' + $ProjectKey + '-' + $safeTerm + '.json')) ([ordered]@{
-    schema = 2; overall = 'terminated'; fileName = 'pwsh'; runId = $TermRunId; projectFingerprint = $Fp; commandFingerprint = $Cmd
+    workingDirectory = $Root; schema = 2; overall = 'terminated'; fileName = 'pwsh'; runId = $TermRunId; projectFingerprint = $Fp; commandFingerprint = $Cmd
     terminated = $true; terminateReason = $TerminateReason; terminateDetail = 'x'; leakedProcessIds = @(); elapsedSeconds = 12.5
     lastProgress = 'Passed: 1  Failed: 0'; exitCode = 124; startedUtc = $termEnded; endedUtc = $termEnded })
 Write-Doc (Join-Path $StateDir ('TestRunGuard-result-' + $ProjectKey + '-' + $safeGreen + '.json')) ([ordered]@{
-    schema = 2; overall = 'ok'; fileName = 'pwsh'; runId = $GreenRunId; projectFingerprint = $Fp; commandFingerprint = $Cmd
+    workingDirectory = $Root; schema = 2; overall = 'ok'; fileName = 'pwsh'; runId = $GreenRunId; projectFingerprint = $Fp; commandFingerprint = $Cmd
     terminated = $false; terminateReason = ''; terminateDetail = ''; leakedProcessIds = @(); elapsedSeconds = 10
     lastProgress = 'Passed: 5  Failed: 0'; exitCode = 0; startedUtc = $greenEnded; endedUtc = $greenEnded })
 . $Hook
@@ -447,7 +447,7 @@ Write-Doc (Join-Path $StateDir ('TestRunGuard-result-' + $ProjectKey + '-' + $sa
             @{ Cmd = ('r3cmdb-' + $key); Term = ('r3termb-' + $key); Green = ('r3greenb-' + $key); Reason = 'idleTimeout' })) {
         $argLine = '-NoLogo -NoProfile -File "' + $wrapper + '" -Hook "' + $c.Script + '" -StateDir "' + $stateDir +
         '" -ProjectKey "' + $key + '" -Fp "' + $fp + '" -Cmd "' + $spec.Cmd + '" -TermRunId "' + $spec.Term +
-        '" -GreenRunId "' + $spec.Green + '" -TerminateReason "' + $spec.Reason + '"'
+        '" -GreenRunId "' + $spec.Green + '" -TerminateReason "' + $spec.Reason + '" -Root "' + $p + '"'
         $sa = @{
             FilePath = $pwshExe; ArgumentList = $argLine; RedirectStandardInput = $inFile
             RedirectStandardOutput = (Join-Path $Work ('r3out-' + $spec.Reason + '.txt'))

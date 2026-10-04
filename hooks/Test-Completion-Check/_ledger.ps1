@@ -42,6 +42,9 @@ $script:expiredMarkers = New-Object System.Collections.Generic.List[object]
 $script:resolvedIncidents = New-Object System.Collections.Generic.List[string]
 $script:pendingNotes = New-Object System.Collections.Specialized.OrderedDictionary
 $script:recoveryAssociations = New-Object System.Collections.Specialized.OrderedDictionary
+$script:retiredNotes = New-Object System.Collections.Specialized.OrderedDictionary
+$script:noteDiagnosticFingerprint = ''
+$script:LedgerLegacyBackup = ''
 # Set when a newly-seen incident could NOT be tracked because the ledger is full
 # of UNRESOLVED obligations. An unresolved note is never silently dropped to make
 # room; the overflow is surfaced (a bounded block) so the backlog is cleared
@@ -49,9 +52,23 @@ $script:recoveryAssociations = New-Object System.Collections.Specialized.Ordered
 $script:pendingOverflow = $false
 $deferredFingerprint = ''
 
+function Copy-PendingNoteEntry {
+    param($Entry, [int64]$Baseline)
+    $copy = [ordered]@{}
+    if ($null -ne $Entry) { foreach ($property in $Entry.PSObject.Properties) { if ($property.Name -ne 'key') { $copy[$property.Name] = $property.Value } } }
+    $copy['reason'] = [string](Get-Field $Entry 'reason')
+    $copy['baseline'] = $Baseline
+    return [pscustomobject]$copy
+}
+
 $previous = $null
 try { $previous = Read-JsonFile $statePath } catch { $previous = $null }
 if ($null -ne $previous) {
+    $script:noteDiagnosticFingerprint = [string](Get-Field $previous 'noteDiagnosticFingerprint')
+    foreach ($retired in @(Get-Field $previous 'retiredNotes')) {
+        $rk = [string](Get-Field $retired 'key')
+        if ($rk -ne '') { $script:retiredNotes[$rk] = $retired }
+    }
     foreach ($association in @(Get-Field $previous 'recoveryAssociations')) {
         $associationKey = [string](Get-Field $association 'incidentKey')
         if ($associationKey -ne '') { $script:recoveryAssociations[$associationKey] = $association }
@@ -73,7 +90,7 @@ if ($null -ne $previous) {
             if ($ek -eq '' -or $script:pendingNotes.Contains($ek)) { continue }
             $eb = -1L; $rawEb = Get-Field $entry 'baseline'
             if ($null -ne $rawEb) { try { $eb = [int64]$rawEb } catch { $eb = -1L } }
-            $script:pendingNotes[$ek] = [pscustomobject]@{ reason = [string](Get-Field $entry 'reason'); baseline = $eb }
+            $script:pendingNotes[$ek] = (Copy-PendingNoteEntry $entry $eb)
         }
     }
     else {
@@ -81,7 +98,7 @@ if ($null -ne $previous) {
         if ($legacyKey -ne '') {
             $lb = -1L; $rawLb = Get-Field $previous 'pendingNoteBaseline'
             if ($null -ne $rawLb) { try { $lb = [int64]$rawLb } catch { $lb = -1L } }
-            $script:pendingNotes[$legacyKey] = [pscustomobject]@{ reason = [string](Get-Field $previous 'pendingNoteReason'); baseline = $lb }
+            $script:pendingNotes[$legacyKey] = [pscustomobject]@{ reason = [string](Get-Field $previous 'pendingNoteReason'); baseline = $lb; origin = (Get-Field $previous 'pendingNoteOrigin') }
         }
     }
     $rawExpired = Get-Field $previous 'expiredMarkers'
@@ -133,6 +150,7 @@ function Test-PendingNoteSatisfied {
     param([string]$Key)
     if (-not $script:pendingNotes.Contains($Key)) { return $false }
     $entry = $script:pendingNotes[$Key]
+    if (-not (Test-NoteObligationActionable $entry)) { return $false }
     $base = [int64]$entry.baseline
     if ($base -lt 0) { return $false }
     if (((Get-NoteBytes -Root $script:cwd) - $base) -lt $script:MinNoteBytes) { return $false }
@@ -149,8 +167,9 @@ function Test-PendingNoteSatisfied {
 # still unresolved, the new one is not added and the overflow is surfaced instead,
 # so an unresolved note is never lost and the cap still never grows.
 function Register-PendingNote {
-    param([string]$Key, [string]$Reason)
-    if ([string]::IsNullOrWhiteSpace($Key)) { return }
+    param([string]$Key, [string]$Reason, $Origin = $null)
+    if ([string]::IsNullOrWhiteSpace($Key) -or [string]::IsNullOrWhiteSpace($Reason)) { return }
+    if (-not (Test-NoteOrigin $Origin)) { return }
     if ($script:resolvedIncidents.Contains($Key) -or $script:pendingNotes.Contains($Key)) { return }
     if ($script:pendingNotes.Count -ge $script:MaxPendingNotes) {
         $freed = $false
@@ -169,7 +188,7 @@ function Register-PendingNote {
             return
         }
     }
-    $script:pendingNotes[$Key] = [pscustomobject]@{ reason = $Reason; baseline = (Get-NoteBytes -Root $script:cwd) }
+    $script:pendingNotes[$Key] = [pscustomobject]@{ reason = $Reason.Trim(); baseline = (Get-NoteBytes -Root $script:cwd); origin = $Origin }
 }
 
 # Earliest (smallest, so registered when fewer note bytes existed) of two
@@ -192,6 +211,10 @@ function Merge-DiskLedger {
     $disk = $null
     try { $disk = Read-JsonFile $script:statePath } catch { $disk = $null }
     if ($null -eq $disk) { return }
+    foreach ($retired in @(Get-Field $disk 'retiredNotes')) {
+        $rk = [string](Get-Field $retired 'key')
+        if ($rk -ne '') { $script:retiredNotes[$rk] = $retired }
+    }
     foreach ($association in @(Get-Field $disk 'recoveryAssociations')) {
         $associationKey = [string](Get-Field $association 'incidentKey')
         if ($associationKey -ne '') { $script:recoveryAssociations[$associationKey] = $association }
@@ -208,16 +231,25 @@ function Merge-DiskLedger {
     if ($null -ne $diskPending) {
         foreach ($entry in @($diskPending)) {
             $ek = [string](Get-Field $entry 'key')
-            if ($ek -eq '' -or $script:resolvedIncidents.Contains($ek)) { continue }   # resolved wins over pending
+            if ($ek -eq '' -or $script:resolvedIncidents.Contains($ek) -or $script:retiredNotes.Contains($ek)) { continue }   # resolved wins over pending
             $eb = -1L; $rawEb = Get-Field $entry 'baseline'
             if ($null -ne $rawEb) { try { $eb = [int64]$rawEb } catch { $eb = -1L } }
             if ($script:pendingNotes.Contains($ek)) {
                 $cur = $script:pendingNotes[$ek]
                 $merged = Get-EarliestBaseline ([int64]$cur.baseline) $eb
-                $script:pendingNotes[$ek] = [pscustomobject]@{ reason = [string]$cur.reason; baseline = $merged }
+                # A stale writer must not erase a receipt snapshot published by
+                # another Stop before that receipt was pruned.
+                $winner = $cur
+                if ((Get-Command Test-NoteObligationActionable -ErrorAction SilentlyContinue) -and
+                    -not (Test-NoteObligationActionable $cur) -and (Test-NoteObligationActionable $entry)) { $winner = $entry }
+                $copy = Copy-PendingNoteEntry $winner $merged
+                foreach ($property in $entry.PSObject.Properties) {
+                    if ($property.Name -ne 'key' -and $null -eq $copy.PSObject.Properties[$property.Name]) { $copy | Add-Member NoteProperty $property.Name $property.Value }
+                }
+                $script:pendingNotes[$ek] = $copy
             }
             else {
-                $script:pendingNotes[$ek] = [pscustomobject]@{ reason = [string](Get-Field $entry 'reason'); baseline = $eb }
+                $script:pendingNotes[$ek] = (Copy-PendingNoteEntry $entry $eb)
             }
         }
     }
@@ -226,6 +258,7 @@ function Merge-DiskLedger {
         foreach ($e in @($diskExpired)) { Add-ExpiredMarker -RunId ([string](Get-Field $e 'runId')) -Detail ([string](Get-Field $e 'detail')) }
     }
     foreach ($rk in @($script:resolvedIncidents)) { if ($script:pendingNotes.Contains($rk)) { $script:pendingNotes.Remove($rk) } }
+    foreach ($rk in @($script:retiredNotes.Keys)) { if ($script:pendingNotes.Contains($rk)) { $script:pendingNotes.Remove($rk) } }
     # ponytail: a merged union >MaxPendingNotes only in the pathological >50-distinct
     # -incident case the concurrent-Stop race never reaches; keep it bounded.
     while ($script:pendingNotes.Count -gt $script:MaxPendingNotes) {
@@ -266,22 +299,39 @@ function Save-CompletionState {
         }
 
         Merge-DiskLedger
+        if (Get-Command Repair-LegacyNoteObligations -ErrorAction SilentlyContinue) { Repair-LegacyNoteObligations }
         if ($ResolveIncidentKey -ne '') { Set-VerifiedIncidentRecovery -IncidentKey $ResolveIncidentKey -RecoveryRunId $RecoveryRunId -Reason $RecoveryReason }
 
         try {
             $notes = New-Object System.Collections.Generic.List[object]
             foreach ($k in @($script:pendingNotes.Keys)) {
                 $entry = $script:pendingNotes[$k]
-                [void]$notes.Add([pscustomobject]@{ key = [string]$k; reason = [string]$entry.reason; baseline = [int64]$entry.baseline })
+                $note = Copy-PendingNoteEntry $entry ([int64]$entry.baseline)
+                $note | Add-Member NoteProperty key ([string]$k)
+                [void]$notes.Add($note)
             }
-            Write-JsonFileAtomic -Value ([pscustomobject]@{
-                    resolvedIncidents   = @($script:resolvedIncidents.ToArray())
-                    expiredMarkers      = @($script:expiredMarkers.ToArray())
-                    pendingNotes        = @($notes.ToArray())
-                    recoveryAssociations = @($script:recoveryAssociations.Values)
-                    deferredFingerprint = $Deferred
-                    updatedUtc          = [DateTime]::UtcNow.ToString('o')
-                }) -Path $script:statePath
+            if ((Get-Command Backup-CompletionLedger -ErrorAction SilentlyContinue) -and (Test-Path -LiteralPath $script:statePath)) {
+                $legacyUnknown = @($script:pendingNotes.Values | Where-Object { -not (Test-NoteOrigin (Get-Field $_ 'origin')) })
+                if ($legacyUnknown.Count -gt 0 -and [string]::IsNullOrWhiteSpace([string](Get-Field (Read-JsonFile $script:statePath) 'legacyBackupPath'))) { $null = Backup-CompletionLedger }
+            }
+            # Preserve unrelated extension fields while migrating the known scalar shape.
+            $payload = [ordered]@{}
+            $onDisk = Read-JsonFile $script:statePath
+            if ($null -ne $onDisk) {
+                foreach ($property in $onDisk.PSObject.Properties) {
+                    if ($property.Name -notin @('resolvedIncident','pendingNoteKey','pendingNoteReason','pendingNoteBaseline')) { $payload[$property.Name] = $property.Value }
+                }
+            }
+            $payload['resolvedIncidents'] = @($script:resolvedIncidents.ToArray())
+            $payload['expiredMarkers'] = @($script:expiredMarkers.ToArray())
+            $payload['pendingNotes'] = @($notes.ToArray())
+            $payload['retiredNotes'] = @($script:retiredNotes.Values)
+            $payload['noteDiagnosticFingerprint'] = $script:noteDiagnosticFingerprint
+            $payload['recoveryAssociations'] = @($script:recoveryAssociations.Values)
+            $payload['deferredFingerprint'] = $Deferred
+            if ($script:LedgerLegacyBackup -ne '') { $payload['legacyBackupPath'] = $script:LedgerLegacyBackup }
+            $payload['updatedUtc'] = [DateTime]::UtcNow.ToString('o')
+            Write-JsonFileAtomic -Value ([pscustomobject]$payload) -Path $script:statePath
         }
         catch { if ($ResolveIncidentKey -ne '') { throw }; $script:LedgerWriteFailed = $_.Exception.Message }
     }
