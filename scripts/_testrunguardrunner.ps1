@@ -87,7 +87,12 @@
                             . $processModule
                             $owned = Get-OwnedProcessTree -RootId $jobSentinel.Id -JobHandle $jobHandle
                             $sample = Get-TreeResourceSample -ProcessIds $owned.Ids -JobHandle $jobHandle -Identities $owned.Identities
-                            Check 'Job accounting includes the assigned child, not the foreign sentinel' ($sample.Alive -eq 1 -and ($owned.Ids -contains $jobChild.Id) -and -not ($owned.Ids -contains $jobSentinel.Id))
+                            # Windows may assign a console-host descendant too; the
+                            # authoritative Job membership, not a hard-coded count,
+                            # is the expected accounting set. Keep the foreign control.
+                            $nativeIds = @([HookMaker.JobNative]::GetProcessIds($jobHandle))
+                            $detail = 'owned=[' + ($owned.Ids -join ',') + '] native=[' + ($nativeIds -join ',') + '] alive=' + $sample.Alive + ' child=' + $jobChild.Id + ' sentinel=' + $jobSentinel.Id
+                            Check 'Job accounting includes all assigned members, not the foreign sentinel' ($sample.Alive -eq $nativeIds.Count -and ($owned.Ids -join ',') -eq ($nativeIds -join ',') -and ($owned.Ids -contains $jobChild.Id) -and -not ($owned.Ids -contains $jobSentinel.Id)) $detail
                             $remaining = @(Stop-OwnedProcessTree -RootId $jobSentinel.Id -JobHandle $jobHandle)
                             Check 'Job cleanup kills the assigned child and preserves the foreign root sentinel' ($remaining.Count -eq 0 -and $jobChild.WaitForExit(5000) -and -not $jobSentinel.HasExited)
                         }
