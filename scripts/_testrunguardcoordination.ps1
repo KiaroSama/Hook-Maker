@@ -10,6 +10,95 @@
 # Dot-sourced by Test-TestRunGuard.ps1 into the caller's scope (uses its
 # harness, helpers and workspace) - not a standalone suite.
 
+function Invoke-FingerprintBindingRegression {
+    . $HookLib
+    $fp = [string](Get-RepoStateFingerprint -ProjectRoot $Proj)
+    if ([string]::IsNullOrWhiteSpace($fp)) { $fp = Get-ShortHash $Proj.ToLowerInvariant() }
+    $copy = New-IsolatedHookCopy
+    $base = 'pwsh -NoProfile -File .\scripts\Run-Tests-Guarded.ps1 -FilePath pwsh -ArgumentsJson ''["-NoProfile","-Command","exit 0"]'' -TimeoutSeconds 23 -IdleTimeoutSeconds 11 -MaxWorkers 1'
+    $response = Fire -HookPath $copy.Script -Cwd $Proj -EventName PreToolUse -Command $base -LocalAppData $copy.LocalAppData
+    Check 'missing fingerprint is refused before an observation is written' (
+        $response.Out -match '"permissionDecision":"deny"' -and
+        @(Get-ChildItem -LiteralPath $copy.LocalAppData -Filter 'TestRunGuard-observed-*.json' -Recurse).Count -eq 0) $response.Out
+    Check 'fingerprint correction preserves all original runner options' (
+        (Get-Message $response.Out).Contains($base + ' -ProjectFingerprint ' + $fp)) $response.Out
+    . (Join-Path (Split-Path -Parent $Hook) '_commandanalysis.ps1')
+    foreach ($binding in @('','   ','bad/value','stale-state')) {
+        $command = $base + " -ProjectFingerprint '" + $binding + "' -Quiet"
+        $identity = Get-GuardedInvocationIdentity -Tokens @(Split-CommandTokens $command) -RawCommand $command
+        $finding = Get-GuardedBindingFinding $identity $command $Proj $fp
+        Check 'invalid literal binding has an exact option-preserving correction' (
+            $null -ne $finding -and $finding.Kind -eq 'deny' -and $finding.Message.Contains($base + ' -ProjectFingerprint ' + $fp + ' -Quiet'))
+    }
+    foreach ($client in @('Claude','Codex')) {
+        $valid = New-IsolatedHookCopy
+        $command = $base + ' -ProjectFingerprint ' + $fp + ' -RunId valid-binding'
+        $r = Fire -HookPath $valid.Script -Cwd $Proj -EventName PreToolUse -Command $command -LocalAppData $valid.LocalAppData -NoClaudeProjectDir:($client -eq 'Codex')
+        $files = @(Get-ChildItem -LiteralPath $valid.LocalAppData -Filter 'TestRunGuard-observed-*.json' -Recurse)
+        Check ($client + ': valid fingerprint produces exactly one silent observation') ($r.Exit -eq 0 -and $r.Out -eq '' -and $files.Count -eq 1)
+        $before = (Get-FileHash -LiteralPath $files[0].FullName).Hash
+        $r = Fire -HookPath $valid.Script -Cwd $Proj -EventName PreToolUse -Command ($command.Replace($fp,'stale-state')) -LocalAppData $valid.LocalAppData -NoClaudeProjectDir:($client -eq 'Codex')
+        $denied = if ($client -eq 'Claude') { $r.Out -match '"permissionDecision":"deny"' } else { $r.Exit -eq 2 }
+        Check ($client + ': stale refusal preserves the existing observation bytes') ($denied -and (Get-FileHash -LiteralPath $files[0].FullName).Hash -eq $before)
+        Check ($client + ': refusal neither grants permission nor rewrites input') ($r.Out -notmatch '"updatedInput"|"permissionDecision":"allow"')
+    }
+    foreach ($option in @('-ProjectFingerprint "$FP"',('-ProjectFingerprint ' + $fp + ' -WorkingDirectory "$WD"'))) {
+        $command = $base + ' ' + $option
+        $identity = Get-GuardedInvocationIdentity -Tokens @(Split-CommandTokens $command) -RawCommand $command
+        Check 'dynamic binding stays unknown, never guessed' ((Get-GuardedBindingFinding $identity $command $Proj $fp).Kind -eq 'unknown')
+    }
+    $argv = @('pwsh','-File','scripts/Run-Tests-Guarded.ps1','-FilePath','cmd.exe','-ArgumentsJson','[]','-ProgressFile','','-Quiet','-ProjectFingerprint','stale-state')
+    $identity = Get-GuardedInvocationIdentity -Tokens @($argv | Where-Object {$_ -ne ''}) -RawCommand $argv
+    $finding = Get-GuardedBindingFinding $identity $argv $Proj $fp
+    $expected = [string[]]$argv.Clone(); $expected[11] = $fp
+    Check 'argv correction preserves empty other options and original token indices' ($finding.Message.Contains((ConvertTo-Json -InputObject $expected -Compress)))
+    $argv = @('pwsh','-File','scripts/Run-Tests-Guarded.ps1','-FilePath','cmd.exe','-ArgumentsJson','[]','-ProjectFingerprint')
+    $identity = Get-GuardedInvocationIdentity -Tokens $argv -RawCommand $argv
+    Check 'argv missing fingerprint value is refused, not unknown' ((Get-GuardedBindingFinding $identity $argv $Proj $fp).Kind -eq 'deny')
+    $foreign = Join-Path $Work 'ForeignProject'
+    New-Item -ItemType Directory -Path $foreign -Force | Out-Null
+    $command = $base + ' -ProjectFingerprint ' + $fp + " -WorkingDirectory '" + $foreign + "'"
+    $identity = Get-GuardedInvocationIdentity -Tokens @(Split-CommandTokens $command) -RawCommand $command
+    Check 'foreign literal cwd is refused explicitly, not rebound' ((Get-GuardedBindingFinding $identity $command $Proj $fp).Message -match 'differs from hook cwd')
+    $same = $base + ' -ProjectFingerprint ' + $fp + " -WorkingDirectory '.'"
+    $identity = Get-GuardedInvocationIdentity -Tokens @(Split-CommandTokens $same) -RawCommand $same
+    Check 'same cwd dot/trailing-separator spelling does not become foreign' ($null -eq (Get-GuardedBindingFinding $identity $same ($Proj + '\') $fp))
+    $savedPart=$env:HM_BINDING_PART
+    try {
+        $env:HM_BINDING_PART=Split-Path -Leaf $Proj
+        $literalPercent=Join-Path (Split-Path -Parent $Proj) '%HM_BINDING_PART%'
+        $command=$base+' -ProjectFingerprint '+$fp+" -WorkingDirectory '"+$literalPercent+"'"
+        $identity=Get-GuardedInvocationIdentity -Tokens @(Split-CommandTokens $command) -RawCommand $command
+        Check 'literal percent working-directory text is never expanded into hook cwd' ((Get-GuardedBindingFinding $identity $command $Proj $fp).Kind -eq 'deny')
+    }
+    finally { $env:HM_BINDING_PART=$savedPart }
+}
+
+function Invoke-EmptyRunnerBindingRegression {
+    . $HookLib
+    $root = Join-Path $Work 'empty-runner-binding'
+    New-Item -ItemType Directory -Path $root -Force | Out-Null
+    $marker = Join-Path $root 'child.txt'
+    $receipt = Join-Path $root 'receipt.json'
+    $child = Join-Path $root 'child.ps1'
+    Write-Utf8 $child ("[IO.File]::WriteAllText('" + $marker.Replace("'","''") + "','started',[Text.Encoding]::UTF8)")
+    $savedLocal=$env:LOCALAPPDATA; $savedState=$env:HOOKMAKER_STATE_DIR; $savedTemp=$env:TEMP; $savedTmp=$env:TMP
+    try {
+        $env:LOCALAPPDATA=$root; $env:HOOKMAKER_STATE_DIR=Join-Path $root 'state'; $env:TEMP=$root; $env:TMP=$root
+        $before = @(Get-ChildItem -LiteralPath $root -Recurse -File | ForEach-Object {$_.FullName})
+        foreach ($binding in @($null,'   ')) {
+            $argv = @('-NoProfile','-File',$Runner,'-FilePath','pwsh','-ArgumentsJson',('["-NoProfile","-File","'+$child.Replace('\','\\')+'"]'),'-ResultPath',$receipt,'-Quiet')
+            if ($null -ne $binding) { $argv += @('-ProjectFingerprint',$binding) }
+            $output = Invoke-QuietCommand -FilePath (Get-Process -Id $PID).Path -ArgumentList $argv -TimeoutSeconds 30
+            $code = $LASTEXITCODE
+            Check 'empty runner binding refuses before child/capture/evidence publication' (
+                $code -eq 3 -and -not (Test-Path -LiteralPath $marker) -and -not (Test-Path -LiteralPath $receipt) -and
+                @(Get-ChildItem -LiteralPath $root -Recurse -File | Where-Object {$before -notcontains $_.FullName}).Count -eq 0) ($output -join ' ')
+        }
+    }
+    finally { $env:LOCALAPPDATA=$savedLocal; $env:HOOKMAKER_STATE_DIR=$savedState; $env:TEMP=$savedTemp; $env:TMP=$savedTmp }
+}
+
     # =====================================================================
     Write-Host '--- coordination handoff: the observed record Test-Completion-Check reads ---' -ForegroundColor Cyan
     function Get-ObservedRecord {
@@ -62,9 +151,12 @@
     $driftMinutes = [Math]::Abs(([DateTime]::UtcNow - $observedTime).TotalMinutes)
     Check 'the timestamp round-trips with no timezone drift (< 2 minutes, not 210)' ($driftMinutes -lt 2) ([string]$driftMinutes)
 
+    Invoke-FingerprintBindingRegression
+    Invoke-EmptyRunnerBindingRegression
+    $fixtureFp = [string]$observed.Document.projectFingerprint
     $hcObsGuarded = New-IsolatedHookCopy
     $r = Fire -HookPath $hcObsGuarded.Script -Cwd $Proj -EventName 'PreToolUse' `
-        -Command 'pwsh -File .\scripts\Run-Tests-Guarded.ps1 -FilePath pytest -ArgumentsJson ''["-q"]''' -LocalAppData $hcObsGuarded.LocalAppData
+        -Command ('pwsh -File .\scripts\Run-Tests-Guarded.ps1 -FilePath pytest -ArgumentsJson ''["-q"]'' -ProjectFingerprint ' + $fixtureFp) -LocalAppData $hcObsGuarded.LocalAppData
     $observedGuarded = Get-ObservedRecord $hcObsGuarded.LocalAppData
     Check 'an ALREADY-GUARDED command still writes an observed record' ($null -ne $observedGuarded)
     Check 'it is recorded as guarded=true' ($observedGuarded.Document.guarded -eq $true) ([string]$observedGuarded.Document.guarded)
@@ -172,7 +264,7 @@
             'pwsh -NoProfile -f scripts\Run-Tests-Guarded.ps1 -FilePath pwsh -ArgumentsJson ''["-File","x.ps1"]''',
             '.\scripts\Run-Tests-Guarded.ps1 -FilePath pwsh -ArgumentsJson ''["-File","x.ps1"]''')) {
         $hcInv = New-IsolatedHookCopy
-        $r = Fire -HookPath $hcInv.Script -Cwd $Proj -EventName 'PreToolUse' -Command $invocation -LocalAppData $hcInv.LocalAppData
+        $r = Fire -HookPath $hcInv.Script -Cwd $Proj -EventName 'PreToolUse' -Command ($invocation + ' -ProjectFingerprint ' + $fixtureFp) -LocalAppData $hcInv.LocalAppData
         Check ('a real guarded invocation is still recognised (silent, never re-wrapped): ' + $invocation) (
             $r.Exit -eq 0 -and $r.Out -eq '') $r.Out
     }
@@ -195,15 +287,12 @@
     # written (the identity has to exist before the run, not after it).
     $rVar = Fire -HookPath $hcVar.Script -Cwd $Proj -EventName 'PreToolUse' -Command $varCommand -LocalAppData $hcVar.LocalAppData
     $obsVar = Get-ObservedRecord $hcVar.LocalAppData
-    Check 'a guarded run whose -RunId is an unexpanded variable is recorded UNCONTROLLED' (
-        $null -ne $obsVar -and $obsVar.Document.runIdControlled -ne $true) (
-        $(if ($null -eq $obsVar) { '<no observed record>' } else { $obsVar.Document | ConvertTo-Json -Compress }))
-    Check 'and the literal token is never stored as the runId' (
-        $null -ne $obsVar -and ([string]$obsVar.Document.runId) -notmatch '\$') (
-        $(if ($null -eq $obsVar) { '<no observed record>' } else { [string]$obsVar.Document.runId }))
-    Check 'the unexpanded projectFingerprint is not stored either' (
-        $null -ne $obsVar -and ([string]$obsVar.Document.projectFingerprint) -notmatch '\$') (
-        $(if ($null -eq $obsVar) { '<no observed record>' } else { [string]$obsVar.Document.projectFingerprint }))
+    Check 'dynamic fingerprint records no manufactured observation' ($null -eq $obsVar -and (Get-Message $rVar.Out) -match 'dynamic or unsupported') $rVar.Out
+    $varCommand = $varCommand.Replace('"$FP"', $fixtureFp)
+    $rVar = Fire -HookPath $hcVar.Script -Cwd $Proj -EventName PreToolUse -Command $varCommand -LocalAppData $hcVar.LocalAppData
+    $obsVar = Get-ObservedRecord $hcVar.LocalAppData
+    Check 'dynamic RunId with valid literal fingerprint retains uncontrolled fallback' ($null -ne $obsVar -and -not $obsVar.Document.runIdControlled -and $obsVar.Document.runId -notmatch '\$')
+    Check 'uncontrolled fallback still carries explicit literal project fingerprint' ($null -ne $obsVar -and $obsVar.Document.projectFingerprint -ceq $fixtureFp)
 
     # =====================================================================
     # The project key must survive a NON-CANONICAL cwd.

@@ -253,6 +253,10 @@
     # hooks AND the guarded runner present for the correct clients/events".
     $trgRunnerClaude = Join-Path $healthProj '.claude\hooks\Hook-Maker\Test-Run-Guard\scripts\Run-Tests-Guarded.ps1'
     Check 'HM-06: the guarded runner is installed beside Test-Run-Guard (Claude runtime)' (Test-Path -LiteralPath $trgRunnerClaude -PathType Leaf) $trgRunnerClaude
+    foreach ($clientDir in @('.claude','.codex')) {
+        $bindingPath = Join-Path $healthProj ($clientDir + '\hooks\Hook-Maker\Test-Run-Guard\_invocationidentity.ps1')
+        Check ($clientDir + ': literal binding preflight is installed with its hook') (Test-Path -LiteralPath $bindingPath -PathType Leaf)
+    }
     $installedRunners = @(Get-ChildItem -LiteralPath $healthProj -Recurse -Filter 'Run-Tests-Guarded.ps1' -File -ErrorAction SilentlyContinue)
     Check 'HM-06: every installed guarded runner rides inside a Test-Run-Guard runtime (never the other two test hooks)' (
         $installedRunners.Count -ge 1 -and @($installedRunners | Where-Object { $_.FullName -notmatch '[\\/]Test-Run-Guard[\\/]' }).Count -eq 0) (($installedRunners | ForEach-Object { $_.FullName }) -join ' ; ')

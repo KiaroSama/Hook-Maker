@@ -35,7 +35,7 @@ foreach ($observerHost in @('pwsh', 'powershell.exe')) {
     Write-Host ('--- literal invocation identity: ' + $observerHost + ' ---') -ForegroundColor Cyan
     foreach ($case in $cases) {
         $copy = New-IsolatedHookCopy
-        $command = '& .\scripts\Run-Tests-Guarded.ps1 -FilePath python.exe ' + $case.Source + ' -RunId literal-case'
+        $command = '& .\scripts\Run-Tests-Guarded.ps1 -FilePath python.exe ' + $case.Source + ' -RunId literal-case -ProjectFingerprint ' + (Get-ShortHash $Proj.ToLowerInvariant())
         $response = Fire -HookPath $copy.Script -Cwd $Proj -EventName 'PreToolUse' -Command $command -LocalAppData $copy.LocalAppData -Exe $observerHost
         $observed = Get-ObservedRecord $copy.LocalAppData
         if ($case.ContainsKey('Unknown')) {
@@ -100,6 +100,12 @@ foreach ($observerHost in @('pwsh', 'powershell.exe')) {
         $null -ne $actual -and $null -ne $observed -and $observed.Document.commandFingerprint -eq $actual.commandFingerprint)
     $response = Fire -HookPath $copy.Script -Cwd $Proj -EventName 'PostToolUse' -Command $command -LocalAppData $copy.LocalAppData -Exe $observerHost
     Check ($observerHost + ': matching real result produces no identity advisory') ($response.Exit -eq 0 -and $response.Out -eq '') $response.Out
+    $originalHash = (Get-FileHash -LiteralPath $resultPath).Hash
+    $secondId = $runId + 'second'
+    $secondCommand = $command.Replace('-RunId ' + $runId, '-RunId ' + $secondId)
+    $null = Fire -HookPath $copy.Script -Cwd $Proj -EventName PreToolUse -Command $secondCommand -LocalAppData $copy.LocalAppData -Exe $observerHost
+    $response = Fire -HookPath $copy.Script -Cwd $Proj -EventName PostToolUse -Command $secondCommand -LocalAppData $copy.LocalAppData -Exe $observerHost
+    Check ($observerHost + ': simultaneous second observation cannot consume first run receipt') ((Get-Message $response.Out) -match 'DIFFERENT run' -and (Get-FileHash -LiteralPath $resultPath).Hash -eq $originalHash)
 
     foreach ($negative in @('failure','leak','stale','incomplete')) {
         $changed = $actual | ConvertTo-Json -Depth 8 | ConvertFrom-Json

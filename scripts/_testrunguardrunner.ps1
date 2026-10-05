@@ -19,7 +19,7 @@
     # PowerShell), so no JSON/embedded-quote survives Start-Process arg mangling.
     $orphanWrapper = Join-Path $Work 'run-orphan.ps1'
     Write-Utf8 $orphanWrapper (
-        "& '$Runner' -FilePath 'pwsh' -Arguments @('-NoProfile','-File','$orphanSuite') " +
+        "& '$Runner' -ProjectFingerprint standalone-fixture -FilePath 'pwsh' -Arguments @('-NoProfile','-File','$orphanSuite') " +
         "-TimeoutSeconds 60 -IdleTimeoutSeconds 30 -HeartbeatSeconds 1 -ResultPath '$orphanResult' -Quiet`nexit `$LASTEXITCODE`n")
     $prevOrphanEnv = $env:ORPHAN_PIDFILE
     $env:ORPHAN_PIDFILE = $orphanPidFile
@@ -135,7 +135,7 @@
         $faultWrapper = Join-Path $faultDir 'invoke.ps1'
         $faultExe = if ($fault -eq 'timeout-cleanup') { 'ping.exe' } else { 'cmd.exe' }
         $faultArgs = if ($fault -eq 'timeout-cleanup') { "@('-n','30','127.0.0.1')" } else { "@('/c','exit','0')" }
-        Write-Utf8 $faultWrapper ("& '$faultDir/Run-Tests-Guarded.ps1' -FilePath '$faultExe' -Arguments $faultArgs -TimeoutSeconds 2 -IdleTimeoutSeconds 5 -HeartbeatSeconds 1 -ResultPath '$faultResult' -Quiet`nexit `$LASTEXITCODE`n")
+        Write-Utf8 $faultWrapper ("& '$faultDir/Run-Tests-Guarded.ps1' -ProjectFingerprint standalone-fixture -FilePath '$faultExe' -Arguments $faultArgs -TimeoutSeconds 2 -IdleTimeoutSeconds 5 -HeartbeatSeconds 1 -ResultPath '$faultResult' -Quiet`nexit `$LASTEXITCODE`n")
         $faultProc = Start-BoundedProcess -FilePath (Get-Process -Id $PID).Path -ArgumentList @('-NoLogo','-NoProfile','-File',$faultWrapper) -Wait -NoNewWindow -PassThru -TimeoutMs 30000
         $faultDoc = [IO.File]::ReadAllText($faultResult, [Text.Encoding]::UTF8) | ConvertFrom-Json
         if ($fault -eq 'timeout-cleanup') {
@@ -157,7 +157,7 @@
     $cleanResult = Join-Path $Work 'clean-result.json'
     $cleanWrapper = Join-Path $Work 'run-clean.ps1'
     Write-Utf8 $cleanWrapper (
-        "& '$Runner' -FilePath 'cmd.exe' -Arguments @('/c','exit','7') " +
+        "& '$Runner' -ProjectFingerprint standalone-fixture -FilePath 'cmd.exe' -Arguments @('/c','exit','7') " +
         "-TimeoutSeconds 30 -IdleTimeoutSeconds 10 -HeartbeatSeconds 1 -ResultPath '$cleanResult' -Quiet`nexit `$LASTEXITCODE`n")
     $cleanIterations = 12
     $cleanStable = $true
@@ -186,7 +186,7 @@
     $quickResult = Join-Path $Work 'quick-result.json'
     $quickWrapper = Join-Path $Work 'run-quick.ps1'
     Write-Utf8 $quickWrapper (
-        "& '$Runner' -FilePath 'cmd.exe' -Arguments @('/c','exit','0') " +
+        "& '$Runner' -ProjectFingerprint standalone-fixture -FilePath 'cmd.exe' -Arguments @('/c','exit','0') " +
         "-TimeoutSeconds 60 -IdleTimeoutSeconds 45 -HeartbeatSeconds 30 -ResultPath '$quickResult' -Quiet`nexit `$LASTEXITCODE`n")
     $quickWatch = [System.Diagnostics.Stopwatch]::StartNew()
     $rpQuick = Start-BoundedProcess -FilePath (Get-Process -Id $PID).Path -Wait -NoNewWindow -PassThru -ArgumentList @('-NoLogo', '-NoProfile', '-File', $quickWrapper)
@@ -201,7 +201,7 @@
     $busyResult = Join-Path $Work 'busy-result.json'
     $busyWrapper = Join-Path $Work 'run-busy.ps1'
     Write-Utf8 $busyWrapper (
-        "& '$Runner' -FilePath 'pwsh' -Arguments @('-NoProfile','-File','$busySuite') " +
+        "& '$Runner' -ProjectFingerprint standalone-fixture -FilePath 'pwsh' -Arguments @('-NoProfile','-File','$busySuite') " +
         "-TimeoutSeconds 30 -IdleTimeoutSeconds 2 -HeartbeatSeconds 1 -ResultPath '$busyResult' -Quiet`nexit `$LASTEXITCODE`n")
     $rp = Start-BoundedProcess -FilePath (Get-Process -Id $PID).Path -Wait -NoNewWindow -PassThru -ArgumentList @(
         '-NoLogo', '-NoProfile', '-File', $busyWrapper)
@@ -227,7 +227,7 @@
     $activeResult = Join-Path $Work 'active-result.json'
     $activeWrapper = Join-Path $Work 'run-active.ps1'
     Write-Utf8 $activeWrapper (
-        "& '$Runner' -FilePath 'pwsh' -Arguments @('-NoProfile','-File','$activeSuite') " +
+        "& '$Runner' -ProjectFingerprint standalone-fixture -FilePath 'pwsh' -Arguments @('-NoProfile','-File','$activeSuite') " +
         "-TimeoutSeconds 40 -IdleTimeoutSeconds 35 -HeartbeatSeconds 1 -ResultPath '$activeResult' -RunId '$activeRunId' -Quiet`nexit `$LASTEXITCODE`n")
     $prevActiveLocal = $env:LOCALAPPDATA
     $prevActiveGo = $env:HOOKMAKER_ACTIVE_GO
@@ -296,7 +296,7 @@
     # The wrapper runs in cwd A (Start-Process -WorkingDirectory below), and passes
     # -WorkingDirectory B to the REAL repo runner, so inside it Get-Location != B.
     Write-Utf8 $wdWrapper (
-        "& '$Runner' -FilePath 'pwsh' -Arguments @('-NoProfile','-File','$wdSuite') " +
+        "& '$Runner' -ProjectFingerprint standalone-fixture -FilePath 'pwsh' -Arguments @('-NoProfile','-File','$wdSuite') " +
         "-WorkingDirectory '$wdB' -TimeoutSeconds 40 -IdleTimeoutSeconds 35 -HeartbeatSeconds 1 -ResultPath '$wdResult' -RunId '$wdRunId' -Quiet`nexit `$LASTEXITCODE`n")
     $prevWdLocal = $env:LOCALAPPDATA
     $prevWdGo = $env:HOOKMAKER_WD_GO
@@ -354,7 +354,7 @@
         # Wrapper script, same reason as the orphan case above: the JSON keeps its
         # quotes instead of being mangled by Start-Process argument joining.
         Write-Utf8 $argWrapper (
-            "& '$Runner' -FilePath 'pwsh' -ArgumentsJson '" + ([string]$argCase.Json).Replace("'", "''") + "' " +
+            "& '$Runner' -ProjectFingerprint standalone-fixture -FilePath 'pwsh' -ArgumentsJson '" + ([string]$argCase.Json).Replace("'", "''") + "' " +
             "-TimeoutSeconds 60 -IdleTimeoutSeconds 30 -ResultPath '$argResult' -Quiet`nexit `$LASTEXITCODE`n")
         $argOut = Join-Path $Work ('argjson-out-' + [guid]::NewGuid().ToString('N').Substring(0, 8) + '.txt')
         $null = Start-BoundedProcess -FilePath (Get-Process -Id $PID).Path -Wait -NoNewWindow -PassThru `
@@ -391,7 +391,7 @@
     $fpResult = Join-Path $Work ('fp-ok-' + [guid]::NewGuid().ToString('N').Substring(0, 8) + '.json')
     $fpWrapper = Join-Path $Work ('run-fp-' + [guid]::NewGuid().ToString('N').Substring(0, 8) + '.ps1')
     Write-Utf8 $fpWrapper (
-        "& '$Runner' -FilePath 'tools/localhost-runner.exe' -WorkingDirectory '$fpDir' " +
+        "& '$Runner' -ProjectFingerprint standalone-fixture -FilePath 'tools/localhost-runner.exe' -WorkingDirectory '$fpDir' " +
         "-ArgumentsJson '[]' -TimeoutSeconds 60 -ResultPath '$fpResult' -Quiet`nexit `$LASTEXITCODE`n")
     $null = Start-BoundedProcess -FilePath (Get-Process -Id $PID).Path -Wait -NoNewWindow -PassThru `
         -ArgumentList @('-NoLogo', '-NoProfile', '-File', $fpWrapper)
@@ -410,7 +410,7 @@
     # A bare 'pwsh' WOULD be found on PATH - the point is that './nope/pwsh.exe'
     # must not silently become it.
     Write-Utf8 $fpMissWrapper (
-        "& '$Runner' -FilePath './nope/pwsh.exe' -WorkingDirectory '$fpDir' " +
+        "& '$Runner' -ProjectFingerprint standalone-fixture -FilePath './nope/pwsh.exe' -WorkingDirectory '$fpDir' " +
         "-ArgumentsJson '[""-NoProfile"",""-Command"",""exit 0""]' -TimeoutSeconds 60 -ResultPath '$fpMissResult' -Quiet`nexit `$LASTEXITCODE`n")
     $null = Start-BoundedProcess -FilePath (Get-Process -Id $PID).Path -Wait -NoNewWindow -PassThru `
         -RedirectStandardError $fpMissErr -ArgumentList @('-NoLogo', '-NoProfile', '-File', $fpMissWrapper)
@@ -437,7 +437,7 @@
     $bareWrapper = Join-Path $Work 'run-bare-name.ps1'
     Write-Utf8 $bareWrapper (
         "`$env:PATH = '$pathExtDir' + ';' + `$env:PATH`n" +
-        "& '$Runner' -FilePath 'zzzprobe' -Arguments @() " +
+        "& '$Runner' -ProjectFingerprint standalone-fixture -FilePath 'zzzprobe' -Arguments @() " +
         "-TimeoutSeconds 60 -IdleTimeoutSeconds 30 -ResultPath '$bareResult' -Quiet`nexit `$LASTEXITCODE`n")
     $null = Start-BoundedProcess -FilePath (Get-Process -Id $PID).Path -Wait -NoNewWindow -PassThru -ArgumentList @(
         '-NoLogo', '-NoProfile', '-File', $bareWrapper)
@@ -505,7 +505,7 @@ try {
     $canonWrapper = Join-Path $Work ('run-canon-' + [guid]::NewGuid().ToString('N').Substring(0, 8) + '.ps1')
     $canonExe = (Get-Process -Id $PID).Path
     Write-Utf8 $canonWrapper (
-        "& '$Runner' -FilePath '$canonExe' -WorkingDirectory '$canonProj' " +
+        "& '$Runner' -ProjectFingerprint standalone-fixture -FilePath '$canonExe' -WorkingDirectory '$canonProj' " +
         "-ArgumentsJson '[""-NoProfile"",""-Command"",""exit 0""]' -TimeoutSeconds 120 " +
         "-ResultPath '$callerResult' -RunId 'a01-acceptance' -Quiet`nexit `$LASTEXITCODE`n")
     $null = Start-BoundedProcess -FilePath $canonExe -Wait -NoNewWindow -PassThru `

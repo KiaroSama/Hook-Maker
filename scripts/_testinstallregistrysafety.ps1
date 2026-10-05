@@ -196,6 +196,7 @@
         $trgPlan = @(Get-InstallPlanFor -HookScript $trgHook -ToolRoot $ToolRoot)
         $trgRunner = @($trgPlan | Where-Object { $_.relativePath -eq 'Test-Run-Guard/scripts/Run-Tests-Guarded.ps1' })
         Check 'the install plan ships scripts/Run-Tests-Guarded.ps1 inside the Test-Run-Guard runtime' ($trgRunner.Count -eq 1) (($trgPlan | ForEach-Object { $_.relativePath }) -join ', ')
+        Check 'literal binding preflight ships as an Immutable hook sibling' (@($trgPlan | Where-Object { $_.relativePath -eq 'Test-Run-Guard/_invocationidentity.ps1' -and $_.ownership -eq 'Immutable' }).Count -eq 1)
         Check 'the shipped runner is an Immutable managed artifact (drift-repairable)' ($trgRunner.Count -eq 1 -and $trgRunner[0].ownership -eq 'Immutable') ([string]$trgRunner[0].ownership)
         $trgIdentity = @($trgPlan | Where-Object { $_.relativePath -eq 'Test-Run-Guard/scripts/_processtree.ps1' })
         Check 'guarded runner ships the canonical birth-checked process helper as an Immutable sibling' ($trgIdentity.Count -eq 1 -and $trgIdentity[0].ownership -eq 'Immutable' -and $trgIdentity[0].sourcePath -eq (Join-Path $ToolRoot 'hooks/_processtree.ps1'))

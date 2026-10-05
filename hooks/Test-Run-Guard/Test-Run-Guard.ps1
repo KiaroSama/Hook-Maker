@@ -3,11 +3,11 @@
 # "Test Hook Architecture").
 #
 # ROLE (global-hook-rules.md "Hook Roles"):
-#   PreToolUse  -> GATE.     Blocks ONE thing: a clearly-recognised RAW test
-#                            command that is about to run with no bounded
-#                            runner around it. It answers with the EXACT safe
-#                            replacement, and nothing else it sees is its
-#                            business.
+#   PreToolUse  -> GATE.     Refuses unbounded RAW test commands and supported
+#                            literal guarded calls with invalid state binding
+#                            BEFORE observation. Exact correction preserves
+#                            caller options; never rewrites input or permissions.
+#                            Foreign cwd and dynamic identity are not rebound.
 #   PostToolUse -> DETECTOR. Reads the guarded runner's structured result and
 #                            reports what actually happened - timeout, kill,
 #                            leaked process, non-zero exit. Never blocks.
@@ -443,21 +443,19 @@ if ($eventName -eq 'PreToolUse') {
             -RunId $runId -RunIdControlled $true -CommandFingerprint $commandFp -ProjectFingerprint $stateFingerprint
     }
     elseif ($verdict.Kind -eq 'guarded') {
-        # Already guarded. Recover the identity the invocation carries: if it was
-        # OUR replacement it has -RunId/-ProjectFingerprint and the inner command,
-        # so the observed record matches what the runner will write. A guarded
-        # command typed directly (no -RunId) cannot be bound by runId - mark it
-        # uncontrolled so the consumer binds on command+project+time instead.
+        # Reject invalid literal binding before writing; never substitute identity
+        # only in observation. No literal RunId retains command+project+time fallback.
         $identity = Get-GuardedInvocationIdentity -Tokens $tokens -RawCommand $rawCommand
-        if ([string]::IsNullOrWhiteSpace($identity.CommandFingerprint)) {
-            Write-Advisory -EventName 'PreToolUse' -Message ('TEST RUN GUARD: this guarded command uses a dynamic or unsupported executable/argument expression, so its run identity cannot be established from the command text. No unmatchable test obligation was recorded. Use a literal -FilePath and literal -Arguments or -ArgumentsJson when correlated evidence is required.' + $configNote)
+        $binding = Get-GuardedBindingFinding $identity $rawCommand $projectRoot $stateFingerprint
+        if ($null -ne $binding) {
+            if ($binding.Kind -eq 'unknown' -or $advisoryOnly) { Write-Advisory -EventName 'PreToolUse' -Message ($binding.Message + $configNote) }
+            Write-Deny -Message ($binding.Message + $configNote)
         }
         $runIdControlled = -not [string]::IsNullOrWhiteSpace($identity.RunId)
         $runId = if ($runIdControlled) { $identity.RunId } else { [guid]::NewGuid().ToString('N') }
         $observedPath = Get-PerRunStatePath -StateDirectory $stateDirectory -Kind 'observed' -ProjectKey $projectKey -RunId $runId
-        $projFp = if (-not [string]::IsNullOrWhiteSpace($identity.ProjectFingerprint)) { $identity.ProjectFingerprint } else { $stateFingerprint }
         Write-ObservedRecord -Path $observedPath -ProjectRoot $projectRoot -Guarded $true `
-            -RunId $runId -RunIdControlled $runIdControlled -CommandFingerprint $identity.CommandFingerprint -ProjectFingerprint $projFp
+            -RunId $runId -RunIdControlled $runIdControlled -CommandFingerprint $identity.CommandFingerprint -ProjectFingerprint $identity.ProjectFingerprint
     }
     if ($verdict.Kind -ne 'raw') {
         # Already bounded: never wrapped a second time. (Unrelated commands left above.)
@@ -567,7 +565,7 @@ if ($verdict.Kind -eq 'guarded') {
     $identity = Get-GuardedInvocationIdentity -Tokens $tokens -RawCommand $rawCommand
     $thisRunId = [string]$identity.RunId
     $thisCommandFp = [string]$identity.CommandFingerprint
-    $identityUnresolved = [string]::IsNullOrWhiteSpace($thisCommandFp)
+    $identityUnresolved = ([string]::IsNullOrWhiteSpace($thisCommandFp) -or $null -ne (Get-GuardedBindingFinding $identity $rawCommand $projectRoot $stateFingerprint))
 }
 elseif ($verdict.Kind -eq 'raw') {
     $thisCommandFp = Get-CommandFingerprint -ExecutablePath $verdict.Command.FilePath -ArgumentList $verdict.Command.Arguments

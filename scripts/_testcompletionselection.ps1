@@ -95,6 +95,31 @@ foreach ($codexShape in @($false, $true)) {
     Check ($client + ': one success still cannot satisfy two concurrent observations') (
         $r.Exit -eq 0 -and $r.Out -match '"decision"\s*:\s*"block"') $r.Out
 
+    $c = New-IsolatedHookCopy; $p = New-GitRepo ('Selection-bound-pre-post-' + $client)
+    $guardDir = Join-Path $Work ('actual-guard-' + $client)
+    [void][IO.Directory]::CreateDirectory($guardDir)
+    foreach ($file in @(Get-ChildItem -LiteralPath (Join-Path $HooksRoot 'Test-Run-Guard') -Filter '*.ps1' -File)) { [IO.File]::Copy($file.FullName, (Join-Path $guardDir $file.Name), $true) }
+    $guard = Join-Path $guardDir 'Test-Run-Guard.ps1'
+    $id = 'actualbound' + $client.ToLowerInvariant()
+    $runner = Join-Path (Split-Path -Parent $PSScriptRoot) 'scripts/Run-Tests-Guarded.ps1'
+    $command = "& '" + $runner.Replace("'","''") + "' -FilePath cmd.exe -ArgumentsJson '[`"/c`",`"exit`",`"0`"]' -WorkingDirectory '" + $p.Replace("'","''") + "' -RunId " + $id + ' -ProjectFingerprint ' + (Get-Fingerprint $p) + ' -TimeoutSeconds 20 -IdleTimeoutSeconds 10 -HeartbeatSeconds 1 -MaxWorkers 1 -Quiet'
+    $pre = Fire -Copy $c -Cwd $p -EventName PreToolUse -Command $command -Codex:$codexShape -Exe $hostExe -HookPath $guard
+    $wrapper = Join-Path $Work ('bound-' + $client + '.ps1')
+    Write-Utf8 $wrapper ($command + "`nexit `$LASTEXITCODE`n")
+    $savedLocal = $env:LOCALAPPDATA; $savedState = $env:HOOKMAKER_STATE_DIR
+    try {
+        $env:LOCALAPPDATA = $c.LocalAppData; $env:HOOKMAKER_STATE_DIR = Get-StateDir $c
+        $null = Invoke-QuietCommand -FilePath 'pwsh' -ArgumentList @('-NoProfile','-File',$wrapper) -TimeoutSeconds 30
+        $boundExit = $LASTEXITCODE
+    }
+    finally { $env:LOCALAPPDATA=$savedLocal; $env:HOOKMAKER_STATE_DIR=$savedState }
+    $post = Fire -Copy $c -Cwd $p -EventName PostToolUse -Command $command -Codex:$codexShape -Exe $hostExe -HookPath $guard
+    $stop = Fire -Copy $c -Cwd $p -Codex:$codexShape -Exe $hostExe
+    $obsPath = Get-RunStateFile $c $p 'observed' $id
+    $resultPath = Get-RunStateFile $c $p 'result' $id
+    $obs = Read-JsonFile $obsPath; $result = Read-JsonFile $resultPath
+    Check ($client + ': actual harmless Pre/runner/Post/Stop is correctly bound') ($pre.Exit -eq 0 -and $pre.Out -eq '' -and $pre.Err -eq '' -and $boundExit -eq 0 -and $post.Exit -eq 0 -and $post.Out -eq '' -and $post.Err -eq '' -and $stop.Out -eq '' -and $stop.Err -eq '' -and $null -ne $obs -and $null -ne $result -and $obs.runId -eq $result.runId -and $obs.commandFingerprint -eq $result.commandFingerprint -and $obs.projectFingerprint -eq $result.projectFingerprint) ($pre.Out + $post.Out + $stop.Out)
+
     $c = New-IsolatedHookCopy; $p = New-GitRepo ('Selection-same-command-' + $client)
     Write-ObservedRecord -Copy $c -Root $p -RunId 'orphan' -AgeMinutes 5
     Write-SelectionPair $c $p 'replacement' (Get-TestCommandFp $p)

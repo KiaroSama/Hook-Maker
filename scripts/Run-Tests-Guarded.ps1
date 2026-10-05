@@ -24,8 +24,8 @@
 # to be crossed, never CPU alone. See Test-ShouldTerminate.
 #
 # Usage:
-#   .\scripts\Run-Tests-Guarded.ps1 -FilePath pwsh -Arguments '-File','.\scripts\Run-Tests.ps1'
-#   .\scripts\Run-Tests-Guarded.ps1 -FilePath pwsh -Arguments '-File','x.ps1' -ResultPath r.json
+#   .\scripts\Run-Tests-Guarded.ps1 -ProjectFingerprint <current-literal> -FilePath pwsh -Arguments '-File','.\scripts\Run-Tests.ps1'
+#   .\scripts\Run-Tests-Guarded.ps1 -ProjectFingerprint <current-literal> -FilePath pwsh -Arguments '-File','x.ps1' -ResultPath r.json
 #
 # Exit code: the child's own exit code, or 124 when this runner terminated it.
 #
@@ -101,9 +101,9 @@ param(
     # The observing hook's repository-state fingerprint, persisted verbatim so the
     # consumer can reject a result produced for a different repository/state. Not
     # recomputed here: the hook owns the git-state derivation.
-    # Absent, the receipt records an empty one and is not usable as recovery
-    # evidence (_recovery.ps1 requires it and now says so by name). The guard's
-    # own replacement command always supplies it; a hand-typed run must too.
+    # Required for standalone callers too: absent/blank refuses before captures,
+    # child startup or evidence publication. Existing direct callers must supply
+    # it explicitly; this standalone runner never guesses or imports Git state.
     [string]$ProjectFingerprint = '',
 
     # Optional, for audit only. The command fingerprint is RECOMPUTED below from
@@ -121,6 +121,12 @@ param(
 
 Set-StrictMode -Version 2.0
 $ErrorActionPreference = 'Stop'
+
+# No inferred identity: refuse BEFORE sibling initialization, captures or child.
+if ([string]::IsNullOrWhiteSpace($ProjectFingerprint)) {
+    [Console]::Error.WriteLine('Run-Tests-Guarded: -ProjectFingerprint is required and must be nonempty. Pass the observing hook''s current literal fingerprint; no child or evidence was created.')
+    exit 3
+}
 
 # ---- the three siblings this runner is split across ------------------------
 #

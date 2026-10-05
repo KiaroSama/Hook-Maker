@@ -19,7 +19,7 @@ foreach($runnerHost in @('pwsh','powershell.exe')) {
         $receipt=Join-Path $caseRoot ($tag+'.json')
         $wrapper=Join-Path $caseRoot ($tag+'.ps1')
         if($failure){[IO.File]::AppendAllText($fixture,"`r`nexit 7`r`n",[Text.UTF8Encoding]::new($false))}
-        $code="`$ErrorActionPreference='Stop'`r`n`$env:LOCALAPPDATA='"+$caseRoot.Replace("'","''")+"'`r`n& '"+$Runner.Replace("'","''")+"' -FilePath '"+$hostChild.Replace("'","''")+"' -Arguments "+$array+" -WorkingDirectory '"+$caseRoot.Replace("'","''")+"' -TimeoutSeconds 20 -IdleTimeoutSeconds 10 -HeartbeatSeconds 1 -MaxWorkers 1 -ResultPath '"+$receipt.Replace("'","''")+"' -Quiet`r`nexit `$LASTEXITCODE`r`n"
+        $code="`$ErrorActionPreference='Stop'`r`n`$env:LOCALAPPDATA='"+$caseRoot.Replace("'","''")+"'`r`n& '"+$Runner.Replace("'","''")+"' -ProjectFingerprint standalone-host-fixture -FilePath '"+$hostChild.Replace("'","''")+"' -Arguments "+$array+" -WorkingDirectory '"+$caseRoot.Replace("'","''")+"' -TimeoutSeconds 20 -IdleTimeoutSeconds 10 -HeartbeatSeconds 1 -MaxWorkers 1 -ResultPath '"+$receipt.Replace("'","''")+"' -Quiet`r`nexit `$LASTEXITCODE`r`n"
         [IO.File]::WriteAllText($wrapper,$code,[Text.UTF8Encoding]::new($true,$true))
         $program=if($runnerHost -eq 'pwsh'){$hostChild}else{$runnerHost}
         $canaryClock = [Diagnostics.Stopwatch]::StartNew()

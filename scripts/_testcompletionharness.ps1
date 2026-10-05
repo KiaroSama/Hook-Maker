@@ -335,12 +335,14 @@ function Fire {
         [switch]$StopHookActive, [switch]$Codex, [string]$Exe = 'pwsh',
         # E-05: optional Stop-input fields the ::deep-debug detection consumes -
         # a transcript_path (Claude Code sends one at Stop) and/or a prompt field.
-        [string]$TranscriptPath = '', [string]$Prompt = ''
+        [string]$TranscriptPath = '', [string]$Prompt = '', [string]$Command = '', [string]$HookPath = ''
     )
     $obj = @{ session_id = $SessionId; cwd = $Cwd; hook_event_name = $EventName }
     if ($StopHookActive) { $obj['stop_hook_active'] = $true }
     if ($TranscriptPath -ne '') { $obj['transcript_path'] = $TranscriptPath }
     if ($Prompt -ne '') { $obj['prompt'] = $Prompt }
+    if ($Command -ne '') { $obj['tool_name']='Bash'; $obj['tool_input']=@{command=$Command} }
+    if ($HookPath -eq '') { $HookPath = $Copy.Script }
     # The client signal is CLAUDE_PROJECT_DIR in the child ENVIRONMENT (set
     # below), never a field in the event input - `hookSpecificOutput` is an
     # OUTPUT field and appears in no event payload.
@@ -350,8 +352,8 @@ function Fire {
     $outFile = Join-Path $Work ('out-' + $token + '.txt')
     $errFile = Join-Path $Work ('err-' + $token + '.txt')
     Write-Utf8 $inFile $payload
-    if ($Exe -eq 'pwsh') { $file = (Get-Process -Id $PID).Path; $argLine = '-NoLogo -NoProfile -File "' + $Copy.Script + '"' }
-    else { $file = 'powershell.exe'; $argLine = '-NoLogo -NoProfile -ExecutionPolicy Bypass -File "' + $Copy.Script + '"' }
+    if ($Exe -eq 'pwsh') { $file = (Get-Process -Id $PID).Path; $argLine = '-NoLogo -NoProfile -File "' + $HookPath +'"' }
+    else { $file = 'powershell.exe'; $argLine = '-NoLogo -NoProfile -ExecutionPolicy Bypass -File "' + $HookPath +'"' }
     $startArgs = @{
         FilePath               = $file; ArgumentList = $argLine; RedirectStandardInput = $inFile
         RedirectStandardOutput = $outFile; RedirectStandardError = $errFile

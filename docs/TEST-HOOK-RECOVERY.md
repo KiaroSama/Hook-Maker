@@ -53,6 +53,17 @@ command, and never append a pipe or redirection to it; run exactly the replaceme
 `Test-Run-Guard` prints, because that is the one carrying the identity a later receipt can
 pair with.
 
+Since 2026-10-05 supported literal guarded calls with missing/blank/unusable/stale
+`-ProjectFingerprint` refuse at PreToolUse before observation. The printed correction
+changes only that binding and preserves caller options. A foreign literal working
+directory requires that project's session context; dynamic syntax gets advice without
+a guessed observation. Standalone callers also must supply a nonempty fingerprint,
+or the runner exits3 before child/capture/evidence. This prevents NEW mismatches;
+it does not fill historical fields. A fresh health command can supersede only the
+same complete health command under the rules above, never a separate mutation
+acceptance command. Repeating live create/delete acceptance requires fresh explicit
+authorization.
+
 The manual association below is now only for the case a re-run cannot reproduce:
 a repaired wrapper whose COMMAND identity legitimately changed. An operator who has
 independently verified equivalent test scope can use:
