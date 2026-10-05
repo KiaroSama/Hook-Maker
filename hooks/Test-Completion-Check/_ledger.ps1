@@ -280,7 +280,7 @@ function Merge-DiskLedger {
 # silent tail), never swallowed; the recovery path still throws.
 $script:LedgerWriteFailed = ''
 function Save-CompletionState {
-    param([string]$Deferred, [string]$ResolveIncidentKey = '', [string]$RecoveryRunId = '', [string]$RecoveryReason = '')
+    param($Deferred = $null, [string]$ResolveIncidentKey = '', [string]$RecoveryRunId = '', [string]$RecoveryReason = '')
     if ($null -eq $Deferred) { $Deferred = $script:deferredFingerprint }
     $script:deferredFingerprint = $Deferred
     $mutex = $null

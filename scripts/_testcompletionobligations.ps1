@@ -92,6 +92,16 @@ function Invoke-NoteObligationEntryRegression {
     $r = Fire -Copy $c -Cwd $p
     Check 'unchanged unknown diagnostic is not repeated and retirement survives disk merge' ($r.Out -eq '' -and (Get-PendingCount (Get-CompletionStateDoc $c $p)) -eq 1) $r.Out
 
+    $c = New-IsolatedHookCopy @{TEST_COMPLETION_COORDINATION_WAIT_SECONDS='0'}
+    $p = New-GitRepoAi 'UnknownCleanupDeferral'
+    New-CleanupMarker $p
+    $ledgerPath = Join-Path (Get-StateDir $c) ('TestCompletionCheck-' + (Get-ProjectKey $p) + '.json')
+    Write-Utf8 $ledgerPath ([pscustomobject]@{pendingNotes=@([pscustomobject]@{key='unknown';reason='';baseline=0})} | ConvertTo-Json -Depth 6)
+    $r = Fire -Copy $c -Cwd $p
+    Check 'unknown cleanup coordination defers once' ($r.Out -eq '') $r.Out
+    $r = Fire -Copy $c -Cwd $p
+    Check 'routine ledger save preserves deferral and next event reports unknown diagnostic' ($r.Out -match 'UNKNOWN' -and $r.Out -notmatch 'decision|additionalContext') $r.Out
+
     $c = New-IsolatedHookCopy
     $p = New-GitRepoAi 'LegacyTermination'
     $legacyReceipt = Join-Path (Get-StateDir $c) ('TestRunGuard-result-' + (Get-ProjectKey $p) + '.json')
