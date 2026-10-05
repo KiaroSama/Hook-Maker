@@ -360,6 +360,8 @@ Before the task it lists the rules that govern this project: the **global** rule
 ## `Secrets-Check`
 
 **Runs:** pre-task (SessionStart) + post-task (Stop).
+Secrets-Check interprets one matched outer single/double quote pair when classifying credential values and matching leaks, so a quoted token cannot evade strong-format checks or bare-token working-tree/index/outgoing matches. Original registry values and source metadata are preserved verbatim; the shared hook configuration parser is unchanged. Values are never executed, interpolated, or escape-expanded. This is not a complete dotenv parser: multiline values and inline-comment/escape processing remain outside this normalization.
+
 The mixed-case entropy guess uses case-sensitive uppercase/lowercase tests. A long lowercase/uppercase-only identifier is not a mixed-case credential. Unverified custom model identifiers remain Unknown/advisory unless stronger evidence exists; verified public routing keys may be listed individually in this hook's own PUBLIC_CONFIG_KEYS. No global MODEL_* exemption; explicit SECRET_KEYS, credential key semantics and definite token/private-key formats still win.
 
 

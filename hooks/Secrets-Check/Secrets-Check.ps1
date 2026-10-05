@@ -521,7 +521,7 @@ if ($inGitRepo) {
     $secretValueGroups = [ordered]@{}
     foreach ($key in @($discovered.Keys | Sort-Object)) {
         if ($discovered[$key].Classification -ne 'Secret') { continue }
-        $groupValue = $discovered[$key].Value
+        $groupValue = Get-SecretValueText $discovered[$key].Value
         if ($groupValue.Length -lt $minSecretLength) { continue }
         if (-not $secretValueGroups.Contains($groupValue)) {
             $secretValueGroups[$groupValue] = New-Object System.Collections.Generic.List[string]

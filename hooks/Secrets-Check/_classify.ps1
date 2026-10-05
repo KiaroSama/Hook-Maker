@@ -124,8 +124,23 @@ $script:PublicKeyContains = @('FEATURE')
 # (user:pass@host) is caught by the strong tier above and does not reach here;
 # a secret stored under a credential-named key (SMTP_PASSWORD) is caught by
 # Test-CredentialLikeKey, which is also unoverridable.
+function Get-SecretValueText {
+    param([AllowEmptyString()][string]$Value)
+    # Read-HookEnv is shared configuration parsing and deliberately retains raw
+    # text. Interpret one matching dotenv quote pair only at the Secrets boundary;
+    # never expand variables/escapes or alter the registry's provenance value.
+    if ($null -eq $Value) { return '' }
+    $text = $Value.Trim()
+    if ($text.Length -ge 2 -and $text[0] -eq $text[$text.Length - 1] -and
+        ($text[0] -eq [char]34 -or $text[0] -eq [char]39)) {
+        return $text.Substring(1, $text.Length - 2)
+    }
+    return $Value
+}
+
 function Test-CredentialLikeValue {
     param([string]$Value, [switch]$StrongOnly)
+    $Value = Get-SecretValueText $Value
     if ([string]::IsNullOrWhiteSpace($Value)) { return $false }
     if ($Value -match '-----BEGIN [A-Z ]*PRIVATE KEY-----') { return $true }
     if ($Value -match '^Bearer\s+\S+') { return $true }

@@ -46,7 +46,51 @@ foreach ($key in @('MODEL_2_ID','MODEL_4_ID','MODEL_5_ID')) {
         Check 'strong model credential beats exact public override' ((Get-KeyValueClassification $key $value) -eq 'Secret')
     }
 }
+$publicConfigKeyOverrides = @('MODEL_1_ID','MODEL_4_ID')
+foreach ($quote in @([string][char]34, [string][char]39)) {
+    foreach ($token in @('ghp_SYNTHETICabcdefghijklmnopqrst2026', 'eyJsynthetic.eyJsynthetic.synthetic', 'Bearer synthetic-token', '-----BEGIN PRIVATE KEY-----', 'sk_test_SYNTHETICabcdefghijkl2026')) {
+        Check 'quoted definite credential remains Secret under public model override' ((Get-KeyValueClassification MODEL_4_ID ($quote + $token + $quote)) -eq 'Secret')
+    }
+    $quotedToken = $quote + 'ghp_SYNTHETICabcdefghijklmnopqrst2026' + $quote
+    $quotedBlock = $autoBlock.Replace($modelValue, $quotedToken)
+    $unsafeDiscovery = @{MODEL_1_ID=[pscustomobject]@{Value=$quotedToken;Source='.env';SourcePath=$sourcePath;Classification='PublicConfig'}}
+    $retained = Remove-StalePublicConfigEntries ($prefix + $quotedBlock) $unsafeDiscovery
+    Check 'quoted stored credential cannot be removed even with public current classification' ($retained.Content -ceq ($prefix + $quotedBlock) -and @($retained.Removed).Count -eq 0)
+}
+Check 'quote normalization preserves inner whitespace and embedded quotes' ((Get-SecretValueText '"  inner '' text  "') -ceq '  inner '' text  ')
+Check 'mismatched and unmatched quotes are not silently stripped' ((Get-SecretValueText '"unclosed') -ceq '"unclosed' -and (Get-SecretValueText '"mismatch''') -ceq '"mismatch''')
+Check 'unquoted text and literal escape sequences stay unchanged' ((Get-SecretValueText 'literal\ntext') -ceq 'literal\ntext' -and (Get-SecretValueText '"literal\ntext"') -ceq 'literal\ntext')
 if ($PublicModelOnly) { return }
+
+function Invoke-QuotedCredentialEntryRegression {
+    $quotedHook = New-ConfiguredHookCopy @{PUBLIC_CONFIG_KEYS='MODEL_4_ID';COOLDOWN_MINUTES='0'}
+    $token = 'ghp_SYNTHETICquotedcredential2026abcdefgh'
+    foreach ($quote in @([string][char]34, [string][char]39)) {
+        $repo = New-GitProj ('QuotedCredential-' + [int][char]$quote)
+        Write-Utf8 (Join-Path $repo '.gitignore') ".env`nsecrets.md`n"
+        Write-Utf8 (Join-Path $repo '.env') ('MODEL_4_ID=' + $quote + $token + $quote + "`n")
+        Write-Utf8 (Join-Path $repo 'example.txt') $token
+        Add-Commit $repo 'synthetic quoted credential'
+        $r = Fire -Cwd $repo -HookPath $quotedHook -EventName Stop
+        Check 'quoted credential blocks Stop even when source stores bare token' ($r.Out -match '"decision"\s*:\s*"block"' -and $r.Out -notlike ('*'+$token+'*') -and $r.Err -eq '') $r.Out
+        $registry = [IO.File]::ReadAllText((Join-Path $repo 'secrets.md'), [Text.Encoding]::UTF8)
+        Check 'quoted registry retains original value/provenance without reserializing it' ($registry.Contains('- Value: ' + $quote + $token + $quote))
+        Write-Utf8 (Join-Path $repo 'example.txt') 'working tree cleaned, index still contains fixture'
+        $r = FireGitPrePush -Cwd $repo -HookPath $quotedHook -StdinText (Get-RefUpdateLine $repo)
+        Check 'quoted credential still blocks with only staged/index token present' ($r.Exit -ne 0 -and $r.Err -match 'git-tracked file' -and $r.Err -notlike ('*'+$token+'*'))
+        Add-Commit $repo 'clean current synthetic token'
+        $r = FireGitPrePush -Cwd $repo -HookPath $quotedHook -StdinText (Get-RefUpdateLine $repo)
+        Check 'quoted credential blocks historical outgoing token after worktree/index cleanup' ($r.Exit -ne 0 -and $r.Err -match 'outgoing commit' -and $r.Err -notlike ('*'+$token+'*'))
+    }
+    $repo = New-GitProj 'QuotedPublicModel'
+    Write-Utf8 (Join-Path $repo '.gitignore') ".env`nsecrets.md`n"
+    Write-Utf8 (Join-Path $repo '.env') 'MODEL_4_ID="gemini-3-pro-image"'
+    Write-Utf8 (Join-Path $repo 'example.txt') 'gemini-3-pro-image'
+    Add-Commit $repo 'synthetic quoted public model'
+    $r = Fire -Cwd $repo -HookPath $quotedHook -EventName Stop
+    Check 'quoted verified public model remains nonblocking' ($r.Exit -eq 0 -and $r.Out -notmatch '"decision"|CRITICAL' -and $r.Err -eq '')
+}
+Invoke-QuotedCredentialEntryRegression
 
 Write-Host '--- exact model configuration: Stop and native pre-push ---' -ForegroundColor Cyan
 $modelHook = New-ConfiguredHookCopy @{ PUBLIC_CONFIG_KEYS = 'MODEL_1_ID,API_KEY'; COOLDOWN_MINUTES = '0' }
