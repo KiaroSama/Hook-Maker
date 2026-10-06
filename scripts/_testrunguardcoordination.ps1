@@ -74,6 +74,33 @@ function Invoke-FingerprintBindingRegression {
     finally { $env:HM_BINDING_PART=$savedPart }
 }
 
+function Invoke-UnavailableStateRegression {
+    param([string]$Root)
+    . $HookLib
+    $copy = New-IsolatedHookCopy
+    $savedOwner = $env:GIT_TEST_ASSUME_DIFFERENT_OWNER
+    try {
+        # Git's own ownership-refusal seam; no trust, ACL or global config edits.
+        $env:GIT_TEST_ASSUME_DIFFERENT_OWNER = '1'
+        foreach ($command in @('pytest -q', 'pwsh -File scripts/Run-Tests-Guarded.ps1 -FilePath pwsh -ArgumentsJson ''["-Command","exit 0"]'' -ProjectFingerprint stale -TimeoutSeconds 23 -IdleTimeoutSeconds 11 -MaxWorkers 1')) {
+            $r = Fire -HookPath $copy.Script -Cwd $Root -EventName PreToolUse -Command $command -LocalAppData $copy.LocalAppData
+            Check 'repository ownership refusal cannot create path-only state evidence' (
+                (Get-Message $r.Out) -match 'repository state is unavailable' -and
+                @(Get-ChildItem -LiteralPath $copy.LocalAppData -Recurse -Filter 'TestRunGuard-observed-*.json').Count -eq 0) $r.Out
+        }
+        . (Join-Path $HooksRoot '_repostate.ps1')
+        $first = Get-RepositoryStateEvidence -ProjectRoot $Root
+        $env:GIT_TEST_ASSUME_DIFFERENT_OWNER = $savedOwner
+        Write-Utf8 (Join-Path $Root 'ownership-state.txt') 'second-state'
+        & git -C $Root add ownership-state.txt
+        & git -C $Root commit -q -m second-state
+        $env:GIT_TEST_ASSUME_DIFFERENT_OWNER = '1'
+        $second = Get-RepositoryStateEvidence -ProjectRoot $Root
+        Check 'two committed ownership-refused states never share trusted repository evidence' ($first.State -eq 'unavailable' -and $second.State -eq 'unavailable' -and $first.RepositoryStateFingerprint -eq '' -and $second.RepositoryStateFingerprint -eq '' -and $first.BindingFingerprint -eq '' -and $second.BindingFingerprint -eq '' -and $first.ProjectKey -eq $second.ProjectKey)
+    }
+    finally { $env:GIT_TEST_ASSUME_DIFFERENT_OWNER = $savedOwner }
+}
+
 function Invoke-EmptyRunnerBindingRegression {
     . $HookLib
     $root = Join-Path $Work 'empty-runner-binding'
@@ -176,6 +203,7 @@ function Invoke-EmptyRunnerBindingRegression {
     Write-Utf8 (Join-Path $gitProj 'a.txt') 'a'
     & git -C $gitProj add -A
     & git -C $gitProj commit -q -m 'init'
+    Invoke-UnavailableStateRegression $gitProj
     $hcFp = New-IsolatedHookCopy
     $null = Fire -HookPath $hcFp.Script -Cwd $gitProj -EventName 'PreToolUse' -Command 'pytest -q' -LocalAppData $hcFp.LocalAppData
     $observedFp = Get-ObservedRecord $hcFp.LocalAppData

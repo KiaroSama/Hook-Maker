@@ -146,15 +146,19 @@
 # and the fallback is applied so it can only ever NARROW what is blocked on -
 # never widen it. A malformed setting must not turn this gate into a nag.
 
-param([string]$ResolveIncident = '', [string]$RecoveryRunId = '', [string]$ProjectRoot = '', [string]$Reason = '')
+param([string]$ResolveIncident = '', [string]$RecoveryRunId = '', [string]$ProjectRoot = '', [string]$Reason = '', [switch]$AuditEvidence, [string]$AuditPath = '')
 
 Set-StrictMode -Version 2.0
 $ErrorActionPreference = 'Stop'
 
 . (Join-Path $PSScriptRoot '..\_hooklib.ps1')
 
-$recoveryMode = ($ResolveIncident -ne '' -or $RecoveryRunId -ne '' -or $ProjectRoot -ne '' -or $Reason -ne '')
-if ($recoveryMode) {
+$recoveryMode = (-not $AuditEvidence -and ($ResolveIncident -ne '' -or $RecoveryRunId -ne '' -or $ProjectRoot -ne '' -or $Reason -ne ''))
+if ($AuditEvidence) {
+    if ($ResolveIncident -ne '' -or $RecoveryRunId -ne '' -or $Reason -ne '' -or [string]::IsNullOrWhiteSpace($ProjectRoot) -or [string]::IsNullOrWhiteSpace($AuditPath)) { throw 'Audit requires only -AuditEvidence, -ProjectRoot and a new -AuditPath; it never resolves an incident.' }
+    $hookInput = [pscustomobject]@{ hook_event_name = 'Stop'; cwd = $ProjectRoot; session_id = '' }
+}
+elseif ($recoveryMode) {
     if ($ResolveIncident -notmatch '^[a-f0-9]{10}$' -or $RecoveryRunId -notmatch '^[A-Za-z0-9._-]{1,128}$' -or [string]::IsNullOrWhiteSpace($ProjectRoot) -or [System.Text.Encoding]::UTF8.GetByteCount($Reason.Trim()) -lt 80) {
         throw 'Recovery requires -ResolveIncident <incident key>, -RecoveryRunId <verified run id>, -ProjectRoot, and a substantive -Reason of at least 80 UTF-8 bytes describing the equivalent test scope and verified repair.'
     }
@@ -162,7 +166,7 @@ if ($recoveryMode) {
     $hookInput = [pscustomobject]@{ hook_event_name = 'Stop'; cwd = $ProjectRoot; session_id = '' }
 }
 else { $hookInput = Read-HookInput }
-if ($null -eq $hookInput) { exit 0 }; $gateReceipt = if (Get-Command Start-StopGateReceipt -ErrorAction SilentlyContinue) { Start-StopGateReceipt -HookInput $hookInput -HookName 'Test-Completion-Check' } else { $null }; try {
+if ($null -eq $hookInput) { exit 0 }; $gateReceipt = if (-not $AuditEvidence -and (Get-Command Start-StopGateReceipt -ErrorAction SilentlyContinue)) { Start-StopGateReceipt -HookInput $hookInput -HookName 'Test-Completion-Check' } else { $null }; try {
 
 # ---- recursion guard: FIRST, before anything is read or evaluated ----
 # Stand down only on THIS hook's OWN re-entry. `stop_hook_active` is set for
@@ -170,7 +174,8 @@ if ($null -eq $hookInput) { exit 0 }; $gateReceipt = if (Get-Command Start-StopG
 # twelve on the same Stop - and leaving it UNGUARDED, as this hook was, means
 # blocking on every Stop for ever with no per-session bound. Neither is right:
 # the marker written immediately before this gate blocks is the correct key.
-if (-not $recoveryMode -and (Test-StopStandDown -HookInput $hookInput -HookName 'Test-Completion-Check')) { exit 0 }
+# Atomic finding admission deduplicates output after evidence is reevaluated.
+# An early stand-down would miss newly arrived receipts in the same task.
 
 $eventName = [string](Get-Field $hookInput 'hook_event_name')
 if ($eventName -ne 'Stop' -and $eventName -ne 'SubagentStop') { exit 0 }
@@ -209,78 +214,26 @@ $sessionId = [string](Get-Field $hookInput 'session_id')
 
 # ---- Explicit user-command activation; transcript data never executes. ----
 . (Join-Path $PSScriptRoot '_deepdebug.ps1')
-Initialize-DeepDebugActivation
+if (-not $AuditEvidence) { Initialize-DeepDebugActivation }
 
 # The durable-note and incident-tag helpers: a REQUIRED sibling (the gate cannot
 # decide a note obligation without them).
 . (Join-Path $PSScriptRoot '_notes.ps1')
 
 
-# Normalises a timestamp read back out of JSON to a genuine UTC DateTime.
-#
-# THIS IS NOT DEFENSIVE PADDING - it fixes a measured 210-minute error on this
-# machine. ConvertFrom-Json rehydrates an ISO-8601 string into a [DateTime]
-# whose Kind is already Utc; casting that to [string] renders the UTC clock
-# with NO zone marker, and re-parsing the result yields Kind=Unspecified, so a
-# following ToUniversalTime() subtracts the local offset a SECOND time. A run
-# that had just ended then read as 3.5 hours old - i.e. STALE - which is the
-# exact failure this hook exists to prevent. Every producer here (the guarded
-# runner's startedUtc/endedUtc, Test-Run-Guard's recordedUtc) writes UTC, so an
-# Unspecified Kind is treated as UTC rather than converted.
-function ConvertTo-UtcTime {
-    param($Value)
-    if ($null -eq $Value) { return $null }
-    $parsed = [DateTime]::MinValue
-    if ($Value -is [DateTime]) {
-        $parsed = $Value
-    }
-    else {
-        $text = [string]$Value
-        if ([string]::IsNullOrWhiteSpace($text)) { return $null }
-        if (-not [DateTime]::TryParse($text, [System.Globalization.CultureInfo]::InvariantCulture,
-                [System.Globalization.DateTimeStyles]::RoundtripKind, [ref]$parsed)) {
-            return $null
-        }
-    }
-    if ($parsed.Kind -eq [System.DateTimeKind]::Utc) { return $parsed }
-    if ($parsed.Kind -eq [System.DateTimeKind]::Local) { return $parsed.ToUniversalTime() }
-    return [DateTime]::SpecifyKind($parsed, [System.DateTimeKind]::Utc)
-}
+. (Join-Path $PSScriptRoot '_identity.ps1')
 
-# The exact run-identity gate (mirrors Test-Run-Guard's Test-ResultMatchesObserved).
-# A result describes the current observation ONLY when its command and project
-# fingerprints match the observed record AND the current state, its start is not
-# before the observation, its end is not before its start, its required fields
-# are present, and - when the observing hook controlled the runId - the runId
-# matches. A fresh result for a different run/command/state is NOT evidence.
-function Test-ResultMatchesObserved {
-    param($Result, $Observed, [string]$CurrentStateFingerprint)
-    if ($null -eq $Result -or $null -eq $Observed) { return $false }
-    $rCmdFp = [string](Get-Field $Result 'commandFingerprint')
-    $rProjFp = [string](Get-Field $Result 'projectFingerprint')
-    $rRunId = [string](Get-Field $Result 'runId')
-    $rStarted = ConvertTo-UtcTime (Get-Field $Result 'startedUtc')
-    $rEnded = ConvertTo-UtcTime (Get-Field $Result 'endedUtc')
-    if ([string]::IsNullOrWhiteSpace($rCmdFp) -or [string]::IsNullOrWhiteSpace($rProjFp) -or $null -eq $rStarted -or $null -eq $rEnded) { return $false }
-    $oCmdFp = [string](Get-Field $Observed 'commandFingerprint')
-    $oProjFp = [string](Get-Field $Observed 'projectFingerprint')
-    if ([string]::IsNullOrWhiteSpace($oProjFp)) { $oProjFp = [string](Get-Field $Observed 'fingerprint') }
-    $oRunId = [string](Get-Field $Observed 'runId')
-    $oControlled = ((Get-Field $Observed 'runIdControlled') -eq $true)
-    $oObserved = ConvertTo-UtcTime (Get-Field $Observed 'observedUtc')
-    if ($rCmdFp -ne $oCmdFp) { return $false }
-    if ($rProjFp -ne $oProjFp) { return $false }
-    if (-not [string]::IsNullOrWhiteSpace($CurrentStateFingerprint) -and $rProjFp -ne $CurrentStateFingerprint) { return $false }
-    if ($null -ne $oObserved -and $rStarted -lt $oObserved.AddSeconds(-2)) { return $false }
-    if ($rEnded -lt $rStarted.AddSeconds(-2)) { return $false }
-    if ($oControlled -and $rRunId -ne $oRunId) { return $false }
-    return $true
+# Path identity and repository evidence are separate, including Git refusal.
+$repositoryState = Get-RepositoryStateEvidence -ProjectRoot $cwd
+$stateFingerprint = $repositoryState.BindingFingerprint
+$preserveOriginals = ($AuditEvidence -or $repositoryState.State -eq 'unavailable')
+. (Join-Path $PSScriptRoot '_diagnostic.ps1')
+if ($AuditEvidence) {
+    . (Join-Path $PSScriptRoot '_evidence.ps1')
+    . (Join-Path $PSScriptRoot '_audit.ps1')
+    Export-CompletionEvidenceAudit -Path $AuditPath -State $repositoryState
+    exit 0
 }
-
-# ---- current state fingerprint (git-based when available, else the cwd) ----
-$stateFingerprint = ''
-try { $stateFingerprint = [string](Get-RepoStateFingerprint -ProjectRoot $cwd) } catch { $stateFingerprint = '' }
-if ([string]::IsNullOrWhiteSpace($stateFingerprint)) { $stateFingerprint = Get-ShortHash $cwd.ToLowerInvariant() }
 
 # ---- this hook's own state: the per-incident LEDGER ------------------------
 . (Join-Path $PSScriptRoot '_ledger.ps1')
@@ -309,6 +262,7 @@ if ($recoveryMode) {
 }
 
 # The evidence is loaded BEFORE pruning so pruning can read each file's content.
+$script:MalformedEvidence = New-Object 'System.Collections.Generic.List[string]'
 $resultEntries = Get-CompletionStateEntries 'result'
 $observedEntries = Get-CompletionStateEntries 'observed'
 $activeEntries = Get-CompletionStateEntries 'active'
@@ -355,7 +309,7 @@ foreach ($ae in $activeEntries) {
         Add-ExpiredMarker -RunId $ms.RunId -Detail $ms.Detail
         [void]$script:expiredNow.Add($(if ($ms.RunId -ne '') { 'run id ' + $ms.RunId } else { 'a record with no run id' }) + ' (' + $ms.Detail + ')')
     }
-    try { Remove-Item -LiteralPath $ae.Path -Force -ErrorAction SilentlyContinue } catch { }
+    if (-not $preserveOriginals) { try { Remove-Item -LiteralPath $ae.Path -Force -ErrorAction SilentlyContinue } catch { } }
 }
 
 # Persist the reconciliation NOW. Several paths below exit silently (no test work
@@ -364,60 +318,7 @@ foreach ($ae in $activeEntries) {
 # with no trace is the exact blind spot this classification exists to close.
 if ($script:expiredNow.Count -gt 0) { Save-CompletionState }
 
-# ---- build the candidate runs for the CURRENT state ----
-$currentObserved = @($observedEntries | Where-Object { (Get-ObservedFingerprint $_.Doc) -eq $stateFingerprint })
-$observedCurrent = ($currentObserved.Count -gt 0)
-$observedCmdFps = New-Object System.Collections.Generic.HashSet[string]
-foreach ($o in $currentObserved) {
-    $oc = [string](Get-Field $o.Doc 'commandFingerprint')
-    if ($oc -ne '') { [void]$observedCmdFps.Add($oc) }
-}
-
-# ONE-TO-ONE pairing (C3): each guarded result may satisfy AT MOST ONE observed
-# run. Exact-runId (runIdControlled) pairings are resolved FIRST so an uncontrolled
-# run cannot steal a controlled run's result; the remaining uncontrolled runs then
-# each take a DISTINCT result from what is left. Two same-command runs invoked
-# directly without -RunId therefore cannot both pair to one green result - the
-# second is left unmatched and blocks (its own result is not in yet, or it failed).
-# Shared with the D3 prune pre-pass via Get-ObservedResultAssignment.
-$mainAssign = Get-ObservedResultAssignment -CurrentObserved $currentObserved -ResultEntries $resultEntries -StateFp $stateFingerprint
-$sortedObserved = $mainAssign.SortedObserved
-$obsResultMap = $mainAssign.Map
-$pairedPaths = $mainAssign.AssignedPaths
-$obsPairs = New-Object System.Collections.Generic.List[object]
-for ($oi = 0; $oi -lt $sortedObserved.Count; $oi++) {
-    $resEntry = if ($obsResultMap.ContainsKey($oi)) { $obsResultMap[$oi] } else { $null }
-    [void]$obsPairs.Add([pscustomobject]@{ Observed = $sortedObserved[$oi].Doc; ResEntry = $resEntry })
-}
-
-$runs = New-Object System.Collections.Generic.List[object]
-# Each current observed run, with its identity-matched result (if any). When none
-# matches, a result for the SAME command that is NOT another run's result is
-# attached for messaging only, so a genuine identity mismatch reads DIFFERENT run
-# while a run that simply has no result of its own reads as missing evidence.
-foreach ($op in $obsPairs) {
-    $sameCmdEntry = $null
-    if ($null -eq $op.ResEntry) {
-        $oCmd = [string](Get-Field $op.Observed 'commandFingerprint')
-        if ($oCmd -ne '') {
-            $sc = @($resultEntries | Where-Object { ([string](Get-Field $_.Doc 'commandFingerprint')) -eq $oCmd -and -not $pairedPaths.Contains($_.Path) })
-            if ($sc.Count -gt 0) { $sameCmdEntry = $sc[0] }
-        }
-    }
-    [void]$runs.Add([pscustomobject]@{ Observed = $op.Observed; ResultEntry = $op.ResEntry; SameCmdEntry = $sameCmdEntry; HasObserved = $true; Matches = ($null -ne $op.ResEntry) })
-}
-# A current-state result with NO observation and whose command matches no observed
-# run is an independent run (e.g. a guarded runner invoked directly). A result
-# whose command DOES match an observed run is just a different run of that command
-# and belongs to that observed run's messaging, not a new run.
-foreach ($re in $resultEntries) {
-    $rProjFp = [string](Get-Field $re.Doc 'projectFingerprint')
-    $isCurrentState = if ($rProjFp -ne '') { $rProjFp -eq $stateFingerprint } else { $ended = ConvertTo-UtcStamp (Get-Field $re.Doc 'endedUtc'); ($null -ne $ended -and ([DateTime]::UtcNow - $ended).TotalHours -le 24) }   # legacy result: no identity, so the 24 h horizon governs
-    if (-not $isCurrentState) { continue }
-    $rCmd = [string](Get-Field $re.Doc 'commandFingerprint')
-    if ($rCmd -ne '' -and $observedCmdFps.Contains($rCmd)) { continue }
-    [void]$runs.Add([pscustomobject]@{ Observed = $null; ResultEntry = $re; SameCmdEntry = $null; HasObserved = $false; Matches = $true })
-}
+. (Join-Path $PSScriptRoot '_candidates.ps1')
 
 # ---- classify + select the representative (worst) run: _runclassify.ps1 (REQUIRED) ----
 . (Join-Path $PSScriptRoot '_runclassify.ps1')
@@ -523,7 +424,7 @@ if ($null -ne $rep -and $null -ne $rep.Run.ResultEntry) {
 # UNLESS ::deep-debug is active for this session: the workflow's completion
 # gate REQUIRES fresh guarded evidence, so its total absence is itself a
 # blocked state (once per session per unchanged state - anti-loop).
-if ($null -eq $result -and -not $observedCurrent -and $activePid -eq 0 -and $abandonedRuns.Count -eq 0 -and $script:pendingNotes.Count -eq 0) {
+if ($null -eq $result -and -not $observedCurrent -and $activePid -eq 0 -and $abandonedRuns.Count -eq 0 -and $script:pendingNotes.Count -eq 0 -and $script:MalformedEvidence.Count -eq 0) {
     if ($script:DeepDebugActive -and (Test-DdGateShouldReport ('noevidence|' + $stateFingerprint))) {
         Write-Finding -Blocking $true -Lines @(
             'TEST COMPLETION CHECK: ::deep-debug is active for this session but NO guarded test evidence exists for the current project state - no observed run, no guarded result, nothing active.',
@@ -538,7 +439,7 @@ if ($null -eq $result -and -not $observedCurrent -and $activePid -eq 0 -and $aba
 # session this still lacks CURRENT clean evidence, so it is the same blocked
 # no-evidence state (its own once-per-session token).
 if ($incidentKey -ne '' -and (Test-AnyIncidentResolved $incidentKey $incidentKeyLegacy) -and $script:pendingNotes.Count -eq 0 -and
-    -not $observedCurrent -and $activePid -eq 0 -and $abandonedRuns.Count -eq 0) {
+    -not $observedCurrent -and $activePid -eq 0 -and $abandonedRuns.Count -eq 0 -and $script:MalformedEvidence.Count -eq 0) {
     if ($script:DeepDebugActive -and (Test-DdGateShouldReport ('resolvedonly|' + $stateFingerprint))) {
         Write-Finding -Blocking $true -Lines @(
             'TEST COMPLETION CHECK: ::deep-debug is active for this session, and while a past incident is resolved, no CURRENT-state guarded test evidence exists.',
@@ -638,34 +539,30 @@ if ($incidentKey -ne '' -and -not (Test-AnyIncidentResolved $incidentKey $incide
 # ---- 4. the run completed but failed --------------------------------------
 # Two answers, both in _failedrun.ps1: a green CI result for this exact commit
 # on a clean tree clears it, anything else blocks exactly as before.
-if ($null -ne $result -and $overall -eq 'failed' -and $resultIsCurrentEvidence -and -not $repAccounted) {
-    $verdict = Resolve-FailedRunVerdict -Doc $result -Path $resultEntryPath -LastProgress $lastProgress -ProjectRoot $cwd -HookPath $PSCommandPath
+$failedIdentityDegraded = ($repositoryState.State -eq 'unavailable' -or [string]::IsNullOrWhiteSpace([string](Get-Field $result 'projectFingerprint')) -or [string](Get-Field $result 'projectFingerprint') -eq $projectKey)
+if ($null -ne $result -and $overall -eq 'failed' -and ($resultIsCurrentEvidence -or $failedIdentityDegraded) -and -not $repAccounted) {
+    $verdict = Resolve-FailedRunVerdict -Doc $result -Path $resultEntryPath -LastProgress $lastProgress -ProjectRoot $cwd -HookPath $PSCommandPath -AllowCiRecovery ($repositoryState.State -eq 'available' -and [string](Get-Field $result 'projectFingerprint') -eq $stateFingerprint)
     Save-CompletionState
     Write-Finding -Blocking $verdict.Blocking -Lines $verdict.Lines
 }
 
-# ---- 5. a test ran but there is no current proof of how it ended ----------
+if ($script:MalformedEvidence.Count -gt 0) {
+    Write-Finding -Blocking $true -Lines @(
+        'TEST COMPLETION CHECK: runId=<unreadable>; commandFingerprint=<unreadable>; observedUtc=<unreadable>; failedField=evidenceDocument:malformed. Exact original: ' + $script:MalformedEvidence[0] + '.',
+        'Recovery: preserve this original and export -AuditEvidence for this exact project to a new local -AuditPath. UNKNOWN keeps the gate; verify the producer and an authorized same-scope recovery without filling fields, deleting receipts or inventing SUCCESS.')
+}
+
+# An unreadable legacy outcome cannot be hidden by unrelated fresh success.
+if ($null -ne $rep -and $rep.Class -eq 'unknown-negative' -and -not $repAccounted) {
+    Write-Finding -Blocking $true -Lines @(
+        'TEST COMPLETION CHECK: unresolved runId=' + [string](Get-Field $result 'runId') + '; commandFingerprint=' + [string](Get-Field $result 'commandFingerprint') + '; observedUtc=<no observation>; failedField=overall:unknownOrMalformed.',
+        'Recovery: preserve this exact receipt and export -AuditEvidence for this project to a new local -AuditPath. UNKNOWN keeps the gate; inspect original producer evidence without inventing SUCCESS or using unrelated green CI.')
+}
+
+# ---- 5. exact unresolved observation diagnostic ----
 if ($observedCurrent -and -not ($resultIsCurrentEvidence -and $overall -eq 'ok') -and -not $repAccounted) {
     Save-CompletionState
-    $why = if ($null -eq $result) {
-        'no guarded result document exists for it'
-    }
-    elseif (-not $resultRunMatches) {
-        'the only guarded result on record is for a DIFFERENT run, command, or repository state (its run identity does not match this observation) and says nothing about how THIS run ended'
-    }
-    elseif (-not $resultIsCurrent) {
-        'the only guarded result on record is STALE (older than ' + $evidenceMinutes + ' minutes) and is not proof that a run happened for the current state'
-    }
-    else {
-        'the current guarded result reports overall=' + $(if ($overall -ne '') { $overall } else { 'unknown' }) + ' rather than a clean completion'
-    }
-    $lines = New-Object System.Collections.Generic.List[string]
-    [void]$lines.Add('TEST COMPLETION CHECK: a test command was observed for the CURRENT project state, but ' + $why + '. Completion cannot be claimed on evidence that does not exist.')
-    if (-not $observedGuarded) {
-        [void]$lines.Add('That command was recorded as running UNGUARDED, so nothing owned it, bounded it, or proved how it ended.')
-    }
-    [void]$lines.Add('Recovery: re-run the suite through scripts\Run-Tests-Guarded.ps1 with a bounded wall and idle timeout, then confirm the result document reports overall=ok with an empty leakedProcessIds. State the actual scope you verified - never that "all tests passed".')
-    Write-Finding -Blocking $true -Lines $lines.ToArray()
+    Write-Finding -Blocking $true -Lines (Get-UnresolvedObservationLines -Observed $observed -Result $result -State $repositoryState -Fresh $resultIsCurrent -HookPath $PSCommandPath -ProjectRoot $cwd)
 }
 
 # ---- clean, current result -------------------------------------------------

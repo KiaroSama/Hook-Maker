@@ -9,14 +9,68 @@ function Write-SelectionPair {
     Write-GuardedResult -Copy $Copy -Root $Root -RunId $Id -CommandFingerprint $Command -AgeMinutes $Age -Overall $Overall -TerminateReason $Reason -Leaked $Leaked
 }
 
+function Invoke-RepositoryEvidenceSelectionRegression {
+    param([switch]$Codex, [string]$HostExe = 'pwsh')
+    $c = New-IsolatedHookCopy; $p = New-GitRepo ('RepositoryEvidence-' + $Codex)
+    $key = Get-ProjectKey $p
+    Write-ObservedRecord -Copy $c -Root $p -RunId legacy-insights -CommandFingerprint insights-command -Fingerprint $key -AgeMinutes 600
+    Write-GuardedResult -Copy $c -Root $p -RunId legacy-insights -CommandFingerprint insights-command -ProjectFingerprint ' ' -AgeMinutes 600
+    Write-SelectionPair $c $p unrelated-logo logo-command
+    $paths = @((Get-RunStateFile $c $p observed legacy-insights), (Get-RunStateFile $c $p result legacy-insights))
+    $hashes = @($paths | ForEach-Object { (Get-FileHash -LiteralPath $_).Hash })
+    $savedOwner = $env:GIT_TEST_ASSUME_DIFFERENT_OWNER
+    try {
+        $env:GIT_TEST_ASSUME_DIFFERENT_OWNER = '1'
+        $r = Fire -Copy $c -Cwd $p -Codex:$Codex -Exe $HostExe
+        $reason = Get-BlockReason $r.Out
+        Check 'unavailable Git names exact legacy run, command, timestamp and missing field' (
+            $r.Err -eq '' -and $reason -match 'runId=legacy-insights' -and $reason -match 'commandFingerprint=insights-command' -and
+            $reason -match 'observedUtc=\d{4}-' -and $reason -match 'failedField=projectFingerprint:missing' -and $reason -match 'state=unavailable') ($r.Out + $r.Err)
+        $again = Fire -Copy $c -Cwd $p -Codex:$Codex -Exe $HostExe -StopHookActive
+        Check 'unchanged unavailable Stop is quiet without manufacturing obligations' ($again.Out -eq '' -and $again.Err -eq '' -and (Get-PendingCount (Get-CompletionStateDoc $c $p)) -eq 0) ($again.Out + $again.Err)
+        $auditCopy = New-IsolatedHookCopy
+        [void](Copy-Tree (Get-StateDir $c) (Get-StateDir $auditCopy))
+        $malformed = Get-RunStateFile $auditCopy $p observed malformed-legacy
+        Write-Utf8 $malformed '{broken'
+        Write-ObservedRecord -Copy $auditCopy -Root $p -RunId live-old -CommandFingerprint live-command -Fingerprint $key -AgeMinutes 5
+        Write-SelectionPair $auditCopy $p live-new live-command
+        Write-ActiveMarker -Copy $auditCopy -Root $p -RunId live-old -ProcessId $PID
+        Write-SelectionPair $auditCopy $p leak-old leak-command -Age 5 -Leaked @(424242)
+        Write-SelectionPair $auditCopy $p leak-new leak-command
+        $audit = Join-Path $Work ('audit-' + $Codex + '.json')
+        $oldLocal = $env:LOCALAPPDATA
+        try {
+            $env:LOCALAPPDATA = $auditCopy.LocalAppData
+            $output = Invoke-QuietCommand -FilePath $HostExe -ArgumentList @('-NoProfile','-File',$auditCopy.Script,'-AuditEvidence','-ProjectRoot',$p,'-AuditPath',$audit) -TimeoutSeconds 30
+            $auditExit = $LASTEXITCODE
+        }
+        finally { $env:LOCALAPPDATA = $oldLocal }
+        $report = Read-JsonFile $audit
+        Check 'audit hashes malformed originals and records their uncertainty' (@($report.originals | Where-Object { $_.path -eq $malformed -and $_.parseState -eq 'malformed' }).Count -eq 1 -and @($report.observations | Where-Object { $_.failedField -eq 'evidenceDocument:malformed' -and $_.verdict -eq 'UNKNOWN' }).Count -eq 1)
+        Check 'audit cannot supersede a live or own-paired leaking original' (@($report.observations | Where-Object { $_.runId -in @('live-old','leak-old') -and $_.verdict -eq 'UNKNOWN' }).Count -eq 2)
+        Check 'audit preserves UNKNOWN and never waives the gate' ($auditExit -eq 0 -and $null -ne $report -and (Get-Field $report 'gateWaived') -eq $false -and @($report.observations | Where-Object { $_.runId -eq 'legacy-insights' -and $_.verdict -eq 'UNKNOWN' }).Count -eq 1) ($output -join ' ')
+    }
+    finally { $env:GIT_TEST_ASSUME_DIFFERENT_OWNER = $savedOwner }
+    $changed = Fire -Copy $c -Cwd $p -Codex:$Codex -Exe $HostExe -StopHookActive
+    Check 'readable Git reevaluates legacy obligation rather than discarding path binding' ((Get-BlockReason $changed.Out) -match 'legacy-insights' -and (Get-BlockReason $changed.Out) -match 'state=available') ($changed.Out + $changed.Err)
+    Check 'both original receipt and observation remain byte-identical' ((Get-FileHash -LiteralPath $paths[0]).Hash -eq $hashes[0] -and (Get-FileHash -LiteralPath $paths[1]).Hash -eq $hashes[1])
+    $c = New-IsolatedHookCopy; $p = New-GitRepo ('RepositoryEvidence-failed-' + $Codex)
+    Write-GuardedResult -Copy $c -Root $p -RunId legacy-daily -CommandFingerprint daily-command -ProjectFingerprint ' ' -Overall failed -ExitCode 1 -AgeMinutes 12000
+    (Get-Item -LiteralPath (Get-RunStateFile $c $p result legacy-daily)).LastWriteTimeUtc = [DateTime]::UtcNow.AddDays(-9)
+    Write-SelectionPair $c $p unrelated-logo logo-command
+    $r = Fire -Copy $c -Cwd $p -Codex:$Codex -Exe $HostExe
+    Check 'old unidentified failure cannot disappear behind unrelated fresh success' ((Get-BlockReason $r.Out) -match 'runId=legacy-daily' -and (Get-BlockReason $r.Out) -match 'Unrelated green CI') ($r.Out + $r.Err)
+    Check 'old whitespace-bound negative original survives retention' (Test-Path -LiteralPath (Get-RunStateFile $c $p result legacy-daily))
+    $c = New-IsolatedHookCopy; $p = New-GitRepo ('RepositoryEvidence-malformed-' + $Codex)
+    Write-Utf8 (Get-RunStateFile $c $p result malformed-only) '{broken'
+    $r = Fire -Copy $c -Cwd $p -Codex:$Codex -Exe $HostExe
+    Check 'malformed-only original remains an explicit unknown gate' ((Get-BlockReason $r.Out) -match 'failedField=evidenceDocument:malformed' -and $r.Err -eq '') ($r.Out + $r.Err)
+}
+
 # Exercise literal selector permutations as well as entry-point file ordering.
 # Load the real pure identity functions from the entry AST, never execute its Stop.
 & {
-    $ast = [System.Management.Automation.Language.Parser]::ParseFile($Hook, [ref]$null, [ref]$null)
-    foreach ($name in @('ConvertTo-UtcTime', 'Test-ResultMatchesObserved')) {
-        $fn = $ast.Find({ param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq $name }, $true)
-        . ([scriptblock]::Create($fn.Extent.Text))
-    }
+    . (Join-Path (Split-Path -Parent $Hook) '_identity.ps1')
     . (Join-Path (Split-Path -Parent $Hook) '_evidence.ps1')
     . (Join-Path (Split-Path -Parent $Hook) '_runclassify.ps1')
     $script:evidenceMinutes = 180
@@ -119,6 +173,8 @@ foreach ($codexShape in @($false, $true)) {
     $resultPath = Get-RunStateFile $c $p 'result' $id
     $obs = Read-JsonFile $obsPath; $result = Read-JsonFile $resultPath
     Check ($client + ': actual harmless Pre/runner/Post/Stop is correctly bound') ($pre.Exit -eq 0 -and $pre.Out -eq '' -and $pre.Err -eq '' -and $boundExit -eq 0 -and $post.Exit -eq 0 -and $post.Out -eq '' -and $post.Err -eq '' -and $stop.Out -eq '' -and $stop.Err -eq '' -and $null -ne $obs -and $null -ne $result -and $obs.runId -eq $result.runId -and $obs.commandFingerprint -eq $result.commandFingerprint -and $obs.projectFingerprint -eq $result.projectFingerprint) ($pre.Out + $post.Out + $stop.Out)
+
+    Invoke-RepositoryEvidenceSelectionRegression -Codex:$codexShape -HostExe $hostExe
 
     $c = New-IsolatedHookCopy; $p = New-GitRepo ('Selection-same-command-' + $client)
     Write-ObservedRecord -Copy $c -Root $p -RunId 'orphan' -AgeMinutes 5

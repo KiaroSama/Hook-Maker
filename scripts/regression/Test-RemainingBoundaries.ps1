@@ -118,6 +118,7 @@ try {
     if ([IO.File]::Exists((Join-Path $SourceRoot 'hooks/_commandtokens.ps1'))) { $leaves += '_commandtokens.ps1' }
     if ([IO.File]::Exists((Join-Path $SourceRoot 'hooks/_budgetlib.ps1'))) { $leaves += '_budgetlib.ps1' }
     if ([IO.File]::Exists((Join-Path $SourceRoot 'hooks/_processlib.ps1'))) { $leaves += '_processlib.ps1' }
+    if ([IO.File]::Exists((Join-Path $SourceRoot 'hooks/_repostate.ps1'))) { $leaves += '_repostate.ps1' }
     foreach ($leaf in $leaves) { Copy-Item -LiteralPath (Join-Path $SourceRoot ('hooks/'+$leaf)) -Destination (Join-Path $tool ('hooks/'+$leaf)) }
     function New-PlanArtifact { param($RelativePath,$Kind,$SourcePath) return [pscustomobject]@{Path=$RelativePath;Source=$SourcePath} }
     function Add-Artifact { param($Artifact) [void]$script:payload.Add($Artifact) }

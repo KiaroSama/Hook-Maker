@@ -35,7 +35,11 @@ function Get-CompletionStateEntries {
     foreach ($file in $files) {
         $doc = $null
         try { $doc = Read-JsonFile $file.FullName } catch { $doc = $null }
-        if ($null -eq $doc) { continue }
+        if ($null -eq $doc -or $doc -isnot [pscustomobject]) {
+            $bad = Get-Variable -Name MalformedEvidence -Scope Script -ValueOnly -ErrorAction SilentlyContinue
+            if ($null -ne $bad) { [void]$bad.Add($file.FullName) }
+            continue
+        }
         [void]$entries.Add([pscustomobject]@{ Doc = $doc; Path = $file.FullName })
     }
     return @($entries.ToArray())
@@ -199,7 +203,7 @@ function Test-ObservationSuperseded {
         $pairObservedAt = ConvertTo-UtcTime (Get-Field $pair.Observed 'observedUtc')
         if ($null -eq $pairObservedAt -or $pairObservedAt -le $observedAt) { continue }
         $doc = $pair.ResEntry.Doc
-        if (([string](Get-Field $doc 'overall')).ToLowerInvariant() -ne 'ok') { continue }
+        if (([string](Get-Field $doc 'overall')).ToLowerInvariant() -ne 'ok' -or (Get-Field $doc 'terminated') -eq $true -or [string](Get-Field $doc 'exitCode') -ne '0') { continue }
         if (@(@(Get-Field $doc 'leakedProcessIds') | Where-Object { $null -ne $_ -and [string]$_ -ne '' }).Count -gt 0) { continue }
         if (([string](Get-Field $doc 'commandFingerprint')) -ne $cmd) { continue }
         if (([string](Get-Field $doc 'projectFingerprint')) -ne $StateFp) { continue }
@@ -337,7 +341,7 @@ function Get-ObservedResultAssignment {
     $sortedObserved = @($CurrentObserved | Sort-Object `
         @{ Expression = { [string](Get-Field $_.Doc 'observedUtc') } }, `
         @{ Expression = { [string](Get-Field $_.Doc 'runId') } })
-    $sortedResults = @($ResultEntries | Sort-Object `
+    $sortedResults = @($ResultEntries | Where-Object { $null -ne $_ } | Sort-Object `
         @{ Expression = { $t = Get-ResultRecordedTime -Doc $_.Doc -Path $_.Path; if ($null -ne $t) { $t.Ticks } else { [int64]0 } } }, `
         @{ Expression = { [string]$_.Path } })
     $assigned = New-Object System.Collections.Generic.HashSet[string]

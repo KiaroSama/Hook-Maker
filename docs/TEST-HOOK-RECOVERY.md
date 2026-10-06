@@ -64,6 +64,41 @@ same complete health command under the rules above, never a separate mutation
 acceptance command. Repeating live create/delete acceptance requires fresh explicit
 authorization.
 
+## Unavailable repository state and audited legacy evidence
+
+`projectKey` addresses a project's coordination files; it is not repository-state
+proof. Git refusal/failure in a repository produces `repositoryState=unavailable`
+and an empty `repositoryStateFingerprint`. Recognized PreToolUse commands are
+refused before observation; no path hash, tool-input rewrite, automatic Git trust,
+ownership or ACL change is used. A deliberately non-Git workspace remains
+`nonrepository`, explicitly degraded, never certified CURRENT repository state.
+
+Completion retains legacy path-only/unidentified observations instead of dropping
+them as old-state. Each identity block names the exact run ID, full command
+fingerprint, UTC observation time, failed matching field and supported recovery.
+A different command or unrelated green CI cannot repair it. Unchanged findings
+are admitted once; changed evidence is reevaluated without creating a new note
+obligation for an ordinary unknown outcome. Active, failed, terminated and leaking
+runs remain independent obligations.
+
+For an explicit, read-only reconciliation report, choose a new local destination
+in an existing directory:
+
+```powershell
+& '<installed runtime>\Test-Completion-Check.ps1' `
+  -AuditEvidence -ProjectRoot '<affected project>' `
+  -AuditPath '<new local report path>.json'
+```
+
+The report retains original SHA-256 hashes and records `UNKNOWN` or `SUPERSEDED`
+under the existing later, own-paired same-complete-command rule. Historical
+supersession is not CURRENT repository proof. It never records `SUCCESS`, modifies
+receipts/observations, resolves an incident or waives the gate. `UNKNOWN` remains
+unresolved. Concurrent evidence changes abort the export; existing destinations
+are never overwritten. Keep the report local. A mutating acceptance command
+requires fresh authorization before any replay; do not rerun a different suite
+merely to suppress the warning.
+
 The manual association below is now only for the case a re-run cannot reproduce:
 a repaired wrapper whose COMMAND identity legitimately changed. An operator who has
 independently verified equivalent test scope can use:

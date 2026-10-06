@@ -186,54 +186,7 @@ function Test-ShouldReport {
     return $true
 }
 
-# Hands Test-Completion-Check the one fact only this hook can know: a test
-# command was seen for THIS repo state. The fingerprint is derived exactly as
-# the consumer derives it (git state when available, else the lowercased cwd
-# hash), so an observation made against one state can never be mistaken for
-# evidence about another.
-#
-# WHY THERE IS NO MATCHING "active" RECORD: that record's `pid` must be a
-# process the consumer can prove is alive. This hook cannot know one. At
-# PreToolUse the guarded runner has not started; at PostToolUse it has already
-# exited; and it runs as a child of the CLIENT, never of this hook, so its pid
-# is never in scope here. A fabricated or guessed pid would be strictly worse
-# than none: pids are recycled, so an unrelated live process would block
-# completion forever. Only the runner knows its own pid - see the report.
-#
-# The record now carries the full run-identity contract (schema 2): the runId
-# minted (raw) or preserved (guarded), whether this hook CONTROLS that runId
-# (a raw run whose replacement injects it -> yes; a guarded run typed directly
-# without -RunId -> no, so the consumer binds on command+project+time instead),
-# the command fingerprint the runner will independently recompute, and the
-# repository fingerprint. This is what lets the consumer reject a stale result
-# from an earlier run/command/state instead of trusting file age.
-function Get-StateFingerprintFor {
-    param([string]$ProjectRoot)
-    $fingerprint = ''
-    try { $fingerprint = [string](Get-RepoStateFingerprint -ProjectRoot $ProjectRoot) } catch { $fingerprint = '' }
-    if ([string]::IsNullOrWhiteSpace($fingerprint)) { $fingerprint = Get-ShortHash $ProjectRoot.ToLowerInvariant() }
-    return $fingerprint
-}
-function Write-ObservedRecord {
-    param(
-        [string]$Path, [string]$ProjectRoot, [bool]$Guarded,
-        [string]$RunId, [bool]$RunIdControlled, [string]$CommandFingerprint, [string]$ProjectFingerprint
-    )
-    if ([string]::IsNullOrWhiteSpace($ProjectFingerprint)) { $ProjectFingerprint = Get-StateFingerprintFor -ProjectRoot $ProjectRoot }
-    try {
-        Write-JsonFileAtomic -Path $Path -Value ([pscustomobject][ordered]@{
-                schema             = 2
-                observedUtc        = [DateTime]::UtcNow.ToString('o')
-                fingerprint        = $ProjectFingerprint
-                projectFingerprint = $ProjectFingerprint
-                runId              = $RunId
-                runIdControlled    = $RunIdControlled
-                commandFingerprint = $CommandFingerprint
-                guarded            = $Guarded
-            })
-    }
-    catch { }    # coordination is best-effort: it must never break the gate
-}
+. (Join-Path $PSScriptRoot '_observation.ps1')
 
 # ---- per-run state file addressing ----------------------------------------
 # Every coordination file is TestRunGuard-<kind>-<projectKey>-<runId>.json.
@@ -424,7 +377,13 @@ if ($eventName -eq 'PreToolUse') {
     }
 
     if ($verdict.Kind -eq 'none') { if ($configNote -ne '') { Write-Advisory -EventName 'PreToolUse' -Message $configNote.Trim() }; exit 0 }
-    $stateFingerprint = Get-StateFingerprintFor -ProjectRoot $projectRoot
+    $repositoryState = Get-RepositoryStateEvidence -ProjectRoot $projectRoot
+    if ($repositoryState.State -eq 'unavailable') {
+        $message = 'TEST RUN GUARD: repository state is unavailable (Git refused or failed). ProjectKey=' + $projectKey + ' identifies only the path. Refused before execution/observation; no fingerprint was guessed and input/options were not rewritten. Recovery: restore authorized read access to this exact repository, then retry the unchanged invocation with the hook''s verified literal repository fingerprint. Never add wildcard/global trust or change ownership/ACLs automatically.'
+        if ($advisoryOnly) { Write-Advisory -EventName PreToolUse -Message $message }
+        Write-Deny -Message $message
+    }
+    $stateFingerprint = $repositoryState.BindingFingerprint
     # Every recognised test command is handed to Test-Completion-Check, whether
     # it is about to run guarded, run unguarded, or be blocked here. Silent -
     # this is a state handoff, not a finding. The observed record carries the run

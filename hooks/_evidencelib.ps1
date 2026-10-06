@@ -117,6 +117,10 @@ function Get-TaskClosingEvidence {
     return $evidence
 }
 
+# Explicit repository-state provenance for test observation and completion.
+$repoStatePath = Join-Path $PSScriptRoot '_repostate.ps1'
+if (Test-Path -LiteralPath $repoStatePath -PathType Leaf) { . $repoStatePath }
+
 # Informational delivery is a separate transaction from Stop admission.
 . (Join-Path $PSScriptRoot '_deliverylib.ps1')
 

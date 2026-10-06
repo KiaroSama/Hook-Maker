@@ -17,7 +17,12 @@ function Get-RunClass {
         $ov = ([string](Get-Field $re.Doc 'overall')).ToLowerInvariant()
         $lk = @(@(Get-Field $re.Doc 'leakedProcessIds') | Where-Object { $null -ne $_ -and [string]$_ -ne '' })
         if (-not [string]::IsNullOrWhiteSpace((Get-IncidentReasonFromDoc $re.Doc))) { return 'incident' }
-        if ($ov -eq 'failed' -and (Test-ResultFresh $re)) { return 'failed' }
+        $state = Get-Variable -Name repositoryState -ValueOnly -ErrorAction SilentlyContinue
+        $fp = [string](Get-Field $re.Doc 'projectFingerprint')
+        $key = [string](Get-Variable -Name projectKey -ValueOnly -ErrorAction SilentlyContinue)
+        $degraded = ($null -ne $state -and ($state.State -eq 'unavailable' -or [string]::IsNullOrWhiteSpace($fp) -or $fp -eq $key))
+        if ($ov -eq 'failed' -and ($degraded -or (Test-ResultFresh $re))) { return 'failed' }
+        if ($degraded -and $ov -notin @('ok','failed')) { return 'unknown-negative' }
         if ($ov -eq 'ok' -and $lk.Count -eq 0) {
             if (Test-ResultFresh $re) { return 'clean' }
             # A matched historical SUCCESS is finished, not fresh proof and not
@@ -82,7 +87,7 @@ function Select-RepresentativeRun {
     }
 
     $rep = $null
-    foreach ($wanted in @('incident', 'failed')) {
+    foreach ($wanted in @('incident', 'failed', 'unknown-negative')) {
         $m = @($classified | Where-Object { $_.Class -eq $wanted -and -not (Test-RunNegativeAccounted -Run $_.Run -AllResults $resultEntries) })
         if ($m.Count -gt 0) { $rep = $m[0]; break }
     }

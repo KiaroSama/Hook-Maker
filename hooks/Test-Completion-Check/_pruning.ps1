@@ -1,4 +1,6 @@
 # Test-Completion-Check: pruning responsibility, extracted from the oversized entry.
+# Unknown repository state cannot classify any historical evidence as old-state.
+if ($preserveOriginals) { return }
 # ---- R1: register note obligations BEFORE pruning can delete a superseded run --
 # The prune below removes a superseded negative (a hang that later re-ran green for
 # the same command+state). A supersede lifts the RESULT-level block but NEVER the
@@ -52,6 +54,7 @@ foreach ($re in $resultEntries) {
     $mtime = Get-FileMtimeUtc $re.Path
     if ($null -eq $mtime -or $mtime -ge $pruneCutoff) { continue }   # keep anything not yet 24h old
     if (Test-RecoveryReceiptRetained -RunId ([string](Get-Field $re.Doc 'runId'))) { continue }
+    if ([string](Get-Field $re.Doc 'projectFingerprint') -eq $projectKey -or [string]::IsNullOrWhiteSpace([string](Get-Field $re.Doc 'projectFingerprint'))) { continue }
     $ov = ([string](Get-Field $re.Doc 'overall')).ToLowerInvariant()
     $lk = @(@(Get-Field $re.Doc 'leakedProcessIds') | Where-Object { $null -ne $_ -and [string]$_ -ne '' })
     $isNegative = ((@('terminated', 'failed', 'error', 'unknown') -contains $ov) -or $lk.Count -gt 0 -or (Get-Field $re.Doc 'terminated') -eq $true)
@@ -82,6 +85,7 @@ for ($i = 0; $i -lt $pruneAssign.SortedObserved.Count; $i++) {
 foreach ($oe in $observedEntries) {
     $mtime = Get-FileMtimeUtc $oe.Path
     if ($null -eq $mtime -or $mtime -ge $pruneCutoff) { continue }
+    if ((Get-ObservedFingerprint $oe.Doc) -eq $projectKey -or [string]::IsNullOrWhiteSpace((Get-ObservedFingerprint $oe.Doc))) { continue }
     if ((Get-ObservedFingerprint $oe.Doc) -ne $stateFingerprint) { [void]$prunedObservedPaths.Add($oe.Path); continue }   # old-STATE: no current obligation
     if (-not $assignedResultForObserved.ContainsKey($oe.Path)) { continue }   # unpaired -> unfinished incident, KEEP
     if ($prunedResultPaths.Contains($assignedResultForObserved[$oe.Path])) { [void]$prunedObservedPaths.Add($oe.Path) }   # its ONE assigned result is a pruned clean/resolved run
