@@ -1,6 +1,6 @@
 # Test-TestCompletionCheck.ps1 scenario block: three small corrections.
-#   1. A result without a project fingerprint (legacy shape) counts only inside
-#      the 24 h horizon; it used to count as current for ever.
+#   1. A negative result without project identity remains unresolved independent
+#      of age; unavailable identity is never forgiven by a retention horizon.
 #   2. A ledger write that fails on the normal path is reported, not swallowed.
 #   3. A Test-Temp-Cleanup installed in the user profile (global scope) is
 #      recognised for the cleanup-evidence coordination.
@@ -21,7 +21,7 @@
     $old = New-GitRepo 'LegacyOld'
     Set-LegacyResult -Copy $c -Root $old -AgeMinutes 1500
     $r = Fire -Copy $c -Cwd $old
-    Check 'a legacy failed result older than 24 h no longer blocks' ($r.Out -notmatch '"decision":"block"') $r.Out
+    Check 'a legacy failed result older than 24 h remains unresolved, never age-forgiven' ($r.Out -match '"decision":"block"' -and (Get-BlockReason $r.Out) -match 'unavailableOrLegacy') $r.Out
     $young = New-GitRepo 'LegacyYoung'
     Set-LegacyResult -Copy $c -Root $young -AgeMinutes 60
     $r = Fire -Copy $c -Cwd $young

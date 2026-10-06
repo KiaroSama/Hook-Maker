@@ -532,7 +532,7 @@ Two hooks used to issue instructions that could not both be followed: the guard 
 
 A run that was TERMINATED or that LEAKED a process keeps blocking whatever CI says, and still owes its tagged note: those are facts about this machine that no CI result speaks to. The notice names the commit it accepted, so the claim can be checked rather than trusted.
 
-A result without a project fingerprint (the legacy shape) counts only within the 24 h horizon; a Test-Temp-Cleanup installed in the user profile (global scope) is recognised for the cleanup-evidence coordination just like a project-scope one; and an incident ledger that cannot be written is reported as a non-blocking note instead of being swallowed.
+An unresolved negative result without a project fingerprint (the legacy shape) is retained regardless of age; age never forgives UNKNOWN or a failed run. Verified same-command recovery still accounts for the failure without rewriting its original; a Test-Temp-Cleanup installed in the user profile (global scope) is recognised for the cleanup-evidence coordination just like a project-scope one; and an incident ledger that cannot be written is reported as a non-blocking note instead of being swallowed.
 
 **Another project's CI runner (2026-09-30).** A survivor candidate whose bounded ancestor walk reaches a `Runner.Listener`/`Runner.Worker` whose executable lies outside this project is left out of the advisory and counted as "another project's CI runner job - not this task's; do not terminate them"; a job under this project's own `.ci-runner-win` stays listed.
 

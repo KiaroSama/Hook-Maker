@@ -102,8 +102,8 @@
     Write-GuardedResult -Copy $c -Root $p -Overall 'ok' -RunId ('c2b-otherok-' + $key) -CommandFingerprint ('cmdUNRELATED' + $key) -AgeMinutes 5
 
     $r = Fire -Copy $c -Cwd $p
-    Check 'C2b/S1: a failure with an EMPTY project fingerprint is superseded by a later green run' (
-        -not (Test-Path -LiteralPath $emptyPath)) $r.Out
+    Check 'C2b/S1: verified same-command recovery preserves the legacy original rather than deleting it' (
+        (Test-Path -LiteralPath $emptyPath) -and $r.Out -notmatch '"decision":"block"') $r.Out
     Check 'C2b/S2: a failure is superseded even though the tree changed (the fix itself changed it)' (
         -not (Test-Path -LiteralPath (Get-RunStateFile -Copy $c -Root $p -Kind 'result' -RunId $rMoved))) $r.Out
     Check 'C2b/S3: a green run of a DIFFERENT command does NOT supersede it' (
