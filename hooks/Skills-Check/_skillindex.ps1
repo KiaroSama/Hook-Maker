@@ -17,14 +17,14 @@
 
 # Index format. Flat lines, not JSON: ~1700 entries parse in milliseconds and the
 # file is only ever produced and consumed here.
-#   header  HookMakerSkillsIndex|3|<configHash>|<builtUtcTicks>
+#   header  HookMakerSkillsIndex|4|<configHash>|<builtUtcTicks>
 #   plugin  p|<plugin>|<folder>|<name>|<description>|<full path>|<source>|<version>|<status>|<explicit>|<invocation>
 #   library l|<folder>|<name>|<description>|<full path>
 #   partial x|<reason>            install key k|<name@market>        install known m|1
 #
-# Version 3 because the shape changed again (per-skill discovery, see
+# Version 4 retains installation identity and definition hash separately (see
 # _skilldiscovery.ps1): an older file on disk is rebuilt, never misread.
-$script:SkillIndexVersion = '3'
+$script:SkillIndexVersion = '4'
 
 # '|' is the field separator and a description may contain anything, so every
 # stored field is flattened first. Lossy on purpose - these values are only ever
@@ -112,7 +112,7 @@ function Read-SkillIndex {
             $parts = $lines[$i].Split('|')
             if ($parts[0] -eq 'p' -and $parts.Count -ge 11) {
                 [void]$plugin.Add([pscustomobject]@{ Plugin = $parts[1]; Leaf = $parts[2]; Name = $parts[3]; Description = $parts[4]; Path = $parts[5]
-                        Source = $parts[6]; Version = $parts[7]; Status = $parts[8]; Explicit = $parts[9]; Invocation = $parts[10] })
+                        Source = $parts[6]; Version = $parts[7]; Status = $parts[8]; Explicit = $parts[9]; Invocation = $parts[10]; InstallationKey = $(if ($parts.Count -ge 12) { $parts[11] } else { '' }); DefinitionHash = $(if ($parts.Count -ge 13) { $parts[12] } else { '' }); ReferenceState = $(if ($parts.Count -ge 14) { $parts[13] } else { '' }); SourceIdentity = $(if ($parts.Count -ge 15) { $parts[14] } else { '' }) })
             }
             elseif ($parts[0] -eq 'l' -and $parts.Count -ge 5) {
                 [void]$library.Add([pscustomobject]@{ Leaf = $parts[1]; Name = $parts[2]; Description = $parts[3]; Path = $parts[4] })
@@ -120,6 +120,14 @@ function Read-SkillIndex {
             elseif ($parts[0] -eq 'x' -and $parts.Count -ge 2) { [void]$partial.Add($parts[1]) }
             elseif ($parts[0] -eq 'k' -and $parts.Count -ge 2) { [void]$keys.Add($parts[1]) }
             elseif ($parts[0] -eq 'm') { $known = $true }
+        }
+        # A cached body hash is not current content evidence. Recheck only the
+        # indexed definitions (never the unbounded provider tree) before reuse.
+        $clock = [Diagnostics.Stopwatch]::StartNew()
+        foreach ($skill in $plugin) {
+            if ($clock.Elapsed.TotalSeconds -gt 2) { return $null }
+            $recordedHash = [string](Get-Field $skill 'DefinitionHash')
+            if ($recordedHash -ne '' -and (Get-DiscoverySkillHash $skill.Path) -cne $recordedHash) { return $null }
         }
         return [pscustomobject]@{ Plugin = $plugin; Library = $library; Partial = $partial; InstallKeys = $keys; InstallKnown = $known }
     }
@@ -159,11 +167,16 @@ function Build-SkillIndex {
     # The install records are the primary source; the cache walk above runs only
     # when PLUGIN_SKILLS_ROOT is set explicitly. A folder both found is kept once.
     $discovered = Invoke-SkillDiscovery -Discovery $skillDiscovery
+    $authoritativePaths = @{}
+    foreach ($skill in $discovered.Skills) { $authoritativePaths[$skill.Path.ToLowerInvariant()] = $true }
+    $retained = New-Object 'System.Collections.Generic.List[object]'
+    foreach ($legacy in $plugin) { if (-not $authoritativePaths.ContainsKey($legacy.Path.ToLowerInvariant())) { [void]$retained.Add($legacy) } }
+    $plugin = $retained
     $seen = @{}
-    foreach ($p in $plugin) { $seen[$p.Path.ToLowerInvariant()] = $true }
     foreach ($s in $discovered.Skills) {
-        if ($seen.ContainsKey($s.Path.ToLowerInvariant())) { continue }
-        $seen[$s.Path.ToLowerInvariant()] = $true
+        $identityKey = $s.Source + '|' + ([string](Get-Field $s 'InstallationKey')) + '|' + $s.Invocation + '|' + $s.Path.ToLowerInvariant()
+        if ($seen.ContainsKey($identityKey)) { continue }
+        $seen[$identityKey] = $true
         [void]$plugin.Add($s)
     }
 
@@ -186,7 +199,7 @@ function Build-SkillIndex {
     [void]$lines.Add('HookMakerSkillsIndex|' + $script:SkillIndexVersion + '|' + $indexConfigHash + '|' + [DateTime]::UtcNow.Ticks)
     foreach ($p in $plugin) {
         [void]$lines.Add('p|' + $p.Plugin + '|' + $p.Leaf + '|' + $p.Name + '|' + $p.Description + '|' + $p.Path + '|' +
-            $p.Source + '|' + (ConvertTo-SkillIndexField $p.Version 60) + '|' + $p.Status + '|' + $p.Explicit + '|' + (ConvertTo-SkillIndexField $p.Invocation 200))
+            $p.Source + '|' + (ConvertTo-SkillIndexField $p.Version 60) + '|' + $p.Status + '|' + $p.Explicit + '|' + (ConvertTo-SkillIndexField $p.Invocation 200) + '|' + (ConvertTo-SkillIndexField ([string](Get-Field $p 'InstallationKey'))) + '|' + ([string](Get-Field $p 'DefinitionHash')) + '|' + ([string](Get-Field $p 'ReferenceState')) + '|' + ([string](Get-Field $p 'SourceIdentity')))
     }
     foreach ($l in $library) { [void]$lines.Add('l|' + $l.Leaf + '|' + $l.Name + '|' + $l.Description + '|' + $l.Path) }
     foreach ($reason in $discovered.Partial) { [void]$lines.Add('x|' + (ConvertTo-SkillIndexField $reason)) }

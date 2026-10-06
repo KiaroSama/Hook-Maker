@@ -30,8 +30,19 @@
 # Reads from the caller: $config, $client, $homeDir, $cwd (Skills-Check.ps1),
 # and Get-SkillIdentity (_skillindex.ps1), which must be loaded first.
 
+. (Join-Path $PSScriptRoot '_desktopskills.ps1')
+. (Join-Path $PSScriptRoot '_pluginidentity.ps1')
 $script:DiscoveryMaxSkills = 1200
 $script:DiscoveryMaxJsonBytes = 4194304
+
+function Get-DiscoveryRelevantNames {
+    param([string]$Prompt)
+    if ([string]::IsNullOrWhiteSpace($Prompt)) { return @() }
+    $text = $Prompt.Substring(0, [Math]::Min($Prompt.Length, 32768))
+    $exact = @([regex]::Matches($text, '(?:[A-Za-z0-9._-]+:)?([A-Za-z0-9]+(?:[-_][A-Za-z0-9]+)+)') | ForEach-Object { $_.Groups[1].Value })
+    $words = @([regex]::Matches($text, '(?<![A-Za-z0-9_-])[A-Za-z0-9][A-Za-z0-9_-]{3,119}(?![A-Za-z0-9_-])') | ForEach-Object { $_.Value })
+    return @($exact + $words | Select-Object -Unique -First 16)
+}
 
 function Get-DiscoverySetting {
     param([string]$Key, [string]$Default)
@@ -42,6 +53,9 @@ function Get-DiscoverySetting {
 # Every location discovery reads, resolved once. Overridable in .env so the
 # test suite never reads the real machine and an unusual install can be pointed at.
 function New-SkillDiscoveryConfig {
+    $discoveryPrompt = ''
+    $inputVariable = Get-Variable -Name hookInput -ErrorAction SilentlyContinue
+    if ($null -ne $inputVariable) { $discoveryPrompt = [string](Get-Field $inputVariable.Value 'prompt') }
     $claudeDir = Join-Path $homeDir '.claude'
     $codexHome = Get-DiscoverySetting 'CODEX_HOME_DIR' ([string]$env:CODEX_HOME)
     if ([string]::IsNullOrWhiteSpace($codexHome)) { $codexHome = Join-Path $homeDir '.codex' }
@@ -58,11 +72,20 @@ function New-SkillDiscoveryConfig {
     }
     catch { $sharedDefault = '' }
     $settings = Get-DiscoverySetting 'CLAUDE_SETTINGS_FILES' ((Join-Path $claudeDir 'settings.json') + ';' + (Join-Path $cwd '.claude\settings.json') + ';' + (Join-Path $cwd '.claude\settings.local.json'))
+    $desktopOverride = Get-DiscoverySetting 'CLAUDE_DESKTOP_SKILLS_ROOT' ''
+    $desktopRoots = @()
+    if ($desktopOverride -ne '') { $desktopRoots = @($desktopOverride) }
+    else {
+        if ($env:LOCALAPPDATA) { $desktopRoots += Join-Path $env:LOCALAPPDATA 'Claude-3p\local-agent-mode-sessions\skills-plugin' }
+        if ($env:APPDATA) { $desktopRoots += Join-Path $env:APPDATA 'Claude\local-agent-mode-sessions\skills-plugin' }
+    }
     return [pscustomobject]@{
         Client          = $client
         PluginsFile     = Get-DiscoverySetting 'CLAUDE_PLUGINS_FILE' (Join-Path $claudeDir 'plugins\installed_plugins.json')
         SettingsFiles   = @($settings.Split(';') | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
-        DesktopRoot     = Get-DiscoverySetting 'CLAUDE_DESKTOP_SKILLS_ROOT' $(if ($env:APPDATA) { Join-Path $env:APPDATA 'Claude\local-agent-mode-sessions\skills-plugin' } else { '' })
+        DesktopRoot     = $desktopOverride
+        DesktopRoots    = $desktopRoots
+        RelevantNames   = @(Get-DiscoveryRelevantNames $discoveryPrompt)
         CodexHome       = $codexHome
         CodexConfig     = Join-Path $codexHome 'config.toml'
         CodexSharedDir  = Get-DiscoverySetting 'CODEX_SHARED_SKILLS_DIR' $sharedDefault
@@ -83,7 +106,36 @@ function Get-SkillSourceStamp {
         }
         catch { [void]$parts.Add($f + '=absent') }
     }
-    foreach ($d in @($Discovery.DesktopRoot, $Discovery.CodexSharedDir)) {
+    if ($Discovery.Client -ne 'codex') {
+        $partial = New-Object 'System.Collections.Generic.List[string]'
+        $records = Read-DiscoveryJson $Discovery.PluginsFile $partial 'plugin stamp registry'
+        if ($null -ne $records -and $null -ne $records.PSObject.Properties['plugins']) {
+            $count = 0
+            foreach ($property in $records.plugins.PSObject.Properties) {
+                foreach ($record in @($property.Value)) {
+                    if ($count -ge 1200) { [void]$parts.Add('plugin-stamp=partial'); break }
+                    $root = [string](Get-Field $record 'installPath')
+                    if ($root -eq '') { continue }
+                    foreach ($rel in @('.claude-plugin/plugin.json','.claude-plugin/marketplace.json')) {
+                        $f = Join-Path $root $rel
+                        try { $i = Get-Item -LiteralPath $f -ErrorAction Stop; [void]$parts.Add($f + '=' + $i.Length + '@' + $i.LastWriteTimeUtc.Ticks) }
+                        catch { [void]$parts.Add($f + '=absent') }
+                    }
+                    $count++
+                }
+                if ($count -ge 1200) { break }
+            }
+        }
+        $snapshot = Get-DesktopSkillSnapshot $Discovery
+        foreach ($session in $snapshot.Sessions) {
+            foreach ($f in @($session.Manifest) + @($session.Definitions)) {
+                try { $i = Get-Item -LiteralPath $f -ErrorAction Stop; [void]$parts.Add($f + '=' + $i.Length + '@' + $i.LastWriteTimeUtc.Ticks) }
+                catch { [void]$parts.Add($f + '=absent') }
+            }
+        }
+        foreach ($reason in $snapshot.Partial) { [void]$parts.Add('partial=' + $reason) }
+    }
+    foreach ($d in @($Discovery.CodexSharedDir)) {
         if (-not [string]::IsNullOrWhiteSpace($d) -and (Test-Path -LiteralPath $d -PathType Container)) {
             [void]$parts.Add($d + '@' + (Get-Item -LiteralPath $d).LastWriteTimeUtc.Ticks)
         }
@@ -96,7 +148,9 @@ function Read-DiscoveryJson {
     if ([string]::IsNullOrWhiteSpace($Path) -or -not (Test-Path -LiteralPath $Path -PathType Leaf)) { return $null }
     try {
         if ((Get-Item -LiteralPath $Path).Length -gt $script:DiscoveryMaxJsonBytes) { [void]$Partial.Add($Label + ' too large to read'); return $null }
-        return (Read-JsonFile -Path $Path)
+        if ((Get-Item -LiteralPath $Path).Attributes -band [IO.FileAttributes]::ReparsePoint) { [void]$Partial.Add($Label + ' reparse document skipped'); return $null }
+        $text = [IO.File]::ReadAllText($Path, [Text.UTF8Encoding]::new($false, $true))
+        return ($text | ConvertFrom-Json -ErrorAction Stop)
     }
     catch { [void]$Partial.Add($Label + ' unreadable'); return $null }
 }
@@ -114,11 +168,11 @@ function Add-UniqueFolder {
 # skills\engineering) is NOT searched below that level - the loader does not,
 # so only the folders the manifest declares from inside it are skills.
 function Get-PluginSkillFolders {
-    param([string]$Root, $Declared, $Partial, [string]$Label)
+    param([string]$Root, $Declared, $Partial, [string]$Label, [switch]$Exclusive, [string[]]$RelevantNames = @())
     $found = New-Object System.Collections.Generic.List[string]
-    if (Test-Path -LiteralPath (Join-Path $Root 'SKILL.md') -PathType Leaf) { Add-UniqueFolder $found $Root }
+    if (-not $Exclusive -and (Test-Path -LiteralPath (Join-Path $Root 'SKILL.md') -PathType Leaf)) { Add-UniqueFolder $found $Root }
     $dirs = New-Object System.Collections.Generic.List[string]
-    [void]$dirs.Add((Join-Path $Root 'skills'))
+    if (-not $Exclusive) { [void]$dirs.Add((Join-Path $Root 'skills')) }
     foreach ($entry in @($Declared)) {
         if ($entry -isnot [string] -or [string]::IsNullOrWhiteSpace($entry)) { continue }
         $full = [IO.Path]::GetFullPath((Join-Path $Root $entry))
@@ -128,9 +182,16 @@ function Get-PluginSkillFolders {
         [void]$dirs.Add($full)
     }
     foreach ($dir in $dirs) {
-        if (-not (Test-Path -LiteralPath $dir -PathType Container)) { continue }
+        if (-not (Test-Path -LiteralPath $dir -PathType Container)) { [void]$Partial.Add($Label + ' skill directory missing'); continue }
+        if (-not (Test-DiscoveryContainedPath -Path $dir -Root $Root)) { [void]$Partial.Add($Label + ' reparse skill directory skipped'); continue }
         if (Test-Path -LiteralPath (Join-Path $dir 'SKILL.md') -PathType Leaf) { Add-UniqueFolder $found ((Get-Item -LiteralPath $dir).FullName); continue }
-        foreach ($child in @(Get-ChildItem -LiteralPath $dir -Directory -ErrorAction SilentlyContinue)) {
+        foreach ($name in $RelevantNames) {
+            $candidate = Join-Path $dir $name
+            if ((Test-Path -LiteralPath (Join-Path $candidate 'SKILL.md') -PathType Leaf) -and (Test-DiscoveryContainedPath $candidate $Root)) { Add-UniqueFolder $found $candidate }
+        }
+        $children = @(Get-ChildItem -LiteralPath $dir -Directory -ErrorAction SilentlyContinue | Select-Object -First 1201)
+        if ($children.Count -gt 1200) { [void]$Partial.Add($Label + ' directory ceiling reached') }
+        foreach ($child in @($children | Select-Object -First 1200)) {
             if ($child.Attributes -band [IO.FileAttributes]::ReparsePoint) { continue }
             if (Test-Path -LiteralPath (Join-Path $child.FullName 'SKILL.md') -PathType Leaf) { Add-UniqueFolder $found $child.FullName }
         }
@@ -183,6 +244,7 @@ function ConvertTo-DiscoveryTicks {
 
 function Get-ClaudeDiscovery {
     param($Discovery, $Result)
+    Get-DesktopDiscovery -Discovery $Discovery -Result $Result
     $records = Read-DiscoveryJson -Path $Discovery.PluginsFile -Partial $Result.Partial -Label 'installed_plugins.json'
     if ($null -ne $records -and $null -ne $records.PSObject.Properties['plugins']) {
         $Result.InstallKnown = $true
@@ -193,7 +255,10 @@ function Get-ClaudeDiscovery {
             foreach ($p in $s.enabledPlugins.PSObject.Properties) { $enabled[$p.Name] = [bool]$p.Value }
         }
         $cwdFull = Normalize-Path $cwd
+        $pending = New-Object 'System.Collections.Generic.List[object]'
+        $clock = [Diagnostics.Stopwatch]::StartNew()
         foreach ($prop in $records.plugins.PSObject.Properties) {
+            if ($pending.Count -ge 256 -or $clock.Elapsed.TotalSeconds -gt 2) { $Result.InstallKnown = $false; [void]$Result.Partial.Add('plugin record/time ceiling reached'); break }
             [void]$Result.InstallKeys.Add($prop.Name)
             $best = $null; $bestTicks = -1L
             foreach ($rec in @($prop.Value)) {
@@ -205,29 +270,26 @@ function Get-ClaudeDiscovery {
             if ($null -eq $best) { continue }
             $root = [string](Get-Field $best 'installPath')
             if ([string]::IsNullOrWhiteSpace($root) -or -not (Test-Path -LiteralPath $root -PathType Container)) { [void]$Result.Partial.Add($prop.Name + ' install path missing'); continue }
-            $plugin = $prop.Name.Split('@')[0]
-            $isEnabled = -not ($enabled.ContainsKey($prop.Name) -and -not $enabled[$prop.Name])
-            $declared = Get-ManifestSkillsField -Root $root -Candidates @('.claude-plugin\plugin.json') -Partial $Result.Partial -Label $prop.Name
-            foreach ($folder in (Get-PluginSkillFolders -Root $root -Declared $declared -Partial $Result.Partial -Label $prop.Name)) {
-                Add-DiscoveredSkill $Result (New-DiscoveredSkill -Plugin $plugin -Folder $folder -Source 'claude-plugin' -Version ([string](Get-Field $best 'version')) -Enabled $isEnabled -Client 'claude')
+            $surface = Get-ClaudePluginSurface -Root $root -Key $prop.Name -Partial $Result.Partial
+            $isEnabled = if ($enabled.ContainsKey($prop.Name)) { $enabled[$prop.Name] } else { $surface.DefaultEnabled }
+            $folders = @(Get-PluginSkillFolders -Root $root -Declared $surface.Declared -Partial $Result.Partial -Label $prop.Name -Exclusive:$surface.Exclusive -RelevantNames $Discovery.RelevantNames)
+            [void]$pending.Add([pscustomobject]@{ Key = $prop.Name; Surface = $surface; Enabled = $isEnabled; Version = [string](Get-Field $best 'version'); Folders = $folders })
+        }
+        # Exact prompt-selected folders get a slot before a large provider can
+        # consume the global budget. The remaining uncovered scope stays PARTIAL.
+        foreach ($selectedPass in @($true,$false)) {
+            foreach ($item in $pending) {
+                foreach ($folder in $item.Folders) {
+                    $selected = $Discovery.RelevantNames -contains (Split-Path -Leaf $folder)
+                    if ($selected -ne $selectedPass) { continue }
+                    if ($Result.Skills.Count -ge $script:DiscoveryMaxSkills -or $clock.Elapsed.TotalSeconds -gt 4) { [void]$Result.Partial.Add($item.Key + ' uncovered installed scope: skill/time ceiling reached'); break }
+                    $skill = New-DiscoveredSkill -Plugin $item.Surface.Namespace -Folder $folder -Source 'claude-plugin' -Version $item.Version -Enabled $item.Enabled -Client 'claude'
+                    Add-ClaudePluginSkill -Result $Result -Skill $skill -Key $item.Key -Known $item.Surface.Known
+                }
             }
         }
     }
     elseif (-not [string]::IsNullOrWhiteSpace($Discovery.PluginsFile) -and -not (Test-Path -LiteralPath $Discovery.PluginsFile)) { $Result.InstallKnown = $false }
-    if (-not [string]::IsNullOrWhiteSpace($Discovery.DesktopRoot) -and (Test-Path -LiteralPath $Discovery.DesktopRoot -PathType Container)) {
-        foreach ($skillsDir in @(Get-ChildItem -Path (Join-Path $Discovery.DesktopRoot '*\*\skills') -Directory -ErrorAction SilentlyContinue | Select-Object -First 4)) {
-            $flags = @{}
-            $manifest = Read-DiscoveryJson -Path (Join-Path (Split-Path -Parent $skillsDir.FullName) 'manifest.json') -Partial $Result.Partial -Label 'Desktop manifest'
-            if ($null -ne $manifest -and $null -ne $manifest.PSObject.Properties['skills']) {
-                foreach ($m in @($manifest.skills)) { $flags[[string](Get-Field $m 'name')] = ((Get-Field $m 'enabled') -ne $false) }
-            }
-            foreach ($d in @(Get-ChildItem -LiteralPath $skillsDir.FullName -Directory -ErrorAction SilentlyContinue)) {
-                $skill = New-DiscoveredSkill -Plugin 'anthropic-skills' -Folder $d.FullName -Source 'claude-desktop' -Version '' -Enabled $true -Client 'claude'
-                if ($flags.ContainsKey($skill.Name) -and -not $flags[$skill.Name]) { $skill.Status = 'disabled' }
-                Add-DiscoveredSkill $Result $skill
-            }
-        }
-    }
 }
 
 # A bounded line scan of the two TOML table shapes Codex writes for this. A
@@ -275,7 +337,10 @@ function Get-CodexDiscovery {
         $root = $versions[0].FullName
         $declared = Get-ManifestSkillsField -Root $root -Candidates @('plugin.json', '.codex-plugin\plugin.json', '.claude-plugin\plugin.json') -Partial $Result.Partial -Label $key
         foreach ($folder in (Get-PluginSkillFolders -Root $root -Declared $declared -Partial $Result.Partial -Label $key)) {
-            Add-DiscoveredSkill $Result (New-DiscoveredSkill -Plugin $parts[0] -Folder $folder -Source 'codex-plugin' -Version $versions[0].Name -Enabled ([bool]$cfg.Plugins[$key]) -Client 'codex')
+            $skill = New-DiscoveredSkill -Plugin $parts[0] -Folder $folder -Source 'codex-plugin' -Version $versions[0].Name -Enabled ([bool]$cfg.Plugins[$key]) -Client 'codex'
+            Set-ObjectProperty $skill 'InstallationKey' $key
+            Set-ObjectProperty $skill 'DefinitionHash' (Get-DiscoverySkillHash $folder)
+            Add-DiscoveredSkill $Result $skill
         }
     }
     foreach ($src in @(@{ Dir = (Join-Path $Discovery.CodexHome 'skills'); Source = 'codex-skills'; Depth = 2 }, @{ Dir = $Discovery.CodexSharedDir; Source = 'codex-shared'; Depth = 1 })) {

@@ -237,11 +237,11 @@ $script:HookMeta = @{
     # the start, and two of them block. A menu tag that still said pre-task
     # would promise a hook that cannot refuse anything.
     'Mcp-Usage-Check'                  = @{ Order = 16; When = 'both'; Text = 'MCP and research-first reminders, and an "MCP used:" line at the end'; Events = @('SessionStart', 'UserPromptSubmit', 'Stop', 'SubagentStop'); Timeout = 10 }
-    'Rules-Check'                      = @{ Order = 17; When = 'both'; Text = 'checks the rules were read, and confirmed at the end'; Events = @('SessionStart', 'UserPromptSubmit', 'Stop', 'SubagentStop'); Timeout = 15 }
+    'Rules-Check'                      = @{ Order = 17; When = 'both'; Text = 'routes rules and language choices; confirms rules at the end'; Events = @('SessionStart', 'UserPromptSubmit', 'Stop', 'SubagentStop'); Timeout = 15 }
     # Skills-Check's real recommended EVENTS are SessionStart,UserPromptSubmit,Stop
     # (the Stop event carries the "Skills used:" summary requirement) - When must
     # be 'both', not 'pre' alone, or the menu tag disagrees with its actual timing.
-    'Skills-Check'                     = @{ Order = 18; When = 'both'; Text = 'finds global/project/plugin skills, and names those used'; Events = @('SessionStart', 'UserPromptSubmit', 'Stop', 'SubagentStop'); Timeout = 20 }
+    'Skills-Check'                     = @{ Order = 18; When = 'both'; Text = 'finds provider-aware skills, and names those used'; Events = @('SessionStart', 'UserPromptSubmit', 'Stop', 'SubagentStop'); Timeout = 20 }
     'Secrets-Check'                    = @{ Order = 19; When = 'both'; Text = 'keeps secrets.md accurate and checks for leaks' }
     # 'both' (not 'pre+post') - Get-HookTimingTag's switch only recognizes
     # pre/post/both; an unrecognized value silently rendered NO timing tag at all.

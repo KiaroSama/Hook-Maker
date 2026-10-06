@@ -71,7 +71,7 @@
     # $allShippedHookCount, but this single render of the hook list still
     # shows it exactly once alongside the real per-hook entries.
     Check 'every shipped hook renders exactly one valid, non-empty timing tag' (($preTagCount + $postTagCount + $bothTagCount) -eq ($allShippedHookCount + 1)) ('pre=' + $preTagCount + ' post=' + $postTagCount + ' both=' + $bothTagCount + ' expected=' + ($allShippedHookCount + 1))
-    Check 'listing shows short descriptions' ($r.Out -match 'relevant \.ai context files' -and $r.Out -match 'checks the rules were read')
+    Check 'listing shows short descriptions' ($r.Out -match 'relevant \.ai context files' -and $r.Out -match 'routes rules and language choices; confirms rules at the end')
     Check 'menu parts are pipe-separated' ($r.Out -match 'Create or update a sync group \| \[pre-task\] \| cross-project \.ai knowledge sync')
     $menuOrder = @(
         '1\. Select all hooks', '2\. Create or update a sync group', '3\. Ai-Context-Check',

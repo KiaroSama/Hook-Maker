@@ -190,7 +190,7 @@ try {
     # The hook dot-sources ..\_hooklib.ps1, so place the lib one level up.
     $hookCopyDir = Join-Path $Work 'hookcopy'
     New-Item -ItemType Directory -Path $hookCopyDir -Force | Out-Null
-    Copy-Item $Hook (Join-Path $hookCopyDir 'Rules-Check.ps1')
+    Copy-Item -Path (Join-Path (Split-Path -Parent $Hook) '*.ps1') -Destination $hookCopyDir
     Copy-TestRuntimeLibraries -SourceHookLib (Join-Path (Split-Path -Parent $Hook) '..\_hooklib.ps1') -Destination (Join-Path $Work '_hooklib.ps1')
     $customRules = Join-Path $Work 'customrules'
     New-RuleFile $customRules 'special.md'
@@ -377,7 +377,7 @@ try {
         param([string]$Enforcement)
         $dir = Join-Path $Work ('rulescopy-' + [guid]::NewGuid().ToString('N').Substring(0, 6))
         New-Item -ItemType Directory -Path $dir -Force | Out-Null
-        Copy-Item $Hook (Join-Path $dir 'Rules-Check.ps1')
+        Copy-Item -Path (Join-Path (Split-Path -Parent $Hook) '*.ps1') -Destination $dir
         Copy-TestRuntimeLibraries -SourceHookLib (Join-Path (Split-Path -Parent $Hook) '..\_hooklib.ps1') -Destination (Join-Path $Work '_hooklib.ps1')
         [System.IO.File]::WriteAllText((Join-Path $dir '.env'), ("RULES_CONFIRMATION_ENFORCEMENT=" + $Enforcement + "`r`n"))
         return (Join-Path $dir 'Rules-Check.ps1')
@@ -474,6 +474,39 @@ try {
     $r = Fire -Cwd $closeProj -Exe 'powershell.exe' -RawStdin (New-StopStdin -Cwd $closeProj -Transcript $tEdit -SessionId 'close-51')
     Check '5.1 host: the Stop gate produces the same block decision' (
         $r.Exit -eq 0 -and $r.Err -eq '' -and $r.Out -match '"decision"\s*:\s*"block"') $r.Out
+
+    # Language advisory uses the existing entry point, even when rules did not move.
+    $languageProj = Join-Path $Work 'language-choice'
+    [void][IO.Directory]::CreateDirectory($languageProj)
+    $null = Fire -Cwd $languageProj
+    foreach ($case in @(
+        @('new-project','Start a new project for a CLI'),
+        @('language','Which programming language should this use?'),
+        @('platform','Design a cross-platform desktop app with Tauri'),
+        @('migration','Migrate this Python service to Rust')
+    )) {
+        $session = 'language-' + $case[0]
+        $r = Fire -Cwd $languageProj -RawStdin (New-PromptStdin $languageProj $case[1] $session)
+        $ctx = Get-AdditionalContext $r.Out
+        Check ('language advisory: ' + $case[0]) ($r.Exit -eq 0 -and $r.Err -eq '' -and $ctx -match 'LANGUAGE DECISION' -and $ctx -match 'Programming Language Selection' -and $ctx -match 'requires separate approval' -and $r.Out -notmatch '"decision"') $r.Out
+        $r = Fire -Cwd $languageProj -RawStdin (New-PromptStdin $languageProj $case[1] $session)
+        Check ('unchanged language category quiet: ' + $case[0]) ($r.Exit -eq 0 -and $r.Out -eq '') $r.Out
+    }
+    $r = Fire -Cwd $languageProj -RawStdin (New-PromptStdin $languageProj 'Start a new project for a CLI' 'language-new-project')
+    Check 'category alternation never repeats unchanged guidance' ($r.Exit -eq 0 -and $r.Out -eq '') $r.Out
+    $r = Fire -Cwd $languageProj -RawStdin (New-PromptStdin $languageProj 'Fix port handling in the Rust CLI' 'language-port')
+    Check 'network port fix is not a language migration' ($r.Exit -eq 0 -and $r.Out -eq '') $r.Out
+    $r = Fire -Cwd $languageProj -RawStdin (New-PromptStdin $languageProj 'Fix a Rust parser bug in the existing project' 'language-narrow')
+    Check 'narrow existing-language fix gets no migration reminder' ($r.Exit -eq 0 -and $r.Out -eq '') $r.Out
+    $r = Fire -Cwd $languageProj -RawStdin (New-PromptStdin $languageProj 'Start a new project; keep Python as explicitly required' 'language-override')
+    $ctx = Get-AdditionalContext $r.Out
+    Check 'language advisory preserves explicit override and no installation authority' ($ctx -match 'explicit user/project constraints' -and $ctx -match 'no migration, denial, rewrite, installation or permission change') $r.Out
+    $faPrompt = -join ([char[]]@(0x067E,0x0631,0x0648,0x0698,0x0647,0x0020,0x062C,0x062F,0x06CC,0x062F))
+    $r = Fire -Cwd $languageProj -Exe 'powershell.exe' -RawStdin (New-PromptStdin $languageProj $faPrompt 'language-fa')
+    Check 'UTF-8 Persian language decision works on 5.1' ($r.Exit -eq 0 -and $r.Err -eq '' -and $r.Out -match 'LANGUAGE DECISION') $r.Out
+    $null = Fire -Cwd $languageProj -Claude $false
+    $r = Fire -Cwd $languageProj -Claude $false -RawStdin (New-PromptStdin $languageProj 'Choose a language for Web UI' 'language-codex')
+    Check 'Codex language reminder keeps context-only shape' ($r.Exit -eq 0 -and $r.Out -match 'LANGUAGE DECISION' -and $r.Out -notmatch '"decision"') $r.Out
 
     # =====================================================================
     Write-Host '--- E-01: static safety + installed-runtime parity ---' -ForegroundColor Cyan

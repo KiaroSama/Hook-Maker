@@ -16,6 +16,7 @@
 # Read-only, bounded, and never a block. A missing rules directory is reported
 # as NOT CHECKED - absence of the rules is not evidence that there is no drift.
 
+. (Join-Path $PSScriptRoot '_catalogueidentity.ps1')
 $script:DriftMaxRuleBytes = 2097152
 $script:DriftMaxCatalogueFiles = 32
 $script:DriftReportLimit = 10
@@ -27,8 +28,8 @@ function Get-SkillRulesDirectory {
     return (Join-Path $homeDir '.claude\rules')
 }
 
-# Every backtick span in the two rule files, lower-cased, plus the part after a
-# "<plugin>:" prefix, because the routing file writes plugin skills both ways.
+# Prose names are only compatibility hints for name-only user callers.
+# Installed provider definitions require the structured contracts below.
 function Get-CataloguedSkillNames {
     param([string]$RulesDir)
     $names = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
@@ -45,8 +46,8 @@ function Get-CataloguedSkillNames {
         foreach ($m in [regex]::Matches($text, '`([^`\r\n]{1,120})`')) {
             $span = $m.Groups[1].Value.Trim()
             [void]$names.Add($span)
-            $colon = $span.LastIndexOf(':')
-            if ($colon -ge 0 -and $colon -lt $span.Length - 1) { [void]$names.Add($span.Substring($colon + 1)) }
+            # Qualified names are never reduced to suffixes: another provider's
+            # route cannot prove that this installed definition is catalogued.
         }
     }
     if ($read -eq 0) { return $null }
@@ -76,11 +77,44 @@ function Get-CataloguePluginKeys {
 # Returns $null when the rules are absent (drift NOT CHECKED), otherwise the
 # two sorted name lists and a fingerprint over both.
 function Get-SkillCatalogueDrift {
-    param([string]$RulesDir, [string[]]$DiscoveredNames, $Index)
+    param([string]$RulesDir, [string[]]$DiscoveredNames, $Index, [object[]]$Definitions = @())
+    $clock = [Diagnostics.Stopwatch]::StartNew()
     $catalogued = Get-CataloguedSkillNames -RulesDir $RulesDir
-    if ($null -eq $catalogued) { return $null }
-    $missing = @($DiscoveredNames | Where-Object { -not [string]::IsNullOrWhiteSpace($_) -and -not $catalogued.Contains($_.Trim()) } |
-        ForEach-Object { $_.Trim().ToLowerInvariant() } | Sort-Object -Unique)
+    $contracts = Read-SkillCatalogueContracts $RulesDir
+    if ($null -eq $catalogued -and $contracts.Records.Count -eq 0) { return $null }
+    $missingList = New-Object 'System.Collections.Generic.List[string]'
+    $pluginNames = @{}
+    $contractsByName = @{}
+    foreach ($record in $contracts.Records) {
+        $name = [string](Get-Field $record 'name')
+        if (-not $contractsByName.ContainsKey($name)) { $contractsByName[$name] = New-Object 'System.Collections.Generic.List[object]' }
+        [void]$contractsByName[$name].Add($record)
+    }
+    foreach ($skill in @($Index.Plugin) + @($Definitions)) {
+        if ($clock.Elapsed.TotalSeconds -gt 4) {
+            $contracts.Partial = @($contracts.Partial) + @('catalogue matching time ceiling reached')
+            break
+        }
+        if ($null -eq $skill -or $skill.Status -ne 'enabled') { continue }
+        $pluginNames[[string]$skill.Name] = $true
+        $covered = $false
+        $candidates = if ($contractsByName.ContainsKey([string]$skill.Name)) { @($contractsByName[[string]$skill.Name].ToArray()) } else { @() }
+        foreach ($record in $candidates) {
+            if (Test-SkillCatalogueContract -Skill $skill -Record $record -Client $client) { $covered = $true; break }
+        }
+        if (-not $covered) {
+            $label = [string]$skill.Invocation
+            if ($label -eq '') { $label = [string]$skill.Name }
+            [void]$missingList.Add($label)
+        }
+    }
+    # Compatibility for callers supplying only user-level names: qualified
+    # providers above always require structured source evidence, never prose.
+    foreach ($name in $DiscoveredNames) {
+        if ($pluginNames.ContainsKey($name)) { continue }
+        if (-not [string]::IsNullOrWhiteSpace($name) -and ($null -eq $catalogued -or -not $catalogued.Contains($name.Trim()))) { [void]$missingList.Add($name.Trim()) }
+    }
+    $missing = @($missingList | Sort-Object -Unique)
     $removed = @()
     # Only a READABLE install record can prove a plugin is gone.
     if ($Index.InstallKnown) {
@@ -89,8 +123,8 @@ function Get-SkillCatalogueDrift {
         $removed = @(Get-CataloguePluginKeys -RulesDir $RulesDir | Where-Object { -not $installed.Contains($_) } | Sort-Object -Unique)
     }
     return [pscustomobject]@{
-        Missing = $missing; Removed = $removed
-        Fingerprint = (Get-ShortHash (($missing -join ',') + '#' + ($removed -join ',')))
+        Missing = $missing; Removed = $removed; Partial = $contracts.Partial
+        Fingerprint = (Get-ShortHash (($missing -join ',') + '#' + ($removed -join ',') + '#' + ($contracts.Partial -join ',')))
     }
 }
 
@@ -101,10 +135,11 @@ function Get-SkillDriftLines {
         [void]$lines.Add('Catalogue drift NOT CHECKED: the deployed routing rules were not found under ' + $RulesDir + ' (this is not an all-clear).')
         return $lines
     }
+    if ($null -ne $Drift.PSObject.Properties['Partial'] -and $Drift.Partial.Count -gt 0) { [void]$lines.Add('Catalogue identity coverage PARTIAL (not an all-clear): ' + ($Drift.Partial -join '; ')) }
     if ($Drift.Missing.Count -gt 0) {
         $shown = @($Drift.Missing | Select-Object -First $script:DriftReportLimit)
         $more = if ($Drift.Missing.Count -gt $shown.Count) { ' (+' + ($Drift.Missing.Count - $shown.Count) + ' more)' } else { '' }
-        [void]$lines.Add('UNCATALOGUED SKILLS (advisory): ' + ($shown -join ', ') + $more + ' - no routing line in global-skill-routing.md or global-skills-catalogue.md; the rules need an update.')
+        [void]$lines.Add('UNCATALOGUED SKILLS (advisory): ' + ($shown -join ', ') + $more + ' - no current provider/source skill contract; bare mentions or other providers do not prove coverage; the rules need an update.')
     }
     if ($Drift.Removed.Count -gt 0) {
         [void]$lines.Add('REMOVED PLUGINS (advisory): ' + ((@($Drift.Removed | Select-Object -First $script:DriftReportLimit)) -join ', ') + ' - the catalogue names a removed plugin; the rules need an update.')

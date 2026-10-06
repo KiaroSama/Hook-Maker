@@ -165,8 +165,8 @@ function Get-UnusedShortlistedSkills {
         # Answered in an earlier turn: the question was put and it was answered,
         # so it is not put again.
         if (@($alreadyAccounted | Where-Object { $_ -eq $n }).Count -gt 0) { continue }
-        # Plugin skills are addressed <plugin>:<skill>; either spelling counts,
-        # because both name the same skill and the agent may write either.
+        # A bare Skill call proves only that bare key, never a qualified provider.
+        # The closing line can still explain a skipped candidate by its short name.
         $leaf = $n
         $colon = $n.LastIndexOf(':')
         if ($colon -ge 0 -and $colon -lt ($n.Length - 1)) { $leaf = $n.Substring($colon + 1) }
@@ -175,7 +175,7 @@ function Get-UnusedShortlistedSkills {
         # The tool INPUT field, not just any occurrence of the name: this hook's
         # own shortlist message lands in the same transcript and names every
         # candidate, so a bare substring search would clear the gate itself.
-        if ($RawTranscript -match ('"skill"[ \t]*:[ \t]*"(?:[^"]*\b)?(?:' + $full + '|' + $short + ')"')) { [void]$answered.Add($n); continue }
+        if ($RawTranscript -match ('"skill"[ \t]*:[ \t]*"' + $full + '"')) { [void]$answered.Add($n); continue }
         if (-not [string]::IsNullOrWhiteSpace($UsedLine)) {
             if ($UsedLine -match ('(?i)(?:' + $full + '|' + $short + ')')) { [void]$answered.Add($n); continue }
         }

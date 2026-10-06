@@ -347,8 +347,11 @@ if (-not $firstRun) {
     catch { $firstRun = $true }
 }
 
+. (Join-Path $PSScriptRoot '_languagechoice.ps1')
+$languageNote = Get-LanguageChoiceReminder -HookInput $hookInput -Client $Client -ProjectRoot $cwd -StateDir $stateDir -PolicyEntries $currentEntries
+
 # Nothing configured and nothing remembered -> silent, zero tokens.
-if ($firstRun -and $currentEntries.Count -eq 0) {
+if ($firstRun -and $currentEntries.Count -eq 0 -and $languageNote -eq '') {
     exit 0
 }
 
@@ -391,7 +394,7 @@ if ($deepDebug -and $sessionId -ne '' -and (Test-Path -LiteralPath $ddStatePath 
 }
 
 $rulesMoved = ($firstRun -or $newFiles.Count -gt 0 -or $changedFiles.Count -gt 0 -or $removedFiles.Count -gt 0)
-if (-not $rulesMoved -and -not $deepDebug) {
+if (-not $rulesMoved -and -not $deepDebug -and $languageNote -eq '') {
     exit 0
 }
 
@@ -407,6 +410,7 @@ else {
     $ponytailRef = '/ponytail:ponytail-audit (native)'
 }
 $lines = New-Object System.Collections.Generic.List[string]
+if ($languageNote -ne '') { [void]$lines.Add($languageNote) }
 if ($rulesMoved) {
     if ($firstRun) {
         [void]$lines.Add('RULES CHECK (' + $Client + ') - first check of this project. Before starting the task, make sure EVERY configured rules file below has been read and is applied:')

@@ -257,7 +257,7 @@ $index = Read-SkillIndex
 if ($null -eq $index) { $index = Build-SkillIndex }
 
 # Nothing to point at, for any event -> stay silent, zero tokens.
-if (-not $hasLibrary -and -not $hasRecord -and $skillFolders.Count -eq 0 -and $index.Plugin.Count -eq 0) { exit 0 }
+if (-not $hasLibrary -and -not $hasRecord -and $skillFolders.Count -eq 0 -and $index.Plugin.Count -eq 0 -and $index.Partial.Count -eq 0) { exit 0 }
 
 # ---- build the deduped project/global inventory (name: from SKILL.md) ------
 # Dedup key: exact skill name (case-insensitive). A single name appearing in
@@ -533,7 +533,7 @@ if ($eventName -eq 'UserPromptSubmit') {
     # Fingerprint = session + client + everything the message would say. An
     # unchanged answer shows once; a new prompt with different matches, or a
     # changed skill set, re-reports immediately.
-    $matchSig = (@($topInstalled | ForEach-Object { $_.Name + '@' + $_.Score }) -join ',') + '#' +
+    $matchSig = ($index.Partial -join ';') + '#' + (@($topInstalled | ForEach-Object { $_.Name + '@' + $_.Score }) -join ',') + '#' +
                 (@($topLibrary | ForEach-Object { $_.Name + '@' + $_.Score }) -join ',')
     $fingerprint = Get-ShortHash ($sessionId + '|' + $client + '|' + $hasLibrary + '|' + $libraryDir + '|' + $hasRecord + '|' + $sig + '|' + $matchSig)
     $statePath = Join-Path $stateDir ('SkillsCheck-prompt-' + $projectKey + '.txt')
@@ -544,9 +544,10 @@ if ($eventName -eq 'UserPromptSubmit') {
     if (-not $promptClaim.Admitted) { exit 0 }
 
     $lines = New-Object System.Collections.Generic.List[string]
+    if ($index.Partial.Count -gt 0) { [void]$lines.Add('Skill discovery was PARTIAL (not the full installed scope): ' + (($index.Partial | Select-Object -Unique -First 8) -join '; ')) }
     [void]$lines.Add('SKILL POLICY CHECK (' + $client + ') - skill use is MANDATORY (skill-policy: Core Principle), not a judgement call: run this check at task start and again whenever the work becomes a new kind of job. Every step a skill covers runs THROUGH that skill, never by hand because it looks simple; a matched library skill is COPIED into the project under the standing authorization (exact command below) and recorded in .ai/SKILLS.md; a feature request runs the mattpocock chain (grilling + domain-modeling first). Sources searched: project, global, plugin, and the shared library.')
     if ($topInstalled.Count -gt 0) {
-        [void]$lines.Add('INSTALLED and matching this prompt - a name-match shortlist, not the full inventory. Invoke the relevant ones by the exact name shown (no authorization needed, they are enabled and loadable) and follow the procedure in the SKILL.md named after the arrow:')
+        [void]$lines.Add('INSTALLED and matching this prompt - a name-match shortlist, not the full inventory. Invoke the relevant ones by the exact name shown (registered/enabled candidates; verify actual host exposure and resolved source before use) and follow the procedure in the SKILL.md named after the arrow:')
         foreach ($m in $topInstalled) {
             $where = ''
             if ($null -ne $m.PSObject.Properties['Path'] -and -not [string]::IsNullOrWhiteSpace([string]$m.Path)) { $where = ' -> ' + (Join-Path $m.Path 'SKILL.md') }
@@ -597,7 +598,9 @@ if ($index.Plugin.Count -gt 0) {
     # is ever put on a shortlist (see _promptmatch.ps1).
     $disabledCount = @($index.Plugin | Where-Object { $_.Status -eq 'disabled' }).Count
     $explicitCount = @($index.Plugin | Where-Object { $_.Explicit -eq '1' }).Count
-    [void]$lines.Add('Of these: ' + ($index.Plugin.Count - $disabledCount) + ' enabled, ' + $disabledCount + ' disabled (not loadable), ' + $explicitCount + ' explicit-only (only when the user names them).')
+    $unknownCount = @($index.Plugin | Where-Object { $_.Status -eq 'unknown' }).Count
+    [void]$lines.Add('Of these: ' + ($index.Plugin.Count - $disabledCount - $unknownCount) + ' enabled, ' + $disabledCount + ' disabled (not loadable), ' + $explicitCount + ' explicit-only (only when the user names them).')
+    if ($unknownCount -gt 0) { [void]$lines.Add('Unknown availability: ' + $unknownCount + ' definitions (not shortlisted).') }
 }
 elseif ($hasPluginRoot) {
     [void]$lines.Add('Plugin skills: none found under ' + $pluginRoot + '.')
@@ -616,12 +619,13 @@ if ($hasLibrary) {
 [void]$lines.Add('- Select only the minimal relevant set (1-5). Follows ' + $policyFile + '.')
 foreach ($routingLine in $script:SkillRoutingLines) { [void]$lines.Add($routingLine) }
 
-# Catalogue drift, once per session per unchanged gap. Project-local skills are
-# excluded: they are library copies, and the global rules never route them.
-$driftNames = @(@($index.Plugin | Where-Object { $_.Status -ne 'disabled' } | ForEach-Object { $_.Name }) +
+# Provider/source-aware drift is advisory, never runtime load evidence.
+# Project-local copies remain outside the global catalogue contract.
+$driftNames = @(@($index.Plugin | Where-Object { $_.Status -eq 'enabled' } | ForEach-Object { $_.Name }) +
     @($byName.Values | Where-Object { $_.Sources -contains 'global' } | ForEach-Object { $_.Name }))
 $rulesDir = Get-SkillRulesDirectory -CodexHome $skillDiscovery.CodexHome
-$drift = Get-SkillCatalogueDrift -RulesDir $rulesDir -DiscoveredNames $driftNames -Index $index
+$globalDefinitions = @($skillFolders | Where-Object { $_.Label -eq 'global' } | ForEach-Object { New-DiscoveredSkill -Plugin '' -Folder $_.Path -Source 'user-global' -Version '' -Enabled $true -Client $client })
+$drift = Get-SkillCatalogueDrift -RulesDir $rulesDir -DiscoveredNames $driftNames -Index $index -Definitions $globalDefinitions
 $driftLines = @(Get-SkillDriftLines -Drift $drift -RulesDir $rulesDir)
 if ($driftLines.Count -gt 0) {
     $driftPrint = if ($null -eq $drift) { 'not-checked|' + $rulesDir } else { $drift.Fingerprint }
