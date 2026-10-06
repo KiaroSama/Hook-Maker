@@ -33,7 +33,7 @@
     $sentinel.Kill(); $sentinel.WaitForExit(10000) | Out-Null; $sentinel = $null
 
     # =====================================================================
-    Write-Host '--- C2: content-aware pruning keeps unresolved negatives, prunes clean/superseded ---' -ForegroundColor Cyan
+    Write-Host '--- C2: logical retirement keeps unresolved negatives and all original files ---' -ForegroundColor Cyan
     $c = New-IsolatedHookCopy
     $p = New-GitRepo 'C2Prune'
     $key = Get-ProjectKey $p
@@ -45,11 +45,11 @@
     $rLeak = 'c2leak-' + $key
     Write-GuardedResult -Copy $c -Root $p -Overall 'ok' -Leaked @(9111) -RunId $rLeak -ProjectFingerprint 'c2-oldstate2' -CommandFingerprint ('cmdleak' + $key)
     (Get-Item -LiteralPath (Get-RunStateFile -Copy $c -Root $p -Kind 'result' -RunId $rLeak)).LastWriteTimeUtc = [DateTime]::UtcNow.AddHours(-25)
-    # (c) a clean OK result older than 24h -> PRUNED (staleness weakens positive evidence).
+    # (c) a clean OK result older than 24h -> logically retired (staleness weakens positive evidence).
     $rCleanOld = 'c2clean-' + $key
     Write-GuardedResult -Copy $c -Root $p -Overall 'ok' -RunId $rCleanOld -CommandFingerprint ('cmdclean' + $key)
     (Get-Item -LiteralPath (Get-RunStateFile -Copy $c -Root $p -Kind 'result' -RunId $rCleanOld)).LastWriteTimeUtc = [DateTime]::UtcNow.AddHours(-25)
-    # (d) an old TERMINATED result SUPERSEDED by a newer clean run for the same command+state -> PRUNED.
+    # (d) an old TERMINATED result SUPERSEDED by a newer clean run for the same command+state -> logically retired.
     $rSup = 'c2sup-' + $key; $rSupOk = 'c2supok-' + $key
     Write-GuardedResult -Copy $c -Root $p -Overall 'terminated' -ExitCode 124 -TerminateReason 'idleTimeout' -TerminateDetail 'x' -RunId $rSup -CommandFingerprint ('cmdsup' + $key) -AgeMinutes 200
     (Get-Item -LiteralPath (Get-RunStateFile -Copy $c -Root $p -Kind 'result' -RunId $rSup)).LastWriteTimeUtc = [DateTime]::UtcNow.AddHours(-25)
@@ -59,10 +59,10 @@
         Test-Path -LiteralPath (Get-RunStateFile -Copy $c -Root $p -Kind 'result' -RunId $rTerm)) $r.Out
     Check 'C2: an unresolved leaked result older than 24h is NOT pruned' (
         Test-Path -LiteralPath (Get-RunStateFile -Copy $c -Root $p -Kind 'result' -RunId $rLeak)) $r.Out
-    Check 'C2: a clean ok result older than 24h IS pruned' (
-        -not (Test-Path -LiteralPath (Get-RunStateFile -Copy $c -Root $p -Kind 'result' -RunId $rCleanOld))) $r.Out
-    Check 'C2: an old terminated result superseded by a newer clean run IS pruned' (
-        -not (Test-Path -LiteralPath (Get-RunStateFile -Copy $c -Root $p -Kind 'result' -RunId $rSup))) $r.Out
+    Check 'C2: logically retired clean result retains its original file' (
+        (Test-Path -LiteralPath (Get-RunStateFile -Copy $c -Root $p -Kind 'result' -RunId $rCleanOld))) $r.Out
+    Check 'C2: superseded terminated original is retained without restoring its block' (
+        (Test-Path -LiteralPath (Get-RunStateFile -Copy $c -Root $p -Kind 'result' -RunId $rSup))) $r.Out
     Check 'C2: the newer clean (superseding) result is retained' (
         Test-Path -LiteralPath (Get-RunStateFile -Copy $c -Root $p -Kind 'result' -RunId $rSupOk)) $r.Out
 
@@ -104,8 +104,8 @@
     $r = Fire -Copy $c -Cwd $p
     Check 'C2b/S1: verified same-command recovery preserves the legacy original rather than deleting it' (
         (Test-Path -LiteralPath $emptyPath) -and $r.Out -notmatch '"decision":"block"') $r.Out
-    Check 'C2b/S2: a failure is superseded even though the tree changed (the fix itself changed it)' (
-        -not (Test-Path -LiteralPath (Get-RunStateFile -Copy $c -Root $p -Kind 'result' -RunId $rMoved))) $r.Out
+    Check 'C2b/S2: changed-tree same-command recovery retains the original without blocking' (
+        (Test-Path -LiteralPath (Get-RunStateFile -Copy $c -Root $p -Kind 'result' -RunId $rMoved)) -and $r.Out -notmatch '"decision":"block"') $r.Out
     Check 'C2b/S3: a green run of a DIFFERENT command does NOT supersede it' (
         Test-Path -LiteralPath (Get-RunStateFile -Copy $c -Root $p -Kind 'result' -RunId $rOther)) $r.Out
 
@@ -164,12 +164,12 @@
     $r = Fire -Copy $c -Cwd $p
     Check 'C4: a clean rerun for the same command/state is ACCEPTED, not re-blocked by the old incident' (
         $r.Exit -eq 0 -and $r.Out -eq '') $r.Out
-    # C2 tie-in: once resolved, the incident''s own aged files become prunable.
+    # C2 tie-in: once resolved, the incident''s own aged files leave the evaluation view, not disk.
     (Get-Item -LiteralPath (Get-RunStateFile -Copy $c -Root $p -Kind 'result' -RunId $rInc)).LastWriteTimeUtc = [DateTime]::UtcNow.AddHours(-25)
     (Get-Item -LiteralPath (Get-RunStateFile -Copy $c -Root $p -Kind 'observed' -RunId $rInc)).LastWriteTimeUtc = [DateTime]::UtcNow.AddHours(-25)
     $r = Fire -Copy $c -Cwd $p
-    Check 'C4/C2: the RESOLVED incident''s aged result file is pruned' (
-        -not (Test-Path -LiteralPath (Get-RunStateFile -Copy $c -Root $p -Kind 'result' -RunId $rInc))) $r.Out
+    Check 'C4/C2: resolved aged incident retains its original file for audit' (
+        (Test-Path -LiteralPath (Get-RunStateFile -Copy $c -Root $p -Kind 'result' -RunId $rInc))) $r.Out
 
     # An UNRESOLVED incident (no note, no clean rerun) still blocks.
     $c = New-IsolatedHookCopy
@@ -275,8 +275,8 @@
     }
     $r = Fire -Copy $c -Cwd $p
     $survivingObs = @(Get-ChildItem -LiteralPath (Get-StateDir $c) -Filter 'TestRunGuard-observed-*.json' -File)
-    Check 'D3: exactly ONE observation survives - the unpaired one is not deleted by a shared result' (
-        $survivingObs.Count -eq 1) ('observed files=' + $survivingObs.Count)
+    Check 'D3: both original observations remain, while only one is logically paired' (
+        $survivingObs.Count -eq 2) ('observed files=' + $survivingObs.Count)
     Check 'D3: the unpaired observation still BLOCKS as observed-without-result' (
         $r.Out -match '"decision":"block"' -and (Get-BlockReason $r.Out) -match 'no guarded result document exists') $r.Out
     # A SECOND result now pairs the surviving observation -> completion allowed.
@@ -286,12 +286,12 @@
         $r.Exit -eq 0 -and $r.Out -eq '') $r.Out
 
     # =====================================================================
-    Write-Host '--- D4: OLD-STATE negatives get bounded retention; CURRENT-state negatives are kept forever ---' -ForegroundColor Cyan
+    Write-Host '--- D4: OLD-STATE negatives retire logically; every original remains on disk ---' -ForegroundColor Cyan
     $c = New-IsolatedHookCopy
     $p = New-GitRepo 'D4OldStateFailed'
     $key = Get-ProjectKey $p
     # (a) an OLD-STATE plain `failed` (no incident key, never superseded) older than
-    #     the 7-day bound -> PRUNED (it can never be current evidence or block).
+    #     the 7-day bound -> logically retired, original bytes retained.
     $rFailOld = 'd4failold-' + $key
     Write-GuardedResult -Copy $c -Root $p -Overall 'failed' -ExitCode 1 -RunId $rFailOld -ProjectFingerprint 'd4-oldstate' -CommandFingerprint ('d4cmdold-' + $key)
     (Get-Item -LiteralPath (Get-RunStateFile -Copy $c -Root $p -Kind 'result' -RunId $rFailOld)).LastWriteTimeUtc = [DateTime]::UtcNow.AddDays(-8)
@@ -304,15 +304,15 @@
     Write-GuardedResult -Copy $c -Root $p -Overall 'terminated' -ExitCode 124 -TerminateReason 'wallTimeout' -TerminateDetail 'x' -RunId $rTermCur -CommandFingerprint ('d4cmdcur-' + $key)
     (Get-Item -LiteralPath (Get-RunStateFile -Copy $c -Root $p -Kind 'result' -RunId $rTermCur)).LastWriteTimeUtc = [DateTime]::UtcNow.AddDays(-8)
     $r = Fire -Copy $c -Cwd $p
-    Check 'D4: an OLD-STATE failed result past the 7-day bound IS pruned (no unbounded growth)' (
-        -not (Test-Path -LiteralPath (Get-RunStateFile -Copy $c -Root $p -Kind 'result' -RunId $rFailOld))) $r.Out
+    Check 'D4: old-state failed original remains on disk after logical retirement' (
+        (Test-Path -LiteralPath (Get-RunStateFile -Copy $c -Root $p -Kind 'result' -RunId $rFailOld))) $r.Out
     Check 'D4: an OLD-STATE failed result within the 7-day bound is still retained' (
         Test-Path -LiteralPath (Get-RunStateFile -Copy $c -Root $p -Kind 'result' -RunId $rFailRecent)) $r.Out
     Check 'D4: a CURRENT-state unresolved terminated of any age is NEVER pruned (round-19 kept)' (
         Test-Path -LiteralPath (Get-RunStateFile -Copy $c -Root $p -Kind 'result' -RunId $rTermCur)) $r.Out
 
     # =====================================================================
-    Write-Host '--- R1: a superseded incident is note-demanded even when its files are pruned before the first Stop ---' -ForegroundColor Cyan
+    Write-Host '--- R1: a superseded incident owes its note before logical retirement at the first Stop ---' -ForegroundColor Cyan
     $c = New-IsolatedHookCopy
     $p = New-GitRepoAi 'R1RegisterBeforePrune'
     $key = Get-ProjectKey $p
@@ -320,15 +320,15 @@
     # A terminated incident, then a NEWER green rerun of the SAME command (supersedes it).
     Write-GuardedResult -Copy $c -Root $p -Overall 'terminated' -ExitCode 124 -TerminateReason 'wallTimeout' -TerminateDetail 'exceeded the 1800s wall ceiling' -RunId $rInc -CommandFingerprint $cmd -AgeMinutes 200
     Write-GuardedResult -Copy $c -Root $p -Overall 'ok' -RunId $rGreen -CommandFingerprint $cmd -AgeMinutes 1
-    # The incident file is already >24h old at the first Stop, so the prune WOULD
-    # delete it (superseded). Its note obligation must be registered BEFORE that.
+    # The incident is already >24h old at the first Stop, so logical retirement WOULD
+    # exclude it (superseded). Register its note BEFORE that; retain the file.
     (Get-Item -LiteralPath (Get-RunStateFile -Copy $c -Root $p -Kind 'result' -RunId $rInc)).LastWriteTimeUtc = [DateTime]::UtcNow.AddHours(-25)
     $r = Fire -Copy $c -Cwd $p
     Check 'R1: the superseded incident still demands its durable note at the first Stop (register-before-prune)' (
         $r.Out -match '"decision":"block"' -and (Get-BlockReason $r.Out) -match 'durable \.ai/ note is still owed' -and (Get-BlockReason $r.Out) -match 'wallTimeout') $r.Out
     Check 'R1: exactly one note obligation was registered before pruning' ((Get-PendingCount (Get-CompletionStateDoc -Copy $c -Root $p)) -eq 1) ''
-    Check 'R1: the superseded incident file WAS pruned - the obligation outlived it in the ledger' (
-        -not (Test-Path -LiteralPath (Get-RunStateFile -Copy $c -Root $p -Kind 'result' -RunId $rInc))) $r.Out
+    Check 'R1: superseded original remains alongside its durable note obligation' (
+        (Test-Path -LiteralPath (Get-RunStateFile -Copy $c -Root $p -Kind 'result' -RunId $rInc))) $r.Out
     Add-TaggedNote -Root $p -Reason (Get-BlockReason $r.Out) -Body ('Wall-timeout self-healed before the first Stop; recorded so the lesson survives pruning. Guard: bounded wall ceiling, verified green.')
     $r = Fire -Copy $c -Cwd $p
     Check 'R1: once the tagged note is written, completion is allowed' ($r.Exit -eq 0 -and $r.Out -eq '') $r.Out

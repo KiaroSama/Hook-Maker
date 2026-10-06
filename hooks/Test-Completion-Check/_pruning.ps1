@@ -1,16 +1,11 @@
 # Test-Completion-Check: pruning responsibility, extracted from the oversized entry.
 # Unknown repository state cannot classify any historical evidence as old-state.
 if ($preserveOriginals) { return }
-# ---- R1: register note obligations BEFORE pruning can delete a superseded run --
-# The prune below removes a superseded negative (a hang that later re-ran green for
-# the same command+state). A supersede lifts the RESULT-level block but NEVER the
-# durable-note requirement (D2). If the superseded run's files were pruned before
-# its obligation was recorded - e.g. the first Stop fires >24h after a self-heal -
-# the lesson would be lost forever. So every CURRENT-state, unresolved, superseded
-# incident has its note demanded here, before the prune can erase it. Its
-# obligation then lives in the ledger independent of the result file. Un-superseded
-# current-state negatives are KEPT by the prune and register normally when they
-# block, so only the about-to-be-pruned ones need this pass.
+# ---- R1: register note obligations BEFORE logical retirement ----------------
+# Supersession lifts the RESULT-level block, never the durable-note requirement.
+# Register current-state incident notes before removing eligible entries from
+# this evaluation's view. Their original files remain byte-identical for audit;
+# note obligations also live independently in the ledger.
 foreach ($re in $resultEntries) {
     $cause = Get-IncidentReasonFromDoc $re.Doc
     if ([string]::IsNullOrWhiteSpace($cause)) { continue }
@@ -28,24 +23,17 @@ foreach ($re in $resultEntries) {
 if ($script:pendingNotes.Count -gt 0) { Save-CompletionState }
 $persistedNotes = @(Get-Field (Read-JsonFile $script:statePath) 'pendingNotes')
 
-# ---- bounded, CONTENT-AWARE state growth control (C2 / D3 / D4) -------------
-# Age alone must never erase a NEGATIVE finding. Staleness weakens only POSITIVE
-# evidence (see this file's header): a run that TERMINATED, FAILED, LEAKED, errored
-# or was OBSERVED-WITHOUT-A-RESULT for the current state is an incident whose
-# obligation survives until it is RESOLVED (a durable note recorded, tracked in
-# resolvedIncidents) or SUPERSEDED (a strictly-newer clean ok run for the same
-# command+state - which also underlies the C4 fix). A CURRENT-state unresolved
-# negative is NEVER pruned by age. Only clean ok runs, resolved/superseded
-# negatives, OLD-STATE clutter past a longer bound (D4), and old-STATE observations
-# carrying no current obligation are pruned, so a hang whose Stop hook never fired
-# within 24h can never be silently deleted before it is seen. Best-effort: a read
-# or delete failure never blocks the gate.
+# ---- CONTENT-AWARE logical retirement (C2 / D3 / D4) -----------------------
+# Staleness weakens positive evidence, never a current unresolved negative.
+# Eligible clean, resolved/superseded or old-state records leave only this
+# evaluation's view. No age, fingerprint or supersession authorizes deleting
+# historical receipts/observations. Unreadable file metadata keeps the entry.
 $pruneCutoff = [DateTime]::UtcNow.AddHours(-24)
 # D4: an OLD-STATE (fingerprint != current) negative can NEVER become current
 # evidence and can never block, yet a plain `failed` has no incident key to ever
 # resolve and, being old-state, is never superseded - so without a bound it would
 # accumulate forever across states. Give old-state negatives a longer, safe
-# retention and prune past it. The CURRENT-state guarantee above is untouched.
+# evaluation window and retire past it, retaining disk originals.
 $oldStateNegativeCutoff = [DateTime]::UtcNow.AddDays(-7)
 function Get-FileMtimeUtc { param([string]$Path) try { return (Get-Item -LiteralPath $Path -Force).LastWriteTimeUtc } catch { return $null } }
 $prunedResultPaths = New-Object System.Collections.Generic.HashSet[string]
@@ -90,8 +78,8 @@ foreach ($oe in $observedEntries) {
     if (-not $assignedResultForObserved.ContainsKey($oe.Path)) { continue }   # unpaired -> unfinished incident, KEEP
     if ($prunedResultPaths.Contains($assignedResultForObserved[$oe.Path])) { [void]$prunedObservedPaths.Add($oe.Path) }   # its ONE assigned result is a pruned clean/resolved run
 }
-foreach ($path in @($prunedResultPaths)) { try { Remove-Item -LiteralPath $path -Force -ErrorAction SilentlyContinue } catch { } }
-foreach ($path in @($prunedObservedPaths)) { try { Remove-Item -LiteralPath $path -Force -ErrorAction SilentlyContinue } catch { } }
+# Retirement is only an in-memory view for this evaluation. Historical bytes
+# remain available to the audit; freshness/supersession is never deletion authority.
 if ($prunedResultPaths.Count -gt 0) { $resultEntries = @($resultEntries | Where-Object { -not $prunedResultPaths.Contains($_.Path) }) }
 if ($prunedObservedPaths.Count -gt 0) { $observedEntries = @($observedEntries | Where-Object { -not $prunedObservedPaths.Contains($_.Path) }) }
 

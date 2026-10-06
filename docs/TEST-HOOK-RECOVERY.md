@@ -81,6 +81,14 @@ are admitted once; changed evidence is reevaluated without creating a new note
 obligation for an ordinary unknown outcome. Active, failed, terminated and leaking
 runs remain independent obligations.
 
+Historical receipts and observations remain byte-for-byte on disk, including
+valid Git-bound records. Age, old repository state and supersession may retire an
+eligible entry only from the current evaluation's in-memory view, never delete
+its original file. Retention is not fresh proof, successful recovery or a gate
+waiver; unresolved negative findings and durable-note obligations remain.
+Previously missing files cannot be reconstructed from hashes or transcripts.
+A verified surviving byte-copy is historical evidence, not a fabricated receipt.
+
 For an explicit, read-only reconciliation report, choose a new local destination
 in an existing directory:
 

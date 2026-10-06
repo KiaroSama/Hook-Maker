@@ -423,8 +423,8 @@
     Check 'an older-STATE terminated run''s leftover files do not block the satisfied current run' (
         $r.Exit -eq 0 -and $r.Out -eq '') $r.Out
 
-    # Bounded state growth: inert per-run result/observed files older than 24h are
-    # pruned; a fresh run's files survive.
+    # Logical retirement: inert per-run result/observed files older than 24h leave
+    # only the evaluation view; every original file survives.
     $c = New-IsolatedHookCopy
     $p = New-GitRepo 'PruneOld'
     $rStale = 'runstale-' + (Get-ProjectKey $p)
@@ -438,8 +438,8 @@
     Write-ObservedRecord -Copy $c -Root $p -RunId $rFresh
     Write-GuardedResult -Copy $c -Root $p -Overall 'ok' -RunId $rFresh
     $r = Fire -Copy $c -Cwd $p
-    Check 'per-run result/observed files older than 24h are pruned' (
-        -not (Test-Path -LiteralPath $staleObs) -and -not (Test-Path -LiteralPath $staleRes)) $staleObs
+    Check 'logically retired result/observed originals remain available for audit' (
+        (Test-Path -LiteralPath $staleObs) -and (Test-Path -LiteralPath $staleRes)) $staleObs
     Check 'a fresh run''s per-run files are NOT pruned' (
         (Test-Path -LiteralPath (Get-RunStateFile -Copy $c -Root $p -Kind 'observed' -RunId $rFresh)) -and
         (Test-Path -LiteralPath (Get-RunStateFile -Copy $c -Root $p -Kind 'result' -RunId $rFresh)))

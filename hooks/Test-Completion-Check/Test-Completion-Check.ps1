@@ -266,7 +266,7 @@ $script:MalformedEvidence = New-Object 'System.Collections.Generic.List[string]'
 $resultEntries = Get-CompletionStateEntries 'result'
 $observedEntries = Get-CompletionStateEntries 'observed'
 $activeEntries = Get-CompletionStateEntries 'active'
-# Reconcile before pruning can remove the only original receipt.
+# Reconcile before logical retirement; original receipt bytes remain on disk.
 if ($script:pendingNotes.Count -gt 0) { Save-CompletionState }
 
 . (Join-Path $PSScriptRoot '_pruning.ps1')

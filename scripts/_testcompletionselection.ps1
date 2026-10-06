@@ -9,6 +9,22 @@ function Write-SelectionPair {
     Write-GuardedResult -Copy $Copy -Root $Root -RunId $Id -CommandFingerprint $Command -AgeMinutes $Age -Overall $Overall -TerminateReason $Reason -Leaked $Leaked
 }
 
+function Invoke-OriginalRetentionRegression {
+    param([switch]$Codex, [string]$HostExe = 'pwsh')
+    $c = New-IsolatedHookCopy; $p = New-GitRepo ('OriginalRetention-' + $Codex)
+    Write-ObservedRecord -Copy $c -Root $p -RunId bound-old -CommandFingerprint old-command -Fingerprint old-git-state -AgeMinutes 1500
+    Write-GuardedResult -Copy $c -Root $p -RunId bound-old -CommandFingerprint old-command -ProjectFingerprint old-git-state -AgeMinutes 1500
+    Write-SelectionPair $c $p current-good current-command
+    $paths = @((Get-RunStateFile $c $p observed bound-old), (Get-RunStateFile $c $p result bound-old))
+    foreach ($path in $paths) { (Get-Item -LiteralPath $path).LastWriteTimeUtc = [DateTime]::UtcNow.AddDays(-8) }
+    $hashes = @($paths | ForEach-Object { (Get-FileHash -LiteralPath $_ -Algorithm SHA256).Hash })
+    $r = Fire -Copy $c -Cwd $p -Codex:$Codex -Exe $HostExe
+    Check 'logical old-state retirement preserves every original file' (@($paths | Where-Object { -not (Test-Path -LiteralPath $_) }).Count -eq 0) ($r.Out + $r.Err)
+    $unchanged = $true
+    for ($i=0; $i -lt $paths.Count; $i++) { if (-not (Test-Path -LiteralPath $paths[$i]) -or (Get-FileHash -LiteralPath $paths[$i] -Algorithm SHA256).Hash -ne $hashes[$i]) { $unchanged = $false } }
+    Check 'retained old-state originals remain byte-identical without current proof' ($unchanged -and $r.Exit -eq 0 -and $r.Err -eq '' -and $r.Out -eq '') ($r.Out + $r.Err)
+}
+
 function Invoke-RepositoryEvidenceSelectionRegression {
     param([switch]$Codex, [string]$HostExe = 'pwsh')
     $c = New-IsolatedHookCopy; $p = New-GitRepo ('RepositoryEvidence-' + $Codex)
@@ -102,6 +118,7 @@ Write-Host '--- historical success versus fresh proof ---' -ForegroundColor Cyan
 foreach ($codexShape in @($false, $true)) {
     $client = if ($codexShape) { 'Codex' } else { 'Claude' }
     $hostExe = if ($codexShape) { 'pwsh' } else { 'powershell.exe' }
+    Invoke-OriginalRetentionRegression -Codex:$codexShape -HostExe $hostExe
     foreach ($reverse in @($false, $true)) {
         $c = New-IsolatedHookCopy; $p = New-GitRepo ('Selection-' + $client + '-' + $reverse)
         # Reverse filenames AND creation order, so enumeration cannot decide which
