@@ -307,7 +307,9 @@
     $c = New-IsolatedHookCopy; $p = New-GitRepo 'MarkerMalformed'
     Write-Utf8 (Get-RunStateFile -Copy $c -Root $p -Kind 'active') '{ this is not valid json'
     $r = Fire -Copy $c -Cwd $p
-    Check 'a malformed active marker fails safely (no block, no loop)' ($r.Out -eq '') $r.Out
+    Check 'a malformed active marker records unknown rather than manufacturing success' ($r.Out -match 'failedField=evidenceDocument:malformed') $r.Out
+    $repeat = Fire -Copy $c -Cwd $p -StopHookActive
+    Check 'a malformed active marker cannot create an unchanged Stop loop' ($repeat.Out -eq '' -and $repeat.Err -eq '') $repeat.Out
 
     $c = New-IsolatedHookCopy
     $p = New-GitRepo 'StaleTerminated'

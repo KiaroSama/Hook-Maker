@@ -1,5 +1,11 @@
 # Explicit audit writes one new report, never the evidence or incident ledger.
 # SUPERSEDED is historical same-command recovery, not SUCCESS or CURRENT proof.
+function Get-AuditBytesHash {
+    param([byte[]]$Bytes)
+    $sha = [Security.Cryptography.SHA256]::Create()
+    try { return ([BitConverter]::ToString($sha.ComputeHash($Bytes))).Replace('-','').ToLowerInvariant() } finally { $sha.Dispose() }
+}
+
 function Get-AuditEvidenceFiles {
     $files = @()
     if (-not [IO.Directory]::Exists($script:stateDir)) { return $files }
@@ -23,8 +29,7 @@ function Export-CompletionEvidenceAudit {
         # Parse and digest the SAME bytes. Hashing after parsing could certify a
         # replacement receipt while the classification still described old bytes.
         $bytes = [IO.File]::ReadAllBytes($file.FullName)
-        $sha = [Security.Cryptography.SHA256]::Create()
-        try { $hash = ([BitConverter]::ToString($sha.ComputeHash($bytes))).Replace('-','').ToLowerInvariant() } finally { $sha.Dispose() }
+        $hash = Get-AuditBytesHash $bytes
         $doc = $null
         try { $doc = ([Text.UTF8Encoding]::new($false,$true).GetString($bytes).TrimStart([char]0xFEFF) | ConvertFrom-Json) } catch { }
         $valid = ($null -ne $doc -and $doc -is [pscustomobject])
@@ -64,7 +69,7 @@ function Export-CompletionEvidenceAudit {
         }
     }
     foreach ($snapshot in $snapshots) {
-        if ((Get-FileHash -LiteralPath $snapshot.path -Algorithm SHA256 -ErrorAction Stop).Hash.ToLowerInvariant() -cne $snapshot.sha256) { throw 'Evidence changed concurrently; audit aborted without modifying originals. Retry after the producer finishes.' }
+        if ((Get-AuditBytesHash ([IO.File]::ReadAllBytes($snapshot.path))) -cne $snapshot.sha256) { throw 'Evidence changed concurrently; audit aborted without modifying originals. Retry after the producer finishes.' }
     }
     if ((@(Get-AuditEvidenceFiles | ForEach-Object { $_.FullName }) -join '|') -cne (@($files | ForEach-Object { $_.FullName }) -join '|')) { throw 'Evidence file set changed concurrently; audit aborted. Retry after the producer finishes.' }
     $report = [pscustomobject][ordered]@{ schema = 1; auditedUtc = [DateTime]::UtcNow.ToString('o'); projectKey = $State.ProjectKey; repositoryState = $State.State; repositoryStateFingerprint = $State.RepositoryStateFingerprint; gateWaived = $false; originals = @($snapshots); observations = @($rows) }

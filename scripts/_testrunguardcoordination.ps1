@@ -79,9 +79,11 @@ function Invoke-UnavailableStateRegression {
     . $HookLib
     $copy = New-IsolatedHookCopy
     $savedOwner = $env:GIT_TEST_ASSUME_DIFFERENT_OWNER
+    $savedConfigCount = $env:GIT_CONFIG_COUNT; $savedConfigKey = $env:GIT_CONFIG_KEY_0; $savedConfigValue = $env:GIT_CONFIG_VALUE_0
     try {
         # Git's own ownership-refusal seam; no trust, ACL or global config edits.
         $env:GIT_TEST_ASSUME_DIFFERENT_OWNER = '1'
+        $env:GIT_CONFIG_COUNT = '1'; $env:GIT_CONFIG_KEY_0 = 'safe.directory'; $env:GIT_CONFIG_VALUE_0 = ''
         foreach ($command in @('pytest -q', 'pwsh -File scripts/Run-Tests-Guarded.ps1 -FilePath pwsh -ArgumentsJson ''["-Command","exit 0"]'' -ProjectFingerprint stale -TimeoutSeconds 23 -IdleTimeoutSeconds 11 -MaxWorkers 1')) {
             $r = Fire -HookPath $copy.Script -Cwd $Root -EventName PreToolUse -Command $command -LocalAppData $copy.LocalAppData
             Check 'repository ownership refusal cannot create path-only state evidence' (
@@ -95,10 +97,11 @@ function Invoke-UnavailableStateRegression {
         & git -C $Root add ownership-state.txt
         & git -C $Root commit -q -m second-state
         $env:GIT_TEST_ASSUME_DIFFERENT_OWNER = '1'
+        $env:GIT_CONFIG_COUNT = '1'; $env:GIT_CONFIG_KEY_0 = 'safe.directory'; $env:GIT_CONFIG_VALUE_0 = ''
         $second = Get-RepositoryStateEvidence -ProjectRoot $Root
         Check 'two committed ownership-refused states never share trusted repository evidence' ($first.State -eq 'unavailable' -and $second.State -eq 'unavailable' -and $first.RepositoryStateFingerprint -eq '' -and $second.RepositoryStateFingerprint -eq '' -and $first.BindingFingerprint -eq '' -and $second.BindingFingerprint -eq '' -and $first.ProjectKey -eq $second.ProjectKey)
     }
-    finally { $env:GIT_TEST_ASSUME_DIFFERENT_OWNER = $savedOwner }
+    finally { $env:GIT_TEST_ASSUME_DIFFERENT_OWNER = $savedOwner; $env:GIT_CONFIG_COUNT = $savedConfigCount; $env:GIT_CONFIG_KEY_0 = $savedConfigKey; $env:GIT_CONFIG_VALUE_0 = $savedConfigValue }
 }
 
 function Invoke-EmptyRunnerBindingRegression {

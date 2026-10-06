@@ -19,8 +19,10 @@ function Invoke-RepositoryEvidenceSelectionRegression {
     $paths = @((Get-RunStateFile $c $p observed legacy-insights), (Get-RunStateFile $c $p result legacy-insights))
     $hashes = @($paths | ForEach-Object { (Get-FileHash -LiteralPath $_).Hash })
     $savedOwner = $env:GIT_TEST_ASSUME_DIFFERENT_OWNER
+    $savedConfigCount = $env:GIT_CONFIG_COUNT; $savedConfigKey = $env:GIT_CONFIG_KEY_0; $savedConfigValue = $env:GIT_CONFIG_VALUE_0
     try {
         $env:GIT_TEST_ASSUME_DIFFERENT_OWNER = '1'
+        $env:GIT_CONFIG_COUNT = '1'; $env:GIT_CONFIG_KEY_0 = 'safe.directory'; $env:GIT_CONFIG_VALUE_0 = ''
         $r = Fire -Copy $c -Cwd $p -Codex:$Codex -Exe $HostExe
         $reason = Get-BlockReason $r.Out
         Check 'unavailable Git names exact legacy run, command, timestamp and missing field' (
@@ -41,16 +43,20 @@ function Invoke-RepositoryEvidenceSelectionRegression {
         $oldLocal = $env:LOCALAPPDATA
         try {
             $env:LOCALAPPDATA = $auditCopy.LocalAppData
-            $output = Invoke-QuietCommand -FilePath $HostExe -ArgumentList @('-NoProfile','-File',$auditCopy.Script,'-AuditEvidence','-ProjectRoot',$p,'-AuditPath',$audit) -TimeoutSeconds 30
+            $auditWrapper = Join-Path $Work ('audit-wrapper-' + $Codex + '.ps1')
+            Write-Utf8 $auditWrapper ("try { & '" + $auditCopy.Script.Replace("'","''") + "' -AuditEvidence -ProjectRoot '" + $p.Replace("'","''") + "' -AuditPath '" + $audit.Replace("'","''") + "' } catch { Write-Output (`$_.Exception.Message + ' ' + `$_.ScriptStackTrace); exit 1 }")
+            $output = Invoke-QuietCommand -FilePath $HostExe -ArgumentList @('-NoProfile','-File',$auditWrapper) -TimeoutSeconds 30
             $auditExit = $LASTEXITCODE
         }
         finally { $env:LOCALAPPDATA = $oldLocal }
         $report = Read-JsonFile $audit
+        Check 'read-only audit completes with a real report' ($auditExit -eq 0 -and $null -ne $report) ($output -join ' ')
+        if ($null -eq $report) { throw ('Read-only audit failed: ' + ($output -join ' ')) }
         Check 'audit hashes malformed originals and records their uncertainty' (@($report.originals | Where-Object { $_.path -eq $malformed -and $_.parseState -eq 'malformed' }).Count -eq 1 -and @($report.observations | Where-Object { $_.failedField -eq 'evidenceDocument:malformed' -and $_.verdict -eq 'UNKNOWN' }).Count -eq 1)
         Check 'audit cannot supersede a live or own-paired leaking original' (@($report.observations | Where-Object { $_.runId -in @('live-old','leak-old') -and $_.verdict -eq 'UNKNOWN' }).Count -eq 2)
         Check 'audit preserves UNKNOWN and never waives the gate' ($auditExit -eq 0 -and $null -ne $report -and (Get-Field $report 'gateWaived') -eq $false -and @($report.observations | Where-Object { $_.runId -eq 'legacy-insights' -and $_.verdict -eq 'UNKNOWN' }).Count -eq 1) ($output -join ' ')
     }
-    finally { $env:GIT_TEST_ASSUME_DIFFERENT_OWNER = $savedOwner }
+    finally { $env:GIT_TEST_ASSUME_DIFFERENT_OWNER = $savedOwner; $env:GIT_CONFIG_COUNT = $savedConfigCount; $env:GIT_CONFIG_KEY_0 = $savedConfigKey; $env:GIT_CONFIG_VALUE_0 = $savedConfigValue }
     $changed = Fire -Copy $c -Cwd $p -Codex:$Codex -Exe $HostExe -StopHookActive
     Check 'readable Git reevaluates legacy obligation rather than discarding path binding' ((Get-BlockReason $changed.Out) -match 'legacy-insights' -and (Get-BlockReason $changed.Out) -match 'state=available') ($changed.Out + $changed.Err)
     Check 'both original receipt and observation remain byte-identical' ((Get-FileHash -LiteralPath $paths[0]).Hash -eq $hashes[0] -and (Get-FileHash -LiteralPath $paths[1]).Hash -eq $hashes[1])

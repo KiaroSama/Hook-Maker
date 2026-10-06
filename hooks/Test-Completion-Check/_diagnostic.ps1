@@ -32,7 +32,9 @@ function Get-UnresolvedObservationLines {
     if ($field -eq 'recordedUtc:STALE') { [void]$lines.Add('TEST COMPLETION CHECK: STALE result, older than ' + $script:evidenceMinutes + ' minutes; not fresh proof.') }
     if ((Get-Field $Observed 'guarded') -eq $false) { [void]$lines.Add('This observation was UNGUARDED: no runner owned or bounded its execution.') }
     [void]$lines.Add('TEST COMPLETION CHECK: unresolved identity evidence. runId=' + [string](Get-Field $Observed 'runId') + '; commandFingerprint=' + [string](Get-Field $Observed 'commandFingerprint') + '; observedUtc=' + $( $at = ConvertTo-UtcTime (Get-Field $Observed 'observedUtc'); if ($null -ne $at) { $at.ToString('o') } else { '<invalid or missing>' }) + '; failedField=' + $field + '.')
+    [void]$lines.Add('Completion cannot be claimed on evidence that does not exist; report actual verified scope, never that "all tests passed".')
     [void]$lines.Add('Repository state=' + $State.State + '; projectKey=' + $State.ProjectKey + ' is path identity only, not CURRENT repository-state evidence. Candidate runId=' + [string](Get-Field $Result 'runId') + '; overall=' + [string](Get-Field $Result 'overall') + '. A DIFFERENT run, command or state is not proof for this observation.')
+    if ($State.State -eq 'available' -and $null -ne $Observed -and (Get-ObservedFingerprint $Observed) -eq $State.RepositoryStateFingerprint) { [void]$lines.Add('This observation names the CURRENT project state; a different scope cannot satisfy it.') }
     if ($State.State -eq 'unavailable') {
         [void]$lines.Add('Recovery: restore authorized Git read access to this exact repository before requesting a verified literal fingerprint. No automatic safe.directory, ownership or ACL change is permitted. Existing failure/timeout/leak obligations remain; unrelated green CI cannot repair missing identity.')
     }

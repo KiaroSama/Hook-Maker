@@ -12,7 +12,10 @@ function Get-RepositoryStateEvidence {
     # A nested directory belongs to its ancestor repository even when Git refuses
     # to read it. .git may be a worktree file, not just a directory.
     $candidate = $root
+    $ceilings = @(([string]$env:GIT_CEILING_DIRECTORIES) -split [IO.Path]::PathSeparator | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | ForEach-Object { Normalize-Path $_ })
     while (-not [string]::IsNullOrWhiteSpace($candidate)) {
+        # Honor Git's documented discovery boundary, including isolated fixtures.
+        if ($candidate -ne $root -and $ceilings -contains $candidate) { break }
         if (Test-Path -LiteralPath (Join-Path $candidate '.git')) {
             return [pscustomobject]@{ ProjectKey = $key; RepositoryStateFingerprint = ''; State = 'unavailable'; BindingFingerprint = '' }
         }
