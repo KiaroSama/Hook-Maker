@@ -90,7 +90,7 @@ function Get-SkillCatalogueDrift {
         if (-not $contractsByName.ContainsKey($name)) { $contractsByName[$name] = New-Object 'System.Collections.Generic.List[object]' }
         [void]$contractsByName[$name].Add($record)
     }
-    foreach ($skill in @($Index.Plugin) + @($Definitions)) {
+    foreach ($skill in @($Index.Plugin | ForEach-Object { $_ }) + @($Definitions)) {
         if ($clock.Elapsed.TotalSeconds -gt 4) {
             $contracts.Partial = @($contracts.Partial) + @('catalogue matching time ceiling reached')
             break

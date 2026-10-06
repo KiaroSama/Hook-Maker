@@ -14,7 +14,8 @@ function Invoke-SkillProviderRegression {
     $skill=New-DiscoveredSkill 'new-provider' $folder 'claude-plugin' '1.0.0' $true 'claude'
     Set-ObjectProperty $skill 'InstallationKey' 'new-provider@market'
     Set-ObjectProperty $skill 'DefinitionHash' (Get-DiscoverySkillHash $folder)
-    $index=[pscustomobject]@{Plugin=@($skill);InstallKeys=@('new-provider@market');InstallKnown=$true}
+    $pluginList=New-Object 'System.Collections.Generic.List[object]';[void]$pluginList.Add($skill)
+    $index=[pscustomobject]@{Plugin=$pluginList;InstallKeys=@('new-provider@market');InstallKnown=$true}
     $drift=Get-SkillCatalogueDrift -RulesDir $rules -DiscoveredNames @('shared-name') -Index $index
     Check 'another provider route and bare prose do not cover installed plugin' ($drift.Missing -contains 'new-provider:shared-name')
     $row=@{name='shared-name';provider='old-provider@market';sha256=$skill.DefinitionHash;sources=@(@{client='claude';package='old-provider@market';path=(Join-Path $folder 'SKILL.md');invocation='old-provider:shared-name';version='1.0.0';status='registered/enabled'})}
