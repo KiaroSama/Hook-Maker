@@ -122,7 +122,24 @@ function Test-AnyIncidentResolved {
 # The same question asked of a RESULT document, which is what most callers hold.
 function Test-ResultIncidentResolved {
     param($Doc, [string]$Path)
-    return (Test-AnyIncidentResolved (Get-ResultIncidentKey -Doc $Doc -Path $Path) (Get-ResultIncidentKeyLegacy -Doc $Doc -Path $Path))
+    $key = Get-ResultIncidentKey -Doc $Doc -Path $Path
+    if ($key -ne '' -and $script:recoveryAssociations.Contains($key)) {
+        $association = $script:recoveryAssociations[$key]
+        # Legacy explicit associations already pin one original. Treat that as
+        # a one-member group; only older note-only resolutions use key fallback.
+        $originalPins = @(if ($null -ne $association.PSObject.Properties['negativeReceipts']) {
+            Get-Field $association 'negativeReceipts'
+        } else { [pscustomobject]@{ runId = Get-Field $association 'negativeRunId'; receiptSha256 = Get-Field $association 'negativeReceiptSha256' } })
+        if ($originalPins.Count -gt 0) {
+            # Group keys can recur. Explicit recovery covers only pinned original
+            # bytes, never a later same-key failure or a modified legacy receipt.
+            $pins = @($originalPins | Where-Object { [string](Get-Field $_ 'runId') -ceq [string](Get-Field $Doc 'runId') })
+            if ($pins.Count -ne 1 -or [string]::IsNullOrWhiteSpace($Path)) { return $false }
+            try { return (Test-IncidentResolved $key) -and (Read-RecoveryReceipt $Path).Sha256 -ceq [string](Get-Field $pins[0] 'receiptSha256') }
+            catch { return $false }
+        }
+    }
+    return (Test-AnyIncidentResolved $key (Get-ResultIncidentKeyLegacy -Doc $Doc -Path $Path))
 }
 
 # The human-readable incident reason for a RESULT document (byte-for-byte the

@@ -250,6 +250,9 @@ if ($AuditEvidence) {
 # so it can never pre-empt a gate: every block below still speaks first.
 . (Join-Path $PSScriptRoot '_survivors.ps1')
 
+# Recovery enumeration must retain malformed evidence too, never certify the
+# readable subset while a result or active marker has an unknown outcome.
+$script:MalformedEvidence = New-Object 'System.Collections.Generic.List[string]'
 # Explicit recovery is a narrowly scoped executor. It validates and records an
 # association before the ordinary gate/prune paths, preserving historical receipts.
 if ($recoveryMode) {
@@ -262,7 +265,6 @@ if ($recoveryMode) {
 }
 
 # The evidence is loaded BEFORE pruning so pruning can read each file's content.
-$script:MalformedEvidence = New-Object 'System.Collections.Generic.List[string]'
 $resultEntries = Get-CompletionStateEntries 'result'
 $observedEntries = Get-CompletionStateEntries 'observed'
 $activeEntries = Get-CompletionStateEntries 'active'
@@ -438,7 +440,7 @@ if ($null -eq $result -and -not $observedCurrent -and $activePid -eq 0 -and $aba
 # current to prove, nothing running: also silence. Under an active ::deep-debug
 # session this still lacks CURRENT clean evidence, so it is the same blocked
 # no-evidence state (its own once-per-session token).
-if ($incidentKey -ne '' -and (Test-AnyIncidentResolved $incidentKey $incidentKeyLegacy) -and $script:pendingNotes.Count -eq 0 -and
+if ($incidentKey -ne '' -and (Test-ResultIncidentResolved -Doc $result -Path $resultEntryPath) -and $script:pendingNotes.Count -eq 0 -and
     -not $observedCurrent -and $activePid -eq 0 -and $abandonedRuns.Count -eq 0 -and $script:MalformedEvidence.Count -eq 0) {
     if ($script:DeepDebugActive -and (Test-DdGateShouldReport ('resolvedonly|' + $stateFingerprint))) {
         Write-Finding -Blocking $true -Lines @(
@@ -513,7 +515,7 @@ if ($abandonedRuns.Count -gt 0) {
 # Gated on identity, not age: an incident from a DIFFERENT run/state is not this
 # run's problem and must not block the current state; a real incident for THIS
 # run still blocks however old its file is.
-if ($incidentKey -ne '' -and -not (Test-AnyIncidentResolved $incidentKey $incidentKeyLegacy) -and $resultRunMatches -and -not $repAccounted) {
+if ($incidentKey -ne '' -and -not (Test-ResultIncidentResolved -Doc $result -Path $resultEntryPath) -and $resultRunMatches -and -not $repAccounted) {
     # Register the owed durable note (its own byte baseline is captured now, so a
     # bare "done" cannot satisfy it later and a second concurrent incident demands
     # its own distinct note). No-op when this incident already owes one.

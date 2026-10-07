@@ -157,16 +157,31 @@ independently verified equivalent test scope can use:
   -Reason '<substantive explanation of equivalent scope and verified repair>'
 ```
 
-The association requires the original incident, a strictly newer clean receipt
-from that project, complete recovery identity, its own substantive tagged note,
-and no active run or surviving original descendant. The ledger mutex serializes
-validation and updates. Both receipt hashes, identities, timestamps and the reason
-remain auditable. A note alone never certifies success. Historical recovery does
-not certify the current product state or resolve any other incident.
+An incident key can group repeated failures of the same complete command and
+outcome. Explicit recovery validates every retained original in that group
+(up to 50), never chooses only the first or latest receipt, and requires one
+separate clean recovery that starts strictly after every original ended. Every
+original needs a distinct run ID, the exact project root and an auditable receipt
+hash; surviving original descendants and active runs still refuse recovery. Malformed
+result/active records and unproven active ownership refuse admission, including
+an identical repeated request; readable records never certify the omitted subset.
+An owed durable note still requires its own substantive tagged explanation and
+an already-proven origin. An unknown-origin legacy note remains unresolved;
+group admission does not guess an origin or silently retire an unknown cause.
+The ledger mutex serializes validation and updates; receipt producers are
+independent. Membership/hashes and active markers are checked again before
+publication, but this is not an atomic transaction across all producers. The association pins every
+original run ID/hash and the recovery identity/hash, timestamps and reason.
+Repeating the identical association is idempotent; adding, modifying or replacing
+members cannot silently expand it. A later same-key failure does not inherit the
+historical repair. Legacy singular associations remain readable and cannot be
+silently converted into group associations. Original receipt bytes remain intact.
+A note alone never certifies success. Historical recovery does not certify the
+current product state, resolve another incident or promote UNKNOWN into SUCCESS.
 
 Focused checks use the existing guarded runner around
 `scripts/Test-TestRunGuard.ps1` and `scripts/Test-TestCompletionCheck.ps1`.
-The latter supports `-ActivationOnly`, `-RecoveryOnly`, `-OrphanOnly`, `-SurvivorsOnly` and `-EvidenceSelectionOnly` for scoped regressions; `-OrphanOnly` runs the five unpaired-observation cases alone. `-EvidenceSelectionOnly` checks historical versus fresh paired success, both input orders, historical-only STALE and unresolved unsafe evidence for Claude and Codex, plus one-to-one pairing and same-command supersession, with isolated state and artificial ages.
+The latter supports `-ActivationOnly`, `-RecoveryOnly`, `-GroupedRecoveryOnly`, `-OrphanOnly`, `-SurvivorsOnly` and `-EvidenceSelectionOnly` for scoped regressions; `-OrphanOnly` runs the five unpaired-observation cases alone. `-EvidenceSelectionOnly` checks historical versus fresh paired success, both input orders, historical-only STALE and unresolved unsafe evidence for Claude and Codex, plus one-to-one pairing and same-command supersession, with isolated state and artificial ages.
 
 The activation regression reproduced 28 failing checks before repair, then passed
 50 focused checks across PowerShell 7 and Windows PowerShell 5.1. The combined

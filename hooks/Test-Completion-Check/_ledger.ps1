@@ -298,6 +298,16 @@ function Save-CompletionState {
             return
         }
 
+        # Merge removes resolved-key notes. Explicit repetition must not erase
+        # an UNKNOWN obligation before the recovery admission check can see it.
+        if ($ResolveIncidentKey -ne '' -and $script:recoveryAssociations.Contains($ResolveIncidentKey)) {
+            $diskBeforeRecovery = Read-JsonFile $script:statePath
+            foreach ($note in @(Get-Field $diskBeforeRecovery 'pendingNotes')) {
+                if ([string](Get-Field $note 'key') -ceq $ResolveIncidentKey -and -not (Test-NoteObligationActionable $note)) {
+                    throw 'This incident has an unresolved legacy note origin; recovery leaves the original ledger unchanged.'
+                }
+            }
+        }
         Merge-DiskLedger
         if (Get-Command Repair-LegacyNoteObligations -ErrorAction SilentlyContinue) { Repair-LegacyNoteObligations }
         if ($ResolveIncidentKey -ne '') { Set-VerifiedIncidentRecovery -IncidentKey $ResolveIncidentKey -RecoveryRunId $RecoveryRunId -Reason $RecoveryReason }
