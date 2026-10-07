@@ -138,7 +138,7 @@
     $env:HOOKMAKER_MAX_TEST_WORKERS = '1'
     try {
         $runnerProc = Start-BoundedProcess -FilePath (Get-Process -Id $PID).Path -Wait -NoNewWindow -PassThru `
-            -ArgumentList @('-NoLogo', '-NoProfile', '-File', $probeRunner)
+            -WorkingDirectory $Proj -ArgumentList @('-NoLogo', '-NoProfile', '-File', $probeRunner)
     }
     finally {
         $env:HOOKMAKER_MAX_TEST_WORKERS = $previousWorkerCeiling
@@ -205,7 +205,7 @@
     $env:HOOKMAKER_MAX_TEST_WORKERS = ''         # prove the value can ONLY come from -MaxWorkers
     try {
         $expProc = Start-BoundedProcess -FilePath (Get-Process -Id $PID).Path -Wait -NoNewWindow -PassThru `
-            -ArgumentList @('-NoLogo', '-NoProfile', '-File', $expRunner)
+            -WorkingDirectory $Proj -ArgumentList @('-NoLogo', '-NoProfile', '-File', $expRunner)
     }
     finally {
         $env:HOOKMAKER_MAX_TEST_WORKERS = $prevAmbient

@@ -3,9 +3,12 @@ function Invoke-RepositoryAccessRegression {
     param([string]$Root)
     . (Join-Path $Root 'hooks/_hooklib.ps1')
     $work = New-TestWorkspace -Prefix 'hookmaker-repository-access'
+    $savedGlobal=$env:GIT_CONFIG_GLOBAL;$savedSystem=$env:GIT_CONFIG_SYSTEM
     $savedOwner=$env:GIT_TEST_ASSUME_DIFFERENT_OWNER; $savedState=$env:HOOKMAKER_STATE_DIR
     $savedCount=$env:GIT_CONFIG_COUNT; $savedKey=$env:GIT_CONFIG_KEY_0; $savedValue=$env:GIT_CONFIG_VALUE_0
     try {
+        $emptyConfig=Join-Path $work 'empty-git-config';Write-Utf8 $emptyConfig ''
+        $env:GIT_CONFIG_GLOBAL=$emptyConfig;$env:GIT_CONFIG_SYSTEM=$emptyConfig
         $repo=Join-Path $work ('approved root '+[char]0x03A9); [void][IO.Directory]::CreateDirectory($repo)
         & git -C $repo init -q -b main
         & git -C $repo config user.email 't@t'; & git -C $repo config user.name 't'
@@ -80,6 +83,7 @@ function Invoke-RepositoryAccessRegression {
         }
     }
     finally {
+        $env:GIT_CONFIG_GLOBAL=$savedGlobal;$env:GIT_CONFIG_SYSTEM=$savedSystem
         $env:GIT_TEST_ASSUME_DIFFERENT_OWNER=$savedOwner;$env:HOOKMAKER_STATE_DIR=$savedState
         $env:GIT_CONFIG_COUNT=$savedCount;$env:GIT_CONFIG_KEY_0=$savedKey;$env:GIT_CONFIG_VALUE_0=$savedValue
         if(-not(Remove-TestWorkspace $work)){$script:Fail++}
