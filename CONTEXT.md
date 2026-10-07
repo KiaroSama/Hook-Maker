@@ -118,6 +118,17 @@ An install target after every junction and symbolic link on it, including links 
 folders, has been followed to the folder that really holds the bytes. `C:\Users\me\.cache\huggingface`
 whose physical path is `H:\AI\.cache\huggingface` is an install target on `H:`, not on `C:`.
 
+## Exact-root approval
+
+A repository owner's explicit, revocable authorization for one physical checkout
+and repository identity, not authority derived from project selection or a parent
+collection. It permits repository identity reads, not deployment or data changes.
+
+## Audit pairing
+
+The unique receipt assigned to one observation under the identity and time rules.
+Pairing is distinct from execution outcome, fresh proof and historical supersession.
+
 ## Retired chain
 
 A Stop-ledger chain whose session has been silent for fourteen days and is not the current session.

@@ -22,7 +22,7 @@ function Export-CompletionEvidenceAudit {
     $destination = [IO.Path]::GetFullPath($Path)
     if ([IO.File]::Exists($destination)) { throw 'Audit destination already exists; choose a new local path. No existing file was overwritten.' }
     if (-not [IO.Directory]::Exists((Split-Path -Parent $destination))) { throw 'Audit destination directory must already exist.' }
-    $results = @(); $observations = @(); $active = @(); $snapshots = @(); $rows = @()
+    $results = @(); $observations = @(); $active = @(); $snapshots = @(); $rows = @(); $malformedActive = $false
     $files = @(Get-AuditEvidenceFiles)
     foreach ($file in $files) {
         if (($file.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 -or $file.Length -gt 1048576) { throw 'Audit requires regular evidence files no larger than 1 MiB; incomplete coverage cannot be exported as complete.' }
@@ -35,6 +35,7 @@ function Export-CompletionEvidenceAudit {
         $valid = ($null -ne $doc -and $doc -is [pscustomobject])
         $snapshots += [pscustomobject]@{ path = $file.FullName; sha256 = $hash; verdict = 'UNKNOWN'; parseState = $(if ($valid) { 'parsed' } else { 'malformed' }) }
         if (-not $valid) {
+            if ($file.Name.StartsWith('TestRunGuard-active-')) { $malformedActive = $true }
             $rows += [pscustomobject]@{ runId = $file.BaseName; commandFingerprint = ''; observedUtc = ''; verdict = 'UNKNOWN'; failedField = 'evidenceDocument:malformed'; candidateOverall = ''; gateWaived = $false }
             continue
         }
@@ -46,25 +47,32 @@ function Export-CompletionEvidenceAudit {
     # Historical matching uses recorded identity only. It never certifies current
     # Git state, waives the gate, changes a receipt, or resolves a ledger incident.
     $assignment = Get-ObservedResultAssignment -CurrentObserved $observations -ResultEntries $results -StateFp ''
-    $pairs = @(); $pairedObservationPaths = New-Object 'System.Collections.Generic.HashSet[string]'
+    $pairs = @(); $pairedObservationPaths = New-Object 'System.Collections.Generic.HashSet[string]'; $assignedResults = @{}
     for ($i = 0; $i -lt $assignment.SortedObserved.Count; $i++) {
         $result = if ($assignment.Map.ContainsKey($i)) { $assignment.Map[$i] } else { $null }
-        if ($null -ne $result) { [void]$pairedObservationPaths.Add($assignment.SortedObserved[$i].Path) }
+        if ($null -ne $result) {
+            [void]$pairedObservationPaths.Add($assignment.SortedObserved[$i].Path)
+            $assignedResults[$assignment.SortedObserved[$i].Path] = $result
+        }
         $pairs += [pscustomobject]@{ Observed = $assignment.SortedObserved[$i].Doc; ResEntry = $result }
     }
     foreach ($entry in $observations) {
         $candidate = @($results | Where-Object { [string](Get-Field $_.Doc 'runId') -eq [string](Get-Field $entry.Doc 'runId') })
-        $doc = if ($candidate.Count -gt 0) { $candidate[0].Doc } else { $null }
+        $paired = $assignedResults.ContainsKey($entry.Path)
+        $doc = if ($paired) { $assignedResults[$entry.Path].Doc } elseif ($candidate.Count -gt 0) { $candidate[0].Doc } else { $null }
         $hasActive = @($active | Where-Object { [string](Get-Field $_.Doc 'runId') -eq [string](Get-Field $entry.Doc 'runId') }).Count -gt 0
         # A live or unproven active marker is an independent obligation. Audit
         # conservatively retains UNKNOWN rather than claiming its cleanup.
-        $superseded = (-not $hasActive -and -not $pairedObservationPaths.Contains($entry.Path) -and (Test-ObservationSuperseded -Observed $entry.Doc -Pairs $pairs -StateFp (Get-ObservedFingerprint $entry.Doc)))
+        $superseded = (-not $malformedActive -and -not $hasActive -and -not $pairedObservationPaths.Contains($entry.Path) -and (Test-ObservationSuperseded -Observed $entry.Doc -Pairs $pairs -StateFp (Get-ObservedFingerprint $entry.Doc)))
         $at = ConvertTo-UtcTime (Get-Field $entry.Doc 'observedUtc')
         $rows += [pscustomobject][ordered]@{
             runId = [string](Get-Field $entry.Doc 'runId'); commandFingerprint = [string](Get-Field $entry.Doc 'commandFingerprint')
             observedUtc = $(if ($null -ne $at) { $at.ToString('o') } else { '' })
             verdict = $(if ($superseded) { 'SUPERSEDED' } else { 'UNKNOWN' })
-            failedField = (Get-ObservationMatchingField $entry.Doc $doc (Get-ObservedFingerprint $entry.Doc))
+            pairStatus = $(if ($paired) { 'PAIRED' } else { 'UNPAIRED' })
+            pairedResultPath = $(if ($paired) { $assignedResults[$entry.Path].Path } else { '' })
+            pairedResultHash = $(if ($paired) { [string](@($snapshots | Where-Object path -eq $assignedResults[$entry.Path].Path)[0].sha256) } else { '' })
+            failedField = $(if ($paired) { '' } else { Get-ObservationMatchingField $entry.Doc $doc (Get-ObservedFingerprint $entry.Doc) })
             candidateOverall = [string](Get-Field $doc 'overall'); gateWaived = $false
         }
     }

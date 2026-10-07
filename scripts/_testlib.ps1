@@ -454,14 +454,16 @@ function Copy-GuardedRunner {
         [Parameter(Mandatory = $true)][string]$DestinationScriptsDir
     )
     [void][IO.Directory]::CreateDirectory($DestinationScriptsDir)
-    foreach ($leaf in @('Run-Tests-Guarded.ps1', '_guardedprocess.ps1', '_guardedstate.ps1', '_guardedtiming.ps1')) {
+    foreach ($leaf in @('Run-Tests-Guarded.ps1', '_guardedprocess.ps1', '_guardedstate.ps1', '_guardedtiming.ps1', '_guardedrepository.ps1')) {
         $source = Join-Path $RepoRoot (Join-Path 'scripts' $leaf)
         if (-not (Test-Path -LiteralPath $source -PathType Leaf)) {
             throw ('Copy-GuardedRunner: missing ' + $leaf + ' at ' + $source)
         }
         Copy-Item -LiteralPath $source -Destination (Join-Path $DestinationScriptsDir $leaf) -Force
     }
-    Copy-Item -LiteralPath (Join-Path $RepoRoot 'hooks/_processtree.ps1') -Destination (Join-Path $DestinationScriptsDir '_processtree.ps1') -Force
+    foreach ($leaf in @('_processtree.ps1','_processlib.ps1','_repositoryaccess.ps1','_repositorytrust.ps1')) {
+        Copy-Item -LiteralPath (Join-Path $RepoRoot ('hooks/' + $leaf)) -Destination (Join-Path $DestinationScriptsDir $leaf) -Force
+    }
 }
 
 # Copy the shared runtime payload chosen by the real production planner, rather

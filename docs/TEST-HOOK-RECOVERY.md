@@ -73,6 +73,39 @@ refused before observation; no path hash, tool-input rewrite, automatic Git trus
 ownership or ACL change is used. A deliberately non-Git workspace remains
 `nonrepository`, explicitly degraded, never certified CURRENT repository state.
 
+### Explicit exact-root approval
+
+Ownership refusal, missing Git, permission failure, missing repository, concurrent
+state changes and other Git errors have distinct sanitized diagnoses. An owner
+may explicitly approve one physical repository root, not a parent collection or
+wildcard. General project selection is not approval. From Hook Maker's checkout:
+
+```powershell
+& './scripts/Set-RepositoryTrust.ps1' -ProjectRoot '<exact physical root>' -Approve -OwnerConfirmed
+```
+
+Use `-Status` to inspect or `-Revoke` to revoke, instead of `-Approve`. The user-local
+record is bound to the current user, exact root and repository metadata identity;
+replacement invalidates it. Reparse paths are refused: select the verified physical
+root. No global Git config, ownership or ACL changes occur. Only approved child
+Git processes receive command-scoped configuration; unrelated runtime settings
+are retained, broad inherited directory trust is reset for that child, and
+unsupported `GIT_CONFIG_PARAMETERS`, malformed pairs or repository-routing overrides
+such as `GIT_DIR`/`GIT_WORK_TREE` fail closed. Approval and state are checked again
+immediately before the actual child environment is applied.
+
+PreToolUse, the standalone runner, Stop and incident recovery use the same bounded
+HEAD plus sorted-status acquisition. A changed/mismatched state is refused before
+the runner creates a child, capture or evidence. Non-Git compatibility remains
+explicitly degraded. Run the unchanged approved read-only invocation only; an
+approval never authorizes a deployment, account request or mutating test.
+
+The approval CLI logs startup/action/error/final exit to UTF-8 `logs/` files named
+`Set-RepositoryTrust_YYYY-MM-DD_HH-mm-ss_UTC.log`, with collision suffixes, UTC
+`[timestamp] [LEVEL] [TRUST]` entries and closed handlers. No secret values are
+recorded; initialization failure reports a console fallback. Logs are retained
+until explicitly reviewed for local support, never uploaded automatically.
+
 Completion retains legacy path-only/unidentified observations instead of dropping
 them as old-state. Each identity block names the exact run ID, full command
 fingerprint, UTC observation time, failed matching field and supported recovery.
@@ -97,6 +130,12 @@ in an existing directory:
   -AuditEvidence -ProjectRoot '<affected project>' `
   -AuditPath '<new local report path>.json'
 ```
+
+The report exposes `pairStatus=PAIRED|UNPAIRED`, the uniquely assigned result path/hash
+and its actual outcome. An assigned pair has an empty matching `failedField`,
+not a false consumed/unproven diagnostic. Pairing does not certify successful
+execution or current state; paired negative/live evidence retains its obligations,
+and malformed active evidence cannot certify supersession.
 
 The report retains original SHA-256 hashes and records `UNKNOWN` or `SUPERSEDED`
 under the existing later, own-paired same-complete-command rule. Historical

@@ -63,6 +63,8 @@ Copy-GuardedRunner -RepoRoot $RepoRoot -DestinationScriptsDir (Join-Path $Proj '
 try {
     . (Join-Path $PSScriptRoot '_testrunguardhosts.ps1')
     if (-not $RunnerHostsOnly) {
+    . (Join-Path $PSScriptRoot '_testrepositoryaccess.ps1')
+    Invoke-RepositoryAccessRegression $RepoRoot
     # PreToolUse recognition, the false-positive guard, and the replacement.
     . (Join-Path $PSScriptRoot '_testrunguardrecognition.ps1')
 

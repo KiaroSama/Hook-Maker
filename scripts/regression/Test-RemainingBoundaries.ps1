@@ -119,6 +119,9 @@ try {
     if ([IO.File]::Exists((Join-Path $SourceRoot 'hooks/_budgetlib.ps1'))) { $leaves += '_budgetlib.ps1' }
     if ([IO.File]::Exists((Join-Path $SourceRoot 'hooks/_processlib.ps1'))) { $leaves += '_processlib.ps1' }
     if ([IO.File]::Exists((Join-Path $SourceRoot 'hooks/_repostate.ps1'))) { $leaves += '_repostate.ps1' }
+    foreach ($extra in @('_repositoryaccess.ps1','_repositorytrust.ps1')) {
+        if ([IO.File]::Exists((Join-Path $SourceRoot ('hooks/'+$extra)))) { $leaves += $extra }
+    }
     foreach ($leaf in $leaves) { Copy-Item -LiteralPath (Join-Path $SourceRoot ('hooks/'+$leaf)) -Destination (Join-Path $tool ('hooks/'+$leaf)) }
     function New-PlanArtifact { param($RelativePath,$Kind,$SourcePath) return [pscustomobject]@{Path=$RelativePath;Source=$SourcePath} }
     function Add-Artifact { param($Artifact) [void]$script:payload.Add($Artifact) }
@@ -152,7 +155,7 @@ try {
     $script:payload.Clear(); $caught = ''
     try { Add-CompanionRuntimeArtifacts -ToolRoot $tool -FriendlyName 'Test-Run-Guard' } catch { $caught=$_.Exception.Message }
     Check-Boundary 'I03b a partial guarded-runner set is rejected too' { $caught -match '_guarded' -and $script:payload.Count -eq 0 } $true
-    foreach ($leaf in @('_guardedtiming.ps1','_guardedstate.ps1','_guardedprocess.ps1')) {
+    foreach ($leaf in @('_guardedtiming.ps1','_guardedstate.ps1','_guardedprocess.ps1','_guardedrepository.ps1')) {
         [IO.File]::WriteAllText((Join-Path $tool ('scripts/' + $leaf)),'# test fixture')
     }
     $script:payload.Clear()
@@ -161,7 +164,7 @@ try {
     foreach ($artifact in $script:payload.ToArray()) { [void]$companionNames.Add([string]$artifact.Path) }
     $companionPaths = @($companionNames.ToArray() | Sort-Object)
     Check-Boundary 'I04 the complete guarded-runner set retains its exact destinations' {
-        ($companionPaths -join ',') -ceq 'Test-Run-Guard/scripts/_guardedprocess.ps1,Test-Run-Guard/scripts/_guardedstate.ps1,Test-Run-Guard/scripts/_guardedtiming.ps1,Test-Run-Guard/scripts/_processtree.ps1,Test-Run-Guard/scripts/Run-Tests-Guarded.ps1'
+        ($companionPaths -join ',') -ceq 'Test-Run-Guard/scripts/_guardedprocess.ps1,Test-Run-Guard/scripts/_guardedrepository.ps1,Test-Run-Guard/scripts/_guardedstate.ps1,Test-Run-Guard/scripts/_guardedtiming.ps1,Test-Run-Guard/scripts/_processlib.ps1,Test-Run-Guard/scripts/_processtree.ps1,Test-Run-Guard/scripts/_repositoryaccess.ps1,Test-Run-Guard/scripts/_repositorytrust.ps1,Test-Run-Guard/scripts/Run-Tests-Guarded.ps1'
     } $true
 }
 catch {

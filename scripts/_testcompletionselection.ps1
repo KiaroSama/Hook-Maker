@@ -118,6 +118,8 @@ Write-Host '--- historical success versus fresh proof ---' -ForegroundColor Cyan
 foreach ($codexShape in @($false, $true)) {
     $client = if ($codexShape) { 'Codex' } else { 'Claude' }
     $hostExe = if ($codexShape) { 'pwsh' } else { 'powershell.exe' }
+    . (Join-Path $PSScriptRoot '_testcompletionaudit.ps1')
+    Invoke-AuditAssignmentRegression -Codex:$codexShape -HostExe $hostExe
     Invoke-OriginalRetentionRegression -Codex:$codexShape -HostExe $hostExe
     foreach ($reverse in @($false, $true)) {
         $c = New-IsolatedHookCopy; $p = New-GitRepo ('Selection-' + $client + '-' + $reverse)

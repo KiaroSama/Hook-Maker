@@ -25,7 +25,7 @@ function Add-SharedRuntimeLibraryArtifacts {
         [Parameter(Mandatory = $true)][string]$ToolRoot,
         [Parameter(Mandatory = $true)][string]$FriendlyName
     )
-    $required = @('_hooklib.ps1', '_stoplib.ps1', '_evidencelib.ps1', '_taskidentity.ps1', '_processtree.ps1', '_deliverylib.ps1', '_scope.ps1', '_gatereceipts.ps1', '_replylanguage.ps1', '_commandtokens.ps1', '_budgetlib.ps1', '_processlib.ps1', '_repostate.ps1')
+    $required = @('_hooklib.ps1', '_stoplib.ps1', '_evidencelib.ps1', '_taskidentity.ps1', '_processtree.ps1', '_deliverylib.ps1', '_scope.ps1', '_gatereceipts.ps1', '_replylanguage.ps1', '_commandtokens.ps1', '_budgetlib.ps1', '_processlib.ps1', '_repostate.ps1', '_repositoryaccess.ps1', '_repositorytrust.ps1')
     Assert-RuntimeSourcesAvailable -ToolRoot $ToolRoot -RelativePaths @($required | ForEach-Object { 'hooks/' + $_ })
     # Validate the whole shared set BEFORE contributing even one artifact.
     foreach ($leaf in $required) {
@@ -46,10 +46,14 @@ function Add-CompanionRuntimeArtifacts {
             'scripts/Run-Tests-Guarded.ps1',
             'scripts/_guardedtiming.ps1',
             'scripts/_guardedstate.ps1',
-            'scripts/_guardedprocess.ps1'
+            'scripts/_guardedprocess.ps1',
+            'scripts/_guardedrepository.ps1'
         )
-        Assert-RuntimeSourcesAvailable -ToolRoot $ToolRoot -RelativePaths ($relatives + @('hooks/_processtree.ps1'))
+        Assert-RuntimeSourcesAvailable -ToolRoot $ToolRoot -RelativePaths ($relatives + @('hooks/_processtree.ps1','hooks/_processlib.ps1','hooks/_repositoryaccess.ps1','hooks/_repositorytrust.ps1'))
         Add-Artifact (New-PlanArtifact -RelativePath ($FriendlyName + '/scripts/_processtree.ps1') -Kind 'File' -SourcePath (Join-Path $ToolRoot 'hooks/_processtree.ps1'))
+        foreach ($leaf in @('_processlib.ps1', '_repositoryaccess.ps1', '_repositorytrust.ps1')) {
+            Add-Artifact (New-PlanArtifact -RelativePath ($FriendlyName + '/scripts/' + $leaf) -Kind 'File' -SourcePath (Join-Path $ToolRoot ('hooks/' + $leaf)))
+        }
         foreach ($relative in $relatives) {
             Add-Artifact (New-PlanArtifact -RelativePath ($FriendlyName + '/' + $relative) -Kind 'File' -SourcePath (Join-Path $ToolRoot $relative))
         }

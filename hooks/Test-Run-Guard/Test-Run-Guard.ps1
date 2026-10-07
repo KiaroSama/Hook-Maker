@@ -379,7 +379,7 @@ if ($eventName -eq 'PreToolUse') {
     if ($verdict.Kind -eq 'none') { if ($configNote -ne '') { Write-Advisory -EventName 'PreToolUse' -Message $configNote.Trim() }; exit 0 }
     $repositoryState = Get-RepositoryStateEvidence -ProjectRoot $projectRoot
     if ($repositoryState.State -eq 'unavailable') {
-        $message = 'TEST RUN GUARD: repository state is unavailable (Git refused or failed). ProjectKey=' + $projectKey + ' identifies only the path. Refused before execution/observation; no fingerprint was guessed and input/options were not rewritten. Recovery: restore authorized read access to this exact repository, then retry the unchanged invocation with the hook''s verified literal repository fingerprint. Never add wildcard/global trust or change ownership/ACLs automatically.'
+        $message = 'TEST RUN GUARD: repository state is unavailable; diagnosis=' + $repositoryState.Diagnosis + '. ProjectKey=' + $projectKey + ' identifies only the path. Refused before execution/observation; no fingerprint was guessed and input/options were not rewritten. Recovery: restore authorized read access to this exact repository, then retry the unchanged invocation with the hook''s verified literal repository fingerprint. Never add wildcard/global trust or change ownership/ACLs automatically.'
         if ($advisoryOnly) { Write-Advisory -EventName PreToolUse -Message $message }
         Write-Deny -Message $message
     }

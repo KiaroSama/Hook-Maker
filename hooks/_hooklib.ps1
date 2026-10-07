@@ -585,14 +585,7 @@ function Get-GitHubRepository {
 # fingerprint still matches what the consumer observes right now.
 function Get-RepoStateFingerprint {
     param([Parameter(Mandatory = $true)][string]$ProjectRoot)
-    if ($null -eq (Get-Command git -ErrorAction SilentlyContinue)) { return '' }
-    $inside = Invoke-QuietCommand -FilePath git -ArgumentList @('-C', $ProjectRoot, 'rev-parse', '--is-inside-work-tree')
-    if ($LASTEXITCODE -ne 0 -or [string]$inside -ne 'true') { return '' }
-    $head = [string](Invoke-QuietCommand -FilePath git -ArgumentList @('-C', $ProjectRoot, 'rev-parse', 'HEAD'))
-    if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($head)) { return '' }
-    $status = @((Invoke-QuietCommand -FilePath git -ArgumentList @('-C', $ProjectRoot, 'status', '--porcelain')) | Where-Object { $_ } | Sort-Object)
-    if ($LASTEXITCODE -ne 0) { return '' }
-    return Get-ShortHash ($head + '|' + ($status -join '|'))
+    return [string](Get-RepositoryAccessSnapshot -ProjectRoot $ProjectRoot).Fingerprint
 }
 
 function Get-LatestWorkTimeUtc {

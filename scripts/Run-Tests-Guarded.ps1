@@ -141,13 +141,13 @@ if ([string]::IsNullOrWhiteSpace($ProjectFingerprint)) {
 # the run's identity helpers, its result document and its live-run marker; and
 # the Job Object, the process tree and the termination decision.
 $script:GuardedRunnerRoot = Split-Path -Parent $PSCommandPath
-foreach ($sibling in @('_guardedtiming.ps1', '_guardedstate.ps1', '_guardedprocess.ps1')) {
+foreach ($sibling in @('_guardedtiming.ps1', '_guardedstate.ps1', '_guardedprocess.ps1', '_guardedrepository.ps1')) {
     $siblingPath = Join-Path $script:GuardedRunnerRoot $sibling
     if (-not (Test-Path -LiteralPath $siblingPath -PathType Leaf)) {
         [Console]::Error.WriteLine('Run-Tests-Guarded: missing required sibling ' + $sibling + ' - refusing to run unguarded.')
         exit 3
     }
-    . $siblingPath
+    if ($sibling -ne '_guardedrepository.ps1') { . $siblingPath }
 }
 
 # ---- run -------------------------------------------------------------------
@@ -188,28 +188,7 @@ if (-not [string]::IsNullOrWhiteSpace($ArgumentsJson)) {
     $Arguments = @(@($parsed) | ForEach-Object { [string]$_ })
 }
 
-if ([string]::IsNullOrWhiteSpace($WorkingDirectory)) { $WorkingDirectory = (Get-Location).Path }
-# Canonicalize ONCE so the marker key, the child's cwd, and result.projectKey all
-# derive from the same absolute path. A relative -WorkingDirectory is resolved
-# against Get-Location first (GetFullPath alone would use the stale process
-# CurrentDirectory, which PowerShell does not keep in sync). 2-arg GetFullPath is
-# .NET-Core-only, so the rooted-guard + Combine form is used for 5.1 parity.
-try {
-    if (-not [System.IO.Path]::IsPathRooted($WorkingDirectory)) {
-        $WorkingDirectory = [System.IO.Path]::Combine((Get-Location).Path, $WorkingDirectory)
-    }
-    $WorkingDirectory = [System.IO.Path]::GetFullPath($WorkingDirectory)
-    # TrimEnd, because GetFullPath PRESERVES a trailing separator: "C:\p\" and
-    # "C:\p" are the same directory but hash to different keys, which splits one
-    # project's timing history and result identity in two. Same canonical form
-    # as hooks\_hooklib.ps1's Normalize-Path, which the hooks use to key the
-    # files this runner's results are paired with. Inlined rather than shared:
-    # this runner is deliberately standalone (it never dot-sources _hooklib).
-    $WorkingDirectory = $WorkingDirectory.TrimEnd([char[]]@(
-            [System.IO.Path]::DirectorySeparatorChar, [System.IO.Path]::AltDirectorySeparatorChar))
-}
-catch { }
-$script:Result.workingDirectory = $WorkingDirectory
+try { . (Join-Path $script:GuardedRunnerRoot '_guardedrepository.ps1') } catch { [Console]::Error.WriteLine($_.Exception.Message); exit 3 }
 # Recomputed HERE, after -ArgumentsJson has been resolved into $Arguments. The
 # initializer above runs before that resolution, so it saw an empty list and
 # every JSON-invoked run reported argumentCount 0.
@@ -395,6 +374,7 @@ try {
     # that does not simply ignores it. Reported as workerBudget, so "what the
     # child was told" and "what the result claims" are the same number.
     $psi.EnvironmentVariables['HOOKMAKER_MAX_TEST_WORKERS'] = [string]$script:Result.workerBudget
+    Set-GuardedRepositoryEnvironment -StartInfo $psi
 
     $process = New-Object System.Diagnostics.Process
     $process.StartInfo = $psi

@@ -26,6 +26,8 @@ function Test-RecoveryReceiptRetained {
 
 function Set-VerifiedIncidentRecovery {
     param([string]$IncidentKey, [string]$RecoveryRunId, [string]$Reason)
+    $access = Get-RepositoryStateEvidence -ProjectRoot $script:cwd
+    if ($access.State -eq 'unavailable') { throw ('Recovery requires verified repository read access; diagnosis=' + $access.Diagnosis + '. Originals remain unchanged.') }
     $entries = @(Get-CompletionStateEntries 'result')
     $negativeMatches = @($entries | Where-Object { (Get-ResultIncidentKey -Doc $_.Doc -Path $_.Path) -eq $IncidentKey })
     $recoveryMatches = @($entries | Where-Object { [string](Get-Field $_.Doc 'runId') -ceq $RecoveryRunId })

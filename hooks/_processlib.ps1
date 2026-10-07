@@ -80,7 +80,9 @@ function Invoke-QuietCommand {
     param(
         [Parameter(Mandatory = $true)][string]$FilePath,
         [Parameter(Mandatory = $true)][string[]]$ArgumentList,
-        [int]$TimeoutSeconds = 20
+        [int]$TimeoutSeconds = 20,
+        [switch]$CaptureOutput,
+        [hashtable]$Environment = @{}
     )
     $savedPreference = $ErrorActionPreference
     $ErrorActionPreference = 'SilentlyContinue'
@@ -147,11 +149,16 @@ function Invoke-QuietCommand {
         }
         $info.RedirectStandardOutput = $true
         $info.RedirectStandardError = $true
+        if ($CaptureOutput) {
+            $info.StandardOutputEncoding = New-Object Text.UTF8Encoding($false,$true)
+            $info.StandardErrorEncoding = New-Object Text.UTF8Encoding($false,$true)
+        }
         # No window, no inherited stdin: a child that decides to prompt would
         # otherwise wait for input nobody is there to give.
         $info.RedirectStandardInput = $true
         $info.UseShellExecute = $false
         $info.CreateNoWindow = $true
+        foreach ($key in $Environment.Keys) { $info.EnvironmentVariables[$key] = [string]$Environment[$key] }
         $process = [System.Diagnostics.Process]::Start($info)
         if ($null -eq $process) { $global:LASTEXITCODE = 1; return $null }
         $ownedProcessCreated = $process.StartTime.ToUniversalTime()
@@ -177,8 +184,10 @@ function Invoke-QuietCommand {
         }
         $output = ''
         try { $output = $stdoutTask.GetAwaiter().GetResult() } catch { $output = '' }
-        try { [void]$stderrTask.GetAwaiter().GetResult() } catch { }
+        $errorOutput = ''
+        try { $errorOutput = $stderrTask.GetAwaiter().GetResult() } catch { }
         $global:LASTEXITCODE = $process.ExitCode
+        if ($CaptureOutput) { return [pscustomobject]@{ ExitCode = $process.ExitCode; Output = $output; ErrorOutput = $errorOutput } }
         if ([string]::IsNullOrEmpty($output)) { return @() }
         return ($output -split "`r?`n" | Where-Object { $_ -ne '' })
     }
