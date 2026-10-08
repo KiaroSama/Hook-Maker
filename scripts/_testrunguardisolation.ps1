@@ -1,6 +1,7 @@
 # An expected-negative child remains failed, but only in the test's own store.
 function Invoke-TestStateIsolationRegression {
     param([string]$RepoRoot, [string]$Workspace)
+    . (Join-Path $RepoRoot 'hooks/_hooklib.ps1')
     $root = Join-Path $Workspace 'state-isolation'
     [void][IO.Directory]::CreateDirectory($root)
     $wrapper = Join-Path $root 'isolation.ps1'
