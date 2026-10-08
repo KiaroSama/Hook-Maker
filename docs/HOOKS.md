@@ -546,6 +546,8 @@ An unresolved negative result without a project fingerprint (the legacy shape) i
 
 **Another project's CI runner (2026-09-30).** A survivor candidate whose bounded ancestor walk reaches a `Runner.Listener`/`Runner.Worker` whose executable lies outside this project is left out of the advisory and counted as "another project's CI runner job - not this task's; do not terminate them"; a job under this project's own `.ci-runner-win` stays listed.
 
+Expected-negative runner fixtures remain failed child outcomes, not product failures exempted by exit code. The enclosing Guard suite isolates its nested state and restores the caller environment; old polluted receipts require explicit audited verification and association, never deletion or SUCCESS rewriting. See [fixture recovery](TEST-HOOK-RECOVERY.md#expected-negative-test-fixtures).
+
 ## `Utf8-Encoding-Check`
 
 **Runs:** pre-task (SessionStart) + post-task (Stop, SubagentStop) + native Git pre-push.

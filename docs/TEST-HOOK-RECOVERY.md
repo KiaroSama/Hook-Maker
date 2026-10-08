@@ -179,6 +179,23 @@ silently converted into group associations. Original receipt bytes remain intact
 A note alone never certifies success. Historical recovery does not certify the
 current product state, resolve another incident or promote UNKNOWN into SUCCESS.
 
+### Expected-negative test fixtures
+
+A child deliberately returning a nonzero exit code is still recorded as failed;
+its enclosing test may pass by asserting that exact outcome. This is not a
+production failure exemption. `Test-TestRunGuard.ps1` isolates nested canonical
+receipts and active markers with process-local `LOCALAPPDATA` and
+`HOOKMAKER_STATE_DIR`, then restores both in `finally`. The outer suite's genuine
+receipt remains in the caller's store.
+
+Old fixture receipts accidentally written into a real project are never deleted,
+rewritten or automatically approved. With explicit owner approval, independently
+verify the exact original hashes, complete command identity, historical fixture
+assertions and enclosing run evidence. A fresh clean read-only verification can
+then support the existing audited equivalent-scope association above. It pins
+only those originals; their nonzero outcomes remain intact, new or different
+failures remain unresolved, and no child is retrospectively called successful.
+
 Focused checks use the existing guarded runner around
 `scripts/Test-TestRunGuard.ps1` and `scripts/Test-TestCompletionCheck.ps1`.
 The latter supports `-ActivationOnly`, `-RecoveryOnly`, `-GroupedRecoveryOnly`, `-OrphanOnly`, `-SurvivorsOnly` and `-EvidenceSelectionOnly` for scoped regressions; `-OrphanOnly` runs the five unpaired-observation cases alone. `-EvidenceSelectionOnly` checks historical versus fresh paired success, both input orders, historical-only STALE and unresolved unsafe evidence for Claude and Codex, plus one-to-one pairing and same-command supersession, with isolated state and artificial ages.

@@ -143,6 +143,12 @@ Every child process the hook starts is bounded by what is left of it, so the cli
 hook while its child runs on.
 _Avoid_: budget (for the whole invocation), hook timeout (the registered number itself)
 
+## Expected-negative fixture
+
+A test input that deliberately fails, with its exact nonzero outcome asserted by
+the enclosing test. The child outcome remains failed even when that assertion
+passes; it is not a successful product run or a general failure exemption.
+
 ## Markdown work time
 
 The newest write time of a Markdown file in the folders the Graphify graph covers beyond Git's view

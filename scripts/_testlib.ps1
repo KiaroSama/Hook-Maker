@@ -485,6 +485,27 @@ function Copy-TestRuntimeLibraries {
     Add-SharedRuntimeLibraryArtifacts -ToolRoot $tool -FriendlyName 'TestRuntime'
 }
 
+# Nested runner fixtures deliberately fail. Their canonical result and active
+# files belong to the fixture, not the enclosing real project's completion gate.
+function Enter-TestStateIsolation {
+    param([Parameter(Mandatory = $true)][string]$Workspace)
+    $root = Join-Path ([IO.Path]::GetFullPath($Workspace)) ('_state-' + [guid]::NewGuid().ToString('N'))
+    $state = Join-Path $root 'HookMaker\state'
+    [void][IO.Directory]::CreateDirectory($state)
+    $token = [pscustomobject]@{ LocalAppData = [Environment]::GetEnvironmentVariable('LOCALAPPDATA'); StateDir = [Environment]::GetEnvironmentVariable('HOOKMAKER_STATE_DIR') }
+    $env:LOCALAPPDATA = $root
+    $env:HOOKMAKER_STATE_DIR = $state
+    return $token
+}
+
+function Exit-TestStateIsolation {
+    param([Parameter(Mandatory = $true)]$Token)
+    if ($null -eq $Token.LocalAppData) { Remove-Item Env:LOCALAPPDATA -ErrorAction SilentlyContinue }
+    else { $env:LOCALAPPDATA = $Token.LocalAppData }
+    if ($null -eq $Token.StateDir) { Remove-Item Env:HOOKMAKER_STATE_DIR -ErrorAction SilentlyContinue }
+    else { $env:HOOKMAKER_STATE_DIR = $Token.StateDir }
+}
+
 # A private copy of the tool's hooks\ and scripts\ for suites that count or
 # write under hooks\ (the wizard suites). Running the wizard and installer FROM
 # the copy keeps the installer's package roots consistent (a hook outside

@@ -60,7 +60,11 @@ New-Item -ItemType Directory -Path $Proj -Force | Out-Null
 New-Item -ItemType Directory -Path (Join-Path $Proj 'scripts') -Force | Out-Null
 Copy-GuardedRunner -RepoRoot $RepoRoot -DestinationScriptsDir (Join-Path $Proj 'scripts')
 
+$testState = $null
 try {
+    $testState = Enter-TestStateIsolation -Workspace $Work
+    . (Join-Path $PSScriptRoot '_testrunguardisolation.ps1')
+    Invoke-TestStateIsolationRegression -RepoRoot $RepoRoot -Workspace $Work
     . (Join-Path $PSScriptRoot '_testrunguardhosts.ps1')
     if (-not $RunnerHostsOnly) {
     . (Join-Path $PSScriptRoot '_testrepositoryaccess.ps1')
@@ -97,6 +101,7 @@ try {
     }
 }
 finally {
+    if ($null -ne $testState) { Exit-TestStateIsolation -Token $testState }
     if ($KeepArtifacts) {
         Write-Host ("Artifacts kept at: $Work") -ForegroundColor DarkGray
     }

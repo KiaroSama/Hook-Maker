@@ -519,6 +519,8 @@ See [test-hook identity and recovery](TEST-HOOK-RECOVERY.md) for explicit user a
 
 فرمان صریح `-ResolveIncident` همهٔ اصل‌های نگه‌داشته‌شدهٔ گروه incident (حداکثر ۵۰) را اعتبارسنجی می‌کند، run ID و SHA-256 هرکدام را ثبت می‌کند و اجرای بازیابیِ سالم و جداگانه‌ای پس از پایان همهٔ اصل‌ها می‌خواهد. شکست بعدی یا رسید تغییرکردهٔ هم‌کلید، این ارتباط را به ارث نمی‌برد؛ ارتباط قدیمیِ تک‌رسیدی سازگار می‌ماند. event، timeout، تنظیمات، نصب‌کننده و منو تغییری ندارند. [قرارداد بازیابی](TEST-HOOK-RECOVERY.md).
 
+fixture منفیِ رانر همچنان نتیجهٔ شکست‌خوردهٔ فرزند است، نه معافیت عمومی برای exit code. سوئیت Guard، شواهد داخلی را ایزوله و محیط والد را برمی‌گرداند؛ رسید قدیمیِ واردشده به دفتر واقعی فقط با اعتبارسنجی و ارتباط ممیزی‌شدهٔ صریح رفع می‌شود، نه حذف یا بازنویسی SUCCESS. [بازیابی fixture](TEST-HOOK-RECOVERY.md#expected-negative-test-fixtures).
+
 ## `Utf8-Encoding-Check`
 
 **زمان اجرا:** قبل از تسک (SessionStart) + بعد از تسک (Stop, SubagentStop) + Git pre-push بومی.
