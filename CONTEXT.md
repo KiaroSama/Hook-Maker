@@ -149,6 +149,17 @@ A test input that deliberately fails, with its exact nonzero outcome asserted by
 the enclosing test. The child outcome remains failed even when that assertion
 passes; it is not a successful product run or a general failure exemption.
 
+## Documentation carryover
+
+Reusing verified ancestor test evidence for a later prose-only change whose own
+checks were intentionally skipped. It is not a successful test of the later change.
+
+## Unknown document input scope
+
+Insufficient evidence to tell whether a reader consumes a changed document's
+meaning. A reader's existence, a filename or an old passing check settles neither
+its input scope nor the current document's eligibility.
+
 ## Markdown work time
 
 The newest write time of a Markdown file in the folders the Graphify graph covers beyond Git's view

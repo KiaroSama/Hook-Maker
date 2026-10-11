@@ -51,8 +51,11 @@ function Get-VerifiedGreenBase {
 # $null (today's behaviour) or @{ Parent; Files } when the carry-over applies.
 function Get-DocsOnlyCarryover {
     param([string]$ProjectRoot, [string]$Sha, [string]$Branch, [string]$RepoSlug, [string]$StatePath)
+    $script:DocsCarryoverReason = ''
     $message = @(Invoke-DocsGit -Arguments @('-C', $ProjectRoot, 'log', '-1', '--format=%B', $Sha)) -join "`n"
-    if ($LASTEXITCODE -ne 0 -or -not (Test-CommitHasSkipMarker -Message $message)) { return $null }
+    if ($LASTEXITCODE -ne 0) { $script:DocsCarryoverReason = 'unknown: final commit message unavailable'; return $null }
+    if (-not (Test-CommitHasSkipMarker -Message $message)) { return $null }
+    $script:DocsCarryoverReason = 'unknown: skipped commit ancestry or prose-only edge not verified'
     # The pending record overwrites the old green cache; never make local history
     # a prerequisite. Walk at most eight first-parent edges, rejecting EVERY edge
     # so code later reverted to the same tree cannot masquerade as docs-only.
@@ -71,7 +74,9 @@ function Get-DocsOnlyCarryover {
         if ([string]$chain[$i + 1] -ceq $cached) { break }
     }
     if ($candidates.Count -eq 0 -or (Test-DocsHaveSemanticConsumers $ProjectRoot $Sha @($files))) { return $null }
+    $script:DocsCarryoverReason = 'unknown or required final-SHA checks: branch protection/rules did not permit carryover'
     if (-not (Test-NoRequiredStatusChecks -RepoSlug $RepoSlug -Branch $Branch)) { return $null }
+    $script:DocsCarryoverReason = 'unknown or non-success: complete nearest eligible ancestor checks not verified'
     $ordered = @($candidates.ToArray())
     # Nearest first: an older cached success cannot conceal a newer failed run.
     foreach ($base in $ordered) {

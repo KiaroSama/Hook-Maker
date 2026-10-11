@@ -1,6 +1,6 @@
 # Focused docs-only carryover seam: real isolated git, bounded fake GitHub.
 # One fixture shared across pure variants; no network, waits or real state edits.
-param([switch]$KeepArtifacts)
+param([switch]$KeepArtifacts, [switch]$LargeRepositoryOnly)
 Set-StrictMode -Version 2.0
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot '_testlib.ps1')
@@ -59,6 +59,12 @@ function Invoke-GhBounded {
     $global:LASTEXITCODE = 1; return ''
 }
 try {
+    . (Join-Path $PSScriptRoot '_testcidocslarge.ps1')
+    Invoke-LargeDocsStopRegression -Workspace $Work -HooksRoot $HookRoot -SmokeOnly:$LargeRepositoryOnly
+    if ($LargeRepositoryOnly) {
+        Write-Host ('Passed: ' + $script:Pass + ' Failed: ' + $script:Fail)
+        exit $script:Fail
+    }
     $repo = Join-Path $Work 'repo'; [void][IO.Directory]::CreateDirectory($repo)
     & git -C $repo init -qb main; & git -C $repo config user.name fixture; & git -C $repo config user.email fixture@example.invalid; & git -C $repo config core.autocrlf false
     [void](Commit-Fixture '.github/workflows/ci.yml' "on: [push]`njobs:`n  test:`n    runs-on: windows-latest`n    steps: []" 'code')
