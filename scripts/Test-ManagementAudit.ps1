@@ -99,6 +99,10 @@ try {
         $r = Invoke-AuditCommand 'Update-Fleet.ps1' @('-OnlyProject',$target)
         $updates = @(Get-AuditEvents 'Update-Fleet_*.log' | Where-Object event -eq 'update-registration')
         Check 'actual fleet dry run logs record/client without changing installation' ($r.Exit -eq 0 -and $updates.Count -eq 1 -and $updates[0].data.recordId -eq $recordId -and -not $updates[0].data.apply)
+        # Missing-profile coverage belongs to fleet projection; restore the
+        # canonical standalone record before exercising the uninstall contract.
+        $record | Add-Member -NotePropertyName profile -NotePropertyValue ''
+        Write-Utf8 $registryPath ($record | ConvertTo-Json -Depth 30)
         $r = Invoke-AuditCommand 'Uninstall-Hook.ps1' @('-RecordId',$recordId,'-ToolRoot',$tool,'-WhatIf') @() 'powershell.exe'
         $uninstall = @(Get-AuditEvents 'Uninstall-Hook_*.log' | Where-Object event -eq 'uninstall-outcome')
         Check 'PS5.1 actual dry uninstall keeps runtime and logs truthful outcome' ($r.Exit -eq 0 -and $uninstall.Count -eq 1 -and $uninstall[0].data.dryRun -and $uninstall[0].data.overall -eq 'ok' -and (Test-Path -LiteralPath (Join-Path $target '.claude/hooks/Hook-Maker/Ai-Memory-Load/Ai-Memory-Load.ps1')))
