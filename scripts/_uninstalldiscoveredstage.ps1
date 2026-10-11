@@ -33,6 +33,7 @@ function Set-ComponentResult {
         [string]$ReasonCode = '',
         [string]$Message = ''
     )
+    Write-ManagementComponentAudit -Component $Component -Status $Status -ReasonCode $ReasonCode
     # Sanitized message only: never raw file contents, command strings, .env
     # values or stdin. A discovered command line can embed a secret, so nothing
     # derived from one ever reaches this document.
@@ -46,6 +47,7 @@ function Set-ComponentResult {
 }
 function Write-UninstallResult {
     param([string]$Overall)
+    Write-ManagementAudit -Event 'uninstall-outcome' -Data @{ overall = $Overall; recordId = Get-ManagementRecordId $RecordId; dryRun = [bool]$WhatIf; recordType = 'discovered' }
     if ([string]::IsNullOrWhiteSpace($ResultPath)) { return }
     try {
         $document = [pscustomobject][ordered]@{

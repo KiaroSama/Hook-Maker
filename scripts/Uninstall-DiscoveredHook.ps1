@@ -68,6 +68,9 @@ $script:ComponentResults = New-Object System.Collections.Generic.List[object]
 $Utf8NoBom = [System.Text.UTF8Encoding]::new($false)
 if ([string]::IsNullOrWhiteSpace($ToolRoot)) { $ToolRoot = Split-Path -Parent $PSScriptRoot }
 $ToolRoot = [System.IO.Path]::GetFullPath($ToolRoot)
+. (Join-Path $PSScriptRoot '_managementaudit.ps1')
+Start-ManagementAudit -ToolRoot $ToolRoot -Name 'Uninstall-DiscoveredHook'
+Write-ManagementAudit -Event 'uninstall-request' -Data @{ recordId = Get-ManagementRecordId $RecordId; dryRun = [bool]$WhatIf; recordType = 'discovered' }
 
 # Same load order as Uninstall-Hook.ps1 (hook runtime helpers -> install plan ->
 # install state library), then the shared discovery identity layer LAST so the

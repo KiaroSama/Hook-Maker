@@ -65,6 +65,7 @@ function Set-ComponentResult {
         [string]$ReasonCode = '',
         [string]$Message = ''
     )
+    Write-ManagementComponentAudit -Component $Component -Status $Status -ReasonCode $ReasonCode
     # Sanitized message only: never raw file contents, .env values or stdin.
     [void]$script:ComponentResults.Add([pscustomobject][ordered]@{
         component = $Component
@@ -76,6 +77,7 @@ function Set-ComponentResult {
 }
 function Write-UninstallResult {
     param([string]$Overall)
+    Write-ManagementAudit -Event 'uninstall-outcome' -Data @{ overall = $Overall; recordId = Get-ManagementRecordId $RecordId; dryRun = [bool]$WhatIf }
     if ([string]::IsNullOrWhiteSpace($ResultPath)) { return }
     try {
         $document = [pscustomobject][ordered]@{
@@ -100,6 +102,9 @@ function Write-UninstallResult {
 $Utf8NoBom = [System.Text.UTF8Encoding]::new($false)
 if ([string]::IsNullOrWhiteSpace($ToolRoot)) { $ToolRoot = Split-Path -Parent $PSScriptRoot }
 $ToolRoot = [System.IO.Path]::GetFullPath($ToolRoot)
+. (Join-Path $PSScriptRoot '_managementaudit.ps1')
+Start-ManagementAudit -ToolRoot $ToolRoot -Name 'Uninstall-Hook'
+Write-ManagementAudit -Event 'uninstall-request' -Data @{ recordId = Get-ManagementRecordId $RecordId; dryRun = [bool]$WhatIf; forgetUnreadable = [bool]$ForgetUnreadableRecord }
 # Required order: hook-runtime shared helpers first (Get-ShortHash,
 # Read-JsonFile, Write-JsonFileAtomic, Set-ObjectProperty), then the install
 # plan (Test-PathContainedIn, the wrapper generator, registration-ownership
@@ -154,6 +159,7 @@ if ($null -eq $record) {
     return
 }
 $recordValidity = Test-InstallRecordValid -Record $record
+if ($recordValidity.Ok) { Write-ManagementAudit -Event 'uninstall-target' -Data @{ recordId = Get-ManagementRecordId $RecordId; profileId = Get-ManagementField $record 'profile'; target = Get-ManagementField $record 'targetProjectRoot'; scope = Get-ManagementField $record 'scope' } }
 
 # A record this tool cannot interpret used to be a dead end: the executor said
 # "manual repair", and there was no manual repair to perform - `clients` cannot

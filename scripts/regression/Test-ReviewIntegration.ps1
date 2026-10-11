@@ -192,7 +192,10 @@ function Write-JsonFile {
     } $true
     # Invoke the actual canonical result setter independently of the installer
     # entry point, so its uniqueness invariant has a positive and a replacement.
-    $errors=$null;$ast=[Management.Automation.Language.Parser]::ParseFile($installer,[ref]$null,[ref]$errors)
+    $resultSource = Join-Path (Split-Path -Parent $installer) '_installresults.ps1'
+    if (-not (Test-Path -LiteralPath $resultSource)) { $resultSource = $installer }
+    . (Join-Path $PSScriptRoot '../_managementaudit.ps1')
+    $errors=$null;$ast=[Management.Automation.Language.Parser]::ParseFile($resultSource,[ref]$null,[ref]$errors)
     $setter=@($ast.FindAll({param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq 'Set-ComponentResult'},$true))[0]
     . ([scriptblock]::Create($setter.Extent.Text))
     $script:ComponentResults=New-Object System.Collections.Generic.List[object]

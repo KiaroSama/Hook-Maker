@@ -65,6 +65,7 @@ else {
 }
 
 # --------------------------------------------------------------- logging ----
+. (Join-Path $ScriptRoot '_managementaudit.ps1')
 $script:LogPath = $null
 $script:EmptyReads = 0
 # Wizard logs kept per directory. A log per run with no retention grew to 5,000+
@@ -84,15 +85,7 @@ function Initialize-Log {
         if (-not (Test-Path -LiteralPath $logDir -PathType Container)) {
             New-Item -ItemType Directory -Path $logDir -Force | Out-Null
         }
-        $stamp = [DateTime]::UtcNow.ToString('yyyy-MM-dd_HH-mm-ss')
-        $base = Join-Path $logDir ('Setup-SyncGroup_' + $stamp + '_UTC')
-        $candidate = $base + '.log'
-        $suffix = 1
-        while (Test-Path -LiteralPath $candidate) {
-            $candidate = $base + '_' + $suffix + '.log'
-            $suffix++
-        }
-        [System.IO.File]::WriteAllText($candidate, '', $Utf8NoBom)
+        $candidate = New-ManagementLogFile -Directory $logDir -Name 'Setup-SyncGroup'
         $script:LogPath = $candidate
         Remove-OldWizardLogs -Directory $logDir -KeepPath $candidate
     }
@@ -179,7 +172,7 @@ function Read-Answer {
     if ($value -eq '') {
         $defaultUsed = 'yes'
     }
-    Write-Log 'DEBUG' 'INPUT' ('User input: prompt=' + $LogLabel + "; value='" + $value + "'; default_used=" + $defaultUsed + '; action=' + $action)
+    Write-Log 'DEBUG' 'INPUT' ('User input: prompt=' + $LogLabel + '; supplied=' + ($value -ne '') + '; default_used=' + $defaultUsed + '; action=' + $action)
 
     if ($action -eq 'quit') {
         throw 'WIZ:EXIT'
@@ -583,7 +576,8 @@ function Show-MainMenu {
 
 # ----------------------------------------------------------------- entry ----
 Initialize-Log
-Write-Log 'INFO' 'STARTUP' ('Execution id: ' + [guid]::NewGuid().ToString())
+if ($null -ne $script:LogPath) { Start-ManagementAudit -ToolRoot $ToolRoot -Name 'Setup-SyncGroup' -Path $script:LogPath }
+Write-Log 'INFO' 'STARTUP' ('Execution id: ' + $(if ($null -ne $script:LogPath) { $script:ManagementAuditIdentity.runId } else { 'unavailable' }))
 # Marks every install/uninstall this wizard run performs as ONE run, so a
 # settings file is backed up once for the whole batch instead of once per hook
 # (see Backup-File in _installclientsettings.ps1). Child Install-Hook.ps1 /

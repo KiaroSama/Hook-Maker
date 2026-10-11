@@ -92,6 +92,7 @@ if ($null -eq $resolverAst) { throw 'Get-HookRecommendedEvents was not found in 
 . (Join-Path $ScriptRoot 'Setup-SyncGroupRelocate.ps1')
 
 # ---- logging -----------------------------------------------------------------
+. (Join-Path $ScriptRoot '_managementaudit.ps1')
 $script:FleetLogPath = $null
 function Initialize-FleetLog {
     param([string]$Requested)
@@ -100,10 +101,7 @@ function Initialize-FleetLog {
         if ([string]::IsNullOrWhiteSpace($path)) {
             $directory = Join-Path $ToolRoot 'logs'
             if (-not [string]::IsNullOrWhiteSpace($env:HOOKMAKER_LOG_DIR)) { $directory = $env:HOOKMAKER_LOG_DIR }
-            $base = Join-Path $directory ('Update-Fleet_' + [DateTime]::UtcNow.ToString('yyyy-MM-dd_HH-mm-ss') + '_UTC')
-            $path = $base + '.log'
-            $suffix = 1
-            while (Test-Path -LiteralPath $path) { $path = $base + '_' + $suffix + '.log'; $suffix++ }
+            $path = New-ManagementLogFile -Directory $directory -Name 'Update-Fleet'
         }
         $path = [System.IO.Path]::GetFullPath($path)
         $parent = Split-Path -Parent $path
@@ -180,6 +178,7 @@ try { $markers = @($Marker | Where-Object { -not [string]::IsNullOrWhiteSpace($_
 catch { Write-Host $_.Exception.Message -ForegroundColor Red; exit 1 }
 
 Initialize-FleetLog -Requested $LogPath
+if ($null -ne $script:FleetLogPath) { Start-ManagementAudit -ToolRoot $ToolRoot -Name 'Update-Fleet' -Path $script:FleetLogPath }
 $mode = if ($Apply) { 'apply' } elseif ($evaluate) { 'dry run' } else { 'compare only' }
 Write-FleetLog 'INFO' 'FLEET' ('Update-Fleet started: mode=' + $mode + ' onlyProject=' + $OnlyProject + ' markers=' + (@($markers | ForEach-Object { $_.Spec }) -join ',') + ' compare=' + [bool]$Compare + ' pid=' + $PID + ' toolRoot=' + $ToolRoot)
 
@@ -224,6 +223,7 @@ if ($evaluate) {
     $updated = 0
     foreach ($registration in $registrations) {
         $label = Get-RegistrationLabel $registration
+        Write-ManagementAudit -Event 'update-registration' -Data @{ recordId = Get-ManagementRecordId (Get-FleetRecordField $registration.Record 'id'); profileId = Get-FleetRecordField $registration.Record 'profile'; target = Get-FleetRecordField $registration.Record 'targetProjectRoot'; client = $registration.Client; phase = 'planned'; state = $registration.State; apply = [bool]$Apply }
         switch ($registration.State) {
             'current' { Write-FleetLog 'INFO' 'FLEET' ('ok | ' + $label) }
             'unreachable' { Write-FleetLog 'INFO' 'FLEET' ('unreachable | ' + $label + ' | ' + $registration.Detail) }
@@ -236,6 +236,7 @@ if ($evaluate) {
                 $reason = ''
                 try { $reason = Invoke-FleetRepair -Registration $registration -Markers $markers }
                 catch { $reason = $_.Exception.Message }
+                Write-ManagementAudit -Event 'update-registration' -Data @{ recordId = Get-ManagementRecordId (Get-FleetRecordField $registration.Record 'id'); client = $registration.Client; phase = 'outcome'; outcome = $(if ($reason -eq '') { 'ok' } else { 'failed' }) }
                 if ($reason -eq '') {
                     $updated++
                     Write-FleetLog 'INFO' 'APPLY' ('updated | ' + $label)

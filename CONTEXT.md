@@ -160,6 +160,18 @@ Insufficient evidence to tell whether a reader consumes a changed document's
 meaning. A reader's existence, a filename or an old passing check settles neither
 its input scope nor the current document's eligibility.
 
+## Management execution evidence
+
+Observed account and process identity for one management run. It identifies the execution context, not the person or agent who initiated it.
+
+## Caller origin claim
+
+A caller's description of where an operation came from. It is unverified unless independent evidence authenticates it, and never grants permission.
+
+## Profile transition
+
+The planned or committed change from a set of sync profiles and their member projects to another set. Member count is distinct from profile count.
+
 ## Markdown work time
 
 The newest write time of a Markdown file in the folders the Graphify graph covers beyond Git's view

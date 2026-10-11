@@ -192,6 +192,9 @@ function New-TestWorkspace {
         New-Item -ItemType Directory -Path $stateDir -Force | Out-Null
         $env:HOOKMAKER_STATE_DIR = $stateDir
     }
+    if ([string]::IsNullOrWhiteSpace($env:HOOKMAKER_LOG_DIR)) {
+        $env:HOOKMAKER_LOG_DIR = Join-Path $path '_logs'
+    }
     return $path
 }
 

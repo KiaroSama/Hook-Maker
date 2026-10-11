@@ -139,6 +139,7 @@ function Test-TextNamesRoot {
 # an opaque key (records and installed engines reference it), and a route id is
 # written into the engine's own sync state - renaming either orphans live state
 # for a label no user output shows.
+. (Join-Path $PSScriptRoot '_managementaudit.ps1')
 function Update-SyncConfigRoot {
     param(
         [Parameter(Mandatory = $true)][string]$ConfigPath,
@@ -153,6 +154,8 @@ function Update-SyncConfigRoot {
     catch { return $changed }
     if ($null -eq $config -or $null -eq $config.PSObject.Properties['profiles']) { return $changed }
 
+    $auditRelocate = [guid]::NewGuid().ToString('N')
+    $auditBefore = @($config.profiles | ForEach-Object { Get-ManagementProfileSummary $_ })
     $oldLeaf = Split-Path -Leaf $OldRoot
     $newLeaf = Split-Path -Leaf $NewRoot
     foreach ($profile in @($config.profiles)) {
@@ -177,7 +180,11 @@ function Update-SyncConfigRoot {
         }
     }
     if ($changed.Roots -gt 0 -or $changed.Names -gt 0 -or $changed.Profiles -gt 0) {
-        Write-JsonFileAtomic -Value $config -Path $ConfigPath
+        $auditAfter = @($config.profiles | ForEach-Object { Get-ManagementProfileSummary $_ })
+        Write-ManagementAudit -Event 'profile-relocation' -Data @{ operationId = $auditRelocate; phase = 'planned'; before = $auditBefore; after = $auditAfter }
+        try { Write-JsonFileAtomic -Value $config -Path $ConfigPath }
+        catch { Write-ManagementAudit -Event 'profile-relocation' -Data @{ operationId = $auditRelocate; phase = 'failed'; reason = 'config-write' }; throw }
+        Write-ManagementAudit -Event 'profile-relocation' -Data @{ operationId = $auditRelocate; phase = 'committed'; before = $auditBefore; after = $auditAfter }
     }
     return $changed
 }

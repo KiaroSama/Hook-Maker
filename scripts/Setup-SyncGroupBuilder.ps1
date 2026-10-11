@@ -353,11 +353,21 @@ function Invoke-CreateGroup {
         }
         if ($confirm -ne $true) {
             Write-NoteLine 'Canceled. Nothing was changed.'
+            Write-ManagementAudit -Event 'profile-transition' -Data @{ phase = 'canceled'; retainedProfileId = [string]$groupProfile.id; reason = 'confirmation-declined' }
             Write-Log 'INFO' 'GROUP' 'User declined at confirmation; no changes applied.'
             return 'canceled'
         }
         break
     }
+    $auditOperation = [guid]::NewGuid().ToString('N')
+    $auditBefore = @()
+    if ($null -ne $config.PSObject.Properties['profiles']) {
+        $auditBefore = @($config.profiles | Where-Object { $removeProfileIds -contains (Get-ManagementField $_ 'id') } | ForEach-Object { Get-ManagementProfileSummary $_ })
+    }
+    $auditAfter = Get-ManagementProfileSummary $groupProfile
+    $auditRemoved = @($removeProfileIds | Where-Object { $_ -ne [string]$groupProfile.id })
+    $auditAdded = @(); if ($removeProfileIds -notcontains [string]$groupProfile.id) { $auditAdded = @([string]$groupProfile.id) }
+    Write-ManagementAudit -Event 'profile-transition' -Data @{ operationId = $auditOperation; phase = 'planned'; retainedProfileId = [string]$groupProfile.id; removedProfileIds = $auditRemoved; addedProfileIds = $auditAdded; before = $auditBefore; after = $auditAfter }
     $installScope = if ($NoInstall) { 'skipped (-NoInstall)' } else { $clients }
     Write-Log 'INFO' 'GROUP' ('Confirmed. profile=' + $groupProfile.id + ' | name="' + $groupProfile.name + '" | projects=' + $allMembers.Count + ' | mergedFrom=' + $mergedFromCount + ' | reinstall=' + @($installMembers).Count + ' | routes=' + $routeCount + ' (full mesh) | events=' + ($events -join ',') + ' | client=' + $installScope + ' | config=' + $ConfigPath)
     foreach ($project in $allMembers) {
@@ -437,6 +447,7 @@ function Invoke-CreateGroup {
             foreach ($path in $rollbackFailures) { Write-NoteLine ('  ' + $path) }
         }
         foreach ($failure in $aiCreateFailures) { Write-NoteLine ('  ' + $failure.Path) }
+        Write-ManagementAudit -Event 'profile-transition' -Data @{ operationId = $auditOperation; phase = 'failed'; reason = 'knowledge-directory'; retainedProfileId = [string]$groupProfile.id }
         Write-Log 'ERROR' 'GROUP' ('Aborted sync group: ' + $aiCreateFailures.Count + ' .ai directory creation failure(s); ' + ($aiCreatedThisRun.Count - $rollbackFailures.Count) + ' directory(ies) rolled back; no profile written.')
         return 'back'
     }
@@ -470,7 +481,12 @@ function Invoke-CreateGroup {
         Copy-Item -LiteralPath $ConfigPath -Destination $backupPath -Force
         Write-Log 'INFO' 'CONFIG' ('Config backup created: ' + $backupPath)
     }
-    Write-JsonFileAtomic -Value $config -Path $ConfigPath
+    try { Write-JsonFileAtomic -Value $config -Path $ConfigPath }
+    catch {
+        Write-ManagementAudit -Event 'profile-transition' -Data @{ operationId = $auditOperation; phase = 'failed'; reason = 'config-write'; retainedProfileId = [string]$groupProfile.id }
+        throw
+    }
+    Write-ManagementAudit -Event 'profile-transition' -Data @{ operationId = $auditOperation; phase = 'committed'; retainedProfileId = [string]$groupProfile.id; removedProfileIds = $auditRemoved; addedProfileIds = $auditAdded; before = $auditBefore; after = $auditAfter }
     $action = 'added'
     if ($replaced) {
         $action = 'updated'
@@ -609,8 +625,14 @@ function Invoke-ResetSyncGroups {
     Write-Log 'INFO' 'RESET' ('Config backup created: ' + $backupPath)
 
     $kept = @($existing | Where-Object { $null -ne $_ -and [string]$_.id -eq $script:ExampleProfileId })
+    $resetId = [guid]::NewGuid().ToString('N')
+    $resetBefore = @($groups | ForEach-Object { Get-ManagementProfileSummary $_ })
+    $resetRemoved = @($groups | ForEach-Object { [string]$_.id })
+    Write-ManagementAudit -Event 'profile-reset' -Data @{ operationId = $resetId; phase = 'planned'; removedProfileIds = $resetRemoved; before = $resetBefore; retainedProfileIds = @($kept | ForEach-Object { [string]$_.id }) }
     Set-ObjectProperty -Object $config -Name 'profiles' -Value $kept
-    Write-JsonFileAtomic -Value $config -Path $ConfigPath
+    try { Write-JsonFileAtomic -Value $config -Path $ConfigPath }
+    catch { Write-ManagementAudit -Event 'profile-reset' -Data @{ operationId = $resetId; phase = 'failed'; reason = 'config-write' }; throw }
+    Write-ManagementAudit -Event 'profile-reset' -Data @{ operationId = $resetId; phase = 'committed'; removedProfileIds = $resetRemoved; before = $resetBefore; retainedProfileIds = @($kept | ForEach-Object { [string]$_.id }) }
 
     Write-Host ('  ' + (Get-Painted ('- removed ' + $groups.Count + ' sync group(s)') $C.Green))
     Write-Field 'backup' $backupPath
