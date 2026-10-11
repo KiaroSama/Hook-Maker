@@ -116,13 +116,14 @@ if ($args.Count -ge 2 -and $args[0] -eq 'api' -and [string]$args[1] -match '^rep
         if ($case.Why -eq 'a ruleset requiring checks') { Set-Content (Join-Path $MockDir 'rules.json') '[{"type":"required_status_checks"}]' -Encoding utf8 }
         if ($case.Why -like 'an unreadable*') { Set-Content (Join-Path $MockDir 'branch_exit.txt') '1' }
         $r = Fire -HookPath $CiHook -Cwd $repo -EventName 'Stop'
-        Check ('k: ' + $case.Why + ' keeps the wait block') ($r.Out -match '"decision"' -and $r.Out -match 'no runs are registered yet') $r.Out
+        $expectedReason = if ($case.Why -eq 'no skip marker') { 'no runs are registered yet' } else { 'carryover not verified' }
+        Check ('k: ' + $case.Why + ' keeps the evidence block') ($r.Out -match '"decision"' -and $r.Out -match $expectedReason) $r.Out
     }
     $unverified = New-PushedCiRepo 'ci-docs-unverified'
     $null = Add-PushedCommit -Repo $unverified -Files @{ 'README.md' = 'd' } -Message 'docs: readme [skip ci]'
     Set-Mock -RunJson '[]'
     $r = Fire -HookPath $CiHook -Cwd $unverified -EventName 'Stop'
-    Check 'k: an unverified parent keeps the wait block' ($r.Out -match '"decision"' -and $r.Out -match 'no runs are registered yet') $r.Out
+    Check 'k: an unverified parent keeps the evidence block without fictitious waiting' ($r.Out -match '"decision"' -and $r.Out -match 'carryover not verified' -and $r.Out -notmatch 'wait briefly') $r.Out
 
     foreach ($client in @('claude', 'codex')) {
         $isolated = New-PushedCiRepo ('ci-docs-missing-' + $client)

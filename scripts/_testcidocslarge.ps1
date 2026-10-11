@@ -84,7 +84,7 @@ exit 1
                 @{Name='unbounded generic reader'; Path='vendor/consumer.py'; Text='validate(open(sys.argv[1]).read())'},
                 @{Name='unsupported language reader'; Path='vendor/consumer.c'; Text='fopen("input", "r");'},
                 @{Name='relevant content overflow'; Path='vendor/consumer.py'; Text='open("input").read()' + ('x' * 1048577)},
-                @{Name='query UTF-8 round trip'; Path='vendor/consumer.py'; Text='open("داده").read()'},
+                @{Name='query UTF-8 round trip'; Path='vendor/consumer.py'; Text='open("' + [char]0x062f + [char]0x0627 + [char]0x062f + [char]0x0647 + '").read()'},
                 @{Name='embedded document'; Path='guide.md'; Text='```python' + "`n" + 'open("compatibility.md").read()' + "`n" + '```'}
             )) {
                 $env:LOCALAPPDATA = Join-Path $root ('state-' + $variant.Name.Replace(' ','-'))
