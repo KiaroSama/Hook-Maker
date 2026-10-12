@@ -384,6 +384,23 @@ function Save-InstallRegistryUnlocked {
     # bytes change, so no reader can be served a pre-write document even if a
     # filesystem's timestamp granularity ever failed to move.
     $script:InstallRegistryCache = $null
+    # A read/serialize round trip changes ISO timestamp precision, whitespace and
+    # BOM without changing a record. Leave the file untouched and promise its
+    # existing text digest; canonical digests would reject an unchanged survivor.
+    $retained = @{}
+    $expectedByName = @{}
+    foreach ($entry in @($snapshot.Expected)) { $expectedByName[[string]$entry.name] = $entry }
+    foreach ($record in @($Registry.installs)) {
+        $id = [string]$record.id
+        $recordPath = Get-InstallRecordPath -ToolRoot $ToolRoot -Id $id
+        if (-not [IO.File]::Exists($recordPath)) { continue }
+        $existing = [IO.File]::ReadAllText($recordPath, [Text.Encoding]::UTF8)
+        $parsed = $existing | ConvertFrom-Json
+        if ([string]::Equals(($parsed | ConvertTo-Json -Depth 50), ($record | ConvertTo-Json -Depth 50), [StringComparison]::Ordinal)) {
+            $retained[$id] = $true
+            $expectedByName[$id + '.json'].sha256 = Get-InstallRecordDigest -Text $existing
+        }
+    }
     # From here the directory is MID-WRITE and no reader may trust it. The marker
     # clears only after metadata lands, so any failure below leaves a detectable
     # incomplete generation instead of an authoritative subset. Creating the
@@ -397,22 +414,11 @@ function Save-InstallRegistryUnlocked {
         # anything was written.
         $id = [string]$record.id
         $keep[$id + '.json'] = $true
+        if ($retained.ContainsKey($id)) { continue }
         $recordPath = Get-InstallRecordPath -ToolRoot $ToolRoot -Id $id
-        # Compared only when there is something to compare against. Serialising
-        # to decide whether to serialise is pure waste on a first write, and a
-        # first write is every record during the one-off migration.
-        $existing = $null
-        if (Test-Path -LiteralPath $recordPath -PathType Leaf) {
-            try { $existing = [System.IO.File]::ReadAllText($recordPath, [System.Text.Encoding]::UTF8) }
-            catch { $existing = $null }
-        }
-        # -Depth 50 mirrors Write-JsonFileAtomic exactly; a mismatch here would
-        # only ever cost an unnecessary rewrite, never a wrong file.
-        if ($null -eq $existing -or -not [string]::Equals($existing, ($record | ConvertTo-Json -Depth 50), [System.StringComparison]::Ordinal)) {
-            $stale = $recordPath + '.tmp'
-            if (Test-Path -LiteralPath $stale -PathType Leaf) { Remove-Item -LiteralPath $stale -Force -ErrorAction SilentlyContinue }
-            Write-JsonFileAtomic -Value $record -Path $recordPath
-        }
+        $stale = $recordPath + '.tmp'
+        if (Test-Path -LiteralPath $stale -PathType Leaf) { Remove-Item -LiteralPath $stale -Force -ErrorAction SilentlyContinue }
+        Write-JsonFileAtomic -Value $record -Path $recordPath
     }
     foreach ($file in @(Get-InstallRecordFiles -ToolRoot $ToolRoot)) {
         if (-not $keep.ContainsKey($file.Name)) {

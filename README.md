@@ -388,7 +388,9 @@ runtime for a client (for example a plain custom-hook record of the sync engine 
 record), removing one takes off only that record's own handlers and its registry row; the runtime
 stays for the other record, and the result says so (`sharedRuntimeKept`, or
 `wouldRemoveHandlersOnly` in a preview). A record without a profile never claims a handler that
-carries one.
+carries one. Surviving registry records retain their original bytes, including timestamp
+precision, formatting and BOM; records whose values actually change are still written and
+verified through the transaction journal.
 
 **A record Hook Maker cannot interpret can still be dropped — as a tracking row only.** If a record
 is damaged past the point where its client list can be read, nothing can prove what it installed, so
