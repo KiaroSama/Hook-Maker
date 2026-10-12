@@ -3,6 +3,18 @@
 The shared language of this project. A glossary and nothing else — no implementation detail, no
 decisions (those are ADRs under `docs/adr/`), no task state (that lives outside the repository).
 
+## CI input evidence report
+
+A diagnostic inventory of immutable repository inputs and unresolved execution
+boundaries. Complete discovery is not proof that a document cannot influence CI.
+An evidence report never grants carryover or changes a CI-success receipt.
+
+## Historical failure disposition
+
+An explicitly accepted record of an operation that failed its original guarantee,
+with its consequences and prospective repair documented. Acceptance closes the
+required response to the failure; it does not turn the past operation into a pass.
+
 ## Test command
 
 A command whose purpose is to **run a test suite**: `pytest`, `jest`, `vitest`, `go test`,

@@ -157,6 +157,11 @@
 timeout ثبت‌شده‌اش رسیده را چاپ می‌کند. فقط‌خواندنی است؛ مدت‌ها از یک فیلد مستندنشده‌ی کلاینت می‌آیند،
 پس مقدار ناموجود شمرده می‌شود، نه حدس زده.
 
+`Get-CiInputEvidence.ps1` provides a read-only, exact-commit CI input inventory.
+Its report always remains `UNKNOWN`, never grants carryover or CI success, and
+never executes inspected source. See [CI input evidence](docs/ci-input-evidence.md)
+for local-only scope, independent budgets, output protection and diagnostic logs.
+
 برای کل پروژه‌ها بدون پرسش، `scripts\Update-Fleet.ps1` شکل غیرتعاملیِ `32` است: همان ارزیابی و
 همان فراخوانی نصب‌کننده، هر بار یک جفت رکورد/کلاینت با رویدادها، محدوده و (برای موتور سینک)
 پروفایل/کانفیگِ ثبت‌شده‌ی خودش. بدون سوئیچ فقط شمارش می‌کند (current / stale / pending-migration /
