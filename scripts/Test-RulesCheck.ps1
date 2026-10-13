@@ -11,7 +11,7 @@
 # Usage:  pwsh -NoLogo -NoProfile -File .\scripts\Test-RulesCheck.ps1 [-KeepArtifacts]
 # Exit code is the number of failed assertions (0 = all passed).
 
-param([switch]$KeepArtifacts)
+param([switch]$KeepArtifacts, [switch]$ResearchOnly)
 
 Set-StrictMode -Version 2.0
 $ErrorActionPreference = 'Stop'
@@ -117,6 +117,14 @@ function Get-AdditionalContext {
 }
 
 try {
+    if ($ResearchOnly) {
+        $researchProject = Join-Path $Work 'Research'
+        [void][IO.Directory]::CreateDirectory($researchProject)
+        $r = Fire -Cwd $researchProject -RawStdin (New-PromptStdin $researchProject '::deep-research compare bounded sources' 'research-red')
+        Check 'explicit research routes through the real prompt event without a grant' ($r.Exit -eq 0 -and $r.Err -eq '' -and $r.Out -match 'global-research-workflows.md' -and $r.Out -match 'claim ledger' -and $r.Out -notmatch '"decision"') $r.Out
+        Write-Host ("Passed: $script:Pass  Failed: $script:Fail")
+        exit $script:Fail
+    }
     # =====================================================================
     Write-Host '--- input handling ---' -ForegroundColor Cyan
     $proj1 = Join-Path $Work 'proj1'; New-Item -ItemType Directory -Path $proj1 -Force | Out-Null
@@ -132,6 +140,26 @@ try {
     $r = Fire -Cwd $proj1
     Check 'no rules dirs -> silent' ($r.Exit -eq 0 -and $r.Out -eq '') $r.Out
     Check 'no rules dirs -> no state written' (-not (Test-Path (Join-Path $FakeAppData 'HookMaker\state')))
+
+    # No real rules or host state are needed for the explicit route.
+    $researchProject = Join-Path $Work 'ResearchMatrix'
+    [void][IO.Directory]::CreateDirectory($researchProject)
+    foreach ($claude in @($true,$false)) {
+        $session = 'research-' + $claude
+        $prompt = '::deep-research compare bounded sources'
+        $r = Fire -Cwd $researchProject -Claude $claude -RawStdin (New-PromptStdin $researchProject $prompt $session)
+        Check ('research route on client ' + $claude) ($r.Exit -eq 0 -and $r.Err -eq '' -and $r.Out -match 'claim ledger' -and $r.Out -notmatch '"decision"') $r.Out
+        $r = Fire -Cwd $researchProject -Claude $claude -RawStdin (New-PromptStdin $researchProject $prompt $session)
+        Check ('research unchanged repeat quiet ' + $claude) ($r.Out -eq '') $r.Out
+        $r = Fire -Cwd $researchProject -Claude $claude -RawStdin (New-PromptStdin $researchProject ($prompt + ' again') $session)
+        Check ('research changed request current ' + $claude) ($r.Out -match 'DEEP RESEARCH ROUTE') $r.Out
+    }
+    $r = Fire -Cwd $researchProject -Exe powershell.exe -RawStdin (New-PromptStdin $researchProject '::deep-research sources' 'research51')
+    Check 'research real PS5.1 context with clean stderr' ($r.Exit -eq 0 -and $r.Err -eq '' -and $r.Out -match 'global-research-workflows.md') $r.Out
+    foreach ($text in @('/deep-research sources','Discuss ::deep-research','"::deep-research"','`::deep-research`',"> ::deep-research", ('```' + "`n::deep-research`n" + '```'),'<tool_result>::deep-research</tool_result>')) {
+        $r = Fire -Cwd $researchProject -RawStdin (New-PromptStdin $researchProject $text ('near-' + [guid]::NewGuid().ToString('N')))
+        Check ('no explicit route from example ' + $text) ($r.Out -notmatch 'DEEP RESEARCH ROUTE') $r.Out
+    }
 
     $globalClaude = Join-Path $FakeHome '.claude\rules'
     New-RuleFile $globalClaude 'alpha.md'

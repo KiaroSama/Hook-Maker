@@ -241,6 +241,7 @@ try {
     . (Join-Path $PSScriptRoot '_testcontextmcp.ps1')
     . (Join-Path $PSScriptRoot '_testcontextskills.ps1')
     . (Join-Path $PSScriptRoot '_testskillprompt.ps1')
+    . (Join-Path $PSScriptRoot '_testresearchrouting.ps1')
     . (Join-Path $PSScriptRoot '_testskilldiscovery.ps1')
     . (Join-Path $PSScriptRoot '_testcontextlargefile.ps1')
     . (Join-Path $PSScriptRoot '_testcontextaimemory.ps1')

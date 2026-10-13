@@ -17,6 +17,10 @@ function Invoke-SkillProviderRegression {
     $pluginList=New-Object 'System.Collections.Generic.List[object]';[void]$pluginList.Add($skill)
     $index=[pscustomobject]@{Plugin=$pluginList;InstallKeys=@('new-provider@market');InstallKnown=$true}
     $drift=Get-SkillCatalogueDrift -RulesDir $rules -DiscoveredNames @('shared-name') -Index $index
+    Write-Utf8 (Join-Path $rules 'global-research-workflows.md') '- `companion-only-research`.'
+    Write-Utf8 (Join-Path $rules 'global-connected-skill-contracts.md') '- `companion-only-setup`.'
+    $hints = Get-CataloguedSkillNames $rules
+    Check 'new companion routes reachable as bounded compatibility hints' ($hints.Contains('companion-only-research') -and $hints.Contains('companion-only-setup'))
     Check 'another provider route and bare prose do not cover installed plugin' ($drift.Missing -contains 'new-provider:shared-name')
     $row=@{name='shared-name';provider='old-provider@market';sha256=$skill.DefinitionHash;sources=@(@{client='claude';package='old-provider@market';path=(Join-Path $folder 'SKILL.md');invocation='old-provider:shared-name';version='1.0.0';status='registered/enabled'})}
     Write-Utf8 (Join-Path $rules 'catalogue/skills-001.jsonl') ($row | ConvertTo-Json -Depth 6 -Compress)

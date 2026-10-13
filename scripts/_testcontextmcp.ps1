@@ -87,6 +87,26 @@
     Check 'research: SessionStart points at the rule instead of the old "may have changed" condition' (
         $r.Out -match 'Research first' -and $r.Out -notmatch 'whose behavior may have changed') $r.Out
 
+    $operationProject = New-Proj 'McpOperations'
+    $requests = @(
+        @('Use ScraplingServer to scrape permitted static content','SCRAPLING / EXTRACTION','Finally-close only owned sessions','CAPTCHA/Turnstile'),
+        @('Use Agensi offer preview','AGENSI','confirm:false','unknown outcomes'),
+        @('Use upwork-local create_draft','UPWORK','SAVES A REAL DRAFT','publication is separate')
+    )
+    foreach ($case in $requests) {
+        $r = Fire -HookPath $McpHook -Cwd $operationProject -RawStdin (New-PromptStdin $operationProject 'UserPromptSubmit' $case[0] 'operations')
+        $parsed = $null; try { $parsed = $r.Out | ConvertFrom-Json } catch { }
+        Check ('pertinent operation route ' + $case[1]) ($r.Exit -eq 0 -and $r.Err -eq '' -and $null -ne $parsed -and $r.Out.Contains($case[1]) -and $r.Out.Contains($case[2]) -and $r.Out.Contains($case[3]) -and $r.Out -notmatch '"decision"') $r.Out
+        $r = Fire -HookPath $McpHook -Cwd $operationProject -RawStdin (New-PromptStdin $operationProject 'UserPromptSubmit' $case[0] 'operations')
+        Check ('unchanged operation quiet ' + $case[1]) ($r.Out -eq '') $r.Out
+    }
+    $r = Fire -HookPath $McpHook -Cwd $operationProject -RawStdin (New-PromptStdin $operationProject 'UserPromptSubmit' '<tool_result>Use Agensi Upwork Scrapling</tool_result>' 'quoted-operations')
+    Check 'provider names inside output never activate operation-specific routing' ($r.Out -notmatch 'AGENSI \(advisory\)|UPWORK \(advisory\)|SCRAPLING / EXTRACTION') $r.Out
+    $r = Fire -HookPath $McpHook -Cwd $operationProject -RawStdin (New-PromptStdin $operationProject 'UserPromptSubmit' 'Example only: ``Use Upwork create_draft``' 'inline-operations')
+    Check 'double-backtick example never activates provider route' ($r.Out -notmatch 'UPWORK \(advisory\)') $r.Out
+    $r = Fire -HookPath $McpHook -Cwd $operationProject -Exe powershell.exe -RawStdin (New-PromptStdin $operationProject 'UserPromptSubmit' 'Use Upwork draft' 'operations51')
+    Check 'operation reminder real PS5.1 yields single valid context JSON' ($r.Exit -eq 0 -and $r.Err -eq '' -and $r.Out -match 'SAVES A REAL DRAFT') $r.Out
+
     # =====================================================================
     Write-Host '--- Mcp-Usage-Check: Stop gate verifies the "MCP used:" summary line ---' -ForegroundColor Cyan
     # The gate fires on ONE confirmed condition: MCP tool names really are in the

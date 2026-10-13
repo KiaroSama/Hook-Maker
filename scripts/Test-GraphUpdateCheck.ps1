@@ -96,6 +96,12 @@ try {
     Add-Commit $stale 'add Foo'
     $r = Fire -Cwd $stale
     Check 'a stale graph produces a Stop reminder' ($r.Out -match '"decision":"block"' -and $r.Out -match 'GRAPH UPDATE CHECK') $r.Out
+    Check 'graph lifecycle success-only verification and safe recycling boundaries' ($r.Out -match 'Only after verified success' -and $r.Out -match 'semantic retention and endpoints' -and $r.Out -match 'Recycle Bin unavailable means cleanup BLOCKED' -and $r.Out -match 'hook deletes nothing') $r.Out
+    $kept = Join-Path $stale 'graph-like-user-data'; [void][IO.Directory]::CreateDirectory($kept)
+    $sentinel = Join-Path $kept 'source.txt'; Write-Utf8 $sentinel 'user-owned graph-like source'
+    $beforeSentinel = [IO.File]::ReadAllBytes($sentinel)
+    $null = Fire -Cwd $stale
+    Check 'graph-like unrelated source remains byte-identical' ([Convert]::ToBase64String([IO.File]::ReadAllBytes($sentinel)) -ceq [Convert]::ToBase64String($beforeSentinel))
     Check 'the reminder uses structural/relationship criteria, not file count' (
         $r.Out -match 'based on STRUCTURAL impact, not the number of files changed') $r.Out
     Check 'the OLD blanket "one-file fixes" exclusion wording is gone' ($r.Out -notmatch 'one-file fixes')

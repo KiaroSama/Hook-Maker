@@ -146,6 +146,8 @@
 
 پیمایشی که به سقفش برسد یک بار «نامعلوم» گزارش می‌شود، هرگز «تمیز» نه، و هرگز بلاک نمی‌کند.
 
+Graph lifecycle reminders require verified coverage, semantic retention and endpoints before recycling only proven owned obsolete copies. Preserve healthy rollback on failure; unavailable Recycle Bin means blocked cleanup, not permanent deletion. No hook deletion or new ownership gate.
+
 ## `Cbm-Read-Check`
 
 **زمان اجرا:** قبل از تسک (SessionStart, UserPromptSubmit).
@@ -256,6 +258,8 @@ Desktop هر دو مسیر `%LOCALAPPDATA%\Claude-3p\local-agent-mode-sessions\s
 
 هر دو راهنمای پیش از کار دو خط ثابت هم دارند: بر اساس خطِ مسیریابیِ خودِ هر مهارت در `global-skill-routing.md` مسیریابی کن، و کار امنیتی از `security-audit` وارد می‌شود، هرگز از یک اسکنر. خط Spec Kit حالا قرارداد پذیرش درخواست در میانهٔ کار را می‌گوید: دلتای درخواست را با شناسهٔ الزام و معیار پذیرش ثبت کن، spec، plan، tasks و انتخاب مهارت را به‌روز کن، گیت‌های متأثر را دوباره اجرا کن، و فقط کارِ وابسته منتظر بماند. کلیدهای تازهٔ `.env`: `CLAUDE_PLUGINS_FILE`، `CLAUDE_SETTINGS_FILES`، `CLAUDE_DESKTOP_SKILLS_ROOT`، `CODEX_HOME_DIR`، `CODEX_SHARED_SKILLS_DIR`، `SKILL_RULES_DIR` (همه با پیش‌فرض).
 
+An actual leading `::deep-research` receives bounded phase-specific routing through current research/connected-skill companions and catalogue records. Native slash, ordinary mentions and quoted/fenced/pasted examples do not activate the composite. Companion prose hints never replace structured provider/kind/client/path/version/hash identity. [Research and operation reminder contract](research-operation-reminders.md).
+
 ## `Mcp-Usage-Check`
 
 **زمان اجرا:** قبل از تسک (SessionStart, UserPromptSubmit) + بعد از تسک (Stop, SubagentStop).
@@ -265,6 +269,8 @@ Desktop هر دو مسیر `%LOCALAPPDATA%\Claude-3p\local-agent-mode-sessions\s
 متن بلاک، سرورهایی که دیده شده و خط دقیقی که باید اضافه شود را نام می‌برد. حالت **معکوس** (هیچ ابزار MCPی صدا زده نشده) حتی در حالت block هم فقط راهنماست و آن هم فقط برای sessionی که نیمه‌ی prompt از قبل مرتبط علامتش زده: هوک نمی‌تواند ثابت کند ابزاری *لازم* بوده، و گیتی که روی گمان شلیک کند ممنوع است. ترنسکریپتِ نبود یا ناخوانا یعنی UNKNOWN — به‌صورت راهنمای ساده‌ای که همین را می‌گوید، نه ادعای «همه‌چیز اوکی» و نه بلاک؛ روی کلاینتی که اصلاً ترنسکریپت نمی‌دهد هم وضعیت دائمی همین است. الگوی تشخیص به ابتدای خطِ ترنسکریپت لنگر خورده و هوک هیچ‌وقت پیشوند `mcp__`ی را که دنبالش می‌گردد چاپ نمی‌کند، پس نه می‌تواند خودش را ارضا کند و نه از خروجی خودش مسلح شود.
 
 `MCP used: none - <one-line reason>` جواب معتبری است. `.env`: `MCP_SUMMARY_ENFORCEMENT` (`block` پیش‌فرض \| `advisory` \| `off`). یادآور ثابت تحقیق (مستندات رسمی، سه گذر GitHub، یادداشت در `.ai/RESEARCH/`) را هم برای هر prompt فنی یا تغییردهنده‌ی پروژه، با کلید جدا برای هر درخواست، می‌فرستد؛ prompt غلط‌تایپی یا فقط‌متنی معاف است
+
+Relevant Scrapling/scraping, Agensi and Upwork operations receive separate request-scoped lifecycle/consent guidance, even later in the same session. Upwork create_draft saves a real draft; publication and repeated unknown outcomes are separate actions. The hook invokes no server, grants no permission and never changes accounts/routes. [Details](research-operation-reminders.md).
 
 ## `Large-File-Check`
 
@@ -339,6 +345,8 @@ commitِ push‌شده‌ای که هیچ run ندارد معمولاً بلاک
 session فقط‌خواندنی یا فقط‌مشورتی به‌جای بلاک، راهنمای بدون مسدودسازی می‌گیرد — هوک نمی‌تواند نشان دهد قوانین آن‌جا نقشِ باربر داشته‌اند — و ترنسکریپتِ نبود یا ناخوانا UNKNOWN است و باز هم فقط راهنما، نه ادعای «همه‌چیز اوکی». `Rules applied: none - <one-line reason>` جواب معتبری است، و نام‌بردن از قانونی که خوانده نشده بدتر از اعتراف به ردکردن آن است. الگوی تشخیص به ابتدای خطِ ترنسکریپت لنگر خورده تا متنِ خودِ هوک هرگز آن را ارضا نکند. `.env`: `GLOBAL_RULES_DIR`، `RULES_CONFIRMATION_ENFORCEMENT` (`block` پیش‌فرض \| `advisory` \| `off`)
 
 در `UserPromptSubmit` تصمیم مرتبطِ پروژهٔ جدید، انتخاب زبان، مرز پلتفرم یا مهاجرت صریح، حتی با قواعد بدون تغییر، **راهنمای مشورتی انتخاب زبان** دریافت می‌کند. مسیر راهنما `global-architecture-rules.md` → Programming Language Selection و قراردادهای مهاجرت نصب‌شده است؛ ردیف پلتفرم و محدودیت صریح بر Rust-first عمومی مقدم‌اند. اصلاح محدود با زبان فعلی ادامه می‌یابد، ارزیابی بدون تغییر دوباره استفاده می‌شود و مهاجرت واقعی/افزودن runtime/جایگزینی framework تأیید جداگانه می‌خواهد. دسته/قواعد یکسان به‌صورت اتمی برای actor/session تکرار نمی‌شود؛ متن پرامپت ذخیره نمی‌شود. گیت Stop جدید، منع زبان، بازنویسی، نصب toolchain، تغییر مجوز یا مهاجرت اجرا نمی‌شود. خروجی فنی انگلیسی و سیاست زبان پاسخ کاربر جدا می‌مانند.
+
+Actual leading `::deep-research` on UserPromptSubmit routes to CODEWORDS.md/global-research-workflows.md with finite budgets, primary evidence/counterevidence and a claim ledger; unchanged requests are quiet. It never executes native slash commands, examples, skills or jobs.
 
 ## `Secrets-Check`
 

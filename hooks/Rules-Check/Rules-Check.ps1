@@ -83,6 +83,7 @@ Set-StrictMode -Version 2.0
 $ErrorActionPreference = 'Stop'
 
 . (Join-Path $PSScriptRoot '..\_hooklib.ps1')
+. (Join-Path $PSScriptRoot '..\_scope.ps1')
 
 $hookInput = Read-HookInput
 if ($null -eq $hookInput) {
@@ -350,8 +351,16 @@ if (-not $firstRun) {
 . (Join-Path $PSScriptRoot '_languagechoice.ps1')
 $languageNote = Get-LanguageChoiceReminder -HookInput $hookInput -Client $Client -ProjectRoot $cwd -StateDir $stateDir -PolicyEntries $currentEntries
 
+$researchNote = ''
+if ($eventName -eq 'UserPromptSubmit' -and (Test-ExplicitResearchPrompt ([string](Get-Field $hookInput 'prompt')))) {
+    $note = Get-ResearchWorkflowReminder
+    $claim = Invoke-DeliveryClaim -Path (Join-Path $stateDir ('RulesCheck-research-' + $Client + '-' + (Get-ShortHash $cwd.ToLowerInvariant()) + '.claims.json')) -Identity (Get-DeliveryIdentity $hookInput) -Fingerprint (Get-ShortHash (([string](Get-Field $hookInput 'prompt')).Trim() + '|' + $note))
+    if ($claim.Admitted) { $researchNote = $note }
+    elseif (-not $claim.Ok) { $researchNote = 'Research reminder reservation is unverified; no research job or approval was recorded.' }
+}
+
 # Nothing configured and nothing remembered -> silent, zero tokens.
-if ($firstRun -and $currentEntries.Count -eq 0 -and $languageNote -eq '') {
+if ($firstRun -and $currentEntries.Count -eq 0 -and $languageNote -eq '' -and $researchNote -eq '') {
     exit 0
 }
 
@@ -394,7 +403,7 @@ if ($deepDebug -and $sessionId -ne '' -and (Test-Path -LiteralPath $ddStatePath 
 }
 
 $rulesMoved = ($firstRun -or $newFiles.Count -gt 0 -or $changedFiles.Count -gt 0 -or $removedFiles.Count -gt 0)
-if (-not $rulesMoved -and -not $deepDebug -and $languageNote -eq '') {
+if (-not $rulesMoved -and -not $deepDebug -and $languageNote -eq '' -and $researchNote -eq '') {
     exit 0
 }
 
@@ -411,6 +420,7 @@ else {
 }
 $lines = New-Object System.Collections.Generic.List[string]
 if ($languageNote -ne '') { [void]$lines.Add($languageNote) }
+if ($researchNote -ne '') { [void]$lines.Add($researchNote) }
 if ($rulesMoved) {
     if ($firstRun) {
         [void]$lines.Add('RULES CHECK (' + $Client + ') - first check of this project. Before starting the task, make sure EVERY configured rules file below has been read and is applied:')

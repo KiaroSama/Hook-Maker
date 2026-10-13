@@ -34,7 +34,7 @@ function Get-CataloguedSkillNames {
     param([string]$RulesDir)
     $names = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
     $read = 0
-    foreach ($file in @('global-skill-routing.md', 'global-skills-catalogue.md')) {
+    foreach ($file in @('global-skill-routing.md', 'global-skills-catalogue.md', 'global-research-workflows.md', 'global-connected-skill-contracts.md')) {
         $path = Join-Path $RulesDir $file
         if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { continue }
         try {

@@ -76,6 +76,7 @@ Set-StrictMode -Version 2.0
 $ErrorActionPreference = 'Stop'
 
 . (Join-Path $PSScriptRoot '..\_hooklib.ps1')
+. (Join-Path $PSScriptRoot '..\_scope.ps1')
 
 $hookInput = Read-HookInput
 if ($null -eq $hookInput) { exit 0 }
@@ -257,7 +258,7 @@ $index = Read-SkillIndex
 if ($null -eq $index) { $index = Build-SkillIndex }
 
 # Nothing to point at, for any event -> stay silent, zero tokens.
-if (-not $hasLibrary -and -not $hasRecord -and $skillFolders.Count -eq 0 -and $index.Plugin.Count -eq 0 -and $index.Partial.Count -eq 0) { exit 0 }
+if (-not $hasLibrary -and -not $hasRecord -and $skillFolders.Count -eq 0 -and $index.Plugin.Count -eq 0 -and $index.Partial.Count -eq 0 -and -not ($eventName -eq 'UserPromptSubmit' -and (Test-ExplicitResearchPrompt ([string](Get-Field $hookInput 'prompt'))))) { exit 0 }
 
 # ---- build the deduped project/global inventory (name: from SKILL.md) ------
 # Dedup key: exact skill name (case-insensitive). A single name appearing in
@@ -450,6 +451,14 @@ if ($eventName -eq 'UserPromptSubmit') {
     # CODEWORDS.md: only a standalone ::-prefixed token activates the composite
     # workflow; ordinary prose "deep debug" falls through to the generic nudge.
     $prompt = [string](Get-Field $hookInput 'prompt')
+    if (Test-ExplicitResearchPrompt $prompt) {
+        $researchRoute = Get-ResearchWorkflowReminder -Skills
+        if ($index.Partial.Count -gt 0) { $researchRoute += "`nSkill discovery PARTIAL; inspect current matching catalogue records, never infer complete coverage." }
+        $claim = Invoke-DeliveryClaim -Path (Join-Path $stateDir ('SkillsCheck-research-' + $client + '-' + $projectKey + '.claims.json')) -Identity (Get-DeliveryIdentity $hookInput) -Fingerprint (Get-ShortHash ($prompt.Trim() + '|' + $sig + '|' + $researchRoute))
+        if ($claim.Admitted) { $null = Write-HookResult -EventName $eventName -Kind 'context' -Message $researchRoute }
+        elseif (-not $claim.Ok) { $null = Write-HookResult -EventName $eventName -Kind 'advisory' -Message 'Research skill routing reservation is unverified; no skill was invoked or installed.' }
+        exit 0
+    }
     if ($prompt -match '(?i)(^|\s)::deep-debug([\s.,;:!?]|$)') {
         # Fingerprint = session + client + installed skill set: unchanged
         # guidance shows once per session; a skill-set change re-reports at once.

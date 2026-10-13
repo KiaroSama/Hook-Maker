@@ -76,6 +76,7 @@ if (-not (Test-Path -LiteralPath $graphPath -PathType Leaf)) {
 
 # ---- optional .env ----
 $config = Read-HookEnv (Join-Path $PSScriptRoot '.env')
+$lifecycleNote = ' For every build/refresh, read graphify.md and graphify-markdown.md: retain a healthy owned comparison/rollback until coverage, semantic retention and endpoints are verified; unexpected shrink or dangling endpoints is failure, preserve/restore healthy state and recovery evidence. Only after verified success recycle proven owned obsolete snapshots/baselines/version copies, leaving one verified active graph and compact receipts. Recycle Bin unavailable means cleanup BLOCKED, never permanent deletion. No graph-name glob or removal of unknown/shared/source/fixtures/.ai/maintained evidence. This hook deletes nothing and decides no ownership; there is no new completion condition based on directory names.'
 $cooldownMinutes = 60
 if ($config.ContainsKey('COOLDOWN_MINUTES')) {
     $parsedSetting = 0; if ([int]::TryParse([string]$config['COOLDOWN_MINUTES'], [ref]$parsedSetting) -and $parsedSetting -ge 0 -and $parsedSetting -le 10080) { $cooldownMinutes = $parsedSetting }
@@ -106,7 +107,7 @@ if (-not $codeStale -and -not $markdownStale) {
     if ($null -ne $markdown -and $markdown.Partial) {
         New-Item -ItemType Directory -Path $stateDir -Force | Out-Null
         [System.IO.File]::WriteAllText($statePath, [DateTime]::UtcNow.ToString('o'))
-        $null = Write-HookResult -EventName $eventName -Kind 'advisory' -Message ('GRAPH UPDATE CHECK: the Markdown folder scan stopped at its bound (' + $markdown.Files + ' files) before covering the whole project, so whether .ai/, specs/, .specify/ or plans/ changed after the graph was built is UNKNOWN - not clean. If they changed in this task, run: graphify update .')
+        $null = Write-HookResult -EventName $eventName -Kind 'advisory' -Message ('GRAPH UPDATE CHECK: the Markdown folder scan stopped at its bound (' + $markdown.Files + ' files) before covering the whole project, so whether .ai/, specs/, .specify/ or plans/ changed after the graph was built is UNKNOWN - not clean. If they changed in this task, run: graphify update .' + $lifecycleNote)
     }
     exit 0
 }
@@ -119,6 +120,7 @@ if ($markdownStale -and (-not $codeStale -or $markdown.TimeUtc -gt $workTime)) {
     $markdownNote = 'Markdown the graph covers beyond Git (.ai/, specs/, .specify/, plans/ or a folder of 10+ .md files) changed after the graph was built; Git does not show these edits. Run: graphify update .  (local, no model). If .ai/ changed, re-run the graphify skill''s semantic pass for the changed .ai/ files only - by the agent itself, never an external model backend. '
 }
 $reason = 'GRAPH UPDATE CHECK: graphify-out/graph.json predates the latest project changes. ' + $markdownNote + 'Decide for yourself based on STRUCTURAL impact, not the number of files changed - a single-file change can still be graph-relevant (e.g. an added/removed/renamed function or class, a changed export, import, call, or inheritance relationship, a new entry point, a changed cross-file dependency), while a multi-file change can be graph-irrelevant (prose/comments/formatting only, a literal or config value change, generated output, tests only unless test architecture is intentionally represented in the graph). If this task changed graph-relevant structure, run: graphify update .  (AST-only, no API cost). Otherwise finish now without updating and say so in one line. EITHER answer clears this block: it is recorded per session and per project before it is emitted, so this same state never blocks twice, and it returns only after future changes.'
+$reason += $lifecycleNote
 # Record the block so THIS hook's own re-entry is recognised; another
 # gate's block must not mute it, and its own must not repeat.
 $emit = Write-StopBlockResult -HookInput $hookInput -HookName 'Graph-Update-Check' -EventName $eventName -Reason $reason

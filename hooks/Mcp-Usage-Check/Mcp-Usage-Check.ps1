@@ -178,7 +178,8 @@ if ($eventName -eq 'SessionStart') {
 # ---- UserPromptSubmit: relevance gate + record it for the closing half ------
 if ($eventName -eq 'UserPromptSubmit') {
     $prompt = [string](Get-Field $hookInput 'prompt')
-    $relevant = $prompt -match '(?i)\b(library|framework|sdk\b|api\b|package|dependency|dependencies|browser|screenshot|website|webpage|\burl\b|database|\bdb\b|\bsql\b|github|pull request|\bpr\b|issue\b|deploy|endpoint|documentation|\bdocs?\b|integrat|webhook|scrape|crawl)\b'
+    $operationNote = Get-OperationMcpReminder -HookInput $hookInput -Client (Get-HookClientId) -ProjectRoot $cwd -StateDir $stateDir
+    $relevant = $operationNote -ne '' -or $prompt -match '(?i)\b(library|framework|sdk\b|api\b|package|dependency|dependencies|browser|screenshot|website|webpage|\burl\b|database|\bdb\b|\bsql\b|github|pull request|\bpr\b|issue\b|deploy|endpoint|documentation|\bdocs?\b|integrat|webhook|scrape|crawl)\b'
 
     # Research is due on every SUBSTANTIVE prompt - work on the project, or a
     # technical question - not only on dependency words. Keyed by the request:
@@ -224,8 +225,11 @@ if ($eventName -eq 'UserPromptSubmit') {
     }
     catch { }
     if ($alreadyReminded) {
-        if ($researchDue) {
-            $emit = Write-HookResult -EventName $eventName -Kind 'context' -Message $script:ResearchReminder
+        $notes = @()
+        if ($researchDue) { $notes += $script:ResearchReminder }
+        if ($operationNote -ne '') { $notes += $operationNote }
+        if ($notes.Count -gt 0) {
+            $emit = Write-HookResult -EventName $eventName -Kind 'context' -Message ($notes -join "`n")
             exit $emit.ExitCode
         }
         exit 0
@@ -238,6 +242,7 @@ if ($eventName -eq 'UserPromptSubmit') {
         $requirement
     )
     if ($researchDue) { $noteLines += $script:ResearchReminder }
+    if ($operationNote -ne '') { $noteLines += $operationNote }
     $note = $noteLines -join "`n"
     $emit = Write-HookResult -EventName $eventName -Kind 'context' -Message $note
     exit $emit.ExitCode
