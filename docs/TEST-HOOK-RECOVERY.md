@@ -95,7 +95,12 @@ such as `GIT_DIR`/`GIT_WORK_TREE` fail closed. Approval and state are checked ag
 immediately before the actual child environment is applied.
 
 PreToolUse, the standalone runner, Stop and incident recovery use the same bounded
-HEAD plus sorted-status acquisition. A changed/mismatched state is refused before
+HEAD plus sorted-status acquisition. Status lines use case-sensitive ordinal ordering,
+not culture-sensitive sorting, so Windows PowerShell 5.1 (NLS) and pwsh (ICU)
+agree for unchanged punctuation, case and Unicode paths. Both snapshots must match;
+no raw Git status bytes are normalized. Updating may change a dirty tree's old
+fingerprint: obtain a fresh supported literal, never rewrite historical evidence.
+A changed/mismatched state is refused before
 the runner creates a child, capture or evidence. Non-Git compatibility remains
 explicitly degraded. Run the unchanged approved read-only invocation only; an
 approval never authorizes a deployment, account request or mutating test.

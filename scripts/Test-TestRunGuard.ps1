@@ -29,7 +29,7 @@
 # Usage:  pwsh -NoLogo -NoProfile -File .\scripts\Test-TestRunGuard.ps1 [-KeepArtifacts]
 # Exit code is the number of failed assertions (0 = all passed).
 
-param([switch]$KeepArtifacts, [switch]$RunnerHostsOnly)
+param([switch]$KeepArtifacts, [switch]$RunnerHostsOnly, [switch]$RepositoryFingerprintOnly)
 
 Set-StrictMode -Version 2.0
 $ErrorActionPreference = 'Stop'
@@ -63,6 +63,11 @@ Copy-GuardedRunner -RepoRoot $RepoRoot -DestinationScriptsDir (Join-Path $Proj '
 $testState = $null
 try {
     $testState = Enter-TestStateIsolation -Workspace $Work
+    if (-not $RunnerHostsOnly) {
+        . (Join-Path $PSScriptRoot '_testrepositoryfingerprint.ps1')
+        Invoke-RepositoryFingerprintRegression $RepoRoot
+    }
+    if (-not $RepositoryFingerprintOnly) {
     . (Join-Path $PSScriptRoot '_testrunguardisolation.ps1')
     Invoke-TestStateIsolationRegression -RepoRoot $RepoRoot -Workspace $Work
     . (Join-Path $PSScriptRoot '_testrunguardhosts.ps1')
@@ -98,6 +103,7 @@ try {
 
     # CI runner stops: by name or wildcard refused, by identity allowed.
     . (Join-Path $PSScriptRoot '_testrunguardrunnerstop.ps1')
+    }
     }
 }
 finally {

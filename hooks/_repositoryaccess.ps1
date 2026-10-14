@@ -80,8 +80,11 @@ function Get-RepositoryAccessSnapshot {
     $status2=Invoke-RepositoryGit -Arguments @('-C',$root,'status','--porcelain')
     foreach($result in @($head1,$status1,$head2,$status2)){if($null-eq$result-or$result.ExitCode-ne0){$answer.Diagnosis=Get-RepositoryGitDiagnosis $result;return $answer}}
     $head=([string]$head1.Output).Trim()
-    $lines1=@([string]$status1.Output-split'\r?\n'|Where-Object{$_}|Sort-Object)
-    $lines2=@([string]$status2.Output-split'\r?\n'|Where-Object{$_}|Sort-Object)
+    [string[]]$lines1=@([string]$status1.Output-split'\r?\n'|Where-Object{$_})
+    [string[]]$lines2=@([string]$status2.Output-split'\r?\n'|Where-Object{$_})
+    # Machine identity must not depend on the host's NLS/ICU culture comparer.
+    [Array]::Sort($lines1,[StringComparer]::Ordinal)
+    [Array]::Sort($lines2,[StringComparer]::Ordinal)
     if($head-eq''-or$head-cne([string]$head2.Output).Trim()-or($lines1-join'|')-cne($lines2-join'|')){$answer.Diagnosis='repositoryChanged';return $answer}
     try {$identityAfter=Get-RepositoryApprovalIdentity $repo} catch {$answer.Diagnosis='repositoryChanged';return $answer}
     if($identity.Identity-cne$identityAfter.Identity){$answer.Diagnosis='repositoryChanged';return $answer}
