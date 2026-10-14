@@ -38,9 +38,11 @@ function Get-RepositoryAccessSnapshot {
     $deadline=[Diagnostics.Stopwatch]::StartNew()
     function Invoke-RepositoryGit {
         param([string[]]$Arguments)
-        $remaining=[int][Math]::Floor(4-$deadline.Elapsed.TotalSeconds)
+        $remaining=[int][Math]::Floor(4000-$deadline.Elapsed.TotalMilliseconds)
         if($remaining-lt1){return [pscustomobject]@{ExitCode=124;Output='';ErrorOutput=''}}
-        return Invoke-QuietCommand -FilePath git -ArgumentList $Arguments -CaptureOutput -Environment $answer.GitEnvironment -TimeoutSeconds $remaining
+        $result=Invoke-QuietCommand -FilePath git -ArgumentList $Arguments -CaptureOutput -Environment $answer.GitEnvironment -TimeoutMilliseconds $remaining
+        if($null-eq$result-and$LASTEXITCODE-eq124){return [pscustomobject]@{ExitCode=124;Output='';ErrorOutput=''}}
+        return $result
     }
     $root=[IO.Path]::GetFullPath($ProjectRoot).TrimEnd([char[]]@('\','/'))
     $answer=[pscustomobject]@{State='unavailable';Fingerprint='';Diagnosis='gitMissing';RepositoryRoot='';GitEnvironment=@{}}

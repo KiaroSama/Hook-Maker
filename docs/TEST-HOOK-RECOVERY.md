@@ -98,7 +98,13 @@ PreToolUse, the standalone runner, Stop and incident recovery use the same bound
 HEAD plus sorted-status acquisition. Status lines use case-sensitive ordinal ordering,
 not culture-sensitive sorting, so Windows PowerShell 5.1 (NLS) and pwsh (ICU)
 agree for unchanged punctuation, case and Unicode paths. Both snapshots must match;
-no raw Git status bytes are normalized. Updating may change a dirty tree's old
+no raw Git status bytes are normalized. Acquisition retains a four-second total
+budget shared by physical/approval checks and all five Git reads; each child gets
+the remaining milliseconds, including the final fractional second. Exhaustion or
+a timed-out Git process reports `gitTimedOut`, never a guessed fingerprint. Other
+launch failures remain unavailable. This does not guarantee acquisition under
+arbitrary host contention or authorize increasing the budget to hide a hang.
+Updating may change a dirty tree's old
 fingerprint: obtain a fresh supported literal, never rewrite historical evidence.
 A changed/mismatched state is refused before
 the runner creates a child, capture or evidence. Non-Git compatibility remains

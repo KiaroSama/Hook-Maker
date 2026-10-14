@@ -82,14 +82,15 @@ function Invoke-QuietCommand {
         [Parameter(Mandatory = $true)][string[]]$ArgumentList,
         [int]$TimeoutSeconds = 20,
         [switch]$CaptureOutput,
-        [hashtable]$Environment = @{}
+        [hashtable]$Environment = @{},
+        [ValidateRange(1, 2147483647)][int]$TimeoutMilliseconds
     )
     $savedPreference = $ErrorActionPreference
     $ErrorActionPreference = 'SilentlyContinue'
     $process = $null
     $commandTimer = [System.Diagnostics.Stopwatch]::StartNew()
     try {
-        $timeoutMs = [int]([Math]::Max(1, $TimeoutSeconds) * 1000)
+        $timeoutMs = if ($PSBoundParameters.ContainsKey('TimeoutMilliseconds')) { $TimeoutMilliseconds } else { [int]([Math]::Max(1, $TimeoutSeconds) * 1000) }
         # Resolve the command the way `&` did before this function was made
         # bounded. Process.Start needs a real executable IMAGE: it cannot run
         # a .ps1 or .cmd, while `&` resolved both through PATH + PATHEXT. A
