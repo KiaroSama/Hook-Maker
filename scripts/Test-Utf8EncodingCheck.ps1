@@ -19,7 +19,7 @@
 # Usage:  pwsh -NoLogo -NoProfile -File .\scripts\Test-Utf8EncodingCheck.ps1 [-KeepArtifacts]
 # Exit code is the number of failed assertions (0 = all passed).
 
-param([switch]$KeepArtifacts)
+param([switch]$KeepArtifacts, [switch]$StreamOnly, [switch]$TransportOnly)
 
 Set-StrictMode -Version 2.0
 $ErrorActionPreference = 'Stop'
@@ -55,6 +55,10 @@ $env:CLAUDE_PROJECT_DIR = ''
 . (Join-Path $PSScriptRoot '_testutf8harness.ps1')
 
 try {
+    if ($TransportOnly) { . (Join-Path $PSScriptRoot '_testutf8transport.ps1') }
+    else {
+    . (Join-Path $PSScriptRoot '_testutf8stream.ps1')
+    if (-not $StreamOnly) {
     # Byte classification + exception-registry validation.
     . (Join-Path $PSScriptRoot '_testutf8classify.ps1')
 
@@ -63,6 +67,8 @@ try {
 
     # The native pre-push mode against real repos + bare remotes.
     . (Join-Path $PSScriptRoot '_testutf8prepush.ps1')
+    }
+    }
 }
 finally {
     $env:CLAUDE_PROJECT_DIR = $SavedClaudeProjectDir

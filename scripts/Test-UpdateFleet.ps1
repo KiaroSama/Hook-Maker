@@ -267,6 +267,30 @@ try {
     Check 'two folders carrying the same record ids are reported ambiguous' ($run.Out.Contains('RELOCATE skipped: ' + $p5)) $run.Out
     Check 'and neither copy is touched' ((Get-TreeSnapshot @($p5A, $p5B)) -ceq $copyBefore)
     Check 'and the record stays unreachable, never failed' ($run.Exit -eq 0 -and (Get-Counts $run.Out)['unreachable'] -eq 2) $run.Out
+
+    # Official managed update on the real UTF8 package, not a hand-patched
+    # runtime. Both clients retain exact explicit caps and unrelated settings.
+    $utfProject = Join-Path $Work 'utf8 fleet'
+    New-Item -ItemType Directory -Path $utfProject -Force | Out-Null
+    $utfSource = Join-Path (Split-Path -Parent $ScriptRoot) 'hooks\Utf8-Encoding-Check\Utf8-Encoding-Check.ps1'
+    & $InstallScript -CustomHook $utfSource -Events @('SessionStart', 'Stop') -TargetProject $utfProject -Clients @('claude', 'codex') *> $null
+    $utfConfigs = @()
+    $utfSettings = @()
+    foreach ($client in @('claude', 'codex')) {
+        $root = Join-Path $utfProject ('.' + $client)
+        $runtime = Join-Path $root 'hooks\Hook-Maker\Utf8-Encoding-Check'
+        $configPath = Join-Path $runtime '.env'
+        Write-Utf8 $configPath "# explicit retained configuration`r`nUTF8_MAX_FILE_KB=4096`r`nUTF8_MAX_FINDINGS=3`r`n"
+        $utfConfigs += @{ Path=$configPath; Hash=(Get-FileHash -LiteralPath $configPath -Algorithm SHA256).Hash }
+        $settingsPath = Join-Path $root $(if ($client -eq 'claude') { 'settings.local.json' } else { 'hooks.json' })
+        $utfSettings += @{ Path=$settingsPath; Hash=(Get-FileHash -LiteralPath $settingsPath -Algorithm SHA256).Hash }
+        [IO.File]::AppendAllText((Join-Path $runtime '_streamvalidation.ps1'), "`r`n# stale helper", [Text.Encoding]::UTF8)
+    }
+    $run = Invoke-Fleet @('-Apply', '-Compare', '-OnlyProject', 'utf8 fleet')
+    Check 'official fleet update repairs both UTF8 client payloads and comparison is exact' (
+        $run.Exit -eq 0 -and @(Get-UpdatedLabels $run.Log).Count -eq 2 -and $run.Out -match 'different=0') ($run.Out+$run.Err)
+    foreach ($item in $utfConfigs) { Check 'fleet update preserves explicit UTF8 configuration bytes' ((Get-FileHash -LiteralPath $item.Path -Algorithm SHA256).Hash -eq $item.Hash) }
+    foreach ($item in $utfSettings) { Check 'fleet update preserves unchanged client registrations/settings bytes' ((Get-FileHash -LiteralPath $item.Path -Algorithm SHA256).Hash -eq $item.Hash) }
 }
 finally {
     if ($null -ne $interrupted -and -not $interrupted.HasExited) { Stop-Process -Id $interrupted.Id -Force -ErrorAction SilentlyContinue }

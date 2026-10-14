@@ -147,6 +147,11 @@ try {
     $nativeConfigText = "# user settings`r`nPUBLIC_CONFIG_KEYS=MODEL_1_ID`r`nSECRET_KEYS=INTERNAL_CODE`r`nCOOLDOWN_MINUTES=17`r`n"
     Write-Utf8 $nativeSecretsConfig $nativeConfigText
     $nativeConfigHash = (Get-FileHash -LiteralPath $nativeSecretsConfig -Algorithm SHA256).Hash
+    $nativeUtf8Config = Join-Path (Split-Path -Parent $companionUtf8Script) '.env'
+    Write-Utf8 $nativeUtf8Config "# retained user cap`r`nUTF8_MAX_FILE_KB=4096`r`nUTF8_MAX_SCAN_SECONDS=17`r`n"
+    $nativeUtf8ConfigHash = (Get-FileHash -LiteralPath $nativeUtf8Config -Algorithm SHA256).Hash
+    $streamCompanion = Join-Path (Split-Path -Parent $companionUtf8Script) '_streamvalidation.ps1'
+    Check 'native UTF8 companion contains its streaming validation payload' (Test-Path -LiteralPath $streamCompanion)
 
 
 
@@ -172,6 +177,7 @@ try {
     # "up to date" while the native chain silently runs old code.
 
     Add-Content -LiteralPath $companionSecretsScript -Value '# deliberately corrupted companion'
+    [System.IO.File]::AppendAllText($streamCompanion, "`r`n# stale streaming helper", [System.Text.Encoding]::UTF8)
 
     $staleCompanionHash = (Get-FileHash -LiteralPath $companionSecretsScript -Algorithm SHA256).Hash
 
@@ -217,6 +223,10 @@ try {
 
     Check 'the stale native companion is repaired back to the current source' ((Get-FileHash -LiteralPath $companionSecretsScript -Algorithm SHA256).Hash -eq $realSecretsHash)
     Check 'native companion update preserves exact user public/secret settings bytes' ((Get-FileHash -LiteralPath $nativeSecretsConfig -Algorithm SHA256).Hash -eq $nativeConfigHash)
+    Check 'native companion update preserves exact user UTF8 configuration bytes' ((Get-FileHash -LiteralPath $nativeUtf8Config -Algorithm SHA256).Hash -eq $nativeUtf8ConfigHash)
+    Check 'official updater repairs the UTF8 streaming helper without direct patches' (
+        (Get-FileHash -LiteralPath $streamCompanion -Algorithm SHA256).Hash -eq
+        (Get-FileHash -LiteralPath (Join-Path $RealHooksDir 'Utf8-Encoding-Check\_streamvalidation.ps1') -Algorithm SHA256).Hash)
 
 
 

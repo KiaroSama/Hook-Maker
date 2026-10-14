@@ -30,8 +30,8 @@
 # concentrated on ONE byte parity in the first bounded window, classifies
 # UTF-16 LE/BE - non-UTF-8 TEXT, never a binary skip. NUL bytes spread across
 # BOTH parities are binary evidence (binary content is not a text violation).
-# A file over UTF8_MAX_FILE_KB has only its first window heuristically
-# checked: binary-looking -> binary; UTF-16-looking -> still a violation;
+# Text is strictly streamed in fixed-memory chunks up to UTF8_MAX_FILE_KB.
+# Above that explicit coverage limit only its heuristic window is checked: binary-looking -> binary; UTF-16-looking -> still a violation;
 # text-looking -> 'oversized' (UNKNOWN - honestly reported, fail-closed at
 # pre-push, never silently passed). An unreadable file is 'unreadable'
 # (unknown). A known-binary EXTENSION alone never classifies content: bytes
@@ -111,7 +111,7 @@
 #   UTF8_MAX_FILES          files classified per SessionStart/Stop scan and
 #                           its changed-file ceiling; never caps the pre-push
 #                           gate, which reads every sent blob   (default 400)
-#   UTF8_MAX_FILE_KB        KB ceiling per file/blob            (default 1024)
+#   UTF8_MAX_FILE_KB        validation KB cap, fixed memory     (default 65536)
 #   UTF8_MAX_DIRECTORIES    directories the walk may visit      (default 4000)
 #   UTF8_MAX_SCAN_SECONDS   wall seconds per scan               (default 10)
 #   UTF8_MAX_FINDINGS       findings shown before capping       (default 8)
@@ -190,7 +190,7 @@ function Read-BoundedIntSetting {
 }
 
 $maxFiles     = Read-BoundedIntSetting 'UTF8_MAX_FILES'         400 1 100000
-$maxFileBytes = 1KB * (Read-BoundedIntSetting 'UTF8_MAX_FILE_KB' 1024 1 1048576)
+$maxFileBytes = 1KB * (Read-BoundedIntSetting 'UTF8_MAX_FILE_KB' 65536 1 1048576)
 $maxDirs      = Read-BoundedIntSetting 'UTF8_MAX_DIRECTORIES'  4000 1 1000000
 $maxSeconds   = Read-BoundedIntSetting 'UTF8_MAX_SCAN_SECONDS'   10 1 3600
 $maxFindings  = Read-BoundedIntSetting 'UTF8_MAX_FINDINGS'        8 1 1000
@@ -222,6 +222,11 @@ if ($config.ContainsKey('UTF8_EXCEPTION_FILE') -and -not [string]::IsNullOrWhite
 
 # ---- classification and the exception registry ------------------------------
 . (Join-Path $PSScriptRoot '_classification.ps1')
+. (Join-Path $PSScriptRoot '_streamvalidation.ps1')
+$budgetPath = Join-Path $PSScriptRoot '_budgetlib.ps1'
+if (-not (Test-Path -LiteralPath $budgetPath -PathType Leaf)) { $budgetPath = Join-Path $PSScriptRoot '..\_budgetlib.ps1' }
+. $budgetPath
+Initialize-HookDeadline -RuntimeDirectory $PSScriptRoot
 
 # ---- client-aware output ----------------------------------------------------
 # Every shape decision belongs to the shared Write-HookResult adapter in
@@ -289,14 +294,17 @@ if ($GitPrePush) {
     $exclude = New-Object System.Collections.Generic.List[string]
     foreach ($line in $refUpdateLines) {
         $parts = @($line.Trim() -split '\s+')
-        if ($parts.Count -lt 4) { continue }
-        if ($parts[1] -notmatch '^[0-9a-f]{40,64}$' -or $parts[3] -notmatch '^[0-9a-f]{40,64}$') {
+        if ($parts.Count -ne 4) {
+            [void]$coverageErrors.Add('a ref-update line is malformed; refusing to treat it as clean')
+            continue
+        }
+        if ($parts[1] -notmatch '^(?:[0-9a-f]{40}|[0-9a-f]{64})$' -or $parts[3] -notmatch '^(?:[0-9a-f]{40}|[0-9a-f]{64})$') {
             [void]$coverageErrors.Add('ref ' + $parts[0] + ' - the ref-update line is malformed; refusing to treat it as clean')
             continue
         }
-        if ($parts[1] -eq $allZero) { continue }    # deletion - nothing pushed
+        if ($parts[1] -match '^0+$') { continue }    # deletion - nothing pushed
         [void]$tips.Add($parts[1])
-        if ($parts[3] -ne $allZero) { [void]$exclude.Add($parts[3]) }
+        if ($parts[3] -notmatch '^0+$') { [void]$exclude.Add($parts[3]) }
     }
     $blobs = New-Object System.Collections.Generic.List[object]
     if ($coverageErrors.Count -eq 0 -and $tips.Count -gt 0) {
@@ -338,14 +346,14 @@ if ($GitPrePush) {
                 [void]$coverageErrors.Add('outgoing blob for ' + $blob.Path + ' could not be read; refusing to treat the push as clean')
                 continue
             }
-            $class = Resolve-ClassWithExtension -RelativePath $blob.Path -RawClass (Get-Utf8Classification -Bytes $read.Bytes -Truncated $read.Truncated)
+            $class = Resolve-ClassWithExtension -RelativePath $blob.Path -RawClass $read.Class
             if ($script:ViolationClasses -contains $class) {
                 if ($violatedPaths.Add($blob.Path)) {
                     [void]$violations.Add($blob.Path + ' - ' + (Get-ClassLabel $class) + ' in an outgoing commit')
                 }
             }
             elseif ($class -eq 'oversized') {
-                [void]$coverageErrors.Add('outgoing text blob ' + $blob.Path + ' exceeds UTF8_MAX_FILE_KB and could not be fully validated; raise the ceiling or add a documented exception (fail closed)')
+                [void]$coverageErrors.Add('outgoing text blob ' + $blob.Path + ' exceeds UTF8_MAX_FILE_KB and could not be fully validated; raise the explicit ceiling after reviewing resource needs (fail closed)')
             }
         }
     }
@@ -524,6 +532,8 @@ if ($inGitRepo) {
 
     # -- bounded validation of each candidate --
     $checkTimer = [System.Diagnostics.Stopwatch]::StartNew()
+    $checkTimerDeadline = [DateTime]::UtcNow.AddSeconds($maxSeconds)
+    if ($script:HookDeadlineUtc -lt $checkTimerDeadline) { $checkTimerDeadline = $script:HookDeadlineUtc }
     $processed = 0
     foreach ($candidatePath in @($candidateMap.Keys | Sort-Object)) {
         if ($processed -ge $maxFiles) {
@@ -541,12 +551,12 @@ if ($inGitRepo) {
         $fileExists = $false
         try { $fileExists = (Test-Path -LiteralPath $fullPath -PathType Leaf) } catch { $fileExists = $false }
         if ($fileExists) {
-            $read = Read-FileBytesBounded -Path $fullPath -MaxFullBytes $maxFileBytes
+            $read = Get-Utf8FileClassification -Path $fullPath -MaxFullBytes $maxFileBytes -DeadlineUtc $checkTimerDeadline
             if ($read.Failed) {
                 [void]$unknownNotes.Add($candidatePath + ' - changed in this task but could not be read; its encoding is NOT verified')
             }
             else {
-                $class = Resolve-ClassWithExtension -RelativePath $candidatePath -RawClass (Get-Utf8Classification -Bytes $read.Bytes -Truncated $read.Truncated)
+                $class = Resolve-ClassWithExtension -RelativePath $candidatePath -RawClass $read.Class
                 if ($script:ViolationClasses -contains $class) {
                     [void]$violations.Add($candidatePath + ' - ' + (Get-ClassLabel $class))
                     $worktreeViolation = $true
@@ -569,12 +579,12 @@ if ($inGitRepo) {
                 $metaParts = @($lsMeta -split '\s+')
                 if ($metaParts.Count -ge 2) {
                     $stagedSha = [string]$metaParts[1]
-                    $read = Get-GitBlobBytes -Cwd $cwd -BlobSha $stagedSha -MaxFullBytes $maxFileBytes
+                    $read = Get-GitBlobBytes -Cwd $cwd -BlobSha $stagedSha -MaxFullBytes $maxFileBytes -DeadlineUtc $checkTimerDeadline
                     if ($read.Failed) {
                         [void]$unknownNotes.Add($candidatePath + ' (staged content) - could not be read; its encoding is NOT verified')
                     }
                     else {
-                        $class = Resolve-ClassWithExtension -RelativePath $candidatePath -RawClass (Get-Utf8Classification -Bytes $read.Bytes -Truncated $read.Truncated)
+                        $class = Resolve-ClassWithExtension -RelativePath $candidatePath -RawClass $read.Class
                         if ($script:ViolationClasses -contains $class) {
                             [void]$violations.Add($candidatePath + ' (staged content) - ' + (Get-ClassLabel $class))
                         }

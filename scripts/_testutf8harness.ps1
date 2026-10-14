@@ -1,4 +1,4 @@
-﻿# Test-Utf8EncodingCheck.ps1 shared harness: fixture builders (raw-byte
+# Test-Utf8EncodingCheck.ps1 shared harness: fixture builders (raw-byte
 # writers, throwaway git repos + bare remotes), isolated hook copies with a
 # fake LOCALAPPDATA, the Fire / FireGitPrePush process runners, and the
 # output parsers. Dot-sourced by Test-Utf8EncodingCheck.ps1 into the caller's
@@ -67,7 +67,7 @@ function Get-InvalidUtf8Bytes {
     return [byte[]](([System.Text.Encoding]::ASCII.GetBytes($Marker)) + @([byte]0xC3, [byte]0x0A))
 }
 
-# Windows-1252 'café' - 0xE9 is a bare high byte, invalid in strict UTF-8.
+# Windows-1252 'cafe' - 0xE9 is a bare high byte, invalid in strict UTF-8.
 function Get-Cp1252Bytes {
     param([string]$Marker = 'CP1252PAYLOAD')
     return [byte[]](([System.Text.Encoding]::ASCII.GetBytes($Marker + ' caf')) + @([byte]0xE9, [byte]0x0A))
@@ -150,10 +150,11 @@ function Fire {
     $outFile = Join-Path $Work ('out-' + $token + '.txt')
     $errFile = Join-Path $Work ('err-' + $token + '.txt')
     [System.IO.File]::WriteAllText($inFile, $payload, (New-Object System.Text.UTF8Encoding $false))
-    if ($Exe -eq 'pwsh') { $file = (Get-Process -Id $PID).Path; $argLine = '-NoLogo -NoProfile -File "' + $HookPath + '"' }
-    else { $file = 'powershell.exe'; $argLine = '-NoLogo -NoProfile -ExecutionPolicy Bypass -File "' + $HookPath + '"' }
+    $args = @('-NoLogo', '-NoProfile', '-File', $HookPath)
+    if ($Exe -eq 'pwsh') { $file = (Get-Process -Id $PID).Path }
+    else { $file = 'powershell.exe'; $args = @('-NoLogo', '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $HookPath) }
     $startArgs = @{
-        FilePath = $file; ArgumentList = $argLine; RedirectStandardInput = $inFile
+        FilePath = $file; ArgumentList = $args; RedirectStandardInput = $inFile
         RedirectStandardOutput = $outFile; RedirectStandardError = $errFile
         NoNewWindow = $true; PassThru = $true
     }
@@ -162,16 +163,16 @@ function Fire {
         foreach ($k in $ExtraEnv.Keys) { $envTable[$k] = [string]$ExtraEnv[$k] }
         $startArgs.Environment = $envTable
     }
-    $proc = Start-Process @startArgs
+    $proc = Start-BoundedProcess @startArgs -TimeoutMs 30000
     # Bounded: -Wait has no ceiling. A hook that blocks on stdin or deadlocks
     # would otherwise hang this suite until the bucket's blunt per-suite limit
     # killed it, which reports a timed-out SUITE instead of this child.
-    if (-not $proc.WaitForExit(180000)) {
+    if (-not $proc.WaitForExit(30000)) {
         try { Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue } catch { }
-        throw ('the hook child (pid ' + $proc.Id + ') did not exit within 180s and was terminated')
+        throw ('the hook child (pid ' + $proc.Id + ') did not exit within 30s and was terminated')
     }
-    $out = if (Test-Path -LiteralPath $outFile) { ([System.IO.File]::ReadAllText($outFile)).Trim() } else { '' }
-    $err = if (Test-Path -LiteralPath $errFile) { ([System.IO.File]::ReadAllText($errFile)).Trim() } else { '' }
+    $out = if (Test-Path -LiteralPath $outFile) { ([System.IO.File]::ReadAllText($outFile, [System.Text.Encoding]::UTF8)).Trim() } else { '' }
+    $err = if (Test-Path -LiteralPath $errFile) { ([System.IO.File]::ReadAllText($errFile, [System.Text.Encoding]::UTF8)).Trim() } else { '' }
     return [pscustomobject]@{ Exit = $proc.ExitCode; Out = $out; Err = $err }
 }
 
@@ -186,26 +187,27 @@ function FireGitPrePush {
     $outFile = Join-Path $Work ('out-' + $token + '.txt')
     $errFile = Join-Path $Work ('err-' + $token + '.txt')
     [System.IO.File]::WriteAllText($inFile, $StdinText, (New-Object System.Text.UTF8Encoding $false))
-    if ($Exe -eq 'pwsh') { $file = (Get-Process -Id $PID).Path; $argLine = '-NoLogo -NoProfile -File "' + $HookPath + '" -GitPrePush' }
-    else { $file = 'powershell.exe'; $argLine = '-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "' + $HookPath + '" -GitPrePush' }
+    $args = @('-NoLogo', '-NoProfile', '-File', $HookPath, '-GitPrePush')
+    if ($Exe -eq 'pwsh') { $file = (Get-Process -Id $PID).Path }
+    else { $file = 'powershell.exe'; $args = @('-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', $HookPath, '-GitPrePush') }
     $startArgs = @{
-        FilePath = $file; ArgumentList = $argLine; WorkingDirectory = $Cwd
+        FilePath = $file; ArgumentList = $args; WorkingDirectory = $Cwd
         RedirectStandardInput = $inFile; RedirectStandardOutput = $outFile; RedirectStandardError = $errFile
         NoNewWindow = $true; PassThru = $true
     }
     if ((Get-Command Start-Process).Parameters.ContainsKey('Environment')) {
         $startArgs.Environment = @{ PATH = $env:PATH; LOCALAPPDATA = $LocalAppData; CLAUDE_PROJECT_DIR = '' }
     }
-    $proc = Start-Process @startArgs
+    $proc = Start-BoundedProcess @startArgs -TimeoutMs 30000
     # Bounded: -Wait has no ceiling. A hook that blocks on stdin or deadlocks
     # would otherwise hang this suite until the bucket's blunt per-suite limit
     # killed it, which reports a timed-out SUITE instead of this child.
-    if (-not $proc.WaitForExit(180000)) {
+    if (-not $proc.WaitForExit(30000)) {
         try { Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue } catch { }
-        throw ('the hook child (pid ' + $proc.Id + ') did not exit within 180s and was terminated')
+        throw ('the hook child (pid ' + $proc.Id + ') did not exit within 30s and was terminated')
     }
-    $out = if (Test-Path -LiteralPath $outFile) { ([System.IO.File]::ReadAllText($outFile)).Trim() } else { '' }
-    $err = if (Test-Path -LiteralPath $errFile) { ([System.IO.File]::ReadAllText($errFile)).Trim() } else { '' }
+    $out = if (Test-Path -LiteralPath $outFile) { ([System.IO.File]::ReadAllText($outFile, [System.Text.Encoding]::UTF8)).Trim() } else { '' }
+    $err = if (Test-Path -LiteralPath $errFile) { ([System.IO.File]::ReadAllText($errFile, [System.Text.Encoding]::UTF8)).Trim() } else { '' }
     return [pscustomobject]@{ Exit = $proc.ExitCode; Out = $out; Err = $err }
 }
 

@@ -259,7 +259,7 @@ $script:HookMeta = @{
     # Utf8-Encoding-Check is also the third native pre-push chain stage
     # (Ignore -> Secrets -> Utf8 -> preserved user hook). Its position is
     # relative, not absolute - the numbers here went stale twice already.
-    'Utf8-Encoding-Check'              = @{ Order = 26; When = 'both'; Text = 'blocks new/changed non-UTF-8 text; pre-push chain stage'; Events = @('SessionStart', 'Stop', 'SubagentStop'); Timeout = 30 }
+    'Utf8-Encoding-Check'              = @{ Order = 26; When = 'both'; Text = 'strict streaming UTF-8; blocks invalid text and pushes'; Events = @('SessionStart', 'Stop', 'SubagentStop'); Timeout = 30 }
     # Directly before Cloudflare-Deploy, per an explicit user requirement.
     # SessionStart loads the user's standing rules out of Synapse;
     # Stop/SubagentStop ask what this session should write back. NOT

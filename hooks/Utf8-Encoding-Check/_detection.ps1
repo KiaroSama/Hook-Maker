@@ -68,6 +68,8 @@ function Invoke-Utf8Walk {
     $dirsVisited = 0
     $entries = New-Object System.Collections.Generic.List[object]
     $walkTimer = [System.Diagnostics.Stopwatch]::StartNew()
+    $walkDeadline = [DateTime]::UtcNow.AddSeconds($maxSeconds)
+    if ($script:HookDeadlineUtc -lt $walkDeadline) { $walkDeadline = $script:HookDeadlineUtc }
 
     $rootFull = $Root.TrimEnd('\', '/')
     try { $rootFull = (Get-Item -LiteralPath $Root -Force -ErrorAction Stop).FullName.TrimEnd('\', '/') } catch { }
@@ -108,9 +110,9 @@ function Invoke-Utf8Walk {
                     $class = 'excepted'
                 }
                 else {
-                    $read = Read-FileBytesBounded -Path $info.FullName -MaxFullBytes $maxFileBytes
+                    $read = Get-Utf8FileClassification -Path $info.FullName -MaxFullBytes $maxFileBytes -DeadlineUtc $walkDeadline
                     if ($read.Failed) { $class = 'unreadable'; $scanIncomplete = $true }
-                    else { $class = Resolve-ClassWithExtension -RelativePath $relative -RawClass (Get-Utf8Classification -Bytes $read.Bytes -Truncated $read.Truncated) }
+                    else { $class = Resolve-ClassWithExtension -RelativePath $relative -RawClass $read.Class }
                 }
                 [void]$entries.Add([pscustomobject]@{ p = $relative; s = [int64]$info.Length; t = [string]$info.LastWriteTimeUtc.Ticks; c = $class })
             }

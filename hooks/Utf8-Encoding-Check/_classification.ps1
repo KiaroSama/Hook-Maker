@@ -112,121 +112,53 @@ function Read-FileBytesBounded {
     return $result
 }
 
-# Git blob read via `git cat-file blob <sha>` with the raw stdout STREAM (a
-# text-mode capture would corrupt the bytes). Bounded: `cat-file -s` first,
-# only the heuristic window of an oversized blob is read, the child is killed
-# once enough bytes arrived, and a hard deadline caps a stalled read. The
-# owned process is always reaped/disposed - no orphan survives this function.
+# Staged and outgoing objects share one strict raw-frame reader. Results retain
+# classifications only: a batch of large catalogs cannot accumulate payloads.
 function Get-GitBlobBytes {
-    param([string]$Cwd, [string]$BlobSha, [int64]$MaxFullBytes)
-    $result = [pscustomobject]@{ Bytes = $null; Truncated = $false; Failed = $false }
-    if ($BlobSha -notmatch '^[0-9a-f]{6,64}$') { $result.Failed = $true; return $result }
-    $sizeRaw = [string](Invoke-QuietCommand -FilePath git -ArgumentList @('-C', $Cwd, 'cat-file', '-s', $BlobSha))
-    $size = [int64]0
-    if ($LASTEXITCODE -ne 0 -or -not [int64]::TryParse($sizeRaw.Trim(), [ref]$size) -or $size -lt 0) {
-        $result.Failed = $true
-        return $result
-    }
-    $toRead = $size
-    if ($size -gt $MaxFullBytes) {
-        $toRead = [Math]::Min([int64]$script:HeuristicWindowBytes, $size)
-        $result.Truncated = $true
-    }
-    $proc = New-Object System.Diagnostics.Process
-    try {
-        $proc.StartInfo.FileName = 'git'
-        # The sha is validated hex above and WorkingDirectory carries the repo
-        # path, so no user-controlled text ever reaches this argument string.
-        $proc.StartInfo.Arguments = 'cat-file blob ' + $BlobSha
-        $proc.StartInfo.WorkingDirectory = $Cwd
-        $proc.StartInfo.UseShellExecute = $false
-        $proc.StartInfo.RedirectStandardOutput = $true
-        $proc.StartInfo.RedirectStandardError = $true
-        $proc.StartInfo.CreateNoWindow = $true
-        [void]$proc.Start()
-        $buffer = New-Object byte[] ([int]$toRead)
-        $total = 0
-        $deadline = [System.Diagnostics.Stopwatch]::StartNew()
-        $stream = $proc.StandardOutput.BaseStream
-        while ($total -lt $buffer.Length) {
-            if ($deadline.Elapsed.TotalSeconds -ge 15) { $result.Failed = $true; break }
-            $n = $stream.Read($buffer, $total, $buffer.Length - $total)
-            if ($n -le 0) { break }
-            $total += $n
-        }
-        if (-not $result.Failed) {
-            if ($total -lt $buffer.Length) { $result.Failed = $true } else { $result.Bytes = $buffer }
-        }
-    }
-    catch { $result.Failed = $true }
-    finally {
-        # A truncated read leaves git blocked on a full pipe - kill it; a full
-        # read lets it exit naturally. Either way the child is reaped here.
-        try { if (-not $proc.HasExited) { $proc.Kill() } } catch { }
-        try { [void]$proc.WaitForExit(2000) } catch { }
-        try { $proc.Dispose() } catch { }
-    }
-    return $result
+    param([string]$Cwd, [string]$BlobSha, [int64]$MaxFullBytes, [DateTime]$DeadlineUtc = ([DateTime]::UtcNow.AddSeconds(20)))
+    $reads = Read-GitBlobsBatch -Cwd $Cwd -BlobShas @($BlobSha) -MaxFullBytes $MaxFullBytes -DeadlineUtc $DeadlineUtc
+    return $reads[$BlobSha]
 }
 
-# Many blobs through ONE `git cat-file --batch` child: the pre-push scan used
-# to start two git processes per blob, which is the only reason it ever needed
-# a file-count cap. Request and response alternate one blob at a time, so
-# neither pipe can fill and deadlock. Returns sha -> the Get-GitBlobBytes
-# result shape; an oversized blob keeps only its heuristic window (the rest is
-# drained, never classified). Any protocol error leaves every unanswered blob
-# Failed, which the caller turns into a fail-closed coverage error.
-function Read-GitBlobsBatch {
-    param([string]$Cwd, [string[]]$BlobShas, [int64]$MaxFullBytes)
-    $results = @{}
-    foreach ($sha in $BlobShas) { $results[$sha] = [pscustomobject]@{ Bytes = $null; Truncated = $false; Failed = $true } }
-    $valid = @($BlobShas | Where-Object { $_ -match '^[0-9a-f]{40,64}$' })
-    if ($valid.Count -eq 0) { return $results }
+function New-Utf8GitProcess {
+    param([string]$Cwd)
     $proc = New-Object System.Diagnostics.Process
+    $proc.StartInfo.FileName = 'git'
+    $proc.StartInfo.Arguments = 'cat-file --batch'
+    $proc.StartInfo.WorkingDirectory = $Cwd
+    $proc.StartInfo.UseShellExecute = $false
+    $proc.StartInfo.RedirectStandardInput = $true
+    $proc.StartInfo.RedirectStandardOutput = $true
+    $proc.StartInfo.RedirectStandardError = $true
+    $proc.StartInfo.CreateNoWindow = $true
+    return $proc
+}
+
+function Read-GitBlobsBatch {
+    param([string]$Cwd, [string[]]$BlobShas, [int64]$MaxFullBytes, [DateTime]$DeadlineUtc = ([DateTime]::UtcNow.AddSeconds(20)))
+    $results = @{}
+    foreach ($sha in $BlobShas) { $results[$sha] = [pscustomobject]@{ Class = ""; Bytes = $null; Truncated = $false; Failed = $true } }
+    $valid = @($BlobShas | Where-Object { $_ -match "^(?:[0-9a-f]{40}|[0-9a-f]{64})$" } | Select-Object -Unique)
+    if ($valid.Count -eq 0) { return $results }
+    $proc = $null
+    $deadline = [DateTime]::UtcNow.AddSeconds(20)
+    if ($DeadlineUtc -lt $deadline) { $deadline = $DeadlineUtc }
+    if ($null -ne $script:HookDeadlineUtc -and $script:HookDeadlineUtc -lt $deadline) { $deadline = $script:HookDeadlineUtc }
     try {
-        $proc.StartInfo.FileName = 'git'
-        $proc.StartInfo.Arguments = 'cat-file --batch'
-        $proc.StartInfo.WorkingDirectory = $Cwd
-        $proc.StartInfo.UseShellExecute = $false
-        $proc.StartInfo.RedirectStandardInput = $true
-        $proc.StartInfo.RedirectStandardOutput = $true
-        $proc.StartInfo.RedirectStandardError = $true
-        $proc.StartInfo.CreateNoWindow = $true
+        if ([DateTime]::UtcNow -ge $deadline) { throw "UTF-8 batch deadline exhausted before startup" }
+        $proc = New-Utf8GitProcess -Cwd $Cwd
         [void]$proc.Start()
         $proc.BeginErrorReadLine()
-        $in = $proc.StandardInput.BaseStream
-        $out = $proc.StandardOutput.BaseStream
-        $header = New-Object System.Collections.Generic.List[byte]
-        $scratch = New-Object byte[] 65536
+        $inputStream = $proc.StandardInput.BaseStream
+        $outputStream = $proc.StandardOutput.BaseStream
         foreach ($sha in $valid) {
+            if ([DateTime]::UtcNow -ge $deadline) { throw "UTF-8 batch deadline exhausted" }
             $request = [System.Text.Encoding]::ASCII.GetBytes($sha + "`n")
-            $in.Write($request, 0, $request.Length)
-            $in.Flush()
-            $header.Clear()
-            while ($true) {
-                $b = $out.ReadByte()
-                if ($b -lt 0) { throw 'cat-file --batch ended early' }
-                if ($b -eq 10) { break }
-                [void]$header.Add([byte]$b)
-            }
-            $parts = @(([System.Text.Encoding]::ASCII.GetString($header.ToArray())) -split ' ')
-            $size = [int64]0
-            if ($parts.Count -ne 3 -or $parts[1] -ne 'blob' -or -not [int64]::TryParse($parts[2], [ref]$size)) { continue }
-            $keep = $size
-            $truncated = $false
-            if ($size -gt $MaxFullBytes) { $keep = [Math]::Min([int64]$script:HeuristicWindowBytes, $size); $truncated = $true }
-            $buffer = New-Object byte[] ([int]$keep)
-            $total = [int64]0
-            # size + 1: git writes an LF after every object body.
-            while ($total -lt $size + 1) {
-                if ($total -lt $keep) { $n = $out.Read($buffer, [int]$total, [int]($keep - $total)) }
-                else { $n = $out.Read($scratch, 0, [int][Math]::Min([int64]$scratch.Length, $size + 1 - $total)) }
-                if ($n -le 0) { throw 'cat-file --batch ended mid-object' }
-                $total += $n
-            }
-            $results[$sha] = [pscustomobject]@{ Bytes = $buffer; Truncated = $truncated; Failed = $false }
+            $inputStream.Write($request, 0, $request.Length)
+            $inputStream.Flush()
+            $results[$sha] = Read-Utf8BatchFrame $outputStream $sha $MaxFullBytes $deadline
         }
-        $in.Close()
+        $inputStream.Close()
     }
     catch { }
     finally {
@@ -256,7 +188,9 @@ function Get-Utf8Exceptions {
         return $valid.ToArray()
     }
     if (-not (Test-Path -LiteralPath $fullPath -PathType Leaf)) { return $valid.ToArray() }
-    $read = Read-FileBytesBounded -Path $fullPath -MaxFullBytes $maxFileBytes
+    # JSON must be materialized; its historical 1 MiB ceiling stays separate
+    # from streamed text so the new catalog default cannot grow registry memory.
+    $read = Read-FileBytesBounded -Path $fullPath -MaxFullBytes ([Math]::Min([int64]1MB, $maxFileBytes))
     if ($read.Failed -or $read.Truncated) {
         [void]$configWarnings.Add('exception registry ' + $exceptionFileSetting + ' could not be fully read; ALL exceptions were rejected.')
         return $valid.ToArray()

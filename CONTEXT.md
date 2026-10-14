@@ -3,6 +3,14 @@
 The shared language of this project. A glossary and nothing else — no implementation detail, no
 decisions (those are ADRs under `docs/adr/`), no task state (that lives outside the repository).
 
+## Validated text
+
+Text whose entire encoding has been verified. A valid prefix is not validated text.
+
+## Coverage limit
+
+An explicit resource bound beyond which the encoding remains unknown, not an encoding exception.
+
 ## CI input evidence report
 
 A diagnostic inventory of immutable repository inputs and unresolved execution
