@@ -193,7 +193,7 @@ try {
     finally { $script:FakeUserEnv.Clear() }
     Check 'stale: a variable only in the user environment says to set it in this command, not to ask' (
         $stale.Count -eq 1 -and $stale[0] -match 'set `OLLAMA_MODELS=G:\\models` in this command; the shell predates it' -and $stale[0] -notmatch 'Ask the user') ($stale -join ' || ')
-    Check 'stale: a variable present in this process is not stale' ($fresh.Count -eq 1 -and $fresh[0] -match 'Ask the user' -and $fresh[0] -notmatch 'predates') ($fresh -join ' || ')
+    Check 'stale: a variable present in this process is not stale' ($fresh.Count -eq 1 -and $fresh[0] -match 'approved ecosystem root or explicit override first' -and $fresh[0] -notmatch 'predates') ($fresh -join ' || ')
     $script:FakeUserEnv['UV_TOOL_BIN_DIR'] = 'G:\uv\bin'
     try { $staleBin = @(Get-Advice 'uv tool install ruff' -Env @{ UV_TOOL_DIR = 'G:\uv\tools' }) } finally { $script:FakeUserEnv.Clear() }
     Check 'stale: the uv launcher override is named for the launcher line' ($staleBin.Count -eq 1 -and $staleBin[0] -match 'set `UV_TOOL_BIN_DIR=G:\\uv\\bin`') ($staleBin -join ' || ')

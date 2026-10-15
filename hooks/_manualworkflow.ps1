@@ -85,7 +85,7 @@ function Get-ManualWorkflowState {
             catch { $answer.Complete = $false; continue }
             finally { if ($null -ne $reader) { $reader.Dispose() } }
             $triggers = @(Get-WorkflowTopTriggers $text)
-            if ($triggers.Count -eq 0 -or $text -match '(?m)^\t|^ *(?:<<:|[&*])') { $answer.Complete = $false }
+            if ($triggers.Count -eq 0 -or $text -match '(?m)^\t|^ *<<:|^ *[A-Za-z0-9_-]+:\s*[&*][A-Za-z0-9_-]+\s*(?:#.*)?$') { $answer.Complete = $false }
             if (@($triggers | Where-Object { $_ -cnotin @('workflow_dispatch', 'workflow_call') }).Count) { $automatic = $true }
             $calls = New-Object 'System.Collections.Generic.List[string]'; $valid = $false
             $jobs = @(Get-ManualWorkflowJobs @($text -split '\r?\n'))

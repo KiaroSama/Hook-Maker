@@ -39,7 +39,9 @@ function Invoke-ManualWorkflowRegression {
         @{Name='quoted disabled job';Root=$rootText;Child=$childText.Replace('    runs-on:',"    'if': false`n    runs-on:");Expected=$false},
         @{Name='quoted nonblocking job';Root=$rootText;Child=$childText.Replace('    runs-on:',"    'continue-on-error': true`n    runs-on:");Expected=$false},
         @{Name='quoted disabled step';Root=$rootText;Child=$childText.Replace('- run: npm test',"- run: npm test`n        'if': false");Expected=$false},
-        @{Name='quoted nonblocking step';Root=$rootText;Child=$childText.Replace('- run: npm test',"- run: npm test`n        'continue-on-error': true");Expected=$false}
+        @{Name='quoted nonblocking step';Root=$rootText;Child=$childText.Replace('- run: npm test',"- run: npm test`n        'continue-on-error': true");Expected=$false},
+        @{Name='PowerShell invocation is not YAML anchor';Root=$rootText;Child=$childText.Replace('npm test',"|`n          & pwsh -File ./scripts/Test-Core.ps1");Expected=$true},
+        @{Name='YAML anchor stays unsupported';Root=$rootText;Child=$childText.Replace('  test:', '  test: &validation');Expected=$false}
     )
     foreach($case in $cases){
         [IO.File]::WriteAllText((Join-Path $dir 'ci.yml'),$case.Root,[Text.UTF8Encoding]::new($false))

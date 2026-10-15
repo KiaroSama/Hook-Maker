@@ -301,7 +301,7 @@ try {
         $r.Out -like '*global-test-rules.md*' -and $r.Out -like '*global-github-automation-rules.md*') $r.Out
     Check 'conditional owners are task-routed and registry names are not reading proof' (
         $r.Out -like '*global-mcp-rules.md for MCP*' -and $r.Out -like '*graphify.md for navigation*' -and
-        $r.Out -like '*filenames alone do not prove a rule was read*') $r.Out
+        $r.Out -like '*read each applicable owner IN FULL before governed work*') $r.Out
     Check 'ordered scope and complete direct registry guidance stay explicit' (
         $r.Out -match 'original request order and stable IDs' -and $r.Out -match 'earliest actionable unfinished' -and
         $r.Out -match 'exact permission or an English Markdown owner handoff' -and $r.Out -match 'direct custom-instructions.md registry entry') $r.Out
