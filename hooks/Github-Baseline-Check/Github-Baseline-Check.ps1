@@ -32,22 +32,14 @@
 # input, e.g. docker/build-push-action) or a trigger word nested DEEPER as an
 # option (a `push` key under `workflow_dispatch: inputs:`) is never mistaken
 # for a trigger.
-# A `workflow_call`-only workflow with real validation counts as CI only when
-# another local workflow (`uses: ./.github/workflows/<file>`) actually calls
-# it AND that caller is itself directly triggered (push/pull_request/
-# pull_request_target) - an uncalled reusable workflow is never counted as
-# proof on its own. Multiline `run: |`/`run: >` blocks are scanned (bounded
-# lookahead) for validation keywords, skipping full-line shell comments so a
-# keyword that appears only in a comment (`# TODO: run npm test`) is not
-# counted as real validation; a bare pyproject.toml defaults to the `pip`
-# Dependabot ecosystem (also correct for Poetry, which has no separate
-# ecosystem value), and is reclassified as `uv` only when a uv.lock sits beside it.
-# Known, intentional limitations (would require real YAML/expression
-# evaluation to close, which this hook deliberately does not add): a
-# validation step disabled via an `if:` condition is not detected as disabled,
-# there is no dedicated least-privilege `permissions:` check, and a reusable
-# workflow called only from OUTSIDE this repository cannot be confirmed
-# locally (reported as a gap, not falsely assumed complete).
+# Manual-root reachability lives in _manualworkflow.ps1: workflow_dispatch is
+# the only initiator on any host; local workflow_call edges must be reachable.
+# Conditions/dependencies, cycles, missing children and incomplete reads cannot
+# establish the baseline. Validation keywords are heuristic, not execution proof;
+# shell comments and nested step inputs never provide validation by themselves.
+# There is no full YAML/expression or least-privilege permissions analysis, and
+# external-only callers cannot be confirmed. A bare pyproject.toml defaults to
+# pip (also Poetry); uv.lock beside it selects uv.
 #
 # Optional .env next to this script (copy .env.example):
 #   COOLDOWN_MINUTES  minimum minutes between identical reports per repo (default 240)
@@ -100,19 +92,18 @@ try {
     }
 }
 catch { $badgeNote = '' }
-# Self-hosted runners stay MANUAL (plan 012 step 6b): a workflow with a job on
-# a self-hosted runner and any trigger besides workflow_dispatch is named once
-# per session per finding set. Advisory only; this hook never touches a runner.
+# Every host stays manual: name automatic initiating triggers once per finding.
+# Reusable workflow_call is not an initiating trigger. Never touches a runner.
 try {
-    $selfHostedLines = @(Get-WorkflowRunnerFacts -ProjectRoot $cwd | Where-Object { $_.SelfHosted -and @($_.Triggers | Where-Object { $_ -cne 'workflow_dispatch' }).Count -gt 0 } |
-        ForEach-Object { '- ' + $_.Name + ': a self-hosted job is triggered by ' + ((@($_.Triggers | Where-Object { $_ -cne 'workflow_dispatch' })) -join ', ') })
+    $selfHostedLines = @(Get-WorkflowRunnerFacts -ProjectRoot $cwd | Where-Object { @($_.Triggers | Where-Object { $_ -cnotin @('workflow_dispatch','workflow_call') }).Count -gt 0 } |
+        ForEach-Object { '- ' + $_.Name + ': a CI workflow is triggered automatically by ' + ((@($_.Triggers | Where-Object { $_ -cnotin @('workflow_dispatch','workflow_call') })) -join ', ') })
     if ($selfHostedLines.Count -gt 0) {
         $shPath = Join-Path (Join-Path $env:LOCALAPPDATA 'HookMaker\state') ('GithubBaselineCheck-selfhosted-' + (Get-ShortHash $cwd.ToLowerInvariant()) + '.txt')
         $shKey = Get-ShortHash ([string](Get-Field $hookInput 'session_id') + '|' + ($selfHostedLines -join '|'))
         $shSeen = ''
         if (Test-Path -LiteralPath $shPath -PathType Leaf) { $shSeen = ([System.IO.File]::ReadAllText($shPath)).Trim() }
         if ($shSeen -ne $shKey) {
-            $shNote = 'SELF-HOSTED RUNNERS STAY MANUAL: trigger a workflow that runs on a self-hosted runner only with workflow_dispatch, and dispatch the one final run for the exact final SHA yourself (never for GitHub- or bot-created branches, Dependabot included). Rule: global-github-automation-rules.md.' + "`n" + ($selfHostedLines -join "`n")
+            $shNote = 'ALL CI HOSTS STAY MANUAL: initiate hosted or self-hosted CI only with workflow_dispatch; workflow_call children need that in-repository manual root, and dispatch the one final run for the exact final SHA yourself (never for GitHub- or bot-created branches, Dependabot included). Rule: global-github-automation-rules.md.' + "`n" + ($selfHostedLines -join "`n")
             $badgeNote = @(@($badgeNote, $shNote) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }) -join "`n`n"
             New-Item -ItemType Directory -Path (Split-Path -Parent $shPath) -Force | Out-Null
             [System.IO.File]::WriteAllText($shPath, $shKey)
@@ -343,53 +334,18 @@ if ($dependabotPath -ne '') {
 $findings = @()
 $hasCode = ($ecosystems.Count -gt 0 -or $sourceCount -ge 3)
 
-# ---- per-workflow signals + local reusable-workflow call graph ----
-# A `workflow_call`-only workflow is never proof of CI on its own - it only
-# runs when something else invokes it. It counts toward the baseline ONLY
-# when either (a) it is ALSO directly triggered (push/pull_request/
-# pull_request_target), or (b) another workflow in this repo actually calls
-# it locally (`uses: ./.github/workflows/<file>` or `.github/workflows/<file>`)
-# AND that caller is itself directly triggered. An uncalled reusable workflow
-# is not counted as proof - this is the safe default (report a gap) rather
-# than assuming a relationship that cannot be confirmed locally.
+# Bounded manual-root reachability is shared with Ci-Status-Check.
+# Keep the independent unsafe-pattern checks; neither heuristic proves a run passed.
 $workflowInfos = New-Object System.Collections.Generic.List[object]
-$callersByCalledFile = @{}
 foreach ($workflow in $workflowFiles) {
-    $text = [System.IO.File]::ReadAllText($workflow.FullName)
-    $hasDirectTrigger = Test-HasWorkflowTrigger -Text $text -Keywords @('push', 'pull_request', 'pull_request_target')
-    $hasWorkflowCallTrigger = Test-HasWorkflowTrigger -Text $text -Keywords @('workflow_call')
-    $hasValidation = Test-HasValidationCommand -Text $text
-    $deployOnly = ($text -match '(?i)\b(deploy|publish|release)\b') -and -not $hasValidation
-    [void]$workflowInfos.Add([pscustomobject]@{
-        Name = $workflow.Name; Text = $text; HasDirectTrigger = $hasDirectTrigger
-        HasWorkflowCallTrigger = $hasWorkflowCallTrigger; HasValidation = $hasValidation; DeployOnly = $deployOnly
-    })
-    foreach ($m in [regex]::Matches($text, '(?im)^\s*-?\s*uses\s*:\s*["'']?(\./[^\s"''#@]+|\.github[/\\]workflows[/\\][^\s"''#@]+)')) {
-        $calledLeaf = (Split-Path -Leaf $m.Groups[1].Value.Trim()).ToLowerInvariant()
-        if ($calledLeaf -eq '') { continue }
-        if (-not $callersByCalledFile.ContainsKey($calledLeaf)) { $callersByCalledFile[$calledLeaf] = New-Object System.Collections.Generic.List[string] }
-        [void]$callersByCalledFile[$calledLeaf].Add($workflow.Name)
-    }
+    if ($workflow.Length -gt 262144) { continue }
+    try { $text = [IO.File]::ReadAllText($workflow.FullName, [Text.UTF8Encoding]::new($false, $true)) }
+    catch { continue }
+    [void]$workflowInfos.Add([pscustomobject]@{ Name = $workflow.Name; Text = $text; HasValidation = (Test-HasValidationCommand $text) })
 }
-
-$meaningfulCi = $false
 $workflowProblems = @()
 $hasImmediateUnsafeRisk = $false
 foreach ($info in $workflowInfos) {
-    if ($info.HasValidation -and -not $info.DeployOnly) {
-        if ($info.HasDirectTrigger) {
-            $meaningfulCi = $true
-        }
-        elseif ($info.HasWorkflowCallTrigger) {
-            $calledLeaf = $info.Name.ToLowerInvariant()
-            if ($callersByCalledFile.ContainsKey($calledLeaf)) {
-                foreach ($callerName in $callersByCalledFile[$calledLeaf]) {
-                    $callerInfo = @($workflowInfos | Where-Object { $_.Name -eq $callerName }) | Select-Object -First 1
-                    if ($null -ne $callerInfo -and $callerInfo.HasDirectTrigger) { $meaningfulCi = $true; break }
-                }
-            }
-        }
-    }
     $text = $info.Text
     if ($text -match '(?im)^\s*continue-on-error:\s*["'']?true["'']?\s*$' -and $info.HasValidation) { $workflowProblems += ($info.Name + ' makes validation non-blocking with continue-on-error') }
     if ((Test-HasWorkflowTrigger -Text $text -Keywords @('pull_request_target')) -and $text -match 'actions/checkout' -and $text -match '(?i)(github\.event\.pull_request\.head|head\.sha)') {
@@ -398,12 +354,15 @@ foreach ($info in $workflowInfos) {
     }
 }
 
+$manualState = Get-ManualWorkflowState $cwd
+$meaningfulCi = $manualState.Compliant
+foreach ($problem in $manualState.Problems) { $workflowProblems += $problem }
 if (-not $meaningfulCi -and $hasCode) {
     $detected = @($ecosystems.Keys | Sort-Object | ForEach-Object { $_.Replace('|', ' at ') })
     $detectedText = 'source files only'
     if ($detected.Count -gt 0) { $detectedText = ($detected -join ', ') }
     $findingPrefix = if ($workflowFiles.Count -eq 0) { 'No CI workflow' } else { 'Workflow files exist, but none provides blocking project validation' }
-    $findings += ('- ' + $findingPrefix + ' (.github/workflows). Detected: ' + $detectedText + '. Add CI on push/pull_request that runs the project''s real lint/test/type-check/build commands; keep failures blocking; use least-privilege permissions and avoid unsafe pull_request_target execution.')
+    $findings += ('- ' + $findingPrefix + ' (.github/workflows). Detected: ' + $detectedText + '. Add manual-only CI with workflow_dispatch on every host (reachable workflow_call children only) that runs the project''s real lint/test/type-check/build commands; keep failures blocking; use least-privilege permissions and avoid unsafe pull_request_target execution.')
 }
 foreach ($problem in $workflowProblems) { $findings += ('- Unsafe/non-blocking workflow: ' + $problem + '.') }
 

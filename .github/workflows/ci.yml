@@ -1,19 +1,13 @@
 name: CI
 
 on:
-  # Lets a branch be verified in CI without opening a pull request. Without
-  # this, a pushed branch has no CI run at all, and the only way to get the
-  # heavy pass is to run suites locally - which the project forbids.
+  # One manually initiated final batch includes every existing validation tier.
   workflow_dispatch:
-  push:
-    branches: [main]
-  pull_request:
 
 permissions:
   contents: read
 
-# A newer push supersedes an in-flight run for the same ref instead of paying
-# for both.
+# A replacement manual batch supersedes an in-flight run for the same ref.
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
@@ -264,3 +258,21 @@ jobs:
             exit 1
           }
           Write-Host 'All suites in this bucket passed.' -ForegroundColor Green
+
+  generation-safety:
+    uses: ./.github/workflows/generation-safety.yml
+
+  receipt-isolation:
+    uses: ./.github/workflows/receipt-isolation.yml
+
+  remaining-boundaries:
+    uses: ./.github/workflows/remaining-boundaries.yml
+
+  review-contracts:
+    uses: ./.github/workflows/review-contracts.yml
+
+  storage-integrity-regressions:
+    uses: ./.github/workflows/storage-integrity-regressions.yml
+
+  task-finalization-regressions:
+    uses: ./.github/workflows/task-finalization-regressions.yml

@@ -175,7 +175,7 @@ try {
 
     New-RuleFile $globalClaude 'gamma.md'
     $r = Fire -Cwd $proj1
-    Check 'added file -> NEW reported once' ($r.Out -like '*NEW:*gamma.md*' -and $r.Out -like '*FULL rule set*') $r.Out
+    Check 'added file -> NEW reported once' ($r.Out -like '*NEW:*gamma.md*' -and $r.Out -like '*complete registry through task-relevant owner routing*') $r.Out
     $r = Fire -Cwd $proj1
     Check 'after NEW acknowledged -> silent' ($r.Out -eq '') $r.Out
 
@@ -299,9 +299,20 @@ try {
         $r.Out -like '*custom-instructions.md*' -and $r.Out -like '*WORKFLOWS.md*' -and $r.Out -like '*CODEWORDS.md*' -and
         $r.Out -like '*ai-context-memory-policy.md*' -and $r.Out -like '*global-hook-rules.md*' -and
         $r.Out -like '*global-test-rules.md*' -and $r.Out -like '*global-github-automation-rules.md*') $r.Out
-    Check 'conditional rules stay conditional (MCP work / codebase navigation only)' (
-        $r.Out -like '*global-mcp-rules.md only when MCP work applies*' -and
-        $r.Out -like '*graphify.md only when codebase navigation applies*') $r.Out
+    Check 'conditional owners are task-routed and registry names are not reading proof' (
+        $r.Out -like '*global-mcp-rules.md for MCP*' -and $r.Out -like '*graphify.md for navigation*' -and
+        $r.Out -like '*filenames alone do not prove a rule was read*') $r.Out
+    Check 'ordered scope and complete direct registry guidance stay explicit' (
+        $r.Out -match 'original request order and stable IDs' -and $r.Out -match 'earliest actionable unfinished' -and
+        $r.Out -match 'exact permission or an English Markdown owner handoff' -and $r.Out -match 'direct custom-instructions.md registry entry') $r.Out
+    Check 'custody and signing reminders never authorize value reads or unsigned activation' (
+        $r.Out -match 'local actual-value custody' -and $r.Out -match 'complete private exports of all stores and isolated restore' -and
+        $r.Out -match 'embedded owner identity AND genuine verified cryptographic signing' -and $r.Out -match 'never unsigned fallback' -and
+        $r.Out -match 'never read/expose values for a reminder') $r.Out
+    Check 'approved packaged logo and actual design skill guidance preserve native primitives and consent' (
+        $r.Out -match 'native resources or packaged in-app assets before signing' -and $r.Out -match 'not README-only' -and
+        $r.Out -match 'actually invokes a matching design skill' -and $r.Out -match 'intentional product-specific design' -and
+        $r.Out -match 'accessible primitives/native controls/existing design systems remain allowed' -and $r.Out -match 'executes no action') $r.Out
     Check 'claude loads EXACTLY skill-policy.md and never references the codex policy' (
         $r.Out -match 'load ONLY skill-policy\.md' -and $r.Out -match 'never both together' -and $r.Out -notmatch 'codex') $r.Out
     Check 'the note warns against uploaded/version-suffixed filenames like "(17)"' (

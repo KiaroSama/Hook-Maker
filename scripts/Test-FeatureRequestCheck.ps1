@@ -310,6 +310,9 @@ try {
     Check 'advisory: a mid-task arrival is routed through the intake (request delta, requirement IDs, acceptance criteria)' (
         $msg -match 'request delta' -and $msg -match 'requirement IDs' -and $msg -match 'acceptance criteria') $msg
     Check 'advisory: only the dependent work waits for an answer' ($msg -match 'independent work continues') $msg
+    Check 'advisory: ordered requests and exact owner scope survive later additions' (
+        $msg -match 'original request order and stable IDs' -and $msg -match 'earliest actionable unfinished' -and
+        $msg -match 'English Markdown owner handoff' -and $msg -match 'never implicit source/staging/runner/provider repair') $msg
     # FR-005: the rules WITHDREW the "not a feature, carry on" carve-out, so the
     # advisory must no longer offer it - this assertion was inverted the day the
     # carve-out went, and it is the inversion that enforces the requirement.

@@ -102,8 +102,8 @@ try {
     }
     $line = @(Get-Advice 'winget install Git.Git')[0]
     Check 'advisory: carries the ask, the verify step and the rule reference' (
-        $line -match 'Ask the user for the install path first, naming the package' -and $line -match 'verify where it landed' -and
-        $line -match 'Rule: global-environment-rules\.md -> Install Locations\.') $line
+        $line -match 'approved ecosystem root or explicit override first' -and $line.Contains('G:\Program Files\<program-name>') -and $line -match 'Location approval is not installation authorization' -and
+        $line -match 'physical writes and real consumer paths' -and $line -match 'project-owned temp/cache before initialization' -and $line -match 'retention reason' -and $line -match 'global-environment-rules\.md') $line
 
     # =====================================================================
     Write-Host '--- silence: an answered location, a link, the project, an unknown command ---' -ForegroundColor Cyan

@@ -423,7 +423,7 @@ if ($languageNote -ne '') { [void]$lines.Add($languageNote) }
 if ($researchNote -ne '') { [void]$lines.Add($researchNote) }
 if ($rulesMoved) {
     if ($firstRun) {
-        [void]$lines.Add('RULES CHECK (' + $Client + ') - first check of this project. Before starting the task, make sure EVERY configured rules file below has been read and is applied:')
+        [void]$lines.Add('RULES CHECK (' + $Client + ') - first check of this project. Before starting the task, use the complete configured registry below to route task-relevant owners; read each applicable owner IN FULL before governed work (on-demand is deferred, not optional):')
     }
     else {
         [void]$lines.Add('RULES CHECK (' + $Client + ') - the configured rules changed since the last check of this project. Read the new/changed files BEFORE starting the task:')
@@ -431,7 +431,7 @@ if ($rulesMoved) {
         foreach ($path in $changedFiles) { [void]$lines.Add('- CHANGED: ' + $path) }
         foreach ($path in $removedFiles) { [void]$lines.Add('- REMOVED: ' + $path + ' (no longer applies)') }
         if ($currentEntries.Count -gt 0) {
-            [void]$lines.Add('Then confirm the FULL rule set is still applied:')
+            [void]$lines.Add('Then apply the complete registry through task-relevant owner routing; filenames alone do not prove a rule was read:')
         }
     }
     foreach ($set in $ruleSets) {
@@ -447,7 +447,7 @@ if ($rulesMoved) {
     # Canonical routing (E-01): canonical installed names, exactly one skill
     # policy for the detected client, and the strict-UTF-8 text default. These
     # ride the same fingerprint gate, so they never repeat on an unchanged set.
-    [void]$lines.Add('Canonical rule set (always the canonical installed filenames - never an uploaded/version-suffixed copy such as "custom-instructions (17).md"): custom-instructions.md, WORKFLOWS.md, CODEWORDS.md, ai-context-memory-policy.md, global-hook-rules.md, global-test-rules.md, global-github-automation-rules.md; global-mcp-rules.md only when MCP work applies; graphify.md only when codebase navigation applies.')
+    [void]$lines.Add('Canonical rule set: start at custom-instructions.md complete direct registry; use canonical installed filenames, never an uploaded/version-suffixed copy such as "custom-instructions (17).md". Read task-relevant owners IN FULL before governed work: WORKFLOWS.md, CODEWORDS.md, ai-context-memory-policy.md, global-hook-rules.md, global-test-rules.md, global-github-automation-rules.md; global-mcp-rules.md for MCP, graphify.md for navigation. Before scope/queue/release/storage/cleanup read global-project-lifecycle-rules.md: preserve original request order and stable IDs, resume earliest actionable unfinished work; other-project mutation requires exact permission or an English Markdown owner handoff. New rule Markdown requires a direct custom-instructions.md registry entry and completeness check under global-instruction-maintenance-rules.md, not only a companion pointer. For secret deployment/storage require local actual-value custody, complete private exports of all stores and isolated restore; never read/expose values for a reminder. Final app builds need approved embedded owner identity AND genuine verified cryptographic signing; missing key/identity/trust blocks final publication/activation, never unsigned fallback or automatic key/certificate/service action. Approved initial/later logos belong in native resources or packaged in-app assets before signing, not README-only branding; no unsolicited logo generation. UI work reads global-ui-rules.md, actually invokes a matching design skill and researches useful libraries; use intentional product-specific design, not generic page templates, while accessible primitives/native controls/existing design systems remain allowed. This advice verifies no consent, custody, export, signature, packaged logo or visual quality and executes no action.')
     [void]$lines.Add('Skill policy routing: active client = ' + $Client + ' -> load ONLY ' + $policyName + ' as the skill policy; never load the other agent''s skill policy and never both together.')
     [void]$lines.Add('ENCODING: every newly written or modified text file defaults to STRICT UTF-8; never trust OS/shell/runtime default encodings. UTF-8 with a BOM and without a BOM are both valid UTF-8 - the BOM is a separate compatibility decision. A non-UTF-8 exception requires a narrow path/scope, the exact encoding, a technical reason, the forcing system, and compatibility verification.')
     # A " (N).md" filename is the browser-download shape of an uploaded copy -

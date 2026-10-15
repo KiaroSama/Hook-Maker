@@ -14,7 +14,7 @@
 # of the root README. It never fetches an image and never checks what a badge
 # claims - that is the agent's job with the evidence in front of it.
 
-$script:BadgeGuidance = 'README badges: 12 to 16 verified badges, as many rows as needed, all centred inside one <div align="center"> block (blank line after the opening tag and before </div>), always including [![Support donations](https://img.shields.io/badge/Support-donations-d04a9a)](#donate) linked to the README''s "## Donate" section (copy that section verbatim from another of the user''s repositories when it is missing). Fill in this order: CI status, license, version/release, tests or coverage, runtime versions, platform, downloads/distribution, documentation, a real paper/DOI, activity/community, built-with stack, repository facts; past 16 the order decides which stay. Never padded or fabricated; a real shortfall is reported. No private data in badge URLs. Rule: global-repository-rules.md.'
+$script:BadgeGuidance = 'README badges: 12 to 16 verified badges, as many rows as needed, all centred inside one <div align="center"> block (blank line after the opening tag and before </div>), always including [![Support donations](https://img.shields.io/badge/Support-donations-d04a9a)](#donate) linked to the README''s "## Donate" section (copy that section verbatim from an authorized public source when it is missing). Fill in this order: CI status, license, version/release, tests or coverage, runtime versions, platform, downloads/distribution, documentation, a real paper/DOI, activity/community, built-with stack, repository facts; past 16 the order decides which stay. Never padded or fabricated; a real shortfall is reported. No private data in badge URLs or references to the user''s private repositories anywhere in another repository. README also needs real installation, prerequisites, configuration and setup/use examples with verified limits/logs, never a badge-only placeholder. An existing approved README logo defaults to width="240"; do not generate an unsolicited logo or resize badges. README branding alone does not include an approved logo in the built app: read global-project-lifecycle-rules.md before packaging resources and signing. Rule: global-repository-rules.md.'
 $script:BadgeMinimum = 12
 $script:BadgeMaximum = 16
 # The donation badge and the section it links to. The section is looked for in
@@ -100,7 +100,7 @@ function Get-ReadmeBadgeNote {
             [void]$lines.Add('- The Support-donations badge is missing near the title.')
         }
         if (-not $State.DonateSection) {
-            [void]$lines.Add('- The README has no "## Donate" section for the #donate link: copy it verbatim from another of the user''s repositories; never invent or alter a wallet address.')
+            [void]$lines.Add('- The README has no "## Donate" section for the #donate link: copy it verbatim from an authorized public source; never invent or alter a wallet address.')
         }
     }
     return ($lines.ToArray() -join "`n")

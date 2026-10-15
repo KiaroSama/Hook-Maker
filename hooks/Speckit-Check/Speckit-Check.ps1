@@ -124,7 +124,7 @@ if ($newestFeature -ne '') {
 }
 
 # ---- the route ---------------------------------------------------------------
-$featureLabel = 'Newest feature here (no active-feature pointer)'
+$featureLabel = 'Newest feature here (navigation only, no active-feature pointer or ownership claim)'
 if ($featureFromPointer) { $featureLabel = 'Active feature (.specify/feature.json)' }
 $lead = ''
 if (-not $specsReadable) {
@@ -153,7 +153,7 @@ $note = @(
     $lead,
     '- A feature or a behaviour change -> speckit-specify, speckit-clarify, speckit-plan, speckit-tasks, speckit-analyze, speckit-implement, in that order.',
     '- A bug or a regression -> diagnose first, then: the feature already has specs/<name>/ -> speckit-converge appends the unmet work to tasks.md and speckit-implement closes it; the fix changes specified behaviour or the area has no spec -> the full chain from speckit-specify.',
-    '- A NEW request mid-task (added scope, changed acceptance, a new bug or constraint) -> record a dated request delta with requirement IDs and acceptance criteria, amend the affected spec/plan/tasks (speckit-specify on the same feature; independent scope gets its own feature), refresh the skill selection, rerun the affected gates, then resume. An earlier Spec Kit run covers only what it recorded. Rule: global-spec-kit-rules.md, Mid-task Request Intake.',
+    '- A NEW request mid-task (added scope, changed acceptance, a new bug or constraint) -> record a dated request delta with requirement IDs and acceptance criteria, amend the affected spec/plan/tasks (speckit-specify on the same feature; independent scope gets its own feature), refresh the skill selection, rerun the affected gates, then resume. An earlier Spec Kit run covers only what it recorded. Preserve original request order and stable IDs; resume the earliest actionable unfinished item, record dependency exceptions, and reconcile every item at closure. Newest-folder navigation is not task ownership. Another project needs exact permission or an English Markdown owner handoff; never implicitly stage or repair its source/runner/provider. Read global-project-lifecycle-rules.md. Rule: global-spec-kit-rules.md, Mid-task Request Intake.',
     'Run each skill to the letter: preflight, prerequisite script, extension hooks, gates, completion report.',
     'Every question any step raises goes to the user - never a plausible default, never a guessed scope. Only the work that depends on the answer waits; independent work continues.',
     'Work that changes nothing - a question, an explanation, a review that writes no code - is answered directly, and so is a trivial edit (a typo, a one-line config value).'

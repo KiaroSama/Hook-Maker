@@ -119,7 +119,7 @@ try {
     if ([IO.File]::Exists((Join-Path $SourceRoot 'hooks/_budgetlib.ps1'))) { $leaves += '_budgetlib.ps1' }
     if ([IO.File]::Exists((Join-Path $SourceRoot 'hooks/_processlib.ps1'))) { $leaves += '_processlib.ps1' }
     if ([IO.File]::Exists((Join-Path $SourceRoot 'hooks/_repostate.ps1'))) { $leaves += '_repostate.ps1' }
-    foreach ($extra in @('_repositoryaccess.ps1','_repositorytrust.ps1')) {
+    foreach ($extra in @('_repositoryaccess.ps1','_repositorytrust.ps1','_manualworkflow.ps1')) {
         if ([IO.File]::Exists((Join-Path $SourceRoot ('hooks/'+$extra)))) { $leaves += $extra }
     }
     foreach ($leaf in $leaves) { Copy-Item -LiteralPath (Join-Path $SourceRoot ('hooks/'+$leaf)) -Destination (Join-Path $tool ('hooks/'+$leaf)) }

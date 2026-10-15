@@ -163,6 +163,9 @@ try {
     Check 'and it carries the intake contract: a request delta with requirement IDs and acceptance criteria' (
         $r.Out -match 'request delta' -and $r.Out -match 'requirement IDs' -and $r.Out -match 'acceptance criteria') $r.Out
     Check 'only the dependent work waits; independent work continues' ($r.Out -match 'independent work continues') $r.Out
+    Check 'intake retains ordered owner-bound work without implicit cross-project repair' (
+        $r.Out -match 'original request order and stable IDs' -and $r.Out -match 'earliest actionable unfinished' -and
+        $r.Out -match 'English Markdown owner handoff' -and $r.Out -match 'reconcile every item') $r.Out
     Check 'the old "finish existing tasks before starting anything else" is gone' (
         $r.Out -notmatch 'before starting something else') $r.Out
 

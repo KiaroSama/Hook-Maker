@@ -91,7 +91,11 @@
     $requests = @(
         @('Use ScraplingServer to scrape permitted static content','SCRAPLING / EXTRACTION','Finally-close only owned sessions','CAPTCHA/Turnstile'),
         @('Use Agensi offer preview','AGENSI','confirm:false','unknown outcomes'),
-        @('Use upwork-local create_draft','UPWORK','SAVES A REAL DRAFT','publication is separate')
+        @('Use upwork-local create_draft','UPWORK','SAVES A REAL DRAFT','publication is separate'),
+        @('Use Upwork-Agent-mcp draft','UPWORK','historical upwork-local','exact action approval'),
+        @('Use Fiverr-Agent-mcp action_commit','FIVERR','manual_handoff','remote_executed:false'),
+        @('Use REA to inspect an artifact','REA','explicit finite action deadlines','not a sandbox'),
+        @('Use telegram-operator for a backup','TELEGRAM OPERATOR','telegram-backup-restore','no-deletions holds win')
     )
     foreach ($case in $requests) {
         $r = Fire -HookPath $McpHook -Cwd $operationProject -RawStdin (New-PromptStdin $operationProject 'UserPromptSubmit' $case[0] 'operations')

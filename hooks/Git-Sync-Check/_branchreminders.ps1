@@ -3,8 +3,8 @@
 # ADVISORY ONLY. Rule (global-repository-rules.md): work stays on the default
 # branch; a side branch, worktree or pull request needs the user's request or a
 # forcing reason stated in the report, and then the whole task uses ONE branch
-# and ONE pull request. A task pushes once, after all the work, because every
-# push and every pull request starts its own CI run.
+# and ONE pull request. A task pushes once after all work, then manually
+# dispatches one exact-SHA final CI batch on any host.
 #
 # PreToolUse context only - never a permission decision, so a reminder can
 # neither approve a command the user's permission mode would ask about nor
@@ -50,7 +50,7 @@ function Get-GitWorkflowReminder {
         $dirty = @(Invoke-QuietCommand -FilePath git -ArgumentList @('-C', $cwd, 'status', '--porcelain', '--untracked-files=no') -TimeoutSeconds 5 | Where-Object { $_ })
         if ($LASTEXITCODE -ne 0 -or $dirty.Count -eq 0) { return '' }
         return ('GIT WORKFLOW REMINDER: this task still has ' + $dirty.Count + ' uncommitted change(s). A task pushes ONCE, ' +
-            'after all the work - every push and every pull request starts its own CI run. Finish, commit, then push. ' +
+            'after all the work - all CI hosts require one final manual workflow_dispatch batch on the exact SHA. Finish, commit, then push. ' +
             'Rule: global-repository-rules.md.')
     }
     return ''

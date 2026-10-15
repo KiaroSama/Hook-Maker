@@ -70,7 +70,7 @@ $chainNote = @(
     '2. If docs/agents/issue-tracker.md is missing, run the setup procedure for those skills first.',
     '3. Then Spec Kit, in order: speckit-specify, speckit-clarify, speckit-plan, speckit-tasks, speckit-analyze, speckit-implement.',
     '4. Inside speckit-implement: tdd at the agreed seams, then code-review, then commit.',
-    'Arriving mid-task? It is a request delta: record it with requirement IDs and acceptance criteria, amend the active feature''s spec/plan/tasks (independent scope gets its own feature), refresh the skill selection and rerun the affected gates before resuming. An earlier Spec Kit run covers only what it recorded.',
+    'Arriving mid-task? It is a request delta: record it with requirement IDs and acceptance criteria, amend the active feature''s spec/plan/tasks (independent scope gets its own feature), refresh the skill selection and rerun the affected gates before resuming. An earlier Spec Kit run covers only what it recorded. Preserve original request order and stable IDs, resume earliest actionable unfinished work and record dependency exceptions; reconcile every item at closure. Another project requires exact permission or an English Markdown owner handoff, never implicit source/staging/runner/provider repair. Read global-project-lifecycle-rules.md.',
     'Every question any step raises goes to the user - never a plausible default. Only the work that depends on the answer waits; independent work continues.'
 ) -join "`n"
 

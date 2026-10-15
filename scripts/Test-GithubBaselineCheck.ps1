@@ -11,7 +11,7 @@
 # Usage:  pwsh -NoLogo -NoProfile -File .\scripts\Test-GithubBaselineCheck.ps1 [-KeepArtifacts]
 # Exit code is the number of failed assertions (0 = all passed).
 
-param([switch]$KeepArtifacts)
+param([switch]$KeepArtifacts, [switch]$ManualOnly)
 
 Set-StrictMode -Version 2.0
 $ErrorActionPreference = 'Stop'
@@ -194,6 +194,9 @@ function Get-HeadSha {
 }
 
 try {
+    . (Join-Path $PSScriptRoot '_testmanualworkflow.ps1')
+    Invoke-ManualWorkflowRegression -Focused:$ManualOnly
+    if (-not $ManualOnly) {
     # =====================================================================
     Write-Host '--- GithubBaselineCheck ---' -ForegroundColor Cyan
     $plainDir = Join-Path $Work 'plain'; New-Item -ItemType Directory -Path $plainDir -Force | Out-Null
@@ -273,7 +276,7 @@ try {
     Set-Content (Join-Path $shRepo '.github\workflows\ci.yml') "on:`n  push:`n  workflow_dispatch:`njobs:`n  t:`n    runs-on: [self-hosted, windows]`n    steps:`n      - run: echo test"
     $r = Fire -HookPath $BaselineHook -Cwd $shRepo
     Check 'self-hosted: a push-triggered self-hosted workflow is named, advisory only' (
-        $r.Out -match 'SELF-HOSTED RUNNERS STAY MANUAL' -and $r.Out -match 'ci\.yml: a self-hosted job is triggered by push' -and $r.Out -notmatch '"decision"') $r.Out
+        $r.Out -match 'ALL CI HOSTS STAY MANUAL' -and $r.Out -match 'ci\.yml: a CI workflow is triggered automatically by push' -and $r.Out -notmatch '"decision"') $r.Out
     $shManual = New-GitRepo 'selfhostedmanual' -GithubRemote:$false
     New-Item -ItemType Directory -Path (Join-Path $shManual '.github\workflows') -Force | Out-Null
     Set-Content (Join-Path $shManual '.github\workflows\ci.yml') "on:`n  workflow_dispatch:`njobs:`n  t:`n    runs-on: self-hosted`n    steps:`n      - run: echo test"
@@ -325,7 +328,7 @@ updates:
     # complete baseline -> silent
     $b4 = New-GitRepo 'base4'
     New-Item -ItemType Directory -Path (Join-Path $b4 '.github\workflows') -Force | Out-Null
-    Set-Content (Join-Path $b4 '.github\workflows\ci.yml') "on:`n  push:`njobs:`n  test:`n    steps:`n      - run: npm test"
+    Set-Content (Join-Path $b4 '.github\workflows\ci.yml') "on:`n  workflow_dispatch:`njobs:`n  test:`n    steps:`n      - run: npm test"
     Set-Content (Join-Path $b4 'package.json') '{}'
     Set-Content (Join-Path $b4 '.github\dependabot.yml') @'
 version: 2
@@ -341,7 +344,7 @@ updates:
     $deployOnly = New-GitRepo 'deployonly'
     New-Item -ItemType Directory -Path (Join-Path $deployOnly '.github\workflows') -Force | Out-Null
     Set-Content (Join-Path $deployOnly 'package.json') '{}'
-    Set-Content (Join-Path $deployOnly '.github\workflows\deploy.yml') "on:`n  push:`njobs:`n  deploy:`n    steps:`n      - run: npm run deploy"
+    Set-Content (Join-Path $deployOnly '.github\workflows\deploy.yml') "on:`n  workflow_dispatch:`njobs:`n  deploy:`n    steps:`n      - run: npm run deploy"
     $r = Fire -HookPath $BaselineHook -Cwd $deployOnly
     Check 'deploy-only workflow does not count as CI' ($r.Out -match 'none provides blocking project validation') $r.Out
 
@@ -354,7 +357,7 @@ updates:
 
     $dirsRepo = New-GitRepo 'dependabotdirs'
     New-Item -ItemType Directory -Path (Join-Path $dirsRepo '.github\workflows'), (Join-Path $dirsRepo 'apps\a'), (Join-Path $dirsRepo 'apps\b') -Force | Out-Null
-    Set-Content (Join-Path $dirsRepo '.github\workflows\ci.yml') "on:`n  pull_request:`njobs:`n  test:`n    steps:`n      - run: npm test"
+    Set-Content (Join-Path $dirsRepo '.github\workflows\ci.yml') "on:`n  workflow_dispatch:`njobs:`n  test:`n    steps:`n      - run: npm test"
     Set-Content (Join-Path $dirsRepo 'apps\a\package.json') '{}'
     Set-Content (Join-Path $dirsRepo 'apps\b\package.json') '{}'
     Set-Content (Join-Path $dirsRepo '.github\dependabot.yml') "version: 2`nupdates:`n  - package-ecosystem: npm`n    directories:`n      - /apps/a`n      - /apps/b`n  - package-ecosystem: github-actions`n    directory: /"
@@ -369,16 +372,16 @@ updates:
     $flowTrigger = New-GitRepo 'flowtrigger'
     Set-Content (Join-Path $flowTrigger 'package.json') '{}'
     New-Item -ItemType Directory -Path (Join-Path $flowTrigger '.github\workflows') -Force | Out-Null
-    Set-Content (Join-Path $flowTrigger '.github\workflows\ci.yml') "on: [push, pull_request]`njobs:`n  test:`n    steps:`n      - run: npm test"
+    Set-Content (Join-Path $flowTrigger '.github\workflows\ci.yml') "on: [workflow_dispatch]`njobs:`n  test:`n    steps:`n      - run: npm test"
     Set-Content (Join-Path $flowTrigger '.github\dependabot.yml') "version: 2`nupdates:`n  - package-ecosystem: npm`n    directory: /`n  - package-ecosystem: github-actions`n    directory: /"
     $r = Fire -HookPath $BaselineHook -Cwd $flowTrigger
-    Check 'flow-style trigger array (on: [push, pull_request]) is recognized' (Test-NoBaselineFinding $r.Out) ([string]$r.Out)
+    Check 'flow-style trigger array (on: [workflow_dispatch]) is recognized' (Test-NoBaselineFinding $r.Out) ([string]$r.Out)
 
     # Quoted "on": key with block-style triggers underneath.
     $quotedOn = New-GitRepo 'quotedon'
     Set-Content (Join-Path $quotedOn 'package.json') '{}'
     New-Item -ItemType Directory -Path (Join-Path $quotedOn '.github\workflows') -Force | Out-Null
-    Set-Content (Join-Path $quotedOn '.github\workflows\ci.yml') "`"on`":`n  push:`n  pull_request:`njobs:`n  test:`n    steps:`n      - run: npm test"
+    Set-Content (Join-Path $quotedOn '.github\workflows\ci.yml') "`"on`":`n  workflow_dispatch:`njobs:`n  test:`n    steps:`n      - run: npm test"
     Set-Content (Join-Path $quotedOn '.github\dependabot.yml') "version: 2`nupdates:`n  - package-ecosystem: npm`n    directory: /`n  - package-ecosystem: github-actions`n    directory: /"
     $r = Fire -HookPath $BaselineHook -Cwd $quotedOn
     Check 'quoted "on" key with block-style triggers is recognized' (Test-NoBaselineFinding $r.Out) ([string]$r.Out)
@@ -391,8 +394,7 @@ updates:
     New-Item -ItemType Directory -Path (Join-Path $multilineRun '.github\workflows') -Force | Out-Null
     Set-Content (Join-Path $multilineRun '.github\workflows\ci.yml') @'
 on:
-  push:
-  pull_request:
+  workflow_dispatch:
 jobs:
   test:
     steps:
@@ -452,7 +454,7 @@ jobs:
 '@
     Set-Content (Join-Path $calledReusable '.github\workflows\caller.yml') @'
 on:
-  push:
+  workflow_dispatch:
 jobs:
   call-tests:
     uses: ./.github/workflows/reusable.yml
@@ -462,7 +464,7 @@ jobs:
     Check 'a workflow_call reusable workflow CALLED by a directly-triggered local workflow counts as CI' (Test-NoBaselineFinding $r.Out) ([string]$r.Out)
 
     # Unrelated nested key named `push:` (a step's own input, e.g.
-    # docker/build-push-action's `push: true`) outside the top-level `on:`
+    # a publishing action's `push: true`) outside the top-level `on:`
     # block must never be mistaken for a push trigger - a confirmed false
     # positive: the workflow here is really only triggered manually.
     $nestedPushKey = New-GitRepo 'nestedpushkey'
@@ -475,7 +477,7 @@ jobs:
   deploy:
     steps:
       - name: Build and push
-        uses: docker/build-push-action@v5
+        uses: vendor/publish-action@v1
         with:
           context: .
           push: true
@@ -488,7 +490,7 @@ jobs:
     $singleQuotedOn = New-GitRepo 'singlequotedon'
     Set-Content (Join-Path $singleQuotedOn 'package.json') '{}'
     New-Item -ItemType Directory -Path (Join-Path $singleQuotedOn '.github\workflows') -Force | Out-Null
-    Set-Content (Join-Path $singleQuotedOn '.github\workflows\ci.yml') "'on':`n  push:`n  pull_request:`njobs:`n  test:`n    steps:`n      - run: npm test"
+    Set-Content (Join-Path $singleQuotedOn '.github\workflows\ci.yml') "'on':`n  workflow_dispatch:`njobs:`n  test:`n    steps:`n      - run: npm test"
     Set-Content (Join-Path $singleQuotedOn '.github\dependabot.yml') "version: 2`nupdates:`n  - package-ecosystem: npm`n    directory: /`n  - package-ecosystem: github-actions`n    directory: /"
     $r = Fire -HookPath $BaselineHook -Cwd $singleQuotedOn
     Check "single-quoted 'on' key with block-style triggers is recognized" (Test-NoBaselineFinding $r.Out) ([string]$r.Out)
@@ -517,8 +519,7 @@ jobs:
     New-Item -ItemType Directory -Path (Join-Path $commentValidation '.github\workflows') -Force | Out-Null
     Set-Content (Join-Path $commentValidation '.github\workflows\ci.yml') @'
 on:
-  push:
-  pull_request:
+  workflow_dispatch:
 jobs:
   test:
     steps:
@@ -535,8 +536,7 @@ jobs:
     New-Item -ItemType Directory -Path (Join-Path $realAfterComment '.github\workflows') -Force | Out-Null
     Set-Content (Join-Path $realAfterComment '.github\workflows\ci.yml') @'
 on:
-  push:
-  pull_request:
+  workflow_dispatch:
 jobs:
   test:
     steps:
@@ -553,8 +553,7 @@ jobs:
     # the direct children of on:) is not a push trigger. Discriminating: the
     # workflow has REAL validation and complete dependabot, so if the nested
     # `push` were wrongly treated as a trigger the baseline would be silent;
-    # correctly ignoring it leaves the workflow only manually triggered ->
-    # "none provides blocking project validation" surfaces.
+    # correctly ignoring it preserves the sufficient manual baseline.
     $nestedInputPush = New-GitRepo 'nestedinputpush'
     Set-Content (Join-Path $nestedInputPush 'package.json') '{}'
     New-Item -ItemType Directory -Path (Join-Path $nestedInputPush '.github\workflows') -Force | Out-Null
@@ -572,10 +571,10 @@ jobs:
 '@
     Set-Content (Join-Path $nestedInputPush '.github\dependabot.yml') "version: 2`nupdates:`n  - package-ecosystem: npm`n    directory: /`n  - package-ecosystem: github-actions`n    directory: /"
     $r = Fire -HookPath $BaselineHook -Cwd $nestedInputPush
-    Check '7.2 a push key nested as a workflow_dispatch input is not a push trigger' ($r.Out -match 'none provides blocking project validation') $r.Out
+    Check '7.2 a push key nested as a workflow_dispatch input is not a push trigger' (Test-NoBaselineFinding $r.Out) $r.Out
 
     # Item 7.2 positive: a direct-child push: under on: still triggers, and with
-    # real validation this is a complete, silent baseline.
+    # real validation this still violates the all-host manual policy.
     $directChildPush = New-GitRepo 'directchildpush'
     Set-Content (Join-Path $directChildPush 'package.json') '{}'
     New-Item -ItemType Directory -Path (Join-Path $directChildPush '.github\workflows') -Force | Out-Null
@@ -590,7 +589,7 @@ jobs:
 '@
     Set-Content (Join-Path $directChildPush '.github\dependabot.yml') "version: 2`nupdates:`n  - package-ecosystem: npm`n    directory: /`n  - package-ecosystem: github-actions`n    directory: /"
     $r = Fire -HookPath $BaselineHook -Cwd $directChildPush
-    Check '7.2 a direct-child push: (with nested branches:) is still a trigger; adequate baseline reports no findings' ([string]$r.Out -notmatch 'GITHUB BASELINE CHECK') ([string]$r.Out)
+    Check '7.2 direct-child automatic push is rejected for every host' ([string]$r.Out -match 'Automatic CI initiating trigger|ALL CI HOSTS STAY MANUAL') ([string]$r.Out)
 
     # Quoted continue-on-error value.
     $quotedCoe = New-GitRepo 'quotedcoe'
@@ -656,6 +655,7 @@ jobs:
     }
     else {
         Write-Host '[SKIP] powershell.exe not available' -ForegroundColor Yellow
+    }
     }
 }
 finally {

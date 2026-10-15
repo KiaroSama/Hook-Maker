@@ -104,9 +104,7 @@ function Get-InstallAdvisories {
                     'verify where it landed. Rule: global-environment-rules.md -> Install Locations.')
             }
             else {
-                [void]$lines.Add($head + 'Ask the user for the install path first, naming the package and what it is, unless a remembered answer or a stated reason ' +
-                    '(installer offers no other location, Windows requires it, the user chose ' + $drive + ') covers it; then point the tool''s own ' +
-                    'setting at that path and verify where it landed. Rule: global-environment-rules.md -> Install Locations.')
+                [void]$lines.Add($head + 'Reuse the existing approved ecosystem root or explicit override first; on this workstation a new program defaults to G:\Program Files\<program-name>. Ask only when that root is unavailable/unsupported or a different location needs a decision. Location approval is not installation authorization. Preserve Windows/system exceptions and existing installations; verify the physical writes and real consumer paths. Bind project-owned temp/cache before initialization. Recycle an obsolete owned copy only after verified replacement and consumer stop, otherwise record its retention reason. Never install, move, delete or rewrite a command/config from this advice. Rule: global-environment-rules.md -> Install Locations; global-project-lifecycle-rules.md.')
             }
         }
     }

@@ -34,3 +34,12 @@
     Set-Mock -ExpectedSha (Get-HeadSha $shPushed)
     $r = Fire -HookPath $CiHook -Cwd $shPushed -EventName 'Stop'
     Check 'SH07 twin: a push-triggered repo with no run still gets the ordinary wait block' ($r.Out -match 'no runs are registered yet' -and $r.Out -notmatch 'not yet dispatched') $r.Out
+
+    $hostedManual = New-GitRepo 'hosted-manual'
+    New-Item -ItemType Directory -Path (Join-Path $hostedManual '.github/workflows') -Force | Out-Null
+    [IO.File]::WriteAllText((Join-Path $hostedManual '.github/workflows/ci.yml'), $wfDispatch.Replace('self-hosted','ubuntu-latest'), [Text.UTF8Encoding]::new($false))
+    Check 'SH08 hosted manual validation uses the same bounded predicate' (Test-ManualCiRepository $hostedManual)
+    Set-Mock -ExpectedSha (Get-HeadSha $hostedManual)
+    $r = Fire -HookPath $CiHook -Cwd $hostedManual -EventName 'Stop'
+    Check 'SH09 missing hosted dispatch is pending, never automatic or green' (
+        $r.Out -match 'final CI not yet dispatched' -and $r.Out -match 'All CI hosts stay manual' -and $r.Out -match '"decision":"block"') $r.Out

@@ -61,7 +61,7 @@
     [IO.File]::WriteAllText((Join-Path $rmRepo 'f.txt'), 'v2', (New-Object Text.UTF8Encoding $false))
     $r = Invoke-PreToolReminder -Cwd $rmRepo -Command 'git push origin main'
     Check 'RM05 a push with uncommitted work gets the push-once reminder, naming the count' (
-        $r.Out -match 'still has 1 uncommitted change' -and $r.Out -match 'pushes ONCE' -and $r.Out -notmatch 'permissionDecision') $r.Out
+        $r.Out -match 'still has 1 uncommitted change' -and $r.Out -match 'pushes ONCE' -and $r.Out -match 'manual workflow_dispatch batch on the exact SHA' -and $r.Out -notmatch 'permissionDecision') $r.Out
     $r = Invoke-PreToolReminder -Cwd $rmRepo -Command 'Get-ChildItem'
     Check 'RM06 an unrelated tool call is silent and runs no sync scan' ($r.Exit -eq 0 -and $r.Out -eq '') $r.Out
     $hookSource = [IO.File]::ReadAllText((Join-Path (Split-Path -Parent $Hook) '_branchreminders.ps1'))
