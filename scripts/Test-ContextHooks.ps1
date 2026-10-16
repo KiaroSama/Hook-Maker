@@ -11,7 +11,7 @@
 # Usage:  pwsh -NoLogo -NoProfile -File .\scripts\Test-ContextHooks.ps1 [-KeepArtifacts]
 # Exit code is the number of failed assertions (0 = all passed).
 
-param([switch]$KeepArtifacts)
+param([switch]$KeepArtifacts, [switch]$ProcessOnly)
 
 Set-StrictMode -Version 2.0
 $ErrorActionPreference = 'Stop'
@@ -232,6 +232,10 @@ function Invoke-HookResult {
 $OrigClaudeProjectDir = $env:CLAUDE_PROJECT_DIR
 
 try {
+    if ($ProcessOnly) {
+        . (Join-Path $PSScriptRoot '_testcontextprocess.ps1')
+    }
+    else {
     # ---- sections, dot-sourced so they share this scope and harness -------
     # Split by hook-under-test. Each file is a pure relocation; the assertion
     # set and its order are unchanged.
@@ -248,6 +252,7 @@ try {
     . (Join-Path $PSScriptRoot '_testcontexthooklib.ps1')
     . (Join-Path $PSScriptRoot '_testcontextprocess.ps1')
     . (Join-Path $PSScriptRoot '_testprocesstree.ps1')
+    }
 }
 finally {
     Set-ClaudeProjectDir $OrigClaudeProjectDir

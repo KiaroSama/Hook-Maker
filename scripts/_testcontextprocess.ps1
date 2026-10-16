@@ -57,14 +57,24 @@ finally { $ready.Dispose(); $child.Dispose() }
 exit 0
 '@
 Write-Utf8 $pipeProbe @'
-param($Library, $HostExe, $RootScript, $Holder, $ReadyName, $ReleaseName, $PidFile, $HolderPidFile)
+param($Library, $HostExe, $RootScript, $Holder, $ReadyName, $ReleaseName, $PidFile, $HolderPidFile, $ResultFile)
 . $Library
+$originalCleanup=(Get-Command Stop-ProcessTree).ScriptBlock
+$global:PipeCleanup=$null
+function Stop-ProcessTree {
+    param($ProcessId,$RootCreated,$TimeoutMilliseconds)
+    $value=& $originalCleanup @PSBoundParameters
+    $global:PipeCleanup=$value
+    return $value
+}
 $timer = [System.Diagnostics.Stopwatch]::StartNew()
 $output = @(Invoke-QuietCommand -FilePath $HostExe -ArgumentList @('-NoLogo', '-NoProfile', '-File', $RootScript,
     '-Library', $Library, '-HostExe', $HostExe, '-Holder', $Holder, '-ReadyName', $ReadyName,
     '-ReleaseName', $ReleaseName, '-PidFile', $PidFile, '-HolderPidFile', $HolderPidFile) -TimeoutSeconds 4)
 $code = $LASTEXITCODE
-[pscustomobject]@{ ExitCode = $code; ElapsedMs = $timer.ElapsedMilliseconds; OutputCount = $output.Count } | ConvertTo-Json -Compress
+$result=[pscustomobject]@{ ExitCode = $code; ElapsedMs = $timer.ElapsedMilliseconds; OutputCount = $output.Count; Cleanup=$global:PipeCleanup }
+[IO.File]::WriteAllText($ResultFile,($result|ConvertTo-Json -Depth 5 -Compress),[Text.UTF8Encoding]::new($false))
+$result | ConvertTo-Json -Depth 5 -Compress
 '@
 foreach ($hostName in @('pwsh', 'powershell.exe')) {
     Write-Host ('--- inherited pipe deadline: ' + $hostName + ' ---') -ForegroundColor Cyan
@@ -76,13 +86,14 @@ foreach ($hostName in @('pwsh', 'powershell.exe')) {
     $release = New-Object System.Threading.EventWaitHandle($false, [System.Threading.EventResetMode]::ManualReset, $releaseName)
     $rootPidFile = Join-Path $Work ($token + '-root.pid')
     $holderPidFile = Join-Path $Work ($token + '-holder.pid')
+    $resultFile = Join-Path $Work ($token + '-result.json')
     $probe = $null; $rootProcess = $null; $holderProcess = $null
     try {
         $info = New-Object System.Diagnostics.ProcessStartInfo
         $info.FileName = $hostExe
         $info.Arguments = ConvertTo-Win32ArgumentString @('-NoLogo', '-NoProfile', '-File', $pipeProbe,
             '-Library', $HookLib, '-HostExe', $hostExe, '-RootScript', $pipeRoot, '-Holder', $pipeHolder,
-            '-ReadyName', $readyName, '-ReleaseName', $releaseName, '-PidFile', $rootPidFile, '-HolderPidFile', $holderPidFile)
+            '-ReadyName', $readyName, '-ReleaseName', $releaseName, '-PidFile', $rootPidFile, '-HolderPidFile', $holderPidFile, '-ResultFile', $resultFile)
         $info.UseShellExecute = $false
         $info.CreateNoWindow = $true
         $info.RedirectStandardOutput = $true
@@ -96,8 +107,12 @@ foreach ($hostName in @('pwsh', 'powershell.exe')) {
         $holderReady = $ready.WaitOne($PipeHangCeilingMs)
         Check ($hostName + ': real descendant starts and holds inherited stdout/stderr') $holderReady
         if ($holderReady) {
-            $holderProcess = [System.Diagnostics.Process]::GetProcessById([int][System.IO.File]::ReadAllText($holderPidFile))
-            $null = $holderProcess.Handle
+            $holderAlreadyGone = $false
+            try {
+                $holderProcess = [System.Diagnostics.Process]::GetProcessById([int][System.IO.File]::ReadAllText($holderPidFile))
+                $null = $holderProcess.Handle
+            }
+            catch [System.ArgumentException] { $holderAlreadyGone = $true }
             try {
                 $rootProcess = [System.Diagnostics.Process]::GetProcessById([int][System.IO.File]::ReadAllText($rootPidFile))
                 # The root's own wait on the ready event has already returned, so
@@ -116,17 +131,19 @@ foreach ($hostName in @('pwsh', 'powershell.exe')) {
             Check ($hostName + ': inherited pipes cannot extend the command deadline') $returned
             # Likewise: the holder cannot exit on its own, so an exit here is the
             # timeout cleanup killing the process tree and nothing else.
-            $descendantTerminated = $returned -and $holderProcess.WaitForExit($PipeHangCeilingMs)
+            $descendantTerminated = $returned -and ($holderAlreadyGone -or $holderProcess.WaitForExit($PipeHangCeilingMs))
             if (-not $returned) { [void]$release.Set(); [void]$probe.WaitForExit($PipeHangCeilingMs) }
             # Only now can the reads finish: the holder owned the write ends, so
             # EOF arrives with its death, not after some interval.
             $captureComplete = $outTask.Wait($PipeHangCeilingMs) -and $errTask.Wait($PipeHangCeilingMs)
             $result = $null
-            if ($captureComplete) {
-                try { $result = $outTask.GetAwaiter().GetResult() | ConvertFrom-Json } catch { }
+            if ([IO.File]::Exists($resultFile)) {
+                try { $result = [IO.File]::ReadAllText($resultFile,[Text.Encoding]::UTF8) | ConvertFrom-Json } catch { }
             }
+            $detail=if($null -ne $result){$result|ConvertTo-Json -Depth 5 -Compress}else{'Independent probe result unavailable'}
             Check ($hostName + ': expired pipe drain returns timeout 124') (
-                $null -ne $result -and $result.ExitCode -eq 124) $(if ($captureComplete) { $outTask.GetAwaiter().GetResult() } else { 'Output capture did not complete.' })
+                $null -ne $result -and $result.ExitCode -eq 124) $detail
+            Check ($hostName + ': timeout output capture completes') $captureComplete $detail
             Check ($hostName + ': timeout cleanup terminates the pipe-owning descendant') $descendantTerminated
         }
     }

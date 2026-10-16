@@ -165,6 +165,13 @@ function Read-GitBlobsBatch {
             $write = $inputStream.WriteAsync($request, 0, $request.Length)
             if (-not $write.Wait($left)) { throw 'deadline' }
             [void]$write.GetAwaiter().GetResult()
+            # Framework's redirected stdin buffers small writes; completion of a
+            # write is not delivery. Flush each bounded window before reading.
+            $left = [int][Math]::Ceiling(($deadline - [DateTime]::UtcNow).TotalMilliseconds)
+            if ($left -le 0) { throw 'deadline' }
+            $flush = $inputStream.FlushAsync()
+            if (-not $flush.Wait($left)) { throw 'deadline' }
+            [void]$flush.GetAwaiter().GetResult()
             foreach ($sha in $window) { $results[$sha] = $reader.Frame($sha, $MaxFullBytes) }
         }
         $inputStream.Close()
