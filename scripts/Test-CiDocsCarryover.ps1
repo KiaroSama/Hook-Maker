@@ -1,6 +1,6 @@
 # Focused docs-only carryover seam: real isolated git, bounded fake GitHub.
 # One fixture shared across pure variants; no network, waits or real state edits.
-param([switch]$KeepArtifacts, [switch]$LargeRepositoryOnly)
+param([switch]$KeepArtifacts, [switch]$LargeRepositoryOnly, [switch]$LockfileOnly)
 Set-StrictMode -Version 2.0
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot '_testlib.ps1')
@@ -8,6 +8,7 @@ $script:Pass = 0; $script:Fail = 0
 $Work = New-TestWorkspace -Prefix 'hookmaker-docscarryover'
 $HookRoot = Join-Path (Split-Path -Parent $PSScriptRoot) 'hooks'
 . (Join-Path $HookRoot '_hooklib.ps1')
+. (Join-Path $HookRoot '_scope.ps1')
 . (Join-Path $HookRoot 'Ci-Status-Check\_pathsfilter.ps1')
 . (Join-Path $HookRoot 'Ci-Status-Check\_docsonly.ps1')
 function Commit-Fixture {
@@ -18,7 +19,7 @@ function Commit-Fixture {
     & git -C $repo add .; & git -C $repo commit -qm $Message
     return ([string](& git -C $repo rev-parse HEAD)).Trim()
 }
-$script:Case = 'green'; $script:Calls = 0
+$script:Case = 'green'; $script:Calls = 0; $script:ManualFixture = $false
 function Get-GhRemainingSeconds { return 30 }
 function Invoke-GhBounded {
     param([string[]]$ArgumentList)
@@ -44,7 +45,10 @@ function Invoke-GhBounded {
         $sha = if ($script:Case -eq 'mismatch') { 'a' * 40 } else { $script:BaseSha }
         $slug = if ($script:Case -eq 'wrong-repo') { 'other/repo' } else { 'owner/repo' }
         $count = if ($script:Case -eq 'incomplete') { 2 } else { 1 }
-        return (@{ total_count = $count; workflow_runs = @(@{ id = 1; head_sha = $sha; head_repository = @{ full_name = $slug }; status = $status; conclusion = $conclusion; path = '.github/workflows/ci.yml'; event = 'push' }) } | ConvertTo-Json -Depth 6 -Compress)
+        $event = if ($script:ManualFixture -and $script:Case -ne 'manual-wrong-event') { 'workflow_dispatch' } else { 'push' }
+        $branch = if ($script:Case -eq 'manual-wrong-branch') { 'other' } else { 'main' }
+        $path = if ($script:Case -eq 'manual-wrong-path') { '.github/workflows/other.yml' } else { '.github/workflows/ci.yml' }
+        return (@{ total_count = $count; workflow_runs = @(@{ id = 1; head_sha = $sha; head_repository = @{ full_name = $slug }; status = $status; conclusion = $conclusion; path = $path; event = $event; head_branch = $branch }) } | ConvertTo-Json -Depth 6 -Compress)
     }
     if ($endpoint -match '/check-runs') {
         $c = if ($script:Case -eq 'check-failed') { 'failure' } else { 'success' }
@@ -60,13 +64,18 @@ function Invoke-GhBounded {
 }
 try {
     . (Join-Path $PSScriptRoot '_testcidocslarge.ps1')
-    Invoke-LargeDocsStopRegression -Workspace $Work -HooksRoot $HookRoot -SmokeOnly:$LargeRepositoryOnly
+    if (-not $LockfileOnly) { Invoke-LargeDocsStopRegression -Workspace $Work -HooksRoot $HookRoot -SmokeOnly:$LargeRepositoryOnly }
     if ($LargeRepositoryOnly) {
         Write-Host ('Passed: ' + $script:Pass + ' Failed: ' + $script:Fail)
         exit $script:Fail
     }
     $repo = Join-Path $Work 'repo'; [void][IO.Directory]::CreateDirectory($repo)
     & git -C $repo init -qb main; & git -C $repo config user.name fixture; & git -C $repo config user.email fixture@example.invalid; & git -C $repo config core.autocrlf false
+    if ($LockfileOnly) {
+        . (Join-Path $PSScriptRoot '_testcidocslockfile.ps1')
+        Write-Host ('Passed: ' + $script:Pass + ' Failed: ' + $script:Fail)
+        exit $script:Fail
+    }
     [void](Commit-Fixture '.github/workflows/ci.yml' "on: [push]`njobs:`n  test:`n    runs-on: windows-latest`n    steps: []" 'code')
     $script:BaseSha = ([string](& git -C $repo rev-parse HEAD)).Trim()
     $sha = Commit-Fixture 'README.md' 'docs'
@@ -141,10 +150,18 @@ try {
         }
         finally { foreach ($child in $children) { if (-not $child.HasExited) { $child.Kill(); [void]$child.WaitForExit(10000) }; $child.Dispose() } }
     }
+    $safeFixture = $sha; $safeBase = $script:BaseSha
+    . (Join-Path $PSScriptRoot '_testcidocsmanual.ps1')
+    . (Join-Path $PSScriptRoot '_testcidocslockfile.ps1')
+    & git -C $repo reset --hard $safeFixture *> $null
+    if ($LASTEXITCODE -ne 0) { throw 'Isolated fixture restoration failed' }
+    $script:ManualFixture = $false; $script:Case = 'green'
+    $script:BaseSha = $safeBase
+    Check 'semantic consumer negative starts from eligible clean fixture' ($null -ne (Get-DocsOnlyCarryover $repo $safeFixture 'main' 'owner/repo' $state))
     $consumerSha = Commit-Fixture 'scripts/doctest.js' "readFileSync('README.md'); runExamples();"
     $script:BaseSha = $consumerSha
     $docs = Commit-Fixture 'README.md' 'changed consumed markdown'
-    Check 'semantic Markdown consumer is not documentation exempt' ($null -eq (Get-DocsOnlyCarryover $repo $docs 'main' 'owner/repo' $state))
+    Check 'semantic Markdown consumer is not documentation exempt' ($null -eq (Get-DocsOnlyCarryover $repo $docs 'main' 'owner/repo' $state) -and $script:DocsCarryoverReason -match 'scripts/doctest\.js')
 }
 finally { if (-not $KeepArtifacts -and -not (Remove-TestWorkspace $Work)) { $script:Fail++ } }
 Write-Host ('Passed: ' + $script:Pass + ' Failed: ' + $script:Fail)

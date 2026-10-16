@@ -1,6 +1,46 @@
 # Size is not evidence of a consumer. Discover relevant inputs across the full
 # tracked tree, including vendor/tests; unreadable or incomplete scope is unknown.
 . (Join-Path $PSScriptRoot '_docsquery.ps1')
+# Recognize a fully consumed Cargo-generated data subset, not a suffix waiver.
+# Escapes, unknown tables/keys and other TOML forms stay unknown; no evaluation.
+function Test-DocsCargoLockData {
+    param([string]$Path, [string[]]$Lines)
+    if ([IO.Path]::GetFileName($Path) -cne 'Cargo.lock') { return $false }
+    $version = $false; $package = $false; $array = $false; $count = 0; $fields = @{}
+    $quoted = '"[^"\\\x00-\x1f]*"'
+    foreach ($raw in $Lines) {
+        $line = $raw.Trim()
+        if ($line -eq '' -or $line.StartsWith('#')) { continue }
+        if ($array) {
+            if ($line -eq ']') { $array = $false; continue }
+            if ($arrayLast -or $line -notmatch ('^' + $quoted + ',?$')) { return $false }
+            $arrayLast = -not $line.EndsWith(',')
+            continue
+        }
+        if ($line -ceq '[[package]]') {
+            if (-not $version -or ($package -and (-not $fields.ContainsKey('name') -or -not $fields.ContainsKey('version')))) { return $false }
+            $package = $true; $count++; $fields = @{}; continue
+        }
+        if (-not $package) {
+            if ($version -or $line -cnotmatch '^version = [34]$') { return $false }
+            $version = $true; continue
+        }
+        if ($line -cnotmatch '^(name|version|source|checksum|replace|dependencies) = (.+)$') { return $false }
+        $key = $Matches[1]; $value = $Matches[2]
+        if ($fields.ContainsKey($key)) { return $false }
+        $fields[$key] = $true
+        if ($key -eq 'dependencies') {
+            if ($value -eq '[') { $array = $true; $arrayLast = $false; continue }
+            if ($value -notmatch ('^\[\s*(?:' + $quoted + '\s*,\s*)*(?:' + $quoted + '\s*)?\]$')) { return $false }
+        }
+        elseif ($value -notmatch ('^' + $quoted + '$')) { return $false }
+        elseif ($key -eq 'name' -and $value -notmatch '^"[A-Za-z0-9_-]+"$') { return $false }
+        elseif ($key -eq 'version' -and $value -notmatch '^"[0-9]+\.[0-9]+\.[0-9]+(?:[-+][A-Za-z0-9.+-]+)?"$') { return $false }
+        elseif ($key -eq 'checksum' -and $value -notmatch '^"[a-f0-9]{64}"$') { return $false }
+    }
+    return ($version -and $count -gt 0 -and -not $array -and $fields.ContainsKey('name') -and $fields.ContainsKey('version'))
+}
+
 function Test-DocsHaveSemanticConsumers {
     param([string]$ProjectRoot, [string]$Sha, [string[]]$Files)
     $script:DocsCarryoverReason = 'unknown: documentation consumer evidence incomplete'
@@ -31,6 +71,9 @@ function Test-DocsHaveSemanticConsumers {
         if ($LASTEXITCODE -ne 0) { return $true }
         $text = $lines -join "`n"; $bytes += [Text.Encoding]::UTF8.GetByteCount($text)
         if ($bytes -gt 1048576) { $script:DocsCarryoverReason = 'unknown: relevant consumer content exceeds 1 MiB'; return $true }
+        # Dependency names are not executable reader operations. Literal changed-doc
+        # references still require proof; data classification does not certify consumers.
+        if ($literal -notcontains $match -and (Test-DocsCargoLockData $path $lines)) { continue }
         # Plain prose links are references, not reads. Embedded executable blocks
         # and include directives remain unknown, including inside vendor Markdown.
         if ($path -match '\.(md|txt)$' -and $text -notmatch '```|~~~|(?i)(include|doctest|mdx|<script)') { continue }

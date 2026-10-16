@@ -108,7 +108,7 @@ function New-IsolatedHookCopy {
     New-Item -ItemType Directory -Path $dir -Force | Out-Null
     # The whole hook PACKAGE - the installer stages every .ps1 beside the entry
     # point, so a single-file copy would exercise a runtime that cannot exist.
-    foreach ($pkgFile in @(Get-ChildItem -LiteralPath (Split-Path -Parent $Hook) -File -Filter '*.ps1')) {
+    foreach ($pkgFile in @(Get-ChildItem -LiteralPath (Split-Path -Parent $Hook) -File | Where-Object { $_.Extension -in @('.ps1','.cs') })) {
         Copy-Item $pkgFile.FullName (Join-Path $dir $pkgFile.Name) -Force
     }
     Copy-TestRuntimeLibraries -SourceHookLib $HookLib -Destination (Join-Path $Work '_hooklib.ps1')

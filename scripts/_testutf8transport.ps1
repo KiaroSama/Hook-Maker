@@ -128,6 +128,10 @@
             $null -eq (Get-Process -Id $childPid -ErrorAction SilentlyContinue))
     } finally { Set-Item -Path Function:New-Utf8GitProcess -Value $factory }
 
+    if ($TransportOnly) {
+        . (Join-Path $PSScriptRoot '_testutf8batchfaults.ps1')
+        . (Join-Path $PSScriptRoot '_testutf8batchprocess.ps1')
+    }
     # Drained classified objects must leave the next header at its exact byte.
     foreach ($firstBody in @([byte[]]@(0,0,97), [Text.Encoding]::ASCII.GetBytes('a'*3000))) {
         $bytes = [Text.Encoding]::ASCII.GetBytes($oid+' blob '+$firstBody.Length+"`n") + $firstBody + [byte[]]@(10) +

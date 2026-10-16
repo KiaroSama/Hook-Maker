@@ -25,8 +25,9 @@ function Test-DocsAncestorGreen {
             [string](Get-Field (Get-Field $run 'head_repository') 'full_name') -ine $RepoSlug -or
             [string](Get-Field $run 'status') -cne 'completed' -or [string](Get-Field $run 'conclusion') -cne 'success') { return $false }
     }
-    # Every branch-applicable push workflow must be represented. Unknown YAML or
-    # a workflow filtered out of this ancestor is conservative: no carryover.
+    # Every applicable initiating workflow must have exact ancestor evidence.
+    # Reusable-only children are covered by the root's complete checks, not
+    # mistaken for independently dispatched roots. Unknown declarations refuse.
     $workflows = @(Invoke-DocsGit -Arguments @('-C', $ProjectRoot, 'ls-tree', '-r', '--name-only', $Sha, '--', '.github/workflows'))
     if ($LASTEXITCODE -ne 0 -or $workflows.Count -gt 50) { return $false }
     $expected = 0
@@ -34,6 +35,17 @@ function Test-DocsAncestorGreen {
         if ($path -notmatch '\.ya?ml$') { continue }
         $text = @(Invoke-DocsGit -Arguments @('-C', $ProjectRoot, 'show', ($Sha + ':' + $path))) -join "`n"
         if ($LASTEXITCODE -ne 0) { return $false }
+        $triggers = @(Get-WorkflowTopTriggers $text)
+        if ($triggers.Count -eq 0 -or $text -match '(?m)^\t|^ *<<:|^ *[A-Za-z0-9_-]+:\s*[&*][A-Za-z0-9_-]+\s*(?:#.*)?$' -or
+            @($triggers | Where-Object { $_ -cnotin @('push','workflow_dispatch','workflow_call') }).Count) { return $false }
+        if ($triggers -ccontains 'workflow_dispatch') {
+            $expected++
+            if (@($runs | Where-Object {
+                [string](Get-Field $_ 'path') -ceq $path -and
+                [string](Get-Field $_ 'event') -ceq 'workflow_dispatch' -and
+                [string](Get-Field $_ 'head_branch') -ceq $Branch
+            }).Count -eq 0) { return $false }
+        }
         $filter = Get-WorkflowPushFilter -Text $text
         if ($null -eq $filter) { continue }
         if (-not $filter.Certain -or @(@($filter.Branches) + @($filter.BranchesIgnore) | Where-Object { $_ -match '[?+\[\]]' }).Count -gt 0) { return $false }

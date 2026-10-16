@@ -137,30 +137,55 @@ function New-Utf8GitProcess {
 function Read-GitBlobsBatch {
     param([string]$Cwd, [string[]]$BlobShas, [int64]$MaxFullBytes, [DateTime]$DeadlineUtc = ([DateTime]::UtcNow.AddSeconds(20)))
     $results = @{}
-    foreach ($sha in $BlobShas) { $results[$sha] = [pscustomobject]@{ Class = ""; Bytes = $null; Truncated = $false; Failed = $true } }
+    foreach ($sha in $BlobShas) { $results[$sha] = [pscustomobject]@{ Class = ""; Bytes = $null; Truncated = $false; Failed = $true; Failure = 'invalid-object-id' } }
     $valid = @($BlobShas | Where-Object { $_ -match "^(?:[0-9a-f]{40}|[0-9a-f]{64})$" } | Select-Object -Unique)
     if ($valid.Count -eq 0) { return $results }
-    $proc = $null
+    $proc = $null; $index = 0; $phase = 'reader-initialization'
     $deadline = [DateTime]::UtcNow.AddSeconds(20)
     if ($DeadlineUtc -lt $deadline) { $deadline = $DeadlineUtc }
     if ($null -ne $script:HookDeadlineUtc -and $script:HookDeadlineUtc -lt $deadline) { $deadline = $script:HookDeadlineUtc }
     try {
-        if ([DateTime]::UtcNow -ge $deadline) { throw "UTF-8 batch deadline exhausted before startup" }
+        if ([DateTime]::UtcNow -ge $deadline) { throw 'deadline' }
+        Initialize-Utf8BatchReader
+        $phase = 'process-start'
         $proc = New-Utf8GitProcess -Cwd $Cwd
-        [void]$proc.Start()
+        if (-not $proc.Start()) { throw 'process-start' }
+        $phase = 'transport'
         $proc.BeginErrorReadLine()
         $inputStream = $proc.StandardInput.BaseStream
         $outputStream = $proc.StandardOutput.BaseStream
-        foreach ($sha in $valid) {
-            if ([DateTime]::UtcNow -ge $deadline) { throw "UTF-8 batch deadline exhausted" }
-            $request = [System.Text.Encoding]::ASCII.GetBytes($sha + "`n")
-            $inputStream.Write($request, 0, $request.Length)
-            $inputStream.Flush()
-            $results[$sha] = Read-Utf8BatchFrame $outputStream $sha $MaxFullBytes $deadline
+        $reader = [HookMakerUtf8.BatchReader]::new($outputStream, $deadline)
+        # <=2080 request bytes fit the ordinary pipe without accumulating bodies;
+        # bounded async writes still fail closed on a child that stops reading.
+        for ($index = 0; $index -lt $valid.Count; $index += 32) {
+            $window = @($valid[$index..([Math]::Min($valid.Count - 1, $index + 31))])
+            $request = [Text.Encoding]::ASCII.GetBytes(($window -join "`n") + "`n")
+            $left = [int][Math]::Ceiling(($deadline - [DateTime]::UtcNow).TotalMilliseconds)
+            if ($left -le 0) { throw 'deadline' }
+            $write = $inputStream.WriteAsync($request, 0, $request.Length)
+            if (-not $write.Wait($left)) { throw 'deadline' }
+            [void]$write.GetAwaiter().GetResult()
+            foreach ($sha in $window) { $results[$sha] = $reader.Frame($sha, $MaxFullBytes) }
         }
         $inputStream.Close()
+        $reader.Complete()
+        $left = [int][Math]::Max(1, [Math]::Ceiling(($deadline - [DateTime]::UtcNow).TotalMilliseconds))
+        if (-not $proc.WaitForExit($left)) { throw 'deadline' }
+        if ($proc.ExitCode -ne 0) { throw 'process-exit' }
     }
-    catch { }
+    catch {
+        $reason = $phase
+        $message = $_.Exception.ToString()
+        foreach ($code in @('deadline','missing-object','malformed-header','short-header','short-body','missing-delimiter','trailing-output','process-start','process-exit')) {
+            if ($message.Contains($code)) { $reason = $code; break }
+        }
+        foreach ($sha in $valid) {
+            if ($results[$sha].Failed -or $reason -eq 'process-exit' -or $index -ge $valid.Count) {
+                $results[$sha].Failed = $true
+                $results[$sha].Failure = $reason
+            }
+        }
+    }
     finally {
         try { if (-not $proc.HasExited) { $proc.Kill() } } catch { }
         try { [void]$proc.WaitForExit(2000) } catch { }

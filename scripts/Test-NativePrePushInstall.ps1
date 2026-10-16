@@ -152,6 +152,8 @@ try {
     $nativeUtf8ConfigHash = (Get-FileHash -LiteralPath $nativeUtf8Config -Algorithm SHA256).Hash
     $streamCompanion = Join-Path (Split-Path -Parent $companionUtf8Script) '_streamvalidation.ps1'
     Check 'native UTF8 companion contains its streaming validation payload' (Test-Path -LiteralPath $streamCompanion)
+    $batchCompanion = Join-Path (Split-Path -Parent $companionUtf8Script) '_batchreader.cs'
+    Check 'native UTF8 compiled adapter is installed byte-identically' ((Get-FileHash $batchCompanion).Hash -eq (Get-FileHash (Join-Path $RealHooksDir 'Utf8-Encoding-Check/_batchreader.cs')).Hash)
 
 
 
@@ -178,6 +180,7 @@ try {
 
     Add-Content -LiteralPath $companionSecretsScript -Value '# deliberately corrupted companion'
     [System.IO.File]::AppendAllText($streamCompanion, "`r`n# stale streaming helper", [System.Text.Encoding]::UTF8)
+    [IO.File]::AppendAllText($batchCompanion, "`r`n// stale compiled adapter", [Text.Encoding]::UTF8)
 
     $staleCompanionHash = (Get-FileHash -LiteralPath $companionSecretsScript -Algorithm SHA256).Hash
 
@@ -230,6 +233,7 @@ try {
 
 
 
+    Check 'official updater repairs compiled adapter and preserves exact manifest coverage' ((Get-FileHash $batchCompanion).Hash -eq (Get-FileHash (Join-Path $RealHooksDir 'Utf8-Encoding-Check/_batchreader.cs')).Hash)
     $wrapperBody = [System.IO.File]::ReadAllText($prePushFile)
 
     Check 'the preserved previous pre-push hook is byte-for-byte unchanged' (

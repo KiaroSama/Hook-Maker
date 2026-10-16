@@ -83,24 +83,16 @@ function Get-Utf8FileClassification {
     return $result
 }
 
+function Initialize-Utf8BatchReader {
+    if (-not ('HookMakerUtf8.BatchReader' -as [type])) {
+        Add-Type -ErrorAction Stop -TypeDefinition ([IO.File]::ReadAllText((Join-Path $PSScriptRoot '_batchreader.cs'), [Text.Encoding]::UTF8))
+    }
+}
+
 function Read-Utf8BatchFrame {
     param([System.IO.Stream]$Stream, [string]$ExpectedSha, [int64]$MaxFullBytes, [DateTime]$DeadlineUtc)
-    $header = New-Object System.Collections.Generic.List[byte]
-    $one = New-Object byte[] 1
-    while ($header.Count -le 128) {
-        if ((Read-Utf8StreamChunk $Stream $one 0 1 $DeadlineUtc) -ne 1) { throw 'cat-file --batch ended in header' }
-        if ($one[0] -eq 10) { break }
-        [void]$header.Add($one[0])
-    }
-    if ($header.Count -gt 128) { throw 'cat-file --batch header exceeded bound' }
-    $text = [System.Text.Encoding]::ASCII.GetString($header.ToArray())
-    $pattern = '^' + [regex]::Escape($ExpectedSha) + ' blob ([0-9]+)$'
-    $size = [int64]0
-    $match = [regex]::Match($text, $pattern)
-    if (-not $match.Success -or -not [int64]::TryParse($match.Groups[1].Value, [ref]$size)) { throw 'cat-file --batch malformed object header' }
-    $class = Read-Utf8StreamClassification $Stream $size $MaxFullBytes $DeadlineUtc -Drain
-    # The separator is NOT part of the body or decoder: consuming size+1 in
-    # one read both hid malformed separators and could swallow the next header.
-    if ((Read-Utf8StreamChunk $Stream $one 0 1 $DeadlineUtc) -ne 1 -or $one[0] -ne 10) { throw 'cat-file --batch missing object delimiter' }
-    return [pscustomobject]@{ Class = $class; Bytes = $null; Truncated = ($class -eq 'oversized'); Failed = $false }
+    Initialize-Utf8BatchReader
+    # A one-frame caller does not own persistent lookahead. Never consume bytes
+    # from the next frame; the batch orchestrator uses its own reusable reader.
+    return ([HookMakerUtf8.BatchReader]::new($Stream, $DeadlineUtc, $false)).Frame($ExpectedSha, $MaxFullBytes)
 }

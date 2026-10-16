@@ -343,7 +343,7 @@ if ($GitPrePush) {
         foreach ($blob in $toCheck) {
             $read = $reads[$blob.Sha]
             if ($read.Failed) {
-                [void]$coverageErrors.Add('outgoing blob for ' + $blob.Path + ' could not be read; refusing to treat the push as clean')
+                [void]$coverageErrors.Add('outgoing blob for ' + $blob.Path + ' could not be read (' + [string](Get-Field $read 'Failure') + '); refusing to treat the push as clean')
                 continue
             }
             $class = Resolve-ClassWithExtension -RelativePath $blob.Path -RawClass $read.Class
@@ -368,7 +368,7 @@ if ($GitPrePush) {
         $shown++
     }
     foreach ($coverageError in $coverageErrors.ToArray()) { [void]$lines.Add('- Outgoing coverage incomplete: ' + $coverageError + '.') }
-    [void]$lines.Add('Re-save each named file as strict UTF-8 in a new commit (this hook never rewrites or transcodes anything), or add a narrow documented exception to ' + $exceptionFileSetting + ', then push again.')
+    [void]$lines.Add($(if ($violations.Count) { 'Re-save confirmed encoding violations as strict UTF-8, or document a narrow required-encoding exception in ' + $exceptionFileSetting + '.' } else { 'Coverage is unknown: repair the named transport/deadline/resource failure; resaving files or encoding exceptions do not repair incomplete reads. No bypass or automatic retry.' }))
     foreach ($warning in $configWarnings.ToArray()) { [void]$lines.Add('Utf8-Encoding-Check .env: ' + $warning) }
     # Advisory-only softens CONFIRMED findings to a warning, but an
     # unscannable REQUIRED range still fails closed - a gate must never

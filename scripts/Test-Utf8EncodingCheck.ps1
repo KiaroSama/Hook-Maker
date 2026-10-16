@@ -19,7 +19,7 @@
 # Usage:  pwsh -NoLogo -NoProfile -File .\scripts\Test-Utf8EncodingCheck.ps1 [-KeepArtifacts]
 # Exit code is the number of failed assertions (0 = all passed).
 
-param([switch]$KeepArtifacts, [switch]$StreamOnly, [switch]$TransportOnly)
+param([switch]$KeepArtifacts, [switch]$StreamOnly, [switch]$TransportOnly, [switch]$BatchOnly, [switch]$BatchFaultsOnly)
 
 Set-StrictMode -Version 2.0
 $ErrorActionPreference = 'Stop'
@@ -55,10 +55,18 @@ $env:CLAUDE_PROJECT_DIR = ''
 . (Join-Path $PSScriptRoot '_testutf8harness.ps1')
 
 try {
-    if ($TransportOnly) { . (Join-Path $PSScriptRoot '_testutf8transport.ps1') }
+    if ($BatchFaultsOnly) {
+        . (Join-Path $HooksRoot 'Utf8-Encoding-Check/_classification.ps1')
+        . (Join-Path $HooksRoot 'Utf8-Encoding-Check/_streamvalidation.ps1')
+        . (Join-Path $PSScriptRoot '_testutf8batchfaults.ps1')
+        . (Join-Path $PSScriptRoot '_testutf8batchprocess.ps1')
+    }
+    elseif ($BatchOnly) { . (Join-Path $PSScriptRoot '_testutf8batch.ps1') }
+    elseif ($TransportOnly) { . (Join-Path $PSScriptRoot '_testutf8transport.ps1') }
     else {
     . (Join-Path $PSScriptRoot '_testutf8stream.ps1')
     if (-not $StreamOnly) {
+    . (Join-Path $PSScriptRoot '_testutf8batch.ps1')
     # Byte classification + exception-registry validation.
     . (Join-Path $PSScriptRoot '_testutf8classify.ps1')
 
