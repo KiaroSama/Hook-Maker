@@ -105,7 +105,8 @@ try {
     $payload.hook_event_name = 'Stop'
     $values = @(Invoke-Workers 'receipt' $payload)
     $record = Read-TaskIdentityRecord -Path (Get-TaskScope $payload).Path
-    Check-Case 'six concurrent receipt mutations all succeed without lost updates' (@($values | Where-Object { -not $_.Ok }).Count -eq 0 -and @($record.blockFingerprints).Count -eq 6)
+    $receiptDetail = (@{workers=@($values|ForEach-Object{@{ok=$_.Ok;state=$_.State}});persistedCount=@($record.blockFingerprints).Count}|ConvertTo-Json -Depth 5 -Compress)
+    Check-Case 'six concurrent receipt mutations all succeed without lost updates' (@($values | Where-Object { -not $_.Ok }).Count -eq 0 -and @($record.blockFingerprints).Count -eq 6) $receiptDetail
     Check-Case 'receipt mutations retain their original task' ($record.taskId -ceq $task)
     foreach ($n in 1..5) { $null = Set-StopBlockMarker -HookInput $payload -HookName ('Seed-' + $n) -FindingFingerprint ('seed-' + $n) }
     $payload.stop_hook_active = $true

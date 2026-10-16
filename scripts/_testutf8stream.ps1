@@ -26,6 +26,7 @@ if (-not $StreamOnly) {
     $transportErr = Join-Path $Work 'transport51.err'
     $transportHost = Start-BoundedProcess -FilePath 'powershell.exe' -ArgumentList @('-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', (Join-Path $ScriptRoot 'Test-Utf8EncodingCheck.ps1'), '-TransportOnly') -RedirectStandardOutput $transportOut -RedirectStandardError $transportErr -TimeoutMs 30000
     $transportText = [IO.File]::ReadAllText($transportOut, [Text.Encoding]::UTF8)
+    if ($transportHost.ExitCode -ne 0 -or $transportText -notmatch 'Passed: [1-9][0-9]*  Failed: 0') { Write-Host ('Transport51 exit=' + $transportHost.ExitCode + ' diagnostic: ' + [IO.File]::ReadAllText($transportErr,[Text.Encoding]::UTF8) + $transportText) }
     Check 'WindowsPowerShell5.1 executes every transport/resource boundary assertion' ($transportHost.ExitCode -eq 0 -and $transportText -match 'Passed: [1-9][0-9]*  Failed: 0') ([IO.File]::ReadAllText($transportErr, [Text.Encoding]::UTF8)+$transportText)
     # Whole public native scan: a large blob is followed by a smaller invalid
     # blob, exercising frame alignment without manufacturing Git output.

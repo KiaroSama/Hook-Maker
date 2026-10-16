@@ -27,7 +27,9 @@ Write-Host ('Batch elapsedSeconds='+[Math]::Round($clock.Elapsed.TotalSeconds,2)
 if (-not $BatchOnly) {
     $batch51Out=Join-Path $Work 'batch51.out'; $batch51Err=Join-Path $Work 'batch51.err'
     $batch51=Start-BoundedProcess -FilePath powershell.exe -ArgumentList @('-NoProfile','-NonInteractive','-File',(Join-Path $PSScriptRoot 'Test-Utf8EncodingCheck.ps1'),'-BatchOnly') -RedirectStandardOutput $batch51Out -RedirectStandardError $batch51Err -TimeoutMs 40000
-    Check '5.1 validates realistic1358blob batch within unchanged production budget' ($batch51.ExitCode-eq0-and[IO.File]::ReadAllText($batch51Out,[Text.Encoding]::UTF8)-match'Passed: 1  Failed: 0'-and[IO.File]::ReadAllText($batch51Err,[Text.Encoding]::UTF8)-eq'')
+    $batch51Text=[IO.File]::ReadAllText($batch51Out,[Text.Encoding]::UTF8); $batch51Error=[IO.File]::ReadAllText($batch51Err,[Text.Encoding]::UTF8)
+    if($batch51.ExitCode-ne0-or$batch51Text-notmatch'Passed: 1  Failed: 0'-or$batch51Error-ne''){Write-Host ('Batch51 exit='+$batch51.ExitCode+' diagnostic: '+$batch51Error+$batch51Text)}
+    Check '5.1 validates realistic1358blob batch within unchanged production budget' ($batch51.ExitCode-eq0-and$batch51Text-match'Passed: 1  Failed: 0'-and$batch51Error-eq'')
     $hc=New-IsolatedHookCopy -EnvContent "UTF8_MAX_FILE_KB=8192`n"
     $r=FireGitPrePush -Cwd $repo -StdinText (Get-RefUpdateLine $repo -RemoteSha ('0'*40)) -HookPath $hc.Script -LocalAppData $hc.LocalAppData
     Check 'real native outgoing range validates all2117 paths /1358 blobs without exception' ($r.Exit-eq0-and$r.Err-eq'') $r.Err
