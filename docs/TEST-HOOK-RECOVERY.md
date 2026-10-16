@@ -99,7 +99,10 @@ HEAD plus sorted-status acquisition. Status lines use case-sensitive ordinal ord
 not culture-sensitive sorting, so Windows PowerShell 5.1 (NLS) and pwsh (ICU)
 agree for unchanged punctuation, case and Unicode paths. Both snapshots must match;
 no raw Git status bytes are normalized. Acquisition retains a four-second total
-budget shared by physical/approval checks and all five Git reads; each child gets
+budget shared by physical/approval checks and four Git processes. The first
+`rev-parse --show-toplevel HEAD` must return exactly root and HEAD; status/HEAD/status
+then retain both HEAD and both status comparisons. This avoids one process-start
+cycle without cached identity, relaxed approval or a longer deadline; each child gets
 the remaining milliseconds, including the final fractional second. Exhaustion or
 a timed-out Git process reports `gitTimedOut`, never a guessed fingerprint. Other
 launch failures remain unavailable. This does not guarantee acquisition under

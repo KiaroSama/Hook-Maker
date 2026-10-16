@@ -66,22 +66,25 @@ function Get-RepositoryAccessSnapshot {
         try {$identity=Get-RepositoryApprovalIdentity $repo;$answer.GitEnvironment=Get-RepositoryGitEnvironment $identity}
         catch {$answer.Diagnosis='repositoryIdentityOrConfigurationInvalid';return $answer}
     }
-    $first=Invoke-RepositoryGit -Arguments @('-C',$root,'rev-parse','--show-toplevel')
+    # rev-parse emits root then HEAD in one process; avoid paying startup twice.
+    $first=Invoke-RepositoryGit -Arguments @('-C',$root,'rev-parse','--show-toplevel','HEAD')
     if($null-eq$first-or$first.ExitCode-ne0) {
         $answer.Diagnosis=Get-RepositoryGitDiagnosis $first
         if($answer.Diagnosis-eq'nonrepository'-and$repo-eq''){$answer.State='nonrepository'}
         return $answer
     }
-    $verifiedRoot=([string]$first.Output).Trim()
+    $initial=@(([string]$first.Output).TrimEnd([char[]]@("`r","`n"))-split'\r?\n')
+    if($initial.Count-ne2-or[string]::IsNullOrWhiteSpace($initial[0])-or[string]::IsNullOrWhiteSpace($initial[1])){$answer.Diagnosis='gitFailed';return $answer}
+    $verifiedRoot=$initial[0]
+    $head1=[string]$initial[1]
     try {$verifiedRoot=Get-RepositoryPhysicalRoot $verifiedRoot} catch {$answer.Diagnosis='physicalRootUnproven';return $answer}
     if($repo-eq''-or-not[string]::Equals($verifiedRoot,$repo,[StringComparison]::OrdinalIgnoreCase)){$answer.Diagnosis='repositoryRootMismatch';return $answer}
     $answer.RepositoryRoot=$verifiedRoot
-    $head1=Invoke-RepositoryGit -Arguments @('-C',$root,'rev-parse','HEAD')
     $status1=Invoke-RepositoryGit -Arguments @('-C',$root,'status','--porcelain')
     $head2=Invoke-RepositoryGit -Arguments @('-C',$root,'rev-parse','HEAD')
     $status2=Invoke-RepositoryGit -Arguments @('-C',$root,'status','--porcelain')
-    foreach($result in @($head1,$status1,$head2,$status2)){if($null-eq$result-or$result.ExitCode-ne0){$answer.Diagnosis=Get-RepositoryGitDiagnosis $result;return $answer}}
-    $head=([string]$head1.Output).Trim()
+    foreach($result in @($status1,$head2,$status2)){if($null-eq$result-or$result.ExitCode-ne0){$answer.Diagnosis=Get-RepositoryGitDiagnosis $result;return $answer}}
+    $head=$head1.Trim()
     [string[]]$lines1=@([string]$status1.Output-split'\r?\n'|Where-Object{$_})
     [string[]]$lines2=@([string]$status2.Output-split'\r?\n'|Where-Object{$_})
     # Machine identity must not depend on the host's NLS/ICU culture comparer.

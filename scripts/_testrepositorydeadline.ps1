@@ -17,12 +17,35 @@ function Invoke-RepositoryDeadlineRegression {
             param($FilePath,$ArgumentList,$TimeoutSeconds,$TimeoutMilliseconds,[switch]$CaptureOutput,$Environment)
             $script:AcquisitionCalls++
             $script:AcquisitionBudgets+=@{Seconds=$TimeoutSeconds;Milliseconds=$TimeoutMilliseconds}
-            $script:AcquisitionClock.Elapsed=[TimeSpan]::FromMilliseconds($script:AcquisitionCalls*800)
-            $output=if($ArgumentList-contains'--show-toplevel'){$repo}elseif($ArgumentList-contains'HEAD'){'abc123'}else{'?? a.txt'}
+            $cost=if($script:AcquisitionCalls-eq1){1800}else{700}
+            if($TimeoutMilliseconds-lt$cost){return [pscustomobject]@{ExitCode=124;Output='';ErrorOutput=''}}
+            $script:AcquisitionClock.Elapsed=[TimeSpan]::FromMilliseconds(1800+($script:AcquisitionCalls-1)*700)
+            $output=if($ArgumentList-contains'--show-toplevel'){
+                if($ArgumentList-contains'HEAD'){$repo+"`nabc123"}else{$repo}
+            }elseif($ArgumentList-contains'HEAD'){'abc123'}else{'?? a.txt'}
             return [pscustomobject]@{ExitCode=0;Output=$output;ErrorOutput=''}
         }
         $snapshot=Get-RepositoryAccessSnapshot $repo
-        Check 'fractional final-read budget is usable without extending total deadline' ($snapshot.State-eq'available'-and$script:AcquisitionCalls-eq5-and$script:AcquisitionBudgets[4].Milliseconds-gt0-and$script:AcquisitionBudgets[4].Milliseconds-le1400)
+        Check 'root and first HEAD share one launch within unchanged total deadline' ($snapshot.State-eq'available'-and$script:AcquisitionCalls-eq4-and$script:AcquisitionBudgets[3].Milliseconds-gt0-and$script:AcquisitionBudgets[3].Milliseconds-le1400)
+        foreach($bad in @('root-only','extra','blank-head','wrong-root','changed-head')) {
+            $script:AcquisitionClock.Elapsed=[TimeSpan]::Zero
+            function Invoke-QuietCommand {
+                param($FilePath,$ArgumentList,$TimeoutSeconds,$TimeoutMilliseconds,[switch]$CaptureOutput,$Environment)
+                $output=if($ArgumentList-contains'--show-toplevel'){
+                    switch($bad){
+                        'root-only'{$repo}
+                        'extra'{$repo+"`nabc123`nextra"}
+                        'blank-head'{$repo+"`n "}
+                        'wrong-root'{$work+"`nabc123"}
+                        default{$repo+"`nabc123"}
+                    }
+                }elseif($ArgumentList-contains'HEAD'){if($bad-eq'changed-head'){'different'}else{'abc123'}}else{'?? a.txt'}
+                return [pscustomobject]@{ExitCode=0;Output=$output;ErrorOutput=''}
+            }
+            $refused=Get-RepositoryAccessSnapshot $repo
+            $expected=if($bad-eq'wrong-root'){'repositoryRootMismatch'}elseif($bad-eq'changed-head'){'repositoryChanged'}else{'gitFailed'}
+            Check ('combined root/HEAD refuses '+$bad) ($refused.State-eq'unavailable'-and$refused.Fingerprint-eq''-and$refused.Diagnosis-eq$expected)
+        }
         $script:AcquisitionClock.Elapsed=[TimeSpan]::FromMilliseconds(4000);$script:AcquisitionCalls=0
         $expired=Get-RepositoryAccessSnapshot $repo
         Check 'exhausted overall deadline launches no Git child' ($expired.State-eq'unavailable'-and$expired.Diagnosis-eq'gitTimedOut'-and$script:AcquisitionCalls-eq0)

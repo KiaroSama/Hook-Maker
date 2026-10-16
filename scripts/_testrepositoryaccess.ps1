@@ -71,7 +71,7 @@ function Invoke-RepositoryAccessRegression {
             function Invoke-QuietCommand {
                 param($FilePath,$ArgumentList,[switch]$CaptureOutput,$Environment,$TimeoutSeconds,$TimeoutMilliseconds)
                 $script:RepositoryFixtureStep++
-                $text=if($ArgumentList-contains'--show-toplevel'){$repo}elseif($ArgumentList-contains'HEAD'){'abc123'}elseif($script:RepositoryFixtureStep-lt5){'?? before.txt'}else{'?? after.txt'}
+                $text=if($ArgumentList-contains'--show-toplevel'){$repo+"`nabc123"}elseif($ArgumentList-contains'HEAD'){'abc123'}elseif($script:RepositoryFixtureStep-lt4){'?? before.txt'}else{'?? after.txt'}
                 return [pscustomobject]@{ExitCode=0;Output=$text;ErrorOutput=''}
             }
             $changing=Get-RepositoryStateEvidence $repo
