@@ -35,7 +35,7 @@
 # Usage:  pwsh -NoLogo -NoProfile -File .\scripts\Test-TestCompletionCheck.ps1 [-KeepArtifacts] [-RecoveryOnly] [-SurvivorsOnly] [-EvidenceSelectionOnly]
 # Exit code is the number of failed assertions (0 = all passed).
 
-param([switch]$KeepArtifacts, [switch]$GroupedRecoveryOnly, [switch]$RecoveryOnly, [switch]$ActivationOnly, [switch]$OrphanOnly, [switch]$SurvivorsOnly, [switch]$CorrectionsOnly, [switch]$EvidenceSelectionOnly, [switch]$ObligationsOnly)
+param([switch]$KeepArtifacts, [switch]$GroupedRecoveryOnly, [switch]$RecoveryOnly, [switch]$ActivationOnly, [switch]$OrphanOnly, [switch]$SurvivorsOnly, [switch]$CorrectionsOnly, [switch]$EvidenceSelectionOnly, [switch]$ObligationsOnly, [switch]$AgedRecoveryOnly)
 
 Set-StrictMode -Version 2.0
 $ErrorActionPreference = 'Stop'
@@ -59,7 +59,11 @@ Write-Host ("Workspace: $Work") -ForegroundColor DarkGray
 
 $sentinel = $null
 try {
-    if ($GroupedRecoveryOnly) {
+    if ($AgedRecoveryOnly) {
+        . (Join-Path $PSScriptRoot '_testcompletionretention.ps1')
+        Invoke-AgedRecoveryRegression -PositiveOnly
+    }
+    elseif ($GroupedRecoveryOnly) {
         [void](New-Module -ArgumentList (Split-Path -Parent $PSScriptRoot), (Join-Path $PSScriptRoot '_testcompletiongroupedunit.ps1') -ScriptBlock { param($Root, $Helper); . $Helper; Invoke-GroupedRecoveryUnitRegression -RepoRoot $Root })
         . (Join-Path $PSScriptRoot '_testcompletiongroupedrecovery.ps1')
     }

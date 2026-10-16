@@ -121,6 +121,8 @@ foreach ($codexShape in @($false, $true)) {
     . (Join-Path $PSScriptRoot '_testcompletionaudit.ps1')
     Invoke-AuditAssignmentRegression -Codex:$codexShape -HostExe $hostExe
     Invoke-OriginalRetentionRegression -Codex:$codexShape -HostExe $hostExe
+    . (Join-Path $PSScriptRoot '_testcompletionretention.ps1')
+    Invoke-AgedRecoveryRegression -Codex:$codexShape -HostExe $hostExe
     foreach ($reverse in @($false, $true)) {
         $c = New-IsolatedHookCopy; $p = New-GitRepo ('Selection-' + $client + '-' + $reverse)
         # Reverse filenames AND creation order, so enumeration cannot decide which

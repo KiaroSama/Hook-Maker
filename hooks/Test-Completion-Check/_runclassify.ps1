@@ -61,7 +61,7 @@ function Test-RunNegativeAccounted {
 # verbatim into one function; it reads the entry's script-scope state
 # ($resultEntries, $script:pendingNotes) exactly as the inline block did.
 function Select-RepresentativeRun {
-    param($Runs)
+    param($Runs, $HistoricalResults = $resultEntries)
     $runs = $Runs
     $classified = @($runs | ForEach-Object { [pscustomobject]@{ Run = $_; Class = (Get-RunClass $_) } })
 
@@ -81,18 +81,18 @@ function Select-RepresentativeRun {
         if ($cl.Class -ne 'incident' -or $null -eq $cl.Run.ResultEntry) { continue }
         $ikSeen = Get-ResultIncidentKey -Doc $cl.Run.ResultEntry.Doc -Path $cl.Run.ResultEntry.Path
         if ($ikSeen -eq '' -or (Test-ResultIncidentResolved -Doc $cl.Run.ResultEntry.Doc -Path $cl.Run.ResultEntry.Path) -or $script:pendingNotes.Contains($ikSeen)) { continue }
-        if (Test-RunNegativeAccounted -Run $cl.Run -AllResults $resultEntries) {
+        if (Test-RunNegativeAccounted -Run $cl.Run -AllResults $HistoricalResults) {
             Register-PendingNote -Key $ikSeen -Reason (Get-IncidentReasonFromDoc $cl.Run.ResultEntry.Doc) -Origin (New-NoteOrigin -Kind result -Path $cl.Run.ResultEntry.Path)
         }
     }
 
     $rep = $null
     foreach ($wanted in @('incident', 'failed', 'unknown-negative')) {
-        $m = @($classified | Where-Object { $_.Class -eq $wanted -and -not (Test-RunNegativeAccounted -Run $_.Run -AllResults $resultEntries) })
+        $m = @($classified | Where-Object { $_.Class -eq $wanted -and -not (Test-RunNegativeAccounted -Run $_.Run -AllResults $HistoricalResults) })
         if ($m.Count -gt 0) { $rep = $m[0]; break }
     }
     if ($null -eq $rep) {
-        $m = @($classified | Where-Object { $_.Run.HasObserved -and $_.Class -notin @('clean', 'historical-success') -and -not (Test-RunNegativeAccounted -Run $_.Run -AllResults $resultEntries) })   # condition 5: observed, not satisfied
+        $m = @($classified | Where-Object { $_.Run.HasObserved -and $_.Class -notin @('clean', 'historical-success') -and -not (Test-RunNegativeAccounted -Run $_.Run -AllResults $HistoricalResults) })   # condition 5: observed, not satisfied
         if ($m.Count -gt 0) { $rep = $m[0] }
     }
     if ($null -eq $rep) {

@@ -266,6 +266,8 @@ if ($recoveryMode) {
 
 # The evidence is loaded BEFORE pruning so pruning can read each file's content.
 $resultEntries = Get-CompletionStateEntries 'result'
+# Historical recovery remains valid after its positive receipt leaves the current view.
+$historicalResultEntries = @($resultEntries)
 $observedEntries = Get-CompletionStateEntries 'observed'
 $activeEntries = Get-CompletionStateEntries 'active'
 # Reconcile before logical retirement; original receipt bytes remain on disk.
@@ -324,7 +326,7 @@ if ($script:expiredNow.Count -gt 0) { Save-CompletionState }
 
 # ---- classify + select the representative (worst) run: _runclassify.ps1 (REQUIRED) ----
 . (Join-Path $PSScriptRoot '_runclassify.ps1')
-$selection = Select-RepresentativeRun -Runs $runs
+$selection = Select-RepresentativeRun -Runs $runs -HistoricalResults $historicalResultEntries
 $classified = $selection.Classified; $rep = $selection.Rep
 
 # ---- project the representative onto the single-run variables ----
@@ -419,7 +421,7 @@ if ($null -ne $result) {
 # ping-pong the ledger and this guard together close).
 $repAccounted = $false
 if ($null -ne $rep -and $null -ne $rep.Run.ResultEntry) {
-    $repAccounted = (Test-RunNegativeAccounted -Run $rep.Run -AllResults $resultEntries)
+    $repAccounted = (Test-RunNegativeAccounted -Run $rep.Run -AllResults $historicalResultEntries)
 }
 
 # Nothing recorded at all for this project - no relevant test work. Silence -
