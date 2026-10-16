@@ -24,6 +24,7 @@ $reads=Read-GitBlobsBatch -Cwd $repo -BlobShas ($ids+$ids[0..15]) -MaxFullBytes 
 $failed=@($ids|Where-Object{$reads[$_].Failed-or$reads[$_].Class-ne'utf8'})
 Check '1358 blobs /2117 paths and repeated IDs fully validate inside unchanged20s batch budget' ($failed.Count-eq0-and$clock.Elapsed.TotalSeconds-lt22) ('failed='+$failed.Count+' elapsedSeconds='+[Math]::Round($clock.Elapsed.TotalSeconds,2))
 Write-Host ('Batch elapsedSeconds='+[Math]::Round($clock.Elapsed.TotalSeconds,2)+' uniqueBlobs='+$ids.Count+' failed='+$failed.Count)
+if($failed.Count){Write-Host ('Batch failure codes: '+(@($failed|ForEach-Object{$reads[$_].Failure}|Sort-Object -Unique)-join','))}
 if (-not $BatchOnly) {
     $batch51Out=Join-Path $Work 'batch51.out'; $batch51Err=Join-Path $Work 'batch51.err'
     $batch51=Start-BoundedProcess -FilePath powershell.exe -ArgumentList @('-NoProfile','-NonInteractive','-File',(Join-Path $PSScriptRoot 'Test-Utf8EncodingCheck.ps1'),'-BatchOnly') -RedirectStandardOutput $batch51Out -RedirectStandardError $batch51Err -TimeoutMs 40000

@@ -149,7 +149,14 @@ function Read-GitBlobsBatch {
         Initialize-Utf8BatchReader
         $phase = 'process-start'
         $proc = New-Utf8GitProcess -Cwd $Cwd
-        if (-not $proc.Start()) { throw 'process-start' }
+        # Framework creates and autoflushes its stdin writer during Start; a
+        # console encoding preamble would corrupt the first raw Git request.
+        $savedInputEncoding = [Console]::InputEncoding
+        try {
+            [Console]::InputEncoding = [Text.UTF8Encoding]::new($false)
+            if (-not $proc.Start()) { throw 'process-start' }
+        }
+        finally { [Console]::InputEncoding = $savedInputEncoding }
         $phase = 'transport'
         $proc.BeginErrorReadLine()
         $inputStream = $proc.StandardInput.BaseStream
