@@ -61,7 +61,7 @@ function Test-RunNegativeAccounted {
 # verbatim into one function; it reads the entry's script-scope state
 # ($resultEntries, $script:pendingNotes) exactly as the inline block did.
 function Select-RepresentativeRun {
-    param($Runs, $HistoricalResults = $resultEntries)
+    param($Runs, $HistoricalResults = @())
     $runs = $Runs
     $classified = @($runs | ForEach-Object { [pscustomobject]@{ Run = $_; Class = (Get-RunClass $_) } })
 
