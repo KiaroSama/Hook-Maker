@@ -29,7 +29,9 @@ function Resolve-FailedRunVerdict {
         [AllowEmptyString()][string]$LastProgress,
         [Parameter(Mandatory = $true)][string]$ProjectRoot,
         [Parameter(Mandatory = $true)][string]$HookPath,
-        [bool]$AllowCiRecovery = $true
+        [bool]$AllowCiRecovery = $true,
+        [ValidateSet('repositoryState:unavailable','projectFingerprint:currentStateMismatch','projectFingerprint:unavailableOrLegacy')]
+        [string]$NoCiRecoveryReason = 'projectFingerprint:unavailableOrLegacy'
     )
     $exitCode = [string](Get-Field $Doc 'exitCode')
     # Derived once, because the -ResolveIncident line below must print the SAME
@@ -42,7 +44,7 @@ function Resolve-FailedRunVerdict {
     # suite the sibling guard had just told the reader not to run here.
     if (-not $AllowCiRecovery) {
         return [pscustomobject]@{ Blocking = $true; Lines = @(
-            'TEST COMPLETION CHECK: failed historical runId=' + [string](Get-Field $Doc 'runId') + '; commandFingerprint=' + [string](Get-Field $Doc 'commandFingerprint') + '; endedUtc=' + [string](Get-Field $Doc 'endedUtc') + '; failedField=projectFingerprint:unavailableOrLegacy. Exit code=' + $exitCode + '.',
+            'TEST COMPLETION CHECK: failed historical runId=' + [string](Get-Field $Doc 'runId') + '; commandFingerprint=' + [string](Get-Field $Doc 'commandFingerprint') + '; endedUtc=' + [string](Get-Field $Doc 'endedUtc') + '; failedField=' + $NoCiRecoveryReason + '. Exit code=' + $exitCode + '.',
             'Recovery: inspect this exact failed command and preserve its receipt. Only verified same-complete-command recovery or an explicit audited equivalent-scope incident association is supported. Unrelated green CI does not repair unavailable identity or prove this historical local-only scope passed.') }
     }
     $ci = Test-CiClearedFailure -ProjectRoot $ProjectRoot -FailureEndedUtc (ConvertTo-UtcStamp (Get-Field $Doc 'endedUtc'))

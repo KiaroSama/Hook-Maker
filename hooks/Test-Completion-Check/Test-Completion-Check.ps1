@@ -543,7 +543,9 @@ if ($incidentKey -ne '' -and -not (Test-ResultIncidentResolved -Doc $result -Pat
 # on a clean tree clears it, anything else blocks exactly as before.
 $failedIdentityDegraded = ($repositoryState.State -eq 'unavailable' -or [string]::IsNullOrWhiteSpace([string](Get-Field $result 'projectFingerprint')) -or [string](Get-Field $result 'projectFingerprint') -eq $projectKey)
 if ($null -ne $result -and $overall -eq 'failed' -and ($resultIsCurrentEvidence -or $failedIdentityDegraded) -and -not $repAccounted) {
-    $verdict = Resolve-FailedRunVerdict -Doc $result -Path $resultEntryPath -LastProgress $lastProgress -ProjectRoot $cwd -HookPath $PSCommandPath -AllowCiRecovery ($repositoryState.State -eq 'available' -and [string](Get-Field $result 'projectFingerprint') -eq $stateFingerprint)
+    # Current acquisition failure does not make a recorded historical identity legacy.
+    $noCiReason = if ([string]::IsNullOrWhiteSpace([string](Get-Field $result 'projectFingerprint')) -or [string](Get-Field $result 'projectFingerprint') -eq $projectKey) { 'projectFingerprint:unavailableOrLegacy' } elseif ($repositoryState.State -eq 'unavailable') { 'repositoryState:unavailable' } else { 'projectFingerprint:currentStateMismatch' }
+    $verdict = Resolve-FailedRunVerdict -Doc $result -Path $resultEntryPath -LastProgress $lastProgress -ProjectRoot $cwd -HookPath $PSCommandPath -AllowCiRecovery ($repositoryState.State -eq 'available' -and [string](Get-Field $result 'projectFingerprint') -eq $stateFingerprint) -NoCiRecoveryReason $noCiReason
     Save-CompletionState
     Write-Finding -Blocking $verdict.Blocking -Lines $verdict.Lines
 }

@@ -9,6 +9,30 @@
 # harness) - not a standalone suite.
 
     Write-Host '--- corrections: legacy result horizon, ledger write failure, global cleanup ---' -ForegroundColor Cyan
+    & {
+        param($Root)
+        . (Join-Path $Root '_hooklib.ps1')
+        . (Join-Path $Root 'Test-Completion-Check/_failedrun.ps1')
+        function Get-ResultIncidentKey { return 'fixture' }
+        $doc=[pscustomobject]@{runId='historical';commandFingerprint='command';endedUtc='2026-01-01T00:00:00Z';exitCode=1;projectFingerprint='recorded'}
+        foreach($reason in @('repositoryState:unavailable','projectFingerprint:currentStateMismatch','projectFingerprint:unavailableOrLegacy')) {
+            $verdict=Resolve-FailedRunVerdict -Doc $doc -Path '' -LastProgress '' -ProjectRoot $Root -HookPath 'fixture' -AllowCiRecovery $false -NoCiRecoveryReason $reason
+            Check ('historical failure keeps block and reports exact '+$reason) ($verdict.Blocking-and($verdict.Lines-join' ').Contains('failedField='+$reason))
+        }
+        $ast=[Management.Automation.Language.Parser]::ParseFile((Join-Path $Root 'Test-Completion-Check/Test-Completion-Check.ps1'),[ref]$null,[ref]$null)
+        $assignment=$ast.Find({param($n) $n-is[Management.Automation.Language.AssignmentStatementAst]-and$n.Left.Extent.Text-eq'$noCiReason'},$true)
+        $projectKey='path-only'
+        foreach($case in @(
+            @{fp='recorded';state='unavailable';want='repositoryState:unavailable'},
+            @{fp='recorded';state='available';want='projectFingerprint:currentStateMismatch'},
+            @{fp='';state='available';want='projectFingerprint:unavailableOrLegacy'},
+            @{fp='path-only';state='unavailable';want='projectFingerprint:unavailableOrLegacy'})) {
+            $result=[pscustomobject]@{projectFingerprint=$case.fp}
+            $repositoryState=[pscustomobject]@{State=$case.state}
+            . ([scriptblock]::Create($assignment.Extent.Text))
+            Check ('caller distinguishes '+$case.state+' with recorded identity '+$case.fp) ($noCiReason-ceq$case.want)
+        }
+    } $HooksRoot
     function Set-LegacyResult {
         param([object]$Copy, [string]$Root, [double]$AgeMinutes)
         Write-GuardedResult -Copy $Copy -Root $Root -Overall 'failed' -ExitCode 1 -AgeMinutes $AgeMinutes
