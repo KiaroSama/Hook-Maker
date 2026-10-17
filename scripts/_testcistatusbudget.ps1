@@ -29,8 +29,8 @@
     Set-Mock -RunJson '[{"databaseId":301,"name":"CI","workflowName":"CI","status":"in_progress","conclusion":null}]' -ExpectedSha (Get-HeadSha $authRepo)
     $null = Fire -HookPath $authHook -Cwd $authRepo -EventName 'Stop' -Extra @{ session_id = 'budget-a' }
     $null = Fire -HookPath $authHook -Cwd $authRepo -EventName 'Stop' -Extra @{ session_id = 'budget-a' }
-    Check 'budget: two Stops in one session ask gh auth status once' ((Get-GhCallCount 'auth|status*') -eq 1 -and (Get-GhCallCount 'run|list*') -eq 2) (
-        'auth=' + (Get-GhCallCount 'auth|status*') + ' runlist=' + (Get-GhCallCount 'run|list*'))
+    Check 'budget: two Stops in one session ask gh auth status once' ((Get-GhCallCount 'auth|status*') -eq 1 -and (Get-GhCallCount 'api|repos/*/actions/runs?head_sha=*') -eq 2) (
+        'auth=' + (Get-GhCallCount 'auth|status*') + ' runlist=' + (Get-GhCallCount 'api|repos/*/actions/runs?head_sha=*'))
     $null = Fire -HookPath $authHook -Cwd $authRepo -EventName 'Stop' -Extra @{ session_id = 'budget-b' }
     Check 'budget: a new session asks again' ((Get-GhCallCount 'auth|status*') -eq 2) ('auth=' + (Get-GhCallCount 'auth|status*'))
 
@@ -44,7 +44,7 @@
         $slowSha = Get-HeadSha $slowRepo
         $slowHook = New-BudgetHookCopy @{ GH_BUDGET_SECONDS = '8' }
         Set-Mock -RunJson '[{"databaseId":302,"name":"CI","workflowName":"CI","status":"completed","conclusion":"success"}]' -ExpectedSha $slowSha
-        Set-Content (Join-Path $MockDir 'sleep.txt') 'run list*|30'
+        Set-Content (Join-Path $MockDir 'sleep.txt') 'api repos/*/actions/runs?head_sha=*|30'
         $watch = [Diagnostics.Stopwatch]::StartNew()
         $r = Fire -HookPath $slowHook -Cwd $slowRepo -EventName 'Stop' -Extra @{ session_id = 'budget-slow' }
         $watch.Stop()
@@ -82,4 +82,4 @@
     $oldHook = New-ConfiguredCiHookCopy -EnvOverrides @{ PENDING_COOLDOWN_MINUTES = '3' }
     Set-Mock -RunJson '[{"databaseId":304,"name":"CI","workflowName":"CI","status":"completed","conclusion":"success"}]' -ExpectedSha (Get-HeadSha $oldRepo)
     $r = Fire -HookPath $oldHook -Cwd $oldRepo -EventName 'Stop'
-    Check 'budget: without _ghbudget.ps1 a green commit still verifies silently' ($r.Exit -eq 0 -and [string]::IsNullOrWhiteSpace([string]$r.Out) -and (Get-GhCallCount 'run|list*') -eq 1) ([string]$r.Out)
+    Check 'budget: without _ghbudget.ps1 a green commit still verifies silently' ($r.Exit -eq 0 -and [string]::IsNullOrWhiteSpace([string]$r.Out) -and (Get-GhCallCount 'api|repos/*/actions/runs?head_sha=*') -eq 1) ([string]$r.Out)

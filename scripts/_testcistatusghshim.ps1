@@ -42,6 +42,7 @@ if($endpoint-match'/commits/[^/]+/status'){
 if($endpoint-match'/commits/[^/]+/check-runs'){
     $pf=Join-Path $mockDir ('checkruns-page-'+$page+'.json');if(Test-Path $pf){Emit-File $pf}
     $f=Join-Path $mockDir 'checkruns.json';if($page-eq1-and(Test-Path $f)){Emit-File $f}
+    if($page-gt1){Write-Output '{"total_count":0,"check_runs":[]}';exit 0}
     $identityFile=Join-Path $mockDir 'api-identity.json'
     if(Test-Path $identityFile){$identity=Get-Content $identityFile -Raw|ConvertFrom-Json;Write-Output (@{total_count=1;check_runs=@(@{id=1;head_sha=$identity.sha;status='completed';conclusion='success'})}|ConvertTo-Json -Depth 5 -Compress)}else{Write-Output '{"total_count":0,"check_runs":[]}'}
     exit 0

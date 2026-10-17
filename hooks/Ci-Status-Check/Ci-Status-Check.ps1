@@ -555,7 +555,13 @@ if ($snapshot.Runs.Count -eq 0 -and $snapshot.FailedRuns.Count -eq 0 -and $snaps
     # Every push workflow filters on paths the push did not touch: no wait and no PR
     # would ever start a run. A note, never green; any other shape keeps the block.
     if ($null -ne (Get-Command -Name 'Test-NoWorkflowForChangedPaths' -ErrorAction SilentlyContinue) -and (Test-NoWorkflowForChangedPaths -ProjectRoot $cwd -Branch $branch -ChangedFiles @(Get-PushChangedFiles -Cwd $cwd -Upstream $info.TrackingRef -Sha $sha))) {
+        $alreadyNoted = $false
+        try {
+            $old = [IO.File]::ReadAllLines($statePath, [Text.Encoding]::UTF8)
+            $alreadyNoted = $old.Count -eq 4 -and $old[0] -ceq $sha -and $old[1] -ceq 'verified' -and $old[3] -ceq 'no-ci-for-ref'
+        } catch { }
         Save-State -Outcome 'verified' -Evidence 'no-ci-for-ref'
+        if ($alreadyNoted) { exit 0 }
         exit (Write-HookResult -EventName $eventName -Kind 'advisory' -Message ('CI CHECK: no workflow is configured to run for the files pushed commit ' + $sha7 + ' changed (every push workflow in ' + $repoSlug + ' filters on paths this push did not touch), so no run will ever appear. This is NOT a green result: nothing was built or tested.')).ExitCode
     }
     Write-Block -Outcome 'pending' -Reason ('CI CHECK: workflows exist but no runs are registered yet for pushed commit ' + $sha7 + ' (' + $repoSlug + '). Do not declare the work complete: wait briefly, then verify the checks for this exact commit with: gh run list --commit ' + $sha)
