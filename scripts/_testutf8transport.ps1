@@ -32,6 +32,8 @@
         finally { $stream.Dispose() }
         Check 'late overlong/surrogate/out-of-range scalar is rejected' ($class -eq 'invalid') $class
     }
+    # Compile before starting frame deadlines: cold Add-Type is setup, not pipe I/O.
+    Initialize-Utf8BatchReader
     # Raw transport fault fixtures: no fake decoder or mock of internal logic.
     $oid = 'a' * 40
     $frames = @(
