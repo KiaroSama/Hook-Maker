@@ -69,7 +69,7 @@ function Invoke-CiWorkloadRegression {
         if($script:WorkloadCase-eq'api-error'){$global:LASTEXITCODE=1;return ''}
         if($ArgumentList[0]-eq'run'){return (@($run)|ConvertTo-Json -Depth 8 -Compress)}
         if($endpoint-match'/actions/runs\?'){
-            $items=if($script:WorkloadCase-eq'duplicate'){@($run,$run)}else{@($run)}
+            $items=@(if($script:WorkloadCase-eq'duplicate'){$run;$run}else{$run})
             return (@{total_count=$(if($script:WorkloadCase-eq'partial'){2}else{$items.Count});workflow_runs=$items}|ConvertTo-Json -Depth 8 -Compress)
         }
         if($endpoint-match'/attempts/2/jobs'){
