@@ -44,80 +44,8 @@ Write-Host ("Workspace: $Work") -ForegroundColor DarkGray
 $ShimDir = Join-Path $Work 'ghshim'
 $MockDir = Join-Path $Work 'ghmock'
 New-Item -ItemType Directory -Path $ShimDir, $MockDir -Force | Out-Null
-$ghMock = @'
-$mockDir = $env:GH_MOCK_DIR
-if (-not $mockDir) { exit 1 }
-$a = @($args)
-Add-Content -LiteralPath (Join-Path $mockDir 'calls.txt') -Value ($a -join '|')
-if ($a.Count -ge 2 -and $a[0] -eq 'auth' -and $a[1] -eq 'status') {
-    $f = Join-Path $mockDir 'auth_exit.txt'
-    $code = 0
-    if (Test-Path $f) { $code = [int]((Get-Content $f -Raw).Trim()) }
-    if ($code -ne 0) { [Console]::Error.WriteLine('You are not logged into any GitHub hosts.') }
-    exit $code
-}
-if ($a.Count -ge 2 -and $a[0] -eq 'pr' -and $a[1] -eq 'list') {
-    $e = Join-Path $mockDir 'pr_exit.txt'
-    if (Test-Path $e) { [Console]::Error.WriteLine('api error'); exit ([int]((Get-Content $e -Raw).Trim())) }
-    $f = Join-Path $mockDir 'pr_list.json'
-    if (Test-Path $f) { Write-Output (Get-Content $f -Raw) } else { Write-Output '[]' }
-    exit 0
-}
-if ($a.Count -ge 2 -and $a[0] -eq 'run' -and $a[1] -eq 'list') {
-    for ($i = 0; $i -lt $a.Count; $i++) {
-        if ($a[$i] -eq '--commit' -and ($i + 1) -lt $a.Count) {
-            Set-Content -Path (Join-Path $mockDir 'received_sha.txt') -Value $a[$i + 1]
-        }
-    }
-    $expectedFile = Join-Path $mockDir 'expected_sha.txt'
-    if (Test-Path $expectedFile) {
-        $expected = (Get-Content $expectedFile -Raw).Trim()
-        $receivedFile = Join-Path $mockDir 'received_sha.txt'
-        $received = ''
-        if (Test-Path $receivedFile) { $received = (Get-Content $receivedFile -Raw).Trim() }
-        if ($received -ne $expected) { Set-Content -Path (Join-Path $mockDir 'sha_mismatch.txt') -Value ($received + ' != ' + $expected) }
-    }
-    $f = Join-Path $mockDir 'run_list.json'
-    if (Test-Path $f) { Write-Output (Get-Content $f -Raw) } else { Write-Output '[]' }
-    exit 0
-}
-if ($a.Count -ge 2 -and $a[0] -eq 'api') {
-    $endpoint = [string]$a[1]
-    # extract the paginated page number (default 1); "per_page" never matches.
-    $page = 1
-    if ($endpoint -match '[?&]page=(\d+)') { $page = [int]$Matches[1] }
-    # commit check-runs list: repos/<slug>/commits/<sha>/check-runs?per_page=100&page=N
-    if ($endpoint -match '/commits/[^/]+/check-runs') {
-        $pf = Join-Path $mockDir ('checkruns-page-' + $page + '.json')
-        if (Test-Path $pf) { Write-Output (Get-Content $pf -Raw); exit 0 }
-        if ($page -eq 1) {
-            $f = Join-Path $mockDir 'checkruns.json'
-            if (Test-Path $f) { Write-Output (Get-Content $f -Raw); exit 0 }
-        }
-        Write-Output '{"total_count":0,"check_runs":[]}'; exit 0
-    }
-    # per-check-run annotations: repos/<slug>/check-runs/<id>/annotations?per_page=100&page=N
-    if ($endpoint -match '/check-runs/([^/]+)/annotations') {
-        $crid = $Matches[1]
-        $perPageErr = Join-Path $mockDir ('annexit-' + $crid + '-page-' + $page + '.txt')
-        if (Test-Path $perPageErr) { [Console]::Error.WriteLine('api error'); exit ([int]((Get-Content $perPageErr -Raw).Trim())) }
-        $errf = Join-Path $mockDir ('annexit-' + $crid + '.txt')
-        if (Test-Path $errf) { [Console]::Error.WriteLine('api error'); exit ([int]((Get-Content $errf -Raw).Trim())) }
-        $genErr = Join-Path $mockDir 'annexit.txt'
-        if (Test-Path $genErr) { [Console]::Error.WriteLine('api error'); exit ([int]((Get-Content $genErr -Raw).Trim())) }
-        $pf = Join-Path $mockDir ('annotations-' + $crid + '-page-' + $page + '.json')
-        if (Test-Path $pf) { Write-Output (Get-Content $pf -Raw); exit 0 }
-        if ($page -eq 1) {
-            $f = Join-Path $mockDir ('annotations-' + $crid + '.json')
-            if (Test-Path $f) { Write-Output (Get-Content $f -Raw); exit 0 }
-        }
-        Write-Output '[]'; exit 0
-    }
-    exit 1
-}
-exit 1
-'@
-[System.IO.File]::WriteAllText((Join-Path $ShimDir 'gh.ps1'), $ghMock)
+$ghMock = [IO.File]::ReadAllText((Join-Path $PSScriptRoot '_testcistatusghshim.ps1'),[Text.Encoding]::UTF8)
+[System.IO.File]::WriteAllText((Join-Path $ShimDir 'gh.ps1'), $ghMock, [Text.Encoding]::UTF8)
 $pathWithoutRealGh = @($env:PATH -split ';' | Where-Object {
     $_ -ne '' -and -not (Test-Path -LiteralPath (Join-Path $_ 'gh.exe') -PathType Leaf)
 })
@@ -205,6 +133,8 @@ function New-GitRepo {
     & git -C $repo config user.name 't'
     & git -C $repo config core.autocrlf false
     Set-Content (Join-Path $repo 'file.txt') 'v1'
+    [void][IO.Directory]::CreateDirectory((Join-Path $repo '.github/workflows'))
+    [IO.File]::WriteAllText((Join-Path $repo '.github/workflows/ci.yml'),"on: [workflow_dispatch]`njobs:`n  validate:`n    runs-on: windows-latest`n    steps:`n      - name: Validate`n        run: echo fixture`n",[Text.Encoding]::UTF8)
     & git -C $repo add .
     & git -C $repo commit -q -m c1
     if ($GithubRemote) {
@@ -253,6 +183,7 @@ function New-ConfiguredCiHookCopy {
 
 try {
     # =====================================================================
+    & {param($Root,$Helper);. $Helper;Invoke-CiWorkloadRegression -HooksRoot $Root} $HooksRoot (Join-Path $PSScriptRoot '_testciworkload.ps1')
     Write-Host '--- CiStatusCheck ---' -ForegroundColor Cyan
     $plainDir = Join-Path $Work 'plain'; New-Item -ItemType Directory -Path $plainDir -Force | Out-Null
     $ci = New-GitRepo 'ci1'
@@ -291,7 +222,7 @@ try {
     Check 'exact pushed SHA queried (not newest run)' ($received -eq $sha)
     Set-Mock -RunJson '[{"databaseId":11,"name":"CI","workflowName":"CI","status":"completed","conclusion":"failure"}]' -ExpectedSha $sha
     $r = Fire -HookPath $CiHook -Cwd $ci -EventName 'Stop'
-    Check 'already-verified commit -> silent (no re-query nag)' ([string]::IsNullOrWhiteSpace([string]$r.Out)) ([string]$r.Out)
+    Check 'legacy verified state cannot bypass a fresh failed run' ($r.Out -match '"decision":"block"' -and $r.Out -match 'FAILED') ([string]$r.Out)
 
     # pending -> block
     $ci2 = New-GitRepo 'ci2'
@@ -311,7 +242,7 @@ try {
     $r = Fire -HookPath $CiHook -Cwd $ci3 -EventName 'Stop'
     Check 'failed checks remain a completion block during cooldown' ($r.Out -match '"decision":"block"') $r.Out
     $calls = [System.IO.File]::ReadAllText((Join-Path $MockDir 'calls.txt'))
-    Check 'CI binds exact-SHA query to repository' ($calls -match 'run\|list\|--repo\|testowner/testrepo-ci3\|--commit') $calls
+    Check 'CI binds exact-SHA raw query to repository' ($calls -match 'api\|repos/testowner/testrepo-ci3/actions/runs\?head_sha=') $calls
 
     # new pushed commit resets the cycle
     Set-Content (Join-Path $ci3 'file.txt') 'v3'
@@ -345,14 +276,13 @@ try {
     Set-Mock -RunJson '[{"databaseId":62,"name":"CI","workflowName":"CI","status":"completed","conclusion":"skipped"},{"databaseId":63,"name":"Lint","workflowName":"Lint","status":"completed","conclusion":"skipped"}]' -ExpectedSha $shaSkip
     $r = Fire -HookPath $CiHook -Cwd $ciSkip -EventName 'Stop'
     Check 'E-09: ALL runs skipped -> blocks, never reads as CI-green' (
-        $r.Out -match '"decision":"block"' -and $r.Out -match 'every run was skipped, nothing verified this commit') $r.Out
-    # A skip BESIDE a genuine success is the normal green companion (path
-    # filters) - still verified silently.
+        $r.Out -match '"decision":"block"' -and $r.Out -match 'Abnormal endings:.*skipped') $r.Out
+    # A skipped companion is not an execution proof without a reviewed contract.
     $ciSkipMix = New-GitRepo 'ci-skipmix'
     $shaSkipMix = Get-HeadSha $ciSkipMix
     Set-Mock -RunJson '[{"databaseId":64,"name":"CI","workflowName":"CI","status":"completed","conclusion":"success"},{"databaseId":65,"name":"Docs","workflowName":"Docs","status":"completed","conclusion":"skipped"}]' -ExpectedSha $shaSkipMix
     $r = Fire -HookPath $CiHook -Cwd $ciSkipMix -EventName 'Stop'
-    Check 'E-09: a skipped run beside a real success stays verified-silent (expected skip)' ([string]::IsNullOrWhiteSpace([string]$r.Out)) ([string]$r.Out)
+    Check 'E-09: an unqualified skipped run beside success cannot certify required work' ($r.Out -match '"decision":"block"') ([string]$r.Out)
     # The failure guidance carries the exact-final-SHA / post-Ponytail contract.
     $ciSha = New-GitRepo 'ci-exactsha'
     $shaExact = Get-HeadSha $ciSha
@@ -584,6 +514,9 @@ try {
     $r = Fire -HookPath $CiHook -Cwd $ci5 -EventName 'Stop'
     Check 'workflows exist, no runs yet -> block (wait)' ($r.Out -match 'no runs are registered yet')
     $ci6 = New-GitRepo 'ci6'
+    & git -C $ci6 rm -q .github/workflows/ci.yml
+    & git -C $ci6 commit -qm 'no workflow fixture'
+    & git -C $ci6 update-ref refs/remotes/origin/main (Get-HeadSha $ci6)
     Set-Mock -ExpectedSha (Get-HeadSha $ci6)
     $r = Fire -HookPath $CiHook -Cwd $ci6 -EventName 'Stop'
     Check 'no workflows configured -> silent verified' ([string]::IsNullOrWhiteSpace([string]$r.Out)) ([string]$r.Out)
@@ -618,7 +551,7 @@ try {
     # never touches a real run object).
     $ci5ok = New-GitRepo 'ci5ok'
     New-Item -ItemType Directory -Path (Join-Path $ci5ok '.github\workflows') -Force | Out-Null
-    Set-Content (Join-Path $ci5ok '.github\workflows\ci.yml') 'name: CI'
+    # Committed simple workflow from New-GitRepo is the positive expectation.
     Set-Mock -RunJson '[{"databaseId":95,"name":"CI","workflowName":"CI","status":"completed","conclusion":"success"}]' -ExpectedSha (Get-HeadSha $ci5ok)
     $r = Fire -HookPath $CiHook -Cwd $ci5ok -EventName 'Stop'
     Check 'B5 control: a real successful run set still verifies silently' ([string]::IsNullOrWhiteSpace([string]$r.Out)) ([string]$r.Out)

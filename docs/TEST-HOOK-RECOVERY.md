@@ -99,10 +99,13 @@ HEAD plus sorted-status acquisition. Status lines use case-sensitive ordinal ord
 not culture-sensitive sorting, so Windows PowerShell 5.1 (NLS) and pwsh (ICU)
 agree for unchanged punctuation, case and Unicode paths. Both snapshots must match;
 no raw Git status bytes are normalized. Acquisition retains a four-second total
-budget shared by physical/approval checks and four Git processes. The first
-`rev-parse --show-toplevel HEAD` must return exactly root and HEAD; status/HEAD/status
-then retain both HEAD and both status comparisons. This avoids one process-start
-cycle without cached identity, relaxed approval or a longer deadline; each child gets
+budget shared by physical/approval checks and at most four Git processes. The first
+`rev-parse --show-toplevel HEAD` must return exactly root and HEAD. A clean first
+legacy status uses `status --porcelain=v2 --branch --no-ahead-behind` for the second
+HEAD and status, saving another startup. Missing, duplicate or malformed branch OIDs
+are refused; newly dirty entries refuse the snapshot. A dirty first status retains
+legacy status/HEAD/status comparisons and the exact ordinal v1 fingerprint, without
+translating v2 paths. No cached identity, relaxed approval or longer deadline; each child gets
 the remaining milliseconds, including the final fractional second. Exhaustion or
 a timed-out Git process reports `gitTimedOut`, never a guessed fingerprint. Other
 launch failures remain unavailable. This does not guarantee acquisition under

@@ -128,7 +128,9 @@ $ciStateDir = Join-Path $ci1.Hook.LocalAppData 'HookMaker\state'
 New-Item -ItemType Directory -Path $ciStateDir -Force | Out-Null
 # The record Ci-Status-Check writes: sha / outcome / timestamp / evidence.
 $ciNote = Join-Path $ciStateDir ('CiStatusCheck-' + (Get-TestShortHash ($ci1.Repo.ToLowerInvariant() + '|octo/docs-demo')) + '.txt')
-[System.IO.File]::WriteAllLines($ciNote, @($ciHead, 'verified', [DateTime]::UtcNow.ToString('o'), 'ci-green'))
+$ciWhen=[DateTimeOffset]::UtcNow.ToString('o')
+$ciProof=@{schema=1;repository='octo/docs-demo';sha=$ciHead;outcome='ci-green';observedUtc=$ciWhen;completedUtc=$ciWhen;workloadFingerprint=('b'*64);sourceFingerprint=('c'*64);runs=@(@{id=1;attempt=1;workflowId=2;path='.github/workflows/ci.yml';event='workflow_dispatch';branch='main';completedUtc=$ciWhen})}
+[System.IO.File]::WriteAllLines($ciNote, @($ciHead, 'verified', $ciWhen, 'ci-green',($ciProof|ConvertTo-Json -Depth 8 -Compress)),[Text.Encoding]::UTF8)
 $rGreen = Fire -HookPath $ci1.Hook.Script -Cwd $ci1.Repo -EventName 'Stop' -LocalAppData $ci1.Hook.LocalAppData
 Check 'ci-green pushed HEAD + review owed: the block names [skip ci], no suite, and the parent SHA' (
     $rGreen.Out -match '"decision":"block"' -and $rGreen.Out -match '\[skip ci\]' -and $rGreen.Out -match 'run no suite' -and

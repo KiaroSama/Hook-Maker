@@ -12,7 +12,7 @@ function Invoke-LargeDocsStopRegression {
     & git -C $repo config core.autocrlf false
     & git -C $repo remote add origin https://github.com/owner/repo.git
     foreach ($dir in @('docs', '.github/workflows', 'data')) { [void][IO.Directory]::CreateDirectory((Join-Path $repo $dir)) }
-    Write-Utf8 (Join-Path $repo '.github/workflows/ci.yml') "on: [push]`njobs:`n  test:`n    runs-on: windows-latest`n    steps: []"
+    Write-Utf8 (Join-Path $repo '.github/workflows/ci.yml') "on: [push]`njobs:`n  test:`n    runs-on: windows-latest`n    steps:`n      - name: Validate`n        run: echo fixture"
     Write-Utf8 (Join-Path $repo 'docs/compatibility.md') 'Original prose'
     Write-Utf8 (Join-Path $repo 'docs/source-format.md') 'Original format prose'
     for ($i = 0; $i -lt 2001; $i++) { Write-Utf8 (Join-Path $repo ('data/' + $i + '.txt')) 'Unrelated payload' }
@@ -38,12 +38,13 @@ if ($a[0] -eq 'api') {
     $e = [string]$a[1]; $base = $env:GH_DOCS_BASE
     if ($e -match '/rules/branches/') { '[]'; exit 0 }
     if ($e -match '/branches/') { '{"name":"main","protected":false}'; exit 0 }
+    if ($e -match '/attempts/1/jobs') { @{total_count=1;jobs=@(@{id=12;check_run_url='https://api.github.com/repos/owner/repo/check-runs/12';run_id=1;run_attempt=1;head_sha=$base;name='test';status='completed';conclusion='success';completed_at='2026-10-17T09:00:00Z';steps=@(@{number=1;name='Validate';status='completed';conclusion='success';completed_at='2026-10-17T08:59:00Z'})})}|ConvertTo-Json -Depth 8 -Compress;exit 0 }
     if ($e -match '/actions/runs') {
         if (-not $e.Contains($base)) { '{"total_count":0,"workflow_runs":[]}'; exit 0 }
-        @{ total_count=1; workflow_runs=@(@{head_sha=$base; head_repository=@{full_name='owner/repo'}; head_branch='main'; status='completed'; conclusion='success'; path='.github/workflows/ci.yml'; event='push'}) } | ConvertTo-Json -Depth 6 -Compress
+        @{ total_count=1; workflow_runs=@(@{id=1;workflow_id=9;run_attempt=1;head_sha=$base; head_repository=@{full_name='owner/repo'}; repository=@{full_name='owner/repo'}; head_branch='main'; status='completed'; conclusion='success'; path='.github/workflows/ci.yml'; event='push'}) } | ConvertTo-Json -Depth 6 -Compress
         exit 0
     }
-    if ($e -match '/check-runs') { @{total_count=1; check_runs=@(@{head_sha=$base; status='completed'; conclusion='success'})} | ConvertTo-Json -Depth 4 -Compress; exit 0 }
+    if ($e -match '/check-runs') { @{total_count=1; check_runs=@(@{id=12;head_sha=$base; status='completed'; conclusion='success'})} | ConvertTo-Json -Depth 4 -Compress; exit 0 }
     if ($e -match '/status') { @{sha=$base; total_count=0; statuses=@(); state='pending'} | ConvertTo-Json -Compress; exit 0 }
 }
 exit 1
@@ -64,7 +65,7 @@ exit 1
         $err = [IO.File]::ReadAllText($errFile, [Text.Encoding]::UTF8)
         $records = @(Get-ChildItem -LiteralPath $env:HOOKMAKER_STATE_DIR -Filter 'CiStatusCheck-*.txt' -File | Where-Object { $_.Name -notmatch 'Auth|Notice|External' })
         $lines = @(); if ($records.Count -eq 1) { $lines = @([IO.File]::ReadAllLines($records[0].FullName, [Text.Encoding]::UTF8)) }
-        Check 'large public Stop carries exact ancestor, not invented final CI' ($proc.ExitCode -eq 0 -and $err -eq '' -and $out -match 'systemMessage' -and $out.Contains($base) -and $out -notmatch '"decision"' -and $lines.Count -eq 5 -and $lines[0] -ceq $sha -and $lines[3] -ceq 'docs-only-carryover' -and $lines[4] -ceq $base) ($out + $err + ($lines -join '|'))
+        Check 'large public Stop carries exact ancestor, not invented final CI' ($proc.ExitCode -eq 0 -and $err -eq '' -and $out -match 'systemMessage' -and $out.Contains($base) -and $out -notmatch '"decision"' -and $lines.Count -eq 6 -and $lines[0] -ceq $sha -and $lines[3] -ceq 'docs-only-carryover' -and $lines[4] -ceq $base) ($out + $err + ($lines -join '|'))
         $proc.Dispose()
         if (-not $SmokeOnly) {
             $env:LOCALAPPDATA = Join-Path $root 'ps51-local'

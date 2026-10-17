@@ -2,7 +2,10 @@
 using System;
 using System.IO;
 using System.Text;
+using System.Collections.Generic;
+using System.Threading;
 using System.Threading.Tasks;
+using System.Runtime.InteropServices;
 
 namespace HookMakerUtf8
 {
@@ -13,6 +16,103 @@ namespace HookMakerUtf8
         public bool Truncated;
         public bool Failed;
         public string Failure = "";
+    }
+
+    // Redirected Windows pipes are synchronous handles. Keep their blocking I/O
+    // on one owned thread instead of queuing every buffer to the thread pool.
+    public sealed class BatchWorker
+    {
+        public readonly Dictionary<string, BatchResult> Results = new Dictionary<string, BatchResult>(StringComparer.Ordinal);
+        public readonly Task Work;
+        public string Failure = "";
+        private readonly object gate = new object();
+        private IntPtr threadHandle;
+        private volatile bool cancelled;
+        [DllImport("kernel32.dll")] private static extern uint GetCurrentThreadId();
+        [DllImport("kernel32.dll")] private static extern IntPtr OpenThread(uint access, bool inherit, uint id);
+        [DllImport("kernel32.dll")] private static extern bool CancelSynchronousIo(IntPtr handle);
+        [DllImport("kernel32.dll")] private static extern bool CloseHandle(IntPtr handle);
+
+        public BatchWorker(Stream input, Stream output, string[] ids, long maxBytes, DateTime deadline)
+        {
+            Work = Task.Factory.StartNew(delegate {
+                bool windows = Environment.OSVersion.Platform == PlatformID.Win32NT;
+                try
+                {
+                    if (windows)
+                    {
+                        lock (gate) threadHandle = OpenThread(1, false, GetCurrentThreadId());
+                        if (threadHandle == IntPtr.Zero) throw new IOException("transport");
+                    }
+                    BatchReader reader = new BatchReader(output, deadline, delegate { Check(deadline); });
+                    byte[] requests = new byte[2080];
+                    for (int index = 0; index < ids.Length; index += 32)
+                    {
+                        Check(deadline);
+                        int end = Math.Min(ids.Length, index + 32), count = 0;
+                        for (int i = index; i < end; i++)
+                        {
+                            string oid = ids[i];
+                            if (oid == null || (oid.Length != 40 && oid.Length != 64)) throw new IOException("invalid-object-id");
+                            foreach (char c in oid)
+                            {
+                                if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'))) throw new IOException("invalid-object-id");
+                                requests[count++] = (byte)c;
+                            }
+                            requests[count++] = 10;
+                        }
+                        Check(deadline);
+                        input.Write(requests, 0, count);
+                        Check(deadline);
+                        input.Flush();
+                        for (int i = index; i < end; i++)
+                        {
+                            Check(deadline);
+                            Results[ids[i]] = reader.Frame(ids[i], maxBytes);
+                        }
+                    }
+                    input.Close();
+                    reader.Complete();
+                    Check(deadline);
+                }
+                catch (Exception error)
+                {
+                    Failure = "transport";
+                    foreach (string code in new[] { "deadline", "missing-object", "malformed-header", "short-header", "short-body", "missing-delimiter", "trailing-output", "invalid-object-id" })
+                        if (error.Message == code) { Failure = code; break; }
+                }
+                finally
+                {
+                    lock (gate)
+                    {
+                        if (threadHandle != IntPtr.Zero) CloseHandle(threadHandle);
+                        threadHandle = IntPtr.Zero;
+                    }
+                }
+            }, CancellationToken.None, TaskCreationOptions.LongRunning, TaskScheduler.Default);
+        }
+
+        private void Check(DateTime deadline)
+        {
+            if (cancelled || DateTime.UtcNow >= deadline) throw new IOException("deadline");
+        }
+
+        public bool Stop(int milliseconds)
+        {
+            cancelled = true;
+            System.Diagnostics.Stopwatch clock = System.Diagnostics.Stopwatch.StartNew();
+            while (!Work.IsCompleted)
+            {
+                // Cancellation can land between synchronous calls; repeat until
+                // the dedicated thread acknowledges it, never reuse that thread.
+                lock (gate)
+                    if (threadHandle != IntPtr.Zero) CancelSynchronousIo(threadHandle);
+                int left = milliseconds - (int)clock.ElapsedMilliseconds;
+                if (left <= 0) return Work.IsCompleted;
+                Work.Wait(Math.Min(10, left));
+            }
+            return true;
+        }
     }
 
     public sealed class BatchReader
@@ -26,6 +126,7 @@ namespace HookMakerUtf8
         private int position;
         private int available;
         private readonly bool prefetch;
+        private readonly Action checkOwner;
         public long BytesRead { get; private set; }
 
         public BatchReader(Stream input, DateTime deadlineUtc) : this(input, deadlineUtc, true) { }
@@ -36,8 +137,14 @@ namespace HookMakerUtf8
             prefetch = allowPrefetch;
         }
 
+        internal BatchReader(Stream input, DateTime deadlineUtc, Action ownerCheck) : this(input, deadlineUtc, true)
+        {
+            checkOwner = ownerCheck;
+        }
+
         private void CheckDeadline()
         {
+            if (checkOwner != null) checkOwner();
             if (DateTime.UtcNow >= deadline) throw new IOException("deadline");
         }
 
@@ -46,9 +153,14 @@ namespace HookMakerUtf8
             CheckDeadline();
             int remaining = (int)Math.Min(int.MaxValue, Math.Ceiling((deadline - DateTime.UtcNow).TotalMilliseconds));
             if (remaining <= 0) throw new IOException("deadline");
-            Task<int> read = stream.ReadAsync(target, offset, count);
-            if (!read.Wait(remaining)) throw new IOException("deadline");
-            int n = read.GetAwaiter().GetResult();
+            int n;
+            if (checkOwner != null) n = stream.Read(target, offset, count);
+            else
+            {
+                Task<int> read = stream.ReadAsync(target, offset, count);
+                if (!read.Wait(remaining)) throw new IOException("deadline");
+                n = read.GetAwaiter().GetResult();
+            }
             BytesRead += n;
             return n;
         }

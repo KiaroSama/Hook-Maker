@@ -1,6 +1,7 @@
 # Size is not evidence of a consumer. Discover relevant inputs across the full
 # tracked tree, including vendor/tests; unreadable or incomplete scope is unknown.
 . (Join-Path $PSScriptRoot '_docsquery.ps1')
+. (Join-Path $PSScriptRoot '_docsreviewed.ps1')
 # Recognize a fully consumed Cargo-generated data subset, not a suffix waiver.
 # Escapes, unknown tables/keys and other TOML forms stay unknown; no evaluation.
 function Test-DocsCargoLockData {
@@ -42,7 +43,7 @@ function Test-DocsCargoLockData {
 }
 
 function Test-DocsHaveSemanticConsumers {
-    param([string]$ProjectRoot, [string]$Sha, [string[]]$Files)
+    param([string]$ProjectRoot, [string]$Sha, [string[]]$Files, [string]$RepoSlug = '')
     $script:DocsCarryoverReason = 'unknown: documentation consumer evidence incomplete'
     $paths = @(Invoke-DocsGitQuery @('-C',$ProjectRoot,'ls-tree','-r','--name-only',$Sha))
     if ($LASTEXITCODE -ne 0) { return $true }
@@ -61,9 +62,10 @@ function Test-DocsHaveSemanticConsumers {
     $readerPattern = 'readFile|read_text|read_bytes|ReadAllText|Get-Content|open[[:space:]]*\(|fopen|ifstream|File\.read|File\.Read|rglob[[:space:]]*\(|glob[[:space:]]*\(|include_str!|include_bytes!|read_dir|walkdir|os\.walk|readdir|ls-files|ls-tree|doctest|remark-extract|mdx|markdown-loader|md-loader|long_description|readme[[:space:]]*=|sphinx|mkdocs|docusaurus|mdbook|markdown|docs[/\\]|["'']docs["'']'
     $readers = @(Invoke-DocsGitQuery @('-C',$ProjectRoot,'grep','--threads=1','-I','-l','-i','-E','-e',$readerPattern,$Sha,'--'))
     if ($LASTEXITCODE -notin @(0,1)) { return $true }
-    $matches = @(@($literal) + @($readers) | Sort-Object -Unique)
+    $matches = @(@($literal) + @($readers) | Sort-Object -Unique | Where-Object { $_ -cne ($Sha + ':.hookmaker-docs-policy.json') })
     if ($matches.Count -gt 100) { $script:DocsCarryoverReason = 'unknown: more than 100 relevant reader/reference candidates; input scope not fully verified'; return $true }
     $bytes = 0
+    $candidates = New-Object Collections.Generic.List[object]
     foreach ($match in $matches) {
         if (-not ([string]$match).StartsWith($Sha + ':', [StringComparison]::Ordinal)) { return $true }
         $path = ([string]$match).Substring($Sha.Length + 1)
@@ -71,6 +73,15 @@ function Test-DocsHaveSemanticConsumers {
         if ($LASTEXITCODE -ne 0) { return $true }
         $text = $lines -join "`n"; $bytes += [Text.Encoding]::UTF8.GetByteCount($text)
         if ($bytes -gt 1048576) { $script:DocsCarryoverReason = 'unknown: relevant consumer content exceeds 1 MiB'; return $true }
+        $candidates.Add([pscustomobject]@{Path=$path;Lines=$lines;Text=$text;Bytes=[Text.Encoding]::UTF8.GetByteCount($text);Match=$match})
+    }
+    # Review covers every discovered candidate and the whole exact tree, including
+    # transitive readers. It is not inferred from open/read/UTF8 vocabulary.
+    if (Test-DocsReviewedInputScope -ProjectRoot $ProjectRoot -RepoSlug $RepoSlug -Sha $Sha -Files $Files -Candidates $candidates.ToArray()) {
+        $script:DocsCarryoverReason = ''; return $false
+    }
+    foreach ($candidate in $candidates) {
+        $path=$candidate.Path; $lines=$candidate.Lines; $text=$candidate.Text; $match=$candidate.Match
         # Dependency names are not executable reader operations. Literal changed-doc
         # references still require proof; data classification does not certify consumers.
         if ($literal -notcontains $match -and (Test-DocsCargoLockData $path $lines)) { continue }

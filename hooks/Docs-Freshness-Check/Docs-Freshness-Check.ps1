@@ -455,7 +455,9 @@ function Get-CiGreenHead {
         if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { continue }
         $note = @()
         try { $note = @([System.IO.File]::ReadAllLines($path)) } catch { continue }
-        if ($note.Count -ge 4 -and $note[0].Trim() -ceq $head -and $note[1].Trim() -ceq 'verified' -and $note[3].Trim() -ceq 'ci-green') { return $head }
+        $ciProofRoot = if ([IO.File]::Exists((Join-Path $PSScriptRoot '_ciprovenance.ps1'))) { $PSScriptRoot } else { Split-Path -Parent $PSScriptRoot }
+        . (Join-Path $ciProofRoot '_ciprovenance.ps1')
+        if ($null -ne (Read-CiProvenance -Lines $note -Repository ([string]$repo.Repository) -Sha $head)) { return $head }
     }
     return ''
 }

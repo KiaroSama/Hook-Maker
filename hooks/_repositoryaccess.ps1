@@ -81,16 +81,31 @@ function Get-RepositoryAccessSnapshot {
     if($repo-eq''-or-not[string]::Equals($verifiedRoot,$repo,[StringComparison]::OrdinalIgnoreCase)){$answer.Diagnosis='repositoryRootMismatch';return $answer}
     $answer.RepositoryRoot=$verifiedRoot
     $status1=Invoke-RepositoryGit -Arguments @('-C',$root,'status','--porcelain')
-    $head2=Invoke-RepositoryGit -Arguments @('-C',$root,'rev-parse','HEAD')
-    $status2=Invoke-RepositoryGit -Arguments @('-C',$root,'status','--porcelain')
-    foreach($result in @($status1,$head2,$status2)){if($null-eq$result-or$result.ExitCode-ne0){$answer.Diagnosis=Get-RepositoryGitDiagnosis $result;return $answer}}
+    if($null-eq$status1-or$status1.ExitCode-ne0){$answer.Diagnosis=Get-RepositoryGitDiagnosis $status1;return $answer}
     $head=$head1.Trim()
     [string[]]$lines1=@([string]$status1.Output-split'\r?\n'|Where-Object{$_})
-    [string[]]$lines2=@([string]$status2.Output-split'\r?\n'|Where-Object{$_})
+    if($lines1.Count-eq0) {
+        # A clean v2 status supplies the second HEAD without another native
+        # startup. Dirty paths keep the legacy v1 preimage; never translate them.
+        $status2=Invoke-RepositoryGit -Arguments @('-C',$root,'status','--porcelain=v2','--branch','--no-ahead-behind')
+        if($null-eq$status2-or$status2.ExitCode-ne0){$answer.Diagnosis=Get-RepositoryGitDiagnosis $status2;return $answer}
+        $records=@([string]$status2.Output-split'\r?\n'|Where-Object{$_})
+        $oids=@($records|Where-Object{$_-cmatch'^# branch\.oid(?: |$)'})
+        if($oids.Count-ne1-or$oids[0]-cnotmatch'^# branch\.oid ([a-f0-9]{40}|[a-f0-9]{64})$'){$answer.Diagnosis='gitFailed';return $answer}
+        $secondHead=$oids[0].Substring(13)
+        if(@($records|Where-Object{$_-cnotmatch'^# '}).Count-ne0){$answer.Diagnosis='repositoryChanged';return $answer}
+        [string[]]$lines2=@()
+    } else {
+        $head2=Invoke-RepositoryGit -Arguments @('-C',$root,'rev-parse','HEAD')
+        $status2=Invoke-RepositoryGit -Arguments @('-C',$root,'status','--porcelain')
+        foreach($result in @($head2,$status2)){if($null-eq$result-or$result.ExitCode-ne0){$answer.Diagnosis=Get-RepositoryGitDiagnosis $result;return $answer}}
+        $secondHead=([string]$head2.Output).Trim()
+        [string[]]$lines2=@([string]$status2.Output-split'\r?\n'|Where-Object{$_})
+    }
     # Machine identity must not depend on the host's NLS/ICU culture comparer.
     [Array]::Sort($lines1,[StringComparer]::Ordinal)
     [Array]::Sort($lines2,[StringComparer]::Ordinal)
-    if($head-eq''-or$head-cne([string]$head2.Output).Trim()-or($lines1-join'|')-cne($lines2-join'|')){$answer.Diagnosis='repositoryChanged';return $answer}
+    if($head-eq''-or$head-cne$secondHead-or($lines1-join'|')-cne($lines2-join'|')){$answer.Diagnosis='repositoryChanged';return $answer}
     try {$identityAfter=Get-RepositoryApprovalIdentity $repo} catch {$answer.Diagnosis='repositoryChanged';return $answer}
     if($identity.Identity-cne$identityAfter.Identity){$answer.Diagnosis='repositoryChanged';return $answer}
     if($answer.GitEnvironment.Count-gt0-and-not(Test-RepositoryRootApproval $identityAfter)){$answer.Diagnosis='approvalChanged';return $answer}

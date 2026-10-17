@@ -1,5 +1,5 @@
 # Exact ancestor event/path/branch must be represented; workflow text alone is not proof.
-$workflow = "on: [workflow_dispatch]`njobs:`n  test:`n    runs-on: windows-latest`n    steps: []"
+$workflow = "on: [workflow_dispatch]`njobs:`n  test:`n    runs-on: windows-latest`n    steps:`n      - name: Validate`n        run: echo fixture"
 $script:BaseSha = Commit-Fixture '.github/workflows/ci.yml' $workflow 'manual fixture'
 $script:Case = 'manual-green'; $script:ManualFixture = $true
 Check 'complete exact manual ancestor is eligible without push workflow' (Test-DocsAncestorGreen $repo 'owner/repo' $script:BaseSha 'main')

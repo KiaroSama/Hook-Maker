@@ -5,16 +5,16 @@
 # next-step context; a verified or irrelevant state stays silent.
 #
 # Design notes:
-# - The exact commit SHA is correlated via `gh run list --commit <sha>` -
-#   never "the newest run in the repository".
+# - Raw Actions metadata is correlated to the exact repository/SHA and source
+#   workload, then exact-attempt jobs/steps/checks; never merely the newest run.
 # - Local remote-tracking state decides whether HEAD is pushed (no network
 #   fetch). Unpushed work is GitSyncCheck's domain and stays silent here.
 #   Pushed-state is resolved via the SAME selected remote that Get-GitHubRepository
 #   chose for the CI query (Get-PushedHeadInfo/`.TrackingRef`) - never a raw
 #   `@{upstream}` that could silently belong to a different remote.
-# - State per repo remembers the last verified/reported SHA so the same
-#   commit is never re-verified and a deterministic failure is not nagged
-#   endlessly; a NEW pushed commit resets the cycle immediately. That is also
+# - State per repo throttles repeated failure detail, never fresh green proof.
+#   A matching verified label is re-evaluated; a NEW pushed commit resets the
+#   cycle immediately. That is also
 #   the ::deep-debug contract (E-09): the workflow's final gate holds for the
 #   EXACT final pushed SHA including accepted post-Ponytail changes - a later
 #   commit re-verifies on its own SHA, and this hook's result alone never
@@ -257,80 +257,7 @@ function Test-CiBillingBlocked {
     return $sawBilling
 }
 
-function Get-CiRunSnapshot {
-    param([string]$RepoSlug, [string]$Sha)
-    if ($null -eq (Get-Command gh -ErrorAction SilentlyContinue)) { return $null }
-    if (-not (Test-GhAuthenticated)) { return $null }
-    $rawJson = Invoke-GhBounded -ArgumentList @('run', 'list', '--repo', $RepoSlug, '--commit', $Sha, '--json', 'databaseId,attempt,name,workflowName,status,conclusion,updatedAt', '--limit', '50')
-    if ($LASTEXITCODE -ne 0) { return $null }
-    $runs = @()
-    try {
-        $parsedRuns = ((@($rawJson) -join "`n") | ConvertFrom-Json)
-        $runs = @($parsedRuns | ForEach-Object { $_ } | Where-Object { $null -ne $_ })
-    }
-    catch { $runs = @() }
-
-    $pendingRuns = @()
-    $failedRuns = @()
-    $infraRuns = @()
-    $successRunCount = 0
-    $skippedRuns = @()
-    $fingerprintParts = New-Object System.Collections.Generic.List[string]
-    foreach ($run in @($runs)) {
-        if ($null -eq $run) { continue }
-        $name = [string](Get-Field $run 'workflowName')
-        if ($name -eq '') { $name = [string](Get-Field $run 'name') }
-        $id = [string](Get-Field $run 'databaseId')
-        $attempt = [string](Get-Field $run 'attempt')
-        $updatedAt = [string](Get-Field $run 'updatedAt')
-        $entry = $name + ' (run ' + $id + ')'
-        $status = ([string](Get-Field $run 'status')).ToLowerInvariant()
-        $conclusion = ([string](Get-Field $run 'conclusion')).ToLowerInvariant()
-        # Non-secret, stable identity for this run; joined with a delimiter that
-        # cannot appear in the values, and the whole set is sorted below.
-        [void]$fingerprintParts.Add($id + "`t" + $attempt + "`t" + $name + "`t" + $status + "`t" + $conclusion + "`t" + $updatedAt)
-        if ($status -ne 'completed') { $pendingRuns += $entry }
-        elseif ($conclusion -in @('success', 'neutral')) { $successRunCount++ }
-        elseif ($conclusion -eq 'skipped') { $skippedRuns += $entry }
-        elseif ($conclusion -in @('failure', 'startup_failure')) { $failedRuns += $entry }
-        else {
-            # cancelled / timed_out / stale / action_required / unknown:
-            # abnormal endings that are often infrastructure or flakiness -
-            # the ONLY states an external-blocker exception may excuse
-            # (a genuine completed failure/startup_failure never is).
-            $infraRuns += ($entry + ' [' + $conclusion + ']')
-        }
-    }
-    # UNEXPECTED SKIP (E-09): a 'skipped' conclusion is a normal green companion
-    # to at least one genuinely successful run (path filters, conditional jobs),
-    # but when EVERY completed run was skipped nothing actually verified this
-    # commit - that must never read as CI-green. Classified with the abnormal
-    # endings so it blocks (and stays eligible for an evidenced external-blocker
-    # exception), never as success.
-    if ($successRunCount -eq 0 -and $skippedRuns.Count -gt 0) {
-        foreach ($skippedEntry in $skippedRuns) { $infraRuns += ($skippedEntry + ' [skipped - every run was skipped, nothing verified this commit]') }
-    }
-    # A completed failure is a genuine code failure UNLESS GitHub's own
-    # annotations prove it is an account billing/payment block (no job ran).
-    # Reclassify those out of $failedRuns so a real failure is never masked - the
-    # check only runs when there IS a failure (never on the green path), keys on
-    # GitHub's authored annotation, and requires EVERY failing run to be
-    # billing-annotated (billing blocks everything, so a mix with a real failure
-    # cannot occur). The fingerprint above is computed over ALL runs before this,
-    # so reclassification never changes it and the recheck/retire logic stays
-    # stable.
-    $billingRuns = @()
-    if ($failedRuns.Count -gt 0 -and (Test-CiBillingBlocked -RepoSlug $RepoSlug -Sha $Sha)) {
-        $billingRuns = $failedRuns
-        $failedRuns = @()
-    }
-    $fingerprint = Get-ShortHash ((@($fingerprintParts.ToArray() | Sort-Object) -join '|'))
-    $allSuccess = ($runs.Count -gt 0 -and $pendingRuns.Count -eq 0 -and $failedRuns.Count -eq 0 -and $infraRuns.Count -eq 0 -and $billingRuns.Count -eq 0)
-    return [pscustomobject]@{
-        Runs = $runs; PendingRuns = $pendingRuns; FailedRuns = $failedRuns; InfraRuns = $infraRuns
-        BillingRuns = $billingRuns; Fingerprint = $fingerprint; AllSuccess = $allSuccess
-    }
-}
+. (Join-Path $PSScriptRoot '_ciworkload.ps1')
 
 # ---- explicit CLI action: record an evidenced, CI-verified external blocker ----
 if ($ReportExternalBlocker) {
@@ -355,7 +282,7 @@ if ($ReportExternalBlocker) {
     }
     # Never record blind: the exact-SHA CI state must be queried and captured
     # right now, and a genuine completed failure can never be excused.
-    $snapshot = Get-CiRunSnapshot -RepoSlug $info.RepoSlug -Sha $info.Sha
+    $snapshot = Get-CiRunSnapshot -RepoSlug $info.RepoSlug -Sha $info.Sha -ProjectRoot $cwd -Branch $info.Branch
     if ($null -eq $snapshot) {
         [Console]::Error.WriteLine('Ci-Status-Check -ReportExternalBlocker: could not query GitHub Actions for this commit (gh missing, unauthenticated, or the API call itself failed). An exception cannot be recorded without a capturable query result - verify gh/auth/connectivity and retry.')
         exit 1
@@ -551,7 +478,7 @@ if (Test-Path -LiteralPath $externalStatePath -PathType Leaf) {
             # applies; surface the non-blocking "CI not green" notice.
             Write-ExternalBlockerContext -Classification $extClassification -Reason $extReason -Sha7 $sha7 -RepoSlug $repoSlug -EventName $eventName
         }
-        $recheck = Get-CiRunSnapshot -RepoSlug $repoSlug -Sha $sha
+        $recheck = Get-CiRunSnapshot -RepoSlug $repoSlug -Sha $sha -ProjectRoot $cwd -Branch $branch
         if ($null -eq $recheck) {
             # Cannot verify right now - keep tolerating the existing, already
             # evidenced exception (never invent a new one, never claim verified).
@@ -562,6 +489,7 @@ if (Test-Path -LiteralPath $externalStatePath -PathType Leaf) {
             # CI recovered - retire the exception and verify normally (green,
             # not "excused"); no external wording.
             Remove-Item -LiteralPath $externalStatePath -Force -ErrorAction SilentlyContinue
+            $snapshot = $recheck
             Save-State -Outcome 'verified' -Evidence 'ci-green'    # a re-queried all-success snapshot
             exit 0
         }
@@ -592,15 +520,18 @@ Invoke-CiStateGate
 $snapshot = $prefetchedSnapshot
 if ($null -eq $snapshot) {
     if ($null -eq (Get-Command gh -ErrorAction SilentlyContinue)) { exit 0 }    # silent degradation: never claim verified
-    $snapshot = Get-CiRunSnapshot -RepoSlug $repoSlug -Sha $sha
+    $snapshot = Get-CiRunSnapshot -RepoSlug $repoSlug -Sha $sha -ProjectRoot $cwd -Branch $branch
     if ($null -eq $snapshot -and $script:GhBudgetExhausted) {
         $emit = Write-HookResult -EventName $eventName -Kind 'advisory' -Message ('CI CHECK: could not verify the checks of pushed commit ' + $sha7 + ' (' + $repoSlug + ') within the ' + $ghBudgetSeconds + ' s GitHub budget (GitHub or the network was slow). This is NOT a green result. Verify this exact commit yourself: gh run list --commit ' + $sha)
         exit $emit.ExitCode
     }
-    if ($null -eq $snapshot) { exit 0 }    # API/permission failure: degrade without claiming anything
+    if ($null -eq $snapshot) {
+        if (-not (Test-GhAuthenticated)) { exit 0 }
+        Write-Block -Outcome 'pending' -Reason ('CI CHECK: complete exact-SHA workload metadata could not be verified for ' + $sha7 + '. API failure, malformed data or partial coverage is unknown, not green; no runs are registered yet with usable complete evidence.')
+    }
 }
 
-if ($snapshot.Runs.Count -eq 0) {
+if ($snapshot.Runs.Count -eq 0 -and $snapshot.FailedRuns.Count -eq 0 -and $snapshot.InfraRuns.Count -eq 0 -and $snapshot.PendingRuns.Count -eq 0 -and $snapshot.BillingRuns.Count -eq 0) {
     $workflowsDir = Join-Path $cwd '.github\workflows'
     $hasWorkflows = $false
     if (Test-Path -LiteralPath $workflowsDir -PathType Container) {
@@ -672,7 +603,10 @@ if ($snapshot.FailedRuns.Count -gt 0 -or $snapshot.InfraRuns.Count -gt 0) {
     Write-Block -Outcome 'failed' -Reason ('CI CHECK for pushed commit ' + $sha7 + ' on ' + $branch + ' (' + $repoSlug + '): ' + ($parts -join ' '))
 }
 
-# All runs for this exact commit completed successfully.
+if (-not $snapshot.AllSuccess) {
+    Write-Block -Outcome 'pending' -Reason ('CI CHECK: required workload, attempt jobs/steps or complete exact-source checks are not proven for ' + $sha7 + '. Successful auxiliary runs or empty failure lists are not CI success. Verify the committed workload contract and exact attempt; do not seed state or dispatch duplicate CI.')
+}
+# Every required workload was positively verified for this exact source.
 Save-State -Outcome 'verified' -Evidence 'ci-green'    # every run for this exact commit succeeded
 if (Get-Command -Name 'Invoke-RunnerLeftRunningGate' -ErrorAction SilentlyContinue) { Invoke-RunnerLeftRunningGate -ProjectRoot $cwd -Sha $sha -StateDir $stateDir -HookInput $hookInput -EventName $eventName }; exit 0
 }

@@ -38,6 +38,9 @@ function Invoke-GhBounded {
         if ($script:Case -eq 'protection-malformed') { return '{}' }
         return '{"name":"main","protected":false}'
     }
+    if ($endpoint -match '/attempts/1/jobs') {
+        return (@{total_count=1;jobs=@(@{id=12;check_run_url='https://api.github.com/repos/owner/repo/check-runs/2';run_id=1;run_attempt=1;head_sha=$script:BaseSha;name='test';status='completed';conclusion='success';completed_at='2026-10-17T09:00:00Z';steps=@(@{number=1;name='Validate';status='completed';conclusion='success';completed_at='2026-10-17T08:59:00Z'})})}|ConvertTo-Json -Depth 8 -Compress)
+    }
     if ($endpoint -match '/actions/runs') {
         if ($endpoint -notmatch $script:BaseSha) { return '{"total_count":0,"workflow_runs":[]}' }
         $status = if ($script:Case -eq 'pending') { 'in_progress' } else { 'completed' }
@@ -48,7 +51,7 @@ function Invoke-GhBounded {
         $event = if ($script:ManualFixture -and $script:Case -ne 'manual-wrong-event') { 'workflow_dispatch' } else { 'push' }
         $branch = if ($script:Case -eq 'manual-wrong-branch') { 'other' } else { 'main' }
         $path = if ($script:Case -eq 'manual-wrong-path') { '.github/workflows/other.yml' } else { '.github/workflows/ci.yml' }
-        return (@{ total_count = $count; workflow_runs = @(@{ id = 1; head_sha = $sha; head_repository = @{ full_name = $slug }; status = $status; conclusion = $conclusion; path = $path; event = $event; head_branch = $branch }) } | ConvertTo-Json -Depth 6 -Compress)
+        return (@{ total_count = $count; workflow_runs = @(@{ id = 1; workflow_id=9;run_attempt=1;head_sha = $sha; head_repository = @{ full_name = $slug }; repository=@{full_name=$slug}; status = $status; conclusion = $conclusion; path = $path; event = $event; head_branch = $branch }) } | ConvertTo-Json -Depth 6 -Compress)
     }
     if ($endpoint -match '/check-runs') {
         $c = if ($script:Case -eq 'check-failed') { 'failure' } else { 'success' }
@@ -76,7 +79,7 @@ try {
         Write-Host ('Passed: ' + $script:Pass + ' Failed: ' + $script:Fail)
         exit $script:Fail
     }
-    [void](Commit-Fixture '.github/workflows/ci.yml' "on: [push]`njobs:`n  test:`n    runs-on: windows-latest`n    steps: []" 'code')
+    [void](Commit-Fixture '.github/workflows/ci.yml' "on: [push]`njobs:`n  test:`n    runs-on: windows-latest`n    steps:`n      - name: Validate`n        run: echo fixture" 'code')
     $script:BaseSha = ([string](& git -C $repo rev-parse HEAD)).Trim()
     $sha = Commit-Fixture 'README.md' 'docs'
     $state = Join-Path $Work 'state.txt'
@@ -109,12 +112,19 @@ try {
         & git -C $repo reset --hard $sha *> $null
     }
     . (Join-Path $HookRoot 'Ci-Status-Check\_cistate.ps1')
-    $stateLines = @($sha, 'verified', [DateTime]::UtcNow.ToString('o'), 'docs-only-carryover', $script:BaseSha)
+    $when = [DateTimeOffset]::UtcNow.ToString('o')
+    $carryProof = @{schema=1;repository='owner/repo';sha=$sha;parent=$script:BaseSha;outcome='docs-only-carryover';observedUtc=$when;sourceFingerprint=('c'*64)}
+    $stateLines = @($sha, 'verified', $when, 'docs-only-carryover', $script:BaseSha, ($carryProof|ConvertTo-Json -Compress))
     $publication = Join-Path $Work 'published.txt'
     Check 'first carryover atomically publishes complete state' (Write-CiStateAtomic $publication $stateLines)
     Check 'repeat carryover does not claim another notice' (-not (Write-CiStateAtomic $publication $stateLines))
     Check 'concurrent stale pending cannot overwrite carryover' (-not (Write-CiStateAtomic $publication @($sha, 'pending', [DateTime]::UtcNow.ToString('o'), '')))
     Check 'state still names exact ancestor, never final SHA ci-green' (([IO.File]::ReadAllLines($publication) -join '|') -ceq ($stateLines -join '|'))
+    $oldProof=@{}+$carryProof; $oldProof.observedUtc=[DateTimeOffset]::UtcNow.AddMinutes(-2).ToString('o')
+    $oldLines=@($sha,'verified',$oldProof.observedUtc,'docs-only-carryover',$script:BaseSha,($oldProof|ConvertTo-Json -Compress))
+    [IO.File]::WriteAllLines($publication,$oldLines,[Text.Encoding]::UTF8)
+    Check 'fresh revalidation deduplicates an older exact notice identity' (-not(Write-CiStateAtomic $publication $stateLines))
+    Check 'stale carryover cannot indefinitely suppress pending revalidation' (Write-CiStateAtomic $publication @($sha,'pending',[DateTimeOffset]::UtcNow.ToString('o'),''))
     # Real simultaneous writers (two bounded, captured child processes) exercise
     # the mutex and atomic replace on both hosts; no synthetic concurrency claim.
     $emptyRulesProbe = Join-Path $Work 'empty-rules.ps1'
@@ -129,7 +139,7 @@ try {
     $shared = Join-Path $HookRoot '_hooklib.ps1'
     $body = '. ''' + $shared.Replace("'", "''") + "'`n. '" + $module.Replace("'", "''") + "'`n" +
         '. ''' + (Join-Path $HookRoot 'Ci-Status-Check\_docsonly.ps1').Replace("'", "''") + "'`n" +
-        'function Get-DocsOnlyCarryover { return [pscustomobject]@{ Parent=''' + $script:BaseSha + '''; Files=@(''README.md'') } }' + "`n" +
+        'function Get-DocsOnlyCarryover { return [pscustomobject]@{ Parent=''' + $script:BaseSha + '''; Files=@(''README.md''); SourceFingerprint=(''c''*64) } }' + "`n" +
         'Invoke-DocsOnlyCarryover -ProjectRoot ''' + $repo.Replace("'", "''") + ''' -Sha ''' + $sha + ''' -Branch main -RepoSlug owner/repo -StatePath ''' +
         (Join-Path $Work 'concurrent.txt').Replace("'", "''") + ''' -EventName Stop'
     [IO.File]::WriteAllText($writer, $body, (New-Object Text.UTF8Encoding $false))
@@ -146,10 +156,15 @@ try {
             Check ($hostExe + ': concurrent Stop emits one non-blocking systemMessage') (
                 @($outputs | Where-Object { $_ -match 'systemMessage' -and $_ -notmatch '"decision"' }).Count -eq 1 -and
                 @($outputs | Where-Object { $_ -eq '' }).Count -eq 1)
-            Check ($hostExe + ': concurrent state complete and no temporary remains') ([IO.File]::ReadAllLines($path).Count -eq 5 -and @(Get-ChildItem $Work -Filter 'concurrent.txt.*.tmp').Count -eq 0)
+            Check ($hostExe + ': concurrent state complete and no temporary remains') ([IO.File]::ReadAllLines($path).Count -eq 6 -and @(Get-ChildItem $Work -Filter 'concurrent.txt.*.tmp').Count -eq 0)
         }
         finally { foreach ($child in $children) { if (-not $child.HasExited) { $child.Kill(); [void]$child.WaitForExit(10000) }; $child.Dispose() } }
     }
+    & {
+        param($hooks,$scripts)
+        . (Join-Path $scripts '_testdocsreviewed.ps1')
+        Invoke-DocsReviewedRegression -HooksRoot $hooks
+    } $HookRoot $PSScriptRoot
     $safeFixture = $sha; $safeBase = $script:BaseSha
     . (Join-Path $PSScriptRoot '_testcidocsmanual.ps1')
     . (Join-Path $PSScriptRoot '_testcidocslockfile.ps1')

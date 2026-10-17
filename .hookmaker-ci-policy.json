@@ -1,0 +1,261 @@
+{
+  "schema": 1,
+  "repository": "KiaroSama/Hook-Maker",
+  "rationale": "Reviewed own manual root and six local reusable workflows, all static matrices and authored validation steps; no observed success is stored. Exact tree binding invalidates this review after source changes.",
+  "treeFingerprint": "d70d730231d7f2cb6ba76027f1ba355ee42df3b94e47d81104e66251b30a6adc",
+  "sources": [
+    {
+      "path": ".github/workflows/ci.yml",
+      "blob": "77ea9fe1f95b4c320cdf0fffa718e9205828eed9"
+    },
+    {
+      "path": ".github/workflows/generation-safety.yml",
+      "blob": "4ebab0d213c9a2b3497e340a82ed974c96b60cf5"
+    },
+    {
+      "path": ".github/workflows/receipt-isolation.yml",
+      "blob": "4b86c03b8a103e40d332941875347756d4c306bf"
+    },
+    {
+      "path": ".github/workflows/remaining-boundaries.yml",
+      "blob": "2973e9c5f561186074029e65d2e3332e5d987535"
+    },
+    {
+      "path": ".github/workflows/review-contracts.yml",
+      "blob": "ff3aabd25b33e2b1706b1563a9154a3750d2d88b"
+    },
+    {
+      "path": ".github/workflows/storage-integrity-regressions.yml",
+      "blob": "468a708c84163dba274b834233eda54730635c8a"
+    },
+    {
+      "path": ".github/workflows/task-finalization-regressions.yml",
+      "blob": "fc5863956f0c2ea9299e189b456491ead6db5ab0"
+    }
+  ],
+  "workflows": [
+    {
+      "path": ".github/workflows/ci.yml",
+      "id": 357063847,
+      "event": "workflow_dispatch",
+      "branch": "main",
+      "jobs": [
+        {
+          "name": "static",
+          "steps": [
+            "Validate sync-hooks.example.json",
+            "Parse-check all PowerShell scripts",
+            "PSScriptAnalyzer (curated rule set)",
+            "Every test suite is covered by a CI bucket"
+          ]
+        },
+        {
+          "name": "engine",
+          "steps": [
+            "Engine smoke test (PowerShell 7)",
+            "Engine smoke test (Windows PowerShell 5.1)",
+            "Stop ledger, anti-loop admission (Windows PowerShell 5.1)"
+          ]
+        },
+        {
+          "name": "suites (registry)",
+          "steps": [
+            "Run registry suites"
+          ]
+        },
+        {
+          "name": "suites (uninstall)",
+          "steps": [
+            "Run uninstall suites"
+          ]
+        },
+        {
+          "name": "suites (wizard)",
+          "steps": [
+            "Run wizard suites"
+          ]
+        },
+        {
+          "name": "suites (secrets)",
+          "steps": [
+            "Run secrets suites"
+          ]
+        },
+        {
+          "name": "suites (hooks)",
+          "steps": [
+            "Run hooks suites"
+          ]
+        },
+        {
+          "name": "generation-safety / native (pwsh, current)",
+          "steps": [
+            "Prepare exact subject and evidence",
+            "Exercise actual production functions and real hook processes",
+            "Preserve source and verify historical workspace cleanup"
+          ]
+        },
+        {
+          "name": "generation-safety / native (pwsh, baseline)",
+          "steps": [
+            "Prepare exact subject and evidence",
+            "Exercise actual production functions and real hook processes",
+            "Preserve source and verify historical workspace cleanup"
+          ]
+        },
+        {
+          "name": "generation-safety / native (powershell, current)",
+          "steps": [
+            "Prepare exact subject and evidence",
+            "Exercise actual production functions and real hook processes",
+            "Preserve source and verify historical workspace cleanup"
+          ]
+        },
+        {
+          "name": "generation-safety / native (powershell, baseline)",
+          "steps": [
+            "Prepare exact subject and evidence",
+            "Exercise actual production functions and real hook processes",
+            "Preserve source and verify historical workspace cleanup"
+          ]
+        },
+        {
+          "name": "receipt-isolation / native (pwsh, current)",
+          "steps": [
+            "Prepare exact source",
+            "Native isolated positive and negative cases",
+            "Preserve source and clean owned historical workspace"
+          ]
+        },
+        {
+          "name": "receipt-isolation / native (pwsh, baseline)",
+          "steps": [
+            "Prepare exact source",
+            "Native isolated positive and negative cases",
+            "Preserve source and clean owned historical workspace"
+          ]
+        },
+        {
+          "name": "receipt-isolation / native (powershell, current)",
+          "steps": [
+            "Prepare exact source",
+            "Native isolated positive and negative cases",
+            "Preserve source and clean owned historical workspace"
+          ]
+        },
+        {
+          "name": "receipt-isolation / native (powershell, baseline)",
+          "steps": [
+            "Prepare exact source",
+            "Native isolated positive and negative cases",
+            "Preserve source and clean owned historical workspace"
+          ]
+        },
+        {
+          "name": "remaining-boundaries / boundaries (pwsh, current)",
+          "steps": [
+            "Prepare exact source and preserve its identity",
+            "Run the actual source through bounded native cases",
+            "Preserve exact source and remove historical workspace"
+          ]
+        },
+        {
+          "name": "remaining-boundaries / boundaries (pwsh, baseline)",
+          "steps": [
+            "Prepare exact source and preserve its identity",
+            "Run the actual source through bounded native cases",
+            "Preserve exact source and remove historical workspace"
+          ]
+        },
+        {
+          "name": "remaining-boundaries / boundaries (powershell, current)",
+          "steps": [
+            "Prepare exact source and preserve its identity",
+            "Run the actual source through bounded native cases",
+            "Preserve exact source and remove historical workspace"
+          ]
+        },
+        {
+          "name": "remaining-boundaries / boundaries (powershell, baseline)",
+          "steps": [
+            "Prepare exact source and preserve its identity",
+            "Run the actual source through bounded native cases",
+            "Preserve exact source and remove historical workspace"
+          ]
+        },
+        {
+          "name": "review-contracts / contracts (pwsh, current)",
+          "steps": [
+            "Prepare the exact subject and evidence directories",
+            "Evidence, capacity, and outcome contracts",
+            "Concurrent callers and real installer fault injection",
+            "Require complete machine-readable evidence",
+            "Preserve tested source and clean the historical checkout"
+          ]
+        },
+        {
+          "name": "review-contracts / contracts (pwsh, baseline)",
+          "steps": [
+            "Prepare the exact subject and evidence directories",
+            "Evidence, capacity, and outcome contracts",
+            "Concurrent callers and real installer fault injection",
+            "Require complete machine-readable evidence",
+            "Preserve tested source and clean the historical checkout"
+          ]
+        },
+        {
+          "name": "review-contracts / contracts (powershell, current)",
+          "steps": [
+            "Prepare the exact subject and evidence directories",
+            "Evidence, capacity, and outcome contracts",
+            "Concurrent callers and real installer fault injection",
+            "Require complete machine-readable evidence",
+            "Preserve tested source and clean the historical checkout"
+          ]
+        },
+        {
+          "name": "review-contracts / contracts (powershell, baseline)",
+          "steps": [
+            "Prepare the exact subject and evidence directories",
+            "Evidence, capacity, and outcome contracts",
+            "Concurrent callers and real installer fault injection",
+            "Require complete machine-readable evidence",
+            "Preserve tested source and clean the historical checkout"
+          ]
+        },
+        {
+          "name": "storage-integrity-regressions / native-storage",
+          "steps": [
+            "Transaction and package regressions (PowerShell 7)",
+            "Transaction and package regressions (Windows PowerShell 5.1)",
+            "Byte verification and publication failures (PowerShell 7)",
+            "Byte verification and publication failures (Windows PowerShell 5.1)",
+            "Record tested revision"
+          ]
+        },
+        {
+          "name": "storage-integrity-regressions / native-runner",
+          "steps": [
+            "Exercise both guarded-runner hosts with fresh per-case evidence"
+          ]
+        },
+        {
+          "name": "task-finalization-regressions / task-identity",
+          "steps": [
+            "Task and ledger regressions (PowerShell 7)",
+            "Task and ledger regressions (Windows PowerShell 5.1)",
+            "Native concurrency and wire output (PowerShell 7)",
+            "Native concurrency and wire output (Windows PowerShell 5.1)",
+            "Archive exact tested source"
+          ]
+        },
+        {
+          "name": "task-finalization-regressions / baseline-red-proof",
+          "steps": [
+            "Prove historical failures without relying on local branch history"
+          ]
+        }
+      ]
+    }
+  ]
+}

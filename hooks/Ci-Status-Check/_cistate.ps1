@@ -1,5 +1,7 @@
 # Serialized atomic CI records: concurrent pending writers cannot clobber an
-# already-proven carryover for the same SHA or split a five-line receipt.
+# fresh proven carryover for the same SHA or split a versioned receipt.
+$ciProofRoot = if ([IO.File]::Exists((Join-Path $PSScriptRoot '_ciprovenance.ps1'))) { $PSScriptRoot } else { Split-Path -Parent $PSScriptRoot }
+. (Join-Path $ciProofRoot '_ciprovenance.ps1')
 function Write-CiStateAtomic {
     param([string]$Path, [string[]]$Lines)
     $mutex = New-Object Threading.Mutex($false, ('Local\HookMaker-CiState-' + (Get-ShortHash $Path.ToLowerInvariant())))
@@ -12,8 +14,13 @@ function Write-CiStateAtomic {
         if (-not $owned) { return $false }
         if ([IO.File]::Exists($Path)) {
             $old = @([IO.File]::ReadAllLines($Path, [Text.Encoding]::UTF8))
-            if ($old.Count -ge 5 -and $old[0] -ceq $Lines[0] -and $old[1] -ceq 'verified' -and $old[3] -ceq 'docs-only-carryover' -and
-                ($Lines[1] -eq 'pending' -or $Lines[3] -eq 'docs-only-carryover')) { return $false }
+            $previous = Read-CiCarryover -Lines $old -Sha $Lines[0] -NoticeIdentityOnly
+            $fresh = Read-CiCarryover -Lines $old -Sha $Lines[0]
+            $incoming = Read-CiCarryover -Lines $Lines -Sha $Lines[0]
+            if (($Lines[1] -eq 'pending' -and $null -ne $fresh) -or
+                ($null -ne $previous -and $null -ne $incoming -and
+                    $incoming.repository -ieq $previous.repository -and $incoming.parent -ceq $previous.parent -and
+                    $incoming.sourceFingerprint -ceq $previous.sourceFingerprint)) { return $false }
         }
         [void][IO.Directory]::CreateDirectory((Split-Path -Parent $Path))
         $temporary = $Path + '.' + [guid]::NewGuid().ToString('N') + '.tmp'
@@ -30,10 +37,21 @@ function Write-CiStateAtomic {
 }
 function Save-State {
     param([string]$Outcome, [string]$Evidence = '')
-    $script:CiStateWriteAccepted = Write-CiStateAtomic -Path $script:statePath -Lines @($script:sha, $Outcome, [DateTime]::UtcNow.ToString('o'), $Evidence)
+    $when = [DateTimeOffset]::UtcNow.ToString('o')
+    $lines = @($script:sha, $Outcome, $when, $Evidence)
+    if ($Evidence -ceq 'ci-green') {
+        $current = Get-Variable snapshot -ValueOnly -ErrorAction SilentlyContinue
+        if ($null -eq $current -or -not $current.AllSuccess -or $null -eq (Get-Field $current 'Provenance')) { return }
+        $proof = $current.Provenance
+        $script:CiStateWriteAccepted = $false
+        $proof.observedUtc = $when
+        $lines += ($proof | ConvertTo-Json -Depth 12 -Compress)
+        if ($null -eq (Read-CiProvenance -Lines $lines -Repository $script:repoSlug -Sha $script:sha)) { return }
+    }
+    $script:CiStateWriteAccepted = Write-CiStateAtomic -Path $script:statePath -Lines $lines
     if (-not $script:CiStateWriteAccepted -and $Outcome -eq 'pending') {
         $lines = @(); try { $lines = @([IO.File]::ReadAllLines($script:statePath, [Text.Encoding]::UTF8)) } catch { }
-        if ($lines.Count -ge 5 -and $lines[0] -ceq $script:sha -and $lines[3] -ceq 'docs-only-carryover') { exit 0 }
+        if ($null -ne (Read-CiCarryover -Lines $lines -Repository $script:repoSlug -Sha $script:sha)) { exit 0 }
     }
 }
 
@@ -52,14 +70,13 @@ function Invoke-CiStateGate {
         catch { }
     }
     if ($null -ne $prefetchedSnapshot -or $stateSha -cne $sha) { return }
-    if ($stateOutcome -eq 'verified') {
-        if (Get-Command Invoke-RunnerLeftRunningGate -ErrorAction SilentlyContinue) { Invoke-RunnerLeftRunningGate -ProjectRoot $cwd -Sha $sha -StateDir $stateDir -HookInput $hookInput -EventName $eventName }
-        exit 0
-    }
+    # A matching historical label cannot prove current workload provenance.
+    # Fresh bounded evaluation below is required even for a versioned receipt.
+    if ($stateOutcome -eq 'verified') { return }
     if ($stateOutcome -eq 'pending') {
         $message = @(Invoke-QuietCommand -FilePath git -ArgumentList @('-C', $cwd, 'log', '-1', '--format=%B', $sha)) -join "`n"
         if ($LASTEXITCODE -eq 0 -and (Test-CommitHasSkipMarker $message)) {
-            $script:prefetchedSnapshot = Get-CiRunSnapshot -RepoSlug $repoSlug -Sha $sha
+            $script:prefetchedSnapshot = Get-CiRunSnapshot -RepoSlug $repoSlug -Sha $sha -ProjectRoot $cwd -Branch $branch
             # Use the newly read final-SHA snapshot, rather than repeating a
             # cached pending complaint. Unknown lookup keeps the old cooldown.
             if ($null -ne $script:prefetchedSnapshot) { return }

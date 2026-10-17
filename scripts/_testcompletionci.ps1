@@ -29,14 +29,18 @@
     function Write-CiRecord {
         param(
             [object]$Copy, [string]$Root, [string]$Sha, [string]$Outcome = 'verified',
-            [string]$Evidence = 'ci-green', [double]$AgeMinutes = 0, [switch]$LegacyThreeLine
+            [string]$Evidence = 'ci-green', [double]$AgeMinutes = 0, [switch]$LegacyThreeLine, [switch]$LegacyFourLine
         )
         $key = Get-ShortHash ($Root.ToLowerInvariant() + '|' + $script:ciSlug.ToLowerInvariant())
         $path = Join-Path (Get-StateDir $Copy) ('CiStatusCheck-' + $key + '.txt')
         $when = [DateTime]::UtcNow.AddMinutes(-$AgeMinutes).ToString('o')
         $lines = if ($LegacyThreeLine) { @($Sha, $Outcome, $when) } else { @($Sha, $Outcome, $when, $Evidence) }
+        if (-not $LegacyThreeLine -and -not $LegacyFourLine -and $Evidence -ceq 'ci-green' -and $Outcome -ceq 'verified') {
+            $proof = @{schema=1;repository=$script:ciSlug;sha=$Sha;outcome='ci-green';observedUtc=$when;completedUtc=$when;workloadFingerprint=('b'*64);sourceFingerprint=('c'*64);runs=@(@{id=1;attempt=1;workflowId=2;path='.github/workflows/ci.yml';event='workflow_dispatch';branch='main';completedUtc=$when})}
+            $lines += ($proof | ConvertTo-Json -Depth 8 -Compress)
+        }
         New-Item -ItemType Directory -Path (Split-Path -Parent $path) -Force | Out-Null
-        [System.IO.File]::WriteAllLines($path, $lines)
+        [System.IO.File]::WriteAllLines($path, $lines, [Text.Encoding]::UTF8)
         return $path
     }
     # One failed run, one CI record, one verdict. Everything below is this shape.
@@ -98,6 +102,10 @@
     # An older Ci-Status-Check runtime writes three lines. Fails closed.
     $ciLegacy = Invoke-CiCase -Name 'cilegacy' -Record @{ LegacyThreeLine = $true }
     Check 'CI2: a pre-change three-line record clears nothing' $ciLegacy.Blocked $ciLegacy.Out
+    $ciLegacy4 = Invoke-CiCase -Name 'cilegacyfour' -Record @{ LegacyFourLine = $true }
+    Check 'CI2: an unqualified four-line green label clears nothing' $ciLegacy4.Blocked $ciLegacy4.Out
+    . (Join-Path $PSScriptRoot '_testciprovenance.ps1')
+    Invoke-CiProvenanceRegression -HooksRoot $HooksRoot
 
     # =====================================================================
     Write-Host '--- CI3: a hang is still a hang, whatever CI says ---' -ForegroundColor Cyan
@@ -108,9 +116,8 @@
 
     # =====================================================================
     Write-Host '--- CI4: the record itself, and what age does not change ---' -ForegroundColor Cyan
-    # Age alone must not invalidate a green result: the commit has not moved, so
-    # nothing about what CI saw has changed. Without this, adding a time-to-live
-    # later would quietly undo the whole feature and nothing would notice.
+    # A twenty-minute observation remains inside the sixty-minute freshness
+    # window and its actual execution still postdates the thirty-minute failure.
     $ciOld = Invoke-CiCase -Name 'ciold' -Record @{ Evidence = 'ci-green'; AgeMinutes = 20 }
     Check 'CI4: an OLD green result for the current commit still clears' (-not $ciOld.Blocked) $ciOld.Out
 

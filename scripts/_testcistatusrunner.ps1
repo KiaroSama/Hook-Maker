@@ -14,7 +14,7 @@ function New-PushedCiRepo {
     param([string]$Name)
     $repo = New-GitRepo $Name
     New-Item -ItemType Directory -Path (Join-Path $repo '.github\workflows') -Force | Out-Null
-    Set-Content (Join-Path $repo '.github\workflows\ci.yml') "on: [push]`njobs:`n  t:`n    runs-on: windows-latest`n    steps: []"
+    Set-Content (Join-Path $repo '.github\workflows\ci.yml') "on: [push]`njobs:`n  validate:`n    runs-on: windows-latest`n    steps:`n      - name: Validate`n        run: echo fixture" -Encoding utf8
     & git -C $repo add . ; & git -C $repo commit -q -m 'ci'
     & git -C $repo update-ref refs/remotes/origin/main (Get-HeadSha $repo)
     return $repo
@@ -66,11 +66,26 @@ if ($args.Count -ge 2 -and $args[0] -eq 'api' -and [string]$args[1] -match '^rep
         $lines = @([IO.File]::ReadAllLines($stateFile.FullName))
         if ($lines.Count -ge 4 -and $lines[1] -eq 'verified' -and (($lines[3] -eq 'ci-green' -and $lines[0] -eq $sha) -or ($lines.Count -ge 5 -and $lines[3] -eq 'docs-only-carryover' -and $lines[4] -eq $sha))) { $greenBase = $true }
     }
-    if ($endpoint -match '/actions/runs') {
-        if (-not $greenBase) { Write-Output '{"total_count":0,"workflow_runs":[]}' }
-        else { Write-Output (@{total_count=1;workflow_runs=@(@{head_sha=$sha;head_repository=@{full_name=$slug};status='completed';conclusion='success';path='.github/workflows/ci.yml';event='push'})}|ConvertTo-Json -Depth 6) }
+    if ($endpoint -match '/actions/runs/([0-9]+)/attempts/1/jobs') {
+        $runId=[long]$Matches[1]
+        $sha=[IO.File]::ReadAllText((Join-Path $env:GH_MOCK_DIR 'ancestor-sha.txt')).Trim()
+        Write-Output (@{total_count=1;jobs=@(@{id=12;check_run_url=('https://api.github.com/repos/'+$slug+'/check-runs/12');run_id=$runId;run_attempt=1;head_sha=$sha;name='validate';status='completed';conclusion='success';completed_at=[DateTimeOffset]::UtcNow.AddSeconds(-1).ToString('o');steps=@(@{number=1;name='Validate';status='completed';conclusion='success';completed_at='2026-10-17T08:59:00Z'})})}|ConvertTo-Json -Depth 8)
+        exit 0
     }
-    elseif ($endpoint -match '/check-runs') { Write-Output (@{total_count=1;check_runs=@(@{head_sha=$sha;status='completed';conclusion='success'})}|ConvertTo-Json -Depth 5) }
+    if ($endpoint -match '/actions/runs') {
+        if ($greenBase) { [IO.File]::WriteAllText((Join-Path $env:GH_MOCK_DIR 'ancestor-sha.txt'),$sha,[Text.Encoding]::UTF8) }
+        if (-not $greenBase -and -not(Test-Path $baseFixture)) {
+            $runs=Get-Content (Join-Path $env:GH_MOCK_DIR 'run_list.json') -Raw|ConvertFrom-Json
+            if(@($runs).Count-gt0){
+                [IO.File]::WriteAllText((Join-Path $env:GH_MOCK_DIR 'ancestor-sha.txt'),$sha,[Text.Encoding]::UTF8)
+                $expanded=@($runs|ForEach-Object{@{id=$_.databaseId;workflow_id=9;run_attempt=1;head_sha=$sha;head_repository=@{full_name=$slug};repository=@{full_name=$slug};head_branch='main';status=$_.status;conclusion=$_.conclusion;path='.github/workflows/ci.yml';event='push'}})
+                @{total_count=$expanded.Count;workflow_runs=$expanded}|ConvertTo-Json -Depth 8;exit 0
+            }
+        }
+        if (-not $greenBase) { Write-Output '{"total_count":0,"workflow_runs":[]}' }
+        else { Write-Output (@{total_count=1;workflow_runs=@(@{id=70;workflow_id=9;run_attempt=1;head_sha=$sha;head_repository=@{full_name=$slug};repository=@{full_name=$slug};head_branch='main';status='completed';conclusion='success';path='.github/workflows/ci.yml';event='push'})}|ConvertTo-Json -Depth 6) }
+    }
+    elseif ($endpoint -match '/check-runs') { Write-Output (@{total_count=1;check_runs=@(@{id=12;head_sha=$sha;status='completed';conclusion='success'})}|ConvertTo-Json -Depth 5) }
     else { Write-Output (@{sha=$sha;total_count=0;statuses=@()}|ConvertTo-Json -Depth 4) }
     exit 0
 }
@@ -84,7 +99,7 @@ if ($args.Count -ge 2 -and $args[0] -eq 'api' -and [string]$args[1] -match '^rep
     $parent = Get-HeadSha $dr
     Set-Mock -RunJson $green
     $null = Fire -HookPath $CiHook -Cwd $dr -EventName 'Stop'
-    Check 'k fixture: the parent is recorded ci-green' ((@(Get-CiStateLines $parent) -join '|') -match '\|verified\|.*\|ci-green$') (@(Get-CiStateLines $parent) -join '|')
+    Check 'k fixture: the parent is recorded ci-green' ((@(Get-CiStateLines $parent) -join '|') -match '\|verified\|[^|]+\|ci-green\|\{') (@(Get-CiStateLines $parent) -join '|')
     $docSha = Add-PushedCommit -Repo $dr -Files @{ 'README.md' = 'docs v2'; 'docs\guide.md' = 'guide' } -Message 'docs: refresh the guide [skip ci]'
     Set-Mock -RunJson '[]'
     $r = Fire -HookPath $CiHook -Cwd $dr -EventName 'Stop'
@@ -143,7 +158,7 @@ if ($args.Count -ge 2 -and $args[0] -eq 'api' -and [string]$args[1] -match '^rep
         $r = Fire -HookPath $CiHook -Cwd $isolated -EventName 'Stop' -Client $client
         Check ($client + ': repeated carryover stays silent') ($r.Exit -eq 0 -and $r.Out -eq '' -and $r.Err -eq '') $r.Out
         $lines = @(Get-CiStateLines $head)
-        Check ($client + ': no final-SHA green fabricated') ($lines.Count -eq 5 -and $lines[3] -eq 'docs-only-carryover' -and $lines[4] -eq $baseSha)
+        Check ($client + ': no final-SHA green fabricated') ($lines.Count -eq 6 -and $lines[3] -eq 'docs-only-carryover' -and $lines[4] -eq $baseSha)
     }
 
     # =====================================================================
@@ -213,6 +228,6 @@ if ($args.Count -ge 2 -and $args[0] -eq 'api' -and [string]$args[1] -match '^rep
     Check 'i: a WSL runner with a Runner.Worker is busy with a job and never flagged' ($wslCase.BusyPids -eq 0) ($wslCase | ConvertTo-Json -Compress)
 }
 finally {
-    [System.IO.File]::WriteAllText($ghShimPath, $ghShimOriginal)
+    [System.IO.File]::WriteAllText($ghShimPath, $ghShimOriginal, [Text.Encoding]::UTF8)
     if ($null -ne $runnerSentinel) { try { $runnerSentinel.Kill(); [void]$runnerSentinel.WaitForExit(10000) } catch { } }
 }

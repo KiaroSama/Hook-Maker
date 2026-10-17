@@ -486,6 +486,7 @@ function Copy-TestRuntimeLibraries {
         Copy-Item -LiteralPath $Artifact.SourcePath -Destination (Join-Path $target ([IO.Path]::GetFileName($Artifact.RelativePath))) -Force -ErrorAction Stop
     }
     Add-SharedRuntimeLibraryArtifacts -ToolRoot $tool -FriendlyName 'TestRuntime'
+    Copy-Item -LiteralPath (Join-Path $tool 'hooks/_ciprovenance.ps1') -Destination (Join-Path $target '_ciprovenance.ps1') -Force -ErrorAction Stop
 }
 
 # Nested runner fixtures deliberately fail. Their canonical result and active

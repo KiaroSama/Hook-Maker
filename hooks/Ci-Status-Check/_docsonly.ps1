@@ -8,6 +8,8 @@
 # documentation, a parent that was not verified green, or a branch whose
 # protection requires status checks (a skipped commit would leave them pending).
 
+$ciProofRoot = if ([IO.File]::Exists((Join-Path $PSScriptRoot '_ciprovenance.ps1'))) { $PSScriptRoot } else { Split-Path -Parent $PSScriptRoot }
+. (Join-Path $ciProofRoot '_ciprovenance.ps1')
 foreach ($module in @('_docsancestor.ps1', '_docsinputs.ps1')) { . (Join-Path $PSScriptRoot $module) }
 
 $script:DocsOnlySkipMarkers = @('[skip ci]', '[ci skip]', '[no ci]', '[skip actions]', '[actions skip]')
@@ -39,10 +41,14 @@ function Get-VerifiedGreenBase {
     param([string]$StatePath)
     try {
         if (-not [IO.File]::Exists($StatePath)) { return '' }
-        $lines = @([IO.File]::ReadAllLines($StatePath))
-        if ($lines.Count -lt 4 -or $lines[1].Trim() -cne 'verified') { return '' }
-        if ($lines[3].Trim() -ceq 'ci-green') { return $lines[0].Trim() }
-        if ($lines[3].Trim() -ceq 'docs-only-carryover' -and $lines.Count -ge 5) { return $lines[4].Trim() }
+        $lines = @([IO.File]::ReadAllLines($StatePath, [Text.Encoding]::UTF8))
+        # Cache is an optional search hint, never authority; legacy labels are ignored.
+        $carry = Read-CiCarryover -Lines $lines
+        if ($null -ne $carry) { return $carry.parent }
+        if ($lines.Count -eq 5) {
+            $candidate = $lines[4] | ConvertFrom-Json -ErrorAction Stop
+            if ($null -ne (Read-CiProvenance -Lines $lines -Repository ([string]$candidate.repository) -Sha $lines[0])) { return $lines[0] }
+        }
     }
     catch { }
     return ''
@@ -73,7 +79,7 @@ function Get-DocsOnlyCarryover {
         $candidates.Add([string]$chain[$i + 1])
         if ([string]$chain[$i + 1] -ceq $cached) { break }
     }
-    if ($candidates.Count -eq 0 -or (Test-DocsHaveSemanticConsumers $ProjectRoot $Sha @($files))) { return $null }
+    if ($candidates.Count -eq 0 -or (Test-DocsHaveSemanticConsumers $ProjectRoot $Sha @($files) $RepoSlug)) { return $null }
     $script:DocsCarryoverReason = 'unknown or required final-SHA checks: branch protection/rules did not permit carryover'
     if (-not (Test-NoRequiredStatusChecks -RepoSlug $RepoSlug -Branch $Branch)) { return $null }
     $script:DocsCarryoverReason = 'unknown or non-success: complete nearest eligible ancestor checks not verified'
@@ -83,7 +89,9 @@ function Get-DocsOnlyCarryover {
         if ((Get-GhRemainingSeconds) -lt 1) { break }
         $script:DocsAncestorAbsent = $false
         if (Test-DocsAncestorGreen $ProjectRoot $RepoSlug $base $Branch) {
-            return [pscustomobject]@{ Parent = $base; Files = @($files | Sort-Object) }
+            $source = @(Invoke-DocsGit -Arguments @('-C', $ProjectRoot, 'ls-tree', '-r', $Sha)) -join "`n"
+            if ($LASTEXITCODE -ne 0 -or [Text.Encoding]::UTF8.GetByteCount($source) -gt 1048576) { return $null }
+            return [pscustomobject]@{ Parent = $base; Files = @($files | Sort-Object); SourceFingerprint = Get-RepositoryIdentityHash $source }
         }
         if (-not $script:DocsAncestorAbsent) { return $null }
     }
@@ -125,10 +133,15 @@ function Invoke-DocsOnlyCarryover {
     param([string]$ProjectRoot, [string]$Sha, [string]$Branch, [string]$RepoSlug, [string]$StatePath, [string]$EventName)
     $carry = Get-DocsOnlyCarryover -ProjectRoot $ProjectRoot -Sha $Sha -Branch $Branch -RepoSlug $RepoSlug -StatePath $StatePath
     if ($null -eq $carry) { return }
-    if (-not (Write-CiStateAtomic -Path $StatePath -Lines @($Sha, 'verified', [DateTime]::UtcNow.ToString('o'), 'docs-only-carryover', $carry.Parent))) {
-        # A concurrent winner already published the SAME complete carryover.
+    $when = [DateTimeOffset]::UtcNow.ToString('o')
+    $proof = [ordered]@{schema=1;repository=$RepoSlug;sha=$Sha;parent=$carry.Parent;outcome='docs-only-carryover';observedUtc=$when;sourceFingerprint=$carry.SourceFingerprint}
+    $receipt = @($Sha, 'verified', $when, 'docs-only-carryover', $carry.Parent, ($proof | ConvertTo-Json -Compress))
+    if ($null -eq (Read-CiCarryover -Lines $receipt -Repository $RepoSlug -Sha $Sha)) { return }
+    if (-not (Write-CiStateAtomic -Path $StatePath -Lines $receipt)) {
+        # A concurrent winner already published the SAME versioned source review.
         $lines = @(); try { $lines = @([IO.File]::ReadAllLines($StatePath, [Text.Encoding]::UTF8)) } catch { }
-        if ($lines.Count -ge 5 -and $lines[0] -ceq $Sha -and $lines[3] -ceq 'docs-only-carryover' -and $lines[4] -ceq $carry.Parent) { exit 0 }
+        $winner = Read-CiCarryover -Lines $lines -Repository $RepoSlug -Sha $Sha -NoticeIdentityOnly
+        if ($null -ne $winner -and $winner.parent -ceq $carry.Parent -and $winner.sourceFingerprint -ceq $carry.SourceFingerprint) { exit 0 }
         return
     }
     $shown = @($carry.Files | Select-Object -First 5)
