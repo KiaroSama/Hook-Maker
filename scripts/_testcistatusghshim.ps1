@@ -35,16 +35,15 @@ if($endpoint-match'/actions/runs/(\d+)/attempts/(\d+)/jobs'){
     $end=[DateTimeOffset]::UtcNow.AddSeconds(-1).ToString('o')
     Write-Output (@{total_count=1;jobs=@(@{id=([long]$id+1000);check_run_url=('https://api.github.com/repos/'+$identity.repo+'/check-runs/1');run_id=[long]$id;run_attempt=[int]$attempt;head_sha=$identity.sha;name='validate';status='completed';conclusion='success';completed_at=$end;steps=@(@{number=1;name='Validate';status='completed';conclusion='success';completed_at='2026-10-17T08:59:00Z'})})}|ConvertTo-Json -Depth 8 -Compress);exit 0
 }
-if($endpoint-match'/commits/[^/]+/status'){
-    $identity=Get-Content (Join-Path $mockDir 'api-identity.json') -Raw|ConvertFrom-Json
-    Write-Output (@{sha=$identity.sha;total_count=0;state='pending';statuses=@()}|ConvertTo-Json -Compress);exit 0
+if($endpoint-match'/commits/([a-f0-9]{40})/status'){
+    Write-Output (@{sha=$Matches[1];total_count=0;state='pending';statuses=@()}|ConvertTo-Json -Depth 4 -Compress);exit 0
 }
 if($endpoint-match'/commits/[^/]+/check-runs'){
     $pf=Join-Path $mockDir ('checkruns-page-'+$page+'.json');if(Test-Path $pf){Emit-File $pf}
     $f=Join-Path $mockDir 'checkruns.json';if($page-eq1-and(Test-Path $f)){Emit-File $f}
     if($page-gt1){Write-Output '{"total_count":0,"check_runs":[]}';exit 0}
-    $identityFile=Join-Path $mockDir 'api-identity.json'
-    if(Test-Path $identityFile){$identity=Get-Content $identityFile -Raw|ConvertFrom-Json;Write-Output (@{total_count=1;check_runs=@(@{id=1;head_sha=$identity.sha;status='completed';conclusion='success'})}|ConvertTo-Json -Depth 5 -Compress)}else{Write-Output '{"total_count":0,"check_runs":[]}'}
+    $commit=[regex]::Match($endpoint,'/commits/([a-f0-9]{40})/').Groups[1].Value
+    Write-Output (@{total_count=1;check_runs=@(@{id=1;head_sha=$commit;status='completed';conclusion='success'})}|ConvertTo-Json -Depth 5 -Compress)
     exit 0
 }
 if($endpoint-match'/check-runs/([^/]+)/annotations'){

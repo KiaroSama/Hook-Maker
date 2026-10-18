@@ -94,10 +94,12 @@ function Start-CiBatchRead {
     param([object]$Request,[int]$Stream,[object]$State)
     # Charge each outstanding raw read BEFORE it starts. A failed/cancelled read
     # retains this conservative charge: retries cannot hide undrained bytes.
-    $available = [Math]::Min(1048576-$Request.Bytes-($Request.Reserved[0]+$Request.Reserved[1]),4194304-$State.Bytes-$State.Reserved)
-    if ($available -le 0 -and $State.Reserved -gt 0) { return $null }
-    # One overflow/EOF byte is inspected, never retained as successful output.
-    $size = [int][Math]::Min(4096,[Math]::Max(1,$available))
+    $available = [Math]::Min(1048576-$Request.Bytes,4194304-$State.Bytes)
+    # Pending stderr reservations are not observed bytes: subtracting them made
+    # a valid stdout tail drain one byte at a time (or deadlock before EOF).
+    # Actual combined bytes are checked before retention; failures conservatively
+    # charge outstanding reads, so retries cannot hide undrained output.
+    $size = [int][Math]::Min(65536,[Math]::Max(1,$available))
     $State.Reserved += $size; $Request.Reserved[$Stream] = $size
     return $Request.Streams[$Stream].ReadAsync($Request.Buffers[$Stream],0,$size)
 }
@@ -175,7 +177,7 @@ function Invoke-CiApiBatch {
                 $process.StandardInput.Close()
                 $request.Streams = @($process.StandardOutput.BaseStream,$process.StandardError.BaseStream)
                 $request.Output = @((New-Object IO.MemoryStream),(New-Object IO.MemoryStream))
-                $request.Buffers = @((New-Object byte[] 4096),(New-Object byte[] 4096))
+                $request.Buffers = @((New-Object byte[] 65536),(New-Object byte[] 65536))
                 $request.Tasks = @((Start-CiBatchRead $request 0 $state),(Start-CiBatchRead $request 1 $state))
                 $state.PeakLive = [Math]::Max($state.PeakLive,$live.Count)
             }
@@ -250,6 +252,7 @@ function Invoke-CiApiBatch {
         }
         foreach ($request in $completed.ToArray()) { $null = Close-CiBatchProcess $request $deadline -Completed:$cleanupVerified }
         $state.Busy = $false
+        if(-not$cleanupVerified-and$global:LASTEXITCODE-eq0){$global:LASTEXITCODE=1}
     }
 }
 

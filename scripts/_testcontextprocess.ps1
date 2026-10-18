@@ -143,6 +143,7 @@ foreach ($hostName in @('pwsh', 'powershell.exe')) {
             $detail=if($null -ne $result){$result|ConvertTo-Json -Depth 5 -Compress}else{'Independent probe result unavailable'}
             Check ($hostName + ': expired pipe drain returns timeout 124') (
                 $null -ne $result -and $result.ExitCode -eq 124) $detail
+            if(-not$captureComplete-or-not$descendantTerminated){Write-Host ('[DIAGNOSTIC] '+$hostName+' cleanup='+$detail)}
             Check ($hostName + ': timeout output capture completes') $captureComplete $detail
             Check ($hostName + ': timeout cleanup terminates the pipe-owning descendant') $descendantTerminated
         }

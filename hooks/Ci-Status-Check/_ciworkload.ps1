@@ -160,31 +160,31 @@ function Get-CiRunSnapshot {
     # Check/status evidence exists independently of Actions, including a zero-run
     # documentation commit. Never let an absent workflow hide a failing check.
     $checks=Read-CiWorkloadApi ('repos/'+$RepoSlug+'/commits/'+$Sha+'/check-runs?filter=latest&per_page=100')
-        $status=Read-CiWorkloadApi ('repos/'+$RepoSlug+'/commits/'+$Sha+'/status?per_page=100')
-        if($null-eq$checks-or$null-eq$status-or$null-eq(Get-Field $checks 'total_count')-or$null-eq$checks.PSObject.Properties['check_runs']-or
-            $null-eq(Get-Field $status 'total_count')-or$null-eq$status.PSObject.Properties['statuses']-or$status.sha-cne$Sha){$proven=$false}
-        else{
-            $cr=@($checks.check_runs);$st=@($status.statuses)
-            $checksComplete=$cr.Count-le100-and$cr.Count-eq$checks.total_count-and$st.Count-le100-and$st.Count-eq$status.total_count
-            $commitChecksSafe=$checksComplete
-            $checkIds=New-Object 'Collections.Generic.HashSet[string]' ([StringComparer]::Ordinal)
-            $checkParts=New-Object Collections.Generic.List[string]
-            foreach($check in $cr){
-                if([string]$check.id-cnotmatch'^[1-9][0-9]*$'-or-not$checkIds.Add([string]$check.id)-or$check.head_sha-cne$Sha){$checksComplete=$false;$commitChecksSafe=$false}
-                if($check.status-cne'completed'-or$check.conclusion-cne'success'){$commitChecksSafe=$false}
-                $checkParts.Add('check|'+$check.id+'|'+$check.status+'|'+$check.conclusion)
-            }
-            foreach($requiredId in $requiredCheckIds){if(-not$checkIds.Contains($requiredId)){$proven=$false}}
-            $contexts=New-Object 'Collections.Generic.HashSet[string]' ([StringComparer]::Ordinal)
-            foreach($state in $st){
-                if([string]::IsNullOrWhiteSpace([string]$state.context)-or-not$contexts.Add([string]$state.context)){$checksComplete=$false;$commitChecksSafe=$false}
-                if($state.state-cne'success'){$commitChecksSafe=$false}
-                $checkParts.Add('status|'+$state.context+'|'+$state.state)
-            }
-            [string[]]$checkOrder=$checkParts.ToArray();[Array]::Sort($checkOrder,[StringComparer]::Ordinal)
-            $checkFingerprint=Get-RepositoryIdentityHash ($checkOrder-join"`n")
-            if(-not$commitChecksSafe-or$cr.Count-eq0){$proven=$false}
+    $status=Read-CiWorkloadApi ('repos/'+$RepoSlug+'/commits/'+$Sha+'/status?per_page=100')
+    if($null-eq$checks-or$null-eq$status-or$null-eq(Get-Field $checks 'total_count')-or$null-eq$checks.PSObject.Properties['check_runs']-or
+        $null-eq(Get-Field $status 'total_count')-or$null-eq$status.PSObject.Properties['statuses']-or(Get-Field $status 'sha')-cne$Sha){$proven=$false}
+    else{
+        $cr=@($checks.check_runs);$st=@($status.statuses)
+        $checksComplete=$cr.Count-le100-and$cr.Count-eq$checks.total_count-and$st.Count-le100-and$st.Count-eq$status.total_count
+        $commitChecksSafe=$checksComplete
+        $checkIds=New-Object 'Collections.Generic.HashSet[string]' ([StringComparer]::Ordinal)
+        $checkParts=New-Object Collections.Generic.List[string]
+        foreach($check in $cr){
+            if([string](Get-Field $check 'id')-cnotmatch'^[1-9][0-9]*$'-or-not$checkIds.Add([string](Get-Field $check 'id'))-or(Get-Field $check 'head_sha')-cne$Sha){$checksComplete=$false;$commitChecksSafe=$false}
+            if((Get-Field $check 'status')-cne'completed'-or(Get-Field $check 'conclusion')-cne'success'){$commitChecksSafe=$false}
+            $checkParts.Add('check|'+(Get-Field $check 'id')+'|'+(Get-Field $check 'status')+'|'+(Get-Field $check 'conclusion'))
         }
+        foreach($requiredId in $requiredCheckIds){if(-not$checkIds.Contains($requiredId)){$proven=$false}}
+        $contexts=New-Object 'Collections.Generic.HashSet[string]' ([StringComparer]::Ordinal)
+        foreach($state in $st){
+            if([string]::IsNullOrWhiteSpace([string](Get-Field $state 'context'))-or-not$contexts.Add([string](Get-Field $state 'context'))){$checksComplete=$false;$commitChecksSafe=$false}
+            if((Get-Field $state 'state')-cne'success'){$commitChecksSafe=$false}
+            $checkParts.Add('status|'+(Get-Field $state 'context')+'|'+(Get-Field $state 'state'))
+        }
+        [string[]]$checkOrder=$checkParts.ToArray();[Array]::Sort($checkOrder,[StringComparer]::Ordinal)
+        $checkFingerprint=Get-RepositoryIdentityHash ($checkOrder-join"`n")
+        if(-not$commitChecksSafe-or$cr.Count-eq0){$proven=$false}
+    }
     $billing=@()
     if($failed.Count-gt0-and(Get-Command Test-CiBillingBlocked -ErrorAction SilentlyContinue)-and(Test-CiBillingBlocked -RepoSlug $RepoSlug -Sha $Sha)){$billing=$failed.ToArray();$failed.Clear()}
     if($proven-and$proofRuns.Count-ne@($expected.Workflows).Count){$proven=$false}

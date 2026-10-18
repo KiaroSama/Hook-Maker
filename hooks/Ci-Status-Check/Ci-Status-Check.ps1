@@ -362,7 +362,7 @@ if ($config.ContainsKey('EXTERNAL_BLOCKER_RECHECK_MINUTES')) {
 $ghBudgetSeconds = 40
 if ($config.ContainsKey('GH_BUDGET_SECONDS')) { $parsedBudget = 0; if ([int]::TryParse([string]$config['GH_BUDGET_SECONDS'], [ref]$parsedBudget) -and $parsedBudget -gt 0) { $ghBudgetSeconds = $parsedBudget } }
 Initialize-GhBudget -Seconds $ghBudgetSeconds
-$script:CiApiScopeKey=$cwd+'|'+$repoSlug+'|'+$sha
+$script:CiApiScopeKey=if(Get-Variable CiApiBatchState -Scope Script -ErrorAction SilentlyContinue){$cwd+'|'+$repoSlug+'|'+$sha}else{''}
 Initialize-DocsEvidenceCache -ScopeKey $script:CiApiScopeKey
 
 $stateDir = Join-Path $env:LOCALAPPDATA 'HookMaker\state'
