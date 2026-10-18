@@ -10,6 +10,9 @@ function Initialize-CiApiBatch {
         if (-not ('HookMaker.CiBatchJson' -as [type])) {
             Add-Type -Path (Join-Path $PSScriptRoot '_cibatchjson.cs') -ErrorAction Stop
         }
+        if (-not ('HookMaker.CiResponseReader' -as [type])) {
+            Add-Type -Path (Join-Path $PSScriptRoot '_cibatchreader.cs') -ErrorAction Stop
+        }
     }
     catch { $script:CiApiBatchState.Exhausted = $true }
 }
@@ -90,20 +93,6 @@ function Get-CiBatchMilliseconds {
     return [int][Math]::Max(0,[Math]::Min(($Deadline-[DateTime]::UtcNow).TotalMilliseconds,1000.0*(Get-GhRemainingSeconds)))
 }
 
-function Start-CiBatchRead {
-    param([object]$Request,[int]$Stream,[object]$State)
-    # Charge each outstanding raw read BEFORE it starts. A failed/cancelled read
-    # retains this conservative charge: retries cannot hide undrained bytes.
-    $available = [Math]::Min(1048576-$Request.Bytes,4194304-$State.Bytes)
-    # Pending stderr reservations are not observed bytes: subtracting them made
-    # a valid stdout tail drain one byte at a time (or deadlock before EOF).
-    # Actual combined bytes are checked before retention; failures conservatively
-    # charge outstanding reads, so retries cannot hide undrained output.
-    $size = [int][Math]::Min(65536,[Math]::Max(1,$available))
-    $State.Reserved += $size; $Request.Reserved[$Stream] = $size
-    return $Request.Streams[$Stream].ReadAsync($Request.Buffers[$Stream],0,$size)
-}
-
 function Close-CiBatchProcess {
     param([object]$Request,[DateTime]$Deadline,[switch]$Completed)
     $clean = $false
@@ -122,6 +111,7 @@ function Close-CiBatchProcess {
     finally {
         # Close pending raw reads too; never wait unboundedly for inherited EOF.
         foreach ($stream in $Request.Streams) { try { $stream.Dispose() } catch { } }
+        if($null-ne$Request.Reader){if(-not$Request.Reader.Release([Math]::Min(200, (Get-CiBatchMilliseconds $Deadline)))){$clean=$false}}
         foreach ($buffer in $Request.Output) { $buffer.Dispose() }
         $Request.Process.Dispose()
     }
@@ -148,7 +138,7 @@ function Invoke-CiApiBatch {
     $wire = New-Object 'Collections.Generic.Dictionary[string,string]' ([StringComparer]::Ordinal)
     $live = New-Object 'Collections.Generic.List[object]'
     $completed = New-Object 'Collections.Generic.List[object]'
-    $utf8 = New-Object Text.UTF8Encoding($false,$true)
+    $byteBudget=New-Object HookMaker.CiResponseBudget($state.Bytes)
     $left = Get-GhRemainingSeconds
     if ($left -lt 1) { $script:GhBudgetExhausted = $true; $global:LASTEXITCODE = 124; return $null }
     $deadline = [DateTime]::UtcNow.AddSeconds([Math]::Min(40,$left))
@@ -165,10 +155,10 @@ function Invoke-CiApiBatch {
             if ((Get-CiBatchMilliseconds $deadline) -le $reserve) { throw 'CI API deadline exhausted.' }
             while ($pending.Count -gt 0 -and $live.Count -lt 4) {
                 if ((Get-CiBatchMilliseconds $deadline) -le 2000*($live.Count+1)) { throw 'CI API deadline exhausted.' }
-                if ($state.Bytes -ge 4194304) { $state.Exhausted=$true; throw 'CI API response byte limit exceeded.' }
+                if ($byteBudget.Bytes -ge 4194304) { $state.Exhausted=$true; throw 'CI API response byte limit exceeded.' }
                 $endpoint = $pending.Dequeue()
                 $process = New-Object Diagnostics.Process
-                $request = @{ Endpoint=$endpoint; Process=$process; Created=$null; Bytes=[long]0; Streams=@(); Output=@(); Tasks=@(); Buffers=@(); Reserved=@(0,0); Ended=@($false,$false) }
+                $request = @{ Endpoint=$endpoint; Process=$process; Created=$null; Reader=$null; Streams=@(); Output=@(); Ended=@($false,$false) }
                 [void]$live.Add($request)
                 $process.StartInfo = New-CiBatchProcessInfo $endpoint
                 if (-not $process.Start()) { throw 'CI API process unavailable.' }
@@ -176,31 +166,18 @@ function Invoke-CiApiBatch {
                 $request.Created = $process.StartTime.ToUniversalTime()
                 $process.StandardInput.Close()
                 $request.Streams = @($process.StandardOutput.BaseStream,$process.StandardError.BaseStream)
-                $request.Output = @((New-Object IO.MemoryStream),(New-Object IO.MemoryStream))
-                $request.Buffers = @((New-Object byte[] 65536),(New-Object byte[] 65536))
-                $request.Tasks = @((Start-CiBatchRead $request 0 $state),(Start-CiBatchRead $request 1 $state))
+                $request.Reader=New-Object HookMaker.CiResponseReader($request.Streams[0],$request.Streams[1],$byteBudget)
                 $state.PeakLive = [Math]::Max($state.PeakLive,$live.Count)
             }
             $tasks = New-Object 'Collections.Generic.List[Threading.Tasks.Task]'
             foreach ($request in $live.ToArray()) {
-                for ($i=0; $i -lt 2; $i++) {
-                    if ($request.Ended[$i]) { continue }
-                    if ($null -eq $request.Tasks[$i]) { $request.Tasks[$i] = Start-CiBatchRead $request $i $state }
-                    if ($null -eq $request.Tasks[$i]) { continue }
-                    if (-not $request.Tasks[$i].IsCompleted) { [void]$tasks.Add($request.Tasks[$i]); continue }
-                    $count = $request.Tasks[$i].GetAwaiter().GetResult()
-                    $state.Reserved -= $request.Reserved[$i]; $request.Reserved[$i]=0
-                    $request.Bytes += $count; $state.Bytes += $count
-                    if ($request.Bytes -gt 1048576 -or $state.Bytes -gt 4194304) { $state.Exhausted=$true; throw 'CI API response byte limit exceeded.' }
-                    if ($count -eq 0) { $request.Ended[$i]=$true; continue }
-                    $request.Output[$i].Write($request.Buffers[$i],0,$count)
-                    $request.Tasks[$i] = Start-CiBatchRead $request $i $state
-                    if ($null -ne $request.Tasks[$i]) { [void]$tasks.Add($request.Tasks[$i]) }
-                }
-                if ($request.Ended[0] -and $request.Ended[1] -and $request.Process.HasExited) {
+                if($request.Reader.Failed){throw 'CI API response transport failed.'}
+                if(-not$request.Reader.Work.IsCompleted){[void]$tasks.Add($request.Reader.Work)}
+                if ($request.Reader.Work.IsCompleted -and $request.Process.HasExited) {
+                    $request.Ended=@($true,$true)
                     if ($request.Process.ExitCode -ne 0) { throw 'CI API process failed.' }
-                    $text = $utf8.GetString($request.Output[0].ToArray())
-                    $null = $utf8.GetString($request.Output[1].ToArray())
+                    $text = $request.Reader.Text(0)
+                    $null = $request.Reader.Text(1)
                     $parsed = ConvertFrom-CiBatchJson $text
                     foreach ($stream in $request.Streams) { $stream.Dispose() }
                     foreach ($buffer in $request.Output) { $buffer.Dispose() }
@@ -233,6 +210,10 @@ function Invoke-CiApiBatch {
                 }
             }
         }
+        foreach($request in $completed.ToArray()){
+            if(-not$request.Reader.Release([Math]::Min(200,(Get-CiBatchMilliseconds $deadline)))){throw 'CI API reader cleanup unverified.'}
+            $request.Reader=$null
+        }
         $cleanupVerified = $true
         # A partial batch cannot seed even positive cache entries.
         foreach ($endpoint in $wire.Keys) { $state.Cache[$ScopeKey.Length.ToString()+':'+$ScopeKey+$endpoint] = $wire[$endpoint] }
@@ -240,16 +221,15 @@ function Invoke-CiApiBatch {
         return ,$result
     }
     catch {
-        if ((Get-CiBatchMilliseconds $deadline) -le 2000*[Math]::Max(1,$live.Count)) { $script:GhBudgetExhausted=$true; $global:LASTEXITCODE=124 }
+        if ($_.Exception.Message -like '*deadline exhausted*' -or (Get-CiBatchMilliseconds $deadline) -le 2000*[Math]::Max(1,$live.Count)) { $script:GhBudgetExhausted=$true; $global:LASTEXITCODE=124 }
         return $null
     }
     finally {
         foreach ($request in $live.ToArray()) {
-            # Unobserved reservations remain charged even after process cleanup.
-            $state.Bytes += $request.Reserved[0]+$request.Reserved[1]
-            $state.Reserved -= $request.Reserved[0]+$request.Reserved[1]
             $null = Close-CiBatchProcess $request $deadline
         }
+        $state.Bytes=$byteBudget.Bytes
+        if(-not$cleanupVerified){$state.Exhausted=$true}
         foreach ($request in $completed.ToArray()) { $null = Close-CiBatchProcess $request $deadline -Completed:$cleanupVerified }
         $state.Busy = $false
         if(-not$cleanupVerified-and$global:LASTEXITCODE-eq0){$global:LASTEXITCODE=1}

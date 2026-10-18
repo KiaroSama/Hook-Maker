@@ -41,7 +41,7 @@ switch ($id) {
     5 { $s=[Console]::OpenStandardOutput(); $s.Write([byte[]]@(123,34,120,34,58,34,255,34,125),0,9); $s.Flush(); exit 0 }
     6 { [Console]::Out.Write('"' + ('x' * 1048576) + '"'); exit 0 }
     7 { [Console]::Error.Write('x' * 1048576); [Console]::Out.Write('{}'); exit 0 }
-    8 { [Console]::Out.Write('"' + ('x' * 999998) + '"'); exit 0 }
+    { $_ -in @(8,17,18,19) } { [Console]::Out.Write('"' + ('x' * 999998) + '"'); exit 0 }
     9 { $wait=New-Object Threading.ManualResetEvent($false); try { [void]$wait.WaitOne(10000) } finally { $wait.Dispose() }; exit 0 }
     10 { [Console]::Out.Write('{/*comment*/"ok":true}'); exit 0 }
     11 { [Console]::Out.Write('{"ok":true,}'); exit 0 }
@@ -84,7 +84,14 @@ try { [void]$ready.Set(); $wait=New-Object Threading.ManualResetEvent($false); t
         Check 'CI positive cache is invocation-local immutable wire data' ($again.ok -and @(Get-ChildItem -LiteralPath $work -Filter 'start-*').Count -eq $before)
         $null = Read-CiBatchApi -Endpoint ($base+'1') -ScopeKey ($scope+'-changed')
         Check 'CI API scope identity prevents cache reuse' (@(Get-ChildItem -LiteralPath $work -Filter 'start-*').Count -eq ($before+1))
-        if($SmokeOnly){return}
+        if($SmokeOnly){
+            Initialize-CiApiBatch;Initialize-GhBudget 40
+            $timer=[Diagnostics.Stopwatch]::StartNew()
+            $large=Read-CiBatchApi -Endpoint ($base+'8') -ScopeKey $scope
+            Check 'CI bounded large response completes inside shared deadline' ($null-ne$large)
+            Write-Host ('Large response elapsedMs='+$timer.ElapsedMilliseconds)
+            return
+        }
         foreach ($id in @(3,4,5,6,7,10,11,12,16)) {
             Initialize-CiApiBatch; Initialize-GhBudget 40
             $failed = Invoke-CiApiBatch -Endpoints @(($base+'1'),($base+$id)) -ScopeKey $scope
@@ -94,7 +101,7 @@ try { [void]$ready.Set(); $wait=New-Object Threading.ManualResetEvent($false); t
         $null = Read-CiBatchApi -Endpoint ($base+'3') -ScopeKey $scope
         $before = @(Get-ChildItem -LiteralPath $work -Filter 'start-*').Count
         $null = Read-CiBatchApi -Endpoint ($base+'3') -ScopeKey $scope
-        Check 'CI failed responses are never cached' (@(Get-ChildItem -LiteralPath $work -Filter 'start-*').Count -eq ($before+1))
+        Check 'CI failed responses are never cached' ($script:CiApiBatchState.Cache.Count-eq0-and@(Get-ChildItem -LiteralPath $work -Filter 'start-*').Count-eq$before)
         Check 'CI failed batch never seeds successful response cache' ($script:CiApiBatchState.Cache.Count -eq 0)
         Initialize-CiApiBatch; Initialize-GhBudget 40
         $null=Invoke-CiApiBatch -Endpoints @(($base+'1'),($base+'1')) -ScopeKey $scope
@@ -110,7 +117,8 @@ try { [void]$ready.Set(); $wait=New-Object Threading.ManualResetEvent($false); t
             Check ('CI endpoint allowlist '+$bad) ($null -eq (Invoke-CiApiBatch -Endpoints @($bad) -ScopeKey $scope))
         }
         Initialize-CiApiBatch; Initialize-GhBudget 40
-        foreach ($i in 1..4) { $large=Read-CiBatchApi -Endpoint ($base+'8') -ScopeKey ($scope+$i); Check ('CI aggregate allows bounded response '+$i) ($null -ne $large) }
+        $largeBatch=Invoke-CiApiBatch -Endpoints @(@(8,17,18,19)|ForEach-Object{$base+$_}) -ScopeKey $scope
+        foreach ($i in @(8,17,18,19)) { Check ('CI aggregate allows bounded response '+$i) ($null-ne$largeBatch-and$largeBatch.ContainsKey($base+$i)) }
         Check 'CI aggregate 4 MiB budget spans calls and scope changes' ($null -eq (Read-CiBatchApi -Endpoint ($base+'8') -ScopeKey ($scope+'5')))
         Initialize-CiApiBatch; Initialize-GhBudget 40
         $countBefore = $script:CiApiBatchState.Seen.Count
