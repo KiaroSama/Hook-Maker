@@ -69,6 +69,7 @@ function Invoke-CiWorkloadRegression {
         if($script:WorkloadCase-eq'api-error'){$global:LASTEXITCODE=1;return ''}
         if($ArgumentList[0]-eq'run'){return (@($run)|ConvertTo-Json -Depth 8 -Compress)}
         if($endpoint-match'/actions/runs\?'){
+            if($script:WorkloadCase-like'zero-*'){return '{"total_count":0,"workflow_runs":[]}'}
             $items=@(if($script:WorkloadCase-eq'duplicate'){$run;$run}else{$run})
             return (@{total_count=$(if($script:WorkloadCase-eq'partial'){2}else{$items.Count});workflow_runs=$items}|ConvertTo-Json -Depth 8 -Compress)
         }
@@ -80,15 +81,24 @@ function Invoke-CiWorkloadRegression {
             if($script:WorkloadCase-eq'missing-step-time'){$job.steps[1].Remove('completed_at')}
             return (@{total_count=$(if($script:WorkloadCase-eq'partial-jobs'){2}else{1});jobs=@($job)}|ConvertTo-Json -Depth 8 -Compress)
         }
-        if($endpoint-match'/check-runs') {return (@{total_count=1;check_runs=@(@{id=12;head_sha=$sha;status='completed';conclusion='success'})}|ConvertTo-Json -Depth 6 -Compress)}
-        if($endpoint-match'/status'){return (@{sha=$sha;total_count=0;state='pending';statuses=@()}|ConvertTo-Json -Compress)}
+        if($endpoint-match'/check-runs') {
+            $end=if($script:WorkloadCase-eq'zero-check-pending'){'queued'}else{'completed'}
+            $conclusion=if($script:WorkloadCase-eq'zero-check-failed'){'failure'}else{'success'}
+            $total=if($script:WorkloadCase-eq'zero-check-partial'){2}else{1}
+            return (@{total_count=$total;check_runs=@(@{id=12;head_sha=$sha;status=$end;conclusion=$conclusion})}|ConvertTo-Json -Depth 6 -Compress)
+        }
+        if($endpoint-match'/status'){
+            $items=@(if($script:WorkloadCase-eq'zero-status-failed'){@{context='external';state='failure'}})
+            return (@{sha=$sha;total_count=$items.Count;state='pending';statuses=$items}|ConvertTo-Json -Depth 6 -Compress)
+        }
         $global:LASTEXITCODE=1;return ''
     }
-    foreach($case in @('bot','complete','skipped-job','skipped-step','wrong-attempt','wrong-repo','wrong-sha','partial','duplicate','neutral','api-error','partial-jobs','missing-step-time')){
+    foreach($case in @('zero-check-failed','zero-check-pending','zero-check-partial','zero-status-failed','zero-clean','bot','complete','skipped-job','skipped-step','wrong-attempt','wrong-repo','wrong-sha','partial','duplicate','neutral','api-error','partial-jobs','missing-step-time')){
         $script:WorkloadCase=$case
         $snapshot=Get-CiRunSnapshot -RepoSlug 'owner/repo' -Sha $sha
         $green=$null-ne$snapshot-and$snapshot.AllSuccess
         Check ('required workload '+$case) ($green-eq($case-eq'complete'))
+        if($case-like'zero-*'){Check ('zero Actions independently verifies checks/statuses '+$case) ($null-ne$snapshot-and$snapshot.CommitChecksSafe-eq($case-eq'zero-clean'))}
         if($case-eq'bot'){Check 'auxiliary-only success leaves documentation route reachable' ($null-ne$snapshot-and$snapshot.Runs.Count-eq0)}
         if($case-eq'complete'){
             $proof=$snapshot.Provenance

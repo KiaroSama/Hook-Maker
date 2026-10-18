@@ -16,7 +16,10 @@ function Initialize-GhBudget {
     if ($Seconds -lt 5) { $Seconds = 5 }
     if ($Seconds -gt 300) { $Seconds = 300 }
     $script:GhDeadlineUtc = [DateTime]::UtcNow.AddSeconds($Seconds)
+    if(Get-Command Initialize-CiApiBatch -ErrorAction SilentlyContinue){Initialize-CiApiBatch}
+    $script:CiApiScopeKey=''
     $script:GhBudgetExhausted = $false
+    if(Get-Command Initialize-DocsEvidenceCache -ErrorAction SilentlyContinue){Initialize-DocsEvidenceCache -ScopeKey ([Guid]::NewGuid().ToString('n'))}
 }
 
 # The GitHub budget never outlives the hook's own deadline (_budgetlib.ps1,
@@ -39,6 +42,12 @@ function Invoke-GhBounded {
         $script:GhBudgetExhausted = $true
         $global:LASTEXITCODE = 124
         return @()
+    }
+    if($ArgumentList.Count-eq2-and$ArgumentList[0]-ceq'api'-and
+        (Get-Variable CiApiScopeKey -Scope Script -ErrorAction SilentlyContinue)-and$script:CiApiScopeKey-ne''){
+        $answer=Read-CiBatchApi -Endpoint $ArgumentList[1] -ScopeKey $script:CiApiScopeKey
+        if($null-eq$answer){return @()}
+        return (ConvertTo-Json -InputObject $answer -Depth 64 -Compress)
     }
     $timeout = [Math]::Min(20, $remaining)
     $out = Invoke-QuietCommand -FilePath gh -ArgumentList $ArgumentList -TimeoutSeconds $timeout

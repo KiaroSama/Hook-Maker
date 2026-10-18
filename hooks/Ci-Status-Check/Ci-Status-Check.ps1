@@ -152,8 +152,8 @@ $script:BillingAnnotationPattern = '(?i)(payments have failed|spending limit|bil
 function Get-PushedHeadInfo {
     param([Parameter(Mandatory = $true)][string]$Cwd)
     if ($null -eq (Get-Command git -ErrorAction SilentlyContinue)) { return $null }
-    $inside = Invoke-QuietCommand -FilePath git -ArgumentList @('-C', $Cwd, 'rev-parse', '--is-inside-work-tree')
-    if ($LASTEXITCODE -ne 0 -or [string]$inside -ne 'true') { return $null }
+    # Repository resolver already validates the worktree; repeating that native
+    # startup before every Stop consumes time without an independent state check.
     $repository = Get-GitHubRepository -ProjectRoot $Cwd
     if ($null -eq $repository -or [string]::IsNullOrWhiteSpace($repository.Branch) -or [string]::IsNullOrWhiteSpace($repository.TrackingRef)) {
         return $null    # no branch, or no trustworthy remote-tracking ref for the selected remote
@@ -282,6 +282,9 @@ if ($ReportExternalBlocker) {
     }
     # Never record blind: the exact-SHA CI state must be queried and captured
     # right now, and a genuine completed failure can never be excused.
+    Initialize-GhBudget -Seconds 40
+    $script:CiApiScopeKey=$cwd+'|'+$info.RepoSlug+'|'+$info.Sha
+    Initialize-DocsEvidenceCache -ScopeKey $script:CiApiScopeKey
     $snapshot = Get-CiRunSnapshot -RepoSlug $info.RepoSlug -Sha $info.Sha -ProjectRoot $cwd -Branch $info.Branch
     if ($null -eq $snapshot) {
         [Console]::Error.WriteLine('Ci-Status-Check -ReportExternalBlocker: could not query GitHub Actions for this commit (gh missing, unauthenticated, or the API call itself failed). An exception cannot be recorded without a capturable query result - verify gh/auth/connectivity and retry.')
@@ -359,6 +362,8 @@ if ($config.ContainsKey('EXTERNAL_BLOCKER_RECHECK_MINUTES')) {
 $ghBudgetSeconds = 40
 if ($config.ContainsKey('GH_BUDGET_SECONDS')) { $parsedBudget = 0; if ([int]::TryParse([string]$config['GH_BUDGET_SECONDS'], [ref]$parsedBudget) -and $parsedBudget -gt 0) { $ghBudgetSeconds = $parsedBudget } }
 Initialize-GhBudget -Seconds $ghBudgetSeconds
+$script:CiApiScopeKey=$cwd+'|'+$repoSlug+'|'+$sha
+Initialize-DocsEvidenceCache -ScopeKey $script:CiApiScopeKey
 
 $stateDir = Join-Path $env:LOCALAPPDATA 'HookMaker\state'
 $statePath = Join-Path $stateDir ('CiStatusCheck-' + (Get-ShortHash ($cwd.ToLowerInvariant() + '|' + $repoSlug.ToLowerInvariant())) + '.txt')

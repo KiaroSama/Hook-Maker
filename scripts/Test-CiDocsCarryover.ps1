@@ -56,16 +56,22 @@ function Invoke-GhBounded {
     if ($endpoint -match '/check-runs') {
         $c = if ($script:Case -eq 'check-failed') { 'failure' } else { 'success' }
         $total = if ($script:Case -eq 'check-incomplete') { 2 } else { 1 }
-        return (@{ total_count = $total; check_runs = @(@{ id = 2; head_sha = $script:BaseSha; status = 'completed'; conclusion = $c }) } | ConvertTo-Json -Depth 4 -Compress)
+        $commitSha=([regex]::Match($endpoint,'/commits/([a-f0-9]{40})/')).Groups[1].Value
+        if($commitSha-cne$script:BaseSha){return '{"total_count":0,"check_runs":[]}'}
+        return (@{ total_count = $total; check_runs = @(@{ id = 2; head_sha = $commitSha; status = 'completed'; conclusion = $c }) } | ConvertTo-Json -Depth 4 -Compress)
     }
     if ($endpoint -match '/status') {
         $c = if ($script:Case -eq 'status-pending') { 'pending' } else { 'success' }
         $statuses = if ($script:Case -eq 'empty-status') { @() } else { @(@{ state = $c; context = 'external' }) }
-        return (@{ sha = $script:BaseSha; total_count = @($statuses).Count; state = $c; statuses = @($statuses) } | ConvertTo-Json -Depth 4 -Compress)
+        $commitSha=([regex]::Match($endpoint,'/commits/([a-f0-9]{40})/')).Groups[1].Value
+        if($commitSha-cne$script:BaseSha){$statuses=@()}
+        return (@{ sha = $commitSha; total_count = @($statuses).Count; state = $c; statuses = @($statuses) } | ConvertTo-Json -Depth 4 -Compress)
     }
     $global:LASTEXITCODE = 1; return ''
 }
 try {
+    & {param($Root,$Helper);. $Helper;Invoke-CiUpstreamRegression -HooksRoot $Root} $HookRoot (Join-Path $PSScriptRoot '_testciupstream.ps1')
+    & {param($Root,$Helper);. $Helper;Invoke-CiClosureRegression -HooksRoot $Root} $HookRoot (Join-Path $PSScriptRoot '_testciclosure.ps1')
     . (Join-Path $PSScriptRoot '_testcidocslarge.ps1')
     if (-not $LockfileOnly) { Invoke-LargeDocsStopRegression -Workspace $Work -HooksRoot $HookRoot -SmokeOnly:$LargeRepositoryOnly }
     if ($LargeRepositoryOnly) {
@@ -81,6 +87,10 @@ try {
     }
     [void](Commit-Fixture '.github/workflows/ci.yml' "on: [push]`njobs:`n  test:`n    runs-on: windows-latest`n    steps:`n      - name: Validate`n        run: echo fixture" 'code')
     $script:BaseSha = ([string](& git -C $repo rev-parse HEAD)).Trim()
+    & git -C $repo remote add origin https://github.com/owner/repo.git
+    & git -C $repo config branch.main.remote origin
+    & git -C $repo config branch.main.merge refs/heads/main
+    & git -C $repo update-ref refs/remotes/origin/main $script:BaseSha
     $sha = Commit-Fixture 'README.md' 'docs'
     $state = Join-Path $Work 'state.txt'
     foreach ($cache in @('missing', 'stale', 'overwritten', 'unrelated')) {

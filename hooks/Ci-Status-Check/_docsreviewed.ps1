@@ -1,12 +1,33 @@
 # Exact reviewed input closure, never a CI result or a filename-based waiver.
+. (Join-Path $PSScriptRoot '_ciclosure.ps1')
 function Test-DocsReviewedInputScope {
     param([string]$ProjectRoot,[string]$RepoSlug,[string]$Sha,[string[]]$Files,[object[]]$Candidates)
+    $script:DocsReviewedPolicyPresent=$false
     if([string]::IsNullOrWhiteSpace($RepoSlug)){return $false}
     $path='.hookmaker-docs-policy.json'
-    $raw=@(Invoke-DocsGitQuery @('-C',$ProjectRoot,'show',($Sha+':'+$path)))-join"`n"
-    if($LASTEXITCODE-ne0-or[Text.Encoding]::UTF8.GetByteCount($raw)-gt65536){return $false}
+    # Schema2 review lives beside its managed runtime, outside the reviewed Git
+    # tree: including its own inventory digest would require a hash fixed point.
+    # It is never auto-created or copied from a consumer's ad-hoc override.
+    $runtimeReview=Join-Path $PSScriptRoot '_docs-policy.json'
+    if([IO.File]::Exists($runtimeReview)){
+        $script:DocsReviewedPolicyPresent=$true
+        $file=Get-Item -LiteralPath $runtimeReview -Force
+        if(($file.Attributes-band[IO.FileAttributes]::ReparsePoint)-or$file.Length-gt65536){return $false}
+        $raw=[IO.File]::ReadAllText($runtimeReview,(New-Object Text.UTF8Encoding($false,$true)))
+    }else{
+        $raw=@(Invoke-DocsGitQuery @('-C',$ProjectRoot,'show',($Sha+':'+$path)))-join"`n"
+        if($LASTEXITCODE-ne0){return $false}
+        $script:DocsReviewedPolicyPresent=$true
+    }
+    if([Text.Encoding]::UTF8.GetByteCount($raw)-gt65536){return $false}
     try {
         $policy=$raw|ConvertFrom-Json -ErrorAction Stop
+        if($policy.schema-eq2){
+            $destination=[string](Get-Variable DocsReviewDestination -Scope Script -ValueOnly -ErrorAction SilentlyContinue)
+            $valid=Test-CiReviewedClosure -ProjectRoot $ProjectRoot -RepoSlug $RepoSlug -Sha $Sha -Policy $policy -Files $Files -Candidates $Candidates -Branch $destination
+            if($valid){$script:DocsReviewedClosure=$policy}
+            return $valid
+        }
         if($policy.schema-ne1-or$policy.repository-ine$RepoSlug-or$policy.PSObject.Properties['results']-or
             $policy.verdict-cne'non-semantic'-or[string]::IsNullOrWhiteSpace([string]$policy.rationale)-or
             $policy.treeFingerprint-cnotmatch'^[a-f0-9]{64}$'){return $false}

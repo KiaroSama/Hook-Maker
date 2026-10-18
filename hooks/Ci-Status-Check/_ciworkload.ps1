@@ -2,9 +2,14 @@
 $ciProofRoot = if ([IO.File]::Exists((Join-Path $PSScriptRoot '_ciprovenance.ps1'))) { $PSScriptRoot } else { Split-Path -Parent $PSScriptRoot }
 . (Join-Path $ciProofRoot '_ciprovenance.ps1')
 . (Join-Path $PSScriptRoot '_cireviewed.ps1')
+. (Join-Path $PSScriptRoot '_docsquery.ps1')
+. (Join-Path $PSScriptRoot '_cibatch.ps1')
 
 function Read-CiWorkloadApi {
     param([string]$Endpoint)
+    if((Get-Variable CiApiScopeKey -Scope Script -ErrorAction SilentlyContinue)-and$script:CiApiScopeKey-ne''){
+        return (Read-CiBatchApi -Endpoint $Endpoint -ScopeKey $script:CiApiScopeKey)
+    }
     $raw=@(Invoke-GhBounded -ArgumentList @('api',$Endpoint))-join"`n"
     if($LASTEXITCODE-ne0-or[string]::IsNullOrWhiteSpace($raw)){return $null}
     try{return ($raw|ConvertFrom-Json -ErrorAction Stop)}catch{return $null}
@@ -58,7 +63,14 @@ function Get-CiRunSnapshot {
     if($null-eq(Get-Command gh -ErrorAction SilentlyContinue)){return $null}
     if((Get-Command Test-GhAuthenticated -ErrorAction SilentlyContinue)-and-not(Test-GhAuthenticated)){return $null}
     if($ProjectRoot-eq''){$ProjectRoot=(Get-Location).Path}
-    $doc=Read-CiWorkloadApi ('repos/'+$RepoSlug+'/actions/runs?head_sha='+$Sha+'&per_page=50')
+    $runEndpoint='repos/'+$RepoSlug+'/actions/runs?head_sha='+$Sha+'&per_page=50'
+    $checkEndpoint='repos/'+$RepoSlug+'/commits/'+$Sha+'/check-runs?filter=latest&per_page=100'
+    $statusEndpoint='repos/'+$RepoSlug+'/commits/'+$Sha+'/status?per_page=100'
+    if((Get-Variable CiApiScopeKey -Scope Script -ErrorAction SilentlyContinue)-and$script:CiApiScopeKey-ne''){
+        $prefetched=Invoke-CiApiBatch -Endpoints @($runEndpoint,$checkEndpoint,$statusEndpoint) -ScopeKey $script:CiApiScopeKey
+        if($null-eq$prefetched){return $null}
+    }
+    $doc=Read-CiWorkloadApi $runEndpoint
     if($null-eq$doc-or$null-eq(Get-Field $doc 'total_count')-or$null-eq$doc.PSObject.Properties['workflow_runs']){return $null}
     $all=@($doc.workflow_runs|Where-Object{$null-ne$_})
     if($all.Count-gt50-or$all.Count-ne$doc.total_count){return $null}
@@ -85,11 +97,21 @@ function Get-CiRunSnapshot {
         elseif($run.conclusion-cin@('failure','startup_failure')){$failed.Add($entry)}
         elseif($run.conclusion-cne'success'){$infra.Add($entry+' ['+$run.conclusion+']')}
     }
-    $expected=Get-CiWorkloadExpectation -ProjectRoot $ProjectRoot -RepoSlug $RepoSlug -Sha $Sha -Branch $Branch
+    $expected=$null
+    if($project.Count-gt0){$expected=Get-CiWorkloadExpectation -ProjectRoot $ProjectRoot -RepoSlug $RepoSlug -Sha $Sha -Branch $Branch}
     $proven=$null-ne$expected;$proofRuns=New-Object Collections.Generic.List[object]
     $requiredCheckIds=New-Object 'Collections.Generic.HashSet[string]' ([StringComparer]::Ordinal)
     $oldest=[DateTimeOffset]::MaxValue
     if($proven){
+        if((Get-Variable CiApiScopeKey -Scope Script -ErrorAction SilentlyContinue)-and$script:CiApiScopeKey-ne''){
+            $jobEndpoints=@(foreach($workflow in @($expected.Workflows)){
+                $matched=@($project|Where-Object{$_.path-ceq$workflow.Path-and$_.event-ceq$workflow.Event-and$_.head_branch-ceq$workflow.Branch-and($workflow.Id-eq''-or[string]$_.workflow_id-ceq[string]$workflow.Id)}|Sort-Object {[long]$_.id} -Descending)
+                if($matched.Count-and$matched[0].status-ceq'completed'-and$matched[0].conclusion-ceq'success'){
+                    'repos/'+$RepoSlug+'/actions/runs/'+$matched[0].id+'/attempts/'+$matched[0].run_attempt+'/jobs?per_page=100'
+                }
+            })
+            if($jobEndpoints.Count-and$null-eq(Invoke-CiApiBatch -Endpoints $jobEndpoints -ScopeKey $script:CiApiScopeKey)){return $null}
+        }
         foreach($workflow in @($expected.Workflows)){
             $matching=@($project|Where-Object{$_.path-ceq$workflow.Path-and$_.event-ceq$workflow.Event-and$_.head_branch-ceq$workflow.Branch-and($workflow.Id-eq''-or[string]$_.workflow_id-ceq[string]$workflow.Id)}|Sort-Object {[long]$_.id} -Descending)
             if($matching.Count-eq0){$proven=$false;continue}
@@ -132,29 +154,45 @@ function Get-CiRunSnapshot {
             $proofRuns.Add([ordered]@{id=$run.id;attempt=$run.run_attempt;workflowId=$run.workflow_id;path=$run.path;event=$run.event;branch=$run.head_branch;completedUtc=$runEnd.ToString('o')})
         }
     }
-    if($proven){
-        $checks=Read-CiWorkloadApi ('repos/'+$RepoSlug+'/commits/'+$Sha+'/check-runs?filter=latest&per_page=100')
+    $checksComplete=$false
+    $commitChecksSafe=$false
+    $checkFingerprint=''
+    # Check/status evidence exists independently of Actions, including a zero-run
+    # documentation commit. Never let an absent workflow hide a failing check.
+    $checks=Read-CiWorkloadApi ('repos/'+$RepoSlug+'/commits/'+$Sha+'/check-runs?filter=latest&per_page=100')
         $status=Read-CiWorkloadApi ('repos/'+$RepoSlug+'/commits/'+$Sha+'/status?per_page=100')
         if($null-eq$checks-or$null-eq$status-or$null-eq(Get-Field $checks 'total_count')-or$null-eq$checks.PSObject.Properties['check_runs']-or
             $null-eq(Get-Field $status 'total_count')-or$null-eq$status.PSObject.Properties['statuses']-or$status.sha-cne$Sha){$proven=$false}
         else{
             $cr=@($checks.check_runs);$st=@($status.statuses)
-            if($cr.Count-eq0-or$cr.Count-gt100-or$cr.Count-ne$checks.total_count-or$st.Count-gt100-or$st.Count-ne$status.total_count){$proven=$false}
+            $checksComplete=$cr.Count-le100-and$cr.Count-eq$checks.total_count-and$st.Count-le100-and$st.Count-eq$status.total_count
+            $commitChecksSafe=$checksComplete
             $checkIds=New-Object 'Collections.Generic.HashSet[string]' ([StringComparer]::Ordinal)
-            foreach($check in $cr){if([string]$check.id-cnotmatch'^[1-9][0-9]*$'-or-not$checkIds.Add([string]$check.id)-or$check.head_sha-cne$Sha-or$check.status-cne'completed'-or$check.conclusion-cne'success'){$proven=$false}}
+            $checkParts=New-Object Collections.Generic.List[string]
+            foreach($check in $cr){
+                if([string]$check.id-cnotmatch'^[1-9][0-9]*$'-or-not$checkIds.Add([string]$check.id)-or$check.head_sha-cne$Sha){$checksComplete=$false;$commitChecksSafe=$false}
+                if($check.status-cne'completed'-or$check.conclusion-cne'success'){$commitChecksSafe=$false}
+                $checkParts.Add('check|'+$check.id+'|'+$check.status+'|'+$check.conclusion)
+            }
             foreach($requiredId in $requiredCheckIds){if(-not$checkIds.Contains($requiredId)){$proven=$false}}
             $contexts=New-Object 'Collections.Generic.HashSet[string]' ([StringComparer]::Ordinal)
-            foreach($state in $st){if([string]::IsNullOrWhiteSpace([string]$state.context)-or-not$contexts.Add([string]$state.context)-or$state.state-cne'success'){$proven=$false}}
+            foreach($state in $st){
+                if([string]::IsNullOrWhiteSpace([string]$state.context)-or-not$contexts.Add([string]$state.context)){$checksComplete=$false;$commitChecksSafe=$false}
+                if($state.state-cne'success'){$commitChecksSafe=$false}
+                $checkParts.Add('status|'+$state.context+'|'+$state.state)
+            }
+            [string[]]$checkOrder=$checkParts.ToArray();[Array]::Sort($checkOrder,[StringComparer]::Ordinal)
+            $checkFingerprint=Get-RepositoryIdentityHash ($checkOrder-join"`n")
+            if(-not$commitChecksSafe-or$cr.Count-eq0){$proven=$false}
         }
-    }
     $billing=@()
     if($failed.Count-gt0-and(Get-Command Test-CiBillingBlocked -ErrorAction SilentlyContinue)-and(Test-CiBillingBlocked -RepoSlug $RepoSlug -Sha $Sha)){$billing=$failed.ToArray();$failed.Clear()}
     if($proven-and$proofRuns.Count-ne@($expected.Workflows).Count){$proven=$false}
     $allSuccess=$proven-and$project.Count-gt0-and$pending.Count-eq0-and$failed.Count-eq0-and$infra.Count-eq0-and$billing.Count-eq0
     [string[]]$orderedParts=$parts.ToArray();[Array]::Sort($orderedParts,[StringComparer]::Ordinal)
-    $fingerprint=Get-RepositoryIdentityHash ($orderedParts-join"`n")
+    $fingerprint=Get-RepositoryIdentityHash (($orderedParts-join"`n")+'|'+$checkFingerprint)
     $provenance=$null
     if($allSuccess){$provenance=[pscustomobject]@{schema=1;repository=$RepoSlug;sha=$Sha;outcome='ci-green';observedUtc=[DateTimeOffset]::UtcNow.ToString('o');completedUtc=$oldest.ToString('o');workloadFingerprint=$fingerprint;sourceFingerprint=$expected.SourceFingerprint;runs=$proofRuns.ToArray()}}
-    return [pscustomobject]@{Runs=$project;AuxiliaryRuns=$auxiliary;PendingRuns=$pending.ToArray();FailedRuns=$failed.ToArray();InfraRuns=$infra.ToArray();BillingRuns=$billing;Fingerprint=$fingerprint;AllSuccess=$allSuccess;Provenance=$provenance}
+    return [pscustomobject]@{Runs=$project;AuxiliaryRuns=$auxiliary;PendingRuns=$pending.ToArray();FailedRuns=$failed.ToArray();InfraRuns=$infra.ToArray();BillingRuns=$billing;Fingerprint=$fingerprint;AllSuccess=$allSuccess;Provenance=$provenance;ChecksComplete=$checksComplete;CommitChecksSafe=$commitChecksSafe}
     } catch { return $null }
 }

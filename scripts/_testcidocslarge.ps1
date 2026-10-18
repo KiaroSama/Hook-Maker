@@ -44,8 +44,12 @@ if ($a[0] -eq 'api') {
         @{ total_count=1; workflow_runs=@(@{id=1;workflow_id=9;run_attempt=1;head_sha=$base; head_repository=@{full_name='owner/repo'}; repository=@{full_name='owner/repo'}; head_branch='main'; status='completed'; conclusion='success'; path='.github/workflows/ci.yml'; event='push'}) } | ConvertTo-Json -Depth 6 -Compress
         exit 0
     }
-    if ($e -match '/check-runs') { @{total_count=1; check_runs=@(@{id=12;head_sha=$base; status='completed'; conclusion='success'})} | ConvertTo-Json -Depth 4 -Compress; exit 0 }
-    if ($e -match '/status') { @{sha=$base; total_count=0; statuses=@(); state='pending'} | ConvertTo-Json -Compress; exit 0 }
+    if ($e -match '/commits/([a-f0-9]{40})/check-runs') {
+        $commit=$Matches[1]
+        if($commit-cne$base){'{"total_count":0,"check_runs":[]}';exit 0}
+        @{total_count=1; check_runs=@(@{id=12;head_sha=$commit; status='completed'; conclusion='success'})} | ConvertTo-Json -Depth 4 -Compress; exit 0
+    }
+    if ($e -match '/commits/([a-f0-9]{40})/status') { @{sha=$Matches[1]; total_count=0; statuses=@(); state='pending'} | ConvertTo-Json -Depth 4 -Compress; exit 0 }
 }
 exit 1
 '@

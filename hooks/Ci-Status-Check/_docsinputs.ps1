@@ -64,6 +64,13 @@ function Test-DocsHaveSemanticConsumers {
     if ($LASTEXITCODE -notin @(0,1)) { return $true }
     $matches = @(@($literal) + @($readers) | Sort-Object -Unique | Where-Object { $_ -cne ($Sha + ':.hookmaker-docs-policy.json') })
     if ($matches.Count -gt 100) { $script:DocsCarryoverReason = 'unknown: more than 100 relevant reader/reference candidates; input scope not fully verified'; return $true }
+    # A complete schema2 inventory binds immutable candidate blobs/bytes, so
+    # re-reading every unchanged source body adds process latency, not evidence.
+    if([IO.File]::Exists((Join-Path $PSScriptRoot '_docs-policy.json'))){
+        $identities=@($matches|ForEach-Object{[pscustomobject]@{Path=([string]$_).Substring($Sha.Length+1)}})
+        if(Test-DocsReviewedInputScope -ProjectRoot $ProjectRoot -RepoSlug $RepoSlug -Sha $Sha -Files $Files -Candidates $identities){$script:DocsCarryoverReason='';return $false}
+        $script:DocsCarryoverReason='unknown: reviewed input closure is invalid or changed';return $true
+    }
     $bytes = 0
     $candidates = New-Object Collections.Generic.List[object]
     foreach ($match in $matches) {
@@ -80,6 +87,7 @@ function Test-DocsHaveSemanticConsumers {
     if (Test-DocsReviewedInputScope -ProjectRoot $ProjectRoot -RepoSlug $RepoSlug -Sha $Sha -Files $Files -Candidates $candidates.ToArray()) {
         $script:DocsCarryoverReason = ''; return $false
     }
+    if($script:DocsReviewedPolicyPresent){$script:DocsCarryoverReason='unknown: reviewed input closure is invalid or changed';return $true}
     foreach ($candidate in $candidates) {
         $path=$candidate.Path; $lines=$candidate.Lines; $text=$candidate.Text; $match=$candidate.Match
         # Dependency names are not executable reader operations. Literal changed-doc

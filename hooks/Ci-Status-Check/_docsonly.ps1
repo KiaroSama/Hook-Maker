@@ -10,7 +10,7 @@
 
 $ciProofRoot = if ([IO.File]::Exists((Join-Path $PSScriptRoot '_ciprovenance.ps1'))) { $PSScriptRoot } else { Split-Path -Parent $PSScriptRoot }
 . (Join-Path $ciProofRoot '_ciprovenance.ps1')
-foreach ($module in @('_docsancestor.ps1', '_docsinputs.ps1')) { . (Join-Path $PSScriptRoot $module) }
+foreach ($module in @('_docsancestor.ps1', '_docsinputs.ps1', '_ciupstream.ps1', '_ciworkload.ps1')) { . (Join-Path $PSScriptRoot $module) }
 
 $script:DocsOnlySkipMarkers = @('[skip ci]', '[ci skip]', '[no ci]', '[skip actions]', '[actions skip]')
 
@@ -58,6 +58,9 @@ function Get-VerifiedGreenBase {
 function Get-DocsOnlyCarryover {
     param([string]$ProjectRoot, [string]$Sha, [string]$Branch, [string]$RepoSlug, [string]$StatePath)
     $script:DocsCarryoverReason = ''
+    $script:DocsReviewedClosure=$null
+    $script:DocsReviewDestination=Get-CiCarryoverDestination $ProjectRoot $RepoSlug $Sha $Branch
+    if($script:DocsReviewDestination-eq''){$script:DocsCarryoverReason='unknown: exact upstream protection destination unavailable or mismatched';return $null}
     $message = @(Invoke-DocsGit -Arguments @('-C', $ProjectRoot, 'log', '-1', '--format=%B', $Sha)) -join "`n"
     if ($LASTEXITCODE -ne 0) { $script:DocsCarryoverReason = 'unknown: final commit message unavailable'; return $null }
     if (-not (Test-CommitHasSkipMarker -Message $message)) { return $null }
@@ -68,6 +71,9 @@ function Get-DocsOnlyCarryover {
     $chain = @(Invoke-DocsGit -Arguments @('-C', $ProjectRoot, 'rev-list', '--first-parent', '--max-count=9', $Sha))
     if ($LASTEXITCODE -ne 0 -or $chain.Count -lt 2 -or $chain[0] -cne $Sha) { return $null }
     $cached = Get-VerifiedGreenBase -StatePath $StatePath
+    $finalSnapshot=Get-CiRunSnapshot -ProjectRoot $ProjectRoot -RepoSlug $RepoSlug -Sha $Sha -Branch $Branch
+    if($null-eq$finalSnapshot-or-not$finalSnapshot.ChecksComplete-or-not$finalSnapshot.CommitChecksSafe-or
+        $finalSnapshot.PendingRuns.Count-or$finalSnapshot.FailedRuns.Count-or$finalSnapshot.InfraRuns.Count-or$finalSnapshot.BillingRuns.Count){return $null}
     $files = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::Ordinal)
     $candidates = New-Object System.Collections.Generic.List[string]
     for ($i = 0; $i -lt $chain.Count - 1; $i++) {
@@ -84,11 +90,21 @@ function Get-DocsOnlyCarryover {
     if (-not (Test-NoRequiredStatusChecks -RepoSlug $RepoSlug -Branch $Branch)) { return $null }
     $script:DocsCarryoverReason = 'unknown or non-success: complete nearest eligible ancestor checks not verified'
     $ordered = @($candidates.ToArray())
+    if($null-ne$script:DocsReviewedClosure){
+        foreach($object in @($Sha)+$ordered){
+            $inventory=Get-CiClosureInventory $ProjectRoot $object @($script:DocsReviewedClosure.documents)
+            if($null-eq$inventory-or$inventory.Fingerprint-cne$script:DocsReviewedClosure.inventory.sha256){return $null}
+            foreach($document in @($script:DocsReviewedClosure.documents)){
+                if(-not(Test-CiClosureProse $ProjectRoot $object $document)){return $null}
+            }
+        }
+    }
     # Nearest first: an older cached success cannot conceal a newer failed run.
     foreach ($base in $ordered) {
         if ((Get-GhRemainingSeconds) -lt 1) { break }
         $script:DocsAncestorAbsent = $false
         if (Test-DocsAncestorGreen $ProjectRoot $RepoSlug $base $Branch) {
+            if(-not(Test-DocsReviewedAncestorBinding $ProjectRoot $RepoSlug $Sha $base $Branch)){return $null}
             $source = @(Invoke-DocsGit -Arguments @('-C', $ProjectRoot, 'ls-tree', '-r', $Sha)) -join "`n"
             if ($LASTEXITCODE -ne 0 -or [Text.Encoding]::UTF8.GetByteCount($source) -gt 1048576) { return $null }
             return [pscustomobject]@{ Parent = $base; Files = @($files | Sort-Object); SourceFingerprint = Get-RepositoryIdentityHash $source }
@@ -102,8 +118,14 @@ function Test-NoRequiredStatusChecks {
     param([string]$RepoSlug, [string]$Branch)
     $encoded = [uri]::EscapeDataString($Branch)
     try {
-        $branchDoc = (@(Invoke-GhBounded -ArgumentList @('api', ('repos/' + $RepoSlug + '/branches/' + $encoded))) -join "`n") | ConvertFrom-Json
-        if ($LASTEXITCODE -ne 0 -or $null -eq $branchDoc -or [string](Get-Field $branchDoc 'name') -cne $Branch -or
+        $branchEndpoint='repos/'+$RepoSlug+'/branches/'+$encoded
+        $rulesEndpoint='repos/'+$RepoSlug+'/rules/branches/'+$encoded+'?per_page=100'
+        if((Get-Variable CiApiScopeKey -Scope Script -ErrorAction SilentlyContinue)-and$script:CiApiScopeKey-ne''){
+            $batch=Invoke-CiApiBatch -Endpoints @($branchEndpoint,$rulesEndpoint) -ScopeKey $script:CiApiScopeKey
+            if($null-eq$batch){return $false}
+        }
+        $branchDoc=Read-CiWorkloadApi $branchEndpoint
+        if ($null -eq $branchDoc -or [string](Get-Field $branchDoc 'name') -cne $Branch -or
             (Get-Field $branchDoc 'protected') -isnot [bool]) { return $false }
         if ([bool](Get-Field $branchDoc 'protected')) {
             if ($null -eq (Get-Field $branchDoc 'protection') -or $null -eq (Get-Field (Get-Field $branchDoc 'protection') 'required_status_checks')) { return $false }
@@ -115,9 +137,14 @@ function Test-NoRequiredStatusChecks {
                     @(Get-Field $checks 'checks' | Where-Object { $null -ne $_ }).Count -gt 0 -or $level -ne 'off') { return $false }
             }
         }
-        $rawRules = @(Invoke-GhBounded -ArgumentList @('api', ('repos/' + $RepoSlug + '/rules/branches/' + $encoded + '?per_page=100'))) -join "`n"
-        if ($LASTEXITCODE -ne 0 -or -not $rawRules.TrimStart().StartsWith('[')) { return $false }
-        $rules = @($rawRules | ConvertFrom-Json | ForEach-Object { $_ })
+        if((Get-Variable CiApiScopeKey -Scope Script -ErrorAction SilentlyContinue)-and$script:CiApiScopeKey-ne''){
+            if($batch[$rulesEndpoint]-isnot[Array]){return $false}
+            $rules=@($batch[$rulesEndpoint])
+        }else{
+            $rawRules = @(Invoke-GhBounded -ArgumentList @('api', $rulesEndpoint)) -join "`n"
+            if ($LASTEXITCODE -ne 0 -or -not $rawRules.TrimStart().StartsWith('[')) { return $false }
+            $rules = @($rawRules | ConvertFrom-Json | ForEach-Object { $_ })
+        }
         if ($rules.Count -ge 100) { return $false }
         foreach ($rule in $rules) {
             $type = [string](Get-Field $rule 'type')
