@@ -261,6 +261,8 @@ $script:HookMeta = @{
     'Test-Plan-Check'                  = @{ Order = 23; When = 'pre';  Text = 'surfaces test-health policy before test or CI work'; Events = @('SessionStart', 'UserPromptSubmit'); Timeout = 15 }
     # Shared repository evidence must finish inside its unchanged 4s deadline.
     'Test-Run-Guard'                   = @{ Order = 24; When = 'both'; Text = 'requires a bounded, host-consistent identity-safe test runner'; Events = @('PreToolUse', 'PostToolUse'); Timeout = 10 }
+    # Explicit historical dispositions pin exact originals and human approval;
+    # they never certify current tests or waive active/leaking/unknown evidence.
     'Test-Completion-Check'            = @{ Order = 25; When = 'post'; Text = 'verifies test evidence and cleanup before finishing'; Events = @('Stop', 'SubagentStop'); Timeout = 20 }
     # Utf8-Encoding-Check is also the third native pre-push chain stage
     # (Ignore -> Secrets -> Utf8 -> preserved user hook). Its position is

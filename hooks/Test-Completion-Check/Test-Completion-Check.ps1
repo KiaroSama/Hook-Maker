@@ -9,6 +9,8 @@
 #   state lives under %LOCALAPPDATA%\HookMaker\state - never in the project.
 #   -ResolveIncident/-RecoveryRunId/-ProjectRoot/-Reason associates one verified
 #   newer clean same-project receipt with a substantively documented incident.
+#   -DispositionRequest with an exact human authorization records only an audited
+#   obsolete/cancelled historical failure, never recovery or current success.
 #   The ledger pins both receipt hashes, identities, scope/repair reason and UTC
 #   time under its bounded mutex; note-only, unrelated and still-active work do
 #   not resolve. Historical associations never certify today's product state.
@@ -146,15 +148,22 @@
 # and the fallback is applied so it can only ever NARROW what is blocked on -
 # never widen it. A malformed setting must not turn this gate into a nag.
 
-param([string]$ResolveIncident = '', [string]$RecoveryRunId = '', [string]$ProjectRoot = '', [string]$Reason = '', [switch]$AuditEvidence, [string]$AuditPath = '')
+param([string]$ResolveIncident = '', [string]$RecoveryRunId = '', [string]$ProjectRoot = '', [string]$Reason = '', [switch]$AuditEvidence, [string]$AuditPath = '', [string]$DispositionRequest = '', [string]$AuthorizationTranscript = '', [string]$AuthorizationRecordId = '')
 
 Set-StrictMode -Version 2.0
 $ErrorActionPreference = 'Stop'
 
 . (Join-Path $PSScriptRoot '..\_hooklib.ps1')
 
-$recoveryMode = (-not $AuditEvidence -and ($ResolveIncident -ne '' -or $RecoveryRunId -ne '' -or $ProjectRoot -ne '' -or $Reason -ne ''))
-if ($AuditEvidence) {
+$dispositionMode = ($DispositionRequest -ne '' -or $AuthorizationTranscript -ne '' -or $AuthorizationRecordId -ne '')
+$recoveryMode = (-not $dispositionMode -and -not $AuditEvidence -and ($ResolveIncident -ne '' -or $RecoveryRunId -ne '' -or $ProjectRoot -ne '' -or $Reason -ne ''))
+if ($dispositionMode) {
+    if ($AuditEvidence -or $ResolveIncident -ne '' -or $RecoveryRunId -ne '' -or $Reason -ne '' -or $AuditPath -ne '' -or
+        [string]::IsNullOrWhiteSpace($ProjectRoot) -or [string]::IsNullOrWhiteSpace($DispositionRequest) -or
+        [string]::IsNullOrWhiteSpace($AuthorizationTranscript) -or [string]::IsNullOrWhiteSpace($AuthorizationRecordId)) { throw 'Disposition requires only an exact project, request and human authorization record.' }
+    $hookInput = [pscustomobject]@{ hook_event_name = 'Stop'; cwd = $ProjectRoot; session_id = '' }
+}
+elseif ($AuditEvidence) {
     if ($ResolveIncident -ne '' -or $RecoveryRunId -ne '' -or $Reason -ne '' -or [string]::IsNullOrWhiteSpace($ProjectRoot) -or [string]::IsNullOrWhiteSpace($AuditPath)) { throw 'Audit requires only -AuditEvidence, -ProjectRoot and a new -AuditPath; it never resolves an incident.' }
     $hookInput = [pscustomobject]@{ hook_event_name = 'Stop'; cwd = $ProjectRoot; session_id = '' }
 }
@@ -182,7 +191,7 @@ if ($eventName -ne 'Stop' -and $eventName -ne 'SubagentStop') { exit 0 }
 
 $cwd = [string](Get-Field $hookInput 'cwd')
 if ([string]::IsNullOrWhiteSpace($cwd) -or -not (Test-Path -LiteralPath $cwd -PathType Container)) {
-    if ($recoveryMode) { throw 'The recovery project directory does not exist.' }
+    if ($recoveryMode -or $dispositionMode) { throw 'The requested project directory does not exist.' }
     exit 0
 }
 
@@ -214,7 +223,7 @@ $sessionId = [string](Get-Field $hookInput 'session_id')
 
 # ---- Explicit user-command activation; transcript data never executes. ----
 . (Join-Path $PSScriptRoot '_deepdebug.ps1')
-if (-not $AuditEvidence) { Initialize-DeepDebugActivation }
+if (-not $AuditEvidence -and -not $dispositionMode) { Initialize-DeepDebugActivation }
 
 # The durable-note and incident-tag helpers: a REQUIRED sibling (the gate cannot
 # decide a note obligation without them).
@@ -243,6 +252,8 @@ if ($AuditEvidence) {
 # ---- read the recorded evidence (AGGREGATED across per-run files) ----------
 . (Join-Path $PSScriptRoot '_evidence.ps1')
 . (Join-Path $PSScriptRoot '_recovery.ps1')
+. (Join-Path $PSScriptRoot '_disposition.ps1')
+. (Join-Path $PSScriptRoot '_dispositionauthorization.ps1')
 . (Join-Path $PSScriptRoot '_noteobligations.ps1')
 . (Join-Path $PSScriptRoot '_failedrun.ps1')
 # Possible orphaned test processes: ADVISORY ONLY, never a block, never a kill.
@@ -255,6 +266,15 @@ if ($AuditEvidence) {
 $script:MalformedEvidence = New-Object 'System.Collections.Generic.List[string]'
 # Explicit recovery is a narrowly scoped executor. It validates and records an
 # association before the ordinary gate/prune paths, preserving historical receipts.
+if ($dispositionMode) {
+    Save-CompletionState -DispositionRequestPath $DispositionRequest -DispositionTranscript $AuthorizationTranscript -DispositionRecordId $AuthorizationRecordId
+    $request = Read-DispositionRequest $DispositionRequest
+    $saved = Read-JsonFile $statePath
+    $pins = @(@(Get-Field $saved 'historicalDispositions') | Where-Object { [string](Get-Field $_ 'runId') -ceq $request.Request.Doc.runId -and [string](Get-Field $_ 'requestSha256') -ceq $request.Request.Sha256 })
+    if ($pins.Count -ne 1) { throw 'Historical disposition was not persisted.' }
+    [Console]::Out.WriteLine('Historical disposition recorded. Original failure retained; no recovery, PASS or current test evidence was recorded.')
+    exit 0
+}
 if ($recoveryMode) {
     Save-CompletionState -ResolveIncidentKey $ResolveIncident -RecoveryRunId $RecoveryRunId -RecoveryReason $Reason
     $saved = Read-JsonFile $statePath
@@ -270,6 +290,8 @@ $resultEntries = Get-CompletionStateEntries 'result'
 $historicalResultEntries = @($resultEntries)
 $observedEntries = Get-CompletionStateEntries 'observed'
 $activeEntries = Get-CompletionStateEntries 'active'
+# A stale or tampered disposition is an obligation, never a missing success.
+Assert-PersistedDispositions -Entries @($resultEntries)
 # Reconcile before logical retirement; original receipt bytes remain on disk.
 if ($script:pendingNotes.Count -gt 0) { Save-CompletionState }
 

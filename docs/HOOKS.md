@@ -521,6 +521,8 @@ Leading shell assignments (`CI=1 pytest ...`) are skipped when recognising the p
 
 ## `Test-Completion-Check`
 
+An explicit audited `obsolete`/`cancelled` disposition can end repetition of one fully identified, noncurrent historical failed operation after verified resource retirement/cancellation and exact human approval. It records separate original/request/evidence hash pins, never recovery, PASS or current test evidence. Changed pins, a return to the original repository context, unknown identity, active/leaking work and distinct current failures still block. Both PowerShell hosts use the same serialized ledger. See [historical disposition](TEST-HOOK-RECOVERY.md#audited-obsolete-or-cancelled-history).
+
 **Runs:** post-task (Stop, SubagentStop).
 
 Explicit `-ResolveIncident` validates every retained original for a grouped incident (maximum 50), pins each run ID/SHA-256 and requires a separate clean recovery after all originals. Later or modified same-key failures do not inherit it; legacy singular associations stay compatible. Events, timeouts, settings, installer and menu behavior are unchanged. See [recovery contract](TEST-HOOK-RECOVERY.md).

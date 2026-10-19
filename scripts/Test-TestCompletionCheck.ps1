@@ -87,6 +87,9 @@ try {
         . (Join-Path $PSScriptRoot '_testcompletionselection.ps1')
     }
     else {
+    . (Join-Path $PSScriptRoot '_testcompletiondisposition.ps1')
+    Invoke-DispositionRegression -Root (Split-Path -Parent $PSScriptRoot)
+    Invoke-DispositionEntryRegression
     . (Join-Path $PSScriptRoot '_testcompletionobligations.ps1')
     Invoke-NoteObligationRegression -RepoRoot (Split-Path -Parent $PSScriptRoot)
     Invoke-NoteObligationEntryRegression

@@ -53,6 +53,7 @@ function Test-RunNegativeAccounted {
     $doc = $Run.ResultEntry.Doc
     $path = $Run.ResultEntry.Path
     $ik = Get-ResultIncidentKey -Doc $doc -Path $path
+    if ((Get-Command Test-HistoricalDisposition -ErrorAction SilentlyContinue) -and (Test-HistoricalDisposition $doc $path)) { return $true }
     if (Test-ResultIncidentResolved -Doc $Run.ResultEntry.Doc -Path $path) { return $true }
     return (Test-ResultSuperseded -NegDoc $doc -NegTime (Get-ResultRecordedTime -Doc $doc -Path $path) -AllResults $AllResults)
 }

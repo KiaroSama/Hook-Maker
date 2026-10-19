@@ -42,6 +42,7 @@ $script:expiredMarkers = New-Object System.Collections.Generic.List[object]
 $script:resolvedIncidents = New-Object System.Collections.Generic.List[string]
 $script:pendingNotes = New-Object System.Collections.Specialized.OrderedDictionary
 $script:recoveryAssociations = New-Object System.Collections.Specialized.OrderedDictionary
+$script:historicalDispositions = New-Object System.Collections.Specialized.OrderedDictionary
 $script:retiredNotes = New-Object System.Collections.Specialized.OrderedDictionary
 $script:noteDiagnosticFingerprint = ''
 $script:LedgerLegacyBackup = ''
@@ -72,6 +73,10 @@ if ($null -ne $previous) {
     foreach ($association in @(Get-Field $previous 'recoveryAssociations')) {
         $associationKey = [string](Get-Field $association 'incidentKey')
         if ($associationKey -ne '') { $script:recoveryAssociations[$associationKey] = $association }
+    }
+    foreach ($disposition in @(Get-Field $previous 'historicalDispositions')) {
+        $id = [string](Get-Field $disposition 'runId')
+        if ($id -ne '') { $script:historicalDispositions[$id] = $disposition }
     }
     $rawResolved = Get-Field $previous 'resolvedIncidents'
     if ($null -ne $rawResolved) {
@@ -219,6 +224,10 @@ function Merge-DiskLedger {
         $associationKey = [string](Get-Field $association 'incidentKey')
         if ($associationKey -ne '') { $script:recoveryAssociations[$associationKey] = $association }
     }
+    foreach ($disposition in @(Get-Field $disk 'historicalDispositions')) {
+        $id = [string](Get-Field $disposition 'runId')
+        if ($id -ne '') { $script:historicalDispositions[$id] = $disposition }
+    }
     $diskResolved = Get-Field $disk 'resolvedIncidents'
     if ($null -ne $diskResolved) {
         foreach ($k in @($diskResolved)) {
@@ -279,8 +288,21 @@ function Merge-DiskLedger {
 # A failed ledger write on the normal path is reported (Write-Finding and the
 # silent tail), never swallowed; the recovery path still throws.
 $script:LedgerWriteFailed = ''
+function Write-CompletionLedgerAtomic {
+    param($Value, [string]$Path)
+    [void][IO.Directory]::CreateDirectory((Split-Path -Parent $Path))
+    $temp = $Path + '.' + [guid]::NewGuid().ToString('N') + '.tmp'
+    try {
+        [IO.File]::WriteAllText($temp, ($Value | ConvertTo-Json -Depth 50), [Text.UTF8Encoding]::new($false))
+        # All ledger writers hold the same mutex. Replace avoids the delete/move
+        # gap of Move-Item -Force; a failed replacement keeps the previous bytes.
+        if ([IO.File]::Exists($Path)) { [IO.File]::Replace($temp, $Path, [NullString]::Value) }
+        else { [IO.File]::Move($temp, $Path) }
+    }
+    finally { if ([IO.File]::Exists($temp)) { [IO.File]::Delete($temp) } }
+}
 function Save-CompletionState {
-    param($Deferred = $null, [string]$ResolveIncidentKey = '', [string]$RecoveryRunId = '', [string]$RecoveryReason = '')
+    param($Deferred = $null, [string]$ResolveIncidentKey = '', [string]$RecoveryRunId = '', [string]$RecoveryReason = '', [string]$DispositionRequestPath = '', [string]$DispositionTranscript = '', [string]$DispositionRecordId = '')
     if ($null -eq $Deferred) { $Deferred = $script:deferredFingerprint }
     $script:deferredFingerprint = $Deferred
     $mutex = $null
@@ -294,7 +316,7 @@ function Save-CompletionState {
         catch { $acquired = $false }
 
         if (-not $acquired) {
-            if ($ResolveIncidentKey -ne '') { throw 'The incident ledger is busy or inaccessible. Retry recovery after the current writer finishes.' }
+            if ($ResolveIncidentKey -ne '' -or $DispositionRequestPath -ne '') { throw 'The incident ledger is busy or inaccessible. Retry after the current writer finishes.' }
             return
         }
 
@@ -311,6 +333,7 @@ function Save-CompletionState {
         Merge-DiskLedger
         if (Get-Command Repair-LegacyNoteObligations -ErrorAction SilentlyContinue) { Repair-LegacyNoteObligations }
         if ($ResolveIncidentKey -ne '') { Set-VerifiedIncidentRecovery -IncidentKey $ResolveIncidentKey -RecoveryRunId $RecoveryRunId -Reason $RecoveryReason }
+        if ($DispositionRequestPath -ne '') { Set-HistoricalDisposition $DispositionRequestPath $DispositionTranscript $DispositionRecordId }
 
         try {
             $notes = New-Object System.Collections.Generic.List[object]
@@ -338,12 +361,13 @@ function Save-CompletionState {
             $payload['retiredNotes'] = @($script:retiredNotes.Values)
             $payload['noteDiagnosticFingerprint'] = $script:noteDiagnosticFingerprint
             $payload['recoveryAssociations'] = @($script:recoveryAssociations.Values)
+            $payload['historicalDispositions'] = @($script:historicalDispositions.Values)
             $payload['deferredFingerprint'] = $Deferred
             if ($script:LedgerLegacyBackup -ne '') { $payload['legacyBackupPath'] = $script:LedgerLegacyBackup }
             $payload['updatedUtc'] = [DateTime]::UtcNow.ToString('o')
-            Write-JsonFileAtomic -Value ([pscustomobject]$payload) -Path $script:statePath
+            Write-CompletionLedgerAtomic -Value ([pscustomobject]$payload) -Path $script:statePath
         }
-        catch { if ($ResolveIncidentKey -ne '') { throw }; $script:LedgerWriteFailed = $_.Exception.Message }
+        catch { if ($ResolveIncidentKey -ne '' -or $DispositionRequestPath -ne '') { throw }; $script:LedgerWriteFailed = $_.Exception.Message }
     }
     finally {
         if ($null -ne $mutex) {

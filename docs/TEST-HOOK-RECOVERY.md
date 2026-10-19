@@ -199,6 +199,26 @@ silently converted into group associations. Original receipt bytes remain intact
 A note alone never certifies success. Historical recovery does not certify the
 current product state, resolve another incident or promote UNKNOWN into SUCCESS.
 
+### Audited obsolete or cancelled history
+
+Use this only for an already-ended historical failure whose resource was retired or whose operation was cancelled with explicit acceptance. It is **not recovery or PASS** and supplies no current tests, release clearance or successful backup. No network operation is replayed. Unknown/legacy identities, current-state failures, failures ended less than 24 hours ago, active or unproven process ownership, termination/leaks, malformed evidence and unresolved note obligations refuse admission.
+
+1. Prepare a local UTF-8 JSON resource attestation, `schema: 1`, with `projectRoot`, `runId`, `receiptSha256`, `action` (`retired` or `cancelled`), `resourceId` (at most 256 characters), `statement` (at least 80 UTF-8 bytes) and `occurredUtc`. Independently validate the real retirement/cancellation before attesting; a file cannot prove a remote deletion by itself. Do not include credentials or private payloads.
+2. Prepare a local UTF-8 JSON request, `schema: 1`, containing the same `projectRoot`, `runId`, `receiptSha256`, `disposition` (`obsolete` for `retired`, or `cancelled`), a substantive `reason` (at least 80 UTF-8 bytes), absolute `evidencePath`, exact `evidenceSha256` and `createdUtc`. Each file is at most 64 KiB, regular and without linked ancestors. Preserve both reviewed files and every original receipt.
+3. Compute the request's SHA-256 and have the human type exactly `::test-disposition <requestSHA256>` in that project's Claude session after reviewing its contents. This literal text is an authorization record, not a slash command. Capture the real message UUID and transcript path. Authorization must be a plain, non-meta user record with matching project/session, later than request creation and at most one hour old. Tool/assistant/peer text, quoted commands, stale messages and a fabricated boolean do not authorize anything. The transcript is local client provenance, not cryptographic human authentication; never manufacture or edit it.
+4. Run the existing installed entry point:
+
+```powershell
+& '<installed runtime>\Test-Completion-Check.ps1' `
+  -ProjectRoot '<exact project>' -DispositionRequest '<absolute request.json>' `
+  -AuthorizationTranscript '<real client transcript.jsonl>' `
+  -AuthorizationRecordId '<real human message UUID>'
+```
+
+The bounded transcript reader considers the final 1 MiB of complete newline-terminated records. Explicit authorization currently accepts the documented Claude user-record shape; Codex Stop evaluation consumes the resulting shared project ledger, but Codex-native authorization records are not accepted. Do not claim that unsupported provenance is verified.
+
+Publication holds the existing project mutex and rechecks exact receipt/request/evidence hashes, repository identity and active work. The ledger stores `historicalDispositions` separately from `resolvedIncidents` and `recoveryAssociations`; a maximum of 50 entries refuses new admissions rather than evicting history. Concurrent writers re-read and merge. Changed or missing pinned files, invalid identity or returning to the original repository fingerprint reopens the obligation. A new same-command failure does not inherit the old disposition. Original failed bytes are never rewritten, and current failures, required tests and cleanup remain independently enforced. The resource attestation is explicitly owner-reviewed evidence; no tool independently verifies a live resource through this interface.
+
 ### Expected-negative test fixtures
 
 A child deliberately returning a nonzero exit code is still recorded as failed;
