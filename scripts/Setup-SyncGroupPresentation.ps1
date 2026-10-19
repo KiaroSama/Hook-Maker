@@ -249,6 +249,7 @@ $script:HookMeta = @{
     'Secrets-Check'                    = @{ Order = 19; When = 'both'; Text = 'keeps secrets.md accurate and checks for leaks' }
     # 'both' (not 'pre+post') - Get-HookTimingTag's switch only recognizes
     # pre/post/both; an unrecognized value silently rendered NO timing tag at all.
+    # Native checks share index inventory and emit only fixed real-phase progress.
     'Ignore-Rules-Check'               = @{ Order = 20; When = 'both'; Text = 'auto-fixes required local/private gitignore rules before and after tasks' }
     'Dependency-Version-Check'         = @{ Order = 21; When = 'both'; Text = 'flags outdated dependencies; requires a stated decision'; Events = @('SessionStart', 'UserPromptSubmit', 'Stop', 'SubagentStop') }
     'Test-Temp-Cleanup'                = @{ Order = 22; When = 'both'; Text = 'cleans safe test cache/temp residue; keeps diagnostics' }

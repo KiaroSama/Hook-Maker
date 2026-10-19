@@ -169,6 +169,14 @@ function New-PrePushWrapperBody {
 
     $stages = @($ManagedScripts) | ForEach-Object {
         $scriptPath = $_.Replace('\', '/').Replace('$', '\$').Replace('`', '\`')
+        $label = switch ([System.IO.Path]::GetFileNameWithoutExtension($_)) {
+            'Ignore-Rules-Check' { 'Ignore' }
+            'Secrets-Check' { 'Secrets' }
+            'Utf8-Encoding-Check' { 'UTF8' }
+            default { 'managed' }
+        }
+        # Real stage starts keep an idle watchdog informed without fake heartbeats or inputs.
+        'printf ''%s\n'' ''[Hook Maker] pre-push: ' + $label + ''' >&2' + "`n" +
         'powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "' + $scriptPath + '" -GitPrePush < "$STDIN_FILE" || exit $?'
     }
     return "#!/bin/sh`n" + $script:PrePushMarker + "`n" +

@@ -36,11 +36,14 @@ if ($isStopEvent -and (Test-StopStandDown -HookInput $hookInput -HookName 'Ignor
 $cwd = [string](Get-Field $hookInput 'cwd')
 if ([string]::IsNullOrWhiteSpace($cwd) -or -not (Test-Path -LiteralPath $cwd -PathType Container)) { exit 0 }
 if ($null -eq (Get-Command git -ErrorAction SilentlyContinue)) { exit 0 }
-$inside = Invoke-QuietCommand -FilePath git -ArgumentList @('-C', $cwd, 'rev-parse', '--is-inside-work-tree')
-if ($LASTEXITCODE -ne 0 -or [string]$inside -ne 'true') { exit 0 }
-# The .gitignore that carries the protected set is the REPOSITORY's, never a
-# subfolder's that the session's working directory happened to drift into.
-$cwd = Resolve-HookProjectRoot $cwd
+if ($GitPrePush) { [Console]::Error.WriteLine('[Hook Maker] Ignore: repository') }
+# One checked top-level query also handles sessions whose cwd drifted below it.
+$rootResult = Invoke-QuietCommand -FilePath git -ArgumentList @('-C', $cwd, 'rev-parse', '--show-toplevel') -CaptureOutput
+if ($null -eq $rootResult -or $rootResult.ExitCode -ne 0) { exit 0 }
+$roots = @(([string]$rootResult.Output).TrimEnd([char[]]@("`r","`n")) -split '\r?\n')
+if ($roots.Count -ne 1 -or [string]::IsNullOrWhiteSpace($roots[0])) { exit 0 }
+$cwd = $roots[0].Trim().Replace('/', '\')
+if (-not (Test-Path -LiteralPath $cwd -PathType Container)) { exit 0 }
 
 $patterns = New-Object System.Collections.Generic.List[string]
 # ORDER IS SEMANTIC, so nothing here is ever reordered or removed - the set is
@@ -199,8 +202,12 @@ if ($missing.Count -gt 0) {
 # A .gitignore entry does not untrack an already indexed file; block until fixed.
 $tracked = New-Object System.Collections.Generic.List[string]
 $staged = New-Object System.Collections.Generic.List[string]
-$trackedFiles = @(Invoke-QuietCommand -FilePath git -ArgumentList @('-C', $cwd, 'ls-files') | Where-Object { $_ })
-$stagedFiles = @(Invoke-QuietCommand -FilePath git -ArgumentList @('-C', $cwd, 'diff', '--cached', '--name-only') | Where-Object { $_ })
+if ($GitPrePush) { [Console]::Error.WriteLine('[Hook Maker] Ignore: index') }
+# The index already contains staged additions. Read staging only for a confirmed
+# protected match's diagnostic, not as a second clean-path inventory.
+$indexResult = Invoke-QuietCommand -FilePath git -ArgumentList @('-C',$cwd,'ls-files','-z') -CaptureOutput
+if ($null -eq $indexResult -or $indexResult.ExitCode -ne 0) { throw 'Ignore index inventory unavailable.' }
+$trackedFiles = @(([string]$indexResult.Output) -split "`0" | Where-Object { $_ })
 # One `git check-ignore -v` per BATCH of paths, never per path: a process spawn
 # costs ~40 ms, so a 200-file repository paid ~9 s here at every Stop. The paths
 # go on the command line (Windows caps it at 32,767 characters), so batches are
@@ -212,7 +219,7 @@ $batchCharLimit = 8000
 $batches = New-Object System.Collections.Generic.List[object]
 $current = New-Object System.Collections.Generic.List[string]
 $currentChars = 0
-foreach ($file in @($trackedFiles + $stagedFiles | Sort-Object -Unique)) {
+foreach ($file in @($trackedFiles | Sort-Object -Unique)) {
     if ($current.Count -gt 0 -and ($currentChars + $file.Length + 3) -gt $batchCharLimit) {
         [void]$batches.Add($current.ToArray())
         $current = New-Object System.Collections.Generic.List[string]
@@ -223,24 +230,27 @@ foreach ($file in @($trackedFiles + $stagedFiles | Sort-Object -Unique)) {
 }
 if ($current.Count -gt 0) { [void]$batches.Add($current.ToArray()) }
 foreach ($paths in $batches) {
-    $detail = @(Invoke-QuietCommand -FilePath git -ArgumentList (@('-C', $cwd, 'check-ignore', '--no-index', '-v', '--') + @($paths)))
-    if ($LASTEXITCODE -gt 1 -or $detail.Count -eq 0) { continue }
-    foreach ($line in $detail) {
-        $text = [string]$line
-        $tab = $text.IndexOf("`t")
-        if ($tab -lt 0) { continue }
-        $source = $text.Substring(0, $tab)
-        $file = $text.Substring($tab + 1)
-        $colon = $source.LastIndexOf(':')
-        if ($colon -lt 0) { continue }
-        $matchedPattern = $source.Substring($colon + 1)
-        # The effective (last-matching) rule is a negation - Git explicitly allows this path
-        # to stay tracked (e.g. `.env.example` against `!/.env.example`). Never protected.
-        if ($matchedPattern.StartsWith('!')) { continue }
-        if ($protectedPatterns -notcontains $matchedPattern) { continue }
+    if ($GitPrePush) { [Console]::Error.WriteLine('[Hook Maker] Ignore: batch start') }
+    # check-ignore -z requires stdin; retain bounded argv batches and request
+    # literal Unicode instead. Windows filenames cannot contain tabs/newlines.
+    $detail = Invoke-QuietCommand -FilePath git -ArgumentList (@('-C',$cwd,'-c','core.quotePath=false','check-ignore','--no-index','-v','--') + @($paths)) -CaptureOutput
+    if ($null -eq $detail -or $detail.ExitCode -notin @(0,1)) { throw 'Ignore path classification unavailable.' }
+    foreach ($line in @(([string]$detail.Output) -split '\r?\n' | Where-Object { $_ })) {
+        $tab=$line.IndexOf("`t")
+        if ($tab -lt 0) { throw 'Ignore path classification is malformed.' }
+        $source=$line.Substring(0,$tab);$colon=$source.LastIndexOf(':')
+        if ($colon -lt 0) { throw 'Ignore path classification is malformed.' }
+        $matchedPattern=$source.Substring($colon+1);$file=$line.Substring($tab+1)
+        if ($matchedPattern.StartsWith('!') -or $protectedPatterns -notcontains $matchedPattern) { continue }
         if ($trackedFiles -contains $file) { [void]$tracked.Add($file) }
-        if ($stagedFiles -contains $file) { [void]$staged.Add($file) }
     }
+    if ($GitPrePush) { [Console]::Error.WriteLine('[Hook Maker] Ignore: batch complete') }
+}
+if ($tracked.Count -gt 0) {
+    $stagedResult = Invoke-QuietCommand -FilePath git -ArgumentList @('-C',$cwd,'diff','--cached','--name-only','-z') -CaptureOutput
+    if ($null -eq $stagedResult -or $stagedResult.ExitCode -ne 0) { throw 'Ignore staged-path diagnostic unavailable.' }
+    $stagedFiles = @(([string]$stagedResult.Output) -split "`0" | Where-Object { $_ })
+    foreach ($file in $tracked) { if ($stagedFiles -contains $file) { [void]$staged.Add($file) } }
 }
 
 # Rule-file patterns in advisory mode: said once per set, never written, never a block.

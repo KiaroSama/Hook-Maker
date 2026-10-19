@@ -92,6 +92,8 @@ function New-Config {
 }
 
 try {
+    . (Join-Path $PSScriptRoot '_testnativeprogress.ps1')
+    Invoke-NativeProgressRegression
     # =====================================================================
 
     Write-Host '--- native pre-push companion is refreshed; a preserved previous hook stays intact ---' -ForegroundColor Cyan

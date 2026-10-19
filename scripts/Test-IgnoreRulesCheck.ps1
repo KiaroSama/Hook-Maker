@@ -63,6 +63,9 @@ function New-ConfiguredIgnoreHookCopy {
 }
 
 try {
+    . (Join-Path $PSScriptRoot '_testignoreprogress.ps1')
+    Invoke-IgnoreProgressContract (Split-Path -Parent $PSScriptRoot)
+    Invoke-IgnoreProgressRegression
     if (-not (Test-Path -LiteralPath $Hook -PathType Leaf)) {
         Write-Host 'Hook not found (expected RED before implementation).' -ForegroundColor Red
         exit 1
