@@ -2,6 +2,13 @@
 # for already-installed legacy copies, not for a damaged current checkout.
 # This file describes payloads in memory; it never edits a target installation.
 
+function Get-ManagedRuntimeUserConfigNames {
+    param([string]$FriendlyName)
+    $names=@('.env')
+    if(Get-Variable ManagedRuntimeUserConfigNames -Scope Script -ErrorAction SilentlyContinue){$names=@($script:ManagedRuntimeUserConfigNames)}
+    if($FriendlyName-ceq'Ci-Status-Check'){$names+='_ci-policy.json'}
+    return $names
+}
 function Assert-RuntimeSourcesAvailable {
     param([string]$ToolRoot, [string[]]$RelativePaths)
     $failures = New-Object 'System.Collections.Generic.List[string]'

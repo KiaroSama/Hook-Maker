@@ -439,7 +439,7 @@ function Get-RuntimeMetadataContent {
     # three times.
     [void]$lines.Add('  "preservedUserConfig": [')
     $preservedLines = New-Object System.Collections.Generic.List[string]
-    foreach ($configName in @($script:ManagedRuntimeUserConfigNames)) {
+    foreach ($configName in @(Get-ManagedRuntimeUserConfigNames $FriendlyName)) {
         [void]$preservedLines.Add('    ' + (ConvertTo-PlanJsonStringLiteral ([string]$configName)))
     }
     for ($index = 0; $index -lt $preservedLines.Count; $index++) {
@@ -522,7 +522,7 @@ function Get-ManagedInstallPlan {
             if ($excluded) { continue }
             if (-not (Test-PathContainedIn -ChildPath $file.FullName -ParentPath $packageRoot)) { continue }
             $relative = $file.FullName.Substring($packageRoot.Length).TrimStart('\', '/')
-            $segments = $relative.Split([char[]]@('\', '/'), [System.StringSplitOptions]::RemoveEmptyEntries)
+            if($FriendlyName-ceq'Ci-Status-Check'-and$relative-ieq'_ci-policy.json'){continue}; $segments = $relative.Split([char[]]@('\', '/'), [System.StringSplitOptions]::RemoveEmptyEntries)
             $inForbidden = $false
             for ($i = 0; $i -lt $segments.Length - 1; $i++) {
                 foreach ($forbidden in $script:PlanForbiddenDirectoryNames) {

@@ -1,8 +1,9 @@
-# External API fixture only; no network, repository writes or real success records.
+# Offline API controls plus one inert owned large Git tree; no real success records.
 param([switch]$RunRegression)
 function Invoke-CiWorkloadHostRegression {
     param([string]$HooksRoot,[string]$Work)
     Invoke-CiWorkloadRegression $HooksRoot
+    & {param($Root,$Temp);Invoke-CiLargeReviewedTreeRegression $Root $Temp} $HooksRoot $Work
     $output=Join-Path $Work 'workload51.out';$errorFile=Join-Path $Work 'workload51.err'
     $helper=Join-Path $PSScriptRoot '_testciworkload.ps1'
     $result=Start-BoundedProcess -FilePath powershell.exe -ArgumentList @('-NoLogo','-NoProfile','-NonInteractive','-File',$helper,'-RunRegression') -TimeoutMs 30000 -RedirectStandardOutput $output -RedirectStandardError $errorFile
@@ -94,6 +95,82 @@ jobs:
         $script:MatrixSource=$saved
     }
 }
+function Invoke-CiLargeReviewedTreeRegression {
+    param([string]$HooksRoot,[string]$Work)
+    . (Join-Path $HooksRoot '_hooklib.ps1')
+    $repo=Join-Path $Work 'large-reviewed-tree';[void][IO.Directory]::CreateDirectory($repo)
+    $null=Invoke-QuietCommand git @('-C',$repo,'init','-q','-b','main')
+    if($LASTEXITCODE-ne0){throw 'Large review fixture init failed'}
+    $inputPath=Join-Path $Work 'large-tree.import'
+    $writer=[IO.StreamWriter]::new($inputPath,$false,[Text.UTF8Encoding]::new($false))
+    try{
+        $writer.Write("blob`nmark :1`ndata 1`nx`ncommit refs/heads/main`ncommitter Fixture <fixture@example.invalid> 1700000000 +0000`ndata 7`nfixture`n")
+        $writer.Write("M 100644 :1 .github/workflows/ci.yml`n")
+        for($i=0;$i-lt7000;$i++){$writer.Write('M 100644 :1 unrelated/'+('x'*150)+$i.ToString('D5')+".txt`n")}
+        $writer.Write("`ndone`n")
+    }finally{$writer.Dispose()}
+    $out=Join-Path $Work 'large-tree.out';$err=Join-Path $Work 'large-tree.err'
+    $import=Start-BoundedProcess -FilePath git -ArgumentList @('-C',$repo,'fast-import','--quiet') -RedirectStandardInput $inputPath -RedirectStandardOutput $out -RedirectStandardError $err -TimeoutMs 15000
+    if($import.ExitCode-ne0){throw 'Large review fixture import failed'}
+    $sha=(@(Invoke-QuietCommand git @('-C',$repo,'rev-parse','HEAD'))-join'').Trim()
+    $tree=(@(Invoke-QuietCommand git @('-C',$repo,'rev-parse',($sha+'^{tree}')))-join'').Trim()
+    $blob=(@(Invoke-QuietCommand git @('-C',$repo,'rev-parse',($sha+':.github/workflows/ci.yml')))-join'').Trim()
+    $copyDir=Join-Path $Work 'review-module';[void][IO.Directory]::CreateDirectory($copyDir)
+    Copy-Item -LiteralPath (Join-Path $HooksRoot 'Ci-Status-Check/_cireviewed.ps1') -Destination (Join-Path $copyDir '_cireviewed.ps1')
+    . (Join-Path $copyDir '_cireviewed.ps1')
+    $policy=@{schema=3;repository='owner/repo';rationale='Whole immutable tree and explicit branch context reviewed';objectFormat='sha1';tree=$tree;sources=@(@{path='.github/workflows/ci.yml';mode='100644';blob=$blob});contextReview=@{};workflows=@(@{path='.github/workflows/ci.yml';id=9;event='workflow_dispatch';branch='feature/deleted';branchEquivalent=$true;branchRationale='Synthetic fixture has no branch-sensitive inputs';equivalentTo=@('main');jobs=@(@{name='native';steps=@('Validate')})})}
+    foreach($dimension in @('conditions','checkout','scripts','envInputs','permissionsSecrets','artifactsCache','concurrency','dependencies')){$policy.contextReview[$dimension]='Reviewed inert fixture '+$dimension}
+    function Invoke-DocsGit {param($Arguments);Invoke-QuietCommand -FilePath git -ArgumentList $Arguments -TimeoutSeconds 5}
+    foreach($case in @('exact','wrong-tree','wrong-mode','wrong-blob','wrong-destination','missing-context')){
+        $copy=$policy|ConvertTo-Json -Depth 12|ConvertFrom-Json
+        if($case-eq'wrong-tree'){$copy.tree='f'*40}
+        if($case-eq'wrong-mode'){$copy.sources[0].mode='100755'}
+        if($case-eq'wrong-blob'){$copy.sources[0].blob='f'*40}
+        if($case-eq'wrong-destination'){$copy.workflows[0].equivalentTo=@('other')}
+        if($case-eq'missing-context'){$copy.contextReview.PSObject.Properties.Remove('scripts')}
+        [IO.File]::WriteAllText((Join-Path $copyDir '_ci-policy.json'),($copy|ConvertTo-Json -Depth 12 -Compress),[Text.UTF8Encoding]::new($false))
+        $result=Get-CiReviewedExpectation $repo owner/repo $sha main
+        Check ('large real tracked tree reviewed binding '+$case) (($null-ne$result)-eq($case-eq'exact'))
+    }
+    # 7000 paths alone have >1MiB of literal path bytes, without blob metadata.
+    Check 'large fixture is genuinely above old textual tree limit' ((7000*(150+10))-gt1048576)
+}
+function Invoke-CiReviewedTreeRegression {
+    param([string]$HooksRoot)
+    . (Join-Path $HooksRoot '_hooklib.ps1')
+    . (Join-Path $HooksRoot 'Ci-Status-Check/_cireviewed.ps1')
+    if(-not(Get-Command Test-CiReviewedTreeBinding -ErrorAction SilentlyContinue)){
+        Check 'exact reviewed tree does not require unrelated tree enumeration' $false
+        return
+    }
+    $review=@{schema=3;repository='owner/repo';objectFormat='sha1';tree=('c'*40);sources=@(@{path='.github/workflows/ci.yml';mode='100644';blob=('b'*40)});contextReview=@{}}
+    foreach($dimension in @('conditions','checkout','scripts','envInputs','permissionsSecrets','artifactsCache','concurrency','dependencies')){$review.contextReview[$dimension]='Explicit immutable-source review of '+$dimension}
+    $script:TreeCase='exact';$script:TreeFullReads=0
+    function Invoke-DocsGit {
+        param($Arguments)
+        $global:LASTEXITCODE=0
+        if($Arguments-contains'--show-object-format=storage'){if($script:TreeCase-eq'exact-sha256'){return 'sha256'};return 'sha1'}
+        if($Arguments-contains'rev-parse'){
+            if($script:TreeCase-eq'wrong-tree'){return ('d'*40)}
+            if($script:TreeCase-eq'query-failed'){$global:LASTEXITCODE=124;return @()}
+            if($script:TreeCase-eq'exact-sha256'){return ('c'*64)}
+            return ('c'*40)
+        }
+        $script:TreeFullReads++;$global:LASTEXITCODE=124;return @()
+    }
+    foreach($case in @('exact','exact-sha256','wrong-tree','wrong-format','missing-context','query-failed','wrong-length','results')){
+        $script:TreeCase=$case;$copy=$review|ConvertTo-Json -Depth 8|ConvertFrom-Json
+        if($case-eq'exact-sha256'){$copy.objectFormat='sha256';$copy.tree='c'*64}
+        if($case-eq'wrong-format'){$copy.objectFormat='sha256'}
+        if($case-eq'missing-context'){$copy.contextReview.PSObject.Properties.Remove('checkout')}
+        if($case-eq'wrong-length'){$copy.tree='c'*39}
+        if($case-eq'results'){$copy|Add-Member results @{success=$true}}
+        $shaLength=if($case-eq'exact-sha256'){64}else{40}
+        $ok=Test-CiReviewedTreeBinding fixture ('a'*$shaLength) $copy
+        Check ('exact reviewed tree binding '+$case) ($ok-eq($case-in@('exact','exact-sha256')))
+    }
+    Check 'tree binding never requests whole textual tree listing' ($script:TreeFullReads-eq0)
+}
 function Invoke-CiReviewedSourceRegression {
     param([string]$HooksRoot)
     . (Join-Path $HooksRoot '_hooklib.ps1')
@@ -124,6 +201,7 @@ function Invoke-CiReviewedSourceRegression {
 }
 function Invoke-CiWorkloadRegression {
     param([string]$HooksRoot)
+    & { param($Root); Invoke-CiReviewedTreeRegression $Root } $HooksRoot
     & { param($Root); Invoke-CiReviewedSourceRegression $Root } $HooksRoot
     & { param($Root); Invoke-CiLiteralMatrixRegression $Root } $HooksRoot
     . (Join-Path $HooksRoot '_hooklib.ps1')
@@ -196,6 +274,8 @@ function Invoke-CiWorkloadRegression {
         if($script:WorkloadCase-eq'bot'){$run.path='dynamic/dependabot';$run.event='dynamic';$run.workflow_id=10}
         if($script:WorkloadCase-eq'wrong-repo'){$run.head_repository.full_name='other/repo'}
         if($script:WorkloadCase-eq'wrong-sha'){$run.head_sha='d'*40}
+        if($script:WorkloadCase-eq'matrix-wrong-branch'){$run.head_branch='feature/unreviewed'}
+        if($script:WorkloadCase-eq'matrix-wrong-event'){$run.event='push'}
         if($script:WorkloadCase-eq'neutral'){$run.conclusion='neutral'}
         if($script:WorkloadCase-eq'api-error'){$global:LASTEXITCODE=1;return ''}
         if($ArgumentList[0]-eq'run'){return (@($run)|ConvertTo-Json -Depth 8 -Compress)}
@@ -218,6 +298,9 @@ function Invoke-CiWorkloadRegression {
                 if($script:WorkloadCase-eq'matrix-duplicate-label'){$items[2].labels=@('windows-latest')}
                 if($script:WorkloadCase-eq'matrix-wrong-attempt'){$items[2].run_attempt=1}
                 if($script:WorkloadCase-eq'matrix-skipped'){$items[2].steps[1].conclusion='skipped'}
+                if($script:WorkloadCase-eq'matrix-failed'){$items[2].conclusion='failure'}
+                if($script:WorkloadCase-eq'matrix-extra'){$items+=@($items[2])}
+                if($script:WorkloadCase-eq'matrix-wrong-sha'){$items[2].head_sha='f'*40}
                 return (@{total_count=3;jobs=$items}|ConvertTo-Json -Depth 10 -Compress)
             }
             if($script:WorkloadCase-eq'skipped-job'){$job.conclusion='skipped'}
@@ -235,12 +318,12 @@ function Invoke-CiWorkloadRegression {
             return (@{total_count=$total;check_runs=$checkRows}|ConvertTo-Json -Depth 6 -Compress)
         }
         if($endpoint-match'/status'){
-            $items=@(if($script:WorkloadCase-eq'zero-status-failed'){@{context='external';state='failure'}})
+            $items=@(if($script:WorkloadCase-eq'zero-status-failed'){@{context='external';state='failure'}}elseif($script:WorkloadCase-in@('zero-status-pending','matrix-pending-status')){@{context='external';state='pending'}})
             return (@{sha=$sha;total_count=$items.Count;state='pending';statuses=$items}|ConvertTo-Json -Depth 6 -Compress)
         }
         $global:LASTEXITCODE=1;return ''
     }
-    foreach($case in @('matrix-complete','matrix-missing','matrix-duplicate-label','matrix-wrong-attempt','matrix-skipped','zero-check-failed','zero-check-pending','zero-check-partial','zero-status-failed','zero-clean','bot','complete','skipped-job','skipped-step','wrong-attempt','wrong-repo','wrong-sha','partial','duplicate','neutral','api-error','partial-jobs','missing-step-time')){
+    foreach($case in @('matrix-wrong-branch','matrix-wrong-event','matrix-complete','matrix-missing','matrix-duplicate-label','matrix-wrong-attempt','matrix-skipped','matrix-extra','matrix-failed','matrix-wrong-sha','matrix-pending-status','zero-status-pending','zero-check-failed','zero-check-pending','zero-check-partial','zero-status-failed','zero-clean','bot','complete','skipped-job','skipped-step','wrong-attempt','wrong-repo','wrong-sha','partial','duplicate','neutral','api-error','partial-jobs','missing-step-time')){
         $script:WorkloadCase=$case
         $snapshot=Get-CiRunSnapshot -RepoSlug 'owner/repo' -Sha $sha
         $green=$null-ne$snapshot-and$snapshot.AllSuccess

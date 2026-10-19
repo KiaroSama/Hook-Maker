@@ -209,8 +209,8 @@ function Get-ExampleText {
 $script:HookMeta = @{
     'Ai-Memory-Check'                  = @{ Order = 2;  Label = 'Ai-Context-Check'; When = 'post'; Text = 'reminds to update the relevant .ai context files when stale' }
     'Ai-Memory-Load'                   = @{ Order = 3;  Label = 'Ai-Context-Load';  When = 'pre';  Text = 'loads the .ai context router and file index before work starts' }
-    # Exact workload includes closed literal OS matrices and source-ordered steps;
-    # unsupported syntax/branch equivalence stays UNKNOWN under existing limits.
+    # Exact workload: closed OS matrices/ordered steps or reviewed root tree OID;
+    # private CiStatus input review survives updates, never substitutes for CI.
     'Ci-Status-Check'                  = @{ Order = 4;  When = 'post'; Text = 'verifies GitHub checks of the exact pushed commit' }
     'Dependabot-Check'                 = @{ Order = 5;  When = 'pre';  Text = 'reports pending Dependabot pull requests' }
     # Both advisory manifest scanners use bounded project-only discovery; partial

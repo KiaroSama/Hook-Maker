@@ -244,6 +244,51 @@ try {
     finally {
         Remove-FixtureHook -Name $verdictFixtureName
     }
+    # A runtime input review is private configuration, not immutable source.
+    $reviewRoot=Join-Path $Work 'review-preservation'
+    $reviewDir=Join-Path $reviewRoot 'Ci-Status-Check'
+    [void][IO.Directory]::CreateDirectory($reviewDir)
+    $reviewPath=Join-Path $reviewDir '_ci-policy.json'
+    $reviewBytes=[Text.Encoding]::UTF8.GetBytes('{"schema":3,"rationale":"fixture input review"}')
+    [IO.File]::WriteAllBytes($reviewPath,$reviewBytes)
+    $reviewSource=Join-Path $Work 'review-source/hooks/Ci-Status-Check'
+    [void][IO.Directory]::CreateDirectory($reviewSource)
+    [IO.File]::WriteAllText((Join-Path $reviewSource 'Ci-Status-Check.ps1'),'# inert source',[Text.UTF8Encoding]::new($false))
+    [IO.File]::WriteAllText((Join-Path $reviewSource '_ci-policy.json'),'{"unrelatedSourceReview":true}',[Text.UTF8Encoding]::new($false))
+    $sourceInfo=[pscustomobject]@{Kind='Package';PackageRoot=$reviewSource;ScriptPath=(Join-Path $reviewSource 'Ci-Status-Check.ps1')}
+    $sourcePlan=@(Get-ManagedInstallPlan -SourceInfo $sourceInfo -FriendlyName 'Ci-Status-Check' -ToolRoot $ToolRoot)
+    Check 'canonical source package never distributes its private CI input review' (@($sourcePlan|Where-Object{$_.relativePath-ieq'Ci-Status-Check/_ci-policy.json'}).Count-eq0)
+    Move-Item -LiteralPath (Join-Path $reviewSource '_ci-policy.json') -Destination (Join-Path $reviewSource '_CI-POLICY.JSON')
+    $sourcePlan=@(Get-ManagedInstallPlan -SourceInfo $sourceInfo -FriendlyName 'Ci-Status-Check' -ToolRoot $ToolRoot)
+    Check 'case-varied source review is private on Windows too' (@($sourcePlan|Where-Object{$_.relativePath-ieq'Ci-Status-Check/_ci-policy.json'}).Count-eq0)
+    $identity=[pscustomobject]@{Client='claude';Scope='project';RecordId='fixture';ProjectRoot=$reviewRoot;TimeoutSeconds=60}
+    $metadata=Get-RuntimeMetadataContent -Artifacts $sourcePlan -FriendlyName 'Ci-Status-Check' -RuntimeIdentity $identity -RuntimeScriptRelativePath 'Ci-Status-Check/Ci-Status-Check.ps1' | ConvertFrom-Json
+    Check 'CiStatus runtime metadata declares private review preservation' (@($metadata.preservedUserConfig)-contains'_ci-policy.json')
+    $reviewPlan=@(New-PlanArtifact -RelativePath 'Ci-Status-Check/entry.ps1' -Kind Generated -GeneratedContent '# inert fixture')
+    $null=Install-PlannedRuntime $reviewPlan $reviewRoot 'Ci-Status-Check'
+    Check 'CiStatus runtime replacement preserves exact reviewed-policy bytes' ([Convert]::ToBase64String([IO.File]::ReadAllBytes($reviewPath))-ceq[Convert]::ToBase64String($reviewBytes))
+    Check 'CiStatus reviewed configuration is not managed drift' (-not(Test-ManagedRuntimeFileTracked '_ci-policy.json' 'Ci-Status-Check'))
+    Check 'another hook receives no reviewed-policy drift exemption' (Test-ManagedRuntimeFileTracked '_ci-policy.json' 'Secrets-Check')
+    Check 'nested reviewed-policy path is still managed' (Test-ManagedRuntimeFileTracked 'nested/_ci-policy.json' 'Ci-Status-Check')
+    [IO.File]::WriteAllText($reviewPath,('x'*65537),[Text.UTF8Encoding]::new($false))
+    $refusedPlan=@(New-PlanArtifact -RelativePath 'Ci-Status-Check/entry.ps1' -Kind Generated -GeneratedContent '# must never replace original')
+    $entryPath=Join-Path $reviewDir 'entry.ps1';$entryHash=Get-FileSha256 $entryPath
+    $refused=$false
+    try{$null=Install-PlannedRuntime $refusedPlan $reviewRoot 'Ci-Status-Check'}catch{$refused=$true}
+    Check 'oversized reviewed-policy refuses before original runtime replacement' ($refused-and([IO.File]::ReadAllText($reviewPath,[Text.Encoding]::UTF8)).Length-eq65537-and(Get-FileSha256 $entryPath)-ceq$entryHash)
+    Remove-Item -LiteralPath $reviewPath
+    [void][IO.Directory]::CreateDirectory($reviewPath)
+    $refused=$false
+    try{$null=Install-PlannedRuntime $refusedPlan $reviewRoot 'Ci-Status-Check'}catch{$refused=$true}
+    Check 'review directory refuses before original runtime replacement' ($refused-and(Test-Path -LiteralPath $reviewPath -PathType Container)-and(Get-FileSha256 $entryPath)-ceq$entryHash)
+    [IO.Directory]::Delete($reviewPath)
+    $reviewTarget=Join-Path $Work 'review-junction-target';[void][IO.Directory]::CreateDirectory($reviewTarget)
+    [void](New-Item -ItemType Junction -Path $reviewPath -Target $reviewTarget)
+    try{
+        $refused=$false
+        try{$null=Install-PlannedRuntime $refusedPlan $reviewRoot 'Ci-Status-Check'}catch{$refused=$true}
+        Check 'linked review refuses without touching original runtime or target' ($refused-and(Test-Path -LiteralPath $reviewPath)-and(Test-Path -LiteralPath $reviewTarget)-and(Get-FileSha256 $entryPath)-ceq$entryHash)
+    }finally{[IO.Directory]::Delete($reviewPath)}
 }
 finally {
     $env:HOOKMAKER_STATE_DIR = $SavedHookMakerStateDir

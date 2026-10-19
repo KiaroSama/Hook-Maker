@@ -1,5 +1,24 @@
 # Explicit expectations are input review, not saved execution results. Any changed
 # workflow/source blob invalidates them before a successful run is considered.
+function Test-CiReviewedTreeBinding {
+    param([string]$ProjectRoot,[string]$Sha,$Policy)
+    try{
+        if($Policy.schema-ne3-or$Policy.PSObject.Properties['results']-or$Policy.objectFormat-cnotin@('sha1','sha256')){return $false}
+        $length=if($Policy.objectFormat-ceq'sha1'){40}else{64}
+        if($Sha-cnotmatch('^[a-f0-9]{'+$length+'}$')-or$Policy.tree-cnotmatch('^[a-f0-9]{'+$length+'}$')){return $false}
+        $format=@(Invoke-DocsGit @('-C',$ProjectRoot,'rev-parse','--show-object-format=storage'))
+        if($LASTEXITCODE-ne0-or$format.Count-ne1-or$format[0]-cne$Policy.objectFormat){return $false}
+        $tree=@(Invoke-DocsGit @('-C',$ProjectRoot,'rev-parse','--verify','--end-of-options',($Sha+'^{tree}')))
+        if($LASTEXITCODE-ne0-or$tree.Count-ne1-or$tree[0]-cne$Policy.tree){return $false}
+        # A tree binds tracked bytes, not branch context or external inputs.
+        # Require a review record for each dimension; text alone is not proof.
+        foreach($dimension in @('conditions','checkout','scripts','envInputs','permissionsSecrets','artifactsCache','concurrency','dependencies')){
+            $property=$Policy.contextReview.PSObject.Properties[$dimension]
+            if($null-eq$property-or$property.Value-isnot[string]-or[string]::IsNullOrWhiteSpace($property.Value)-or$property.Value.Length-gt4096){return $false}
+        }
+        return $true
+    }catch{return $false}
+}
 function Get-CiReviewedExpectation {
     param([string]$ProjectRoot,[string]$RepoSlug,[string]$Sha,[string]$Branch)
     $path='.hookmaker-ci-policy.json'
@@ -15,8 +34,9 @@ function Get-CiReviewedExpectation {
     if($raw.Length-gt65536){return $null}
     try {
         $policy=$raw|ConvertFrom-Json -ErrorAction Stop
-        if($policy.schema-notin@(1,2)-or$policy.repository-ine$RepoSlug-or$policy.PSObject.Properties['results']-or
+        if($policy.schema-notin@(1,2,3)-or$policy.repository-ine$RepoSlug-or$policy.PSObject.Properties['results']-or
             [string]::IsNullOrWhiteSpace([string]$policy.rationale)){return $null}
+        if($policy.schema-eq3-and(-not[IO.File]::Exists($runtimeReview)-or-not(Test-CiReviewedTreeBinding $ProjectRoot $Sha $policy))){return $null}
         $closure=@($policy.sources)
         if($closure.Count-eq0-or$closure.Count-gt100){return $null}
         $seen=New-Object 'Collections.Generic.HashSet[string]' ([StringComparer]::Ordinal)
@@ -28,22 +48,24 @@ function Get-CiReviewedExpectation {
         # Schema2 independently validates the COMPLETE inventory below. Selecting
         # its reviewed source blobs must not first enumerate an unrelated tree.
         $treeArgs=@('-C',$ProjectRoot,'ls-tree','-r',$Sha)
-        if($policy.schema-eq2){$treeArgs+=@('--')+@($closure|ForEach-Object{':(literal)'+$_.path})}
+        if($policy.schema-in@(2,3)){$treeArgs+=@('--')+@($closure|ForEach-Object{':(literal)'+$_.path})}
         $sourceTree=@(Invoke-DocsGit -Arguments $treeArgs)
         if($LASTEXITCODE-ne0-or($sourceTree-join"`n").Length-gt1048576){return $null}
         $blobs=New-Object 'Collections.Generic.Dictionary[string,string]' ([StringComparer]::Ordinal)
+        $modes=New-Object 'Collections.Generic.Dictionary[string,string]' ([StringComparer]::Ordinal)
         foreach($row in $sourceTree){
-            if($row-cnotmatch'^[0-7]{6} blob ([a-f0-9]{40}|[a-f0-9]{64})\t(.+)$'){
+            if($row-cnotmatch'^([0-7]{6}) blob ([a-f0-9]{40}|[a-f0-9]{64})\t(.+)$'){
                 if($policy.schema-eq1){continue}
                 return $null
             }
-            $blob=$Matches[1];$sourcePath=$Matches[2]
+            $mode=$Matches[1];$blob=$Matches[2];$sourcePath=$Matches[3]
             if($blobs.ContainsKey($sourcePath)){return $null}
-            $blobs.Add($sourcePath,$blob)
+            $blobs.Add($sourcePath,$blob);$modes.Add($sourcePath,$mode)
         }
-        if($policy.schema-eq2-and$blobs.Count-ne$closure.Count){return $null}
+        if($policy.schema-in@(2,3)-and$blobs.Count-ne$closure.Count){return $null}
         foreach($source in $closure){
             if(-not$blobs.ContainsKey([string]$source.path)-or$blobs[[string]$source.path]-cne$source.blob){return $null}
+            if($policy.schema-eq3-and($source.mode-cnotin@('100644','100755')-or$modes[[string]$source.path]-cne$source.mode)){return $null}
             $sourceParts.Add($source.path+'|'+$source.blob)
         }
         $workflowPaths=@(Invoke-DocsGit -Arguments @('-C',$ProjectRoot,'ls-tree','-r','--name-only',$Sha,'--','.github/workflows'))
@@ -54,7 +76,7 @@ function Get-CiReviewedExpectation {
             $closure=$policy.closure
             $inputs=@($closure.candidates|ForEach-Object{[pscustomobject]@{Path=$_.path;Bytes=$_.bytes}})
             if(-not(Test-CiReviewedClosure $ProjectRoot $RepoSlug $Sha $closure @($closure.documents) $inputs $Branch)){return $null}
-        }else{
+        }elseif($policy.schema-eq1){
             if($policy.treeFingerprint-cnotmatch'^[a-f0-9]{64}$'){return $null}
             $bound=@($sourceTree|Where-Object{$_-cnotmatch"`t\.hookmaker-ci-policy\.json$"})-join"`n"
             if((Get-RepositoryIdentityHash $bound)-cne$policy.treeFingerprint){return $null}

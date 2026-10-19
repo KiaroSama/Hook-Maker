@@ -27,7 +27,7 @@
 # ---------------------------------------------------------------------------
 
 function Test-ManagedRuntimeFileTracked {
-    param([Parameter(Mandatory = $true)][string]$RelativePath)
+    param([Parameter(Mandatory = $true)][string]$RelativePath,[string]$FriendlyName='')
     $normalized = ([string]$RelativePath).Replace('\', '/').TrimStart('/')
     foreach ($mutable in $script:ManagedRuntimeMutablePaths) {
         if ([string]::Equals($normalized, ([string]$mutable).Replace('\', '/'), [System.StringComparison]::OrdinalIgnoreCase)) { return $false }
@@ -39,7 +39,7 @@ function Test-ManagedRuntimeFileTracked {
     # subdirectory is a shipped file and stays tracked.
     $segments = @($normalized.Split('/') | Where-Object { $_ -ne '' })
     if ($segments.Count -eq 1) {
-        foreach ($userConfig in $script:ManagedRuntimeUserConfigNames) {
+        foreach ($userConfig in @(Get-ManagedRuntimeUserConfigNames $FriendlyName)) {
             if ([string]::Equals($segments[0], [string]$userConfig, [System.StringComparison]::OrdinalIgnoreCase)) { return $false }
         }
     }
@@ -175,7 +175,7 @@ function Get-InstalledManifest {
         $hookRoot = [System.IO.Path]::GetFullPath($hookDir).TrimEnd('\') + '\'
         foreach ($file in @(Get-ChildItem -LiteralPath $hookDir -File -Recurse -Force -ErrorAction SilentlyContinue)) {
             $relative = $file.FullName.Substring($hookRoot.Length)
-            if (-not (Test-ManagedRuntimeFileTracked -RelativePath $relative)) { continue }
+            if (-not (Test-ManagedRuntimeFileTracked -RelativePath $relative -FriendlyName $FriendlyName)) { continue }
             [void]$entries.Add([pscustomobject]@{ path = ($FriendlyName + '/' + $relative); hash = (Get-FileSha256 $file.FullName) })
         }
     }
@@ -270,7 +270,7 @@ function Get-NativePrePushInstalledManifest {
         $companionRoot = [System.IO.Path]::GetFullPath($companionDir).TrimEnd('\') + '\'
         foreach ($file in @(Get-ChildItem -LiteralPath $companionDir -File -Recurse -Force -ErrorAction SilentlyContinue)) {
             $relative = $file.FullName.Substring($companionRoot.Length)
-            if (-not (Test-ManagedRuntimeFileTracked -RelativePath $relative)) { continue }
+            if (-not (Test-ManagedRuntimeFileTracked -RelativePath $relative -FriendlyName $companion)) { continue }
             [void]$entries.Add([pscustomobject]@{ path = ($companion + '/' + $relative); hash = (Get-FileSha256 $file.FullName) })
         }
     }
