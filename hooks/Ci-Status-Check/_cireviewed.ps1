@@ -21,17 +21,30 @@ function Get-CiReviewedExpectation {
         if($closure.Count-eq0-or$closure.Count-gt100){return $null}
         $seen=New-Object 'Collections.Generic.HashSet[string]' ([StringComparer]::Ordinal)
         $sourceParts=New-Object Collections.Generic.List[string]
-        $sourceTree=@(Invoke-DocsGit -Arguments @('-C',$ProjectRoot,'ls-tree','-r',$Sha))
+        foreach($source in $closure){
+            if($source.path-isnot[string]-or$source.path-cnotmatch'^[A-Za-z0-9_. /-]+$'-or$source.path-match'(^|/)\.\.?(/|$)'-or
+                $source.path.StartsWith('/')-or$source.blob-cnotmatch'^(?:[a-f0-9]{40}|[a-f0-9]{64})$'-or-not$seen.Add([string]$source.path)){return $null}
+        }
+        # Schema2 independently validates the COMPLETE inventory below. Selecting
+        # its reviewed source blobs must not first enumerate an unrelated tree.
+        $treeArgs=@('-C',$ProjectRoot,'ls-tree','-r',$Sha)
+        if($policy.schema-eq2){$treeArgs+=@('--')+@($closure|ForEach-Object{':(literal)'+$_.path})}
+        $sourceTree=@(Invoke-DocsGit -Arguments $treeArgs)
         if($LASTEXITCODE-ne0-or($sourceTree-join"`n").Length-gt1048576){return $null}
         $blobs=New-Object 'Collections.Generic.Dictionary[string,string]' ([StringComparer]::Ordinal)
-        foreach($row in $sourceTree){if($row-cmatch'^[0-7]{6} blob ([a-f0-9]{40}|[a-f0-9]{64})\t(.+)$'){$blobs[$Matches[2]]=$Matches[1]}}
+        foreach($row in $sourceTree){
+            if($row-cnotmatch'^[0-7]{6} blob ([a-f0-9]{40}|[a-f0-9]{64})\t(.+)$'){
+                if($policy.schema-eq1){continue}
+                return $null
+            }
+            $blob=$Matches[1];$sourcePath=$Matches[2]
+            if($blobs.ContainsKey($sourcePath)){return $null}
+            $blobs.Add($sourcePath,$blob)
+        }
+        if($policy.schema-eq2-and$blobs.Count-ne$closure.Count){return $null}
         foreach($source in $closure){
-            if($source.path-cnotmatch'^[A-Za-z0-9_. /-]+$'-or$source.path-match'(^|/)\.\.(/|$)'-or
-                $source.path.StartsWith('/')-or$source.blob-cnotmatch'^(?:[a-f0-9]{40}|[a-f0-9]{64})$'-or-not$seen.Add([string]$source.path)){return $null}
-            if(-not$blobs.ContainsKey([string]$source.path)){return $null}
-            $actual=$blobs[[string]$source.path]
-            if($actual-cne$source.blob){return $null}
-            $sourceParts.Add($source.path+'|'+$actual)
+            if(-not$blobs.ContainsKey([string]$source.path)-or$blobs[[string]$source.path]-cne$source.blob){return $null}
+            $sourceParts.Add($source.path+'|'+$source.blob)
         }
         $workflowPaths=@(Invoke-DocsGit -Arguments @('-C',$ProjectRoot,'ls-tree','-r','--name-only',$Sha,'--','.github/workflows'))
         if($LASTEXITCODE-ne0-or$workflowPaths.Count-gt50){return $null}

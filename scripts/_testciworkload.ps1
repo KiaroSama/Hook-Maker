@@ -1,6 +1,131 @@
 # External API fixture only; no network, repository writes or real success records.
+param([switch]$RunRegression)
+function Invoke-CiWorkloadHostRegression {
+    param([string]$HooksRoot,[string]$Work)
+    Invoke-CiWorkloadRegression $HooksRoot
+    $output=Join-Path $Work 'workload51.out';$errorFile=Join-Path $Work 'workload51.err'
+    $helper=Join-Path $PSScriptRoot '_testciworkload.ps1'
+    $result=Start-BoundedProcess -FilePath powershell.exe -ArgumentList @('-NoLogo','-NoProfile','-NonInteractive','-File',$helper,'-RunRegression') -TimeoutMs 30000 -RedirectStandardOutput $output -RedirectStandardError $errorFile
+    Check 'Framework executes source and raw matrix workload controls' ($result.ExitCode-eq0) ([IO.File]::ReadAllText($output,[Text.Encoding]::UTF8)+[IO.File]::ReadAllText($errorFile,[Text.Encoding]::UTF8))
+}
+function Invoke-CiLiteralMatrixRegression {
+    param([string]$HooksRoot)
+    . (Join-Path $HooksRoot '_hooklib.ps1')
+    . (Join-Path $HooksRoot '_scope.ps1')
+    . (Join-Path $HooksRoot 'Ci-Status-Check/_ciworkload.ps1')
+    function Get-CiReviewedExpectation { return $null }
+    function Invoke-DocsGit {
+        param($Arguments)
+        $global:LASTEXITCODE=0
+        if($Arguments-contains'ls-tree'){return '.github/workflows/ci.yml'}
+        return $script:MatrixSource
+    }
+    $script:MatrixSource=@'
+name: CI
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  core:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-24.04]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+      - run: echo validate
+      - name: Linux validation
+        if: runner.os == 'Linux'
+        run: |
+          echo linux
+          echo check
+'@
+    $result=Get-CiWorkloadExpectation fixture owner/repo ('a'*40) main
+    Check 'literal matrix derives two source legs without observed job names' ($null-ne$result-and@($result.Workflows[0].Jobs).Count-eq2)
+    if($null-eq$result){return}
+    $jobs=@($result.Workflows[0].Jobs)
+    Check 'literal matrix binds exact labels and source conditional step' ($jobs[1].Labels[0]-ceq'ubuntu-24.04'-and$jobs[1].MainSteps[2].Required-and-not$jobs[0].MainSteps[2].Required)
+    $expected=$jobs[1]
+    $observed=[pscustomobject]@{steps=@(
+        [pscustomobject]@{number=1;name='Set up job';status='completed';conclusion='success'},
+        [pscustomobject]@{number=2;name=('Run actions/checkout@'+('a'*40));status='completed';conclusion='success'},
+        [pscustomobject]@{number=3;name='Run echo validate';status='completed';conclusion='success'},
+        [pscustomobject]@{number=4;name='Linux validation';status='completed';conclusion='success'},
+        [pscustomobject]@{number=30;name=('Post Run actions/checkout@'+('a'*40));status='completed';conclusion='success'},
+        [pscustomobject]@{number=31;name='Complete job';status='completed';conclusion='success'})}
+    foreach($shape in @('complete','missing','skipped-required','executed-false','reordered','injected','duplicate','pre-step')){
+        $copy=$observed|ConvertTo-Json -Depth 8|ConvertFrom-Json
+        switch($shape){
+            missing {$copy.steps=@($copy.steps|Where-Object{$_.name-cne'Run echo validate'})}
+            skipped-required {$copy.steps[2].conclusion='skipped'}
+            executed-false {$expected=$jobs[0]}
+            reordered {$copy.steps[1].number=3;$copy.steps[2].number=2}
+            injected {$copy.steps[2].name='unexpected validation'}
+            duplicate {$copy.steps+=@($copy.steps[2])}
+            pre-step {$copy.steps+=@([pscustomobject]@{number=0;name='Pre Run other/action@sha';status='completed';conclusion='success'})}
+        }
+        Check ('literal ordered execution binding '+$shape) ((Test-CiLiteralJobSteps $expected $copy)-eq($shape-eq'complete'))
+        $expected=$jobs[1]
+    }
+    $named=$observed|ConvertTo-Json -Depth 8|ConvertFrom-Json
+    $named.steps[1].name='Checkout';$named.steps[4].name='Post Checkout'
+    $namedExpected=$jobs[1]|ConvertTo-Json -Depth 8|ConvertFrom-Json
+    $namedExpected.MainSteps[0].Name='Checkout'
+    Check 'explicit action display name binds its own post cleanup' (Test-CiLiteralJobSteps $namedExpected $named)
+    foreach($variant in @('include','dynamic','job-condition','unknown-step','continue','duplicate-os','branch-step','quoted-condition','reserved-setup','reserved-complete','reserved-post')){
+        $saved=$script:MatrixSource
+        switch($variant){
+            include {$script:MatrixSource=$saved.Replace('        os:',"        include: []`n        os:")}
+            dynamic {$script:MatrixSource=$saved.Replace('[windows-latest, ubuntu-24.04]','${{ fromJSON(inputs.os) }}')}
+            job-condition {$script:MatrixSource=$saved.Replace('    strategy:',"    if: false`n    strategy:")}
+            unknown-step {$script:MatrixSource=$saved.Replace('      - run: echo validate',"      - run: echo validate`n        mysterious: true")}
+            continue {$script:MatrixSource=$saved.Replace('      - run: echo validate',"      - run: echo validate`n        continue-on-error: true")}
+            duplicate-os {$script:MatrixSource=$saved.Replace('ubuntu-24.04','windows-latest')}
+            branch-step {$script:MatrixSource=$saved.Replace("runner.os == 'Linux'","github.ref == 'refs/heads/main'")}
+            quoted-condition {$script:MatrixSource=$saved.Replace('        if:',"        'if':")}
+            reserved-setup {$script:MatrixSource=$saved.Replace('Linux validation','Set up job')}
+            reserved-complete {$script:MatrixSource=$saved.Replace('Linux validation','Complete job')}
+            reserved-post {$script:MatrixSource=$saved.Replace('Linux validation','Post Run other/action@sha')}
+        }
+        $unsupported=Get-CiWorkloadExpectation fixture owner/repo ('a'*40) main
+        Check ('literal matrix refuses unsupported '+$variant) ($null-eq$unsupported)
+        $script:MatrixSource=$saved
+    }
+}
+function Invoke-CiReviewedSourceRegression {
+    param([string]$HooksRoot)
+    . (Join-Path $HooksRoot '_hooklib.ps1')
+    . (Join-Path $HooksRoot 'Ci-Status-Check/_cireviewed.ps1')
+    $script:SourceCase='exact'
+    $script:FullTreeReads=0
+    $script:SourcePolicy=@{schema=2;repository='owner/repo';rationale='Synthetic bounded source review';sources=@(@{path='.github/workflows/ci.yml';blob=('b'*40)});closure=@{candidates=@();documents=@('README.md');sourceBranches=@('main');destinationBranches=@('main')};workflows=@(@{path='.github/workflows/ci.yml';id=9;event='workflow_dispatch';branch='main';jobs=@(@{name='native';steps=@('Run validation')})})}|ConvertTo-Json -Depth 12 -Compress
+    function Test-CiReviewedClosure { return $script:SourceCase-ne'closure-refused' }
+    function Invoke-DocsGit {
+        param($Arguments)
+        $global:LASTEXITCODE=0
+        if($Arguments-contains'show'){return $script:SourcePolicy}
+        if($Arguments-contains'--name-only'){return '.github/workflows/ci.yml'}
+        if($Arguments.Count-eq5){$script:FullTreeReads++;$global:LASTEXITCODE=124;return @()}
+        if($script:SourceCase-eq'query-failed'){$global:LASTEXITCODE=124;return @()}
+        if($script:SourceCase-eq'missing'){return @()}
+        $row='100644 blob '+('b'*40)+"`t.github/workflows/ci.yml"
+        if($script:SourceCase-eq'wrong-blob'){$row=$row.Replace(('b'*40),('c'*40))}
+        if($script:SourceCase-eq'duplicate'){return @($row,$row)}
+        return $row
+    }
+    foreach($case in @('exact','missing','wrong-blob','duplicate','query-failed','closure-refused')){
+        $script:SourceCase=$case
+        $result=Get-CiReviewedExpectation fixture owner/repo ('a'*40) main
+        Check ('reviewed selected source binding '+$case) (($null-ne$result)-eq($case-eq'exact'))
+    }
+    Check 'schema2 source selection does not read unrelated full tree before independent inventory validation' ($script:FullTreeReads-eq0)
+}
 function Invoke-CiWorkloadRegression {
     param([string]$HooksRoot)
+    & { param($Root); Invoke-CiReviewedSourceRegression $Root } $HooksRoot
+    & { param($Root); Invoke-CiLiteralMatrixRegression $Root } $HooksRoot
     . (Join-Path $HooksRoot '_hooklib.ps1')
     . (Join-Path $HooksRoot '_scope.ps1')
     . (Join-Path $HooksRoot 'Ci-Status-Check/_pathsfilter.ps1')
@@ -56,7 +181,13 @@ function Invoke-CiWorkloadRegression {
     $sha='a'*40;$script:WorkloadCase='bot'
     function Get-CiWorkloadExpectation {
         param($ProjectRoot,$RepoSlug,$Sha,$Branch)
-        return [pscustomobject]@{SourceFingerprint=('c'*64);Workflows=@([pscustomobject]@{Path='.github/workflows/ci.yml';Id='9';Event='workflow_dispatch';Branch='main';Jobs=@([pscustomobject]@{Name='native';Steps=@('Run validation')})})}
+        $expectedJobs=@([pscustomobject]@{Name='native';Steps=@('Run validation')})
+        if($script:WorkloadCase-like'matrix-*'){
+            $expectedJobs=@(foreach($label in @('windows-latest','ubuntu-24.04','macos-15')){
+                [pscustomobject]@{Name='core';Labels=@($label);Steps=@('Run validation');MainSteps=@([pscustomobject]@{Name='Run validation';Required=$true;Uses=''})}
+            })
+        }
+        return [pscustomobject]@{SourceFingerprint=('c'*64);Workflows=@([pscustomobject]@{Path='.github/workflows/ci.yml';Id='9';Event='workflow_dispatch';Branch='main';Jobs=$expectedJobs})}
     }
     function Invoke-GhBounded {
         param([string[]]$ArgumentList)
@@ -75,6 +206,20 @@ function Invoke-CiWorkloadRegression {
         }
         if($endpoint-match'/attempts/2/jobs'){
             $job=@{id=12;check_run_url='https://api.github.com/repos/owner/repo/check-runs/12';run_id=7;run_attempt=2;head_sha=$sha;name='native';status='completed';conclusion='success';completed_at='2026-10-17T09:59:00Z';steps=@(@{number=1;name='Set up job';status='completed';conclusion='success'},@{number=2;name='Run validation';status='completed';conclusion='success';completed_at='2026-10-17T09:58:00Z'})}
+            if($script:WorkloadCase-like'matrix-*'){
+                $items=@(for($leg=0;$leg-lt3;$leg++){
+                    $copy=$job|ConvertTo-Json -Depth 8|ConvertFrom-Json
+                    $copy.id=12+$leg;$copy.check_run_url='https://api.github.com/repos/owner/repo/check-runs/'+(12+$leg)
+                    $copy.name='hosted implicit '+$leg
+                    $copy|Add-Member labels @(@('windows-latest','ubuntu-24.04','macos-15')[$leg])
+                    $copy
+                })
+                if($script:WorkloadCase-eq'matrix-missing'){$items=@($items[0],$items[1])}
+                if($script:WorkloadCase-eq'matrix-duplicate-label'){$items[2].labels=@('windows-latest')}
+                if($script:WorkloadCase-eq'matrix-wrong-attempt'){$items[2].run_attempt=1}
+                if($script:WorkloadCase-eq'matrix-skipped'){$items[2].steps[1].conclusion='skipped'}
+                return (@{total_count=3;jobs=$items}|ConvertTo-Json -Depth 10 -Compress)
+            }
             if($script:WorkloadCase-eq'skipped-job'){$job.conclusion='skipped'}
             if($script:WorkloadCase-eq'skipped-step'){$job.steps[1].conclusion='skipped'}
             if($script:WorkloadCase-eq'wrong-attempt'){$job.run_attempt=1}
@@ -85,7 +230,9 @@ function Invoke-CiWorkloadRegression {
             $end=if($script:WorkloadCase-eq'zero-check-pending'){'queued'}else{'completed'}
             $conclusion=if($script:WorkloadCase-eq'zero-check-failed'){'failure'}else{'success'}
             $total=if($script:WorkloadCase-eq'zero-check-partial'){2}else{1}
-            return (@{total_count=$total;check_runs=@(@{id=12;head_sha=$sha;status=$end;conclusion=$conclusion})}|ConvertTo-Json -Depth 6 -Compress)
+            $checkRows=@(@{id=12;head_sha=$sha;status=$end;conclusion=$conclusion})
+            if($script:WorkloadCase-like'matrix-*'){$checkRows=@(foreach($id in @(12,13,14)){@{id=$id;head_sha=$sha;status='completed';conclusion='success'}});$total=3}
+            return (@{total_count=$total;check_runs=$checkRows}|ConvertTo-Json -Depth 6 -Compress)
         }
         if($endpoint-match'/status'){
             $items=@(if($script:WorkloadCase-eq'zero-status-failed'){@{context='external';state='failure'}})
@@ -93,11 +240,11 @@ function Invoke-CiWorkloadRegression {
         }
         $global:LASTEXITCODE=1;return ''
     }
-    foreach($case in @('zero-check-failed','zero-check-pending','zero-check-partial','zero-status-failed','zero-clean','bot','complete','skipped-job','skipped-step','wrong-attempt','wrong-repo','wrong-sha','partial','duplicate','neutral','api-error','partial-jobs','missing-step-time')){
+    foreach($case in @('matrix-complete','matrix-missing','matrix-duplicate-label','matrix-wrong-attempt','matrix-skipped','zero-check-failed','zero-check-pending','zero-check-partial','zero-status-failed','zero-clean','bot','complete','skipped-job','skipped-step','wrong-attempt','wrong-repo','wrong-sha','partial','duplicate','neutral','api-error','partial-jobs','missing-step-time')){
         $script:WorkloadCase=$case
         $snapshot=Get-CiRunSnapshot -RepoSlug 'owner/repo' -Sha $sha
         $green=$null-ne$snapshot-and$snapshot.AllSuccess
-        Check ('required workload '+$case) ($green-eq($case-eq'complete'))
+        Check ('required workload '+$case) ($green-eq($case-in@('complete','matrix-complete')))
         if($case-like'zero-*'){Check ('zero Actions independently verifies checks/statuses '+$case) ($null-ne$snapshot-and$snapshot.CommitChecksSafe-eq($case-eq'zero-clean'))}
         if($case-eq'bot'){Check 'auxiliary-only success leaves documentation route reachable' ($null-ne$snapshot-and$snapshot.Runs.Count-eq0)}
         if($case-eq'complete'){
@@ -106,4 +253,13 @@ function Invoke-CiWorkloadRegression {
             Check 'later cleanup cannot refresh required execution preceding local failure' ($null-eq(Read-CiProvenance -Lines $lines -Repository owner/repo -Sha $sha -FailureEndedUtc '2026-10-17T09:58:30Z'))
         }
     }
+}
+if($RunRegression){
+    Set-StrictMode -Version 2.0
+    $ErrorActionPreference='Stop'
+    . (Join-Path $PSScriptRoot '_testlib.ps1')
+    $script:Pass=0;$script:Fail=0
+    Invoke-CiWorkloadRegression (Join-Path (Split-Path -Parent $PSScriptRoot) 'hooks')
+    Write-Output "Passed: $script:Pass Failed: $script:Fail"
+    exit $script:Fail
 }

@@ -4,6 +4,7 @@ $ciProofRoot = if ([IO.File]::Exists((Join-Path $PSScriptRoot '_ciprovenance.ps1
 . (Join-Path $PSScriptRoot '_cireviewed.ps1')
 . (Join-Path $PSScriptRoot '_docsquery.ps1')
 . (Join-Path $PSScriptRoot '_cibatch.ps1')
+. (Join-Path $PSScriptRoot '_ciliteral.ps1')
 
 function Read-CiWorkloadApi {
     param([string]$Endpoint)
@@ -29,24 +30,27 @@ function Get-CiWorkloadExpectation {
         if($path-cnotmatch'^\.github/workflows/[A-Za-z0-9_.-]+\.ya?ml$'){return $null}
         $text=@(Invoke-DocsGit -Arguments @('-C',$ProjectRoot,'show',($Sha+':'+$path)))-join"`n"
         if($LASTEXITCODE-ne0-or$text.Length-gt262144){return $null}
+        $normalized=$text.Replace("`r`n","`n").TrimEnd("`n")+"`n"
+        $stepPattern='      - name: [A-Za-z0-9 _./()-]+\n        run: [^\r\n{}|>&*!]+\n'
+        $jobPattern='  [A-Za-z0-9_-]+:\n    runs-on: [A-Za-z0-9_.-]+\n    steps:\n(?:'+$stepPattern+')+'
+        if($normalized-cnotmatch('\Aon: \[(?:workflow_dispatch|push)\]\njobs:\n(?:'+$jobPattern+')+\z')){
+            $literal=Get-CiLiteralWorkflow -Text $text -Path $path -Branch $Branch
+            if($null-eq$literal){return $null}
+            $workflows.Add($literal);$sources.Add($path+'|'+$text);continue
+        }
         $triggers=@(Get-WorkflowTopTriggers $text)
         $onLines=@($text-split'\r?\n'|Where-Object{$_-cmatch'^on:'})
         if($onLines.Count-ne1-or$onLines[0]-cnotmatch'^on: \[(workflow_dispatch|push)\]$'){return $null}
         if($triggers.Count-eq1-and$triggers[0]-ceq'workflow_call'){return $null}
         if($triggers.Count-ne1-or@($triggers|Where-Object{$_-cnotin@('workflow_dispatch','push')}).Count){return $null}
-        # Fully consume the tiny supported grammar; line discovery is not YAML
-        # validation. Quoted/conditional/reusable/matrix forms need explicit review.
-        $normalized=$text.Replace("`r`n","`n").TrimEnd("`n")+"`n"
-        $stepPattern='      - name: [A-Za-z0-9 _./()-]+\n        run: [^\r\n{}|>&*!]+\n'
-        $jobPattern='  [A-Za-z0-9_-]+:\n    runs-on: [A-Za-z0-9_.-]+\n    steps:\n(?:'+$stepPattern+')+'
-        if($normalized-cnotmatch('\Aon: \[(?:workflow_dispatch|push)\]\njobs:\n(?:'+$jobPattern+')+\z')){return $null}
+        # Preserve the original tiny grammar's name-based evidence contract.
         $jobs=New-Object Collections.Generic.List[object]
         $names=New-Object 'Collections.Generic.HashSet[string]' ([StringComparer]::Ordinal)
         foreach($block in [regex]::Matches($normalized,$jobPattern)){
             $name=([regex]::Match($block.Value,'\A  ([A-Za-z0-9_-]+):')).Groups[1].Value
             if(-not$names.Add($name)){return $null}
             $steps=@([regex]::Matches($block.Value,'(?m)^      - name: ([A-Za-z0-9 _./()-]+)$')|ForEach-Object{$_.Groups[1].Value})
-            if(@($steps|Select-Object -Unique).Count-ne$steps.Count){return $null}
+            if(@($steps|Select-Object -Unique).Count-ne$steps.Count-or@($steps|Where-Object{$_-cin@('Set up job','Complete job')-or$_-cmatch'^(Post|Pre) '}).Count){return $null}
             $jobs.Add([pscustomobject]@{Name=$name;Steps=$steps})
         }
         $event=if($triggers-ccontains'workflow_dispatch'){'workflow_dispatch'}elseif($triggers-ccontains'push'){'push'}else{'pull_request'}
@@ -123,12 +127,21 @@ function Get-CiRunSnapshot {
             if($jobs.Count-eq0-or$jobs.Count-gt100-or$jobs.Count-ne$jobsDoc.total_count-or$jobs.Count-ne@($workflow.Jobs).Count){$proven=$false;continue}
             $jobIds=New-Object 'Collections.Generic.HashSet[string]' ([StringComparer]::Ordinal)
             $jobNames=New-Object 'Collections.Generic.HashSet[string]' ([StringComparer]::Ordinal)
+            $legKeys=New-Object 'Collections.Generic.HashSet[string]' ([StringComparer]::Ordinal)
             $runEnd=[DateTimeOffset]::MaxValue
             foreach($job in $jobs){
-                $required=@($workflow.Jobs|Where-Object{$_.Name-ceq$job.name})
+                $required=@($workflow.Jobs|Where-Object{
+                    if($_.PSObject.Properties['MainSteps']){
+                        $labels=@(Get-Field $job 'labels')
+                        $labels.Count-eq1-and$_.Labels.Count-eq1-and$labels[0]-ceq$_.Labels[0]
+                    }else{$_.Name-ceq$job.name}
+                })
                 if($required.Count-ne1-or-not$jobNames.Add([string]$job.name)-or[string]$job.id-cnotmatch'^[1-9][0-9]*$'-or-not$jobIds.Add([string]$job.id)-or
                     [string]$job.run_id-cne[string]$run.id-or[string]$job.run_attempt-cne[string]$run.run_attempt-or
                     $job.head_sha-cne$Sha-or$job.status-cne'completed'-or$job.conclusion-cne'success'){$proven=$false;continue}
+                if($required[0].PSObject.Properties['MainSteps']){
+                    if(-not$legKeys.Add(($required[0].Labels-join'|'))-or-not(Test-CiLiteralJobSteps $required[0] $job)){$proven=$false;continue}
+                }
                 $checkUrl=[string](Get-Field $job 'check_run_url')
                 $checkPrefix='https://api.github.com/repos/'+$RepoSlug+'/check-runs/'
                 if(-not$checkUrl.StartsWith($checkPrefix,[StringComparison]::OrdinalIgnoreCase)-or

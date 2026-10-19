@@ -185,7 +185,7 @@ try {
     # =====================================================================
     & {param($Root,$Helper);. $Helper;Invoke-CiApiBatchRegression -HooksRoot $Root} $HooksRoot (Join-Path $PSScriptRoot '_testcibatch.ps1')
     & {param($Root,$Helper);. $Helper;Invoke-CiQueryRegression -HooksRoot $Root} $HooksRoot (Join-Path $PSScriptRoot '_testciquery.ps1')
-    & {param($Root,$Helper);. $Helper;Invoke-CiWorkloadRegression -HooksRoot $Root} $HooksRoot (Join-Path $PSScriptRoot '_testciworkload.ps1')
+    & {param($Root,$Helper,$Temp);. $Helper;Invoke-CiWorkloadHostRegression -HooksRoot $Root -Work $Temp} $HooksRoot (Join-Path $PSScriptRoot '_testciworkload.ps1') $Work
     Write-Host '--- CiStatusCheck ---' -ForegroundColor Cyan
     $plainDir = Join-Path $Work 'plain'; New-Item -ItemType Directory -Path $plainDir -Force | Out-Null
     $ci = New-GitRepo 'ci1'
