@@ -139,11 +139,11 @@ function Invoke-DispositionEntryRegression {
     $after=[IO.File]::ReadAllText((Join-Path (Get-StateDir $copy) ('TestCompletionCheck-'+(Get-ProjectKey $root)+'.json')),[Text.Encoding]::UTF8)
     Check 'authorization refusals leave ledger bytes unchanged' ($before-ceq$after)
     $r=Fire $copy $root -SessionId 'disposition-history'
-    Check 'historical disposition is not current success' ($r.Exit-eq0-and-not(Is-Blocking $r.Out)-and$r.Out-notmatch'DEEP DEBUG: COMPLETE|all tests passed') ($r.Out+$r.Err)
+    Check 'historical disposition is not current success' ($r.Exit-eq0-and(Get-BlockReason $r.Out)-eq''-and$r.Out-notmatch'DEEP DEBUG: COMPLETE|all tests passed') ($r.Out+$r.Err)
     Write-GuardedResult $copy $root -Overall failed -ExitCode 1 -RunId 'different-current'
     $r=Fire $copy $root -SessionId 'disposition-current-failure'
-    Check 'distinct current failure still blocks after historical disposition' (Is-Blocking $r.Out) $r.Out
+    Check 'distinct current failure still blocks after historical disposition' ((Get-BlockReason $r.Out)-ne'') $r.Out
     Write-Utf8 $request.Evidence '{"schema":1,"tampered":true}'
     $r=Fire $copy $root -SessionId 'disposition-tamper'
-    Check 'tampered retirement evidence reopens historical obligation' ((Is-Blocking $r.Out)-and$r.Out-match'historical disposition no longer validates') $r.Out
+    Check 'tampered retirement evidence reopens historical obligation' (((Get-BlockReason $r.Out)-ne'')-and$r.Out-match'historical disposition no longer validates') $r.Out
 }

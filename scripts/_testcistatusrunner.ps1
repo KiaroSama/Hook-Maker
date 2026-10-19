@@ -153,10 +153,12 @@ if ($args.Count -ge 2 -and $args[0] -eq 'api' -and [string]$args[1] -match '^rep
             [IO.File]::WriteAllLines($sp, @($head, 'pending', [DateTime]::UtcNow.ToString('o'), ''), (New-Object Text.UTF8Encoding $false))
         }
         $r = Fire -HookPath $CiHook -Cwd $isolated -EventName 'Stop' -Client $client
+        if ($r.Exit -ne 0 -or $r.Err -ne '' -or $r.Out -match '"decision"' -or -not (Get-CiNote $r.Out).Contains($baseSha)) { Write-Host ('Carryover failure output: '+$r.Out+'|stderr='+$r.Err+'|exit='+$r.Exit) }
         Check ($client + ': missing cache entry emits systemMessage with exact remote-verified ancestor') (
-            $r.Exit -eq 0 -and $r.Err -eq '' -and $r.Out -notmatch '"decision"' -and (Get-CiNote $r.Out).Contains($baseSha)) $r.Out
+            $r.Exit -eq 0 -and $r.Err -eq '' -and $r.Out -notmatch '"decision"' -and (Get-CiNote $r.Out).Contains($baseSha)) ($r.Out+'|stderr='+$r.Err+'|exit='+$r.Exit)
         $r = Fire -HookPath $CiHook -Cwd $isolated -EventName 'Stop' -Client $client
-        Check ($client + ': repeated carryover stays silent') ($r.Exit -eq 0 -and $r.Out -eq '' -and $r.Err -eq '') $r.Out
+        if ($r.Exit -ne 0 -or $r.Out -ne '' -or $r.Err -ne '') { Write-Host ('Carryover repeat failure output: '+$r.Out+'|stderr='+$r.Err+'|exit='+$r.Exit) }
+        Check ($client + ': repeated carryover stays silent') ($r.Exit -eq 0 -and $r.Out -eq '' -and $r.Err -eq '') ($r.Out+'|stderr='+$r.Err+'|exit='+$r.Exit)
         $lines = @(Get-CiStateLines $head)
         Check ($client + ': no final-SHA green fabricated') ($lines.Count -eq 6 -and $lines[3] -eq 'docs-only-carryover' -and $lines[4] -eq $baseSha)
     }
