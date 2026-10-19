@@ -107,7 +107,10 @@ are refused; newly dirty entries refuse the snapshot. A dirty first status retai
 legacy status/HEAD/status comparisons and the exact ordinal v1 fingerprint, without
 translating v2 paths. No cached identity, relaxed approval or longer deadline; each child gets
 the remaining milliseconds, including the final fractional second. Exhaustion or
-a timed-out Git process reports `gitTimedOut`, never a guessed fingerprint. Other
+a timed-out Git process reports `gitTimedOut`, never a guessed fingerprint. A final
+budget check also rejects an otherwise successful last read or identity/approval
+validation that finishes at or after four seconds; expired evidence is never published
+as available. Other
 launch failures remain unavailable. This does not guarantee acquisition under
 arbitrary host contention or authorize increasing the budget to hide a hang.
 Updating may change a dirty tree's old

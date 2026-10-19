@@ -109,7 +109,10 @@ function Get-RepositoryAccessSnapshot {
     try {$identityAfter=Get-RepositoryApprovalIdentity $repo} catch {$answer.Diagnosis='repositoryChanged';return $answer}
     if($identity.Identity-cne$identityAfter.Identity){$answer.Diagnosis='repositoryChanged';return $answer}
     if($answer.GitEnvironment.Count-gt0-and-not(Test-RepositoryRootApproval $identityAfter)){$answer.Diagnosis='approvalChanged';return $answer}
-    $answer.Fingerprint=(Get-RepositoryIdentityHash ($head+'|'+($lines1-join'|'))).Substring(0,10)
+    $fingerprint=(Get-RepositoryIdentityHash ($head+'|'+($lines1-join'|'))).Substring(0,10)
+    # Native exit and final identity checks can consume the remaining budget too.
+    if($deadline.Elapsed.TotalMilliseconds-ge4000){$answer.Diagnosis='gitTimedOut';return $answer}
+    $answer.Fingerprint=$fingerprint
     $answer.State='available';$answer.Diagnosis=''
     return $answer
 }

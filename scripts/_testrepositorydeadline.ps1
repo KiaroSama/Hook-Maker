@@ -1,6 +1,47 @@
 # Deterministic clock at the acquisition boundary; Git access/state guards stay real.
+function Invoke-RepositoryFinalDeadlineRegression {
+    param([string]$Root)
+    . (Join-Path $Root 'hooks/_hooklib.ps1')
+    $work=New-TestWorkspace -Prefix 'hookmaker-final-deadline'
+    try {
+        $repo=Join-Path $work 'bounded root';[void][IO.Directory]::CreateDirectory($repo)
+        [void][IO.Directory]::CreateDirectory((Join-Path $repo '.git'))
+        $identityReader=(Get-Command Get-RepositoryApprovalIdentity).ScriptBlock
+        $body=(Get-Command Get-RepositoryAccessSnapshot).ScriptBlock.ToString().Replace('[Diagnostics.Stopwatch]::StartNew()','$script:FinalDeadlineClock')
+        Set-Item Function:Get-RepositoryAccessSnapshot -Value ([scriptblock]::Create($body))
+        function Get-RepositoryApprovalIdentity {
+            param($Root)
+            $script:IdentityReads++
+            $identity=& $identityReader $Root
+            if($script:FinalCase-eq'identity-expired'-and$script:IdentityReads-eq2){$script:FinalDeadlineClock.Elapsed=[TimeSpan]::FromMilliseconds(4000)}
+            return $identity
+        }
+        function Invoke-QuietCommand {
+            param($FilePath,$ArgumentList,$TimeoutMilliseconds,[switch]$CaptureOutput,$Environment)
+            $script:FinalCalls++
+            $dirty=$script:FinalCase-eq'dirty-expired'
+            $final=($ArgumentList-contains'--porcelain=v2')-or($dirty-and$script:FinalCalls-eq4)
+            $elapsed=if($final){if($script:FinalCase-eq'last-query-expired'-or$dirty){4100}elseif($script:FinalCase-eq'exact-boundary'){4000}else{3999}}else{100*$script:FinalCalls}
+            $script:FinalDeadlineClock.Elapsed=[TimeSpan]::FromMilliseconds($elapsed)
+            $oid='a'*40
+            $output=if($ArgumentList-contains'--show-toplevel'){$repo+"`n"+$oid}elseif($ArgumentList-contains'HEAD'){$oid}elseif($ArgumentList-contains'--porcelain=v2'){'# branch.oid '+$oid+"`n# branch.head main"}elseif($dirty){'?? a.txt'}else{''}
+            return [pscustomobject]@{ExitCode=0;Output=$output;ErrorOutput=''}
+        }
+        foreach($case in @('within','exact-boundary','last-query-expired','identity-expired','dirty-expired')){
+            $script:FinalCase=$case;$script:FinalCalls=0;$script:IdentityReads=0
+            $script:FinalDeadlineClock=[pscustomobject]@{Elapsed=[TimeSpan]::Zero}
+            $result=Get-RepositoryAccessSnapshot $repo
+            if($case-eq'within'){
+                Check 'final acquisition within deadline retains verified identity' ($result.State-ceq'available'-and$result.Fingerprint-ceq(Get-RepositoryIdentityHash (('a'*40)+'|')).Substring(0,10))
+            }else{
+                Check ('expired final acquisition refuses '+$case) ($result.State-ceq'unavailable'-and$result.Diagnosis-ceq'gitTimedOut'-and$result.Fingerprint-ceq'')
+            }
+        }
+    }finally{if(-not(Remove-TestWorkspace $work)){$script:Fail++}}
+}
 function Invoke-RepositoryDeadlineRegression {
     param([string]$Root)
+    & {param($Source);Invoke-RepositoryFinalDeadlineRegression $Source} $Root
     . (Join-Path $Root 'hooks/_hooklib.ps1')
     $work=New-TestWorkspace -Prefix 'hookmaker-repository-deadline'
     $originalQuery=(Get-Command Invoke-QuietCommand).ScriptBlock

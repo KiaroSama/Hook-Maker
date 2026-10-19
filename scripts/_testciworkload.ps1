@@ -106,7 +106,8 @@ function Invoke-CiLargeReviewedTreeRegression {
     try{
         $writer.Write("blob`nmark :1`ndata 1`nx`ncommit refs/heads/main`ncommitter Fixture <fixture@example.invalid> 1700000000 +0000`ndata 7`nfixture`n")
         $writer.Write("M 100644 :1 .github/workflows/ci.yml`n")
-        for($i=0;$i-lt7000;$i++){$writer.Write('M 100644 :1 unrelated/'+('x'*150)+$i.ToString('D5')+".txt`n")}
+        # Bound sibling lookup cost in fast-import without shrinking the >1MiB tree.
+        for($i=0;$i-lt7000;$i++){$writer.Write('M 100644 :1 unrelated/'+([int][Math]::Floor($i/70)).ToString('D3')+'/'+('x'*150)+$i.ToString('D5')+".txt`n")}
         $writer.Write("`ndone`n")
     }finally{$writer.Dispose()}
     $out=Join-Path $Work 'large-tree.out';$err=Join-Path $Work 'large-tree.err'
