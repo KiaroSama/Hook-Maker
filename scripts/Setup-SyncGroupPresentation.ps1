@@ -211,6 +211,8 @@ $script:HookMeta = @{
     'Ai-Memory-Load'                   = @{ Order = 3;  Label = 'Ai-Context-Load';  When = 'pre';  Text = 'loads the .ai context router and file index before work starts' }
     'Ci-Status-Check'                  = @{ Order = 4;  When = 'post'; Text = 'verifies GitHub checks of the exact pushed commit' }
     'Dependabot-Check'                 = @{ Order = 5;  When = 'pre';  Text = 'reports pending Dependabot pull requests' }
+    # Both advisory manifest scanners use bounded project-only discovery; partial
+    # coverage is UNKNOWN. Their clients, events and registered timeouts stay fixed.
     'Github-Baseline-Check'            = @{ Order = 6;  When = 'pre';  Text = 'checks the .github CI/dependabot baseline and the README badge set' }
     'Git-Sync-Check'                   = @{ Order = 7;  When = 'both'; Text = 'checks remote sync, branch status and commit identity' }
     # Text kept deliberately short: with the '[pre+post-task]' tag and the
@@ -259,6 +261,8 @@ $script:HookMeta = @{
     # Utf8-Encoding-Check is also the third native pre-push chain stage
     # (Ignore -> Secrets -> Utf8 -> preserved user hook). Its position is
     # relative, not absolute - the numbers here went stale twice already.
+    # Disk/native copies share complete small-object binary evidence; BOM/text
+    # vetoes, explicit caps, stage ordering and registered timeout are unchanged.
     'Utf8-Encoding-Check'              = @{ Order = 26; When = 'both'; Text = 'strict streaming UTF-8; blocks invalid text and pushes'; Events = @('SessionStart', 'Stop', 'SubagentStop'); Timeout = 30 }
     # Directly before Cloudflare-Deploy, per an explicit user requirement.
     # SessionStart loads the user's standing rules out of Synapse;

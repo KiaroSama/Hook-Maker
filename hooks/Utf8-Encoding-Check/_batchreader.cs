@@ -9,6 +9,33 @@ using System.Runtime.InteropServices;
 
 namespace HookMakerUtf8
 {
+    // Narrow complete-object evidence, never an extension or cryptographic test.
+    public static class BinaryEvidence
+    {
+        public static bool IsOpaque(byte[] bytes, int count, bool complete)
+        {
+            if (!complete || bytes == null || count < 64 || count > 8192 || count > bytes.Length) return false;
+            if ((bytes[0] == 255 && bytes[1] == 254) || (bytes[0] == 254 && bytes[1] == 255) ||
+                (bytes[0] == 239 && bytes[1] == 187 && bytes[2] == 191)) return false;
+            int controls = 0, high = 0;
+            for (int i = 0; i < count; i++)
+            {
+                byte b = bytes[i];
+                if (b < 32 && b != 9 && b != 10 && b != 13) controls++;
+                if (b >= 128) high++;
+            }
+            if (controls < 8 || controls * 16 < count || high * 4 < count) return false;
+            // Either valid UTF-16 byte order vetoes opacity, even for actual binary.
+            foreach (Encoding encoding in new Encoding[] {
+                new UTF8Encoding(false, true), new UnicodeEncoding(false, false, true), new UnicodeEncoding(true, false, true) })
+            {
+                try { encoding.GetCharCount(bytes, 0, count); return false; }
+                catch (DecoderFallbackException) { }
+            }
+            return true;
+        }
+    }
+
     public sealed class BatchResult
     {
         public string Class = "";
@@ -192,8 +219,9 @@ namespace HookMakerUtf8
             }
         }
 
-        private string PrefixClass(int count)
+        private string PrefixClass(int count, bool complete)
         {
+            if (BinaryEvidence.IsOpaque(prefix, count, complete)) return "binary";
             if (count >= 2 && prefix[0] == 255 && prefix[1] == 254) return "utf16le";
             if (count >= 2 && prefix[0] == 254 && prefix[1] == 255) return "utf16be";
             int even = 0, odd = 0;
@@ -237,7 +265,7 @@ namespace HookMakerUtf8
             if (!long.TryParse(digits, out size)) throw new IOException("malformed-header");
             int prefixLength = (int)Math.Min(prefix.Length, size);
             Exact(prefix, prefixLength, "short-body");
-            string classification = PrefixClass(prefixLength);
+            string classification = PrefixClass(prefixLength, size == prefixLength && size <= maxBytes);
             Decoder decoder = null;
             if (classification == "utf8" || classification == "utf8bom")
             {

@@ -11,7 +11,7 @@
 # Usage:  pwsh -NoLogo -NoProfile -File .\scripts\Test-GithubBaselineCheck.ps1 [-KeepArtifacts]
 # Exit code is the number of failed assertions (0 = all passed).
 
-param([switch]$KeepArtifacts, [switch]$ManualOnly)
+param([switch]$KeepArtifacts, [switch]$ManualOnly, [switch]$ScopeOnly)
 
 Set-StrictMode -Version 2.0
 $ErrorActionPreference = 'Stop'
@@ -194,9 +194,14 @@ function Get-HeadSha {
 }
 
 try {
+    . (Join-Path $PSScriptRoot '_testadvisoryscope.ps1')
+    Invoke-AdvisoryScopeRegression
+    if (-not $ScopeOnly) {
     . (Join-Path $PSScriptRoot '_testmanualworkflow.ps1')
     Invoke-ManualWorkflowRegression -Focused:$ManualOnly
-    if (-not $ManualOnly) {
+    }
+    if (-not $ManualOnly -and -not $ScopeOnly) {
+    Invoke-AdvisoryBaselineRegression
     # =====================================================================
     Write-Host '--- GithubBaselineCheck ---' -ForegroundColor Cyan
     $plainDir = Join-Path $Work 'plain'; New-Item -ItemType Directory -Path $plainDir -Force | Out-Null

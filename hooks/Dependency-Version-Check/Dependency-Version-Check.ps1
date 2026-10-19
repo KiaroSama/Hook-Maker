@@ -104,6 +104,7 @@ if ($closing) {
 $cwd = [string](Get-Field $hookInput 'cwd')
 if ([string]::IsNullOrWhiteSpace($cwd) -or -not (Test-Path -LiteralPath $cwd -PathType Container)) { exit 0 }
 
+$cwd = Resolve-HookProjectRoot -Path $cwd
 $config = Read-HookEnv (Join-Path $PSScriptRoot '.env')
 $cooldownMinutes = 10080
 if ($config.ContainsKey('COOLDOWN_MINUTES')) { $parsedSetting = 0; if ([int]::TryParse([string]$config['COOLDOWN_MINUTES'], [ref]$parsedSetting) -and $parsedSetting -ge 0 -and $parsedSetting -le 10080) { $cooldownMinutes = $parsedSetting } }
@@ -177,23 +178,14 @@ function Add-ManifestHit {
 }
 
 $dockerfiles = New-Object System.Collections.Generic.List[string]
-$stack = New-Object System.Collections.Generic.Stack[string]
-$stack.Push($rootFull)
-$visited = 0
-while ($stack.Count -gt 0 -and $visited -lt 4000) {
-    $current = $stack.Pop()
-    $visited++
-    try {
-        foreach ($dir in [System.IO.Directory]::EnumerateDirectories($current)) {
-            $leaf = Split-Path -Leaf $dir
-            if ($excludedDirs -contains $leaf) { continue }
-            # A virtualenv is pruned by its PEP 405 marker, not its name (see _hooklib.ps1).
-            if (Test-IsMarkerPrunedDirectory $dir) { continue }
-            $item = Get-Item -LiteralPath $dir -Force -ErrorAction SilentlyContinue
-            if ($null -eq $item -or $item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) { continue }
-            $stack.Push($dir)
-        }
-        foreach ($file in [System.IO.Directory]::EnumerateFiles($current)) {
+$discovery = Get-AdvisoryProjectFiles -ProjectRoot $rootFull -ExcludedDirs $excludedDirs
+if (-not $discovery.Complete) {
+    $kind = if ($closing) { 'advisory' } else { 'context' }
+    $null = Write-HookResult -EventName $eventName -Kind $kind -Message ('DEPENDENCY VERSION CHECK: project discovery is partial (' + ($discovery.Reasons -join ', ') + '); dependency scope is UNKNOWN. No cached complete report or package-manager query was used.')
+    exit 0
+}
+foreach ($file in $discovery.Files) {
+    $current = [IO.Path]::GetDirectoryName($file)
             $name = Split-Path -Leaf $file
             switch -Regex ($name) {
                 '^package\.json$' { Add-ManifestHit 'npm' $current $file; continue }
@@ -219,9 +211,6 @@ while ($stack.Count -gt 0 -and $visited -lt 4000) {
                 '^Gemfile$' { Add-ManifestHit 'bundler' $current $file; continue }
                 '^Dockerfile.*$' { [void]$dockerfiles.Add($file); continue }
             }
-        }
-    }
-    catch { }
 }
 
 $workflowsDir = Join-Path $cwd '.github\workflows'
@@ -382,7 +371,7 @@ $incomplete = New-Object System.Collections.Generic.List[string]
 if ($manifestPaths.ContainsKey('npm') -and (Get-Command npm -ErrorAction SilentlyContinue)) {
     foreach ($dir in @($manifestPaths['npm'] | Select-Object -First 3)) {
         Push-Location -LiteralPath $dir
-        try { $raw = Invoke-QuietCommand -FilePath npm -ArgumentList @('outdated', '--json') }
+        try { $raw = Invoke-BoundedCommand -FilePath npm -ArgumentList @('outdated', '--json') }
         finally { Pop-Location }
         # npm outdated exits 1 when outdated packages exist - that is success, not a failure.
         if ($LASTEXITCODE -gt 1) { [void]$incomplete.Add('npm at ' + (Get-RelDir $dir) + ' - `npm outdated --json` failed (exit ' + $LASTEXITCODE + ').'); continue }
@@ -599,7 +588,7 @@ if ($manifestPaths.ContainsKey('go') -and (Get-Command go -ErrorAction SilentlyC
         # Invoke-QuietCommand has no -WorkingDirectory parameter - Push-Location/Pop-Location
         # around the call instead, same as the npm block above.
         Push-Location -LiteralPath $dir
-        try { $raw = Invoke-QuietCommand -FilePath go -ArgumentList @('list', '-u', '-m', 'all') }
+        try { $raw = Invoke-BoundedCommand -FilePath go -ArgumentList @('list', '-u', '-m', 'all') }
         finally { Pop-Location }
         if ($LASTEXITCODE -ne 0) { [void]$incomplete.Add('Go at ' + (Get-RelDir $dir) + ' - `go list -u -m all` failed (exit ' + $LASTEXITCODE + ').'); continue }
         $count = 0

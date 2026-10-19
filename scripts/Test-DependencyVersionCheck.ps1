@@ -162,6 +162,16 @@ try {
     $r = Fire -Cwd $empty
     Check 'a project with nothing this hook understands stays silent' ($r.Exit -eq 0 -and $r.Out -eq '') $r.Out
 
+    $archiveOnly = New-Proj 'ArchiveOnly'
+    foreach ($name in @('plans/research/package.json', 'specs/sample/Cargo.toml', '.specify/build.gradle')) {
+        $path = Join-Path $archiveOnly $name
+        [void][IO.Directory]::CreateDirectory((Split-Path -Parent $path))
+        Write-Utf8 $path '{}'
+    }
+    Reset-CallLog
+    $r = Fire -Cwd $archiveOnly
+    Check 'root planning archives are not active dependencies or package-manager targets' ($r.Exit -eq 0 -and $r.Err -eq '' -and $r.Out -eq '' -and (Get-NpmCallCount) -eq 0) $r.Out
+
     # =====================================================================
     Write-Host '--- npm: outdated patch/minor/major classification ---' -ForegroundColor Cyan
     $npmProj = New-Proj 'NpmProj'

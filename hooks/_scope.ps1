@@ -231,6 +231,59 @@ function Get-HookExcludedDirs {
     return $result.ToArray()
 }
 
+# Project-structure advice must not turn private planning archives into active
+# dependencies. This scope belongs ONLY to the two advisory manifest scanners;
+# ignoredness is never evidence for secrets, outgoing objects or CI input safety.
+function Get-AdvisoryProjectFiles {
+    param(
+        [Parameter(Mandatory = $true)][string]$ProjectRoot,
+        [string[]]$ExcludedDirs = @(),
+        [ValidateRange(1,4000)][int]$MaxDirectories = 4000,
+        [ValidateRange(1,50000)][int]$MaxEntries = 50000,
+        [ValidateRange(0,32)][int]$MaxDepth = 32,
+        [ValidateRange(0,5000)][int]$TimeoutMilliseconds = 5000
+    )
+    $clock = [Diagnostics.Stopwatch]::StartNew()
+    if (Get-Command Get-HookRemainingSeconds -ErrorAction SilentlyContinue) {
+        $TimeoutMilliseconds = [Math]::Min($TimeoutMilliseconds, (Get-HookRemainingSeconds) * 1000)
+    }
+    $files = New-Object 'System.Collections.Generic.List[string]'
+    $reasons = New-Object 'System.Collections.Generic.List[string]'
+    $stack = New-Object 'System.Collections.Generic.Stack[object]'
+    $stack.Push(@($ProjectRoot, 0))
+    $directories = 0; $entries = 0
+    while ($stack.Count -gt 0) {
+        if ($clock.ElapsedMilliseconds -ge $TimeoutMilliseconds) { [void]$reasons.Add('timeLimit'); break }
+        if ($directories -ge $MaxDirectories) { [void]$reasons.Add('directoryLimit'); break }
+        $frame = $stack.Pop(); $directory = [string]$frame[0]; $depth = [int]$frame[1]
+        $directories++
+        try {
+            if ([IO.File]::GetAttributes($directory) -band [IO.FileAttributes]::ReparsePoint) { [void]$reasons.Add('reparseRoot'); continue }
+            foreach ($entry in [IO.Directory]::EnumerateFileSystemEntries($directory)) {
+                if ($clock.ElapsedMilliseconds -ge $TimeoutMilliseconds) { [void]$reasons.Add('timeLimit'); break }
+                if ($entries -ge $MaxEntries) { [void]$reasons.Add('entryLimit'); break }
+                $entries++
+                $attributes = [IO.File]::GetAttributes($entry)
+                if ($attributes -band [IO.FileAttributes]::ReparsePoint) { continue }
+                if ($attributes -band [IO.FileAttributes]::Directory) {
+                    $name = [IO.Path]::GetFileName($entry)
+                    if ($ExcludedDirs -contains $name) { continue }
+                    # Root anchors matter: src/plans can be real production code.
+                    if ($depth -eq 0 -and $name -in @('plans', 'specs', '.specify')) { continue }
+                    if (Test-IsMarkerPrunedDirectory $entry) { continue }
+                    if ($depth -ge $MaxDepth) { [void]$reasons.Add('depthLimit'); continue }
+                    if (($directories + $stack.Count) -ge $MaxDirectories) { [void]$reasons.Add('directoryLimit'); continue }
+                    $stack.Push(@($entry, ($depth + 1)))
+                }
+                else { [void]$files.Add($entry) }
+            }
+        }
+        catch { [void]$reasons.Add('readError') }
+        if ($reasons -contains 'entryLimit' -or $reasons -contains 'timeLimit') { break }
+    }
+    return [pscustomobject]@{ Files = $files.ToArray(); Complete = ($reasons.Count -eq 0); Reasons = @($reasons | Select-Object -Unique) }
+}
+
 # ---- self-hosted runner facts (plan 012 step 6b, steering V38) --------------
 # Self-hosted runners stay MANUAL: a workflow with a job on `runs-on:
 # self-hosted` should be triggered only by workflow_dispatch. Read as DATA with

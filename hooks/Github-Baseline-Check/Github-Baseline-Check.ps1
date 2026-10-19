@@ -58,6 +58,9 @@ $cwd = [string](Get-Field $hookInput 'cwd')
 if ([string]::IsNullOrWhiteSpace($cwd) -or -not (Test-Path -LiteralPath $cwd -PathType Container)) {
     exit 0
 }
+$cwd = Resolve-HookProjectRoot -Path $cwd
+$budgetPath = Join-Path $PSScriptRoot '..\_budgetlib.ps1'
+if (Test-Path -LiteralPath $budgetPath -PathType Leaf) { . $budgetPath; Initialize-HookDeadline -RuntimeDirectory $PSScriptRoot }
 $eventName = [string](Get-Field $hookInput 'hook_event_name')
 if ([string]::IsNullOrWhiteSpace($eventName)) {
     $eventName = 'SessionStart'
@@ -162,23 +165,9 @@ $excludedDirs = @(Get-HookExcludedDirs -Extra @('logs', '.cross-project-sync', '
 $ecosystems = @{}
 $sourceCount = 0
 $rootFull = (Get-Item -LiteralPath $cwd).FullName.TrimEnd('\', '/')
-$stack = New-Object System.Collections.Generic.Stack[object]
-$stack.Push(@($rootFull, 0))
-while ($stack.Count -gt 0) {
-    $frame = $stack.Pop()
-    $currentDir = [string]$frame[0]
-    $depth = [int]$frame[1]
-    try {
-        foreach ($childDir in [System.IO.Directory]::EnumerateDirectories($currentDir)) {
-            $leaf = Split-Path -Leaf $childDir
-            # A virtualenv is pruned by its PEP 405 marker, not its name (see _hooklib.ps1).
-            if (Test-IsMarkerPrunedDirectory $childDir) { continue }
-            $item = Get-Item -LiteralPath $childDir -Force -ErrorAction SilentlyContinue
-            if ($null -ne $item -and -not ($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -and $excludedDirs -notcontains $leaf.ToLowerInvariant()) {
-                $stack.Push(@($childDir, ($depth + 1)))
-            }
-        }
-        foreach ($file in [System.IO.Directory]::EnumerateFiles($currentDir)) {
+$discovery = Get-AdvisoryProjectFiles -ProjectRoot $rootFull -ExcludedDirs $excludedDirs
+foreach ($file in $discovery.Files) {
+    $currentDir = [IO.Path]::GetDirectoryName($file)
             $fileName = Split-Path -Leaf $file
             if ($fileName -eq 'pyproject.toml') {
                 $relDir = $currentDir.Substring($rootFull.Length).TrimStart('\', '/').Replace('\', '/')
@@ -200,9 +189,6 @@ while ($stack.Count -gt 0) {
             elseif ($sourceExtensions -contains [System.IO.Path]::GetExtension($fileName).ToLowerInvariant()) {
                 $sourceCount++
             }
-        }
-    }
-    catch { }
 }
 
 # Matches a YAML trigger keyword across the shapes real workflows use: a
@@ -332,6 +318,9 @@ if ($dependabotPath -ne '') {
 
 # ---- findings ----
 $findings = @()
+if (-not $discovery.Complete) {
+    $findings += ('- Project discovery is partial (' + ($discovery.Reasons -join ', ') + '); unvisited manifests and ecosystems are UNKNOWN, not verified absent.')
+}
 $hasCode = ($ecosystems.Count -gt 0 -or $sourceCount -ge 3)
 
 # Bounded manual-root reachability is shared with Ci-Status-Check.

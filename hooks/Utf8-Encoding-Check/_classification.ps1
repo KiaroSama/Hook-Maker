@@ -33,6 +33,20 @@ function Get-Utf8Classification {
     if ($len -ge 2 -and $Bytes[0] -eq 0xFF -and $Bytes[1] -eq 0xFE) { return 'utf16le' }
     if ($len -ge 2 -and $Bytes[0] -eq 0xFE -and $Bytes[1] -eq 0xFF) { return 'utf16be' }
     $hasBom = ($len -ge 3 -and $Bytes[0] -eq 0xEF -and $Bytes[1] -eq 0xBB -and $Bytes[2] -eq 0xBF)
+    if (-not $Truncated -and -not $hasBom -and $len -ge 64 -and $len -le 8192) {
+        try {
+            $invalidUtf8 = $false
+            try { [void]([Text.UTF8Encoding]::new($false, $true)).GetCharCount($Bytes) }
+            catch [Text.DecoderFallbackException] { $invalidUtf8 = $true }
+            # Ordinary small UTF-8 text must not pay cold compiler startup.
+            if ($invalidUtf8) {
+                Initialize-Utf8BatchReader
+                if ([HookMakerUtf8.BinaryEvidence]::IsOpaque($Bytes, $len, $true)) { return 'binary' }
+            }
+        }
+        # Missing compiler/helper never grants evidence or aborts registry loading.
+        catch { }
+    }
     # NUL scan over the first bounded window. BOM-less UTF-16 text shows its
     # zeros overwhelmingly on ONE byte parity (ASCII-range chars leave the
     # other byte of each pair zero); real binary spreads zeros across both.

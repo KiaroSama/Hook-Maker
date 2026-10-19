@@ -29,7 +29,7 @@ function Read-Utf8StreamClassification {
     # and BOM precedence. The unused buffer tail must never enter that window.
     $prefix = New-Object byte[] $prefixLength
     [Array]::Copy($buffer, $prefix, $prefixLength)
-    $class = Get-Utf8Classification -Bytes $prefix -Truncated $true
+    $class = Get-Utf8Classification -Bytes $prefix -Truncated ($Length -gt $prefixLength -or $Length -gt $MaxFullBytes)
     $decoder = $null
     $chars = $null
     if ($class -eq 'oversized' -or ($Length -eq 0 -and $class -eq 'utf8')) {

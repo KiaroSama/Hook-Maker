@@ -19,7 +19,7 @@
 # Usage:  pwsh -NoLogo -NoProfile -File .\scripts\Test-Utf8EncodingCheck.ps1 [-KeepArtifacts]
 # Exit code is the number of failed assertions (0 = all passed).
 
-param([switch]$KeepArtifacts, [switch]$StreamOnly, [switch]$TransportOnly, [switch]$BatchOnly, [switch]$BatchFaultsOnly)
+param([switch]$KeepArtifacts, [switch]$StreamOnly, [switch]$TransportOnly, [switch]$BatchOnly, [switch]$BatchFaultsOnly, [switch]$OpaqueOnly, [string]$OpaqueFixtureDirectory = '')
 
 Set-StrictMode -Version 2.0
 $ErrorActionPreference = 'Stop'
@@ -55,7 +55,8 @@ $env:CLAUDE_PROJECT_DIR = ''
 . (Join-Path $PSScriptRoot '_testutf8harness.ps1')
 
 try {
-    if ($BatchFaultsOnly) {
+    if ($OpaqueOnly) { . (Join-Path $PSScriptRoot '_testutf8opaque.ps1') }
+    elseif ($BatchFaultsOnly) {
         . (Join-Path $HooksRoot 'Utf8-Encoding-Check/_classification.ps1')
         . (Join-Path $HooksRoot 'Utf8-Encoding-Check/_streamvalidation.ps1')
         . (Join-Path $PSScriptRoot '_testutf8batchfaults.ps1')
@@ -66,6 +67,10 @@ try {
     else {
     . (Join-Path $PSScriptRoot '_testutf8stream.ps1')
     if (-not $StreamOnly) {
+    . (Join-Path $PSScriptRoot '_testutf8opaque.ps1')
+    $opaqueOut = Join-Path $Work 'opaque51.out'; $opaqueErr = Join-Path $Work 'opaque51.err'
+    $opaqueHost = Start-BoundedProcess -FilePath 'powershell.exe' -ArgumentList @('-NoLogo','-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-File',(Join-Path $ScriptRoot 'Test-Utf8EncodingCheck.ps1'),'-OpaqueOnly') -RedirectStandardOutput $opaqueOut -RedirectStandardError $opaqueErr -TimeoutMs 60000
+    Check 'WindowsPowerShell5.1 executes opaque evidence and text veto controls' ($opaqueHost.ExitCode -eq 0) ([IO.File]::ReadAllText($opaqueErr,[Text.Encoding]::UTF8) + [IO.File]::ReadAllText($opaqueOut,[Text.Encoding]::UTF8))
     . (Join-Path $PSScriptRoot '_testutf8batch.ps1')
     # Byte classification + exception-registry validation.
     . (Join-Path $PSScriptRoot '_testutf8classify.ps1')
