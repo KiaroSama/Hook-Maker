@@ -59,12 +59,23 @@ function Invoke-DispositionRegression {
             $script:historicalDispositions['historical']=[pscustomobject]@{schema=1;disposition='obsolete';projectRoot=$Root;requestSha256=('b'*64);receiptSha256=(Read-RecoveryReceipt $path).Sha256;authorization=[pscustomobject]@{requestSha256=('b'*64)}}
             if(Test-HistoricalDisposition $receipt $path){throw 'Unavailable acquisition incorrectly accepted a persisted disposition.'}
             Write-Host 'Historical disposition: 13 checks passed.'
+            . (Join-Path $Root 'scripts/_testcompletionadmission.ps1')
+            Invoke-DispositionAdmissionRegression -Root $Root -Work $work
         }finally{if([IO.Directory]::Exists($work)){[IO.Directory]::Delete($work,$true)}}
     }
     Remove-Module $module -Force -ErrorAction SilentlyContinue
 }
 
 function Invoke-DispositionEntryRegression {
+    # The default suite runs on pwsh; exercise the deterministic admission seam
+    # on Framework once as well, without rebuilding the expensive entry fixtures.
+    $sourceRoot=Split-Path -Parent $PSScriptRoot
+    $frameworkOut=Join-Path $Work 'disposition-framework.out'
+    $frameworkErr=Join-Path $Work 'disposition-framework.err'
+    $command=". '"+(Join-Path $sourceRoot 'scripts/_testcompletiondisposition.ps1').Replace("'","''")+"'; Invoke-DispositionRegression '"+$sourceRoot.Replace("'","''")+"'"
+    $framework=Start-BoundedProcess -FilePath powershell.exe -ArgumentList @('-NoLogo','-NoProfile','-NonInteractive','-Command',$command) -RedirectStandardOutput $frameworkOut -RedirectStandardError $frameworkErr -TimeoutMs 30000
+    $frameworkText=[IO.File]::ReadAllText($frameworkOut,[Text.Encoding]::UTF8)
+    Check 'Framework deterministic disposition admission controls' ($framework.ExitCode-eq0-and$frameworkText-match'9 deterministic controls passed') ($frameworkText+[IO.File]::ReadAllText($frameworkErr,[Text.Encoding]::UTF8))
     $root=New-GitRepoAi 'historical disposition root'
     $copy=New-IsolatedHookCopy
     $originals=@{}

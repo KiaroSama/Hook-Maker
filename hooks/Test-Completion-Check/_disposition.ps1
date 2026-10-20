@@ -81,9 +81,11 @@ function Set-HistoricalDisposition {
     if($null-eq$prior-and$script:historicalDispositions.Count-ge50){throw 'Disposition capacity reached; no historical record was evicted.'}
     # The ledger mutex does not lock producers or attestation files. Re-read all
     # pins and project ownership immediately before atomic ledger publication.
+    # Acquisition can spend the remaining identity budget. Re-read immutable
+    # pins afterwards so changes during that wait cannot enter the ledger.
+    $after=Get-RepositoryStateEvidence $script:cwd
     $last=Read-DispositionRequest $request.Path
     $latest=@(Get-CompletionStateEntries 'result'|Where-Object{[string](Get-Field $_.Doc 'runId')-ceq$d.runId})
-    $after=Get-RepositoryStateEvidence $script:cwd
     if($latest.Count-ne1-or$latest[0].Path-cne$receipt.Path-or(Read-RecoveryReceipt $receipt.Path).Sha256-cne$receipt.Sha256-or
         $last.Request.Sha256-cne$request.Sha256-or$last.Evidence.Sha256-cne$bundle.Evidence.Sha256-or
         $after.State-cne'available'-or$after.RepositoryStateFingerprint-cne$access.RepositoryStateFingerprint){throw 'Disposition evidence changed during validation.'}
