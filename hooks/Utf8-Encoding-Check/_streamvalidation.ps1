@@ -25,8 +25,8 @@ function Read-Utf8StreamClassification {
         if ($n -le 0) { throw 'UTF-8 stream ended in heuristic window' }
         $prefixRead += $n
     }
-    # Preserve the historical heuristic exactly, including both byte parities
-    # and BOM precedence. The unused buffer tail must never enter that window.
+    # Share BOM precedence and the density-qualified NUL heuristic with disk
+    # and Git readers. The unused buffer tail must never enter that window.
     $prefix = New-Object byte[] $prefixLength
     [Array]::Copy($buffer, $prefix, $prefixLength)
     $class = Get-Utf8Classification -Bytes $prefix -Truncated ($Length -gt $prefixLength -or $Length -gt $MaxFullBytes)

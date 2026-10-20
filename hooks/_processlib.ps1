@@ -91,6 +91,14 @@ function Invoke-QuietCommand {
     $commandTimer = [System.Diagnostics.Stopwatch]::StartNew()
     try {
         $timeoutMs = if ($PSBoundParameters.ContainsKey('TimeoutMilliseconds')) { $TimeoutMilliseconds } else { [int]([Math]::Max(1, $TimeoutSeconds) * 1000) }
+        # An adopted hook deadline also covers Git discovery, not only gh calls.
+        # Unadopted callers keep their requested per-command timeout unchanged.
+        $deadline = Get-Variable -Name HookDeadlineUtc -Scope Script -ErrorAction SilentlyContinue
+        if ($null -ne $deadline -and $deadline.Value -is [DateTime]) {
+            $leftMs = [Math]::Floor(($deadline.Value - [DateTime]::UtcNow).TotalMilliseconds)
+            if ($leftMs -le 0) { $global:LASTEXITCODE = 124; return $null }
+            $timeoutMs = [int][Math]::Min($timeoutMs, $leftMs)
+        }
         # Resolve the command the way `&` did before this function was made
         # bounded. Process.Start needs a real executable IMAGE: it cannot run
         # a .ps1 or .cmd, while `&` resolved both through PATH + PATHEXT. A
@@ -160,6 +168,7 @@ function Invoke-QuietCommand {
         $info.UseShellExecute = $false
         $info.CreateNoWindow = $true
         foreach ($key in $Environment.Keys) { $info.EnvironmentVariables[$key] = [string]$Environment[$key] }
+        if ($commandTimer.ElapsedMilliseconds -ge $timeoutMs) { $global:LASTEXITCODE = 124; return $null }
         $process = [System.Diagnostics.Process]::Start($info)
         if ($null -eq $process) { $global:LASTEXITCODE = 1; return $null }
         $ownedProcessCreated = $process.StartTime.ToUniversalTime()

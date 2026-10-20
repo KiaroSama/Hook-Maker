@@ -66,9 +66,9 @@ try {
     Check 'past the deadline no process starts: empty output, exit 124, instant' ($out.Count -eq 0 -and $code -eq 124 -and $instant.Elapsed.TotalMilliseconds -lt 300) ('exit=' + $code + ' ms=' + [int]$instant.Elapsed.TotalMilliseconds)
     $script:HookDeadlineUtc = [DateTime]::UtcNow.AddSeconds(2)
     $watch = [System.Diagnostics.Stopwatch]::StartNew()
-    $null = Invoke-BoundedCommand -FilePath $pwshPath -ArgumentList @('-NoLogo', '-NoProfile', '-Command', 'Start-Sleep -Seconds 30') -TimeoutSeconds 20
+    $null = Invoke-QuietCommand -FilePath $pwshPath -ArgumentList @('-NoLogo', '-NoProfile', '-Command', 'Start-Sleep -Seconds 30') -TimeoutSeconds 20
     $watch.Stop()
-    Check 'a slow child is cut at the deadline, not at its own 20 s' ($watch.Elapsed.TotalSeconds -lt 10 -and $LASTEXITCODE -eq 124) ('{0:N1} s, exit {1}' -f $watch.Elapsed.TotalSeconds, $LASTEXITCODE)
+    Check 'a direct shared-runner child is cut at the hook deadline, not at its own 20 s' ($watch.Elapsed.TotalSeconds -lt 10 -and $LASTEXITCODE -eq 124) ('{0:N1} s, exit {1}' -f $watch.Elapsed.TotalSeconds, $LASTEXITCODE)
 }
 finally {
     if (-not $KeepArtifacts) { if (-not (Remove-TestWorkspace -Path @($Work))) { $script:Fail++ } }

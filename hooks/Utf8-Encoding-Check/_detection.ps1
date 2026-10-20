@@ -41,16 +41,34 @@ function Test-PathExcluded {
     return $false
 }
 
-# git quotes a path containing specials as "..." with backslash escapes; the
-# common cases (spaces stay unquoted, quotes/backslashes escaped) are handled.
-# An octal-escaped non-ASCII path is left as-is - it can only fail an
-# exception match, which is the strict (safe) direction.
+# Git C-quotes UTF-8 BYTES, not Unicode codepoints. Decode octal bytes together
+# before path normalization; a malformed escape must never alias an exception.
 function ConvertFrom-GitQuotedPath {
     param([string]$Path)
-    if ($Path.Length -ge 2 -and $Path.StartsWith('"') -and $Path.EndsWith('"')) {
-        return $Path.Substring(1, $Path.Length - 2).Replace('\"', '"').Replace('\\', '\')
+    if (-not $Path.StartsWith('"')) { return $Path }
+    if ($Path.Length -lt 2 -or -not $Path.EndsWith('"')) { throw 'Malformed Git quoted path' }
+    $strict=[Text.UTF8Encoding]::new($false,$true)
+    $bytes=New-Object 'Collections.Generic.List[byte]'
+    $escapes=@{a=7;b=8;f=12;n=10;r=13;t=9;v=11;'\'=92;'"'=34}
+    for($i=1;$i-lt$Path.Length-1;$i++){
+        $c=$Path[$i]
+        if($c-eq'"'){throw 'Malformed Git quoted path'}
+        if($c-ne'\'){
+            $start=$i
+            while($i+1-lt$Path.Length-1-and$Path[$i+1]-ne'\'-and$Path[$i+1]-ne'"'){$i++}
+            $bytes.AddRange($strict.GetBytes($Path.Substring($start,$i-$start+1)))
+            continue
+        }
+        $i++
+        if($i-ge$Path.Length-1){throw 'Truncated Git path escape'}
+        $key=[string]$Path[$i]
+        if($escapes.ContainsKey($key)-and$key-ceq$key.ToLowerInvariant()){[void]$bytes.Add([byte]$escapes[$key]);continue}
+        if($i+2-ge$Path.Length-1-or$Path.Substring($i,3)-cnotmatch'^[0-3][0-7]{2}$'){throw 'Invalid Git path octal escape'}
+        [void]$bytes.Add([Convert]::ToByte($Path.Substring($i,3),8));$i+=2
     }
-    return $Path
+    $decoded=$strict.GetString($bytes.ToArray())
+    if($decoded.IndexOf([char]0)-ge0){throw 'NUL is not a Git path'}
+    return $decoded
 }
 
 # ---- bounded project walk (baseline + non-git delta) ------------------------

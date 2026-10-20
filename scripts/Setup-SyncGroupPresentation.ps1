@@ -268,8 +268,9 @@ $script:HookMeta = @{
     # Utf8-Encoding-Check is also the third native pre-push chain stage
     # (Ignore -> Secrets -> Utf8 -> preserved user hook). Its position is
     # relative, not absolute - the numbers here went stale twice already.
-    # Disk/native copies share complete small-object binary evidence; BOM/text
-    # vetoes, explicit caps, stage ordering and registered timeout are unchanged.
+    # Disk/native copies share complete binary evidence and density-qualified
+    # sparse-NUL decoding; Git octal paths keep exact exception identity.
+    # BOM/text vetoes, caps, stage ordering and registered timeout are unchanged.
     'Utf8-Encoding-Check'              = @{ Order = 26; When = 'both'; Text = 'strict streaming UTF-8; blocks invalid text and pushes'; Events = @('SessionStart', 'Stop', 'SubagentStop'); Timeout = 30 }
     # Directly before Cloudflare-Deploy, per an explicit user requirement.
     # SessionStart loads the user's standing rules out of Synapse;

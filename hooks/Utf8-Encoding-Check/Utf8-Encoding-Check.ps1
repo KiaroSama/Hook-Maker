@@ -329,7 +329,7 @@ if ($GitPrePush) {
             if ($meta.Count -lt 5) { continue }
             $newSha = [string]$meta[3]
             if ($newSha -eq $allZero -or -not $sent.Contains($newSha)) { continue }
-            $blobPath = (ConvertFrom-GitQuotedPath ($lineText.Substring($tabIndex + 1))).Replace('\', '/')
+            try { $blobPath = (ConvertFrom-GitQuotedPath ($lineText.Substring($tabIndex + 1))).Replace('\', '/') } catch { [void]$coverageErrors.Add('outgoing Git path could not be decoded exactly'); continue }
             if (-not $seenBlobs.Add($newSha + '|' + $blobPath)) { continue }
             [void]$blobs.Add([pscustomobject]@{ Sha = $newSha; Path = $blobPath })
         }
@@ -505,7 +505,7 @@ if ($inGitRepo) {
                 $arrowIndex = $relative.IndexOf(' -> ')
                 if ($arrowIndex -ge 0) { $relative = $relative.Substring($arrowIndex + 4) }
             }
-            $relative = (ConvertFrom-GitQuotedPath $relative.Trim()).Replace('\', '/')
+            try { $relative = (ConvertFrom-GitQuotedPath $relative.Trim()).Replace('\', '/') } catch { [void]$unknownNotes.Add('changed Git path could not be decoded exactly'); continue }
             if ($relative -eq '' -or (Test-PathExcluded $relative)) { continue }
             $indexState = $code.Substring(0, 1)
             $staged = ($indexState -ne ' ' -and $indexState -ne '?' -and $indexState -ne '!')
@@ -522,7 +522,7 @@ if ($inGitRepo) {
             }
             else {
                 foreach ($rawLine in $diffLines) {
-                    $relative = (ConvertFrom-GitQuotedPath ([string]$rawLine).Trim()).Replace('\', '/')
+                    try { $relative = (ConvertFrom-GitQuotedPath ([string]$rawLine).Trim()).Replace('\', '/') } catch { [void]$unknownNotes.Add('committed Git path could not be decoded exactly'); continue }
                     if ($relative -eq '' -or (Test-PathExcluded $relative)) { continue }
                     if (-not $candidateMap.ContainsKey($relative)) { $candidateMap[$relative] = $false }
                 }

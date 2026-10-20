@@ -35,6 +35,8 @@ $script:TestPreviewLength = 200
 . (Join-Path $PSScriptRoot '_testcistatusharness.ps1')
 
 $Work = New-TestWorkspace -Prefix 'hookmaker-cistatustest'
+. (Join-Path $PSScriptRoot '_testcideadline.ps1')
+Invoke-CiInstalledDeadlineRegression (Split-Path -Parent $PSScriptRoot) $Work
 $OriginalLocalAppData = $env:LOCALAPPDATA
 $env:LOCALAPPDATA = Join-Path $Work 'localappdata'
 New-Item -ItemType Directory -Path $env:LOCALAPPDATA -Force | Out-Null

@@ -25,6 +25,33 @@
     $r = FireGitPrePush -Cwd $ppValid -StdinText '' -HookPath $hcPp.Script -LocalAppData $hcPp.LocalAppData
     Check 'empty pre-push stdin (nothing pushed) passes' ($r.Exit -eq 0) $r.Err
 
+    # One repository and hook copy cover both hosts and the exact-path negative.
+    $ppSparse = New-PushableRepo 'PpSparseQuoted'
+    Write-Utf8 (Join-Path $ppSparse 'base.txt') "seed`n"
+    Add-Commit $ppSparse 'baseline'
+    Push-Repo $ppSparse
+    $sparsePath = 'web/'+[char]0x6587+[char]0x4ef6+[char]0x6f0f+[char]0x6d1e+'.md'
+    $sparseBytes = Get-Utf8SparseFixture
+    Write-Bytes (Join-Path $ppSparse $sparsePath) $sparseBytes
+    Add-Commit $ppSparse 'sparse NUL original shape'
+    foreach ($sparseHost in @('powershell','pwsh')) {
+        $r = FireGitPrePush -Cwd $ppSparse -StdinText (Get-RefUpdateLine $ppSparse) -HookPath $hcPp.Script -LocalAppData $hcPp.LocalAppData -Exe $sparseHost
+        Check ('sparse NUL quoted UTF8 outgoing passes on '+$sparseHost) ($r.Exit -eq 0 -and $r.Out -eq '' -and $r.Err -eq '') $r.Err
+    }
+    $diskRead = Get-Utf8FileClassification (Join-Path $ppSparse $sparsePath) 64MB ([DateTime]::UtcNow.AddSeconds(5))
+    Check 'disk sparse NUL original shape is strictly UTF8' (-not $diskRead.Failed -and $diskRead.Class -ceq 'utf8')
+    $sparseBytes[$sparseBytes.Length-1]=0xc3
+    Write-Bytes (Join-Path $ppSparse $sparsePath) $sparseBytes
+    Add-Commit $ppSparse 'invalid final sequence control'
+    foreach ($sparseHost in @('powershell','pwsh')) {
+        $r = FireGitPrePush -Cwd $ppSparse -StdinText (Get-RefUpdateLine $ppSparse) -HookPath $hcPp.Script -LocalAppData $hcPp.LocalAppData -Exe $sparseHost
+        Check ('sparse invalid tail diagnostic keeps exact UTF8 path on '+$sparseHost) ($r.Exit -eq 1 -and $r.Err.Contains($sparsePath) -and $r.Err.Contains('invalid UTF-8')) $r.Err
+    }
+    Write-Utf8 (Join-Path $ppSparse '.utf8-encoding-exceptions.json') (Get-ExceptionJson -Path $sparsePath -Encoding 'windows-1252' -Reason 'Test-only legacy transport requires original bytes unchanged')
+    Add-Commit $ppSparse 'exact path exception control'
+    $r = FireGitPrePush -Cwd $ppSparse -StdinText (Get-RefUpdateLine $ppSparse) -HookPath $hcPp.Script -LocalAppData $hcPp.LocalAppData
+    Check 'quoted UTF8 pathname matches its exact documented exception' ($r.Exit -eq 0 -and $r.Err -eq '') $r.Err
+
     # =====================================================================
     Write-Host '--- pre-push: new-branch outgoing invalid text blocks; twin + stub prove it ---' -ForegroundColor Cyan
     $ppNew = New-PushableRepo 'PpNewBranch'

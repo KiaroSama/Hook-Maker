@@ -58,6 +58,7 @@ if (-not $StreamOnly) {
     $tipBlob = ((& git -C $repo rev-parse 'HEAD:catalog.json') | Out-String).Trim()
     $read = Get-GitBlobBytes -Cwd $repo -BlobSha $tipBlob -MaxFullBytes 64MB -DeadlineUtc ([DateTime]::UtcNow.AddSeconds(-1))
     Check 'staged reader honors exhausted caller scan deadline without a fresh20s budget' $read.Failed
+    $script:HookDeadlineUtc = $null
     # Commit-delta needs a baseline; staged invalid content is independently
     # visible even with a clean working tree and no baseline.
     Write-Bytes (Join-Path $repo 'staged.json') ([System.Text.Encoding]::UTF8.GetBytes($catalogText) + [byte[]]@(0xC3))

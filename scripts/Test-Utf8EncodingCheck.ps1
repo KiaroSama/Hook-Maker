@@ -63,8 +63,14 @@ try {
         . (Join-Path $PSScriptRoot '_testutf8batchprocess.ps1')
     }
     elseif ($BatchOnly) { . (Join-Path $PSScriptRoot '_testutf8batch.ps1') }
-    elseif ($TransportOnly) { . (Join-Path $PSScriptRoot '_testutf8transport.ps1') }
+    elseif ($TransportOnly) {
+        . (Join-Path $PSScriptRoot '_testutf8sparse.ps1')
+        Invoke-Utf8SparseRegression $HooksRoot
+        . (Join-Path $PSScriptRoot '_testutf8transport.ps1')
+    }
     else {
+    . (Join-Path $PSScriptRoot '_testutf8sparse.ps1')
+    Invoke-Utf8SparseRegression $HooksRoot
     . (Join-Path $PSScriptRoot '_testutf8stream.ps1')
     if (-not $StreamOnly) {
     . (Join-Path $PSScriptRoot '_testutf8opaque.ps1')
@@ -72,6 +78,7 @@ try {
     $opaqueHost = Start-BoundedProcess -FilePath 'powershell.exe' -ArgumentList @('-NoLogo','-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-File',(Join-Path $ScriptRoot 'Test-Utf8EncodingCheck.ps1'),'-OpaqueOnly') -RedirectStandardOutput $opaqueOut -RedirectStandardError $opaqueErr -TimeoutMs 60000
     Check 'WindowsPowerShell5.1 executes opaque evidence and text veto controls' ($opaqueHost.ExitCode -eq 0) ([IO.File]::ReadAllText($opaqueErr,[Text.Encoding]::UTF8) + [IO.File]::ReadAllText($opaqueOut,[Text.Encoding]::UTF8))
     . (Join-Path $PSScriptRoot '_testutf8batch.ps1')
+    $script:HookDeadlineUtc = $null
     # Byte classification + exception-registry validation.
     . (Join-Path $PSScriptRoot '_testutf8classify.ps1')
 

@@ -111,10 +111,12 @@ param(
 Set-StrictMode -Version 2.0
 $ErrorActionPreference = 'Stop'
 
-. (Join-Path $PSScriptRoot '..\_hooklib.ps1'); . (Join-Path $PSScriptRoot '..\_scope.ps1')
-# Optional sibling and shared deadline library: a runtime installed before they existed keeps today's behaviour.
-$budgetLibPath = Join-Path $PSScriptRoot '..\_budgetlib.ps1'
+# Installed libraries are private siblings. Start the deadline before shared
+# initialization so discovery/compiler startup cannot receive a fresh budget.
+$budgetLibPath = Join-Path $PSScriptRoot '_budgetlib.ps1'
+if (-not (Test-Path -LiteralPath $budgetLibPath -PathType Leaf)) { $budgetLibPath = Join-Path $PSScriptRoot '..\_budgetlib.ps1' }
 if (Test-Path -LiteralPath $budgetLibPath -PathType Leaf) { . $budgetLibPath; Initialize-HookDeadline -RuntimeDirectory $PSScriptRoot }
+. (Join-Path $PSScriptRoot '..\_hooklib.ps1'); . (Join-Path $PSScriptRoot '..\_scope.ps1')
 $pathsFilterPath = Join-Path $PSScriptRoot '_pathsfilter.ps1'; if (Test-Path -LiteralPath $pathsFilterPath -PathType Leaf) { . $pathsFilterPath }
 $ghBudgetPath = Join-Path $PSScriptRoot '_ghbudget.ps1'
 foreach ($siblingName in @('_runneralive.ps1', '_docsonly.ps1')) { $siblingPath = Join-Path $PSScriptRoot $siblingName; if (Test-Path -LiteralPath $siblingPath -PathType Leaf) { . $siblingPath } }

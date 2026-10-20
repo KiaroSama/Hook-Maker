@@ -56,7 +56,9 @@ function Get-Utf8Classification {
     for ($i = 0; $i -lt $window; $i++) {
         if ($Bytes[$i] -eq 0) { if ($i % 2 -eq 0) { $evenZeros++ } else { $oddZeros++ } }
     }
-    if (($evenZeros + $oddZeros) -gt 0) {
+    # Sparse literal NULs occur in valid UTF-8 references. Parity is meaningful
+    # only with substantial NUL density; otherwise require full strict decoding.
+    if (($evenZeros + $oddZeros) -gt 0 -and ($evenZeros + $oddZeros) * 16 -ge $window) {
         if ($oddZeros -ge 2 -and $oddZeros -ge (3 * $evenZeros)) { return 'utf16le' }
         if ($evenZeros -ge 2 -and $evenZeros -ge (3 * $oddZeros)) { return 'utf16be' }
         return 'binary'

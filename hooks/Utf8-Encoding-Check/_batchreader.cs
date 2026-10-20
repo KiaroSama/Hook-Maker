@@ -227,7 +227,9 @@ namespace HookMakerUtf8
             int even = 0, odd = 0;
             for (int i = 0; i < count; i++)
                 if (prefix[i] == 0) { if ((i & 1) == 0) even++; else odd++; }
-            if (even + odd > 0)
+            // Sparse NULs are not UTF-16 evidence; the complete UTF-8 decoder
+            // below must still validate every byte, including the final flush.
+            if (even + odd > 0 && (even + odd) * 16 >= count)
             {
                 if (odd >= 2 && odd >= 3 * even) return "utf16le";
                 if (even >= 2 && even >= 3 * odd) return "utf16be";
