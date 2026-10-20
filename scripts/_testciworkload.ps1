@@ -202,6 +202,7 @@ function Invoke-CiReviewedSourceRegression {
 }
 function Invoke-CiWorkloadRegression {
     param([string]$HooksRoot)
+    & {param($Root,$Helper);. $Helper;Invoke-CiReviewedSkipRegression $Root} $HooksRoot (Join-Path $PSScriptRoot '_testcireviewedskips.ps1')
     & { param($Root); Invoke-CiReviewedTreeRegression $Root } $HooksRoot
     & { param($Root); Invoke-CiReviewedSourceRegression $Root } $HooksRoot
     & { param($Root); Invoke-CiLiteralMatrixRegression $Root } $HooksRoot

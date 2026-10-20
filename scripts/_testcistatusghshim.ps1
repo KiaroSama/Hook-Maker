@@ -16,6 +16,10 @@ if($a.Count-ge2-and$a[0]-eq'pr'-and$a[1]-eq'list'){
 if($a.Count-lt2-or$a[0]-ne'api'){exit 1}
 $endpoint=[string]$a[1];$page=1
 if($endpoint-match'[?&]page=(\d+)'){$page=[int]$Matches[1]}
+# Explicit raw fixture responses exercise reviewed jobs through the real Stop
+# entry; production never expands expectations from these observed responses.
+$rawName=if($endpoint-match'/actions/runs\?'){'runs'}elseif($endpoint-match'/attempts/[0-9]+/jobs'){'jobs'}elseif($endpoint-match'/commits/[^/]+/check-runs'){'checks'}elseif($endpoint-match'/commits/[^/]+/status'){'statuses'}else{''}
+if($rawName-ne''){$rawFile=Join-Path $mockDir ('raw-'+$rawName+'.json');if(Test-Path -LiteralPath $rawFile){Emit-File $rawFile}}
 if($endpoint-match'^repos/([^/]+/[^/]+)/actions/runs\?head_sha=([a-f0-9]+)'){
     $repo=$Matches[1];$sha=$Matches[2]
     [IO.File]::WriteAllText((Join-Path $mockDir 'received_sha.txt'),$sha,[Text.Encoding]::UTF8)

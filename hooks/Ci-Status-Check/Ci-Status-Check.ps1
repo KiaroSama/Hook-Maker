@@ -532,7 +532,7 @@ if ($null -eq $snapshot) {
     }
     if ($null -eq $snapshot) {
         if (-not (Test-GhAuthenticated)) { exit 0 }
-        Write-Block -Outcome 'pending' -Reason ('CI CHECK: complete exact-SHA workload metadata could not be verified for ' + $sha7 + '. API failure, malformed data or partial coverage is unknown, not green; no runs are registered yet with usable complete evidence.')
+        Write-Block -Outcome 'unproven' -Reason ('CI CHECK: complete exact-SHA workload metadata could not be verified for ' + $sha7 + '. API failure, malformed data or partial coverage is unknown, not green; no runs are registered yet with usable complete evidence.')
     }
 }
 
@@ -615,7 +615,7 @@ if ($snapshot.FailedRuns.Count -gt 0 -or $snapshot.InfraRuns.Count -gt 0) {
 }
 
 if (-not $snapshot.AllSuccess) {
-    Write-Block -Outcome 'pending' -Reason ('CI CHECK: required workload, attempt jobs/steps or complete exact-source checks are not proven for ' + $sha7 + '. Successful auxiliary runs or empty failure lists are not CI success. Verify the committed workload contract and exact attempt; do not seed state or dispatch duplicate CI.')
+    Write-Block -Outcome 'unproven' -Reason ('CI CHECK: required workload, attempt jobs/steps or complete exact-source checks are not proven for ' + $sha7 + '. Successful auxiliary runs or empty failure lists are not CI success. Verify the committed workload contract and exact attempt; do not seed state or dispatch duplicate CI.')
 }
 # Every required workload was positively verified for this exact source.
 Save-State -Outcome 'verified' -Evidence 'ci-green'    # every run for this exact commit succeeded

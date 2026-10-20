@@ -55,8 +55,8 @@ function Save-State {
     }
 }
 
-# Existing cooldown semantics, with one recovery opportunity when pending has
-# overwritten the green cache. Remote final-SHA evidence still precedes carryover.
+# Failed detail retains its cooldown. Pending always revalidates because source
+# review and remote attempts can change without a new SHA.
 function Invoke-CiStateGate {
     $stateSha = ''; $stateOutcome = ''; $stateTime = [DateTime]::MinValue
     if (Test-Path -LiteralPath $statePath -PathType Leaf) {
@@ -74,21 +74,16 @@ function Invoke-CiStateGate {
     # Fresh bounded evaluation below is required even for a versioned receipt.
     if ($stateOutcome -eq 'verified') { return }
     if ($stateOutcome -eq 'pending') {
-        $message = @(Invoke-QuietCommand -FilePath git -ArgumentList @('-C', $cwd, 'log', '-1', '--format=%B', $sha)) -join "`n"
-        if ($LASTEXITCODE -eq 0 -and (Test-CommitHasSkipMarker $message)) {
-            $script:prefetchedSnapshot = Get-CiRunSnapshot -RepoSlug $repoSlug -Sha $sha -ProjectRoot $cwd -Branch $branch
-            # Use the newly read final-SHA snapshot, rather than repeating a
-            # cached pending complaint. Unknown lookup keeps the old cooldown.
-            if ($null -ne $script:prefetchedSnapshot) { return }
-        }
+        # A source-bound review or remote attempt can change without changing
+        # HEAD. A cached label cannot outrank fresh exact-source evidence.
+        $script:prefetchedSnapshot = Get-CiRunSnapshot -RepoSlug $repoSlug -Sha $sha -ProjectRoot $cwd -Branch $branch
+        if ($null -ne $script:prefetchedSnapshot) { return }
+        $emit = Write-StopBlockResult -HookInput $hookInput -HookName 'Ci-Status-Check' -EventName $eventName -Reason ('CI CHECK: fresh exact-source evidence could not be verified for ' + $sha7 + '. The cached pending label does not prove that jobs are running. Verify access and complete workload metadata; this is unknown, not green.')
+        exit $emit.ExitCode
     }
     $ageMinutes = ([DateTime]::UtcNow - $stateTime).TotalMinutes
     if ($stateOutcome -eq 'failed' -and $ageMinutes -lt $failureCooldown) {
         $emit = Write-StopBlockResult -HookInput $hookInput -HookName 'Ci-Status-Check' -EventName $eventName -Reason ('CI CHECK: pushed commit ' + $sha7 + ' still has failed checks. Detailed failure guidance was recently reported; completion remains blocked until a replacement commit is pushed or the failure is reported as an external/manual blocker.')
-        exit $emit.ExitCode
-    }
-    if ($stateOutcome -eq 'pending' -and $ageMinutes -lt $pendingCooldown) {
-        $emit = Write-StopBlockResult -HookInput $hookInput -HookName 'Ci-Status-Check' -EventName $eventName -Reason ('CI CHECK: pushed commit ' + $sha7 + ' is still awaiting terminal checks. Detailed status was recently reported; completion remains blocked.')
         exit $emit.ExitCode
     }
 }

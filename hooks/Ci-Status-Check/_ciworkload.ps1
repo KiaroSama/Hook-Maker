@@ -105,6 +105,7 @@ function Get-CiRunSnapshot {
     if($project.Count-gt0){$expected=Get-CiWorkloadExpectation -ProjectRoot $ProjectRoot -RepoSlug $RepoSlug -Sha $Sha -Branch $Branch}
     $proven=$null-ne$expected;$proofRuns=New-Object Collections.Generic.List[object]
     $requiredCheckIds=New-Object 'Collections.Generic.HashSet[string]' ([StringComparer]::Ordinal)
+    $skippedCheckIds=New-Object 'Collections.Generic.HashSet[string]' ([StringComparer]::Ordinal)
     $oldest=[DateTimeOffset]::MaxValue
     if($proven){
         if((Get-Variable CiApiScopeKey -Scope Script -ErrorAction SilentlyContinue)-and$script:CiApiScopeKey-ne''){
@@ -138,7 +139,10 @@ function Get-CiRunSnapshot {
                 })
                 if($required.Count-ne1-or-not$jobNames.Add([string]$job.name)-or[string]$job.id-cnotmatch'^[1-9][0-9]*$'-or-not$jobIds.Add([string]$job.id)-or
                     [string]$job.run_id-cne[string]$run.id-or[string]$job.run_attempt-cne[string]$run.run_attempt-or
-                    $job.head_sha-cne$Sha-or$job.status-cne'completed'-or$job.conclusion-cne'success'){$proven=$false;continue}
+                    $job.head_sha-cne$Sha-or$job.status-cne'completed'){$proven=$false;continue}
+                $skip=(Get-Field $required[0] 'disposition')-ceq'skipped'
+                if(($skip-and($job.conclusion-cne'skipped'-or$job.steps-isnot[Array]-or$job.steps.Count-ne0))-or
+                    (-not$skip-and$job.conclusion-cne'success')){$proven=$false;continue}
                 if($required[0].PSObject.Properties['MainSteps']){
                     if(-not$legKeys.Add(($required[0].Labels-join'|'))-or-not(Test-CiLiteralJobSteps $required[0] $job)){$proven=$false;continue}
                 }
@@ -149,6 +153,12 @@ function Get-CiRunSnapshot {
                     -not$requiredCheckIds.Add($checkUrl.Substring($checkPrefix.Length))){$proven=$false;continue}
                 $end=ConvertTo-CiUtcTime (Get-Field $job 'completed_at')
                 if($null-eq$end-or$end-gt[DateTimeOffset]::UtcNow){$proven=$false;continue}
+                if($skip){
+                    # Only this exact attempt's validated job can authorize its
+                    # correlated skipped check. It supplies no execution freshness.
+                    [void]$skippedCheckIds.Add($checkUrl.Substring($checkPrefix.Length))
+                    continue
+                }
                 # A later unrelated job/cleanup cannot refresh an earlier validation.
                 if($end-lt$runEnd){$runEnd=$end}
                 $steps=@(Get-Field $job 'steps')
@@ -184,7 +194,8 @@ function Get-CiRunSnapshot {
         $checkParts=New-Object Collections.Generic.List[string]
         foreach($check in $cr){
             if([string](Get-Field $check 'id')-cnotmatch'^[1-9][0-9]*$'-or-not$checkIds.Add([string](Get-Field $check 'id'))-or(Get-Field $check 'head_sha')-cne$Sha){$checksComplete=$false;$commitChecksSafe=$false}
-            if((Get-Field $check 'status')-cne'completed'-or(Get-Field $check 'conclusion')-cne'success'){$commitChecksSafe=$false}
+            $expectedConclusion=if($skippedCheckIds.Contains([string](Get-Field $check 'id'))){'skipped'}else{'success'}
+            if((Get-Field $check 'status')-cne'completed'-or(Get-Field $check 'conclusion')-cne$expectedConclusion){$commitChecksSafe=$false}
             $checkParts.Add('check|'+(Get-Field $check 'id')+'|'+(Get-Field $check 'status')+'|'+(Get-Field $check 'conclusion'))
         }
         foreach($requiredId in $requiredCheckIds){if(-not$checkIds.Contains($requiredId)){$proven=$false}}

@@ -97,10 +97,24 @@ function Get-CiReviewedExpectation {
             $jobs=@($workflow.jobs)
             if($jobs.Count-eq0-or$jobs.Count-gt100){return $null}
             $names=New-Object 'Collections.Generic.HashSet[string]' ([StringComparer]::Ordinal)
+            $requiredCount=0
             foreach($job in $jobs){
-                if([string]::IsNullOrWhiteSpace([string]$job.name)-or-not$names.Add([string]$job.name)-or@($job.steps).Count-eq0-or@($job.steps).Count-gt100){return $null}
-                foreach($step in @($job.steps)){if($step-isnot[string]-or[string]::IsNullOrWhiteSpace($step)){return $null}}
+                if($job.name-isnot[string]-or[string]::IsNullOrWhiteSpace($job.name)-or-not$names.Add($job.name)){return $null}
+                # Inapplicability is reviewed source input, not an observed-success
+                # allowlist. Missing/null steps must not masquerade as an empty array.
+                $disposition=$job.PSObject.Properties['disposition']
+                if($null-ne$disposition){
+                    if($disposition.Value-isnot[string]-or$disposition.Value-cne'skipped'-or$job.rationale-isnot[string]-or
+                        [string]::IsNullOrWhiteSpace($job.rationale)-or$job.rationale.Length-gt4096-or
+                        $job.steps-isnot[Array]-or$job.steps.Count-ne0){return $null}
+                    continue
+                }
+                if(@($job.steps).Count-eq0-or@($job.steps).Count-gt100){return $null}
+                $stepNames=New-Object 'Collections.Generic.HashSet[string]' ([StringComparer]::Ordinal)
+                foreach($step in @($job.steps)){if($step-isnot[string]-or[string]::IsNullOrWhiteSpace($step)-or-not$stepNames.Add($step)){return $null}}
+                $requiredCount++
             }
+            if($requiredCount-eq0){return $null}
         }
         [string[]]$ordered=$sourceParts.ToArray();[Array]::Sort($ordered,[StringComparer]::Ordinal)
         return [pscustomobject]@{SourceFingerprint=Get-RepositoryIdentityHash (($ordered-join"`n")+'|'+$raw);Workflows=$workflows}

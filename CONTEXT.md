@@ -11,6 +11,17 @@ Text whose entire encoding has been verified. A valid prefix is not validated te
 
 An explicit resource bound beyond which the encoding remains unknown, not an encoding exception.
 
+## Reviewed inapplicable job
+
+A job whose source and execution context have been explicitly reviewed as outside
+this validation's scope. Its observed skipped outcome is accounted for, not
+successful execution, release certification or evidence that required work ran.
+
+## Unproven workload
+
+Validation whose complete applicable work or evidence cannot be established.
+Unproven does not mean queued or running.
+
 ## CI input evidence report
 
 A diagnostic inventory of immutable repository inputs and unresolved execution

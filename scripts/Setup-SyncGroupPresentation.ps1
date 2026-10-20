@@ -211,6 +211,7 @@ $script:HookMeta = @{
     'Ai-Memory-Load'                   = @{ Order = 3;  Label = 'Ai-Context-Load';  When = 'pre';  Text = 'loads the .ai context router and file index before work starts' }
     # Exact workload: closed OS matrices/ordered steps or reviewed root tree OID;
     # private CiStatus input review survives updates, never substitutes for CI.
+    # Reviewed inapplicable skips bind exact attempt/check IDs, not execution.
     'Ci-Status-Check'                  = @{ Order = 4;  When = 'post'; Text = 'verifies GitHub checks of the exact pushed commit' }
     'Dependabot-Check'                 = @{ Order = 5;  When = 'pre';  Text = 'reports pending Dependabot pull requests' }
     # Both advisory manifest scanners use bounded project-only discovery; partial
