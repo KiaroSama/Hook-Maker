@@ -2,7 +2,7 @@
   "schema": 1,
   "repository": "KiaroSama/Hook-Maker",
   "rationale": "Reviewed own manual root and six local reusable workflows, all static matrices and authored validation steps; no observed success is stored. Exact tree binding invalidates this review after source changes.",
-  "treeFingerprint": "491a1c5db516c00d8d2adaeb53ff73987e4541479401be65be391a4b9d1f08b4",
+  "treeFingerprint": "495fc389173ab10db5103033985085e6ce500a1ebdd6fa107c47f6b23167434d",
   "sources": [
     {
       "path": ".github/workflows/ci.yml",

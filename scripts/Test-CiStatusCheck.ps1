@@ -233,7 +233,9 @@ try {
     $r = Fire -HookPath $CiHook -Cwd $ci2 -EventName 'Stop'
     Check 'pending checks -> block with wait guidance' ($r.Out -match '"decision":"block"' -and $r.Out -match 'still in progress' -and $r.Out -match 'gh run list --commit')
     $r = Fire -HookPath $CiHook -Cwd $ci2 -EventName 'Stop'
-    Check 'pending checks remain a completion block during cooldown' ($r.Out -match '"decision":"block"') $r.Out
+    Check 'unchanged pending evidence does not recursively reblock the same session' ($r.Out-eq''-and$r.Exit-eq0) $r.Out
+    $r = Fire -HookPath $CiHook -Cwd $ci2 -EventName 'Stop' -Extra @{ session_id = 'pending-fresh-session' }
+    Check 'fresh session still blocks genuinely running checks during pending cooldown' ($r.Out -match '"decision":"block"' -and $r.Out -match 'still in progress') $r.Out
 
     # failure -> block with fix guidance; repeated -> cooldown silence
     $ci3 = New-GitRepo 'ci3'

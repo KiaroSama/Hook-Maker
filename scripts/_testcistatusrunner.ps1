@@ -113,7 +113,9 @@ if ($args.Count -ge 2 -and $args[0] -eq 'api' -and [string]$args[1] -match '^rep
     Check 'k: the note is said once' ([string]::IsNullOrWhiteSpace($r.Out)) $r.Out
     $chainSha = Add-PushedCommit -Repo $dr -Files @{ 'CHANGELOG.md' = 'entry' } -Message 'docs: changelog [ci skip]'
     $r = Fire -HookPath $CiHook -Cwd $dr -EventName 'Stop'
-    Check 'k: a second docs-only commit carries the same green parent' ((Get-CiNote $r.Out) -match ('green on ' + $parent.Substring(0, 7))) $r.Out
+    $chainMatches=(Get-CiNote $r.Out) -match ('green on ' + $parent.Substring(0, 7))
+    if(-not$chainMatches){Write-Host ('[DIAGNOSTIC] second-docs Stop output='+$r.Out+' stderr='+$r.Err)}
+    Check 'k: a second docs-only commit carries the same green parent' $chainMatches $r.Out
 
     foreach ($case in @(
             @{ Name = 'ci-docs-code'; Files = @{ 'README.md' = 'd'; 'tool.ps1' = 'x' }; Message = 'docs and code [skip ci]'; Why = 'a code file' },
