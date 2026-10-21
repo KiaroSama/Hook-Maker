@@ -116,6 +116,7 @@ function Test-NoWorkflowForChangedPaths {
     $dir = Join-Path $ProjectRoot '.github\workflows'
     $files = @(Get-ChildItem -LiteralPath $dir -File -ErrorAction SilentlyContinue | Where-Object { $_.Extension -in @('.yml', '.yaml') })
     if ($files.Count -eq 0 -or $files.Count -gt 50) { return $false }    # past the bound, a skipped file could run: never guess
+    $hasPushWorkflow = $false
     foreach ($file in $files) {
         if ($file.Length -gt 262144) { return $false }
         $text = ''
@@ -123,7 +124,8 @@ function Test-NoWorkflowForChangedPaths {
         $triggers = @(Get-WorkflowTopTriggers $text)
         if ($triggers.Count -eq 0) { return $false }    # triggers not read (flow mapping, odd layout): never guess
         if (@($triggers | Where-Object { $_ -cnotin @('push', 'workflow_dispatch', 'workflow_call') }).Count -gt 0) { return $false }
-        if ($triggers -cnotcontains 'push') { continue }    # manual-only workflow: never runs on a push anyway
+        if ($triggers -cnotcontains 'push') { continue }    # manual roots still require an explicit dispatch
+        $hasPushWorkflow = $true
         $filter = Get-WorkflowPushFilter $text
         if ($null -eq $filter -or -not $filter.Certain) { return $false }
         $patterns = @($filter.Branches) + @($filter.BranchesIgnore) + @($filter.Paths) + @($filter.PathsIgnore)
@@ -136,7 +138,7 @@ function Test-NoWorkflowForChangedPaths {
             if (@($filter.PathsIgnore).Count -gt 0 -and -not (Test-FilterMatch $changed $filter.PathsIgnore)) { return $false }
         }
     }
-    return $true
+    return $hasPushWorkflow
 }
 
 # The files the last push changed: the remote-tracking ref before the push (its

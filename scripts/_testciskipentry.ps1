@@ -87,6 +87,7 @@ try{
     [IO.File]::WriteAllText((Join-Path $MockDir 'raw-runs.json'),'{"total_count":0,"workflow_runs":[]}', $utf8)
     $noRuns=Fire -HookPath $reviewHook -Cwd $reviewRepo -EventName Stop -Extra @{session_id='missing-review-no-runs'}
     Check 'unsupported zero-run source asks for review before dispatch' ($noRuns.Out-match'Set-CiWorkloadReview'-and$noRuns.Out-notmatch'final CI not yet dispatched') $noRuns.Out
+    if($noRuns.Out-notmatch'Set-CiWorkloadReview'){Write-Output ('Zero-run review fixture: '+$noRuns.Out)}
     [IO.File]::WriteAllText((Join-Path $MockDir 'raw-runs.json'),(@{total_count=1;workflow_runs=@($run)}|ConvertTo-Json -Depth 10 -Compress),$utf8)
 }finally{[IO.File]::Move(($reviewPath+'.fixture'),$reviewPath)}
 [IO.File]::WriteAllText($reviewPath,$reviewJson,$utf8)
