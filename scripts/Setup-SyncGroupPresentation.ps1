@@ -212,6 +212,7 @@ $script:HookMeta = @{
     # Exact workload: closed OS matrices/ordered steps or reviewed root tree OID;
     # private CiStatus input review survives updates, never substitutes for CI.
     # Reviewed inapplicable skips bind exact attempt/check IDs, not execution.
+    # Selected input enrollment binds source/context and survives managed updates.
     'Ci-Status-Check'                  = @{ Order = 4;  When = 'post'; Text = 'verifies GitHub checks of the exact pushed commit' }
     'Dependabot-Check'                 = @{ Order = 5;  When = 'pre';  Text = 'reports pending Dependabot pull requests' }
     # Both advisory manifest scanners use bounded project-only discovery; partial

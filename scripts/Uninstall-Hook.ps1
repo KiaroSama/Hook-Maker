@@ -359,7 +359,7 @@ function Remove-EmptyManagedRoot {
 # rename - reversible) BEFORE the settings file is rewritten. The set-aside is
 # only permanently deleted after the settings commit succeeds; if it fails,
 # the set-aside is moved back so the client keeps working exactly as before.
-function Remove-ClientComponent {
+function Remove-ClientComponentCore {
     param([Parameter(Mandatory = $true)][string]$ClientName)
 
     $subrecord = Get-ClientSubrecord -Record $record -Client $ClientName
@@ -481,6 +481,7 @@ function Remove-ClientComponent {
 # the settings/runtime helpers defined just above, so this line must stay after
 # them and before the first call below.
 . (Join-Path $PSScriptRoot '_uninstallnative.ps1')
+. (Join-Path $PSScriptRoot '_uninstallcireview.ps1')
 
 # ---- Test-Temp-Cleanup's per-project coordination record -------------------
 # Cloudflare-Deploy treats %LOCALAPPDATA%\HookMaker\state\TestTempCleanup-result-<key>.json

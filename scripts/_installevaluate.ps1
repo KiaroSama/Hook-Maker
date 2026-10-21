@@ -52,7 +52,16 @@ function Get-RecordUpdateState {
         $status = 'skip'
         $detail = 'could not evaluate this record (manual repair): ' + $_.Exception.Message
     }
-    return [pscustomobject]@{ Status = $status; Detail = $detail; Components = $components }
+    $reviews=@()
+    if($status-cne'skip'-and$null-ne$Record-and$Record.PSObject.Properties['friendlyName']-and$Record.friendlyName-ceq'Ci-Status-Check'){
+        try{
+            . (Join-Path $PSScriptRoot '_cireviewstatus.ps1')
+            $reviews=@(Get-CiReviewEnrollmentStatus $Record $ToolRoot)
+            $reviewIssues=@($reviews|Where-Object{$_.Status-ceq'review-required'})
+            if($reviewIssues.Count){$detail=($detail+'; input review required for '+(($reviewIssues|ForEach-Object{$_.Client})-join',')+'; use Set-CiWorkloadReview.ps1, not repeated payload updates').TrimStart(';',' ')}
+        }catch{$reviews=@([pscustomobject]@{Client='unknown';Status='review-required';Detail='Review status unavailable; preserve configuration.'})}
+    }
+    return [pscustomobject]@{ Status = $status; Detail = $detail; Components = $components; Reviews=$reviews }
 }
 
 # Resource-aware and deliberately conservative. The work is I/O-heavy rather
@@ -100,7 +109,7 @@ function Get-UpdateEvaluationPlan {
     if ($records.Count -lt $MinimumForParallel -or $workers -lt 2) {
         foreach ($record in $records) {
             $state = Get-RecordUpdateState -Record $record -ToolRoot $ToolRoot
-            [void]$plan.Add([pscustomobject]@{ Record = $record; Status = $state.Status; Detail = $state.Detail; Components = $state.Components })
+            [void]$plan.Add([pscustomobject]@{ Record = $record; Status = $state.Status; Detail = $state.Detail; Components = $state.Components; Reviews = $state.Reviews })
         }
         return $plan
     }
@@ -126,7 +135,7 @@ function Get-UpdateEvaluationPlan {
         $out = New-Object System.Collections.Generic.List[object]
         foreach ($index in @($Indexes)) {
             $state = Get-RecordUpdateState -Record $Records[$index] -ToolRoot $ToolRoot
-            [void]$out.Add([pscustomobject]@{ Index = $index; Status = $state.Status; Detail = $state.Detail; Components = $state.Components })
+            [void]$out.Add([pscustomobject]@{ Index = $index; Status = $state.Status; Detail = $state.Detail; Components = $state.Components; Reviews = $state.Reviews })
         }
         return $out.ToArray()
     }
@@ -177,11 +186,11 @@ function Get-UpdateEvaluationPlan {
     for ($i = 0; $i -lt $records.Count; $i++) {
         if ($states.ContainsKey($i)) {
             $entry = $states[$i]
-            [void]$plan.Add([pscustomobject]@{ Record = $records[$i]; Status = [string]$entry.Status; Detail = [string]$entry.Detail; Components = @($entry.Components) })
+            [void]$plan.Add([pscustomobject]@{ Record = $records[$i]; Status = [string]$entry.Status; Detail = [string]$entry.Detail; Components = @($entry.Components); Reviews = @($entry.Reviews) })
         }
         else {
             $state = Get-RecordUpdateState -Record $records[$i] -ToolRoot $ToolRoot
-            [void]$plan.Add([pscustomobject]@{ Record = $records[$i]; Status = $state.Status; Detail = $state.Detail; Components = $state.Components })
+            [void]$plan.Add([pscustomobject]@{ Record = $records[$i]; Status = $state.Status; Detail = $state.Detail; Components = $state.Components; Reviews = $state.Reviews })
         }
     }
     return $plan

@@ -21,22 +21,38 @@ function Test-CiReviewedTreeBinding {
 }
 function Get-CiReviewedExpectation {
     param([string]$ProjectRoot,[string]$RepoSlug,[string]$Sha,[string]$Branch)
+    $script:CiReviewPresent=$false
     $path='.hookmaker-ci-policy.json'
     $runtimeReview=Join-Path $PSScriptRoot '_ci-policy.json'
-    if([IO.File]::Exists($runtimeReview)){
-        $file=Get-Item -LiteralPath $runtimeReview -Force
-        if(($file.Attributes-band[IO.FileAttributes]::ReparsePoint)-or$file.Length-gt65536){return $null}
-        $raw=[IO.File]::ReadAllText($runtimeReview,(New-Object Text.UTF8Encoding($false,$true)))
-    }else{
-        $raw=@(Invoke-DocsGit -Arguments @('-C',$ProjectRoot,'show',($Sha+':'+$path)))-join"`n"
-        if($LASTEXITCODE-ne0){return $null}
-    }
-    if($raw.Length-gt65536){return $null}
+    try {
+        $runtime=Test-Path -LiteralPath $runtimeReview
+        if($runtime){
+            $script:CiReviewPresent=$true
+            $file=Get-Item -LiteralPath $runtimeReview -Force
+            if($file.PSIsContainer-or($file.Attributes-band[IO.FileAttributes]::ReparsePoint)-or$file.Length-gt65536){return $null}
+            $raw=[IO.File]::ReadAllText($runtimeReview,(New-Object Text.UTF8Encoding($false,$true)))
+        }else{
+            $raw=@(Invoke-DocsGit -Arguments @('-C',$ProjectRoot,'show',($Sha+':'+$path)))-join"`n"
+            if($LASTEXITCODE-ne0){return $null}
+            $script:CiReviewPresent=$true
+        }
+        return ConvertFrom-CiReviewedPolicy -Raw $raw -ProjectRoot $ProjectRoot -RepoSlug $RepoSlug -Sha $Sha -Branch $Branch -RuntimeReview:$runtime
+    }catch{return $null}
+}
+function ConvertFrom-CiReviewedPolicy {
+    param([string]$Raw,[string]$ProjectRoot,[string]$RepoSlug,[string]$Sha,[string]$Branch,[switch]$RuntimeReview)
+    if($Raw.Length-gt65536){return $null}
     try {
         $policy=$raw|ConvertFrom-Json -ErrorAction Stop
         if($policy.schema-notin@(1,2,3)-or$policy.repository-ine$RepoSlug-or$policy.PSObject.Properties['results']-or
             [string]::IsNullOrWhiteSpace([string]$policy.rationale)){return $null}
-        if($policy.schema-eq3-and(-not[IO.File]::Exists($runtimeReview)-or-not(Test-CiReviewedTreeBinding $ProjectRoot $Sha $policy))){return $null}
+        if($policy.schema-eq3-and(-not$RuntimeReview-or-not(Test-CiReviewedTreeBinding $ProjectRoot $Sha $policy))){return $null}
+        if($policy.PSObject.Properties['enrollment']){
+            if(-not$RuntimeReview){return $null}
+            if(-not(Get-Command Test-CiEnrollmentBinding -ErrorAction SilentlyContinue)){. (Join-Path $PSScriptRoot '_cienrollment.ps1')}
+            if(-not(Test-CiEnrollmentBinding $policy.enrollment $ProjectRoot $RepoSlug $Sha $Branch)-or
+                $policy.enrollment.reviewFingerprint-cne(Get-CiReviewedInputFingerprint $policy)){return $null}
+        }
         $closure=@($policy.sources)
         if($closure.Count-eq0-or$closure.Count-gt100){return $null}
         $seen=New-Object 'Collections.Generic.HashSet[string]' ([StringComparer]::Ordinal)

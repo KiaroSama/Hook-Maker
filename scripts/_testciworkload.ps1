@@ -3,6 +3,10 @@ param([switch]$RunRegression)
 function Invoke-CiWorkloadHostRegression {
     param([string]$HooksRoot,[string]$Work)
     Invoke-CiWorkloadRegression $HooksRoot
+    $management=Join-Path $PSScriptRoot '_testcireviewmanagement.ps1'
+    $managementOut=Join-Path $Work 'review-management51.out';$managementErr=Join-Path $Work 'review-management51.err'
+    $managed=Start-BoundedProcess powershell.exe @('-NoLogo','-NoProfile','-NonInteractive','-File',$management,'-RunRegression') -TimeoutMs 45000 -RedirectStandardOutput $managementOut -RedirectStandardError $managementErr
+    Check 'Framework executes actual review publication and context controls' ($managed.ExitCode-eq0) ([IO.File]::ReadAllText($managementOut,[Text.Encoding]::UTF8)+[IO.File]::ReadAllText($managementErr,[Text.Encoding]::UTF8))
     & {param($Root,$Temp);Invoke-CiLargeReviewedTreeRegression $Root $Temp} $HooksRoot $Work
     $output=Join-Path $Work 'workload51.out';$errorFile=Join-Path $Work 'workload51.err'
     $helper=Join-Path $PSScriptRoot '_testciworkload.ps1'
@@ -202,6 +206,7 @@ function Invoke-CiReviewedSourceRegression {
 }
 function Invoke-CiWorkloadRegression {
     param([string]$HooksRoot)
+    & {param($Root,$Helper);. $Helper;Invoke-CiEnrollmentRegression $Root} $HooksRoot (Join-Path $PSScriptRoot '_testcienrollment.ps1')
     & {param($Root,$Helper);. $Helper;Invoke-CiReviewedSkipRegression $Root} $HooksRoot (Join-Path $PSScriptRoot '_testcireviewedskips.ps1')
     & { param($Root); Invoke-CiReviewedTreeRegression $Root } $HooksRoot
     & { param($Root); Invoke-CiReviewedSourceRegression $Root } $HooksRoot
@@ -220,6 +225,7 @@ function Invoke-CiWorkloadRegression {
         param($Arguments)
         $global:LASTEXITCODE=0
         if($Arguments-contains'ls-tree'){return '.github/workflows/ci.yml'}
+        if($Arguments[-1]-like'*:.hookmaker-ci-policy.json'){$global:LASTEXITCODE=128;return @()}
         return $script:WorkflowSource
     }
     foreach($variant in @('literal','quoted-name','quoted-condition','hidden-mapping')){

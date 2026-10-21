@@ -244,6 +244,8 @@ try {
     finally {
         Remove-FixtureHook -Name $verdictFixtureName
     }
+    & {param($Root,$Temp);. (Join-Path $Root 'scripts/_testcireviewmanagement.ps1');Invoke-CiReviewManagementRegression $Root $Temp} $ToolRoot $Work
+    & {param($Root,$Temp);. (Join-Path $Root 'scripts/_testcireviewcli.ps1');Invoke-CiReviewCliRegression $Root $Temp} $ToolRoot $Work
     # A runtime input review is private configuration, not immutable source.
     $reviewRoot=Join-Path $Work 'review-preservation'
     $reviewDir=Join-Path $reviewRoot 'Ci-Status-Check'

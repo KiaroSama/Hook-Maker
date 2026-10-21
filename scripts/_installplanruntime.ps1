@@ -19,6 +19,11 @@
 # Any failure before step 4 leaves the previous runtime untouched; a failure
 # during step 4 restores it. Abandoned staging/backup directories from an
 # interrupted run are cleaned on the next install.
+function New-ManagedRuntimeMutex {
+    param([string]$Directory)
+    $key=Get-RepositoryIdentityHash ((Normalize-Path $Directory).ToLowerInvariant())
+    return (New-Object Threading.Mutex($false,('Local\HookMaker-Runtime-'+$key)))
+}
 function Install-PlannedRuntime {
     param(
         [Parameter(Mandatory = $true)]$Plan,
@@ -29,6 +34,10 @@ function Install-PlannedRuntime {
         New-Item -ItemType Directory -Path $RuntimeRoot -Force | Out-Null
     }
     $destination = Join-Path $RuntimeRoot $FriendlyName
+    $runtimeMutex=New-ManagedRuntimeMutex $destination
+    $runtimeHeld=$false
+    try{$runtimeHeld=$runtimeMutex.WaitOne(5000)}catch [Threading.AbandonedMutexException]{$runtimeHeld=$true}
+    if(-not$runtimeHeld){$runtimeMutex.Dispose();throw 'Selected runtime is busy; installation refused before staging.'}
     $token = [guid]::NewGuid().ToString('N').Substring(0, 8)
     $staging = Join-Path $RuntimeRoot ('.hookmaker-staging-' + $FriendlyName + '-' + $token)
     $setAside = Join-Path $RuntimeRoot ('.hookmaker-previous-' + $FriendlyName + '-' + $token)
@@ -38,6 +47,8 @@ function Install-PlannedRuntime {
     # the same hook has its own freshly-created staging directory that matches
     # the same name pattern, and deleting it out from under that process would
     # turn a survivable race into a failed install.
+    $swapped = $false
+    try {
     $abandonedBefore = [DateTime]::UtcNow.AddMinutes(-30)
     foreach ($prefix in @(('.hookmaker-staging-' + $FriendlyName + '-'), ('.hookmaker-previous-' + $FriendlyName + '-'))) {
         foreach ($candidate in @(Get-ChildItem -LiteralPath $RuntimeRoot -Directory -Force -ErrorAction SilentlyContinue)) {
@@ -47,8 +58,6 @@ function Install-PlannedRuntime {
         }
     }
 
-    $swapped = $false
-    try {
         New-Item -ItemType Directory -Path $staging -Force | Out-Null
         $stagingHookDir = Join-Path $staging $FriendlyName
         New-Item -ItemType Directory -Path $stagingHookDir -Force | Out-Null
@@ -145,6 +154,7 @@ function Install-PlannedRuntime {
         if ($swapped -and (Test-Path -LiteralPath $setAside)) {
             Remove-Item -LiteralPath $setAside -Recurse -Force -ErrorAction SilentlyContinue
         }
+        if($runtimeHeld){$runtimeMutex.ReleaseMutex()};$runtimeMutex.Dispose()
     }
 }
 

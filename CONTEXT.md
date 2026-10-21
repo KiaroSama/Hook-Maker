@@ -17,6 +17,12 @@ A job whose source and execution context have been explicitly reviewed as outsid
 this validation's scope. Its observed skipped outcome is accounted for, not
 successful execution, release certification or evidence that required work ran.
 
+## Workload review enrollment
+
+Explicit association of a source-reviewed validation expectation with one installed
+client and exact repository/source/branch context. It is input to verification,
+never evidence that CI executed or succeeded. Changed context requires renewed review.
+
 ## Unproven workload
 
 Validation whose complete applicable work or evidence cannot be established.

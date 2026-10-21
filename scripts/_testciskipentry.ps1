@@ -79,6 +79,16 @@ $unknown=Fire -HookPath $reviewHook -Cwd $reviewRepo -EventName Stop -Extra @{se
 Check 'public Stop malformed review remains unproven not running' ($unknown.Out-match'not proven'-and$unknown.Out-notmatch'awaiting terminal') $unknown.Out
 $lines=[IO.File]::ReadAllLines($fixtureState,[Text.Encoding]::UTF8)
 Check 'unknown workload uses distinct unproven state' ($lines[1]-ceq'unproven')
+Check 'malformed review prints selected enrollment recovery' ($unknown.Out-match'Set-CiWorkloadReview'-and$unknown.Out-match'_ci-policy.json')
+[IO.File]::Move($reviewPath,($reviewPath+'.fixture'))
+try{
+    $missing=Fire -HookPath $reviewHook -Cwd $reviewRepo -EventName Stop -Extra @{session_id='missing-reviewed-input'}
+    Check 'missing matrix review stays non-green with actionable enrollment' ($missing.Out-match'Set-CiWorkloadReview'-and$missing.Out-notmatch'awaiting terminal|not finished yet') $missing.Out
+    [IO.File]::WriteAllText((Join-Path $MockDir 'raw-runs.json'),'{"total_count":0,"workflow_runs":[]}', $utf8)
+    $noRuns=Fire -HookPath $reviewHook -Cwd $reviewRepo -EventName Stop -Extra @{session_id='missing-review-no-runs'}
+    Check 'unsupported zero-run source asks for review before dispatch' ($noRuns.Out-match'Set-CiWorkloadReview'-and$noRuns.Out-notmatch'final CI not yet dispatched') $noRuns.Out
+    [IO.File]::WriteAllText((Join-Path $MockDir 'raw-runs.json'),(@{total_count=1;workflow_runs=@($run)}|ConvertTo-Json -Depth 10 -Compress),$utf8)
+}finally{[IO.File]::Move(($reviewPath+'.fixture'),$reviewPath)}
 [IO.File]::WriteAllText($reviewPath,$reviewJson,$utf8)
 $jobRows[0].steps[0].conclusion='skipped'
 [IO.File]::WriteAllText((Join-Path $MockDir 'raw-jobs.json'),(@{total_count=5;jobs=$jobRows}|ConvertTo-Json -Depth 15 -Compress),$utf8)

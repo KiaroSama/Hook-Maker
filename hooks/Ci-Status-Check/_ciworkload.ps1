@@ -18,8 +18,15 @@ function Read-CiWorkloadApi {
 
 function Get-CiWorkloadExpectation {
     param([string]$ProjectRoot,[string]$RepoSlug,[string]$Sha,[string]$Branch)
+    $script:CiWorkloadReason = ''
+    $script:CiReviewPresent = $false
     $reviewed = Get-CiReviewedExpectation -ProjectRoot $ProjectRoot -RepoSlug $RepoSlug -Sha $Sha -Branch $Branch
     if ($null -ne $reviewed) { return $reviewed }
+    $script:CiWorkloadReason = 'Workload not proven: missing, stale or unsupported source review. Review the committed workflow and full input context, then use Hook Maker scripts/Set-CiWorkloadReview.ps1 for the selected record/client. Runtime input: ' + (Join-Path $PSScriptRoot '_ci-policy.json') + '. Do not dispatch duplicate CI or seed success state.'
+    # A present invalid review must not silently downgrade to literal recognition.
+    if (Test-Path -LiteralPath (Join-Path $PSScriptRoot '_ci-policy.json')) { return $null }
+    $present=Get-Variable CiReviewPresent -Scope Script -ErrorAction SilentlyContinue
+    if ($null-ne$present-and$present.Value) { return $null }
     # Literal unconditional workflows only. Unsupported expansion needs reviewed
     # source-bound expectations, never a guess based on observed successful jobs.
     $paths=@(Invoke-DocsGit -Arguments @('-C',$ProjectRoot,'ls-tree','-r','--name-only',$Sha,'--','.github/workflows'))
@@ -58,6 +65,7 @@ function Get-CiWorkloadExpectation {
         $sources.Add($path+'|'+$text)
     }
     if($workflows.Count-eq0){return $null}
+    $script:CiWorkloadReason=''
     return [pscustomobject]@{SourceFingerprint=Get-RepositoryIdentityHash ($sources.ToArray()-join"`n");Workflows=$workflows.ToArray()}
 }
 
@@ -102,7 +110,14 @@ function Get-CiRunSnapshot {
         elseif($run.conclusion-cne'success'){$infra.Add($entry+' ['+$run.conclusion+']')}
     }
     $expected=$null
-    if($project.Count-gt0){$expected=Get-CiWorkloadExpectation -ProjectRoot $ProjectRoot -RepoSlug $RepoSlug -Sha $Sha -Branch $Branch}
+    $workloadReason=''
+    if($project.Count-gt0){
+        $expected=Get-CiWorkloadExpectation -ProjectRoot $ProjectRoot -RepoSlug $RepoSlug -Sha $Sha -Branch $Branch
+        if($null-eq$expected){
+            $reason=Get-Variable CiWorkloadReason -Scope Script -ErrorAction SilentlyContinue
+            if($null-ne$reason){$workloadReason=[string]$reason.Value}
+        }
+    }
     $proven=$null-ne$expected;$proofRuns=New-Object Collections.Generic.List[object]
     $requiredCheckIds=New-Object 'Collections.Generic.HashSet[string]' ([StringComparer]::Ordinal)
     $skippedCheckIds=New-Object 'Collections.Generic.HashSet[string]' ([StringComparer]::Ordinal)
@@ -217,6 +232,6 @@ function Get-CiRunSnapshot {
     $fingerprint=Get-RepositoryIdentityHash (($orderedParts-join"`n")+'|'+$checkFingerprint)
     $provenance=$null
     if($allSuccess){$provenance=[pscustomobject]@{schema=1;repository=$RepoSlug;sha=$Sha;outcome='ci-green';observedUtc=[DateTimeOffset]::UtcNow.ToString('o');completedUtc=$oldest.ToString('o');workloadFingerprint=$fingerprint;sourceFingerprint=$expected.SourceFingerprint;runs=$proofRuns.ToArray()}}
-    return [pscustomobject]@{Runs=$project;AuxiliaryRuns=$auxiliary;PendingRuns=$pending.ToArray();FailedRuns=$failed.ToArray();InfraRuns=$infra.ToArray();BillingRuns=$billing;Fingerprint=$fingerprint;AllSuccess=$allSuccess;Provenance=$provenance;ChecksComplete=$checksComplete;CommitChecksSafe=$commitChecksSafe}
+    return [pscustomobject]@{Runs=$project;AuxiliaryRuns=$auxiliary;PendingRuns=$pending.ToArray();FailedRuns=$failed.ToArray();InfraRuns=$infra.ToArray();BillingRuns=$billing;Fingerprint=$fingerprint;AllSuccess=$allSuccess;Provenance=$provenance;ChecksComplete=$checksComplete;CommitChecksSafe=$commitChecksSafe;WorkloadReason=$workloadReason}
     } catch { return $null }
 }
