@@ -36,15 +36,15 @@ exit 0
             $settings=(Get-ClientSubrecord $record $client).settingsPath
             $settingsHash=Get-FileSha256 $settings
             $acqOut=Join-Path $Work ('installed-acquisition-'+$client+'.out');$acqErr=Join-Path $Work ('installed-acquisition-'+$client+'.err')
-            $acquired=Start-BoundedProcess $exe @('-NoLogo','-NoProfile','-NonInteractive','-File',$acquisition,'-Library',(Join-Path $runtime '_hooklib.ps1'),'-Root',$repo,'-Sha',$sha) -TimeoutMs 15000 -RedirectStandardOutput $acqOut -RedirectStandardError $acqErr
+            $acquired=Start-BoundedProcess -FilePath $exe -ArgumentList @('-NoLogo','-NoProfile','-NonInteractive','-File',$acquisition,'-Library',(Join-Path $runtime '_hooklib.ps1'),'-Root',$repo,'-Sha',$sha) -TimeoutMs 15000 -RedirectStandardOutput $acqOut -RedirectStandardError $acqErr
             Check ('actual installed shared acquisition retains 4000ms contract '+$client) ($acquired.ExitCode-eq0) ([IO.File]::ReadAllText($acqOut,[Text.Encoding]::UTF8)+[IO.File]::ReadAllText($acqErr,[Text.Encoding]::UTF8))
             $arguments=@('-NoLogo','-NoProfile','-NonInteractive','-File',(Join-Path $ToolRoot 'scripts/Set-CiWorkloadReview.ps1'),'-RecordId',$record.id,'-Client',$client,'-PolicyPath',$policyPath,'-Repository','owner/repo','-Commit',$sha,'-Branch','main','-ExpectedPolicyHash','absent')
             $out=Join-Path $Work ('review-cli-'+$client+'.out');$err=Join-Path $Work ('review-cli-'+$client+'.err')
-            $preview=Start-BoundedProcess $exe $arguments -TimeoutMs 60000 -RedirectStandardOutput $out -RedirectStandardError $err
+            $preview=Start-BoundedProcess -FilePath $exe -ArgumentList $arguments -TimeoutMs 60000 -RedirectStandardOutput $out -RedirectStandardError $err
             Check ('actual review CLI preview no policy '+$client) ($preview.ExitCode-eq0-and-not(Test-Path -LiteralPath (Join-Path $runtime '_ci-policy.json'))) ([IO.File]::ReadAllText($out)+[IO.File]::ReadAllText($err))
-            $applied=Start-BoundedProcess $exe ($arguments+@('-Apply','-ReviewConfirmed')) -TimeoutMs 60000 -RedirectStandardOutput $out -RedirectStandardError $err
+            $applied=Start-BoundedProcess -FilePath $exe -ArgumentList ($arguments+@('-Apply','-ReviewConfirmed')) -TimeoutMs 60000 -RedirectStandardOutput $out -RedirectStandardError $err
             Check ('actual selected review CLI enrollment '+$client) ($applied.ExitCode-eq0-and(Test-Path -LiteralPath (Join-Path $runtime '_ci-policy.json'))) ([IO.File]::ReadAllText($out)+[IO.File]::ReadAllText($err))
-            $refused=Start-BoundedProcess $exe ($arguments+@('-Apply','-ReviewConfirmed')) -TimeoutMs 60000 -RedirectStandardOutput $out -RedirectStandardError $err
+            $refused=Start-BoundedProcess -FilePath $exe -ArgumentList ($arguments+@('-Apply','-ReviewConfirmed')) -TimeoutMs 60000 -RedirectStandardOutput $out -RedirectStandardError $err
             Check ('actual stale preimage refuses without registration changes '+$client) ($refused.ExitCode-ne0-and(Get-FileSha256 $settings)-ceq$settingsHash)
         }
         . (Join-Path $ToolRoot 'scripts/_installevaluate.ps1')
@@ -57,7 +57,7 @@ exit 0
         }finally{$null=Invoke-QuietCommand git @('-C',$repo,'config','branch.main.merge','refs/heads/main')}
         $before=@(Get-ChildItem (Join-Path $env:HOOKMAKER_STATE_DIR 'ci-review-recovery') -File -Recurse|ForEach-Object{Get-FileSha256 $_.FullName})
         $out=Join-Path $Work 'review-uninstall.out';$err=Join-Path $Work 'review-uninstall.err'
-        $removed=Start-BoundedProcess pwsh @('-NoProfile','-File',(Join-Path $ToolRoot 'scripts/Uninstall-Hook.ps1'),'-RecordId',$record.id,'-ToolRoot',$ToolRoot) -TimeoutMs 60000 -RedirectStandardOutput $out -RedirectStandardError $err
+        $removed=Start-BoundedProcess -FilePath pwsh -ArgumentList @('-NoProfile','-File',(Join-Path $ToolRoot 'scripts/Uninstall-Hook.ps1'),'-RecordId',$record.id,'-ToolRoot',$ToolRoot) -TimeoutMs 60000 -RedirectStandardOutput $out -RedirectStandardError $err
         $after=@(Get-ChildItem (Join-Path $env:HOOKMAKER_STATE_DIR 'ci-review-recovery') -File -Recurse|ForEach-Object{Get-FileSha256 $_.FullName})
         Check 'supported uninstall retains original review recovery' ($removed.ExitCode-eq0-and@($before|Where-Object{$after-cnotcontains$_}).Count-eq0-and$after.Count-gt$before.Count) ([IO.File]::ReadAllText($out)+[IO.File]::ReadAllText($err))
     }finally{$env:PATH=$savedPath}

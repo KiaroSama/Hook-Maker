@@ -5,7 +5,7 @@ function Invoke-CiWorkloadHostRegression {
     Invoke-CiWorkloadRegression $HooksRoot
     $management=Join-Path $PSScriptRoot '_testcireviewmanagement.ps1'
     $managementOut=Join-Path $Work 'review-management51.out';$managementErr=Join-Path $Work 'review-management51.err'
-    $managed=Start-BoundedProcess powershell.exe @('-NoLogo','-NoProfile','-NonInteractive','-File',$management,'-RunRegression') -TimeoutMs 45000 -RedirectStandardOutput $managementOut -RedirectStandardError $managementErr
+    $managed=Start-BoundedProcess -FilePath powershell.exe -ArgumentList @('-NoLogo','-NoProfile','-NonInteractive','-File',$management,'-RunRegression') -TimeoutMs 45000 -RedirectStandardOutput $managementOut -RedirectStandardError $managementErr
     Check 'Framework executes actual review publication and context controls' ($managed.ExitCode-eq0) ([IO.File]::ReadAllText($managementOut,[Text.Encoding]::UTF8)+[IO.File]::ReadAllText($managementErr,[Text.Encoding]::UTF8))
     & {param($Root,$Temp);Invoke-CiLargeReviewedTreeRegression $Root $Temp} $HooksRoot $Work
     $output=Join-Path $Work 'workload51.out';$errorFile=Join-Path $Work 'workload51.err'
