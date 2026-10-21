@@ -35,7 +35,7 @@ jobs:
           New-Item -ItemType Directory -Force "$env:RUNNER_TEMP/storage-evidence" | Out-Null
           git archive --format=zip --output="$env:RUNNER_TEMP/storage-evidence/source.zip" HEAD
           git rev-parse HEAD | Set-Content -Encoding utf8 "$env:RUNNER_TEMP/storage-evidence/commit.txt"
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         if: always()
         with:
           name: storage-evidence
@@ -78,7 +78,7 @@ jobs:
           if ($exitCode -ne 0 -or $diagnostics.Count -ne 4) {
             throw 'One of the four native runner cases failed or did not produce its evidence.'
           }
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         if: always()
         with:
           name: runner-evidence
