@@ -43,7 +43,9 @@ exit 0
             $preview=Start-BoundedProcess -FilePath $exe -ArgumentList $arguments -TimeoutMs 60000 -RedirectStandardOutput $out -RedirectStandardError $err
             Check ('actual review CLI preview no policy '+$client) ($preview.ExitCode-eq0-and-not(Test-Path -LiteralPath (Join-Path $runtime '_ci-policy.json'))) ([IO.File]::ReadAllText($out)+[IO.File]::ReadAllText($err))
             $applied=Start-BoundedProcess -FilePath $exe -ArgumentList ($arguments+@('-Apply','-ReviewConfirmed')) -TimeoutMs 60000 -RedirectStandardOutput $out -RedirectStandardError $err
-            Check ('actual selected review CLI enrollment '+$client) ($applied.ExitCode-eq0-and(Test-Path -LiteralPath (Join-Path $runtime '_ci-policy.json'))) ([IO.File]::ReadAllText($out)+[IO.File]::ReadAllText($err))
+            $applyDetail=[IO.File]::ReadAllText($out,[Text.Encoding]::UTF8)+[IO.File]::ReadAllText($err,[Text.Encoding]::UTF8)
+            Check ('actual selected review CLI enrollment '+$client) ($applied.ExitCode-eq0-and(Test-Path -LiteralPath (Join-Path $runtime '_ci-policy.json'))) $applyDetail
+            if($applied.ExitCode-ne0){Write-Output ('Review fixture refusal '+$client+': '+$applyDetail)}
             $refused=Start-BoundedProcess -FilePath $exe -ArgumentList ($arguments+@('-Apply','-ReviewConfirmed')) -TimeoutMs 60000 -RedirectStandardOutput $out -RedirectStandardError $err
             Check ('actual stale preimage refuses without registration changes '+$client) ($refused.ExitCode-ne0-and(Get-FileSha256 $settings)-ceq$settingsHash)
         }

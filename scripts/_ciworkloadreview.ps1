@@ -65,7 +65,7 @@ function Publish-CiWorkloadReview {
         $recovery=Save-CiReviewRecovery $ToolRoot $Selection.Record.id $Selection.Client $Submitted $previous
         $encoded=[Text.UTF8Encoding]::new($false,$true).GetBytes($Json)
         if($encoded.Length-gt65536){throw 'Enrolled review exceeds 64 KiB.'}
-        $temp=Join-Path $Selection.Directory ('.ci-review-'+[guid]::NewGuid().ToString('N')+'.tmp')
+        $temp=Join-Path (Split-Path -Parent $Selection.Directory) ('.ci-review-'+[guid]::NewGuid().ToString('N')+'.tmp')
         $stream=[IO.File]::Open($temp,'CreateNew','Write','None')
         try{$stream.Write($encoded,0,$encoded.Length);$stream.Flush($true)}finally{$stream.Dispose()}
         $null=& $Revalidate

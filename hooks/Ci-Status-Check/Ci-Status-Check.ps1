@@ -556,9 +556,9 @@ if ($snapshot.Runs.Count -eq 0 -and $snapshot.FailedRuns.Count -eq 0 -and $snaps
         Write-Block -Outcome 'pending' -Reason ('CI CHECK: documentation-only carryover not verified for skipped commit ' + $sha7 + ' (' + $repoSlug + '): ' + $script:DocsCarryoverReason + '. No final-SHA run is expected from a skip marker; waiting will not establish eligibility. Independently verify the named input/evidence limitation; do not seed success state or dispatch duplicate CI merely to suppress this message.')
     }
     # Every host is manual: a push starts no run by design. Missing dispatch is never green.
-    $manualExpectation=Get-CiWorkloadExpectation -ProjectRoot $cwd -RepoSlug $repoSlug -Sha $sha -Branch $branch
-    if($null-eq$manualExpectation-and$script:CiWorkloadReason-ne''){Write-Block -Outcome 'unproven' -Reason ('CI CHECK: '+$script:CiWorkloadReason)}
     if (Test-ManualCiRepository -ProjectRoot $cwd) {
+        $manualExpectation=Get-CiWorkloadExpectation -ProjectRoot $cwd -RepoSlug $repoSlug -Sha $sha -Branch $branch
+        if($null-eq$manualExpectation-and$script:CiWorkloadReason-ne''){Write-Block -Outcome 'unproven' -Reason ('CI CHECK: '+$script:CiWorkloadReason)}
         Write-Block -Outcome 'pending' -Reason ('CI CHECK: final CI not yet dispatched for commit ' + $sha7 + ' on ' + $branch + ' (' + $repoSlug + '). All CI hosts stay manual: a push starts no run; reachable workflow_call children require a workflow_dispatch root. Dispatch the one final run for this exact SHA (gh workflow run <workflow> --ref ' + $branch + '), then verify it - never for a GitHub- or bot-created branch (Dependabot included). No hook starts, stops or reconfigures a runner.')
     }
     # Every push workflow filters on paths the push did not touch: no wait and no PR
@@ -573,6 +573,8 @@ if ($snapshot.Runs.Count -eq 0 -and $snapshot.FailedRuns.Count -eq 0 -and $snaps
         if ($alreadyNoted) { exit 0 }
         exit (Write-HookResult -EventName $eventName -Kind 'advisory' -Message ('CI CHECK: no workflow is configured to run for the files pushed commit ' + $sha7 + ' changed (every push workflow in ' + $repoSlug + ' filters on paths this push did not touch), so no run will ever appear. This is NOT a green result: nothing was built or tested.')).ExitCode
     }
+    $missingExpectation=Get-CiWorkloadExpectation -ProjectRoot $cwd -RepoSlug $repoSlug -Sha $sha -Branch $branch
+    if($null-eq$missingExpectation-and$script:CiWorkloadReason-ne''){Write-Block -Outcome 'unproven' -Reason ('CI CHECK: no runs are registered yet; '+$script:CiWorkloadReason)}
     Write-Block -Outcome 'pending' -Reason ('CI CHECK: workflows exist but no runs are registered yet for pushed commit ' + $sha7 + ' (' + $repoSlug + '). Do not declare the work complete: wait briefly, then verify the checks for this exact commit with: gh run list --commit ' + $sha)
 }
 
