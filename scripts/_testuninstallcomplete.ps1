@@ -14,6 +14,8 @@ function Invoke-CompleteNativeRemovalRegression {
     . (Join-Path $ScriptRoot '_installlifecycle.ps1')
     $heldLifecycle=Enter-InstallLifecycle $ToolRoot
     try {
+        $absentRemoval=Invoke-UninstallProcess -RecordId 'absent-lifecycle-fixture'
+        Check 'absent record no-op does not contend with mutation lifecycle' ([string]$absentRemoval.Result.overall-eq'ok')
         $busyRemoval=Invoke-UninstallProcess -RecordId $nativeRecord.id -Complete
         Check 'concurrent uninstaller refuses before mutation' ([string]$busyRemoval.Result.overall-eq'failed'-and$busyRemoval.Err.Contains('Another install or uninstall owns this registry'))
         Check 'busy lifecycle preserves wrapper and selected record' ((Test-BytesEqual ([IO.File]::ReadAllBytes($wrapper)) $managedBytes)-and @(Get-RecordsFor 'Ignore-Rules-Check'|Where-Object{$_.id-eq$nativeRecord.id}).Count-eq1)

@@ -138,6 +138,15 @@ if ([string]::IsNullOrWhiteSpace($RecordId)) {
     throw '-RecordId is required.'
 }
 
+# An absent record has no mutation lifetime to serialize. Real removals still
+# re-read the registry under the lifecycle lock before trusting any ownership.
+$preflightState = Read-InstallRegistryState -ToolRoot $ToolRoot
+if ($preflightState.State -ne 'corrupt' -and @($preflightState.Registry.installs | Where-Object { [string](Get-Field $_ 'id') -eq $RecordId }).Count -eq 0) {
+    Set-ComponentResult -Component 'registry' -Status 'ok' -ReasonCode 'notFound' -Message 'no install record with this id - already removed'
+    Write-UninstallResult -Overall 'ok'
+    Write-Host ("No install record found for id '" + $RecordId + "'. Nothing to do.")
+    return
+}
 . (Join-Path $PSScriptRoot '_installlifecycle.ps1')
 $lifecycleMutex = Enter-InstallLifecycle $ToolRoot
 try {
