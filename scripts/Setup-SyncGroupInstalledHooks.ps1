@@ -645,6 +645,8 @@ function Invoke-UninstallInstalledHooks {
         Write-Host ''
         Write-Field 'installations to remove' ([string]$recordIds.Count)
         Write-NoteLine '  Hook SOURCE files under hooks\ are never deleted.'
+        Write-NoteLine '  Canonical project hooks: complete owned-state removal; sync engines also retire selected membership.'
+        Write-NoteLine '  Shared owners, applied knowledge and original audit/recovery evidence are preserved.'
 
         $confirm = Read-YesNo (New-QuestionPrompt ('Uninstall ' + $recordIds.Count + ' installation(s) now?') 'y/n' 'n') $false 'confirm uninstall'
         if ($null -eq $confirm -or $confirm -ne $true) {
@@ -653,86 +655,7 @@ function Invoke-UninstallInstalledHooks {
             return 'done'
         }
 
-        # ---- delegate each record to the executor ----
-        Write-PhaseHeader 'Removing' $C.Process '-'
-        $removed = New-Object System.Collections.Generic.List[string]
-        $failed = New-Object System.Collections.Generic.List[string]
-        $manual = New-Object System.Collections.Generic.List[string]
-        # Record type decides the executor. Resolved per id from the registry
-        # rather than carried on the row, so a stale row can never route a
-        # managed record into the discovered remover (which cannot prove managed
-        # ownership) or the reverse.
-        $discoveredUninstallScript = Join-Path (Split-Path -Parent $UninstallScript) 'Uninstall-DiscoveredHook.ps1'
-        foreach ($id in $recordIds) {
-            $record = @($registry.installs | Where-Object { (Get-RecordDisplayField $_ 'id' '') -eq $id })[0]
-            $executor = if ((Get-RecordType $record) -eq 'discovered') { $discoveredUninstallScript } else { $UninstallScript }
-            # A MANAGED record that does not validate has no removal path at all
-            # - `clients` cannot be inferred - so it is dropped as a registry row
-            # and nothing else. Decided from the live record here, next to the
-            # executor choice, for the same reason: a stale row must not be able
-            # to pick the narrower operation for a record that is fine.
-            $forgetArgs = @{}
-            if ((Get-RecordType $record) -ne 'discovered' -and -not (Test-InstallRecordValid -Record $record).Ok) {
-                $forgetArgs['ForgetUnreadableRecord'] = $true
-            }
-            $resultPath = Join-Path ([System.IO.Path]::GetTempPath()) ('hookmaker-uninstall-' + [guid]::NewGuid().ToString('N').Substring(0, 8) + '.json')
-            $threw = $false
-            try { & $executor -RecordId $id -ToolRoot $ToolRoot -ResultPath $resultPath @forgetArgs *> $null }
-            catch { $threw = $true }
-            $overall = 'failed'
-            if (Test-Path -LiteralPath $resultPath) {
-                try {
-                    $doc = Get-Content -LiteralPath $resultPath -Raw | ConvertFrom-Json
-                    if ($null -ne $doc -and $null -ne $doc.PSObject.Properties['overall']) { $overall = [string]$doc.overall }
-                }
-                catch { }
-                Remove-Item -LiteralPath $resultPath -Force -ErrorAction SilentlyContinue
-            }
-            elseif (-not $threw) { $overall = 'failed' }
-
-            # A bare record id tells the user NOTHING about which hook this was or
-            # where it lives, which is exactly what they need when a row asks for
-            # manual repair - the id alone forced a registry lookup by hand. A
-            # clean removal stays short; anything needing action names the file.
-            $rowName = Get-HookFriendlyName (Get-RecordDisplayField $record 'friendlyName' 'unknown-record')
-            $rowWhere = Get-RecordLocationText $record
-            switch ($overall) {
-                'ok' { [void]$removed.Add($id); Write-Host ('  ' + (Get-Painted 'removed' $C.Green) + ' ' + $rowName) }
-                'manualRepair' {
-                    [void]$manual.Add($id)
-                    Write-Host ('  ' + (Get-Painted 'manual repair needed' $C.Amber) + ' ' + $rowName)
-                    Write-Host ('      ' + (Get-Painted $rowWhere $C.Gray))
-                    Write-Log 'WARNING' 'UNINSTALL' ('Manual repair needed: ' + $rowName + ' at ' + $rowWhere + ' (id ' + $id + ')')
-                }
-                # 'partial' is the discovered remover's honest middle outcome:
-                # something really came off but not everything, so it must not be
-                # reported as a clean removal.
-                'partial' {
-                    [void]$manual.Add($id)
-                    Write-Host ('  ' + (Get-Painted 'partially removed - needs attention' $C.Amber) + ' ' + $rowName)
-                    Write-Host ('      ' + (Get-Painted $rowWhere $C.Gray))
-                    Write-Log 'WARNING' 'UNINSTALL' ('Partially removed: ' + $rowName + ' at ' + $rowWhere + ' (id ' + $id + ')')
-                }
-                default {
-                    [void]$failed.Add($id)
-                    Write-Host ('  ' + (Get-Painted 'failed' $C.Red) + ' ' + $rowName)
-                    Write-Host ('      ' + (Get-Painted $rowWhere $C.Gray))
-                    Write-Log 'ERROR' 'UNINSTALL' ('Uninstall failed: ' + $rowName + ' at ' + $rowWhere + ' (id ' + $id + ')')
-                }
-            }
-        }
-        Write-Host ''
-        Write-Field 'removed' ([string]$removed.Count)
-        Write-Field 'needs manual repair' ([string]$manual.Count)
-        Write-Field 'failed' ([string]$failed.Count)
-        # Skipped rows never reached the executor, so they appear in no other
-        # count. Surfacing them here is what keeps "the rest still proceeds"
-        # from quietly becoming "some of your selection vanished".
-        if ($blocked.Count -gt 0) { Write-Field 'skipped (manual repair)' ([string]$blocked.Count) }
-        if ($manual.Count -gt 0 -or $failed.Count -gt 0 -or $blocked.Count -gt 0) {
-            Write-NoteLine '  Records that did not fully uninstall are KEPT in the registry so nothing is silently lost.'
-        }
-        Write-Log 'INFO' 'UNINSTALL' ('Uninstall finished: removed=' + $removed.Count + ' manual=' + $manual.Count + ' failed=' + $failed.Count + ' skipped=' + $blocked.Count)
-        return 'done'
+        . (Join-Path $PSScriptRoot 'Setup-SyncGroupUninstallExecution.ps1')
+        return (Invoke-UninstallSelection -Registry $registry -RecordIds $recordIds -Blocked $blocked)
     }
 }

@@ -35,13 +35,14 @@ function Get-CiReviewSelection {
     return [pscustomobject]@{Record=$record;Client=$Client;Directory=$directory;PolicyPath=Join-Path $directory '_ci-policy.json';MetadataHash=Get-CiReviewBytesHash $raw}
 }
 function Save-CiReviewRecovery {
-    param([string]$ToolRoot,[string]$RecordId,[string]$Client,[byte[]]$Submitted,[AllowNull()][byte[]]$Previous)
+    param([string]$ToolRoot,[string]$RecordId,[string]$Client,[byte[]]$Submitted,[AllowNull()][byte[]]$Previous,[ValidateSet('_ci-policy.json','_docs-policy.json')][string]$PolicyName='_ci-policy.json')
     $root=Join-Path (Get-InstallStateDirectory $ToolRoot) 'ci-review-recovery'
     $parent=Get-InstallStateDirectory $ToolRoot
     $null=Get-RepositoryPhysicalRoot $parent
     [void][IO.Directory]::CreateDirectory($root)
     $null=Get-RepositoryPhysicalRoot $root
-    $directory=Join-Path $root ($RecordId+'-'+$Client+'-'+[guid]::NewGuid().ToString('N'))
+    $kind=if($PolicyName-ceq'_docs-policy.json'){'-docs'}else{''}
+    $directory=Join-Path $root ($RecordId+'-'+$Client+$kind+'-'+[guid]::NewGuid().ToString('N'))
     [void][IO.Directory]::CreateDirectory($directory)
     foreach($item in @(@('submitted.json',$Submitted),@('previous.json',$Previous))){
         if($null-eq$item[1]){continue}

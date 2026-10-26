@@ -1,6 +1,7 @@
 # Complete synthetic inventory; no real target policy or success record.
 function Invoke-CiClosureRegression {
     param([string]$HooksRoot)
+    & {param($Root,$Helper);. $Helper;Invoke-DocsClosureExtendedRegression $Root} $HooksRoot (Join-Path $PSScriptRoot '_testdocsclosureextended.ps1')
     . (Join-Path $HooksRoot '_hooklib.ps1')
     . (Join-Path $HooksRoot 'Ci-Status-Check/_ciclosure.ps1')
     $base='a'*40;$ancestor='b'*40;$final='c'*40;$tree='d'*40;$blob='e'*40;$doc='f'*40

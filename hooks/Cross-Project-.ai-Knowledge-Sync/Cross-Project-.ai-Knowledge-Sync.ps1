@@ -360,111 +360,11 @@ function Get-StatePaths {
     }
 }
 
-function Enter-RouteStateLock {
-    param([Parameter(Mandatory = $true)][string]$StatePath)
-
-    # Both entry points own this lock from the first state read through package
-    # cleanup. Atomic file replacement alone cannot protect a read/modify/write.
-    $key = Get-StringHash -Text (Normalize-Path $StatePath).ToUpperInvariant()
-    $mutex = $null
-    try {
-        $mutex = [System.Threading.Mutex]::new($false, ('Global\HookMakerSync-' + $key))
-        try { $acquired = $mutex.WaitOne(5000) }
-        catch [System.Threading.AbandonedMutexException] { $acquired = $true }
-        if (-not $acquired) { throw 'The sync route is busy. Retry after its current operation finishes.' }
-        return $mutex
-    }
-    catch {
-        if ($null -ne $mutex) { $mutex.Dispose() }
-        throw ('Could not acquire the sync route lock: ' + $_.Exception.Message)
-    }
-}
+. (Join-Path $ScriptRoot '_routelifecycle.ps1')
 
 function Get-AcknowledgementCommand {
     param($Context, [string]$Fingerprint)
     return 'powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "' + $HookScriptPath + '" -Acknowledge -ProjectRoot "' + $Context.destinationRoot + '" -Profile "' + $Context.profileId + '" -Route "' + $Context.routeId + '" -ConfigPath "' + $ConfigPath + '" -ContentFingerprint "' + $Fingerprint + '"'
-}
-
-function Get-MatchingRoutes {
-    param(
-        [Parameter(Mandatory = $true)]$Config,
-        [Parameter(Mandatory = $true)][string]$WorkingDirectory,
-        [string]$EventName,
-        [string]$ProfileFilter,
-        [string]$RouteFilter
-    )
-
-    $workingPath = Normalize-Path $WorkingDirectory
-    $defaults = if ($null -ne $Config.PSObject.Properties['defaults']) { $Config.defaults } else { [pscustomobject]@{} }
-    # Named routeMatches (not "matches") to avoid the $Matches automatic variable.
-    $routeMatches = New-Object System.Collections.Generic.List[object]
-
-    foreach ($profileConfig in @($Config.profiles)) {
-        $profileId = [string]$profileConfig.id
-        if ([string]::IsNullOrWhiteSpace($profileId)) {
-            continue
-        }
-        if (-not [string]::IsNullOrWhiteSpace($ProfileFilter) -and -not [string]::Equals($profileId, $ProfileFilter, [System.StringComparison]::OrdinalIgnoreCase)) {
-            continue
-        }
-        if ($null -ne $profileConfig.PSObject.Properties['enabled'] -and -not [bool]$profileConfig.enabled) {
-            continue
-        }
-
-        foreach ($routeConfig in @($profileConfig.routes)) {
-            $routeId = [string]$routeConfig.id
-            if ([string]::IsNullOrWhiteSpace($routeId)) {
-                continue
-            }
-            if (-not [string]::IsNullOrWhiteSpace($RouteFilter) -and -not [string]::Equals($routeId, $RouteFilter, [System.StringComparison]::OrdinalIgnoreCase)) {
-                continue
-            }
-            if ($null -ne $routeConfig.PSObject.Properties['enabled'] -and -not [bool]$routeConfig.enabled) {
-                continue
-            }
-            if (-not [string]::IsNullOrWhiteSpace($EventName)) {
-                $allowedEvents = @(Get-PropertyValue -Primary $routeConfig -Secondary $profileConfig -Tertiary $defaults -Name 'events' -Fallback @('SessionStart', 'UserPromptSubmit'))
-                if (-not ($allowedEvents -contains $EventName)) {
-                    continue
-                }
-            }
-            if ($null -eq $routeConfig.source -or $null -eq $routeConfig.destination) {
-                continue
-            }
-
-            $destinationRoots = Get-EndpointRoots -Endpoint $routeConfig.destination
-            $matchedDestinationRoot = $null
-            foreach ($candidateRoot in $destinationRoots) {
-                if (Test-PathInside -Candidate $workingPath -Parent $candidateRoot) {
-                    $matchedDestinationRoot = $candidateRoot
-                    break
-                }
-            }
-            if ($null -eq $matchedDestinationRoot) {
-                continue
-            }
-
-            $sourceRoot = Normalize-Path ([string]$routeConfig.source.root)
-            $destinationRoot = Normalize-Path ([string]$routeConfig.destination.root)
-            $sourceDirectoryName = if ($null -ne $routeConfig.source.PSObject.Properties['directory']) { [string]$routeConfig.source.directory } else { '.ai' }
-            $destinationDirectoryName = if ($null -ne $routeConfig.destination.PSObject.Properties['directory']) { [string]$routeConfig.destination.directory } else { '.ai' }
-
-            [void]$routeMatches.Add([pscustomobject][ordered]@{
-                profile = $profileConfig
-                route = $routeConfig
-                defaults = $defaults
-                profileId = $profileId
-                routeId = $routeId
-                sourceRoot = $sourceRoot
-                destinationRoot = $destinationRoot
-                matchedDestinationRoot = $matchedDestinationRoot
-                sourceDirectory = Join-Path $sourceRoot $sourceDirectoryName
-                destinationDirectory = Join-Path $destinationRoot $destinationDirectoryName
-            })
-        }
-    }
-
-    return $routeMatches.ToArray()
 }
 
 function New-ReviewMessage {
@@ -541,6 +441,7 @@ if ($Acknowledge) {
     $statePaths = Get-StatePaths -DestinationDirectory $context.destinationDirectory -ProfileId $context.profileId -RouteId $context.routeId -SourceRoot $context.sourceRoot
     $routeLock = Enter-RouteStateLock -StatePath $statePaths.statePath
     try {
+        if (-not (Test-SyncRouteCurrent $context)) { throw 'The selected route was retired or changed before acknowledgement.' }
         $state = Read-JsonFile $statePaths.statePath
         # ConvertTo-NormalizedState guarantees 'pending' is a real property
         # (possibly $null) below - a raw $state.pending read here, before any
@@ -631,6 +532,7 @@ foreach ($context in $contexts) {
     $statePaths = Get-StatePaths -DestinationDirectory $context.destinationDirectory -ProfileId $context.profileId -RouteId $context.routeId -SourceRoot $context.sourceRoot
     $routeLock = Enter-RouteStateLock -StatePath $statePaths.statePath
     try {
+        if (-not (Test-SyncRouteCurrent $context)) { continue }
         $state = Read-JsonFile $statePaths.statePath
         # ConvertTo-NormalizedState repairs every partial/damaged shape (missing
         # file, "{}", a missing top-level field, a non-null 'pending' missing

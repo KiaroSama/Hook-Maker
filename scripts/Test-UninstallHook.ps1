@@ -23,7 +23,7 @@
 # Usage:  pwsh -NoLogo -NoProfile -File .\scripts\Test-UninstallHook.ps1 [-KeepArtifacts]
 # Exit code is the number of failed assertions (0 = all passed).
 
-param([switch]$KeepArtifacts)
+param([switch]$KeepArtifacts, [switch]$CompleteOnly)
 
 Set-StrictMode -Version 2.0
 $ErrorActionPreference = 'Stop'
@@ -123,7 +123,7 @@ function Invoke-UninstallProcess {
     # red-proof can execute the pre-change executor for real, without ever
     # reverting the shared working tree.
     param([string]$RecordId, [switch]$WhatIf, [string]$UninstallToolRoot = $ToolRoot, [string]$FakeHome = '',
-        [string]$ScriptPath = '', [switch]$ForgetUnreadableRecord)
+        [string]$ScriptPath = '', [switch]$ForgetUnreadableRecord, [switch]$Complete)
     if ([string]::IsNullOrWhiteSpace($ScriptPath)) { $ScriptPath = $UninstallScript }
     $token = [guid]::NewGuid().ToString('N').Substring(0, 8)
     $outF = Join-Path $Work "uninstout-$token.txt"; $errF = Join-Path $Work "uninsterr-$token.txt"
@@ -131,6 +131,7 @@ function Invoke-UninstallProcess {
     $argLine = '-NoLogo -NoProfile -File "' + $ScriptPath + '" -RecordId "' + $RecordId + '" -ToolRoot "' + $UninstallToolRoot + '" -ResultPath "' + $resultFile + '"'
     if ($WhatIf) { $argLine += ' -WhatIf' }
     if ($ForgetUnreadableRecord) { $argLine += ' -ForgetUnreadableRecord' }
+    if ($Complete) { $argLine += ' -Complete' }
     $hostExecutable = (Get-Process -Id $PID).Path
     $startArgs = @{
         FilePath = $hostExecutable; ArgumentList = $argLine
@@ -258,9 +259,18 @@ try {
     # the native block defines $ignoreHook, which the ownership block reuses.
     # The finally below stays HERE so cleanup always runs whichever block
     # fails.
-    . (Join-Path $ScriptRoot '_testuninstallhookscope.ps1')
-    . (Join-Path $ScriptRoot '_testuninstallhooknative.ps1')
-    . (Join-Path $ScriptRoot '_testuninstallhookownership.ps1')
+    if (-not $CompleteOnly) {
+        . (Join-Path $ScriptRoot '_testuninstallhookscope.ps1')
+        . (Join-Path $ScriptRoot '_testuninstallhooknative.ps1')
+        . (Join-Path $ScriptRoot '_testuninstallhookownership.ps1')
+    }
+    . (Join-Path $ScriptRoot '_testuninstallcomplete.ps1')
+    if (-not $CompleteOnly -and $PSVersionTable.PSVersion.Major -ge 7) {
+        $frameworkOut=Join-Path $Work 'complete-framework.out'
+        $frameworkErr=Join-Path $Work 'complete-framework.err'
+        $framework=Start-BoundedProcess -FilePath 'powershell.exe' -ArgumentList @('-NoLogo','-NoProfile','-NonInteractive','-File',$PSCommandPath,'-CompleteOnly') -TimeoutMs 180000 -RedirectStandardOutput $frameworkOut -RedirectStandardError $frameworkErr
+        Check 'complete removal public fixtures pass on Windows PowerShell 5.1' ($framework.ExitCode -eq 0) ([IO.File]::ReadAllText($frameworkOut,[Text.Encoding]::UTF8)+[IO.File]::ReadAllText($frameworkErr,[Text.Encoding]::UTF8))
+    }
 }
 finally {
     $env:HOOKMAKER_STATE_DIR = $SavedHookMakerStateDir

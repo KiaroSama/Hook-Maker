@@ -109,6 +109,42 @@ exit 1
                 & git -C $repo reset --hard $sha *> $null
                 & git -C $repo update-ref refs/remotes/origin/main $sha
             }
+            # Reuse the real repository and GitHub transport; reviewed inputs are
+            # fixture-authored source evidence, not generated from successful jobs.
+            foreach($document in @('docs/compatibility.md','docs/source-format.md')){
+                Write-Utf8 (Join-Path $repo $document) ('Baseline prose'+"`n"+'```powershell'+"`n"+'Write-Output 42'+"`n"+'```')
+            }
+            [void][IO.Directory]::CreateDirectory((Join-Path $repo 'scripts'))
+            foreach($i in 0..154){Write-Utf8 (Join-Path $repo "scripts/reader-$i.ps1") '$null=[IO.File]::ReadAllText("data/0.txt")'}
+            & git -C $repo add .; & git -C $repo commit -qm 'reviewed fixture source'
+            $reviewBase=([string](& git -C $repo rev-parse HEAD)).Trim()
+            $env:GH_DOCS_BASE=$reviewBase
+            $documents=@('docs/compatibility.md','docs/source-format.md')
+            $inventory=Get-CiClosureInventory $repo $reviewBase $documents
+            $tree=([string](& git -C $repo rev-parse ($reviewBase+'^{tree}'))).Trim()
+            $projection=Get-RepositoryIdentityHash (@('fence:```powershell','code:Write-Output 42','fence:```')-join"`n")
+            $policy=@{schema=3;repository='owner/repo';verdict='non-semantic';rationale='Every synthetic reader reads fixed unrelated data';baseline=@{sha=$reviewBase;tree=$tree};ancestor=@{sha=$reviewBase;tree=$tree};sourceBranches=@('main');destinationBranches=@('main');documents=$documents;documentContracts=@($documents|ForEach-Object{@{path=$_;sha256=$projection}});inventory=@{count=$inventory.Count;sha256=$inventory.Fingerprint};candidates=@(0..154|ForEach-Object{$path="scripts/reader-$_.ps1";@{path=$path;blob=$inventory.Entries[$path].Blob;bytes=$inventory.Entries[$path].Bytes;role='fixed-unrelated-input';rationale='Literal data/0.txt input only; no document path or traversal'}})}
+            foreach($document in $documents){Write-Utf8 (Join-Path $repo $document) ('Revised prose'+"`n"+'```powershell'+"`n"+'Write-Output 42'+"`n"+'```')}
+            & git -C $repo add .; & git -C $repo commit -qm 'docs [skip ci]'
+            $reviewFinal=([string](& git -C $repo rev-parse HEAD)).Trim()
+            & git -C $repo update-ref refs/remotes/origin/main $reviewFinal
+            $unreviewed=Test-DocsHaveSemanticConsumers $repo $reviewFinal $documents 'owner/repo'
+            Check '155-reader automatic path retains original candidate refusal' ($unreviewed-and$script:DocsCarryoverReason-match'more than 100')
+            $runtime=Join-Path $root 'reviewed-runtime/Ci-Status-Check'
+            [void][IO.Directory]::CreateDirectory($runtime)
+            foreach($module in @(Get-ChildItem (Split-Path -Parent $hook) -File|Where-Object{$_.Extension-in@('.ps1','.cs')})){Copy-Item -LiteralPath $module.FullName -Destination $runtime}
+            Copy-TestRuntimeLibraries -SourceHookLib (Join-Path $HooksRoot '_hooklib.ps1') -Destination (Join-Path (Split-Path -Parent $runtime) '_hooklib.ps1')
+            Write-Utf8 (Join-Path $runtime '_docs-policy.json') ($policy|ConvertTo-Json -Depth 12 -Compress)
+            foreach($hostName in @('pwsh','powershell.exe')){
+                $env:LOCALAPPDATA=Join-Path $root ('reviewed-'+$hostName)
+                $env:HOOKMAKER_STATE_DIR=Join-Path $env:LOCALAPPDATA 'HookMaker/state'
+                $proc=Start-BoundedProcess -FilePath $hostName -ArgumentList @('-NoLogo','-NoProfile','-NonInteractive','-File',(Join-Path $runtime 'Ci-Status-Check.ps1')) -WorkingDirectory $repo -TimeoutMs 60000 -RedirectStandardInput $inputFile -RedirectStandardOutput $outFile -RedirectStandardError $errFile
+                $out=[IO.File]::ReadAllText($outFile,[Text.Encoding]::UTF8);$err=[IO.File]::ReadAllText($errFile,[Text.Encoding]::UTF8)
+                $records=@(Get-ChildItem $env:HOOKMAKER_STATE_DIR -Filter 'CiStatusCheck-*.txt' -File|Where-Object{$_.Name-notmatch'Auth|Notice|External'})
+                $lines=@();if($records.Count-eq1){$lines=@([IO.File]::ReadAllLines($records[0].FullName,[Text.Encoding]::UTF8))}
+                Check ('155-reader public Stop preserves snippets and ancestor-only proof '+$hostName) ($proc.ExitCode-eq0-and$err-eq''-and$out.Contains($reviewBase)-and$out-match'systemMessage'-and$out-notmatch'"decision"'-and$lines.Count-eq6-and$lines[0]-ceq$reviewFinal-and$lines[3]-ceq'docs-only-carryover'-and$lines[4]-ceq$reviewBase) ($out+$err+($lines-join'|'))
+                $proc.Dispose()
+            }
         }
     }
     finally {

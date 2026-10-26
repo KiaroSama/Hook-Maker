@@ -90,6 +90,7 @@ function ConvertFrom-CiReviewedPolicy {
         if($policy.schema-eq2){
             if(-not(Get-Command Test-CiReviewedClosure -ErrorAction SilentlyContinue)){. (Join-Path $PSScriptRoot '_ciclosure.ps1')}
             $closure=$policy.closure
+            if($closure.schema-ne2){return $null}
             $inputs=@($closure.candidates|ForEach-Object{[pscustomobject]@{Path=$_.path;Bytes=$_.bytes}})
             if(-not(Test-CiReviewedClosure $ProjectRoot $RepoSlug $Sha $closure @($closure.documents) $inputs $Branch)){return $null}
         }elseif($policy.schema-eq1){

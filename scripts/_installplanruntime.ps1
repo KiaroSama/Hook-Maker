@@ -111,11 +111,11 @@ function Install-PlannedRuntime {
         # BEFORE the swap: a copy failure must leave the only original intact.
         foreach ($userConfig in @(Get-ManagedRuntimeUserConfigNames $FriendlyName)) {
             $previousConfig = Join-Path $destination ([string]$userConfig)
-            if($userConfig-ceq'_ci-policy.json'-and(Test-Path -LiteralPath $previousConfig)-and-not(Test-Path -LiteralPath $previousConfig -PathType Leaf)){throw 'Reviewed CI configuration is not a regular file; original runtime preserved.'}
+            if($userConfig-cin@('_ci-policy.json','_docs-policy.json')-and(Test-Path -LiteralPath $previousConfig)-and-not(Test-Path -LiteralPath $previousConfig -PathType Leaf)){throw 'Reviewed CI configuration is not a regular file; original runtime preserved.'}
             if (-not (Test-Path -LiteralPath $previousConfig -PathType Leaf)) { continue }
             $stagedConfig = Join-Path $stagingHookDir ([string]$userConfig)
             if (Test-Path -LiteralPath $stagedConfig) { continue }
-            if($userConfig-ceq'_ci-policy.json'){
+            if($userConfig-cin@('_ci-policy.json','_docs-policy.json')){
                 $config=Get-Item -LiteralPath $previousConfig -Force
                 if(($config.Attributes-band[IO.FileAttributes]::ReparsePoint)-or$config.Length-gt65536){throw 'Reviewed CI configuration is linked or oversized; original runtime preserved.'}
             }

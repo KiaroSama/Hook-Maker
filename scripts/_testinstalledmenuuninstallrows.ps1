@@ -29,8 +29,9 @@
     $executorLog = Join-Path $Work 'uninstall-executor-calls.txt'
     $stubExecutor = Join-Path $Work 'Stub-Uninstall-Hook.ps1'
     Write-Utf8 $stubExecutor ((@(
-        'param([string]$RecordId, [string]$ToolRoot, [string]$ResultPath)'
-        'Add-Content -LiteralPath (Join-Path $PSScriptRoot ''uninstall-executor-calls.txt'') -Value $RecordId'
+        'param([string]$RecordId, [string]$ToolRoot, [string]$ResultPath, [switch]$Complete, [switch]$ForgetUnreadableRecord)'
+        'Add-Content -LiteralPath (Join-Path $PSScriptRoot ''uninstall-executor-calls.txt'') -Value $RecordId -Encoding utf8'
+        '[IO.File]::AppendAllText((Join-Path $PSScriptRoot ''uninstall-mode-calls.txt''), ($RecordId+''|''+[string][bool]$Complete+"`n"), [Text.Encoding]::UTF8)'
         '[System.IO.File]::WriteAllText($ResultPath, ''{"overall":"ok"}'')'
     ) -join "`r`n") + "`r`n")
 
@@ -86,7 +87,7 @@
             if ($script:UninstallAnswers.Count -eq 0) { return '0' }
             return $script:UninstallAnswers.Dequeue()
         }
-        function Read-YesNo { param([string]$Prompt, [bool]$Default, [string]$LogLabel) return $true }
+        function Read-YesNo { param([string]$Prompt, [bool]$Default, [string]$LogLabel) return $script:UninstallConfirmed }
         # The registry is supplied directly, so nothing on disk is read and the
         # real install-registry file cannot be touched by this part.
         function Read-InstallRegistryState { param([string]$ToolRoot) return [pscustomobject]@{ State = 'ok'; Reason = ''; Path = 'synthetic' } }
@@ -128,17 +129,42 @@
                 # Scope 1 + a folder with no tracked install: not an error and
                 # not a dead end - it says so and offers the scope menu again.
                 [pscustomobject]@{ Name = 'filteredEmpty'; Answers = @('1', 'C:\Proj\Nothing\Here', '0') }
+                [pscustomobject]@{ Name = 'declined'; Answers = @('2', '1') }
             )) {
+            $script:UninstallConfirmed=$case.Name-ne'declined'
+            $callsBefore=if(Test-Path -LiteralPath $executorLog){[IO.File]::ReadAllText($executorLog,[Text.Encoding]::UTF8)}else{''}
             $script:Captured = New-Object System.Collections.Generic.List[string]
             $script:UninstallAnswers = New-Object System.Collections.Generic.Queue[string]
             foreach ($answer in $case.Answers) { $script:UninstallAnswers.Enqueue($answer) }
             [void](Invoke-UninstallInstalledHooks)
             $results[$case.Name] = ($script:Captured -join "`n")
             $results[($case.Name + 'Calls')] = if (Test-Path -LiteralPath $executorLog) { [System.IO.File]::ReadAllText($executorLog) } else { '' }
+            if($case.Name-eq'declined'){$results['declinedUnchanged']=$results['declinedCalls']-ceq$callsBefore}
         }
         return , $results
     }
 
+    Check 'uninstall: declining confirmation never invokes the executor' ([bool]$uninstallRuns['declinedUnchanged']-and[string]$uninstallRuns['declined']-match'Canceled. Nothing was changed.')
+    $modeCalls=[IO.File]::ReadAllText((Join-Path $Work 'uninstall-mode-calls.txt'),[Text.Encoding]::UTF8)
+    Check 'uninstall: custom package rows never claim complete external cleanup' ($modeCalls-notmatch'\|True') $modeCalls
+    & {
+        $canonicalRecord=New-RemovableRecord $rec 'canonical-complete'
+        $canonicalRecord.friendlyName='Ai-Memory-Check'
+        $canonicalRecord.sourceScript=Join-Path $ToolRoot 'hooks/Ai-Memory-Check/Ai-Memory-Check.ps1'
+        function Test-InstallRecordValid { param($Record) return [pscustomobject]@{Ok=$true} }
+        function Write-Host { param([Parameter(ValueFromRemainingArguments=$true)]$Args) }
+        function Write-PhaseHeader { param($Text,$Color,$Char) }
+        function Write-Field { param($Name,$Value) }
+        function Write-Log { param($Level,$Component,$Message) }
+        function Get-Painted { param($Text,$Color) return $Text }
+        $UninstallScript=$stubExecutor
+        $C=@{Process='';Green='';Amber='';Gray='';Red=''}
+        . (Join-Path $ScriptRoot 'Setup-SyncGroupInstallFlows.ps1')
+        . (Join-Path $ScriptRoot 'Setup-SyncGroupUninstallExecution.ps1')
+        [void](Invoke-UninstallSelection -Registry ([pscustomobject]@{installs=@($canonicalRecord)}) -RecordIds @($canonicalRecord.id) -Blocked @())
+    }
+    $canonicalModes=[IO.File]::ReadAllText((Join-Path $Work 'uninstall-mode-calls.txt'),[Text.Encoding]::UTF8)
+    Check 'uninstall: canonical project row invokes complete removal' ($canonicalModes-match'canonical-complete\|True') $canonicalModes
     $mixed = [string]$uninstallRuns['mixed']
     $mixedCalls = @(([string]$uninstallRuns['mixedCalls']) -split "`r?`n" | Where-Object { $_ -ne '' })
     # The skip notice and its per-row list, isolated from the rest of the

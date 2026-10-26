@@ -58,7 +58,7 @@ function Get-RecordUpdateState {
             . (Join-Path $PSScriptRoot '_cireviewstatus.ps1')
             $reviews=@(Get-CiReviewEnrollmentStatus $Record $ToolRoot)
             $reviewIssues=@($reviews|Where-Object{$_.Status-ceq'review-required'})
-            if($reviewIssues.Count){$detail=($detail+'; input review required for '+(($reviewIssues|ForEach-Object{$_.Client})-join',')+'; use Set-CiWorkloadReview.ps1, not repeated payload updates').TrimStart(';',' ')}
+            if($reviewIssues.Count){$detail=($detail+'; input review required for '+(($reviewIssues|ForEach-Object{$_.Client+': '+$_.Detail})-join'; ')+'; not repeated payload updates').TrimStart(';',' ')}
         }catch{$reviews=@([pscustomobject]@{Client='unknown';Status='review-required';Detail='Review status unavailable; preserve configuration.'})}
     }
     return [pscustomobject]@{ Status = $status; Detail = $detail; Components = $components; Reviews=$reviews }

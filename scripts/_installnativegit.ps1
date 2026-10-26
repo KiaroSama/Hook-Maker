@@ -1,6 +1,6 @@
 # The NATIVE GIT pre-push chain, split out of Install-Hook.ps1 (which had grown
-# past the file-size review threshold) as a PURE relocation - the body below is
-# byte-identical to what lived there.
+# past the file-size review threshold). Wrapper mutation now shares the native
+# remover's resource lock; the enclosing installer holds its lifecycle lock.
 #
 # Scope: the one hook that also manages a real .git/hooks/pre-push wrapper
 # (Ignore-Rules-Check). It stages the managed runtime plus its chain companions
@@ -41,6 +41,8 @@ function Install-IgnorePrePush {
     if (-not [System.IO.Path]::IsPathRooted($hooksPath)) { $hooksPath = Join-Path $projectRoot $hooksPath }
     $hooksPath = [System.IO.Path]::GetFullPath($hooksPath)
 
+    $prePush = Join-Path $hooksPath 'pre-push'
+    Invoke-WithResourceLock -ResourcePath $prePush -Action {
     $runtimeRoot = Join-Path $hooksPath 'Hook-Maker'
     $runtime = Copy-HookRuntime -ClientDir $hooksPath -RuntimeRootOverride $runtimeRoot
     $oldWrongRoot = Join-Path (Split-Path -Parent $hooksPath) 'hooks\Hook-Maker'
@@ -145,4 +147,5 @@ function Install-IgnorePrePush {
         companions            = @($chainCompanions)
         sourceManifest        = @(Get-NativePrePushSourceManifest -ToolRoot $ToolRoot -PrimaryFriendlyName $FriendlyName -PrimaryHookScript $HookScript -PrimarySourceDir $SourceDir -Companions $chainCompanions)
     }
+    } | Out-Null
 }

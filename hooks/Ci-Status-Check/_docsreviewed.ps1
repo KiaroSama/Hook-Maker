@@ -5,14 +5,14 @@ function Test-DocsReviewedInputScope {
     $script:DocsReviewedPolicyPresent=$false
     if([string]::IsNullOrWhiteSpace($RepoSlug)){return $false}
     $path='.hookmaker-docs-policy.json'
-    # Schema2 review lives beside its managed runtime, outside the reviewed Git
+    # Schema2/3 review lives beside its managed runtime, outside the reviewed Git
     # tree: including its own inventory digest would require a hash fixed point.
     # It is never auto-created or copied from a consumer's ad-hoc override.
     $runtimeReview=Join-Path $PSScriptRoot '_docs-policy.json'
-    if([IO.File]::Exists($runtimeReview)){
+    if(Test-Path -LiteralPath $runtimeReview){
         $script:DocsReviewedPolicyPresent=$true
         $file=Get-Item -LiteralPath $runtimeReview -Force
-        if(($file.Attributes-band[IO.FileAttributes]::ReparsePoint)-or$file.Length-gt65536){return $false}
+        if($file.PSIsContainer-or($file.Attributes-band[IO.FileAttributes]::ReparsePoint)-or$file.Length-gt65536){return $false}
         $raw=[IO.File]::ReadAllText($runtimeReview,(New-Object Text.UTF8Encoding($false,$true)))
     }else{
         $raw=@(Invoke-DocsGitQuery @('-C',$ProjectRoot,'show',($Sha+':'+$path)))-join"`n"
@@ -22,7 +22,8 @@ function Test-DocsReviewedInputScope {
     if([Text.Encoding]::UTF8.GetByteCount($raw)-gt65536){return $false}
     try {
         $policy=$raw|ConvertFrom-Json -ErrorAction Stop
-        if($policy.schema-eq2){
+        if($policy.schema-in@(2,3)){
+            if($policy.schema-eq3-and-not[IO.File]::Exists($runtimeReview)){return $false}
             $destination=[string](Get-Variable DocsReviewDestination -Scope Script -ValueOnly -ErrorAction SilentlyContinue)
             $valid=Test-CiReviewedClosure -ProjectRoot $ProjectRoot -RepoSlug $RepoSlug -Sha $Sha -Policy $policy -Files $Files -Candidates $Candidates -Branch $destination
             if($valid){$script:DocsReviewedClosure=$policy}

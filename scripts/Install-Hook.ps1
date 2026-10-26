@@ -314,6 +314,9 @@ $script:KnownToolRoots = @(Get-KnownToolRoots -ToolRoot $ToolRoot)
 # pre-push chain; stays $null for every other hook (StrictMode-safe default).
 $script:NativeGitState = $null
 
+. (Join-Path $PSScriptRoot '_installlifecycle.ps1')
+$lifecycleMutex = Enter-InstallLifecycle $ToolRoot -TimeoutMilliseconds 120000
+try {
 # ---- effective per-hook timeout -------------------------------------------
 # Resolution order, still BEFORE any file is touched:
 #   1. an explicit -Timeout (already bounds-validated above);
@@ -611,3 +614,5 @@ $overallResult = Get-OverallInstallResult
 Write-InstallResult -Overall $overallResult
 
 Write-Host 'Restart the clients and review /hooks. Codex may require trusting the new command.'
+}
+finally { $lifecycleMutex.ReleaseMutex(); $lifecycleMutex.Dispose() }

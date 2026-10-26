@@ -95,7 +95,8 @@ function Get-DocsOnlyCarryover {
             $inventory=Get-CiClosureInventory $ProjectRoot $object @($script:DocsReviewedClosure.documents)
             if($null-eq$inventory-or$inventory.Fingerprint-cne$script:DocsReviewedClosure.inventory.sha256){return $null}
             foreach($document in @($script:DocsReviewedClosure.documents)){
-                if(-not(Test-CiClosureProse $ProjectRoot $object $document)){return $null}
+                if(-not$inventory.Entries.ContainsKey($document)-or$inventory.Entries[$document].Mode-cne'100644'-or
+                    -not(Test-DocsClosureDocument $ProjectRoot $object $document $script:DocsReviewedClosure)){return $null}
             }
         }
     }

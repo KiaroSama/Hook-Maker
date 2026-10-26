@@ -30,4 +30,12 @@ function Invoke-CiQueryRegression {
     $null=Invoke-DocsGit @('-C','fixture','show',($sha+':README.md'))
     $null=Invoke-DocsGit @('-C','fixture','show',($sha+':README.md'))
     Check 'failed immutable discovery is never memoized' (($script:QueryChildren-$before)-eq2)
+    Initialize-DocsEvidenceCache -ScopeKey 'empty-lines'
+    $queryArgs=@('-C','fixture','show',($sha+':README.md'))
+    $key=Get-DocsImmutableQueryKey $queryArgs
+    $script:DocsEvidenceCache[$key]=@('plain')
+    $script:DocsEvidenceCache[$key+'|preserve-empty']=@('code','','end')
+    $raw=@(Invoke-DocsGitQuery $queryArgs -PreserveEmptyLines)
+    $plain=@(Invoke-DocsGitQuery $queryArgs)
+    Check 'protected snippet cache retains empty lines separately from legacy text' ($raw.Count-eq3-and$raw[1]-ceq''-and$plain.Count-eq1-and$plain[0]-ceq'plain')
 }

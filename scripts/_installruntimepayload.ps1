@@ -6,7 +6,7 @@ function Get-ManagedRuntimeUserConfigNames {
     param([string]$FriendlyName)
     $names=@('.env')
     if(Get-Variable ManagedRuntimeUserConfigNames -Scope Script -ErrorAction SilentlyContinue){$names=@($script:ManagedRuntimeUserConfigNames)}
-    if($FriendlyName-ceq'Ci-Status-Check'){$names+='_ci-policy.json'}
+    if($FriendlyName-ceq'Ci-Status-Check'){$names+=@('_ci-policy.json','_docs-policy.json')}
     return $names
 }
 function Assert-RuntimeSourcesAvailable {

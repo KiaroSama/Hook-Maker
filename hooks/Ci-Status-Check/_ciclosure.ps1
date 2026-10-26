@@ -1,5 +1,6 @@
 # A reviewed baseline is immutable input evidence, never an execution result.
 # Inventory includes every path except the explicitly reviewed prose documents.
+. (Join-Path $PSScriptRoot '_docssnippets.ps1')
 function Get-CiClosureInventory {
     param([string]$ProjectRoot,[string]$Sha,[string[]]$Documents)
     $rows=@(Invoke-DocsGitQuery @('-C',$ProjectRoot,'ls-tree','-r','-l',$Sha))
@@ -39,7 +40,7 @@ function Test-DocsReviewedAncestorBinding {
 function Test-CiReviewedClosure {
     param([string]$ProjectRoot,[string]$RepoSlug,[string]$Sha,$Policy,[string[]]$Files,[object[]]$Candidates,[string]$Branch,[string]$Ancestor='')
     try {
-        if($Policy.schema-ne2-or$Policy.repository-ine$RepoSlug-or$Policy.verdict-cne'non-semantic'-or
+        if($Policy.schema-notin@(2,3)-or$Policy.repository-ine$RepoSlug-or$Policy.verdict-cne'non-semantic'-or
             $Policy.PSObject.Properties['results']-or[string]::IsNullOrWhiteSpace([string]$Policy.rationale)){return $false}
         foreach($binding in @($Policy.baseline,$Policy.ancestor)){
             if($binding.sha-cnotmatch'^[a-f0-9]{40}$'-or$binding.tree-cnotmatch'^[a-f0-9]{40}$'){return $false}
@@ -73,11 +74,17 @@ function Test-CiReviewedClosure {
                 if(-not$inventory.Entries.ContainsKey($document)-or$inventory.Entries[$document].Mode-cne'100644'){return $false}
             }
             foreach($object in @($Policy.baseline.sha,$Sha,$Policy.ancestor.sha)){
-                if(-not(Test-CiClosureProse $ProjectRoot $object $document)){return $false}
+                if(-not(Test-DocsClosureDocument $ProjectRoot $object $document $Policy)){return $false}
             }
         }
         $reviews=@($Policy.candidates)
-        if($reviews.Count-ne$Candidates.Count-or$reviews.Count-gt100){return $false}
+        # Explicit schema3 review binds identities without reading source bodies;
+        # automatic inspection and older review contracts keep their original caps.
+        $limit=if($Policy.schema-eq3){256}else{100}
+        $byteLimit=if($Policy.schema-eq3){16777216}else{1048576}
+        if($reviews.Count-ne$Candidates.Count-or$reviews.Count-gt$limit){return $false}
+        $actualPaths=New-Object 'Collections.Generic.HashSet[string]' ([StringComparer]::Ordinal)
+        foreach($candidate in $Candidates){if($candidate.Path-isnot[string]-or-not$actualPaths.Add($candidate.Path)){return $false}}
         $seen=New-Object 'Collections.Generic.HashSet[string]' ([StringComparer]::Ordinal)
         $reviewBytes=[long]0
         foreach($review in $reviews){
@@ -86,10 +93,9 @@ function Test-CiReviewedClosure {
                 ($paths.Contains($review.path)-and$review.role-cne'prose-reference')-or
                 [string]::IsNullOrWhiteSpace([string]$review.rationale)-or
                 $review.role-cnotin@('output-only','process-stream','socket-stream','fixed-unrelated-input','opaque-reference','prose-reference','hygiene-only','packaging-identity')){return $false}
+            if($current.Entries[$review.path].Bytes-gt$byteLimit-$reviewBytes){return $false}
             $reviewBytes+=$current.Entries[$review.path].Bytes
-            if($reviewBytes-gt1048576){return $false}
-            $actual=@($Candidates|Where-Object{$_.Path-ceq$review.path})
-            if($actual.Count-ne1){return $false}
+            if($reviewBytes-gt$byteLimit-or-not$actualPaths.Contains($review.path)){return $false}
         }
         return $true
     } catch {return $false}

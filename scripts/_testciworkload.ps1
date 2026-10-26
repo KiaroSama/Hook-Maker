@@ -182,7 +182,7 @@ function Invoke-CiReviewedSourceRegression {
     . (Join-Path $HooksRoot 'Ci-Status-Check/_cireviewed.ps1')
     $script:SourceCase='exact'
     $script:FullTreeReads=0
-    $script:SourcePolicy=@{schema=2;repository='owner/repo';rationale='Synthetic bounded source review';sources=@(@{path='.github/workflows/ci.yml';blob=('b'*40)});closure=@{candidates=@();documents=@('README.md');sourceBranches=@('main');destinationBranches=@('main')};workflows=@(@{path='.github/workflows/ci.yml';id=9;event='workflow_dispatch';branch='main';jobs=@(@{name='native';steps=@('Run validation')})})}|ConvertTo-Json -Depth 12 -Compress
+    $script:SourcePolicy=@{schema=2;repository='owner/repo';rationale='Synthetic bounded source review';sources=@(@{path='.github/workflows/ci.yml';blob=('b'*40)});closure=@{schema=2;candidates=@();documents=@('README.md');sourceBranches=@('main');destinationBranches=@('main')};workflows=@(@{path='.github/workflows/ci.yml';id=9;event='workflow_dispatch';branch='main';jobs=@(@{name='native';steps=@('Run validation')})})}|ConvertTo-Json -Depth 12 -Compress
     function Test-CiReviewedClosure { return $script:SourceCase-ne'closure-refused' }
     function Invoke-DocsGit {
         param($Arguments)
@@ -206,6 +206,7 @@ function Invoke-CiReviewedSourceRegression {
 }
 function Invoke-CiWorkloadRegression {
     param([string]$HooksRoot)
+    & {param($Root,$Helper);. $Helper;Invoke-CiReviewedRootsRegression $Root} $HooksRoot (Join-Path $PSScriptRoot '_testcireviewedroots.ps1')
     & {param($Root,$Helper);. $Helper;Invoke-CiEnrollmentRegression $Root} $HooksRoot (Join-Path $PSScriptRoot '_testcienrollment.ps1')
     & {param($Root,$Helper);. $Helper;Invoke-CiReviewedSkipRegression $Root} $HooksRoot (Join-Path $PSScriptRoot '_testcireviewedskips.ps1')
     & { param($Root); Invoke-CiReviewedTreeRegression $Root } $HooksRoot

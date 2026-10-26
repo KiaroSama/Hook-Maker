@@ -50,7 +50,9 @@ param(
     # Drop a record this tool CANNOT interpret from the registry, and nothing
     # else. Refused outright for a record that validates - a valid record has a
     # real removal path and must use it. See Remove-UninterpretableRecord.
-    [switch]$ForgetUnreadableRecord
+    [switch]$ForgetUnreadableRecord,
+    # Retire selected project operational state and sync membership as well.
+    [switch]$Complete
 )
 
 Set-StrictMode -Version 2.0
@@ -136,6 +138,9 @@ if ([string]::IsNullOrWhiteSpace($RecordId)) {
     throw '-RecordId is required.'
 }
 
+. (Join-Path $PSScriptRoot '_installlifecycle.ps1')
+$lifecycleMutex = Enter-InstallLifecycle $ToolRoot
+try {
 # ---- lookup + validate BEFORE anything is touched --------------------------
 $script:CurrentPhase = 'registry'
 $registryState = Read-InstallRegistryState -ToolRoot $ToolRoot
@@ -172,6 +177,10 @@ if ($recordValidity.Ok) { Write-ManagementAudit -Event 'uninstall-target' -Data 
 # refusal for a VALID record is what stops this becoming a way around the
 # ownership proofs.
 if ($ForgetUnreadableRecord) {
+    if ($Complete) {
+        Set-ComponentResult -Component 'registry' -Status 'manualRepair' -ReasonCode 'incompatibleRemovalMode' -Message 'Registry-only forgetting cannot prove complete removal.'
+        Write-UninstallResult -Overall 'manualRepair'; return
+    }
     if ($recordValidity.Ok) {
         Set-ComponentResult -Component 'registry' -Status 'manualRepair' -ReasonCode 'recordIsReadable' `
             -Message 'this record can be interpreted; use the normal uninstall so its files and registrations are removed too'
@@ -253,73 +262,7 @@ function Read-OrCreateJsonObject {
     return ($raw | ConvertFrom-Json)
 }
 
-$script:UninstallTimestamp = (Get-Date).ToString('yyyyMMdd-HHmmss')
-
-# Same one-backup-per-run rule as the installer (see Backup-File in
-# _installclientsettings.ps1): a bulk uninstall is one invocation per record, so
-# a single settings file used to collect one backup per removed hook. The
-# operation is part of the name, so an install run and an uninstall run in the
-# same wizard session never satisfy each other's backup.
-# Where THIS run's backup of a settings file lives. Split out so a caller that
-# deletes the file it just backed up can find that copy again.
-function Get-SettingsBackupPath {
-    param([Parameter(Mandatory = $true)][string]$Path)
-    $stamp = $script:UninstallTimestamp
-    $run = [string]$env:HOOKMAKER_BACKUP_RUN
-    if (-not [string]::IsNullOrWhiteSpace($run)) {
-        $safe = ($run -replace '[^A-Za-z0-9._-]', '')
-        if ($safe.Length -gt 40) { $safe = $safe.Substring(0, 40) }
-        if ($safe -ne '') { $stamp = 'uninstall-' + $safe }
-    }
-    return ($Path + '.backup-' + $stamp)
-}
-
-function Backup-SettingsFile {
-    param([Parameter(Mandatory = $true)][string]$Path)
-    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { return }
-    $backupPath = Get-SettingsBackupPath -Path $Path
-    if (-not (Test-Path -LiteralPath $backupPath -PathType Leaf)) {
-        Copy-Item -LiteralPath $Path -Destination $backupPath -Force
-    }
-    # ONE backup per file at a time, same rule as the installer's Backup-File:
-    # this run's copy survives, every earlier run's copy of the same file goes.
-    Remove-SupersededBackups -Path $Path -KeepPath $backupPath
-}
-
-# Same transactional pattern as Install-Hook.ps1's Write-JsonFile: serialize to
-# a sibling temp file, re-parse it to PROVE it is valid JSON, then atomically
-# replace the real file. A failure at any step leaves the original untouched.
-function Write-SettingsFileAtomic {
-    param(
-        [Parameter(Mandatory = $true)]$Value,
-        [Parameter(Mandatory = $true)][string]$Path
-    )
-    if ((Test-Path -LiteralPath $Path) -and -not (Test-Path -LiteralPath $Path -PathType Leaf)) {
-        throw ('Cannot write settings: "' + $Path + '" exists but is not a file.')
-    }
-    $directory = Split-Path -Parent $Path
-    if (-not (Test-Path -LiteralPath $directory -PathType Container)) {
-        New-Item -ItemType Directory -Path $directory -Force | Out-Null
-    }
-    $json = $Value | ConvertTo-Json -Depth 50
-    $temporaryPath = $Path + '.hookmaker-tmp-' + [guid]::NewGuid().ToString('N').Substring(0, 8)
-    try {
-        [System.IO.File]::WriteAllText($temporaryPath, $json, $Utf8NoBom)
-        $verify = [System.IO.File]::ReadAllText($temporaryPath, [System.Text.Encoding]::UTF8)
-        $null = $verify | ConvertFrom-Json
-        if (Test-Path -LiteralPath $Path -PathType Leaf) {
-            [System.IO.File]::Replace($temporaryPath, $Path, [NullString]::Value)
-        }
-        else {
-            Move-Item -LiteralPath $temporaryPath -Destination $Path -Force
-        }
-    }
-    finally {
-        if (Test-Path -LiteralPath $temporaryPath -PathType Leaf) {
-            Remove-Item -LiteralPath $temporaryPath -Force -ErrorAction SilentlyContinue
-        }
-    }
-}
+. (Join-Path $PSScriptRoot '_uninstallsettings.ps1')
 
 # Strict containment: hookDir must be a PROPER child of runtimeRoot (never
 # equal to it - that would risk wiping the whole Hook-Maker folder) and
@@ -347,10 +290,12 @@ function Remove-EmptyManagedRoot {
     # safe (no sibling, known filename, contained, not a reparse point), so
     # this only ever deletes what was already proven removable.
     foreach ($file in @(Get-RemovableSharedRuntimeRootFiles -RuntimeRoot $Root)) {
-        try { Remove-Item -LiteralPath $file -Force } catch { }
+        if ($Complete) { Remove-Item -LiteralPath $file -Force -ErrorAction Stop }
+        else { try { Remove-Item -LiteralPath $file -Force } catch { } }
     }
-    if (@(Get-ChildItem -LiteralPath $Root -Force -ErrorAction SilentlyContinue).Count -eq 0) {
-        try { Remove-Item -LiteralPath $Root -Force } catch { }
+    if (@(Get-ChildItem -LiteralPath $Root -Force -ErrorAction Stop).Count -eq 0) {
+        if ($Complete) { Remove-Item -LiteralPath $Root -Force -ErrorAction Stop }
+        else { try { Remove-Item -LiteralPath $Root -Force } catch { } }
     }
 }
 
@@ -426,6 +371,8 @@ function Remove-ClientComponentCore {
         else {
             try {
                 Invoke-WithResourceLock -ResourcePath $settingsPath -Action {
+                    $currentScan = Get-ClientHandlerScan -SettingsPath $settingsPath -Subrecord $subrecord -CanonicalRuntimeScript $identity.CanonicalRuntimeScript
+                    if ($currentScan.NearMatch) { throw 'Registration changed before settings commit; removal refused.' }
                     $json = Read-OrCreateJsonObject $settingsPath
                     if ($null -ne $json.PSObject.Properties['hooks'] -and $null -ne $json.hooks) {
                         $persistedEvents = Get-PersistedEventSet -Subrecord $subrecord
@@ -461,8 +408,16 @@ function Remove-ClientComponentCore {
     if (-not [string]::IsNullOrWhiteSpace($setAside) -and (Test-Path -LiteralPath $setAside)) {
         try { Remove-Item -LiteralPath $setAside -Recurse -Force }
         catch {
-            Set-ComponentResult -Component $ClientName -Status 'ok' -ReasonCode 'runtimeCleanupIncomplete' -Message $_.Exception.Message
-            return [pscustomobject]@{ Removed = $true }
+            $cleanupError = $_.Exception.Message
+            # Preserve the recorded path for retry instead of abandoning a random
+            # set-aside directory and dropping the only installation identity.
+            try { Move-Item -LiteralPath $setAside -Destination $hookDir -Force }
+            catch {
+                Set-ObjectProperty $subrecord 'uninstallStagedRuntime' $setAside
+                $cleanupError += '; retained cleanup directory: ' + $setAside
+            }
+            Set-ComponentResult -Component $ClientName -Status 'failed' -ReasonCode 'runtimeCleanupIncomplete' -Message $cleanupError
+            return [pscustomobject]@{ Removed = $false }
         }
     }
     Remove-EmptyManagedRoot -Root $runtimeRoot
@@ -474,53 +429,19 @@ function Remove-ClientComponentCore {
     return [pscustomobject]@{ Removed = $true }
 }
 
-# ---- native Git pre-push integration ----------------------------------------
-# Both removers edit the one generated pre-push wrapper under the same
-# ownership proof, so they share a module. Dot-sourced HERE, deliberately:
-# those functions read the record identity and $WhatIf from this scope and call
-# the settings/runtime helpers defined just above, so this line must stay after
-# them and before the first call below.
+# Native removers read record identity and the settings/runtime helpers above.
 . (Join-Path $PSScriptRoot '_uninstallnative.ps1')
 . (Join-Path $PSScriptRoot '_uninstallcireview.ps1')
-
-# ---- Test-Temp-Cleanup's per-project coordination record -------------------
-# Cloudflare-Deploy treats %LOCALAPPDATA%\HookMaker\state\TestTempCleanup-result-<key>.json
-# as the STRONG proof that Test-Temp-Cleanup is installed for a project ("only
-# the hook itself writes one"), preferring it over the weaker runtime-directory
-# listing. Uninstalling the hook is what RETIRES that ownership, so a surviving
-# record makes the proof permanently false: the release-readiness gate keeps
-# waiting for a fresh 'clean' category that nothing will ever write again, and
-# the deploy reminder is dead in that project forever. The record is evidence,
-# so the uninstall has to retire it - weakening the consumer instead would
-# trade a missed reminder for a deploy decision on unproven cleanliness, which
-# is the worse direction (see Test-CleanupInstalled's own comment block).
-#
-# The key must be spelled the way the WRITER spells it. Test-Temp-Cleanup.ps1
-# hashes Normalize-Path($cwd).ToLowerInvariant(); targetProjectRoot is only
-# GetFullPath'd at install time, and GetFullPath KEEPS a trailing separator, so
-# `-TargetProject 'C:\p\'` persists a spelling that hashes to a DIFFERENT key.
-# Canonicalizing here is what makes the delete hit the real file instead of
-# silently missing it while looking like it worked.
-#
-# Scoped to this hook and this project: never a sweep of the state directory,
-# which would retire records belonging to other projects' still-installed
-# copies. A user-scope install has no targetProjectRoot and therefore no single
-# project record to retire, so its records are deliberately left alone.
-#
-# Best effort by contract: an absent, locked or unreachable file is not an
-# uninstall failure. It runs only once every owned component came off cleanly,
-# which is also why the weaker runtime-directory signal needs nothing here -
-# that directory is deleted by the client removers above on the same success
-# path, and a partial uninstall must keep BOTH signals so the hook is not
-# reported as retired while a live registration may remain.
-function Remove-CleanupCoordinationRecord {
-    if ($FriendlyName -ne 'Test-Temp-Cleanup' -or [string]::IsNullOrWhiteSpace($RecordTargetProjectRoot)) { return }
-    try {
-        $cleanupKey = Get-ShortHash (Normalize-Path $RecordTargetProjectRoot).ToLowerInvariant()
-        Remove-Item -Force -ErrorAction SilentlyContinue -LiteralPath (
-            Join-Path $env:LOCALAPPDATA ('HookMaker\state\TestTempCleanup-result-' + $cleanupKey + '.json'))
+# TestTempCleanup-result ownership retirement lives with other exact state contracts.
+. (Join-Path $PSScriptRoot '_uninstallresidue.ps1')
+. (Join-Path $PSScriptRoot '_uninstallsync.ps1')
+$completePlan = $null
+if ($Complete) {
+    try { $completePlan = Get-CompleteUninstallPlan $record $registry; $syncPlan = Get-UninstallSyncPlan $record $registry }
+    catch {
+        Set-ComponentResult -Component 'completePreflight' -Status 'manualRepair' -ReasonCode 'ownershipUnproven' -Message $_.Exception.Message
+        Write-UninstallResult -Overall 'manualRepair'; return
     }
-    catch { }
 }
 
 # ---- execution order: native Git first (cheapest, read-mostly proof of
@@ -528,19 +449,19 @@ function Remove-CleanupCoordinationRecord {
 # is touched, matching "stop that record ... preserve every file". ----------
 $script:CurrentPhase = 'nativeGit'
 $nativeGitResult = Remove-NativeGitComponent
-$nativeGitBlocked = @($script:ComponentResults | Where-Object { $_.component -eq 'nativeGit' -and $_.status -eq 'manualRepair' }).Count -gt 0
-if ($nativeGitBlocked) {
-    Write-UninstallResult -Overall 'manualRepair'
-    Write-Host ("WARNING: the native pre-push wrapper for '" + $FriendlyName + "' is ambiguous or has drifted. Nothing was changed for this record; manual repair is required.")
+$nativeGitBlocked = @($script:ComponentResults | Where-Object { $_.component -eq 'nativeGit' -and ($_.status -eq 'manualRepair' -or ($Complete -and $_.status -eq 'failed')) })
+if ($nativeGitBlocked.Count -gt 0) {
+    Write-UninstallResult -Overall ([string]$nativeGitBlocked[-1].status)
+    Write-Host ("WARNING: native removal for '" + $FriendlyName + "' is incomplete. Tracking and client components are retained; inspect the native result before retrying.")
     return
 }
 
-# The Utf8-Encoding-Check chain stage comes off between the record's own
-# native proof and the client registrations: a manualRepair/failed result here
-# flows into the SAME partial-outcome machinery below (record retained,
-# component-level truth reported), never a silent skip.
+# Refused native ownership must not remove otherwise intact client components.
 $script:CurrentPhase = 'chainStage'
 Remove-CompanionChainStage
+$chainBlocked = @($script:ComponentResults | Where-Object { $_.component -eq 'chainStage' -and ($_.status -eq 'manualRepair' -or ($Complete -and $_.status -eq 'failed')) })
+if ($chainBlocked.Count -gt 0) { Write-UninstallResult -Overall ([string]$chainBlocked[-1].status); return }
+
 
 $script:CurrentPhase = 'claude'
 $claudeResult = Remove-ClientComponent -ClientName 'claude'
@@ -620,11 +541,35 @@ if ($anyFailed.Count -gt 0 -or $anyManual.Count -gt 0) {
     return
 }
 
-# ---- everything owned by this record came off cleanly: remove the record --
-# The coordination record is retired HERE, past the partial/ambiguous gate
-# above: a record that only partially came off may still be live for this
-# project, and its cleanup evidence must survive with it.
-Remove-CleanupCoordinationRecord
+# Retire state only after all registrations are gone; partial installs keep it.
+try {
+    if ($Complete) {
+        Invoke-UninstallSyncRetirement $syncPlan
+        if ($null -ne $syncPlan) { Move-UninstallSyncState $syncPlan }
+        Remove-CompleteUninstallState $completePlan
+        Complete-UninstallSyncJournal $syncPlan
+    }
+    else { Remove-CleanupCoordinationRecord }
+}
+catch {
+    $cleanupMessage = $_.Exception.Message
+    try {
+        Invoke-WithInstallRegistryLock -ToolRoot $ToolRoot -Action {
+            $pending = Read-InstallRegistryState $ToolRoot
+            if ($pending.State -ne 'ok') { throw 'Registry unavailable during cleanup failure recording.' }
+            $entry = @($pending.Registry.installs | Where-Object { [string]$_.id -ceq $RecordId })
+            if ($entry.Count -ne 1) { throw 'Selected record changed during cleanup.' }
+            if ($nativeGitResult.Removed -and $null -ne $entry[0].PSObject.Properties['nativeGit']) { Set-ObjectProperty $entry[0] 'nativeGit' $null }
+            Set-ObjectProperty $entry[0] 'lastResult' 'partial'
+            Set-ObjectProperty $entry[0] 'lastReason' 'registrations retired; complete cleanup still pending'
+            Save-InstallRegistry $ToolRoot $pending.Registry
+        } | Out-Null
+    } catch { $cleanupMessage += '; cleanup status could not be persisted' }
+    Set-ComponentResult -Component 'ownedCleanup' -Status 'failed' -ReasonCode 'cleanupIncomplete' -Message $cleanupMessage
+    Write-UninstallResult -Overall 'failed'
+    Write-Host 'WARNING: owned cleanup is incomplete. The installation record is retained for retry.'
+    return
+}
 
 $removeResult = $null
 try {
@@ -688,3 +633,5 @@ if (-not $removeResult.Ok) {
 Set-ComponentResult -Component 'registry' -Status 'ok'
 Write-UninstallResult -Overall 'ok'
 Write-Host ("Uninstalled '" + $FriendlyName + "' (record " + $RecordId + ").")
+}
+finally { $lifecycleMutex.ReleaseMutex(); $lifecycleMutex.Dispose() }

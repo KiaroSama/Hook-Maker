@@ -379,9 +379,29 @@ Two kinds of row are offered:
 Selecting an aggregate together with one of its own individual rows removes each installation
 exactly once (deduplicated by record id).
 
-**Your hook source files are never deleted.** Uninstalling removes only the installed runtime
-copies, the client registrations, any native Git integration owned by that record, and the registry
-record itself. The originals under `hooks\` are untouched, so you can reinstall at any time.
+**Your hook source files are never deleted.** Select an individual row to remove one hook from one
+project. For canonical managed project hooks the menu uses complete removal: owned client/runtime/native
+artifacts, exact project operational markers and tracking are removed; a sync-engine installation also
+retires that project's selected-profile routes in the canonical configuration and tracked managed
+copies. Peer-to-peer routes and other profiles remain. Pending route state/inboxes move out of active
+namespaces into route-local `retired` recovery; already-applied knowledge is never deleted.
+
+Original receipts, CI provenance consumed by other gates, audit logs, review recovery, shared ledgers,
+session-only evidence and resources with another live owner are retained and reported, not silently
+purged. Custom/discovered hooks have no general external-state cleanup contract: their proven removal
+scope stays explicit. A failed cleanup is incomplete and retains retry tracking; it cannot report a
+complete removal. Complete removal of a separately installed Secrets or UTF-8 hook also retires its
+owned companion stage from the same project's managed native chain, preserving the chain owner,
+remaining stage order and original user-hook bytes. Native install/removal share a wrapper lock;
+a verified recovery preimage remains until cleanup succeeds. A registry-scoped lifecycle lock also prevents install/uninstall overlap: installers wait within the existing 120-second registry ceiling; a busy uninstall refuses before mutation. Nothing is removed until confirmation.
+
+The scriptable equivalent is `scripts/Uninstall-Hook.ps1 -RecordId <id> -Complete`, optionally with
+`-WhatIf` and `-ResultPath`. Without `-Complete`, the legacy record-only CLI preserves sync membership.
+Complete mode refuses unsupported ownership, global scope, drift and ambiguous paths. Sync peers must
+first carry the current route-revalidation contract through a supported update; removal never silently
+updates their executable code. Routing/list metadata and recorded hashes are adjusted only for the
+retired membership, preserving unrelated drift. No all-machine wipe is implied. Original hook source
+remains available for reinstalling.
 
 **A runtime another record still uses is kept.** When two records of one hook share one installed
 runtime for a client (for example a plain custom-hook record of the sync engine next to its sync-group

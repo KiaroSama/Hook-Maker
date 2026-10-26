@@ -38,8 +38,9 @@ function Save-DocsImmutableQuery {
     $script:DocsEvidenceCache[$Key]=[string[]]$Lines.Clone();$script:DocsEvidenceBytes+=$size
 }
 function Invoke-DocsGitQuery {
-    param([string[]]$Arguments)
+    param([string[]]$Arguments,[switch]$PreserveEmptyLines)
     $key=Get-DocsImmutableQueryKey $Arguments
+    if($key-ne''-and$PreserveEmptyLines){$key+='|preserve-empty'}
     if($key-ne''-and$script:DocsEvidenceCache.ContainsKey($key)){$global:LASTEXITCODE=0;return $script:DocsEvidenceCache[$key]}
     $left = Get-GhRemainingSeconds
     if ($left -lt 3) { $script:DocsCarryoverReason = 'unknown: shared evidence deadline exhausted'; $global:LASTEXITCODE = 124; return @() }
@@ -78,7 +79,11 @@ function Invoke-DocsGitQuery {
         }
         $global:LASTEXITCODE = $process.ExitCode
         if ($process.ExitCode -notin @(0,1)) { $script:DocsCarryoverReason = 'unknown: Git evidence query failed' }
-        $lines=@($text.ToString() -split "`r?`n" | Where-Object { $_ -ne '' })
+        if($PreserveEmptyLines){
+            $content=$text.ToString()
+            if($content.EndsWith("`n")){$content=$content.Substring(0,$content.Length-1);if($content.EndsWith("`r")){$content=$content.Substring(0,$content.Length-1)}}
+            $lines=@($content -split "`r?`n")
+        }else{$lines=@($text.ToString() -split "`r?`n" | Where-Object { $_ -ne '' })}
         Save-DocsImmutableQuery -Key $key -Lines $lines
         return $lines
     }

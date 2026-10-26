@@ -57,10 +57,21 @@ exit 0
             $drift=@(Get-UpdateEvaluationPlan @($record) $ToolRoot)
             Check 'review drift requests review without a payload reinstall loop' ($drift[0].Status-ceq$current[0].Status-and@($drift[0].Reviews|Where-Object{$_.Status-ceq'review-required'}).Count-eq2-and$drift[0].Detail-match'Set-CiWorkloadReview')
         }finally{$null=Invoke-QuietCommand git @('-C',$repo,'config','branch.main.merge','refs/heads/main')}
+        $docsBytes=[Text.UTF8Encoding]::new($false).GetBytes('{"schema":3,"rationale":"owner documentation review"}')
+        foreach($client in @('claude','codex')){
+            $runtime=Split-Path -Parent (Get-ClientSubrecord $record $client).runtimeScript
+            [IO.File]::WriteAllBytes((Join-Path $runtime '_docs-policy.json'),$docsBytes)
+        }
+        $docsStatus=@(Get-UpdateEvaluationPlan @($record) $ToolRoot)
+        Check 'documentation review status is separate from enrolled CI input' (@($docsStatus[0].Reviews|Where-Object{$_.Policy-ceq'_docs-policy.json'}).Count-eq2)
         $before=@(Get-ChildItem (Join-Path $env:HOOKMAKER_STATE_DIR 'ci-review-recovery') -File -Recurse|ForEach-Object{Get-FileSha256 $_.FullName})
         $out=Join-Path $Work 'review-uninstall.out';$err=Join-Path $Work 'review-uninstall.err'
         $removed=Start-BoundedProcess -FilePath pwsh -ArgumentList @('-NoProfile','-File',(Join-Path $ToolRoot 'scripts/Uninstall-Hook.ps1'),'-RecordId',$record.id,'-ToolRoot',$ToolRoot) -TimeoutMs 60000 -RedirectStandardOutput $out -RedirectStandardError $err
         $after=@(Get-ChildItem (Join-Path $env:HOOKMAKER_STATE_DIR 'ci-review-recovery') -File -Recurse|ForEach-Object{Get-FileSha256 $_.FullName})
+        . (Join-Path $ToolRoot 'scripts/_ciworkloadreview.ps1')
+        $docsHash=Get-CiReviewBytesHash $docsBytes
+        $docsRecovery=@(Get-ChildItem (Join-Path $env:HOOKMAKER_STATE_DIR 'ci-review-recovery') -Directory|Where-Object{$_.Name-match'-docs-'}|ForEach-Object{Get-FileSha256 (Join-Path $_.FullName 'submitted.json')})
+        Check 'supported uninstall preserves both original documentation reviews outside runtime' ($removed.ExitCode-eq0-and$docsRecovery.Count-eq2-and@($docsRecovery|Where-Object{$_-ine$docsHash}).Count-eq0)
         Check 'supported uninstall retains original review recovery' ($removed.ExitCode-eq0-and@($before|Where-Object{$after-cnotcontains$_}).Count-eq0-and$after.Count-gt$before.Count) ([IO.File]::ReadAllText($out)+[IO.File]::ReadAllText($err))
     }finally{$env:PATH=$savedPath}
 }
