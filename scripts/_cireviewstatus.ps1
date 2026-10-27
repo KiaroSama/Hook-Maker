@@ -36,7 +36,9 @@ function Get-CiReviewEnrollmentStatus {
                         function Invoke-DocsGitQuery {param($Arguments,[switch]$PreserveEmptyLines);Invoke-DocsGit $Arguments}
                         $identity=@(Invoke-DocsGit @('-C',$Root,'rev-parse','HEAD','--abbrev-ref','HEAD'))
                         if($LASTEXITCODE-ne0-or$identity.Count-ne2-or$Policy.schema-notin@(2,3)){return $false}
-                        $inputs=@($Policy.candidates|ForEach-Object{[pscustomobject]@{Path=$_.path}})
+                        $review=Get-DocsClosureCandidates $Policy
+                        if($null-eq$review){return $false}
+                        $inputs=@($review.Items|ForEach-Object{[pscustomobject]@{Path=$_.path}})
                         return Test-CiReviewedClosure $Root $Policy.repository $identity[0] $Policy @($Policy.documents) $inputs $identity[1]
                     } $Record.targetProjectRoot $ToolRoot $policy
                     $state=if($valid){'review-bound'}else{'review-required'}

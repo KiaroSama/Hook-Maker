@@ -1,8 +1,37 @@
 # A reviewed baseline is immutable input evidence, never an execution result.
 # Inventory includes every path except the explicitly reviewed prose documents.
 . (Join-Path $PSScriptRoot '_docssnippets.ps1')
+function Get-DocsClosureCandidates {
+    param($Policy)
+    if(-not$Policy.PSObject.Properties['candidatePages']){return [pscustomobject]@{Items=@($Policy.candidates);Paged=$false}}
+    if($Policy.schema-ne3-or$Policy.PSObject.Properties['candidates']){return $null}
+    if($Policy.candidatePages-isnot[Array]){return $null}
+    $pages=@($Policy.candidatePages)
+    if($pages.Count-lt1-or$pages.Count-gt16){return $null}
+    $items=New-Object Collections.Generic.List[object]
+    foreach($page in $pages){
+        if($page.candidates-isnot[Array]){return $null}
+        $rows=@($page.candidates)
+        if($rows.Count-lt1-or$rows.Count-gt100){return $null}
+        $bytes=[long]0
+        foreach($row in $rows){
+            if($row.bytes-isnot[int]-and$row.bytes-isnot[long]){return $null}
+            if($row.bytes-lt0-or$row.bytes-gt1048576-$bytes){return $null}
+            $bytes+=$row.bytes;$items.Add($row)
+        }
+    }
+    return [pscustomobject]@{Items=$items.ToArray();Paged=$true}
+}
 function Get-CiClosureInventory {
-    param([string]$ProjectRoot,[string]$Sha,[string[]]$Documents)
+    param([string]$ProjectRoot,[string]$Sha,[string[]]$Documents,$Policy=$null)
+    $key=''
+    if($null-ne$Policy-and(Get-Variable DocsInventoryCache -Scope Script -ErrorAction SilentlyContinue)-and
+        (Get-Variable DocsEvidenceScope -Scope Script -ErrorAction SilentlyContinue)-and$script:DocsEvidenceScope-ne''-and$Sha-cmatch'^[a-f0-9]{40}$'-and[IO.Directory]::Exists($ProjectRoot)){
+        $physical=Get-RepositoryPhysicalRoot $ProjectRoot
+        $rootIdentity=$physical+'|'+[IO.Directory]::GetCreationTimeUtc($physical).Ticks+'|'+[IO.File]::GetCreationTimeUtc((Join-Path $physical '.git')).Ticks
+        $key=Get-RepositoryIdentityHash ((@($script:DocsEvidenceScope,$rootIdentity,$Sha,($Documents|ConvertTo-Json -Compress),($Policy|ConvertTo-Json -Depth 100 -Compress)))-join'|')
+        if($script:DocsInventoryCache.ContainsKey($key)){return $script:DocsInventoryCache[$key]}
+    }
     $rows=@(Invoke-DocsGitQuery @('-C',$ProjectRoot,'ls-tree','-r','-l',$Sha))
     if($LASTEXITCODE-ne0-or$rows.Count-eq0){return $null}
     $seen=New-Object 'Collections.Generic.HashSet[string]' ([StringComparer]::Ordinal)
@@ -16,7 +45,16 @@ function Get-CiClosureInventory {
         if($Documents-cnotcontains$path){$parts.Add($mode+'|'+$blob+'|'+$bytes.ToString([Globalization.CultureInfo]::InvariantCulture)+'|'+$path)}
     }
     [string[]]$ordered=$parts.ToArray();[Array]::Sort($ordered,[StringComparer]::Ordinal)
-    return [pscustomobject]@{Fingerprint=Get-RepositoryIdentityHash ($ordered-join"`n");Count=$ordered.Count;Entries=$entries}
+    $inventory=[pscustomobject]@{Fingerprint=Get-RepositoryIdentityHash ($ordered-join"`n");Count=$ordered.Count;Entries=$entries}
+    # Parsing an immutable tree twice adds no evidence; only successful bounded
+    # inventories in this invocation/review scope are reusable, never verdicts.
+    if($key-ne''){
+        $size=[Text.Encoding]::UTF8.GetByteCount(($rows-join"`n"))
+        if($script:DocsInventoryCache.Count-lt32-and$script:DocsInventoryBytes+$size-le4194304){
+            $script:DocsInventoryCache[$key]=$inventory;$script:DocsInventoryBytes+=$size
+        }
+    }
+    return $inventory
 }
 function Test-CiClosureProse {
     param([string]$ProjectRoot,[string]$Sha,[string]$Path)
@@ -42,6 +80,8 @@ function Test-CiReviewedClosure {
     try {
         if($Policy.schema-notin@(2,3)-or$Policy.repository-ine$RepoSlug-or$Policy.verdict-cne'non-semantic'-or
             $Policy.PSObject.Properties['results']-or[string]::IsNullOrWhiteSpace([string]$Policy.rationale)){return $false}
+        $candidateReview=Get-DocsClosureCandidates $Policy
+        if($null-eq$candidateReview){return $false}
         foreach($binding in @($Policy.baseline,$Policy.ancestor)){
             if($binding.sha-cnotmatch'^[a-f0-9]{40}$'-or$binding.tree-cnotmatch'^[a-f0-9]{40}$'){return $false}
             $tree=(@(Invoke-DocsGit @('-C',$ProjectRoot,'rev-parse',($binding.sha+'^{tree}')))-join'').Trim()
@@ -63,24 +103,22 @@ function Test-CiReviewedClosure {
             if($document-isnot[string]-or$document-cnotmatch'^[A-Za-z0-9_./-]+\.(md|txt)$'-or$document-match'(^|/)\.\.?(/|$)'-or-not$paths.Add($document)){return $false}
         }
         foreach($file in $Files){if(-not$paths.Contains($file)){return $false}}
-        $baseline=Get-CiClosureInventory $ProjectRoot $Policy.baseline.sha $documents
-        $current=Get-CiClosureInventory $ProjectRoot $Sha $documents
-        $prior=Get-CiClosureInventory $ProjectRoot $Policy.ancestor.sha $documents
+        $baseline=Get-CiClosureInventory $ProjectRoot $Policy.baseline.sha $documents $Policy
+        $current=Get-CiClosureInventory $ProjectRoot $Sha $documents $Policy
+        $prior=Get-CiClosureInventory $ProjectRoot $Policy.ancestor.sha $documents $Policy
         if($null-eq$baseline-or$null-eq$current-or$null-eq$prior-or$Policy.inventory.sha256-cnotmatch'^[a-f0-9]{64}$'-or
             $baseline.Fingerprint-cne$Policy.inventory.sha256-or$baseline.Count-ne$Policy.inventory.count-or
             $current.Fingerprint-cne$baseline.Fingerprint-or$prior.Fingerprint-cne$baseline.Fingerprint){return $false}
         foreach($document in $documents){
-            foreach($inventory in @($baseline,$current,$prior)){
-                if(-not$inventory.Entries.ContainsKey($document)-or$inventory.Entries[$document].Mode-cne'100644'){return $false}
-            }
-            foreach($object in @($Policy.baseline.sha,$Sha,$Policy.ancestor.sha)){
-                if(-not(Test-DocsClosureDocument $ProjectRoot $object $document $Policy)){return $false}
+            foreach($binding in @(@{Sha=$Policy.baseline.sha;Inventory=$baseline},@{Sha=$Sha;Inventory=$current},@{Sha=$Policy.ancestor.sha;Inventory=$prior})){
+                if(-not(Test-DocsClosureDocumentIdentity $binding.Inventory $binding.Sha $Sha $Policy $document)-or
+                    -not(Test-DocsClosureDocument $ProjectRoot $binding.Sha $document $Policy)){return $false}
             }
         }
-        $reviews=@($Policy.candidates)
+        $reviews=@($candidateReview.Items)
         # Explicit schema3 review binds identities without reading source bodies;
         # automatic inspection and older review contracts keep their original caps.
-        $limit=if($Policy.schema-eq3){256}else{100}
+        $limit=if($candidateReview.Paged){1600}elseif($Policy.schema-eq3){256}else{100}
         $byteLimit=if($Policy.schema-eq3){16777216}else{1048576}
         if($reviews.Count-ne$Candidates.Count-or$reviews.Count-gt$limit){return $false}
         $actualPaths=New-Object 'Collections.Generic.HashSet[string]' ([StringComparer]::Ordinal)
@@ -93,8 +131,9 @@ function Test-CiReviewedClosure {
                 ($paths.Contains($review.path)-and$review.role-cne'prose-reference')-or
                 [string]::IsNullOrWhiteSpace([string]$review.rationale)-or
                 $review.role-cnotin@('output-only','process-stream','socket-stream','fixed-unrelated-input','opaque-reference','prose-reference','hygiene-only','packaging-identity')){return $false}
-            if($current.Entries[$review.path].Bytes-gt$byteLimit-$reviewBytes){return $false}
-            $reviewBytes+=$current.Entries[$review.path].Bytes
+            $entry=if($candidateReview.Paged){$baseline.Entries[$review.path]}else{$current.Entries[$review.path]}
+            if($entry.Bytes-gt$byteLimit-$reviewBytes){return $false}
+            $reviewBytes+=$entry.Bytes
             if($reviewBytes-gt$byteLimit-or-not$actualPaths.Contains($review.path)){return $false}
         }
         return $true

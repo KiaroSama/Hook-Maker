@@ -5,6 +5,8 @@ function Initialize-DocsEvidenceCache {
     $script:DocsEvidenceScope=$ScopeKey
     $script:DocsEvidenceCache=New-Object 'Collections.Generic.Dictionary[string,object]' ([StringComparer]::Ordinal)
     $script:DocsEvidenceBytes=0
+    $script:DocsInventoryCache=New-Object 'Collections.Generic.Dictionary[string,object]' ([StringComparer]::Ordinal)
+    $script:DocsInventoryBytes=0
 }
 function Get-DocsImmutableQueryKey {
     param([string[]]$Arguments)

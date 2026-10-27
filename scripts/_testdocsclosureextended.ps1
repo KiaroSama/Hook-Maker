@@ -1,6 +1,7 @@
 # Complete reviewed identities exercise the real validator; only Git is external.
+param([switch]$RunRegression)
 function Invoke-DocsClosureExtendedRegression {
-    param([string]$HooksRoot,[switch]$SmokeOnly)
+    param([string]$HooksRoot,[switch]$SmokeOnly,[switch]$PagedOnly)
     . (Join-Path $HooksRoot '_hooklib.ps1')
     . (Join-Path $HooksRoot 'Ci-Status-Check/_ciclosure.ps1')
     $base='a'*40;$ancestor='b'*40;$final='c'*40;$tree='d'*40;$blob='e'*40
@@ -30,14 +31,55 @@ function Invoke-DocsClosureExtendedRegression {
         }
         if($script:ExtendedCase-eq'transitive'){return $rows+@("100644 blob $blob 3`tother/input.py","100644 blob $blob 20`t$document")}
         if($script:ExtendedCase-eq'mode'){return @($rows|ForEach-Object{$_-replace'^100644','100755'})+"100644 blob $blob 20`t$document"}
-        return $rows+"100644 blob $blob 20`t$document"
+        $resultRows=$rows
+        if($script:ExtendedCase-in@('page-byte-max','page-byte-over')){$resultRows=@($rows|ForEach-Object{if($_-ceq"100644 blob $blob 42`tscripts/reader-0.py"){"100644 blob $blob $script:ExtendedFirstBytes`tscripts/reader-0.py"}else{$_}})}
+        $docBlob=if($script:ExtendedCase-eq'unknown-document'-and$Arguments[-1]-ceq$final){'0'*40}else{$blob}
+        return $resultRows+"100644 blob $docBlob 20`t$document"
     }
-    $cases=if($SmokeOnly){@('complete')}else{@('complete','omitted','extra','duplicate','blob','bytes','role','transitive','mode','snippet','blank','block-context','inline','include','ambiguous','contract','branch','legacy','limit','size','results','contracts-duplicate')}
+    $pageCases=@('paged','page-mixed','page-empty','page-count','page-entry-count','page-duplicate','page-missing','page-extra','page-blob','page-role','page-before','page-after','page-pair-missing','page-pair-duplicate','page-repo','page-branch','page-legacy','page-results','page-byte-max','page-byte-over','page-byte-negative','page-byte-string','page-sixteen','page-snippet','page-unknown-document','page-tree')
+    $cases=if($PagedOnly){@('paged')}elseif($SmokeOnly){@('complete')}else{@('complete','omitted','extra','duplicate','blob','bytes','role','transitive','mode','snippet','blank','block-context','inline','include','ambiguous','contract','branch','legacy','limit','size','results','contracts-duplicate')+$pageCases}
     foreach($case in $cases){
         $script:ExtendedCase=$case
         $copy=$policy|ConvertTo-Json -Depth 12|ConvertFrom-Json
         $actual=$inputs
+        if($case-in$pageCases){
+            $copy|Add-Member candidatePages @([pscustomobject]@{candidates=@($copy.candidates|Select-Object -First 100)},[pscustomobject]@{candidates=@($copy.candidates|Select-Object -Skip 100)})
+            $copy.PSObject.Properties.Remove('candidates')
+            $copy.documentContracts[0]|Add-Member beforeBlob $blob
+            $copy.documentContracts[0]|Add-Member afterBlob $blob
+        }
+        if($case-in@('page-byte-max','page-byte-over')){
+            $firstBytes=if($case-eq'page-byte-max'){1044418}else{1044419}
+            $copy.candidatePages[0].candidates[0].bytes=$firstBytes
+            $script:ExtendedFirstBytes=$firstBytes
+            [string[]]$sized=@($parts|ForEach-Object{if($_-ceq"100644|$blob|42|scripts/reader-0.py"){"100644|$blob|$firstBytes|scripts/reader-0.py"}else{$_}})
+            [Array]::Sort($sized,[StringComparer]::Ordinal)
+            $copy.inventory.sha256=Get-RepositoryIdentityHash ($sized-join"`n")
+        }
         switch($case){
+            page-mixed {$copy|Add-Member candidates @()}
+            page-empty {$copy.candidatePages=@()}
+            page-count {$copy.candidatePages=@($copy.candidatePages[0])*17}
+            page-entry-count {$copy.candidatePages[0].candidates+=@($copy.candidatePages[1].candidates[0]);$copy.candidatePages[1].candidates=@($copy.candidatePages[1].candidates|Select-Object -Skip 1)}
+            page-duplicate {$copy.candidatePages[1].candidates[0].path=$copy.candidatePages[0].candidates[0].path}
+            page-missing {$copy.candidatePages[1].candidates=@($copy.candidatePages[1].candidates|Select-Object -Skip 1)}
+            page-extra {$actual=$inputs+@([pscustomobject]@{Path='extra.py'})}
+            page-blob {$copy.candidatePages[0].candidates[0].blob='0'*40}
+            page-role {$copy.candidatePages[0].candidates[0].role='semantic-read'}
+            page-before {$copy.documentContracts[0].beforeBlob='0'*40}
+            page-after {$copy.documentContracts[0].afterBlob='0'*40}
+            page-pair-missing {$copy.documentContracts[0].PSObject.Properties.Remove('afterBlob')}
+            page-pair-duplicate {$copy.documentContracts+=@($copy.documentContracts[0])}
+            page-repo {$copy.repository='other/repo'}
+            page-branch {$copy.destinationBranches=@('other')}
+            page-legacy {$copy.schema=2}
+            page-results {$copy|Add-Member results success}
+            page-byte-negative {$copy.candidatePages[0].candidates[0].bytes=-1}
+            page-byte-string {$copy.candidatePages[0].candidates[0].bytes='42'}
+            page-sixteen {$copy.candidatePages=@(0..15|ForEach-Object{[pscustomobject]@{candidates=@($reviews|Select-Object -Skip ($_*10) -First 10)}})}
+            page-snippet {$script:ExtendedCase='snippet'}
+            page-unknown-document {$script:ExtendedCase='unknown-document'}
+            page-tree {$copy.inventory.sha256='0'*64}
             omitted {$copy.candidates=@($copy.candidates|Select-Object -Skip 1)}
             extra {$actual=$inputs+@([pscustomobject]@{Path='extra.py'})}
             duplicate {$copy.candidates[1].path=$copy.candidates[0].path}
@@ -53,6 +95,17 @@ function Invoke-DocsClosureExtendedRegression {
             contracts-duplicate {$copy.documentContracts+=@($copy.documentContracts[0])}
         }
         $ok=Test-CiReviewedClosure fixture owner/repo $final $copy @($document) $actual main $ancestor
-        Check ('complete reviewed docs '+$case) ($ok-eq($case-eq'complete'))
+        Check ('complete reviewed docs '+$case) ($ok-eq($case-in@('complete','paged','page-byte-max','page-sixteen')))
     }
+}
+if($RunRegression){
+    Set-StrictMode -Version 2.0
+    $ErrorActionPreference='Stop'
+    . (Join-Path $PSScriptRoot '_testlib.ps1')
+    $script:Pass=0;$script:Fail=0
+    $hooks=Join-Path (Split-Path -Parent $PSScriptRoot) 'hooks'
+    Invoke-DocsClosureExtendedRegression $hooks
+    & {param($Root,$Helper);. $Helper;Invoke-CiQueryRegression $Root} $hooks (Join-Path $PSScriptRoot '_testciquery.ps1')
+    Write-Output "Passed: $script:Pass Failed: $script:Fail"
+    exit $script:Fail
 }

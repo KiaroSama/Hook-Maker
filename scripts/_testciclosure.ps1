@@ -2,6 +2,13 @@
 function Invoke-CiClosureRegression {
     param([string]$HooksRoot)
     & {param($Root,$Helper);. $Helper;Invoke-DocsClosureExtendedRegression $Root} $HooksRoot (Join-Path $PSScriptRoot '_testdocsclosureextended.ps1')
+    $work=New-TestWorkspace 'docs-closure-framework'
+    try {
+        $out=Join-Path $work 'framework.out';$err=Join-Path $work 'framework.err'
+        $hostRun=Start-BoundedProcess -FilePath powershell.exe -ArgumentList @('-NoLogo','-NoProfile','-NonInteractive','-File',(Join-Path $PSScriptRoot '_testdocsclosureextended.ps1'),'-RunRegression') -TimeoutMs 30000 -RedirectStandardOutput $out -RedirectStandardError $err
+        Check 'Framework executes complete closure and invocation memo controls' ($hostRun.ExitCode-eq0-and[IO.File]::ReadAllText($err,[Text.Encoding]::UTF8)-eq'') ([IO.File]::ReadAllText($out,[Text.Encoding]::UTF8)+[IO.File]::ReadAllText($err,[Text.Encoding]::UTF8))
+        $hostRun.Dispose()
+    }finally{if(-not(Remove-TestWorkspace $work)){$script:Fail++}}
     . (Join-Path $HooksRoot '_hooklib.ps1')
     . (Join-Path $HooksRoot 'Ci-Status-Check/_ciclosure.ps1')
     $base='a'*40;$ancestor='b'*40;$final='c'*40;$tree='d'*40;$blob='e'*40;$doc='f'*40

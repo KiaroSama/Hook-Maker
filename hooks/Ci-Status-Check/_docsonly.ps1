@@ -92,10 +92,10 @@ function Get-DocsOnlyCarryover {
     $ordered = @($candidates.ToArray())
     if($null-ne$script:DocsReviewedClosure){
         foreach($object in @($Sha)+$ordered){
-            $inventory=Get-CiClosureInventory $ProjectRoot $object @($script:DocsReviewedClosure.documents)
+            $inventory=Get-CiClosureInventory $ProjectRoot $object @($script:DocsReviewedClosure.documents) $script:DocsReviewedClosure
             if($null-eq$inventory-or$inventory.Fingerprint-cne$script:DocsReviewedClosure.inventory.sha256){return $null}
             foreach($document in @($script:DocsReviewedClosure.documents)){
-                if(-not$inventory.Entries.ContainsKey($document)-or$inventory.Entries[$document].Mode-cne'100644'-or
+                if(-not(Test-DocsClosureDocumentIdentity $inventory $object $Sha $script:DocsReviewedClosure $document)-or
                     -not(Test-DocsClosureDocument $ProjectRoot $object $document $script:DocsReviewedClosure)){return $null}
             }
         }

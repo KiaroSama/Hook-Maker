@@ -26,6 +26,20 @@ function Get-DocsProtectedProjection {
     if($fence-ne''){return $null}
     return [pscustomobject]@{Sha256=Get-RepositoryIdentityHash ($parts.ToArray()-join"`n")}
 }
+function Test-DocsClosureDocumentIdentity {
+    param($Inventory,[string]$Sha,[string]$CurrentSha,$Policy,[string]$Path)
+    if(-not$Inventory.Entries.ContainsKey($Path)-or$Inventory.Entries[$Path].Mode-cne'100644'){return $false}
+    if(-not$Policy.PSObject.Properties['candidatePages']){return $true}
+    $contracts=@($Policy.documentContracts|Where-Object{$_.path-ceq$Path})
+    if($contracts.Count-ne1){return $false}
+    $contract=$contracts[0]
+    if($contract.beforeBlob-isnot[string]-or$contract.afterBlob-isnot[string]-or
+        $contract.beforeBlob-cnotmatch'^[a-f0-9]{40}$'-or$contract.afterBlob-cnotmatch'^[a-f0-9]{40}$'){return $false}
+    $blob=$Inventory.Entries[$Path].Blob
+    if(($Sha-ceq$Policy.baseline.sha-or$Sha-ceq$Policy.ancestor.sha)-and$blob-cne$contract.beforeBlob){return $false}
+    if($Sha-ceq$CurrentSha-and$blob-cne$contract.afterBlob){return $false}
+    return @($contract.beforeBlob,$contract.afterBlob)-ccontains$blob
+}
 function Test-DocsClosureDocument {
     param([string]$ProjectRoot,[string]$Sha,[string]$Path,$Policy)
     if($Policy.schema-ne3){return Test-CiClosureProse $ProjectRoot $Sha $Path}

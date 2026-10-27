@@ -128,6 +128,13 @@ exit 1
             & git -C $repo add .; & git -C $repo commit -qm 'docs [skip ci]'
             $reviewFinal=([string](& git -C $repo rev-parse HEAD)).Trim()
             & git -C $repo update-ref refs/remotes/origin/main $reviewFinal
+            $finalInventory=Get-CiClosureInventory $repo $reviewFinal $documents
+            foreach($contract in $policy.documentContracts){
+                $contract.beforeBlob=$inventory.Entries[$contract.path].Blob
+                $contract.afterBlob=$finalInventory.Entries[$contract.path].Blob
+            }
+            $policy.candidatePages=@(@{candidates=@($policy.candidates|Select-Object -First 100)},@{candidates=@($policy.candidates|Select-Object -Skip 100)})
+            $policy.Remove('candidates')
             $unreviewed=Test-DocsHaveSemanticConsumers $repo $reviewFinal $documents 'owner/repo'
             Check '155-reader automatic path retains original candidate refusal' ($unreviewed-and$script:DocsCarryoverReason-match'more than 100')
             $runtime=Join-Path $root 'reviewed-runtime/Ci-Status-Check'
