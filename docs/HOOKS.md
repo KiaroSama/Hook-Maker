@@ -490,9 +490,10 @@ An invalid value is reported once in plain text and the default is used: a malfo
 
 ## `Test-Run-Guard`
 
-Clean and untracked-only acquisition uses three Git launches with the exact ordinal v1 fingerprint, including space-path quoting. Initially tracked-dirty trees retain the four-launch route. Present-empty Git configuration is preserved from the environment block on both hosts; absent pairs refuse. The four-second admission deadline, physical-root checks and exact-root approval remain unchanged. See the [recovery contract](TEST-HOOK-RECOVERY.md).
 
 **Runs:** pre-task + post-task (PreToolUse, PostToolUse).
+
+Clean and untracked-only acquisition uses three Git launches with the exact ordinal v1 fingerprint, including space-path quoting. Initially tracked-dirty trees retain the four-launch route. Present-empty Git configuration is preserved from the environment block on both hosts; absent pairs refuse. The four-second admission deadline, physical-root checks and exact-root approval remain unchanged. See the [recovery contract](TEST-HOOK-RECOVERY.md).
 
 **Literal binding preflight:** an already-guarded invocation with a missing, blank, unusable or stale `-ProjectFingerprint` is refused before execution and before an observation is written. The response supplies the current literal fingerprint and an exact correction changing only that parameter; command, working directory, wall/idle limits, workers and all other options are preserved. No tool input is rewritten and no permission is granted. A literal `-WorkingDirectory` outside hook cwd is refused explicitly: run from that project's session context and obtain its fingerprint, never bind its receipt to this project. Dynamic or unsupported identity/cwd syntax remains advisory with no fabricated observation. Direct standalone callers must now pass a nonempty fingerprint: the runner exits `3` before sibling initialization, capture files, child startup or evidence publication when omitted/blank; it never guesses one. Existing raw-command replacement still supplies the identity. Historical receipts/observations are not backfilled, and completion matching/supersession/one-to-one assignment are unchanged.
 
