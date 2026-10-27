@@ -26,6 +26,27 @@ function Invoke-RepositoryAccessRegression {
         Set-RepositoryRootApproval -ProjectRoot $repo -Approve -OwnerConfirmed
         $approved=Get-RepositoryStateEvidence $repo
         Check 'approved exact root preserves independently obtained state fingerprint' ($approved.State-eq'available'-and$approved.BindingFingerprint-eq$ordinary)
+        $probe=Join-Path $work 'empty-config-probe.ps1'
+        Write-Utf8 $probe @'
+param([string]$Library,[string]$Repository,[string]$Mode)
+$ErrorActionPreference='Stop'
+. (Join-Path $Library '_processlib.ps1')
+. (Join-Path $Library '_repositoryaccess.ps1')
+if($Mode-eq'absent'){Remove-Item Env:GIT_CONFIG_VALUE_0 -ErrorAction Stop}
+$inherited=[Environment]::GetEnvironmentVariables()
+$snapshot=Get-RepositoryAccessSnapshot $Repository
+if($Mode-eq'empty') {
+    if(-not$inherited.Contains('GIT_CONFIG_VALUE_0')-or$inherited['GIT_CONFIG_VALUE_0']-cne''-or$snapshot.State-cne'available'-or$snapshot.GitEnvironment.GIT_CONFIG_VALUE_0-cne''){throw 'Present-empty reset did not reach actual Git with exact-root approval.'}
+}else{
+    if($inherited.Contains('GIT_CONFIG_VALUE_0')-or$snapshot.State-cne'unavailable'-or$snapshot.Fingerprint-cne''-or$snapshot.Diagnosis-cne'repositoryIdentityOrConfigurationInvalid'){throw 'Absent runtime config pair was not refused.'}
+}
+'@
+        foreach($hostName in @('pwsh','powershell.exe')) {
+            foreach($mode in @('empty','absent')) {
+                $result=Invoke-QuietCommand -FilePath $hostName -ArgumentList @('-NoProfile','-File',$probe,'-Library',(Join-Path $Root 'hooks'),'-Repository',$repo,'-Mode',$mode) -Environment @{GIT_CONFIG_COUNT='1';GIT_CONFIG_KEY_0='safe.directory';GIT_CONFIG_VALUE_0=''} -CaptureOutput -TimeoutSeconds 12
+                Check ($hostName+': actual '+$mode+' Git config pair preserves approval boundary') ($null-ne$result-and$result.ExitCode-eq0-and[string]::IsNullOrWhiteSpace($result.ErrorOutput)) ($result.Output+$result.ErrorOutput)
+            }
+        }
         $other=Join-Path $work 'unapproved root';[void][IO.Directory]::CreateDirectory($other)
         & git -c ('safe.directory='+$other) -C $other init -q -b main
         $otherState=Get-RepositoryStateEvidence $other
@@ -71,7 +92,7 @@ function Invoke-RepositoryAccessRegression {
             function Invoke-QuietCommand {
                 param($FilePath,$ArgumentList,[switch]$CaptureOutput,$Environment,$TimeoutSeconds,$TimeoutMilliseconds)
                 $script:RepositoryFixtureStep++
-                $text=if($ArgumentList-contains'--show-toplevel'){$repo+"`nabc123"}elseif($ArgumentList-contains'HEAD'){'abc123'}elseif($script:RepositoryFixtureStep-lt4){'?? before.txt'}else{'?? after.txt'}
+                $text=if($ArgumentList-contains'--show-toplevel'){$repo+"`nabc123"}elseif($ArgumentList-contains'HEAD'){'abc123'}elseif($script:RepositoryFixtureStep-lt4){' M before.txt'}else{' M after.txt'}
                 return [pscustomobject]@{ExitCode=0;Output=$text;ErrorOutput=''}
             }
             $changing=Get-RepositoryStateEvidence $repo

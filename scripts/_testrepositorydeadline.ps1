@@ -1,4 +1,48 @@
 # Deterministic clock at the acquisition boundary; Git access/state guards stay real.
+param([switch]$UntrackedOnly)
+function Invoke-RepositoryUntrackedRegression {
+    param([string]$Root)
+    . (Join-Path $Root 'hooks/_hooklib.ps1')
+    $work=New-TestWorkspace -Prefix 'hookmaker-untracked-acquisition'
+    try {
+        $repo=Join-Path $work 'bounded root';[void][IO.Directory]::CreateDirectory((Join-Path $repo '.git'))
+        $script:UntrackedClock=[pscustomobject]@{Elapsed=[TimeSpan]::Zero}
+        $body=(Get-Command Get-RepositoryAccessSnapshot).ScriptBlock.ToString().Replace('[Diagnostics.Stopwatch]::StartNew()','$script:UntrackedClock')
+        Set-Item Function:Get-RepositoryAccessSnapshot -Value ([scriptblock]::Create($body))
+        foreach($case in @('space','quoted','unicode','added','removed','head','tracked','conflict','timeout')) {
+            $script:UntrackedCalls=0;$script:UntrackedClock.Elapsed=[TimeSpan]::Zero
+            $v1='?? z.txt'+"`n"+'?? "spaced name.txt"'
+            $v2='? spaced name.txt'+"`n? z.txt"
+            if($case-eq'quoted'){$v1='?? "escaped\tname.txt"';$v2='? "escaped\tname.txt"'}
+            if($case-eq'unicode'){$v1='?? '+[char]0x03A9+'.txt';$v2='? '+[char]0x03A9+'.txt'}
+            function Invoke-QuietCommand {
+                param($FilePath,$ArgumentList,$TimeoutMilliseconds,[switch]$CaptureOutput,$Environment)
+                $script:UntrackedCalls++
+                if($TimeoutMilliseconds-lt1100){return [pscustomobject]@{ExitCode=124;Output='';ErrorOutput=''}}
+                $script:UntrackedClock.Elapsed+=[TimeSpan]::FromMilliseconds(1100)
+                $text=if($ArgumentList-contains'--show-toplevel'){$repo+"`n"+('a'*40)}
+                elseif($ArgumentList-contains'HEAD'){'a'*40}
+                elseif($ArgumentList-contains'--porcelain=v2'){
+                    if($case-eq'timeout'){return [pscustomobject]@{ExitCode=124;Output='';ErrorOutput=''}}
+                    $oid=if($case-eq'head'){'b'*40}else{'a'*40}
+                    $items=switch($case){'added'{$v2+"`n? extra.txt"} 'removed'{''} 'tracked'{'1 .M N... tracked.txt'} 'conflict'{'u UU N... conflict.txt'} default{$v2}}
+                    '# branch.oid '+$oid+"`n# branch.head main`n"+$items
+                }
+                else{$v1}
+                return [pscustomobject]@{ExitCode=0;Output=$text;ErrorOutput=''}
+            }
+            $result=Get-RepositoryAccessSnapshot $repo
+            $preimage=switch($case){'quoted'{'?? "escaped\tname.txt"'} 'unicode'{'?? '+[char]0x03A9+'.txt'} default{'?? "spaced name.txt"|?? z.txt'}}
+            $expected=(Get-RepositoryIdentityHash (('a'*40)+'|'+$preimage)).Substring(0,10)
+            if($case-in@('space','quoted','unicode')) {
+                Check ('untracked-only exact legacy identity with three launches: '+$case) ($result.State-ceq'available'-and$result.Fingerprint-ceq$expected-and$script:UntrackedCalls-eq3) ($result|ConvertTo-Json -Compress)
+            }else{
+                $diagnosis=if($case-eq'timeout'){'gitTimedOut'}else{'repositoryChanged'}
+                Check ('untracked-only inconsistent snapshot refuses: '+$case) ($result.State-ceq'unavailable'-and$result.Diagnosis-ceq$diagnosis-and$result.Fingerprint-ceq'') ($result|ConvertTo-Json -Compress)
+            }
+        }
+    }finally{if(-not(Remove-TestWorkspace $work)){$script:Fail++}}
+}
 function Invoke-RepositoryFinalDeadlineRegression {
     param([string]$Root)
     . (Join-Path $Root 'hooks/_hooklib.ps1')
@@ -24,7 +68,7 @@ function Invoke-RepositoryFinalDeadlineRegression {
             $elapsed=if($final){if($script:FinalCase-eq'last-query-expired'-or$dirty){4100}elseif($script:FinalCase-eq'exact-boundary'){4000}else{3999}}else{100*$script:FinalCalls}
             $script:FinalDeadlineClock.Elapsed=[TimeSpan]::FromMilliseconds($elapsed)
             $oid='a'*40
-            $output=if($ArgumentList-contains'--show-toplevel'){$repo+"`n"+$oid}elseif($ArgumentList-contains'HEAD'){$oid}elseif($ArgumentList-contains'--porcelain=v2'){'# branch.oid '+$oid+"`n# branch.head main"}elseif($dirty){'?? a.txt'}else{''}
+            $output=if($ArgumentList-contains'--show-toplevel'){$repo+"`n"+$oid}elseif($ArgumentList-contains'HEAD'){$oid}elseif($ArgumentList-contains'--porcelain=v2'){'# branch.oid '+$oid+"`n# branch.head main"}elseif($dirty){' M a.txt'}else{''}
             return [pscustomobject]@{ExitCode=0;Output=$output;ErrorOutput=''}
         }
         foreach($case in @('within','exact-boundary','last-query-expired','identity-expired','dirty-expired')){
@@ -41,6 +85,10 @@ function Invoke-RepositoryFinalDeadlineRegression {
 }
 function Invoke-RepositoryDeadlineRegression {
     param([string]$Root)
+    & {param($Source);Invoke-RepositoryUntrackedRegression $Source} $Root
+    . (Join-Path $Root 'hooks/_hooklib.ps1')
+    $framework=Invoke-QuietCommand -FilePath powershell.exe -ArgumentList @('-NoProfile','-File',(Join-Path $Root 'scripts/_testrepositorydeadline.ps1'),'-UntrackedOnly') -CaptureOutput -TimeoutMilliseconds 15000
+    Check 'Framework executes untracked snapshot controls' ($null-ne$framework-and$framework.ExitCode-eq0-and$framework.Output-match'Passed: 9 Failed: 0'-and[string]::IsNullOrWhiteSpace($framework.ErrorOutput)) ($framework.Output+$framework.ErrorOutput)
     & {param($Source);Invoke-RepositoryFinalDeadlineRegression $Source} $Root
     . (Join-Path $Root 'hooks/_hooklib.ps1')
     $work=New-TestWorkspace -Prefix 'hookmaker-repository-deadline'
@@ -63,7 +111,7 @@ function Invoke-RepositoryDeadlineRegression {
             $script:AcquisitionClock.Elapsed=[TimeSpan]::FromMilliseconds(1800+($script:AcquisitionCalls-1)*700)
             $output=if($ArgumentList-contains'--show-toplevel'){
                 if($ArgumentList-contains'HEAD'){$repo+"`nabc123"}else{$repo}
-            }elseif($ArgumentList-contains'HEAD'){'abc123'}else{'?? a.txt'}
+            }elseif($ArgumentList-contains'HEAD'){'abc123'}else{' M a.txt'}
             return [pscustomobject]@{ExitCode=0;Output=$output;ErrorOutput=''}
         }
         $snapshot=Get-RepositoryAccessSnapshot $repo
@@ -80,7 +128,7 @@ function Invoke-RepositoryDeadlineRegression {
                         'wrong-root'{$work+"`nabc123"}
                         default{$repo+"`nabc123"}
                     }
-                }elseif($ArgumentList-contains'HEAD'){if($bad-eq'changed-head'){'different'}else{'abc123'}}else{'?? a.txt'}
+                }elseif($ArgumentList-contains'HEAD'){if($bad-eq'changed-head'){'different'}else{'abc123'}}else{' M a.txt'}
                 return [pscustomobject]@{ExitCode=0;Output=$output;ErrorOutput=''}
             }
             $refused=Get-RepositoryAccessSnapshot $repo
@@ -116,7 +164,7 @@ function Invoke-RepositoryDeadlineRegression {
                     }
                     $headers-join"`n"
                 }elseif($case-in@('dirty','dirty-changed')){
-                    if($case-eq'dirty-changed'-and$script:AcquisitionCalls-eq4){'?? after.txt'}else{'?? a.txt'}
+                    if($case-eq'dirty-changed'-and$script:AcquisitionCalls-eq4){' M after.txt'}else{' M a.txt'}
                 }else{''}
                 return [pscustomobject]@{ExitCode=0;Output=$output;ErrorOutput=''}
             }
@@ -125,7 +173,7 @@ function Invoke-RepositoryDeadlineRegression {
                 $legacy=(Get-RepositoryIdentityHash ($oid+'|')).Substring(0,10)
                 Check ('clean acquisition retains legacy fingerprint with three launches: '+$case) ($current.State-eq'available'-and$current.Fingerprint-ceq$legacy-and$script:AcquisitionCalls-eq3-and$script:AcquisitionBudgets[2].Milliseconds-le1800)
             }elseif($case-eq'dirty'){
-                $legacy=(Get-RepositoryIdentityHash ($oid+'|?? a.txt')).Substring(0,10)
+                $legacy=(Get-RepositoryIdentityHash ($oid+'| M a.txt')).Substring(0,10)
                 Check 'dirty acquisition retains four-launch legacy preimage without v2 path conversion' ($current.State-eq'available'-and$current.Fingerprint-ceq$legacy-and$script:AcquisitionCalls-eq4)
             }else{
                 $diagnosis=if($case-eq'v2-timeout'){'gitTimedOut'}elseif($case-in@('dirty-changed','became-dirty','changed-head')){'repositoryChanged'}else{'gitFailed'}
@@ -155,4 +203,12 @@ function Invoke-RepositoryDeadlineRegression {
         Set-Item Function:Get-RepositoryAccessSnapshot -Value $originalSnapshot
         if(-not(Remove-TestWorkspace $work)){$script:Fail++}
     }
+}
+if($UntrackedOnly) {
+    $ErrorActionPreference='Stop'
+    . (Join-Path $PSScriptRoot '_testlib.ps1')
+    $script:Pass=0;$script:Fail=0
+    Invoke-RepositoryUntrackedRegression (Split-Path -Parent $PSScriptRoot)
+    Write-Output ('Passed: '+$script:Pass+' Failed: '+$script:Fail)
+    exit $script:Fail
 }

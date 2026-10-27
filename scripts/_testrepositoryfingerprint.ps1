@@ -17,11 +17,11 @@ function Invoke-RepositoryFingerprintRegression {
         $git=Invoke-QuietCommand -FilePath git -ArgumentList @('-C',$repo,'commit','-q','-m','initial') -CaptureOutput -TimeoutSeconds 5
         if($git.ExitCode-ne0){throw 'Fingerprint fixture Git commit failed.'}
         # Worked ordinal ordering, not a second call to the production sorter.
-        $names=@('-a.txt','Z.txt','_a.txt','a-b.txt','ab.txt','z-a.txt',([string][char]0x03A9+'.txt'))
+        $names=@('-a.txt','Z.txt','_a.txt','a-b.txt','ab.txt','spaced name.txt','z-a.txt',([string][char]0x03A9+'.txt'))
         foreach($name in $names){Write-Utf8 (Join-Path $repo $name) 'dirty'}
         $head=Invoke-QuietCommand -FilePath git -ArgumentList @('-C',$repo,'rev-parse','HEAD') -CaptureOutput -TimeoutSeconds 5
         if($head.ExitCode-ne0){throw 'Fingerprint fixture HEAD unavailable.'}
-        $preimage=$head.Output.Trim()+'|'+(($names|ForEach-Object{'?? '+$_})-join'|')
+        $preimage=$head.Output.Trim()+'|?? "spaced name.txt"|?? -a.txt|?? Z.txt|?? _a.txt|?? a-b.txt|?? ab.txt|?? z-a.txt|?? '+[char]0x03A9+'.txt'
         $sha=[Security.Cryptography.SHA256]::Create()
         try {$expected=([BitConverter]::ToString($sha.ComputeHash([Text.Encoding]::UTF8.GetBytes($preimage)))).Replace('-','').ToLowerInvariant().Substring(0,10)}
         finally {$sha.Dispose()}

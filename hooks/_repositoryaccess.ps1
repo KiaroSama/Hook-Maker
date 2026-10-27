@@ -8,10 +8,13 @@ function Get-RepositoryGitEnvironment {
     if(-not[string]::IsNullOrWhiteSpace([string]$env:GIT_CONFIG_PARAMETERS)){throw 'Unsupported GIT_CONFIG_PARAMETERS cannot be combined with exact-root approval.'}
     $count=0;$raw=[string]$env:GIT_CONFIG_COUNT
     if($raw-ne''-and(-not[int]::TryParse($raw,[ref]$count)-or$count-lt0-or$count-gt64)){throw 'Git runtime configuration count is invalid or exceeds 64.'}
+    # Framework single-value lookup can collapse a present-empty entry to null.
+    # Read the actual block once: an empty trust reset is valid, absence is not.
+    $inherited=[Environment]::GetEnvironmentVariables()
     for($i=0;$i-lt$count;$i++) {
-        $key=[Environment]::GetEnvironmentVariable('GIT_CONFIG_KEY_'+$i)
-        $value=[Environment]::GetEnvironmentVariable('GIT_CONFIG_VALUE_'+$i)
-        if([string]::IsNullOrWhiteSpace($key)-or$null-eq$value){throw 'Git runtime configuration contains an incomplete pair.'}
+        $key=[string]$inherited['GIT_CONFIG_KEY_'+$i]
+        $value=$inherited['GIT_CONFIG_VALUE_'+$i]
+        if([string]::IsNullOrWhiteSpace($key)-or-not$inherited.Contains('GIT_CONFIG_VALUE_'+$i)){throw 'Git runtime configuration contains an incomplete pair.'}
         $values['GIT_CONFIG_KEY_'+$i]=$key;$values['GIT_CONFIG_VALUE_'+$i]=$value
     }
     # Reset inherited broad safe.directory values for this child only, then add
@@ -84,17 +87,24 @@ function Get-RepositoryAccessSnapshot {
     if($null-eq$status1-or$status1.ExitCode-ne0){$answer.Diagnosis=Get-RepositoryGitDiagnosis $status1;return $answer}
     $head=$head1.Trim()
     [string[]]$lines1=@([string]$status1.Output-split'\r?\n'|Where-Object{$_})
-    if($lines1.Count-eq0) {
-        # A clean v2 status supplies the second HEAD without another native
-        # startup. Dirty paths keep the legacy v1 preimage; never translate them.
+    if(@($lines1|Where-Object{-not$_.StartsWith('?? ',[StringComparison]::Ordinal)}).Count-eq0) {
+        # Clean/untracked-only v2 supplies the second HEAD in the same launch.
+        # Tracked paths retain the four-launch v1 route; its formats differ.
         $status2=Invoke-RepositoryGit -Arguments @('-C',$root,'status','--porcelain=v2','--branch','--no-ahead-behind')
         if($null-eq$status2-or$status2.ExitCode-ne0){$answer.Diagnosis=Get-RepositoryGitDiagnosis $status2;return $answer}
         $records=@([string]$status2.Output-split'\r?\n'|Where-Object{$_})
         $oids=@($records|Where-Object{$_-cmatch'^# branch\.oid(?: |$)'})
         if($oids.Count-ne1-or$oids[0]-cnotmatch'^# branch\.oid ([a-f0-9]{40}|[a-f0-9]{64})$'){$answer.Diagnosis='gitFailed';return $answer}
         $secondHead=$oids[0].Substring(13)
-        if(@($records|Where-Object{$_-cnotmatch'^# '}).Count-ne0){$answer.Diagnosis='repositoryChanged';return $answer}
-        [string[]]$lines2=@()
+        $items=@($records|Where-Object{$_-cnotmatch'^# '})
+        if(@($items|Where-Object{-not$_.StartsWith('? ',[StringComparison]::Ordinal)-or$_.Length-le2}).Count-ne0){$answer.Diagnosis='repositoryChanged';return $answer}
+        [string[]]$lines2=@(foreach($item in $items){
+            $path=$item.Substring(2)
+            # v1 forces quotes for spaces; v2 only quotes unusual characters.
+            # Preserve Git's existing C escapes verbatim, never decode path bytes.
+            if(-not$path.StartsWith('"',[StringComparison]::Ordinal)-and$path.Contains(' ')){$path='"'+$path+'"'}
+            '?? '+$path
+        })
     } else {
         $head2=Invoke-RepositoryGit -Arguments @('-C',$root,'rev-parse','HEAD')
         $status2=Invoke-RepositoryGit -Arguments @('-C',$root,'status','--porcelain')

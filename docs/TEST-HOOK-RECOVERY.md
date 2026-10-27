@@ -97,15 +97,21 @@ immediately before the actual child environment is applied.
 PreToolUse, the standalone runner, Stop and incident recovery use the same bounded
 HEAD plus sorted-status acquisition. Status lines use case-sensitive ordinal ordering,
 not culture-sensitive sorting, so Windows PowerShell 5.1 (NLS) and pwsh (ICU)
-agree for unchanged punctuation, case and Unicode paths. Both snapshots must match;
-no raw Git status bytes are normalized. Acquisition retains a four-second total
-budget shared by physical/approval checks and at most four Git processes. The first
-`rev-parse --show-toplevel HEAD` must return exactly root and HEAD. A clean first
-legacy status uses `status --porcelain=v2 --branch --no-ahead-behind` for the second
-HEAD and status, saving another startup. Missing, duplicate or malformed branch OIDs
-are refused; newly dirty entries refuse the snapshot. A dirty first status retains
-legacy status/HEAD/status comparisons and the exact ordinal v1 fingerprint, without
-translating v2 paths. No cached identity, relaxed approval or longer deadline; each child gets
+agree for unchanged punctuation, case and Unicode paths. Both snapshots must match.
+Acquisition retains a four-second total budget shared by physical/approval checks
+and at most four Git processes. The first `rev-parse --show-toplevel HEAD` must
+return exactly root and HEAD. A clean or untracked-only first legacy status uses
+`status --porcelain=v2 --branch --no-ahead-behind` for the second HEAD and status,
+saving another startup. Only untracked `? ` records map to the legacy `?? ` prefix;
+v1 additionally quotes otherwise-unquoted paths containing spaces, so those outer
+quotes are restored without decoding or re-escaping Git's pathname bytes. The
+ordinal-sorted v1 preimages must match exactly. Missing, duplicate or malformed
+branch OIDs, changed HEAD, added/removed untracked paths and tracked/conflict
+transitions refuse. An initially tracked-dirty status retains legacy
+status/HEAD/status comparisons without translating tracked v2 records.
+Present-empty runtime configuration values (including `safe.directory` reset)
+are read from the actual environment block on both PowerShell hosts, preserved
+in the Git child, and distinguished from absent pairs, which remain invalid. No cached identity, relaxed approval or longer deadline; each child gets
 the remaining milliseconds, including the final fractional second. Exhaustion or
 a timed-out Git process reports `gitTimedOut`, never a guessed fingerprint. A final
 budget check also rejects an otherwise successful last read or identity/approval
