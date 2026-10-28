@@ -33,6 +33,30 @@ function Invoke-CandidateGroupingRegression {
         $other=@($runs|Where-Object{$_.Observed.runId-ceq'unmatched'})[0]
         Check 'messaging prefers exact run then path, not enumeration order' ($exact.SameCmdEntry.Path-ceq'b-exact'-and$other.SameCmdEntry.Path-ceq'a-other')
         Check 'missing and empty commands do not acquire unrelated candidates' (@($runs|Where-Object{$_.Observed.runId-ceq'none'-and$null-eq$_.SameCmdEntry}).Count-eq2)
+        $script:SupersessionOutcomeReads=0
+        $unrelated=@(foreach($i in 0..39) {
+            $doc=[pscustomobject]@{commandFingerprint=('unrelated-'+$i);terminated=$false;leakedProcessIds=@();recordedUtc='2026-01-02T00:00:00Z'}
+            $doc|Add-Member ScriptProperty overall { $script:SupersessionOutcomeReads++;return 'ok' }
+            [pscustomobject]@{Doc=$doc;Path=('unrelated-'+$i)}
+        })
+        $negative=[pscustomobject]@{commandFingerprint='wanted'}
+        $before=[datetime]::Parse('2026-01-01T00:00:00Z').ToUniversalTime()
+        $notSuperseded=Test-ResultSuperseded $negative $before $unrelated
+        Check 'supersession rejects unrelated commands before outcome inspection' (-not$notSuperseded-and$script:SupersessionOutcomeReads-eq0) ([string]$script:SupersessionOutcomeReads)
+        foreach($case in @(
+            @('case-folded full command','WANTED','ok',$false,@(),'2026-01-02T00:00:00Z',$true),
+            @('different full command','wanted-extra','ok',$false,@(),'2026-01-02T00:00:00Z',$false),
+            @('missing command','','ok',$false,@(),'2026-01-02T00:00:00Z',$false),
+            @('same timestamp','wanted','ok',$false,@(),'2026-01-01T00:00:00Z',$false),
+            @('older timestamp','wanted','ok',$false,@(),'2025-12-31T00:00:00Z',$false),
+            @('failed result','wanted','failed',$false,@(),'2026-01-02T00:00:00Z',$false),
+            @('terminated result','wanted','ok',$true,@(),'2026-01-02T00:00:00Z',$false),
+            @('leaking result','wanted','ok',$false,@(424242),'2026-01-02T00:00:00Z',$false)
+        )) {
+            $entry=[pscustomobject]@{Doc=[pscustomobject]@{commandFingerprint=$case[1];overall=$case[2];terminated=$case[3];leakedProcessIds=$case[4];recordedUtc=$case[5]};Path='literal-result'}
+            Check ('supersession preserves '+$case[0]) ((Test-ResultSuperseded $negative $before @($entry))-eq$case[6])
+        }
+        Check 'missing negative command cannot be superseded' (-not(Test-ResultSuperseded ([pscustomobject]@{}) $before @($entry)))
     } $Root
 }
 

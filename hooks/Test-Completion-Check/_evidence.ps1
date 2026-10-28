@@ -187,11 +187,13 @@ function Test-ResultSuperseded {
     $cmd = [string](Get-Field $NegDoc 'commandFingerprint')
     if ($cmd -eq '') { return $false }
     foreach ($re in @($AllResults)) {
+        # Historical negatives scan this inventory repeatedly. Unrelated commands
+        # cannot supersede them; avoid inspecting their outcome and leak arrays.
+        if (([string](Get-Field $re.Doc 'commandFingerprint')) -ne $cmd) { continue }
         $ov = ([string](Get-Field $re.Doc 'overall')).ToLowerInvariant()
         if ($ov -ne 'ok' -or (Get-Field $re.Doc 'terminated') -eq $true) { continue }
         $lk = @(@(Get-Field $re.Doc 'leakedProcessIds') | Where-Object { $null -ne $_ -and [string]$_ -ne '' })
         if ($lk.Count -gt 0) { continue }
-        if (([string](Get-Field $re.Doc 'commandFingerprint')) -ne $cmd) { continue }
         $t = Get-ResultRecordedTime -Doc $re.Doc -Path $re.Path
         if ($null -ne $t -and $t -gt $NegTime) { return $true }
     }
