@@ -2,6 +2,40 @@
 # existing isolated completion harness, artificial ages and real hook entry.
 # No process sentinels, clock waits, real state or installation changes.
 
+function Invoke-CandidateGroupingRegression {
+    param([string]$Root)
+    & {
+        param($SourceRoot)
+        . (Join-Path $SourceRoot 'hooks/Test-Completion-Check/_identity.ps1')
+        . (Join-Path $SourceRoot 'hooks/Test-Completion-Check/_evidence.ps1')
+        $script:CandidateCommandReads=0
+        $repositoryState=[pscustomobject]@{State='unavailable'}
+        $stateFingerprint='';$projectKey='project-address'
+        $resultEntries=@(foreach($i in 0..39) {
+            $doc=[pscustomobject]@{CommandValue=('command-'+$i);runId=('run-'+$i);projectFingerprint='historical';overall='ok'}
+            $doc|Add-Member ScriptProperty commandFingerprint { $script:CandidateCommandReads++;return $this.CommandValue }
+            [pscustomobject]@{Doc=$doc;Path=('result-'+$i)}
+        })
+        $observedEntries=@(foreach($i in 0..23) {
+            [pscustomobject]@{Doc=[pscustomobject]@{commandFingerprint=('COMMAND-'+$i);runId=('run-'+$i);projectFingerprint='historical';observedUtc='2026-01-01T00:00:00Z';runIdControlled=$true};Path=('observed-'+$i)}
+        })
+        . (Join-Path $SourceRoot 'hooks/Test-Completion-Check/_candidates.ps1')
+        Check 'unavailable candidate messaging groups result commands once' ($script:CandidateCommandReads-le120) ([string]$script:CandidateCommandReads)
+        Check 'unavailable grouping preserves diagnostic matches without pairing success' ($runs.Count-eq24-and@($runs|Where-Object{$_.Matches-or$null-ne$_.ResultEntry}).Count-eq0-and@($runs|Where-Object{$null-ne$_.SameCmdEntry-and$_.SameCmdEntry.Path-ceq'result-7'}).Count-eq1)
+        $resultEntries=@(foreach($item in @(@('z-exact','wanted'),@('a-other','different'),@('b-exact','wanted'))) {
+            [pscustomobject]@{Doc=[pscustomobject]@{commandFingerprint='SAME';runId=$item[1];projectFingerprint='historical';overall='ok'};Path=$item[0]}
+        })
+        $observedEntries=@(foreach($item in @(@('exact','wanted','same'),@('other','unmatched','same'),@('missing','none','absent'),@('empty','none',''))) {
+            [pscustomobject]@{Doc=[pscustomobject]@{commandFingerprint=$item[2];runId=$item[1];projectFingerprint='historical';observedUtc='2026-01-01T00:00:00Z';runIdControlled=$true};Path=$item[0]}
+        })
+        . (Join-Path $SourceRoot 'hooks/Test-Completion-Check/_candidates.ps1')
+        $exact=@($runs|Where-Object{$_.Observed.runId-ceq'wanted'})[0]
+        $other=@($runs|Where-Object{$_.Observed.runId-ceq'unmatched'})[0]
+        Check 'messaging prefers exact run then path, not enumeration order' ($exact.SameCmdEntry.Path-ceq'b-exact'-and$other.SameCmdEntry.Path-ceq'a-other')
+        Check 'missing and empty commands do not acquire unrelated candidates' (@($runs|Where-Object{$_.Observed.runId-ceq'none'-and$null-eq$_.SameCmdEntry}).Count-eq2)
+    } $Root
+}
+
 function Write-SelectionPair {
     param($Copy, [string]$Root, [string]$Id, [string]$Command, [double]$Age = 0,
         [string]$Overall = 'ok', [string]$Reason = '', [object[]]$Leaked = @())
@@ -114,6 +148,13 @@ function Invoke-RepositoryEvidenceSelectionRegression {
     }
 }
 
+Invoke-CandidateGroupingRegression -Root (Split-Path -Parent $PSScriptRoot)
+$groupingRoot=Split-Path -Parent $PSScriptRoot
+$groupingCommand="`$root='"+$groupingRoot.Replace("'","''")+"';. (Join-Path `$root 'hooks/_hooklib.ps1');. (Join-Path `$root 'scripts/_testlib.ps1');`$script:Pass=0;`$script:Fail=0;`$ast=[Management.Automation.Language.Parser]::ParseFile((Join-Path `$root 'scripts/_testcompletionselection.ps1'),[ref]`$null,[ref]`$null);`$fn=`$ast.Find({param(`$n)`$n-is[Management.Automation.Language.FunctionDefinitionAst]-and`$n.Name-ceq'Invoke-CandidateGroupingRegression'},`$true);. ([scriptblock]::Create(`$fn.Extent.Text));Invoke-CandidateGroupingRegression `$root;exit `$script:Fail"
+$groupingPath=Join-Path $Work 'candidate-grouping-framework.ps1'
+Write-Utf8 $groupingPath $groupingCommand
+$frameworkGrouping=Invoke-QuietCommand -FilePath powershell.exe -ArgumentList @('-NoProfile','-NonInteractive','-File',$groupingPath) -CaptureOutput -TimeoutMilliseconds 15000
+Check 'Framework candidate grouping and message controls execute' ($null-ne$frameworkGrouping-and$frameworkGrouping.ExitCode-eq0-and$frameworkGrouping.Output-match'\[PASS\] missing and empty commands'-and$frameworkGrouping.ErrorOutput-eq'')
 Write-Host '--- historical success versus fresh proof ---' -ForegroundColor Cyan
 foreach ($codexShape in @($false, $true)) {
     $client = if ($codexShape) { 'Codex' } else { 'Claude' }

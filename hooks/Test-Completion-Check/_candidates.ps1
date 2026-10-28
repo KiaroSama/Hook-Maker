@@ -35,12 +35,22 @@ $runs = New-Object System.Collections.Generic.List[object]
 # matches, a result for the SAME command that is NOT another run's result is
 # attached for messaging only, so a genuine identity mismatch reads DIFFERENT run
 # while a run that simply has no result of its own reads as missing evidence.
+# Unavailable state keeps every observation. Scanning every result per missing
+# pair made historical recovery exceed Stop's budget; index only messaging
+# candidates, never pairing or success, with the same invariant -eq comparer.
+$resultsByCommand = New-Object 'Collections.Generic.Dictionary[string,object]' ([StringComparer]::InvariantCultureIgnoreCase)
+foreach ($re in $resultEntries) {
+    $command = [string](Get-Field $re.Doc 'commandFingerprint')
+    if ($command -eq '') { continue }
+    if (-not $resultsByCommand.ContainsKey($command)) { $resultsByCommand[$command] = New-Object 'Collections.Generic.List[object]' }
+    [void]$resultsByCommand[$command].Add($re)
+}
 foreach ($op in $obsPairs) {
     $sameCmdEntry = $null
     if ($null -eq $op.ResEntry) {
         $oCmd = [string](Get-Field $op.Observed 'commandFingerprint')
-        if ($oCmd -ne '') {
-            $sc = @($resultEntries | Where-Object { ([string](Get-Field $_.Doc 'commandFingerprint')) -eq $oCmd -and -not $pairedPaths.Contains($_.Path) })
+        if ($oCmd -ne '' -and $resultsByCommand.ContainsKey($oCmd)) {
+            $sc = @($resultsByCommand[$oCmd].ToArray() | Where-Object { -not $pairedPaths.Contains($_.Path) })
             if ($sc.Count -gt 0) {
                 $sameCmdEntry = @($sc | Sort-Object @{ Expression = { [string](Get-Field $_.Doc 'runId') -ne [string](Get-Field $op.Observed 'runId') } }, @{ Expression = { [string]$_.Path } })[0]
             }
