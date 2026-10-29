@@ -19,13 +19,14 @@
 # The SessionStart baseline the advisory reads: Test-Temp-Cleanup's, the only
 # one this state directory has. Written here exactly as that hook writes it.
 function Write-SessionBaseline {
-    param([object]$Copy, [string]$Root, [datetime]$Utc, [string]$SessionId = 'sess1')
+    param([object]$Copy, [string]$Root, [datetime]$Utc, [string]$SessionId = 'sess1', [switch]$Scoped)
     $doc = [ordered]@{
         sessionId = $SessionId; projectKey = (Get-ProjectKey $Root)
         repoStateFingerprint = ''; scanComplete = $true; partialCauses = @()
         timestampUtc = $Utc.ToString('o'); candidates = @()
     }
-    Write-Utf8 (Join-Path (Get-StateDir $Copy) ('TestTempCleanup-baseline-' + (Get-ProjectKey $Root) + '.json')) ($doc | ConvertTo-Json -Depth 5)
+    $suffix=if($Scoped){'-'+(Get-ShortHash $SessionId)}else{''}
+    Write-Utf8 (Join-Path (Get-StateDir $Copy) ('TestTempCleanup-baseline-' + (Get-ProjectKey $Root) + $suffix + '.json')) ($doc | ConvertTo-Json -Depth 5)
 }
 
 # Stop advisories use the same non-continuing systemMessage on both clients.
@@ -41,6 +42,23 @@ function Get-AdvisoryText {
     # =====================================================================
     Write-Host '--- possible orphaned test processes: advisory only, never a gate ---' -ForegroundColor Cyan
 
+# Pure reader controls avoid another process sentinel or expensive event setup.
+& {
+    . (Join-Path $HooksRoot 'Test-Completion-Check/_identity.ps1')
+    . (Join-Path $HooksRoot 'Test-Completion-Check/_survivors.ps1')
+    $c=New-IsolatedHookCopy;$p=New-GitRepo 'SurvivorSessionScope'
+    $script:stateDir=Get-StateDir $c;$script:projectKey=Get-ProjectKey $p;$script:sessionId='session-A'
+    $a=[datetime]::Parse('2026-01-01T00:00:00Z').ToUniversalTime()
+    $b=$a.AddHours(1)
+    Write-SessionBaseline $c $p $a -SessionId 'session-A' -Scoped
+    Write-SessionBaseline $c $p $b -SessionId 'session-B'
+    Check 'survivor time uses its scoped baseline despite foreign legacy writer' ((Get-SessionBaselineUtc)-eq$a)
+    $script:sessionId='session-B'
+    Check 'survivor time retains matching legacy baseline compatibility' ((Get-SessionBaselineUtc)-eq$b)
+    $bad=Join-Path $script:stateDir ('TestTempCleanup-baseline-'+$script:projectKey+'-'+(Get-ShortHash 'session-B')+'.json')
+    Write-Utf8 $bad '{malformed'
+    Check 'malformed scoped survivor baseline cannot fall back to legacy time' ($null-eq(Get-SessionBaselineUtc))
+}
 $survivorSentinel = $null
 $cohortSentinel = $null
 try {

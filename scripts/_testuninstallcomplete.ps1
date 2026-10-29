@@ -105,6 +105,9 @@ $completeProject=New-Proj 'CompleteStateProject'
 & $InstallScript -CustomHook $completeSource -Events @('Stop') -TargetProject $completeProject -ClaudeOnly *> $null
 $completeRecord=Get-RecordForScope 'Ai-Memory-Check' $completeProject
 . (Join-Path $ScriptRoot '_uninstallresidue.ps1')
+$cleanupLeaves=@(Get-UninstallStateLeaves 'Test-Temp-Cleanup' $completeProject)
+$cleanupKey=Get-ShortHash (Normalize-Path $completeProject).ToLowerInvariant()
+Check 'complete cleanup removal retains baseline and reporting evidence' ($cleanupLeaves-notcontains("TestTempCleanup-baseline-$cleanupKey.json")-and$cleanupLeaves-notcontains("TestTempCleanup-state-$cleanupKey.json")-and$cleanupLeaves-contains("TestTempCleanup-result-$cleanupKey.json"))
 $globalOwner=($completeRecord|ConvertTo-Json -Depth 30)|ConvertFrom-Json
 $globalOwner.id='global-owner';$globalOwner.scope='global';$globalOwner.targetProjectRoot=''
 Check 'global same-hook owner preserves shared project state' (Test-UninstallStateShared $completeRecord ([pscustomobject]@{installs=@($completeRecord,$globalOwner)}))
@@ -146,6 +149,18 @@ $skillClaims=@(foreach($kind in @('close','deepdebug','prompt')){
 $skillsRemoved=Invoke-UninstallProcess -RecordId $skillsRecord.id -Complete
 Check 'project-owned session shortlist retires with complete removal' ([string]$skillsRemoved.Result.overall-eq'ok'-and-not(Test-Path -LiteralPath $shortlist)-and[IO.File]::ReadAllText($foreignShortlist,[Text.Encoding]::UTF8)-ceq'foreign-shortlist')
 Check 'complete removal retires every owned skill delivery reservation' (@($skillClaims|Where-Object{Test-Path -LiteralPath $_}).Count-eq0)
+
+Write-Host '--- cleanup removal retains session evidence, retires coordination ---' -ForegroundColor Cyan
+$cleanupSource=Join-Path $RealHooksDir 'Test-Temp-Cleanup/Test-Temp-Cleanup.ps1'
+& $InstallScript -CustomHook $cleanupSource -Events @('SessionStart','Stop') -TargetProject $completeProject -ClaudeOnly *> $null
+$cleanupRecord=Get-RecordForScope 'Test-Temp-Cleanup' $completeProject
+$cleanupEvidence=@("TestTempCleanup-baseline-$cleanupKey.json","TestTempCleanup-state-$cleanupKey.json",("TestTempCleanup-baseline-$cleanupKey-"+(Get-ShortHash 'session-A')+'.json'),("TestTempCleanup-state-$cleanupKey-"+(Get-ShortHash 'session-A')+'.json'))
+foreach($leaf in $cleanupEvidence){Write-Utf8 (Join-Path $stateRoot $leaf) 'retained-original'}
+$coordination=Join-Path $stateRoot "TestTempCleanup-result-$cleanupKey.json"
+Write-Utf8 $coordination '{"schemaVersion":3}'
+$cleanupRemoved=Invoke-UninstallProcess -RecordId $cleanupRecord.id -Complete
+Check 'cleanup uninstall preserves exact legacy and scoped evidence bytes' ([string]$cleanupRemoved.Result.overall-eq'ok'-and @($cleanupEvidence|Where-Object{[IO.File]::ReadAllText((Join-Path $stateRoot $_),[Text.Encoding]::UTF8)-cne'retained-original'}).Count-eq0) ($cleanupRemoved.Result|ConvertTo-Json -Depth 5)
+Check 'cleanup uninstall retires its project coordination signal' (-not(Test-Path -LiteralPath $coordination))
 
 Write-Host '--- complete engine removal retires selected mesh membership ---' -ForegroundColor Cyan
 $meshProjects=@((New-Proj 'CompleteMeshA'),(New-Proj 'CompleteMeshB'),(New-Proj 'CompleteMeshC'))

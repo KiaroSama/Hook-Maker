@@ -25,7 +25,8 @@ function Get-UninstallStateLeaves {
         'Git-Sync-Check'=@("GitSyncCheck-$key.txt")
         'Cloudflare-Deploy'=@("CloudflareDeploy-$key.txt")
         'Test-Plan-Check'=@("TestPlanCheck-$key.json")
-        'Test-Temp-Cleanup'=@("TestTempCleanup-baseline-$key.json","TestTempCleanup-result-$key.json","TestTempCleanup-state-$key.json")
+        # Session baselines/reporting history remain evidence for surviving readers.
+        'Test-Temp-Cleanup'=@("TestTempCleanup-result-$key.json")
         'Docs-Freshness-Check'=@("DocsFreshnessCheck-baseline-$key.json","DocsFreshnessCheck-ack-$key.json","DocsFreshnessCheck-pushdeny-$key.txt","DocsFreshnessCheck-error-$key.txt")
         'Large-File-Check'=@("LargeFileCheckBaseline-$key.json")
         'Utf8-Encoding-Check'=@("Utf8EncodingCheck-$key.json")

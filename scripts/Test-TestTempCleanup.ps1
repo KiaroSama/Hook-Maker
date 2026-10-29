@@ -185,6 +185,10 @@ function Test-HasFullInstruction {
 }
 
 try {
+    . (Join-Path $PSScriptRoot '_testcleanupsession.ps1')
+    Invoke-CleanupSessionRegression -HostExe pwsh
+    Invoke-CleanupSessionRegression -HostExe powershell.exe
+    Invoke-CleanupPublicationRegression
     # =====================================================================
     Write-Host '--- THE CORE GUARANTEE: a cache created after baseline is NOT deleted ---' -ForegroundColor Cyan
     $hc1 = New-IsolatedHookCopy

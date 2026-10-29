@@ -324,20 +324,21 @@ if ($eventName -ne 'SessionStart' -and $eventName -ne 'Stop' -and -not ($eventNa
 
 $stateDir = Join-Path $env:LOCALAPPDATA 'HookMaker\state'
 $projectKey = Get-ShortHash $projectRoot.ToLowerInvariant()
-$baselinePath = Join-Path $stateDir ('TestTempCleanup-baseline-' + $projectKey + '.json')
+. (Join-Path $PSScriptRoot '_sessionstate.ps1')
 $resultPath = Join-Path $stateDir ('TestTempCleanup-result-' + $projectKey + '.json')
 # Anti-loop + residue-tracking state. The old build's
 # TestTempCleanup-failure-<key>.txt belonged to the deleted "could not remove"
 # failure model; it is never read or written again. A leftover file from an
 # older build is inert (this hook has no deletion authority even over its own
 # obsolete state, so it is left where it is rather than removed).
-$hookStatePath = Join-Path $stateDir ('TestTempCleanup-state-' + $projectKey + '.json')
+# Baseline and reporting state are session-scoped by _sessionstate.ps1.
 
 # ==========================================================================
 # SessionStart: bounded metadata-only baseline. Silent unless the SCAN was
 # partial - never any project mutation, never an agent action.
 # ==========================================================================
 if ($eventName -eq 'SessionStart') {
+    if (Test-Path -LiteralPath $baselinePath) { exit 0 } # Resume cannot establish a later start.
     $gitAvailable = Test-GitWorkTree $projectRoot
     $scan = Get-CleanupScan -Root $projectRoot -ExtraCandidateNames $extraCandidateNames -ExtraReviewNames $extraReviewNames -MaxEntries $maxScanEntries -MaxDepth $maxScanDepth
     $causes = @{}
@@ -375,7 +376,7 @@ if ($eventName -eq 'SessionStart') {
         timestampUtc = [DateTime]::UtcNow.ToString('o')
         candidates = $records.ToArray()
     }
-    Write-JsonFileAtomic -Value $baseline -Path $baselinePath
+    Publish-CleanupBaseline -Value $baseline -Path $baselinePath
 
     $coverage = @($allCauses | Where-Object { $script:CoverageCauses -contains $_ })
     if ($coverage.Count -gt 0) {
@@ -401,14 +402,14 @@ $script:hookInput = $hookInput
 
 $gitAvailable = Test-GitWorkTree $projectRoot
 
-$baseline = Read-JsonFile -Path $baselinePath
+$baseline = Read-CleanupBaseline -Path $baselinePath
 $baselineMap = @{}
 $baselineAvailable = $false
 $causes = @{}
 if ($null -eq $baseline) {
     $causes['baseline-missing'] = $true
 }
-elseif ([string](Get-Field $baseline 'sessionId') -ne $sessionId -or $sessionId -eq '') {
+elseif ([string](Get-Field $baseline 'sessionId') -cne $sessionId -or $sessionId -eq '') {
     $causes['baseline-session-mismatch'] = $true
 }
 else {
@@ -436,7 +437,7 @@ else {
 $hookState = Read-JsonFile -Path $hookStatePath
 $lastEvidenceFingerprint = ''
 $previouslyReported = @{}
-if ($null -ne $hookState -and [string](Get-Field $hookState 'sessionId') -eq $sessionId -and $sessionId -ne '') {
+if ($null -ne $hookState -and [string](Get-Field $hookState 'sessionId') -ceq $sessionId -and $sessionId -ne '') {
     $lastEvidenceFingerprint = [string](Get-Field $hookState 'evidenceFingerprint')
     foreach ($reported in @(Get-Field $hookState 'reportedDisposable')) {
         if (-not [string]::IsNullOrWhiteSpace([string]$reported)) { $previouslyReported[[string]$reported] = $true }

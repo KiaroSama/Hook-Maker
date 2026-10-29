@@ -35,7 +35,7 @@
 #
 # THE SESSION WINDOW. The lower bound is the SessionStart baseline this state
 # directory already holds: Test-Temp-Cleanup writes
-# TestTempCleanup-baseline-<projectKey>.json at SessionStart carrying
+# TestTempCleanup-baseline-<projectKey>-<sessionHash>.json carrying
 # { sessionId, timestampUtc }. That is the single source of truth for "when this
 # session started"; this file reads it and never writes or derives a second one.
 # It is honoured only when its sessionId is THIS session - a baseline from an
@@ -83,11 +83,15 @@ function Get-SurvivorPatterns {
 # the 210-minute double-offset bug it documents applies here identically.
 function Get-SessionBaselineUtc {
     $path = Join-Path $script:stateDir ('TestTempCleanup-baseline-' + $script:projectKey + '.json')
+    if (-not [string]::IsNullOrWhiteSpace($script:sessionId)) {
+        $scoped = Join-Path $script:stateDir ('TestTempCleanup-baseline-' + $script:projectKey + '-' + (Get-ShortHash $script:sessionId) + '.json')
+        if (Test-Path -LiteralPath $scoped) { $path = $scoped }
+    }
     $doc = $null
     try { $doc = Read-JsonFile -Path $path } catch { return $null }
     if ($null -eq $doc) { return $null }
     if ([string]::IsNullOrWhiteSpace($script:sessionId)) { return $null }
-    if ([string](Get-Field $doc 'sessionId') -ne $script:sessionId) { return $null }
+    if ([string](Get-Field $doc 'sessionId') -cne $script:sessionId) { return $null }
     return (ConvertTo-UtcTime (Get-Field $doc 'timestampUtc'))
 }
 
