@@ -59,8 +59,11 @@ function Invoke-DispositionRegression {
             $script:historicalDispositions['historical']=[pscustomobject]@{schema=1;disposition='obsolete';projectRoot=$Root;requestSha256=('b'*64);receiptSha256=(Read-RecoveryReceipt $path).Sha256;authorization=[pscustomobject]@{requestSha256=('b'*64)}}
             if(Test-HistoricalDisposition $receipt $path){throw 'Unavailable acquisition incorrectly accepted a persisted disposition.'}
             Write-Host 'Historical disposition: 13 checks passed.'
+            . (Join-Path $Root 'scripts/_testcompletionlegacy.ps1')
+            Invoke-LegacyDispositionRegression -Root $Root -Work $work
             . (Join-Path $Root 'scripts/_testcompletionadmission.ps1')
             Invoke-DispositionAdmissionRegression -Root $Root -Work $work
+            Invoke-DispositionAdmissionRegression -Root $Root -Work $work -Legacy
         }finally{if([IO.Directory]::Exists($work)){[IO.Directory]::Delete($work,$true)}}
     }
     Remove-Module $module -Force -ErrorAction SilentlyContinue
@@ -72,9 +75,10 @@ function Invoke-DispositionEntryRegression {
     $sourceRoot=Split-Path -Parent $PSScriptRoot
     $frameworkOut=Join-Path $Work 'disposition-framework.out'
     $frameworkErr=Join-Path $Work 'disposition-framework.err'
-    $command=". '"+(Join-Path $sourceRoot 'scripts/_testcompletiondisposition.ps1').Replace("'","''")+"'; Invoke-DispositionRegression '"+$sourceRoot.Replace("'","''")+"'"
+    $command=". '"+(Join-Path $sourceRoot 'scripts/_testcompletiondelivery.ps1').Replace("'","''")+"'; Invoke-FailedDeliveryRegression '"+$sourceRoot.Replace("'","''")+"' '"+$Work.Replace("'","''")+"'; . '"+(Join-Path $sourceRoot 'scripts/_testcompletiondisposition.ps1').Replace("'","''")+"'; Invoke-DispositionRegression '"+$sourceRoot.Replace("'","''")+"'"
     $framework=Start-BoundedProcess -FilePath powershell.exe -ArgumentList @('-NoLogo','-NoProfile','-NonInteractive','-Command',$command) -RedirectStandardOutput $frameworkOut -RedirectStandardError $frameworkErr -TimeoutMs 30000
     $frameworkText=[IO.File]::ReadAllText($frameworkOut,[Text.Encoding]::UTF8)
+    Check 'Framework delivery and legacy compatibility controls' ($framework.ExitCode-eq0-and$frameworkText-match'Completed failure delivery controls passed'-and$frameworkText-match'Legacy disposition compatibility controls passed') ($frameworkText+[IO.File]::ReadAllText($frameworkErr,[Text.Encoding]::UTF8))
     Check 'Framework deterministic disposition admission controls' ($framework.ExitCode-eq0-and$frameworkText-match'9 deterministic controls passed') ($frameworkText+[IO.File]::ReadAllText($frameworkErr,[Text.Encoding]::UTF8))
     $root=New-GitRepoAi 'historical disposition root'
     $copy=New-IsolatedHookCopy
@@ -85,13 +89,23 @@ function Invoke-DispositionEntryRegression {
         Write-GuardedResult $copy $root -Overall failed -ExitCode 1 -RunId $id -ProjectFingerprint '1234567890' -AgeMinutes 2880
         $receipt=Get-RunStateFile $copy $root result $id
         $doc=[IO.File]::ReadAllText($receipt,[Text.Encoding]::UTF8)|ConvertFrom-Json
-        $doc|Add-Member NoteProperty repositoryState available
+        if($kind-eq'cancelled'){
+            $doc.projectFingerprint=''
+            $doc|Add-Member NoteProperty projectKey ((Get-DeliveryHash (Normalize-Path $root).ToLowerInvariant()).Substring(0,12))
+        }else{$doc|Add-Member NoteProperty repositoryState available}
         Write-Utf8 $receipt ($doc|ConvertTo-Json -Depth 8)
         $hash=(Get-FileHash $receipt -Algorithm SHA256).Hash.ToLowerInvariant();$originals[$receipt]=$hash
         $evidence=Join-Path $Work ($id+'-evidence.json')
         Write-Utf8 $evidence ([pscustomobject]@{schema=1;projectRoot=$root;runId=$id;receiptSha256=$hash;action=$(if($kind-eq'obsolete'){'retired'}else{'cancelled'});resourceId='fixture-resource';statement='The fixture resource was explicitly retired after the failed historical snapshot; the owner accepted the loss and no restoration or successful verification is claimed.';occurredUtc=[DateTime]::UtcNow.AddMinutes(-10).ToString('o')}|ConvertTo-Json)
         $request=Join-Path $Work ($id+'-request.json')
         Write-Utf8 $request ([pscustomobject]@{schema=1;projectRoot=$root;runId=$id;receiptSha256=$hash;disposition=$kind;reason='The owner reviewed exact historical failure and retirement evidence, explicitly accepted the loss, and requests only ending repetition of this original historical obligation.';evidencePath=$evidence;evidenceSha256=(Get-FileHash $evidence -Algorithm SHA256).Hash.ToLowerInvariant();createdUtc=[DateTime]::UtcNow.AddMinutes(-5).ToString('o')}|ConvertTo-Json)
+        if($kind-eq'cancelled'){
+            $legacyRequest=Read-JsonFile $request
+            $legacyRequest|Add-Member NoteProperty identityKind 'legacy-missing'
+            $legacyRequest|Add-Member NoteProperty commandFingerprint $doc.commandFingerprint
+            $legacyRequest|Add-Member NoteProperty endedUtc $doc.endedUtc
+            Write-Utf8 $request ($legacyRequest|ConvertTo-Json -Depth 8)
+        }
         $recordId=[guid]::NewGuid().ToString()
         $transcript=Join-Path $Work ($id+'-transcript.jsonl')
         $record=[pscustomobject]@{type='user';uuid=$recordId;sessionId='fixture-session';cwd=$root;timestamp=[DateTime]::UtcNow.ToString('o');message=[pscustomobject]@{role='user';content=('::test-disposition '+(Get-FileHash $request -Algorithm SHA256).Hash.ToLowerInvariant())}}
@@ -130,6 +144,7 @@ function Invoke-DispositionEntryRegression {
     }
     $state=Get-CompletionStateDoc $copy $root
     Check 'concurrent dispositions retain both exact records without recovery' (@(Get-Field $state 'historicalDispositions').Count-eq2-and@(Get-Field $state 'recoveryAssociations').Count-eq0-and(Get-ResolvedCount $state)-eq0)
+    Check 'legacy disposition preserves missing identity kind' (@(@(Get-Field $state 'historicalDispositions')|Where-Object{[string](Get-Field $_ 'identityKind')-ceq'legacy-missing'}).Count-eq1)
     foreach($file in $originals.Keys){Check 'disposition preserves original failure bytes' ((Get-FileHash $file -Algorithm SHA256).Hash.ToLowerInvariant()-ceq$originals[$file])}
     $before=[IO.File]::ReadAllText((Join-Path (Get-StateDir $copy) ('TestCompletionCheck-'+(Get-ProjectKey $root)+'.json')),[Text.Encoding]::UTF8)
     $request=$requests[0]

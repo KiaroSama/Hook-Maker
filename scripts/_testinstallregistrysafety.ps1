@@ -208,6 +208,16 @@
         }
     }
 
+    $completionHook=Join-Path $RealHooksDir 'Test-Completion-Check/Test-Completion-Check.ps1'
+    $completionPlan=@(Get-InstallPlanFor -HookScript $completionHook -ToolRoot $ToolRoot)
+    Check 'completion delivery helper is immutable and manifest covered' (@($completionPlan|Where-Object{$_.relativePath-ceq'Test-Completion-Check/_failureadmission.ps1'-and$_.ownership-ceq'Immutable'}).Count-eq1)
+    $incomplete=Join-Path $Work 'incomplete-completion-source'
+    [void][IO.Directory]::CreateDirectory((Join-Path $incomplete 'hooks/Test-Completion-Check'))
+    foreach($leaf in @('_disposition.ps1','_dispositionauthorization.ps1')){Write-Utf8 (Join-Path $incomplete ('hooks/Test-Completion-Check/'+$leaf)) '# fixture'}
+    $refused=$false
+    try{Add-CompanionRuntimeArtifacts -ToolRoot $incomplete -FriendlyName 'Test-Completion-Check'}catch{$refused=$_.Exception.Message-match'_failureadmission.ps1'}
+    Check 'completion omitted delivery dependency refuses before mutation' $refused
+
     # =====================================================================
     # Install-generated ownership metadata: <runtime>/<hook>/.hookmaker-runtime.json.
     #

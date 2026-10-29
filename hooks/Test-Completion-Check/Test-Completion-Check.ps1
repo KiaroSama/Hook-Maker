@@ -104,12 +104,9 @@
 #                  detected by CLAUDE_PROJECT_DIR being exported (Claude Code
 #                  sets it on every hook process, Codex does not - the same
 #                  signal Ci-Status-Check, Rules-Check and Secrets-Check use).
-#                  Claude Code gets
-#                  `hookSpecificOutput.additionalContext` (its documented
-#                  model-visible Stop field); Codex gets `systemMessage` (its
-#                  only documented common field). Emitting a Codex block for an
-#                  advisory would force a pointless new prompt - an infinite
-#                  loop for Codex users - so it is never done.
+#                  Both clients get non-continuing `systemMessage`; Claude
+#                  Stop additionalContext also continues the conversation.
+#                  Completed-failure repeats remain UNRESOLVED, never a pass.
 # TEST_COMPLETION_ADVISORY_ONLY=1 turns every would-be block into that advisory.
 #
 # ::DEEP-DEBUG SESSION GATE (E-05). When the ::deep-debug workflow is ACTIVE
@@ -571,7 +568,7 @@ if ($null -ne $result -and $overall -eq 'failed' -and ($resultIsCurrentEvidence 
     $noCiReason = if ([string]::IsNullOrWhiteSpace([string](Get-Field $result 'projectFingerprint')) -or [string](Get-Field $result 'projectFingerprint') -eq $projectKey) { 'projectFingerprint:unavailableOrLegacy' } elseif ($repositoryState.State -eq 'unavailable') { 'repositoryState:unavailable' } else { 'projectFingerprint:currentStateMismatch' }
     $verdict = Resolve-FailedRunVerdict -Doc $result -Path $resultEntryPath -LastProgress $lastProgress -ProjectRoot $cwd -HookPath $PSCommandPath -AllowCiRecovery ($repositoryState.State -eq 'available' -and [string](Get-Field $result 'projectFingerprint') -eq $stateFingerprint) -NoCiRecoveryReason $noCiReason
     Save-CompletionState
-    Write-Finding -Blocking $verdict.Blocking -Lines $verdict.Lines
+    Write-Finding -Blocking $verdict.Blocking -Lines $verdict.Lines -CompletedFailure
 }
 
 if ($script:MalformedEvidence.Count -gt 0) {

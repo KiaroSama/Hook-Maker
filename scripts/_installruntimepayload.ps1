@@ -46,6 +46,14 @@ function Add-CompanionRuntimeArtifacts {
         [Parameter(Mandatory = $true)][string]$ToolRoot,
         [Parameter(Mandatory = $true)][string]$FriendlyName
     )
+    if ($FriendlyName -ceq 'Test-Completion-Check') {
+        # Enumeration ships siblings; a missing source cannot declare itself.
+        Assert-RuntimeSourcesAvailable -ToolRoot $ToolRoot -RelativePaths @(
+            'hooks/Test-Completion-Check/_failureadmission.ps1',
+            'hooks/Test-Completion-Check/_disposition.ps1',
+            'hooks/Test-Completion-Check/_dispositionauthorization.ps1'
+        )
+    }
     if ([string]::Equals($FriendlyName, 'Test-Run-Guard', [StringComparison]::OrdinalIgnoreCase)) {
         # All companions, or none. The runner refuses to start without its siblings
         # rather than run a test it cannot watch, so shipping a partial set would

@@ -1,7 +1,7 @@
 # Deterministic admission races at the repository adapter seam: mutate exactly
 # between the two production validation reads, without timing sleeps or threads.
 function Invoke-DispositionAdmissionRegression {
-    param([string]$Root, [string]$Work)
+    param([string]$Root, [string]$Work, [switch]$Legacy)
     . (Join-Path $Root 'hooks/Test-Completion-Check/_dispositionauthorization.ps1')
     $script:cwd=$Root
     $script:pendingNotes=New-Object Collections.Specialized.OrderedDictionary
@@ -15,6 +15,11 @@ function Invoke-DispositionAdmissionRegression {
     $transcriptPath=Join-Path $Work 'admission-transcript.jsonl'
     $recordId=[guid]::NewGuid().ToString()
     $receipt=[pscustomobject]@{schema=2;workingDirectory=$Root;runId='admission';commandFingerprint=('a'*32);projectFingerprint='1234567890';repositoryState='available';overall='failed';exitCode=1;terminated=$false;leakedProcessIds=@();startedUtc=[DateTime]::UtcNow.AddDays(-2).ToString('o');endedUtc=[DateTime]::UtcNow.AddDays(-2).AddSeconds(1).ToString('o')}
+    if($Legacy){
+        $receipt.projectFingerprint=''
+        $receipt.PSObject.Properties.Remove('repositoryState')
+        $receipt|Add-Member NoteProperty projectKey ((Get-DeliveryHash (Normalize-Path $Root).ToLowerInvariant()).Substring(0,12))
+    }
     $utf8=[Text.UTF8Encoding]::new($false)
     $receiptText=$receipt|ConvertTo-Json -Depth 8
     [IO.File]::WriteAllText($receiptPath,$receiptText,$utf8)
@@ -23,6 +28,11 @@ function Invoke-DispositionAdmissionRegression {
     $evidenceText=$evidence|ConvertTo-Json -Depth 8
     [IO.File]::WriteAllText($evidencePath,$evidenceText,$utf8)
     $request=[pscustomobject]@{schema=1;projectRoot=$Root;runId='admission';receiptSha256=$originalHash;disposition='obsolete';reason='The fixture owner explicitly accepts this exact historical loss after reviewing resource retirement. Only repetition of this obligation may end; no success is claimed.';evidencePath=$evidencePath;evidenceSha256=(Read-RecoveryReceipt $evidencePath).Sha256;createdUtc=[DateTime]::UtcNow.AddMinutes(-5).ToString('o')}
+    if($Legacy){
+        $request|Add-Member NoteProperty identityKind 'legacy-missing'
+        $request|Add-Member NoteProperty commandFingerprint $receipt.commandFingerprint
+        $request|Add-Member NoteProperty endedUtc $receipt.endedUtc
+    }
     $requestText=$request|ConvertTo-Json -Depth 8
     [IO.File]::WriteAllText($requestPath,$requestText,$utf8)
     $authorization=[pscustomobject]@{type='user';uuid=$recordId;sessionId='isolated-admission';cwd=$Root;timestamp=[DateTime]::UtcNow.ToString('o');message=[pscustomobject]@{role='user';content=('::test-disposition '+(Read-RecoveryReceipt $requestPath).Sha256)}}

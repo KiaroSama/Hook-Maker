@@ -25,6 +25,26 @@
     Check 'Codex: a real gate does NOT use the advisory systemMessage shape' (
         $null -ne $doc -and $null -eq $doc.PSObject.Properties['systemMessage']) $r.Out
 
+    # Raw evidence, not changing diagnostic/task wording, owns failed delivery.
+    foreach($hostName in @('pwsh','powershell.exe')){
+        foreach($clientName in @('claude','codex')){
+            $c=New-IsolatedHookCopy
+            $p=New-GitRepo ('Repeat-'+$hostName+'-'+$clientName)
+            Write-GuardedResult $c $p -Overall failed -ExitCode 1 -AgeMinutes 2880
+            $receipt=Get-RunStateFile $c $p result
+            $legacy=Read-JsonFile $receipt;$legacy.projectFingerprint=''
+            Write-Utf8 $receipt ($legacy|ConvertTo-Json -Depth 8)
+            $hash=(Get-FileHash $receipt).Hash
+            $first=Fire $c $p -Exe $hostName -Codex:($clientName-eq'codex') -SessionId 'repeat'
+            Check ('completed failure first blocks '+$hostName+' '+$clientName) ((Get-BlockReason $first.Out)-ne'') ($first.Out+$first.Err)
+            $again=Fire $c $p -Exe $hostName -Codex:($clientName-eq'codex') -SessionId 'repeat' -Prompt 'different task diagnostic'
+            $notice=ConvertFrom-HookOutput $again.Out
+            Check ('completed failure repeat never continues '+$hostName+' '+$clientName) ($again.Exit-eq0-and$null-ne$notice-and@($notice.PSObject.Properties).Count-eq1-and[string](Get-Field $notice 'systemMessage')-match'UNRESOLVED') ($again.Out+$again.Err)
+            $state=Get-CompletionStateDoc $c $p
+            Check 'delivery is neither recovery nor disposition' ((Get-ResolvedCount $state)-eq0-and@(Get-Field $state 'recoveryAssociations').Count-eq0-and@(Get-Field $state 'historicalDispositions').Count-eq0-and(Get-FileHash $receipt).Hash-ceq$hash)
+        }
+    }
+
     # ---- advisory-only: the same finding must never become a Codex block ----
     $c = New-IsolatedHookCopy @{ TEST_COMPLETION_ADVISORY_ONLY = '1' }
     $p = New-GitRepo 'Advisory'

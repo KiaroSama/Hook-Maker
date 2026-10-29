@@ -87,6 +87,8 @@ try {
         . (Join-Path $PSScriptRoot '_testcompletionselection.ps1')
     }
     else {
+    . (Join-Path $PSScriptRoot '_testcompletiondelivery.ps1')
+    Invoke-FailedDeliveryRegression -Root (Split-Path -Parent $PSScriptRoot) -Work $Work
     . (Join-Path $PSScriptRoot '_testcompletiondisposition.ps1')
     Invoke-DispositionRegression -Root (Split-Path -Parent $PSScriptRoot)
     Invoke-DispositionEntryRegression

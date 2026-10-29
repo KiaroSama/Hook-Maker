@@ -30,8 +30,10 @@ function Test-DdGateShouldReport {
 # session's leftover is not an actionable signal for the current task.
 $script:expiredNow = New-Object System.Collections.Generic.List[string]
 
+. (Join-Path $PSScriptRoot '_failureadmission.ps1')
+
 function Write-Finding {
-    param([string[]]$Lines, [bool]$Blocking)
+    param([string[]]$Lines, [bool]$Blocking, [switch]$CompletedFailure)
     $all = New-Object System.Collections.Generic.List[string]
     foreach ($line in $Lines) { [void]$all.Add($line) }
     # E-05: while ::deep-debug is active, every blocking finding also carries the
@@ -84,6 +86,17 @@ function Write-Finding {
     # correction allowance, so it cannot be taken without being granted. A
     # refusal emits nothing and leaves the finding recorded as unresolved. An
     # ADVISORY claims nothing, because it never stopped anything.
+    if ($kind -eq 'block' -and $CompletedFailure -and $script:MalformedEvidence.Count -eq 0) {
+        $paths = @(@($historicalResultEntries) + @($observedEntries) + @($activeEntries) | ForEach-Object { $_.Path })
+        $claim = Get-FailedReceiptDeliveryClaim -HookInput $hookInput -Doc $result -Path $resultEntryPath -EvidencePaths $paths
+        if ($null -ne $claim -and $claim.Ok -and -not $claim.Admitted) {
+            $script:StopGateVerdict = 'block'
+            # Stop additionalContext also forces continuation; this remains
+            # unresolved, but repeating it must not restart the assistant.
+            [Console]::Out.WriteLine((@{ systemMessage = ('TEST COMPLETION CHECK: UNRESOLVED failed receipt, already reported in this session. No recovery or PASS was recorded.' + "`n" + $message) } | ConvertTo-Json -Depth 6 -Compress))
+            exit 0
+        }
+    }
     if ($kind -eq 'block') {
         $emit = Write-StopBlockResult -HookInput $hookInput -HookName 'Test-Completion-Check' -EventName $script:eventName -Reason $message
         exit $emit.ExitCode

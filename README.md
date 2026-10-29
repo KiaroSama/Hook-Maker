@@ -25,6 +25,8 @@ in sync. When a source project's knowledge changes, the hook stages the changed 
 the destination project and asks the agent to review and import what is durable — before it
 starts the user's task.
 
+Completed-failure repeats remain **UNRESOLVED** without forcing endless continuation. Exact legacy missing-identity disposition is opt-in and still requires fresh human approval of immutable request bytes; it never records recovery or current success. See [completion compatibility and recovery](docs/TEST-HOOK-RECOVERY.md#exact-legacy-missing-identity-compatibility).
+
 ## Layout
 
 | Path | Purpose |

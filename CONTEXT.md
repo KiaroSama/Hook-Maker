@@ -34,6 +34,17 @@ A diagnostic inventory of immutable repository inputs and unresolved execution
 boundaries. Complete discovery is not proof that a document cannot influence CI.
 An evidence report never grants carryover or changes a CI-success receipt.
 
+## Delivery reservation
+
+A record that one actor has already been offered a particular unchanged finding.
+It prevents repeated forced continuation, not an unresolved verdict, and does not
+accept consequences, recover an operation or prove current success.
+
+## Historical missing identity
+
+Identity information absent in an original historical receipt. Explicitly naming
+that absence does not reconstruct it from the present or make it current evidence.
+
 ## Historical failure disposition
 
 An explicitly accepted record of an operation that failed its original guarantee,

@@ -1,8 +1,21 @@
 # Historical acceptance is not recovery or current test evidence. Original bytes
 # and the reviewed resource attestation remain the authority on every use.
 function Assert-HistoricalDispositionReceipt {
-    param($Doc, [string]$Root, [string]$RunId, $Access)
+    param($Doc, [string]$Root, [string]$RunId, $Access, $Request = $null)
     $fp=[string](Get-Field $Doc 'projectFingerprint')
+    $kind=[string](Get-Field $Request 'identityKind')
+    if($kind-cnotin@('','recorded','legacy-missing')){throw 'Unknown disposition identity kind.'}
+    $identityValid=[string](Get-Field $Doc 'repositoryState')-ceq'available'-and
+        $fp-cmatch'^[a-f0-9]{10}$'-and$fp-cne$Access.ProjectKey-and$fp-cne$Access.RepositoryStateFingerprint
+    if($kind-ceq'legacy-missing'){
+        # This is the old producer's exact absence, not a reconstructed identity.
+        $identityValid=$null-eq$Doc.PSObject.Properties['repositoryState']-and
+            $null-ne$Doc.PSObject.Properties['projectFingerprint']-and$Doc.projectFingerprint-is[string]-and$fp-ceq''-and
+            [string](Get-Field $Doc 'projectKey')-ceq(Get-DeliveryHash (Normalize-Path $Root).ToLowerInvariant()).Substring(0,12)-and
+            [string](Get-Field $Request 'commandFingerprint')-ceq[string](Get-Field $Doc 'commandFingerprint')-and
+            $null-ne(ConvertTo-UtcTime (Get-Field $Request 'endedUtc'))-and
+            (ConvertTo-UtcTime (Get-Field $Request 'endedUtc'))-eq(ConvertTo-UtcTime (Get-Field $Doc 'endedUtc'))
+    }
     $exitCode=0
     $leaks=$Doc.PSObject.Properties['leakedProcessIds']
     $start=ConvertTo-UtcTime (Get-Field $Doc 'startedUtc')
@@ -10,7 +23,7 @@ function Assert-HistoricalDispositionReceipt {
     if($Access.State-cne'available'-or[string]::IsNullOrWhiteSpace([string]$Access.RepositoryStateFingerprint)){throw 'Disposition requires current verified repository access.'}
     if((Get-Field $Doc 'schema')-ne2-or[string](Get-Field $Doc 'runId')-cne$RunId-or
         -not[string]::Equals((Normalize-Path ([string](Get-Field $Doc 'workingDirectory'))),(Normalize-Path $Root),[StringComparison]::OrdinalIgnoreCase)-or
-        [string](Get-Field $Doc 'repositoryState')-cne'available'-or$fp-cnotmatch'^[a-f0-9]{10}$'-or$fp-ceq$Access.ProjectKey-or$fp-ceq$Access.RepositoryStateFingerprint-or
+        -not$identityValid-or
         [string](Get-Field $Doc 'commandFingerprint')-cnotmatch'^[a-f0-9]{32}$'-or[string](Get-Field $Doc 'overall')-cne'failed'-or
         -not[int]::TryParse([string](Get-Field $Doc 'exitCode'),[ref]$exitCode)-or$exitCode-eq0-or
         (Get-Field $Doc 'terminated')-ne$false-or$null-eq$leaks-or$leaks.Value-isnot[array]-or$leaks.Value.Count-ne0-or
@@ -35,6 +48,11 @@ function Read-DispositionRequest {
     param([string]$Path)
     $request=Read-DispositionDocument $Path;$d=$request.Doc
     $created=ConvertTo-UtcTime (Get-Field $d 'createdUtc')
+    $identityKind=[string](Get-Field $d 'identityKind')
+    if($identityKind-cnotin@('','recorded','legacy-missing')){throw 'Unknown disposition identity kind.'}
+    if($identityKind-ceq'legacy-missing'-and
+        ([string](Get-Field $d 'commandFingerprint')-cnotmatch'^[a-f0-9]{32}$'-or
+         $null-eq(ConvertTo-UtcTime (Get-Field $d 'endedUtc')))){throw 'Legacy request must pin the original command and end time.'}
     if((Get-Field $d 'schema')-ne1-or[string](Get-Field $d 'runId')-cnotmatch'^[A-Za-z0-9._-]{1,128}$'-or
         [string](Get-Field $d 'receiptSha256')-cnotmatch'^[a-f0-9]{64}$'-or[string](Get-Field $d 'evidenceSha256')-cnotmatch'^[a-f0-9]{64}$'-or
         [string](Get-Field $d 'disposition')-cnotin@('obsolete','cancelled')-or
@@ -71,7 +89,7 @@ function Set-HistoricalDisposition {
     if($matchingEntries.Count-ne1){throw 'Disposition requires exactly one canonical receipt for this run.'}
     $receipt=Read-RecoveryReceipt $matchingEntries[0].Path
     if($receipt.Sha256-cne$d.receiptSha256){throw 'Disposition receipt hash mismatch.'}
-    Assert-HistoricalDispositionReceipt $receipt.Doc $script:cwd $d.runId $access
+    Assert-HistoricalDispositionReceipt $receipt.Doc $script:cwd $d.runId $access $d
     if((ConvertTo-UtcTime $bundle.Evidence.Doc.occurredUtc)-le(ConvertTo-UtcTime $receipt.Doc.endedUtc)){throw 'Retirement must follow the failed operation.'}
     $auth=Get-DispositionAuthorization $Transcript $RecordId $request.Sha256 $script:cwd (ConvertTo-UtcTime $d.createdUtc)
     Assert-DispositionCleanup $entries
@@ -94,6 +112,7 @@ function Set-HistoricalDisposition {
     if(($finalAuth|ConvertTo-Json -Compress)-cne($auth|ConvertTo-Json -Compress)){throw 'Authorization changed during disposition validation.'}
     $script:historicalDispositions[$d.runId]=[pscustomobject][ordered]@{
         schema=1;runId=$d.runId;projectRoot=(Normalize-Path $script:cwd);receiptSha256=$receipt.Sha256
+        identityKind=$(if([string](Get-Field $d 'identityKind')-ceq'legacy-missing'){'legacy-missing'}else{'recorded'})
         commandFingerprint=[string]$receipt.Doc.commandFingerprint;endedUtc=$receipt.Doc.endedUtc
         disposition=$d.disposition;requestPath=$request.Path;requestSha256=$request.Sha256
         evidencePath=$bundle.Evidence.Path;evidenceSha256=$bundle.Evidence.Sha256
@@ -121,9 +140,12 @@ function Test-HistoricalDisposition {
         if((Get-Field $pin 'schema')-ne1-or[string](Get-Field $pin 'disposition')-cnotin@('obsolete','cancelled')-or
             [string](Get-Field (Get-Field $pin 'authorization') 'requestSha256')-cne[string](Get-Field $pin 'requestSha256')-or
             -not[string]::Equals((Normalize-Path ([string](Get-Field $pin 'projectRoot'))),(Normalize-Path $script:cwd),[StringComparison]::OrdinalIgnoreCase)){return $false}
-        Assert-HistoricalDispositionReceipt $Doc $script:cwd $id $state
         if((Read-RecoveryReceipt $Path).Sha256-cne$pin.receiptSha256){return $false}
         $bundle=Read-DispositionRequest $pin.requestPath
+        Assert-HistoricalDispositionReceipt $Doc $script:cwd $id $state $bundle.Request.Doc
+        $kind=if([string](Get-Field $bundle.Request.Doc 'identityKind')-ceq'legacy-missing'){'legacy-missing'}else{'recorded'}
+        $pinKind=[string](Get-Field $pin 'identityKind')
+        if(($kind-ceq'legacy-missing'-and$pinKind-cne$kind)-or($pinKind-cne''-and$pinKind-cne$kind)){return $false}
         if([string]$bundle.Request.Doc.disposition-cne[string]$pin.disposition-or
             -not[string]::Equals((Normalize-Path $bundle.Request.Doc.projectRoot),(Normalize-Path $script:cwd),[StringComparison]::OrdinalIgnoreCase)){return $false}
         return $bundle.Request.Sha256-ceq$pin.requestSha256-and$bundle.Evidence.Sha256-ceq$pin.evidenceSha256-and
