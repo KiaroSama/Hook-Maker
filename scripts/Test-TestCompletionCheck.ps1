@@ -87,6 +87,13 @@ try {
         . (Join-Path $PSScriptRoot '_testcompletionselection.ps1')
     }
     else {
+    . (Join-Path $PSScriptRoot '_testcompletionindexes.ps1')
+    Invoke-CompletionIndexRegression -Root (Split-Path -Parent $PSScriptRoot)
+    Invoke-CompletionPruningRegression -Root (Split-Path -Parent $PSScriptRoot)
+    . (Join-Path $PSScriptRoot '_testcompletionrecovered.ps1')
+    Invoke-RecoveredObservationRegression -Root (Split-Path -Parent $PSScriptRoot) -Work $Work
+    . (Join-Path $PSScriptRoot '_testcompletionaudit.ps1')
+    Invoke-AuditIndexRegression -Root (Split-Path -Parent $PSScriptRoot) -Work $Work
     . (Join-Path $PSScriptRoot '_testcompletiondelivery.ps1')
     Invoke-FailedDeliveryRegression -Root (Split-Path -Parent $PSScriptRoot) -Work $Work
     . (Join-Path $PSScriptRoot '_testcompletiondisposition.ps1')

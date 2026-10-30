@@ -211,6 +211,9 @@
     $completionHook=Join-Path $RealHooksDir 'Test-Completion-Check/Test-Completion-Check.ps1'
     $completionPlan=@(Get-InstallPlanFor -HookScript $completionHook -ToolRoot $ToolRoot)
     Check 'completion delivery helper is immutable and manifest covered' (@($completionPlan|Where-Object{$_.relativePath-ceq'Test-Completion-Check/_failureadmission.ps1'-and$_.ownership-ceq'Immutable'}).Count-eq1)
+    foreach($leaf in @('_evidence.ps1','_pruning.ps1','_runclassify.ps1','_audit.ps1')) {
+        Check ('completion historical processing manifest covers '+$leaf) (@($completionPlan|Where-Object{$_.relativePath-ceq('Test-Completion-Check/'+$leaf)-and$_.ownership-ceq'Immutable'}).Count-eq1)
+    }
     $incomplete=Join-Path $Work 'incomplete-completion-source'
     [void][IO.Directory]::CreateDirectory((Join-Path $incomplete 'hooks/Test-Completion-Check'))
     foreach($leaf in @('_disposition.ps1','_dispositionauthorization.ps1')){Write-Utf8 (Join-Path $incomplete ('hooks/Test-Completion-Check/'+$leaf)) '# fixture'}

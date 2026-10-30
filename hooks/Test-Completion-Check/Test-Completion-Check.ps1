@@ -439,7 +439,7 @@ if ($null -ne $result) {
 # incident picked as the fallback representative would re-block forever (the D1/D2
 # ping-pong the ledger and this guard together close).
 $repAccounted = $false
-if ($null -ne $rep -and $null -ne $rep.Run.ResultEntry) {
+if ($null -ne $rep) {
     $repAccounted = (Test-RunNegativeAccounted -Run $rep.Run -AllResults $historicalResultEntries)
 }
 

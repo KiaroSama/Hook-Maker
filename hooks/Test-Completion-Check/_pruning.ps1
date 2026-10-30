@@ -1,6 +1,33 @@
 # Test-Completion-Check: pruning responsibility, extracted from the oversized entry.
 # Unknown repository state cannot classify any historical evidence as old-state.
 if ($preserveOriginals) { return }
+# These indexes last only for this parsed inventory. Keep the original -eq
+# singular IDs and -ceq grouped pins distinct; one ignore-case set changes policy.
+$pruneResultsByCommand = New-Object 'Collections.Generic.Dictionary[string,object]' ([StringComparer]::InvariantCultureIgnoreCase)
+foreach ($entry in $resultEntries) {
+    $command = [string](Get-Field $entry.Doc 'commandFingerprint')
+    if ($command -eq '') { continue }
+    if (-not $pruneResultsByCommand.ContainsKey($command)) { $pruneResultsByCommand[$command] = New-Object 'Collections.Generic.List[object]' }
+    [void]$pruneResultsByCommand[$command].Add($entry)
+}
+function Get-PruneCommandResults {
+    param($Doc)
+    $command = [string](Get-Field $Doc 'commandFingerprint')
+    if ($command -ne '' -and $pruneResultsByCommand.ContainsKey($command)) { return $pruneResultsByCommand[$command].ToArray() }
+    return @()
+}
+$retainedRunIds = New-Object 'Collections.Generic.HashSet[string]' ([StringComparer]::InvariantCultureIgnoreCase)
+$retainedGroupRunIds = New-Object 'Collections.Generic.HashSet[string]' ([StringComparer]::Ordinal)
+foreach ($association in @($script:recoveryAssociations.Values)) {
+    foreach ($field in @('negativeRunId', 'recoveryRunId')) {
+        $id = [string](Get-Field $association $field)
+        if ($id -ne '') { [void]$retainedRunIds.Add($id) }
+    }
+    foreach ($pin in @(Get-Field $association 'negativeReceipts')) {
+        $id = [string](Get-Field $pin 'runId')
+        if ($id -ne '') { [void]$retainedGroupRunIds.Add($id) }
+    }
+}
 # ---- R1: register note obligations BEFORE logical retirement ----------------
 # Supersession lifts the RESULT-level block, never the durable-note requirement.
 # Register current-state incident notes before removing eligible entries from
@@ -14,7 +41,7 @@ foreach ($re in $resultEntries) {
     $rProjFp = [string](Get-Field $re.Doc 'projectFingerprint')
     $isCurrentState = ($rProjFp -eq '' -or $rProjFp -eq $stateFingerprint)
     if (-not $isCurrentState) { continue }
-    if (Test-ResultSuperseded -NegDoc $re.Doc -NegTime (Get-ResultRecordedTime -Doc $re.Doc -Path $re.Path) -AllResults $resultEntries) {
+    if (Test-ResultSuperseded -NegDoc $re.Doc -NegTime (Get-ResultRecordedTime -Doc $re.Doc -Path $re.Path) -AllResults @(Get-PruneCommandResults $re.Doc)) {
         Register-PendingNote -Key $ik -Reason $cause -Origin (New-NoteOrigin -Kind result -Path $re.Path)
     }
 }
@@ -41,7 +68,8 @@ $prunedObservedPaths = New-Object System.Collections.Generic.HashSet[string]
 foreach ($re in $resultEntries) {
     $mtime = Get-FileMtimeUtc $re.Path
     if ($null -eq $mtime -or $mtime -ge $pruneCutoff) { continue }   # keep anything not yet 24h old
-    if (Test-RecoveryReceiptRetained -RunId ([string](Get-Field $re.Doc 'runId'))) { continue }
+    $runId = [string](Get-Field $re.Doc 'runId')
+    if ($retainedRunIds.Contains($runId) -or $retainedGroupRunIds.Contains($runId)) { continue }
     if ([string](Get-Field $re.Doc 'projectFingerprint') -eq $projectKey -or [string]::IsNullOrWhiteSpace([string](Get-Field $re.Doc 'projectFingerprint'))) { continue }
     $ov = ([string](Get-Field $re.Doc 'overall')).ToLowerInvariant()
     $lk = @(@(Get-Field $re.Doc 'leakedProcessIds') | Where-Object { $null -ne $_ -and [string]$_ -ne '' })
@@ -49,7 +77,7 @@ foreach ($re in $resultEntries) {
     if (-not $isNegative) { [void]$prunedResultPaths.Add($re.Path); continue }   # clean ok run -> prunable
     $ik = Get-ResultIncidentKey -Doc $re.Doc -Path $re.Path
     $resolved = (Test-ResultIncidentResolved -Doc $re.Doc -Path $re.Path)
-    $superseded = Test-ResultSuperseded -NegDoc $re.Doc -NegTime (Get-ResultRecordedTime -Doc $re.Doc -Path $re.Path) -AllResults $resultEntries
+    $superseded = Test-ResultSuperseded -NegDoc $re.Doc -NegTime (Get-ResultRecordedTime -Doc $re.Doc -Path $re.Path) -AllResults @(Get-PruneCommandResults $re.Doc)
     $cause = Get-IncidentReasonFromDoc $re.Doc
     if ($superseded -and -not $resolved -and $cause -ne '' -and
         (@($persistedNotes | Where-Object { [string](Get-Field $_ 'key') -eq $ik -and (Test-NoteObligationActionable $_) }).Count -eq 0 -or $script:LedgerWriteFailed -ne '')) { continue }

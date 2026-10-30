@@ -89,6 +89,9 @@ foreach ($hostName in @('pwsh', 'powershell.exe')) {
     Check ($hostName + ': validated association resolves the exact incident') ($resolved.Exit -eq 0 -and @($state.resolvedIncidents) -contains $fixture.Key) ($resolved.Out + $resolved.Err)
     $associations = @(Get-Field $state 'recoveryAssociations') | Where-Object { $null -ne $_ }
     Check ($hostName + ': association records the exact recovery and receipt hashes') (@($associations).Count -eq 1 -and $associations[0].recoveryRunId -eq $fixture.RecoveryRunId -and $associations[0].negativeReceiptSha256 -ceq (Get-FileHash -LiteralPath $fixture.NegativePath -Algorithm SHA256).Hash.ToLowerInvariant() -and $associations[0].recoveryReceiptSha256 -ceq (Get-FileHash -LiteralPath $fixture.RecoveryPath -Algorithm SHA256).Hash.ToLowerInvariant()) ($state | ConvertTo-Json -Depth 6)
+    # Exact recovered legacy observation stays unpaired, but cannot revive the
+    # already audited original when it outranks fresh proof in candidate selection.
+    Write-ObservedRecord -Copy $fixture.Copy -Root $fixture.Root -RunId ('legacy-' + (Get-ProjectKey $fixture.Root)) -CommandFingerprint ('d' * 32) -Fingerprint '' -AgeMinutes 30
     foreach ($event in @('Stop', 'SubagentStop')) {
         $after = Fire -Copy $fixture.Copy -Cwd $fixture.Root -EventName $event -Exe $hostName -SessionId ('after-' + $event + $hostName)
         Check ($hostName + ': ' + $event + ' does not revive the recovered incident') ($after.Exit -eq 0 -and [string]::IsNullOrWhiteSpace($after.Out)) ($after.Out + $after.Err)

@@ -1,4 +1,47 @@
 # Audit reports pairing, not execution SUCCESS. Existing isolated completion harness.
+function Invoke-AuditIndexRegression {
+    param([string]$Root,[string]$Work)
+    & {
+        param($Root,$Work)
+        . (Join-Path $Root 'hooks/_hooklib.ps1')
+        . (Join-Path $Root 'hooks/Test-Completion-Check/_identity.ps1')
+        . (Join-Path $Root 'hooks/Test-Completion-Check/_evidence.ps1')
+        . (Join-Path $Root 'hooks/Test-Completion-Check/_audit.ps1')
+        . (Join-Path $Root 'hooks/Test-Completion-Check/_diagnostic.ps1')
+        $script:stateDir=Join-Path $Work 'audit-index';$script:projectKey='fixture'
+        [void][IO.Directory]::CreateDirectory($script:stateDir)
+        foreach($i in 0..19) {
+            $doc=[ordered]@{runId=('run-'+$i);commandFingerprint=('command-'+$i);projectFingerprint='state';runIdControlled=$true;observedUtc='2026-01-01T00:00:00Z';startedUtc='2026-01-01T00:00:00Z';endedUtc='2026-01-01T00:00:01Z';overall='ok';terminated=$false;leakedProcessIds=@()}
+            foreach($kind in @('observed','result')) {
+                [IO.File]::WriteAllText((Join-Path $script:stateDir ('TestRunGuard-'+$kind+'-fixture-'+$i+'.json')),($doc|ConvertTo-Json -Depth 6),[Text.UTF8Encoding]::new($false))
+            }
+        }
+        $reader=(Get-Command Get-Field).ScriptBlock;$script:AuditRunReads=0
+        function Get-Field {param($Object,[string]$Name) if($Name-eq'runId'){$script:AuditRunReads++}; & $reader $Object $Name}
+        $path=Join-Path $Work 'indexed-audit.json'
+        Export-CompletionEvidenceAudit $path ([pscustomobject]@{ProjectKey='fixture';State='available';RepositoryStateFingerprint='state'})
+        $report=Read-JsonFile $path
+        Check 'audit avoids repeated whole-result run lookups' ($script:AuditRunReads-le200) ([string]$script:AuditRunReads)
+        Check 'indexed audit retains complete hashes and truthful paired rows' ($report.originals.Count-eq40-and$report.observations.Count-eq20-and@($report.observations|Where-Object{$_.pairStatus-ne'PAIRED'-or$_.verdict-ne'UNKNOWN'}).Count-eq0-and$report.gateWaived-eq$false)
+        $refused=$false;try{Export-CompletionEvidenceAudit $path ([pscustomobject]@{})}catch{$refused=$true}
+        Check 'audit never overwrites an existing report' $refused
+        $script:AuditMutationPath=Join-Path $script:stateDir 'TestRunGuard-observed-fixture-0.json'
+        $script:AuditMutationDone=$false
+        $hashReader=(Get-Command Get-AuditBytesHash).ScriptBlock
+        function Get-AuditBytesHash {
+            param([byte[]]$Bytes)
+            $hash=& $hashReader $Bytes
+            if(-not$script:AuditMutationDone) {
+                $script:AuditMutationDone=$true
+                [IO.File]::AppendAllText($script:AuditMutationPath,' ',[Text.UTF8Encoding]::new($false))
+            }
+            return $hash
+        }
+        $changedPath=Join-Path $Work 'changed-audit.json';$refused=$false
+        try{Export-CompletionEvidenceAudit $changedPath ([pscustomobject]@{})}catch{$refused=$_.Exception.Message-match'changed concurrently'}
+        Check 'concurrent raw-byte change refuses audit publication' ($refused-and-not[IO.File]::Exists($changedPath))
+    } $Root $Work
+}
 function Invoke-AuditAssignmentRegression {
     param([switch]$Codex,[string]$HostExe='pwsh')
     $c=New-IsolatedHookCopy;$p=New-GitRepo ('AuditAssignment-'+$Codex)

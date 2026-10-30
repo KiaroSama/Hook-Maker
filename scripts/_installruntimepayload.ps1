@@ -51,7 +51,11 @@ function Add-CompanionRuntimeArtifacts {
         Assert-RuntimeSourcesAvailable -ToolRoot $ToolRoot -RelativePaths @(
             'hooks/Test-Completion-Check/_failureadmission.ps1',
             'hooks/Test-Completion-Check/_disposition.ps1',
-            'hooks/Test-Completion-Check/_dispositionauthorization.ps1'
+            'hooks/Test-Completion-Check/_dispositionauthorization.ps1',
+            'hooks/Test-Completion-Check/_evidence.ps1',
+            'hooks/Test-Completion-Check/_pruning.ps1',
+            'hooks/Test-Completion-Check/_runclassify.ps1',
+            'hooks/Test-Completion-Check/_audit.ps1'
         )
     }
     if ([string]::Equals($FriendlyName, 'Test-Run-Guard', [StringComparison]::OrdinalIgnoreCase)) {

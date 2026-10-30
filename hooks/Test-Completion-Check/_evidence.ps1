@@ -363,6 +363,18 @@ function Get-ObservedResultAssignment {
     $sortedResults = @($ResultEntries | Where-Object { $null -ne $_ } | Sort-Object `
         @{ Expression = { $t = Get-ResultRecordedTime -Doc $_.Doc -Path $_.Path; if ($null -ne $t) { $t.Ticks } else { [int64]0 } } }, `
         @{ Expression = { [string]$_.Path } })
+    # Keep sorted bucket order and the full matcher; indexes only avoid unrelated
+    # candidates, never share successful evidence between hook invocations.
+    $byCommand = New-Object 'Collections.Generic.Dictionary[string,object]' ([StringComparer]::InvariantCultureIgnoreCase)
+    $byRun = New-Object 'Collections.Generic.Dictionary[string,object]' ([StringComparer]::InvariantCultureIgnoreCase)
+    foreach ($re in $sortedResults) {
+        foreach ($field in @('commandFingerprint', 'runId')) {
+            $key = [string](Get-Field $re.Doc $field)
+            $index = if ($field -eq 'runId') { $byRun } else { $byCommand }
+            if (-not $index.ContainsKey($key)) { $index[$key] = New-Object 'Collections.Generic.List[object]' }
+            [void]$index[$key].Add($re)
+        }
+    }
     $assigned = New-Object System.Collections.Generic.HashSet[string]
     $map = @{}
     for ($pass = 0; $pass -lt 2; $pass++) {
@@ -372,7 +384,10 @@ function Get-ObservedResultAssignment {
             $odoc = $sortedObserved[$oi].Doc
             $controlled = ((Get-Field $odoc 'runIdControlled') -eq $true)
             if ($controlled -ne $controlledPass) { continue }
-            foreach ($re in $sortedResults) {
+            $index = if ($controlled) { $byRun } else { $byCommand }
+            $key = [string](Get-Field $odoc $(if ($controlled) { 'runId' } else { 'commandFingerprint' }))
+            if (-not $index.ContainsKey($key)) { continue }
+            foreach ($re in $index[$key]) {
                 if ($assigned.Contains($re.Path)) { continue }
                 if (Test-ResultMatchesObserved -Result $re.Doc -Observed $odoc -CurrentStateFingerprint $StateFp) {
                     $map[$oi] = $re

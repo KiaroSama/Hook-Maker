@@ -49,7 +49,25 @@ function Get-RunClass {
 # the run stops outranking everything else).
 function Test-RunNegativeAccounted {
     param($Run, $AllResults)
-    if ($null -eq $Run.ResultEntry) { return (Test-ObservationSuperseded -Observed $Run.Observed -Pairs $obsPairs.ToArray() -StateFp $stateFingerprint) }
+    if ($null -eq $Run.ResultEntry) {
+        # Missing historical identity prevents pairing, not exact audited recovery
+        # accounting. A note-only resolution or another run never owns this record.
+        $same = Get-Field $Run 'SameCmdEntry'
+        if ($null -ne $same -and (Get-Field $Run.Observed 'runIdControlled') -eq $true -and
+            [string](Get-Field $Run.Observed 'runId') -cne '' -and
+            [string](Get-Field $Run.Observed 'runId') -ceq [string](Get-Field $same.Doc 'runId') -and
+            [string](Get-Field $Run.Observed 'commandFingerprint') -cne '' -and
+            [string](Get-Field $Run.Observed 'commandFingerprint') -ceq [string](Get-Field $same.Doc 'commandFingerprint') -and
+            $script:recoveryAssociations.Contains((Get-ResultIncidentKey $same.Doc $same.Path)) -and
+            (Test-ResultIncidentResolved $same.Doc $same.Path)) {
+            $association = $script:recoveryAssociations[(Get-ResultIncidentKey $same.Doc $same.Path)]
+            $pins = @(if ($null -ne $association.PSObject.Properties['negativeReceipts']) {
+                Get-Field $association 'negativeReceipts'
+            } else { [pscustomobject]@{ runId = Get-Field $association 'negativeRunId'; receiptSha256 = Get-Field $association 'negativeReceiptSha256' } })
+            if (@($pins | Where-Object { [string](Get-Field $_ 'runId') -ceq [string](Get-Field $same.Doc 'runId') -and [string](Get-Field $_ 'receiptSha256') -cmatch '^[0-9a-f]{64}$' }).Count -eq 1) { return $true }
+        }
+        return (Test-ObservationSuperseded -Observed $Run.Observed -Pairs $obsPairs.ToArray() -StateFp $stateFingerprint)
+    }
     $doc = $Run.ResultEntry.Doc
     $path = $Run.ResultEntry.Path
     $ik = Get-ResultIncidentKey -Doc $doc -Path $path

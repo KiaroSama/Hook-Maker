@@ -237,6 +237,14 @@ Only the ordinary completed-failure branch reserves delivery, scoped to project/
 
 Reservation reads at most 1,024 regular JSON files, 1 MiB per file and 16 MiB total; the atomic persistent store is bounded to 1,024 entries/1 MiB with a two-second lock wait and no eviction to make room. Invalid UTF-8, malformed/unknown evidence, missing actor identity, unreadable files or exhausted capacity use the normal gate. Termination, leaks, active work and other branches keep their existing behavior. Installed payload parity, isolated replay, actual registered event and real incident disposition are separate acceptance claims.
 
+### Bounded historical processing and audited observation accounting
+
+Assignment, pruning and audit use invocation-local indexes over the same parsed inventory. Sorted candidate order, controlled-first one-to-one ownership, full command/state/time predicates and the distinct case rules of singular versus grouped recovery pins remain unchanged. There is no cross-event positive cache, longer evidence lifetime or increased event deadline.
+
+An unpairable controlled legacy observation may be historically accounted for only when its exact run and complete command identify an existing explicitly audited recovery association whose original raw receipt hash still matches. A note-only resolution, empty pin list, foreign/uncontrolled observation or modified/missing original cannot use this path. It creates neither a pair nor current positive evidence and writes no recovery/disposition. Independent active, leak and note obligations remain enforced. A missing original without that provenance stays UNKNOWN; do not invent a receipt, reuse unrelated CI or replay a provider operation.
+
+Read-only audit indexes retain every original hash and truthful observation row, including malformed and active uncertainty. It parses and hashes the same bytes, rechecks all bytes and the entire file set before CreateNew publication, and refuses incomplete/concurrently changed evidence. A successful isolated replay, a complete audit, canonical CI, installed parity and an actual registered event are distinct claims.
+
 ### Expected-negative test fixtures
 
 A child deliberately returning a nonzero exit code is still recorded as failed;

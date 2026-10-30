@@ -266,6 +266,8 @@ $script:HookMeta = @{
     # Explicit legacy-missing disposition pins original absence and human hash;
     # completed-failure repeats stay UNRESOLVED without forcing continuation.
     # Final pins follow acquisition; no current proof or active/unknown waiver.
+    # Invocation-local evidence indexes preserve ordering/identity; exact audited
+    # recovery accounts its controlled original only, never missing evidence.
     'Test-Completion-Check'            = @{ Order = 25; When = 'post'; Text = 'verifies test evidence and cleanup before finishing'; Events = @('Stop', 'SubagentStop'); Timeout = 20 }
     # Utf8-Encoding-Check is also the third native pre-push chain stage
     # (Ignore -> Secrets -> Utf8 -> preserved user hook). Its position is
