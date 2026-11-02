@@ -128,6 +128,10 @@
     }
     finally { Remove-FixtureHook 'ZZZ-Regtest-Transaction' }
 
+    . (Join-Path $PSScriptRoot '_testinstallruntimelock.ps1')
+    Invoke-RuntimeLockRegression -Root $ToolRoot -Work $Work
+    Check 'locked directory replacement preserves the complete runtime and config' $true
+
     . (Join-Path $PSScriptRoot '_testinstallruntimeconfig.ps1')
 
     # =====================================================================

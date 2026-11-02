@@ -109,6 +109,15 @@ jobs:
       - name: Engine smoke test (Windows PowerShell 5.1)
         shell: powershell
         run: .\scripts\Test-Engine.ps1
+      - name: Locked runtime replacement (Windows PowerShell 5.1)
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          . ./scripts/_testlib.ps1
+          . ./scripts/_testinstallruntimelock.ps1
+          $work = New-TestWorkspace -Prefix 'hookmaker-runtime-lock'
+          try { Invoke-RuntimeLockRegression -Root $PWD.Path -Work $work }
+          finally { if (-not (Remove-TestWorkspace -Path $work)) { throw 'Runtime lock workspace cleanup failed.' } }
       # The anti-loop ledger decides whether a gate may force another answer, so
       # a host-specific defect in it is a continuation storm on that host and
       # nothing on the other. It ran on pwsh 7 only (its suites bucket); the 5.1

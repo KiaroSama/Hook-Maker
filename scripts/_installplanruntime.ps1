@@ -122,17 +122,20 @@ function Install-PlannedRuntime {
             Copy-Item -LiteralPath $previousConfig -Destination $stagedConfig -Force
         }
 
+        # Move-Item falls back to per-file copy/delete on Windows access denial,
+        # splitting a live runtime when a later file is locked. Native same-volume
+        # renames fail intact instead; never merge into an existing destination.
         if (Test-Path -LiteralPath $destination) {
-            Move-Item -LiteralPath $destination -Destination $setAside -Force
+            [System.IO.Directory]::Move($destination, $setAside)
         }
         try {
-            Move-Item -LiteralPath $stagingHookDir -Destination $destination -Force
+            [System.IO.Directory]::Move($stagingHookDir, $destination)
             $swapped = $true
         }
         catch {
             # Put the previous runtime back so the installation keeps working.
             if ((Test-Path -LiteralPath $setAside) -and -not (Test-Path -LiteralPath $destination)) {
-                Move-Item -LiteralPath $setAside -Destination $destination -Force
+                [System.IO.Directory]::Move($setAside, $destination)
             }
             throw
         }

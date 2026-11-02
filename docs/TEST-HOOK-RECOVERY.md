@@ -1,5 +1,17 @@
 # Test-hook identity and historical recovery
 
+## Interrupted managed runtime updates
+
+The installer uses native same-volume directory renames, not `Move-Item`'s per-file
+fallback. A locked live file refuses replacement without splitting the original
+runtime. Release only an identified owned consumer before retrying the supported
+installer; never kill processes by name. The two renames provide compensating
+rollback, not crash-atomic exchange. Preserve any interrupted set-aside directory
+until its exact file union matches the captured preimage and recovery is verified;
+never infer ownership or disposability from its name or age. The install-registry
+suite covers locked refusal, complete original/config preservation and successful
+replacement after the lock is released on both supported PowerShell hosts.
+
 The canonical changes are in `hooks/Test-Completion-Check/Test-Completion-Check.ps1`,
 its `_deepdebug.ps1`, `_ledger.ps1` and `_recovery.ps1` modules, and
 `hooks/Test-Run-Guard/_commandanalysis.ps1` plus `Test-Run-Guard.ps1`. Regression

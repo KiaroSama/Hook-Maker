@@ -708,10 +708,10 @@ rather than followed out of the declared boundary.
 Replacing a runtime is staged, not destructive: the new tree is built in a sibling staging
 directory, every planned artifact is hash-verified, and existing user configuration is copied
 into staging **before** anything live is touched, then
-swapped into place; if the swap itself fails the previous runtime is restored. A failure at any
-earlier point leaves the existing installation exactly as it was, and abandoned staging directories
-from an interrupted run are cleaned up on the next install. Settings files are written the same
-way — serialized to a sibling temp file, re-parsed from disk to prove they load, then atomically
+swapped using native same-volume directory renames, never per-file move fallback. A locked live
+file refuses replacement with the complete original tree intact; a failed staged rename restores
+the previous directory. This remains compensating rollback, not crash-atomic exchange.
+Settings files are written the same way — serialized to a sibling temp file, re-parsed from disk to prove they load, then atomically
 replaced — so a failure can never leave truncated or unparseable settings behind.
 
 ### Registration ownership
