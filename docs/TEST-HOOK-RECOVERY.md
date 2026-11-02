@@ -1,5 +1,25 @@
 # Test-hook identity and historical recovery
 
+## Durable guarded receipts
+
+Every terminal guarded run publishes UTF-8 schema-2 evidence at the canonical
+per-project/run path in `HOOKMAKER_STATE_DIR`, or the user-local HookMaker state
+folder when unset, plus the requested result path. Canonical receipts are
+create-only: identical publication is idempotent; reusing a run identity with
+different bytes refuses without replacing the original. Use a fresh run identity
+for a new execution. Noncanonical caller output may still be reused.
+
+Publication flushes a same-directory temporary file before renaming it into place.
+A canonical storage failure cannot return success: the runner reports publication
+failure and returns a nonzero infrastructure exit while retaining the actual child
+outcome in any writable caller receipt. This does not guarantee survival of disk
+failure, external deletion or a process killed before publication. Completion
+retirement removes records only from the evaluation view, never their disk bytes.
+Keep original evidence for unresolved incidents; never fabricate a missing receipt
+or replay an old deployment to reconstruct it. Both supported hosts exercise
+canonical discovery, collision preservation and storage-error propagation in the
+existing runner tests.
+
 ## Interrupted managed runtime updates
 
 The installer uses native same-volume directory renames, not `Move-Item`'s per-file

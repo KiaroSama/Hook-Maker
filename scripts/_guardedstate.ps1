@@ -105,17 +105,31 @@ $script:Result = [pscustomobject][ordered]@{
 # be a secret. The count is kept because "did it get the arguments I expected"
 # is answerable without the values.
 function Write-GuardedResultFile {
-    param([Parameter(Mandatory = $true)][string]$Path, [Parameter(Mandatory = $true)][string]$Json)
+    param([Parameter(Mandatory = $true)][string]$Path, [Parameter(Mandatory = $true)][string]$Json, [switch]$Immutable)
     $dir = Split-Path -Parent $Path
     if (-not [string]::IsNullOrWhiteSpace($dir) -and -not (Test-Path -LiteralPath $dir)) {
         New-Item -ItemType Directory -Path $dir -Force | Out-Null
     }
     # Same bytes, published atomically: a consumer must never read a half-written
     # result and conclude the run produced nothing.
-    $tmp = $Path + '.' + [guid]::NewGuid().ToString('N').Substring(0, 8) + '.tmp'
-    [System.IO.File]::WriteAllText($tmp, $Json, (New-Object System.Text.UTF8Encoding($false)))
+    $tmp = $Path + '.' + [guid]::NewGuid().ToString('N') + '.tmp'
+    $created = $false
     try {
-        if (Test-Path -LiteralPath $Path -PathType Leaf) {
+        $bytes = (New-Object System.Text.UTF8Encoding($false)).GetBytes($Json)
+        $stream = [IO.File]::Open($tmp, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
+        $created = $true
+        try { $stream.Write($bytes, 0, $bytes.Length); $stream.Flush($true) }
+        finally { $stream.Dispose() }
+        if ($Immutable) {
+            # Terminal evidence is append-only. A retry may repeat identical bytes,
+            # but a reused runId must never replace the original execution.
+            try { [IO.File]::Move($tmp, $Path) }
+            catch {
+                if (-not [IO.File]::Exists($Path) -or
+                    [Convert]::ToBase64String([IO.File]::ReadAllBytes($Path)) -cne [Convert]::ToBase64String($bytes)) { throw }
+            }
+        }
+        elseif (Test-Path -LiteralPath $Path -PathType Leaf) {
             [System.IO.File]::Replace($tmp, $Path, [NullString]::Value)
         }
         else {
@@ -123,7 +137,7 @@ function Write-GuardedResultFile {
         }
     }
     finally {
-        if (Test-Path -LiteralPath $tmp -PathType Leaf) { Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue }
+        if ($created -and (Test-Path -LiteralPath $tmp -PathType Leaf)) { Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue }
     }
 }
 
@@ -140,19 +154,25 @@ function Write-GuardedResultFile {
 # Writing both keeps the caller's file exactly where it asked for it - nothing
 # that reads it today breaks - while making every terminal result discoverable
 # through the one path the hook knows. Same document, same schema, same run id.
+$script:ReceiptPublicationFailed = $false
 function Write-GuardedResult {
     $json = $script:Result | ConvertTo-Json -Depth 6
     $written = @{}
-    foreach ($target in @($ResultPath, $script:CanonicalResultPath)) {
+    $errors = New-Object 'Collections.Generic.List[string]'
+    if ([string]::IsNullOrWhiteSpace($script:CanonicalResultPath)) { [void]$errors.Add('Canonical receipt path unavailable.') }
+    foreach ($target in @($script:CanonicalResultPath, $ResultPath)) {
         if ([string]::IsNullOrWhiteSpace($target)) { continue }
-        $key = $target.ToLowerInvariant()
-        if ($written.ContainsKey($key)) { continue }
-        $written[$key] = $true
-        try { Write-GuardedResultFile -Path $target -Json $json }
-        catch {
-            Write-Warning ('the guarded result document could not be written to ' + $target + ': ' + $_.Exception.Message)
+        try {
+            $key = [IO.Path]::GetFullPath($target).ToLowerInvariant()
+            if ($written.ContainsKey($key)) { continue }
+            $written[$key] = $true
+            $immutable = ($target -eq $script:CanonicalResultPath -or (Split-Path -Leaf $target) -like 'TestRunGuard-result-*.json')
+            Write-GuardedResultFile -Path $target -Json $json -Immutable:$immutable
         }
+        catch { [void]$errors.Add('Receipt publication failed at ' + $target + ': ' + $_.Exception.Message) }
     }
+    $script:ReceiptPublicationFailed = ($errors.Count -gt 0)
+    if ($script:ReceiptPublicationFailed) { throw ($errors.ToArray() -join '; ') }
 }
 
 # ---- "a guarded run is live" marker ----------------------------------------

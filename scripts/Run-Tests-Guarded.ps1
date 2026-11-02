@@ -608,6 +608,14 @@ try {
     exit $exitCode
 }
 catch {
+    # Persistence failure is not a different child outcome; keep its real receipt.
+    if ($script:ReceiptPublicationFailed) {
+        [Console]::Error.WriteLine('Run-Tests-Guarded: receipt publication failed; child outcome retained. ' + $_.Exception.Message)
+        if ($script:Result.terminated) { exit 124 }
+        if (@($script:Result.leakedProcessIds).Count -gt 0) { exit 125 }
+        if ($null -ne $script:Result.exitCode -and $script:Result.exitCode -ne 0) { exit $script:Result.exitCode }
+        exit 3
+    }
     $script:Result.overall = 'error'
     $script:Result.terminateDetail += ' - ownership/cleanup unproven: ' + $_.Exception.Message
     [Console]::Error.WriteLine('Run-Tests-Guarded: ' + $_.Exception.Message)
@@ -642,7 +650,7 @@ finally {
     }
     # A terminal error is published AFTER bounded cleanup, including exited-root
     # descendants; issuing termination alone is never a successful receipt.
-    if (-not $script:ResultWritten) {
+    if (-not $script:ResultWritten -and -not $script:ReceiptPublicationFailed) {
         if ($script:Result.overall -eq 'unknown') { $script:Result.overall = 'error' }
         $script:Result.endedUtc = (Get-Date).ToUniversalTime().ToString('o')
         try { Write-GuardedResult } catch { }

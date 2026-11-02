@@ -41,4 +41,30 @@ foreach($runnerHost in @('pwsh','powershell.exe')) {
         $actual=if(Test-Path -LiteralPath $capture){[IO.File]::ReadAllText($capture,[Text.Encoding]::UTF8)}else{''}
         Check ($runnerHost+': '+$tag+' empty/quotes/backslash/Unicode argv round trip') ($actual -ceq (ConvertTo-Json -InputObject $hostArguments -Compress)) $actual
     }
+    # Mutable caller output must not replace the append-only canonical receipts.
+    $canonicalFiles = @(Get-ChildItem -LiteralPath $env:HOOKMAKER_STATE_DIR -Filter 'TestRunGuard-result-*.json' -File |
+        Where-Object { (Read-JsonFile $_.FullName).workingDirectory -eq $caseRoot })
+    Check ($runnerHost+': terminal receipts remain discoverable') ($canonicalFiles.Count -eq 2)
+    $failedCanonical = @($canonicalFiles | Where-Object { (Read-JsonFile $_.FullName).exitCode -eq 7 })
+    if ($failedCanonical.Count -ne 1) { throw 'Expected one failed canonical fixture receipt.' }
+    $originalBytes = [Convert]::ToBase64String([IO.File]::ReadAllBytes($failedCanonical[0].FullName))
+    $originalRun = Read-JsonFile $failedCanonical[0].FullName
+    Write-Utf8 $wrapper ($code.Replace(' -Quiet',(" -RunId '"+$originalRun.runId+"' -Quiet")))
+    $collisionOutput = Invoke-QuietCommand -FilePath $program -ArgumentList @('-NoProfile','-File',$wrapper) -TimeoutSeconds 35 -CaptureOutput
+    Check ($runnerHost+': duplicate run identity preserves original bytes') (
+        $collisionOutput.ExitCode -eq 7 -and [Convert]::ToBase64String([IO.File]::ReadAllBytes($failedCanonical[0].FullName)) -ceq $originalBytes -and
+        $collisionOutput.ErrorOutput -match 'receipt publication failed')
+    $blockedState = Join-Path $caseRoot 'blocked-state'
+    Write-Utf8 $blockedState 'not a directory'
+    $blockedWrapper = Join-Path $caseRoot 'blocked-publication.ps1'
+    $blockedCode = "`$env:HOOKMAKER_STATE_DIR='"+$blockedState.Replace("'","''")+"'`r`n"+$code
+    # Only persistence fails: retain the actual successful child's outcome.
+    Write-Utf8 $fixture "Write-Output 'Receipt fixture complete'`r`n"
+    Write-Utf8 $blockedWrapper $blockedCode
+    $blockedOutput = Invoke-QuietCommand -FilePath $program -ArgumentList @('-NoProfile','-File',$blockedWrapper) -TimeoutSeconds 35 -CaptureOutput
+    $blockedExit = $blockedOutput.ExitCode
+    $fallback = Read-JsonFile $receipt
+    Check ($runnerHost+': storage failure cannot return successful exit') (
+        $blockedExit -eq 3 -and $fallback.overall -eq 'ok' -and $fallback.exitCode -eq 0 -and
+        $blockedOutput.ErrorOutput -match 'receipt publication failed')
 }
