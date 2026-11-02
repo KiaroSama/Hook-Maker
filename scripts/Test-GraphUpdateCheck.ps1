@@ -95,26 +95,26 @@ try {
     Write-Utf8 (Join-Path $stale 'src.ps1') 'function Foo {}'
     Add-Commit $stale 'add Foo'
     $r = Fire -Cwd $stale
-    Check 'a stale graph produces a Stop reminder' ($r.Out -match '"decision":"block"' -and $r.Out -match 'GRAPH UPDATE CHECK') $r.Out
-    Check 'graph lifecycle success-only verification and safe recycling boundaries' ($r.Out -match 'Only after verified success' -and $r.Out -match 'semantic retention and endpoints' -and $r.Out -match 'Recycle Bin unavailable means cleanup BLOCKED' -and $r.Out -match 'hook deletes nothing') $r.Out
+    Check 'a stale graph advises without blocking or continuation' ($r.Out -match '"systemMessage"' -and $r.Out -notmatch '"decision"|additionalContext' -and $r.Out -match 'GRAPH UPDATE CHECK') $r.Out
+    Check 'graph lifecycle preserves rollback and permanent ownership-checked cleanup' ($r.Out -match 'Only after verified success' -and $r.Out -match 'semantic retention and endpoints' -and $r.Out -match 'permanently delete exact proven owned obsolete' -and $r.Out -match 'NOT Recycle Bin' -and $r.Out -match 'hook deletes nothing') $r.Out
     $kept = Join-Path $stale 'graph-like-user-data'; [void][IO.Directory]::CreateDirectory($kept)
     $sentinel = Join-Path $kept 'source.txt'; Write-Utf8 $sentinel 'user-owned graph-like source'
     $beforeSentinel = [IO.File]::ReadAllBytes($sentinel)
     $null = Fire -Cwd $stale
     Check 'graph-like unrelated source remains byte-identical' ([Convert]::ToBase64String([IO.File]::ReadAllBytes($sentinel)) -ceq [Convert]::ToBase64String($beforeSentinel))
     Check 'the reminder uses structural/relationship criteria, not file count' (
-        $r.Out -match 'based on STRUCTURAL impact, not the number of files changed') $r.Out
+        $r.Out -match 'Judge STRUCTURAL impact, not file count') $r.Out
     Check 'the OLD blanket "one-file fixes" exclusion wording is gone' ($r.Out -notmatch 'one-file fixes')
     Check 'a one-file structural change (export/import/call/inheritance) is described as update-worthy' (
-        $r.Out -match 'a single-file change can still be graph-relevant' -and
-        $r.Out -match 'changed export, import, call, or inheritance relationship') $r.Out
+        $r.Out -match 'symbols/exports/imports/calls/inheritance/entries/dependencies' -and
+        $r.Out -match 'matter even in one file') $r.Out
     Check 'a one-file internal literal/comment-only change is described as potentially not update-worthy' (
-        $r.Out -match 'prose/comments/formatting only, a literal or config value change') $r.Out
+        $r.Out -match 'Prose/comments/formatting/literal/config/generated/test changes matter only if represented') $r.Out
     Check 'a multi-file docs-only change is explicitly excluded too (criteria are structural, not per-file)' (
-        $r.Out -match 'a multi-file change can be graph-irrelevant') $r.Out
+        $r.Out -match 'not file count' -and $r.Out -match 'changes matter only if represented') $r.Out
     Check 'AST-only/no-API-cost wording remains accurate' ($r.Out -match 'graphify update \.' -and $r.Out -match 'AST-only, no API cost') $r.Out
     Check 'updating remains advisory (agent decides, hook never runs graphify itself)' (
-        $r.Out -match 'Decide for yourself' -and $r.Out -notmatch 'graphify update \.\s*$')
+        $r.Out -match 'Judge STRUCTURAL impact' -and $r.Out -notmatch 'graphify update \.\s*$')
     $hookText = [System.IO.File]::ReadAllText($Hook)
     Check 'the hook script never invokes graphify itself' ($hookText -notmatch "FilePath\s+graphify" -and $hookText -notmatch "'graphify'")
 
@@ -188,7 +188,7 @@ try {
     Write-Utf8 $mdFile '# note'
     (Get-Item -LiteralPath $mdFile).LastWriteTimeUtc = [DateTime]::UtcNow.AddMinutes(20)
     $r = Fire -Cwd $mdRepo
-    Check 'an edit in a git-ignored .ai/ newer than the graph blocks once' ($r.Out -match '"decision":"block"') $r.Out
+    Check 'newer git-ignored Markdown advises without continuation' ($r.Out -match '"systemMessage"' -and $r.Out -notmatch '"decision"|additionalContext') $r.Out
     Check 'the block names the Markdown folders and the local update' (
         $r.Out -match 'Markdown the graph covers beyond Git' -and $r.Out -match 'graphify update \.' -and $r.Out -match 'never an external model backend') $r.Out
     $r = Fire -Cwd $mdRepo

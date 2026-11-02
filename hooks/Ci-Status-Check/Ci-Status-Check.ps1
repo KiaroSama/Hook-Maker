@@ -443,10 +443,10 @@ function Write-ExternalBlockerContext {
         [System.IO.File]::WriteAllText($noticePath, $noticeStamp)
     }
     catch { }
-    $message = 'CI NOT VERIFIED GREEN. Completion is allowed only because a recorded EXTERNAL CI blocker is in effect for ' +
+    $message = 'CI NOT VERIFIED GREEN. Recorded EXTERNAL CI blocker permits completion for ' +
         $RepoSlug + '@' + $Sha7 + ' [' + $Classification + ']: ' + $Reason +
-        '. This is a documented external blocker, not a successful CI run - report it accurately and do not claim CI passed.' + "`n" +
-    'CI cannot execute this run (external blocker above). Under CI First this is the one case where the heavy pass runs locally: run it once through the guarded runner on the final tree, record the blocker (command, evidence, time) in .ai/TESTING_NOTES.md as an observation - re-verify it next task, never treat it as standing - and say in the completion report that CI was unavailable and why.'
+        '. Report the blocker, never CI success.' + "`n" +
+    'CI cannot execute this run: run the heavy pass once through the guarded runner on the final tree. Record blocker command/evidence/time in .ai/TESTING_NOTES.md as a dated observation; re-verify next task, not standing permission. Report CI unavailable and why.'
     $null = Write-HookResult -EventName $EventName -Kind 'advisory' -Message $message
     exit 0
 }
@@ -585,7 +585,7 @@ if ($reviewReason -ne '' -and $snapshot.FailedRuns.Count -eq 0 -and $snapshot.In
 if ($snapshot.PendingRuns.Count -gt 0) {
     # E-09 wording: a non-completed status covers queued AND in_progress (and any
     # other pre-terminal state) - none of them is ever green.
-    Write-Block -Outcome 'pending' -Reason ('CI CHECK: pushed commit ' + $sha7 + ' on ' + $branch + ' (' + $repoSlug + ') has ' + $snapshot.PendingRuns.Count + ' check run(s) not finished yet (queued or still in progress): ' + ($snapshot.PendingRuns -join '; ') + '. The work is not verifiably complete yet - wait for them and verify this exact commit (gh run list --commit ' + $sha + ').')
+    Write-Block -Outcome 'pending' -Reason ('CI CHECK: pushed commit ' + $sha7 + ' on ' + $branch + ' (' + $repoSlug + ') has ' + $snapshot.PendingRuns.Count + ' check run(s) not finished yet (queued or still in progress): ' + ($snapshot.PendingRuns -join '; ') + '. Incomplete: wait and verify exact SHA (gh run list --commit ' + $sha + ').')
 }
 
 # ---- account billing / payment block: proven external, auto-recorded ----

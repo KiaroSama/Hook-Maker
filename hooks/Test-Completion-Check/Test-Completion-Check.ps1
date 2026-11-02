@@ -504,8 +504,8 @@ if ($cleanupInstalled) {
 if ($activePid -gt 0) {
     Save-CompletionState
     Write-Finding -Blocking $true -Lines @(
-        'TEST COMPLETION CHECK: a guarded test run is STILL ACTIVE (owner process ' + $activePid + ' is alive). The work cannot be complete while its result is unknown.',
-        'Recovery: wait for that run to finish and read its result document, or stop it deliberately with the guarded runner and record how it ended. Do not declare the task complete, and do not claim any test outcome until the run has actually ended.')
+        'TEST COMPLETION CHECK: guarded run STILL ACTIVE; owner process ' + $activePid + ' alive, outcome UNKNOWN. Task incomplete.',
+        'Recovery: await exit + read result, or deliberately stop via guarded runner and record outcome. Claim no test result before exit.')
 }
 
 # ---- 1b. a guarded run DIED without recording how it ended (OWNERLESS) -----
@@ -526,8 +526,8 @@ if ($abandonedRuns.Count -gt 0) {
         'TEST COMPLETION CHECK: a guarded test run DIED without recording how it ended - it is OWNERLESS. ' +
             $(if ($abandonedRuns.Count -gt 1) { 'There are ' + $abandonedRuns.Count + ' such runs; the first is reported here. ' } else { '' }) +
             'Evidence: ' + $ab.Detail + ', and no guarded result document exists for ' + $(if ($ab.RunId -ne '') { 'run id ' + $ab.RunId } else { 'this marker' }) + '.',
-        'Its result is UNKNOWN AND UNRECOVERABLE: the guarded runner records a terminal result on every exit path it can intercept, so nothing was recorded means the process was killed outright, and no later run will ever fill that gap. Do not treat it as a pass, and do not claim any test outcome from it.',
-        'Recovery: re-run the affected suite through scripts\Run-Tests-Guarded.ps1 so a real result document exists, then record a durable note in .ai/ (BUGS.md, TESTING_NOTES.md, COMMANDS.md and/or LESSON.md) covering what killed the run, why nothing detected it at the time, and the verified guard that now catches it.',
+        'Result UNKNOWN AND UNRECOVERABLE: no terminal receipt despite runner exit handling; abrupt kill left a gap no later run can fill. Do not treat it as a pass or claim an outcome.',
+        'Recovery: affected suite via scripts\Run-Tests-Guarded.ps1; durable .ai/ note (BUGS.md, TESTING_NOTES.md, COMMANDS.md and/or LESSON.md): termination cause, missed detection, verified prevention guard.',
         'Tag that note with a line `' + (Get-IncidentTag $ab.Key) + '` (exactly) to clear THIS incident; a bare acknowledgement will not.',
         'If the run genuinely belonged to abandoned work and there is nothing to learn from it, delete its record instead - the exact file is: ' + $ab.Path)
 }
@@ -552,9 +552,9 @@ if ($incidentKey -ne '' -and -not (Test-ResultIncidentResolved -Doc $result -Pat
     else {
         [void]$lines.Add('Recovery: fix the cause of the ' + $(if ($terminateReason -ne '') { $terminateReason } else { 'termination' }) + ' - do not simply raise the ceiling to hide it - then re-run the suite through scripts\Run-Tests-Guarded.ps1 and confirm the new result reports overall=ok.')
     }
-    [void]$lines.Add('Then record a durable note in .ai/ (BUGS.md, TESTING_NOTES.md, COMMANDS.md and/or LESSON.md as appropriate) covering WHY this was not detected earlier and the verified prevention/recovery guard. A bare acknowledgement is not a note.')
-    [void]$lines.Add('Tag that note with a line `' + (Get-IncidentTag $incidentKey) + '` (exactly) so THIS specific incident is cleared - a note without this tag will not resolve it, and a second concurrent incident needs its own separately tagged note.')
-    [void]$lines.Add('If the verified repair changes the command or the old receipt lacks identity, explicitly associate its newer clean receipt: powershell.exe -NoProfile -File "' + $PSCommandPath + '" -ResolveIncident ' + $incidentKey + ' -RecoveryRunId "<verified recovery run id>" -ProjectRoot "' + $cwd + '" -Reason "<substantive equivalent test scope and verified repair, at least 80 UTF-8 bytes>". This still requires the incident note and verified process cleanup.')
+    [void]$lines.Add('Durable .ai/ note (BUGS.md, TESTING_NOTES.md, COMMANDS.md and/or LESSON.md): WHY this was not detected earlier + verified prevention/recovery guard; no bare acknowledgement.')
+    [void]$lines.Add('Exact tag line: `' + (Get-IncidentTag $incidentKey) + '`. Untagged notes cannot clear it; each concurrent incident needs its own tagged note.')
+    [void]$lines.Add('If the verified repair changes the command or the old receipt lacks identity, explicitly associate its newer clean receipt: pwsh -NoProfile -File "' + $PSCommandPath + '" -ResolveIncident ' + $incidentKey + ' -RecoveryRunId "<verified recovery run id>" -ProjectRoot "' + $cwd + '" -Reason "<substantive equivalent test scope and verified repair, at least 80 UTF-8 bytes>". This still requires the incident note and verified process cleanup.')
     [void]$lines.Add('Report only what the evidence shows: this hook has seen one guarded run for this project and cannot confirm any broader test scope passed.')
     Write-Finding -Blocking $true -Lines $lines.ToArray()
 }

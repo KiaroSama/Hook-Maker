@@ -39,7 +39,7 @@ function Get-UnresolvedObservationLines {
         [void]$lines.Add('Repository access diagnosis=' + [string]$State.Diagnosis + '. Approval requires an explicit owner-confirmed exact physical root, never project selection alone.')
         [void]$lines.Add('Recovery: restore authorized Git read access to this exact repository before requesting a verified literal fingerprint. No automatic safe.directory, ownership or ACL change is permitted. Existing failure/timeout/leak obligations remain; unrelated green CI cannot repair missing identity.')
     }
-    [void]$lines.Add('Supported recovery: only a later clean, independently paired observation of the SAME COMPLETE command (the commandFingerprint above, including every argument) can supersede this unmatched observation. A different logo/readme/health scope cannot. Do not repeat a mutating command without fresh authorization; if safe recovery is unavailable, record UNKNOWN in the read-only audit below and report the gate unresolved. Never fill fields or delete originals.')
-    [void]$lines.Add('Read-only audit: powershell.exe -NoProfile -File "' + $HookPath + '" -AuditEvidence -ProjectRoot "' + $ProjectRoot + '" -AuditPath "<new local JSON path>". The export records original hashes and UNKNOWN/SUPERSEDED, never SUCCESS; UNKNOWN keeps the gate.')
+    [void]$lines.Add('Supported recovery: later clean, independently paired SAME COMPLETE command (commandFingerprint above, every argument); different logo/readme/health scope cannot supersede this observation. Mutation requires fresh authorization. No safe recovery -> audit UNKNOWN, report unresolved. Never fill fields/delete originals.')
+    [void]$lines.Add('Read-only audit: pwsh -NoProfile -File "' + $HookPath + '" -AuditEvidence -ProjectRoot "' + $ProjectRoot + '" -AuditPath "<new local JSON path>". Original hashes + UNKNOWN/SUPERSEDED, never SUCCESS; UNKNOWN keeps the gate.')
     return $lines.ToArray()
 }

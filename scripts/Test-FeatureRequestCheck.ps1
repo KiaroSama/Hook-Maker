@@ -1,6 +1,5 @@
 # Offline suite for Feature-Request-Check: the prompt detector, the
-# UserPromptSubmit advisory, the Stop gate, and the guard that stops the hook
-# arming its own gate from the banner it emitted itself.
+# UserPromptSubmit/Stop advisories and suppression of its own injected banner.
 #
 # Everything is FABRICATED - a workspace-local LOCALAPPDATA, workspace-local
 # project directories, hand-built .jsonl transcripts. The hook only ever reads
@@ -146,13 +145,13 @@ function Get-Message {
     return ''
 }
 
-function Test-Blocked {
+function Test-Advised {
     param([string]$Text)
     if ([string]::IsNullOrWhiteSpace($Text)) { return $false }
     $doc = $null
     try { $doc = $Text | ConvertFrom-Json } catch { return $false }
-    if ($null -eq $doc -or $null -eq $doc.PSObject.Properties['decision']) { return $false }
-    return ([string]$doc.decision -eq 'block')
+    if ($null -eq $doc -or $null -ne $doc.PSObject.Properties['decision'] -or $null -ne $doc.PSObject.Properties['hookSpecificOutput']) { return $false }
+    return ($null -ne $doc.PSObject.Properties['systemMessage'] -and [string]$doc.systemMessage -match 'FEATURE REQUEST CHECK')
 }
 
 # A Claude transcript is JSONL: one {"message":{...}} object per line.
@@ -322,7 +321,7 @@ try {
         $msg -match 'speckit-specify' -and $msg -notmatch '(?i)to-spec\b' -and
         $msg -notmatch '(?i)to-tickets') $msg
     Check 'advisory: UserPromptSubmit NEVER emits decision:block' (
-        -not (Test-Blocked $r.Out)) $r.Out
+        $r.Out -notmatch '"decision"') $r.Out
     $rSame = Fire (@{ session_id = 'u1'; cwd = $projAdvise; hook_event_name = 'UserPromptSubmit'; prompt = $FeaturePrompt })
     Check 'advisory: the same prompt is not repeated' ($rSame.Out -eq '') $rSame.Out
     $rNew = Fire (@{ session_id = 'u1'; cwd = $projAdvise; hook_event_name = 'UserPromptSubmit'; prompt = 'implement the export endpoint for reports' })
@@ -356,11 +355,11 @@ try {
     $tUnder = Join-Path $Work 'cap-under.jsonl'
     Write-Utf8 $tUnder ($capUserLine + "`n" + $padUnder + "`n")
     $rUnder = Fire (New-StopPayload -Cwd (New-Proj 'CapUnder') -Transcript $tUnder -SessionId 'cap-under') -HookPath $capHook
-    Check 'cap: a transcript under the byte cap is still evaluated - the gate blocks' (Test-Blocked $rUnder.Out) ($rUnder.Out + $rUnder.Err)
+    Check 'cap: a transcript under the byte cap is still evaluated - the hook advises' (Test-Advised $rUnder.Out) ($rUnder.Out + $rUnder.Err)
 
     # =====================================================================
     Write-Host ''
-    Write-Host '--- Stop: the gate, and the evidence it refuses to invent ---' -ForegroundColor Cyan
+    Write-Host '--- Stop: passive advice from verified transcript evidence ---' -ForegroundColor Cyan
     $tFeature = New-Transcript 'feature-no-chain' @(
         (New-UserEntry $FeaturePrompt),
         (New-AssistantEntry 'edited three files and ran the tests')
@@ -368,13 +367,13 @@ try {
     $projGate = New-Proj 'Gate'
     $rBlock = Fire (New-StopPayload -Cwd $projGate -Transcript $tFeature -SessionId 'g1')
     $blockMsg = Get-Message $rBlock.Out
-    Check 'gate: a feature prompt with no grilling call BLOCKS' (
-        (Test-Blocked $rBlock.Out) -and $rBlock.Exit -eq 0) ($rBlock.Out + $rBlock.Err)
-    Check 'gate: the block quotes the prompt it actually found (its evidence)' (
+    Check 'advisory: missing interview emits only a passive systemMessage' (
+        (Test-Advised $rBlock.Out) -and $rBlock.Exit -eq 0) ($rBlock.Out + $rBlock.Err)
+    Check 'advisory: the reminder quotes the prompt it actually found (its evidence)' (
         $blockMsg -match 'dark mode option') $blockMsg
-    Check 'gate: the block names the missing Skill call by name' (
+    Check 'advisory: the reminder names the missing Skill call by name' (
         $blockMsg -match 'grilling') $blockMsg
-    Check 'gate: the block states BOTH ways out, so it is clearable' (
+    Check 'advisory: the reminder states BOTH ways out, so it is clearable' (
         $blockMsg -match '(?i)run it now' -and $blockMsg -match '(?i)why this was not a feature') $blockMsg
 
     $tRan = New-Transcript 'feature-chain-ran' @(
@@ -384,7 +383,7 @@ try {
         (New-AssistantEntry 'wrote the spec')
     )
     $rRan = Fire (New-StopPayload -Cwd (New-Proj 'GateRan') -Transcript $tRan -SessionId 'g2')
-    Check 'gate: the COMPLETE chain (grilling + domain-modeling) keeps it silent' (
+    Check 'advisory: the COMPLETE chain (grilling + domain-modeling) keeps it silent' (
         $rRan.Exit -eq 0 -and $rRan.Out -eq '') ($rRan.Out + $rRan.Err)
 
     # The hook accepts the plugin-qualified spelling as well as the bare one;
@@ -395,19 +394,19 @@ try {
         (New-SkillEntry 'mattpocock-skills:domain-modeling')
     )
     $rQualified = Fire (New-StopPayload -Cwd (New-Proj 'GateQualified') -Transcript $tQualified -SessionId 'g3')
-    Check 'gate: the plugin-qualified spelling counts for both halves' (
+    Check 'advisory: the plugin-qualified spelling counts for both halves' (
         $rQualified.Exit -eq 0 -and $rQualified.Out -eq '') ($rQualified.Out + $rQualified.Err)
 
-    # HALF a chain is not the chain: either half alone still blocks, and the
+    # HALF a chain is not the chain: either half alone still advises, and the
     # block names the one that is missing so the reply does not have to guess.
     $tOther = New-Transcript 'feature-other-skill' @(
         (New-UserEntry $FeaturePrompt),
         (New-SkillEntry 'domain-modeling')
     )
     $rOther = Fire (New-StopPayload -Cwd (New-Proj 'GateOther') -Transcript $tOther -SessionId 'g4')
-    Check 'gate: domain-modeling WITHOUT grilling still blocks' (
-        Test-Blocked $rOther.Out) ($rOther.Out + $rOther.Err)
-    Check 'gate: that block names the missing half (grilling), not the one that ran' (
+    Check 'advisory: domain-modeling WITHOUT grilling still advises' (
+        Test-Advised $rOther.Out) ($rOther.Out + $rOther.Err)
+    Check 'advisory: that block names the missing half (grilling), not the one that ran' (
         (Get-Message $rOther.Out) -match 'no Skill call to "grilling"') $rOther.Out
 
     # The mirror case: grilling ran, domain-modeling did not.
@@ -416,14 +415,14 @@ try {
         (New-SkillEntry 'grilling')
     )
     $rHalf = Fire (New-StopPayload -Cwd (New-Proj 'GateHalf') -Transcript $tHalf -SessionId 'g4b')
-    Check 'gate: grilling WITHOUT domain-modeling still blocks' (
-        Test-Blocked $rHalf.Out) ($rHalf.Out + $rHalf.Err)
-    Check 'gate: that block names domain-modeling as the missing half' (
+    Check 'advisory: grilling WITHOUT domain-modeling still advises' (
+        Test-Advised $rHalf.Out) ($rHalf.Out + $rHalf.Err)
+    Check 'advisory: that block names domain-modeling as the missing half' (
         (Get-Message $rHalf.Out) -match 'no Skill call to "domain-modeling"') $rHalf.Out
     # The chain's tail is Spec Kit now, not the to-spec/to-tickets wrappers:
     # speckit-specify supersedes to-spec and speckit-tasks supersedes
-    # to-tickets, so the block has to send the reader to the steps that exist.
-    Check 'gate: the block states the chain ORDER, not just the two names' (
+    # to-tickets, so the reminder has to send the reader to the steps that exist.
+    Check 'advisory: the reminder states the chain ORDER, not just the two names' (
         (Get-Message $rHalf.Out) -match 'IN ORDER' -and
         (Get-Message $rHalf.Out) -match 'then Spec Kit in order: speckit-specify') $rHalf.Out
 
@@ -432,51 +431,51 @@ try {
         (New-UserEntry 'what does this function do')
     )
     $rNone = Fire (New-StopPayload -Cwd (New-Proj 'GateNone') -Transcript $tNone -SessionId 'g5')
-    Check 'gate: no feature prompt in the session, no block' (
+    Check 'advisory: no feature prompt in the session, no block' (
         $rNone.Exit -eq 0 -and $rNone.Out -eq '') ($rNone.Out + $rNone.Err)
 
     # No transcript is NO EVIDENCE, in either direction - never an all-clear
     # and never a violation. Codex does not supply one at all.
     $rNoTranscript = Fire (New-StopPayload -Cwd (New-Proj 'GateNoTranscript') -SessionId 'g6')
-    Check 'gate: no transcript_path at all is silent, not a block' (
+    Check 'advisory: no transcript_path at all is silent, not a block' (
         $rNoTranscript.Exit -eq 0 -and $rNoTranscript.Out -eq '') ($rNoTranscript.Out + $rNoTranscript.Err)
     $rMissing = Fire (New-StopPayload -Cwd (New-Proj 'GateMissing') -Transcript (Join-Path $Work 'no-such-transcript.jsonl') -SessionId 'g7')
-    Check 'gate: a transcript path that does not exist is silent too' (
+    Check 'advisory: a transcript path that does not exist is silent too' (
         $rMissing.Exit -eq 0 -and $rMissing.Out -eq '') ($rMissing.Out + $rMissing.Err)
 
     $rIgnored = Fire (New-StopPayload -Cwd (New-Proj 'GateEvent') -Transcript $tFeature -SessionId 'g8' -EventName 'PreToolUse')
-    Check 'gate: an event this hook does not own is ignored' (
+    Check 'advisory: an event this hook does not own is ignored' (
         $rIgnored.Exit -eq 0 -and $rIgnored.Out -eq '') ($rIgnored.Out + $rIgnored.Err)
 
     # =====================================================================
     Write-Host ''
-    Write-Host '--- Stop: it blocks ONCE, and a new request re-arms it ---' -ForegroundColor Cyan
+    Write-Host '--- Stop: advise ONCE; a new request re-arms delivery ---' -ForegroundColor Cyan
     $projOnce = New-Proj 'GateOnce'
     $rFirst = Fire (New-StopPayload -Cwd $projOnce -Transcript $tFeature -SessionId 'once')
-    Check 'once: the first Stop blocks' (Test-Blocked $rFirst.Out) $rFirst.Out
+    Check 'once: the first Stop advises' (Test-Advised $rFirst.Out) $rFirst.Out
     $rSecond = Fire (New-StopPayload -Cwd $projOnce -Transcript $tFeature -SessionId 'once')
-    Check 'once: the SAME unfinished business does not block twice' (
+    Check 'once: the SAME unfinished business is not reported twice' (
         $rSecond.Exit -eq 0 -and $rSecond.Out -eq '') ($rSecond.Out + $rSecond.Err)
     $tSecondFeature = New-Transcript 'feature-second' @(
         (New-UserEntry $FeaturePrompt),
         (New-UserEntry 'implement the export endpoint for reports')
     )
     $rReArmed = Fire (New-StopPayload -Cwd $projOnce -Transcript $tSecondFeature -SessionId 'once')
-    Check 'once: a NEW feature prompt re-arms the gate' (
-        Test-Blocked $rReArmed.Out) ($rReArmed.Out + $rReArmed.Err)
+    Check 'once: a NEW feature prompt re-arms the reminder' (
+        Test-Advised $rReArmed.Out) ($rReArmed.Out + $rReArmed.Err)
 
     # stop_hook_active is set by ANY gate's block on the same Stop, so exiting
     # on the flag alone would let one hook mute all the others. Standing down
     # is owed only to this hook's OWN recorded block.
     $projLoop = New-Proj 'GateLoop'
     $rLoopFirst = Fire (New-StopPayload -Cwd $projLoop -Transcript $tFeature -SessionId 'loop')
-    Check 'loop: the block is emitted and its marker recorded' (Test-Blocked $rLoopFirst.Out) $rLoopFirst.Out
+    Check 'loop: the reminder is emitted and its marker recorded' (Test-Advised $rLoopFirst.Out) $rLoopFirst.Out
     $rLoopBack = Fire (New-StopPayload -Cwd $projLoop -Transcript $tFeature -SessionId 'loop' -StopActive)
     Check 'loop: its own re-entry stands down (no hook loop)' (
         $rLoopBack.Exit -eq 0 -and $rLoopBack.Out -eq '') ($rLoopBack.Out + $rLoopBack.Err)
     $rOtherGate = Fire (New-StopPayload -Cwd (New-Proj 'GateOtherBlock') -Transcript $tFeature -SessionId 'someone-else' -StopActive)
     Check 'loop: ANOTHER gate''s block does not mute this one' (
-        Test-Blocked $rOtherGate.Out) ($rOtherGate.Out + $rOtherGate.Err)
+        Test-Advised $rOtherGate.Out) ($rOtherGate.Out + $rOtherGate.Err)
 
     # =====================================================================
     Write-Host ''
@@ -506,15 +505,15 @@ try {
         $rBannerIndented.Exit -eq 0 -and $rBannerIndented.Out -eq '') ($rBannerIndented.Out + $rBannerIndented.Err)
 
     # Narrowness in the other direction: the guard skips an ENTRY, not the
-    # scan. A real request in the same session still arms the gate.
+    # scan. A real request in the same session still arms the reminder.
     $tBannerPlusReal = New-Transcript 'banner-plus-real' @(
         (New-UserEntry $Banner),
         (New-UserEntry $FeaturePrompt)
     )
     $rBannerPlusReal = Fire (New-StopPayload -Cwd (New-Proj 'BannerPlusReal') -Transcript $tBannerPlusReal -SessionId 'b3')
-    Check 'banner: a real request alongside the banner still blocks' (
-        Test-Blocked $rBannerPlusReal.Out) ($rBannerPlusReal.Out + $rBannerPlusReal.Err)
-    Check 'banner: and the block quotes the REAL prompt, not the banner' (
+    Check 'banner: a real request alongside the banner still advises' (
+        Test-Advised $rBannerPlusReal.Out) ($rBannerPlusReal.Out + $rBannerPlusReal.Err)
+    Check 'banner: and the reminder quotes the REAL prompt, not the banner' (
         (Get-Message $rBannerPlusReal.Out) -match 'dark mode option') (Get-Message $rBannerPlusReal.Out)
 
     # Anchored at the start of a line: a user talking ABOUT the banner mid
@@ -524,7 +523,7 @@ try {
     )
     $rBannerQuoted = Fire (New-StopPayload -Cwd (New-Proj 'BannerQuoted') -Transcript $tBannerQuoted -SessionId 'b4')
     Check 'banner: the guard is anchored - a mid-sentence mention is still the user' (
-        Test-Blocked $rBannerQuoted.Out) ($rBannerQuoted.Out + $rBannerQuoted.Err)
+        Test-Advised $rBannerQuoted.Out) ($rBannerQuoted.Out + $rBannerQuoted.Err)
 
     # =====================================================================
     Write-Host ''
@@ -537,8 +536,8 @@ try {
         (New-AssistantEntry 'started coding')
     )
     $rFa = Fire (New-StopPayload -Cwd (New-Proj 'FaGate') -Transcript $tFaFeature -SessionId 'fa1')
-    Check 'fa: a Persian feature request arms the gate end to end' (
-        Test-Blocked $rFa.Out) ($rFa.Out + $rFa.Err)
+    Check 'fa: a Persian feature request arms the reminder end to end' (
+        Test-Advised $rFa.Out) ($rFa.Out + $rFa.Err)
     $tFaBug = New-Transcript 'fa-bug' @(
         (New-UserEntry ($FaBug + ' ' + $FaAdd))
     )
@@ -563,8 +562,8 @@ try {
     # Control: the same hook copy, the same feature prompt, a transcript that
     # fits - so the silence above is the PARTIAL flag and not the copy itself.
     $rFits = Fire (New-StopPayload -Cwd (New-Proj 'PartialControl') -Transcript $tFeature -SessionId 'p2') -HookPath $partialHook
-    Check 'partial control: the same copy still blocks on a transcript that fits' (
-        Test-Blocked $rFits.Out) ($rFits.Out + $rFits.Err)
+    Check 'partial control: the same copy still advises on a transcript that fits' (
+        Test-Advised $rFits.Out) ($rFits.Out + $rFits.Err)
 
     # =====================================================================
     Write-Host ''
@@ -595,8 +594,8 @@ try {
     Write-Host ''
     Write-Host '--- Windows PowerShell 5.1 runs it identically ---' -ForegroundColor Cyan
     $r51Block = Fire (New-StopPayload -Cwd (New-Proj 'Ps51Gate') -Transcript $tFeature -SessionId 'w1') -Exe 'powershell'
-    Check '5.1: the Stop gate blocks the same way' (
-        (Test-Blocked $r51Block.Out) -and $r51Block.Exit -eq 0) ($r51Block.Out + $r51Block.Err)
+    Check '5.1: Stop emits the same passive advisory' (
+        (Test-Advised $r51Block.Out) -and $r51Block.Exit -eq 0) ($r51Block.Out + $r51Block.Err)
     $r51Quiet = Fire (New-StopPayload -Cwd (New-Proj 'Ps51Quiet') -Transcript $tRan -SessionId 'w2') -Exe 'powershell'
     Check '5.1: a chain that ran is silent there too' (
         $r51Quiet.Exit -eq 0 -and $r51Quiet.Out -eq '') ($r51Quiet.Out + $r51Quiet.Err)

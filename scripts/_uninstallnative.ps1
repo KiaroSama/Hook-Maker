@@ -257,6 +257,12 @@ function Remove-CompanionChainStage {
     if ($owners.Count -ne 1) { throw 'Multiple native companion owners require manual repair.' }
     $wrapper = [string]$owners[0].nativeGit.wrapperPath
     Assert-UninstallRegularPath $wrapper
+    # The resource lock creates its parent. An absent moved-away project has
+    # no wrapper to serialize; creating that parent would defeat absence proof.
+    # The caller's registry lifecycle lock still excludes managed mutations.
+    if (-not (Test-Path -LiteralPath $RecordTargetProjectRoot)) {
+        return Remove-CompanionChainStageCore
+    }
     Invoke-WithResourceLock -ResourcePath $wrapper -Action {
         $live = Read-InstallRegistryState $ToolRoot
         if ($live.State -ne 'ok') { throw 'Registry unavailable under native companion lock.' }
@@ -313,6 +319,20 @@ function Remove-CompanionChainStageCore {
         return
     }
     if ([string]::IsNullOrWhiteSpace($wrapperPath) -or -not (Test-Path -LiteralPath $wrapperPath -PathType Leaf)) {
+        # A moved-away root has no chain to edit. Surviving artifacts remain
+        # unproven; this old record never follows the replacement root.
+        $stageDir = Split-Path -Parent ([IO.Path]::GetFullPath($utf8Stage[0]))
+        if (-not [string]::IsNullOrWhiteSpace($wrapperPath) -and
+            (Test-PathContainedIn -ChildPath $wrapperPath -ParentPath $projectRoot) -and
+            (Test-PathContainedIn -ChildPath $chainRuntimeRoot -ParentPath $projectRoot)) {
+            Assert-UninstallRegularPath $projectRoot
+            Assert-UninstallRegularPath $wrapperPath
+            Assert-UninstallRegularPath $stageDir
+            if (-not (Test-Path -LiteralPath $projectRoot) -and -not (Test-Path -LiteralPath $stageDir)) {
+                Set-ComponentResult -Component 'chainStage' -Status 'ok' -ReasonCode 'alreadyRemoved'
+                return
+            }
+        }
         Set-ComponentResult -Component 'chainStage' -Status 'manualRepair' -ReasonCode 'chainWrapperMissing' `
             -Message 'the chain owner records a managed wrapper but none exists at its recorded path'
         return

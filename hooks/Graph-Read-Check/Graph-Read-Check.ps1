@@ -80,11 +80,8 @@ $missesMarkdown = Test-GraphMissesMarkdown -Root $cwd
 
 # Reminder for the graph-EXISTS case (read the graph; do not re-browse the tree).
 $haveGraphNote = @(
-    'GRAPH READ CHECK - this project has a graphify knowledge graph (graphify-out/graph.json). If, and only if, this task needs codebase understanding (architecture, cross-file relationships, "where is X used", call paths, refactor scope, impact), prefer a scoped query over broad file browsing:',
-    '- graphify query "<question>" for a specific question.',
-    '- graphify path "<A>" "<B>" for a relationship; graphify explain "<concept>" for a focused concept.',
-    '- Confirm important findings in the actual source before acting. Skip this entirely for isolated edits, docs, config, secrets, or small local fixes - not querying is a fine and expected outcome.',
-    '- This project keeps BOTH graphs. A Codebase Memory index does not replace this one: ask Codebase Memory about code structure, and graphify about docs/specs/papers/images/video and whole-project query, path and explain views. A graph that is built and never read is a defect; keep it current with graphify update . whenever the material it covers has moved.'
+    'GRAPH READ CHECK: graphify-out/graph.json exists. For architecture/call paths/impact/refactor scope, query before broad browsing: graphify query "<question>", graphify path "<A>" "<B>", graphify explain "<concept>". Confirm findings in source.',
+    '- BOTH graphs: CMM for code; Graphify for docs/specs/papers/images/video and cross-cut views. Use and refresh covered changes: graphify update .; CMM is not a replacement. Isolated edits/docs/config/secrets/small fixes need no query.'
 ) -join "`n"
 if ($graphExists -and $missesMarkdown) { $haveGraphNote += "`n" + $markdownSetupLine }
 
@@ -118,14 +115,14 @@ else {
     $graphifyAvailable = $null -ne (Get-Command graphify -ErrorAction SilentlyContinue)
     if ($graphifyAvailable) {
         $note = @(
-            'GRAPH READ CHECK - this task looks like it needs codebase-wide understanding (architecture, dependencies, call paths, impact, module relations, entry points, or a broad refactor), and no graphify knowledge graph exists yet (graphify-out/graph.json is absent). The graphify CLI IS available on PATH.',
-            'If a graph is worth it for this task: verify the current commands from the installed CLI help/docs first (e.g. graphify --help), create the graph (typically: graphify .), then use a SCOPED query - graphify query "<question>", graphify path "<A>" "<B>", or graphify explain "<concept>" - instead of browsing the whole tree by hand. Confirm findings in the source. Skip all of this for isolated edits, docs, config, secrets, or small local fixes. This hook never runs graphify for you.'
+            'GRAPH READ CHECK: structural task; no graphify knowledge graph exists (graphify-out/graph.json absent); CLI available on PATH.',
+            'If useful: verify installed help/docs (graphify --help), build (typically graphify .), then scoped graphify query "<question>", path "<A>" "<B>" or explain "<concept>". Confirm in source. Isolated edits/docs/config/secrets/small fixes need no graph. Hook runs nothing.'
         ) -join "`n"
     }
     else {
         $note = @(
-            'GRAPH READ CHECK - this task looks like it needs codebase-wide understanding, but no graphify knowledge graph exists (graphify-out/graph.json is absent) and the graphify CLI was not found on PATH.',
-            'Skip the graph and fall back to bounded, targeted source inspection - scoped search and reading only the files this task actually touches - rather than an unbounded whole-repo scan. This note will not repeat for this state.'
+            'GRAPH READ CHECK: structural task; no graphify knowledge graph exists (graphify-out/graph.json absent); CLI not found on PATH.',
+            'Use bounded scoped source search/reads, not a whole-repo scan. Unchanged state stays silent.'
         ) -join "`n"
     }
     $note += "`n" + '- When the graph is built, include the Markdown folders the agents work from: graphify-markdown.md.'

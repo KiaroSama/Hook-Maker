@@ -115,6 +115,14 @@
         $r = Invoke-Wizard -Config $cfg -Answers @('1', '1', [string]$uninstallIndex, '2', '1', 'n', '0') -WorkingDirectory $proj
         Check 'the wizard run exits 0' ($r.Exit -eq 0) $r.Err
 
+        $direct = Invoke-Wizard -Config $cfg -Answers @('4', ('"' + $proj + '"'), '1', 'n', 'exit') -WorkingDirectory $proj
+        Check 'main menu 4 opens project-only removal before any global list' (
+            $direct.Exit -eq 0 -and $direct.Out -match 'Remove hooks from a project' -and
+            $direct.Out -match [regex]::Escape($rec.id) -and
+            $direct.Out -notmatch 'Every installed hook|Available hooks \(hooks') $direct.Out
+        Check 'direct project removal decline preserves the registry record' (
+            $null -ne (Get-RecordForScope $fxName $proj) -and $direct.Out -match 'Canceled. Nothing was changed.') $direct.Out
+
         # ---- list screen: everything Get-InstalledHookSnapshot collects ----
         Check 'list: the friendly hook name appears' ($r.Out -match [regex]::Escape('ZZZ-Menusuite-Fixture')) $r.Out
         Check 'list: the hook type (CustomHook) appears' ($r.Out -match 'CustomHook') $r.Out

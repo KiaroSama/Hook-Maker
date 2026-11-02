@@ -112,9 +112,9 @@ try {
     [System.IO.File]::WriteAllText((Join-Path $dirty 'new.txt'), 'uncommitted', (New-Object System.Text.UTF8Encoding $false))
     $r = Fire -Cwd $dirty
     Check 'dirty repository produces a blocking Stop instruction' ($r.Out -match '"decision":"block"' -and $r.Out -match 'uncommitted change') $r.Out
-    Check 'the instruction is operational/mandatory, not discretionary' ($r.Out -match 'Before finishing, inspect and reconcile' -and $r.Out -match 'instead of waiting for another user request') $r.Out
+    Check 'the instruction is operational/mandatory, not discretionary' ($r.Out -match 'Reconcile task/subagent work before closing' -and $r.Out -match 'When verified and authorized') $r.Out
     Check 'the message does NOT use the old discretionary "otherwise finish" wording' ($r.Out -notmatch 'otherwise finish' -and $r.Out -notmatch 'At your discretion') $r.Out
-    Check 'the message forbids committing secrets/protected/unrelated files' ($r.Out -match 'Never commit unrelated, unverified, secret, or protected files') $r.Out
+    Check 'the message forbids committing secrets/protected/unrelated files' ($r.Out -match 'Preserve unrelated/unverified/secret/protected files') $r.Out
 
     # =====================================================================
     Write-Host '--- ahead repository: instructs a verified push, no second user request ---' -ForegroundColor Cyan
@@ -162,7 +162,7 @@ try {
         $null = Fire -Cwd $stampRepo -SessionId 'stamp-3' -HookPath (Join-Path $everyHookDir 'Git-Sync-Check.ps1')
         Check 'FETCH_MIN_INTERVAL_MINUTES=0 fetches on every event (stamp rewritten)' ([System.IO.File]::ReadAllText($stampFile[0].FullName) -ne $firstStamp) $firstStamp
     }
-    Check 'behind guidance recommends inspection/fast-forward, not a blind merge' ($r.Out -match 'fast-forward-only pull' -and $r.Out -match 'do not blindly pull or merge') $r.Out
+    Check 'behind guidance recommends inspection/fast-forward, not a blind merge' ($r.Out -match 'git pull --ff-only' -and $r.Out -match 'no blind pull/merge') $r.Out
 
     # =====================================================================
     Write-Host '--- missing upstream is reported ---' -ForegroundColor Cyan
@@ -203,7 +203,7 @@ try {
     # session id is used because $dirty's default-session fingerprint was already
     # instructed above (by design: unchanged fingerprint + same session -> silent).
     $r = Fire -Cwd $dirty -SessionId 'wording-check'
-    Check 'instruction explicitly scopes staging to this task''s ready/verified changes only' ($r.Out -match "stage only those changes" -and $r.Out -match 'unrelated pre-existing changes') $r.Out
+    Check 'instruction explicitly scopes staging to this task''s ready/verified changes only' ($r.Out -match 'stage only task changes' -and $r.Out -match 'Preserve unrelated/unverified/secret/protected files') $r.Out
 
     # =====================================================================
     Write-Host '--- cooldown/fingerprint/session gating ---' -ForegroundColor Cyan

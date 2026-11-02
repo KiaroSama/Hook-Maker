@@ -8,6 +8,8 @@ function Invoke-DispositionRegression {
         $helper = Join-Path $Root 'hooks/Test-Completion-Check/_disposition.ps1'
         if (-not [IO.File]::Exists($helper)) { throw 'Historical disposition validation is not implemented.' }
         . $helper
+        . (Join-Path $Root 'scripts/_testcompletionaccess.ps1')
+        Invoke-DispositionAccessRegression $Root
         $receipt = [pscustomobject]@{ schema=2; workingDirectory=$Root; runId='historical'; commandFingerprint=('a'*32); projectFingerprint='1234567890'; repositoryState='available'; overall='failed'; exitCode=1; terminated=$false; leakedProcessIds=@(); startedUtc=[DateTime]::UtcNow.AddDays(-2).ToString('o'); endedUtc=[DateTime]::UtcNow.AddDays(-2).AddSeconds(1).ToString('o') }
         $access = [pscustomobject]@{ State='available'; RepositoryStateFingerprint='0987654321'; ProjectKey='2222222222' }
         Assert-HistoricalDispositionReceipt $receipt $Root 'historical' $access

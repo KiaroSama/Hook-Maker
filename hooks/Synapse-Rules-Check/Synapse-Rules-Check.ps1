@@ -65,16 +65,9 @@ if ($eventName -eq 'UserPromptSubmit' -and -not $midSessionReminder) { exit 0 }
 # ---- SessionStart: load the rules, with the settings that make it work ------
 if ($eventName -eq 'SessionStart') {
     $note = @(
-        'SYNAPSE RULES CHECK - read the durable rules from Synapse BEFORE the first edit, not when someone tells you to.',
-        'They are the user''s standing instructions and they change between sessions; a session that feels self-sufficient is exactly the one that skips this.',
-        '',
-        '1. Call `memory_digest` ONCE now, passing a `tokenBudget`. It is token-hungry - it returns each memory three times (items, text, sections).',
-        '2. Do NOT read the result into context raw. Index it first (id | type | first ~110 chars), then read IN FULL only the few that match this task.',
-        '3. For anything more specific, `memory_retrieve`: minScore 0.65 on an unfiltered query; filter by project with tags ["project:<slug>"].',
-        '   NEVER pass minScore and tags together - the filter already did the relevance work and a correct result scores low behind it.',
-        '   An empty result you expected to hit: re-query WITHOUT minScore and read scoreBreakdown. A 0.60-0.65 hit with real vector was clipped by the threshold; ~0.5 with vector near 0 is noise.',
-        '   If the answer comes back ADJACENT rather than exact, re-query using the words the ANSWER would contain, not the words the question came in.',
-        '4. A memory about the OUTSIDE WORLD''s current state - CI, deploy, billing, quota, a credential, whether a service is running - is an observation with a timestamp, never a property. Re-verify it before repeating it.'
+        'SYNAPSE RULES CHECK: before first edit, memory_digest ONCE/session with tokenBudget; index it first (id/type/~110-char preview); read matching memories IN FULL, not triple raw items/text/sections.',
+        'Targeted memory_retrieve: minScore 0.65 unfiltered OR tags ["project:<slug>"]; NEVER pass minScore and tags together. Expected empty -> remove threshold, inspect scoreBreakdown (0.60-0.65 with real vector may be clipped; ~0.5/near-zero vector is noise). Adjacent answer -> query expected answer terms.',
+        'Memory is recall, not policy/project truth. CI/deploy/billing/quota/credentials/service state is an observation with a timestamp: reverify before repeating. Keep private data local.'
     ) -join "`n"
     $emit = Write-HookResult -EventName $eventName -Kind 'context' -Message $note
     exit $emit.ExitCode
@@ -158,12 +151,9 @@ if ($eventName -eq 'UserPromptSubmit') {
 
 if ($consulted) {
     $message = @(
-        'SYNAPSE WRITE-BACK: the store was read this session. Before finishing, decide what it should now hold.',
-        '- WRITE what is durable and reusable: a confirmed fact, a lesson with its reason, a decision and the rejected alternative, a verified command. Use `memory_write` with an `entityKey` so the new version SUPERSEDES the old one, plus a `project:<slug>` tag.',
-        '- DO NOT write status snapshots, round history, closure evidence, a resolved bug with no transferable lesson, or anything an existing memory already covers.',
-        '- If something in the store was CONTRADICTED this session - a cleared blocker, a renamed project, a changed environment fact - correct it in the SAME turn. A stale memory is more confident than no memory, which is what makes it expensive.',
-        '- Never store secrets, credentials, tokens, or the contents of secrets.md / .env.',
-        '- If nothing durable came out of this session, that is a normal answer; write nothing.'
+        'SYNAPSE WRITE-BACK: save only new durable facts, lessons+reason, decisions+rejected alternative or verified commands via `memory_write` (entityKey supersedes old version; project:<slug> tag).',
+        'Skip duplicates, status/round/closure snapshots and fixes without transferable lessons. CONTRADICTED this session (cleared blocker/renamed project/changed environment) -> correct in the SAME turn.',
+        'Never store secrets, credentials, tokens or secrets.md/.env contents. Nothing durable -> write nothing.'
     ) -join "`n"
 }
 else {

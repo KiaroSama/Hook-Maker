@@ -1,7 +1,7 @@
 # McpUsageCheck - MCP tool usage, checked at BOTH ends of the task.
 #
 # ROLE (global-hook-rules.md, "Hook Roles"): ADVISORY on the pre-task events,
-# GATE on Stop/SubagentStop - and the gate is deliberately narrow. It blocks on
+# advisory by default at Stop/SubagentStop; explicit block mode gates only on
 # exactly ONE confirmed, reproducible condition: this session really did call a
 # connected MCP server tool (the hook read the tool names out of the session
 # transcript) and the closing summary carries no line naming which ones. Both
@@ -41,7 +41,7 @@
 # on a client that supplies no transcript path.
 #
 # Optional .env next to this script (copy .env.example):
-#   MCP_SUMMARY_ENFORCEMENT  block (default) | advisory | off
+#   MCP_SUMMARY_ENFORCEMENT  advisory (default) | block | off
 
 Set-StrictMode -Version 2.0
 $ErrorActionPreference = 'Stop'
@@ -57,8 +57,8 @@ $ErrorActionPreference = 'Stop'
 # because a new topic in the same session must never be silenced by an earlier
 # one. The single exemption is the one the rule makes: a typo or text-only edit.
 $script:ResearchReminder = @(
-    'RESEARCH CHECK - Research first: every project task and every technical question starts with a live lookup - official docs (Context7, then the docs themselves), then GitHub in three passes: upstream releases and issues, code search for real usage at the installed version, and maintained reference implementations. Record sources and a documentation digest in .ai/RESEARCH/ before dependent work, and refresh on every new request. Only a typo or text-only edit is exempt. Rule: global-research-rules.md.',
-    '- This reminder cannot see whether research happened: a bare web call or an old note is not proof. A source that cannot be reached is recorded as a blocker for the work that depends on it; independent work continues.'
+    'RESEARCH CHECK - Research first for every task/technical question/new request; only effect-free typo/text edits exempt. Official docs (Context7 -> official site), then GitHub three passes: upstream releases/issues, installed-version usage, maintained references. Save sources + digest in .ai/RESEARCH/ before dependent work. Rule: global-research-rules.md.',
+    '- This hook cannot see whether research happened; a web call/old note is not proof. Unreachable source: record a blocker for the work that depends on it; independent work continues.'
 ) -join "`n"
 # ponytail: a keyword test, not a parser - "fix the typo and add a feature" is
 # treated as text-only. Tighten it if that shape is ever seen for real.
@@ -84,7 +84,7 @@ if ($eventName -eq 'Stop' -or $eventName -eq 'SubagentStop') {
 }
 
 $config = Read-HookEnv (Join-Path $PSScriptRoot '.env')
-$enforcement = 'block'
+$enforcement = 'advisory'
 if ($config.ContainsKey('MCP_SUMMARY_ENFORCEMENT')) {
     $raw = ([string]$config['MCP_SUMMARY_ENFORCEMENT']).Trim().ToLowerInvariant()
     if ($raw -eq 'block' -or $raw -eq 'advisory' -or $raw -eq 'off') { $enforcement = $raw }
@@ -100,7 +100,7 @@ $gatePath = Join-Path $stateDir ('McpUsageCheck-gate-' + $projectKey + '.txt')
 # The exact wording the closing summary must carry. Kept in one place so the
 # instruction, the block message and the detector can never drift apart.
 $requiredLine = 'MCP used: <server names>   (or exactly "MCP used: none - <one-line reason>")'
-$requirement = 'CLOSING REQUIREMENT - end the final task summary with its own line starting "MCP used:" naming every connected MCP server actually called this task; if none were called, write "MCP used: none - <one-line reason>". Never list a server that was merely available.'
+$requirement = 'CLOSING REQUIREMENT: "MCP used: <servers actually called this task>"; otherwise "MCP used: none - <one-line reason>". Available is not used.'
 
 # ---- bounded transcript probe ---------------------------------------------
 # A private copy rather than a shared helper: hooks\_hooklib.ps1 is owned

@@ -1,151 +1,48 @@
-# Test-TestPlanCheck.ps1 scenario block: THE ADVISORY TEXT CONTRACT - the
-# always-emitted policy bullets Test-Plan-Check carries on every relevant
-# event, independent of relevance gating, findings, cooldown and client shape.
-#
-# The bullets ARE the hook's product: an agent that reads only this summary
-# must see the whole test policy, so each one is pinned here by its own
-# phrases, in order, and proven to survive both client output shapes intact.
-#
-# Dot-sourced by Test-TestPlanCheck.ps1 into the caller's scope (uses its
-# harness, helpers and workspace) - not a standalone suite.
-
-    # =====================================================================
-    Write-Host '--- advisory text: every always-emitted policy bullet is present ---' -ForegroundColor Cyan
-    $hcAdv = New-IsolatedHookCopy
-    $projAdv = New-GitRepo 'AdvisoryText'
-    $rAdv = Fire -HookPath $hcAdv.Script -Cwd $projAdv -EventName 'SessionStart' -LocalAppData $hcAdv.LocalAppData
-    $msgAdv = Get-Message $rAdv.Out
-    Check 'SessionStart emits the advisory' ($rAdv.Exit -eq 0 -and $msgAdv -match '(?i)TEST PLAN CHECK') ($rAdv.Out + '|' + $rAdv.Err)
-    # The pre-existing bullets: an edit that adds a line must not drop one.
-    Check 'text: bounded wall + idle timeout bullet' (
-        $msgAdv -match 'bounded WALL timeout AND an idle/no-progress timeout' -and
-        $msgAdv -match 'A run with no bound is a defect') $msgAdv
-    Check 'text: no-blind-sleep bullet' (
-        $msgAdv -match 'No long blind sleeps' -and $msgAdv -match 'never a fixed multi-second delay') $msgAdv
-    Check 'text: resource-aware parallelism bullet' (
-        $msgAdv -match 'max\(2, min\(8, cores-2\)\) workers' -and $msgAdv -match 'no nested oversubscription') $msgAdv
-    Check 'text: process-tree + temp cleanup bullet' (
-        $msgAdv -match 'Terminate the whole owned process tree' -and $msgAdv -match 'clean temp/state in finally') $msgAdv
-    Check 'text: suite discovery + CI mapping bullet' (
-        $msgAdv -match 'Discover suites instead of hardcoding a list' -and $msgAdv -match 'mapped to a CI bucket') $msgAdv
-    Check 'text: high-CPU-alone-is-not-hung bullet' (
-        $msgAdv -match 'High CPU alone never means hung' -and $msgAdv -match 'wall/idle/memory bound') $msgAdv
-    Check 'text: before/after timing bullet' (
-        $msgAdv -match 'record before/after timing' -and $msgAdv -match '"feels faster" is not evidence') $msgAdv
-
-    # =====================================================================
-    Write-Host '--- advisory text: the verification-cadence bullet ---' -ForegroundColor Cyan
-    # Without this line an agent reading only the hook summary never sees the
-    # cadence rule and re-runs the whole suite after every edit.
-    Check 'cadence: light checks while code is still being written' (
-        $msgAdv -match '- Cadence: while code is still being written run only LIGHT checks' -and
-        $msgAdv -match 'one narrowly scoped test, or a smoke run of the changed path') $msgAdv
-    Check 'cadence: the heavy pass runs ONCE after all edits are complete' (
-        $msgAdv -match 'Run the HEAVY pass' -and $msgAdv -match 'every guarded run' -and
-        $msgAdv -match 'ONCE after all edits are complete') $msgAdv
-    Check 'cadence: fix-all-then-re-run-once, never re-run per file' (
-        $msgAdv -match 'on failure fix everything that pass reported together, then re-run once' -and
-        $msgAdv -match 'Never re-run a suite because one more file changed') $msgAdv
-
-    # =====================================================================
-    Write-Host '--- advisory text: the optimization-before-any-run bullet ---' -ForegroundColor Cyan
-    # The timing bullet above covers only the MEASUREMENT half of the rule;
-    # this line carries the precondition: nothing runs before it is optimized.
-    Check 'optimization: every evidence-producing run counts as a test, whatever it is called' (
-        $msgAdv -match '- Optimization before any run: everything that executes code to produce evidence is a test' -and
-        $msgAdv -match 'suite, pass, matrix, guarded run, benchmark, check') $msgAdv
-    Check 'optimization: EXISTING suites are included and an un-optimized run is not permitted' (
-        $msgAdv -match 'EXISTING suites optimized before they run again' -and
-        $msgAdv -match 'An un-optimized run is not permitted: optimize first, then run') $msgAdv
-    Check 'optimization: validity is never traded for speed, and the record lands in TESTING_NOTES' (
-        $msgAdv -match 'Never trade validity for speed' -and
-        $msgAdv -match 'Record suite/date/before-after timing in \.ai/TESTING_NOTES\.md') $msgAdv
-
-    # =====================================================================
-    Write-Host '--- advisory text: the no-orphaned-test-process bullet ---' -ForegroundColor Cyan
-    # The runner-teardown bullet above is the RUNNER's obligation; this line
-    # is the AGENT's: never detach, never finish with a run alive, always sweep.
-    Check 'no-orphan: detached starts are named and the guarded runner is the owner' (
-        $msgAdv -match '- No orphaned test process: never start a test detached' -and
-        $msgAdv -match 'Start-Job, Start-Process without -Wait' -and
-        $msgAdv -match 'the guarded runner is that owner') $msgAdv
-    Check 'no-orphan: never finish with a run alive, and an interrupted wait has no result' (
-        $msgAdv -match 'Never end your turn or report done while a run you started is alive' -and
-        $msgAdv -match 'an interrupted wait has NO result - kill the tree first') $msgAdv
-    Check 'no-orphan: the sweep runs before finishing AND after every subagent reports' (
-        $msgAdv -match 'Before finishing, and after every subagent reports, sweep' -and
-        $msgAdv -match 'terminate every survivor, verify it is gone, report each pid' -and
-        $msgAdv -match 'On Windows check pid AND start time and exclude your own shell') $msgAdv
-
-    # =====================================================================
-    Write-Host '--- advisory text: the CI-first bullet ---' -ForegroundColor Cyan
-    # The three bullets above say HOW a run must behave; this one says WHERE it
-    # happens. Without it an agent reading only the hook still defaults to running
-    # the heavy pass on this machine.
-    Check 'ci-first: the heavy pass runs in GitHub CI, on the pushed commit' (
-        $msgAdv -match '- CI first: every test that can run in GitHub CI runs there' -and
-        $msgAdv -match 'on the pushed commit') $msgAdv
-    Check 'ci-first: local execution is confined to the light loop' (
-        $msgAdv -match 'Keep local execution to the light loop' -and
-        $msgAdv -match 'at most one narrowly scoped test') $msgAdv
-    Check 'ci-first: never run locally what CI runs - push and read that exact SHA' (
-        $msgAdv -match 'Never run locally a test that CI runs' -and
-        $msgAdv -match 'read its result for that exact SHA') $msgAdv
-    Check 'ci-first: a gap in the workflow is EXTENDED, not worked around locally' (
-        $msgAdv -match 'extend the workflow - do not run the suite locally instead') $msgAdv
-    Check 'ci-first: the local fallback needs a LIVE query and a timestamped record' (
-        $msgAdv -match 'only when a live gh query shows CI cannot execute it' -and
-        $msgAdv -match 'billing/quota, no runner, workflow disabled, no remote' -and
-        $msgAdv -match 'timestamped observation in \.ai/TESTING_NOTES\.md') $msgAdv
-
-    # =====================================================================
-    Write-Host '--- advisory text: both new lines sit in the ALWAYS-emitted block ---' -ForegroundColor Cyan
-    # Order pins the documented insertion point: ... timing -> cadence ->
-    # efficiency -> (optional ::deep-debug section).
-    $idxTiming = $msgAdv.IndexOf('- When optimising a suite')
-    $idxCadence = $msgAdv.IndexOf('- Cadence: while code')
-    $idxOptimization = $msgAdv.IndexOf('- Optimization before any run')
-    $idxOrphan = $msgAdv.IndexOf('- No orphaned test process')
-    $idxCiFirst = $msgAdv.IndexOf('- CI first: every test that can run')
-    Check 'the four new bullets sit in order after the timing bullet' (
-        $idxTiming -ge 0 -and $idxCadence -gt $idxTiming -and
-        $idxOptimization -gt $idxCadence -and $idxOrphan -gt $idxOptimization -and
-        $idxCiFirst -gt $idxOrphan) (
-        'timing=' + $idxTiming + ' cadence=' + $idxCadence +
-        ' optimization=' + $idxOptimization + ' orphan=' + $idxOrphan +
-        ' cifirst=' + $idxCiFirst)
-    # Not gated behind ::deep-debug: an ordinary test prompt carries them too.
-    $hcAdvPlain = New-IsolatedHookCopy
-    $projAdvPlain = New-GitRepo 'AdvisoryTextPlain'
-    $rAdvPlain = Fire -HookPath $hcAdvPlain.Script -Cwd $projAdvPlain -EventName 'UserPromptSubmit' -Prompt $TestRelatedPrompt -LocalAppData $hcAdvPlain.LocalAppData
-    $msgAdvPlain = Get-Message $rAdvPlain.Out
-    Check 'a plain test prompt (no ::deep-debug) still carries all four new lines' (
-        $msgAdvPlain -notmatch '::deep-debug detected' -and
-        $msgAdvPlain -match '- Cadence: while code is still being written' -and
-        $msgAdvPlain -match '- Optimization before any run' -and
-        $msgAdvPlain -match '- No orphaned test process' -and
-        $msgAdvPlain -match '- CI first: every test that can run') $msgAdvPlain
-
-    # =====================================================================
-    Write-Host '--- advisory text: both client shapes render the new lines in FULL ---' -ForegroundColor Cyan
-    # The no-orphan bullet is last and longest; its FINAL clause proves the
-    # shared Write-HookResult adapter truncated nothing on either client.
-    $hcAdvCl = New-IsolatedHookCopy
-    $projAdvCl = New-GitRepo 'AdvisoryTextClaude'
-    $rAdvCl = Fire -HookPath $hcAdvCl.Script -Cwd $projAdvCl -EventName 'SessionStart' -LocalAppData $hcAdvCl.LocalAppData -ClaudeProjectDir $projAdvCl
-    $parsedAdvCl = $null
-    try { $parsedAdvCl = $rAdvCl.Out | ConvertFrom-Json } catch { $parsedAdvCl = $null }
-    $msgAdvCl = Get-Message $rAdvCl.Out
-    Check 'Claude shape carries all four new lines whole (additionalContext, no decision)' (
-        $null -ne $parsedAdvCl -and $null -ne $parsedAdvCl.PSObject.Properties['hookSpecificOutput'] -and
-        $rAdvCl.Out -notmatch '"decision"' -and
-        $msgAdvCl -match 'Never re-run a suite because one more file changed' -and
-        $msgAdvCl -match 'Record suite/date/before-after timing in \.ai/TESTING_NOTES\.md' -and
-        $msgAdvCl -match 'exclude your own shell' -and
-        $msgAdvCl -match 'timestamped observation in \.ai/TESTING_NOTES\.md') $rAdvCl.Out
-    Check 'Codex OFF-Stop shape carries all four new lines whole (never systemMessage)' (
-        $rAdv.Out -notmatch 'systemMessage' -and
-        $msgAdv -match 'Never re-run a suite because one more file changed' -and
-        $msgAdv -match 'Record suite/date/before-after timing in \.ai/TESTING_NOTES\.md' -and
-        $msgAdv -match 'exclude your own shell' -and
-        $msgAdv -match 'timestamped observation in \.ai/TESTING_NOTES\.md') $rAdv.Out
+# Public advisory contract; reuse one capture per client, no extra policy-only subprocess.
+# Dot-sourced by Test-TestPlanCheck.ps1 with its isolated harness.
+$hcAdv = New-IsolatedHookCopy
+$projAdv = New-GitRepo 'AdvisoryText'
+$rAdv = Fire -HookPath $hcAdv.Script -Cwd $projAdv -EventName 'SessionStart' -LocalAppData $hcAdv.LocalAppData
+$msgAdv = Get-Message $rAdv.Out
+Check 'SessionStart emits advisory without a blocking decision' ($rAdv.Exit -eq 0 -and $msgAdv -match 'TEST PLAN CHECK' -and $rAdv.Out -notmatch '"decision"') ($rAdv.Out + '|' + $rAdv.Err)
+$policyFacts = @(
+    @('wall and idle bounds', 'bounded WALL timeout AND an idle/no-progress timeout', 'A run with no bound is a defect'),
+    @('signal-based waits', 'No long blind sleeps', 'readiness check, or bounded polling'),
+    @('shared resource budget', 'shared worker ceiling for explicit/auto counts', 'cores/free memory/children/other work', 'OS/cleanup headroom', 'HOOKMAKER_MAX_TEST_WORKERS'),
+    @('owned tree and teardown', 'Terminate the whole owned process tree', 'clean temp/state in finally', 'failed run'),
+    @('discovery and CI coverage', 'Discover suites instead of hardcoding', 'mapped to a CI bucket'),
+    @('CPU is not a hang', 'High CPU alone never means hung', 'wall/idle/memory bound'),
+    @('measured timing', 'record before/after timing', '"feels faster" is not evidence'),
+    @('light implementation loop', 'writing -> LIGHT type/lint/compile/import/exact-path smoke or one seam'),
+    @('one final heavy pass', 'ALL edits finished -> one HEAVY suite/matrix/integration pass', 'Collect/fix ALL failures together, rerun whole pass', 'No suite per file'),
+    @('optimization before evidence', 'Optimization before any run, including checks/benchmarks/guarded evidence', 'cheapest valid tier', 'one level/behavior', 'parameterized variants/shared setup'),
+    @('existing tests and validity', 'Optimize new/changed/unreviewed existing tests', 'preserve validity', 'Record suite/date/before-after timing in .ai/TESTING_NOTES.md', 'reuse unchanged reviewed work'),
+    @('bounded lifetime owner', 'OWNED, BOUNDED, WATCHED, SWEPT', 'recorded PID/start time + bounded reaper', 'Wall/idle expiry or interrupted wait -> kill/verify whole owned tree, never success'),
+    @('survivor sweep', 'No turn end with owned runs alive', 'After subagent/final: sweep', 'Windows PID+start, exclude own shell/other projects', 'report survivors and cleanup'),
+    @('manual private CI first', 'CI first (private repos too): one manual final exact-SHA batch after ALL edits', 'push starts no run by design', 'Add missing suite mapping', 'never duplicate CI locally'),
+    @('local fallback evidence', 'next-edit-dependent light check', 'local-only requirement', 'live-proven billing/quota/runner/workflow/no-repo block recorded in .ai/TESTING_NOTES.md', 'queue/privacy is not fallback'),
+    @('Windows and shared Rust', 'pwsh7; 5.1 only documented compatibility need', 'G:\Program Files\Rust', 'CARGO_HOME/RUSTUP_HOME/version/target', 'no project compiler duplicate', 'Advice installs nothing or changes PATH/env')
+)
+foreach ($fact in $policyFacts) {
+    $missing = @($fact | Select-Object -Skip 1 | Where-Object { -not $msgAdv.Contains($_) })
+    Check ('policy facts: ' + $fact[0]) ($missing.Count -eq 0) ($missing -join '; ')
+}
+$labels = @('- When optimising', '- Cadence:', '- Optimization before any run', '- No orphaned test process', '- CI first')
+$previous = -1
+foreach ($label in $labels) {
+    $at = $msgAdv.IndexOf($label)
+    Check ('policy order: ' + $label) ($at -gt $previous) $at
+    $previous = $at
+}
+Check 'ordinary policy stays concise without truncation' ($msgAdv.Length -lt 4200 -and $msgAdv -notmatch 'truncated') $msgAdv.Length
+$hcAdvCl = New-IsolatedHookCopy
+$projAdvCl = New-GitRepo 'AdvisoryTextClaude'
+$rAdvCl = Fire -HookPath $hcAdvCl.Script -Cwd $projAdvCl -EventName 'UserPromptSubmit' -Prompt $TestRelatedPrompt -LocalAppData $hcAdvCl.LocalAppData -ClaudeProjectDir $projAdvCl
+$msgAdvCl = Get-Message $rAdvCl.Out
+foreach ($fact in $policyFacts) {
+    $missing = @($fact | Select-Object -Skip 1 | Where-Object { -not $msgAdvCl.Contains($_) })
+    Check ('Claude prompt preserves policy facts: ' + $fact[0]) ($missing.Count -eq 0) ($missing -join '; ')
+}
+Check 'both clients retain off-Stop context without systemMessage/block' (
+    $rAdv.Out -match 'hookSpecificOutput' -and $rAdvCl.Out -match 'hookSpecificOutput' -and
+    $rAdv.Out -notmatch 'systemMessage|"decision"' -and $rAdvCl.Out -notmatch 'systemMessage|"decision"') ($rAdv.Err + $rAdvCl.Err)

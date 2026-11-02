@@ -235,8 +235,8 @@ function Get-SkillClosingDecision {
             Token = ('shortlisted-unused|' + $named)
             Text  = (@(
                     ('SKILL POLICY CHECK - this session was shown INSTALLED skills matching the prompt and used none of them: ' + $named + '.' + $scale),
-                    'They need no authorization - they are already loadable, and the policy is that a step a skill covers runs THROUGH that skill rather than by hand.',
-                    ('TO CLEAR THIS: either invoke the relevant one(s) by their exact name and then report them, or keep the "Skills used:" line and say in it why each was not applicable - e.g. "Skills used: none - ' + $named + ' does not cover a docs-only edit". Naming EVERY outstanding skill in that one line clears this in a single turn; each name is remembered, so nothing already answered is asked again.')
+                    'Already loadable: no authorization needed. Covered steps run THROUGH the matching skill.',
+                    ('TO CLEAR THIS: invoke relevant exact keys and report them, or explain every unused name in "Skills used: none - ' + $named + ' does not cover a docs-only edit". One line can name ALL outstanding skills; answered names stay credited.')
                 ) -join "`n")
         }
     }
@@ -252,8 +252,7 @@ function Get-SkillClosingDecision {
                     # its own: this message lands in the same transcript the next
                     # Stop reads, and an example at the start of a line would
                     # satisfy the detector - the hook would clear its own block.
-                    'TO CLEAR THIS: add one line to the final summary, on its own line, starting exactly with "Skills used:" and naming the exact skill name(s) invoked or materially followed - e.g. "Skills used: superpowers:systematic-debugging, powershell-windows".',
-                    'Name only skills that actually shaped the work; a skill that was opened and then not followed does not count.'
+                    'TO CLEAR THIS: add one final-summary line starting exactly with "Skills used:" and exact invoked/materially followed names (e.g. "Skills used: powershell-windows"). Read-but-unused is not used.'
                 ) -join "`n")
         }
     }
@@ -264,7 +263,7 @@ function Get-SkillClosingDecision {
         if (@($unused).Count -gt 0) {
             [void]$lines.Add('INSTALLED skills matching this prompt were offered and none was used: ' + $named + '.' + $scale + ' They need no authorization.')
         }
-        [void]$lines.Add('TO CLEAR THIS: add one line to the final summary, on its own line, starting exactly with "Skills used:" and naming what was used - or exactly "Skills used: none - <one-line reason>" when nothing applied. Both are valid answers; omitting the line is not.')
+        [void]$lines.Add('TO CLEAR THIS: one final-summary line starting exactly with "Skills used:" + actual names, or "Skills used: none - <one-line reason>". Either is valid; omission is not.')
         return [pscustomobject]@{ Kind = 'block'; Answered = $answeredNow; Token = ('missing-after-work|' + $named); Text = (($lines.ToArray()) -join "`n") }
     }
 
@@ -277,7 +276,7 @@ function Get-SkillClosingDecision {
         Token = 'none-invoked'
         Text  = (@(
                 'SKILL POLICY CHECK - no skill was invoked this session.',
-                'If the task touched a specialised domain (debugging, testing, security review, UI/UX, a specific stack) an installed skill probably applied and was skipped - a relevant INSTALLED skill may be activated without asking.',
+                'Check matching installed debugging/test/security/UI/stack skills; relevant installed skills need no activation approval.',
                 ('Either way the summary must carry the line: ' + $script:SkillsRequiredLine)
             ) -join "`n")
     }

@@ -166,7 +166,7 @@ else {
     }
 }
 if ($otherFiles.Count -gt 0) {
-    [void]$lines.Add('Other files present in .ai/ (not loaded here - read only the ones relevant to THIS task, per memory.md''s own routing above): ' + ($otherFiles -join ', '))
+    [void]$lines.Add('Other .ai/ files (not loaded; follow memory.md task routing): ' + ($otherFiles -join ', '))
 }
 [void]$lines.Add('Use memory.md as the starting point; do not load every .ai file by default - only what this task actually needs. This note stays silent until memory.md or the .ai/ file list changes again.')
 if ($deepDebug) {

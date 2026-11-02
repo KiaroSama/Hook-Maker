@@ -146,7 +146,7 @@ available; otherwise it runs in the current console with the best available Powe
 
 Main menu: `1` **Create or install a hook** (opens a sub-menu: install an existing hook, create a
 new hook, install from config, or update previously installed hooks — see "Updating previously
-installed hooks" below), `2` show configured profiles, `3` validate. `0` goes back, `exit` quits.
+installed hooks" below), `2` show configured profiles, `3` validate, `4` **Remove hooks from a project**. Item `4` asks for its folder first (quoted paths/spaces supported), lists only matching project/subtree records, then offers individual or project-all removal with default-No confirmation. Cancel/decline changes nothing; the management submenu retains the explicit global view. `0` goes back, `exit` quits.
 
 Under **Install an existing hook**, list item `1` is **Select all hooks** — an aggregate action
 (not a hook itself) that runs the **sync group AND every individual hook below** in one pass, using

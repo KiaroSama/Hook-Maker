@@ -572,6 +572,7 @@ function Show-MainMenu {
     Write-MenuLine 1 'Create or install a hook' '(sync group + hooks\ folder)'
     Write-MenuLine 2 'Show configured profiles'
     Write-MenuLine 3 'Validate configuration'
+    Write-MenuLine 4 'Remove hooks from a project' '(enter its folder; individual or all)'
 }
 
 # ----------------------------------------------------------------- entry ----
@@ -610,14 +611,15 @@ try {
             if ($choice -eq '') {
                 $choice = '1'
             }
-            $mainAction = @{ '1' = 'Create or install a hook'; '2' = 'Show configured profiles'; '3' = 'Validate configuration'; '0' = 'Exit' }[$choice]
+            $mainAction = @{ '1' = 'Create or install a hook'; '2' = 'Show configured profiles'; '3' = 'Validate configuration'; '4' = 'Remove hooks from a project'; '0' = 'Exit' }[$choice]
             if ($mainAction) { Write-Log 'INFO' 'MENU' ('Main menu -> ' + $choice + '. ' + $mainAction) }
             switch ($choice) {
                 '1' { Invoke-CustomHookMenu; continue menu }
                 '2' { Show-Profiles; continue menu }
                 '3' { Invoke-Validate; continue menu }
+                '4' { Invoke-UninstallInstalledHooks -ProjectOnly | Out-Null; continue menu }
                 '0' { break menu }
-                default { Write-ErrorLine 'Enter 1, 2, 3 or 0.' }
+                default { Write-ErrorLine 'Enter 1, 2, 3, 4 or 0.' }
             }
         }
     }

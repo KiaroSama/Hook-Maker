@@ -185,7 +185,7 @@ function New-GitRepo {
 function Test-NoBaselineFinding {
     param([AllowNull()][string]$Out)
     if ([string]::IsNullOrWhiteSpace($Out)) { return $true }
-    return ($Out -notmatch 'GITHUB BASELINE CHECK' -and $Out -match 'README badges: 12 to 16 verified badges')
+    return ($Out -notmatch 'GITHUB BASELINE CHECK' -and $Out -match 'README badges: 12 to 16 verified distinct facts')
 }
 
 function Get-HeadSha {
@@ -213,7 +213,7 @@ try {
     # The workflow baseline stays silent without a GitHub remote; the README
     # badge reminder does NOT - the badge rule binds every repository.
     Check 'no GitHub remote -> no baseline findings' ($r.Out -notmatch 'GITHUB BASELINE CHECK') $r.Out
-    Check 'no GitHub remote, no CI -> the badge guidance still arrives' ($r.Out -match 'README badges: 12 to 16 verified badges') $r.Out
+    Check 'no GitHub remote, no CI -> the badge guidance still arrives' ($r.Out -match 'README badges: 12 to 16 verified distinct facts') $r.Out
 
     # =====================================================================
     Write-Host '--- README badges: 12 to 16, centred, the donation badge always (steering V40, V45, V47) ---' -ForegroundColor Cyan
@@ -233,24 +233,24 @@ try {
     $r = Fire -HookPath $BaselineHook -Cwd $bd3
     Check 'badges: a 3-badge README gets the below-12 prompt' ($r.Out -match 'shows 3 badge image\(s\)[^"]*below 12' -and $r.Out -match 'a prompt, not a defect') $r.Out
     Check 'badges: the guidance carries the priority order, the donation badge and the truth floors' (
-        $r.Out -match 'CI status, license, version/release' -and $r.Out -match 'built-with stack, repository facts' -and
-        $r.Out -match 'Support-donations-d04a9a' -and $r.Out -match 'Never padded or fabricated' -and $r.Out -match 'No private data in badge URLs') $r.Out
+        $r.Out -match 'Priority: CI, license, release' -and $r.Out -match 'stack/repo facts' -and
+        $r.Out -match 'Support-donations-d04a9a' -and $r.Out -match 'report real shortfall, no padding' -and $r.Out -match 'No private data/other private repo references') $r.Out
     Check 'badges: a missing donation badge and Donate section are each named' (
-        $r.Out -match 'Support-donations badge is missing' -and $r.Out -match 'no \\"## Donate\\" section' -and $r.Out -match 'never invent or alter a wallet address') $r.Out
+        $r.Out -match 'Support-donations badge is missing' -and $r.Out -match 'no \\"## Donate\\" section' -and $r.Out -match 'never invent/alter wallets') $r.Out
     Check 'badges: advisory only - never a decision' ($r.Out -notmatch '"decision"') $r.Out
     Check 'badges: rows outside a centred block are named, with the exact wrapper (steering V47)' (
-        $r.Out -match 'all centred inside one <div align=\\"center\\"> block' -and
+        $r.Out -match 'one <div align=\\"center\\"> block with inner blank lines' -and
         $r.Out -match 'badge rows are not inside one <div align=\\"center\\"> block' -and $r.Out -match 'blank line after the opening tag') $r.Out
     $bd14 = New-GitRepo 'badges14' -GithubRemote:$false
     New-BadgeReadme -Repo $bd14 -Shields 14
     $r = Fire -HookPath $BaselineHook -Cwd $bd14
     Check 'badges: 14 badges get NO count advisory (inside 12-16), still no block' (
-        $r.Out -match '12 to 16 verified badges' -and $r.Out -match 'past 16 the order decides which stay' -and $r.Out -notmatch 'badge image\(s\) near' -and $r.Out -notmatch 'above' -and $r.Out -notmatch '"decision"') $r.Out
+        $r.Out -match '12 to 16 verified distinct facts' -and $r.Out -match 'trim past16' -and $r.Out -notmatch 'badge image\(s\) near' -and $r.Out -notmatch 'above' -and $r.Out -notmatch '"decision"') $r.Out
     $bd7 = New-GitRepo 'badges7' -GithubRemote:$false
     New-BadgeReadme -Repo $bd7 -Shields 10 -WithWorkflowBadge -WithDonate -Centred
     $r = Fire -HookPath $BaselineHook -Cwd $bd7
     Check 'badges: 10 static + workflow + donation = 12, centred, with its Donate section -> guidance only; the plain logo is not counted' (
-        $r.Out -match '12 to 16 verified badges' -and $r.Out -notmatch 'badge image\(s\) near' -and $r.Out -notmatch 'not inside one' -and
+        $r.Out -match '12 to 16 verified distinct facts' -and $r.Out -notmatch 'badge image\(s\) near' -and $r.Out -notmatch 'not inside one' -and
         $r.Out -notmatch 'badge is missing' -and $r.Out -notmatch 'no \\"## Donate\\" section') $r.Out
     $bd11 = New-GitRepo 'badges11' -GithubRemote:$false
     New-BadgeReadme -Repo $bd11 -Shields 9 -WithWorkflowBadge -WithDonate
@@ -265,7 +265,7 @@ try {
     $bd16 = New-GitRepo 'badges16' -GithubRemote:$false
     New-BadgeReadme -Repo $bd16 -Shields 15 -WithDonate
     $r = Fire -HookPath $BaselineHook -Cwd $bd16
-    Check 'badges: exactly 16 is inside the bounds - no count note' ($r.Out -match '12 to 16 verified badges' -and $r.Out -notmatch 'badge image\(s\) near') $r.Out
+    Check 'badges: exactly 16 is inside the bounds - no count note' ($r.Out -match '12 to 16 verified distinct facts' -and $r.Out -notmatch 'badge image\(s\) near') $r.Out
     $r = Fire -HookPath $BaselineHook -Cwd $bd7
     Check 'badges: the same README state in the same session is said once' ([string]::IsNullOrWhiteSpace([string]$r.Out)) ([string]$r.Out)
     $r = Fire -HookPath $BaselineHook -Cwd $bd3 -Client 'claude'

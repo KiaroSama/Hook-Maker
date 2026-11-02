@@ -104,7 +104,7 @@ function Get-InstallAdvisories {
                     'verify where it landed. Rule: global-environment-rules.md -> Install Locations.')
             }
             else {
-                [void]$lines.Add($head + 'Reuse the existing approved ecosystem root or explicit override first; on this workstation a new program defaults to G:\Program Files\<program-name>. Ask only when that root is unavailable/unsupported or a different location needs a decision. Location approval is not installation authorization. Preserve Windows/system exceptions and existing installations; verify the physical writes and real consumer paths. Bind project-owned temp/cache before initialization. Recycle an obsolete owned copy only after verified replacement and consumer stop, otherwise record its retention reason. Never install, move, delete or rewrite a command/config from this advice. Rule: global-environment-rules.md -> Install Locations; global-project-lifecycle-rules.md.')
+                [void]$lines.Add($head + 'Reuse approved ecosystem root/override; new workstation program -> G:\Program Files\<program-name>. Ask only unavailable/unsupported/different root. Location is not install consent. Preserve system exceptions/existing installs; verify physical writes/consumers, bind project temp/cache first. After verified replacement + consumer stop permanently delete exact proven obsolete owned copy, NOT Recycle Bin; otherwise record retention. Advice performs no install/move/delete/config rewrite. Owners: global-environment-rules.md -> Install Locations; global-project-lifecycle-rules.md.')
             }
         }
     }

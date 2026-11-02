@@ -391,6 +391,7 @@ function Resolve-UninstallProjectFilter {
 }
 
 function Invoke-UninstallInstalledHooks {
+    param([switch]$ProjectOnly)
     Write-Log 'INFO' 'UNINSTALL' 'Uninstall installed hooks started.'
     Write-PhaseHeader 'Uninstall Installed Hooks' $C.Input '-'
 
@@ -407,7 +408,7 @@ function Invoke-UninstallInstalledHooks {
     }
 
     $registry = Read-InstallRegistry -ToolRoot $ToolRoot
-    if (@(Get-InstalledHookSnapshot -Registry $registry).Count -eq 0) {
+    if (@($registry.installs).Count -eq 0) {
         Write-NoteLine '  No installed hooks are tracked yet - nothing to uninstall.'
         Write-Log 'INFO' 'UNINSTALL' 'No tracked installs.'
         return 'back'
@@ -422,13 +423,16 @@ function Invoke-UninstallInstalledHooks {
     $rows = @()
     while ($true) {
         if ($outerScope) {
-            Write-MenuTitle 'What do you want to uninstall?'
+            if (-not $ProjectOnly) { Write-MenuTitle 'What do you want to uninstall?' }
             # The project route is first and is the default: on a machine with
             # hundreds of installs it is the only one that produces a list
             # anyone can pick from.
-            Write-MenuLine 1 'Only the hooks in one project' '(you give the folder)'
-            Write-MenuLine 2 'Every installed hook' '(one list of everything tracked)'
-            $mode = Read-Answer (New-QuestionPrompt 'Choose' $null '1') 'uninstall scope'
+            $mode = '1'
+            if (-not $ProjectOnly) {
+                Write-MenuLine 1 'Only the hooks in one project' '(you give the folder)'
+                Write-MenuLine 2 'Every installed hook' '(one list of everything tracked)'
+                $mode = Read-Answer (New-QuestionPrompt 'Choose' $null '1') 'uninstall scope'
+            }
             if ($mode -eq '') { $mode = '1' }
             if ($mode -eq '0') {
                 Write-NoteLine 'Canceled. Nothing was changed.'
@@ -438,7 +442,7 @@ function Invoke-UninstallInstalledHooks {
             if ($mode -eq '1') {
                 $answer = Read-Answer (New-QuestionPrompt 'Project folder' (
                         'example: ' + (Get-ExampleText 'G:\Projects\My App') + ' - subfolders are included') $null) 'uninstall project filter'
-                if ($answer -eq '0' -or $answer -eq '') { continue }
+                if ($answer -eq '0' -or $answer -eq '') { if ($ProjectOnly) { return 'back' }; continue }
                 $resolvedFilter = Resolve-UninstallProjectFilter $answer
                 if (-not $resolvedFilter.Ok) {
                     Write-ErrorLine $resolvedFilter.Reason
@@ -458,7 +462,8 @@ function Invoke-UninstallInstalledHooks {
                 # Not an error, and not a dead end: the folder simply has no
                 # tracked installs, so the scope menu is offered again.
                 Write-NoteLine ('  No tracked hooks are installed in ' + $projectFilter)
-                Write-NoteLine '  Nothing was changed. Pick another folder, or list everything.'
+                if ($ProjectOnly) { Write-NoteLine '  Nothing was changed. Enter another folder, or 0 to cancel.' }
+                else { Write-NoteLine '  Nothing was changed. Pick another folder, or list everything.' }
                 Write-Log 'INFO' 'UNINSTALL' ('Project folder matched no tracked installs: ' + $projectFilter)
                 continue
             }
@@ -581,72 +586,8 @@ function Invoke-UninstallInstalledHooks {
         }
 
         # ---- confirmation: show exactly what will be touched, before anything ----
-        Write-PhaseHeader 'Confirm Uninstall' $C.Confirm '-'
-        foreach ($id in $recordIds) {
-            $record = @($registry.installs | Where-Object { (Get-RecordDisplayField $_ 'id' '') -eq $id })[0]
-            if ($null -eq $record) { continue }
-            $recordType = Get-RecordType $record
-            $hookType = Get-RecordDisplayField $record 'hookType' '(unknown type)'
-            $profileId = Get-RecordDisplayField $record 'profile' ''
-            $scopeText = if ((Get-RecordDisplayField $record 'scope') -eq 'global') { 'global' } else { Get-RecordDisplayField $record 'targetProjectRoot' '(unknown target)' }
-            $label = Get-HookFriendlyName (Get-RecordDisplayField $record 'friendlyName' 'unknown-record')
-            if (-not [string]::IsNullOrWhiteSpace($profileId)) { $label += ' [' + $profileId + ']' }
-            Write-Host ('  ' + (Get-Painted $label $C.Bold) + $script:MenuSep + (Get-Painted $hookType $C.Aqua) + $script:MenuSep + (Get-Painted $scopeText $C.Gray))
-            Write-Field '    record id' $id
-            Write-Field '    record type' $recordType
-
-            if ($recordType -eq 'discovered') {
-                # Discovered evidence, not an install plan: what the scan saw,
-                # and exactly how far removal will go. Nothing here is presented
-                # as something Hook Maker owns.
-                $capability = Get-DiscoveredRemovalCapability $record
-                Write-Field '    removal' $capability.Capability $C.Amber
-                $clientInfo = Get-DiscoveredClientEvents $record
-                foreach ($client in @($clientInfo.Clients)) {
-                    $events = @($clientInfo.EventsByClient[$client])
-                    $eventsText = if ($events.Count -gt 0) { $events -join ', ' } else { '(none)' }
-                    Write-Field ('    ' + (Get-ClientDisplayName $client) + ' events') $eventsText
-                }
-                foreach ($evidence in @($record.clients)) {
-                    if ($null -eq $evidence -or $null -eq $evidence.PSObject.Properties['settingsPath']) { continue }
-                    Write-Field ('    ' + (Get-ClientDisplayName (Get-RecordDisplayField $evidence 'client' '')) + ' settings') ([string]$evidence.settingsPath)
-                }
-                $discoveredNative = $null
-                if ($null -ne $record.PSObject.Properties['nativeGit']) { $discoveredNative = $record.nativeGit }
-                if ($null -ne $discoveredNative) {
-                    Write-Field '    native Git hook' (Get-RecordDisplayField $discoveredNative 'hookPath' '(unknown path)') $C.Amber
-                    Write-Field '    native Git classification' (Get-RecordDisplayField $discoveredNative 'classification' 'unknown')
-                }
-                else {
-                    Write-Field '    native Git' 'no'
-                }
-                continue
-            }
-
-            Write-Field '    source script' (Get-RecordDisplayField $record 'sourceScript' '(unknown source)')
-            foreach ($client in @(Get-InstalledClientNames -Record $record)) {
-                $subrecord = Get-ClientSubrecord -Record $record -Client $client
-                $clientLabel = Get-ClientDisplayName $client
-                $events = @($subrecord.events | ForEach-Object { [string]$_ })
-                $eventsText = if ($events.Count -gt 0) { $events -join ', ' } else { '(none)' }
-                Write-Field ('    ' + $clientLabel + ' events') $eventsText
-                Write-Field ('    ' + $clientLabel + ' settings') ([string]$subrecord.settingsPath)
-                Write-Field ('    ' + $clientLabel + ' runtime script') ([string]$subrecord.runtimeScript)
-            }
-            $native = $null
-            if ($null -ne $record.PSObject.Properties['nativeGit']) { $native = $record.nativeGit }
-            if ($null -ne $native -and $null -ne $native.PSObject.Properties['managed'] -and $native.managed -eq $true) {
-                Write-Field '    native Git' 'yes - the managed pre-push chain is part of this install' $C.Amber
-            }
-            else {
-                Write-Field '    native Git' 'no'
-            }
-        }
-        Write-Host ''
-        Write-Field 'installations to remove' ([string]$recordIds.Count)
-        Write-NoteLine '  Hook SOURCE files under hooks\ are never deleted.'
-        Write-NoteLine '  Canonical project hooks: complete owned-state removal; sync engines also retire selected membership.'
-        Write-NoteLine '  Shared owners, applied knowledge and original audit/recovery evidence are preserved.'
+        . (Join-Path $PSScriptRoot 'Setup-SyncGroupUninstallConfirmation.ps1')
+        Show-UninstallConfirmation -Registry $registry -RecordIds $recordIds.ToArray()
 
         $confirm = Read-YesNo (New-QuestionPrompt ('Uninstall ' + $recordIds.Count + ' installation(s) now?') 'y/n' 'n') $false 'confirm uninstall'
         if ($null -eq $confirm -or $confirm -ne $true) {

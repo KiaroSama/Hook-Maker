@@ -213,12 +213,10 @@ function Get-ReviewReason {
 # carries the same semantics.
 function Get-AgentInstructionLines {
     return @(
-        'Inspect every candidate before deletion.',
-        'Do not rely on the directory name alone.',
-        'Never delete tracked, staged, linked, diagnostic, ambiguous, protected, or user-owned data.',
-        'Delete only project-local residue that you have independently confirmed is disposable.',
-        'Use normal agent tools; this hook performs no deletion.',
-        'Leave uncertain candidates intact and report them.'
+        'Inspect every candidate before deletion; name/age/ignored status proves no ownership.',
+        'Never delete tracked, staged, linked, diagnostic, ambiguous, protected, shared/active or user-owned data; preserve history/OLD, memory/research, required fixtures/outputs, secrets/keys and needed rollback.',
+        'After verification and consumer stop, permanently delete only exact project-local residue independently proven owned/disposable, NOT Recycle Bin.',
+        'Use normal agent tools; this hook performs no deletion. Leave uncertain candidates intact and report them. Owner: global-project-lifecycle-rules.md -> Cleanup.'
     )
 }
 

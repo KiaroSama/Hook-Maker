@@ -11,8 +11,8 @@
 # the hook exists at all - the pre-task note alone was routinely acknowledged
 # and then ignored.
 #
-# ROLE (global-hook-rules.md, "Hook Roles"): DETECTOR/ADVISORY before, GATE
-# after - and the gate is narrow on purpose. It blocks on one confirmed,
+# ROLE: DETECTOR/ADVISORY; explicit block mode adds a narrow closing gate.
+# Only that configured mode blocks on one confirmed,
 # reproducible condition: rule files exist for this project, the session
 # transcript shows this session actually EDITED files, and the closing summary
 # carries no line starting "Rules applied:". All three are facts the hook read.
@@ -72,7 +72,7 @@
 # Optional .env next to this script (copy .env.example):
 #   GLOBAL_RULES_DIR  overrides the global rules directory (default:
 #                     <home>\.claude\rules or <home>\.codex\rules by client)
-#   RULES_CONFIRMATION_ENFORCEMENT  block (default) | advisory | off
+#   RULES_CONFIRMATION_ENFORCEMENT  advisory (default) | block | off
 
 param(
     # 'claude', 'codex', or '' for auto-detection via CLAUDE_PROJECT_DIR.
@@ -168,7 +168,7 @@ $stateDir = Join-Path $env:LOCALAPPDATA 'HookMaker\state'
 # the pre-task instruction, the closing block message and the detector, so they
 # cannot drift apart.
 $script:RulesRequiredLine = 'Rules applied: <rule files that governed this task>   (or exactly "Rules applied: none - <one-line reason>")'
-$script:RulesRequirement = 'CLOSING REQUIREMENT - end the final task summary with its own line starting "Rules applied:" naming the rule files above that actually governed this work and, in a few words, how. If none applied, write "Rules applied: none - <one-line reason>". Listing a rule that was not read or not followed is worse than admitting it was skipped.'
+$script:RulesRequirement = 'CLOSING REQUIREMENT: "Rules applied: <files actually read/followed + purpose>"; otherwise "Rules applied: none - <one-line reason>". Report skipped rules honestly.'
 
 # ============================ CLOSING HALF ==================================
 # Stop / SubagentStop: was the rule set actually read and applied, and does the
@@ -179,7 +179,7 @@ if ($closing) {
     $projectKey = Get-ShortHash $cwd.ToLowerInvariant()
     $gatePath = Join-Path $stateDir ('RulesCheck-close-' + $Client + '-' + $projectKey + '.txt')
 
-    $enforcement = 'block'
+    $enforcement = 'advisory'
     if ($config.ContainsKey('RULES_CONFIRMATION_ENFORCEMENT')) {
         $raw = ([string]$config['RULES_CONFIRMATION_ENFORCEMENT']).Trim().ToLowerInvariant()
         if ($raw -eq 'block' -or $raw -eq 'advisory' -or $raw -eq 'off') { $enforcement = $raw }
@@ -447,9 +447,11 @@ if ($rulesMoved) {
     # Canonical routing (E-01): canonical installed names, exactly one skill
     # policy for the detected client, and the strict-UTF-8 text default. These
     # ride the same fingerprint gate, so they never repeat on an unchanged set.
-    [void]$lines.Add('Canonical rule set: start at custom-instructions.md complete direct registry; use canonical installed filenames, never an uploaded/version-suffixed copy such as "custom-instructions (17).md". Read task-relevant owners IN FULL before governed work: WORKFLOWS.md, CODEWORDS.md, ai-context-memory-policy.md, global-hook-rules.md, global-test-rules.md, global-github-automation-rules.md; global-mcp-rules.md for MCP, graphify.md for navigation. Before scope/queue/release/storage/cleanup read global-project-lifecycle-rules.md: preserve original request order and stable IDs, resume earliest actionable unfinished work; other-project mutation requires exact permission or an English Markdown owner handoff. New rule Markdown requires a direct custom-instructions.md registry entry and completeness check under global-instruction-maintenance-rules.md, not only a companion pointer. For secret deployment/storage require local actual-value custody, complete private exports of all stores and isolated restore; never read/expose values for a reminder. Final app builds need approved embedded owner identity AND genuine verified cryptographic signing; missing key/identity/trust blocks final publication/activation, never unsigned fallback or automatic key/certificate/service action. Approved initial/later logos belong in native resources or packaged in-app assets before signing, not README-only branding; no unsolicited logo generation. UI work reads global-ui-rules.md, actually invokes a matching design skill and researches useful libraries; use intentional product-specific design, not generic page templates, while accessible primitives/native controls/existing design systems remain allowed. This advice verifies no consent, custody, export, signature, packaged logo or visual quality and executes no action.')
+    [void]$lines.Add('Canonical rule set: custom-instructions.md direct registry; canonical installed filenames, never uploaded/version-suffixed copies. Read applicable owners IN FULL: WORKFLOWS.md, CODEWORDS.md, ai-context-memory-policy.md; global-hook-rules.md, global-test-rules.md, global-github-automation-rules.md, global-mcp-rules.md + global-mcp-server-contracts.md, graphify.md by job. Agent selection -> global-agent-rules.md; capability changes -> exact skill/command/agent/codeword routes, native slash stays native. Already loaded unchanged rules need no reread.')
+    [void]$lines.Add('Scope/queue/release/storage/cleanup -> global-project-lifecycle-rules.md: original request order and stable IDs, earliest actionable unfinished work; other-project changes need exact permission or English Markdown owner handoff. New rule Markdown -> direct registry + global-instruction-maintenance-rules.md completeness.')
+    [void]$lines.Add('Deployment/storage -> local actual-value custody, complete private exports of all stores + isolated restore; never read/expose values for a reminder. Final app -> approved embedded identity AND genuine verified cryptographic signing; missing key/identity/trust blocks publication/activation, never unsigned fallback. Approved initial/later logos packaged before signing, not README-only. UI -> global-ui-rules.md, invoke matching design skill + library research, product-specific design with accessible native/existing primitives. No automatic key/certificate/service/logo action; reminder proves no consent/custody/export/restore/signature/packaged logo/visual quality.')
     [void]$lines.Add('Skill policy routing: active client = ' + $Client + ' -> load ONLY ' + $policyName + ' as the skill policy; never load the other agent''s skill policy and never both together.')
-    [void]$lines.Add('ENCODING: every newly written or modified text file defaults to STRICT UTF-8; never trust OS/shell/runtime default encodings. UTF-8 with a BOM and without a BOM are both valid UTF-8 - the BOM is a separate compatibility decision. A non-UTF-8 exception requires a narrow path/scope, the exact encoding, a technical reason, the forcing system, and compatibility verification.')
+    [void]$lines.Add('ENCODING: explicit STRICT UTF-8 for new/modified text; BOM is separate compatibility. Exception requires exact path/scope + encoding + technical reason/forcing consumer + verified compatibility; never locale defaults.')
     # A " (N).md" filename is the browser-download shape of an uploaded copy -
     # canonical rule files never carry it, so flag it instead of trusting it.
     $suffixedNames = @($currentEntries.Keys | ForEach-Object { [System.IO.Path]::GetFileName($_) } | Where-Object { $_ -match '\s\(\d+\)\.md$' } | Sort-Object -Unique)

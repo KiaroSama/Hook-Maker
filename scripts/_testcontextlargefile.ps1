@@ -60,11 +60,11 @@
             $null -ne $lfClaudeDoc -and $null -ne $lfClaudeDoc.PSObject.Properties['systemMessage'] -and
             $r.Out -notmatch 'hookSpecificOutput' -and $r.Out -notmatch '"decision"') $r.Out
         Check 'an oversized file is still detected and reported' ($lfClaudeMsg -match 'LARGE FILE CHECK' -and $lfClaudeMsg -match 'big\.ps1') $lfClaudeMsg
-        Check 'the reason says a pre-existing oversized file is advisory and blocks nothing' ($lfClaudeMsg -match 'this is advisory and nothing here blocks') $lfClaudeMsg
-        Check 'the reason states the ceiling binds what you WRITE, not what already exists' ($lfClaudeMsg -match 'the ceiling binds what you WRITE' -and $lfClaudeMsg -match 'the gate fires only on a file this task itself pushed past it') $lfClaudeMsg
-        Check 'the reason forbids thin wrappers/pass-through/arbitrary fragments here too' ($lfClaudeMsg -match 'never create a thin wrapper, pass-through module or arbitrary fragment') $lfClaudeMsg
-        Check 'the reason forbids starting an unrelated refactor merely because a file is large' ($lfClaudeMsg -match 'never start a refactor unrelated to the current task') $lfClaudeMsg
-        Check 'a pre-existing oversized file is told to stop growing, not to be split on the spot' ($lfClaudeMsg -match 'stop growing' -and $lfClaudeMsg -match 'extract from the file rather than adding to it') $lfClaudeMsg
+        Check 'pre-existing overflow stays advisory' ($lfClaudeMsg -match 'Already oversized before this task: advisory only') $lfClaudeMsg
+        Check 'gate applies only to task-grown overflow' ($lfClaudeMsg -match 'gate applies only to task-grown overflow') $lfClaudeMsg
+        Check 'no count-driven wrappers or fragments' ($lfClaudeMsg -match 'No thin wrapper/pass-through/arbitrary count split') $lfClaudeMsg
+        Check 'no unrelated refactor' ($lfClaudeMsg -match 'or unrelated refactor') $lfClaudeMsg
+        Check 'existing overflow requires cohesive extraction before growth' ($lfClaudeMsg -match 'Closed to growth: extract a real responsibility/module/layer/public boundary') $lfClaudeMsg
         # BYTE-COMPATIBILITY (real emission site 2 of 4): Large-File-Check's own
         # Write-Advisory Claude branch, fed the message it actually produced.
         # Run on the 5.1 host: hookSpecificOutput has TWO keys and .NET Core

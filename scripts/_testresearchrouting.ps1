@@ -21,3 +21,4 @@ Set-ClaudeProjectDir ''
 $r = Fire -HookPath $researchHook -Cwd $researchProj -RawStdin (New-PromptStdin $researchProj 'UserPromptSubmit' '::deep-research compare sources' 'research-codex')
 Check 'Codex research route invents no Claude-only invocation' ($r.Out -match 'supported client' -and $r.Out -notmatch 'anthropic-skills:|mattpocock-skills:') $r.Out
 Set-ClaudeProjectDir $OrigClaudeProjectDir
+. (Join-Path $PSScriptRoot '_testhookguidance.ps1')

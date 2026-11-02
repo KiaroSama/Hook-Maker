@@ -696,7 +696,7 @@ if ($needsClassification.Count -gt 0) {
 if ($removedPublicConfigKeys.Count -gt 0) {
     [void]$lines.Add('Removed ' + $removedPublicConfigKeys.Count + ' previously auto-added secrets.md entr' + $(if ($removedPublicConfigKeys.Count -eq 1) { 'y' } else { 'ies' }) + ' now classified as public config, not a secret: ' + ($removedPublicConfigKeys -join ', ') + '.')
 }
-[void]$lines.Add('Never print, log, or commit a secret value. Rotate anything that may have leaked. Removing a secrets.md entry is always your call, not automated.')
+[void]$lines.Add('Never print/log/commit/upload values; rotate suspected exposure. Registry removal needs your review. Signing custody: exportable one-line keys in local secrets.md; file keys in ignored private owning-project storage + registry metadata. Never force-export hardware/provider keys. Owner: global-project-lifecycle-rules.md.')
 $message = $lines.ToArray() -join "`n"
 
 if ($GitPrePush) {

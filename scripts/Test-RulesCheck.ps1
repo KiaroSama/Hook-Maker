@@ -299,31 +299,32 @@ try {
         $r.Out -like '*custom-instructions.md*' -and $r.Out -like '*WORKFLOWS.md*' -and $r.Out -like '*CODEWORDS.md*' -and
         $r.Out -like '*ai-context-memory-policy.md*' -and $r.Out -like '*global-hook-rules.md*' -and
         $r.Out -like '*global-test-rules.md*' -and $r.Out -like '*global-github-automation-rules.md*') $r.Out
-    Check 'conditional owners are task-routed and registry names are not reading proof' (
-        $r.Out -like '*global-mcp-rules.md for MCP*' -and $r.Out -like '*graphify.md for navigation*' -and
-        $r.Out -like '*read each applicable owner IN FULL before governed work*') $r.Out
+    Check 'conditional owners and current agent/capability routes stay explicit' (
+        $r.Out -like '*Read applicable owners IN FULL*' -and $r.Out -like '*global-mcp-server-contracts.md*' -and
+        $r.Out -like '*graphify.md by job*' -and $r.Out -like '*global-agent-rules.md*' -and
+        $r.Out -like '*native slash stays native*') $r.Out
     Check 'ordered scope and complete direct registry guidance stay explicit' (
         $r.Out -match 'original request order and stable IDs' -and $r.Out -match 'earliest actionable unfinished' -and
-        $r.Out -match 'exact permission or an English Markdown owner handoff' -and $r.Out -match 'direct custom-instructions.md registry entry') $r.Out
+        $r.Out -match 'exact permission or English Markdown owner handoff' -and $r.Out -match 'New rule Markdown -> direct registry') $r.Out
     Check 'custody and signing reminders never authorize value reads or unsigned activation' (
-        $r.Out -match 'local actual-value custody' -and $r.Out -match 'complete private exports of all stores and isolated restore' -and
-        $r.Out -match 'embedded owner identity AND genuine verified cryptographic signing' -and $r.Out -match 'never unsigned fallback' -and
-        $r.Out -match 'never read/expose values for a reminder') $r.Out
+        $r.Out -match 'local actual-value custody' -and $r.Out -match 'complete private exports of all stores \+ isolated restore' -and
+        $r.Out -match 'approved embedded identity AND genuine verified cryptographic signing' -and
+        $r.Out -match 'missing key/identity/trust blocks publication/activation' -and
+        $r.Out -match 'never read/expose values for a reminder' -and $r.Out -match 'never unsigned fallback') $r.Out
     Check 'approved packaged logo and actual design skill guidance preserve native primitives and consent' (
-        $r.Out -match 'native resources or packaged in-app assets before signing' -and $r.Out -match 'not README-only' -and
-        $r.Out -match 'actually invokes a matching design skill' -and $r.Out -match 'intentional product-specific design' -and
-        $r.Out -match 'accessible primitives/native controls/existing design systems remain allowed' -and $r.Out -match 'executes no action') $r.Out
+        $r.Out -match 'logos packaged before signing, not README-only' -and
+        $r.Out -match 'invoke matching design skill \+ library research' -and $r.Out -match 'product-specific design with accessible native/existing primitives' -and
+        $r.Out -match 'No automatic key/certificate/service/logo action') $r.Out
     Check 'claude loads EXACTLY skill-policy.md and never references the codex policy' (
         $r.Out -match 'load ONLY skill-policy\.md' -and $r.Out -match 'never both together' -and $r.Out -notmatch 'codex') $r.Out
     Check 'the note warns against uploaded/version-suffixed filenames like "(17)"' (
-        $r.Out -like '*version-suffixed*' -and $r.Out -like '*custom-instructions (17).md*') $r.Out
+        $r.Out -like '*version-suffixed*' -and $r.Out -like '*canonical installed filenames*') $r.Out
     Check 'UTF-8 guidance: strict default, distrust OS/shell/runtime defaults' (
-        $r.Out -like '*STRICT UTF-8*' -and $r.Out -like '*never trust OS/shell/runtime default encodings*') $r.Out
+        $r.Out -like '*explicit STRICT UTF-8*' -and $r.Out -like '*never locale defaults*') $r.Out
     Check 'UTF-8 guidance: BOM and no-BOM are both UTF-8; BOM is a separate compatibility decision' (
-        $r.Out -like '*with a BOM and without a BOM are both valid UTF-8*' -and $r.Out -like '*separate compatibility decision*') $r.Out
+        $r.Out -like '*BOM is separate compatibility*') $r.Out
     Check 'UTF-8 guidance: exception = narrow scope + exact encoding + reason + forcing system + verification' (
-        $r.Out -like '*narrow path/scope*' -and $r.Out -like '*exact encoding*' -and $r.Out -like '*technical reason*' -and
-        $r.Out -like '*forcing system*' -and $r.Out -like '*compatibility verification*') $r.Out
+        $r.Out -like '*exact path/scope + encoding + technical reason/forcing consumer + verified compatibility*') $r.Out
     # A real uploaded-style copy in the rules dir is flagged, not trusted.
     New-RuleFile $globalClaude 'custom-instructions (17).md'
     $r = Fire -Cwd $projE1
@@ -428,6 +429,9 @@ try {
     $tEditConfirmed = New-RulesTranscript 'rc-edit-ok' 'Edit' "Done.`nRules applied: project-rule.md (naming), alpha.md (structure)"
     $tReadOnly = New-RulesTranscript 'rc-readonly' 'Read' "Here is the answer."
 
+    $r = Fire -Cwd $closeProj -RawStdin (New-StopStdin -Cwd $closeProj -Transcript $tEdit -SessionId 'close-default')
+    Check 'default missing rules line is advisory, not continuation' ($r.Out-match'Rules applied:'-and$r.Out-match'"systemMessage"'-and$r.Out-notmatch'"decision"|additionalContext') $r.Out
+    $Hook = New-ConfiguredRulesHookCopy 'block'
     $r = Fire -Cwd $closeProj -RawStdin (New-StopStdin -Cwd $closeProj -Transcript $tEdit -SessionId 'close-b1')
     Check 'edits + no confirmation -> a real block decision' ($r.Out -match '"decision"\s*:\s*"block"') $r.Out
     Check 'the block lists the governing rule files it checked' ($r.Out -match 'Governing rule files:' -and $r.Out -match 'project-rule\.md') $r.Out
@@ -499,7 +503,7 @@ try {
     Check 'off mode skips the closing check entirely' ($r.Exit -eq 0 -and $r.Out -eq '') $r.Out
     $badHook = New-ConfiguredRulesHookCopy 'nonsense-value'
     $r = Fire -Cwd $closeProj -HookPath $badHook -RawStdin (New-StopStdin -Cwd $closeProj -Transcript $tEdit -SessionId 'close-bad')
-    Check 'an invalid enforcement value falls back to the block default' ($r.Out -match '"decision"\s*:\s*"block"') $r.Out
+    Check 'an invalid enforcement value falls back to advisory' ($r.Out -match '"systemMessage"' -and $r.Out -notmatch '"decision"|additionalContext') $r.Out
 
     # The requirement is stated BEFORE the work, so the gate is never the first
     # the agent hears of it.
@@ -514,6 +518,7 @@ try {
     Check '5.1 host: the Stop gate produces the same block decision' (
         $r.Exit -eq 0 -and $r.Err -eq '' -and $r.Out -match '"decision"\s*:\s*"block"') $r.Out
 
+    $Hook = Join-Path (Split-Path -Parent $PSScriptRoot) 'hooks/Rules-Check/Rules-Check.ps1'
     # Language advisory uses the existing entry point, even when rules did not move.
     $languageProj = Join-Path $Work 'language-choice'
     [void][IO.Directory]::CreateDirectory($languageProj)

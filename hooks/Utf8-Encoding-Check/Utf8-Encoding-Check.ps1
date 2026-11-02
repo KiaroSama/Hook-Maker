@@ -666,7 +666,7 @@ if ($violations.Count -gt 0) {
         [void]$lines.Add('Also NOT verified (never an all-clear):')
         foreach ($note in $unknownNotes.ToArray()) { [void]$lines.Add('- ' + $note) }
     }
-    [void]$lines.Add('Re-save each file above as strict UTF-8 yourself (this hook never rewrites, transcodes or normalizes anything), or add a narrow documented exception to ' + $exceptionFileSetting + ' ({version:1, exceptions:[{path, encoding, reason, verification}]}), then stop again.')
+    [void]$lines.Add('Re-save as strict UTF-8 (hook never rewrites/transcodes/normalizes), or document a narrow verified exception in ' + $exceptionFileSetting + ' ({version:1, exceptions:[{path, encoding, reason, verification}]}), then stop again.')
     Write-HookMessage -Lines $lines.ToArray() -Blocking $true
 }
 

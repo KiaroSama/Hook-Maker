@@ -56,7 +56,7 @@
     $r = Fire -HookPath $hook1 -Cwd $proj1 -EventName 'Stop'
     Check 'Stop requires a final "Skills used:" summary line for skills actually used' ($r.Out -match 'Skills used:') $r.Out
     Check 'the policy explicitly excludes merely-installed/available/considered/copied-but-unused skills' (
-        $r.Out -match 'never a skill that was merely installed, available, discovered, copied, considered, or read but not used') $r.Out
+        $r.Out -match 'Installed/available/discovered/copied/considered/read-only is not used') $r.Out
     Check 'no skill used is answered with an explicit "none" plus a reason, not by dropping the line' (
         $r.Out -match 'Skills used: none - <one-line reason>') $r.Out
     Check 'the policy forbids listing the whole library' ($r.Out -match 'never the whole library') $r.Out
@@ -70,7 +70,7 @@
     Write-Host '--- Skills-Check: the Stop gate fires only on a skill that was really invoked ---' -ForegroundColor Cyan
     $skStop = New-Proj 'SkillsStopGate'
     New-Item -ItemType Directory -Path (Join-Path $skStop '.claude\skills\gate-skill') -Force | Out-Null
-    $skStopHook = New-ConfiguredSkillsHookCopy -EnvOverrides @{ SKILLS_DIR = (Join-Path $Work 'no-such-library') }
+    $skStopHook = New-ConfiguredSkillsHookCopy -EnvOverrides @{ SKILLS_DIR = (Join-Path $Work 'no-such-library'); SKILLS_SUMMARY_ENFORCEMENT = 'block' }
     $tSkillNoLine = New-ToolTranscript 'sk-nosum' 'Skill' "Done.`nI finished the change."
     $tSkillLine = New-ToolTranscript 'sk-sum' 'Skill' "Done.`nSkills used: gate-skill"
     $tNoSkill = New-ToolTranscript 'sk-none' 'Read' "Done."
@@ -95,12 +95,12 @@
         $r.Out -match 'could NOT be verified' -and $r.Out -match 'not an all-clear' -and $r.Out -notmatch '"decision"') $r.Out
     $r = Fire -HookPath $skStopHook -Cwd $skStop -RawStdin (New-StopStdin -Cwd $skStop -Transcript $tSkillNoLine -SessionId 'sk-sub' -EventName 'SubagentStop')
     Check 'SubagentStop gets the same gate as Stop' ($r.Out -match '"decision"\s*:\s*"block"') $r.Out
-    $skAdvHook = New-ConfiguredSkillsHookCopy -EnvOverrides @{ SKILLS_DIR = (Join-Path $Work 'no-such-library'); SKILLS_SUMMARY_ENFORCEMENT = 'advisory' }
+    $skAdvHook = New-ConfiguredSkillsHookCopy -EnvOverrides @{ SKILLS_DIR = (Join-Path $Work 'no-such-library') }
     $skAdvProj = New-Proj 'SkillsStopAdvisory'
     New-Item -ItemType Directory -Path (Join-Path $skAdvProj '.claude\skills\gate-skill') -Force | Out-Null
     $r = Fire -HookPath $skAdvHook -Cwd $skAdvProj -RawStdin (New-StopStdin -Cwd $skAdvProj -Transcript $tSkillNoLine -SessionId 'sk-a1')
-    Check 'advisory mode reports the same finding without a block decision' (
-        $r.Out -match 'invoked at least one skill' -and $r.Out -notmatch '"decision"') $r.Out
+    Check 'default skill finding is advisory without continuation' (
+        $r.Out -match 'invoked at least one skill' -and $r.Out -match '"systemMessage"' -and $r.Out -notmatch '"decision"|additionalContext') $r.Out
     $skOffHook = New-ConfiguredSkillsHookCopy -EnvOverrides @{ SKILLS_DIR = (Join-Path $Work 'no-such-library'); SKILLS_SUMMARY_ENFORCEMENT = 'off' }
     $skOffProj = New-Proj 'SkillsStopOff'
     New-Item -ItemType Directory -Path (Join-Path $skOffProj '.claude\skills\gate-skill') -Force | Out-Null
@@ -329,9 +329,9 @@
     Check 'the destination is the client-routed project skills directory' (
         $rlCtx -like '*Destination for this project*' -and
         $rlCtx -like ('*' + (Join-Path $libProj '.claude\skills') + '*')) $rlCtx
-    Check 'importing is named as an AUTHORIZED operation the user must approve first' (
-        $rl.Out -match 'AUTHORIZED operation' -and $rl.Out -match 'ask the user first') $rl.Out
-    Check 'the hook states it never copies anything itself' ($rl.Out -match 'never copies anything itself') $rl.Out
+    Check 'importing follows the active policy authority, not discovery consent' (
+        $rl.Out -match 'copy authority' -and $rl.Out -match 'skill-policy\.md') $rl.Out
+    Check 'the hook states it never copies anything itself' ($rl.Out -match 'This hook never copies') $rl.Out
     Check 'the import safety boundary travels with the command' (
         $rl.Out -match 'never reparse points' -and $rl.Out -match 'secrets/caches/VCS metadata' -and
         $rl.Out -match 'never overwrite a modified project skill silently' -and

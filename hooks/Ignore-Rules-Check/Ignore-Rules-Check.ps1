@@ -261,7 +261,7 @@ if ($ruleAdvice.Count -gt 0 -and -not $GitPrePush) {
     $adviceFp = Get-ShortHash ((@($ruleAdvice | Sort-Object)) -join '|')
     $seenFp = ''; try { if (Test-Path -LiteralPath $adviceState -PathType Leaf) { $seenFp = ([System.IO.File]::ReadAllText($adviceState)).Trim() } } catch { }
     if ($seenFp -ne $adviceFp) {
-        $adviceLine = 'Your rule files (AGENTS.md, CLAUDE.md, agent rules) ask for these ignore patterns; they were NOT written or protected - add them to EXTRA_PATTERNS in this hook''s .env, or to .gitignore yourself, if they are right: ' + ($ruleAdvice -join ', ')
+        $adviceLine = 'Rule-requested patterns NOT written/protected; review, then add to this hook''s .env EXTRA_PATTERNS or .gitignore: ' + ($ruleAdvice -join ', ')
         try { New-Item -ItemType Directory -Path (Split-Path -Parent $adviceState) -Force | Out-Null; [System.IO.File]::WriteAllText($adviceState, $adviceFp) } catch { }
     }
 }

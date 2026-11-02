@@ -300,7 +300,7 @@ try {
     Write-Utf8 (Join-Path $pGraphEn 'graphify-out\graph.json') '{}'
     $enStdin = @{ session_id = 'g-en1'; cwd = $pGraphEn; hook_event_name = 'UserPromptSubmit'; prompt = 'map the call path and module dependencies' } | ConvertTo-Json
     $r = Fire -Cwd $pGraphEn -HookPath $GraphHook -RawStdin $enStdin
-    Check 'relevant English -> scoped-query reminder' ($r.Out -like '*this project has a graphify knowledge graph*' -and $r.Out -like '*graphify query*') $r.Out
+    Check 'relevant English -> scoped-query reminder' ($r.Out -like '*graphify-out/graph.json exists*' -and $r.Out -like '*graphify query*') $r.Out
 
     # =====================================================================
     Write-Host '--- Graph-Read-Check: missing graph + graphify AVAILABLE -> create-then-query, never runs graphify ---' -ForegroundColor Cyan
@@ -316,7 +316,7 @@ try {
     try {
         $missStdin = @{ session_id = 'm-1'; cwd = $pMiss; hook_event_name = 'UserPromptSubmit'; prompt = 'refactor the architecture and check module dependencies across the codebase' } | ConvertTo-Json
         $r = Fire -Cwd $pMiss -HookPath $GraphHook -RawStdin $missStdin
-        Check 'missing graph + relevant -> create-then-query guidance' ($r.Out -like '*GRAPH READ CHECK*' -and $r.Out -like '*create the graph*' -and $r.Out -like '*graphify query*') $r.Out
+        Check 'missing graph + relevant -> create-then-query guidance' ($r.Out -like '*GRAPH READ CHECK*' -and $r.Out -like '*build (typically graphify .)*' -and $r.Out -like '*graphify query*') $r.Out
         Check 'hook did NOT execute graphify (no sentinel)' (-not (Test-Path -LiteralPath $sentinel))
         # Missing graph + trivial/docs prompt -> total silence (new session).
         $trivialStdin = @{ session_id = 'm-triv'; cwd = $pMiss; hook_event_name = 'UserPromptSubmit'; prompt = 'fix a typo in the changelog wording' } | ConvertTo-Json
@@ -333,7 +333,7 @@ try {
     try {
         $u1 = @{ session_id = 'u-1'; cwd = $pMiss2; hook_event_name = 'UserPromptSubmit'; prompt = 'trace the call path and impact of this entry point' } | ConvertTo-Json
         $r = Fire -Cwd $pMiss2 -HookPath $GraphHook -RawStdin $u1
-        Check 'missing graph + graphify unavailable -> bounded fallback advisory' ($r.Out -like '*GRAPH READ CHECK*' -and $r.Out -like '*fall back*' -and $r.Out -like '*not found on PATH*') $r.Out
+        Check 'missing graph + graphify unavailable -> bounded fallback advisory' ($r.Out -like '*GRAPH READ CHECK*' -and $r.Out -like '*bounded scoped source search/reads*' -and $r.Out -like '*not found on PATH*') $r.Out
         # Same session + same (no-graph) state -> deduped, never loops.
         $r2 = Fire -Cwd $pMiss2 -HookPath $GraphHook -RawStdin $u1
         Check 'unavailable fallback does not repeat in the same session/state' ($r2.Exit -eq 0 -and $r2.Out -eq '') $r2.Out
@@ -364,12 +364,12 @@ try {
     try {
         $exStdin = @{ session_id = 'ex-1'; cwd = $pEx; hook_event_name = 'UserPromptSubmit'; prompt = 'what is the impact across modules and entry points' } | ConvertTo-Json
         $r = Fire -Cwd $pEx -HookPath $GraphHook -RawStdin $exStdin
-        Check 'no graph yet -> create/fallback guidance (not the read note)' ($r.Out -like '*no graphify knowledge graph exists*' -and $r.Out -notlike '*this project has a graphify knowledge graph*') $r.Out
+        Check 'no graph yet -> create/fallback guidance (not the read note)' ($r.Out -like '*no graphify knowledge graph exists*' -and $r.Out -notlike '*graphify-out/graph.json exists*') $r.Out
         # The graph now appears; the same session must switch to the READ note.
         New-Item -ItemType Directory -Path (Join-Path $pEx 'graphify-out') -Force | Out-Null
         Write-Utf8 (Join-Path $pEx 'graphify-out\graph.json') '{}'
         $r2 = Fire -Cwd $pEx -HookPath $GraphHook -RawStdin $exStdin
-        Check 'graph now exists -> read reminder re-enabled (existence change)' ($r2.Out -like '*this project has a graphify knowledge graph*' -and $r2.Out -like '*graphify query*') $r2.Out
+        Check 'graph now exists -> read reminder re-enabled (existence change)' ($r2.Out -like '*graphify-out/graph.json exists*' -and $r2.Out -like '*graphify query*') $r2.Out
     }
     finally { $env:PATH = $savedPath }
 

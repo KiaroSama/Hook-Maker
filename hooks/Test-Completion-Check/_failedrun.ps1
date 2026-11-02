@@ -64,7 +64,7 @@ function Resolve-FailedRunVerdict {
         Lines    = @(
             'TEST COMPLETION CHECK: the latest guarded test run for this project FAILED (exit code ' + $exitCode + '). The work is not verifiably complete.',
             $(if ($LastProgress -ne '') { 'Last recorded progress: ' + $LastProgress } else { 'The result document records no final progress line.' }),
-            'Recovery: inspect the actual failure, fix the root cause, and re-run the suite through scripts\Run-Tests-Guarded.ps1 until the result reports overall=ok. Do not weaken, skip, or delete tests to make it pass, and do not claim tests passed while this result stands.',
+            'Recovery: fix root cause; same-command scripts\Run-Tests-Guarded.ps1 overall=ok or eligible exact-SHA CI below. Do not weaken, skip, or delete tests or ignore exits; unresolved is not passed.',
             # Pushing the repair and letting CI go green on that exact commit clears
             # this too, on a clean tree - which is the cheaper route when CI already
             # runs the suite. Stated because the alternative was an eleven-minute
@@ -73,7 +73,7 @@ function Resolve-FailedRunVerdict {
             # The supersede matches the COMMAND, not the tree state, so the edit that
             # fixed the failure does not disqualify the green run proving it. The escape
             # hatch is for when a re-run cannot reproduce the identity at all.
-            'Re-running the SAME command green supersedes this automatically, even though your fix changed the working tree. Only if the command itself had to change, or the old receipt carries no command identity, associate the newer clean receipt explicitly: powershell.exe -NoProfile -File "' + $HookPath + '" -ResolveIncident ' + $key + ' -RecoveryRunId "<verified recovery run id>" -ProjectRoot "' + $ProjectRoot + '" -Reason "<substantive equivalent test scope and verified repair, at least 80 UTF-8 bytes>".',
+            'Re-running the SAME command green supersedes this automatically, even though your fix changed the working tree. Only if the command itself had to change, or the old receipt carries no command identity, associate the newer clean receipt explicitly: pwsh -NoProfile -File "' + $HookPath + '" -ResolveIncident ' + $key + ' -RecoveryRunId "<verified recovery run id>" -ProjectRoot "' + $ProjectRoot + '" -Reason "<substantive equivalent test scope and verified repair, at least 80 UTF-8 bytes>".',
             'Note: the supersede matches the WHOLE argument vector, so a run covering three suites does not supersede a one-suite failure.')
     }
 }

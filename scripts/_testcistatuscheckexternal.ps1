@@ -57,17 +57,17 @@
     Check 'Claude: Stop uses the non-continuing user-visible systemMessage shape' ($r.Out -match '"systemMessage"' -and $r.Out -notmatch 'hookSpecificOutput|additionalContext|decision') $r.Out
     Check 'Claude: the completion context explicitly says CI is NOT verified green' ($r.Out -match 'CI NOT VERIFIED GREEN' -and $r.Out -match 'external' ) $r.Out
     Check 'Claude: the context names repo, short sha, classification and sanitized reason' ($r.Out -match 'testowner/testrepo-ext1' -and $r.Out -match ($extSha1.Substring(0, 7)) -and $r.Out -match 'github-outage' -and $r.Out -match 'status page reports a full outage') $r.Out
-    Check 'Claude: the context denies success and instructs not to claim CI passed' ($r.Out -match 'not a successful CI run' -and $r.Out -match 'do not claim CI passed') $r.Out
+    Check 'Claude: the context denies success and instructs not to claim CI passed' ($r.Out -match 'CI NOT VERIFIED GREEN' -and $r.Out -match 'Report the blocker, never CI success') $r.Out
     # F14: a confirmed blocker is the ONE case the rules let the heavy pass run
     # locally, so the notice says what to do next instead of only naming the blocker.
     Check 'Claude: the notice states the CI-First local fallback and its conditions' (
         $r.Out -match 'CI cannot execute this run' -and
-        $r.Out -match 'the one case where the heavy pass runs locally' -and
+        $r.Out -match 'Recorded EXTERNAL CI blocker permits completion' -and
         $r.Out -match 'once through the guarded runner on the final tree') $r.Out
     Check 'Claude: the notice requires the blocker recorded as a re-verified observation' (
-        $r.Out -match 'record the blocker' -and
-        $r.Out -match 're-verify it next task, never treat it as standing' -and
-        $r.Out -match 'CI was unavailable and why') $r.Out
+        $r.Out -match 'Record blocker command/evidence/time' -and
+        $r.Out -match 'dated observation; re-verify next task, not standing permission' -and
+        $r.Out -match 'CI unavailable and why') $r.Out
 
     # Codex: same message text, but through the officially supported common
     # systemMessage field - no hookSpecificOutput/additionalContext (undocumented
@@ -77,7 +77,7 @@
     $rCodex = Fire -HookPath $CiHook -Cwd $ext1 -EventName 'Stop' -Client 'codex' -Extra @{ session_id = 'codex-shape' }
     Check 'Codex: Stop uses the supported systemMessage shape (no hookSpecificOutput/additionalContext)' ($rCodex.Out -match '"systemMessage"' -and $rCodex.Out -notmatch 'additionalContext' -and $rCodex.Out -notmatch 'hookSpecificOutput') $rCodex.Out
     Check 'Codex: the notice is non-blocking (no decision:block)' ($rCodex.Out -notmatch '"decision":"block"') $rCodex.Out
-    Check 'Codex: the notice explicitly says CI is NOT verified green' ($rCodex.Out -match 'CI NOT VERIFIED GREEN' -and $rCodex.Out -match 'not a successful CI run') $rCodex.Out
+    Check 'Codex: the notice explicitly says CI is NOT verified green' ($rCodex.Out -match 'CI NOT VERIFIED GREEN' -and $rCodex.Out -match 'never CI success') $rCodex.Out
     Check 'Codex: the notice names repo, short sha, classification and sanitized reason' ($rCodex.Out -match 'testowner/testrepo-ext1' -and $rCodex.Out -match ($extSha1.Substring(0, 7)) -and $rCodex.Out -match 'github-outage' -and $rCodex.Out -match 'status page reports a full outage') $rCodex.Out
     Check 'both client shapes carry the identical notice text' (
         ($r.Out -replace '.*CI NOT VERIFIED GREEN', 'CI NOT VERIFIED GREEN' -replace '"\}\}$', '') -match 'external CI blocker' -and

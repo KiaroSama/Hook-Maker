@@ -451,9 +451,9 @@ try {
     # Steering V48: update to latest, or the nearest non-breaking version; the old
     # "unrelated to dependencies" escape is gone.
     Check 'V48: the closing half asks for the update now, with the nearest non-breaking fallback and the global install' (
-        $r.Out -match 'Update each finding now to the latest stable release' -and
-        $r.Out -match 'nearest version below it that does not break' -and $r.Out -match 'updated in the global install' -and
-        $r.Out -match 'Only a recorded reason' -and $r.Out -notmatch 'unrelated to dependencies') $r.Out
+        $r.Out -match 'Update latest stable, else newest nonbreaking' -and
+        $r.Out -match 'record failed version/cause' -and $r.Out -match '\[global install\] updates globally' -and
+        $r.Out -match 'Retain only with reason' -and $r.Out -notmatch 'unrelated to dependencies') $r.Out
     Check 'the closing half never blocks (advisory shape only)' ($r.Out -notmatch '"decision"') $r.Out
     Check 'the closing half separates out the EOL/major class' ($r.Out -match 'end-of-life or a clearly old major') $r.Out
     Check 'the closing half runs NO scan (no npm invocation at Stop)' ((Get-NpmCallCount) -eq 0) ('npm calls=' + (Get-NpmCallCount))
@@ -465,7 +465,7 @@ try {
     # so a Stop from another session in between would re-arm it.
     $rClaude = Fire -Cwd $contractProj -EventName 'Stop' -SessionId 'contract-claude' -Client 'claude'
     Check 'V48: the Claude client gets the same update request, still advisory' (
-        $rClaude.Out -match 'Update each finding now to the latest stable release' -and
+        $rClaude.Out -match 'Update latest stable, else newest nonbreaking' -and
         $rClaude.Out -notmatch 'unrelated to dependencies' -and $rClaude.Out -notmatch '"decision"') $rClaude.Out
     $r4 = Fire -Cwd $contractProj -EventName 'SubagentStop' -SessionId 'contract-3'
     Check 'SubagentStop replays it too' ($r4.Out -match 'pkg-old') $r4.Out

@@ -7,16 +7,9 @@
 # export, a changed call relationship) while a multi-file change can be
 # graph-irrelevant (docs-only, formatting-only, generated output).
 #
-# ROLE: GATE on Stop/SubagentStop (global-hook-rules.md SS Hook Roles). The
-# integration matrix files it under "freshness" for WHAT IT ASKS ABOUT; the
-# mechanism is a real decision:block, and the source says so here so the two
-# descriptions cannot drift apart again. It blocks only on the documented,
-# reproducible condition below: graphify-out\graph.json exists, and the newest
-# project work is more than two minutes newer than graph.json.
-# WHAT CLEARS IT: finishing the turn again - after `graphify update .`, or
-# after one line saying the change was not structural. The block is recorded
-# per session and per project BEFORE it is emitted, so the same state never
-# blocks twice; a later session is additionally held off by COOLDOWN_MINUTES.
+# ROLE: detector/advisor on Stop/SubagentStop; never forces continuation.
+# Reminds only when graphify-out\graph.json exists and project work is more
+# than two minutes newer. Existing cooldown and stand-down remain intact.
 #
 # Token-efficient by design:
 # - Fires only when graphify-out\graph.json exists AND the latest project work
@@ -76,7 +69,7 @@ if (-not (Test-Path -LiteralPath $graphPath -PathType Leaf)) {
 
 # ---- optional .env ----
 $config = Read-HookEnv (Join-Path $PSScriptRoot '.env')
-$lifecycleNote = ' For every build/refresh, read graphify.md and graphify-markdown.md: retain a healthy owned comparison/rollback until coverage, semantic retention and endpoints are verified; unexpected shrink or dangling endpoints is failure, preserve/restore healthy state and recovery evidence. Only after verified success recycle proven owned obsolete snapshots/baselines/version copies, leaving one verified active graph and compact receipts. Recycle Bin unavailable means cleanup BLOCKED, never permanent deletion. No graph-name glob or removal of unknown/shared/source/fixtures/.ai/maintained evidence. This hook deletes nothing and decides no ownership; there is no new completion condition based on directory names.'
+$lifecycleNote = ' Read graphify.md + graphify-markdown.md. Retain healthy rollback until coverage, semantic retention and endpoints pass; shrink/dangling edges fail: preserve/restore recovery. Only after verified success permanently delete exact proven owned obsolete copies, NOT Recycle Bin; retain one active graph + compact receipts. No name globs or unknown/shared/source/fixture/memory/evidence deletion. This hook deletes nothing; names prove no ownership.'
 $cooldownMinutes = 60
 if ($config.ContainsKey('COOLDOWN_MINUTES')) {
     $parsedSetting = 0; if ([int]::TryParse([string]$config['COOLDOWN_MINUTES'], [ref]$parsedSetting) -and $parsedSetting -ge 0 -and $parsedSetting -le 10080) { $cooldownMinutes = $parsedSetting }
@@ -119,11 +112,10 @@ $markdownNote = ''
 if ($markdownStale -and (-not $codeStale -or $markdown.TimeUtc -gt $workTime)) {
     $markdownNote = 'Markdown the graph covers beyond Git (.ai/, specs/, .specify/, plans/ or a folder of 10+ .md files) changed after the graph was built; Git does not show these edits. Run: graphify update .  (local, no model). If .ai/ changed, re-run the graphify skill''s semantic pass for the changed .ai/ files only - by the agent itself, never an external model backend. '
 }
-$reason = 'GRAPH UPDATE CHECK: graphify-out/graph.json predates the latest project changes. ' + $markdownNote + 'Decide for yourself based on STRUCTURAL impact, not the number of files changed - a single-file change can still be graph-relevant (e.g. an added/removed/renamed function or class, a changed export, import, call, or inheritance relationship, a new entry point, a changed cross-file dependency), while a multi-file change can be graph-irrelevant (prose/comments/formatting only, a literal or config value change, generated output, tests only unless test architecture is intentionally represented in the graph). If this task changed graph-relevant structure, run: graphify update .  (AST-only, no API cost). Otherwise finish now without updating and say so in one line. EITHER answer clears this block: it is recorded per session and per project before it is emitted, so this same state never blocks twice, and it returns only after future changes.'
+$reason = 'GRAPH UPDATE CHECK: graphify-out/graph.json predates project changes. ' + $markdownNote + 'Judge STRUCTURAL impact, not file count: symbols/exports/imports/calls/inheritance/entries/dependencies matter even in one file. Prose/comments/formatting/literal/config/generated/test changes matter only if represented. Relevant -> graphify update . (AST-only, no API cost); otherwise explain briefly. Advisory only; cooldown prevents repeats.'
 $reason += $lifecycleNote
-# Record the block so THIS hook's own re-entry is recognised; another
-# gate's block must not mute it, and its own must not repeat.
-$emit = Write-StopBlockResult -HookInput $hookInput -HookName 'Graph-Update-Check' -EventName $eventName -Reason $reason
+# The existing cooldown suppresses unchanged advisories; no continuation claim.
+$emit = Write-HookResult -EventName $eventName -Kind 'advisory' -Message $reason
 exit $emit.ExitCode
 }
 catch { if ($null -ne $gateReceipt) { $gateReceipt.Crashed = $true }; throw }

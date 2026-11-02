@@ -197,8 +197,13 @@ function Invoke-SkillSurfaceRegression {
     $ctx2 = Get-Context $r2.Out
     Check 'an unchanged drift gap is not reported twice in one session' ($ctx2 -match 'SKILL POLICY CHECK' -and $ctx2 -notmatch 'UNCATALOGUED SKILLS') $ctx2
     Check 'the route line states the mid-task intake contract' (
-        $ctx -match 'record the request delta with requirement IDs and acceptance criteria' -and $ctx -match 'spec, plan, tasks and skill selection' -and
-        $ctx -match 'rerun the affected gates' -and $ctx -match 'only work that depends on the delta waits' -and $ctx -match 'Spec Kit routes every task') $ctx
+        $ctx -match 'dated delta/requirement IDs/acceptance' -and $ctx -match 'amend affected artifacts/skills/gates before dependent edits' -and
+        $ctx -match 'independent work continues' -and $ctx -match 'Spec Kit routes every task') $ctx
+    Check 'agent guidance names actual roots without claiming exposure or spawning' (
+        $ctx -match 'global-agent-rules.md' -and $ctx -match 'global/project .claude/agents' -and
+        $ctx -match 'installed_plugins.json declared/default roots' -and $ctx -match 'current host roster' -and
+        $ctx -match 'missing/unreadable/malformed scope is UNVERIFIED' -and $ctx -match 'Small tasks: zero agents' -and
+        $ctx -match 'This hook spawns nothing') $ctx
 
     $malformedHook = New-ConfiguredSkillsHookCopy -EnvOverrides @{ SKILLS_DIR=(Join-Path $Work 'none'); CLAUDE_PLUGINS_FILE=(Join-Path $Work 'none.json'); CLAUDE_DESKTOP_SKILLS_ROOT=(Join-Path $sdClaude 'bad-desktop') }
     $badSession=Join-Path $sdClaude 'bad-desktop/owner/session'

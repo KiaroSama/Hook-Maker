@@ -264,6 +264,9 @@ try {
         . (Join-Path $ScriptRoot '_testuninstallhooknative.ps1')
         . (Join-Path $ScriptRoot '_testuninstallhookownership.ps1')
     }
+    . (Join-Path $ScriptRoot '_testuninstallcompanionabsence.ps1')
+    Invoke-CompanionAbsenceRegression -Root (Split-Path -Parent $ScriptRoot) -Work $Work
+    Invoke-MovedCompanionRegression
     . (Join-Path $ScriptRoot '_testuninstallcomplete.ps1')
     if (-not $CompleteOnly -and $PSVersionTable.PSVersion.Major -ge 7) {
         $frameworkOut=Join-Path $Work 'complete-framework.out'

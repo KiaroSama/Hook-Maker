@@ -95,7 +95,9 @@
         @('Use Upwork-Agent-mcp draft','UPWORK','historical upwork-local','exact action approval'),
         @('Use Fiverr-Agent-mcp action_commit','FIVERR','manual_handoff','remote_executed:false'),
         @('Use REA to inspect an artifact','REA','explicit finite action deadlines','not a sandbox'),
-        @('Use telegram-operator for a backup','TELEGRAM OPERATOR','telegram-backup-restore','no-deletions holds win')
+        @('Use telegram-operator for a backup','TELEGRAM OPERATOR','telegram-backup-restore','no-deletions holds win'),
+        @('Use context-mode to inspect output','CONTEXT-MODE','not an OS/network/filesystem security sandbox','actual host namespace/schema'),
+        @('Use Numera-CHA-Solver-MCP for licensed text','NUMERA CHA','never CAPTCHA bypass','server_verified are independent')
     )
     foreach ($case in $requests) {
         $r = Fire -HookPath $McpHook -Cwd $operationProject -RawStdin (New-PromptStdin $operationProject 'UserPromptSubmit' $case[0] 'operations')
@@ -122,7 +124,7 @@
     $tNoMcp = New-ToolTranscript 'mcp-none' 'Read' "Done."
 
     $r = Fire -HookPath $McpHook -Cwd $mcpStop -RawStdin (New-StopStdin -Cwd $mcpStop -Transcript $tMcpNoSum -SessionId 'mcp-b1')
-    Check 'MCP called + no summary line -> a real block decision' ($r.Out -match '"decision"\s*:\s*"block"') $r.Out
+    Check 'default MCP missing line is advisory, not continuation' ($r.Out -match '"systemMessage"' -and $r.Out -notmatch '"decision"|additionalContext') $r.Out
     Check 'the block names the servers it actually observed' ($r.Out -match 'Servers observed in this session: context7') $r.Out
     Check 'the block names the exact single action that clears it' ($r.Out -match 'TO CLEAR THIS' -and $r.Out -match 'starting exactly with .{0,3}MCP used:') $r.Out
     # An unchanged failure blocks ONCE per session (global-hook-rules.md: a gate
@@ -130,7 +132,7 @@
     $r2 = Fire -HookPath $McpHook -Cwd $mcpStop -RawStdin (New-StopStdin -Cwd $mcpStop -Transcript $tMcpNoSum -SessionId 'mcp-b1')
     Check 'the SAME unchanged failure does not block twice in one session' ($r2.Exit -eq 0 -and $r2.Out -eq '') $r2.Out
     $r3 = Fire -HookPath $McpHook -Cwd $mcpStop -RawStdin (New-StopStdin -Cwd $mcpStop -Transcript $tMcpNoSum -SessionId 'mcp-b2')
-    Check 'a NEW session with the same failure blocks again' ($r3.Out -match '"decision"\s*:\s*"block"') $r3.Out
+    Check 'a NEW session with the same finding advises again' ($r3.Out -match '"systemMessage"' -and $r3.Out -notmatch '"decision"|additionalContext') $r3.Out
 
     $r = Fire -HookPath $McpHook -Cwd $mcpStop -RawStdin (New-StopStdin -Cwd $mcpStop -Transcript $tMcpSum -SessionId 'mcp-ok')
     Check 'MCP called + the summary line present -> silent, no block' ($r.Exit -eq 0 -and $r.Out -eq '') $r.Out
@@ -142,7 +144,7 @@
     $ownText = 'CLOSING REQUIREMENT - end the final task summary with its own line starting "MCP used:" naming every connected MCP server actually called this task. TO CLEAR THIS: add one line to the final summary, on its own line, starting exactly with "MCP used:" and naming the servers actually used - e.g. "MCP used: context7".'
     $tSelf = New-ToolTranscript 'mcp-self' 'mcp__context7__query-docs' $ownText
     $r = Fire -HookPath $McpHook -Cwd $mcpStop -RawStdin (New-StopStdin -Cwd $mcpStop -Transcript $tSelf -SessionId 'mcp-self1')
-    Check 'the hook''s OWN instruction text in the transcript never satisfies the gate' ($r.Out -match '"decision"\s*:\s*"block"') $r.Out
+    Check 'the hook''s OWN instruction text never satisfies the declaration' ($r.Out -match '"systemMessage"' -and $r.Out -notmatch '"decision"|additionalContext') $r.Out
 
     $r = Fire -HookPath $McpHook -Cwd $mcpStop -RawStdin (New-StopStdin -Cwd $mcpStop -Transcript $tNoMcp -SessionId 'mcp-n1')
     Check 'no MCP call and no recorded relevance -> silent (never a block on suspicion)' ($r.Exit -eq 0 -and $r.Out -eq '') $r.Out
@@ -202,11 +204,14 @@
     $badHook = New-ConfiguredMcpHookCopy 'nonsense-value'
     $mcpBad = New-Proj 'McpBadConfig'
     $r = Fire -HookPath $badHook -Cwd $mcpBad -RawStdin (New-StopStdin -Cwd $mcpBad -Transcript $tMcpNoSum -SessionId 'mcp-x1')
-    Check 'an invalid enforcement value falls back to the block default' ($r.Out -match '"decision"\s*:\s*"block"') $r.Out
+    Check 'an invalid enforcement value falls back to advisory' ($r.Out -match '"systemMessage"' -and $r.Out -notmatch '"decision"|additionalContext') $r.Out
 
     # =====================================================================
     Write-Host '--- Mcp-Usage-Check: Windows PowerShell 5.1 host ---' -ForegroundColor Cyan
     $r = Fire -HookPath $McpHook -Cwd $plain -Exe 'powershell.exe'
     Check '5.1 host: emits cleanly, no crash' ($r.Exit -eq 0 -and $r.Err -eq '' -and $r.Out -like '*MCP USAGE CHECK*') $r.Out
     $r = Fire -HookPath $McpHook -Cwd $mcpStop -Exe 'powershell.exe' -RawStdin (New-StopStdin -Cwd $mcpStop -Transcript $tMcpNoSum -SessionId 'mcp-51')
-    Check '5.1 host: the Stop gate produces the same block decision' ($r.Exit -eq 0 -and $r.Err -eq '' -and $r.Out -match '"decision"\s*:\s*"block"') $r.Out
+    Check '5.1 host: default Stop is advisory without continuation' ($r.Exit -eq 0 -and $r.Err -eq '' -and $r.Out -match '"systemMessage"' -and $r.Out -notmatch '"decision"|additionalContext')
+    $blockHook = New-ConfiguredMcpHookCopy 'block'
+    $r = Fire -HookPath $blockHook -Cwd $mcpStop -RawStdin (New-StopStdin -Cwd $mcpStop -Transcript $tMcpNoSum -SessionId 'mcp-explicit-block')
+    Check 'explicit MCP block configuration remains effective' ($r.Exit -eq 0 -and $r.Out -match '"decision"\s*:\s*"block"') $r.Out

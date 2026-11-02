@@ -175,7 +175,7 @@ try {
         -not [string]::IsNullOrWhiteSpace([string]$parsed.hookSpecificOutput.additionalContext)) $r.Out
     $msg1 = Get-Message $r.Out
     Check 'the advisory surfaces the bounded wall/idle timeout policy point' ($msg1 -match '(?i)wall timeout' -and $msg1 -match '(?i)idle') $msg1
-    Check 'the advisory surfaces resource-aware parallelism and process cleanup' ($msg1 -match '(?i)cores-2' -and $msg1 -match '(?i)process tree') $msg1
+    Check 'the advisory surfaces resource-aware parallelism and process cleanup' ($msg1 -match 'shared worker ceiling' -and $msg1 -match 'cores/free memory/children/other work' -and $msg1 -match '(?i)process tree') $msg1
     # The policy block itself mentions blind sleeps, so absence is asserted on
     # the findings SECTION, which only appears when something real was seen.
     Check 'a bounded test file produces no invented finding' ($msg1 -notmatch '(?i)Observed in this project') $msg1

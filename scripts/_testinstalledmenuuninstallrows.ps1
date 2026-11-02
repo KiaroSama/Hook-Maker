@@ -130,13 +130,20 @@
                 # not a dead end - it says so and offers the scope menu again.
                 [pscustomobject]@{ Name = 'filteredEmpty'; Answers = @('1', 'C:\Proj\Nothing\Here', '0') }
                 [pscustomobject]@{ Name = 'declined'; Answers = @('2', '1') }
+                [pscustomobject]@{ Name = 'directAll'; Answers = @($proj, '') }
+                [pscustomobject]@{ Name = 'directOne'; Answers = @($proj, '1') }
+                [pscustomobject]@{ Name = 'directCancel'; Answers = @('0') }
+                [pscustomobject]@{ Name = 'directEmpty'; Answers = @('C:\Proj\Nothing\Here', '0') }
+                [pscustomobject]@{ Name = 'directDeclined'; Answers = @($proj, '') }
             )) {
-            $script:UninstallConfirmed=$case.Name-ne'declined'
+            $script:UninstallConfirmed=$case.Name-notin@('declined','directDeclined')
             $callsBefore=if(Test-Path -LiteralPath $executorLog){[IO.File]::ReadAllText($executorLog,[Text.Encoding]::UTF8)}else{''}
             $script:Captured = New-Object System.Collections.Generic.List[string]
             $script:UninstallAnswers = New-Object System.Collections.Generic.Queue[string]
             foreach ($answer in $case.Answers) { $script:UninstallAnswers.Enqueue($answer) }
-            [void](Invoke-UninstallInstalledHooks)
+            [void](Invoke-UninstallInstalledHooks -ProjectOnly:($case.Name.StartsWith('direct')))
+            $callsAfter=if(Test-Path -LiteralPath $executorLog){[IO.File]::ReadAllText($executorLog,[Text.Encoding]::UTF8)}else{''}
+            $results[($case.Name+'NewCalls')]=@($callsAfter.Substring($callsBefore.Length)-split'\r?\n'|Where-Object{$_-ne''})
             $results[$case.Name] = ($script:Captured -join "`n")
             $results[($case.Name + 'Calls')] = if (Test-Path -LiteralPath $executorLog) { [System.IO.File]::ReadAllText($executorLog) } else { '' }
             if($case.Name-eq'declined'){$results['declinedUnchanged']=$results['declinedCalls']-ceq$callsBefore}
@@ -144,6 +151,15 @@
         return , $results
     }
 
+    foreach($name in @('directAll','directOne','directCancel','directEmpty','directDeclined')) {
+        $text=[string]$uninstallRuns[$name]
+        Check ('direct project removal never offers the global list: '+$name) ($text-notmatch'Every installed hook|ZZZ-Blocked-One|ZZZ-Blocked-Two') $text
+    }
+    Check 'direct project all removes exactly its two records' (($uninstallRuns['directAllNewCalls']-join',')-ceq'zzz-removable-a,zzz-removable-b')
+    Check 'direct project individual removes only the selected record' (($uninstallRuns['directOneNewCalls']-join',')-ceq'zzz-removable-a')
+    foreach($name in @('directCancel','directEmpty','directDeclined')) {
+        Check ('direct project cancellation invokes no executor: '+$name) (@($uninstallRuns[($name+'NewCalls')]).Count-eq0)
+    }
     Check 'uninstall: declining confirmation never invokes the executor' ([bool]$uninstallRuns['declinedUnchanged']-and[string]$uninstallRuns['declined']-match'Canceled. Nothing was changed.')
     $modeCalls=[IO.File]::ReadAllText((Join-Path $Work 'uninstall-mode-calls.txt'),[Text.Encoding]::UTF8)
     Check 'uninstall: custom package rows never claim complete external cleanup' ($modeCalls-notmatch'\|True') $modeCalls

@@ -15,7 +15,8 @@
 # import instructions.
 #
 # ROLE (global-hook-rules.md, "Hook Roles"): DETECTOR/ADVISORY on the pre-task
-# events, GATE on Stop/SubagentStop. The hook NEVER copies, installs, refreshes,
+# events; advisory by default at Stop/SubagentStop, GATE only by explicit config.
+# The hook NEVER copies, installs, refreshes,
 # overwrites, enables or removes a skill and never writes inside the scanned
 # repo: skill-policy.md makes installation an authorized operation, so discovery
 # and an exact instruction are the most this hook may do. The .ai/SKILLS.md
@@ -70,7 +71,7 @@
 #   GLOBAL_SKILLS_DIR          the client's global skills directory.
 #   PLUGIN_SKILLS_ROOT         the plugin cache root.
 #   LIBRARY_INDEX_TTL_MINUTES  index lifetime, default 1440 (one day).
-#   SKILLS_SUMMARY_ENFORCEMENT block (default) | advisory | off
+#   SKILLS_SUMMARY_ENFORCEMENT advisory (default) | block | off
 
 Set-StrictMode -Version 2.0
 $ErrorActionPreference = 'Stop'
@@ -125,14 +126,14 @@ $projectKey = Get-ShortHash $cwd.ToLowerInvariant()
 # name list contradicting the "none" it had just written. Both halves passed
 # their own tests; what was missing was that they agreed.
 $script:SkillsRequiredLine = 'Skills used: <skill names>   (or exactly "Skills used: none - <one-line reason>", and that reason names any skills this prompt shortlisted)'
-$script:SkillsRequirement = 'CLOSING REQUIREMENT - end the final task summary with its own line starting "Skills used:" naming ONLY the exact skill names actually invoked or materially followed - never a skill that was merely installed, available, discovered, copied, considered, or read but not used, and never the whole library. If none were used, write "Skills used: none - <one-line reason>", and when INSTALLED skills were shortlisted for this prompt that reason must NAME them - each offered name is accounted for once, so a reason naming none of them leaves every one of them outstanding and costs a further turn. Do not force a skill for trivial tasks merely to produce the line.'
+$script:SkillsRequirement = 'CLOSING REQUIREMENT: "Skills used: <exact invoked/materially followed names>"; otherwise "Skills used: none - <one-line reason>" naming each unused shortlisted installed skill. Installed/available/discovered/copied/considered/read-only is not used; never the whole library; do not force a skill for trivial tasks.'
 # The import safety boundary, stated wherever an import is suggested. Copying a
 # skill is an AUTHORIZED operation under the Skill Policy and this hook never
 # performs one - so every place that names a copy command also names its rules.
 # One line, both advisories. Spec Kit is the ROUTE a task takes; the skills
 # inventory above is the SET a task may use. Naming the route here costs a
 # line and stops the inventory reading as the whole policy.
-$script:SpecKitRouting = 'Spec Kit routes every task that changes the project: no .specify/ yet -> speckit-init then speckit-constitution; a feature or behaviour change -> speckit-specify, clarify, plan, tasks, analyze, implement, in that order; a bug -> diagnose, then speckit-converge on a spec-bearing feature or the full chain otherwise; resumed work or doubt about completeness -> speckit-converge. Run each to the letter. A NEW REQUEST MID-TASK (global-spec-kit-rules.md, Mid-task Request Intake): record the request delta with requirement IDs and acceptance criteria, update the affected spec, plan, tasks and skill selection, rerun the affected gates, then resume implementation - only work that depends on the delta waits; independent work continues.'
+$script:SpecKitRouting = 'Spec Kit routes every task that changes the project: absent infrastructure -> speckit-init, constitution; feature/behavior -> speckit-specify, clarify, plan, tasks, analyze, implement; bug -> diagnose then speckit-converge+implement on existing spec, full chain otherwise; resume/doubt -> speckit-converge. Each new request: dated delta/requirement IDs/acceptance, amend affected artifacts/skills/gates before dependent edits; independent work continues. Run full procedures. Owner: global-spec-kit-rules.md.'
 # Order 55 step 4a, verbatim. Routing is per SKILL, because an agent sees
 # skills, not plugins; and security work has one entry point.
 $script:SkillRoutingLines = @(
@@ -372,7 +373,7 @@ function Get-EvidenceTranscriptFallbackPath {
 
 # ============================ CLOSING HALF ==================================
 if ($closing) {
-    $enforcement = 'block'
+    $enforcement = 'advisory'
     if ($config.ContainsKey('SKILLS_SUMMARY_ENFORCEMENT')) {
         $raw = ([string]$config['SKILLS_SUMMARY_ENFORCEMENT']).Trim().ToLowerInvariant()
         if ($raw -eq 'block' -or $raw -eq 'advisory' -or $raw -eq 'off') { $enforcement = $raw }
@@ -507,12 +508,12 @@ if ($eventName -eq 'UserPromptSubmit') {
         }
 
         $dd = New-Object System.Collections.Generic.List[string]
-        [void]$dd.Add('SKILL POLICY CHECK (' + $client + ') - ::deep-debug capability routing. Activate by PHASE, never everything at once; skill identity is the exact name: in each installed SKILL.md (never a folder, plugin, marketplace, or category label). Inspect installed/loadable skills FIRST; never silently install/copy/refresh/overwrite/remove/enable a skill.')
-        [void]$dd.Add('- Goal/orchestration: write the fixed goal (every bug and every phase closed) into the task ledger first; ::multi-agent is a codeword dependency, not a skill; superpowers:dispatching-parallel-agents for independent discovery/debug workstreams; superpowers:subagent-driven-development for a prepared plan with substantially independent tasks. Flatten dependencies once, deduplicate, detect cycles - never recursive re-runs, never nested agent trees.')
-        [void]$dd.Add('- Understanding/planning: audit-context-building for medium/large/unfamiliar/architecture-heavy/security-heavy scope; Graphify only under its own policy; superpowers:brainstorming only for genuine behavior/design ambiguity; superpowers:writing-plans only when a complex repair lacks an executable plan.')
+        [void]$dd.Add('SKILL POLICY CHECK (' + $client + ') - ::deep-debug capability routing. Activate by PHASE, never everything at once. Identity: exact name: in each installed SKILL.md, never a folder, plugin, marketplace, or category label. Check loadability first; never silently install/copy/refresh/overwrite/remove/enable.')
+        [void]$dd.Add('- Goal/orchestration: write the fixed goal (every bug and every phase closed) into the task ledger first. ::multi-agent is a codeword dependency, not a skill. Independent discovery/debug -> superpowers:dispatching-parallel-agents; prepared independent tasks -> superpowers:subagent-driven-development. Flatten/dedupe/check cycles once; never recursive re-runs, never nested agent trees.')
+        [void]$dd.Add('- Understanding/planning: medium/large/unfamiliar/architecture/security-heavy -> audit-context-building; Graphify only under its own policy. superpowers:brainstorming only for genuine behavior/design ambiguity; superpowers:writing-plans only when a complex repair lacks an executable plan.')
         [void]$dd.Add('- Known bug: systematic-debugging, test-driven-development, verification-before-completion; runtime evidence -> CHOOSE debugging-code (DAP) OR debug-live (trusted DebugMCP/VS Code), not normally both for one question.')
         [void]$dd.Add('- Existing plan: executing-plans (only when a real plan exists), test-driven-development, requesting-code-review, verification-before-completion.')
-        [void]$dd.Add('- Security-sensitive: smallest applicable subset of differential-review, insecure-defaults, requesting-code-review, verification-before-completion, semgrep and/or codeql, sarif-parsing (when SARIF output exists), fp-check before treating automated findings as confirmed, variant-analysis after a proven root cause, supply-chain-risk-auditor (dependency/supply-chain scope), c-review (C/C++ only), rust-review (Rust only). "static-analysis" is a plugin/category LABEL, not an invokable skill, unless an installed SKILL.md declares that exact name:. Active security testing still requires ownership/authorization and matching scope.')
+        [void]$dd.Add('- Security-sensitive: enter security-audit; smallest applicable subset: differential-review, insecure-defaults, semgrep and/or codeql, sarif-parsing (when SARIF output exists), fp-check before treating automated findings as confirmed, variant-analysis after a proven root cause, supply-chain-risk-auditor for dependencies, c-review (C/C++ only), rust-review (Rust only). "static-analysis" is a plugin/category LABEL, not an invokable skill unless an installed SKILL.md declares that exact name:. Active security testing still requires ownership/authorization and matching scope.')
         [void]$dd.Add('- Test strengthening: property-based-testing only where a meaningful invariant exists (round trips, validators, state machines, path containment, idempotency, boundaries) - never manufacture low-value properties to claim skill use.')
         [void]$dd.Add('- Finalization: superpowers:using-git-worktrees only when authorized isolation materially reduces collision risk; after integration requesting-code-review + verification-before-completion; superpowers:finishing-a-development-branch only when work really occurred on an independent branch and all checks are green; THEN run ' + $ponytailRef + ' exactly ONCE - afterwards only safe accepted simplifications + targeted tests + final verification, never a second pass.')
         if ($notVisible.Count -gt 0) {
@@ -554,9 +555,9 @@ if ($eventName -eq 'UserPromptSubmit') {
 
     $lines = New-Object System.Collections.Generic.List[string]
     if ($index.Partial.Count -gt 0) { [void]$lines.Add('Skill discovery was PARTIAL (not the full installed scope): ' + (($index.Partial | Select-Object -Unique -First 8) -join '; ')) }
-    [void]$lines.Add('SKILL POLICY CHECK (' + $client + ') - skill use is MANDATORY (skill-policy: Core Principle), not a judgement call: run this check at task start and again whenever the work becomes a new kind of job. Every step a skill covers runs THROUGH that skill, never by hand because it looks simple; a matched library skill is COPIED into the project under the standing authorization (exact command below) and recorded in .ai/SKILLS.md; a feature request runs the mattpocock chain (grilling + domain-modeling first). Sources searched: project, global, plugin, and the shared library.')
+    [void]$lines.Add('SKILL POLICY CHECK (' + $client + '): skill use is MANDATORY; task start/job change -> installed/library relevance; covered steps run THROUGH exact skills. Sources: project/global/plugin/library. Library copies follow ' + $policyFile + ' authority, real folders + .ai/SKILLS.md record. Feature -> grilling + domain-modeling + Spec Kit.')
     if ($topInstalled.Count -gt 0) {
-        [void]$lines.Add('INSTALLED and matching this prompt - a name-match shortlist, not the full inventory. Invoke the relevant ones by the exact name shown (registered/enabled candidates; verify actual host exposure and resolved source before use) and follow the procedure in the SKILL.md named after the arrow:')
+        [void]$lines.Add('INSTALLED matches (name shortlist, not full inventory): verify host exposure/source, invoke exact key, follow linked SKILL.md:')
         foreach ($m in $topInstalled) {
             $where = ''
             if ($null -ne $m.PSObject.Properties['Path'] -and -not [string]::IsNullOrWhiteSpace([string]$m.Path)) { $where = ' -> ' + (Join-Path $m.Path 'SKILL.md') }
@@ -564,7 +565,7 @@ if ($eventName -eq 'UserPromptSubmit') {
         }
     }
     if ($topLibrary.Count -gt 0) {
-        [void]$lines.Add('IN THE LIBRARY but NOT installed - these match this prompt. Importing a skill is an AUTHORIZED operation under ' + $policyFile + ': ask the user first, then run the exact command, then record source/destination/date/reason in .ai/SKILLS.md. This hook never copies anything itself.')
+        [void]$lines.Add('IN THE LIBRARY but NOT installed - these match this prompt. Follow ' + $policyFile + ' copy authority, then record source/destination/date/reason in .ai/SKILLS.md. This hook never copies.')
         [void]$lines.Add('Destination for this project: ' + $projectSkillsDir)
         foreach ($m in $topLibrary) {
             [void]$lines.Add('- ' + $m.Name + '   ->   Copy-Item -LiteralPath "' + $m.Path + '" -Destination "' + $projectSkillsDir + '" -Recurse -Force')
@@ -585,7 +586,9 @@ if ($eventName -eq 'UserPromptSubmit') {
 
 # ---- SessionStart: compact routed inventory of all three installed sources --
 $lines = New-Object System.Collections.Generic.List[string]
-[void]$lines.Add('SKILL POLICY CHECK (' + $client + ') - skill use is MANDATORY (skill-policy: Core Principle): check at task start and at every change of job kind, then do each covered step THROUGH its skill. A relevant INSTALLED skill may be activated without asking; installing, copying, updating or removing one may not.')
+[void]$lines.Add('SKILL POLICY CHECK (' + $client + '): task start/job change -> minimal matching installed skills; covered steps run THROUGH them. Activation needs no extra approval; copy/install/update/removal follows ' + $policyFile + ' authority, not this reminder.')
+$agentRoots = if ($client -eq 'claude') { 'global/project .claude/agents + active installed_plugins.json declared/default roots' } else { 'this client''s supported native agent/plugin roots' }
+[void]$lines.Add('AGENT ROUTING: read global-agent-rules.md. Relevance-first discovery: current host roster + ' + $agentRoots + '; dedupe actual paths, not names/old cache versions. Read selected full body/tools/limits. Installed/exposed/invoked differ; missing/unreadable/malformed scope is UNVERIFIED, embedded templates are not native agents. Small tasks: zero agents; minimum independent stream otherwise, no PROACTIVELY swarm or full-body scan per event. This hook spawns nothing.')
 if ($skillLines.Count -gt 0) {
     [void]$lines.Add('Project + global skills (deduped by name:):')
     foreach ($sl in $skillLines) { [void]$lines.Add($sl) }
@@ -622,7 +625,7 @@ if ($hasRecord) {
     [void]$lines.Add('- Read .ai/SKILLS.md for the active-skill record; keep it updated (local-only, secret-free) when skills change.')
 }
 if ($hasLibrary) {
-    [void]$lines.Add('- Skill library: ' + $libraryDir + ' (' + $index.Library.Count + ' skills indexed). It is searched against each prompt; a match that is not installed is reported with the exact import command into ' + $projectSkillsDir + '. Importing is an authorized operation - ask first, never copy silently.')
+    [void]$lines.Add('- Skill library: ' + $libraryDir + ' (' + $index.Library.Count + ' skills indexed). It is searched against each prompt; a match that is not installed is reported with the exact import command into ' + $projectSkillsDir + '. Copy only under current policy authority; this hook grants none.')
     [void]$lines.Add('- ' + $script:ImportGuidance)
 }
 [void]$lines.Add('- Select only the minimal relevant set (1-5). Follows ' + $policyFile + '.')

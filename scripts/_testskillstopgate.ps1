@@ -12,7 +12,7 @@
     Write-Host '--- Skills-Check: substantive work is accountable, a read-only session is not ---' -ForegroundColor Cyan
     $wkProj = New-Proj 'StopWork'
     New-Item -ItemType Directory -Path (Join-Path $wkProj '.claude\skills\gate-skill') -Force | Out-Null
-    $wkHook = New-ConfiguredSkillsHookCopy -EnvOverrides @{ SKILLS_DIR = (Join-Path $Work 'no-such-library') }
+    $wkHook = New-ConfiguredSkillsHookCopy -EnvOverrides @{ SKILLS_DIR = (Join-Path $Work 'no-such-library'); SKILLS_SUMMARY_ENFORCEMENT = 'block' }
     # A file-mutating tool call with no closing line. Before this gate existed the
     # cheapest route past the policy was to invoke no skill at all: the session
     # was then merely advised, however much it changed.
@@ -21,7 +21,7 @@
     Check 'a session that CHANGED FILES and reported no skill -> a real block decision' (
         $r.Out -match '"decision"\s*:\s*"block"' -and $r.Out -match 'changed files') $r.Out
     Check 'the block offers the honest escape, not just the compliant one' (
-        $r.Out -match 'Skills used: none' -and $r.Out -match 'Both are valid answers') $r.Out
+        $r.Out -match 'Skills used: none' -and $r.Out -match 'Either is valid; omission is not') $r.Out
     $r2 = Fire -HookPath $wkHook -Cwd $wkProj -RawStdin (New-StopStdin -Cwd $wkProj -Transcript $tWrote -SessionId 'sk-w1')
     Check 'the SAME unchanged failure does not block twice in one session' ($r2.Exit -eq 0 -and $r2.Out -eq '') $r2.Out
     $tWroteOk = New-ToolTranscript 'sk-wrote-ok' 'Write' "Done.`nSkills used: none - a docs-only edit"
@@ -43,7 +43,7 @@
     $slSkill = Join-Path $slProj '.claude\skills\telemetry-pipeline'
     New-Item -ItemType Directory -Path $slSkill -Force | Out-Null
     Write-Utf8 (Join-Path $slSkill 'SKILL.md') "---`nname: telemetry-pipeline`ndescription: test`n---`nbody"
-    $slHook = New-ConfiguredSkillsHookCopy -EnvOverrides @{ SKILLS_DIR = (Join-Path $Work 'no-such-library') }
+    $slHook = New-ConfiguredSkillsHookCopy -EnvOverrides @{ SKILLS_DIR = (Join-Path $Work 'no-such-library'); SKILLS_SUMMARY_ENFORCEMENT = 'block' }
     $rp = Fire -HookPath $slHook -Cwd $slProj -RawStdin (New-PromptStdin -Cwd $slProj -EventName 'UserPromptSubmit' -Prompt 'rebuild the telemetry pipeline ingest path' -SessionId 'sl-1')
     Check 'the prompt half shortlists the installed skill it matched' ($rp.Out -match 'telemetry-pipeline') $rp.Out
     # The line is PRESENT and still wrong: it claims nothing applied while an
@@ -187,7 +187,7 @@
     Write-Host '--- Skills-Check: the pre-task instruction teaches the line the gate accepts ---' -ForegroundColor Cyan
     $rpTaught = Fire -HookPath $slHook -Cwd $slProj -RawStdin (New-PromptStdin -Cwd $slProj -EventName 'UserPromptSubmit' -Prompt 'rebuild the telemetry pipeline ingest path' -SessionId 'sl-taught')
     Check 'the instruction beside the shortlist says the reason must NAME the shortlisted skills' (
-        $rpTaught.Out -match 'telemetry-pipeline' -and $rpTaught.Out -match 'must NAME them') $rpTaught.Out
+        $rpTaught.Out -match 'telemetry-pipeline' -and $rpTaught.Out -match 'naming each unused shortlisted installed skill') $rpTaught.Out
     # ONE turn, and the line is exactly what the instruction above asks for -
     # no more than an agent reading it could have known to write.
     $tTaught = New-ToolTranscript 'sl-taught' 'Write' "Done.`nSkills used: none - telemetry-pipeline does not cover a docs-only edit"

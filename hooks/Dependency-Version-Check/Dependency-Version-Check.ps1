@@ -305,7 +305,7 @@ if ($closing) {
         [void]$closeLines.Add('Of those, ' + $urgent.Count + ' are end-of-life or a clearly old major version - those two classes need a stated reason to leave in place, not silence.')
     }
     [void]$closeLines.Add('Answer each one in the final summary on its own line: ' + $script:DependencyDecisionLine)
-    [void]$closeLines.Add('An unanswered finding is an UNREVIEWED RISK, not an accepted one. Update each finding now to the latest stable release, or to the nearest version below it that does not break (record the breaking version and the failure); a globally inherited package ([global install]) is updated in the global install. Only a recorded reason (intentional pin, advisory on the newer release, unsupported runtime, licence change, OS-managed tool) leaves one in place. This hook never upgrades anything and never blocks.')
+    [void]$closeLines.Add('Unanswered = UNREVIEWED RISK. Update latest stable, else newest nonbreaking (record failed version/cause); [global install] updates globally. Retain only with reason: pin/advisory/runtime/licence/OS-managed. Hook never upgrades or blocks.')
     $null = Write-HookResult -EventName $eventName -Kind 'advisory' -Message ($closeLines.ToArray() -join "`n")
     exit 0
 }
@@ -710,12 +710,12 @@ if ($incomplete.Count -gt 0) {
 # because a report with no stated obligation is the one that gets skimmed and dropped.
 if ($reportLines.Count -gt 0) {
     [void]$reportLines.Add('WHAT TO DO WITH THIS - every finding above needs a DECISION, not agreement:')
-    [void]$reportLines.Add('1. Verify before changing anything: release notes/changelog, breaking changes, runtime and peer constraints, security advisories. Prefer the latest STABLE compatible version - never a prerelease/beta/RC/nightly/canary by default.')
-    [void]$reportLines.Add('2. Decide per finding: update (then update the lockfile and run the project''s real checks), keep (the current version is correct here), or defer (name what blocks it). "Keep" and "defer" are legitimate answers; silence is not.')
-    [void]$reportLines.Add('3. Update in small verified batches with validation after each - never one large uncontrolled bump, and never a major version without a breaking-change review.')
-    [void]$reportLines.Add('4. An [EOL] entry or a clearly old major needs an explicit stated reason to leave in place.')
-    [void]$reportLines.Add('5. Report the outcome in the final summary on its own line: ' + $script:DependencyDecisionLine)
-    [void]$reportLines.Add('This hook never edits a manifest, never runs an upgrade and never blocks completion - whether to upgrade is the user''s call. What it does require is that the call be made and stated rather than left unread.')
+    [void]$reportLines.Add('1. Verify release notes/changelog, breaking changes, runtime/peers and advisories; prefer the latest STABLE compatible version, not prerelease/beta/RC/nightly/canary.')
+    [void]$reportLines.Add('2. Decide each: update (then update the lockfile and run real checks), keep (correct here), or defer (name blocker). Keep/defer are legitimate; silence is not.')
+    [void]$reportLines.Add('3. Use small verified batches, validate each; review breaking changes before any major bump.')
+    [void]$reportLines.Add('4. [EOL]/clearly old major: explicit stated reason to leave in place.')
+    [void]$reportLines.Add('5. Final summary, own line: ' + $script:DependencyDecisionLine)
+    [void]$reportLines.Add('User decides; hook never edits a manifest, never runs an upgrade and never blocks completion. State the decision.')
 }
 $report = $reportLines.ToArray() -join "`n"
 Save-CachedState -Report $report

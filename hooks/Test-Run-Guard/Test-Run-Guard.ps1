@@ -456,11 +456,10 @@ if ($eventName -eq 'PreToolUse') {
     # E-04: one concise line naming the deep-debug/test-policy requirements the
     # replacement already enforces, so the model can verify instead of re-derive.
     # Guidance only - the command guard above is unchanged.
-    $ddNote = ' CI first: a suite that GitHub CI runs is not run here - push and read the CI result for that SHA instead; use this local guarded command only for a light single-test run, or for the heavy pass when a live gh query has shown CI cannot execute it.' +
-    ' Deep-debug/test-policy bounds this replacement already covers: bounded runner, outer wall + idle' +
-    ' ceilings, one shared worker ceiling, process-tree cleanup, real exit-code propagation, no ad hoc sleeps.' +
-    ' Where the framework documents its OWN native timeout flag, pass that too - never a guessed one.' +
-    ' Cadence: if code is still being written, defer this suite to the single heavy pass after ALL edits and use light checks until then; run the replacement now only if this is that final pass, the run itself is the work (::test-audit timing, a suite-only failure), or the user asked for it. Every test that will run must already be optimized (global-test-rules.md: Test Optimization Before Any Run; it loads on demand, so read it in full before this work), and the guarded runner is the only owner this run may have - never wrap it in a background job.'
+    $ddNote = ' CI first: one final manual exact-SHA batch (private too), no local duplicate. This local command is for a next-edit-dependent light check or live-proven CI block.' +
+    ' Deep-debug/test-policy bounds: bounded runner, outer wall + idle ceilings, shared worker ceiling,' +
+    ' process-tree cleanup, real exit-code propagation, no ad hoc sleeps. Add the documented native timeout flag; never a guessed one.' +
+    ' Cadence: while writing, light checks; defer suites until ALL edits finish. Run now only for the final pass, run-as-task (::test-audit timing, a suite-only failure), or explicit user request. Optimize every test BEFORE running; read global-test-rules.md IN FULL, especially Test Optimization Before Any Run. The guarded runner is the only owner; never wrap it in a background job.'
 
     # E-04: maintained-textual-output advisory. Fires ONLY when the raw command
     # VISIBLY writes output to a file (a standalone top-level '>'/'>>' token with

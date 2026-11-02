@@ -176,21 +176,18 @@ try {
     $parsed = $null
     try { $parsed = $r.Out | ConvertFrom-Json } catch { }
     $reasonE7 = if ($null -ne $parsed) { [string]$parsed.reason } else { '' }
-    Check 'guidance names the deep-debug DURABLE-value set (root cause/fixed path/regression fixture/commands)' (
-        $reasonE7 -like '*debugging/::deep-debug task*' -and $reasonE7 -like '*confirmed root cause*' -and
-        $reasonE7 -like '*fixed path*' -and $reasonE7 -like '*permanent regression test/fixture*' -and
-        $reasonE7 -like '*verified commands and their outcomes*') $reasonE7
-    Check 'guidance covers blockers/risk, timing facts, Ponytail accept/reject, and the BLOCKED next step' (
-        $reasonE7 -like '*unresolved blockers/remaining risk*' -and $reasonE7 -like '*stable timing/resource facts*' -and
-        $reasonE7 -like '*Ponytail simplifications accepted/rejected*' -and $reasonE7 -like '*exact next step when the workflow ended BLOCKED*') $reasonE7
-    Check 'guidance forbids the never-store list (prompts/logs/dumps/source/secrets/hypotheses/policy text)' (
-        $reasonE7 -like '*Never store raw prompts, raw logs, scan dumps, full source, secrets, temporary hypotheses, routine passing output, or duplicated global policy text*') $reasonE7
-    Check 'guidance requires UTF-8 for new/modified .ai files and defers file validation to Utf8-Encoding-Check' (
-        $reasonE7 -like '*UTF-8*' -and $reasonE7 -like '*Utf8-Encoding-Check validates the files via its own state*' -and
-        $reasonE7 -like '*nothing is rescanned here*') $reasonE7
-    Check 'the pre-existing (1)(2)(3) ordering guidance is preserved unchanged' (
-        $reasonE7 -like '*update .ai/memory.md first*' -and $reasonE7 -like '*ONLY the specialized files that gained reusable value*' -and
-        $reasonE7 -like '*never duplicate a lesson across files*') $reasonE7
+    Check 'guidance preserves debugging cause/path/regression/commands' (
+        $reasonE7 -match 'Debugging/::deep-debug' -and $reasonE7 -match 'confirmed root cause/fixed path/permanent regression fixture' -and
+        $reasonE7 -match 'verified commands/outcomes') $reasonE7
+    Check 'guidance preserves risk/timing/Ponytail and next action' (
+        $reasonE7 -match 'blockers/risks/next action' -and $reasonE7 -match 'stable timing/resources' -and
+        $reasonE7 -match 'Ponytail accepted/rejected') $reasonE7
+    Check 'guidance forbids sensitive and disposable memory content' (
+        $reasonE7 -match 'no secrets/raw prompts/logs/scans/source/hypotheses/routine passes/global-policy copies') $reasonE7
+    Check 'guidance retains encoding owner without another scan' (
+        $reasonE7 -match 'Strict UTF-8' -and $reasonE7 -match 'Utf8-Encoding-Check validates; no rescan here') $reasonE7
+    Check 'current memory policy updates specialized value before router' (
+        $reasonE7 -match 'update relevant specialized files, memory.md router LAST' -and $reasonE7 -match 'deduplicate with links') $reasonE7
 
     # =====================================================================
     Write-Host '--- E-13: static safety greps ---' -ForegroundColor Cyan

@@ -1,25 +1,12 @@
 # Feature-Request-Check - a feature request runs the mattpocock chain.
 #
-# ROLE: ADVISORY on UserPromptSubmit, GATE (blocks once) on Stop/SubagentStop
-# (global-hook-rules.md SS Hook Roles). Enforces the Skill Policy's
-# "Installed Skill Families -> Feature requests": grilling + domain-modeling
-# -> spec -> tickets -> implement, rather than jumping straight to code.
+# ROLE: detector/advisor on UserPromptSubmit/Stop/SubagentStop.
+# Missing interview evidence is reported, never forced continuation.
+# Skill Policy routes grilling + domain-modeling -> Spec Kit -> implement.
 #
-# WHY IT MAY BLOCK WHERE THE OTHER REMINDER HOOKS DO NOT: the cost is
-# asymmetric and late. A skipped reminder about docs is a paragraph to write
-# afterwards; a feature built without the grilling pass is a feature built to
-# the wrong requirements, and that is only discovered once it is finished.
-#
-# WHAT IT WILL NOT DO, on purpose:
-# - It never blocks without EVIDENCE. No transcript (Codex, an unknown client)
-#   means no claim in either direction: silent, not an all-clear.
-# - A partial transcript read never produces a block - it saw part of the
-#   session and cannot know what the rest holds.
-# - It blocks ONCE per set of feature prompts. The same unchanged set passes
-#   silently on the next Stop; a NEW feature prompt re-arms it. A gate that
-#   fires forever teaches people to work around it.
-# - "This was not a feature" is a valid answer. The block text says so, and one
-#   line of reasoning clears it.
+# Missing/partial transcripts stay silent, not all-clear. Complete evidence
+# produces one passive reminder per prompt set; a new set re-arms it.
+# "This was not a feature" plus a reason remains a valid answer.
 #
 # DETECTION IS DELIBERATELY CONSERVATIVE. A lone common verb never triggers:
 # "add" needs an object within 60 characters, and any bug vocabulary in the
@@ -70,7 +57,7 @@ $chainNote = @(
     '2. If docs/agents/issue-tracker.md is missing, run the setup procedure for those skills first.',
     '3. Then Spec Kit, in order: speckit-specify, speckit-clarify, speckit-plan, speckit-tasks, speckit-analyze, speckit-implement.',
     '4. Inside speckit-implement: tdd at the agreed seams, then code-review, then commit.',
-    'Arriving mid-task? It is a request delta: record it with requirement IDs and acceptance criteria, amend the active feature''s spec/plan/tasks (independent scope gets its own feature), refresh the skill selection and rerun the affected gates before resuming. An earlier Spec Kit run covers only what it recorded. Preserve original request order and stable IDs, resume earliest actionable unfinished work and record dependency exceptions; reconcile every item at closure. Another project requires exact permission or an English Markdown owner handoff, never implicit source/staging/runner/provider repair. Read global-project-lifecycle-rules.md.',
+    'Mid-task request delta: dated requirement IDs + acceptance criteria; amend active spec/plan/tasks (independent scope -> own feature), refresh skills/gates before dependent edits. Preserve original request order and stable IDs; resume earliest actionable unfinished work, record dependency exceptions, reconcile all at closure. Other project: exact permission or English Markdown owner handoff; never implicit source/staging/runner/provider repair. Read global-project-lifecycle-rules.md.',
     'Every question any step raises goes to the user - never a plausible default. Only the work that depends on the answer waits; independent work continues.'
 ) -join "`n"
 
@@ -168,14 +155,13 @@ if (-not $ranDomainModeling) { [void]$missing.Add('"domain-modeling"') }
 $missingNames = ($missing.ToArray() -join ' and ')
 
 $blockMessage = @(
-    ('FEATURE REQUEST CHECK - a feature request was detected in this session (first match: "' + $firstPrompt + '") but the mattpocock chain did not run: the transcript holds no Skill call to ' + $missingNames + '.'),
-    'Either run it now IN ORDER - grilling + domain-modeling first, then Spec Kit in order: speckit-specify, clarify, plan, tasks, analyze, implement (Skill tool, exact name:, e.g. mattpocock-skills:grilling) -',
-    'or state in one line why this was not a feature, and finish. Both clear this.'
+    ('FEATURE REQUEST CHECK: first match "' + $firstPrompt + '"; no Skill call to ' + $missingNames + ' found in the complete transcript.'),
+    'Advisory: run it now IN ORDER: grilling + domain-modeling, then Spec Kit in order: speckit-specify, clarify, plan, tasks, analyze, implement (exact installed keys).',
+    'Or explain why this was not a feature. No forced continuation.'
 ) -join "`n"
 
-# Record the block so THIS hook's own re-entry is recognised; another
-# gate's block must not mute it, and its own must not repeat.
-$emit = Write-StopBlockResult -HookInput $hookInput -HookName 'Feature-Request-Check' -FindingFingerprint $fingerprint -EventName $eventName -Message $blockMessage
+# The prompt-set fingerprint above suppresses repeats without forcing continuation.
+$emit = Write-HookResult -EventName $eventName -Kind 'advisory' -Message $blockMessage
 exit $emit.ExitCode
 }
 catch { if ($null -ne $gateReceipt) { $gateReceipt.Crashed = $true }; throw }

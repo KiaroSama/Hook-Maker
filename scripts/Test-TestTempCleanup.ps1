@@ -172,9 +172,9 @@ function Get-CandidateLinePattern {
 # them, so their presence is the semantic contract (not the JSON envelope).
 $InstructionFragments = @(
     'Inspect every candidate before deletion',
-    'Do not rely on the directory name alone',
-    'Never delete tracked, staged, linked, diagnostic, ambiguous, protected, or user-owned data',
-    'Delete only project-local residue that you have independently confirmed is disposable',
+    'name/age/ignored status proves no ownership',
+    'Never delete tracked, staged, linked, diagnostic, ambiguous, protected, shared/active or user-owned data',
+    'permanently delete only exact project-local residue independently proven owned/disposable, NOT Recycle Bin',
     'this hook performs no deletion',
     'Leave uncertain candidates intact and report them'
 )

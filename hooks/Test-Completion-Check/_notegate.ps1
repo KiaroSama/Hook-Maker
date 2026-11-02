@@ -28,9 +28,8 @@ if ($script:pendingNotes.Count -gt 0 -or $script:pendingOverflow) {
         })
         Write-Finding -Blocking $true -Lines (@(
             'TEST COMPLETION CHECK: a durable .ai/ note is still owed because ' + $owed[0].Reason + '. ' + $owed.Count + ' evidenced obligation(s) remain (at most five shown).',
-            'Write it into .ai/BUGS.md, .ai/TESTING_NOTES.md, .ai/COMMANDS.md and/or .ai/LESSON.md, whichever fits. It must state WHY the problem was not detected earlier and the verified prevention/recovery guard that now catches it - concretely enough that a later session can act on it.',
-            'Tag it with a line `' + (Get-IncidentTag $owed[0].Key) + '` (exactly) so THIS specific incident is cleared; a note without this tag, or a bare tag with no real content, will not clear it, and each other owed incident needs its own tagged note.',
-            'A bare acknowledgement ("done", "n/a", "fixed") does not satisfy this and will not clear it; the check looks for the tag plus real added content in those files.') + $summary)
+            'Add an actionable note to matching .ai/BUGS.md, .ai/TESTING_NOTES.md, .ai/COMMANDS.md and/or .ai/LESSON.md: why detection missed it + verified prevention/recovery guard.',
+            'Exact tag line: `' + (Get-IncidentTag $owed[0].Key) + '`. Each incident needs its own tag + substantive added content; an untagged note, bare tag or bare acknowledgement ("done", "n/a", "fixed") cannot clear it.') + $summary)
     }
     # Unknown-only state is not completion evidence. Fall through to the
     # independent deep-debug/current-evidence gates and diagnostic tail.

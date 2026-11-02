@@ -15,39 +15,36 @@
     # CI first comes BEFORE the local command is handed over: a heavy local run is
     # the exception now, so the refusal says so rather than implying this machine.
     Check 'the deny opens with CI first: a suite CI runs is not run here' (
-        $msgDd -match 'CI first: a suite that GitHub CI runs is not run here' -and
-        $msgDd -match 'push and read the CI result for that SHA instead') $msgDd
+        $msgDd -match 'CI first: one final manual exact-SHA batch' -and $msgDd -match 'no local duplicate') $msgDd
     Check 'the deny says what the LOCAL guarded command is still for' (
-        $msgDd -match 'only for a light single-test run' -and
-        $msgDd -match 'a live gh query has shown CI cannot execute it') $msgDd
+        $msgDd -match 'next-edit-dependent light check' -and $msgDd -match 'live-proven CI block') $msgDd
     Check 'CI first is stated BEFORE the deep-debug bounds, not appended after them' (
-        $msgDd.IndexOf('CI first: a suite that GitHub CI runs') -ge 0 -and
-        $msgDd.IndexOf('CI first: a suite that GitHub CI runs') -lt
+        $msgDd.IndexOf('CI first: one final manual exact-SHA batch') -ge 0 -and
+        $msgDd.IndexOf('CI first: one final manual exact-SHA batch') -lt
         $msgDd.IndexOf('Deep-debug/test-policy bounds')) $msgDd
     Check 'the deny names the deep-debug bounds the replacement enforces' (
         $msgDd -match 'Deep-debug/test-policy bounds' -and $msgDd -match 'outer wall \+ idle' -and
         $msgDd -match 'shared worker ceiling' -and $msgDd -match 'process-tree cleanup' -and
         $msgDd -match 'exit-code propagation' -and $msgDd -match 'no ad hoc sleeps') $msgDd
     Check 'the deny tells the model to use only a documented native timeout flag, never a guessed one' (
-        $msgDd -match 'documents its OWN native timeout flag' -and $msgDd -match 'never a guessed one') $msgDd
+        $msgDd -match 'documented native timeout flag' -and $msgDd -match 'never a guessed one') $msgDd
     # E-04 cadence: the note states WHEN the replacement belongs, so a refusal
     # mid-implementation does not turn into a guarded run after every edit.
     Check 'the deny states the verification cadence (defer to the single heavy pass, light checks until then)' (
-        $msgDd -match 'Cadence: if code is still being written' -and
-        $msgDd -match 'defer this suite to the single heavy pass after ALL edits' -and
-        $msgDd -match 'use light checks until then') $msgDd
+        $msgDd -match 'Cadence: while writing, light checks' -and
+        $msgDd -match 'defer suites until ALL edits finish') $msgDd
     Check 'the cadence sentence names the three exceptions that justify running now' (
-        $msgDd -match 'only if this is that final pass' -and
+        $msgDd -match 'Run now only for the final pass' -and
         $msgDd -match '::test-audit timing, a suite-only failure' -and
-        $msgDd -match 'the user asked for it') $msgDd
+        $msgDd -match 'explicit user request') $msgDd
 
     # The same note carries the other two preconditions the rules put on a run:
     # it must already be optimized, and the guarded runner must be its only owner.
     Check 'the deny requires the suite to be optimized BEFORE it may run' (
-        $msgDd -match 'Every test that will run must already be optimized' -and
-        $msgDd -match 'Test Optimization Before Any Run' -and $msgDd -match 'global-test-rules\.md: .*read it in full before this work') $msgDd
+        $msgDd -match 'Optimize every test BEFORE running' -and
+        $msgDd -match 'Test Optimization Before Any Run' -and $msgDd -match 'read global-test-rules\.md IN FULL') $msgDd
     Check 'the deny names the guarded runner as the only permitted owner (no background job)' (
-        $msgDd -match 'the guarded runner is the only owner this run may have' -and
+        $msgDd -match 'The guarded runner is the only owner' -and
         $msgDd -match 'never wrap it in a background job') $msgDd
     # The cadence text is GUIDANCE on the note: it never reaches the command.
     $replDd = Get-Replacement $msgDd

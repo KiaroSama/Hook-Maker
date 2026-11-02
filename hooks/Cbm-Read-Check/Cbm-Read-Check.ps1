@@ -63,10 +63,8 @@ if ($eventName -eq 'UserPromptSubmit') {
 
 if ($indexed) {
     $note = @(
-        'CBM READ CHECK - this project is indexed in Codebase Memory MCP. For any codebase understanding (architecture, "where is X used", callers, impact, refactor scope) query the graph BEFORE browsing files:',
-        '- get_architecture for orientation, search_graph to find symbols, trace_path for callers/callees, get_code_snippet for exact source, detect_changes for blast radius.',
-        '- Coverage is best-effort, never proof: check_index_coverage every path you cite, and confirm important findings in the source before acting.',
-        '- Isolated edits, docs, config, or a small local fix need no query - not querying is a fine and expected outcome.'
+        'CBM READ CHECK: indexed. Architecture/usage/callers/impact/refactor -> query the graph BEFORE browsing: get_architecture, search_graph, trace_path, get_code_snippet, detect_changes.',
+        'Best-effort coverage: check_index_coverage for cited paths; confirm findings in source. Isolated edits/docs/config/small fixes need no query.'
     ) -join "`n"
 }
 else {
@@ -84,11 +82,11 @@ else {
         'Then query the graph before browsing files: get_architecture, search_graph, trace_path, get_code_snippet.',
         'If indexing refuses, diagnose the specific cause using global-mcp-windows-cmm.md (Windows CMM installation and correct usage) - it loads on demand, so read it in full before this work:',
         '- Outside the allowed root / absent approval: verify the selected service environment and exact project root. Enroll only a root the user authorized; a hook reminder never authorizes wider access.',
-        '- Approved but still sensitive on 0.10.8: approval equality is separator-sensitive. Compare backslash and forward-slash spellings and the approval marker. Preserve every grant; add only the equivalent spelling of the same approved root, with a backup, concurrent-change detection and atomic publication. Do not move project sources or use parent grants/junction escapes.',
+        '- Approved but sensitive: version-specific separator-sensitive equality/marker; verify current Windows CMM owner. Authorized equivalent spelling only, preserve grants + backup/concurrent-check/atomic write; no parent grants/source moves/junction bypass.',
         '- OS/sandbox access denial: a shell refusal does not prove the connected MCP service is broken. Use the connected tool or authorized escalation; do not grant sandbox identities write access to the private service.',
         '- cache-private / untrusted identity / secure-coordination failure: inspect the exact path and SID in the newest worker log, including cache/runtime ancestor ACLs. Keep the private service outside writable workspaces; repeatedly tightening a workspace ACL or weakening security checks is not a repair.',
         $manualAdvice,
-        'CMM 0.10.8 reads grants during authorization; approval alone does not require a restart. Reload a client only when evidence shows obsolete executable/environment settings or a dead connection. Confirm recovery with an actual tool result, index_status and a scoped query; parser warnings still require source inspection.'
+        'Approval alone does not require a restart; verify current service behavior. Reload a client only when evidence shows obsolete executable/environment settings or a dead connection. Confirm recovery with an actual tool result, index_status and a scoped query; parser warnings still require source inspection.'
     ) -join "`n"
 }
 

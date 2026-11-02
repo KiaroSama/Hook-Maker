@@ -89,7 +89,7 @@ catch { }
 $message = @(
     ('CBM UPDATE CHECK - code changed after the Codebase Memory index was last written (index: ' +
         $dbUtc.ToString('yyyy-MM-dd HH:mm:ss') + ' UTC, newest work: ' + $workUtc.ToString('yyyy-MM-dd HH:mm:ss') + ' UTC).'),
-    'The background watcher normally keeps it fresh, so a gap this size means it is lagging or this project was never registered with it.',
+    'Watcher freshness is unverified; lag or missing registration possible.',
     ('Before relying on any graph answer, call index_status; if it does not reflect the change, run index_repository(repo_path=' + ($cwd | ConvertTo-Json -Compress) + ', mode="moderate", persistence=true).'),
     'Judge by STRUCTURE, not by file count: a changed symbol, export, import, call/inheritance edge or entry point matters; docs, formatting and generated output do not - skip it then.'
 ) -join "`n"

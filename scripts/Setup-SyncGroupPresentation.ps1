@@ -224,7 +224,7 @@ $script:HookMeta = @{
     # landed on a second line. Test-Wizard.ps1 pins the exact concise wording,
     # the absence of an embedded newline, and the single-line budget.
     # Menu 9-11, inserted above the documentation and graph hooks. The first
-    # is a GATE at Stop (the only shipped hook that blocks on a skill chain);
+    # is advisory at Stop (missing interview evidence never forces continuation);
     # the two Cbm-* hooks mirror the Graph-* pair for the Codebase Memory
     # index. Both pairs stay live: every project carries BOTH graphs, and the
     # Cbm-* pair answers for code structure while the Graph-* pair answers for
@@ -240,8 +240,7 @@ $script:HookMeta = @{
     'Graph-Update-Check'               = @{ Order = 14; When = 'post'; Text = 'suggests graphify update when the graph is stale' }
     'Large-File-Check'                 = @{ Order = 15; When = 'both'; Text = 'small-files policy + oversized-file scan' }
     # 'both', not 'pre': these three now VERIFY at Stop as well as remind at
-    # the start, and two of them block. A menu tag that still said pre-task
-    # would promise a hook that cannot refuse anything.
+    # the start. Closing findings default to advisory; explicit block settings remain.
     'Mcp-Usage-Check'                  = @{ Order = 16; When = 'both'; Text = 'MCP and research-first reminders, and an "MCP used:" line at the end'; Events = @('SessionStart', 'UserPromptSubmit', 'Stop', 'SubagentStop'); Timeout = 10 }
     'Rules-Check'                      = @{ Order = 17; When = 'both'; Text = 'routes rules and language choices; confirms rules at the end'; Events = @('SessionStart', 'UserPromptSubmit', 'Stop', 'SubagentStop'); Timeout = 15 }
     # Skills-Check's real recommended EVENTS are SessionStart,UserPromptSubmit,Stop
@@ -254,7 +253,7 @@ $script:HookMeta = @{
     # Native checks share index inventory and emit only fixed real-phase progress.
     'Ignore-Rules-Check'               = @{ Order = 20; When = 'both'; Text = 'auto-fixes required local/private gitignore rules before and after tasks' }
     'Dependency-Version-Check'         = @{ Order = 21; When = 'both'; Text = 'flags outdated dependencies; requires a stated decision'; Events = @('SessionStart', 'UserPromptSubmit', 'Stop', 'SubagentStop') }
-    'Test-Temp-Cleanup'                = @{ Order = 22; When = 'both'; Text = 'cleans safe test cache/temp residue; keeps diagnostics' }
+    'Test-Temp-Cleanup'                = @{ Order = 22; When = 'both'; Text = 'reports test residue for review; never deletes files' }
     # The three-stage test-health hooks (24.txt). Events/Timeout are the
     # CANONICAL per-hook values - Get-HookRecommendedEvents and the install call
     # read them from here, so name/order/timing/events/timeout cannot drift into
