@@ -216,8 +216,8 @@ try {
     $r = Fire -HookPath $hc6.Script -Cwd $proj6 -EventName 'Stop' -LocalAppData $hc6.LocalAppData
     $msg6 = Get-Advisory $r.Out
     Check '9. 801 lines is reported' ($msg6 -match 'a\.py \(801 lines\)') $msg6
-    Check '10. an already-oversized file is advisory: it blocks nothing and mandates no split' ($msg6 -match '(?i)this is advisory and nothing here blocks' -and $msg6 -match '(?i)the ceiling binds what you WRITE') $msg6
-    Check '10b. the report still defers the split decision to a real responsibility boundary' ($msg6 -match '(?i)Split by a real responsibility, cohesive module, layer or public boundary') $msg6
+    Check '10. an already-oversized file is advisory: it blocks nothing and mandates no split' ($msg6 -match 'advisory only' -and $msg6 -match 'gate applies only to task-grown overflow' -and $r.Out -notmatch '"decision"') $msg6
+    Check '10b. the report still defers the split decision to a real responsibility boundary' ($msg6 -match 'extract a real responsibility/module/layer/public boundary') $msg6
 
     $hc7 = New-IsolatedHookCopy
     $proj7 = New-Proj 'ClearlyLarger'

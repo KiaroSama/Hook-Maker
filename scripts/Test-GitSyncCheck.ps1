@@ -124,7 +124,7 @@ try {
     & git -C $ahead commit -q -m 'task change'
     $r = Fire -Cwd $ahead
     Check 'ahead repository is reported' ($r.Out -match 'AHEAD of origin/main') $r.Out
-    Check 'ahead repository instructs pushing now without waiting for another request' ($r.Out -match 'push the current branch now' -and $r.Out -match 'instead of waiting for another user request') $r.Out
+    Check 'ahead repository instructs one verified authorized push' ($r.Out -match 'When verified and authorized' -and $r.Out -match 'one final push') $r.Out
 
     # =====================================================================
     Write-Host '--- behind repository: safe inspection/fast-forward, not blind merge ---' -ForegroundColor Cyan
@@ -249,7 +249,7 @@ try {
     $ps5 = New-PushedRepo 'ps5'
     [System.IO.File]::WriteAllText((Join-Path $ps5 'new.txt'), 'uncommitted', (New-Object System.Text.UTF8Encoding $false))
     $r = Fire -Cwd $ps5 -Exe 'powershell.exe'
-    Check 'Windows PowerShell 5.1: dirty repo blocks with the mandatory instruction' ($r.Exit -eq 0 -and $r.Out -match '"decision":"block"' -and $r.Out -match 'instead of waiting for another user request') $r.Err
+    Check 'Windows PowerShell 5.1: dirty repo blocks with the mandatory instruction' ($r.Exit -eq 0 -and $r.Out -match '"decision":"block"' -and $r.Out -match 'When verified and authorized') $r.Err
 
     Write-Host '--- Windows PowerShell 5.1: HM-08 task-scoped worktree path ---' -ForegroundColor Cyan
     $ps5wt = New-PushedRepo 'ps5-wt'
@@ -491,8 +491,8 @@ try {
         $rV1.Out -match 'uncommitted change' -and $rV1.Out -match 'staged, unstaged, and/or untracked') $rV1.Out
     # (5) unreconciled subagent work - the operational instruction covers it.
     Check 'E-08(5): the instruction covers unreconciled subagent work explicitly' (
-        $rV1.Out -match 'Work produced by a subagent during this task is task-scoped' -and
-        $rV1.Out -match 'never leave unreconciled subagent work behind') $rV1.Out
+        $rV1.Out -match 'Reconcile task/subagent work before closing' -and
+        $rV1.Out -match 'Preserve unrelated/unverified/secret/protected files') $rV1.Out
     # (2)+(7) unpushed commits / local-remote final SHA mismatch.
     $vocab2 = New-PushedRepo 'vocab-ahead'
     [System.IO.File]::WriteAllText((Join-Path $vocab2 'f.txt'), 'v2', (New-Object System.Text.UTF8Encoding $false))

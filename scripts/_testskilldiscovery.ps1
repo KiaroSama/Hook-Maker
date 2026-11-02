@@ -224,7 +224,7 @@ function Invoke-SkillSurfaceRegression {
     Check 'each shortlisted skill names its SKILL.md procedure location' ($ctx -match ('alpha:alpha-one \[plugin\] -> ' + [regex]::Escape((Join-Path $sdAlpha 'skills\one\SKILL.md')))) $ctx
     Check 'an explicit-only skill is never shortlisted' ($ctx -notmatch 'alpha-three') $ctx
     Check 'a skill of a disabled plugin is never shortlisted' ($ctx -notmatch 'dormant-widget') $ctx
-    Check 'the shortlist says it is not the full inventory' ($ctx -match 'not the full inventory') $ctx
+    Check 'the shortlist says it is not the full inventory' ($ctx -match 'not full inventory') $ctx
     Check '4a: both routing lines are present verbatim at UserPromptSubmit' ($ctx.Contains($sdRoutingA) -and $ctx.Contains($sdRoutingB)) $ctx
 
     # ---- Codex fixture home -------------------------------------------------

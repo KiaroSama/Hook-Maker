@@ -196,7 +196,7 @@ try {
     Set-Mock -NpmExit 1 -NpmJson '{"pkg-pre":{"current":"1.0.0","latest":"2.0.0-beta.1"}}'
     $r = Fire -Cwd $preProj
     Check 'a prerelease latest version is classified [prerelease], not silently recommended' ($r.Out -match 'pkg-pre 1\.0\.0 -> 2\.0\.0-beta\.1 \[prerelease\]') $r.Out
-    Check 'the report tells the agent never to default to a prerelease' ($r.Out -match 'never a prerelease/beta/RC/nightly') $r.Out
+    Check 'the report tells the agent never to default to a prerelease' ($r.Out -match 'latest STABLE compatible version' -and $r.Out -match 'not prerelease/beta/RC/nightly/canary') $r.Out
 
     # =====================================================================
     Write-Host '--- npm: real command failure vs "outdated found" exit code ---' -ForegroundColor Cyan

@@ -138,7 +138,7 @@
         $rC2.Out -notmatch '"decision"' -and $rC2.Exit -eq 0) $rC2.Out
     Check 'C4b. it stays the non-blocking advisory it has always been' (
         (Get-Advisory $rC2.Out) -match 'old\.cs \(1400 lines\)' -and
-        (Get-Advisory $rC2.Out) -match '(?i)this is advisory and nothing here blocks') $rC2.Out
+        (Get-Advisory $rC2.Out) -match 'advisory only' -and (Get-Advisory $rC2.Out) -match 'gate applies only to task-grown overflow') $rC2.Out
 
     # =====================================================================
     Write-Host '--- Unknown never blocks: no baseline, and partial coverage ---' -ForegroundColor Cyan

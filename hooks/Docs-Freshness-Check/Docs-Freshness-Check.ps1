@@ -423,7 +423,7 @@ function Get-ReviewRequestLines {
     # documented workflow boundaries - the doc-impact areas the UTF-8 hook and
     # ::deep-debug work introduced. Detection stays generic (any real non-doc
     # change); pure internal changes still clear with -Result NoUpdate.
-    [void]$lines.Add('Review stale behavior/features, CLI/menu/output/examples, config/env/defaults, APIs/schemas, prerequisites/install/runtime/deps, paths/layout, deploy/migration/security/compatibility/limits, encoding/exceptions, hook lifecycle/native-chain order, workflow boundaries (::deep-debug/one final Ponytail), counts/capabilities. Only affected tracked public docs.')
+    [void]$lines.Add('Review stale behavior/features, CLI/output/examples, menu numbering/labels, config/env/defaults, APIs/schemas, prerequisites/install/runtime/deps, paths/layout, deploy/migration/security/compatibility/limits, text-encoding policy/encoding-exception formats, hook install/update/status/uninstall behavior/native Git hook chain order, workflow boundaries (::deep-debug/single final Ponytail pass), counts/capabilities. Only affected tracked public docs.')
     [void]$lines.Add('Update ONLY the tracked public .md/.txt files actually made stale by this task - do not edit unrelated docs merely for consistency or wording.')
     [void]$lines.Add('Then run exactly one acknowledgement command to clear this: ' + $ackCommand + ' (use -Result NoUpdate -Reason "<why no doc became inaccurate>" instead if nothing needs updating).')
     return $lines.ToArray()

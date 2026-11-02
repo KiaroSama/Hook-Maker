@@ -417,8 +417,8 @@ try {
         param([string]$Enforcement)
         $dir = Join-Path $Work ('rulescopy-' + [guid]::NewGuid().ToString('N').Substring(0, 6))
         New-Item -ItemType Directory -Path $dir -Force | Out-Null
-        Copy-Item -Path (Join-Path (Split-Path -Parent $Hook) '*.ps1') -Destination $dir
-        Copy-TestRuntimeLibraries -SourceHookLib (Join-Path (Split-Path -Parent $Hook) '..\_hooklib.ps1') -Destination (Join-Path $Work '_hooklib.ps1')
+        Copy-Item -Path (Join-Path $ScriptRoot '../hooks/Rules-Check/*.ps1') -Destination $dir
+        Copy-TestRuntimeLibraries -SourceHookLib (Join-Path $ScriptRoot '../hooks/_hooklib.ps1') -Destination (Join-Path $Work '_hooklib.ps1')
         [System.IO.File]::WriteAllText((Join-Path $dir '.env'), ("RULES_CONFIRMATION_ENFORCEMENT=" + $Enforcement + "`r`n"))
         return (Join-Path $dir 'Rules-Check.ps1')
     }

@@ -1,7 +1,7 @@
 # Public diagnostic contract: unavailable access is not an invalid historical pin.
 function Invoke-DispositionAccessRegression {
     param([string]$Root)
-    $module=New-Module -ArgumentList $Root -ScriptBlock {
+    & {
         param($Root)
         . (Join-Path $Root 'hooks/_hooklib.ps1')
         . (Join-Path $Root 'hooks/Test-Completion-Check/_disposition.ps1')
@@ -18,6 +18,5 @@ function Invoke-DispositionAccessRegression {
         $script:historicalDispositions=@{}
         Assert-PersistedDispositions @()
         Write-Output 'Disposition access: 4 controls passed.'
-    }
-    try { & $module {} } finally { Remove-Module $module -Force -ErrorAction SilentlyContinue }
+    } $Root
 }

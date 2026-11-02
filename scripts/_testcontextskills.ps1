@@ -371,7 +371,7 @@
     New-Item -ItemType Directory -Path (Join-Path $instProj '.claude\skills\telegram-bot-builder') -Force | Out-Null
     $rInst = Fire -HookPath $libHook -Cwd $instProj -RawStdin (New-PromptStdin -Cwd $instProj -EventName 'UserPromptSubmit' -Prompt 'build a telegram bot' -SessionId 'lib-2')
     Check 'an already-installed match is offered for ACTIVATION, not for import' (
-        $rInst.Out -match 'INSTALLED and matching this prompt' -and
+        $rInst.Out -match 'INSTALLED matches' -and
         $rInst.Out -match 'telegram-bot-builder \[project\]' -and
         $rInst.Out -notmatch 'Copy-Item') $rInst.Out
     $rNo = Fire -HookPath $libHook -Cwd $libProj -RawStdin (New-PromptStdin -Cwd $libProj -EventName 'UserPromptSubmit' -Prompt 'zzzz qqqq wwww' -SessionId 'lib-3')

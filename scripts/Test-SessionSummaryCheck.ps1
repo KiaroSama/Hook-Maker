@@ -343,7 +343,8 @@ try {
     Check 'summary: parses under Windows PowerShell 5.1' (([string]$parse).Trim() -eq 'OK') ([string]$parse)
     $r51 = Invoke-SummaryHook -Payload @{ hook_event_name = 'UserPromptSubmit'; cwd = $proj; session_id = $sid } -Exe 'powershell.exe'
     Check 'summary: Windows PowerShell 5.1 emits the same open-work classification' (
-        $r51.Exit -eq 0 -and $r51.Out -match 'Never put completed.*REMAINING' -and
+        $r51.Exit -eq 0 -and $r51.Out -match 'DONE: verified completed work' -and
+        $r51.Out -match 'REMAINING: ONLY unresolved required work' -and
         $r51.Out -match 'history only') $r51.Out
 
     # The hook is shipped source: it must stay pure ASCII, like every other
