@@ -168,7 +168,7 @@ $blocked = @(Get-BlockedGateNames -ProjectKey $projectKey -SessionId $sessionId)
 
 $lines = New-Object System.Collections.ArrayList
 if (-not [string]::IsNullOrEmpty($languageLine)) { [void]$lines.Add($languageLine); [void]$lines.Add('') }
-[void]$lines.Add('SESSION SUMMARY: exactly one short DONE / REMAINING CLOSING section per task, LAST after MCP used:/Skills used:/Rules applied:, in the user''s language.')
+[void]$lines.Add('SESSION SUMMARY: exactly one short DONE / REMAINING per task; CLOSING section LAST after MCP used:/Skills used:/Rules applied:, in the user''s language.')
 [void]$lines.Add('- Only when handing back finished work; not during work, background waits or gate corrections. After publication, correct the named issue in one line; never repeat the wrap-up.')
 [void]$lines.Add('- Before closing: meaningful memory updates, authorized Git sync + exact-SHA green CI, stale-doc acknowledgement, real tests, no owned process survivors, secrets/local-only hygiene. Verify, never guess.')
 [void]$lines.Add('- DONE: verified completed work, successful checks and resolved gates (including repaired past failures). REMAINING: ONLY unresolved required work, unfinished/deferred items, blockers and untested paths, each with its reason.')
