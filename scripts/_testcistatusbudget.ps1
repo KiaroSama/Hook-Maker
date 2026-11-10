@@ -85,4 +85,45 @@
     $oldSha=Get-HeadSha $oldRepo
     Set-Mock -RunJson '[{"databaseId":304,"name":"CI","workflowName":"CI","status":"completed","conclusion":"success"}]' -ExpectedSha $oldSha
     $r = Fire -HookPath $oldHook -Cwd $oldRepo -EventName 'Stop'
-    Check 'budget: missing optional sibling retains execution proof and explicit report/UI gap' ($r.Exit -eq 0 -and $r.Out -match 'CI execution verified' -and $r.Out -match 'Suite/case reports \+ commit/check UI UNVERIFIED' -and $r.Out -match $oldSha -and $r.Out -notmatch '"decision"' -and (Get-GhCallCount 'api|repos/*/actions/runs?head_sha=*') -eq 1) ([string]$r.Out)
+    Check 'budget: missing optional sibling retains execution proof and explicit report/UI gap' ($r.Exit -eq 0 -and $r.Err -eq '' -and $r.Out -match 'CI execution verified' -and $r.Out -match 'Suite/case reports \+ commit/check UI UNVERIFIED' -and $r.Out -match $oldSha -and $r.Out -notmatch '"decision"' -and (Get-GhCallCount 'api|repos/*/actions/runs?head_sha=*') -eq 1) ([string]$r.Out)
+    $failedRepo=New-GitRepo 'ci-budget-nosibling-failed';$failedSha=Get-HeadSha $failedRepo
+    $failedChecks='{"total_count":1,"check_runs":[{"id":1,"head_sha":"'+$failedSha+'","status":"completed","conclusion":"failure"}]}'
+    Set-Mock -RunJson '[{"databaseId":305,"name":"CI","workflowName":"CI","status":"completed","conclusion":"failure"}]' -ExpectedSha $failedSha -CheckRunsJson $failedChecks -Annotations @{ '1'='[{"annotation_level":"failure","message":"payments have failed"}]' }
+    $r=Fire -HookPath $oldHook -Cwd $failedRepo -EventName 'Stop'
+    Check 'budget: missing billing reader keeps an actual failed check blocked, never billing or green' ($r.Exit-eq0-and$r.Err-eq''-and$r.Out-match'"decision":"block"'-and$r.Out-match'FAILED:'-and$r.Out-notmatch'account-billing|CI execution verified'-and(Get-GhCallCount 'api|*/annotations*')-eq0) ([string]$r.Out)
+    # Every entry fallback must share ONE deadline, including auth; expiry never
+    # launches another command and never becomes a successful zero-result set.
+    $entryAst=[Management.Automation.Language.Parser]::ParseFile($oldHook,[ref]$null,[ref]$null)
+    $fallback=$entryAst.Find({param($n)$n-is[Management.Automation.Language.IfStatementAst]-and$n.Extent.Text-match"Get-Command -Name 'Invoke-GhBounded'"},$true)
+    $fallbackText=$fallback.Clauses[0].Item2.Extent.Text
+    $fallbackText=$fallbackText.Substring(1,$fallbackText.Length-2)
+    foreach($hostExe in @('pwsh','powershell.exe')){
+        $probe=Join-Path $Work 'missing-budget-deadline.ps1'
+        $probeText="param([string]`$BatchPath)`n. `$BatchPath`n"+@'
+Set-StrictMode -Version 2.0
+$ErrorActionPreference='Stop'
+$script:Calls=0;$script:HookLeft=7
+function Invoke-QuietCommand {param($FilePath,$ArgumentList,$TimeoutSeconds) $script:Calls++;if($TimeoutSeconds-lt1-or$TimeoutSeconds-gt$script:HookLeft){throw 'Command exceeds hook remainder'};$global:LASTEXITCODE=0;return 'ok'}
+function Get-HookRemainingSeconds {return $script:HookLeft}
+'@ + "`n" + $fallbackText + @'
+Initialize-GhBudget 8
+if((Get-GhRemainingSeconds)-gt7){throw 'Fallback ignores hook deadline'}
+$deadline=$script:GhDeadlineUtc
+if(-not(Test-GhAuthenticated)-or$script:Calls-ne1-or$script:GhDeadlineUtc-ne$deadline){throw 'Auth is not in original shared budget'}
+$script:CiApiScopeKey='fallback-fixture';$base='repos/testowner/testrepo/check-runs/'
+foreach($id in 1..32){[void]$script:CiApiBatchState.Seen.Add($base+$id+'/annotations')}
+$answer=@(Invoke-GhBounded @('api',($base+'33/annotations')))
+if($LASTEXITCODE-eq0-or$answer.Count-ne0-or$script:Calls-ne1-or$script:CiApiBatchState.Seen.Count-ne32){throw 'Fallback bypassed shared endpoint cap'}
+$script:CiApiBatchState.Seen.Clear();$script:CiApiBatchState.Bytes=4194304
+$answer=@(Invoke-GhBounded @('api',($base+'1/annotations')))
+if($LASTEXITCODE-eq0-or$answer.Count-ne0-or$script:Calls-ne1-or-not$script:CiApiBatchState.Exhausted){throw 'Fallback bypassed aggregate byte cap'}
+$script:HookLeft=0
+$null=Invoke-GhBounded @('api','fixture')
+if($script:Calls-ne1-or$LASTEXITCODE-ne124-or-not$script:GhBudgetExhausted-or$script:GhDeadlineUtc-ne$deadline){throw 'Expired budget launched/reset or claimed success'}
+Write-Host 'Missing-budget shared deadline controls passed; endpoint=32; aggregateBytes=4194304; launches=1; expiry=124'
+'@
+        [IO.File]::WriteAllText($probe,$probeText,[Text.UTF8Encoding]::new($false))
+        $out=Join-Path $Work ($hostExe+'-missing-budget.out');$err=Join-Path $Work ($hostExe+'-missing-budget.err')
+        $process=Start-BoundedProcess -FilePath $hostExe -ArgumentList @('-NoLogo','-NoProfile','-NonInteractive','-File',$probe,'-BatchPath',(Join-Path (Split-Path -Parent $CiHook) '_cibatch.ps1')) -TimeoutMs 10000 -RedirectStandardOutput $out -RedirectStandardError $err
+        Check ($hostExe+': missing optional budget retains shared deadline, endpoint/byte caps, bounded auth and no launch after expiry') ($process.ExitCode-eq0-and[IO.File]::ReadAllText($out).Contains('Missing-budget shared deadline controls passed')-and[IO.File]::ReadAllText($err)-eq'') ([IO.File]::ReadAllText($err))
+    }

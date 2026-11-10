@@ -122,10 +122,33 @@ $ghBudgetPath = Join-Path $PSScriptRoot '_ghbudget.ps1'
 foreach ($siblingName in @('_runneralive.ps1', '_docsonly.ps1')) { $siblingPath = Join-Path $PSScriptRoot $siblingName; if (Test-Path -LiteralPath $siblingPath -PathType Leaf) { . $siblingPath } }
 if (Test-Path -LiteralPath $ghBudgetPath -PathType Leaf) { . $ghBudgetPath }
 if ($null -eq (Get-Command -Name 'Invoke-GhBounded' -ErrorAction SilentlyContinue)) {
-    function Initialize-GhBudget { param([int]$Seconds) }
-    function Invoke-GhBounded { param([string[]]$ArgumentList) return (Invoke-QuietCommand -FilePath gh -ArgumentList $ArgumentList) }
-    function Test-GhAuthenticated { $null = Invoke-QuietCommand -FilePath gh -ArgumentList @('auth', 'status'); return ($LASTEXITCODE -eq 0) }
-    $script:GhBudgetExhausted = $false
+    # Optional-module fallback still implements the budget API its readers use.
+    function Initialize-GhBudget {
+        param([int]$Seconds)
+        $script:GhDeadlineUtc=[DateTime]::UtcNow.AddSeconds([Math]::Max(5,[Math]::Min(300,$Seconds)))
+        $script:GhBudgetExhausted=$false;$script:CiApiScopeKey=''
+        if(Get-Command Initialize-CiApiBatch -ErrorAction SilentlyContinue){Initialize-CiApiBatch}
+    }
+    function Get-GhRemainingSeconds {
+        $left=[Math]::Max(0,[Math]::Floor(($script:GhDeadlineUtc-[DateTime]::UtcNow).TotalSeconds))
+        if(Get-Command Get-HookRemainingSeconds -ErrorAction SilentlyContinue){$left=[Math]::Min($left,(Get-HookRemainingSeconds))}
+        return [int]$left
+    }
+    function Invoke-GhBounded {
+        param([string[]]$ArgumentList)
+        $left=Get-GhRemainingSeconds
+        if($left-lt1){$script:GhBudgetExhausted=$true;$global:LASTEXITCODE=124;return @()}
+        if($ArgumentList.Count-eq2-and$ArgumentList[0]-ceq'api'-and$script:CiApiScopeKey-ne''){
+            $answer=Read-CiBatchApi -Endpoint $ArgumentList[1] -ScopeKey $script:CiApiScopeKey
+            if($null-eq$answer){return @()}
+            return (ConvertTo-Json -InputObject $answer -Depth 64 -Compress)
+        }
+        $answer=Invoke-QuietCommand -FilePath gh -ArgumentList $ArgumentList -TimeoutSeconds ([Math]::Min(20,$left))
+        if($LASTEXITCODE-ne0-and(Get-GhRemainingSeconds)-lt1){$script:GhBudgetExhausted=$true}
+        return $answer
+    }
+    function Test-GhAuthenticated { $null=Invoke-GhBounded @('auth','status');return ($LASTEXITCODE-eq0) }
+    $script:GhBudgetExhausted=$false
 }
 
 $script:AllowedExternalClassifications = @(
@@ -196,6 +219,8 @@ function Get-PushedHeadInfo {
 # different one - so neither is ever mistaken for billing.
 function Test-CiBillingBlocked {
     param([string]$RepoSlug, [string]$Sha)
+    # An older runtime without the optional reader cannot prove billing.
+    if(-not(Get-Command Get-CheckRunBillingVerdict -ErrorAction SilentlyContinue)){return $false}
     # Strict pagination bound: at most 20 pages of 100 = 2000 check-runs, and the
     # same 20-page ceiling for one check-run's annotations. Anything we cannot
     # fully verify within that bound fails CLOSED, so an unverifiable set is
