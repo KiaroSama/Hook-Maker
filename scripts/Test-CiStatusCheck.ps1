@@ -529,13 +529,12 @@ try {
 
     # ---- B5 regression: `gh run list` returning BLANK or literal `null` (exit
     # 0) must never be silently treated as a verified/all-success commit.
-    # ConvertFrom-Json turns both into $null (no throw, so the catch path is
-    # never hit); piping that single $null through ForEach-Object previously
+    # Missing/malformed collection evidence is UNKNOWN, not a valid zero-run
+    # collection. Converting either into a null pipeline previously
     # produced a 1-element array containing $null, so $runs.Count was 1 (not
     # 0) and every per-run bucket stayed empty, making $allSuccess true on zero
-    # real data. Both variants must fall to the same "no runs registered yet"
-    # pending block as a real empty result set with workflows configured -
-    # never a silent exit 0. A real `'[]'` response (no runs.json override,
+    # real data. Both variants must block as exact-SHA metadata UNVERIFIED,
+    # never claim that malformed data proves no runs. A real `'[]'` response (no runs.json override,
     # the ci5/ci6 pair above) must keep behaving exactly as before.
     $ci5blank = New-GitRepo 'ci5blank'
     New-Item -ItemType Directory -Path (Join-Path $ci5blank '.github\workflows') -Force | Out-Null
@@ -543,14 +542,14 @@ try {
     Set-Mock -ExpectedSha (Get-HeadSha $ci5blank)
     Set-Content -Path (Join-Path $MockDir 'run_list.json') -Value '' -NoNewline -Encoding utf8
     $r = Fire -HookPath $CiHook -Cwd $ci5blank -EventName 'Stop'
-    Check 'B5: blank `gh run list` stdout -> pending block, never silently verified' ($r.Out -match '"decision":"block"' -and $r.Out -match 'no runs are registered yet') $r.Out
+    Check 'B5: blank run stdout blocks as unverified metadata, never a verified zero-run collection' ($r.Out -match '"decision":"block"' -and $r.Out -match 'exact-SHA workload metadata UNVERIFIED' -and $r.Out -match 'UNKNOWN, not green') $r.Out
 
     $ci5null = New-GitRepo 'ci5null'
     New-Item -ItemType Directory -Path (Join-Path $ci5null '.github\workflows') -Force | Out-Null
     Set-Content (Join-Path $ci5null '.github\workflows\ci.yml') 'name: CI'
     Set-Mock -RunJson 'null' -ExpectedSha (Get-HeadSha $ci5null)
     $r = Fire -HookPath $CiHook -Cwd $ci5null -EventName 'Stop'
-    Check 'B5: literal `null` `gh run list` stdout -> pending block, never silently verified' ($r.Out -match '"decision":"block"' -and $r.Out -match 'no runs are registered yet') $r.Out
+    Check 'B5: literal null run stdout blocks as unverified metadata, never a verified zero-run collection' ($r.Out -match '"decision":"block"' -and $r.Out -match 'exact-SHA workload metadata UNVERIFIED' -and $r.Out -match 'UNKNOWN, not green') $r.Out
 
     # control: a normal successful run set on the same workflows-configured
     # shape still verifies silently (the Where-Object null filter added for B5
@@ -583,7 +582,7 @@ try {
     & git -C $mismatchOk update-ref refs/remotes/origin/main $mmSha
     Set-Mock -RunJson '[{"databaseId":70,"name":"CI","workflowName":"CI","status":"completed","conclusion":"success"}]' -ExpectedSha $mmSha
     $r = Fire -HookPath $CiHook -Cwd $mismatchOk -EventName 'Stop'
-    Check 'non-GitHub upstream + up-to-date GitHub origin ref -> still verifies against origin' ([string]::IsNullOrWhiteSpace([string]$r.Out)) ([string]$r.Out)
+    Check 'non-GitHub upstream + current GitHub origin verifies execution without inventing report/UI proof' ($r.Exit -eq 0 -and $r.Out -match 'CI execution verified' -and $r.Out -match 'Suite/case reports \+ commit/check UI UNVERIFIED' -and $r.Out -match $mmSha -and $r.Out -notmatch '"decision"') ([string]$r.Out)
     $calls = [System.IO.File]::ReadAllText((Join-Path $MockDir 'calls.txt'))
     Check 'queries the origin repository slug, not the mirror' ($calls -match 'testowner/testrepo-mismatch-ok') $calls
 
@@ -606,7 +605,7 @@ try {
     & git -C $diffBranch update-ref refs/remotes/origin/release $dbSha
     Set-Mock -RunJson '[{"databaseId":71,"name":"CI","workflowName":"CI","status":"completed","conclusion":"success"}]' -ExpectedSha $dbSha
     $r = Fire -HookPath $CiHook -Cwd $diffBranch -EventName 'Stop'
-    Check 'differently-named remote branch still resolves via @{upstream}' ([string]::IsNullOrWhiteSpace([string]$r.Out)) ([string]$r.Out)
+    Check 'differently-named upstream branch verifies execution with a separate report/UI gap' ($r.Exit -eq 0 -and $r.Out -match 'CI execution verified' -and $r.Out -match 'Suite/case reports \+ commit/check UI UNVERIFIED' -and $r.Out -match $dbSha -and $r.Out -notmatch '"decision"') ([string]$r.Out)
 
     # Multiple GitHub remotes, no unambiguous target (neither is origin,
     # neither matches the branch's configured upstream) - must degrade silently.

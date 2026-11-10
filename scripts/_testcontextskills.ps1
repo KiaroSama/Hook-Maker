@@ -272,8 +272,9 @@
     Check 'the plugin source is enumerated and counted' (
         $r3s.Out -match 'Plugin skills: 3/2 plugins' -and
         $r3s.Out -match 'ponytail \(1\)' -and $r3s.Out -match 'superpowers \(2\)') $r3s.Out
+    $pluginContext = [string](($r3s.Out | ConvertFrom-Json).hookSpecificOutput.additionalContext)
     Check 'plugin skills are addressed as <plugin>:<skill>, the form the client uses' (
-        (Get-Context $r3s.Out) -match 'key <plugin>:<skill>') $r3s.Out
+        $pluginContext -match 'key <plugin>:<skill>') $r3s.Out
     # Several hundred plugin skill names would be a token bill, not information -
     # the inventory names PLUGINS, and individual plugin skills surface only in
     # the per-prompt shortlist below.

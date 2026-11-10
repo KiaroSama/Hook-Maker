@@ -51,7 +51,7 @@
         Check 'budget: a slow GitHub never outlives the budget (8 s + start-up grace)' ($watch.Elapsed.TotalSeconds -lt 16 -and $r.Exit -eq 0) (
             ('{0:N1} s, exit {1}' -f $watch.Elapsed.TotalSeconds, $r.Exit))
         Check 'budget: exhaustion is reported as not verified, naming the commit' (
-            $r.Out -match 'systemMessage' -and $r.Out -match 'could not verify' -and $r.Out -match $slowSha.Substring(0, 7)) $r.Out
+            $r.Out -match 'systemMessage' -and $r.Out -match 'CI CHECK: UNVERIFIED' -and $r.Out -match 'budget.*exhausted' -and $r.Out -match 'NOT green' -and $r.Out -match $slowSha.Substring(0, 7)) $r.Out
         Check 'budget: exhaustion never blocks' ($r.Out -notmatch '"decision":"block"') $r.Out
         $slowState = @(Get-ChildItem -LiteralPath (Join-Path $env:LOCALAPPDATA 'HookMaker\state') -Filter 'CiStatusCheck-*.txt' -ErrorAction SilentlyContinue |
             Where-Object { $_.Name -notlike 'CiStatusCheck-External-*' -and $_.Name -notlike 'CiStatusCheck-Notice-*' } |
@@ -80,6 +80,9 @@
     # An installed runtime copied before the sibling existed keeps working.
     $oldRepo = New-GitRepo 'ci-budget-nosibling'
     $oldHook = New-ConfiguredCiHookCopy -EnvOverrides @{ PENDING_COOLDOWN_MINUTES = '3' }
-    Set-Mock -RunJson '[{"databaseId":304,"name":"CI","workflowName":"CI","status":"completed","conclusion":"success"}]' -ExpectedSha (Get-HeadSha $oldRepo)
+    $oldBudget=Join-Path (Split-Path -Parent $oldHook) '_ghbudget.ps1'
+    if(Test-Path -LiteralPath $oldBudget){Remove-Item -LiteralPath $oldBudget -Force}
+    $oldSha=Get-HeadSha $oldRepo
+    Set-Mock -RunJson '[{"databaseId":304,"name":"CI","workflowName":"CI","status":"completed","conclusion":"success"}]' -ExpectedSha $oldSha
     $r = Fire -HookPath $oldHook -Cwd $oldRepo -EventName 'Stop'
-    Check 'budget: without _ghbudget.ps1 a green commit still verifies silently' ($r.Exit -eq 0 -and [string]::IsNullOrWhiteSpace([string]$r.Out) -and (Get-GhCallCount 'api|repos/*/actions/runs?head_sha=*') -eq 1) ([string]$r.Out)
+    Check 'budget: missing optional sibling retains execution proof and explicit report/UI gap' ($r.Exit -eq 0 -and $r.Out -match 'CI execution verified' -and $r.Out -match 'Suite/case reports \+ commit/check UI UNVERIFIED' -and $r.Out -match $oldSha -and $r.Out -notmatch '"decision"' -and (Get-GhCallCount 'api|repos/*/actions/runs?head_sha=*') -eq 1) ([string]$r.Out)
