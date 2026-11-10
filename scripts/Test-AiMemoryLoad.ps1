@@ -257,7 +257,7 @@ try {
     New-Item -ItemType Directory -Path (Join-Path $proj4 'graphify-out') -Force | Out-Null
     Write-Utf8 (Join-Path $proj4 'graphify-out\graph.json') '{}'
     $r = Fire -Cwd $proj4 -HookPath $GraphHook
-    Check 'graph exists -> emits the reminder' ($r.Out -like '*GRAPH READ CHECK*' -and $r.Out -like '*graphify query*') $r.Out
+    Check 'graph exists -> emits the reminder' ($r.Out -like '*GRAPH READ CHECK*' -and $r.Out -like '*query/path/explain*') $r.Out
     $r2 = Fire -Cwd $proj4 -HookPath $GraphHook
     Check 'fires again next session (cheap static reminder, no state needed)' ($r2.Out -like '*GRAPH READ CHECK*') $r2.Out
     $r = Fire -Cwd $proj4 -HookPath $GraphHook -EventName 'SubagentStop'
@@ -289,17 +289,17 @@ try {
     Write-Utf8 (Join-Path $pGraphFa 'graphify-out\graph.json') '{}'
     $faStdin1 = @{ session_id = 'g-fa1'; cwd = $pGraphFa; hook_event_name = 'UserPromptSubmit'; prompt = ('please review the ' + $faArch + ' of this project') } | ConvertTo-Json
     $r = Fire -Cwd $pGraphFa -HookPath $GraphHook -RawStdin $faStdin1
-    Check 'relevant Persian (architecture) -> scoped-query reminder' ($r.Out -like '*GRAPH READ CHECK*' -and $r.Out -like '*graphify query*') $r.Out
+    Check 'relevant Persian (architecture) -> scoped-query reminder' ($r.Out -like '*GRAPH READ CHECK*' -and $r.Out -like '*query/path/explain*') $r.Out
     $faStdin2 = @{ session_id = 'g-fa2'; cwd = $pGraphFa; hook_event_name = 'UserPromptSubmit'; prompt = ('this ' + $faDep + ' needs checking') } | ConvertTo-Json
     $r = Fire -Cwd $pGraphFa -HookPath $GraphHook -RawStdin $faStdin2
-    Check 'relevant Persian (dependency) -> scoped-query reminder' ($r.Out -like '*GRAPH READ CHECK*' -and $r.Out -like '*graphify query*') $r.Out
+    Check 'relevant Persian (dependency) -> scoped-query reminder' ($r.Out -like '*GRAPH READ CHECK*' -and $r.Out -like '*query/path/explain*') $r.Out
     # A dedicated English relevant case with a fresh project (the graph-exists path).
     $pGraphEn = New-Proj 'GraphEnglish'
     New-Item -ItemType Directory -Path (Join-Path $pGraphEn 'graphify-out') -Force | Out-Null
     Write-Utf8 (Join-Path $pGraphEn 'graphify-out\graph.json') '{}'
     $enStdin = @{ session_id = 'g-en1'; cwd = $pGraphEn; hook_event_name = 'UserPromptSubmit'; prompt = 'map the call path and module dependencies' } | ConvertTo-Json
     $r = Fire -Cwd $pGraphEn -HookPath $GraphHook -RawStdin $enStdin
-    Check 'relevant English -> scoped-query reminder' ($r.Out -like '*GRAPH READ CHECK: structural work*' -and $r.Out -like '*graphify query*') $r.Out
+    Check 'relevant English -> scoped-query reminder' ($r.Out -like '*GRAPH READ CHECK:*' -and $r.Out -like '*query/path/explain*') $r.Out
 
     # =====================================================================
     Write-Host '--- Graph-Read-Check: missing graph + graphify AVAILABLE -> create-then-query, never runs graphify ---' -ForegroundColor Cyan
@@ -315,7 +315,7 @@ try {
     try {
         $missStdin = @{ session_id = 'm-1'; cwd = $pMiss; hook_event_name = 'UserPromptSubmit'; prompt = 'refactor the architecture and check module dependencies across the codebase' } | ConvertTo-Json
         $r = Fire -Cwd $pMiss -HookPath $GraphHook -RawStdin $missStdin
-        Check 'missing graph + relevant -> create-then-query guidance' ($r.Out -like '*GRAPH: structural task*' -and $r.Out -like '*Verify graphify --help/docs: graphify .*' -and $r.Out -like '*query \"<question>\"*') $r.Out
+        Check 'missing graph + relevant -> create-then-query guidance' ($r.Out -like '*GRAPH: structural task*' -and $r.Out -like '*graphify --help*' -and $r.Out -like '*BEFORE build/navigation: graphify.md/graphify-markdown.md FULL*') $r.Out
         Check 'hook did NOT execute graphify (no sentinel)' (-not (Test-Path -LiteralPath $sentinel))
         # Missing graph + trivial/docs prompt -> total silence (new session).
         $trivialStdin = @{ session_id = 'm-triv'; cwd = $pMiss; hook_event_name = 'UserPromptSubmit'; prompt = 'fix a typo in the changelog wording' } | ConvertTo-Json
@@ -363,12 +363,12 @@ try {
     try {
         $exStdin = @{ session_id = 'ex-1'; cwd = $pEx; hook_event_name = 'UserPromptSubmit'; prompt = 'what is the impact across modules and entry points' } | ConvertTo-Json
         $r = Fire -Cwd $pEx -HookPath $GraphHook -RawStdin $exStdin
-        Check 'no graph yet -> create/fallback guidance (not the read note)' ($r.Out -like '*graphify-out/graph.json absent*' -and $r.Out -notlike '*GRAPH READ CHECK: structural work*') $r.Out
+        Check 'no graph yet -> create/fallback guidance (not the read note)' ($r.Out -like '*graphify-out/graph.json absent*' -and $r.Out -notlike '*GRAPH READ CHECK:*') $r.Out
         # The graph now appears; the same session must switch to the READ note.
         New-Item -ItemType Directory -Path (Join-Path $pEx 'graphify-out') -Force | Out-Null
         Write-Utf8 (Join-Path $pEx 'graphify-out\graph.json') '{}'
         $r2 = Fire -Cwd $pEx -HookPath $GraphHook -RawStdin $exStdin
-        Check 'graph now exists -> read reminder re-enabled (existence change)' ($r2.Out -like '*GRAPH READ CHECK: structural work*' -and $r2.Out -like '*graphify query*') $r2.Out
+        Check 'graph now exists -> read reminder re-enabled (existence change)' ($r2.Out -like '*GRAPH READ CHECK:*' -and $r2.Out -like '*query/path/explain*') $r2.Out
     }
     finally { $env:PATH = $savedPath }
 

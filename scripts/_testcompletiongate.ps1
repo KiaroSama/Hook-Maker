@@ -544,7 +544,7 @@
     Check 'the evidence names the dead owner process' ($reason -match ('owner process ' + $goner.Id + ' is gone')) $reason
     Check 'it states the result is unknown AND unrecoverable, not merely pending' (
         $reason -match 'UNKNOWN AND UNRECOVERABLE') $reason
-    Check 'it refuses to let the run be read as a pass' ($reason -match 'later runs!=original pass') $reason
+    Check 'it refuses to let the run be read as a pass' ($reason -match 'later runs?!=original pass') $reason
     Check 'the recovery names the guarded runner' ($reason -match 'Run-Tests-Guarded\.ps1') $reason
     Check 'the recovery names the exact record to delete if the work was abandoned' (
         $reason -match [regex]::Escape((Get-RunStateFile -Copy $c -Root $p -Kind 'active'))) $reason

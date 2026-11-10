@@ -261,7 +261,7 @@ try {
     Check 'prerelease + draft flagged' ($r.Out -match '#14 \[draft\] .*\[PRERELEASE')
     Check 'grouped update classified' ($r.Out -match '#15 .*\[grouped')
     Check 'exact head SHA quoted' ($r.Out -match 'head sha 1111111')
-    Check 'policy tail present, concise' ($r.Out -match 'no auto MAJOR/PRERELEASE')
+    Check 'policy tail present, concise' ($r.Out -match '(?:no auto MAJOR/PRERELEASE|No label-only action/auto MAJOR/PRERELEASE)')
     # Scope: a PR marked SECURITY is described as classification only (never
     # "confirmed"); it is reviewed now only if directly relevant, explicitly
     # requested, or critically unsafe to defer - otherwise every pending PR,
@@ -270,12 +270,12 @@ try {
     Check 'a SECURITY-marked PR is described as classification only, not confirmed' ($r.Out -match 'A PR above is marked SECURITY \(by title/label, not independently verified severity\)\.') $r.Out
     Check 'the old "confirmed security update - prioritize" wording is gone' ($r.Out -notmatch 'confirmed security update - prioritize') $r.Out
     Check 'unrelated/non-critical PRs (including SECURITY-marked) are explicitly deferred to a separate task' (
-        $r.Out -match 'defer unrelated incl\.SECURITY to separate task' -and $r.Out -match 'Act only requested/relevant/confirmed-critical') $r.Out
-    Check 'pending Dependabot PRs are never a reason to block or delay unrelated work' ($r.Out -match 'never block/delay it') $r.Out
+        $r.Out -match 'Unrelated incl\.SECURITY: defer' -and $r.Out -match 'interrupt only requested/directly relevant/reliably confirmed unsafe') $r.Out
+    Check 'pending Dependabot PRs are never a reason to block or delay unrelated work' ($r.Out -match 'Unrelated incl\.SECURITY: defer; interrupt only requested/directly relevant/reliably confirmed unsafe') $r.Out
     Check 'the old "REST of these" wording is gone' ($r.Out -notmatch 'REST of these') $r.Out
     Check 'the old unconditional "review before unrelated work" wording is gone' ($r.Out -notmatch 'Review these BEFORE unrelated work') $r.Out
     Check 'still no auto-merge instruction exists' ($r.Out -notmatch '(?i)automatically merge' -and $r.Out -notmatch '(?i)merge (it|them|these) now')
-    Check 'MAJOR and PRERELEASE remain explicitly non-automatic' ($r.Out -match 'no auto MAJOR/PRERELEASE') $r.Out
+    Check 'MAJOR and PRERELEASE remain explicitly non-automatic' ($r.Out -match '(?:no auto MAJOR/PRERELEASE|No label-only action/auto MAJOR/PRERELEASE)') $r.Out
 
     # unchanged state -> silent; changed state -> reports again
     $r = Fire -HookPath $DependabotHook -Cwd $repoB

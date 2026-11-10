@@ -193,7 +193,7 @@ try {
     }
     finally { $script:FakeUserEnv.Clear() }
     Check 'stale: a variable only in the user environment says to set it in this command, not to ask' (
-        $stale.Count -eq 1 -and $stale[0] -match 'set `OLLAMA_MODELS=G:\\models` in this command; the shell predates it' -and $stale[0] -notmatch 'Ask the user') ($stale -join ' || ')
+        $stale.Count -eq 1 -and $stale[0] -match 'set `OLLAMA_MODELS=G:\\models` in-command: user env newer than shell; no path question' -and $stale[0] -notmatch 'Ask the user') ($stale -join ' || ')
     Check 'stale: a variable present in this process is not stale' ($fresh.Count -eq 1 -and $fresh[0] -match 'approved root/new G:' -and $fresh[0] -notmatch 'predates') ($fresh -join ' || ')
     $script:FakeUserEnv['UV_TOOL_BIN_DIR'] = 'G:\uv\bin'
     try { $staleBin = @(Get-Advice 'uv tool install ruff' -Env @{ UV_TOOL_DIR = 'G:\uv\tools' }) } finally { $script:FakeUserEnv.Clear() }

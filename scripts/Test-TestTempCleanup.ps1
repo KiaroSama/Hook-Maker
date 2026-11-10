@@ -204,7 +204,7 @@ try {
         (Test-Path -LiteralPath (Join-Path $cache1 'x.txt')) -and
         ([System.IO.File]::ReadAllText((Join-Path $cache1 'x.txt')) -eq 'cache-content'))
     Check 'it is surfaced as likely-disposable, which is a description not an approval' ($r.Out -match 'class=likely-disposable') $r.Out
-    Check 'the report tells the agent to inspect every candidate before deletion' ($r.Out -match 'Verify each path: name/age/ignore!=ownership.') $r.Out
+    Check 'the report routes candidate disposal to the full cleanup owner before action' ($r.Out -match 'BEFORE disposal: global-project-lifecycle-rules\.md Cleanup FULL') $r.Out
     Check 'the report carries the complete mandated instruction' (Test-HasFullInstruction $r.Out) $r.Out
     Check 'the report never claims the hook removed anything' ($r.Out -notmatch 'removed safe' -and $r.Out -notmatch 'verified by rescan') $r.Out
     Check 'the recorded category is review-required, not clean' ((Get-RecordedCategory $hc1.LocalAppData $proj1) -eq 'review-required') (Get-RecordedCategory $hc1.LocalAppData $proj1)

@@ -540,7 +540,7 @@ try {
         $hookText -notmatch 'Start-Process' -and $hookText -notmatch 'Invoke-Expression' -and
         $hookText -notmatch '(?i)\biex\b' -and $hookText -notmatch '&\s*\$') $hookText.Substring(0, 200)
     Check 'the ledger goal and /ponytail:ponytail-audit appear in source as referenced text, no NATIVE-command goal claim' (
-        $hookText -like '*first task-ledger entries*' -and $hookText -like '*/ponytail:ponytail-audit*' -and $hookText -notlike '*NATIVE command*')
+        $hookText -like '*BEFORE ::deep-debug read WORKFLOWS.md Deep Debug/skill-policy-deep-debug.md/CODEWORDS.md FULL, EVERY bug/phase*' -and $hookText -like '*/ponytail:ponytail-audit*' -and $hookText -notlike '*NATIVE command*')
     # Installed-runtime parity: the runtime copy installed above must produce
     # byte-identical ::deep-debug guidance to the source hook (same client,
     # same prompt, fresh per-project state for each).

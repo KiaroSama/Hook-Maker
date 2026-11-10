@@ -119,5 +119,5 @@ function Invoke-NoteObligationEntryRegression {
     (Get-Item -LiteralPath $receiptPath).LastWriteTimeUtc = [DateTime]::UtcNow.AddHours(-25)
     Write-GuardedResult -Copy $c -Root $p -RunId overflow-green
     $r = Fire -Copy $c -Cwd $p
-    Check 'unknown full ledger never drops the genuine incident receipt or suppresses overflow gate' ($r.Out -match '"decision":"block"' -and $r.Out -match 'ledger is FULL' -and (Test-Path -LiteralPath $receiptPath) -and (Get-PendingCount (Get-CompletionStateDoc $c $p)) -eq 50) $r.Out
+    Check 'unknown full ledger never drops the genuine incident receipt or suppresses overflow gate' ($r.Out -match '"decision":"block"' -and $r.Out -match 'ledger (?:is )?FULL' -and (Test-Path -LiteralPath $receiptPath) -and (Get-PendingCount (Get-CompletionStateDoc $c $p)) -eq 50) $r.Out
 }

@@ -78,7 +78,7 @@
     Write-Utf8 (Join-Path $projUnknown 'notes.txt') "abc123`r`n"
     Add-Commit $projUnknown 'seed'
     $r = Fire -Cwd $projUnknown
-    Check 'an ambiguous key is reported as needing classification, not auto-added' ($r.Out -like '*Classification unclear*WIDGET_ID*' -and $r.Out -notlike '*Auto-added*WIDGET_ID*') $r.Out
+    Check 'an ambiguous key is reported as needing classification, not auto-added' ($r.Out -like '*UNKNOWN Secret/PublicConfig*WIDGET_ID*' -and $r.Out -notlike '*Auto-added*WIDGET_ID*') $r.Out
     Check 'the ambiguous key is never treated as a confirmed leak from a bare value match' ($r.Out -notlike '*WIDGET_ID*appears in a git-tracked file*') $r.Out
     Check 'the ambiguous-key advisory does not block the task' ($r.Exit -eq 0)
 
@@ -126,7 +126,7 @@
     Add-Commit $projOpaquePublic 'seed'
     $r = Fire -Cwd $projOpaquePublic
     Check 'NEXT_PUBLIC_SESSION with an opaque repeated-letter value is NOT auto-classified PublicConfig' ($r.Out -notlike '*Auto-added*NEXT_PUBLIC_SESSION*') $r.Out
-    Check 'the opaque public-prefixed value is instead reported as needing classification (Unknown)' ($r.Out -like '*Classification unclear*NEXT_PUBLIC_SESSION*') $r.Out
+    Check 'the opaque public-prefixed value is instead reported as needing classification (Unknown)' ($r.Out -like '*UNKNOWN Secret/PublicConfig*NEXT_PUBLIC_SESSION*') $r.Out
 
     # =====================================================================
     Write-Host '--- classification: PUBLIC_CONFIG_KEYS can never declassify a real credential ---' -ForegroundColor Cyan
@@ -163,7 +163,7 @@
     $r = Fire -Cwd $projEmail
     Check 'an admin e-mail is NOT auto-added to secrets.md as a secret' ($r.Out -notlike '*Auto-added*ADMIN_EMAIL*') $r.Out
     Check 'an admin e-mail in a tracked file is NOT reported as a leak' ($r.Out -notlike '*appears in a git-tracked file*') $r.Out
-    Check 'the e-mail is reported as needing classification instead (Unknown, advisory)' ($r.Out -like '*Classification unclear*ADMIN_EMAIL*') $r.Out
+    Check 'the e-mail is reported as needing classification instead (Unknown, advisory)' ($r.Out -like '*UNKNOWN Secret/PublicConfig*ADMIN_EMAIL*') $r.Out
 
     # ... and an address under a credential-named key is still Secret: the
     # e-mail exclusion only removes the heuristic, never key evidence.

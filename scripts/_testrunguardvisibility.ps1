@@ -41,7 +41,7 @@
         # A refusal that does not name the replacement is one the reader cannot
         # act on, which is the failure mode the hook rules single out.
         Check ('and the refusal names the silent form: ' + $command) (
-            (Get-Message $r.Out) -match 'current session|headless is the default|Invoke the interpreter directly|Drop -NoExit') $r.Out
+            (Get-Message $r.Out) -match 'current session|headless (?:is the default|default/required)|Invoke the interpreter directly|Drop -NoExit') $r.Out
     }
 
     # =====================================================================

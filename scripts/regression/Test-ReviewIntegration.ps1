@@ -211,7 +211,7 @@ function Write-JsonFile {
         Check-Contract 'I11 planned delivery library is byte-identical in installed runtime' { [IO.File]::Exists($library) -and (Get-FileHash $library).Hash -ceq (Get-FileHash (Join-Path $tool 'hooks\_deliverylib.ps1')).Hash }
         $payload=[pscustomobject]@{cwd=$target;session_id='installed';hook_event_name='UserPromptSubmit'}
         $wire=Invoke-ReviewHook $entry $payload 'claude'
-        Check-Contract 'I12 installed runtime actually emits first reminder with no stderr' { $wire.Exit -eq 0 -and $wire.Err -eq '' -and $wire.Out -match 'CLOSING section' }
+        Check-Contract 'I12 installed runtime actually emits first reminder with no stderr' { $wire.Exit -eq 0 -and $wire.Err -eq '' -and $wire.Out -match 'DONE\s*/\s*REMAINING' }
         $wire=Invoke-ReviewHook $entry $payload 'claude'
         Check-Contract 'I13 installed runtime suppresses the repeated reminder' { $wire.Exit -eq 0 -and $wire.Err -eq '' -and $wire.Out -eq '' }
     }

@@ -374,7 +374,7 @@ try {
     Check 'advisory: the reminder names the missing Skill call by name' (
         $blockMsg -match 'grilling') $blockMsg
     Check 'advisory: the reminder states BOTH ways out, so it is clearable' (
-        $blockMsg -match 'Advisory order: grilling\+domain-modeling' -and $blockMsg -match '(?i)why this was not a feature') $blockMsg
+        $blockMsg -match 'BEFORE feature work: global-spec-kit-rules\.md FULL; grilling\+domain-modeling first' -and $blockMsg -match '(?i)why this was not a feature') $blockMsg
 
     $tRan = New-Transcript 'feature-chain-ran' @(
         (New-UserEntry $FeaturePrompt),

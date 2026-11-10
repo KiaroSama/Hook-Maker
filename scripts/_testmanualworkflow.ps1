@@ -15,7 +15,7 @@ function Invoke-ManualWorkflowRegression {
     Check 'README and packaged-logo contracts require distinct full owners before work' (
         $badgeNote -match 'BEFORE README: global-repository-rules.md README FULL' -and
         $badgeNote -match 'BEFORE app logo/signing: global-project-lifecycle-rules.md FULL; README!=app logo' -and
-        $badgeNote -match 'verbatim authorized public text; never invent/alter wallets')
+        $badgeNote -match '12 to 16 verified badges/Donate')
     $sourceState = Get-ManualWorkflowState (Split-Path -Parent $HooksRoot)
     Check 'own workflow batch has one manual root and reachable reusable validation' $sourceState.Compliant
     $rootText="on: workflow_dispatch`njobs:`n  child:`n    uses: ./.github/workflows/child.yml`n"

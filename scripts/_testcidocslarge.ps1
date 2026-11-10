@@ -136,7 +136,7 @@ exit 1
             $policy.candidatePages=@(@{candidates=@($policy.candidates|Select-Object -First 100)},@{candidates=@($policy.candidates|Select-Object -Skip 100)})
             $policy.Remove('candidates')
             $unreviewed=Test-DocsHaveSemanticConsumers $repo $reviewFinal $documents 'owner/repo'
-            Check '155-reader automatic path retains original candidate refusal' ($unreviewed-and$script:DocsCarryoverReason-match'more than 100')
+            Check '155-reader automatic path retains original candidate refusal' ($unreviewed-and$script:DocsCarryoverReason-match'(?:more than |>)100 reader/reference candidates')
             $runtime=Join-Path $root 'reviewed-runtime/Ci-Status-Check'
             [void][IO.Directory]::CreateDirectory($runtime)
             foreach($module in @(Get-ChildItem (Split-Path -Parent $hook) -File|Where-Object{$_.Extension-in@('.ps1','.cs')})){Copy-Item -LiteralPath $module.FullName -Destination $runtime}

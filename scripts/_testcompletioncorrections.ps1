@@ -57,7 +57,7 @@
     # The ledger path as a DIRECTORY: every write to it fails.
     New-Item -ItemType Directory -Path (Join-Path (Get-StateDir $c) ('TestCompletionCheck-' + (Get-ProjectKey $p) + '.json')) -Force | Out-Null
     $r = Fire -Copy $c -Cwd $p
-    Check 'a ledger that cannot be written is reported, not swallowed' ($r.Exit -eq 0 -and $r.Out -match 'incident ledger could not be written') ($r.Out + '|' + $r.Err)
+    Check 'a ledger that cannot be written is reported, not swallowed' ($r.Exit -eq 0 -and $r.Out -match 'ledger write failed') ($r.Out + '|' + $r.Err)
     Check 'the ledger-write report never blocks' ($r.Out -notmatch '"decision":"block"') $r.Out
 
     $c = New-IsolatedHookCopy @{ TEST_COMPLETION_COORDINATION_WAIT_SECONDS = '0' }

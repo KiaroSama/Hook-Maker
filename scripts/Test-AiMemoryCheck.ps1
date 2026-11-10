@@ -150,7 +150,7 @@ try {
     $r = Fire -Cwd $proj3
     $parsed = $null
     try { $parsed = $r.Out | ConvertFrom-Json } catch { }
-    Check 'explicitly says no specialized files exist yet' ($null -ne $parsed -and [string]$parsed.reason -like '*no specialized files yet*')
+    Check 'explicitly says no specialized files exist yet' ($null -ne $parsed -and [string]$parsed.reason -like '*Only memory.md exists; specialized file ONLY for reusable task knowledge*')
 
     # =====================================================================
     Write-Host '--- memory.md already fresh -> silent ---' -ForegroundColor Cyan

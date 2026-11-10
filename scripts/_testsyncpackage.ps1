@@ -142,9 +142,10 @@
     Move-Item -LiteralPath $secondGeneration[0].FullName -Destination $movedAside -Force
     $ackGone = Run-Acknowledgement -Command $ackCommand
     Check 'acknowledging a package that is no longer on disk is REFUSED' ($ackGone.Exit -ne 0) ($ackGone.Out + $ackGone.Error)
+    $ackText = ($ackGone.Error + $ackGone.Out) -replace '\s+', ' '
     Check 'and the refusal says the source will be staged again rather than blaming the reviewer' (
-        ($ackGone.Error + $ackGone.Out) -match 'Reviewed package damaged/missing' -and
-        ($ackGone.Error + $ackGone.Out) -match 'Not processed; next event restages current source') ($ackGone.Error + $ackGone.Out)
+        $ackText -match 'Reviewed package damaged/missing' -and
+        $ackText -match 'Not processed; next event restages current source') $ackText
 
     # Put it back, tamper with the manifest's identity, and try again.
     Move-Item -LiteralPath $movedAside -Destination $secondGeneration[0].FullName -Force

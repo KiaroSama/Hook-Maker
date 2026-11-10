@@ -181,7 +181,7 @@ try {
     }
     foreach ($hostExe in @('pwsh','powershell.exe')) {
         $latestWriter=Join-Path $Work 'latest-status.ps1'
-        $latestPrefix='$hookInput=[pscustomobject]@{session_id="latest-status";cwd='''+$repo.Replace("'","''")+''';hook_event_name="Stop"}; '
+        $latestPrefix='$hookInput=[pscustomobject]@{session_id="latest-status-'+$hostExe+'";cwd='''+$repo.Replace("'","''")+''';hook_event_name="Stop"}; '
         $latestBody=$body.Replace('Invoke-DocsOnlyCarryover -ProjectRoot', $latestPrefix+'Invoke-DocsOnlyCarryover -ProjectRoot')+' -RequireLatestStatus'
         [IO.File]::WriteAllText($latestWriter,$latestBody,(New-Object Text.UTF8Encoding $false))
         $latestOut=Join-Path $Work 'latest-status.out';$latestErr=Join-Path $Work 'latest-status.err'

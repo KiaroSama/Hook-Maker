@@ -380,7 +380,7 @@
     Write-GuardedResult -Copy $c -Root $p -Overall 'ok' -RunId ('r2bgreen-' + $key) -CommandFingerprint $cmd -AgeMinutes 1
     $r = Fire -Copy $c -Cwd $p
     Check 'R2b: overflow of unresolved notes surfaces as a block, not a silent drop' ($r.Out -match '"decision":"block"') $r.Out
-    Check 'R2b: the block names the FULL-ledger overflow condition' ((Get-BlockReason $r.Out) -match 'ledger is FULL') (Get-BlockReason $r.Out)
+    Check 'R2b: the block names the FULL-ledger overflow condition' ((Get-BlockReason $r.Out) -match 'ledger (?:is )?FULL') (Get-BlockReason $r.Out)
     $st = Get-CompletionStateDoc -Copy $c -Root $p
     Check 'R2b: NONE of the 50 unresolved obligations was dropped (cap held, nothing lost)' ((Get-PendingCount $st) -eq 50) ('pending=' + (Get-PendingCount $st))
 
@@ -618,5 +618,5 @@ Write-Doc (Join-Path $StateDir ('TestRunGuard-result-' + $ProjectKey + '-' + $sa
         Clear-ReceiptField -Copy $cH -Root $pH -RunId $greenH -Field $field
         $resH = Invoke-Resolve -Copy $cH -Root $pH -Key $incH -RecoveryRunId $greenH -Reason $resolveReason
         Check ('C2h: an absent ' + $field + ' is refused BY NAME, not as a generic identity failure') (
-            $resH.Exit -ne 0 -and $resH.Text -match ('no ' + $field)) ('key ' + $incH + ' :: ' + $resH.Text)
+            $resH.Exit -ne 0 -and $resH.Text -match ('(?:no ' + $field + '|' + $field + '\s+missing)')) ('key ' + $incH + ' :: ' + $resH.Text)
     }

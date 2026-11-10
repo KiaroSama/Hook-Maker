@@ -184,8 +184,8 @@ try {
     Check 'a minor update is classified [minor]' ($r.Out -match 'pkg-minor 1\.0\.0 -> 1\.1\.0 \[minor\]') $r.Out
     Check 'a major update is classified [major]' ($r.Out -match 'pkg-major 1\.0\.0 -> 2\.0\.0 \[major\]') $r.Out
     Check 'output never contains a blocking decision (advisory only)' ($r.Out -notmatch '"decision"') $r.Out
-    Check 'output includes incremental-update guidance' ($r.Out -match 'small verified batches') $r.Out
-    Check 'output includes safety/release-note review guidance' ($r.Out -match 'Verify releases/breaks/runtime/peers/advisories') $r.Out
+    Check 'output includes incremental-update guidance' ($r.Out -match 'small validated batches') $r.Out
+    Check 'output routes safety/release-note review to the full environment owner' ($r.Out -match 'BEFORE review/update: global-environment-rules\.md FULL') $r.Out
     Check 'no automatic file modification occurs (package.json unchanged)' (
         ([System.IO.File]::ReadAllText((Join-Path $npmProj 'package.json'))) -eq '{"name":"fixture","version":"1.0.0","dependencies":{"pkg-patch":"1.0.0","pkg-minor":"1.0.0","pkg-major":"1.0.0"}}')
 
@@ -376,10 +376,10 @@ try {
     $rSession = Fire -Cwd $promptProj -EventName 'SessionStart'
     Check 'SessionStart caches findings for this project' ($rSession.Out -match 'pkg-x') $rSession.Out
     $rPromptPlain = Fire -Cwd $promptProj -EventName 'UserPromptSubmit' -Prompt 'fix a typo in the README'
-    Check 'an unrelated prompt still surfaces cached findings but no new-dependency guidance' ($rPromptPlain.Out -match 'pkg-x' -and $rPromptPlain.Out -notmatch 'Dependency/runtime/tool/Action/image: official docs/releases') $rPromptPlain.Out
+    Check 'an unrelated prompt still surfaces cached findings but no new-dependency guidance' ($rPromptPlain.Out -match 'pkg-x' -and $rPromptPlain.Out -notmatch 'BEFORE dependency/runtime/tool/Action/image changes: global-environment-rules.md FULL') $rPromptPlain.Out
     $rPromptNew = Fire -Cwd $promptProj -EventName 'UserPromptSubmit' -Prompt 'please add a new dependency for HTTP requests'
-    Check 'a new-dependency prompt injects "prefer latest stable compatible" guidance' ($rPromptNew.Out -match 'Dependency/runtime/tool/Action/image: official docs/releases') $rPromptNew.Out
-    Check 'new-dependency guidance also warns against a floating tag / non-deterministic pin' ($rPromptNew.Out -match 'floating tag')
+    Check 'a new-dependency prompt injects "prefer latest stable compatible" guidance' ($rPromptNew.Out -match 'BEFORE dependency/runtime/tool/Action/image changes: global-environment-rules.md FULL') $rPromptNew.Out
+    Check 'new-dependency guidance also warns against a floating tag / non-deterministic pin' ($rPromptNew.Out -match 'latest compatible STABLE/pin\+lock')
     $rPromptScratch = Fire -Cwd $promptProj -EventName 'UserPromptSubmit' -Prompt 'create a new project from scratch using a modern web framework'
     Check '"from scratch" project prompts also trigger the guidance' ($rPromptScratch.Out -match 'latest compatible STABLE') $rPromptScratch.Out
 
@@ -432,11 +432,11 @@ try {
     Write-Utf8 (Join-Path $contractProj 'package.json') '{"name":"fixture","dependencies":{"pkg-old":"1.0.0"}}'
     Set-Mock -NpmExit 1 -NpmJson '{"pkg-old":{"current":"1.0.0","latest":"3.0.0"}}'
     $rc = Fire -Cwd $contractProj -SessionId 'contract-1'
-    Check 'the report demands a decision per finding, not agreement' ($rc.Out -match 'Each finding:' -and $rc.Out -match 'Final standalone: Dependency decisions:') $rc.Out
+    Check 'the report demands a decision per finding, not agreement' ($rc.Out -match 'Each:' -and $rc.Out -match 'Final standalone: Dependency decisions:') $rc.Out
     Check 'update / keep / defer are all named as legitimate answers' (
         $rc.Out -match 'update\+lock\+real checks' -and $rc.Out -match 'keep\+reason' -and $rc.Out -match 'defer\+blocker') $rc.Out
-    Check 'silence is explicitly NOT an answer' ($rc.Out -match 'Each finding:' -and $rc.Out -match 'Final standalone:') $rc.Out
-    Check 'EOL / clearly-old-major needs a stated reason to leave in place' ($rc.Out -match 'justify EOL/old-major retention') $rc.Out
+    Check 'silence is explicitly NOT an answer' ($rc.Out -match 'Each:' -and $rc.Out -match 'Final standalone:') $rc.Out
+    Check 'EOL/old-major retention routes to the full owner with explicit keep reason' ($rc.Out -match 'BEFORE review/update: global-environment-rules\.md FULL' -and $rc.Out -match 'keep\+reason') $rc.Out
     Check 'the report names the exact closing line to write' ($rc.Out -match 'Dependency decisions:') $rc.Out
     Check 'the report still disclaims any authority to upgrade or block' (
         $rc.Out -match 'hook never edits/upgrades/blocks' -and $rc.Out -notmatch '"decision"') $rc.Out
@@ -465,7 +465,7 @@ try {
     # so a Stop from another session in between would re-arm it.
     $rClaude = Fire -Cwd $contractProj -EventName 'Stop' -SessionId 'contract-claude' -Client 'claude'
     Check 'V48: the Claude client gets the same update request, still advisory' (
-        $rClaude.Out -match 'Latest stable/newest nonbreaking' -and
+        $rClaude.Out -match 'BEFORE decisions: global-environment-rules\.md FULL' -and
         $rClaude.Out -notmatch 'unrelated to dependencies' -and $rClaude.Out -notmatch '"decision"') $rClaude.Out
     $r4 = Fire -Cwd $contractProj -EventName 'SubagentStop' -SessionId 'contract-3'
     Check 'SubagentStop replays it too' ($r4.Out -match 'pkg-old') $r4.Out
@@ -497,7 +497,7 @@ try {
     $r = Fire -Cwd $contractProj -EventName 'Stop' -SessionId 'off-1' -HookPath $offHook
     Check 'CLOSING_REMINDER=0 silences the closing half' ($r.Exit -eq 0 -and $r.Out -eq '') $r.Out
     $r = Fire -Cwd $contractProj -EventName 'UserPromptSubmit' -Prompt 'add a new dependency' -SessionId 'off-2' -HookPath $offHook
-    Check 'CLOSING_REMINDER=0 leaves the pre-task halves working' ($r.Out -match 'latest STABLE') $r.Out
+    Check 'CLOSING_REMINDER=0 leaves the pre-task halves working' ($r.Out -match 'latest compatible STABLE') $r.Out
 
     # =====================================================================
     Write-Host '--- shipped .env.example registers the correct events ---' -ForegroundColor Cyan

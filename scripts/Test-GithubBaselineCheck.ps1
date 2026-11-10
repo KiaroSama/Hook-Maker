@@ -185,7 +185,7 @@ function New-GitRepo {
 function Test-NoBaselineFinding {
     param([AllowNull()][string]$Out)
     if ([string]::IsNullOrWhiteSpace($Out)) { return $true }
-    return ($Out -notmatch 'GITHUB BASELINE CHECK' -and $Out -match '12 to 16 distinct verified badges')
+    return ($Out -notmatch 'GITHUB BASELINE CHECK' -and $Out -match '12 to 16 verified badges/Donate')
 }
 
 function Get-HeadSha {
@@ -213,7 +213,7 @@ try {
     # The workflow baseline stays silent without a GitHub remote; the README
     # badge reminder does NOT - the badge rule binds every repository.
     Check 'no GitHub remote -> no baseline findings' ($r.Out -notmatch 'GITHUB BASELINE CHECK') $r.Out
-    Check 'no GitHub remote, no CI -> the badge guidance still arrives' ($r.Out -match '12 to 16 distinct verified badges') $r.Out
+    Check 'no GitHub remote, no CI -> the badge guidance still arrives' ($r.Out -match '12 to 16 verified badges/Donate') $r.Out
 
     # =====================================================================
     Write-Host '--- README badges: 12 to 16, centred, the donation badge always (steering V40, V45, V47) ---' -ForegroundColor Cyan
@@ -251,7 +251,7 @@ try {
     New-BadgeReadme -Repo $bd7 -Shields 10 -WithWorkflowBadge -WithDonate -Centred
     $r = Fire -HookPath $BaselineHook -Cwd $bd7
     Check 'badges: 10 static + workflow + donation = 12, centred, with its Donate section -> guidance only; the plain logo is not counted' (
-        $r.Out -match '12 to 16 distinct verified badges' -and $r.Out -notmatch 'Title badges: \d+ [<>] \d+' -and $r.Out -notmatch 'Center badge rows' -and
+        $r.Out -match '12 to 16 verified badges/Donate' -and $r.Out -notmatch 'Title badges: \d+ [<>] \d+' -and $r.Out -notmatch 'Center badge rows' -and
         $r.Out -notmatch 'Title lacks Support-donations badge' -and $r.Out -notmatch 'Missing ## Donate/#donate') $r.Out
     $bd11 = New-GitRepo 'badges11' -GithubRemote:$false
     New-BadgeReadme -Repo $bd11 -Shields 9 -WithWorkflowBadge -WithDonate
@@ -266,7 +266,7 @@ try {
     $bd16 = New-GitRepo 'badges16' -GithubRemote:$false
     New-BadgeReadme -Repo $bd16 -Shields 15 -WithDonate
     $r = Fire -HookPath $BaselineHook -Cwd $bd16
-    Check 'badges: exactly 16 is inside the bounds - no count note' ($r.Out -match '12 to 16 distinct verified badges' -and $r.Out -notmatch 'Title badges: \d+ [<>] \d+') $r.Out
+    Check 'badges: exactly 16 is inside the bounds - no count note' ($r.Out -match '12 to 16 verified badges/Donate' -and $r.Out -notmatch 'Title badges: \d+ [<>] \d+') $r.Out
     $r = Fire -HookPath $BaselineHook -Cwd $bd7
     Check 'badges: the same README state in the same session is said once' ([string]::IsNullOrWhiteSpace([string]$r.Out)) ([string]$r.Out)
     $r = Fire -HookPath $BaselineHook -Cwd $bd3 -Client 'claude'

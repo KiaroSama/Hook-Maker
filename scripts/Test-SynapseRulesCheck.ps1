@@ -164,7 +164,7 @@ try {
     Check 'stop: it says to correct a CONTRADICTED memory in the same turn' (
         $rUsed.Out -match 'Correct contradicted blocker/name/environment SAME turn') $rUsed.Out
     Check 'stop: it refuses secrets explicitly' ($rUsed.Out -match 'No secrets/credentials/tokens') $rUsed.Out
-    Check 'stop: "nothing durable" is a normal answer' ($rUsed.Out -match 'no durable value = no write') $rUsed.Out
+    Check 'stop: "nothing durable" is a normal answer' ($rUsed.Out -match 'no durable value\s*=\s*no write') $rUsed.Out
 
     Write-Host ''
     Write-Host '--- the marker: a long session that read it EARLY still counts ---' -ForegroundColor Cyan

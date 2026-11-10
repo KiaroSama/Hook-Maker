@@ -38,7 +38,7 @@ function Invoke-AuditIndexRegression {
             return $hash
         }
         $changedPath=Join-Path $Work 'changed-audit.json';$refused=$false
-        try{Export-CompletionEvidenceAudit $changedPath ([pscustomobject]@{})}catch{$refused=$_.Exception.Message-match'changed concurrently'}
+        try{Export-CompletionEvidenceAudit $changedPath ([pscustomobject]@{})}catch{$refused=$_.Exception.Message-match'^Evidence changed; audit aborted, originals untouched'}
         Check 'concurrent raw-byte change refuses audit publication' ($refused-and-not[IO.File]::Exists($changedPath))
     } $Root $Work
 }

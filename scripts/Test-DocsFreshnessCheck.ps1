@@ -512,7 +512,7 @@ try {
     Check 'Codex (no CLAUDE_PROJECT_DIR): the catch path exits cleanly (exit 0, no stderr)' ($rCodex.Exit -eq 0 -and $rCodex.Err -eq '') ($rCodex.Out + ' | err=' + $rCodex.Err)
     Check 'Codex (no CLAUDE_PROJECT_DIR): the detection-error warning is emitted as systemMessage' (
         $null -ne $codexParsed -and $null -ne $codexParsed.PSObject.Properties['systemMessage'] -and
-        [string]$codexParsed.systemMessage -match 'DOCS FRESHNESS CHECK') $rCodex.Out
+        [string]$codexParsed.systemMessage -match 'DOCS FRESHNESS UNKNOWN \(detection error\)') $rCodex.Out
     Check 'Codex output never uses hookSpecificOutput.additionalContext for this warning' (
         $null -ne $codexParsed -and $null -eq $codexParsed.PSObject.Properties['hookSpecificOutput']) $rCodex.Out
     # Once per session: on Claude Code a Stop additionalContext re-invokes the
@@ -521,7 +521,7 @@ try {
     $rAgain = Fire -HookPath $hcErr.Script -Cwd $projErr -EventName 'Stop' -LocalAppData $hcErr.LocalAppData
     Check 'the detection-error warning is NOT repeated to the same session (exit 0, silent)' ($rAgain.Exit -eq 0 -and $rAgain.Out -eq '') $rAgain.Out
     $rNew = Fire -HookPath $hcErr.Script -Cwd $projErr -EventName 'Stop' -SessionId 'sess2' -LocalAppData $hcErr.LocalAppData
-    Check 'a NEW session is warned again' ($rNew.Out -match 'DOCS FRESHNESS CHECK') $rNew.Out
+    Check 'a NEW session is warned again' ($rNew.Out -match 'DOCS FRESHNESS UNKNOWN \(detection error\)') $rNew.Out
 
     # PreToolUse `git push` gate and Stop latest-SHA guidance.
     . (Join-Path $PSScriptRoot '_testdocsfreshnesspush.ps1')

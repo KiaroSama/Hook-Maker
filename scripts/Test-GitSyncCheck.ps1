@@ -162,7 +162,7 @@ try {
         $null = Fire -Cwd $stampRepo -SessionId 'stamp-3' -HookPath (Join-Path $everyHookDir 'Git-Sync-Check.ps1')
         Check 'FETCH_MIN_INTERVAL_MINUTES=0 fetches on every event (stamp rewritten)' ([System.IO.File]::ReadAllText($stampFile[0].FullName) -ne $firstStamp) $firstStamp
     }
-    Check 'behind guidance recommends inspection/fast-forward, not a blind merge' ($r.Out -match 'Behind\+clean: inspect/ff-only' -and $r.Out -match 'dirty/diverged: inspect') $r.Out
+    Check 'behind guidance routes sync to the full owner and preserves unrelated work' ($r.Out -match 'BEFORE sync: global-repository-rules\.md FULL' -and $r.Out -match 'Preserve unrelated work; blocked: retain/report') $r.Out
 
     # =====================================================================
     Write-Host '--- missing upstream is reported ---' -ForegroundColor Cyan
@@ -538,8 +538,8 @@ try {
     & git -C $idRepo -c user.name='GitHub' -c user.email='noreply@github.com' commit -q --allow-empty -m web
     & git -C $idRepo push -q origin main
     $r = Fire -Cwd $idRepo -EventName 'SessionStart' -SessionId 'id-sess'
-    Check 'identity: the reminder names the public address and the rewrite obligation' (
-        $r.Out -match 'COMMIT IDENTITY' -and $r.Out -match 'Kiaro\.Sama\.Dev@gmail\.com' -and $r.Out -match 'owner-only rewrite') $r.Out
+    Check 'identity: public address and full identity-repair owner are named before action' (
+        $r.Out -match 'COMMIT IDENTITY' -and $r.Out -match 'Kiaro\.Sama\.Dev@gmail\.com' -and $r.Out -match 'BEFORE create/repair: global-repository-rules\.md Git and identity FULL') $r.Out
     Check 'identity: exactly one commit is counted - the bot and the noreply@ system committer are not' (
         $r.Out -match '1 commit\(s\) across 4 commit') $r.Out
     Check 'identity: no other address is ever printed' (
@@ -563,7 +563,7 @@ try {
     & git -C $idNew push -q origin main
     $r = Fire -Cwd $idNew -SessionId 'id-new'
     Check 'identity: a session commit on another address is reported at Stop, as advice not a block' (
-        $r.Out -match 'the commits made in this session' -and $r.Out -notmatch '"decision"\s*:\s*"block"') $r.Out
+        $r.Out -match 'session commits' -and $r.Out -notmatch '"decision"\s*:\s*"block"') $r.Out
     Check 'identity: and still without printing the address' ($r.Out -notmatch 'example\.invalid') $r.Out
 
     # Disposition: a merged stray and a branch holding unique commits.

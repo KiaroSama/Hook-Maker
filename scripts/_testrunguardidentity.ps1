@@ -40,7 +40,7 @@ foreach ($observerHost in @('pwsh', 'powershell.exe')) {
         $observed = Get-ObservedRecord $copy.LocalAppData
         if ($case.ContainsKey('Unknown')) {
             Check ($observerHost + ': ' + $case.Name) (
-                $response.Exit -eq 0 -and $null -eq $observed -and (Get-Message $response.Out) -match 'identity') $response.Out
+                $response.Exit -eq 0 -and $null -eq $observed -and (Get-Message $response.Out) -match 'dynamic/unsupported binding; no observation') $response.Out
         }
         else {
             $expected = Get-CommandFingerprint -ExecutablePath 'python.exe' -ArgumentList @($case.Expected)
@@ -59,7 +59,7 @@ foreach ($observerHost in @('pwsh', 'powershell.exe')) {
         commandFingerprint=(Get-CommandFingerprint -ExecutablePath 'python.exe' -ArgumentList @('unrelated')); overall='ok'; exitCode=0
     }
     $response = Fire -HookPath $unknownCopy.Script -Cwd $Proj -EventName 'PostToolUse' -Command $unknownCommand -LocalAppData $unknownCopy.LocalAppData -Exe $observerHost
-    Check ($observerHost + ': dynamic identity cannot accept an unrelated fresh success') ((Get-Message $response.Out) -match 'NO evidence') $response.Out
+    Check ($observerHost + ': dynamic identity cannot accept an unrelated fresh success') ((Get-Message $response.Out) -match 'executable/argv literals unrecoverable; unrelated result != run identity') $response.Out
 }
 
 Write-Host '--- literal argv: observer and real guarded runner agree end to end ---' -ForegroundColor Cyan
@@ -115,7 +115,7 @@ foreach ($observerHost in @('pwsh', 'powershell.exe')) {
         Write-Utf8 $resultPath ($changed | ConvertTo-Json -Depth 8)
         if ($negative -eq 'stale') { [System.IO.File]::SetLastWriteTimeUtc($resultPath, [DateTime]::UtcNow.AddHours(-2)) }
         $response = Fire -HookPath $copy.Script -Cwd $Proj -EventName 'PostToolUse' -Command $command -LocalAppData $copy.LocalAppData -Exe $observerHost
-        $expectedMessage = switch ($negative) {failure {'did NOT pass'} leak {'PROCESS LEAK'} default {'NO evidence'}}
+        $expectedMessage = switch ($negative) {failure {'did NOT pass'} leak {'PROCESS LEAK'} default {'Outcome UNPROVEN, no pass claim'}}
         Check ($observerHost + ': literal argv still rejects ' + $negative + ' evidence') ((Get-Message $response.Out) -match $expectedMessage) $response.Out
     }
 }

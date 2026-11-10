@@ -168,10 +168,10 @@ try {
     Check '2. it requires counting before new code' ($msg1 -match '(?i)Count first') $msg1
     Check '4. default threshold 800 appears in the guidance' ($msg1 -match '\b800\b') $msg1
     Check '6a. a file at or near the ceiling is declared CLOSED to new code' (
-        $msg1 -match '(?i)>=700 lines: CLOSED to new code') $msg1
-    Check '6b. anti-wrapper guidance remains' ($msg1 -match '(?i)wrapper') $msg1
+        $msg1 -match '(?i)>=700 lines CLOSED to new code') $msg1
+    Check '6b. anti-wrapper and split policy route to the full architecture owner' ($msg1 -match 'BEFORE splitting: global-architecture-rules\.md FULL') $msg1
     Check '7. the guidance carries the ceiling to test files and subagents' (
-        $msg1 -match '(?i)Tests count' -and $msg1 -match '(?i)briefs include ceiling') $msg1
+        $msg1 -match '(?i)Tests/worker briefs count' -and $msg1 -match 'HARD CEILING 800') $msg1
 
     # =====================================================================
     Write-Host '--- Pre-task uses the CONFIGURED threshold; invalid falls back to 800 ---' -ForegroundColor Cyan

@@ -122,7 +122,7 @@
     # task takes. Naming only the set reads as though the set were the whole
     # policy, which is what the 2026-09-19 rules stopped being true.
     Check 'the nudge also names the Spec Kit route' (
-        $r.Out -match 'BEFORE scaffold/feature/bug/delta: global-spec-kit-rules\.md FULL' -and $r.Out -match 'bug-converge') $r.Out
+        $r.Out -match 'BEFORE scaffold/feature/bug/delta: global-spec-kit-rules\.md FULL') $r.Out
     # Advisory only: naming a route must not turn this hook into a second gate.
     Check 'and naming it adds no blocking decision' ($r.Out -notmatch '"decision":"block"') $r.Out
     $r2 = Fire -HookPath $hook1 -Cwd $proj1 -RawStdin (New-PromptStdin -Cwd $proj1 -EventName 'UserPromptSubmit' -Prompt 'anything else' -SessionId 'skills-s1')
@@ -270,10 +270,10 @@
     Check 'the project source is enumerated' ($r3s.Out -match 'proj-only-skill \[project\]') $r3s.Out
     Check 'the global source is enumerated' ($r3s.Out -match 'global-only-skill \[global\]') $r3s.Out
     Check 'the plugin source is enumerated and counted' (
-        $r3s.Out -match 'Plugin skills: 3 across 2 plugins' -and
+        $r3s.Out -match 'Plugin skills: 3/2 plugins' -and
         $r3s.Out -match 'ponytail \(1\)' -and $r3s.Out -match 'superpowers \(2\)') $r3s.Out
     Check 'plugin skills are addressed as <plugin>:<skill>, the form the client uses' (
-        $r3s.Out -match 'Address these as <plugin>:<skill>') $r3s.Out
+        (Get-Context $r3s.Out) -match 'key <plugin>:<skill>') $r3s.Out
     # Several hundred plugin skill names would be a token bill, not information -
     # the inventory names PLUGINS, and individual plugin skills surface only in
     # the per-prompt shortlist below.

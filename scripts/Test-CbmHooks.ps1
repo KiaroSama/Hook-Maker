@@ -201,7 +201,7 @@ try {
     [System.IO.File]::WriteAllText((Join-Path $proj 'graphify-out\graph.json'), '{}')
     $r = Invoke-CbmHook 'Graph-Read-Check\Graph-Read-Check.ps1' @{ hook_event_name = 'SessionStart'; cwd = $proj; session_id = 'g1' } $cache
     Check 'graph: still advises when this project has a CBM index' ($r.Out -match 'GRAPH READ CHECK:') $r.Out
-    Check 'graph: the advisory names both graphs' ($r.Out -match 'Both: CMM code; Graphify docs/media/cross-cut') $r.Out
+    Check 'graph: the advisory names both graphs' ($r.Out -match 'Both: CMM code/Graphify docs-media-cross-cut') $r.Out
     Remove-Item -LiteralPath $dbPath -Force
     $r = Invoke-CbmHook 'Graph-Read-Check\Graph-Read-Check.ps1' @{ hook_event_name = 'SessionStart'; cwd = $proj; session_id = 'g2' } $cache
     Check 'graph: unchanged behaviour when there is no CBM index' ($r.Out -match 'GRAPH READ CHECK:') $r.Out
