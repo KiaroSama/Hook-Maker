@@ -325,7 +325,8 @@ foreach ($p in $index.Plugin) {
     if (-not $pluginsByPlugin.ContainsKey($group)) { $pluginsByPlugin[$group] = 0 }
     $pluginsByPlugin[$group] = $pluginsByPlugin[$group] + 1
 }
-$installedNames = Get-InstalledSkillNames @($index.Plugin)
+# Both index paths return a generic List; @() can fail on its PSObject wrapper.
+$installedNames = Get-InstalledSkillNames ($index.Plugin.ToArray())
 foreach ($key in $byName.Keys) { $installedNames[$key] = $true }
 
 # ---- bounded transcript probe ---------------------------------------------
