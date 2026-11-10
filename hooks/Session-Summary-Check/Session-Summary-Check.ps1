@@ -157,7 +157,7 @@ $claim = Invoke-DeliveryClaim -Path ($deliveryPath + '.claims.json') -Identity (
 if (-not $claim.Ok) {
     # No reservation means no claim that the policy was delivered. This display
     # warning is non-continuing; a later real event can retry the unchanged state.
-    [Console]::Out.WriteLine((@{ systemMessage = ('SESSION SUMMARY: reminder reservation is unverified (' + $claim.Reason + '). No task completion was recorded.') } | ConvertTo-Json -Compress))
+    [Console]::Out.WriteLine((@{ systemMessage = ('SESSION SUMMARY: reservation UNVERIFIED: ' + $claim.Reason + '; no completion.') } | ConvertTo-Json -Compress))
     exit 0
 }
 if (-not $claim.Admitted) {
@@ -168,11 +168,9 @@ $blocked = @(Get-BlockedGateNames -ProjectKey $projectKey -SessionId $sessionId)
 
 $lines = New-Object System.Collections.ArrayList
 if (-not [string]::IsNullOrEmpty($languageLine)) { [void]$lines.Add($languageLine); [void]$lines.Add('') }
-[void]$lines.Add('SESSION SUMMARY: exactly one short DONE / REMAINING per task; CLOSING section LAST after MCP used:/Skills used:/Rules applied:, in the user''s language.')
-[void]$lines.Add('- Only when handing back finished work; not during work, background waits or gate corrections. After publication, correct the named issue in one line; never repeat the wrap-up.')
-[void]$lines.Add('- Before closing: meaningful memory updates, authorized Git sync + exact-SHA green CI, stale-doc acknowledgement, real tests, no owned process survivors, secrets/local-only hygiene. Verify, never guess.')
-[void]$lines.Add('- DONE: verified completed work, successful checks and resolved gates (including repaired past failures). REMAINING: ONLY unresolved required work, unfinished/deferred items, blockers and untested paths, each with its reason.')
-[void]$lines.Add('- Check every gate''s current state; distinguish verified/unverified. No invented work or informational nonblockers. Nothing left -> one line. Keep it scannable.')
+[void]$lines.Add('SESSION SUMMARY: final handback ONLY, user language; DONE / REMAINING ONCE/task, LAST after MCP used:/Skills used:/Rules applied:. Corrections: issue-line only.')
+[void]$lines.Add('Verify memory/authorized Git/exact-SHA CI/docs ack/real tests/no owned survivors/private hygiene; ALL gates verified/unverified. Missing owner/proof: REMAINING.')
+[void]$lines.Add('DONE=verified work/checks/gates; REMAINING=unfinished/deferred/blocked/untested+reasons, or none.')
 
 # A summary that went out while a gate was still open. Stated ONCE, as a fact
 # about what already happened, and never turned into a demand for a correction
@@ -184,16 +182,16 @@ if ($null -ne (Get-Command Read-GenerationFailureOnce -ErrorAction SilentlyConti
     try { $pastFailure = Read-GenerationFailureOnce -HookInput $hookInput } catch { $pastFailure = '' }
     if (-not [string]::IsNullOrWhiteSpace($pastFailure)) {
         [void]$lines.Add('')
-        [void]$lines.Add('NOTED ONCE, NO ACTION NEEDED: a wrap-up was observed, but its readiness was not verified (' + $pastFailure + ').')
-        [void]$lines.Add('This is recorded, not a correction to make - the summary was already displayed by then.')
+        [void]$lines.Add('NOTED ONCE, NO ACTION: wrap-up readiness UNVERIFIED (' + $pastFailure + ').')
+        [void]$lines.Add('Already displayed; history, no correction.')
     }
 }
 
 if ($blocked.Count -gt 0) {
     [void]$lines.Add('')
     [void]$lines.Add('Gate(s) that already blocked earlier in this session: ' + ($blocked -join ', ') + '.')
-    [void]$lines.Add('These markers are history only; they do not prove a gate is still open.')
-    [void]$lines.Add('Account for each one after checking its current status: resolved in DONE, unresolved in REMAINING.')
+    [void]$lines.Add('Historical markers != current open gates.')
+    [void]$lines.Add('Recheck each: resolved -> DONE; unresolved -> REMAINING.')
 }
 
 $emit = Write-HookResult -EventName $eventName -Kind 'context' -Message ($lines -join "`n")

@@ -118,10 +118,10 @@ try {
     $ruleRepo = New-RuleFileRepo 'rulefile-advisory'
     $r = Fire -Cwd $ruleRepo
     $ruleIgnore = [System.IO.File]::ReadAllText((Join-Path $ruleRepo '.gitignore'))
-    Check 'rule-file pattern: reported, not written into .gitignore' ($ruleIgnore -notmatch '(?m)^/src/?\r?$' -and $r.Out -match 'Rule-requested patterns NOT written/protected' -and $r.Out -match '/src') ($r.Out + ' || ' + $ruleIgnore)
+    Check 'rule-file pattern: reported, not written into .gitignore' ($ruleIgnore -notmatch '(?m)^/src/?\r?$' -and $r.Out -match 'Patterns NOT protected' -and $r.Out -match '/src') ($r.Out + ' || ' + $ruleIgnore)
     Check 'rule-file pattern: a tracked file under it is never push-blocked' ($r.Out -notmatch 'TRACKED protected paths') $r.Out
     $r = Fire -Cwd $ruleRepo -EventName 'SessionStart'
-    Check 'rule-file advice is said once per set, not on every event' ($r.Out -notmatch 'Rule-requested patterns NOT written/protected') $r.Out
+    Check 'rule-file advice is said once per set, not on every event' ($r.Out -notmatch 'Patterns NOT protected') $r.Out
     $protectHook = New-ConfiguredIgnoreHookCopy -EnvOverrides @{ RULE_FILE_PATTERNS = 'write-and-protect' }
     $protRepo = New-RuleFileRepo 'rulefile-protect'
     $r = Fire -Cwd $protRepo -HookPath $protectHook

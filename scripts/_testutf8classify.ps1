@@ -84,7 +84,7 @@
     finally { $lockStream.Dispose() }
     $msgLock = Get-Message $rLock.Out
     Check 'an unreadable file makes the baseline PARTIAL with the read-failure cause' (
-        $msgLock -match '(?i)could not be read' -and $msgLock -match '(?i)PARTIAL') $msgLock
+        $msgLock -match '(?i)unreadable files/directories' -and $msgLock -match '(?i)PARTIAL') $msgLock
     Check 'an unreadable file is never reported as a violation' ($msgLock -notmatch '- locked\.txt - an invalid') $msgLock
 
     # =====================================================================
@@ -115,7 +115,7 @@
         $rRpRoot = Fire -HookPath $hcRpRoot.Script -Cwd $rpLink -EventName 'SessionStart' -LocalAppData $hcRpRoot.LocalAppData
         $msgRpRoot = Get-Message $rRpRoot.Out
         Check 'a junction scan ROOT is refused and marked PARTIAL naming the root' (
-            $msgRpRoot -match '(?i)PARTIAL' -and $msgRpRoot -match '(?i)scan root is a junction') $msgRpRoot
+            $msgRpRoot -match '(?i)PARTIAL' -and $msgRpRoot -match '(?i)root junction/symlink not followed') $msgRpRoot
         Check 'no finding comes from behind the refused junction root' ($msgRpRoot -notmatch 'linkedbad') $msgRpRoot
     }
     else {
@@ -172,5 +172,5 @@
     Write-Bytes $excRegistry (Get-InvalidUtf8Bytes 'CORRUPTREGISTRY')
     $r = Fire -HookPath $hcExc.Script -Cwd $projExc -EventName 'Stop' -SessionId 'exc99' -LocalAppData $hcExc.LocalAppData
     Check 'a registry that is not itself valid UTF-8 rejects ALL exceptions (still blocks)' (
-        (Test-StopBlocks $r.Out) -and (Get-Message $r.Out) -match 'legacy/notes\.txt' -and (Get-Message $r.Out) -match '(?i)not itself valid UTF-8') $r.Out
+        (Test-StopBlocks $r.Out) -and (Get-Message $r.Out) -match 'legacy/notes\.txt' -and (Get-Message $r.Out) -match '(?i)invalid UTF-8') $r.Out
     Remove-Item -LiteralPath $excRegistry -Force

@@ -103,9 +103,9 @@ if ($config.ContainsKey('LINE_THRESHOLD')) {
 # UserPromptSubmit exits here: it must never pay for a filesystem walk. SessionStart
 # falls through to record the baseline the Stop gate needs (guidance emitted first,
 # so a scan problem can never cost the guidance).
-$headline = "FILE SIZE POLICY - $lineThreshold lines is a HARD CEILING per source file, enforced when you write, so decomposition is never needed later."
-$bullet1 = "- Before writing to ANY file, check its length. A file at or near the ceiling (about $($lineThreshold - 100) lines or more) is CLOSED to new code: create a new file named for the responsibility the new code carries, write there, wire it in with imports/re-exports."
-$bullet2 = "- Never push a file past $lineThreshold lines; never grow a file already over it - extract from it instead."
+$headline = "FILE SIZE: HARD CEILING $lineThreshold lines/source file; enforce before writing."
+$bullet1 = "- Count first: >=$($lineThreshold - 100) lines CLOSED to new code; cohesive module/wired imports."
+$bullet2 = "- Never exceed $lineThreshold or grow oversized files; extract instead."
 $guidanceExitCode = 0
 if (-not $isStopEvent) {
     if ($eventName -eq 'UserPromptSubmit') {
@@ -116,7 +116,7 @@ if (-not $isStopEvent) {
             $headline,
             $bullet1,
             $bullet2,
-            "- A new file is a real responsibility: never a thin wrapper, forwarding file, or fragment created to duck the number. Test files count too. Put the ceiling in every subagent brief."
+            "- BEFORE splitting: global-architecture-rules.md FULL. Tests/worker briefs count."
         )
     }
     $note = $lines -join "`n"
@@ -351,10 +351,10 @@ while ($stack.Count -gt 0) {
 # cause string naming the REAL reason(s) - reused by BOTH the no-offender advisory
 # and the offender report, so neither ever assumes a cause it did not actually hit.
 $causes = New-Object System.Collections.Generic.List[string]
-if ($scanLimitReached) { [void]$causes.Add('a source-file scan ceiling of ' + $maxFiles + ' files was reached') }
-if ($dirLimitReached) { [void]$causes.Add('a directory ceiling of ' + $maxDirs + ' directories was reached') }
-if ($timeLimitReached) { [void]$causes.Add('a scan time limit of ' + $maxScanSeconds + ' seconds was reached') }
-if ($scanIncomplete) { [void]$causes.Add('one or more files or directories could not be read') }
+if ($scanLimitReached) { [void]$causes.Add('source-file ceiling ' + $maxFiles + ' reached') }
+if ($dirLimitReached) { [void]$causes.Add('directory ceiling ' + $maxDirs + ' reached') }
+if ($timeLimitReached) { [void]$causes.Add('scan time limit ' + $maxScanSeconds + 's reached') }
+if ($scanIncomplete) { [void]$causes.Add('unreadable files/directories') }
 $partial = $causes.Count -gt 0
 $partialCause = $causes -join ' and '
 
@@ -441,14 +441,14 @@ if ($baselineUsable -and -not $partial) {
             catch { }
             $shown = @($grown.ToArray() | Sort-Object -Property Lines -Descending | Select-Object -First 5)
             $blockLines = New-Object System.Collections.Generic.List[string]
-            [void]$blockLines.Add('LARGE FILE CHECK: this task pushed ' + $grown.Count + ' source file(s) past the ' + $lineThreshold + '-line hard ceiling (each was at or under it when this session started):')
+            [void]$blockLines.Add('LARGE FILE CHECK: task grew ' + $grown.Count + ' source files from <=' + $lineThreshold + ' to above hard ceiling:')
             foreach ($item in $shown) {
-                [void]$blockLines.Add('- ' + $item.Path + ' (' + $item.Lines + ' lines now, ' + $item.Was + ' at session start): move the code added to ' + $item.Path + ' into a new responsibility-named file; do not create a wrapper.')
+                [void]$blockLines.Add('- ' + $item.Path + ': ' + $item.Was + ' -> ' + $item.Lines + ' lines; extract added code by responsibility, not wrapper.')
             }
             if ($grown.Count -gt $shown.Count) {
                 [void]$blockLines.Add('(+' + ($grown.Count - $shown.Count) + ' more file(s) in the same state, same recovery.)')
             }
-            [void]$blockLines.Add('Do that for each file above - a real responsibility, never a thin wrapper, forwarding file, or fragment created to duck the number - then stop again. This block clears as soon as each file above is back at or under ' + $lineThreshold + ' lines.')
+            [void]$blockLines.Add('Each file: real responsibility extraction, no wrapper/forwarding/count dodge. Stop again; clear when each <=' + $lineThreshold + ' lines.')
             # Record the block the way every sibling Stop gate does, so
             # Session-Summary-Check can account for it.
             $emit = Write-StopBlockResult -HookInput $hookInput -HookName 'Large-File-Check' -FindingFingerprint $fingerprint -EventName $eventName -Reason ($blockLines.ToArray() -join "`n")
@@ -466,7 +466,7 @@ if ($offenders.Count -eq 0) {
     if ($partial -and -not $cooldownActive) {
         New-Item -ItemType Directory -Path $stateDir -Force | Out-Null
         [System.IO.File]::WriteAllText($statePath, [DateTime]::UtcNow.ToString('o'))
-        $coverageNote = 'LARGE FILE CHECK: coverage was INCOMPLETE - ' + $partialCause + ' before the whole project was scanned, so no oversized-file all-clear can be concluded. No offender was found in the scanned portion, but unscanned files may remain. Advisory only - not a block.'
+        $coverageNote = 'LARGE FILE CHECK: coverage was INCOMPLETE - ' + $partialCause + '; no scanned offender, unscanned UNKNOWN. No all-clear; advisory only.'
         Write-Advisory $coverageNote
     }
     exit 0
@@ -485,8 +485,8 @@ $more = ''
 if ($offenders.Count -gt $top.Count) {
     $more = ' and ' + ($offenders.Count - $top.Count) + ' more'
 }
-$partialNote = if ($partial) { ' (PARTIAL scan: ' + $partialCause + ', so this list may be incomplete - not full-repository coverage.)' } else { '' }
-$reason = 'LARGE FILE CHECK: ' + $offenders.Count + ' source file(s) exceed ' + $lineThreshold + ' lines: ' + ($fileLines -join '; ') + $more + '.' + $partialNote + ' Already oversized before this task: advisory only; gate applies only to task-grown overflow. Closed to growth: extract a real responsibility/module/layer/public boundary, wire entry/imports/re-exports, avoid cycles; verify build/tests. No thin wrapper/pass-through/arbitrary count split or unrelated refactor. Cooldown applies.'
+$partialNote = if ($partial) { ' (PARTIAL scan: ' + $partialCause + '; list incomplete, not whole-repo coverage.)' } else { '' }
+$reason = 'LARGE FILE CHECK: ' + $offenders.Count + ' source file(s) exceed ' + $lineThreshold + ' lines: ' + ($fileLines -join '; ') + $more + '.' + $partialNote + ' Existing overflow advisory; task-grown overflow gates. BEFORE extraction: global-architecture-rules.md FULL. Stop growth; verify build/tests; cooldown.'
 Write-Advisory $reason
 exit 0
 }

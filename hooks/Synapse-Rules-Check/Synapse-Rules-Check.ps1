@@ -65,9 +65,8 @@ if ($eventName -eq 'UserPromptSubmit' -and -not $midSessionReminder) { exit 0 }
 # ---- SessionStart: load the rules, with the settings that make it work ------
 if ($eventName -eq 'SessionStart') {
     $note = @(
-        'SYNAPSE RULES CHECK: before first edit, memory_digest ONCE/session with tokenBudget; index it first (id/type/~110-char preview); read matching memories IN FULL, not triple raw items/text/sections.',
-        'Targeted memory_retrieve: minScore 0.65 unfiltered OR tags ["project:<slug>"]; NEVER pass minScore and tags together. Expected empty -> remove threshold, inspect scoreBreakdown (0.60-0.65 with real vector may be clipped; ~0.5/near-zero vector is noise). Adjacent answer -> query expected answer terms.',
-        'Memory is recall, not policy/project truth. CI/deploy/billing/quota/credentials/service state is an observation with a timestamp: reverify before repeating. Keep private data local.'
+        'SYNAPSE: BEFORE edits memory_digest ONCE/session+tokenBudget; index id/type/~110-char preview, read matches FULL.',
+        'memory_retrieve: minScore0.65 or tags; empty: remove threshold/check scoreBreakdown (real0.60-0.65/~0.5 noise); adjacent: answer terms. Recall!=policy/project truth; reverify operation/account state; private local.'
     ) -join "`n"
     $emit = Write-HookResult -EventName $eventName -Kind 'context' -Message $note
     exit $emit.ExitCode
@@ -145,24 +144,23 @@ if ($eventName -eq 'UserPromptSubmit') {
         [System.IO.File]::WriteAllText($midPath, $midKey)
     }
     catch { exit 0 }    # an undeliverable once-marker must not turn into a per-prompt note
-    $emit = Write-HookResult -EventName $eventName -Kind 'context' -Message 'SYNAPSE RULES CHECK: this session has already changed files and has not read the Synapse store. Call `memory_digest` once now (with a `tokenBudget`; index it, then read only what matches), then continue. This is said once per session.'
+    $emit = Write-HookResult -EventName $eventName -Kind 'context' -Message 'SYNAPSE: files changed without store read. Once now: `memory_digest` + `tokenBudget`; index, read matches, continue. Once/session.'
     exit $emit.ExitCode
 }
 
 if ($consulted) {
     $message = @(
-        'SYNAPSE WRITE-BACK: save only new durable facts, lessons+reason, decisions+rejected alternative or verified commands via `memory_write` (entityKey supersedes old version; project:<slug> tag).',
-        'Skip duplicates, status/round/closure snapshots and fixes without transferable lessons. CONTRADICTED this session (cleared blocker/renamed project/changed environment) -> correct in the SAME turn.',
-        'Never store secrets, credentials, tokens or secrets.md/.env contents. Nothing durable -> write nothing.'
+        'SYNAPSE memory_write: durable facts/reasons/decisions/rejections/verified commands; entityKey replaces, project:<slug>. Correct contradicted blocker/name/environment SAME turn.',
+        'No secrets/credentials/tokens/secrets.md/.env contents/duplicate/status/closure/nontransferable fixes; no durable value=no write.'
     ) -join "`n"
 }
 else {
     $message = @(
-        'SYNAPSE RULES CHECK: this session is ending and the Synapse store was never queried.',
-        $(if ($worked) { 'This session changed files and never read the store: its standing rules governed that work unread - `memory_digest` once, with a `tokenBudget`, is the whole cost.' }
-            else { 'If the session did real work, its standing rules governed that work and were not read - `memory_digest` once, with a `tokenBudget`, is the whole cost.' }),
-        'If anything durable was learned, write it back with `memory_write` (entityKey + project tag) rather than leaving it only in `.ai/`.',
-        'For a trivial turn this is nothing to act on.'
+        'SYNAPSE RULES CHECK: store never queried this session.',
+        $(if ($worked) { 'Files changed: read standing rules now; `memory_digest` ONCE + `tokenBudget`.' }
+            else { 'Real work: read standing rules; `memory_digest` ONCE + `tokenBudget`.' }),
+        'Durable learning: `memory_write` + entityKey/project tag; `.ai/` alone insufficient.',
+        'Trivial turn: no action.'
     ) -join "`n"
 }
 

@@ -80,7 +80,7 @@
     Check 'and it is NOT accused of leaving no result document' (
         $asyncMessage -notmatch 'no guarded result document exists') $r.Out
     Check 'deferral never claims the run passed' (
-        $asyncMessage -notmatch 'passed' -and $asyncMessage -match 'not evidence of anything') $r.Out
+        $asyncMessage -notmatch 'passed' -and $asyncMessage -match 'no outcome evidence') $r.Out
     Check 'deferral is advisory: exit 0, no permission decision' (
         $r.Exit -eq 0 -and $r.Out -notmatch '"permissionDecision"') $r.Out
 

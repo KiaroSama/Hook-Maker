@@ -326,7 +326,7 @@ function Save-CompletionState {
             $diskBeforeRecovery = Read-JsonFile $script:statePath
             foreach ($note in @(Get-Field $diskBeforeRecovery 'pendingNotes')) {
                 if ([string](Get-Field $note 'key') -ceq $ResolveIncidentKey -and -not (Test-NoteObligationActionable $note)) {
-                    throw 'This incident has an unresolved legacy note origin; recovery leaves the original ledger unchanged.'
+                    throw 'Legacy note origin UNKNOWN; recovery refused, ledger unchanged.'
                 }
             }
         }

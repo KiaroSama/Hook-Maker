@@ -12,7 +12,7 @@
 
     Write-Host '--- V45: replies stay in the language the user TYPED ---' -ForegroundColor Cyan
     $rlFa = -join ([char[]](0x0633, 0x0644, 0x0627, 0x0645, 0x0020, 0x0648, 0x0636, 0x0639, 0x06CC, 0x062A, 0x0020, 0x0686, 0x06CC, 0x0647))
-    $rlLine = 'LANGUAGE: the user writes in Persian. Your reply text and progress notes are Persian; tool-call descriptions (command labels), commands, code, comments, file contents and commit messages stay English. Nothing translates your text: the user reads it as written.'
+    $rlLine = 'LANGUAGE: replies/progress Persian; tool labels, commands, code/comments, files/commits English. Output is untranslated.'
     . (Join-Path $HooksRoot '_replylanguage.ps1')
     $rlCases = [ordered]@{
         'persian'   = @($rlFa, 'persian')

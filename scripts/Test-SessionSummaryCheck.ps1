@@ -115,29 +115,29 @@ try {
     Write-Host '--- the requirement itself ---' -ForegroundColor Cyan
     Check 'summary: asks for a DONE section' ($r.Out -match 'DONE') $r.Out
     Check 'summary: asks for a REMAINING section' ($r.Out -match 'REMAINING') $r.Out
-    Check 'summary: closing section is last and only when handing back work' ($r.Out -match 'LAST after' -and $r.Out -match 'Only when handing back finished work') $r.Out
-    Check 'summary: exactly one wrap-up per task, not during waits' ($r.Out -match 'exactly one short DONE / REMAINING per task' -and $r.Out -match 'not during work, background waits') $r.Out
+    Check 'summary: closing section is last and only when handing back work' ($r.Out -match 'LAST after' -and $r.Out -match 'final handback ONLY') $r.Out
+    Check 'summary: exactly one wrap-up per task, not during waits' ($r.Out -match 'DONE / REMAINING ONCE/task' -and $r.Out -match 'final handback ONLY') $r.Out
     Check 'summary: authored guidance stays under 1300 characters' (([string](($r.Out|ConvertFrom-Json).hookSpecificOutput.additionalContext)).Length -lt 1300) $r.Out
     # L01: wording alone was tried and did not hold - the rule now has to say
     # that a correction turn adds NOTHING, because that is the turn that used to
     # produce the second and third wrap-up.
     Check 'summary: a gate that blocks afterwards is a CORRECTION turn, not a reason to restate' (
-        $r.Out -match 'gate corrections' -and $r.Out -match 'never repeat the wrap-up') $r.Out
+        $r.Out -match 'Corrections: issue-line only') $r.Out
     Check 'summary: it is once per TASK, not once per message or per gate' (
-        $r.Out -match 'one short DONE / REMAINING per task') $r.Out
+        $r.Out -match 'DONE / REMAINING ONCE/task') $r.Out
     Check 'summary: names the preconditions that make the carrying message the last one' (
-        $r.Out -match 'authorized Git sync' -and $r.Out -match 'exact-SHA green CI' -and $r.Out -match 'no owned process survivors') $r.Out
+        $r.Out -match 'authorized Git/exact-SHA CI' -and $r.Out -match 'no owned survivors') $r.Out
     Check 'summary: names the sibling requirements it must follow' (
         ($r.Out -match 'MCP used') -and ($r.Out -match 'Skills used')) $r.Out
     Check 'summary: demands failures and untested paths be included' ($r.Out -match 'untested') $r.Out
-    Check 'summary: demands current-state checks for every gate' ($r.Out -match 'Check every gate' -and $r.Out -match 'current state') $r.Out
+    Check 'summary: demands current-state checks for every gate' ($r.Out -match 'ALL gates verified/unverified') $r.Out
     $summaryMessage = [string](($r.Out | ConvertFrom-Json).hookSpecificOutput.additionalContext)
     Check 'summary: successful checks and resolved blockers belong in DONE' (
-        $summaryMessage -match '(?m)^- DONE:.*successful.*resolved') $summaryMessage
+        $summaryMessage -match '(?m)^DONE=verified work/checks/gates') $summaryMessage
     Check 'summary: REMAINING contains only unresolved required work' (
-        $summaryMessage -match 'REMAINING: ONLY unresolved required work') $summaryMessage
+        $summaryMessage -match 'REMAINING=unfinished/deferred/blocked/untested\+reasons') $summaryMessage
     Check 'summary: completed items must not be relisted as remaining' (
-        $summaryMessage -match 'DONE: verified completed work' -and $summaryMessage -match 'REMAINING: ONLY unresolved required work') $summaryMessage
+        $summaryMessage -match 'DONE=verified work/checks/gates' -and $summaryMessage -match 'REMAINING=unfinished/deferred/blocked/untested\+reasons') $summaryMessage
 
     # =====================================================================
     Write-Host '--- with no markers there is no gate list at all ---' -ForegroundColor Cyan
@@ -150,9 +150,9 @@ try {
     $r = Invoke-SummaryHook @{ hook_event_name = 'UserPromptSubmit'; cwd = $proj; session_id = $sid }
     Check 'summary: reports that gates blocked earlier this session' ($r.Out -match 'blocked earlier in this session') $r.Out
     Check 'summary: names both gates, sorted' ($r.Out -match 'CiStatusCheck, SecretsCheck') $r.Out
-    Check 'summary: asks for each blocked gate to be accounted for' ($r.Out -match 'Account for each one') $r.Out
+    Check 'summary: asks for each blocked gate to be accounted for' ($r.Out -match 'Recheck each') $r.Out
     Check 'summary: old gate markers are history, not evidence of an open blocker' (
-        $r.Out -match 'history only' -and $r.Out -match 'do not prove.*still open') $r.Out
+        $r.Out -match 'Historical markers != current open gates') $r.Out
 
     # A marker left by an EARLIER session in the same project is evidence about
     # that session, not this one. Reporting it would accuse the current session
@@ -279,7 +279,7 @@ try {
     $rLed = Invoke-SummaryHook @{ hook_event_name = 'UserPromptSubmit'; cwd = $ledProj; session_id = 'led-1' }
     Check 'summary: gates that really blocked are reported, sorted' ($rLed.Out -match 'CiStatusCheck, SecretsCheck') $rLed.Out
     Check 'summary: they are named as history to account for, not as open blockers' (
-        $rLed.Out -match 'history only' -or $rLed.Out -match 'Account for each one') $rLed.Out
+        $rLed.Out -match 'Historical markers != current open gates' -or $rLed.Out -match 'Recheck each') $rLed.Out
     $rLedOther = Invoke-SummaryHook @{ hook_event_name = 'UserPromptSubmit'; cwd = $ledProj; session_id = 'led-other' }
     Check 'summary: ANOTHER session in the same project is not handed those gates' (
         $rLedOther.Out -notmatch 'SecretsCheck') $rLedOther.Out
@@ -343,9 +343,9 @@ try {
     Check 'summary: parses under Windows PowerShell 5.1' (([string]$parse).Trim() -eq 'OK') ([string]$parse)
     $r51 = Invoke-SummaryHook -Payload @{ hook_event_name = 'UserPromptSubmit'; cwd = $proj; session_id = $sid } -Exe 'powershell.exe'
     Check 'summary: Windows PowerShell 5.1 emits the same open-work classification' (
-        $r51.Exit -eq 0 -and $r51.Out -match 'DONE: verified completed work' -and
-        $r51.Out -match 'REMAINING: ONLY unresolved required work' -and
-        $r51.Out -match 'history only') $r51.Out
+        $r51.Exit -eq 0 -and $r51.Out -match 'DONE=verified work/checks/gates' -and
+        $r51.Out -match 'REMAINING=unfinished/deferred/blocked/untested\+reasons' -and
+        $r51.Out -match 'Historical markers != current open gates') $r51.Out
 
     # The hook is shipped source: it must stay pure ASCII, like every other
     # hook in this set (Persian is carried as \uXXXX escapes and decoded at

@@ -39,6 +39,20 @@ function Invoke-RuntimeLockRegression {
         if ([IO.File]::ReadAllText($config) -cne 'FIXTURE_SETTING=preserved') { throw 'Original configuration changed on refusal.' }
         if (@(Get-ChildItem -LiteralPath $destination -Force -Recurse -File).Count -ne 4) { throw 'Original runtime file set changed on refusal.' }
         if (@(Get-ChildItem -LiteralPath $runtimeRoot -Directory -Force).Count -ne 1) { throw 'Locked refusal abandoned transaction directories.' }
+        $script:RuntimeGenerationCheckReached=$false
+        $precommitReached=$false;$generationRefused=$false
+        try {
+            Install-PlannedRuntime -Plan $replacement -RuntimeRoot $runtimeRoot -FriendlyName $name -BeforeCommit {
+                $script:RuntimeGenerationCheckReached=$true
+                throw 'Source generation changed before publication.'
+            } | Out-Null
+        } catch { $generationRefused=$true }
+        $precommitReached=Get-Variable RuntimeGenerationCheckReached -Scope Script -ValueOnly -ErrorAction SilentlyContinue
+        if(-not$generationRefused-or-not$precommitReached){throw 'Source generation must be revalidated at the precommit boundary.'}
+        foreach($leaf in $original.Keys){
+            if([IO.File]::ReadAllText((Join-Path $destination $leaf))-cne$original[$leaf]){throw 'Generation refusal changed original runtime.'}
+        }
+        if([IO.File]::ReadAllText($config)-cne'FIXTURE_SETTING=preserved'){throw 'Generation refusal changed original configuration.'}
         Install-PlannedRuntime -Plan $replacement -RuntimeRoot $runtimeRoot -FriendlyName $name | Out-Null
         foreach ($leaf in $original.Keys) {
             if ([IO.File]::ReadAllText((Join-Path $destination $leaf)) -cne ('new ' + $leaf)) { throw 'Unlocked replacement did not install the complete new runtime.' }

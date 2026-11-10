@@ -282,8 +282,8 @@ function Get-ActiveMarkerState {
         # and markers whose owner lookup failed at write time included.
         $markerStartUtc = ConvertTo-UtcTime (Get-Field $Doc 'ownerProcessStartUtc')
         if ($null -eq $markerStartUtc) {
-            $detail = 'the marker records no parseable owner start time, so process ' + $candidate +
-                ' cannot be proven to be the process that started this run (a recycled pid is indistinguishable without it)'
+            $detail = 'Owner start missing/invalid; PID ' + $candidate +
+                ' may be reused, not proven owner.'
         }
         else {
             $liveProcess = $null
@@ -295,18 +295,18 @@ function Get-ActiveMarkerState {
                 $liveStart = $null
                 try { $liveStart = $liveProcess.StartTime.ToUniversalTime() } catch { $liveStart = $null }
                 if ($null -eq $liveStart) {
-                    $detail = 'process ' + $candidate + ' is alive but its start time cannot be read, so it cannot be confirmed to be the owner of this run'
+                    $detail = 'process ' + $candidate + ' alive, start unreadable; owner UNPROVEN.'
                 }
                 elseif ([Math]::Abs(($liveStart - $markerStartUtc).TotalSeconds) -gt 2) {
                     $detail = 'process ' + $candidate + ' is alive but started at ' + $liveStart.ToString('o') +
-                        ', not the recorded ' + $markerStartUtc.ToString('o') + ' - the pid was recycled by an unrelated process'
+                        '; recorded ' + $markerStartUtc.ToString('o') + '; unrelated reused PID.'
                 }
                 else {
                     $markerExe = [string](Get-Field $Doc 'ownerExecutablePath')
                     $liveExe = ''
                     try { $liveExe = [string]$liveProcess.Path } catch { $liveExe = '' }
                     if ($markerExe -ne '' -and $liveExe -ne '' -and -not [string]::Equals($liveExe, $markerExe, [System.StringComparison]::OrdinalIgnoreCase)) {
-                        $detail = 'process ' + $candidate + ' is alive but is running ' + $liveExe + ', not the recorded owner executable'
+                        $detail = 'process ' + $candidate + ' executable=' + $liveExe + '; recorded owner differs.'
                     }
                     else { $isLive = $true }
                 }

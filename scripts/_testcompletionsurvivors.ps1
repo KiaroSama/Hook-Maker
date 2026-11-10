@@ -112,10 +112,11 @@ try {
     Check 'the row carries the start time and the command line' (
         $text -match ('(?m)^  pid ' + $survivorSentinel.Id + '  started \d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}Z  .*powershell')) $r.Out
     Check 'the advisory names itself as advisory and states the hook kills nothing' (
-        $text -match 'possible orphaned test processes started during this session' -and
-        $text -match 'cannot prove ownership and kills nothing') $r.Out
+        $text -match 'Possible session test orphans' -and
+        $text -match 'advisory, owner UNPROVEN; kills nothing') $r.Out
     Check 'the advisory instructs the survivor sweep and cites the rule' (
-        $text -match 'Run the survivor sweep before finishing \(global-test-rules\.md -> No Orphaned Test Processes; it loads on demand, so read it in full before this work\)') $r.Out
+        $text -match 'global-test-rules\.md FULL: sweep PID\+start ownership' -and
+        $text -match 'reap owned, verify/report exit' -and $text -match 'Owned alive=incomplete') $r.Out
     Check 'the survivor advisory NEVER blocks: no decision, exit 0' (
         $r.Exit -eq 0 -and $r.Err -eq '' -and $null -ne $doc -and
         $null -ne $doc.PSObject.Properties['systemMessage'] -and
@@ -153,7 +154,7 @@ try {
     $doc = ConvertFrom-HookOutput $r.Out
     Check 'Codex: the survivor advisory uses systemMessage and never decision:block' (
         $r.Exit -eq 0 -and $null -ne $doc -and $null -eq (Get-Field $doc 'decision') -and
-        [string](Get-Field $doc 'systemMessage') -match 'possible orphaned test processes') $r.Out
+        [string](Get-Field $doc 'systemMessage') -match 'Possible session test orphans') $r.Out
     Check 'Codex: no Claude-only field is invented for it' (
         $null -ne $doc -and $null -eq (Get-Field $doc 'hookSpecificOutput')) $r.Out
 
@@ -200,8 +201,8 @@ try {
     Check 'the printed rows are capped at 10' (
         (@(($text -split "`n") | Where-Object { $_ -match '^  pid \d+' }).Count) -eq 10) $r.Out
     Check 'the overflow is reported honestly as PARTIAL coverage, with the count' (
-        $text -match '\.\.\. and \d+ more matching process\(es\) not listed' -and
-        $text -match 'capped at 10 rows, so the coverage shown here is PARTIAL') $r.Out
+        $text -match '\+\d+ matches omitted; cap=10' -and
+        $text -match 'shown coverage PARTIAL') $r.Out
     Check 'a capped list still never blocks' (
         $r.Exit -eq 0 -and $r.Err -eq '' -and $null -ne $doc -and
         $null -ne $doc.PSObject.Properties['systemMessage'] -and
@@ -220,7 +221,7 @@ try {
     Check 'an existing block condition still blocks, and the advisory does not pre-empt it' (
         $null -ne $doc -and [string](Get-Field $doc 'decision') -eq 'block' -and
         [string](Get-Field $doc 'reason') -match 'wallTimeout' -and
-        [string](Get-Field $doc 'reason') -notmatch 'possible orphaned test processes') $r.Out
+        [string](Get-Field $doc 'reason') -notmatch 'Possible session test orphans') $r.Out
 
     # ---- static: this file can neither kill nor over-enumerate -------------
     $survivorSrc = [System.IO.File]::ReadAllText((Join-Path (Split-Path -Parent $Hook) '_survivors.ps1'))

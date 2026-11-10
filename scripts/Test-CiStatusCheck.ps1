@@ -221,7 +221,7 @@ try {
     # success -> verified silently; second run also silent via state
     Set-Mock -RunJson '[{"databaseId":10,"name":"CI","workflowName":"CI","status":"completed","conclusion":"success"}]' -ExpectedSha $sha
     $r = Fire -HookPath $CiHook -Cwd $ci -EventName 'Stop'
-    Check 'all checks green -> silent, commit verified' ([string]::IsNullOrWhiteSpace([string]$r.Out)) ([string]$r.Out)
+    Check 'green execution keeps report and UI verification separate' ($r.Out -match 'systemMessage' -and $r.Out -match 'Suite/case reports \+ commit/check UI UNVERIFIED' -and $r.Out -notmatch '"decision"') ([string]$r.Out)
     $received = (Get-Content (Join-Path $MockDir 'received_sha.txt') -Raw).Trim()
     Check 'exact pushed SHA queried (not newest run)' ($received -eq $sha)
     Set-Mock -RunJson '[{"databaseId":11,"name":"CI","workflowName":"CI","status":"completed","conclusion":"failure"}]' -ExpectedSha $sha
@@ -233,18 +233,18 @@ try {
     $sha2 = Get-HeadSha $ci2
     Set-Mock -RunJson '[{"databaseId":21,"name":"CI","workflowName":"CI","status":"in_progress","conclusion":null}]' -ExpectedSha $sha2
     $r = Fire -HookPath $CiHook -Cwd $ci2 -EventName 'Stop'
-    Check 'pending checks -> block with wait guidance' ($r.Out -match '"decision":"block"' -and $r.Out -match 'still in progress' -and $r.Out -match 'gh run list --commit')
+    Check 'pending checks -> block with wait guidance' ($r.Out -match '"decision":"block"' -and $r.Out -match 'checks not finished yet \(queued/in-progress\)' -and $r.Out -match 'gh run list --commit')
     $r = Fire -HookPath $CiHook -Cwd $ci2 -EventName 'Stop'
     Check 'unchanged pending evidence does not recursively reblock the same session' ($r.Out-eq''-and$r.Exit-eq0) $r.Out
     $r = Fire -HookPath $CiHook -Cwd $ci2 -EventName 'Stop' -Extra @{ session_id = 'pending-fresh-session' }
-    Check 'fresh session still blocks genuinely running checks during pending cooldown' ($r.Out -match '"decision":"block"' -and $r.Out -match 'still in progress') $r.Out
+    Check 'fresh session still blocks genuinely running checks during pending cooldown' ($r.Out -match '"decision":"block"' -and $r.Out -match 'checks not finished yet \(queued/in-progress\)') $r.Out
 
     # failure -> block with fix guidance; repeated -> cooldown silence
     $ci3 = New-GitRepo 'ci3'
     $sha3 = Get-HeadSha $ci3
     Set-Mock -RunJson '[{"databaseId":31,"name":"CI","workflowName":"CI","status":"completed","conclusion":"failure"}]' -ExpectedSha $sha3
     $r = Fire -HookPath $CiHook -Cwd $ci3 -EventName 'Stop'
-    Check 'failed checks -> block with real-fix guidance' ($r.Out -match 'FAILED' -and $r.Out -match '--log-failed' -and $r.Out -match 'Do not weaken or skip tests')
+    Check 'failed checks -> block with real-fix guidance' ($r.Out -match 'FAILED' -and $r.Out -match '--log-failed' -and $r.Out -match 'Preserve tests/exits')
     $r = Fire -HookPath $CiHook -Cwd $ci3 -EventName 'Stop'
     Check 'failed checks remain a completion block during cooldown' ($r.Out -match '"decision":"block"') $r.Out
     $calls = [System.IO.File]::ReadAllText((Join-Path $MockDir 'calls.txt'))
@@ -258,7 +258,7 @@ try {
     & git -C $ci3 update-ref refs/remotes/origin/main $sha3b
     Set-Mock -RunJson '[{"databaseId":32,"name":"CI","workflowName":"CI","status":"completed","conclusion":"timed_out"}]' -ExpectedSha $sha3b
     $r = Fire -HookPath $CiHook -Cwd $ci3 -EventName 'Stop'
-    Check 'NEW pushed commit -> re-checked; timed_out classed as infra/flaky' ($r.Out -match '"decision":"block"' -and $r.Out -match 'timed_out' -and $r.Out -match 'infrastructure')
+    Check 'NEW pushed commit -> re-checked; timed_out classed as infra/flaky' ($r.Out -match '"decision":"block"' -and $r.Out -match 'timed_out' -and $r.Out -match 'Classify infra/access/flake')
 
     # cancelled + stale also infra-classified
     $ci4 = New-GitRepo 'ci4'
@@ -275,14 +275,14 @@ try {
     Set-Mock -RunJson '[{"databaseId":61,"name":"CI","workflowName":"CI","status":"queued","conclusion":null}]' -ExpectedSha $shaQ
     $r = Fire -HookPath $CiHook -Cwd $ciQ -EventName 'Stop'
     Check 'E-09: a queued run blocks and is named queued-or-in-progress' (
-        $r.Out -match '"decision":"block"' -and $r.Out -match 'queued or still in progress') $r.Out
+        $r.Out -match '"decision":"block"' -and $r.Out -match 'checks not finished yet \(queued/in-progress\)') $r.Out
     # EVERY completed run skipped -> nothing verified the commit -> never green.
     $ciSkip = New-GitRepo 'ci-allskip'
     $shaSkip = Get-HeadSha $ciSkip
     Set-Mock -RunJson '[{"databaseId":62,"name":"CI","workflowName":"CI","status":"completed","conclusion":"skipped"},{"databaseId":63,"name":"Lint","workflowName":"Lint","status":"completed","conclusion":"skipped"}]' -ExpectedSha $shaSkip
     $r = Fire -HookPath $CiHook -Cwd $ciSkip -EventName 'Stop'
     Check 'E-09: ALL runs skipped -> blocks, never reads as CI-green' (
-        $r.Out -match '"decision":"block"' -and $r.Out -match 'Abnormal endings:.*skipped') $r.Out
+        $r.Out -match '"decision":"block"' -and $r.Out -match 'Abnormal:.*skipped') $r.Out
     # A skipped companion is not an execution proof without a reviewed contract.
     $ciSkipMix = New-GitRepo 'ci-skipmix'
     $shaSkipMix = Get-HeadSha $ciSkipMix
@@ -298,7 +298,7 @@ try {
     $r = Fire -HookPath $CiHook -Cwd $ciSha -EventName 'Stop'
     Check 'E-09: the failure block states the EXACT-final-SHA contract incl. post-Ponytail changes' (
         $r.Out -match '"decision":"block"' -and $r.Out -match 'EXACT final pushed SHA' -and
-        $r.Out -match 'post-Ponytail' -and $r.Out -match 're-verified on its own SHA') $r.Out
+        $r.Out -match 'post-Ponytail' -and $r.Out -match 'push/verify its SHA') $r.Out
     # The external-blocker exception contract already exists - pin its wording in
     # source rather than rewriting it (E-09): the notice always states CI is NOT
     # verified green and forbids claiming CI passed.
@@ -560,7 +560,7 @@ try {
     # Committed simple workflow from New-GitRepo is the positive expectation.
     Set-Mock -RunJson '[{"databaseId":95,"name":"CI","workflowName":"CI","status":"completed","conclusion":"success"}]' -ExpectedSha (Get-HeadSha $ci5ok)
     $r = Fire -HookPath $CiHook -Cwd $ci5ok -EventName 'Stop'
-    Check 'B5 control: a real successful run set still verifies silently' ([string]::IsNullOrWhiteSpace([string]$r.Out)) ([string]$r.Out)
+    Check 'B5 control: real successful execution never claims case or UI proof' ($r.Out -match 'Suite/case reports \+ commit/check UI UNVERIFIED' -and $r.Out -notmatch '"decision"') ([string]$r.Out)
 
     # gh unauthenticated -> silent degradation (never claims verified)
     $ci7 = New-GitRepo 'ci7'

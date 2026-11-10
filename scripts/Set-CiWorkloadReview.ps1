@@ -75,7 +75,7 @@ try{
     }
     $phase='preimage'
     $prior=Read-CiReviewBytes $selection.PolicyPath -Optional
-    if((Get-CiReviewBytesHash $prior)-cne$ExpectedPolicyHash){throw 'Review preimage differs; inspect the selected runtime policy.'}
+    if((Get-CiReviewBytesHash $prior)-cne$ExpectedPolicyHash){Stop-CiReview policy-mismatch}
     if(-not$Apply){
         Write-Output ('Review preview valid; selected record='+$RecordId+'; client='+$Client+'; no files changed. Apply requires ReviewConfirmed.')
         Write-ManagementAudit -Event 'review-preview' -Data @{recordId=$RecordId;client=$Client;commit=$Commit}
@@ -83,7 +83,7 @@ try{
     }
     $revalidate={
         $fresh=Get-CiReviewSelection $toolRoot $RecordId $Client
-        if($fresh.Directory-cne$selection.Directory-or$fresh.MetadataHash-cne$selection.MetadataHash){throw 'Selected runtime changed during review.'}
+        if($fresh.Directory-cne$selection.Directory-or$fresh.MetadataHash-cne$selection.MetadataHash){Stop-CiReview identity-changed}
         if(-not(Test-CiEnrollmentBinding $context $root $Repository $Commit $Branch)){throw 'Repository context changed during review.'}
         if($null-eq(ConvertFrom-CiReviewedPolicy $json $root $Repository $Commit $Branch -RuntimeReview)){throw 'Source review changed during validation.'}
     }
@@ -94,6 +94,6 @@ try{
     exit 0
 }catch{
     Write-ManagementAudit -Event 'review-refused' -Data @{recordId=$RecordId;client=$Client;reason='Validation or atomic publication failed';exitCode=1}
-    [Console]::Error.WriteLine(('CI workload review refused at '+$phase+'. Verify the selected record/client, exact source/context and expected policy hash; inspect read-only workflow access if needed. Original review/recovery data was preserved; no CI result was stored.'))
+    [Console]::Error.WriteLine((Get-CiReviewFailureMessage $_ $phase $toolRoot $RecordId $Client))
     exit 1
 }

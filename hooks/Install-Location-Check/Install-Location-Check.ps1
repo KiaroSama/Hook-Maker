@@ -100,11 +100,11 @@ function Get-InstallAdvisories {
             if (-not [string]::IsNullOrEmpty($finding.Advice)) { [void]$lines.Add($head + $finding.Advice) }
             elseif ($stale.Count -gt 0) {
                 [void]$lines.Add($head + 'The user already chose a location: set ' + (($stale | ForEach-Object { '`' + $_ + '`' }) -join ' and ') +
-                    ' in this command; the shell predates it (the value is in the user environment, not in this process). Do not ask for a path; ' +
+                    ' in-command: user env newer than shell; no path question; ' +
                     'verify where it landed. Rule: global-environment-rules.md -> Install Locations.')
             }
             else {
-                [void]$lines.Add($head + 'Reuse approved ecosystem root/override; new workstation program -> G:\Program Files\<program-name>. Ask only unavailable/unsupported/different root. Location is not install consent. Preserve system exceptions/existing installs; verify physical writes/consumers, bind project temp/cache first. After verified replacement + consumer stop permanently delete exact proven obsolete owned copy, NOT Recycle Bin; otherwise record retention. Advice performs no install/move/delete/config rewrite. Owners: global-environment-rules.md -> Install Locations; global-project-lifecycle-rules.md.')
+                [void]$lines.Add($head + 'BEFORE install/cleanup: global-environment-rules.md/global-project-lifecycle-rules.md FULL. Approved root/new G:\Program Files\<program-name>; ask only unavailable/different. Path!=consent.')
             }
         }
     }

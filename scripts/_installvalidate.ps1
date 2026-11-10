@@ -49,13 +49,9 @@ function Get-CanonicalPathOrNull {
     catch { return $null }
 }
 
-# The exact per-client settings location Install-Hook.ps1 writes to for a
-# given record scope. MUST mirror its own $ClaudeSettings/$CodexHooks
-# expressions exactly:
-#   project: <root>\.claude\settings.local.json / <root>\.codex\hooks.json
-#   global:  $HOME\.claude\settings.json / $HOME\.codex\hooks.json
-# Duplicated here (rather than shared) because a validator has to be able to
-# prove a persisted settingsPath without re-running the installer.
+# One settings-path choice for installation, validation and selected repair.
+# Claude retains an existing marked shared settings.json; new installs default
+# to settings.local.json. A second independent rule rejected official records.
 function Get-CanonicalClientSettingsPath {
     param(
         [Parameter(Mandatory = $true)][string]$ClientName,
@@ -80,7 +76,16 @@ function Get-CanonicalClientSettingsPath {
     }
 
     if ($Scope -eq 'project') {
-        return (Join-Path $TargetProjectRoot $capability.projectRegistration)
+        $defaultPath=Join-Path $TargetProjectRoot $capability.projectRegistration
+        if($ClientName-ceq'claude'){
+            $sharedPath=Join-Path $TargetProjectRoot '.claude/settings.json'
+            if(Test-Path -LiteralPath $sharedPath -PathType Leaf){
+                $text=''
+                try{$text=[IO.File]::ReadAllText($sharedPath)}catch{}
+                if($text-match'Hook-Maker'){return $sharedPath}
+            }
+        }
+        return $defaultPath
     }
     return (Join-Path $HOME $capability.globalRegistration)
 }

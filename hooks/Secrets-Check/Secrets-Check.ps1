@@ -340,7 +340,7 @@ if ($added.Count -gt 0 -and $inGitRepo) {
     $null = Invoke-QuietCommand -FilePath git -ArgumentList @('-C', $cwd, 'check-ignore', '-q', '--', 'secrets.md')
     if ($LASTEXITCODE -ne 0) {
         [void]$critical.Add('secrets.md is NOT covered by .gitignore - refusing to write ' + $added.Count +
-            ' discovered secret value(s) into it. Add /secrets.md to .gitignore, then re-run.')
+            ' values. Ignore /secrets.md, then retry.')
         # Same degradation as the write-failure path below: name the keys in the
         # report, put no value on disk.
         [void]$missingUndocumented.AddRange($added)
@@ -418,7 +418,7 @@ function Get-OutgoingCommits {
         if ($remoteSha -eq $allZero) {
             $revs = @(Invoke-QuietCommand -FilePath git -ArgumentList @('-C', $Cwd, 'rev-list', $localSha, '--not', '--remotes') | Where-Object { $_ })
             if ($LASTEXITCODE -ne 0) {
-                [void]$errors.Add('new ref ' + $localRef + ' - outgoing commits could not be resolved (rev-list failed); refusing to treat it as clean')
+                [void]$errors.Add('new ref ' + $localRef + ' - rev-list failed; outgoing commits UNKNOWN, not clean')
                 continue
             }
         }
@@ -429,12 +429,12 @@ function Get-OutgoingCommits {
             $null = Invoke-QuietCommand -FilePath git -ArgumentList @('-C', $Cwd, 'rev-parse', '--verify', '--quiet', ($remoteSha + '^{commit}'))
             if ($LASTEXITCODE -ne 0) {
                 $shortRemote = if ($remoteSha.Length -gt 7) { $remoteSha.Substring(0, 7) } else { $remoteSha }
-                [void]$errors.Add('ref ' + $localRef + ' - remote commit ' + $shortRemote + ' is not resolvable locally, so the outgoing range cannot be bounded; refusing to treat it as clean')
+                [void]$errors.Add('ref ' + $localRef + ' - remote commit ' + $shortRemote + ' unresolved locally; outgoing range unbounded, not clean')
                 continue
             }
             $revs = @(Invoke-QuietCommand -FilePath git -ArgumentList @('-C', $Cwd, 'rev-list', ($remoteSha + '..' + $localSha)) | Where-Object { $_ })
             if ($LASTEXITCODE -ne 0) {
-                [void]$errors.Add('ref ' + $localRef + ' - outgoing commits could not be resolved (rev-list failed); refusing to treat it as clean')
+                [void]$errors.Add('ref ' + $localRef + ' - rev-list failed; outgoing commits UNKNOWN, not clean')
                 continue
             }
         }
@@ -579,7 +579,7 @@ if ($inGitRepo) {
         [void]$critical.Add('Outgoing history could not be fully scanned: ' + $resolveError + '.')
     }
     if ($outgoingScanFailedClosed) {
-        [void]$critical.Add('Outgoing history could not be fully scanned: git grep failed on at least one commit batch; refusing to authorize the push as clean.')
+        [void]$critical.Add('Outgoing scan incomplete: git grep batch failed; push refused, not clean.')
     }
 }
 
@@ -683,7 +683,7 @@ if ($placeholders.Count -gt 0) {
     [void]$lines.Add('Value looks like an empty placeholder: ' + ($placeholders.ToArray() -join ', '))
 }
 if ($unused.Count -gt 0) {
-    [void]$lines.Add('In secrets.md but not referenced elsewhere in the tracked project (verify before removing - never auto-removed): ' + ($unused.ToArray() -join ', '))
+    [void]$lines.Add('Registry-only, no tracked reference; verify removal, never auto-remove: ' + ($unused.ToArray() -join ', '))
 }
 if ($needsClassification.Count -gt 0) {
     # NAME THE FILE. "in .env" sent operators to the PROJECT's .env - the file
@@ -691,12 +691,12 @@ if ($needsClassification.Count -gt 0) {
     # with nothing to tell them why. The config .env is this hook's own, beside
     # the installed script; it is inside the client config directory, which the
     # scan excludes, so it can never be mistaken for scanned input.
-    [void]$lines.Add('Classification unclear (neither confirmed Secret nor confirmed PublicConfig) - not registered, not treated as a confirmed leak, and never blocking on its own: ' + ($needsClassification.ToArray() -join ', ') + '. Classify explicitly via SECRET_KEYS or PUBLIC_CONFIG_KEYS in THIS HOOK''S OWN .env - ' + (Join-Path $PSScriptRoot '.env') + ' - and NOT in the scanned project .env, which is the input being classified. Create that file if it does not exist; installs and updates never overwrite it.')
+    [void]$lines.Add('UNKNOWN Secret/PublicConfig (unregistered, not leak/no standalone block): ' + ($needsClassification.ToArray() -join ', ') + '. Set SECRET_KEYS/PUBLIC_CONFIG_KEYS in THIS HOOK''S OWN .env: ' + (Join-Path $PSScriptRoot '.env') + ', NOT project .env. Create if absent; preserved on install/update.')
 }
 if ($removedPublicConfigKeys.Count -gt 0) {
     [void]$lines.Add('Removed ' + $removedPublicConfigKeys.Count + ' previously auto-added secrets.md entr' + $(if ($removedPublicConfigKeys.Count -eq 1) { 'y' } else { 'ies' }) + ' now classified as public config, not a secret: ' + ($removedPublicConfigKeys -join ', ') + '.')
 }
-[void]$lines.Add('Never print/log/commit/upload values; rotate suspected exposure. Registry removal needs your review. Signing custody: exportable one-line keys in local secrets.md; file keys in ignored private owning-project storage + registry metadata. Never force-export hardware/provider keys. Owner: global-project-lifecycle-rules.md.')
+[void]$lines.Add('Never print/log/commit/upload values; rotate suspected exposure; review removals. BEFORE signing custody: global-project-lifecycle-rules.md FULL; no forced export.')
 $message = $lines.ToArray() -join "`n"
 
 if ($GitPrePush) {

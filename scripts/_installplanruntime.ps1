@@ -28,7 +28,8 @@ function Install-PlannedRuntime {
     param(
         [Parameter(Mandatory = $true)]$Plan,
         [Parameter(Mandatory = $true)][string]$RuntimeRoot,
-        [Parameter(Mandatory = $true)][string]$FriendlyName
+        [Parameter(Mandatory = $true)][string]$FriendlyName,
+        [scriptblock]$BeforeCommit
     )
     if (-not (Test-Path -LiteralPath $RuntimeRoot -PathType Container)) {
         New-Item -ItemType Directory -Path $RuntimeRoot -Force | Out-Null
@@ -121,6 +122,8 @@ function Install-PlannedRuntime {
             }
             Copy-Item -LiteralPath $previousConfig -Destination $stagedConfig -Force
         }
+
+        if($null-ne$BeforeCommit){$null=& $BeforeCommit}
 
         # Move-Item falls back to per-file copy/delete on Windows access denial,
         # splitting a live runtime when a later file is locked. Native same-volume

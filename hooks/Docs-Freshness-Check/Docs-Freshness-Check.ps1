@@ -113,7 +113,7 @@ $stateDir = Join-Path $env:LOCALAPPDATA 'HookMaker\state'
 # ==========================================================================
 if ($Acknowledge) {
     if ([string]::IsNullOrWhiteSpace($ProjectRoot) -or -not (Test-Path -LiteralPath $ProjectRoot -PathType Container)) {
-        Write-Host 'Docs-Freshness-Check: -ProjectRoot is required and must be an existing directory.'
+        Write-Host 'Docs-Freshness-Check: -ProjectRoot needs existing directory.'
         exit 1
     }
     $rootFull = Normalize-Path $ProjectRoot
@@ -128,7 +128,7 @@ if ($Acknowledge) {
     $reasonTrim = $Reason.Trim()
     $genericReasons = @('none', 'not needed', 'n/a', 'na', 'done', 'ok', 'fine', 'nothing', 'no reason', 'update', 'updated', 'no update', 'skip', 'skipped')
     if ($reasonTrim -eq '' -or $genericReasons -contains $reasonTrim.ToLowerInvariant()) {
-        Write-Host 'Docs-Freshness-Check: -Reason must be a concrete, non-generic explanation.'
+        Write-Host 'Docs-Freshness-Check: concrete -Reason required.'
         exit 1
     }
     $fileList = @()
@@ -136,7 +136,7 @@ if ($Acknowledge) {
         $fileList = @($Files.Split(',') | ForEach-Object { $_.Trim().Replace('\', '/') } | Where-Object { $_ -ne '' })
     }
     if ($Result -eq 'Updated' -and $fileList.Count -eq 0) {
-        Write-Host 'Docs-Freshness-Check: -Result Updated requires at least one -Files entry.'
+        Write-Host 'Docs-Freshness-Check: Updated needs -Files.'
         exit 1
     }
     $invalid = @()
@@ -153,7 +153,7 @@ if ($Acknowledge) {
         if ($tracked.Count -eq 0 -and $staged.Count -eq 0) { $invalid += $f; continue }
     }
     if ($invalid.Count -gt 0) {
-        Write-Host ('Docs-Freshness-Check: rejected - not a canonical tracked/staged in-project doc file: ' + ($invalid -join ', '))
+        Write-Host ('Docs-Freshness-Check: rejected noncanonical/untracked/outside doc: ' + ($invalid -join ', '))
         exit 1
     }
     $ackKey = Get-ShortHash $rootFull.ToLowerInvariant()
@@ -411,21 +411,21 @@ function Get-ReviewRequestLines {
     $boundedImpact = @($ImpactFiles | Select-Object -First $maxFindings)
     $ackCommand = 'powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "' + $PSCommandPath + '" -Acknowledge -ProjectRoot "' + $Root + '" -ImpactFingerprint "' + $Fingerprint + '" -Result Updated -Files "<comma-separated relative doc paths>" -Reason "<concise factual reason>"'
     $lines = New-Object System.Collections.Generic.List[string]
-    [void]$lines.Add('DOCS FRESHNESS CHECK: this task changed ' + $boundedImpact.Count + ' project file(s) that may make published documentation stale: ' + ($boundedImpact -join ', ') + '.')
+    [void]$lines.Add('DOCS FRESHNESS CHECK: ' + $boundedImpact.Count + ' task changes may stale docs: ' + ($boundedImpact -join ', ') + '.')
     if ($candidateDocs.Count -gt 0) {
-        [void]$lines.Add('Candidate tracked documentation to review (ranked): ' + ($candidateDocs -join ', ') + '.')
+        [void]$lines.Add('Ranked tracked-doc candidates: ' + ($candidateDocs -join ', ') + '.')
     }
     else {
-        [void]$lines.Add('No tracked .md/.txt documentation exists yet in this project to review.')
+        [void]$lines.Add('No tracked .md/.txt docs to review.')
     }
     # E-10: the review-topic list also names encoding policy/exceptions, hook
     # lifecycle (install/update/status/uninstall) and native chain order, and
     # documented workflow boundaries - the doc-impact areas the UTF-8 hook and
     # ::deep-debug work introduced. Detection stays generic (any real non-doc
     # change); pure internal changes still clear with -Result NoUpdate.
-    [void]$lines.Add('Review stale behavior/features, CLI/output/examples, menu numbering/labels, config/env/defaults, APIs/schemas, prerequisites/install/runtime/deps, paths/layout, deploy/migration/security/compatibility/limits, text-encoding policy/encoding-exception formats, hook install/update/status/uninstall behavior/native Git hook chain order, workflow boundaries (::deep-debug/single final Ponytail pass), counts/capabilities. Only affected tracked public docs.')
-    [void]$lines.Add('Update ONLY the tracked public .md/.txt files actually made stale by this task - do not edit unrelated docs merely for consistency or wording.')
-    [void]$lines.Add('Then run exactly one acknowledgement command to clear this: ' + $ackCommand + ' (use -Result NoUpdate -Reason "<why no doc became inaccurate>" instead if nothing needs updating).')
+    [void]$lines.Add('BEFORE review: global-hook-rules.md Hook Change Gate/global-repository-rules.md README FULL, all affected contracts.')
+    [void]$lines.Add('Update task-stale tracked public .md/.txt ONLY; no unrelated wording/consistency edits.')
+    [void]$lines.Add('Clear with one acknowledgement: ' + $ackCommand + ' (nothing stale: -Result NoUpdate -Reason "<why no doc became inaccurate>").')
     return $lines.ToArray()
 }
 
@@ -518,14 +518,14 @@ try {
         if ($denied -eq $impactFingerprint) { exit 0 }
         New-Item -ItemType Directory -Path $stateDir -Force | Out-Null
         [System.IO.File]::WriteAllText($pushDenyPath, $impactFingerprint)
-        $lines.Insert(1, 'This git push is held once for that review: review/update the docs now and commit them so they land in this one push (CI runs once), then acknowledge and push again.')
+        $lines.Insert(1, 'Push held once: review/update/commit docs before the single push/CI; acknowledge, retry push.')
         exit (Write-HookResult -EventName 'PreToolUse' -Kind 'deny' -Reason ($lines.ToArray() -join "`n")).ExitCode
     }
 
     $greenHead = Get-CiGreenHead -Root $rootFull -RootKeys @($cwd, $rootFull) -ImpactFiles $realImpactFiles
     if ($greenHead -ne '') {
         $sha7 = $greenHead.Substring(0, [Math]::Min(7, $greenHead.Length))
-        [void]$lines.Add('CI is already green on the pushed HEAD ' + $sha7 + ': put the documentation update in a documentation-only commit with [skip ci] in its message, push it, run no suite, and report that the tests passed on the parent SHA ' + $sha7 + '.')
+        [void]$lines.Add('Tested parent SHA ' + $sha7 + '; commit/push reviewed docs. New SHA UNTESTED: latest-status checks still required in ONE manual final batch or exact blocker; no ancestor green/display-only run.')
     }
     $reason = $lines.ToArray() -join "`n"
     # Record the block so THIS hook's own re-entry is recognised; another
@@ -552,7 +552,7 @@ catch {
         [System.IO.File]::WriteAllText($errStampPath, $sessionId)
     }
     catch { }
-    $errMsg = 'DOCS FRESHNESS CHECK: could not reliably determine whether documentation needs review this time (detection error) - do not assume documentation is current; review tracked README/CHANGELOG/docs manually if this task changed user-visible behavior.'
+    $errMsg = 'DOCS FRESHNESS UNKNOWN (detection error): user-visible change? Manually review tracked README/CHANGELOG/docs; no current-docs claim.'
     # Client-aware through the shared adapter: Codex does not render
     # hookSpecificOutput.additionalContext at Stop (only systemMessage), so an
     # unconditional additionalContext here silently drops this warning on Codex.

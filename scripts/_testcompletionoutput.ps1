@@ -78,7 +78,7 @@
     $r = Fire -Copy $c -Cwd $p
     $reason = Get-BlockReason $r.Out
     Check 'an invalid EVIDENCE_MINUTES is reported in plain text with the finding' (
-        $reason -match 'TEST_COMPLETION_EVIDENCE_MINUTES is not an integer' -and $reason -match 'using the default 180') $reason
+        $reason -match 'TEST_COMPLETION_EVIDENCE_MINUTES: integer1\.\.10080 required; default180') $reason
     $c = New-IsolatedHookCopy @{ TEST_COMPLETION_ADVISORY_ONLY = 'yes' }
     $p2 = New-GitRepo 'BadAdvisory'
     Write-GuardedResult -Copy $c -Root $p2 -Overall 'terminated' -ExitCode 124 -TerminateReason 'wallTimeout' -TerminateDetail 'x'
@@ -86,13 +86,13 @@
     $doc = ConvertFrom-HookOutput $r.Out
     Check 'an invalid ADVISORY_ONLY falls back to advisory - a typo can never widen blocking' (
         $null -ne $doc -and $null -eq $doc.PSObject.Properties['decision'] -and
-        $doc.systemMessage -match 'ADVISORY_ONLY must be 0 or 1') $r.Out
+        $doc.systemMessage -match 'ADVISORY_ONLY: 0/1 required; invalid -> advisory\(1\), never wider blocking') $r.Out
     $c = New-IsolatedHookCopy @{ TEST_COMPLETION_ALWAYS_REQUIRE_NOTE = '1' }
     $p3 = New-GitRepo 'AlwaysNote'
     Write-GuardedResult -Copy $c -Root $p3 -Overall 'ok'
     $r = Fire -Copy $c -Cwd $p3
     Check 'ALWAYS_REQUIRE_NOTE=1 demands a note even after a clean run' (
-        $r.Out -match '"decision":"block"' -and (Get-BlockReason $r.Out) -match 'durable \.ai/ note is still owed') $r.Out
+        $r.Out -match '"decision":"block"' -and (Get-BlockReason $r.Out) -match '\.ai/ note owed') $r.Out
     Add-TaggedNote -Root $p3 -Reason (Get-BlockReason $r.Out) -Body ('Full suite run through the guarded runner completed clean; recorded here because this project requires a note per run. ' +
         'Wall 1800s / idle 300s, no leaked processes observed.')
     $r = Fire -Copy $c -Cwd $p3

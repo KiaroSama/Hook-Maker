@@ -185,7 +185,7 @@ try {
     Check 'a major update is classified [major]' ($r.Out -match 'pkg-major 1\.0\.0 -> 2\.0\.0 \[major\]') $r.Out
     Check 'output never contains a blocking decision (advisory only)' ($r.Out -notmatch '"decision"') $r.Out
     Check 'output includes incremental-update guidance' ($r.Out -match 'small verified batches') $r.Out
-    Check 'output includes safety/release-note review guidance' ($r.Out -match 'release notes') $r.Out
+    Check 'output includes safety/release-note review guidance' ($r.Out -match 'Verify releases/breaks/runtime/peers/advisories') $r.Out
     Check 'no automatic file modification occurs (package.json unchanged)' (
         ([System.IO.File]::ReadAllText((Join-Path $npmProj 'package.json'))) -eq '{"name":"fixture","version":"1.0.0","dependencies":{"pkg-patch":"1.0.0","pkg-minor":"1.0.0","pkg-major":"1.0.0"}}')
 
@@ -196,7 +196,7 @@ try {
     Set-Mock -NpmExit 1 -NpmJson '{"pkg-pre":{"current":"1.0.0","latest":"2.0.0-beta.1"}}'
     $r = Fire -Cwd $preProj
     Check 'a prerelease latest version is classified [prerelease], not silently recommended' ($r.Out -match 'pkg-pre 1\.0\.0 -> 2\.0\.0-beta\.1 \[prerelease\]') $r.Out
-    Check 'the report tells the agent never to default to a prerelease' ($r.Out -match 'latest STABLE compatible version' -and $r.Out -match 'not prerelease/beta/RC/nightly/canary') $r.Out
+    Check 'the report routes full version/compatibility/prerelease policy before review or update' ($r.Out -match 'BEFORE review/update: global-environment-rules.md FULL') $r.Out
 
     # =====================================================================
     Write-Host '--- npm: real command failure vs "outdated found" exit code ---' -ForegroundColor Cyan
@@ -324,7 +324,7 @@ try {
     Write-Utf8 (Join-Path $ghProj '.github\workflows\ci.yml') "on:`n  push:`njobs:`n  test:`n    steps:`n      - uses: actions/checkout@v2`n      - run: echo hi"
     Set-Mock
     $r = Fire -Cwd $ghProj
-    Check 'a clearly old major GitHub Action version is flagged' ($r.Out -match 'actions/checkout@v2 is a clearly old major version') $r.Out
+    Check 'a clearly old major GitHub Action version is flagged' ($r.Out -match 'actions/checkout@v2 old major; verify latest') $r.Out
     $ghCurrentProj = New-Proj 'GhActionsCurrentProj'
     Write-Utf8 (Join-Path $ghCurrentProj '.github\workflows\ci.yml') "on:`n  push:`njobs:`n  test:`n    steps:`n      - uses: actions/checkout@v4`n      - run: echo hi"
     $r = Fire -Cwd $ghCurrentProj
@@ -335,7 +335,7 @@ try {
     $nvmProj = New-Proj 'NvmProj'
     Write-Utf8 (Join-Path $nvmProj '.nvmrc') '14'
     $r = Fire -Cwd $nvmProj
-    Check 'an EOL Node major version pin is reported' ($r.Out -match 'runtime pin \.nvmrc: Node 14 is a known end-of-life major version \[EOL\]') $r.Out
+    Check 'an EOL Node major version pin is reported' ($r.Out -match 'runtime pin \.nvmrc: Node 14 known end-of-life major \[EOL\]') $r.Out
     $currentNvmProj = New-Proj 'CurrentNvmProj'
     Write-Utf8 (Join-Path $currentNvmProj '.nvmrc') '22'
     $r = Fire -Cwd $currentNvmProj
@@ -343,18 +343,18 @@ try {
     $pyVerProj = New-Proj 'PyVerProj'
     Write-Utf8 (Join-Path $pyVerProj '.python-version') '3.7'
     $r = Fire -Cwd $pyVerProj
-    Check 'an EOL Python version pin is reported' ($r.Out -match 'runtime pin \.python-version: Python 3\.7 is a known end-of-life version \[EOL\]') $r.Out
+    Check 'an EOL Python version pin is reported' ($r.Out -match 'runtime pin \.python-version: Python 3\.7 known end-of-life \[EOL\]') $r.Out
 
     # =====================================================================
     Write-Host '--- Docker base image: floating tag and EOL tag ---' -ForegroundColor Cyan
     $dockerFloatProj = New-Proj 'DockerFloatProj'
     Write-Utf8 (Join-Path $dockerFloatProj 'Dockerfile') "FROM node:latest`nCMD [`"node`"]"
     $r = Fire -Cwd $dockerFloatProj
-    Check 'a floating :latest base image tag is flagged as non-reproducible' ($r.Out -match 'node:latest uses a floating/untagged') $r.Out
+    Check 'a floating :latest base image tag is flagged as non-reproducible' ($r.Out -match 'node:latest floating/untagged') $r.Out
     $dockerEolProj = New-Proj 'DockerEolProj'
     Write-Utf8 (Join-Path $dockerEolProj 'Dockerfile') "FROM ubuntu:18.04`nCMD [`"true`"]"
     $r = Fire -Cwd $dockerEolProj
-    Check 'a known EOL base image tag is flagged' ($r.Out -match 'ubuntu:18\.04 is a known end-of-life base image tag \[EOL\]') $r.Out
+    Check 'a known EOL base image tag is flagged' ($r.Out -match 'ubuntu:18\.04 known end-of-life base \[EOL\]') $r.Out
     $dockerCurrentProj = New-Proj 'DockerCurrentProj'
     Write-Utf8 (Join-Path $dockerCurrentProj 'Dockerfile') "FROM node:22-slim`nCMD [`"node`"]"
     $r = Fire -Cwd $dockerCurrentProj
@@ -365,7 +365,7 @@ try {
     $cargoProj = New-Proj 'CargoProj'
     Write-Utf8 (Join-Path $cargoProj 'Cargo.toml') "[package]`nname = `"fixture`""
     $r = Fire -Cwd $cargoProj
-    Check 'cargo is detected and reported incomplete with the correct crate requirement noted' ($r.Out -match 'cargo detected' -and $r.Out -match 'cargo-outdated crate') $r.Out
+    Check 'cargo is detected and reported incomplete with the correct crate requirement noted' ($r.Out -match 'cargo UNCHECKED' -and $r.Out -match 'cargo-outdated required') $r.Out
     Check 'an incomplete-only report never claims a clean/current result' ($r.Out -notmatch 'up to date')
 
     # =====================================================================
@@ -376,12 +376,12 @@ try {
     $rSession = Fire -Cwd $promptProj -EventName 'SessionStart'
     Check 'SessionStart caches findings for this project' ($rSession.Out -match 'pkg-x') $rSession.Out
     $rPromptPlain = Fire -Cwd $promptProj -EventName 'UserPromptSubmit' -Prompt 'fix a typo in the README'
-    Check 'an unrelated prompt still surfaces cached findings but no new-dependency guidance' ($rPromptPlain.Out -match 'pkg-x' -and $rPromptPlain.Out -notmatch 'Before selecting a version for a new/updated dependency') $rPromptPlain.Out
+    Check 'an unrelated prompt still surfaces cached findings but no new-dependency guidance' ($rPromptPlain.Out -match 'pkg-x' -and $rPromptPlain.Out -notmatch 'Dependency/runtime/tool/Action/image: official docs/releases') $rPromptPlain.Out
     $rPromptNew = Fire -Cwd $promptProj -EventName 'UserPromptSubmit' -Prompt 'please add a new dependency for HTTP requests'
-    Check 'a new-dependency prompt injects "prefer latest stable compatible" guidance' ($rPromptNew.Out -match 'Before selecting a version for a new/updated dependency') $rPromptNew.Out
+    Check 'a new-dependency prompt injects "prefer latest stable compatible" guidance' ($rPromptNew.Out -match 'Dependency/runtime/tool/Action/image: official docs/releases') $rPromptNew.Out
     Check 'new-dependency guidance also warns against a floating tag / non-deterministic pin' ($rPromptNew.Out -match 'floating tag')
     $rPromptScratch = Fire -Cwd $promptProj -EventName 'UserPromptSubmit' -Prompt 'create a new project from scratch using a modern web framework'
-    Check '"from scratch" project prompts also trigger the guidance' ($rPromptScratch.Out -match 'prefer the latest STABLE') $rPromptScratch.Out
+    Check '"from scratch" project prompts also trigger the guidance' ($rPromptScratch.Out -match 'latest compatible STABLE') $rPromptScratch.Out
 
     # =====================================================================
     Write-Host '--- caching: unchanged fingerprint suppresses a repeat scan; a manifest edit invalidates it ---' -ForegroundColor Cyan
@@ -432,30 +432,30 @@ try {
     Write-Utf8 (Join-Path $contractProj 'package.json') '{"name":"fixture","dependencies":{"pkg-old":"1.0.0"}}'
     Set-Mock -NpmExit 1 -NpmJson '{"pkg-old":{"current":"1.0.0","latest":"3.0.0"}}'
     $rc = Fire -Cwd $contractProj -SessionId 'contract-1'
-    Check 'the report demands a decision per finding, not agreement' ($rc.Out -match 'needs a DECISION, not agreement') $rc.Out
+    Check 'the report demands a decision per finding, not agreement' ($rc.Out -match 'Each finding:' -and $rc.Out -match 'Final standalone: Dependency decisions:') $rc.Out
     Check 'update / keep / defer are all named as legitimate answers' (
-        $rc.Out -match 'update \(then update the lockfile' -and $rc.Out -match 'keep \(' -and $rc.Out -match 'defer \(') $rc.Out
-    Check 'silence is explicitly NOT an answer' ($rc.Out -match 'silence is not') $rc.Out
-    Check 'EOL / clearly-old-major needs a stated reason to leave in place' ($rc.Out -match 'explicit stated reason to leave in place') $rc.Out
+        $rc.Out -match 'update\+lock\+real checks' -and $rc.Out -match 'keep\+reason' -and $rc.Out -match 'defer\+blocker') $rc.Out
+    Check 'silence is explicitly NOT an answer' ($rc.Out -match 'Each finding:' -and $rc.Out -match 'Final standalone:') $rc.Out
+    Check 'EOL / clearly-old-major needs a stated reason to leave in place' ($rc.Out -match 'justify EOL/old-major retention') $rc.Out
     Check 'the report names the exact closing line to write' ($rc.Out -match 'Dependency decisions:') $rc.Out
     Check 'the report still disclaims any authority to upgrade or block' (
-        $rc.Out -match 'never runs an upgrade and never blocks completion' -and $rc.Out -notmatch '"decision"') $rc.Out
+        $rc.Out -match 'hook never edits/upgrades/blocks' -and $rc.Out -notmatch '"decision"') $rc.Out
 
     # =====================================================================
     Write-Host '--- Stop/SubagentStop: replays unanswered findings, never scans, never blocks ---' -ForegroundColor Cyan
     Reset-CallLog
     $r = Fire -Cwd $contractProj -EventName 'Stop' -SessionId 'contract-1'
-    Check 'the closing half replays the still-unanswered finding' ($r.Out -match 'pkg-old' -and $r.Out -match 'still on the table') $r.Out
+    Check 'the closing half replays the still-unanswered finding' ($r.Out -match 'pkg-old' -and $r.Out -match 'earlier findings need decisions') $r.Out
     Check 'the closing half asks for the decision line' ($r.Out -match 'Dependency decisions:') $r.Out
     Check 'an unanswered finding is named an UNREVIEWED RISK, not an accepted one' ($r.Out -match 'UNREVIEWED RISK') $r.Out
     # Steering V48: update to latest, or the nearest non-breaking version; the old
     # "unrelated to dependencies" escape is gone.
-    Check 'V48: the closing half asks for the update now, with the nearest non-breaking fallback and the global install' (
-        $r.Out -match 'Update latest stable, else newest nonbreaking' -and
-        $r.Out -match 'record failed version/cause' -and $r.Out -match '\[global install\] updates globally' -and
-        $r.Out -match 'Retain only with reason' -and $r.Out -notmatch 'unrelated to dependencies') $r.Out
+    # Stable/nonbreaking/global/retention details are indirect in the full owner.
+    Check 'V48: closing decisions require the complete environment owner, not an unrelated escape' (
+        $r.Out -match 'BEFORE decisions: global-environment-rules.md FULL' -and
+        $r.Out -notmatch 'unrelated to dependencies') $r.Out
     Check 'the closing half never blocks (advisory shape only)' ($r.Out -notmatch '"decision"') $r.Out
-    Check 'the closing half separates out the EOL/major class' ($r.Out -match 'end-of-life or a clearly old major') $r.Out
+    Check 'the closing half separates out the EOL/major class' ($r.Out -match 'EOL/old-major: explicit retain reason required') $r.Out
     Check 'the closing half runs NO scan (no npm invocation at Stop)' ((Get-NpmCallCount) -eq 0) ('npm calls=' + (Get-NpmCallCount))
     $r2 = Fire -Cwd $contractProj -EventName 'Stop' -SessionId 'contract-1'
     Check 'an unchanged report does not repeat on the next Stop of the same session' ($r2.Exit -eq 0 -and $r2.Out -eq '') $r2.Out
@@ -465,7 +465,7 @@ try {
     # so a Stop from another session in between would re-arm it.
     $rClaude = Fire -Cwd $contractProj -EventName 'Stop' -SessionId 'contract-claude' -Client 'claude'
     Check 'V48: the Claude client gets the same update request, still advisory' (
-        $rClaude.Out -match 'Update latest stable, else newest nonbreaking' -and
+        $rClaude.Out -match 'Latest stable/newest nonbreaking' -and
         $rClaude.Out -notmatch 'unrelated to dependencies' -and $rClaude.Out -notmatch '"decision"') $rClaude.Out
     $r4 = Fire -Cwd $contractProj -EventName 'SubagentStop' -SessionId 'contract-3'
     Check 'SubagentStop replays it too' ($r4.Out -match 'pkg-old') $r4.Out

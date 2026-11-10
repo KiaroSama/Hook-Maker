@@ -12,46 +12,19 @@
     $rDd = Fire -HookPath $hcDd.Script -Cwd $Proj -EventName 'PreToolUse' -Command 'pytest -q tests/' -LocalAppData $hcDd.LocalAppData
     $msgDd = Get-Message $rDd.Out
     Check 'the deny still denies (guard behavior unchanged by the guidance line)' ($rDd.Out -match '"permissionDecision":"deny"') $rDd.Out
-    # CI first comes BEFORE the local command is handed over: a heavy local run is
-    # the exception now, so the refusal says so rather than implying this machine.
-    Check 'the deny opens with CI first: a suite CI runs is not run here' (
-        $msgDd -match 'CI first: one final manual exact-SHA batch' -and $msgDd -match 'no local duplicate') $msgDd
-    Check 'the deny says what the LOCAL guarded command is still for' (
-        $msgDd -match 'next-edit-dependent light check' -and $msgDd -match 'live-proven CI block') $msgDd
-    Check 'CI first is stated BEFORE the deep-debug bounds, not appended after them' (
-        $msgDd.IndexOf('CI first: one final manual exact-SHA batch') -ge 0 -and
-        $msgDd.IndexOf('CI first: one final manual exact-SHA batch') -lt
-        $msgDd.IndexOf('Deep-debug/test-policy bounds')) $msgDd
-    Check 'the deny names the deep-debug bounds the replacement enforces' (
-        $msgDd -match 'Deep-debug/test-policy bounds' -and $msgDd -match 'outer wall \+ idle' -and
-        $msgDd -match 'shared worker ceiling' -and $msgDd -match 'process-tree cleanup' -and
-        $msgDd -match 'exit-code propagation' -and $msgDd -match 'no ad hoc sleeps') $msgDd
-    Check 'the deny tells the model to use only a documented native timeout flag, never a guessed one' (
-        $msgDd -match 'documented native timeout flag' -and $msgDd -match 'never a guessed one') $msgDd
-    # E-04 cadence: the note states WHEN the replacement belongs, so a refusal
-    # mid-implementation does not turn into a guarded run after every edit.
-    Check 'the deny states the verification cadence (defer to the single heavy pass, light checks until then)' (
-        $msgDd -match 'Cadence: while writing, light checks' -and
-        $msgDd -match 'defer suites until ALL edits finish') $msgDd
-    Check 'the cadence sentence names the three exceptions that justify running now' (
-        $msgDd -match 'Run now only for the final pass' -and
-        $msgDd -match '::test-audit timing, a suite-only failure' -and
-        $msgDd -match 'explicit user request') $msgDd
-
-    # The same note carries the other two preconditions the rules put on a run:
-    # it must already be optimized, and the guarded runner must be its only owner.
-    Check 'the deny requires the suite to be optimized BEFORE it may run' (
-        $msgDd -match 'Optimize every test BEFORE running' -and
-        $msgDd -match 'Test Optimization Before Any Run' -and $msgDd -match 'read global-test-rules\.md IN FULL') $msgDd
-    Check 'the deny names the guarded runner as the only permitted owner (no background job)' (
-        $msgDd -match 'The guarded runner is the only owner' -and
-        $msgDd -match 'never wrap it in a background job') $msgDd
+    # Optimization/cadence/CI/private/local exceptions/native bounds/waits now
+    # live behind one mandatory full owner before runs. These assertions prove
+    # the pointer and inline owner lifetime, not private rule contents or execution.
+    Check 'the deny requires complete test policy before any run' (
+        $msgDd -match 'BEFORE runs: global-test-rules\.md FULL') $msgDd
+    Check 'the deny keeps guarded lifetime and forbids background wrappers' (
+        $msgDd -match 'Guard owns lifetime; no background wrapper') $msgDd
     # The cadence text is GUIDANCE on the note: it never reaches the command.
     $replDd = Get-Replacement $msgDd
     Check 'the cadence line rides the note, never the replacement command' (
         $replDd -match 'Run-Tests-Guarded\.ps1' -and $replDd -notmatch 'Cadence' -and
         $replDd -notmatch 'CI first') $replDd
-    Check 'a command with no file redirect gets NO UTF-8 output note' ($msgDd -notmatch 'WRITES textual output') $msgDd
+    Check 'a command with no file redirect gets NO UTF-8 output note' ($msgDd -notmatch 'Text:') $msgDd
 
     # =====================================================================
     Write-Host '--- E-04: UTF-8 output advice only when the command VISIBLY writes a text file ---' -ForegroundColor Cyan
@@ -59,17 +32,17 @@
     $rU1 = Fire -HookPath $hcU1.Script -Cwd $Proj -EventName 'PreToolUse' -Command 'pytest -q tests/ > results.txt' -LocalAppData $hcU1.LocalAppData
     $msgU1 = Get-Message $rU1.Out
     Check 'a "> file" redirect on a recognised test command adds the UTF-8 output note' (
-        $msgU1 -match 'WRITES textual output' -and $msgU1 -match '-Encoding utf8' -and $msgU1 -match 'PYTHONUTF8=1') $msgU1
+        $msgU1 -match 'Text:' -and $msgU1 -match '-Encoding utf8' -and $msgU1 -match 'PYTHONUTF8=1') $msgU1
     Check 'the note names ONLY official syntax and forbids invented flags' (
-        $msgU1 -match 'OFFICIAL syntax' -and $msgU1 -match 'Never invent an encoding flag' -and
+        $msgU1 -match 'UTF-8' -and $msgU1 -match 'Documented flags only' -and
         $msgU1 -notmatch '--encoding') $msgU1
-    Check 'the note defers file validation to Utf8-Encoding-Check' ($msgU1 -match 'Utf8-Encoding-Check validates the files') $msgU1
+    Check 'the note defers file validation to Utf8-Encoding-Check' ($msgU1 -match 'Utf8-Encoding-Check validates') $msgU1
     $hcU2 = New-IsolatedHookCopy
     $rU2 = Fire -HookPath $hcU2.Script -Cwd $Proj -EventName 'PreToolUse' -Command 'pytest -q tests/ > $null' -LocalAppData $hcU2.LocalAppData
-    Check 'a redirect to $null is NOT "maintained textual output" (no UTF-8 note)' ((Get-Message $rU2.Out) -notmatch 'WRITES textual output') (Get-Message $rU2.Out)
+    Check 'a redirect to $null is NOT "maintained textual output" (no UTF-8 note)' ((Get-Message $rU2.Out) -notmatch 'Text:') (Get-Message $rU2.Out)
     $hcU3 = New-IsolatedHookCopy
     $rU3 = Fire -HookPath $hcU3.Script -Cwd $Proj -EventName 'PreToolUse' -Command 'pytest -q | tee out.log' -LocalAppData $hcU3.LocalAppData
-    Check 'a tee into a file also gets the UTF-8 output note' ((Get-Message $rU3.Out) -match 'WRITES textual output') (Get-Message $rU3.Out)
+    Check 'a tee into a file also gets the UTF-8 output note' ((Get-Message $rU3.Out) -match 'Text:') (Get-Message $rU3.Out)
     # The E-04 additions must not create a NEW recognition path: an unrelated
     # command that merely redirects stays totally silent.
     $hcU4 = New-IsolatedHookCopy
@@ -172,8 +145,8 @@
     $msgRl = Get-Message $rRl.Out
     Check 'RL-D1 the deny still denies and its text ends with the LANGUAGE line' (
         $rRl.Out -match '"permissionDecision":"deny"' -and
-        $msgRl.TrimEnd().EndsWith('Nothing translates your text: the user reads it as written.') -and
-        $msgRl -match 'LANGUAGE: the user writes in Persian') $msgRl
+        $msgRl.TrimEnd().EndsWith('Output is untranslated.') -and
+        $msgRl -match 'LANGUAGE: replies/progress Persian') $msgRl
     [System.IO.File]::Delete((Join-Path $rlState ('ReplyLanguage-' + $rlKey + '.txt')))
     $rRl = Fire -HookPath (Join-Path $rlDir 'Test-Run-Guard.ps1') -Cwd $Proj -EventName 'PreToolUse' -Command 'pytest -q tests/' -LocalAppData $rlLocal
     Check 'RL-D2 with no recorded language the deny carries no LANGUAGE line' (

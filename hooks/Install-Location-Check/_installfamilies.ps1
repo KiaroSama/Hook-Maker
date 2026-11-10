@@ -144,10 +144,10 @@ function Get-InstallerFindings {
         # NVIDIA's documented default; the installer has no location option.
         $target = Join-Path $programFiles ('NVIDIA GPU Computing Toolkit\CUDA\v' + $cuda.Groups[1].Value)
         if (Test-InstallFlag -Tokens $Arguments -Names @('-s', '/s')) {
-            $advice = 'CUDA silent mode (-s) always installs on the system drive, so asking for a path does not help. Working route: start the ' +
-                'graphical Custom install through explorer.exe "<installer>", untick Driver and NVIDIA App, choose the location there, and take ' +
-                'the toolkit major version that matches the PyTorch build (cu128 -> 12.x, cu130/cu132 -> 13.x); then verify where it landed. ' +
-                'Rule: global-environment-rules.md -> Install Locations.'
+            $advice = 'CUDA -s forces system drive; no path question. Use ' +
+                'explorer.exe "<installer>" -> Custom; untick Driver/NVIDIA App, choose location. ' +
+                'Match PyTorch: cu128->12.x; cu130/cu132->13.x. Verify destination. ' +
+                'global-environment-rules.md Install Locations.'
         }
     }
     elseif ($null -eq $target -and $python.Success) {

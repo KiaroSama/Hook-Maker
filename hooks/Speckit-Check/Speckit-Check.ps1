@@ -128,35 +128,29 @@ $featureLabel = 'Newest feature here (navigation only, no active-feature pointer
 if ($featureFromPointer) { $featureLabel = 'Active feature (.specify/feature.json)' }
 $lead = ''
 if (-not $specsReadable) {
-    $lead = '- This project''s specs directory could not be read, so the route is UNKNOWN - check it before assuming there is no plan.'
+    $lead = '- Specs unreadable: route UNKNOWN; inspect, do not assume no plan.'
 }
 elseif (-not $hasInfrastructure) {
-    $lead = '- No .specify/ here yet -> speckit-init, then speckit-constitution.'
+    $lead = '- No .specify/: speckit-init -> speckit-constitution.'
 }
 elseif ($newestFeature -eq '') {
-    $lead = '- .specify/ exists but no feature carries a spec yet -> the full chain from speckit-specify.'
-    if (-not $hasConstitution) { $lead += ' The constitution is missing too -> speckit-constitution first.' }
+    $lead = '- .specify/ without feature spec: full chain from speckit-specify.'
+    if (-not $hasConstitution) { $lead += ' Missing constitution: speckit-constitution FIRST.' }
 }
 elseif ($openTasks -lt 0) {
-    $lead = '- ' + $featureLabel + ': specs/' + $newestFeature + ' - its tasks.md could not be read, so how much is built is UNKNOWN -> speckit-converge before assuming either way.'
+    $lead = '- ' + $featureLabel + ': specs/' + $newestFeature + ' tasks.md unreadable; completion UNKNOWN -> speckit-converge.'
 }
 elseif ($openTasks -gt 0) {
-    $lead = '- ' + $featureLabel + ': specs/' + $newestFeature + ' - its tasks.md still has ' + [string]$openTasks + ' unchecked item(s) -> continue them with speckit-implement; a NEW request arriving meanwhile goes through the intake below first.'
+    $lead = '- ' + $featureLabel + ': specs/' + $newestFeature + ' - its tasks.md still has ' + [string]$openTasks + ' unchecked -> speckit-implement; NEW requests: intake first.'
 }
 else {
-    $lead = '- ' + $featureLabel + ': specs/' + $newestFeature + ' - its tasks.md has no unchecked items. New work starts a new feature; resumed work or doubt about completeness -> speckit-converge.'
+    $lead = '- ' + $featureLabel + ': specs/' + $newestFeature + ' tasks checked. New work: new feature; resume/completion doubt: speckit-converge.'
 }
 
 $note = @(
-    'SPECKIT CHECK: Spec Kit carries the spec-driven workflow and one speckit-* skill runs on every task that changes the project.',
-    'Route by where this project stands:',
+    'SPECKIT CHECK: BEFORE project-change/delta dependents, global-spec-kit-rules.md FULL.',
     $lead,
-    '- A feature or a behaviour change -> speckit-specify, speckit-clarify, speckit-plan, speckit-tasks, speckit-analyze, speckit-implement, in that order.',
-    '- A bug or a regression -> diagnose first, then: the feature already has specs/<name>/ -> speckit-converge appends the unmet work to tasks.md and speckit-implement closes it; the fix changes specified behaviour or the area has no spec -> the full chain from speckit-specify.',
-    '- NEW request delta: date + requirement IDs/acceptance criteria; amend affected spec/plan/tasks via specify (independent scope -> own feature), refresh skills/gates before dependent edits. Prior run covers recorded scope only. Preserve original request order and stable IDs; earliest actionable unfinished item first, explain exceptions, reconcile every item at closure. Newest folder is not ownership. Other project: exact permission or English Markdown owner handoff; never implicitly stage or repair its source/runner/provider. Read global-project-lifecycle-rules.md + global-spec-kit-rules.md -> Mid-task Request Intake.',
-    'Run each skill to the letter: preflight, prerequisite script, extension hooks, gates, completion report.',
-    'Every question any step raises goes to the user - never a plausible default, never a guessed scope. Only the work that depends on the answer waits; independent work continues.',
-    'Work that changes nothing - a question, an explanation, a review that writes no code - is answered directly, and so is a trivial edit (a typo, a one-line config value).'
+    'Ask unknowns; only dependents wait. Newest!=owner; other-project consent/English handoff. Read-only/trivial typo/value exempt.'
 ) -join "`n"
 
 # One message per (session, project, state, text, REQUEST). Initialising the
@@ -221,7 +215,7 @@ if ($hasInfrastructure) {
             try { $refreshSaid = (([System.IO.File]::ReadAllText($refreshStatePath).Trim()) -eq $refreshKey) } catch { }
         }
         if (-not $refreshSaid) {
-            $refreshLine = 'Spec Kit refresh due: run `specify integration status`, then `specify integration upgrade <key>` for each installed integration, then `specify extension update`; record the date in .ai/COMMANDS.md.'
+            $refreshLine = 'Refresh: `specify integration status` -> `specify integration upgrade <key>` EACH installed -> `specify extension update`; date .ai/COMMANDS.md.'
             try {
                 New-Item -ItemType Directory -Path $stateDir -Force | Out-Null
                 [System.IO.File]::WriteAllText($refreshStatePath, $refreshKey)

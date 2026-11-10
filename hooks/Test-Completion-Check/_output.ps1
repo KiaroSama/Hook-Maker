@@ -54,14 +54,14 @@ function Write-Finding {
     }
     if ($script:expiredNow.Count -gt 0) {
         [void]$all.Add('')
-        [void]$all.Add('Also reconciled (not a block, and not part of this task): ' + $script:expiredNow.Count +
-            ' abandoned guarded-run record(s) from an earlier session were expired and dropped - ' + (@($script:expiredNow) -join '; ') + '.')
+        [void]$all.Add('Earlier-session reconciliation (not this task/block): ' + $script:expiredNow.Count +
+            ' abandoned guarded markers expired/dropped: ' + (@($script:expiredNow) -join '; ') + '.')
     }
     if ($script:configWarnings.Count -gt 0) {
         [void]$all.Add('')
         foreach ($warning in $script:configWarnings) { [void]$all.Add('Test-Completion-Check .env: ' + $warning) }
     }
-    $ledgerFailure = [string](Get-Variable -Name LedgerWriteFailed -Scope Script -ValueOnly -ErrorAction SilentlyContinue); if ($ledgerFailure -ne '') { [void]$all.Add('TEST COMPLETION CHECK: its incident ledger could not be written (' + $ledgerFailure + '); recorded notes may be asked for again.') }; $message = ($all.ToArray() -join "`n")
+    $ledgerFailure = [string](Get-Variable -Name LedgerWriteFailed -Scope Script -ValueOnly -ErrorAction SilentlyContinue); if ($ledgerFailure -ne '') { [void]$all.Add('TEST COMPLETION CHECK: ledger write failed (' + $ledgerFailure + '); note requests may recur.') }; $message = ($all.ToArray() -join "`n")
     # The gating DECISION is made above and is unchanged here; Write-HookResult
     # only turns it into the client's wire shape (claude/codex block ->
     # decision:block, claude advisory -> hookSpecificOutput.additionalContext,
@@ -93,7 +93,7 @@ function Write-Finding {
             $script:StopGateVerdict = 'block'
             # Stop additionalContext also forces continuation; this remains
             # unresolved, but repeating it must not restart the assistant.
-            [Console]::Out.WriteLine((@{ systemMessage = ('TEST COMPLETION CHECK: UNRESOLVED failed receipt, already reported in this session. No recovery or PASS was recorded.' + "`n" + $message) } | ConvertTo-Json -Depth 6 -Compress))
+            [Console]::Out.WriteLine((@{ systemMessage = ('TEST COMPLETION CHECK: UNRESOLVED failed receipt; already reported, no recovery/PASS.' + "`n" + $message) } | ConvertTo-Json -Depth 6 -Compress))
             exit 0
         }
     }

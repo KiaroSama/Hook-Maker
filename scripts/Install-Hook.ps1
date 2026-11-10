@@ -33,7 +33,11 @@ param(
     # inferring success from console text or from the mere absence of an
     # exception, which cannot distinguish "fully installed" from "installed but
     # tracking failed".
-    [string]$ResultPath
+    [string]$ResultPath,
+    # In-process selected repair pins the reviewed generation through staging.
+    [object[]]$ExpectedSourceManifest = @(),
+    # Optional in-process selected-repair preimage check; never persisted input.
+    [scriptblock]$BeforeRuntimeCommit
 )
 
 Set-StrictMode -Version 2.0
@@ -271,16 +275,8 @@ if (-not [string]::IsNullOrWhiteSpace($TargetProject)) {
     # uninstall cleaned only one side. Following the existing file is what the
     # "update the same config" rule means in practice, and it adds no absolute
     # path to a tracked file that did not already carry one.
-    $ClaudeSettings = Join-Path $projectRoot '.claude\settings.local.json'
-    $trackedSettings = Join-Path $projectRoot '.claude\settings.json'
-    if (Test-Path -LiteralPath $trackedSettings -PathType Leaf) {
-        $trackedText = ''
-        try { $trackedText = [System.IO.File]::ReadAllText($trackedSettings) } catch { $trackedText = '' }
-        # The marker this tool's own registrations always carry, so a project that
-        # merely has unrelated hooks in settings.json is left alone.
-        if ($trackedText -match 'Hook-Maker') { $ClaudeSettings = $trackedSettings }
-    }
-    $CodexHooks = Join-Path $projectRoot '.codex\hooks.json'
+    $ClaudeSettings = Get-CanonicalClientSettingsPath -ClientName claude -Scope project -TargetProjectRoot $projectRoot
+    $CodexHooks = Get-CanonicalClientSettingsPath -ClientName codex -Scope project -TargetProjectRoot $projectRoot
     $ScopeLabel = 'project'
 
 }
@@ -377,7 +373,7 @@ if ($InstallClaude) {
     # Each client gets its own runtime copy so its command has zero dependency
     # on the Hook Maker folder (or on the other client's files).
     $claudeRuntime = Copy-HookRuntime -ClientDir (Split-Path -Parent $ClaudeSettings) `
-        -RuntimeIdentity (New-RuntimeIdentity -Client 'claude' -Scope $ScopeLabel -RecordId $RecordId -ProjectRoot $RecordProjectRoot -TimeoutSeconds $script:EffectiveTimeout)
+        -RuntimeIdentity (New-RuntimeIdentity -Client 'claude' -Scope $ScopeLabel -RecordId $RecordId -ProjectRoot $RecordProjectRoot -TimeoutSeconds $script:EffectiveTimeout) -ExpectedSourceManifest $ExpectedSourceManifest -BeforeRuntimeCommit $BeforeRuntimeCommit
     $claudeCommands = New-HookCommands -Runtime $claudeRuntime
     # The whole read-modify-write is held under a crash-aware lock on THIS
     # settings file, so two installs touching the same file cannot lose each
@@ -418,7 +414,7 @@ if ($InstallClaude) {
 if ($InstallCodex) {
     $script:CurrentPhase = 'codex'
     $codexRuntime = Copy-HookRuntime -ClientDir (Split-Path -Parent $CodexHooks) `
-        -RuntimeIdentity (New-RuntimeIdentity -Client 'codex' -Scope $ScopeLabel -RecordId $RecordId -ProjectRoot $RecordProjectRoot -TimeoutSeconds $script:EffectiveTimeout)
+        -RuntimeIdentity (New-RuntimeIdentity -Client 'codex' -Scope $ScopeLabel -RecordId $RecordId -ProjectRoot $RecordProjectRoot -TimeoutSeconds $script:EffectiveTimeout) -ExpectedSourceManifest $ExpectedSourceManifest -BeforeRuntimeCommit $BeforeRuntimeCommit
     $codexCommands = New-HookCommands -Runtime $codexRuntime
     # The whole read-modify-write is held under a crash-aware lock on THIS
     # settings file, so two installs touching the same file cannot lose each

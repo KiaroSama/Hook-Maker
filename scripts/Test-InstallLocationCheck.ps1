@@ -101,9 +101,10 @@ try {
         Check ('fires: ' + $case[0]) ($lines.Count -eq 1 -and $lines[0].StartsWith($expected)) ($lines -join ' || ')
     }
     $line = @(Get-Advice 'winget install Git.Git')[0]
-    Check 'advisory: carries the ask, the verify step and the rule reference' (
-        $line -match 'Reuse approved ecosystem root/override' -and $line.Contains('G:\Program Files\<program-name>') -and $line -match 'Location is not install consent' -and
-        $line -match 'verify physical writes/consumers' -and $line -match 'bind project temp/cache first' -and $line -match 'record retention' -and $line -match 'permanently delete exact proven obsolete owned' -and $line -match 'NOT Recycle Bin' -and $line -match 'global-environment-rules\.md') $line
+    # Physical-write/consumer/obsolete-disposal checks route to both FULL owners.
+    Check 'advisory: requires full install/cleanup owners and preserves location consent boundary' (
+        $line -match 'BEFORE install/cleanup: global-environment-rules.md/global-project-lifecycle-rules.md FULL' -and
+        $line -match 'Approved root/new' -and $line.Contains('G:\Program Files\<program-name>') -and $line -match 'Path!=consent') $line
 
     # =====================================================================
     Write-Host '--- silence: an answered location, a link, the project, an unknown command ---' -ForegroundColor Cyan
@@ -193,7 +194,7 @@ try {
     finally { $script:FakeUserEnv.Clear() }
     Check 'stale: a variable only in the user environment says to set it in this command, not to ask' (
         $stale.Count -eq 1 -and $stale[0] -match 'set `OLLAMA_MODELS=G:\\models` in this command; the shell predates it' -and $stale[0] -notmatch 'Ask the user') ($stale -join ' || ')
-    Check 'stale: a variable present in this process is not stale' ($fresh.Count -eq 1 -and $fresh[0] -match 'Reuse approved ecosystem root/override' -and $fresh[0] -notmatch 'predates') ($fresh -join ' || ')
+    Check 'stale: a variable present in this process is not stale' ($fresh.Count -eq 1 -and $fresh[0] -match 'approved root/new G:' -and $fresh[0] -notmatch 'predates') ($fresh -join ' || ')
     $script:FakeUserEnv['UV_TOOL_BIN_DIR'] = 'G:\uv\bin'
     try { $staleBin = @(Get-Advice 'uv tool install ruff' -Env @{ UV_TOOL_DIR = 'G:\uv\tools' }) } finally { $script:FakeUserEnv.Clear() }
     Check 'stale: the uv launcher override is named for the launcher line' ($staleBin.Count -eq 1 -and $staleBin[0] -match 'set `UV_TOOL_BIN_DIR=G:\\uv\\bin`') ($staleBin -join ' || ')
@@ -223,8 +224,8 @@ try {
     foreach ($silentForm in @('.\dl\cuda_13.4.0_windows_network.exe -s', 'Start-Process .\dl\cuda_13.4.0_windows_network.exe -ArgumentList "-s nvcc_13.4"')) {
         $silent = @(Get-Advice $silentForm)
         Check ('cuda -s: the silent-mode route, not a path question: ' + $silentForm) (
-            $silent.Count -eq 1 -and $silent[0] -match 'CUDA silent mode \(-s\) always installs on the system drive' -and $silent[0] -match 'explorer\.exe' -and
-            $silent[0] -match 'untick Driver and NVIDIA App' -and $silent[0] -match 'cu128 -> 12\.x, cu130/cu132 -> 13\.x' -and $silent[0] -notmatch 'Ask the user') ($silent -join ' || ')
+            $silent.Count -eq 1 -and $silent[0] -match 'CUDA -s forces system drive' -and $silent[0] -match 'explorer\.exe' -and
+            $silent[0] -match 'untick Driver/NVIDIA App' -and $silent[0] -match 'cu128->12\.x; cu130/cu132->13\.x' -and $silent[0] -notmatch 'Ask the user') ($silent -join ' || ')
     }
     $driver = '581.29-desktop-win10-win11-64bit-international-dch-whql.exe'
     foreach ($form in @(('.\dl\' + $driver), ('Start-Process .\dl\' + $driver), ('explorer.exe .\dl\' + $driver))) {

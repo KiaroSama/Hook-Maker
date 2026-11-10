@@ -181,7 +181,7 @@ $dockerfiles = New-Object System.Collections.Generic.List[string]
 $discovery = Get-AdvisoryProjectFiles -ProjectRoot $rootFull -ExcludedDirs $excludedDirs
 if (-not $discovery.Complete) {
     $kind = if ($closing) { 'advisory' } else { 'context' }
-    $null = Write-HookResult -EventName $eventName -Kind $kind -Message ('DEPENDENCY VERSION CHECK: project discovery is partial (' + ($discovery.Reasons -join ', ') + '); dependency scope is UNKNOWN. No cached complete report or package-manager query was used.')
+    $null = Write-HookResult -EventName $eventName -Kind $kind -Message ('DEPENDENCY VERSION CHECK: discovery PARTIAL (' + ($discovery.Reasons -join ', ') + '); scope UNKNOWN; no cached complete report/package query.')
     exit 0
 }
 foreach ($file in $discovery.Files) {
@@ -299,13 +299,13 @@ if ($closing) {
     # where "leave it" needs a stated reason rather than silence.
     $urgent = @($findingLines | Where-Object { $_ -match '\[(EOL|major)\]\s*$' })
     $closeLines = New-Object System.Collections.Generic.List[string]
-    [void]$closeLines.Add('DEPENDENCY VERSION CHECK - ' + $findingLines.Count + ' finding(s) were reported for this project at the start of the session and are still on the table:')
+    [void]$closeLines.Add('DEPENDENCY VERSION CHECK: ' + $findingLines.Count + ' earlier findings need decisions:')
     foreach ($f in @($findingLines | Select-Object -First $maxFindings)) { [void]$closeLines.Add($f) }
     if ($urgent.Count -gt 0) {
-        [void]$closeLines.Add('Of those, ' + $urgent.Count + ' are end-of-life or a clearly old major version - those two classes need a stated reason to leave in place, not silence.')
+        [void]$closeLines.Add('Of those, ' + $urgent.Count + ' EOL/old-major: explicit retain reason required.')
     }
-    [void]$closeLines.Add('Answer each one in the final summary on its own line: ' + $script:DependencyDecisionLine)
-    [void]$closeLines.Add('Unanswered = UNREVIEWED RISK. Update latest stable, else newest nonbreaking (record failed version/cause); [global install] updates globally. Retain only with reason: pin/advisory/runtime/licence/OS-managed. Hook never upgrades or blocks.')
+    [void]$closeLines.Add('Final, one line/finding: ' + $script:DependencyDecisionLine)
+    [void]$closeLines.Add('Unanswered=UNREVIEWED RISK. BEFORE decisions: global-environment-rules.md FULL. Advisory.')
     $null = Write-HookResult -EventName $eventName -Kind 'advisory' -Message ($closeLines.ToArray() -join "`n")
     exit 0
 }
@@ -317,7 +317,7 @@ if ($eventName -eq 'UserPromptSubmit') {
     if ($prompt -match '(?i)\b(add|introduce|adopt|install|upgrade|replace|modernize|switch to|migrate to)\b.{0,40}\b(dependency|dependencies|package|library|libraries|framework|runtime|sdk|build tool|cli|action|docker image|base image)\b' -or
         $prompt -match '(?i)\b(create|start|scaffold|bootstrap)\b.{0,20}\b(project|app|application|repo|repository)\b.{0,20}\bfrom scratch\b' -or
         $prompt -match '(?i)\b(new feature)\b') {
-        [void]$parts.Add('Before selecting a version for a new/updated dependency, runtime, build tool, GitHub Action, or Docker image: check the current official documentation/release notes and choose the latest STABLE version supported by this project''s runtime and peer dependencies - not a prerelease/beta/RC/nightly/canary. Pin deterministically per this ecosystem''s convention rather than a floating tag, and update the lockfile.')
+        [void]$parts.Add('BEFORE dependency/runtime/tool/Action/image changes: global-environment-rules.md FULL; latest compatible STABLE/pin+lock.')
     }
     $cached = Read-CachedState
     if ($null -ne $cached -and $cached.Fingerprint -eq $fingerprint -and -not [string]::IsNullOrWhiteSpace($cached.Report)) {
@@ -395,11 +395,11 @@ if ($manifestPaths.ContainsKey('npm') -and (Get-Command npm -ErrorAction Silentl
                 $count++
             }
         }
-        catch { [void]$incomplete.Add('npm at ' + (Get-RelDir $dir) + ' - could not parse `npm outdated --json` output.') }
+        catch { [void]$incomplete.Add('npm ' + (Get-RelDir $dir) + ': invalid `npm outdated --json` output.') }
     }
 }
 elseif ($manifestPaths.ContainsKey('npm')) {
-    [void]$incomplete.Add('npm detected but the `npm` CLI is not available - run `npm outdated` to check.')
+    [void]$incomplete.Add('npm missing; check: `npm outdated`.')
 }
 
 # Resolve THIS PROJECT's Python interpreter. `pip` on PATH is the machine's
@@ -509,24 +509,24 @@ if ($manifestPaths.ContainsKey('pip')) {
                 if ($script:PythonScopeReady) {
                     $declared = Get-DeclaredPythonPackages -ProjectRoot $cwd
                     if (@($declared.Unreadable).Count -gt 0) {
-                        [void]$incomplete.Add('Python (pip) - could not read the declared dependencies of: ' + (@($declared.Unreadable) -join ', ') + '; packages outside the readable set were not inspected.')
+                        [void]$incomplete.Add('Python declarations unreadable: ' + (@($declared.Unreadable) -join ', ') + '; outside readable set UNCHECKED.')
                     }
                     if (@($declared.Names).Count -gt 0) {
                         $closure = Expand-PythonDependencyClosure -PythonExecutable $pipCmd -Names @($declared.Names)
                         if ($null -eq $closure) {
-                            [void]$incomplete.Add('Python (pip) - the installed metadata could not be read, so transitive dependencies were not inspected; only directly declared packages are reported.')
+                            [void]$incomplete.Add('Python: metadata unreadable; direct packages only, transitive UNCHECKED.')
                             $inScope = @($declared.Names)
                         }
                         else { $inScope = @(@($declared.Names) + @($closure) | Sort-Object -Unique) }
                     }
                     elseif (@($declared.Unreadable).Count -eq 0) {
-                        [void]$incomplete.Add('Python (pip) - Python manifests exist but declare no dependency this hook can parse, so the project scope is unknown and nothing was reported as outdated.')
+                        [void]$incomplete.Add('Python manifests: no parseable dependencies; scope UNKNOWN, no outdated report.')
                         $inScope = @()
                     }
                     else { $inScope = @() }
                 }
                 else {
-                    [void]$incomplete.Add('Python (pip) - the dependency-scope module is missing from this runtime, so the report could not be restricted to this project''s own packages.')
+                    [void]$incomplete.Add('Python: dependency-scope module missing; cannot restrict report to project.')
                     $inScope = @()
                 }
                 $scopeIndex = @{}
@@ -554,7 +554,7 @@ if ($manifestPaths.ContainsKey('pip')) {
             catch { [void]$incomplete.Add('Python (pip) - could not parse `pip list --outdated --format=json` output.') }
         }
     }
-    else { [void]$incomplete.Add('Python (pip) - this project has Python manifests but no project environment (.venv/venv) was found, and an arbitrary interpreter on PATH is NOT this project''s dependency set. Either use the project venv, or - when this project deliberately runs on a shared base interpreter - name that interpreter in this hook''s .env as PYTHON_EXECUTABLE=<full path>; findings stay restricted to the declared dependencies either way.') }
+    else { [void]$incomplete.Add('Python manifest/no venv: PATH != project env. Use venv or explicit shared .env PYTHON_EXECUTABLE=<full path>; declared deps only.') }
 }
 
 # ---- Poetry / uv / pnpm / yarn / bun / .NET / Java / Rust / PHP / Ruby: detected, but not given a
@@ -566,19 +566,19 @@ if ($manifestPaths.ContainsKey('pip')) {
 $incompleteHints = [ordered]@{
     'poetry'  = 'poetry show --outdated --format=json'
     'uv'      = 'uv pip list --outdated --format json'
-    'pnpm'    = 'pnpm outdated --format json (exits 1 when outdated packages are found, like npm)'
-    'yarn'    = 'yarn outdated (Yarn Classic v1 only - no JSON output; Yarn Berry v2+ removed this command entirely, closest is the interactive `yarn upgrade-interactive` or the third-party plugin-outdated plugin)'
-    'bun'     = 'bun outdated (no JSON output option; exit-code behavior when updates are found is undocumented)'
-    'nuget'   = 'dotnet list package --outdated --format json --output-version 1 (always exits 0, even with updates found - never infer freshness from its exit code)'
-    'maven'   = 'mvn versions:display-dependency-updates (requires the versions-maven-plugin)'
-    'gradle'  = './gradlew dependencyUpdates (requires the versions Gradle plugin) or check each dependency manually'
-    'cargo'   = 'cargo outdated --format json (requires installing the separate cargo-outdated crate first - Cargo has no built-in outdated command; exits 0 by default even with updates found unless --exit-code is passed)'
-    'composer' = 'composer outdated --format=json (always exits 0 unless --strict is passed - never infer freshness from its exit code)'
-    'bundler' = 'bundle outdated (no JSON output option; exits 1 when outdated gems are found)'
+    'pnpm'    = 'pnpm outdated --format json (outdated: exit1, like npm)'
+    'yarn'    = 'yarn outdated (Classic1, no JSON; Berry2+: removed; yarn upgrade-interactive/plugin-outdated)'
+    'bun'     = 'bun outdated (no JSON; outdated exit undocumented)'
+    'nuget'   = 'dotnet list package --outdated --format json --output-version 1 (outdated may exit0)'
+    'maven'   = 'mvn versions:display-dependency-updates (versions-maven-plugin required)'
+    'gradle'  = './gradlew dependencyUpdates (versions plugin required), else manual check'
+    'cargo'   = 'cargo outdated --format json (cargo-outdated required; outdated exit0 unless --exit-code)'
+    'composer' = 'composer outdated --format=json (outdated exit0 unless --strict)'
+    'bundler' = 'bundle outdated (no JSON; outdated exit1)'
 }
 foreach ($eco in $detectedEcosystems) {
     if ($incompleteHints.Contains($eco)) {
-        [void]$incomplete.Add($eco + ' detected - version freshness not automatically checked here; run `' + $incompleteHints[$eco] + '`.')
+        [void]$incomplete.Add($eco + ' UNCHECKED; run `' + $incompleteHints[$eco] + '`.')
     }
 }
 
@@ -604,7 +604,7 @@ if ($manifestPaths.ContainsKey('go') -and (Get-Command go -ErrorAction SilentlyC
     }
 }
 elseif ($manifestPaths.ContainsKey('go')) {
-    [void]$incomplete.Add('go.mod detected but the `go` CLI is not available - run `go list -u -m all` to check.')
+    [void]$incomplete.Add('go.mod/go missing; check: `go list -u -m all`.')
 }
 
 # ---- GitHub Actions: static known-minimum-major check ----
@@ -616,7 +616,7 @@ foreach ($wf in $workflowFiles) {
         $major = 0
         if (-not [int]::TryParse($m.Groups[2].Value, [ref]$major)) { continue }
         if ($script:ActionMinimumMajor.ContainsKey($action) -and $major -lt $script:ActionMinimumMajor[$action]) {
-            [void]$findings.Add('github-actions ' + $wf.Name + ': ' + $action + '@v' + $major + ' is a clearly old major version (verify the current latest) [major]')
+            [void]$findings.Add('github-actions ' + $wf.Name + ': ' + $action + '@v' + $major + ' old major; verify latest [major]')
         }
     }
 }
@@ -628,7 +628,7 @@ foreach ($nvmFile in @('.nvmrc', '.node-version')) {
         $ver = ([System.IO.File]::ReadAllText($p)).Trim().TrimStart('v')
         $majorNum = 0
         if ([int]::TryParse(($ver -split '\.')[0], [ref]$majorNum) -and $script:NodeEolMajors -contains $majorNum) {
-            [void]$findings.Add('runtime pin ' + $nvmFile + ': Node ' + $ver + ' is a known end-of-life major version [EOL]')
+            [void]$findings.Add('runtime pin ' + $nvmFile + ': Node ' + $ver + ' known end-of-life major [EOL]')
         }
     }
 }
@@ -651,7 +651,7 @@ if ($manifestPaths.ContainsKey('npm')) {
                 if ($m2.Success) {
                     $en = [int]$m2.Groups[1].Value
                     if ($script:NodeEolMajors -contains $en) {
-                        [void]$findings.Add('runtime pin ' + (Get-RelDir $dir) + '/package.json engines.node: ' + $engineNode + ' allows a known end-of-life Node major [EOL]')
+                        [void]$findings.Add('runtime pin ' + (Get-RelDir $dir) + '/package.json engines.node: ' + $engineNode + ' permits end-of-life Node major [EOL]')
                     }
                 }
             }
@@ -665,7 +665,7 @@ foreach ($pyFile in @('.python-version', 'runtime.txt')) {
         $ver = ([System.IO.File]::ReadAllText($p)).Trim()
         $m3 = [regex]::Match($ver, '(\d+\.\d+)')
         if ($m3.Success -and $script:PythonEolVersions -contains $m3.Groups[1].Value) {
-            [void]$findings.Add('runtime pin ' + $pyFile + ': Python ' + $m3.Groups[1].Value + ' is a known end-of-life version [EOL]')
+            [void]$findings.Add('runtime pin ' + $pyFile + ': Python ' + $m3.Groups[1].Value + ' known end-of-life [EOL]')
         }
     }
 }
@@ -679,12 +679,12 @@ foreach ($df in $dockerfiles) {
         $image = $m.Groups[1].Value
         if ($image -match '(?i)^scratch$' -or $image -match '(?i)\bas\b') { continue }
         if ($image -match ':latest$' -or $image -notmatch ':') {
-            [void]$findings.Add('docker ' + $relPath + ': ' + $image + ' uses a floating/untagged (effectively :latest) base image - not reproducible [unknown]')
+            [void]$findings.Add('docker ' + $relPath + ': ' + $image + ' floating/untagged (:latest); unreproducible [unknown]')
             continue
         }
         foreach ($eol in $script:DockerEolBaseImages) {
             if ($image -eq $eol -or $image.StartsWith($eol + '-')) {
-                [void]$findings.Add('docker ' + $relPath + ': ' + $image + ' is a known end-of-life base image tag [EOL]')
+                [void]$findings.Add('docker ' + $relPath + ': ' + $image + ' known end-of-life base [EOL]')
                 break
             }
         }
@@ -703,19 +703,16 @@ if ($incomplete.Count -gt 0) {
     if ($reportLines.Count -eq 0) { [void]$reportLines.Add('DEPENDENCY VERSION CHECK (' + $cwd + '):') }
     # Deliberately avoids the phrase this project's own guard greps for as a
     # currency claim: the line must forbid such a claim, not contain one.
-    [void]$reportLines.Add('Incomplete checks - these are UNKNOWN, and UNKNOWN is not the same as fine. Do not describe this project as fully checked while any of these stand:')
+    [void]$reportLines.Add('Incomplete checks: UNKNOWN != fine; no full-coverage claim:')
     foreach ($i in @($incomplete | Sort-Object -Unique)) { [void]$reportLines.Add('- ' + $i) }
 }
 # The response contract. The scan above is evidence; these lines say what must be DONE with it,
 # because a report with no stated obligation is the one that gets skimmed and dropped.
 if ($reportLines.Count -gt 0) {
-    [void]$reportLines.Add('WHAT TO DO WITH THIS - every finding above needs a DECISION, not agreement:')
-    [void]$reportLines.Add('1. Verify release notes/changelog, breaking changes, runtime/peers and advisories; prefer the latest STABLE compatible version, not prerelease/beta/RC/nightly/canary.')
-    [void]$reportLines.Add('2. Decide each: update (then update the lockfile and run real checks), keep (correct here), or defer (name blocker). Keep/defer are legitimate; silence is not.')
-    [void]$reportLines.Add('3. Use small verified batches, validate each; review breaking changes before any major bump.')
-    [void]$reportLines.Add('4. [EOL]/clearly old major: explicit stated reason to leave in place.')
-    [void]$reportLines.Add('5. Final summary, own line: ' + $script:DependencyDecisionLine)
-    [void]$reportLines.Add('User decides; hook never edits a manifest, never runs an upgrade and never blocks completion. State the decision.')
+    [void]$reportLines.Add('BEFORE review/update: global-environment-rules.md FULL.')
+    [void]$reportLines.Add('Each: update+lock+real checks | keep+reason | defer+blocker; small validated batches.')
+    [void]$reportLines.Add('Final standalone: ' + $script:DependencyDecisionLine)
+    [void]$reportLines.Add('User decides; hook never edits/upgrades/blocks.')
 }
 $report = $reportLines.ToArray() -join "`n"
 Save-CachedState -Report $report

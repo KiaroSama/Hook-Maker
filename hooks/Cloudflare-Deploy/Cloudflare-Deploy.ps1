@@ -9,11 +9,9 @@
 # and the source says so here so the two descriptions cannot drift apart
 # again. It blocks only on the documented, reproducible condition spelled out
 # below: a wrangler config exists AND Test-ReleaseReady holds for the tree as
-# it stands right now. WHAT CLEARS IT: finishing the turn again - after
-# deploying and verifying, or after one line saying why this commit should not
-# ship. The block is recorded per session and per project BEFORE it is
-# emitted, so the same state never blocks twice; a later session is
-# additionally held off by COOLDOWN_MINUTES.
+# it stands right now. Own re-entry stands down; later sessions honor the
+# source/client/config cooldown. Explicit reviewed deployment/no-ship evidence
+# acknowledges the exact SHA across sessions, never a provider/CI success claim.
 #
 # The decision is gated on actual RELEASE READINESS (deterministic repo/CI/
 # cleanup state), never on menu position or hook registration order - Stop
@@ -39,10 +37,24 @@
 #   DEPLOY_COMMAND    the deploy command to suggest (default: npx wrangler deploy)
 #   COOLDOWN_MINUTES  minimum minutes between reminders per project (default 30)
 
+[CmdletBinding()]
+param(
+    [switch]$Acknowledge,
+    [string]$ProjectRoot,
+    [ValidateSet('claude','codex')][string]$Client,
+    [string]$Commit,
+    [string]$EvidencePath,
+    [switch]$ReviewConfirmed
+)
 Set-StrictMode -Version 2.0
 $ErrorActionPreference = 'Stop'
 
 . (Join-Path $PSScriptRoot '..\_hooklib.ps1')
+. (Join-Path $PSScriptRoot '_acknowledgment.ps1')
+if ($Acknowledge) {
+    exit (Invoke-DeploymentAcknowledgment -Root $ProjectRoot -Client $Client -Commit $Commit -EvidencePath $EvidencePath -ReviewConfirmed:$ReviewConfirmed)
+}
+if ($PSBoundParameters.Count -gt 0) { throw 'Acknowledgment arguments require -Acknowledge.' }
 
 $hookInput = Read-HookInput
 if ($null -eq $hookInput) {
@@ -66,6 +78,7 @@ if ([string]::IsNullOrWhiteSpace($eventName)) { $eventName = 'Stop' }
 # a custom-events install would otherwise run this whole body - git calls
 # included - on UserPromptSubmit.
 if ($eventName -ne 'Stop' -and $eventName -ne 'SubagentStop') { exit 0 }
+if ((Get-HookClientId) -eq 'unknown') { exit 0 }
 # This task's identity, read once. Get-CleanupEvidenceVerdict uses it as the
 # producer/consumer barrier: a coordination record written by an EARLIER session
 # describes a task that has already ended, however current its repo fingerprint
@@ -626,9 +639,10 @@ function Test-ReleaseReady {
     return $true
 }
 
-# ---- cooldown (per project) ----
+# Readiness remains mandatory; a different SHA/client/config never inherits cooldown.
+if (-not (Test-ReleaseReady $cwd)) { exit 0 }
 $stateDir = Join-Path $env:LOCALAPPDATA 'HookMaker\state'
-$statePath = Join-Path $stateDir ('CloudflareDeploy-' + (Get-ShortHash $cwd.ToLowerInvariant()) + '.txt')
+$statePath = Get-DeploymentCooldownPath $cwd (Get-HookClientId) $script:ReleaseHeadSha (Join-Path $cwd $wranglerConfig) $stateDir
 $lastFire = [DateTime]::MinValue
 if (Test-Path -LiteralPath $statePath -PathType Leaf) {
     try {
@@ -640,20 +654,14 @@ if (Test-Path -LiteralPath $statePath -PathType Leaf) {
     catch { }
 }
 
-# Only show the decision when the repository and release state are actually
-# ready - never based on hook registration order (see header).
-if (-not (Test-ReleaseReady $cwd)) {
-    exit 0
-}
+if (Test-DeploymentAcknowledgment $cwd (Get-HookClientId) $script:ReleaseHeadSha (Join-Path $cwd $wranglerConfig) $stateDir) { exit 0 }
 
 $reasonLines = New-Object System.Collections.Generic.List[string]
-[void]$reasonLines.Add('CLOUDFLARE DEPLOY CHECK: ' + $wranglerConfig + '; release commit ' + $script:ReleaseHeadSha + ': clean tree, HEAD not ahead of upstream, exact-SHA CI green when workflows exist, current cleanup clean when installed. Deployment is NOT automatic just because this config exists.')
-[void]$reasonLines.Add('1) Deploy only complete work: tests/typecheck/lint/build pass; exact release commit is known; CI for that commit is green if this repo uses CI (or explicit documented exception); authorized environment/bindings/migrations understood. Exclude secrets/local-only/debug files, unrelated changes and disposable test cache/temp residue. Partial/local diagnostic, documentation-only, an experiment, or the release commit is not known - finish now WITHOUT deploying; state why.')
-[void]$reasonLines.Add('2) Choose production/staging/preview/named environment explicitly; matching Wrangler config/command, never silently default to production.')
-[void]$reasonLines.Add('3) Cloudflare-specific pre-deploy review, only where relevant to this diff: Worker name and account/environment selection, environment-specific variables, bindings, D1 databases and migrations, KV namespaces, R2 buckets, Queues, Durable Objects and migrations, service bindings, routes/custom domains, cron triggers, compatibility date/flags, deployment CLI/version compatibility, and build output. Never print secret values.')
-[void]$reasonLines.Add('4) If deployment is warranted, run: ' + $deployCommand)
-[void]$reasonLines.Add('5) Post-deployment verification is REQUIRED: do not claim deployment succeeded solely because the command exited 0. Record environment/Worker/project/source SHA/sanitized command/deployment-version ID or URL. Smallest real check: smoke-test the public/staging URL, health/changed feature, recent deploy logs, routes/bindings or migrations. Unavailable verification stays unverified; state the limit.')
-[void]$reasonLines.Add('6) On failure: do not repeatedly redeploy blindly; inspect/fix confirmed deploy/config issues, validate via the applicable CI/light-check route, retry only when safe. Never hide a failed deployment; never claim the task is live if it is not. Clear with verified deployment OR one-line no-ship reason; once per unchanged project/session state.')
+[void]$reasonLines.Add('CLOUDFLARE DEPLOY CHECK: ' + $wranglerConfig + '; SHA=' + $script:ReleaseHeadSha + '; clean/synced, exact-SHA configured CI green, installed cleanup current/clean. Config != deploy.')
+[void]$reasonLines.Add('BEFORE deploy: global-project-lifecycle-rules.md + selected cloudflare/wrangler contracts FULL. Partial/docs/experiment/unknown SHA: explain, NO deploy.')
+[void]$reasonLines.Add('Explicit Wrangler env, NEVER default production. Warranted only: ' + $deployCommand)
+[void]$reasonLines.Add('Exit0!=live proof; exact-SHA deployment+real postchecks or reviewed no-ship. Missing=UNVERIFIED; confirmed failures: fix/safe retry.')
+[void]$reasonLines.Add('Ack without deploy (HOOKS.md): pwsh -NoProfile -File "' + $PSCommandPath + '" -Acknowledge -ProjectRoot "' + $cwd + '" -Client ' + (Get-HookClientId) + ' -Commit ' + $script:ReleaseHeadSha + ' -EvidencePath "<reviewed local evidence.json>" -ReviewConfirmed.')
 $reason = $reasonLines.ToArray() -join "`n"
 # Record the block so THIS hook's own re-entry is recognised; another
 # gate's block must not mute it, and its own must not repeat.

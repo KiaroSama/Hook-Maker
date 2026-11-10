@@ -106,7 +106,7 @@ try {
         $shSeen = ''
         if (Test-Path -LiteralPath $shPath -PathType Leaf) { $shSeen = ([System.IO.File]::ReadAllText($shPath)).Trim() }
         if ($shSeen -ne $shKey) {
-            $shNote = 'ALL CI HOSTS STAY MANUAL: initiate hosted or self-hosted CI only with workflow_dispatch; workflow_call children need that in-repository manual root, and dispatch the one final run for the exact final SHA yourself (never for GitHub- or bot-created branches, Dependabot included). Rule: global-github-automation-rules.md.' + "`n" + ($selfHostedLines -join "`n")
+            $shNote = 'MANUAL CI, all hosts: workflow_dispatch root, reachable workflow_call children only. Dispatch one final exact-SHA run; never GitHub/bot/Dependabot branches. global-github-automation-rules.md.' + "`n" + ($selfHostedLines -join "`n")
             $badgeNote = @(@($badgeNote, $shNote) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }) -join "`n`n"
             New-Item -ItemType Directory -Path (Split-Path -Parent $shPath) -Force | Out-Null
             [System.IO.File]::WriteAllText($shPath, $shKey)
@@ -319,7 +319,7 @@ if ($dependabotPath -ne '') {
 # ---- findings ----
 $findings = @()
 if (-not $discovery.Complete) {
-    $findings += ('- Project discovery is partial (' + ($discovery.Reasons -join ', ') + '); unvisited manifests and ecosystems are UNKNOWN, not verified absent.')
+    $findings += ('- Discovery PARTIAL (' + ($discovery.Reasons -join ', ') + '); unvisited manifests/ecosystems UNKNOWN, not absent.')
 }
 $hasCode = ($ecosystems.Count -gt 0 -or $sourceCount -ge 3)
 
@@ -351,7 +351,7 @@ if (-not $meaningfulCi -and $hasCode) {
     $detectedText = 'source files only'
     if ($detected.Count -gt 0) { $detectedText = ($detected -join ', ') }
     $findingPrefix = if ($workflowFiles.Count -eq 0) { 'No CI workflow' } else { 'Workflow files exist, but none provides blocking project validation' }
-    $findings += ('- ' + $findingPrefix + ' (.github/workflows). Detected: ' + $detectedText + '. Add manual-only CI with workflow_dispatch on every host (reachable workflow_call children only) that runs the project''s real lint/test/type-check/build commands; keep failures blocking; use least-privilege permissions and avoid unsafe pull_request_target execution.')
+    $findings += ('- ' + $findingPrefix + ' (.github/workflows). Detected: ' + $detectedText + '. Add all-host manual workflow_dispatch/reachable workflow_call validation: lint/tests/types/build, blocking failures, least privilege; no unsafe pull_request_target.')
 }
 foreach ($problem in $workflowProblems) { $findings += ('- Unsafe/non-blocking workflow: ' + $problem + '.') }
 
@@ -362,13 +362,13 @@ if ($dependabotPath -eq '') {
     }
 }
 else {
-    if ($dependabotMalformed) { $findings += '- dependabot.yml is malformed or missing version: 2 / updates; coverage cannot be trusted.' }
+    if ($dependabotMalformed) { $findings += '- dependabot.yml malformed/missing version: 2 / updates; coverage UNKNOWN.' }
     $missing = @()
     foreach ($key in ($required.Keys | Sort-Object)) {
         if (-not $covered.ContainsKey($key)) { $missing += $key.Replace('|', ' at ') }
     }
     if ($missing.Count -gt 0) {
-        $findings += ('- dependabot.yml exists but lacks entries for: ' + ($missing -join ', ') + '. Do not remove or rewrite the working entries; add only what is missing.')
+        $findings += ('- dependabot.yml exists but lacks entries for: ' + ($missing -join ', ') + '. Add missing only; preserve working entries.')
     }
 }
 
@@ -391,7 +391,7 @@ if ($findings.Count -gt 0) {
             if ($wf.Name -match '(?i)codeql') { $hasCodeql = $true; break }
         }
         if (-not $hasCodeql) {
-            $findings += ('- Optional: CodeQL scanning supports the detected language(s) (' + (@($codeqlLangs.Keys | Sort-Object) -join ', ') + ') and is not configured.')
+            $findings += ('- Optional CodeQL absent; supported detected languages: ' + (@($codeqlLangs.Keys | Sort-Object) -join ', ') + '.')
         }
     }
 }
@@ -420,14 +420,14 @@ New-Item -ItemType Directory -Path $stateDir -Force | Out-Null
 [System.IO.File]::WriteAllLines($statePath, @($fingerprint, [DateTime]::UtcNow.ToString('o')))
 
 $scopeNote = if ($hasImmediateUnsafeRisk) {
-    'The pull_request_target + untrusted-checkout finding above is an immediate security risk (a fork PR can run with repository-level permissions) - treat it as urgent even in an otherwise unrelated task, but keep the fix itself scoped and evidence-based (inspect the real workflow first, change only what is actually unsafe).'
+    'Urgent: pull_request_target + untrusted checkout gives fork code repository permissions. Inspect workflow; fix confirmed unsafe scope only.'
 }
 else {
-    'These are advisory for an unrelated task: fix now only when the user asked for CI/repository/security/release setup, the current task directly requires the missing baseline, or a workflow poses a confirmed unsafe risk (see above) - otherwise preserve this finding for a separate task and continue the requested work. Never create or rewrite workflows during an unrelated task, and never treat the optional CodeQL suggestion as mandatory.'
+    'Unrelated: advisory/defer. Fix requested/dependent/confirmed unsafe scope only; CodeQL optional.'
 }
 $message = 'GITHUB BASELINE CHECK (' + $repoSlug + '): the .github automation baseline does not match the project structure:' + "`n" +
     ($findings -join "`n") + "`n" +
-    $scopeNote + ' When a fix does go ahead: global-github-automation-rules.md governs it and loads on demand, so read it in full before this work; inspect the real project first, use its actual commands, and never blindly copy templates or overwrite working project-specific automation.'
+    $scopeNote + ' BEFORE repair: global-github-automation-rules.md FULL; preserve working automation.'
 if (-not [string]::IsNullOrWhiteSpace($badgeNote)) { $message += "`n`n" + $badgeNote }
 $null = Write-HookResult -EventName $eventName -Kind 'context' -Message $message
 exit 0

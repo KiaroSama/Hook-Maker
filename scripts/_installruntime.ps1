@@ -41,7 +41,9 @@ function Copy-HookRuntime {
         # source installed for Claude and for Codex produces two runtimes whose
         # only difference is this identity. Omitted (the native Git pre-push
         # chain, which has no client identity) plans no metadata file.
-        $RuntimeIdentity = $null
+        $RuntimeIdentity = $null,
+        [object[]]$ExpectedSourceManifest = @(),
+        [scriptblock]$BeforeRuntimeCommit
     )
 
     $runtimeRoot = if ([string]::IsNullOrWhiteSpace($RuntimeRootOverride)) {
@@ -82,7 +84,18 @@ function Copy-HookRuntime {
     $plan = Get-ManagedInstallPlan -SourceInfo $SourceInfo -FriendlyName $FriendlyName -ToolRoot $ToolRoot `
         -ConfigPath $ConfigPath -IncludeConfig:$isEngineInstall -SyncProjectListContent $syncListContent `
         -RuntimeIdentity $RuntimeIdentity
-    Install-PlannedRuntime -Plan $plan -RuntimeRoot $runtimeRoot -FriendlyName $FriendlyName | Out-Null
+    $beforeCommit=$null
+    if(@($ExpectedSourceManifest).Count-or$null-ne$BeforeRuntimeCommit){
+        $beforeCommit={
+            if(@($ExpectedSourceManifest).Count){
+                $currentSource=@(Get-ManagedSourceManifest -ToolRoot $ToolRoot -HookScript $HookScript -SourceDir $SourceDir -FriendlyName $FriendlyName -ProjectRoot $RecordProjectRoot)
+                if(-not(Compare-Manifest $ExpectedSourceManifest $currentSource).IsMatch){throw 'Reviewed source generation changed; runtime preserved.'}
+            }
+            if($null-ne$BeforeRuntimeCommit){$null=& $BeforeRuntimeCommit}
+        }
+        $null=& $beforeCommit
+    }
+    Install-PlannedRuntime -Plan $plan -RuntimeRoot $runtimeRoot -FriendlyName $FriendlyName -BeforeCommit $beforeCommit | Out-Null
 
     # ---- POST-COMMIT CLEANUP ONLY, past this point -------------------------
     # The replacement runtime is now staged, hash-verified and swapped into

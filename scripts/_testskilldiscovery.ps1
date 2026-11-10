@@ -109,10 +109,12 @@ function Invoke-SkillSurfaceRegression {
     . (Join-Path $PSScriptRoot '_testskillproviders.ps1')
     Invoke-SkillProviderRegression (Split-Path -Parent $PSScriptRoot)
     $sdSavedClaudeDir = $env:CLAUDE_PROJECT_DIR
-    # The two order-55 step-4a lines, copied from the ORDER, not from the hook:
-    # the assertion must fail if the hook's wording drifts from what was asked.
-    $sdRoutingA = '- Every visible skill has its own routing line in global-skill-routing.md; user-level, Desktop and Kiaro template skills are in global-skills-catalogue.md. Route by that line, not by the plugin name; where two skills share a job, the line names the default. global-skill-routing.md loads on demand, so read it in full before this work.'
-    $sdRoutingB = '- Security work enters at the security-audit skill, never at a scanner. semgrep, codeql, SARIF, insecure-defaults and differential-review are evidence that workflow calls for. It runs in guidance mode by default and in full audit mode only on an explicit audit, pen-test, end-to-end review, or a request for report artifacts.'
+    # Independent concise-contract expectations; discovery and negative controls
+    # below still exercise actual isolated client installations.
+    $sdRoutingA = '- BEFORE selection/security: global-skill-routing.md/global-skills-catalogue.md FULL.'
+    # Security gateway details are disclosed by this same complete catalogue
+    # pointer before security work, not repeated inline or claimed executed.
+    $sdRoutingB = 'BEFORE selection/security: global-skill-routing.md/global-skills-catalogue.md FULL.'
 
     function New-SdSkill {
         param([string]$Dir, [string]$Name, [string]$Extra = '')
@@ -180,30 +182,30 @@ function Invoke-SkillSurfaceRegression {
     Check 'Claude SessionStart uses the shared context shape' ($r.Out -match '"hookSpecificOutput"' -and $r.Out -match '"hookEventName":"SessionStart"') $r.Out
     # alpha 3 (nested + one explicit-only), solo 1 (root SKILL.md), picked 2
     # (declared folders), dup 1, off 1 (disabled plugin), Desktop 2 (one off).
-    Check 'every individual skill is counted, not every package' ($ctx -match 'Plugin skills: 10 across 6 plugins') $ctx
-    Check 'enabled, disabled and explicit-only stay distinct' ($ctx -match 'Of these: 8 enabled, 2 disabled \(not loadable\), 1 explicit-only') $ctx
+    Check 'every individual skill is counted, not every package' ($ctx -match 'Plugin skills: 10/6 plugins') $ctx
+    Check 'enabled, disabled and explicit-only stay distinct' ($ctx -match 'Availability: 8 enabled; 2 disabled/unloadable; 1 user-explicit-only') $ctx
     Check 'a declared path outside the plugin and a missing install path make the scan PARTIAL' (
         $ctx -match 'Skill discovery was PARTIAL' -and $ctx -match 'picked@m declares a path outside the plugin' -and $ctx -match 'ghost@m install path missing') $ctx
     Check '4a: the per-skill routing line is present verbatim at SessionStart' ($ctx.Contains($sdRoutingA)) $ctx
     Check '4a: the security-audit entry line is present verbatim at SessionStart' ($ctx.Contains($sdRoutingB)) $ctx
     Check 'uncatalogued detection names exactly the one missing skill' (
-        $ctx -match 'UNCATALOGUED SKILLS \(advisory\): picked:pick-b - no current provider/source skill contract' -and $ctx -match 'the rules need an update') $ctx
+        $ctx -match 'UNCATALOGUED SKILLS \(advisory\): picked:pick-b - provider/source contract missing' -and $ctx -match 'Update rules') $ctx
     Check 'a catalogue plugin missing from the install records is reported as removed' (
-        $ctx -match 'REMOVED PLUGINS \(advisory\): kdense@gone - the catalogue names a removed plugin; the rules need an update') $ctx
+        $ctx -match 'REMOVED PLUGINS \(advisory\): kdense@gone - removed plugin still catalogued; update rules') $ctx
     Check 'the other client''s catalogue record is never reported' ($ctx -notmatch 'only@codex') $ctx
     Check 'a host-bundled skill is never reported in either direction' ($ctx -notmatch 'code-review' -and $ctx -notmatch 'security-review') $ctx
     Check 'drift is advisory, never a block' ($r.Out -notmatch '"decision"') $r.Out
     $r2 = Fire -HookPath $sdClaudeHook -Cwd $sdProj -RawStdin (New-PromptStdin -Cwd $sdProj -EventName 'SessionStart' -Prompt '' -SessionId 'sd-c1')
     $ctx2 = Get-Context $r2.Out
     Check 'an unchanged drift gap is not reported twice in one session' ($ctx2 -match 'SKILL POLICY CHECK' -and $ctx2 -notmatch 'UNCATALOGUED SKILLS') $ctx2
-    Check 'the route line states the mid-task intake contract' (
-        $ctx -match 'dated delta/requirement IDs/acceptance' -and $ctx -match 'amend affected artifacts/skills/gates before dependent edits' -and
-        $ctx -match 'independent work continues' -and $ctx -match 'Spec Kit routes every task') $ctx
-    Check 'agent guidance names actual roots without claiming exposure or spawning' (
-        $ctx -match 'global-agent-rules.md' -and $ctx -match 'global/project .claude/agents' -and
-        $ctx -match 'installed_plugins.json declared/default roots' -and $ctx -match 'current host roster' -and
-        $ctx -match 'missing/unreadable/malformed scope is UNVERIFIED' -and $ctx -match 'Small tasks: zero agents' -and
-        $ctx -match 'This hook spawns nothing') $ctx
+    Check 'the route line requires the full mid-task intake owner before delta work' (
+        $ctx -match 'BEFORE scaffold/feature/bug/delta: global-spec-kit-rules.md FULL') $ctx
+    # Roster/dedupe/full body/tools/limits/minimum0 and exposure distinctions
+    # are indirect behind the mandatory owner, not runtime proof from this hook.
+    Check 'agent guidance names actual roots and full owner before selection, never spawns' (
+        $ctx -match 'BEFORE selection global-agent-rules.md FULL' -and $ctx -match 'global/project .claude/agents' -and
+        $ctx -match 'installed_plugins.json declared/default roots' -and
+        $ctx -match 'Gaps UNVERIFIED; no auto spawn') $ctx
 
     $malformedHook = New-ConfiguredSkillsHookCopy -EnvOverrides @{ SKILLS_DIR=(Join-Path $Work 'none'); CLAUDE_PLUGINS_FILE=(Join-Path $Work 'none.json'); CLAUDE_DESKTOP_SKILLS_ROOT=(Join-Path $sdClaude 'bad-desktop') }
     $badSession=Join-Path $sdClaude 'bad-desktop/owner/session'
@@ -224,7 +226,7 @@ function Invoke-SkillSurfaceRegression {
     Check 'each shortlisted skill names its SKILL.md procedure location' ($ctx -match ('alpha:alpha-one \[plugin\] -> ' + [regex]::Escape((Join-Path $sdAlpha 'skills\one\SKILL.md')))) $ctx
     Check 'an explicit-only skill is never shortlisted' ($ctx -notmatch 'alpha-three') $ctx
     Check 'a skill of a disabled plugin is never shortlisted' ($ctx -notmatch 'dormant-widget') $ctx
-    Check 'the shortlist says it is not the full inventory' ($ctx -match 'not full inventory') $ctx
+    Check 'the shortlist says it is not the full inventory' ($ctx -match 'INSTALLED matches only: verify source/exposure/exact SKILL.md key') $ctx
     Check '4a: both routing lines are present verbatim at UserPromptSubmit' ($ctx.Contains($sdRoutingA) -and $ctx.Contains($sdRoutingB)) $ctx
 
     # ---- Codex fixture home -------------------------------------------------
@@ -267,7 +269,7 @@ function Invoke-SkillSurfaceRegression {
         $ctx -match 'Of these: 6 enabled, 2 disabled \(not loadable\), 1 explicit-only') $ctx
     Check 'several cached versions are reported as a partial choice, not hidden' ($ctx -match 'coff@mk has 2 cached versions; newest used') $ctx
     Check 'a Codex run never reports Claude paths or Claude skills' ($ctx -notmatch 'alpha-one' -and $ctx -notmatch 'anthropic-skills' -and $ctx -notmatch 'sd-claude') $ctx
-    Check 'missing rules are reported as NOT CHECKED, never as no drift' ($ctx -match 'Catalogue drift NOT CHECKED' -and $ctx -match 'not an all-clear') $ctx
+    Check 'missing rules are reported as NOT CHECKED, never as no drift' ($ctx -match 'Catalogue drift NOT CHECKED' -and $ctx -match 'not all-clear') $ctx
     $r = Fire -HookPath $sdCodexHook -Cwd $sdCodexProj -RawStdin (New-PromptStdin -Cwd $sdCodexProj -EventName 'UserPromptSubmit' -Prompt 'quiet shared gone owned' -SessionId 'sd-x2')
     $ctx = Get-Context $r.Out
     Check 'Codex invocations are bare names' ($ctx -match '- shared-one \[codex-shared\]' -and $ctx -match '- owned-helper \[codex-skills\]') $ctx

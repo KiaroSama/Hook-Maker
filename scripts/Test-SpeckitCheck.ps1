@@ -110,23 +110,23 @@ try {
 
     $bare = New-SpeckitProject -Name 'bare'
     $r = Invoke-SpeckitHook @{ hook_event_name = 'UserPromptSubmit'; cwd = $bare; session_id = 'r1'; prompt = 'add an export feature' }
-    Check 'no .specify/ -> init then constitution' ($r.Out -match 'speckit-init, then speckit-constitution') $r.Out
+    Check 'no .specify/ -> init then constitution' ($r.Out -match 'speckit-init -> speckit-constitution') $r.Out
     Check 'and it is advisory, never a block' ($r.Exit -eq 0 -and $r.Out -notmatch '"decision"') $r.Out
 
     $infra = New-SpeckitProject -Name 'infra' -WithInfrastructure -WithConstitution
     $r = Invoke-SpeckitHook @{ hook_event_name = 'UserPromptSubmit'; cwd = $infra; session_id = 'r2'; prompt = 'add an export feature' }
     Check 'infrastructure but no feature -> the full chain from specify' (
-        $r.Out -match 'no feature carries a spec yet') $r.Out
+        $r.Out -match 'without feature spec: full chain from speckit-specify') $r.Out
 
     $open = New-SpeckitProject -Name 'open' -WithInfrastructure -WithConstitution -Feature '001-x' -TasksBody "- [ ] T001 a`r`n- [x] T002 b`r`n- [ ] T003 c"
     $r = Invoke-SpeckitHook @{ hook_event_name = 'UserPromptSubmit'; cwd = $open; session_id = 'r3'; prompt = 'add an export feature' }
     Check 'an unfinished feature is named, with its exact open count' (
-        $r.Out -match 'specs/001-x' -and $r.Out -match '2 unchecked item') $r.Out
+        $r.Out -match 'specs/001-x' -and $r.Out -match '2 unchecked') $r.Out
 
     $done = New-SpeckitProject -Name 'done' -WithInfrastructure -WithConstitution -Feature '002-y' -TasksBody '- [x] T001 done'
     $r = Invoke-SpeckitHook @{ hook_event_name = 'UserPromptSubmit'; cwd = $done; session_id = 'r4'; prompt = 'add an export feature' }
     Check 'a finished feature routes resumed work to converge' (
-        $r.Out -match 'specs/002-y' -and $r.Out -match 'no unchecked items' -and $r.Out -match 'speckit-converge') $r.Out
+        $r.Out -match 'specs/002-y' -and $r.Out -match 'tasks checked' -and $r.Out -match 'speckit-converge') $r.Out
 
     # UNREADABLE IS NOT ABSENT. A feature whose tasks.md is missing must not be
     # reported as finished - that would send the agent to start something new
@@ -134,7 +134,7 @@ try {
     $blind = New-SpeckitProject -Name 'blind' -WithInfrastructure -WithConstitution -Feature '003-z'
     $r = Invoke-SpeckitHook @{ hook_event_name = 'UserPromptSubmit'; cwd = $blind; session_id = 'r5'; prompt = 'add an export feature' }
     Check 'a feature whose task list cannot be read is UNKNOWN, never "finished"' (
-        $r.Out -match 'UNKNOWN' -and $r.Out -notmatch 'no unchecked items') $r.Out
+        $r.Out -match 'UNKNOWN' -and $r.Out -notmatch 'tasks checked') $r.Out
 
     # =====================================================================
     Write-Host '--- silence is the default ---' -ForegroundColor Cyan
@@ -149,7 +149,7 @@ try {
     New-Item -ItemType Directory -Path (Join-Path $bare '.specify\memory') -Force | Out-Null
     $r = Invoke-SpeckitHook @{ hook_event_name = 'UserPromptSubmit'; cwd = $bare; session_id = 'r1'; prompt = 'add an export feature' }
     Check 'initialising the project mid-session re-arms the follow-up route' (
-        $r.Out -match 'SPECKIT CHECK' -and $r.Out -notmatch 'No \.specify/ here yet') $r.Out
+        $r.Out -match 'SPECKIT CHECK' -and $r.Out -notmatch 'No \.specify/:') $r.Out
 
     # =====================================================================
     Write-Host '--- mid-task intake (order 55, step 3) ---' -ForegroundColor Cyan
@@ -160,12 +160,12 @@ try {
     $r = Invoke-SpeckitHook @{ hook_event_name = 'UserPromptSubmit'; cwd = $open; session_id = 'r3'; prompt = 'also fix the login bug in the api' }
     Check 'a NEW request mid-task is surfaced although task counts and timestamps are unchanged' (
         $r.Out -match 'SPECKIT CHECK') $r.Out
-    Check 'and it carries the intake contract: a request delta with requirement IDs and acceptance criteria' (
-        $r.Out -match 'request delta' -and $r.Out -match 'requirement IDs' -and $r.Out -match 'acceptance criteria') $r.Out
-    Check 'only the dependent work waits; independent work continues' ($r.Out -match 'independent work continues') $r.Out
-    Check 'intake retains ordered owner-bound work without implicit cross-project repair' (
-        $r.Out -match 'original request order and stable IDs' -and $r.Out -match 'earliest actionable unfinished' -and
-        $r.Out -match 'English Markdown owner handoff' -and $r.Out -match 'reconcile every item') $r.Out
+    # Dated IDs/acceptance/order/artifacts/phases/gates live behind full owner.
+    Check 'intake requires full Spec Kit owner before project-change/delta dependents' (
+        $r.Out -match 'BEFORE project-change/delta dependents, global-spec-kit-rules.md FULL') $r.Out
+    Check 'only dependent work waits' ($r.Out -match 'Ask unknowns; only dependents wait') $r.Out
+    Check 'intake retains ownership without implicit cross-project repair' (
+        $r.Out -match 'Newest!=owner' -and $r.Out -match 'other-project consent/English handoff') $r.Out
     Check 'the old "finish existing tasks before starting anything else" is gone' (
         $r.Out -notmatch 'before starting something else') $r.Out
 
@@ -289,7 +289,7 @@ try {
         ($merged.Count -eq $script:HookMakerExcludedDirs.Count + 1)) ($merged -join ',')
 
     Write-Host '--- monthly Spec Kit refresh advisory (files only) ---' -ForegroundColor Cyan
-    $refreshText = 'Spec Kit refresh due: run `specify integration status`, then `specify integration upgrade <key>` for each installed integration, then `specify extension update`; record the date in .ai/COMMANDS.md.'
+    $refreshText = 'Refresh: `specify integration status` -> `specify integration upgrade <key>` EACH installed -> `specify extension update`; date .ai/COMMANDS.md.'
     function New-RefreshProject {
         param([string]$Name, [AllowNull()][object]$RecordedDaysAgo)
         $root = New-SpeckitProject -Name $Name -WithInfrastructure -WithConstitution
@@ -307,13 +307,13 @@ try {
     try { $context = [string](($out | ConvertFrom-Json).hookSpecificOutput.additionalContext) } catch { }
     Check 'no recorded refresh -> the fixed refresh text, verbatim' ($context.Contains($refreshText)) $out
     $out = Get-RefreshOut $rfNone
-    Check 'the same recorded state is advised once per project' (-not $out.Contains('Spec Kit refresh due')) $out
+    Check 'the same recorded state is advised once per project' (-not $out.Contains('Refresh: `specify integration status`')) $out
     $out = Get-RefreshOut (New-RefreshProject -Name 'Refresh31' -RecordedDaysAgo 31)
-    Check 'a refresh recorded 31 days ago -> advised' ($out -match 'Spec Kit refresh due') $out
+    Check 'a refresh recorded 31 days ago -> advised' ($out -match 'Refresh: `specify integration status`') $out
     $out = Get-RefreshOut (New-RefreshProject -Name 'Refresh5' -RecordedDaysAgo 5)
-    Check 'a refresh recorded 5 days ago -> not advised, route still given' ($out -notmatch 'Spec Kit refresh due' -and $out -match 'SPECKIT CHECK') $out
+    Check 'a refresh recorded 5 days ago -> not advised, route still given' ($out -notmatch 'Refresh: `specify integration status`' -and $out -match 'SPECKIT CHECK') $out
     $out = Get-RefreshOut (New-SpeckitProject -Name 'RefreshNoSpecify')
-    Check 'a folder without .specify/ never gets the refresh text' ($out -notmatch 'Spec Kit refresh due') $out
+    Check 'a folder without .specify/ never gets the refresh text' ($out -notmatch 'Refresh: `specify integration status`') $out
     $speckitSource = [System.IO.File]::ReadAllText($Hook)
     Check 'the hook never runs specify (no invocation in its source)' (
         $speckitSource -notmatch '(?im)^[^#\r\n]*(&\s*[''"]?specify\b|FilePath\s+[''"]?specify\b|Start-Process[^\r\n]*specify\b)') ''

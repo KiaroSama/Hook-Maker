@@ -60,7 +60,7 @@
     Check 'PostToolUse output is one parseable JSON document' (Test-IsSingleJson $r.Out) $r.Out
     Check 'the finding names the terminate reason' ($message -match 'TERMINATED' -and $message -match 'idleTimeout') $message
     Check 'the finding carries lastProgress - where it was when it died' ($message -match 'Test-RulesCheck\.ps1 \(7/22\)') $message
-    Check 'the finding refuses to call a termination a test failure' ($message -match 'not a test failure') $message
+    Check 'the finding refuses to call a termination a test failure' ($message -match 'termination != test assertion failure') $message
     Check 'PostToolUse never blocks' ($r.Exit -eq 0 -and $r.Out -notmatch '"permissionDecision":"deny"' -and $r.Out -notmatch '"decision"') $r.Out
     $rRepeat = Fire -HookPath $hcPost.Script -Cwd $Proj -EventName 'PostToolUse' -Command 'pytest -q' -LocalAppData $hcPost.LocalAppData
     Check 'the SAME unchanged result is not reported twice' ($rRepeat.Exit -eq 0 -and $rRepeat.Out -eq '') $rRepeat.Out
@@ -100,15 +100,15 @@
     $hcMissing = New-IsolatedHookCopy
     $r = Fire -HookPath $hcMissing.Script -Cwd $Proj -EventName 'PostToolUse' -Command 'pytest -q' -LocalAppData $hcMissing.LocalAppData
     $message = Get-Message $r.Out
-    Check 'a missing result document is reported as NO evidence' ($message -match 'NO evidence' -and $message -match 'do not report it as passing') $message
-    Check 'the missing-evidence finding never claims a pass' ($message -notmatch 'passed\b' -or $message -match 'do not report it as passing') $message
+    Check 'a missing result document is reported as unproven' ($message -match 'Outcome UNPROVEN' -and $message -match 'no pass claim') $message
+    Check 'the missing-evidence finding never claims a pass' ($message -notmatch 'passed\b' -and $message -match 'no pass claim') $message
 
     $hcStale = New-IsolatedHookCopy
     $stalePath = New-ResultDocument -LocalAppData $hcStale.LocalAppData -ProjectRoot $Proj -Fields @{ overall = 'ok'; exitCode = 0 }
     (Get-Item -LiteralPath $stalePath).LastWriteTimeUtc = [DateTime]::UtcNow.AddHours(-6)
     $r = Fire -HookPath $hcStale.Script -Cwd $Proj -EventName 'PostToolUse' -Command 'pytest -q' -LocalAppData $hcStale.LocalAppData
     $message = Get-Message $r.Out
-    Check 'a STALE ok result is not accepted as evidence for this run' ($message -match 'stale' -and $message -match 'NO evidence') $message
+    Check 'a STALE ok result is not accepted as evidence for this run' ($message -match 'stale' -and $message -match 'Outcome UNPROVEN') $message
 
     # =====================================================================
     Write-Host '--- Codex shape (no CLAUDE_PROJECT_DIR) ---' -ForegroundColor Cyan
@@ -154,7 +154,7 @@
     $r = Fire -HookPath $hcBare.Script -Cwd $bare -EventName 'PreToolUse' -Command 'pytest -q' -LocalAppData $hcBare.LocalAppData
     $message = Get-Message $r.Out
     Check 'with no locatable runner the gate downgrades to advice' ($r.Exit -eq 0 -and $r.Out -notmatch '"permissionDecision":"deny"') $r.Out
-    Check 'the advice still states the requirement' ($message -match 'could not be located' -and $message -match 'wall timeout') $message
+    Check 'the advice still states the requirement' ($message -match 'missing from' -and $message -match 'bounded wall/idle') $message
 
     # Review-1: the runner SHIPS beside the installed hook (installer plants it at
     # <hookdir>\scripts\Run-Tests-Guarded.ps1 - Find-GuardedRunner's candidate[0]).
@@ -223,5 +223,5 @@
     $r = Fire -HookPath $isoNoMgr.Script -Cwd $projOnlyBad -EventName 'PreToolUse' -Command 'pytest -q' -LocalAppData $isoNoMgr.LocalAppData
     $msg = Get-Message $r.Out
     Check 'a candidate without the contract marker is NOT returned -> the gate advises instead of blocking' (
-        $r.Out -notmatch '"permissionDecision":"deny"' -and $msg -match 'could not be located') $msg
+        $r.Out -notmatch '"permissionDecision":"deny"' -and $msg -match 'missing from') $msg
 

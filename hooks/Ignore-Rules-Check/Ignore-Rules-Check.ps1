@@ -261,7 +261,7 @@ if ($ruleAdvice.Count -gt 0 -and -not $GitPrePush) {
     $adviceFp = Get-ShortHash ((@($ruleAdvice | Sort-Object)) -join '|')
     $seenFp = ''; try { if (Test-Path -LiteralPath $adviceState -PathType Leaf) { $seenFp = ([System.IO.File]::ReadAllText($adviceState)).Trim() } } catch { }
     if ($seenFp -ne $adviceFp) {
-        $adviceLine = 'Rule-requested patterns NOT written/protected; review, then add to this hook''s .env EXTRA_PATTERNS or .gitignore: ' + ($ruleAdvice -join ', ')
+        $adviceLine = 'Patterns NOT protected; review/add via .env EXTRA_PATTERNS or .gitignore: ' + ($ruleAdvice -join ', ')
         try { New-Item -ItemType Directory -Path (Split-Path -Parent $adviceState) -Force | Out-Null; [System.IO.File]::WriteAllText($adviceState, $adviceFp) } catch { }
     }
 }
@@ -276,7 +276,7 @@ if ($adviceLine -ne '') { [void]$lines.Add($adviceLine) }
 if ($missing.Count -gt 0) { [void]$lines.Add('Auto-added ' + $missing.Count + ' missing pattern(s) to .gitignore: ' + ($missing -join ', ')) }
 if ($tracked.Count -gt 0) { [void]$lines.Add('TRACKED protected paths must be untracked before push (preserve local files): ' + (($tracked | Sort-Object -Unique) -join ', ')) }
 if ($staged.Count -gt 0) { [void]$lines.Add('STAGED protected paths must be removed from the index before push: ' + (($staged | Sort-Object -Unique) -join ', ')) }
-[void]$lines.Add('Review .gitignore, preserve local files, and add any other project-specific private/generated paths required by the current rules before pushing.')
+[void]$lines.Add('Before push: review .gitignore/private/generated exclusions; preserve local files.')
 $reason = $lines.ToArray() -join "`n"
 if ($GitPrePush) {
     [Console]::Error.WriteLine($reason)

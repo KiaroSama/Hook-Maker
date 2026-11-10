@@ -127,7 +127,7 @@ function Get-ManualWorkflowState {
         if ($leaves.Count -eq 0) { $answer.Complete = $false; break }
         $pending = @($pending | Where-Object { $leaves -cnotcontains $_ })
     }
-    if (-not $answer.Complete) { $answer.Problems += 'Manual workflow reachability is UNKNOWN (unreadable, over-limit, unsupported or cyclic structure); inspect the actual workflows.' }
+    if (-not $answer.Complete) { $answer.Problems += 'Manual reachability UNKNOWN: unreadable/over-limit/unsupported/cyclic. Inspect workflows.' }
     $answer.Compliant = $answer.Complete -and -not $automatic -and $roots.Count -gt 0 -and $answer.HasValidation
     return $answer
 }

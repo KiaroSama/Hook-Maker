@@ -254,7 +254,7 @@ function Write-SurvivorAdvisory {
     $stopActive = Get-Field $hookInput 'stop_hook_active'
     if ($null -ne $stopActive -and [bool]$stopActive) { return }
     # The otherwise-silent tail still owes the ledger-write failure (once, never a block).
-    if ($script:LedgerWriteFailed -ne '') { Write-Finding -Blocking $false -Lines @('TEST COMPLETION CHECK - advisory only: nothing else needs attention, but its incident ledger could not be written.') }
+    if ($script:LedgerWriteFailed -ne '') { Write-Finding -Blocking $false -Lines @('TEST COMPLETION CHECK: ledger write failed; otherwise clear, advisory.') }
     $patterns = @(Get-SurvivorPatterns)
     if ($patterns.Count -eq 0) { return }
     $since = Get-SessionBaselineUtc
@@ -264,8 +264,8 @@ function Write-SurvivorAdvisory {
     if (-not $snapshot.Ok) {
         if (-not (Test-SurvivorShouldReport 'enumeration-unavailable')) { return }
         Write-Finding -Blocking $false -Lines @(
-            'TEST COMPLETION CHECK: process query refused/timed out; session orphan coverage PARTIAL, not clean.',
-            'Read global-test-rules.md -> No Orphaned Test Processes IN FULL; sweep task-started processes, prove ownership, terminate survivors, verify exit and report each pid.')
+            'TEST COMPLETION CHECK: process query refused/timeout; orphan coverage PARTIAL.',
+            'FULL global-test-rules.md No Orphaned Test Processes: sweep owned PIDs/reap/verify exit/report.')
         return
     }
     $rows = @($snapshot.Rows)
@@ -279,18 +279,18 @@ function Write-SurvivorAdvisory {
     if (-not (Test-SurvivorShouldReport $token)) { return }
 
     $lines = New-Object System.Collections.Generic.List[string]
-    [void]$lines.Add('TEST COMPLETION CHECK - possible orphaned test processes started during this session (advisory; the hook cannot prove ownership and kills nothing):')
+    [void]$lines.Add('Possible session test orphans (advisory, owner UNPROVEN; kills nothing):')
     $shown = [Math]::Min($rows.Count, $script:SurvivorMaxRows)
     for ($i = 0; $i -lt $shown; $i++) {
         [void]$lines.Add('  pid ' + $rows[$i].Pid + '  started ' + $rows[$i].Started.ToString('yyyy-MM-dd HH:mm:ss') + 'Z  ' + $rows[$i].Text)
     }
     if ($rows.Count -gt $shown) {
-        [void]$lines.Add('  ... and ' + ($rows.Count - $shown) + ' more matching process(es) not listed - this list is capped at ' +
-            $script:SurvivorMaxRows + ' rows, so the coverage shown here is PARTIAL.')
+        [void]$lines.Add('  +' + ($rows.Count - $shown) + ' matches omitted; cap=' +
+            $script:SurvivorMaxRows + '; shown coverage PARTIAL.')
     }
     if ($snapshot.ForeignRunner -gt 0) {
-        [void]$lines.Add('  (' + $snapshot.ForeignRunner + ' more process(es) left out: another project''s CI runner job - not this task''s; do not terminate them.)')
+        [void]$lines.Add('  (' + $snapshot.ForeignRunner + ' omitted foreign CI runner process(es); NOT task-owned, never terminate.)')
     }
-    [void]$lines.Add('Run the survivor sweep before finishing (global-test-rules.md -> No Orphaned Test Processes; it loads on demand, so read it in full before this work): prove task ownership by PID + start time, terminate owned survivors, verify exit, report each. Owned alive -> incomplete.')
+    [void]$lines.Add('global-test-rules.md FULL: sweep PID+start ownership; reap owned, verify/report exit. Owned alive=incomplete.')
     Write-Finding -Blocking $false -Lines $lines.ToArray()
 }

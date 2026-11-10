@@ -212,6 +212,8 @@ function Invoke-CiWorkloadRegression {
     & { param($Root); Invoke-CiReviewedTreeRegression $Root } $HooksRoot
     & { param($Root); Invoke-CiReviewedSourceRegression $Root } $HooksRoot
     & { param($Root); Invoke-CiLiteralMatrixRegression $Root } $HooksRoot
+    & {param($Root,$Helper);. $Helper;Invoke-CiPaginationRegression $Root} $HooksRoot (Join-Path $PSScriptRoot '_testcipagination.ps1')
+    & {param($Root,$Helper);. $Helper;Invoke-CiPagedSnapshotRegression $Root} $HooksRoot (Join-Path $PSScriptRoot '_testcipagination.ps1')
     . (Join-Path $HooksRoot '_hooklib.ps1')
     . (Join-Path $HooksRoot '_scope.ps1')
     . (Join-Path $HooksRoot 'Ci-Status-Check/_pathsfilter.ps1')
@@ -308,6 +310,8 @@ function Invoke-CiWorkloadRegression {
                 if($script:WorkloadCase-eq'matrix-wrong-attempt'){$items[2].run_attempt=1}
                 if($script:WorkloadCase-eq'matrix-skipped'){$items[2].steps[1].conclusion='skipped'}
                 if($script:WorkloadCase-eq'matrix-failed'){$items[2].conclusion='failure'}
+                if($script:WorkloadCase-eq'matrix-cancelled'){$items[2].conclusion='cancelled'}
+                if($script:WorkloadCase-eq'matrix-timeout'){$items[2].conclusion='timed_out'}
                 if($script:WorkloadCase-eq'matrix-extra'){$items+=@($items[2])}
                 if($script:WorkloadCase-eq'matrix-wrong-sha'){$items[2].head_sha='f'*40}
                 return (@{total_count=3;jobs=$items}|ConvertTo-Json -Depth 10 -Compress)
@@ -332,7 +336,7 @@ function Invoke-CiWorkloadRegression {
         }
         $global:LASTEXITCODE=1;return ''
     }
-    foreach($case in @('matrix-wrong-branch','matrix-wrong-event','matrix-complete','matrix-missing','matrix-duplicate-label','matrix-wrong-attempt','matrix-skipped','matrix-extra','matrix-failed','matrix-wrong-sha','matrix-pending-status','zero-status-pending','zero-check-failed','zero-check-pending','zero-check-partial','zero-status-failed','zero-clean','bot','complete','skipped-job','skipped-step','wrong-attempt','wrong-repo','wrong-sha','partial','duplicate','neutral','api-error','partial-jobs','missing-step-time')){
+    foreach($case in @('matrix-wrong-branch','matrix-wrong-event','matrix-complete','matrix-missing','matrix-duplicate-label','matrix-wrong-attempt','matrix-skipped','matrix-extra','matrix-failed','matrix-cancelled','matrix-timeout','matrix-wrong-sha','matrix-pending-status','zero-status-pending','zero-check-failed','zero-check-pending','zero-check-partial','zero-status-failed','zero-clean','bot','complete','skipped-job','skipped-step','wrong-attempt','wrong-repo','wrong-sha','partial','duplicate','neutral','api-error','partial-jobs','missing-step-time')){
         $script:WorkloadCase=$case
         $snapshot=Get-CiRunSnapshot -RepoSlug 'owner/repo' -Sha $sha
         $green=$null-ne$snapshot-and$snapshot.AllSuccess
@@ -340,6 +344,7 @@ function Invoke-CiWorkloadRegression {
         if($case-like'zero-*'){Check ('zero Actions independently verifies checks/statuses '+$case) ($null-ne$snapshot-and$snapshot.CommitChecksSafe-eq($case-eq'zero-clean'))}
         if($case-eq'bot'){Check 'auxiliary-only success leaves documentation route reachable' ($null-ne$snapshot-and$snapshot.Runs.Count-eq0)}
         if($case-eq'complete'){
+            Check 'workload execution proof does not invent suite or UI verification' ($null-eq$snapshot.Provenance.PSObject.Properties['testCases']-and$null-eq$snapshot.Provenance.PSObject.Properties['uiVerified'])
             $proof=$snapshot.Provenance
             $lines=@($sha,'verified',$proof.observedUtc,'ci-green',($proof|ConvertTo-Json -Depth 10 -Compress))
             Check 'later cleanup cannot refresh required execution preceding local failure' ($null-eq(Read-CiProvenance -Lines $lines -Repository owner/repo -Sha $sha -FailureEndedUtc '2026-10-17T09:58:30Z'))

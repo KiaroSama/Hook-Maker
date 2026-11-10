@@ -89,20 +89,20 @@ function Get-CommitIdentityReport {
 
 function Get-CommitIdentityReminder {
     param([Parameter(Mandatory = $true)]$Report, [string]$Scope = 'history')
-    $what = if ($Scope -eq 'history') { 'this repository''s commits and tags (old ones and every new one)' } else { 'the commits made in this session' }
+    $what = if ($Scope -eq 'history') { 'repository commits/tags, old+new' } else { 'session commits' }
     $lines = New-Object System.Collections.Generic.List[string]
-    [void]$lines.Add('COMMIT IDENTITY: check that ' + $what + ' carry ONLY ' + $script:PublicCommitEmail + ' for the owner''s author, committer, tagger and co-author/sign-off identities, and no other address. Any commit that carries another address of the owner''s MUST be rewritten (private backup first, rewrite only the owner''s identity, publish with --force-with-lease=<ref>:<old-oid>, then verify CI on the new SHA). Rule: global-repository-rules.md, Public Commit Identity and Private Email Remediation.')
+    [void]$lines.Add('COMMIT IDENTITY: ' + $what + ': owner fields ONLY ' + $script:PublicCommitEmail + '. BEFORE create/repair: global-repository-rules.md Git and identity FULL.')
     if (-not $Report.LogOk) {
-        [void]$lines.Add('- The commit log could not be read, so how many commits carry another address is UNKNOWN.')
+        [void]$lines.Add('- Log unreadable; other-address count UNKNOWN.')
     }
     else {
         $scope = if ($Report.Truncated) { 'in the newest ' + $Report.Scanned + ' commits (scan capped - older ones were not read)' } else { 'across ' + $Report.Scanned + ' commit(s)' }
-        [void]$lines.Add('- ' + $Report.OtherCommits + ' commit(s) ' + $scope + ' carry an address other than the public one (bots and bare noreply@ system addresses not counted). Addresses are not shown here; list them yourself and decide which are the owner''s.')
+        [void]$lines.Add('- ' + $Report.OtherCommits + ' commit(s) ' + $scope + ' nonpublic addresses (excluding bots/bare noreply@); values hidden. Establish owner locally.')
         if ($Report.OtherTags -gt 0) { [void]$lines.Add('- ' + $Report.OtherTags + ' annotated tag(s) carry another tagger address.') }
     }
     if (-not $Report.EffectiveOk) {
-        [void]$lines.Add('- The effective user.email for this repository is NOT the public address - set it before the next commit: git config --local user.email ' + $script:PublicCommitEmail)
+        [void]$lines.Add('- Nonpublic user.email; before commit: git config --local user.email ' + $script:PublicCommitEmail)
     }
-    [void]$lines.Add('- Changing user.email or adding .mailmap does not remove an address already inside Git objects.')
+    [void]$lines.Add('- user.email/.mailmap NEVER repair stored Git identities.')
     return ($lines.ToArray() -join "`n")
 }

@@ -246,7 +246,7 @@
     Write-GuardedResult -Copy $c -Root $p -Overall 'ok' -RunId $rHeal -AgeMinutes 0
     $r = Fire -Copy $c -Cwd $p
     Check 'D2: the FIRST Stop still demands the durable note even though the run is already green again' (
-        $r.Out -match '"decision":"block"' -and (Get-BlockReason $r.Out) -match 'durable \.ai/ note is still owed' -and (Get-BlockReason $r.Out) -match 'idleTimeout') $r.Out
+        $r.Out -match '"decision":"block"' -and (Get-BlockReason $r.Out) -match '\.ai/ note owed' -and (Get-BlockReason $r.Out) -match 'idleTimeout') $r.Out
     $st = Get-CompletionStateDoc -Copy $c -Root $p
     Check 'D2: the self-healed incident registered a note obligation on first sighting' ((Get-PendingCount $st) -eq 1) ('pending=' + (Get-PendingCount $st))
     Add-TaggedNote -Root $p -Reason (Get-BlockReason $r.Out) -Body ('Idle-timeout self-healed before the Stop hook fired; recorded so the lesson is not lost. ' +
@@ -278,7 +278,7 @@
     Check 'D3: both original observations remain, while only one is logically paired' (
         $survivingObs.Count -eq 2) ('observed files=' + $survivingObs.Count)
     Check 'D3: the unpaired observation still BLOCKS as observed-without-result' (
-        $r.Out -match '"decision":"block"' -and (Get-BlockReason $r.Out) -match 'no guarded result document exists') $r.Out
+        $r.Out -match '"decision":"block"' -and (Get-BlockReason $r.Out) -match 'exact observation lacks guarded result') $r.Out
     # A SECOND result now pairs the surviving observation -> completion allowed.
     Write-GuardedResult -Copy $c -Root $p -Overall 'ok' -RunId ('d3r2-' + $key) -AgeMinutes 0
     $r = Fire -Copy $c -Cwd $p
@@ -325,7 +325,7 @@
     (Get-Item -LiteralPath (Get-RunStateFile -Copy $c -Root $p -Kind 'result' -RunId $rInc)).LastWriteTimeUtc = [DateTime]::UtcNow.AddHours(-25)
     $r = Fire -Copy $c -Cwd $p
     Check 'R1: the superseded incident still demands its durable note at the first Stop (register-before-prune)' (
-        $r.Out -match '"decision":"block"' -and (Get-BlockReason $r.Out) -match 'durable \.ai/ note is still owed' -and (Get-BlockReason $r.Out) -match 'wallTimeout') $r.Out
+        $r.Out -match '"decision":"block"' -and (Get-BlockReason $r.Out) -match '\.ai/ note owed' -and (Get-BlockReason $r.Out) -match 'wallTimeout') $r.Out
     Check 'R1: exactly one note obligation was registered before pruning' ((Get-PendingCount (Get-CompletionStateDoc -Copy $c -Root $p)) -eq 1) ''
     Check 'R1: superseded original remains alongside its durable note obligation' (
         (Test-Path -LiteralPath (Get-RunStateFile -Copy $c -Root $p -Kind 'result' -RunId $rInc))) $r.Out
@@ -594,7 +594,7 @@ Write-Doc (Join-Path $StateDir ('TestRunGuard-result-' + $ProjectKey + '-' + $sa
     Write-GuardedResult -Copy $cT -Root $pT -Overall 'ok' -ExitCode 0 -RunId $greenT -CommandFingerprint ('cmdc2gnew' + $keyT)
     $resT1 = Invoke-Resolve -Copy $cT -Root $pT -Key $incT -RecoveryRunId $greenT -Reason $resolveReason
     Check 'C2g: recovery REFUSES a termination while its note is unwritten' (
-        $resT1.Exit -ne 0 -and $resT1.Text -match 'owes a durable note') ('key ' + $incT + ' :: ' + $resT1.Text)
+        $resT1.Exit -ne 0 -and $resT1.Text -match 'own exact tag \+ substantive growth beyond baseline required') ('key ' + $incT + ' :: ' + $resT1.Text)
     Write-IncidentNote -Root $pT -Key $incT
     $resT2 = Invoke-Resolve -Copy $cT -Root $pT -Key $incT -RecoveryRunId $greenT -Reason $resolveReason
     Check 'C2g: and accepts it once the tagged note exists' (

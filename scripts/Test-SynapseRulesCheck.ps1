@@ -107,16 +107,16 @@ try {
     Write-Host ''
     Write-Host '--- SessionStart: the instruction and the measured settings ---' -ForegroundColor Cyan
     $rStart = Fire -Cwd $proj -EventName 'SessionStart' -SessionId 's-start'
-    Check 'start: it fires when a store exists' ($rStart.Exit -eq 0 -and $rStart.Out -match 'SYNAPSE RULES CHECK') ($rStart.Out + $rStart.Err)
+    Check 'start: it fires when a store exists' ($rStart.Exit -eq 0 -and $rStart.Out -match 'SYNAPSE:') ($rStart.Out + $rStart.Err)
     Check 'start: it names memory_digest and the tokenBudget' (
         $rStart.Out -match 'memory_digest' -and $rStart.Out -match 'tokenBudget') $rStart.Out
-    Check 'start: it says to index BEFORE reading the digest' ($rStart.Out -match '(?i)index it first') $rStart.Out
+    Check 'start: it says to index BEFORE reading the digest' ($rStart.Out -match 'ONCE/session\+tokenBudget; index id/type/~110-char preview, read matches FULL') $rStart.Out
     # The two settings this store measured and that are easy to get wrong.
     Check 'start: it carries the 0.65 threshold' ($rStart.Out -match '0\.65') $rStart.Out
     Check 'start: it warns against minScore together with tags' (
-        $rStart.Out -match '(?i)NEVER pass minScore and tags together') $rStart.Out
+        $rStart.Out -match 'minScore0.65 OR tags') $rStart.Out
     Check 'start: it says an environment fact must be re-verified, not recalled' (
-        $rStart.Out -match '(?i)observation with a timestamp') $rStart.Out
+        $rStart.Out -match 'Reverify operation/account state') $rStart.Out
     Check 'start: nothing is written to stderr' ($rStart.Err -eq '') $rStart.Err
 
     Write-Host ''
@@ -125,7 +125,7 @@ try {
     $midProj = New-Proj 'MidSession'
     $rMid = Fire -Cwd $midProj -EventName 'UserPromptSubmit' -SessionId 's-mid' -TranscriptPath $wroteUnread
     Check 'mid: files changed and the store unread -> the one mid-session note' (
-        $rMid.Exit -eq 0 -and $rMid.Out -match 'already changed files' -and $rMid.Out -match 'memory_digest') ($rMid.Out + $rMid.Err)
+        $rMid.Exit -eq 0 -and $rMid.Out -match 'files changed without store read' -and $rMid.Out -match 'memory_digest') ($rMid.Out + $rMid.Err)
     $rMidAgain = Fire -Cwd $midProj -EventName 'UserPromptSubmit' -SessionId 's-mid' -TranscriptPath $wroteUnread
     Check 'mid: the same session is never told twice' ($rMidAgain.Exit -eq 0 -and $rMidAgain.Out -eq '') $rMidAgain.Out
     $rQuiet = Fire -Cwd (New-Proj 'MidQuiet') -EventName 'UserPromptSubmit' -SessionId 's-quiet' -TranscriptPath (New-Transcript 'transcript-read-only.jsonl' '{"type":"tool_use","name":"Read","input":{}}')
@@ -149,22 +149,22 @@ try {
     Check 'stop: an unread store is reported' (
         $rMissed.Exit -eq 0 -and $rMissed.Out -match 'never queried') ($rMissed.Out + $rMissed.Err)
     Check 'stop: the unread message still says how to write back' ($rMissed.Out -match 'memory_write') $rMissed.Out
-    Check 'stop: a trivial session keeps the conditional wording' ($rMissed.Out -match 'If the session did real work') $rMissed.Out
+    Check 'stop: a trivial session keeps the conditional wording' ($rMissed.Out -match 'Real work: read standing rules') $rMissed.Out
     $rWorked = Fire -Cwd (New-Proj 'Worked') -EventName 'Stop' -SessionId 's-worked' -TranscriptPath $wroteUnread
-    Check 'stop: a session that changed files is told so plainly' ($rWorked.Out -match 'changed files and never read the store') $rWorked.Out
+    Check 'stop: a session that changed files is told so plainly' ($rWorked.Out -match 'Files changed: read standing rules now') $rWorked.Out
     Check 'stop: never a block, worked or not' ($rWorked.Out -notmatch '"decision"' -and $rMissed.Out -notmatch '"decision"') ($rWorked.Out + $rMissed.Out)
 
     # Consulted: the same shape, with a real tool name in it.
     $used = New-Transcript 'transcript-used.jsonl' '{"role":"assistant","name":"mcp__synapse__memory_digest"}'
     $rUsed = Fire -Cwd (New-Proj 'Used') -EventName 'Stop' -SessionId 's-used' -TranscriptPath $used
     Check 'stop: a consulted store gets the WRITE-BACK half instead' (
-        $rUsed.Exit -eq 0 -and $rUsed.Out -match 'SYNAPSE WRITE-BACK' -and $rUsed.Out -notmatch 'never queried') ($rUsed.Out + $rUsed.Err)
+        $rUsed.Exit -eq 0 -and $rUsed.Out -match 'SYNAPSE memory_write:' -and $rUsed.Out -notmatch 'never queried') ($rUsed.Out + $rUsed.Err)
     Check 'stop: write-back demands an entityKey so a new version supersedes' (
         $rUsed.Out -match 'entityKey') $rUsed.Out
     Check 'stop: it says to correct a CONTRADICTED memory in the same turn' (
-        $rUsed.Out -match '(?i)CONTRADICTED this session') $rUsed.Out
-    Check 'stop: it refuses secrets explicitly' ($rUsed.Out -match '(?i)Never store secrets') $rUsed.Out
-    Check 'stop: "nothing durable" is a normal answer' ($rUsed.Out -match '(?i)write nothing') $rUsed.Out
+        $rUsed.Out -match 'Correct contradicted blocker/name/environment SAME turn') $rUsed.Out
+    Check 'stop: it refuses secrets explicitly' ($rUsed.Out -match 'No secrets/credentials/tokens') $rUsed.Out
+    Check 'stop: "nothing durable" is a normal answer' ($rUsed.Out -match 'no durable value = no write') $rUsed.Out
 
     Write-Host ''
     Write-Host '--- the marker: a long session that read it EARLY still counts ---' -ForegroundColor Cyan
@@ -173,7 +173,7 @@ try {
     $longProj = New-Proj 'LongSession'
     $early = New-Transcript 'transcript-early.jsonl' '{"tool_name":"mcp__synapse__memory_retrieve"}'
     $rFirst = Fire -Cwd $longProj -EventName 'Stop' -SessionId 's-long' -TranscriptPath $early
-    Check 'marker: the first Stop sees the call and says write-back' ($rFirst.Out -match 'SYNAPSE WRITE-BACK') $rFirst.Out
+    Check 'marker: the first Stop sees the call and says write-back' ($rFirst.Out -match 'SYNAPSE memory_write:') $rFirst.Out
     # Same session, same project, but the call has now scrolled away entirely.
     $scrolled = New-Transcript 'transcript-scrolled.jsonl' '{"role":"assistant","text":"much later work"}' -PadKb 8
     $rLater = Fire -Cwd $longProj -EventName 'SubagentStop' -SessionId 's-long' -TranscriptPath $scrolled
@@ -198,7 +198,7 @@ try {
     # A CHANGED answer must get through immediately - the gate is per state,
     # not a mute switch.
     $rChanged = Fire -Cwd $repeatProj -EventName 'Stop' -SessionId 's-repeat' -TranscriptPath $used
-    Check 'gate: a changed answer is reported immediately' ($rChanged.Out -match 'SYNAPSE WRITE-BACK') $rChanged.Out
+    Check 'gate: a changed answer is reported immediately' ($rChanged.Out -match 'SYNAPSE memory_write:') $rChanged.Out
 
     Write-Host ''
     Write-Host '--- SYNAPSE_HOME is the fallback signal for a non-default layout ---' -ForegroundColor Cyan
@@ -212,7 +212,7 @@ try {
         Write-Utf8 $envPath ('SYNAPSE_HOME=' + $altHome)
         $rAlt = Fire -Cwd $envProj -EventName 'SessionStart' -SessionId 's-alt' -Profile $FakeProfileWithout
         Check 'SYNAPSE_HOME makes the hook speak with no store at the default path' (
-            $rAlt.Exit -eq 0 -and $rAlt.Out -match 'SYNAPSE RULES CHECK') ($rAlt.Out + $rAlt.Err)
+            $rAlt.Exit -eq 0 -and $rAlt.Out -match 'SYNAPSE:') ($rAlt.Out + $rAlt.Err)
         # A configured path that does not exist is NOT a signal.
         Write-Utf8 $envPath ('SYNAPSE_HOME=' + (Join-Path $Work 'no-such-synapse'))
         $rBadAlt = Fire -Cwd (New-Proj 'EnvBogus') -EventName 'SessionStart' -SessionId 's-bad' -Profile $FakeProfileWithout
@@ -247,7 +247,7 @@ try {
     Write-Host '--- Windows PowerShell 5.1 runs it identically ---' -ForegroundColor Cyan
     $r51 = Fire -Cwd (New-Proj 'Ps51') -EventName 'SessionStart' -SessionId 's-51' -Exe 'powershell'
     Check '5.1: the reminder is emitted cleanly' (
-        $r51.Exit -eq 0 -and $r51.Out -match 'SYNAPSE RULES CHECK') ($r51.Out + $r51.Err)
+        $r51.Exit -eq 0 -and $r51.Out -match 'SYNAPSE:') ($r51.Out + $r51.Err)
     $r51None = Fire -Cwd (New-Proj 'Ps51None') -EventName 'SessionStart' -SessionId 's-51n' -Profile $FakeProfileWithout -Exe 'powershell'
     Check '5.1: the relevance gate holds there too' ($r51None.Exit -eq 0 -and $r51None.Out -eq '') ($r51None.Out + $r51None.Err)
 }

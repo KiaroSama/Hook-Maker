@@ -174,13 +174,13 @@ try {
     [System.IO.File]::WriteAllBytes((Join-Path $projBad '.ai\memory.md'), $badBytes)
     $r = Fire -Cwd $projBad
     Check 'invalid UTF-8 memory.md -> classification advisory, not a crash' (
-        $r.Exit -eq 0 -and $r.Err -eq '' -and $r.Out -like '*NOT valid UTF-8*') ($r.Out + $r.Err)
+        $r.Exit -eq 0 -and $r.Err -eq '' -and $r.Out -like '*invalid UTF-8/legacy/unknown*') ($r.Out + $r.Err)
     Check 'the advisory shows path + classification ONLY - file contents are not printed' (
         $r.Out -notlike '*SECRET_LEGACY_MARKER*' -and $r.Out -notlike '*AI MEMORY LOADED*') $r.Out
     Check 'no replacement-character mojibake is injected (literal or JSON-escaped)' (
         $r.Out.IndexOf([char]0xFFFD) -lt 0 -and $r.Out -notmatch '(?i)\\ufffd') $r.Out
     Check 'the advisory demands an explicit reviewed conversion, never a silent transcode' (
-        $r.Out -like '*must be UTF-8*' -and $r.Out -like '*never a silent transcode*') $r.Out
+        $r.Out -like '*Reviewed UTF-8 conversion required*' -and $r.Out -like '*hook never transcodes*') $r.Out
     Check 'the invalid file is NOT transcoded/mutated by the hook' (
         [System.Linq.Enumerable]::SequenceEqual([byte[]]$badBytes, [byte[]][System.IO.File]::ReadAllBytes((Join-Path $projBad '.ai\memory.md'))))
     $r2 = Fire -Cwd $projBad
@@ -210,20 +210,19 @@ try {
     Check 'prose "deep debug" does NOT bypass the dedup and does NOT add routing' ($r.Exit -eq 0 -and $r.Out -eq '') $r.Out
     $ddStdin = @{ session_id = 'dd-s1'; cwd = $projDd; hook_event_name = 'UserPromptSubmit'; prompt = 'run ::deep-debug on the parser' } | ConvertTo-Json
     $r = Fire -Cwd $projDd -RawStdin $ddStdin
-    Check 'standalone ::deep-debug forces the router note out with the deep-debug set' (
-        $r.Out -like '*::deep-debug memory routing*' -and $r.Out -like '*CONTEXT.md, REFERENCE.md, COMMANDS.md, BUGS.md, EDGE_CASES.md, TESTING_NOTES.md*' -and
-        $r.Out -like '*SECURITY_NOTES.md when the work is security-sensitive*' -and $r.Out -like '*DECISIONS.md, LESSON.md*' -and
-        $r.Out -like '*WORKFLOWS.md/PLAYBOOKS.md when present*') $r.Out
-    Check 'the routing forbids loading the whole .ai/ and copying global rules into it' (
-        $r.Out -like '*Never load the whole .ai/ directory*' -and $r.Out -like '*never copy global rules into .ai/*' -and
-        $r.Out -like '*not a reason to create empty boilerplate*') $r.Out
-    Check 'the routing states the .ai/ UTF-8 requirement (path+classification only for legacy files)' (
-        $r.Out -like '*must be UTF-8*' -and $r.Out -like '*path + classification only*' -and $r.Out -like '*never print raw bytes*') $r.Out
+    # Exact debug/security loading sets now route through the FULL owners.
+    Check 'standalone ::deep-debug requires full loading owners before the relevant existing set' (
+        $r.Out -like '*::deep-debug: BEFORE loading, ai-context-memory-policy.md/CODEWORDS.md FULL*' -and
+        $r.Out -like '*memory.md -> relevant existing debug/security set only*') $r.Out
+    Check 'the routing forbids bulk/empty/global-rule copies' (
+        $r.Out -like '*no raw/transcode/bulk/empty/global-rule copies*') $r.Out
+    Check 'the routing retains UTF-8 and path/class-only legacy handling' (
+        $r.Out -like '*UTF-8; legacy path/class only*' -and $r.Out -like '*no raw/transcode*') $r.Out
     $r2 = Fire -Cwd $projDd -RawStdin $ddStdin
     Check 'a repeated ::deep-debug in the SAME session is silent (once per session)' ($r2.Exit -eq 0 -and $r2.Out -eq '') $r2.Out
     $ddStdin2 = @{ session_id = 'dd-s2'; cwd = $projDd; hook_event_name = 'UserPromptSubmit'; prompt = '::deep-debug' } | ConvertTo-Json
     $r3 = Fire -Cwd $projDd -RawStdin $ddStdin2
-    Check 'a NEW session re-reports the ::deep-debug routing' ($r3.Out -like '*::deep-debug memory routing*') $r3.Out
+    Check 'a NEW session re-reports the ::deep-debug routing' ($r3.Out -like '*::deep-debug: BEFORE loading*') $r3.Out
     # Normal behavior unchanged after dd: unchanged memory stays silent for a
     # plain prompt, and a real edit still re-fires without any dd section.
     $plainStdin = @{ session_id = 'dd-s2'; cwd = $projDd; hook_event_name = 'UserPromptSubmit'; prompt = 'ordinary work' } | ConvertTo-Json
@@ -232,7 +231,7 @@ try {
     Write-Utf8 (Join-Path $projDd '.ai\memory.md') "# Memory`n`nDD_ROUTER_EDITED`n"
     $r5 = Fire -Cwd $projDd -RawStdin $plainStdin
     Check 'a real edit re-fires the plain load WITHOUT the dd routing section' (
-        $r5.Out -like '*DD_ROUTER_EDITED*' -and $r5.Out -notlike '*::deep-debug memory routing*') $r5.Out
+        $r5.Out -like '*DD_ROUTER_EDITED*' -and $r5.Out -notlike '*::deep-debug: BEFORE loading*') $r5.Out
 
     # =====================================================================
     Write-Host '--- Ai-Memory-Load E-13: static safety greps ---' -ForegroundColor Cyan
@@ -300,7 +299,7 @@ try {
     Write-Utf8 (Join-Path $pGraphEn 'graphify-out\graph.json') '{}'
     $enStdin = @{ session_id = 'g-en1'; cwd = $pGraphEn; hook_event_name = 'UserPromptSubmit'; prompt = 'map the call path and module dependencies' } | ConvertTo-Json
     $r = Fire -Cwd $pGraphEn -HookPath $GraphHook -RawStdin $enStdin
-    Check 'relevant English -> scoped-query reminder' ($r.Out -like '*graphify-out/graph.json exists*' -and $r.Out -like '*graphify query*') $r.Out
+    Check 'relevant English -> scoped-query reminder' ($r.Out -like '*GRAPH READ CHECK: structural work*' -and $r.Out -like '*graphify query*') $r.Out
 
     # =====================================================================
     Write-Host '--- Graph-Read-Check: missing graph + graphify AVAILABLE -> create-then-query, never runs graphify ---' -ForegroundColor Cyan
@@ -316,7 +315,7 @@ try {
     try {
         $missStdin = @{ session_id = 'm-1'; cwd = $pMiss; hook_event_name = 'UserPromptSubmit'; prompt = 'refactor the architecture and check module dependencies across the codebase' } | ConvertTo-Json
         $r = Fire -Cwd $pMiss -HookPath $GraphHook -RawStdin $missStdin
-        Check 'missing graph + relevant -> create-then-query guidance' ($r.Out -like '*GRAPH READ CHECK*' -and $r.Out -like '*build (typically graphify .)*' -and $r.Out -like '*graphify query*') $r.Out
+        Check 'missing graph + relevant -> create-then-query guidance' ($r.Out -like '*GRAPH: structural task*' -and $r.Out -like '*Verify graphify --help/docs: graphify .*' -and $r.Out -like '*query \"<question>\"*') $r.Out
         Check 'hook did NOT execute graphify (no sentinel)' (-not (Test-Path -LiteralPath $sentinel))
         # Missing graph + trivial/docs prompt -> total silence (new session).
         $trivialStdin = @{ session_id = 'm-triv'; cwd = $pMiss; hook_event_name = 'UserPromptSubmit'; prompt = 'fix a typo in the changelog wording' } | ConvertTo-Json
@@ -333,7 +332,7 @@ try {
     try {
         $u1 = @{ session_id = 'u-1'; cwd = $pMiss2; hook_event_name = 'UserPromptSubmit'; prompt = 'trace the call path and impact of this entry point' } | ConvertTo-Json
         $r = Fire -Cwd $pMiss2 -HookPath $GraphHook -RawStdin $u1
-        Check 'missing graph + graphify unavailable -> bounded fallback advisory' ($r.Out -like '*GRAPH READ CHECK*' -and $r.Out -like '*bounded scoped source search/reads*' -and $r.Out -like '*not found on PATH*') $r.Out
+        Check 'missing graph + graphify unavailable -> bounded fallback advisory' ($r.Out -like '*GRAPH: structural task*' -and $r.Out -like '*bounded scoped source search/reads*' -and $r.Out -like '*CLI absent from PATH*') $r.Out
         # Same session + same (no-graph) state -> deduped, never loops.
         $r2 = Fire -Cwd $pMiss2 -HookPath $GraphHook -RawStdin $u1
         Check 'unavailable fallback does not repeat in the same session/state' ($r2.Exit -eq 0 -and $r2.Out -eq '') $r2.Out
@@ -364,12 +363,12 @@ try {
     try {
         $exStdin = @{ session_id = 'ex-1'; cwd = $pEx; hook_event_name = 'UserPromptSubmit'; prompt = 'what is the impact across modules and entry points' } | ConvertTo-Json
         $r = Fire -Cwd $pEx -HookPath $GraphHook -RawStdin $exStdin
-        Check 'no graph yet -> create/fallback guidance (not the read note)' ($r.Out -like '*no graphify knowledge graph exists*' -and $r.Out -notlike '*graphify-out/graph.json exists*') $r.Out
+        Check 'no graph yet -> create/fallback guidance (not the read note)' ($r.Out -like '*graphify-out/graph.json absent*' -and $r.Out -notlike '*GRAPH READ CHECK: structural work*') $r.Out
         # The graph now appears; the same session must switch to the READ note.
         New-Item -ItemType Directory -Path (Join-Path $pEx 'graphify-out') -Force | Out-Null
         Write-Utf8 (Join-Path $pEx 'graphify-out\graph.json') '{}'
         $r2 = Fire -Cwd $pEx -HookPath $GraphHook -RawStdin $exStdin
-        Check 'graph now exists -> read reminder re-enabled (existence change)' ($r2.Out -like '*graphify-out/graph.json exists*' -and $r2.Out -like '*graphify query*') $r2.Out
+        Check 'graph now exists -> read reminder re-enabled (existence change)' ($r2.Out -like '*GRAPH READ CHECK: structural work*' -and $r2.Out -like '*graphify query*') $r2.Out
     }
     finally { $env:PATH = $savedPath }
 

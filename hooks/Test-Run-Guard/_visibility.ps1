@@ -77,8 +77,8 @@ function Get-VisibleInvocationFinding {
                 [void]$inner.Add([string]$tokens[$i])
             }
             return [pscustomobject]@{
-                Reason      = 'this starts the test with Start-Process and neither -Wait, -NoNewWindow nor -WindowStyle Hidden, so it detaches into a NEW WINDOW on the user''s screen - and a detached run is also unowned, so nothing reaps it'
-                SafeForm    = 'Run it in the current session instead (no Start-Process at all), or if a separate process is genuinely needed add -Wait -NoNewWindow.'
+                Reason      = 'Start-Process lacks -Wait/-NoNewWindow/-WindowStyle Hidden: visible detached test, unowned/unreaped'
+                SafeForm    = 'Use current session; necessary separate process: -Wait -NoNewWindow.'
                 InnerTokens = $inner.ToArray()
             }
         }
@@ -91,7 +91,7 @@ function Get-VisibleInvocationFinding {
             # program, so there is no inner command to hand back.
             return [pscustomobject]@{
                 Reason      = ('this passes ' + $token + ', which asks for a VISIBLE browser window')
-                SafeForm    = 'Drop the flag - headless is the default, and it is what the rule requires unless a human has to watch this run live.'
+                SafeForm    = 'Drop flag: headless default/required unless human must watch live.'
                 InnerTokens = $null
             }
         }
@@ -104,8 +104,8 @@ function Get-VisibleInvocationFinding {
         $inner = @()
         if ($tokens.Count -gt 1) { $inner = @($tokens[1..($tokens.Count - 1)]) }
         return [pscustomobject]@{
-            Reason      = ('this launches the test through ' + $lower[0] + ', a terminal host whose whole job is to open a new window')
-            SafeForm    = 'Invoke the interpreter directly (pwsh / python / node) in the current session so the output is captured instead of displayed.'
+            Reason      = ('Visible terminal launcher: ' + $lower[0])
+            SafeForm    = 'Direct pwsh/python/node in current session; capture output, no window.'
             InnerTokens = $inner
         }
     }
@@ -114,8 +114,8 @@ function Get-VisibleInvocationFinding {
             $inner = @()
             if ($tokens.Count -gt 3) { $inner = @($tokens[3..($tokens.Count - 1)]) }
             return [pscustomobject]@{
-                Reason      = 'this launches the test through `cmd /c start`, which opens a new console window'
-                SafeForm    = 'Invoke the interpreter directly (pwsh / python / node) in the current session so the output is captured instead of displayed.'
+                Reason      = '`cmd /c start` opens a console'
+                SafeForm    = 'Direct pwsh/python/node in current session; capture output, no window.'
                 InnerTokens = $inner
             }
         }
@@ -126,8 +126,8 @@ function Get-VisibleInvocationFinding {
         foreach ($token in $lower) {
             if ($token -eq '-noexit') {
                 return [pscustomobject]@{
-                    Reason      = 'this passes -NoExit, which holds a PowerShell window open after the run so a human can read it'
-                    SafeForm    = 'Drop -NoExit and let the process exit; read the captured output instead.'
+                    Reason      = '-NoExit keeps PowerShell visible after run'
+                    SafeForm    = 'Drop -NoExit; capture output, allow exit.'
                     InnerTokens = $null
                 }
             }

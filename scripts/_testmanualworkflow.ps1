@@ -12,10 +12,10 @@ function Invoke-ManualWorkflowRegression {
     . (Join-Path $HooksRoot 'Github-Baseline-Check/_readmebadges.ps1')
     $state = Get-ReadmeBadgeState $repo
     $badgeNote = Get-ReadmeBadgeNote $state
-    Check 'README setup/logo/private reference guidance stays advisory' (
-        $badgeNote -match 'authorized public source' -and $badgeNote -match 'verified prerequisites/install/setup/config/entrypoint/use/logs/limits' -and
-        $badgeNote -match 'width="240"' -and $badgeNote -match 'not include an approved logo in the built app' -and
-        $badgeNote -match 'No private data/other private repo references' -and $badgeNote -match 'never invent/alter wallets')
+    Check 'README and packaged-logo contracts require distinct full owners before work' (
+        $badgeNote -match 'BEFORE README: global-repository-rules.md README FULL' -and
+        $badgeNote -match 'BEFORE app logo/signing: global-project-lifecycle-rules.md FULL; README!=app logo' -and
+        $badgeNote -match 'verbatim authorized public text; never invent/alter wallets')
     $sourceState = Get-ManualWorkflowState (Split-Path -Parent $HooksRoot)
     Check 'own workflow batch has one manual root and reachable reusable validation' $sourceState.Compliant
     $rootText="on: workflow_dispatch`njobs:`n  child:`n    uses: ./.github/workflows/child.yml`n"

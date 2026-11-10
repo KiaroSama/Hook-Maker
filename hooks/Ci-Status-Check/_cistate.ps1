@@ -49,10 +49,8 @@ function Save-State {
         if ($null -eq (Read-CiProvenance -Lines $lines -Repository $script:repoSlug -Sha $script:sha)) { return }
     }
     $script:CiStateWriteAccepted = Write-CiStateAtomic -Path $script:statePath -Lines $lines
-    if (-not $script:CiStateWriteAccepted -and $Outcome -eq 'pending') {
-        $lines = @(); try { $lines = @([IO.File]::ReadAllLines($script:statePath, [Text.Encoding]::UTF8)) } catch { }
-        if ($null -ne (Read-CiCarryover -Lines $lines -Repository $script:repoSlug -Sha $script:sha)) { exit 0 }
-    }
+    # A protected ancestor receipt coordinates legacy notices, not current-SHA
+    # acceptance. Retain it, but let the caller emit its pending/block decision.
 }
 
 # Failed detail retains its cooldown. Pending always revalidates because source
@@ -78,12 +76,12 @@ function Invoke-CiStateGate {
         # HEAD. A cached label cannot outrank fresh exact-source evidence.
         $script:prefetchedSnapshot = Get-CiRunSnapshot -RepoSlug $repoSlug -Sha $sha -ProjectRoot $cwd -Branch $branch
         if ($null -ne $script:prefetchedSnapshot) { return }
-        $emit = Write-StopBlockResult -HookInput $hookInput -HookName 'Ci-Status-Check' -EventName $eventName -Reason ('CI CHECK: fresh exact-source evidence could not be verified for ' + $sha7 + '. The cached pending label does not prove that jobs are running. Verify access and complete workload metadata; this is unknown, not green.')
+        $emit = Write-StopBlockResult -HookInput $hookInput -HookName 'Ci-Status-Check' -EventName $eventName -Reason ('CI CHECK: fresh exact-source evidence could not be verified for ' + $sha7 + '. Cached pending != running proof. Verify access/full workload; UNKNOWN, not green.')
         exit $emit.ExitCode
     }
     $ageMinutes = ([DateTime]::UtcNow - $stateTime).TotalMinutes
     if ($stateOutcome -eq 'failed' -and $ageMinutes -lt $failureCooldown) {
-        $emit = Write-StopBlockResult -HookInput $hookInput -HookName 'Ci-Status-Check' -EventName $eventName -Reason ('CI CHECK: pushed commit ' + $sha7 + ' still has failed checks. Detailed failure guidance was recently reported; completion remains blocked until a replacement commit is pushed or the failure is reported as an external/manual blocker.')
+        $emit = Write-StopBlockResult -HookInput $hookInput -HookName 'Ci-Status-Check' -EventName $eventName -Reason ('CI CHECK: pushed commit ' + $sha7 + ' still failed; guidance already reported. Completion blocked: push repair or report proven external/manual blocker.')
         exit $emit.ExitCode
     }
 }

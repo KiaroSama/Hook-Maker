@@ -48,6 +48,6 @@ function Invoke-AdvisoryBaselineRegression {
         $result = Fire -HookPath $BaselineHook -Cwd (Join-Path $repo 'src') -Exe $(if ($hostName -eq 'powershell.exe') { $hostName } else { '' })
         Check ('actual baseline retains nested production, excludes root research: ' + $hostName) (
             $result.Exit -eq 0 -and $result.Err -eq '' -and $result.Out -match 'npm at /src/plans' -and
-            $result.Out -notmatch 'cargo at|gradle at|npm at /\.specify|cargo detected|discovery is partial') $result.Out
+            $result.Out -notmatch 'cargo at|gradle at|npm at /\.specify|cargo detected|discovery PARTIAL') $result.Out
     }
 }

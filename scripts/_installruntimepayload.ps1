@@ -46,6 +46,12 @@ function Add-CompanionRuntimeArtifacts {
         [Parameter(Mandatory = $true)][string]$ToolRoot,
         [Parameter(Mandatory = $true)][string]$FriendlyName
     )
+    if ($FriendlyName -ceq 'Ci-Status-Check') {
+        Assert-RuntimeSourcesAvailable -ToolRoot $ToolRoot -RelativePaths @('hooks/Ci-Status-Check/_cipagination.ps1','hooks/Ci-Status-Check/_civisibility.ps1')
+    }
+    if ($FriendlyName -ceq 'Cloudflare-Deploy') {
+        Assert-RuntimeSourcesAvailable -ToolRoot $ToolRoot -RelativePaths @('hooks/Cloudflare-Deploy/_acknowledgment.ps1')
+    }
     if ($FriendlyName -ceq 'Test-Completion-Check') {
         # Enumeration ships siblings; a missing source cannot declare itself.
         Assert-RuntimeSourcesAvailable -ToolRoot $ToolRoot -RelativePaths @(

@@ -5,6 +5,8 @@ $ciProofRoot = if ([IO.File]::Exists((Join-Path $PSScriptRoot '_ciprovenance.ps1
 . (Join-Path $PSScriptRoot '_docsquery.ps1')
 . (Join-Path $PSScriptRoot '_cibatch.ps1')
 . (Join-Path $PSScriptRoot '_ciliteral.ps1')
+. (Join-Path $PSScriptRoot '_cipagination.ps1')
+. (Join-Path $PSScriptRoot '_civisibility.ps1')
 
 function Read-CiWorkloadApi {
     param([string]$Endpoint)
@@ -22,7 +24,7 @@ function Get-CiWorkloadExpectation {
     $script:CiReviewPresent = $false
     $reviewed = Get-CiReviewedExpectation -ProjectRoot $ProjectRoot -RepoSlug $RepoSlug -Sha $Sha -Branch $Branch
     if ($null -ne $reviewed) { return $reviewed }
-    $script:CiWorkloadReason = 'Workload not proven: missing, stale or unsupported source review. Review the committed workflow and full input context, then use Hook Maker scripts/Set-CiWorkloadReview.ps1 for the selected record/client. Runtime input: ' + (Join-Path $PSScriptRoot '_ci-policy.json') + '. Do not dispatch duplicate CI or seed success state.'
+    $script:CiWorkloadReason = 'Workload UNPROVEN: review missing/stale/unsupported. Review committed workflow/full inputs; scripts/Set-CiWorkloadReview.ps1 selected record/client. Input: ' + (Join-Path $PSScriptRoot '_ci-policy.json') + '. Do not dispatch duplicate CI or seed success state.'
     # A present invalid review must not silently downgrade to literal recognition.
     if (Test-Path -LiteralPath (Join-Path $PSScriptRoot '_ci-policy.json')) { return $null }
     $present=Get-Variable CiReviewPresent -Scope Script -ErrorAction SilentlyContinue
@@ -82,10 +84,10 @@ function Get-CiRunSnapshot {
         $prefetched=Invoke-CiApiBatch -Endpoints @($runEndpoint,$checkEndpoint,$statusEndpoint) -ScopeKey $script:CiApiScopeKey
         if($null-eq$prefetched){return $null}
     }
-    $doc=Read-CiWorkloadApi $runEndpoint
+    $doc=Read-CiWorkloadCollection -Endpoint $runEndpoint -Field workflow_runs
     if($null-eq$doc-or$null-eq(Get-Field $doc 'total_count')-or$null-eq$doc.PSObject.Properties['workflow_runs']){return $null}
     $all=@($doc.workflow_runs|Where-Object{$null-ne$_})
-    if($all.Count-gt50-or$all.Count-ne$doc.total_count){return $null}
+    if($all.Count-ne$doc.total_count){return $null}
     $seen=New-Object 'Collections.Generic.HashSet[string]' ([StringComparer]::Ordinal)
     foreach($run in $all){
         if([string](Get-Field $run 'id')-cnotmatch'^[1-9][0-9]*$'-or-not$seen.Add([string]$run.id)-or
@@ -137,10 +139,10 @@ function Get-CiRunSnapshot {
             if($matching.Count-eq0){$proven=$false;continue}
             $run=$matching[0]
             if($run.status-cne'completed'-or$run.conclusion-cne'success'){$proven=$false;continue}
-            $jobsDoc=Read-CiWorkloadApi ('repos/'+$RepoSlug+'/actions/runs/'+$run.id+'/attempts/'+$run.run_attempt+'/jobs?per_page=100')
+            $jobsDoc=Read-CiWorkloadCollection -Endpoint ('repos/'+$RepoSlug+'/actions/runs/'+$run.id+'/attempts/'+$run.run_attempt+'/jobs?per_page=100') -Field jobs
             if($null-eq$jobsDoc-or$null-eq(Get-Field $jobsDoc 'total_count')-or$null-eq$jobsDoc.PSObject.Properties['jobs']){$proven=$false;continue}
             $jobs=@($jobsDoc.jobs|Where-Object{$null-ne$_})
-            if($jobs.Count-eq0-or$jobs.Count-gt100-or$jobs.Count-ne$jobsDoc.total_count-or$jobs.Count-ne@($workflow.Jobs).Count){$proven=$false;continue}
+            if($jobs.Count-eq0-or$jobs.Count-ne$jobsDoc.total_count-or$jobs.Count-ne@($workflow.Jobs).Count){$proven=$false;continue}
             $jobIds=New-Object 'Collections.Generic.HashSet[string]' ([StringComparer]::Ordinal)
             $jobNames=New-Object 'Collections.Generic.HashSet[string]' ([StringComparer]::Ordinal)
             $legKeys=New-Object 'Collections.Generic.HashSet[string]' ([StringComparer]::Ordinal)
@@ -197,13 +199,13 @@ function Get-CiRunSnapshot {
     $checkFingerprint=''
     # Check/status evidence exists independently of Actions, including a zero-run
     # documentation commit. Never let an absent workflow hide a failing check.
-    $checks=Read-CiWorkloadApi ('repos/'+$RepoSlug+'/commits/'+$Sha+'/check-runs?filter=latest&per_page=100')
-    $status=Read-CiWorkloadApi ('repos/'+$RepoSlug+'/commits/'+$Sha+'/status?per_page=100')
+    $checks=Read-CiWorkloadCollection -Endpoint ('repos/'+$RepoSlug+'/commits/'+$Sha+'/check-runs?filter=latest&per_page=100') -Field check_runs
+    $status=Read-CiWorkloadCollection -Endpoint ('repos/'+$RepoSlug+'/commits/'+$Sha+'/status?per_page=100') -Field statuses -IdentityField context -Sha $Sha
     if($null-eq$checks-or$null-eq$status-or$null-eq(Get-Field $checks 'total_count')-or$null-eq$checks.PSObject.Properties['check_runs']-or
         $null-eq(Get-Field $status 'total_count')-or$null-eq$status.PSObject.Properties['statuses']-or(Get-Field $status 'sha')-cne$Sha){$proven=$false}
     else{
         $cr=@($checks.check_runs);$st=@($status.statuses)
-        $checksComplete=$cr.Count-le100-and$cr.Count-eq$checks.total_count-and$st.Count-le100-and$st.Count-eq$status.total_count
+        $checksComplete=$cr.Count-eq$checks.total_count-and$st.Count-eq$status.total_count
         $commitChecksSafe=$checksComplete
         $checkIds=New-Object 'Collections.Generic.HashSet[string]' ([StringComparer]::Ordinal)
         $checkParts=New-Object Collections.Generic.List[string]

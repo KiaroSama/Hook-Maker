@@ -30,7 +30,7 @@
     Set-Mock -RunJson '[]' -ExpectedSha (Get-HeadSha $docsRepo)
     $r = Fire -HookPath $CiHook -Cwd $docsRepo -EventName 'Stop'
     Check 'paths filter unmatched by the push: a note, not a block' ($r.Exit -eq 0 -and $r.Out -notmatch '"decision":"block"' -and $r.Out -match 'no workflow is configured to run') $r.Out
-    Check 'the note never claims green' ($r.Out -match 'NOT a green result') $r.Out
+    Check 'the note never claims green' ($r.Out -match 'NOT green/built/tested') $r.Out
     $r = Fire -HookPath $CiHook -Cwd $docsRepo -EventName 'Stop'
     Check 'the same commit stays quiet afterwards (recorded as no-ci-for-ref)' ($r.Exit -eq 0 -and $r.Out -eq '') $r.Out
 

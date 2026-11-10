@@ -37,15 +37,15 @@ function Get-BranchDisposition {
     $partial = New-Object System.Collections.Generic.List[string]
     $base = Get-DispositionBase -RepoPath $RepoPath -Fallback $Fallback
     if ($base -eq '') {
-        [void]$partial.Add('no base branch could be determined (no origin/HEAD, no session branch, no main/master)')
+        [void]$partial.Add('base UNKNOWN: no origin/HEAD/session branch/main/master')
         return [pscustomobject]@{ Base = ''; Merged = @(); Unique = @(); Partial = @($partial.ToArray()); Capped = $false }
     }
     $remotes = Invoke-Git @('remote') -RepoPath $RepoPath
     if (-not $remotes.Ok -or @($remotes.Output | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) }).Count -eq 0) {
-        [void]$partial.Add('no remote is configured, so only local branches are listed')
+        [void]$partial.Add('no remote; local branches only')
     }
     elseif (-not $FetchOk) {
-        [void]$partial.Add('this run could not fetch, so remote-tracking branches are as of the last successful fetch')
+        [void]$partial.Add('fetch failed; remote refs from last successful fetch')
     }
     $head = Invoke-Git @('symbolic-ref', '--quiet', 'HEAD') -RepoPath $RepoPath
     if (-not $head.Ok) { [void]$partial.Add('HEAD is detached') }
@@ -76,10 +76,10 @@ function Get-BranchDisposition {
 function Get-BranchDispositionInstruction {
     param([Parameter(Mandatory = $true)]$Disposition)
     $lines = New-Object System.Collections.Generic.List[string]
-    [void]$lines.Add('Leave no branch open: every branch of this repository is merged into its base and deleted, closed and deleted once its unique commits are confirmed carried elsewhere or worthless, or named in your final report with the reason it survives. Never delete a branch with unique unmerged commits, a protected branch, an unknown branch, or someone else''s work; a branch whose content you cannot verify is reported, not disposed of.')
+    [void]$lines.Add('Branches: ONLY proven carried/worthless -> merge/delete or close/delete; else survivor+reason. Preserve unique/protected/unknown/others'' work; unverifiable -> report, NEVER delete.')
     if ($Disposition.Base -ne '') {
         if (@($Disposition.Merged).Count -gt 0) { [void]$lines.Add('- merged into ' + $Disposition.Base + ' (safe to delete once confirmed): ' + (@($Disposition.Merged) -join ', ')) }
-        if (@($Disposition.Unique).Count -gt 0) { [void]$lines.Add('- holding commits not in ' + $Disposition.Base + ' (merge, confirm carried elsewhere, or explain): ' + (@($Disposition.Unique) -join ', ')) }
+        if (@($Disposition.Unique).Count -gt 0) { [void]$lines.Add('- commits absent from ' + $Disposition.Base + ' (merge/carried elsewhere/survivor reason):' + (@($Disposition.Unique) -join ', ')) }
         if (@($Disposition.Merged).Count -eq 0 -and @($Disposition.Unique).Count -eq 0) { [void]$lines.Add('- no branch besides ' + $Disposition.Base + ' was found.') }
         if ($Disposition.Capped) { [void]$lines.Add('- the listing was capped at ' + $script:DispositionMaxBranches + ' per kind; more branches exist.') }
     }

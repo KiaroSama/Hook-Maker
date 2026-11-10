@@ -212,6 +212,24 @@
         }
     }
 
+    $ciPlan=@(Get-InstallPlanFor -HookScript (Join-Path $RealHooksDir 'Ci-Status-Check/Ci-Status-Check.ps1') -ToolRoot $ToolRoot)
+    foreach($leaf in @('_cipagination.ps1','_civisibility.ps1')){
+        Check ('CI collection/visibility helper ships immutable '+$leaf) (@($ciPlan|Where-Object{$_.relativePath-ceq('Ci-Status-Check/'+$leaf)-and$_.ownership-ceq'Immutable'}).Count-eq1)
+    }
+    $missingCi=Join-Path $Work 'missing-ci-collection-source'
+    [void][IO.Directory]::CreateDirectory((Join-Path $missingCi 'hooks/Ci-Status-Check'))
+    $refused=$false
+    try{Add-CompanionRuntimeArtifacts -ToolRoot $missingCi -FriendlyName 'Ci-Status-Check'}catch{$refused=$_.Exception.Message-match'_cipagination.ps1'}
+    Check 'missing CI collection dependency refuses before installation' $refused
+
+    $cloudflarePlan=@(Get-InstallPlanFor -HookScript (Join-Path $RealHooksDir 'Cloudflare-Deploy/Cloudflare-Deploy.ps1') -ToolRoot $ToolRoot)
+    Check 'deployment acknowledgment helper ships as immutable payload' (@($cloudflarePlan|Where-Object{$_.relativePath-ceq'Cloudflare-Deploy/_acknowledgment.ps1'-and$_.ownership-ceq'Immutable'}).Count-eq1)
+    $missingCloudflare=Join-Path $Work 'missing-cloudflare-source'
+    [void][IO.Directory]::CreateDirectory((Join-Path $missingCloudflare 'hooks/Cloudflare-Deploy'))
+    $refused=$false
+    try{Add-CompanionRuntimeArtifacts -ToolRoot $missingCloudflare -FriendlyName 'Cloudflare-Deploy'}catch{$refused=$_.Exception.Message-match'_acknowledgment.ps1'}
+    Check 'missing deployment acknowledgment dependency refuses installation' $refused
+
     $completionHook=Join-Path $RealHooksDir 'Test-Completion-Check/Test-Completion-Check.ps1'
     $completionPlan=@(Get-InstallPlanFor -HookScript $completionHook -ToolRoot $ToolRoot)
     Check 'completion delivery helper is immutable and manifest covered' (@($completionPlan|Where-Object{$_.relativePath-ceq'Test-Completion-Check/_failureadmission.ps1'-and$_.ownership-ceq'Immutable'}).Count-eq1)

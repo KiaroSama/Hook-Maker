@@ -176,18 +176,14 @@ try {
     $parsed = $null
     try { $parsed = $r.Out | ConvertFrom-Json } catch { }
     $reasonE7 = if ($null -ne $parsed) { [string]$parsed.reason } else { '' }
-    Check 'guidance preserves debugging cause/path/regression/commands' (
-        $reasonE7 -match 'Debugging/::deep-debug' -and $reasonE7 -match 'confirmed root cause/fixed path/permanent regression fixture' -and
-        $reasonE7 -match 'verified commands/outcomes') $reasonE7
-    Check 'guidance preserves risk/timing/Ponytail and next action' (
-        $reasonE7 -match 'blockers/risks/next action' -and $reasonE7 -match 'stable timing/resources' -and
-        $reasonE7 -match 'Ponytail accepted/rejected') $reasonE7
-    Check 'guidance forbids sensitive and disposable memory content' (
-        $reasonE7 -match 'no secrets/raw prompts/logs/scans/source/hypotheses/routine passes/global-policy copies') $reasonE7
-    Check 'guidance retains encoding owner without another scan' (
-        $reasonE7 -match 'Strict UTF-8' -and $reasonE7 -match 'Utf8-Encoding-Check validates; no rescan here') $reasonE7
+    # Debugging proof/risk/timings/Ponytail/privacy detail is indirect in the
+    # FULL memory owners before update, not asserted executed by this reminder.
+    Check 'guidance requires both full memory owners BEFORE update/debug notes' (
+        $reasonE7 -match 'BEFORE update/debug notes: ai-context-memory-policy.md/ai-context-memory-details.md FULL') $reasonE7
+    Check 'guidance retains strict encoding and no-value/no-write outcome' (
+        $reasonE7 -match 'strict UTF-8' -and $reasonE7 -match 'No durable value: explain/no write') $reasonE7
     Check 'current memory policy updates specialized value before router' (
-        $reasonE7 -match 'update relevant specialized files, memory.md router LAST' -and $reasonE7 -match 'deduplicate with links') $reasonE7
+        $reasonE7 -match 'Dedupe/link, memory\.md LAST') $reasonE7
 
     # =====================================================================
     Write-Host '--- E-13: static safety greps ---' -ForegroundColor Cyan

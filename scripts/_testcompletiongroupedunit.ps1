@@ -118,7 +118,7 @@ try {
         [System.IO.File]::WriteAllText($green.Path, ($green.Doc | ConvertTo-Json -Depth 10), [System.Text.UTF8Encoding]::new($false))
         $refused = $false
         try { Set-VerifiedIncidentRecovery $key 'clean-recovery' $reason } catch { $refused = $true; $refusal = $_.Exception.Message }
-        if ($variant -eq 'liveOriginalLeak') { Assert-True ($refusal -match 'recorded leaked process is still present') ('The live-descendant refusal was not exercised: ' + $refusal) }
+        if ($variant -eq 'liveOriginalLeak') { Assert-True ($refusal -match 'Leaked PID present/ownership uncertain') ('The live-descendant refusal was not exercised: ' + $refusal) }
         Assert-True $refused ($variant + ': unsafe grouped recovery was accepted.')
         Assert-True (($script:recoveryAssociations[(Get-ResultIncidentKey ($oldText | ConvertFrom-Json) $two.Path)] | ConvertTo-Json -Depth 10 -Compress) -ceq $priorAssociation) ($variant + ': refusal changed historical association.')
         [System.IO.File]::WriteAllText($two.Path, $oldText, [System.Text.UTF8Encoding]::new($false))

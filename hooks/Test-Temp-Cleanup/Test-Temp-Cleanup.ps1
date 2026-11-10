@@ -187,11 +187,11 @@ function Get-CandidateTypeLabel {
 function Get-MatchReason {
     param([string]$Kind)
     switch ($Kind) {
-        'cache-dir' { return 'recognized disposable test cache/temp directory name' }
-        'task-created-dir' { return 'recognized task-created bytecode cache directory name' }
-        'review-dir' { return 'recognized diagnostic/review artifact directory name' }
-        'task-created-file' { return 'recognized compiled-bytecode file pattern' }
-        'review-file' { return 'recognized coverage/report file pattern' }
+        'cache-dir' { return 'test cache/temp name' }
+        'task-created-dir' { return 'task-created bytecode cache name' }
+        'review-dir' { return 'diagnostic/review directory name' }
+        'task-created-file' { return 'compiled-bytecode pattern' }
+        'review-file' { return 'coverage/report pattern' }
         default { return 'unrecognized' }
     }
 }
@@ -199,13 +199,13 @@ function Get-MatchReason {
 function Get-ReviewReason {
     param([string]$Classification)
     switch ($Classification) {
-        'likely-disposable' { return 'confirm independently that it is disposable, then delete it yourself' }
-        'review-or-diagnostic' { return 'diagnostic/review artifact - keep unless you have confirmed it is no longer needed' }
-        'protected' { return 'protected (tracked, staged, or a link) - do not delete' }
-        'ambiguous' { return 'origin or purpose is not established - leave intact and report it' }
-        'unknown-git-state' { return 'git state could not be determined - leave intact and report it' }
-        'partial-or-unreadable' { return 'metadata could not be read - leave intact and report it' }
-        default { return 'leave intact and report it' }
+        'likely-disposable' { return 'independently verify disposal, then delete yourself' }
+        'review-or-diagnostic' { return 'diagnostic/review: retain until verified unneeded' }
+        'protected' { return 'tracked/staged/link: never delete' }
+        'ambiguous' { return 'origin/purpose unknown: retain/report' }
+        'unknown-git-state' { return 'git state unknown: retain/report' }
+        'partial-or-unreadable' { return 'metadata unreadable: retain/report' }
+        default { return 'retain/report' }
     }
 }
 
@@ -213,10 +213,8 @@ function Get-ReviewReason {
 # carries the same semantics.
 function Get-AgentInstructionLines {
     return @(
-        'Inspect every candidate before deletion; name/age/ignored status proves no ownership.',
-        'Never delete tracked, staged, linked, diagnostic, ambiguous, protected, shared/active or user-owned data; preserve history/OLD, memory/research, required fixtures/outputs, secrets/keys and needed rollback.',
-        'After verification and consumer stop, permanently delete only exact project-local residue independently proven owned/disposable, NOT Recycle Bin.',
-        'Use normal agent tools; this hook performs no deletion. Leave uncertain candidates intact and report them. Owner: global-project-lifecycle-rules.md -> Cleanup.'
+        'BEFORE disposal: global-project-lifecycle-rules.md Cleanup FULL.',
+        'Only proven disposable exact owned paths: permanent deletion, NOT Recycle Bin; uncertain retain/report. Hook deletes nothing.'
     )
 }
 
@@ -379,8 +377,8 @@ if ($eventName -eq 'SessionStart') {
     $coverage = @($allCauses | Where-Object { $script:CoverageCauses -contains $_ })
     if ($coverage.Count -gt 0) {
         $lines = New-Object System.Collections.Generic.List[string]
-        [void]$lines.Add('TEST TEMP CLEANUP (detector only - this hook never deletes anything): the SessionStart residue baseline scan was PARTIAL (' + ($coverage -join ', ') + ').')
-        [void]$lines.Add('A partial baseline means a later cleanliness check for this session cannot be complete. Resolve the unreadable path(s), or raise MAX_SCAN_ENTRIES/MAX_SCAN_DEPTH in this hook''s .env, if disposable-residue coverage matters for this task.')
+        [void]$lines.Add('TEST TEMP CLEANUP: SessionStart baseline PARTIAL (detector, deletes nothing): (' + ($coverage -join ', ') + ').')
+        [void]$lines.Add('Partial baseline != cleanliness proof. Needed coverage: fix unreadable paths/review .env MAX_SCAN_ENTRIES/MAX_SCAN_DEPTH.')
         Write-ClientMessage -Message ($lines.ToArray() -join "`n") -EventName $eventName -Blocking $false
     }
     exit 0
@@ -599,27 +597,27 @@ $blocking = $false
 switch ($category) {
     'residue-confirmed' {
         $blocking = $true
-        [void]$lines.Add('TEST TEMP CLEANUP (detector only - this hook never deletes anything): ' + $residueNow.Count +
-            ' candidate(s) already surfaced as likely-disposable on an earlier Stop of this session are STILL PRESENT: ' +
+        [void]$lines.Add('TEST TEMP CLEANUP (detector, deletes nothing): ' + $residueNow.Count +
+            ' prior-Stop residue candidates STILL PRESENT:' +
             ((@($residueNow | Select-Object -First $maxFindings | ForEach-Object { $_.RelPath })) -join ', ') + '.')
-        [void]$lines.Add('Do not claim the task is complete while unresolved disposable residue remains. Either delete what YOU have independently confirmed is disposable, or state explicitly why it must stay. (This hook is reporting that its earlier instruction was not resolved - it has NOT itself confirmed any path is safe to delete.)')
+        [void]$lines.Add('Unresolved: independently prove disposal or retain/reason. Detector!=deletion safety.')
     }
     'partial' {
         $blocking = $true
-        [void]$lines.Add('TEST TEMP CLEANUP (detector only - this hook never deletes anything): the residue scan was PARTIAL (' + ($coverageCauses -join ', ') + '), so this project state cannot be reported as clean.')
-        [void]$lines.Add('Do not claim the workspace is free of disposable test residue. Resolve the unreadable path(s), or raise MAX_SCAN_ENTRIES/MAX_SCAN_DEPTH in this hook''s .env, then re-check - or state the coverage limit explicitly instead of assuming it is clean.')
+        [void]$lines.Add('TEST TEMP CLEANUP: scan PARTIAL (detector, deletes nothing): (' + ($coverageCauses -join ', ') + '); NOT clean.')
+        [void]$lines.Add('Fix unreadable paths/review hook .env MAX_SCAN_ENTRIES/MAX_SCAN_DEPTH; recheck or disclose partial coverage.')
     }
     'unknown' {
-        [void]$lines.Add('TEST TEMP CLEANUP (detector only - this hook never deletes anything): candidate classification is UNKNOWN for this state (' + ($evidenceCauses -join ', ') + ').')
-        [void]$lines.Add('Without that evidence nothing can be described as disposable - treat every candidate below as ambiguous and leave it intact.')
+        [void]$lines.Add('TEST TEMP CLEANUP: classification UNKNOWN (detector, deletes nothing): (' + ($evidenceCauses -join ', ') + ').')
+        [void]$lines.Add('No disposal evidence: every candidate ambiguous; preserve.')
     }
     default {
-        [void]$lines.Add('TEST TEMP CLEANUP (detector only - this hook never deletes anything): ' + $reviewNeeded.Count + ' recognized candidate(s) need YOUR review in this project.')
+        [void]$lines.Add('TEST TEMP CLEANUP (detector, deletes nothing): ' + $reviewNeeded.Count + ' project candidates: review required.')
     }
 }
 
 if ($foundList.Count -gt 0) {
-    [void]$lines.Add('Candidates (relative paths and bounded metadata only - no file contents are read or shown):')
+    [void]$lines.Add('Candidates: relative paths/bounded metadata; no content read/shown:')
     foreach ($finding in @($sortedFound | Select-Object -First $maxFindings)) {
         [void]$lines.Add('  ' + $finding.RelPath +
             ' | class=' + $finding.Classification +
@@ -633,7 +631,7 @@ if ($foundList.Count -gt 0) {
             ' | needs-review=' + $finding.ReviewReason)
     }
     if ($foundList.Count -gt $maxFindings) {
-        [void]$lines.Add('  ... and ' + ($foundList.Count - $maxFindings) + ' more (MAX_FINDINGS reached - the list is truncated, the scan is not).')
+        [void]$lines.Add('  ... and ' + ($foundList.Count - $maxFindings) + ' more (MAX_FINDINGS limits list, not scan).')
     }
 }
 [void]$lines.Add('Scan coverage: ' + $(if ($allCauses.Count -eq 0) { 'complete' } else { 'PARTIAL - ' + ($allCauses -join ', ') }))

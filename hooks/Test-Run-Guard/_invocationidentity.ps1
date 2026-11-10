@@ -172,7 +172,7 @@ function Get-GuardedInvocationIdentity {
 function Get-GuardedBindingFinding {
     param($Identity, $RawCommand, [string]$ProjectRoot, [string]$CurrentFingerprint)
     if (-not $Identity.BindingKnown -or [string]::IsNullOrWhiteSpace($Identity.CommandFingerprint)) {
-        return [pscustomobject]@{ Kind='unknown'; Message='TEST RUN GUARD: this guarded command uses a dynamic or unsupported identity/working-directory expression. No unmatchable observation was recorded. Use literal -FilePath, arguments, -WorkingDirectory and -ProjectFingerprint for correlated evidence.' }
+        return [pscustomobject]@{ Kind='unknown'; Message='TEST RUN GUARD: dynamic/unsupported binding; no observation. Use literal -FilePath/arguments/-WorkingDirectory/-ProjectFingerprint.' }
     }
     $ProjectRoot = [IO.Path]::GetFullPath($ProjectRoot).TrimEnd([char[]]@([IO.Path]::DirectorySeparatorChar, [IO.Path]::AltDirectorySeparatorChar))
     $working = $Identity.WorkingDirectory
@@ -182,9 +182,9 @@ function Get-GuardedBindingFinding {
             # Match the standalone runner: literal percent/dollar text is never expanded.
             $working = [IO.Path]::GetFullPath($working).TrimEnd([char[]]@([IO.Path]::DirectorySeparatorChar, [IO.Path]::AltDirectorySeparatorChar))
         }
-        catch { return [pscustomobject]@{Kind='unknown';Message='TEST RUN GUARD: literal -WorkingDirectory cannot be resolved. No observation was recorded; use an absolute literal project directory.'} }
+        catch { return [pscustomobject]@{Kind='unknown';Message='TEST RUN GUARD: unresolved -WorkingDirectory; no observation. Use absolute literal project path.'} }
         if (-not [string]::Equals($working, $ProjectRoot, [StringComparison]::OrdinalIgnoreCase)) {
-            return [pscustomobject]@{Kind='deny';Message=('TEST RUN GUARD: literal -WorkingDirectory differs from hook cwd. No observation was recorded. Run the unchanged invocation from a session whose cwd is that project, then use its current literal -ProjectFingerprint; this session cannot bind another project''s receipt. Current hook-cwd fingerprint: ' + $CurrentFingerprint + '. All caller options remain unchanged.')}
+            return [pscustomobject]@{Kind='deny';Message=('TEST RUN GUARD: -WorkingDirectory != cwd; no cross-project observation. Target cwd + its literal -ProjectFingerprint required. Hook fingerprint: ' + $CurrentFingerprint + '. Caller options unchanged.')}
         }
     }
     if ($Identity.ProjectFingerprint -ceq $CurrentFingerprint) { return $null }
@@ -205,5 +205,5 @@ function Get-GuardedBindingFinding {
         else { [void]$corrected.Add('-ProjectFingerprint'); [void]$corrected.Add($CurrentFingerprint) }
         $correction = ConvertTo-Json -InputObject ([string[]]$corrected.ToArray()) -Compress
     }
-    return [pscustomobject]@{Kind='deny';Message=('TEST RUN GUARD: missing, blank, unusable or stale -ProjectFingerprint. Refused before execution and observation. Current literal fingerprint: ' + $CurrentFingerprint + '. Correct only this binding, preserving all other command/options:' + "`n`n" + $correction + "`n`n" + 'No tool input was rewritten and no permission was granted.')}
+    return [pscustomobject]@{Kind='deny';Message=('TEST RUN GUARD: invalid/stale -ProjectFingerprint; no execution/observation. Current literal: ' + $CurrentFingerprint + '. Only binding correction; other argv unchanged:' + "`n`n" + $correction + "`n`n" + 'No input rewrite/permission granted.')}
 }

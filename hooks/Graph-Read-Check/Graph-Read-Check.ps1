@@ -75,13 +75,13 @@ function Test-GraphMissesMarkdown {
     catch { }
     return $true
 }
-$markdownSetupLine = '- This graph was built without the git-ignored Markdown folders (.ai/, specs/, .specify/, plans/) - one-time set-up: graphify-markdown.md (a .graphifyignore, then graphify extract . --no-gitignore --code-only, then graphify update .). This hook never runs graphify.'
+$markdownSetupLine = '- Missing ignored Markdown: graphify-markdown.md FULL -> graphify extract . --no-gitignore --code-only -> graphify update .; no execution.'
 $missesMarkdown = Test-GraphMissesMarkdown -Root $cwd
 
 # Reminder for the graph-EXISTS case (read the graph; do not re-browse the tree).
 $haveGraphNote = @(
-    'GRAPH READ CHECK: graphify-out/graph.json exists. For architecture/call paths/impact/refactor scope, query before broad browsing: graphify query "<question>", graphify path "<A>" "<B>", graphify explain "<concept>". Confirm findings in source.',
-    '- BOTH graphs: CMM for code; Graphify for docs/specs/papers/images/video and cross-cut views. Use and refresh covered changes: graphify update .; CMM is not a replacement. Isolated edits/docs/config/secrets/small fixes need no query.'
+    'GRAPH READ CHECK: BEFORE structural browsing graphify.md FULL; query/path/explain, source-confirm.',
+    'Both: CMM code/Graphify docs-media-cross-cut; covered changes: graphify update .; isolated edits exempt.'
 ) -join "`n"
 if ($graphExists -and $missesMarkdown) { $haveGraphNote += "`n" + $markdownSetupLine }
 
@@ -115,17 +115,17 @@ else {
     $graphifyAvailable = $null -ne (Get-Command graphify -ErrorAction SilentlyContinue)
     if ($graphifyAvailable) {
         $note = @(
-            'GRAPH READ CHECK: structural task; no graphify knowledge graph exists (graphify-out/graph.json absent); CLI available on PATH.',
-            'If useful: verify installed help/docs (graphify --help), build (typically graphify .), then scoped graphify query "<question>", path "<A>" "<B>" or explain "<concept>". Confirm in source. Isolated edits/docs/config/secrets/small fixes need no graph. Hook runs nothing.'
+            'GRAPH: structural task; graphify-out/graph.json absent, CLI on PATH.',
+            'BEFORE build/navigation: graphify.md/graphify-markdown.md FULL; graphify --help. Small/docs/config/secret edits exempt; source-confirm; hook executes nothing.'
         ) -join "`n"
     }
     else {
         $note = @(
-            'GRAPH READ CHECK: structural task; no graphify knowledge graph exists (graphify-out/graph.json absent); CLI not found on PATH.',
+            'GRAPH: structural task; graphify-out/graph.json absent, CLI absent from PATH.',
             'Use bounded scoped source search/reads, not a whole-repo scan. Unchanged state stays silent.'
         ) -join "`n"
     }
-    $note += "`n" + '- When the graph is built, include the Markdown folders the agents work from: graphify-markdown.md.'
+    $note += "`n" + '- BEFORE build: graphify-markdown.md FULL.'
     $graphToken = 'nograph'
 }
 

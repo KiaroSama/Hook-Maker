@@ -18,8 +18,8 @@ if ($script:pendingNotes.Count -gt 0 -or $script:pendingOverflow) {
         # live lesson - and keep blocking until the backlog is cleared.
         Save-CompletionState
         Write-Finding -Blocking $true -Lines @(
-            'TEST COMPLETION CHECK: the durable-note ledger is FULL (' + $script:MaxPendingNotes + ' unresolved test-incident notes are already owed) and another incident was seen that cannot be tracked without discarding one.',
-            'The genuine new incident receipt is retained. Resolve evidenced obligations or correlate unknown legacy records before selective repair; never invent lessons for UNKNOWN entries. No unresolved record is silently dropped.')
+            'TEST COMPLETION CHECK: note ledger FULL (' + $script:MaxPendingNotes + ' unresolved); new incident would lose evidence.',
+            'New receipt retained. Resolve obligations/correlate legacy before selective repair; no invented UNKNOWN lessons/dropped unresolved.')
     }
     if ($owed.Count -gt 0) {
         Save-CompletionState
@@ -27,9 +27,9 @@ if ($script:pendingNotes.Count -gt 0 -or $script:pendingOverflow) {
             'Incident ' + $_.Key + ': ' + $_.Reason + '. Origin: run=' + [string](Get-Field $_.Origin 'runId') + ', command=' + [string](Get-Field $_.Origin 'commandFingerprint') + ', outcome=' + [string](Get-Field $_.Origin 'overall') + ', receipt=' + [string](Get-Field $_.Origin 'receiptPath') + ', SHA256=' + [string](Get-Field $_.Origin 'receiptSha256')
         })
         Write-Finding -Blocking $true -Lines (@(
-            'TEST COMPLETION CHECK: a durable .ai/ note is still owed because ' + $owed[0].Reason + '. ' + $owed.Count + ' evidenced obligation(s) remain (at most five shown).',
-            'Add an actionable note to matching .ai/BUGS.md, .ai/TESTING_NOTES.md, .ai/COMMANDS.md and/or .ai/LESSON.md: why detection missed it + verified prevention/recovery guard.',
-            'Exact tag line: `' + (Get-IncidentTag $owed[0].Key) + '`. Each incident needs its own tag + substantive added content; an untagged note, bare tag or bare acknowledgement ("done", "n/a", "fixed") cannot clear it.') + $summary)
+            'TEST COMPLETION CHECK: .ai/ note owed: ' + $owed[0].Reason + '; ' + $owed.Count + ' obligations, max5 shown.',
+            '.ai/{BUGS,TESTING_NOTES,COMMANDS,LESSON}.md: missed-detection cause + verified prevention/recovery.',
+            'Exact tag: `' + (Get-IncidentTag $owed[0].Key) + '`; EACH incident: own tag + substantive addition; untagged/bare/done/n-a/fixed != clear.') + $summary)
     }
     # Unknown-only state is not completion evidence. Fall through to the
     # independent deep-debug/current-evidence gates and diagnostic tail.

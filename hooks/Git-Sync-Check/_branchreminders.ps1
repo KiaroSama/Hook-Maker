@@ -39,19 +39,14 @@ function Get-GitWorkflowReminder {
     if ($null -eq $toolInput) { return '' }
     $kind = Get-GitWorkflowCommandKind -Command ([string](Get-Field $toolInput 'command'))
     if ($kind -eq 'branch') {
-        return ('GIT WORKFLOW REMINDER: work stays on the default branch. A side branch, worktree or pull request ' +
-            'needs the user''s request or a forcing reason you state in the report (for example a protected default ' +
-            'branch); then use ONE branch and ONE pull request for the whole task, and account for it at the end. ' +
-            'Rule: global-repository-rules.md.')
+        return 'GIT: BEFORE branch/worktree/PR creation: global-repository-rules.md FULL. Only requested/forced; ONE/task, reconcile at closure.'
     }
     if ($kind -eq 'push') {
         $cwd = [string](Get-Field $HookInput 'cwd')
         if ([string]::IsNullOrWhiteSpace($cwd) -or $null -eq (Get-Command git -ErrorAction SilentlyContinue)) { return '' }
         $dirty = @(Invoke-QuietCommand -FilePath git -ArgumentList @('-C', $cwd, 'status', '--porcelain', '--untracked-files=no') -TimeoutSeconds 5 | Where-Object { $_ })
         if ($LASTEXITCODE -ne 0 -or $dirty.Count -eq 0) { return '' }
-        return ('GIT WORKFLOW REMINDER: this task still has ' + $dirty.Count + ' uncommitted change(s). A task pushes ONCE, ' +
-            'after all the work - all CI hosts require one final manual workflow_dispatch batch on the exact SHA. Finish, commit, then push. ' +
-            'Rule: global-repository-rules.md.')
+        return ('GIT WORKFLOW REMINDER: ' + $dirty.Count + ' uncommitted change(s). BEFORE push: global-repository-rules.md FULL. Finish ALL work; push ONCE, one manual exact-SHA CI batch.')
     }
     return ''
 }
@@ -61,14 +56,14 @@ function Get-GitWorkflowReminder {
 # unavailable gh or a non-GitHub remote says so rather than claiming none.
 function Get-OpenPullRequestLine {
     param([Parameter(Mandatory = $true)][string]$RepoPath)
-    if ($null -eq (Get-Command gh -ErrorAction SilentlyContinue)) { return 'Open pull requests: not checked (gh is not available).' }
+    if ($null -eq (Get-Command gh -ErrorAction SilentlyContinue)) { return 'Open pull requests: UNCHECKED (gh missing).' }
     Push-Location -LiteralPath $RepoPath
     try { $raw = @(Invoke-QuietCommand -FilePath gh -ArgumentList @('pr', 'list', '--state', 'open', '--limit', '20', '--json', 'number,headRefName') -TimeoutSeconds 8); $ghExit = $LASTEXITCODE }
     finally { Pop-Location }
-    if ($ghExit -ne 0) { return 'Open pull requests: not checked (gh pr list failed - no GitHub remote or no access).' }
+    if ($ghExit -ne 0) { return 'Open pull requests: UNCHECKED (gh pr list failed: remote/access).' }
     $prs = @()
-    try { $prs = @(($raw -join "`n") | ConvertFrom-Json) } catch { return 'Open pull requests: not checked (unreadable gh output).' }
+    try { $prs = @(($raw -join "`n") | ConvertFrom-Json) } catch { return 'Open pull requests: UNCHECKED (gh output unreadable).' }
     if ($prs.Count -eq 0) { return 'Open pull requests: none.' }
     $names = @($prs | ForEach-Object { '#' + [string]$_.number + ' (' + [string]$_.headRefName + ')' })
-    return ('Open pull requests: ' + ($names -join ', ') + ' - merge, close, or name each in the report with why it stays open.')
+    return ('Open pull requests: ' + ($names -join ', ') + ' - merge/close OR report each survivor+reason.')
 }

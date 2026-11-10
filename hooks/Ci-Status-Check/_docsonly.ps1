@@ -60,11 +60,11 @@ function Get-DocsOnlyCarryover {
     $script:DocsCarryoverReason = ''
     $script:DocsReviewedClosure=$null
     $script:DocsReviewDestination=Get-CiCarryoverDestination $ProjectRoot $RepoSlug $Sha $Branch
-    if($script:DocsReviewDestination-eq''){$script:DocsCarryoverReason='unknown: exact upstream protection destination unavailable or mismatched';return $null}
+    if($script:DocsReviewDestination-eq''){$script:DocsCarryoverReason='unknown: exact upstream protection target absent/mismatched';return $null}
     $message = @(Invoke-DocsGit -Arguments @('-C', $ProjectRoot, 'log', '-1', '--format=%B', $Sha)) -join "`n"
     if ($LASTEXITCODE -ne 0) { $script:DocsCarryoverReason = 'unknown: final commit message unavailable'; return $null }
     if (-not (Test-CommitHasSkipMarker -Message $message)) { return $null }
-    $script:DocsCarryoverReason = 'unknown: skipped commit ancestry or prose-only edge not verified'
+    $script:DocsCarryoverReason = 'unknown: skipped ancestry/prose-only edge unverified'
     # The pending record overwrites the old green cache; never make local history
     # a prerequisite. Walk at most eight first-parent edges, rejecting EVERY edge
     # so code later reverted to the same tree cannot masquerade as docs-only.
@@ -86,9 +86,9 @@ function Get-DocsOnlyCarryover {
         if ([string]$chain[$i + 1] -ceq $cached) { break }
     }
     if ($candidates.Count -eq 0 -or (Test-DocsHaveSemanticConsumers $ProjectRoot $Sha @($files) $RepoSlug)) { return $null }
-    $script:DocsCarryoverReason = 'unknown or required final-SHA checks: branch protection/rules did not permit carryover'
+    $script:DocsCarryoverReason = 'unknown/required final-SHA checks: protection/rules forbid carryover'
     if (-not (Test-NoRequiredStatusChecks -RepoSlug $RepoSlug -Branch $Branch)) { return $null }
-    $script:DocsCarryoverReason = 'unknown or non-success: complete nearest eligible ancestor checks not verified'
+    $script:DocsCarryoverReason = 'unknown/non-success: nearest eligible ancestor checks incomplete/unverified'
     $ordered = @($candidates.ToArray())
     if($null-ne$script:DocsReviewedClosure){
         foreach($object in @($Sha)+$ordered){
@@ -158,9 +158,15 @@ function Test-NoRequiredStatusChecks {
 
 # Writes the carry-over record and exits with the note, or returns quietly.
 function Invoke-DocsOnlyCarryover {
-    param([string]$ProjectRoot, [string]$Sha, [string]$Branch, [string]$RepoSlug, [string]$StatePath, [string]$EventName)
+    param([string]$ProjectRoot, [string]$Sha, [string]$Branch, [string]$RepoSlug, [string]$StatePath, [string]$EventName, [switch]$RequireLatestStatus)
     $carry = Get-DocsOnlyCarryover -ProjectRoot $ProjectRoot -Sha $Sha -Branch $Branch -RepoSlug $RepoSlug -StatePath $StatePath
     if ($null -eq $carry) { return }
+    # Ancestor evidence may be truthful without satisfying final-commit status.
+    # Keep earlier records intact; never publish a synthetic final-SHA check.
+    if ($RequireLatestStatus) {
+        $emit = Write-StopBlockResult -HookInput $hookInput -HookName 'Ci-Status-Check' -EventName $EventName -Reason ('CI CHECK: ancestor-tested=' + $carry.Parent + '; final SHA=' + $Sha + ' UNTESTED. Latest-status required: applicable final-SHA checks in ONE manual batch or exact blocker. No copied green/display-only run.')
+        exit $emit.ExitCode
+    }
     $when = [DateTimeOffset]::UtcNow.ToString('o')
     $proof = [ordered]@{schema=1;repository=$RepoSlug;sha=$Sha;parent=$carry.Parent;outcome='docs-only-carryover';observedUtc=$when;sourceFingerprint=$carry.SourceFingerprint}
     $receipt = @($Sha, 'verified', $when, 'docs-only-carryover', $carry.Parent, ($proof | ConvertTo-Json -Compress))
@@ -176,5 +182,5 @@ function Invoke-DocsOnlyCarryover {
     $more = if ($carry.Files.Count -gt $shown.Count) { ', ...' } else { '' }
     exit (Write-HookResult -EventName $EventName -Kind 'advisory' -Message ('CI CHECK: tests verified green on ' + $carry.Parent +
         '; ' + $Sha.Substring(0, [Math]::Min(7, $Sha.Length)) + ' changes documentation only (' + $carry.Files.Count + ' file(s): ' + ($shown -join ', ') + $more +
-        ') and carries a skip marker, so no run was started. Report the tests as passed on that parent - this commit is not a new green result.')).ExitCode
+        '); ancestor-tested, final SHA UNTESTED. Latest-status required: final-SHA manual batch or exact blocker; carryover cannot satisfy. Report parent tests, NOT this commit green.')).ExitCode
 }

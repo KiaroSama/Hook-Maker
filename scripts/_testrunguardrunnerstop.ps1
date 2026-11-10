@@ -23,7 +23,7 @@
             'sudo -u root pkill -f Runner.Listener')) {
         $r = Fire -HookPath $hcRs.Script -Cwd $Proj -EventName 'PreToolUse' -Command $forbidden -LocalAppData $hcRs.LocalAppData
         $m = Get-Message $r.Out
-        Check ('runner stop refused: ' + $forbidden) ($r.Out -match '"permissionDecision":"deny"' -and $m -match 'every other project''s runner') $r.Out
+        Check ('runner stop refused: ' + $forbidden) ($r.Out -match '"permissionDecision":"deny"' -and $m -match 'also kills other projects'' CI runners/jobs') $r.Out
     }
     $r = Fire -HookPath $hcRs.Script -Cwd $Proj -EventName 'PreToolUse' -Command 'taskkill /IM Runner.Listener.exe /F' -LocalAppData $hcRs.LocalAppData
     Check 'the refusal names this project''s own runner folder as the replacement' ((Get-Message $r.Out).Contains($ownFolder)) (Get-Message $r.Out)
@@ -37,6 +37,6 @@
     }
     $r = Fire -HookPath $hcRs.Script -Cwd $Proj -EventName 'PreToolUse' -Command 'wsl --shutdown' -LocalAppData $hcRs.LocalAppData
     Check 'wsl --shutdown is advised against, never refused' (
-        $r.Out -notmatch '"permissionDecision":"deny"' -and (Get-Message $r.Out) -match 'stops every WSL CI runner') $r.Out
+        $r.Out -notmatch '"permissionDecision":"deny"' -and (Get-Message $r.Out) -match 'also stops other projects'' WSL runners/jobs') $r.Out
     $r = Fire -HookPath $hcRs.Script -Cwd $Proj -EventName 'PreToolUse' -Command 'taskkill /IM Runner.Listener.exe /F' -LocalAppData $hcRs.LocalAppData -Exe 'powershell'
     Check 'the refusal holds on Windows PowerShell 5.1' ($r.Out -match '"permissionDecision":"deny"') $r.Out

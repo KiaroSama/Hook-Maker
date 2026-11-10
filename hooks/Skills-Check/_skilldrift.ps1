@@ -132,17 +132,17 @@ function Get-SkillDriftLines {
     param($Drift, [string]$RulesDir)
     $lines = New-Object System.Collections.Generic.List[string]
     if ($null -eq $Drift) {
-        [void]$lines.Add('Catalogue drift NOT CHECKED: the deployed routing rules were not found under ' + $RulesDir + ' (this is not an all-clear).')
+        [void]$lines.Add('Catalogue drift NOT CHECKED: routing rules absent under ' + $RulesDir + '; not all-clear.')
         return $lines
     }
     if ($null -ne $Drift.PSObject.Properties['Partial'] -and $Drift.Partial.Count -gt 0) { [void]$lines.Add('Catalogue identity coverage PARTIAL (not an all-clear): ' + ($Drift.Partial -join '; ')) }
     if ($Drift.Missing.Count -gt 0) {
         $shown = @($Drift.Missing | Select-Object -First $script:DriftReportLimit)
         $more = if ($Drift.Missing.Count -gt $shown.Count) { ' (+' + ($Drift.Missing.Count - $shown.Count) + ' more)' } else { '' }
-        [void]$lines.Add('UNCATALOGUED SKILLS (advisory): ' + ($shown -join ', ') + $more + ' - no current provider/source skill contract; bare mentions or other providers do not prove coverage; the rules need an update.')
+        [void]$lines.Add('UNCATALOGUED SKILLS (advisory): ' + ($shown -join ', ') + $more + ' - provider/source contract missing; mentions/other providers != coverage. Update rules.')
     }
     if ($Drift.Removed.Count -gt 0) {
-        [void]$lines.Add('REMOVED PLUGINS (advisory): ' + ((@($Drift.Removed | Select-Object -First $script:DriftReportLimit)) -join ', ') + ' - the catalogue names a removed plugin; the rules need an update.')
+        [void]$lines.Add('REMOVED PLUGINS (advisory): ' + ((@($Drift.Removed | Select-Object -First $script:DriftReportLimit)) -join ', ') + ' - removed plugin still catalogued; update rules.')
     }
     return $lines
 }

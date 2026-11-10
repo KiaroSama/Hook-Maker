@@ -138,11 +138,11 @@
     Add-Commit $projUnk 'seed'
     Write-Utf8 (Join-Path $projUnk 'big.txt') (('a' * 3000) + "`n")
     $r = Fire -HookPath $hcUnk.Script -Cwd $projUnk -EventName 'Stop' -SessionId 'u1' -LocalAppData $hcUnk.LocalAppData
-    Check 'an oversized new text file yields the NOT-verified advisory (not a block, not silence)' (-not (Test-StopBlocks $r.Out) -and (Get-Message $r.Out) -match 'could NOT be verified') $r.Out
+    Check 'an oversized new text file yields the NOT-verified advisory (not a block, not silence)' (-not (Test-StopBlocks $r.Out) -and (Get-Message $r.Out) -match 'changed files UNVERIFIED, not all-clear') $r.Out
     $r = Fire -HookPath $hcUnk.Script -Cwd $projUnk -EventName 'Stop' -SessionId 'u1' -LocalAppData $hcUnk.LocalAppData
     Check 'the same unverified set in the same session is silent on the next Stop' ($r.Out -eq '') $r.Out
     $r = Fire -HookPath $hcUnk.Script -Cwd $projUnk -EventName 'Stop' -SessionId 'u2' -LocalAppData $hcUnk.LocalAppData
-    Check 'a NEW session is told about the unverified file again' ((Get-Message $r.Out) -match 'could NOT be verified') $r.Out
+    Check 'a NEW session is told about the unverified file again' ((Get-Message $r.Out) -match 'changed files UNVERIFIED, not all-clear') $r.Out
 
     # =====================================================================
     Write-Host '--- Stop: valid->invalid modification blocks; the fix clears immediately ---' -ForegroundColor Cyan
@@ -226,7 +226,7 @@
     $r = Fire -HookPath $hcCap.Script -Cwd $projCap -EventName 'Stop' -SessionId 'p1' -LocalAppData $hcCap.LocalAppData -ClaudeProjectDir $projCap
     $msgCap = Get-Message $r.Out
     Check 'the capped check reports PARTIAL and refuses to call it an all-clear' (
-        -not (Test-StopBlocks $r.Out) -and $msgCap -match '(?i)PARTIAL' -and $msgCap -match '(?i)NOT an all-clear' -and $msgCap -match 'UTF8_MAX_FILES') $r.Out
+        -not (Test-StopBlocks $r.Out) -and $msgCap -match '(?i)PARTIAL' -and $msgCap -match '(?i)not all-clear' -and $msgCap -match 'UTF8_MAX_FILES') $r.Out
     $parsedCap = $null
     try { $parsedCap = $r.Out | ConvertFrom-Json } catch { $parsedCap = $null }
     Check 'the Stop advisory uses the Claude shape when CLAUDE_PROJECT_DIR is set' (
@@ -288,7 +288,7 @@
     Check 'a malformed .env never crashes the gate' ($r.Exit -eq 0 -and $r.Err -eq '') $r.Err
     Check 'the invalid integer is reported and the default used; the bad flag falls to advisory-only (non-widening)' (
         -not (Test-StopBlocks $r.Out) -and (Get-Message $r.Out) -match 'UTF8_MAX_FILES is not an integer' -and
-        (Get-Message $r.Out) -match '(?i)falling back to advisory-only') $r.Out
+        (Get-Message $r.Out) -match 'invalid -> advisory\(true\), never wider blocking') $r.Out
 
     # =====================================================================
     Write-Host '--- Windows PowerShell 5.1 host: the Stop gate works unchanged ---' -ForegroundColor Cyan

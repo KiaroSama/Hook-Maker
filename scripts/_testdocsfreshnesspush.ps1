@@ -1,5 +1,5 @@
-# Docs-Freshness-Check: the PreToolUse `git push` gate and the Stop [skip ci]
-# advice. Dot-sourced by Test-DocsFreshnessCheck.ps1 inside its try block, so
+# Docs-Freshness-Check: PreToolUse `git push` and Stop latest-SHA guidance.
+# Dot-sourced by Test-DocsFreshnessCheck.ps1 inside its try block, so
 # $Work, Fire, FireAck, Get-Fingerprint, New-IsolatedHookCopy, New-GitRepo,
 # Add-Commit, Write-Utf8 and Check all come from there. Upstreams are local
 # bare repositories; nothing here reaches a network.
@@ -48,10 +48,10 @@ $denyReason = Get-DenyReason $rDeny.Out
 Check 'a push carrying a real code change and no acknowledgement is denied (Claude permissionDecision deny)' (
     $rDeny.Exit -eq 0 -and $rDeny.Out -match '"permissionDecision":"deny"') ($rDeny.Out + ' | err=' + $rDeny.Err)
 Check 'the deny names the changed file and the ranked candidate docs' (
-    $denyReason -match 'a\.ps1' -and $denyReason -match 'Candidate tracked documentation to review \(ranked\): README\.md') $denyReason
+    $denyReason -match 'a\.ps1' -and $denyReason -match 'Ranked tracked-doc candidates: README\.md') $denyReason
 Check 'the deny carries the same -Acknowledge recovery command the Stop gate prints' (
     $denyReason -match '-Acknowledge -ProjectRoot' -and $denyReason -match '-ImpactFingerprint "[a-f0-9]+"' -and $denyReason -match '-Result NoUpdate') $denyReason
-Check 'the deny says the docs land in this one push (CI runs once)' ($denyReason -match 'this one push \(CI runs once\)') $denyReason
+Check 'the deny says the docs land in this one push (CI runs once)' ($denyReason -match 'before the single push/CI') $denyReason
 $fpPush = [regex]::Match($denyReason, '-ImpactFingerprint "([a-f0-9]+)"').Groups[1].Value
 $rRetry = Invoke-PushAttempt $push1
 Check 'the same push again with the fingerprint unchanged is not denied again (silent)' (
@@ -105,10 +105,10 @@ Write-Utf8 (Join-Path $push5.Repo 'a.ps1') "function A { 2 }`n"
 Add-Commit $push5.Repo 'code'
 $rChained = Invoke-PushAttempt $push5 'git status && git push' -Client 'codex'
 Check 'x && git push is recognised; Codex gets exit 2 with the reason on stderr' (
-    $rChained.Exit -eq 2 -and $rChained.Err -match 'DOCS FRESHNESS CHECK' -and $rChained.Err -match 'this one push') ($rChained.Out + ' | err=' + $rChained.Err)
+    $rChained.Exit -eq 2 -and $rChained.Err -match 'DOCS FRESHNESS CHECK' -and $rChained.Err -match 'before the single push/CI') ($rChained.Out + ' | err=' + $rChained.Err)
 
 # =====================================================================
-Write-Host '--- Stop: a review still owed on a ci-green pushed HEAD asks for a [skip ci] docs commit ---' -ForegroundColor Cyan
+Write-Host '--- Stop: reviewed docs preserve parent proof without a latest-SHA waiver ---' -ForegroundColor Cyan
 function New-CiScenario {
     param([string]$Name)
     $hc = New-IsolatedHookCopy
@@ -132,9 +132,10 @@ $ciWhen=[DateTimeOffset]::UtcNow.ToString('o')
 $ciProof=@{schema=1;repository='octo/docs-demo';sha=$ciHead;outcome='ci-green';observedUtc=$ciWhen;completedUtc=$ciWhen;workloadFingerprint=('b'*64);sourceFingerprint=('c'*64);runs=@(@{id=1;attempt=1;workflowId=2;path='.github/workflows/ci.yml';event='workflow_dispatch';branch='main';completedUtc=$ciWhen})}
 [System.IO.File]::WriteAllLines($ciNote, @($ciHead, 'verified', $ciWhen, 'ci-green',($ciProof|ConvertTo-Json -Depth 8 -Compress)),[Text.Encoding]::UTF8)
 $rGreen = Fire -HookPath $ci1.Hook.Script -Cwd $ci1.Repo -EventName 'Stop' -LocalAppData $ci1.Hook.LocalAppData
-Check 'ci-green pushed HEAD + review owed: the block names [skip ci], no suite, and the parent SHA' (
-    $rGreen.Out -match '"decision":"block"' -and $rGreen.Out -match '\[skip ci\]' -and $rGreen.Out -match 'run no suite' -and
-    $rGreen.Out -match ('parent SHA ' + $ciHead.Substring(0, 7))) $rGreen.Out
+Check 'docs repair retains tested parent identity without waiving latest-SHA checks' (
+    $rGreen.Out -match '"decision":"block"' -and $rGreen.Out -notmatch '\[skip ci\]|no suite' -and
+    $rGreen.Out -match ('parent SHA ' + $ciHead.Substring(0, 7)) -and $rGreen.Out -match 'New SHA UNTESTED' -and
+    $rGreen.Out -match 'ONE manual final batch or exact blocker' -and $rGreen.Out -match 'no ancestor green/display-only run') $rGreen.Out
 $ci2 = New-CiScenario 'CiNotRecorded'
 $rNotGreen = Fire -HookPath $ci2.Hook.Script -Cwd $ci2.Repo -EventName 'Stop' -LocalAppData $ci2.Hook.LocalAppData
 Check 'without a ci-green record the block keeps today''s text (no [skip ci])' (

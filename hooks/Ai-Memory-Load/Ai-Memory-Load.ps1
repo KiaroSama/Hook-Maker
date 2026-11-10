@@ -153,11 +153,10 @@ $lines = New-Object System.Collections.Generic.List[string]
 if ($invalidUtf8) {
     # E-06: legacy non-UTF-8 memory is surfaced by path + classification ONLY.
     # No raw bytes, no replacement-character mojibake, no silent transcoding.
-    [void]$lines.Add('AI MEMORY LOAD: .ai/memory.md exists but is NOT valid UTF-8 (legacy/unknown encoding). Its contents were NOT loaded and are not shown - raw bytes are never printed.')
-    [void]$lines.Add('Every .ai/ file read or created must be UTF-8. Review and convert this file explicitly (a reviewed conversion by the agent - never a silent transcode by a hook); it will load normally once valid.')
+    [void]$lines.Add('AI MEMORY: .ai/memory.md invalid UTF-8/legacy/unknown; NOT loaded. Reviewed UTF-8 conversion required; hook never transcodes/shows bytes.')
 }
 else {
-    [void]$lines.Add('AI MEMORY LOADED - .ai/memory.md (this project''s startup router):')
+    [void]$lines.Add('AI MEMORY LOADED - .ai/memory.md (project startup router):')
     [void]$lines.Add('')
     [void]$lines.Add($content)
     [void]$lines.Add('')
@@ -166,15 +165,14 @@ else {
     }
 }
 if ($otherFiles.Count -gt 0) {
-    [void]$lines.Add('Other .ai/ files (not loaded; follow memory.md task routing): ' + ($otherFiles -join ', '))
+    [void]$lines.Add('Other .ai/ files (not loaded; router selects): ' + ($otherFiles -join ', '))
 }
-[void]$lines.Add('Use memory.md as the starting point; do not load every .ai file by default - only what this task actually needs. This note stays silent until memory.md or the .ai/ file list changes again.')
+[void]$lines.Add('memory.md first; task files only. Unchanged router/list: silent.')
 if ($deepDebug) {
     # E-06: routing text only for the standalone ::deep-debug codeword - the
     # loader names the set, the agent loads only what exists and is relevant.
     [void]$lines.Add('')
-    [void]$lines.Add('::deep-debug memory routing: after memory.md, load ONLY the existing, task-relevant files from CONTEXT.md, REFERENCE.md, COMMANDS.md, BUGS.md, EDGE_CASES.md, TESTING_NOTES.md (+ SECURITY_NOTES.md when the work is security-sensitive), DECISIONS.md, LESSON.md, and the project-local WORKFLOWS.md/PLAYBOOKS.md when present. Never load the whole .ai/ directory, never copy global rules into .ai/, and a missing optional file is not a reason to create empty boilerplate.')
-    [void]$lines.Add('Every .ai/ file read or created must be UTF-8; surface a legacy non-UTF-8 .ai file by path + classification only - never print raw bytes and never silently transcode it.')
+    [void]$lines.Add('::deep-debug: BEFORE loading, ai-context-memory-policy.md/CODEWORDS.md FULL; memory.md -> relevant existing debug/security set only. UTF-8; legacy path/class only, no raw/transcode/bulk/empty/global-rule copies.')
 }
 
 $null = Write-HookResult -EventName $eventName -Kind 'context' -Message ($lines.ToArray() -join "`n")

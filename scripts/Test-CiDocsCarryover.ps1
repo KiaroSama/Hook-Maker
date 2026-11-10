@@ -130,6 +130,15 @@ try {
     Check 'repeat carryover does not claim another notice' (-not (Write-CiStateAtomic $publication $stateLines))
     Check 'concurrent stale pending cannot overwrite carryover' (-not (Write-CiStateAtomic $publication @($sha, 'pending', [DateTime]::UtcNow.ToString('o'), '')))
     Check 'state still names exact ancestor, never final SHA ci-green' (([IO.File]::ReadAllLines($publication) -join '|') -ceq ($stateLines -join '|'))
+    $pendingProbe=Join-Path $Work 'pending-carryover.ps1'
+    $pendingBody='. '''+(Join-Path $HookRoot '_hooklib.ps1').Replace("'","''")+"'`n. '"+(Join-Path $HookRoot 'Ci-Status-Check/_cistate.ps1').Replace("'","''")+"'`n"+
+        '$script:sha='''+$sha+'''; $script:repoSlug=''owner/repo''; $script:statePath='''+$publication.Replace("'","''")+'''; Save-State -Outcome pending; Write-Output ''LatestStatusBlockStillRequired'''
+    [IO.File]::WriteAllText($pendingProbe,$pendingBody,(New-Object Text.UTF8Encoding $false))
+    foreach($pendingHost in @('pwsh','powershell.exe')){
+        $pendingOut=Join-Path $Work 'pending-carryover.out';$pendingErr=Join-Path $Work 'pending-carryover.err'
+        $pendingResult=Start-BoundedProcess -FilePath $pendingHost -ArgumentList @('-NoLogo','-NoProfile','-NonInteractive','-File',$pendingProbe) -TimeoutMs 10000 -RedirectStandardOutput $pendingOut -RedirectStandardError $pendingErr
+        Check ($pendingHost+': protected ancestor receipt cannot suppress caller latest-status block') ($pendingResult.ExitCode-eq0-and[IO.File]::ReadAllText($pendingOut).Contains('LatestStatusBlockStillRequired')-and[IO.File]::ReadAllText($pendingErr)-eq''-and([IO.File]::ReadAllLines($publication)-join'|')-ceq($stateLines-join'|'))
+    }
     $oldProof=@{}+$carryProof; $oldProof.observedUtc=[DateTimeOffset]::UtcNow.AddMinutes(-2).ToString('o')
     $oldLines=@($sha,'verified',$oldProof.observedUtc,'docs-only-carryover',$script:BaseSha,($oldProof|ConvertTo-Json -Compress))
     [IO.File]::WriteAllLines($publication,$oldLines,[Text.Encoding]::UTF8)
@@ -169,6 +178,17 @@ try {
             Check ($hostExe + ': concurrent state complete and no temporary remains') ([IO.File]::ReadAllLines($path).Count -eq 6 -and @(Get-ChildItem $Work -Filter 'concurrent.txt.*.tmp').Count -eq 0)
         }
         finally { foreach ($child in $children) { if (-not $child.HasExited) { $child.Kill(); [void]$child.WaitForExit(10000) }; $child.Dispose() } }
+    }
+    foreach ($hostExe in @('pwsh','powershell.exe')) {
+        $latestWriter=Join-Path $Work 'latest-status.ps1'
+        $latestPrefix='$hookInput=[pscustomobject]@{session_id="latest-status";cwd='''+$repo.Replace("'","''")+''';hook_event_name="Stop"}; '
+        $latestBody=$body.Replace('Invoke-DocsOnlyCarryover -ProjectRoot', $latestPrefix+'Invoke-DocsOnlyCarryover -ProjectRoot')+' -RequireLatestStatus'
+        [IO.File]::WriteAllText($latestWriter,$latestBody,(New-Object Text.UTF8Encoding $false))
+        $latestOut=Join-Path $Work 'latest-status.out';$latestErr=Join-Path $Work 'latest-status.err'
+        $before=[Convert]::ToBase64String([IO.File]::ReadAllBytes((Join-Path $Work 'concurrent.txt')))
+        $latest=Start-BoundedProcess -FilePath $hostExe -ArgumentList @('-NoLogo','-NoProfile','-NonInteractive','-File',$latestWriter) -TimeoutMs 30000 -RedirectStandardOutput $latestOut -RedirectStandardError $latestErr
+        $text=[IO.File]::ReadAllText($latestOut,[Text.Encoding]::UTF8)
+        Check ($hostExe+': latest-status requirement refuses ancestor-only completion without rewriting evidence') ($latest.ExitCode-eq0-and$text-match'"decision"'-and$text.Contains($sha)-and$text.Contains($script:BaseSha)-and$text-match'Latest-status required'-and[IO.File]::ReadAllText($latestErr)-eq''-and[Convert]::ToBase64String([IO.File]::ReadAllBytes((Join-Path $Work 'concurrent.txt')))-ceq$before)
     }
     & {
         param($hooks,$scripts)

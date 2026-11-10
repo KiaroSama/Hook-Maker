@@ -125,22 +125,21 @@ $projectKey = Get-ShortHash $cwd.ToLowerInvariant()
 # that followed this instruction to the letter was blocked once and then wrote a
 # name list contradicting the "none" it had just written. Both halves passed
 # their own tests; what was missing was that they agreed.
-$script:SkillsRequiredLine = 'Skills used: <skill names>   (or exactly "Skills used: none - <one-line reason>", and that reason names any skills this prompt shortlisted)'
-$script:SkillsRequirement = 'CLOSING REQUIREMENT: "Skills used: <exact invoked/materially followed names>"; otherwise "Skills used: none - <one-line reason>" naming each unused shortlisted installed skill. Installed/available/discovered/copied/considered/read-only is not used; never the whole library; do not force a skill for trivial tasks.'
+$script:SkillsRequiredLine = 'Skills used: <names> OR Skills used: none - <EACH unused name/reason>'
+$script:SkillsRequirement = 'Final "Skills used: <exact used names>" or "Skills used: none - <EACH unused match/reason>"; read/presence/library/trivial!=use.'
 # The import safety boundary, stated wherever an import is suggested. Copying a
 # skill is an AUTHORIZED operation under the Skill Policy and this hook never
 # performs one - so every place that names a copy command also names its rules.
 # One line, both advisories. Spec Kit is the ROUTE a task takes; the skills
 # inventory above is the SET a task may use. Naming the route here costs a
 # line and stops the inventory reading as the whole policy.
-$script:SpecKitRouting = 'Spec Kit routes every task that changes the project: absent infrastructure -> speckit-init, constitution; feature/behavior -> speckit-specify, clarify, plan, tasks, analyze, implement; bug -> diagnose then speckit-converge+implement on existing spec, full chain otherwise; resume/doubt -> speckit-converge. Each new request: dated delta/requirement IDs/acceptance, amend affected artifacts/skills/gates before dependent edits; independent work continues. Run full procedures. Owner: global-spec-kit-rules.md.'
-# Order 55 step 4a, verbatim. Routing is per SKILL, because an agent sees
+$script:SpecKitRouting = 'BEFORE scaffold/feature/bug/delta: global-spec-kit-rules.md FULL.'
+# Order 55 step 4a, condensed. Routing is per SKILL, because an agent sees
 # skills, not plugins; and security work has one entry point.
 $script:SkillRoutingLines = @(
-    '- Every visible skill has its own routing line in global-skill-routing.md; user-level, Desktop and Kiaro template skills are in global-skills-catalogue.md. Route by that line, not by the plugin name; where two skills share a job, the line names the default. global-skill-routing.md loads on demand, so read it in full before this work.',
-    '- Security work enters at the security-audit skill, never at a scanner. semgrep, codeql, SARIF, insecure-defaults and differential-review are evidence that workflow calls for. It runs in guidance mode by default and in full audit mode only on an explicit audit, pen-test, end-to-end review, or a request for report artifacts.'
+    '- BEFORE selection/security: global-skill-routing.md/global-skills-catalogue.md FULL.'
 )
-$script:ImportGuidance = 'Import guidance: copy the minimal set (1-5) as real folders (never reparse points, junctions or shortcuts), exclude secrets/caches/VCS metadata, never overwrite a modified project skill silently, and record source/destination/hash/agent/reason in .ai/SKILLS.md.'
+$script:ImportGuidance = 'BEFORE copy: active skill policy FULL; 1-5 authorized real folders, preserve modified. Record .ai/SKILLS.md.'
 
 # ---- shared skill library (searched by prompt, never enumerated into output) --
 $libraryDir = ''
@@ -307,7 +306,7 @@ foreach ($key in @($byName.Keys | Sort-Object)) {
     $e = $byName[$key]
     [void]$skillLines.Add('- ' + $e.Name + ' [' + ((@($e.Sources) | Sort-Object) -join '+') + ']')
     if ($e.Hashes.Count -gt 1) {
-        [void]$conflictLines.Add('CONFLICT (repair before use): "' + $e.Name + '" differs between ' + ((@($e.Sources) | Sort-Object) -join ' and ') + ' - do NOT overwrite silently; diff the two copies, reconcile, and record the chosen version in .ai/SKILLS.md.')
+        [void]$conflictLines.Add('CONFLICT: "' + $e.Name + '" differs: ' + ((@($e.Sources) | Sort-Object) -join ' and ') + '. Before use: diff/reconcile -> .ai/SKILLS.md; no silent overwrite.')
     }
 }
 
@@ -386,7 +385,7 @@ if ($closing) {
         $fingerprint = (Get-HookSuppressionIdentity -HookInput $hookInput) + '|' + $eventName + '|' + $StateToken
         $claim = Invoke-DeliveryClaim -Path ($gatePath + '.claims.json') -Identity (Get-DeliveryIdentity $hookInput) -Fingerprint $fingerprint
         if (-not $claim.Ok) {
-            [Console]::Out.WriteLine((@{ systemMessage = ('Closing reminder reservation is unverified (' + $claim.Reason + '); no approval or completion was recorded.') } | ConvertTo-Json -Compress))
+            [Console]::Out.WriteLine((@{ systemMessage = ('Closing reservation UNVERIFIED (' + $claim.Reason + '); no approval/completion.') } | ConvertTo-Json -Compress))
         }
         return $claim.Admitted
     }
@@ -408,7 +407,7 @@ if ($closing) {
         # UNKNOWN - no transcript, unreadable, or a client that supplies none.
         if (-not (Test-ShouldReportClosing 'unverified')) { exit 0 }
         $note = @(
-            'SKILL POLICY CHECK - the session transcript was not available to this hook, so skill use could NOT be verified (this is not an all-clear).',
+            'Skill use UNVERIFIED: transcript unavailable, not all-clear.',
             $script:SkillsRequirement
         ) -join "`n"
         $emit = Write-HookResult -EventName $eventName -Kind 'advisory' -Message $note
@@ -454,10 +453,10 @@ if ($eventName -eq 'UserPromptSubmit') {
     $prompt = [string](Get-Field $hookInput 'prompt')
     if (Test-ExplicitResearchPrompt $prompt) {
         $researchRoute = Get-ResearchWorkflowReminder -Skills
-        if ($index.Partial.Count -gt 0) { $researchRoute += "`nSkill discovery PARTIAL; inspect current matching catalogue records, never infer complete coverage." }
+        if ($index.Partial.Count -gt 0) { $researchRoute += "`nDiscovery PARTIAL; inspect matching catalogue, no completeness claim." }
         $claim = Invoke-DeliveryClaim -Path (Join-Path $stateDir ('SkillsCheck-research-' + $client + '-' + $projectKey + '.claims.json')) -Identity (Get-DeliveryIdentity $hookInput) -Fingerprint (Get-ShortHash ($prompt.Trim() + '|' + $sig + '|' + $researchRoute))
         if ($claim.Admitted) { $null = Write-HookResult -EventName $eventName -Kind 'context' -Message $researchRoute }
-        elseif (-not $claim.Ok) { $null = Write-HookResult -EventName $eventName -Kind 'advisory' -Message 'Research skill routing reservation is unverified; no skill was invoked or installed.' }
+        elseif (-not $claim.Ok) { $null = Write-HookResult -EventName $eventName -Kind 'advisory' -Message 'Research routing reservation UNVERIFIED; no skill invoked/installed.' }
         exit 0
     }
     if ($prompt -match '(?i)(^|\s)::deep-debug([\s.,;:!?]|$)') {
@@ -481,7 +480,7 @@ if ($eventName -eq 'UserPromptSubmit') {
         # same. Neither client's syntax is authoritative for the other, and the
         # references stay plain text - this hook never executes them.
         if ($client -eq 'codex') {
-            $ponytailRef = 'the verified installed ponytail-audit capability via this client''s supported invocation'
+            $ponytailRef = 'verified installed ponytail-audit via this client''s supported invocation'
         }
         else {
             $ponytailRef = 'native /ponytail:ponytail-audit'
@@ -508,19 +507,14 @@ if ($eventName -eq 'UserPromptSubmit') {
         }
 
         $dd = New-Object System.Collections.Generic.List[string]
-        [void]$dd.Add('SKILL POLICY CHECK (' + $client + ') - ::deep-debug capability routing. Activate by PHASE, never everything at once. Identity: exact name: in each installed SKILL.md, never a folder, plugin, marketplace, or category label. Check loadability first; never silently install/copy/refresh/overwrite/remove/enable.')
-        [void]$dd.Add('- Goal/orchestration: write the fixed goal (every bug and every phase closed) into the task ledger first. ::multi-agent is a codeword dependency, not a skill. Independent discovery/debug -> superpowers:dispatching-parallel-agents; prepared independent tasks -> superpowers:subagent-driven-development. Flatten/dedupe/check cycles once; never recursive re-runs, never nested agent trees.')
-        [void]$dd.Add('- Understanding/planning: medium/large/unfamiliar/architecture/security-heavy -> audit-context-building; Graphify only under its own policy. superpowers:brainstorming only for genuine behavior/design ambiguity; superpowers:writing-plans only when a complex repair lacks an executable plan.')
-        [void]$dd.Add('- Known bug: systematic-debugging, test-driven-development, verification-before-completion; runtime evidence -> CHOOSE debugging-code (DAP) OR debug-live (trusted DebugMCP/VS Code), not normally both for one question.')
-        [void]$dd.Add('- Existing plan: executing-plans (only when a real plan exists), test-driven-development, requesting-code-review, verification-before-completion.')
-        [void]$dd.Add('- Security-sensitive: enter security-audit; smallest applicable subset: differential-review, insecure-defaults, semgrep and/or codeql, sarif-parsing (when SARIF output exists), fp-check before treating automated findings as confirmed, variant-analysis after a proven root cause, supply-chain-risk-auditor for dependencies, c-review (C/C++ only), rust-review (Rust only). "static-analysis" is a plugin/category LABEL, not an invokable skill unless an installed SKILL.md declares that exact name:. Active security testing still requires ownership/authorization and matching scope.')
-        [void]$dd.Add('- Test strengthening: property-based-testing only where a meaningful invariant exists (round trips, validators, state machines, path containment, idempotency, boundaries) - never manufacture low-value properties to claim skill use.')
-        [void]$dd.Add('- Finalization: superpowers:using-git-worktrees only when authorized isolation materially reduces collision risk; after integration requesting-code-review + verification-before-completion; superpowers:finishing-a-development-branch only when work really occurred on an independent branch and all checks are green; THEN run ' + $ponytailRef + ' exactly ONCE - afterwards only safe accepted simplifications + targeted tests + final verification, never a second pass.')
+        [void]$dd.Add('SKILL POLICY CHECK (' + $client + '): ::deep-debug; exact loadable SKILL.md key/exposure, no mutation.')
+        [void]$dd.Add('BEFORE EVERY bug/phase: WORKFLOWS.md Deep Debug/skill-policy-deep-debug.md FULL. ::multi-agent!=skill; no recursion.')
+        [void]$dd.Add('- ' + $ponytailRef + ' ONCE; then safe cuts/targeted tests/final proof only.')
         if ($notVisible.Count -gt 0) {
-            [void]$dd.Add('- NOT VISIBLE in the enumerated project/global/plugin skill sources: ' + ($notVisible.ToArray() -join ', ') + '. Verify each is installed/loadable elsewhere before relying on it; a genuinely missing required capability must be REPORTED as missing and the workflow marked blocked/partial - never silently skipped.')
+            [void]$dd.Add('- NOT VISIBLE (project/global/plugin): ' + ($notVisible.ToArray() -join ', ') + '. Verify elsewhere; required gap=BLOCKED/PARTIAL.')
 
         }
-        [void]$dd.Add('- Select only the task-relevant subset; keep Claude and Codex invocation syntax separate - neither client''s syntax is authoritative for the other. This hook routes only: it never executes a skill, slash command, or codeword.')
+        [void]$dd.Add('- Subset/client syntax only; hook invokes nothing.')
         [void]$dd.Add($script:SkillsRequirement)
         $emit = Write-HookResult -EventName $eventName -Kind 'context' -Message ($dd.ToArray() -join "`n")
         exit $emit.ExitCode
@@ -554,10 +548,10 @@ if ($eventName -eq 'UserPromptSubmit') {
     if (-not $promptClaim.Admitted) { exit 0 }
 
     $lines = New-Object System.Collections.Generic.List[string]
-    if ($index.Partial.Count -gt 0) { [void]$lines.Add('Skill discovery was PARTIAL (not the full installed scope): ' + (($index.Partial | Select-Object -Unique -First 8) -join '; ')) }
-    [void]$lines.Add('SKILL POLICY CHECK (' + $client + '): skill use is MANDATORY; task start/job change -> installed/library relevance; covered steps run THROUGH exact skills. Sources: project/global/plugin/library. Library copies follow ' + $policyFile + ' authority, real folders + .ai/SKILLS.md record. Feature -> grilling + domain-modeling + Spec Kit.')
+    if ($index.Partial.Count -gt 0) { [void]$lines.Add('Skill discovery was PARTIAL: ' + (($index.Partial | Select-Object -Unique -First 8) -join '; ')) }
+    [void]$lines.Add('SKILL POLICY CHECK (' + $client + '): each job: project/global/plugin/library. FIRST ' + $policyFile + ' FULL; feature: grilling/domain-modeling/Spec Kit.')
     if ($topInstalled.Count -gt 0) {
-        [void]$lines.Add('INSTALLED matches (name shortlist, not full inventory): verify host exposure/source, invoke exact key, follow linked SKILL.md:')
+        [void]$lines.Add('INSTALLED matches only: verify source/exposure/exact SKILL.md key:')
         foreach ($m in $topInstalled) {
             $where = ''
             if ($null -ne $m.PSObject.Properties['Path'] -and -not [string]::IsNullOrWhiteSpace([string]$m.Path)) { $where = ' -> ' + (Join-Path $m.Path 'SKILL.md') }
@@ -565,16 +559,16 @@ if ($eventName -eq 'UserPromptSubmit') {
         }
     }
     if ($topLibrary.Count -gt 0) {
-        [void]$lines.Add('IN THE LIBRARY but NOT installed - these match this prompt. Follow ' + $policyFile + ' copy authority, then record source/destination/date/reason in .ai/SKILLS.md. This hook never copies.')
-        [void]$lines.Add('Destination for this project: ' + $projectSkillsDir)
+        [void]$lines.Add('Library!=installed; BEFORE copy ' + $policyFile + ' FULL; record date. Hook never copies.')
+        [void]$lines.Add('Project destination: ' + $projectSkillsDir)
         foreach ($m in $topLibrary) {
             [void]$lines.Add('- ' + $m.Name + '   ->   Copy-Item -LiteralPath "' + $m.Path + '" -Destination "' + $projectSkillsDir + '" -Recurse -Force')
         }
-        [void]$lines.Add('(Create the destination first if it is missing: New-Item -ItemType Directory -Path "' + $projectSkillsDir + '" -Force. Activate by the name: inside the copied SKILL.md, which may differ from the folder name.)')
+        [void]$lines.Add('(If absent: New-Item -ItemType Directory -Path "' + $projectSkillsDir + '" -Force; invoke copied SKILL.md name:.)')
         [void]$lines.Add($script:ImportGuidance)
     }
     if ($topInstalled.Count -eq 0 -and $topLibrary.Count -eq 0) {
-        [void]$lines.Add('No skill name matched this prompt in any of the four sources. That is a name-level match only, not proof that no skill applies - if the task is clearly specialised, look through the sources yourself before deciding.')
+        [void]$lines.Add('Four sources: no name match != irrelevant; inspect specialists.')
         if ($hasLibrary) { [void]$lines.Add('Library: ' + $libraryDir) }
     }
     foreach ($routingLine in $script:SkillRoutingLines) { [void]$lines.Add($routingLine) }
@@ -586,9 +580,9 @@ if ($eventName -eq 'UserPromptSubmit') {
 
 # ---- SessionStart: compact routed inventory of all three installed sources --
 $lines = New-Object System.Collections.Generic.List[string]
-[void]$lines.Add('SKILL POLICY CHECK (' + $client + '): task start/job change -> minimal matching installed skills; covered steps run THROUGH them. Activation needs no extra approval; copy/install/update/removal follows ' + $policyFile + ' authority, not this reminder.')
+[void]$lines.Add('SKILL POLICY CHECK (' + $client + '): BEFORE each job, ' + $policyFile + ' FULL; minimal relevant 1-5 exact SKILL.md keys; mutation rules bind.')
 $agentRoots = if ($client -eq 'claude') { 'global/project .claude/agents + active installed_plugins.json declared/default roots' } else { 'this client''s supported native agent/plugin roots' }
-[void]$lines.Add('AGENT ROUTING: read global-agent-rules.md. Relevance-first discovery: current host roster + ' + $agentRoots + '; dedupe actual paths, not names/old cache versions. Read selected full body/tools/limits. Installed/exposed/invoked differ; missing/unreadable/malformed scope is UNVERIFIED, embedded templates are not native agents. Small tasks: zero agents; minimum independent stream otherwise, no PROACTIVELY swarm or full-body scan per event. This hook spawns nothing.')
+[void]$lines.Add('AGENTS: BEFORE selection global-agent-rules.md FULL. Roots: ' + $agentRoots + '. Gaps UNVERIFIED; no auto spawn.')
 if ($skillLines.Count -gt 0) {
     [void]$lines.Add('Project + global skills (deduped by name:):')
     foreach ($sl in $skillLines) { [void]$lines.Add($sl) }
@@ -605,30 +599,28 @@ if ($index.Plugin.Count -gt 0) {
     $shown = @($pluginSummary | Select-Object -First 24)
     $suffix = ''
     if ($pluginSummary.Count -gt $shown.Count) { $suffix = ', +' + ($pluginSummary.Count - $shown.Count) + ' more plugins' }
-    [void]$lines.Add('Plugin skills: ' + $index.Plugin.Count + ' across ' + $pluginsByPlugin.Count + ' plugins - ' + ($shown -join ', ') + $suffix + '. Address these as <plugin>:<skill>.')
+    [void]$lines.Add('Plugin skills: ' + $index.Plugin.Count + '/' + $pluginsByPlugin.Count + ' plugins: ' + ($shown -join ', ') + $suffix + '; key <plugin>:<skill>.')
     # Enabled, disabled and explicit-only are different facts; only the first
     # is ever put on a shortlist (see _promptmatch.ps1).
     $disabledCount = @($index.Plugin | Where-Object { $_.Status -eq 'disabled' }).Count
     $explicitCount = @($index.Plugin | Where-Object { $_.Explicit -eq '1' }).Count
     $unknownCount = @($index.Plugin | Where-Object { $_.Status -eq 'unknown' }).Count
-    [void]$lines.Add('Of these: ' + ($index.Plugin.Count - $disabledCount - $unknownCount) + ' enabled, ' + $disabledCount + ' disabled (not loadable), ' + $explicitCount + ' explicit-only (only when the user names them).')
-    if ($unknownCount -gt 0) { [void]$lines.Add('Unknown availability: ' + $unknownCount + ' definitions (not shortlisted).') }
+    [void]$lines.Add('Availability: ' + ($index.Plugin.Count - $disabledCount - $unknownCount) + ' enabled; ' + $disabledCount + ' disabled/unloadable; ' + $explicitCount + ' user-explicit-only.')
+    if ($unknownCount -gt 0) { [void]$lines.Add('Unknown availability: ' + $unknownCount + ' (not shortlisted).') }
 }
 elseif ($hasPluginRoot) {
     [void]$lines.Add('Plugin skills: none found under ' + $pluginRoot + '.')
 }
 if ($index.Partial.Count -gt 0) {
-    [void]$lines.Add('Skill discovery was PARTIAL (the list above is not complete): ' + ((@($index.Partial) | Select-Object -First 6) -join '; ') + '.')
+    [void]$lines.Add('Skill discovery was PARTIAL: ' + ((@($index.Partial) | Select-Object -First 6) -join '; ') + '.')
 }
-[void]$lines.Add('- Activate the relevant ones by the exact name: in each SKILL.md - never by folder, plugin, marketplace or category label.')
 if ($hasRecord) {
-    [void]$lines.Add('- Read .ai/SKILLS.md for the active-skill record; keep it updated (local-only, secret-free) when skills change.')
+    [void]$lines.Add('- Skill changes: read/update .ai/SKILLS.md; local, secret-free.')
 }
 if ($hasLibrary) {
-    [void]$lines.Add('- Skill library: ' + $libraryDir + ' (' + $index.Library.Count + ' skills indexed). It is searched against each prompt; a match that is not installed is reported with the exact import command into ' + $projectSkillsDir + '. Copy only under current policy authority; this hook grants none.')
+    [void]$lines.Add('- Library: ' + $libraryDir + ' (' + $index.Library.Count + '); exact prompt imports -> ' + $projectSkillsDir + '. Policy consent only.')
     [void]$lines.Add('- ' + $script:ImportGuidance)
 }
-[void]$lines.Add('- Select only the minimal relevant set (1-5). Follows ' + $policyFile + '.')
 foreach ($routingLine in $script:SkillRoutingLines) { [void]$lines.Add($routingLine) }
 
 # Provider/source-aware drift is advisory, never runtime load evidence.

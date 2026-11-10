@@ -56,15 +56,15 @@ function Test-CiClearedFailure {
     # it, so a dirty tree is not the tree the run passed on.
     $dirty = @((Invoke-QuietCommand -FilePath git -ArgumentList @('-C', $ProjectRoot, 'status', '--porcelain')) | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) })
     if ($LASTEXITCODE -ne 0) { return (New-CiRefusal 'the working tree state cannot be read') }
-    if ($dirty.Count -gt 0) { return (New-CiRefusal 'the working tree has uncommitted changes, which no CI result describes') }
+    if ($dirty.Count -gt 0) { return (New-CiRefusal 'uncommitted changes: CI cannot describe this tree') }
 
     $path = Get-CiEvidencePath -ProjectRoot $ProjectRoot -RepoSlug ([string]$repo.Repository)
-    if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { return (New-CiRefusal 'no CI observation has been recorded for this project yet') }
+    if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { return (New-CiRefusal 'project CI observation absent') }
     $lines = @()
     try { $lines = @([System.IO.File]::ReadAllLines($path, [Text.Encoding]::UTF8)) } catch { return (New-CiRefusal 'the CI observation cannot be read') }
 
     $proof = Read-CiProvenance -Lines $lines -Repository ([string]$repo.Repository) -Sha $head -FailureEndedUtc $failureEnd
-    if ($null -eq $proof) { return (New-CiRefusal 'CI provenance is missing, stale, mismatched, or its actual execution predates the failure') }
+    if ($null -eq $proof) { return (New-CiRefusal 'CI provenance absent/stale/mismatched or execution predates failure') }
 
     return [pscustomobject]@{ Cleared = $true; Sha = $head; Reason = 'CI is green for this exact commit' }
 }

@@ -45,7 +45,7 @@ function Resolve-FailedRunVerdict {
     if (-not $AllowCiRecovery) {
         return [pscustomobject]@{ Blocking = $true; Lines = @(
             'TEST COMPLETION CHECK: failed historical runId=' + [string](Get-Field $Doc 'runId') + '; commandFingerprint=' + [string](Get-Field $Doc 'commandFingerprint') + '; endedUtc=' + [string](Get-Field $Doc 'endedUtc') + '; failedField=' + $NoCiRecoveryReason + '. Exit code=' + $exitCode + '.',
-            'Recovery: inspect this exact failed command and preserve its receipt. Only verified same-complete-command recovery or an explicit audited equivalent-scope incident association is supported. Unrelated green CI does not repair unavailable identity or prove this historical local-only scope passed.') }
+            'Retain receipt; SAME COMPLETE argv/audited equivalent scope ONLY. Unrelated CI!=identity/scope repair.') }
     }
     $ci = Test-CiClearedFailure -ProjectRoot $ProjectRoot -FailureEndedUtc (ConvertTo-UtcStamp (Get-Field $Doc 'endedUtc'))
     if ($ci.Cleared) {
@@ -53,27 +53,26 @@ function Resolve-FailedRunVerdict {
         $short = $ci.Sha; if ($short.Length -gt 7) { $short = $short.Substring(0, 7) }
         return [pscustomobject]@{
             Blocking = $false
-            Lines    = @('TEST COMPLETION CHECK: a guarded test run for this project FAILED (exit code ' + $exitCode +
-                '), but every CI check for commit ' + $short + ' - the exact commit this clean tree is on - passed after that failure ended. ' +
-                'That is the heavy pass, so it is not run again here. Re-run locally only if you need evidence CI cannot give you.')
+            Lines    = @('TEST COMPLETION CHECK: guarded failure exit=' + $exitCode +
+                '; all CI checks passed later for clean exact HEAD ' + $short +
+                '. No heavy duplicate; local only for evidence CI cannot provide.')
         }
     }
 
     return [pscustomobject]@{
         Blocking = $true
         Lines    = @(
-            'TEST COMPLETION CHECK: the latest guarded test run for this project FAILED (exit code ' + $exitCode + '). The work is not verifiably complete.',
-            $(if ($LastProgress -ne '') { 'Last recorded progress: ' + $LastProgress } else { 'The result document records no final progress line.' }),
-            'Recovery: fix root cause; same-command scripts\Run-Tests-Guarded.ps1 overall=ok or eligible exact-SHA CI below. Do not weaken, skip, or delete tests or ignore exits; unresolved is not passed.',
+            'TEST COMPLETION CHECK: latest guarded run FAILED, exit=' + $exitCode + '; incomplete.',
+            $(if ($LastProgress -ne '') { 'Last recorded progress: ' + $LastProgress } else { 'No final progress recorded.' }),
+            'Fix; SAME-command scripts\Run-Tests-Guarded.ps1 overall=ok or eligible newer clean-HEAD exact-SHA CI. Never weaken tests/exits; unresolved!=pass.',
             # Pushing the repair and letting CI go green on that exact commit clears
             # this too, on a clean tree - which is the cheaper route when CI already
             # runs the suite. Stated because the alternative was an eleven-minute
             # duplicate local run that the sibling guard had already refused.
-            'A green CI result for the exact commit HEAD is on also clears this, provided the tree is clean and the result is newer than the failure. Here: ' + $ci.Reason + '.',
+            'CI eligibility: ' + $ci.Reason + '.',
             # The supersede matches the COMMAND, not the tree state, so the edit that
             # fixed the failure does not disqualify the green run proving it. The escape
             # hatch is for when a re-run cannot reproduce the identity at all.
-            'Re-running the SAME command green supersedes this automatically, even though your fix changed the working tree. Only if the command itself had to change, or the old receipt carries no command identity, associate the newer clean receipt explicitly: pwsh -NoProfile -File "' + $HookPath + '" -ResolveIncident ' + $key + ' -RecoveryRunId "<verified recovery run id>" -ProjectRoot "' + $ProjectRoot + '" -Reason "<substantive equivalent test scope and verified repair, at least 80 UTF-8 bytes>".',
-            'Note: the supersede matches the WHOLE argument vector, so a run covering three suites does not supersede a one-suite failure.')
+            'SAME WHOLE argv green survives edits; three suites!=one. Changed/missing identity: pwsh -NoProfile -File "' + $HookPath + '" -ResolveIncident ' + $key + ' -RecoveryRunId "<verified recovery run id>" -ProjectRoot "' + $ProjectRoot + '" -Reason "<equivalent scope/verified repair, >=80 UTF-8 bytes>".')
     }
 }

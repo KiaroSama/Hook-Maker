@@ -27,14 +27,14 @@ function Assert-HistoricalDispositionReceipt {
         [string](Get-Field $Doc 'commandFingerprint')-cnotmatch'^[a-f0-9]{32}$'-or[string](Get-Field $Doc 'overall')-cne'failed'-or
         -not[int]::TryParse([string](Get-Field $Doc 'exitCode'),[ref]$exitCode)-or$exitCode-eq0-or
         (Get-Field $Doc 'terminated')-ne$false-or$null-eq$leaks-or$leaks.Value-isnot[array]-or$leaks.Value.Count-ne0-or
-        $null-eq$start-or$null-eq$end-or$end-lt$start-or$end-gt[DateTime]::UtcNow.AddHours(-24)){throw 'Only a fully identified, ended, noncurrent historical failure without termination or leaks can be disposed.'}
+        $null-eq$start-or$null-eq$end-or$end-lt$start-or$end-gt[DateTime]::UtcNow.AddHours(-24)){throw 'Disposition: identified ended noncurrent failure only; no termination/leaks.'}
 }
 
 function Read-DispositionDocument {
     param([string]$Path)
     $full=[IO.Path]::GetFullPath($Path)
     $item=Get-Item -LiteralPath $full -Force -ErrorAction Stop
-    if($item.PSIsContainer-or$item.Length-gt65536){throw 'Disposition documents must be regular files of at most 64 KiB.'}
+    if($item.PSIsContainer-or$item.Length-gt65536){throw 'Disposition: regular file <=64 KiB required.'}
     if(($item.Attributes-band[IO.FileAttributes]::ReparsePoint)-ne0){throw 'Linked disposition evidence is refused.'}
     $part=$item.Directory
     while($null-ne$part){if(($part.Attributes-band[IO.FileAttributes]::ReparsePoint)-ne0){throw 'Linked disposition evidence is refused.'};$part=$part.Parent}
@@ -57,7 +57,7 @@ function Read-DispositionRequest {
         [string](Get-Field $d 'receiptSha256')-cnotmatch'^[a-f0-9]{64}$'-or[string](Get-Field $d 'evidenceSha256')-cnotmatch'^[a-f0-9]{64}$'-or
         [string](Get-Field $d 'disposition')-cnotin@('obsolete','cancelled')-or
         [Text.Encoding]::UTF8.GetByteCount(([string](Get-Field $d 'reason')).Trim())-lt80-or
-        $null-eq$created-or$created-gt[DateTime]::UtcNow){throw 'Disposition request has missing or invalid exact identity, reason or timestamp.'}
+        $null-eq$created-or$created-gt[DateTime]::UtcNow){throw 'Disposition: invalid/missing exact identity/reason/time.'}
     $evidence=Read-DispositionDocument ([string](Get-Field $d 'evidencePath'));$e=$evidence.Doc
     $at=ConvertTo-UtcTime (Get-Field $e 'occurredUtc')
     $expected=if($d.disposition-ceq'obsolete'){'retired'}else{'cancelled'}
@@ -130,7 +130,7 @@ function Assert-PersistedDispositions {
     foreach($id in @($script:historicalDispositions.Keys)){
         $matchingEntries=@($Entries|Where-Object{[string](Get-Field $_.Doc 'runId')-ceq$id})
         if($matchingEntries.Count-ne1-or-not(Test-HistoricalDisposition $matchingEntries[0].Doc $matchingEntries[0].Path)){
-            Write-Finding -Blocking $true -Lines @('TEST COMPLETION CHECK: historical disposition no longer validates for runId='+$id+'. Original failure remains unresolved; verify exact receipt, resource evidence and repository identity. No current success was inferred.')
+            Write-Finding -Blocking $true -Lines @('TEST COMPLETION CHECK: historical disposition no longer validates for runId='+$id+'. Failure unresolved; verify receipt/resources/repository identity. No current success.')
         }
     }
 }

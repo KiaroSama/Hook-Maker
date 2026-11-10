@@ -69,7 +69,7 @@ if (-not (Test-Path -LiteralPath $graphPath -PathType Leaf)) {
 
 # ---- optional .env ----
 $config = Read-HookEnv (Join-Path $PSScriptRoot '.env')
-$lifecycleNote = ' Read graphify.md + graphify-markdown.md. Retain healthy rollback until coverage, semantic retention and endpoints pass; shrink/dangling edges fail: preserve/restore recovery. Only after verified success permanently delete exact proven owned obsolete copies, NOT Recycle Bin; retain one active graph + compact receipts. No name globs or unknown/shared/source/fixture/memory/evidence deletion. This hook deletes nothing; names prove no ownership.'
+$lifecycleNote = ' BEFORE update/cleanup: graphify.md/graphify-markdown.md FULL. Loss: restore; retain active/evidence/unknown. Hook deletes nothing.'
 $cooldownMinutes = 60
 if ($config.ContainsKey('COOLDOWN_MINUTES')) {
     $parsedSetting = 0; if ([int]::TryParse([string]$config['COOLDOWN_MINUTES'], [ref]$parsedSetting) -and $parsedSetting -ge 0 -and $parsedSetting -le 10080) { $cooldownMinutes = $parsedSetting }
@@ -100,7 +100,7 @@ if (-not $codeStale -and -not $markdownStale) {
     if ($null -ne $markdown -and $markdown.Partial) {
         New-Item -ItemType Directory -Path $stateDir -Force | Out-Null
         [System.IO.File]::WriteAllText($statePath, [DateTime]::UtcNow.ToString('o'))
-        $null = Write-HookResult -EventName $eventName -Kind 'advisory' -Message ('GRAPH UPDATE CHECK: the Markdown folder scan stopped at its bound (' + $markdown.Files + ' files) before covering the whole project, so whether .ai/, specs/, .specify/ or plans/ changed after the graph was built is UNKNOWN - not clean. If they changed in this task, run: graphify update .' + $lifecycleNote)
+        $null = Write-HookResult -EventName $eventName -Kind 'advisory' -Message ('GRAPH UPDATE CHECK: the Markdown folder scan stopped at its bound (' + $markdown.Files + ' files); .ai/specs/.specify/plans freshness UNKNOWN, not clean. Changed this task? graphify update .' + $lifecycleNote)
     }
     exit 0
 }
@@ -110,9 +110,9 @@ New-Item -ItemType Directory -Path $stateDir -Force | Out-Null
 
 $markdownNote = ''
 if ($markdownStale -and (-not $codeStale -or $markdown.TimeUtc -gt $workTime)) {
-    $markdownNote = 'Markdown the graph covers beyond Git (.ai/, specs/, .specify/, plans/ or a folder of 10+ .md files) changed after the graph was built; Git does not show these edits. Run: graphify update .  (local, no model). If .ai/ changed, re-run the graphify skill''s semantic pass for the changed .ai/ files only - by the agent itself, never an external model backend. '
+    $markdownNote = 'Covered Markdown changed beyond Git: graphify update . (local); .ai/: host-agent semantic only, no external model. '
 }
-$reason = 'GRAPH UPDATE CHECK: graphify-out/graph.json predates project changes. ' + $markdownNote + 'Judge STRUCTURAL impact, not file count: symbols/exports/imports/calls/inheritance/entries/dependencies matter even in one file. Prose/comments/formatting/literal/config/generated/test changes matter only if represented. Relevant -> graphify update . (AST-only, no API cost); otherwise explain briefly. Advisory only; cooldown prevents repeats.'
+$reason = 'GRAPH UPDATE CHECK: graphify-out/graph.json predates changes. ' + $markdownNote + 'Graphed/structural impact: graphify update . (local AST); else explain. Advisory/cooldown.'
 $reason += $lifecycleNote
 # The existing cooldown suppresses unchanged advisories; no continuation claim.
 $emit = Write-HookResult -EventName $eventName -Kind 'advisory' -Message $reason

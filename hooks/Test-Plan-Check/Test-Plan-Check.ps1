@@ -393,23 +393,23 @@ foreach ($file in $testFiles) {
         elseif ($line -match '(?i)\b(?:time\.)?sleep\(\s*(\d+)') { $seconds = [int]$Matches[1] }
         elseif ($line -match '(?i)^\s*sleep\s+(\d+)\b') { $seconds = [int]$Matches[1] }
         if ($maxBlindSleepSeconds -gt 0 -and $seconds -ge $maxBlindSleepSeconds) {
-            [void]$findings.Add($where + ' - blind sleep of ' + $seconds + 's in a test file (>= the ' + $maxBlindSleepSeconds + 's blind-wait ceiling). Wait on a deterministic signal or bounded polling instead.')
+            [void]$findings.Add($where + ': blind sleep ' + $seconds + 's >= ' + $maxBlindSleepSeconds + 's ceiling; use signal/bounded polling.')
         }
 
         # 2. an explicitly unbounded wait
         if ($line -match '(?i)WaitForExit\(\s*\)') {
-            [void]$findings.Add($where + ' - WaitForExit() with no timeout: an unbounded wait on a child process.')
+            [void]$findings.Add($where + ': WaitForExit() unbounded; add timeout.')
         }
 
         # 3. an unbounded polling loop (only when the file shows no bound at all)
         if (-not $hasBound -and ($line -match '(?i)while\s*\(\s*\$?true\s*\)' -or $line -match '(?i)^\s*while\s+True\s*:')) {
-            [void]$findings.Add($where + ' - polling loop with no timeout/deadline/elapsed bound anywhere in the file.')
+            [void]$findings.Add($where + ': poll loop; no file timeout/deadline/elapsed bound.')
         }
 
         # 4. a child process started with no visible bound (once per file)
         if (-not $hasBound -and -not $reportedNoBound -and
             ($line -match '(?i)\bStart-Process\b' -or $line -match '(?i)\bsubprocess\.(run|Popen|call)\b' -or $line -match '(?i)\bchild_process\b')) {
-            [void]$findings.Add($where + ' - starts a child process with no wall/idle bound in the file; the suite can hang without an owner.')
+            [void]$findings.Add($where + ': child without file wall/idle bound; ownerless hang risk.')
             $reportedNoBound = $true
         }
 
@@ -422,14 +422,14 @@ foreach ($file in $testFiles) {
 # cause string naming the REAL reason(s), reused by the advisory NOTE below, so it
 # never assumes a cause it did not actually hit (mirrors Large-File-Check).
 $causes = New-Object System.Collections.Generic.List[string]
-if ($rootReparse) { [void]$causes.Add('the scan root is a junction/symlink and was not followed') }
-if ($fileLimitReached) { [void]$causes.Add('a candidate-file ceiling of ' + $maxFiles + ' files was reached') }
-if ($dirLimitReached) { [void]$causes.Add('a directory ceiling of ' + $maxDirs + ' directories was reached') }
-if ($timeLimitReached) { [void]$causes.Add('a scan time limit of ' + $maxSeconds + ' seconds was reached') }
-if ($findingsLimitReached) { [void]$causes.Add('a findings ceiling of ' + $maxFindings + ' was reached') }
-if ($scanIncomplete) { [void]$causes.Add('one or more files or directories could not be read') }
-if ($oversizedFiles -gt 0) { [void]$causes.Add($oversizedFiles.ToString() + ' file(s) exceeded the per-file size limit of ' + ($maxFileBytes / 1KB) + ' KB') }
-if ($unparsedFiles -gt 0) { [void]$causes.Add($unparsedFiles.ToString() + ' PowerShell file(s) could not be parsed') }
+if ($rootReparse) { [void]$causes.Add('root junction/symlink not followed') }
+if ($fileLimitReached) { [void]$causes.Add('candidate-file ceiling ' + $maxFiles + ' reached') }
+if ($dirLimitReached) { [void]$causes.Add('directory ceiling ' + $maxDirs + ' reached') }
+if ($timeLimitReached) { [void]$causes.Add('scan time limit ' + $maxSeconds + 's reached') }
+if ($findingsLimitReached) { [void]$causes.Add('findings ceiling ' + $maxFindings + ' reached') }
+if ($scanIncomplete) { [void]$causes.Add('files/directories could not be read') }
+if ($oversizedFiles -gt 0) { [void]$causes.Add($oversizedFiles.ToString() + ' files exceed ' + ($maxFileBytes / 1KB) + ' KB/file') }
+if ($unparsedFiles -gt 0) { [void]$causes.Add($unparsedFiles.ToString() + ' PowerShell files unparsed') }
 $partialScan = $causes.Count -gt 0
 $partialCause = $causes -join ' and '
 
@@ -485,19 +485,8 @@ catch { }
 
 # ---- the advisory ------------------------------------------------------------
 $lines = New-Object System.Collections.Generic.List[string]
-[void]$lines.Add('TEST PLAN CHECK - test-health policy for this task. Advisory only: this hook never runs a test and never edits a file. The policy is global-test-rules.md; it loads on demand, so read it in full before this work.')
-[void]$lines.Add('- Give every test run a bounded WALL timeout AND an idle/no-progress timeout. A run with no bound is a defect, not a slow test.')
-[void]$lines.Add('- No long blind sleeps. Wait on a deterministic signal, a readiness check, or bounded polling - never a fixed multi-second delay.')
-[void]$lines.Add('- One shared worker ceiling for explicit/auto counts, sized to cores/free memory/children/other work with OS/cleanup headroom. No nested oversubscription or needless serialization; map HOOKMAKER_MAX_TEST_WORKERS to supported framework controls.')
-[void]$lines.Add('- Terminate the whole owned process tree and clean temp/state in finally. A leaked worker, port, lock or temp directory is a failed run.')
-[void]$lines.Add('- Discover suites instead of hardcoding a list, and keep every suite on disk mapped to a CI bucket.')
-[void]$lines.Add('- High CPU alone never means hung. A kill needs a wall/idle/memory bound, or sustained resource use WITH no progress.')
-[void]$lines.Add('- When optimising a suite, record before/after timing - "feels faster" is not evidence.')
-[void]$lines.Add('- Cadence: writing -> LIGHT type/lint/compile/import/exact-path smoke or one seam; ALL edits finished -> one HEAVY suite/matrix/integration pass. Collect/fix ALL failures together, rerun whole pass. No suite per file.')
-[void]$lines.Add('- Optimization before any run, including checks/benchmarks/guarded evidence: cheapest valid tier, one level/behavior, parameterized variants/shared setup, light imports, no blind sleeps, correct CI bucket. Optimize new/changed/unreviewed existing tests; preserve validity. Record suite/date/before-after timing in .ai/TESTING_NOTES.md; reuse unchanged reviewed work.')
-[void]$lines.Add('- No orphaned test process: OWNED, BOUNDED, WATCHED, SWEPT. Detached only with recorded PID/start time + bounded reaper. Wall/idle expiry or interrupted wait -> kill/verify whole owned tree, never success. No turn end with owned runs alive. After subagent/final: sweep task runners/workers/browsers/servers; Windows PID+start, exclude own shell/other projects; report survivors and cleanup.')
-[void]$lines.Add('- CI first (private repos too): one manual final exact-SHA batch after ALL edits; push starts no run by design. Add missing suite mapping; never duplicate CI locally. Local: next-edit-dependent light check, local-only requirement, or live-proven billing/quota/runner/workflow/no-repo block recorded in .ai/TESTING_NOTES.md; queue/privacy is not fallback.')
-[void]$lines.Add('- Windows commands: pwsh7; 5.1 only documented compatibility need. Shared Rust: verify G:\Program Files\Rust, CARGO_HOME/RUSTUP_HOME/version/target; no project compiler duplicate. Advice installs nothing or changes PATH/env. Owner: global-environment-rules.md.')
+[void]$lines.Add('TEST PLAN CHECK (advisory): BEFORE EVERY run, global-test-rules.md/global-environment-rules.md FULL.')
+[void]$lines.Add('Hook runs/edits/installs nothing. CI/light/local exceptions: full owner above.')
 if ($deepDebug) {
     # E-03: the standalone ::deep-debug codeword was detected in the prompt.
     # These are PLAN requirements the workflow's test plan must cover - reject
@@ -505,22 +494,16 @@ if ($deepDebug) {
     # stays with Utf8-Encoding-Check: this hook checks the plan and visible test
     # commands, it never runs a second repository encoding scanner.
     [void]$lines.Add('')
-    [void]$lines.Add('::deep-debug detected - additional test-health requirements this plan must cover (advisory; reject/advise a plan that omits an applicable one):')
-    [void]$lines.Add('- Every confirmed behavior defect gets a PERSISTENT regression test or maintained fixture, and the original failing path plus the important failure/edge paths are re-run.')
-    [void]$lines.Add('- Bound per-test, per-suite, whole-command, idle/no-progress and CI-job time; use the tool''s DOCUMENTED native timeout where supported (never a guessed flag) plus the outer guarded-runner limit.')
-    [void]$lines.Add('- No blind sleeps, unbounded polling, interactive waits, unbounded process joins, or hidden retries; ONE shared resource-aware worker ceiling governs explicit and auto-detected counts.')
-    [void]$lines.Add('- Terminate owned child processes and clean temporary resources; property tests only where a REAL invariant exists; a security-tool finding needs confirmation before code changes.')
-    [void]$lines.Add('- Ponytail simplifications get TARGETED tests only - never a second broad debug/audit loop.')
-    [void]$lines.Add('- Every newly created/modified test, fixture, snapshot, golden file, expected output, generated text and test config is UTF-8 unless a documented technical exception applies (Utf8-Encoding-Check validates the files; this hook does not rescan them), and every new Test-*.ps1 is permanently mapped to CI.')
+    [void]$lines.Add('::deep-debug plan: BEFORE work WORKFLOWS.md Deep Debug FULL. EVERY Test-*.ps1 -> CI.')
 }
 if ($findings.Count -gt 0) {
     [void]$lines.Add('')
-    [void]$lines.Add('Observed in this project right now (each line is a real file:line - open it and confirm before changing anything):')
+    [void]$lines.Add('Observed file:line; source-confirm before edits:')
     foreach ($finding in $findings) { [void]$lines.Add('- ' + $finding) }
 }
 if ($partialScan) {
     [void]$lines.Add('')
-    [void]$lines.Add('NOTE: this scan was PARTIAL - ' + $partialCause + ' before the whole repository was covered. Treat the findings above as a sample, not a complete audit.')
+    [void]$lines.Add('NOTE: this scan was PARTIAL - ' + $partialCause + '; sample only, not complete audit.')
 }
 if ($configWarnings.Count -gt 0) {
     [void]$lines.Add('')
@@ -563,12 +546,12 @@ try {
     }
     if ($suitesWithBaseline -gt 0) {
         [void]$lines.Add('')
-        [void]$lines.Add('- A prior test-timing baseline exists for ' + $suitesWithBaseline + ' recorded command(s) here (local Hook-Maker state). Test-Completion-Check flags a run only when it is materially slower than that robust median at the same worker ceiling - treat an unexplained jump as a regression to investigate, not a new normal to accept.')
+        [void]$lines.Add('- Local timing baselines: ' + $suitesWithBaseline + ' commands. Compare robust median/same workers; inspect material unexplained slowdown, never normalize.')
     }
 }
 catch { }
 [void]$lines.Add('')
-[void]$lines.Add('Silent from here until this project''s test state changes or ' + $cooldownMinutes + ' minutes pass.')
+[void]$lines.Add('Silent until project test state changes or ' + $cooldownMinutes + 'min.')
 $message = ($lines.ToArray() -join "`n")
 
 exit (Write-HookResult -EventName $eventName -Kind 'advisory' -Message $message).ExitCode

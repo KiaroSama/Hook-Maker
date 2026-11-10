@@ -752,11 +752,11 @@ function Get-StopFinalizationClause {
         }
     }
     if ($published) {
-        return ('FINALIZATION: a DONE / REMAINING wrap-up was already published for this task. This is a CORRECTION turn - ' +
-            'resolve what this block names and stop. Do NOT write a second wrap-up: one per task is the whole rule, and ' +
-            'repeating it is what makes the real one unreadable. If the correction changes what the published wrap-up ' +
-            'claimed, say only that, in one line.')
+        return ('FINALIZATION: DONE / REMAINING already published; CORRECTION only. ' +
+            'Resolve named issue, stop; no second wrap-up. ' +
+            'Changed published claim? ' +
+            'Correct in one line only.')
     }
-    return ('FINALIZATION: do not write the DONE / REMAINING wrap-up in this correction turn. It belongs in the message ' +
-        'after which nothing blocks - so satisfy the remaining gates first, then write it exactly once, last.')
+    return ('FINALIZATION: no DONE / REMAINING in correction. ' +
+        'Clear remaining gates, then exactly one wrap-up, last.')
 }

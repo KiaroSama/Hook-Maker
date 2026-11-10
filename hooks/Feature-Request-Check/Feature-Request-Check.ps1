@@ -52,13 +52,9 @@ $config = Read-HookEnv (Join-Path $PSScriptRoot '.env')
 # workflow the rules put them on. Speckit-Check names that route; this hook
 # stays on the interview, which is the part a transcript can actually prove.
 $chainNote = @(
-    'FEATURE REQUEST CHECK - this prompt reads as a feature request, so run the chain instead of coding straight from it:',
-    '1. Call the Skill tool twice: "grilling" (interrogate the request until the real requirement is known) and "domain-modeling".',
-    '2. If docs/agents/issue-tracker.md is missing, run the setup procedure for those skills first.',
-    '3. Then Spec Kit, in order: speckit-specify, speckit-clarify, speckit-plan, speckit-tasks, speckit-analyze, speckit-implement.',
-    '4. Inside speckit-implement: tdd at the agreed seams, then code-review, then commit.',
-    'Mid-task request delta: dated requirement IDs + acceptance criteria; amend active spec/plan/tasks (independent scope -> own feature), refresh skills/gates before dependent edits. Preserve original request order and stable IDs; resume earliest actionable unfinished work, record dependency exceptions, reconcile all at closure. Other project: exact permission or English Markdown owner handoff; never implicit source/staging/runner/provider repair. Read global-project-lifecycle-rules.md.',
-    'Every question any step raises goes to the user - never a plausible default. Only the work that depends on the answer waits; independent work continues.'
+    'FEATURE REQUEST CHECK: grilling+domain-modeling BEFORE code; resolve unknowns.',
+    'BEFORE feature/delta/setup: global-spec-kit-rules.md/global-skill-routing.md FULL. Only dependents wait.',
+    'Other-project work: exact consent or English lifecycle handoff.'
 ) -join "`n"
 
 # ---- UserPromptSubmit: advise, once per prompt -------------------------------
@@ -156,7 +152,7 @@ $missingNames = ($missing.ToArray() -join ' and ')
 
 $blockMessage = @(
     ('FEATURE REQUEST CHECK: first match "' + $firstPrompt + '"; no Skill call to ' + $missingNames + ' found in the complete transcript.'),
-    'Advisory: run it now IN ORDER: grilling + domain-modeling, then Spec Kit in order: speckit-specify, clarify, plan, tasks, analyze, implement (exact installed keys).',
+    'BEFORE feature work: global-spec-kit-rules.md FULL; grilling+domain-modeling first.',
     'Or explain why this was not a feature. No forced continuation.'
 ) -join "`n"
 

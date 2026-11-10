@@ -132,7 +132,7 @@ Write-ObservedRecord -Copy $fixture.Copy -Root $fixture.Root -RunId 'current-unf
 $historical = Invoke-ExplicitRecovery -Fixture $fixture
 Check 'historical recovery: later product edits do not invalidate the historical association' ($historical.Exit -eq 0 -and (Get-ResolvedCount (Get-CompletionStateDoc -Copy $fixture.Copy -Root $fixture.Root)) -eq 1) ($historical.Out + $historical.Err)
 $currentBlocked = Fire -Copy $fixture.Copy -Cwd $fixture.Root -SessionId 'independent-current'
-Check 'historical recovery: unfinished current-state work still blocks independently' ($currentBlocked.Out -match '"decision":"block"' -and (Get-BlockReason $currentBlocked.Out) -match 'CURRENT project state') $currentBlocked.Out
+Check 'historical recovery: unfinished current-state work still blocks independently' ($currentBlocked.Out -match '"decision":"block"' -and (Get-BlockReason $currentBlocked.Out) -match 'CURRENT needs same scope') $currentBlocked.Out
 
 # A real concurrent writer loads the old ledger and waits on an event. Recovery
 # finishes first; that stale writer must merge the association before persisting.

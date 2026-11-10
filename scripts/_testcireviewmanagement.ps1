@@ -6,6 +6,8 @@ function Invoke-CiReviewManagementRegression {
     . (Join-Path $ToolRoot 'scripts/_installlib.ps1')
     . (Join-Path $ToolRoot 'scripts/_installplan.ps1')
     . (Join-Path $ToolRoot 'scripts/_ciworkloadreview.ps1')
+    . (Join-Path $ToolRoot 'scripts/_testcireviewdiagnostics.ps1')
+    Invoke-CiReviewDiagnosticRegression $ToolRoot
     . (Join-Path $ToolRoot 'hooks/Ci-Status-Check/_cireviewed.ps1')
     . (Join-Path $ToolRoot 'hooks/Ci-Status-Check/_cienrollment.ps1')
     $repo=Join-Path $Work 'review-management';[void][IO.Directory]::CreateDirectory($repo)

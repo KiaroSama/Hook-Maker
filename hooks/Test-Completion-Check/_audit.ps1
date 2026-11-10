@@ -20,7 +20,7 @@ function Get-AuditEvidenceFiles {
 function Export-CompletionEvidenceAudit {
     param([string]$Path, $State)
     $destination = [IO.Path]::GetFullPath($Path)
-    if ([IO.File]::Exists($destination)) { throw 'Audit destination already exists; choose a new local path. No existing file was overwritten.' }
+    if ([IO.File]::Exists($destination)) { throw 'Audit path exists; choose new local file. Original untouched.' }
     if (-not [IO.Directory]::Exists((Split-Path -Parent $destination))) { throw 'Audit destination directory must already exist.' }
     $results = New-Object 'Collections.Generic.List[object]'
     $observations = New-Object 'Collections.Generic.List[object]'
@@ -32,7 +32,7 @@ function Export-CompletionEvidenceAudit {
     $malformedActive = $false
     $files = @(Get-AuditEvidenceFiles)
     foreach ($file in $files) {
-        if (($file.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 -or $file.Length -gt 1048576) { throw 'Audit requires regular evidence files no larger than 1 MiB; incomplete coverage cannot be exported as complete.' }
+        if (($file.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 -or $file.Length -gt 1048576) { throw 'Audit: regular files <=1 MiB required; partial != complete.' }
         # Parse and digest the SAME bytes. Hashing after parsing could certify a
         # replacement receipt while the classification still described old bytes.
         $bytes = [IO.File]::ReadAllBytes($file.FullName)
@@ -97,12 +97,12 @@ function Export-CompletionEvidenceAudit {
         })
     }
     foreach ($snapshot in $snapshots) {
-        if ((Get-AuditBytesHash ([IO.File]::ReadAllBytes($snapshot.path))) -cne $snapshot.sha256) { throw 'Evidence changed concurrently; audit aborted without modifying originals. Retry after the producer finishes.' }
+        if ((Get-AuditBytesHash ([IO.File]::ReadAllBytes($snapshot.path))) -cne $snapshot.sha256) { throw 'Evidence changed; audit aborted, originals untouched. Wait for producer.' }
     }
-    if ((@(Get-AuditEvidenceFiles | ForEach-Object { $_.FullName }) -join '|') -cne (@($files | ForEach-Object { $_.FullName }) -join '|')) { throw 'Evidence file set changed concurrently; audit aborted. Retry after the producer finishes.' }
+    if ((@(Get-AuditEvidenceFiles | ForEach-Object { $_.FullName }) -join '|') -cne (@($files | ForEach-Object { $_.FullName }) -join '|')) { throw 'Evidence set changed; audit aborted. Wait for producer, retry.' }
     $report = [pscustomobject][ordered]@{ schema = 1; auditedUtc = [DateTime]::UtcNow.ToString('o'); projectKey = $State.ProjectKey; repositoryState = $State.State; repositoryStateFingerprint = $State.RepositoryStateFingerprint; gateWaived = $false; originals = $snapshots.ToArray(); observations = $rows.ToArray() }
     $bytes = [Text.Encoding]::UTF8.GetBytes(($report | ConvertTo-Json -Depth 8))
     $stream = [IO.File]::Open($destination, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
     try { $stream.Write($bytes, 0, $bytes.Length); $stream.Flush() } finally { $stream.Dispose() }
-    [Console]::Out.WriteLine('Read-only evidence audit exported. Original hashes retained; UNKNOWN keeps the gate. No SUCCESS or incident resolution was recorded.')
+    [Console]::Out.WriteLine('Audit exported; originals hashed/retained. UNKNOWN still gates; no SUCCESS/resolution.')
 }

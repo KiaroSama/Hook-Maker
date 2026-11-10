@@ -14,25 +14,25 @@
     $extSha1 = Get-HeadSha $ext1
 
     $r = FireExternalBlocker -Cwd $ext1 -Classification 'test-failure-not-really-external' -Reason 'ci is red, ci is red, ci is red'
-    Check 'unknown classification is rejected (no bypass via free text)' ($r.Exit -eq 1 -and $r.Err -match 'requires -Classification') $r.Err
+    Check 'unknown classification is rejected (no bypass via free text)' ($r.Exit -eq 1 -and $r.Err -match '-Classification=') $r.Err
     $r = FireExternalBlocker -Cwd $ext1 -Classification 'github-outage' -Reason ''
-    Check 'empty reason is rejected (bounded minimum-evidence rule)' ($r.Exit -eq 1 -and $r.Err -match 'requires -Reason') $r.Err
+    Check 'empty reason is rejected (bounded minimum-evidence rule)' ($r.Exit -eq 1 -and $r.Err -match '-Reason requires') $r.Err
     $r = FireExternalBlocker -Cwd $ext1 -Classification 'github-outage' -Reason 'too short'
-    Check 'a too-short reason is rejected (below the minimum-evidence length)' ($r.Exit -eq 1 -and $r.Err -match 'requires -Reason') $r.Err
+    Check 'a too-short reason is rejected (below the minimum-evidence length)' ($r.Exit -eq 1 -and $r.Err -match '-Reason requires') $r.Err
     $r = FireExternalBlocker -Cwd $ext1 -Classification 'other-external' -Reason 'weird one-off issue'
-    Check '"other-external" requires a stronger (longer) reason than the named categories' ($r.Exit -eq 1 -and $r.Err -match 'stronger justification') $r.Err
+    Check '"other-external" requires a stronger (longer) reason than the named categories' ($r.Exit -eq 1 -and $r.Err -match 'other-external: stronger evidence') $r.Err
     $r = FireExternalBlocker -Cwd $plainDir -Classification 'github-outage' -Reason 'github.com is down according to the status page'
-    Check 'cannot record an exception outside a resolvable pushed GitHub commit' ($r.Exit -eq 1 -and $r.Err -match 'not a resolvable, pushed commit') $r.Err
+    Check 'cannot record an exception outside a resolvable pushed GitHub commit' ($r.Exit -eq 1 -and $r.Err -match 'pushed GitHub HEAD unresolved') $r.Err
 
     # No CI access at all -> recording is refused (never blind/unverified).
     Set-Mock -AuthExit 1
     $r = FireExternalBlocker -Cwd $ext1 -Classification 'github-outage' -Reason 'GitHub Actions status page reports a full outage'
-    Check 'cannot record without querying CI (gh unauthenticated)' ($r.Exit -eq 1 -and $r.Err -match 'could not query GitHub Actions') $r.Err
+    Check 'cannot record without querying CI (gh unauthenticated)' ($r.Exit -eq 1 -and $r.Err -match 'gh/auth/API query unavailable') $r.Err
 
     # CI already green for this exact commit -> nothing to excuse.
     Set-Mock -RunJson '[{"databaseId":79,"name":"CI","workflowName":"CI","status":"completed","conclusion":"success"}]' -ExpectedSha $extSha1
     $r = FireExternalBlocker -Cwd $ext1 -Classification 'github-outage' -Reason 'GitHub Actions status page reports a full outage'
-    Check 'cannot record when CI for this commit is already green' ($r.Exit -eq 1 -and $r.Err -match 'already fully green') $r.Err
+    Check 'cannot record when CI for this commit is already green' ($r.Exit -eq 1 -and $r.Err -match 'exact-commit CI already green') $r.Err
 
     # Normal failure still blocks BEFORE any exception is recorded, and a
     # genuine COMPLETED failure can never be excused as external - not even
@@ -41,13 +41,13 @@
     $r = Fire -HookPath $CiHook -Cwd $ext1 -EventName 'Stop'
     Check 'failed CI still blocks completion before any exception exists' ($r.Out -match '"decision":"block"' -and $r.Out -match 'FAILED') $r.Out
     $r = FireExternalBlocker -Cwd $ext1 -Classification 'other-external' -Reason 'the build step failed so lets just call it external instead'
-    Check 'a genuine completed failure cannot be reported as external, regardless of classification' ($r.Exit -eq 1 -and $r.Err -match 'genuine COMPLETED failure') $r.Err
+    Check 'a genuine completed failure cannot be reported as external, regardless of classification' ($r.Exit -eq 1 -and $r.Err -match 'COMPLETED failure') $r.Err
 
     # An infra-consistent state (cancelled - not a completed code/test
     # failure) IS eligible, and recording captures that exact state.
     Set-Mock -RunJson '[{"databaseId":81,"attempt":1,"name":"CI","workflowName":"CI","status":"completed","conclusion":"cancelled","updatedAt":"2026-07-16T10:00:00Z"}]' -ExpectedSha $extSha1
     $r = FireExternalBlocker -Cwd $ext1 -Classification 'github-outage' -Reason 'GitHub Actions status page reports a full outage'
-    Check 'recording an evidenced external blocker succeeds for an infra-consistent CI state' ($r.Exit -eq 0 -and $r.Out -match 'EXTERNAL CI blocker' -and $r.Out -match 'does NOT mark CI verified') $r.Out
+    Check 'recording an evidenced external blocker succeeds for an infra-consistent CI state' ($r.Exit -eq 0 -and $r.Out -match 'EXTERNAL CI blocker' -and $r.Out -match 'NOT verified/green') $r.Out
     # Item 5: completion allowed, but Stop surfaces a NON-BLOCKING "CI not green"
     # notice. The shape is systemMessage for both clients: on Claude a Stop
     # additionalContext re-invokes the model, and Codex Stop documents only the
@@ -60,14 +60,12 @@
     Check 'Claude: the context denies success and instructs not to claim CI passed' ($r.Out -match 'CI NOT VERIFIED GREEN' -and $r.Out -match 'Report the blocker, never CI success') $r.Out
     # F14: a confirmed blocker is the ONE case the rules let the heavy pass run
     # locally, so the notice says what to do next instead of only naming the blocker.
-    Check 'Claude: the notice states the CI-First local fallback and its conditions' (
-        $r.Out -match 'CI cannot execute this run' -and
+    Check 'Claude: the notice states the evidenced CI blocker and final-tree guarded fallback' (
         $r.Out -match 'Recorded EXTERNAL CI blocker permits completion' -and
-        $r.Out -match 'once through the guarded runner on the final tree') $r.Out
-    Check 'Claude: the notice requires the blocker recorded as a re-verified observation' (
-        $r.Out -match 'Record blocker command/evidence/time' -and
-        $r.Out -match 'dated observation; re-verify next task, not standing permission' -and
-        $r.Out -match 'CI unavailable and why') $r.Out
+        $r.Out -match 'CI blocked: final-tree guarded pass') $r.Out
+    Check 'Claude: the notice requires dated command/evidence and per-task re-verification' (
+        $r.Out -match 'dated command/evidence .ai/TESTING_NOTES.md' -and
+        $r.Out -match 'Reverify each task; no standing waiver') $r.Out
 
     # Codex: same message text, but through the officially supported common
     # systemMessage field - no hookSpecificOutput/additionalContext (undocumented
@@ -80,8 +78,8 @@
     Check 'Codex: the notice explicitly says CI is NOT verified green' ($rCodex.Out -match 'CI NOT VERIFIED GREEN' -and $rCodex.Out -match 'never CI success') $rCodex.Out
     Check 'Codex: the notice names repo, short sha, classification and sanitized reason' ($rCodex.Out -match 'testowner/testrepo-ext1' -and $rCodex.Out -match ($extSha1.Substring(0, 7)) -and $rCodex.Out -match 'github-outage' -and $rCodex.Out -match 'status page reports a full outage') $rCodex.Out
     Check 'both client shapes carry the identical notice text' (
-        ($r.Out -replace '.*CI NOT VERIFIED GREEN', 'CI NOT VERIFIED GREEN' -replace '"\}\}$', '') -match 'external CI blocker' -and
-        ($rCodex.Out -replace '.*CI NOT VERIFIED GREEN', 'CI NOT VERIFIED GREEN' -replace '"\}$', '') -match 'external CI blocker'
+        ($r.Out -replace '.*CI NOT VERIFIED GREEN', 'CI NOT VERIFIED GREEN' -replace '"\}\}$', '') -match 'EXTERNAL CI blocker' -and
+        ($rCodex.Out -replace '.*CI NOT VERIFIED GREEN', 'CI NOT VERIFIED GREEN' -replace '"\}$', '') -match 'EXTERNAL CI blocker'
     ) ($r.Out + ' || ' + $rCodex.Out)
     Check 'neither client output exposes secret-like data (no tokens/paths/logs)' (
         $r.Out -notmatch '(?i)(ghp_|gho_|password|secret=|Bearer )' -and $rCodex.Out -notmatch '(?i)(ghp_|gho_|password|secret=|Bearer )'
@@ -112,7 +110,7 @@
     # (NO external wording).
     Set-Mock -RunJson '[{"databaseId":81,"attempt":1,"name":"CI","workflowName":"CI","status":"completed","conclusion":"success"},{"databaseId":70,"attempt":1,"name":"Lint","workflowName":"Lint","status":"completed","conclusion":"success"}]' -ExpectedSha $extSha1
     $r = Fire -HookPath $recheckHook -Cwd $ext1 -EventName 'Stop'
-    Check 'CI turning green on recheck retires the exception and verifies normally (no external wording)' ($r.Out -notmatch 'CI NOT VERIFIED GREEN' -and [string]::IsNullOrWhiteSpace([string]$r.Out)) ([string]$r.Out)
+    Check 'CI turning green on recheck retires the exception and verifies normally (no external wording)' ($r.Out -notmatch 'CI NOT VERIFIED GREEN|"decision"' -and $r.Out -match 'Suite/case reports \+ commit/check UI UNVERIFIED') ([string]$r.Out)
     $r2 = Fire -HookPath $CiHook -Cwd $ext1 -EventName 'Stop'
     Check 'the commit now stays verified on a normal follow-up check too' ([string]::IsNullOrWhiteSpace([string]$r2.Out)) ([string]$r2.Out)
 

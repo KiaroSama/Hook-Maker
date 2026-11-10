@@ -58,14 +58,14 @@
     $reason = Get-BlockReason $r.Out
     Check 'a clean re-run does NOT clear the owed note - it still blocks' ($r.Out -match '"decision":"block"') $r.Out
     Check 'the outstanding item is identified as the durable .ai/ note' (
-        $reason -match 'durable \.ai/ note is still owed' -and $reason -match 'idleTimeout') $reason
+        $reason -match '\.ai/ note owed' -and $reason -match 'idleTimeout') $reason
     Check 'the note requirement names the four candidate files' (
-        $reason -match 'BUGS\.md' -and $reason -match 'TESTING_NOTES\.md' -and $reason -match 'COMMANDS\.md' -and $reason -match 'LESSON\.md') $reason
+        $reason -match '\.ai/\{BUGS,TESTING_NOTES,COMMANDS,LESSON\}\.md') $reason
     Add-AiNote -Root $p -Text 'done'
     $r = Fire -Copy $c -Cwd $p
     Check 'the word "done" leaves the durable-note obligation pending without repeating output' (
         $r.Exit -eq 0 -and $r.Out -eq '' -and (Get-PendingCount (Get-CompletionStateDoc -Copy $c -Root $p)) -eq 1) $r.Out
-    Check 'the original block says a bare acknowledgement will not clear it' ($reason -match 'bare acknowledgement') $reason
+    Check 'the original block says a bare acknowledgement will not clear it' ($reason -match 'untagged/bare/done/n-a/fixed != clear') $reason
     # An UNTAGGED real note (long enough to clear the byte floor) still does NOT
     # satisfy it - the incident's own tag is required.
     Add-AiNote -Root $p -Text ('Idle-timeout hang in the integration suite: the runner reported no output for 300s. ' +

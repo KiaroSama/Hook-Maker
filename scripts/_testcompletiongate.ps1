@@ -129,11 +129,11 @@
     Check 'the block names the termination reason exactly' ($reason -match 'wallTimeout') $reason
     Check 'the block carries the runner detail, not a generic phrase' ($reason -match 'exceeded the 1800s wall ceiling') $reason
     Check 'the recovery instruction names the guarded runner explicitly' ($reason -match 'Run-Tests-Guarded\.ps1') $reason
-    Check 'raising the ceiling to hide it is explicitly refused' ($reason -match 'do not simply raise the ceiling') $reason
+    Check 'raising the ceiling to hide it is explicitly refused' ($reason -match 'cause, not ceilings') $reason
     Check 'it never claims a broader test scope passed' (
-        $reason -match 'cannot confirm any broader test scope passed' -and $reason -notmatch 'all tests passed[^"]*$') $reason
+        $reason -match 'one project guarded run only, not broader test success' -and $reason -notmatch 'all tests passed[^"]*$') $reason
     Check 'the durable .ai/ note is demanded with the reason it exists' (
-        $reason -match '\.ai/' -and $reason -match 'WHY this was not detected earlier' -and $reason -match 'prevention/recovery guard') $reason
+        $reason -match '\.ai/' -and $reason -match 'missed detection' -and $reason -match 'verified prevention\+recovery') $reason
 
     $c = New-IsolatedHookCopy
     $p = New-GitRepo 'Idle'
@@ -163,8 +163,8 @@
     $r = Fire -Copy $c -Cwd $p
     $reason = Get-BlockReason $r.Out
     Check 'a current overall=failed result blocks completion' ($r.Out -match '"decision":"block"' -and $reason -match 'FAILED') $reason
-    Check 'the real exit code is surfaced' ($reason -match 'exit code 3') $reason
-    Check 'weakening or skipping tests to go green is explicitly refused' ($reason -match 'Do not weaken, skip, or delete tests') $reason
+    Check 'the real exit code is surfaced' ($reason -match 'FAILED, exit=3') $reason
+    Check 'weakening or skipping tests to go green is explicitly refused' ($reason -match 'Never weaken tests/exits; unresolved!=pass') $reason
 
     # =====================================================================
     Write-Host '--- STALE evidence is not proof of a run ---' -ForegroundColor Cyan
@@ -176,8 +176,8 @@
     $reason = Get-BlockReason $r.Out
     Check 'a STALE ok result does not silently allow completion for an observed run' (
         $r.Exit -eq 0 -and $r.Out -ne '' -and $r.Out -match '"decision":"block"') $r.Out
-    Check 'the staleness is stated as the reason, with the window' ($reason -match 'STALE' -and $reason -match '180 minutes') $reason
-    Check 'the stale path never claims a run happened' ($reason -match 'Completion cannot be claimed on evidence that does not exist') $reason
+    Check 'the staleness is stated as the reason, with the window' ($reason -match 'STALE' -and $reason -match '180min') $reason
+    Check 'the stale path never claims a run happened' ($reason -match 'Missing/different run/argv/state!=pass; prove scope') $reason
 
     # REGRESSION: ConvertFrom-Json rehydrates an ISO-8601 string into a
     # Kind=Utc [DateTime]; casting that to [string] drops the zone marker, so a
@@ -326,9 +326,9 @@
     $r = Fire -Copy $c -Cwd $p
     $reason = Get-BlockReason $r.Out
     Check 'an observed run with NO result document does not claim success' ($r.Out -match '"decision":"block"') $r.Out
-    Check 'it says plainly that no result document exists' ($reason -match 'no guarded result document exists') $reason
+    Check 'it says plainly that no result document exists' ($reason -match 'exact observation lacks guarded result') $reason
     Check 'an unguarded run is called out as unowned and unbounded' ($reason -match 'UNGUARDED') $reason
-    Check 'it forbids the "all tests passed" claim explicitly' ($reason -match 'never that "all tests passed"') $reason
+    Check 'it forbids the "all tests passed" claim explicitly' ($reason -match 'Missing/different run/argv/state!=pass; prove scope') $reason
 
     $c = New-IsolatedHookCopy
     $p = New-GitRepo 'ObservedOtherState'
@@ -507,7 +507,7 @@
     Check 'a recycled pid with no result blocks as OWNERLESS, never as a live run' (
         $r.Out -match '"decision":"block"' -and $reason -match 'OWNERLESS' -and $reason -notmatch 'STILL ACTIVE') $reason
     Check 'the block says WHY the pid proves nothing, naming the missing identity' (
-        $reason -match 'no parseable owner start time') $reason
+        $reason -match 'Owner start missing/invalid') $reason
 
     # A genuinely live, FULLY PINNED owner still blocks - the strict identity
     # rule must not have cost the case the gate exists for.
@@ -544,7 +544,7 @@
     Check 'the evidence names the dead owner process' ($reason -match ('owner process ' + $goner.Id + ' is gone')) $reason
     Check 'it states the result is unknown AND unrecoverable, not merely pending' (
         $reason -match 'UNKNOWN AND UNRECOVERABLE') $reason
-    Check 'it refuses to let the run be read as a pass' ($reason -match 'Do not treat it as a pass') $reason
+    Check 'it refuses to let the run be read as a pass' ($reason -match 'later runs!=original pass') $reason
     Check 'the recovery names the guarded runner' ($reason -match 'Run-Tests-Guarded\.ps1') $reason
     Check 'the recovery names the exact record to delete if the work was abandoned' (
         $reason -match [regex]::Escape((Get-RunStateFile -Copy $c -Root $p -Kind 'active'))) $reason
@@ -625,9 +625,9 @@
     Check 'a 3h-old record expires under a configured 1h horizon' (
         -not (Test-Path -LiteralPath (Get-RunStateFile -Copy $c -Root $p -Kind 'active' -RunId $rExp))) $reason
     Check 'the expiry is surfaced on an output the hook was already emitting' (
-        $reason -match 'Also reconciled' -and $reason -match [regex]::Escape($rExp)) $reason
+        $reason -match 'Earlier-session reconciliation' -and $reason -match [regex]::Escape($rExp)) $reason
     Check 'and it is stated as NOT a block and not part of this task' (
-        $reason -match 'not a block, and not part of this task') $reason
+        $reason -match 'not this task/block') $reason
 
     # An out-of-range horizon is reported and the default applied - a malformed
     # setting can neither widen nor silence the gate.
@@ -638,6 +638,6 @@
     $r = Fire -Copy $c -Cwd $p
     $reason = Get-BlockReason $r.Out
     Check 'an invalid horizon is reported in plain text' (
-        $reason -match 'TEST_COMPLETION_ACTIVE_MARKER_MAX_HOURS is not an integer in 1\.\.168') $reason
+        $reason -match 'TEST_COMPLETION_ACTIVE_MARKER_MAX_HOURS: integer1\.\.168 required; default12') $reason
     Check 'and the documented default still governs (11h is inside 12h -> still blocks)' (
         $r.Out -match '"decision":"block"' -and $reason -match 'OWNERLESS') $reason

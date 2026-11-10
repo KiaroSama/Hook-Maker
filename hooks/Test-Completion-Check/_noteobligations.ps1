@@ -124,7 +124,7 @@ function Get-UnknownNoteDiagnostic {
     $script:noteDiagnosticFingerprint = $fingerprint
     $shown = @($unknown | Select-Object -First 5)
     return @('TEST COMPLETION CHECK (diagnostic): ' + $unknown.Count + ' legacy note record(s) have UNKNOWN origin or cause: ' + ($shown -join ', ') +
-        $(if ($unknown.Count -gt 5) { ' (first five shown)' } else { '' }) + '. Preserved, not resolved. No invented lesson or acknowledgement is required. Correlate the original project/command/outcome/receipt before selective repair.')
+        $(if ($unknown.Count -gt 5) { ' (first five shown)' } else { '' }) + '. Preserved/unresolved; no invented lesson/ack. Correlate original project/command/outcome/receipt before repair.')
 }
 
 function Write-UnknownNoteDiagnostic {

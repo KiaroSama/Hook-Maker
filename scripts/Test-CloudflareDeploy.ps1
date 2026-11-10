@@ -181,6 +181,9 @@ function Fire {
 }
 
 try {
+    . (Join-Path $PSScriptRoot '_testcloudflareack.ps1')
+    Invoke-CloudflareAcknowledgmentRegression (Split-Path -Parent $PSScriptRoot) $Work
+    Invoke-CloudflareAcknowledgmentCliRegression $Hook $Work
     . (Join-Path $PSScriptRoot '_testcloudflarereadiness.ps1')
     # =====================================================================
     Write-Host '--- non-Workers projects stay silent ---' -ForegroundColor Cyan
@@ -194,25 +197,21 @@ try {
     $cf = New-ReadyWorkersRepo 'CfProj'
     $r = Fire -Cwd $cf
     Check 'a ready Workers project receives a Stop reminder' ($r.Out -match '"decision":"block"' -and $r.Out -match 'CLOUDFLARE DEPLOY CHECK') $r.Out
-    Check 'the message explicitly says deployment is not automatic' ($r.Out -match 'Deployment is NOT automatic just because this config exists') $r.Out
+    Check 'the message explicitly says deployment is not automatic' ($r.Out -match 'Config != deploy') $r.Out
     Check 'partial/experimental/docs-only work is explicitly allowed to finish without deploying' (
-        $r.Out -match 'documentation-only, an experiment, or the release commit is not known - finish now WITHOUT deploying') $r.Out
+        $r.Out -match 'Partial/docs/experiment/unknown SHA: explain, NO deploy') $r.Out
     Check 'environment selection is required and production is not silently assumed' (
-        $r.Out -match 'never silently default to production') $r.Out
-    Check 'pre-deploy checks include tests/build and the exact release state' (
-        $r.Out -match 'tests/typecheck/lint/build pass' -and $r.Out -match 'exact release commit is known') $r.Out
-    Check 'disposable test cache/temp residue must not be part of the release' ($r.Out -match 'disposable test cache/temp residue') $r.Out
-    Check 'CI-green is considered when the repo uses CI' ($r.Out -match 'CI for that commit is green if this repo uses CI') $r.Out
-    Check 'bindings/migrations are considered conditionally, not unconditionally' (
-        $r.Out -match 'only where relevant to this diff' -and $r.Out -match 'D1 databases and migrations') $r.Out
-    Check 'post-deploy smoke/health verification is required' (
-        $r.Out -match 'Post-deployment verification is REQUIRED' -and $r.Out -match 'smoke-test the public/staging URL') $r.Out
-    Check 'command success alone is not described as sufficient proof' (
-        $r.Out -match 'do not claim deployment succeeded solely because the command exited 0') $r.Out
-    Check 'failure is reported accurately, never hidden, never claimed live' (
-        $r.Out -match 'never hide a failed deployment' -and $r.Out -match 'never claim the task is live if it is not') $r.Out
-    Check 'redeploy-on-failure is not blind/repeated' ($r.Out -match 'do not repeatedly redeploy blindly') $r.Out
-    Check 'no secret values are requested or printed' ($r.Out -match 'Never print secret values')
+        $r.Out -match 'Explicit Wrangler env, NEVER default production') $r.Out
+    # Release/tests/custody/exclusions/target/bindings/migrations detail is indirect
+    # in mandatory lifecycle and selected Cloudflare contracts, not provider proof.
+    Check 'deployment requires complete lifecycle and selected provider contracts before action' (
+        $r.Out -match 'BEFORE deploy: global-project-lifecycle-rules.md \+ selected cloudflare/wrangler contracts FULL' -and
+        $r.Out.Contains(([string](& git -C $cf rev-parse HEAD)).Trim())) $r.Out
+    Check 'CI-green is considered when the repo uses CI' ($r.Out -match 'exact-SHA configured CI green') $r.Out
+    Check 'post-deploy real verification or reviewed no-ship is required' (
+        $r.Out -match 'exact-SHA deployment\+real postchecks or reviewed no-ship' -and $r.Out -match 'Missing=UNVERIFIED') $r.Out
+    Check 'command success alone is not described as live proof' ($r.Out -match 'Exit0!=live proof') $r.Out
+    Check 'redeploy-on-failure is not blind/repeated' ($r.Out -match 'confirmed failures: fix/safe retry') $r.Out
     Check 'the deploy command itself is still suggested' ($r.Out -match 'npx wrangler deploy') $r.Out
 
     # =====================================================================
@@ -633,7 +632,7 @@ try {
     Write-Host '--- Windows PowerShell 5.1 ---' -ForegroundColor Cyan
     $cf3 = New-ReadyWorkersRepo 'CfProjPs5'
     $r4 = Fire -Cwd $cf3 -Exe 'powershell.exe'
-    Check 'Windows PowerShell 5.1 emits the reminder cleanly' ($r4.Exit -eq 0 -and $r4.Out -match 'CLOUDFLARE DEPLOY CHECK' -and $r4.Out -match 'Post-deployment verification is REQUIRED') $r4.Err
+    Check 'Windows PowerShell 5.1 emits the reminder cleanly' ($r4.Exit -eq 0 -and $r4.Out -match 'CLOUDFLARE DEPLOY CHECK' -and $r4.Out -match 'Missing=UNVERIFIED') $r4.Err
 }
 finally {
     if ($KeepArtifacts) {

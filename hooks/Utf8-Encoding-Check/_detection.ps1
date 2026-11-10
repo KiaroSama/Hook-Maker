@@ -140,11 +140,11 @@ function Invoke-Utf8Walk {
     }
 
     $causes = New-Object System.Collections.Generic.List[string]
-    if ($rootReparse) { [void]$causes.Add('the scan root is a junction/symlink and was not followed') }
-    if ($fileLimitReached) { [void]$causes.Add('a file ceiling of ' + $maxFiles + ' classified files was reached') }
-    if ($dirLimitReached) { [void]$causes.Add('a directory ceiling of ' + $maxDirs + ' directories was reached') }
-    if ($timeLimitReached) { [void]$causes.Add('a scan time limit of ' + $maxSeconds + ' seconds was reached') }
-    if ($scanIncomplete) { [void]$causes.Add('one or more files or directories could not be read') }
+    if ($rootReparse) { [void]$causes.Add('root junction/symlink not followed') }
+    if ($fileLimitReached) { [void]$causes.Add('file ceiling ' + $maxFiles + ' reached') }
+    if ($dirLimitReached) { [void]$causes.Add('directory ceiling ' + $maxDirs + ' reached') }
+    if ($timeLimitReached) { [void]$causes.Add('scan time limit ' + $maxSeconds + 's reached') }
+    if ($scanIncomplete) { [void]$causes.Add('unreadable files/directories') }
     return [pscustomobject]@{
         Entries = @($entries.ToArray())
         Partial = ($causes.Count -gt 0)

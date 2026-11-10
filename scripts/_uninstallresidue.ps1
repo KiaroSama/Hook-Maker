@@ -7,7 +7,7 @@ function Get-UninstallStateLeaves {
     $map=@{
         # CI/incident records stay evidence; install-location markers are
         # session-only, never project-owned. Repository cooldowns resolve below.
-        'Ci-Status-Check'=@("CiStatusCheck-Runner-$key.txt")
+        'Ci-Status-Check'=@("CiStatusCheck-Runner-$key.txt","CiStatusCheck-Visibility-$key.claims.json")
         'Dependabot-Check'=@()
         'Install-Location-Check'=@()
         'Test-Completion-Check'=@()
@@ -42,6 +42,18 @@ function Get-UninstallStateLeaves {
     $leaves=New-Object 'Collections.Generic.List[string]'
     if(-not$map.ContainsKey($Name)-and$Name-cne'Rules-Check'){throw 'This hook has no declared complete-removal state contract; use ordinary removal and review external effects.'}
     if($map.ContainsKey($Name)){foreach($leaf in $map[$Name]){$leaves.Add($leaf)}}
+    if($Name-ceq'Cloudflare-Deploy'){
+        $state=Join-Path $env:LOCALAPPDATA 'HookMaker/state'
+        $prefix='CloudflareDeploy-cooldown-'+(Get-RepositoryIdentityHash ((Normalize-Path $Root).ToLowerInvariant()))+'-'
+        if(Test-Path -LiteralPath $state -PathType Container){
+            Assert-UninstallRegularPath $state
+            $entries=@(Get-ChildItem -LiteralPath $state -File -Force -Filter ($prefix+'*.txt') -ErrorAction Stop)
+            if($entries.Count-gt10000){throw 'Deployment cooldown inventory exceeds its inspection bound.'}
+            foreach($entry in $entries){
+                if($entry.Name-cmatch('^'+[regex]::Escape($prefix)+'(?:claude|codex)-(?:[a-f0-9]{40}|[a-f0-9]{64})-[a-f0-9]{64}\.txt$')){$leaves.Add($entry.Name)}
+            }
+        }
+    }
     $safeName=[regex]::Replace($Name,'[^A-Za-z0-9]+','')
     $leaves.Add("StopBlock-$safeName-$key.txt")
     if($Name-eq'Rules-Check'){

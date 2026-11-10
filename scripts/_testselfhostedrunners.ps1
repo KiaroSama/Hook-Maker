@@ -5,7 +5,7 @@
 # that scope with its harness: New-GitRepo, Set-Mock, Get-HeadSha, Fire,
 # $CiHook, Check. The underscore keeps it out of the runner's Test-*.ps1 glob.
 
-    Write-Host '--- self-hosted runners stay manual: facts, and final CI not yet dispatched ---' -ForegroundColor Cyan
+    Write-Host '--- self-hosted runners stay manual: facts, and final dispatch missing ---' -ForegroundColor Cyan
     . (Join-Path (Split-Path -Parent (Split-Path -Parent $CiHook)) '_scope.ps1')
     $wfPush = "on:`n  push:`n    branches: [main]`n  workflow_dispatch:`njobs:`n  test:`n    runs-on: [self-hosted, windows]`n    steps:`n      - run: echo test"
     $wfDispatch = "on:`n  workflow_dispatch:`n    inputs:`n      push:`n        type: boolean`njobs:`n  test:`n    runs-on:`n      - self-hosted`n      - linux`n    steps:`n      - run: echo test"
@@ -23,9 +23,9 @@
     Check 'SH04 a dispatch-only self-hosted repository is manual' (Test-ManualSelfHostedRepo -ProjectRoot $shManual)
     Set-Mock -ExpectedSha (Get-HeadSha $shManual)
     $r = Fire -HookPath $CiHook -Cwd $shManual -EventName 'Stop'
-    Check 'SH05 no run on a manual self-hosted repo -> "final CI not yet dispatched", a block, never green' (
-        $r.Out -match 'final CI not yet dispatched' -and $r.Out -match '"decision":"block"' -and
-        $r.Out -match 'never for a GitHub- or bot-created branch' -and $r.Out -notmatch 'no runs are registered yet') $r.Out
+    Check 'SH05 no run on a manual self-hosted repo -> "final dispatch missing", a block, never green' (
+        $r.Out -match 'final dispatch missing' -and $r.Out -match '"decision":"block"' -and
+        $r.Out -match 'Never GitHub/bot/Dependabot branches' -and $r.Out -notmatch 'no runs are registered yet') $r.Out
 
     $shPushed = New-GitRepo 'selfhosted-push'
     New-Item -ItemType Directory -Path (Join-Path $shPushed '.github\workflows') -Force | Out-Null
@@ -42,4 +42,4 @@
     Set-Mock -ExpectedSha (Get-HeadSha $hostedManual)
     $r = Fire -HookPath $CiHook -Cwd $hostedManual -EventName 'Stop'
     Check 'SH09 missing hosted dispatch is pending, never automatic or green' (
-        $r.Out -match 'final CI not yet dispatched' -and $r.Out -match 'All CI hosts stay manual' -and $r.Out -match '"decision":"block"') $r.Out
+        $r.Out -match 'final dispatch missing' -and $r.Out -match 'Manual only; push!=run' -and $r.Out -match '"decision":"block"') $r.Out

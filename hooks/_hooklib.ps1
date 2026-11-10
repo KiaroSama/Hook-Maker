@@ -263,10 +263,10 @@ function Write-HookResult {
             # UNKNOWN client - exactly the guessing this function exists to
             # prevent - or emit an empty reason.
             if ($clientId -eq 'unknown') {
-                $degradedParts += 'the client is unknown and no output shape is documented for it, so nothing was emitted'
+                $degradedParts += 'client is unknown; no output contract, emitted nothing.'
             }
             elseif ([string]::IsNullOrWhiteSpace($text)) {
-                $degradedParts += ('no ' + $Kind + ' text was supplied, so nothing was emitted')
+                $degradedParts += ('no ' + $Kind + ' text; emitted nothing.')
             }
             else {
                 $decision = $(if ($Kind -eq 'deny') { 'deny' } else { 'allow' })
@@ -301,10 +301,10 @@ function Write-HookResult {
         }
 
         if ($clientId -eq 'unknown') {
-            $degradedParts += 'the client is unknown and no output shape is documented for it, so nothing was emitted'
+            $degradedParts += 'client is unknown; no output contract, emitted nothing.'
         }
         elseif ([string]::IsNullOrWhiteSpace($text)) {
-            $degradedParts += ('no ' + $Kind + ' text was supplied, so nothing was emitted')
+            $degradedParts += ('no ' + $Kind + ' text; emitted nothing.')
         }
         else {
             $effectiveKind = $Kind
@@ -314,7 +314,7 @@ function Write-HookResult {
                 if (-not $blockable) {
                     $effectiveKind = 'advisory'
                     $degradedParts += ($clientId + ' documents no block mechanism on ' + $EventName +
-                        '; downgraded to the strongest available advisory - this is NOT an enforced gate')
+                        '; strongest supported advisory, NOT enforced gate')
                 }
             }
             if ($effectiveKind -eq 'block') {
@@ -802,7 +802,7 @@ function Write-StopBlockResult {
         return [pscustomobject]@{ ExitCode = 0; Emitted = $false; Admission = $admit }
     }
     if (-not $script:StopLedgerReady) {
-        $notice = 'Hook Maker requires its installed Stop library to continue safely. Repair this runtime. Unresolved: ' + $text
+        $notice = 'Stop library missing/unsafe; repair runtime. Unresolved: ' + $text
         [Console]::Out.WriteLine((@{ continue = $false; stopReason = $notice; systemMessage = $notice } | ConvertTo-Json -Compress))
         return [pscustomobject]@{ ExitCode = 0; Emitted = $true; Admission = $admit; Degraded = $true }
     }

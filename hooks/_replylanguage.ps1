@@ -22,7 +22,7 @@
 # State: one tiny file per session under %LOCALAPPDATA%\HookMaker\state, keyed by
 # a hash of the session id. Advisory only - nothing here ever blocks.
 
-$script:ReplyLanguageLine = 'LANGUAGE: the user writes in Persian. Your reply text and progress notes are Persian; tool-call descriptions (command labels), commands, code, comments, file contents and commit messages stay English. Nothing translates your text: the user reads it as written.'
+$script:ReplyLanguageLine = 'LANGUAGE: replies/progress Persian; tool labels, commands, code/comments, files/commits English. Output is untranslated.'
 $script:ReplyLanguageMaxAgeDays = 7
 # Text that reaches UserPromptSubmit without being the user's typing.
 $script:InjectedPromptMarkers = @(

@@ -68,7 +68,7 @@ $run.status='completed';$run.conclusion='success'
 foreach($hostKind in @('primary','framework')){
     $exe=if($hostKind-eq'framework'){'powershell.exe'}else{''}
     $result=Fire -HookPath $reviewHook -Cwd $reviewRepo -EventName Stop -Exe $exe -Extra @{session_id=('reviewed-'+$hostKind)}
-    Check ('reviewed public Stop manual matrix reusable skipped '+$hostKind) ($result.Exit-eq0-and$result.Out-eq''-and$result.Err-eq'') ($result.Out+$result.Err)
+    Check ('reviewed public Stop manual matrix reusable skipped '+$hostKind) ($result.Exit-eq0-and$result.Out-match'Suite/case reports \+ commit/check UI UNVERIFIED'-and$result.Out-notmatch'"decision"'-and$result.Err-eq'') ($result.Out+$result.Err)
 }
 $lines=[IO.File]::ReadAllLines($fixtureState,[Text.Encoding]::UTF8)
 Check 'fresh terminal review replaces actual pending with validated provenance' ($lines[1]-ceq'verified'-and$lines[3]-ceq'ci-green'-and$lines[4]-match'reviewed')
@@ -76,7 +76,7 @@ Check 'fresh terminal review replaces actual pending with validated provenance' 
 $bad=$reviewJson|ConvertFrom-Json;$bad.workflows[0].jobs[4].rationale=''
 [IO.File]::WriteAllText($reviewPath,($bad|ConvertTo-Json -Depth 15 -Compress),$utf8)
 $unknown=Fire -HookPath $reviewHook -Cwd $reviewRepo -EventName Stop -Extra @{session_id='reviewed-unknown'}
-Check 'public Stop malformed review remains unproven not running' ($unknown.Out-match'not proven'-and$unknown.Out-notmatch'awaiting terminal') $unknown.Out
+Check 'public Stop malformed review remains unproven not running' ($unknown.Out-match'UNPROVEN'-and$unknown.Out-notmatch'awaiting terminal') $unknown.Out
 $lines=[IO.File]::ReadAllLines($fixtureState,[Text.Encoding]::UTF8)
 Check 'unknown workload uses distinct unproven state' ($lines[1]-ceq'unproven')
 Check 'malformed review prints selected enrollment recovery' ($unknown.Out-match'Set-CiWorkloadReview'-and$unknown.Out-match'_ci-policy.json')
@@ -86,7 +86,7 @@ try{
     Check 'missing matrix review stays non-green with actionable enrollment' ($missing.Out-match'Set-CiWorkloadReview'-and$missing.Out-notmatch'awaiting terminal|not finished yet') $missing.Out
     [IO.File]::WriteAllText((Join-Path $MockDir 'raw-runs.json'),'{"total_count":0,"workflow_runs":[]}', $utf8)
     $noRuns=Fire -HookPath $reviewHook -Cwd $reviewRepo -EventName Stop -Extra @{session_id='missing-review-no-runs'}
-    Check 'unsupported zero-run source asks for review before dispatch' ($noRuns.Out-match'Set-CiWorkloadReview'-and$noRuns.Out-notmatch'final CI not yet dispatched') $noRuns.Out
+    Check 'unsupported zero-run source asks for review before dispatch' ($noRuns.Out-match'Set-CiWorkloadReview'-and$noRuns.Out-notmatch'final dispatch missing') $noRuns.Out
     if($noRuns.Out-notmatch'Set-CiWorkloadReview'){Write-Output ('Zero-run review fixture: '+$noRuns.Out)}
     [IO.File]::WriteAllText((Join-Path $MockDir 'raw-runs.json'),(@{total_count=1;workflow_runs=@($run)}|ConvertTo-Json -Depth 10 -Compress),$utf8)
 }finally{[IO.File]::Move(($reviewPath+'.fixture'),$reviewPath)}
@@ -94,5 +94,5 @@ try{
 $jobRows[0].steps[0].conclusion='skipped'
 [IO.File]::WriteAllText((Join-Path $MockDir 'raw-jobs.json'),(@{total_count=5;jobs=$jobRows}|ConvertTo-Json -Depth 15 -Compress),$utf8)
 $negative=Fire -HookPath $reviewHook -Cwd $reviewRepo -EventName Stop -Extra @{session_id='reviewed-required-skip'}
-Check 'public Stop skipped required validation never passes' ($negative.Out-match'not proven') $negative.Out
+Check 'public Stop skipped required validation never passes' ($negative.Out-match'UNPROVEN') $negative.Out
 Set-Mock

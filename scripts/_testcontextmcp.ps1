@@ -37,15 +37,15 @@
     $parsed = $null
     try { $parsed = $r.Out | ConvertFrom-Json } catch { }
     Check 'emits a valid hookSpecificOutput on SessionStart' ($null -ne $parsed -and [string]$parsed.hookSpecificOutput.hookEventName -eq 'SessionStart')
-    Check 'mentions MCP USAGE CHECK' ($r.Out -like '*MCP USAGE CHECK*') $r.Out
+    Check 'mentions MCP USAGE CHECK' ($r.Out -like '*MCP:*') $r.Out
     # Budget raised from 600 to 800: the note now also states the CLOSING
     # requirement up front, which is deliberate - the Stop gate must never be the
     # first time the agent hears about the "MCP used:" line. Measured 687 chars;
     # 800 leaves headroom without letting the note grow into a policy dump.
     Check 'note stays short (under 800 chars: 4 lines + the closing requirement)' ($null -ne $parsed -and ([string]$parsed.hookSpecificOutput.additionalContext).Length -lt 800) ([string]$parsed.hookSpecificOutput.additionalContext).Length
-    Check 'SessionStart states the closing "MCP used:" requirement up front' ($r.Out -match 'CLOSING REQUIREMENT' -and $r.Out -match 'MCP used:') $r.Out
+    Check 'SessionStart states the closing "MCP used:" requirement up front' ($r.Out -match 'Close:' -and $r.Out -match 'MCP used:') $r.Out
     $r2 = Fire -HookPath $McpHook -Cwd $plain
-    Check 'fires again next session too (no state file on SessionStart by design)' ($r2.Out -like '*MCP USAGE CHECK*') $r2.Out
+    Check 'fires again next session too (no state file on SessionStart by design)' ($r2.Out -like '*MCP:*') $r2.Out
 
     # =====================================================================
     Write-Host '--- Mcp-Usage-Check: UserPromptSubmit only when the prompt suggests MCP would help ---' -ForegroundColor Cyan
@@ -55,63 +55,65 @@
     $r = Fire -HookPath $McpHook -Cwd $mcpProj -RawStdin (New-PromptStdin -Cwd $mcpProj -EventName 'UserPromptSubmit' -Prompt '' -SessionId 's-empty')
     Check 'an empty prompt stays silent' ($r.Exit -eq 0 -and $r.Out -eq '') $r.Out
     $r = Fire -HookPath $McpHook -Cwd $mcpProj -RawStdin (New-PromptStdin -Cwd $mcpProj -EventName 'UserPromptSubmit' -Prompt 'add the new payments API library and check its docs' -SessionId 's-relevant')
-    Check 'a relevant prompt (library/API/docs) emits the reminder' ($r.Out -like '*MCP USAGE CHECK*') $r.Out
+    Check 'a relevant prompt (library/API/docs) emits the reminder' ($r.Out -like '*MCP:*') $r.Out
     $r2 = Fire -HookPath $McpHook -Cwd $mcpProj -RawStdin (New-PromptStdin -Cwd $mcpProj -EventName 'UserPromptSubmit' -Prompt 'now also update the library docs further' -SessionId 's-relevant')
     # The MCP-relevance note is still once per session; the RESEARCH reminder
     # is per request (order 55 step 5), so a new prompt in the same session
     # carries the research text and nothing else.
     Check 'the SAME session does not repeat the MCP-relevance note on the next relevant prompt' (
-        $r2.Exit -eq 0 -and $r2.Out -notmatch 'MCP USAGE CHECK - this task looks like') $r2.Out
-    Check 'but the next, different request DOES get the research reminder' ($r2.Out -match 'RESEARCH CHECK') $r2.Out
+        $r2.Exit -eq 0 -and $r2.Out -notmatch 'MCP: relevant connected tools may help') $r2.Out
+    Check 'but the next, different request DOES get the research reminder' ($r2.Out -match 'RESEARCH:') $r2.Out
     $r3 = Fire -HookPath $McpHook -Cwd $mcpProj -RawStdin (New-PromptStdin -Cwd $mcpProj -EventName 'UserPromptSubmit' -Prompt 'add another library dependency' -SessionId 's-relevant-2')
-    Check 'a NEW session with a relevant prompt reminds again' ($r3.Out -like '*MCP USAGE CHECK*') $r3.Out
+    Check 'a NEW session with a relevant prompt reminds again' ($r3.Out -like '*MCP:*') $r3.Out
 
     Write-Host '--- Mcp-Usage-Check: research before every task (order 55 step 5) ---' -ForegroundColor Cyan
     $resProj = New-Proj 'McpResearch'
     # No dependency keyword at all: the old keyword gate stayed silent here.
     $r = Fire -HookPath $McpHook -Cwd $resProj -RawStdin (New-PromptStdin -Cwd $resProj -EventName 'UserPromptSubmit' -Prompt 'refactor the login handler to fix the crash' -SessionId 'res-1')
     Check 'research: a plain edit/debug prompt with no dependency keyword gets the fixed research text' (
-        $r.Out -match 'RESEARCH CHECK' -and $r.Out -match 'three passes' -and $r.Out -match '\.ai/RESEARCH/' -and $r.Out -match 'global-research-rules\.md') $r.Out
+        $r.Out -match 'RESEARCH:' -and $r.Out -match 'three GitHub passes' -and $r.Out -match '\.ai/RESEARCH/' -and $r.Out -match 'global-research-rules\.md') $r.Out
     Check 'research: it is advisory context, never a decision' ($r.Out -notmatch '"decision"') $r.Out
     Check 'research: it never claims research happened, and a bare web call or old note is not proof' (
-        $r.Out -match 'cannot see whether research happened' -and $r.Out -match 'not proof') $r.Out
+        $r.Out -match 'Calls/old notes != research' -and $r.Out -match 'Hook proves nothing') $r.Out
     Check 'research: an unreachable source blocks only the dependent work' (
-        $r.Out -match 'blocker for the work that depends on it' -and $r.Out -match 'independent work continues') $r.Out
+        $r.Out -match 'source failure blocks dependents only') $r.Out
     $r = Fire -HookPath $McpHook -Cwd $resProj -RawStdin (New-PromptStdin -Cwd $resProj -EventName 'UserPromptSubmit' -Prompt 'add a retry option to the export command' -SessionId 'res-1')
-    Check 'research: a second, different request in the same session is NOT suppressed' ($r.Out -match 'RESEARCH CHECK') $r.Out
+    Check 'research: a second, different request in the same session is NOT suppressed' ($r.Out -match 'RESEARCH:') $r.Out
     $r = Fire -HookPath $McpHook -Cwd $resProj -RawStdin (New-PromptStdin -Cwd $resProj -EventName 'UserPromptSubmit' -Prompt 'add a retry option to the export command' -SessionId 'res-1')
     Check 'research: the same request repeated is said once' ($r.Exit -eq 0 -and $r.Out -eq '') $r.Out
     $r = Fire -HookPath $McpHook -Cwd $resProj -RawStdin (New-PromptStdin -Cwd $resProj -EventName 'UserPromptSubmit' -Prompt 'what time is it?' -SessionId 'res-2')
     Check 'research: chat that is neither work nor a technical question stays silent' ($r.Exit -eq 0 -and $r.Out -eq '') $r.Out
     $r = Fire -HookPath $McpHook -Cwd $resProj
-    Check 'research: SessionStart points at the rule instead of the old "may have changed" condition' (
-        $r.Out -match 'Research first' -and $r.Out -notmatch 'whose behavior may have changed') $r.Out
+    Check 'research: SessionStart requires full research and MCP owners before work' (
+        $r.Out -match 'BEFORE work global-mcp-rules.md/global-research-rules.md FULL' -and $r.Out -notmatch 'whose behavior may have changed') $r.Out
 
     $operationProject = New-Proj 'McpOperations'
+    # Each conditional process contract is now behind its exact FULL-before-use
+    # owner pointer. This proves routing/authority, not the private owner's content.
     $requests = @(
-        @('Use ScraplingServer to scrape permitted static content','SCRAPLING / EXTRACTION','Finally-close only owned sessions','CAPTCHA/Turnstile'),
-        @('Use Agensi offer preview','AGENSI','confirm:false','unknown outcomes'),
-        @('Use upwork-local create_draft','UPWORK','SAVES A REAL DRAFT','publication is separate'),
-        @('Use Upwork-Agent-mcp draft','UPWORK','historical upwork-local','exact action approval'),
-        @('Use Fiverr-Agent-mcp action_commit','FIVERR','manual_handoff','remote_executed:false'),
-        @('Use REA to inspect an artifact','REA','explicit finite action deadlines','not a sandbox'),
-        @('Use telegram-operator for a backup','TELEGRAM OPERATOR','telegram-backup-restore','no-deletions holds win'),
-        @('Use context-mode to inspect output','CONTEXT-MODE','not an OS/network/filesystem security sandbox','actual host namespace/schema'),
-        @('Use Numera-CHA-Solver-MCP for licensed text','NUMERA CHA','never CAPTCHA bypass','server_verified are independent')
+        @('Use ScraplingServer to scrape permitted static content','SCRAPLING:','BEFORE use global-research-workflows.md Scrapling FULL','skill/schema'),
+        @('Use Agensi offer preview','AGENSI:','BEFORE use global-connected-skill-contracts.md Agensi FULL','Preview may mutate/spend'),
+        @('Use upwork-local create_draft','UPWORK:','BEFORE use global-connected-skill-contracts.md Upwork FULL','Draft persists'),
+        @('Use Upwork-Agent-mcp draft','UPWORK:','BEFORE use global-connected-skill-contracts.md Upwork FULL','UNKNOWN: reconcile, no retry'),
+        @('Use Fiverr-Agent-mcp action_commit','FIVERR:','BEFORE use global-rea-fiverr-contracts.md FULL/schema','fresh human approval, no self-approval'),
+        @('Use REA to inspect an artifact','REA:','BEFORE use global-rea-fiverr-contracts.md FULL','Missing controls BLOCK; reconcile timeout'),
+        @('Use telegram-operator for a backup','TELEGRAM:','BEFORE use global-connected-skill-contracts.md Telegram Operator FULL/job/schema','No deletion'),
+        @('Use context-mode to inspect output','CONTEXT-MODE:','BEFORE use global-mcp-server-contracts.md FULL/schema','Not a sandbox'),
+        @('Use Numera-CHA-Solver-MCP for licensed text','NUMERA CHA:','BEFORE use global-mcp-server-contracts.md FULL','Human!=server_verified; no self-approval')
     )
     foreach ($case in $requests) {
         $r = Fire -HookPath $McpHook -Cwd $operationProject -RawStdin (New-PromptStdin $operationProject 'UserPromptSubmit' $case[0] 'operations')
         $parsed = $null; try { $parsed = $r.Out | ConvertFrom-Json } catch { }
-        Check ('pertinent operation route ' + $case[1]) ($r.Exit -eq 0 -and $r.Err -eq '' -and $null -ne $parsed -and $r.Out.Contains($case[1]) -and $r.Out.Contains($case[2]) -and $r.Out.Contains($case[3]) -and $r.Out -notmatch '"decision"') $r.Out
+        Check ('pertinent operation route ' + $case[1]) ($r.Exit -eq 0 -and $r.Err -eq '' -and $null -ne $parsed -and $r.Out.Contains($case[1]) -and $r.Out.Contains($case[2]) -and $r.Out.Contains($case[3]) -and $r.Out.Contains('Hook grants no actions/spend; UNKNOWN: reconcile, no retry') -and $r.Out -notmatch '"decision"') $r.Out
         $r = Fire -HookPath $McpHook -Cwd $operationProject -RawStdin (New-PromptStdin $operationProject 'UserPromptSubmit' $case[0] 'operations')
         Check ('unchanged operation quiet ' + $case[1]) ($r.Out -eq '') $r.Out
     }
     $r = Fire -HookPath $McpHook -Cwd $operationProject -RawStdin (New-PromptStdin $operationProject 'UserPromptSubmit' '<tool_result>Use Agensi Upwork Scrapling</tool_result>' 'quoted-operations')
-    Check 'provider names inside output never activate operation-specific routing' ($r.Out -notmatch 'AGENSI \(advisory\)|UPWORK \(advisory\)|SCRAPLING / EXTRACTION') $r.Out
+    Check 'provider names inside output never activate operation-specific routing' ($r.Out -notmatch 'AGENSI:|UPWORK:|SCRAPLING:') $r.Out
     $r = Fire -HookPath $McpHook -Cwd $operationProject -RawStdin (New-PromptStdin $operationProject 'UserPromptSubmit' 'Example only: ``Use Upwork create_draft``' 'inline-operations')
-    Check 'double-backtick example never activates provider route' ($r.Out -notmatch 'UPWORK \(advisory\)') $r.Out
+    Check 'double-backtick example never activates provider route' ($r.Out -notmatch 'UPWORK:') $r.Out
     $r = Fire -HookPath $McpHook -Cwd $operationProject -Exe powershell.exe -RawStdin (New-PromptStdin $operationProject 'UserPromptSubmit' 'Use Upwork draft' 'operations51')
-    Check 'operation reminder real PS5.1 yields single valid context JSON' ($r.Exit -eq 0 -and $r.Err -eq '' -and $r.Out -match 'SAVES A REAL DRAFT') $r.Out
+    Check 'operation reminder real PS5.1 yields single valid context JSON' ($r.Exit -eq 0 -and $r.Err -eq '' -and $r.Out -match 'Draft persists') $r.Out
 
     # =====================================================================
     Write-Host '--- Mcp-Usage-Check: Stop gate verifies the "MCP used:" summary line ---' -ForegroundColor Cyan
@@ -126,7 +128,7 @@
     $r = Fire -HookPath $McpHook -Cwd $mcpStop -RawStdin (New-StopStdin -Cwd $mcpStop -Transcript $tMcpNoSum -SessionId 'mcp-b1')
     Check 'default MCP missing line is advisory, not continuation' ($r.Out -match '"systemMessage"' -and $r.Out -notmatch '"decision"|additionalContext') $r.Out
     Check 'the block names the servers it actually observed' ($r.Out -match 'Servers observed in this session: context7') $r.Out
-    Check 'the block names the exact single action that clears it' ($r.Out -match 'TO CLEAR THIS' -and $r.Out -match 'starting exactly with .{0,3}MCP used:') $r.Out
+    Check 'the block names the exact single action that clears it' ($r.Out -match 'Clear: standalone final' -and $r.Out -match 'MCP used:context7' -and $r.Out -match 'actually called/materially used servers ONLY') $r.Out
     # An unchanged failure blocks ONCE per session (global-hook-rules.md: a gate
     # must not loop on the same unchanged state).
     $r2 = Fire -HookPath $McpHook -Cwd $mcpStop -RawStdin (New-StopStdin -Cwd $mcpStop -Transcript $tMcpNoSum -SessionId 'mcp-b1')
@@ -171,13 +173,13 @@
     # session the prompt half recorded as MCP-relevant.
     $mcpUnk = New-Proj 'McpUnknown'
     $r = Fire -HookPath $McpHook -Cwd $mcpUnk -RawStdin (New-PromptStdin -Cwd $mcpUnk -EventName 'UserPromptSubmit' -Prompt 'read the payments API docs' -SessionId 'mcp-u1')
-    Check 'a relevant prompt records the session as MCP-relevant (reminder emitted)' ($r.Out -match 'MCP USAGE CHECK') $r.Out
+    Check 'a relevant prompt records the session as MCP-relevant (reminder emitted)' ($r.Out -match 'MCP:') $r.Out
     $r = Fire -HookPath $McpHook -Cwd $mcpUnk -RawStdin (New-StopStdin -Cwd $mcpUnk -Transcript (Join-Path $Work 'no-such-transcript.jsonl') -SessionId 'mcp-u1')
     Check 'a missing transcript reports UNVERIFIED, never an all-clear and never a block' (
-        $r.Out -match 'could NOT be verified' -and $r.Out -match 'not an all-clear' -and $r.Out -notmatch '"decision"') $r.Out
+        $r.Out -match 'MCP use UNVERIFIED' -and $r.Out -match 'not all-clear' -and $r.Out -notmatch '"decision"') $r.Out
     $r = Fire -HookPath $McpHook -Cwd $mcpUnk -RawStdin (New-StopStdin -Cwd $mcpUnk -Transcript $tNoMcp -SessionId 'mcp-u1')
     Check 'a relevant session that called no MCP tool gets an advisory, not a block' (
-        $r.Out -match 'no connected MCP server tool was called' -and $r.Out -notmatch '"decision"') $r.Out
+        $r.Out -match 'no connected tool called' -and $r.Out -notmatch '"decision"') $r.Out
 
     # =====================================================================
     Write-Host '--- Mcp-Usage-Check: MCP_SUMMARY_ENFORCEMENT downgrades and disables the gate ---' -ForegroundColor Cyan
@@ -200,7 +202,7 @@
     $r = Fire -HookPath $offHook -Cwd $mcpOff -RawStdin (New-StopStdin -Cwd $mcpOff -Transcript $tMcpNoSum -SessionId 'mcp-o1')
     Check 'off mode skips the closing check entirely' ($r.Exit -eq 0 -and $r.Out -eq '') $r.Out
     $r = Fire -HookPath $offHook -Cwd $mcpOff
-    Check 'off mode still runs the pre-task half' ($r.Out -match 'MCP USAGE CHECK') $r.Out
+    Check 'off mode still runs the pre-task half' ($r.Out -match 'MCP:') $r.Out
     $badHook = New-ConfiguredMcpHookCopy 'nonsense-value'
     $mcpBad = New-Proj 'McpBadConfig'
     $r = Fire -HookPath $badHook -Cwd $mcpBad -RawStdin (New-StopStdin -Cwd $mcpBad -Transcript $tMcpNoSum -SessionId 'mcp-x1')
@@ -209,7 +211,7 @@
     # =====================================================================
     Write-Host '--- Mcp-Usage-Check: Windows PowerShell 5.1 host ---' -ForegroundColor Cyan
     $r = Fire -HookPath $McpHook -Cwd $plain -Exe 'powershell.exe'
-    Check '5.1 host: emits cleanly, no crash' ($r.Exit -eq 0 -and $r.Err -eq '' -and $r.Out -like '*MCP USAGE CHECK*') $r.Out
+    Check '5.1 host: emits cleanly, no crash' ($r.Exit -eq 0 -and $r.Err -eq '' -and $r.Out -like '*MCP:*') $r.Out
     $r = Fire -HookPath $McpHook -Cwd $mcpStop -Exe 'powershell.exe' -RawStdin (New-StopStdin -Cwd $mcpStop -Transcript $tMcpNoSum -SessionId 'mcp-51')
     Check '5.1 host: default Stop is advisory without continuation' ($r.Exit -eq 0 -and $r.Err -eq '' -and $r.Out -match '"systemMessage"' -and $r.Out -notmatch '"decision"|additionalContext')
     $blockHook = New-ConfiguredMcpHookCopy 'block'

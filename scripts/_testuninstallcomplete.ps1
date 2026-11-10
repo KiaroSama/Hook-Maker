@@ -117,10 +117,18 @@ try {
     $authKey=Get-ShortHash ($completeProject.ToLowerInvariant()+'|fixture/owned-state')
     $ciLeaves=@(Get-UninstallStateLeaves 'Ci-Status-Check' $completeProject)
     Check 'complete CI inventory retires auth cache without deleting shared CI provenance' ($ciLeaves-contains('CiStatusCheck-Auth-'+$authKey+'.json')-and$ciLeaves-notcontains('CiStatusCheck-'+$authKey+'.txt'))
+    Check 'complete CI inventory retires only project visibility delivery marker' ($ciLeaves-contains("CiStatusCheck-Visibility-$cleanupKey.claims.json")-and$ciLeaves-notcontains('CiStatusCheck-Visibility-foreign.claims.json'))
 }
 finally { Set-Item Function:Get-GitHubRepository -Value $repositoryResolver }
 $stateRoot=Join-Path $FakeLocalAppData 'HookMaker/state'
 [void][IO.Directory]::CreateDirectory($stateRoot)
+$deploymentKey=Get-RepositoryIdentityHash ((Normalize-Path $completeProject).ToLowerInvariant())
+$deploymentLeaf='CloudflareDeploy-cooldown-'+$deploymentKey+'-claude-'+('a'*40)+'-'+('b'*64)+'.txt'
+$foreignDeploymentLeaf='CloudflareDeploy-cooldown-'+('c'*64)+'-claude-'+('a'*40)+'-'+('b'*64)+'.txt'
+$deploymentAck='CloudflareDeploy-ack-'+$deploymentKey+'-claude-'+('a'*40)+'.json'
+foreach($leaf in @($deploymentLeaf,$foreignDeploymentLeaf,$deploymentAck)){Write-Utf8 (Join-Path $stateRoot $leaf) 'preservation-fixture'}
+$deploymentLeaves=@(Get-UninstallStateLeaves 'Cloudflare-Deploy' $completeProject)
+Check 'complete deployment inventory selects only exact project cooldowns, not acknowledgments' ($deploymentLeaves-contains$deploymentLeaf-and$deploymentLeaves-notcontains$foreignDeploymentLeaf-and$deploymentLeaves-notcontains$deploymentAck)
 $ownState=Join-Path $stateRoot ('AiMemoryCheck-'+(Get-ShortHash $completeProject.ToLowerInvariant())+'.txt')
 $foreignState=Join-Path $stateRoot 'AiMemoryCheck-foreign.txt'
 Write-Utf8 $ownState 'owned-marker';Write-Utf8 $foreignState 'foreign-marker'

@@ -389,7 +389,7 @@ if ($fetchIntervalMinutes -gt 0) {
 if ($fetchDue) {
     $fetch = Invoke-Git @('fetch', '--quiet')
     if ($fetch.Ok) { try { New-Item -ItemType Directory -Path $stateDir -Force | Out-Null; [System.IO.File]::WriteAllText($fetchStampPath, [DateTime]::UtcNow.ToString('o')) } catch { } }
-    else { [void]$findings.Add('The remote could not be fetched (offline?); comparison uses the last known remote state.') }
+    else { [void]$findings.Add('Fetch failed; comparing last-known remote state.') }
 }
 
 $status = Invoke-Git @('status', '--porcelain')
@@ -399,7 +399,7 @@ if ($status.Ok) {
     if ($statusLines.Count -gt 0) {
         # E-08 wording: porcelain covers all three dirty categories - name them
         # so the report reads unambiguously as staged AND unstaged AND untracked.
-        [void]$findings.Add('There are ' + $statusLines.Count + ' uncommitted change(s) in the working tree (staged, unstaged, and/or untracked).')
+        [void]$findings.Add([string]$statusLines.Count + ' uncommitted changes (staged/unstaged/untracked).')
     }
 }
 
@@ -429,10 +429,10 @@ if ($upstream.Ok) {
             # E-08 wording: ahead/behind IS a local/remote final-SHA mismatch -
             # say so explicitly for the completion report.
             if ($behind -gt 0) {
-                [void]$findings.Add('Branch ' + $branchName + ' is ' + $behind + ' commit(s) BEHIND ' + $upstreamName + ' (pull needed; the local and remote final SHAs do not match).')
+                [void]$findings.Add('Branch ' + $branchName + ' is ' + $behind + ' commit(s) BEHIND ' + $upstreamName + ' (pull needed; local/remote final SHA mismatch).')
             }
             if ($ahead -gt 0) {
-                [void]$findings.Add('Branch ' + $branchName + ' is ' + $ahead + ' commit(s) AHEAD of ' + $upstreamName + ' (push needed; unpushed commits - the local and remote final SHAs do not match).')
+                [void]$findings.Add('Branch ' + $branchName + ' is ' + $ahead + ' commit(s) AHEAD of ' + $upstreamName + ' (push needed; unpushed commits, local/remote final SHA mismatch).')
             }
         }
     }
@@ -445,7 +445,7 @@ if (-not $isStopEvent) {
     $contextParts = New-Object System.Collections.Generic.List[string]
     if ($findings.Count -gt 0) {
         $message = 'GIT SYNC STATUS (' + $cwd + "):`n- " + ($findings.ToArray() -join "`n- ")
-        $message += "`nConsider this pre-existing sync state before making further changes; this check does not modify the repository."
+        $message += "`nAccount for existing sync state before edits. Hook changes nothing."
         [void]$contextParts.Add($message)
     }
     # EVERY session, clean or not: the owner chose a reminder that always runs
@@ -540,7 +540,7 @@ if ($haveBaseline) {
                 # UNKNOWN on either side (status failed at capture or now, or
                 # a baseline written before the fingerprint field existed):
                 # never claim unchanged, and never hard-block on unknown alone.
-                [void]$advisoryExtra.Add('The uncommitted-change state of pre-existing worktree ' + $wt.Path + ' could not be compared against its pre-task baseline; its dirty-state evidence is ambiguous/UNKNOWN and it cannot be confirmed unchanged (never treated as an all-clear).')
+                [void]$advisoryExtra.Add('The uncommitted-change state of pre-existing worktree ' + $wt.Path + ' baseline comparison unavailable; dirty-state UNKNOWN, unchanged unproved; no all-clear.')
                 continue
             }
             if ($currentDirty -eq $baselineDirty) { continue }   # genuinely unchanged (HEAD AND dirty state) -> advisory context only
@@ -596,7 +596,7 @@ if ($haveBaseline) {
     }
 
     if ($scanIncomplete) {
-        [void]$advisoryExtra.Add('The worktree/branch scan was capped by its limits or time bound; some entries may not have been inspected.')
+        [void]$advisoryExtra.Add('Worktree/branch scan capped: coverage PARTIAL, entries possibly unseen.')
     }
 }
 
@@ -678,10 +678,10 @@ if ($blockingFindings.Count -eq 0) {
     exit 0
 }
 
-$operationalInstruction = "`n`nReconcile task/subagent work before closing. When verified and authorized: stage only task changes, neutral commit, one final push. Clean behind -> inspect then git pull --ff-only; dirty/diverged/conflicted -> inspect, no blind pull/merge. Set upstream only for authorized publication. Preserve unrelated/unverified/secret/protected files; no unapproved force/rewrite. Failed tests, unfinished work, conflicts or permission/auth/protection block -> preserve and report exact unsynchronized state. Owner: global-repository-rules.md."
+$operationalInstruction = "`n`nBEFORE sync: global-repository-rules.md FULL. Preserve unrelated work; blocked: retain/report."
 if ($blockingExtra.Count -gt 0) {
     $destinationWording = if ($destinationBranch -ne '') { $destinationBranch } else { 'the intended destination branch' }
-    $operationalInstruction += "`n`nReconcile every task-created/changed branch and worktree above: incorporate into " + $destinationWording + " when intended; push work meant for sharing. Pushed but unmerged alone is not a blocker. Use 'git worktree remove' only after purpose completion, with no unreconciled/uncommitted work. Force-push/history rewrite needs explicit authorization. Unsafe/impossible reconciliation -> preserve and report exact reason, not resolved."
+    $operationalInstruction += "`n`nReconcile ALL task branches/worktrees into " + $destinationWording + " if intended; push shareable work. Pushed-unmerged!=blocker. Worktree removal: finished/clean/reconciled ONLY; unsafe retain/report."
 }
 $operationalInstruction += "`n`n" + (Get-BranchDispositionInstruction -Disposition (Get-BranchDisposition -RepoPath $cwd -Fallback $destinationBranch -FetchOk ([bool]$fetch.Ok)))
 $operationalInstruction += "`n" + (Get-OpenPullRequestLine -RepoPath $cwd)

@@ -57,8 +57,8 @@ $ErrorActionPreference = 'Stop'
 # because a new topic in the same session must never be silenced by an earlier
 # one. The single exemption is the one the rule makes: a typo or text-only edit.
 $script:ResearchReminder = @(
-    'RESEARCH CHECK - Research first for every task/technical question/new request; only effect-free typo/text edits exempt. Official docs (Context7 -> official site), then GitHub three passes: upstream releases/issues, installed-version usage, maintained references. Save sources + digest in .ai/RESEARCH/ before dependent work. Rule: global-research-rules.md.',
-    '- This hook cannot see whether research happened; a web call/old note is not proof. Unreachable source: record a blocker for the work that depends on it; independent work continues.'
+    'RESEARCH: global-research-rules.md FULL. Each substantive request: live official docs/three GitHub passes -> .ai/RESEARCH/ sources+digest BEFORE dependents.',
+    '- Calls/old notes != research; source failure blocks dependents only. Hook proves nothing.'
 ) -join "`n"
 # ponytail: a keyword test, not a parser - "fix the typo and add a feature" is
 # treated as text-only. Tighten it if that shape is ever seen for real.
@@ -100,7 +100,7 @@ $gatePath = Join-Path $stateDir ('McpUsageCheck-gate-' + $projectKey + '.txt')
 # The exact wording the closing summary must carry. Kept in one place so the
 # instruction, the block message and the detector can never drift apart.
 $requiredLine = 'MCP used: <server names>   (or exactly "MCP used: none - <one-line reason>")'
-$requirement = 'CLOSING REQUIREMENT: "MCP used: <servers actually called this task>"; otherwise "MCP used: none - <one-line reason>". Available is not used.'
+$requirement = 'Close: "MCP used: <actually called servers>" or "MCP used: none - <reason>"; available != used.'
 
 # ---- bounded transcript probe ---------------------------------------------
 # A private copy rather than a shared helper: hooks\_hooklib.ps1 is owned
@@ -157,7 +157,7 @@ function Test-ShouldReport {
     $fingerprint = (Get-HookSuppressionIdentity -HookInput $hookInput) + '|' + $eventName + '|' + $StateToken
     $claim = Invoke-DeliveryClaim -Path ($gatePath + '.claims.json') -Identity (Get-DeliveryIdentity $hookInput) -Fingerprint $fingerprint
     if (-not $claim.Ok) {
-        [Console]::Out.WriteLine((@{ systemMessage = ('Closing reminder reservation is unverified (' + $claim.Reason + '); no approval or completion was recorded.') } | ConvertTo-Json -Compress))
+        [Console]::Out.WriteLine((@{ systemMessage = ('Closing reservation UNVERIFIED: ' + $claim.Reason + '; no approval/completion.') } | ConvertTo-Json -Compress))
     }
     return $claim.Admitted
 }
@@ -165,10 +165,7 @@ function Test-ShouldReport {
 # ---- SessionStart: the policy AND the closing requirement -------------------
 if ($eventName -eq 'SessionStart') {
     $note = @(
-        'MCP USAGE CHECK - before working, consider the connected MCP servers and tools for this task:',
-        '- Research first on every task and technical question: live docs and GitHub, recorded in .ai/RESEARCH/ (the full rule arrives with each request). Rule: global-research-rules.md.',
-        '- Browser automation, database, GitHub, memory and other connectors when they materially help.',
-        '- Use the smallest tool surface that completes and verifies the work; if no MCP fits, proceed without and say so.',
+        'MCP: BEFORE work global-mcp-rules.md/global-research-rules.md FULL. Minimum useful tools; no fit: proceed/explain.',
         $requirement
     ) -join "`n"
     $emit = Write-HookResult -EventName $eventName -Kind 'context' -Message $note
@@ -236,9 +233,7 @@ if ($eventName -eq 'UserPromptSubmit') {
     }
 
     $noteLines = @(
-        'MCP USAGE CHECK - this task looks like connected MCP tools would materially help (library/API/docs, a page or URL, a database, GitHub, a deployment, durable memory).',
-        '- Prefer live docs over recalled versions/APIs; prefer a first-party connector over guessing.',
-        '- Use the smallest tool surface that completes AND verifies the work.',
+        'MCP: BEFORE library/API/docs/URL/DB/GitHub/deploy/memory work, global-mcp-rules.md FULL. Minimum relevant connectors; live docs, not recalled APIs.',
         $requirement
     )
     if ($researchDue) { $noteLines += $script:ResearchReminder }
@@ -280,7 +275,7 @@ if ($null -eq $tail) {
     if (-not $sessionRelevant) { exit 0 }
     if (-not (Test-ShouldReport 'unverified')) { exit 0 }
     $note = @(
-        'MCP USAGE CHECK - the session transcript was not available to this hook, so MCP use could NOT be verified (this is not an all-clear).',
+        'MCP use UNVERIFIED: transcript unavailable, not all-clear.',
         $requirement,
         ('Required line: ' + $requiredLine)
     ) -join "`n"
@@ -329,14 +324,13 @@ if ($usedMcp) {
     $names = (@($servers) | Sort-Object) -join ', '
     if (-not (Test-ShouldReport ('missing|' + $names))) { exit 0 }
     $reason = @(
-        'MCP USAGE CHECK - this session called MCP server tool(s) and the closing summary does not report them.',
+        'MCP calls made; closing server names missing.',
         ('Servers observed in this session: ' + $names + '.'),
         # The example is deliberately kept INLINE and quoted rather than shown on
         # a line of its own: this message lands in the same transcript the next
         # Stop reads, and an example at the start of a line would satisfy the
         # detector - the hook would then clear its own block.
-        ('TO CLEAR THIS: add one line to the final summary, on its own line, starting exactly with "MCP used:" and naming the servers actually used - e.g. "MCP used: ' + $names + '".'),
-        'Name only servers whose tools were really called; drop any of the above that were not material to the result.'
+        ('Clear: standalone final "MCP used:' + $names + '"; actually called/materially used servers ONLY.')
     ) -join "`n"
     if ($enforcement -eq 'advisory') {
         $emit = Write-HookResult -EventName $eventName -Kind 'advisory' -Message $reason
@@ -354,8 +348,8 @@ if ($usedMcp) {
 if (-not $sessionRelevant) { exit 0 }
 if (-not (Test-ShouldReport 'none-used')) { exit 0 }
 $note = @(
-    'MCP USAGE CHECK - this task was flagged MCP-relevant at the prompt, and no connected MCP server tool was called all session.',
-    'If a library/API/version fact, a page, a database, a repository, a deployment or durable memory was involved, that was very likely a missed check - verify it now rather than shipping a recalled answer.',
+    'MCP-relevant task; no connected tool called.',
+    'BEFORE answering: global-mcp-rules.md/global-research-rules.md FULL; verify missed checks.',
     ('Either way the summary must carry the line: ' + $requiredLine)
 ) -join "`n"
 $emit = Write-HookResult -EventName $eventName -Kind 'advisory' -Message $note

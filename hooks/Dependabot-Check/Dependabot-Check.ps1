@@ -131,7 +131,7 @@ if ($limitReason -eq '') {
 }
 
 if ($limitReason -ne '') {
-    Write-ContextIfNew -Fingerprint ('limited:' + $limitReason) -Message ('DEPENDABOT CHECK (' + $repoSlug + '): pending Dependabot work could NOT be verified because ' + $limitReason + '. Do not claim dependency updates were checked; state this limitation if it is relevant to the task.')
+    Write-ContextIfNew -Fingerprint ('limited:' + $limitReason) -Message ('DEPENDABOT CHECK (' + $repoSlug + '): pending Dependabot work could NOT be verified because ' + $limitReason + '. Updates UNVERIFIED; report relevant limit.')
 }
 
 if ($prs.Count -eq 0) {
@@ -240,6 +240,6 @@ else {
 }
 $message = 'DEPENDABOT CHECK (' + $repoSlug + '): ' + $prs.Count + ' pending Dependabot PR(s) from the verified app/dependabot author:' + "`n" +
     (($prLines -join "`n") + $moreNote) + "`n" +
-    $priorityNote + ' Defer unrelated PRs, SECURITY included; act only if requested, directly relevant or reliable critical evidence makes continuing unsafe. Never block unrelated work. Review exact head/diff/manifests/locks/releases/breaks/runtime/permissions/supply-chain/checks. Merge only authorized validated security/patch or low-risk minor; never auto-merge MAJOR/PRERELEASE. Verify resulting base SHA/checks. Owner: global-github-automation-rules.md.'
+    $priorityNote + ' BEFORE action global-github-automation-rules.md Dependabot FULL. Unrelated incl.SECURITY: defer; interrupt only requested/directly relevant/reliably confirmed unsafe. No label-only action/auto MAJOR/PRERELEASE.'
 
 Write-ContextIfNew -Fingerprint (($fingerprintParts | Sort-Object) -join '|') -Message $message

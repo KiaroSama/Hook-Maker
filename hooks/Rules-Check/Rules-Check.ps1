@@ -167,8 +167,8 @@ $stateDir = Join-Path $env:LOCALAPPDATA 'HookMaker\state'
 # The exact wording the closing summary must carry. One definition, shared by
 # the pre-task instruction, the closing block message and the detector, so they
 # cannot drift apart.
-$script:RulesRequiredLine = 'Rules applied: <rule files that governed this task>   (or exactly "Rules applied: none - <one-line reason>")'
-$script:RulesRequirement = 'CLOSING REQUIREMENT: "Rules applied: <files actually read/followed + purpose>"; otherwise "Rules applied: none - <one-line reason>". Report skipped rules honestly.'
+$script:RulesRequiredLine = 'Rules applied: <files + purpose> OR "Rules applied: none - <reason>"'
+$script:RulesRequirement = 'Final standalone "Rules applied: <files + purpose>" or "Rules applied: none - <reason>"; disclose unread.'
 
 # ============================ CLOSING HALF ==================================
 # Stop / SubagentStop: was the rule set actually read and applied, and does the
@@ -237,7 +237,7 @@ function Get-EvidenceTranscriptFallbackPath {
         $fingerprint = (Get-HookSuppressionIdentity -HookInput $hookInput) + '|' + $eventName + '|' + $StateToken
         $claim = Invoke-DeliveryClaim -Path ($gatePath + '.claims.json') -Identity (Get-DeliveryIdentity $hookInput) -Fingerprint $fingerprint
         if (-not $claim.Ok) {
-            [Console]::Out.WriteLine((@{ systemMessage = ('Closing reminder reservation is unverified (' + $claim.Reason + '); no approval or completion was recorded.') } | ConvertTo-Json -Compress))
+            [Console]::Out.WriteLine((@{ systemMessage = ('Closing reservation UNVERIFIED: ' + $claim.Reason + '; no approval/completion.') } | ConvertTo-Json -Compress))
         }
         return $claim.Admitted
     }
@@ -268,7 +268,7 @@ function Get-EvidenceTranscriptFallbackPath {
         # UNKNOWN - no transcript, unreadable, or a client that supplies none.
         if (-not (Test-ShouldReportClosing 'unverified')) { exit 0 }
         $note = @(
-            ('RULES CHECK (' + $Client + ') - the session transcript was not available to this hook, so rule compliance could NOT be verified (this is not an all-clear).'),
+            ('RULES CHECK (' + $Client + '): transcript unavailable; compliance UNVERIFIED, not all-clear.'),
             ('Governing rule files: ' + $ruleMenu + '.'),
             $script:RulesRequirement,
             ('Required line: ' + $script:RulesRequiredLine)
@@ -302,14 +302,13 @@ function Get-EvidenceTranscriptFallbackPath {
     if ($editEvidence) {
         if (-not (Test-ShouldReportClosing 'missing-after-edit')) { exit 0 }
         $reason = @(
-            ('RULES CHECK (' + $Client + ') - this session edited files and the closing summary does not confirm which rules governed the change.'),
+            ('RULES CHECK (' + $Client + '): files edited; final governing rules missing.'),
             ('Governing rule files: ' + $ruleMenu + '.'),
             # The example is deliberately kept INLINE and quoted rather than on a
             # line of its own: this message lands in the same transcript the next
             # Stop reads, and an example at the start of a line would satisfy the
             # detector - the hook would then clear its own block.
-            'TO CLEAR THIS: add one line to the final summary, on its own line, starting exactly with "Rules applied:" and naming the rule files that actually governed this work - e.g. "Rules applied: global-hook-rules.md (hook roles, gate conditions), global-test-rules.md (bounded test runs)".',
-            'If a listed rule was genuinely not read, say so instead of naming it. "Rules applied: none - <one-line reason>" is a valid answer.'
+            $script:RulesRequirement
         ) -join "`n"
         if ($enforcement -eq 'advisory') {
             $emit = Write-HookResult -EventName $eventName -Kind 'advisory' -Message $reason
@@ -356,7 +355,7 @@ if ($eventName -eq 'UserPromptSubmit' -and (Test-ExplicitResearchPrompt ([string
     $note = Get-ResearchWorkflowReminder
     $claim = Invoke-DeliveryClaim -Path (Join-Path $stateDir ('RulesCheck-research-' + $Client + '-' + (Get-ShortHash $cwd.ToLowerInvariant()) + '.claims.json')) -Identity (Get-DeliveryIdentity $hookInput) -Fingerprint (Get-ShortHash (([string](Get-Field $hookInput 'prompt')).Trim() + '|' + $note))
     if ($claim.Admitted) { $researchNote = $note }
-    elseif (-not $claim.Ok) { $researchNote = 'Research reminder reservation is unverified; no research job or approval was recorded.' }
+    elseif (-not $claim.Ok) { $researchNote = 'Research reservation UNVERIFIED; no job/approval recorded.' }
 }
 
 # Nothing configured and nothing remembered -> silent, zero tokens.
@@ -412,7 +411,7 @@ if (-not $rulesMoved -and -not $deepDebug -and $languageNote -eq '' -and $resear
 # Both stay plain text in the note - this hook never executes them.
 if ($Client -eq 'codex') {
     $policyName = 'skill-policy-codex-optimized.md'
-    $ponytailRef = 'the verified installed ponytail-audit capability (via this client''s supported invocation)'
+    $ponytailRef = 'verified installed ponytail-audit (this client''s supported invocation)'
 }
 else {
     $policyName = 'skill-policy.md'
@@ -423,15 +422,15 @@ if ($languageNote -ne '') { [void]$lines.Add($languageNote) }
 if ($researchNote -ne '') { [void]$lines.Add($researchNote) }
 if ($rulesMoved) {
     if ($firstRun) {
-        [void]$lines.Add('RULES CHECK (' + $Client + ') - first check of this project. Before starting the task, use the complete configured registry below to route task-relevant owners; read each applicable owner IN FULL before governed work (on-demand is deferred, not optional):')
+        [void]$lines.Add('RULES CHECK (' + $Client + '): first check; registry -> task owners IN FULL before work. Deferred != optional:')
     }
     else {
-        [void]$lines.Add('RULES CHECK (' + $Client + ') - the configured rules changed since the last check of this project. Read the new/changed files BEFORE starting the task:')
+        [void]$lines.Add('RULES CHECK (' + $Client + '): rules changed; read new/changed files BEFORE work:')
         foreach ($path in $newFiles) { [void]$lines.Add('- NEW: ' + $path) }
         foreach ($path in $changedFiles) { [void]$lines.Add('- CHANGED: ' + $path) }
         foreach ($path in $removedFiles) { [void]$lines.Add('- REMOVED: ' + $path + ' (no longer applies)') }
         if ($currentEntries.Count -gt 0) {
-            [void]$lines.Add('Then apply the complete registry through task-relevant owner routing; filenames alone do not prove a rule was read:')
+            [void]$lines.Add('Route complete registry by task; filenames != read proof:')
         }
     }
     foreach ($set in $ruleSets) {
@@ -447,28 +446,21 @@ if ($rulesMoved) {
     # Canonical routing (E-01): canonical installed names, exactly one skill
     # policy for the detected client, and the strict-UTF-8 text default. These
     # ride the same fingerprint gate, so they never repeat on an unchanged set.
-    [void]$lines.Add('Canonical rule set: custom-instructions.md direct registry; canonical installed filenames, never uploaded/version-suffixed copies. Read applicable owners IN FULL: WORKFLOWS.md, CODEWORDS.md, ai-context-memory-policy.md; global-hook-rules.md, global-test-rules.md, global-github-automation-rules.md, global-mcp-rules.md + global-mcp-server-contracts.md, graphify.md by job. Agent selection -> global-agent-rules.md; capability changes -> exact skill/command/agent/codeword routes, native slash stays native. Already loaded unchanged rules need no reread.')
-    [void]$lines.Add('Scope/queue/release/storage/cleanup -> global-project-lifecycle-rules.md: original request order and stable IDs, earliest actionable unfinished work; other-project changes need exact permission or English Markdown owner handoff. New rule Markdown -> direct registry + global-instruction-maintenance-rules.md completeness.')
-    [void]$lines.Add('Deployment/storage -> local actual-value custody, complete private exports of all stores + isolated restore; never read/expose values for a reminder. Final app -> approved embedded identity AND genuine verified cryptographic signing; missing key/identity/trust blocks publication/activation, never unsigned fallback. Approved initial/later logos packaged before signing, not README-only. UI -> global-ui-rules.md, invoke matching design skill + library research, product-specific design with accessible native/existing primitives. No automatic key/certificate/service/logo action; reminder proves no consent/custody/export/restore/signature/packaged logo/visual quality.')
-    [void]$lines.Add('Skill policy routing: active client = ' + $Client + ' -> load ONLY ' + $policyName + ' as the skill policy; never load the other agent''s skill policy and never both together.')
-    [void]$lines.Add('ENCODING: explicit STRICT UTF-8 for new/modified text; BOM is separate compatibility. Exception requires exact path/scope + encoding + technical reason/forcing consumer + verified compatibility; never locale defaults.')
+    [void]$lines.Add('BEFORE work: installed CLAUDE.md/AGENTS.md registry -> EVERY task owner FULL. Missing owner: report, dependent work waits; native slash intact.')
+    [void]$lines.Add($Client + ': ONLY ' + $policyName + '.')
+    [void]$lines.Add('Strict UTF-8; BOM distinct. Exception: path/scope/encoding/forcing consumer/verified compatibility.')
     # A " (N).md" filename is the browser-download shape of an uploaded copy -
     # canonical rule files never carry it, so flag it instead of trusting it.
     $suffixedNames = @($currentEntries.Keys | ForEach-Object { [System.IO.Path]::GetFileName($_) } | Where-Object { $_ -match '\s\(\d+\)\.md$' } | Sort-Object -Unique)
     if ($suffixedNames.Count -gt 0) {
-        [void]$lines.Add('WARNING - version-suffixed rule filename(s) present (an uploaded copy is NOT canonical; follow the canonical installed name instead): ' + ($suffixedNames -join ', '))
+        [void]$lines.Add('WARNING: version-suffixed copies, NOT canonical; use installed canonical names:' + ($suffixedNames -join ', '))
     }
-    [void]$lines.Add('Rules already loaded in context only need a confirmation, not a re-read. This check stays silent until a rules file changes again.')
     # Stated up front so the closing gate is never a surprise at Stop.
     [void]$lines.Add($script:RulesRequirement)
 }
 if ($deepDebug) {
-    [void]$lines.Add('RULES CHECK (' + $Client + ') - standalone ::deep-debug codeword detected. Workflow bounds (WORKFLOWS.md "Deep Debug Orchestrator" + skill-policy-deep-debug.md + CODEWORDS.md; WORKFLOWS.md and skill-policy-deep-debug.md load on demand, so read it in full before this work):')
-    [void]$lines.Add('- ::deep-debug is a BOUNDED composite workflow: end as DEEP DEBUG: COMPLETE or DEEP DEBUG: BLOCKED - never an endless audit/refactor/fix loop.')
-    [void]$lines.Add('- The ::deep-debug goal is the agent''s own ledger goal: every bug and finding fixed and verified, rejected with evidence, deferred by explicit scope, or blocked with a concrete reason, and every phase done - written as the first task-ledger entries (WORKFLOWS.md Deep Debug Orchestrator, step 1). A goal command is typed only by the user; no rule asks the agent to invoke one.')
-    [void]$lines.Add('- ::multi-agent is a workflow dependency: independent owned workstreams, ONE integration of all results, then final verification on the unified tree - no recursive re-runs, no nested agent trees.')
-    [void]$lines.Add('- Run ' + $ponytailRef + ' exactly ONCE, only after debugging, testing, security/review work, and integrated verification have completed.')
-    [void]$lines.Add('- After Ponytail: only safe accepted simplifications, their targeted regression repair if needed, and final verification - never a new audit/refactor/debug cycle.')
+    [void]$lines.Add('RULES CHECK (' + $Client + '): BEFORE ::deep-debug read WORKFLOWS.md Deep Debug/skill-policy-deep-debug.md/CODEWORDS.md FULL, EVERY bug/phase.')
+    [void]$lines.Add('After proof: ' + $ponytailRef + ' ONCE, safe cuts/targeted checks/final proof only. End DEEP DEBUG: COMPLETE or DEEP DEBUG: BLOCKED.')
 }
 
 # ---- persist state, then report ----

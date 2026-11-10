@@ -290,17 +290,17 @@ $finProj = 'C:\proj\finalize'
 $finFresh = New-StopInput -Session 'FIN' -Continuation $false -Cwd $finProj
 $clauseBefore = Get-StopFinalizationClause -HookInput $finFresh
 Check 'before any wrap-up, the clause says it belongs in the LAST message' (
-    $clauseBefore -match 'after which nothing blocks') $clauseBefore
+    $clauseBefore -match 'Clear remaining gates, then exactly one wrap-up, last') $clauseBefore
 Check 'and it forbids writing one in this correction turn' (
-    $clauseBefore -match 'do not write the DONE / REMAINING wrap-up in this correction turn') $clauseBefore
+    $clauseBefore -match 'no DONE / REMAINING in correction') $clauseBefore
 
 # Now the agent HAS published one - the event carries its own final answer.
 $finPublished = New-StopInput -Session 'FIN' -Continuation $true -Cwd $finProj
 Add-Member -InputObject $finPublished -NotePropertyName 'last_assistant_message' -NotePropertyValue "Fixed it.`nDONE`n- pushed`nREMAINING`n- nothing"
 $clauseAfter = Get-StopFinalizationClause -HookInput $finPublished
 Check 'once published, the clause REFUSES a second wrap-up' (
-    $clauseAfter -match 'Do NOT write a second wrap-up') $clauseAfter
-Check 'and it names this a correction turn' ($clauseAfter -match 'CORRECTION turn') $clauseAfter
+    $clauseAfter -match 'no second wrap-up') $clauseAfter
+Check 'and it names this a correction turn' ($clauseAfter -match 'CORRECTION only') $clauseAfter
 
 # The state is REMEMBERED: a later block in the same task still refuses, even
 # when that later event carries no closing text of its own.
@@ -308,12 +308,12 @@ $null = Set-StopBlockMarker -HookInput $finPublished -HookName 'Gate-A'
 $finLater = New-StopInput -Session 'FIN' -Continuation $true -Cwd $finProj
 $clauseLater = Get-StopFinalizationClause -HookInput $finLater
 Check 'a later gate with no closing text still knows the wrap-up was published' (
-    $clauseLater -match 'Do NOT write a second wrap-up') $clauseLater
+    $clauseLater -match 'no second wrap-up') $clauseLater
 
 # A DIFFERENT task must start clean - the refusal is per task, not per project.
 $finOther = New-StopInput -Session 'FIN-OTHER' -Continuation $false -Cwd $finProj
 Check 'a different task is not held to another task''s published wrap-up' (
-    (Get-StopFinalizationClause -HookInput $finOther) -match 'after which nothing blocks')
+    (Get-StopFinalizationClause -HookInput $finOther) -match 'Clear remaining gates, then exactly one wrap-up, last')
 
 # And the clause actually reaches the user: every gate emits through this path.
 $finEmitProj = 'C:\proj\finalize-emit'

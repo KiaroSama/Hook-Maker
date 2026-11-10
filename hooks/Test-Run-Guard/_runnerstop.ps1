@@ -79,8 +79,8 @@ function Get-RunnerStopReplacement {
 function Get-RunnerStopFinding {
     param([string[]]$Tokens, [string]$ProjectRoot)
     $segments = @(Split-CommandSegments -Tokens @($Tokens))
-    $rule = ' Rule: global-github-automation-rules.md -> Self-Hosted Runners (one runner per project, stopped only by its own identity).'
-    $lead = 'TEST RUN GUARD: this stops CI runners by name or wildcard, which also stops every other project''s runner and the job it is running. '
+    $rule = ' Rule: global-github-automation-rules.md Self-Hosted Runners; exact own identity only.'
+    $lead = 'TEST RUN GUARD: name/wildcard stop also kills other projects'' CI runners/jobs. '
     $slug = Get-RunnerRepositorySlug -ProjectRoot $ProjectRoot
     for ($s = 0; $s -lt $segments.Count; $s++) {
         $segment = @($segments[$s])
@@ -141,7 +141,7 @@ function Get-RunnerStopFinding {
                 $flag = @($rest | Where-Object { $_ -in @('--shutdown', '--terminate', '-t') })
                 if ($flag.Count -gt 0) {
                     return [pscustomobject]@{ Deny = $false; Message = ('TEST RUN GUARD: `wsl ' + $flag[0] +
-                        '` stops every WSL CI runner too, and the job each one is running - another project''s included. If you only meant to stop this project''s runner: ' +
+                        '` also stops other projects'' WSL runners/jobs. Own-project alternative:' +
                         (Get-RunnerStopReplacement -ProjectRoot $ProjectRoot -Wsl $true) + $rule) }
                 }
             }

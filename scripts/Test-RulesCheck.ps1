@@ -121,7 +121,7 @@ try {
         $researchProject = Join-Path $Work 'Research'
         [void][IO.Directory]::CreateDirectory($researchProject)
         $r = Fire -Cwd $researchProject -RawStdin (New-PromptStdin $researchProject '::deep-research compare bounded sources' 'research-red')
-        Check 'explicit research routes through the real prompt event without a grant' ($r.Exit -eq 0 -and $r.Err -eq '' -and $r.Out -match 'global-research-workflows.md' -and $r.Out -match 'claim ledger' -and $r.Out -notmatch '"decision"') $r.Out
+        Check 'explicit research routes through the real prompt event without a grant' ($r.Exit -eq 0 -and $r.Err -eq '' -and $r.Out -match 'global-research-workflows.md' -and $r.Out -match 'citations/claims' -and $r.Out -notmatch '"decision"') $r.Out
         Write-Host ("Passed: $script:Pass  Failed: $script:Fail")
         exit $script:Fail
     }
@@ -148,11 +148,11 @@ try {
         $session = 'research-' + $claude
         $prompt = '::deep-research compare bounded sources'
         $r = Fire -Cwd $researchProject -Claude $claude -RawStdin (New-PromptStdin $researchProject $prompt $session)
-        Check ('research route on client ' + $claude) ($r.Exit -eq 0 -and $r.Err -eq '' -and $r.Out -match 'claim ledger' -and $r.Out -notmatch '"decision"') $r.Out
+        Check ('research route on client ' + $claude) ($r.Exit -eq 0 -and $r.Err -eq '' -and $r.Out -match 'citations/claims' -and $r.Out -notmatch '"decision"') $r.Out
         $r = Fire -Cwd $researchProject -Claude $claude -RawStdin (New-PromptStdin $researchProject $prompt $session)
         Check ('research unchanged repeat quiet ' + $claude) ($r.Out -eq '') $r.Out
         $r = Fire -Cwd $researchProject -Claude $claude -RawStdin (New-PromptStdin $researchProject ($prompt + ' again') $session)
-        Check ('research changed request current ' + $claude) ($r.Out -match 'DEEP RESEARCH ROUTE') $r.Out
+        Check ('research changed request current ' + $claude) ($r.Out -match '::deep-research:') $r.Out
     }
     $r = Fire -Cwd $researchProject -Exe powershell.exe -RawStdin (New-PromptStdin $researchProject '::deep-research sources' 'research51')
     Check 'research real PS5.1 context with clean stderr' ($r.Exit -eq 0 -and $r.Err -eq '' -and $r.Out -match 'global-research-workflows.md') $r.Out
@@ -175,7 +175,7 @@ try {
 
     New-RuleFile $globalClaude 'gamma.md'
     $r = Fire -Cwd $proj1
-    Check 'added file -> NEW reported once' ($r.Out -like '*NEW:*gamma.md*' -and $r.Out -like '*complete registry through task-relevant owner routing*') $r.Out
+    Check 'added file -> NEW reported once' ($r.Out -like '*NEW:*gamma.md*' -and $r.Out -like '*Route complete registry by task*') $r.Out
     $r = Fire -Cwd $proj1
     Check 'after NEW acknowledged -> silent' ($r.Out -eq '') $r.Out
 
@@ -295,52 +295,38 @@ try {
     Write-Host '--- E-01: canonical rule routing + UTF-8 guidance (claude) ---' -ForegroundColor Cyan
     $projE1 = Join-Path $Work 'projE1'; New-Item -ItemType Directory -Path $projE1 -Force | Out-Null
     $r = Fire -Cwd $projE1
-    Check 'first-run note names the canonical rule set by canonical installed names' (
-        $r.Out -like '*custom-instructions.md*' -and $r.Out -like '*WORKFLOWS.md*' -and $r.Out -like '*CODEWORDS.md*' -and
-        $r.Out -like '*ai-context-memory-policy.md*' -and $r.Out -like '*global-hook-rules.md*' -and
-        $r.Out -like '*global-test-rules.md*' -and $r.Out -like '*global-github-automation-rules.md*') $r.Out
-    Check 'conditional owners and current agent/capability routes stay explicit' (
-        $r.Out -like '*Read applicable owners IN FULL*' -and $r.Out -like '*global-mcp-server-contracts.md*' -and
-        $r.Out -like '*graphify.md by job*' -and $r.Out -like '*global-agent-rules.md*' -and
-        $r.Out -like '*native slash stays native*') $r.Out
-    Check 'ordered scope and complete direct registry guidance stay explicit' (
-        $r.Out -match 'original request order and stable IDs' -and $r.Out -match 'earliest actionable unfinished' -and
-        $r.Out -match 'exact permission or English Markdown owner handoff' -and $r.Out -match 'New rule Markdown -> direct registry') $r.Out
-    Check 'custody and signing reminders never authorize value reads or unsigned activation' (
-        $r.Out -match 'local actual-value custody' -and $r.Out -match 'complete private exports of all stores \+ isolated restore' -and
-        $r.Out -match 'approved embedded identity AND genuine verified cryptographic signing' -and
-        $r.Out -match 'missing key/identity/trust blocks publication/activation' -and
-        $r.Out -match 'never read/expose values for a reminder' -and $r.Out -match 'never unsigned fallback') $r.Out
-    Check 'approved packaged logo and actual design skill guidance preserve native primitives and consent' (
-        $r.Out -match 'logos packaged before signing, not README-only' -and
-        $r.Out -match 'invoke matching design skill \+ library research' -and $r.Out -match 'product-specific design with accessible native/existing primitives' -and
-        $r.Out -match 'No automatic key/certificate/service/logo action') $r.Out
-    Check 'claude loads EXACTLY skill-policy.md and never references the codex policy' (
-        $r.Out -match 'load ONLY skill-policy\.md' -and $r.Out -match 'never both together' -and $r.Out -notmatch 'codex') $r.Out
-    Check 'the note warns against uploaded/version-suffixed filenames like "(17)"' (
-        $r.Out -like '*version-suffixed*' -and $r.Out -like '*canonical installed filenames*') $r.Out
-    Check 'UTF-8 guidance: strict default, distrust OS/shell/runtime defaults' (
-        $r.Out -like '*explicit STRICT UTF-8*' -and $r.Out -like '*never locale defaults*') $r.Out
-    Check 'UTF-8 guidance: BOM and no-BOM are both UTF-8; BOM is a separate compatibility decision' (
-        $r.Out -like '*BOM is separate compatibility*') $r.Out
-    Check 'UTF-8 guidance: exception = narrow scope + exact encoding + reason + forcing system + verification' (
-        $r.Out -like '*exact path/scope + encoding + technical reason/forcing consumer + verified compatibility*') $r.Out
+    # Agent/capability/lifecycle/custody/signing/logo/UI details are routed by
+    # the installed client router, never an assumed custom-instructions.md file.
+    # Missing routed owners are an explicit dependent-work blocker, not a waiver.
+    Check 'first-run note requires every task owner through actual client registry' (
+        $r.Out -match 'BEFORE work: installed CLAUDE.md/AGENTS.md registry -> EVERY task owner FULL' -and
+        $r.Out -match 'Deferred != optional') $r.Out
+    Check 'missing owner never waives dependent obligations or changes native slash' (
+        $r.Out -match 'Missing owner: report, dependent work waits' -and
+        $r.Out -match 'native slash intact') $r.Out
+    Check 'claude selects only its own skill policy' (
+        $r.Out -match 'claude: ONLY skill-policy\.md' -and $r.Out -notmatch 'codex') $r.Out
+    Check 'first run does not invent a version-suffixed file warning' ($r.Out -notmatch 'WARNING: version-suffixed') $r.Out
+    Check 'UTF-8 guidance requires strict explicit format' ($r.Out -match 'Strict UTF-8') $r.Out
+    Check 'BOM remains a separate decision' ($r.Out -match 'BOM distinct') $r.Out
+    Check 'encoding exception retains scope, encoding, forcing consumer and compatibility proof' (
+        $r.Out -match 'path/scope/encoding/forcing consumer/verified compatibility') $r.Out
     # A real uploaded-style copy in the rules dir is flagged, not trusted.
     New-RuleFile $globalClaude 'custom-instructions (17).md'
     $r = Fire -Cwd $projE1
     Check 'a version-suffixed rule FILE on disk is flagged as non-canonical' (
-        $r.Out -like '*NEW:*custom-instructions (17).md*' -and $r.Out -like '*WARNING - version-suffixed*') $r.Out
+        $r.Out -like '*NEW:*custom-instructions (17).md*' -and $r.Out -like '*WARNING: version-suffixed copies, NOT canonical*') $r.Out
     Remove-Item (Join-Path $globalClaude 'custom-instructions (17).md') -Force
     $r = Fire -Cwd $projE1
     Check 'removing the uploaded copy clears the warning (REMOVED reported, no WARNING)' (
-        $r.Out -like '*REMOVED:*custom-instructions (17).md*' -and $r.Out -notlike '*WARNING - version-suffixed*') $r.Out
+        $r.Out -like '*REMOVED:*custom-instructions (17).md*' -and $r.Out -notlike '*WARNING: version-suffixed*') $r.Out
 
     # =====================================================================
     Write-Host '--- E-01: canonical rule routing (codex) ---' -ForegroundColor Cyan
     $projE1x = Join-Path $Work 'projE1x'; New-Item -ItemType Directory -Path $projE1x -Force | Out-Null
     $r = Fire -Cwd $projE1x -Claude $false
     Check 'codex loads EXACTLY skill-policy-codex-optimized.md and never the claude policy' (
-        $r.Out -match 'load ONLY skill-policy-codex-optimized\.md' -and $r.Out -match 'never both together' -and
+        $r.Out -match 'codex: ONLY skill-policy-codex-optimized\.md' -and
         $r.Out -notmatch 'skill-policy\.md') $r.Out
 
     # =====================================================================
@@ -350,37 +336,30 @@ try {
     $r = Fire -Cwd $projDD -RawStdin (New-PromptStdin -Cwd $projDD -Prompt 'let us deep debug the login flow and deep-debug some more' -SessionId 'dd-s1')
     Check 'ordinary prose "deep debug" does NOT activate the codeword path' ($r.Exit -eq 0 -and $r.Out -eq '') $r.Out
     $r = Fire -Cwd $projDD -RawStdin (New-PromptStdin -Cwd $projDD -Prompt 'run ::deep-debug on the parser' -SessionId 'dd-s1')
-    Check 'a standalone ::deep-debug DOES emit the bounded-workflow guidance' (
-        $r.Out -like '*::deep-debug is a BOUNDED composite workflow*' -and
-        $r.Out -like '*DEEP DEBUG: COMPLETE or DEEP DEBUG: BLOCKED*' -and
-        $r.Out -like '*never an endless audit/refactor/fix loop*' -and
-        $r.Out -like '*WORKFLOWS.md and skill-policy-deep-debug.md load on demand, so read it in full before this work*') $r.Out
-    Check 'guidance states the fixed ::deep-debug ledger goal, never a NATIVE-command claim (steering V39)' (
-        $r.Out -like '*every bug and finding fixed and verified*' -and $r.Out -like '*every phase done*' -and
-        $r.Out -like '*first task-ledger entries*' -and $r.Out -notlike '*NATIVE command*') $r.Out
-    Check 'guidance frames ::multi-agent as ONE integration + final verification' (
-        $r.Out -like '*::multi-agent is a workflow dependency*' -and $r.Out -like '*ONE integration*' -and
-        $r.Out -like '*final verification on the unified tree*' -and $r.Out -like '*no nested agent trees*') $r.Out
-    Check 'guidance: Ponytail (native /ponytail:ponytail-audit) runs exactly ONCE after all verification' (
-        $r.Out -like '*/ponytail:ponytail-audit*' -and $r.Out -like '*exactly ONCE*' -and
-        $r.Out -like '*integrated verification have completed*') $r.Out
-    Check 'guidance: after Ponytail never a new audit/refactor/debug cycle' (
-        $r.Out -like '*only safe accepted simplifications*' -and $r.Out -like '*never a new audit/refactor/debug cycle*') $r.Out
+    Check 'a standalone ::deep-debug requires complete workflow owners before EVERY bug/phase' (
+        $r.Out -like '*BEFORE ::deep-debug read WORKFLOWS.md Deep Debug/skill-policy-deep-debug.md/CODEWORDS.md FULL, EVERY bug/phase*' -and
+        $r.Out -like '*DEEP DEBUG: COMPLETE or DEEP DEBUG: BLOCKED*') $r.Out
+    # Goal/dispositions/integration/recursion live in the full workflow owners;
+    # the public reminder proves routing only, never their execution.
+    Check 'Ponytail native reference remains ONCE after proof' (
+        $r.Out -like '*After proof:*/ponytail:ponytail-audit*ONCE*') $r.Out
+    Check 'post-Ponytail work is bounded to safe cuts and final proof' (
+        $r.Out -like '*safe cuts/targeted checks/final proof only*') $r.Out
     $r2 = Fire -Cwd $projDD -RawStdin (New-PromptStdin -Cwd $projDD -Prompt '::deep-debug again please' -SessionId 'dd-s1')
     Check 'repeated unchanged ::deep-debug guidance is fingerprint-suppressed in the SAME session' ($r2.Exit -eq 0 -and $r2.Out -eq '') $r2.Out
     $r3 = Fire -Cwd $projDD -RawStdin (New-PromptStdin -Cwd $projDD -Prompt '::deep-debug' -SessionId 'dd-s2')
-    Check 'a NEW session re-reports the ::deep-debug guidance' ($r3.Out -like '*BOUNDED composite workflow*') $r3.Out
+    Check 'a NEW session re-reports the ::deep-debug guidance' ($r3.Out -like '*BEFORE ::deep-debug*End DEEP DEBUG:*') $r3.Out
     (Get-Item (Join-Path $globalClaude 'alpha.md')).LastWriteTimeUtc = [DateTime]::UtcNow.AddMinutes(15)
     $r4 = Fire -Cwd $projDD -RawStdin (New-PromptStdin -Cwd $projDD -Prompt '::deep-debug' -SessionId 'dd-s2')
     Check 'changed rule state still re-reports while consumed dd guidance stays suppressed' (
-        $r4.Out -like '*CHANGED:*alpha.md*' -and $r4.Out -notlike '*BOUNDED composite workflow*') $r4.Out
+        $r4.Out -like '*CHANGED:*alpha.md*' -and $r4.Out -notlike '*BEFORE ::deep-debug*End DEEP DEBUG:*') $r4.Out
     # Codex shape: same graph bounds, client-native command references only.
     $projDDx = Join-Path $Work 'projDDx'; New-Item -ItemType Directory -Path $projDDx -Force | Out-Null
     $null = Fire -Cwd $projDDx -Claude $false   # consume the codex first-run baseline
     $r = Fire -Cwd $projDDx -Claude $false -RawStdin (New-PromptStdin -Cwd $projDDx -Prompt '::deep-debug' -SessionId 'ddx-s1')
     Check 'codex ::deep-debug guidance uses client-native references, not Claude slash literals' (
-        $r.Out -like '*BOUNDED composite workflow*' -and $r.Out -like '*first task-ledger entries*' -and $r.Out -notlike '*NATIVE command*' -and
-        $r.Out -like '*ponytail-audit capability*' -and $r.Out -notlike '*/ponytail:ponytail-audit*' -and
+        $r.Out -like '*BEFORE ::deep-debug*End DEEP DEBUG:*' -and $r.Out -like '*EVERY bug/phase*' -and $r.Out -notlike '*NATIVE command*' -and
+        $r.Out -like '*verified installed ponytail-audit*' -and $r.Out -notlike '*/ponytail:ponytail-audit*' -and
         $r.Out -notlike '*/goal*') $r.Out
 
     # =====================================================================
@@ -436,9 +415,9 @@ try {
     Check 'edits + no confirmation -> a real block decision' ($r.Out -match '"decision"\s*:\s*"block"') $r.Out
     Check 'the block lists the governing rule files it checked' ($r.Out -match 'Governing rule files:' -and $r.Out -match 'project-rule\.md') $r.Out
     Check 'the block names the exact single action that clears it' (
-        $r.Out -match 'TO CLEAR THIS' -and $r.Out -match 'starting exactly with .{0,3}Rules applied:') $r.Out
+        $r.Out -match 'Final standalone' -and $r.Out -match 'Rules applied: <files \+ purpose>') $r.Out
     Check '"none - <reason>" is offered as a legitimate answer, not a forced claim' (
-        $r.Out -match 'Rules applied: none - <one-line reason>') $r.Out
+        $r.Out -match 'Rules applied: none - <reason>') $r.Out
     # An unchanged failure blocks ONCE per session (global-hook-rules.md: a gate
     # must not loop on the same unchanged state).
     $r2 = Fire -Cwd $closeProj -RawStdin (New-StopStdin -Cwd $closeProj -Transcript $tEdit -SessionId 'close-b1')
@@ -467,10 +446,10 @@ try {
     # UNKNOWN transcript: never an all-clear, never a block.
     $r = Fire -Cwd $closeProj -RawStdin (New-StopStdin -Cwd $closeProj -Transcript (Join-Path $Work 'no-such-transcript.jsonl') -SessionId 'close-u1')
     Check 'a missing transcript reports UNVERIFIED, never an all-clear and never a block' (
-        $r.Out -match 'could NOT be verified' -and $r.Out -match 'not an all-clear' -and $r.Out -notmatch '"decision"') $r.Out
+        $r.Out -match 'compliance UNVERIFIED' -and $r.Out -match 'not all-clear' -and $r.Out -notmatch '"decision"') $r.Out
     $r = Fire -Cwd $closeProj -RawStdin (New-StopStdin -Cwd $closeProj -SessionId 'close-u2')
     Check 'no transcript_path at all is treated the same way (unverified, not silent)' (
-        $r.Out -match 'could NOT be verified' -and $r.Out -notmatch '"decision"') $r.Out
+        $r.Out -match 'compliance UNVERIFIED' -and $r.Out -notmatch '"decision"') $r.Out
 
     $r = Fire -Cwd $closeProj -RawStdin (New-StopStdin -Cwd $closeProj -Transcript $tEdit -SessionId 'close-sa' -StopActive $true)
     # stop_hook_active means "a Stop gate blocked and the agent is coming
@@ -497,7 +476,7 @@ try {
     $advHook = New-ConfiguredRulesHookCopy 'advisory'
     $r = Fire -Cwd $closeProj -HookPath $advHook -RawStdin (New-StopStdin -Cwd $closeProj -Transcript $tEdit -SessionId 'close-adv')
     Check 'advisory mode reports the same finding without a block decision' (
-        $r.Out -match 'this session edited files' -and $r.Out -notmatch '"decision"') $r.Out
+        $r.Out -match 'files edited; final governing rules missing' -and $r.Out -notmatch '"decision"') $r.Out
     $offHook = New-ConfiguredRulesHookCopy 'off'
     $r = Fire -Cwd $closeProj -HookPath $offHook -RawStdin (New-StopStdin -Cwd $closeProj -Transcript $tEdit -SessionId 'close-off')
     Check 'off mode skips the closing check entirely' ($r.Exit -eq 0 -and $r.Out -eq '') $r.Out
@@ -511,7 +490,7 @@ try {
     New-RuleFile (Join-Path $preProj '.claude\rules') 'pre-rule.md'
     $r = Fire -Cwd $preProj
     Check 'the pre-task note states the closing "Rules applied:" requirement up front' (
-        $r.Out -match 'CLOSING REQUIREMENT' -and $r.Out -match 'Rules applied:') $r.Out
+        $r.Out -match 'Final standalone' -and $r.Out -match 'Rules applied:') $r.Out
 
     # 5.1 host parity for the gate.
     $r = Fire -Cwd $closeProj -Exe 'powershell.exe' -RawStdin (New-StopStdin -Cwd $closeProj -Transcript $tEdit -SessionId 'close-51')
@@ -532,7 +511,7 @@ try {
         $session = 'language-' + $case[0]
         $r = Fire -Cwd $languageProj -RawStdin (New-PromptStdin $languageProj $case[1] $session)
         $ctx = Get-AdditionalContext $r.Out
-        Check ('language advisory: ' + $case[0]) ($r.Exit -eq 0 -and $r.Err -eq '' -and $ctx -match 'LANGUAGE DECISION' -and $ctx -match 'Programming Language Selection' -and $ctx -match 'requires separate approval' -and $r.Out -notmatch '"decision"') $r.Out
+        Check ('language advisory: ' + $case[0]) ($r.Exit -eq 0 -and $r.Err -eq '' -and $ctx -match 'LANGUAGE:' -and $ctx -match 'global-architecture-rules.md FULL' -and $ctx -match 'migration/runtime/framework: separate consent' -and $r.Out -notmatch '"decision"') $r.Out
         $r = Fire -Cwd $languageProj -RawStdin (New-PromptStdin $languageProj $case[1] $session)
         Check ('unchanged language category quiet: ' + $case[0]) ($r.Exit -eq 0 -and $r.Out -eq '') $r.Out
     }
@@ -544,13 +523,13 @@ try {
     Check 'narrow existing-language fix gets no migration reminder' ($r.Exit -eq 0 -and $r.Out -eq '') $r.Out
     $r = Fire -Cwd $languageProj -RawStdin (New-PromptStdin $languageProj 'Start a new project; keep Python as explicitly required' 'language-override')
     $ctx = Get-AdditionalContext $r.Out
-    Check 'language advisory preserves explicit override and no installation authority' ($ctx -match 'explicit user/project constraints' -and $ctx -match 'no migration, denial, rewrite, installation or permission change') $r.Out
+    Check 'language advisory preserves explicit override and no installation authority' ($ctx -match 'global-architecture-rules.md FULL' -and $ctx -match 'Narrow fix keeps stack' -and $ctx -match 'separate consent' -and $ctx -match 'No execution') $r.Out
     $faPrompt = -join ([char[]]@(0x067E,0x0631,0x0648,0x0698,0x0647,0x0020,0x062C,0x062F,0x06CC,0x062F))
     $r = Fire -Cwd $languageProj -Exe 'powershell.exe' -RawStdin (New-PromptStdin $languageProj $faPrompt 'language-fa')
-    Check 'UTF-8 Persian language decision works on 5.1' ($r.Exit -eq 0 -and $r.Err -eq '' -and $r.Out -match 'LANGUAGE DECISION') $r.Out
+    Check 'UTF-8 Persian language decision works on 5.1' ($r.Exit -eq 0 -and $r.Err -eq '' -and $r.Out -match 'LANGUAGE:') $r.Out
     $null = Fire -Cwd $languageProj -Claude $false
     $r = Fire -Cwd $languageProj -Claude $false -RawStdin (New-PromptStdin $languageProj 'Choose a language for Web UI' 'language-codex')
-    Check 'Codex language reminder keeps context-only shape' ($r.Exit -eq 0 -and $r.Out -match 'LANGUAGE DECISION' -and $r.Out -notmatch '"decision"') $r.Out
+    Check 'Codex language reminder keeps context-only shape' ($r.Exit -eq 0 -and $r.Out -match 'LANGUAGE:' -and $r.Out -notmatch '"decision"') $r.Out
 
     # =====================================================================
     Write-Host '--- E-01: static safety + installed-runtime parity ---' -ForegroundColor Cyan

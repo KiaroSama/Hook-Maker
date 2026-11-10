@@ -69,14 +69,14 @@ exit 1
         $err = [IO.File]::ReadAllText($errFile, [Text.Encoding]::UTF8)
         $records = @(Get-ChildItem -LiteralPath $env:HOOKMAKER_STATE_DIR -Filter 'CiStatusCheck-*.txt' -File | Where-Object { $_.Name -notmatch 'Auth|Notice|External' })
         $lines = @(); if ($records.Count -eq 1) { $lines = @([IO.File]::ReadAllLines($records[0].FullName, [Text.Encoding]::UTF8)) }
-        Check 'large public Stop carries exact ancestor, not invented final CI' ($proc.ExitCode -eq 0 -and $err -eq '' -and $out -match 'systemMessage' -and $out.Contains($base) -and $out -notmatch '"decision"' -and $lines.Count -eq 6 -and $lines[0] -ceq $sha -and $lines[3] -ceq 'docs-only-carryover' -and $lines[4] -ceq $base) ($out + $err + ($lines -join '|'))
+        Check 'large public Stop distinguishes tested ancestor from required final status' ($proc.ExitCode -eq 0 -and $err -eq '' -and $out.Contains($base) -and $out.Contains($sha) -and $out -match '"decision"' -and $out -match 'Latest-status required' -and $lines.Count -eq 0) ($out + $err + ($lines -join '|'))
         $proc.Dispose()
         if (-not $SmokeOnly) {
             $env:LOCALAPPDATA = Join-Path $root 'ps51-local'
             $env:HOOKMAKER_STATE_DIR = Join-Path $env:LOCALAPPDATA 'HookMaker/state'
             $proc = Start-BoundedProcess -FilePath powershell.exe -ArgumentList @('-NoLogo','-NoProfile','-File',$hook) -WorkingDirectory $repo -Wait -NoNewWindow -TimeoutMs 60000 -RedirectStandardInput $inputFile -RedirectStandardOutput $outFile -RedirectStandardError $errFile
             $out = [IO.File]::ReadAllText($outFile,[Text.Encoding]::UTF8); $err = [IO.File]::ReadAllText($errFile,[Text.Encoding]::UTF8)
-            Check '5.1 large Stop carries exact ancestor with strict UTF-8 queries' ($proc.ExitCode -eq 0 -and $err -eq '' -and $out.Contains($base) -and $out -match 'systemMessage' -and $out -notmatch '"decision"') ($out + $err)
+            Check '5.1 large Stop keeps ancestor evidence distinct from final status' ($proc.ExitCode -eq 0 -and $err -eq '' -and $out.Contains($base) -and $out.Contains($sha) -and $out -match '"decision"' -and $out -match 'Latest-status required') ($out + $err)
             $proc.Dispose()
             foreach ($variant in @(
                 @{Name='vendored direct read'; Path='vendor/check.py'; Text='open("docs/compatibility.md").read()'},
@@ -103,7 +103,7 @@ exit 1
                 & git -C $repo update-ref refs/remotes/origin/main $head
                 $proc = Start-BoundedProcess -FilePath pwsh -ArgumentList @('-NoLogo','-NoProfile','-File',$hook) -WorkingDirectory $repo -Wait -NoNewWindow -TimeoutMs 60000 -RedirectStandardInput $inputFile -RedirectStandardOutput $outFile -RedirectStandardError $errFile
                 $out = [IO.File]::ReadAllText($outFile,[Text.Encoding]::UTF8); $err = [IO.File]::ReadAllText($errFile,[Text.Encoding]::UTF8)
-                Check ($variant.Name + ': public Stop refuses without indefinite CI wait') ($proc.ExitCode -eq 0 -and $err -eq '' -and $out -match '"decision"' -and $out -match 'carryover not verified' -and $out -notmatch 'wait briefly|no runs are registered yet') ($out + $err)
+                Check ($variant.Name + ': public Stop refuses without indefinite CI wait') ($proc.ExitCode -eq 0 -and $err -eq '' -and $out -match '"decision"' -and $out -match 'docs carryover UNVERIFIED' -and $out -notmatch 'wait briefly|no runs are registered yet') ($out + $err)
                 $proc.Dispose()
                 # Isolated fixture only, not application history.
                 & git -C $repo reset --hard $sha *> $null
@@ -149,7 +149,7 @@ exit 1
                 $out=[IO.File]::ReadAllText($outFile,[Text.Encoding]::UTF8);$err=[IO.File]::ReadAllText($errFile,[Text.Encoding]::UTF8)
                 $records=@(Get-ChildItem $env:HOOKMAKER_STATE_DIR -Filter 'CiStatusCheck-*.txt' -File|Where-Object{$_.Name-notmatch'Auth|Notice|External'})
                 $lines=@();if($records.Count-eq1){$lines=@([IO.File]::ReadAllLines($records[0].FullName,[Text.Encoding]::UTF8))}
-                Check ('155-reader public Stop preserves snippets and ancestor-only proof '+$hostName) ($proc.ExitCode-eq0-and$err-eq''-and$out.Contains($reviewBase)-and$out-match'systemMessage'-and$out-notmatch'"decision"'-and$lines.Count-eq6-and$lines[0]-ceq$reviewFinal-and$lines[3]-ceq'docs-only-carryover'-and$lines[4]-ceq$reviewBase) ($out+$err+($lines-join'|'))
+                Check ('155-reader public Stop preserves snippets and ancestor-only proof '+$hostName) ($proc.ExitCode-eq0-and$err-eq''-and$out.Contains($reviewBase)-and$out.Contains($reviewFinal)-and$out-match'"decision"'-and$out-match'Latest-status required'-and$lines.Count-eq0) ($out+$err+($lines-join'|'))
                 $proc.Dispose()
             }
         }

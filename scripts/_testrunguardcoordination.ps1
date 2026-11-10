@@ -59,7 +59,7 @@ function Invoke-FingerprintBindingRegression {
     New-Item -ItemType Directory -Path $foreign -Force | Out-Null
     $command = $base + ' -ProjectFingerprint ' + $fp + " -WorkingDirectory '" + $foreign + "'"
     $identity = Get-GuardedInvocationIdentity -Tokens @(Split-CommandTokens $command) -RawCommand $command
-    Check 'foreign literal cwd is refused explicitly, not rebound' ((Get-GuardedBindingFinding $identity $command $Proj $fp).Message -match 'differs from hook cwd')
+    Check 'foreign literal cwd is refused explicitly, not rebound' ((Get-GuardedBindingFinding $identity $command $Proj $fp).Message -match '-WorkingDirectory != cwd; no cross-project observation')
     $same = $base + ' -ProjectFingerprint ' + $fp + " -WorkingDirectory '.'"
     $identity = Get-GuardedInvocationIdentity -Tokens @(Split-CommandTokens $same) -RawCommand $same
     Check 'same cwd dot/trailing-separator spelling does not become foreign' ($null -eq (Get-GuardedBindingFinding $identity $same ($Proj + '\') $fp))
@@ -87,7 +87,7 @@ function Invoke-UnavailableStateRegression {
         foreach ($command in @('pytest -q', 'pwsh -File scripts/Run-Tests-Guarded.ps1 -FilePath pwsh -ArgumentsJson ''["-Command","exit 0"]'' -ProjectFingerprint stale -TimeoutSeconds 23 -IdleTimeoutSeconds 11 -MaxWorkers 1')) {
             $r = Fire -HookPath $copy.Script -Cwd $Root -EventName PreToolUse -Command $command -LocalAppData $copy.LocalAppData
             Check 'repository ownership refusal cannot create path-only state evidence' (
-                (Get-Message $r.Out) -match 'repository state is unavailable' -and
+                (Get-Message $r.Out) -match 'repository unavailable' -and
                 @(Get-ChildItem -LiteralPath $copy.LocalAppData -Recurse -Filter 'TestRunGuard-observed-*.json').Count -eq 0) $r.Out
         }
         . (Join-Path $HooksRoot '_repostate.ps1')
@@ -318,7 +318,7 @@ function Invoke-EmptyRunnerBindingRegression {
     # written (the identity has to exist before the run, not after it).
     $rVar = Fire -HookPath $hcVar.Script -Cwd $Proj -EventName 'PreToolUse' -Command $varCommand -LocalAppData $hcVar.LocalAppData
     $obsVar = Get-ObservedRecord $hcVar.LocalAppData
-    Check 'dynamic fingerprint records no manufactured observation' ($null -eq $obsVar -and (Get-Message $rVar.Out) -match 'dynamic or unsupported') $rVar.Out
+    Check 'dynamic fingerprint records no manufactured observation' ($null -eq $obsVar -and (Get-Message $rVar.Out) -match 'dynamic/unsupported binding; no observation') $rVar.Out
     $varCommand = $varCommand.Replace('"$FP"', $fixtureFp)
     $rVar = Fire -HookPath $hcVar.Script -Cwd $Proj -EventName PreToolUse -Command $varCommand -LocalAppData $hcVar.LocalAppData
     $obsVar = Get-ObservedRecord $hcVar.LocalAppData

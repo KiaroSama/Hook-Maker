@@ -104,7 +104,7 @@ try {
     # reminder each time - but a clean repository still reports no sync state.
     Check 'clean synchronized repository: SessionStart reports no sync state' ($r.Exit -eq 0 -and $r.Out -notmatch 'GIT SYNC STATUS') $r.Out
     Check 'and it carries the every-session identity reminder, with nothing to fix here' (
-        $r.Out -match 'COMMIT IDENTITY' -and $r.Out -match '0 commit\(s\) across' -and $r.Out -notmatch 'is NOT the public address') $r.Out
+        $r.Out -match 'COMMIT IDENTITY' -and $r.Out -match '0 commit\(s\) across' -and $r.Out -notmatch 'Nonpublic user.email') $r.Out
 
     # =====================================================================
     Write-Host '--- dirty task repository: mandatory operational Stop instruction ---' -ForegroundColor Cyan
@@ -112,9 +112,9 @@ try {
     [System.IO.File]::WriteAllText((Join-Path $dirty 'new.txt'), 'uncommitted', (New-Object System.Text.UTF8Encoding $false))
     $r = Fire -Cwd $dirty
     Check 'dirty repository produces a blocking Stop instruction' ($r.Out -match '"decision":"block"' -and $r.Out -match 'uncommitted change') $r.Out
-    Check 'the instruction is operational/mandatory, not discretionary' ($r.Out -match 'Reconcile task/subagent work before closing' -and $r.Out -match 'When verified and authorized') $r.Out
+    Check 'the instruction is operational/mandatory, not discretionary' ($r.Out -match 'global-repository-rules\.md FULL' -and $r.Out -match 'BEFORE sync: global-repository-rules\.md FULL') $r.Out
     Check 'the message does NOT use the old discretionary "otherwise finish" wording' ($r.Out -notmatch 'otherwise finish' -and $r.Out -notmatch 'At your discretion') $r.Out
-    Check 'the message forbids committing secrets/protected/unrelated files' ($r.Out -match 'Preserve unrelated/unverified/secret/protected files') $r.Out
+    Check 'the message forbids committing secrets/protected/unrelated files' ($r.Out -match 'Preserve unrelated work') $r.Out
 
     # =====================================================================
     Write-Host '--- ahead repository: instructs a verified push, no second user request ---' -ForegroundColor Cyan
@@ -124,7 +124,7 @@ try {
     & git -C $ahead commit -q -m 'task change'
     $r = Fire -Cwd $ahead
     Check 'ahead repository is reported' ($r.Out -match 'AHEAD of origin/main') $r.Out
-    Check 'ahead repository instructs one verified authorized push' ($r.Out -match 'When verified and authorized' -and $r.Out -match 'one final push') $r.Out
+    Check 'ahead repository requires complete sync policy before action' ($r.Out -match 'BEFORE sync: global-repository-rules\.md FULL') $r.Out
 
     # =====================================================================
     Write-Host '--- behind repository: safe inspection/fast-forward, not blind merge ---' -ForegroundColor Cyan
@@ -162,7 +162,7 @@ try {
         $null = Fire -Cwd $stampRepo -SessionId 'stamp-3' -HookPath (Join-Path $everyHookDir 'Git-Sync-Check.ps1')
         Check 'FETCH_MIN_INTERVAL_MINUTES=0 fetches on every event (stamp rewritten)' ([System.IO.File]::ReadAllText($stampFile[0].FullName) -ne $firstStamp) $firstStamp
     }
-    Check 'behind guidance recommends inspection/fast-forward, not a blind merge' ($r.Out -match 'git pull --ff-only' -and $r.Out -match 'no blind pull/merge') $r.Out
+    Check 'behind guidance recommends inspection/fast-forward, not a blind merge' ($r.Out -match 'Behind\+clean: inspect/ff-only' -and $r.Out -match 'dirty/diverged: inspect') $r.Out
 
     # =====================================================================
     Write-Host '--- missing upstream is reported ---' -ForegroundColor Cyan
@@ -203,7 +203,7 @@ try {
     # session id is used because $dirty's default-session fingerprint was already
     # instructed above (by design: unchanged fingerprint + same session -> silent).
     $r = Fire -Cwd $dirty -SessionId 'wording-check'
-    Check 'instruction explicitly scopes staging to this task''s ready/verified changes only' ($r.Out -match 'stage only task changes' -and $r.Out -match 'Preserve unrelated/unverified/secret/protected files') $r.Out
+    Check 'instruction explicitly scopes staging to this task''s ready/verified changes only' ($r.Out -match 'global-repository-rules\.md FULL' -and $r.Out -match 'Preserve unrelated work') $r.Out
 
     # =====================================================================
     Write-Host '--- cooldown/fingerprint/session gating ---' -ForegroundColor Cyan
@@ -241,15 +241,15 @@ try {
     [System.IO.File]::WriteAllText((Join-Path $ctx 'new.txt'), 'uncommitted', (New-Object System.Text.UTF8Encoding $false))
     $r = Fire -Cwd $ctx -EventName 'SessionStart'
     Check 'SessionStart context is non-blocking additionalContext, not a block decision' ($r.Out -match '"additionalContext"' -and $r.Out -notmatch '"decision"') $r.Out
-    Check 'SessionStart context tells the agent to consider pre-existing sync state first' ($r.Out -match 'Consider this pre-existing sync state before making further changes') $r.Out
-    Check 'SessionStart never modifies the repository' ($r.Out -match 'this check does not modify the repository') $r.Out
+    Check 'SessionStart context tells the agent to consider pre-existing sync state first' ($r.Out -match 'Account for existing sync state before edits') $r.Out
+    Check 'SessionStart never modifies the repository' ($r.Out -match 'Hook changes nothing') $r.Out
 
     # =====================================================================
     Write-Host '--- Windows PowerShell 5.1 ---' -ForegroundColor Cyan
     $ps5 = New-PushedRepo 'ps5'
     [System.IO.File]::WriteAllText((Join-Path $ps5 'new.txt'), 'uncommitted', (New-Object System.Text.UTF8Encoding $false))
     $r = Fire -Cwd $ps5 -Exe 'powershell.exe'
-    Check 'Windows PowerShell 5.1: dirty repo blocks with the mandatory instruction' ($r.Exit -eq 0 -and $r.Out -match '"decision":"block"' -and $r.Out -match 'When verified and authorized') $r.Err
+    Check 'Windows PowerShell 5.1: dirty repo blocks with the mandatory instruction' ($r.Exit -eq 0 -and $r.Out -match '"decision":"block"' -and $r.Out -match 'BEFORE sync: global-repository-rules\.md FULL') $r.Err
 
     Write-Host '--- Windows PowerShell 5.1: HM-08 task-scoped worktree path ---' -ForegroundColor Cyan
     $ps5wt = New-PushedRepo 'ps5-wt'
@@ -447,7 +447,7 @@ try {
     }
     [System.IO.File]::WriteAllText((Join-Path $legacyExtra 'f.txt'), 'edited during task', (New-Object System.Text.UTF8Encoding $false))
     $rUnknown = Fire -Cwd $legacy -SessionId 'legacy-sess'
-    Check 'an UNKNOWN (pre-fix) baseline fingerprint surfaces advisory uncertainty, never a false all-clear' ($rUnknown.Out -match 'cannot be confirmed unchanged') $rUnknown.Out
+    Check 'an UNKNOWN (pre-fix) baseline fingerprint surfaces advisory uncertainty, never a false all-clear' ($rUnknown.Out -match 'unchanged unproved') $rUnknown.Out
     Check 'an UNKNOWN baseline fingerprint alone never hard-blocks' ($rUnknown.Out -notmatch '"decision":"block"') $rUnknown.Out
 
     # =====================================================================
@@ -488,11 +488,11 @@ try {
     [System.IO.File]::WriteAllText((Join-Path $vocab1 'new.txt'), 'x', (New-Object System.Text.UTF8Encoding $false))
     $rV1 = Fire -Cwd $vocab1
     Check 'E-08(1): the dirty finding names staged, unstaged, AND untracked' (
-        $rV1.Out -match 'uncommitted change' -and $rV1.Out -match 'staged, unstaged, and/or untracked') $rV1.Out
+        $rV1.Out -match 'uncommitted change' -and $rV1.Out -match 'staged/unstaged/untracked') $rV1.Out
     # (5) unreconciled subagent work - the operational instruction covers it.
     Check 'E-08(5): the instruction covers unreconciled subagent work explicitly' (
-        $rV1.Out -match 'Reconcile task/subagent work before closing' -and
-        $rV1.Out -match 'Preserve unrelated/unverified/secret/protected files') $rV1.Out
+        $rV1.Out -match 'global-repository-rules\.md FULL' -and
+        $rV1.Out -match 'Preserve unrelated work') $rV1.Out
     # (2)+(7) unpushed commits / local-remote final SHA mismatch.
     $vocab2 = New-PushedRepo 'vocab-ahead'
     [System.IO.File]::WriteAllText((Join-Path $vocab2 'f.txt'), 'v2', (New-Object System.Text.UTF8Encoding $false))
@@ -501,7 +501,7 @@ try {
     $rV2 = Fire -Cwd $vocab2
     Check 'E-08(2,7): AHEAD names unpushed commits AND the local/remote final-SHA mismatch' (
         $rV2.Out -match 'AHEAD of origin/main' -and $rV2.Out -match 'unpushed commits' -and
-        $rV2.Out -match 'local and remote final SHAs do not match') $rV2.Out
+        $rV2.Out -match 'local/remote final SHA mismatch') $rV2.Out
     # (7) behind: the same SHA-mismatch vocabulary on the pull side.
     $vocab3 = New-PushedRepo 'vocab-behind'
     $vocab3Clone = Join-Path $ReposRoot 'vocab-behind-clone'
@@ -517,14 +517,14 @@ try {
     & git -C $vocab3Clone push -q origin main
     $rV3 = Fire -Cwd $vocab3
     Check 'E-08(7): BEHIND also names the local/remote final-SHA mismatch' (
-        $rV3.Out -match 'BEHIND origin/main' -and $rV3.Out -match 'local and remote final SHAs do not match') $rV3.Out
+        $rV3.Out -match 'BEHIND origin/main' -and $rV3.Out -match 'local/remote final SHA mismatch') $rV3.Out
     # (3)+(4) changed pre-existing worktrees (HEAD unchanged) and task-created/
     # advanced branches+worktrees are pinned by the HM-08 scenarios above; (6)
     # ambiguous/unknown dirty evidence: the legacy-baseline scenario's wording
     # now names it explicitly.
     Check 'E-08(6): unknown dirty evidence is named ambiguous/UNKNOWN and never an all-clear' (
-        $rUnknown.Out -match 'ambiguous/UNKNOWN' -and $rUnknown.Out -match 'never treated as an all-clear' -and
-        $rUnknown.Out -match 'cannot be confirmed unchanged') $rUnknown.Out
+        $rUnknown.Out -match 'dirty-state UNKNOWN' -and $rUnknown.Out -match 'no all-clear' -and
+        $rUnknown.Out -match 'unchanged unproved') $rUnknown.Out
 
     # =====================================================================
     Write-Host '--- order 55 step 2: commit identity and branch disposition ---' -ForegroundColor Cyan
@@ -539,12 +539,12 @@ try {
     & git -C $idRepo push -q origin main
     $r = Fire -Cwd $idRepo -EventName 'SessionStart' -SessionId 'id-sess'
     Check 'identity: the reminder names the public address and the rewrite obligation' (
-        $r.Out -match 'COMMIT IDENTITY' -and $r.Out -match 'Kiaro\.Sama\.Dev@gmail\.com' -and $r.Out -match 'MUST be rewritten') $r.Out
+        $r.Out -match 'COMMIT IDENTITY' -and $r.Out -match 'Kiaro\.Sama\.Dev@gmail\.com' -and $r.Out -match 'owner-only rewrite') $r.Out
     Check 'identity: exactly one commit is counted - the bot and the noreply@ system committer are not' (
         $r.Out -match '1 commit\(s\) across 4 commit') $r.Out
     Check 'identity: no other address is ever printed' (
         $r.Out -notmatch 'example\.invalid' -and $r.Out -notmatch 'dependabot\[bot\]@') $r.Out
-    Check 'identity: .mailmap is named as no fix' ($r.Out -match '\.mailmap does not remove') $r.Out
+    Check 'identity: .mailmap is named as no fix' ($r.Out -match '\.mailmap NEVER repair') $r.Out
 
     $idLocal = New-Repo 'identity-local'
     & git -C $idLocal config user.email 'not.public@example.invalid'
@@ -552,7 +552,7 @@ try {
     $r = Fire -Cwd $idLocal -EventName 'SessionStart' -SessionId 'id-local'
     Check 'identity: a repository WITHOUT a remote still gets the reminder' ($r.Out -match 'COMMIT IDENTITY') $r.Out
     Check 'identity: the effective identity is reported as not public, without its value' (
-        $r.Out -match 'is NOT the public address' -and $r.Out -notmatch 'not\.public@') $r.Out
+        $r.Out -match 'Nonpublic user.email' -and $r.Out -notmatch 'not\.public@') $r.Out
     $r = Fire -Cwd $idLocal -SessionId 'id-local'
     Check 'identity: no remote is still silent at Stop (nothing to synchronise)' ($r.Exit -eq 0 -and $r.Out -eq '') $r.Out
 
@@ -578,9 +578,10 @@ try {
     & git -C $dispo commit -q --allow-empty -m task
     $r = Fire -Cwd $dispo -SessionId 'dispo'
     Check 'disposition: the Stop instruction states the leave-no-branch-open rule and its floors' (
-        $r.Out -match 'Leave no branch open' -and $r.Out -match 'Never delete a branch with unique unmerged commits') $r.Out
+        $r.Out -match 'Branches: ONLY proven carried/worthless -> merge/delete or close/delete; else survivor\+reason' -and
+        $r.Out -match 'Preserve unique/protected/unknown/others' -and $r.Out -match 'unverifiable -> report, NEVER delete') $r.Out
     Check 'disposition: a merged stray is listed as merged' ($r.Out -match 'merged into origin/main[^\r\n]*merged-stray') $r.Out
-    Check 'disposition: a branch with unique commits is listed as holding them' ($r.Out -match 'holding commits not in origin/main[^\r\n]*has-unique') $r.Out
+    Check 'disposition: a branch with unique commits is listed as holding them' ($r.Out -match 'commits absent from origin/main[^\r\n]*has-unique') $r.Out
     Check 'disposition: nothing was deleted or merged by the hook' (
         (@(& git -C $dispo for-each-ref --format='%(refname:short)' refs/heads) -join ',') -match 'merged-stray' -and
         (@(& git -C $dispo for-each-ref --format='%(refname:short)' refs/heads) -join ',') -match 'has-unique') ''

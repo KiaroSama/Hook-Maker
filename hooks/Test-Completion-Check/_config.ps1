@@ -11,7 +11,7 @@ if ($config.ContainsKey('TEST_COMPLETION_EVIDENCE_MINUTES')) {
         $evidenceMinutes = $parsed
     }
     elseif (-not [string]::IsNullOrWhiteSpace($raw)) {
-        [void]$configWarnings.Add('TEST_COMPLETION_EVIDENCE_MINUTES is not an integer in 1..10080; using the default 180.')
+        [void]$configWarnings.Add('TEST_COMPLETION_EVIDENCE_MINUTES: integer1..10080 required; default180.')
     }
 }
 
@@ -24,7 +24,7 @@ if ($config.ContainsKey('TEST_COMPLETION_ADVISORY_ONLY')) {
     if ($raw -eq '1') { $advisoryOnly = $true }
     elseif ($raw -ne '0' -and -not [string]::IsNullOrWhiteSpace($raw)) {
         $advisoryOnly = $true
-        [void]$configWarnings.Add('TEST_COMPLETION_ADVISORY_ONLY must be 0 or 1; falling back to advisory-only (1) so a malformed value can never widen what is blocked on.')
+        [void]$configWarnings.Add('TEST_COMPLETION_ADVISORY_ONLY: 0/1 required; invalid -> advisory(1), never wider blocking.')
     }
 }
 
@@ -33,7 +33,7 @@ if ($config.ContainsKey('TEST_COMPLETION_ALWAYS_REQUIRE_NOTE')) {
     $raw = [string]$config['TEST_COMPLETION_ALWAYS_REQUIRE_NOTE']
     if ($raw -eq '1') { $alwaysRequireNote = $true }
     elseif ($raw -ne '0' -and -not [string]::IsNullOrWhiteSpace($raw)) {
-        [void]$configWarnings.Add('TEST_COMPLETION_ALWAYS_REQUIRE_NOTE must be 0 or 1; using the default 0 (a note is required only after an incident).')
+        [void]$configWarnings.Add('TEST_COMPLETION_ALWAYS_REQUIRE_NOTE: 0/1 required; default0, incident-only note.')
     }
 }
 
@@ -48,7 +48,7 @@ if ($config.ContainsKey('TEST_COMPLETION_ACTIVE_MARKER_MAX_HOURS')) {
         $activeMarkerMaxHours = $parsed
     }
     elseif (-not [string]::IsNullOrWhiteSpace($raw)) {
-        [void]$configWarnings.Add('TEST_COMPLETION_ACTIVE_MARKER_MAX_HOURS is not an integer in 1..168; using the default 12.')
+        [void]$configWarnings.Add('TEST_COMPLETION_ACTIVE_MARKER_MAX_HOURS: integer1..168 required; default12.')
     }
 }
 
@@ -60,7 +60,7 @@ if ($config.ContainsKey('TEST_COMPLETION_COORDINATION_WAIT_SECONDS')) {
         $coordinationWaitSeconds = $parsed
     }
     elseif (-not [string]::IsNullOrWhiteSpace($raw)) {
-        [void]$configWarnings.Add('TEST_COMPLETION_COORDINATION_WAIT_SECONDS is not an integer in 0..30; using the default 2.')
+        [void]$configWarnings.Add('TEST_COMPLETION_COORDINATION_WAIT_SECONDS: integer0..30 required; default2.')
     }
 }
 

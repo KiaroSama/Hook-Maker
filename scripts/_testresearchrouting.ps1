@@ -14,11 +14,11 @@ $researchHook = New-ConfiguredSkillsHookCopy @{SKILLS_DIR=(Join-Path $Work 'abse
 $researchProj = New-Proj 'ResearchSkillRoute'
 Set-ClaudeProjectDir $researchProj
 $r = Fire -HookPath $researchHook -Cwd $researchProj -RawStdin (New-PromptStdin $researchProj 'UserPromptSubmit' '::deep-research compare sources' 'research-skill')
-Check 'public research skill route names phases and exact exposure boundaries' ($r.Exit -eq 0 -and $r.Err -eq '' -and $r.Out -match 'RESEARCH SKILL ROUTING' -and $r.Out -match 'component kind' -and $r.Out -match 'never simulated' -and $r.Out -notmatch '"decision"') $r.Out
+Check 'public research skill route requires complete exact-job owners before selection' ($r.Exit -eq 0 -and $r.Err -eq '' -and $r.Out -match 'RESEARCH: BEFORE selection' -and $r.Out -match 'global-research-workflows.md/global-connected-skill-contracts.md/exact catalogue job FULL' -and $r.Out -match 'no simulation/action/spend' -and $r.Out -notmatch '"decision"') $r.Out
 $r = Fire -HookPath $researchHook -Cwd $researchProj -RawStdin (New-PromptStdin $researchProj 'UserPromptSubmit' '::deep-research compare sources' 'research-skill')
 Check 'public research skill route unchanged repeat is silent' ($r.Out -eq '') $r.Out
 Set-ClaudeProjectDir ''
 $r = Fire -HookPath $researchHook -Cwd $researchProj -RawStdin (New-PromptStdin $researchProj 'UserPromptSubmit' '::deep-research compare sources' 'research-codex')
-Check 'Codex research route invents no Claude-only invocation' ($r.Out -match 'supported client' -and $r.Out -notmatch 'anthropic-skills:|mattpocock-skills:') $r.Out
+Check 'Codex research route requires full client contract and invents no Claude-only invocation' ($r.Out -match 'exact catalogue job FULL' -and $r.Out -notmatch 'anthropic-skills:|mattpocock-skills:') $r.Out
 Set-ClaudeProjectDir $OrigClaudeProjectDir
 . (Join-Path $PSScriptRoot '_testhookguidance.ps1')

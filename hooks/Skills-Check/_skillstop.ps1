@@ -224,7 +224,7 @@ function Get-SkillClosingDecision {
     # count, is what made a finite demand look infinite.
     $scale = ''
     if ($outstandingTotal -gt @($unused).Count) {
-        $scale = ' (' + $outstandingTotal + ' outstanding in total, all of them here: ' + $namedAll + ')'
+        $scale = ' (' + $outstandingTotal + ' outstanding, ALL: ' + $namedAll + ')'
     }
 
     if ($null -ne $usedLine) {
@@ -234,9 +234,9 @@ function Get-SkillClosingDecision {
             Answered = $answeredNow
             Token = ('shortlisted-unused|' + $named)
             Text  = (@(
-                    ('SKILL POLICY CHECK - this session was shown INSTALLED skills matching the prompt and used none of them: ' + $named + '.' + $scale),
-                    'Already loadable: no authorization needed. Covered steps run THROUGH the matching skill.',
-                    ('TO CLEAR THIS: invoke relevant exact keys and report them, or explain every unused name in "Skills used: none - ' + $named + ' does not cover a docs-only edit". One line can name ALL outstanding skills; answered names stay credited.')
+                    ('INSTALLED prompt matches unused: ' + $named + '.' + $scale),
+                    'Loadable: no approval; covered steps THROUGH matching skill.',
+                    ('Clear ALL, one line: invoke/report exact keys OR "Skills used: none -' + $named + ': <each reason>". Answers credited.')
                 ) -join "`n")
         }
     }
@@ -247,23 +247,23 @@ function Get-SkillClosingDecision {
             Answered = $answeredNow
             Token = 'missing-after-invoke'
             Text  = (@(
-                    'SKILL POLICY CHECK - this session invoked at least one skill and the closing summary does not report which.',
+                    'Skills invoked, closing names missing.',
                     # The example stays INLINE and quoted rather than on a line of
                     # its own: this message lands in the same transcript the next
                     # Stop reads, and an example at the start of a line would
                     # satisfy the detector - the hook would clear its own block.
-                    'TO CLEAR THIS: add one final-summary line starting exactly with "Skills used:" and exact invoked/materially followed names (e.g. "Skills used: powershell-windows"). Read-but-unused is not used.'
+                    'Final standalone "Skills used: <exact invoked/applied names>"; read-only != used.'
                 ) -join "`n")
         }
     }
 
     if (Test-SubstantiveWork $RawTranscript) {
         $lines = New-Object System.Collections.Generic.List[string]
-        [void]$lines.Add('SKILL POLICY CHECK - this session changed files and the closing summary carries no "Skills used:" line.')
+        [void]$lines.Add('Files changed; final "Skills used:" missing.')
         if (@($unused).Count -gt 0) {
-            [void]$lines.Add('INSTALLED skills matching this prompt were offered and none was used: ' + $named + '.' + $scale + ' They need no authorization.')
+            [void]$lines.Add('INSTALLED prompt matches unused: ' + $named + '.' + $scale + ' They need no authorization.')
         }
-        [void]$lines.Add('TO CLEAR THIS: one final-summary line starting exactly with "Skills used:" + actual names, or "Skills used: none - <one-line reason>". Either is valid; omission is not.')
+        [void]$lines.Add('Clear: final "Skills used: <actual names>" or "Skills used: none - <reason>"; no omission.')
         return [pscustomobject]@{ Kind = 'block'; Answered = $answeredNow; Token = ('missing-after-work|' + $named); Text = (($lines.ToArray()) -join "`n") }
     }
 
@@ -275,9 +275,9 @@ function Get-SkillClosingDecision {
         Answered = $answeredNow
         Token = 'none-invoked'
         Text  = (@(
-                'SKILL POLICY CHECK - no skill was invoked this session.',
-                'Check matching installed debugging/test/security/UI/stack skills; relevant installed skills need no activation approval.',
-                ('Either way the summary must carry the line: ' + $script:SkillsRequiredLine)
+                'SKILL POLICY CHECK: no invocation this session.',
+                'Check installed debug/test/security/UI/stack matches; use needs no approval.',
+                $script:SkillsRequirement
             ) -join "`n")
     }
 }

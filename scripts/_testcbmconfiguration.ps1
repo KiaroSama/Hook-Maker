@@ -169,9 +169,12 @@ TMP = __TEMP__
     Check 'CLI advice quotes the executable and configured argument as PowerShell literals' (
         $message.Contains("& '" + $commandValue.Replace("'", "''") + "'") -and
         $message.Contains("'literal ''argument'' `$()'"))
-    Check 'recovery distinguishes approval, slash mismatch, sandbox denial and private ancestors' (
-        $message -match 'absent approval' -and $message -match 'separator-sensitive' -and
-        $message -match 'OS/sandbox' -and $message -match 'cache-private')
+    # Marker/cache/private ancestor recovery detail is indirect in the FULL owner.
+    Check 'recovery requires full Windows owner before action and keeps approval/denial boundaries' (
+        $message -match 'Absent approval' -and $message -match 'BEFORE recovery global-mcp-windows-cmm.md FULL' -and
+        $message -match 'Shell denial!=MCP failure' -and $message -match 'no wider grants/path bypass/security weakening')
+    Check 'watcher freshness is unverified until index status is checked' (
+        $message -match 'watcher freshness UNVERIFIED, check index_status')
     Check 'guidance contains no unconditional restart or STOP claim' (
         $message -ne '' -and $message -notmatch 'Then STOP|restart is required|server only reads.*start')
     Check 'index guidance includes persistence' ($message -match 'persistence=true')

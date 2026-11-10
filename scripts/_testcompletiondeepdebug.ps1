@@ -30,11 +30,15 @@
         $null -ne $doc -and $null -eq $doc.PSObject.Properties['decision'] -and
         [string]$doc.systemMessage -match '(?m)^DEEP DEBUG: COMPLETE$') $r.Out
     $ddCtx = [string]$doc.systemMessage
-    Check 'COMPLETE names the verified test-evidence scope' ($ddCtx -match 'Test-evidence scope verified' -and $ddCtx -match 'fresh clean result') $ddCtx
-    Check 'COMPLETE honestly lists what this hook CANNOT verify (goal/integration/review/Ponytail/UTF-8/CI)' (
-        $ddCtx -match 'NOT verifiable by this hook' -and $ddCtx -match 'goal ledger receipt \(every item closed\)' -and $ddCtx -notmatch '/goal' -and $ddCtx -match 'Ponytail' -and
-        $ddCtx -match 'Utf8-Encoding-Check' -and $ddCtx -match 'exact-final-SHA CI') $ddCtx
-    Check 'free-form done text is named as never-proof' ($ddCtx -match '"done" text is never proof') $ddCtx
+    Check 'COMPLETE limits verified scope to fresh clean observations without open run or note' (
+        $ddCtx -match 'Scope: fresh clean current observations' -and
+        $ddCtx -match 'no active/leak/owed note/unresolved timeout/kill') $ddCtx
+    # Whole-ledger/integration/review/Ponytail/encoding/Git/CI proof is indirect
+    # in the complete closure owner; this hook explicitly cannot verify it.
+    Check 'COMPLETE requires full closure owner and discloses other unverified gates' (
+        $ddCtx -match 'Before full closure: WORKFLOWS.md Deep Debug FULL; other gates unverified here' -and
+        $ddCtx -notmatch '/goal') $ddCtx
+    Check 'free-form done text is named as never-proof' ($ddCtx -match 'done!=proof') $ddCtx
     Check 'the session-bound marker was written (schema-versioned)' (
         (Test-Path -LiteralPath (Join-Path (Get-StateDir $c) ('TestCompletionCheck-deepdebug-' + (Get-ProjectKey $p) + '.json'))))
     # Anti-loop: same session + unchanged state -> the COMPLETE advisory does not repeat.
@@ -53,7 +57,7 @@
     Check 'deep-debug active with NO guarded evidence -> blocks' ($r.Out -match '"decision":"block"') $r.Out
     Check 'the block carries the exact DEEP DEBUG: BLOCKED (reason) line' ($reason -match '(?m)^DEEP DEBUG: BLOCKED \(') $reason
     Check 'the block names the missing evidence and the guarded-runner recovery' (
-        $reason -match 'NO guarded test evidence' -and $reason -match 'Run-Tests-Guarded\.ps1') $reason
+        $reason -match 'no current guarded observation/result/active' -and $reason -match 'Run-Tests-Guarded\.ps1') $reason
     # Once per session: the unchanged no-evidence state does not re-block.
     $r = Fire -Copy $c -Cwd $p
     Check 'anti-loop: the unchanged no-evidence BLOCKED state emits once per session' ($r.Exit -eq 0 -and $r.Out -eq '') $r.Out
@@ -107,7 +111,7 @@
     $r = Fire -Copy $c -Cwd $p
     $reason = Get-BlockReason $r.Out
     Check 'a stale ok result under deep-debug -> BLOCKED, never COMPLETE' (
-        $r.Out -match '"decision":"block"' -and $reason -match 'STALE or not a clean current-state result' -and
+        $r.Out -match '"decision":"block"' -and $reason -match 'STALE/nonclean/noncurrent evidence' -and
         $reason -match '(?m)^DEEP DEBUG: BLOCKED \(' -and $reason -notmatch 'DEEP DEBUG: COMPLETE') $reason
     $r = Fire -Copy $c -Cwd $p
     Check 'anti-loop: the unchanged stale-evidence BLOCKED state emits once per session' ($r.Exit -eq 0 -and $r.Out -eq '') $r.Out

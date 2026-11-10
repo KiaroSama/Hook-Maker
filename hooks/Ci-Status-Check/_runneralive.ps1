@@ -74,8 +74,8 @@ function Get-RunnerLeftRunningText {
     param([Parameter(Mandatory = $true)][string]$ProjectRoot)
     $live = Get-LiveProjectRunner -ProjectRoot $ProjectRoot
     if (-not $live.Checked -or @($live.Pids).Count -eq 0) { return '' }
-    return ('This project''s CI runner is still running (pid ' + (@($live.Pids) -join ', ') + ') although its run has finished. Stop it now, before any other work: ' +
-        $live.Stop + ' - then confirm it exited. Rule: global-github-automation-rules.md -> Self-Hosted Runners (stopped as soon as its run has finished, never left running idle).')
+    return ('Project CI finished; idle runner still running (pid ' + (@($live.Pids) -join ', ') + '). Stop before other work: ' +
+        $live.Stop + '; verify exit. global-github-automation-rules.md Self-Hosted Runners: no idle survivor.')
 }
 
 # Once the exact-SHA run has reached a terminal state: one block per unchanged

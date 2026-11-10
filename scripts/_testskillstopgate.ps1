@@ -19,9 +19,9 @@
     $tWrote = New-ToolTranscript 'sk-wrote' 'Write' "Done."
     $r = Fire -HookPath $wkHook -Cwd $wkProj -RawStdin (New-StopStdin -Cwd $wkProj -Transcript $tWrote -SessionId 'sk-w1')
     Check 'a session that CHANGED FILES and reported no skill -> a real block decision' (
-        $r.Out -match '"decision"\s*:\s*"block"' -and $r.Out -match 'changed files') $r.Out
+        $r.Out -match '"decision"\s*:\s*"block"' -and $r.Out -match 'Files changed') $r.Out
     Check 'the block offers the honest escape, not just the compliant one' (
-        $r.Out -match 'Skills used: none' -and $r.Out -match 'Either is valid; omission is not') $r.Out
+        $r.Out -match 'Skills used: none' -and $r.Out -match 'no omission') $r.Out
     $r2 = Fire -HookPath $wkHook -Cwd $wkProj -RawStdin (New-StopStdin -Cwd $wkProj -Transcript $tWrote -SessionId 'sk-w1')
     Check 'the SAME unchanged failure does not block twice in one session' ($r2.Exit -eq 0 -and $r2.Out -eq '') $r2.Out
     $tWroteOk = New-ToolTranscript 'sk-wrote-ok' 'Write' "Done.`nSkills used: none - a docs-only edit"
@@ -32,7 +32,7 @@
     $tRead = New-ToolTranscript 'sk-read' 'Read' 'Done.'
     $r = Fire -HookPath $wkHook -Cwd $wkProj -RawStdin (New-StopStdin -Cwd $wkProj -Transcript $tRead -SessionId 'sk-w3')
     Check 'a READ-ONLY session is advised, never blocked' (
-        $r.Out -match 'no skill was invoked this session' -and $r.Out -notmatch '"decision"') $r.Out
+        $r.Out -match 'no invocation this session' -and $r.Out -notmatch '"decision"') $r.Out
     $tBash = New-ToolTranscript 'sk-bash' 'Bash' 'Done.'
     $r = Fire -HookPath $wkHook -Cwd $wkProj -RawStdin (New-StopStdin -Cwd $wkProj -Transcript $tBash -SessionId 'sk-w4')
     Check 'a shell command is NOT assumed to have mutated anything (evidence, not suspicion)' (
@@ -56,10 +56,10 @@
     # IS present here, so a missing-line block would be the wrong diagnosis and
     # would let this assertion pass without the gate under test ever firing.
     Check 'it is the shortlist finding, not the missing-line one (the line is present)' (
-        $r.Out -match 'used none of them') $r.Out
+        $r.Out -match 'INSTALLED prompt matches unused') $r.Out
     Check 'the block NAMES the skill that was offered and dropped' ($r.Out -match 'telemetry-pipeline') $r.Out
     Check 'the block states no authorization is needed for an installed skill' (
-        $r.Out -match 'no authorization' -or $r.Out -match 'already loadable') $r.Out
+        $r.Out -match 'Loadable: no approval') $r.Out
     # A FRESH session for the cleared case. Reusing the blocked one would prove
     # nothing: an unchanged finding is fingerprint-suppressed, and suppression is
     # indistinguishable from silence at the hook's output.
@@ -76,7 +76,7 @@
     Check 'the third session is shown the same shortlist' ($rp3.Out -match 'telemetry-pipeline') $rp3.Out
     $r = Fire -HookPath $slHook -Cwd $slProj -RawStdin (New-StopStdin -Cwd $slProj -Transcript $tProse -SessionId 'sl-3')
     Check 'a name mentioned in PROSE below the line does not clear the gate' (
-        $r.Out -match '"decision"\s*:\s*"block"' -and $r.Out -match 'used none of them') $r.Out
+        $r.Out -match '"decision"\s*:\s*"block"' -and $r.Out -match 'INSTALLED prompt matches unused') $r.Out
     # Scope of the claim: the gate asks whether THIS session used what THIS
     # session was shown. A shortlist is not a standing obligation on the project.
     $r = Fire -HookPath $slHook -Cwd $slProj -RawStdin (New-StopStdin -Cwd $slProj -Transcript $tIgnored -SessionId 'sl-other')
@@ -93,7 +93,7 @@
     $advHook = New-ConfiguredSkillsHookCopy -EnvOverrides @{ SKILLS_DIR = (Join-Path $Work 'no-such-library'); SKILLS_SUMMARY_ENFORCEMENT = 'advisory' }
     $r = Fire -HookPath $advHook -Cwd $wkProj -RawStdin (New-StopStdin -Cwd $wkProj -Transcript $tWrote -SessionId 'sk-adv')
     Check 'advisory mode reports the file-change finding without a block decision' (
-        $r.Out -match 'changed files' -and $r.Out -notmatch '"decision"') $r.Out
+        $r.Out -match 'Files changed' -and $r.Out -notmatch '"decision"') $r.Out
     $offHook = New-ConfiguredSkillsHookCopy -EnvOverrides @{ SKILLS_DIR = (Join-Path $Work 'no-such-library'); SKILLS_SUMMARY_ENFORCEMENT = 'off' }
     $r = Fire -HookPath $offHook -Cwd $wkProj -RawStdin (New-StopStdin -Cwd $wkProj -Transcript $tWrote -SessionId 'sk-off')
     Check 'off mode skips the closing check entirely' ($r.Exit -eq 0 -and $r.Out -eq '') $r.Out
@@ -154,7 +154,7 @@
     $gateFile3 = Join-Path $Work ('skillgate3-' + [guid]::NewGuid().ToString('N').Substring(0, 6) + '.txt')
     Save-SkillShortlist $gateFile3 $gateOffered
     $gd5 = Get-SkillClosingDecision -ClosingText 'Skills used: none - unrelated work' -RawTranscript '' -Shortlist @(Get-SkillShortlist $gateFile3) -Accounted @(Get-SkillAccounted $gateFile3) -SkillInvoked $false
-    Check 'the block states the TOTAL outstanding, not only the six it lists' ($gd5.Text -match '9 outstanding in total') $gd5.Text
+    Check 'the block states the TOTAL outstanding, not only the six it lists' ($gd5.Text -match '9 outstanding, ALL:') $gd5.Text
     Check 'and it carries every outstanding name, so one line can cover them all' (
         $gd5.Text -match 'iota-nine' -and $gd5.Text -match 'eta-seven') $gd5.Text
 
@@ -187,7 +187,7 @@
     Write-Host '--- Skills-Check: the pre-task instruction teaches the line the gate accepts ---' -ForegroundColor Cyan
     $rpTaught = Fire -HookPath $slHook -Cwd $slProj -RawStdin (New-PromptStdin -Cwd $slProj -EventName 'UserPromptSubmit' -Prompt 'rebuild the telemetry pipeline ingest path' -SessionId 'sl-taught')
     Check 'the instruction beside the shortlist says the reason must NAME the shortlisted skills' (
-        $rpTaught.Out -match 'telemetry-pipeline' -and $rpTaught.Out -match 'naming each unused shortlisted installed skill') $rpTaught.Out
+        $rpTaught.Out -match 'telemetry-pipeline' -and $rpTaught.Out -match 'EACH unused match/reason') $rpTaught.Out
     # ONE turn, and the line is exactly what the instruction above asks for -
     # no more than an agent reading it could have known to write.
     $tTaught = New-ToolTranscript 'sl-taught' 'Write' "Done.`nSkills used: none - telemetry-pipeline does not cover a docs-only edit"

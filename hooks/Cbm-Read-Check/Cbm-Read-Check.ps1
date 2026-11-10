@@ -63,30 +63,26 @@ if ($eventName -eq 'UserPromptSubmit') {
 
 if ($indexed) {
     $note = @(
-        'CBM READ CHECK: indexed. Architecture/usage/callers/impact/refactor -> query the graph BEFORE browsing: get_architecture, search_graph, trace_path, get_code_snippet, detect_changes.',
-        'Best-effort coverage: check_index_coverage for cited paths; confirm findings in source. Isolated edits/docs/config/small fixes need no query.'
+        'CBM READ CHECK: indexed. Structure: get_architecture/search_graph/trace_path/get_code_snippet/detect_changes FIRST.',
+        'Citations: check_index_coverage + source confirmation. Isolated edits exempt.'
     ) -join "`n"
 }
 else {
     $inspectCommand = Get-CbmCliAdvice -Service $service -Arguments @('allow-root', '--list')
     $approveCommand = Get-CbmCliAdvice -Service $service -Arguments @('allow-root', '--approve-sensitive', $cwd)
     $manualAdvice = if ($inspectCommand -ne '') {
-        "Manual inspection in an authorized owner-account shell (the hook never executes it):`n  " + $inspectCommand +
-        "`nOnly for an absent approval of THIS user-authorized root, and only if it is classified as sensitive:`n  " + $approveCommand
+        "Authorized owner shell inspection ONLY (not hook execution):`n  " + $inspectCommand +
+        "`nAbsent approval + authorized exact sensitive root ONLY:`n" + $approveCommand
     }
-    else { 'No safe raw CLI invocation was resolved. Use the connected MCP tools or verify the configured launcher and its CLI arguments in an authorized owner-account shell; do not guess an executable or launcher mode.' }
+    else { 'CLI unresolved: connected MCP or verify launcher/args in authorized owner shell; never guess executable/mode.' }
     $rootJson = $cwd | ConvertTo-Json -Compress
     $note = @(
-        ('CBM READ CHECK - this project has no Codebase Memory index yet (expected at ' + $dbPath + ').'),
-        ('Unless this session is documentation-only, index it once now: index_repository(repo_path=' + $rootJson + ', mode="moderate", persistence=true). A background watcher normally keeps it fresh.'),
-        'Then query the graph before browsing files: get_architecture, search_graph, trace_path, get_code_snippet.',
-        'If indexing refuses, diagnose the specific cause using global-mcp-windows-cmm.md (Windows CMM installation and correct usage) - it loads on demand, so read it in full before this work:',
-        '- Outside the allowed root / absent approval: verify the selected service environment and exact project root. Enroll only a root the user authorized; a hook reminder never authorizes wider access.',
-        '- Approved but sensitive: version-specific separator-sensitive equality/marker; verify current Windows CMM owner. Authorized equivalent spelling only, preserve grants + backup/concurrent-check/atomic write; no parent grants/source moves/junction bypass.',
-        '- OS/sandbox access denial: a shell refusal does not prove the connected MCP service is broken. Use the connected tool or authorized escalation; do not grant sandbox identities write access to the private service.',
-        '- cache-private / untrusted identity / secure-coordination failure: inspect the exact path and SID in the newest worker log, including cache/runtime ancestor ACLs. Keep the private service outside writable workspaces; repeatedly tightening a workspace ACL or weakening security checks is not a repair.',
+        ('CBM READ CHECK: index absent; expected ' + $dbPath + '.'),
+        ('Non-doc: index_repository(repo_path=' + $rootJson + ', mode="moderate", persistence=true) once; watcher freshness UNVERIFIED, check index_status.'),
+        'Before browsing: get_architecture/search_graph/trace_path/get_code_snippet.',
+        'Refusal: BEFORE recovery global-mcp-windows-cmm.md FULL. Shell denial!=MCP failure; no wider grants/path bypass/security weakening.',
         $manualAdvice,
-        'Approval alone does not require a restart; verify current service behavior. Reload a client only when evidence shows obsolete executable/environment settings or a dead connection. Confirm recovery with an actual tool result, index_status and a scoped query; parser warnings still require source inspection.'
+        'Approval!=restart. Reload only proven stale binary/env/dead connection; verify source/index_status/query/parser warnings.'
     ) -join "`n"
 }
 

@@ -96,25 +96,22 @@ try {
     Add-Commit $stale 'add Foo'
     $r = Fire -Cwd $stale
     Check 'a stale graph advises without blocking or continuation' ($r.Out -match '"systemMessage"' -and $r.Out -notmatch '"decision"|additionalContext' -and $r.Out -match 'GRAPH UPDATE CHECK') $r.Out
-    Check 'graph lifecycle preserves rollback and permanent ownership-checked cleanup' ($r.Out -match 'Only after verified success' -and $r.Out -match 'semantic retention and endpoints' -and $r.Out -match 'permanently delete exact proven owned obsolete' -and $r.Out -match 'NOT Recycle Bin' -and $r.Out -match 'hook deletes nothing') $r.Out
+    # Full graph owner holds coverage/semantics/endpoints/rollback/disposal detail.
+    Check 'graph update/cleanup requires full owners and retains loss/authority safeguards' (
+        $r.Out -match 'BEFORE update/cleanup: graphify.md/graphify-markdown.md FULL' -and
+        $r.Out -match 'Loss: restore; retain active/evidence/unknown' -and $r.Out -match 'Hook deletes nothing') $r.Out
     $kept = Join-Path $stale 'graph-like-user-data'; [void][IO.Directory]::CreateDirectory($kept)
     $sentinel = Join-Path $kept 'source.txt'; Write-Utf8 $sentinel 'user-owned graph-like source'
     $beforeSentinel = [IO.File]::ReadAllBytes($sentinel)
     $null = Fire -Cwd $stale
     Check 'graph-like unrelated source remains byte-identical' ([Convert]::ToBase64String([IO.File]::ReadAllBytes($sentinel)) -ceq [Convert]::ToBase64String($beforeSentinel))
-    Check 'the reminder uses structural/relationship criteria, not file count' (
-        $r.Out -match 'Judge STRUCTURAL impact, not file count') $r.Out
-    Check 'the OLD blanket "one-file fixes" exclusion wording is gone' ($r.Out -notmatch 'one-file fixes')
-    Check 'a one-file structural change (export/import/call/inheritance) is described as update-worthy' (
-        $r.Out -match 'symbols/exports/imports/calls/inheritance/entries/dependencies' -and
-        $r.Out -match 'matter even in one file') $r.Out
-    Check 'a one-file internal literal/comment-only change is described as potentially not update-worthy' (
-        $r.Out -match 'Prose/comments/formatting/literal/config/generated/test changes matter only if represented') $r.Out
-    Check 'a multi-file docs-only change is explicitly excluded too (criteria are structural, not per-file)' (
-        $r.Out -match 'not file count' -and $r.Out -match 'changes matter only if represented') $r.Out
-    Check 'AST-only/no-API-cost wording remains accurate' ($r.Out -match 'graphify update \.' -and $r.Out -match 'AST-only, no API cost') $r.Out
+    Check 'the reminder uses graphed/structural impact, not a blanket file exemption' (
+        $r.Out -match 'Graphed/structural impact' -and $r.Out -notmatch 'one-file fixes') $r.Out
+    Check 'ungraphed changes require an explanation instead of an automatic update' (
+        $r.Out -match 'else explain') $r.Out
+    Check 'AST-only/no-API-cost wording remains accurate' ($r.Out -match 'graphify update \.' -and $r.Out -match 'local AST') $r.Out
     Check 'updating remains advisory (agent decides, hook never runs graphify itself)' (
-        $r.Out -match 'Judge STRUCTURAL impact' -and $r.Out -notmatch 'graphify update \.\s*$')
+        $r.Out -match 'Graphed/structural impact' -and $r.Out -notmatch 'graphify update \.\s*$')
     $hookText = [System.IO.File]::ReadAllText($Hook)
     Check 'the hook script never invokes graphify itself' ($hookText -notmatch "FilePath\s+graphify" -and $hookText -notmatch "'graphify'")
 
@@ -190,7 +187,8 @@ try {
     $r = Fire -Cwd $mdRepo
     Check 'newer git-ignored Markdown advises without continuation' ($r.Out -match '"systemMessage"' -and $r.Out -notmatch '"decision"|additionalContext') $r.Out
     Check 'the block names the Markdown folders and the local update' (
-        $r.Out -match 'Markdown the graph covers beyond Git' -and $r.Out -match 'graphify update \.' -and $r.Out -match 'never an external model backend') $r.Out
+        $r.Out -match 'Covered Markdown' -and $r.Out -match 'changed beyond Git' -and
+        $r.Out -match 'graphify update \.' -and $r.Out -match 'host-agent semantic only, no external model') $r.Out
     $r = Fire -Cwd $mdRepo
     Check 'the same Markdown state does not block twice' ($r.Exit -eq 0 -and $r.Out -eq '') $r.Out
 
@@ -226,15 +224,15 @@ try {
     New-Item -ItemType Directory -Path (Join-Path $readRepo '.ai') -Force | Out-Null
     Write-Utf8 (Join-Path $readRepo '.ai\memory.md') '# memory'
     $out = Invoke-ReadCheck -Cwd $readRepo -Session 'md-read-1'
-    Check 'read-check: a graph without .graphify_build.json gets the one-time set-up line' ($out -match 'built without the git-ignored Markdown folders' -and $out -match 'graphify-markdown\.md') $out
+    Check 'read-check: a graph without .graphify_build.json gets the one-time set-up line' ($out -match 'Missing ignored Markdown' -and $out -match 'graphify-markdown\.md') $out
     Write-Utf8 (Join-Path $readRepo 'graphify-out\.graphify_build.json') '{"gitignore": false}'
     $out = Invoke-ReadCheck -Cwd $readRepo -Session 'md-read-2'
-    Check 'read-check: {"gitignore": false} removes the line' ($out -match 'GRAPH READ CHECK' -and $out -notmatch 'built without the git-ignored') $out
+    Check 'read-check: {"gitignore": false} removes the line' ($out -match 'GRAPH READ CHECK' -and $out -notmatch 'Missing ignored Markdown') $out
     $plainRepo = New-GitRepo 'MdNone'
     Write-Utf8 (Join-Path $plainRepo 'a.ps1') 'function A {}'; Add-Commit $plainRepo 'init'
     New-StaleGraph $plainRepo | Out-Null
     $out = Invoke-ReadCheck -Cwd $plainRepo -Session 'md-read-3'
-    Check 'read-check: a project without Markdown folders never gets the line' ($out -match 'GRAPH READ CHECK' -and $out -notmatch 'built without the git-ignored') $out
+    Check 'read-check: a project without Markdown folders never gets the line' ($out -match 'GRAPH READ CHECK' -and $out -notmatch 'Missing ignored Markdown') $out
 
     Write-Host '--- Windows PowerShell 5.1 ---' -ForegroundColor Cyan
     $ps5 = New-GitRepo 'Ps5'
@@ -242,7 +240,7 @@ try {
     Write-Utf8 (Join-Path $ps5 'src.ps1') 'function Baz {}'
     Add-Commit $ps5 'add Baz'
     $r4 = Fire -Cwd $ps5 -Exe 'powershell.exe'
-    Check 'Windows PowerShell 5.1 emits the reminder cleanly' ($r4.Exit -eq 0 -and $r4.Out -match 'GRAPH UPDATE CHECK' -and $r4.Out -match 'STRUCTURAL impact') $r4.Err
+    Check 'Windows PowerShell 5.1 emits the reminder cleanly' ($r4.Exit -eq 0 -and $r4.Out -match 'GRAPH UPDATE CHECK' -and $r4.Out -match 'Graphed/structural impact') $r4.Err
 }
 finally {
     if ($KeepArtifacts) {

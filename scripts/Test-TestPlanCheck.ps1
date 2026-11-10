@@ -174,8 +174,8 @@ try {
         [string]$parsed.hookSpecificOutput.hookEventName -eq 'SessionStart' -and
         -not [string]::IsNullOrWhiteSpace([string]$parsed.hookSpecificOutput.additionalContext)) $r.Out
     $msg1 = Get-Message $r.Out
-    Check 'the advisory surfaces the bounded wall/idle timeout policy point' ($msg1 -match '(?i)wall timeout' -and $msg1 -match '(?i)idle') $msg1
-    Check 'the advisory surfaces resource-aware parallelism and process cleanup' ($msg1 -match 'shared worker ceiling' -and $msg1 -match 'cores/free memory/children/other work' -and $msg1 -match '(?i)process tree') $msg1
+    Check 'the advisory surfaces the bounded wall/idle timeout policy point' ($msg1 -match 'wall/idle bounds') $msg1
+    Check 'the advisory surfaces resource-aware parallelism and process cleanup' ($msg1 -match 'HOOKMAKER_MAX_TEST_WORKERS explicit/auto' -and $msg1 -match 'CPU/RAM/children/other work' -and $msg1 -match 'Finally reap owned tree/temp/state') $msg1
     # The policy block itself mentions blind sleeps, so absence is asserted on
     # the findings SECTION, which only appears when something real was seen.
     Check 'a bounded test file produces no invented finding' ($msg1 -notmatch '(?i)Observed in this project') $msg1
@@ -213,7 +213,7 @@ try {
     $hc4 = New-IsolatedHookCopy
     $proj4 = New-GitRepo 'Relevance'
     $rRelated = Fire -HookPath $hc4.Script -Cwd $proj4 -EventName 'UserPromptSubmit' -Prompt $TestRelatedPrompt -LocalAppData $hc4.LocalAppData
-    Check 'a clearly test-related prompt produces advice naming the on-demand policy file' ((Get-Message $rRelated.Out) -match '(?i)TEST PLAN CHECK' -and (Get-Message $rRelated.Out) -match 'global-test-rules\.md; it loads on demand, so read it in full before this work') $rRelated.Out
+    Check 'a clearly test-related prompt produces advice naming the on-demand policy file' ((Get-Message $rRelated.Out) -match '(?i)TEST PLAN CHECK' -and (Get-Message $rRelated.Out) -match 'global-test-rules\.md FULL') $rRelated.Out
 
     $hc5 = New-IsolatedHookCopy
     $proj5 = New-GitRepo 'Irrelevance'
@@ -255,7 +255,7 @@ try {
     Write-Utf8 (Join-Path $proj7 'tests\test_api.py') "import time`ndef test_ok():`n    time.sleep(300)`n    assert True`n"
     $rChanged = Fire -HookPath $hc7.Script -Cwd $proj7 -EventName 'UserPromptSubmit' -Prompt $TestRelatedPrompt -LocalAppData $hc7.LocalAppData
     Check 'a CHANGED project state reports immediately, ignoring the cooldown' ((Get-Message $rChanged.Out) -ne '') $rChanged.Out
-    Check 'the new minute-scale sleep is reported with a real file:line' ((Get-Message $rChanged.Out) -match 'test_api\.py:3 - blind sleep of 300s') (Get-Message $rChanged.Out)
+    Check 'the new minute-scale sleep is reported with a real file:line' ((Get-Message $rChanged.Out) -match 'test_api\.py:3: blind sleep\s+300s') (Get-Message $rChanged.Out)
 
     # =====================================================================
     Write-Host '--- TEST_PLAN_ALWAYS_REPORT=1 overrides the cooldown ---' -ForegroundColor Cyan
@@ -274,7 +274,7 @@ try {
     & git -C $proj8 commit -q -m t 2>$null | Out-Null
     $r = Fire -HookPath $hc8.Script -Cwd $proj8 -EventName 'SessionStart' -LocalAppData $hc8.LocalAppData
     $msg8 = Get-Message $r.Out
-    Check 'WaitForExit() with no timeout is reported at its line' ($msg8 -match 'Test-Runner\.ps1:2 - WaitForExit\(\) with no timeout') $msg8
+    Check 'WaitForExit() with no timeout is reported at its line' ($msg8 -match 'Test-Runner\.ps1:2: WaitForExit\(\) unbounded') $msg8
     Check 'the finding uses a project-relative path, never the absolute fixture path' ($msg8 -notlike ('*' + $proj8 + '*')) $msg8
 
     # =====================================================================
@@ -285,7 +285,7 @@ try {
     $msg9 = Get-Message $r.Out
     Check 'a malformed .env does not crash the hook' ($r.Exit -eq 0 -and $r.Err -eq '') ($r.Err)
     Check 'the invalid cooldown is reported in plain text and the default 120 is used' (
-        $msg9 -match 'TEST_PLAN_COOLDOWN_MINUTES is not an integer' -and $msg9 -match '120 minutes pass') $msg9
+        $msg9 -match 'TEST_PLAN_COOLDOWN_MINUTES is not an integer' -and $msg9 -match 'using the default 120') $msg9
     Check 'the invalid ALWAYS_REPORT flag is reported too' ($msg9 -match 'TEST_PLAN_ALWAYS_REPORT must be 0 or 1') $msg9
 
     # =====================================================================
@@ -304,7 +304,7 @@ New-Item -ItemType File -Path (Join-Path $PSScriptRoot 'EXECUTED-MARKER.txt') -F
     $after = Get-TreeSignature $proj10
     Check 'the whole project tree is byte-for-byte identical after the hook ran' ($before -eq $after)
     Check 'no execution marker exists - the hook read the test file, it did not run it' (-not (Test-Path -LiteralPath (Join-Path $proj10 'scripts\EXECUTED-MARKER.txt')))
-    Check 'it still DETECTED the 600s sleep by reading' ((Get-Message $r.Out) -match 'Test-Sideeffect\.ps1:1 - blind sleep of 600s') (Get-Message $r.Out)
+    Check 'it still DETECTED the 600s sleep by reading' ((Get-Message $r.Out) -match 'Test-Sideeffect\.ps1:1: blind sleep\s+600s') (Get-Message $r.Out)
     Check 'the hook created no client settings inside the project' (
         -not (Test-Path -LiteralPath (Join-Path $proj10 '.claude')) -and -not (Test-Path -LiteralPath (Join-Path $proj10 '.codex')))
     $stateFiles = @(Get-ChildItem -LiteralPath (Join-Path $hc10.LocalAppData 'HookMaker\state') -Filter 'TestPlanCheck-*.json' -ErrorAction SilentlyContinue)
@@ -317,7 +317,7 @@ New-Item -ItemType File -Path (Join-Path $PSScriptRoot 'EXECUTED-MARKER.txt') -F
     Write-Utf8 (Join-Path $proj11 'tests\test_slow.py') "import time`ntime.sleep(120)`n"
     $r = Fire -HookPath $hc11.Script -Cwd $proj11 -EventName 'SessionStart' -LocalAppData $hc11.LocalAppData
     Check 'a non-git project still reports its findings without error' (
-        $r.Exit -eq 0 -and $r.Err -eq '' -and (Get-Message $r.Out) -match 'test_slow\.py:2 - blind sleep of 120s') ($r.Out + $r.Err)
+        $r.Exit -eq 0 -and $r.Err -eq '' -and (Get-Message $r.Out) -match 'test_slow\.py:2: blind sleep\s+120s') ($r.Out + $r.Err)
 
     # =====================================================================
     Write-Host '--- Windows PowerShell 5.1 host ---' -ForegroundColor Cyan
@@ -328,7 +328,7 @@ New-Item -ItemType File -Path (Join-Path $PSScriptRoot 'EXECUTED-MARKER.txt') -F
     & git -C $proj12 commit -q -m t 2>$null | Out-Null
     $r = Fire -HookPath $hc12.Script -Cwd $proj12 -EventName 'UserPromptSubmit' -Prompt $TestRelatedPrompt -LocalAppData $hc12.LocalAppData -Exe 'powershell.exe'
     Check '5.1 host: relevance gate, scan and advisory all work' (
-        $r.Exit -eq 0 -and (Get-Message $r.Out) -match 'Test-Slow\.ps1:1 - blind sleep of 180s') ($r.Out + $r.Err)
+        $r.Exit -eq 0 -and (Get-Message $r.Out) -match 'Test-Slow\.ps1:1: blind sleep\s+180s') ($r.Out + $r.Err)
     $r = Fire -HookPath $hc12.Script -Cwd $proj12 -EventName 'UserPromptSubmit' -Prompt $UnrelatedPrompt -LocalAppData $hc12.LocalAppData -Exe 'powershell.exe'
     Check '5.1 host: an unrelated prompt is still silent' ($r.Exit -eq 0 -and $r.Out -eq '') $r.Out
 
@@ -353,7 +353,7 @@ New-Item -ItemType File -Path (Join-Path $PSScriptRoot 'EXECUTED-MARKER.txt') -F
     & git -C $projExcl commit -q -m t 2>$null | Out-Null
     $rExcl = Fire -HookPath $hcExcl.Script -Cwd $projExcl -EventName 'SessionStart' -LocalAppData $hcExcl.LocalAppData
     $msgExcl = Get-Message $rExcl.Out
-    Check 'the real top-level test file IS reported' ($msgExcl -match 'test_app\.py:2 - blind sleep of 200s') $msgExcl
+    Check 'the real top-level test file IS reported' ($msgExcl -match 'test_app\.py:2: blind sleep\s+200s') $msgExcl
     Check 'the node_modules test file is NOT reported (tree pruned, never descended)' ($msgExcl -notmatch 'test_dep\.py') $msgExcl
     Check 'pruning a large excluded tree is not treated as partial coverage' ($msgExcl -notmatch '(?i)PARTIAL') $msgExcl
 
@@ -380,7 +380,7 @@ New-Item -ItemType File -Path (Join-Path $PSScriptRoot 'EXECUTED-MARKER.txt') -F
     if ($madeJunction) {
         $rRp = Fire -HookPath $hcRp.Script -Cwd $projRp -EventName 'SessionStart' -LocalAppData $hcRp.LocalAppData
         $msgRp = Get-Message $rRp.Out
-        Check 'the in-repo test file IS reported (scan otherwise works)' ($msgRp -match 'test_local\.py:2 - blind sleep of 150s') $msgRp
+        Check 'the in-repo test file IS reported (scan otherwise works)' ($msgRp -match 'test_local\.py:2: blind sleep\s+150s') $msgRp
         Check 'content behind the junction is NOT reported (reparse point not followed)' ($msgRp -notmatch 'test_linked\.py') $msgRp
     }
     else {
@@ -413,7 +413,7 @@ New-Item -ItemType File -Path (Join-Path $PSScriptRoot 'EXECUTED-MARKER.txt') -F
     $rFind = Fire -HookPath $hcFind.Script -Cwd $projFind -EventName 'SessionStart' -LocalAppData $hcFind.LocalAppData
     $msgFind = Get-Message $rFind.Out
     Check 'the findings ceiling makes the scan report PARTIAL coverage' ($msgFind -match '(?i)PARTIAL') $msgFind
-    $observedCount = @([regex]::Matches($msgFind, 'blind sleep of')).Count
+    $observedCount = @([regex]::Matches($msgFind, ': blind sleep \d+s')).Count
     Check 'only the capped number of findings (1) is emitted' ($observedCount -eq 1) ("count=$observedCount :: " + $msgFind)
 
     # =====================================================================
@@ -452,7 +452,7 @@ New-Item -ItemType File -Path (Join-Path $PSScriptRoot 'EXECUTED-MARKER.txt') -F
     $rFull = Fire -HookPath $hcFull.Script -Cwd $projTrip -EventName 'SessionStart' -LocalAppData $hcFull.LocalAppData
     $msgFull = Get-Message $rFull.Out
     Check 'without the seam the same fixture scans fully (not partial)' ($msgFull -notmatch '(?i)PARTIAL') $msgFull
-    Check 'without the seam the test-file finding IS reported' ($msgFull -match 'zz_test_slow\.ps1:1 - blind sleep of 300s') $msgFull
+    Check 'without the seam the test-file finding IS reported' ($msgFull -match 'zz_test_slow\.ps1:1: blind sleep\s+300s') $msgFull
 
     # =====================================================================
     Write-Host '--- extension-NON-matching files also pay the per-entry time check (HM-04) ---' -ForegroundColor Cyan
@@ -490,7 +490,7 @@ New-Item -ItemType File -Path (Join-Path $PSScriptRoot 'EXECUTED-MARKER.txt') -F
     # Control: scanning the target directory DIRECTLY finds the finding (it is real).
     $hcCtl = New-IsolatedHookCopy
     $rCtl = Fire -HookPath $hcCtl.Script -Cwd $rootTgt -EventName 'SessionStart' -LocalAppData $hcCtl.LocalAppData
-    Check 'control: scanning the target directly DOES find the finding' ((Get-Message $rCtl.Out) -match 'test_root\.py:2 - blind sleep of 300s') (Get-Message $rCtl.Out)
+    Check 'control: scanning the target directly DOES find the finding' ((Get-Message $rCtl.Out) -match 'test_root\.py:2: blind sleep\s+300s') (Get-Message $rCtl.Out)
     # Now a junction whose cwd IS the reparse point.
     $rootJct = Join-Path $Work ('rproot-jct-' + [guid]::NewGuid().ToString('N').Substring(0, 6))
     $madeRootJct = $false
@@ -505,7 +505,7 @@ New-Item -ItemType File -Path (Join-Path $PSScriptRoot 'EXECUTED-MARKER.txt') -F
         $rJct = Fire -HookPath $hcJct.Script -Cwd $rootJct -EventName 'SessionStart' -LocalAppData $hcJct.LocalAppData
         $msgJct = Get-Message $rJct.Out
         Check 'a junction scan ROOT is refused -> the scan is PARTIAL naming the root' (
-            $msgJct -match '(?i)PARTIAL' -and $msgJct -match '(?i)scan root is a junction') $msgJct
+            $msgJct -match '(?i)PARTIAL' -and $msgJct -match '(?i)root junction/symlink not followed') $msgJct
         Check 'the finding behind the junction root is absent (root not followed)' ($msgJct -notmatch 'test_root\.py') $msgJct
     }
     else {
@@ -536,7 +536,7 @@ New-Item -ItemType File -Path (Join-Path $PSScriptRoot 'EXECUTED-MARKER.txt') -F
     $rTm = Fire -HookPath $hcTm.Script -Cwd $projTm -EventName 'SessionStart' -LocalAppData $hcTm.LocalAppData
     $msgTm = Get-Message $rTm.Out
     Check 'the 12-char runner projectKey matches and the baseline line appears' (
-        $rTm.Exit -eq 0 -and $rTm.Err -eq '' -and $msgTm -match 'prior test-timing baseline exists for 1 recorded command') ($msgTm + $rTm.Err)
+        $rTm.Exit -eq 0 -and $rTm.Err -eq '' -and $msgTm -match 'Local timing baselines: 1 commands') ($msgTm + $rTm.Err)
     # Control: a timing file for a DIFFERENT project (different 12-char key) must
     # NOT be counted - the match is by stored key, not by file presence.
     $hcTmOther = New-IsolatedHookCopy -EnvContent "TEST_PLAN_ALWAYS_REPORT=1`n"
@@ -545,7 +545,7 @@ New-Item -ItemType File -Path (Join-Path $PSScriptRoot 'EXECUTED-MARKER.txt') -F
     $tmOtherDoc = [pscustomobject]@{ version = 1; projectKey = ('0' * 12); commandFingerprint = ('cd' * 16); samples = $tmSamples }
     Write-Utf8 (Join-Path $tmOtherState ('TestTiming-' + ('0' * 12) + '-' + ('cd' * 16) + '.json')) ($tmOtherDoc | ConvertTo-Json -Depth 6)
     $rTmOther = Fire -HookPath $hcTmOther.Script -Cwd $projTm -EventName 'SessionStart' -LocalAppData $hcTmOther.LocalAppData
-    Check 'a foreign-project timing file is NOT counted as this project''s baseline' ((Get-Message $rTmOther.Out) -notmatch 'prior test-timing baseline') (Get-Message $rTmOther.Out)
+    Check 'a foreign-project timing file is NOT counted as this project''s baseline' ((Get-Message $rTmOther.Out) -notmatch 'Local timing baselines') (Get-Message $rTmOther.Out)
 
     # =====================================================================
     Write-Host '--- E-03: standalone ::deep-debug extends the advisory; prose never does ---' -ForegroundColor Cyan
@@ -559,31 +559,31 @@ New-Item -ItemType File -Path (Join-Path $PSScriptRoot 'EXECUTED-MARKER.txt') -F
     $rProseTest = Fire -HookPath $hcDd.Script -Cwd $projDd -EventName 'UserPromptSubmit' -Prompt 'deep debug this flaky test suite please' -LocalAppData $hcDd.LocalAppData
     $msgProse = Get-Message $rProseTest.Out
     Check 'prose "deep debug" + test keyword -> plain advisory WITHOUT the dd section' (
-        $msgProse -match '(?i)TEST PLAN CHECK' -and $msgProse -notmatch '::deep-debug detected') $msgProse
+        $msgProse -match '(?i)TEST PLAN CHECK' -and $msgProse -notmatch '::deep-debug plan \(advisory\):') $msgProse
     # A STANDALONE ::deep-debug token alone (no other keyword) passes the gate
     # and the advisory carries the deep-debug plan requirements.
     $hcDd2 = New-IsolatedHookCopy
     $projDd2 = New-GitRepo 'DeepDebugToken'
     $rDd = Fire -HookPath $hcDd2.Script -Cwd $projDd2 -EventName 'UserPromptSubmit' -Prompt '::deep-debug' -LocalAppData $hcDd2.LocalAppData
     $msgDd = Get-Message $rDd.Out
-    Check 'standalone ::deep-debug alone is relevant and advises' ($msgDd -match '(?i)TEST PLAN CHECK' -and $msgDd -match '::deep-debug detected') $msgDd
+    Check 'standalone ::deep-debug alone is relevant and advises' ($msgDd -match '(?i)TEST PLAN CHECK' -and $msgDd -match '::deep-debug plan \(advisory\):') $msgDd
     Check 'dd: persistent regression test/fixture + original failing/edge paths' (
-        $msgDd -match 'PERSISTENT regression test' -and $msgDd -match 'original failing path' -and $msgDd -match 'failure/edge paths') $msgDd
+        $msgDd -match 'persistent regression/fixture' -and $msgDd -match 'original/edge/failure rerun') $msgDd
     Check 'dd: bounded per-test/suite/command/idle/CI time + documented native timeout + outer guarded limit' (
-        $msgDd -match 'per-test, per-suite, whole-command, idle/no-progress and CI-job time' -and
-        $msgDd -match 'DOCUMENTED native timeout' -and $msgDd -match 'never a guessed flag' -and $msgDd -match 'outer guarded-runner limit') $msgDd
+        $msgDd -match 'documented native\+outer case/suite/command/CI wall/idle bounds' -and
+        $msgDd -match 'no blind sleep/unbounded poll/input/join/hidden retry/guessed flags') $msgDd
     Check 'dd: no blind sleep/unbounded polling/interactive wait/hidden retry + ONE shared worker ceiling' (
-        $msgDd -match 'No blind sleeps, unbounded polling, interactive waits' -and $msgDd -match 'hidden retries' -and
-        $msgDd -match 'ONE shared resource-aware worker ceiling') $msgDd
+        $msgDd -match 'No blind sleep/unbounded poll/input/join/hidden retry' -and
+        $msgDd -match 'HOOKMAKER_MAX_TEST_WORKERS explicit/auto' -and $msgDd -match 'CPU/RAM/children/other work minus OS/cleanup reserve') $msgDd
     Check 'dd: child-process/temp cleanup + property tests only for real invariants + security findings need confirmation' (
-        $msgDd -match 'Terminate owned child processes and clean temporary resources' -and
-        $msgDd -match 'REAL invariant' -and $msgDd -match 'security-tool finding needs confirmation') $msgDd
+        $msgDd -match 'OWNED/BOUNDED/WATCHED/SWEPT PID\+start' -and $msgDd -match 'Finally reap owned tree/temp/state' -and
+        $msgDd -match 'real property invariants' -and $msgDd -match 'confirm security findings before edits') $msgDd
     Check 'dd: Ponytail simplifications get targeted tests, never a second broad loop' (
-        $msgDd -match 'Ponytail simplifications get TARGETED tests only' -and $msgDd -match 'never a second broad debug/audit loop') $msgDd
+        $msgDd -match 'Ponytail: targeted tests ONLY, no broad re-audit/debug') $msgDd
     Check 'dd: new/modified test text is UTF-8 unless documented exception; new Test-*.ps1 CI-mapped' (
-        $msgDd -match 'UTF-8 unless a documented technical exception applies' -and $msgDd -match 'permanently mapped to CI') $msgDd
+        $msgDd -match 'UTF-8/verified exception' -and $msgDd -match 'EVERY Test-\*\.ps1 -> CI') $msgDd
     Check 'dd: the UTF-8 line defers file validation to Utf8-Encoding-Check (no second scanner here)' (
-        $msgDd -match 'Utf8-Encoding-Check validates the files' -and $msgDd -match 'does not rescan') $msgDd
+        $msgDd -match 'Utf8-Encoding-Check: UTF-8/verified exception') $msgDd
     # Same fingerprint gate: an unchanged repeat of the SAME dd prompt is silent.
     $rDdRepeat = Fire -HookPath $hcDd2.Script -Cwd $projDd2 -EventName 'UserPromptSubmit' -Prompt '::deep-debug' -LocalAppData $hcDd2.LocalAppData
     Check 'dd anti-loop: an unchanged ::deep-debug repeat inside the cooldown is silent' ($rDdRepeat.Exit -eq 0 -and $rDdRepeat.Out -eq '') $rDdRepeat.Out
@@ -593,7 +593,7 @@ New-Item -ItemType File -Path (Join-Path $PSScriptRoot 'EXECUTED-MARKER.txt') -F
     $rPlainAfter = Fire -HookPath $hcDd2.Script -Cwd $projDd2 -EventName 'UserPromptSubmit' -Prompt $TestRelatedPrompt -LocalAppData $hcDd2.LocalAppData
     $msgPlainAfter = Get-Message $rPlainAfter.Out
     Check 'a later plain test prompt reports the NORMAL advisory without dd lines' (
-        $msgPlainAfter -match '(?i)TEST PLAN CHECK' -and $msgPlainAfter -notmatch '::deep-debug detected') $msgPlainAfter
+        $msgPlainAfter -match '(?i)TEST PLAN CHECK' -and $msgPlainAfter -notmatch '::deep-debug plan \(advisory\):') $msgPlainAfter
     # Client shapes: the dd advisory rides the same client-aware envelope.
     $hcDdClaude = New-IsolatedHookCopy
     $projDdCl = New-GitRepo 'DeepDebugClaude'
@@ -602,7 +602,7 @@ New-Item -ItemType File -Path (Join-Path $PSScriptRoot 'EXECUTED-MARKER.txt') -F
     try { $parsedDdCl = $rDdCl.Out | ConvertFrom-Json } catch { $parsedDdCl = $null }
     Check 'dd advisory uses the Claude shape (hookSpecificOutput.additionalContext) for Claude' (
         $null -ne $parsedDdCl -and $null -ne $parsedDdCl.PSObject.Properties['hookSpecificOutput'] -and
-        ([string]$parsedDdCl.hookSpecificOutput.additionalContext) -match '::deep-debug detected' -and
+        ([string]$parsedDdCl.hookSpecificOutput.additionalContext) -match '::deep-debug plan \(advisory\):' -and
         $rDdCl.Out -notmatch '"decision"') $rDdCl.Out
     $hcDdCodex = New-IsolatedHookCopy
     $projDdCx = New-GitRepo 'DeepDebugCodex'
@@ -614,7 +614,7 @@ New-Item -ItemType File -Path (Join-Path $PSScriptRoot 'EXECUTED-MARKER.txt') -F
         $null -ne $parsedDdCx -and $null -eq $parsedDdCx.PSObject.Properties['systemMessage'] -and
         $null -ne $parsedDdCx.PSObject.Properties['hookSpecificOutput'] -and
         [string]$parsedDdCx.hookSpecificOutput.hookEventName -eq 'UserPromptSubmit' -and
-        ([string]$parsedDdCx.hookSpecificOutput.additionalContext) -match '::deep-debug detected') $rDdCx.Out
+        ([string]$parsedDdCx.hookSpecificOutput.additionalContext) -match '::deep-debug plan \(advisory\):') $rDdCx.Out
 
     # =====================================================================
     Write-Host '--- E-13: static safety - the hook only DESCRIBES commands, it never executes them ---' -ForegroundColor Cyan
@@ -702,7 +702,7 @@ New-Item -ItemType File -Path (Join-Path $PSScriptRoot 'EXECUTED-MARKER.txt') -F
             [System.IO.File]::ReadAllText($tpcRuntime) -eq $tpcExpectedRuntimeText)
         $parRepairLocal = Join-Path $Work '_par-repair-local'; New-Item -ItemType Directory -Path $parRepairLocal -Force | Out-Null
         $rParRepaired = Fire -HookPath $tpcRuntime -Cwd $projPar -EventName 'UserPromptSubmit' -Prompt '::deep-debug' -LocalAppData $parRepairLocal
-        Check 'the repaired runtime emits the current ::deep-debug guidance' ((Get-Message $rParRepaired.Out) -match '::deep-debug detected') (Get-Message $rParRepaired.Out)
+        Check 'the repaired runtime emits the current ::deep-debug guidance' ((Get-Message $rParRepaired.Out) -match '::deep-debug plan \(advisory\):') (Get-Message $rParRepaired.Out)
     }
     finally { $env:HOOKMAKER_STATE_DIR = $savedHmStateDir }
 

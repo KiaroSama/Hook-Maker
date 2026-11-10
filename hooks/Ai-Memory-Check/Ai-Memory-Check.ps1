@@ -91,7 +91,7 @@ if ($null -eq $workTime) {
 $reasonWhy = ''
 $memoryPath = Join-Path $aiDir 'memory.md'
 if (-not (Test-Path -LiteralPath $memoryPath -PathType Leaf)) {
-    $reasonWhy = '.ai exists but .ai/memory.md (the startup router) is missing'
+    $reasonWhy = '.ai/ exists; startup router .ai/memory.md missing'
 }
 else {
     $memoryTime = (Get-Item -LiteralPath $memoryPath -Force).LastWriteTimeUtc
@@ -118,14 +118,14 @@ $filesClause = if ($existingFiles.Count -gt 0) {
     'Other files currently in .ai/: ' + ($existingFiles -join ', ') + '.'
 }
 else {
-    '.ai/ has no specialized files yet (only memory.md) - create one ONLY if this task produced something reusable enough to name (e.g. LESSON.md, REFERENCE.md).'
+    'Only memory.md exists; specialized file ONLY for reusable task knowledge (LESSON.md/REFERENCE.md).'
 }
 
 # E-07: the durable-value guidance names what a debugging/::deep-debug task
 # records and what it never stores. Guidance text only - encoding of the files
 # themselves is validated by Utf8-Encoding-Check through its own state (no
 # repository rescan here, no dependence on same-event hook order).
-$reason = 'AI MEMORY CHECK: ' + $reasonWhy + '. Meaningful reusable work only: update relevant specialized files, memory.md router LAST; deduplicate with links. ' + $filesClause + ' Debugging/::deep-debug: confirmed root cause/fixed path/permanent regression fixture, verified commands/outcomes, blockers/risks/next action, stable timing/resources and consequential Ponytail accepted/rejected simplifications. Strict UTF-8 (Utf8-Encoding-Check validates; no rescan here); no secrets/raw prompts/logs/scans/source/hypotheses/routine passes/global-policy copies. Trivial/no durable value -> explain briefly, no write. Either answer clears this once/session gate. Owner: ai-context-memory-policy.md.'
+$reason = 'AI MEMORY CHECK: ' + $reasonWhy + '. BEFORE update/debug notes: ai-context-memory-policy.md/ai-context-memory-details.md FULL. ' + $filesClause + ' Dedupe/link, memory.md LAST; strict UTF-8. No durable value: explain/no write. Once/session.'
 # Record the block so THIS hook's own re-entry is recognised; another
 # gate's block must not mute it, and its own must not repeat.
 $emit = Write-StopBlockResult -HookInput $hookInput -HookName 'Ai-Memory-Check' -EventName $eventName -Reason $reason

@@ -164,14 +164,14 @@ try {
     # Re-pointed onto the hard-ceiling wording: what they pinned before ("review
     # signal", "small overage", "appending is correct") is now the opposite rule.
     Check '1. SessionStart states the ceiling is HARD and enforced when you write' (
-        $msg1 -match '(?i)HARD CEILING per source file, enforced when you write') $msg1
-    Check '2. it says decomposition is never needed later' ($msg1 -match '(?i)decomposition is never needed later') $msg1
+        $msg1 -match '(?i)HARD CEILING 800 lines/source file; enforce before writing') $msg1
+    Check '2. it requires counting before new code' ($msg1 -match '(?i)Count first') $msg1
     Check '4. default threshold 800 appears in the guidance' ($msg1 -match '\b800\b') $msg1
     Check '6a. a file at or near the ceiling is declared CLOSED to new code' (
-        $msg1 -match '(?i)about 700 lines or more\) is CLOSED to new code') $msg1
+        $msg1 -match '(?i)>=700 lines: CLOSED to new code') $msg1
     Check '6b. anti-wrapper guidance remains' ($msg1 -match '(?i)wrapper') $msg1
     Check '7. the guidance carries the ceiling to test files and subagents' (
-        $msg1 -match '(?i)Test files count too' -and $msg1 -match '(?i)subagent brief') $msg1
+        $msg1 -match '(?i)Tests count' -and $msg1 -match '(?i)briefs include ceiling') $msg1
 
     # =====================================================================
     Write-Host '--- Pre-task uses the CONFIGURED threshold; invalid falls back to 800 ---' -ForegroundColor Cyan
@@ -216,8 +216,8 @@ try {
     $r = Fire -HookPath $hc6.Script -Cwd $proj6 -EventName 'Stop' -LocalAppData $hc6.LocalAppData
     $msg6 = Get-Advisory $r.Out
     Check '9. 801 lines is reported' ($msg6 -match 'a\.py \(801 lines\)') $msg6
-    Check '10. an already-oversized file is advisory: it blocks nothing and mandates no split' ($msg6 -match 'advisory only' -and $msg6 -match 'gate applies only to task-grown overflow' -and $r.Out -notmatch '"decision"') $msg6
-    Check '10b. the report still defers the split decision to a real responsibility boundary' ($msg6 -match 'extract a real responsibility/module/layer/public boundary') $msg6
+    Check '10. an already-oversized file is advisory: it blocks nothing and mandates no split' ($msg6 -match 'Existing overflow advisory; task-grown overflow gates' -and $r.Out -notmatch '"decision"') $msg6
+    Check '10b. extraction requires full responsibility/boundary owner BEFORE work' ($msg6 -match 'BEFORE extraction: global-architecture-rules.md FULL' -and $msg6 -match 'Stop growth; verify build/tests') $msg6
 
     $hc7 = New-IsolatedHookCopy
     $proj7 = New-Proj 'ClearlyLarger'
@@ -346,8 +346,8 @@ try {
     # R1: a ceiling-only partial must name the FILE ceiling in the OFFENDER report -
     # not a read failure, and not the directory/time limit that were not hit.
     Check '21c. the ceiling-only offender report names the FILE ceiling, not a read failure or a dir/time limit' (
-        $msg17 -match '(?i)scan ceiling of 1 files was reached' -and
-        $msg17 -notmatch '(?i)could not be read' -and $msg17 -notmatch '(?i)directory ceiling' -and $msg17 -notmatch '(?i)time limit') $msg17
+        $msg17 -match '(?i)source-file ceiling 1 reached' -and
+        $msg17 -notmatch '(?i)unreadable files/directories' -and $msg17 -notmatch '(?i)directory ceiling' -and $msg17 -notmatch '(?i)time limit') $msg17
 
     # =====================================================================
     Write-Host '--- Stop scan: MAX_FILES is a real per-file ceiling (one flat dir over the limit) ---' -ForegroundColor Cyan
@@ -485,7 +485,7 @@ try {
         Check 'R1. an unreadable file yields an advisory (exit 0, non-empty, no stderr) - not a silent all-clear' (
             $rRead.Exit -eq 0 -and $rRead.Out -ne '' -and $rRead.Err -eq '') ("exit=$($rRead.Exit) out=[$($rRead.Out)] err=[$($rRead.Err)]")
         Check 'R2. the advisory states coverage was INCOMPLETE and names a read failure (not only a ceiling)' (
-            $msgRead -match '(?i)coverage was INCOMPLETE' -and $msgRead -match '(?i)could not be read') $msgRead
+            $msgRead -match '(?i)coverage was INCOMPLETE' -and $msgRead -match '(?i)unreadable files/directories') $msgRead
         Check 'R3. the incomplete-coverage advisory is NOT a decision:block' ($rRead.Out -notmatch '"decision"') $rRead.Out
     }
     else {
@@ -517,7 +517,7 @@ try {
         $msgR1 = Get-Advisory $rR1.Out
         Check 'R1a. the readable offender is still reported' ($msgR1 -match 'big\.py \(900 lines\)') $msgR1
         Check 'R1b. the offender report marks PARTIAL and names the READ FAILURE cause' (
-            $msgR1 -match '(?i)PARTIAL scan' -and $msgR1 -match '(?i)could not be read') $msgR1
+            $msgR1 -match '(?i)PARTIAL scan' -and $msgR1 -match '(?i)unreadable files/directories') $msgR1
         Check 'R1c. it does NOT falsely claim a scan ceiling / directory / time limit was hit' (
             $msgR1 -notmatch '(?i)scan ceiling' -and $msgR1 -notmatch '(?i)directory ceiling' -and $msgR1 -notmatch '(?i)time limit') $msgR1
     }
@@ -539,8 +539,8 @@ try {
     Check 'R2a. the root offender IS reported (root directory was traversed)' ($msgR2 -match 'big\.py \(900 lines\)') $msgR2
     Check 'R2b. the file behind the directory ceiling is NOT reached' ($msgR2 -notmatch 'deep\.py') $msgR2
     Check 'R2c. coverage is PARTIAL and the cause names the DIRECTORY ceiling (not files/time/read failure)' (
-        $msgR2 -match '(?i)PARTIAL scan' -and $msgR2 -match '(?i)directory ceiling of 1 directories was reached' -and
-        $msgR2 -notmatch '(?i)source-file scan ceiling' -and $msgR2 -notmatch '(?i)time limit' -and $msgR2 -notmatch '(?i)could not be read') $msgR2
+        $msgR2 -match '(?i)PARTIAL scan' -and $msgR2 -match '(?i)directory ceiling 1 reached' -and
+        $msgR2 -notmatch '(?i)source-file ceiling' -and $msgR2 -notmatch '(?i)time limit' -and $msgR2 -notmatch '(?i)unreadable files/directories') $msgR2
 
     # =====================================================================
     Write-Host '--- R2: MAX_DIRECTORIES / MAX_SCAN_SECONDS validate and fall back safely ---' -ForegroundColor Cyan
@@ -584,9 +584,9 @@ try {
     Check 'T1a. the scan stops MID-directory: only 2 of the 10 source files are scanned before the time trip' (
         $msgT1 -match '\b2 source file\(s\) exceed 800 lines' -and $msgT1 -notmatch '\b10 source file') $msgT1
     Check 'T1b. coverage is PARTIAL and the cause names the TIME limit (not files/dirs/read failure)' (
-        $msgT1 -match '(?i)PARTIAL scan' -and $msgT1 -match '(?i)scan time limit of 5 seconds was reached' -and
-        $msgT1 -notmatch '(?i)source-file scan ceiling' -and $msgT1 -notmatch '(?i)directory ceiling' -and
-        $msgT1 -notmatch '(?i)could not be read') $msgT1
+        $msgT1 -match '(?i)PARTIAL scan' -and $msgT1 -match '(?i)scan time limit 5s reached' -and
+        $msgT1 -notmatch '(?i)source-file ceiling' -and $msgT1 -notmatch '(?i)directory ceiling' -and
+        $msgT1 -notmatch '(?i)unreadable files/directories') $msgT1
     Check 'T1c. the mid-directory time report is a client-aware advisory, never a decision:block' (
         $rT1.Out -notmatch '"decision"' -and $rT1.Exit -eq 0 -and $rT1.Err -eq '') ("exit=$($rT1.Exit) out=[$($rT1.Out)] err=[$($rT1.Err)]")
 
@@ -672,7 +672,7 @@ try {
     New-SourceFile (Join-Path $proj23 'src\a.py') 1100
     $rPre = Fire -HookPath $hc23.Script -Cwd $proj23 -EventName 'SessionStart' -LocalAppData $hc23.LocalAppData -Exe 'powershell.exe'
     Check '30a. 5.1 host: pre-task guidance works' (
-        $rPre.Exit -eq 0 -and (Get-Advisory $rPre.Out) -match '(?i)HARD CEILING per source file') ($rPre.Out + $rPre.Err)
+        $rPre.Exit -eq 0 -and (Get-Advisory $rPre.Out) -match '(?i)HARD CEILING 800 lines/source file') ($rPre.Out + $rPre.Err)
     $rStop = Fire -HookPath $hc23.Script -Cwd $proj23 -EventName 'Stop' -LocalAppData $hc23.LocalAppData -Exe 'powershell.exe'
     Check '30b. 5.1 host: Stop scan reports the oversized file' (
         $rStop.Exit -eq 0 -and (Get-Advisory $rStop.Out) -match 'a\.py \(1100 lines\)') ($rStop.Out + $rStop.Err)

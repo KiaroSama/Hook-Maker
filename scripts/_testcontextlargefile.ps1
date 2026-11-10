@@ -24,10 +24,10 @@
     # These three replace the assertions on the wording the 800-line hard-ceiling
     # rule retired ("REVIEW SIGNAL, not an architectural law", "wrappers,
     # forwarding files, arbitrary fragments...", "appending is correct when ...").
-    Check 'pre-task note states the ceiling is HARD and enforced at write time' ($r.Out -match 'HARD CEILING per source file, enforced when you write') $r.Out
-    Check 'pre-task note explicitly forbids a wrapper/forwarding file/fragment that ducks the number' (
-        $r.Out -match 'never a thin wrapper, forwarding file, or fragment created to duck the number') $r.Out
-    Check 'pre-task note closes a near-ceiling file to new code instead of allowing an append' ($r.Out -match 'is CLOSED to new code') $r.Out
+    Check 'pre-task note states the ceiling is HARD and enforced at write time' ($r.Out -match 'HARD CEILING 800 lines/source file; enforce before writing') $r.Out
+    Check 'pre-task splitting requires full responsibility/boundary owner' (
+        $r.Out -match 'BEFORE splitting: global-architecture-rules.md FULL') $r.Out
+    Check 'pre-task note closes a near-ceiling file to new code instead of allowing an append' ($r.Out -match '>=700 lines CLOSED to new code') $r.Out
 
     # =====================================================================
     Write-Host '--- Large-File-Check: Stop report is a client-aware, non-blocking advisory (never decision:block) ---' -ForegroundColor Cyan
@@ -60,11 +60,11 @@
             $null -ne $lfClaudeDoc -and $null -ne $lfClaudeDoc.PSObject.Properties['systemMessage'] -and
             $r.Out -notmatch 'hookSpecificOutput' -and $r.Out -notmatch '"decision"') $r.Out
         Check 'an oversized file is still detected and reported' ($lfClaudeMsg -match 'LARGE FILE CHECK' -and $lfClaudeMsg -match 'big\.ps1') $lfClaudeMsg
-        Check 'pre-existing overflow stays advisory' ($lfClaudeMsg -match 'Already oversized before this task: advisory only') $lfClaudeMsg
-        Check 'gate applies only to task-grown overflow' ($lfClaudeMsg -match 'gate applies only to task-grown overflow') $lfClaudeMsg
-        Check 'no count-driven wrappers or fragments' ($lfClaudeMsg -match 'No thin wrapper/pass-through/arbitrary count split') $lfClaudeMsg
-        Check 'no unrelated refactor' ($lfClaudeMsg -match 'or unrelated refactor') $lfClaudeMsg
-        Check 'existing overflow requires cohesive extraction before growth' ($lfClaudeMsg -match 'Closed to growth: extract a real responsibility/module/layer/public boundary') $lfClaudeMsg
+        Check 'pre-existing overflow stays advisory' ($lfClaudeMsg -match 'Existing overflow advisory') $lfClaudeMsg
+        Check 'gate applies only to task-grown overflow' ($lfClaudeMsg -match 'task-grown overflow gates') $lfClaudeMsg
+        # Cohesion/no-count-dodge/no-unrelated-refactor details are indirect in FULL owner.
+        Check 'existing overflow requires full extraction policy before growth' (
+            $lfClaudeMsg -match 'BEFORE extraction: global-architecture-rules.md FULL' -and $lfClaudeMsg -match 'Stop growth; verify build/tests') $lfClaudeMsg
         # BYTE-COMPATIBILITY (real emission site 2 of 4): Large-File-Check's own
         # Write-Advisory Claude branch, fed the message it actually produced.
         # Run on the 5.1 host: hookSpecificOutput has TWO keys and .NET Core

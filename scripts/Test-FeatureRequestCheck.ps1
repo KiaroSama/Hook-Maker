@@ -306,19 +306,19 @@ try {
     Check 'advisory: it names grilling and domain-modeling, not just "a skill"' (
         $msg -match 'grilling' -and $msg -match 'domain-modeling') $msg
     # Order 55 step 3: a feature request arriving mid-task is a request delta.
-    Check 'advisory: a mid-task arrival is routed through the intake (request delta, requirement IDs, acceptance criteria)' (
-        $msg -match 'request delta' -and $msg -match 'requirement IDs' -and $msg -match 'acceptance criteria') $msg
-    Check 'advisory: only the dependent work waits for an answer' ($msg -match 'independent work continues') $msg
-    Check 'advisory: ordered requests and exact owner scope survive later additions' (
-        $msg -match 'original request order and stable IDs' -and $msg -match 'earliest actionable unfinished' -and
-        $msg -match 'English Markdown owner handoff' -and $msg -match 'never implicit source/staging/runner/provider repair') $msg
+    Check 'advisory: feature/delta/setup require the full Spec Kit and routing owners before work' (
+        $msg -match 'BEFORE feature/delta/setup: global-spec-kit-rules.md/global-skill-routing.md FULL') $msg
+    Check 'advisory: only the dependent work waits for an answer' ($msg -match 'only dependents wait') $msg
+    Check 'advisory: exact owner scope and full intake remain required' (
+        $msg -match 'global-spec-kit-rules.md/global-skill-routing.md FULL' -and
+        $msg -match 'Other-project work: exact consent or English lifecycle handoff') $msg
     # FR-005: the rules WITHDREW the "not a feature, carry on" carve-out, so the
     # advisory must no longer offer it - this assertion was inverted the day the
     # carve-out went, and it is the inversion that enforces the requirement.
     Check 'advisory: the withdrawn carve-out is NOT offered any more' (
         $msg -notmatch '(?i)not a feature') $msg
     Check 'advisory: it routes on to Spec Kit, naming no retired step' (
-        $msg -match 'speckit-specify' -and $msg -notmatch '(?i)to-spec\b' -and
+        $msg -match 'global-spec-kit-rules.md/global-skill-routing.md FULL' -and $msg -notmatch '(?i)to-spec\b' -and
         $msg -notmatch '(?i)to-tickets') $msg
     Check 'advisory: UserPromptSubmit NEVER emits decision:block' (
         $r.Out -notmatch '"decision"') $r.Out
@@ -374,7 +374,7 @@ try {
     Check 'advisory: the reminder names the missing Skill call by name' (
         $blockMsg -match 'grilling') $blockMsg
     Check 'advisory: the reminder states BOTH ways out, so it is clearable' (
-        $blockMsg -match '(?i)run it now' -and $blockMsg -match '(?i)why this was not a feature') $blockMsg
+        $blockMsg -match 'Advisory order: grilling\+domain-modeling' -and $blockMsg -match '(?i)why this was not a feature') $blockMsg
 
     $tRan = New-Transcript 'feature-chain-ran' @(
         (New-UserEntry $FeaturePrompt),
@@ -422,9 +422,8 @@ try {
     # The chain's tail is Spec Kit now, not the to-spec/to-tickets wrappers:
     # speckit-specify supersedes to-spec and speckit-tasks supersedes
     # to-tickets, so the reminder has to send the reader to the steps that exist.
-    Check 'advisory: the reminder states the chain ORDER, not just the two names' (
-        (Get-Message $rHalf.Out) -match 'IN ORDER' -and
-        (Get-Message $rHalf.Out) -match 'then Spec Kit in order: speckit-specify') $rHalf.Out
+    Check 'advisory: complete feature-order owner loads before work, interviews first' (
+        (Get-Message $rHalf.Out) -match 'BEFORE feature work: global-spec-kit-rules.md FULL; grilling\+domain-modeling first') $rHalf.Out
 
     $tNone = New-Transcript 'no-feature' @(
         (New-UserEntry 'fix the crash on the login page'),

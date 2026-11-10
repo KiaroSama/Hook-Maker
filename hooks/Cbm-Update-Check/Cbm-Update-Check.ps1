@@ -87,11 +87,11 @@ try {
 catch { }
 
 $message = @(
-    ('CBM UPDATE CHECK - code changed after the Codebase Memory index was last written (index: ' +
+    ('CBM UPDATE CHECK: code newer than index (' +
         $dbUtc.ToString('yyyy-MM-dd HH:mm:ss') + ' UTC, newest work: ' + $workUtc.ToString('yyyy-MM-dd HH:mm:ss') + ' UTC).'),
-    'Watcher freshness is unverified; lag or missing registration possible.',
-    ('Before relying on any graph answer, call index_status; if it does not reflect the change, run index_repository(repo_path=' + ($cwd | ConvertTo-Json -Compress) + ', mode="moderate", persistence=true).'),
-    'Judge by STRUCTURE, not by file count: a changed symbol, export, import, call/inheritance edge or entry point matters; docs, formatting and generated output do not - skip it then.'
+    'Watcher UNVERIFIED: lag/unregistered possible.',
+    ('Before trusting graph: index_status; stale -> index_repository(repo_path=' + ($cwd | ConvertTo-Json -Compress) + ', mode="moderate", persistence=true).'),
+    'STRUCTURE, not count: symbols/exports/imports/calls/inheritance/entries matter; docs/format/generated-only: skip.'
 ) -join "`n"
 
 $emit = Write-HookResult -EventName $eventName -Kind 'context' -Message $message

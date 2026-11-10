@@ -28,18 +28,18 @@ function Get-UnresolvedObservationLines {
         $field = if (-not $Fresh) { 'recordedUtc:STALE' } else { 'overall:' + [string](Get-Field $Result 'overall') }
     }
     $lines = New-Object 'System.Collections.Generic.List[string]'
-    if ($null -eq $Result) { [void]$lines.Add('TEST COMPLETION CHECK: no guarded result document exists for this exact observed run.') }
-    if ($field -eq 'recordedUtc:STALE') { [void]$lines.Add('TEST COMPLETION CHECK: STALE result, older than ' + $script:evidenceMinutes + ' minutes; not fresh proof.') }
-    if ((Get-Field $Observed 'guarded') -eq $false) { [void]$lines.Add('This observation was UNGUARDED: no runner owned or bounded its execution.') }
-    [void]$lines.Add('TEST COMPLETION CHECK: unresolved identity evidence. runId=' + [string](Get-Field $Observed 'runId') + '; commandFingerprint=' + [string](Get-Field $Observed 'commandFingerprint') + '; observedUtc=' + $( $at = ConvertTo-UtcTime (Get-Field $Observed 'observedUtc'); if ($null -ne $at) { $at.ToString('o') } else { '<invalid or missing>' }) + '; failedField=' + $field + '.')
-    [void]$lines.Add('Completion cannot be claimed on evidence that does not exist; report actual verified scope, never that "all tests passed".')
-    [void]$lines.Add('Repository state=' + $State.State + '; projectKey=' + $State.ProjectKey + ' is path identity only, not CURRENT repository-state evidence. Candidate runId=' + [string](Get-Field $Result 'runId') + '; overall=' + [string](Get-Field $Result 'overall') + '. A DIFFERENT run, command or state is not proof for this observation.')
-    if ($State.State -eq 'available' -and $null -ne $Observed -and (Get-ObservedFingerprint $Observed) -eq $State.RepositoryStateFingerprint) { [void]$lines.Add('This observation names the CURRENT project state; a different scope cannot satisfy it.') }
+    if ($null -eq $Result) { [void]$lines.Add('TEST COMPLETION CHECK: exact observation lacks guarded result.') }
+    if ($field -eq 'recordedUtc:STALE') { [void]$lines.Add('TEST COMPLETION CHECK: STALE >' + $script:evidenceMinutes + 'min, not current proof.') }
+    if ((Get-Field $Observed 'guarded') -eq $false) { [void]$lines.Add('UNGUARDED: no owner/bound.') }
+    [void]$lines.Add('TEST COMPLETION CHECK: UNRESOLVED; runId=' + [string](Get-Field $Observed 'runId') + '; commandFingerprint=' + [string](Get-Field $Observed 'commandFingerprint') + '; observedUtc=' + $( $at = ConvertTo-UtcTime (Get-Field $Observed 'observedUtc'); if ($null -ne $at) { $at.ToString('o') } else { '<invalid or missing>' }) + '; failedField=' + $field + '.')
+    [void]$lines.Add('Missing/different run/argv/state!=pass; prove scope.')
+    [void]$lines.Add('Repository=' + $State.State + '; path-only projectKey=' + $State.ProjectKey + '; candidate runId=' + [string](Get-Field $Result 'runId') + '; overall=' + [string](Get-Field $Result 'overall') + '.')
+    if ($State.State -eq 'available' -and $null -ne $Observed -and (Get-ObservedFingerprint $Observed) -eq $State.RepositoryStateFingerprint) { [void]$lines.Add('CURRENT needs same scope.') }
     if ($State.State -eq 'unavailable') {
-        [void]$lines.Add('Repository access diagnosis=' + [string]$State.Diagnosis + '. Approval requires an explicit owner-confirmed exact physical root, never project selection alone.')
-        [void]$lines.Add('Recovery: restore authorized Git read access to this exact repository before requesting a verified literal fingerprint. No automatic safe.directory, ownership or ACL change is permitted. Existing failure/timeout/leak obligations remain; unrelated green CI cannot repair missing identity.')
+        [void]$lines.Add('Access=' + [string]$State.Diagnosis + '; physical-root owner consent required, selection != consent.')
+        [void]$lines.Add('Authorized Git read/exact fingerprint only; no trust/ACL/owner edits. Retain failures; unrelated green!=identity.')
     }
-    [void]$lines.Add('Supported recovery: later clean, independently paired SAME COMPLETE command (commandFingerprint above, every argument); different logo/readme/health scope cannot supersede this observation. Mutation requires fresh authorization. No safe recovery -> audit UNKNOWN, report unresolved. Never fill fields/delete originals.')
-    [void]$lines.Add('Read-only audit: pwsh -NoProfile -File "' + $HookPath + '" -AuditEvidence -ProjectRoot "' + $ProjectRoot + '" -AuditPath "<new local JSON path>". Original hashes + UNKNOWN/SUPERSEDED, never SUCCESS; UNKNOWN keeps the gate.')
+    [void]$lines.Add('Recovery: later clean independently paired SAME COMPLETE argv; fresh mutation consent. Never fill identity/delete originals; UNKNOWN/SUPERSEDED!=SUCCESS.')
+    [void]$lines.Add('Read-only audit (UNKNOWN blocks): pwsh -NoProfile -File "' + $HookPath + '" -AuditEvidence -ProjectRoot "' + $ProjectRoot + '" -AuditPath "<new local JSON>".')
     return $lines.ToArray()
 }

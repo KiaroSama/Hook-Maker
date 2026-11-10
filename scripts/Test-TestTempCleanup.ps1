@@ -168,15 +168,14 @@ function Get-CandidateLinePattern {
         ' \| type=[a-z-]+ \| at-session-start=[a-z]+ \| during-session=[a-z]+ \| git=' + $GitState)
 }
 
-# The six mandated instruction lines. Every client adapter must carry all of
-# them, so their presence is the semantic contract (not the JSON envelope).
+# Protected classes/ownership/verification/consumer-exit requirements are now
+# indirect behind the complete Cleanup owner BEFORE disposal. These assertions
+# prove routing and inline authority, not that private owner content was applied.
 $InstructionFragments = @(
-    'Inspect every candidate before deletion',
-    'name/age/ignored status proves no ownership',
-    'Never delete tracked, staged, linked, diagnostic, ambiguous, protected, shared/active or user-owned data',
-    'permanently delete only exact project-local residue independently proven owned/disposable, NOT Recycle Bin',
-    'this hook performs no deletion',
-    'Leave uncertain candidates intact and report them'
+    'BEFORE disposal: global-project-lifecycle-rules.md Cleanup FULL',
+    'Only proven disposable exact owned paths: permanent deletion, NOT Recycle Bin',
+    'uncertain retain/report',
+    'Hook deletes nothing'
 )
 function Test-HasFullInstruction {
     param([string]$Text)
@@ -205,7 +204,7 @@ try {
         (Test-Path -LiteralPath (Join-Path $cache1 'x.txt')) -and
         ([System.IO.File]::ReadAllText((Join-Path $cache1 'x.txt')) -eq 'cache-content'))
     Check 'it is surfaced as likely-disposable, which is a description not an approval' ($r.Out -match 'class=likely-disposable') $r.Out
-    Check 'the report tells the agent to inspect every candidate before deletion' ($r.Out -match 'Inspect every candidate before deletion') $r.Out
+    Check 'the report tells the agent to inspect every candidate before deletion' ($r.Out -match 'Verify each path: name/age/ignore!=ownership.') $r.Out
     Check 'the report carries the complete mandated instruction' (Test-HasFullInstruction $r.Out) $r.Out
     Check 'the report never claims the hook removed anything' ($r.Out -notmatch 'removed safe' -and $r.Out -notmatch 'verified by rescan') $r.Out
     Check 'the recorded category is review-required, not clean' ((Get-RecordedCategory $hc1.LocalAppData $proj1) -eq 'review-required') (Get-RecordedCategory $hc1.LocalAppData $proj1)
@@ -531,7 +530,7 @@ try {
     Check 'hitting the scan-entry ceiling records partial, NEVER clean' ((Get-RecordedCategory $hc7.LocalAppData $proj7) -eq 'partial') (Get-RecordedCategory $hc7.LocalAppData $proj7)
     Check 'the named cause max-scan-entries-reached is reported' ($r.Out -match 'max-scan-entries-reached') $r.Out
     Check 'partial coverage gates completion so clean cannot be claimed' (
-        $r.Out -match '"decision":"block"' -and $r.Out -match 'cannot be reported as clean') $r.Out
+        $r.Out -match '"decision":"block"' -and $r.Out -match 'NOT clean') $r.Out
 
     # =====================================================================
     Write-Host '--- an unreadable directory yields a NAMED partial cause ---' -ForegroundColor Cyan
@@ -590,13 +589,13 @@ try {
     Fire -HookPath $hc10.Script -Cwd $proj10 -EventName 'SessionStart' -LocalAppData $hc10.LocalAppData | Out-Null
     $loopCache = New-Cache $proj10
     $r1 = Fire -HookPath $hc10.Script -Cwd $proj10 -EventName 'Stop' -LocalAppData $hc10.LocalAppData
-    Check 'the first Stop reports review-required' ($r1.Out -match 'need YOUR review') $r1.Out
+    Check 'the first Stop reports review-required' ($r1.Out -match 'project candidates: review required') $r1.Out
     $r2 = Fire -HookPath $hc10.Script -Cwd $proj10 -EventName 'Stop' -LocalAppData $hc10.LocalAppData
     Check 'a still-present previously surfaced candidate becomes residue-confirmed' (
         $r2.Out -match 'STILL PRESENT' -and (Get-RecordedCategory $hc10.LocalAppData $proj10) -eq 'residue-confirmed') $r2.Out
     Check 'residue-confirmed gates completion' ($r2.Out -match '"decision":"block"') $r2.Out
     Check 'residue-confirmed never claims the hook itself confirmed disposability' (
-        $r2.Out -match 'has NOT itself confirmed any path is safe to delete') $r2.Out
+        $r2.Out -match 'Detector!=deletion safety') $r2.Out
     $r3 = Fire -HookPath $hc10.Script -Cwd $proj10 -EventName 'Stop' -LocalAppData $hc10.LocalAppData
     Check 'the SAME unchanged evidence does not report again (no loop)' ($r3.Exit -eq 0 -and $r3.Out -eq '') $r3.Out
     Check 'the coordination record is still refreshed while suppressed' ((Get-RecordedCategory $hc10.LocalAppData $proj10) -eq 'residue-confirmed') (Get-RecordedCategory $hc10.LocalAppData $proj10)

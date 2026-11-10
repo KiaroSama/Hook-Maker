@@ -64,7 +64,7 @@
     New-SourceFile (Join-Path $projSk 'src\grows.ps1') 803
     $rSk2 = Fire -HookPath $hcSk2.Script -Cwd $projSk -EventName 'Stop' -LocalAppData $hcSk2.LocalAppData
     Check 'S2d. twin: the same 796 -> 803 growth in project source DOES block' (
-        (Get-BlockReason $rSk2.Out) -match 'src\\grows\.ps1 \(803 lines now, 796 at session start\)' -and
+        (Get-BlockReason $rSk2.Out) -match 'src\\grows\.ps1: 796 -> 803 lines' -and
         (Get-BlockReason $rSk2.Out) -notmatch '\.specify') $rSk2.Out
 
     # =====================================================================
@@ -98,13 +98,13 @@
     Check 'C2a. a file grown from <=800 to >800 during the task BLOCKS (real decision:block)' (
         $reasonC1 -ne '' -and $rBlock.Exit -eq 0 -and $rBlock.Err -eq '') ($rBlock.Out + $rBlock.Err)
     Check 'C2b. the block names the file, both counts and the ceiling' (
-        $reasonC1 -match 'src\\grows\.py \(900 lines now, 790 at session start\)' -and
-        $reasonC1 -match '800-line hard ceiling') $reasonC1
+        $reasonC1 -match 'src\\grows\.py: 790 -> 900 lines' -and
+        $reasonC1 -match 'from <=800 to above hard ceiling') $reasonC1
     Check 'C2c. the block carries the EXACT recovery, and says what clears it' (
-        $reasonC1 -match 'move the code added to src\\grows\.py into a new responsibility-named file; do not create a wrapper\.' -and
-        $reasonC1 -match 'clears as soon as each file above is back at or under 800 lines') $reasonC1
+        $reasonC1 -match 'extract added code by responsibility, not wrapper' -and
+        $reasonC1 -match 'clear when each <=800 lines') $reasonC1
     Check 'C2d. the recovery forbids ducking the number with a wrapper/forwarding file' (
-        $reasonC1 -match '(?i)never a thin wrapper, forwarding file, or fragment created to duck the number') $reasonC1
+        $reasonC1 -match 'real responsibility extraction, no wrapper/forwarding/count dodge') $reasonC1
 
     # =====================================================================
     Write-Host '--- The gate blocks ONCE per fingerprint, and changed state is re-evaluated ---' -ForegroundColor Cyan
@@ -122,7 +122,7 @@
     New-SourceFile (Join-Path $projC1 'src\grows.py') 950
     $rChanged = Fire -HookPath $hcC1.Script -Cwd $projC1 -EventName 'Stop' -LocalAppData $hcC1.LocalAppData
     Check 'C3c. changed state blocks again - and the advisory cooldown never swallows the gate' (
-        (Get-BlockReason $rChanged.Out) -match 'src\\grows\.py \(950 lines now, 790 at session start\)') $rChanged.Out
+        (Get-BlockReason $rChanged.Out) -match 'src\\grows\.py: 790 -> 950 lines') $rChanged.Out
 
     # =====================================================================
     Write-Host '--- A file already over the ceiling at baseline stays ADVISORY ---' -ForegroundColor Cyan
@@ -138,7 +138,7 @@
         $rC2.Out -notmatch '"decision"' -and $rC2.Exit -eq 0) $rC2.Out
     Check 'C4b. it stays the non-blocking advisory it has always been' (
         (Get-Advisory $rC2.Out) -match 'old\.cs \(1400 lines\)' -and
-        (Get-Advisory $rC2.Out) -match 'advisory only' -and (Get-Advisory $rC2.Out) -match 'gate applies only to task-grown overflow') $rC2.Out
+        (Get-Advisory $rC2.Out) -match 'Existing overflow advisory; task-grown overflow gates') $rC2.Out
 
     # =====================================================================
     Write-Host '--- Unknown never blocks: no baseline, and partial coverage ---' -ForegroundColor Cyan

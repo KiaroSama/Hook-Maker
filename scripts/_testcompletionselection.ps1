@@ -101,7 +101,7 @@ function Invoke-RepositoryEvidenceSelectionRegression {
         $reason = Get-BlockReason $r.Out
         Check 'unavailable Git names exact legacy run, command, timestamp and missing field' (
             $r.Err -eq '' -and $reason -match 'runId=legacy-insights' -and $reason -match 'commandFingerprint=insights-command' -and
-            $reason -match 'observedUtc=\d{4}-' -and $reason -match 'failedField=projectFingerprint:missing' -and $reason -match 'state=unavailable') ($r.Out + $r.Err)
+            $reason -match 'observedUtc=\d{4}-' -and $reason -match 'failedField=projectFingerprint:missing' -and $reason -match 'Repository=unavailable') ($r.Out + $r.Err)
         $again = Fire -Copy $c -Cwd $p -Codex:$Codex -Exe $HostExe -StopHookActive
         Check 'unchanged unavailable Stop is quiet without manufacturing obligations' ($again.Out -eq '' -and $again.Err -eq '' -and (Get-PendingCount (Get-CompletionStateDoc $c $p)) -eq 0) ($again.Out + $again.Err)
         $auditCopy = New-IsolatedHookCopy
@@ -132,14 +132,14 @@ function Invoke-RepositoryEvidenceSelectionRegression {
     }
     finally { $env:GIT_TEST_ASSUME_DIFFERENT_OWNER = $savedOwner; $env:GIT_CONFIG_COUNT = $savedConfigCount; $env:GIT_CONFIG_KEY_0 = $savedConfigKey; $env:GIT_CONFIG_VALUE_0 = $savedConfigValue }
     $changed = Fire -Copy $c -Cwd $p -Codex:$Codex -Exe $HostExe -StopHookActive
-    Check 'readable Git reevaluates legacy obligation rather than discarding path binding' ((Get-BlockReason $changed.Out) -match 'legacy-insights' -and (Get-BlockReason $changed.Out) -match 'state=available') ($changed.Out + $changed.Err)
+    Check 'readable Git reevaluates legacy obligation rather than discarding path binding' ((Get-BlockReason $changed.Out) -match 'legacy-insights' -and (Get-BlockReason $changed.Out) -match 'Repository=available') ($changed.Out + $changed.Err)
     Check 'both original receipt and observation remain byte-identical' ((Get-FileHash -LiteralPath $paths[0]).Hash -eq $hashes[0] -and (Get-FileHash -LiteralPath $paths[1]).Hash -eq $hashes[1])
     $c = New-IsolatedHookCopy; $p = New-GitRepo ('RepositoryEvidence-failed-' + $Codex)
     Write-GuardedResult -Copy $c -Root $p -RunId legacy-daily -CommandFingerprint daily-command -ProjectFingerprint ' ' -Overall failed -ExitCode 1 -AgeMinutes 12000
     (Get-Item -LiteralPath (Get-RunStateFile $c $p result legacy-daily)).LastWriteTimeUtc = [DateTime]::UtcNow.AddDays(-9)
     Write-SelectionPair $c $p unrelated-logo logo-command
     $r = Fire -Copy $c -Cwd $p -Codex:$Codex -Exe $HostExe
-    Check 'old unidentified failure cannot disappear behind unrelated fresh success' ((Get-BlockReason $r.Out) -match 'runId=legacy-daily' -and (Get-BlockReason $r.Out) -match 'Unrelated green CI') ($r.Out + $r.Err)
+    Check 'old unidentified failure cannot disappear behind unrelated fresh success' ((Get-BlockReason $r.Out) -match 'runId=legacy-daily' -and (Get-BlockReason $r.Out) -match 'Unrelated CI!=identity/scope repair') ($r.Out + $r.Err)
     Check 'old whitespace-bound negative original survives retention' (Test-Path -LiteralPath (Get-RunStateFile $c $p result legacy-daily))
     $c = New-IsolatedHookCopy; $p = New-GitRepo ('RepositoryEvidence-malformed-' + $Codex)
     Write-Utf8 (Get-RunStateFile $c $p result malformed-only) '{broken'

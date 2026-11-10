@@ -14,7 +14,7 @@
 # of the root README. It never fetches an image and never checks what a badge
 # claims - that is the agent's job with the evidence in front of it.
 
-$script:BadgeGuidance = 'README badges: 12 to 16 verified distinct facts, one <div align="center"> block with inner blank lines. Include [![Support donations](https://img.shields.io/badge/Support-donations-d04a9a)](#donate); missing ## Donate -> verbatim authorized public source, never invent/alter wallets. Priority: CI, license, release, tests/coverage, runtime/platform, downloads/docs, real paper/DOI, activity/community, stack/repo facts; trim past16, report real shortfall, no padding. No private data/other private repo references in badges/docs. Complete verified prerequisites/install/setup/config/entrypoint/use/logs/limits, not badges alone. Approved logo width="240"; no unsolicited logo/badge resizing. README branding does not include an approved logo in the built app. Packaged app logo/signing -> global-project-lifecycle-rules.md; owner: global-repository-rules.md.'
+$script:BadgeGuidance = 'BEFORE README: global-repository-rules.md README FULL; 12 to 16 verified badges/Donate. BEFORE app logo/signing: global-project-lifecycle-rules.md FULL; README!=app logo.'
 $script:BadgeMinimum = 12
 $script:BadgeMaximum = 16
 # The donation badge and the section it links to. The section is looked for in
@@ -81,26 +81,26 @@ function Get-ReadmeBadgeNote {
     $lines = New-Object System.Collections.Generic.List[string]
     [void]$lines.Add($script:BadgeGuidance)
     if (-not $State.Found) {
-        [void]$lines.Add('- This repository has no root README: it needs useful project documentation with the verified badges, never a badge-only placeholder.')
+        [void]$lines.Add('- README missing: useful docs + verified badges, not badge-only.')
     }
     elseif (-not $State.Readable) {
-        [void]$lines.Add('- The README could not be read, so its badge count is UNKNOWN.')
+        [void]$lines.Add('- README unreadable; badge count UNKNOWN.')
     }
     else {
         if ($State.Count -lt $script:BadgeMinimum) {
-            [void]$lines.Add('- The README shows ' + $State.Count + ' badge image(s) near its title - below ' + $script:BadgeMinimum + '. Look for verifiable facts not yet shown; a real shortfall is reported, never padded. This is a prompt, not a defect.')
+            [void]$lines.Add('- Title badges: ' + $State.Count + ' < ' + $script:BadgeMinimum + '. Add distinct verified facts or report shortfall; no padding. Advisory, not defect.')
         }
         elseif ($State.Count -gt $script:BadgeMaximum) {
-            [void]$lines.Add('- The README shows ' + $State.Count + ' badge image(s) near its title - above ' + $script:BadgeMaximum + '. Trim by the priority order: keep the higher-priority facts. This is a prompt, not a defect.')
+            [void]$lines.Add('- Title badges: ' + $State.Count + ' > ' + $script:BadgeMaximum + '. Trim lower-priority facts. Advisory, not defect.')
         }
         if ($State.Count -gt 0 -and -not $State.Centred) {
-            [void]$lines.Add('- The badge rows are not inside one <div align="center"> block: wrap them, with a blank line after the opening tag and before </div>, so the Markdown badges render centred.')
+            [void]$lines.Add('- Center badge rows: one <div align="center">, blank lines after opening/before </div>.')
         }
         if (-not $State.DonateBadge) {
-            [void]$lines.Add('- The Support-donations badge is missing near the title.')
+            [void]$lines.Add('- Title lacks Support-donations badge.')
         }
         if (-not $State.DonateSection) {
-            [void]$lines.Add('- The README has no "## Donate" section for the #donate link: copy it verbatim from an authorized public source; never invent or alter a wallet address.')
+            [void]$lines.Add('- Missing ## Donate/#donate: verbatim authorized public text; never invent/alter wallets.')
         }
     }
     return ($lines.ToArray() -join "`n")
