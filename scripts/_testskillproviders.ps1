@@ -96,7 +96,7 @@ function Invoke-SkillProviderRegression {
     $drift=Get-SkillCatalogueDrift $rules @('shared-name') $index
     Check 'cached old definition hash cannot cover changed body' ($drift.Missing -contains 'new-provider:shared-name')
     $indexPath=Join-Path $Work 'warm-index.txt';$indexConfigHash='fixture';$indexTtlMinutes=1440
-    Write-Utf8 $indexPath ('HookMakerSkillsIndex|4|fixture|'+[DateTime]::UtcNow.Ticks+"`np|new-provider|shared-name|shared-name|fixture|"+$folder+'|claude-plugin|2|enabled|0|new-provider:shared-name|new-provider@market|'+$skill.DefinitionHash)
+    Write-Utf8 $indexPath ('HookMakerSkillsIndex|'+$script:SkillIndexVersion+'|fixture|'+[DateTime]::UtcNow.Ticks+"`np|new-provider|shared-name|shared-name|fixture|"+$folder+'|claude-plugin|2|enabled|0|new-provider:shared-name|new-provider@market|'+$skill.DefinitionHash)
     Check 'warm index invalidates on body change without manifest edit' ($null -eq (Read-SkillIndex))
     $skillDiscovery=$discovery;$stateDir=Join-Path $Work 'index-state';$hasLibrary=$false;$libraryDir='';$hasPluginRoot=$true;$pluginRoot=Join-Path $Work 'override-cache'
     $cacheSkill=Join-Path $pluginRoot 'market/alias/1/skills/off-child';[void][IO.Directory]::CreateDirectory($cacheSkill)
@@ -107,4 +107,69 @@ function Invoke-SkillProviderRegression {
     $skillDiscovery.SettingsFiles=@($settings);$skillDiscovery.RelevantNames=@();$indexPath=Join-Path $stateDir 'index.txt'
     $built=Build-SkillIndex
     Check 'authoritative disabled install replaces enabled override cache row' (@($built.Plugin | Where-Object {$_.Name -eq 'off-child' -and $_.Status -eq 'disabled'}).Count -eq 1 -and @($built.Plugin | Where-Object {$_.Status -eq 'enabled'}).Count -eq 0)
+    Invoke-SkillEvidenceRegression $Root
+}
+
+# Pure shared seams: no hook child, network, real home or installed-client probe.
+function Invoke-SkillEvidenceRegression {
+    param([string]$Root)
+    . (Join-Path $Root 'hooks/_hooklib.ps1')
+    . (Join-Path $Root 'hooks/Skills-Check/_skillindex.ps1')
+    . (Join-Path $Root 'hooks/Skills-Check/_skilldiscovery.ps1')
+    . (Join-Path $Root 'hooks/Skills-Check/_skillstop.ps1')
+    $client='claude';$config=@{};$homeDir=$Work;$cwd=$Work;$hookInput=[pscustomobject]@{prompt='telemetry'}
+    $stateDir=Join-Path $Work 'evidence-state';$indexPath=Join-Path $stateDir 'index.txt';$indexConfigHash='fixture';$indexTtlMinutes=0
+    [void][IO.Directory]::CreateDirectory($stateDir)
+    Write-Utf8 $indexPath ('HookMakerSkillsIndex|4|fixture|'+[DateTime]::UtcNow.Ticks+"`np|old|telemetry|telemetry|fixture|missing|cache-walk||enabled|0|old:telemetry")
+    Check 'V72 invalidates formerly enabled cache-only index rows' ($null -eq (Read-SkillIndex))
+    $hasLibrary=$false;$libraryDir='';$hasPluginRoot=$true;$pluginRoot=Join-Path $Work 'evidence-cache'
+    $folder=Join-Path $pluginRoot 'market/cache-alias/1/skills/telemetry';[void][IO.Directory]::CreateDirectory($folder)
+    Write-Utf8 (Join-Path $folder 'SKILL.md') "---`nname: telemetry`n---`nbody"
+    $skillDiscovery=New-SkillDiscoveryConfig
+    $skillDiscovery.PluginsFile=Join-Path $Work 'absent-registry';$skillDiscovery.DesktopRoots=@()
+    $built=Build-SkillIndex
+    $cached=@($built.Plugin | Where-Object {$_.Source -eq 'cache-walk'})
+    Check 'cache-only definition remains unknown without an invented invocation' ($cached.Count -eq 1 -and $cached[0].Status -eq 'unknown' -and $cached[0].Invocation -eq '')
+    $eligible=Get-Command Test-SkillCandidate -ErrorAction SilentlyContinue
+    Check 'candidate predicate exists for both shortlist and availability' ($null -ne $eligible)
+    if ($null -ne $eligible) {
+        foreach ($case in @(@('enabled','0','actual:telemetry',$true),@('disabled','0','actual:telemetry',$false),@('unknown','0','actual:telemetry',$false),@('enabled','1','actual:telemetry',$false),@('enabled','0','',$false))) {
+            $row=[pscustomobject]@{Status=$case[0];Explicit=$case[1];Invocation=$case[2]}
+            Check ('candidate eligibility '+($case[0..2]-join '/')) ((Test-SkillCandidate $row) -eq $case[3])
+        }
+    }
+    $installedReader=Get-Command Get-InstalledSkillNames -ErrorAction SilentlyContinue
+    Check 'installed-name suppression is independent of candidate eligibility' ($null -ne $installedReader)
+    if ($null -ne $installedReader) {
+        foreach ($case in @(@('disabled','0'),@('enabled','1'),@('unknown','0'))) {
+            $definition=[pscustomobject]@{Source='claude-plugin';Status=$case[0];Explicit=$case[1];Invocation='actual:telemetry';Name='telemetry';Leaf='folder-name'}
+            $names=Get-InstalledSkillNames (@($definition)+@($cached))
+            Check ('authoritative duplicate import suppressed '+($case-join '/')) ($names.ContainsKey('actual:telemetry') -and $names.ContainsKey('telemetry') -and $names.ContainsKey('folder-name'))
+        }
+        Check 'cache-only unknown does not suppress authorized library import' ((Get-InstalledSkillNames @($cached)).Count -eq 0)
+    }
+    $known=New-DiscoveredSkill 'actual' $folder 'claude-plugin' '2.3' $true 'claude'
+    Set-ObjectProperty $known InstallationKey 'registered-alias@market'
+    $index=[pscustomobject]@{Plugin=@($known)+@($cached);Library=@()};$byName=@{};$installedNames=@{};$prompt='telemetry'
+    . (Join-Path $Root 'hooks/Skills-Check/_promptmatch.ps1')
+    Check 'shortlist excludes cache-only and preserves exact source provider version' ($topInstalled.Count -eq 1 -and $topInstalled[0].Name -ceq 'actual:telemetry' -and $topInstalled[0].Where -ceq 'claude-plugin' -and [string](Get-Field $topInstalled[0] 'InstallationKey') -ceq 'registered-alias@market' -and [string](Get-Field $topInstalled[0] 'Version') -ceq '2.3')
+    foreach ($line in @('old:telemetry','actual:telemetry-extra','actual:telemetry:child','prefix-actual:telemetry','none - old:telemetry unavailable')) {
+        $answer=Get-UnusedShortlistedSkills @('actual:telemetry') @() '' $line
+        Check ('foreign or partial key not credited: '+$line) ($answer.Total -eq 1)
+    }
+    foreach ($line in @('actual:telemetry','none - actual:telemetry: failed','none - actual:telemetry unavailable','none - actual:telemetry unsupported','none - telemetry: unrelated')) {
+        $answer=Get-UnusedShortlistedSkills @('actual:telemetry') @() '' $line
+        Check ('exact key or unique explicit skip credited: '+$line) ($answer.Total -eq 0)
+    }
+    $answer=Get-UnusedShortlistedSkills @('actual:telemetry','other:telemetry') @() '' 'none - telemetry unrelated'
+    Check 'ambiguous bare skip cannot credit two providers' ($answer.Total -eq 2)
+    $answer=Get-UnusedShortlistedSkills @('actual:telemetry') @() '' 'telemetry'
+    Check 'bare usage claim never credits qualified provider' ($answer.Total -eq 1)
+    $answer=Get-UnusedShortlistedSkills @('telemetry') @() '' 'telemetry'
+    Check 'local and Codex bare keys retain accounting' ($answer.Total -eq 0)
+    $decision=Get-SkillClosingDecision 'Skills used: none - unrelated' '' @('actual:telemetry') @() $false
+    Check 'accounting guidance distinguishes evidence and never assumes loadability' ($decision.Text -notmatch 'Loadable:|They need no authorization' -and $decision.Text -match 'call!=loaded/executed/verified' -and $decision.Text -match 'failed/unavailable/unsupported')
+    . (Join-Path $Root 'scripts/_guidanceinventory.ps1')
+    $authored=(@(Get-HookGuidanceInventory (Join-Path $Root 'hooks')) | Measure-Object Characters -Sum).Sum
+    Check 'V72 preserves fixed half-baseline guidance ceiling' ($authored -le 58360) $authored
 }

@@ -126,7 +126,7 @@ $projectKey = Get-ShortHash $cwd.ToLowerInvariant()
 # name list contradicting the "none" it had just written. Both halves passed
 # their own tests; what was missing was that they agreed.
 $script:SkillsRequiredLine = 'Skills used: <names> OR Skills used: none - <EACH unused name/reason>'
-$script:SkillsRequirement = 'Final "Skills used: <exact used names>" or "Skills used: none - <EACH unused match/reason>"; read/presence/library/trivial!=use.'
+$script:SkillsRequirement = 'Final "Skills used: <exact keys/outcomes>" or "Skills used: none - <EACH unused match/reason>"; read/presence/library/trivial!=use; configured!=exposed.'
 # The import safety boundary, stated wherever an import is suggested. Copying a
 # skill is an AUTHORIZED operation under the Skill Policy and this hook never
 # performs one - so every place that names a copy command also names its rules.
@@ -139,7 +139,7 @@ $script:SpecKitRouting = 'BEFORE scaffold/feature/bug/delta: global-spec-kit-rul
 $script:SkillRoutingLines = @(
     '- BEFORE selection/security: global-skill-routing.md/global-skills-catalogue.md FULL.'
 )
-$script:ImportGuidance = 'BEFORE copy: active skill policy FULL; 1-5 authorized real folders, preserve modified. Record .ai/SKILLS.md.'
+$script:ImportGuidance = 'BEFORE copy: skill policy FULL; 1-5 authorized folders, preserve modified; record .ai/SKILLS.md.'
 
 # ---- shared skill library (searched by prompt, never enumerated into output) --
 $libraryDir = ''
@@ -316,19 +316,17 @@ foreach ($key in @($byName.Keys | Sort-Object)) {
 $pluginNames = @{}
 $pluginsByPlugin = @{}
 foreach ($p in $index.Plugin) {
-    $full = $p.Plugin + ':' + $p.Leaf
-    $pluginNames[$full.ToLowerInvariant()] = $true
-    $pluginNames[([string]$p.Leaf).ToLowerInvariant()] = $true
-    foreach ($alias in @($p.Name, $p.Invocation)) {
-        if (-not [string]::IsNullOrWhiteSpace([string]$alias)) { $pluginNames[([string]$alias).ToLowerInvariant()] = $true }
+    if (Test-SkillCandidate $p) {
+        foreach ($name in @($p.Leaf, $p.Name, $p.Invocation)) {
+            if (-not [string]::IsNullOrWhiteSpace([string]$name)) { $pluginNames[([string]$name).ToLowerInvariant()] = $true }
+        }
     }
     $group = if ([string]::IsNullOrWhiteSpace($p.Plugin)) { [string]$p.Source } else { [string]$p.Plugin }
     if (-not $pluginsByPlugin.ContainsKey($group)) { $pluginsByPlugin[$group] = 0 }
     $pluginsByPlugin[$group] = $pluginsByPlugin[$group] + 1
 }
-$installedNames = @{}
+$installedNames = Get-InstalledSkillNames @($index.Plugin)
 foreach ($key in $byName.Keys) { $installedNames[$key] = $true }
-foreach ($key in $pluginNames.Keys) { $installedNames[$key] = $true }
 
 # ---- bounded transcript probe ---------------------------------------------
 # A private copy rather than a shared helper: hooks\_hooklib.ps1 is owned
@@ -446,6 +444,7 @@ if ($eventName -eq 'UserPromptSubmit') {
     foreach ($key in @($byName.Keys | Sort-Object)) {
         $sig += $key + ':' + ((@($byName[$key].Hashes) | Sort-Object) -join ',') + ';'
     }
+    foreach ($p in $index.Plugin) { $sig += (@($p.Invocation, $p.Source, (Get-Field $p 'InstallationKey'), $p.Version, $p.Status, $p.Explicit) -join '|') + ';' }
 
     # ---- standalone ::deep-debug codeword -> phase-routed capability graph ----
     # CODEWORDS.md: only a standalone ::-prefixed token activates the composite
@@ -537,7 +536,7 @@ if ($eventName -eq 'UserPromptSubmit') {
     # Fingerprint = session + client + everything the message would say. An
     # unchanged answer shows once; a new prompt with different matches, or a
     # changed skill set, re-reports immediately.
-    $matchSig = ($index.Partial -join ';') + '#' + (@($topInstalled | ForEach-Object { $_.Name + '@' + $_.Score }) -join ',') + '#' +
+    $matchSig = ($index.Partial -join ';') + '#' + (@($topInstalled | ForEach-Object { $_.Name + '@' + $_.Score + '|' + $_.Where + '|' + (Get-Field $_ 'InstallationKey') + '|' + (Get-Field $_ 'Version') }) -join ',') + '#' +
                 (@($topLibrary | ForEach-Object { $_.Name + '@' + $_.Score }) -join ',')
     $fingerprint = Get-ShortHash ($sessionId + '|' + $client + '|' + $hasLibrary + '|' + $libraryDir + '|' + $hasRecord + '|' + $sig + '|' + $matchSig)
     $statePath = Join-Path $stateDir ('SkillsCheck-prompt-' + $projectKey + '.txt')
@@ -549,12 +548,13 @@ if ($eventName -eq 'UserPromptSubmit') {
 
     $lines = New-Object System.Collections.Generic.List[string]
     if ($index.Partial.Count -gt 0) { [void]$lines.Add('Skill discovery was PARTIAL: ' + (($index.Partial | Select-Object -Unique -First 8) -join '; ')) }
-    [void]$lines.Add('SKILL POLICY CHECK (' + $client + '): each job: project/global/plugin/library. FIRST ' + $policyFile + ' FULL; feature: grilling/domain-modeling/Spec Kit.')
+    [void]$lines.Add('SKILL POLICY CHECK (' + $client + '): project/global/plugin/library; ' + $policyFile + ' FULL; feature: grilling/domain-modeling/Spec Kit.')
     if ($topInstalled.Count -gt 0) {
         [void]$lines.Add('INSTALLED matches only: verify source/exposure/exact SKILL.md key:')
         foreach ($m in $topInstalled) {
             $where = ''
             if ($null -ne $m.PSObject.Properties['Path'] -and -not [string]::IsNullOrWhiteSpace([string]$m.Path)) { $where = ' -> ' + (Join-Path $m.Path 'SKILL.md') }
+            if ([string](Get-Field $m 'InstallationKey') -ne '') { $where += '; package=' + $m.InstallationKey + '; version=' + $m.Version }
             [void]$lines.Add('- ' + $m.Name + ' [' + $m.Where + ']' + $where)
         }
     }
@@ -580,7 +580,7 @@ if ($eventName -eq 'UserPromptSubmit') {
 
 # ---- SessionStart: compact routed inventory of all three installed sources --
 $lines = New-Object System.Collections.Generic.List[string]
-[void]$lines.Add('SKILL POLICY CHECK (' + $client + '): BEFORE each job, ' + $policyFile + ' FULL; minimal relevant 1-5 exact SKILL.md keys; mutation rules bind.')
+[void]$lines.Add('SKILL POLICY CHECK (' + $client + '): each job: ' + $policyFile + ' FULL; 1-5 relevant exact SKILL.md keys; mutation rules bind.')
 $agentRoots = if ($client -eq 'claude') { 'global/project .claude/agents + active installed_plugins.json declared/default roots' } else { 'this client''s supported native agent/plugin roots' }
 [void]$lines.Add('AGENTS: BEFORE selection global-agent-rules.md FULL. Roots: ' + $agentRoots + '. Gaps UNVERIFIED; no auto spawn.')
 if ($skillLines.Count -gt 0) {
@@ -599,13 +599,14 @@ if ($index.Plugin.Count -gt 0) {
     $shown = @($pluginSummary | Select-Object -First 24)
     $suffix = ''
     if ($pluginSummary.Count -gt $shown.Count) { $suffix = ', +' + ($pluginSummary.Count - $shown.Count) + ' more plugins' }
-    [void]$lines.Add('Plugin skills: ' + $index.Plugin.Count + '/' + $pluginsByPlugin.Count + ' plugins: ' + ($shown -join ', ') + $suffix + '; key <plugin>:<skill>.')
+    [void]$lines.Add('Plugin skills: ' + $index.Plugin.Count + '/' + $pluginsByPlugin.Count + ' plugins: ' + ($shown -join ', ') + $suffix + '; verify key.')
     # Enabled, disabled and explicit-only are different facts; only the first
     # is ever put on a shortlist (see _promptmatch.ps1).
     $disabledCount = @($index.Plugin | Where-Object { $_.Status -eq 'disabled' }).Count
     $explicitCount = @($index.Plugin | Where-Object { $_.Explicit -eq '1' }).Count
     $unknownCount = @($index.Plugin | Where-Object { $_.Status -eq 'unknown' }).Count
-    [void]$lines.Add('Availability: ' + ($index.Plugin.Count - $disabledCount - $unknownCount) + ' enabled; ' + $disabledCount + ' disabled/unloadable; ' + $explicitCount + ' user-explicit-only.')
+    $eligibleCount = @($index.Plugin | Where-Object { Test-SkillCandidate $_ }).Count
+    [void]$lines.Add('Availability: ' + $eligibleCount + ' eligible; ' + $disabledCount + ' disabled; ' + $explicitCount + ' user-explicit-only.')
     if ($unknownCount -gt 0) { [void]$lines.Add('Unknown availability: ' + $unknownCount + ' (not shortlisted).') }
 }
 elseif ($hasPluginRoot) {

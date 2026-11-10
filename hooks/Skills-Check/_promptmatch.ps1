@@ -117,13 +117,11 @@ if ($tokens.Count -gt 0) {
         # A disabled skill cannot be loaded and an explicit-only one is never
         # chosen by the model; shortlisting either would make the Stop gate
         # demand an invocation the client does not allow.
-        if ($p.Status -ne 'enabled' -or $p.Explicit -eq '1' -or [string]::IsNullOrWhiteSpace([string]$p.Invocation)) { continue }
+        if (-not (Test-SkillCandidate $p)) { continue }
         $identitySignal = [math]::Max((Get-PromptMatchScore $p.Leaf), (Get-PromptMatchScore $p.Name))
         if ($identitySignal -le 0) { continue }
         $s = Get-SkillMatchScore -Leaf $p.Leaf -Name $p.Name -Description $p.Description
-        $exact = if ([string]::IsNullOrWhiteSpace([string]$p.Invocation)) { $p.Plugin + ':' + $p.Leaf } else { [string]$p.Invocation }
-        $origin = if ($p.Source -eq 'claude-plugin' -or $p.Source -eq 'cache-walk' -or $p.Source -eq 'codex-plugin') { 'plugin' } else { [string]$p.Source }
-        if ($s -gt 0) { [void]$installedMatches.Add([pscustomobject]@{ Name = $exact; Score = $s; Where = $origin; Path = $p.Path }) }
+        if ($s -gt 0) { [void]$installedMatches.Add([pscustomobject]@{ Name = [string]$p.Invocation; Score = $s; Where = [string]$p.Source; Path = $p.Path; InstallationKey = [string](Get-Field $p 'InstallationKey'); Version = [string]$p.Version }) }
     }
     foreach ($l in $index.Library) {
         # Already available somewhere: importing it again is noise, and

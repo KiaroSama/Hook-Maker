@@ -57,7 +57,7 @@ $ErrorActionPreference = 'Stop'
 # because a new topic in the same session must never be silenced by an earlier
 # one. The single exemption is the one the rule makes: a typo or text-only edit.
 $script:ResearchReminder = @(
-    'RESEARCH: global-research-rules.md FULL. Each substantive request: live official docs/three GitHub passes -> .ai/RESEARCH/ sources+digest BEFORE dependents.',
+    'RESEARCH: each substantive request: global-research-rules.md FULL; live official + three GitHub passes -> .ai/RESEARCH/ sources+digest BEFORE dependents.',
     '- Calls/old notes != research; source failure blocks dependents only. Hook proves nothing.'
 ) -join "`n"
 # ponytail: a keyword test, not a parser - "fix the typo and add a feature" is
@@ -99,8 +99,8 @@ $gatePath = Join-Path $stateDir ('McpUsageCheck-gate-' + $projectKey + '.txt')
 
 # The exact wording the closing summary must carry. Kept in one place so the
 # instruction, the block message and the detector can never drift apart.
-$requiredLine = 'MCP used: <server names>   (or exactly "MCP used: none - <one-line reason>")'
-$requirement = 'Close: "MCP used: <actually called servers>" or "MCP used: none - <reason>"; available != used.'
+$requiredLine = 'MCP used: <servers> OR MCP used: none - <reason>'
+$requirement = 'Close: "MCP used: <servers>" or "MCP used: none - <reason>"; available != used.'
 
 # ---- bounded transcript probe ---------------------------------------------
 # A private copy rather than a shared helper: hooks\_hooklib.ps1 is owned
@@ -165,7 +165,7 @@ function Test-ShouldReport {
 # ---- SessionStart: the policy AND the closing requirement -------------------
 if ($eventName -eq 'SessionStart') {
     $note = @(
-        'MCP: BEFORE work global-mcp-rules.md/global-research-rules.md FULL. Minimum useful tools; no fit: proceed/explain.',
+        'MCP: BEFORE selection global-mcp-server-contracts.md FULL; global-mcp-rules.md/global-research-rules.md FULL. No fit: proceed/explain.',
         $requirement
     ) -join "`n"
     $emit = Write-HookResult -EventName $eventName -Kind 'context' -Message $note
@@ -233,7 +233,7 @@ if ($eventName -eq 'UserPromptSubmit') {
     }
 
     $noteLines = @(
-        'MCP: BEFORE library/API/docs/URL/DB/GitHub/deploy/memory work, global-mcp-rules.md FULL. Minimum relevant connectors; live docs, not recalled APIs.',
+        'MCP: BEFORE selection global-mcp-server-contracts.md FULL; global-mcp-rules.md FULL. Live docs; minimum tools.',
         $requirement
     )
     if ($researchDue) { $noteLines += $script:ResearchReminder }
@@ -275,9 +275,9 @@ if ($null -eq $tail) {
     if (-not $sessionRelevant) { exit 0 }
     if (-not (Test-ShouldReport 'unverified')) { exit 0 }
     $note = @(
-        'MCP use UNVERIFIED: transcript unavailable, not all-clear.',
+        'MCP use UNVERIFIED: no transcript, not all-clear.',
         $requirement,
-        ('Required line: ' + $requiredLine)
+        ('Final: ' + $requiredLine)
     ) -join "`n"
     $emit = Write-HookResult -EventName $eventName -Kind 'advisory' -Message $note
     exit $emit.ExitCode
@@ -324,7 +324,7 @@ if ($usedMcp) {
     $names = (@($servers) | Sort-Object) -join ', '
     if (-not (Test-ShouldReport ('missing|' + $names))) { exit 0 }
     $reason = @(
-        'MCP calls made; closing server names missing.',
+        'MCP calls; final server names missing.',
         ('Servers observed in this session: ' + $names + '.'),
         # The example is deliberately kept INLINE and quoted rather than shown on
         # a line of its own: this message lands in the same transcript the next
@@ -348,9 +348,9 @@ if ($usedMcp) {
 if (-not $sessionRelevant) { exit 0 }
 if (-not (Test-ShouldReport 'none-used')) { exit 0 }
 $note = @(
-    'MCP-relevant task; no connected tool called.',
-    'BEFORE answering: global-mcp-rules.md/global-research-rules.md FULL; verify missed checks.',
-    ('Either way the summary must carry the line: ' + $requiredLine)
+    'MCP task; no connected tool called.',
+    'BEFORE answering: global-mcp-rules.md/global-research-rules.md FULL; check omissions.',
+    ('Final: ' + $requiredLine)
 ) -join "`n"
 $emit = Write-HookResult -EventName $eventName -Kind 'advisory' -Message $note
 exit $emit.ExitCode

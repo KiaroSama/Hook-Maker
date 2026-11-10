@@ -117,7 +117,7 @@
 
     Write-Host '--- Skills-Check: UserPromptSubmit task-relevance nudge, once per session ---' -ForegroundColor Cyan
     $r = Fire -HookPath $hook1 -Cwd $proj1 -RawStdin (New-PromptStdin -Cwd $proj1 -EventName 'UserPromptSubmit' -Prompt 'anything' -SessionId 'skills-s1')
-    Check 'UserPromptSubmit emits the mandatory-skill-check nudge' ($r.Out -match 'SKILL POLICY CHECK' -and $r.Out -match 'each job: project/global/plugin/library') $r.Out
+    Check 'UserPromptSubmit emits the mandatory-skill-check nudge' ($r.Out -match 'SKILL POLICY CHECK' -and $r.Out -match 'project/global/plugin/library') $r.Out
     # The skills inventory is the SET a task may use; Spec Kit is the ROUTE the
     # task takes. Naming only the set reads as though the set were the whole
     # policy, which is what the 2026-09-19 rules stopped being true.
@@ -230,13 +230,13 @@
     New-Item -ItemType Directory -Path $guideLib -Force | Out-Null
     $guideHook = New-ConfiguredSkillsHookCopy -EnvOverrides @{ SKILLS_DIR = $guideLib }
     $rg = Fire -HookPath $guideHook -Cwd $guideProj
-    Check 'import guidance: copy the minimal set (1-5)' ($rg.Out -match 'minimal relevant 1-5') $rg.Out
-    Check 'import guidance: active policy FULL before real-folder copy' ($rg.Out -match 'BEFORE copy: active skill policy FULL; 1-5 authorized real folders') $rg.Out
+    Check 'import guidance: copy the minimal set (1-5)' ($rg.Out -match '1-5 relevant') $rg.Out
+    Check 'import guidance: active policy FULL before real-folder copy' ($rg.Out -match 'BEFORE copy: skill policy FULL; 1-5 authorized folders') $rg.Out
     # Links/private exclusions and record fields are indirect in the complete
     # active policy, not independently verified by this public routing assertion.
     Check 'import safety and record detail route to active policy before copy' (
-        $rg.Out -match 'BEFORE each job, skill-policy\.md FULL' -and
-        $rg.Out -match 'BEFORE copy: active skill policy FULL' -and $rg.Out -match 'Record \.ai/SKILLS\.md') $rg.Out
+        $rg.Out -match 'each job: skill-policy\.md FULL' -and
+        $rg.Out -match 'BEFORE copy: skill policy FULL' -and $rg.Out -match 'record \.ai/SKILLS\.md') $rg.Out
     Check 'import guidance: preserve a modified project skill' ($rg.Out -match 'preserve modified') $rg.Out
     Check 'record guidance: .ai/SKILLS.md is local-only and secret-free' ($rg.Out -match 'local, secret-free') $rg.Out
 
@@ -244,14 +244,16 @@
     Write-Host '--- Skills-Check: all THREE installed sources are enumerated (global, project, plugin) ---' -ForegroundColor Cyan
     # A plugin cache laid out the way the client lays one out:
     #   <root>\<marketplace>\<plugin>\<version>\skills\<skill>
-    # The plugin id is the SECOND segment, and the client addresses these skills
-    # as "<plugin>:<skill>" - so that is what the inventory has to report.
+    # Cache presence is discovered/unknown; a current registry below establishes
+    # eligible plugin identities independently of the cache directory names.
     function New-PluginCache {
         param([string]$Name, [hashtable]$Plugins)
         $root = Join-Path $Work $Name
         foreach ($plugin in $Plugins.Keys) {
             foreach ($skill in $Plugins[$plugin]) {
-                New-Item -ItemType Directory -Path (Join-Path $root ('market\' + $plugin + '\1.0.0\skills\' + $skill)) -Force | Out-Null
+                $folder = Join-Path $root ('market\' + $plugin + '\1.0.0\skills\' + $skill)
+                New-Item -ItemType Directory -Path $folder -Force | Out-Null
+                Write-Utf8 (Join-Path $folder 'SKILL.md') ("---`nname: " + $skill + "`n---`nbody")
             }
         }
         return $root
@@ -273,8 +275,8 @@
         $r3s.Out -match 'Plugin skills: 3/2 plugins' -and
         $r3s.Out -match 'ponytail \(1\)' -and $r3s.Out -match 'superpowers \(2\)') $r3s.Out
     $pluginContext = [string](($r3s.Out | ConvertFrom-Json).hookSpecificOutput.additionalContext)
-    Check 'plugin skills are addressed as <plugin>:<skill>, the form the client uses' (
-        $pluginContext -match 'key <plugin>:<skill>') $r3s.Out
+    Check 'cache counts require key verification and remain unknown' (
+        $pluginContext -match 'verify key' -and $pluginContext -match 'Unknown availability: 3') $r3s.Out
     # Several hundred plugin skill names would be a token bill, not information -
     # the inventory names PLUGINS, and individual plugin skills surface only in
     # the per-prompt shortlist below.
@@ -287,12 +289,18 @@
     $r = Fire -HookPath $emptyPluginHook -Cwd $threeProj
     Check 'an existing but empty plugin cache is reported as empty, not silently omitted' (
         $r.Out -match 'Plugin skills: none found under') $r.Out
-    # A plugin skill counts as INSTALLED for ::deep-debug capability coverage.
+    $cacheOnly = Fire -HookPath $threeHook -Cwd $threeProj -RawStdin (New-PromptStdin -Cwd $threeProj -EventName 'UserPromptSubmit' -Prompt 'brainstorming' -SessionId 'cache-only')
+    Check 'cache-only folders never become exact invocation suggestions' ($cacheOnly.Out -notmatch '- superpowers:brainstorming \[') $cacheOnly.Out
+    # Activation coverage uses current install records, not a cache presence claim.
     $ddPlugins = New-PluginCache 'dd-plugin-cache' @{ 'superpowers' = @('systematic-debugging', 'test-driven-development', 'requesting-code-review', 'verification-before-completion') }
+    $ddRegistry = Join-Path $Work 'dd-installed.json'
+    Write-Utf8 $ddRegistry (@{plugins=@{'superpowers@market'=@(@{scope='user';installPath=(Join-Path $ddPlugins 'market/superpowers/1.0.0');version='1.0.0'})}} | ConvertTo-Json -Depth 6)
     $ddPluginHook = New-ConfiguredSkillsHookCopy -EnvOverrides @{
-        SKILLS_DIR = (Join-Path $Work 'no-such-library'); PLUGIN_SKILLS_ROOT = $ddPlugins
+        SKILLS_DIR = (Join-Path $Work 'no-such-library'); PLUGIN_SKILLS_ROOT = $ddPlugins; CLAUDE_PLUGINS_FILE = $ddRegistry
     }
     $ddPluginProj = New-Proj 'DeepDebugViaPlugins'
+    $cacheDeep = Fire -HookPath $threeHook -Cwd $threeProj -RawStdin (New-PromptStdin -Cwd $threeProj -EventName 'UserPromptSubmit' -Prompt '::deep-debug' -SessionId 'cache-deep')
+    Check 'cache-only definitions cannot clear deep-debug missing capabilities' ($cacheDeep.Out -match 'NOT VISIBLE' -and $cacheDeep.Out -match 'verification-before-completion') $cacheDeep.Out
     $r = Fire -HookPath $ddPluginHook -Cwd $ddPluginProj -RawStdin (New-PromptStdin -Cwd $ddPluginProj -EventName 'UserPromptSubmit' -Prompt '::deep-debug' -SessionId 'ddp-1')
     Check 'core capabilities provided by PLUGINS are not reported as missing' (
         $r.Out -match '::deep-debug; exact loadable SKILL.md key/exposure' -and $r.Out -notmatch 'NOT VISIBLE') $r.Out
@@ -337,8 +345,8 @@
         $rl.Out -match 'BEFORE copy skill-policy\.md FULL' -and $rl.Out -match 'Library!=installed') $rl.Out
     Check 'the hook states it never copies anything itself' ($rl.Out -match 'Hook never copies') $rl.Out
     Check 'the import safety owner and modified-folder boundary travel with the command' (
-        $rl.Out -match 'BEFORE copy: active skill policy FULL; 1-5 authorized real folders, preserve modified' -and
-        $rl.Out -match 'Record \.ai/SKILLS\.md') $rl.Out
+        $rl.Out -match 'BEFORE copy: skill policy FULL; 1-5 authorized folders, preserve modified' -and
+        $rl.Out -match 'record \.ai/SKILLS\.md') $rl.Out
     # THE POLICY BOUNDARY, asserted as behaviour and not just as wording: after a
     # run that recommends an import, nothing may have been copied.
     Check 'the hook copied NOTHING - the destination directory was not even created' (
@@ -429,7 +437,7 @@
     $ddHook = New-ConfiguredSkillsHookCopy -EnvOverrides @{ SKILLS_DIR = (Join-Path $Work 'no-such-library') }
     $r = Fire -HookPath $ddHook -Cwd $ddProj -RawStdin (New-PromptStdin -Cwd $ddProj -EventName 'UserPromptSubmit' -Prompt 'please deep debug the login flow, maybe deep-debug harder' -SessionId 'sdd-prose')
     Check 'ordinary prose "deep debug" never surfaces the capability graph (generic nudge only)' (
-        $r.Out -notmatch '::deep-debug; exact loadable SKILL.md key/exposure' -and $r.Out -match 'each job: project/global/plugin/library') $r.Out
+        $r.Out -notmatch '::deep-debug; exact loadable SKILL.md key/exposure' -and $r.Out -match 'project/global/plugin/library') $r.Out
     $r = Fire -HookPath $ddHook -Cwd $ddProj -RawStdin (New-PromptStdin -Cwd $ddProj -EventName 'UserPromptSubmit' -Prompt '::deep-debug the login flow' -SessionId 'sdd-c1')
     Check 'standalone ::deep-debug emits phase routing, never blanket activation' (
         $r.Out -match 'SKILL POLICY CHECK \(claude\): ::deep-debug; exact loadable SKILL.md key/exposure' -and

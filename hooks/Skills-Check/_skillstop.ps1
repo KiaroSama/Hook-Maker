@@ -165,8 +165,8 @@ function Get-UnusedShortlistedSkills {
         # Answered in an earlier turn: the question was put and it was answered,
         # so it is not put again.
         if (@($alreadyAccounted | Where-Object { $_ -eq $n }).Count -gt 0) { continue }
-        # A bare Skill call proves only that bare key, never a qualified provider.
-        # The closing line can still explain a skipped candidate by its short name.
+        # Calls account for an exact key, not successful loading or execution.
+        # A bare skip must be explicit and identify just one offered provider.
         $leaf = $n
         $colon = $n.LastIndexOf(':')
         if ($colon -ge 0 -and $colon -lt ($n.Length - 1)) { $leaf = $n.Substring($colon + 1) }
@@ -175,9 +175,16 @@ function Get-UnusedShortlistedSkills {
         # The tool INPUT field, not just any occurrence of the name: this hook's
         # own shortlist message lands in the same transcript and names every
         # candidate, so a bare substring search would clear the gate itself.
-        if ($RawTranscript -match ('"skill"[ \t]*:[ \t]*"' + $full + '"')) { [void]$answered.Add($n); continue }
+        if ($RawTranscript -cmatch ('"skill"[ \t]*:[ \t]*"' + $full + '"')) { [void]$answered.Add($n); continue }
         if (-not [string]::IsNullOrWhiteSpace($UsedLine)) {
-            if ($UsedLine -match ('(?i)(?:' + $full + '|' + $short + ')')) { [void]$answered.Add($n); continue }
+            $edge = '[\p{L}\p{N}_.:/-]'
+            $exact = $UsedLine -cmatch ('(?<!' + $edge + ')' + $full + '(?![\p{L}\p{N}_./-]|:\S)')
+            $uniqueSkip = $false
+            if ($n -ne $leaf -and $UsedLine -match '^\s*none\b') {
+                $sameLeaf = @($Shortlist | Where-Object { ([string]$_).Split(':')[-1] -ceq $leaf })
+                $uniqueSkip = $sameLeaf.Count -eq 1 -and $UsedLine -cmatch ('(?<!' + $edge + ')' + $short + '(?![\p{L}\p{N}_./-]|:\S)')
+            }
+            if ($exact -or $uniqueSkip) { [void]$answered.Add($n); continue }
         }
         $total++
         # The lead is capped for readability; the FULL outstanding list travels
@@ -235,8 +242,8 @@ function Get-SkillClosingDecision {
             Token = ('shortlisted-unused|' + $named)
             Text  = (@(
                     ('INSTALLED prompt matches unused: ' + $named + '.' + $scale),
-                    'Loadable: no approval; covered steps THROUGH matching skill.',
-                    ('Clear ALL, one line: invoke/report exact keys OR "Skills used: none -' + $named + ': <each reason>". Answers credited.')
+                    'call!=loaded/executed/verified; report failed/unavailable/unsupported.',
+                    ('Clear: exact keys/outcomes OR "Skills used: none -' + $named + ': <each reason>".')
                 ) -join "`n")
         }
     }
@@ -261,7 +268,7 @@ function Get-SkillClosingDecision {
         $lines = New-Object System.Collections.Generic.List[string]
         [void]$lines.Add('Files changed; final "Skills used:" missing.')
         if (@($unused).Count -gt 0) {
-            [void]$lines.Add('INSTALLED prompt matches unused: ' + $named + '.' + $scale + ' They need no authorization.')
+            [void]$lines.Add('INSTALLED prompt matches unused: ' + $named + '.' + $scale + ' Verify exposure; no auto changes.')
         }
         [void]$lines.Add('Clear: final "Skills used: <actual names>" or "Skills used: none - <reason>"; no omission.')
         return [pscustomobject]@{ Kind = 'block'; Answered = $answeredNow; Token = ('missing-after-work|' + $named); Text = (($lines.ToArray()) -join "`n") }
@@ -276,7 +283,7 @@ function Get-SkillClosingDecision {
         Token = 'none-invoked'
         Text  = (@(
                 'SKILL POLICY CHECK: no invocation this session.',
-                'Check installed debug/test/security/UI/stack matches; use needs no approval.',
+                'Check debug/test/security/UI/stack matches; verify exposure, no auto changes.',
                 $script:SkillsRequirement
             ) -join "`n")
     }

@@ -17,14 +17,33 @@
 
 # Index format. Flat lines, not JSON: ~1700 entries parse in milliseconds and the
 # file is only ever produced and consumed here.
-#   header  HookMakerSkillsIndex|4|<configHash>|<builtUtcTicks>
+#   header  HookMakerSkillsIndex|5|<configHash>|<builtUtcTicks>
 #   plugin  p|<plugin>|<folder>|<name>|<description>|<full path>|<source>|<version>|<status>|<explicit>|<invocation>
 #   library l|<folder>|<name>|<description>|<full path>
 #   partial x|<reason>            install key k|<name@market>        install known m|1
 #
-# Version 4 retains installation identity and definition hash separately (see
-# _skilldiscovery.ps1): an older file on disk is rebuilt, never misread.
-$script:SkillIndexVersion = '4'
+# Version 5 invalidates cache-only rows formerly promoted to enabled invocations.
+$script:SkillIndexVersion = '5'
+
+# Eligibility is discovery evidence only, never proof of exposure or execution.
+function Test-SkillCandidate {
+    param($Skill)
+    return ($Skill.Status -eq 'enabled' -and $Skill.Explicit -ne '1' -and -not [string]::IsNullOrWhiteSpace([string]$Skill.Invocation))
+}
+
+# Installed-but-disabled/explicit/unknown definitions still prevent duplicate
+# import suggestions. Cache folders alone prove no installation.
+function Get-InstalledSkillNames {
+    param([object[]]$Skills)
+    $names=@{}
+    foreach ($skill in $Skills) {
+        if ($skill.Source -eq 'cache-walk') { continue }
+        foreach ($name in @($skill.Leaf,$skill.Name,$skill.Invocation)) {
+            if (-not [string]::IsNullOrWhiteSpace([string]$name)) { $names[([string]$name).ToLowerInvariant()]=$true }
+        }
+    }
+    return $names
+}
 
 # '|' is the field separator and a description may contain anything, so every
 # stored field is flattened first. Lossy on purpose - these values are only ever
@@ -155,7 +174,7 @@ function Build-SkillIndex {
                     if (($d.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -eq [System.IO.FileAttributes]::ReparsePoint) { continue }
                     $identity = Get-SkillIdentity (Join-Path $d.FullName 'SKILL.md')
                     [void]$plugin.Add([pscustomobject]@{ Plugin = $pluginName; Leaf = $d.Name; Name = $identity.Name; Description = $identity.Description; Path = $d.FullName
-                            Source = 'cache-walk'; Version = ''; Status = 'enabled'; Explicit = $(if ($identity.Explicit) { '1' } else { '0' }); Invocation = ($pluginName + ':' + $d.Name) })
+                            Source = 'cache-walk'; Version = ''; Status = 'unknown'; Explicit = $(if ($identity.Explicit) { '1' } else { '0' }); Invocation = '' })
                     if ($plugin.Count -ge $maxPlugin) { break }
                 }
                 if ($plugin.Count -ge $maxPlugin) { break }

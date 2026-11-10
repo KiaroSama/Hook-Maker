@@ -12,7 +12,11 @@ Guidance requires one question, finite page/call/time/cost limits, primary bodie
 
 Companion prose can supply name-only compatibility hints. Installed provider coverage still requires structured kind/client/provider/path/version/hash evidence. Commands, source-only definitions, missing resources and metadata-only changes are not new executable capabilities. Discovery and catalogue limits remain unchanged; partial stays unknown.
 
-Mcp-Usage-Check adds relevant request-scoped advisories:
+Mcp-Usage-Check routes current `global-mcp-server-contracts.md` before selection and adds relevant request-scoped advisories. Exposed schemas do not establish authorization. Typed missing scopes, HTTP 401/403 or failed tool results are blocked operations, not evidence of a broken installation. Report the missing grant without repeating the unchanged call, reading bearer values, widening scopes, changing endpoints/settings or running provider probes.
+
+- **Omniroute-ccr:** exact current gateway schema and owner contract; `omniroute_tool_search` may require `read:tools`. Discovery/metrics, retained CCR or gateway memory, configuration mutations, inference/web calls, plugin lifecycle, document appends and gamification effects have separate data/cost/consent boundaries. Neither a reminder nor a tool listing authorizes them. Existing desktop and rea-video routes remain distinct.
+
+Mcp-Usage-Check also adds:
 - **Scrapling/extraction:** permitted static HTTP first; legitimate JS rendering only; owned-session finally-close; HTTP seconds versus browser milliseconds; bounded requests/bodies/robots/rates and small batches; selector/provenance/Unicode fidelity. No CAPTCHA, refusal/paywall/auth/proxy bypass, TLS weakening or private URL escape.
 - **Agensi:** matching operator reference; acquisition/trial/cloud/install/update/creator preview can persist/transfer/spend even when free. Separate exact approval and original-ID reconciliation; no paid-content export or account/route fallback.
 - **Upwork:** official OAuth and the `Upwork-Agent-mcp` native bridge (historical `upwork-local`) remain distinct; current namespace/schema/account/action evidence. Auth-required, connection-failed, unsupported and unverified differ; never request tokens/codes/callback URLs. `create_draft` saves a real draft immediately, retry may duplicate, publication is separate. Resolve schema conflicts, respect preview/Connects/budget gates and reconcile unknown outcomes.

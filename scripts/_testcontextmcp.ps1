@@ -14,6 +14,33 @@
 # The underscore prefix keeps this out of the runner's Test-*.ps1 glob, so it
 # needs no ci.yml bucket entry of its own.
 
+function Invoke-McpGatewayRegression {
+    param([string]$Root)
+    . (Join-Path $Root 'hooks/_hooklib.ps1')
+    . (Join-Path $Root 'hooks/_scope.ps1')
+    $entry=[IO.File]::ReadAllText((Join-Path $Root 'hooks/Mcp-Usage-Check/Mcp-Usage-Check.ps1'))
+    $ast=[Management.Automation.Language.Parser]::ParseInput($entry,[ref]$null,[ref]$null)
+    $messages=@($ast.FindAll({param($n) $n -is [Management.Automation.Language.StringConstantExpressionAst]},$true) | ForEach-Object {$_.Value})
+    $ownerMessages=@($messages | Where-Object {$_ -match '^MCP: BEFORE selection'})
+    Check 'MCP startup and prompt both require server contracts before selection' ($ownerMessages.Count -eq 2 -and @($ownerMessages | Where-Object {$_ -notmatch 'global-mcp-server-contracts.md FULL'}).Count -eq 0)
+    foreach ($client in @('claude','codex')) {
+        $state=Join-Path $Work ('gateway-'+$client)
+        foreach ($prompt in @('Use OmniRoute route metrics','Use Omniroute-ccr tool search')) {
+            $input=[pscustomobject]@{prompt=$prompt;session_id='gateway';cwd=$Work}
+            $note=Get-OperationMcpReminder $input $client $Work $state
+            Check ('gateway authorization boundary '+$client+'/'+$prompt) ($note -match 'OMNIROUTE:' -and $note -match 'global-mcp-server-contracts.md FULL' -and $note -match 'exposed!=authorized' -and $note -match 'scope/401/403' -and $note -match 'blocked, not broken' -and $note -match 'report; no retry/grant/token/endpoint/config/install/restart/probe/provider repair') $note
+            Check ('gateway repeated request quiet '+$client+'/'+$prompt) ((Get-OperationMcpReminder $input $client $Work $state) -eq '')
+        }
+        foreach ($prompt in @('<tool_result>Use OmniRoute</tool_result>','Example: ``Use Omniroute-ccr``','"Use OmniRoute"','Review a function')) {
+            $input=[pscustomobject]@{prompt=$prompt;session_id='quoted';cwd=$Work}
+            Check ('gateway quoted or unrelated stays silent '+$client+'/'+$prompt) ((Get-OperationMcpReminder $input $client $Work $state) -eq '')
+        }
+        $input=[pscustomobject]@{prompt='Use context-mode';session_id='retained';cwd=$Work}
+        Check ('existing context route retained '+$client) ((Get-OperationMcpReminder $input $client $Work $state) -match 'CONTEXT-MODE:')
+    }
+}
+
+    Invoke-McpGatewayRegression (Split-Path -Parent $PSScriptRoot)
     # =====================================================================
     Write-Host '--- Mcp-Usage-Check: input handling ---' -ForegroundColor Cyan
     $plain = New-Proj 'Plain'
@@ -85,7 +112,7 @@
     Check 'research: chat that is neither work nor a technical question stays silent' ($r.Exit -eq 0 -and $r.Out -eq '') $r.Out
     $r = Fire -HookPath $McpHook -Cwd $resProj
     Check 'research: SessionStart requires full research and MCP owners before work' (
-        $r.Out -match 'BEFORE work global-mcp-rules.md/global-research-rules.md FULL' -and $r.Out -notmatch 'whose behavior may have changed') $r.Out
+        $r.Out -match 'BEFORE selection global-mcp-server-contracts.md FULL' -and $r.Out -match 'global-mcp-rules.md/global-research-rules.md FULL' -and $r.Out -notmatch 'whose behavior may have changed') $r.Out
 
     $operationProject = New-Proj 'McpOperations'
     # Each conditional process contract is now behind its exact FULL-before-use
@@ -99,7 +126,8 @@
         @('Use REA to inspect an artifact','REA:','BEFORE use global-rea-fiverr-contracts.md FULL','Missing controls BLOCK; reconcile timeout'),
         @('Use telegram-operator for a backup','TELEGRAM:','BEFORE use global-connected-skill-contracts.md Telegram Operator FULL/job/schema','No deletion'),
         @('Use context-mode to inspect output','CONTEXT-MODE:','BEFORE use global-mcp-server-contracts.md FULL/schema','Not a sandbox'),
-        @('Use Numera-CHA-Solver-MCP for licensed text','NUMERA CHA:','BEFORE use global-mcp-server-contracts.md FULL','Human!=server_verified; no self-approval')
+        @('Use Numera-CHA-Solver-MCP for licensed text','NUMERA CHA:','BEFORE use global-mcp-server-contracts.md FULL','Human!=server_verified; no self-approval'),
+        @('Use Omniroute-ccr tool search','OMNIROUTE:','global-mcp-server-contracts.md FULL','blocked, not broken')
     )
     foreach ($case in $requests) {
         $r = Fire -HookPath $McpHook -Cwd $operationProject -RawStdin (New-PromptStdin $operationProject 'UserPromptSubmit' $case[0] 'operations')

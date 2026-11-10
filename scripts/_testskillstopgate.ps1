@@ -58,8 +58,8 @@
     Check 'it is the shortlist finding, not the missing-line one (the line is present)' (
         $r.Out -match 'INSTALLED prompt matches unused') $r.Out
     Check 'the block NAMES the skill that was offered and dropped' ($r.Out -match 'telemetry-pipeline') $r.Out
-    Check 'the block states no authorization is needed for an installed skill' (
-        $r.Out -match 'Loadable: no approval') $r.Out
+    Check 'the block distinguishes calls from successful load and supports honest failure' (
+        $r.Out -match 'call!=loaded/executed/verified' -and $r.Out -match 'failed/unavailable/unsupported' -and $r.Out -notmatch 'Loadable: no approval') $r.Out
     # A FRESH session for the cleared case. Reusing the blocked one would prove
     # nothing: an unchanged finding is fingerprint-suppressed, and suppression is
     # indistinguishable from silence at the hook's output.

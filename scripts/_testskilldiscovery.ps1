@@ -183,7 +183,7 @@ function Invoke-SkillSurfaceRegression {
     # alpha 3 (nested + one explicit-only), solo 1 (root SKILL.md), picked 2
     # (declared folders), dup 1, off 1 (disabled plugin), Desktop 2 (one off).
     Check 'every individual skill is counted, not every package' ($ctx -match 'Plugin skills: 10/6 plugins') $ctx
-    Check 'enabled, disabled and explicit-only stay distinct' ($ctx -match 'Availability: 8 enabled; 2 disabled/unloadable; 1 user-explicit-only') $ctx
+    Check 'enabled, disabled and explicit-only stay distinct' ($ctx -match 'Availability: 7 eligible; 2 disabled; 1 user-explicit-only') $ctx
     Check 'a declared path outside the plugin and a missing install path make the scan PARTIAL' (
         $ctx -match 'Skill discovery was PARTIAL' -and $ctx -match 'picked@m declares a path outside the plugin' -and $ctx -match 'ghost@m install path missing') $ctx
     Check '4a: the per-skill routing line is present verbatim at SessionStart' ($ctx.Contains($sdRoutingA)) $ctx
@@ -219,11 +219,12 @@ function Invoke-SkillSurfaceRegression {
     Write-Host '--- Skills-Check: the shortlist names exact invocations and skips what cannot run ---' -ForegroundColor Cyan
     $r = Fire -HookPath $sdClaudeHook -Cwd $sdProj -RawStdin (New-PromptStdin -Cwd $sdProj -EventName 'UserPromptSubmit' -Prompt 'alpha dormant solo pick tooling' -SessionId 'sd-c2')
     $ctx = Get-Context $r.Out
-    Check 'two nested skills of one plugin are offered separately' ($ctx -match '- alpha:alpha-one \[plugin\]' -and $ctx -match '- alpha:alpha-two \[plugin\]') $ctx
-    Check 'identical names from different providers stay distinct' ($ctx -match '- dup:alpha-one \[plugin\]') $ctx
-    Check 'a root-SKILL.md plugin is addressed as <plugin>:<name>' ($ctx -match '- solo:solo-skill \[plugin\]') $ctx
-    Check 'a declared individual skill folder is offered' ($ctx -match '- picked:pick-a \[plugin\]') $ctx
-    Check 'each shortlisted skill names its SKILL.md procedure location' ($ctx -match ('alpha:alpha-one \[plugin\] -> ' + [regex]::Escape((Join-Path $sdAlpha 'skills\one\SKILL.md')))) $ctx
+    Check 'two nested skills of one plugin are offered separately' ($ctx -match '- alpha:alpha-one \[claude-plugin\]' -and $ctx -match '- alpha:alpha-two \[claude-plugin\]') $ctx
+    Check 'identical names from different providers stay distinct' ($ctx -match '- dup:alpha-one \[claude-plugin\]') $ctx
+    Check 'a root-SKILL.md plugin is addressed as <plugin>:<name>' ($ctx -match '- solo:solo-skill \[claude-plugin\]') $ctx
+    Check 'a declared individual skill folder is offered' ($ctx -match '- picked:pick-a \[claude-plugin\]') $ctx
+    Check 'each shortlisted skill names its SKILL.md procedure location' ($ctx -match ('alpha:alpha-one \[claude-plugin\] -> ' + [regex]::Escape((Join-Path $sdAlpha 'skills\one\SKILL.md')))) $ctx
+    Check 'shortlist retains installation key and version without guessing exposure' ($ctx -match 'package=alpha@m; version=1.0.0' -and $ctx -match 'configured!=exposed') $ctx
     Check 'an explicit-only skill is never shortlisted' ($ctx -notmatch 'alpha-three') $ctx
     Check 'a skill of a disabled plugin is never shortlisted' ($ctx -notmatch 'dormant-widget') $ctx
     Check 'the shortlist says it is not the full inventory' ($ctx -match 'INSTALLED matches only: verify source/exposure/exact SKILL.md key') $ctx
@@ -234,7 +235,7 @@ function Invoke-SkillSurfaceRegression {
     $sdCodexCache = Join-Path $sdCodex 'plugins\cache\mk'
     New-Item -ItemType Directory -Path (Join-Path $sdCodexCache 'cplug\1.0.0\.codex-plugin') -Force | Out-Null
     Write-Utf8 (Join-Path $sdCodexCache 'cplug\1.0.0\.codex-plugin\plugin.json') '{"name":"cplug","skills":"./skills/"}'
-    New-SdSkill (Join-Path $sdCodexCache 'cplug\1.0.0\skills\c-one') 'c-one'
+    New-SdSkill (Join-Path $sdCodexCache 'cplug\1.0.0\skills\c-one') 'codex-alpha'
     New-SdSkill (Join-Path $sdCodexCache 'cplug\1.0.0\skills\c-two') 'c-two'
     New-SdSkill (Join-Path $sdCodexCache 'coff\1.0.0\skills\c-old') 'c-old'
     New-SdSkill (Join-Path $sdCodexCache 'coff\2.0.0\skills\c-off') 'c-off'
@@ -266,13 +267,16 @@ function Invoke-SkillSurfaceRegression {
     # cplug 2 + coff 1 (newest version only) + own + .system + gone + quiet + shared.
     Check 'Codex plugins, its skills folder and the shared folder are all enumerated' ($ctx -match 'Plugin skills: 8/4 plugins') $ctx
     Check 'on Codex a disabled plugin, a config-disabled skill and an explicit-only skill stay distinct' (
-        $ctx -match 'Availability: 6 enabled; 2 disabled/unloadable; 1 user-explicit-only') $ctx
+        $ctx -match 'Availability: 5 eligible; 2 disabled; 1 user-explicit-only') $ctx
     Check 'several cached versions are reported as a partial choice, not hidden' ($ctx -match 'coff@mk has 2 cached versions; newest used') $ctx
     Check 'a Codex run never reports Claude paths or Claude skills' ($ctx -notmatch 'alpha-one' -and $ctx -notmatch 'anthropic-skills' -and $ctx -notmatch 'sd-claude') $ctx
     Check 'missing rules are reported as NOT CHECKED, never as no drift' ($ctx -match 'Catalogue drift NOT CHECKED' -and $ctx -match 'not all-clear') $ctx
     $r = Fire -HookPath $sdCodexHook -Cwd $sdCodexProj -RawStdin (New-PromptStdin -Cwd $sdCodexProj -EventName 'UserPromptSubmit' -Prompt 'quiet shared gone owned' -SessionId 'sd-x2')
     $ctx = Get-Context $r.Out
     Check 'Codex invocations are bare names' ($ctx -match '- shared-one \[codex-shared\]' -and $ctx -match '- owned-helper \[codex-skills\]') $ctx
+    $r = Fire -HookPath $sdCodexHook -Cwd $sdCodexProj -RawStdin (New-PromptStdin -Cwd $sdCodexProj -EventName 'UserPromptSubmit' -Prompt 'codex alpha' -SessionId 'sd-x-plugin')
+    $ctx = Get-Context $r.Out
+    Check 'Codex plugin retains bare invocation and source provider version' ($ctx -match '- codex-alpha \[codex-plugin\]' -and $ctx -match 'package=cplug@mk; version=1.0.0' -and $ctx -notmatch 'cplug:codex-alpha') $ctx
     Check 'Codex explicit-only and config-disabled skills are never shortlisted' ($ctx -notmatch '- quiet ' -and $ctx -notmatch '- gone ') $ctx
     $r = Fire -HookPath $sdCodexHook -Cwd $sdCodexProj -RawStdin (New-StopStdin -Cwd $sdCodexProj -Transcript (Join-Path $Work 'no-such-transcript.jsonl') -SessionId 'sd-x3')
     Check 'Codex Stop keeps its established systemMessage shape' ($r.Out -match '"systemMessage"' -and $r.Out -notmatch '"hookSpecificOutput"') $r.Out
