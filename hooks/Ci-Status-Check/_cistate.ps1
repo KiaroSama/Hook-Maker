@@ -76,12 +76,12 @@ function Invoke-CiStateGate {
         # HEAD. A cached label cannot outrank fresh exact-source evidence.
         $script:prefetchedSnapshot = Get-CiRunSnapshot -RepoSlug $repoSlug -Sha $sha -ProjectRoot $cwd -Branch $branch
         if ($null -ne $script:prefetchedSnapshot) { return }
-        $emit = Write-StopBlockResult -HookInput $hookInput -HookName 'Ci-Status-Check' -EventName $eventName -Reason ('CI CHECK: fresh exact-source evidence could not be verified for ' + $sha7 + '. Cached pending != running proof. Verify access/full workload; UNKNOWN, not green.')
+        $emit = Write-StopBlockResult -HookInput $hookInput -HookName 'Ci-Status-Check' -EventName $eventName -Reason ('CI CHECK: fresh exact-source proof unavailable: ' + $sha7 + '. Cached pending!=running; check access/full workload. UNKNOWN, not green.')
         exit $emit.ExitCode
     }
     $ageMinutes = ([DateTime]::UtcNow - $stateTime).TotalMinutes
     if ($stateOutcome -eq 'failed' -and $ageMinutes -lt $failureCooldown) {
-        $emit = Write-StopBlockResult -HookInput $hookInput -HookName 'Ci-Status-Check' -EventName $eventName -Reason ('CI CHECK: pushed commit ' + $sha7 + ' still failed; guidance already reported. Completion blocked: push repair or report proven external/manual blocker.')
+        $emit = Write-StopBlockResult -HookInput $hookInput -HookName 'Ci-Status-Check' -EventName $eventName -Reason ('CI CHECK: pushed ' + $sha7 + ' failed; details sent. Blocked: push repair or report proven external/manual blocker.')
         exit $emit.ExitCode
     }
 }
