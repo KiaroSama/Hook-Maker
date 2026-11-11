@@ -123,13 +123,16 @@ function Get-CiRunSnapshot {
     $proven=$null-ne$expected;$proofRuns=New-Object Collections.Generic.List[object]
     $requiredCheckIds=New-Object 'Collections.Generic.HashSet[string]' ([StringComparer]::Ordinal)
     $skippedCheckIds=New-Object 'Collections.Generic.HashSet[string]' ([StringComparer]::Ordinal)
+    $validatedCheckIds=New-Object 'Collections.Generic.HashSet[string]' ([StringComparer]::Ordinal)
     $oldest=[DateTimeOffset]::MaxValue
     if($proven){
         if((Get-Variable CiApiScopeKey -Scope Script -ErrorAction SilentlyContinue)-and$script:CiApiScopeKey-ne''){
             $jobEndpoints=@(foreach($workflow in @($expected.Workflows)){
                 $matched=@($project|Where-Object{$_.path-ceq$workflow.Path-and$_.event-ceq$workflow.Event-and$_.head_branch-ceq$workflow.Branch-and($workflow.Id-eq''-or[string]$_.workflow_id-ceq[string]$workflow.Id)}|Sort-Object {[long]$_.id} -Descending)
-                if($matched.Count-and$matched[0].status-ceq'completed'-and$matched[0].conclusion-ceq'success'){
-                    'repos/'+$RepoSlug+'/actions/runs/'+$matched[0].id+'/attempts/'+$matched[0].run_attempt+'/jobs?per_page=100'
+                foreach($candidate in $matched){
+                    if($candidate.status-ceq'completed'-and$candidate.conclusion-ceq'success'){
+                        'repos/'+$RepoSlug+'/actions/runs/'+$candidate.id+'/attempts/'+$candidate.run_attempt+'/jobs?per_page=100'
+                    }
                 }
             })
             if($jobEndpoints.Count-and$null-eq(Invoke-CiApiBatch -Endpoints $jobEndpoints -ScopeKey $script:CiApiScopeKey)){return $null}
@@ -137,7 +140,10 @@ function Get-CiRunSnapshot {
         foreach($workflow in @($expected.Workflows)){
             $matching=@($project|Where-Object{$_.path-ceq$workflow.Path-and$_.event-ceq$workflow.Event-and$_.head_branch-ceq$workflow.Branch-and($workflow.Id-eq''-or[string]$_.workflow_id-ceq[string]$workflow.Id)}|Sort-Object {[long]$_.id} -Descending)
             if($matching.Count-eq0){$proven=$false;continue}
-            $run=$matching[0]
+            # Commit checks may include older successful runs. Validate their own
+            # attempts too; only the latest supplies required checks and freshness.
+            foreach($run in $matching){
+            $latest=[string]$run.id-ceq[string]$matching[0].id
             if($run.status-cne'completed'-or$run.conclusion-cne'success'){$proven=$false;continue}
             $jobsDoc=Read-CiWorkloadCollection -Endpoint ('repos/'+$RepoSlug+'/actions/runs/'+$run.id+'/attempts/'+$run.run_attempt+'/jobs?per_page=100') -Field jobs
             if($null-eq$jobsDoc-or$null-eq(Get-Field $jobsDoc 'total_count')-or$null-eq$jobsDoc.PSObject.Properties['jobs']){$proven=$false;continue}
@@ -160,14 +166,15 @@ function Get-CiRunSnapshot {
                 $skip=(Get-Field $required[0] 'disposition')-ceq'skipped'
                 if(($skip-and($job.conclusion-cne'skipped'-or$job.steps-isnot[Array]-or$job.steps.Count-ne0))-or
                     (-not$skip-and$job.conclusion-cne'success')){$proven=$false;continue}
-                if($required[0].PSObject.Properties['MainSteps']){
+                if($latest-and$required[0].PSObject.Properties['MainSteps']){
                     if(-not$legKeys.Add(($required[0].Labels-join'|'))-or-not(Test-CiLiteralJobSteps $required[0] $job)){$proven=$false;continue}
                 }
                 $checkUrl=[string](Get-Field $job 'check_run_url')
                 $checkPrefix='https://api.github.com/repos/'+$RepoSlug+'/check-runs/'
                 if(-not$checkUrl.StartsWith($checkPrefix,[StringComparison]::OrdinalIgnoreCase)-or
                     $checkUrl.Substring($checkPrefix.Length)-cnotmatch'^[1-9][0-9]*$'-or
-                    -not$requiredCheckIds.Add($checkUrl.Substring($checkPrefix.Length))){$proven=$false;continue}
+                    -not$validatedCheckIds.Add($checkUrl.Substring($checkPrefix.Length))){$proven=$false;continue}
+                if($latest-and-not$requiredCheckIds.Add($checkUrl.Substring($checkPrefix.Length))){$proven=$false;continue}
                 $end=ConvertTo-CiUtcTime (Get-Field $job 'completed_at')
                 if($null-eq$end-or$end-gt[DateTimeOffset]::UtcNow){$proven=$false;continue}
                 if($skip){
@@ -179,8 +186,12 @@ function Get-CiRunSnapshot {
                 # A later unrelated job/cleanup cannot refresh an earlier validation.
                 if($end-lt$runEnd){$runEnd=$end}
                 $steps=@(Get-Field $job 'steps')
+                if($steps.Count-eq0){$proven=$false;continue}
                 $numbers=New-Object 'Collections.Generic.HashSet[string]' ([StringComparer]::Ordinal)
                 foreach($step in $steps){if([string]$step.number-cnotmatch'^[1-9][0-9]*$'-or-not$numbers.Add([string]$step.number)-or$step.status-cne'completed'-or$step.conclusion-cnotin@('success','skipped')){$proven=$false}}
+                # Older inputs may legitimately skip different native steps.
+                # Their jobs correlate checks only, never prove current execution.
+                if(-not$latest){continue}
                 foreach($name in @($required[0].Steps)){
                     $actual=@($steps|Where-Object{$_.name-ceq$name})
                     if($actual.Count-ne1-or$actual[0].status-cne'completed'-or$actual[0].conclusion-cne'success'){$proven=$false;continue}
@@ -190,8 +201,11 @@ function Get-CiRunSnapshot {
                 }
             }
             if($runEnd-eq[DateTimeOffset]::MaxValue){$proven=$false;continue}
-            if($runEnd-lt$oldest){$oldest=$runEnd}
-            $proofRuns.Add([ordered]@{id=$run.id;attempt=$run.run_attempt;workflowId=$run.workflow_id;path=$run.path;event=$run.event;branch=$run.head_branch;completedUtc=$runEnd.ToString('o')})
+            if($latest){
+                if($runEnd-lt$oldest){$oldest=$runEnd}
+                $proofRuns.Add([ordered]@{id=$run.id;attempt=$run.run_attempt;workflowId=$run.workflow_id;path=$run.path;event=$run.event;branch=$run.head_branch;completedUtc=$runEnd.ToString('o')})
+            }
+            }
         }
     }
     $checksComplete=$false
