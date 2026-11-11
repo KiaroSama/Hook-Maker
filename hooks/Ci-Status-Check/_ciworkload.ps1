@@ -128,7 +128,7 @@ function Get-CiRunSnapshot {
     if($proven){
         if((Get-Variable CiApiScopeKey -Scope Script -ErrorAction SilentlyContinue)-and$script:CiApiScopeKey-ne''){
             $jobEndpoints=@(foreach($workflow in @($expected.Workflows)){
-                $matched=@($project|Where-Object{$_.path-ceq$workflow.Path-and$_.event-ceq$workflow.Event-and$_.head_branch-ceq$workflow.Branch-and($workflow.Id-eq''-or[string]$_.workflow_id-ceq[string]$workflow.Id)}|Sort-Object {[long]$_.id} -Descending)
+                $matched=@($project|Where-Object{$_.path-ceq$workflow.Path-and$_.event-ceq$workflow.Event-and($_.head_branch-ceq$workflow.Branch-or((Get-Field $workflow 'branchEquivalent')-is[bool]-and(Get-Field $workflow 'branchEquivalent')-eq$true-and-not[string]::IsNullOrWhiteSpace([string](Get-Field $workflow 'branchRationale'))-and@(Get-Field $workflow 'equivalentTo')-ccontains$_.head_branch))-and($workflow.Id-eq''-or[string]$_.workflow_id-ceq[string]$workflow.Id)}|Sort-Object {[long]$_.id} -Descending)
                 foreach($candidate in $matched){
                     if($candidate.status-ceq'completed'-and$candidate.conclusion-ceq'success'){
                         'repos/'+$RepoSlug+'/actions/runs/'+$candidate.id+'/attempts/'+$candidate.run_attempt+'/jobs?per_page=100'
@@ -138,12 +138,13 @@ function Get-CiRunSnapshot {
             if($jobEndpoints.Count-and$null-eq(Invoke-CiApiBatch -Endpoints $jobEndpoints -ScopeKey $script:CiApiScopeKey)){return $null}
         }
         foreach($workflow in @($expected.Workflows)){
-            $matching=@($project|Where-Object{$_.path-ceq$workflow.Path-and$_.event-ceq$workflow.Event-and$_.head_branch-ceq$workflow.Branch-and($workflow.Id-eq''-or[string]$_.workflow_id-ceq[string]$workflow.Id)}|Sort-Object {[long]$_.id} -Descending)
-            if($matching.Count-eq0){$proven=$false;continue}
+            $matching=@($project|Where-Object{$_.path-ceq$workflow.Path-and$_.event-ceq$workflow.Event-and($_.head_branch-ceq$workflow.Branch-or((Get-Field $workflow 'branchEquivalent')-is[bool]-and(Get-Field $workflow 'branchEquivalent')-eq$true-and-not[string]::IsNullOrWhiteSpace([string](Get-Field $workflow 'branchRationale'))-and@(Get-Field $workflow 'equivalentTo')-ccontains$_.head_branch))-and($workflow.Id-eq''-or[string]$_.workflow_id-ceq[string]$workflow.Id)}|Sort-Object {[long]$_.id} -Descending)
+            $current=@($matching|Where-Object{$_.head_branch-ceq$workflow.Branch})
+            if($current.Count-eq0){$proven=$false;continue}
             # Commit checks may include older successful runs. Validate their own
             # attempts too; only the latest supplies required checks and freshness.
             foreach($run in $matching){
-            $latest=[string]$run.id-ceq[string]$matching[0].id
+            $latest=[string]$run.id-ceq[string]$current[0].id
             if($run.status-cne'completed'-or$run.conclusion-cne'success'){$proven=$false;continue}
             $jobsDoc=Read-CiWorkloadCollection -Endpoint ('repos/'+$RepoSlug+'/actions/runs/'+$run.id+'/attempts/'+$run.run_attempt+'/jobs?per_page=100') -Field jobs
             if($null-eq$jobsDoc-or$null-eq(Get-Field $jobsDoc 'total_count')-or$null-eq$jobsDoc.PSObject.Properties['jobs']){$proven=$false;continue}
