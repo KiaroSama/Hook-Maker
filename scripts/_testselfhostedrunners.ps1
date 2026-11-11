@@ -25,7 +25,7 @@
     $r = Fire -HookPath $CiHook -Cwd $shManual -EventName 'Stop'
     Check 'SH05 no run on a manual self-hosted repo -> "final dispatch missing", a block, never green' (
         $r.Out -match 'final dispatch missing' -and $r.Out -match '"decision":"block"' -and
-        $r.Out -match 'Never GitHub/bot/Dependabot branches' -and $r.Out -notmatch 'no runs are registered yet') $r.Out
+        $r.Out -match 'No bot refs/runner action' -and $r.Out -notmatch 'no runs are registered yet') $r.Out
 
     $shPushed = New-GitRepo 'selfhosted-push'
     New-Item -ItemType Directory -Path (Join-Path $shPushed '.github\workflows') -Force | Out-Null
@@ -42,4 +42,27 @@
     Set-Mock -ExpectedSha (Get-HeadSha $hostedManual)
     $r = Fire -HookPath $CiHook -Cwd $hostedManual -EventName 'Stop'
     Check 'SH09 missing hosted dispatch is pending, never automatic or green' (
-        $r.Out -match 'final dispatch missing' -and $r.Out -match 'Manual only; push!=run' -and $r.Out -match '"decision":"block"') $r.Out
+        $r.Out -match 'final dispatch missing' -and $r.Out -match 'Ordinary CI manual: workflow_dispatch/reachable workflow_call' -and $r.Out -match '"decision":"block"') $r.Out
+
+    $tokens=$null;$errors=$null
+    $helper=Join-Path $PSScriptRoot '_testmanualworkflow.ps1'
+    $ast=[Management.Automation.Language.Parser]::ParseFile($helper,[ref]$tokens,[ref]$errors)
+    $fixture=$ast.Find({param($n) $n-is[Management.Automation.Language.FunctionDefinitionAst]-and$n.Name-eq'Get-SecurityWorkflowFixture'},$true)
+    . ([scriptblock]::Create($fixture.Extent.Text))
+    $securityText=Get-SecurityWorkflowFixture
+    $scanRepo=New-GitRepo 'security-only-no-run'
+    [IO.File]::WriteAllText((Join-Path $scanRepo '.github/workflows/ci.yml'),$securityText,[Text.UTF8Encoding]::new($false))
+    Set-Mock -ExpectedSha (Get-HeadSha $scanRepo)
+    $r=Fire -HookPath $CiHook -Cwd $scanRepo -EventName 'Stop'
+    Check 'security-only no run is unproven without fabricated manual missing-dispatch instruction' (
+        $r.Out-match'"decision":"block"'-and$r.Out-match'security-only; no runs'-and
+        $r.Out-notmatch'final dispatch missing|gh workflow run') $r.Out
+    [IO.File]::WriteAllText((Join-Path $scanRepo '.github/workflows/scan.yml'),$securityText,[Text.UTF8Encoding]::new($false))
+    $manual="on: [workflow_dispatch]`njobs:`n  verify:`n    runs-on: windows-latest`n    steps:`n      - run: npm test`n"
+    [IO.File]::WriteAllText((Join-Path $scanRepo '.github/workflows/ci.yml'),$manual,[Text.UTF8Encoding]::new($false))
+    $r=Fire -HookPath $CiHook -Cwd $scanRepo -EventName 'Stop'
+    # Mixed files are unsupported by the exact-SHA verifier absent reviewed evidence.
+    # Its refusal must not be loosened to obtain a missing-dispatch or green label.
+    Check 'manual validation beside security scan still needs exact reviewed workload, not no-ci' (
+        $r.Out-match'"decision":"block"'-and$r.Out-notmatch'security-only; no runs'-and
+        $r.Out-match'UNPROVEN|UNVERIFIED|unproven|review|workload|final dispatch missing') $r.Out

@@ -282,7 +282,7 @@ try {
     Set-Content (Join-Path $shRepo '.github\workflows\ci.yml') "on:`n  push:`n  workflow_dispatch:`njobs:`n  t:`n    runs-on: [self-hosted, windows]`n    steps:`n      - run: echo test"
     $r = Fire -HookPath $BaselineHook -Cwd $shRepo
     Check 'self-hosted: a push-triggered self-hosted workflow is named, advisory only' (
-        $r.Out -match 'MANUAL CI, all hosts' -and $r.Out -match 'ci\.yml: a CI workflow is triggered automatically by push' -and $r.Out -notmatch '"decision"') $r.Out
+        $r.Out -match 'MANUAL CI, all hosts' -and $r.Out -match 'ci\.yml: automatic project/unknown trigger: push' -and $r.Out -notmatch '"decision"') $r.Out
     $shManual = New-GitRepo 'selfhostedmanual' -GithubRemote:$false
     New-Item -ItemType Directory -Path (Join-Path $shManual '.github\workflows') -Force | Out-Null
     Set-Content (Join-Path $shManual '.github\workflows\ci.yml') "on:`n  workflow_dispatch:`njobs:`n  t:`n    runs-on: self-hosted`n    steps:`n      - run: echo test"
@@ -295,13 +295,11 @@ try {
     $r = Fire -HookPath $BaselineHook -Cwd $b1
     Check 'missing .github -> CI + dependabot findings' ($r.Out -match 'GITHUB BASELINE CHECK' -and $r.Out -match 'No CI workflow' -and $r.Out -match 'No \.github/dependabot\.yml' -and $r.Out -match 'npm at /' -and $r.Out -match 'BEFORE repair: global-github-automation-rules\.md FULL')
     Check 'CodeQL suggested for detected language' ($r.Out -match 'CodeQL')
-    Check 'CodeQL is explicitly optional, never mandatory' ($r.Out -match '- Optional CodeQL absent') $r.Out
-    # Scope: ordinary gaps (missing/weak CI, incomplete Dependabot, optional
-    # CodeQL) are advisory for an unrelated task - fix now only when the user
-    # asked, the task directly needs it, or a workflow is confirmed unsafe.
-    Check 'ordinary gaps are advisory for an unrelated task' (
-        $r.Out -match 'Unrelated: advisory/defer') $r.Out
-    Check 'current-task expansion is explicitly prohibited' ($r.Out -match 'Fix requested/dependent/confirmed unsafe scope only') $r.Out
+    Check 'CodeQL requirement follows actual public/private scope, never local filename' (
+        $r.Out -match 'Public CodeQL/Socket/Semgrep/CodeRabbit' -and $r.Out -match 'private Socket/Semgrep; preserve existing' -and $r.Out -notmatch 'CodeQL optional|Optional CodeQL absent') $r.Out
+    Check 'information-only tasks authorize no unrelated account actions' (
+        $r.Out -match 'Info-only: no actions') $r.Out
+    Check 'current-task expansion is explicitly prohibited' ($r.Out -match 'Owned dev/closure: standing scope; info-only: no actions') $r.Out
     Check 'the old unconditional "fix per the repository rules" wording is gone' ($r.Out -notmatch 'Fix per the repository rules:') $r.Out
     $r = Fire -HookPath $BaselineHook -Cwd $b1
     Check 'unchanged findings -> silent (cooldown)' ($r.Out -eq '')
@@ -320,7 +318,7 @@ updates:
       interval: "weekly"
 '@
     $r = Fire -HookPath $BaselineHook -Cwd $b2
-    Check 'dependabot lacks github-actions -> reported, npm preserved' ($r.Out -match 'lacks entries for: github-actions at /' -and $r.Out -notmatch 'npm at /,')
+    Check 'dependabot lacks github-actions -> reported, npm preserved' ($r.Out -match 'lacks: github-actions at /' -and $r.Out -notmatch 'npm at /,')
 
     # monorepo: packages/a + packages/b npm, pip at root
     $b3 = New-GitRepo 'base3'
@@ -629,7 +627,7 @@ jobs:
       - run: npm test
 '@
     $r = Fire -HookPath $BaselineHook -Cwd $prtFlow
-    Check 'flow-style pull_request_target with untrusted checkout is flagged unsafe' ($r.Out -match 'pull_request_target with untrusted PR checkout') $r.Out
+    Check 'flow-style pull_request_target with untrusted checkout is flagged unsafe' ($r.Out -match 'pull_request_target \+ untrusted checkout') $r.Out
     # A confirmed unsafe workflow is called out as urgent EVEN for an
     # unrelated task, unlike ordinary advisory gaps.
     Check 'a confirmed unsafe workflow is called out as urgent regardless of task relation' (

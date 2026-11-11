@@ -581,11 +581,16 @@ if ($snapshot.Runs.Count -eq 0 -and $snapshot.FailedRuns.Count -eq 0 -and $snaps
     if ($script:DocsCarryoverReason -ne '') {
         Write-Block -Outcome 'pending' -Reason ('CI CHECK: docs carryover UNVERIFIED ' + $sha7 + ' (' + $repoSlug + '): ' + $script:DocsCarryoverReason + '. Skip=no final-SHA run; waiting cannot qualify. Verify limit; no seeded success/duplicate CI.')
     }
-    # Every host is manual: a push starts no run by design. Missing dispatch is never green.
-    if (Test-ManualCiRepository -ProjectRoot $cwd) {
+    # Scan-only workflows cannot supply ordinary project validation or prove CI.
+    $manualState = Get-ManualWorkflowState -ProjectRoot $cwd
+    if ($manualState.SecurityOnly) {
+        Write-Block -Outcome 'unproven' -Reason ('CI CHECK: security-only; no runs: ' + $sha7 + '. Verify scan/revision; NOT green/missing manual dispatch.')
+    }
+    # Ordinary validation is manual on every host. Missing dispatch is never green.
+    if ($manualState.Compliant) {
         $manualExpectation=Get-CiWorkloadExpectation -ProjectRoot $cwd -RepoSlug $repoSlug -Sha $sha -Branch $branch
         if($null-eq$manualExpectation-and$script:CiWorkloadReason-ne''){Write-Block -Outcome 'unproven' -Reason ('CI CHECK: '+$script:CiWorkloadReason)}
-        Write-Block -Outcome 'pending' -Reason ('CI CHECK: final dispatch missing: ' + $sha7 + '/' + $branch + ' (' + $repoSlug + '). Manual only; push!=run; workflow_call requires workflow_dispatch root. ONCE: gh workflow run <workflow> --ref ' + $branch + '; verify SHA. Never GitHub/bot/Dependabot branches; no runner action.')
+        Write-Block -Outcome 'pending' -Reason ('CI CHECK: final dispatch missing: ' + $sha7 + '/' + $branch + ' (' + $repoSlug + '). Ordinary CI manual: workflow_dispatch/reachable workflow_call. ONCE: gh workflow run <workflow> --ref ' + $branch + '; verify SHA. No bot refs/runner action.')
     }
     # Every push workflow filters on paths the push did not touch: no wait and no PR
     # would ever start a run. A note, never green; any other shape keeps the block.

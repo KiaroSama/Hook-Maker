@@ -47,7 +47,7 @@ function Add-CompanionRuntimeArtifacts {
         [Parameter(Mandatory = $true)][string]$FriendlyName
     )
     if ($FriendlyName -ceq 'Ci-Status-Check') {
-        Assert-RuntimeSourcesAvailable -ToolRoot $ToolRoot -RelativePaths @('hooks/Ci-Status-Check/_cipagination.ps1','hooks/Ci-Status-Check/_civisibility.ps1')
+        Assert-RuntimeSourcesAvailable -ToolRoot $ToolRoot -RelativePaths @('hooks/Ci-Status-Check/_cipagination.ps1','hooks/Ci-Status-Check/_civisibility.ps1','hooks/Ci-Status-Check/_ciauxiliary.ps1')
     }
     if ($FriendlyName -ceq 'Cloudflare-Deploy') {
         Assert-RuntimeSourcesAvailable -ToolRoot $ToolRoot -RelativePaths @('hooks/Cloudflare-Deploy/_acknowledgment.ps1')

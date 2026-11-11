@@ -2,16 +2,15 @@
 # GitHub repository has an appropriate .github automation baseline for its
 # REAL structure: a CI workflow, dependabot.yml with coverage for every
 # detected ecosystem/directory (github-actions included when workflows exist),
-# and - as secondary suggestions - CodeQL / dependency-review where supported.
+# and routes standing security posture through the current ownership/plan rules.
 #
 # It inspects the local project only (manifests, lockfiles, monorepo package
 # dirs, workflow files); no gh or network is needed. It reports concrete gaps
 # and leaves the writing to the agent - it never copies a fixed template and
 # never overwrites existing automation. The response is scope-aware: ordinary
-# gaps (missing/weak CI, incomplete Dependabot coverage, optional CodeQL) are
-# advisory for an unrelated task - fixed now only when the user asked for CI/
-# repository/security/release work, the current task directly requires the
-# missing baseline, or a workflow poses a confirmed unsafe risk. A confirmed
+# gaps are advisory, not authorization for unrelated actions. Standing owned-repo
+# development/closure posture follows the current owner, within access/support;
+# information-only requests do not authorize fleet/account changes. A confirmed
 # unsafe workflow (pull_request_target + untrusted checkout) is called out as
 # urgent regardless, though remediation still stays scoped and evidence-based.
 #
@@ -33,7 +32,7 @@
 # option (a `push` key under `workflow_dispatch: inputs:`) is never mistaken
 # for a trigger.
 # Manual-root reachability lives in _manualworkflow.ps1: workflow_dispatch is
-# the only initiator on any host; local workflow_call edges must be reachable.
+# the ordinary CI initiator on all hosts; security-only is a positive narrow subset.
 # Conditions/dependencies, cycles, missing children and incomplete reads cannot
 # establish the baseline. Validation keywords are heuristic, not execution proof;
 # shell comments and nested step inputs never provide validation by themselves.
@@ -95,18 +94,19 @@ try {
     }
 }
 catch { $badgeNote = '' }
-# Every host stays manual: name automatic initiating triggers once per finding.
-# Reusable workflow_call is not an initiating trigger. Never touches a runner.
+# Ordinary validation stays manual; positively supported security-only scans do not
+# cause an automatic-CI warning. Unknown structures still require source review.
+$manualState = Get-ManualWorkflowState $cwd
 try {
-    $selfHostedLines = @(Get-WorkflowRunnerFacts -ProjectRoot $cwd | Where-Object { @($_.Triggers | Where-Object { $_ -cnotin @('workflow_dispatch','workflow_call') }).Count -gt 0 } |
-        ForEach-Object { '- ' + $_.Name + ': a CI workflow is triggered automatically by ' + ((@($_.Triggers | Where-Object { $_ -cnotin @('workflow_dispatch','workflow_call') })) -join ', ') })
+    $selfHostedLines = @($manualState.AutomaticWorkflows |
+        ForEach-Object { '- ' + $_.Name + ': automatic project/unknown trigger: ' + ((@($_.Triggers | Where-Object { $_ -cnotin @('workflow_dispatch','workflow_call') })) -join ', ') })
     if ($selfHostedLines.Count -gt 0) {
         $shPath = Join-Path (Join-Path $env:LOCALAPPDATA 'HookMaker\state') ('GithubBaselineCheck-selfhosted-' + (Get-ShortHash $cwd.ToLowerInvariant()) + '.txt')
         $shKey = Get-ShortHash ([string](Get-Field $hookInput 'session_id') + '|' + ($selfHostedLines -join '|'))
         $shSeen = ''
         if (Test-Path -LiteralPath $shPath -PathType Leaf) { $shSeen = ([System.IO.File]::ReadAllText($shPath)).Trim() }
         if ($shSeen -ne $shKey) {
-            $shNote = 'MANUAL CI, all hosts: workflow_dispatch root, reachable workflow_call children only. Dispatch one final exact-SHA run; never GitHub/bot/Dependabot branches. global-github-automation-rules.md.' + "`n" + ($selfHostedLines -join "`n")
+            $shNote = 'MANUAL CI, all hosts; security-only UNKNOWN: source review.' + "`n" + ($selfHostedLines -join "`n")
             $badgeNote = @(@($badgeNote, $shNote) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }) -join "`n`n"
             New-Item -ItemType Directory -Path (Split-Path -Parent $shPath) -Force | Out-Null
             [System.IO.File]::WriteAllText($shPath, $shKey)
@@ -125,6 +125,17 @@ function Exit-WithBadgeNote {
 $repository = Get-GitHubRepository -ProjectRoot $cwd
 if ($null -eq $repository) { Exit-WithBadgeNote }
 $repoSlug = $repository.Repository
+# Local inspection cannot establish remote ownership, visibility or service state.
+# Route current standing requirements without network, account or upload actions.
+$securityKey = 'security-v74|' + [string](Get-Field $hookInput 'session_id') + '|' + $repoSlug
+$securityPath = Join-Path $env:LOCALAPPDATA ('HookMaker/state/GithubBaselineCheck-security-' + (Get-ShortHash $cwd.ToLowerInvariant()) + '.txt')
+$securitySeen = ''
+try { if (Test-Path -LiteralPath $securityPath -PathType Leaf) { $securitySeen = [IO.File]::ReadAllText($securityPath, [Text.Encoding]::UTF8) } } catch { }
+if ($securitySeen -cne $securityKey) {
+    $message = 'SECURITY: global-github-automation-rules.md Sec12 FULL first: owner/visibility/support/plan. Public CodeQL/Socket/Semgrep/CodeRabbit; private Socket/Semgrep; preserve existing. Graph/alerts/malware/update PRs distinct. Latest execution!=rate-limit/stale/skip. All-bot disposition; CodeRabbit uncovered head only; no duplicates/auto-merge. Free-first/shared quotas/financial consent/privacy. Verified private action links for blockers. Info-only: no actions; hook executes nothing.'
+    $badgeNote += "`n" + $message
+    try { [void][IO.Directory]::CreateDirectory((Split-Path -Parent $securityPath)); [IO.File]::WriteAllText($securityPath, $securityKey, [Text.UTF8Encoding]::new($false)) } catch { }
+}
 
 # ---- optional .env ----
 $config = Read-HookEnv (Join-Path $PSScriptRoot '.env')
@@ -319,7 +330,7 @@ if ($dependabotPath -ne '') {
 # ---- findings ----
 $findings = @()
 if (-not $discovery.Complete) {
-    $findings += ('- Discovery PARTIAL (' + ($discovery.Reasons -join ', ') + '); unvisited manifests/ecosystems UNKNOWN, not absent.')
+    $findings += ('- Discovery PARTIAL: ' + ($discovery.Reasons -join ', ') + '; unvisited ecosystems UNKNOWN.')
 }
 $hasCode = ($ecosystems.Count -gt 0 -or $sourceCount -ge 3)
 
@@ -336,14 +347,13 @@ $workflowProblems = @()
 $hasImmediateUnsafeRisk = $false
 foreach ($info in $workflowInfos) {
     $text = $info.Text
-    if ($text -match '(?im)^\s*continue-on-error:\s*["'']?true["'']?\s*$' -and $info.HasValidation) { $workflowProblems += ($info.Name + ' makes validation non-blocking with continue-on-error') }
+    if ($text -match '(?im)^\s*continue-on-error:\s*["'']?true["'']?\s*$' -and $info.HasValidation) { $workflowProblems += ($info.Name + ' nonblocking: continue-on-error') }
     if ((Test-HasWorkflowTrigger -Text $text -Keywords @('pull_request_target')) -and $text -match 'actions/checkout' -and $text -match '(?i)(github\.event\.pull_request\.head|head\.sha)') {
-        $workflowProblems += ($info.Name + ' uses pull_request_target with untrusted PR checkout')
+        $workflowProblems += ($info.Name + ' pull_request_target + untrusted checkout')
         $hasImmediateUnsafeRisk = $true    # confirmed unsafe workflow, an immediate security risk
     }
 }
 
-$manualState = Get-ManualWorkflowState $cwd
 $meaningfulCi = $manualState.Compliant
 foreach ($problem in $manualState.Problems) { $workflowProblems += $problem }
 if (-not $meaningfulCi -and $hasCode) {
@@ -351,7 +361,7 @@ if (-not $meaningfulCi -and $hasCode) {
     $detectedText = 'source files only'
     if ($detected.Count -gt 0) { $detectedText = ($detected -join ', ') }
     $findingPrefix = if ($workflowFiles.Count -eq 0) { 'No CI workflow' } else { 'Workflow files exist, but none provides blocking project validation' }
-    $findings += ('- ' + $findingPrefix + ' (.github/workflows). Detected: ' + $detectedText + '. Add all-host manual workflow_dispatch/reachable workflow_call validation: lint/tests/types/build, blocking failures, least privilege; no unsafe pull_request_target.')
+    $findings += ('- ' + $findingPrefix + ': ' + $detectedText + '. Need blocking workflow_dispatch/reachable workflow_call lint/tests/types/build; least privilege/safe PRs.')
 }
 foreach ($problem in $workflowProblems) { $findings += ('- Unsafe/non-blocking workflow: ' + $problem + '.') }
 
@@ -362,39 +372,18 @@ if ($dependabotPath -eq '') {
     }
 }
 else {
-    if ($dependabotMalformed) { $findings += '- dependabot.yml malformed/missing version: 2 / updates; coverage UNKNOWN.' }
+    if ($dependabotMalformed) { $findings += '- dependabot.yml version:2/updates missing or malformed; coverage UNKNOWN.' }
     $missing = @()
     foreach ($key in ($required.Keys | Sort-Object)) {
         if (-not $covered.ContainsKey($key)) { $missing += $key.Replace('|', ' at ') }
     }
     if ($missing.Count -gt 0) {
-        $findings += ('- dependabot.yml exists but lacks entries for: ' + ($missing -join ', ') + '. Add missing only; preserve working entries.')
+        $findings += ('- dependabot.yml lacks: ' + ($missing -join ', ') + '; preserve existing.')
     }
 }
 
-# Secondary suggestions - only when a primary gap already exists (keeps an
-# otherwise-adequate baseline silent).
-if ($findings.Count -gt 0) {
-    $codeqlLangs = @{}
-    foreach ($key in $ecosystems.Keys) {
-        switch (($key -split '\|')[0]) {
-            'npm' { $codeqlLangs['javascript-typescript'] = $true }
-            'pip' { $codeqlLangs['python'] = $true }
-            'uv' { $codeqlLangs['python'] = $true }
-            'gomod' { $codeqlLangs['go'] = $true }
-            'bundler' { $codeqlLangs['ruby'] = $true }
-        }
-    }
-    if ($codeqlLangs.Count -gt 0) {
-        $hasCodeql = $false
-        foreach ($wf in $workflowFiles) {
-            if ($wf.Name -match '(?i)codeql') { $hasCodeql = $true; break }
-        }
-        if (-not $hasCodeql) {
-            $findings += ('- Optional CodeQL absent; supported detected languages: ' + (@($codeqlLangs.Keys | Sort-Object) -join ', ') + '.')
-        }
-    }
-}
+# Remote security setup/execution remains unknown; the scoped owner reminder
+# above applies even when this local automation baseline has no findings.
 
 if ($findings.Count -eq 0) {
     Exit-WithBadgeNote
@@ -420,14 +409,14 @@ New-Item -ItemType Directory -Path $stateDir -Force | Out-Null
 [System.IO.File]::WriteAllLines($statePath, @($fingerprint, [DateTime]::UtcNow.ToString('o')))
 
 $scopeNote = if ($hasImmediateUnsafeRisk) {
-    'Urgent: pull_request_target + untrusted checkout gives fork code repository permissions. Inspect workflow; fix confirmed unsafe scope only.'
+    'Urgent: pull_request_target + untrusted checkout; fix confirmed unsafe scope only.'
 }
 else {
-    'Unrelated: advisory/defer. Fix requested/dependent/confirmed unsafe scope only; CodeQL optional.'
+    'Owned dev/closure: standing scope; info-only: no actions.'
 }
-$message = 'GITHUB BASELINE CHECK (' + $repoSlug + '): the .github automation baseline does not match the project structure:' + "`n" +
+$message = 'GITHUB BASELINE CHECK (' + $repoSlug + '): local gaps:' + "`n" +
     ($findings -join "`n") + "`n" +
-    $scopeNote + ' BEFORE repair: global-github-automation-rules.md FULL; preserve working automation.'
+    $scopeNote + ' BEFORE repair: global-github-automation-rules.md FULL; preserve existing.'
 if (-not [string]::IsNullOrWhiteSpace($badgeNote)) { $message += "`n`n" + $badgeNote }
 $null = Write-HookResult -EventName $eventName -Kind 'context' -Message $message
 exit 0

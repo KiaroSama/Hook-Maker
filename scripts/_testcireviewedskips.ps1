@@ -1,7 +1,7 @@
 # One offline source/API fixture; no real GitHub or consumer state is changed.
-param([switch]$RunRegression,[switch]$SmokeOnly)
+param([switch]$RunRegression,[switch]$SmokeOnly,[switch]$AuxiliaryOnly)
 function Invoke-CiReviewedSkipRegression {
-    param([string]$HooksRoot,[switch]$SmokeOnly)
+    param([string]$HooksRoot,[switch]$SmokeOnly,[switch]$AuxiliaryOnly)
     . (Join-Path $HooksRoot '_hooklib.ps1')
     . (Join-Path $HooksRoot '_scope.ps1')
     . (Join-Path $HooksRoot 'Ci-Status-Check/_ciworkload.ps1')
@@ -40,10 +40,22 @@ function Invoke-CiReviewedSkipRegression {
         if($Endpoint-match'/actions/runs\?'){return ($script:SkipRuns|ConvertTo-Json -Depth 15|ConvertFrom-Json)}
         if($Endpoint-match'/runs/6/attempts/1/jobs'){return ($script:OlderSkipJobs|ConvertTo-Json -Depth 15|ConvertFrom-Json)}
         if($Endpoint-match'/runs/7/attempts/2/jobs'){return ($script:SkipJobs|ConvertTo-Json -Depth 15|ConvertFrom-Json)}
+        if($Endpoint-match'/runs/8/attempts/1/jobs'){
+            if((Get-Variable AuxiliaryTransportFailure -Scope Script -ErrorAction SilentlyContinue)-and$script:AuxiliaryTransportFailure){return $null}
+            return ($script:AuxJobs|ConvertTo-Json -Depth 15|ConvertFrom-Json)
+        }
         if($Endpoint-match'/check-runs'){return ($script:SkipChecks|ConvertTo-Json -Depth 15|ConvertFrom-Json)}
         if($Endpoint-match'/status'){return ($script:SkipStatuses|ConvertTo-Json -Depth 15|ConvertFrom-Json)}
         throw 'Unexpected fixture endpoint'
     }
+    if($AuxiliaryOnly){
+        Invoke-CiAuxiliarySkipRegression -Sha $sha -Run $run -Jobs $jobs -Checks $checks
+        return
+    }
+    Invoke-CiAuxiliarySkipRegression -Sha $sha -Run $run -Jobs $jobs -Checks $checks
+    $script:SkipRuns=@{total_count=1;workflow_runs=@($run)}
+    $script:SkipJobs=@{total_count=2;jobs=$jobs}
+    $script:SkipChecks=@{total_count=2;check_runs=$checks}
     $expectation=Get-CiReviewedExpectation fixture owner/repo $sha main
     Check 'explicit reviewed inapplicable skip is source-bound input' ($null-ne$expectation)
     $snapshot=Get-CiRunSnapshot owner/repo $sha fixture main
@@ -151,12 +163,85 @@ function Invoke-CiReviewedSkipRegression {
         Check ('reviewed skip refuses '+$case) ($null-eq$snapshot-or-not$snapshot.AllSuccess)
     }
 }
+# Synthetic public metadata only; this subset never queries a service or writes state.
+function Invoke-CiAuxiliarySkipRegression {
+    param([string]$Sha,$Run,$Jobs,$Checks)
+    $auxRun=@{id=8;workflow_id=10;run_attempt=1;head_sha=$Sha;repository=@{full_name='owner/repo'};head_repository=@{full_name='owner/repo'};path='dynamic/github-code-scanning/codeql';event='dynamic';head_branch='main';status='completed';conclusion='success';check_suite_id=30}
+    $auxJobs=@(
+        @{id=21;run_id=8;run_attempt=1;head_sha=$Sha;name='Analyze (csharp)';status='completed';conclusion='success';check_run_url='https://api.github.com/repos/owner/repo/check-runs/301';completed_at='2026-10-17T11:00:00Z';steps=@(@{number=1;name='Perform CodeQL Analysis';status='completed';conclusion='success';completed_at='2026-10-17T10:59:00Z'})},
+        @{id=22;run_id=8;run_attempt=1;head_sha=$Sha;name='Adjust Configuration';status='completed';conclusion='skipped';check_run_url='https://api.github.com/repos/owner/repo/check-runs/302';started_at='2026-10-17T11:00:01Z';completed_at='2026-10-17T11:00:00Z';steps=@()}
+    )
+    $auxChecks=@(
+        @{id=301;url='https://api.github.com/repos/owner/repo/check-runs/301';name='Analyze (csharp)';head_sha=$Sha;status='completed';conclusion='success';check_suite=@{id=30};app=@{slug='github-actions';owner=@{login='github'}}},
+        @{id=302;url='https://api.github.com/repos/owner/repo/check-runs/302';name='Adjust Configuration';head_sha=$Sha;status='completed';conclusion='skipped';check_suite=@{id=30};app=@{slug='github-actions';owner=@{login='github'}}}
+    )
+    foreach($case in @('valid','wrong-app','wrong-app-owner','missing-app','wrong-suite','missing-suite','wrong-repo','wrong-sha','wrong-attempt','wrong-run','wrong-name','wrong-url','wrong-check-name','wrong-check-url','unknown-path','wrong-event','failed-run','pending-run','no-analysis','failed-analysis','pending-analysis','no-analysis-step','duplicate-analysis-step','duplicate-job','wrong-job-id','duplicate-job-id','duplicate-check','truncated-jobs','truncated-checks','truncated-runs','transport-unavailable','null-jobs','missing-jobs-field','unknown-skip','executed-config','null-config-steps','missing-config-time','future-config-time','config-failed','config-pending','check-pending','check-failed','project-missing')) {
+        $script:AuxiliaryTransportFailure=$false
+        $script:SkipRuns=@{total_count=2;workflow_runs=@($Run,$auxRun)}|ConvertTo-Json -Depth 20|ConvertFrom-Json
+        $script:SkipJobs=@{total_count=2;jobs=$Jobs}|ConvertTo-Json -Depth 20|ConvertFrom-Json
+        $script:AuxJobs=@{total_count=2;jobs=$auxJobs}|ConvertTo-Json -Depth 20|ConvertFrom-Json
+        $script:SkipChecks=@{total_count=4;check_runs=@($Checks)+$auxChecks}|ConvertTo-Json -Depth 20|ConvertFrom-Json
+        switch($case) {
+            wrong-app {$script:SkipChecks.check_runs[3].app.slug='untrusted'}
+            wrong-app-owner {$script:SkipChecks.check_runs[3].app.owner.login='other'}
+            missing-app {$script:SkipChecks.check_runs[3].app=$null}
+            wrong-suite {$script:SkipChecks.check_runs[3].check_suite.id=31}
+            missing-suite {$script:SkipRuns.workflow_runs[1].check_suite_id=$null}
+            wrong-repo {$script:SkipRuns.workflow_runs[1].repository.full_name='other/repo'}
+            wrong-sha {$script:AuxJobs.jobs[1].head_sha='d'*40}
+            wrong-attempt {$script:AuxJobs.jobs[1].run_attempt=2}
+            wrong-run {$script:AuxJobs.jobs[1].run_id=9}
+            wrong-name {$script:AuxJobs.jobs[1].name='Other configuration'}
+            wrong-url {$script:AuxJobs.jobs[1].check_run_url='https://api.github.com/repos/other/repo/check-runs/302'}
+            wrong-check-name {$script:SkipChecks.check_runs[3].name='Different'}
+            wrong-check-url {$script:SkipChecks.check_runs[3].url='https://api.github.com/repos/owner/repo/check-runs/999'}
+            unknown-path {$script:SkipRuns.workflow_runs[1].path='dynamic/other/codeql'}
+            wrong-event {$script:SkipRuns.workflow_runs[1].event='push'}
+            failed-run {$script:SkipRuns.workflow_runs[1].conclusion='failure'}
+            pending-run {$script:SkipRuns.workflow_runs[1].status='in_progress'}
+            no-analysis {$script:AuxJobs.jobs=@($script:AuxJobs.jobs[1]);$script:AuxJobs.total_count=1}
+            failed-analysis {$script:AuxJobs.jobs[0].steps[0].conclusion='failure'}
+            pending-analysis {$script:AuxJobs.jobs[0].steps[0].status='in_progress'}
+            no-analysis-step {$script:AuxJobs.jobs[0].steps[0].name='Set up job'}
+            duplicate-analysis-step {$script:AuxJobs.jobs[0].steps+=@($script:AuxJobs.jobs[0].steps[0])}
+            duplicate-job {$script:AuxJobs.jobs+=@($script:AuxJobs.jobs[0]);$script:AuxJobs.total_count=3}
+            wrong-job-id {$script:AuxJobs.jobs[1].id='unknown'}
+            duplicate-job-id {$script:AuxJobs.jobs[1].id=$script:AuxJobs.jobs[0].id}
+            duplicate-check {$script:SkipChecks.check_runs+=@($script:SkipChecks.check_runs[3]);$script:SkipChecks.total_count=5}
+            truncated-jobs {$script:AuxJobs.total_count=3}
+            truncated-checks {$script:SkipChecks.total_count=5}
+            truncated-runs {$script:SkipRuns.total_count=3}
+            transport-unavailable {$script:AuxiliaryTransportFailure=$true}
+            null-jobs {$script:AuxJobs.jobs=$null}
+            missing-jobs-field {$script:AuxJobs.PSObject.Properties.Remove('jobs')}
+            unknown-skip {$script:SkipChecks.check_runs[2].conclusion='skipped'}
+            executed-config {$script:AuxJobs.jobs[1].steps=@(@{number=1;name='Execute';status='completed';conclusion='success'})}
+            null-config-steps {$script:AuxJobs.jobs[1].steps=$null}
+            missing-config-time {$script:AuxJobs.jobs[1].completed_at=$null}
+            future-config-time {$script:AuxJobs.jobs[1].completed_at=[DateTimeOffset]::UtcNow.AddHours(1).ToString('o')}
+            config-failed {$script:AuxJobs.jobs[1].conclusion='failure'}
+            config-pending {$script:AuxJobs.jobs[1].status='queued'}
+            check-pending {$script:SkipChecks.check_runs[3].status='queued'}
+            check-failed {$script:SkipChecks.check_runs[3].conclusion='failure'}
+            project-missing {$script:SkipRuns.workflow_runs=@($script:SkipRuns.workflow_runs[1]);$script:SkipRuns.total_count=1;$script:SkipChecks.check_runs=@($script:SkipChecks.check_runs[2],$script:SkipChecks.check_runs[3]);$script:SkipChecks.total_count=2}
+        }
+        $snapshot=Get-CiRunSnapshot owner/repo $Sha fixture main
+        $green=$null-ne$snapshot-and$snapshot.AllSuccess
+        Check ('managed CodeQL auxiliary '+$case) ($green-eq($case-eq'valid'))
+        if($case-eq'valid'-and$green) {
+            Check 'auxiliary configuration skip supplies no project provenance or freshness' (
+                $snapshot.Provenance.runs.Count-eq1-and$snapshot.Provenance.runs[0].id-eq7-and
+                $snapshot.Provenance.completedUtc-ceq'2026-10-17T09:58:00.0000000+00:00')
+        }
+    }
+}
+
 if($RunRegression){
     Set-StrictMode -Version 2.0
     $ErrorActionPreference='Stop'
     . (Join-Path $PSScriptRoot '_testlib.ps1')
     $script:Pass=0;$script:Fail=0
-    Invoke-CiReviewedSkipRegression (Join-Path (Split-Path -Parent $PSScriptRoot) 'hooks') -SmokeOnly:$SmokeOnly
+    Invoke-CiReviewedSkipRegression (Join-Path (Split-Path -Parent $PSScriptRoot) 'hooks') -SmokeOnly:$SmokeOnly -AuxiliaryOnly:$AuxiliaryOnly
     Write-Output "Passed: $script:Pass Failed: $script:Fail"
     exit $script:Fail
 }

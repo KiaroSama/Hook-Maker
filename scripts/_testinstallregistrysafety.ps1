@@ -213,7 +213,7 @@
     }
 
     $ciPlan=@(Get-InstallPlanFor -HookScript (Join-Path $RealHooksDir 'Ci-Status-Check/Ci-Status-Check.ps1') -ToolRoot $ToolRoot)
-    foreach($leaf in @('_cipagination.ps1','_civisibility.ps1')){
+    foreach($leaf in @('_cipagination.ps1','_civisibility.ps1','_ciauxiliary.ps1')){
         Check ('CI collection/visibility helper ships immutable '+$leaf) (@($ciPlan|Where-Object{$_.relativePath-ceq('Ci-Status-Check/'+$leaf)-and$_.ownership-ceq'Immutable'}).Count-eq1)
     }
     $missingCi=Join-Path $Work 'missing-ci-collection-source'
@@ -221,6 +221,10 @@
     $refused=$false
     try{Add-CompanionRuntimeArtifacts -ToolRoot $missingCi -FriendlyName 'Ci-Status-Check'}catch{$refused=$_.Exception.Message-match'_cipagination.ps1'}
     Check 'missing CI collection dependency refuses before installation' $refused
+    foreach($leaf in @('_cipagination.ps1','_civisibility.ps1')){Write-Utf8 (Join-Path $missingCi ('hooks/Ci-Status-Check/'+$leaf)) '# fixture'}
+    $refused=$false
+    try{Add-CompanionRuntimeArtifacts -ToolRoot $missingCi -FriendlyName 'Ci-Status-Check'}catch{$refused=$_.Exception.Message-match'_ciauxiliary.ps1'}
+    Check 'missing managed auxiliary proof dependency refuses before installation' $refused
 
     $cloudflarePlan=@(Get-InstallPlanFor -HookScript (Join-Path $RealHooksDir 'Cloudflare-Deploy/Cloudflare-Deploy.ps1') -ToolRoot $ToolRoot)
     Check 'deployment acknowledgment helper ships as immutable payload' (@($cloudflarePlan|Where-Object{$_.relativePath-ceq'Cloudflare-Deploy/_acknowledgment.ps1'-and$_.ownership-ceq'Immutable'}).Count-eq1)
