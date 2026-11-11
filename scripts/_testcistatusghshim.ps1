@@ -37,7 +37,7 @@ if($endpoint-match'^repos/([^/]+/[^/]+)/actions/runs\?head_sha=([a-f0-9]+)'){
 if($endpoint-match'/actions/runs/(\d+)/attempts/(\d+)/jobs'){
     $id=$Matches[1];$attempt=$Matches[2];$identity=Get-Content (Join-Path $mockDir 'api-identity.json') -Raw|ConvertFrom-Json
     $end=[DateTimeOffset]::UtcNow.AddSeconds(-1).ToString('o')
-    Write-Output (@{total_count=1;jobs=@(@{id=([long]$id+1000);check_run_url=('https://api.github.com/repos/'+$identity.repo+'/check-runs/1');run_id=[long]$id;run_attempt=[int]$attempt;head_sha=$identity.sha;name='validate';status='completed';conclusion='success';completed_at=$end;steps=@(@{number=1;name='Validate';status='completed';conclusion='success';completed_at='2026-10-17T08:59:00Z'})})}|ConvertTo-Json -Depth 8 -Compress);exit 0
+    Write-Output (@{total_count=1;jobs=@(@{id=([long]$id+1000);check_run_url=('https://api.github.com/repos/'+$identity.repo+'/check-runs/'+([long]$id+1000));run_id=[long]$id;run_attempt=[int]$attempt;head_sha=$identity.sha;name='validate';status='completed';conclusion='success';completed_at=$end;steps=@(@{number=1;name='Validate';status='completed';conclusion='success';completed_at='2026-10-17T08:59:00Z'})})}|ConvertTo-Json -Depth 8 -Compress);exit 0
 }
 if($endpoint-match'/commits/([a-f0-9]{40})/status'){
     Write-Output (@{sha=$Matches[1];total_count=0;state='pending';statuses=@()}|ConvertTo-Json -Depth 4 -Compress);exit 0
@@ -47,7 +47,11 @@ if($endpoint-match'/commits/[^/]+/check-runs'){
     $f=Join-Path $mockDir 'checkruns.json';if($page-eq1-and(Test-Path $f)){Emit-File $f}
     if($page-gt1){Write-Output '{"total_count":0,"check_runs":[]}';exit 0}
     $commit=[regex]::Match($endpoint,'/commits/([a-f0-9]{40})/').Groups[1].Value
-    Write-Output (@{total_count=1;check_runs=@(@{id=1;head_sha=$commit;status='completed';conclusion='success'})}|ConvertTo-Json -Depth 5 -Compress)
+    # Separate workflow runs own separate checks, even on the same commit.
+    $runFile=Join-Path $mockDir 'run_list.json'
+    $runs=if(Test-Path $runFile){@([IO.File]::ReadAllText($runFile,[Text.Encoding]::UTF8)|ConvertFrom-Json)}else{@()}
+    $checks=@(foreach($run in $runs){@{id=([long]$run.databaseId+1000);head_sha=$commit;status='completed';conclusion='success'}})
+    Write-Output (@{total_count=$checks.Count;check_runs=$checks}|ConvertTo-Json -Depth 5 -Compress)
     exit 0
 }
 if($endpoint-match'/check-runs/([^/]+)/annotations'){
