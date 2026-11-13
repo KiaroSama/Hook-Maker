@@ -158,9 +158,14 @@ function Test-NoRequiredStatusChecks {
 
 # Writes the carry-over record and exits with the note, or returns quietly.
 function Invoke-DocsOnlyCarryover {
-    param([string]$ProjectRoot, [string]$Sha, [string]$Branch, [string]$RepoSlug, [string]$StatePath, [string]$EventName)
+    param([string]$ProjectRoot, [string]$Sha, [string]$Branch, [string]$RepoSlug, [string]$StatePath, [string]$EventName, [switch]$RequireLatestStatus)
     $carry = Get-DocsOnlyCarryover -ProjectRoot $ProjectRoot -Sha $Sha -Branch $Branch -RepoSlug $RepoSlug -StatePath $StatePath
     if ($null -eq $carry) { return }
+    # Restored ancestor evidence is not final-status proof; advise without publishing a final-SHA receipt.
+    if ($RequireLatestStatus) {
+        $emit = Write-StopBlockResult -HookInput $hookInput -HookName 'Ci-Status-Check' -EventName $EventName -Reason ('ancestor-tested=' + $carry.Parent + '; final SHA=' + $Sha + ' UNTESTED. Latest-status required: final-SHA manual batch or exact blocker; no copied green.')
+        exit $emit.ExitCode
+    }
     $when = [DateTimeOffset]::UtcNow.ToString('o')
     $proof = [ordered]@{schema=1;repository=$RepoSlug;sha=$Sha;parent=$carry.Parent;outcome='docs-only-carryover';observedUtc=$when;sourceFingerprint=$carry.SourceFingerprint}
     $receipt = @($Sha, 'verified', $when, 'docs-only-carryover', $carry.Parent, ($proof | ConvertTo-Json -Compress))

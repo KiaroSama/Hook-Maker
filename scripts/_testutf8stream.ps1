@@ -52,7 +52,7 @@ if (-not $StreamOnly) {
     Check 'native invalid final byte beyond former ceiling blocks as invalid' ($r.Exit -eq 0 -and $r.Err -match 'catalog\.json - an invalid UTF-8') $r.Err
     foreach ($malformedRef in @('refs/heads/main', ((Get-RefUpdateLine -Repo $repo).Trim() + ' extra'))) {
         $r = FireGitPrePush -Cwd $repo -StdinText ($malformedRef + "`n") -HookPath $streamCopy.Script -LocalAppData $streamCopy.LocalAppData
-        Check 'malformed native ref input refuses required coverage' ($r.Exit -eq 0 -and $r.Err -match 'malformed') $r.Err
+        Check 'malformed native ref input reports UNKNOWN coverage without blocking' ($r.Exit -eq 0 -and $r.Err -match 'malformed') $r.Err
     }
     $script:HookDeadlineUtc = [DateTime]::UtcNow.AddSeconds(10)
     $tipBlob = ((& git -C $repo rev-parse 'HEAD:catalog.json') | Out-String).Trim()
@@ -65,5 +65,5 @@ if (-not $StreamOnly) {
     & git -C $repo add staged.json
     Write-Utf8 (Join-Path $repo 'staged.json') $catalogText
     $r = Fire -HookPath $streamCopy.Script -Cwd $repo -EventName 'Stop' -SessionId 'stream-staged' -LocalAppData $streamCopy.LocalAppData
-    Check 'large staged invalid tail blocks even after working tree reverted valid' ((Test-StopAdvisory $r.Out) -and (Get-Message $r.Out) -match 'staged.json staged') ($r.Out+$r.Err)
+    Check 'large staged invalid tail advises even after worktree reverted valid' ((Test-StopAdvisory $r.Out) -and (Get-Message $r.Out) -match 'staged\.json \(staged content\) - invalid UTF-8') ($r.Out+$r.Err)
 }

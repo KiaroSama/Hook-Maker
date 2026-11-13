@@ -148,5 +148,6 @@ if (Test-Path -LiteralPath $statePath -PathType Leaf) {
 New-Item -ItemType Directory -Path $stateDir -Force | Out-Null
 [System.IO.File]::WriteAllText($statePath, $fingerprint)
 
-$null = Write-HookResult -EventName $eventName -Kind 'context' -Message $note
+# Preserve the graph-version evidence through the shared delivery deduplicator.
+$null = Write-HookResult -EventName $eventName -Kind 'context' -Message $note -HookInput $hookInput -HookName 'Graph-Read-Check' -FindingFingerprint $fingerprint
 exit 0

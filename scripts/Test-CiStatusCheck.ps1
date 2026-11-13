@@ -300,13 +300,13 @@ try {
     $r = Fire -HookPath $CiHook -Cwd $ciSha -EventName 'Stop'
     Check 'E-09: the failure block states the EXACT-final-SHA contract incl. post-Ponytail changes' (
         $r.Out -match '"systemMessage"' -and $r.Out -match 'final pushed SHA' -and
-        $r.Out -match 'post-Ponytail' -and $r.Out -match 'push/verify its SHA') $r.Out
+        $r.Out -match 'post-Ponytail commits too' -and $r.Out -match 'repair/validate/push, verify SHA') $r.Out
     # The external-blocker exception contract already exists - pin its wording in
     # source rather than rewriting it (E-09): the notice always states CI is NOT
     # verified green and forbids claiming CI passed.
     $ciText = [System.IO.File]::ReadAllText($CiHook)
     Check 'E-09: the external-blocker notice source states CI UNVERIFIED + never-claim-passed' (
-        $ciText -match 'CI UNVERIFIED' -and $ciText -match 'never CI success') $ciText.Substring(0, 200)
+        $ciText -match 'CI UNVERIFIED' -and $ciText -match 'never claim CI passed') $ciText.Substring(0, 200)
     Check 'E-09: the notice shape never uses decision:block (source pin)' (
         $ciText -match 'Neither shape ever uses `decision:block`' -or $ciText -match 'never emits `decision:block`' -or $ciText -match 'It never emits') $ciText.Substring(0, 200)
 
@@ -544,14 +544,14 @@ try {
     Set-Mock -ExpectedSha (Get-HeadSha $ci5blank)
     Set-Content -Path (Join-Path $MockDir 'run_list.json') -Value '' -NoNewline -Encoding utf8
     $r = Fire -HookPath $CiHook -Cwd $ci5blank -EventName 'Stop'
-    Check 'B5: blank run stdout blocks as unverified metadata, never a verified zero-run collection' ($r.Out -match '"systemMessage"' -and $r.Out -match 'exact-SHA workload metadata UNVERIFIED' -and $r.Out -match 'UNKNOWN, not green') $r.Out
+    Check 'B5: blank run stdout is silently unknown, never a verified zero-run collection' ($r.Exit -eq 0 -and $r.Err -eq '' -and $r.Out -eq '') $r.Out
 
     $ci5null = New-GitRepo 'ci5null'
     New-Item -ItemType Directory -Path (Join-Path $ci5null '.github\workflows') -Force | Out-Null
     Set-Content (Join-Path $ci5null '.github\workflows\ci.yml') 'name: CI'
     Set-Mock -RunJson 'null' -ExpectedSha (Get-HeadSha $ci5null)
     $r = Fire -HookPath $CiHook -Cwd $ci5null -EventName 'Stop'
-    Check 'B5: literal null run stdout blocks as unverified metadata, never a verified zero-run collection' ($r.Out -match '"systemMessage"' -and $r.Out -match 'exact-SHA workload metadata UNVERIFIED' -and $r.Out -match 'UNKNOWN, not green') $r.Out
+    Check 'B5: literal null run stdout is silently unknown, never a verified zero-run collection' ($r.Exit -eq 0 -and $r.Err -eq '' -and $r.Out -eq '') $r.Out
 
     # control: a normal successful run set on the same workflows-configured
     # shape still verifies silently (the Where-Object null filter added for B5

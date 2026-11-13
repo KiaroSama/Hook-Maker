@@ -164,7 +164,7 @@ try {
         $null = Fire -Cwd $stampRepo -SessionId 'stamp-3' -HookPath (Join-Path $everyHookDir 'Git-Sync-Check.ps1')
         Check 'FETCH_MIN_INTERVAL_MINUTES=0 fetches on every event (stamp rewritten)' ([System.IO.File]::ReadAllText($stampFile[0].FullName) -ne $firstStamp) $firstStamp
     }
-    Check 'behind guidance routes sync to the full owner and preserves unrelated work' ($r.Out -match 'BEFORE sync: global-repository-rules\.md FULL' -and $r.Out -match 'Preserve unrelated work; blocked: retain/report') $r.Out
+    Check 'behind guidance routes sync to the full owner and preserves unrelated work' ($r.Out -match 'BEFORE sync: global-repository-rules\.md FULL' -and $r.Out -match 'Preserve unrelated work; unverified: retain/report') $r.Out
 
     # =====================================================================
     Write-Host '--- missing upstream is reported ---' -ForegroundColor Cyan
@@ -490,7 +490,7 @@ try {
     [System.IO.File]::WriteAllText((Join-Path $vocab1 'new.txt'), 'x', (New-Object System.Text.UTF8Encoding $false))
     $rV1 = Fire -Cwd $vocab1
     Check 'E-08(1): the dirty finding names staged, unstaged, AND untracked' (
-        $rV1.Out -match 'uncommitted change' -and $rV1.Out -match 'staged/unstaged/untracked') $rV1.Out
+        $rV1.Out -match 'uncommitted change' -and $rV1.Out -match 'staged, unstaged, and/or untracked') $rV1.Out
     # (5) unreconciled subagent work - the operational instruction covers it.
     Check 'E-08(5): the instruction covers unreconciled subagent work explicitly' (
         $rV1.Out -match 'global-repository-rules\.md FULL' -and

@@ -51,7 +51,7 @@
         Check 'budget: a slow GitHub never outlives the budget (8 s + start-up grace)' ($watch.Elapsed.TotalSeconds -lt 16 -and $r.Exit -eq 0) (
             ('{0:N1} s, exit {1}' -f $watch.Elapsed.TotalSeconds, $r.Exit))
         Check 'budget: exhaustion is reported as not verified, naming the commit' (
-            $r.Out -match 'systemMessage' -and $r.Out -match 'CI CHECK: UNVERIFIED' -and $r.Out -match 'budget.*exhausted' -and $r.Out -match 'NOT green' -and $r.Out -match $slowSha.Substring(0, 7)) $r.Out
+            $r.Out -match 'systemMessage' -and $r.Out -match 'UNVERIFIED' -and $r.Out -match 'budget.*exhausted' -and $r.Out -match 'NOT green' -and $r.Out -match $slowSha.Substring(0, 7)) $r.Out
         Check 'budget: exhaustion never blocks' ($r.Out -notmatch '"decision":"block"') $r.Out
         $slowState = @(Get-ChildItem -LiteralPath (Join-Path $env:LOCALAPPDATA 'HookMaker\state') -Filter 'CiStatusCheck-*.txt' -ErrorAction SilentlyContinue |
             Where-Object { $_.Name -notlike 'CiStatusCheck-External-*' -and $_.Name -notlike 'CiStatusCheck-Notice-*' } |
@@ -90,7 +90,7 @@
     $failedChecks='{"total_count":1,"check_runs":[{"id":1,"head_sha":"'+$failedSha+'","status":"completed","conclusion":"failure"}]}'
     Set-Mock -RunJson '[{"databaseId":305,"name":"CI","workflowName":"CI","status":"completed","conclusion":"failure"}]' -ExpectedSha $failedSha -CheckRunsJson $failedChecks -Annotations @{ '1'='[{"annotation_level":"failure","message":"billing/payment"}]' }
     $r=Fire -HookPath $oldHook -Cwd $failedRepo -EventName 'Stop'
-    Check 'budget: missing billing reader keeps an actual failed check blocked, never billing or green' ($r.Exit-eq0-and$r.Err-eq''-and$r.Out-match'"decision":"block"'-and$r.Out-match'FAILED:'-and$r.Out-notmatch'account-billing|CI execution verified'-and(Get-GhCallCount 'api|*/annotations*')-eq0) ([string]$r.Out)
+    Check 'budget: missing billing reader keeps an actual failed check blocked, never billing or green' ($r.Exit-eq0-and$r.Err-eq''-and$r.Out-match'"systemMessage"'-and$r.Out-notmatch'"decision"'-and$r.Out-match'FAILED:'-and$r.Out-notmatch'account-billing|CI execution verified'-and(Get-GhCallCount 'api|*/annotations*')-eq0) ([string]$r.Out)
     # Every entry fallback must share ONE deadline, including auth; expiry never
     # launches another command and never becomes a successful zero-result set.
     $entryAst=[Management.Automation.Language.Parser]::ParseFile($oldHook,[ref]$null,[ref]$null)

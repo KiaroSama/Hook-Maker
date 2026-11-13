@@ -67,9 +67,9 @@
     Write-Bytes (Join-Path $projBig 'big.dat') ([byte[]]$bigBinary.ToArray())
     $rBig = Fire -HookPath $hcBig.Script -Cwd $projBig -EventName 'SessionStart' -LocalAppData $hcBig.LocalAppData
     $msgBig = Get-Message $rBig.Out
-    Check 'an oversized TEXT file is reported as NOT validated (unknown), never silently passed' ($msgBig -match '1 file\(s\) exceeded UTF8_MAX_FILE_KB') $msgBig
+    Check 'an oversized TEXT file is reported as NOT validated (unknown), never silently passed' ($msgBig -match '1 >UTF8_MAX_FILE_KB UNKNOWN\.') $msgBig
     Check 'an oversized text file is not invented as a violation' ($msgBig -notmatch '- big\.txt -') $msgBig
-    Check 'an oversized BINARY file is recognized as binary from its first window (not counted unknown)' ($msgBig -notmatch '2 file\(s\) exceeded') $msgBig
+    Check 'an oversized BINARY file is recognized as binary from its first window (not counted unknown)' ($msgBig -notmatch '2 >UTF8_MAX_FILE_KB UNKNOWN\.') $msgBig
 
     # =====================================================================
     Write-Host '--- an unreadable file is honest partial coverage, never a violation ---' -ForegroundColor Cyan

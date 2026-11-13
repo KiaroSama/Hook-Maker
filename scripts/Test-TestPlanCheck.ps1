@@ -174,8 +174,8 @@ try {
         [string]$parsed.hookSpecificOutput.hookEventName -eq 'SessionStart' -and
         -not [string]::IsNullOrWhiteSpace([string]$parsed.hookSpecificOutput.additionalContext)) $r.Out
     $msg1 = Get-Message $r.Out
-    Check 'the advisory routes wall/idle timeout policy to the full owners before every run' ($msg1 -match 'BEFORE EVERY run, global-test-rules\.md/global-environment-rules\.md FULL') $msg1
-    Check 'the advisory routes workers/cleanup to full owners and stays non-executing' ($msg1 -match 'BEFORE EVERY run, global-test-rules\.md/global-environment-rules\.md FULL' -and $msg1 -match 'Hook runs/edits/installs nothing') $msg1
+    Check 'the advisory routes wall/idle timeout policy to the full owners before every run' ($msg1 -match 'read global-test-rules\.md FULL') $msg1
+    Check 'the advisory routes workers/cleanup to full owners and stays non-executing' ($msg1 -match 'read global-test-rules\.md FULL' -and $msg1 -match 'Hook runs/edits nothing') $msg1
     # The policy block itself mentions blind sleeps, so absence is asserted on
     # the findings SECTION, which only appears when something real was seen.
     Check 'a bounded test file produces no invented finding' ($msg1 -notmatch '(?i)Observed (?:in this project|file:line)') $msg1
@@ -213,7 +213,7 @@ try {
     $hc4 = New-IsolatedHookCopy
     $proj4 = New-GitRepo 'Relevance'
     $rRelated = Fire -HookPath $hc4.Script -Cwd $proj4 -EventName 'UserPromptSubmit' -Prompt $TestRelatedPrompt -LocalAppData $hc4.LocalAppData
-    Check 'a clearly test-related prompt produces advice naming the on-demand policy file' ((Get-Message $rRelated.Out) -match '(?i)TEST PLAN CHECK' -and (Get-Message $rRelated.Out) -match 'global-test-rules\.md/global-environment-rules\.md FULL') $rRelated.Out
+    Check 'a clearly test-related prompt produces advice naming the on-demand policy file' ((Get-Message $rRelated.Out) -match 'Test-Plan-Check: advisory test health' -and (Get-Message $rRelated.Out) -match 'read global-test-rules\.md FULL') $rRelated.Out
 
     $hc5 = New-IsolatedHookCopy
     $proj5 = New-GitRepo 'Irrelevance'
@@ -229,7 +229,7 @@ try {
     $rNoKeyword = Fire -HookPath $hc6.Script -Cwd $proj6 -EventName 'UserPromptSubmit' -Prompt 'Please rename the invoice column.' -LocalAppData $hc6.LocalAppData
     Check 'without the keyword the prompt stays silent' ($rNoKeyword.Out -eq '') $rNoKeyword.Out
     $rKeyword = Fire -HookPath $hc6.Script -Cwd $proj6 -EventName 'UserPromptSubmit' -Prompt 'Please rerun the quokka checks for me.' -LocalAppData $hc6.LocalAppData
-    Check 'a configured extra keyword makes the prompt relevant' ((Get-Message $rKeyword.Out) -match '(?i)TEST PLAN CHECK') $rKeyword.Out
+    Check 'a configured extra keyword makes the prompt relevant' ((Get-Message $rKeyword.Out) -match 'Test-Plan-Check: advisory test health') $rKeyword.Out
 
     # =====================================================================
     Write-Host '--- fingerprint + cooldown: unchanged repeats suppressed, a change reports at once ---' -ForegroundColor Cyan
@@ -263,7 +263,7 @@ try {
     $projAlways = New-GitRepo 'AlwaysReport'
     $null = Fire -HookPath $hcAlways.Script -Cwd $projAlways -EventName 'SessionStart' -LocalAppData $hcAlways.LocalAppData
     $rAgain = Fire -HookPath $hcAlways.Script -Cwd $projAlways -EventName 'SessionStart' -LocalAppData $hcAlways.LocalAppData
-    Check 'ALWAYS_REPORT=1 reports again on an unchanged project' ((Get-Message $rAgain.Out) -match '(?i)TEST PLAN CHECK') $rAgain.Out
+    Check 'ALWAYS_REPORT=1 reports again on an unchanged project' ((Get-Message $rAgain.Out) -match 'Test-Plan-Check: advisory test health') $rAgain.Out
 
     # =====================================================================
     Write-Host '--- an unbounded wait is reported; findings always point at a line ---' -ForegroundColor Cyan
@@ -559,34 +559,34 @@ New-Item -ItemType File -Path (Join-Path $PSScriptRoot 'EXECUTED-MARKER.txt') -F
     $rProseTest = Fire -HookPath $hcDd.Script -Cwd $projDd -EventName 'UserPromptSubmit' -Prompt 'deep debug this flaky test suite please' -LocalAppData $hcDd.LocalAppData
     $msgProse = Get-Message $rProseTest.Out
     Check 'prose "deep debug" + test keyword -> plain advisory WITHOUT the dd section' (
-        $msgProse -match '(?i)TEST PLAN CHECK' -and $msgProse -notmatch '::deep-debug plan:') $msgProse
+        $msgProse -match 'Test-Plan-Check: advisory test health' -and $msgProse -notmatch '::deep-debug:') $msgProse
     # A STANDALONE ::deep-debug token alone (no other keyword) passes the gate
     # and the advisory carries the deep-debug plan requirements.
     $hcDd2 = New-IsolatedHookCopy
     $projDd2 = New-GitRepo 'DeepDebugToken'
     $rDd = Fire -HookPath $hcDd2.Script -Cwd $projDd2 -EventName 'UserPromptSubmit' -Prompt '::deep-debug' -LocalAppData $hcDd2.LocalAppData
     $msgDd = Get-Message $rDd.Out
-    Check 'standalone ::deep-debug alone is relevant and advises' ($msgDd -match '(?i)TEST PLAN CHECK' -and $msgDd -match '::deep-debug plan:') $msgDd
+    Check 'standalone ::deep-debug alone is relevant and advises' ($msgDd -match 'Test-Plan-Check: advisory test health' -and $msgDd -match '::deep-debug:') $msgDd
     # Detailed regression/bounds/resources/cleanup/Ponytail/encoding requirements
     # now route through mandatory full owners; this hook does not verify compliance.
     Check 'dd: persistent regression and original failure paths route to the full workflow' (
-        $msgDd -match 'BEFORE work WORKFLOWS\.md Deep Debug FULL') $msgDd
+        $msgDd -match '::deep-debug: persistent regression/real fixture for confirmed defects; rerun original/important failures') $msgDd
     Check 'dd: native and outer limits route to complete test/environment owners' (
-        $msgDd -match 'BEFORE EVERY run, global-test-rules\.md/global-environment-rules\.md FULL') $msgDd
+        $msgDd -match 'read global-test-rules\.md FULL') $msgDd
     Check 'dd: bounded waits and one shared worker ceiling retain their full owner' (
-        $msgDd -match 'global-test-rules\.md/global-environment-rules\.md FULL' -and
-        $msgDd -match 'BEFORE work WORKFLOWS\.md Deep Debug FULL') $msgDd
+        $msgDd -match 'read global-test-rules\.md FULL' -and
+        $msgDd -match '::deep-debug: persistent regression/real fixture for confirmed defects; rerun original/important failures') $msgDd
     Check 'dd: cleanup, property invariants and confirmed security findings retain their full workflow' (
-        $msgDd -match 'BEFORE work WORKFLOWS\.md Deep Debug FULL' -and
-        $msgDd -match 'Hook runs/edits/installs nothing') $msgDd
+        $msgDd -match '::deep-debug: persistent regression/real fixture for confirmed defects; rerun original/important failures' -and
+        $msgDd -match 'Hook runs/edits nothing') $msgDd
     Check 'dd: one terminal Ponytail pass routes to the full workflow before work' (
-        $msgDd -match 'BEFORE work WORKFLOWS\.md Deep Debug FULL') $msgDd
+        $msgDd -match '::deep-debug: persistent regression/real fixture for confirmed defects; rerun original/important failures') $msgDd
     Check 'dd: encoding owner and every Test-*.ps1 CI mapping remain required' (
-        $msgDd -match 'global-test-rules\.md/global-environment-rules\.md FULL' -and
-        $msgDd -match 'EVERY Test-\*\.ps1 -> CI') $msgDd
+        $msgDd -match 'read global-test-rules\.md FULL' -and
+        $msgDd -match 'every Test-\*\.ps1 -> CI') $msgDd
     Check 'dd: validation remains owned by full test policy, not a second encoding scanner' (
-        $msgDd -match 'global-test-rules\.md/global-environment-rules\.md FULL' -and
-        $msgDd -match 'Hook runs/edits/installs nothing') $msgDd
+        $msgDd -match 'read global-test-rules\.md FULL' -and
+        $msgDd -match 'Hook runs/edits nothing') $msgDd
     # Same fingerprint gate: an unchanged repeat of the SAME dd prompt is silent.
     $rDdRepeat = Fire -HookPath $hcDd2.Script -Cwd $projDd2 -EventName 'UserPromptSubmit' -Prompt '::deep-debug' -LocalAppData $hcDd2.LocalAppData
     Check 'dd anti-loop: an unchanged ::deep-debug repeat inside the cooldown is silent' ($rDdRepeat.Exit -eq 0 -and $rDdRepeat.Out -eq '') $rDdRepeat.Out
@@ -596,7 +596,7 @@ New-Item -ItemType File -Path (Join-Path $PSScriptRoot 'EXECUTED-MARKER.txt') -F
     $rPlainAfter = Fire -HookPath $hcDd2.Script -Cwd $projDd2 -EventName 'UserPromptSubmit' -Prompt $TestRelatedPrompt -LocalAppData $hcDd2.LocalAppData
     $msgPlainAfter = Get-Message $rPlainAfter.Out
     Check 'a later plain test prompt reports the NORMAL advisory without dd lines' (
-        $msgPlainAfter -match '(?i)TEST PLAN CHECK' -and $msgPlainAfter -notmatch '::deep-debug plan:') $msgPlainAfter
+        $msgPlainAfter -match 'Test-Plan-Check: advisory test health' -and $msgPlainAfter -notmatch '::deep-debug:') $msgPlainAfter
     # Client shapes: the dd advisory rides the same client-aware envelope.
     $hcDdClaude = New-IsolatedHookCopy
     $projDdCl = New-GitRepo 'DeepDebugClaude'
@@ -605,7 +605,7 @@ New-Item -ItemType File -Path (Join-Path $PSScriptRoot 'EXECUTED-MARKER.txt') -F
     try { $parsedDdCl = $rDdCl.Out | ConvertFrom-Json } catch { $parsedDdCl = $null }
     Check 'dd advisory uses the Claude shape (hookSpecificOutput.additionalContext) for Claude' (
         $null -ne $parsedDdCl -and $null -ne $parsedDdCl.PSObject.Properties['hookSpecificOutput'] -and
-        ([string]$parsedDdCl.hookSpecificOutput.additionalContext) -match '::deep-debug plan:' -and
+        ([string]$parsedDdCl.hookSpecificOutput.additionalContext) -match '::deep-debug:' -and
         $rDdCl.Out -notmatch '"decision"') $rDdCl.Out
     $hcDdCodex = New-IsolatedHookCopy
     $projDdCx = New-GitRepo 'DeepDebugCodex'
@@ -617,7 +617,7 @@ New-Item -ItemType File -Path (Join-Path $PSScriptRoot 'EXECUTED-MARKER.txt') -F
         $null -ne $parsedDdCx -and $null -eq $parsedDdCx.PSObject.Properties['systemMessage'] -and
         $null -ne $parsedDdCx.PSObject.Properties['hookSpecificOutput'] -and
         [string]$parsedDdCx.hookSpecificOutput.hookEventName -eq 'UserPromptSubmit' -and
-        ([string]$parsedDdCx.hookSpecificOutput.additionalContext) -match '::deep-debug plan:') $rDdCx.Out
+        ([string]$parsedDdCx.hookSpecificOutput.additionalContext) -match '::deep-debug:') $rDdCx.Out
 
     # =====================================================================
     Write-Host '--- E-13: static safety - the hook only DESCRIBES commands, it never executes them ---' -ForegroundColor Cyan
@@ -705,7 +705,7 @@ New-Item -ItemType File -Path (Join-Path $PSScriptRoot 'EXECUTED-MARKER.txt') -F
             [System.IO.File]::ReadAllText($tpcRuntime) -eq $tpcExpectedRuntimeText)
         $parRepairLocal = Join-Path $Work '_par-repair-local'; New-Item -ItemType Directory -Path $parRepairLocal -Force | Out-Null
         $rParRepaired = Fire -HookPath $tpcRuntime -Cwd $projPar -EventName 'UserPromptSubmit' -Prompt '::deep-debug' -LocalAppData $parRepairLocal
-        Check 'the repaired runtime emits the current ::deep-debug guidance' ((Get-Message $rParRepaired.Out) -match '::deep-debug plan:') (Get-Message $rParRepaired.Out)
+        Check 'the repaired runtime emits the current ::deep-debug guidance' ((Get-Message $rParRepaired.Out) -match '::deep-debug:') (Get-Message $rParRepaired.Out)
     }
     finally { $env:HOOKMAKER_STATE_DIR = $savedHmStateDir }
 

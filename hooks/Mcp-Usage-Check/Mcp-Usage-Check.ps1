@@ -166,7 +166,7 @@ function Test-ShouldReport {
 if ($eventName -eq 'SessionStart') {
     $note = @(
         'Mcp-Usage-Check: advisory connector review:',
-        '- Technical work: global-research-rules.md FULL, live docs/GitHub -> .ai/RESEARCH/.',
+        '- BEFORE selection: global-mcp-rules.md/global-mcp-server-contracts.md FULL; research owner FULL, live docs/GitHub -> .ai/RESEARCH/.',
         '- Material browser/DB/GitHub/memory connectors only.',
         '- Smallest verifying tool; no fit: proceed/explain none.',
         $requirement
@@ -202,7 +202,7 @@ if ($eventName -eq 'UserPromptSubmit') {
     }
     if (-not $relevant) {
         if ($researchDue) {
-            $emit = Write-HookResult -EventName $eventName -Kind 'context' -Message $script:ResearchReminder
+            $emit = Write-HookResult -EventName $eventName -Kind 'context' -Message $script:ResearchReminder -HookInput $hookInput -HookName 'Mcp-Usage-Check' -FindingFingerprint $researchKey
             exit $emit.ExitCode
         }
         exit 0
@@ -237,7 +237,7 @@ if ($eventName -eq 'UserPromptSubmit') {
 
     $noteLines = @(
         'Mcp-Usage-Check: advisory library/API/docs/URL/DB/GitHub/deploy/memory connector match.',
-        '- Live docs/first-party connector, not recalled API/guess.',
+        '- BEFORE selection: global-mcp-rules.md/global-mcp-server-contracts.md FULL; live docs, not recalled API/guess.',
         '- Smallest complete verifying tool.',
         $requirement
     )

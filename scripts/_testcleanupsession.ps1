@@ -2,7 +2,8 @@
 function Invoke-CleanupSessionRegression {
     param([string]$HostExe='pwsh')
     $c=New-IsolatedHookCopy
-    $p=New-Proj ('session-isolation-'+$HostExe)
+    $p=New-GitRepo ('session-isolation-'+$HostExe)
+    Add-Commit $p 'init'
     $null=Fire -HookPath $c.Script -Cwd $p -EventName SessionStart -SessionId 'session-A' -LocalAppData $c.LocalAppData -Exe $HostExe
     $state=Join-Path $c.LocalAppData 'HookMaker/state'
     $key=Get-ShortHash ((Normalize-Path $p).ToLowerInvariant())
@@ -21,7 +22,8 @@ function Invoke-CleanupSessionRegression {
     $null=Fire -HookPath $c.Script -Cwd $p -EventName SessionStart -SessionId 'session-A' -LocalAppData $c.LocalAppData -Exe $HostExe
     Check ($HostExe+': repeated SessionStart preserves first baseline bytes') ((Test-Path $aPath)-and[IO.File]::ReadAllText($aPath,[Text.Encoding]::UTF8)-ceq$initial)
     $legacy=New-IsolatedHookCopy
-    $lp=New-Proj ('session-legacy-'+$HostExe)
+    $lp=New-GitRepo ('session-legacy-'+$HostExe)
+    Add-Commit $lp 'init'
     $lk=Get-ShortHash ((Normalize-Path $lp).ToLowerInvariant())
     $ls=Join-Path $legacy.LocalAppData 'HookMaker/state'
     [void][IO.Directory]::CreateDirectory($ls)
@@ -33,17 +35,17 @@ function Invoke-CleanupSessionRegression {
     $r=Fire -HookPath $legacy.Script -Cwd $lp -EventName Stop -SessionId 'legacy-A' -LocalAppData $legacy.LocalAppData -Exe $HostExe
     Check ($HostExe+': matching legacy baseline retains appeared classification') ($r.Err-eq''-and$r.Out-match'at-session-start=no'-and$r.Out-notmatch'baseline-session-mismatch') $r.Out
     $r=Fire -HookPath $legacy.Script -Cwd $lp -EventName Stop -SessionId 'foreign-B' -LocalAppData $legacy.LocalAppData -Exe $HostExe
-    Check ($HostExe+': foreign legacy baseline cannot prove absence') ($r.Err-eq''-and$r.Out-match'baseline-missing'-and$r.Out-notmatch'class=likely-disposable') $r.Out
+    Check ($HostExe+': foreign legacy baseline cannot prove absence') ($r.Exit-eq0-and$r.Err-eq''-and$r.Out-eq''-and(Get-RecordedCategory $legacy.LocalAppData $lp)-eq'unknown'-and @((Get-RecordedResult $legacy.LocalAppData $lp).partialCauses)-contains'baseline-missing') $r.Out
     $null=Fire -HookPath $legacy.Script -Cwd $lp -EventName SessionStart -SessionId 'foreign-B' -LocalAppData $legacy.LocalAppData -Exe $HostExe
     Check ($HostExe+': foreign SessionStart leaves legacy original untouched') ([IO.File]::ReadAllText($legacyPath,[Text.Encoding]::UTF8)-ceq$legacyBytes)
     $scoped=Join-Path $ls ('TestTempCleanup-baseline-'+$lk+'-'+(Get-ShortHash 'legacy-A')+'.json')
     Write-Utf8 $scoped '{malformed'
     $r=Fire -HookPath $legacy.Script -Cwd $lp -EventName Stop -SessionId 'legacy-A' -LocalAppData $legacy.LocalAppData -Exe $HostExe
-    Check ($HostExe+': malformed scoped evidence never falls back to clean legacy') ($r.Err-eq''-and$r.Out-match'baseline-missing'-and$r.Out-notmatch'class=likely-disposable') $r.Out
+    Check ($HostExe+': malformed scoped evidence never falls back to clean legacy') ($r.Exit-eq0-and$r.Err-eq''-and$r.Out-eq''-and(Get-RecordedCategory $legacy.LocalAppData $lp)-eq'unknown'-and @((Get-RecordedResult $legacy.LocalAppData $lp).partialCauses)-contains'baseline-missing') $r.Out
     $null=Fire -HookPath $legacy.Script -Cwd $lp -EventName SessionStart -SessionId 'legacy-A' -LocalAppData $legacy.LocalAppData -Exe $HostExe
     Check ($HostExe+': malformed initial evidence is retained, not replaced on resume') ([IO.File]::ReadAllText($scoped,[Text.Encoding]::UTF8)-ceq'{malformed')
     $r=Fire -HookPath $legacy.Script -Cwd $lp -EventName Stop -SessionId '' -LocalAppData $legacy.LocalAppData -Exe $HostExe
-    Check ($HostExe+': empty session cannot borrow legacy evidence') ($r.Err-eq''-and$r.Out-match'baseline-session-mismatch'-and$r.Out-notmatch'class=likely-disposable') $r.Out
+    Check ($HostExe+': empty session cannot borrow legacy evidence') ($r.Exit-eq0-and$r.Err-eq''-and$r.Out-eq''-and(Get-RecordedCategory $legacy.LocalAppData $lp)-eq'unknown'-and @((Get-RecordedResult $legacy.LocalAppData $lp).partialCauses)-contains'baseline-session-mismatch') $r.Out
     $unicode='session-'+[char]0x06cc+[char]0x0627
     $null=Fire -HookPath $legacy.Script -Cwd $lp -EventName SessionStart -SessionId $unicode -LocalAppData $legacy.LocalAppData -Exe $HostExe
     $unicodePath=Join-Path $ls ('TestTempCleanup-baseline-'+$lk+'-'+(Get-ShortHash $unicode)+'.json')

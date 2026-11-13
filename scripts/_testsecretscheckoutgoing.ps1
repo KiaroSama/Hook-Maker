@@ -18,7 +18,7 @@
     Add-Commit $projLeakWt 'seed clean'
     Write-Utf8 (Join-Path $projLeakWt 'notes.txt') "leaked: wtonlyvalue1234567890`r`n"
     $r = Fire -Cwd $projLeakWt
-    Check 'leak only in working tree (unstaged) is detected' ($r.Out -like '*WT_ONLY_SECRET*appears in a git-tracked file*notes.txt*') $r.Out
+    Check 'leak only in working tree (unstaged) is detected' ($r.Out -like '*WT_ONLY_SECRET*tracked leak:*notes.txt*') $r.Out
     Check 'worktree-only leak: value never printed' ($r.Out -notlike '*wtonlyvalue1234567890*') $r.Out
 
     # Leak only in the INDEX (staged, then the working copy is cleaned WITHOUT
@@ -33,7 +33,7 @@
     & git -C $projLeakIdx add notes.txt 2>$null | Out-Null
     Write-Utf8 (Join-Path $projLeakIdx 'notes.txt') "clean again (worktree only)`r`n"
     $r = Fire -Cwd $projLeakIdx
-    Check 'leak only in the git index (staged) is detected' ($r.Out -like '*IDX_ONLY_SECRET*appears in a git-tracked file*notes.txt*') $r.Out
+    Check 'leak only in the git index (staged) is detected' ($r.Out -like '*IDX_ONLY_SECRET*tracked leak:*notes.txt*') $r.Out
     Check 'index-only leak: value never printed' ($r.Out -notlike '*idxonlyvalue1234567890*') $r.Out
 
     # Same leak present in BOTH the working tree and the index - reported once.
@@ -56,7 +56,7 @@
     Write-Utf8 (Join-Path $projClean 'notes.txt') "clean again`r`n"
     & git -C $projClean add notes.txt 2>$null | Out-Null
     $r = Fire -Cwd $projClean
-    Check 'cleaned and re-staged file is NOT flagged as a leak' ($r.Out -notlike '*CLEANED_SECRET*appears in a git-tracked file*') $r.Out
+    Check 'cleaned and re-staged file is NOT flagged as a leak' ($r.Out -notlike '*CLEANED_SECRET*tracked leak:*') $r.Out
 
     # Nested file path.
     $projNested = New-GitProj 'LeakNestedPath'
@@ -75,7 +75,7 @@
     Write-Utf8 (Join-Path $projSpace 'my notes.txt') "leaked: spacevalue1234567890`r`n"
     Add-Commit $projSpace 'space leak'
     $r = Fire -Cwd $projSpace
-    Check 'tracked file leak is detected when project/file paths contain spaces' ($r.Out -like '*SPACE_LEAK_TOKEN*appears in a git-tracked file*my notes.txt*') $r.Out
+    Check 'tracked file leak is detected when project/file paths contain spaces' ($r.Out -like '*SPACE_LEAK_TOKEN*tracked leak:*my notes.txt*') $r.Out
     Check 'no secret value ever appears in output or stderr (leak regression block)' (
         $r.Out -notlike '*spacevalue1234567890*' -and $r.Err -notlike '*spacevalue1234567890*'
     ) ($r.Out + $r.Err)
@@ -93,7 +93,7 @@
     Write-Utf8 (Join-Path $outBasic 'leak.txt') "leak: basicoutgoingvalue1234567890`r`n"
     Add-Commit $outBasic 'introduce a leak, never cleaned'
     $rBasic = FireGitPrePush -Cwd $outBasic -StdinText (Get-RefUpdateLine -Repo $outBasic)
-    Check 'basic outgoing leak (no cleanup) is detected' ($rBasic.Exit -eq 1 -and $rBasic.Err -match 'BASIC_OUTGOING_SECRET' -and $rBasic.Err -match 'outgoing commit') $rBasic.Err
+    Check 'basic outgoing leak (no cleanup) is detected' ($rBasic.Exit -eq 1 -and $rBasic.Err -match 'BASIC_OUTGOING_SECRET' -and $rBasic.Err -match 'outgoing leak:') $rBasic.Err
 
     # Secret in an OLDER outgoing commit, with a later cleanup commit also in
     # the same outgoing range - both worktree AND index are clean, only
@@ -112,7 +112,7 @@
     Add-Commit $outOlder 'cleanup commit (also outgoing, tree now clean)'
     Check 'worktree and index are already clean before the push check' (@(& git -C $outOlder status --porcelain).Count -eq 0)
     $rOlder = FireGitPrePush -Cwd $outOlder -StdinText (Get-RefUpdateLine -Repo $outOlder)
-    Check 'secret in an older outgoing commit is detected despite a clean later cleanup commit' ($rOlder.Exit -eq 1 -and $rOlder.Err -match 'OLDER_COMMIT_SECRET' -and $rOlder.Err -match 'outgoing commit') $rOlder.Err
+    Check 'secret in an older outgoing commit is detected despite a clean later cleanup commit' ($rOlder.Exit -eq 1 -and $rOlder.Err -match 'OLDER_COMMIT_SECRET' -and $rOlder.Err -match 'outgoing leak:') $rOlder.Err
     Check 'older-outgoing-commit leak: value never printed' ($rOlder.Err -notlike '*oldercommitvalue1234567890*') $rOlder.Err
 
     # A clean outgoing range must stay silent (no false blocker).
@@ -227,7 +227,7 @@
     Write-Utf8 (Join-Path $outDash 'leak.txt') "leak: -dashprefixvalue1234567890`r`n"
     Add-Commit $outDash 'introduce a dash-prefixed secret value leak'
     $rDash = FireGitPrePush -Cwd $outDash -StdinText (Get-RefUpdateLine -Repo $outDash)
-    Check 'dash-prefixed secret value in an outgoing commit is detected as a leak' ($rDash.Exit -eq 1 -and $rDash.Err -match 'DASH_PREFIX_SECRET' -and $rDash.Err -match 'outgoing commit') $rDash.Err
+    Check 'dash-prefixed secret value in an outgoing commit is detected as a leak' ($rDash.Exit -eq 1 -and $rDash.Err -match 'DASH_PREFIX_SECRET' -and $rDash.Err -match 'outgoing leak:') $rDash.Err
     Check 'dash-prefixed leak is NOT reported as an unscannable/incomplete outgoing scan' ($rDash.Err -notmatch 'could not be fully scanned') $rDash.Err
     Check 'dash-prefixed outgoing leak: value never printed' ($rDash.Err -notlike '*dashprefixvalue1234567890*') $rDash.Err
 
@@ -242,7 +242,7 @@
     Write-Utf8 (Join-Path $outNoDash 'leak.txt') "leak: nodashcontrolvalue1234567890`r`n"
     Add-Commit $outNoDash 'introduce a non-dash-prefixed secret value leak'
     $rNoDash = FireGitPrePush -Cwd $outNoDash -StdinText (Get-RefUpdateLine -Repo $outNoDash)
-    Check 'non-dash-prefixed secret value in an outgoing commit is still detected (negative control)' ($rNoDash.Exit -eq 1 -and $rNoDash.Err -match 'NODASH_CONTROL_SECRET' -and $rNoDash.Err -match 'outgoing commit') $rNoDash.Err
+    Check 'non-dash-prefixed secret value in an outgoing commit is still detected (negative control)' ($rNoDash.Exit -eq 1 -and $rNoDash.Err -match 'NODASH_CONTROL_SECRET' -and $rNoDash.Err -match 'outgoing leak:') $rNoDash.Err
 
     # =====================================================================
     Write-Host '--- outgoing-commit scan: real end-to-end git push (native pre-push chain) ---' -ForegroundColor Cyan
@@ -280,7 +280,7 @@
     $pushOutput = (& git -C $e2e push origin main 2>&1 | Out-String)
     $pushExit = $LASTEXITCODE
     $ErrorActionPreference = $savedEap
-    Check 'real end-to-end git push is rejected by the native pre-push chain' ($pushExit -ne 0 -and $pushOutput -match 'SECRETS CHECK' -and $pushOutput -match 'outgoing commit') $pushOutput
+    Check 'real end-to-end git push is rejected by the native pre-push chain' ($pushExit -ne 0 -and $pushOutput -match 'SECRETS CHECK' -and $pushOutput -match 'outgoing leak:') $pushOutput
     Check 'real end-to-end push: the secret value never appears in git''s output' ($pushOutput -notlike '*e2erealpushvalue1234567890*') $pushOutput
 
     # =====================================================================
@@ -300,7 +300,7 @@
     Write-Utf8 (Join-Path $envHist '.env') "ENVHIST_SECRET=envhistvalue1234567890`r`n"
     Add-Commit $envHist 'untrack .env (local copy kept, ignored)'
     $rEnvHist = FireGitPrePush -Cwd $envHist -StdinText (Get-RefUpdateLine -Repo $envHist)
-    Check 'outgoing commit adds .env then removes it: push blocked' ($rEnvHist.Exit -eq 1 -and $rEnvHist.Err -match 'ENVHIST_SECRET' -and $rEnvHist.Err -match 'outgoing commit') $rEnvHist.Err
+    Check 'outgoing commit adds .env then removes it: push blocked' ($rEnvHist.Exit -eq 1 -and $rEnvHist.Err -match 'ENVHIST_SECRET' -and $rEnvHist.Err -match 'outgoing leak:') $rEnvHist.Err
     Check 'outgoing .env-history leak: value never printed' ($rEnvHist.Err -notlike '*envhistvalue1234567890*') $rEnvHist.Err
 
     # Nested .env.local, later removed.
@@ -392,5 +392,5 @@
     Add-Commit $unresolvable 'clean change'
     $fakeRemote = 'deadbeef' + ('0' * 32)
     $rUnresolvable = FireGitPrePush -Cwd $unresolvable -StdinText (Get-RefUpdateLine -Repo $unresolvable -RemoteSha $fakeRemote)
-    Check 'unresolvable remote SHA fails closed (blocked with incomplete-scan message)' ($rUnresolvable.Exit -eq 1 -and ($rUnresolvable.Err -replace '\s+', ' ') -match 'could not be fully scanned' -and ($rUnresolvable.Err -replace '\s+', ' ') -match 'unresolved locally; outgoing range unbounded, not clean') $rUnresolvable.Err
+    Check 'unresolvable remote SHA fails closed (blocked with incomplete-scan message)' ($rUnresolvable.Exit -eq 1 -and ($rUnresolvable.Err -replace '\s+', ' ') -match 'Outgoing coverage UNKNOWN:' -and ($rUnresolvable.Err -replace '\s+', ' ') -match 'remote commit [0-9a-f]{7} unresolved; outgoing UNKNOWN') $rUnresolvable.Err
     Check 'incomplete-scan block never prints a secret value' ($rUnresolvable.Err -notlike '*bigrangevalue*' -and $rUnresolvable.Err -notlike '*bigcleanvalue*') $rUnresolvable.Err

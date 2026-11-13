@@ -286,5 +286,11 @@ if ($isStopEvent) {
 $emit = Write-HookResult -EventName $eventName -Kind 'context' -Message $reason
 exit $emit.ExitCode
 }
-catch { if ($null -ne $gateReceipt) { $gateReceipt.Crashed = $true }; exit 0 }
+catch {
+    if ($null -ne $gateReceipt) { $gateReceipt.Crashed = $true }
+    # R035: unavailable inventory is advisory evidence, never a silent all-clear.
+    $unknown = 'Ignore coverage UNKNOWN; Git inventory/classification unavailable. Retry Git access; no all-clear.'
+    if ($GitPrePush) { exit (Write-NativeFinding -HookName Ignore-Rules-Check -Message $unknown -ProjectRoot $cwd) }
+    exit (Write-HookResult -EventName $eventName -Kind advisory -Message $unknown).ExitCode
+}
 finally { if ($null -ne $gateReceipt) { Complete-StopGateReceipt $gateReceipt } }

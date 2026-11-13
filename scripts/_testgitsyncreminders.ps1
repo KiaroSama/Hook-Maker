@@ -52,8 +52,8 @@
     $rmRepo = New-PushedRepo 'reminders'
     $r = Invoke-PreToolReminder -Cwd $rmRepo -Command 'git switch -c feature/side'
     Check 'RM02 a branch-creating command gets the side-branch reminder as context' (
-        $r.Exit -eq 0 -and $r.Out -match 'BEFORE branch/worktree/PR creation: global-repository-rules.md FULL' -and
-        $r.Out -match 'Only requested/forced; ONE/task' -and $r.Out -match '"additionalContext"') $r.Out
+        $r.Exit -eq 0 -and $r.Out -match 'advisory default branch; side branch/worktree/PR' -and $r.Out -match 'global-repository-rules\.md' -and
+        $r.Out -match 'needs user request or reported forcing reason' -and $r.Out -match 'one task branch/PR' -and $r.Out -match '"additionalContext"') $r.Out
     Check 'RM03 the reminder carries no permission decision (never approves, never blocks)' (
         $r.Out -notmatch 'permissionDecision' -and $r.Out -notmatch '"decision"') $r.Out
     $r = Invoke-PreToolReminder -Cwd $rmRepo -Command 'git push origin main'
@@ -61,7 +61,7 @@
     [IO.File]::WriteAllText((Join-Path $rmRepo 'f.txt'), 'v2', (New-Object Text.UTF8Encoding $false))
     $r = Invoke-PreToolReminder -Cwd $rmRepo -Command 'git push origin main'
     Check 'RM05 a push with uncommitted work gets the push-once reminder, naming the count' (
-        $r.Out -match '1 uncommitted change' -and $r.Out -match 'BEFORE push: global-repository-rules.md FULL' -and $r.Out -match 'push ONCE, one manual exact-SHA CI batch' -and $r.Out -notmatch 'permissionDecision') $r.Out
+        $r.Out -match '1 uncommitted change' -and $r.Out -match 'global-repository-rules\.md' -and $r.Out -match 'pushes ONCE, after all work' -and $r.Out -match 'all-host manual workflow_dispatch exact-SHA batch' -and $r.Out -notmatch 'permissionDecision') $r.Out
     $r = Invoke-PreToolReminder -Cwd $rmRepo -Command 'Get-ChildItem'
     Check 'RM06 an unrelated tool call is silent and runs no sync scan' ($r.Exit -eq 0 -and $r.Out -eq '') $r.Out
     $hookSource = [IO.File]::ReadAllText((Join-Path (Split-Path -Parent $Hook) '_branchreminders.ps1'))

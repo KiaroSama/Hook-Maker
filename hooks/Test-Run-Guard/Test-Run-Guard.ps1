@@ -485,7 +485,7 @@ if ($eventName -eq 'PreToolUse') {
         }
     }
 
-    $message = 'Test-Run-Guard: advisory, ' + $verdict.Command.Label + ' lacks wall/idle/tree ownership; cleanup/outcome UNVERIFIED. Data-only guarded form: ' + $replacement + '; real exit (124=termination), -ResultPath read at PostToolUse.' + $workerNote + $ddNote + $utf8Note + $configNote
+    $message = 'Test-Run-Guard: advisory, ' + $verdict.Command.Label + ' lacks wall/idle/tree ownership; cleanup/outcome UNVERIFIED. Data-only guarded form:' + "`n" + $replacement + "`n" + 'Real exit (124=termination), -ResultPath read at PostToolUse.' + $workerNote + $ddNote + $utf8Note + $configNote
 
     if ($advisoryOnly) {
         # TEST_GUARD_ADVISORY_ONLY=1: the finding still goes out, the command

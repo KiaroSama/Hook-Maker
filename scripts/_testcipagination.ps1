@@ -120,7 +120,7 @@ function Invoke-CiPaginationRegression {
     Check 'execution proof has separate complete visibility guidance' ($null-ne$visibility)
     if($null-ne$visibility){
         $text=Get-CiVisibilityReminder ('a'*40)
-        Check 'visibility requires full reporting owner before all-test claims, separate from execution proof' ($text.Contains(('a'*40))-and$text.Contains('Suite/case')-and$text.Contains('UNVERIFIED')-and$text.Contains('BEFORE all-test claim: global-github-automation-rules.md Section8 FULL')-and$text.Contains('Reports/UI UNVERIFIED')-and$text.Contains('reporter cannot mask test failure'))
+        Check 'visibility requires full reporting owner before all-test claims, separate from execution proof' ($text.Contains(('a'*40))-and$text.Contains('CI execution verified: ')-and$text.Contains('global-github-automation-rules.md Section8 FULL before all-test claim')-and$text.Contains('Reports/UI UNVERIFIED')-and$text.Contains('reporter cannot hide failure'))
     }
     # Exercise both real output adapters and reservation deduplication without
     # another hook process; the existing suite owns this isolated workspace.

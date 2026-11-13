@@ -174,13 +174,13 @@ try {
     [System.IO.File]::WriteAllBytes((Join-Path $projBad '.ai\memory.md'), $badBytes)
     $r = Fire -Cwd $projBad
     Check 'invalid UTF-8 memory.md -> classification advisory, not a crash' (
-        $r.Exit -eq 0 -and $r.Err -eq '' -and $r.Out -like '*invalid UTF-8/legacy/unknown*') ($r.Out + $r.Err)
+        $r.Exit -eq 0 -and $r.Err -eq '' -and $r.Out -like '*memory.md invalid UTF-8*') ($r.Out + $r.Err)
     Check 'the advisory shows path + classification ONLY - file contents are not printed' (
         $r.Out -notlike '*SECRET_LEGACY_MARKER*' -and $r.Out -notlike '*AI MEMORY LOADED*') $r.Out
     Check 'no replacement-character mojibake is injected (literal or JSON-escaped)' (
         $r.Out.IndexOf([char]0xFFFD) -lt 0 -and $r.Out -notmatch '(?i)\\ufffd') $r.Out
     Check 'the advisory demands an explicit reviewed conversion, never a silent transcode' (
-        $r.Out -like '*Reviewed UTF-8 conversion required*' -and $r.Out -like '*hook never transcodes*') $r.Out
+        $r.Out -like '*Review explicit UTF-8 conversion*' -and $r.Out -like '*hook never transcodes*') $r.Out
     Check 'the invalid file is NOT transcoded/mutated by the hook' (
         [System.Linq.Enumerable]::SequenceEqual([byte[]]$badBytes, [byte[]][System.IO.File]::ReadAllBytes((Join-Path $projBad '.ai\memory.md'))))
     $r2 = Fire -Cwd $projBad
@@ -212,17 +212,17 @@ try {
     $r = Fire -Cwd $projDd -RawStdin $ddStdin
     # Exact debug/security loading sets now route through the FULL owners.
     Check 'standalone ::deep-debug requires full loading owners before the relevant existing set' (
-        $r.Out -like '*::deep-debug: BEFORE loading, ai-context-memory-policy.md/CODEWORDS.md FULL*' -and
-        $r.Out -like '*memory.md -> relevant existing debug/security set only*') $r.Out
+        $r.Out -like '*::deep-debug: router then existing task-relevant*' -and
+        $r.Out -like '*CONTEXT/REFERENCE/COMMANDS/BUGS/EDGE_CASES/TESTING_NOTES/DECISIONS/LESSON/WORKFLOWS/PLAYBOOKS, SECURITY_NOTES if security*') $r.Out
     Check 'the routing forbids bulk/empty/global-rule copies' (
-        $r.Out -like '*no raw/transcode/bulk/empty/global-rule copies*') $r.Out
+        $r.Out -like '*No whole-dir/global-copy/empty scaffold*') $r.Out
     Check 'the routing retains UTF-8 and path/class-only legacy handling' (
-        $r.Out -like '*UTF-8; legacy path/class only*' -and $r.Out -like '*no raw/transcode*') $r.Out
+        $r.Out -like '*UTF-8 memory; legacy path/class only*' -and $r.Out -like '*no raw bytes/silent transcode*') $r.Out
     $r2 = Fire -Cwd $projDd -RawStdin $ddStdin
     Check 'a repeated ::deep-debug in the SAME session is silent (once per session)' ($r2.Exit -eq 0 -and $r2.Out -eq '') $r2.Out
     $ddStdin2 = @{ session_id = 'dd-s2'; cwd = $projDd; hook_event_name = 'UserPromptSubmit'; prompt = '::deep-debug' } | ConvertTo-Json
     $r3 = Fire -Cwd $projDd -RawStdin $ddStdin2
-    Check 'a NEW session re-reports the ::deep-debug routing' ($r3.Out -like '*::deep-debug: BEFORE loading*') $r3.Out
+    Check 'a NEW session re-reports the ::deep-debug routing' ($r3.Out -like '*::deep-debug: router then existing task-relevant*') $r3.Out
     # Normal behavior unchanged after dd: unchanged memory stays silent for a
     # plain prompt, and a real edit still re-fires without any dd section.
     $plainStdin = @{ session_id = 'dd-s2'; cwd = $projDd; hook_event_name = 'UserPromptSubmit'; prompt = 'ordinary work' } | ConvertTo-Json
@@ -231,7 +231,7 @@ try {
     Write-Utf8 (Join-Path $projDd '.ai\memory.md') "# Memory`n`nDD_ROUTER_EDITED`n"
     $r5 = Fire -Cwd $projDd -RawStdin $plainStdin
     Check 'a real edit re-fires the plain load WITHOUT the dd routing section' (
-        $r5.Out -like '*DD_ROUTER_EDITED*' -and $r5.Out -notlike '*::deep-debug: BEFORE loading*') $r5.Out
+        $r5.Out -like '*DD_ROUTER_EDITED*' -and $r5.Out -notlike '*::deep-debug: router then existing task-relevant*') $r5.Out
 
     # =====================================================================
     Write-Host '--- Ai-Memory-Load E-13: static safety greps ---' -ForegroundColor Cyan
@@ -257,9 +257,9 @@ try {
     New-Item -ItemType Directory -Path (Join-Path $proj4 'graphify-out') -Force | Out-Null
     Write-Utf8 (Join-Path $proj4 'graphify-out\graph.json') '{}'
     $r = Fire -Cwd $proj4 -HookPath $GraphHook
-    Check 'graph exists -> emits the reminder' ($r.Out -like '*GRAPH READ CHECK*' -and $r.Out -like '*query/path/explain*') $r.Out
-    $r2 = Fire -Cwd $proj4 -HookPath $GraphHook
-    Check 'fires again next session (cheap static reminder, no state needed)' ($r2.Out -like '*GRAPH READ CHECK*') $r2.Out
+    Check 'graph exists -> emits the reminder' ($r.Out -like '*Graph-Read-Check: advisory graphify-out/graph.json*' -and $r.Out -like '*graphify query*' -and $r.Out -like '*graphify path*' -and $r.Out -like '*graphify explain*') $r.Out
+    $r2 = Fire -Cwd $proj4 -HookPath $GraphHook -RawStdin (@{ session_id = 'graph-next-session'; cwd = $proj4; hook_event_name = 'SessionStart' } | ConvertTo-Json)
+    Check 'fires again next session (cheap static reminder, no state needed)' ($r2.Out -like '*Graph-Read-Check: advisory graphify-out/graph.json*') $r2.Out
     $r = Fire -Cwd $proj4 -HookPath $GraphHook -EventName 'SubagentStop'
     Check 'SubagentStop -> silent (not a registered event)' ($r.Exit -eq 0 -and $r.Out -eq '') $r.Out
 
@@ -270,13 +270,13 @@ try {
     Check 'a docs-only/trivial prompt stays silent' ($r.Exit -eq 0 -and $r.Out -eq '') $r.Out
     $relevantStdin1 = @{ session_id = 'g-relevant'; cwd = $proj4; hook_event_name = 'UserPromptSubmit'; prompt = 'refactor the module and check what calls this function across the codebase' } | ConvertTo-Json
     $r = Fire -Cwd $proj4 -HookPath $GraphHook -RawStdin $relevantStdin1
-    Check 'a structure/refactor/call-path prompt emits the reminder' ($r.Out -like '*GRAPH READ CHECK*') $r.Out
+    Check 'a structure/refactor/call-path prompt emits the reminder' ($r.Out -like '*Graph-Read-Check: advisory graphify-out/graph.json*') $r.Out
     $relevantStdin2 = @{ session_id = 'g-relevant'; cwd = $proj4; hook_event_name = 'UserPromptSubmit'; prompt = 'now also check the architecture impact further' } | ConvertTo-Json
     $r2 = Fire -Cwd $proj4 -HookPath $GraphHook -RawStdin $relevantStdin2
     Check 'the SAME session does not repeat the reminder on the next relevant prompt' ($r2.Exit -eq 0 -and $r2.Out -eq '') $r2.Out
     $relevantStdin3 = @{ session_id = 'g-relevant-2'; cwd = $proj4; hook_event_name = 'UserPromptSubmit'; prompt = 'where is this used across modules' } | ConvertTo-Json
     $r3 = Fire -Cwd $proj4 -HookPath $GraphHook -RawStdin $relevantStdin3
-    Check 'a NEW session with a relevant prompt reminds again' ($r3.Out -like '*GRAPH READ CHECK*') $r3.Out
+    Check 'a NEW session with a relevant prompt reminds again' ($r3.Out -like '*Graph-Read-Check: advisory graphify-out/graph.json*') $r3.Out
 
     # =====================================================================
     Write-Host '--- Graph-Read-Check: relevant PERSIAN prompt (graph exists) ---' -ForegroundColor Cyan
@@ -289,17 +289,17 @@ try {
     Write-Utf8 (Join-Path $pGraphFa 'graphify-out\graph.json') '{}'
     $faStdin1 = @{ session_id = 'g-fa1'; cwd = $pGraphFa; hook_event_name = 'UserPromptSubmit'; prompt = ('please review the ' + $faArch + ' of this project') } | ConvertTo-Json
     $r = Fire -Cwd $pGraphFa -HookPath $GraphHook -RawStdin $faStdin1
-    Check 'relevant Persian (architecture) -> scoped-query reminder' ($r.Out -like '*GRAPH READ CHECK*' -and $r.Out -like '*query/path/explain*') $r.Out
+    Check 'relevant Persian (architecture) -> scoped-query reminder' ($r.Out -like '*Graph-Read-Check: advisory graphify-out/graph.json*' -and $r.Out -like '*graphify query*' -and $r.Out -like '*graphify path*' -and $r.Out -like '*graphify explain*') $r.Out
     $faStdin2 = @{ session_id = 'g-fa2'; cwd = $pGraphFa; hook_event_name = 'UserPromptSubmit'; prompt = ('this ' + $faDep + ' needs checking') } | ConvertTo-Json
     $r = Fire -Cwd $pGraphFa -HookPath $GraphHook -RawStdin $faStdin2
-    Check 'relevant Persian (dependency) -> scoped-query reminder' ($r.Out -like '*GRAPH READ CHECK*' -and $r.Out -like '*query/path/explain*') $r.Out
+    Check 'relevant Persian (dependency) -> scoped-query reminder' ($r.Out -like '*Graph-Read-Check: advisory graphify-out/graph.json*' -and $r.Out -like '*graphify query*' -and $r.Out -like '*graphify path*' -and $r.Out -like '*graphify explain*') $r.Out
     # A dedicated English relevant case with a fresh project (the graph-exists path).
     $pGraphEn = New-Proj 'GraphEnglish'
     New-Item -ItemType Directory -Path (Join-Path $pGraphEn 'graphify-out') -Force | Out-Null
     Write-Utf8 (Join-Path $pGraphEn 'graphify-out\graph.json') '{}'
     $enStdin = @{ session_id = 'g-en1'; cwd = $pGraphEn; hook_event_name = 'UserPromptSubmit'; prompt = 'map the call path and module dependencies' } | ConvertTo-Json
     $r = Fire -Cwd $pGraphEn -HookPath $GraphHook -RawStdin $enStdin
-    Check 'relevant English -> scoped-query reminder' ($r.Out -like '*GRAPH READ CHECK:*' -and $r.Out -like '*query/path/explain*') $r.Out
+    Check 'relevant English -> scoped-query reminder' ($r.Out -like '*Graph-Read-Check: advisory graphify-out/graph.json*' -and $r.Out -like '*graphify query*' -and $r.Out -like '*graphify path*' -and $r.Out -like '*graphify explain*') $r.Out
 
     # =====================================================================
     Write-Host '--- Graph-Read-Check: missing graph + graphify AVAILABLE -> create-then-query, never runs graphify ---' -ForegroundColor Cyan
@@ -347,14 +347,14 @@ try {
     Write-Utf8 $fpGraph '{}'
     $fpStdin = @{ session_id = 'fp-1'; cwd = $pFp; hook_event_name = 'UserPromptSubmit'; prompt = 'refactor the module structure' } | ConvertTo-Json
     $r = Fire -Cwd $pFp -HookPath $GraphHook -RawStdin $fpStdin
-    Check 'first relevant prompt in session -> reminder' ($r.Out -like '*GRAPH READ CHECK*') $r.Out
+    Check 'first relevant prompt in session -> reminder' ($r.Out -like '*Graph-Read-Check: advisory graphify-out/graph.json*') $r.Out
     $r2 = Fire -Cwd $pFp -HookPath $GraphHook -RawStdin $fpStdin
     Check 'same session + unchanged graph -> silent (fingerprint dedup)' ($r2.Exit -eq 0 -and $r2.Out -eq '') $r2.Out
     # Regenerate the graph (new version): its LastWriteTime changes the token.
     $gi = Get-Item -LiteralPath $fpGraph -Force
     $gi.LastWriteTimeUtc = $gi.LastWriteTimeUtc.AddMinutes(5)
     $r3 = Fire -Cwd $pFp -HookPath $GraphHook -RawStdin $fpStdin
-    Check 'a graph version change re-enables the reminder in the same session' ($r3.Out -like '*GRAPH READ CHECK*') $r3.Out
+    Check 'a graph version change re-enables the reminder in the same session' ($r3.Out -like '*Graph-Read-Check: advisory graphify-out/graph.json*') $r3.Out
 
     # Existence change (no graph -> graph appears): create-guidance, then read.
     $pEx = New-Proj 'GraphExistenceChange'   # starts with no graphify-out
@@ -363,19 +363,19 @@ try {
     try {
         $exStdin = @{ session_id = 'ex-1'; cwd = $pEx; hook_event_name = 'UserPromptSubmit'; prompt = 'what is the impact across modules and entry points' } | ConvertTo-Json
         $r = Fire -Cwd $pEx -HookPath $GraphHook -RawStdin $exStdin
-        Check 'no graph yet -> create/fallback guidance (not the read note)' ($r.Out -like '*graphify-out/graph.json absent*' -and $r.Out -notlike '*GRAPH READ CHECK:*') $r.Out
+        Check 'no graph yet -> create/fallback guidance (not the read note)' ($r.Out -like '*graphify-out/graph.json absent*' -and $r.Out -notlike '*Graph-Read-Check: advisory graphify-out/graph.json*') $r.Out
         # The graph now appears; the same session must switch to the READ note.
         New-Item -ItemType Directory -Path (Join-Path $pEx 'graphify-out') -Force | Out-Null
         Write-Utf8 (Join-Path $pEx 'graphify-out\graph.json') '{}'
         $r2 = Fire -Cwd $pEx -HookPath $GraphHook -RawStdin $exStdin
-        Check 'graph now exists -> read reminder re-enabled (existence change)' ($r2.Out -like '*GRAPH READ CHECK:*' -and $r2.Out -like '*query/path/explain*') $r2.Out
+        Check 'graph now exists -> read reminder re-enabled (existence change)' ($r2.Out -like '*Graph-Read-Check: advisory graphify-out/graph.json*' -and $r2.Out -like '*graphify query*' -and $r2.Out -like '*graphify path*' -and $r2.Out -like '*graphify explain*') $r2.Out
     }
     finally { $env:PATH = $savedPath }
 
     # =====================================================================
     Write-Host '--- Graph-Read-Check: Windows PowerShell 5.1 host ---' -ForegroundColor Cyan
-    $r = Fire -Cwd $proj4 -HookPath $GraphHook -Exe 'powershell.exe'
-    Check '5.1 host: emits cleanly' ($r.Exit -eq 0 -and $r.Err -eq '' -and $r.Out -like '*GRAPH READ CHECK*') $r.Out
+    $r = Fire -Cwd $proj4 -HookPath $GraphHook -Exe 'powershell.exe' -RawStdin (@{ session_id = 'graph-host51'; cwd = $proj4; hook_event_name = 'SessionStart' } | ConvertTo-Json)
+    Check '5.1 host: emits cleanly' ($r.Exit -eq 0 -and $r.Err -eq '' -and $r.Out -like '*Graph-Read-Check: advisory graphify-out/graph.json*') $r.Out
 }
 finally {
     if (-not $KeepArtifacts) {

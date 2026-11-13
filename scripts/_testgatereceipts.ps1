@@ -61,18 +61,18 @@
     $script:StopGateVerdict = ''
     $rulesReceipt = Set-Receipt $rs 'Rules-Check' 'running'
     $blockProbe = Write-StopBlockResult -HookInput $rs -HookName 'Rules-Check' -EventName 'Stop' -Reason 'RULES CHECK: receipt probe finding'
-    Check 'R06 Write-StopBlockResult marks the round as a block for the receipt' ($script:StopGateVerdict -ceq 'block') ([string]$script:StopGateVerdict)
+    Check 'R06 non-safety advisory leaves the receipt unblocked' ($script:StopGateVerdict -cne 'block' -and $blockProbe.ExitCode -eq 0 -and $blockProbe.Emitted) ([string]$script:StopGateVerdict)
     Complete-StopGateReceipt $rulesReceipt
     $reentry = $rs.PSObject.Copy()
     Set-ObjectProperty -Object $reentry -Name 'stop_hook_active' -Value $true
     # A task-scoped runtime does not stand a gate down on re-entry: it
     # re-evaluates, and an unchanged finding is deduplicated by admission rather
-    # than shown again. The round must still end `block`, never `pass`.
+    # than shown again. R035 non-safety advice never creates a blocking receipt.
     $rulesAgain = Start-StopGateReceipt -HookInput $reentry -HookName 'Rules-Check'
     $null = Write-StopBlockResult -HookInput $reentry -HookName 'Rules-Check' -EventName 'Stop' -Reason 'RULES CHECK: receipt probe finding'
     if ($null -ne $rulesAgain) { Complete-StopGateReceipt $rulesAgain }
-    Check 'R06b an unresolved finding re-evaluated on re-entry stays block even when its repeat is suppressed' (
-        (Get-ReceiptVerdict $rs 'Rules-Check') -ceq 'block') ([string](Get-ReceiptVerdict $rs 'Rules-Check'))
+    Check 'R06b repeated advisory is suppressed without a blocking receipt' (
+        (Get-ReceiptVerdict $rs 'Rules-Check') -ceq 'pass') ([string](Get-ReceiptVerdict $rs 'Rules-Check'))
 
     # --- FR-014: the required set comes from the client's own registration -------
     Write-ReceiptRegistration -Gates @('Git-Sync-Check', 'Large-File-Check')

@@ -49,10 +49,8 @@ function Save-State {
         if ($null -eq (Read-CiProvenance -Lines $lines -Repository $script:repoSlug -Sha $script:sha)) { return }
     }
     $script:CiStateWriteAccepted = Write-CiStateAtomic -Path $script:statePath -Lines $lines
-    if (-not $script:CiStateWriteAccepted -and $Outcome -eq 'pending') {
-        $lines = @(); try { $lines = @([IO.File]::ReadAllLines($script:statePath, [Text.Encoding]::UTF8)) } catch { }
-        if ($null -ne (Read-CiCarryover -Lines $lines -Repository $script:repoSlug -Sha $script:sha)) { exit 0 }
-    }
+    # A protected ancestor receipt preserves history, not current-status acceptance; keep evaluating.
+    # Otherwise a restored docs-only record suppresses the latest-SHA advisory.
 }
 
 # Failed detail retains its cooldown. Pending always revalidates because source

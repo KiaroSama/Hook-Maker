@@ -27,6 +27,16 @@ $script:TestPreviewLength = 400
 $Work = New-TestWorkspace -Prefix 'hookmaker-test'
 Write-Host ("Workspace: $Work") -ForegroundColor DarkGray
 
+# A pending package is advisory; its identity, evidence paths and bound ACK remain required.
+function Test-SyncReviewNotice {
+    param([string]$Output)
+    $message = ''
+    try { $message = [string](($Output | ConvertFrom-Json).hookSpecificOutput.additionalContext) } catch { return $false }
+    return ($message -match '^Cross-Project-\.ai-Knowledge-Sync: advisory profile=grp, route=\S+' -and
+        $message -match 'destination=.+, source=.+, manifest=.+manifest\.json, staged=.+\. Destination rules;' -and
+        $message -match 'Review, even no import: .+-Acknowledge .+-ContentFingerprint ')
+}
+
 function New-Project {
     param([string]$Name)
     $root = Join-Path $Work $Name
@@ -151,7 +161,7 @@ try {
     Write-Config -Path $cfg1 -Routes $routesAB -Extensions @('.md')
     $r1 = Fire -Cwd $B -Config $cfg1
     Check 'single-extension config: exit 0 (no crash)' ($r1.Exit -eq 0)
-    Check 'single-extension config: review emitted' ($r1.Out -match 'REVIEW REQUIRED')
+    Check 'single-extension config: review emitted' ((Test-SyncReviewNotice $r1.Out))
     $valid = $false
     try { $null = $r1.Out | ConvertFrom-Json; $valid = $true } catch { $valid = $false }
     Check 'output is valid JSON hook payload' $valid
@@ -160,7 +170,7 @@ try {
     $cfg2 = Join-Path $Work 'cfg-many.json'
     Write-Config -Path $cfg2 -Routes $routesAB -Extensions @('.md', '.txt', '.json', '.ps1')
     $r2 = Fire -Cwd $B -Config $cfg2
-    Check 'many-extension config: review emitted' ($r2.Out -match 'REVIEW REQUIRED')
+    Check 'many-extension config: review emitted' ((Test-SyncReviewNotice $r2.Out))
 
     # --- Scenario 3: staged package on disk (from scenario 1) --------------
     $inboxRoot = Join-Path $B '.ai\.cross-project-sync\inbox'
@@ -188,7 +198,7 @@ try {
     Add-Content -LiteralPath (Join-Path $A '.ai\LESSON.md') 'rotate tokens quarterly'
     Set-Content -LiteralPath (Join-Path $A '.ai\COMMANDS.md') 'npm test' -Encoding utf8
     $r6 = Fire -Cwd $B -Config $cfg1 -EventName 'UserPromptSubmit'
-    Check 'change re-detected after ack' ($r6.Out -match 'REVIEW REQUIRED')
+    Check 'change re-detected after ack' ((Test-SyncReviewNotice $r6.Out))
     $manifest = Get-ChildItem -LiteralPath $inboxRoot -Recurse -Filter 'manifest.json' | Select-Object -First 1
     $m = Get-Content -LiteralPath $manifest.FullName -Raw | ConvertFrom-Json
     Check 'manifest lists added COMMANDS.md' (@($m.added) -contains 'COMMANDS.md')
@@ -212,7 +222,7 @@ try {
     # --- Scenario 9: engine runs under Windows PowerShell 5.1 --------------
     if (Get-Command powershell.exe -ErrorAction SilentlyContinue) {
         $r9 = Fire -Cwd $B -Config $cfg2 -Exe 'powershell.exe'
-        Check 'runs under powershell.exe (5.1)' ($r9.Exit -eq 0 -and $r9.Out -match 'REVIEW REQUIRED')
+        Check 'runs under powershell.exe (5.1)' ($r9.Exit -eq 0 -and (Test-SyncReviewNotice $r9.Out))
     }
     else {
         Write-Host '[SKIP] powershell.exe not available' -ForegroundColor Yellow
@@ -230,14 +240,14 @@ try {
     Write-Config -Path $cfgCorrupt -Routes @((New-Route 'corrupt-route' (New-Endpoint 'Src' $CorruptSrc) (New-Endpoint 'Dest' $CorruptDest))) -Extensions @('.md')
 
     $rSeed = Fire -Cwd $CorruptDest -Config $cfgCorrupt
-    Check 'corrupt-state fixture: seed run emits review' ($rSeed.Out -match 'REVIEW REQUIRED')
+    Check 'corrupt-state fixture: seed run emits review' ((Test-SyncReviewNotice $rSeed.Out))
     $stateFile = Get-ChildItem -LiteralPath (Join-Path $CorruptDest '.ai\.cross-project-sync\state') -Filter '*.json' -ErrorAction SilentlyContinue | Select-Object -First 1
     Check 'corrupt-state fixture: state file exists' ($null -ne $stateFile)
     Set-Content -LiteralPath $stateFile.FullName -Value '{}' -Encoding utf8
 
     $rCorrupt = Fire -Cwd $CorruptDest -Config $cfgCorrupt
     Check 'corrupt state ({}): exit 0 (no StrictMode crash)' ($rCorrupt.Exit -eq 0) $rCorrupt.Out
-    Check 'corrupt state ({}): still re-detects as fresh' ($rCorrupt.Out -match 'REVIEW REQUIRED') $rCorrupt.Out
+    Check 'corrupt state ({}): still re-detects as fresh' ((Test-SyncReviewNotice $rCorrupt.Out)) $rCorrupt.Out
     $stateAfter = Get-Content -LiteralPath $stateFile.FullName -Raw | ConvertFrom-Json
     Check 'corrupt state ({}): state file rebuilt with pending' ($null -ne $stateAfter.pending)
 
@@ -255,14 +265,14 @@ try {
     Write-Config -Path $cfgPartialTop -Routes @((New-Route 'partial-top-route' (New-Endpoint 'Src' $PartialTopSrc) (New-Endpoint 'Dest' $PartialTopDest))) -Extensions @('.md')
 
     $rPartialTopSeed = Fire -Cwd $PartialTopDest -Config $cfgPartialTop
-    Check 'partial-top fixture: seed run emits review' ($rPartialTopSeed.Out -match 'REVIEW REQUIRED')
+    Check 'partial-top fixture: seed run emits review' ((Test-SyncReviewNotice $rPartialTopSeed.Out))
     $partialTopStateFile = Get-ChildItem -LiteralPath (Join-Path $PartialTopDest '.ai\.cross-project-sync\state') -Filter '*.json' -ErrorAction SilentlyContinue | Select-Object -First 1
     Check 'partial-top fixture: state file exists' ($null -ne $partialTopStateFile)
     Set-Content -LiteralPath $partialTopStateFile.FullName -Value '{"pending": null}' -Encoding utf8
 
     $rPartialTop = Fire -Cwd $PartialTopDest -Config $cfgPartialTop
     Check 'partial top-level state ({"pending":null}): exit 0 (no StrictMode crash)' ($rPartialTop.Exit -eq 0) $rPartialTop.Out
-    Check 'partial top-level state: still re-detects as needing review' ($rPartialTop.Out -match 'REVIEW REQUIRED') $rPartialTop.Out
+    Check 'partial top-level state: still re-detects as needing review' ((Test-SyncReviewNotice $rPartialTop.Out)) $rPartialTop.Out
 
     # --- Scenario 12: {} reaching -Acknowledge directly (HM-01 class 2) -----
     # The per-context loop guard never runs for -Acknowledge: it used to read
@@ -298,7 +308,7 @@ try {
     Write-Config -Path $cfgPartialPending -Routes @((New-Route 'partial-pending-route' (New-Endpoint 'Src' $PartialPendingSrc) (New-Endpoint 'Dest' $PartialPendingDest))) -Extensions @('.md')
 
     $rPartialPendingSeed = Fire -Cwd $PartialPendingDest -Config $cfgPartialPending
-    Check 'partial-pending fixture: seed run emits review' ($rPartialPendingSeed.Out -match 'REVIEW REQUIRED')
+    Check 'partial-pending fixture: seed run emits review' ((Test-SyncReviewNotice $rPartialPendingSeed.Out))
     $partialPendingStateFile = Get-ChildItem -LiteralPath (Join-Path $PartialPendingDest '.ai\.cross-project-sync\state') -Filter '*.json' -ErrorAction SilentlyContinue | Select-Object -First 1
     Check 'partial-pending fixture: state file exists' ($null -ne $partialPendingStateFile)
     $seededPendingState = Get-Content -LiteralPath $partialPendingStateFile.FullName -Raw | ConvertFrom-Json
@@ -311,7 +321,7 @@ try {
 
     $rPartialPending = Fire -Cwd $PartialPendingDest -Config $cfgPartialPending -SessionId 'partial-pending-session'
     Check 'pending missing sourceQuickFingerprint: exit 0 (no StrictMode crash)' ($rPartialPending.Exit -eq 0) $rPartialPending.Out
-    Check 'pending missing sourceQuickFingerprint: review re-notified' ($rPartialPending.Out -match 'REVIEW REQUIRED') $rPartialPending.Out
+    Check 'pending missing sourceQuickFingerprint: review re-notified' ((Test-SyncReviewNotice $rPartialPending.Out)) $rPartialPending.Out
     $stateAfterPartialPending = Get-Content -LiteralPath $partialPendingStateFile.FullName -Raw | ConvertFrom-Json
     Check 'pending missing sourceQuickFingerprint: original packageRoot preserved (not rebuilt)' ([string]$stateAfterPartialPending.pending.packageRoot -eq $originalPackageRoot) ([string]$stateAfterPartialPending.pending.packageRoot)
     Check 'pending missing sourceQuickFingerprint: field repaired (non-null)' ($null -ne $stateAfterPartialPending.pending.sourceQuickFingerprint)
@@ -330,7 +340,7 @@ try {
     Write-Config -Path $cfgOlderSchema -Routes @((New-Route 'older-schema-route' (New-Endpoint 'Src' $OlderSchemaSrc) (New-Endpoint 'Dest' $OlderSchemaDest))) -Extensions @('.md')
 
     $rOlderSchemaSeed = Fire -Cwd $OlderSchemaDest -Config $cfgOlderSchema
-    Check 'older-schema fixture: seed run emits review' ($rOlderSchemaSeed.Out -match 'REVIEW REQUIRED')
+    Check 'older-schema fixture: seed run emits review' ((Test-SyncReviewNotice $rOlderSchemaSeed.Out))
     $olderSchemaStateFile = Get-ChildItem -LiteralPath (Join-Path $OlderSchemaDest '.ai\.cross-project-sync\state') -Filter '*.json' -ErrorAction SilentlyContinue | Select-Object -First 1
     Check 'older-schema fixture: state file exists' ($null -ne $olderSchemaStateFile)
     $olderSeededState = Get-Content -LiteralPath $olderSchemaStateFile.FullName -Raw | ConvertFrom-Json
@@ -345,7 +355,7 @@ try {
 
     $rOlderSchema = Fire -Cwd $OlderSchemaDest -Config $cfgOlderSchema -SessionId 'older-schema-session'
     Check 'leaner top-level schema: exit 0 (no StrictMode crash)' ($rOlderSchema.Exit -eq 0) $rOlderSchema.Out
-    Check 'leaner top-level schema: review re-notified for new session' ($rOlderSchema.Out -match 'REVIEW REQUIRED') $rOlderSchema.Out
+    Check 'leaner top-level schema: review re-notified for new session' ((Test-SyncReviewNotice $rOlderSchema.Out)) $rOlderSchema.Out
     $stateAfterOlderSchema = Get-Content -LiteralPath $olderSchemaStateFile.FullName -Raw | ConvertFrom-Json
     Check 'leaner top-level schema: pending packageRoot preserved byte-for-byte' ([string]$stateAfterOlderSchema.pending.packageRoot -eq $olderOriginalPackageRoot) ([string]$stateAfterOlderSchema.pending.packageRoot)
     Check 'leaner top-level schema: routeId repaired (non-empty)' (-not [string]::IsNullOrWhiteSpace([string]$stateAfterOlderSchema.routeId))
@@ -363,7 +373,7 @@ try {
     $cfgEmptyObj = Join-Path $Work 'cfg-empty-obj.json'
     Write-Config -Path $cfgEmptyObj -Routes @((New-Route 'empty-obj-route' (New-Endpoint 'Src' $EmptyObjSrc) (New-Endpoint 'Dest' $EmptyObjDest))) -Extensions @('.md')
     $rEmptyObjSeed = Fire -Cwd $EmptyObjDest -Config $cfgEmptyObj
-    Check 'empty-object fixture: seed run emits review' ($rEmptyObjSeed.Out -match 'REVIEW REQUIRED')
+    Check 'empty-object fixture: seed run emits review' ((Test-SyncReviewNotice $rEmptyObjSeed.Out))
     $emptyObjStateFile = Get-ChildItem -LiteralPath (Join-Path $EmptyObjDest '.ai\.cross-project-sync\state') -Filter '*.json' -ErrorAction SilentlyContinue | Select-Object -First 1
     Check 'empty-object fixture: state file exists' ($null -ne $emptyObjStateFile)
     $emptyObjText = Get-Content -LiteralPath $emptyObjStateFile.FullName -Raw
@@ -372,7 +382,7 @@ try {
     [System.IO.File]::WriteAllText($emptyObjStateFile.FullName, $emptyObjText, (New-Object System.Text.UTF8Encoding $false))
     $rEmptyObj = Fire -Cwd $EmptyObjDest -Config $cfgEmptyObj -SessionId 'empty-obj-session'
     Check 'lastAppliedFiles as an empty object: exit 0 (no StrictMode crash on .path)' ($rEmptyObj.Exit -eq 0) $rEmptyObj.Out
-    Check 'lastAppliedFiles as an empty object: the run still reports the review' ($rEmptyObj.Out -match 'REVIEW REQUIRED') $rEmptyObj.Out
+    Check 'lastAppliedFiles as an empty object: the run still reports the review' ((Test-SyncReviewNotice $rEmptyObj.Out)) $rEmptyObj.Out
 
     # --- Scenario 16: the ORIGIN of the empty object - a 5.1 re-write --------
     # A function that returns an EMPTY array returns AutomationNull, and
@@ -389,16 +399,16 @@ try {
         $cfgPs51 = Join-Path $Work 'cfg-ps51.json'
         Write-Config -Path $cfgPs51 -Routes @((New-Route 'ps51-route' (New-Endpoint 'Src' $Ps51Src) (New-Endpoint 'Dest' $Ps51Dest))) -Extensions @('.md')
         $rPs51Seed = Fire -Cwd $Ps51Dest -Config $cfgPs51 -SessionId 'ps51-first'
-        Check '5.1 re-write: seed run (pwsh) emits review' ($rPs51Seed.Out -match 'REVIEW REQUIRED') $rPs51Seed.Out
+        Check '5.1 re-write: seed run (pwsh) emits review' ((Test-SyncReviewNotice $rPs51Seed.Out)) $rPs51Seed.Out
         $ps51StateFile = Get-ChildItem -LiteralPath (Join-Path $Ps51Dest '.ai\.cross-project-sync\state') -Filter '*.json' -ErrorAction SilentlyContinue | Select-Object -First 1
         Check '5.1 re-write: state file exists after the seed' ($null -ne $ps51StateFile)
         $rPs51Again = Fire -Cwd $Ps51Dest -Config $cfgPs51 -SessionId 'ps51-second' -Exe 'powershell'
-        Check '5.1 re-write: a new session under powershell.exe re-notifies (exit 0)' ($rPs51Again.Exit -eq 0 -and $rPs51Again.Out -match 'REVIEW REQUIRED') $rPs51Again.Out
+        Check '5.1 re-write: a new session under powershell.exe re-notifies (exit 0)' ($rPs51Again.Exit -eq 0 -and (Test-SyncReviewNotice $rPs51Again.Out)) $rPs51Again.Out
         $ps51Text = Get-Content -LiteralPath $ps51StateFile.FullName -Raw
         Check '5.1 re-write: lastAppliedFiles is still a JSON ARRAY, not {}' ($ps51Text -match '"lastAppliedFiles":\s*\[') ($ps51Text -replace '\s+', ' ')
         Check '5.1 re-write: pending.sourceFiles is still a JSON ARRAY' ($ps51Text -match '"sourceFiles":\s*\[') ($ps51Text -replace '\s+', ' ')
         $rPs51Third = Fire -Cwd $Ps51Dest -Config $cfgPs51 -SessionId 'ps51-third' -Exe 'powershell'
-        Check '5.1 re-write: a third session still runs cleanly (exit 0, review re-notified)' ($rPs51Third.Exit -eq 0 -and $rPs51Third.Out -match 'REVIEW REQUIRED') $rPs51Third.Out
+        Check '5.1 re-write: a third session still runs cleanly (exit 0, review re-notified)' ($rPs51Third.Exit -eq 0 -and (Test-SyncReviewNotice $rPs51Third.Out)) $rPs51Third.Out
     }
     else { Write-Host '[SKIP] powershell.exe not available for the 5.1 re-write scenario' -ForegroundColor Yellow }
 
@@ -410,7 +420,7 @@ try {
     $staleSourceFile = Join-Path $StaleSrc '.ai\NOTE.md'
     [System.IO.File]::WriteAllText($staleSourceFile, 'abc', [System.Text.UTF8Encoding]::new($false))
     $seedA = Fire -Cwd $StaleDest -Config $cfgStale
-    Check 'stale acknowledgement: package A is staged' ($seedA.Exit -eq 0 -and $seedA.Out -match 'REVIEW REQUIRED')
+    Check 'stale acknowledgement: package A is staged' ($seedA.Exit -eq 0 -and (Test-SyncReviewNotice $seedA.Out))
     $staleStateFile = Get-ChildItem -LiteralPath (Join-Path $StaleDest '.ai\.cross-project-sync\state') -Filter '*.json' | Select-Object -First 1
     $packageA = (Get-Content -LiteralPath $staleStateFile.FullName -Raw -Encoding UTF8 | ConvertFrom-Json).pending
     Check 'content digest: standard abc SHA-256 stays lower-case and byte-identical' ($packageA.sourceFiles[0].sha256 -ceq 'ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad')
@@ -418,7 +428,7 @@ try {
 
     Set-Content -LiteralPath $staleSourceFile 'Unreviewed replacement package B' -Encoding UTF8
     $seedB = Fire -Cwd $StaleDest -Config $cfgStale -EventName 'UserPromptSubmit'
-    Check 'stale acknowledgement: package B replaces A' ($seedB.Exit -eq 0 -and $seedB.Out -match 'REVIEW REQUIRED')
+    Check 'stale acknowledgement: package B replaces A' ($seedB.Exit -eq 0 -and (Test-SyncReviewNotice $seedB.Out))
     $stateBeforeStale = Get-Content -LiteralPath $staleStateFile.FullName -Raw -Encoding UTF8
     $packageB = ($stateBeforeStale | ConvertFrom-Json).pending
     Check 'stale acknowledgement: fixture fingerprints differ' ($packageA.sourceContentFingerprint -ne $packageB.sourceContentFingerprint)
@@ -464,7 +474,7 @@ try {
     $legacyState | ConvertTo-Json -Depth 50 | Set-Content -LiteralPath $staleStateFile.FullName -Encoding UTF8
     $migratedEvent = Fire -Cwd $StaleDest -Config $cfgStale
     $migratedContext = [string]($migratedEvent.Out | ConvertFrom-Json).hookSpecificOutput.additionalContext
-    $migratedCommand = [regex]::Match($migratedContext, '(?m)^powershell\.exe .*').Value.Trim()
+    $migratedCommand = [regex]::Match($migratedContext, '(?m)(?<=Review, even no import: )powershell\.exe .*').Value.Trim()
     Check 'legacy pending package: notification regenerates a bound command' ($migratedCommand -match ('-ContentFingerprint "' + $packageB.sourceContentFingerprint + '"'))
     Check 'legacy pending package: staged review is retained' (Test-Path -LiteralPath $packageB.manifestPath -PathType Leaf)
     $currentAck = Run-Acknowledgement -Command $migratedCommand

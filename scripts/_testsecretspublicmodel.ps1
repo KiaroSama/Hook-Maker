@@ -77,10 +77,10 @@ function Invoke-QuotedCredentialEntryRegression {
         Check 'quoted registry retains original value/provenance without reserializing it' ($registry.Contains('- Value: ' + $quote + $token + $quote))
         Write-Utf8 (Join-Path $repo 'example.txt') 'working tree cleaned, index still contains fixture'
         $r = FireGitPrePush -Cwd $repo -HookPath $quotedHook -StdinText (Get-RefUpdateLine $repo)
-        Check 'quoted credential still blocks with only staged/index token present' ($r.Exit -ne 0 -and $r.Err -match 'git-tracked file' -and $r.Err -notlike ('*'+$token+'*'))
+        Check 'quoted credential still blocks with only staged/index token present' ($r.Exit -ne 0 -and $r.Err -match 'tracked leak:' -and $r.Err -notlike ('*'+$token+'*'))
         Add-Commit $repo 'clean current synthetic token'
         $r = FireGitPrePush -Cwd $repo -HookPath $quotedHook -StdinText (Get-RefUpdateLine $repo)
-        Check 'quoted credential blocks historical outgoing token after worktree/index cleanup' ($r.Exit -ne 0 -and $r.Err -match 'outgoing commit' -and $r.Err -notlike ('*'+$token+'*'))
+        Check 'quoted credential blocks historical outgoing token after worktree/index cleanup' ($r.Exit -ne 0 -and $r.Err -match 'outgoing leak:' -and $r.Err -notlike ('*'+$token+'*'))
     }
     $repo = New-GitProj 'QuotedPublicModel'
     Write-Utf8 (Join-Path $repo '.gitignore') ".env`nsecrets.md`n"
@@ -103,7 +103,7 @@ $registryPath = Join-Path $modelRepo 'secrets.md'
 $modelBlock = $autoBlock.Replace($sourcePath, (Join-Path $modelRepo '.env'))
 Write-Utf8 $registryPath ($prefix + $modelBlock + $manualBlock)
 $r = Fire -Cwd $modelRepo -HookPath $modelHook -EventName Stop
-Check 'Stop public model example does not block or report a value leak' ($r.Exit -eq 0 -and $r.Out -notmatch '"decision"|appears in a git-tracked file' -and $r.Err -eq '')
+Check 'Stop public model example does not block or report a value leak' ($r.Exit -eq 0 -and $r.Out -notmatch '"decision"|tracked leak:' -and $r.Err -eq '')
 Check 'Stop safely removes stale auto model and retains manual entry' ([IO.File]::ReadAllText($registryPath, [Text.Encoding]::UTF8) -ceq ($prefix + $manualBlock))
 # Reset only this synthetic registry to exercise cleanup independently in native.
 Write-Utf8 $registryPath ($prefix + $modelBlock + $manualBlock)

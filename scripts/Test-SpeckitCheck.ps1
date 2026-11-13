@@ -142,14 +142,14 @@ try {
     $r = Invoke-SpeckitHook @{ hook_event_name = 'UserPromptSubmit'; cwd = $open; session_id = 'r3'; prompt = 'add an export feature' }
     Check 'the same project in the same session says nothing a second time' ($r.Out.Trim() -eq '') $r.Out
     $r = Invoke-SpeckitHook @{ hook_event_name = 'UserPromptSubmit'; cwd = $open; session_id = 's-other'; prompt = 'add an export feature' }
-    Check 'but a different session gets the message' ($r.Out -match 'SPECKIT CHECK') $r.Out
+    Check 'but a different session gets the message' ($r.Out -match 'Speckit-Check: advisory') $r.Out
 
     # The state CHANGING is what un-suppresses it: initialising a project
     # mid-session must not be silenced by the "no .specify/ yet" note.
     New-Item -ItemType Directory -Path (Join-Path $bare '.specify\memory') -Force | Out-Null
     $r = Invoke-SpeckitHook @{ hook_event_name = 'UserPromptSubmit'; cwd = $bare; session_id = 'r1'; prompt = 'add an export feature' }
     Check 'initialising the project mid-session re-arms the follow-up route' (
-        $r.Out -match 'SPECKIT CHECK' -and $r.Out -notmatch 'No \.specify/:') $r.Out
+        $r.Out -match 'Speckit-Check: advisory' -and $r.Out -notmatch 'No \.specify/:') $r.Out
 
     # =====================================================================
     Write-Host '--- mid-task intake (order 55, step 3) ---' -ForegroundColor Cyan
@@ -159,13 +159,13 @@ try {
     # the case the intake line exists for.
     $r = Invoke-SpeckitHook @{ hook_event_name = 'UserPromptSubmit'; cwd = $open; session_id = 'r3'; prompt = 'also fix the login bug in the api' }
     Check 'a NEW request mid-task is surfaced although task counts and timestamps are unchanged' (
-        $r.Out -match 'SPECKIT CHECK') $r.Out
+        $r.Out -match 'Speckit-Check: advisory') $r.Out
     # Dated IDs/acceptance/order/artifacts/phases/gates live behind full owner.
     Check 'intake requires full Spec Kit owner before project-change/delta dependents' (
-        $r.Out -match 'BEFORE project-change/delta dependents, global-spec-kit-rules.md FULL') $r.Out
-    Check 'only dependent work waits' ($r.Out -match 'Ask unknowns; only dependents wait') $r.Out
+        $r.Out -match 'Read global-spec-kit-rules.md/global-project-lifecycle-rules.md') $r.Out
+    Check 'only dependent work waits' ($r.Out -match 'ask unknowns, only dependents wait') $r.Out
     Check 'intake retains ownership without implicit cross-project repair' (
-        $r.Out -match 'Newest!=owner' -and $r.Out -match 'other-project consent/English handoff') $r.Out
+        $r.Out -match 'Newest folder != owner' -and $r.Out -match 'other-project exact consent or English handoff') $r.Out
     Check 'the old "finish existing tasks before starting anything else" is gone' (
         $r.Out -notmatch 'before starting something else') $r.Out
 
@@ -194,7 +194,7 @@ try {
     $r = Invoke-SpeckitHook @{ hook_event_name = 'Stop'; cwd = $open; session_id = 'q3' }
     Check 'it ignores events it does not own - it has nothing to say at Stop' ($r.Out.Trim() -eq '') $r.Out
     $r = Invoke-SpeckitHook @{ hook_event_name = 'SessionStart'; cwd = $open; session_id = 'q4' }
-    Check 'SessionStart needs no prompt and still routes' ($r.Out -match 'SPECKIT CHECK') $r.Out
+    Check 'SessionStart needs no prompt and still routes' ($r.Out -match 'Speckit-Check: advisory') $r.Out
 
     # =====================================================================
     Write-Host '--- both client wire shapes ---' -ForegroundColor Cyan
@@ -311,7 +311,7 @@ try {
     $out = Get-RefreshOut (New-RefreshProject -Name 'Refresh31' -RecordedDaysAgo 31)
     Check 'a refresh recorded 31 days ago -> advised' ($out -match 'Refresh: `specify integration status`') $out
     $out = Get-RefreshOut (New-RefreshProject -Name 'Refresh5' -RecordedDaysAgo 5)
-    Check 'a refresh recorded 5 days ago -> not advised, route still given' ($out -notmatch 'Refresh: `specify integration status`' -and $out -match 'SPECKIT CHECK') $out
+    Check 'a refresh recorded 5 days ago -> not advised, route still given' ($out -notmatch 'Refresh: `specify integration status`' -and $out -match 'Speckit-Check: advisory') $out
     $out = Get-RefreshOut (New-SpeckitProject -Name 'RefreshNoSpecify')
     Check 'a folder without .specify/ never gets the refresh text' ($out -notmatch 'Refresh: `specify integration status`') $out
     $speckitSource = [System.IO.File]::ReadAllText($Hook)

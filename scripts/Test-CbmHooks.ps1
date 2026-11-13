@@ -165,14 +165,14 @@ try {
     # JSON-quoted argument, so inspecting raw stdout conflates two encodings.
     $indexNote = [string](($r.Out | ConvertFrom-Json).hookSpecificOutput.additionalContext)
     Check 'read: an unindexed project is told to index once, with the real path' (
-        $indexNote -match 'CBM READ CHECK: index absent' -and $indexNote.Contains('index_repository(repo_path=' + ($proj | ConvertTo-Json -Compress)) -and
+        $indexNote -match '^Cbm-Read-Check: advisory, index absent' -and $indexNote.Contains('index_repository(repo_path=' + ($proj | ConvertTo-Json -Compress)) -and
         $indexNote.Contains('global-mcp-windows-cmm.md FULL')) $r.Out
 
     $dbPath = Get-CbmProjectDbPath -ProjectRoot $proj -CacheDir $cache
     [System.IO.File]::WriteAllText($dbPath, 'x')
     $r = Invoke-CbmHook 'Cbm-Read-Check\Cbm-Read-Check.ps1' @{ hook_event_name = 'SessionStart'; cwd = $proj; session_id = 'a3' } $cache
     Check 'read: an indexed project is told to query before browsing' (
-        $r.Out -match 'Structure:.*FIRST' -and $r.Out -match 'get_architecture' -and $r.Out -match 'search_graph') $r.Out
+        $r.Exit -eq 0 -and $r.Out -match 'Cbm-Read-Check: advisory, indexed; before broad code reads' -and $r.Out -match 'get_architecture/search_graph/trace_path/get_code_snippet/detect_changes') $r.Out
     Check 'read: it also says coverage is never proof' ($r.Out -match 'check_index_coverage') $r.Out
 
     $r = Invoke-CbmHook 'Cbm-Read-Check\Cbm-Read-Check.ps1' @{ hook_event_name = 'SessionStart'; cwd = $proj; session_id = 'a3' } $cache
@@ -183,13 +183,13 @@ try {
     # the index state and not just the session id.
     Remove-Item -LiteralPath $dbPath -Force
     $r = Invoke-CbmHook 'Cbm-Read-Check\Cbm-Read-Check.ps1' @{ hook_event_name = 'SessionStart'; cwd = $proj; session_id = 'a3' } $cache
-    Check 'read: a CHANGED index state speaks again in the same session' ($r.Out -match 'CBM READ CHECK: index absent') $r.Out
+    Check 'read: a CHANGED index state speaks again in the same session' ($r.Exit -eq 0 -and $r.Out -match 'Cbm-Read-Check: advisory, index absent; expected') $r.Out
     [System.IO.File]::WriteAllText($dbPath, 'x')
 
     $r = Invoke-CbmHook 'Cbm-Read-Check\Cbm-Read-Check.ps1' @{ hook_event_name = 'UserPromptSubmit'; cwd = $proj; session_id = 'a4'; prompt = 'fix the typo in the readme' } $cache
     Check 'read: silent on a prompt that needs no codebase understanding' ($r.Out.Trim() -eq '') $r.Out
     $r = Invoke-CbmHook 'Cbm-Read-Check\Cbm-Read-Check.ps1' @{ hook_event_name = 'UserPromptSubmit'; cwd = $proj; session_id = 'a5'; prompt = 'where is this helper used across the codebase' } $cache
-    Check 'read: speaks on a structural prompt' ($r.Out -match 'CBM READ CHECK') $r.Out
+    Check 'read: speaks on a structural prompt' ($r.Exit -eq 0 -and $r.Out -match 'Cbm-Read-Check: advisory, indexed; before broad code reads') $r.Out
     $r = Invoke-CbmHook 'Cbm-Read-Check\Cbm-Read-Check.ps1' @{ hook_event_name = 'Stop'; cwd = $proj; session_id = 'a6' } $cache
     Check 'read: ignores events it does not own' ($r.Out.Trim() -eq '') $r.Out
     $r = Invoke-CbmHook 'Cbm-Read-Check\Cbm-Read-Check.ps1' @{ hook_event_name = 'SessionStart'; cwd = (Join-Path $Work 'no-such-dir'); session_id = 'a7' } $cache
@@ -200,13 +200,13 @@ try {
     New-Item -ItemType Directory -Path (Join-Path $proj 'graphify-out') -Force | Out-Null
     [System.IO.File]::WriteAllText((Join-Path $proj 'graphify-out\graph.json'), '{}')
     $r = Invoke-CbmHook 'Graph-Read-Check\Graph-Read-Check.ps1' @{ hook_event_name = 'SessionStart'; cwd = $proj; session_id = 'g1' } $cache
-    Check 'graph: still advises when this project has a CBM index' ($r.Out -match 'GRAPH READ CHECK:') $r.Out
+    Check 'graph: still advises when this project has a CBM index' ($r.Exit -eq 0 -and $r.Out -match 'Graph-Read-Check: advisory graphify-out/graph.json; broad architecture/relationships/call/impact/refactor questions: scoped graph first') $r.Out
     Check 'graph: the advisory names both graphs' ($r.Out -match 'Both: CMM code/Graphify docs-media-cross-cut') $r.Out
     Remove-Item -LiteralPath $dbPath -Force
     $r = Invoke-CbmHook 'Graph-Read-Check\Graph-Read-Check.ps1' @{ hook_event_name = 'SessionStart'; cwd = $proj; session_id = 'g2' } $cache
-    Check 'graph: unchanged behaviour when there is no CBM index' ($r.Out -match 'GRAPH READ CHECK:') $r.Out
+    Check 'graph: unchanged behaviour when there is no CBM index' ($r.Exit -eq 0 -and $r.Out -match 'Graph-Read-Check: advisory graphify-out/graph.json; broad architecture/relationships/call/impact/refactor questions: scoped graph first') $r.Out
     $r = Invoke-CbmHook 'Graph-Read-Check\Graph-Read-Check.ps1' @{ hook_event_name = 'SessionStart'; cwd = $proj; session_id = 'g3' } $emptyCache
-    Check 'graph: unchanged behaviour when CBM is not installed at all' ($r.Out -match 'GRAPH READ CHECK:') $r.Out
+    Check 'graph: unchanged behaviour when CBM is not installed at all' ($r.Exit -eq 0 -and $r.Out -match 'Graph-Read-Check: advisory graphify-out/graph.json; broad architecture/relationships/call/impact/refactor questions: scoped graph first') $r.Out
     [System.IO.File]::WriteAllText($dbPath, 'x')
 
     # =====================================================================

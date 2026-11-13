@@ -107,16 +107,16 @@ try {
     Write-Host ''
     Write-Host '--- SessionStart: the instruction and the measured settings ---' -ForegroundColor Cyan
     $rStart = Fire -Cwd $proj -EventName 'SessionStart' -SessionId 's-start'
-    Check 'start: it fires when a store exists' ($rStart.Exit -eq 0 -and $rStart.Out -match 'SYNAPSE:') ($rStart.Out + $rStart.Err)
+    Check 'start: it fires when a store exists' ($rStart.Exit -eq 0 -and $rStart.Out -match 'Synapse-Rules-Check: advisory') ($rStart.Out + $rStart.Err)
     Check 'start: it names memory_digest and the tokenBudget' (
         $rStart.Out -match 'memory_digest' -and $rStart.Out -match 'tokenBudget') $rStart.Out
-    Check 'start: it says to index BEFORE reading the digest' ($rStart.Out -match 'ONCE/session\+tokenBudget; index id/type/~110-char preview, read matches FULL') $rStart.Out
+    Check 'start: it says to index BEFORE reading the digest' ($rStart.Out -match 'memory_digest once with tokenBudget, index id/type/preview then full task matches') $rStart.Out
     # The two settings this store measured and that are easy to get wrong.
     Check 'start: it carries the 0.65 threshold' ($rStart.Out -match '0\.65') $rStart.Out
     Check 'start: it warns against minScore together with tags' (
-        $rStart.Out -match 'minScore0.65 OR tags') $rStart.Out
+        $rStart.Out -match 'minScore0.65 OR project:<slug> tags, never both') $rStart.Out
     Check 'start: it says an environment fact must be re-verified, not recalled' (
-        $rStart.Out -match 'Reverify operation/account state') $rStart.Out
+        $rStart.Out -match 'Recall != canonical policy/project truth or operation/account consent') $rStart.Out
     Check 'start: nothing is written to stderr' ($rStart.Err -eq '') $rStart.Err
 
     Write-Host ''
@@ -158,13 +158,13 @@ try {
     $used = New-Transcript 'transcript-used.jsonl' '{"role":"assistant","name":"mcp__synapse__memory_digest"}'
     $rUsed = Fire -Cwd (New-Proj 'Used') -EventName 'Stop' -SessionId 's-used' -TranscriptPath $used
     Check 'stop: a consulted store gets the WRITE-BACK half instead' (
-        $rUsed.Exit -eq 0 -and $rUsed.Out -match 'SYNAPSE memory_write:' -and $rUsed.Out -notmatch 'never queried') ($rUsed.Out + $rUsed.Err)
+        $rUsed.Exit -eq 0 -and $rUsed.Out -match 'Synapse-Rules-Check: advisory write-back' -and $rUsed.Out -notmatch 'never queried') ($rUsed.Out + $rUsed.Err)
     Check 'stop: write-back demands an entityKey so a new version supersedes' (
         $rUsed.Out -match 'entityKey') $rUsed.Out
     Check 'stop: it says to correct a CONTRADICTED memory in the same turn' (
-        $rUsed.Out -match 'Correct contradicted blocker/name/environment SAME turn') $rUsed.Out
-    Check 'stop: it refuses secrets explicitly' ($rUsed.Out -match 'No secrets/credentials/tokens') $rUsed.Out
-    Check 'stop: "nothing durable" is a normal answer' ($rUsed.Out -match 'no durable value\s*=\s*no write') $rUsed.Out
+        $rUsed.Out -match 'correct contradicted memory this turn') $rUsed.Out
+    Check 'stop: it refuses secrets explicitly' ($rUsed.Out -match 'no.*secrets/\.env/registry contents') $rUsed.Out
+    Check 'stop: "nothing durable" is a normal answer' ($rUsed.Out -match 'no durable learning means no write') $rUsed.Out
 
     Write-Host ''
     Write-Host '--- the marker: a long session that read it EARLY still counts ---' -ForegroundColor Cyan
@@ -173,7 +173,7 @@ try {
     $longProj = New-Proj 'LongSession'
     $early = New-Transcript 'transcript-early.jsonl' '{"tool_name":"mcp__synapse__memory_retrieve"}'
     $rFirst = Fire -Cwd $longProj -EventName 'Stop' -SessionId 's-long' -TranscriptPath $early
-    Check 'marker: the first Stop sees the call and says write-back' ($rFirst.Out -match 'SYNAPSE memory_write:') $rFirst.Out
+    Check 'marker: the first Stop sees the call and says write-back' ($rFirst.Out -match 'Synapse-Rules-Check: advisory write-back') $rFirst.Out
     # Same session, same project, but the call has now scrolled away entirely.
     $scrolled = New-Transcript 'transcript-scrolled.jsonl' '{"role":"assistant","text":"much later work"}' -PadKb 8
     $rLater = Fire -Cwd $longProj -EventName 'SubagentStop' -SessionId 's-long' -TranscriptPath $scrolled
@@ -198,7 +198,7 @@ try {
     # A CHANGED answer must get through immediately - the gate is per state,
     # not a mute switch.
     $rChanged = Fire -Cwd $repeatProj -EventName 'Stop' -SessionId 's-repeat' -TranscriptPath $used
-    Check 'gate: a changed answer is reported immediately' ($rChanged.Out -match 'SYNAPSE memory_write:') $rChanged.Out
+    Check 'gate: a changed answer is reported immediately' ($rChanged.Out -match 'Synapse-Rules-Check: advisory write-back') $rChanged.Out
 
     Write-Host ''
     Write-Host '--- SYNAPSE_HOME is the fallback signal for a non-default layout ---' -ForegroundColor Cyan
@@ -212,7 +212,7 @@ try {
         Write-Utf8 $envPath ('SYNAPSE_HOME=' + $altHome)
         $rAlt = Fire -Cwd $envProj -EventName 'SessionStart' -SessionId 's-alt' -Profile $FakeProfileWithout
         Check 'SYNAPSE_HOME makes the hook speak with no store at the default path' (
-            $rAlt.Exit -eq 0 -and $rAlt.Out -match 'SYNAPSE:') ($rAlt.Out + $rAlt.Err)
+            $rAlt.Exit -eq 0 -and $rAlt.Out -match 'Synapse-Rules-Check: advisory') ($rAlt.Out + $rAlt.Err)
         # A configured path that does not exist is NOT a signal.
         Write-Utf8 $envPath ('SYNAPSE_HOME=' + (Join-Path $Work 'no-such-synapse'))
         $rBadAlt = Fire -Cwd (New-Proj 'EnvBogus') -EventName 'SessionStart' -SessionId 's-bad' -Profile $FakeProfileWithout
@@ -247,7 +247,7 @@ try {
     Write-Host '--- Windows PowerShell 5.1 runs it identically ---' -ForegroundColor Cyan
     $r51 = Fire -Cwd (New-Proj 'Ps51') -EventName 'SessionStart' -SessionId 's-51' -Exe 'powershell'
     Check '5.1: the reminder is emitted cleanly' (
-        $r51.Exit -eq 0 -and $r51.Out -match 'SYNAPSE:') ($r51.Out + $r51.Err)
+        $r51.Exit -eq 0 -and $r51.Out -match 'Synapse-Rules-Check: advisory') ($r51.Out + $r51.Err)
     $r51None = Fire -Cwd (New-Proj 'Ps51None') -EventName 'SessionStart' -SessionId 's-51n' -Profile $FakeProfileWithout -Exe 'powershell'
     Check '5.1: the relevance gate holds there too' ($r51None.Exit -eq 0 -and $r51None.Out -eq '') ($r51None.Out + $r51None.Err)
 }

@@ -35,7 +35,9 @@
     Write-Bytes (Join-Path $ppSparse $sparsePath) $sparseBytes
     Add-Commit $ppSparse 'sparse NUL original shape'
     foreach ($sparseHost in @('powershell','pwsh')) {
-        $r = FireGitPrePush -Cwd $ppSparse -StdinText (Get-RefUpdateLine $ppSparse) -HookPath $hcPp.Script -LocalAppData $hcPp.LocalAppData -Exe $sparseHost
+        # Each host needs its own session state; identical native findings dedupe.
+        $sparseLocal = Join-Path $hcPp.LocalAppData $sparseHost
+        $r = FireGitPrePush -Cwd $ppSparse -StdinText (Get-RefUpdateLine $ppSparse) -HookPath $hcPp.Script -LocalAppData $sparseLocal -Exe $sparseHost
         Check ('sparse NUL quoted UTF8 outgoing passes on '+$sparseHost) ($r.Exit -eq 0 -and $r.Out -eq '' -and $r.Err -eq '') $r.Err
     }
     $diskRead = Get-Utf8FileClassification (Join-Path $ppSparse $sparsePath) 64MB ([DateTime]::UtcNow.AddSeconds(5))
@@ -44,7 +46,9 @@
     Write-Bytes (Join-Path $ppSparse $sparsePath) $sparseBytes
     Add-Commit $ppSparse 'invalid final sequence control'
     foreach ($sparseHost in @('powershell','pwsh')) {
-        $r = FireGitPrePush -Cwd $ppSparse -StdinText (Get-RefUpdateLine $ppSparse) -HookPath $hcPp.Script -LocalAppData $hcPp.LocalAppData -Exe $sparseHost
+        # Each host needs its own session state; identical native findings dedupe.
+        $sparseLocal = Join-Path $hcPp.LocalAppData $sparseHost
+        $r = FireGitPrePush -Cwd $ppSparse -StdinText (Get-RefUpdateLine $ppSparse) -HookPath $hcPp.Script -LocalAppData $sparseLocal -Exe $sparseHost
         Check ('sparse invalid tail diagnostic keeps exact UTF8 path on '+$sparseHost) ($r.Exit -eq 0 -and $r.Err.Contains($sparsePath) -and $r.Err.Contains('invalid UTF-8')) $r.Err
     }
     Write-Utf8 (Join-Path $ppSparse '.utf8-encoding-exceptions.json') (Get-ExceptionJson -Path $sparsePath -Encoding 'windows-1252' -Reason 'Test-only legacy transport requires original bytes unchanged')
@@ -66,8 +70,8 @@
     $r = FireGitPrePush -Cwd $ppNew -StdinText $stdinNew -HookPath $hcPp.Script -LocalAppData $hcPp.LocalAppData
     $sigPpAfter = Get-TreeSignature $ppNew
     Check 'new-branch push (remote sha all-zero) with an invalid text blob warns (exit 0)' ($r.Exit -eq 0) ($r.Out + $r.Err)
-    Check 'the block names the file and classification on stderr' (
-        $r.Err -match 'UTF8 ENCODING CHECK' -and $r.Err -match 'feature\.txt' -and $r.Err -match 'invalid UTF-8') $r.Err
+    Check 'the advisory names the hook, outgoing scope, file and classification on stderr' (
+        $r.Err -match 'Utf8-Encoding-Check: UTF8 advisory, outgoing findings:' -and $r.Err -match 'feature\.txt' -and $r.Err -match 'invalid UTF-8') $r.Err
     Check 'the pre-push block never leaks blob contents' ($r.Err -notmatch 'PPNEWMARKER') $r.Err
     Check 'a blocked pre-push mutates nothing in the repository' ($sigPpBefore -eq $sigPpAfter)
     # NEGATIVE CONTROL twin: identical flow, VALID bytes -> passes.
@@ -221,7 +225,7 @@
     Write-Utf8 (Join-Path $ppBigTxt 'big.txt') (('a' * 3000) + "`n")
     Add-Commit $ppBigTxt 'oversized text blob'
     $r = FireGitPrePush -Cwd $ppBigTxt -StdinText (Get-RefUpdateLine -Repo $ppBigTxt) -HookPath $hcPpBig.Script -LocalAppData $hcPpBig.LocalAppData
-    Check 'an oversized outgoing TEXT blob reports UNKNOWN (exit 1, names the ceiling)' (
+    Check 'an oversized outgoing TEXT blob advises UNKNOWN with exit 0 and named ceiling' (
         $r.Exit -eq 0 -and $r.Err -match 'UTF8_MAX_FILE_KB' -and $r.Err -match 'big\.txt') $r.Err
     $ppBigBin = New-PushableRepo 'PpOversizeBinary'
     Write-Utf8 (Join-Path $ppBigBin 'base.txt') "seed`n"
@@ -239,11 +243,12 @@
     # The pre-push mode must write NO state: every scenario above shares
     # $hcPp, whose isolated LOCALAPPDATA must still hold nothing.
     $ppState = @(Get-ChildItem -LiteralPath (Join-Path $hcPp.LocalAppData 'HookMaker\state') -ErrorAction SilentlyContinue)
-    Check 'the pre-push mode wrote no local state at all' ($ppState.Count -eq 0) (($ppState | ForEach-Object { $_.Name }) -join ', ')
+    Check 'native state contains only finding fingerprints, never a validation baseline' (@($ppState | Where-Object {$_.Name -notmatch '^NativeFinding-[0-9a-f]+\.json$'}).Count -eq 0) (($ppState | ForEach-Object { $_.Name }) -join ', ')
     # The suite's own workspace ($Work) legitimately matches 'hookmaker-utf8*';
     # anything ELSE with that prefix would be residue the hook itself created.
     $workLeaf = Split-Path -Leaf $Work
     $hookTempFiles = @(Get-ChildItem -LiteralPath ([System.IO.Path]::GetTempPath()) -Filter 'hookmaker-utf8*' -ErrorAction SilentlyContinue | Where-Object { $_.Name -ne $workLeaf })
     Check 'the hook left no temp files of its own behind' ($hookTempFiles.Count -eq 0) (($hookTempFiles | ForEach-Object { $_.Name }) -join ', ')
-    $r = FireGitPrePush -Cwd $ppNew -StdinText $stdinNew -HookPath $hcPp.Script -LocalAppData $hcPp.LocalAppData -Exe 'pwsh'
+    $pwshLocal = Join-Path $hcPp.LocalAppData 'pwsh-final'
+    $r = FireGitPrePush -Cwd $ppNew -StdinText $stdinNew -HookPath $hcPp.Script -LocalAppData $pwshLocal -Exe 'pwsh'
     Check 'pwsh host: the same invalid new-branch push still reports' ($r.Exit -eq 0 -and $r.Err -match 'feature\.txt') $r.Err

@@ -18,7 +18,7 @@
     Check 'NEXT_PUBLIC_APP_URL is not auto-added to secrets.md' ($r.Out -notlike '*NEXT_PUBLIC_APP_URL*') $r.Out
     Check 'R2_BUCKET is not auto-added to secrets.md' ($r.Out -notlike '*R2_BUCKET*') $r.Out
     Check 'no secrets.md was created for public-only config' (-not (Test-Path (Join-Path $projPub 'secrets.md')))
-    Check 'tracked reuse of the same public value is not reported as a leak' ($r.Out -notlike '*appears in a git-tracked file*') $r.Out
+    Check 'tracked reuse of the same public value is not reported as a leak' ($r.Out -notlike '*tracked leak:*') $r.Out
     Check 'nothing blocks (exit 0) for public config alone' ($r.Exit -eq 0)
 
     # Same shape through the real native pre-push path.
@@ -39,8 +39,8 @@
     Write-Utf8 (Join-Path $projPubToken 'notes.txt') "token: zzcredentiallikevalue123456`r`n"
     Add-Commit $projPubToken 'seed'
     $r = Fire -Cwd $projPubToken
-    Check 'PUBLIC_API_TOKEN (key semantics: TOKEN) still classifies as Secret and is auto-added' ($r.Out -like '*Auto-added*PUBLIC_API_TOKEN*') $r.Out
-    Check 'PUBLIC_API_TOKEN leaking into a tracked file still blocks' ($r.Out -like '*PUBLIC_API_TOKEN*appears in a git-tracked file*notes.txt*') $r.Out
+    Check 'PUBLIC_API_TOKEN (key semantics: TOKEN) still classifies as Secret and is auto-added' ($r.Out -like '*Added * registry keys (fill Purpose/Used by):*PUBLIC_API_TOKEN*') $r.Out
+    Check 'PUBLIC_API_TOKEN leaking into a tracked file still blocks' ($r.Out -like '*PUBLIC_API_TOKEN*tracked leak:*notes.txt*') $r.Out
 
     $projPubKey = New-GitProj 'NextPublicApiKey'
     Write-Utf8 (Join-Path $projPubKey '.gitignore') ".env`nsecrets.md`n"
@@ -48,8 +48,8 @@
     Write-Utf8 (Join-Path $projPubKey 'notes.txt') "sk_live_abcdefghij1234567890`r`n"
     Add-Commit $projPubKey 'seed'
     $r = Fire -Cwd $projPubKey
-    Check 'NEXT_PUBLIC_API_KEY with a live-looking key value still classifies as Secret' ($r.Out -like '*Auto-added*NEXT_PUBLIC_API_KEY*') $r.Out
-    Check 'NEXT_PUBLIC_API_KEY leak still blocks despite the public prefix' ($r.Out -like '*NEXT_PUBLIC_API_KEY*appears in a git-tracked file*notes.txt*') $r.Out
+    Check 'NEXT_PUBLIC_API_KEY with a live-looking key value still classifies as Secret' ($r.Out -like '*Added * registry keys (fill Purpose/Used by):*NEXT_PUBLIC_API_KEY*') $r.Out
+    Check 'NEXT_PUBLIC_API_KEY leak still blocks despite the public prefix' ($r.Out -like '*NEXT_PUBLIC_API_KEY*tracked leak:*notes.txt*') $r.Out
 
     # =====================================================================
     Write-Host '--- classification: value shape can force Secret or PublicConfig regardless of key wording ---' -ForegroundColor Cyan
@@ -59,8 +59,8 @@
     Write-Utf8 (Join-Path $projConn 'notes.txt') "postgres://dbuser:dbpass1234@db.example.com:5432/app`r`n"
     Add-Commit $projConn 'seed'
     $r = Fire -Cwd $projConn
-    Check 'a *_URL key with an embedded username:password still classifies as Secret' ($r.Out -like '*Auto-added*DATABASE_URL*') $r.Out
-    Check 'the embedded-credential connection string still blocks as a leak' ($r.Out -like '*DATABASE_URL*appears in a git-tracked file*notes.txt*') $r.Out
+    Check 'a *_URL key with an embedded username:password still classifies as Secret' ($r.Out -like '*Added * registry keys (fill Purpose/Used by):*DATABASE_URL*') $r.Out
+    Check 'the embedded-credential connection string still blocks as a leak' ($r.Out -like '*DATABASE_URL*tracked leak:*notes.txt*') $r.Out
 
     $projPlainUrl = New-GitProj 'PlainPublicUrl'
     Write-Utf8 (Join-Path $projPlainUrl '.gitignore') ".env`nsecrets.md`n"
@@ -78,8 +78,8 @@
     Write-Utf8 (Join-Path $projUnknown 'notes.txt') "abc123`r`n"
     Add-Commit $projUnknown 'seed'
     $r = Fire -Cwd $projUnknown
-    Check 'an ambiguous key is reported as needing classification, not auto-added' ($r.Out -like '*UNKNOWN Secret/PublicConfig*WIDGET_ID*' -and $r.Out -notlike '*Auto-added*WIDGET_ID*') $r.Out
-    Check 'the ambiguous key is never treated as a confirmed leak from a bare value match' ($r.Out -notlike '*WIDGET_ID*appears in a git-tracked file*') $r.Out
+    Check 'an ambiguous key is reported as needing classification, not auto-added' ($r.Out -like '*UNKNOWN, unregistered/advisory:*WIDGET_ID*' -and $r.Out -notlike '*Added * registry keys (fill Purpose/Used by):*WIDGET_ID*') $r.Out
+    Check 'the ambiguous key is never treated as a confirmed leak from a bare value match' ($r.Out -notlike '*WIDGET_ID*tracked leak:*') $r.Out
     Check 'the ambiguous-key advisory does not block the task' ($r.Exit -eq 0)
 
     # =====================================================================
@@ -89,7 +89,7 @@
     Write-Utf8 (Join-Path $projOverrideSecret '.env') "INTERNAL_CODE=abc123`r`n"
     $overrideSecretHook = New-ConfiguredHookCopy @{ SECRET_KEYS = 'INTERNAL_CODE' }
     $r = Fire -Cwd $projOverrideSecret -HookPath $overrideSecretHook
-    Check 'SECRET_KEYS override forces an otherwise-ambiguous key to classify as Secret' ($r.Out -like '*Auto-added*INTERNAL_CODE*') $r.Out
+    Check 'SECRET_KEYS override forces an otherwise-ambiguous key to classify as Secret' ($r.Out -like '*Added * registry keys (fill Purpose/Used by):*INTERNAL_CODE*') $r.Out
 
     $projOverridePublic = New-GitProj 'OverrideForcesPublic'
     Write-Utf8 (Join-Path $projOverridePublic '.gitignore') ".env`nsecrets.md`n"
@@ -103,7 +103,7 @@
     Write-Utf8 (Join-Path $projOverrideConflict '.env') "WIDGET_ID=abc123`r`n"
     $overrideConflictHook = New-ConfiguredHookCopy @{ SECRET_KEYS = 'WIDGET_ID'; PUBLIC_CONFIG_KEYS = 'WIDGET_ID' }
     $r = Fire -Cwd $projOverrideConflict -HookPath $overrideConflictHook
-    Check 'SECRET_KEYS wins over PUBLIC_CONFIG_KEYS on the same key' ($r.Out -like '*Auto-added*WIDGET_ID*') $r.Out
+    Check 'SECRET_KEYS wins over PUBLIC_CONFIG_KEYS on the same key' ($r.Out -like '*Added * registry keys (fill Purpose/Used by):*WIDGET_ID*') $r.Out
 
     # =====================================================================
     Write-Host '--- classification: conservative registry cleanup for stale auto-added public config ---' -ForegroundColor Cyan
@@ -125,8 +125,8 @@
     Write-Utf8 (Join-Path $projOpaquePublic '.env') "NEXT_PUBLIC_SESSION=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa`r`n"
     Add-Commit $projOpaquePublic 'seed'
     $r = Fire -Cwd $projOpaquePublic
-    Check 'NEXT_PUBLIC_SESSION with an opaque repeated-letter value is NOT auto-classified PublicConfig' ($r.Out -notlike '*Auto-added*NEXT_PUBLIC_SESSION*') $r.Out
-    Check 'the opaque public-prefixed value is instead reported as needing classification (Unknown)' ($r.Out -like '*UNKNOWN Secret/PublicConfig*NEXT_PUBLIC_SESSION*') $r.Out
+    Check 'NEXT_PUBLIC_SESSION with an opaque repeated-letter value is NOT auto-classified PublicConfig' ($r.Out -notlike '*Added * registry keys (fill Purpose/Used by):*NEXT_PUBLIC_SESSION*') $r.Out
+    Check 'the opaque public-prefixed value is instead reported as needing classification (Unknown)' ($r.Out -like '*UNKNOWN, unregistered/advisory:*NEXT_PUBLIC_SESSION*') $r.Out
 
     # =====================================================================
     Write-Host '--- classification: PUBLIC_CONFIG_KEYS can never declassify a real credential ---' -ForegroundColor Cyan
@@ -135,14 +135,14 @@
     Write-Utf8 (Join-Path $projNoDeclassifyValue '.env') "API_TOKEN=ghp_abcdefghijklmnopqrst1234`r`n"
     $noDeclassifyValueHook = New-ConfiguredHookCopy @{ PUBLIC_CONFIG_KEYS = 'API_TOKEN' }
     $r = Fire -Cwd $projNoDeclassifyValue -HookPath $noDeclassifyValueHook
-    Check 'PUBLIC_CONFIG_KEYS cannot declassify a credential-shaped VALUE (a real GitHub token)' ($r.Out -like '*Auto-added*API_TOKEN*') $r.Out
+    Check 'PUBLIC_CONFIG_KEYS cannot declassify a credential-shaped VALUE (a real GitHub token)' ($r.Out -like '*Added * registry keys (fill Purpose/Used by):*API_TOKEN*') $r.Out
 
     $projNoDeclassifyKey = New-GitProj 'NoDeclassifyCredentialKey'
     Write-Utf8 (Join-Path $projNoDeclassifyKey '.gitignore') ".env`nsecrets.md`n"
     Write-Utf8 (Join-Path $projNoDeclassifyKey '.env') "SERVICE_PASSWORD=abc123`r`n"
     $noDeclassifyKeyHook = New-ConfiguredHookCopy @{ PUBLIC_CONFIG_KEYS = 'SERVICE_PASSWORD' }
     $r = Fire -Cwd $projNoDeclassifyKey -HookPath $noDeclassifyKeyHook
-    Check 'PUBLIC_CONFIG_KEYS cannot declassify credential-like KEY semantics (PASSWORD)' ($r.Out -like '*Auto-added*SERVICE_PASSWORD*') $r.Out
+    Check 'PUBLIC_CONFIG_KEYS cannot declassify credential-like KEY semantics (PASSWORD)' ($r.Out -like '*Added * registry keys (fill Purpose/Used by):*SERVICE_PASSWORD*') $r.Out
 
     # =====================================================================
     # Regression: a real push in a Next.js/Vercel project was blocked by 42
@@ -161,16 +161,16 @@
     Write-Utf8 (Join-Path $projEmail 'authz.ts') "const OWNER = 'Admin.Owner2024@Example.com';`r`n"
     Add-Commit $projEmail 'seed'
     $r = Fire -Cwd $projEmail
-    Check 'an admin e-mail is NOT auto-added to secrets.md as a secret' ($r.Out -notlike '*Auto-added*ADMIN_EMAIL*') $r.Out
-    Check 'an admin e-mail in a tracked file is NOT reported as a leak' ($r.Out -notlike '*appears in a git-tracked file*') $r.Out
-    Check 'the e-mail is reported as needing classification instead (Unknown, advisory)' ($r.Out -like '*UNKNOWN Secret/PublicConfig*ADMIN_EMAIL*') $r.Out
+    Check 'an admin e-mail is NOT auto-added to secrets.md as a secret' ($r.Out -notlike '*Added * registry keys (fill Purpose/Used by):*ADMIN_EMAIL*') $r.Out
+    Check 'an admin e-mail in a tracked file is NOT reported as a leak' ($r.Out -notlike '*tracked leak:*') $r.Out
+    Check 'the e-mail is reported as needing classification instead (Unknown, advisory)' ($r.Out -like '*UNKNOWN, unregistered/advisory:*ADMIN_EMAIL*') $r.Out
 
     # ... and an address under a credential-named key is still Secret: the
     # e-mail exclusion only removes the heuristic, never key evidence.
     $projEmailPwd = New-Proj 'EmailUnderCredentialKey'
     Write-Utf8 (Join-Path $projEmailPwd '.env') "SMTP_PASSWORD=Admin.Owner2024@Example.com`r`n"
     $r = Fire -Cwd $projEmailPwd
-    Check 'an address under a *_PASSWORD key is still Secret (key evidence is unoverridable)' ($r.Out -like '*Auto-added*SMTP_PASSWORD*') $r.Out
+    Check 'an address under a *_PASSWORD key is still Secret (key evidence is unoverridable)' ($r.Out -like '*Added * registry keys (fill Purpose/Used by):*SMTP_PASSWORD*') $r.Out
 
     # A public-by-design high-entropy value (Turnstile SITE key shape): Secret
     # by default, but now correctable per key.
@@ -178,7 +178,7 @@
     $projSiteKeyDefault = New-Proj 'SiteKeyDefaultSecret'
     Write-Utf8 (Join-Path $projSiteKeyDefault '.env') $turnstileEnv
     $r = Fire -Cwd $projSiteKeyDefault
-    Check 'DEFAULT is unchanged: a heuristic-only value with no override is still Secret' ($r.Out -like '*Auto-added*NEXT_PUBLIC_TURNSTILE_SITE_KEY*') $r.Out
+    Check 'DEFAULT is unchanged: a heuristic-only value with no override is still Secret' ($r.Out -like '*Added * registry keys (fill Purpose/Used by):*NEXT_PUBLIC_TURNSTILE_SITE_KEY*') $r.Out
 
     $projSiteKeyOverride = New-GitProj 'SiteKeyDeclassified'
     Write-Utf8 (Join-Path $projSiteKeyOverride '.gitignore') ".env`nsecrets.md`n"
@@ -187,8 +187,8 @@
     Add-Commit $projSiteKeyOverride 'seed'
     $siteKeyHook = New-ConfiguredHookCopy @{ PUBLIC_CONFIG_KEYS = 'NEXT_PUBLIC_TURNSTILE_SITE_KEY' }
     $r = Fire -Cwd $projSiteKeyOverride -HookPath $siteKeyHook
-    Check 'PUBLIC_CONFIG_KEYS CAN declassify a heuristic-only value (the escape hatch is reachable)' ($r.Out -notlike '*Auto-added*NEXT_PUBLIC_TURNSTILE_SITE_KEY*') $r.Out
-    Check 'the declassified site key in tracked client code no longer blocks' ($r.Out -notlike '*appears in a git-tracked file*') $r.Out
+    Check 'PUBLIC_CONFIG_KEYS CAN declassify a heuristic-only value (the escape hatch is reachable)' ($r.Out -notlike '*Added * registry keys (fill Purpose/Used by):*NEXT_PUBLIC_TURNSTILE_SITE_KEY*') $r.Out
+    Check 'the declassified site key in tracked client code no longer blocks' ($r.Out -notlike '*tracked leak:*') $r.Out
 
     # =====================================================================
     # One value under several keys is scanned once and reported once. Before
@@ -204,7 +204,7 @@
     Write-Utf8 (Join-Path $projShared 'notes.txt') "zzsharedcredential1234567`r`n"
     Add-Commit $projShared 'seed'
     $r = Fire -Cwd $projShared
-    $leakLines = @(($r.Out -split '\r?\n') | Where-Object { $_ -like '*appears in a git-tracked file*' })
+    $leakLines = @(($r.Out -split '\r?\n') | Where-Object { $_ -like '*tracked leak:*' })
     Check 'one shared value produces exactly ONE leak line, not one per key' ($leakLines.Count -eq 1) ($leakLines -join ' | ')
     Check 'that single line names every key holding the value' (
         $leakLines.Count -eq 1 -and $leakLines[0] -like '*BACKUP_API_TOKEN*' -and
@@ -225,7 +225,7 @@
     )
     $r = Fire -Cwd $projAuthSecret
     foreach ($k in @('AUTH_TOKEN', 'AUTH_SECRET', 'AUTH_PASSWORD', 'AUTH_CREDENTIAL', 'AUTH_KEY', 'BASIC_AUTH_PASSWORD', 'OAUTH_CLIENT_SECRET')) {
-        Check ($k + ' classifies as Secret and is auto-added') ($r.Out -like ('*Auto-added*' + $k + '*')) $r.Out
+        Check ($k + ' classifies as Secret and is auto-added') ($r.Out -like ('*Added * registry keys (fill Purpose/Used by):*' + $k + '*')) $r.Out
     }
 
     $projAuthNotSecret = New-Proj 'AuthBoundaryNotSecret'
@@ -237,5 +237,5 @@
     )
     $r = Fire -Cwd $projAuthNotSecret
     foreach ($k in @('AUTHOR_NAME', 'AUTH0_DOMAIN', 'NEXT_PUBLIC_AUTH_URL', 'AUTH_CALLBACK_URL')) {
-        Check ($k + ' never classifies as Secret merely for containing the letters AUTH') ($r.Out -notlike ('*Auto-added*' + $k + '*')) $r.Out
+        Check ($k + ' never classifies as Secret merely for containing the letters AUTH') ($r.Out -notlike ('*Added * registry keys (fill Purpose/Used by):*' + $k + '*')) $r.Out
     }

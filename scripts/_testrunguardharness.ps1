@@ -48,12 +48,12 @@ function New-IsolatedHookCopy {
 function Fire {
     param(
         [string]$HookPath, [string]$Cwd, [string]$EventName, [string]$Command,
-        [string[]]$CommandArray, [string]$LocalAppData, [switch]$NoClaudeProjectDir, [string]$Exe = 'pwsh'
+        [string[]]$CommandArray, [string]$LocalAppData, [switch]$NoClaudeProjectDir, [string]$Exe = 'pwsh', [string]$SessionId = ([guid]::NewGuid().ToString('N'))
     )
     $toolInput = @{ description = 'x' }
     if ($PSBoundParameters.ContainsKey('CommandArray')) { $toolInput['command'] = @($CommandArray) }
     else { $toolInput['command'] = $Command }
-    $obj = @{ session_id = 'sess1'; cwd = $Cwd; hook_event_name = $EventName; tool_name = 'Bash'; tool_input = $toolInput }
+    $obj = @{ session_id = $SessionId; cwd = $Cwd; hook_event_name = $EventName; tool_name = 'Bash'; tool_input = $toolInput }
     $payload = $obj | ConvertTo-Json -Depth 6
     $token = [guid]::NewGuid().ToString('N').Substring(0, 8)
     $inFile = Join-Path $Work ('in-' + $token + '.json')

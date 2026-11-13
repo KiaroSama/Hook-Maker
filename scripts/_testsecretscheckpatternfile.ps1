@@ -24,7 +24,7 @@
     Add-Commit $dashProj 'seed'
     $patternState = Join-Path $FakeAppData 'HookMaker\state'
     $r = Fire -Cwd $dashProj
-    Check 'a leaked value starting with - is still found through the pattern file' ($r.Out -like '*DASH_SECRET*appears in a git-tracked file*notes.txt*') $r.Out
+    Check 'a leaked value starting with - is still found through the pattern file' ($r.Out -like '*DASH_SECRET*tracked leak:*notes.txt*') $r.Out
     Check 'the dash-value report never contains the raw value' ($r.Out -notlike '*Abcdefghij1234567890zz*') $r.Out
     $residue = @(Get-ChildItem -LiteralPath $patternState -Filter 'SecretsCheck-pattern-*' -File -ErrorAction SilentlyContinue)
     Check 'no pattern file is left behind after the scan' ($residue.Count -eq 0) (($residue | ForEach-Object { $_.Name }) -join ', ')
@@ -38,4 +38,4 @@
     Write-Utf8 (Join-Path $fallbackProj 'notes.txt') "pasted: -Abcdefghij1234567890zz by mistake`r`n"
     Add-Commit $fallbackProj 'seed'
     $r = Fire -Cwd $fallbackProj -HookPath $fallbackHook
-    Check 'fallback: without _patternfile.ps1 the leak is still detected' ($r.Out -like '*DASH_SECRET*appears in a git-tracked file*notes.txt*') $r.Out
+    Check 'fallback: without _patternfile.ps1 the leak is still detected' ($r.Out -like '*DASH_SECRET*tracked leak:*notes.txt*') $r.Out

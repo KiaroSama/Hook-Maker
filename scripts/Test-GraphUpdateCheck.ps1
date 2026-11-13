@@ -227,12 +227,12 @@ try {
     Check 'read-check: a graph without .graphify_build.json gets the one-time set-up line' ($out -match 'Missing ignored Markdown' -and $out -match 'graphify-markdown\.md') $out
     Write-Utf8 (Join-Path $readRepo 'graphify-out\.graphify_build.json') '{"gitignore": false}'
     $out = Invoke-ReadCheck -Cwd $readRepo -Session 'md-read-2'
-    Check 'read-check: {"gitignore": false} removes the line' ($out -match 'GRAPH READ CHECK' -and $out -notmatch 'Missing ignored Markdown') $out
+    Check 'read-check: {"gitignore": false} removes the line' ($out -match 'Graph-Read-Check:.*graphify-out/graph\.json' -and $out -notmatch 'Missing ignored Markdown') $out
     $plainRepo = New-GitRepo 'MdNone'
     Write-Utf8 (Join-Path $plainRepo 'a.ps1') 'function A {}'; Add-Commit $plainRepo 'init'
     New-StaleGraph $plainRepo | Out-Null
     $out = Invoke-ReadCheck -Cwd $plainRepo -Session 'md-read-3'
-    Check 'read-check: a project without Markdown folders never gets the line' ($out -match 'GRAPH READ CHECK' -and $out -notmatch 'Missing ignored Markdown') $out
+    Check 'read-check: a project without Markdown folders never gets the line' ($out -match 'Graph-Read-Check:.*graphify-out/graph\.json' -and $out -notmatch 'Missing ignored Markdown') $out
 
     Write-Host '--- Windows PowerShell 5.1 ---' -ForegroundColor Cyan
     $ps5 = New-GitRepo 'Ps5'

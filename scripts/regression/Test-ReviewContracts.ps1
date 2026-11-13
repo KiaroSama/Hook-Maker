@@ -159,7 +159,8 @@ try {
         $payload.hook_event_name='Stop'; Set-ObjectProperty $payload 'transcript_path' $transcript
         Set-ObjectProperty $payload 'last_assistant_message' ''
         $wire=Invoke-ReviewHook $path $payload
-        Check-Contract ('E17 '+$name+' preserves UNKNOWN instead of accepting a raw old label') { $wire.Exit -eq 0 -and $wire.Err -eq '' -and $wire.Out -match '(?:NOT be verified|UNVERIFIED)' -and $wire.Out -notmatch '"decision":"block"' } $true
+        # FR005 keeps unavailable closing evidence silent, never accepts an older raw label.
+        Check-Contract ('E17 '+$name+' preserves UNKNOWN instead of accepting a raw old label') { $wire.Exit -eq 0 -and $wire.Err -eq '' -and $wire.Out -eq '' } $true
     }
     $summary=Join-Path $SourceRoot 'hooks\Session-Summary-Check\Session-Summary-Check.ps1'
     $payload=[pscustomobject]@{cwd=$project;session_id='shared-session';hook_event_name='SessionStart'}

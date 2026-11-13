@@ -87,10 +87,10 @@ try {
     # =====================================================================
     Write-Host '--- events: it speaks BEFORE the task and nowhere else ---' -ForegroundColor Cyan
     $r = Invoke-SummaryHook @{ hook_event_name = 'SessionStart'; cwd = $proj; session_id = $sid }
-    Check 'summary: SessionStart delivers the closing requirement' ($r.Out -match 'SESSION SUMMARY') $r.Out
+    Check 'summary: SessionStart delivers the closing requirement' ($r.Out -match 'Session-Summary-Check: advisory') $r.Out
     Check 'summary: SessionStart exits 0' ($r.Exit -eq 0) ([string]$r.Exit)
     $r = Invoke-SummaryHook @{ hook_event_name = 'UserPromptSubmit'; cwd = $proj; session_id = $sid }
-    Check 'summary: UserPromptSubmit delivers it too' ($r.Out -match 'SESSION SUMMARY') $r.Out
+    Check 'summary: UserPromptSubmit delivers it too' ($r.Out -match 'Session-Summary-Check: advisory') $r.Out
 
     # Stop is the event this hook shipped on twice, and looped on twice: on
     # Claude Code a Stop additionalContext re-invokes the model, so a summary
@@ -107,7 +107,7 @@ try {
 
     # =====================================================================
     Write-Host '--- it is ADVISORY: a block would guarantee something comes after it ---' -ForegroundColor Cyan
-    $r = Invoke-SummaryHook @{ hook_event_name = 'UserPromptSubmit'; cwd = $proj; session_id = $sid }
+    $r = Invoke-SummaryHook @{ hook_event_name = 'UserPromptSubmit'; cwd = $proj; session_id = 'summary-contract' }
     Check 'summary: never emits a block decision' ($r.Out -notmatch '"decision"') $r.Out
     Check 'summary: never uses the blocking exit code 2' ($r.Exit -ne 2) ([string]$r.Exit)
 
@@ -115,29 +115,29 @@ try {
     Write-Host '--- the requirement itself ---' -ForegroundColor Cyan
     Check 'summary: asks for a DONE section' ($r.Out -match 'DONE') $r.Out
     Check 'summary: asks for a REMAINING section' ($r.Out -match 'REMAINING') $r.Out
-    Check 'summary: closing section is last and only when handing back work' ($r.Out -match 'LAST after' -and $r.Out -match 'final handback ONLY') $r.Out
-    Check 'summary: exactly one wrap-up per task, not during waits' ($r.Out -match 'DONE / REMAINING ONCE/task' -and $r.Out -match 'final handback ONLY') $r.Out
+    Check 'summary: closing section is last and only when handing back work' ($r.Out -match 'last after MCP/Skills/Rules lines' -and $r.Out -match 'at task completion') $r.Out
+    Check 'summary: exactly one wrap-up per task, not during waits' ($r.Out -match 'one short DONE / REMAINING' -and $r.Out -match 'at task completion') $r.Out
     Check 'summary: authored guidance stays under 1300 characters' (([string](($r.Out|ConvertFrom-Json).hookSpecificOutput.additionalContext)).Length -lt 1300) $r.Out
     # L01: wording alone was tried and did not hold - the rule now has to say
     # that a correction turn adds NOTHING, because that is the turn that used to
     # produce the second and third wrap-up.
     Check 'summary: a gate that blocks afterwards is a CORRECTION turn, not a reason to restate' (
-        $r.Out -match 'Corrections: issue-line only') $r.Out
+        $r.Out -match 'correct changed claims once, no second wrap-up') $r.Out
     Check 'summary: it is once per TASK, not once per message or per gate' (
-        $r.Out -match 'DONE / REMAINING ONCE/task') $r.Out
+        $r.Out -match 'one short DONE / REMAINING') $r.Out
     Check 'summary: names the preconditions that make the carrying message the last one' (
-        $r.Out -match 'authorized Git/exact-SHA CI' -and $r.Out -match 'no owned survivors') $r.Out
+        $r.Out -match 'applicable memory/Git/exact-SHA CI/docs/tests/process cleanup/secrets/local-only state' -and $r.Out -match 'or disclose the gap') $r.Out
     Check 'summary: names the sibling requirements it must follow' (
-        ($r.Out -match 'MCP used') -and ($r.Out -match 'Skills used')) $r.Out
+        ($r.Out -match 'MCP/Skills/Rules lines') -and ($r.Out -match 'MCP/Skills/Rules lines')) $r.Out
     Check 'summary: demands failures and untested paths be included' ($r.Out -match 'untested') $r.Out
-    Check 'summary: demands current-state checks for every gate' ($r.Out -match 'ALL gates verified/unverified') $r.Out
+    Check 'summary: demands current-state checks for every gate' ($r.Out -match 'current blockers') $r.Out
     $summaryMessage = [string](($r.Out | ConvertFrom-Json).hookSpecificOutput.additionalContext)
     Check 'summary: successful checks and resolved blockers belong in DONE' (
-        $summaryMessage -match '(?m)^DONE=verified work/checks/gates') $summaryMessage
+        $summaryMessage -match '(?m)^DONE: completed work/checks/resolved gates with observed proof') $summaryMessage
     Check 'summary: REMAINING contains only unresolved required work' (
-        $summaryMessage -match 'REMAINING=unfinished/deferred/blocked/untested\+reasons') $summaryMessage
+        $summaryMessage -match 'REMAINING: unfinished required items, current blockers, deferred scope or untested required paths with reasons') $summaryMessage
     Check 'summary: completed items must not be relisted as remaining' (
-        $summaryMessage -match 'DONE=verified work/checks/gates' -and $summaryMessage -match 'REMAINING=unfinished/deferred/blocked/untested\+reasons') $summaryMessage
+        $summaryMessage -match 'DONE=verified work/checks/gates' -and $summaryMessage -match 'REMAINING: unfinished required items, current blockers, deferred scope or untested required paths with reasons') $summaryMessage
 
     # =====================================================================
     Write-Host '--- with no markers there is no gate list at all ---' -ForegroundColor Cyan
@@ -211,18 +211,18 @@ try {
     $loopProj = Join-Path $Work 'loop-proj'
     New-Item -ItemType Directory -Path $loopProj -Force | Out-Null
     $first = Invoke-SummaryHook @{ hook_event_name = 'UserPromptSubmit'; cwd = $loopProj; session_id = 'loop-a' }
-    Check 'summary: the first prompt of a session delivers the requirement' ($first.Out -match 'SESSION SUMMARY') $first.Out
+    Check 'summary: the first prompt of a session delivers the requirement' ($first.Out -match 'Session-Summary-Check: advisory') $first.Out
     $second = Invoke-SummaryHook -KeepDelivered -Payload @{ hook_event_name = 'UserPromptSubmit'; cwd = $loopProj; session_id = 'loop-a' }
     Check 'summary: a SECOND prompt inside the window says nothing' ($second.Out.Trim() -eq '') $second.Out
     $third = Invoke-SummaryHook -KeepDelivered -Payload @{ hook_event_name = 'UserPromptSubmit'; cwd = $loopProj; session_id = 'loop-a' }
     Check 'summary: a THIRD prompt stays silent too (no slow re-arming)' ($third.Out.Trim() -eq '') $third.Out
     $newSession = Invoke-SummaryHook -KeepDelivered -Payload @{ hook_event_name = 'UserPromptSubmit'; cwd = $loopProj; session_id = 'loop-b' }
-    Check 'summary: a NEW session is told again' ($newSession.Out -match 'SESSION SUMMARY') $newSession.Out
+    Check 'summary: a NEW session is told again' ($newSession.Out -match 'Session-Summary-Check: advisory') $newSession.Out
     # SessionStart is a rebuilt context (startup, resume, clear, compaction):
     # it always delivers, inside the window or not, and it stamps the window so
     # the very next prompt does not repeat it.
     $restart = Invoke-SummaryHook -KeepDelivered -Payload @{ hook_event_name = 'SessionStart'; cwd = $loopProj; session_id = 'loop-b' }
-    Check 'summary: SessionStart delivers even inside the window (rebuilt context)' ($restart.Out -match 'SESSION SUMMARY') $restart.Out
+    Check 'summary: SessionStart delivers even inside the window (rebuilt context)' ($restart.Out -match 'Session-Summary-Check: advisory') $restart.Out
     $afterRestart = Invoke-SummaryHook -KeepDelivered -Payload @{ hook_event_name = 'UserPromptSubmit'; cwd = $loopProj; session_id = 'loop-b' }
     Check 'summary: the prompt right after a SessionStart does not repeat it' ($afterRestart.Out.Trim() -eq '') $afterRestart.Out
     # The window is real: an expired stamp re-delivers on the next prompt.
@@ -235,7 +235,7 @@ try {
     }
     [IO.File]::WriteAllText($claimPath, ($claimDocument | ConvertTo-Json -Depth 5))
     $expired = Invoke-SummaryHook -KeepDelivered -Payload @{ hook_event_name = 'UserPromptSubmit'; cwd = $loopProj; session_id = 'loop-b' }
-    Check 'summary: a prompt after the window expired is reminded again' ($expired.Out -match 'SESSION SUMMARY') $expired.Out
+    Check 'summary: a prompt after the window expired is reminded again' ($expired.Out -match 'Session-Summary-Check: advisory') $expired.Out
 
     # =====================================================================
     Write-Host '--- R03: two sessions in one project keep separate cooldowns ---' -ForegroundColor Cyan
@@ -245,15 +245,15 @@ try {
     $abProj = Join-Path $Work 'ab-proj'
     New-Item -ItemType Directory -Path $abProj -Force | Out-Null
     $abA1 = Invoke-SummaryHook @{ hook_event_name = 'UserPromptSubmit'; cwd = $abProj; session_id = 'ab-a' }
-    Check 'summary: session A is told first' ($abA1.Out -match 'SESSION SUMMARY') $abA1.Out
+    Check 'summary: session A is told first' ($abA1.Out -match 'Session-Summary-Check: advisory') $abA1.Out
     $abB1 = Invoke-SummaryHook -KeepDelivered -Payload @{ hook_event_name = 'UserPromptSubmit'; cwd = $abProj; session_id = 'ab-b' }
-    Check 'summary: session B is told too, however recent A was' ($abB1.Out -match 'SESSION SUMMARY') $abB1.Out
+    Check 'summary: session B is told too, however recent A was' ($abB1.Out -match 'Session-Summary-Check: advisory') $abB1.Out
     $abA2 = Invoke-SummaryHook -KeepDelivered -Payload @{ hook_event_name = 'UserPromptSubmit'; cwd = $abProj; session_id = 'ab-a' }
     Check 'summary: A/B/A - session A is NOT told again inside its own window' ($abA2.Out.Trim() -eq '') $abA2.Out
     $abB2 = Invoke-SummaryHook -KeepDelivered -Payload @{ hook_event_name = 'UserPromptSubmit'; cwd = $abProj; session_id = 'ab-b' }
     Check 'summary: and B is not told again either' ($abB2.Out.Trim() -eq '') $abB2.Out
     $abC = Invoke-SummaryHook -KeepDelivered -Payload @{ hook_event_name = 'UserPromptSubmit'; cwd = $abProj; session_id = 'ab-c' }
-    Check 'negative control: a THIRD, never-seen session is still told' ($abC.Out -match 'SESSION SUMMARY') $abC.Out
+    Check 'negative control: a THIRD, never-seen session is still told' ($abC.Out -match 'Session-Summary-Check: advisory') $abC.Out
 
     # =====================================================================
     Write-Host '--- R03: gate history comes from the REAL producer ---' -ForegroundColor Cyan
@@ -315,7 +315,7 @@ try {
     # would report other sessions' blocks as this one's. It still delivers the
     # requirement - that part needs no session - but names no gates.
     $r = Invoke-SummaryHook @{ hook_event_name = 'UserPromptSubmit'; cwd = $proj }
-    Check 'summary: no session id still yields the requirement' ($r.Out -match 'SESSION SUMMARY') $r.Out
+    Check 'summary: no session id still yields the requirement' ($r.Out -match 'Session-Summary-Check: advisory') $r.Out
     Check 'summary: no session id names no gates rather than guessing' ($r.Out -notmatch 'blocked earlier in this session') $r.Out
 
     # An empty marker must not match an empty/absent session id and quietly
@@ -332,7 +332,7 @@ try {
     try {
         $json = (@{ hook_event_name = 'UserPromptSubmit'; cwd = $proj; session_id = $sid } | ConvertTo-Json -Compress)
         $out = ($json | & pwsh -NoProfile -File $Hook 2>&1) -join "`n"
-        Check 'summary: no state directory at all is not an error' (($LASTEXITCODE -eq 0) -and ($out -match 'SESSION SUMMARY')) ($out + ' exit=' + $LASTEXITCODE)
+        Check 'summary: no state directory at all is not an error' (($LASTEXITCODE -eq 0) -and ($out -match 'Session-Summary-Check: advisory')) ($out + ' exit=' + $LASTEXITCODE)
     }
     finally { $env:LOCALAPPDATA = $prevLocal }
 
@@ -344,7 +344,7 @@ try {
     $r51 = Invoke-SummaryHook -Payload @{ hook_event_name = 'UserPromptSubmit'; cwd = $proj; session_id = $sid } -Exe 'powershell.exe'
     Check 'summary: Windows PowerShell 5.1 emits the same open-work classification' (
         $r51.Exit -eq 0 -and $r51.Out -match 'DONE=verified work/checks/gates' -and
-        $r51.Out -match 'REMAINING=unfinished/deferred/blocked/untested\+reasons' -and
+        $r51.Out -match 'REMAINING: unfinished required items, current blockers, deferred scope or untested required paths with reasons' -and
         $r51.Out -match 'Historical markers != current open gates') $r51.Out
 
     # The hook is shipped source: it must stay pure ASCII, like every other

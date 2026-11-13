@@ -146,7 +146,14 @@ function Get-OperationMcpReminder {
         [void]$notes.Add('AGENSI: BEFORE use global-connected-skill-contracts.md Agensi FULL. Preview may mutate/spend.')
     }
     if ($text -match '(?i)\bupwork(?:-agent-mcp|-local)?\b') {
-        [void]$notes.Add('UPWORK (advisory): read global-connected-skill-contracts.md; official Upwork and Upwork-Agent-mcp (historical upwork-local) are distinct selected routes. Verify current account/role/schema and exact action approval. create_draft SAVES A REAL DRAFT immediately; preview text is not pure, retry can duplicate, publication is separate. Resolve schema/prose conflicts rather than guess required fields. Respect preview-confirm and Connects/budget gates; reconcile original IDs/current owned state after unknown results. No automatic login, application, messaging, upload, spend or permission changes.')
+        [void]$notes.Add('UPWORK: global-connected-skill-contracts.md Upwork FULL; official/local distinct. Draft persists; exact action approval, preview-confirm/Connects gates; schema conflict: reconcile, no guessed fields/retry. Publication separate; no auto login/apply/message/upload/spend/permissions.')
+    }
+    # Retain provider-specific context/approval routes lost by the historical restore.
+    if ($text -match '(?i)\bcontext-mode\b') {
+        [void]$notes.Add('CONTEXT-MODE: BEFORE use global-mcp-server-contracts.md FULL/schema. Not a sandbox.')
+    }
+    if ($text -match '(?i)\bnumera[- ]cha(?:[- ]solver(?:[- ]mcp)?)?\b') {
+        [void]$notes.Add('NUMERA CHA: BEFORE use global-mcp-server-contracts.md FULL. Human!=server_verified; no self-approval.')
     }
     if ($text -match '(?i)\bfiverr(?:-agent-mcp)?\b') {
         [void]$notes.Add('FIVERR: BEFORE use global-rea-fiverr-contracts.md FULL/schema. Local!=live; fresh human approval, no self-approval.')

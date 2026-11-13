@@ -37,7 +37,7 @@
     foreach ($command in $visibleCases) {
         $r = Fire -HookPath $hcVis.Script -Cwd $Proj -EventName 'PreToolUse' -Command $command -LocalAppData $hcVis.LocalAppData
         Check ('a visible invocation is denied: ' + $command) (
-            $r.Out -match '"permissionDecision":"deny"') $r.Out
+            ($r.Out -match '"additionalContext"|"systemMessage"' -and $r.Out -notmatch '"permissionDecision"|"decision"')) $r.Out
         # A refusal that does not name the replacement is one the reader cannot
         # act on, which is the failure mode the hook rules single out.
         Check ('and the refusal names the silent form: ' + $command) (

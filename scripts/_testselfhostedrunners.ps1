@@ -23,8 +23,8 @@
     Check 'SH04 a dispatch-only self-hosted repository is manual' (Test-ManualSelfHostedRepo -ProjectRoot $shManual)
     Set-Mock -ExpectedSha (Get-HeadSha $shManual)
     $r = Fire -HookPath $CiHook -Cwd $shManual -EventName 'Stop'
-    Check 'SH05 no run on a manual self-hosted repo -> "final dispatch missing", a block, never green' (
-        $r.Out -match 'final dispatch missing' -and $r.Out -match '"decision":"block"' -and
+    Check 'SH05 no run on a manual self-hosted repo -> "final dispatch missing", advisory, never green' (
+        $r.Out -match 'final dispatch missing' -and $r.Out -match '"systemMessage"' -and $r.Exit -eq 0 -and $r.Out -notmatch '"decision"' -and
         $r.Out -match 'Never GitHub/bot/Dependabot branches' -and $r.Out -notmatch 'no runs are registered yet') $r.Out
 
     $shPushed = New-GitRepo 'selfhosted-push'
@@ -42,4 +42,4 @@
     Set-Mock -ExpectedSha (Get-HeadSha $hostedManual)
     $r = Fire -HookPath $CiHook -Cwd $hostedManual -EventName 'Stop'
     Check 'SH09 missing hosted dispatch is pending, never automatic or green' (
-        $r.Out -match 'final dispatch missing' -and $r.Out -match 'Manual only; push!=run' -and $r.Out -match '"decision":"block"') $r.Out
+        $r.Out -match 'final dispatch missing' -and $r.Out -match 'Manual: push!=run' -and $r.Out -match '"systemMessage"' -and $r.Exit -eq 0 -and $r.Out -notmatch '"decision"') $r.Out

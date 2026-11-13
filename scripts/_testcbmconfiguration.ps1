@@ -161,7 +161,7 @@ TMP = __TEMP__
     $r = Invoke-CbmHook 'Cbm-Read-Check\Cbm-Read-Check.ps1' @{hook_event_name='SessionStart';cwd=$configuredProj;session_id='configured-cmm'} ''
     $message = ''
     try { $message = [string](($r.Out | ConvertFrom-Json).hookSpecificOutput.additionalContext) } catch { }
-    Check 'Codex-only hooks find the configured service and remain non-blocking' ($r.Exit -eq 0 -and $message -match 'CBM READ CHECK') $r.Out
+    Check 'Codex-only hooks find the configured service and remain non-blocking' ($r.Exit -eq 0 -and $message -match '^Cbm-Read-Check: advisory, index absent; expected') $r.Out
     foreach ($key in @('CBM_CACHE_DIR', 'CBM_RUNTIME_DIR', 'TEMP', 'TMP')) {
         $expected = "`$env:" + $key + " = '" + ([string]$server.env[$key]).Replace("'", "''") + "'"
         Check ('CLI advice preserves the configured ' + $key) ($message.Contains($expected))
@@ -171,10 +171,11 @@ TMP = __TEMP__
         $message.Contains("'literal ''argument'' `$()'"))
     # Marker/cache/private ancestor recovery detail is indirect in the FULL owner.
     Check 'recovery requires full Windows owner before action and keeps approval/denial boundaries' (
-        $message -match 'Absent approval' -and $message -match 'BEFORE recovery global-mcp-windows-cmm.md FULL' -and
-        $message -match 'Shell refusal != MCP outage' -and $message -match 'no wider grants/path bypass/security weakening')
+        $message -match 'Refusal: global-mcp-windows-cmm.md FULL, exact authorized service/root only' -and
+        $message -match 'No parent/source move/junction/ACL weakening or sandbox service-write' -and
+        $message -match 'Shell refusal != MCP outage' -and $message -match 'Approval != restart')
     Check 'watcher freshness is unverified until index status is checked' (
-        $message -match 'watcher freshness UNVERIFIED, check index_status')
+        $message -match 'verify index_status/watcher, then query')
     Check 'guidance contains no unconditional restart or STOP claim' (
         $message -ne '' -and $message -notmatch 'Then STOP|restart is required|server only reads.*start')
     Check 'index guidance includes persistence' ($message -match 'persistence=true')
@@ -211,12 +212,12 @@ TMP = __TEMP__
     [System.IO.File]::SetLastWriteTimeUtc((Get-CbmProjectDbPath -ProjectRoot $configuredProj -CacheDir $cacheValue), [DateTime]::UtcNow.AddHours(-1))
     $r = Invoke-CbmHook 'Cbm-Update-Check\Cbm-Update-Check.ps1' @{hook_event_name='Stop';cwd=$configuredProj;session_id='configured-update'} ''
     Check 'CMM freshness checks use the configured Codex cache and stay advisory' (
-        $r.Exit -eq 0 -and $r.Out -match 'CBM UPDATE CHECK' -and $r.Out -notmatch '"decision":"block"') $r.Out
+        $r.Exit -eq 0 -and $r.Out -match 'Watcher UNVERIFIED: lag/absent' -and $r.Out -notmatch '"decision":"block"') $r.Out
     foreach ($hookName in @('Graph-Read-Check', 'Graph-Update-Check')) {
         $event = if ($hookName -eq 'Graph-Read-Check') {'SessionStart'} else {'Stop'}
         $r = Invoke-CbmHook ($hookName + '\' + $hookName + '.ps1') @{hook_event_name=$event;cwd=$configuredProj;session_id=$hookName} ''
         Check ($hookName + ' still speaks beside the Codex-configured CMM index') (
-            $r.Exit -eq 0 -and $r.Out -match ($hookName.Replace('-', ' ').ToUpperInvariant())) $r.Out
+            $r.Exit -eq 0 -and $r.Out -match $(if ($hookName -eq 'Graph-Read-Check') { 'Graph-Read-Check: advisory graphify-out/graph.json' } else { $hookName.Replace('-', ' ').ToUpperInvariant() })) $r.Out
     }
     Write-Utf8 (Join-Path $configuredProj '.codex\config.toml') "[mcp_servers.codebase-memory-mcp]`nenabled = false`n"
     Check 'a disabled project CMM record cannot fall back to the enabled global record' (
@@ -237,7 +238,7 @@ TMP = __TEMP__
         $event = if ($hookName -eq 'Graph-Read-Check') {'SessionStart'} else {'Stop'}
         $r = Invoke-CbmHook ($hookName + '\' + $hookName + '.ps1') @{hook_event_name=$event;cwd=$configuredProj;session_id=('disabled-' + $hookName)} ''
         Check ($hookName + ' remains active when the project disables CMM') (
-            $r.Exit -eq 0 -and $r.Out -match ($hookName.Replace('-', ' ').ToUpperInvariant())) $r.Out
+            $r.Exit -eq 0 -and $r.Out -match $(if ($hookName -eq 'Graph-Read-Check') { 'Graph-Read-Check: advisory graphify-out/graph.json' } else { $hookName.Replace('-', ' ').ToUpperInvariant() })) $r.Out
     }
     Check 'the configured CMM executable fixture was never changed' (
         [System.IO.File]::ReadAllText($commandValue, [System.Text.Encoding]::UTF8) -eq 'NON-EXECUTABLE FIXTURE: hooks must never launch CMM.')

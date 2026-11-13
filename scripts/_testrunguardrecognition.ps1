@@ -29,7 +29,7 @@
     foreach ($command in $recognised) {
         $r = Fire -HookPath $hc.Script -Cwd $Proj -EventName 'PreToolUse' -Command $command -LocalAppData $hc.LocalAppData
         $message = Get-Message $r.Out
-        Check ('recognised as a test command: ' + $command) ($message -match 'TEST RUN GUARD') ($r.Out + '|' + $r.Err)
+        Check ('recognised as a test command: ' + $command) ($message -match 'Test-Run-Guard:.*(?:advisory|Advisory)') ($r.Out + '|' + $r.Err)
     }
     # DD-15: the printed replacement runs in a POSIX shell, where an unquoted
     # backslash is an escape - C:\tmp\x would reach the runner as C:tmpx.
@@ -88,7 +88,7 @@
     # A here-string opener is a TOKEN: `user@"` glued to a word is plain text and
     # must not hide the next line from recognition; a real `= @'` still does.
     $glued = Fire -HookPath $hc.Script -Cwd $Proj -EventName 'PreToolUse' -Command ('git commit -m "fix: mail me@"' + "`npytest -q tests/") -LocalAppData $hc.LocalAppData
-    Check 'a glued @" is text: the pytest line after it is still recognised' ((Get-Message $glued.Out) -match 'TEST RUN GUARD') $glued.Out
+    Check 'a glued @" is text: the pytest line after it is still recognised' ((Get-Message $glued.Out) -match 'Test-Run-Guard:.*(?:advisory|Advisory)') $glued.Out
     $realHere = Fire -HookPath $hc.Script -Cwd $Proj -EventName 'PreToolUse' -Command ("`$x = @'`npytest -q tests/`n'@") -LocalAppData $hc.LocalAppData
     Check 'a real here-string body is still data, never a command' ($realHere.Exit -eq 0 -and $realHere.Out -eq '') $realHere.Out
 
@@ -97,7 +97,7 @@
     $r = Fire -HookPath $hc.Script -Cwd $Proj -EventName 'PreToolUse' -Command 'pytest -q tests/' -LocalAppData $hc.LocalAppData
     $message = Get-Message $r.Out
     Check 'output is exactly one parseable JSON document' (Test-IsSingleJson $r.Out) $r.Out
-    Check 'Claude shape denies via permissionDecision' ($r.Out -match '"permissionDecision":"deny"') $r.Out
+    Check 'Claude raw-test advisory never grants or denies permission' (($r.Out -match '"additionalContext"|"systemMessage"' -and $r.Out -notmatch '"permissionDecision"|"decision"')) $r.Out
     $replacement = Get-Replacement $message
     Check 'a replacement invocation is returned' ($replacement -ne '') $message
     Check 'the replacement uses -ArgumentsJson, NEVER -Arguments' ($replacement -match '-ArgumentsJson' -and $replacement -notmatch '-Arguments\s') $replacement
@@ -110,7 +110,7 @@
     # repeats them in front so the child still sees them.
     $r = Fire -HookPath $hc.Script -Cwd $Proj -EventName 'PreToolUse' -Command 'CI=1 pytest -q tests/' -LocalAppData $hc.LocalAppData
     $prefixed = Get-Replacement (Get-Message $r.Out)
-    Check 'an assignment-prefixed command is denied' ($r.Out -match '"permissionDecision":"deny"') $r.Out
+    Check 'an assignment-prefixed command receives the ownership advisory' (($r.Out -match '"additionalContext"|"systemMessage"' -and $r.Out -notmatch '"permissionDecision"|"decision"')) $r.Out
     Check 'the replacement starts with the same assignment' ($prefixed -match '^CI=1 pwsh -NoLogo -NoProfile -File') $prefixed
     Check 'the replacement runs pytest, not the assignment' ($prefixed -match '-FilePath "pytest"') $prefixed
     Check 'the prefixed ArgumentsJson holds only the real arguments' ($prefixed -match '\[\\?"-q\\?",\\?"tests/\\?"\]' -or $prefixed -match '\["-q","tests/"\]') $prefixed
@@ -246,9 +246,9 @@
     function Test-BlindWait {
         param([string]$Label, [string]$Command, [bool]$ExpectDeny)
         $rb = Fire -HookPath $hc.Script -Cwd $Proj -EventName 'PreToolUse' -Command $Command -LocalAppData $hc.LocalAppData
-        $denied = ($rb.Out -match '"permissionDecision":"deny"')
+        $denied = ($rb.Exit -eq 0 -and $rb.Out -match '"additionalContext"|"systemMessage"' -and $rb.Out -notmatch '"permissionDecision"|"decision"' -and (Get-Message $rb.Out) -match 'blind wait')
         if ($ExpectDeny) {
-            Check ('DENIED: ' + $Label) ($denied) $rb.Out
+            Check ('ADVISED: ' + $Label) $denied $rb.Out
             # The message is an EXACT safe pattern (a deadline-bounded readiness
             # check), not a generic warning.
             $msg = Get-Message $rb.Out
@@ -373,7 +373,7 @@
     $message1 = Get-Message $r1.Out
     Check 'an invalid value is reported by KEY and falls back to the default' ($message1 -match 'TEST_GUARD_WALL_TIMEOUT_SECONDS' -and $message1 -match 'using the default 1800') $message1
     Check 'an invalid value never leaks the offending value' ($message1 -notmatch 'forever' -and $message1 -notmatch 'maybe') $message1
-    Check 'an invalid value does not disable the gate (it still denies)' ($r1.Out -match '"permissionDecision":"deny"') $r1.Out
+    Check 'an invalid value does not disable the raw-test advisory' (($r1.Out -match '"additionalContext"|"systemMessage"' -and $r1.Out -notmatch '"permissionDecision"|"decision"')) $r1.Out
     $r2 = Fire -HookPath $hcBad.Script -Cwd $Proj -EventName 'PreToolUse' -Command 'pytest -q' -LocalAppData $hcBad.LocalAppData
     Check 'the config complaint is reported ONCE, not on every event' ((Get-Message $r2.Out) -notmatch 'TEST_GUARD_WALL_TIMEOUT_SECONDS') $r2.Out
     $rUnrelated = Fire -HookPath $hcBad.Script -Cwd $Proj -EventName 'PreToolUse' -Command 'git status' -LocalAppData $hcBad.LocalAppData
@@ -386,7 +386,7 @@
     Check 'TEST_GUARD_NEVER_GUARD wins over recognition' ($r.Exit -eq 0 -and $r.Out -eq '') $r.Out
     $hcExtra = New-IsolatedHookCopy -EnvOverrides @{ TEST_GUARD_EXTRA_TEST_COMMANDS = 'bazel test' }
     $r = Fire -HookPath $hcExtra.Script -Cwd $Proj -EventName 'PreToolUse' -Command 'bazel test //...' -LocalAppData $hcExtra.LocalAppData
-    Check 'TEST_GUARD_EXTRA_TEST_COMMANDS extends recognition' ((Get-Message $r.Out) -match 'TEST RUN GUARD') $r.Out
+    Check 'TEST_GUARD_EXTRA_TEST_COMMANDS extends recognition' ((Get-Message $r.Out) -match 'Test-Run-Guard:.*(?:advisory|Advisory)') $r.Out
     $r = Fire -HookPath $hcExtra.Script -Cwd $Proj -EventName 'PreToolUse' -Command 'bazel build //...' -LocalAppData $hcExtra.LocalAppData
     Check 'the extras do not widen recognition beyond the declared fragment' ($r.Exit -eq 0 -and $r.Out -eq '') $r.Out
 
@@ -437,7 +437,7 @@
         param([string]$Name, [string]$Command, [bool]$ExpectRecognised)
         $rd = Fire -HookPath $hcData.Script -Cwd $Proj -EventName 'PreToolUse' -Command $Command -LocalAppData $hcData.LocalAppData
         $msg = Get-Message $rd.Out
-        $seen = ($msg -match 'TEST RUN GUARD')
+        $seen = ($msg -match 'Test-Run-Guard:.*(?:advisory|Advisory)')
         Check $Name ($seen -eq $ExpectRecognised) ('recognised=' + $seen + ' want=' + $ExpectRecognised + ' | ' + $msg)
         return $msg
     }
@@ -517,5 +517,5 @@
                                 'pwsh -NoProfile -File .\tests\Test-Foo\Test-Foo.ps1')) {
         $rExcl = Fire -HookPath $hcExcl.Script -Cwd $Proj -EventName 'PreToolUse' -Command $stillGuarded -LocalAppData $hcExcl.LocalAppData
         Check ('FR-006: a suite outside a hook layout is still refused: ' + $stillGuarded) (
-            (Get-Message $rExcl.Out) -match 'TEST RUN GUARD') $rExcl.Out
+            (Get-Message $rExcl.Out) -match 'Test-Run-Guard:.*(?:advisory|Advisory)') $rExcl.Out
     }

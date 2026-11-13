@@ -85,7 +85,7 @@ try {
     Check 'SessionStart auto-adds required protected patterns' ($ignore -match '(?m)^/\.ai/$' -and $ignore -match '(?m)^/AGENTS\.md$' -and $ignore -match '(?m)^\*\*/\.ignoreme$') $ignore
     # RULE_FILE_PATTERNS=advisory (the default since plan 043): reported, never written.
     Check 'SessionStart reports a local-only path from project rules without writing it' ($ignore -notmatch '(?m)^/private-cache/$' -and $r.Out -match 'private-cache') ($ignore + ' || ' + $r.Out)
-    Check 'pre-task auto-fix reports context' ($r.Out -match '"hookSpecificOutput"' -and $r.Out -match 'Auto-added') $r.Out
+    Check 'pre-task auto-fix reports context' ($r.Out -match '"hookSpecificOutput"' -and $r.Out -match 'Added [0-9]+ \.gitignore patterns:') $r.Out
     $r = Fire -Cwd $repo
     Check 'clean post-task Stop -> silent' ($r.Exit -eq 0 -and $r.Out -eq '') $r.Out
 
@@ -93,7 +93,7 @@ try {
     $r = Fire -Cwd $post
     $postIgnore = [System.IO.File]::ReadAllText((Join-Path $post '.gitignore'))
     Check 'Stop also auto-adds required protected patterns' ($postIgnore -match '(?m)^/\.ai/$') $postIgnore
-    Check 'post-task auto-fix blocks once for review' ($r.Out -match '"decision":"block"' -and $r.Out -match 'Auto-added') $r.Out
+    Check 'post-task auto-fix advises review without blocking' ($r.Exit -eq 0 -and $r.Out -match '"systemMessage"' -and $r.Out -notmatch '"decision"' -and $r.Out -match 'Added [0-9]+ \.gitignore patterns:') $r.Out
 
     $tracked = New-Repo 'tracked'
     [System.IO.File]::WriteAllText((Join-Path $tracked 'AGENTS.md'), 'private', (New-Object System.Text.UTF8Encoding $false))
@@ -118,15 +118,15 @@ try {
     $ruleRepo = New-RuleFileRepo 'rulefile-advisory'
     $r = Fire -Cwd $ruleRepo
     $ruleIgnore = [System.IO.File]::ReadAllText((Join-Path $ruleRepo '.gitignore'))
-    Check 'rule-file pattern: reported, not written into .gitignore' ($ruleIgnore -notmatch '(?m)^/src/?\r?$' -and $r.Out -match 'Patterns NOT protected' -and $r.Out -match '/src') ($r.Out + ' || ' + $ruleIgnore)
-    Check 'rule-file pattern: a tracked file under it is never push-blocked' ($r.Out -notmatch 'TRACKED protected paths') $r.Out
+    Check 'rule-file pattern: reported, not written into .gitignore' ($ruleIgnore -notmatch '(?m)^/src/?\r?$' -and $r.Out -match 'Unprotected: .env EXTRA_PATTERNS/.gitignore review:' -and $r.Out -match '/src') ($r.Out + ' || ' + $ruleIgnore)
+    Check 'rule-file pattern: a tracked file under it is never push-blocked' ($r.Out -notmatch 'TRACKED, preserve/untrack:') $r.Out
     $r = Fire -Cwd $ruleRepo -EventName 'SessionStart'
-    Check 'rule-file advice is said once per set, not on every event' ($r.Out -notmatch 'Patterns NOT protected') $r.Out
+    Check 'rule-file advice is said once per set, not on every event' ($r.Out -notmatch 'Unprotected: .env EXTRA_PATTERNS/.gitignore review:') $r.Out
     $protectHook = New-ConfiguredIgnoreHookCopy -EnvOverrides @{ RULE_FILE_PATTERNS = 'write-and-protect' }
     $protRepo = New-RuleFileRepo 'rulefile-protect'
     $r = Fire -Cwd $protRepo -HookPath $protectHook
     $protIgnore = [System.IO.File]::ReadAllText((Join-Path $protRepo '.gitignore'))
-    Check 'RULE_FILE_PATTERNS=write-and-protect keeps the earlier behaviour (written and protected)' ($protIgnore -match '(?m)^/src\r?$' -and $r.Out -match 'TRACKED protected paths' -and $r.Out -match 'src/a.txt') ($r.Out + ' || ' + $protIgnore)
+    Check 'RULE_FILE_PATTERNS=write-and-protect keeps the earlier behaviour (written and protected)' ($protIgnore -match '(?m)^/src\r?$' -and $r.Out -match 'TRACKED, preserve/untrack:' -and $r.Out -match 'src/a.txt') ($r.Out + ' || ' + $protIgnore)
 
     # =====================================================================
     Write-Host '--- .env.example and other template files are allowed to stay tracked ---' -ForegroundColor Cyan
@@ -255,7 +255,7 @@ try {
     # Reproduced consequence: alphabetically sorting an existing .gitignore moves
     # every '!' line above '/.env.*' ('!' < '/' in ASCII), which both re-ignores the
     # public templates AND makes an already-tracked .env.example match the protected
-    # /.env.* pattern - a false "TRACKED protected paths" block on a legitimately
+    # /.env.* pattern - a false "TRACKED, preserve/untrack:" block on a legitimately
     # public file. The hook must repair the precedence, never just accept presence.
     $sortedRepo = New-Repo 'sorted-gitignore'
     $null = Fire -Cwd $sortedRepo -EventName 'SessionStart'
@@ -411,7 +411,7 @@ try {
     $pushOutput = (& git -C $pushRepo push -u origin main 2>&1 | Out-String)
     $pushExit = $LASTEXITCODE
     $ErrorActionPreference = 'Stop'
-    Check 'first push is blocked after auto-fixing missing ignore rules' ($pushExit -ne 0 -and $pushOutput -match 'IGNORE RULES CHECK' -and (Test-Path -LiteralPath (Join-Path $pushRepo '.gitignore'))) $pushOutput
+    Check 'first push advises after auto-fixing missing ignore rules' ($pushExit -eq 0 -and $pushOutput -match 'Ignore-Rules-Check: Ignore' -and (Test-Path -LiteralPath (Join-Path $pushRepo '.gitignore'))) $pushOutput
 
     & git -C $pushRepo add .gitignore
     & git -C $pushRepo commit -q -m c2
@@ -517,7 +517,7 @@ try {
         ) -join "`n")
     $rs = Fire -Cwd $sorted -EventName 'SessionStart'
     Check 'sorted: a negation hoisted above its ignore rule IS re-added' (
-        $rs.Out -match 'Auto-added' -and $rs.Out -match '!/\.env\.example') $rs.Out
+        $rs.Out -match 'Added [0-9]+ \.gitignore patterns:' -and $rs.Out -match '!/\.env\.example') $rs.Out
 
     # =====================================================================
     # A session whose cwd drifted into a SUBFOLDER (2026-09-26, two projects):
@@ -552,7 +552,7 @@ try {
         -not (Test-Path -LiteralPath (Join-Path $driftDeep '.gitignore')) -and
         -not (Test-Path -LiteralPath (Join-Path $driftIncomplete 'src\.gitignore'))) $ri.Out
     Check 'drift: the report names the repository root, not the subfolder' (
-        $ri.Out.Replace('\\', '\').Contains('IGNORE RULES CHECK (' + $driftIncomplete + ')')) $ri.Out
+        $ri.Out.Replace('\\', '\').Contains('Ignore (' + $driftIncomplete + ')')) $ri.Out
 
     # Outside a git work tree the hook keeps its old behaviour: it does nothing.
     $plainFolder = Join-Path $Work 'not-a-repo\sub'

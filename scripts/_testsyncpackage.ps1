@@ -105,7 +105,7 @@
     Write-Config -Path $pkgCfg -Routes @((New-Route 'src-to-dst' (New-Endpoint 'PkgSrc' $src) (New-Endpoint 'PkgDst' $dst))) -Extensions @('.md')
 
     $r = Fire -Cwd $dst -Config $pkgCfg
-    Check 'a first change is announced' ($r.Out -match 'KNOWLEDGE REVIEW REQUIRED') $r.Out
+    Check 'a first change is announced' ((Test-SyncReviewNotice $r.Out)) $r.Out
     $pkgInbox = Join-Path $dst '.ai\.cross-project-sync\inbox'
     $firstGeneration = @(Get-ChildItem -LiteralPath $pkgInbox -Recurse -Directory -Filter '*' -ErrorAction SilentlyContinue |
             Where-Object { Test-Path -LiteralPath (Join-Path $_.FullName 'manifest.json') })
@@ -119,7 +119,7 @@
     # survives until the new one is verified.
     Set-Content -LiteralPath (Join-Path $src '.ai\LESSON.md') "# two`nsecond" -Encoding utf8
     $r2 = Fire -Cwd $dst -Config $pkgCfg
-    Check 'the changed source is announced again' ($r2.Out -match 'KNOWLEDGE REVIEW REQUIRED') $r2.Out
+    Check 'the changed source is announced again' ((Test-SyncReviewNotice $r2.Out)) $r2.Out
     # -Recurse: the inbox holds one directory PER ROUTE, and the generations live
     # inside that. Listing only the top level finds the route directory, which
     # carries no manifest - and then finds no generation at all.
@@ -162,7 +162,7 @@
     Remove-Item -LiteralPath $secondGeneration[0].FullName -Recurse -Force
     $r3 = Fire -Cwd $dst -Config $pkgCfg
     Check 'a pending record whose package is gone is rebuilt, not announced as a dead path' (
-        $r3.Out -match 'KNOWLEDGE REVIEW REQUIRED') $r3.Out
+        (Test-SyncReviewNotice $r3.Out)) $r3.Out
     $rebuilt = @(Get-ChildItem -LiteralPath $pkgInbox -Recurse -Directory -ErrorAction SilentlyContinue |
             Where-Object { Test-Path -LiteralPath (Join-Path $_.FullName 'manifest.json') })
     Check 'and the rebuilt generation really exists on disk' ($rebuilt.Count -eq 1) ([string]$rebuilt.Count)

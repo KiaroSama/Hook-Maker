@@ -19,7 +19,7 @@ function Invoke-IgnoreProgressContract {
     }
     Check 'ignore staged diagnostic is queried only after a protected index match' $lazy
     Check 'ignore index and match protocol preserves literal quoted paths' ($text.Contains("'ls-files','-z'")-and$text.Contains("'core.quotePath=false','check-ignore','--no-index','-v'"))
-    Check 'native ignore reports actual fixed phases only on stderr' ($text.Contains('[Hook Maker] Ignore: repository')-and$text.Contains('[Hook Maker] Ignore: index')-and$text.Contains('[Hook Maker] Ignore: batch')-and$text.Contains('if ($GitPrePush)'))
+    Check 'native ignore keeps clean runs quiet and routes actionable findings to the native adapter' ($text.Contains('Write-NativeFinding -HookName Ignore-Rules-Check')-and$text.Contains('if ($GitPrePush)')-and-not$text.Contains('[Hook Maker] Ignore: batch complete'))
 }
 
 function Invoke-IgnoreProgressRegression {
@@ -44,7 +44,7 @@ function Invoke-IgnoreProgressRegression {
     }
     foreach($hostExe in @((Get-Process -Id $PID).Path,'powershell.exe')|Select-Object -Unique){
         $native=Invoke-NativeIgnore $nested $Hook $hostExe
-        Check 'native clean index permits staged Unicode source and public template from nested cwd' ($native.Exit-eq0-and$native.Out-eq''-and$native.Err.Contains('[Hook Maker] Ignore: repository')-and$native.Err.Contains('[Hook Maker] Ignore: index')-and$native.Err.Contains('[Hook Maker] Ignore: batch complete')) $native.Err
+        Check 'native clean index permits staged Unicode source and public template silently from nested cwd' ($native.Exit-eq0-and$native.Out-eq''-and$native.Err-eq'') $native.Err
         Check 'native progress contains no root or source path' (-not$native.Err.Contains($repo)-and-not$native.Err.Contains($name)) $native.Err
     }
     Check 'native clean path preserves root ignore bytes' ([Convert]::ToBase64String($before)-ceq[Convert]::ToBase64String([IO.File]::ReadAllBytes((Join-Path $repo '.gitignore'))))
@@ -53,15 +53,15 @@ function Invoke-IgnoreProgressRegression {
     Write-Utf8 $private 'controlled private fixture'
     & git -C $repo add -f -- $private
     $blocked=Invoke-NativeIgnore $nested $Hook (Get-Process -Id $PID).Path
-    Check 'native index includes forced staged protected Unicode path and keeps STAGED diagnostic' ($blocked.Exit-ne0-and$blocked.Out-eq''-and$blocked.Err-match'TRACKED'-and$blocked.Err-match'STAGED'-and$blocked.Err.Contains('private ['+[char]0x03A9+'].txt')) $blocked.Err
+    Check 'native protected-path advisory includes forced staged Unicode path and STAGED diagnostic' ($blocked.Exit-eq0-and$blocked.Out-eq''-and$blocked.Err-match'TRACKED'-and$blocked.Err-match'STAGED'-and$blocked.Err.Contains('private ['+[char]0x03A9+'].txt')) $blocked.Err
     Check 'native protected refusal preserves local file bytes' ([IO.File]::ReadAllText($private,[Text.Encoding]::UTF8)-ceq'controlled private fixture')
     $empty=New-Repo 'native empty index';$null=Fire -Cwd $empty -EventName SessionStart
     $native=Invoke-NativeIgnore $empty $Hook (Get-Process -Id $PID).Path
-    Check 'native empty index has no invented batch progress' ($native.Exit-eq0-and$native.Out-eq''-and$native.Err.Contains('[Hook Maker] Ignore: index')-and-not$native.Err.Contains('[Hook Maker] Ignore: batch')) $native.Err
+    Check 'native empty index has no invented batch progress' ($native.Exit-eq0-and$native.Out-eq''-and$native.Err-eq'') $native.Err
     $shim=Join-Path $Work 'ignore-error-shim';[void][IO.Directory]::CreateDirectory($shim)
     $realGit=@(Get-Command git.exe -CommandType Application)[0].Source
     Write-Utf8 (Join-Path $shim 'git.ps1') ("if (`$args -contains 'ls-files') { exit 128 }`r`n& '"+$realGit.Replace("'","''")+"' @args`r`nexit `$LASTEXITCODE")
     $withoutGit=@($env:PATH-split';'|Where-Object{$_-and-not(Test-Path -LiteralPath (Join-Path $_ 'git.exe'))})
     $native=Invoke-NativeIgnore $empty $Hook (Get-Process -Id $PID).Path @{PATH=(@($shim)+$withoutGit)-join';'}
-    Check 'native Git inventory error is nonzero with no completion marker' ($native.Exit-ne0-and-not$native.Err.Contains('[Hook Maker] Ignore: batch complete')) $native.Err
+    Check 'native Git inventory error is advisory UNKNOWN, never an all-clear' ($native.Exit-eq0-and$native.Out-eq''-and$native.Err.Contains('Ignore-Rules-Check: Ignore coverage UNKNOWN; Git inventory/classification unavailable. Retry Git access; no all-clear.')-and-not$native.Err.Contains('[Hook Maker] Ignore: batch complete')) $native.Err
 }

@@ -204,7 +204,7 @@ $FeaturePrompt = 'add a dark mode option to the settings page'
 # The self-recognition assertions below are only worth anything if this really
 # is the text the hook writes; a copy kept passing here once while the hook's
 # wording had already moved on.
-$bannerPattern = '(?ms)^\$chainNote\s*=\s*@\(\s*\r?\n\s*''([^'']*)'''
+$bannerPattern = '(?m)^\$chainNote\s*=\s*''([^'']*)'''
 $bannerMatch = [regex]::Match([System.IO.File]::ReadAllText($Hook), $bannerPattern)
 if (-not $bannerMatch.Success) {
     Write-Host 'Could not read the hook''s own banner out of its chain note.' -ForegroundColor Red

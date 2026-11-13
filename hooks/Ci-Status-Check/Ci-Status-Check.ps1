@@ -122,10 +122,33 @@ $ghBudgetPath = Join-Path $PSScriptRoot '_ghbudget.ps1'
 foreach ($siblingName in @('_runneralive.ps1', '_docsonly.ps1')) { $siblingPath = Join-Path $PSScriptRoot $siblingName; if (Test-Path -LiteralPath $siblingPath -PathType Leaf) { . $siblingPath } }
 if (Test-Path -LiteralPath $ghBudgetPath -PathType Leaf) { . $ghBudgetPath }
 if ($null -eq (Get-Command -Name 'Invoke-GhBounded' -ErrorAction SilentlyContinue)) {
-    function Initialize-GhBudget { param([int]$Seconds) }
-    function Invoke-GhBounded { param([string[]]$ArgumentList) return (Invoke-QuietCommand -FilePath gh -ArgumentList $ArgumentList) }
-    function Test-GhAuthenticated { $null = Invoke-QuietCommand -FilePath gh -ArgumentList @('auth', 'status'); return ($LASTEXITCODE -eq 0) }
-    $script:GhBudgetExhausted = $false
+    # Restore the optional-module bounds: missing _ghbudget must not reset deadlines or bypass API caps.
+    function Initialize-GhBudget {
+        param([int]$Seconds)
+        $script:GhDeadlineUtc=[DateTime]::UtcNow.AddSeconds([Math]::Max(5,[Math]::Min(300,$Seconds)))
+        $script:GhBudgetExhausted=$false;$script:CiApiScopeKey=''
+        if(Get-Command Initialize-CiApiBatch -ErrorAction SilentlyContinue){Initialize-CiApiBatch}
+    }
+    function Get-GhRemainingSeconds {
+        $left=[Math]::Max(0,[Math]::Floor(($script:GhDeadlineUtc-[DateTime]::UtcNow).TotalSeconds))
+        if(Get-Command Get-HookRemainingSeconds -ErrorAction SilentlyContinue){$left=[Math]::Min($left,(Get-HookRemainingSeconds))}
+        return [int]$left
+    }
+    function Invoke-GhBounded {
+        param([string[]]$ArgumentList)
+        $left=Get-GhRemainingSeconds
+        if($left-lt1){$script:GhBudgetExhausted=$true;$global:LASTEXITCODE=124;return @()}
+        if($ArgumentList.Count-eq2-and$ArgumentList[0]-ceq'api'-and$script:CiApiScopeKey-ne''){
+            $answer=Read-CiBatchApi -Endpoint $ArgumentList[1] -ScopeKey $script:CiApiScopeKey
+            if($null-eq$answer){return @()}
+            return (ConvertTo-Json -InputObject $answer -Depth 64 -Compress)
+        }
+        $answer=Invoke-QuietCommand -FilePath gh -ArgumentList $ArgumentList -TimeoutSeconds ([Math]::Min(20,$left))
+        if($LASTEXITCODE-ne0-and(Get-GhRemainingSeconds)-lt1){$script:GhBudgetExhausted=$true}
+        return $answer
+    }
+    function Test-GhAuthenticated { $null=Invoke-GhBounded @('auth','status');return ($LASTEXITCODE-eq0) }
+    $script:GhBudgetExhausted=$false
 }
 
 $script:AllowedExternalClassifications = @(
@@ -498,6 +521,8 @@ if (Test-Path -LiteralPath $externalStatePath -PathType Leaf) {
             Remove-Item -LiteralPath $externalStatePath -Force -ErrorAction SilentlyContinue
             $snapshot = $recheck
             Save-State -Outcome 'verified' -Evidence 'ci-green'    # a re-queried all-success snapshot
+            # Preserve the execution/report distinction after recovery, not a fabricated all-test claim.
+            Write-CiVisibilityReminder $hookInput $sha $stateDir $eventName
             exit 0
         }
         if ($recheck.Fingerprint -eq $extFingerprint) {
@@ -551,7 +576,7 @@ if ($snapshot.Runs.Count -eq 0 -and $snapshot.FailedRuns.Count -eq 0 -and $snaps
         exit 0
     }
     $script:DocsCarryoverReason = ''
-    if (Get-Command -Name 'Invoke-DocsOnlyCarryover' -ErrorAction SilentlyContinue) { Invoke-DocsOnlyCarryover -ProjectRoot $cwd -Sha $sha -Branch $branch -RepoSlug $repoSlug -StatePath $statePath -EventName $eventName }
+    if (Get-Command -Name 'Invoke-DocsOnlyCarryover' -ErrorAction SilentlyContinue) { Invoke-DocsOnlyCarryover -ProjectRoot $cwd -Sha $sha -Branch $branch -RepoSlug $repoSlug -StatePath $statePath -EventName $eventName -RequireLatestStatus }
     if ($script:DocsCarryoverReason -ne '') {
         Write-Block -Outcome 'pending' -Reason ('docs carryover UNVERIFIED ' + $sha7 + ' (' + $repoSlug + '): ' + $script:DocsCarryoverReason + '. Skip=no final-SHA run; waiting cannot qualify. Verify limit; no seeded success/duplicate CI.')
     }
@@ -629,6 +654,8 @@ if (-not $snapshot.AllSuccess) {
 }
 # Every required workload was positively verified for this exact source.
 Save-State -Outcome 'verified' -Evidence 'ci-green'    # every run for this exact commit succeeded
+# Restoring the entrypoint must retain its existing bounded report/UI evidence reminder.
+Write-CiVisibilityReminder $hookInput $sha $stateDir $eventName
 if (Get-Command -Name 'Invoke-RunnerLeftRunningGate' -ErrorAction SilentlyContinue) { Invoke-RunnerLeftRunningGate -ProjectRoot $cwd -Sha $sha -StateDir $stateDir -HookInput $hookInput -EventName $eventName }; exit 0
 }
 catch { if ($null -ne $gateReceipt) { $gateReceipt.Crashed = $true }; throw }

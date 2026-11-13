@@ -62,13 +62,13 @@ $fixtureState=Join-Path (Join-Path $env:LOCALAPPDATA 'HookMaker/state') ('CiStat
 $run.status='in_progress';$run.conclusion=$null
 [IO.File]::WriteAllText((Join-Path $MockDir 'raw-runs.json'),(@{total_count=1;workflow_runs=@($run)}|ConvertTo-Json -Depth 10 -Compress),$utf8)
 $initial=Fire -HookPath $reviewHook -Cwd $reviewRepo -EventName Stop -Extra @{session_id='reviewed-pending'}
-Check 'reviewed public Stop genuinely running remains blocking' ($initial.Out-match'not finished yet') $initial.Out
+Check 'reviewed public Stop genuinely running remains advisory' ($initial.Exit-eq0-and$initial.Out-match'queued/in-progress'-and$initial.Out-match'await SHA'-and$initial.Out-notmatch'"decision"') $initial.Out
 $run.status='completed';$run.conclusion='success'
 [IO.File]::WriteAllText((Join-Path $MockDir 'raw-runs.json'),(@{total_count=1;workflow_runs=@($run)}|ConvertTo-Json -Depth 10 -Compress),$utf8)
 foreach($hostKind in @('primary','framework')){
     $exe=if($hostKind-eq'framework'){'powershell.exe'}else{''}
     $result=Fire -HookPath $reviewHook -Cwd $reviewRepo -EventName Stop -Exe $exe -Extra @{session_id=('reviewed-'+$hostKind)}
-    Check ('reviewed public Stop manual matrix reusable skipped '+$hostKind) ($result.Exit-eq0-and$result.Out-match'Suite/case reports \+ commit/check UI UNVERIFIED'-and$result.Out-notmatch'"decision"'-and$result.Err-eq'') ($result.Out+$result.Err)
+    Check ('reviewed public Stop manual matrix reusable skipped '+$hostKind) ($result.Exit-eq0-and$result.Out-match'Reports/UI UNVERIFIED'-and$result.Out-notmatch'"decision"'-and$result.Err-eq'') ($result.Out+$result.Err)
 }
 $lines=[IO.File]::ReadAllLines($fixtureState,[Text.Encoding]::UTF8)
 Check 'fresh terminal review replaces actual pending with validated provenance' ($lines[1]-ceq'verified'-and$lines[3]-ceq'ci-green'-and$lines[4]-match'reviewed')

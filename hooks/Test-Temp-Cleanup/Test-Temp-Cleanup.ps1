@@ -241,8 +241,9 @@ function Write-ClientMessage {
     # allowance cannot be overspent; a refusal emits nothing and the finding
     # stays recorded as unresolved. An advisory claims nothing - it never
     # stopped anything - so it goes straight out.
+    # Retained residue is the unsafe-disposal gate, never generic advisory severity.
     if ($kind -eq 'block') {
-        $emit = Write-StopBlockResult -HookInput $script:hookInput -HookName 'Test-Temp-Cleanup' -EventName $EventName -Reason $Message
+        $emit = Write-StopBlockResult -HookInput $script:hookInput -HookName 'Test-Temp-Cleanup' -EventName $EventName -Reason $Message -Condition 'unsafe-delete'
         if ($emit.ExitCode -ne 0) { exit $emit.ExitCode }
         return
     }

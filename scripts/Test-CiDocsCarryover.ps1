@@ -188,7 +188,7 @@ try {
         $before=[Convert]::ToBase64String([IO.File]::ReadAllBytes((Join-Path $Work 'concurrent.txt')))
         $latest=Start-BoundedProcess -FilePath $hostExe -ArgumentList @('-NoLogo','-NoProfile','-NonInteractive','-File',$latestWriter) -TimeoutMs 30000 -RedirectStandardOutput $latestOut -RedirectStandardError $latestErr
         $text=[IO.File]::ReadAllText($latestOut,[Text.Encoding]::UTF8)
-        Check ($hostExe+': latest-status requirement refuses ancestor-only completion without rewriting evidence') ($latest.ExitCode-eq0-and$text-match'"decision"'-and$text.Contains($sha)-and$text.Contains($script:BaseSha)-and$text-match'Latest-status required'-and[IO.File]::ReadAllText($latestErr)-eq''-and[Convert]::ToBase64String([IO.File]::ReadAllBytes((Join-Path $Work 'concurrent.txt')))-ceq$before)
+        Check ($hostExe+': latest-status requirement refuses ancestor-only completion without rewriting evidence') ($latest.ExitCode-eq0-and$text -match '"systemMessage"' -and $text -notmatch '"decision"'-and$text.Contains($sha)-and$text.Contains($script:BaseSha)-and$text-match'Latest-status required'-and[IO.File]::ReadAllText($latestErr)-eq''-and[Convert]::ToBase64String([IO.File]::ReadAllBytes((Join-Path $Work 'concurrent.txt')))-ceq$before)
     }
     & {
         param($hooks,$scripts)

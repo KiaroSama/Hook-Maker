@@ -270,7 +270,7 @@ try {
         $r = Invoke-LocationHook -Client $client -Payload @{ hook_event_name = 'PreToolUse'; cwd = $Project; session_id = ('proc-' + $client); tool_name = 'Bash'; tool_input = @{ command = 'ollama pull llama3' } }
         $parsed = $null; try { $parsed = $r.Out | ConvertFrom-Json } catch { }
         Check ($client + ': exit 0') ($r.Exit -eq 0) ([string]$r.Exit)
-        Check ($client + ': additionalContext carries the advisory') ($null -ne $parsed -and [string]$parsed.hookSpecificOutput.additionalContext -match '^INSTALL LOCATION: ollama would install llama3') $r.Out
+        Check ($client + ': additionalContext carries the advisory') ($null -ne $parsed -and [string]$parsed.hookSpecificOutput.additionalContext -match '^Install-Location-Check: Advisory\. INSTALL LOCATION: ollama would install llama3') $r.Out
         Check ($client + ': no permissionDecision - an advisory never approves or denies') ($r.Out -notmatch 'permissionDecision' -and $r.Out -notmatch '"decision"') $r.Out
         $again = Invoke-LocationHook -Client $client -Payload @{ hook_event_name = 'PreToolUse'; cwd = $Project; session_id = ('proc-' + $client); tool_name = 'Bash'; tool_input = @{ command = 'ollama pull llama3' } }
         Check ($client + ': the repeat in the same session is silent') ($again.Exit -eq 0 -and $again.Out.Trim() -eq '') $again.Out

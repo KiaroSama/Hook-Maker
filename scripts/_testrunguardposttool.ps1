@@ -116,7 +116,7 @@
     $r = Fire -HookPath $hcCodex.Script -Cwd $Proj -EventName 'PreToolUse' -Command 'pytest -q' -LocalAppData $hcCodex.LocalAppData -NoClaudeProjectDir
     Check 'Codex block uses systemMessage, never hookSpecificOutput' ($r.Out -match '"systemMessage"' -and $r.Out -notmatch 'hookSpecificOutput') $r.Out
     Check 'Codex output is one parseable JSON document' (Test-IsSingleJson $r.Out) $r.Out
-    Check 'Codex block exits 2 and feeds the reason back on stderr' ($r.Exit -eq 2 -and $r.Err -match 'TEST RUN GUARD') ([string]$r.Exit + '|' + $r.Err)
+    Check 'Codex raw-test advisory exits 0 with no stderr' ($r.Exit -eq 0 -and $r.Err -eq '' -and $r.Out -match 'Test-Run-Guard:' -and $r.Err -match 'Test-Run-Guard:.*(?:advisory|Advisory)') ([string]$r.Exit + '|' + $r.Err)
     $r = Fire -HookPath $hcCodex.Script -Cwd $Proj -EventName 'PreToolUse' -Command 'git status' -LocalAppData $hcCodex.LocalAppData -NoClaudeProjectDir
     Check 'Codex is equally silent on unrelated commands' ($r.Exit -eq 0 -and $r.Out -eq '' -and $r.Err -eq '') ($r.Out + '|' + $r.Err)
 
@@ -172,7 +172,7 @@
     $shipMsg = Get-Message $r.Out
     $shipRepl = Get-Replacement $shipMsg
     Check 'a hook with the runner shipped beside it BLOCKS a raw command in a bare project' (
-        $r.Out -match '"permissionDecision":"deny"' -and $shipRepl -match '-ArgumentsJson') $r.Out
+        ($r.Out -match '"additionalContext"|"systemMessage"' -and $r.Out -notmatch '"permissionDecision"|"decision"') -and $shipRepl -match '-ArgumentsJson') $r.Out
     Check 'the shipped-beside runner is the one referenced in the replacement' (
         $shipRepl -match 'scripts.Run-Tests-Guarded\.ps1') $shipRepl
 

@@ -11,14 +11,14 @@
     $hcDd = New-IsolatedHookCopy
     $rDd = Fire -HookPath $hcDd.Script -Cwd $Proj -EventName 'PreToolUse' -Command 'pytest -q tests/' -LocalAppData $hcDd.LocalAppData
     $msgDd = Get-Message $rDd.Out
-    Check 'the deny still denies (guard behavior unchanged by the guidance line)' ($rDd.Out -match '"permissionDecision":"deny"') $rDd.Out
+    Check 'raw tests advise without a permission decision' (($rDd.Out -match '"additionalContext"|"systemMessage"' -and $rDd.Out -notmatch '"permissionDecision"|"decision"')) $rDd.Out
     # Optimization/cadence/CI/private/local exceptions/native bounds/waits now
     # live behind one mandatory full owner before runs. These assertions prove
     # the pointer and inline owner lifetime, not private rule contents or execution.
     Check 'the deny requires complete test policy before any run' (
-        $msgDd -match 'BEFORE runs: global-test-rules\.md FULL') $msgDd
+        $msgDd -match 'global-test-rules\.md FULL' -and $msgDd -match 'CI first: exact pushed-SHA result') $msgDd
     Check 'the deny keeps guarded lifetime and forbids background wrappers' (
-        $msgDd -match 'Guard owns lifetime; no background wrapper') $msgDd
+        $msgDd -match 'wall/idle/tree ownership' -and $msgDd -match 'no detached owner') $msgDd
     # The cadence text is GUIDANCE on the note: it never reaches the command.
     $replDd = Get-Replacement $msgDd
     Check 'the cadence line rides the note, never the replacement command' (
@@ -141,14 +141,14 @@
     New-Item -ItemType Directory -Path $rlState -Force | Out-Null
     $rlKey = & { . $HookLib; Get-ShortHash 'sess1' }
     [System.IO.File]::WriteAllText((Join-Path $rlState ('ReplyLanguage-' + $rlKey + '.txt')), 'persian')
-    $rRl = Fire -HookPath (Join-Path $rlDir 'Test-Run-Guard.ps1') -Cwd $Proj -EventName 'PreToolUse' -Command 'pytest -q tests/' -LocalAppData $rlLocal
+    $rRl = Fire -HookPath (Join-Path $rlDir 'Test-Run-Guard.ps1') -Cwd $Proj -EventName 'PreToolUse' -Command 'pytest -q tests/' -LocalAppData $rlLocal -SessionId 'sess1'
     $msgRl = Get-Message $rRl.Out
-    Check 'RL-D1 the deny still denies and its text ends with the LANGUAGE line' (
-        $rRl.Out -match '"permissionDecision":"deny"' -and
+    Check 'RL-D1 the ownership advisory ends with the LANGUAGE line' (
+        ($rRl.Out -match '"additionalContext"|"systemMessage"' -and $rRl.Out -notmatch '"permissionDecision"|"decision"') -and
         $msgRl.TrimEnd().EndsWith('Output is untranslated.') -and
         $msgRl -match 'LANGUAGE: replies/progress Persian') $msgRl
     [System.IO.File]::Delete((Join-Path $rlState ('ReplyLanguage-' + $rlKey + '.txt')))
-    $rRl = Fire -HookPath (Join-Path $rlDir 'Test-Run-Guard.ps1') -Cwd $Proj -EventName 'PreToolUse' -Command 'pytest -q tests/' -LocalAppData $rlLocal
+    $rRl = Fire -HookPath (Join-Path $rlDir 'Test-Run-Guard.ps1') -Cwd $Proj -EventName 'PreToolUse' -Command 'pytest -q tests/' -LocalAppData $rlLocal -SessionId 'sess1'
     Check 'RL-D2 with no recorded language the deny carries no LANGUAGE line' (
-        $rRl.Out -match '"permissionDecision":"deny"' -and (Get-Message $rRl.Out) -notmatch 'LANGUAGE:') $rRl.Out
+        ($rRl.Out -match '"additionalContext"|"systemMessage"' -and $rRl.Out -notmatch '"permissionDecision"|"decision"') -and (Get-Message $rRl.Out) -notmatch 'LANGUAGE:') $rRl.Out
 

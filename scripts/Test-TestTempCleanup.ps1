@@ -172,10 +172,12 @@ function Get-CandidateLinePattern {
 # indirect behind the complete Cleanup owner BEFORE disposal. These assertions
 # prove routing and inline authority, not that private owner content was applied.
 $InstructionFragments = @(
-    'BEFORE disposal: global-project-lifecycle-rules.md Cleanup FULL',
-    'Only proven disposable exact owned paths: permanent deletion, NOT Recycle Bin',
-    'uncertain retain/report',
-    'Hook deletes nothing'
+    'Inspect before deletion.',
+    'Name != ownership.',
+    'Keep tracked/staged/linked/diagnostic/ambiguous/protected/user data.',
+    'Delete only independently proven disposable project residue.',
+    'Agent tools only; hook never deletes.',
+    'Uncertain: retain/report.'
 )
 function Test-HasFullInstruction {
     param([string]$Text)
@@ -513,8 +515,8 @@ try {
     $r = Fire -HookPath $hc6.Script -Cwd $proj6 -EventName 'Stop' -LocalAppData $hc6.LocalAppData
     Check 'without a baseline NOTHING is deleted' ((Test-Path -LiteralPath $orphanCache) -and (Test-Path -LiteralPath $orphanTmp))
     Check 'without a baseline every candidate is ambiguous, never disposable' (
-        $r.Out -match 'class=ambiguous' -and $r.Out -notmatch 'class=likely-disposable') $r.Out
-    Check 'the named cause baseline-missing is reported' ($r.Out -match 'baseline-missing') $r.Out
+        $r.Exit -eq 0 -and $r.Out -eq '' -and (Get-RecordedCategory $hc6.LocalAppData $proj6) -eq 'unknown' -and (Get-RecordedResult $hc6.LocalAppData $proj6).candidateCount -eq 2) $r.Out
+    Check 'the named cause baseline-missing is reported' (@((Get-RecordedResult $hc6.LocalAppData $proj6).partialCauses) -contains 'baseline-missing') $r.Out
     Check 'the recorded category is unknown, never clean' ((Get-RecordedCategory $hc6.LocalAppData $proj6) -eq 'unknown') (Get-RecordedCategory $hc6.LocalAppData $proj6)
 
     # =====================================================================
@@ -524,13 +526,13 @@ try {
     Write-Utf8 (Join-Path $proj7 'a.txt') 'a'
     Add-Commit $proj7 'init'
     $rStart = Fire -HookPath $hc7.Script -Cwd $proj7 -EventName 'SessionStart' -LocalAppData $hc7.LocalAppData
-    Check 'SessionStart is NOT silent when its own baseline scan was partial' (
-        $rStart.Out -match 'PARTIAL' -and $rStart.Out -match 'max-scan-entries-reached') $rStart.Out
+    Check 'SessionStart stays silent but records its partial baseline' (
+        $rStart.Exit -eq 0 -and $rStart.Out -eq '' -and @((Get-RecordedResult $hc7.LocalAppData $proj7).partialCauses) -contains 'max-scan-entries-reached') $rStart.Out
     $r = Fire -HookPath $hc7.Script -Cwd $proj7 -EventName 'Stop' -LocalAppData $hc7.LocalAppData
     Check 'hitting the scan-entry ceiling records partial, NEVER clean' ((Get-RecordedCategory $hc7.LocalAppData $proj7) -eq 'partial') (Get-RecordedCategory $hc7.LocalAppData $proj7)
-    Check 'the named cause max-scan-entries-reached is reported' ($r.Out -match 'max-scan-entries-reached') $r.Out
-    Check 'partial coverage gates completion so clean cannot be claimed' (
-        $r.Out -match '"decision":"block"' -and $r.Out -match 'NOT clean') $r.Out
+    Check 'the named cause max-scan-entries-reached is reported' (@((Get-RecordedResult $hc7.LocalAppData $proj7).partialCauses) -contains 'max-scan-entries-reached') $r.Out
+    Check 'partial coverage stays silent without a clean claim' (
+        $r.Exit -eq 0 -and $r.Out -eq '' -and -not (Get-RecordedResult $hc7.LocalAppData $proj7).scanComplete) $r.Out
 
     # =====================================================================
     Write-Host '--- an unreadable directory yields a NAMED partial cause ---' -ForegroundColor Cyan
@@ -552,7 +554,7 @@ try {
         try { Get-ChildItem -LiteralPath $blocked -Force -ErrorAction Stop | Out-Null } catch { $reallyBlocked = $true }
         Check 'the fixture directory really cannot be enumerated' $reallyBlocked
         $r = Fire -HookPath $hc8.Script -Cwd $proj8 -EventName 'Stop' -LocalAppData $hc8.LocalAppData
-        Check 'a directory-read failure is reported as directory-unreadable, not swallowed' ($r.Out -match 'directory-unreadable') $r.Out
+        Check 'a directory-read failure is reported as directory-unreadable, not swallowed' ($r.Out -eq '' -and @((Get-RecordedResult $hc8.LocalAppData $proj8).partialCauses) -contains 'directory-unreadable') $r.Out
         Check 'a directory-read failure records partial, never clean' ((Get-RecordedCategory $hc8.LocalAppData $proj8) -eq 'partial') (Get-RecordedCategory $hc8.LocalAppData $proj8)
         Check 'the blocked directory is still on disk afterwards' (Test-Path -LiteralPath $blocked)
     }
@@ -577,8 +579,8 @@ try {
     $r = Fire -HookPath $hc9.Script -Cwd $proj9 -EventName 'Stop' -LocalAppData $hc9.LocalAppData
     Check 'a candidate with unknown git state still exists' (Test-Path -LiteralPath $noGitCache)
     Check 'it is classified unknown-git-state, never likely-disposable' (
-        $r.Out -match 'class=unknown-git-state' -and $r.Out -notmatch 'class=likely-disposable') $r.Out
-    Check 'git=unknown is reported explicitly, not downgraded to untracked' ($r.Out -match 'git=unknown') $r.Out
+        $r.Exit -eq 0 -and $r.Out -eq '' -and (Get-RecordedResult $hc9.LocalAppData $proj9).candidateCount -eq 1 -and (Get-RecordedCategory $hc9.LocalAppData $proj9) -eq 'unknown') $r.Out
+    Check 'git=unknown is reported explicitly, not downgraded to untracked' (@((Get-RecordedResult $hc9.LocalAppData $proj9).partialCauses) -contains 'git-state-unknown') $r.Out
     Check 'the recorded category is unknown, never clean' ((Get-RecordedCategory $hc9.LocalAppData $proj9) -eq 'unknown') (Get-RecordedCategory $hc9.LocalAppData $proj9)
 
     # =====================================================================
@@ -592,10 +594,10 @@ try {
     Check 'the first Stop reports review-required' ($r1.Out -match 'project candidates: review required') $r1.Out
     $r2 = Fire -HookPath $hc10.Script -Cwd $proj10 -EventName 'Stop' -LocalAppData $hc10.LocalAppData
     Check 'a still-present previously surfaced candidate becomes residue-confirmed' (
-        $r2.Out -match 'STILL PRESENT' -and (Get-RecordedCategory $hc10.LocalAppData $proj10) -eq 'residue-confirmed') $r2.Out
+        $r2.Out -match 'prior residue still present' -and (Get-RecordedCategory $hc10.LocalAppData $proj10) -eq 'residue-confirmed') $r2.Out
     Check 'residue-confirmed gates completion' ($r2.Out -match '"decision":"block"') $r2.Out
     Check 'residue-confirmed never claims the hook itself confirmed disposability' (
-        $r2.Out -match 'Detector!=deletion safety') $r2.Out
+        $r2.Out -match 'Prove disposal safety or retain/reason, detector!=authority') $r2.Out
     $r3 = Fire -HookPath $hc10.Script -Cwd $proj10 -EventName 'Stop' -LocalAppData $hc10.LocalAppData
     Check 'the SAME unchanged evidence does not report again (no loop)' ($r3.Exit -eq 0 -and $r3.Out -eq '') $r3.Out
     Check 'the coordination record is still refreshed while suppressed' ((Get-RecordedCategory $hc10.LocalAppData $proj10) -eq 'residue-confirmed') (Get-RecordedCategory $hc10.LocalAppData $proj10)

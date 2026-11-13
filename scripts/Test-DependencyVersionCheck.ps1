@@ -184,8 +184,8 @@ try {
     Check 'a minor update is classified [minor]' ($r.Out -match 'pkg-minor 1\.0\.0 -> 1\.1\.0 \[minor\]') $r.Out
     Check 'a major update is classified [major]' ($r.Out -match 'pkg-major 1\.0\.0 -> 2\.0\.0 \[major\]') $r.Out
     Check 'output never contains a blocking decision (advisory only)' ($r.Out -notmatch '"decision"') $r.Out
-    Check 'output includes incremental-update guidance' ($r.Out -match 'small validated batches') $r.Out
-    Check 'output routes safety/release-note review to the full environment owner' ($r.Out -match 'BEFORE review/update: global-environment-rules\.md FULL') $r.Out
+    Check 'output includes incremental-update guidance' ($r.Out -match 'Small verified batches') $r.Out
+    Check 'output routes safety/release-note review to the full environment owner' ($r.Out -match 'Verify releases/breaks/runtime/peers/advisories; latest compatible STABLE, no default prerelease') $r.Out
     Check 'no automatic file modification occurs (package.json unchanged)' (
         ([System.IO.File]::ReadAllText((Join-Path $npmProj 'package.json'))) -eq '{"name":"fixture","version":"1.0.0","dependencies":{"pkg-patch":"1.0.0","pkg-minor":"1.0.0","pkg-major":"1.0.0"}}')
 
@@ -196,7 +196,7 @@ try {
     Set-Mock -NpmExit 1 -NpmJson '{"pkg-pre":{"current":"1.0.0","latest":"2.0.0-beta.1"}}'
     $r = Fire -Cwd $preProj
     Check 'a prerelease latest version is classified [prerelease], not silently recommended' ($r.Out -match 'pkg-pre 1\.0\.0 -> 2\.0\.0-beta\.1 \[prerelease\]') $r.Out
-    Check 'the report routes full version/compatibility/prerelease policy before review or update' ($r.Out -match 'BEFORE review/update: global-environment-rules.md FULL') $r.Out
+    Check 'the report routes full version/compatibility/prerelease policy before review or update' ($r.Out -match 'Verify releases/breaks/runtime/peers/advisories; latest compatible STABLE, no default prerelease') $r.Out
 
     # =====================================================================
     Write-Host '--- npm: real command failure vs "outdated found" exit code ---' -ForegroundColor Cyan
@@ -436,7 +436,7 @@ try {
     Check 'update / keep / defer are all named as legitimate answers' (
         $rc.Out -match 'update\+lock\+real checks' -and $rc.Out -match 'keep\+reason' -and $rc.Out -match 'defer\+blocker') $rc.Out
     Check 'silence is explicitly NOT an answer' ($rc.Out -match 'Each:' -and $rc.Out -match 'Final standalone:') $rc.Out
-    Check 'EOL/old-major retention routes to the full owner with explicit keep reason' ($rc.Out -match 'BEFORE review/update: global-environment-rules\.md FULL' -and $rc.Out -match 'keep\+reason') $rc.Out
+    Check 'EOL/old-major retention routes to the full owner with explicit keep reason' ($rc.Out -match 'Verify releases/breaks/runtime/peers/advisories; latest compatible STABLE, no default prerelease' -and $rc.Out -match 'keep\+reason') $rc.Out
     Check 'the report names the exact closing line to write' ($rc.Out -match 'Dependency decisions:') $rc.Out
     Check 'the report still disclaims any authority to upgrade or block' (
         $rc.Out -match 'hook never edits/upgrades/blocks' -and $rc.Out -notmatch '"decision"') $rc.Out

@@ -544,7 +544,8 @@ if ($eventName -eq 'UserPromptSubmit') {
     if (-not $promptClaim.Admitted) { exit 0 }
 
     $lines = New-Object System.Collections.Generic.List[string]
-    if ($index.Partial.Count -gt 0) { exit 0 }
+    # Partial discovery retains known matches and exposes uncertainty, never a completeness claim.
+    if ($index.Partial.Count -gt 0) { [void]$lines.Add('Skill discovery was PARTIAL: ' + (($index.Partial | Select-Object -Unique -First 6) -join '; ')) }
     [void]$lines.Add('SKILL POLICY CHECK (' + $client + '): advisory skill routing at task/job change; covered steps through exact skill. Matched authorized library copy -> project/.ai/SKILLS.md; feature: grilling/domain-modeling then Spec Kit. Sources: project/global/plugin/library.')
     if ($topInstalled.Count -gt 0) {
         [void]$lines.Add('INSTALLED matches only: verify source/exposure/exact SKILL.md key:')
@@ -605,7 +606,8 @@ if ($index.Plugin.Count -gt 0) {
 elseif ($hasPluginRoot) {
     [void]$lines.Add('Plugin skills: none found under ' + $pluginRoot + '.')
 }
-if ($index.Partial.Count -gt 0) { exit 0 }
+# Partial discovery retains known matches and exposes uncertainty, never a completeness claim.
+    if ($index.Partial.Count -gt 0) { [void]$lines.Add('Skill discovery was PARTIAL: ' + (($index.Partial | Select-Object -Unique -First 6) -join '; ')) }
 [void]$lines.Add('- Exact SKILL.md name:, not folder/plugin/market/category.')
 if ($hasRecord) {
     [void]$lines.Add('- Skill changes: read/update .ai/SKILLS.md; local, secret-free.')

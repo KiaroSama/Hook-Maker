@@ -219,7 +219,7 @@ try {
     New-Item -ItemType Directory -Path $driftSub -Force | Out-Null
     $r = Fire -Cwd $driftSub
     Check 'drift: a secret found from a subfolder is registered in the ROOT secrets.md' (
-        (Test-Path (Join-Path $driftRepo 'secrets.md')) -and $r.Out -like '*Auto-added*DRIFT_TOKEN*') $r.Out
+        (Test-Path (Join-Path $driftRepo 'secrets.md')) -and $r.Out -like '*Added * registry keys (fill Purpose/Used by):*DRIFT_TOKEN*') $r.Out
     Check 'drift: no secrets.md is created in the subfolder' (-not (Test-Path (Join-Path $driftSub 'secrets.md'))) $r.Out
     Check 'drift: the value is still never printed' ($r.Out -notlike '*sk-live-drift1234567890abcd*') $r.Out
 
@@ -228,7 +228,7 @@ try {
     $proj1 = New-Proj 'AutoAppend'
     Write-Utf8 (Join-Path $proj1 '.env') "API_KEY=sk-live-abcdef1234567890`r`n"
     $r = Fire -Cwd $proj1
-    Check 'reports auto-added key' ($r.Out -like '*Auto-added*API_KEY*') $r.Out
+    Check 'reports auto-added key' ($r.Out -like '*Added * registry keys (fill Purpose/Used by):*API_KEY*') $r.Out
     Check 'the real secret VALUE is never printed to output' ($r.Out -notlike '*sk-live-abcdef1234567890*') $r.Out
     Check 'secrets.md was created' (Test-Path (Join-Path $proj1 'secrets.md'))
     $secretsContent1 = [System.IO.File]::ReadAllText((Join-Path $proj1 'secrets.md'))
@@ -243,7 +243,7 @@ try {
     $proj1b = New-Proj 'PlaceholderPersist'
     Write-Utf8 (Join-Path $proj1b '.env') "DB_PASSWORD=changeme`r`n"
     $r1 = Fire -Cwd $proj1b
-    Check 'first run: auto-added + placeholder both reported' ($r1.Out -like '*Auto-added*DB_PASSWORD*' -and $r1.Out -like '*placeholder*DB_PASSWORD*') $r1.Out
+    Check 'first run: auto-added + placeholder both reported' ($r1.Out -like '*Added * registry keys (fill Purpose/Used by):*DB_PASSWORD*' -and $r1.Out -like '*placeholder*DB_PASSWORD*') $r1.Out
     # Second run's fingerprint differs from the first (moved out of "added" into
     # "still a standing placeholder"), so it reports once more...
     $r2 = Fire -Cwd $proj1b
@@ -259,7 +259,7 @@ try {
     Write-Utf8 (Join-Path $proj2 '.env') "SOME_TOKEN=abcdefghij1234567890`r`n"
     $noAppendHook = New-ConfiguredHookCopy @{ AUTO_APPEND = 'false' }
     $r = Fire -Cwd $proj2 -HookPath $noAppendHook
-    Check 'reports missing-undocumented instead of auto-added' ($r.Out -like '*Found in .env but NOT in secrets.md*SOME_TOKEN*' -and $r.Out -notlike '*Auto-added*') $r.Out
+    Check 'reports missing-undocumented instead of auto-added' ($r.Out -like '*.env missing registry (AUTO_APPEND off):*SOME_TOKEN*' -and $r.Out -notlike '*Added * registry keys (fill Purpose/Used by):*') $r.Out
     Check 'secrets.md NOT created when AUTO_APPEND=false' (-not (Test-Path (Join-Path $proj2 'secrets.md')))
 
     # =====================================================================
@@ -278,8 +278,8 @@ try {
     # file already exists - so asserting the phrase alone would still pass
     # against the unfixed hook and prove nothing.
     Check 'refusal names the key, says it refused, and never claims an auto-add' (
-        $r.Out -like '*GUARD_PREWRITE_TOKEN*' -and $r.Out -like '*refusing to write*' -and
-        $r.Out -like '*NOT covered by .gitignore*' -and $r.Out -notlike '*Auto-added*') $r.Out
+        $r.Out -like '*GUARD_PREWRITE_TOKEN*' -and $r.Out -like '*no write of*' -and
+        $r.Out -like '*Registry unignored*' -and $r.Out -notlike '*Added * registry keys (fill Purpose/Used by):*') $r.Out
     Check 'refusal never prints the secret value' ($r.Out -notlike ('*' + $guardValue + '*')) $r.Out
 
     # Control: the guard refuses an unsafe write, it does not disable the feature.
@@ -299,10 +299,10 @@ try {
     Add-Commit $proj3 'seed'
     Write-Utf8 (Join-Path $proj3 'secrets.md') "# Secrets`n`n## FOO`n- Value: bar`n"
     $r = Fire -Cwd $proj3
-    Check 'CRITICAL: secrets.md not covered by .gitignore' ($r.Out -like '*CRITICAL*' -and $r.Out -like '*secrets.md*NOT covered by .gitignore*') $r.Out
+    Check 'CRITICAL: secrets.md not covered by .gitignore' ($r.Out -like '*CRITICAL*' -and $r.Out -like '*Registry unignored*') $r.Out
     Write-Utf8 (Join-Path $proj3 '.gitignore') "secrets.md`n"
     $r = Fire -Cwd $proj3
-    Check 'no longer flagged once .gitignore covers it' ($r.Exit -eq 0 -and $r.Out -notlike '*NOT covered*') $r.Out
+    Check 'no longer flagged once .gitignore covers it' ($r.Exit -eq 0 -and $r.Out -notlike '*Registry unignored*') $r.Out
 
     # =====================================================================
     Write-Host '--- git: secrets.md staged then tracked ---' -ForegroundColor Cyan
@@ -310,10 +310,10 @@ try {
     Write-Utf8 (Join-Path $proj4 'secrets.md') "# Secrets`n`n## FOO`n- Value: bar`n"
     & git -C $proj4 add secrets.md 2>$null | Out-Null
     $r = Fire -Cwd $proj4
-    Check 'CRITICAL: secrets.md staged for commit' ($r.Out -like '*STAGED for commit*') $r.Out
+    Check 'CRITICAL: secrets.md staged for commit' ($r.Out -like '*Registry STAGED*') $r.Out
     & git -C $proj4 commit -q -m 'oops' 2>$null | Out-Null
     $r = Fire -Cwd $proj4
-    Check 'CRITICAL: secrets.md tracked by git' ($r.Out -like '*TRACKED by git*') $r.Out
+    Check 'CRITICAL: secrets.md tracked by git' ($r.Out -like '*Registry TRACKED*') $r.Out
 
     # =====================================================================
     Write-Host '--- git: a real .env file itself tracked ---' -ForegroundColor Cyan
@@ -322,7 +322,7 @@ try {
     Write-Utf8 (Join-Path $proj5 '.gitignore') "secrets.md`n"
     Add-Commit $proj5 'commit env by mistake'
     $r = Fire -Cwd $proj5
-    Check 'CRITICAL: .env itself is tracked by git' ($r.Out -like '*.env*TRACKED by git*') $r.Out
+    Check 'CRITICAL: .env itself is tracked by git' ($r.Out -like '*.env secrets TRACKED*') $r.Out
 
     $nested = New-GitProj 'NestedEnv'
     New-Item -ItemType Directory -Path (Join-Path $nested 'apps\api'), (Join-Path $nested 'node_modules\pkg') -Force | Out-Null
@@ -343,7 +343,7 @@ try {
     Write-Utf8 (Join-Path $proj6 'notes.txt') "reminder: token is zzzverylongsecretvalue999 do not share`r`n"
     Add-Commit $proj6 'seed'
     $r = Fire -Cwd $proj6
-    Check 'CRITICAL: leak detected in tracked file' ($r.Out -like '*LEAKED_SECRET*appears in a git-tracked file*notes.txt*') $r.Out
+    Check 'CRITICAL: leak detected in tracked file' ($r.Out -like '*LEAKED_SECRET*tracked leak:*notes.txt*') $r.Out
     Check 'leak report never contains the raw value' ($r.Out -notlike '*zzzverylongsecretvalue999*') $r.Out
 
     # A real secret value accidentally copy-pasted into a TRACKED template file
@@ -360,7 +360,7 @@ try {
     & git -C $proj6b add -f .env.example 2>$null | Out-Null
     Add-Commit $proj6b 'track template with an accidentally leaked real value'
     $r = Fire -Cwd $proj6b
-    Check 'a real secret value copy-pasted into a tracked .env.example is still caught' ($r.Out -like '*REAL_TEMPLATE_SECRET*appears in a git-tracked file*.env.example*') $r.Out
+    Check 'a real secret value copy-pasted into a tracked .env.example is still caught' ($r.Out -like '*REAL_TEMPLATE_SECRET*tracked leak:*.env.example*') $r.Out
     Check 'the tracked-template leak report never contains the raw value' ($r.Out -notlike '*templateleakvalue1234567890*') $r.Out
 
     # Classification scenarios (PublicConfig/Secret/Unknown, overrides, grouping).
@@ -382,12 +382,12 @@ try {
     Add-Commit $proj7 'seed'
     $forcedScanHook = New-ConfiguredHookCopy @{ UNUSED_SCAN_COOLDOWN_MINUTES = '0' }
     $r = Fire -Cwd $proj7 -HookPath $forcedScanHook
-    Check 'flags the truly unused key' ($r.Out -like '*Registry-only, no tracked reference*ORPHAN_KEY*') $r.Out
-    Check 'does NOT flag the key that is referenced elsewhere' ($r.Out -notlike '*Registry-only, no tracked reference*REFERENCED_KEY*') $r.Out
+    Check 'flags the truly unused key' ($r.Out -like '*Registry-only, user decision:*ORPHAN_KEY*') $r.Out
+    Check 'does NOT flag the key that is referenced elsewhere' ($r.Out -notlike '*Registry-only, user decision:*REFERENCED_KEY*') $r.Out
     # Immediately re-checking with the REAL hook's default (long) cooldown must
     # skip the scan - satisfies "not every time, only very infrequently".
     $r2 = Fire -Cwd $proj7
-    Check 'default long cooldown skips the unused scan on the very next run' ($r2.Out -notlike '*Registry-only, no tracked reference*') $r2.Out
+    Check 'default long cooldown skips the unused scan on the very next run' ($r2.Out -notlike '*Registry-only, user decision:*') $r2.Out
 
     # =====================================================================
     Write-Host '--- Stop event: only a CRITICAL finding produces decision:block ---' -ForegroundColor Cyan
@@ -408,7 +408,7 @@ try {
     Add-Commit $projUnknownStop 'seed'
     $r = Fire -Cwd $projUnknownStop -EventName 'Stop'
     Check 'Unknown-only Stop output is never decision:block' ($r.Out -notlike '*"decision":"block"*') $r.Out
-    Check 'Unknown-only Stop output still surfaces the advisory context' ($r.Out -like '*UNKNOWN Secret/PublicConfig*WIDGET_ID*') $r.Out
+    Check 'Unknown-only Stop output still surfaces the advisory context' ($r.Out -like '*UNKNOWN, unregistered/advisory:*WIDGET_ID*') $r.Out
     Check 'Unknown-only Stop exits zero' ($r.Exit -eq 0) $r.Out
 
     Write-Host '--- the advisory names WHICH .env, and that answer is true ---' -ForegroundColor Cyan
@@ -434,7 +434,7 @@ try {
     Add-Commit $projWrongEnv 'seed'
     $rWrong = Fire -Cwd $projWrongEnv -EventName 'Stop'
     Check 'PUBLIC_CONFIG_KEYS in the scanned project .env does NOT classify the key' (
-        $rWrong.Out -like '*UNKNOWN Secret/PublicConfig*WIDGET_ID*') $rWrong.Out
+        $rWrong.Out -like '*UNKNOWN, unregistered/advisory:*WIDGET_ID*') $rWrong.Out
 
     # The other half: the same key in the hook's own .env does classify it.
     $rightHook = New-ConfiguredHookCopy @{ PUBLIC_CONFIG_KEYS = 'WIDGET_ID' }
@@ -444,20 +444,23 @@ try {
     Add-Commit $projRightEnv 'seed'
     $rRight = Fire -Cwd $projRightEnv -EventName 'Stop' -HookPath $rightHook
     Check 'PUBLIC_CONFIG_KEYS in the hook''s own .env DOES classify the key' (
-        $rRight.Out -notlike '*UNKNOWN Secret/PublicConfig*WIDGET_ID*') $rRight.Out
+        $rRight.Out -notlike '*UNKNOWN, unregistered/advisory:*WIDGET_ID*') $rRight.Out
 
     Write-Host '--- Stop event: a successful auto-add alone never blocks (advisory only) ---' -ForegroundColor Cyan
     $projAutoAddStop = New-Proj 'AutoAddStopNonBlocking'
     Write-Utf8 (Join-Path $projAutoAddStop '.env') "STOP_TOKEN=abcdefghij1234567890`r`n"
     $r = Fire -Cwd $projAutoAddStop -EventName 'Stop'
     Check 'successful auto-add alone at Stop is never decision:block' ($r.Out -notlike '*"decision":"block"*') $r.Out
-    Check 'successful auto-add alone at Stop still reports the addition' ($r.Out -like '*Auto-added*STOP_TOKEN*') $r.Out
+    Check 'successful auto-add alone at Stop still reports the addition' ($r.Out -like '*Added * registry keys (fill Purpose/Used by):*STOP_TOKEN*') $r.Out
     Check 'auto-add-only Stop never prints the secret value' ($r.Out -notlike '*abcdefghij1234567890*') $r.Out
 
     $advisory = New-GitProj 'AdvisoryPush'
     Write-Utf8 (Join-Path $advisory '.gitignore') ".env`nsecrets.md`n"
     Write-Utf8 (Join-Path $advisory '.env') "PLACEHOLDER_TOKEN=changeme`r`n"
-    $r = Fire -Cwd $advisory -GitPrePush
+    # A real native invocation supplies an update line. Empty stdin is an
+    # incomplete outgoing scan, which correctly remains a Secrets safety block.
+    Add-Commit $advisory 'seed advisory placeholder fixture'
+    $r = FireGitPrePush -Cwd $advisory -StdinText (Get-RefUpdateLine $advisory)
     Check 'advisory-only pre-push findings exit zero' ($r.Exit -eq 0) $r.Err
     Check 'advisory-only pre-push is quiet' ([string]::IsNullOrWhiteSpace($r.Out) -and [string]::IsNullOrWhiteSpace($r.Err)) ($r.Out + $r.Err)
 
@@ -523,17 +526,17 @@ try {
     Write-Utf8 (Join-Path $blkNotIgnored 'secrets.md') "# Secrets`n`n## FOO`n- Value: blocknotignored1234567890`n"
     $r = Fire -Cwd $blkNotIgnored -EventName 'Stop'
     Check 'secrets.md present but NOT git-ignored still hard-blocks' (
-        (Test-StopBlocks $r.Out) -and $r.Out -like '*NOT covered by .gitignore*') $r.Out
+        (Test-StopBlocks $r.Out) -and $r.Out -like '*Registry unignored*') $r.Out
 
     $blkTracked = New-GitProj 'BlockSecretsMdTracked'
     Write-Utf8 (Join-Path $blkTracked '.gitignore') "secrets.md`n"
     Write-Utf8 (Join-Path $blkTracked 'secrets.md') "# Secrets`n`n## FOO`n- Value: blocktracked1234567890`n"
     & git -C $blkTracked add -f secrets.md 2>$null | Out-Null
     $r = Fire -Cwd $blkTracked -EventName 'Stop'
-    Check 'staged secrets.md still hard-blocks' ((Test-StopBlocks $r.Out) -and $r.Out -like '*STAGED for commit*') $r.Out
+    Check 'staged secrets.md still hard-blocks' ((Test-StopBlocks $r.Out) -and $r.Out -like '*Registry STAGED*') $r.Out
     Add-Commit $blkTracked 'track secrets.md'
     $r = Fire -Cwd $blkTracked -EventName 'Stop'
-    Check 'tracked secrets.md still hard-blocks' ((Test-StopBlocks $r.Out) -and $r.Out -like '*TRACKED by git*') $r.Out
+    Check 'tracked secrets.md still hard-blocks' ((Test-StopBlocks $r.Out) -and $r.Out -like '*Registry TRACKED*') $r.Out
 
     $blkLeak = New-GitProj 'BlockValueLeak'
     Write-Utf8 (Join-Path $blkLeak '.gitignore') ".env`nsecrets.md`n"
@@ -542,7 +545,7 @@ try {
     Add-Commit $blkLeak 'seed'
     $r = Fire -Cwd $blkLeak -EventName 'Stop'
     Check 'a real secret VALUE leak into a tracked file still hard-blocks' (
-        (Test-StopBlocks $r.Out) -and $r.Out -like '*GUARD_LEAK_TOKEN*appears in a git-tracked file*') $r.Out
+        (Test-StopBlocks $r.Out) -and $r.Out -like '*GUARD_LEAK_TOKEN*tracked leak:*') $r.Out
     Check 'the hard-block reason never prints the leaked value' ($r.Out -notlike '*guardleakvalue1234567890*') $r.Out
 
     $blkEnvTracked = New-GitProj 'BlockEnvTracked'
@@ -551,7 +554,7 @@ try {
     Add-Commit $blkEnvTracked 'commit .env by mistake'
     $r = Fire -Cwd $blkEnvTracked -EventName 'Stop'
     Check 'a tracked real .env file still hard-blocks' (
-        (Test-StopBlocks $r.Out) -and $r.Out -like '*.env*TRACKED by git*') $r.Out
+        (Test-StopBlocks $r.Out) -and $r.Out -like '*.env secrets TRACKED*') $r.Out
 
     # =====================================================================
     Write-Host '--- a clean, ignored .venv is not a secret finding (git protection != deployment) ---' -ForegroundColor Cyan
@@ -577,7 +580,7 @@ try {
     Check 'an ignored .venv is never reported as a tracked/staged secret file' ($r.Out -notlike '*.venv*') $r.Out
     Check 'token-shaped constants vendored inside .venv are never registered as secrets' (
         $r.Out -notlike '*SAMPLE_JWT*' -and $r.Out -notlike '*SAMPLE_B64*' -and $r.Out -notlike '*FAKE_API_KEY*') $r.Out
-    Check 'the whole .venv directory is never classified as a secret' ($r.Out -notlike '*UNKNOWN Secret/PublicConfig*.venv*') $r.Out
+    Check 'the whole .venv directory is never classified as a secret' ($r.Out -notlike '*UNKNOWN, unregistered/advisory:*.venv*') $r.Out
     $venvTracked = @(& git -C $venv ls-files -- .venv | Where-Object { $_ })
     Check 'the hook never tracks the ignored .venv as a side effect' ($venvTracked.Count -eq 0) ($venvTracked -join ', ')
     $rVenvPush = FireGitPrePush -Cwd $venv -StdinText (Get-RefUpdateLine -Repo $venv)
@@ -596,7 +599,7 @@ try {
     Add-Commit $venvLeak 'force-track a .venv file that carries a real secret'
     $r = Fire -Cwd $venvLeak -EventName 'Stop'
     Check 'a REAL secret force-tracked inside .venv is still caught' (
-        $r.Out -like '*VENVLEAK_SECRET*appears in a git-tracked file*settings.py*') $r.Out
+        $r.Out -like '*VENVLEAK_SECRET*tracked leak:*settings.py*') $r.Out
     Check 'the force-tracked .venv leak report never prints the raw value' ($r.Out -notlike '*venvleakvalue1234567890*') $r.Out
 
     # =====================================================================
@@ -632,7 +635,7 @@ try {
     $proj9 = New-Proj 'Host51'
     Write-Utf8 (Join-Path $proj9 '.env') "HOST_TOKEN=abcdefghij1234567890`r`n"
     $r = Fire -Cwd $proj9 -Exe 'powershell.exe'
-    Check '5.1 host: auto-append + report works' ($r.Exit -eq 0 -and $r.Out -like '*Auto-added*HOST_TOKEN*' -and $r.Out -notlike '*abcdefghij1234567890*') $r.Out
+    Check '5.1 host: auto-append + report works' ($r.Exit -eq 0 -and $r.Out -like '*Added * registry keys (fill Purpose/Used by):*HOST_TOKEN*' -and $r.Out -notlike '*abcdefghij1234567890*') $r.Out
 }
 finally {
     $env:HOOKMAKER_STATE_DIR = $SavedHookMakerStateDir

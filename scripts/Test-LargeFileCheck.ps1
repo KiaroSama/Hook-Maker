@@ -82,7 +82,7 @@ function Fire {
         [string]$LocalAppData, [switch]$StopHookActive, [switch]$GitPrePush,
         [string]$Exe = 'pwsh', [string]$ClaudeProjectDir = '', [int]$TripTimeAfterFiles = 0
     )
-    $obj = @{ cwd = $Cwd; hook_event_name = $EventName }
+    $obj = @{ session_id = (Split-Path (Split-Path $LocalAppData -Parent) -Leaf); cwd = $Cwd; hook_event_name = $EventName }
     if ($StopHookActive) { $obj['stop_hook_active'] = $true }
     $payload = $obj | ConvertTo-Json -Depth 5
     $token = [guid]::NewGuid().ToString('N').Substring(0, 8)

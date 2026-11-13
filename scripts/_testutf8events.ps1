@@ -168,8 +168,8 @@
     & git -C $projStg add s.txt 2>$null | Out-Null
     Write-Utf8 (Join-Path $projStg 's.txt') "worktree reverted to valid - only the INDEX holds the bad bytes`n"
     $r = Fire -HookPath $hcStg.Script -Cwd $projStg -EventName 'Stop' -SessionId 'g1' -LocalAppData $hcStg.LocalAppData
-    Check 'invalid bytes living only in the git INDEX (staged, worktree reverted) still block' (
-        (Test-StopAdvisory $r.Out) -and (Get-Message $r.Out) -match 's\.txt staged') $r.Out
+    Check 'invalid bytes only in the git INDEX still advise after worktree revert' (
+        (Test-StopAdvisory $r.Out) -and (Get-Message $r.Out) -match 's\.txt \(staged content\) - invalid UTF-8') $r.Out
     Check 'the staged-content block never leaks the staged bytes' ((Get-Message $r.Out) -notmatch 'STAGEDMARKER') $r.Out
 
     # =====================================================================
@@ -226,7 +226,7 @@
     $r = Fire -HookPath $hcCap.Script -Cwd $projCap -EventName 'Stop' -SessionId 'p1' -LocalAppData $hcCap.LocalAppData -ClaudeProjectDir $projCap
     $msgCap = Get-Message $r.Out
     Check 'the capped check reports PARTIAL and refuses to call it an all-clear' (
-        -not (Test-StopBlocks $r.Out) -and $msgCap -match '(?i)PARTIAL' -and $msgCap -match '(?i)not all-clear' -and $msgCap -match 'UTF8_MAX_FILES') $r.Out
+        -not (Test-StopBlocks $r.Out) -and $msgCap -match '(?i)PARTIAL' -and $msgCap -match '(?i)rest UNCHECKED' -and $msgCap -match 'Changed files UNVERIFIED:' -and $msgCap -match 'UTF8_MAX_FILES') $r.Out
     $parsedCap = $null
     try { $parsedCap = $r.Out | ConvertFrom-Json } catch { $parsedCap = $null }
     Check 'the Stop advisory uses the Claude shape when CLAUDE_PROJECT_DIR is set' (
@@ -241,7 +241,7 @@
     Add-Commit $projSub 'seed'
     Write-Bytes (Join-Path $projSub 'sub.txt') (Get-InvalidUtf8Bytes 'SUBMARKER')
     $r = Fire -HookPath $hcSub.Script -Cwd $projSub -EventName 'SubagentStop' -SessionId 'u1' -LocalAppData $hcSub.LocalAppData
-    Check 'SubagentStop blocks exactly like Stop' ((Test-StopAdvisory $r.Out) -and (Get-Message $r.Out) -match 'sub\.txt') $r.Out
+    Check 'SubagentStop advises exactly like Stop' ((Test-StopAdvisory $r.Out) -and (Get-Message $r.Out) -match 'sub\.txt') $r.Out
     $r = Fire -HookPath $hcSub.Script -Cwd $projSub -EventName 'Stop' -SessionId 'u2' -LocalAppData $hcSub.LocalAppData -StopHookActive
     # stop_hook_active means "a Stop gate blocked and the agent is coming
     # back" - NOT "YOU blocked". Thirteen gates share the one flag, so a gate
@@ -288,7 +288,7 @@
     Check 'a malformed .env never crashes the gate' ($r.Exit -eq 0 -and $r.Err -eq '') $r.Err
     Check 'the invalid integer is reported and the default used; the bad flag falls to advisory-only (non-widening)' (
         -not (Test-StopBlocks $r.Out) -and (Get-Message $r.Out) -match 'UTF8_MAX_FILES is not an integer' -and
-        (Get-Message $r.Out) -match 'invalid -> advisory\(true\), never wider blocking') $r.Out
+        (Get-Message $r.Out) -match 'invalid -> advisory\(true\), never wider advisory') $r.Out
 
     # =====================================================================
     Write-Host '--- Windows PowerShell 5.1 host: the Stop gate works unchanged ---' -ForegroundColor Cyan

@@ -1,4 +1,4 @@
-﻿# Offline test suite for Docs-Freshness-Check - new hook, no prior coverage.
+# Offline test suite for Docs-Freshness-Check - new hook, no prior coverage.
 # Focused on the explicit safety/detection requirements, not an exhaustive
 # per-language matrix: SessionStart baseline is silent; task-delta detection
 # (committed + staged + working-tree, comment/blank-only changes excluded);
@@ -124,7 +124,7 @@ function FireAck {
 function Get-Fingerprint {
     param([string]$Text)
     try {
-        $reason = [string]((($Text | ConvertFrom-Json)).reason)
+        $reason = [string]((($Text | ConvertFrom-Json)).systemMessage)
         $m = [regex]::Match($reason, '-ImpactFingerprint "([a-f0-9]+)"')
         if ($m.Success) { return $m.Groups[1].Value }
     }
@@ -155,14 +155,14 @@ try {
     $hcUtf = New-IsolatedHookCopy
     $projUtf = New-GitRepo 'NonAsciiBaseline'
     Write-Utf8 (Join-Path $projUtf 'README.md') "# Proj`n"
-    Write-Utf8 (Join-Path $projUtf 'café.md') "# Café notes`n"
+    Write-Utf8 (Join-Path $projUtf ('caf' + [char]0xE9 + '.md')) "# Caf$([char]0xE9) notes`n"
     Add-Commit $projUtf 'init'
     $rUtf = Fire -HookPath $hcUtf.Script -Cwd $projUtf -EventName 'SessionStart' -LocalAppData $hcUtf.LocalAppData -Exe 'powershell.exe'
     Check '5.1 host: SessionStart with a non-ASCII tracked filename does not crash and stays silent' ($rUtf.Exit -eq 0 -and $rUtf.Out -eq '' -and $rUtf.Err -eq '') ($rUtf.Out + ' | err=' + $rUtf.Err)
     Check '5.1 host: a baseline state file was written despite the non-ASCII filename' (
         @(Get-ChildItem -LiteralPath (Join-Path $hcUtf.LocalAppData 'HookMaker\state') -Filter 'DocsFreshnessCheck-baseline-*.json' -ErrorAction SilentlyContinue).Count -eq 1)
 
-    # Doc-classification content check (is café.md actually hashed into the
+    # Doc-classification content check (is caf[U+00E9].md actually hashed into the
     # baseline, not silently dropped?) is run under the default pwsh host
     # instead of re-using the 5.1 firing above: a nested powershell.exe child
     # spawned from pwsh in this environment loses access to Get-FileHash
@@ -173,7 +173,7 @@ try {
     $hcUtf2 = New-IsolatedHookCopy
     $projUtf2 = New-GitRepo 'NonAsciiBaselineContent'
     Write-Utf8 (Join-Path $projUtf2 'README.md') "# Proj`n"
-    Write-Utf8 (Join-Path $projUtf2 'café.md') "# Café notes`n"
+    Write-Utf8 (Join-Path $projUtf2 ('caf' + [char]0xE9 + '.md')) "# Caf$([char]0xE9) notes`n"
     Add-Commit $projUtf2 'init'
     $rUtf2 = Fire -HookPath $hcUtf2.Script -Cwd $projUtf2 -EventName 'SessionStart' -LocalAppData $hcUtf2.LocalAppData
     Check 'pwsh host: SessionStart with a non-ASCII tracked filename does not crash and stays silent' ($rUtf2.Exit -eq 0 -and $rUtf2.Out -eq '' -and $rUtf2.Err -eq '') ($rUtf2.Out + ' | err=' + $rUtf2.Err)
@@ -229,7 +229,7 @@ try {
     Fire -HookPath $hc5.Script -Cwd $proj5 -EventName 'SessionStart' -LocalAppData $hc5.LocalAppData | Out-Null
     Write-Utf8 (Join-Path $proj5 'src\cli.ps1') "function Invoke-Cli { param(`$Flag, `$NewFlag) return `$Flag + `$NewFlag }`n"
     $r = Fire -HookPath $hc5.Script -Cwd $proj5 -EventName 'Stop' -LocalAppData $hc5.LocalAppData
-    Check 'a real CLI/behavior code change triggers decision:block' ($r.Out -match '"decision":"block"') $r.Out
+    Check 'a real CLI/behavior code change emits an advisory' ($r.Exit -eq 0 -and $r.Out -notmatch '"decision"' -and $r.Out -match 'DOCS FRESHNESS CHECK') $r.Out
     Check 'the block reason names the changed file (relative path)' ($r.Out -match [regex]::Escape('src\cli.ps1') -or $r.Out -match [regex]::Escape('src/cli.ps1')) $r.Out
     Check 'candidate documentation includes ranked tracked README/CHANGELOG' ($r.Out -match 'README\.md' -and $r.Out -match 'CHANGELOG\.md') $r.Out
     Check 'the report gives an acknowledgement command with a real fingerprint' ((Get-Fingerprint $r.Out) -ne '') $r.Out
@@ -284,7 +284,7 @@ try {
     Write-Utf8 (Join-Path $proj8 'a.ps1') "function A { 2 }`n"
     Add-Commit $proj8 'a real change, committed before Stop'
     $r = Fire -HookPath $hc8.Script -Cwd $proj8 -EventName 'Stop' -LocalAppData $hc8.LocalAppData
-    Check 'a change committed after SessionStart is still detected via the starting-HEAD range' ($r.Out -match '"decision":"block"') $r.Out
+    Check 'a change committed after SessionStart is still detected via the starting-HEAD range' ($r.Exit -eq 0 -and $r.Out -notmatch '"decision"' -and $r.Out -match 'DOCS FRESHNESS CHECK') $r.Out
 
     $hc9 = New-IsolatedHookCopy
     $proj9 = New-GitRepo 'StagedAndWorktree'
@@ -309,7 +309,7 @@ try {
     Fire -HookPath $hc10.Script -Cwd $proj10 -EventName 'SessionStart' -LocalAppData $hc10.LocalAppData | Out-Null
     Write-Utf8 (Join-Path $proj10 'a.ps1') "function A { 2 }`n"
     $rBlock = Fire -HookPath $hc10.Script -Cwd $proj10 -EventName 'Stop' -LocalAppData $hc10.LocalAppData
-    Check 'first Stop blocks' ($rBlock.Out -match '"decision":"block"') $rBlock.Out
+    Check 'first Stop reports advisory' ($rBlock.Exit -eq 0 -and $rBlock.Out -notmatch '"decision"' -and $rBlock.Out -match 'DOCS FRESHNESS CHECK') $rBlock.Out
     $fp1 = Get-Fingerprint $rBlock.Out
     Check 'a fingerprint was extracted from the block reason' ($fp1 -ne '')
     Write-Utf8 (Join-Path $proj10 'README.md') "# Proj`n`nUpdated for the new behavior.`n"
@@ -356,8 +356,8 @@ try {
         @(Get-ChildItem -LiteralPath (Join-Path $hc12.LocalAppData 'HookMaker\state') -Filter 'DocsFreshnessCheck-ack-*.json').Count -eq 0)
     $null = Fire -HookPath $hc12.Script -Cwd $proj12 -EventName 'UserPromptSubmit' -Prompt 'Recheck the rejected review' -LocalAppData $hc12.LocalAppData
     $rRecheck = Fire -HookPath $hc12.Script -Cwd $proj12 -EventName 'Stop' -LocalAppData $hc12.LocalAppData -StopHookActive
-    Check 'a genuine new task still blocks the identical unacknowledged documentation evidence' (
-        $rRecheck.Out -match '"decision":"block"' -and (Get-Fingerprint $rRecheck.Out) -eq $fp12) $rRecheck.Out
+    Check 'a genuine new task still reports the identical unacknowledged documentation evidence' (
+        $rRecheck.Exit -eq 0 -and $rRecheck.Out -notmatch '"decision"' -and $rRecheck.Out -match 'DOCS FRESHNESS CHECK' -and (Get-Fingerprint $rRecheck.Out) -eq $fp12) $rRecheck.Out
 
     # =====================================================================
     Write-Host '--- acknowledgement rejection: out-of-root, private, and untracked paths ---' -ForegroundColor Cyan
@@ -398,7 +398,7 @@ try {
     $null = Fire -HookPath $hc14.Script -Cwd $proj14 -EventName 'UserPromptSubmit' -Prompt 'Recheck the stale review' -LocalAppData $hc14.LocalAppData
     $rRecheck = Fire -HookPath $hc14.Script -Cwd $proj14 -EventName 'Stop' -LocalAppData $hc14.LocalAppData -StopHookActive
     Check 'a mismatched approval still cannot clear the gate when the task is reevaluated' (
-        $rRecheck.Out -match '"decision":"block"' -and (Get-Fingerprint $rRecheck.Out) -ne $wrongFp) $rRecheck.Out
+        $rRecheck.Exit -eq 0 -and $rRecheck.Out -notmatch '"decision"' -and $rRecheck.Out -match 'DOCS FRESHNESS CHECK' -and (Get-Fingerprint $rRecheck.Out) -ne $wrongFp) $rRecheck.Out
 
     # =====================================================================
     Write-Host '--- a later non-document change invalidates a previous acknowledgement ---' -ForegroundColor Cyan
@@ -417,7 +417,7 @@ try {
     Check 'silent immediately after acknowledgement' ($rQuietAfterAck.Exit -eq 0 -and $rQuietAfterAck.Out -eq '') $rQuietAfterAck.Out
     Write-Utf8 (Join-Path $proj15 'a.ps1') "function A { 3 }`n"
     $rInvalidated = Fire -HookPath $hc15.Script -Cwd $proj15 -EventName 'Stop' -LocalAppData $hc15.LocalAppData
-    Check 'a further non-doc change invalidates the old acknowledgement and blocks again' ($rInvalidated.Out -match '"decision":"block"') $rInvalidated.Out
+    Check 'a further non-doc change invalidates the old acknowledgement and advises again' ($rInvalidated.Exit -eq 0 -and $rInvalidated.Out -notmatch '"decision"' -and $rInvalidated.Out -match 'DOCS FRESHNESS CHECK') $rInvalidated.Out
 
     # =====================================================================
     Write-Host '--- a documentation-only task never blocks (nothing to loop on) ---' -ForegroundColor Cyan
@@ -475,7 +475,7 @@ try {
     Fire -HookPath $hc19.Script -Cwd $proj19 -EventName 'SessionStart' -LocalAppData $hc19.LocalAppData -Exe 'powershell.exe' | Out-Null
     Write-Utf8 (Join-Path $proj19 'a.ps1') "function A { 2 }`n"
     $r = Fire -HookPath $hc19.Script -Cwd $proj19 -EventName 'Stop' -LocalAppData $hc19.LocalAppData -Exe 'powershell.exe'
-    Check '5.1 host: detects the change and blocks' ($r.Exit -eq 0 -and $r.Out -match '"decision":"block"') $r.Out
+    Check '5.1 host: detects the change and advises' ($r.Exit -eq 0 -and $r.Exit -eq 0 -and $r.Out -notmatch '"decision"' -and $r.Out -match 'DOCS FRESHNESS CHECK') $r.Out
 
     # =====================================================================
     Write-Host '--- Stop detection-error catch path: Codex gets systemMessage, not additionalContext ---' -ForegroundColor Cyan

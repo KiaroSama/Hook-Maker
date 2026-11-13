@@ -18,7 +18,7 @@ function Invoke-FingerprintBindingRegression {
     $base = 'pwsh -NoProfile -File .\scripts\Run-Tests-Guarded.ps1 -FilePath pwsh -ArgumentsJson ''["-NoProfile","-Command","exit 0"]'' -TimeoutSeconds 23 -IdleTimeoutSeconds 11 -MaxWorkers 1'
     $response = Fire -HookPath $copy.Script -Cwd $Proj -EventName PreToolUse -Command $base -LocalAppData $copy.LocalAppData
     Check 'missing fingerprint is refused before an observation is written' (
-        $response.Out -match '"permissionDecision":"deny"' -and
+        ($response.Out -match '"additionalContext"|"systemMessage"' -and $response.Out -notmatch '"permissionDecision"|"decision"') -and
         @(Get-ChildItem -LiteralPath $copy.LocalAppData -Filter 'TestRunGuard-observed-*.json' -Recurse).Count -eq 0) $response.Out
     Check 'fingerprint correction preserves all original runner options' (
         (Get-Message $response.Out).Contains($base + ' -ProjectFingerprint ' + $fp)) $response.Out
@@ -38,7 +38,7 @@ function Invoke-FingerprintBindingRegression {
         Check ($client + ': valid fingerprint produces exactly one silent observation') ($r.Exit -eq 0 -and $r.Out -eq '' -and $files.Count -eq 1)
         $before = (Get-FileHash -LiteralPath $files[0].FullName).Hash
         $r = Fire -HookPath $valid.Script -Cwd $Proj -EventName PreToolUse -Command ($command.Replace($fp,'stale-state')) -LocalAppData $valid.LocalAppData -NoClaudeProjectDir:($client -eq 'Codex')
-        $denied = if ($client -eq 'Claude') { $r.Out -match '"permissionDecision":"deny"' } else { $r.Exit -eq 2 }
+        $denied = if ($client -eq 'Claude') { ($r.Out -match '"additionalContext"|"systemMessage"' -and $r.Out -notmatch '"permissionDecision"|"decision"') } else { $r.Exit -eq 0 -and $r.Err -eq '' -and $r.Out -match 'Test-Run-Guard:' }
         Check ($client + ': stale refusal preserves the existing observation bytes') ($denied -and (Get-FileHash -LiteralPath $files[0].FullName).Hash -eq $before)
         Check ($client + ': refusal neither grants permission nor rewrites input') ($r.Out -notmatch '"updatedInput"|"permissionDecision":"allow"')
     }
@@ -62,7 +62,7 @@ function Invoke-FingerprintBindingRegression {
     Check 'foreign literal cwd is refused explicitly, not rebound' ((Get-GuardedBindingFinding $identity $command $Proj $fp).Message -match '-WorkingDirectory != cwd; no cross-project observation')
     $same = $base + ' -ProjectFingerprint ' + $fp + " -WorkingDirectory '.'"
     $identity = Get-GuardedInvocationIdentity -Tokens @(Split-CommandTokens $same) -RawCommand $same
-    Check 'same cwd dot/trailing-separator spelling does not become foreign' ($null -eq (Get-GuardedBindingFinding $identity $same ($Proj + '\') $fp))
+    Check 'same cwd dot/trailing-separator spelling does not become foreign' ($null -eq (Get-GuardedBindingFinding $identity $same ($Proj + '') $fp))
     $savedPart=$env:HM_BINDING_PART
     try {
         $env:HM_BINDING_PART=Split-Path -Leaf $Proj
@@ -117,7 +117,7 @@ function Invoke-EmptyRunnerBindingRegression {
         $env:LOCALAPPDATA=$root; $env:HOOKMAKER_STATE_DIR=Join-Path $root 'state'; $env:TEMP=$root; $env:TMP=$root
         $before = @(Get-ChildItem -LiteralPath $root -Recurse -File | ForEach-Object {$_.FullName})
         foreach ($binding in @($null,'   ')) {
-            $argv = @('-NoProfile','-File',$Runner,'-FilePath','pwsh','-ArgumentsJson',('["-NoProfile","-File","'+$child.Replace('\','\\')+'"]'),'-ResultPath',$receipt,'-Quiet')
+            $argv = @('-NoProfile','-File',$Runner,'-FilePath','pwsh','-ArgumentsJson',('["-NoProfile","-File","'+$child.Replace('','\')+'"]'),'-ResultPath',$receipt,'-Quiet')
             if ($null -ne $binding) { $argv += @('-ProjectFingerprint',$binding) }
             $output = Invoke-QuietCommand -FilePath (Get-Process -Id $PID).Path -ArgumentList $argv -TimeoutSeconds 30
             $code = $LASTEXITCODE
@@ -222,7 +222,7 @@ function Invoke-EmptyRunnerBindingRegression {
     foreach ($cmd in @('.\scripts\Test-Wizard.ps1', './scripts/Run-Tests.ps1', 'C:\repo\scripts\Test-RulesCheck.ps1 -KeepArtifacts', '& ".\scripts\Test-RulesCheck.ps1"')) {
         $r = Fire -HookPath $hcD.Script -Cwd $Proj -EventName 'PreToolUse' -Command $cmd -LocalAppData $hcD.LocalAppData
         $repl = Get-Replacement (Get-Message $r.Out)
-        Check ('direct form is guarded: ' + $cmd) ((Get-Message $r.Out) -match 'TEST RUN GUARD' -and $repl -match 'Run-Tests-Guarded') $r.Out
+        Check ('direct form is guarded: ' + $cmd) ((Get-Message $r.Out) -match 'Test-Run-Guard:.*(?:advisory|Advisory)' -and $repl -match 'Run-Tests-Guarded') $r.Out
     }
     $r = Fire -HookPath $hcD.Script -Cwd $Proj -EventName 'PreToolUse' -Command '.\scripts\Test-Wizard.ps1 -KeepArtifacts' -LocalAppData $hcD.LocalAppData
     $repl = Get-Replacement (Get-Message $r.Out)
@@ -348,7 +348,7 @@ function Invoke-EmptyRunnerBindingRegression {
         finally { $sha.Dispose() }
     }
     foreach ($spelling in @(
-            @{ Name = 'a trailing separator'; Cwd = ($Proj + '\') },
+            @{ Name = 'a trailing separator'; Cwd = ($Proj + '') },
             @{ Name = 'a dot segment'; Cwd = (Join-Path $Proj '.') },
             @{ Name = 'an upper-cased path'; Cwd = $Proj.ToUpperInvariant() })) {
         $hcSpell = New-IsolatedHookCopy

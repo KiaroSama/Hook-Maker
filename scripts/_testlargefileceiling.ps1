@@ -1,4 +1,4 @@
-# Test-LargeFileCheck section: the ONE Stop gate - a source file that THIS TASK
+# Test-LargeFileCheck section: task-growth advisory - a source file that THIS TASK
 # pushed past the hard ceiling (at or under it in the SessionStart baseline, over
 # it now). Covers: the block and its exact recovery text; a file already over the
 # ceiling at baseline staying advisory; the once-per-fingerprint bound and the
@@ -57,15 +57,16 @@
     $msgSk = Get-Advisory $rSk.Out
     Check 'S2b. no .specify file is reported at Stop, however large' ($msgSk -notmatch '(?i)common\.ps1|big\.ps1|\.specify') $msgSk
     Check 'S2c. a source file over the ceiling outside .specify IS still reported' ($msgSk -match 'tracked\.py \(900 lines\)') $msgSk
-    # Twin: the same growth in project source still blocks, so S2a is not a dead gate.
+    # Twin: the same growth in project source is still reported, without blocking.
     New-SourceFile (Join-Path $projSk 'src\grows.ps1') 796
     $hcSk2 = New-IsolatedHookCopy
     $null = Fire -HookPath $hcSk2.Script -Cwd $projSk -EventName 'SessionStart' -LocalAppData $hcSk2.LocalAppData
     New-SourceFile (Join-Path $projSk 'src\grows.ps1') 803
     $rSk2 = Fire -HookPath $hcSk2.Script -Cwd $projSk -EventName 'Stop' -LocalAppData $hcSk2.LocalAppData
-    Check 'S2d. twin: the same 796 -> 803 growth in project source DOES block' (
-        (Get-BlockReason $rSk2.Out) -match 'src\\grows\.ps1: 796 -> 803 lines' -and
-        (Get-BlockReason $rSk2.Out) -notmatch '\.specify') $rSk2.Out
+    Check 'S2d. twin: the same 796 -> 803 growth in project source advises without blocking' (
+        $rSk2.Exit -eq 0 -and $rSk2.Out -notmatch '"decision"' -and
+        (Get-Advisory $rSk2.Out) -match 'src\\grows\.ps1 \(803 lines now, 796 at session start\)' -and
+        (Get-Advisory $rSk2.Out) -notmatch '\.specify') $rSk2.Out
 
     # =====================================================================
     Write-Host '--- The Stop GATE: a file this task pushed past the ceiling ---' -ForegroundColor Cyan
@@ -94,14 +95,14 @@
     # The task grows it past the ceiling.
     New-SourceFile (Join-Path $projC1 'src\grows.py') 900
     $rBlock = Fire -HookPath $hcC1.Script -Cwd $projC1 -EventName 'Stop' -LocalAppData $hcC1.LocalAppData
-    $reasonC1 = Get-BlockReason $rBlock.Out
-    Check 'C2a. a file grown from <=800 to >800 during the task BLOCKS (real decision:block)' (
-        $reasonC1 -ne '' -and $rBlock.Exit -eq 0 -and $rBlock.Err -eq '') ($rBlock.Out + $rBlock.Err)
-    Check 'C2b. the block names the file, both counts and the ceiling' (
-        $reasonC1 -match 'src\\grows\.py: 790 -> 900 lines' -and
+    $reasonC1 = Get-Advisory $rBlock.Out
+    Check 'C2a. task growth from <=800 to >800 advises without a block decision' (
+        $reasonC1 -ne '' -and $rBlock.Exit -eq 0 -and $rBlock.Err -eq '' -and $rBlock.Out -notmatch '"decision"') ($rBlock.Out + $rBlock.Err)
+    Check 'C2b. the advisory names the file, both counts and the ceiling' (
+        $reasonC1 -match 'src\\grows\.py \(900 lines now, 790 at session start\)' -and
         $reasonC1 -match 'from <=800 to above hard ceiling') $reasonC1
-    Check 'C2c. the block carries the EXACT recovery, and says what clears it' (
-        $reasonC1 -match 'extract added code by responsibility, not wrapper' -and
+    Check 'C2c. the advisory carries the responsibility extraction and clearing action' (
+        $reasonC1 -match 'move the code added to src\\grows\.py into a new responsibility-named file; do not create a wrapper' -and
         $reasonC1 -match 'clear when each <=800 lines') $reasonC1
     Check 'C2d. the recovery forbids ducking the number with a wrapper/forwarding file' (
         $reasonC1 -match 'real responsibility extraction, no wrapper/forwarding/count dodge') $reasonC1
@@ -109,7 +110,7 @@
     # =====================================================================
     Write-Host '--- The gate blocks ONCE per fingerprint, and changed state is re-evaluated ---' -ForegroundColor Cyan
     $rRepeat = Fire -HookPath $hcC1.Script -Cwd $projC1 -EventName 'Stop' -LocalAppData $hcC1.LocalAppData
-    Check 'C3a. the same unchanged state does NOT block twice' (
+    Check 'C3a. unchanged task-growth state never becomes a blocking decision' (
         (Get-BlockReason $rRepeat.Out) -eq '' -and $rRepeat.Out -notmatch '"decision"') $rRepeat.Out
     $afterBlockText = if ($baselinePathC1 -ne '') { [System.IO.File]::ReadAllText($baselinePathC1) } else { '' }
     $afterBlockDoc = $null
@@ -121,8 +122,8 @@
     # per-project cooldown is now running. The gate must not depend on it.
     New-SourceFile (Join-Path $projC1 'src\grows.py') 950
     $rChanged = Fire -HookPath $hcC1.Script -Cwd $projC1 -EventName 'Stop' -LocalAppData $hcC1.LocalAppData
-    Check 'C3c. changed state blocks again - and the advisory cooldown never swallows the gate' (
-        (Get-BlockReason $rChanged.Out) -match 'src\\grows\.py: 790 -> 950 lines') $rChanged.Out
+    Check 'C3c. changed task-growth state advises again despite the report cooldown' (
+        $rChanged.Exit -eq 0 -and $rChanged.Out -notmatch '"decision"' -and (Get-Advisory $rChanged.Out) -match 'src\\grows\.py \(950 lines now, 790 at session start\)') $rChanged.Out
 
     # =====================================================================
     Write-Host '--- A file already over the ceiling at baseline stays ADVISORY ---' -ForegroundColor Cyan

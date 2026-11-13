@@ -16,23 +16,23 @@
     $r = FireExternalBlocker -Cwd $ext1 -Classification 'test-failure-not-really-external' -Reason 'ci is red, ci is red, ci is red'
     Check 'unknown classification is rejected (no bypass via free text)' ($r.Exit -eq 1 -and $r.Err -match '-Classification=') $r.Err
     $r = FireExternalBlocker -Cwd $ext1 -Classification 'github-outage' -Reason ''
-    Check 'empty reason is rejected (bounded minimum-evidence rule)' ($r.Exit -eq 1 -and $r.Err -match '-Reason requires') $r.Err
+    Check 'empty reason is rejected (bounded minimum-evidence rule)' ($r.Exit -eq 1 -and $r.Err -match 'reason>=10 evidence chars') $r.Err
     $r = FireExternalBlocker -Cwd $ext1 -Classification 'github-outage' -Reason 'too short'
-    Check 'a too-short reason is rejected (below the minimum-evidence length)' ($r.Exit -eq 1 -and $r.Err -match '-Reason requires') $r.Err
+    Check 'a too-short reason is rejected (below the minimum-evidence length)' ($r.Exit -eq 1 -and $r.Err -match 'reason>=10 evidence chars') $r.Err
     $r = FireExternalBlocker -Cwd $ext1 -Classification 'other-external' -Reason 'weird one-off issue'
-    Check '"other-external" requires a stronger (longer) reason than the named categories' ($r.Exit -eq 1 -and $r.Err -match 'other-external: stronger evidence') $r.Err
+    Check '"other-external" requires a stronger (longer) reason than the named categories' ($r.Exit -eq 1 -and $r.Err -match 'other-external needs stronger proof') $r.Err
     $r = FireExternalBlocker -Cwd $plainDir -Classification 'github-outage' -Reason 'github.com is down according to the status page'
-    Check 'cannot record an exception outside a resolvable pushed GitHub commit' ($r.Exit -eq 1 -and $r.Err -match 'pushed GitHub HEAD unresolved') $r.Err
+    Check 'cannot record an exception outside a resolvable pushed GitHub commit' ($r.Exit -eq 1 -and $r.Err -match 'pushed HEAD UNKNOWN') $r.Err
 
     # No CI access at all -> recording is refused (never blind/unverified).
     Set-Mock -AuthExit 1
     $r = FireExternalBlocker -Cwd $ext1 -Classification 'github-outage' -Reason 'GitHub Actions status page reports a full outage'
-    Check 'cannot record without querying CI (gh unauthenticated)' ($r.Exit -eq 1 -and $r.Err -match 'gh/auth/API query unavailable') $r.Err
+    Check 'cannot record without querying CI (gh unauthenticated)' ($r.Exit -eq 1 -and $r.Err -match 'gh/auth/API UNKNOWN') $r.Err
 
     # CI already green for this exact commit -> nothing to excuse.
     Set-Mock -RunJson '[{"databaseId":79,"name":"CI","workflowName":"CI","status":"completed","conclusion":"success"}]' -ExpectedSha $extSha1
     $r = FireExternalBlocker -Cwd $ext1 -Classification 'github-outage' -Reason 'GitHub Actions status page reports a full outage'
-    Check 'cannot record when CI for this commit is already green' ($r.Exit -eq 1 -and $r.Err -match 'exact-commit CI already green') $r.Err
+    Check 'cannot record when CI for this commit is already green' ($r.Exit -eq 1 -and $r.Err -match 'exact SHA green, exception unnecessary') $r.Err
 
     # Normal failure still blocks BEFORE any exception is recorded, and a
     # genuine COMPLETED failure can never be excused as external - not even
@@ -57,15 +57,15 @@
     Check 'Claude: Stop uses the non-continuing user-visible systemMessage shape' ($r.Out -match '"systemMessage"' -and $r.Out -notmatch 'hookSpecificOutput|additionalContext|decision') $r.Out
     Check 'Claude: the completion context explicitly says CI is NOT verified green' ($r.Out -match 'CI UNVERIFIED' -and $r.Out -match 'external' ) $r.Out
     Check 'Claude: the context names repo, short sha, classification and sanitized reason' ($r.Out -match 'testowner/testrepo-ext1' -and $r.Out -match ($extSha1.Substring(0, 7)) -and $r.Out -match 'github-outage' -and $r.Out -match 'status page reports a full outage') $r.Out
-    Check 'Claude: the context denies success and instructs not to claim CI passed' ($r.Out -match 'CI UNVERIFIED' -and $r.Out -match 'Report the blocker, never CI success') $r.Out
+    Check 'Claude: the context denies success and instructs not to claim CI passed' ($r.Out -match 'CI UNVERIFIED' -and $r.Out -match 'Report blocker, never green') $r.Out
     # F14: a confirmed blocker is the ONE case the rules let the heavy pass run
     # locally, so the notice says what to do next instead of only naming the blocker.
     Check 'Claude: the notice states the evidenced CI blocker and final-tree guarded fallback' (
-        $r.Out -match 'Recorded EXTERNAL CI blocker permits completion' -and
-        $r.Out -match 'CI blocked: final-tree guarded pass') $r.Out
+        $r.Out -match 'recorded external blocker for' -and
+        $r.Out -match 'CI unavailable: final-tree guarded pass') $r.Out
     Check 'Claude: the notice requires dated command/evidence and per-task re-verification' (
-        $r.Out -match 'dated command/evidence .ai/TESTING_NOTES.md' -and
-        $r.Out -match 'Reverify each task; no standing waiver') $r.Out
+        $r.Out -match 'UTC evidence .ai/TESTING_NOTES.md' -and
+        $r.Out -match 'recheck per task, no waiver') $r.Out
 
     # Codex: same message text, but through the officially supported common
     # systemMessage field - no hookSpecificOutput/additionalContext (undocumented
@@ -75,11 +75,10 @@
     $rCodex = Fire -HookPath $CiHook -Cwd $ext1 -EventName 'Stop' -Client 'codex' -Extra @{ session_id = 'codex-shape' }
     Check 'Codex: Stop uses the supported systemMessage shape (no hookSpecificOutput/additionalContext)' ($rCodex.Out -match '"systemMessage"' -and $rCodex.Out -notmatch 'additionalContext' -and $rCodex.Out -notmatch 'hookSpecificOutput') $rCodex.Out
     Check 'Codex: the notice is non-blocking (no decision:block)' ($rCodex.Out -notmatch '"decision":"block"') $rCodex.Out
-    Check 'Codex: the notice explicitly says CI is NOT verified green' ($rCodex.Out -match 'CI UNVERIFIED' -and $rCodex.Out -match 'never CI success') $rCodex.Out
+    Check 'Codex: the notice explicitly says CI is NOT verified green' ($rCodex.Out -match 'CI UNVERIFIED' -and $rCodex.Out -match 'Report blocker, never green') $rCodex.Out
     Check 'Codex: the notice names repo, short sha, classification and sanitized reason' ($rCodex.Out -match 'testowner/testrepo-ext1' -and $rCodex.Out -match ($extSha1.Substring(0, 7)) -and $rCodex.Out -match 'github-outage' -and $rCodex.Out -match 'status page reports a full outage') $rCodex.Out
     Check 'both client shapes carry the identical notice text' (
-        ($r.Out -replace '.*CI UNVERIFIED', 'CI UNVERIFIED' -replace '"\}\}$', '') -match 'EXTERNAL CI blocker' -and
-        ($rCodex.Out -replace '.*CI UNVERIFIED', 'CI UNVERIFIED' -replace '"\}$', '') -match 'EXTERNAL CI blocker'
+        ([string](($r.Out | ConvertFrom-Json).systemMessage)) -ceq ([string](($rCodex.Out | ConvertFrom-Json).systemMessage))
     ) ($r.Out + ' || ' + $rCodex.Out)
     Check 'neither client output exposes secret-like data (no tokens/paths/logs)' (
         $r.Out -notmatch '(?i)(ghp_|gho_|password|secret=|Bearer )' -and $rCodex.Out -notmatch '(?i)(ghp_|gho_|password|secret=|Bearer )'

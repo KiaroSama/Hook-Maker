@@ -39,10 +39,25 @@
 #   DEPLOY_COMMAND    the deploy command to suggest (default: npx wrangler deploy)
 #   COOLDOWN_MINUTES  minimum minutes between reminders per project (default 30)
 
+# Preserve exact-source acknowledgment; advisory delivery is not a deployment decision.
+[CmdletBinding()]
+param(
+    [switch]$Acknowledge,
+    [string]$ProjectRoot,
+    [ValidateSet('claude','codex')][string]$Client,
+    [string]$Commit,
+    [string]$EvidencePath,
+    [switch]$ReviewConfirmed
+)
 Set-StrictMode -Version 2.0
 $ErrorActionPreference = 'Stop'
 
 . (Join-Path $PSScriptRoot '..\_hooklib.ps1')
+. (Join-Path $PSScriptRoot '_acknowledgment.ps1')
+if ($Acknowledge) {
+    exit (Invoke-DeploymentAcknowledgment -Root $ProjectRoot -Client $Client -Commit $Commit -EvidencePath $EvidencePath -ReviewConfirmed:$ReviewConfirmed)
+}
+if ($PSBoundParameters.Count -gt 0) { throw 'Acknowledgment arguments require -Acknowledge.' }
 
 $hookInput = Read-HookInput
 if ($null -eq $hookInput) {
@@ -66,6 +81,7 @@ if ([string]::IsNullOrWhiteSpace($eventName)) { $eventName = 'Stop' }
 # a custom-events install would otherwise run this whole body - git calls
 # included - on UserPromptSubmit.
 if ($eventName -ne 'Stop' -and $eventName -ne 'SubagentStop') { exit 0 }
+if ((Get-HookClientId) -eq 'unknown') { exit 0 }
 # This task's identity, read once. Get-CleanupEvidenceVerdict uses it as the
 # producer/consumer barrier: a coordination record written by an EARLIER session
 # describes a task that has already ended, however current its repo fingerprint
@@ -626,9 +642,10 @@ function Test-ReleaseReady {
     return $true
 }
 
-# ---- cooldown (per project) ----
+# Readiness remains mandatory; a different SHA/client/config never inherits cooldown.
+if (-not (Test-ReleaseReady $cwd)) { exit 0 }
 $stateDir = Join-Path $env:LOCALAPPDATA 'HookMaker\state'
-$statePath = Join-Path $stateDir ('CloudflareDeploy-' + (Get-ShortHash $cwd.ToLowerInvariant()) + '.txt')
+$statePath = Get-DeploymentCooldownPath $cwd (Get-HookClientId) $script:ReleaseHeadSha (Join-Path $cwd $wranglerConfig) $stateDir
 $lastFire = [DateTime]::MinValue
 if (Test-Path -LiteralPath $statePath -PathType Leaf) {
     try {
@@ -640,11 +657,7 @@ if (Test-Path -LiteralPath $statePath -PathType Leaf) {
     catch { }
 }
 
-# Only show the decision when the repository and release state are actually
-# ready - never based on hook registration order (see header).
-if (-not (Test-ReleaseReady $cwd)) {
-    exit 0
-}
+if (Test-DeploymentAcknowledgment $cwd (Get-HookClientId) $script:ReleaseHeadSha (Join-Path $cwd $wranglerConfig) $stateDir) { exit 0 }
 
 $reasonLines = New-Object System.Collections.Generic.List[string]
 [void]$reasonLines.Add('CLOUDFLARE DEPLOY CHECK: ' + $wranglerConfig + '; SHA=' + $script:ReleaseHeadSha + '; clean/synced, exact-SHA configured CI green, installed cleanup current/clean. Config != deploy.')
@@ -654,6 +667,7 @@ $reasonLines = New-Object System.Collections.Generic.List[string]
 [void]$reasonLines.Add('If warranted: ' + $deployCommand)
 [void]$reasonLines.Add('Verify deployed environment/Worker/source SHA/secret-free command/version or URL and changed feature/health/logs/routes/bindings/migrations; exit0 alone != live. Missing proof: disclose; failure: inspect confirmed cause, validate/safe retry, never blind redeploy. Verified deployment or explicit no-ship decision records this state once, never inferred consent.')
 
+[void]$reasonLines.Add('Ack without deploy (HOOKS.md): pwsh -NoProfile -File "' + $PSCommandPath + '" -Acknowledge -ProjectRoot "' + $cwd + '" -Client ' + (Get-HookClientId) + ' -Commit ' + $script:ReleaseHeadSha + ' -EvidencePath "<reviewed local evidence.json>" -ReviewConfirmed.')
 $reason = $reasonLines.ToArray() -join "`n"
 # Record the block so THIS hook's own re-entry is recognised; another
 # gate's block must not mute it, and its own must not repeat.

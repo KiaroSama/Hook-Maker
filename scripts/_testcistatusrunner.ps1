@@ -103,14 +103,14 @@ if ($args.Count -ge 2 -and $args[0] -eq 'api' -and [string]$args[1] -match '^rep
     $docSha = Add-PushedCommit -Repo $dr -Files @{ 'README.md' = 'docs v2'; 'docs\guide.md' = 'guide' } -Message 'docs: refresh the guide [skip ci]'
     Set-Mock -RunJson '[]'
     $r = Fire -HookPath $CiHook -Cwd $dr -EventName 'Stop'
-    Check 'k: ancestor proof cannot satisfy latest-commit status' ($r.Out -match '"decision"' -and $r.Out.Contains($parent) -and $r.Out.Contains($docSha) -and $r.Out -match 'UNTESTED.*Latest-status required') $r.Out
+    Check 'k: ancestor proof cannot satisfy latest-commit status' ($r.Out -match '"systemMessage"' -and $r.Out -notmatch '"decision"' -and $r.Out.Contains($parent) -and $r.Out.Contains($docSha) -and $r.Out -match 'UNTESTED.*Latest-status required') $r.Out
     $state = @(Get-CiStateLines $docSha)
     Check 'k: no final-SHA green or carryover authorization is published' ($state.Count -eq 0) ($state -join '|')
     $r = Fire -HookPath $CiHook -Cwd $dr -EventName 'Stop'
     Check 'k: the note is said once' ([string]::IsNullOrWhiteSpace($r.Out)) $r.Out
     $chainSha = Add-PushedCommit -Repo $dr -Files @{ 'CHANGELOG.md' = 'entry' } -Message 'docs: changelog [ci skip]'
     $r = Fire -HookPath $CiHook -Cwd $dr -EventName 'Stop'
-    $chainMatches=$r.Out -match '"decision"' -and $r.Out.Contains($parent) -and $r.Out.Contains($chainSha) -and $r.Out -match 'Latest-status required'
+    $chainMatches=$r.Out -match '"systemMessage"' -and $r.Out -notmatch '"decision"' -and $r.Out.Contains($parent) -and $r.Out.Contains($chainSha) -and $r.Out -match 'Latest-status required'
     if(-not$chainMatches){Write-Host ('[DIAGNOSTIC] second-docs Stop output='+$r.Out+' stderr='+$r.Err)}
     Check 'k: a second docs-only commit carries the same green parent' $chainMatches $r.Out
 
@@ -131,13 +131,13 @@ if ($args.Count -ge 2 -and $args[0] -eq 'api' -and [string]$args[1] -match '^rep
         if ($case.Why -like 'an unreadable*') { Set-Content (Join-Path $MockDir 'branch_exit.txt') '1' }
         $r = Fire -HookPath $CiHook -Cwd $repo -EventName 'Stop'
         $expectedReason = if ($case.Why -eq 'no skip marker') { 'no runs are registered yet' } else { 'docs carryover UNVERIFIED' }
-        Check ('k: ' + $case.Why + ' keeps the evidence block') ($r.Out -match '"decision"' -and $r.Out -match $expectedReason) $r.Out
+        Check ('k: ' + $case.Why + ' keeps the evidence block') ($r.Out -match '"systemMessage"' -and $r.Out -notmatch '"decision"' -and $r.Out -match $expectedReason) $r.Out
     }
     $unverified = New-PushedCiRepo 'ci-docs-unverified'
     $null = Add-PushedCommit -Repo $unverified -Files @{ 'README.md' = 'd' } -Message 'docs: readme [skip ci]'
     Set-Mock -RunJson '[]'
     $r = Fire -HookPath $CiHook -Cwd $unverified -EventName 'Stop'
-    Check 'k: an unverified parent keeps the evidence block without fictitious waiting' ($r.Out -match '"decision"' -and $r.Out -match 'docs carryover UNVERIFIED' -and $r.Out -notmatch 'wait briefly') $r.Out
+    Check 'k: an unverified parent keeps the evidence block without fictitious waiting' ($r.Out -match '"systemMessage"' -and $r.Out -notmatch '"decision"' -and $r.Out -match 'docs carryover UNVERIFIED' -and $r.Out -notmatch 'wait briefly') $r.Out
 
     foreach ($client in @('claude', 'codex')) {
         $isolated = New-PushedCiRepo ('ci-docs-missing-' + $client)
@@ -153,7 +153,7 @@ if ($args.Count -ge 2 -and $args[0] -eq 'api' -and [string]$args[1] -match '^rep
         }
         $r = Fire -HookPath $CiHook -Cwd $isolated -EventName 'Stop' -Client $client
         Check ($client + ': ancestor-only proof blocks latest-status completion without fabricated green') (
-            $r.Exit -eq 0 -and $r.Err -eq '' -and $r.Out -match '"decision"' -and $r.Out.Contains($baseSha) -and $r.Out.Contains($head) -and $r.Out -match 'Latest-status required') ($r.Out+'|stderr='+$r.Err+'|exit='+$r.Exit)
+            $r.Exit -eq 0 -and $r.Err -eq '' -and $r.Out -match '"systemMessage"' -and $r.Out -notmatch '"decision"' -and $r.Out.Contains($baseSha) -and $r.Out.Contains($head) -and $r.Out -match 'Latest-status required') ($r.Out+'|stderr='+$r.Err+'|exit='+$r.Exit)
         $r = Fire -HookPath $CiHook -Cwd $isolated -EventName 'Stop' -Client $client
         if ($r.Exit -ne 0 -or $r.Out -ne '' -or $r.Err -ne '') { Write-Host ('Carryover repeat failure output: '+$r.Out+'|stderr='+$r.Err+'|exit='+$r.Exit) }
         Check ($client + ': repeated carryover stays silent') ($r.Exit -eq 0 -and $r.Out -eq '' -and $r.Err -eq '') ($r.Out+'|stderr='+$r.Err+'|exit='+$r.Exit)

@@ -229,9 +229,9 @@ function Write-HookResult {
             if($effective-ne'block'){$Kind='advisory'}
         }
         $text=if($Reason-ne''){$Reason}else{$Message}
-        # Layout changes never truncate facts or quoted commands. Advisory text
-        # is identified as such instead of continuing to claim enforcement.
-        $text=[regex]::Replace($text,'[\r\n]+\s*',' ')
+        # Layout changes never truncate facts or quoted commands. Line breaks stay,
+        # because a replacement command sits on its own line and must stay runnable.
+        $text=[regex]::Replace($text,'[ \t]*\r?\n(\s*\r?\n)*[ \t]*',"`n")
         if($Kind-in@('context','advisory')){$text=[regex]::Replace($text,'(?i)\bblocked\b','unverified');$text=[regex]::Replace($text,'(?i)\bblocking\b','advisory');$text=[regex]::Replace($text,'(?i)\bUNKNOWN blocks\b','UNKNOWN; advisory')}
         if(-not$text.StartsWith($HookName+':',[StringComparison]::Ordinal)){$text=$HookName+': '+$(if($Kind-in@('context','advisory')){'Advisory. '}else{''})+$text}
         $Message=$text;$Reason=$text

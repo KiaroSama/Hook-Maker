@@ -28,7 +28,7 @@ function Invoke-PushAttempt {
 
 function Get-DenyReason {
     param([string]$Text)
-    try { return [string](($Text | ConvertFrom-Json).hookSpecificOutput.permissionDecisionReason) } catch { return '' }
+    try { return [string](($Text | ConvertFrom-Json).hookSpecificOutput.additionalContext) } catch { return '' }
 }
 
 function Get-TestShortHash {
@@ -45,8 +45,8 @@ Write-Utf8 (Join-Path $push1.Repo 'a.ps1') "function A { 2 }`n"
 Add-Commit $push1.Repo 'code'
 $rDeny = Invoke-PushAttempt $push1
 $denyReason = Get-DenyReason $rDeny.Out
-Check 'a push carrying a real code change and no acknowledgement is denied (Claude permissionDecision deny)' (
-    $rDeny.Exit -eq 0 -and $rDeny.Out -match '"permissionDecision":"deny"') ($rDeny.Out + ' | err=' + $rDeny.Err)
+Check 'a push carrying a real code change and no acknowledgement is advisory (Claude context, no deny)' (
+    $rDeny.Exit -eq 0 -and $rDeny.Out -notmatch '"permissionDecision"' -and $denyReason -match 'DOCS FRESHNESS CHECK') ($rDeny.Out + ' | err=' + $rDeny.Err)
 Check 'the deny names the changed file and the ranked candidate docs' (
     $denyReason -match 'a\.ps1' -and $denyReason -match 'Ranked tracked-doc candidates: README\.md') $denyReason
 Check 'the deny carries the same -Acknowledge recovery command the Stop gate prints' (
@@ -57,8 +57,8 @@ $rRetry = Invoke-PushAttempt $push1
 Check 'the same push again with the fingerprint unchanged is not denied again (silent)' (
     $rRetry.Exit -eq 0 -and $rRetry.Out -eq '' -and $rRetry.Err -eq '') ($rRetry.Out + ' | err=' + $rRetry.Err)
 $rStopOwed = Fire -HookPath $push1.Hook.Script -Cwd $push1.Repo -EventName 'Stop' -LocalAppData $push1.Hook.LocalAppData
-Check 'the allowed retry is not an acknowledgement: Stop still blocks on the same fingerprint' (
-    $rStopOwed.Out -match '"decision":"block"' -and (Get-Fingerprint $rStopOwed.Out) -eq $fpPush) $rStopOwed.Out
+Check 'the allowed retry is not an acknowledgement: Stop still advises on the same fingerprint' (
+    $rStopOwed.Exit -eq 0 -and $rStopOwed.Out -notmatch '"decision"' -and $rStopOwed.Out -match 'DOCS FRESHNESS CHECK' -and (Get-Fingerprint $rStopOwed.Out) -eq $fpPush) $rStopOwed.Out
 Write-Utf8 (Join-Path $push1.Repo 'README.md') "# Proj`n`nA() now returns 2.`n"
 Add-Commit $push1.Repo 'docs'
 $rAckPush = FireAck -HookPath $push1.Hook.Script -ProjectRoot $push1.Repo -Fingerprint $fpPush -Result Updated -Files 'README.md' -Reason 'documented the new A() return value' -LocalAppData $push1.Hook.LocalAppData
@@ -99,13 +99,13 @@ Check 'non-push commands record no push-deny state' (
 # From the parent directory, so only -C can point the gate at the repository.
 $rDashC = Invoke-PushAttempt $push4 'git -C PushRecognition push origin main' -Cwd $Work
 Check 'git -C <dir> push is recognised and resolved against the cwd' (
-    $rDashC.Out -match '"permissionDecision":"deny"' -and (Get-DenyReason $rDashC.Out) -match 'a\.ps1') ($rDashC.Out + ' | err=' + $rDashC.Err)
+    $rDashC.Exit -eq 0 -and $rDashC.Out -notmatch '"permissionDecision"' -and $rDashC.Out -match 'DOCS FRESHNESS CHECK' -and (Get-DenyReason $rDashC.Out) -match 'a\.ps1') ($rDashC.Out + ' | err=' + $rDashC.Err)
 $push5 = New-PushScenario 'PushChained'
 Write-Utf8 (Join-Path $push5.Repo 'a.ps1') "function A { 2 }`n"
 Add-Commit $push5.Repo 'code'
 $rChained = Invoke-PushAttempt $push5 'git status && git push' -Client 'codex'
-Check 'x && git push is recognised; Codex gets exit 2 with the reason on stderr' (
-    $rChained.Exit -eq 2 -and $rChained.Err -match 'DOCS FRESHNESS CHECK' -and $rChained.Err -match 'before the single push/CI') ($rChained.Out + ' | err=' + $rChained.Err)
+Check 'x && git push is recognised; Codex gets exit 0 with advisory context' (
+    $rChained.Exit -eq 0 -and $rChained.Err -eq '' -and $rChained.Out -match 'DOCS FRESHNESS CHECK' -and $rChained.Out -match 'before the single push/CI') ($rChained.Out + ' | err=' + $rChained.Err)
 
 # =====================================================================
 Write-Host '--- Stop: reviewed docs preserve parent proof without a latest-SHA waiver ---' -ForegroundColor Cyan
@@ -133,13 +133,13 @@ $ciProof=@{schema=1;repository='octo/docs-demo';sha=$ciHead;outcome='ci-green';o
 [System.IO.File]::WriteAllLines($ciNote, @($ciHead, 'verified', $ciWhen, 'ci-green',($ciProof|ConvertTo-Json -Depth 8 -Compress)),[Text.Encoding]::UTF8)
 $rGreen = Fire -HookPath $ci1.Hook.Script -Cwd $ci1.Repo -EventName 'Stop' -LocalAppData $ci1.Hook.LocalAppData
 Check 'docs repair retains tested parent identity without waiving latest-SHA checks' (
-    $rGreen.Out -match '"decision":"block"' -and $rGreen.Out -notmatch '\[skip ci\]|no suite' -and
+    $rGreen.Exit -eq 0 -and $rGreen.Out -notmatch '"decision"' -and $rGreen.Out -match 'DOCS FRESHNESS CHECK' -and $rGreen.Out -notmatch '\[skip ci\]|no suite' -and
     $rGreen.Out -match ('parent SHA ' + $ciHead.Substring(0, 7)) -and $rGreen.Out -match 'New SHA UNTESTED' -and
     $rGreen.Out -match 'ONE manual final batch or exact blocker' -and $rGreen.Out -match 'no ancestor green/display-only run') $rGreen.Out
 $ci2 = New-CiScenario 'CiNotRecorded'
 $rNotGreen = Fire -HookPath $ci2.Hook.Script -Cwd $ci2.Repo -EventName 'Stop' -LocalAppData $ci2.Hook.LocalAppData
 Check 'without a ci-green record the block keeps today''s text (no [skip ci])' (
-    $rNotGreen.Out -match '"decision":"block"' -and $rNotGreen.Out -notmatch 'skip ci') $rNotGreen.Out
+    $rNotGreen.Exit -eq 0 -and $rNotGreen.Out -notmatch '"decision"' -and $rNotGreen.Out -match 'DOCS FRESHNESS CHECK' -and $rNotGreen.Out -notmatch 'skip ci') $rNotGreen.Out
 
 # A -C value no path can hold must not crash the hook on Windows PowerShell 5.1,
 # where .NET Framework's IsPathRooted throws on it; the command is simply not a

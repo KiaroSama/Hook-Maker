@@ -301,18 +301,19 @@ try {
     # the installed client router, never an assumed custom-instructions.md file.
     # Missing routed owners are an explicit dependent-work blocker, not a waiver.
     Check 'first-run note requires every task owner through actual client registry' (
-        $r.Out -match 'BEFORE work: installed CLAUDE.md/AGENTS.md registry -> EVERY task owner FULL' -and
+        $r.Out -match 'RULES CHECK \(claude\): first check; registry -> task owners IN FULL before work' -and
         $r.Out -match 'Deferred != optional') $r.Out
-    Check 'missing owner never waives dependent obligations or changes native slash' (
-        $r.Out -match 'Missing owner: report, dependent work waits' -and
-        $r.Out -match 'native slash intact') $r.Out
+    Check 'registry routing remains mandatory and does not claim execution' (
+        $r.Out -match 'Canonical registry: custom-instructions\.md' -and
+        $r.Out -match 'task owners FULL before work' -and
+        $r.Out -match 'Advisory verifies/executes none of these') $r.Out
     Check 'claude selects only its own skill policy' (
-        $r.Out -match 'claude: ONLY skill-policy\.md' -and $r.Out -notmatch 'codex') $r.Out
+        $r.Out -match 'active client = claude -> load ONLY skill-policy\.md as the skill policy' -and $r.Out -notmatch 'skill-policy-codex-optimized\.md') $r.Out
     Check 'first run does not invent a version-suffixed file warning' ($r.Out -notmatch 'WARNING: version-suffixed') $r.Out
-    Check 'UTF-8 guidance requires strict explicit format' ($r.Out -match 'Strict UTF-8') $r.Out
-    Check 'BOM remains a separate decision' ($r.Out -match 'BOM distinct') $r.Out
+    Check 'UTF-8 guidance requires strict explicit format' ($r.Out -match 'UTF-8: explicit strict I/O') $r.Out
+    Check 'BOM remains a separate decision' ($r.Out -match 'BOM separate') $r.Out
     Check 'encoding exception retains scope, encoding, forcing consumer and compatibility proof' (
-        $r.Out -match 'path/scope/encoding/forcing consumer/verified compatibility') $r.Out
+        $r.Out -match 'path/scope/encoding/reason/forcing system and compatibility proof') $r.Out
     # A real uploaded-style copy in the rules dir is flagged, not trusted.
     New-RuleFile $globalClaude 'custom-instructions (17).md'
     $r = Fire -Cwd $projE1
@@ -328,7 +329,7 @@ try {
     $projE1x = Join-Path $Work 'projE1x'; New-Item -ItemType Directory -Path $projE1x -Force | Out-Null
     $r = Fire -Cwd $projE1x -Claude $false
     Check 'codex loads EXACTLY skill-policy-codex-optimized.md and never the claude policy' (
-        $r.Out -match 'codex: ONLY skill-policy-codex-optimized\.md' -and
+        $r.Out -match 'active client = codex -> load ONLY skill-policy-codex-optimized\.md as the skill policy' -and
         $r.Out -notmatch 'skill-policy\.md') $r.Out
 
     # =====================================================================
@@ -339,7 +340,7 @@ try {
     Check 'ordinary prose "deep debug" does NOT activate the codeword path' ($r.Exit -eq 0 -and $r.Out -eq '') $r.Out
     $r = Fire -Cwd $projDD -RawStdin (New-PromptStdin -Cwd $projDD -Prompt 'run ::deep-debug on the parser' -SessionId 'dd-s1')
     Check 'a standalone ::deep-debug requires complete workflow owners before EVERY bug/phase' (
-        $r.Out -like '*BEFORE ::deep-debug read WORKFLOWS.md Deep Debug/skill-policy-deep-debug.md/CODEWORDS.md FULL, EVERY bug/phase*' -and
+        ([string](($r.Out | ConvertFrom-Json).hookSpecificOutput.additionalContext)).Contains('BEFORE ::deep-debug read WORKFLOWS.md Deep Debug/skill-policy-deep-debug.md/CODEWORDS.md FULL, EVERY bug/phase') -and
         $r.Out -like '*DEEP DEBUG: COMPLETE or DEEP DEBUG: BLOCKED*') $r.Out
     # Goal/dispositions/integration/recursion live in the full workflow owners;
     # the public reminder proves routing only, never their execution.
@@ -417,7 +418,7 @@ try {
     Check 'edits + no confirmation -> a real block decision' ($r.Out -match '"decision"\s*:\s*"block"') $r.Out
     Check 'the block lists the governing rule files it checked' ($r.Out -match 'Governing rule files:' -and $r.Out -match 'project-rule\.md') $r.Out
     Check 'the block names the exact single action that clears it' (
-        $r.Out -match 'Final standalone' -and $r.Out -match 'Rules applied: <files \+ purpose>') $r.Out
+        $r.Out -match 'Final: standalone' -and $r.Out -match 'Rules applied: <files \+ purposes>') $r.Out
     Check '"none - <reason>" is offered as a legitimate answer, not a forced claim' (
         $r.Out -match 'Rules applied: none - <reason>') $r.Out
     # An unchanged failure blocks ONCE per session (global-hook-rules.md: a gate
@@ -447,11 +448,11 @@ try {
 
     # UNKNOWN transcript: never an all-clear, never a block.
     $r = Fire -Cwd $closeProj -RawStdin (New-StopStdin -Cwd $closeProj -Transcript (Join-Path $Work 'no-such-transcript.jsonl') -SessionId 'close-u1')
-    Check 'a missing transcript reports UNVERIFIED, never an all-clear and never a block' (
-        $r.Out -match 'compliance UNVERIFIED' -and $r.Out -match 'not all-clear' -and $r.Out -notmatch '"decision"') $r.Out
+    Check 'a missing transcript is silently unknown, never an all-clear' (
+        $r.Exit -eq 0 -and $r.Err -eq '' -and $r.Out -eq '') $r.Out
     $r = Fire -Cwd $closeProj -RawStdin (New-StopStdin -Cwd $closeProj -SessionId 'close-u2')
-    Check 'no transcript_path at all is treated the same way (unverified, not silent)' (
-        $r.Out -match 'compliance UNVERIFIED' -and $r.Out -notmatch '"decision"') $r.Out
+    Check 'no transcript_path is silently unknown as well' (
+        $r.Exit -eq 0 -and $r.Err -eq '' -and $r.Out -eq '') $r.Out
 
     $r = Fire -Cwd $closeProj -RawStdin (New-StopStdin -Cwd $closeProj -Transcript $tEdit -SessionId 'close-sa' -StopActive $true)
     # stop_hook_active means "a Stop gate blocked and the agent is coming
