@@ -37,17 +37,17 @@
     $srcRepo = New-PathsRepo 'ci-paths-src' $srcOnly @('docs/x.md', 'src/a.ts')
     Set-Mock -RunJson '[]' -ExpectedSha (Get-HeadSha $srcRepo)
     $r = Fire -HookPath $CiHook -Cwd $srcRepo -EventName 'Stop'
-    Check 'a push that touches a filtered path still blocks while its run is missing' ($r.Out -match '"decision":"block"' -and $r.Out -match 'no runs are registered') $r.Out
+    Check 'a push that touches a filtered path still blocks while its run is missing' ($r.Out -match '"systemMessage"' -and $r.Out -match 'no runs are registered') $r.Out
 
     $prRepo = New-PathsRepo 'ci-paths-pr' "on:`n  push:`n    paths: ['src/**']`n  pull_request:`njobs: {}`n" @('docs/x.md')
     Set-Mock -RunJson '[]' -ExpectedSha (Get-HeadSha $prRepo)
     $r = Fire -HookPath $CiHook -Cwd $prRepo -EventName 'Stop'
-    Check 'a workflow that also runs on pull_request keeps the block (open the PR)' ($r.Out -match '"decision":"block"') $r.Out
+    Check 'a workflow that also runs on pull_request keeps the block (open the PR)' ($r.Out -match '"systemMessage"') $r.Out
 
     $flowRepo = New-PathsRepo 'ci-paths-flow' "on: { push: { paths: ['src/**'] } }`njobs: {}`n" @('docs/x.md')
     Set-Mock -RunJson '[]' -ExpectedSha (Get-HeadSha $flowRepo)
     $r = Fire -HookPath $CiHook -Cwd $flowRepo -EventName 'Stop'
-    Check 'a filter this reader cannot read with certainty keeps the block' ($r.Out -match '"decision":"block"') $r.Out
+    Check 'a filter this reader cannot read with certainty keeps the block' ($r.Out -match '"systemMessage"') $r.Out
 
     Write-Host '--- paths filter: patterns this reader cannot evaluate keep the block (DD-12/13/14) ---' -ForegroundColor Cyan
     $pfUnit = & {

@@ -134,7 +134,7 @@
 
     # 1. No registry at all -> the changed invalid file blocks (the pivot).
     $r = Fire -HookPath $hcExc.Script -Cwd $projExc -EventName 'Stop' -SessionId 'exc01' -LocalAppData $hcExc.LocalAppData
-    Check 'without a registry the changed non-UTF-8 file blocks' ((Test-StopBlocks $r.Out) -and (Get-Message $r.Out) -match 'legacy/notes\.txt') $r.Out
+    Check 'without a registry the changed non-UTF-8 file blocks' ((Test-StopAdvisory $r.Out) -and (Get-Message $r.Out) -match 'legacy/notes\.txt') $r.Out
 
     # 2. A valid EXACT entry is honoured -> no block, silent.
     Write-Utf8 $excRegistry (Get-ExceptionJson -Path 'legacy/notes.txt')
@@ -146,7 +146,7 @@
     $r = Fire -HookPath $hcExc.Script -Cwd $projExc -EventName 'Stop' -SessionId 'exc03' -LocalAppData $hcExc.LocalAppData
     Check 'a valid single narrow glob exception is honoured' (-not (Test-StopBlocks $r.Out)) $r.Out
 
-    # 4..10: every malformed/overbroad shape is REJECTED and the file still blocks.
+    # 4..10: every malformed/overbroad shape is REJECTED and the file still reports.
     $badRegistries = @(
         @{ Name = 'a broad **/* pattern';            Json = (Get-ExceptionJson -Path '**/*') },
         @{ Name = 'a bare * pattern';                Json = (Get-ExceptionJson -Path '*') },
@@ -162,15 +162,15 @@
         $excIndex++
         Write-Utf8 $excRegistry $bad.Json
         $r = Fire -HookPath $hcExc.Script -Cwd $projExc -EventName 'Stop' -SessionId ('exc{0:00}' -f $excIndex) -LocalAppData $hcExc.LocalAppData
-        Check ($bad.Name + ' is rejected and grants NO exception (still blocks)') (
-            (Test-StopBlocks $r.Out) -and (Get-Message $r.Out) -match 'legacy/notes\.txt') $r.Out
+        Check ($bad.Name + ' is rejected and grants NO exception (still reports)') (
+            (Test-StopAdvisory $r.Out) -and (Get-Message $r.Out) -match 'legacy/notes\.txt') $r.Out
     }
     Check 'a rejected entry is explained in the block message' ((Get-Message $r.Out) -match '(?i)rejected') (Get-Message $r.Out)
 
     # 11. The registry file itself must be valid UTF-8 - a corrupt registry
-    #     rejects ALL exceptions and the pivot file still blocks.
+    #     rejects ALL exceptions and the pivot file still reports.
     Write-Bytes $excRegistry (Get-InvalidUtf8Bytes 'CORRUPTREGISTRY')
     $r = Fire -HookPath $hcExc.Script -Cwd $projExc -EventName 'Stop' -SessionId 'exc99' -LocalAppData $hcExc.LocalAppData
-    Check 'a registry that is not itself valid UTF-8 rejects ALL exceptions (still blocks)' (
-        (Test-StopBlocks $r.Out) -and (Get-Message $r.Out) -match 'legacy/notes\.txt' -and (Get-Message $r.Out) -match '(?i)invalid UTF-8') $r.Out
+    Check 'a registry that is not itself valid UTF-8 rejects ALL exceptions (still reports)' (
+        (Test-StopAdvisory $r.Out) -and (Get-Message $r.Out) -match 'legacy/notes\.txt' -and (Get-Message $r.Out) -match '(?i)invalid UTF-8') $r.Out
     Remove-Item -LiteralPath $excRegistry -Force

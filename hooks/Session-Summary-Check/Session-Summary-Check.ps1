@@ -168,9 +168,10 @@ $blocked = @(Get-BlockedGateNames -ProjectKey $projectKey -SessionId $sessionId)
 
 $lines = New-Object System.Collections.ArrayList
 if (-not [string]::IsNullOrEmpty($languageLine)) { [void]$lines.Add($languageLine); [void]$lines.Add('') }
-[void]$lines.Add('SESSION SUMMARY: final handback ONLY, user language; DONE / REMAINING ONCE/task, LAST after MCP used:/Skills used:/Rules applied:. Corrections: issue-line only.')
-[void]$lines.Add('Verify memory/authorized Git/exact-SHA CI/docs ack/real tests/no owned survivors/private hygiene; ALL gates verified/unverified. Missing owner/proof: REMAINING.')
-[void]$lines.Add('DONE=verified work/checks/gates; REMAINING=unfinished/deferred/blocked/untested+reasons, or none.')
+# One advisory replaces repeated policy paragraphs without dropping closure facts.
+[void]$lines.Add('Session-Summary-Check: advisory, one short DONE / REMAINING at task completion, last after MCP/Skills/Rules lines, in the user''s language; never mid-work/background wait/correction.')
+[void]$lines.Add('Already published: correct changed claims once, no second wrap-up. Before closing verify applicable memory/Git/exact-SHA CI/docs/tests/process cleanup/secrets/local-only state, or disclose the gap.')
+[void]$lines.Add('DONE: completed work/checks/resolved gates with observed proof, including recovered failures; REMAINING: unfinished required items, current blockers, deferred scope or untested required paths with reasons. History alone proves no open gate; no invented follow-ups, concise none if clear.')
 
 # A summary that went out while a gate was still open. Stated ONCE, as a fact
 # about what already happened, and never turned into a demand for a correction

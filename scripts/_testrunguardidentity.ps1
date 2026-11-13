@@ -59,7 +59,7 @@ foreach ($observerHost in @('pwsh', 'powershell.exe')) {
         commandFingerprint=(Get-CommandFingerprint -ExecutablePath 'python.exe' -ArgumentList @('unrelated')); overall='ok'; exitCode=0
     }
     $response = Fire -HookPath $unknownCopy.Script -Cwd $Proj -EventName 'PostToolUse' -Command $unknownCommand -LocalAppData $unknownCopy.LocalAppData -Exe $observerHost
-    Check ($observerHost + ': dynamic identity cannot accept an unrelated fresh success') ((Get-Message $response.Out) -match 'executable/argv literals unrecoverable; unrelated result != run identity') $response.Out
+    Check ($observerHost + ': dynamic identity cannot accept an unrelated fresh success') ((Get-Message $response.Out) -match 'argv/executable UNKNOWN; unrelated receipt!=identity') $response.Out
 }
 
 Write-Host '--- literal argv: observer and real guarded runner agree end to end ---' -ForegroundColor Cyan

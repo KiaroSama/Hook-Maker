@@ -39,7 +39,7 @@ foreach ($hostName in @('pwsh', 'powershell.exe')) {
     Write-Utf8 (Join-Path $first 'f.txt') 'changed in the non-final worktree'
     $r = Fire -Cwd $many -SessionId ('multi-' + $hostTag) -Exe $hostName
     Check ($hostName + ': a dirty non-final linked worktree is inspected') (
-        $r.Exit -eq 0 -and $r.Out -match '"decision":"block"' -and
+        $r.Exit -eq 0 -and $r.Out -match '"systemMessage"' -and
         $r.Out -match ('multi-' + $hostTag + '-first')) ($r.Out + $r.Err)
 
     $dirty = New-PushedRepo ('dirty-content-' + $hostTag)
@@ -60,7 +60,7 @@ foreach ($hostName in @('pwsh', 'powershell.exe')) {
         [System.IO.File]::GetLastWriteTimeUtc($dirtyFile) -eq $savedTime)
     $r = Fire -Cwd $dirty -SessionId ('content-' + $hostTag) -Exe $hostName
     Check ($hostName + ': changed bytes in an already-dirty tracked file are task-scoped') (
-        $r.Exit -eq 0 -and $r.Out -match '"decision":"block"' -and $r.Out -match 'pre-existing worktree') ($r.Out + $r.Err)
+        $r.Exit -eq 0 -and $r.Out -match '"systemMessage"' -and $r.Out -match 'pre-existing worktree') ($r.Out + $r.Err)
 
     $untracked = Join-Path $other ('new folder\untracked-' + [char]0x0645 + '.txt')
     Write-Utf8 $untracked 'untracked-before'
@@ -68,7 +68,7 @@ foreach ($hostName in @('pwsh', 'powershell.exe')) {
     Write-Utf8 $untracked 'untracked-during'
     $r = Fire -Cwd $dirty -SessionId ('untracked-' + $hostTag) -Exe $hostName
     Check ($hostName + ': changed bytes under an already-untracked directory are task-scoped') (
-        $r.Exit -eq 0 -and $r.Out -match '"decision":"block"' -and $r.Out -match 'pre-existing worktree') ($r.Out + $r.Err)
+        $r.Exit -eq 0 -and $r.Out -match '"systemMessage"' -and $r.Out -match 'pre-existing worktree') ($r.Out + $r.Err)
 
     Write-Utf8 $dirtyFile 'staged-one'
     & git -C $other add f.txt
@@ -82,7 +82,7 @@ foreach ($hostName in @('pwsh', 'powershell.exe')) {
     Check ($hostName + ': index-only fixture preserves worktree bytes and status codes') ($beforeStatus -eq $afterStatus)
     $r = Fire -Cwd $dirty -SessionId ('index-' + $hostTag) -Exe $hostName
     Check ($hostName + ': changed staged bytes are detected independently of worktree bytes') (
-        $r.Exit -eq 0 -and $r.Out -match '"decision":"block"' -and $r.Out -match 'pre-existing worktree') ($r.Out + $r.Err)
+        $r.Exit -eq 0 -and $r.Out -match '"systemMessage"' -and $r.Out -match 'pre-existing worktree') ($r.Out + $r.Err)
 
     $large = Join-Path $other 'large.dat'
     $stream = [System.IO.File]::Create($large)

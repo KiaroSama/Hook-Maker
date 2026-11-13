@@ -17,33 +17,14 @@
 
 # Index format. Flat lines, not JSON: ~1700 entries parse in milliseconds and the
 # file is only ever produced and consumed here.
-#   header  HookMakerSkillsIndex|5|<configHash>|<builtUtcTicks>
+#   header  HookMakerSkillsIndex|4|<configHash>|<builtUtcTicks>
 #   plugin  p|<plugin>|<folder>|<name>|<description>|<full path>|<source>|<version>|<status>|<explicit>|<invocation>
 #   library l|<folder>|<name>|<description>|<full path>
 #   partial x|<reason>            install key k|<name@market>        install known m|1
 #
-# Version 5 invalidates cache-only rows formerly promoted to enabled invocations.
+# T004 cache-only evidence regression: version 5 invalidates invented enabled keys;
+# old index rows are rebuilt, never promoted to installed/exposed evidence.
 $script:SkillIndexVersion = '5'
-
-# Eligibility is discovery evidence only, never proof of exposure or execution.
-function Test-SkillCandidate {
-    param($Skill)
-    return ($Skill.Status -eq 'enabled' -and $Skill.Explicit -ne '1' -and -not [string]::IsNullOrWhiteSpace([string]$Skill.Invocation))
-}
-
-# Installed-but-disabled/explicit/unknown definitions still prevent duplicate
-# import suggestions. Cache folders alone prove no installation.
-function Get-InstalledSkillNames {
-    param([object[]]$Skills)
-    $names=@{}
-    foreach ($skill in $Skills) {
-        if ($skill.Source -eq 'cache-walk') { continue }
-        foreach ($name in @($skill.Leaf,$skill.Name,$skill.Invocation)) {
-            if (-not [string]::IsNullOrWhiteSpace([string]$name)) { $names[([string]$name).ToLowerInvariant()]=$true }
-        }
-    }
-    return $names
-}
 
 # '|' is the field separator and a description may contain anything, so every
 # stored field is flattened first. Lossy on purpose - these values are only ever
@@ -232,4 +213,21 @@ function Build-SkillIndex {
     }
     catch { }
     return [pscustomobject]@{ Plugin = $plugin; Library = $library; Partial = $discovered.Partial; InstallKeys = $discovered.InstallKeys; InstallKnown = $discovered.InstallKnown }
+}
+
+function Test-SkillCandidate {
+    param($Skill)
+    return ($Skill.Status -eq 'enabled' -and $Skill.Explicit -ne '1' -and -not [string]::IsNullOrWhiteSpace([string]$Skill.Invocation))
+}
+
+function Get-InstalledSkillNames {
+    param([object[]]$Skills)
+    $names=@{}
+    foreach ($skill in $Skills) {
+        if ($skill.Source -eq 'cache-walk') { continue }
+        foreach ($name in @($skill.Leaf,$skill.Name,$skill.Invocation)) {
+            if (-not [string]::IsNullOrWhiteSpace([string]$name)) { $names[([string]$name).ToLowerInvariant()]=$true }
+        }
+    }
+    return $names
 }

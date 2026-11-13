@@ -125,7 +125,7 @@
         $timer = [Diagnostics.Stopwatch]::StartNew()
         $reads = Read-GitBlobsBatch -Cwd $Work -BlobShas @($oid) -MaxFullBytes 64MB -DeadlineUtc ([DateTime]::UtcNow.AddSeconds(2))
         $childPid = if (Test-Path -LiteralPath $pidPath) { [int][IO.File]::ReadAllText($pidPath,[Text.Encoding]::UTF8) } else { 0 }
-        Check 'stalled batch pipe fails closed and reaps the exact owned child' (
+        Check 'stalled batch pipe reports UNKNOWN and reaps the exact owned child' (
             $reads[$oid].Failed -and $timer.Elapsed.TotalSeconds -lt 5 -and $childPid -gt 0 -and
             $null -eq (Get-Process -Id $childPid -ErrorAction SilentlyContinue))
     } finally { Set-Item -Path Function:New-Utf8GitProcess -Value $factory }

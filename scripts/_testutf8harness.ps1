@@ -232,6 +232,14 @@ function Test-StopBlocks {
     return ($null -ne $parsed -and $null -ne $parsed.PSObject.Properties['decision'] -and [string]$parsed.decision -eq 'block')
 }
 
+# R035 style findings must be delivered without a gate. Empty/stub output fails.
+function Test-StopAdvisory {
+    param([string]$Out)
+    if(Test-StopBlocks $Out){return $false}
+    $message=Get-Message $Out
+    return -not[string]::IsNullOrWhiteSpace($message)
+}
+
 # Byte-level snapshot of an entire tree: relative path + length + SHA-256.
 # Proving "untouched" by Test-Path would pass even if content were rewritten.
 function Get-TreeSignature {

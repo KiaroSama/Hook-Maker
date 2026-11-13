@@ -36,7 +36,6 @@ if ($isStopEvent -and (Test-StopStandDown -HookInput $hookInput -HookName 'Ignor
 $cwd = [string](Get-Field $hookInput 'cwd')
 if ([string]::IsNullOrWhiteSpace($cwd) -or -not (Test-Path -LiteralPath $cwd -PathType Container)) { exit 0 }
 if ($null -eq (Get-Command git -ErrorAction SilentlyContinue)) { exit 0 }
-if ($GitPrePush) { [Console]::Error.WriteLine('[Hook Maker] Ignore: repository') }
 # One checked top-level query also handles sessions whose cwd drifted below it.
 $rootResult = Invoke-QuietCommand -FilePath git -ArgumentList @('-C', $cwd, 'rev-parse', '--show-toplevel') -CaptureOutput
 if ($null -eq $rootResult -or $rootResult.ExitCode -ne 0) { exit 0 }
@@ -202,7 +201,6 @@ if ($missing.Count -gt 0) {
 # A .gitignore entry does not untrack an already indexed file; block until fixed.
 $tracked = New-Object System.Collections.Generic.List[string]
 $staged = New-Object System.Collections.Generic.List[string]
-if ($GitPrePush) { [Console]::Error.WriteLine('[Hook Maker] Ignore: index') }
 # The index already contains staged additions. Read staging only for a confirmed
 # protected match's diagnostic, not as a second clean-path inventory.
 $indexResult = Invoke-QuietCommand -FilePath git -ArgumentList @('-C',$cwd,'ls-files','-z') -CaptureOutput
@@ -230,7 +228,6 @@ foreach ($file in @($trackedFiles | Sort-Object -Unique)) {
 }
 if ($current.Count -gt 0) { [void]$batches.Add($current.ToArray()) }
 foreach ($paths in $batches) {
-    if ($GitPrePush) { [Console]::Error.WriteLine('[Hook Maker] Ignore: batch start') }
     # check-ignore -z requires stdin; retain bounded argv batches and request
     # literal Unicode instead. Windows filenames cannot contain tabs/newlines.
     $detail = Invoke-QuietCommand -FilePath git -ArgumentList (@('-C',$cwd,'-c','core.quotePath=false','check-ignore','--no-index','-v','--') + @($paths)) -CaptureOutput
@@ -244,7 +241,6 @@ foreach ($paths in $batches) {
         if ($matchedPattern.StartsWith('!') -or $protectedPatterns -notcontains $matchedPattern) { continue }
         if ($trackedFiles -contains $file) { [void]$tracked.Add($file) }
     }
-    if ($GitPrePush) { [Console]::Error.WriteLine('[Hook Maker] Ignore: batch complete') }
 }
 if ($tracked.Count -gt 0) {
     $stagedResult = Invoke-QuietCommand -FilePath git -ArgumentList @('-C',$cwd,'diff','--cached','--name-only','-z') -CaptureOutput
@@ -261,26 +257,25 @@ if ($ruleAdvice.Count -gt 0 -and -not $GitPrePush) {
     $adviceFp = Get-ShortHash ((@($ruleAdvice | Sort-Object)) -join '|')
     $seenFp = ''; try { if (Test-Path -LiteralPath $adviceState -PathType Leaf) { $seenFp = ([System.IO.File]::ReadAllText($adviceState)).Trim() } } catch { }
     if ($seenFp -ne $adviceFp) {
-        $adviceLine = 'Patterns NOT protected; review/add via .env EXTRA_PATTERNS or .gitignore: ' + ($ruleAdvice -join ', ')
+        $adviceLine = 'Unprotected: .env EXTRA_PATTERNS/.gitignore review: ' + ($ruleAdvice -join ', ')
         try { New-Item -ItemType Directory -Path (Split-Path -Parent $adviceState) -Force | Out-Null; [System.IO.File]::WriteAllText($adviceState, $adviceFp) } catch { }
     }
 }
 if ($missing.Count -eq 0 -and $tracked.Count -eq 0 -and $staged.Count -eq 0) {
     if ($adviceLine -eq '') { exit 0 }
-    $emit = Write-HookResult -EventName $eventName -Kind $(if ($isStopEvent) { 'advisory' } else { 'context' }) -Message ('IGNORE RULES CHECK (' + $cwd + '):' + "`n" + $adviceLine)
+    $emit = Write-HookResult -EventName $eventName -Kind $(if ($isStopEvent) { 'advisory' } else { 'context' }) -Message ('Ignore (' + $cwd + '):' + "`n" + $adviceLine)
     exit $emit.ExitCode
 }
 $lines = New-Object System.Collections.Generic.List[string]
-[void]$lines.Add('IGNORE RULES CHECK (' + $cwd + '):')
+[void]$lines.Add('Ignore (' + $cwd + '):')
 if ($adviceLine -ne '') { [void]$lines.Add($adviceLine) }
-if ($missing.Count -gt 0) { [void]$lines.Add('Auto-added ' + $missing.Count + ' missing pattern(s) to .gitignore: ' + ($missing -join ', ')) }
-if ($tracked.Count -gt 0) { [void]$lines.Add('TRACKED protected paths must be untracked before push (preserve local files): ' + (($tracked | Sort-Object -Unique) -join ', ')) }
-if ($staged.Count -gt 0) { [void]$lines.Add('STAGED protected paths must be removed from the index before push: ' + (($staged | Sort-Object -Unique) -join ', ')) }
-[void]$lines.Add('Before push: review .gitignore/private/generated exclusions; preserve local files.')
+if ($missing.Count -gt 0) { [void]$lines.Add('Added ' + $missing.Count + ' .gitignore patterns: ' + ($missing -join ', ')) }
+if ($tracked.Count -gt 0) { [void]$lines.Add('TRACKED, preserve/untrack: ' + (($tracked | Sort-Object -Unique) -join ', ')) }
+if ($staged.Count -gt 0) { [void]$lines.Add('STAGED, index only: ' + (($staged | Sort-Object -Unique) -join ', ')) }
+[void]$lines.Add('Review ignores, preserve files.')
 $reason = $lines.ToArray() -join "`n"
 if ($GitPrePush) {
-    [Console]::Error.WriteLine($reason)
-    exit 1
+    exit (Write-NativeFinding -HookName Ignore-Rules-Check -Message $reason -ProjectRoot $cwd)
 }
 if ($isStopEvent) {
     # Record the block so THIS hook's own re-entry is recognised; another
@@ -291,5 +286,5 @@ if ($isStopEvent) {
 $emit = Write-HookResult -EventName $eventName -Kind 'context' -Message $reason
 exit $emit.ExitCode
 }
-catch { if ($null -ne $gateReceipt) { $gateReceipt.Crashed = $true }; throw }
+catch { if ($null -ne $gateReceipt) { $gateReceipt.Crashed = $true }; exit 0 }
 finally { if ($null -ne $gateReceipt) { Complete-StopGateReceipt $gateReceipt } }

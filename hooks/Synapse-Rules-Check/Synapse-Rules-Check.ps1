@@ -64,10 +64,7 @@ if ($eventName -eq 'UserPromptSubmit' -and -not $midSessionReminder) { exit 0 }
 
 # ---- SessionStart: load the rules, with the settings that make it work ------
 if ($eventName -eq 'SessionStart') {
-    $note = @(
-        'SYNAPSE: BEFORE edits memory_digest ONCE/session+tokenBudget; index id/type/~110-char preview, read matches FULL.',
-        'memory_retrieve: minScore0.65 or tags; empty: remove threshold/check scoreBreakdown (real0.60-0.65/~0.5 noise); adjacent: answer terms. Recall!=policy/project truth; reverify operation/account state; private local.'
-    ) -join "`n"
+    $note = 'Synapse-Rules-Check: advisory, read recall before first edit: memory_digest once with tokenBudget, index id/type/preview then full task matches; memory_retrieve minScore0.65 OR project:<slug> tags, never both. Empty expected: remove threshold/read scoreBreakdown (real vector0.60-0.65 vs near-zero vector noise); adjacent answer: query answer terms. Recall != canonical policy/project truth or operation/account consent; private local, no raw memory disclosure.'
     $emit = Write-HookResult -EventName $eventName -Kind 'context' -Message $note
     exit $emit.ExitCode
 }
@@ -149,10 +146,7 @@ if ($eventName -eq 'UserPromptSubmit') {
 }
 
 if ($consulted) {
-    $message = @(
-        'SYNAPSE memory_write: durable facts/reasons/decisions/rejections/verified commands; entityKey replaces, project:<slug>. Correct contradicted blocker/name/environment SAME turn.',
-        'No secrets/credentials/tokens/secrets.md/.env contents/duplicate/status/closure/nontransferable fixes; no durable value=no write.'
-    ) -join "`n"
+    $message = 'Synapse-Rules-Check: advisory write-back of new durable facts/reasons/decisions/rejected alternatives/verified commands via memory_write + entityKey/project:<slug>; correct contradicted memory this turn. No status/history/closure-only/duplicate notes or secrets/.env/registry contents; no durable learning means no write.'
 }
 else {
     $message = @(

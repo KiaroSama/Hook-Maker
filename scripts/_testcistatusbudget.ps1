@@ -70,7 +70,7 @@
         Check 'budget: paginated queries stop at the deadline (12 s + start-up grace)' ($watch.Elapsed.TotalSeconds -lt 20 -and $r.Exit -eq 0) (
             ('{0:N1} s, exit {1}' -f $watch.Elapsed.TotalSeconds, $r.Exit))
         Check 'budget: a failed run whose billing check ran out of time still fails closed, never green' (
-            $r.Out -notmatch 'CI NOT VERIFIED GREEN' -and $r.Out -ne '') $r.Out
+            $r.Out -notmatch 'CI UNVERIFIED' -and $r.Out -ne '') $r.Out
     }
     finally {
         [System.IO.File]::WriteAllText($shimPath, $ghMock)
@@ -85,10 +85,10 @@
     $oldSha=Get-HeadSha $oldRepo
     Set-Mock -RunJson '[{"databaseId":304,"name":"CI","workflowName":"CI","status":"completed","conclusion":"success"}]' -ExpectedSha $oldSha
     $r = Fire -HookPath $oldHook -Cwd $oldRepo -EventName 'Stop'
-    Check 'budget: missing optional sibling retains execution proof and explicit report/UI gap' ($r.Exit -eq 0 -and $r.Err -eq '' -and $r.Out -match 'CI execution verified' -and $r.Out -match 'Suite/case reports \+ commit/check UI UNVERIFIED' -and $r.Out -match $oldSha -and $r.Out -notmatch '"decision"' -and (Get-GhCallCount 'api|repos/*/actions/runs?head_sha=*') -eq 1) ([string]$r.Out)
+    Check 'budget: missing optional sibling retains execution proof and explicit report/UI gap' ($r.Exit -eq 0 -and $r.Err -eq '' -and $r.Out -match 'CI execution verified' -and $r.Out -match 'Reports/UI UNVERIFIED' -and $r.Out -match $oldSha -and $r.Out -notmatch '"decision"' -and (Get-GhCallCount 'api|repos/*/actions/runs?head_sha=*') -eq 1) ([string]$r.Out)
     $failedRepo=New-GitRepo 'ci-budget-nosibling-failed';$failedSha=Get-HeadSha $failedRepo
     $failedChecks='{"total_count":1,"check_runs":[{"id":1,"head_sha":"'+$failedSha+'","status":"completed","conclusion":"failure"}]}'
-    Set-Mock -RunJson '[{"databaseId":305,"name":"CI","workflowName":"CI","status":"completed","conclusion":"failure"}]' -ExpectedSha $failedSha -CheckRunsJson $failedChecks -Annotations @{ '1'='[{"annotation_level":"failure","message":"payments have failed"}]' }
+    Set-Mock -RunJson '[{"databaseId":305,"name":"CI","workflowName":"CI","status":"completed","conclusion":"failure"}]' -ExpectedSha $failedSha -CheckRunsJson $failedChecks -Annotations @{ '1'='[{"annotation_level":"failure","message":"billing/payment"}]' }
     $r=Fire -HookPath $oldHook -Cwd $failedRepo -EventName 'Stop'
     Check 'budget: missing billing reader keeps an actual failed check blocked, never billing or green' ($r.Exit-eq0-and$r.Err-eq''-and$r.Out-match'"decision":"block"'-and$r.Out-match'FAILED:'-and$r.Out-notmatch'account-billing|CI execution verified'-and(Get-GhCallCount 'api|*/annotations*')-eq0) ([string]$r.Out)
     # Every entry fallback must share ONE deadline, including auth; expiry never

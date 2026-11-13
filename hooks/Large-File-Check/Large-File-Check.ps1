@@ -443,7 +443,7 @@ if ($baselineUsable -and -not $partial) {
             $blockLines = New-Object System.Collections.Generic.List[string]
             [void]$blockLines.Add('LARGE FILE CHECK: task grew ' + $grown.Count + ' source files from <=' + $lineThreshold + ' to above hard ceiling:')
             foreach ($item in $shown) {
-                [void]$blockLines.Add('- ' + $item.Path + ': ' + $item.Was + ' -> ' + $item.Lines + ' lines; extract added code by responsibility, not wrapper.')
+                [void]$blockLines.Add('- ' + $item.Path + ' (' + $item.Lines + ' lines now, ' + $item.Was + ' at session start): move the code added to ' + $item.Path + ' into a new responsibility-named file; do not create a wrapper.')
             }
             if ($grown.Count -gt $shown.Count) {
                 [void]$blockLines.Add('(+' + ($grown.Count - $shown.Count) + ' more file(s) in the same state, same recovery.)')
@@ -457,20 +457,7 @@ if ($baselineUsable -and -not $partial) {
     }
 }
 
-if ($offenders.Count -eq 0) {
-    # Full scan, nothing oversized -> silent (the common case). But a PARTIAL
-    # scan that found nothing is NOT an all-clear: the ceiling cut the walk
-    # short, so unscanned files may exist. Emit a short, non-blocking advisory
-    # (same client shape as the pre-task branch) rather than a false silence.
-    # Cooldown is honoured via the shared state file so it cannot spam.
-    if ($partial -and -not $cooldownActive) {
-        New-Item -ItemType Directory -Path $stateDir -Force | Out-Null
-        [System.IO.File]::WriteAllText($statePath, [DateTime]::UtcNow.ToString('o'))
-        $coverageNote = 'LARGE FILE CHECK: coverage was INCOMPLETE - ' + $partialCause + '; no scanned offender, unscanned UNKNOWN. No all-clear; advisory only.'
-        Write-Advisory $coverageNote
-    }
-    exit 0
-}
+if ($offenders.Count -eq 0) { exit 0 } # R035: unscanned scope is not an offender or all-clear.
 
 # The offender report is the advisory half, so here the cooldown applies: an
 # unchanged repeat inside the window stays silent, exactly as before.

@@ -73,8 +73,8 @@ function Set-VerifiedIncidentRecovery {
 
     foreach ($active in @(Get-CompletionStateEntries 'active')) {
         $state = Get-ActiveMarkerState -Doc $active.Doc -Path $active.Path -MaxAgeHours $script:activeMarkerMaxHours -ResultEntries $entries
-        if ($state.State -eq 'live') { throw 'Project guarded run active; no recovery until owned work ends.' }
-        if ($state.State -eq 'died') { throw 'Active ownership/outcome UNKNOWN; unfinished work cannot recover.' }
+        if ($state.State -eq 'live') { throw 'A guarded run is still active for this project. Recovery cannot be recorded while owned work is running.' }
+        if ($state.State -eq 'died') { throw 'An active marker has unresolved ownership or outcome; recovery cannot certify unfinished work.' }
     }
     if ($script:MalformedEvidence.Count -gt 0) { throw 'Malformed active evidence prevents recovery admission.' }
     foreach ($original in $negatives) {

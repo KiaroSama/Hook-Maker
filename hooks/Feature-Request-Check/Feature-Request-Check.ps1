@@ -1,12 +1,25 @@
 # Feature-Request-Check - a feature request runs the mattpocock chain.
 #
-# ROLE: detector/advisor on UserPromptSubmit/Stop/SubagentStop.
-# Missing interview evidence is reported, never forced continuation.
-# Skill Policy routes grilling + domain-modeling -> Spec Kit -> implement.
+# ROLE: ADVISORY on UserPromptSubmit, GATE (blocks once) on Stop/SubagentStop
+# (global-hook-rules.md SS Hook Roles). Enforces the Skill Policy's
+# "Installed Skill Families -> Feature requests": grilling + domain-modeling
+# -> spec -> tickets -> implement, rather than jumping straight to code.
 #
-# Missing/partial transcripts stay silent, not all-clear. Complete evidence
-# produces one passive reminder per prompt set; a new set re-arms it.
-# "This was not a feature" plus a reason remains a valid answer.
+# WHY IT MAY BLOCK WHERE THE OTHER REMINDER HOOKS DO NOT: the cost is
+# asymmetric and late. A skipped reminder about docs is a paragraph to write
+# afterwards; a feature built without the grilling pass is a feature built to
+# the wrong requirements, and that is only discovered once it is finished.
+#
+# WHAT IT WILL NOT DO, on purpose:
+# - It never blocks without EVIDENCE. No transcript (Codex, an unknown client)
+#   means no claim in either direction: silent, not an all-clear.
+# - A partial transcript read never produces a block - it saw part of the
+#   session and cannot know what the rest holds.
+# - It blocks ONCE per set of feature prompts. The same unchanged set passes
+#   silently on the next Stop; a NEW feature prompt re-arms it. A gate that
+#   fires forever teaches people to work around it.
+# - "This was not a feature" is a valid answer. The block text says so, and one
+#   line of reasoning clears it.
 #
 # DETECTION IS DELIBERATELY CONSERVATIVE. A lone common verb never triggers:
 # "add" needs an object within 60 characters, and any bug vocabulary in the
@@ -51,11 +64,7 @@ $config = Read-HookEnv (Join-Path $PSScriptRoot '.env')
 # full chain - so telling the reader a fix is exempt would send them past the
 # workflow the rules put them on. Speckit-Check names that route; this hook
 # stays on the interview, which is the part a transcript can actually prove.
-$chainNote = @(
-    'FEATURE REQUEST CHECK: grilling+domain-modeling BEFORE code; resolve unknowns.',
-    'BEFORE feature/delta/setup: global-spec-kit-rules.md/global-skill-routing.md FULL. Only dependents wait.',
-    'Other-project work: exact consent or English lifecycle handoff.'
-) -join "`n"
+$chainNote = 'Feature-Request-Check: advisory feature intake; grilling + domain-modeling first, missing docs/agents/issue-tracker.md -> their setup; then speckit-specify/clarify/plan/tasks/analyze/implement, agreed TDD/review/Git closure. Mid-task delta: dated IDs/AC, amend active spec/plan/tasks, linked independent feature, refresh skills/gates before dependent work; stable order/earliest actionable/explained dependencies/complete disposition. Other-project exact consent or English handoff, not implicit source/staging/runner/provider repair; global-project-lifecycle-rules.md.'
 
 # ---- UserPromptSubmit: advise, once per prompt -------------------------------
 if ($eventName -eq 'UserPromptSubmit') {
@@ -156,8 +165,9 @@ $blockMessage = @(
     'Or explain why this was not a feature. No forced continuation.'
 ) -join "`n"
 
-# The prompt-set fingerprint above suppresses repeats without forcing continuation.
-$emit = Write-HookResult -EventName $eventName -Kind 'advisory' -Message $blockMessage
+# Record the block so THIS hook's own re-entry is recognised; another
+# gate's block must not mute it, and its own must not repeat.
+$emit = Write-StopBlockResult -HookInput $hookInput -HookName 'Feature-Request-Check' -FindingFingerprint $fingerprint -EventName $eventName -Message $blockMessage
 exit $emit.ExitCode
 }
 catch { if ($null -ne $gateReceipt) { $gateReceipt.Crashed = $true }; throw }

@@ -44,11 +44,11 @@ function Test-DocsCargoLockData {
 
 function Test-DocsHaveSemanticConsumers {
     param([string]$ProjectRoot, [string]$Sha, [string[]]$Files, [string]$RepoSlug = '')
-    $script:DocsCarryoverReason = 'unknown: docs consumer proof incomplete'
+    $script:DocsCarryoverReason = 'UNKNOWN docs consumers'
     $paths = @(Invoke-DocsGitQuery @('-C',$ProjectRoot,'ls-tree','-r','--name-only',$Sha))
     if ($LASTEXITCODE -ne 0) { return $true }
     $config = @($paths | Where-Object { $_ -match '(^|/)(mkdocs\.ya?ml|conf\.py|docusaurus\.config\.[^/]+|book\.toml|\.readthedocs\.ya?ml)$' })
-    if ($config.Count -gt 0) { $script:DocsCarryoverReason = 'semantic: documentation toolchain configuration'; return $true }
+    if ($config.Count -gt 0) { $script:DocsCarryoverReason = 'Semantic doc toolchain'; return $true }
     # Literal references include basenames (relative/constructed paths). Markdown
     # references stay candidates: embedded code/imports cannot be excluded by suffix.
     $literalArgs = @('-C',$ProjectRoot,'grep','--threads=1','-I','-l','-i','-F')
@@ -68,9 +68,9 @@ function Test-DocsHaveSemanticConsumers {
     if(Test-Path -LiteralPath (Join-Path $PSScriptRoot '_docs-policy.json')){
         $identities=@($matches|ForEach-Object{[pscustomobject]@{Path=([string]$_).Substring($Sha.Length+1)}})
         if(Test-DocsReviewedInputScope -ProjectRoot $ProjectRoot -RepoSlug $RepoSlug -Sha $Sha -Files $Files -Candidates $identities){$script:DocsCarryoverReason='';return $false}
-        $script:DocsCarryoverReason='unknown: reviewed input closure invalid/changed';return $true
+        $script:DocsCarryoverReason='UNKNOWN reviewed closure changed/invalid';return $true
     }
-    if ($matches.Count -gt 100) { $script:DocsCarryoverReason = 'unknown: >100 reader/reference candidates; scope UNVERIFIED'; return $true }
+    if ($matches.Count -gt 100) { $script:DocsCarryoverReason = 'UNKNOWN >100 reader candidates'; return $true }
     $bytes = 0
     $candidates = New-Object Collections.Generic.List[object]
     foreach ($match in $matches) {
@@ -79,7 +79,7 @@ function Test-DocsHaveSemanticConsumers {
         $lines = @(Invoke-DocsGitQuery @('-C',$ProjectRoot,'show',($Sha + ':' + $path)))
         if ($LASTEXITCODE -ne 0) { return $true }
         $text = $lines -join "`n"; $bytes += [Text.Encoding]::UTF8.GetByteCount($text)
-        if ($bytes -gt 1048576) { $script:DocsCarryoverReason = 'unknown: relevant consumer content >1 MiB'; return $true }
+        if ($bytes -gt 1048576) { $script:DocsCarryoverReason = 'UNKNOWN consumer >1MiB'; return $true }
         $candidates.Add([pscustomobject]@{Path=$path;Lines=$lines;Text=$text;Bytes=[Text.Encoding]::UTF8.GetByteCount($text);Match=$match})
     }
     # Review covers every discovered candidate and the whole exact tree, including
@@ -87,7 +87,7 @@ function Test-DocsHaveSemanticConsumers {
     if (Test-DocsReviewedInputScope -ProjectRoot $ProjectRoot -RepoSlug $RepoSlug -Sha $Sha -Files $Files -Candidates $candidates.ToArray()) {
         $script:DocsCarryoverReason = ''; return $false
     }
-    if($script:DocsReviewedPolicyPresent){$script:DocsCarryoverReason='unknown: reviewed input closure invalid/changed';return $true}
+    if($script:DocsReviewedPolicyPresent){$script:DocsCarryoverReason='UNKNOWN reviewed closure changed/invalid';return $true}
     foreach ($candidate in $candidates) {
         $path=$candidate.Path; $lines=$candidate.Lines; $text=$candidate.Text; $match=$candidate.Match
         # Dependency names are not executable reader operations. Literal changed-doc
@@ -99,18 +99,18 @@ function Test-DocsHaveSemanticConsumers {
         # Encoding vocabulary alone never proves hygiene: a decoder can pass its
         # result into a semantic assertion through an arbitrary variable name.
         if ($text -match '(?i)(doctest|markdown[-_ ]?doctest|remark-extract|mdx|markdown-loader|md-loader|embed.*\.md|include_str!.*\.md|sphinx|mkdocs|docusaurus|mdbook|long_description|readme\s*=)') {
-            $script:DocsCarryoverReason = 'semantic: doc build/test/package input:' + $path
+            $script:DocsCarryoverReason = 'Semantic doc build/test/package:' + $path
             return $true
         }
         if ($readers -contains $match) {
-            $script:DocsCarryoverReason = 'unknown: reader scope not disjoint/hygiene-only: ' + $path
+            $script:DocsCarryoverReason = 'UNKNOWN reader scope/hygiene: ' + $path
             return $true
         }
         foreach ($line in $lines) {
             if ($line -match '(?i)(prettier|markdownlint|format:|format:check)' -and $line -notmatch '(?i)(--plugin|--config)') { continue }
             foreach ($file in $Files) {
                 if (($line.IndexOf($file, [StringComparison]::OrdinalIgnoreCase) -ge 0 -or $line.IndexOf([IO.Path]::GetFileName($file), [StringComparison]::OrdinalIgnoreCase) -ge 0)) {
-                    $script:DocsCarryoverReason = 'semantic: changed-doc reference:' + $path
+                    $script:DocsCarryoverReason = 'Semantic doc reference:' + $path
                     return $true
                 }
             }

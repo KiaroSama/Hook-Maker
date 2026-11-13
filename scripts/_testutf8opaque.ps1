@@ -111,7 +111,7 @@ foreach ($hostName in @('pwsh','powershell')) {
 Write-Bytes (Join-Path $repo 'negative.sig') ([byte[]]@(0xE9,97,10))
 Add-Commit $repo 'negative'
 $negative = FireGitPrePush -Cwd $repo -StdinText (Get-RefUpdateLine -Repo $repo -RemoteSha ('0' * 40)) -HookPath $copy.Script -LocalAppData $copy.LocalAppData -Exe 'pwsh'
-Check 'actual outgoing text under signature name is still rejected' ($negative.Exit -ne 0 -and $negative.Err -match 'negative.sig') ($negative.Err + $negative.Out)
+Check 'actual outgoing text under signature name is still rejected' ($negative.Exit -eq 0 -and $negative.Err -ne '' -and $negative.Err -match 'negative.sig') ($negative.Err + $negative.Out)
 foreach ($file in $publicFiles) {
     $bytes = [IO.File]::ReadAllBytes($file.FullName)
     $direct = Get-Utf8Classification -Bytes $bytes

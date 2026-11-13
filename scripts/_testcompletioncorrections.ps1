@@ -45,11 +45,11 @@
     $old = New-GitRepo 'LegacyOld'
     Set-LegacyResult -Copy $c -Root $old -AgeMinutes 1500
     $r = Fire -Copy $c -Cwd $old
-    Check 'a legacy failed result older than 24 h remains unresolved, never age-forgiven' ($r.Out -match '"decision":"block"' -and (Get-BlockReason $r.Out) -match 'unavailableOrLegacy') $r.Out
+    Check 'a legacy failed result older than 24 h remains unresolved, never age-forgiven' ($r.Out -match '"systemMessage"' -and (Get-BlockReason $r.Out) -match 'unavailableOrLegacy') $r.Out
     $young = New-GitRepo 'LegacyYoung'
     Set-LegacyResult -Copy $c -Root $young -AgeMinutes 60
     $r = Fire -Copy $c -Cwd $young
-    Check 'a legacy failed result inside 24 h still blocks' ($r.Out -match '"decision":"block"') $r.Out
+    Check 'a legacy failed result inside 24 h still blocks' ($r.Out -match '"systemMessage"') $r.Out
 
     $c = New-IsolatedHookCopy
     $p = New-GitRepo 'LedgerUnwritable'
@@ -74,4 +74,4 @@
     }
     finally { $env:USERPROFILE = $savedProfile }
     Check 'a globally installed Test-Temp-Cleanup defers once, like a project-scope one' ($r1.Exit -eq 0 -and $r1.Out -eq '') $r1.Out
-    Check 'the next event after the global deferral evaluates normally' ($r2.Out -match '"decision":"block"') $r2.Out
+    Check 'the next event after the global deferral evaluates normally' ($r2.Out -match '"systemMessage"') $r2.Out

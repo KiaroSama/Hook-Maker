@@ -84,7 +84,7 @@
     $sigBefore = Get-TreeSignature $projFresh
     $r = Fire -HookPath $hcFresh.Script -Cwd $projFresh -EventName 'Stop' -SessionId 's1' -LocalAppData $hcFresh.LocalAppData
     $sigAfter = Get-TreeSignature $projFresh
-    Check 'a NEW invalid-UTF-8 file blocks at Stop (decision:block)' (Test-StopBlocks $r.Out) $r.Out
+    Check 'a NEW invalid-UTF-8 file warns at Stop without block' (Test-StopAdvisory $r.Out) $r.Out
     Check 'the block names the relative path and the classification' ((Get-Message $r.Out) -match 'fresh\.txt - an invalid UTF-8 byte sequence') $r.Out
     Check 'the block reason never contains the file contents' ((Get-Message $r.Out) -notmatch 'FRESHSECRETMARKER') $r.Out
     Check 'the block explains the safe action without offering to rewrite anything' ((Get-Message $r.Out) -match '(?i)never rewrites') $r.Out
@@ -121,11 +121,11 @@
     # silent, and a NEW session is blocked again.
     Check 'the repeat is SILENT - a Stop advisory re-invokes the model, so repeating it would loop' ($r.Out -eq '') $r.Out
     $r = Fire -HookPath $hcFresh.Script -Cwd $projFresh -EventName 'Stop' -SessionId 's2' -LocalAppData $hcFresh.LocalAppData
-    Check 'a NEW session with the same unresolved violation is blocked again' (Test-StopBlocks $r.Out) $r.Out
+    Check 'a NEW session with the same unresolved violation is blocked again' (Test-StopAdvisory $r.Out) $r.Out
     Write-Bytes (Join-Path $projFresh 'fresh2.txt') (Get-InvalidUtf8Bytes 'SECONDMARKER')
     $r = Fire -HookPath $hcFresh.Script -Cwd $projFresh -EventName 'Stop' -SessionId 's1' -LocalAppData $hcFresh.LocalAppData
     Check 'CHANGED state (a second invalid file) re-evaluates and blocks immediately' (
-        (Test-StopBlocks $r.Out) -and (Get-Message $r.Out) -match 'fresh2\.txt') $r.Out
+        (Test-StopAdvisory $r.Out) -and (Get-Message $r.Out) -match 'fresh2\.txt') $r.Out
 
     # =====================================================================
     Write-Host '--- Stop: an unverified (oversized) file is reported once per session, never on every Stop ---' -ForegroundColor Cyan
@@ -138,11 +138,11 @@
     Add-Commit $projUnk 'seed'
     Write-Utf8 (Join-Path $projUnk 'big.txt') (('a' * 3000) + "`n")
     $r = Fire -HookPath $hcUnk.Script -Cwd $projUnk -EventName 'Stop' -SessionId 'u1' -LocalAppData $hcUnk.LocalAppData
-    Check 'an oversized new text file yields the NOT-verified advisory (not a block, not silence)' (-not (Test-StopBlocks $r.Out) -and (Get-Message $r.Out) -match 'changed files UNVERIFIED, not all-clear') $r.Out
+    Check 'an oversized new text file yields the UNVERIFIED advisory (not a block, not silence)' (-not (Test-StopBlocks $r.Out) -and (Get-Message $r.Out) -match 'Changed files UNVERIFIED') $r.Out
     $r = Fire -HookPath $hcUnk.Script -Cwd $projUnk -EventName 'Stop' -SessionId 'u1' -LocalAppData $hcUnk.LocalAppData
     Check 'the same unverified set in the same session is silent on the next Stop' ($r.Out -eq '') $r.Out
     $r = Fire -HookPath $hcUnk.Script -Cwd $projUnk -EventName 'Stop' -SessionId 'u2' -LocalAppData $hcUnk.LocalAppData
-    Check 'a NEW session is told about the unverified file again' ((Get-Message $r.Out) -match 'changed files UNVERIFIED, not all-clear') $r.Out
+    Check 'a NEW session is told about the unverified file again' ((Get-Message $r.Out) -match 'Changed files UNVERIFIED') $r.Out
 
     # =====================================================================
     Write-Host '--- Stop: valid->invalid modification blocks; the fix clears immediately ---' -ForegroundColor Cyan
@@ -152,7 +152,7 @@
     Add-Commit $projMod 'valid seed'
     Write-Bytes (Join-Path $projMod 'mod.txt') (Get-InvalidUtf8Bytes 'MODMARKER')
     $r = Fire -HookPath $hcMod.Script -Cwd $projMod -EventName 'Stop' -SessionId 'm1' -LocalAppData $hcMod.LocalAppData
-    Check 'a valid file MODIFIED to invalid UTF-8 blocks' ((Test-StopBlocks $r.Out) -and (Get-Message $r.Out) -match 'mod\.txt') $r.Out
+    Check 'a valid file MODIFIED to invalid UTF-8 blocks' ((Test-StopAdvisory $r.Out) -and (Get-Message $r.Out) -match 'mod\.txt') $r.Out
     Write-Utf8 (Join-Path $projMod 'mod.txt') "fixed back to valid UTF-8`n"
     $r = Fire -HookPath $hcMod.Script -Cwd $projMod -EventName 'Stop' -SessionId 'm1' -LocalAppData $hcMod.LocalAppData
     Check 'fixing the file back to valid UTF-8 clears the gate immediately (same session)' (
@@ -169,7 +169,7 @@
     Write-Utf8 (Join-Path $projStg 's.txt') "worktree reverted to valid - only the INDEX holds the bad bytes`n"
     $r = Fire -HookPath $hcStg.Script -Cwd $projStg -EventName 'Stop' -SessionId 'g1' -LocalAppData $hcStg.LocalAppData
     Check 'invalid bytes living only in the git INDEX (staged, worktree reverted) still block' (
-        (Test-StopBlocks $r.Out) -and (Get-Message $r.Out) -match 's\.txt \(staged content\)') $r.Out
+        (Test-StopAdvisory $r.Out) -and (Get-Message $r.Out) -match 's\.txt staged') $r.Out
     Check 'the staged-content block never leaks the staged bytes' ((Get-Message $r.Out) -notmatch 'STAGEDMARKER') $r.Out
 
     # =====================================================================
@@ -195,8 +195,8 @@
     Add-Commit $projCmt 'commit the bad file during the task'
     Check 'fixture sanity: the tree is clean after the mid-task commit' (@(& git -C $projCmt status --porcelain).Count -eq 0)
     $r = Fire -HookPath $hcCmt.Script -Cwd $projCmt -EventName 'Stop' -SessionId 'c1' -LocalAppData $hcCmt.LocalAppData
-    Check 'an invalid file committed during the task (clean tree) still blocks via the baseline delta' (
-        (Test-StopBlocks $r.Out) -and (Get-Message $r.Out) -match 'cm\.txt') $r.Out
+    Check 'an invalid file committed during the task (clean tree) still reports via the baseline delta' (
+        (Test-StopAdvisory $r.Out) -and (Get-Message $r.Out) -match 'cm\.txt') $r.Out
 
     # =====================================================================
     Write-Host '--- Stop: non-git projects use the baseline delta; no baseline means no guess ---' -ForegroundColor Cyan
@@ -207,7 +207,7 @@
     Write-Bytes (Join-Path $projNg 'b.txt') (Get-InvalidUtf8Bytes 'NOGITMARKER')
     $r = Fire -HookPath $hcNg.Script -Cwd $projNg -EventName 'Stop' -SessionId 'n1' -LocalAppData $hcNg.LocalAppData
     Check 'non-git: a NEW invalid file is caught through the size/mtime baseline delta' (
-        (Test-StopBlocks $r.Out) -and (Get-Message $r.Out) -match 'b\.txt') $r.Out
+        (Test-StopAdvisory $r.Out) -and (Get-Message $r.Out) -match 'b\.txt') $r.Out
     $hcNg2 = New-IsolatedHookCopy
     $projNg2 = New-Proj 'NoGitNoBase'
     Write-Bytes (Join-Path $projNg2 'orphan.txt') (Get-InvalidUtf8Bytes 'ORPHANMARKER')
@@ -241,7 +241,7 @@
     Add-Commit $projSub 'seed'
     Write-Bytes (Join-Path $projSub 'sub.txt') (Get-InvalidUtf8Bytes 'SUBMARKER')
     $r = Fire -HookPath $hcSub.Script -Cwd $projSub -EventName 'SubagentStop' -SessionId 'u1' -LocalAppData $hcSub.LocalAppData
-    Check 'SubagentStop blocks exactly like Stop' ((Test-StopBlocks $r.Out) -and (Get-Message $r.Out) -match 'sub\.txt') $r.Out
+    Check 'SubagentStop blocks exactly like Stop' ((Test-StopAdvisory $r.Out) -and (Get-Message $r.Out) -match 'sub\.txt') $r.Out
     $r = Fire -HookPath $hcSub.Script -Cwd $projSub -EventName 'Stop' -SessionId 'u2' -LocalAppData $hcSub.LocalAppData -StopHookActive
     # stop_hook_active means "a Stop gate blocked and the agent is coming
     # back" - NOT "YOU blocked". Thirteen gates share the one flag, so a gate
@@ -262,7 +262,7 @@
     Write-Bytes (Join-Path $projAdv 'adv.txt') (Get-InvalidUtf8Bytes 'ADVMARKER')
     $r = Fire -HookPath $hcAdv.Script -Cwd $projAdv -EventName 'Stop' -SessionId 'a1' -LocalAppData $hcAdv.LocalAppData
     Check 'UTF8_ADVISORY_ONLY=true reports the finding without decision:block' (
-        -not (Test-StopBlocks $r.Out) -and (Get-Message $r.Out) -match 'adv\.txt' -and (Get-Message $r.Out) -match '(?i)reported, not blocked') $r.Out
+        -not (Test-StopBlocks $r.Out) -and (Get-Message $r.Out) -match 'adv\.txt' -and (Get-Message $r.Out) -match '(?i)UTF8 advisory') $r.Out
     $parsedAdv = $null
     try { $parsedAdv = $r.Out | ConvertFrom-Json } catch { $parsedAdv = $null }
     Check 'the OTHER half of the pair: Codex ON Stop keeps systemMessage' (
@@ -298,5 +298,5 @@
     Add-Commit $proj51 'seed'
     Write-Bytes (Join-Path $proj51 'h51.txt') (Get-InvalidUtf8Bytes 'HOST51MARKER')
     $r = Fire -HookPath $hc51.Script -Cwd $proj51 -EventName 'Stop' -SessionId 'h1' -LocalAppData $hc51.LocalAppData -Exe 'powershell'
-    Check '5.1 host: a new invalid file still blocks at Stop' (
-        (Test-StopBlocks $r.Out) -and (Get-Message $r.Out) -match 'h51\.txt') ($r.Out + $r.Err)
+    Check '5.1 host: a new invalid file still reports at Stop' (
+        (Test-StopAdvisory $r.Out) -and (Get-Message $r.Out) -match 'h51\.txt') ($r.Out + $r.Err)

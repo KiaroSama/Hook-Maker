@@ -8,6 +8,8 @@ $script:Pass = 0
 $script:Fail = 0
 $script:TestPreviewLength = 400
 . (Join-Path $PSScriptRoot '_testlib.ps1')
+. (Join-Path $PSScriptRoot '_testfindingpolicy.ps1')
+Invoke-FindingPolicyRegression -Root (Split-Path -Parent $PSScriptRoot) -HookName 'Git-Sync-Check'
 
 $Work = New-TestWorkspace -Prefix 'hookmaker-gitsynctest'
 Write-Host ("Workspace: $Work") -ForegroundColor DarkGray
@@ -111,7 +113,7 @@ try {
     $dirty = New-PushedRepo 'dirty'
     [System.IO.File]::WriteAllText((Join-Path $dirty 'new.txt'), 'uncommitted', (New-Object System.Text.UTF8Encoding $false))
     $r = Fire -Cwd $dirty
-    Check 'dirty repository produces a blocking Stop instruction' ($r.Out -match '"decision":"block"' -and $r.Out -match 'uncommitted change') $r.Out
+    Check 'dirty repository produces a advisory Stop instruction' ($r.Out -match '"systemMessage"' -and $r.Out -match 'uncommitted change') $r.Out
     Check 'the instruction is operational/mandatory, not discretionary' ($r.Out -match 'global-repository-rules\.md FULL' -and $r.Out -match 'BEFORE sync: global-repository-rules\.md FULL') $r.Out
     Check 'the message does NOT use the old discretionary "otherwise finish" wording' ($r.Out -notmatch 'otherwise finish' -and $r.Out -notmatch 'At your discretion') $r.Out
     Check 'the message forbids committing secrets/protected/unrelated files' ($r.Out -match 'Preserve unrelated work') $r.Out
@@ -210,17 +212,17 @@ try {
     $gate = New-PushedRepo 'gate'
     [System.IO.File]::WriteAllText((Join-Path $gate 'new.txt'), 'uncommitted', (New-Object System.Text.UTF8Encoding $false))
     $r1 = Fire -Cwd $gate -SessionId 'sessA'
-    Check 'first Stop for an actionable fingerprint blocks' ($r1.Out -match '"decision":"block"') $r1.Out
+    Check 'first Stop for an actionable fingerprint blocks' ($r1.Out -match '"systemMessage"') $r1.Out
     $r2 = Fire -Cwd $gate -SessionId 'sessA'
     Check 'unchanged fingerprint in the same session does not loop (silent, not blocked again)' ($r2.Exit -eq 0 -and $r2.Out -eq '') $r2.Out
     $r3 = Fire -Cwd $gate -SessionId 'sessB'
-    Check 'a NEW session is evaluated and instructed again immediately, even with the same unchanged state' ($r3.Out -match '"decision":"block"') $r3.Out
+    Check 'a NEW session is evaluated and instructed again immediately, even with the same unchanged state' ($r3.Out -match '"systemMessage"') $r3.Out
     # Change the fingerprint (advance HEAD) within the SAME session that was already silenced.
     [System.IO.File]::WriteAllText((Join-Path $gate 'new.txt'), 'still uncommitted but different', (New-Object System.Text.UTF8Encoding $false))
     & git -C $gate add new.txt
     & git -C $gate commit -q -m 'commit the previously-uncommitted file'
     $r4 = Fire -Cwd $gate -SessionId 'sessB'
-    Check 'cooldown does not skip inspection of a changed fingerprint (state changed -> re-evaluated)' ($r4.Out -match '"decision":"block"' -and $r4.Out -match 'AHEAD') $r4.Out
+    Check 'cooldown does not skip inspection of a changed fingerprint (state changed -> re-evaluated)' ($r4.Out -match '"systemMessage"' -and $r4.Out -match 'AHEAD') $r4.Out
 
     # =====================================================================
     Write-Host '--- stop_hook_active still exits immediately ---' -ForegroundColor Cyan
@@ -249,7 +251,7 @@ try {
     $ps5 = New-PushedRepo 'ps5'
     [System.IO.File]::WriteAllText((Join-Path $ps5 'new.txt'), 'uncommitted', (New-Object System.Text.UTF8Encoding $false))
     $r = Fire -Cwd $ps5 -Exe 'powershell.exe'
-    Check 'Windows PowerShell 5.1: dirty repo blocks with the mandatory instruction' ($r.Exit -eq 0 -and $r.Out -match '"decision":"block"' -and $r.Out -match 'BEFORE sync: global-repository-rules\.md FULL') $r.Err
+    Check 'Windows PowerShell 5.1: dirty repo reports the scoped advisory instruction' ($r.Exit -eq 0 -and $r.Out -match '"systemMessage"' -and $r.Out -match 'BEFORE sync: global-repository-rules\.md FULL') $r.Err
 
     Write-Host '--- Windows PowerShell 5.1: HM-08 task-scoped worktree path ---' -ForegroundColor Cyan
     $ps5wt = New-PushedRepo 'ps5-wt'
@@ -260,7 +262,7 @@ try {
     & git -C $ps5wt worktree add -q $ps5wtExtra -b ps5-wt-extra 2>$null
     [System.IO.File]::WriteAllText((Join-Path $ps5wtExtra 'new.txt'), 'uncommitted', (New-Object System.Text.UTF8Encoding $false))
     $rWt = Fire -Cwd $ps5wt -EventName 'SubagentStop' -SessionId 'ps5wt-sess' -Exe 'powershell.exe'
-    Check 'Windows PowerShell 5.1: a new task-scoped worktree with uncommitted changes blocks at SubagentStop' ($rWt.Exit -eq 0 -and $rWt.Out -match '"decision":"block"' -and $rWt.Out -match 'ps5-wt-extra') $rWt.Err
+    Check 'Windows PowerShell 5.1: a new task-scoped worktree with uncommitted changes reports at SubagentStop' ($rWt.Exit -eq 0 -and $rWt.Out -match '"systemMessage"' -and $rWt.Out -match 'ps5-wt-extra') $rWt.Err
 
     # =====================================================================
     Write-Host '--- generated Git-sync template includes SessionStart+PreToolUse+Stop+SubagentStop registration ---' -ForegroundColor Cyan
@@ -289,14 +291,14 @@ try {
     Check 'a pre-existing, unchanged worktree produces no output at all (main repo clean, nothing task-scoped)' ($r.Exit -eq 0 -and $r.Out -eq '') $r.Out
 
     # =====================================================================
-    Write-Host '--- HM-08: new subagent worktree with uncommitted changes BLOCKS at SubagentStop ---' -ForegroundColor Cyan
+    Write-Host '--- HM-08: new subagent worktree with uncommitted changes reports at SubagentStop ---' -ForegroundColor Cyan
     $wtSub = New-PushedRepo 'wt-subagent'
     Fire -Cwd $wtSub -EventName 'SessionStart' -SessionId 'wt-sub-sess' | Out-Null
     $wtSubNew = Join-Path $ReposRoot 'wt-subagent-feature'
     & git -C $wtSub worktree add -q $wtSubNew -b wt-subagent-feature 2>$null
     [System.IO.File]::WriteAllText((Join-Path $wtSubNew 'new.txt'), 'subagent work in progress', (New-Object System.Text.UTF8Encoding $false))
     $r = Fire -Cwd $wtSub -EventName 'SubagentStop' -SessionId 'wt-sub-sess'
-    Check 'a new task-scoped worktree with uncommitted changes BLOCKS at SubagentStop' ($r.Out -match '"decision":"block"') $r.Out
+    Check 'a new task-scoped worktree with uncommitted changes reports at SubagentStop' ($r.Out -match '"systemMessage"') $r.Out
     Check 'the block names the new worktree path and its uncommitted state' ($r.Out -match 'wt-subagent-feature' -and $r.Out -match 'uncommitted change') $r.Out
 
     # =====================================================================
@@ -309,7 +311,7 @@ try {
     & git -C $wtBranchNew add feature.txt
     & git -C $wtBranchNew commit -q -m 'feature commit, not pushed, not merged'
     $r3 = Fire -Cwd $wtBranch -SessionId 'wt-branch-sess'
-    Check 'a new branch with commits unreachable from destination and no upstream BLOCKS' ($r3.Out -match '"decision":"block"') $r3.Out
+    Check 'a new branch with commits unreachable from destination and no upstream BLOCKS' ($r3.Out -match '"systemMessage"') $r3.Out
     Check 'the block names the branch and says it is not reconciled into the destination' ($r3.Out -match 'wt-branch-feature' -and $r3.Out -match 'not reconciled into') $r3.Out
     Check 'the (clean, committed) worktree itself is not what is flagged - branch reconciliation is' ($r3.Out -notmatch 'uncommitted change') $r3.Out
 
@@ -357,7 +359,7 @@ try {
     $extraStatusBefore = ((& git -C $wtNoMutExtra status --porcelain) -join "`n")
     $worktreeListBefore = ((& git -C $wtNoMut worktree list --porcelain) -join "`n")
     $r = Fire -Cwd $wtNoMut -EventName 'Stop' -SessionId 'wt-no-mut-sess'
-    Check 'sanity: the extra worktree with uncommitted changes was actually detected' ($r.Out -match '"decision":"block"') $r.Out
+    Check 'sanity: the extra worktree with uncommitted changes was actually detected' ($r.Out -match '"systemMessage"') $r.Out
     $mainShaAfter = (& git -C $wtNoMut rev-parse HEAD)
     $mainStatusAfter = ((& git -C $wtNoMut status --porcelain) -join "`n")
     $extraShaAfter = (& git -C $wtNoMutExtra rev-parse HEAD)
@@ -379,7 +381,7 @@ try {
     & git -C $wtLoop worktree add -q $wtLoopExtra -b wt-loop-extra 2>$null
     [System.IO.File]::WriteAllText((Join-Path $wtLoopExtra 'still-dirty.txt'), 'v1', (New-Object System.Text.UTF8Encoding $false))
     $rFirst = Fire -Cwd $wtLoop -SessionId 'wt-loop-sess'
-    Check 'first Stop for a new task-scoped dirty worktree blocks' ($rFirst.Out -match '"decision":"block"') $rFirst.Out
+    Check 'first Stop for a new task-scoped dirty worktree blocks' ($rFirst.Out -match '"systemMessage"') $rFirst.Out
     $rSecond = Fire -Cwd $wtLoop -SessionId 'wt-loop-sess'
     Check 'the identical unchanged task-scoped state does not loop on a second Stop in the same session' ($rSecond.Exit -eq 0 -and $rSecond.Out -eq '') $rSecond.Out
     # Change the task-scoped state within the SAME session (commit the file -
@@ -388,7 +390,7 @@ try {
     & git -C $wtLoopExtra add still-dirty.txt
     & git -C $wtLoopExtra commit -q -m 'commit the previously-uncommitted file'
     $rThird = Fire -Cwd $wtLoop -SessionId 'wt-loop-sess'
-    Check 'a CHANGED task-scoped state (worktree committed, branch now unreconciled) is evaluated again immediately, same session' ($rThird.Out -match '"decision":"block"' -and $rThird.Out -match 'not reconciled into') $rThird.Out
+    Check 'a CHANGED task-scoped state (worktree committed, branch now unreconciled) is evaluated again immediately, same session' ($rThird.Out -match '"systemMessage"' -and $rThird.Out -match 'not reconciled into') $rThird.Out
 
     # =====================================================================
     # HM-08 follow-up (dirty fingerprint): a PRE-EXISTING worktree whose HEAD
@@ -460,7 +462,7 @@ try {
     $fpStatusBefore = ((& git -C $fpExtra status --porcelain) -join "`n")
     $fpHeadBefore = (& git -C $fpExtra rev-parse HEAD)
     $rFp = Fire -Cwd $fp -SessionId 'fp-sess'
-    Check 'a tracked-file edit inside a pre-existing worktree (HEAD unchanged) BLOCKS at Stop' ($rFp.Out -match '"decision":"block"') $rFp.Out
+    Check 'a tracked-file edit inside a pre-existing worktree (HEAD unchanged) reports at Stop' ($rFp.Out -match '"systemMessage"') $rFp.Out
     Check 'the block honestly names the pre-existing worktree and that its uncommitted state changed during the task' ($rFp.Out -match 'pre-existing worktree' -and $rFp.Out -match 'wt-dirtyfp-extra' -and $rFp.Out -match 'during this task') $rFp.Out
     $fpStatusAfter = ((& git -C $fpExtra status --porcelain) -join "`n")
     $fpHeadAfter = (& git -C $fpExtra rev-parse HEAD)
@@ -475,7 +477,7 @@ try {
     # actionable state and must re-evaluate immediately in the same session.
     [System.IO.File]::WriteAllText((Join-Path $fpExtra 'extra-untracked.txt'), 'more task work', (New-Object System.Text.UTF8Encoding $false))
     $rFp3 = Fire -Cwd $fp -SessionId 'fp-sess'
-    Check 'a FURTHER dirty-state change in the same worktree re-blocks immediately in the same session' ($rFp3.Out -match '"decision":"block"' -and $rFp3.Out -match 'pre-existing worktree') $rFp3.Out
+    Check 'a FURTHER dirty-state change in the same worktree re-blocks immediately in the same session' ($rFp3.Out -match '"systemMessage"' -and $rFp3.Out -match 'pre-existing worktree') $rFp3.Out
 
     # =====================================================================
     # E-08: the Stop reporting vocabulary must cover all seven task-scoped

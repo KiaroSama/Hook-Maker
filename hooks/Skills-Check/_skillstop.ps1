@@ -259,6 +259,7 @@ function Get-SkillClosingDecision {
                     # its own: this message lands in the same transcript the next
                     # Stop reads, and an example at the start of a line would
                     # satisfy the detector - the hook would clear its own block.
+                    'Final standalone "Skills used: <exact invoked/applied keys>"; presence/read != execution.',
                     'Final standalone "Skills used: <exact invoked/applied names>"; read-only != used.'
                 ) -join "`n")
         }
@@ -282,9 +283,9 @@ function Get-SkillClosingDecision {
         Answered = $answeredNow
         Token = 'none-invoked'
         Text  = (@(
-                'SKILL POLICY CHECK: no invocation this session.',
-                'Check debug/test/security/UI/stack matches; verify exposure, no auto changes.',
-                $script:SkillsRequirement
+                'SKILL POLICY CHECK - no skill was invoked this session.',
+                'Specialized debugging/testing/security/UI/stack may have an installed match; verify exact key/exposure before use.',
+                ('Either way the summary must carry the line: ' + $script:SkillsRequiredLine)
             ) -join "`n")
     }
 }

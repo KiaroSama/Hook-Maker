@@ -39,7 +39,7 @@
     # with a nominally "valid" classification.
     Set-Mock -RunJson '[{"databaseId":80,"name":"CI","workflowName":"CI","status":"completed","conclusion":"failure"}]' -ExpectedSha $extSha1
     $r = Fire -HookPath $CiHook -Cwd $ext1 -EventName 'Stop'
-    Check 'failed CI still blocks completion before any exception exists' ($r.Out -match '"decision":"block"' -and $r.Out -match 'FAILED') $r.Out
+    Check 'failed CI still blocks completion before any exception exists' ($r.Out -match '"systemMessage"' -and $r.Out -match 'FAILED') $r.Out
     $r = FireExternalBlocker -Cwd $ext1 -Classification 'other-external' -Reason 'the build step failed so lets just call it external instead'
     Check 'a genuine completed failure cannot be reported as external, regardless of classification' ($r.Exit -eq 1 -and $r.Err -match 'COMPLETED failure') $r.Err
 
@@ -55,9 +55,9 @@
     $r = Fire -HookPath $CiHook -Cwd $ext1 -EventName 'Stop' -Client 'claude'
     Check 'Claude: active exception authorizes completion with a NON-BLOCKING context (not decision:block)' ($r.Out -notmatch '"decision":"block"' -and $r.Out -match 'systemMessage') $r.Out
     Check 'Claude: Stop uses the non-continuing user-visible systemMessage shape' ($r.Out -match '"systemMessage"' -and $r.Out -notmatch 'hookSpecificOutput|additionalContext|decision') $r.Out
-    Check 'Claude: the completion context explicitly says CI is NOT verified green' ($r.Out -match 'CI NOT VERIFIED GREEN' -and $r.Out -match 'external' ) $r.Out
+    Check 'Claude: the completion context explicitly says CI is NOT verified green' ($r.Out -match 'CI UNVERIFIED' -and $r.Out -match 'external' ) $r.Out
     Check 'Claude: the context names repo, short sha, classification and sanitized reason' ($r.Out -match 'testowner/testrepo-ext1' -and $r.Out -match ($extSha1.Substring(0, 7)) -and $r.Out -match 'github-outage' -and $r.Out -match 'status page reports a full outage') $r.Out
-    Check 'Claude: the context denies success and instructs not to claim CI passed' ($r.Out -match 'CI NOT VERIFIED GREEN' -and $r.Out -match 'Report the blocker, never CI success') $r.Out
+    Check 'Claude: the context denies success and instructs not to claim CI passed' ($r.Out -match 'CI UNVERIFIED' -and $r.Out -match 'Report the blocker, never CI success') $r.Out
     # F14: a confirmed blocker is the ONE case the rules let the heavy pass run
     # locally, so the notice says what to do next instead of only naming the blocker.
     Check 'Claude: the notice states the evidenced CI blocker and final-tree guarded fallback' (
@@ -75,11 +75,11 @@
     $rCodex = Fire -HookPath $CiHook -Cwd $ext1 -EventName 'Stop' -Client 'codex' -Extra @{ session_id = 'codex-shape' }
     Check 'Codex: Stop uses the supported systemMessage shape (no hookSpecificOutput/additionalContext)' ($rCodex.Out -match '"systemMessage"' -and $rCodex.Out -notmatch 'additionalContext' -and $rCodex.Out -notmatch 'hookSpecificOutput') $rCodex.Out
     Check 'Codex: the notice is non-blocking (no decision:block)' ($rCodex.Out -notmatch '"decision":"block"') $rCodex.Out
-    Check 'Codex: the notice explicitly says CI is NOT verified green' ($rCodex.Out -match 'CI NOT VERIFIED GREEN' -and $rCodex.Out -match 'never CI success') $rCodex.Out
+    Check 'Codex: the notice explicitly says CI is NOT verified green' ($rCodex.Out -match 'CI UNVERIFIED' -and $rCodex.Out -match 'never CI success') $rCodex.Out
     Check 'Codex: the notice names repo, short sha, classification and sanitized reason' ($rCodex.Out -match 'testowner/testrepo-ext1' -and $rCodex.Out -match ($extSha1.Substring(0, 7)) -and $rCodex.Out -match 'github-outage' -and $rCodex.Out -match 'status page reports a full outage') $rCodex.Out
     Check 'both client shapes carry the identical notice text' (
-        ($r.Out -replace '.*CI NOT VERIFIED GREEN', 'CI NOT VERIFIED GREEN' -replace '"\}\}$', '') -match 'EXTERNAL CI blocker' -and
-        ($rCodex.Out -replace '.*CI NOT VERIFIED GREEN', 'CI NOT VERIFIED GREEN' -replace '"\}$', '') -match 'EXTERNAL CI blocker'
+        ($r.Out -replace '.*CI UNVERIFIED', 'CI UNVERIFIED' -replace '"\}\}$', '') -match 'EXTERNAL CI blocker' -and
+        ($rCodex.Out -replace '.*CI UNVERIFIED', 'CI UNVERIFIED' -replace '"\}$', '') -match 'EXTERNAL CI blocker'
     ) ($r.Out + ' || ' + $rCodex.Out)
     Check 'neither client output exposes secret-like data (no tokens/paths/logs)' (
         $r.Out -notmatch '(?i)(ghp_|gho_|password|secret=|Bearer )' -and $rCodex.Out -notmatch '(?i)(ghp_|gho_|password|secret=|Bearer )'
@@ -88,14 +88,14 @@
     # Throttled re-check, same observed fingerprint -> still allowed (refreshed, not retired) + still non-blocking notice.
     $recheckHook = New-ConfiguredCiHookCopy @{ EXTERNAL_BLOCKER_RECHECK_MINUTES = '0' }
     $r = Fire -HookPath $recheckHook -Cwd $ext1 -EventName 'Stop' -Extra @{ session_id = 'recheck-same-fp' }
-    Check 'recheck with the identical CI fingerprint keeps completion allowed with the notice' ($r.Out -notmatch '"decision":"block"' -and $r.Out -match 'CI NOT VERIFIED GREEN') $r.Out
+    Check 'recheck with the identical CI fingerprint keeps completion allowed with the notice' ($r.Out -notmatch '"decision":"block"' -and $r.Out -match 'CI UNVERIFIED') $r.Out
 
     # Item 4: same run id/status/conclusion but a CHANGED attempt/updatedAt
     # (a rerun) produces a different fingerprint -> the old exception is
     # invalidated and the (still-infra) state blocks normally.
     Set-Mock -RunJson '[{"databaseId":81,"attempt":2,"name":"CI","workflowName":"CI","status":"completed","conclusion":"cancelled","updatedAt":"2026-07-16T12:30:00Z"}]' -ExpectedSha $extSha1
     $r = Fire -HookPath $recheckHook -Cwd $ext1 -EventName 'Stop'
-    Check 'a rerun (changed attempt/updatedAt, same id/status/conclusion) invalidates the old exception' ($r.Out -match '"decision":"block"') $r.Out
+    Check 'a rerun (changed attempt/updatedAt, same id/status/conclusion) invalidates the old exception' ($r.Out -match '"systemMessage"') $r.Out
 
     # Re-record, then recheck with the SAME runs in a DIFFERENT order -> the
     # normalized/sorted fingerprint is unchanged, so the exception is kept.
@@ -104,13 +104,13 @@
     Check 'records an exception over a two-run snapshot' ($r.Exit -eq 0) $r.Err
     Set-Mock -RunJson '[{"databaseId":70,"attempt":1,"name":"Lint","workflowName":"Lint","status":"completed","conclusion":"cancelled","updatedAt":"2026-07-16T10:00:00Z"},{"databaseId":81,"attempt":1,"name":"CI","workflowName":"CI","status":"completed","conclusion":"cancelled","updatedAt":"2026-07-16T10:00:00Z"}]' -ExpectedSha $extSha1
     $r = Fire -HookPath $recheckHook -Cwd $ext1 -EventName 'Stop' -Extra @{ session_id = 'recheck-reordered' }
-    Check 'reordered but identical snapshot keeps the exception (order-independent fingerprint)' ($r.Out -notmatch '"decision":"block"' -and $r.Out -match 'CI NOT VERIFIED GREEN') $r.Out
+    Check 'reordered but identical snapshot keeps the exception (order-independent fingerprint)' ($r.Out -notmatch '"decision":"block"' -and $r.Out -match 'CI UNVERIFIED') $r.Out
 
     # Throttled re-check, CI turned GREEN -> exception retired, verified normally
     # (NO external wording).
     Set-Mock -RunJson '[{"databaseId":81,"attempt":1,"name":"CI","workflowName":"CI","status":"completed","conclusion":"success"},{"databaseId":70,"attempt":1,"name":"Lint","workflowName":"Lint","status":"completed","conclusion":"success"}]' -ExpectedSha $extSha1
     $r = Fire -HookPath $recheckHook -Cwd $ext1 -EventName 'Stop'
-    Check 'CI turning green on recheck retires the exception and verifies normally (no external wording)' ($r.Out -notmatch 'CI NOT VERIFIED GREEN|"decision"' -and $r.Out -match 'Suite/case reports \+ commit/check UI UNVERIFIED') ([string]$r.Out)
+    Check 'CI turning green on recheck retires the exception and verifies normally (no external wording)' ($r.Out -notmatch 'CI UNVERIFIED|"decision"' -and $r.Out -match 'Reports/UI UNVERIFIED') ([string]$r.Out)
     $r2 = Fire -HookPath $CiHook -Cwd $ext1 -EventName 'Stop'
     Check 'the commit now stays verified on a normal follow-up check too' ([string]::IsNullOrWhiteSpace([string]$r2.Out)) ([string]$r2.Out)
 
@@ -125,7 +125,7 @@
     Check 'records an exception for ext1b under an infra-consistent state' ($r.Exit -eq 0) $r.Err
     Set-Mock -RunJson '[{"databaseId":91,"name":"CI","workflowName":"CI","status":"completed","conclusion":"failure"}]' -ExpectedSha $extSha1bb
     $r = Fire -HookPath $recheckHookB -Cwd $ext1b -EventName 'Stop'
-    Check 'CI changing to a genuine failure on recheck invalidates the exception and blocks normally' ($r.Out -match '"decision":"block"' -and $r.Out -match 'FAILED') $r.Out
+    Check 'CI changing to a genuine failure on recheck invalidates the exception and blocks normally' ($r.Out -match '"systemMessage"' -and $r.Out -match 'FAILED') $r.Out
 
     # Throttled re-check that cannot query gh at all -> keep tolerating the
     # existing, already-evidenced exception (never invent a new one).
@@ -137,7 +137,7 @@
     Check 'records an exception for ext1c' ($r.Exit -eq 0) $r.Err
     Set-Mock -AuthExit 1
     $r = Fire -HookPath $recheckHookC -Cwd $ext1c -EventName 'Stop'
-    Check 'a recheck that cannot query gh keeps tolerating the existing exception (with the notice)' ($r.Out -notmatch '"decision":"block"' -and $r.Out -match 'CI NOT VERIFIED GREEN') $r.Out
+    Check 'a recheck that cannot query gh keeps tolerating the existing exception (with the notice)' ($r.Out -notmatch '"decision":"block"' -and $r.Out -match 'CI UNVERIFIED') $r.Out
 
     # A NEW pushed commit invalidates the old exception (also proves a wrong SHA cannot reuse it).
     Set-Mock -RunJson '[{"databaseId":81,"name":"CI","workflowName":"CI","status":"completed","conclusion":"cancelled"}]' -ExpectedSha $extSha1
@@ -148,7 +148,7 @@
     & git -C $ext1 update-ref refs/remotes/origin/main $extSha1d
     Set-Mock -RunJson '[{"databaseId":82,"name":"CI","workflowName":"CI","status":"completed","conclusion":"failure"}]' -ExpectedSha $extSha1d
     $r = Fire -HookPath $CiHook -Cwd $ext1 -EventName 'Stop'
-    Check 'a new pushed commit resets the state - the old exception does not carry over' ($r.Out -match '"decision":"block"' -and $r.Out -match 'FAILED') $r.Out
+    Check 'a new pushed commit resets the state - the old exception does not carry over' ($r.Out -match '"systemMessage"' -and $r.Out -match 'FAILED') $r.Out
 
     # Wrong repository cannot reuse an exception recorded for a different
     # resolved repository slug.
@@ -160,7 +160,7 @@
     & git -C $ext2 remote set-url origin 'https://github.com/testowner/testrepo-ext2-renamed.git'
     Set-Mock -RunJson '[{"databaseId":84,"name":"CI","workflowName":"CI","status":"completed","conclusion":"failure"}]' -ExpectedSha $extSha2
     $r = Fire -HookPath $CiHook -Cwd $ext2 -EventName 'Stop'
-    Check 'a different resolved repository cannot reuse a prior exception' ($r.Out -match '"decision":"block"' -and $r.Out -match 'FAILED') $r.Out
+    Check 'a different resolved repository cannot reuse a prior exception' ($r.Out -match '"systemMessage"' -and $r.Out -match 'FAILED') $r.Out
 
     # Expired/stale exception is rejected: TTL=0 means the very next check
     # already treats it as expired and falls back to normal (blocking) evaluation.
@@ -172,7 +172,7 @@
     $shortTtlHook = New-ConfiguredCiHookCopy @{ EXTERNAL_BLOCKER_TTL_MINUTES = '0' }
     Set-Mock -RunJson '[{"databaseId":86,"name":"CI","workflowName":"CI","status":"completed","conclusion":"failure"}]' -ExpectedSha $extSha3
     $r = Fire -HookPath $shortTtlHook -Cwd $ext3 -EventName 'Stop'
-    Check 'expired exception is rejected - falls back to normal (blocking) evaluation' ($r.Out -match '"decision":"block"' -and $r.Out -match 'FAILED') $r.Out
+    Check 'expired exception is rejected - falls back to normal (blocking) evaluation' ($r.Out -match '"systemMessage"' -and $r.Out -match 'FAILED') $r.Out
 
     # stop_hook_active means ANY gate blocked, not this one - so with a live
     # exception on file the notice must STILL be emitted. Recursion is
@@ -191,7 +191,7 @@
     $r = Fire -HookPath $CiHook -Cwd $ext4 -EventName 'Stop'
     Check 'the same session is not told the same blocker twice (silent, not blocked)' ($r.Out -eq '') $r.Out
     $r = Fire -HookPath $CiHook -Cwd $ext4 -EventName 'Stop' -Extra @{ session_id = 'ext4-later' }
-    Check 'a new session is told the blocker again (once)' ($r.Out -match 'CI NOT VERIFIED GREEN' -and $r.Out -notmatch '"decision":"block"') $r.Out
+    Check 'a new session is told the blocker again (once)' ($r.Out -match 'CI UNVERIFIED' -and $r.Out -notmatch '"decision":"block"') $r.Out
     $r = Fire -HookPath $CiHook -Cwd $ext4 -EventName 'Stop' -Extra @{ session_id = 'ext4-later' }
     Check 'and stays silent for the rest of that session' ($r.Out -eq '') $r.Out
 

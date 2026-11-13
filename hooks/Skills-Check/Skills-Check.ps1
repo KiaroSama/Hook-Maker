@@ -15,8 +15,7 @@
 # import instructions.
 #
 # ROLE (global-hook-rules.md, "Hook Roles"): DETECTOR/ADVISORY on the pre-task
-# events; advisory by default at Stop/SubagentStop, GATE only by explicit config.
-# The hook NEVER copies, installs, refreshes,
+# events, GATE on Stop/SubagentStop. The hook NEVER copies, installs, refreshes,
 # overwrites, enables or removes a skill and never writes inside the scanned
 # repo: skill-policy.md makes installation an authorized operation, so discovery
 # and an exact instruction are the most this hook may do. The .ai/SKILLS.md
@@ -134,9 +133,10 @@ $script:SkillsRequirement = 'Final "Skills used: <exact keys/outcomes>" or "Skil
 # inventory above is the SET a task may use. Naming the route here costs a
 # line and stops the inventory reading as the whole policy.
 $script:SpecKitRouting = 'BEFORE scaffold/feature/bug/delta: global-spec-kit-rules.md FULL.'
-# Order 55 step 4a, condensed. Routing is per SKILL, because an agent sees
+# Order 55 step 4a, verbatim. Routing is per SKILL, because an agent sees
 # skills, not plugins; and security work has one entry point.
 $script:SkillRoutingLines = @(
+    '- Skill job/default: global-skill-routing.md FULL; user/Desktop/Kiaro contracts: global-skills-catalogue.md, not plugin labels.',
     '- BEFORE selection/security: global-skill-routing.md/global-skills-catalogue.md FULL.'
 )
 $script:ImportGuidance = 'BEFORE copy: skill policy FULL; 1-5 authorized folders, preserve modified; record .ai/SKILLS.md.'
@@ -316,18 +316,19 @@ foreach ($key in @($byName.Keys | Sort-Object)) {
 $pluginNames = @{}
 $pluginsByPlugin = @{}
 foreach ($p in $index.Plugin) {
-    if (Test-SkillCandidate $p) {
-        foreach ($name in @($p.Leaf, $p.Name, $p.Invocation)) {
-            if (-not [string]::IsNullOrWhiteSpace([string]$name)) { $pluginNames[([string]$name).ToLowerInvariant()] = $true }
-        }
+    $full = $p.Plugin + ':' + $p.Leaf
+    $pluginNames[$full.ToLowerInvariant()] = $true
+    $pluginNames[([string]$p.Leaf).ToLowerInvariant()] = $true
+    foreach ($alias in @($p.Name, $p.Invocation)) {
+        if (-not [string]::IsNullOrWhiteSpace([string]$alias)) { $pluginNames[([string]$alias).ToLowerInvariant()] = $true }
     }
     $group = if ([string]::IsNullOrWhiteSpace($p.Plugin)) { [string]$p.Source } else { [string]$p.Plugin }
     if (-not $pluginsByPlugin.ContainsKey($group)) { $pluginsByPlugin[$group] = 0 }
     $pluginsByPlugin[$group] = $pluginsByPlugin[$group] + 1
 }
-# Both index paths return a generic List; @() can fail on its PSObject wrapper.
-$installedNames = Get-InstalledSkillNames ($index.Plugin.ToArray())
+$installedNames = @{}
 foreach ($key in $byName.Keys) { $installedNames[$key] = $true }
+foreach ($key in $pluginNames.Keys) { $installedNames[$key] = $true }
 
 # ---- bounded transcript probe ---------------------------------------------
 # A private copy rather than a shared helper: hooks\_hooklib.ps1 is owned
@@ -384,7 +385,7 @@ if ($closing) {
         $fingerprint = (Get-HookSuppressionIdentity -HookInput $hookInput) + '|' + $eventName + '|' + $StateToken
         $claim = Invoke-DeliveryClaim -Path ($gatePath + '.claims.json') -Identity (Get-DeliveryIdentity $hookInput) -Fingerprint $fingerprint
         if (-not $claim.Ok) {
-            [Console]::Out.WriteLine((@{ systemMessage = ('Closing reservation UNVERIFIED (' + $claim.Reason + '); no approval/completion.') } | ConvertTo-Json -Compress))
+            $null=$claim.Reason # R035: unavailable reservation is silent, not approval.
         }
         return $claim.Admitted
     }
@@ -402,16 +403,7 @@ if ($closing) {
     }
     if ($null -ne $evidence -and $evidence.Known) { $tail = [string]$evidence.Text }
     else { $tail = $null } # UNKNOWN is not permission to search raw transcript text.
-    if ($null -eq $tail) {
-        # UNKNOWN - no transcript, unreadable, or a client that supplies none.
-        if (-not (Test-ShouldReportClosing 'unverified')) { exit 0 }
-        $note = @(
-            'Skill use UNVERIFIED: transcript unavailable, not all-clear.',
-            $script:SkillsRequirement
-        ) -join "`n"
-        $emit = Write-HookResult -EventName $eventName -Kind 'advisory' -Message $note
-        exit $emit.ExitCode
-    }
+    if ($null -eq $tail) { exit 0 } # R035: unavailable state is silent, never approved.
 
     # The client's own tool-call record is the evidence for what happened, and
     # that is a JSONL record: the closing assistant response $tail holds carries
@@ -445,7 +437,6 @@ if ($eventName -eq 'UserPromptSubmit') {
     foreach ($key in @($byName.Keys | Sort-Object)) {
         $sig += $key + ':' + ((@($byName[$key].Hashes) | Sort-Object) -join ',') + ';'
     }
-    foreach ($p in $index.Plugin) { $sig += (@($p.Invocation, $p.Source, (Get-Field $p 'InstallationKey'), $p.Version, $p.Status, $p.Explicit) -join '|') + ';' }
 
     # ---- standalone ::deep-debug codeword -> phase-routed capability graph ----
     # CODEWORDS.md: only a standalone ::-prefixed token activates the composite
@@ -456,7 +447,7 @@ if ($eventName -eq 'UserPromptSubmit') {
         if ($index.Partial.Count -gt 0) { $researchRoute += "`nDiscovery PARTIAL; inspect matching catalogue, no completeness claim." }
         $claim = Invoke-DeliveryClaim -Path (Join-Path $stateDir ('SkillsCheck-research-' + $client + '-' + $projectKey + '.claims.json')) -Identity (Get-DeliveryIdentity $hookInput) -Fingerprint (Get-ShortHash ($prompt.Trim() + '|' + $sig + '|' + $researchRoute))
         if ($claim.Admitted) { $null = Write-HookResult -EventName $eventName -Kind 'context' -Message $researchRoute }
-        elseif (-not $claim.Ok) { $null = Write-HookResult -EventName $eventName -Kind 'advisory' -Message 'Research routing reservation UNVERIFIED; no skill invoked/installed.' }
+        elseif (-not $claim.Ok) { exit 0 }
         exit 0
     }
     if ($prompt -match '(?i)(^|\s)::deep-debug([\s.,;:!?]|$)') {
@@ -508,7 +499,12 @@ if ($eventName -eq 'UserPromptSubmit') {
 
         $dd = New-Object System.Collections.Generic.List[string]
         [void]$dd.Add('SKILL POLICY CHECK (' + $client + '): ::deep-debug; exact loadable SKILL.md key/exposure, no mutation.')
-        [void]$dd.Add('BEFORE EVERY bug/phase: WORKFLOWS.md Deep Debug/skill-policy-deep-debug.md FULL. ::multi-agent!=skill; no recursion.')
+        [void]$dd.Add('- Ledger bugs/phases first; ::multi-agent codeword. dispatching-parallel-agents: independent discovery; subagent-driven-development: prepared tasks. Flatten/dedup/cycle-check once, no nested/recursive agents.')
+        [void]$dd.Add('- audit-context-building: substantial/unfamiliar/architecture/security; Graphify policy. brainstorming: real design ambiguity; writing-plans: complex repair lacking plan.')
+        [void]$dd.Add('- Bug: systematic-debugging/test-driven-development/verification-before-completion; runtime question: debugging-code DAP OR trusted debug-live DebugMCP/VS Code.')
+        [void]$dd.Add('- Real plan: executing-plans, test-driven-development, requesting-code-review, verification-before-completion.')
+        [void]$dd.Add('- Security subset by job: differential-review/insecure-defaults/review/verification; semgrep/codeql, SARIF parser if output exists; fp-check before confirmation, variant-analysis after proven cause, supply-chain auditor for deps, c-review C/C++, rust-review Rust. static-analysis is label unless exact installed name:. Active testing needs ownership/consent/scope.')
+        [void]$dd.Add('- property-based-testing: real round-trip/validator/state/path/idempotency/boundary invariant only, never usage padding.')
         [void]$dd.Add('- ' + $ponytailRef + ' ONCE; then safe cuts/targeted tests/final proof only.')
         if ($notVisible.Count -gt 0) {
             [void]$dd.Add('- NOT VISIBLE (project/global/plugin): ' + ($notVisible.ToArray() -join ', ') + '. Verify elsewhere; required gap=BLOCKED/PARTIAL.')
@@ -537,7 +533,7 @@ if ($eventName -eq 'UserPromptSubmit') {
     # Fingerprint = session + client + everything the message would say. An
     # unchanged answer shows once; a new prompt with different matches, or a
     # changed skill set, re-reports immediately.
-    $matchSig = ($index.Partial -join ';') + '#' + (@($topInstalled | ForEach-Object { $_.Name + '@' + $_.Score + '|' + $_.Where + '|' + (Get-Field $_ 'InstallationKey') + '|' + (Get-Field $_ 'Version') }) -join ',') + '#' +
+    $matchSig = ($index.Partial -join ';') + '#' + (@($topInstalled | ForEach-Object { $_.Name + '@' + $_.Score }) -join ',') + '#' +
                 (@($topLibrary | ForEach-Object { $_.Name + '@' + $_.Score }) -join ',')
     $fingerprint = Get-ShortHash ($sessionId + '|' + $client + '|' + $hasLibrary + '|' + $libraryDir + '|' + $hasRecord + '|' + $sig + '|' + $matchSig)
     $statePath = Join-Path $stateDir ('SkillsCheck-prompt-' + $projectKey + '.txt')
@@ -548,14 +544,13 @@ if ($eventName -eq 'UserPromptSubmit') {
     if (-not $promptClaim.Admitted) { exit 0 }
 
     $lines = New-Object System.Collections.Generic.List[string]
-    if ($index.Partial.Count -gt 0) { [void]$lines.Add('Skill discovery was PARTIAL: ' + (($index.Partial | Select-Object -Unique -First 8) -join '; ')) }
-    [void]$lines.Add('SKILL POLICY CHECK (' + $client + '): project/global/plugin/library; ' + $policyFile + ' FULL; feature: grilling/domain-modeling/Spec Kit.')
+    if ($index.Partial.Count -gt 0) { exit 0 }
+    [void]$lines.Add('SKILL POLICY CHECK (' + $client + '): advisory skill routing at task/job change; covered steps through exact skill. Matched authorized library copy -> project/.ai/SKILLS.md; feature: grilling/domain-modeling then Spec Kit. Sources: project/global/plugin/library.')
     if ($topInstalled.Count -gt 0) {
         [void]$lines.Add('INSTALLED matches only: verify source/exposure/exact SKILL.md key:')
         foreach ($m in $topInstalled) {
             $where = ''
             if ($null -ne $m.PSObject.Properties['Path'] -and -not [string]::IsNullOrWhiteSpace([string]$m.Path)) { $where = ' -> ' + (Join-Path $m.Path 'SKILL.md') }
-            if ([string](Get-Field $m 'InstallationKey') -ne '') { $where += '; package=' + $m.InstallationKey + '; version=' + $m.Version }
             [void]$lines.Add('- ' + $m.Name + ' [' + $m.Where + ']' + $where)
         }
     }
@@ -581,9 +576,7 @@ if ($eventName -eq 'UserPromptSubmit') {
 
 # ---- SessionStart: compact routed inventory of all three installed sources --
 $lines = New-Object System.Collections.Generic.List[string]
-[void]$lines.Add('SKILL POLICY CHECK (' + $client + '): each job: ' + $policyFile + ' FULL; 1-5 relevant exact SKILL.md keys; mutation rules bind.')
-$agentRoots = if ($client -eq 'claude') { 'global/project .claude/agents + active installed_plugins.json declared/default roots' } else { 'this client''s supported native agent/plugin roots' }
-[void]$lines.Add('AGENTS: BEFORE selection global-agent-rules.md FULL. Roots: ' + $agentRoots + '. Gaps UNVERIFIED; no auto spawn.')
+[void]$lines.Add('SKILL POLICY CHECK (' + $client + '): advisory task/job skill check; use relevant installed exact keys, installation/copy/update/removal only under policy consent.')
 if ($skillLines.Count -gt 0) {
     [void]$lines.Add('Project + global skills (deduped by name:):')
     foreach ($sl in $skillLines) { [void]$lines.Add($sl) }
@@ -606,16 +599,14 @@ if ($index.Plugin.Count -gt 0) {
     $disabledCount = @($index.Plugin | Where-Object { $_.Status -eq 'disabled' }).Count
     $explicitCount = @($index.Plugin | Where-Object { $_.Explicit -eq '1' }).Count
     $unknownCount = @($index.Plugin | Where-Object { $_.Status -eq 'unknown' }).Count
-    $eligibleCount = @($index.Plugin | Where-Object { Test-SkillCandidate $_ }).Count
-    [void]$lines.Add('Availability: ' + $eligibleCount + ' eligible; ' + $disabledCount + ' disabled; ' + $explicitCount + ' user-explicit-only.')
+    [void]$lines.Add('Of these: ' + ($index.Plugin.Count - $disabledCount - $unknownCount) + ' enabled, ' + $disabledCount + ' disabled; ' + $explicitCount + ' user-explicit-only.')
     if ($unknownCount -gt 0) { [void]$lines.Add('Unknown availability: ' + $unknownCount + ' (not shortlisted).') }
 }
 elseif ($hasPluginRoot) {
     [void]$lines.Add('Plugin skills: none found under ' + $pluginRoot + '.')
 }
-if ($index.Partial.Count -gt 0) {
-    [void]$lines.Add('Skill discovery was PARTIAL: ' + ((@($index.Partial) | Select-Object -First 6) -join '; ') + '.')
-}
+if ($index.Partial.Count -gt 0) { exit 0 }
+[void]$lines.Add('- Exact SKILL.md name:, not folder/plugin/market/category.')
 if ($hasRecord) {
     [void]$lines.Add('- Skill changes: read/update .ai/SKILLS.md; local, secret-free.')
 }
@@ -623,6 +614,7 @@ if ($hasLibrary) {
     [void]$lines.Add('- Library: ' + $libraryDir + ' (' + $index.Library.Count + '); exact prompt imports -> ' + $projectSkillsDir + '. Policy consent only.')
     [void]$lines.Add('- ' + $script:ImportGuidance)
 }
+[void]$lines.Add('- Select only the minimal relevant set (1-5). Follows ' + $policyFile + '.')
 foreach ($routingLine in $script:SkillRoutingLines) { [void]$lines.Add($routingLine) }
 
 # Provider/source-aware drift is advisory, never runtime load evidence.

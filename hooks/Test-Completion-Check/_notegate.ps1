@@ -18,8 +18,8 @@ if ($script:pendingNotes.Count -gt 0 -or $script:pendingOverflow) {
         # live lesson - and keep blocking until the backlog is cleared.
         Save-CompletionState
         Write-Finding -Blocking $true -Lines @(
-            'TEST COMPLETION CHECK: note ledger FULL (' + $script:MaxPendingNotes + ' unresolved); new incident would lose evidence.',
-            'New receipt retained. Resolve obligations/correlate legacy before selective repair; no invented UNKNOWN lessons/dropped unresolved.')
+            'note ledger FULL (' + $script:MaxPendingNotes + ' unresolved); new incident would lose evidence.',
+            'Retain receipt; correlate legacy/resolve notes before selective repair, no invented lesson/evidence loss.')
     }
     if ($owed.Count -gt 0) {
         Save-CompletionState
@@ -27,9 +27,10 @@ if ($script:pendingNotes.Count -gt 0 -or $script:pendingOverflow) {
             'Incident ' + $_.Key + ': ' + $_.Reason + '. Origin: run=' + [string](Get-Field $_.Origin 'runId') + ', command=' + [string](Get-Field $_.Origin 'commandFingerprint') + ', outcome=' + [string](Get-Field $_.Origin 'overall') + ', receipt=' + [string](Get-Field $_.Origin 'receiptPath') + ', SHA256=' + [string](Get-Field $_.Origin 'receiptSha256')
         })
         Write-Finding -Blocking $true -Lines (@(
-            'TEST COMPLETION CHECK: .ai/ note owed: ' + $owed[0].Reason + '; ' + $owed.Count + ' obligations, max5 shown.',
+            '.ai/ note owed: ' + $owed[0].Reason + '; ' + $owed.Count + ' obligations, max5 shown.',
             '.ai/{BUGS,TESTING_NOTES,COMMANDS,LESSON}.md: missed-detection cause + verified prevention/recovery.',
-            'Exact tag: `' + (Get-IncidentTag $owed[0].Key) + '`; EACH incident: own tag + substantive addition; untagged/bare/done/n-a/fixed != clear.') + $summary)
+            'Tag it with a line `' + (Get-IncidentTag $owed[0].Key) + '`: exact incident tag + substantive content per obligation.',
+            'done/n/a/fixed or tag alone != added lesson.') + $summary)
     }
     # Unknown-only state is not completion evidence. Fall through to the
     # independent deep-debug/current-evidence gates and diagnostic tail.

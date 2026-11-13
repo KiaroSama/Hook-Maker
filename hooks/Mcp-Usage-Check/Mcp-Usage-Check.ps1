@@ -1,7 +1,7 @@
 # McpUsageCheck - MCP tool usage, checked at BOTH ends of the task.
 #
 # ROLE (global-hook-rules.md, "Hook Roles"): ADVISORY on the pre-task events,
-# advisory by default at Stop/SubagentStop; explicit block mode gates only on
+# GATE on Stop/SubagentStop - and the gate is deliberately narrow. It blocks on
 # exactly ONE confirmed, reproducible condition: this session really did call a
 # connected MCP server tool (the hook read the tool names out of the session
 # transcript) and the closing summary carries no line naming which ones. Both
@@ -157,7 +157,7 @@ function Test-ShouldReport {
     $fingerprint = (Get-HookSuppressionIdentity -HookInput $hookInput) + '|' + $eventName + '|' + $StateToken
     $claim = Invoke-DeliveryClaim -Path ($gatePath + '.claims.json') -Identity (Get-DeliveryIdentity $hookInput) -Fingerprint $fingerprint
     if (-not $claim.Ok) {
-        [Console]::Out.WriteLine((@{ systemMessage = ('Closing reservation UNVERIFIED: ' + $claim.Reason + '; no approval/completion.') } | ConvertTo-Json -Compress))
+            $null=$claim.Reason # R035 unknown reservation: silent.
     }
     return $claim.Admitted
 }
@@ -165,7 +165,10 @@ function Test-ShouldReport {
 # ---- SessionStart: the policy AND the closing requirement -------------------
 if ($eventName -eq 'SessionStart') {
     $note = @(
-        'MCP: BEFORE selection global-mcp-server-contracts.md FULL; global-mcp-rules.md/global-research-rules.md FULL. No fit: proceed/explain.',
+        'Mcp-Usage-Check: advisory connector review:',
+        '- Technical work: global-research-rules.md FULL, live docs/GitHub -> .ai/RESEARCH/.',
+        '- Material browser/DB/GitHub/memory connectors only.',
+        '- Smallest verifying tool; no fit: proceed/explain none.',
         $requirement
     ) -join "`n"
     $emit = Write-HookResult -EventName $eventName -Kind 'context' -Message $note
@@ -233,7 +236,9 @@ if ($eventName -eq 'UserPromptSubmit') {
     }
 
     $noteLines = @(
-        'MCP: BEFORE selection global-mcp-server-contracts.md FULL; global-mcp-rules.md FULL. Live docs; minimum tools.',
+        'Mcp-Usage-Check: advisory library/API/docs/URL/DB/GitHub/deploy/memory connector match.',
+        '- Live docs/first-party connector, not recalled API/guess.',
+        '- Smallest complete verifying tool.',
         $requirement
     )
     if ($researchDue) { $noteLines += $script:ResearchReminder }
@@ -268,20 +273,7 @@ if ($null -ne $marker -and $sessionId -ne '' -and [string](Get-Field $marker 'se
     $sessionRelevant = ([bool](Get-Field $marker 'relevant'))
 }
 
-if ($null -eq $tail) {
-    # UNKNOWN: no transcript, unreadable, or a client that supplies none. State
-    # the requirement, say plainly that it was not verified, never claim either
-    # outcome. Once per session.
-    if (-not $sessionRelevant) { exit 0 }
-    if (-not (Test-ShouldReport 'unverified')) { exit 0 }
-    $note = @(
-        'MCP use UNVERIFIED: no transcript, not all-clear.',
-        $requirement,
-        ('Final: ' + $requiredLine)
-    ) -join "`n"
-    $emit = Write-HookResult -EventName $eventName -Kind 'advisory' -Message $note
-    exit $emit.ExitCode
-}
+if ($null -eq $tail) { exit 0 } # R035: unavailable state is silent, never approved.
 
 # SUBSTANTIVE, not merely present (L05). 'MCP used:' with nothing after it, a
 # bare 'none', or the line inside a fenced example the agent wrote to SHOW the
@@ -330,7 +322,8 @@ if ($usedMcp) {
         # a line of its own: this message lands in the same transcript the next
         # Stop reads, and an example at the start of a line would satisfy the
         # detector - the hook would then clear its own block.
-        ('Clear: standalone final "MCP used:' + $names + '"; actually called/materially used servers ONLY.')
+        ('Final standalone actual servers: "MCP used: ' + $names + '".'),
+        'Only material actual calls, not availability.'
     ) -join "`n"
     if ($enforcement -eq 'advisory') {
         $emit = Write-HookResult -EventName $eventName -Kind 'advisory' -Message $reason

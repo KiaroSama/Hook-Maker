@@ -2,7 +2,7 @@
 # API: report that limitation rather than synthesizing coverage from green jobs.
 function Get-CiVisibilityReminder {
     param([string]$Sha)
-    $message='CI execution verified: '+$Sha+'. Suite/case reports + commit/check UI UNVERIFIED. BEFORE all-test claim: global-github-automation-rules.md Section8 FULL. Missing proof BLOCKS; reporter cannot mask test failure. No auto dispatch/upload/token/permissions.'
+    $message='CI execution verified: '+$Sha+'. Reports/UI UNVERIFIED: global-github-automation-rules.md Section8 FULL before all-test claim; reporter cannot hide failure. No auto dispatch/upload/permission.'
     return $message
 }
 function Write-CiVisibilityReminder {

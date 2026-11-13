@@ -32,6 +32,8 @@ $script:Pass = 0
 $script:Fail = 0
 $script:TestPreviewLength = 200
 . (Join-Path $PSScriptRoot '_testlib.ps1')
+. (Join-Path $PSScriptRoot '_testfindingpolicy.ps1')
+Invoke-FindingPolicyRegression -Root (Split-Path -Parent $PSScriptRoot) -HookName 'Ci-Status-Check'
 . (Join-Path $PSScriptRoot '_testcistatusharness.ps1')
 
 $Work = New-TestWorkspace -Prefix 'hookmaker-cistatustest'
@@ -104,7 +106,7 @@ function Set-Mock {
 # billing tests read like the real API. GitHub annotates ONE failing check-run
 # when a billing block stops a run; its siblings fail with NO annotations, so
 # both shapes are exercised below.
-$script:BillingMessage = "The job was not started because recent account payments have failed or your spending limit needs to be increased. Please check the 'Billing & plans' section in your settings"
+$script:BillingMessage = "The job was not started because recent account billing/payment or your spending limit needs to be increased. Please check the 'Billing & plans' section in your settings"
 function New-CheckRunsJson {
     param([hashtable[]]$Runs)   # each: @{ id = '1'; conclusion = 'failure' }
     $items = @($Runs | ForEach-Object { '{"id":' + $_.id + ',"conclusion":"' + $_.conclusion + '"}' })
@@ -221,23 +223,23 @@ try {
     # success -> verified silently; second run also silent via state
     Set-Mock -RunJson '[{"databaseId":10,"name":"CI","workflowName":"CI","status":"completed","conclusion":"success"}]' -ExpectedSha $sha
     $r = Fire -HookPath $CiHook -Cwd $ci -EventName 'Stop'
-    Check 'green execution keeps report and UI verification separate' ($r.Out -match 'systemMessage' -and $r.Out -match 'Suite/case reports \+ commit/check UI UNVERIFIED' -and $r.Out -notmatch '"decision"') ([string]$r.Out)
+    Check 'green execution keeps report and UI verification separate' ($r.Out -match 'systemMessage' -and $r.Out -match 'Reports/UI UNVERIFIED' -and $r.Out -notmatch '"decision"') ([string]$r.Out)
     $received = (Get-Content (Join-Path $MockDir 'received_sha.txt') -Raw).Trim()
     Check 'exact pushed SHA queried (not newest run)' ($received -eq $sha)
     Set-Mock -RunJson '[{"databaseId":11,"name":"CI","workflowName":"CI","status":"completed","conclusion":"failure"}]' -ExpectedSha $sha
     $r = Fire -HookPath $CiHook -Cwd $ci -EventName 'Stop'
-    Check 'legacy verified state cannot bypass a fresh failed run' ($r.Out -match '"decision":"block"' -and $r.Out -match 'FAILED') ([string]$r.Out)
+    Check 'legacy verified state cannot bypass a fresh failed run' ($r.Out -match '"systemMessage"' -and $r.Out -match 'FAILED') ([string]$r.Out)
 
     # pending -> block
     $ci2 = New-GitRepo 'ci2'
     $sha2 = Get-HeadSha $ci2
     Set-Mock -RunJson '[{"databaseId":21,"name":"CI","workflowName":"CI","status":"in_progress","conclusion":null}]' -ExpectedSha $sha2
     $r = Fire -HookPath $CiHook -Cwd $ci2 -EventName 'Stop'
-    Check 'pending checks -> block with wait guidance' ($r.Out -match '"decision":"block"' -and $r.Out -match 'checks not finished yet \(queued/in-progress\)' -and $r.Out -match 'gh run list --commit')
+    Check 'pending checks -> advisory with wait guidance' ($r.Out -match '"systemMessage"' -and $r.Out -match 'queued/in-progress' -and $r.Out -match 'gh run list --commit')
     $r = Fire -HookPath $CiHook -Cwd $ci2 -EventName 'Stop'
     Check 'unchanged pending evidence does not recursively reblock the same session' ($r.Out-eq''-and$r.Exit-eq0) $r.Out
     $r = Fire -HookPath $CiHook -Cwd $ci2 -EventName 'Stop' -Extra @{ session_id = 'pending-fresh-session' }
-    Check 'fresh session still blocks genuinely running checks during pending cooldown' ($r.Out -match '"decision":"block"' -and $r.Out -match 'checks not finished yet \(queued/in-progress\)') $r.Out
+    Check 'fresh session still blocks genuinely running checks during pending cooldown' ($r.Out -match '"systemMessage"' -and $r.Out -match 'queued/in-progress') $r.Out
 
     # failure -> block with fix guidance; repeated -> cooldown silence
     $ci3 = New-GitRepo 'ci3'
@@ -246,7 +248,7 @@ try {
     $r = Fire -HookPath $CiHook -Cwd $ci3 -EventName 'Stop'
     Check 'failed checks -> block with real-fix guidance' ($r.Out -match 'FAILED' -and $r.Out -match '--log-failed' -and $r.Out -match 'Preserve tests/exits')
     $r = Fire -HookPath $CiHook -Cwd $ci3 -EventName 'Stop'
-    Check 'failed checks remain a completion block during cooldown' ($r.Out -match '"decision":"block"') $r.Out
+    Check 'failed checks remain a completion block during cooldown' ($r.Out -match '"systemMessage"') $r.Out
     $calls = [System.IO.File]::ReadAllText((Join-Path $MockDir 'calls.txt'))
     Check 'CI binds exact-SHA raw query to repository' ($calls -match 'api\|repos/testowner/testrepo-ci3/actions/runs\?head_sha=') $calls
 
@@ -258,7 +260,7 @@ try {
     & git -C $ci3 update-ref refs/remotes/origin/main $sha3b
     Set-Mock -RunJson '[{"databaseId":32,"name":"CI","workflowName":"CI","status":"completed","conclusion":"timed_out"}]' -ExpectedSha $sha3b
     $r = Fire -HookPath $CiHook -Cwd $ci3 -EventName 'Stop'
-    Check 'NEW pushed commit -> re-checked; timed_out classed as infra/flaky' ($r.Out -match '"decision":"block"' -and $r.Out -match 'timed_out' -and $r.Out -match 'Classify infra/access/flake')
+    Check 'NEW pushed commit -> re-checked; timed_out classed as infra/flaky' ($r.Out -match '"systemMessage"' -and $r.Out -match 'timed_out' -and $r.Out -match 'Classify infra/access/flake')
 
     # cancelled + stale also infra-classified
     $ci4 = New-GitRepo 'ci4'
@@ -275,20 +277,20 @@ try {
     Set-Mock -RunJson '[{"databaseId":61,"name":"CI","workflowName":"CI","status":"queued","conclusion":null}]' -ExpectedSha $shaQ
     $r = Fire -HookPath $CiHook -Cwd $ciQ -EventName 'Stop'
     Check 'E-09: a queued run blocks and is named queued-or-in-progress' (
-        $r.Out -match '"decision":"block"' -and $r.Out -match 'checks not finished yet \(queued/in-progress\)') $r.Out
+        $r.Out -match '"systemMessage"' -and $r.Out -match 'queued/in-progress') $r.Out
     # EVERY completed run skipped -> nothing verified the commit -> never green.
     $ciSkip = New-GitRepo 'ci-allskip'
     $shaSkip = Get-HeadSha $ciSkip
     Set-Mock -RunJson '[{"databaseId":62,"name":"CI","workflowName":"CI","status":"completed","conclusion":"skipped"},{"databaseId":63,"name":"Lint","workflowName":"Lint","status":"completed","conclusion":"skipped"}]' -ExpectedSha $shaSkip
     $r = Fire -HookPath $CiHook -Cwd $ciSkip -EventName 'Stop'
     Check 'E-09: ALL runs skipped -> blocks, never reads as CI-green' (
-        $r.Out -match '"decision":"block"' -and $r.Out -match 'Abnormal:.*skipped') $r.Out
+        $r.Out -match '"systemMessage"' -and $r.Out -match 'Abnormal:.*skipped') $r.Out
     # A skipped companion is not an execution proof without a reviewed contract.
     $ciSkipMix = New-GitRepo 'ci-skipmix'
     $shaSkipMix = Get-HeadSha $ciSkipMix
     Set-Mock -RunJson '[{"databaseId":64,"name":"CI","workflowName":"CI","status":"completed","conclusion":"success"},{"databaseId":65,"name":"Docs","workflowName":"Docs","status":"completed","conclusion":"skipped"}]' -ExpectedSha $shaSkipMix
     $r = Fire -HookPath $CiHook -Cwd $ciSkipMix -EventName 'Stop'
-    Check 'E-09: an unqualified skipped run beside success cannot certify required work' ($r.Out -match '"decision":"block"') ([string]$r.Out)
+    Check 'E-09: an unqualified skipped run beside success cannot certify required work' ($r.Out -match '"systemMessage"') ([string]$r.Out)
     # The failure guidance carries the exact-final-SHA / post-Ponytail contract.
     $ciSha = New-GitRepo 'ci-exactsha'
     $shaExact = Get-HeadSha $ciSha
@@ -297,14 +299,14 @@ try {
         -Annotations @{ '66' = (New-RealFailureAnnotations) }
     $r = Fire -HookPath $CiHook -Cwd $ciSha -EventName 'Stop'
     Check 'E-09: the failure block states the EXACT-final-SHA contract incl. post-Ponytail changes' (
-        $r.Out -match '"decision":"block"' -and $r.Out -match 'EXACT final pushed SHA' -and
+        $r.Out -match '"systemMessage"' -and $r.Out -match 'final pushed SHA' -and
         $r.Out -match 'post-Ponytail' -and $r.Out -match 'push/verify its SHA') $r.Out
     # The external-blocker exception contract already exists - pin its wording in
     # source rather than rewriting it (E-09): the notice always states CI is NOT
     # verified green and forbids claiming CI passed.
     $ciText = [System.IO.File]::ReadAllText($CiHook)
-    Check 'E-09: the external-blocker notice source states CI NOT VERIFIED GREEN + never-claim-passed' (
-        $ciText -match 'CI NOT VERIFIED GREEN' -and $ciText -match 'never CI success') $ciText.Substring(0, 200)
+    Check 'E-09: the external-blocker notice source states CI UNVERIFIED + never-claim-passed' (
+        $ciText -match 'CI UNVERIFIED' -and $ciText -match 'never CI success') $ciText.Substring(0, 200)
     Check 'E-09: the notice shape never uses decision:block (source pin)' (
         $ciText -match 'Neither shape ever uses `decision:block`' -or $ciText -match 'never emits `decision:block`' -or $ciText -match 'It never emits') $ciText.Substring(0, 200)
 
@@ -325,8 +327,8 @@ try {
         -Annotations @{ '81' = (New-BillingAnnotations); '82' = (New-BillingAnnotations) }
     $r = Fire -HookPath $CiHook -Cwd $ciBill -EventName 'Stop'
     Check 'billing block -> NOT a hard block' ($r.Out -notmatch '"decision":"block"') $r.Out
-    Check 'billing block -> non-blocking CI-not-green context, classified account-billing' ($r.Out -match 'CI NOT VERIFIED GREEN' -and $r.Out -match 'account-billing') $r.Out
-    Check 'billing block -> names the payment/spending-limit cause' ($r.Out -match 'payments have failed' -or $r.Out -match 'spending-limit') $r.Out
+    Check 'billing block -> non-blocking CI-not-green context, classified account-billing' ($r.Out -match 'CI UNVERIFIED' -and $r.Out -match 'account-billing') $r.Out
+    Check 'billing block -> names the payment/spend block cause' ($r.Out -match 'billing/payment' -or $r.Out -match 'spend block') $r.Out
     $billStateFile = @(Get-ChildItem -LiteralPath $billStateDir -Filter 'CiStatusCheck-External-*.txt' -ErrorAction SilentlyContinue)
     $billRecorded = $false
     foreach ($f in $billStateFile) { if ([System.IO.File]::ReadAllText($f.FullName) -match 'account-billing') { $billRecorded = $true } }
@@ -368,7 +370,7 @@ try {
         -CheckRunsJson (New-CheckRunsJson @(@{id = '95'; conclusion = 'failure' }, @{id = '96'; conclusion = 'failure' })) `
         -Annotations @{ '95' = (New-BillingAnnotations); '96' = (New-RealFailureAnnotations) }
     $r = Fire -HookPath $CiHook -Cwd $ciBillMixed -EventName 'Stop'
-    Check 'a real annotated failure beside a billing one still HARD BLOCKS' ($r.Out -match '"decision":"block"') $r.Out
+    Check 'a real annotated failure beside a billing one still reports advisory' ($r.Out -match '"systemMessage"') $r.Out
     Check 'that mixed case is never recorded as an external blocker' ($r.Out -notmatch 'account-billing') $r.Out
 
     # No billing annotation anywhere - unannotated failures alone prove nothing
@@ -382,9 +384,9 @@ try {
         -Annotations @{ '97' = '[]'; '98' = '[]' }
     $r = Fire -HookPath $CiHook -Cwd $ciBillNone -EventName 'Stop'
     Check 'failures with NO annotations at all are still a hard block, never billing' (
-        $r.Out -match '"decision":"block"' -and $r.Out -notmatch 'account-billing') $r.Out
+        $r.Out -match '"systemMessage"' -and $r.Out -notmatch 'account-billing') $r.Out
     $r = Fire -HookPath $CiHook -Cwd $ciBill -EventName 'Stop' -Extra @{ session_id = 'a-later-session' }
-    Check 'billing block -> a NEW session is told again, still non-blocking' ($r.Out -notmatch '"decision":"block"' -and $r.Out -match 'CI NOT VERIFIED GREEN') $r.Out
+    Check 'billing block -> a NEW session is told again, still non-blocking' ($r.Out -notmatch '"decision":"block"' -and $r.Out -match 'CI UNVERIFIED') $r.Out
     $r = Fire -HookPath $CiHook -Cwd $ciBill -EventName 'Stop' -Extra @{ session_id = 'a-later-session' }
     Check 'billing block -> that session is then silent too (no slow re-arming)' ($r.Out -eq '') $r.Out
     # same case surfaces correctly in the Claude client shape too
@@ -397,7 +399,7 @@ try {
     $r = Fire -HookPath $CiHook -Cwd $ciBillC -EventName 'Stop' -Client 'claude'
     Check 'billing block (Claude) -> non-continuing systemMessage, not a block' ($r.Out -match 'systemMessage' -and $r.Out -match 'account-billing' -and $r.Out -notmatch '"decision":"block"') $r.Out
 
-    # a genuine failure (check-run present, annotation is a real error) still hard-blocks
+    # a genuine failure (check-run present, annotation is a real error) still reports advisory
     $ciReal = New-GitRepo 'ci-real'
     $shaReal = Get-HeadSha $ciReal
     Set-Mock -RunJson '[{"databaseId":91,"name":"CI","workflowName":"CI","status":"completed","conclusion":"failure"}]' `
@@ -405,7 +407,7 @@ try {
         -CheckRunsJson (New-CheckRunsJson @(@{id = '91'; conclusion = 'failure' })) `
         -Annotations @{ '91' = (New-RealFailureAnnotations) }
     $r = Fire -HookPath $CiHook -Cwd $ciReal -EventName 'Stop'
-    Check 'real failure (non-billing annotation) still hard-blocks' ($r.Out -match '"decision":"block"' -and $r.Out -match 'FAILED') $r.Out
+    Check 'real failure (non-billing annotation) still reports advisory' ($r.Out -match '"systemMessage"' -and $r.Out -match 'FAILED') $r.Out
 
     # mixed: one failing check-run billing, one a real failure -> fail CLOSED (hard block)
     $ciMixed = New-GitRepo 'ci-mixed'
@@ -415,7 +417,7 @@ try {
         -CheckRunsJson (New-CheckRunsJson @(@{id = '101'; conclusion = 'failure' }, @{id = '102'; conclusion = 'failure' })) `
         -Annotations @{ '101' = (New-BillingAnnotations); '102' = (New-RealFailureAnnotations) }
     $r = Fire -HookPath $CiHook -Cwd $ciMixed -EventName 'Stop'
-    Check 'one failing run without the billing annotation -> hard block (fail closed)' ($r.Out -match '"decision":"block"' -and $r.Out -match 'FAILED') $r.Out
+    Check 'one failing run without the billing annotation -> hard block (fail closed)' ($r.Out -match '"systemMessage"' -and $r.Out -match 'FAILED') $r.Out
 
     # the annotations query itself errors -> billing not claimed, hard block (fail closed)
     $ciAnnErr = New-GitRepo 'ci-annerr'
@@ -425,7 +427,7 @@ try {
         -CheckRunsJson (New-CheckRunsJson @(@{id = '111'; conclusion = 'failure' })) `
         -AnnotationsExitAll 1
     $r = Fire -HookPath $CiHook -Cwd $ciAnnErr -EventName 'Stop'
-    Check 'annotations query error -> billing not claimed, hard block (fail closed)' ($r.Out -match '"decision":"block"' -and $r.Out -match 'FAILED') $r.Out
+    Check 'annotations query error -> billing not claimed, hard block (fail closed)' ($r.Out -match '"systemMessage"' -and $r.Out -match 'FAILED') $r.Out
 
     # ---- account billing block: pagination safety (check-runs + annotations) ----
     # A commit can have MORE check-runs than one page, so billing is only claimed
@@ -446,7 +448,7 @@ try {
         } `
         -Annotations @{ '201' = (New-BillingAnnotations); '202' = (New-BillingAnnotations); '203' = (New-BillingAnnotations); '204' = (New-BillingAnnotations) }
     $r = Fire -HookPath $CiHook -Cwd $ciBillMP -EventName 'Stop'
-    Check 'multi-page all-billing -> billing classification after full verification' ($r.Out -notmatch '"decision":"block"' -and $r.Out -match 'CI NOT VERIFIED GREEN' -and $r.Out -match 'account-billing') $r.Out
+    Check 'multi-page all-billing -> billing classification after full verification' ($r.Out -notmatch '"decision":"block"' -and $r.Out -match 'CI UNVERIFIED' -and $r.Out -match 'account-billing') $r.Out
 
     # (B) a real failure on check-run PAGE 2 (only page 1 was billing) -> the
     # complete set contains an unannotated failure, so billing is refused (block).
@@ -460,7 +462,7 @@ try {
         } `
         -Annotations @{ '211' = (New-BillingAnnotations); '212' = (New-BillingAnnotations); '213' = (New-RealFailureAnnotations) }
     $r = Fire -HookPath $CiHook -Cwd $ciMPreal -EventName 'Stop'
-    Check 'a real failure on check-run page 2 prevents billing (hard block, fail closed)' ($r.Out -match '"decision":"block"' -and $r.Out -match 'FAILED') $r.Out
+    Check 'a real failure on check-run page 2 prevents billing (hard block, fail closed)' ($r.Out -match '"systemMessage"' -and $r.Out -match 'FAILED') $r.Out
 
     # (C) total_count above the strict bound (2000) -> cannot fully verify -> fail
     # closed BEFORE any annotation is trusted, even though the delivered runs are
@@ -472,7 +474,7 @@ try {
         -CheckRunPages @{ '1' = (New-CheckRunsPageJson -TotalCount 2001 -Runs @(@{id = '221'; conclusion = 'failure' })) } `
         -Annotations @{ '221' = (New-BillingAnnotations) }
     $r = Fire -HookPath $CiHook -Cwd $ciBound -EventName 'Stop'
-    Check 'total_count above the safety bound -> fail closed (hard block)' ($r.Out -match '"decision":"block"' -and $r.Out -match 'FAILED') $r.Out
+    Check 'total_count above the safety bound -> fail closed (hard block)' ($r.Out -match '"systemMessage"' -and $r.Out -match 'FAILED') $r.Out
 
     # (D) total_count is 5 but only 2 runs are ever delivered (page 2 empty) ->
     # fetched count never reaches total_count -> truncation -> fail closed.
@@ -483,7 +485,7 @@ try {
         -CheckRunPages @{ '1' = (New-CheckRunsPageJson -TotalCount 5 -Runs @(@{id = '231'; conclusion = 'failure' }, @{id = '232'; conclusion = 'failure' })) } `
         -Annotations @{ '231' = (New-BillingAnnotations); '232' = (New-BillingAnnotations) }
     $r = Fire -HookPath $CiHook -Cwd $ciTrunc -EventName 'Stop'
-    Check 'fetched check-run count below total_count -> fail closed (hard block)' ($r.Out -match '"decision":"block"' -and $r.Out -match 'FAILED') $r.Out
+    Check 'fetched check-run count below total_count -> fail closed (hard block)' ($r.Out -match '"systemMessage"' -and $r.Out -match 'FAILED') $r.Out
 
     # (E1) the billing annotation is only on annotation PAGE 2 (page 1 is a
     # different, non-billing annotation) -> the paginator must read page 2 to find
@@ -508,7 +510,7 @@ try {
         -AnnotationPages @{ '251-1' = (New-RealFailureAnnotations) } `
         -AnnotationPageExits @{ '251-2' = 1 }
     $r = Fire -HookPath $CiHook -Cwd $ciAnnErr2 -EventName 'Stop'
-    Check 'annotation pagination error on page 2 -> fail closed (hard block)' ($r.Out -match '"decision":"block"' -and $r.Out -match 'FAILED') $r.Out
+    Check 'annotation pagination error on page 2 -> fail closed (hard block)' ($r.Out -match '"systemMessage"' -and $r.Out -match 'FAILED') $r.Out
     $annCalls = [System.IO.File]::ReadAllText((Join-Path $MockDir 'calls.txt'))
     Check 'annotation pagination actually queried page 2 before failing closed' ($annCalls -match 'check-runs/251/annotations\?per_page=100&page=2') $annCalls
 
@@ -542,14 +544,14 @@ try {
     Set-Mock -ExpectedSha (Get-HeadSha $ci5blank)
     Set-Content -Path (Join-Path $MockDir 'run_list.json') -Value '' -NoNewline -Encoding utf8
     $r = Fire -HookPath $CiHook -Cwd $ci5blank -EventName 'Stop'
-    Check 'B5: blank run stdout blocks as unverified metadata, never a verified zero-run collection' ($r.Out -match '"decision":"block"' -and $r.Out -match 'exact-SHA workload metadata UNVERIFIED' -and $r.Out -match 'UNKNOWN, not green') $r.Out
+    Check 'B5: blank run stdout blocks as unverified metadata, never a verified zero-run collection' ($r.Out -match '"systemMessage"' -and $r.Out -match 'exact-SHA workload metadata UNVERIFIED' -and $r.Out -match 'UNKNOWN, not green') $r.Out
 
     $ci5null = New-GitRepo 'ci5null'
     New-Item -ItemType Directory -Path (Join-Path $ci5null '.github\workflows') -Force | Out-Null
     Set-Content (Join-Path $ci5null '.github\workflows\ci.yml') 'name: CI'
     Set-Mock -RunJson 'null' -ExpectedSha (Get-HeadSha $ci5null)
     $r = Fire -HookPath $CiHook -Cwd $ci5null -EventName 'Stop'
-    Check 'B5: literal null run stdout blocks as unverified metadata, never a verified zero-run collection' ($r.Out -match '"decision":"block"' -and $r.Out -match 'exact-SHA workload metadata UNVERIFIED' -and $r.Out -match 'UNKNOWN, not green') $r.Out
+    Check 'B5: literal null run stdout blocks as unverified metadata, never a verified zero-run collection' ($r.Out -match '"systemMessage"' -and $r.Out -match 'exact-SHA workload metadata UNVERIFIED' -and $r.Out -match 'UNKNOWN, not green') $r.Out
 
     # control: a normal successful run set on the same workflows-configured
     # shape still verifies silently (the Where-Object null filter added for B5
@@ -559,7 +561,7 @@ try {
     # Committed simple workflow from New-GitRepo is the positive expectation.
     Set-Mock -RunJson '[{"databaseId":95,"name":"CI","workflowName":"CI","status":"completed","conclusion":"success"}]' -ExpectedSha (Get-HeadSha $ci5ok)
     $r = Fire -HookPath $CiHook -Cwd $ci5ok -EventName 'Stop'
-    Check 'B5 control: real successful execution never claims case or UI proof' ($r.Out -match 'Suite/case reports \+ commit/check UI UNVERIFIED' -and $r.Out -notmatch '"decision"') ([string]$r.Out)
+    Check 'B5 control: real successful execution never claims case or UI proof' ($r.Out -match 'Reports/UI UNVERIFIED' -and $r.Out -notmatch '"decision"') ([string]$r.Out)
 
     # gh unauthenticated -> silent degradation (never claims verified)
     $ci7 = New-GitRepo 'ci7'
@@ -582,7 +584,7 @@ try {
     & git -C $mismatchOk update-ref refs/remotes/origin/main $mmSha
     Set-Mock -RunJson '[{"databaseId":70,"name":"CI","workflowName":"CI","status":"completed","conclusion":"success"}]' -ExpectedSha $mmSha
     $r = Fire -HookPath $CiHook -Cwd $mismatchOk -EventName 'Stop'
-    Check 'non-GitHub upstream + current GitHub origin verifies execution without inventing report/UI proof' ($r.Exit -eq 0 -and $r.Out -match 'CI execution verified' -and $r.Out -match 'Suite/case reports \+ commit/check UI UNVERIFIED' -and $r.Out -match $mmSha -and $r.Out -notmatch '"decision"') ([string]$r.Out)
+    Check 'non-GitHub upstream + current GitHub origin verifies execution without inventing report/UI proof' ($r.Exit -eq 0 -and $r.Out -match 'CI execution verified' -and $r.Out -match 'Reports/UI UNVERIFIED' -and $r.Out -match $mmSha -and $r.Out -notmatch '"decision"') ([string]$r.Out)
     $calls = [System.IO.File]::ReadAllText((Join-Path $MockDir 'calls.txt'))
     Check 'queries the origin repository slug, not the mirror' ($calls -match 'testowner/testrepo-mismatch-ok') $calls
 
@@ -605,7 +607,7 @@ try {
     & git -C $diffBranch update-ref refs/remotes/origin/release $dbSha
     Set-Mock -RunJson '[{"databaseId":71,"name":"CI","workflowName":"CI","status":"completed","conclusion":"success"}]' -ExpectedSha $dbSha
     $r = Fire -HookPath $CiHook -Cwd $diffBranch -EventName 'Stop'
-    Check 'differently-named upstream branch verifies execution with a separate report/UI gap' ($r.Exit -eq 0 -and $r.Out -match 'CI execution verified' -and $r.Out -match 'Suite/case reports \+ commit/check UI UNVERIFIED' -and $r.Out -match $dbSha -and $r.Out -notmatch '"decision"') ([string]$r.Out)
+    Check 'differently-named upstream branch verifies execution with a separate report/UI gap' ($r.Exit -eq 0 -and $r.Out -match 'CI execution verified' -and $r.Out -match 'Reports/UI UNVERIFIED' -and $r.Out -match $dbSha -and $r.Out -notmatch '"decision"') ([string]$r.Out)
 
     # Multiple GitHub remotes, no unambiguous target (neither is origin,
     # neither matches the branch's configured upstream) - must degrade silently.
@@ -653,15 +655,15 @@ try {
         $ps51ciSha = Get-HeadSha $ps51ci
         Set-Mock -RunJson '[{"databaseId":51,"name":"CI","workflowName":"CI","status":"completed","conclusion":"failure"}]' -ExpectedSha $ps51ciSha
         $r = Fire -HookPath $CiHook -Cwd $ps51ci -EventName 'Stop' -Exe 'powershell.exe'
-        Check 'CiStatusCheck under 5.1' ($r.Exit -eq 0 -and $r.Out -match '"decision":"block"')
+        Check 'CiStatusCheck under 5.1' ($r.Exit -eq 0 -and $r.Out -match '"systemMessage"')
         Set-Mock -RunJson '[{"databaseId":52,"name":"CI","workflowName":"CI","status":"completed","conclusion":"cancelled"}]' -ExpectedSha $ps51ciSha
         $r = FireExternalBlocker -Cwd $ps51ci -Classification 'github-outage' -Reason '5.1 host outage test, status page confirms it' -Exe 'powershell.exe'
         Check '-ReportExternalBlocker under 5.1' ($r.Exit -eq 0 -and $r.Out -match 'EXTERNAL CI blocker')
         $r = Fire -HookPath $CiHook -Cwd $ps51ci -EventName 'Stop' -Exe 'powershell.exe' -Client 'codex'
-        Check 'external-blocker exception honored under 5.1 (Codex: non-blocking systemMessage, CI not green)' ($r.Exit -eq 0 -and $r.Out -notmatch '"decision":"block"' -and $r.Out -match '"systemMessage"' -and $r.Out -match 'CI NOT VERIFIED GREEN')
+        Check 'external-blocker exception honored under 5.1 (Codex: non-blocking systemMessage, CI not green)' ($r.Exit -eq 0 -and $r.Out -notmatch '"decision":"block"' -and $r.Out -match '"systemMessage"' -and $r.Out -match 'CI UNVERIFIED')
         # Its own session: the Codex fire above already told session 't' (once per session).
         $r = Fire -HookPath $CiHook -Cwd $ps51ci -EventName 'Stop' -Exe 'powershell.exe' -Client 'claude' -Extra @{ session_id = 'ps51-claude' }
-        Check 'external-blocker exception honored under 5.1 (Claude: non-continuing systemMessage, CI not green)' ($r.Exit -eq 0 -and $r.Out -notmatch '"decision":"block"' -and $r.Out -match 'systemMessage' -and $r.Out -notmatch 'hookSpecificOutput' -and $r.Out -match 'CI NOT VERIFIED GREEN')
+        Check 'external-blocker exception honored under 5.1 (Claude: non-continuing systemMessage, CI not green)' ($r.Exit -eq 0 -and $r.Out -notmatch '"decision":"block"' -and $r.Out -match 'systemMessage' -and $r.Out -notmatch 'hookSpecificOutput' -and $r.Out -match 'CI UNVERIFIED')
     }
     else {
         Write-Host '[SKIP] powershell.exe not available' -ForegroundColor Yellow

@@ -107,7 +107,7 @@ function Get-ManualWorkflowState {
         }
     }
     catch { $answer.Complete = $false }
-    if ($automatic) { $answer.Problems += 'Automatic CI initiating trigger exists; all hosts require workflow_dispatch.' }
+    if ($automatic) { $answer.Problems += 'Automatic CI trigger; require workflow_dispatch.' }
     $roots = @($nodes.Keys | Where-Object { $nodes[$_].Triggers -ccontains 'workflow_dispatch' })
     $seen = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::Ordinal)
     $queue = New-Object 'System.Collections.Generic.Queue[string]'
@@ -127,7 +127,7 @@ function Get-ManualWorkflowState {
         if ($leaves.Count -eq 0) { $answer.Complete = $false; break }
         $pending = @($pending | Where-Object { $leaves -cnotcontains $_ })
     }
-    if (-not $answer.Complete) { $answer.Problems += 'Manual reachability UNKNOWN: unreadable/over-limit/unsupported/cyclic. Inspect workflows.' }
+    if (-not $answer.Complete) { $answer.Problems += 'Manual UNKNOWN: read/bound/grammar/cycle; inspect.' }
     $answer.Compliant = $answer.Complete -and -not $automatic -and $roots.Count -gt 0 -and $answer.HasValidation
     return $answer
 }

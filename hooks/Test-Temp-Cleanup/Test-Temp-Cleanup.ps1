@@ -213,8 +213,12 @@ function Get-ReviewReason {
 # carries the same semantics.
 function Get-AgentInstructionLines {
     return @(
-        'BEFORE disposal: global-project-lifecycle-rules.md Cleanup FULL.',
-        'Only proven disposable exact owned paths: permanent deletion, NOT Recycle Bin; uncertain retain/report. Hook deletes nothing.'
+        'Inspect before deletion.',
+        'Name != ownership.',
+        'Keep tracked/staged/linked/diagnostic/ambiguous/protected/user data.',
+        'Delete only independently proven disposable project residue.',
+        'Agent tools only; hook never deletes.',
+        'Uncertain: retain/report.'
     )
 }
 
@@ -374,13 +378,7 @@ if ($eventName -eq 'SessionStart') {
     }
     Publish-CleanupBaseline -Value $baseline -Path $baselinePath
 
-    $coverage = @($allCauses | Where-Object { $script:CoverageCauses -contains $_ })
-    if ($coverage.Count -gt 0) {
-        $lines = New-Object System.Collections.Generic.List[string]
-        [void]$lines.Add('TEST TEMP CLEANUP: SessionStart baseline PARTIAL (detector, deletes nothing): (' + ($coverage -join ', ') + ').')
-        [void]$lines.Add('Partial baseline != cleanliness proof. Needed coverage: fix unreadable paths/review .env MAX_SCAN_ENTRIES/MAX_SCAN_DEPTH.')
-        Write-ClientMessage -Message ($lines.ToArray() -join "`n") -EventName $eventName -Blocking $false
-    }
+    # R035: uncertain baseline is retained, never emitted as a finding.
     exit 0
 }
 
@@ -588,7 +586,7 @@ Write-JsonFileAtomic -Path $hookStatePath -Value ([ordered]@{
     updatedUtc = [DateTime]::UtcNow.ToString('o')
 })
 
-if ($category -eq 'clean') { exit 0 }
+if ($category-in@('clean','partial','unknown')) { exit 0 } # R035: uncertain state is silent, record retained.
 if ($evidenceFingerprint -eq $lastEvidenceFingerprint) { exit 0 }
 
 # ---- report ----
@@ -597,27 +595,27 @@ $blocking = $false
 switch ($category) {
     'residue-confirmed' {
         $blocking = $true
-        [void]$lines.Add('TEST TEMP CLEANUP (detector, deletes nothing): ' + $residueNow.Count +
-            ' prior-Stop residue candidates STILL PRESENT:' +
+        [void]$lines.Add('Read-only candidates: ' + $residueNow.Count +
+            ' prior residue still present:' +
             ((@($residueNow | Select-Object -First $maxFindings | ForEach-Object { $_.RelPath })) -join ', ') + '.')
-        [void]$lines.Add('Unresolved: independently prove disposal or retain/reason. Detector!=deletion safety.')
+        [void]$lines.Add('Prove disposal safety or retain/reason, detector!=authority.')
     }
     'partial' {
         $blocking = $true
-        [void]$lines.Add('TEST TEMP CLEANUP: scan PARTIAL (detector, deletes nothing): (' + ($coverageCauses -join ', ') + '); NOT clean.')
-        [void]$lines.Add('Fix unreadable paths/review hook .env MAX_SCAN_ENTRIES/MAX_SCAN_DEPTH; recheck or disclose partial coverage.')
+        [void]$lines.Add('Scan PARTIAL (read-only): (' + ($coverageCauses -join ', ') + '); NOT clean.')
+        [void]$lines.Add('Review unreadable/.env MAX_SCAN_ENTRIES/MAX_SCAN_DEPTH; recheck/disclose PARTIAL.')
     }
     'unknown' {
-        [void]$lines.Add('TEST TEMP CLEANUP: classification UNKNOWN (detector, deletes nothing): (' + ($evidenceCauses -join ', ') + ').')
-        [void]$lines.Add('No disposal evidence: every candidate ambiguous; preserve.')
+        [void]$lines.Add('Classification UNKNOWN (read-only): (' + ($evidenceCauses -join ', ') + ').')
+        [void]$lines.Add('Ambiguous disposal; preserve all.')
     }
     default {
-        [void]$lines.Add('TEST TEMP CLEANUP (detector, deletes nothing): ' + $reviewNeeded.Count + ' project candidates: review required.')
+        [void]$lines.Add('Read-only candidates: ' + $reviewNeeded.Count + ' project candidates: review required.')
     }
 }
 
 if ($foundList.Count -gt 0) {
-    [void]$lines.Add('Candidates: relative paths/bounded metadata; no content read/shown:')
+    [void]$lines.Add('Paths/metadata only, no content:')
     foreach ($finding in @($sortedFound | Select-Object -First $maxFindings)) {
         [void]$lines.Add('  ' + $finding.RelPath +
             ' | class=' + $finding.Classification +

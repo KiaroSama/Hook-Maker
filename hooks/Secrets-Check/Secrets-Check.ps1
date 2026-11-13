@@ -339,8 +339,8 @@ if ($null -ne (Get-Command git -ErrorAction SilentlyContinue)) {
 if ($added.Count -gt 0 -and $inGitRepo) {
     $null = Invoke-QuietCommand -FilePath git -ArgumentList @('-C', $cwd, 'check-ignore', '-q', '--', 'secrets.md')
     if ($LASTEXITCODE -ne 0) {
-        [void]$critical.Add('secrets.md is NOT covered by .gitignore - refusing to write ' + $added.Count +
-            ' values. Ignore /secrets.md, then retry.')
+        [void]$critical.Add('Registry unignored; no write of ' + $added.Count +
+            ' values; ignore registry/retry.')
         # Same degradation as the write-failure path below: name the keys in the
         # report, put no value on disk.
         [void]$missingUndocumented.AddRange($added)
@@ -359,10 +359,10 @@ if ($added.Count -gt 0) {
         $entry = $discovered[$key]
         [void]$entryLines.Add('')
         [void]$entryLines.Add('## ' + $key)
-        [void]$entryLines.Add('- Purpose: TODO - describe what this secret is used for')
-        [void]$entryLines.Add('- Used by: (auto-detected from ' + $entry.Source + '; update if used elsewhere)')
+        [void]$entryLines.Add('- Purpose: TODO')
+        [void]$entryLines.Add('- Used by: (from ' + $entry.Source + '; review other consumers)')
         [void]$entryLines.Add('- Source: ' + $entry.SourcePath)
-        [void]$entryLines.Add('- Created: ' + [DateTime]::UtcNow.ToString('yyyy-MM-dd') + ' (auto-added by Secrets-Check)')
+        [void]$entryLines.Add('- Created: ' + [DateTime]::UtcNow.ToString('yyyy-MM-dd') + ' (Secrets-Check)')
         [void]$entryLines.Add('- Value: ' + $entry.Value)
     }
     $newContent = $secretsContent.TrimEnd() + "`n" + ($entryLines.ToArray() -join "`n") + "`n"
@@ -418,7 +418,7 @@ function Get-OutgoingCommits {
         if ($remoteSha -eq $allZero) {
             $revs = @(Invoke-QuietCommand -FilePath git -ArgumentList @('-C', $Cwd, 'rev-list', $localSha, '--not', '--remotes') | Where-Object { $_ })
             if ($LASTEXITCODE -ne 0) {
-                [void]$errors.Add('new ref ' + $localRef + ' - rev-list failed; outgoing commits UNKNOWN, not clean')
+                [void]$errors.Add('new ref ' + $localRef + ' rev-list failed; outgoing UNKNOWN')
                 continue
             }
         }
@@ -429,12 +429,12 @@ function Get-OutgoingCommits {
             $null = Invoke-QuietCommand -FilePath git -ArgumentList @('-C', $Cwd, 'rev-parse', '--verify', '--quiet', ($remoteSha + '^{commit}'))
             if ($LASTEXITCODE -ne 0) {
                 $shortRemote = if ($remoteSha.Length -gt 7) { $remoteSha.Substring(0, 7) } else { $remoteSha }
-                [void]$errors.Add('ref ' + $localRef + ' - remote commit ' + $shortRemote + ' unresolved locally; outgoing range unbounded, not clean')
+                [void]$errors.Add('ref ' + $localRef + ' - remote commit ' + $shortRemote + ' unresolved; outgoing UNKNOWN')
                 continue
             }
             $revs = @(Invoke-QuietCommand -FilePath git -ArgumentList @('-C', $Cwd, 'rev-list', ($remoteSha + '..' + $localSha)) | Where-Object { $_ })
             if ($LASTEXITCODE -ne 0) {
-                [void]$errors.Add('ref ' + $localRef + ' - rev-list failed; outgoing commits UNKNOWN, not clean')
+                [void]$errors.Add('ref ' + $localRef + ' rev-list failed; outgoing UNKNOWN')
                 continue
             }
         }
@@ -481,26 +481,26 @@ if ($inGitRepo) {
     if ($secretsExists) {
         $null = Invoke-QuietCommand -FilePath git -ArgumentList @('-C', $cwd, 'check-ignore', '-q', '--', 'secrets.md')
         if ($LASTEXITCODE -ne 0) {
-            [void]$critical.Add('secrets.md exists but is NOT covered by .gitignore.')
+            [void]$critical.Add('Registry unignored.')
         }
         $tracked = Invoke-QuietCommand -FilePath git -ArgumentList @('-C', $cwd, 'ls-files', '--', 'secrets.md')
         if ($LASTEXITCODE -eq 0 -and @($tracked | Where-Object { $_ }).Count -gt 0) {
-            [void]$critical.Add('secrets.md is TRACKED by git.')
+            [void]$critical.Add('Registry TRACKED.')
         }
         $staged = Invoke-QuietCommand -FilePath git -ArgumentList @('-C', $cwd, 'diff', '--cached', '--name-only', '--', 'secrets.md')
         if ($LASTEXITCODE -eq 0 -and @($staged | Where-Object { $_ }).Count -gt 0) {
-            [void]$critical.Add('secrets.md is STAGED for commit.')
+            [void]$critical.Add('Registry STAGED.')
         }
     }
     foreach ($file in $envFiles) {
         $relPath = $file.Name
         $tracked = Invoke-QuietCommand -FilePath git -ArgumentList @('-C', $cwd, 'ls-files', '--', $relPath)
         if ($LASTEXITCODE -eq 0 -and @($tracked | Where-Object { $_ }).Count -gt 0) {
-            [void]$critical.Add($relPath + ' (contains real secrets) is TRACKED by git.')
+            [void]$critical.Add($relPath + ' secrets TRACKED.')
         }
         $staged = Invoke-QuietCommand -FilePath git -ArgumentList @('-C', $cwd, 'diff', '--cached', '--name-only', '--', $relPath)
         if ($LASTEXITCODE -eq 0 -and @($staged | Where-Object { $_ }).Count -gt 0) {
-            [void]$critical.Add($relPath + ' (contains real secrets) is STAGED for commit.')
+            [void]$critical.Add($relPath + ' secrets STAGED.')
         }
     }
     $excludeNames = @('secrets.md') + @($envFiles | ForEach-Object { $_.Name.Replace('\', '/') })
@@ -543,7 +543,7 @@ if ($inGitRepo) {
         }
         foreach ($matchFile in @($matchPaths.ToArray() | Sort-Object -Unique)) {
             if ($excludeNames -contains ([string]$matchFile).Replace('\', '/')) { continue }
-            [void]$critical.Add('Value of ' + $key + ' appears in a git-tracked file: ' + $matchFile)
+            [void]$critical.Add('Value of ' + $key + ' tracked leak: ' + $matchFile)
         }
 
         # Outgoing-commit scan: the actual push-safety boundary. A value can
@@ -569,17 +569,17 @@ if ($inGitRepo) {
                 if (-not $seenOutgoingPaths.Add($hitPath)) { continue }    # dedupe by path across commits
                 $hitSha7 = $hitSha
                 if ($hitSha7.Length -gt 7) { $hitSha7 = $hitSha7.Substring(0, 7) }
-                [void]$critical.Add('Value of ' + $key + ' appears in outgoing commit ' + $hitSha7 + ': ' + $hitPath)
+                [void]$critical.Add('Value of ' + $key + ' outgoing leak: ' + $hitSha7 + ': ' + $hitPath)
             }
         }
     }
     # Fail closed: an outgoing range that could not be resolved, or a grep that
     # errored mid-scan, means "unknown", not "clean" - block the push.
     foreach ($resolveError in $outgoingResolveErrors) {
-        [void]$critical.Add('Outgoing history could not be fully scanned: ' + $resolveError + '.')
+        [void]$critical.Add('Outgoing coverage UNKNOWN: ' + $resolveError + '.')
     }
     if ($outgoingScanFailedClosed) {
-        [void]$critical.Add('Outgoing scan incomplete: git grep batch failed; push refused, not clean.')
+        [void]$critical.Add('Outgoing grep failed; push refused, UNKNOWN.')
     }
 }
 
@@ -674,16 +674,16 @@ if ($critical.Count -gt 0) {
     foreach ($item in $critical) { [void]$lines.Add('- ' + $item) }
 }
 if ($added.Count -gt 0) {
-    [void]$lines.Add('Auto-added ' + $added.Count + ' new secret(s) to secrets.md (fill in Purpose/Used by): ' + ($added.ToArray() -join ', '))
+    [void]$lines.Add('Added ' + $added.Count + ' registry keys (fill Purpose/Used by): ' + ($added.ToArray() -join ', '))
 }
 if ($missingUndocumented.Count -gt 0) {
-    [void]$lines.Add('Found in .env but NOT in secrets.md (AUTO_APPEND is off): ' + ($missingUndocumented.ToArray() -join ', '))
+    [void]$lines.Add('.env missing registry (AUTO_APPEND off): ' + ($missingUndocumented.ToArray() -join ', '))
 }
 if ($placeholders.Count -gt 0) {
-    [void]$lines.Add('Value looks like an empty placeholder: ' + ($placeholders.ToArray() -join ', '))
+    [void]$lines.Add('Empty placeholder: ' + ($placeholders.ToArray() -join ', '))
 }
 if ($unused.Count -gt 0) {
-    [void]$lines.Add('Registry-only, no tracked reference; verify removal, never auto-remove: ' + ($unused.ToArray() -join ', '))
+    [void]$lines.Add('Registry-only, user decision: ' + ($unused.ToArray() -join ', '))
 }
 if ($needsClassification.Count -gt 0) {
     # NAME THE FILE. "in .env" sent operators to the PROJECT's .env - the file
@@ -691,12 +691,12 @@ if ($needsClassification.Count -gt 0) {
     # with nothing to tell them why. The config .env is this hook's own, beside
     # the installed script; it is inside the client config directory, which the
     # scan excludes, so it can never be mistaken for scanned input.
-    [void]$lines.Add('UNKNOWN Secret/PublicConfig (unregistered, not leak/no standalone block): ' + ($needsClassification.ToArray() -join ', ') + '. Set SECRET_KEYS/PUBLIC_CONFIG_KEYS in THIS HOOK''S OWN .env: ' + (Join-Path $PSScriptRoot '.env') + ', NOT project .env. Create if absent; preserved on install/update.')
+    [void]$lines.Add('UNKNOWN, unregistered/advisory: ' + ($needsClassification.ToArray() -join ', ') + '. SECRET_KEYS/PUBLIC_CONFIG_KEYS in hook .env: ' + (Join-Path $PSScriptRoot '.env') + ', not project .env; create, update preserves.')
 }
 if ($removedPublicConfigKeys.Count -gt 0) {
-    [void]$lines.Add('Removed ' + $removedPublicConfigKeys.Count + ' previously auto-added secrets.md entr' + $(if ($removedPublicConfigKeys.Count -eq 1) { 'y' } else { 'ies' }) + ' now classified as public config, not a secret: ' + ($removedPublicConfigKeys -join ', ') + '.')
+    [void]$lines.Add('Removed ' + $removedPublicConfigKeys.Count + ' generated registry entr' + $(if ($removedPublicConfigKeys.Count -eq 1) { 'y' } else { 'ies' }) + ' classified public: ' + ($removedPublicConfigKeys -join ', ') + '.')
 }
-[void]$lines.Add('Never print/log/commit/upload values; rotate suspected exposure; review removals. BEFORE signing custody: global-project-lifecycle-rules.md FULL; no forced export.')
+[void]$lines.Add('No value output/Git; rotate leaks, user removal.')
 $message = $lines.ToArray() -join "`n"
 
 if ($GitPrePush) {
@@ -714,7 +714,13 @@ $hasBlockingFindings = ($critical.Count -gt 0)
 if ($isStopEvent -and $hasBlockingFindings) {
     # Record the block so THIS hook's own re-entry is recognised; another
     # gate's block must not mute it, and its own must not repeat.
-    $emit = Write-StopBlockResult -HookInput $hookInput -HookName 'Secrets-Check' -EventName $eventName -Reason $message
+    # R035: additive registry maintenance changes wording, not the underlying
+    # leak. Bind safety admission to exact critical findings so auto-append
+    # cannot refund the same secret's once-per-session refusal.
+    # Hash known secret identities/values locally; never persist or display values.
+    $identityParts=@($critical.ToArray()|Sort-Object)+@($discovered.Keys|Sort-Object|ForEach-Object{[string]$_+'|'+(Get-ShortHash ([string]$discovered[$_].Value))})
+    $safetyFingerprint=Get-ShortHash ($identityParts-join '|')
+    $emit = Write-StopBlockResult -HookInput $hookInput -HookName 'Secrets-Check' -EventName $eventName -Reason $message -Condition 'secret-exposure' -FindingFingerprint $safetyFingerprint
     exit $emit.ExitCode
 }
 if ($isStopEvent) {

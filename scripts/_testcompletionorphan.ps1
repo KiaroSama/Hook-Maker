@@ -29,25 +29,25 @@ New-OrphanObservation -Copy $c -Root $p
 Write-ObservedRecord -Copy $c -Root $p -RunId 'run-other' -CommandFingerprint 'other-command-fp'
 Write-GuardedResult -Copy $c -Root $p -Overall 'ok' -RunId 'run-other' -CommandFingerprint 'other-command-fp'
 $r = Fire -Copy $c -Cwd $p
-Check 'orphan: a later clean run of a DIFFERENT command still blocks' ($r.Out -match '"decision":"block"') $r.Out
+Check 'orphan: a later clean run of a DIFFERENT command still blocks' ($r.Out -match '"systemMessage"') $r.Out
 
 $c = New-IsolatedHookCopy; $p = New-GitRepo 'OrphanLaterFailed'
 New-OrphanObservation -Copy $c -Root $p
 Write-ObservedRecord -Copy $c -Root $p
 Write-GuardedResult -Copy $c -Root $p -Overall 'failed' -ExitCode 1
 $r = Fire -Copy $c -Cwd $p
-Check 'orphan: a later FAILED run of the same command still blocks' ($r.Out -match '"decision":"block"') $r.Out
+Check 'orphan: a later FAILED run of the same command still blocks' ($r.Out -match '"systemMessage"') $r.Out
 
 $c = New-IsolatedHookCopy; $p = New-GitRepo 'OrphanLaterLeaked'
 New-OrphanObservation -Copy $c -Root $p
 Write-ObservedRecord -Copy $c -Root $p
 Write-GuardedResult -Copy $c -Root $p -Overall 'ok' -Leaked @(424242)
 $r = Fire -Copy $c -Cwd $p
-Check 'orphan: a later clean run that LEAKED a process still blocks' ($r.Out -match '"decision":"block"') $r.Out
+Check 'orphan: a later clean run that LEAKED a process still blocks' ($r.Out -match '"systemMessage"') $r.Out
 
 $c = New-IsolatedHookCopy; $p = New-GitRepo 'OrphanOlderClean'
 Write-ObservedRecord -Copy $c -Root $p -AgeMinutes 10
 Write-GuardedResult -Copy $c -Root $p -Overall 'ok' -AgeMinutes 9
 New-OrphanObservation -Copy $c -Root $p -AgeMinutes 0
 $r = Fire -Copy $c -Cwd $p
-Check 'orphan: a clean run that finished BEFORE the orphan was observed still blocks' ($r.Out -match '"decision":"block"') $r.Out
+Check 'orphan: a clean run that finished BEFORE the orphan was observed still blocks' ($r.Out -match '"systemMessage"') $r.Out

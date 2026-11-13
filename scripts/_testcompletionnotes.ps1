@@ -20,7 +20,7 @@
             }) | ConvertTo-Json -Depth 8)
     $r = Fire -Copy $c -Cwd $p
     Check 'migration: a legacy single-value pendingNoteKey is still enforced as an owed note' (
-        $r.Out -match '"decision":"block"' -and (Get-BlockReason $r.Out) -match 'a legacy migrated incident') $r.Out
+        $r.Out -match '"systemMessage"' -and (Get-BlockReason $r.Out) -match 'a legacy migrated incident') $r.Out
     $st = Get-CompletionStateDoc -Copy $c -Root $p
     Check 'migration: the state is rewritten in the new collection shape (pendingNotes, no old scalar)' (
         (Get-PendingCount $st) -eq 1 -and $null -ne $st.PSObject.Properties['pendingNotes'] -and $null -eq $st.PSObject.Properties['pendingNoteKey']) $r.Out
@@ -51,12 +51,12 @@
     $p = New-GitRepo 'Note'
     Write-GuardedResult -Copy $c -Root $p -Overall 'terminated' -ExitCode 124 -TerminateReason 'idleTimeout' -TerminateDetail 'produced no output or state change for 300s'
     $r = Fire -Copy $c -Cwd $p
-    Check 'the incident blocks first and registers the owed note' ($r.Out -match '"decision":"block"') $r.Out
+    Check 'the incident blocks first and registers the owed note' ($r.Out -match '"systemMessage"') $r.Out
     # The run itself is now fixed: a fresh clean result replaces the incident.
     Write-GuardedResult -Copy $c -Root $p -Overall 'ok'
     $r = Fire -Copy $c -Cwd $p
     $reason = Get-BlockReason $r.Out
-    Check 'a clean re-run does NOT clear the owed note - it still blocks' ($r.Out -match '"decision":"block"') $r.Out
+    Check 'a clean re-run does NOT clear the owed note - it still blocks' ($r.Out -match '"systemMessage"') $r.Out
     Check 'the outstanding item is identified as the durable .ai/ note' (
         $reason -match '\.ai/ note owed' -and $reason -match 'idleTimeout') $reason
     Check 'the note requirement names the four candidate files' (
@@ -90,7 +90,7 @@
     $r = Fire -Copy $c -Cwd $p
     Check 'cleanup installed but not yet recorded -> defers silently on this event' ($r.Exit -eq 0 -and $r.Out -eq '') $r.Out
     $r = Fire -Copy $c -Cwd $p
-    Check 'the NEXT event evaluates normally - the deferral never loops forever' ($r.Out -match '"decision":"block"') $r.Out
+    Check 'the NEXT event evaluates normally - the deferral never loops forever' ($r.Out -match '"systemMessage"') $r.Out
 
     $c = New-IsolatedHookCopy @{ TEST_COMPLETION_COORDINATION_WAIT_SECONDS = '0' }
     $p = New-GitRepo 'RaceResolved'
@@ -98,12 +98,12 @@
     Write-CleanupResult -Copy $c -Root $p -Category 'clean'
     Write-GuardedResult -Copy $c -Root $p -Overall 'terminated' -ExitCode 124 -TerminateReason 'wallTimeout' -TerminateDetail 'exceeded the 1800s wall ceiling'
     $r = Fire -Copy $c -Cwd $p
-    Check 'cleanup already recorded for the current state -> no deferral, evaluates at once' ($r.Out -match '"decision":"block"') $r.Out
+    Check 'cleanup already recorded for the current state -> no deferral, evaluates at once' ($r.Out -match '"systemMessage"') $r.Out
 
     $c = New-IsolatedHookCopy @{ TEST_COMPLETION_COORDINATION_WAIT_SECONDS = '0' }
     $p = New-GitRepo 'RaceNotInstalled'
     Write-CleanupResult -Copy $c -Root $p -Category 'clean' -Fingerprint 'stale-other-state'
     Write-GuardedResult -Copy $c -Root $p -Overall 'terminated' -ExitCode 124 -TerminateReason 'wallTimeout' -TerminateDetail 'x'
     $r = Fire -Copy $c -Cwd $p
-    Check 'cleanup NOT installed -> its state is irrelevant, no deferral at all' ($r.Out -match '"decision":"block"') $r.Out
+    Check 'cleanup NOT installed -> its state is irrelevant, no deferral at all' ($r.Out -match '"systemMessage"') $r.Out
 

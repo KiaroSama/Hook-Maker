@@ -28,18 +28,18 @@ function Get-UnresolvedObservationLines {
         $field = if (-not $Fresh) { 'recordedUtc:STALE' } else { 'overall:' + [string](Get-Field $Result 'overall') }
     }
     $lines = New-Object 'System.Collections.Generic.List[string]'
-    if ($null -eq $Result) { [void]$lines.Add('TEST COMPLETION CHECK: exact observation lacks guarded result.') }
-    if ($field -eq 'recordedUtc:STALE') { [void]$lines.Add('TEST COMPLETION CHECK: STALE >' + $script:evidenceMinutes + 'min, not current proof.') }
+    if ($null -eq $Result) { [void]$lines.Add('exact observation lacks guarded result.') }
+    if ($field -eq 'recordedUtc:STALE') { [void]$lines.Add('STALE >' + $script:evidenceMinutes + 'min, not current proof.') }
     if ((Get-Field $Observed 'guarded') -eq $false) { [void]$lines.Add('UNGUARDED: no owner/bound.') }
-    [void]$lines.Add('TEST COMPLETION CHECK: UNRESOLVED; runId=' + [string](Get-Field $Observed 'runId') + '; commandFingerprint=' + [string](Get-Field $Observed 'commandFingerprint') + '; observedUtc=' + $( $at = ConvertTo-UtcTime (Get-Field $Observed 'observedUtc'); if ($null -ne $at) { $at.ToString('o') } else { '<invalid or missing>' }) + '; failedField=' + $field + '.')
+    [void]$lines.Add('UNRESOLVED; runId=' + [string](Get-Field $Observed 'runId') + '; commandFingerprint=' + [string](Get-Field $Observed 'commandFingerprint') + '; observedUtc=' + $( $at = ConvertTo-UtcTime (Get-Field $Observed 'observedUtc'); if ($null -ne $at) { $at.ToString('o') } else { '<invalid or missing>' }) + '; failedField=' + $field + '.')
     [void]$lines.Add('Missing/different run/argv/state!=pass; prove scope.')
     [void]$lines.Add('Repository=' + $State.State + '; path-only projectKey=' + $State.ProjectKey + '; candidate runId=' + [string](Get-Field $Result 'runId') + '; overall=' + [string](Get-Field $Result 'overall') + '.')
     if ($State.State -eq 'available' -and $null -ne $Observed -and (Get-ObservedFingerprint $Observed) -eq $State.RepositoryStateFingerprint) { [void]$lines.Add('CURRENT needs same scope.') }
     if ($State.State -eq 'unavailable') {
         [void]$lines.Add('Access=' + [string]$State.Diagnosis + '; physical-root owner consent required, selection != consent.')
-        [void]$lines.Add('Authorized Git read/exact fingerprint only; no trust/ACL/owner edits. Retain failures; unrelated green!=identity.')
+        [void]$lines.Add('Exact authorized Git read only; preserve failures, no trust/ACL/owner edits; unrelated green!=identity.')
     }
-    [void]$lines.Add('Recovery: later clean independently paired SAME COMPLETE argv; fresh mutation consent. Never fill identity/delete originals; UNKNOWN/SUPERSEDED!=SUCCESS.')
-    [void]$lines.Add('Read-only audit (UNKNOWN blocks): pwsh -NoProfile -File "' + $HookPath + '" -AuditEvidence -ProjectRoot "' + $ProjectRoot + '" -AuditPath "<new local JSON>".')
+    [void]$lines.Add('Recovery: later clean paired SAME COMPLETE argv + consent; no backfill/delete, UNKNOWN/SUPERSEDED!=SUCCESS.')
+    [void]$lines.Add('Read-only UNKNOWN audit: pwsh -NoProfile -File "' + $HookPath + '" -AuditEvidence -ProjectRoot "' + $ProjectRoot + '" -AuditPath "<new local JSON>".')
     return $lines.ToArray()
 }

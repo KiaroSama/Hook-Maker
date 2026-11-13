@@ -172,7 +172,7 @@ TMP = __TEMP__
     # Marker/cache/private ancestor recovery detail is indirect in the FULL owner.
     Check 'recovery requires full Windows owner before action and keeps approval/denial boundaries' (
         $message -match 'Absent approval' -and $message -match 'BEFORE recovery global-mcp-windows-cmm.md FULL' -and
-        $message -match 'Shell denial!=MCP failure' -and $message -match 'no wider grants/path bypass/security weakening')
+        $message -match 'Shell refusal != MCP outage' -and $message -match 'no wider grants/path bypass/security weakening')
     Check 'watcher freshness is unverified until index status is checked' (
         $message -match 'watcher freshness UNVERIFIED, check index_status')
     Check 'guidance contains no unconditional restart or STOP claim' (

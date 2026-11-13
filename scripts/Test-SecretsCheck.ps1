@@ -28,6 +28,8 @@ $script:Pass = 0
 $script:Fail = 0
 $script:TestPreviewLength = 400
 . (Join-Path $PSScriptRoot '_testlib.ps1')
+. (Join-Path $PSScriptRoot '_testfindingpolicy.ps1')
+Invoke-FindingPolicyRegression -Root (Split-Path -Parent $PSScriptRoot) -HookName 'Secrets-Check'
 
 $Work = New-TestWorkspace -Prefix 'hookmaker-secretstest'
 $FakeAppData = Join-Path $Work 'appdata'
@@ -395,7 +397,9 @@ try {
     $parsed = $null
     try { $parsed = $r.Out | ConvertFrom-Json } catch { }
     Check 'Stop with a CRITICAL finding returns decision:block' ($null -ne $parsed -and [string]$parsed.decision -eq 'block') $r.Out
-    Check 'critical block reason names the problem, never a secret value' ($null -ne $parsed -and [string]$parsed.reason -like '*NOT covered by .gitignore*' -and [string]$parsed.reason -notlike '*realsecretvalue1234567890*') $r.Out
+    Check 'critical block reason names unignored registry, never a secret value' ($null -ne $parsed -and [string]$parsed.reason -like '*Registry unignored*' -and [string]$parsed.reason -notlike '*realsecretvalue1234567890*') $r.Out
+    $repeat=Fire -Cwd $proj8 -EventName Stop
+    Check '035 unchanged secret critical fixture blocks once, then is silent' ($repeat.Exit-eq0-and$repeat.Out-eq''-and$repeat.Err-eq'') ($repeat.Out+$repeat.Err)
 
     Write-Host '--- Stop event: Unknown-only findings never block (advisory only) ---' -ForegroundColor Cyan
     $projUnknownStop = New-GitProj 'UnknownStopNonBlocking'

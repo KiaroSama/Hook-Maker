@@ -91,7 +91,7 @@ function Get-IntSetting {
     if ($raw -eq '') { return $Default }
     $parsed = 0
     if (-not [int]::TryParse($raw, [ref]$parsed) -or $parsed -lt $Minimum -or $parsed -gt $Maximum) {
-        [void]$script:ConfigIssues.Add($Key + ' must be a whole number between ' + $Minimum + ' and ' + $Maximum + ' - using the default ' + $Default)
+        [void]$script:ConfigIssues.Add($Key + ' integer ' + $Minimum + ' and ' + $Maximum + '; default=' + $Default)
         return $Default
     }
     return $parsed
@@ -104,7 +104,7 @@ function Get-BoolSetting {
     if ($raw -eq '') { return $Default }
     if ($raw -in @('1', 'true', 'yes', 'on')) { return $true }
     if ($raw -in @('0', 'false', 'no', 'off')) { return $false }
-    [void]$script:ConfigIssues.Add($Key + ' must be 0 or 1 - using the default ' + $(if ($Default) { '1' } else { '0' }))
+    [void]$script:ConfigIssues.Add($Key + ' 0/1; default=' + $(if ($Default) { '1' } else { '0' }))
     return $Default
 }
 
@@ -236,8 +236,8 @@ function Get-PerRunStateEntries {
 # clients' bytes exactly, including the second top-level systemMessage key and
 # Codex's exit 2.
 function Write-Deny {
-    param([string]$Message)
-    $langInput = Get-Variable -Name hookInput -Scope Script -ValueOnly -ErrorAction SilentlyContinue; if ($null -ne $langInput -and (Get-Command Get-ReplyLanguageLine -ErrorAction SilentlyContinue)) { $Message += (Get-ReplyLanguageLine -HookInput $langInput -Prefix "`n") }; exit (Write-HookResult -EventName 'PreToolUse' -Kind 'deny' -Reason $Message).ExitCode
+    param([string]$Message,[string]$Condition='advisory')
+    $langInput = Get-Variable -Name hookInput -Scope Script -ValueOnly -ErrorAction SilentlyContinue; if ($null -ne $langInput -and (Get-Command Get-ReplyLanguageLine -ErrorAction SilentlyContinue)) { $Message += (Get-ReplyLanguageLine -HookInput $langInput -Prefix "`n") }; exit (Write-HookResult -EventName 'PreToolUse' -Kind 'deny' -Reason $Message -Condition $Condition).ExitCode
 }
 
 function Write-Advisory {
@@ -328,7 +328,7 @@ $configStatePath = Join-Path $stateDirectory ('TestRunGuard-config-' + $projectK
 # a typo in .env must not stop the agent from running anything.
 $configNote = ''
 if ($script:ConfigIssues.Count -gt 0) {
-    $issues = 'TEST-RUN-GUARD CONFIG: ' + (@($script:ConfigIssues.ToArray()) -join '; ') + '.'
+    $issues = 'Guard config: ' + (@($script:ConfigIssues.ToArray()) -join '; ') + '.'
     if (Test-ShouldReport -StatePath $configStatePath -Fingerprint (Get-ShortHash $issues)) { $configNote = ' ' + $issues }
 }
 
@@ -344,12 +344,12 @@ if ($eventName -eq 'PreToolUse') {
     # TEST_GUARD_ADVISORY_ONLY. Both emitters exit; nothing here re-parses a shell.
     $blindWait = Get-BlindWaitFinding -Tokens $tokens -MaxBlindSleepSeconds $maxBlindSleepSeconds
     if ($null -ne $blindWait) {
-        $blindMsg = 'TEST RUN GUARD: ' + $blindWait.Reason + '. ' + $blindWait.SafePattern + $configNote
+        $blindMsg = '' + $blindWait.Reason + '. ' + $blindWait.SafePattern + $configNote
         if ($advisoryOnly) { Write-Advisory -EventName 'PreToolUse' -Message ('ADVISORY ONLY (TEST_GUARD_ADVISORY_ONLY=1) - ' + $blindMsg) }
         Write-Deny -Message $blindMsg
     }
     $runnerStop = if (Get-Command -Name 'Get-RunnerStopFinding' -ErrorAction SilentlyContinue) { Get-RunnerStopFinding -Tokens $tokens -ProjectRoot $projectRoot } else { $null }
-    if ($null -ne $runnerStop) { if ($runnerStop.Deny -and -not $advisoryOnly) { Write-Deny -Message ($runnerStop.Message + $configNote) }; Write-Advisory -EventName 'PreToolUse' -Message ($runnerStop.Message + $configNote) }
+    if ($null -ne $runnerStop) { if ($runnerStop.Deny -and -not $advisoryOnly) { Write-Deny -Message ($runnerStop.Message + $configNote) -Condition 'data-loss' }; Write-Advisory -EventName 'PreToolUse' -Message ($runnerStop.Message + $configNote) }
 
     # SILENT EXECUTION. Only a RECOGNISED test command is this hook's business,
     # and only an unmistakably visible form is refused - an ambiguous one emits
@@ -370,7 +370,7 @@ if ($eventName -eq 'PreToolUse') {
             $launchesTest = ($null -ne (Get-RecognizedTestCommand -Tokens @($visible.InnerTokens) -ExtraFragments $extraFragments))
         }
         if ($null -ne $visible -and $launchesTest) {
-            $visibleMsg = 'TEST RUN GUARD: ' + $visible.Reason + '. All task processes hidden. ' + $visible.SafeForm + $configNote
+            $visibleMsg = '' + $visible.Reason + '. All task processes hidden. ' + $visible.SafeForm + $configNote
             if ($advisoryOnly) { Write-Advisory -EventName 'PreToolUse' -Message ('ADVISORY ONLY (TEST_GUARD_ADVISORY_ONLY=1) - ' + $visibleMsg) }
             Write-Deny -Message $visibleMsg
         }
@@ -379,7 +379,7 @@ if ($eventName -eq 'PreToolUse') {
     if ($verdict.Kind -eq 'none') { if ($configNote -ne '') { Write-Advisory -EventName 'PreToolUse' -Message $configNote.Trim() }; exit 0 }
     $repositoryState = Get-RepositoryStateEvidence -ProjectRoot $projectRoot
     if ($repositoryState.State -eq 'unavailable') {
-        $message = 'TEST RUN GUARD: repository unavailable; diagnosis=' + $repositoryState.Diagnosis + '; path-only ProjectKey=' + $projectKey + '. Restore authorized exact-root read, retry unchanged literal fingerprint. No run/observation/input edits/identity guess/global trust/ACL/ownership changes.'
+        $message = 'Test-Run-Guard: repository UNKNOWN; diagnosis=' + $repositoryState.Diagnosis + '; path-only ProjectKey=' + $projectKey + '. Authorized exact-root read/retry; no observation/input/identity/trust/ACL/owner edits.'
         if ($advisoryOnly) { Write-Advisory -EventName PreToolUse -Message $message }
         Write-Deny -Message $message
     }
@@ -425,9 +425,11 @@ if ($eventName -eq 'PreToolUse') {
     $runnerPath = Find-GuardedRunner -ProjectRoot $projectRoot
     if ($runnerPath -eq '') {
         Write-Advisory -EventName 'PreToolUse' -Message (
-            'TEST RUN GUARD: test (' + $verdict.Command.Label +
-            '); scripts\Run-Tests-Guarded.ps1 missing from ' +
-            $projectRoot + '; no exact replacement. Require bounded wall/idle + owned-tree cleanup; otherwise completion UNPROVEN.' + $configNote)
+            'test (' + $verdict.Command.Label +
+            ') unbounded; scripts\Run-Tests-Guarded.ps1 absent from ' +
+            $projectRoot + ', exact replacement UNKNOWN; use owner with wall+' +
+            'timeout, an idle/no-progress timeout and process-tree cleanup, or the run cannot be proven to have ' +
+            'finished.' + $configNote)
     }
 
     $replacement = New-GuardedInvocation -RunnerPath $runnerPath -FilePath $verdict.Command.FilePath `
@@ -447,13 +449,18 @@ if ($eventName -eq 'PreToolUse') {
     $workerNote = ''
     if ($maxWorkers -gt 0) {
         $workerNote = ' Worker cap=' + $maxWorkers +
-        ' via HOOKMAKER_MAX_TEST_WORKERS; unsupported framework: own flag <=' + $maxWorkers + '.'
+        ' (exported as HOOKMAKER_MAX_TEST_WORKERS). For a framework that ignores that variable, pass its own' +
+        ' worker flag at or below ' + $maxWorkers + '.'
     }
 
     # E-04: one concise line naming the deep-debug/test-policy requirements the
     # replacement already enforces, so the model can verify instead of re-derive.
     # Guidance only - the command guard above is unchanged.
-    $ddNote = ' BEFORE runs: global-test-rules.md FULL. Guard owns lifetime; no background wrapper.'
+    $ddNote = ' CI first: exact pushed-SHA result; local guarded light seam or live-gh-proven CI block only.' +
+    ' Deep-debug bounds: owner/wall+idle' +
+    ', shared workers/tree cleanup/real exit, no blind sleeps.' +
+    ' Add documented native timeout only.' +
+    ' Optimized final CI after edits, run-itself/user exception; global-test-rules.md FULL, no detached owner.'
 
     # E-04: maintained-textual-output advisory. Fires ONLY when the raw command
     # VISIBLY writes output to a file (a standalone top-level '>'/'>>' token with
@@ -473,16 +480,12 @@ if ($eventName -eq 'PreToolUse') {
         }
         elseif ($tokLower -in @('out-file', 'set-content', 'tee-object', 'tee')) { $isFileRedirect = $true }
         if ($isFileRedirect) {
-            $utf8Note = ' Text: UTF-8 (Out-File/Set-Content -Encoding utf8;' +
-            ' Python PYTHONUTF8=1/PYTHONIOENCODING=utf-8).' +
-            ' Documented flags only; Utf8-Encoding-Check validates.'
+            $utf8Note = ' Text UTF-8: documented -Encoding utf8/PYTHONUTF8=1/PYTHONIOENCODING=utf-8; Utf8-Encoding-Check validates.'
             break
         }
     }
 
-    $message = 'TEST RUN GUARD: "' + $verdict.Command.Label + '" unbounded; wall/idle/tree cleanup UNVERIFIED. ' +
-    'Use (argv=data, no shell reparse):' + "`n`n" + $replacement + "`n`n" +
-    'Real exit (termination124); PostToolUse reads receipt -ResultPath.' + $workerNote + $ddNote + $utf8Note + $configNote
+    $message = 'Test-Run-Guard: advisory, ' + $verdict.Command.Label + ' lacks wall/idle/tree ownership; cleanup/outcome UNVERIFIED. Data-only guarded form: ' + $replacement + '; real exit (124=termination), -ResultPath read at PostToolUse.' + $workerNote + $ddNote + $utf8Note + $configNote
 
     if ($advisoryOnly) {
         # TEST_GUARD_ADVISORY_ONLY=1: the finding still goes out, the command
@@ -575,7 +578,7 @@ if ($isStale -and $null -eq $result) {
     $activeEntries = Get-PerRunStateEntries -StateDirectory $stateDirectory -Kind 'active' -ProjectKey $projectKey
     $stillRunning = Get-DeferringActiveRun -ActiveEntries $activeEntries -RunId $thisRunId -CommandFingerprint $thisCommandFp -StateFingerprint $stateFingerprint -Observed $observed
     if ($null -ne $stillRunning) {
-        $deferMessage = 'TEST RUN GUARD: STILL EXECUTING; verified live owner PID=' + [string](Get-Field $stillRunning 'ownerPid') +
+        $deferMessage = 'STILL EXECUTING; verified live owner PID=' + [string](Get-Field $stillRunning 'ownerPid') +
         '; receipt pending, no outcome evidence. ' +
         'Await exit/read receipt before outcome claim.' + $configNote
         if (Test-ShouldReport -StatePath $reportStatePath -Fingerprint (Get-ShortHash ('active|' + [string](Get-Field $stillRunning 'runId')))) {
@@ -587,12 +590,13 @@ if ($isStale -and $null -eq $result) {
 
 if ($isStale) {
     # NEVER claims the run was fine. It says exactly what is missing.
-    $reason = if ($identityUnresolved) { 'executable/argv literals unrecoverable; unrelated result != run identity' }
-    elseif ($null -eq $result) { 'no guarded result document exists for it' }
-    elseif (-not $identityMatches) { 'receipt belongs to DIFFERENT run/command/state, not this observation; outcome unproved' }
+    $reason = if ($identityUnresolved) { 'argv/executable UNKNOWN; unrelated receipt!=identity' }
+    elseif ($null -eq $result) { 'guarded receipt absent' }
+    elseif (-not $identityMatches) { 'receipt run/command/state differs; outcome UNPROVEN' }
     else { 'the guarded result document is stale (last written ' + [Math]::Round($resultAgeMinutes) + ' minutes ago)' }
-    $message = 'TEST RUN GUARD: a test command ran, but ' + $reason + '. Outcome UNPROVEN, no pass claim. ' +
-    'scripts\Run-Tests-Guarded.ps1: guard supplies exact bounded argv/per-run -ResultPath.' + $configNote
+    $message = 'Test-Run-Guard: ran, but ' + $reason + '. Outcome UNPROVEN, no pass claim. ' +
+    'ended, not PASS. scripts\Run-Tests-Guarded.ps1 rerun (Test-Run-Guard ' +
+    'Guard supplies exact argv/per-run -ResultPath: scripts\Run-Tests-Guarded.ps1.' + $configNote
     if (Test-ShouldReport -StatePath $reportStatePath -Fingerprint (Get-ShortHash ('stale|' + $verdict.Kind + '|' + [string]$identityUnresolved + '|' + [string]$identityMatches + '|' + [Math]::Round($resultAgeMinutes / 10)))) {
         Write-Advisory -EventName 'PostToolUse' -Message $message
     }
@@ -614,21 +618,21 @@ $findings = New-Object System.Collections.Generic.List[string]
 
 if ($overall -eq 'terminated') {
     $detail = if ($terminateDetail -ne '') { $terminateDetail } else { 'no detail recorded' }
-    [void]$findings.Add('Guarded run TERMINATED after ' + $elapsed + 's; reason: ' +
+    [void]$findings.Add('TERMINATED after ' + $elapsed + 's; reason: ' +
         $(if ($terminateReason -ne '') { $terminateReason } else { 'unknown' }) + ' (' + $detail + '). ' +
         'Suite unfinished; termination != test assertion failure.')
     # The single most useful field when asking "where was it when it died".
-    if ($lastProgress -ne '') { [void]$findings.Add('Last progress before termination: ' + $lastProgress) }
-    else { [void]$findings.Add('No captured progress; possible pre-test hang.') }
+    if ($lastProgress -ne '') { [void]$findings.Add('Last progress: ' + $lastProgress) }
+    else { [void]$findings.Add('No progress, possible pre-test hang.') }
 }
 elseif ($null -ne $exitCode -and [int]$exitCode -ne 0) {
-    [void]$findings.Add('Run exit code ' + [int]$exitCode + '; ' + $elapsed + 's; did NOT pass.')
-    if ($lastProgress -ne '') { [void]$findings.Add('Last recorded output: ' + $lastProgress) }
+    [void]$findings.Add('Exit=' + [int]$exitCode + '; ' + $elapsed + 's; did NOT pass.')
+    if ($lastProgress -ne '') { [void]$findings.Add('Last output: ' + $lastProgress) }
 }
 
 if (@($leaked).Count -gt 0) {
     [void]$findings.Add('PROCESS LEAK: ' + (@($leaked) -join ', ') + ' survived tree termination. ' +
-        'Verify/reap before continuation; ports/locks/temp may remain.')
+        'Verify/reap; ports/locks/temp may remain.')
 }
 
 if ($findings.Count -eq 0) { exit 0 }    # clean run - stay silent
@@ -639,7 +643,7 @@ if ($null -ne $peakTree -and [int]$peakTree -gt 0) { $context += ('peak process 
 $contextLine = ''
 if ($context.Count -gt 0) { $contextLine = ' Resource use: ' + ($context -join ', ') + '.' }
 
-$message = 'TEST RUN GUARD (guarded run result): ' + (@($findings.ToArray()) -join ' ') + $contextLine + $configNote
+$message = 'Guard result: ' + (@($findings.ToArray()) -join ' ') + $contextLine + $configNote
 
 # Bound to THIS run: a new run (new startedUtc) or a changed outcome reports
 # again; the same unchanged result never does.

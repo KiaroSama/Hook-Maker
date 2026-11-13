@@ -196,7 +196,7 @@ try {
     Write-Host '--- Workers project, ready state: deployment-worthiness decision reminder ---' -ForegroundColor Cyan
     $cf = New-ReadyWorkersRepo 'CfProj'
     $r = Fire -Cwd $cf
-    Check 'a ready Workers project receives a Stop reminder' ($r.Out -match '"decision":"block"' -and $r.Out -match 'CLOUDFLARE DEPLOY CHECK') $r.Out
+    Check 'a ready Workers project receives a Stop reminder' ($r.Out -match '"systemMessage"' -and $r.Out -match 'CLOUDFLARE DEPLOY CHECK') $r.Out
     Check 'the message explicitly says deployment is not automatic' ($r.Out -match 'Config != deploy') $r.Out
     Check 'partial/experimental/docs-only work is explicitly allowed to finish without deploying' (
         $r.Out -match 'Partial/docs/experiment/unknown SHA: explain, NO deploy') $r.Out
@@ -211,7 +211,7 @@ try {
     Check 'post-deploy real verification or reviewed no-ship is required' (
         $r.Out -match 'exact-SHA deployment\+real postchecks or reviewed no-ship' -and $r.Out -match 'Missing=UNVERIFIED') $r.Out
     Check 'command success alone is not described as live proof' ($r.Out -match 'Exit0!=live proof') $r.Out
-    Check 'redeploy-on-failure is not blind/repeated' ($r.Out -match 'confirmed failures: fix/safe retry') $r.Out
+    Check 'redeploy-on-failure is not blind/repeated' ($r.Out -match 'failure: inspect confirmed cause') $r.Out
     Check 'the deploy command itself is still suggested' ($r.Out -match 'npx wrangler deploy') $r.Out
 
     # =====================================================================

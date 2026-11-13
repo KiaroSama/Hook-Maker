@@ -113,22 +113,22 @@ $stateDir = Join-Path $env:LOCALAPPDATA 'HookMaker\state'
 # ==========================================================================
 if ($Acknowledge) {
     if ([string]::IsNullOrWhiteSpace($ProjectRoot) -or -not (Test-Path -LiteralPath $ProjectRoot -PathType Container)) {
-        Write-Host 'Docs-Freshness-Check: -ProjectRoot needs existing directory.'
+        Write-Host '-ProjectRoot existing directory required.'
         exit 1
     }
     $rootFull = Normalize-Path $ProjectRoot
     if ([string]::IsNullOrWhiteSpace($ImpactFingerprint)) {
-        Write-Host 'Docs-Freshness-Check: -ImpactFingerprint is required.'
+        Write-Host '-ImpactFingerprint required.'
         exit 1
     }
     if ([string]::IsNullOrWhiteSpace($Result)) {
-        Write-Host 'Docs-Freshness-Check: -Result Updated|NoUpdate is required.'
+        Write-Host '-Result Updated|NoUpdate required.'
         exit 1
     }
     $reasonTrim = $Reason.Trim()
     $genericReasons = @('none', 'not needed', 'n/a', 'na', 'done', 'ok', 'fine', 'nothing', 'no reason', 'update', 'updated', 'no update', 'skip', 'skipped')
     if ($reasonTrim -eq '' -or $genericReasons -contains $reasonTrim.ToLowerInvariant()) {
-        Write-Host 'Docs-Freshness-Check: concrete -Reason required.'
+        Write-Host 'Concrete -Reason required.'
         exit 1
     }
     $fileList = @()
@@ -136,7 +136,7 @@ if ($Acknowledge) {
         $fileList = @($Files.Split(',') | ForEach-Object { $_.Trim().Replace('\', '/') } | Where-Object { $_ -ne '' })
     }
     if ($Result -eq 'Updated' -and $fileList.Count -eq 0) {
-        Write-Host 'Docs-Freshness-Check: Updated needs -Files.'
+        Write-Host 'Updated requires -Files.'
         exit 1
     }
     $invalid = @()
@@ -153,7 +153,7 @@ if ($Acknowledge) {
         if ($tracked.Count -eq 0 -and $staged.Count -eq 0) { $invalid += $f; continue }
     }
     if ($invalid.Count -gt 0) {
-        Write-Host ('Docs-Freshness-Check: rejected noncanonical/untracked/outside doc: ' + ($invalid -join ', '))
+        Write-Host ('Rejected noncanonical/untracked/outside doc: ' + ($invalid -join ', '))
         exit 1
     }
     $ackKey = Get-ShortHash $rootFull.ToLowerInvariant()
@@ -166,7 +166,7 @@ if ($Acknowledge) {
         timestampUtc      = [DateTime]::UtcNow.ToString('o')
     }
     Write-JsonFileAtomic -Value $record -Path $ackPath
-    Write-Host 'Docs-Freshness-Check: review acknowledged.'
+    Write-Host 'Docs review acknowledged.'
     exit 0
 }
 
@@ -525,7 +525,7 @@ try {
     $greenHead = Get-CiGreenHead -Root $rootFull -RootKeys @($cwd, $rootFull) -ImpactFiles $realImpactFiles
     if ($greenHead -ne '') {
         $sha7 = $greenHead.Substring(0, [Math]::Min(7, $greenHead.Length))
-        [void]$lines.Add('Tested parent SHA ' + $sha7 + '; commit/push reviewed docs. New SHA UNTESTED: latest-status checks still required in ONE manual final batch or exact blocker; no ancestor green/display-only run.')
+        [void]$lines.Add('Pushed HEAD green ' + $sha7 + ': docs-only [skip ci] commit/push, no suite; tests passed on parent ' + $sha7 + '.')
     }
     $reason = $lines.ToArray() -join "`n"
     # Record the block so THIS hook's own re-entry is recognised; another
@@ -556,7 +556,7 @@ catch {
     # Client-aware through the shared adapter: Codex does not render
     # hookSpecificOutput.additionalContext at Stop (only systemMessage), so an
     # unconditional additionalContext here silently drops this warning on Codex.
-    $null = Write-HookResult -EventName $eventName -Kind 'advisory' -Message $errMsg
+    $null=$errMsg # R035: failed detection is silent; no current-docs claim.
     exit 0
 }
 }

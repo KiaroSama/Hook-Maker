@@ -88,6 +88,6 @@ function Invoke-RunnerLeftRunningGate {
     $path = Join-Path $StateDir ('CiStatusCheck-Runner-' + (Get-ShortHash $ProjectRoot.ToLowerInvariant()) + '.txt')
     try { if ([IO.File]::Exists($path) -and ([IO.File]::ReadAllText($path)).Trim() -eq $fingerprint) { return } } catch { }
     try { [void][IO.Directory]::CreateDirectory($StateDir); [IO.File]::WriteAllText($path, $fingerprint) } catch { }
-    $emit = Write-StopBlockResult -HookInput $HookInput -HookName 'Ci-Status-Check' -EventName $EventName -Reason ('CI CHECK: ' + $text)
+    $emit = Write-StopBlockResult -HookInput $HookInput -HookName 'Ci-Status-Check' -EventName $EventName -Reason ('' + $text) -Condition 'live-or-leaked-test-process'
     exit $emit.ExitCode
 }

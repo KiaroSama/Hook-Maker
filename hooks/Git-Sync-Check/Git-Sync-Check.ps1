@@ -389,7 +389,7 @@ if ($fetchIntervalMinutes -gt 0) {
 if ($fetchDue) {
     $fetch = Invoke-Git @('fetch', '--quiet')
     if ($fetch.Ok) { try { New-Item -ItemType Directory -Path $stateDir -Force | Out-Null; [System.IO.File]::WriteAllText($fetchStampPath, [DateTime]::UtcNow.ToString('o')) } catch { } }
-    else { [void]$findings.Add('Fetch failed; comparing last-known remote state.') }
+    else { [void]$findings.Add('Fetch failed, remote state stale.') }
 }
 
 $status = Invoke-Git @('status', '--porcelain')
@@ -399,7 +399,7 @@ if ($status.Ok) {
     if ($statusLines.Count -gt 0) {
         # E-08 wording: porcelain covers all three dirty categories - name them
         # so the report reads unambiguously as staged AND unstaged AND untracked.
-        [void]$findings.Add([string]$statusLines.Count + ' uncommitted changes (staged/unstaged/untracked).')
+        [void]$findings.Add('There are ' + $statusLines.Count + ' uncommitted change(s) in the working tree (staged, unstaged, and/or untracked).')
     }
 }
 
@@ -596,7 +596,7 @@ if ($haveBaseline) {
     }
 
     if ($scanIncomplete) {
-        [void]$advisoryExtra.Add('Worktree/branch scan capped: coverage PARTIAL, entries possibly unseen.')
+        [void]$advisoryExtra.Add('Worktree/branch PARTIAL; unseen entries.')
     }
 }
 

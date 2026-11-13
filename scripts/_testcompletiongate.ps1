@@ -141,7 +141,7 @@
     $r = Fire -Copy $c -Cwd $p
     $reason = Get-BlockReason $r.Out
     Check 'an idleTimeout termination blocks and is named as idleTimeout' (
-        $r.Out -match '"decision":"block"' -and $reason -match 'idleTimeout' -and $reason -match 'no output or state change') $reason
+        $r.Out -match '"systemMessage"' -and $reason -match 'idleTimeout' -and $reason -match 'no output or state change') $reason
 
     # =====================================================================
     Write-Host '--- leaked process ids block ---' -ForegroundColor Cyan
@@ -150,7 +150,7 @@
     Write-GuardedResult -Copy $c -Root $p -Overall 'ok' -ExitCode 0 -Leaked @(4321, 4322)
     $r = Fire -Copy $c -Cwd $p
     $reason = Get-BlockReason $r.Out
-    Check 'a non-empty leakedProcessIds blocks even when overall=ok' ($r.Out -match '"decision":"block"') $r.Out
+    Check 'a non-empty leakedProcessIds blocks even when overall=ok' ($r.Out -match '"systemMessage"') $r.Out
     Check 'the leaked pids are named so they can actually be checked' ($reason -match '4321' -and $reason -match '4322') $reason
     Check 'the recovery tells the agent how to confirm they are gone' ($reason -match 'Get-Process -Id') $reason
     Check 'a leak also demands the durable .ai/ note' ($reason -match '\.ai/') $reason
@@ -162,7 +162,7 @@
     Write-GuardedResult -Copy $c -Root $p -Overall 'failed' -ExitCode 3
     $r = Fire -Copy $c -Cwd $p
     $reason = Get-BlockReason $r.Out
-    Check 'a current overall=failed result blocks completion' ($r.Out -match '"decision":"block"' -and $reason -match 'FAILED') $reason
+    Check 'a current overall=failed result blocks completion' ($r.Out -match '"systemMessage"' -and $reason -match 'FAILED') $reason
     Check 'the real exit code is surfaced' ($reason -match 'FAILED, exit=3') $reason
     Check 'weakening or skipping tests to go green is explicitly refused' ($reason -match 'Never weaken tests/exits; unresolved!=pass') $reason
 
@@ -175,7 +175,7 @@
     $r = Fire -Copy $c -Cwd $p
     $reason = Get-BlockReason $r.Out
     Check 'a STALE ok result does not silently allow completion for an observed run' (
-        $r.Exit -eq 0 -and $r.Out -ne '' -and $r.Out -match '"decision":"block"') $r.Out
+        $r.Exit -eq 0 -and $r.Out -ne '' -and $r.Out -match '"systemMessage"') $r.Out
     Check 'the staleness is stated as the reason, with the window' ($reason -match 'STALE' -and $reason -match '180min') $reason
     Check 'the stale path never claims a run happened' ($reason -match 'Missing/different run/argv/state!=pass; prove scope') $reason
 
@@ -212,7 +212,7 @@
     Write-ObservedRecord -Copy $c -Root $p -AgeMinutes 181
     $r = Fire -Copy $c -Cwd $p
     Check 'a 181-minute-old result is STALE and no longer proves the run happened' (
-        $r.Out -match '"decision":"block"' -and (Get-BlockReason $r.Out) -match 'STALE') $r.Out
+        $r.Out -match '"systemMessage"' -and (Get-BlockReason $r.Out) -match 'STALE') $r.Out
 
     # =====================================================================
     Write-Host '--- run-identity gate: a result must belong to THIS observation (scope A) ---' -ForegroundColor Cyan
@@ -229,7 +229,7 @@
     Write-GuardedResult -Copy $c -Root $p -Overall 'ok' -RunId 'run-A-different'
     $r = Fire -Copy $c -Cwd $p
     Check 'a fresh green result from a different runId does NOT satisfy the observed run' (
-        $r.Out -match '"decision":"block"' -and (Get-BlockReason $r.Out) -match 'DIFFERENT run') $r.Out
+        $r.Out -match '"systemMessage"' -and (Get-BlockReason $r.Out) -match 'DIFFERENT run') $r.Out
 
     # A green result for the same command but a DIFFERENT repository fingerprint.
     $c = New-IsolatedHookCopy; $p = New-GitRepo 'IdProjMismatch'
@@ -237,7 +237,7 @@
     Write-GuardedResult -Copy $c -Root $p -Overall 'ok' -ProjectFingerprint 'some-other-state'
     $r = Fire -Copy $c -Cwd $p
     Check 'a green result for a different repository fingerprint does NOT satisfy the current state' (
-        $r.Out -match '"decision":"block"') $r.Out
+        $r.Out -match '"systemMessage"') $r.Out
 
     # A previous FAILED result must not block a later observation unless its
     # identity matches: here it is a different run, so it must NOT block.
@@ -246,7 +246,7 @@
     Write-GuardedResult -Copy $c -Root $p -Overall 'failed' -ExitCode 1 -RunId 'run-earlier'
     $r = Fire -Copy $c -Cwd $p
     Check 'a failed result from a different run blocks as unproven, not as the old failure' (
-        $r.Out -match '"decision":"block"' -and (Get-BlockReason $r.Out) -match 'DIFFERENT run' -and (Get-BlockReason $r.Out) -notmatch 'FAILED \(exit code 1\)') $r.Out
+        $r.Out -match '"systemMessage"' -and (Get-BlockReason $r.Out) -match 'DIFFERENT run' -and (Get-BlockReason $r.Out) -notmatch 'FAILED \(exit code 1\)') $r.Out
 
     # A result whose startedUtc PREDATES observedUtc is rejected (it is from
     # before this observation). Result started 5 min ago, observation is now.
@@ -255,7 +255,7 @@
     Write-GuardedResult -Copy $c -Root $p -Overall 'ok' -AgeMinutes 5
     $r = Fire -Copy $c -Cwd $p
     Check 'a result that started before the observation is rejected as a different run' (
-        $r.Out -match '"decision":"block"' -and (Get-BlockReason $r.Out) -match 'DIFFERENT run') $r.Out
+        $r.Out -match '"systemMessage"' -and (Get-BlockReason $r.Out) -match 'DIFFERENT run') $r.Out
 
     # A malformed result (missing runId + fingerprints) with an observed record
     # fails CLOSED - it is not accepted as a clean pass.
@@ -264,7 +264,7 @@
     Write-GuardedResult -Copy $c -Root $p -Overall 'ok' -RunId ' ' -CommandFingerprint ' ' -ProjectFingerprint ' '
     $r = Fire -Copy $c -Cwd $p
     Check 'a malformed result (blank identity) is not accepted as a clean pass' (
-        $r.Out -match '"decision":"block"') $r.Out
+        $r.Out -match '"systemMessage"') $r.Out
 
     # =====================================================================
     Write-Host '--- active marker is resistant to PID reuse (scope C) ---' -ForegroundColor Cyan
@@ -307,7 +307,7 @@
     $c = New-IsolatedHookCopy; $p = New-GitRepo 'MarkerMalformed'
     Write-Utf8 (Get-RunStateFile -Copy $c -Root $p -Kind 'active') '{ this is not valid json'
     $r = Fire -Copy $c -Cwd $p
-    Check 'a malformed active marker records unknown rather than manufacturing success' ($r.Out -match 'failedField=evidenceDocument:malformed') $r.Out
+    Check 'a malformed active marker records unknown rather than manufacturing success' ($r.Out -match 'malformed runId/commandFingerprint/observedUtc UNKNOWN') $r.Out
     $repeat = Fire -Copy $c -Cwd $p -StopHookActive
     Check 'a malformed active marker cannot create an unchanged Stop loop' ($repeat.Out -eq '' -and $repeat.Err -eq '') $repeat.Out
 
@@ -316,7 +316,7 @@
     Write-GuardedResult -Copy $c -Root $p -Overall 'terminated' -ExitCode 124 -TerminateReason 'wallTimeout' -TerminateDetail 'exceeded the 60s wall ceiling' -AgeMinutes 600
     $r = Fire -Copy $c -Cwd $p
     Check 'staleness never excuses a negative finding - an old hang still blocks' (
-        $r.Out -match '"decision":"block"' -and (Get-BlockReason $r.Out) -match 'wallTimeout') $r.Out
+        $r.Out -match '"systemMessage"' -and (Get-BlockReason $r.Out) -match 'wallTimeout') $r.Out
 
     # =====================================================================
     Write-Host '--- a MISSING result where a test clearly ran ---' -ForegroundColor Cyan
@@ -325,7 +325,7 @@
     Write-ObservedRecord -Copy $c -Root $p -Guarded $false
     $r = Fire -Copy $c -Cwd $p
     $reason = Get-BlockReason $r.Out
-    Check 'an observed run with NO result document does not claim success' ($r.Out -match '"decision":"block"') $r.Out
+    Check 'an observed run with NO result document does not claim success' ($r.Out -match '"systemMessage"') $r.Out
     Check 'it says plainly that no result document exists' ($reason -match 'exact observation lacks guarded result') $reason
     Check 'an unguarded run is called out as unowned and unbounded' ($reason -match 'UNGUARDED') $reason
     Check 'it forbids the "all tests passed" claim explicitly' ($reason -match 'Missing/different run/argv/state!=pass; prove scope') $reason
@@ -375,12 +375,12 @@
     Check 'each run gets its OWN observed file (no overwrite)' (
         @(Get-ChildItem -LiteralPath (Get-StateDir $c) -Filter 'TestRunGuard-observed-*.json').Count -eq 2)
     $r = Fire -Copy $c -Cwd $p
-    Check 'completion is BLOCKED while run B has no result, even though run A passed' ($r.Out -match '"decision":"block"') $r.Out
+    Check 'completion is BLOCKED while run B has no result, even though run A passed' ($r.Out -match '"systemMessage"') $r.Out
     # Run B now fails - run A's pass must not cover it.
     Write-GuardedResult -Copy $c -Root $p -Overall 'failed' -ExitCode 2 -RunId $rB
     $r = Fire -Copy $c -Cwd $p
     Check 'completion is BLOCKED while run B is failed (A''s pass does not cover B)' (
-        $r.Out -match '"decision":"block"' -and (Get-BlockReason $r.Out) -match 'FAILED') $r.Out
+        $r.Out -match '"systemMessage"' -and (Get-BlockReason $r.Out) -match 'FAILED') $r.Out
     # Run B passes: BOTH runs are now satisfied.
     Write-GuardedResult -Copy $c -Root $p -Overall 'ok' -RunId $rB
     $r = Fire -Copy $c -Cwd $p
@@ -540,7 +540,7 @@
     $r = Fire -Copy $c -Cwd $p
     $reason = Get-BlockReason $r.Out
     Check 'a run whose owner died with no result BLOCKS completion' (
-        $r.Out -match '"decision":"block"' -and $reason -match 'OWNERLESS') $reason
+        $r.Out -match '"systemMessage"' -and $reason -match 'OWNERLESS') $reason
     Check 'the evidence names the dead owner process' ($reason -match ('owner process ' + $goner.Id + ' is gone')) $reason
     Check 'it states the result is unknown AND unrecoverable, not merely pending' (
         $reason -match 'UNKNOWN AND UNRECOVERABLE') $reason
@@ -561,7 +561,7 @@
         (Get-PendingCount (Get-CompletionStateDoc -Copy $c -Root $p)) -eq 1) $r2.Out
     $rRecheck = Fire -Copy $c -Cwd $p -SessionId 'recheck-ownerless'
     Check 'an independent session still sees the unresolved ownerless incident' (
-        $rRecheck.Out -match '"decision":"block"' -and (Get-BlockReason $rRecheck.Out) -match 'OWNERLESS') $rRecheck.Out
+        $rRecheck.Out -match '"systemMessage"' -and (Get-BlockReason $rRecheck.Out) -match 'OWNERLESS') $rRecheck.Out
     # ...and the tagged durable note resolves it, so the gate cannot loop forever.
     Add-TaggedNote -Root $p -Reason $reason -Body 'The guarded runner was killed by the session teardown before it could write its result. Nothing detected it because the active record was deleted unread. Guard: the completion gate now classifies an ownerless record instead of dropping it.'
     $r3 = Fire -Copy $c -Cwd $p
@@ -576,7 +576,7 @@
     Write-GuardedResult -Copy $c -Root $p -Overall 'failed' -ExitCode 3
     $r = Fire -Copy $c -Cwd $p
     Check 'a dead owner whose run DID record a result is judged by that result, not as ownerless' (
-        $r.Out -match '"decision":"block"' -and (Get-BlockReason $r.Out) -match 'FAILED' -and (Get-BlockReason $r.Out) -notmatch 'OWNERLESS') $r.Out
+        $r.Out -match '"systemMessage"' -and (Get-BlockReason $r.Out) -match 'FAILED' -and (Get-BlockReason $r.Out) -notmatch 'OWNERLESS') $r.Out
 
     # =====================================================================
     Write-Host '--- a STALE record from a previous session is reconciled, not blocking ---' -ForegroundColor Cyan
@@ -609,7 +609,7 @@
     Set-MarkerAge -Copy $c -Root $p -AgeHours 11   # default horizon is 12h
     $r = Fire -Copy $c -Cwd $p
     Check 'an 11h-old ownerless record is still INSIDE the 12h horizon and still blocks' (
-        $r.Out -match '"decision":"block"' -and (Get-BlockReason $r.Out) -match 'OWNERLESS') $r.Out
+        $r.Out -match '"systemMessage"' -and (Get-BlockReason $r.Out) -match 'OWNERLESS') $r.Out
 
     # The horizon is configurable, and the expiry is then reported alongside a
     # finding the hook was already emitting (never as a reason to break silence).
@@ -640,4 +640,4 @@
     Check 'an invalid horizon is reported in plain text' (
         $reason -match 'TEST_COMPLETION_ACTIVE_MARKER_MAX_HOURS: integer1\.\.168 required; default12') $reason
     Check 'and the documented default still governs (11h is inside 12h -> still blocks)' (
-        $r.Out -match '"decision":"block"' -and $reason -match 'OWNERLESS') $reason
+        $r.Out -match '"systemMessage"' -and $reason -match 'OWNERLESS') $reason

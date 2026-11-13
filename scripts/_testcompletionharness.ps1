@@ -382,6 +382,7 @@ function ConvertFrom-HookOutput {
 function Get-BlockReason {
     param([string]$Text)
     $doc = ConvertFrom-HookOutput $Text
-    if ($null -eq $doc -or $null -eq $doc.PSObject.Properties['reason']) { return '' }
-    return [string]$doc.reason
+    if($null-eq$doc){return ''}
+    if($null-ne$doc.PSObject.Properties['reason']){return [string]$doc.reason}
+    return [string](Get-Field $doc 'systemMessage')
 }

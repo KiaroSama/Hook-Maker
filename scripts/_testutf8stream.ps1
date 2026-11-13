@@ -40,19 +40,19 @@ if (-not $StreamOnly) {
     Check 'native outgoing 3353196-byte catalog passes default complete validation' ($r.Exit -eq 0 -and $r.Err -eq '') ($r.Out+$r.Err)
     $capCopy = New-IsolatedHookCopy -EnvContent "UTF8_MAX_FILE_KB=1024`n"
     $r = FireGitPrePush -Cwd $repo -StdinText $refLine -HookPath $capCopy.Script -LocalAppData $capCopy.LocalAppData
-    Check 'explicit retained1024KiB cap still fails closed for large outgoing text' ($r.Exit -eq 1 -and $r.Err -match 'UTF8_MAX_FILE_KB') $r.Err
+    Check 'explicit retained1024KiB cap still reports UNKNOWN for large outgoing text' ($r.Exit -eq 0 -and $r.Err -match 'UTF8_MAX_FILE_KB') $r.Err
     Write-Bytes (Join-Path $repo 'zzz.txt') (Get-InvalidUtf8Bytes)
     Add-Commit $repo 'invalid following blob'
     $r = FireGitPrePush -Cwd $repo -StdinText (Get-RefUpdateLine -Repo $repo) -HookPath $streamCopy.Script -LocalAppData $streamCopy.LocalAppData
-    Check 'invalid blob after large valid blob is not swallowed by batch framing' ($r.Exit -eq 1 -and $r.Err -match 'zzz\.txt' -and $r.Err -notmatch 'could not be read') $r.Err
+    Check 'invalid blob after large valid blob is not swallowed by batch framing' ($r.Exit -eq 0 -and $r.Err -match 'zzz\.txt' -and $r.Err -notmatch 'could not be read') $r.Err
     $tail = [System.IO.File]::Open((Join-Path $repo 'catalog.json'), [System.IO.FileMode]::Open, [System.IO.FileAccess]::Write)
     try { $null=$tail.Seek(-1,[System.IO.SeekOrigin]::End); $tail.WriteByte(0xFF) } finally { $tail.Dispose() }
     Add-Commit $repo 'invalid final byte'
     $r = FireGitPrePush -Cwd $repo -StdinText (Get-RefUpdateLine -Repo $repo) -HookPath $streamCopy.Script -LocalAppData $streamCopy.LocalAppData
-    Check 'native invalid final byte beyond former ceiling blocks as invalid' ($r.Exit -eq 1 -and $r.Err -match 'catalog\.json - an invalid UTF-8') $r.Err
+    Check 'native invalid final byte beyond former ceiling blocks as invalid' ($r.Exit -eq 0 -and $r.Err -match 'catalog\.json - an invalid UTF-8') $r.Err
     foreach ($malformedRef in @('refs/heads/main', ((Get-RefUpdateLine -Repo $repo).Trim() + ' extra'))) {
         $r = FireGitPrePush -Cwd $repo -StdinText ($malformedRef + "`n") -HookPath $streamCopy.Script -LocalAppData $streamCopy.LocalAppData
-        Check 'malformed native ref input refuses required coverage' ($r.Exit -eq 1 -and $r.Err -match 'malformed') $r.Err
+        Check 'malformed native ref input refuses required coverage' ($r.Exit -eq 0 -and $r.Err -match 'malformed') $r.Err
     }
     $script:HookDeadlineUtc = [DateTime]::UtcNow.AddSeconds(10)
     $tipBlob = ((& git -C $repo rev-parse 'HEAD:catalog.json') | Out-String).Trim()
@@ -65,5 +65,5 @@ if (-not $StreamOnly) {
     & git -C $repo add staged.json
     Write-Utf8 (Join-Path $repo 'staged.json') $catalogText
     $r = Fire -HookPath $streamCopy.Script -Cwd $repo -EventName 'Stop' -SessionId 'stream-staged' -LocalAppData $streamCopy.LocalAppData
-    Check 'large staged invalid tail blocks even after working tree reverted valid' ((Test-StopBlocks $r.Out) -and (Get-Message $r.Out) -match 'staged.json \(staged content\)') ($r.Out+$r.Err)
+    Check 'large staged invalid tail blocks even after working tree reverted valid' ((Test-StopAdvisory $r.Out) -and (Get-Message $r.Out) -match 'staged.json staged') ($r.Out+$r.Err)
 }

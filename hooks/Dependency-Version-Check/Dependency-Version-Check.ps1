@@ -509,24 +509,24 @@ if ($manifestPaths.ContainsKey('pip')) {
                 if ($script:PythonScopeReady) {
                     $declared = Get-DeclaredPythonPackages -ProjectRoot $cwd
                     if (@($declared.Unreadable).Count -gt 0) {
-                        [void]$incomplete.Add('Python declarations unreadable: ' + (@($declared.Unreadable) -join ', ') + '; outside readable set UNCHECKED.')
+                        [void]$incomplete.Add('Python declarations UNKNOWN: ' + (@($declared.Unreadable) -join ', ') + '; outside readable set UNCHECKED.')
                     }
                     if (@($declared.Names).Count -gt 0) {
                         $closure = Expand-PythonDependencyClosure -PythonExecutable $pipCmd -Names @($declared.Names)
                         if ($null -eq $closure) {
-                            [void]$incomplete.Add('Python: metadata unreadable; direct packages only, transitive UNCHECKED.')
+                            [void]$incomplete.Add('Python metadata unreadable; direct only, transitive UNKNOWN.')
                             $inScope = @($declared.Names)
                         }
                         else { $inScope = @(@($declared.Names) + @($closure) | Sort-Object -Unique) }
                     }
                     elseif (@($declared.Unreadable).Count -eq 0) {
-                        [void]$incomplete.Add('Python manifests: no parseable dependencies; scope UNKNOWN, no outdated report.')
+                        [void]$incomplete.Add('Python manifests unparseable, scope UNKNOWN.')
                         $inScope = @()
                     }
                     else { $inScope = @() }
                 }
                 else {
-                    [void]$incomplete.Add('Python: dependency-scope module missing; cannot restrict report to project.')
+                    [void]$incomplete.Add('Python scope module absent, project report UNKNOWN.')
                     $inScope = @()
                 }
                 $scopeIndex = @{}
@@ -709,8 +709,11 @@ if ($incomplete.Count -gt 0) {
 # The response contract. The scan above is evidence; these lines say what must be DONE with it,
 # because a report with no stated obligation is the one that gets skimmed and dropped.
 if ($reportLines.Count -gt 0) {
-    [void]$reportLines.Add('BEFORE review/update: global-environment-rules.md FULL.')
-    [void]$reportLines.Add('Each: update+lock+real checks | keep+reason | defer+blocker; small validated batches.')
+    [void]$reportLines.Add('Advisory decisions per finding:')
+    [void]$reportLines.Add('Verify releases/breaks/runtime/peers/advisories; latest compatible STABLE, no default prerelease.')
+    [void]$reportLines.Add('Per finding: update+lock+real checks, keep(reason), defer(blocker); silence!=review.')
+    [void]$reportLines.Add('Small verified batches; majors need breaking-change review.')
+    [void]$reportLines.Add('[EOL]/old major retain reason.')
     [void]$reportLines.Add('Final standalone: ' + $script:DependencyDecisionLine)
     [void]$reportLines.Add('User decides; hook never edits/upgrades/blocks.')
 }

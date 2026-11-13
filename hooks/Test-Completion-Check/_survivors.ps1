@@ -254,7 +254,7 @@ function Write-SurvivorAdvisory {
     $stopActive = Get-Field $hookInput 'stop_hook_active'
     if ($null -ne $stopActive -and [bool]$stopActive) { return }
     # The otherwise-silent tail still owes the ledger-write failure (once, never a block).
-    if ($script:LedgerWriteFailed -ne '') { Write-Finding -Blocking $false -Lines @('TEST COMPLETION CHECK: ledger write failed; otherwise clear, advisory.') }
+    if ($script:LedgerWriteFailed -ne '') { Write-Finding -Blocking $false -Lines @('ledger write failed; otherwise clear, advisory.') }
     $patterns = @(Get-SurvivorPatterns)
     if ($patterns.Count -eq 0) { return }
     $since = Get-SessionBaselineUtc
@@ -264,7 +264,7 @@ function Write-SurvivorAdvisory {
     if (-not $snapshot.Ok) {
         if (-not (Test-SurvivorShouldReport 'enumeration-unavailable')) { return }
         Write-Finding -Blocking $false -Lines @(
-            'TEST COMPLETION CHECK: process query refused/timeout; orphan coverage PARTIAL.',
+            'process query refused/timeout; orphan coverage PARTIAL.',
             'FULL global-test-rules.md No Orphaned Test Processes: sweep owned PIDs/reap/verify exit/report.')
         return
     }
@@ -291,6 +291,6 @@ function Write-SurvivorAdvisory {
     if ($snapshot.ForeignRunner -gt 0) {
         [void]$lines.Add('  (' + $snapshot.ForeignRunner + ' omitted foreign CI runner process(es); NOT task-owned, never terminate.)')
     }
-    [void]$lines.Add('global-test-rules.md FULL: sweep PID+start ownership; reap owned, verify/report exit. Owned alive=incomplete.')
+    [void]$lines.Add('global-test-rules.md FULL: PID+start sweep/reap/verify/report; owned alive=incomplete.')
     Write-Finding -Blocking $false -Lines $lines.ToArray()
 }

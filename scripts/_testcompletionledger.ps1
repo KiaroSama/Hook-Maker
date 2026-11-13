@@ -120,7 +120,7 @@
     Write-GuardedResult -Copy $c -Root $p -Overall 'failed' -ExitCode 1 -RunId ('c2c-fail-' + $key) -CommandFingerprint ('cmdc2c' + $key)
     $r = Fire -Copy $c -Cwd $p
     $reason = Get-BlockReason $r.Out
-    Check 'C2c: a plain failed run blocks' ($r.Out -match '"decision":"block"') $r.Out
+    Check 'C2c: a plain failed run blocks' ($r.Out -match '"systemMessage"') $r.Out
     Check 'C2c: and the block carries a resolvable incident key, not an empty one' (
         $reason -match 'ResolveIncident\s+[0-9a-fA-F]{6,}') $reason
 
@@ -136,7 +136,7 @@
     Write-GuardedResult -Copy $c -Root $p -Overall 'ok' -RunId ('c3resx-' + $key)
     $r = Fire -Copy $c -Cwd $p
     Check 'C3: two uncontrolled observations with only ONE green result -> completion BLOCKS (the second is unpaired)' (
-        $r.Out -match '"decision":"block"') $r.Out
+        $r.Out -match '"systemMessage"') $r.Out
     # A SECOND green result: now each observation pairs one-to-one.
     Write-GuardedResult -Copy $c -Root $p -Overall 'ok' -RunId ('c3resy-' + $key)
     $r = Fire -Copy $c -Cwd $p
@@ -152,7 +152,7 @@
     Write-ObservedRecord -Copy $c -Root $p -RunId $rInc
     Write-GuardedResult -Copy $c -Root $p -Overall 'terminated' -ExitCode 124 -TerminateReason 'idleTimeout' -TerminateDetail 'produced no output or state change for 300s' -RunId $rInc
     $r = Fire -Copy $c -Cwd $p
-    Check 'C4: the incident blocks first and registers the owed note' ($r.Out -match '"decision":"block"') $r.Out
+    Check 'C4: the incident blocks first and registers the owed note' ($r.Out -match '"systemMessage"') $r.Out
     Check 'C4: the block instructs the agent to tag the note with the incident key' ((Get-BlockReason $r.Out) -match 'Test incident:') (Get-BlockReason $r.Out)
     # The environmental cause is fixed WITHOUT a source change: a durable note is
     # written (tagged with the incident key) and the SAME command reruns GREEN.
@@ -179,7 +179,7 @@
     Write-GuardedResult -Copy $c -Root $p -Overall 'terminated' -ExitCode 124 -TerminateReason 'wallTimeout' -TerminateDetail 'exceeded the 1800s wall ceiling' -RunId $rInc2
     $r = Fire -Copy $c -Cwd $p
     Check 'C4: a genuinely unresolved incident still blocks completion' (
-        $r.Out -match '"decision":"block"' -and (Get-BlockReason $r.Out) -match 'wallTimeout') $r.Out
+        $r.Out -match '"systemMessage"' -and (Get-BlockReason $r.Out) -match 'wallTimeout') $r.Out
 
     # =====================================================================
     Write-Host '--- D1: two concurrent incidents each keep their OWN resolved-state + note (no ping-pong) ---' -ForegroundColor Cyan
@@ -198,7 +198,7 @@
     Write-GuardedResult -Copy $c -Root $p -Overall 'terminated' -ExitCode 124 -TerminateReason 'idleTimeout' -TerminateDetail 'produced no output or state change for 300s' -RunId $rB -CommandFingerprint $cmdB -AgeMinutes 1
     $r = Fire -Copy $c -Cwd $p
     Check 'D1: with two incidents the first (A) blocks and names its reason' (
-        $r.Out -match '"decision":"block"' -and (Get-BlockReason $r.Out) -match 'wallTimeout') $r.Out
+        $r.Out -match '"systemMessage"' -and (Get-BlockReason $r.Out) -match 'wallTimeout') $r.Out
     $st = Get-CompletionStateDoc -Copy $c -Root $p
     Check 'D1: after A blocks, ONE note obligation is tracked (A only)' ((Get-PendingCount $st) -eq 1) ('pending=' + (Get-PendingCount $st))
     # Resolve A: write A's OWN tagged durable note AND a green rerun of cmdA that SUPERSEDES A.
@@ -209,7 +209,7 @@
     Write-GuardedResult -Copy $c -Root $p -Overall 'ok' -RunId $rAok -CommandFingerprint $cmdA -AgeMinutes 0
     $r = Fire -Copy $c -Cwd $p
     Check 'D1: resolving A does NOT allow completion - B (a DISTINCT incident) still blocks' (
-        $r.Out -match '"decision":"block"' -and (Get-BlockReason $r.Out) -match 'idleTimeout') $r.Out
+        $r.Out -match '"systemMessage"' -and (Get-BlockReason $r.Out) -match 'idleTimeout') $r.Out
     $st = Get-CompletionStateDoc -Copy $c -Root $p
     # THIS is the ledger assertion: a single-slot design would have overwritten A's
     # obligation with B's, leaving pending=1. The per-incident MAP keeps BOTH.
@@ -246,7 +246,7 @@
     Write-GuardedResult -Copy $c -Root $p -Overall 'ok' -RunId $rHeal -AgeMinutes 0
     $r = Fire -Copy $c -Cwd $p
     Check 'D2: the FIRST Stop still demands the durable note even though the run is already green again' (
-        $r.Out -match '"decision":"block"' -and (Get-BlockReason $r.Out) -match '\.ai/ note owed' -and (Get-BlockReason $r.Out) -match 'idleTimeout') $r.Out
+        $r.Out -match '"systemMessage"' -and (Get-BlockReason $r.Out) -match '\.ai/ note owed' -and (Get-BlockReason $r.Out) -match 'idleTimeout') $r.Out
     $st = Get-CompletionStateDoc -Copy $c -Root $p
     Check 'D2: the self-healed incident registered a note obligation on first sighting' ((Get-PendingCount $st) -eq 1) ('pending=' + (Get-PendingCount $st))
     Add-TaggedNote -Root $p -Reason (Get-BlockReason $r.Out) -Body ('Idle-timeout self-healed before the Stop hook fired; recorded so the lesson is not lost. ' +
@@ -278,7 +278,7 @@
     Check 'D3: both original observations remain, while only one is logically paired' (
         $survivingObs.Count -eq 2) ('observed files=' + $survivingObs.Count)
     Check 'D3: the unpaired observation still BLOCKS as observed-without-result' (
-        $r.Out -match '"decision":"block"' -and (Get-BlockReason $r.Out) -match 'exact observation lacks guarded result') $r.Out
+        $r.Out -match '"systemMessage"' -and (Get-BlockReason $r.Out) -match 'exact observation lacks guarded result') $r.Out
     # A SECOND result now pairs the surviving observation -> completion allowed.
     Write-GuardedResult -Copy $c -Root $p -Overall 'ok' -RunId ('d3r2-' + $key) -AgeMinutes 0
     $r = Fire -Copy $c -Cwd $p
@@ -325,7 +325,7 @@
     (Get-Item -LiteralPath (Get-RunStateFile -Copy $c -Root $p -Kind 'result' -RunId $rInc)).LastWriteTimeUtc = [DateTime]::UtcNow.AddHours(-25)
     $r = Fire -Copy $c -Cwd $p
     Check 'R1: the superseded incident still demands its durable note at the first Stop (register-before-prune)' (
-        $r.Out -match '"decision":"block"' -and (Get-BlockReason $r.Out) -match '\.ai/ note owed' -and (Get-BlockReason $r.Out) -match 'wallTimeout') $r.Out
+        $r.Out -match '"systemMessage"' -and (Get-BlockReason $r.Out) -match '\.ai/ note owed' -and (Get-BlockReason $r.Out) -match 'wallTimeout') $r.Out
     Check 'R1: exactly one note obligation was registered before pruning' ((Get-PendingCount (Get-CompletionStateDoc -Copy $c -Root $p)) -eq 1) ''
     Check 'R1: superseded original remains alongside its durable note obligation' (
         (Test-Path -LiteralPath (Get-RunStateFile -Copy $c -Root $p -Kind 'result' -RunId $rInc))) $r.Out
@@ -355,7 +355,7 @@
     Add-TaggedNote -Root $p -Reason $firstReason -Body ('First incident fixed and documented with a real substantial prevention guard so a later session can act on it - well over eighty bytes of genuine content here.')
     $r = Fire -Copy $c -Cwd $p
     Check 'R2a: after ONE tagged note completion STILL blocks - the other incident is unresolved (an 80-byte note cannot clear both)' (
-        $r.Out -match '"decision":"block"') $r.Out
+        $r.Out -match '"systemMessage"') $r.Out
     $secondReason = Get-BlockReason $r.Out
     Check 'R2a: exactly ONE obligation remains after the first tagged note' ((Get-PendingCount (Get-CompletionStateDoc -Copy $c -Root $p)) -eq 1) ('pending=' + (Get-PendingCount (Get-CompletionStateDoc -Copy $c -Root $p)))
     Check 'R2a: the remaining block names a DIFFERENT incident tag' (
@@ -379,7 +379,7 @@
     Write-GuardedResult -Copy $c -Root $p -Overall 'terminated' -ExitCode 124 -TerminateReason 'wallTimeout' -TerminateDetail 'x' -RunId ('r2binc-' + $key) -CommandFingerprint $cmd -AgeMinutes 200
     Write-GuardedResult -Copy $c -Root $p -Overall 'ok' -RunId ('r2bgreen-' + $key) -CommandFingerprint $cmd -AgeMinutes 1
     $r = Fire -Copy $c -Cwd $p
-    Check 'R2b: overflow of unresolved notes surfaces as a block, not a silent drop' ($r.Out -match '"decision":"block"') $r.Out
+    Check 'R2b: overflow of unresolved notes surfaces as a block, not a silent drop' ($r.Out -match '"systemMessage"') $r.Out
     Check 'R2b: the block names the FULL-ledger overflow condition' ((Get-BlockReason $r.Out) -match 'ledger (?:is )?FULL') (Get-BlockReason $r.Out)
     $st = Get-CompletionStateDoc -Copy $c -Root $p
     Check 'R2b: NONE of the 50 unresolved obligations was dropped (cap held, nothing lost)' ((Get-PendingCount $st) -eq 50) ('pending=' + (Get-PendingCount $st))
@@ -559,7 +559,7 @@ Write-Doc (Join-Path $StateDir ('TestRunGuard-result-' + $ProjectKey + '-' + $sa
     $keyF = Get-ProjectKey $pF
     Write-GuardedResult -Copy $cF -Root $pF -Overall 'failed' -ExitCode 1 -RunId ('c2f-fail-' + $keyF) -CommandFingerprint ('cmdc2fold' + $keyF) -AgeMinutes 9
     $rF = Fire -Copy $cF -Cwd $pF
-    Check 'C2f: a plain failed run blocks' ($rF.Out -match '"decision":"block"') $rF.Out
+    Check 'C2f: a plain failed run blocks' ($rF.Out -match '"systemMessage"') $rF.Out
     $incF = Get-PrintedIncidentKey $rF.Out
     Check 'C2f: and prints a well-formed incident key' ($incF -ne 'nokey') $rF.Out
 

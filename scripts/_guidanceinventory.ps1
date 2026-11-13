@@ -1,4 +1,4 @@
-# Fixed output-construction inventory reviewed against 0ab5b09. Character counts,
+# Fixed output-construction inventory; 035 baseline reviewed against 28be7d1. Character counts,
 # not tokens. Charge short fragments, command arguments and new guidance in full.
 function Get-HookGuidanceInventory {
     param([Parameter(Mandatory = $true)][string]$HooksRoot)

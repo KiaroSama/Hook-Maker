@@ -81,7 +81,7 @@ Write-Host '--- explicit recovery: legacy fingerprint and a changed ownership wr
 foreach ($hostName in @('pwsh', 'powershell.exe')) {
     $fixture = New-RecoveryFixture -Name $hostName
     $before = Fire -Copy $fixture.Copy -Cwd $fixture.Root -Exe $hostName -SessionId ('before-' + $hostName)
-    Check ($hostName + ': note and unrelated command green do not automatically resolve legacy incident') ($before.Out -match '"decision":"block"') $before.Out
+    Check ($hostName + ': note and unrelated command green do not automatically resolve legacy incident') ($before.Out -match '"systemMessage"') $before.Out
     $negativeBytes = [System.IO.File]::ReadAllText($fixture.NegativePath, [System.Text.Encoding]::UTF8)
     $recoveryBytes = [System.IO.File]::ReadAllText($fixture.RecoveryPath, [System.Text.Encoding]::UTF8)
     $resolved = Invoke-ExplicitRecovery -Fixture $fixture -Exe $hostName
@@ -114,7 +114,7 @@ foreach ($variant in @('missingNote', 'wrongTag', 'bareTag', 'missingRecovery', 
     Check ($variant + ': explicit recovery is rejected') ($rejected.Exit -ne 0) ($rejected.Out + $rejected.Err)
     Check ($variant + ': rejected recovery does not change the ledger') ([System.IO.File]::ReadAllText($ledgerPath, [System.Text.Encoding]::UTF8) -ceq $ledgerBefore)
     $stillBlocked = Fire -Copy $fixture.Copy -Cwd $fixture.Root -SessionId ('still-' + $variant)
-    Check ($variant + ': completion remains blocked') ($stillBlocked.Out -match '"decision":"block"') $stillBlocked.Out
+    Check ($variant + ': completion remains blocked') ($stillBlocked.Out -match '"systemMessage"') $stillBlocked.Out
 }
 
 $fixture = New-RecoveryFixture -Name 'reusedPid' -Variant 'reusedPid'
@@ -132,7 +132,7 @@ Write-ObservedRecord -Copy $fixture.Copy -Root $fixture.Root -RunId 'current-unf
 $historical = Invoke-ExplicitRecovery -Fixture $fixture
 Check 'historical recovery: later product edits do not invalidate the historical association' ($historical.Exit -eq 0 -and (Get-ResolvedCount (Get-CompletionStateDoc -Copy $fixture.Copy -Root $fixture.Root)) -eq 1) ($historical.Out + $historical.Err)
 $currentBlocked = Fire -Copy $fixture.Copy -Cwd $fixture.Root -SessionId 'independent-current'
-Check 'historical recovery: unfinished current-state work still blocks independently' ($currentBlocked.Out -match '"decision":"block"' -and (Get-BlockReason $currentBlocked.Out) -match 'CURRENT needs same scope') $currentBlocked.Out
+Check 'historical recovery: unfinished current-state work still blocks independently' ($currentBlocked.Out -match '"systemMessage"' -and (Get-BlockReason $currentBlocked.Out) -match 'CURRENT needs same scope') $currentBlocked.Out
 
 # A real concurrent writer loads the old ledger and waits on an event. Recovery
 # finishes first; that stale writer must merge the association before persisting.

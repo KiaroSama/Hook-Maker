@@ -39,14 +39,19 @@ function Get-GitWorkflowReminder {
     if ($null -eq $toolInput) { return '' }
     $kind = Get-GitWorkflowCommandKind -Command ([string](Get-Field $toolInput 'command'))
     if ($kind -eq 'branch') {
-        return 'GIT: BEFORE branch/worktree/PR creation: global-repository-rules.md FULL. Only requested/forced; ONE/task, reconcile at closure.'
+        return ('Git-Sync-Check: advisory default branch; side branch/worktree/PR ' +
+            'needs user request or reported forcing reason (protected default ' +
+            'branch); one task branch/PR, account at closure. ' +
+            'Rule: global-repository-rules.md.')
     }
     if ($kind -eq 'push') {
         $cwd = [string](Get-Field $HookInput 'cwd')
         if ([string]::IsNullOrWhiteSpace($cwd) -or $null -eq (Get-Command git -ErrorAction SilentlyContinue)) { return '' }
         $dirty = @(Invoke-QuietCommand -FilePath git -ArgumentList @('-C', $cwd, 'status', '--porcelain', '--untracked-files=no') -TimeoutSeconds 5 | Where-Object { $_ })
         if ($LASTEXITCODE -ne 0 -or $dirty.Count -eq 0) { return '' }
-        return ('GIT WORKFLOW REMINDER: ' + $dirty.Count + ' uncommitted change(s). BEFORE push: global-repository-rules.md FULL. Finish ALL work; push ONCE, one manual exact-SHA CI batch.')
+        return ('Git-Sync-Check: task has ' + $dirty.Count + ' uncommitted change(s). A task pushes ONCE, ' +
+            'after all work; all-host manual workflow_dispatch exact-SHA batch. Finish/commit/push. ' +
+            'Rule: global-repository-rules.md.')
     }
     return ''
 }

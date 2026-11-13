@@ -45,7 +45,7 @@
     Add-Commit $ppSparse 'invalid final sequence control'
     foreach ($sparseHost in @('powershell','pwsh')) {
         $r = FireGitPrePush -Cwd $ppSparse -StdinText (Get-RefUpdateLine $ppSparse) -HookPath $hcPp.Script -LocalAppData $hcPp.LocalAppData -Exe $sparseHost
-        Check ('sparse invalid tail diagnostic keeps exact UTF8 path on '+$sparseHost) ($r.Exit -eq 1 -and $r.Err.Contains($sparsePath) -and $r.Err.Contains('invalid UTF-8')) $r.Err
+        Check ('sparse invalid tail diagnostic keeps exact UTF8 path on '+$sparseHost) ($r.Exit -eq 0 -and $r.Err.Contains($sparsePath) -and $r.Err.Contains('invalid UTF-8')) $r.Err
     }
     Write-Utf8 (Join-Path $ppSparse '.utf8-encoding-exceptions.json') (Get-ExceptionJson -Path $sparsePath -Encoding 'windows-1252' -Reason 'Test-only legacy transport requires original bytes unchanged')
     Add-Commit $ppSparse 'exact path exception control'
@@ -65,7 +65,7 @@
     $sigPpBefore = Get-TreeSignature $ppNew
     $r = FireGitPrePush -Cwd $ppNew -StdinText $stdinNew -HookPath $hcPp.Script -LocalAppData $hcPp.LocalAppData
     $sigPpAfter = Get-TreeSignature $ppNew
-    Check 'new-branch push (remote sha all-zero) with an invalid text blob blocks (exit 1)' ($r.Exit -eq 1) ($r.Out + $r.Err)
+    Check 'new-branch push (remote sha all-zero) with an invalid text blob warns (exit 0)' ($r.Exit -eq 0) ($r.Out + $r.Err)
     Check 'the block names the file and classification on stderr' (
         $r.Err -match 'UTF8 ENCODING CHECK' -and $r.Err -match 'feature\.txt' -and $r.Err -match 'invalid UTF-8') $r.Err
     Check 'the pre-push block never leaks blob contents' ($r.Err -notmatch 'PPNEWMARKER') $r.Err
@@ -87,7 +87,7 @@
     Check 'stub proof: an exit-0 stub lets the invalid push through (test is load-bearing)' ($r.Exit -eq 0 -and $r.Err -eq '') $r.Err
 
     # =====================================================================
-    Write-Host '--- pre-push: invalid committed then DELETED in a later outgoing commit still blocks ---' -ForegroundColor Cyan
+    Write-Host '--- pre-push: invalid committed then DELETED in a later outgoing commit still reports ---' -ForegroundColor Cyan
     $ppDel = New-PushableRepo 'PpDeletedLater'
     Write-Utf8 (Join-Path $ppDel 'base.txt') "seed`n"
     Add-Commit $ppDel 'baseline'
@@ -98,8 +98,8 @@
     Add-Commit $ppDel 'delete it again (both commits still outgoing)'
     Check 'fixture sanity: the working tree no longer holds the file' (-not (Test-Path (Join-Path $ppDel 'temp.txt')))
     $r = FireGitPrePush -Cwd $ppDel -StdinText (Get-RefUpdateLine -Repo $ppDel) -HookPath $hcPp.Script -LocalAppData $hcPp.LocalAppData
-    Check 'an invalid blob introduced and deleted within the outgoing range still blocks' (
-        $r.Exit -eq 1 -and $r.Err -match 'temp\.txt') $r.Err
+    Check 'an invalid blob introduced and deleted within the outgoing range still reports' (
+        $r.Exit -eq 0 -and $r.Err -match 'temp\.txt') $r.Err
 
     # =====================================================================
     Write-Host '--- pre-push: multiple refs in one stdin; deletion refs scan nothing ---' -ForegroundColor Cyan
@@ -118,7 +118,7 @@
     $stdinB = Get-RefUpdateLine -Repo $ppMulti -Branch 'branchB' -RemoteSha ('0' * 40)
     $r = FireGitPrePush -Cwd $ppMulti -StdinText ($stdinA + $stdinB) -HookPath $hcPp.Script -LocalAppData $hcPp.LocalAppData
     Check 'multiple refs in ONE stdin: both refs'' findings are reported' (
-        $r.Exit -eq 1 -and $r.Err -match 'a\.txt' -and $r.Err -match 'b\.txt' -and $r.Err -match 'UTF-16 LE') $r.Err
+        $r.Exit -eq 0 -and $r.Err -match 'a\.txt' -and $r.Err -match 'b\.txt' -and $r.Err -match 'UTF-16 LE') $r.Err
     $ppDelRef = New-PushableRepo 'PpDeletionRef'
     Write-Utf8 (Join-Path $ppDelRef 'base.txt') "seed`n"
     Add-Commit $ppDelRef 'baseline'
@@ -158,13 +158,13 @@
     Add-Commit $ppExcCtl 'the same utf-16 file WITHOUT an exception'
     $r = FireGitPrePush -Cwd $ppExcCtl -StdinText (Get-RefUpdateLine -Repo $ppExcCtl) -HookPath $hcPp.Script -LocalAppData $hcPp.LocalAppData
     Check 'twin without the exception blocks (the exception was load-bearing)' (
-        $r.Exit -eq 1 -and $r.Err -match 'legacy/report\.txt' -and $r.Err -match 'UTF-16 LE') $r.Err
+        $r.Exit -eq 0 -and $r.Err -match 'legacy/report\.txt' -and $r.Err -match 'UTF-16 LE') $r.Err
 
     # =====================================================================
     Write-Host '--- pre-push: an unknown remote sha widens the scan, never skips it ---' -ForegroundColor Cyan
     # A remote sha git does not know cannot narrow the range, so everything
     # the local tip holds beyond the remote-tracking refs is scanned: a clean
-    # change passes, an invalid one still blocks.
+    # change passes, an invalid one still reports.
     $ppUnres = New-PushableRepo 'PpUnresolvable'
     Write-Utf8 (Join-Path $ppUnres 'base.txt') "seed`n"
     Add-Commit $ppUnres 'baseline'
@@ -177,13 +177,13 @@
     Write-Bytes (Join-Path $ppUnres 'bad.txt') (Get-InvalidUtf8Bytes 'PPUNRESMARKER')
     Add-Commit $ppUnres 'invalid change'
     $r = FireGitPrePush -Cwd $ppUnres -StdinText (Get-RefUpdateLine -Repo $ppUnres -RemoteSha $fakeRemote) -HookPath $hcPp.Script -LocalAppData $hcPp.LocalAppData
-    Check 'an unknown remote sha still blocks an invalid outgoing blob' ($r.Exit -eq 1 -and $r.Err -match 'bad\.txt') $r.Err
+    Check 'an unknown remote sha still reports an invalid outgoing blob' ($r.Exit -eq 0 -and $r.Err -match 'bad\.txt') $r.Err
 
     # =====================================================================
     Write-Host '--- pre-push: no file-count ceiling; a rewrite of published content scans nothing ---' -ForegroundColor Cyan
     # UTF8_MAX_FILES=1 once refused any push of two or more blobs. The gate now
     # reads every sent blob, so the setting must not limit it: three valid
-    # blobs pass, and an invalid THIRD one still blocks (the scan went past 1).
+    # blobs pass, and an invalid THIRD one still reports (the scan went past 1).
     $hcPpCap = New-IsolatedHookCopy -EnvContent "UTF8_MAX_FILES=1`n"
     $ppCap = New-PushableRepo 'PpCeiling'
     Write-Utf8 (Join-Path $ppCap 'base.txt') "seed`n"
@@ -199,7 +199,7 @@
     Write-Utf8 (Join-Path $ppCap 'f4.txt') "valid four`n"
     Add-Commit $ppCap 'invalid blob among several'
     $r = FireGitPrePush -Cwd $ppCap -StdinText (Get-RefUpdateLine -Repo $ppCap) -HookPath $hcPpCap.Script -LocalAppData $hcPpCap.LocalAppData
-    Check 'an invalid blob beyond the old ceiling still blocks' ($r.Exit -eq 1 -and $r.Err -match 'f3\.txt' -and $r.Err -notmatch 'UTF8_MAX_FILES') $r.Err
+    Check 'an invalid blob beyond the old ceiling still reports' ($r.Exit -eq 0 -and $r.Err -match 'f3\.txt' -and $r.Err -notmatch 'UTF8_MAX_FILES') $r.Err
     # History rewrite: legacy invalid content already published, then only the
     # commit is rewritten (new sha, same tree). Nothing new is sent, so the
     # legacy blob is not re-judged; the untouched gate above proves it would be.
@@ -221,8 +221,8 @@
     Write-Utf8 (Join-Path $ppBigTxt 'big.txt') (('a' * 3000) + "`n")
     Add-Commit $ppBigTxt 'oversized text blob'
     $r = FireGitPrePush -Cwd $ppBigTxt -StdinText (Get-RefUpdateLine -Repo $ppBigTxt) -HookPath $hcPpBig.Script -LocalAppData $hcPpBig.LocalAppData
-    Check 'an oversized outgoing TEXT blob fails closed (exit 1, names the ceiling)' (
-        $r.Exit -eq 1 -and $r.Err -match 'UTF8_MAX_FILE_KB' -and $r.Err -match 'big\.txt') $r.Err
+    Check 'an oversized outgoing TEXT blob reports UNKNOWN (exit 1, names the ceiling)' (
+        $r.Exit -eq 0 -and $r.Err -match 'UTF8_MAX_FILE_KB' -and $r.Err -match 'big\.txt') $r.Err
     $ppBigBin = New-PushableRepo 'PpOversizeBinary'
     Write-Utf8 (Join-Path $ppBigBin 'base.txt') "seed`n"
     Add-Commit $ppBigBin 'baseline'
@@ -246,4 +246,4 @@
     $hookTempFiles = @(Get-ChildItem -LiteralPath ([System.IO.Path]::GetTempPath()) -Filter 'hookmaker-utf8*' -ErrorAction SilentlyContinue | Where-Object { $_.Name -ne $workLeaf })
     Check 'the hook left no temp files of its own behind' ($hookTempFiles.Count -eq 0) (($hookTempFiles | ForEach-Object { $_.Name }) -join ', ')
     $r = FireGitPrePush -Cwd $ppNew -StdinText $stdinNew -HookPath $hcPp.Script -LocalAppData $hcPp.LocalAppData -Exe 'pwsh'
-    Check 'pwsh host: the same invalid new-branch push still blocks' ($r.Exit -eq 1 -and $r.Err -match 'feature\.txt') $r.Err
+    Check 'pwsh host: the same invalid new-branch push still reports' ($r.Exit -eq 0 -and $r.Err -match 'feature\.txt') $r.Err

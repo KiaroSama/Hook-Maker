@@ -7,9 +7,16 @@
 # export, a changed call relationship) while a multi-file change can be
 # graph-irrelevant (docs-only, formatting-only, generated output).
 #
-# ROLE: detector/advisor on Stop/SubagentStop; never forces continuation.
-# Reminds only when graphify-out\graph.json exists and project work is more
-# than two minutes newer. Existing cooldown and stand-down remain intact.
+# ROLE: GATE on Stop/SubagentStop (global-hook-rules.md SS Hook Roles). The
+# integration matrix files it under "freshness" for WHAT IT ASKS ABOUT; the
+# mechanism is a real decision:block, and the source says so here so the two
+# descriptions cannot drift apart again. It blocks only on the documented,
+# reproducible condition below: graphify-out\graph.json exists, and the newest
+# project work is more than two minutes newer than graph.json.
+# WHAT CLEARS IT: finishing the turn again - after `graphify update .`, or
+# after one line saying the change was not structural. The block is recorded
+# per session and per project BEFORE it is emitted, so the same state never
+# blocks twice; a later session is additionally held off by COOLDOWN_MINUTES.
 #
 # Token-efficient by design:
 # - Fires only when graphify-out\graph.json exists AND the latest project work
@@ -95,15 +102,7 @@ if ($null -ne (Get-Command -Name 'Get-MarkdownWorkTime' -ErrorAction SilentlyCon
 $graphTime = (Get-Item -LiteralPath $graphPath -Force).LastWriteTimeUtc
 $codeStale = ($null -ne $workTime -and $workTime -gt $graphTime.AddMinutes(2))
 $markdownStale = ($null -ne $markdown -and $null -ne $markdown.TimeUtc -and $markdown.TimeUtc -gt $graphTime.AddMinutes(2))
-if (-not $codeStale -and -not $markdownStale) {
-    # A scan that hit its bound proves nothing: say so once per cooldown, never block on it.
-    if ($null -ne $markdown -and $markdown.Partial) {
-        New-Item -ItemType Directory -Path $stateDir -Force | Out-Null
-        [System.IO.File]::WriteAllText($statePath, [DateTime]::UtcNow.ToString('o'))
-        $null = Write-HookResult -EventName $eventName -Kind 'advisory' -Message ('GRAPH UPDATE CHECK: the Markdown folder scan stopped at its bound (' + $markdown.Files + ' files); .ai/specs/.specify/plans freshness UNKNOWN, not clean. Changed this task? graphify update .' + $lifecycleNote)
-    }
-    exit 0
-}
+if (-not $codeStale -and -not $markdownStale) { exit 0 } # R035: partial alone proves no stale state.
 
 New-Item -ItemType Directory -Path $stateDir -Force | Out-Null
 [System.IO.File]::WriteAllText($statePath, [DateTime]::UtcNow.ToString('o'))
@@ -114,8 +113,9 @@ if ($markdownStale -and (-not $codeStale -or $markdown.TimeUtc -gt $workTime)) {
 }
 $reason = 'GRAPH UPDATE CHECK: graphify-out/graph.json predates changes. ' + $markdownNote + 'Graphed/structural impact: graphify update . (local AST); else explain. Advisory/cooldown.'
 $reason += $lifecycleNote
-# The existing cooldown suppresses unchanged advisories; no continuation claim.
-$emit = Write-HookResult -EventName $eventName -Kind 'advisory' -Message $reason
+# Record the block so THIS hook's own re-entry is recognised; another
+# gate's block must not mute it, and its own must not repeat.
+$emit = Write-StopBlockResult -HookInput $hookInput -HookName 'Graph-Update-Check' -EventName $eventName -Reason $reason
 exit $emit.ExitCode
 }
 catch { if ($null -ne $gateReceipt) { $gateReceipt.Crashed = $true }; throw }

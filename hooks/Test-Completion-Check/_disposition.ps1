@@ -122,15 +122,10 @@ function Set-HistoricalDisposition {
 
 function Assert-PersistedDispositions {
     param($Entries)
-    if($script:historicalDispositions.Count-gt0-and
-        ($script:repositoryState.State-cne'available'-or[string]::IsNullOrWhiteSpace([string]$script:repositoryState.RepositoryStateFingerprint))){
-        Write-Finding -Blocking $true -Lines @('TEST COMPLETION CHECK: historical disposition revalidation UNKNOWN; repository access='+[string]$script:repositoryState.Diagnosis+'. Restore verified access; original pins unchanged, no current success inferred.')
-        return
-    }
     foreach($id in @($script:historicalDispositions.Keys)){
         $matchingEntries=@($Entries|Where-Object{[string](Get-Field $_.Doc 'runId')-ceq$id})
         if($matchingEntries.Count-ne1-or-not(Test-HistoricalDisposition $matchingEntries[0].Doc $matchingEntries[0].Path)){
-            Write-Finding -Blocking $true -Lines @('TEST COMPLETION CHECK: historical disposition no longer validates for runId='+$id+'. Failure unresolved; verify receipt/resources/repository identity. No current success.')
+            Write-Finding -Blocking $true -Lines @('historical disposition no longer validates for runId='+$id+'. Failure unresolved; verify receipt/resources/repository identity. No current success.')
         }
     }
 }

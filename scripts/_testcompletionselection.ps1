@@ -144,7 +144,7 @@ function Invoke-RepositoryEvidenceSelectionRegression {
     $c = New-IsolatedHookCopy; $p = New-GitRepo ('RepositoryEvidence-malformed-' + $Codex)
     Write-Utf8 (Get-RunStateFile $c $p result malformed-only) '{broken'
     $r = Fire -Copy $c -Cwd $p -Codex:$Codex -Exe $HostExe
-    Check 'malformed-only original remains an explicit unknown gate' ((Get-BlockReason $r.Out) -match 'failedField=evidenceDocument:malformed' -and $r.Err -eq '') ($r.Out + $r.Err)
+    Check 'malformed-only original remains an explicit unknown gate' ((Get-BlockReason $r.Out) -match 'malformed runId/commandFingerprint/observedUtc UNKNOWN' -and $r.Err -eq '') ($r.Out + $r.Err)
 }
 
 # Exercise literal selector permutations as well as entry-point file ordering.

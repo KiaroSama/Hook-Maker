@@ -40,6 +40,8 @@ $script:Pass = 0
 $script:Fail = 0
 $script:TestPreviewLength = 700
 . (Join-Path $PSScriptRoot '_testlib.ps1')
+. (Join-Path $PSScriptRoot '_testfindingpolicy.ps1')
+Invoke-FindingPolicyRegression -Root (Split-Path -Parent $PSScriptRoot) -HookName 'Utf8-Encoding-Check'
 
 $Work = New-TestWorkspace -Prefix 'hookmaker-utf8test'
 Write-Host ("Workspace: $Work") -ForegroundColor DarkGray

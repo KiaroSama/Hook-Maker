@@ -18,7 +18,7 @@ foreach ($hostName in @('pwsh', 'powershell.exe')) {
     }
     $blocked = Fire -Copy $copy -Cwd $root -Exe $hostName -SessionId ('group-before-' + $hostName)
     $match = [regex]::Match((Get-BlockReason $blocked.Out), 'runId=([^;]+)')
-    Check ($hostName + ': legacy grouped failures remain blocked before explicit proof') ($blocked.Out -match '"decision":"block"' -and $match.Success) ($blocked.Out + $blocked.Err)
+    Check ($hostName + ': legacy grouped failures remain blocked before explicit proof') ($blocked.Out -match '"systemMessage"' -and $match.Success) ($blocked.Out + $blocked.Err)
     $firstPath = Get-RunStateFile -Copy $copy -Root $root -Kind 'result' -RunId $negativeIds[0]
     # Use the production key helper without copying its grouping algorithm.
     . (Join-Path (Split-Path -Parent $copy.Script) '_identity.ps1')
@@ -63,7 +63,7 @@ foreach ($hostName in @('pwsh', 'powershell.exe')) {
     $laterDoc = Read-JsonFile $laterPath; $laterDoc.projectFingerprint = ''
     Write-Utf8 $laterPath ($laterDoc | ConvertTo-Json -Depth 8)
     $later = Fire -Copy $copy -Cwd $root -Exe $hostName -SessionId ('group-later-' + $hostName)
-    Check ($hostName + ': later same-key failure stays blocked at the real entry') ($later.Out -match '"decision":"block"' -and (Get-BlockReason $later.Out) -match 'later-same-key') ($later.Out + $later.Err)
+    Check ($hostName + ': later same-key failure stays blocked at the real entry') ($later.Out -match '"systemMessage"' -and (Get-BlockReason $later.Out) -match 'later-same-key') ($later.Out + $later.Err)
 
     $single = New-IsolatedHookCopy
     $singleRoot = New-GitRepoAi ('SingularRecovery-' + $hostName)

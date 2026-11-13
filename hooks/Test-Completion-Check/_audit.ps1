@@ -104,5 +104,5 @@ function Export-CompletionEvidenceAudit {
     $bytes = [Text.Encoding]::UTF8.GetBytes(($report | ConvertTo-Json -Depth 8))
     $stream = [IO.File]::Open($destination, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
     try { $stream.Write($bytes, 0, $bytes.Length); $stream.Flush() } finally { $stream.Dispose() }
-    [Console]::Out.WriteLine('Audit exported; originals hashed/retained. UNKNOWN still gates; no SUCCESS/resolution.')
+    [Console]::Out.WriteLine('Audit exported; originals retained/hashed, UNKNOWN advisory, no SUCCESS/resolution.')
 }

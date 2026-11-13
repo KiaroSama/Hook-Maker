@@ -11,8 +11,8 @@
 # the hook exists at all - the pre-task note alone was routinely acknowledged
 # and then ignored.
 #
-# ROLE: DETECTOR/ADVISORY; explicit block mode adds a narrow closing gate.
-# Only that configured mode blocks on one confirmed,
+# ROLE (global-hook-rules.md, "Hook Roles"): DETECTOR/ADVISORY before, GATE
+# after - and the gate is narrow on purpose. It blocks on one confirmed,
 # reproducible condition: rule files exist for this project, the session
 # transcript shows this session actually EDITED files, and the closing summary
 # carries no line starting "Rules applied:". All three are facts the hook read.
@@ -237,7 +237,7 @@ function Get-EvidenceTranscriptFallbackPath {
         $fingerprint = (Get-HookSuppressionIdentity -HookInput $hookInput) + '|' + $eventName + '|' + $StateToken
         $claim = Invoke-DeliveryClaim -Path ($gatePath + '.claims.json') -Identity (Get-DeliveryIdentity $hookInput) -Fingerprint $fingerprint
         if (-not $claim.Ok) {
-            [Console]::Out.WriteLine((@{ systemMessage = ('Closing reservation UNVERIFIED: ' + $claim.Reason + '; no approval/completion.') } | ConvertTo-Json -Compress))
+            $null=$claim.Reason # R035 unknown reservation: silent.
         }
         return $claim.Admitted
     }
@@ -264,18 +264,7 @@ function Get-EvidenceTranscriptFallbackPath {
     }
     if ($null -ne $evidence -and $evidence.Known) { $tail = [string]$evidence.Text }
     else { $tail = $null } # UNKNOWN is not permission to search raw transcript text.
-    if ($null -eq $tail) {
-        # UNKNOWN - no transcript, unreadable, or a client that supplies none.
-        if (-not (Test-ShouldReportClosing 'unverified')) { exit 0 }
-        $note = @(
-            ('RULES CHECK (' + $Client + '): transcript unavailable; compliance UNVERIFIED, not all-clear.'),
-            ('Governing rule files: ' + $ruleMenu + '.'),
-            $script:RulesRequirement,
-            ('Required line: ' + $script:RulesRequiredLine)
-        ) -join "`n"
-        $emit = Write-HookResult -EventName $eventName -Kind 'advisory' -Message $note
-        exit $emit.ExitCode
-    }
+    if ($null -eq $tail) { exit 0 } # R035: unavailable state is silent, never approved.
 
     # Anchored at the start of a transcript line, so this hook's own instruction
     # text can never satisfy it. A short markdown prefix is tolerated.
@@ -308,7 +297,8 @@ function Get-EvidenceTranscriptFallbackPath {
             # line of its own: this message lands in the same transcript the next
             # Stop reads, and an example at the start of a line would satisfy the
             # detector - the hook would then clear its own block.
-            $script:RulesRequirement
+            'Final standalone "Rules applied: <actual files + purpose>"; disclose unread rules, or "Rules applied: none - <reason>".',
+            'Unread != applied; give the reason.'
         ) -join "`n"
         if ($enforcement -eq 'advisory') {
             $emit = Write-HookResult -EventName $eventName -Kind 'advisory' -Message $reason
@@ -355,7 +345,7 @@ if ($eventName -eq 'UserPromptSubmit' -and (Test-ExplicitResearchPrompt ([string
     $note = Get-ResearchWorkflowReminder
     $claim = Invoke-DeliveryClaim -Path (Join-Path $stateDir ('RulesCheck-research-' + $Client + '-' + (Get-ShortHash $cwd.ToLowerInvariant()) + '.claims.json')) -Identity (Get-DeliveryIdentity $hookInput) -Fingerprint (Get-ShortHash (([string](Get-Field $hookInput 'prompt')).Trim() + '|' + $note))
     if ($claim.Admitted) { $researchNote = $note }
-    elseif (-not $claim.Ok) { $researchNote = 'Research reservation UNVERIFIED; no job/approval recorded.' }
+    elseif (-not $claim.Ok) { $researchNote = '' }
 }
 
 # Nothing configured and nothing remembered -> silent, zero tokens.
@@ -446,21 +436,26 @@ if ($rulesMoved) {
     # Canonical routing (E-01): canonical installed names, exactly one skill
     # policy for the detected client, and the strict-UTF-8 text default. These
     # ride the same fingerprint gate, so they never repeat on an unchanged set.
-    [void]$lines.Add('BEFORE work: installed CLAUDE.md/AGENTS.md registry -> EVERY task owner FULL. Missing owner: report, dependent work waits; native slash intact.')
-    [void]$lines.Add($Client + ': ONLY ' + $policyName + '.')
-    [void]$lines.Add('Strict UTF-8; BOM distinct. Exception: path/scope/encoding/forcing consumer/verified compatibility.')
+    [void]$lines.Add('Canonical registry: custom-instructions.md, not version-suffixed uploads; task owners FULL before work. Scope/queue/release/storage/cleanup: global-project-lifecycle-rules.md, stable IDs/order, earliest unfinished item; other-project writes need exact consent or English owner handoff. New rule Markdown: direct registry entry + global-instruction-maintenance-rules.md completeness. Secrets: actual-value custody/private full export/isolated restore, never expose values. Final apps: approved embedded identity, verified signing and approved packaged logo; missing prerequisites stay unverified, no unsigned fallback/key/service/logo creation. UI: global-ui-rules.md, design skill + library research, product-specific accessible primitives. Advisory verifies/executes none of these.')
+    [void]$lines.Add('Skill policy routing: active client = ' + $Client + ' -> load ONLY ' + $policyName + ' as the skill policy; never load the other agent''s skill policy and never both together.')
+    [void]$lines.Add('UTF-8: explicit strict I/O, BOM separate; never trust host defaults. Exceptions name path/scope/encoding/reason/forcing system and compatibility proof.')
     # A " (N).md" filename is the browser-download shape of an uploaded copy -
     # canonical rule files never carry it, so flag it instead of trusting it.
     $suffixedNames = @($currentEntries.Keys | ForEach-Object { [System.IO.Path]::GetFileName($_) } | Where-Object { $_ -match '\s\(\d+\)\.md$' } | Sort-Object -Unique)
     if ($suffixedNames.Count -gt 0) {
         [void]$lines.Add('WARNING: version-suffixed copies, NOT canonical; use installed canonical names:' + ($suffixedNames -join ', '))
     }
+    [void]$lines.Add('Rules already loaded in context only need a confirmation, not a re-read. This check stays silent until a rules file changes again.')
     # Stated up front so the closing gate is never a surprise at Stop.
     [void]$lines.Add($script:RulesRequirement)
 }
 if ($deepDebug) {
     [void]$lines.Add('RULES CHECK (' + $Client + '): BEFORE ::deep-debug read WORKFLOWS.md Deep Debug/skill-policy-deep-debug.md/CODEWORDS.md FULL, EVERY bug/phase.')
+    [void]$lines.Add('- ::deep-debug is a BOUNDED composite workflow: end as DEEP DEBUG: COMPLETE or DEEP DEBUG: BLOCKED - never an endless audit/refactor/fix loop.')
+    [void]$lines.Add('- ::deep-debug ledger first: each bug/finding/phase verified, evidence-rejected, user-deferred or exact blocker; goal command human-only.')
+    [void]$lines.Add('- ::multi-agent: independent owned streams, one integration/final unified proof; no recursion/nested agents.')
     [void]$lines.Add('After proof: ' + $ponytailRef + ' ONCE, safe cuts/targeted checks/final proof only. End DEEP DEBUG: COMPLETE or DEEP DEBUG: BLOCKED.')
+    [void]$lines.Add('- After Ponytail: accepted safe cuts, targeted repairs/final proof only; no new audit cycle.')
 }
 
 # ---- persist state, then report ----

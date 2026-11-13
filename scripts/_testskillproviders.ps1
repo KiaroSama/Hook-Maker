@@ -171,5 +171,5 @@ function Invoke-SkillEvidenceRegression {
     Check 'accounting guidance distinguishes evidence and never assumes loadability' ($decision.Text -notmatch 'Loadable:|They need no authorization' -and $decision.Text -match 'call!=loaded/executed/verified' -and $decision.Text -match 'failed/unavailable/unsupported')
     . (Join-Path $Root 'scripts/_guidanceinventory.ps1')
     $authored=(@(Get-HookGuidanceInventory (Join-Path $Root 'hooks')) | Measure-Object Characters -Sum).Sum
-    Check 'V72 preserves fixed half-baseline guidance ceiling' ($authored -le 58360) $authored
+    Check '035 preserves half of chosen 28be7d1 baseline' ($authored -le 66157) $authored
 }

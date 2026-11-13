@@ -113,8 +113,8 @@ try {
     $r = Fire -Cwd $proj1
     $parsed = $null
     try { $parsed = $r.Out | ConvertFrom-Json } catch { }
-    Check 'blocks with a reason' ($null -ne $parsed -and [string]$parsed.decision -eq 'block')
-    Check 'reason names memory.md as missing' ($null -ne $parsed -and [string]$parsed.reason -like '*memory.md*missing*')
+    Check 'blocks with a reason' ($null -ne $parsed -and $null -eq $parsed.PSObject.Properties['decision'] -and [string]$parsed.systemMessage -ne '')
+    Check 'reason names memory.md as missing' ($null -ne $parsed -and [string]$parsed.systemMessage -like '*memory.md*missing*')
 
     # =====================================================================
     Write-Host '--- stale memory.md vs newer project work -> flags it, lists real .ai files ---' -ForegroundColor Cyan
@@ -131,8 +131,8 @@ try {
     $r = Fire -Cwd $proj2
     $parsed = $null
     try { $parsed = $r.Out | ConvertFrom-Json } catch { }
-    Check 'blocks: memory.md older than latest work' ($null -ne $parsed -and [string]$parsed.reason -like '*older than the latest project changes*')
-    Check 'reason lists the ACTUAL specialized files present (not a generic example)' ($null -ne $parsed -and [string]$parsed.reason -like '*Other files currently in .ai/*LESSON.md*REFERENCE.md*')
+    Check 'blocks: memory.md older than latest work' ($null -ne $parsed -and [string]$parsed.systemMessage -like '*older than the latest project changes*')
+    Check 'reason lists the ACTUAL specialized files present (not a generic example)' ($null -ne $parsed -and [string]$parsed.systemMessage -like '*Other files currently in .ai/*LESSON.md*REFERENCE.md*')
     # Immediate re-fire must respect the cooldown (default 30 min) - silent.
     $r2 = Fire -Cwd $proj2
     Check 'respects cooldown on immediate re-check' ($r2.Exit -eq 0 -and $r2.Out -eq '')
@@ -150,7 +150,7 @@ try {
     $r = Fire -Cwd $proj3
     $parsed = $null
     try { $parsed = $r.Out | ConvertFrom-Json } catch { }
-    Check 'explicitly says no specialized files exist yet' ($null -ne $parsed -and [string]$parsed.reason -like '*Only memory.md exists; specialized file ONLY for reusable task knowledge*')
+    Check 'explicitly says no specialized files exist yet' ($null -ne $parsed -and [string]$parsed.systemMessage -like '*Only memory.md exists; specialized file ONLY for reusable task knowledge*')
 
     # =====================================================================
     Write-Host '--- memory.md already fresh -> silent ---' -ForegroundColor Cyan
@@ -175,7 +175,7 @@ try {
     $r = Fire -Cwd $projE7
     $parsed = $null
     try { $parsed = $r.Out | ConvertFrom-Json } catch { }
-    $reasonE7 = if ($null -ne $parsed) { [string]$parsed.reason } else { '' }
+    $reasonE7 = if ($null -ne $parsed) { [string]$parsed.systemMessage } else { '' }
     # Debugging proof/risk/timings/Ponytail/privacy detail is indirect in the
     # FULL memory owners before update, not asserted executed by this reminder.
     Check 'guidance requires both full memory owners BEFORE update/debug notes' (
@@ -208,7 +208,7 @@ try {
     $r = Fire -Cwd $proj5 -Exe 'powershell.exe'
     $parsed = $null
     try { $parsed = $r.Out | ConvertFrom-Json } catch { }
-    Check '5.1 host: blocks cleanly, no crash' ($r.Exit -eq 0 -and $r.Err -eq '' -and $null -ne $parsed -and [string]$parsed.decision -eq 'block') $r.Out
+    Check '5.1 host: blocks cleanly, no crash' ($r.Exit -eq 0 -and $r.Err -eq '' -and $null -ne $parsed -and $null -eq $parsed.PSObject.Properties['decision'] -and [string]$parsed.systemMessage -ne '') $r.Out
 }
 finally {
     if (-not $KeepArtifacts) {

@@ -147,11 +147,7 @@ else {
     $lead = '- ' + $featureLabel + ': specs/' + $newestFeature + ' tasks checked. New work: new feature; resume/completion doubt: speckit-converge.'
 }
 
-$note = @(
-    'SPECKIT CHECK: BEFORE project-change/delta dependents, global-spec-kit-rules.md FULL.',
-    $lead,
-    'Ask unknowns; only dependents wait. Newest!=owner; other-project consent/English handoff. Read-only/trivial typo/value exempt.'
-) -join "`n"
+$note = 'Speckit-Check: advisory, behavior: specify -> clarify -> plan -> tasks -> analyze -> implement; bug unchanged specified intent: diagnose -> converge append -> implement, changed/no spec: full chain. Delta: dated IDs/AC, amend affected spec/plan/tasks, refresh skills/gates before dependent edits; independent scope linked feature, stable IDs/order/earliest actionable + explained dependencies. Follow actual preflight/scripts/extensions/gates/report; ask unknowns, only dependents wait. Newest folder != owner, other-project exact consent or English handoff. Read global-spec-kit-rules.md/global-project-lifecycle-rules.md; read-only/trivial typo/value exempt.'
 
 # One message per (session, project, state, text, REQUEST). Initialising the
 # project mid-session CHANGES the state, so the follow-up route is not

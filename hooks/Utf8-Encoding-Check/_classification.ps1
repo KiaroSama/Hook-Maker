@@ -217,13 +217,13 @@ function Get-Utf8Exceptions {
     $valid = New-Object System.Collections.Generic.List[object]
     $relSetting = $exceptionFileSetting.Replace('\', '/')
     if ([System.IO.Path]::IsPathRooted($exceptionFileSetting) -or $relSetting -match '(^|/)\.\.(/|$)') {
-        [void]$configWarnings.Add('UTF8_EXCEPTION_FILE: project-relative inside root required; rejected, no exceptions.')
+        [void]$configWarnings.Add('UTF8_EXCEPTION_FILE not relative, rejected.')
         return $valid.ToArray()
     }
     $fullPath = ''
     try { $fullPath = [System.IO.Path]::GetFullPath((Join-Path $ProjectRoot $exceptionFileSetting)) } catch { $fullPath = '' }
     if ($fullPath -eq '' -or -not (Test-PathInside -Candidate $fullPath -Parent $ProjectRoot)) {
-        [void]$configWarnings.Add('UTF8_EXCEPTION_FILE outside project: rejected; no exceptions.')
+        [void]$configWarnings.Add('UTF8_EXCEPTION_FILE outside root.')
         return $valid.ToArray()
     }
     if (-not (Test-Path -LiteralPath $fullPath -PathType Leaf)) { return $valid.ToArray() }
@@ -231,12 +231,12 @@ function Get-Utf8Exceptions {
     # from streamed text so the new catalog default cannot grow registry memory.
     $read = Read-FileBytesBounded -Path $fullPath -MaxFullBytes ([Math]::Min([int64]1MB, $maxFileBytes))
     if ($read.Failed -or $read.Truncated) {
-        [void]$configWarnings.Add('exception registry ' + $exceptionFileSetting + ' unreadable/incomplete; ALL exceptions rejected.')
+        [void]$configWarnings.Add('exceptions ' + $exceptionFileSetting + ' unreadable, all rejected.')
         return $valid.ToArray()
     }
     $registryClass = Get-Utf8Classification -Bytes $read.Bytes
     if ($registryClass -ne 'utf8' -and $registryClass -ne 'utf8bom') {
-        [void]$configWarnings.Add('exception registry ' + $exceptionFileSetting + ' invalid UTF-8 (' + $registryClass + '); ALL exceptions rejected.')
+        [void]$configWarnings.Add('exceptions ' + $exceptionFileSetting + ' invalid UTF-8 (' + $registryClass + '), all rejected.')
         return $valid.ToArray()
     }
     $payloadOffset = 0
@@ -244,12 +244,12 @@ function Get-Utf8Exceptions {
     $doc = $null
     try { $doc = ([System.Text.Encoding]::UTF8.GetString($read.Bytes, $payloadOffset, $read.Bytes.Length - $payloadOffset)) | ConvertFrom-Json } catch { $doc = $null }
     if ($null -eq $doc) {
-        [void]$configWarnings.Add('exception registry ' + $exceptionFileSetting + ' invalid JSON; ALL exceptions rejected.')
+        [void]$configWarnings.Add('exceptions ' + $exceptionFileSetting + ' invalid JSON, all rejected.')
         return $valid.ToArray()
     }
     $version = Get-Field $doc 'version'
     if ([string]$version -ne '1') {
-        [void]$configWarnings.Add('exception registry ' + $exceptionFileSetting + ' version !=1; ALL exceptions rejected.')
+        [void]$configWarnings.Add('exceptions ' + $exceptionFileSetting + ' version!=1, all rejected.')
         return $valid.ToArray()
     }
     $index = 0
@@ -261,23 +261,23 @@ function Get-Utf8Exceptions {
         $reason = ([string](Get-Field $entry 'reason')).Trim()
         $reject = ''
         if ($path -eq '') { $reject = 'path is empty' }
-        elseif ([System.IO.Path]::IsPathRooted($path) -or $path -match '^[A-Za-z]:' -or $path.StartsWith('/')) { $reject = 'absolute path: project-relative required' }
+        elseif ([System.IO.Path]::IsPathRooted($path) -or $path -match '^[A-Za-z]:' -or $path.StartsWith('/')) { $reject = 'absolute, require relative' }
         elseif ($path -match '(^|/)\.\.(/|$)') { $reject = '".." may escape project' }
-        elseif ($path.Contains('**')) { $reject = '"**" forbidden; exact path or one narrow "*" only' }
-        elseif ($path.Contains('?') -or $path.Contains('[') -or $path.Contains(']')) { $reject = 'wildcard: deterministic "*" only' }
+        elseif ($path.Contains('**')) { $reject = 'no "**", exact/narrow "*"' }
+        elseif ($path.Contains('?') -or $path.Contains('[') -or $path.Contains(']')) { $reject = 'only deterministic "*"' }
         elseif (@($path.ToCharArray() | Where-Object { [string]$_ -eq '*' }).Count -gt 1) { $reject = 'multiple "*": overbroad' }
-        elseif (@($path.ToCharArray() | Where-Object { [string]$_ -ne '*' -and [string]$_ -ne '/' }).Count -lt 3) { $reject = 'fewer than 3 literals: overbroad' }
-        elseif (-not $script:RecognizedEncodings.Contains($encoding)) { $reject = 'encoding "' + $encoding + '" unrecognized; binary cannot be excepted as text.' }
-        elseif ($reason.Length -lt 5 -or $script:PlaceholderReasons -contains $reason.ToLowerInvariant()) { $reject = 'reason missing/placeholder; concrete reason required' }
+        elseif (@($path.ToCharArray() | Where-Object { [string]$_ -ne '*' -and [string]$_ -ne '/' }).Count -lt 3) { $reject = '<3 literals, overbroad' }
+        elseif (-not $script:RecognizedEncodings.Contains($encoding)) { $reject = 'encoding "' + $encoding + '" invalid/binary.' }
+        elseif ($reason.Length -lt 5 -or $script:PlaceholderReasons -contains $reason.ToLowerInvariant()) { $reject = 'concrete reason missing' }
         if ($reject -eq '' -and -not $path.Contains('*')) {
             # Belt and braces: an exact path must also physically resolve
             # inside the project even after normalization.
             $entryFull = ''
             try { $entryFull = [System.IO.Path]::GetFullPath((Join-Path $ProjectRoot $path)) } catch { $entryFull = '' }
-            if ($entryFull -eq '' -or -not (Test-PathInside -Candidate $entryFull -Parent $ProjectRoot)) { $reject = 'path resolves outside the project' }
+            if ($entryFull -eq '' -or -not (Test-PathInside -Candidate $entryFull -Parent $ProjectRoot)) { $reject = 'path outside root' }
         }
         if ($reject -ne '') {
-            [void]$configWarnings.Add('exception entry ' + $index + ' (' + $path + ') rejected: ' + $reject + '. No exception granted.')
+            [void]$configWarnings.Add('entry ' + $index + ' (' + $path + ') rejected: ' + $reject + '. No exception.')
             continue
         }
         [void]$valid.Add([pscustomobject]@{ Path = $path; IsGlob = $path.Contains('*'); Encoding = $encoding; Reason = $reason })

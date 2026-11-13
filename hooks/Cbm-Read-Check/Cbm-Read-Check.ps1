@@ -62,28 +62,14 @@ if ($eventName -eq 'UserPromptSubmit') {
 }
 
 if ($indexed) {
-    $note = @(
-        'CBM READ CHECK: indexed. Structure: get_architecture/search_graph/trace_path/get_code_snippet/detect_changes FIRST.',
-        'Citations: check_index_coverage + source confirmation. Isolated edits exempt.'
-    ) -join "`n"
+    $note = 'Cbm-Read-Check: advisory, indexed; before broad code reads use get_architecture/search_graph/trace_path/get_code_snippet/detect_changes, check_index_coverage + source-confirm citations; isolated edits exempt.'
 }
 else {
-    $inspectCommand = Get-CbmCliAdvice -Service $service -Arguments @('allow-root', '--list')
-    $approveCommand = Get-CbmCliAdvice -Service $service -Arguments @('allow-root', '--approve-sensitive', $cwd)
-    $manualAdvice = if ($inspectCommand -ne '') {
-        "Authorized owner shell inspection ONLY (not hook execution):`n  " + $inspectCommand +
-        "`nAbsent approval + authorized exact sensitive root ONLY:`n" + $approveCommand
-    }
-    else { 'CLI unresolved: connected MCP or verify launcher/args in authorized owner shell; never guess executable/mode.' }
-    $rootJson = $cwd | ConvertTo-Json -Compress
-    $note = @(
-        ('CBM READ CHECK: index absent; expected ' + $dbPath + '.'),
-        ('Non-doc: index_repository(repo_path=' + $rootJson + ', mode="moderate", persistence=true) once; watcher freshness UNVERIFIED, check index_status.'),
-        'Before browsing: get_architecture/search_graph/trace_path/get_code_snippet.',
-        'Refusal: BEFORE recovery global-mcp-windows-cmm.md FULL. Shell denial!=MCP failure; no wider grants/path bypass/security weakening.',
-        $manualAdvice,
-        'Approval!=restart. Reload only proven stale binary/env/dead connection; verify source/index_status/query/parser warnings.'
-    ) -join "`n"
+    $inspectCommand=Get-CbmCliAdvice -Service $service -Arguments @('allow-root','--list')
+    $approveCommand=Get-CbmCliAdvice -Service $service -Arguments @('allow-root','--approve-sensitive',$cwd)
+    $manualAdvice=' Authorized owner shell only: '+$inspectCommand+'; exact sensitive root consent only: '+$approveCommand
+    $rootJson=$cwd|ConvertTo-Json -Compress
+    $note = 'Cbm-Read-Check: advisory, index absent; expected ' + $dbPath + '. Non-doc: index_repository(repo_path=' + $rootJson + ', mode="moderate", persistence=true); verify index_status/watcher, then query. Refusal: global-mcp-windows-cmm.md FULL, exact authorized service/root only; compare approved separator spelling/marker, preserve grants/backup/atomic concurrency. No parent/source move/junction/ACL weakening or sandbox service-write. Shell refusal != MCP outage; cache-private/identity: newest worker log path/SID/cache/runtime ancestor ACL. Approval != restart; reload only proven stale binary/env/dead connection, verify query/parser warnings.' + $manualAdvice
 }
 
 # One message per (session, project, index state). Indexing the project during

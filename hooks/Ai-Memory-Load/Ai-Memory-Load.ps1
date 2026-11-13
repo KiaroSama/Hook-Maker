@@ -153,7 +153,8 @@ $lines = New-Object System.Collections.Generic.List[string]
 if ($invalidUtf8) {
     # E-06: legacy non-UTF-8 memory is surfaced by path + classification ONLY.
     # No raw bytes, no replacement-character mojibake, no silent transcoding.
-    [void]$lines.Add('AI MEMORY: .ai/memory.md invalid UTF-8/legacy/unknown; NOT loaded. Reviewed UTF-8 conversion required; hook never transcodes/shows bytes.')
+    [void]$lines.Add('Ai-Memory-Load: advisory, memory.md invalid UTF-8; contents withheld, no raw bytes.')
+    [void]$lines.Add('Review explicit UTF-8 conversion; hook never transcodes, valid router loads normally.')
 }
 else {
     [void]$lines.Add('AI MEMORY LOADED - .ai/memory.md (project startup router):')
@@ -172,7 +173,8 @@ if ($deepDebug) {
     # E-06: routing text only for the standalone ::deep-debug codeword - the
     # loader names the set, the agent loads only what exists and is relevant.
     [void]$lines.Add('')
-    [void]$lines.Add('::deep-debug: BEFORE loading, ai-context-memory-policy.md/CODEWORDS.md FULL; memory.md -> relevant existing debug/security set only. UTF-8; legacy path/class only, no raw/transcode/bulk/empty/global-rule copies.')
+    [void]$lines.Add('::deep-debug: router then existing task-relevant CONTEXT/REFERENCE/COMMANDS/BUGS/EDGE_CASES/TESTING_NOTES/DECISIONS/LESSON/WORKFLOWS/PLAYBOOKS, SECURITY_NOTES if security. No whole-dir/global-copy/empty scaffold.')
+    [void]$lines.Add('UTF-8 memory; legacy path/class only, no raw bytes/silent transcode.')
 }
 
 $null = Write-HookResult -EventName $eventName -Kind 'context' -Message ($lines.ToArray() -join "`n")

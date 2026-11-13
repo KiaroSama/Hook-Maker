@@ -61,13 +61,14 @@ function Write-Finding {
         [void]$all.Add('')
         foreach ($warning in $script:configWarnings) { [void]$all.Add('Test-Completion-Check .env: ' + $warning) }
     }
-    $ledgerFailure = [string](Get-Variable -Name LedgerWriteFailed -Scope Script -ValueOnly -ErrorAction SilentlyContinue); if ($ledgerFailure -ne '') { [void]$all.Add('TEST COMPLETION CHECK: ledger write failed (' + $ledgerFailure + '); note requests may recur.') }; $message = ($all.ToArray() -join "`n")
+    $ledgerFailure = [string](Get-Variable -Name LedgerWriteFailed -Scope Script -ValueOnly -ErrorAction SilentlyContinue); if ($ledgerFailure -ne '') { [void]$all.Add('ledger write failed (' + $ledgerFailure + '); note requests may recur.') }; $message = ($all.ToArray() -join "`n")
     # The gating DECISION is made above and is unchanged here; Write-HookResult
     # only turns it into the client's wire shape (claude/codex block ->
     # decision:block, claude advisory -> hookSpecificOutput.additionalContext,
     # codex Stop advisory -> systemMessage). A client that documents no Stop
     # gate has its block downgraded to the strongest advisory and reported as
     # degraded, which is what 'degraded-stop-gate' means - never a fake gate.
+    if($CompletedFailure){$message=$message -replace '(?i)\bblocked\b','unverified'}
     $kind = 'advisory'
     # NEVER block a SUBAGENT. On Claude a Stop/SubagentStop `decision:block`
     # FORCES CONTINUATION: the reason arrives as the subagent's next
@@ -80,25 +81,20 @@ function Write-Finding {
     # payload emitted a byte-identical block to Stop, for a test command the
     # MAIN agent had run. The advisory is still shown (systemMessage at
     # SubagentStop) and the real gate still holds on the main Stop.
-    if ($Blocking -and -not $script:advisoryOnly -and $script:eventName -ne 'SubagentStop') { $kind = 'block' }
+    $safety=$false
+    $active=Get-Variable activePid -Scope Script -ValueOnly -ErrorAction SilentlyContinue
+    $leaks=Get-Variable leaked -Scope Script -ValueOnly -ErrorAction SilentlyContinue
+    if($null-ne$active-and$active-gt0){$safety=$true}
+    foreach($candidate in @($leaks)) { $id=0; if([int]::TryParse([string]$candidate,[ref]$id)-and$id-gt0-and$null-ne(Get-Process -Id $id -ErrorAction SilentlyContinue)){$safety=$true} }
+    if($Blocking-and$safety-and-not$script:advisoryOnly-and$script:eventName-ne'SubagentStop'){$kind='block'}
     # A block must be ADMITTED before it is emitted: the claim is what gives the
     # gate a memory of having spoken, and it also spends one unit of the shared
     # correction allowance, so it cannot be taken without being granted. A
     # refusal emits nothing and leaves the finding recorded as unresolved. An
     # ADVISORY claims nothing, because it never stopped anything.
-    if ($kind -eq 'block' -and $CompletedFailure -and $script:MalformedEvidence.Count -eq 0) {
-        $paths = @(@($historicalResultEntries) + @($observedEntries) + @($activeEntries) | ForEach-Object { $_.Path })
-        $claim = Get-FailedReceiptDeliveryClaim -HookInput $hookInput -Doc $result -Path $resultEntryPath -EvidencePaths $paths
-        if ($null -ne $claim -and $claim.Ok -and -not $claim.Admitted) {
-            $script:StopGateVerdict = 'block'
-            # Stop additionalContext also forces continuation; this remains
-            # unresolved, but repeating it must not restart the assistant.
-            [Console]::Out.WriteLine((@{ systemMessage = ('TEST COMPLETION CHECK: UNRESOLVED failed receipt; already reported, no recovery/PASS.' + "`n" + $message) } | ConvertTo-Json -Depth 6 -Compress))
-            exit 0
-        }
-    }
+    # R035: ended failures/receipt history remain advisory; no recovery or PASS is manufactured.
     if ($kind -eq 'block') {
-        $emit = Write-StopBlockResult -HookInput $hookInput -HookName 'Test-Completion-Check' -EventName $script:eventName -Reason $message
+        $emit = Write-StopBlockResult -HookInput $hookInput -HookName 'Test-Completion-Check' -EventName $script:eventName -Reason $message -Condition 'live-or-leaked-test-process'
         exit $emit.ExitCode
     }
     $emit = Write-HookResult -EventName $script:eventName -Kind $kind -Message $message -Reason $message

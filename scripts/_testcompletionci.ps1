@@ -63,7 +63,7 @@
             $null = Write-CiRecord @recArgs
         }
         $r = Fire -Copy $c -Cwd $p
-        return [pscustomobject]@{ Out = [string]$r.Out; Blocked = ([string]$r.Out -match '"decision":"block"'); Root = $p; Copy = $c }
+        return [pscustomobject]@{ Out = [string]$r.Out; Blocked = ([string]$r.Out -match '"systemMessage"'); Root = $p; Copy = $c }
     }
 
     # The whole point: green CI, current commit, clean tree, newer than the failure.
@@ -130,7 +130,7 @@
     $recPath = Write-CiRecord -Copy $cN -Root $pN -Sha (Get-CiHead $pN) -Outcome 'failed' -Evidence ''
     $rN = Fire -Copy $cN -Cwd $pN
     Check 'CI4: a newer non-green observation overrides the older green one' (
-        [string]$rN.Out -match '"decision":"block"') $rN.Out
+        [string]$rN.Out -match '"systemMessage"') $rN.Out
 
     # The record carries a commit, an outcome, a timestamp and one evidence word -
     # nothing else. Argued in the plan as non-secret by construction; this is what

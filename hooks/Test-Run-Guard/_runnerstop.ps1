@@ -68,11 +68,11 @@ function Get-RunnerStopReplacement {
     param([string]$ProjectRoot, [bool]$Wsl)
     $slug = Get-RunnerRepositorySlug -ProjectRoot $ProjectRoot
     if ($Wsl) {
-        return 'Stop only this project''s runner: pkill -f ''/srv/ci/runners/' + $slug + '/'' (or kill the pid of the run.sh you started), then confirm it exited.'
+        return 'Own runner only: pkill -f ''/srv/ci/runners/' + $slug + '/'' or own run.sh PID; verify exit.'
     }
     $folder = [Management.Automation.WildcardPattern]::Escape((Join-Path $ProjectRoot '.ci-runner-win').TrimEnd('\') + '\').Replace("'", "''") + '*'
-    return ('Stop only this project''s runner: Get-CimInstance Win32_Process | Where-Object { $_.ExecutablePath -like ''' + $folder +
-        ''' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force } (or taskkill /PID <pid of the run.cmd you started> /T), then confirm each exited.')
+    return ('Own runner only: Get-CimInstance Win32_Process | Where-Object { $_.ExecutablePath -like ''' + $folder +
+        ''' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }; or taskkill /PID <own run.cmd pid> /T; verify exit.')
 }
 
 # $null, or @{ Deny; Message } for the first runner stop found in the command.
@@ -80,7 +80,7 @@ function Get-RunnerStopFinding {
     param([string[]]$Tokens, [string]$ProjectRoot)
     $segments = @(Split-CommandSegments -Tokens @($Tokens))
     $rule = ' Rule: global-github-automation-rules.md Self-Hosted Runners; exact own identity only.'
-    $lead = 'TEST RUN GUARD: name/wildcard stop also kills other projects'' CI runners/jobs. '
+    $lead = 'name/wildcard stop also kills other projects'' CI runners/jobs. '
     $slug = Get-RunnerRepositorySlug -ProjectRoot $ProjectRoot
     for ($s = 0; $s -lt $segments.Count; $s++) {
         $segment = @($segments[$s])
@@ -140,7 +140,7 @@ function Get-RunnerStopFinding {
             'wsl' {
                 $flag = @($rest | Where-Object { $_ -in @('--shutdown', '--terminate', '-t') })
                 if ($flag.Count -gt 0) {
-                    return [pscustomobject]@{ Deny = $false; Message = ('TEST RUN GUARD: `wsl ' + $flag[0] +
+                    return [pscustomobject]@{ Deny = $false; Message = ('`wsl ' + $flag[0] +
                         '` also stops other projects'' WSL runners/jobs. Own-project alternative:' +
                         (Get-RunnerStopReplacement -ProjectRoot $ProjectRoot -Wsl $true) + $rule) }
                 }

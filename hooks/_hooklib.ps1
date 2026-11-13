@@ -1,10 +1,3 @@
-# Shared helpers for Hook Maker's shipped hooks. Each hook dot-sources this
-# once ( . (Join-Path $PSScriptRoot '..\_hooklib.ps1') ) so the identical
-# stdin / .env / hash / JSON boilerplate lives in exactly one place. The
-# underscore prefix keeps it out of the wizard's hook discovery
-# (Get-HookEntries skips '_'-prefixed names). StrictMode 2.0 clean; every
-# function is self-contained so it works from any host or scope.
-
 # Hook I/O is UTF-8 BY CONTRACT: Claude Code and Codex hand the event JSON to the
 # hook as UTF-8 and read its output back as UTF-8. [Console]::In / ::Out do NOT
 # honour that on their own - they decode with the CONSOLE code page, and a hook
@@ -24,7 +17,6 @@ $Utf8NoBomIo = [System.Text.UTF8Encoding]::new($false)
 try { [Console]::InputEncoding = $Utf8NoBomIo } catch { }
 try { [Console]::OutputEncoding = $Utf8NoBomIo } catch { }
 try { $OutputEncoding = $Utf8NoBomIo } catch { }
-
 # Field accessor tolerant of a missing property or a $null value.
 function Get-Field {
     param($Obj, [string]$Name)
@@ -33,14 +25,12 @@ function Get-Field {
     }
     return $null
 }
-
 function Normalize-Path {
     param([Parameter(Mandatory = $true)][string]$Path)
     $expanded = [Environment]::ExpandEnvironmentVariables($Path)
     $full = [System.IO.Path]::GetFullPath($expanded)
     return $full.TrimEnd([char[]]@([System.IO.Path]::DirectorySeparatorChar, [System.IO.Path]::AltDirectorySeparatorChar))
 }
-
 function Test-PathInside {
     param(
         [Parameter(Mandatory = $true)][string]$Candidate,
@@ -54,7 +44,6 @@ function Test-PathInside {
     $prefix = $parentPath + [System.IO.Path]::DirectorySeparatorChar
     return $candidatePath.StartsWith($prefix, [System.StringComparison]::OrdinalIgnoreCase)
 }
-
 # A directory identified by what it CONTAINS, not by what it is called. Names are
 # a convention: `python -m venv <anything>` is legal, so a virtualenv called
 # 'spotdl-env' is invisible to a name list - a real one held 9,817 of a 13,562
@@ -76,7 +65,6 @@ function Test-PathInside {
 # Never throws - an invalid, too-long or unreadable path is simply $false, so a
 # walk can never break here.
 $script:PruneMarkerFiles = @('pyvenv.cfg', 'CACHEDIR.TAG')
-
 function Test-IsMarkerPrunedDirectory {
     param([string]$Path)
     if ([string]::IsNullOrWhiteSpace($Path)) { return $false }
@@ -91,7 +79,6 @@ function Test-IsMarkerPrunedDirectory {
     }
     return $false
 }
-
 function Set-ObjectProperty {
     param(
         [Parameter(Mandatory = $true)]$Object,
@@ -105,7 +92,6 @@ function Set-ObjectProperty {
         $Object | Add-Member -MemberType NoteProperty -Name $Name -Value $Value
     }
 }
-
 # Reads the hook event JSON from stdin. Returns the parsed object, or $null when
 # stdin carried nothing usable - genuinely empty, or bytes that are not JSON.
 # Both mean the same thing to a hook: there is no event to act on.
@@ -133,9 +119,12 @@ function Read-HookInput {
     if ($null -ne $parsed -and $script:TaskIdentityReady) {
         try { Register-UserTaskBoundary -HookInput $parsed } catch { }
     }
+    $script:HookRuntimeInput=$parsed
+    $script:HookRuntimeName=''
+    $entry=Get-PSCallStack | Where-Object {$_.ScriptName-like'*.ps1'-and[IO.Path]::GetFileName($_.ScriptName)-ne'_hooklib.ps1'} | Select-Object -First 1
+    if($null-ne$entry){$script:HookRuntimeName=[IO.Path]::GetFileNameWithoutExtension($entry.ScriptName)}
     return $parsed
 }
-
 # The clients a hook runtime can be running under.
 #
 # This duplicates the id list in scripts\_clientcapability.ps1, and that is
@@ -145,7 +134,6 @@ function Read-HookInput {
 # dot-sourcing. Test-ContextHooks asserts the two lists are identical, which is
 # how the duplication is kept honest.
 $script:HookClientIds = @('claude', 'codex')
-
 # Which client is running this hook.
 #
 # Resolution order, and why:
@@ -171,7 +159,6 @@ function Get-HookClientId {
     if (-not [string]::IsNullOrWhiteSpace($env:CLAUDE_PROJECT_DIR)) { return 'claude' }
     return 'codex'
 }
-
 # Which events each client documents a REAL block/deny mechanism for.
 #
 # This mirrors blockCapableEvents in scripts\_clientcapability.ps1, and it is
@@ -185,14 +172,12 @@ $script:HookBlockCapableEvents = @{
     'claude' = @('UserPromptSubmit', 'PreToolUse', 'PostToolUse', 'Stop', 'SubagentStop', 'PreCompact', 'PermissionRequest')
     'codex'  = @('UserPromptSubmit', 'PreToolUse', 'Stop', 'SubagentStop')
 }
-
 # The ONLY events where Codex takes systemMessage instead of
 # hookSpecificOutput.additionalContext. Codex does not document
 # additionalContext/hookSpecificOutput for Stop, but it honours them everywhere
 # else - so this is a Stop-scoped exception, not a Codex-wide output shape.
 # Getting that backwards silently rewrites every pre-task hook's Codex output.
 $script:HookCodexSystemMessageEvents = @('Stop', 'SubagentStop')
-
 # The ONE place a semantic hook result becomes a client-specific output shape.
 #
 # Kinds:
@@ -226,22 +211,52 @@ function Write-HookResult {
         [Parameter(Mandatory = $true)][ValidateSet('context', 'advisory', 'block', 'silent', 'deny', 'allow')][string]$Kind,
         [string]$Message = '',
         [string]$Reason = '',
-        [string]$Client = ''
+        [string]$Client = '',
+        [string]$HookName = '',
+        $HookInput = $null,
+        [string]$Condition = 'advisory',
+        [string]$FindingFingerprint = ''
     )
+    # Capture the real runtime identity at stdin read, not from a message prefix.
+    # Pure output-adapter callers without an input keep their existing contract.
+    if($null-eq$HookInput){$HookInput=Get-Variable HookRuntimeInput -Scope Script -ValueOnly -ErrorAction SilentlyContinue}
+    if($HookName-eq''){$HookName=[string](Get-Variable HookRuntimeName -Scope Script -ValueOnly -ErrorAction SilentlyContinue)}
+    if($null-ne$HookInput-and$HookName-ne''){
+        if((Get-HookFindingKind $HookName $Condition)-eq'silent'){return [pscustomobject]@{Emitted=$false;Shape='none';ExitCode=0;Degraded=$false;DegradedReason=''}}
+        if($Kind-in@('block','deny')){
+            $effective=Get-HookFindingKind -HookName $HookName -Condition $Condition
+            if($effective-eq'silent'){return [pscustomobject]@{Emitted=$false;Shape='none';ExitCode=0;Degraded=$false;DegradedReason=''}}
+            if($effective-ne'block'){$Kind='advisory'}
+        }
+        $text=if($Reason-ne''){$Reason}else{$Message}
+        # Layout changes never truncate facts or quoted commands. Advisory text
+        # is identified as such instead of continuing to claim enforcement.
+        $text=[regex]::Replace($text,'[\r\n]+\s*',' ')
+        if($Kind-in@('context','advisory')){$text=[regex]::Replace($text,'(?i)\bblocked\b','unverified');$text=[regex]::Replace($text,'(?i)\bblocking\b','advisory');$text=[regex]::Replace($text,'(?i)\bUNKNOWN blocks\b','UNKNOWN; advisory')}
+        if(-not$text.StartsWith($HookName+':',[StringComparison]::Ordinal)){$text=$HookName+': '+$(if($Kind-in@('context','advisory')){'Advisory. '}else{''})+$text}
+        $Message=$text;$Reason=$text
+        if([string]::IsNullOrWhiteSpace($FindingFingerprint)){$FindingFingerprint=Get-ShortHash $text}
+        $cwd=[string](Get-Field $HookInput cwd)
+        $identity=Get-DeliveryIdentity $HookInput
+        if($cwd-eq''-or$identity-eq''){return [pscustomobject]@{Emitted=$false;Shape='none';ExitCode=0;Degraded=$false;DegradedReason=''}}
+        try {
+        $claimPath=Join-Path (Join-Path $env:LOCALAPPDATA 'HookMaker/state') ('HookFinding-'+(Get-ShortHash (Normalize-Path $cwd).ToLowerInvariant())+'.json')
+        # Include fingerprint in the identity, so A->B->A cannot refund A's claim.
+        $claim=Invoke-DeliveryClaim -Path $claimPath -Identity ($identity+'|'+$HookName+'|'+$EventName+'|'+$FindingFingerprint) -Fingerprint $FindingFingerprint
+        if(-not$claim.Ok-or-not$claim.Admitted){return [pscustomobject]@{Emitted=$false;Shape='none';ExitCode=0;Degraded=$false;DegradedReason=''}}
+        } catch {return [pscustomobject]@{Emitted=$false;Shape='none';ExitCode=0;Degraded=$true;DegradedReason='state-unavailable'}}
+    }
     $emitted = $false
     $shape = 'none'
     $exitCode = 0
     $degradedParts = @()
-
     if ($Kind -ne 'silent') {
         # 'block' names its payload Reason and context/advisory name it Message;
         # accept either so a call site keeps the vocabulary it already uses.
         $text = $Message
         if ($Kind -eq 'block') { $text = $Reason }
         if ([string]::IsNullOrWhiteSpace($text)) { $text = $(if ($Kind -eq 'block') { $Message } else { $Reason }) }
-
         $clientId = Get-HookClientId -Explicit $Client
-
         # ---- the PreToolUse PERMISSION mechanism -------------------------
         # 'deny'/'allow' are NOT 'block'/'advisory' with a different name. A
         # PreToolUse permission decision is a separate documented mechanism:
@@ -299,7 +314,6 @@ function Write-HookResult {
                 DegradedReason = ($degradedParts -join '; ')
             }
         }
-
         if ($clientId -eq 'unknown') {
             $degradedParts += 'client is unknown; no output contract, emitted nothing.'
         }
@@ -354,7 +368,6 @@ function Write-HookResult {
             $emitted = $true
         }
     }
-
     return [pscustomobject]@{
         Emitted        = $emitted
         Shape          = $shape
@@ -363,16 +376,21 @@ function Write-HookResult {
         DegradedReason = ($degradedParts -join '; ')
     }
 }
-
 # Parses a KEY=VALUE .env file ('#' comments allowed). Returns a hashtable;
 # empty when the file is absent or blank.
 function Read-HookEnv {
     param([string]$Path)
     $values = @{}
+    # R035: only the runtime-owned .env can change severity; scanned project
+    # env files must never classify themselves or disable the leak guard.
+    $caller=Get-PSCallStack|Where-Object{$_.ScriptName-like'*.ps1'-and[IO.Path]::GetFileName($_.ScriptName)-ne'_hooklib.ps1'}|Select-Object -First 1
+    $policyOwned=$null-ne$caller-and[string]::Equals([IO.Path]::GetFullPath($Path),(Join-Path ([IO.Path]::GetDirectoryName($caller.ScriptName)) '.env'),[StringComparison]::OrdinalIgnoreCase)
     if ([string]::IsNullOrWhiteSpace($Path) -or -not (Test-Path -LiteralPath $Path -PathType Leaf)) {
+        if($policyOwned){$script:HookPolicySettings=$values}
         return $values
     }
-    foreach ($line in [System.IO.File]::ReadAllLines($Path)) {
+    try { $envLines=[IO.File]::ReadAllLines($Path,[Text.UTF8Encoding]::new($false,$true)) } catch { if($policyOwned){$script:HookPolicySettings=$values}; return $values }
+    foreach ($line in $envLines) {
         $trimmed = $line.Trim()
         if ($trimmed -eq '' -or $trimmed.StartsWith('#')) { continue }
         $separator = $trimmed.IndexOf('=')
@@ -380,9 +398,9 @@ function Read-HookEnv {
             $values[$trimmed.Substring(0, $separator).Trim()] = $trimmed.Substring($separator + 1).Trim()
         }
     }
+    if($policyOwned){$script:HookPolicySettings=$values}
     return $values
 }
-
 # 10-char lowercase hex SHA-256 prefix - stable per-project state file keys.
 function Get-ShortHash {
     param([string]$Text)
@@ -394,7 +412,6 @@ function Get-ShortHash {
         $sha.Dispose()
     }
 }
-
 # Reads a JSON file into an object, or $null when absent / blank.
 function Read-JsonFile {
     param([Parameter(Mandatory = $true)][string]$Path)
@@ -407,7 +424,6 @@ function Read-JsonFile {
     }
     return ($raw | ConvertFrom-Json)
 }
-
 # Writes an object as UTF-8 (no BOM) JSON via a temp file + atomic move.
 function Write-JsonFileAtomic {
     param(
@@ -440,7 +456,6 @@ function Write-JsonFileAtomic {
         }
     }
 }
-
 # ---- HM-07: bounded rolling test-timing history (READ side) -----------------
 # Samples live ONLY in local Hook-Maker state (%LOCALAPPDATA%\HookMaker\state),
 # one file per (canonical project key + command/suite fingerprint), never in the
@@ -454,12 +469,10 @@ $script:TimingMaxSamples = 30
 $script:TimingMinBaseline = 5        # this many COMPARABLE ok runs before judging
 $script:TimingRelFactor = 1.5        # >= 50% slower than the median, AND ...
 $script:TimingAbsSeconds = 30        # ... >= 30s slower in absolute terms
-
 function Get-TimingHistoryPath {
     param([string]$StateDir, [string]$ProjectKey, [string]$CommandFingerprint)
     return (Join-Path $StateDir ('TestTiming-' + $ProjectKey + '-' + $CommandFingerprint + '.json'))
 }
-
 # The ok-only, worker-comparable elapsed samples. A run taken with a DIFFERENT
 # worker ceiling is not comparable (more workers => faster), so a worker-count
 # change yields too few comparable samples rather than a false regression.
@@ -480,7 +493,6 @@ function Get-ComparableOkSeconds {
     }
     return $out
 }
-
 function Get-Median {
     param([double[]]$Values)
     $v = @($Values | Sort-Object)
@@ -760,81 +772,68 @@ function Get-HookSuppressionIdentity {
     return ([string](Get-Field $HookInput 'session_id') + '|main|')
 }
 
-# Claim admission and emit the block in ONE step, so no gate can emit a
-# continuation it was not admitted for. That pairing used to be the caller's to
-# remember, and every caller forgot it: the marker was written, its result
-# dropped, and the block emitted regardless.
-#
-# A REFUSAL EMITS NOTHING. The finding is already recorded as unresolved in the
-# ledger, and forcing another answer once the shared allowance is spent is the
-# loop this whole mechanism exists to stop. .Emitted says which happened, so a
-# caller that needs to know can tell a refusal from a delivered block.
+# R035: only these detector-supplied conditions are safety gates; prose is never
+# inspected to guess severity. A persisted local override remains authoritative.
+$script:HookFindingSeverity = @{
+    'secret-exposure'='block'; 'unsafe-delete'='block'; 'data-loss'='block'
+    'live-or-leaked-test-process'='block'; 'advisory'='advisory'; 'unknown'='silent'
+}
+function Get-HookFindingKind {
+    param([string]$HookName,[string]$Condition='advisory')
+    $settings=Get-Variable HookPolicySettings -Scope Script -ValueOnly -ErrorAction SilentlyContinue
+    if($null-ne$settings){
+        $key=switch($HookName){'Rules-Check'{'RULES_CONFIRMATION_ENFORCEMENT'};'Skills-Check'{'SKILLS_SUMMARY_ENFORCEMENT'};'Mcp-Usage-Check'{'MCP_SUMMARY_ENFORCEMENT'};default{'HOOK_ENFORCEMENT'}}
+        if(-not$settings.ContainsKey($key)-and$settings.ContainsKey('HOOK_ENFORCEMENT')){$key='HOOK_ENFORCEMENT'}
+        if($settings.ContainsKey($key)){
+            $choice=([string]$settings[$key]).Trim().ToLowerInvariant()
+            if($choice-eq'off'){return 'silent'}
+            if($choice-in@('block','advisory')){return $choice}
+        }
+    }
+    if($script:HookFindingSeverity.ContainsKey($Condition)){return $script:HookFindingSeverity[$Condition]}
+    return 'advisory'
+}
+# Native Git has no JSON/session payload. Keep its stdin/exit contract and store
+# only a sanitized message hash, scoped to the parent shell identity when known.
+function Write-NativeFinding {
+    param([string]$HookName,[string]$Message,[string]$ProjectRoot,[string]$Condition='advisory')
+    $kind=Get-HookFindingKind $HookName $Condition
+    if($kind-eq'silent'-or[string]::IsNullOrWhiteSpace($Message)){return 0}
+    try {
+        $parent=Get-CimInstance Win32_Process -Filter ('ProcessId='+$PID) -OperationTimeoutSec 2 -ErrorAction Stop
+        $owner=Get-Process -Id ([int]$parent.ParentProcessId) -ErrorAction Stop
+        $session=[string]$owner.Id+'|'+$owner.StartTime.ToUniversalTime().Ticks
+        $root=Normalize-Path $ProjectRoot
+        $fingerprint=Get-ShortHash $Message
+        $path=Join-Path (Join-Path $env:LOCALAPPDATA 'HookMaker/state') ('NativeFinding-'+(Get-ShortHash $root.ToLowerInvariant())+'.json')
+        $claim=Invoke-DeliveryClaim -Path $path -Identity ($HookName+'|GitPrePush|'+$session+'|'+$fingerprint) -Fingerprint $fingerprint
+        if(-not$claim.Ok-or-not$claim.Admitted){return 0}
+        [Console]::Error.WriteLine($HookName+': '+$Message)
+        if($kind-eq'block'){return 1}
+    }catch{return 0}
+    return 0
+}
+
 function Write-StopBlockResult {
     param(
-        [Parameter(Mandatory = $true)]$HookInput,
-        [Parameter(Mandatory = $true)][string]$HookName,
-        [Parameter(Mandatory = $true)][string]$EventName,
-        [AllowEmptyString()][string]$Reason = '',
-        [AllowEmptyString()][string]$Message = '',
-        [AllowEmptyString()][string]$FindingFingerprint = ''
+        [Parameter(Mandatory=$true)]$HookInput,
+        [Parameter(Mandatory=$true)][string]$HookName,
+        [Parameter(Mandatory=$true)][string]$EventName,
+        [AllowEmptyString()][string]$Reason='',
+        [AllowEmptyString()][string]$Message='',
+        [AllowEmptyString()][string]$FindingFingerprint='',
+        [string]$Condition='advisory'
     )
-    # The TEXT is composed before admission, because the text IS the finding: a
-    # gate that refuses for a different reason is making a different claim and
-    # must be allowed to make it, while the same words twice in one task are the
-    # same request repeated. Composed without the finalization clause below, so
-    # a clause that varies cannot make an unchanged finding look new.
-    $text = $Reason
-    if ([string]::IsNullOrEmpty($text)) { $text = $Message }
-    if ([string]::IsNullOrWhiteSpace($text) -or (Get-HookClientId) -eq 'unknown') {
-        return [pscustomobject]@{ ExitCode = 0; Emitted = $false; Admission = $null }
-    }
-    # Prefer the detector's semantic evidence identity. Equal message text is
-    # not equal evidence: another edit can change bytes behind one dirty path.
-    $finding = $FindingFingerprint
-    if ([string]::IsNullOrWhiteSpace($finding)) { $finding = Get-ShortHash ($HookName + '|' + $text) }
-    $script:StopGateVerdict = 'block'; $admit = Set-StopBlockMarker -HookInput $HookInput -HookName $HookName -FindingFingerprint $finding
-    if ($null -eq $admit -or -not $admit.Admitted) {
-        if ($null -ne $admit -and $admit.Reason -ne 'already-claimed') {
-            $notice = 'Hook Maker stopped automatic corrections (' + $admit.Reason + '). This finding is NOT resolved: ' + $text
-            [Console]::Out.WriteLine((@{ continue = $false; stopReason = $notice; systemMessage = $notice } | ConvertTo-Json -Compress))
-            return [pscustomobject]@{ ExitCode = 0; Emitted = $true; Admission = $admit }
-        }
-        return [pscustomobject]@{ ExitCode = 0; Emitted = $false; Admission = $admit }
-    }
-    if (-not $script:StopLedgerReady) {
-        $notice = 'Stop library missing/unsafe; repair runtime. Unresolved: ' + $text
-        [Console]::Out.WriteLine((@{ continue = $false; stopReason = $notice; systemMessage = $notice } | ConvertTo-Json -Compress))
-        return [pscustomobject]@{ ExitCode = 0; Emitted = $true; Admission = $admit; Degraded = $true }
-    }
-    # EVERY block carries the finalization clause, because every block is the
-    # thing that turns one wrap-up into three: the agent answers, a gate sends it
-    # back, it corrects, it writes another wrap-up, the next gate sends it back
-    # again. The gate that interrupted is the only component that knows this is a
-    # correction turn, so it is the one that has to say so.
-    if ($script:StopLedgerReady) {
-        try {
-            $clause = Get-StopFinalizationClause -HookInput $HookInput
-            if (-not [string]::IsNullOrWhiteSpace($clause)) { $text = $text + "`n" + $clause }; if (Get-Command Get-ReplyLanguageLine -ErrorAction SilentlyContinue) { $text += (Get-ReplyLanguageLine -HookInput $HookInput -Prefix "`n") }
-        }
-        catch { }
-    }
-    # The text about to be emitted is recorded as this task's, so a client that
-    # replays a refusal as the next user prompt (Codex does) is recognised as the
-    # continuation it is rather than minting a task and refilling the allowance.
-    if ($script:TaskIdentityReady) {
-        $identity = Get-CurrentUserTaskIdentity -HookInput $HookInput
-        if (-not $identity.Degraded) {
-            $receipt = Register-TaskContinuation -HookInput $HookInput -Reason $text
-            if (-not $receipt.Ok) {
-                $notice = 'Hook Maker could not durably record the correction; completion is unverified. ' + $text
-                [Console]::Out.WriteLine((@{ continue = $false; stopReason = $notice; systemMessage = $notice } | ConvertTo-Json -Compress))
-                return [pscustomobject]@{ ExitCode = 0; Emitted = $true; Admission = $admit; Degraded = $true }
-            }
-            $text = $receipt.Text
-        }
-    }
-    $emit = Write-HookResult -EventName $EventName -Kind 'block' -Reason $text -Message $text
-    return [pscustomobject]@{ ExitCode = $emit.ExitCode; Emitted = $emit.Emitted; Admission = $admit }
+    $text=if([string]::IsNullOrEmpty($Reason)){$Message}else{$Reason}
+    $kind=Get-HookFindingKind -HookName $HookName -Condition $Condition
+    if($kind-eq'silent'-or[string]::IsNullOrWhiteSpace($text)){return [pscustomobject]@{ExitCode=0;Emitted=$false;Admission=$null}}
+    # Advisory delivery never spends the Stop continuation budget or creates a
+    # task continuation receipt. Missing/corrupt reservation state is silent.
+    if($kind-ne'block'){return (Write-HookResult -EventName $EventName -Kind advisory -Message $text -HookName $HookName -HookInput $HookInput -FindingFingerprint $FindingFingerprint)}
+    $admit=Set-StopBlockMarker -HookInput $HookInput -HookName $HookName -FindingFingerprint $(if($FindingFingerprint-ne''){$FindingFingerprint}else{Get-ShortHash ($HookName+'|'+$text)})
+    if($null-eq$admit-or-not$admit.Admitted){return [pscustomobject]@{ExitCode=0;Emitted=$false;Admission=$admit}}
+    $script:StopGateVerdict='block'
+    return (Write-HookResult -EventName $EventName -Kind block -Reason $text -Message $text -HookName $HookName -HookInput $HookInput -Condition $Condition -FindingFingerprint $FindingFingerprint)
 }
 
 # The fallback marker path, used by a runtime with no _stoplib.ps1 beside it.

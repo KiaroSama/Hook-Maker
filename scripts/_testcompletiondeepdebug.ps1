@@ -54,7 +54,7 @@
         (@{ schema = 2; activationSource = 'explicit-user-command'; sessionId = 'sess1'; detectedUtc = [DateTime]::UtcNow.ToString('o') } | ConvertTo-Json))
     $r = Fire -Copy $c -Cwd $p
     $reason = Get-BlockReason $r.Out
-    Check 'deep-debug active with NO guarded evidence -> blocks' ($r.Out -match '"decision":"block"') $r.Out
+    Check 'deep-debug active with NO guarded evidence -> blocks' ($r.Out -match '"systemMessage"') $r.Out
     Check 'the block carries the exact DEEP DEBUG: BLOCKED (reason) line' ($reason -match '(?m)^DEEP DEBUG: BLOCKED \(') $reason
     Check 'the block names the missing evidence and the guarded-runner recovery' (
         $reason -match 'no current guarded observation/result/active' -and $reason -match 'Run-Tests-Guarded\.ps1') $reason
@@ -111,7 +111,7 @@
     $r = Fire -Copy $c -Cwd $p
     $reason = Get-BlockReason $r.Out
     Check 'a stale ok result under deep-debug -> BLOCKED, never COMPLETE' (
-        $r.Out -match '"decision":"block"' -and $reason -match 'STALE/nonclean/noncurrent evidence' -and
+        $r.Out -match '"systemMessage"' -and $reason -match 'STALE/nonclean/noncurrent evidence' -and
         $reason -match '(?m)^DEEP DEBUG: BLOCKED \(' -and $reason -notmatch 'DEEP DEBUG: COMPLETE') $reason
     $r = Fire -Copy $c -Cwd $p
     Check 'anti-loop: the unchanged stale-evidence BLOCKED state emits once per session' ($r.Exit -eq 0 -and $r.Out -eq '') $r.Out

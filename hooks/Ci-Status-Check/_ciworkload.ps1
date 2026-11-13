@@ -5,6 +5,7 @@ $ciProofRoot = if ([IO.File]::Exists((Join-Path $PSScriptRoot '_ciprovenance.ps1
 . (Join-Path $PSScriptRoot '_docsquery.ps1')
 . (Join-Path $PSScriptRoot '_cibatch.ps1')
 . (Join-Path $PSScriptRoot '_ciliteral.ps1')
+# T004 paged snapshot RED: never mistake a full first page for all workflows/checks.
 . (Join-Path $PSScriptRoot '_cipagination.ps1')
 . (Join-Path $PSScriptRoot '_civisibility.ps1')
 
@@ -24,7 +25,7 @@ function Get-CiWorkloadExpectation {
     $script:CiReviewPresent = $false
     $reviewed = Get-CiReviewedExpectation -ProjectRoot $ProjectRoot -RepoSlug $RepoSlug -Sha $Sha -Branch $Branch
     if ($null -ne $reviewed) { return $reviewed }
-    $script:CiWorkloadReason = 'Workload UNPROVEN: review missing/stale/unsupported. Review committed workflow/full inputs; scripts/Set-CiWorkloadReview.ps1 selected record/client. Input: ' + (Join-Path $PSScriptRoot '_ci-policy.json') + '. Do not dispatch duplicate CI or seed success state.'
+    $script:CiWorkloadReason = 'Workload UNPROVEN; review committed workflow/inputs: scripts/Set-CiWorkloadReview.ps1 record/client. Input=' + (Join-Path $PSScriptRoot '_ci-policy.json') + '. Do not dispatch duplicate CI or seed success state.'
     # A present invalid review must not silently downgrade to literal recognition.
     if (Test-Path -LiteralPath (Join-Path $PSScriptRoot '_ci-policy.json')) { return $null }
     $present=Get-Variable CiReviewPresent -Scope Script -ErrorAction SilentlyContinue
