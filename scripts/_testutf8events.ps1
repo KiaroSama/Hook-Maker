@@ -288,7 +288,7 @@
     Check 'a malformed .env never crashes the gate' ($r.Exit -eq 0 -and $r.Err -eq '') $r.Err
     Check 'the invalid integer is reported and the default used; the bad flag falls to advisory-only (non-widening)' (
         -not (Test-StopBlocks $r.Out) -and (Get-Message $r.Out) -match 'UTF8_MAX_FILES is not an integer' -and
-        (Get-Message $r.Out) -match 'invalid -> advisory\(true\), never wider advisory') $r.Out
+        (Get-Message $r.Out) -match 'invalid -> advisory\(true\), never wider blocking') $r.Out
 
     # =====================================================================
     Write-Host '--- Windows PowerShell 5.1 host: the Stop gate works unchanged ---' -ForegroundColor Cyan

@@ -45,7 +45,7 @@ function Resolve-FailedRunVerdict {
     if (-not $AllowCiRecovery) {
         return [pscustomobject]@{ Blocking = $true; Lines = @(
             'failed historical runId=' + [string](Get-Field $Doc 'runId') + '; commandFingerprint=' + [string](Get-Field $Doc 'commandFingerprint') + '; endedUtc=' + [string](Get-Field $Doc 'endedUtc') + '; failedField=' + $NoCiRecoveryReason + '. Exit code=' + $exitCode + '.',
-            'Retain receipt; SAME COMPLETE argv/audited scope only, unrelated CI!=repair.') }
+            'Retain receipt; SAME COMPLETE argv/scope, unrelated CI!=repair.') }
     }
     $ci = Test-CiClearedFailure -ProjectRoot $ProjectRoot -FailureEndedUtc (ConvertTo-UtcStamp (Get-Field $Doc 'endedUtc'))
     if ($ci.Cleared) {

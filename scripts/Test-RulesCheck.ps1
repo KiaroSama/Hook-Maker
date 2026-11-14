@@ -341,7 +341,10 @@ try {
     $r = Fire -Cwd $projDD -RawStdin (New-PromptStdin -Cwd $projDD -Prompt 'run ::deep-debug on the parser' -SessionId 'dd-s1')
     Check 'a standalone ::deep-debug requires complete workflow owners before EVERY bug/phase' (
         ([string](($r.Out | ConvertFrom-Json).hookSpecificOutput.additionalContext)).Contains('BEFORE ::deep-debug read WORKFLOWS.md Deep Debug/skill-policy-deep-debug.md/CODEWORDS.md FULL, EVERY bug/phase') -and
-        ([string](($r.Out | ConvertFrom-Json).hookSpecificOutput.additionalContext)).Contains('DEEP DEBUG: COMPLETE or DEEP DEBUG: unverified')) $r.Out
+        # The verdict marker is a FIXED token the workflow matches on, so it is
+        # delivered verbatim even on an advisory - the advisory vocabulary
+        # rewrite must never turn `DEEP DEBUG: BLOCKED` into anything else.
+        ([string](($r.Out | ConvertFrom-Json).hookSpecificOutput.additionalContext)).Contains('DEEP DEBUG: COMPLETE or DEEP DEBUG: BLOCKED')) $r.Out
     # Goal/dispositions/integration/recursion live in the full workflow owners;
     # the public reminder proves routing only, never their execution.
     Check 'Ponytail native reference remains ONCE after proof' (

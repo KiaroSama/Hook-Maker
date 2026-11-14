@@ -116,7 +116,7 @@ try {
         $text -match 'advisory, owner UNPROVEN; kills nothing') $r.Out
     Check 'the advisory instructs the survivor sweep and cites the rule' (
         $text -match 'global-test-rules\.md FULL: sweep PID\+start ownership' -and
-        $text -match 'reap owned, verify/report exit' -and $text -match 'Owned alive=incomplete') $r.Out
+        $text -match 'PID\+start sweep/reap/verify/report' -and $text -match 'owned alive=incomplete') $r.Out
     Check 'the survivor advisory NEVER blocks: no decision, exit 0' (
         $r.Exit -eq 0 -and $r.Err -eq '' -and $null -ne $doc -and
         $null -ne $doc.PSObject.Properties['systemMessage'] -and

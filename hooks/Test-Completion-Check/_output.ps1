@@ -33,7 +33,7 @@ $script:expiredNow = New-Object System.Collections.Generic.List[string]
 . (Join-Path $PSScriptRoot '_failureadmission.ps1')
 
 function Write-Finding {
-    param([string[]]$Lines, [bool]$Blocking, [switch]$CompletedFailure)
+    param([string[]]$Lines, [bool]$Blocking, [switch]$CompletedFailure, [switch]$HasVerdict)
     $all = New-Object System.Collections.Generic.List[string]
     foreach ($line in $Lines) { [void]$all.Add($line) }
     # E-05: while ::deep-debug is active, every finding also carries the exact
@@ -43,7 +43,9 @@ function Write-Finding {
     # It rides EVERY finding, not only a blocking one: a ::deep-debug session has
     # to read COMPLETE/BLOCKED off whatever this gate says, and since 035 most of
     # what it says is delivered as an advisory.
-    if ($script:DeepDebugActive) {
+    # A finding that already carries a verdict owns it: appending BLOCKED to a
+    # COMPLETE advisory would state both outcomes at once.
+    if ($script:DeepDebugActive -and -not $HasVerdict) {
         $ddReason = ''
         if (@($Lines).Count -gt 0) {
             $ddReason = ([string]$Lines[0]) -replace '^TEST COMPLETION CHECK:\s*', ''
