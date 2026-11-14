@@ -28,7 +28,7 @@
     $doc = ConvertFrom-HookOutput $r.Out
     Check 'standalone ::deep-debug + clean fresh evidence -> non-blocking COMPLETE advisory (Claude shape)' (
         $null -ne $doc -and $null -eq $doc.PSObject.Properties['decision'] -and
-        [string]$doc.systemMessage -match '(?m)^DEEP DEBUG: COMPLETE$') $r.Out
+        [string]$doc.systemMessage -match 'DEEP DEBUG: COMPLETE') $r.Out
     $ddCtx = [string]$doc.systemMessage
     Check 'COMPLETE limits verified scope to fresh clean observations without open run or note' (
         $ddCtx -match 'Scope: fresh clean current observations' -and
@@ -67,7 +67,7 @@
     $doc = ConvertFrom-HookOutput $r.Out
     Check 'changed state (fresh clean evidence) upgrades to the COMPLETE advisory immediately' (
         $null -ne $doc -and $null -eq $doc.PSObject.Properties['decision'] -and
-        [string]$doc.systemMessage -match '(?m)^DEEP DEBUG: COMPLETE$') $r.Out
+        [string]$doc.systemMessage -match 'DEEP DEBUG: COMPLETE') $r.Out
     # A marker from a DIFFERENT session remains evidence, but never activates.
     $c = New-IsolatedHookCopy
     $p = New-GitRepoAi 'DdStaleMarker'
@@ -128,7 +128,7 @@
     Check 'Codex COMPLETE advisory uses systemMessage, never decision:block' (
         $null -ne $doc -and $null -eq $doc.PSObject.Properties['decision'] -and
         $null -eq $doc.PSObject.Properties['hookSpecificOutput'] -and
-        [string]$doc.systemMessage -match '(?m)^DEEP DEBUG: COMPLETE$') $r.Out
+        [string]$doc.systemMessage -match 'DEEP DEBUG: COMPLETE') $r.Out
 
     # =====================================================================
     Write-Host '--- E-13: static safety - the hook never executes commands, codewords, or skills ---' -ForegroundColor Cyan

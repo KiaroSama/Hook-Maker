@@ -623,7 +623,7 @@ if ($script:DeepDebugActive) {
                 [void]$ddLines.Add('')
                 foreach ($trl in $timingRegressionLines) { [void]$ddLines.Add($trl) }
             }
-            Write-Finding -Blocking $false -Lines $ddLines.ToArray() -HasVerdict -HasVerdict -HasVerdict
+            Write-Finding -Blocking $false -Lines $ddLines.ToArray() -HasVerdict
         }
     }
     elseif (Test-DdGateShouldReport ('staleorunproven|' + $stateFingerprint)) {

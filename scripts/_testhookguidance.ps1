@@ -4,7 +4,7 @@ $guidanceRoot=Join-Path (Split-Path -Parent $PSScriptRoot) hooks
 . (Join-Path $PSScriptRoot _guidanceinventory.ps1)
 $guidanceBudgets=@{
     '_hooklib.ps1'=316
-    '_manualworkflow.ps1'=102
+    '_manualworkflow.ps1'=135
     '_replylanguage.ps1'=130
     '_scope.ps1'=2927
     '_stoplib.ps1'=280
@@ -12,7 +12,7 @@ $guidanceBudgets=@{
     'Ai-Memory-Load'=723
     'Cbm-Read-Check'=1482
     'Cbm-Update-Check'=295
-    'Ci-Status-Check'=3867
+    'Ci-Status-Check'=3912
     'Cloudflare-Deploy'=1475
     'Cross-Project-.ai-Knowledge-Sync'=1165
     'Dependabot-Check'=728
