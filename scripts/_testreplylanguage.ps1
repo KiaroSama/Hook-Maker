@@ -63,7 +63,9 @@
                 '$ErrorActionPreference = ''Stop''',
                 '. $HookLibPath',
                 '$in = [IO.File]::ReadAllText($InputPath) | ConvertFrom-Json',
-                '$r = Write-StopBlockResult -HookInput $in -HookName ''Rules-Check'' -EventName ''Stop'' -Reason ''RULES CHECK: language probe''',
+                # Probe the BLOCK path: since 035 only a safety condition blocks, so the
+                # default advisory condition never reaches the finalization/language appends.
+                '$r = Write-StopBlockResult -HookInput $in -HookName ''Rules-Check'' -EventName ''Stop'' -Reason ''RULES CHECK: language probe'' -Condition ''live-or-leaked-test-process''',
                 'exit $r.ExitCode'
             ) -join "`r`n"), (New-Object System.Text.UTF8Encoding $false))
     foreach ($client in @('claude', 'codex')) {

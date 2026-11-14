@@ -204,8 +204,9 @@ foreach ($codexShape in @($false, $true)) {
     $c = New-IsolatedHookCopy; $p = New-GitRepo ('Selection-old-only-' + $client)
     Write-SelectionPair $c $p 'only-old' 'old-only' -Age 600
     $r = Fire -Copy $c -Cwd $p -Codex:$codexShape -Exe $hostExe
+    # R035: a stale historical success is a reported finding, not a stopped turn.
     Check ($client + ': historical success alone remains STALE, never fresh proof') (
-        $r.Exit -eq 0 -and $r.Out -match '"decision"\s*:\s*"block"' -and (Get-BlockReason $r.Out) -match 'STALE') $r.Out
+        $r.Exit -eq 0 -and $r.Out -match '"systemMessage"' -and $r.Out -notmatch '"decision"' -and (Get-BlockReason $r.Out) -match 'STALE') $r.Out
 
     foreach ($bad in @('missing', 'mismatch', 'identity', 'old-identity', 'failed', 'old-failed', 'wallTimeout', 'idleTimeout', 'terminated', 'leak', 'old-leak')) {
         $c = New-IsolatedHookCopy; $p = New-GitRepo ('Selection-' + $client + '-' + $bad)

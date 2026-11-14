@@ -222,10 +222,10 @@ function Write-HookResult {
     if($null-eq$HookInput){$HookInput=Get-Variable HookRuntimeInput -Scope Script -ValueOnly -ErrorAction SilentlyContinue}
     if($HookName-eq''){$HookName=[string](Get-Variable HookRuntimeName -Scope Script -ValueOnly -ErrorAction SilentlyContinue)}
     if($null-ne$HookInput-and$HookName-ne''){
-        if((Get-HookFindingKind $HookName $Condition)-eq'silent'){return [pscustomobject]@{Emitted=$false;Shape='none';ExitCode=0;Degraded=$false;DegradedReason=''}}
+        # Enforcement keys govern whether a FINDING may stop the turn; they never silence the pre-task context half, so `=off` cannot mute the opening reminder.
+        if($Kind-ne'context'-and(Get-HookFindingKind $HookName $Condition)-eq'silent'){return [pscustomobject]@{Emitted=$false;Shape='none';ExitCode=0;Degraded=$false;DegradedReason=''}}
         if($Kind-in@('block','deny')){
             $effective=Get-HookFindingKind -HookName $HookName -Condition $Condition
-            if($effective-eq'silent'){return [pscustomobject]@{Emitted=$false;Shape='none';ExitCode=0;Degraded=$false;DegradedReason=''}}
             if($effective-ne'block'){$Kind='advisory'}
         }
         $text=if($Reason-ne''){$Reason}else{$Message}

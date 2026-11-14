@@ -64,7 +64,7 @@ $config = Read-HookEnv (Join-Path $PSScriptRoot '.env')
 # full chain - so telling the reader a fix is exempt would send them past the
 # workflow the rules put them on. Speckit-Check names that route; this hook
 # stays on the interview, which is the part a transcript can actually prove.
-$chainNote = 'Feature-Request-Check: advisory feature intake; grilling + domain-modeling first, missing docs/agents/issue-tracker.md -> setup; then speckit-specify/clarify/plan/tasks/analyze/implement, agreed TDD/review/Git closure. Mid-task delta: dated IDs/AC, amend spec/plan/tasks, linked independent feature, refresh skills/gates; stable order/explained dependencies/disposition. Cross-project exact consent or English handoff; not implicit source/staging/runner/provider repair; global-project-lifecycle-rules.md. BEFORE feature/delta/setup: global-spec-kit-rules.md/global-skill-routing.md FULL; unresolved decisions: only dependents wait.'
+$chainNote = 'Feature-Request-Check: advisory feature intake; grilling + domain-modeling first, missing docs/agents/issue-tracker.md -> setup; then speckit-specify/clarify/plan/tasks/analyze/implement, agreed TDD/review/Git closure. Mid-task delta: dated IDs/AC, amend spec/plan/tasks, linked independent feature, refresh skills/gates; stable order/explained dependencies/disposition. Other-project exact consent or English handoff; not implicit source/staging/runner/provider repair; global-project-lifecycle-rules.md. BEFORE feature/delta/setup: global-spec-kit-rules.md/global-skill-routing.md FULL; unresolved decisions: only dependents wait.'
 
 # ---- UserPromptSubmit: advise, once per prompt -------------------------------
 if ($eventName -eq 'UserPromptSubmit') {

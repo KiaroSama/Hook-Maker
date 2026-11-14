@@ -17,15 +17,18 @@ function Invoke-AgedRecoveryRegression {
         Write-ObservedRecord $c $p -RunId current -CommandFingerprint current-command
         Write-GuardedResult $c $p -RunId current -CommandFingerprint current-command
         $r=Fire -Copy $c -Cwd $p -Codex:$Codex -Exe $HostExe
-        $blocked=$r.Out-match'"decision"\s*:\s*"block"'
-        Check ('aged recovery '+$case+' retains exact supersession decision') ($r.Exit-eq0-and$r.Err-eq''-and$blocked-eq($case-ne'same')) ($r.Out+$r.Err)
+        # R035: a negative receipt is now reported, never stopped on, so the
+        # supersession decision is read off the emitted finding instead of the
+        # retired decision:block shape. An unresolved case still has to SPEAK.
+        $reported=$r.Out-match'"systemMessage"'
+        Check ('aged recovery '+$case+' retains exact supersession decision') ($r.Exit-eq0-and$r.Err-eq''-and$reported-eq($case-ne'same')) ($r.Out+$r.Err)
         $after=@($originals|ForEach-Object{[Convert]::ToBase64String([IO.File]::ReadAllBytes($_))})
         Check ('aged recovery '+$case+' preserves original byte sequences') (($before-join'|')-ceq($after-join'|'))
         if($case-eq'same') {
             [IO.File]::Delete((Get-RunStateFile $c $p result current))
             # The outstanding current observation still requires its own result.
             $r=Fire -Copy $c -Cwd $p -Codex:$Codex -Exe $HostExe
-            Check 'retired recovery cannot become fresh execution proof' ($r.Exit-eq0-and$r.Err-eq''-and$r.Out-match'"decision"\s*:\s*"block"') ($r.Out+$r.Err)
+            Check 'retired recovery cannot become fresh execution proof' ($r.Exit-eq0-and$r.Err-eq''-and$r.Out-match'"systemMessage"' -and $r.Out -notmatch '"decision"') ($r.Out+$r.Err)
         }
     }
 }

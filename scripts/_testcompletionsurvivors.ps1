@@ -210,17 +210,20 @@ try {
         $null -eq $doc.PSObject.Properties['decision']) $r.Out
 
     # ---- the advisory never displaces a real gate -------------------------
-    # A terminated guarded result blocks exactly as before WITH a live candidate
-    # present: the survivor list is emitted only where the hook would be silent.
+    # A genuine safety condition blocks WITH a live candidate present: the
+    # survivor list is emitted only where the hook would otherwise be silent, so
+    # it must never pre-empt the block that was already going to happen. R035
+    # narrowed block authority to the safety conditions, so the live guarded run
+    # is the gate to prove this against - not a finished terminated receipt.
     $c7 = New-IsolatedHookCopy
     $p7 = New-GitRepo 'SurvivorVsGate'
     Write-SessionBaseline -Copy $c7 -Root $p7 -Utc ([datetime]::UtcNow.AddMinutes(-5))
-    Write-GuardedResult -Copy $c7 -Root $p7 -Overall 'terminated' -ExitCode 124 -TerminateReason 'wallTimeout' -TerminateDetail 'x'
+    Write-ActiveMarker -Copy $c7 -Root $p7 -ProcessId $PID
     $r = Fire -Copy $c7 -Cwd $p7
     $doc = ConvertFrom-HookOutput $r.Out
     Check 'an existing block condition still blocks, and the advisory does not pre-empt it' (
         $null -ne $doc -and [string](Get-Field $doc 'decision') -eq 'block' -and
-        [string](Get-Field $doc 'reason') -match 'wallTimeout' -and
+        [string](Get-Field $doc 'reason') -match 'STILL ACTIVE' -and
         [string](Get-Field $doc 'reason') -notmatch 'Possible session test orphans') $r.Out
 
     # ---- static: this file can neither kill nor over-enumerate -------------

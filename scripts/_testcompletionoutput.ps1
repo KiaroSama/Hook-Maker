@@ -8,16 +8,18 @@
 # its harness, helpers and workspace) - not a standalone suite.
 
     # =====================================================================
+    # R035: a LIVE guarded run is the safety condition, so it is what a real gate
+    # is proved with here. A terminated receipt is reported, never stopped on.
     Write-Host '--- both client shapes, and the Codex block-vs-advisory distinction ---' -ForegroundColor Cyan
     $c = New-IsolatedHookCopy
     $p = New-GitRepo 'Shapes'
-    Write-GuardedResult -Copy $c -Root $p -Overall 'terminated' -ExitCode 124 -TerminateReason 'wallTimeout' -TerminateDetail 'x'
+    Write-ActiveMarker -Copy $c -Root $p -ProcessId $PID
     $r = Fire -Copy $c -Cwd $p
     $doc = ConvertFrom-HookOutput $r.Out
     Check 'Claude: a real gate emits decision:block' (
         $null -ne $doc -and $doc.decision -eq 'block' -and $null -eq $doc.PSObject.Properties['hookSpecificOutput']) $r.Out
     $c2 = New-IsolatedHookCopy
-    Write-GuardedResult -Copy $c2 -Root $p -Overall 'terminated' -ExitCode 124 -TerminateReason 'wallTimeout' -TerminateDetail 'x'
+    Write-ActiveMarker -Copy $c2 -Root $p -ProcessId $PID
     $r = Fire -Copy $c2 -Cwd $p -Codex
     $doc = ConvertFrom-HookOutput $r.Out
     Check 'Codex: a real gate also emits decision:block (forcing continuation is the point of a gate)' (
@@ -92,7 +94,7 @@
     Write-GuardedResult -Copy $c -Root $p3 -Overall 'ok'
     $r = Fire -Copy $c -Cwd $p3
     Check 'ALWAYS_REQUIRE_NOTE=1 demands a note even after a clean run' (
-        $r.Out -match '"decision":"block"' -and (Get-BlockReason $r.Out) -match '\.ai/ note owed') $r.Out
+        $r.Out -match '"systemMessage"' -and $r.Out -notmatch '"decision"' -and (Get-BlockReason $r.Out) -match '\.ai/ note owed') $r.Out
     Add-TaggedNote -Root $p3 -Reason (Get-BlockReason $r.Out) -Body ('Full suite run through the guarded runner completed clean; recorded here because this project requires a note per run. ' +
         'Wall 1800s / idle 300s, no leaked processes observed.')
     $r = Fire -Copy $c -Cwd $p3
@@ -116,10 +118,10 @@
     $p = New-GitRepo 'Ps51'
     $r = Fire -Copy $c -Cwd $p -Exe 'powershell.exe'
     Check '5.1: silence when there is no test work' ($r.Exit -eq 0 -and $r.Out -eq '') ($r.Out + $r.Err)
-    Write-GuardedResult -Copy $c -Root $p -Overall 'terminated' -ExitCode 124 -TerminateReason 'wallTimeout' -TerminateDetail 'exceeded the 1800s wall ceiling'
+    Write-ActiveMarker -Copy $c -Root $p -ProcessId $PID
     $r = Fire -Copy $c -Cwd $p -Exe 'powershell.exe'
     Check '5.1: the gate blocks with the same reason and no stderr noise' (
-        $r.Exit -eq 0 -and $r.Out -match '"decision":"block"' -and (Get-BlockReason $r.Out) -match 'wallTimeout' -and $r.Err -eq '') ($r.Out + '|' + $r.Err)
+        $r.Exit -eq 0 -and $r.Out -match '"decision":"block"' -and (Get-BlockReason $r.Out) -match 'STILL ACTIVE' -and $r.Err -eq '') ($r.Out + '|' + $r.Err)
     $r = Fire -Copy $c -Cwd $p -Exe 'powershell.exe' -StopHookActive
     Check '5.1: stop_hook_active short-circuits identically' ($r.Exit -eq 0 -and $r.Out -eq '') ($r.Out + $r.Err)
 

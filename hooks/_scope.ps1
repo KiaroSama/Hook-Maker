@@ -152,6 +152,9 @@ function Get-OperationMcpReminder {
     if ($text -match '(?i)\bcontext-mode\b') {
         [void]$notes.Add('CONTEXT-MODE: BEFORE use global-mcp-server-contracts.md FULL/schema. Not a sandbox.')
     }
+    if ($text -match '(?i)\bomniroute(?:-ccr)?\b') {
+        [void]$notes.Add('OMNIROUTE: global-mcp-server-contracts.md FULL; exposed!=authorized. Missing scope/401/403: blocked, not broken; report; no retry/grant/token/endpoint/config/install/restart/probe/provider repair.')
+    }
     if ($text -match '(?i)\bnumera[- ]cha(?:[- ]solver(?:[- ]mcp)?)?\b') {
         [void]$notes.Add('NUMERA CHA: BEFORE use global-mcp-server-contracts.md FULL. Human!=server_verified; no self-approval.')
     }

@@ -85,23 +85,27 @@
     # nor can clear, so blocking one also breaks the rule that every block must
     # name the action that clears it. The identical condition must still hard
     # block on the main agent's Stop, which is the only place it belongs.
+    #
+    # R035 narrowed block authority to the safety conditions, so the control
+    # here uses a LIVE guarded run (a genuine live-or-leaked-test-process), not a
+    # terminated receipt: a finished run is a finding now, not a stop.
     Write-Host '--- the same blocking condition: Stop blocks, SubagentStop never does ---' -ForegroundColor Cyan
     $c = New-IsolatedHookCopy
     $p = New-GitRepo 'SubagentNeverBlocked'
-    Write-GuardedResult -Copy $c -Root $p -Overall 'terminated' -ExitCode 124 -TerminateReason 'wallTimeout' -TerminateDetail 'exceeded the 1800s wall ceiling'
+    Write-ActiveMarker -Copy $c -Root $p -ProcessId $PID
     $rStop = Fire -Copy $c -Cwd $p
     Check 'the condition really does block on Stop (control)' ($rStop.Out -match '"decision"\s*:\s*"block"') $rStop.Out
     $c = New-IsolatedHookCopy
     $p = New-GitRepo 'SubagentNeverBlocked2'
-    Write-GuardedResult -Copy $c -Root $p -Overall 'terminated' -ExitCode 124 -TerminateReason 'wallTimeout' -TerminateDetail 'exceeded the 1800s wall ceiling'
+    Write-ActiveMarker -Copy $c -Root $p -ProcessId $PID
     $rSub = Fire -Copy $c -Cwd $p -EventName 'SubagentStop'
     Check 'the SAME condition never emits decision:block at SubagentStop' ($rSub.Out -notmatch '"decision"\s*:\s*"block"') $rSub.Out
     Check 'SubagentStop still exits 0 and never fails the subagent' ($rSub.Exit -eq 0) $rSub.Err
     Check 'the finding is still delivered, as a non-blocking advisory' (
-        $rSub.Out -match 'systemMessage' -and $rSub.Out -notmatch 'hookSpecificOutput' -and $rSub.Out -match 'TEST COMPLETION CHECK') $rSub.Out
+        $rSub.Out -match 'systemMessage' -and $rSub.Out -notmatch 'hookSpecificOutput' -and $rSub.Out -match 'Test-Completion-Check') $rSub.Out
     $c = New-IsolatedHookCopy
     $p = New-GitRepo 'SubagentNeverBlockedCodex'
-    Write-GuardedResult -Copy $c -Root $p -Overall 'terminated' -ExitCode 124 -TerminateReason 'wallTimeout' -TerminateDetail 'exceeded the 1800s wall ceiling'
+    Write-ActiveMarker -Copy $c -Root $p -ProcessId $PID
     $rSubCodex = Fire -Copy $c -Cwd $p -EventName 'SubagentStop' -Codex
     Check 'the Codex shape is non-blocking at SubagentStop too' (
         $rSubCodex.Exit -eq 0 -and $rSubCodex.Out -notmatch '"decision"\s*:\s*"block"') $rSubCodex.Out
@@ -118,16 +122,21 @@
     Check 'an observed run WITH a fresh clean result -> still allowed' ($r.Exit -eq 0 -and $r.Out -eq '') $r.Out
 
     # =====================================================================
-    Write-Host '--- a terminated run blocks, names the reason, gives the recovery ---' -ForegroundColor Cyan
+    # A terminated run is a real finding, but R035 ranked it below the safety
+    # conditions: it is reported once, loudly and with its recovery, and the turn
+    # is not stopped for it. The message contract is unchanged.
+    Write-Host '--- a terminated run is reported, names the reason, gives the recovery ---' -ForegroundColor Cyan
     $c = New-IsolatedHookCopy
     $p = New-GitRepo 'Wall'
     Write-GuardedResult -Copy $c -Root $p -Overall 'terminated' -ExitCode 124 -TerminateReason 'wallTimeout' -TerminateDetail 'exceeded the 1800s wall ceiling'
     $r = Fire -Copy $c -Cwd $p
     $doc = ConvertFrom-HookOutput $r.Out
-    Check 'a terminated (wallTimeout) result blocks completion' ($r.Exit -eq 0 -and $null -ne $doc -and $doc.decision -eq 'block') $r.Out
+    Check 'a terminated (wallTimeout) result is delivered without stopping the turn' (
+        $r.Exit -eq 0 -and $null -ne $doc -and $null -eq $doc.PSObject.Properties['decision'] -and
+        $null -ne $doc.PSObject.Properties['systemMessage']) $r.Out
     $reason = Get-BlockReason $r.Out
-    Check 'the block names the termination reason exactly' ($reason -match 'wallTimeout') $reason
-    Check 'the block carries the runner detail, not a generic phrase' ($reason -match 'exceeded the 1800s wall ceiling') $reason
+    Check 'the finding names the termination reason exactly' ($reason -match 'wallTimeout') $reason
+    Check 'the finding carries the runner detail, not a generic phrase' ($reason -match 'exceeded the 1800s wall ceiling') $reason
     Check 'the recovery instruction names the guarded runner explicitly' ($reason -match 'Run-Tests-Guarded\.ps1') $reason
     Check 'raising the ceiling to hide it is explicitly refused' ($reason -match 'cause, not ceilings') $reason
     Check 'it never claims a broader test scope passed' (
@@ -499,14 +508,15 @@
         $r.Out -notmatch 'STILL ACTIVE') $r.Out
 
     # The same recycled pid with NO result is not "active" either - it is a run
-    # that died, and it must be reported as exactly that.
+    # that died, and it must be reported as exactly that. It is a finding, not a
+    # stop: nothing is still running, so the safety conditions do not apply.
     $c = New-IsolatedHookCopy; $p = New-GitRepo 'RecycledNoResult'
     Write-ActiveMarker -Copy $c -Root $p -ProcessId $recycler.Id -StartUtc ' ' -ExePath $recyclerExe
     $r = Fire -Copy $c -Cwd $p
     $reason = Get-BlockReason $r.Out
-    Check 'a recycled pid with no result blocks as OWNERLESS, never as a live run' (
-        $r.Out -match '"decision":"block"' -and $reason -match 'OWNERLESS' -and $reason -notmatch 'STILL ACTIVE') $reason
-    Check 'the block says WHY the pid proves nothing, naming the missing identity' (
+    Check 'a recycled pid with no result is reported as OWNERLESS, never as a live run' (
+        $r.Out -match '"systemMessage"' -and $r.Out -notmatch '"decision"' -and $reason -match 'OWNERLESS' -and $reason -notmatch 'STILL ACTIVE') $reason
+    Check 'the finding says WHY the pid proves nothing, naming the missing identity' (
         $reason -match 'Owner start missing/invalid') $reason
 
     # A genuinely live, FULLY PINNED owner still blocks - the strict identity

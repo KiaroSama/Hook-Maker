@@ -498,7 +498,7 @@ Write-Doc (Join-Path $StateDir ('TestRunGuard-result-' + $ProjectKey + '-' + $sa
     $rE = Fire -Copy $cE -Cwd $pE
     $msgE = [string]$rE.Out
     Check 'C2d/S2: a DIFFERENT command that failed is still a separate finding' (
-        $msgE -match 'TEST COMPLETION CHECK') $msgE
+        $msgE -match 'Test-Completion-Check') $msgE
 
     # =====================================================================
     # The block for a FAILED run prints a -ResolveIncident command, and recovery
