@@ -169,7 +169,7 @@
     Write-Utf8 (Join-Path $projStg 's.txt') "worktree reverted to valid - only the INDEX holds the bad bytes`n"
     $r = Fire -HookPath $hcStg.Script -Cwd $projStg -EventName 'Stop' -SessionId 'g1' -LocalAppData $hcStg.LocalAppData
     Check 'invalid bytes only in the git INDEX still advise after worktree revert' (
-        (Test-StopAdvisory $r.Out) -and (Get-Message $r.Out) -match 's\.txt \(staged content\) - invalid UTF-8') $r.Out
+        (Test-StopAdvisory $r.Out) -and (Get-Message $r.Out) -match 's\.txt \(staged content\) - an invalid UTF-8 byte sequence') $r.Out
     Check 'the staged-content block never leaks the staged bytes' ((Get-Message $r.Out) -notmatch 'STAGEDMARKER') $r.Out
 
     # =====================================================================

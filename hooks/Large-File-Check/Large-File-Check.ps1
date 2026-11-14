@@ -457,7 +457,11 @@ if ($baselineUsable -and -not $partial) {
     }
 }
 
-if ($offenders.Count -eq 0) { exit 0 } # R035: unscanned scope is not an offender or all-clear.
+if ($offenders.Count -eq 0) {
+    # R035: a valid partial scan is evidence of incomplete coverage, not clean.
+    if ($partial) { Write-Advisory ('LARGE FILE CHECK: coverage was INCOMPLETE: ' + $partialCause + '; no offenders observed, unseen files unverified. Retry the bounded scan after resolving the cause.') }
+    exit 0
+}
 
 # The offender report is the advisory half, so here the cooldown applies: an
 # unchanged repeat inside the window stays silent, exactly as before.

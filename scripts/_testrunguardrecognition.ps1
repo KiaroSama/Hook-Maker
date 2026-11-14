@@ -171,7 +171,7 @@
 
         # ... and the very next PostToolUse consumes exactly that document.
         $r = Fire -HookPath $hcProbe.Script -Cwd $Proj -EventName 'PostToolUse' -Command $probeCommand -LocalAppData $hcProbe.LocalAppData
-        Check 'PostToolUse reads the real document the replacement produced' ((Get-Message $r.Out) -match 'exit code 7') $r.Out
+        Check 'PostToolUse reads the real document the replacement produced' ((Get-Message $r.Out) -match 'Exit=7;.*did NOT pass') $r.Out
     }
 
     # =====================================================================
@@ -246,7 +246,7 @@
     function Test-BlindWait {
         param([string]$Label, [string]$Command, [bool]$ExpectDeny)
         $rb = Fire -HookPath $hc.Script -Cwd $Proj -EventName 'PreToolUse' -Command $Command -LocalAppData $hc.LocalAppData
-        $denied = ($rb.Exit -eq 0 -and $rb.Out -match '"additionalContext"|"systemMessage"' -and $rb.Out -notmatch '"permissionDecision"|"decision"' -and (Get-Message $rb.Out) -match 'blind wait')
+        $denied = ($rb.Exit -eq 0 -and $rb.Out -match '"additionalContext"|"systemMessage"' -and $rb.Out -notmatch '"permissionDecision"|"decision"' -and (Get-Message $rb.Out) -match '(?:blind wait:|blind delay:|unbounded always-true sleep/poll loop:)')
         if ($ExpectDeny) {
             Check ('ADVISED: ' + $Label) $denied $rb.Out
             # The message is an EXACT safe pattern (a deadline-bounded readiness
@@ -371,7 +371,7 @@
     $hcBad = New-IsolatedHookCopy -EnvOverrides @{ TEST_GUARD_WALL_TIMEOUT_SECONDS = 'forever'; TEST_GUARD_ADVISORY_ONLY = 'maybe' }
     $r1 = Fire -HookPath $hcBad.Script -Cwd $Proj -EventName 'PreToolUse' -Command 'pytest -q' -LocalAppData $hcBad.LocalAppData
     $message1 = Get-Message $r1.Out
-    Check 'an invalid value is reported by KEY and falls back to the default' ($message1 -match 'TEST_GUARD_WALL_TIMEOUT_SECONDS' -and $message1 -match 'using the default 1800') $message1
+    Check 'an invalid value is reported by KEY and falls back to the default' ($message1 -match 'TEST_GUARD_WALL_TIMEOUT_SECONDS' -and $message1 -match 'default=1800') $message1
     Check 'an invalid value never leaks the offending value' ($message1 -notmatch 'forever' -and $message1 -notmatch 'maybe') $message1
     Check 'an invalid value does not disable the raw-test advisory' (($r1.Out -match '"additionalContext"|"systemMessage"' -and $r1.Out -notmatch '"permissionDecision"|"decision"')) $r1.Out
     $r2 = Fire -HookPath $hcBad.Script -Cwd $Proj -EventName 'PreToolUse' -Command 'pytest -q' -LocalAppData $hcBad.LocalAppData

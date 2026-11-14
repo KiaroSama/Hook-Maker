@@ -17,7 +17,10 @@ function Invoke-ManualWorkflowRegression {
         $badgeNote -match 'BEFORE app logo/signing: global-project-lifecycle-rules.md FULL; README!=app logo' -and
         $badgeNote -match '12 to 16 verified badges/Donate')
     $sourceState = Get-ManualWorkflowState (Split-Path -Parent $HooksRoot)
-    Check 'own workflow batch has one manual root and reachable reusable validation' $sourceState.Compliant
+    Check 'own workflow retains validation and reports only the standing security trigger exception' (
+        -not $sourceState.Compliant -and $sourceState.HasValidation -and $sourceState.Complete -and
+        @($sourceState.Problems).Count -eq 1 -and
+        @($sourceState.Problems)[0] -ceq 'Automatic CI trigger; require workflow_dispatch.') ($sourceState | ConvertTo-Json -Depth 5 -Compress)
     $rootText="on: workflow_dispatch`njobs:`n  child:`n    uses: ./.github/workflows/child.yml`n"
     $childText="on: workflow_call`njobs:`n  test:`n    runs-on: ubuntu-latest`n    steps:`n      - run: npm test`n"
     $cases=@(

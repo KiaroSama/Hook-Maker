@@ -1,4 +1,4 @@
-﻿# Test-ContextHooks section: _hooklib: UTF-8 contract, client identity, Write-HookResult.
+# Test-ContextHooks section: _hooklib: UTF-8 contract, client identity, Write-HookResult.
 #
 # Dot-sourced from Test-ContextHooks.ps1 INSIDE its try block, so it runs in
 # that scope and uses its harness directly: $Work, $Fire, Check, New-Proj,
@@ -16,7 +16,7 @@
     # actually send. A hook process with no attached console - a GUI-hosted
     # client, or any parent spawning it with CreateNoWindow + redirected pipes,
     # including this repo's own parallel test runner - falls back to the machine's
-    # OEM page (measured: ibm437), so a prompt of 'معماری پروژه' arrived as
+    # OEM page (measured: ibm437), so a prompt of 'Persian architecture prompt' arrived as
     # box-drawing characters and every non-ASCII prompt, path, and filename
     # silently missed its match. _hooklib now pins UTF-8 both ways at dot-source
     # time (the fix Cross-Project-.ai-Knowledge-Sync always had).
@@ -41,7 +41,7 @@ if ($null -ne $in) { $prompt = [string](Get-Field $in 'prompt') }
 '@
     Write-Utf8 $utf8Probe ($probeBody.Replace('__LIBDIR__', (Split-Path -Parent $HookLib)))
 
-    # 'معماری' - the exact word the Graph-Read-Check relevance test uses.
+    # 'Persian architecture' - the exact word the Graph-Read-Check relevance test uses.
     $persian = [string]::Join('', @(1605, 1593, 1605, 1575, 1585, 1740 | ForEach-Object { [char]$_ }))
     $expected = (($persian.ToCharArray() | ForEach-Object { [int]$_ }) -join ',')
     $probePayload = @{ session_id = 't'; hook_event_name = 'UserPromptSubmit'; prompt = $persian } | ConvertTo-Json -Compress
@@ -202,7 +202,7 @@ if ($null -ne $in) { $prompt = [string](Get-Field $in 'prompt') }
         # SessionStart context - one of the ~15 unbranched hookSpecificOutput
         # sites, so this pins the shape the adapter must keep for Claude. On the
         # 5.1 host for the deterministic-hashing reason described at the probe.
-        $hrRealMcp = Fire -HookPath $McpHook -Cwd $plain -Exe 'powershell.exe'
+        $hrRealMcp = Fire -HookPath $McpHook -Cwd $plain -Exe 'powershell.exe' -RawStdin (New-PromptStdin $plain 'SessionStart' '' 'adapter-real-session')
         $hrMcpDoc = $null
         try { $hrMcpDoc = $hrRealMcp.Out | ConvertFrom-Json } catch { }
         $hrMcpMsg = if ($null -ne $hrMcpDoc -and $null -ne $hrMcpDoc.PSObject.Properties['hookSpecificOutput']) { [string]$hrMcpDoc.hookSpecificOutput.additionalContext } else { '' }

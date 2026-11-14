@@ -84,7 +84,7 @@
     }
     $r = Fire -HookPath $hcFail.Script -Cwd $Proj -EventName 'PostToolUse' -Command 'pytest -q' -LocalAppData $hcFail.LocalAppData
     $message = Get-Message $r.Out
-    Check 'a non-zero exit code is surfaced as a non-pass' ($message -match 'exit code 3' -and $message -match 'did NOT pass') $message
+    Check 'a non-zero exit code is surfaced as a non-pass' ($message -match 'Exit=3;' -and $message -match 'did NOT pass') $message
 
     # =====================================================================
     Write-Host '--- PostToolUse: a clean result is silent; unrelated commands are silent ---' -ForegroundColor Cyan
@@ -114,9 +114,9 @@
     Write-Host '--- Codex shape (no CLAUDE_PROJECT_DIR) ---' -ForegroundColor Cyan
     $hcCodex = New-IsolatedHookCopy
     $r = Fire -HookPath $hcCodex.Script -Cwd $Proj -EventName 'PreToolUse' -Command 'pytest -q' -LocalAppData $hcCodex.LocalAppData -NoClaudeProjectDir
-    Check 'Codex block uses systemMessage, never hookSpecificOutput' ($r.Out -match '"systemMessage"' -and $r.Out -notmatch 'hookSpecificOutput') $r.Out
+    Check 'Codex raw-test advisory uses additionalContext without a permission decision' ($r.Exit -eq 0 -and $r.Out -match '"additionalContext"' -and $r.Out -notmatch '"permissionDecision"|"decision"') $r.Out
     Check 'Codex output is one parseable JSON document' (Test-IsSingleJson $r.Out) $r.Out
-    Check 'Codex raw-test advisory exits 0 with no stderr' ($r.Exit -eq 0 -and $r.Err -eq '' -and $r.Out -match 'Test-Run-Guard:' -and $r.Err -match 'Test-Run-Guard:.*(?:advisory|Advisory)') ([string]$r.Exit + '|' + $r.Err)
+    Check 'Codex raw-test advisory exits 0 with no stderr' ($r.Exit -eq 0 -and $r.Err -eq '' -and $r.Out -match 'Test-Run-Guard:.*(?:advisory|Advisory)') ([string]$r.Exit + '|' + $r.Err)
     $r = Fire -HookPath $hcCodex.Script -Cwd $Proj -EventName 'PreToolUse' -Command 'git status' -LocalAppData $hcCodex.LocalAppData -NoClaudeProjectDir
     Check 'Codex is equally silent on unrelated commands' ($r.Exit -eq 0 -and $r.Out -eq '' -and $r.Err -eq '') ($r.Out + '|' + $r.Err)
 
@@ -154,7 +154,7 @@
     $r = Fire -HookPath $hcBare.Script -Cwd $bare -EventName 'PreToolUse' -Command 'pytest -q' -LocalAppData $hcBare.LocalAppData
     $message = Get-Message $r.Out
     Check 'with no locatable runner the gate downgrades to advice' ($r.Exit -eq 0 -and $r.Out -notmatch '"permissionDecision":"deny"') $r.Out
-    Check 'the advice still states the requirement' ($message -match 'missing from' -and $message -match 'bounded wall/idle') $message
+    Check 'the advice still states the requirement' ($message -match 'scripts\\Run-Tests-Guarded\.ps1 absent from' -and $message -match 'wall\+timeout, an idle/no-progress timeout and process-tree cleanup') $message
 
     # Review-1: the runner SHIPS beside the installed hook (installer plants it at
     # <hookdir>\scripts\Run-Tests-Guarded.ps1 - Find-GuardedRunner's candidate[0]).
@@ -223,5 +223,5 @@
     $r = Fire -HookPath $isoNoMgr.Script -Cwd $projOnlyBad -EventName 'PreToolUse' -Command 'pytest -q' -LocalAppData $isoNoMgr.LocalAppData
     $msg = Get-Message $r.Out
     Check 'a candidate without the contract marker is NOT returned -> the gate advises instead of blocking' (
-        $r.Out -notmatch '"permissionDecision":"deny"' -and $msg -match 'missing from') $msg
+        $r.Out -notmatch '"permissionDecision":"deny"' -and $msg -match 'scripts\\Run-Tests-Guarded\.ps1 absent from') $msg
 

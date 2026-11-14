@@ -827,12 +827,13 @@ function Write-StopBlockResult {
     $text=if([string]::IsNullOrEmpty($Reason)){$Message}else{$Reason}
     $kind=Get-HookFindingKind -HookName $HookName -Condition $Condition
     if($kind-eq'silent'-or[string]::IsNullOrWhiteSpace($text)){return [pscustomobject]@{ExitCode=0;Emitted=$false;Admission=$null}}
-    # Advisory delivery never spends the Stop continuation budget or creates a
-    # task continuation receipt. Missing/corrupt reservation state is silent.
+    # Advisory delivery never spends the Stop continuation budget or creates a task continuation receipt; missing/corrupt reservation state is silent.
     if($kind-ne'block'){return (Write-HookResult -EventName $EventName -Kind advisory -Message $text -HookName $HookName -HookInput $HookInput -FindingFingerprint $FindingFingerprint)}
     $admit=Set-StopBlockMarker -HookInput $HookInput -HookName $HookName -FindingFingerprint $(if($FindingFingerprint-ne''){$FindingFingerprint}else{Get-ShortHash ($HookName+'|'+$text)})
     if($null-eq$admit-or-not$admit.Admitted){return [pscustomobject]@{ExitCode=0;Emitted=$false;Admission=$admit}}
     $script:StopGateVerdict='block'
+    # A block IS the correction turn, so it owns the finalization clause and the reply-language line; the advisory return above must not carry them.
+    if($script:StopLedgerReady){try{$clause=Get-StopFinalizationClause -HookInput $HookInput;if(-not[string]::IsNullOrWhiteSpace($clause)){$text=$text+"`n"+$clause};if(Get-Command Get-ReplyLanguageLine -ErrorAction SilentlyContinue){$text+=(Get-ReplyLanguageLine -HookInput $HookInput -Prefix "`n")}}catch{}}
     return (Write-HookResult -EventName $EventName -Kind block -Reason $text -Message $text -HookName $HookName -HookInput $HookInput -Condition $Condition -FindingFingerprint $FindingFingerprint)
 }
 

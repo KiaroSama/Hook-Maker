@@ -32,9 +32,9 @@
     $rU1 = Fire -HookPath $hcU1.Script -Cwd $Proj -EventName 'PreToolUse' -Command 'pytest -q tests/ > results.txt' -LocalAppData $hcU1.LocalAppData
     $msgU1 = Get-Message $rU1.Out
     Check 'a "> file" redirect on a recognised test command adds the UTF-8 output note' (
-        $msgU1 -match 'Text:' -and $msgU1 -match '-Encoding utf8' -and $msgU1 -match 'PYTHONUTF8=1') $msgU1
+        $msgU1 -match 'Text UTF-8:' -and $msgU1 -match '-Encoding utf8' -and $msgU1 -match 'PYTHONUTF8=1') $msgU1
     Check 'the note names ONLY official syntax and forbids invented flags' (
-        $msgU1 -match 'UTF-8' -and $msgU1 -match 'Documented flags only' -and
+        $msgU1 -match 'UTF-8' -and $msgU1 -match 'documented -Encoding utf8/PYTHONUTF8=1/PYTHONIOENCODING=utf-8' -and
         $msgU1 -notmatch '--encoding') $msgU1
     Check 'the note defers file validation to Utf8-Encoding-Check' ($msgU1 -match 'Utf8-Encoding-Check validates') $msgU1
     $hcU2 = New-IsolatedHookCopy
@@ -42,7 +42,7 @@
     Check 'a redirect to $null is NOT "maintained textual output" (no UTF-8 note)' ((Get-Message $rU2.Out) -notmatch 'Text:') (Get-Message $rU2.Out)
     $hcU3 = New-IsolatedHookCopy
     $rU3 = Fire -HookPath $hcU3.Script -Cwd $Proj -EventName 'PreToolUse' -Command 'pytest -q | tee out.log' -LocalAppData $hcU3.LocalAppData
-    Check 'a tee into a file also gets the UTF-8 output note' ((Get-Message $rU3.Out) -match 'Text:') (Get-Message $rU3.Out)
+    Check 'a tee into a file also gets the UTF-8 output note' ((Get-Message $rU3.Out) -match 'Text UTF-8:') (Get-Message $rU3.Out)
     # The E-04 additions must not create a NEW recognition path: an unrelated
     # command that merely redirects stays totally silent.
     $hcU4 = New-IsolatedHookCopy

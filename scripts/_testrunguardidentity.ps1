@@ -40,7 +40,7 @@ foreach ($observerHost in @('pwsh', 'powershell.exe')) {
         $observed = Get-ObservedRecord $copy.LocalAppData
         if ($case.ContainsKey('Unknown')) {
             Check ($observerHost + ': ' + $case.Name) (
-                $response.Exit -eq 0 -and $null -eq $observed -and (Get-Message $response.Out) -match 'dynamic/unsupported binding; no observation') $response.Out
+                $response.Exit -eq 0 -and $null -eq $observed -and (Get-Message $response.Out) -match 'UNKNOWN binding, no observation; literal -FilePath/argv/-WorkingDirectory/-ProjectFingerprint') $response.Out
         }
         else {
             $expected = Get-CommandFingerprint -ExecutablePath 'python.exe' -ArgumentList @($case.Expected)
@@ -105,7 +105,7 @@ foreach ($observerHost in @('pwsh', 'powershell.exe')) {
     $secondCommand = $command.Replace('-RunId ' + $runId, '-RunId ' + $secondId)
     $null = Fire -HookPath $copy.Script -Cwd $Proj -EventName PreToolUse -Command $secondCommand -LocalAppData $copy.LocalAppData -Exe $observerHost
     $response = Fire -HookPath $copy.Script -Cwd $Proj -EventName PostToolUse -Command $secondCommand -LocalAppData $copy.LocalAppData -Exe $observerHost
-    Check ($observerHost + ': simultaneous second observation cannot consume first run receipt') ((Get-Message $response.Out) -match 'DIFFERENT run' -and (Get-FileHash -LiteralPath $resultPath).Hash -eq $originalHash)
+    Check ($observerHost + ': simultaneous second observation cannot consume first run receipt') ((Get-Message $response.Out) -match 'receipt run/command/state differs; outcome UNPROVEN' -and (Get-FileHash -LiteralPath $resultPath).Hash -eq $originalHash)
 
     foreach ($negative in @('failure','leak','stale','incomplete')) {
         $changed = $actual | ConvertTo-Json -Depth 8 | ConvertFrom-Json

@@ -243,7 +243,7 @@
     # The pre-push mode must write NO state: every scenario above shares
     # $hcPp, whose isolated LOCALAPPDATA must still hold nothing.
     $ppState = @(Get-ChildItem -LiteralPath (Join-Path $hcPp.LocalAppData 'HookMaker\state') -ErrorAction SilentlyContinue)
-    Check 'native state contains only finding fingerprints, never a validation baseline' (@($ppState | Where-Object {$_.Name -notmatch '^NativeFinding-[0-9a-f]+\.json$'}).Count -eq 0) (($ppState | ForEach-Object { $_.Name }) -join ', ')
+    Check 'native state contains only finding fingerprints, never a validation baseline' (@($ppState | Where-Object {$_.Name -notmatch '^NativeFinding-[0-9a-f]+\.json(?:\.lock)?$'}).Count -eq 0) (($ppState | ForEach-Object { $_.Name }) -join ', ')
     # The suite's own workspace ($Work) legitimately matches 'hookmaker-utf8*';
     # anything ELSE with that prefix would be residue the hook itself created.
     $workLeaf = Split-Path -Leaf $Work

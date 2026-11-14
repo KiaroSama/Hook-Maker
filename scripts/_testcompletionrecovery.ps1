@@ -34,13 +34,25 @@ function Invoke-ExplicitRecovery {
     }
 }
 
+# One real owned exited child supplies historical leak PIDs, not an invented absent number.
+$deadRecoveryProcess = Start-Process -FilePath (Get-Process -Id $PID).Path -ArgumentList @('-NoLogo','-NoProfile','-NonInteractive','-Command','exit 0') -WindowStyle Hidden -PassThru
+try {
+    if (-not $deadRecoveryProcess.WaitForExit(15000)) { throw 'Recovery dead-PID fixture did not exit within its bound.' }
+    $script:RecoveryDeadPid = $deadRecoveryProcess.Id
+} finally {
+    if (-not $deadRecoveryProcess.HasExited) { $deadRecoveryProcess.Kill(); [void]$deadRecoveryProcess.WaitForExit(5000) }
+    $deadRecoveryProcess.Dispose()
+}
 function New-RecoveryFixture {
     param([string]$Name, [string]$Variant = 'valid')
     $copy = New-IsolatedHookCopy
     $root = New-GitRepoAi ('Recovery-' + $Name)
     $negativeRun = 'legacy-' + (Get-ProjectKey $root)
     $recoveryRun = 'recovery-' + (Get-ProjectKey $root)
-    $leakedPid = if ($Variant -in @('liveLeak', 'reusedPid')) { $PID } else { 2147483000 }
+    $leakedPid = if ($Variant -in @('liveLeak', 'reusedPid')) { $PID } else { $script:RecoveryDeadPid }
+    if ($Variant -notin @('liveLeak','reusedPid') -and $null -ne (Get-Process -Id $leakedPid -ErrorAction SilentlyContinue)) {
+        throw 'The historical test PID is alive/reused; it cannot qualify as dead advisory evidence.'
+    }
     Write-GuardedResult -Copy $copy -Root $root -Overall 'failed' -Leaked @($leakedPid) -AgeMinutes 30 -RunId $negativeRun -CommandFingerprint ('d' * 32)
     $negativePath = Get-RunStateFile -Copy $copy -Root $root -Kind 'result' -RunId $negativeRun
     $negative = Read-JsonFile $negativePath
@@ -52,8 +64,17 @@ function New-RecoveryFixture {
     }
     Write-Utf8 $negativePath ($negative | ConvertTo-Json -Depth 6)
     $blocked = Fire -Copy $copy -Cwd $root -SessionId ('seed-' + $Name)
-    if ($blocked.Out -notmatch '"decision":"block"') { throw ('Recovery fixture did not reproduce the original incident gate: ' + $blocked.Out + $blocked.Err) }
-    $tag = Get-IncidentTagLine (Get-BlockReason $blocked.Out)
+    # Ended receipt history is advisory; a genuinely live leaked PID remains a safety gate.
+    $seedReason = Get-BlockReason $blocked.Out
+    $seedSafety = $Variant -in @('liveLeak','reusedPid')
+    if ($blocked.Exit -ne 0 -or $blocked.Err -ne '' -or $seedReason -notmatch 'guarded run LEAKED process' -or
+        ($seedSafety -and $blocked.Out -notmatch '"decision":"block"') -or
+        (-not $seedSafety -and ($blocked.Out -notmatch '"systemMessage"' -or $blocked.Out -match '"decision"'))) {
+        throw ('Recovery fixture did not reproduce the recorded leak evidence: ' + $blocked.Out + $blocked.Err)
+    }
+    if (-not $seedSafety -and $null -ne (Get-Process -Id $leakedPid -ErrorAction SilentlyContinue)) { throw 'Historical PID became live during the advisory probe.' }
+    $tag = Get-IncidentTagLine $seedReason
+    if ($tag -eq '') { throw 'Recorded leak evidence must retain its incident tag, including live/reused PIDs.' }
     $key = $tag.Substring('Test incident: '.Length)
     $body = 'Cause: an owned helper survived the original test process. Recovery reruns the same six fixture tests with a bounded wrapper and finally cleanup. The clean receipt and empty owned tree were verified.'
     if ($Variant -ne 'missingNote') {
@@ -114,7 +135,10 @@ foreach ($variant in @('missingNote', 'wrongTag', 'bareTag', 'missingRecovery', 
     Check ($variant + ': explicit recovery is rejected') ($rejected.Exit -ne 0) ($rejected.Out + $rejected.Err)
     Check ($variant + ': rejected recovery does not change the ledger') ([System.IO.File]::ReadAllText($ledgerPath, [System.Text.Encoding]::UTF8) -ceq $ledgerBefore)
     $stillBlocked = Fire -Copy $fixture.Copy -Cwd $fixture.Root -SessionId ('still-' + $variant)
-    Check ($variant + ': completion remains blocked') ($stillBlocked.Out -match '"systemMessage"') $stillBlocked.Out
+    $liveSafety = $variant -in @('active','liveLeak')
+    Check ($variant + ': unresolved evidence remains, live ownership alone blocks') (
+        $stillBlocked.Exit -eq 0 -and $stillBlocked.Err -eq '' -and
+        $(if ($liveSafety) { $stillBlocked.Out -match '"decision":"block"' } else { $stillBlocked.Out -match '"systemMessage"' -and $stillBlocked.Out -notmatch '"decision"' })) $stillBlocked.Out
 }
 
 $fixture = New-RecoveryFixture -Name 'reusedPid' -Variant 'reusedPid'

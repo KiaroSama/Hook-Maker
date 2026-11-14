@@ -53,7 +53,9 @@ foreach($runnerHost in @('pwsh','powershell.exe')) {
     $collisionOutput = Invoke-QuietCommand -FilePath $program -ArgumentList @('-NoProfile','-File',$wrapper) -TimeoutSeconds 35 -CaptureOutput
     Check ($runnerHost+': duplicate run identity preserves original bytes') (
         $collisionOutput.ExitCode -eq 7 -and [Convert]::ToBase64String([IO.File]::ReadAllBytes($failedCanonical[0].FullName)) -ceq $originalBytes -and
-        $collisionOutput.ErrorOutput -match 'receipt publication failed')
+        $collisionOutput.ErrorOutput -match 'receipt publication failed') (
+        'exit=' + $collisionOutput.ExitCode + '; originalBytesPreserved=' + ([Convert]::ToBase64String([IO.File]::ReadAllBytes($failedCanonical[0].FullName)) -ceq $originalBytes) +
+        '; stderr=' + $collisionOutput.ErrorOutput)
     $blockedState = Join-Path $caseRoot 'blocked-state'
     Write-Utf8 $blockedState 'not a directory'
     $blockedWrapper = Join-Path $caseRoot 'blocked-publication.ps1'

@@ -352,7 +352,7 @@ updates:
     Set-Content (Join-Path $deployOnly 'package.json') '{}'
     Set-Content (Join-Path $deployOnly '.github\workflows\deploy.yml') "on:`n  workflow_dispatch:`njobs:`n  deploy:`n    steps:`n      - run: npm run deploy"
     $r = Fire -HookPath $BaselineHook -Cwd $deployOnly
-    Check 'deploy-only workflow does not count as CI' ($r.Out -match 'none provides blocking project validation') $r.Out
+    Check 'deploy-only workflow does not count as CI' ($r.Out -match 'none provides advisory project validation') $r.Out
 
     $deep = New-GitRepo 'deepmono'
     $deepDir = Join-Path $deep 'services\platform\backend\billing\worker'
@@ -443,7 +443,7 @@ jobs:
 '@
     Set-Content (Join-Path $uncalledReusable '.github\dependabot.yml') "version: 2`nupdates:`n  - package-ecosystem: npm`n    directory: /`n  - package-ecosystem: github-actions`n    directory: /"
     $r = Fire -HookPath $BaselineHook -Cwd $uncalledReusable
-    Check 'an UNCALLED workflow_call-only reusable workflow does not count as CI' ($r.Out -match 'none provides blocking project validation') $r.Out
+    Check 'an UNCALLED workflow_call-only reusable workflow does not count as CI' ($r.Out -match 'none provides advisory project validation') $r.Out
 
     # Same reusable workflow, but now a SECOND workflow in the repo actually
     # calls it locally AND is itself directly triggered - now it counts.
@@ -490,7 +490,7 @@ jobs:
           tags: myimage:latest
 '@
     $r = Fire -HookPath $BaselineHook -Cwd $nestedPushKey
-    Check 'an unrelated nested "push:" key (step input) is not mistaken for a push trigger' ($r.Out -match 'none provides blocking project validation') $r.Out
+    Check 'an unrelated nested "push:" key (step input) is not mistaken for a push trigger' ($r.Out -match 'none provides advisory project validation') $r.Out
 
     # Single-quoted top-level 'on': key (the double-quoted form is already covered above).
     $singleQuotedOn = New-GitRepo 'singlequotedon'
@@ -516,7 +516,7 @@ jobs:
       - run: echo "reminder- push: deploys are manual only" && ./deploy.sh
 '@
     $r = Fire -HookPath $BaselineHook -Cwd $commentsAndText
-    Check 'comments and run-command text mentioning "push:" are not mistaken for a trigger' ($r.Out -match 'none provides blocking project validation') $r.Out
+    Check 'comments and run-command text mentioning "push:" are not mistaken for a trigger' ($r.Out -match 'none provides advisory project validation') $r.Out
 
     # Item 7.1: a validation keyword that appears ONLY in a full-line shell
     # comment inside a run: | block is not real validation.
@@ -534,7 +534,7 @@ jobs:
           echo "not implemented"
 '@
     $r = Fire -HookPath $BaselineHook -Cwd $commentValidation
-    Check '7.1 validation keyword only in a shell comment is NOT counted as CI' ($r.Out -match 'none provides blocking project validation') $r.Out
+    Check '7.1 validation keyword only in a shell comment is NOT counted as CI' ($r.Out -match 'none provides advisory project validation') $r.Out
 
     # Item 7.1 positive: a real validation command AFTER a comment line counts.
     $realAfterComment = New-GitRepo 'realaftercomment'
@@ -641,7 +641,7 @@ jobs:
     New-Item -ItemType Directory -Path (Join-Path $emptyWf '.github\workflows') -Force | Out-Null
     Set-Content (Join-Path $emptyWf '.github\workflows\ci.yml') ''
     $r = Fire -HookPath $BaselineHook -Cwd $emptyWf
-    Check 'empty workflow file does not crash and is reported as missing validation' ($r.Exit -eq 0 -and $r.Out -match 'none provides blocking project validation') $r.Out
+    Check 'empty workflow file does not crash and is reported as missing validation' ($r.Exit -eq 0 -and $r.Out -match 'none provides advisory project validation') $r.Out
 
     # Unparseable/garbage workflow content - must degrade gracefully, never crash.
     $garbageWf = New-GitRepo 'garbagewf'

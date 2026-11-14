@@ -306,7 +306,7 @@ try {
     # verified green and forbids claiming CI passed.
     $ciText = [System.IO.File]::ReadAllText($CiHook)
     Check 'E-09: the external-blocker notice source states CI UNVERIFIED + never-claim-passed' (
-        $ciText -match 'CI UNVERIFIED' -and $ciText -match 'never claim CI passed') $ciText.Substring(0, 200)
+        $ciText -match 'CI UNVERIFIED; recorded external blocker for' -and $ciText -match 'Report blocker, never green') $ciText.Substring(0, 200)
     Check 'E-09: the notice shape never uses decision:block (source pin)' (
         $ciText -match 'Neither shape ever uses `decision:block`' -or $ciText -match 'never emits `decision:block`' -or $ciText -match 'It never emits') $ciText.Substring(0, 200)
 

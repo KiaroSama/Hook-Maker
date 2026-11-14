@@ -183,7 +183,7 @@ function Invoke-SkillSurfaceRegression {
     # alpha 3 (nested + one explicit-only), solo 1 (root SKILL.md), picked 2
     # (declared folders), dup 1, off 1 (disabled plugin), Desktop 2 (one off).
     Check 'every individual skill is counted, not every package' ($ctx -match 'Plugin skills: 10/6 plugins') $ctx
-    Check 'enabled, disabled and explicit-only stay distinct' ($ctx -match 'Availability: 7 eligible; 2 disabled; 1 user-explicit-only') $ctx
+    Check 'enabled, disabled and explicit-only stay distinct' ($ctx -match 'Of these: 8 enabled, 2 disabled; 1 user-explicit-only') $ctx
     Check 'a declared path outside the plugin and a missing install path make the scan PARTIAL' (
         $ctx -match 'Skill discovery was PARTIAL' -and $ctx -match 'picked@m declares a path outside the plugin' -and $ctx -match 'ghost@m install path missing') $ctx
     Check '4a: the per-skill routing line is present verbatim at SessionStart' ($ctx.Contains($sdRoutingA)) $ctx
@@ -267,7 +267,7 @@ function Invoke-SkillSurfaceRegression {
     # cplug 2 + coff 1 (newest version only) + own + .system + gone + quiet + shared.
     Check 'Codex plugins, its skills folder and the shared folder are all enumerated' ($ctx -match 'Plugin skills: 8/4 plugins') $ctx
     Check 'on Codex a disabled plugin, a config-disabled skill and an explicit-only skill stay distinct' (
-        $ctx -match 'Availability: 5 eligible; 2 disabled; 1 user-explicit-only') $ctx
+        $ctx -match 'Of these: 6 enabled, 2 disabled; 1 user-explicit-only') $ctx
     Check 'several cached versions are reported as a partial choice, not hidden' ($ctx -match 'coff@mk has 2 cached versions; newest used') $ctx
     Check 'a Codex run never reports Claude paths or Claude skills' ($ctx -notmatch 'alpha-one' -and $ctx -notmatch 'anthropic-skills' -and $ctx -notmatch 'sd-claude') $ctx
     Check 'missing rules are reported as NOT CHECKED, never as no drift' ($ctx -match 'Catalogue drift NOT CHECKED' -and $ctx -match 'not all-clear') $ctx
@@ -278,7 +278,7 @@ function Invoke-SkillSurfaceRegression {
     $ctx = Get-Context $r.Out
     Check 'Codex plugin retains bare invocation and source provider version' ($ctx -match '- codex-alpha \[codex-plugin\]' -and $ctx -match 'package=cplug@mk; version=1.0.0' -and $ctx -notmatch 'cplug:codex-alpha') $ctx
     Check 'Codex explicit-only and config-disabled skills are never shortlisted' ($ctx -notmatch '- quiet ' -and $ctx -notmatch '- gone ') $ctx
-    $r = Fire -HookPath $sdCodexHook -Cwd $sdCodexProj -RawStdin (New-StopStdin -Cwd $sdCodexProj -Transcript (Join-Path $Work 'no-such-transcript.jsonl') -SessionId 'sd-x3')
+    $r = Fire -HookPath $sdCodexHook -Cwd $sdCodexProj -RawStdin (New-StopStdin -Cwd $sdCodexProj -Transcript (New-ToolTranscript 'codex-read-shape' 'Read' 'Done.') -SessionId 'sd-x3')
     Check 'Codex Stop keeps its established systemMessage shape' ($r.Out -match '"systemMessage"' -and $r.Out -notmatch '"hookSpecificOutput"') $r.Out
 
     Set-ClaudeProjectDir $sdSavedClaudeDir

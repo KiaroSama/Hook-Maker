@@ -51,7 +51,9 @@ if (-not $StreamOnly) {
     $r = FireGitPrePush -Cwd $repo -StdinText (Get-RefUpdateLine -Repo $repo) -HookPath $streamCopy.Script -LocalAppData $streamCopy.LocalAppData
     Check 'native invalid final byte beyond former ceiling blocks as invalid' ($r.Exit -eq 0 -and $r.Err -match 'catalog\.json - an invalid UTF-8') $r.Err
     foreach ($malformedRef in @('refs/heads/main', ((Get-RefUpdateLine -Repo $repo).Trim() + ' extra'))) {
-        $r = FireGitPrePush -Cwd $repo -StdinText ($malformedRef + "`n") -HookPath $streamCopy.Script -LocalAppData $streamCopy.LocalAppData
+        # Both shapes produce the same finding. Independent cases need fresh state.
+        $malformedLocal = Join-Path $streamCopy.LocalAppData ([guid]::NewGuid().ToString('N'))
+        $r = FireGitPrePush -Cwd $repo -StdinText ($malformedRef + "`n") -HookPath $streamCopy.Script -LocalAppData $malformedLocal
         Check 'malformed native ref input reports UNKNOWN coverage without blocking' ($r.Exit -eq 0 -and $r.Err -match 'malformed') $r.Err
     }
     $script:HookDeadlineUtc = [DateTime]::UtcNow.AddSeconds(10)
@@ -65,5 +67,5 @@ if (-not $StreamOnly) {
     & git -C $repo add staged.json
     Write-Utf8 (Join-Path $repo 'staged.json') $catalogText
     $r = Fire -HookPath $streamCopy.Script -Cwd $repo -EventName 'Stop' -SessionId 'stream-staged' -LocalAppData $streamCopy.LocalAppData
-    Check 'large staged invalid tail advises even after worktree reverted valid' ((Test-StopAdvisory $r.Out) -and (Get-Message $r.Out) -match 'staged\.json \(staged content\) - invalid UTF-8') ($r.Out+$r.Err)
+    Check 'large staged invalid tail advises even after worktree reverted valid' ((Test-StopAdvisory $r.Out) -and (Get-Message $r.Out) -match 'staged\.json \(staged content\) - an invalid UTF-8 byte sequence') ($r.Out+$r.Err)
 }

@@ -219,6 +219,8 @@ function Get-PushedHeadInfo {
 # different one - so neither is ever mistaken for billing.
 function Test-CiBillingBlocked {
     param([string]$RepoSlug, [string]$Sha)
+    # A restored optional-module runtime cannot classify billing without its annotation reader.
+    if (-not (Get-Command Get-CheckRunBillingVerdict -ErrorAction SilentlyContinue)) { return $false }
     # Strict pagination bound: at most 20 pages of 100 = 2000 check-runs, and the
     # same 20-page ceiling for one check-run's annotations. Anything we cannot
     # fully verify within that bound fails CLOSED, so an unverifiable set is
@@ -578,7 +580,7 @@ if ($snapshot.Runs.Count -eq 0 -and $snapshot.FailedRuns.Count -eq 0 -and $snaps
     $script:DocsCarryoverReason = ''
     if (Get-Command -Name 'Invoke-DocsOnlyCarryover' -ErrorAction SilentlyContinue) { Invoke-DocsOnlyCarryover -ProjectRoot $cwd -Sha $sha -Branch $branch -RepoSlug $repoSlug -StatePath $statePath -EventName $eventName -RequireLatestStatus }
     if ($script:DocsCarryoverReason -ne '') {
-        Write-Block -Outcome 'pending' -Reason ('docs carryover UNVERIFIED ' + $sha7 + ' (' + $repoSlug + '): ' + $script:DocsCarryoverReason + '. Skip=no final-SHA run; waiting cannot qualify. Verify limit; no seeded success/duplicate CI.')
+        Write-Block -Outcome 'pending' -Reason ('docs carryover UNVERIFIED ' + $sha7 + ' (' + $repoSlug + '): ' + $script:DocsCarryoverReason + '. Skip=no final-SHA run; wait!=proof. Check limit; no seed/duplicate CI.')
     }
     # Every host is manual: a push starts no run by design. Missing dispatch is never green.
     if (Test-ManualCiRepository -ProjectRoot $cwd) {
@@ -645,8 +647,8 @@ if ($snapshot.FailedRuns.Count -gt 0 -or $snapshot.InfraRuns.Count -gt 0) {
     # final pushed SHA - any later commit, e.g. an accepted post-Ponytail
     # simplification, restarts this gate on its own SHA.
     if (Get-Command -Name 'Get-RunnerLeftRunningText' -ErrorAction SilentlyContinue) { $runnerText = Get-RunnerLeftRunningText -ProjectRoot $cwd; if ($runnerText -ne '') { $parts += $runnerText } }
-    $parts += 'Verify final pushed SHA, later/post-Ponytail commits too.'
-    Write-Block -Outcome 'failed' -Reason ('CI CHECK for pushed commit ' + $sha7 + '/' + $branch + ' (' + $repoSlug + '): ' + ($parts -join ' '))
+    $parts += 'Verify final pushed SHA + later/post-Ponytail commits too.'
+    Write-Block -Outcome 'failed' -Reason ('Pushed ' + $sha7 + '/' + $branch + ' (' + $repoSlug + '): ' + ($parts -join ' '))
 }
 
 if (-not $snapshot.AllSuccess) {

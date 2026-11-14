@@ -206,7 +206,7 @@ try {
         (Test-Path -LiteralPath (Join-Path $cache1 'x.txt')) -and
         ([System.IO.File]::ReadAllText((Join-Path $cache1 'x.txt')) -eq 'cache-content'))
     Check 'it is surfaced as likely-disposable, which is a description not an approval' ($r.Out -match 'class=likely-disposable') $r.Out
-    Check 'the report routes candidate disposal to the full cleanup owner before action' ($r.Out -match 'BEFORE disposal: global-project-lifecycle-rules\.md Cleanup FULL') $r.Out
+    Check 'the report routes candidate disposal to the full cleanup owner before action' ($r.Out -match 'Inspect before deletion' -and $r.Out -match 'Name != ownership' -and $r.Out -match 'independently proven disposable project residue') $r.Out
     Check 'the report carries the complete mandated instruction' (Test-HasFullInstruction $r.Out) $r.Out
     Check 'the report never claims the hook removed anything' ($r.Out -notmatch 'removed safe' -and $r.Out -notmatch 'verified by rescan') $r.Out
     Check 'the recorded category is review-required, not clean' ((Get-RecordedCategory $hc1.LocalAppData $proj1) -eq 'review-required') (Get-RecordedCategory $hc1.LocalAppData $proj1)
@@ -527,7 +527,7 @@ try {
     Add-Commit $proj7 'init'
     $rStart = Fire -HookPath $hc7.Script -Cwd $proj7 -EventName 'SessionStart' -LocalAppData $hc7.LocalAppData
     Check 'SessionStart stays silent but records its partial baseline' (
-        $rStart.Exit -eq 0 -and $rStart.Out -eq '' -and @((Get-RecordedResult $hc7.LocalAppData $proj7).partialCauses) -contains 'max-scan-entries-reached') $rStart.Out
+        $rStart.Exit -eq 0 -and $rStart.Out -eq '' -and @((Read-JsonFile (Join-Path (Join-Path $hc7.LocalAppData 'HookMaker/state') ('TestTempCleanup-baseline-' + (Get-ShortHash ((Normalize-Path $proj7).ToLowerInvariant())) + '-' + (Get-ShortHash 'sess1') + '.json'))).partialCauses) -contains 'max-scan-entries-reached') $rStart.Out
     $r = Fire -HookPath $hc7.Script -Cwd $proj7 -EventName 'Stop' -LocalAppData $hc7.LocalAppData
     Check 'hitting the scan-entry ceiling records partial, NEVER clean' ((Get-RecordedCategory $hc7.LocalAppData $proj7) -eq 'partial') (Get-RecordedCategory $hc7.LocalAppData $proj7)
     Check 'the named cause max-scan-entries-reached is reported' (@((Get-RecordedResult $hc7.LocalAppData $proj7).partialCauses) -contains 'max-scan-entries-reached') $r.Out
@@ -673,7 +673,9 @@ try {
     Check 'Windows PowerShell 5.1 SessionStart runs cleanly and silently' ($r.Exit -eq 0 -and $r.Out -eq '' -and $r.Err -eq '') $r.Err
     $ps5Cache = New-Cache $proj14
     $r = Fire -HookPath $hc14.Script -Cwd $proj14 -EventName 'Stop' -LocalAppData $hc14.LocalAppData -Exe 'powershell.exe'
-    Check 'Windows PowerShell 5.1 Stop reports cleanly with no stderr' ($r.Exit -eq 0 -and $r.Out -match 'TEST TEMP CLEANUP' -and $r.Err -eq '') $r.Err
+    Check 'Windows PowerShell 5.1 Stop reports cleanly with no stderr' (
+        $r.Exit -eq 0 -and $r.Out -match 'Test-Temp-Cleanup:' -and
+        $r.Out -match 'Read-only candidates: 1 project candidates: review required' -and $r.Err -eq '') ($r.Out + $r.Err)
     Check 'Windows PowerShell 5.1 carries the full instruction too' (Test-HasFullInstruction $r.Out) $r.Out
     Check 'Windows PowerShell 5.1 deleted nothing either' (Test-Path -LiteralPath $ps5Cache)
 }

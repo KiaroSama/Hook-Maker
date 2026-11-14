@@ -32,7 +32,7 @@
     $tRead = New-ToolTranscript 'sk-read' 'Read' 'Done.'
     $r = Fire -HookPath $wkHook -Cwd $wkProj -RawStdin (New-StopStdin -Cwd $wkProj -Transcript $tRead -SessionId 'sk-w3')
     Check 'a READ-ONLY session is advised, never blocked' (
-        $r.Out -match 'no invocation this session' -and $r.Out -notmatch '"decision"') $r.Out
+        $r.Out -match 'no skill was invoked this session' -and $r.Out -notmatch '"decision"') $r.Out
     $tBash = New-ToolTranscript 'sk-bash' 'Bash' 'Done.'
     $r = Fire -HookPath $wkHook -Cwd $wkProj -RawStdin (New-StopStdin -Cwd $wkProj -Transcript $tBash -SessionId 'sk-w4')
     Check 'a shell command is NOT assumed to have mutated anything (evidence, not suspicion)' (

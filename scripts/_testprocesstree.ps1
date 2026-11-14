@@ -54,9 +54,14 @@
     # One real tree, to prove the wiring: a child that spawns a grandchild, both
     # bounded so a failure here cannot outlive the suite.
     $ptExe = (Get-Process -Id $PID).Path
+    $ptChild = $null
+    $ptGrandId = 0
+    $ptChildStart = [DateTime]::MinValue
+    try {
     $ptChild = Start-Process -FilePath $ptExe -PassThru -WindowStyle Hidden -ArgumentList @(
         '-NoProfile', '-Command',
         "Start-Process -FilePath '$ptExe' -WindowStyle Hidden -ArgumentList '-NoProfile','-Command','Start-Sleep -Seconds 45'; Start-Sleep -Seconds 45")
+    $ptChildStart = $ptChild.StartTime.ToUniversalTime()
     # Wait on the grandchild EXISTING, not on the clock.
     $ptDeadline = [DateTime]::UtcNow.AddSeconds(15)
     $ptGrand = @()
@@ -86,3 +91,25 @@
     $ptGoneVerdict = Stop-ProcessTree -ProcessId $ptChild.Id -TimeoutMilliseconds 2000
     Check 'an already-dead process is cleared, not reported as a survivor' (
         @($ptGoneVerdict.Survivors).Count -eq 0) (@($ptGoneVerdict.Survivors) -join ',')
+    }
+    finally {
+        if ($null -ne $ptChild) {
+            # Even a failed assertion/setup owns the same fixture tree until exit.
+            $null = Stop-ProcessTree -ProcessId $ptChild.Id -RootCreated $ptChildStart -TimeoutMilliseconds 8000
+            if ($ptGrandId -gt 0) {
+                $grand = Get-Process -Id $ptGrandId -ErrorAction SilentlyContinue
+                if ($null -ne $grand) {
+                    try {
+                        $owner = Get-CimInstance Win32_Process -Filter ('ProcessId=' + $ptGrandId) -ErrorAction Stop
+                        if ($grand.StartTime.ToUniversalTime() -ge $ptChildStart -and
+                            [int]$owner.ParentProcessId -eq $ptChild.Id -and [string]$owner.CommandLine -match 'Start-Sleep -Seconds 45') {
+                            if (-not $grand.HasExited) { $grand.Kill() }
+                            if (-not $grand.WaitForExit(8000)) { throw 'Owned process-tree fixture did not exit.' }
+                        }
+                    }
+                    finally { $grand.Dispose() }
+                }
+            }
+            $ptChild.Dispose()
+        }
+    }

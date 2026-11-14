@@ -39,19 +39,19 @@
         $r = Fire -HookPath (Join-Path $renameHookDir 'Ai-Memory-Check.ps1') -Cwd $renameProj -EventName 'Stop' -Exe 'powershell.exe'
         Check '5.1 host: a staged rename never crashes Get-LatestWorkTimeUtc (clean exit, no StrictMode/illegal-path error)' (
             $r.Exit -eq 0 -and $r.Err -eq '') ($r.Out + ' | err=' + $r.Err)
-        Check 'the reminder logic still runs (missing .ai/memory.md is still detected and blocks)' (
-            $r.Out -match '"decision":"block"' -and $r.Out -match 'memory\.md') $r.Out
+        Check 'the reminder logic still runs (missing .ai/memory.md is still detected as advisory)' (
+            $r.Exit -eq 0 -and $r.Out -notmatch '"decision"' -and $r.Out -match 'memory\.md') $r.Out
         # BYTE-COMPATIBILITY (real emission site 4 of 4): a genuine decision:block,
         # captured on the 5.1 host. 5.1 and pwsh 7 escape and ORDER JSON keys
         # differently, so proving the adapter on both hosts is what makes the
         # "byte-identical" claim meaningful rather than host-specific luck.
         $amcDoc = $null
         try { $amcDoc = $r.Out | ConvertFrom-Json } catch { }
-        $amcReason = if ($null -ne $amcDoc -and $null -ne $amcDoc.PSObject.Properties['reason']) { [string]$amcDoc.reason } else { '' }
-        $amcAdapted = Invoke-HookResult -Call @{ kind = 'block'; event = 'Stop'; reason = $amcReason; client = 'claude' } -Exe 'powershell.exe'
-        Check '5.1 host: Write-HookResult reproduces the real decision:block byte-for-byte' (
+        $amcReason = if ($null -ne $amcDoc -and $null -ne $amcDoc.PSObject.Properties['systemMessage']) { [string]$amcDoc.systemMessage } else { '' }
+        $amcAdapted = Invoke-HookResult -Call @{ kind = 'advisory'; event = 'Stop'; message = $amcReason; client = 'claude' } -Exe 'powershell.exe'
+        Check '5.1 host: Write-HookResult reproduces the real advisory byte-for-byte' (
             $amcReason -ne '' -and $amcAdapted.Out -ceq $r.Out -and
-            $amcAdapted.Result.Shape -eq 'decisionBlock' -and $amcAdapted.Result.Degraded -eq $false) (
+            $amcAdapted.Result.Shape -eq 'claudeSystemMessage' -and $amcAdapted.Result.Degraded -eq $false) (
             'hook=[' + $r.Out + '] adapter=[' + $amcAdapted.Out + ']')
     }
     finally {

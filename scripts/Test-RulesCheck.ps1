@@ -341,7 +341,7 @@ try {
     $r = Fire -Cwd $projDD -RawStdin (New-PromptStdin -Cwd $projDD -Prompt 'run ::deep-debug on the parser' -SessionId 'dd-s1')
     Check 'a standalone ::deep-debug requires complete workflow owners before EVERY bug/phase' (
         ([string](($r.Out | ConvertFrom-Json).hookSpecificOutput.additionalContext)).Contains('BEFORE ::deep-debug read WORKFLOWS.md Deep Debug/skill-policy-deep-debug.md/CODEWORDS.md FULL, EVERY bug/phase') -and
-        $r.Out -like '*DEEP DEBUG: COMPLETE or DEEP DEBUG: BLOCKED*') $r.Out
+        ([string](($r.Out | ConvertFrom-Json).hookSpecificOutput.additionalContext)).Contains('DEEP DEBUG: COMPLETE or DEEP DEBUG: unverified')) $r.Out
     # Goal/dispositions/integration/recursion live in the full workflow owners;
     # the public reminder proves routing only, never their execution.
     Check 'Ponytail native reference remains ONCE after proof' (
@@ -417,8 +417,10 @@ try {
     $r = Fire -Cwd $closeProj -RawStdin (New-StopStdin -Cwd $closeProj -Transcript $tEdit -SessionId 'close-b1')
     Check 'edits + no confirmation -> a real block decision' ($r.Out -match '"decision"\s*:\s*"block"') $r.Out
     Check 'the block lists the governing rule files it checked' ($r.Out -match 'Governing rule files:' -and $r.Out -match 'project-rule\.md') $r.Out
+    $closingReason = [string](($r.Out | ConvertFrom-Json).reason)
     Check 'the block names the exact single action that clears it' (
-        $r.Out -match 'Final: standalone' -and $r.Out -match 'Rules applied: <files \+ purposes>') $r.Out
+        $closingReason.Contains('Final standalone "Rules applied: <actual files + purpose>"') -and
+        $closingReason.Contains('disclose unread rules')) $closingReason
     Check '"none - <reason>" is offered as a legitimate answer, not a forced claim' (
         $r.Out -match 'Rules applied: none - <reason>') $r.Out
     # An unchanged failure blocks ONCE per session (global-hook-rules.md: a gate

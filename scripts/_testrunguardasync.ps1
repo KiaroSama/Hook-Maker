@@ -97,7 +97,7 @@
     Check 'a marker with no owner start time does NOT defer (a recycled pid is indistinguishable)' (
         $noStartMessage -notmatch 'STILL EXECUTING') $r.Out
     Check 'and the honest missing-evidence warning is still given' (
-        $noStartMessage -match 'no guarded result document exists') $r.Out
+        $noStartMessage -match 'guarded receipt absent' -and $noStartMessage -match 'Outcome UNPROVEN, no pass claim') $r.Out
 
     # ---- a marker for a DIFFERENT run cannot answer for this one ----------
     $hcOther = New-IsolatedHookCopy

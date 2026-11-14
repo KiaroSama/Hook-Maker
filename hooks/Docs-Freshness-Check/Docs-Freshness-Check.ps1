@@ -525,7 +525,8 @@ try {
     $greenHead = Get-CiGreenHead -Root $rootFull -RootKeys @($cwd, $rootFull) -ImpactFiles $realImpactFiles
     if ($greenHead -ne '') {
         $sha7 = $greenHead.Substring(0, [Math]::Min(7, $greenHead.Length))
-        [void]$lines.Add('Pushed HEAD green ' + $sha7 + ': docs-only [skip ci] commit/push, no suite; tests passed on parent ' + $sha7 + '.')
+        # Parent evidence cannot waive the changed final SHA's verification.
+        [void]$lines.Add('Tested parent SHA ' + $sha7 + '; reviewed docs commit/push. New SHA UNTESTED: ONE manual final batch or exact blocker; no ancestor green/display-only run.')
     }
     $reason = $lines.ToArray() -join "`n"
     # Record the block so THIS hook's own re-entry is recognised; another

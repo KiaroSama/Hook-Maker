@@ -125,7 +125,7 @@ function Assert-PersistedDispositions {
     # Restore the access distinction: unavailable repository evidence cannot invalidate a historical pin.
     if ($script:historicalDispositions.Count -gt 0 -and
         ($script:repositoryState.State -cne 'available' -or [string]::IsNullOrWhiteSpace([string]$script:repositoryState.RepositoryStateFingerprint))) {
-        Write-Finding -Blocking $true -Lines @('Historical disposition UNKNOWN: repository access ' + $script:repositoryState.Diagnosis + '; verify access before validating receipts.')
+        Write-Finding -Blocking $true -Lines @('Disposition UNKNOWN: ' + $script:repositoryState.Diagnosis + '; verify access, then receipts.')
         return
     }
     foreach($id in @($script:historicalDispositions.Keys)){

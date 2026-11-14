@@ -302,7 +302,7 @@ try {
     $r = Fire (@{ session_id = 'u1'; cwd = $projAdvise; hook_event_name = 'UserPromptSubmit'; prompt = $FeaturePrompt })
     $msg = Get-Message $r.Out
     Check 'advisory: a feature prompt gets the chain note' (
-        $r.Exit -eq 0 -and $r.Err -eq '' -and $msg -match 'FEATURE REQUEST CHECK') ($r.Out + $r.Err)
+        $r.Exit -eq 0 -and $r.Err -eq '' -and $msg -match '^Feature-Request-Check:.*advisory feature intake') ($r.Out + $r.Err)
     Check 'advisory: it names grilling and domain-modeling, not just "a skill"' (
         $msg -match 'grilling' -and $msg -match 'domain-modeling') $msg
     # Order 55 step 3: a feature request arriving mid-task is a request delta.
@@ -311,7 +311,7 @@ try {
     Check 'advisory: only the dependent work waits for an answer' ($msg -match 'only dependents wait') $msg
     Check 'advisory: exact owner scope and full intake remain required' (
         $msg -match 'global-spec-kit-rules.md/global-skill-routing.md FULL' -and
-        $msg -match 'Other-project work: exact consent or English lifecycle handoff') $msg
+        $msg -match 'Other-project exact consent or English handoff') $msg
     # FR-005: the rules WITHDREW the "not a feature, carry on" carve-out, so the
     # advisory must no longer offer it - this assertion was inverted the day the
     # carve-out went, and it is the inversion that enforces the requirement.
@@ -326,7 +326,7 @@ try {
     Check 'advisory: the same prompt is not repeated' ($rSame.Out -eq '') $rSame.Out
     $rNew = Fire (@{ session_id = 'u1'; cwd = $projAdvise; hook_event_name = 'UserPromptSubmit'; prompt = 'implement the export endpoint for reports' })
     Check 'advisory: a DIFFERENT feature prompt speaks again' (
-        (Get-Message $rNew.Out) -match 'FEATURE REQUEST CHECK') $rNew.Out
+        (Get-Message $rNew.Out) -match '^Feature-Request-Check:.*advisory feature intake') $rNew.Out
     $rQuiet = Fire (@{ session_id = 'u2'; cwd = (New-Proj 'AdviseQuiet'); hook_event_name = 'UserPromptSubmit'; prompt = 'what does this function do' })
     Check 'advisory: an ordinary prompt is silent' (
         $rQuiet.Exit -eq 0 -and $rQuiet.Out -eq '') ($rQuiet.Out + $rQuiet.Err)

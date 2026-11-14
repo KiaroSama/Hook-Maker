@@ -354,8 +354,9 @@ try {
         $rStillBlocked.Exit -eq 0 -and $rStillBlocked.Out -eq '' -and $rStillBlocked.Err -eq '') $rStillBlocked.Out
     Check 'a rejected acknowledgement writes no approval record' (
         @(Get-ChildItem -LiteralPath (Join-Path $hc12.LocalAppData 'HookMaker\state') -Filter 'DocsFreshnessCheck-ack-*.json').Count -eq 0)
-    $null = Fire -HookPath $hc12.Script -Cwd $proj12 -EventName 'UserPromptSubmit' -Prompt 'Recheck the rejected review' -LocalAppData $hc12.LocalAppData
-    $rRecheck = Fire -HookPath $hc12.Script -Cwd $proj12 -EventName 'Stop' -LocalAppData $hc12.LocalAppData -StopHookActive
+    $null = Fire -HookPath $hc12.Script -Cwd $proj12 -EventName 'SessionStart' -SessionId 'docs-recheck-rejected' -LocalAppData $hc12.LocalAppData
+    $null = Fire -HookPath $hc12.Script -Cwd $proj12 -EventName 'UserPromptSubmit' -Prompt 'Recheck the rejected review' -SessionId 'docs-recheck-rejected' -LocalAppData $hc12.LocalAppData
+    $rRecheck = Fire -HookPath $hc12.Script -Cwd $proj12 -EventName 'Stop' -SessionId 'docs-recheck-rejected' -LocalAppData $hc12.LocalAppData -StopHookActive
     Check 'a genuine new task still reports the identical unacknowledged documentation evidence' (
         $rRecheck.Exit -eq 0 -and $rRecheck.Out -notmatch '"decision"' -and $rRecheck.Out -match 'DOCS FRESHNESS CHECK' -and (Get-Fingerprint $rRecheck.Out) -eq $fp12) $rRecheck.Out
 
@@ -395,8 +396,8 @@ try {
     $rAfterWrongFp = Fire -HookPath $hc14.Script -Cwd $proj14 -EventName 'Stop' -LocalAppData $hc14.LocalAppData
     Check 'an unchanged mismatched review is deduplicated, not repeatedly emitted' (
         $rAfterWrongFp.Exit -eq 0 -and $rAfterWrongFp.Out -eq '' -and $rAfterWrongFp.Err -eq '') $rAfterWrongFp.Out
-    $null = Fire -HookPath $hc14.Script -Cwd $proj14 -EventName 'UserPromptSubmit' -Prompt 'Recheck the stale review' -LocalAppData $hc14.LocalAppData
-    $rRecheck = Fire -HookPath $hc14.Script -Cwd $proj14 -EventName 'Stop' -LocalAppData $hc14.LocalAppData -StopHookActive
+    $null = Fire -HookPath $hc14.Script -Cwd $proj14 -EventName 'UserPromptSubmit' -Prompt 'Recheck the stale review' -SessionId 'docs-recheck-stale' -LocalAppData $hc14.LocalAppData
+    $rRecheck = Fire -HookPath $hc14.Script -Cwd $proj14 -EventName 'Stop' -SessionId 'docs-recheck-stale' -LocalAppData $hc14.LocalAppData -StopHookActive
     Check 'a mismatched approval still cannot clear the gate when the task is reevaluated' (
         $rRecheck.Exit -eq 0 -and $rRecheck.Out -notmatch '"decision"' -and $rRecheck.Out -match 'DOCS FRESHNESS CHECK' -and (Get-Fingerprint $rRecheck.Out) -ne $wrongFp) $rRecheck.Out
 
@@ -510,18 +511,15 @@ try {
     $codexParsed = $null
     try { $codexParsed = $rCodex.Out | ConvertFrom-Json } catch { }
     Check 'Codex (no CLAUDE_PROJECT_DIR): the catch path exits cleanly (exit 0, no stderr)' ($rCodex.Exit -eq 0 -and $rCodex.Err -eq '') ($rCodex.Out + ' | err=' + $rCodex.Err)
-    Check 'Codex (no CLAUDE_PROJECT_DIR): the detection-error warning is emitted as systemMessage' (
-        $null -ne $codexParsed -and $null -ne $codexParsed.PSObject.Properties['systemMessage'] -and
-        [string]$codexParsed.systemMessage -match 'DOCS FRESHNESS UNKNOWN \(detection error\)') $rCodex.Out
-    Check 'Codex output never uses hookSpecificOutput.additionalContext for this warning' (
-        $null -ne $codexParsed -and $null -eq $codexParsed.PSObject.Properties['hookSpecificOutput']) $rCodex.Out
+    Check 'Codex detection error is silent without a current-docs claim' ($rCodex.Exit -eq 0 -and $rCodex.Out -eq '' -and $rCodex.Err -eq '') $rCodex.Out
+    Check 'silent unknown detection emits no guessed client envelope' ($null -eq $codexParsed) $rCodex.Out
     # Once per session: on Claude Code a Stop additionalContext re-invokes the
     # model, so a persistent detection error repeated on every Stop was a loop
     # with nothing to act on. The corrupt baseline is still in place here.
     $rAgain = Fire -HookPath $hcErr.Script -Cwd $projErr -EventName 'Stop' -LocalAppData $hcErr.LocalAppData
     Check 'the detection-error warning is NOT repeated to the same session (exit 0, silent)' ($rAgain.Exit -eq 0 -and $rAgain.Out -eq '') $rAgain.Out
     $rNew = Fire -HookPath $hcErr.Script -Cwd $projErr -EventName 'Stop' -SessionId 'sess2' -LocalAppData $hcErr.LocalAppData
-    Check 'a NEW session is warned again' ($rNew.Out -match 'DOCS FRESHNESS UNKNOWN \(detection error\)') $rNew.Out
+    Check 'a NEW session with unknown detection stays silent' ($rNew.Exit -eq 0 -and $rNew.Out -eq '' -and $rNew.Err -eq '') $rNew.Out
 
     # PreToolUse `git push` gate and Stop latest-SHA guidance.
     . (Join-Path $PSScriptRoot '_testdocsfreshnesspush.ps1')

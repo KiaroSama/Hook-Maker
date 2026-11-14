@@ -105,7 +105,14 @@ foreach ($hostName in @('pwsh', 'powershell.exe')) {
         # sleep: the ceiling is only there so a child that never starts fails
         # instead of hanging the suite.
         $holderReady = $ready.WaitOne($PipeHangCeilingMs)
-        Check ($hostName + ': real descendant starts and holds inherited stdout/stderr') $holderReady
+        $startupDetail = ''
+        if (-not $holderReady) {
+            # A readiness failure still owns the descendants; preserve causal evidence.
+            $startupDetail = 'probe-exited=' + $probe.HasExited + '; root-pid-file=' + [IO.File]::Exists($rootPidFile) + '; holder-pid-file=' + [IO.File]::Exists($holderPidFile)
+            if ([IO.File]::Exists($resultFile)) { $startupDetail += '; result=' + [IO.File]::ReadAllText($resultFile, [Text.Encoding]::UTF8) }
+            if ($errTask.IsCompleted) { $startupDetail += '; stderr=' + $errTask.Result }
+        }
+        Check ($hostName + ': real descendant starts and holds inherited stdout/stderr') $holderReady $startupDetail
         if ($holderReady) {
             $holderAlreadyGone = $false
             try {
@@ -150,6 +157,21 @@ foreach ($hostName in @('pwsh', 'powershell.exe')) {
     }
     finally {
         [void]$release.Set()
+        # Readiness can fail after a child wrote its PID. Cleanup still owns it.
+        foreach ($record in @(@{Path=$holderPidFile;Role='holder'}, @{Path=$rootPidFile;Role='root'})) {
+            if (-not [IO.File]::Exists($record.Path)) { continue }
+            try {
+                $recorded = [System.Diagnostics.Process]::GetProcessById([int][IO.File]::ReadAllText($record.Path))
+                if ($recorded.StartTime.ToUniversalTime() -lt $probe.StartTime.ToUniversalTime()) { $recorded.Dispose(); continue }
+                $owner = Get-CimInstance Win32_Process -Filter ('ProcessId=' + $recorded.Id) -ErrorAction Stop
+                $scriptPath = if ($record.Role -eq 'holder') { $pipeHolder } else { $pipeRoot }
+                if ([string]$owner.CommandLine -notlike ('*' + $scriptPath + '*')) { $recorded.Dispose(); continue }
+                if ($record.Role -eq 'holder' -and $null -eq $holderProcess) { $holderProcess = $recorded }
+                elseif ($record.Role -eq 'root' -and $null -eq $rootProcess) { $rootProcess = $recorded }
+                else { $recorded.Dispose() }
+            }
+            catch [System.ArgumentException] { }
+        }
         foreach ($ownedProcess in @($holderProcess, $rootProcess, $probe)) {
             if ($null -eq $ownedProcess) { continue }
             try {

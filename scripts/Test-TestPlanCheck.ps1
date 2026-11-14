@@ -261,9 +261,10 @@ try {
     Write-Host '--- TEST_PLAN_ALWAYS_REPORT=1 overrides the cooldown ---' -ForegroundColor Cyan
     $hcAlways = New-IsolatedHookCopy -EnvContent "TEST_PLAN_ALWAYS_REPORT=1`n"
     $projAlways = New-GitRepo 'AlwaysReport'
-    $null = Fire -HookPath $hcAlways.Script -Cwd $projAlways -EventName 'SessionStart' -LocalAppData $hcAlways.LocalAppData
+    $rFirst = Fire -HookPath $hcAlways.Script -Cwd $projAlways -EventName 'SessionStart' -LocalAppData $hcAlways.LocalAppData
+    Check 'ALWAYS_REPORT still emits the first actionable advisory' ($rFirst.Exit -eq 0 -and (Get-Message $rFirst.Out) -match 'Test-Plan-Check: advisory test health') $rFirst.Out
     $rAgain = Fire -HookPath $hcAlways.Script -Cwd $projAlways -EventName 'SessionStart' -LocalAppData $hcAlways.LocalAppData
-    Check 'ALWAYS_REPORT=1 reports again on an unchanged project' ((Get-Message $rAgain.Out) -match 'Test-Plan-Check: advisory test health') $rAgain.Out
+    Check 'ALWAYS_REPORT cannot repeat an unchanged fingerprint in the same session' ($rAgain.Exit -eq 0 -and $rAgain.Err -eq '' -and $rAgain.Out -eq '') $rAgain.Out
 
     # =====================================================================
     Write-Host '--- an unbounded wait is reported; findings always point at a line ---' -ForegroundColor Cyan

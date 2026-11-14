@@ -159,8 +159,17 @@ try {
         $payload.hook_event_name='Stop'; Set-ObjectProperty $payload 'transcript_path' $transcript
         Set-ObjectProperty $payload 'last_assistant_message' ''
         $wire=Invoke-ReviewHook $path $payload
-        # FR005 keeps unavailable closing evidence silent, never accepts an older raw label.
-        Check-Contract ('E17 '+$name+' preserves UNKNOWN instead of accepting a raw old label') { $wire.Exit -eq 0 -and $wire.Err -eq '' -and $wire.Out -eq '' } $true
+        # Both old acceptance and FR005 UNKNOWN are silent. Inspect this subject's
+        # actual evidence branch too, so historical raw fallback cannot look repaired.
+        $consumerAst=[Management.Automation.Language.Parser]::ParseFile($path,[ref]$null,[ref]$null)
+        $evidenceBranch=$consumerAst.Find({param($n) $n -is [Management.Automation.Language.IfStatementAst] -and
+            $n.Clauses[0].Item1.Extent.Text -match '\$evidence\.Known' -and
+            $n.Clauses[0].Item2.Extent.Text -match '\$tail\s*='},$true)
+        $unknownBranch=if($null-ne$evidenceBranch -and $null-ne$evidenceBranch.ElseClause){$evidenceBranch.ElseClause.Extent.Text}else{''}
+        Check-Contract ('E17 '+$name+' preserves UNKNOWN instead of accepting a raw old label') {
+            $wire.Exit -eq 0 -and $wire.Err -eq '' -and $wire.Out -eq '' -and
+            $unknownBranch -match '\$tail\s*=\s*\$null' -and $unknownBranch -notmatch 'Get-TranscriptTailText'
+        } $true
     }
     $summary=Join-Path $SourceRoot 'hooks\Session-Summary-Check\Session-Summary-Check.ps1'
     $payload=[pscustomobject]@{cwd=$project;session_id='shared-session';hook_event_name='SessionStart'}

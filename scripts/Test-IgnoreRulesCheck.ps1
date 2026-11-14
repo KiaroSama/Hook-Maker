@@ -412,6 +412,10 @@ try {
     $pushExit = $LASTEXITCODE
     $ErrorActionPreference = 'Stop'
     Check 'first push advises after auto-fixing missing ignore rules' ($pushExit -eq 0 -and $pushOutput -match 'Ignore-Rules-Check: Ignore' -and (Test-Path -LiteralPath (Join-Path $pushRepo '.gitignore'))) $pushOutput
+    $previousMarker = Join-Path $pushRepo 'previous-hook.txt'
+    Check 'advisory-only first push reaches the preserved user hook' (Test-Path -LiteralPath $previousMarker) $pushOutput
+    # The successful advisory push already ran it. Isolate the next safety check.
+    [IO.File]::Delete($previousMarker)
 
     & git -C $pushRepo add .gitignore
     & git -C $pushRepo commit -q -m c2
@@ -423,7 +427,7 @@ try {
     $pushOutput = (& git -C $pushRepo push -u origin main 2>&1 | Out-String)
     $pushExit = $LASTEXITCODE
     $ErrorActionPreference = 'Stop'
-    Check 'Secrets-Check blocks before the previous hook' ($pushExit -ne 0 -and $pushOutput -match 'SECRETS CHECK' -and -not (Test-Path -LiteralPath (Join-Path $pushRepo 'previous-hook.txt'))) $pushOutput
+    Check 'Secrets-Check blocks before the previous hook' ($pushExit -ne 0 -and $pushOutput -match 'SECRETS CHECK' -and $pushOutput -match 'API_KEY' -and $pushOutput -match 'leak\.txt' -and -not (Test-Path -LiteralPath $previousMarker)) $pushOutput
 
     # Fully discard the leak commit from HISTORY (not just add a later
     # "remove it" commit on top) - the outgoing-commit scan correctly still

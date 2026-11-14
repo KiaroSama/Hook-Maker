@@ -31,15 +31,18 @@
     Check 'RL02 a Persian prompt yields the LANGUAGE line as Claude additionalContext' (
         $r.Exit -eq 0 -and $r.Out.Contains($rlLine) -and $r.Out -match 'additionalContext' -and $r.Out -notmatch '"decision"') $r.Out
     $r = Invoke-SummaryHook -Payload @{ hook_event_name = 'UserPromptSubmit'; cwd = $rlProj; session_id = 'rl-1'; prompt = $rlFa } -AsClaude -KeepDelivered
-    Check 'RL03 inside the summary cooldown the line still arrives, alone' (
-        $r.Out.Contains($rlLine) -and $r.Out -notmatch 'SESSION SUMMARY' -and $r.Out -match 'additionalContext') $r.Out
+    Check 'RL03 cooldown delivers the distinct language-only reminder once, without summary' (
+        $r.Exit -eq 0 -and $r.Out.Contains($rlLine) -and $r.Out -match 'additionalContext' -and
+        $r.Out -notmatch 'one short DONE / REMAINING|"decision"') $r.Out
     $r = Invoke-SummaryHook -Payload @{ hook_event_name = 'UserPromptSubmit'; cwd = $rlProj; session_id = 'rl-c'; prompt = $rlFa }
     Check 'RL02b the Codex shape carries it as additionalContext too' ($r.Out.Contains($rlLine) -and $r.Out -match 'additionalContext') $r.Out
     $r = Invoke-SummaryHook -Payload @{ hook_event_name = 'UserPromptSubmit'; cwd = $rlProj; session_id = 'rl-1'; prompt = ('Base directory for this skill: C:\x ' + $rlFa) } -AsClaude -KeepDelivered
     Check 'RL04 a skill expansion is not the user typing: no line' ($r.Out -notmatch 'LANGUAGE:') $r.Out
     foreach ($source in @('compact', 'resume')) {
-        $r = Invoke-SummaryHook -Payload @{ hook_event_name = 'SessionStart'; cwd = $rlProj; session_id = 'rl-1'; source = $source } -AsClaude
-        Check ('RL05 SessionStart after ' + $source + ' repeats the line from state') ($r.Out.Contains($rlLine) -and $r.Out -match 'SESSION SUMMARY') $r.Out
+        # Independent rebuilt contexts need independent session identities under R035.
+        $null = Invoke-SummaryHook -Payload @{ hook_event_name = 'UserPromptSubmit'; cwd = $rlProj; session_id = ('rl-' + $source); prompt = $rlFa } -AsClaude
+        $r = Invoke-SummaryHook -Payload @{ hook_event_name = 'SessionStart'; cwd = $rlProj; session_id = ('rl-' + $source); source = $source } -AsClaude
+        Check ('RL05 SessionStart after ' + $source + ' repeats the line from state') ($r.Out.Contains($rlLine) -and $r.Out -match 'Session-Summary-Check: advisory') $r.Out
     }
     $r = Invoke-SummaryHook -Payload @{ hook_event_name = 'SessionStart'; cwd = $rlProj; session_id = 'rl-1'; source = 'startup' } -AsClaude
     Check 'RL06 a fresh startup does not repeat it' ($r.Out -notmatch 'LANGUAGE:') $r.Out

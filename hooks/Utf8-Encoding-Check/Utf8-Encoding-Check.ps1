@@ -369,9 +369,8 @@ if ($GitPrePush) {
     foreach ($coverageError in $coverageErrors.ToArray()) { [void]$lines.Add('- Outgoing PARTIAL: ' + $coverageError + '.') }
     [void]$lines.Add($(if ($violations.Count) { 'UTF-8/required-encoding exception: ' + $exceptionFileSetting + '.' } else { 'UNKNOWN: repair transport/deadline/resources, not exceptions; no auto retry.' }))
     foreach ($warning in $configWarnings.ToArray()) { [void]$lines.Add('Utf8-Encoding-Check .env: ' + $warning) }
-    # R035: confirmed style findings warn; unknown state is silent, not clean.
-    if($violations.Count-gt0){exit (Write-NativeFinding -HookName Utf8-Encoding-Check -Message ($lines.ToArray() -join ' ') -ProjectRoot $cwd)}
-    exit 0 # R035: unknown outgoing state is silent.
+    # R035: valid-repository coverage failures advise UNKNOWN, never all-clear.
+    exit (Write-NativeFinding -HookName Utf8-Encoding-Check -Message ($lines.ToArray() -join ' ') -ProjectRoot $cwd)
 }
 
 # =============================================================================

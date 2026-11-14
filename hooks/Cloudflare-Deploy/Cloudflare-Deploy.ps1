@@ -662,11 +662,10 @@ if (Test-DeploymentAcknowledgment $cwd (Get-HookClientId) $script:ReleaseHeadSha
 $reasonLines = New-Object System.Collections.Generic.List[string]
 [void]$reasonLines.Add('CLOUDFLARE DEPLOY CHECK: ' + $wranglerConfig + '; SHA=' + $script:ReleaseHeadSha + '; clean/synced, exact-SHA configured CI green, installed cleanup current/clean. Config != deploy.')
 # Deployment advice cannot authorize provider changes or block completion.
-[void]$reasonLines.Add('Advisory deploy decision: complete authorized release only; relevant tests/build, known exact SHA/CI or documented exception, clean secrets/local-only/debug/unrelated/temp scope, reviewed bindings/migrations. Docs/experiment/unknown release: do not deploy, state why.')
-[void]$reasonLines.Add('Choose production/staging/preview/named Wrangler environment explicitly; review name/account, vars, D1/KV/R2/Queues/DO+migrations, services/routes/domains/crons, compatibility/CLI/build as relevant; never secret values.')
-[void]$reasonLines.Add('If warranted: ' + $deployCommand)
-[void]$reasonLines.Add('Verify deployed environment/Worker/source SHA/secret-free command/version or URL and changed feature/health/logs/routes/bindings/migrations; exit0 alone != live. Missing proof: disclose; failure: inspect confirmed cause, validate/safe retry, never blind redeploy. Verified deployment or explicit no-ship decision records this state once, never inferred consent.')
-
+[void]$reasonLines.Add('BEFORE deploy: global-project-lifecycle-rules.md + selected cloudflare/wrangler contracts FULL. Authorized release only; tests/build, exact SHA/CI or exception, clean secrets/local-only/debug/temp, reviewed bindings/migrations. Partial/docs/experiment/unknown: explain, NO deploy.')
+[void]$reasonLines.Add('Explicit Wrangler env: production/staging/preview/named; review account/name, vars, D1/KV/R2/Queues/DO+migrations, services/routes/domains/crons, compatibility/CLI/build; no secret values.')
+[void]$reasonLines.Add('Warranted only: ' + $deployCommand)
+[void]$reasonLines.Add('Exit0!=live proof; exact-SHA deployment + real feature/health/log/route/binding/migration postchecks or reviewed no-ship. Record env/Worker/SHA/command/version/URL, no secrets. Missing=UNVERIFIED; confirmed cause: fix/validate/safe retry, never blind redeploy. No consent inferred.')
 [void]$reasonLines.Add('Ack without deploy (HOOKS.md): pwsh -NoProfile -File "' + $PSCommandPath + '" -Acknowledge -ProjectRoot "' + $cwd + '" -Client ' + (Get-HookClientId) + ' -Commit ' + $script:ReleaseHeadSha + ' -EvidencePath "<reviewed local evidence.json>" -ReviewConfirmed.')
 $reason = $reasonLines.ToArray() -join "`n"
 # Record the block so THIS hook's own re-entry is recognised; another

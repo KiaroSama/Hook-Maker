@@ -137,7 +137,7 @@ try {
     Check 'summary: REMAINING contains only unresolved required work' (
         $summaryMessage -match 'REMAINING: unfinished required items, current blockers, deferred scope or untested required paths with reasons') $summaryMessage
     Check 'summary: completed items must not be relisted as remaining' (
-        $summaryMessage -match 'DONE=verified work/checks/gates' -and $summaryMessage -match 'REMAINING: unfinished required items, current blockers, deferred scope or untested required paths with reasons') $summaryMessage
+        $summaryMessage -match 'DONE: completed work/checks/resolved gates with observed proof' -and $summaryMessage -match 'REMAINING: unfinished required items, current blockers, deferred scope or untested required paths with reasons') $summaryMessage
 
     # =====================================================================
     Write-Host '--- with no markers there is no gate list at all ---' -ForegroundColor Cyan
@@ -148,7 +148,7 @@ try {
     $null = New-BlockMarker -HookName 'Secrets-Check' -ProjectRoot $proj -SessionId $sid
     $null = New-BlockMarker -HookName 'Ci-Status-Check' -ProjectRoot $proj -SessionId $sid
     $r = Invoke-SummaryHook @{ hook_event_name = 'UserPromptSubmit'; cwd = $proj; session_id = $sid }
-    Check 'summary: reports that gates blocked earlier this session' ($r.Out -match 'blocked earlier in this session') $r.Out
+    Check 'summary: reports that gates blocked earlier this session' ($r.Out -match 'unverified earlier in this session') $r.Out
     Check 'summary: names both gates, sorted' ($r.Out -match 'CiStatusCheck, SecretsCheck') $r.Out
     Check 'summary: asks for each blocked gate to be accounted for' ($r.Out -match 'Recheck each') $r.Out
     Check 'summary: old gate markers are history, not evidence of an open blocker' (
@@ -157,10 +157,11 @@ try {
     # A marker left by an EARLIER session in the same project is evidence about
     # that session, not this one. Reporting it would accuse the current session
     # of a block it never hit.
+    $currentGateReport = $r.Out
     $null = New-BlockMarker -HookName 'Docs-Freshness-Check' -ProjectRoot $proj -SessionId 'an-older-session'
     $r = Invoke-SummaryHook @{ hook_event_name = 'UserPromptSubmit'; cwd = $proj; session_id = $sid }
     Check 'summary: ignores a marker from a different session' ($r.Out -notmatch 'DocsFreshnessCheck') $r.Out
-    Check 'summary: still names this session''s own gates' ($r.Out -match 'CiStatusCheck, SecretsCheck') $r.Out
+    Check 'summary: prior report names own gates and unchanged replay stays silent' ($currentGateReport -match 'CiStatusCheck, SecretsCheck' -and $r.Exit -eq 0 -and $r.Out -eq '') $r.Out
 
     # A marker for a DIFFERENT project shares the state directory but not the
     # project key, so it must not leak into this project's summary.
@@ -183,7 +184,7 @@ try {
             # immediately below); what must be byte-identical is every SIBLING gate's
             # marker. Hashing its own stamp too would fail on a legitimate rewrite -
             # which is what name+length used to hide, in both directions.
-            $parts = @(Get-ChildItem -LiteralPath $Dir -File | Where-Object { $_.Name -notlike 'SessionSummary-*' } | Sort-Object Name | ForEach-Object {
+            $parts = @(Get-ChildItem -LiteralPath $Dir -File | Where-Object { $_.Name -notlike 'SessionSummary-*' -and $_.Name -notlike 'HookFinding-*' } | Sort-Object Name | ForEach-Object {
                     $bytes = [System.IO.File]::ReadAllBytes($_.FullName)
                     $_.Name + ':' + [System.BitConverter]::ToString($sha.ComputeHash($bytes)).Replace('-', '')
                 })
@@ -201,7 +202,7 @@ try {
     # read-only to it, asserted above.
     Check 'summary: writes only its own delivery stamp, nothing else' (
         @(Get-ChildItem -LiteralPath $StateDir -File | Where-Object {
-                $_.Name -notlike 'StopBlock-*' -and $_.Name -notlike 'SessionSummary-*'
+                $_.Name -notlike 'StopBlock-*' -and $_.Name -notlike 'SessionSummary-*' -and $_.Name -notlike 'HookFinding-*'
             }).Count -eq 0) $after
 
     # =====================================================================
@@ -235,7 +236,7 @@ try {
     }
     [IO.File]::WriteAllText($claimPath, ($claimDocument | ConvertTo-Json -Depth 5))
     $expired = Invoke-SummaryHook -KeepDelivered -Payload @{ hook_event_name = 'UserPromptSubmit'; cwd = $loopProj; session_id = 'loop-b' }
-    Check 'summary: a prompt after the window expired is reminded again' ($expired.Out -match 'Session-Summary-Check: advisory') $expired.Out
+    Check 'summary: unchanged fingerprint stays silent after legacy window expiry' ($expired.Exit -eq 0 -and $expired.Out -eq '') $expired.Out
 
     # =====================================================================
     Write-Host '--- R03: two sessions in one project keep separate cooldowns ---' -ForegroundColor Cyan
@@ -295,7 +296,7 @@ try {
     $r = Invoke-SummaryHook -Payload @{ hook_event_name = 'UserPromptSubmit'; cwd = $proj; session_id = $sid } -AsClaude
     Check 'summary: Claude gets model-visible additionalContext on the prompt' (
         ($r.Out -match 'hookSpecificOutput') -and ($r.Out -match 'additionalContext') -and ($r.Out -match '"hookEventName":"UserPromptSubmit"')) $r.Out
-    $r = Invoke-SummaryHook @{ hook_event_name = 'UserPromptSubmit'; cwd = $proj; session_id = $sid }
+    $r = Invoke-SummaryHook @{ hook_event_name = 'UserPromptSubmit'; cwd = $proj; session_id = 'summary-codex-shape' }
     Check 'summary: Codex gets additionalContext too (systemMessage is Stop-only)' (
         ($r.Out -match 'additionalContext') -and ($r.Out -notmatch 'systemMessage')) $r.Out
     $r = Invoke-SummaryHook -Payload @{ hook_event_name = 'SessionStart'; cwd = $proj; session_id = $sid } -AsClaude
@@ -315,7 +316,9 @@ try {
     # would report other sessions' blocks as this one's. It still delivers the
     # requirement - that part needs no session - but names no gates.
     $r = Invoke-SummaryHook @{ hook_event_name = 'UserPromptSubmit'; cwd = $proj }
-    Check 'summary: no session id still yields the requirement' ($r.Out -match 'Session-Summary-Check: advisory') $r.Out
+    Check 'summary: absent session reports unavailable reservation without completion' (
+        $r.Exit -eq 0 -and $r.Out -match 'SESSION SUMMARY: reservation UNVERIFIED: identity-unavailable; no completion' -and
+        $r.Out -notmatch 'DONE:|REMAINING:') $r.Out
     Check 'summary: no session id names no gates rather than guessing' ($r.Out -notmatch 'blocked earlier in this session') $r.Out
 
     # An empty marker must not match an empty/absent session id and quietly
@@ -341,11 +344,11 @@ try {
     # The hook ships to both hosts, so a pwsh-only construct is a real defect.
     $parse = powershell.exe -NoLogo -NoProfile -Command "`$e=`$null; `$null=[System.Management.Automation.Language.Parser]::ParseFile('$Hook',[ref]`$null,[ref]`$e); if(`$e -and `$e.Count){'FAIL'}else{'OK'}"
     Check 'summary: parses under Windows PowerShell 5.1' (([string]$parse).Trim() -eq 'OK') ([string]$parse)
-    $r51 = Invoke-SummaryHook -Payload @{ hook_event_name = 'UserPromptSubmit'; cwd = $proj; session_id = $sid } -Exe 'powershell.exe'
+    $r51 = Invoke-SummaryHook -Payload @{ hook_event_name = 'UserPromptSubmit'; cwd = $proj; session_id = 'summary-host51' } -Exe 'powershell.exe'
     Check 'summary: Windows PowerShell 5.1 emits the same open-work classification' (
-        $r51.Exit -eq 0 -and $r51.Out -match 'DONE=verified work/checks/gates' -and
+        $r51.Exit -eq 0 -and $r51.Out -match 'DONE: completed work/checks/resolved gates with observed proof' -and
         $r51.Out -match 'REMAINING: unfinished required items, current blockers, deferred scope or untested required paths with reasons' -and
-        $r51.Out -match 'Historical markers != current open gates') $r51.Out
+        $r51.Out -match 'History alone proves no open gate') $r51.Out
 
     # The hook is shipped source: it must stay pure ASCII, like every other
     # hook in this set (Persian is carried as \uXXXX escapes and decoded at

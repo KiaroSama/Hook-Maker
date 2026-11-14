@@ -76,12 +76,12 @@ function Invoke-CiStateGate {
         # HEAD. A cached label cannot outrank fresh exact-source evidence.
         $script:prefetchedSnapshot = Get-CiRunSnapshot -RepoSlug $repoSlug -Sha $sha -ProjectRoot $cwd -Branch $branch
         if ($null -ne $script:prefetchedSnapshot) { return }
-        $emit = Write-StopBlockResult -HookInput $hookInput -HookName 'Ci-Status-Check' -EventName $eventName -Reason ('Fresh source UNVERIFIED: ' + $sha7 + '. Cached pending!=running; verify access/workload, UNKNOWN!=green.')
+        $emit = Write-StopBlockResult -HookInput $hookInput -HookName 'Ci-Status-Check' -EventName $eventName -Reason ('Source UNVERIFIED: ' + $sha7 + '. Pending!=running; verify access/workload, UNKNOWN!=green.')
         exit $emit.ExitCode
     }
     $ageMinutes = ([DateTime]::UtcNow - $stateTime).TotalMinutes
     if ($stateOutcome -eq 'failed' -and $ageMinutes -lt $failureCooldown) {
-        $emit = Write-StopBlockResult -HookInput $hookInput -HookName 'Ci-Status-Check' -EventName $eventName -Reason ('pushed commit ' + $sha7 + ' failed; advisory, reported. Repair/push or document external blocker.')
+        $emit = Write-StopBlockResult -HookInput $hookInput -HookName 'Ci-Status-Check' -EventName $eventName -Reason ('pushed commit ' + $sha7 + ' failed. Repair/push or note external blocker.')
         exit $emit.ExitCode
     }
 }

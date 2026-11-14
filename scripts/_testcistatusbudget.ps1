@@ -90,7 +90,7 @@
     $failedChecks='{"total_count":1,"check_runs":[{"id":1,"head_sha":"'+$failedSha+'","status":"completed","conclusion":"failure"}]}'
     Set-Mock -RunJson '[{"databaseId":305,"name":"CI","workflowName":"CI","status":"completed","conclusion":"failure"}]' -ExpectedSha $failedSha -CheckRunsJson $failedChecks -Annotations @{ '1'='[{"annotation_level":"failure","message":"billing/payment"}]' }
     $r=Fire -HookPath $oldHook -Cwd $failedRepo -EventName 'Stop'
-    Check 'budget: missing billing reader keeps an actual failed check blocked, never billing or green' ($r.Exit-eq0-and$r.Err-eq''-and$r.Out-match'"systemMessage"'-and$r.Out-notmatch'"decision"'-and$r.Out-match'FAILED:'-and$r.Out-notmatch'account-billing|CI execution verified'-and(Get-GhCallCount 'api|*/annotations*')-eq0) ([string]$r.Out)
+    Check 'budget: missing billing reader keeps actual failure advisory, never billing or green' ($r.Exit-eq0-and$r.Err-eq''-and$r.Out-match'"systemMessage"'-and$r.Out-notmatch'"decision"'-and$r.Out-match'FAILED:'-and$r.Out-notmatch'account-billing|CI execution verified'-and(Get-GhCallCount 'api|*/annotations*')-eq0) ([string]$r.Out)
     # Every entry fallback must share ONE deadline, including auth; expiry never
     # launches another command and never becomes a successful zero-result set.
     $entryAst=[Management.Automation.Language.Parser]::ParseFile($oldHook,[ref]$null,[ref]$null)

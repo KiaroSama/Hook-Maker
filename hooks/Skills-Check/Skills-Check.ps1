@@ -499,6 +499,7 @@ if ($eventName -eq 'UserPromptSubmit') {
 
         $dd = New-Object System.Collections.Generic.List[string]
         [void]$dd.Add('SKILL POLICY CHECK (' + $client + '): ::deep-debug; exact loadable SKILL.md key/exposure, no mutation.')
+        [void]$dd.Add('- EVERY bug/phase: WORKFLOWS.md Deep Debug/skill-policy-deep-debug.md FULL.')
         [void]$dd.Add('- Ledger bugs/phases first; ::multi-agent codeword. dispatching-parallel-agents: independent discovery; subagent-driven-development: prepared tasks. Flatten/dedup/cycle-check once, no nested/recursive agents.')
         [void]$dd.Add('- audit-context-building: substantial/unfamiliar/architecture/security; Graphify policy. brainstorming: real design ambiguity; writing-plans: complex repair lacking plan.')
         [void]$dd.Add('- Bug: systematic-debugging/test-driven-development/verification-before-completion; runtime question: debugging-code DAP OR trusted debug-live DebugMCP/VS Code.')
@@ -552,7 +553,9 @@ if ($eventName -eq 'UserPromptSubmit') {
         foreach ($m in $topInstalled) {
             $where = ''
             if ($null -ne $m.PSObject.Properties['Path'] -and -not [string]::IsNullOrWhiteSpace([string]$m.Path)) { $where = ' -> ' + (Join-Path $m.Path 'SKILL.md') }
-            [void]$lines.Add('- ' + $m.Name + ' [' + $m.Where + ']' + $where)
+            # Preserve indexed source identity through the visible shortlist.
+            $identity = if ($null -ne $m.PSObject.Properties['InstallationKey']) { '; package=' + $m.InstallationKey + '; version=' + $m.Version } else { '' }
+            [void]$lines.Add('- ' + $m.Name + ' [' + $m.Where + ']' + $where + $identity)
         }
     }
     if ($topLibrary.Count -gt 0) {
@@ -619,6 +622,8 @@ if ($hasLibrary) {
 [void]$lines.Add('- Select only the minimal relevant set (1-5). Follows ' + $policyFile + '.')
 foreach ($routingLine in $script:SkillRoutingLines) { [void]$lines.Add($routingLine) }
 
+# Agents are a separate selection surface; skill discovery cannot prove coverage.
+[void]$lines.Add('Agents: BEFORE selection global-agent-rules.md FULL; global/project ' + $(if ($client -eq 'claude') { '.claude/agents' } else { 'native agents' }) + '; installed_plugins.json declared/default roots. Gaps UNVERIFIED; no auto spawn.')
 # Provider/source-aware drift is advisory, never runtime load evidence.
 # Project-local copies remain outside the global catalogue contract.
 $driftNames = @(@($index.Plugin | Where-Object { $_.Status -eq 'enabled' } | ForEach-Object { $_.Name }) +

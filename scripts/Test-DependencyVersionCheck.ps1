@@ -380,7 +380,7 @@ try {
     $rPromptNew = Fire -Cwd $promptProj -EventName 'UserPromptSubmit' -Prompt 'please add a new dependency for HTTP requests'
     Check 'a new-dependency prompt injects "prefer latest stable compatible" guidance' ($rPromptNew.Out -match 'BEFORE dependency/runtime/tool/Action/image changes: global-environment-rules.md FULL') $rPromptNew.Out
     Check 'new-dependency guidance also warns against a floating tag / non-deterministic pin' ($rPromptNew.Out -match 'latest compatible STABLE/pin\+lock')
-    $rPromptScratch = Fire -Cwd $promptProj -EventName 'UserPromptSubmit' -Prompt 'create a new project from scratch using a modern web framework'
+    $rPromptScratch = Fire -Cwd $promptProj -EventName 'UserPromptSubmit' -Prompt 'create a new project from scratch using a modern web framework' -SessionId 'scratch-new-session'
     Check '"from scratch" project prompts also trigger the guidance' ($rPromptScratch.Out -match 'latest compatible STABLE') $rPromptScratch.Out
 
     # =====================================================================
@@ -398,8 +398,8 @@ try {
     # in one process and the reverse order in the next) - only the DECODED content is a
     # meaningful equality check here, the JSON key order is never semantically significant.
     $ctx1 = ($r1.Out | ConvertFrom-Json).hookSpecificOutput.additionalContext
-    $ctx2 = ($r2.Out | ConvertFrom-Json).hookSpecificOutput.additionalContext
-    Check 'a second scan with an unchanged fingerprint reuses the cache (no new npm invocation)' ((Get-NpmCallCount) -eq 1 -and $ctx2 -eq $ctx1) ('calls=' + (Get-NpmCallCount))
+    Check 'an unchanged finding stays silent without a new npm invocation' (
+        (Get-NpmCallCount) -eq 1 -and $ctx1 -match 'pkg-c' -and $r2.Exit -eq 0 -and $r2.Out -eq '') ('calls=' + (Get-NpmCallCount))
     Write-Utf8 (Join-Path $cacheProj 'package.json') '{"name":"fixture","dependencies":{"pkg-c":"1.0.0","pkg-d":"1.0.0"}}'
     Set-Mock -NpmExit 1 -NpmJson '{"pkg-c":{"current":"1.0.0","latest":"1.0.1"},"pkg-d":{"current":"1.0.0","latest":"2.0.0"}}'
     $r3 = Fire -Cwd $cacheProj
@@ -432,11 +432,13 @@ try {
     Write-Utf8 (Join-Path $contractProj 'package.json') '{"name":"fixture","dependencies":{"pkg-old":"1.0.0"}}'
     Set-Mock -NpmExit 1 -NpmJson '{"pkg-old":{"current":"1.0.0","latest":"3.0.0"}}'
     $rc = Fire -Cwd $contractProj -SessionId 'contract-1'
-    Check 'the report demands a decision per finding, not agreement' ($rc.Out -match 'Each:' -and $rc.Out -match 'Final standalone: Dependency decisions:') $rc.Out
+    Check 'the report demands a decision per finding, not agreement' ($rc.Out -match 'Per finding:' -and $rc.Out -match 'Final standalone: Dependency decisions:') $rc.Out
     Check 'update / keep / defer are all named as legitimate answers' (
-        $rc.Out -match 'update\+lock\+real checks' -and $rc.Out -match 'keep\+reason' -and $rc.Out -match 'defer\+blocker') $rc.Out
-    Check 'silence is explicitly NOT an answer' ($rc.Out -match 'Each:' -and $rc.Out -match 'Final standalone:') $rc.Out
-    Check 'EOL/old-major retention routes to the full owner with explicit keep reason' ($rc.Out -match 'Verify releases/breaks/runtime/peers/advisories; latest compatible STABLE, no default prerelease' -and $rc.Out -match 'keep\+reason') $rc.Out
+        $rc.Out -match 'update\+lock\+real checks' -and $rc.Out -match 'keep\(reason\)' -and $rc.Out -match 'defer\(blocker\)') $rc.Out
+    Check 'silence is explicitly NOT an answer' ($rc.Out -match 'silence!=review' -and $rc.Out -match 'Final standalone:') $rc.Out
+    Check 'EOL/old-major retention requires an explicit reason after compatibility review' (
+        $rc.Out -match 'Verify releases/breaks/runtime/peers/advisories; latest compatible STABLE, no default prerelease' -and
+        $rc.Out -match '\[EOL\]/old major retain reason') $rc.Out
     Check 'the report names the exact closing line to write' ($rc.Out -match 'Dependency decisions:') $rc.Out
     Check 'the report still disclaims any authority to upgrade or block' (
         $rc.Out -match 'hook never edits/upgrades/blocks' -and $rc.Out -notmatch '"decision"') $rc.Out

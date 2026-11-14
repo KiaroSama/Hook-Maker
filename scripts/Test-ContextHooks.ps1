@@ -142,7 +142,10 @@ $hookResultProbeBody = @'
 Set-StrictMode -Version 2.0
 $ErrorActionPreference = 'Stop'
 . (Join-Path '__LIBDIR__' '_hooklib.ps1')
+# Pure adapter tests intentionally bypass runtime dedup and severity selection.
 $in = Read-HookInput
+$script:HookRuntimeInput = $null
+$script:HookRuntimeName = ''
 $outcome = Write-HookResult -EventName ([string](Get-Field $in 'event')) -Kind ([string](Get-Field $in 'kind')) `
     -Message ([string](Get-Field $in 'message')) -Reason ([string](Get-Field $in 'reason')) -Client ([string](Get-Field $in 'client'))
 [System.IO.File]::WriteAllText([string](Get-Field $in 'resultPath'), ($outcome | ConvertTo-Json -Compress), (New-Object System.Text.UTF8Encoding $false))
@@ -167,6 +170,8 @@ Set-StrictMode -Version 2.0
 $ErrorActionPreference = 'Stop'
 . (Join-Path '__LIBDIR__' '_hooklib.ps1')
 $in = Read-HookInput
+$script:HookRuntimeInput = $null
+$script:HookRuntimeName = ''
 $text = [string](Get-Field $in 'message')
 $ev = [string](Get-Field $in 'event')
 
@@ -234,6 +239,7 @@ $OrigClaudeProjectDir = $env:CLAUDE_PROJECT_DIR
 try {
     if ($ProcessOnly) {
         . (Join-Path $PSScriptRoot '_testcontextprocess.ps1')
+        . (Join-Path $PSScriptRoot '_testprocesstree.ps1')
     }
     else {
     # ---- sections, dot-sourced so they share this scope and harness -------

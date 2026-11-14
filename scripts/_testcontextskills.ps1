@@ -53,14 +53,14 @@
 
     # =====================================================================
     Write-Host '--- Skills-Check: Stop requires the "Skills used:" summary line ---' -ForegroundColor Cyan
-    $r = Fire -HookPath $hook1 -Cwd $proj1 -EventName 'Stop'
+    $r = Fire -HookPath $hook1 -Cwd $proj1 -RawStdin (New-StopStdin -Cwd $proj1 -Transcript (New-ToolTranscript 'skills-contract-read' 'Read' 'Done.') -SessionId 'skills-contract')
     Check 'Stop requires a final "Skills used:" summary line for skills actually used' ($r.Out -match 'Skills used:') $r.Out
     Check 'the policy explicitly excludes merely-installed/available/considered/copied-but-unused skills' (
-        $r.Out -match 'read/presence/library/trivial!=use') $r.Out
+        $r.Out -match 'no skill was invoked this session' -and $r.Out -match 'verify exact key/exposure before use') $r.Out
     Check 'no skill used is answered with an explicit "none" plus a reason, not by dropping the line' (
-        $r.Out -match 'Skills used: none - <EACH unused match/reason>') $r.Out
-    Check 'the policy forbids listing the whole library' ($r.Out -match 'read/presence/library/trivial!=use') $r.Out
-    Check 'the policy does not force a skill for trivial tasks merely to produce the line' ($r.Out -match 'read/presence/library/trivial!=use') $r.Out
+        $r.Out -match 'Skills used: none - <EACH unused name/reason>') $r.Out
+    Check 'the policy forbids listing the whole library' ($r.Out -match 'no skill was invoked this session' -and $r.Out -match 'verify exact key/exposure before use') $r.Out
+    Check 'the policy does not force a skill for trivial tasks merely to produce the line' ($r.Out -match 'no skill was invoked this session' -and $r.Out -match 'verify exact key/exposure before use') $r.Out
     Check 'a session with no skill invoked is advised, never blocked' ($r.Out -notmatch '"decision"') $r.Out
     $stopHookActiveStdin = @{ session_id = 't'; cwd = $proj1; hook_event_name = 'Stop'; stop_hook_active = $true } | ConvertTo-Json
     $r = Fire -HookPath $hook1 -Cwd $proj1 -EventName 'Stop' -RawStdin $stopHookActiveStdin
@@ -84,15 +84,15 @@
     Check 'skill invoked + the summary line present -> silent, no block' ($r.Exit -eq 0 -and $r.Out -eq '') $r.Out
     $r = Fire -HookPath $skStopHook -Cwd $skStop -RawStdin (New-StopStdin -Cwd $skStop -Transcript $tNoSkill -SessionId 'sk-n1')
     Check 'no skill invoked -> advisory only (whether one was NEEDED is not the hook''s call)' (
-        $r.Out -match 'no invocation this session' -and $r.Out -notmatch '"decision"') $r.Out
+        $r.Out -match 'no skill was invoked this session' -and $r.Out -notmatch '"decision"') $r.Out
     # SELF-SATISFACTION PROBE, same reasoning as the Mcp-Usage-Check one above.
     $skOwnText = 'CLOSING REQUIREMENT - end the final task summary with its own line starting "Skills used:" naming ONLY the exact skill names actually invoked. TO CLEAR THIS: add one line to the final summary, on its own line, starting exactly with "Skills used:" - e.g. "Skills used: superpowers:systematic-debugging".'
     $tSkSelf = New-ToolTranscript 'sk-self' 'Skill' $skOwnText
     $r = Fire -HookPath $skStopHook -Cwd $skStop -RawStdin (New-StopStdin -Cwd $skStop -Transcript $tSkSelf -SessionId 'sk-self1')
     Check 'the hook''s OWN instruction text in the transcript never satisfies the gate' ($r.Out -match '"decision"\s*:\s*"block"') $r.Out
     $r = Fire -HookPath $skStopHook -Cwd $skStop -RawStdin (New-StopStdin -Cwd $skStop -Transcript (Join-Path $Work 'no-such-transcript.jsonl') -SessionId 'sk-u1')
-    Check 'a missing transcript reports UNVERIFIED, never an all-clear and never a block' (
-        $r.Out -match 'Skill use UNVERIFIED' -and $r.Out -match 'not all-clear' -and $r.Out -notmatch '"decision"') $r.Out
+    Check 'a missing transcript stays silent without an all-clear' (
+        $r.Exit -eq 0 -and $r.Err -eq '' -and $r.Out -eq '') $r.Out
     $r = Fire -HookPath $skStopHook -Cwd $skStop -RawStdin (New-StopStdin -Cwd $skStop -Transcript $tSkillNoLine -SessionId 'sk-sub' -EventName 'SubagentStop')
     Check 'SubagentStop gets the same gate as Stop' ($r.Out -match '"decision"\s*:\s*"block"') $r.Out
     $skAdvHook = New-ConfiguredSkillsHookCopy -EnvOverrides @{ SKILLS_DIR = (Join-Path $Work 'no-such-library') }
@@ -106,7 +106,7 @@
     New-Item -ItemType Directory -Path (Join-Path $skOffProj '.claude\skills\gate-skill') -Force | Out-Null
     $r = Fire -HookPath $skOffHook -Cwd $skOffProj -RawStdin (New-StopStdin -Cwd $skOffProj -Transcript $tSkillNoLine -SessionId 'sk-o1')
     Check 'off mode skips the closing check entirely' ($r.Exit -eq 0 -and $r.Out -eq '') $r.Out
-    $r = Fire -HookPath $skOffHook -Cwd $skOffProj
+    $r = Fire -HookPath $skOffHook -Cwd $skOffProj -RawStdin (New-PromptStdin $skOffProj 'SessionStart' '' 'skills-off-new')
     Check 'off mode still runs the pre-task half' ($r.Out -match 'SKILL POLICY CHECK') $r.Out
 
     # =====================================================================
@@ -230,12 +230,12 @@
     New-Item -ItemType Directory -Path $guideLib -Force | Out-Null
     $guideHook = New-ConfiguredSkillsHookCopy -EnvOverrides @{ SKILLS_DIR = $guideLib }
     $rg = Fire -HookPath $guideHook -Cwd $guideProj
-    Check 'import guidance: copy the minimal set (1-5)' ($rg.Out -match '1-5 relevant') $rg.Out
+    Check 'import guidance: copy the minimal set (1-5)' ($rg.Out -match '1-5 authorized folders') $rg.Out
     Check 'import guidance: active policy FULL before real-folder copy' ($rg.Out -match 'BEFORE copy: skill policy FULL; 1-5 authorized folders') $rg.Out
     # Links/private exclusions and record fields are indirect in the complete
     # active policy, not independently verified by this public routing assertion.
     Check 'import safety and record detail route to active policy before copy' (
-        $rg.Out -match 'each job: skill-policy\.md FULL' -and
+        $rg.Out -match 'BEFORE copy: skill policy FULL; 1-5 authorized folders' -and
         $rg.Out -match 'BEFORE copy: skill policy FULL' -and $rg.Out -match 'record \.ai/SKILLS\.md') $rg.Out
     Check 'import guidance: preserve a modified project skill' ($rg.Out -match 'preserve modified') $rg.Out
     Check 'record guidance: .ai/SKILLS.md is local-only and secret-free' ($rg.Out -match 'local, secret-free') $rg.Out
@@ -445,33 +445,42 @@
     Check 'skill identity requires installed declaration and verified loadability' (
         $r.Out -match 'exact loadable SKILL\.md key/exposure') $r.Out
     Check 'claude ledger closure and native Ponytail reference remain explicit' (
-        $r.Out -match 'EVERY bug/phase' -and
+        $r.Out -match 'Ledger bugs/phases first' -and
         $r.Out -notmatch 'native /goal' -and $r.Out -match 'native /ponytail:ponytail-audit') $r.Out
-    Check 'agent orchestration routes full owner, codeword not skill, no recursion' (
-        $r.Out -match 'WORKFLOWS\.md Deep Debug/skill-policy-deep-debug\.md FULL' -and
-        $r.Out -match '::multi-agent!=skill; no recursion') $r.Out
-    # Context/design/planning, diagnosis/TDD/runtime, invariants, security gateway
-    # and closure now live in the two complete phase owners. Public routing can
-    # prove that load requirement, not those private bodies' contents or execution.
-    Check 'all conditional phase routes require FULL owners before EVERY bug/phase' (
-        $r.Out -match 'BEFORE EVERY bug/phase: WORKFLOWS\.md Deep Debug/skill-policy-deep-debug\.md FULL') $r.Out
+    Check 'agent orchestration separates discovery/prepared tasks and forbids recursion' (
+        $r.Out -match '::multi-agent codeword' -and
+        $r.Out -match 'dispatching-parallel-agents: independent discovery' -and
+        $r.Out -match 'subagent-driven-development: prepared tasks' -and
+        $r.Out -match 'Flatten/dedup/cycle-check once, no nested/recursive agents') $r.Out
+    # Explicit phase routes are advice, never proof a capability was executed.
+    Check 'context, design, diagnosis and runtime phases retain owners and exact capability routes' (
+        $r.Out -match 'EVERY bug/phase: WORKFLOWS\.md Deep Debug/skill-policy-deep-debug\.md FULL' -and
+        $r.Out -match 'audit-context-building: substantial/unfamiliar/architecture/security' -and
+        $r.Out -match 'brainstorming: real design ambiguity' -and
+        $r.Out -match 'writing-plans: complex repair lacking plan' -and
+        $r.Out -match 'Bug: systematic-debugging/test-driven-development/verification-before-completion' -and
+        $r.Out -match 'runtime question: debugging-code DAP OR trusted debug-live DebugMCP/VS Code') $r.Out
     Check 'plan routing remains subset-only, not blanket activation' (
-        $r.Out -match 'BEFORE EVERY bug/phase' -and $r.Out -match 'Subset/client syntax only') $r.Out
-    Check 'security work shares mandatory full phase owners and catalogue selection' (
+        $r.Out -match 'Real plan: executing-plans, test-driven-development, requesting-code-review, verification-before-completion' -and $r.Out -match 'Subset/client syntax only') $r.Out
+    Check 'security work retains phase owners, a job subset and explicit authority' (
         $r.Out -match 'WORKFLOWS\.md Deep Debug/skill-policy-deep-debug\.md FULL' -and
-        $r.Out -match 'no mutation') $r.Out
+        $r.Out -match 'Security subset by job:' -and
+        $r.Out -match 'Active testing needs ownership/consent/scope' -and $r.Out -match 'no mutation') $r.Out
     Check 'category labels alone cannot satisfy installed identity/loadability' (
         $r.Out -match 'exact loadable SKILL\.md key/exposure' -and
         $r.Out -match 'hook invokes nothing') $r.Out
-    Check 'active security and invariants require full phase owners, never use-claim padding' (
-        $r.Out -match 'BEFORE EVERY bug/phase: WORKFLOWS\.md Deep Debug/skill-policy-deep-debug\.md FULL' -and
-        $r.Out -match 'read/presence/library/trivial!=use') $r.Out
-    Check 'closure routes full owner before one Ponytail pass and bounded final proof' (
+    Check 'active security and invariants require phase owners without usage padding' (
         $r.Out -match 'WORKFLOWS\.md Deep Debug/skill-policy-deep-debug\.md FULL' -and
-        $r.Out -match 'ponytail-audit ONCE; then safe cuts/targeted tests/final proof only') $r.Out
+        $r.Out -match 'Active testing needs ownership/consent/scope' -and
+        $r.Out -match 'boundary invariant only, never usage padding' -and
+        $r.Out -match 'read/presence/library/trivial!=use') $r.Out
+    Check 'closure retains phase owners, one Ponytail pass and bounded final proof' (
+        $r.Out -match 'WORKFLOWS\.md Deep Debug/skill-policy-deep-debug\.md FULL' -and
+        $r.Out -match 'Bug: systematic-debugging/test-driven-development/verification-before-completion' -and
+        $r.Out -match 'ponytail:ponytail-audit ONCE; then safe cuts/targeted tests/final proof only') $r.Out
     Check 'missing core capability is surfaced, blocked/partial, never silently skipped' (
         $r.Out -match 'NOT VISIBLE \(project/global/plugin\): verification-before-completion\.' -and
-        $r.Out -match 'Verify elsewhere' -and $r.Out -match 'BLOCKED/PARTIAL') $r.Out
+        $r.Out -match 'Verify elsewhere' -and $r.Out -match 'UNVERIFIED/PARTIAL') $r.Out
     Check 'no silent skill mutation and only relevant subset' (
         $r.Out -match 'no mutation' -and $r.Out -match 'Subset/client syntax only') $r.Out
     Check 'client syntax separation and non-execution remain explicit' (
@@ -499,10 +508,10 @@
     $rx = Fire -HookPath $ddxHook -Cwd $ddxProj -RawStdin (New-PromptStdin -Cwd $ddxProj -EventName 'UserPromptSubmit' -Prompt '::deep-debug' -SessionId 'sddx-1')
     Check 'codex shape emits the same phase-routed graph under the codex client' (
         $rx.Out -match 'SKILL POLICY CHECK \(codex\): ::deep-debug; exact loadable SKILL.md key/exposure' -and
-        $rx.Out -match 'BEFORE EVERY bug/phase: WORKFLOWS\.md Deep Debug/skill-policy-deep-debug\.md FULL') $rx.Out
+        $rx.Out -match 'Bug: systematic-debugging/test-driven-development/verification-before-completion') $rx.Out
     Check 'codex shape does not require the Claude slash literals (client-native references instead)' (
         $rx.Out -notmatch '/ponytail:ponytail-audit' -and $rx.Out -notmatch '/goal' -and
-        $rx.Out -match 'EVERY bug/phase' -and
+        $rx.Out -match 'Ledger bugs/phases first' -and
         $rx.Out -match 'ponytail-audit via this client' -and
         $rx.Out -match 'supported invocation') $rx.Out
     Check 'codex shape never references Claude locations or the claude policy file' (

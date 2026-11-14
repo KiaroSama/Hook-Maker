@@ -18,7 +18,7 @@ function Invoke-CleanupSessionRegression {
     $b=Fire -HookPath $c.Script -Cwd $p -EventName Stop -SessionId 'session-B' -LocalAppData $c.LocalAppData -Exe $HostExe
     Check ($HostExe+': B retains its own preexisting classification') ($b.Err-eq''-and$b.Out-match'at-session-start=yes'-and$b.Out-notmatch'during-session=appeared') $b.Out
     $again=Fire -HookPath $c.Script -Cwd $p -EventName Stop -SessionId 'session-A' -LocalAppData $c.LocalAppData -Exe $HostExe
-    Check ($HostExe+': another session cannot reset A reporting state') ($again.Out-eq''-and$again.Err-eq'') $again.Out
+    Check ($HostExe+': another session preserves A reporting state and residue gate') ($again.Err-eq''-and$again.Out-match'prior residue still present'-and$again.Out-match'"decision":"block"'-and(Get-RecordedCategory $c.LocalAppData $p)-eq'residue-confirmed') $again.Out
     $null=Fire -HookPath $c.Script -Cwd $p -EventName SessionStart -SessionId 'session-A' -LocalAppData $c.LocalAppData -Exe $HostExe
     Check ($HostExe+': repeated SessionStart preserves first baseline bytes') ((Test-Path $aPath)-and[IO.File]::ReadAllText($aPath,[Text.Encoding]::UTF8)-ceq$initial)
     $legacy=New-IsolatedHookCopy

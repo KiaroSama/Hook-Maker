@@ -199,9 +199,9 @@ try {
     Check 'a ready Workers project receives a Stop reminder' ($r.Out -match '"systemMessage"' -and $r.Out -match 'CLOUDFLARE DEPLOY CHECK') $r.Out
     Check 'the message explicitly says deployment is not automatic' ($r.Out -match 'Config != deploy') $r.Out
     Check 'partial/experimental/docs-only work is explicitly allowed to finish without deploying' (
-        $r.Out -match 'Partial/docs/experiment/unknown SHA: explain, NO deploy') $r.Out
+        $r.Out -match 'Partial/docs/experiment/unknown: explain, NO deploy') $r.Out
     Check 'environment selection is required and production is not silently assumed' (
-        $r.Out -match 'Explicit Wrangler env, NEVER default production') $r.Out
+        $r.Out -match 'Explicit Wrangler env: production/staging/preview/named') $r.Out
     # Release/tests/custody/exclusions/target/bindings/migrations detail is indirect
     # in mandatory lifecycle and selected Cloudflare contracts, not provider proof.
     Check 'deployment requires complete lifecycle and selected provider contracts before action' (
@@ -209,9 +209,9 @@ try {
         $r.Out.Contains(([string](& git -C $cf rev-parse HEAD)).Trim())) $r.Out
     Check 'CI-green is considered when the repo uses CI' ($r.Out -match 'exact-SHA configured CI green') $r.Out
     Check 'post-deploy real verification or reviewed no-ship is required' (
-        $r.Out -match 'exact-SHA deployment\+real postchecks or reviewed no-ship' -and $r.Out -match 'Missing=UNVERIFIED') $r.Out
+        $r.Out -match 'exact-SHA deployment \+ real feature/health/log/route/binding/migration postchecks or reviewed no-ship' -and $r.Out -match 'Missing=UNVERIFIED') $r.Out
     Check 'command success alone is not described as live proof' ($r.Out -match 'Exit0!=live proof') $r.Out
-    Check 'redeploy-on-failure is not blind/repeated' ($r.Out -match 'failure: inspect confirmed cause') $r.Out
+    Check 'redeploy-on-failure is not blind/repeated' ($r.Out -match 'confirmed cause: fix/validate/safe retry, never blind redeploy') $r.Out
     Check 'the deploy command itself is still suggested' ($r.Out -match 'npx wrangler deploy') $r.Out
 
     # =====================================================================

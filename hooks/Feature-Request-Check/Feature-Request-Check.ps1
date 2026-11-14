@@ -64,7 +64,7 @@ $config = Read-HookEnv (Join-Path $PSScriptRoot '.env')
 # full chain - so telling the reader a fix is exempt would send them past the
 # workflow the rules put them on. Speckit-Check names that route; this hook
 # stays on the interview, which is the part a transcript can actually prove.
-$chainNote = 'Feature-Request-Check: advisory feature intake; grilling + domain-modeling first, missing docs/agents/issue-tracker.md -> their setup; then speckit-specify/clarify/plan/tasks/analyze/implement, agreed TDD/review/Git closure. Mid-task delta: dated IDs/AC, amend active spec/plan/tasks, linked independent feature, refresh skills/gates before dependent work; stable order/earliest actionable/explained dependencies/complete disposition. Other-project exact consent or English handoff, not implicit source/staging/runner/provider repair; global-project-lifecycle-rules.md.'
+$chainNote = 'Feature-Request-Check: advisory feature intake; grilling + domain-modeling first, missing docs/agents/issue-tracker.md -> setup; then speckit-specify/clarify/plan/tasks/analyze/implement, agreed TDD/review/Git closure. Mid-task delta: dated IDs/AC, amend spec/plan/tasks, linked independent feature, refresh skills/gates; stable order/explained dependencies/disposition. Cross-project exact consent or English handoff; not implicit source/staging/runner/provider repair; global-project-lifecycle-rules.md. BEFORE feature/delta/setup: global-spec-kit-rules.md/global-skill-routing.md FULL; unresolved decisions: only dependents wait.'
 
 # ---- UserPromptSubmit: advise, once per prompt -------------------------------
 if ($eventName -eq 'UserPromptSubmit') {
@@ -80,7 +80,7 @@ if ($eventName -eq 'UserPromptSubmit') {
         [System.IO.File]::WriteAllText($statePath, $fingerprint)
     }
     catch { }
-    $emit = Write-HookResult -EventName $eventName -Kind 'context' -Message $chainNote
+    $emit = Write-HookResult -EventName $eventName -Kind 'context' -Message $chainNote -FindingFingerprint $fingerprint
     exit $emit.ExitCode
 }
 
@@ -117,7 +117,7 @@ foreach ($entry in @($transcript.Entries)) {
         # the transcript inside a user turn. A hook that finds evidence it
         # planted itself would arm its own gate in any session where it
         # once spoke, so anything carrying this hook's banner is skipped.
-        $isOwnBanner = $entry.Text -match '(?im)^[ \t]*FEATURE REQUEST CHECK'
+        $isOwnBanner = $entry.Text -match '(?im)^[ \t]*(?:FEATURE REQUEST CHECK|Feature-Request-Check:)'
         if ((-not $isOwnBanner) -and (Test-FeatureRequestPrompt -Prompt $entry.Text)) {
             [void]$featurePrompts.Add($entry.Text)
         }
