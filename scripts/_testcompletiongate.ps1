@@ -142,7 +142,7 @@
     Check 'it never claims a broader test scope passed' (
         $reason -match 'one project guarded run only, not broader test success' -and $reason -notmatch 'all tests passed[^"]*$') $reason
     Check 'the durable .ai/ note is demanded with the reason it exists' (
-        $reason -match '\.ai/' -and $reason -match 'missed detection' -and $reason -match 'verified prevention\+recovery') $reason
+        $reason -match '\.ai/' -and $reason -match 'cause/prevention/recovery' -and $reason -match 'not ack') $reason
 
     $c = New-IsolatedHookCopy
     $p = New-GitRepo 'Idle'
@@ -173,7 +173,7 @@
     $reason = Get-BlockReason $r.Out
     Check 'a current overall=failed result blocks completion' ($r.Out -match '"systemMessage"' -and $reason -match 'FAILED') $reason
     Check 'the real exit code is surfaced' ($reason -match 'FAILED, exit=3') $reason
-    Check 'weakening or skipping tests to go green is explicitly refused' ($reason -match 'Never weaken tests/exits; unresolved!=pass') $reason
+    Check 'weakening or skipping tests to go green is explicitly refused' ($reason -match 'no weaker assertions/exits, unresolved!=pass') $reason
 
     # =====================================================================
     Write-Host '--- STALE evidence is not proof of a run ---' -ForegroundColor Cyan

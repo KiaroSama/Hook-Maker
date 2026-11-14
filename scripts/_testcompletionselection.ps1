@@ -139,7 +139,7 @@ function Invoke-RepositoryEvidenceSelectionRegression {
     (Get-Item -LiteralPath (Get-RunStateFile $c $p result legacy-daily)).LastWriteTimeUtc = [DateTime]::UtcNow.AddDays(-9)
     Write-SelectionPair $c $p unrelated-logo logo-command
     $r = Fire -Copy $c -Cwd $p -Codex:$Codex -Exe $HostExe
-    Check 'old unidentified failure cannot disappear behind unrelated fresh success' ((Get-BlockReason $r.Out) -match 'runId=legacy-daily' -and (Get-BlockReason $r.Out) -match 'Unrelated CI!=identity/scope repair') ($r.Out + $r.Err)
+    Check 'old unidentified failure cannot disappear behind unrelated fresh success' ((Get-BlockReason $r.Out) -match 'runId=legacy-daily' -and (Get-BlockReason $r.Out) -match 'unrelated CI!=repair') ($r.Out + $r.Err)
     Check 'old whitespace-bound negative original survives retention' (Test-Path -LiteralPath (Get-RunStateFile $c $p result legacy-daily))
     $c = New-IsolatedHookCopy; $p = New-GitRepo ('RepositoryEvidence-malformed-' + $Codex)
     Write-Utf8 (Get-RunStateFile $c $p result malformed-only) '{broken'
@@ -225,7 +225,7 @@ foreach ($codexShape in @($false, $true)) {
         }
         $r = Fire -Copy $c -Cwd $p -Codex:$codexShape -Exe $hostExe
         Check ($client + ': fresh success never hides ' + $bad + ' of another command') (
-            $r.Exit -eq 0 -and $r.Out -match '"decision"\s*:\s*"block"' -and $r.Err -eq '') $r.Out
+            $r.Exit -eq 0 -and $r.Out -match '"systemMessage"' -and $r.Out -notmatch '"decision"' -and $r.Err -eq '') $r.Out
     }
 
     # One-to-one assignment: same-time uncontrolled observations cannot both
@@ -240,7 +240,7 @@ foreach ($codexShape in @($false, $true)) {
     Write-GuardedResult -Copy $c -Root $p -RunId 'one'
     $r = Fire -Copy $c -Cwd $p -Codex:$codexShape -Exe $hostExe
     Check ($client + ': one success still cannot satisfy two concurrent observations') (
-        $r.Exit -eq 0 -and $r.Out -match '"decision"\s*:\s*"block"') $r.Out
+        $r.Exit -eq 0 -and $r.Out -match '"systemMessage"' -and $r.Out -notmatch '"decision"') $r.Out
 
     $c = New-IsolatedHookCopy; $p = New-GitRepo ('Selection-bound-pre-post-' + $client)
     $guardDir = Join-Path $Work ('actual-guard-' + $client)

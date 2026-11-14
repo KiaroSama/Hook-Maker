@@ -63,12 +63,15 @@
             $null = Write-CiRecord @recArgs
         }
         $r = Fire -Copy $c -Cwd $p
-        return [pscustomobject]@{ Out = [string]$r.Out; Blocked = ([string]$r.Out -match '"systemMessage"'); Root = $p; Copy = $c }
+        # A FINDING being reported and a turn being stopped are different facts
+        # since 035: a CI verdict is advisory, so the notice still arrives as
+        # systemMessage while nothing emits decision:block. Blocked means stopped.
+        return [pscustomobject]@{ Out = [string]$r.Out; Blocked = ([string]$r.Out -match '"decision"'); Reported = ([string]$r.Out -match '"systemMessage"'); Root = $p; Copy = $c }
     }
 
     # The whole point: green CI, current commit, clean tree, newer than the failure.
     $ciOk = Invoke-CiCase -Name 'ciclear' -Record @{ Evidence = 'ci-green' }
-    Check 'CI1: a green CI result for the current commit does not block' (-not $ciOk.Blocked) $ciOk.Out
+    Check 'CI1: a green CI result for the current commit does not stop the turn' (-not $ciOk.Blocked) $ciOk.Out
     $ciHead = Get-CiHead $ciOk.Root
     Check 'CI1: and the notice names the commit it accepted, so the claim is checkable' (
         $ciOk.Out -match [regex]::Escape($ciHead.Substring(0, 7))) $ciOk.Out
@@ -76,41 +79,41 @@
         $ciOk.Out -notmatch 'durable note') $ciOk.Out
 
     # =====================================================================
-    Write-Host '--- CI2: every near-miss still blocks ---' -ForegroundColor Cyan
+    Write-Host '--- CI2: every near-miss is still reported ---' -ForegroundColor Cyan
     $ciRed = Invoke-CiCase -Name 'cired' -Record @{ Outcome = 'failed'; Evidence = '' }
-    Check 'CI2: a RED CI result still blocks' $ciRed.Blocked $ciRed.Out
+    Check 'CI2: a RED CI result is still reported' $ciRed.Reported $ciRed.Out
     $ciPending = Invoke-CiCase -Name 'cipending' -Record @{ Outcome = 'pending'; Evidence = '' }
-    Check 'CI2: a PENDING CI result still blocks' $ciPending.Blocked $ciPending.Out
+    Check 'CI2: a PENDING CI result is still reported' $ciPending.Reported $ciPending.Out
     $ciNone = Invoke-CiCase -Name 'cinone'
-    Check 'CI2: NO CI record at all still blocks - absence of evidence is not evidence' $ciNone.Blocked $ciNone.Out
+    Check 'CI2: NO CI record at all is still reported - absence of evidence is not evidence' $ciNone.Reported $ciNone.Out
     $ciOther = Invoke-CiCase -Name 'ciother' -Record @{ Sha = ('0' * 40); Evidence = 'ci-green' }
-    Check 'CI2: a green result for a DIFFERENT commit still blocks' $ciOther.Blocked $ciOther.Out
+    Check 'CI2: a green result for a DIFFERENT commit is still reported' $ciOther.Reported $ciOther.Out
     $ciDirty = Invoke-CiCase -Name 'cidirty' -Record @{ Evidence = 'ci-green' } -Dirty
-    Check 'CI2: a dirty working tree still blocks' $ciDirty.Blocked $ciDirty.Out
+    Check 'CI2: a dirty working tree is still reported' $ciDirty.Reported $ciDirty.Out
     Check 'CI2: and the refusal says the tree has uncommitted changes' (
         $ciDirty.Out -match 'uncommitted changes') $ciDirty.Out
     # Evidence must be NEWER than what it excuses. The failure above ended 30
     # minutes ago, so a record observed 90 minutes ago never saw it.
     $ciStale = Invoke-CiCase -Name 'cistale' -Record @{ Evidence = 'ci-green'; AgeMinutes = 90 }
-    Check 'CI2: a green result recorded BEFORE the failure ended still blocks' $ciStale.Blocked $ciStale.Out
+    Check 'CI2: a green result recorded BEFORE the failure ended is still reported' $ciStale.Reported $ciStale.Out
 
     # The trap: Ci-Status-Check writes outcome 'verified' both for an observed
     # all-success AND for a project that has no CI to observe. Reading the two as
     # the same would silently disable this gate everywhere without workflows.
     $ciNoCi = Invoke-CiCase -Name 'cinoci' -Record @{ Evidence = 'no-ci' }
-    Check 'CI2: "no CI configured" is NOT a green result and clears nothing' $ciNoCi.Blocked $ciNoCi.Out
+    Check 'CI2: "no CI configured" is NOT a green result and clears nothing' $ciNoCi.Reported $ciNoCi.Out
     # An older Ci-Status-Check runtime writes three lines. Fails closed.
     $ciLegacy = Invoke-CiCase -Name 'cilegacy' -Record @{ LegacyThreeLine = $true }
-    Check 'CI2: a pre-change three-line record clears nothing' $ciLegacy.Blocked $ciLegacy.Out
+    Check 'CI2: a pre-change three-line record clears nothing' $ciLegacy.Reported $ciLegacy.Out
     $ciLegacy4 = Invoke-CiCase -Name 'cilegacyfour' -Record @{ LegacyFourLine = $true }
-    Check 'CI2: an unqualified four-line green label clears nothing' $ciLegacy4.Blocked $ciLegacy4.Out
+    Check 'CI2: an unqualified four-line green label clears nothing' $ciLegacy4.Reported $ciLegacy4.Out
     . (Join-Path $PSScriptRoot '_testciprovenance.ps1')
     Invoke-CiProvenanceRegression -HooksRoot $HooksRoot
 
     # =====================================================================
     Write-Host '--- CI3: a hang is still a hang, whatever CI says ---' -ForegroundColor Cyan
     $ciTerm = Invoke-CiCase -Name 'citerm' -Record @{ Evidence = 'ci-green' } -Overall 'terminated' -ExitCode 124
-    Check 'CI3: a TERMINATED run blocks even with a green CI result' $ciTerm.Blocked $ciTerm.Out
+    Check 'CI3: a TERMINATED run is reported even with a green CI result' $ciTerm.Reported $ciTerm.Out
     Check 'CI3: and it still demands its durable note' (
         $ciTerm.Out -match 'Test incident:') $ciTerm.Out
 
