@@ -396,6 +396,17 @@ if ($InstallClaude) {
             $group = if ($eventName -eq 'SessionStart') {
                 [pscustomobject][ordered]@{ matcher = 'startup|resume|clear|compact'; hooks = @($handler) }
             }
+            elseif ($eventName -in @('PreToolUse', 'PostToolUse')) {
+                # Only the shell tools ever reach the pre/post-tool hooks: each one
+                # reads `tool_input.command` and exits 0 without it (verified in
+                # Git-Sync-Check, Install-Location-Check, Docs-Freshness-Check and
+                # Test-Run-Guard). Without this matcher every Read/Edit/Grep spawned
+                # a full PowerShell process just to return nothing - the single
+                # largest per-call cost in a long session. Claude-only on purpose:
+                # Codex tool naming is not verified here, and a matcher that fails
+                # to match there would disable the hook silently.
+                [pscustomobject][ordered]@{ matcher = 'Bash'; hooks = @($handler) }
+            }
             else {
                 [pscustomobject][ordered]@{ hooks = @($handler) }
             }

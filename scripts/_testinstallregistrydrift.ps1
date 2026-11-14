@@ -420,6 +420,25 @@ for (`$i = 0; `$i -lt 8; `$i++) {
     [System.IO.File]::WriteAllText($matcherSettings, ($matcherJson | ConvertTo-Json -Depth 50), (New-Object System.Text.UTF8Encoding $false))
     $driftMatcher = Get-InstallIntegrity -Record (@(Get-RecordsFor 'Ai-Memory-Check' | Where-Object { $_.targetProjectRoot -eq $matcherProj })[0]) -ToolRoot $ToolRoot
     Check 'a changed matcher is caught' (($driftMatcher.Status -eq 'update') -and ($driftMatcher.Detail -match 'matcher')) $driftMatcher.Detail
+
+    # The tool events carry a matcher on Claude so a hook that only reads
+    # `tool_input.command` stops spawning a process for every Read/Edit/Grep.
+    # Installing one and immediately re-checking is what proves the INSTALLER
+    # and the DRIFT DETECTOR agree: if either side drops the rule, the fresh
+    # install reports itself drifted here.
+    $toolProj = New-Proj 'ToolMatcherProj'
+    & $InstallScript -CustomHook (Join-Path $RealHooksDir 'Install-Location-Check\Install-Location-Check.ps1') -Events @('PreToolUse') -TargetProject $toolProj -ClaudeOnly *> $null
+    $toolRec = @(Get-RecordsFor 'Install-Location-Check' | Where-Object { $_.targetProjectRoot -eq $toolProj })[0]
+    $toolSettings = [string]$toolRec.clients.claude.settingsPath
+    $toolJson = Get-Content -LiteralPath $toolSettings -Raw | ConvertFrom-Json
+    Check 'a Claude tool-event registration is written with the Bash matcher' (
+        (@($toolJson.hooks.PreToolUse).Count -ge 1) -and ([string]@($toolJson.hooks.PreToolUse)[0].matcher -eq 'Bash'))
+    Check 'a fresh tool-event install is not reported as drifted' ((Get-InstallIntegrity -Record $toolRec -ToolRoot $ToolRoot).Status -eq 'current')
+    # ...and the exemption is real: Codex must NOT be expected to carry one.
+    Check 'the tool-event matcher is Claude-only' (
+        ((Get-ExpectedMatcher -EventName 'PreToolUse' -Client 'codex') -eq '') -and
+        ((Get-ExpectedMatcher -EventName 'PreToolUse' -Client 'claude') -eq 'Bash') -and
+        ((Get-ExpectedMatcher -EventName 'SessionStart' -Client 'codex') -eq 'startup|resume|clear|compact'))
     # =====================================================================
     # STRUCTURED OUTCOME CONTRACT: programmatic callers must never infer
     # success from console text or from "no exception was thrown". The

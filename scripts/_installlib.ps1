@@ -595,7 +595,8 @@ function Get-InstallIntegrity {
             -ExpectedHandlerType $expectedHandlerType `
             -ExpectedStatusMessage $expectedStatusMessage `
             -ExpectedStatusMessageKnown:$statusMessageKnown `
-            -ExpectedTimeout $expectedTimeout
+            -ExpectedTimeout $expectedTimeout `
+            -Client $client
         if (-not $registrationState.Ok) {
             Add-Component -Name $client -Status 'update' -Detail ($registrationState.Reason + ' (' + $registrationState.Detail + ')')
             continue

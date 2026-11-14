@@ -30,11 +30,20 @@
 
 # ---- registration inspection ---------------------------------------------
 
-# The matcher Install-Hook.ps1 writes for a given event (SessionStart is the
-# only event that carries one).
+# The matcher Install-Hook.ps1 writes for a given event. Two events carry one:
+# SessionStart (which sub-kinds to fire on) and - for CLAUDE only - the tool
+# events (which TOOL, so a hook that only reads `tool_input.command` stops
+# spawning a process for every Read/Edit/Grep).
+#
+# The client parameter is not cosmetic. The installer writes the tool-event
+# matcher inside its Claude block only, because Codex's shell tool name is not
+# verified; expecting 'Bash' on Codex would report every Codex registration as
+# drifted on every run, for ever. This must stay identical to the installer's
+# own branch, so both take the same client into account.
 function Get-ExpectedMatcher {
-    param([Parameter(Mandatory = $true)][string]$EventName)
+    param([Parameter(Mandatory = $true)][string]$EventName, [string]$Client = 'claude')
     if ($EventName -eq 'SessionStart') { return 'startup|resume|clear|compact' }
+    if ($Client -eq 'claude' -and $EventName -in @('PreToolUse', 'PostToolUse')) { return 'Bash' }
     return ''
 }
 
@@ -117,7 +126,10 @@ function Test-ClientRegistrationState {
         # Per-hook, not universal: the caller passes what the RECORD says this
         # installation registered. The default only covers a caller that has no
         # recorded expectation at all.
-        [int]$ExpectedTimeout = $script:DefaultHookTimeoutSeconds
+        [int]$ExpectedTimeout = $script:DefaultHookTimeoutSeconds,
+        # Which client's settings file this is. The tool-event matcher exists only
+        # on Claude, so the expectation cannot be answered per event alone.
+        [string]$Client = 'claude'
     )
     $registrations = @(Get-HookRegistrations -SettingsPath $SettingsPath -RuntimeScript $RuntimeScript -ProfileId $ProfileId)
     $byEvent = @{}
@@ -138,7 +150,7 @@ function Test-ClientRegistrationState {
             return [pscustomobject]@{ Ok = $false; Reason = 'duplicate registration'; Detail = ($byEvent[$eventName].Count.ToString() + ' registrations for ' + $eventName) }
         }
         $registration = $byEvent[$eventName][0]
-        $expectedMatcher = Get-ExpectedMatcher -EventName $eventName
+        $expectedMatcher = Get-ExpectedMatcher -EventName $eventName -Client $Client
         if ([string]$registration.Matcher -ne $expectedMatcher) {
             return [pscustomobject]@{ Ok = $false; Reason = 'registration drifted'; Detail = ('matcher changed on ' + $eventName) }
         }

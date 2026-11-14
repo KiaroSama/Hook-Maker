@@ -23,6 +23,7 @@ function Assert-InstalledClientReadback {
         SettingsPath = $SettingsPath; RuntimeScript = [string]$Runtime.Script
         ExpectedEvents = $Events; ProfileId = $ProfileId; ExpectedTimeout = $Timeout
         ExpectedHandlerType = 'command'; ExpectedCommand = [string]$Commands.Windows
+        Client = $Client
     }
     if ($Client -eq 'codex') {
         $parameters.ExpectedCommand = [string]$Commands.Portable

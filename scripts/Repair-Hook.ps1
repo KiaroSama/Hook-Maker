@@ -57,7 +57,7 @@ try {
     if($null-eq$owner-or$owner.recordId-cne$RecordId-or$owner.client-cne$Client-or$owner.friendlyName-cne$record.friendlyName-or$owner.scope-cne'project'-or$owner.projectKey-cne(Get-RuntimeMetadataProjectKey project $project)){Stop-CiReview identity-changed}
     $timeout=$script:DefaultHookTimeoutSeconds
     if($sub.PSObject.Properties['timeout']){$timeout=[int]$sub.timeout}
-    $registration=Test-ClientRegistrationState -SettingsPath $sub.settingsPath -RuntimeScript $sub.runtimeScript -ExpectedEvents @($sub.events) -ProfileId $record.profile -ExpectedCommand $sub.command -ExpectedCommandWindows $sub.commandWindows -ExpectedHandlerType $sub.handlerType -ExpectedTimeout $timeout
+    $registration=Test-ClientRegistrationState -SettingsPath $sub.settingsPath -RuntimeScript $sub.runtimeScript -ExpectedEvents @($sub.events) -ProfileId $record.profile -ExpectedCommand $sub.command -ExpectedCommandWindows $sub.commandWindows -ExpectedHandlerType $sub.handlerType -ExpectedTimeout $timeout -Client $Client
     if(-not$registration.Ok){Stop-CiReview registration-stale}
     # Source staleness is repairable; independent installed bytes are not ours to replace.
     $precondition=Test-EventMigrationPrecondition $record $Client
