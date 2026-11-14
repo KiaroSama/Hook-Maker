@@ -145,9 +145,33 @@ jobs:
                   require(version.returncode == 0 and version.stdout.strip() == VERSION, "The Gitleaks executable version could not be verified.")
                   log("INFO", "Verified the scanner version and download checksum.")
 
-                  # Use the pinned built-in rules, without repository-controlled suppression files.
+                  # Use the pinned built-in rules. The suppression list below is
+                  # fixed HERE, not read from the repository, so a branch cannot
+                  # silence the scan by committing its own config. It covers only
+                  # files whose purpose is to hold credential-SHAPED strings: the
+                  # test fixtures that prove the Secrets-Check patterns fire, and
+                  # one removed one-off workflow whose flagged values are plain
+                  # git object ids. Anywhere else, every rule still applies.
+                  scanner_config = """[extend]
+useDefault = true
+
+[[allowlists]]
+description = "Test fixtures: synthetic credential-shaped strings written on purpose"
+paths = [
+  '''scripts/Test-SecretsCheck\\.ps1''',
+  '''scripts/_testsecretscheckclassify\\.ps1''',
+  '''scripts/_testsecretscheckpatternfile\\.ps1''',
+  '''scripts/_testsecretspublicmodel\\.ps1''',
+  '''scripts/Test-Generation\\.ps1''',
+  '''scripts/Test-IgnoreRulesCheck\\.ps1''',
+]
+
+[[allowlists]]
+description = "Removed one-off workflow whose flagged values are plain git object ids"
+paths = ['''.github/workflows/apply-pr5-integration-once\\.yml''']
+"""
                   config_path = temporary / "scanner.toml"
-                  config_path.write_text("[extend]\nuseDefault = true\n", encoding="utf-8")
+                  config_path.write_text(scanner_config, encoding="utf-8")
                   log_options = "--full-history --diff-filter=uxdb --no-ext-diff --no-textconv --ignore-submodules=all -m"
                   scope = "All fetched branches and tags, including full history and merge diffs"
                   if event_name == "pull_request":
