@@ -40,8 +40,11 @@
             $first=Fire $c $p -Exe $hostName -Codex:($clientName-eq'codex') -SessionId 'repeat'
             Check ('completed failure first blocks '+$hostName+' '+$clientName) ((Get-BlockReason $first.Out)-ne'') ($first.Out+$first.Err)
             $again=Fire $c $p -Exe $hostName -Codex:($clientName-eq'codex') -SessionId 'repeat' -Prompt 'different task diagnostic'
-            $notice=ConvertFrom-HookOutput $again.Out
-            Check ('completed failure repeat never continues '+$hostName+' '+$clientName) ($again.Exit-eq0-and$null-ne$notice-and@($notice.PSObject.Properties).Count-eq1-and[string](Get-Field $notice 'systemMessage')-match'UNRESOLVED') ($again.Out+$again.Err)
+            # R035 FR-003/AC-05: an unchanged finding is reported ONCE per
+            # fingerprint - the repeat is silent, not repeated and definitely
+            # not a continuation. Silence here is the contract, so the check is
+            # that nothing was emitted at all, not that a second copy arrived.
+            Check ('completed failure repeat never continues and never repeats '+$hostName+' '+$clientName) ($again.Exit-eq0-and$again.Out-eq'') ($again.Out+$again.Err)
             $state=Get-CompletionStateDoc $c $p
             Check 'delivery is neither recovery nor disposition' ((Get-ResolvedCount $state)-eq0-and@(Get-Field $state 'recoveryAssociations').Count-eq0-and@(Get-Field $state 'historicalDispositions').Count-eq0-and(Get-FileHash $receipt).Hash-ceq$hash)
         }

@@ -65,7 +65,7 @@
     $r = Fire -Copy $c -Cwd $p
     Check 'the word "done" leaves the durable-note obligation pending without repeating output' (
         $r.Exit -eq 0 -and $r.Out -eq '' -and (Get-PendingCount (Get-CompletionStateDoc -Copy $c -Root $p)) -eq 1) $r.Out
-    Check 'the original block says a bare acknowledgement will not clear it' ($reason -match 'untagged/bare/done/n-a/fixed != clear') $reason
+    Check 'the original block says a bare acknowledgement will not clear it' ($reason -match 'done/n/a/fixed or tag alone != added lesson') $reason
     # An UNTAGGED real note (long enough to clear the byte floor) still does NOT
     # satisfy it - the incident's own tag is required.
     Add-AiNote -Root $p -Text ('Idle-timeout hang in the integration suite: the runner reported no output for 300s. ' +

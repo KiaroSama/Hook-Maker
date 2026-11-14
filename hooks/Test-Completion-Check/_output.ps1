@@ -36,11 +36,14 @@ function Write-Finding {
     param([string[]]$Lines, [bool]$Blocking, [switch]$CompletedFailure)
     $all = New-Object System.Collections.Generic.List[string]
     foreach ($line in $Lines) { [void]$all.Add($line) }
-    # E-05: while ::deep-debug is active, every blocking finding also carries the
-    # exact workflow verdict line with a concise reason derived from the first
-    # finding line. Constant text riding an EXISTING block - it adds no new loop
-    # path; the dd-specific outputs have their own once-per-session gate.
-    if ($Blocking -and $script:DeepDebugActive) {
+    # E-05: while ::deep-debug is active, every finding also carries the exact
+    # workflow verdict line with a concise reason derived from the first finding
+    # line. Constant text riding an EXISTING finding - it adds no new loop path;
+    # the dd-specific outputs have their own once-per-session gate.
+    # It rides EVERY finding, not only a blocking one: a ::deep-debug session has
+    # to read COMPLETE/BLOCKED off whatever this gate says, and since 035 most of
+    # what it says is delivered as an advisory.
+    if ($script:DeepDebugActive) {
         $ddReason = ''
         if (@($Lines).Count -gt 0) {
             $ddReason = ([string]$Lines[0]) -replace '^TEST COMPLETION CHECK:\s*', ''
@@ -68,7 +71,9 @@ function Write-Finding {
     # codex Stop advisory -> systemMessage). A client that documents no Stop
     # gate has its block downgraded to the strongest advisory and reported as
     # degraded, which is what 'degraded-stop-gate' means - never a fake gate.
-    if($CompletedFailure){$message=$message -replace '(?i)\bblocked\b','unverified'}
+    # Same rule as the shared adapter: rewrite the ordinary word, never a fixed
+    # protocol marker such as `DEEP DEBUG: BLOCKED`.
+    if($CompletedFailure){$message=$message -replace '(?i)\b(?<!DEEP DEBUG: )blocked\b','unverified'}
     $kind = 'advisory'
     # NEVER block a SUBAGENT. On Claude a Stop/SubagentStop `decision:block`
     # FORCES CONTINUATION: the reason arrives as the subagent's next

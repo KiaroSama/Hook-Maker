@@ -229,10 +229,11 @@ function Write-HookResult {
             if($effective-ne'block'){$Kind='advisory'}
         }
         $text=if($Reason-ne''){$Reason}else{$Message}
-        # Layout changes never truncate facts or quoted commands. Line breaks stay,
-        # because a replacement command sits on its own line and must stay runnable.
-        $text=[regex]::Replace($text,'[ \t]*\r?\n(\s*\r?\n)*[ \t]*',"`n")
-        if($Kind-in@('context','advisory')){$text=[regex]::Replace($text,'(?i)\bblocked\b','unverified');$text=[regex]::Replace($text,'(?i)\bblocking\b','advisory');$text=[regex]::Replace($text,'(?i)\bUNKNOWN blocks\b','UNKNOWN; advisory')}
+        # Collapse RUNS of blank lines only. Leading indentation is content here -
+        # survivor rows, nested bullets and quoted commands all carry meaning in it.
+        $text=[regex]::Replace($text,'(\r?\n)(?:[ \t]*\r?\n)+',"`n")
+        # Rewrite ordinary prose only. A FIXED PROTOCOL MARKER (`DEEP DEBUG: BLOCKED`, which the workflow matches on) and a `.env:` config warning (which describes the SETTING's semantics, not this finding's) both survive verbatim.
+        if($Kind-in@('context','advisory')){$text=(([regex]::Split($text,'(?<=\n)'))|ForEach-Object{if($_-match'\.env: '){$_}else{[regex]::Replace([regex]::Replace([regex]::Replace($_,'(?i)\b(?<!DEEP DEBUG: )blocked\b','unverified'),'(?i)\b(?<!DEEP DEBUG: )blocking\b','advisory'),'(?i)\bUNKNOWN blocks\b','UNKNOWN; advisory')}})-join''}
         if(-not$text.StartsWith($HookName+':',[StringComparison]::Ordinal)){$text=$HookName+': '+$(if($Kind-in@('context','advisory')){'Advisory. '}else{''})+$text}
         $Message=$text;$Reason=$text
         if([string]::IsNullOrWhiteSpace($FindingFingerprint)){$FindingFingerprint=Get-ShortHash $text}
