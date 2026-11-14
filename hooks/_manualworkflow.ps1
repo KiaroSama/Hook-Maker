@@ -59,9 +59,49 @@ function Test-ManualWorkflowValidation {
     return $false
 }
 
+# Positive subset, not YAML evaluation: fixed hosted, bounded, least-privilege
+# action-only scans. Other security setups need source review, never a name exemption.
+function Test-DedicatedSecurityWorkflow {
+    param([string]$Text)
+    if ($Text.Length -gt 262144) { return $false }
+    $lines = @($Text -split '\r?\n' | Where-Object { $_.Trim() -ne '' -and -not $_.TrimStart().StartsWith('#') })
+    $source = ($lines -join "`n") + "`n"
+    $event = '(?:push|pull_request|workflow_dispatch)'
+    $events = '(?:' + $event + '|\[ *' + $event + '(?: *, *' + $event + ')* *\])'
+    # Deliberately smaller than cron: five bounded integers or *, matching quotes.
+    $cron = '(?<quote>[''""])(?:\*|[0-5]?[0-9]) (?:\*|[01]?[0-9]|2[0-3]) (?:\*|[1-9]|[12][0-9]|3[01]) (?:\*|[1-9]|1[0-2]) (?:\*|[0-6])\k<quote>'
+    $trigger = '(?:on: ' + $events + '\n|on:\n(?:  ' + $event + ':\n|  schedule:\n    - cron: ' + $cron + '\n)+)'
+    $pin = '(?:v[34]|[a-f0-9]{40})'
+    $checkout = '      - uses: actions/checkout@' + '(?:v[4-7]|[a-f0-9]{40})' + '\n'
+    $languages = '(?:javascript-typescript|python|ruby)(?:, *(?:javascript-typescript|python|ruby))*'
+    $codeql = '      - uses: github/codeql-action/init@' + $pin + '\n' +
+        '        with:\n          languages: ' + $languages + '\n          build-mode: none\n' +
+        '      - uses: github/codeql-action/analyze@' + $pin + '\n'
+    $dependencyReview = '      - uses: actions/dependency-review-action@(?:v4|[a-f0-9]{40})\n'
+    $jobStart = '  [A-Za-z0-9_-]+:\n    runs-on: (?:ubuntu|windows|macos)-latest\n' +
+        '    timeout-minutes: (?:[1-9]|[12][0-9]|30)\n    permissions:\n      contents: read\n'
+    $job = $jobStart + '      security-events: write\n    steps:\n' + $checkout + $codeql
+    # Dependency review has no shell/build and needs only contents:read, on PRs.
+    if ($source -cmatch '\A(?:name: [A-Za-z0-9 ._-]+\n)?on: (?:pull_request|\[ *pull_request *\])\n') {
+        $job = '(?:' + $job + '|' + $jobStart + '    steps:\n' + $checkout + $dependencyReview + ')'
+    }
+    $pattern = '\A(?:name: [A-Za-z0-9 ._-]+\n)?' + $trigger + 'permissions: \{\}\njobs:\n(?:' + $job + ')+\z'
+    try {
+        if (-not [regex]::IsMatch($source, $pattern, [Text.RegularExpressions.RegexOptions]::CultureInvariant, [TimeSpan]::FromMilliseconds(100))) { return $false }
+        # The anchored grammar alone permits duplicate YAML keys; these are UNKNOWN.
+        $eventKeys = @()
+        if ($source -cmatch '(?m)^on: (.+)$') { $eventKeys = @($Matches[1].Trim('[', ']') -split ',' | ForEach-Object { $_.Trim() }) }
+        else { $eventKeys = @([regex]::Matches($source, '(?m)^  (push|pull_request|workflow_dispatch|schedule):$') | ForEach-Object { $_.Groups[1].Value }) }
+        $jobKeys = @(Get-ManualWorkflowJobs $lines | ForEach-Object { $_.Lines[0].Trim().TrimEnd(':') })
+        if (@($eventKeys | Select-Object -Unique).Count -ne $eventKeys.Count -or @($jobKeys | Select-Object -Unique).Count -ne $jobKeys.Count) { return $false }
+        return $true
+    }
+    catch { return $false }
+}
+
 function Get-ManualWorkflowState {
     param([string]$ProjectRoot)
-    $answer = [pscustomobject]@{ Compliant = $false; HasValidation = $false; Complete = $true; Problems = @() }
+    $answer = [pscustomobject]@{ Compliant = $false; HasValidation = $false; Complete = $true; SecurityOnly = $false; AutomaticWorkflows = @(); Problems = @() }
     $dir = Join-Path $ProjectRoot '.github/workflows'
     if (-not [IO.Directory]::Exists($dir)) { return $answer }
     $nodes = New-Object 'System.Collections.Generic.Dictionary[string,object]' ([StringComparer]::Ordinal)
@@ -86,7 +126,11 @@ function Get-ManualWorkflowState {
             finally { if ($null -ne $reader) { $reader.Dispose() } }
             $triggers = @(Get-WorkflowTopTriggers $text)
             if ($triggers.Count -eq 0 -or $text -match '(?m)^\t|^ *<<:|^ *[A-Za-z0-9_-]+:\s*[&*][A-Za-z0-9_-]+\s*(?:#.*)?$') { $answer.Complete = $false }
-            if (@($triggers | Where-Object { $_ -cnotin @('workflow_dispatch', 'workflow_call') }).Count) { $automatic = $true }
+            $securityOnly = Test-DedicatedSecurityWorkflow $text
+            if (@($triggers | Where-Object { $_ -cnotin @('workflow_dispatch', 'workflow_call') }).Count -and -not $securityOnly) {
+                $automatic = $true
+                $answer.AutomaticWorkflows += [pscustomobject]@{ Name = $file.Name; Triggers = $triggers }
+            }
             $calls = New-Object 'System.Collections.Generic.List[string]'; $valid = $false
             $jobs = @(Get-ManualWorkflowJobs @($text -split '\r?\n'))
             if ($jobs.Count -eq 0) { $answer.Complete = $false }
@@ -101,14 +145,15 @@ function Get-ManualWorkflowState {
                     if ($value -cmatch '^[''"'']?\./\.github/workflows/([A-Za-z0-9_.-]+\.ya?ml)[''"'']?\s*(?:#.*)?$') { [void]$calls.Add($Matches[1]) }
                     else { $answer.Complete = $false }
                 }
-                elseif (Test-ManualWorkflowValidation $job.Lines) { $valid = $true }
+                elseif (-not $securityOnly -and (Test-ManualWorkflowValidation $job.Lines)) { $valid = $true }
             }
-            $nodes[$file.Name] = [pscustomobject]@{ Triggers = $triggers; Calls = $calls.ToArray(); Validation = $valid }
+            $nodes[$file.Name] = [pscustomobject]@{ Triggers = $triggers; Calls = $calls.ToArray(); Validation = $valid; SecurityOnly = $securityOnly }
         }
     }
     catch { $answer.Complete = $false }
-    if ($automatic) { $answer.Problems += 'Automatic CI trigger; require workflow_dispatch.' }
-    $roots = @($nodes.Keys | Where-Object { $nodes[$_].Triggers -ccontains 'workflow_dispatch' })
+    if ($automatic) { $answer.Problems += 'Automatic CI/unknown; manual validation or reviewed security-only.' }
+    $answer.SecurityOnly = $answer.Complete -and $nodes.Count -gt 0 -and @($nodes.Values | Where-Object { -not $_.SecurityOnly }).Count -eq 0
+    $roots = @($nodes.Keys | Where-Object { -not $nodes[$_].SecurityOnly -and $nodes[$_].Triggers -ccontains 'workflow_dispatch' })
     $seen = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::Ordinal)
     $queue = New-Object 'System.Collections.Generic.Queue[string]'
     foreach ($root in $roots) { $queue.Enqueue($root) }
@@ -127,7 +172,7 @@ function Get-ManualWorkflowState {
         if ($leaves.Count -eq 0) { $answer.Complete = $false; break }
         $pending = @($pending | Where-Object { $leaves -cnotcontains $_ })
     }
-    if (-not $answer.Complete) { $answer.Problems += 'Manual UNKNOWN: read/bound/grammar/cycle; inspect.' }
+    if (-not $answer.Complete) { $answer.Problems += 'Manual graph UNKNOWN: read/limit/shape/cycle; inspect workflows.' }
     $answer.Compliant = $answer.Complete -and -not $automatic -and $roots.Count -gt 0 -and $answer.HasValidation
     return $answer
 }

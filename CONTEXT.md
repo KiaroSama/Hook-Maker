@@ -11,6 +11,14 @@ Text whose entire encoding has been verified. A valid prefix is not validated te
 
 An explicit resource bound beyond which the encoding remains unknown, not an encoding exception.
 
+## Project validation workflow
+
+A workflow that runs this project's ordinary build, test, lint or validation workload. Its initiation is manual; a security-labelled job does not change that classification.
+
+## Dedicated security automation
+
+A separately bounded workflow or managed service whose work is security scanning, review or dependency-update PR generation, not a vehicle for automatically running the project's ordinary validation workload. Configuration alone is not execution or coverage proof.
+
 ## Reviewed inapplicable job
 
 A job whose source and execution context have been explicitly reviewed as outside

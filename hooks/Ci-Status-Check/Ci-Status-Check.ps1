@@ -332,7 +332,7 @@ if ($ReportExternalBlocker) {
     [System.IO.File]::WriteAllLines($externalStatePath, @($info.Sha, $info.RepoSlug, $Classification, $reasonLine, $nowIso, $snapshot.Fingerprint, $nowIso))
     $sha7 = $info.Sha
     if ($sha7.Length -gt 7) { $sha7 = $sha7.Substring(0, 7) }
-    [Console]::Out.WriteLine('Recorded an EXTERNAL CI blocker for ' + $info.RepoSlug + '@' + $sha7 + ' [' + $Classification + ']: ' + $reasonLine + '. Exact observed-state bound; Stop retires on green, invalidates changed state. NOT verified/green.')
+    [Console]::Out.WriteLine('EXTERNAL CI blocker: ' + $info.RepoSlug + '@' + $sha7 + ' [' + $Classification + ']: ' + $reasonLine + '. State-bound; Stop retires on green/change; NOT verified/green.')
     exit 0
 }
 
@@ -582,8 +582,13 @@ if ($snapshot.Runs.Count -eq 0 -and $snapshot.FailedRuns.Count -eq 0 -and $snaps
     if ($script:DocsCarryoverReason -ne '') {
         Write-Block -Outcome 'pending' -Reason ('docs carryover UNVERIFIED ' + $sha7 + ' (' + $repoSlug + '): ' + $script:DocsCarryoverReason + '. Skip=no final-SHA run; wait!=proof. Check limit; no seed/duplicate CI.')
     }
-    # Every host is manual: a push starts no run by design. Missing dispatch is never green.
-    if (Test-ManualCiRepository -ProjectRoot $cwd) {
+    # Scan-only workflows cannot supply ordinary project validation or prove CI.
+    $manualState = Get-ManualWorkflowState -ProjectRoot $cwd
+    if ($manualState.SecurityOnly) {
+        Write-Block -Outcome 'unproven' -Reason ('CI CHECK: security-only; no runs: ' + $sha7 + '. Verify scan/revision; NOT green/missing manual dispatch.')
+    }
+    # Ordinary validation is manual on every host. Missing dispatch is never green.
+    if ($manualState.Compliant) {
         $manualExpectation=Get-CiWorkloadExpectation -ProjectRoot $cwd -RepoSlug $repoSlug -Sha $sha -Branch $branch
         if($null-eq$manualExpectation-and$script:CiWorkloadReason-ne''){Write-Block -Outcome 'unproven' -Reason (''+$script:CiWorkloadReason)}
         Write-Block -Outcome 'pending' -Reason ('final dispatch missing: ' + $sha7 + '/' + $branch + ' (' + $repoSlug + '). Manual: push!=run; workflow_call needs workflow_dispatch root. Once: gh workflow run <workflow> --ref ' + $branch + '; verify SHA. Never GitHub/bot/Dependabot branches; no runner action.')

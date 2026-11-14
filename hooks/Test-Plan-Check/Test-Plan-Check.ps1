@@ -544,7 +544,12 @@ try {
     try { $myTimingKeys += (Get-RunnerProjectKey ([System.IO.Path]::GetFullPath($cwd))) } catch { }
     $suitesWithBaseline = 0
     if (-not [string]::IsNullOrWhiteSpace($cwd) -and (Test-Path -LiteralPath $stateDir -PathType Container)) {
-        foreach ($tf in @(Get-ChildItem -LiteralPath $stateDir -Filter 'TestTiming-*.json' -File -ErrorAction SilentlyContinue)) {
+        # Select THIS project's filenames before JSON reads; foreign histories can
+        # exceed the event deadline. Distinct keys avoid counting one file twice.
+        $timingFiles = @($myTimingKeys | Select-Object -Unique | ForEach-Object {
+            Get-ChildItem -LiteralPath $stateDir -Filter ('TestTiming-' + $_ + '-*.json') -File -ErrorAction SilentlyContinue
+        })
+        foreach ($tf in $timingFiles) {
             $tdoc = $null
             try { $tdoc = Read-JsonFile $tf.FullName } catch { $tdoc = $null }
             if ($null -eq $tdoc -or -not $tdoc.PSObject.Properties['projectKey']) { continue }

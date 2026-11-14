@@ -8,6 +8,7 @@ $ciProofRoot = if ([IO.File]::Exists((Join-Path $PSScriptRoot '_ciprovenance.ps1
 # T004 paged snapshot RED: never mistake a full first page for all workflows/checks.
 . (Join-Path $PSScriptRoot '_cipagination.ps1')
 . (Join-Path $PSScriptRoot '_civisibility.ps1')
+. (Join-Path $PSScriptRoot '_ciauxiliary.ps1')
 
 function Read-CiWorkloadApi {
     param([string]$Endpoint)
@@ -223,6 +224,9 @@ function Get-CiRunSnapshot {
         $cr=@($checks.check_runs);$st=@($status.statuses)
         $checksComplete=$cr.Count-eq$checks.total_count-and$st.Count-eq$status.total_count
         $commitChecksSafe=$checksComplete
+        $auxiliarySkipped=Get-CiAuxiliarySkippedChecks -Runs $auxiliary -Checks $cr -RepoSlug $RepoSlug -Sha $Sha -ValidatedCheckIds $validatedCheckIds
+        if($null-eq$auxiliarySkipped){$proven=$false;$commitChecksSafe=$false}
+        else{foreach($id in $auxiliarySkipped){[void]$skippedCheckIds.Add($id)}}
         $checkIds=New-Object 'Collections.Generic.HashSet[string]' ([StringComparer]::Ordinal)
         $checkParts=New-Object Collections.Generic.List[string]
         foreach($check in $cr){
