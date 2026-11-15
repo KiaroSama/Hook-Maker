@@ -450,11 +450,11 @@ for (`$i = 0; `$i -lt 8; `$i++) {
         (@($script:ShellOnlyToolHooks | Where-Object { $_ -in @('Git-Sync-Check', 'Install-Location-Check', 'Docs-Freshness-Check', 'Test-Run-Guard') }).Count -eq 4))
     # An install of a NON-listed hook on PreToolUse writes no matcher key at all,
     # and the drift check must then call it current rather than 'update'.
-    $custFixture = New-FixtureHook 'ZZZ-Regtest-ToolEvent' "param(`$e)`nexit 0 # no matcher for a custom hook`n"
+    $custFixture = New-FixtureHook 'ZZZ-Regtest-Toolevent' "param(`$e)`nexit 0 # no matcher for a custom hook`n"
     try {
         $custProj = New-Proj 'CustomToolEventProj'
         & $InstallScript -CustomHook $custFixture -Events @('PreToolUse') -TargetProject $custProj -ClaudeOnly *> $null
-        $custRec = @(Get-RecordsFor 'ZZZ-Regtest-ToolEvent' | Where-Object { $_.targetProjectRoot -eq $custProj })[0]
+        $custRec = @(Get-RecordsFor 'ZZZ-Regtest-Toolevent' | Where-Object { $_.targetProjectRoot -eq $custProj })[0]
         $custSettings = [string]$custRec.clients.claude.settingsPath
         $custJson = Get-Content -LiteralPath $custSettings -Raw | ConvertFrom-Json
         $custEntry = @($custJson.hooks.PreToolUse)[0]
@@ -463,7 +463,7 @@ for (`$i = 0; `$i -lt 8; `$i++) {
         Check 'a custom tool-event install is not reported as drifted' (
             ((Get-InstallIntegrity -Record $custRec -ToolRoot $ToolRoot).Status -eq 'current'))
     }
-    finally { Remove-FixtureHook 'ZZZ-Regtest-ToolEvent' }
+    finally { Remove-FixtureHook 'ZZZ-Regtest-Toolevent' }
     # =====================================================================
     # STRUCTURED OUTCOME CONTRACT: programmatic callers must never infer
     # success from console text or from "no exception was thrown". The
