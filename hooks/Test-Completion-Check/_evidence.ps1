@@ -53,7 +53,7 @@ function Get-ResultRecordedTime {
     $t = ConvertTo-UtcTime (Get-Field $Doc 'recordedUtc')
     if ($null -eq $t) { $t = ConvertTo-UtcTime (Get-Field $Doc 'endedUtc') }
     if ($null -eq $t -and -not [string]::IsNullOrWhiteSpace($Path)) {
-        try { $dt = [System.IO.File]::GetLastWriteTimeUtc($Path); if ($dt.Year -gt 1601) { $t = $dt } } catch { $t = $null }
+        try { $t = (Get-Item -LiteralPath $Path -Force).LastWriteTimeUtc } catch { $t = $null }
     }
     return $t
 }

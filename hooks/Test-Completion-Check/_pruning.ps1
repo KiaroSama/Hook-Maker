@@ -65,7 +65,7 @@ function Get-EntryMtimeUtc {
     param($Entry)
     $cached = Get-Field $Entry 'MtimeUtc'
     if ($null -ne $cached) { return $cached }
-    try { $dt = [System.IO.File]::GetLastWriteTimeUtc($Entry.Path); if ($dt.Year -gt 1601) { return $dt }; return $null } catch { return $null }
+    try { return (Get-Item -LiteralPath $Entry.Path -Force).LastWriteTimeUtc } catch { return $null }
 }
 $prunedResultPaths = New-Object System.Collections.Generic.HashSet[string]
 $prunedObservedPaths = New-Object System.Collections.Generic.HashSet[string]
