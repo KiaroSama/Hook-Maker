@@ -30,20 +30,28 @@
 
 # ---- registration inspection ---------------------------------------------
 
-# The matcher Install-Hook.ps1 writes for a given event. Two events carry one:
-# SessionStart (which sub-kinds to fire on) and - for CLAUDE only - the tool
-# events (which TOOL, so a hook that only reads `tool_input.command` stops
-# spawning a process for every Read/Edit/Grep).
+# The built-in hooks whose tool-event handlers read ONLY `tool_input.command` and
+# exit 0 without it (verified in each source). A matcher of Bash is correct for
+# these and for nothing else: a user's own hook on the same event, such as the
+# wizard's Tool logger, reads tool_name for EVERY tool, and a Bash matcher would
+# silently cut it to shell calls. So the list is closed and named, never "every
+# hook on a tool event".
+$script:ShellOnlyToolHooks = @('Git-Sync-Check', 'Install-Location-Check', 'Docs-Freshness-Check', 'Test-Run-Guard')
+
+# The matcher Install-Hook.ps1 writes for a given event and hook. Two cases carry
+# one: SessionStart (which sub-kinds to fire on) and - for CLAUDE only, and only
+# for a hook in $script:ShellOnlyToolHooks - the tool events (which TOOL, so the
+# hook stops spawning a process for every Read/Edit/Grep).
 #
-# The client parameter is not cosmetic. The installer writes the tool-event
+# Client and hook name are not cosmetic. The installer writes the tool-event
 # matcher inside its Claude block only, because Codex's shell tool name is not
-# verified; expecting 'Bash' on Codex would report every Codex registration as
-# drifted on every run, for ever. This must stay identical to the installer's
-# own branch, so both take the same client into account.
+# verified; expecting 'Bash' on Codex, or on a hook outside the list, would
+# report that registration as drifted on every run, for ever. The installer and
+# the drift detector both call THIS function so they cannot disagree.
 function Get-ExpectedMatcher {
-    param([Parameter(Mandatory = $true)][string]$EventName, [string]$Client = 'claude')
+    param([Parameter(Mandatory = $true)][string]$EventName, [string]$Client = 'claude', [string]$HookName = '')
     if ($EventName -eq 'SessionStart') { return 'startup|resume|clear|compact' }
-    if ($Client -eq 'claude' -and $EventName -in @('PreToolUse', 'PostToolUse')) { return 'Bash' }
+    if ($Client -eq 'claude' -and $EventName -in @('PreToolUse', 'PostToolUse') -and $HookName -in $script:ShellOnlyToolHooks) { return 'Bash' }
     return ''
 }
 
@@ -128,9 +136,14 @@ function Test-ClientRegistrationState {
         # recorded expectation at all.
         [int]$ExpectedTimeout = $script:DefaultHookTimeoutSeconds,
         # Which client's settings file this is. The tool-event matcher exists only
-        # on Claude, so the expectation cannot be answered per event alone.
+        # on Claude and only for the shell-only built-ins, so the expectation
+        # cannot be answered per event alone.
         [string]$Client = 'claude'
     )
+    # The hook's own name, read off the runtime layout (.../Hook-Maker/<Name>/
+    # <Name>.ps1) rather than passed in, so every existing caller is judged by the
+    # same rule the installer uses and no caller can forget to name the hook.
+    $hookNameFromRuntime = [IO.Path]::GetFileNameWithoutExtension([string]$RuntimeScript)
     $registrations = @(Get-HookRegistrations -SettingsPath $SettingsPath -RuntimeScript $RuntimeScript -ProfileId $ProfileId)
     $byEvent = @{}
     foreach ($registration in $registrations) {
@@ -150,7 +163,7 @@ function Test-ClientRegistrationState {
             return [pscustomobject]@{ Ok = $false; Reason = 'duplicate registration'; Detail = ($byEvent[$eventName].Count.ToString() + ' registrations for ' + $eventName) }
         }
         $registration = $byEvent[$eventName][0]
-        $expectedMatcher = Get-ExpectedMatcher -EventName $eventName -Client $Client
+        $expectedMatcher = Get-ExpectedMatcher -EventName $eventName -Client $Client -HookName $hookNameFromRuntime
         if ([string]$registration.Matcher -ne $expectedMatcher) {
             return [pscustomobject]@{ Ok = $false; Reason = 'registration drifted'; Detail = ('matcher changed on ' + $eventName) }
         }

@@ -261,7 +261,7 @@ $script:HookMeta = @{
     # Docs-Freshness-Check above.
     'Test-Plan-Check'                  = @{ Order = 23; When = 'pre';  Text = 'surfaces test-health policy before test or CI work'; Events = @('SessionStart', 'UserPromptSubmit'); Timeout = 15 }
     # Shared repository evidence must finish inside its unchanged 4s deadline.
-    'Test-Run-Guard'                   = @{ Order = 24; When = 'both'; Text = 'requires a bounded, host-consistent identity-safe test runner'; Events = @('PreToolUse', 'PostToolUse'); Timeout = 10 }
+    'Test-Run-Guard'                   = @{ Order = 24; When = 'both'; Text = 'bounded, identity-safe runner; shell calls only'; Events = @('PreToolUse', 'PostToolUse'); Timeout = 10 }
     # Explicit legacy-missing disposition pins original absence and human hash;
     # completed-failure repeats stay UNRESOLVED without forcing continuation.
     # Final pins follow acquisition; no current proof or active/unknown waiver.
@@ -297,7 +297,7 @@ $script:HookMeta = @{
     # Install-Location-Check: last before Cloudflare-Deploy per an explicit user
     # requirement. PreToolUse only - it reads the install command before it runs
     # and adds context; it never blocks or approves.
-    'Install-Location-Check'           = @{ Order = 29; When = 'pre'; Text = 'asks for an install path off the system drive'; Events = @('PreToolUse'); Timeout = 10 }
+    'Install-Location-Check'           = @{ Order = 29; When = 'pre'; Text = 'install path off the system drive; shell calls only'; Events = @('PreToolUse'); Timeout = 10 }
     'Cloudflare-Deploy'                = @{ Order = 30; When = 'post'; Text = 'suggests deploying in Cloudflare Workers projects, gated on release readiness' }
 }
 # The "[pre-task]" / "[post-task]" tag, colored by phase (a different color than

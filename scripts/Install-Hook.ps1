@@ -393,19 +393,15 @@ if ($InstallClaude) {
         }
         foreach ($eventName in $Events) {
             $handler = [pscustomobject][ordered]@{ type = 'command'; command = $claudeCommands.Windows; timeout = $script:EffectiveTimeout }
-            $group = if ($eventName -eq 'SessionStart') {
-                [pscustomobject][ordered]@{ matcher = 'startup|resume|clear|compact'; hooks = @($handler) }
-            }
-            elseif ($eventName -in @('PreToolUse', 'PostToolUse')) {
-                # Only the shell tools ever reach the pre/post-tool hooks: each one
-                # reads `tool_input.command` and exits 0 without it (verified in
-                # Git-Sync-Check, Install-Location-Check, Docs-Freshness-Check and
-                # Test-Run-Guard). Without this matcher every Read/Edit/Grep spawned
-                # a full PowerShell process just to return nothing - the single
-                # largest per-call cost in a long session. Claude-only on purpose:
-                # Codex tool naming is not verified here, and a matcher that fails
-                # to match there would disable the hook silently.
-                [pscustomobject][ordered]@{ matcher = 'Bash'; hooks = @($handler) }
+            # ONE source of truth for the matcher, shared with the drift detector
+            # (Get-ExpectedMatcher in _installlibregistration.ps1), so an install
+            # can never write a shape the next integrity check calls drifted.
+            # An empty expectation means the group carries NO matcher key at all:
+            # writing matcher:'' would change the file shape every existing
+            # registration has.
+            $expectedMatcher = Get-ExpectedMatcher -EventName $eventName -Client 'claude' -HookName $SourceName
+            $group = if ($expectedMatcher -ne '') {
+                [pscustomobject][ordered]@{ matcher = $expectedMatcher; hooks = @($handler) }
             }
             else {
                 [pscustomobject][ordered]@{ hooks = @($handler) }

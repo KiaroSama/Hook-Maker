@@ -436,9 +436,34 @@ for (`$i = 0; `$i -lt 8; `$i++) {
     Check 'a fresh tool-event install is not reported as drifted' ((Get-InstallIntegrity -Record $toolRec -ToolRoot $ToolRoot).Status -eq 'current')
     # ...and the exemption is real: Codex must NOT be expected to carry one.
     Check 'the tool-event matcher is Claude-only' (
-        ((Get-ExpectedMatcher -EventName 'PreToolUse' -Client 'codex') -eq '') -and
-        ((Get-ExpectedMatcher -EventName 'PreToolUse' -Client 'claude') -eq 'Bash') -and
-        ((Get-ExpectedMatcher -EventName 'SessionStart' -Client 'codex') -eq 'startup|resume|clear|compact'))
+        ((Get-ExpectedMatcher -EventName 'PreToolUse' -Client 'codex' -HookName 'Install-Location-Check') -eq '') -and
+        ((Get-ExpectedMatcher -EventName 'PreToolUse' -Client 'claude' -HookName 'Install-Location-Check') -eq 'Bash') -and
+        ((Get-ExpectedMatcher -EventName 'SessionStart' -Client 'codex' -HookName 'Install-Location-Check') -eq 'startup|resume|clear|compact'))
+    # The matcher is per-HOOK, not per-event. A user's own hook on PreToolUse -
+    # the wizard's Tool logger reads tool_name for EVERY tool - must keep firing
+    # on every tool: scoping it to Bash would cut it to shell calls in silence.
+    Check 'a custom hook on a tool event is expected with NO matcher' (
+        ((Get-ExpectedMatcher -EventName 'PreToolUse' -Client 'claude' -HookName 'My-Tool-Logger') -eq '') -and
+        ((Get-ExpectedMatcher -EventName 'PostToolUse' -Client 'claude' -HookName 'My-Tool-Logger') -eq ''))
+    Check 'the shell-only hook list is the four verified hooks' (
+        ($script:ShellOnlyToolHooks.Count -eq 4) -and
+        (@($script:ShellOnlyToolHooks | Where-Object { $_ -in @('Git-Sync-Check', 'Install-Location-Check', 'Docs-Freshness-Check', 'Test-Run-Guard') }).Count -eq 4))
+    # An install of a NON-listed hook on PreToolUse writes no matcher key at all,
+    # and the drift check must then call it current rather than 'update'.
+    $custFixture = New-FixtureHook 'ZZZ-Regtest-ToolEvent' "param(`$e)`nexit 0 # no matcher for a custom hook`n"
+    try {
+        $custProj = New-Proj 'CustomToolEventProj'
+        & $InstallScript -CustomHook $custFixture -Events @('PreToolUse') -TargetProject $custProj -ClaudeOnly *> $null
+        $custRec = @(Get-RecordsFor 'ZZZ-Regtest-ToolEvent' | Where-Object { $_.targetProjectRoot -eq $custProj })[0]
+        $custSettings = [string]$custRec.clients.claude.settingsPath
+        $custJson = Get-Content -LiteralPath $custSettings -Raw | ConvertFrom-Json
+        $custEntry = @($custJson.hooks.PreToolUse)[0]
+        Check 'a custom tool-event install writes NO matcher member' (
+            ($null -ne $custEntry) -and (-not $custEntry.PSObject.Properties['matcher']))
+        Check 'a custom tool-event install is not reported as drifted' (
+            ((Get-InstallIntegrity -Record $custRec -ToolRoot $ToolRoot).Status -eq 'current'))
+    }
+    finally { Remove-FixtureHook 'ZZZ-Regtest-ToolEvent' }
     # =====================================================================
     # STRUCTURED OUTCOME CONTRACT: programmatic callers must never infer
     # success from console text or from "no exception was thrown". The
