@@ -84,8 +84,17 @@
     if(Test-Path -LiteralPath $oldBudget){Remove-Item -LiteralPath $oldBudget -Force}
     $oldSha=Get-HeadSha $oldRepo
     Set-Mock -RunJson '[{"databaseId":304,"name":"CI","workflowName":"CI","status":"completed","conclusion":"success"}]' -ExpectedSha $oldSha
+    # The count is a DELTA around this one Fire, not an absolute number over the
+    # shared calls.txt. The two blocks above deliberately install a slow gh shim
+    # and let the budget expire mid-call, so anything that survives them lands
+    # in this file; an absolute `-eq 1` then fails on a busy runner for a reason
+    # that has nothing to do with the sibling being missing. The claim this case
+    # makes is "THIS Stop asked GitHub for the run list exactly once".
+    $runListPattern = 'api|repos/*/actions/runs?head_sha=*'
+    $callsBefore = Get-GhCallCount $runListPattern
     $r = Fire -HookPath $oldHook -Cwd $oldRepo -EventName 'Stop'
-    Check 'budget: missing optional sibling retains execution proof and explicit report/UI gap' ($r.Exit -eq 0 -and $r.Err -eq '' -and $r.Out -match 'CI execution verified' -and $r.Out -match 'Reports/UI UNVERIFIED' -and $r.Out -match $oldSha -and $r.Out -notmatch '"decision"' -and (Get-GhCallCount 'api|repos/*/actions/runs?head_sha=*') -eq 1) ([string]$r.Out)
+    $runListCalls = (Get-GhCallCount $runListPattern) - $callsBefore
+    Check 'budget: missing optional sibling retains execution proof and explicit report/UI gap' ($r.Exit -eq 0 -and $r.Err -eq '' -and $r.Out -match 'CI execution verified' -and $r.Out -match 'Reports/UI UNVERIFIED' -and $r.Out -match $oldSha -and $r.Out -notmatch '"decision"' -and $runListCalls -eq 1) ('run-list calls=' + $runListCalls + ' ' + [string]$r.Out)
     $failedRepo=New-GitRepo 'ci-budget-nosibling-failed';$failedSha=Get-HeadSha $failedRepo
     $failedChecks='{"total_count":1,"check_runs":[{"id":1,"head_sha":"'+$failedSha+'","status":"completed","conclusion":"failure"}]}'
     Set-Mock -RunJson '[{"databaseId":305,"name":"CI","workflowName":"CI","status":"completed","conclusion":"failure"}]' -ExpectedSha $failedSha -CheckRunsJson $failedChecks -Annotations @{ '1'='[{"annotation_level":"failure","message":"billing/payment"}]' }
