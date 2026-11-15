@@ -386,7 +386,7 @@ function Read-HookEnv {
     # env files must never classify themselves or disable the leak guard.
     $caller=Get-PSCallStack|Where-Object{$_.ScriptName-like'*.ps1'-and[IO.Path]::GetFileName($_.ScriptName)-ne'_hooklib.ps1'}|Select-Object -First 1
     $policyOwned=$null-ne$caller-and[string]::Equals([IO.Path]::GetFullPath($Path),(Join-Path ([IO.Path]::GetDirectoryName($caller.ScriptName)) '.env'),[StringComparison]::OrdinalIgnoreCase)
-    if ([string]::IsNullOrWhiteSpace($Path) -or -not (Test-Path -LiteralPath $Path -PathType Leaf)) {
+    if ([string]::IsNullOrWhiteSpace($Path) -or -not [IO.File]::Exists($Path)) {
         if($policyOwned){$script:HookPolicySettings=$values}
         return $values
     }
@@ -416,9 +416,7 @@ function Get-ShortHash {
 # Reads a JSON file into an object, or $null when absent / blank.
 function Read-JsonFile {
     param([Parameter(Mandatory = $true)][string]$Path)
-    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
-        return $null
-    }
+    if (-not [System.IO.File]::Exists($Path)) { return $null }
     $raw = [System.IO.File]::ReadAllText($Path, [System.Text.Encoding]::UTF8)
     if ([string]::IsNullOrWhiteSpace($raw)) {
         return $null

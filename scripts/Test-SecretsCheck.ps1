@@ -636,6 +636,31 @@ try {
     Write-Utf8 (Join-Path $proj9 '.env') "HOST_TOKEN=abcdefghij1234567890`r`n"
     $r = Fire -Cwd $proj9 -Exe 'powershell.exe'
     Check '5.1 host: auto-append + report works' ($r.Exit -eq 0 -and $r.Out -like '*Added * registry keys (fill Purpose/Used by):*HOST_TOKEN*' -and $r.Out -notlike '*abcdefghij1234567890*') $r.Out
+
+    Write-Host '--- fast traversal + batched index parity ---' -ForegroundColor Cyan
+    $batchRepo = New-GitProj 'BatchEnvParity'
+    Write-Utf8 (Join-Path $batchRepo '.gitignore') "secrets.md`n"
+    foreach ($sub in @('services\api', 'services\worker', 'custom-venv', 'custom-cache', 'node_modules\pkg')) {
+        New-Item -ItemType Directory -Path (Join-Path $batchRepo $sub) -Force | Out-Null
+    }
+    Write-Utf8 (Join-Path $batchRepo 'custom-venv\pyvenv.cfg') "home = C:\Python`r`n"
+    Write-Utf8 (Join-Path $batchRepo 'custom-venv\.env') "SKIPPED_VENV_SECRET=venv_ignored_value_123456`r`n"
+    Write-Utf8 (Join-Path $batchRepo 'custom-cache\CACHEDIR.TAG') "Signature: 8a477f597d28d172789f06886806bc55`r`n"
+    Write-Utf8 (Join-Path $batchRepo 'custom-cache\.env') "SKIPPED_CACHE_SECRET=cache_ignored_value_12345`r`n"
+    Write-Utf8 (Join-Path $batchRepo 'node_modules\pkg\.env') "SKIPPED_NM_SECRET=nm_ignored_value_12345678`r`n"
+    Write-Utf8 (Join-Path $batchRepo 'services\worker\.env') "WORKER_API_SECRET=worker_dummy_val_12345678`r`n"
+    Write-Utf8 (Join-Path $batchRepo 'services\worker\.env.example') "WORKER_API_SECRET=changeme`r`n"
+    Add-Commit $batchRepo 'commit tracked worker env'
+    Write-Utf8 (Join-Path $batchRepo 'services\api\.env.local') "API_SIGNING_SECRET=api_dummy_val_1234567890`r`n"
+    & git -C $batchRepo add 'services/api/.env.local' 2>$null | Out-Null
+    $rBatch = Fire -Cwd $batchRepo -EventName 'Stop'
+    Check 'batched index detects both tracked and staged nested .env* files' (
+        $rBatch.Out -like '*services/worker/.env secrets TRACKED.*' -and
+        $rBatch.Out -like '*services/api/.env.local secrets STAGED.*') $rBatch.Out
+    Check 'fast traversal skips pyvenv.cfg, CACHEDIR.TAG and node_modules .env*' (
+        $rBatch.Out -notlike '*SKIPPED_VENV_SECRET*' -and $rBatch.Out -notlike '*custom-venv*' -and
+        $rBatch.Out -notlike '*SKIPPED_CACHE_SECRET*' -and $rBatch.Out -notlike '*custom-cache*' -and
+        $rBatch.Out -notlike '*SKIPPED_NM_SECRET*' -and $rBatch.Out -notlike '*node_modules*') $rBatch.Out
 }
 finally {
     $env:HOOKMAKER_STATE_DIR = $SavedHookMakerStateDir

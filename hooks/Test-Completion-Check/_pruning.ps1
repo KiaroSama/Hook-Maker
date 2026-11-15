@@ -4,16 +4,15 @@ if ($preserveOriginals) { return }
 # These indexes last only for this parsed inventory. Keep the original -eq
 # singular IDs and -ceq grouped pins distinct; one ignore-case set changes policy.
 $pruneResultsByCommand = New-Object 'Collections.Generic.Dictionary[string,object]' ([StringComparer]::InvariantCultureIgnoreCase)
-foreach ($entry in $resultEntries) {
+foreach ($entry in @(Get-LatestCleanResultEntries $resultEntries)) {
     $command = [string](Get-Field $entry.Doc 'commandFingerprint')
     if ($command -eq '') { continue }
-    if (-not $pruneResultsByCommand.ContainsKey($command)) { $pruneResultsByCommand[$command] = New-Object 'Collections.Generic.List[object]' }
-    [void]$pruneResultsByCommand[$command].Add($entry)
+    $pruneResultsByCommand[$command] = @($entry)
 }
 function Get-PruneCommandResults {
     param($Doc)
     $command = [string](Get-Field $Doc 'commandFingerprint')
-    if ($command -ne '' -and $pruneResultsByCommand.ContainsKey($command)) { return $pruneResultsByCommand[$command].ToArray() }
+    if ($command -ne '' -and $pruneResultsByCommand.ContainsKey($command)) { return $pruneResultsByCommand[$command] }
     return @()
 }
 $retainedRunIds = New-Object 'Collections.Generic.HashSet[string]' ([StringComparer]::InvariantCultureIgnoreCase)
@@ -62,11 +61,16 @@ $pruneCutoff = [DateTime]::UtcNow.AddHours(-24)
 # accumulate forever across states. Give old-state negatives a longer, safe
 # evaluation window and retire past it, retaining disk originals.
 $oldStateNegativeCutoff = [DateTime]::UtcNow.AddDays(-7)
-function Get-FileMtimeUtc { param([string]$Path) try { return (Get-Item -LiteralPath $Path -Force).LastWriteTimeUtc } catch { return $null } }
+function Get-EntryMtimeUtc {
+    param($Entry)
+    $cached = Get-Field $Entry 'MtimeUtc'
+    if ($null -ne $cached) { return $cached }
+    try { $dt = [System.IO.File]::GetLastWriteTimeUtc($Entry.Path); if ($dt.Year -gt 1601) { return $dt }; return $null } catch { return $null }
+}
 $prunedResultPaths = New-Object System.Collections.Generic.HashSet[string]
 $prunedObservedPaths = New-Object System.Collections.Generic.HashSet[string]
 foreach ($re in $resultEntries) {
-    $mtime = Get-FileMtimeUtc $re.Path
+    $mtime = Get-EntryMtimeUtc $re
     if ($null -eq $mtime -or $mtime -ge $pruneCutoff) { continue }   # keep anything not yet 24h old
     $runId = [string](Get-Field $re.Doc 'runId')
     if ($retainedRunIds.Contains($runId) -or $retainedGroupRunIds.Contains($runId)) { continue }
@@ -99,7 +103,7 @@ for ($i = 0; $i -lt $pruneAssign.SortedObserved.Count; $i++) {
     if ($pruneAssign.Map.ContainsKey($i)) { $assignedResultForObserved[$pruneAssign.SortedObserved[$i].Path] = $pruneAssign.Map[$i].Path }
 }
 foreach ($oe in $observedEntries) {
-    $mtime = Get-FileMtimeUtc $oe.Path
+    $mtime = Get-EntryMtimeUtc $oe
     if ($null -eq $mtime -or $mtime -ge $pruneCutoff) { continue }
     if ((Get-ObservedFingerprint $oe.Doc) -eq $projectKey -or [string]::IsNullOrWhiteSpace((Get-ObservedFingerprint $oe.Doc))) { continue }
     if ((Get-ObservedFingerprint $oe.Doc) -ne $stateFingerprint) { [void]$prunedObservedPaths.Add($oe.Path); continue }   # old-STATE: no current obligation

@@ -27,20 +27,22 @@
 function Get-CompletionStateEntries {
     param([string]$Kind)
     $entries = New-Object System.Collections.Generic.List[object]
-    if (-not (Test-Path -LiteralPath $script:stateDir -PathType Container)) { return @() }
-    $files = New-Object System.Collections.Generic.List[object]
-    try { foreach ($f in @(Get-ChildItem -LiteralPath $script:stateDir -Filter ('TestRunGuard-' + $Kind + '-' + $script:projectKey + '-*.json') -File -ErrorAction SilentlyContinue)) { [void]$files.Add($f) } } catch { }
+    if (-not [System.IO.Directory]::Exists($script:stateDir)) { return @() }
+    $paths = New-Object System.Collections.Generic.List[string]
+    try { foreach ($p in [System.IO.Directory]::EnumerateFiles($script:stateDir, ('TestRunGuard-' + $Kind + '-' + $script:projectKey + '-*.json'))) { [void]$paths.Add($p) } } catch { }
     $legacy = Join-Path $script:stateDir ('TestRunGuard-' + $Kind + '-' + $script:projectKey + '.json')
-    try { if (Test-Path -LiteralPath $legacy -PathType Leaf) { [void]$files.Add((Get-Item -LiteralPath $legacy -Force)) } } catch { }
-    foreach ($file in $files) {
+    try { if ([System.IO.File]::Exists($legacy)) { [void]$paths.Add($legacy) } } catch { }
+    foreach ($fullPath in $paths) {
         $doc = $null
-        try { $doc = Read-JsonFile $file.FullName } catch { $doc = $null }
+        try { $doc = Read-JsonFile $fullPath } catch { $doc = $null }
         if ($null -eq $doc -or $doc -isnot [pscustomobject]) {
             $bad = Get-Variable -Name MalformedEvidence -Scope Script -ValueOnly -ErrorAction SilentlyContinue
-            if ($null -ne $bad) { [void]$bad.Add($file.FullName) }
+            if ($null -ne $bad) { [void]$bad.Add($fullPath) }
             continue
         }
-        [void]$entries.Add([pscustomobject]@{ Doc = $doc; Path = $file.FullName })
+        $mtime = $null
+        try { $dt = [System.IO.File]::GetLastWriteTimeUtc($fullPath); if ($dt.Year -gt 1601) { $mtime = $dt } } catch { $mtime = $null }
+        [void]$entries.Add([pscustomobject]@{ Doc = $doc; Path = $fullPath; MtimeUtc = $mtime })
     }
     return @($entries.ToArray())
 }
@@ -51,7 +53,7 @@ function Get-ResultRecordedTime {
     $t = ConvertTo-UtcTime (Get-Field $Doc 'recordedUtc')
     if ($null -eq $t) { $t = ConvertTo-UtcTime (Get-Field $Doc 'endedUtc') }
     if ($null -eq $t -and -not [string]::IsNullOrWhiteSpace($Path)) {
-        try { $t = (Get-Item -LiteralPath $Path -Force).LastWriteTimeUtc } catch { $t = $null }
+        try { $dt = [System.IO.File]::GetLastWriteTimeUtc($Path); if ($dt.Year -gt 1601) { $t = $dt } } catch { $t = $null }
     }
     return $t
 }
@@ -198,6 +200,32 @@ function Test-ResultSuperseded {
         if ($null -ne $t -and $t -gt $NegTime) { return $true }
     }
     return $false
+}
+
+# Collapses a result inventory to at most one latest clean ok entry per
+# commandFingerprint so repeated Test-ResultSuperseded checks run in O(1) per
+# negative instead of rescanning hundreds of historical receipts (O(N^2)).
+function Get-LatestCleanResultEntries {
+    param($Entries)
+    $bestEntry = New-Object 'System.Collections.Generic.Dictionary[string,object]' ([System.StringComparer]::InvariantCultureIgnoreCase)
+    $bestTime = New-Object 'System.Collections.Generic.Dictionary[string,datetime]' ([System.StringComparer]::InvariantCultureIgnoreCase)
+    foreach ($re in @($Entries)) {
+        if ($null -eq $re -or $null -eq $re.Doc) { continue }
+        $cmd = [string](Get-Field $re.Doc 'commandFingerprint')
+        if ($cmd -eq '') { continue }
+        if (([string](Get-Field $re.Doc 'overall')).ToLowerInvariant() -ne 'ok' -or (Get-Field $re.Doc 'terminated') -eq $true) { continue }
+        $lk = @(@(Get-Field $re.Doc 'leakedProcessIds') | Where-Object { $null -ne $_ -and [string]$_ -ne '' })
+        if ($lk.Count -gt 0) { continue }
+        $t = Get-ResultRecordedTime -Doc $re.Doc -Path $re.Path
+        if ($null -eq $t) { continue }
+        if (-not $bestTime.ContainsKey($cmd) -or $t -gt $bestTime[$cmd]) {
+            $bestTime[$cmd] = $t
+            $bestEntry[$cmd] = $re
+        }
+    }
+    $out = New-Object 'System.Collections.Generic.List[object]'
+    foreach ($val in $bestEntry.Values) { [void]$out.Add($val) }
+    return @($out.ToArray())
 }
 
 # An observed run with NO result of its own - a guarded run typed by hand

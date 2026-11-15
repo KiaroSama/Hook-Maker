@@ -281,6 +281,7 @@ $scanLimitReached = $false
 $dirLimitReached = $false
 $timeLimitReached = $false
 $scanIncomplete = $false
+$useFastFs = Initialize-FastFsScope
 while ($stack.Count -gt 0) {
     if ($scannedFiles -ge $maxFiles) { $scanLimitReached = $true; break }
     if ($dirsVisited -ge $maxDirs) { $dirLimitReached = $true; break }
@@ -291,22 +292,37 @@ while ($stack.Count -gt 0) {
     # whole directory and silently shrink coverage. A failure is recorded in
     # $scanIncomplete (partial coverage), never swallowed into a false all-clear.
     $childDirs = @()
-    try { $childDirs = @([System.IO.Directory]::EnumerateDirectories($currentDir)) } catch { $scanIncomplete = $true }
-    foreach ($childDir in $childDirs) {
-        try {
-            $leaf = Split-Path -Leaf $childDir
-            if ($excludedDirs -contains $leaf.ToLowerInvariant()) { continue }
-            # A virtualenv is pruned by its PEP 405 marker, not its name (see _hooklib.ps1).
-            if (Test-IsMarkerPrunedDirectory $childDir) { continue }
-            # Never follow a reparse point (junction/symlink): it can escape the
-            # project or loop back on it. Skip before descent.
-            if (([System.IO.File]::GetAttributes($childDir) -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) { continue }
-            $stack.Push($childDir)
-        }
-        catch { $scanIncomplete = $true }
-    }
     $files = @()
-    try { $files = @([System.IO.Directory]::EnumerateFiles($currentDir)) } catch { $scanIncomplete = $true }
+    if ($useFastFs) {
+        $unusedPruned = $false
+        $readOk = $false
+        try { $readOk = [HookMaker.FastFsScope]::ReadDirectory($currentDir, $excludedDirs, $null, $false, [ref]$childDirs, [ref]$files, [ref]$unusedPruned) } catch { $readOk = $false }
+        if (-not $readOk) { $scanIncomplete = $true }
+        foreach ($childDir in $childDirs) {
+            try {
+                if ([System.IO.File]::Exists([System.IO.Path]::Combine($childDir, 'pyvenv.cfg')) -or [System.IO.File]::Exists([System.IO.Path]::Combine($childDir, 'CACHEDIR.TAG'))) { continue }
+                $stack.Push($childDir)
+            }
+            catch { $scanIncomplete = $true }
+        }
+    }
+    else {
+        try { $childDirs = @([System.IO.Directory]::EnumerateDirectories($currentDir)) } catch { $scanIncomplete = $true }
+        foreach ($childDir in $childDirs) {
+            try {
+                $leaf = [System.IO.Path]::GetFileName($childDir)
+                if ($excludedDirs -contains $leaf.ToLowerInvariant()) { continue }
+                # A virtualenv is pruned by its PEP 405 marker, not its name (see _hooklib.ps1).
+                if (Test-IsMarkerPrunedDirectory $childDir) { continue }
+                # Never follow a reparse point (junction/symlink): it can escape the
+                # project or loop back on it. Skip before descent.
+                if (([System.IO.File]::GetAttributes($childDir) -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) { continue }
+                $stack.Push($childDir)
+            }
+            catch { $scanIncomplete = $true }
+        }
+        try { $files = @([System.IO.Directory]::EnumerateFiles($currentDir)) } catch { $scanIncomplete = $true }
+    }
     foreach ($file in $files) {
         try {
             # Extension is checked BEFORE the ceiling so the MAX_FILES ceiling

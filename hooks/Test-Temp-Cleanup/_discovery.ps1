@@ -153,7 +153,7 @@ function Get-CleanupScan {
         if ($scanned -ge $MaxEntries) { $limitReached = $true; break }
         $current = $stack.Pop()
         $entries = $null
-        try { $entries = @(Get-ChildItem -LiteralPath $current.Path -Force -ErrorAction Stop) }
+        try { $entries = @((New-Object System.IO.DirectoryInfo $current.Path).GetFileSystemInfos()) }
         catch {
             # B-01: a directory that cannot be enumerated used to be swallowed
             # by a bare `continue`, so the caller could not tell coverage apart
@@ -164,9 +164,10 @@ function Get-CleanupScan {
         foreach ($entry in $entries) {
             if ($scanned -ge $MaxEntries) { $limitReached = $true; break }
             $scanned++
-            $isLink = Test-IsReparsePoint $entry
+            $attr = $entry.Attributes
+            $isLink = (($attr -band [System.IO.FileAttributes]::ReparsePoint) -ne 0)
 
-            if (-not $entry.PSIsContainer) {
+            if (($attr -band [System.IO.FileAttributes]::Directory) -eq 0) {
                 $kind = ''
                 foreach ($pattern in $script:TaskCreatedOnlyFilePatterns) {
                     if ($entry.Name -like $pattern) { $kind = 'task-created-file'; break }
@@ -230,7 +231,7 @@ function Get-CandidateSize {
     if ($IsLink) { return [pscustomobject]@{ Bytes = -1; Bounded = $false; Ok = $true } }
     try {
         if (-not $IsDir) {
-            return [pscustomobject]@{ Bytes = (Get-Item -LiteralPath $Path -Force -ErrorAction Stop).Length; Bounded = $false; Ok = $true }
+            return [pscustomobject]@{ Bytes = (New-Object System.IO.FileInfo $Path).Length; Bounded = $false; Ok = $true }
         }
         $sum = 0L
         $examined = 0

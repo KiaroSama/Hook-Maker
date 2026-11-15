@@ -217,31 +217,7 @@ if ($config.ContainsKey('MIN_SECRET_LENGTH')) {
 # source. Nothing this hook excluded before was dropped - see _scope.ps1 for
 # why the base is the intersection of the five hooks' lists and not their union.
 $excludedDirs = @(Get-HookExcludedDirs -Extra @('vendors', 'coverage', '.cache', 'cache', 'env', '.agents'))
-$envFiles = New-Object System.Collections.Generic.List[object]
-$rootFull = (Get-Item -LiteralPath $cwd).FullName.TrimEnd('\', '/')
-$stack = New-Object System.Collections.Generic.Stack[string]
-$stack.Push($rootFull)
-while ($stack.Count -gt 0) {
-    $current = $stack.Pop()
-    try {
-        foreach ($filePath in [System.IO.Directory]::EnumerateFiles($current, '.env*', [System.IO.SearchOption]::TopDirectoryOnly)) {
-            $leaf = Split-Path -Leaf $filePath
-            if ($leaf -notmatch '(?i)\.(example|sample|template|dist)$') {
-                $relative = $filePath.Substring($rootFull.Length).TrimStart('\', '/').Replace('\', '/')
-                [void]$envFiles.Add([pscustomobject]@{ FullName = $filePath; Name = $relative })
-            }
-        }
-        foreach ($dirPath in [System.IO.Directory]::EnumerateDirectories($current)) {
-            $dir = Get-Item -LiteralPath $dirPath -Force -ErrorAction SilentlyContinue
-            if ($null -eq $dir -or ($dir.Attributes -band [System.IO.FileAttributes]::ReparsePoint)) { continue }
-            # A virtualenv is pruned by its PEP 405 marker, not its name (see _hooklib.ps1).
-            if (Test-IsMarkerPrunedDirectory $dir.FullName) { continue }
-            if ($excludedDirs -notcontains $dir.Name.ToLowerInvariant()) { $stack.Push($dir.FullName) }
-        }
-    }
-    catch { }
-}
-$envFiles = @($envFiles.ToArray() | Sort-Object Name)
+$envFiles = @(Get-ProjectEnvFiles -ProjectRoot $cwd -ExcludedDirs $excludedDirs)
 
 $secretsPath = Join-Path $cwd 'secrets.md'
 $secretsExists = Test-Path -LiteralPath $secretsPath -PathType Leaf
@@ -478,30 +454,34 @@ if ($inGitRepo -and $GitPrePush -and $refUpdateLines.Count -gt 0) {
 $outgoingScanFailedClosed = $false
 
 if ($inGitRepo) {
+    $pathCmp = if ($env:OS -eq 'Windows_NT') { [System.StringComparer]::OrdinalIgnoreCase } else { [System.StringComparer]::Ordinal }
+    $trackedSet = $null; $stagedSet = $null
+    if ($secretsExists -or $envFiles.Count -gt 0) {
+        $lsCap = Invoke-QuietCommand -FilePath git -ArgumentList @('-C', $cwd, 'ls-files', '-z') -CaptureOutput
+        if ($null -ne $lsCap -and $lsCap.ExitCode -eq 0) {
+            $trackedSet = New-Object 'System.Collections.Generic.HashSet[string]' ($pathCmp)
+            foreach ($p in @(([string]$lsCap.Output) -split "`0" | Where-Object { $_ })) { [void]$trackedSet.Add($p) }
+        }
+        $stCap = Invoke-QuietCommand -FilePath git -ArgumentList @('-C', $cwd, 'diff', '--cached', '--name-only', '-z') -CaptureOutput
+        if ($null -ne $stCap -and $stCap.ExitCode -eq 0) {
+            $stagedSet = New-Object 'System.Collections.Generic.HashSet[string]' ($pathCmp)
+            foreach ($p in @(([string]$stCap.Output) -split "`0" | Where-Object { $_ })) { [void]$stagedSet.Add($p) }
+        }
+    }
     if ($secretsExists) {
         $null = Invoke-QuietCommand -FilePath git -ArgumentList @('-C', $cwd, 'check-ignore', '-q', '--', 'secrets.md')
-        if ($LASTEXITCODE -ne 0) {
-            [void]$critical.Add('Registry unignored.')
-        }
-        $tracked = Invoke-QuietCommand -FilePath git -ArgumentList @('-C', $cwd, 'ls-files', '--', 'secrets.md')
-        if ($LASTEXITCODE -eq 0 -and @($tracked | Where-Object { $_ }).Count -gt 0) {
-            [void]$critical.Add('Registry TRACKED.')
-        }
-        $staged = Invoke-QuietCommand -FilePath git -ArgumentList @('-C', $cwd, 'diff', '--cached', '--name-only', '--', 'secrets.md')
-        if ($LASTEXITCODE -eq 0 -and @($staged | Where-Object { $_ }).Count -gt 0) {
-            [void]$critical.Add('Registry STAGED.')
-        }
+        if ($LASTEXITCODE -ne 0) { [void]$critical.Add('Registry unignored.') }
+        $regTracked = if ($null -ne $trackedSet) { $trackedSet.Contains('secrets.md') } else { $t = Invoke-QuietCommand -FilePath git -ArgumentList @('-C', $cwd, 'ls-files', '--', 'secrets.md'); ($LASTEXITCODE -eq 0 -and @($t | Where-Object { $_ }).Count -gt 0) }
+        if ($regTracked) { [void]$critical.Add('Registry TRACKED.') }
+        $regStaged = if ($null -ne $stagedSet) { $stagedSet.Contains('secrets.md') } else { $s = Invoke-QuietCommand -FilePath git -ArgumentList @('-C', $cwd, 'diff', '--cached', '--name-only', '--', 'secrets.md'); ($LASTEXITCODE -eq 0 -and @($s | Where-Object { $_ }).Count -gt 0) }
+        if ($regStaged) { [void]$critical.Add('Registry STAGED.') }
     }
     foreach ($file in $envFiles) {
         $relPath = $file.Name
-        $tracked = Invoke-QuietCommand -FilePath git -ArgumentList @('-C', $cwd, 'ls-files', '--', $relPath)
-        if ($LASTEXITCODE -eq 0 -and @($tracked | Where-Object { $_ }).Count -gt 0) {
-            [void]$critical.Add($relPath + ' secrets TRACKED.')
-        }
-        $staged = Invoke-QuietCommand -FilePath git -ArgumentList @('-C', $cwd, 'diff', '--cached', '--name-only', '--', $relPath)
-        if ($LASTEXITCODE -eq 0 -and @($staged | Where-Object { $_ }).Count -gt 0) {
-            [void]$critical.Add($relPath + ' secrets STAGED.')
-        }
+        $envTracked = if ($null -ne $trackedSet) { $trackedSet.Contains($relPath) } else { $t = Invoke-QuietCommand -FilePath git -ArgumentList @('-C', $cwd, 'ls-files', '--', $relPath); ($LASTEXITCODE -eq 0 -and @($t | Where-Object { $_ }).Count -gt 0) }
+        if ($envTracked) { [void]$critical.Add($relPath + ' secrets TRACKED.') }
+        $envStaged = if ($null -ne $stagedSet) { $stagedSet.Contains($relPath) } else { $s = Invoke-QuietCommand -FilePath git -ArgumentList @('-C', $cwd, 'diff', '--cached', '--name-only', '--', $relPath); ($LASTEXITCODE -eq 0 -and @($s | Where-Object { $_ }).Count -gt 0) }
+        if ($envStaged) { [void]$critical.Add($relPath + ' secrets STAGED.') }
     }
     $excludeNames = @('secrets.md') + @($envFiles | ForEach-Object { $_.Name.Replace('\', '/') })
     # Grouped BY VALUE, not by key. Several keys legitimately hold the same

@@ -370,3 +370,231 @@ function Test-ManualSelfHostedRepo {
     if (@($facts | Where-Object { $_.SelfHosted }).Count -eq 0) { return $false }
     return (@($facts | Where-Object { @($_.Triggers | Where-Object { $_ -cnotin @('workflow_dispatch', 'workflow_call') }).Count -gt 0 }).Count -eq 0)
 }
+
+# ---- fast Win32 directory traversal with cross-platform .NET fallback --------
+# On Windows, FindFirstFileExW (FindExInfoBasic | FIND_FIRST_EX_LARGE_FETCH)
+# returns names, directory/reparse attributes and marker-file presence in a
+# single kernel call per directory instead of separate EnumerateFiles +
+# EnumerateDirectories + Get-Item + File.Exists syscalls. Non-Windows hosts and
+# constrained runtimes fall back to pure .NET System.IO with identical rules.
+function Initialize-FastFsScope {
+    if ($env:OS -ne 'Windows_NT') { return $false }
+    if ($null -ne ('HookMaker.FastFsScope' -as [type])) { return $true }
+    $csSource = @'
+using System;
+using System.Collections.Concurrent;
+using System.Collections.Generic;
+using System.IO;
+using System.Runtime.InteropServices;
+using System.Threading;
+
+namespace HookMaker {
+    public static class FastFsScope {
+        private const int FILE_ATTRIBUTE_DIRECTORY = 0x10;
+        private const int FILE_ATTRIBUTE_REPARSE_POINT = 0x400;
+        private const int FIND_FIRST_EX_LARGE_FETCH = 2;
+        private static readonly IntPtr INVALID_HANDLE_VALUE = new IntPtr(-1);
+
+        [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+        private struct WIN32_FIND_DATAW {
+            public int dwFileAttributes;
+            public System.Runtime.InteropServices.ComTypes.FILETIME ftCreationTime;
+            public System.Runtime.InteropServices.ComTypes.FILETIME ftLastAccessTime;
+            public System.Runtime.InteropServices.ComTypes.FILETIME ftLastWriteTime;
+            public int nFileSizeHigh;
+            public int nFileSizeLow;
+            public int dwReserved0;
+            public int dwReserved1;
+            [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 260)]
+            public string cFileName;
+            [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 14)]
+            public string cAlternateFileName;
+        }
+
+        [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+        private static extern IntPtr FindFirstFileExW(
+            string lpFileName, int fInfoLevelId, out WIN32_FIND_DATAW lpFindFileData,
+            int fSearchOp, IntPtr lpSearchFilter, int dwAdditionalFlags);
+
+        [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+        private static extern bool FindNextFileW(IntPtr hFindFile, out WIN32_FIND_DATAW lpFindFileData);
+
+        [DllImport("kernel32.dll")]
+        private static extern bool FindClose(IntPtr hFindFile);
+
+        private static string ToSearchPattern(string dir) {
+            string p = dir.EndsWith("\\") ? (dir + "*") : (dir + "\\*");
+            if (!p.StartsWith("\\\\?\\") && p.Length >= 248) p = "\\\\?\\" + p;
+            return p;
+        }
+
+        public static bool ReadDirectory(
+            string dirPath, string[] excludedDirs, string[] markerFiles, bool checkMarkers,
+            out string[] subDirs, out string[] filePaths, out bool markerPruned) {
+            var excl = new HashSet<string>(excludedDirs ?? new string[0], StringComparer.OrdinalIgnoreCase);
+            var markers = new HashSet<string>(markerFiles ?? new string[0], StringComparer.OrdinalIgnoreCase);
+            var dList = new List<string>();
+            var fList = new List<string>();
+            markerPruned = false;
+            WIN32_FIND_DATAW fd;
+            IntPtr h = FindFirstFileExW(ToSearchPattern(dirPath), 1, out fd, 0, IntPtr.Zero, FIND_FIRST_EX_LARGE_FETCH);
+            if (h == INVALID_HANDLE_VALUE) {
+                int err = Marshal.GetLastWin32Error();
+                subDirs = new string[0];
+                filePaths = new string[0];
+                return (err == 2 || err == 18);
+            }
+            string prefix = dirPath.EndsWith("\\") ? dirPath : (dirPath + "\\");
+            try {
+                do {
+                    string name = fd.cFileName;
+                    if (name == "." || name == "..") continue;
+                    int attr = fd.dwFileAttributes;
+                    if ((attr & FILE_ATTRIBUTE_DIRECTORY) != 0) {
+                        if ((attr & FILE_ATTRIBUTE_REPARSE_POINT) != 0) continue;
+                        if (excl.Contains(name)) continue;
+                        dList.Add(prefix + name);
+                    } else {
+                        if (checkMarkers && markers.Contains(name)) {
+                            markerPruned = true;
+                        }
+                        fList.Add(prefix + name);
+                    }
+                } while (FindNextFileW(h, out fd));
+            } finally {
+                FindClose(h);
+            }
+            if (markerPruned) {
+                subDirs = new string[0];
+                filePaths = new string[0];
+                return true;
+            }
+            subDirs = dList.ToArray();
+            filePaths = fList.ToArray();
+            return true;
+        }
+
+        public static string[] FindEnvFiles(string root, string[] excludedDirs, string[] markerFiles) {
+            var excl = new HashSet<string>(excludedDirs ?? new string[0], StringComparer.OrdinalIgnoreCase);
+            var markers = new HashSet<string>(markerFiles ?? new string[0], StringComparer.OrdinalIgnoreCase);
+            var queue = new ConcurrentQueue<string>();
+            var bag = new ConcurrentBag<string>();
+            int pending = 1;
+            queue.Enqueue(root);
+            using (var done = new ManualResetEventSlim(false)) {
+                int workers = Math.Min(4, Math.Max(1, Environment.ProcessorCount));
+                var threads = new Thread[workers];
+                for (int w = 0; w < workers; w++) {
+                    threads[w] = new Thread(() => {
+                        var subDirs = new List<string>(32);
+                        var envHere = new List<string>(4);
+                        while (!done.IsSet) {
+                            string cur;
+                            if (!queue.TryDequeue(out cur)) {
+                                done.Wait(1);
+                                continue;
+                            }
+                            try {
+                                subDirs.Clear();
+                                envHere.Clear();
+                                bool isRoot = string.Equals(cur, root, StringComparison.OrdinalIgnoreCase);
+                                bool hasMarker = false;
+                                WIN32_FIND_DATAW fd;
+                                IntPtr h = FindFirstFileExW(ToSearchPattern(cur), 1, out fd, 0, IntPtr.Zero, FIND_FIRST_EX_LARGE_FETCH);
+                                if (h != INVALID_HANDLE_VALUE) {
+                                    string prefix = cur.EndsWith("\\") ? cur : (cur + "\\");
+                                    try {
+                                        do {
+                                            string name = fd.cFileName;
+                                            if (name == "." || name == "..") continue;
+                                            int attr = fd.dwFileAttributes;
+                                            if ((attr & FILE_ATTRIBUTE_DIRECTORY) != 0) {
+                                                if ((attr & FILE_ATTRIBUTE_REPARSE_POINT) != 0) continue;
+                                                if (excl.Contains(name)) continue;
+                                                subDirs.Add(prefix + name);
+                                            } else {
+                                                if (!isRoot && markers.Contains(name)) {
+                                                    hasMarker = true;
+                                                } else if (name.StartsWith(".env", StringComparison.OrdinalIgnoreCase)) {
+                                                    envHere.Add(prefix + name);
+                                                }
+                                            }
+                                        } while (FindNextFileW(h, out fd));
+                                    } finally {
+                                        FindClose(h);
+                                    }
+                                }
+                                if (!hasMarker) {
+                                    for (int i = 0; i < envHere.Count; i++) bag.Add(envHere[i]);
+                                    if (subDirs.Count > 0) {
+                                        Interlocked.Add(ref pending, subDirs.Count);
+                                        for (int i = 0; i < subDirs.Count; i++) queue.Enqueue(subDirs[i]);
+                                    }
+                                }
+                            } finally {
+                                if (Interlocked.Decrement(ref pending) == 0) done.Set();
+                            }
+                        }
+                    });
+                    threads[w].IsBackground = true;
+                    threads[w].Start();
+                }
+                done.Wait();
+                for (int w = 0; w < workers; w++) threads[w].Join();
+            }
+            var result = bag.ToArray();
+            Array.Sort(result, StringComparer.OrdinalIgnoreCase);
+            return result;
+        }
+    }
+}
+'@
+    try { Add-Type -Language CSharp -TypeDefinition $csSource -ErrorAction Stop; return $true } catch { return $false }
+}
+
+function Get-ProjectEnvFiles {
+    param(
+        [Parameter(Mandatory = $true)][string]$ProjectRoot,
+        [string[]]$ExcludedDirs = @()
+    )
+    $rootFull = (Get-Item -LiteralPath $ProjectRoot).FullName.TrimEnd('\', '/')
+    $markerNames = if (Get-Variable -Name PruneMarkerFiles -Scope Script -ErrorAction SilentlyContinue) { @($script:PruneMarkerFiles) } else { @('pyvenv.cfg', 'CACHEDIR.TAG') }
+    $rawPaths = $null
+    if (Initialize-FastFsScope) {
+        try { $rawPaths = [HookMaker.FastFsScope]::FindEnvFiles($rootFull, $ExcludedDirs, $markerNames) } catch { $rawPaths = $null }
+    }
+    if ($null -eq $rawPaths) {
+        $exclSet = @{}
+        foreach ($d in @($ExcludedDirs)) { if (-not [string]::IsNullOrWhiteSpace($d)) { $exclSet[$d.ToLowerInvariant()] = $true } }
+        $collected = New-Object System.Collections.Generic.List[string]
+        $dirStack = New-Object System.Collections.Generic.Stack[string]
+        $dirStack.Push($rootFull)
+        while ($dirStack.Count -gt 0) {
+            $cur = $dirStack.Pop()
+            try {
+                foreach ($fp in [System.IO.Directory]::EnumerateFiles($cur, '.env*', [System.IO.SearchOption]::TopDirectoryOnly)) {
+                    [void]$collected.Add($fp)
+                }
+                foreach ($dp in [System.IO.Directory]::EnumerateDirectories($cur)) {
+                    $attr = [System.IO.File]::GetAttributes($dp)
+                    if (($attr -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) { continue }
+                    $leafName = [System.IO.Path]::GetFileName($dp)
+                    if ($exclSet.ContainsKey($leafName.ToLowerInvariant())) { continue }
+                    if (Test-IsMarkerPrunedDirectory $dp) { continue }
+                    $dirStack.Push($dp)
+                }
+            }
+            catch { }
+        }
+        $rawPaths = $collected.ToArray()
+    }
+    $envItems = New-Object System.Collections.Generic.List[object]
+    foreach ($filePath in $rawPaths) {
+        $leaf = [System.IO.Path]::GetFileName($filePath)
+        if ($leaf -notmatch '(?i)\.(example|sample|template|dist)$') {
+            $relative = $filePath.Substring($rootFull.Length).TrimStart('\', '/').Replace('\', '/')
+            [void]$envItems.Add([pscustomobject]@{ FullName = $filePath; Name = $relative })
+        }
+    }
+    return @($envItems.ToArray() | Sort-Object Name)
+}

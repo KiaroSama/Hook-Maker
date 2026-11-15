@@ -81,6 +81,7 @@ function Test-RunNegativeAccounted {
 # ($resultEntries, $script:pendingNotes) exactly as the inline block did.
 function Select-RepresentativeRun {
     param($Runs, $HistoricalResults = @())
+    if (Get-Command Get-LatestCleanResultEntries -ErrorAction SilentlyContinue) { $HistoricalResults = @(Get-LatestCleanResultEntries $HistoricalResults) }
     $runs = $Runs
     $classified = @($runs | ForEach-Object { [pscustomobject]@{ Run = $_; Class = (Get-RunClass $_) } })
 
