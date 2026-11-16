@@ -215,7 +215,7 @@ When it does report, it names both timestamps, says to call `index_status` and r
 
 ## `Synapse-Rules-Check`
 
-**Runs:** pre-task (SessionStart, UserPromptSubmit) + post-task gate (Stop).
+**Runs:** pre-task (SessionStart, UserPromptSubmit) + post-task gate (Stop; SubagentStop is registered and always stays silent).
 
 Keeps the agent's own operating rules current from the **Synapse** memory store, and makes the agent give back what it learned. A PowerShell hook has no MCP client, so it never reads or writes the store itself: **SessionStart** states both duties and the measured settings - call `memory_digest` once with a `tokenBudget`, index the result before reading any of it (the digest returns every memory three times), read in full only what matches the task; `minScore` 0.65 unfiltered, `tags: ["project:<slug>"]` to scope, never both together.
 

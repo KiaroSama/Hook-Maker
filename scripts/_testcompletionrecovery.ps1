@@ -34,14 +34,20 @@ function Invoke-ExplicitRecovery {
     }
 }
 
-# One real owned exited child supplies historical leak PIDs, not an invented absent number.
-$deadRecoveryProcess = Start-Process -FilePath (Get-Process -Id $PID).Path -ArgumentList @('-NoLogo','-NoProfile','-NonInteractive','-Command','exit 0') -WindowStyle Hidden -PassThru
-try {
-    if (-not $deadRecoveryProcess.WaitForExit(15000)) { throw 'Recovery dead-PID fixture did not exit within its bound.' }
-    $script:RecoveryDeadPid = $deadRecoveryProcess.Id
-} finally {
-    if (-not $deadRecoveryProcess.HasExited) { $deadRecoveryProcess.Kill(); [void]$deadRecoveryProcess.WaitForExit(5000) }
-    $deadRecoveryProcess.Dispose()
+# One real owned exited child supplies a historical leak PID, not an invented
+# absent number. Taken fresh per fixture: one PID shared by the whole suite was
+# reused by a later CI process minutes afterwards and turned the advisory into
+# a live-leak block (CI run 43935117906, Recovery-wrongRunId).
+# ponytail: a sub-second reuse window remains; retry the fixture if CI still hits it.
+function New-DeadRecoveryPid {
+    $dead = Start-Process -FilePath (Get-Process -Id $PID).Path -ArgumentList @('-NoLogo','-NoProfile','-NonInteractive','-Command','exit 0') -WindowStyle Hidden -PassThru
+    try {
+        if (-not $dead.WaitForExit(15000)) { throw 'Recovery dead-PID fixture did not exit within its bound.' }
+        return $dead.Id
+    } finally {
+        if (-not $dead.HasExited) { $dead.Kill(); [void]$dead.WaitForExit(5000) }
+        $dead.Dispose()
+    }
 }
 function New-RecoveryFixture {
     param([string]$Name, [string]$Variant = 'valid')
@@ -49,7 +55,7 @@ function New-RecoveryFixture {
     $root = New-GitRepoAi ('Recovery-' + $Name)
     $negativeRun = 'legacy-' + (Get-ProjectKey $root)
     $recoveryRun = 'recovery-' + (Get-ProjectKey $root)
-    $leakedPid = if ($Variant -in @('liveLeak', 'reusedPid')) { $PID } else { $script:RecoveryDeadPid }
+    $leakedPid = if ($Variant -in @('liveLeak', 'reusedPid')) { $PID } else { New-DeadRecoveryPid }
     if ($Variant -notin @('liveLeak','reusedPid') -and $null -ne (Get-Process -Id $leakedPid -ErrorAction SilentlyContinue)) {
         throw 'The historical test PID is alive/reused; it cannot qualify as dead advisory evidence.'
     }
