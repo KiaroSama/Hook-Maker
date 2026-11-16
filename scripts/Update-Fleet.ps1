@@ -146,6 +146,11 @@ function Invoke-FleetRepair {
         $baseArgs['ConfigPath'] = Get-FleetRecordField $record 'configPath'
     }
     else { $baseArgs['CustomHook'] = Get-FleetRecordField $record 'sourceScript' }
+    $current = Get-ClientSubrecord -Record $record -Client $client
+    if ($null -ne $current -and $null -ne $current.PSObject.Properties['timeout']) {
+        $raise = Get-HookTimeoutRaiseArgs -Name $Registration.Hook -RecordedTimeout ([int]$current.timeout)
+        if ($raise.ContainsKey('Timeout')) { $baseArgs['Timeout'] = $raise.Timeout }
+    }
 
     $verdict = $null
     if ((Get-FleetRecordField $record 'scope') -eq 'global') {

@@ -1,32 +1,28 @@
-# Synapse-Rules-Check - the agent refreshes ITS OWN operating rules from the
-# Synapse memory store at the start of a session, and writes back what the
-# session taught before it ends.
+# Synapse-Rules-Check - the agent reads ITS OWN standing rules from the Synapse
+# memory store before it edits the project, and decides about write-back before
+# it closes.
 #
-# ROLE: ADVISORY (global-hook-rules.md SS Hook Roles). It reads nothing from
-# Synapse and writes nothing to it - a PowerShell hook has no MCP client, and
-# the memories are the AGENT's to fetch through `memory_digest` /
-# `memory_retrieve`. This hook supplies the instruction and the measured
-# settings, then checks at Stop whether the fetch actually happened. It never
-# blocks: it cannot know whether a given session needed the store, and a memory
-# reminder is not worth wedging a Stop over.
+# ROLE: ADVISORY on SessionStart/UserPromptSubmit, GATE (blocks once) on Stop
+# (global-hook-rules.md SS Hook Roles; spec 037). A PowerShell hook has no MCP
+# client, so it never reads or writes the store itself; it judges only what the
+# COMPLETE transcript proves - client-recorded tool calls, never prose:
+#   - project edits and no memory_digest/memory_retrieve/memory_write call
+#     -> refused once (read duty, FR-037-01);
+#   - project edits, no memory_write call and no closing line
+#     `Synapse: no durable learning - <reason>` -> refused once (write duty,
+#     FR-037-02). The reasoned opt-out keeps trivial edits from forcing junk
+#     notes; an empty reason does not clear it;
+#   - a read that came only after the first edit -> one advisory (FR-037-03).
+# Never refused (FR-037-04): no project edit, SubagentStop (the subagent works
+# under its parent's duties), no/partial/unreadable transcript, or a machine
+# without a Synapse store. HOOK_ENFORCEMENT=advisory|off softens or disables it.
 #
-# WHY IT EXISTS, in the store's own words: a whole long session ran without a
-# single Synapse query, and three rules already stored there were broken in
-# that one session. The stored diagnosis is precise about the cause - "nothing
-# in the session prompt reminds you, and hook reminders cover `.ai/` and not
-# this. So it is exactly the step that gets skipped in a long working session
-# that feels self-sufficient." This hook is that missing reminder.
+# WHY IT BLOCKS NOW: the advisory version was ignored. Whole sessions ran without
+# a single Synapse query while rules stored there were broken in that same
+# session; a reminder the agent can skip is exactly the step that gets skipped.
 #
-# EVENTS: SessionStart (load), Stop/SubagentStop (write back), and
-# UserPromptSubmit for ONE mid-session note: a Stop advisory reaches the user,
-# not the model, so the only word that reaches the agent while it can still act
-# is a prompt-time context note. It is said only when the transcript already
-# shows a file-changing tool call and no Synapse read, and at most once per
-# session - never per prompt. Deliberately NOT SessionEnd: by then the agent
-# can no longer act, and the whole point of the closing half is that it still can.
-#
-# RELEVANCE GATE: silent unless this machine actually has a Synapse store, so
-# a project on a host without one is never nagged.
+# Project edits exclude .ai/, .claude/, plans/, specs/, .specify/ and anything
+# outside the project root, the same filter as Speckit-Check.
 
 Set-StrictMode -Version 2.0
 $ErrorActionPreference = 'Stop'
@@ -38,17 +34,14 @@ if ($null -eq $hookInput) { exit 0 }
 $eventName = [string](Get-Field $hookInput 'hook_event_name')
 if ([string]::IsNullOrWhiteSpace($eventName)) { $eventName = 'SessionStart' }
 if ($eventName -notin @('SessionStart', 'UserPromptSubmit', 'Stop', 'SubagentStop')) { exit 0 }
-
-# A Stop hook that re-fires on its own output is the classic hook loop; the
-# client sets this flag on the re-entry and every Stop hook must honour it.
-if ($eventName -eq 'Stop' -or $eventName -eq 'SubagentStop') {
+# A subagent works under the parent's duties; refusing it would wedge delegation.
+if ($eventName -eq 'SubagentStop') { exit 0 }
+if ($eventName -eq 'Stop') {
     $stopActive = Get-Field $hookInput 'stop_hook_active'
     if ($null -ne $stopActive -and [bool]$stopActive) { exit 0 }
 }
 
 # ---- relevance gate: is Synapse actually set up on this machine? ------------
-# Either signal is enough. SYNAPSE_HOME overrides the install path for a
-# non-default layout; the store path is the one the memories themselves name.
 $config = Read-HookEnv (Join-Path $PSScriptRoot '.env')
 $synapseHome = ''
 if ($config.ContainsKey('SYNAPSE_HOME')) { $synapseHome = [string]$config['SYNAPSE_HOME'] }
@@ -59,117 +52,121 @@ if (-not $configured -and -not [string]::IsNullOrWhiteSpace($synapseHome)) {
     try { if (Test-Path -LiteralPath $synapseHome -PathType Container) { $configured = $true } } catch { }
 }
 if (-not $configured) { exit 0 }
-$midSessionReminder = -not ($config.ContainsKey('MID_SESSION_REMINDER') -and [string]$config['MID_SESSION_REMINDER'] -eq '0')
-if ($eventName -eq 'UserPromptSubmit' -and -not $midSessionReminder) { exit 0 }
 
-# ---- SessionStart: load the rules, with the settings that make it work ------
+$cwd = [string](Get-Field $hookInput 'cwd')
+$sessionId = [string](Get-Field $hookInput 'session_id')
+$projectKey = Get-ShortHash ([string]$cwd).ToLowerInvariant()
+$stateDir = Join-Path $env:LOCALAPPDATA 'HookMaker\state'
+
+# ---- SessionStart: state both duties up front (FR-037-05) -------------------
 if ($eventName -eq 'SessionStart') {
-    $note = 'Synapse-Rules-Check: advisory, read recall before first edit: memory_digest once with tokenBudget, index id/type/preview then full task matches; memory_retrieve minScore0.65 OR project:<slug> tags, never both. Empty expected: remove threshold/read scoreBreakdown (real vector0.60-0.65 vs near-zero vector noise); adjacent answer: query answer terms. Recall != canonical policy/project truth or operation/account consent; private local, no raw memory disclosure.'
+    $note = 'Synapse-Rules-Check: ENFORCED at Stop. (1) Before the first project edit: memory_digest once with tokenBudget, index id/type/preview then full task matches; memory_retrieve minScore0.65 OR project:<slug> tags, never both. (2) Before closing: memory_write durable facts/decisions/verified commands (entityKey/project tag), or end with `Synapse: no durable learning - <reason>`. Recall != canonical policy or consent; no secrets, no raw memory disclosure.'
     $emit = Write-HookResult -EventName $eventName -Kind 'context' -Message $note
     exit $emit.ExitCode
 }
 
-# ---- was it read, and did the session change files? ------------------------
-# Detected from this hook's own stdin transcript_path with a BOUNDED tail read.
-# Only tool-call records are searched for; the text is never stored, printed or
-# hashed, and a live writer is never blocked (shared read).
-function Get-TranscriptTailText {
-    param([string]$Path)
-    if ([string]::IsNullOrWhiteSpace($Path) -or -not (Test-Path -LiteralPath $Path -PathType Leaf)) { return '' }
-    try {
-        $stream = [System.IO.File]::Open($Path, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::ReadWrite)
-        try {
-            $tailBytes = [int][Math]::Min([int64]262144, $stream.Length)
-            if ($stream.Length -gt $tailBytes) { [void]$stream.Seek(-$tailBytes, [System.IO.SeekOrigin]::End) }
-            $buffer = New-Object byte[] $tailBytes
-            $read = $stream.Read($buffer, 0, $tailBytes)
-            if ($read -le 0) { return '' }
-            return [System.Text.Encoding]::UTF8.GetString($buffer, 0, $read)
-        }
-        finally { $stream.Dispose() }
-    }
-    catch { return '' }
-}
-
-# A client-recorded file-mutating tool call, never prose (the same detector as
-# Skills-Check's _skillstop.ps1). This hook's own notes never carry that record
-# shape, so they cannot satisfy it.
-function Test-SubstantiveWork {
-    param([string]$RawTranscript)
-    if ([string]::IsNullOrWhiteSpace($RawTranscript)) { return $false }
-    return ($RawTranscript -match '"name"[ \t]*:[ \t]*"(Write|Edit|MultiEdit|NotebookEdit)"')
-}
-
-$tailText = Get-TranscriptTailText ([string](Get-Field $hookInput 'transcript_path'))
-# MATCH THE CLIENT'S TOOL-CALL RECORD, NOT THE BARE TOKEN. This hook's own
-# SessionStart note names memory_digest, memory_retrieve AND memory_write, and
-# that note lands in the very transcript read here - a bare token search is
-# satisfied by the hook's own words and reports "consulted" for a session that
-# never queried anything, which makes the whole reminder unreachable. Only a
-# "name": "mcp__synapse__memory_*" entry is evidence of a real call.
-$consulted = ($tailText -match '(?i)"(?:name|tool_name)"[ \t]*:[ \t]*"mcp__[A-Za-z0-9_.\-]*synapse[A-Za-z0-9_.\-]*__memory_(digest|retrieve|write)"')
-$worked = Test-SubstantiveWork $tailText
-
-# A session-bound marker, because a long session pushes the SessionStart call
-# out of the bounded tail: once seen, this session counts as having read it.
-$sessionId = [string](Get-Field $hookInput 'session_id')
-$cwd = [string](Get-Field $hookInput 'cwd')
-$projectKey = Get-ShortHash ([string]$cwd).ToLowerInvariant()
-$stateDir = Join-Path $env:LOCALAPPDATA 'HookMaker\state'
-$markerPath = Join-Path $stateDir ('SynapseRulesCheck-seen-' + $projectKey + '.json')
-if ($consulted) {
-    try {
-        New-Item -ItemType Directory -Path $stateDir -Force | Out-Null
-        Write-JsonFileAtomic -Path $markerPath -Value ([pscustomobject]@{ schema = 1; sessionId = $sessionId; seenUtc = [DateTime]::UtcNow.ToString('o') })
-    }
-    catch { }
-}
-else {
-    $marker = $null
-    try { $marker = Read-JsonFile $markerPath } catch { $marker = $null }
-    if ($null -ne $marker -and $sessionId -ne '' -and [string](Get-Field $marker 'sessionId') -eq $sessionId) { $consulted = $true }
-}
-
 # ---- UserPromptSubmit: one mid-session note, only with evidence ------------
+# A bounded tail read keeps this per-prompt path cheap; the Stop gate below is
+# the one that reads the complete transcript.
 if ($eventName -eq 'UserPromptSubmit') {
-    if ($consulted -or -not $worked -or $sessionId -eq '') { exit 0 }
+    if ($config.ContainsKey('MID_SESSION_REMINDER') -and [string]$config['MID_SESSION_REMINDER'] -eq '0') { exit 0 }
+    if ($sessionId -eq '') { exit 0 }
+    $tailText = ''
+    $path = [string](Get-Field $hookInput 'transcript_path')
+    try {
+        if ($path -ne '' -and [IO.File]::Exists($path)) {
+            $stream = [IO.File]::Open($path, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::ReadWrite)
+            try {
+                $take = [int][Math]::Min([int64]262144, $stream.Length)
+                if ($stream.Length -gt $take) { [void]$stream.Seek(-$take, [IO.SeekOrigin]::End) }
+                $buffer = New-Object byte[] $take
+                $read = $stream.Read($buffer, 0, $take)
+                if ($read -gt 0) { $tailText = [Text.Encoding]::UTF8.GetString($buffer, 0, $read) }
+            }
+            finally { $stream.Dispose() }
+        }
+    }
+    catch { $tailText = '' }
+    # Tool-call record shape only: this hook's own notes name the tools too.
+    $consulted = ($tailText -match '(?i)"(?:name|tool_name)"[ \t]*:[ \t]*"mcp__[A-Za-z0-9_.\-]*synapse[A-Za-z0-9_.\-]*__memory_(digest|retrieve|write)"')
+    $worked = ($tailText -match '"name"[ \t]*:[ \t]*"(Write|Edit|MultiEdit|NotebookEdit)"')
+    if ($consulted -or -not $worked) { exit 0 }
     $midPath = Join-Path $stateDir ('SynapseRulesCheck-mid-' + $projectKey + '.txt')
     $midKey = Get-ShortHash ($sessionId + '|mid|unread-after-work')
-    try { if ((Test-Path -LiteralPath $midPath -PathType Leaf) -and ([System.IO.File]::ReadAllText($midPath).Trim()) -eq $midKey) { exit 0 } } catch { }
-    try {
-        New-Item -ItemType Directory -Path $stateDir -Force | Out-Null
-        [System.IO.File]::WriteAllText($midPath, $midKey)
-    }
+    try { if ([IO.File]::Exists($midPath) -and ([IO.File]::ReadAllText($midPath).Trim()) -eq $midKey) { exit 0 } } catch { }
+    try { New-Item -ItemType Directory -Path $stateDir -Force | Out-Null; [IO.File]::WriteAllText($midPath, $midKey) }
     catch { exit 0 }    # an undeliverable once-marker must not turn into a per-prompt note
-    $emit = Write-HookResult -EventName $eventName -Kind 'context' -Message 'SYNAPSE: files changed without store read. Once now: `memory_digest` + `tokenBudget`; index, read matches, continue. Once/session.'
+    $emit = Write-HookResult -EventName $eventName -Kind 'context' -Message 'SYNAPSE: files changed without store read; Stop will refuse. Now: `memory_digest` + `tokenBudget`, read matches, continue.'
     exit $emit.ExitCode
 }
 
-if ($consulted) {
-    $message = 'Synapse-Rules-Check: advisory write-back of new durable facts/reasons/decisions/rejected alternatives/verified commands via memory_write + entityKey/project:<slug>; correct contradicted memory this turn. No status/history/closure-only/duplicate notes or secrets/.env/registry contents; no durable learning means no write.'
-}
-else {
-    $message = @(
-        'SYNAPSE RULES CHECK: store never queried this session.',
-        $(if ($worked) { 'Files changed: read standing rules now; `memory_digest` ONCE + `tokenBudget`.' }
-            else { 'Real work: read standing rules; `memory_digest` ONCE + `tokenBudget`.' }),
-        'Durable learning: `memory_write` + entityKey/project tag; `.ai/` alone insufficient.',
-        'Trivial turn: no action.'
-    ) -join "`n"
-}
-
-# Say it once per session-state: an unchanged answer does not repeat on every
-# Stop of the same session, while a changed one is reported immediately.
-$fingerprint = Get-ShortHash ($sessionId + '|' + $eventName + '|' + [string]$consulted + '|' + [string]$worked)
-$gatePath = Join-Path $stateDir ('SynapseRulesCheck-gate-' + $projectKey + '.txt')
-if (Test-Path -LiteralPath $gatePath -PathType Leaf) {
-    try { if (([System.IO.File]::ReadAllText($gatePath).Trim()) -eq $fingerprint) { exit 0 } } catch { }
-}
+# ---- Stop: read and write duties over the complete transcript ---------------
+$gateReceipt = if (Get-Command Start-StopGateReceipt -ErrorAction SilentlyContinue) { Start-StopGateReceipt -HookInput $hookInput -HookName 'Synapse-Rules-Check' } else { $null }
 try {
-    New-Item -ItemType Directory -Path $stateDir -Force | Out-Null
-    [System.IO.File]::WriteAllText($gatePath, $fingerprint)
-}
-catch { }
+    if ((Get-Command Test-StopStandDown -ErrorAction SilentlyContinue) -and (Test-StopStandDown -HookInput $hookInput -HookName 'Synapse-Rules-Check')) { exit 0 }
+    if (-not $script:EvidenceLibReady -or [string]::IsNullOrWhiteSpace($cwd)) { exit 0 }
+    $maxBytes = 20000000
+    if ($config.ContainsKey('MAX_TRANSCRIPT_BYTES')) {
+        $parsed = 0
+        if ([int]::TryParse([string]$config['MAX_TRANSCRIPT_BYTES'], [ref]$parsed) -and $parsed -ge 100000) { $maxBytes = $parsed }
+    }
+    $evidence = Get-TranscriptToolEvidence -Path ([string](Get-Field $hookInput 'transcript_path')) -MaxBytes $maxBytes
+    # Partial means the read or the edit may sit in the unread part: unknown, silent.
+    if (-not $evidence.Ok -or $evidence.Partial) { exit 0 }
 
-$emit = Write-HookResult -EventName $eventName -Kind 'context' -Message $message
-exit $emit.ExitCode
+    $root = [IO.Path]::GetFullPath($cwd).TrimEnd('\', '/') + '\'
+    $index = 0; $firstEdit = -1; $firstRead = -1; $editCount = 0; $wrote = $false
+    foreach ($item in @($evidence.Events)) {
+        $index++
+        if ($item.Kind -eq 'synapse') {
+            # A write needs the store too, so it also counts as a read.
+            if ($firstRead -lt 0) { $firstRead = $index }
+            if ($item.Value -eq 'write') { $wrote = $true }
+        }
+        elseif ($item.Kind -eq 'write') {
+            $full = ''
+            try { $full = [IO.Path]::GetFullPath($(if ([IO.Path]::IsPathRooted($item.Value)) { $item.Value } else { Join-Path $cwd $item.Value })) } catch { continue }
+            if (-not $full.StartsWith($root, [StringComparison]::OrdinalIgnoreCase)) { continue }
+            if ($full.Substring($root.Length) -match '^(?i)(\.ai|\.claude|plans|specs|\.specify)[\\/]') { continue }
+            $editCount++
+            if ($firstEdit -lt 0) { $firstEdit = $index }
+        }
+    }
+    if ($editCount -eq 0) { exit 0 }
+
+    $optOut = $false
+    if (-not $wrote) {
+        $closing = $null
+        if (Get-Command Get-TaskClosingEvidence -ErrorAction SilentlyContinue) { $closing = Get-TaskClosingEvidence -HookInput $hookInput }
+        elseif (Get-Command Get-ClosingAssistantText -ErrorAction SilentlyContinue) { $closing = Get-ClosingAssistantText -HookInput $hookInput }
+        if ($null -ne $closing -and $closing.Known) {
+            $declaration = Test-ClosingDeclaration -Text ([string]$closing.Text) -LabelPattern 'Synapse'
+            # The reason must be real words after the dash, not "-" or "n/a".
+            if ($declaration.Present -and ([string]$declaration.Value).Trim() -match '^(?i)no[ \t]+durable[ \t]+learning[ \t]*[-:][ \t]*(?<reason>.*\S.*)$' -and $Matches['reason'].Trim().Length -ge 6) { $optOut = $true }
+        }
+    }
+
+    $missingRead = ($firstRead -lt 0)
+    $missingWrite = (-not $wrote -and -not $optOut)
+    $late = (-not $missingRead -and $firstRead -gt $firstEdit)
+    if (-not $missingRead -and -not $missingWrite -and -not $late) { exit 0 }
+
+    # Once per (session, outcome): an unchanged answer stays silent on repeat Stops.
+    $fingerprint = Get-ShortHash ($sessionId + '|' + [string]$missingRead + '|' + [string]$missingWrite + '|' + [string]$late)
+    $gatePath = Join-Path $stateDir ('SynapseRulesCheck-gate-' + $projectKey + '.txt')
+    try { if ([IO.File]::Exists($gatePath) -and ([IO.File]::ReadAllText($gatePath).Trim()) -eq $fingerprint) { exit 0 } } catch { }
+    try { New-Item -ItemType Directory -Path $stateDir -Force | Out-Null; [IO.File]::WriteAllText($gatePath, $fingerprint) } catch { }
+
+    if (-not $missingRead -and -not $missingWrite) {
+        $emit = Write-HookResult -EventName $eventName -Kind 'advisory' -Message ('Synapse-Rules-Check: store read only AFTER the first of ' + [string]$editCount + ' project edits. Next session: memory_digest before editing.')
+        exit $emit.ExitCode
+    }
+    $lines = New-Object System.Collections.Generic.List[string]
+    [void]$lines.Add('SYNAPSE RULES CHECK: ' + [string]$editCount + ' project edits in the complete transcript.')
+    if ($missingRead) { [void]$lines.Add('Read duty: no memory_digest/memory_retrieve call. Run `memory_digest` once with `tokenBudget`, read task matches, re-check the edits against them.') }
+    if ($missingWrite) { [void]$lines.Add('Write duty: no memory_write call. Write durable facts/decisions/verified commands (entityKey + project tag; no secrets), or end the reply with `Synapse: no durable learning - <reason>`.') }
+    $emit = Write-StopBlockResult -HookInput $hookInput -HookName 'Synapse-Rules-Check' -FindingFingerprint $fingerprint -EventName $eventName -Message ($lines.ToArray() -join "`n") -Condition 'required-workflow'
+    exit $emit.ExitCode
+}
+catch { if ($null -ne $gateReceipt) { $gateReceipt.Crashed = $true }; throw }
+finally { if ($null -ne $gateReceipt) { Complete-StopGateReceipt $gateReceipt } }

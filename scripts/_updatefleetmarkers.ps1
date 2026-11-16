@@ -123,6 +123,11 @@ function Get-FleetRegistrations {
                 }
                 $missing = Get-MissingFleetMarker -RuntimeDir $runtimeDir -Markers $Markers
                 if ($missing -ne '') { $state = 'stale'; $detail = 'marker missing: ' + $missing }
+                elseif ((Get-Command Get-HookTimeoutRaiseArgs -ErrorAction SilentlyContinue) -and $null -ne $subrecord -and
+                    $null -ne $subrecord.PSObject.Properties['timeout']) {
+                    $raise = Get-HookTimeoutRaiseArgs -Name $name -RecordedTimeout ([int]$subrecord.timeout)
+                    if ($raise.ContainsKey('Timeout')) { $state = 'stale'; $detail = 'timeout ' + [string]$subrecord.timeout + ' < ' + [string]$raise.Timeout }
+                }
             }
             $eventPlan = Resolve-UpdateEventsForClient -Record $record -Client $client
             # A binding with a pending migration is stale whatever its files say.

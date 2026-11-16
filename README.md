@@ -310,7 +310,7 @@ prints counts (current / stale / pending-migration / unreachable / skipped) and 
 each repeatable `-Marker <file>[:<pattern>]` marks a runtime stale when the file (relative to the
 hook's runtime folder) is missing or lacks the text. Its state comes only from the registry and the
 installed files, so an interrupted `-Apply` resumes by running it again. `-Compare` byte-compares
-every managed runtime against its source. Each run writes `logs\Update-Fleet_<UTC>.log`, one line
+every managed runtime against its source. A recorded hook timeout below the wizard's current value for that hook is stale and is raised on `-Apply` (never lowered; the wizard's update does the same). Each run writes `logs\Update-Fleet_<UTC>.log`, one line
 per registration; the exit code is the number of failed registrations. A project folder that no
 longer exists is first looked for: a renamed or moved folder still carries its hooks' record ids in
 their runtime metadata, so exactly one folder carrying them (searched under the nearest existing

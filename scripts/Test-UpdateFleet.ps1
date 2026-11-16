@@ -291,6 +291,25 @@ try {
         $run.Exit -eq 0 -and @(Get-UpdatedLabels $run.Log).Count -eq 2 -and $run.Out -match 'different=0') ($run.Out+$run.Err)
     foreach ($item in $utfConfigs) { Check 'fleet update preserves explicit UTF8 configuration bytes' ((Get-FileHash -LiteralPath $item.Path -Algorithm SHA256).Hash -eq $item.Hash) }
     foreach ($item in $utfSettings) { Check 'fleet update preserves unchanged client registrations/settings bytes' ((Get-FileHash -LiteralPath $item.Path -Algorithm SHA256).Hash -eq $item.Hash) }
+
+    # ---- spec 037: a recorded timeout below the metadata is raised, never lowered
+    $tmoProject = Join-Path $Work 'timeout fleet'
+    New-Item -ItemType Directory -Path $tmoProject -Force | Out-Null
+    $synSource = Join-Path (Split-Path -Parent $ScriptRoot) 'hooks\Synapse-Rules-Check\Synapse-Rules-Check.ps1'
+    & $InstallScript -CustomHook $synSource -Events @('SessionStart', 'Stop') -TargetProject $tmoProject -Clients @('claude') -Timeout 10 *> $null
+    $run = Invoke-Fleet @('-WhatIf', '-OnlyProject', 'timeout fleet')
+    Check 'a recorded 10 s timeout below the 30 s metadata is stale' (
+        (Get-Counts $run.Out)['stale'] -eq 1 -and $run.Out.Contains('timeout 10 < 30')) $run.Out
+    $run = Invoke-Fleet @('-Apply', '-Compare', '-OnlyProject', 'timeout fleet')
+    $tmoValues = @()
+    foreach ($group in @(([IO.File]::ReadAllText((Join-Path $tmoProject '.claude\settings.local.json')) | ConvertFrom-Json).hooks.Stop)) {
+        foreach ($handler in @($group.hooks)) { $tmoValues += [int]$handler.timeout }
+    }
+    Check 'fleet -Apply writes the raised timeout and compares clean' (
+        $run.Exit -eq 0 -and $tmoValues.Count -ge 1 -and @($tmoValues | Where-Object { $_ -ne 30 }).Count -eq 0 -and $run.Out -match 'different=0') (
+        ($tmoValues -join ',') + ' ' + $run.Out + $run.Err)
+    $run = Invoke-Fleet @('-WhatIf', '-OnlyProject', 'timeout fleet')
+    Check 'after the raise the registration is current' ((Get-Counts $run.Out)['current'] -eq 1) $run.Out
 }
 finally {
     if ($null -ne $interrupted -and -not $interrupted.HasExited) { Stop-Process -Id $interrupted.Id -Force -ErrorAction SilentlyContinue }

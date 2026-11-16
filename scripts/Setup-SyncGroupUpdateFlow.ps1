@@ -196,6 +196,11 @@ function Invoke-UpdateInstalledHooks {
             # names exactly the one client being repaired and fails closed on
             # anything it does not recognise.
             $clientArgs = @{ Clients = @($client) }
+            $currentSub = Get-ClientSubrecord -Record $record -Client $client
+            if ($null -ne $currentSub -and $null -ne $currentSub.PSObject.Properties['timeout'] -and (Get-Command Get-HookTimeoutRaiseArgs -ErrorAction SilentlyContinue)) {
+                $raise = Get-HookTimeoutRaiseArgs -Name ([string]$record.friendlyName) -RecordedTimeout ([int]$currentSub.timeout)
+                if ($raise.ContainsKey('Timeout')) { $clientArgs['Timeout'] = $raise.Timeout }
+            }
             try {
                 # STRUCTURED OUTCOME, through the one shared contract: success is
                 # read from the installer's result document, never inferred from

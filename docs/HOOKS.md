@@ -49,7 +49,7 @@ never successful CI evidence. Process cleanup retains the existing 5-second rese
 | [`Graph-Update-Check`](#graph-update-check) | post-task (Stop) | Detector / Advisory | reports stale graph evidence |
 | [`Cbm-Read-Check`](#cbm-read-check) | pre-task (SessionStart, UserPromptSubmit) | Advisory | suggests querying the Codebase Memory index |
 | [`Cbm-Update-Check`](#cbm-update-check) | post-task (Stop, SubagentStop) | Detector / Advisory | reports index lag |
-| [`Synapse-Rules-Check`](#synapse-rules-check) | pre-task (SessionStart, UserPromptSubmit) + post-task (Stop/SubagentStop) | Advisory | reminds the agent to read Synapse; makes no MCP call |
+| [`Synapse-Rules-Check`](#synapse-rules-check) | pre-task (SessionStart, UserPromptSubmit) + post-task (Stop/SubagentStop) | Gate (blocks once) | Stop refuses project edits without a Synapse read or write-back; makes no MCP call |
 | [`Session-Summary-Check`](#session-summary-check) | pre-task instructions (SessionStart, UserPromptSubmit); silent observation (Stop, SubagentStop) | Advisory / Coordinator | requests one DONE / REMAINING summary |
 | [`Install-Location-Check`](#install-location-check) | pre-task (PreToolUse) | Advisory | prefers approved install roots |
 | [`Cloudflare-Deploy`](#cloudflare-deploy) | post-task (Stop) | Advisory / Coordinator | reports release readiness; never deploys automatically |
@@ -110,6 +110,8 @@ The shipped set remains 30 packages. No hook/client/event/menu number/installer 
 **Runs:** pre-task (SessionStart, UserPromptSubmit).
 
 The sync engine: stages changed `.ai` knowledge from related projects for review. Each review is an **owned generation**: the staging directory is proven to sit inside the configured destination through every internal ancestor (a junction on `inbox`, `.ai` or `.cross-project-sync` refuses the whole operation rather than redirecting it out of the project), the new generation is built and its copied bytes verified against the snapshot BEFORE the superseded one is retired, and the acknowledgement is bound to the generation on disk rather than to a matching fingerprint string.
+
+**Rescan throttle (spec 037):** SessionStart always walks every route's source. A UserPromptSubmit skips a route whose last completed walk is younger than `rescanMinutes` (default 10, `0` = every prompt), and an event starts no further route once `runBudgetSeconds` (default 40) have passed; both are read route -> profile -> defaults. A source with millions of files used to cost 20+ minutes per prompt against a 60 s registration.
 
 A source that changes mid-review therefore queues a new generation instead of deleting the one being read; a package that is gone or tampered with is rebuilt instead of announced as a dead path; and staging that could not be retired is reported as **deferred cleanup**, which is a different outcome from a failed review.
 
@@ -213,15 +215,19 @@ When it does report, it names both timestamps, says to call `index_status` and r
 
 ## `Synapse-Rules-Check`
 
-**Runs:** pre-task (SessionStart, UserPromptSubmit) + post-task (Stop/SubagentStop).
+**Runs:** pre-task (SessionStart, UserPromptSubmit) + post-task gate (Stop).
 
-Keeps the agent's own operating rules current from the **Synapse** memory store. It is ADVISORY and holds no MCP client of its own — a PowerShell hook cannot call an MCP tool, so it supplies the instruction and the measured settings and the agent does the fetching. **SessionStart** says to call `memory_digest` once with a `tokenBudget`, index the result before reading any of it (the digest returns every memory three times), and read in full only what matches the task; it also carries the retrieval settings that were measured against this store — `minScore` 0.65 unfiltered, `tags: ["project:<slug>"]` to scope, never both together, and how to tell a threshold-clipped hit from noise in the `scoreBreakdown`.
+Keeps the agent's own operating rules current from the **Synapse** memory store, and makes the agent give back what it learned. A PowerShell hook has no MCP client, so it never reads or writes the store itself: **SessionStart** states both duties and the measured settings - call `memory_digest` once with a `tokenBudget`, index the result before reading any of it (the digest returns every memory three times), read in full only what matches the task; `minScore` 0.65 unfiltered, `tags: ["project:<slug>"]` to scope, never both together.
 
-**Stop/SubagentStop** asks the other half: write back what is durable with `memory_write` (an `entityKey` so a new version supersedes the old, plus a `project:` tag), and correct anything the session CONTRADICTED in the same turn — a cleared blocker, a renamed project, a changed environment fact. It detects whether the store was consulted at all from a bounded 256 KB tail of this session's transcript (tool names only; the text is never stored, printed or hashed) plus a session-bound marker, so a long session that read it early still counts.
+**Stop is a gate** (spec 037). It reads the COMPLETE transcript (up to `MAX_TRANSCRIPT_BYTES`, default 20 MB) and judges only client-recorded tool calls, never prose - the hook's own note names every tool and must never count:
 
-**UserPromptSubmit** carries one mid-session note, because a Stop advisory reaches the user rather than the model: when the transcript already shows a client-recorded file-changing tool call (`Write`, `Edit`, `MultiEdit`, `NotebookEdit`) and no Synapse read, the agent is told once to call `memory_digest` now — at most once per session, never per prompt (`MID_SESSION_REMINDER=0` turns it off). The Stop note then says plainly when the session changed files unread.
+- **Read duty:** project edits (`Write`/`Edit`/`MultiEdit`/`NotebookEdit` inside the project root, outside `.ai/`, `.claude/`, `plans/`, `specs/`, `.specify/`) and no `memory_digest`/`memory_retrieve`/`memory_write` call -> refused once.
+- **Write duty:** project edits and no `memory_write` call -> refused once, unless the closing reply carries `Synapse: no durable learning - <reason>` with a real reason (an empty or placeholder reason does not clear it). The opt-out keeps one-line fixes from forcing junk notes.
+- A read that came only AFTER the first edit is a single advisory, not a block.
 
-It **never blocks** — it cannot know whether a given session needed the store — and stays completely silent on a machine with no Synapse (`%USERPROFILE%\.synapse\synapse.db`, or `SYNAPSE_HOME` for a non-default layout).
+One refusal per session and outcome: an unchanged answer is silent on the next Stop. Never refused: no project edit, `SubagentStop` (the subagent works under its parent's duties), a missing/oversized/unreadable transcript, `stop_hook_active`, or a machine without Synapse (`%USERPROFILE%\.synapse\synapse.db`, or `SYNAPSE_HOME`). `HOOK_ENFORCEMENT=advisory|off` in the hook's `.env` softens or disables the gate.
+
+**UserPromptSubmit** carries one mid-session note: when the transcript tail already shows a file-changing tool call and no Synapse read, the agent is told once to call `memory_digest` now, because Stop will refuse (`MID_SESSION_REMINDER=0` turns the note off; the gate stays).
 
 ## `Session-Summary-Check`
 

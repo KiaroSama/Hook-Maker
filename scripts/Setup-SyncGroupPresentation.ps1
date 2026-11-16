@@ -229,10 +229,10 @@ $script:HookMeta = @{
     # index. Both pairs stay live: every project carries BOTH graphs, and the
     # Cbm-* pair answers for code structure while the Graph-* pair answers for
     # what graphify alone covers and its cross-cutting views.
-    'Feature-Request-Check'            = @{ Order = 8;  When = 'both'; Text = 'a feature request runs the grilling chain, not straight to code'; Events = @('UserPromptSubmit', 'Stop', 'SubagentStop'); Timeout = 15 }
-    'Speckit-Check'                    = @{ Order = 9;  When = 'both'; Text = 'route the task through Spec Kit before writing code'; Events = @('SessionStart', 'UserPromptSubmit', 'Stop'); Timeout = 15 }
-    'Cbm-Read-Check'                   = @{ Order = 10; When = 'pre';  Text = 'query the Codebase Memory index before browsing files'; Events = @('SessionStart', 'UserPromptSubmit'); Timeout = 10 }
-    'Cbm-Update-Check'                 = @{ Order = 11; When = 'post'; Text = 'reports a Codebase Memory index lagging behind the code'; Events = @('Stop', 'SubagentStop'); Timeout = 15 }
+    'Feature-Request-Check'            = @{ Order = 8;  When = 'both'; Text = 'a feature request runs the grilling chain, not straight to code'; Events = @('UserPromptSubmit', 'Stop', 'SubagentStop'); Timeout = 45 }
+    'Speckit-Check'                    = @{ Order = 9;  When = 'both'; Text = 'route the task through Spec Kit before writing code'; Events = @('SessionStart', 'UserPromptSubmit', 'Stop'); Timeout = 45 }
+    'Cbm-Read-Check'                   = @{ Order = 10; When = 'pre';  Text = 'query the Codebase Memory index before browsing files'; Events = @('SessionStart', 'UserPromptSubmit'); Timeout = 30 }
+    'Cbm-Update-Check'                 = @{ Order = 11; When = 'post'; Text = 'reports a Codebase Memory index lagging behind the code'; Events = @('Stop', 'SubagentStop'); Timeout = 45 }
     # PreToolUse holds a `git push` once for the review, so the docs land in
     # that one push; the migration table's v10 moves the old SessionStart+Stop.
     'Docs-Freshness-Check'             = @{ Order = 12;  When = 'both'; Text = 'checks tracked docs after changes; requires ack'; Events = @('SessionStart', 'PreToolUse', 'Stop') }
@@ -241,12 +241,12 @@ $script:HookMeta = @{
     'Large-File-Check'                 = @{ Order = 15; When = 'both'; Text = 'small-files policy + oversized-file scan' }
     # 'both', not 'pre': these three now VERIFY at Stop as well as remind at
     # the start. Closing findings default to advisory; explicit block settings remain.
-    'Mcp-Usage-Check'                  = @{ Order = 16; When = 'both'; Text = 'MCP and research-first reminders, and an "MCP used:" line at the end'; Events = @('SessionStart', 'UserPromptSubmit', 'Stop', 'SubagentStop'); Timeout = 10 }
-    'Rules-Check'                      = @{ Order = 17; When = 'both'; Text = 'routes rules and language choices; confirms rules at the end'; Events = @('SessionStart', 'UserPromptSubmit', 'Stop', 'SubagentStop'); Timeout = 15 }
+    'Mcp-Usage-Check'                  = @{ Order = 16; When = 'both'; Text = 'MCP and research-first reminders, and an "MCP used:" line at the end'; Events = @('SessionStart', 'UserPromptSubmit', 'Stop', 'SubagentStop'); Timeout = 30 }
+    'Rules-Check'                      = @{ Order = 17; When = 'both'; Text = 'routes rules and language choices; confirms rules at the end'; Events = @('SessionStart', 'UserPromptSubmit', 'Stop', 'SubagentStop'); Timeout = 45 }
     # Skills-Check's real recommended EVENTS are SessionStart,UserPromptSubmit,Stop
     # (the Stop event carries the "Skills used:" summary requirement) - When must
     # be 'both', not 'pre' alone, or the menu tag disagrees with its actual timing.
-    'Skills-Check'                     = @{ Order = 18; When = 'both'; Text = 'finds provider-aware skills, and names those used'; Events = @('SessionStart', 'UserPromptSubmit', 'Stop', 'SubagentStop'); Timeout = 20 }
+    'Skills-Check'                     = @{ Order = 18; When = 'both'; Text = 'finds provider-aware skills, and names those used'; Events = @('SessionStart', 'UserPromptSubmit', 'Stop', 'SubagentStop'); Timeout = 60 }
     'Secrets-Check'                    = @{ Order = 19; When = 'both'; Text = 'keeps secrets.md accurate and checks for leaks' }
     # 'both' (not 'pre+post') - Get-HookTimingTag's switch only recognizes
     # pre/post/both; an unrecognized value silently rendered NO timing tag at all.
@@ -259,28 +259,28 @@ $script:HookMeta = @{
     # read them from here, so name/order/timing/events/timeout cannot drift into
     # a second table. Text stays short for the same single-line reason as
     # Docs-Freshness-Check above.
-    'Test-Plan-Check'                  = @{ Order = 23; When = 'pre';  Text = 'surfaces test-health policy before test or CI work'; Events = @('SessionStart', 'UserPromptSubmit'); Timeout = 15 }
+    'Test-Plan-Check'                  = @{ Order = 23; When = 'pre';  Text = 'surfaces test-health policy before test or CI work'; Events = @('SessionStart', 'UserPromptSubmit'); Timeout = 45 }
     # Shared repository evidence must finish inside its unchanged 4s deadline.
-    'Test-Run-Guard'                   = @{ Order = 24; When = 'both'; Text = 'bounded, identity-safe runner; shell calls only'; Events = @('PreToolUse', 'PostToolUse'); Timeout = 10 }
+    'Test-Run-Guard'                   = @{ Order = 24; When = 'both'; Text = 'bounded, identity-safe runner; shell calls only'; Events = @('PreToolUse', 'PostToolUse'); Timeout = 30 }
     # Explicit legacy-missing disposition pins original absence and human hash;
     # completed-failure repeats stay UNRESOLVED without forcing continuation.
     # Final pins follow acquisition; no current proof or active/unknown waiver.
     # Invocation-local evidence indexes preserve ordering/identity; exact audited
     # recovery accounts its controlled original only, never missing evidence.
-    'Test-Completion-Check'            = @{ Order = 25; When = 'post'; Text = 'verifies test evidence and cleanup before finishing'; Events = @('Stop', 'SubagentStop'); Timeout = 20 }
+    'Test-Completion-Check'            = @{ Order = 25; When = 'post'; Text = 'verifies test evidence and cleanup before finishing'; Events = @('Stop', 'SubagentStop'); Timeout = 60 }
     # Utf8-Encoding-Check is also the third native pre-push chain stage
     # (Ignore -> Secrets -> Utf8 -> preserved user hook). Its position is
     # relative, not absolute - the numbers here went stale twice already.
     # Disk/native copies share complete binary evidence and density-qualified
     # sparse-NUL decoding; Git octal paths keep exact exception identity.
     # BOM/text vetoes, caps, stage ordering and registered timeout are unchanged.
-    'Utf8-Encoding-Check'              = @{ Order = 26; When = 'both'; Text = 'strict streaming UTF-8; blocks invalid text and pushes'; Events = @('SessionStart', 'Stop', 'SubagentStop'); Timeout = 30 }
+    'Utf8-Encoding-Check'              = @{ Order = 26; When = 'both'; Text = 'strict streaming UTF-8; blocks invalid text and pushes'; Events = @('SessionStart', 'Stop', 'SubagentStop'); Timeout = 45 }
     # Directly before Cloudflare-Deploy, per an explicit user requirement.
     # SessionStart loads the user's standing rules out of Synapse;
     # Stop/SubagentStop ask what this session should write back. NOT
     # UserPromptSubmit (the digest is a once-per-session read) and NOT
     # SessionEnd (by then the agent can no longer act on the answer).
-    'Synapse-Rules-Check'              = @{ Order = 27; When = 'both'; Text = 'loads the user''s rules from Synapse; nudges once mid-session'; Events = @('SessionStart', 'UserPromptSubmit', 'Stop', 'SubagentStop'); Timeout = 10 }
+    'Synapse-Rules-Check'              = @{ Order = 27; When = 'both'; Text = 'requires a Synapse read before edits and a write-back at Stop'; Events = @('SessionStart', 'UserPromptSubmit', 'Stop', 'SubagentStop'); Timeout = 30 }
     # Session-Summary-Check sits between Synapse-Rules-Check and
     # Cloudflare-Deploy per an explicit user requirement. That number is only
     # where it is LISTED. It is advisory and asks for the summary as the
@@ -290,15 +290,27 @@ $script:HookMeta = @{
     # always arrived as one more turn after the work, which is the loop it
     # shipped with twice. Stop events now OBSERVE only and return no output.
     # Recording must be registered too; the pre-task timing tag names speech.
-    'Session-Summary-Check'            = @{ Order = 28; When = 'pre'; Text = 'asks the closing reply for a done / still-open summary'; Events = @('SessionStart', 'UserPromptSubmit', 'Stop', 'SubagentStop'); Timeout = 10 }
+    'Session-Summary-Check'            = @{ Order = 28; When = 'pre'; Text = 'asks the closing reply for a done / still-open summary'; Events = @('SessionStart', 'UserPromptSubmit', 'Stop', 'SubagentStop'); Timeout = 30 }
     # Cloudflare-Deploy is deliberately kept LAST among individual hook
     # entries (Order = highest value) per an explicit user requirement, not
     # filesystem/alphabetical order - see Test-Wizard.ps1 for the pinned order.
     # Install-Location-Check: last before Cloudflare-Deploy per an explicit user
     # requirement. PreToolUse only - it reads the install command before it runs
     # and adds context; it never blocks or approves.
-    'Install-Location-Check'           = @{ Order = 29; When = 'pre'; Text = 'install path off the system drive; shell calls only'; Events = @('PreToolUse'); Timeout = 10 }
+    'Install-Location-Check'           = @{ Order = 29; When = 'pre'; Text = 'install path off the system drive; shell calls only'; Events = @('PreToolUse'); Timeout = 30 }
     'Cloudflare-Deploy'                = @{ Order = 30; When = 'post'; Text = 'suggests deploying in Cloudflare Workers projects, gated on release readiness' }
+}
+# The registration timeout an UPDATE must pass (spec 037 FR-037-08). Updates
+# reuse the recorded value, so a raised metadata timeout never reached a single
+# installed project and the old 10-20 s values kept timing out under load.
+# Raise-only: a recorded value at or above the metadata (60 s defaults, a
+# deliberate manual repair) is kept by returning an empty splat.
+function Get-HookTimeoutRaiseArgs {
+    param([Parameter(Mandatory = $true)][string]$Name, [int]$RecordedTimeout = 0)
+    if (-not $script:HookMeta.ContainsKey($Name) -or -not $script:HookMeta[$Name].ContainsKey('Timeout')) { return @{} }
+    $wanted = [int]$script:HookMeta[$Name].Timeout
+    if ($RecordedTimeout -gt 0 -and $RecordedTimeout -lt $wanted) { return @{ Timeout = $wanted } }
+    return @{}
 }
 # The "[pre-task]" / "[post-task]" tag, colored by phase (a different color than
 # the description, FFmWiz-style, so timing reads at a glance).

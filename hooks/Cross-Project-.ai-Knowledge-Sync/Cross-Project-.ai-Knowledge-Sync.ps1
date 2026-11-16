@@ -29,6 +29,7 @@ else {
 . (Join-Path $ScriptRoot '..\_hooklib.ps1')
 . (Join-Path $ScriptRoot '_packageguard.ps1')
 . (Join-Path $ScriptRoot '_packagebuild.ps1')
+. (Join-Path $ScriptRoot '_scanthrottle.ps1')
 
 function Get-PropertyValue {
     param(
@@ -502,7 +503,11 @@ if ($contexts.Count -eq 0) {
 }
 
 $messages = New-Object System.Collections.Generic.List[string]
+# Run budget (spec 037): routes not started inside it wait for the next event,
+# so one slow source cannot push the whole event past its registration timeout.
+$runClock = [Diagnostics.Stopwatch]::StartNew()
 foreach ($context in $contexts) {
+    if ($runClock.Elapsed.TotalSeconds -ge (Get-ScanSetting -Context $context -Name 'runBudgetSeconds' -Default 40)) { break }
     if (-not (Test-Path -LiteralPath $context.sourceDirectory -PathType Container)) {
         continue
     }
@@ -514,6 +519,7 @@ foreach ($context in $contexts) {
     $routeLock = Enter-RouteStateLock -StatePath $statePaths.statePath
     try {
         if (-not (Test-SyncRouteCurrent $context)) { continue }
+        if (Test-RouteScanFresh -StatePath $statePaths.statePath -EventName $eventName -RescanMinutes (Get-ScanSetting -Context $context -Name 'rescanMinutes' -Default 10)) { continue }
         $state = Read-JsonFile $statePaths.statePath
         # ConvertTo-NormalizedState repairs every partial/damaged shape (missing
         # file, "{}", a missing top-level field, a non-null 'pending' missing
@@ -525,6 +531,7 @@ foreach ($context in $contexts) {
 
         # @() around the call: an empty result would otherwise unwrap to $null.
         $eligibleFiles = @(Get-EligibleFiles -SourceDirectory $context.sourceDirectory -RouteConfig $context.route -ProfileConfig $context.profile -Defaults $context.defaults)
+        Set-RouteScanStamp -StatePath $statePaths.statePath
         $quickFingerprint = Get-QuickSnapshot -Files $eligibleFiles
 
         if ($null -ne $state.pending -and [string]$state.pending.sourceQuickFingerprint -eq $quickFingerprint) {
@@ -619,7 +626,8 @@ foreach ($context in $contexts) {
             # Staging refused: the path was not provably inside the configured
             # destination, or the copied bytes did not match the snapshot. The
             # PREVIOUS state stands - nothing is announced, nothing is marked
-            # applied, and the next event tries again.
+            # applied, and the next event tries again - so the scan stamp goes too.
+            try { [IO.File]::Delete((Get-ScanStampPath -StatePath $statePaths.statePath)) } catch { }
             continue
         }
         $state = Publish-PendingPackage -Context $context -State $state -StatePaths $statePaths -Pending $pending -SessionId $sessionId

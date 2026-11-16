@@ -120,7 +120,7 @@ function Get-TaskClosingEvidence {
 # THE SESSION'S TOOL EVIDENCE, in order (spec 036). Read-ClaudeTranscript keeps
 # only Skill calls, but the Spec Kit gate must count WRITTEN files and the rules
 # gate must see which files were READ. One ordered list of
-# @{ Kind = prompt|skill|read|write; Value } instead of a second private parser.
+# @{ Kind = prompt|skill|read|write|synapse; Value } instead of a second private parser.
 #
 # CHEAP ON PURPOSE: only lines that can carry evidence are parsed. A tool result
 # (the bulk of a transcript) carries "tool_use_id" and is skipped unparsed; so
@@ -166,6 +166,8 @@ function Get-TranscriptToolEvidence {
                         $kind = 'write'; $value = [string](Get-Field $toolInput 'file_path')
                         if ($value -eq '') { $value = [string](Get-Field $toolInput 'notebook_path') }
                     }
+                    # Synapse memory calls (spec 037): Value is digest|retrieve|write.
+                    elseif ($name -match '(?i)^mcp__[A-Za-z0-9_.\-]*synapse[A-Za-z0-9_.\-]*__memory_(digest|retrieve|write)$') { $kind = 'synapse'; $value = $Matches[1].ToLowerInvariant() }
                     else { continue }
                     if ($value -ne '') { [void]$events.Add([pscustomobject]@{ Kind = $kind; Value = $value }) }
                 }

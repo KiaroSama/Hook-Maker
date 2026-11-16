@@ -107,7 +107,7 @@ try {
     Write-Host ''
     Write-Host '--- SessionStart: the instruction and the measured settings ---' -ForegroundColor Cyan
     $rStart = Fire -Cwd $proj -EventName 'SessionStart' -SessionId 's-start'
-    Check 'start: it fires when a store exists' ($rStart.Exit -eq 0 -and $rStart.Out -match 'Synapse-Rules-Check: advisory') ($rStart.Out + $rStart.Err)
+    Check 'start: it fires when a store exists' ($rStart.Exit -eq 0 -and $rStart.Out -match 'Synapse-Rules-Check: ENFORCED at Stop') ($rStart.Out + $rStart.Err)
     Check 'start: it names memory_digest and the tokenBudget' (
         $rStart.Out -match 'memory_digest' -and $rStart.Out -match 'tokenBudget') $rStart.Out
     Check 'start: it says to index BEFORE reading the digest' ($rStart.Out -match 'memory_digest once with tokenBudget, index id/type/preview then full task matches') $rStart.Out
@@ -115,8 +115,8 @@ try {
     Check 'start: it carries the 0.65 threshold' ($rStart.Out -match '0\.65') $rStart.Out
     Check 'start: it warns against minScore together with tags' (
         $rStart.Out -match 'minScore0.65 OR project:<slug> tags, never both') $rStart.Out
-    Check 'start: it says an environment fact must be re-verified, not recalled' (
-        $rStart.Out -match 'Recall != canonical policy/project truth or operation/account consent') $rStart.Out
+    Check 'start: recall is not policy or consent' (
+        $rStart.Out -match 'Recall != canonical policy or consent') $rStart.Out
     Check 'start: nothing is written to stderr' ($rStart.Err -eq '') $rStart.Err
 
     Write-Host ''
@@ -142,63 +142,75 @@ try {
     Check 'mid: no store -> silent' ($rMidNone.Exit -eq 0 -and $rMidNone.Out -eq '') $rMidNone.Out
 
     Write-Host ''
-    Write-Host '--- Stop: was the store actually consulted? ---' -ForegroundColor Cyan
-    # NOT consulted: the transcript holds ordinary work and no memory_* call.
-    $plain = New-Transcript 'transcript-plain.jsonl' '{"role":"assistant","text":"edited a file and ran the tests"}'
-    $rMissed = Fire -Cwd (New-Proj 'Missed') -EventName 'Stop' -SessionId 's-missed' -TranscriptPath $plain
-    Check 'stop: an unread store is reported' (
-        $rMissed.Exit -eq 0 -and $rMissed.Out -match 'never queried') ($rMissed.Out + $rMissed.Err)
-    Check 'stop: the unread message still says how to write back' ($rMissed.Out -match 'memory_write') $rMissed.Out
-    Check 'stop: a trivial session keeps the conditional wording' ($rMissed.Out -match 'Real work: read standing rules') $rMissed.Out
-    $rWorked = Fire -Cwd (New-Proj 'Worked') -EventName 'Stop' -SessionId 's-worked' -TranscriptPath $wroteUnread
-    Check 'stop: a session that changed files is told so plainly' ($rWorked.Out -match 'Files changed: read standing rules now') $rWorked.Out
-    Check 'stop: never a block, worked or not' ($rWorked.Out -notmatch '"decision"' -and $rMissed.Out -notmatch '"decision"') ($rWorked.Out + $rMissed.Out)
+    Write-Host '--- Stop gate: read and write duties over the complete transcript (spec 037) ---' -ForegroundColor Cyan
+    # Real client record shapes: tool_use parts inside assistant messages, the
+    # closing reply as the last assistant text.
+    function New-GateTranscript {
+        param([string]$Name, [string]$Root, [string[]]$Steps, [string]$FinalText = 'Done.')
+        $entries = New-Object System.Collections.Generic.List[string]
+        [void]$entries.Add((@{ type = 'user'; message = @{ role = 'user'; content = 'fix the parser' } } | ConvertTo-Json -Depth 8 -Compress))
+        foreach ($s in @($Steps)) {
+            if ($s -like 'edit:*') { $part = @{ type = 'tool_use'; name = 'Edit'; input = @{ file_path = (Join-Path $Root $s.Substring(5)) } } }
+            else { $part = @{ type = 'tool_use'; name = ('mcp__synapse__memory_' + $s); input = @{} } }
+            [void]$entries.Add((@{ type = 'assistant'; message = @{ role = 'assistant'; content = @($part) } } | ConvertTo-Json -Depth 8 -Compress))
+        }
+        [void]$entries.Add((@{ type = 'assistant'; message = @{ role = 'assistant'; content = @(@{ type = 'text'; text = $FinalText }) } } | ConvertTo-Json -Depth 8 -Compress))
+        $path = Join-Path $Work ($Name + '.jsonl')
+        [System.IO.File]::WriteAllText($path, (($entries.ToArray() -join "`n") + "`n"))
+        return $path
+    }
+    $blockPattern = '"decision"\s*:\s*"block"'
+    $g = New-Proj 'GateNoRead'
+    $rNoRead = Fire -Cwd $g -EventName 'Stop' -SessionId 'g-noread' -TranscriptPath (New-GateTranscript 'g-noread' $g @('edit:src\a.ps1'))
+    Check 'gate: edits with no Synapse call -> blocked' ($rNoRead.Out -match $blockPattern -and $rNoRead.Out -match 'SYNAPSE RULES CHECK') ($rNoRead.Out + $rNoRead.Err)
+    Check 'gate: the block names the read duty and memory_digest' ($rNoRead.Out -match 'Read duty' -and $rNoRead.Out -match 'memory_digest') $rNoRead.Out
+    Check 'gate: the block also names the write duty and the opt-out line' ($rNoRead.Out -match 'Write duty' -and $rNoRead.Out -match 'Synapse: no durable learning - <reason>') $rNoRead.Out
+    $rAgain = Fire -Cwd $g -EventName 'Stop' -SessionId 'g-noread' -TranscriptPath (New-GateTranscript 'g-noread2' $g @('edit:src\a.ps1'))
+    Check 'gate: an unchanged outcome is not refused twice' ($rAgain.Out -notmatch $blockPattern) $rAgain.Out
 
-    # Consulted: the same shape, with a real tool name in it.
-    $used = New-Transcript 'transcript-used.jsonl' '{"role":"assistant","name":"mcp__synapse__memory_digest"}'
-    $rUsed = Fire -Cwd (New-Proj 'Used') -EventName 'Stop' -SessionId 's-used' -TranscriptPath $used
-    Check 'stop: a consulted store gets the WRITE-BACK half instead' (
-        $rUsed.Exit -eq 0 -and $rUsed.Out -match 'Synapse-Rules-Check: advisory write-back' -and $rUsed.Out -notmatch 'never queried') ($rUsed.Out + $rUsed.Err)
-    Check 'stop: write-back demands an entityKey so a new version supersedes' (
-        $rUsed.Out -match 'entityKey') $rUsed.Out
-    Check 'stop: it says to correct a CONTRADICTED memory in the same turn' (
-        $rUsed.Out -match 'correct contradicted memory this turn') $rUsed.Out
-    Check 'stop: it refuses secrets explicitly' ($rUsed.Out -match 'no.*secrets/\.env/registry contents') $rUsed.Out
-    Check 'stop: "nothing durable" is a normal answer' ($rUsed.Out -match 'no durable learning means no write') $rUsed.Out
+    $g = New-Proj 'GateReadNoWrite'
+    $rNoWrite = Fire -Cwd $g -EventName 'Stop' -SessionId 'g-nowrite' -TranscriptPath (New-GateTranscript 'g-nowrite' $g @('digest', 'edit:src\a.ps1'))
+    Check 'gate: read first, no write, no opt-out -> blocked on the write duty only' (
+        $rNoWrite.Out -match $blockPattern -and $rNoWrite.Out -match 'Write duty' -and $rNoWrite.Out -notmatch 'Read duty') $rNoWrite.Out
+
+    $g = New-Proj 'GateWrote'
+    $rWrote = Fire -Cwd $g -EventName 'Stop' -SessionId 'g-wrote' -TranscriptPath (New-GateTranscript 'g-wrote' $g @('retrieve', 'edit:src\a.ps1', 'write'))
+    Check 'gate: read first + memory_write -> silent' ($rWrote.Exit -eq 0 -and $rWrote.Out -eq '') ($rWrote.Out + $rWrote.Err)
+
+    $g = New-Proj 'GateOptOut'
+    $rOpt = Fire -Cwd $g -EventName 'Stop' -SessionId 'g-opt' -TranscriptPath (New-GateTranscript 'g-opt' $g @('digest', 'edit:src\a.ps1') "Fixed it.`nSynapse: no durable learning - a one-line typo fix")
+    Check 'gate: a reasoned opt-out line clears the write duty' ($rOpt.Exit -eq 0 -and $rOpt.Out -eq '') ($rOpt.Out + $rOpt.Err)
+    $g = New-Proj 'GateOptEmpty'
+    $rOptEmpty = Fire -Cwd $g -EventName 'Stop' -SessionId 'g-optempty' -TranscriptPath (New-GateTranscript 'g-optempty' $g @('digest', 'edit:src\a.ps1') "Fixed it.`nSynapse: no durable learning -")
+    Check 'gate: an opt-out with an empty reason is still refused' ($rOptEmpty.Out -match $blockPattern) $rOptEmpty.Out
+
+    $g = New-Proj 'GateLate'
+    $rLate = Fire -Cwd $g -EventName 'Stop' -SessionId 'g-late' -TranscriptPath (New-GateTranscript 'g-late' $g @('edit:src\a.ps1', 'digest', 'write'))
+    Check 'gate: a read only after the first edit is an advisory, not a block' (
+        $rLate.Out -match 'only AFTER the first' -and $rLate.Out -notmatch $blockPattern) $rLate.Out
+
+    $g = New-Proj 'GateQuestion'
+    $rQuestion = Fire -Cwd $g -EventName 'Stop' -SessionId 'g-q' -TranscriptPath (New-GateTranscript 'g-q' $g @())
+    Check 'gate: a session without project edits is silent' ($rQuestion.Exit -eq 0 -and $rQuestion.Out -eq '') $rQuestion.Out
+    $g = New-Proj 'GateExcluded'
+    $rExcluded = Fire -Cwd $g -EventName 'Stop' -SessionId 'g-x' -TranscriptPath (New-GateTranscript 'g-x' $g @('edit:.ai\memory.md', 'edit:specs\001\spec.md', 'edit:plans\p.md'))
+    Check 'gate: edits only under .ai/specs/plans are not project edits' ($rExcluded.Out -eq '') $rExcluded.Out
+    $rSub = Fire -Cwd (New-Proj 'GateSub') -EventName 'SubagentStop' -SessionId 'g-sub' -TranscriptPath (New-GateTranscript 'g-sub' $g @('edit:src\a.ps1'))
+    Check 'gate: SubagentStop is never refused' ($rSub.Exit -eq 0 -and $rSub.Out -eq '') $rSub.Out
+    $rNoTranscript = Fire -Cwd (New-Proj 'GateNoTranscript') -EventName 'Stop' -SessionId 'g-nt'
+    Check 'gate: no transcript is unknown evidence - silent' ($rNoTranscript.Exit -eq 0 -and $rNoTranscript.Out -eq '') $rNoTranscript.Out
+    # The hook's own SessionStart note names every memory_* tool as prose; only
+    # a tool_use record may count as a call.
+    $g = New-Proj 'GateOwnNote'
+    $rOwnNote = Fire -Cwd $g -EventName 'Stop' -SessionId 'g-own' -TranscriptPath (New-GateTranscript 'g-own' $g @('edit:src\a.ps1') ('Noted: ' + $rStart.Out))
+    Check 'gate: the hook''s own note text never counts as a Synapse call' ($rOwnNote.Out -match 'Read duty') $rOwnNote.Out
 
     Write-Host ''
-    Write-Host '--- the marker: a long session that read it EARLY still counts ---' -ForegroundColor Cyan
-    # The tail window is bounded, so the marker is the only thing that can carry
-    # "already read" across a session long enough to push the call out of it.
-    $longProj = New-Proj 'LongSession'
-    $early = New-Transcript 'transcript-early.jsonl' '{"tool_name":"mcp__synapse__memory_retrieve"}'
-    $rFirst = Fire -Cwd $longProj -EventName 'Stop' -SessionId 's-long' -TranscriptPath $early
-    Check 'marker: the first Stop sees the call and says write-back' ($rFirst.Out -match 'Synapse-Rules-Check: advisory write-back') $rFirst.Out
-    # Same session, same project, but the call has now scrolled away entirely.
-    $scrolled = New-Transcript 'transcript-scrolled.jsonl' '{"role":"assistant","text":"much later work"}' -PadKb 8
-    $rLater = Fire -Cwd $longProj -EventName 'SubagentStop' -SessionId 's-long' -TranscriptPath $scrolled
-    Check 'marker: a later Stop of the SAME session does not call it unread' (
-        $rLater.Out -notmatch 'never queried') $rLater.Out
-    # A different session in the same project must not inherit it.
-    $rNewSession = Fire -Cwd $longProj -EventName 'Stop' -SessionId 's-different' -TranscriptPath $scrolled
-    Check 'marker: a NEW session does not inherit the previous one''s marker' (
-        $rNewSession.Out -match 'never queried') $rNewSession.Out
-
-    Write-Host ''
-    Write-Host '--- anti-loop: stop_hook_active, and one answer per session-state ---' -ForegroundColor Cyan
-    $rRecursion = Fire -Cwd (New-Proj 'Recursion') -EventName 'Stop' -SessionId 's-rec' -TranscriptPath $plain -StopHookActive
+    Write-Host '--- anti-loop: stop_hook_active ---' -ForegroundColor Cyan
+    $g = New-Proj 'Recursion'
+    $rRecursion = Fire -Cwd $g -EventName 'Stop' -SessionId 's-rec' -TranscriptPath (New-GateTranscript 'g-rec' $g @('edit:src\a.ps1')) -StopHookActive
     Check 'stop_hook_active is honoured (no re-entry)' (
         $rRecursion.Exit -eq 0 -and $rRecursion.Out -eq '') ($rRecursion.Out + $rRecursion.Err)
-
-    $repeatProj = New-Proj 'Repeat'
-    $rOnce = Fire -Cwd $repeatProj -EventName 'Stop' -SessionId 's-repeat' -TranscriptPath $plain
-    Check 'gate: the first Stop reports' ($rOnce.Out -match 'never queried') $rOnce.Out
-    $rTwice = Fire -Cwd $repeatProj -EventName 'Stop' -SessionId 's-repeat' -TranscriptPath $plain
-    Check 'gate: an unchanged answer is not repeated on the next Stop' ($rTwice.Out -eq '') $rTwice.Out
-    # A CHANGED answer must get through immediately - the gate is per state,
-    # not a mute switch.
-    $rChanged = Fire -Cwd $repeatProj -EventName 'Stop' -SessionId 's-repeat' -TranscriptPath $used
-    Check 'gate: a changed answer is reported immediately' ($rChanged.Out -match 'Synapse-Rules-Check: advisory write-back') $rChanged.Out
 
     Write-Host ''
     Write-Host '--- SYNAPSE_HOME is the fallback signal for a non-default layout ---' -ForegroundColor Cyan
@@ -212,7 +224,7 @@ try {
         Write-Utf8 $envPath ('SYNAPSE_HOME=' + $altHome)
         $rAlt = Fire -Cwd $envProj -EventName 'SessionStart' -SessionId 's-alt' -Profile $FakeProfileWithout
         Check 'SYNAPSE_HOME makes the hook speak with no store at the default path' (
-            $rAlt.Exit -eq 0 -and $rAlt.Out -match 'Synapse-Rules-Check: advisory') ($rAlt.Out + $rAlt.Err)
+            $rAlt.Exit -eq 0 -and $rAlt.Out -match 'Synapse-Rules-Check: ENFORCED at Stop') ($rAlt.Out + $rAlt.Err)
         # A configured path that does not exist is NOT a signal.
         Write-Utf8 $envPath ('SYNAPSE_HOME=' + (Join-Path $Work 'no-such-synapse'))
         $rBadAlt = Fire -Cwd (New-Proj 'EnvBogus') -EventName 'SessionStart' -SessionId 's-bad' -Profile $FakeProfileWithout
@@ -221,8 +233,9 @@ try {
         Write-Utf8 $envPath 'MID_SESSION_REMINDER=0'
         $rOff = Fire -Cwd (New-Proj 'MidOff') -EventName 'UserPromptSubmit' -SessionId 's-off' -TranscriptPath $wroteUnread
         Check 'MID_SESSION_REMINDER=0 turns the mid-session note off' ($rOff.Exit -eq 0 -and $rOff.Out -eq '') $rOff.Out
-        $rOffStop = Fire -Cwd (New-Proj 'MidOffStop') -EventName 'Stop' -SessionId 's-off' -TranscriptPath $wroteUnread
-        Check 'MID_SESSION_REMINDER=0 leaves the Stop note unchanged' ($rOffStop.Out -match 'never queried') $rOffStop.Out
+        $offProj = New-Proj 'MidOffStop'
+        $rOffStop = Fire -Cwd $offProj -EventName 'Stop' -SessionId 's-off' -TranscriptPath (New-GateTranscript 'g-off' $offProj @('edit:src\a.ps1'))
+        Check 'MID_SESSION_REMINDER=0 leaves the Stop gate enforced' ($rOffStop.Out -match 'Read duty') $rOffStop.Out
     }
     finally {
         # Never leave a .env behind next to a shipped hook: the installer would
@@ -247,7 +260,7 @@ try {
     Write-Host '--- Windows PowerShell 5.1 runs it identically ---' -ForegroundColor Cyan
     $r51 = Fire -Cwd (New-Proj 'Ps51') -EventName 'SessionStart' -SessionId 's-51' -Exe 'powershell'
     Check '5.1: the reminder is emitted cleanly' (
-        $r51.Exit -eq 0 -and $r51.Out -match 'Synapse-Rules-Check: advisory') ($r51.Out + $r51.Err)
+        $r51.Exit -eq 0 -and $r51.Out -match 'Synapse-Rules-Check: ENFORCED at Stop') ($r51.Out + $r51.Err)
     $r51None = Fire -Cwd (New-Proj 'Ps51None') -EventName 'SessionStart' -SessionId 's-51n' -Profile $FakeProfileWithout -Exe 'powershell'
     Check '5.1: the relevance gate holds there too' ($r51None.Exit -eq 0 -and $r51None.Out -eq '') ($r51None.Out + $r51None.Err)
 }

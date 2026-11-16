@@ -55,7 +55,9 @@ function New-Route {
 }
 
 function Write-Config {
-    param([string]$Path, $Routes, $Extensions)
+    # rescanMinutes 0: these scenarios send UserPromptSubmit right after another
+    # event and expect a fresh walk; the throttle has its own scenario.
+    param([string]$Path, $Routes, $Extensions, [int]$RescanMinutes = 0)
     $cfg = [ordered]@{
         version  = 2
         defaults = [ordered]@{
@@ -64,6 +66,7 @@ function Write-Config {
             maxFileBytes      = 2097152
             includeExtensions = $Extensions
             excludePatterns   = @('.cross-project-sync/*', '*/.cross-project-sync/*')
+            rescanMinutes     = $RescanMinutes
         }
         profiles = @(
             [ordered]@{ id = 'grp'; name = 'Test group'; enabled = $true; routes = $Routes }
@@ -483,6 +486,30 @@ try {
     Check 'current acknowledgement: only B fingerprint is applied' ($null -eq $appliedB.pending -and $appliedB.lastAppliedContentFingerprint -eq $packageB.sourceContentFingerprint)
     $repeatB = Run-Acknowledgement -Command $packageB.acknowledgementCommand
     Check 'current acknowledgement: repeated B command is an idempotent no-op' ($repeatB.Exit -eq 0 -and $repeatB.Out -match 'No pending review exists')
+
+    # Spec 037: a prompt inside rescanMinutes skips the walk; SessionStart never does.
+    $ThrSrc = New-Project 'ThrottleSrc'; $ThrDest = New-Project 'ThrottleDest'
+    $cfgThr = Join-Path $Work 'cfg-throttle.json'
+    Write-Config -Path $cfgThr -Routes @((New-Route 'throttle-route' (New-Endpoint 'Src' $ThrSrc) (New-Endpoint 'Dest' $ThrDest))) -Extensions @('.md') -RescanMinutes 10
+    $thrNote = Join-Path $ThrSrc '.ai\NOTE.md'
+    $thrStateDir = Join-Path $ThrDest '.ai\.cross-project-sync\state'
+    Set-Content -LiteralPath $thrNote 'first' -Encoding utf8
+    $thr1 = Fire -Cwd $ThrDest -Config $cfgThr
+    Check 'throttle: SessionStart walks and stages' ($thr1.Exit -eq 0 -and (Test-SyncReviewNotice $thr1.Out)) $thr1.Error
+    $thrStamp = @(Get-ChildItem -LiteralPath $thrStateDir -Filter '*.scan')
+    Check 'throttle: a completed walk leaves a scan stamp' ($thrStamp.Count -eq 1)
+    Set-Content -LiteralPath $thrNote 'second' -Encoding utf8
+    $thrState = Get-ChildItem -LiteralPath $thrStateDir -Filter '*.json' | Select-Object -First 1
+    $thrBefore = Get-Content -LiteralPath $thrState.FullName -Raw -Encoding UTF8
+    $thr2 = Fire -Cwd $ThrDest -Config $cfgThr -EventName 'UserPromptSubmit'
+    Check 'throttle: a prompt inside the interval skips the walk' ($thr2.Exit -eq 0 -and [string]::IsNullOrWhiteSpace($thr2.Out) -and
+        (Get-Content -LiteralPath $thrState.FullName -Raw -Encoding UTF8) -ceq $thrBefore) $thr2.Out
+    if ($thrStamp.Count -eq 1) { [IO.File]::SetLastWriteTimeUtc($thrStamp[0].FullName, [DateTime]::UtcNow.AddMinutes(-11)) }
+    $thr3 = Fire -Cwd $ThrDest -Config $cfgThr -EventName 'UserPromptSubmit'
+    Check 'throttle: a prompt after the interval walks again and sees the change' ($thr3.Exit -eq 0 -and (Test-SyncReviewNotice $thr3.Out)) $thr3.Out
+    Set-Content -LiteralPath $thrNote 'third' -Encoding utf8
+    $thr4 = Fire -Cwd $ThrDest -Config $cfgThr
+    Check 'throttle: SessionStart always rescans' ($thr4.Exit -eq 0 -and (Test-SyncReviewNotice $thr4.Out)) $thr4.Out
 
     # Owned package generations (L08): containment from the trusted
     # destination, verified staging, generational replacement, bound ACK.

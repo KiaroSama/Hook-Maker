@@ -230,9 +230,9 @@
     $healthCodex = Join-Path $healthProj '.codex\hooks.json'
     # name -> canonical events + canonical timeout, exactly as $script:HookMeta declares them.
     $healthExpected = [ordered]@{
-        'Test-Plan-Check'       = @{ Events = 'SessionStart,UserPromptSubmit'; Timeout = '15' }
-        'Test-Run-Guard'        = @{ Events = 'PostToolUse,PreToolUse';        Timeout = '10' }
-        'Test-Completion-Check' = @{ Events = 'Stop,SubagentStop';             Timeout = '20' }
+        'Test-Plan-Check'       = @{ Events = 'SessionStart,UserPromptSubmit'; Timeout = '45' }
+        'Test-Run-Guard'        = @{ Events = 'PostToolUse,PreToolUse';        Timeout = '30' }
+        'Test-Completion-Check' = @{ Events = 'Stop,SubagentStop';             Timeout = '60' }
     }
     foreach ($entry in $healthExpected.GetEnumerator()) {
         $hookName = $entry.Key

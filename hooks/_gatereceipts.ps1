@@ -278,6 +278,24 @@ function Remove-StaleStopGateReceipts {
     catch { }
 }
 
+function Test-ReceiptPruneDue {
+    param([Parameter(Mandatory = $true)][string]$Path)
+    # Listing a state folder that holds 100k+ receipts costs 4-11 s under load,
+    # which pushed Stop gates past their timeouts when it ran on every Stop.
+    # Old receipts only need retiring eventually, so one walk per hour per
+    # project is enough; the stamp's write time records the last walk.
+    try {
+        $m = [regex]::Match([IO.Path]::GetFileName($Path), '^GateReceipt-v2-([a-f0-9]+)-')
+        if (-not $m.Success) { return $false }
+        $stamp = Join-Path (Split-Path -Parent $Path) ('GateReceiptPrune-' + $m.Groups[1].Value + '.stamp')
+        if ([IO.File]::Exists($stamp) -and [IO.File]::GetLastWriteTimeUtc($stamp) -gt [DateTime]::UtcNow.AddHours(-1)) { return $false }
+        [IO.File]::WriteAllText($stamp, '')
+        [IO.File]::SetLastWriteTimeUtc($stamp, [DateTime]::UtcNow)
+        return $true
+    }
+    catch { return $false }
+}
+
 function Start-StopGateReceipt {
     param([Parameter(Mandatory = $true)]$HookInput, [Parameter(Mandatory = $true)][string]$HookName)
     $eventName = [string](Get-Field $HookInput 'hook_event_name')
@@ -286,7 +304,7 @@ function Start-StopGateReceipt {
     $path = Get-StopGateReceiptPath $HookInput $HookName
     if ($path -eq '' -or -not (Test-StopObserverRegistered $HookInput)) { return $null }
     $script:StopGateVerdict = ''
-    Remove-StaleStopGateReceipts $path
+    if (Test-ReceiptPruneDue $path) { Remove-StaleStopGateReceipts $path }
     $token = [guid]::NewGuid().ToString('N')
     if (-not (Write-StopGateReceiptFile $path $HookName 'running' $token)) { return $null }
     return [pscustomobject]@{ Path = $path; Gate = $HookName; AttemptId = $token; Crashed = $false }

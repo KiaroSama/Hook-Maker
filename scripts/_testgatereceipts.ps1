@@ -148,6 +148,15 @@
     Check 'R15b an old receipt that no longer parses is retired too' (-not (Test-Path -LiteralPath $gcBadReceipt))
     Check 'R15 an orphaned lock older than any live scope is retired; a recent lock and a lock with its receipt stay' (
         -not (Test-Path -LiteralPath $gcOldLock) -and (Test-Path -LiteralPath $gcKeptLock) -and (Test-Path -LiteralPath $gcRecentLock))
+    # Spec 037: the per-Stop prune walk runs at most once an hour per project.
+    $gcStamp = Join-Path $gcDir ('GateReceiptPrune-' + $gcPrefix.Substring('GateReceipt-v2-'.Length) + '.stamp')
+    if (Test-Path -LiteralPath $gcStamp) { Remove-Item -LiteralPath $gcStamp -Force }
+    $firstDue = Test-ReceiptPruneDue $gcNew
+    $secondDue = Test-ReceiptPruneDue $gcNew
+    [IO.File]::SetLastWriteTimeUtc($gcStamp, [DateTime]::UtcNow.AddHours(-2))
+    $staleDue = Test-ReceiptPruneDue $gcNew
+    Check 'R15c the prune walk is due once, then throttled for an hour, then due again' ($firstDue -and -not $secondDue -and $staleDue) (
+        [string]$firstDue + '/' + [string]$secondDue + '/' + [string]$staleDue)
 
     # --- FR-016: a READY generation is collectable (T046) -------------------------
     $collected = Invoke-GenerationCollection -HookInput $ok
