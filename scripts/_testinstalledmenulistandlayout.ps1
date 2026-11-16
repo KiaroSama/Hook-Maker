@@ -194,7 +194,7 @@
             # Session-Summary-Check, Install-Location-Check and Cloudflare-Deploy, which stays the last
             # individual entry. These numbers are literal on purpose - derive
             # them and nothing is left protecting the order.
-            Check 'menu: 10 is Speckit-Check' ([string]$rows[10] -match '^Speckit-Check \| \[pre-task\] \|') ([string]$rows[10])
+            Check 'menu: 10 is Speckit-Check' ([string]$rows[10] -match '^Speckit-Check \| \[pre\+post-task\] \|') ([string]$rows[10])
             Check 'menu: 24 is Test-Plan-Check' ([string]$rows[24] -match '^Test-Plan-Check \| \[pre-task\] \|') ([string]$rows[23])
             Check 'menu: 25 is Test-Run-Guard' ([string]$rows[25] -match '^Test-Run-Guard \| \[pre\+post-task\] \|') ([string]$rows[25])
             Check 'menu: 26 is Test-Completion-Check' ([string]$rows[26] -match '^Test-Completion-Check \| \[post-task\] \|') ([string]$rows[26])

@@ -19,7 +19,7 @@ function Get-UninstallStateLeaves {
         'Graph-Read-Check'=@("GraphReadCheck-prompt-$key.txt")
         'Graph-Update-Check'=@("GraphUpdateCheck-$key.txt")
         'Dependency-Version-Check'=@("DependencyVersionCheck-$key.txt","DependencyVersionCheck-close-$key.txt")
-        'Speckit-Check'=@("SpeckitCheck-$key.txt","SpeckitCheck-refresh-$key.txt")
+        'Speckit-Check'=@("SpeckitCheck-$key.txt","SpeckitCheck-refresh-$key.txt","SpeckitCheck-gate-$key.txt")
         'Ignore-Rules-Check'=@("IgnoreRulesCheck-rules-$key.txt")
         'Secrets-Check'=@("Secrets-Check-$key.txt","Secrets-Check-Unused-$key.txt")
         'Git-Sync-Check'=@("GitSyncCheck-$key.txt")

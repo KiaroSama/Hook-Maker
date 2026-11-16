@@ -230,7 +230,7 @@ $script:HookMeta = @{
     # Cbm-* pair answers for code structure while the Graph-* pair answers for
     # what graphify alone covers and its cross-cutting views.
     'Feature-Request-Check'            = @{ Order = 8;  When = 'both'; Text = 'a feature request runs the grilling chain, not straight to code'; Events = @('UserPromptSubmit', 'Stop', 'SubagentStop'); Timeout = 15 }
-    'Speckit-Check'                    = @{ Order = 9;  When = 'pre';  Text = 'route the task through Spec Kit before writing code'; Events = @('SessionStart', 'UserPromptSubmit'); Timeout = 10 }
+    'Speckit-Check'                    = @{ Order = 9;  When = 'both'; Text = 'route the task through Spec Kit before writing code'; Events = @('SessionStart', 'UserPromptSubmit', 'Stop'); Timeout = 15 }
     'Cbm-Read-Check'                   = @{ Order = 10; When = 'pre';  Text = 'query the Codebase Memory index before browsing files'; Events = @('SessionStart', 'UserPromptSubmit'); Timeout = 10 }
     'Cbm-Update-Check'                 = @{ Order = 11; When = 'post'; Text = 'reports a Codebase Memory index lagging behind the code'; Events = @('Stop', 'SubagentStop'); Timeout = 15 }
     # PreToolUse holds a `git push` once for the review, so the docs land in

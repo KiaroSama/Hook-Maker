@@ -85,4 +85,11 @@ $script:InstalledEventMigrations = @(
         From    = @('SessionStart', 'Stop')
         Reason  = 'the prior shipped default had no PreToolUse, so the documentation review arrived only after the push and its CI run'
     }
+    # v11 (spec 036): the advisory-only default before the Stop gate existed.
+    [pscustomobject]@{
+        Version = 11
+        Hook    = 'Speckit-Check'
+        From    = @('SessionStart', 'UserPromptSubmit')
+        Reason  = 'the prior shipped default had no Stop, so a multi-file change that skipped the Spec Kit chain was never caught'
+    }
 )

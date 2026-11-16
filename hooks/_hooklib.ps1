@@ -773,9 +773,10 @@ function Get-HookSuppressionIdentity {
 
 # R035: only these detector-supplied conditions are safety gates; prose is never
 # inspected to guess severity. A persisted local override remains authoritative.
+# 'required-workflow' (spec 036): a user-mandated chain/rules gate blocks once.
 $script:HookFindingSeverity = @{
     'secret-exposure'='block'; 'unsafe-delete'='block'; 'data-loss'='block'
-    'live-or-leaked-test-process'='block'; 'advisory'='advisory'; 'unknown'='silent'
+    'live-or-leaked-test-process'='block'; 'required-workflow'='block'; 'advisory'='advisory'; 'unknown'='silent'
 }
 function Get-HookFindingKind {
     param([string]$HookName,[string]$Condition='advisory')

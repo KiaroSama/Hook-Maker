@@ -399,12 +399,12 @@ try {
     # A hook copy with its own .env, so the enforcement switch can be exercised
     # without writing a .env next to the real shipped hook.
     function New-ConfiguredRulesHookCopy {
-        param([string]$Enforcement)
+        param([string]$Enforcement, [string]$ExtraEnv = '')
         $dir = Join-Path $Work ('rulescopy-' + [guid]::NewGuid().ToString('N').Substring(0, 6))
         New-Item -ItemType Directory -Path $dir -Force | Out-Null
         Copy-Item -Path (Join-Path $ScriptRoot '../hooks/Rules-Check/*.ps1') -Destination $dir
         Copy-TestRuntimeLibraries -SourceHookLib (Join-Path $ScriptRoot '../hooks/_hooklib.ps1') -Destination (Join-Path $Work '_hooklib.ps1')
-        [System.IO.File]::WriteAllText((Join-Path $dir '.env'), ("RULES_CONFIRMATION_ENFORCEMENT=" + $Enforcement + "`r`n"))
+        [System.IO.File]::WriteAllText((Join-Path $dir '.env'), ("RULES_CONFIRMATION_ENFORCEMENT=" + $Enforcement + "`r`n" + $ExtraEnv))
         return (Join-Path $dir 'Rules-Check.ps1')
     }
 
@@ -415,7 +415,7 @@ try {
     $tReadOnly = New-RulesTranscript 'rc-readonly' 'Read' "Here is the answer."
 
     $r = Fire -Cwd $closeProj -RawStdin (New-StopStdin -Cwd $closeProj -Transcript $tEdit -SessionId 'close-default')
-    Check 'default missing rules line is advisory, not continuation' ($r.Out-match'Rules applied:'-and$r.Out-match'"systemMessage"'-and$r.Out-notmatch'"decision"|additionalContext') $r.Out
+    Check 'default missing rules line after edits is a block (spec 036)' ($r.Out -match 'Rules applied:' -and $r.Out -match '"decision"\s*:\s*"block"') $r.Out
     $Hook = New-ConfiguredRulesHookCopy 'block'
     $r = Fire -Cwd $closeProj -RawStdin (New-StopStdin -Cwd $closeProj -Transcript $tEdit -SessionId 'close-b1')
     Check 'edits + no confirmation -> a real block decision' ($r.Out -match '"decision"\s*:\s*"block"') $r.Out
@@ -490,7 +490,38 @@ try {
     Check 'off mode skips the closing check entirely' ($r.Exit -eq 0 -and $r.Out -eq '') $r.Out
     $badHook = New-ConfiguredRulesHookCopy 'nonsense-value'
     $r = Fire -Cwd $closeProj -HookPath $badHook -RawStdin (New-StopStdin -Cwd $closeProj -Transcript $tEdit -SessionId 'close-bad')
-    Check 'an invalid enforcement value falls back to advisory' ($r.Out -match '"systemMessage"' -and $r.Out -notmatch '"decision"|additionalContext') $r.Out
+    Check 'an invalid enforcement value falls back to block' ($r.Out -match '"decision"\s*:\s*"block"') $r.Out
+
+    # READ EVIDENCE (spec 036 FR-036-05): an on-demand rule named in the line
+    # must have been Read in the session; auto-loaded files need no read.
+    $sourceDir = Join-Path $Work 'rule-source'
+    New-RuleFile $sourceDir 'global-test-rules.md'
+    New-RuleFile $sourceDir 'project-rule.md'
+    $readHook = New-ConfiguredRulesHookCopy 'block' ('RULES_SOURCE_DIR=' + $sourceDir + "`r`n")
+    function New-ReadTranscript {
+        param([string]$Name, [string[]]$Reads, [string]$FinalText)
+        $path = Join-Path $Work ($Name + '.jsonl')
+        $lines = New-Object System.Collections.Generic.List[string]
+        $lines.Add((@{ type = 'assistant'; message = @{ content = @(@{ type = 'tool_use'; name = 'Edit'; input = @{ file_path = 'a.ps1' } }) } } | ConvertTo-Json -Compress -Depth 8)) | Out-Null
+        foreach ($read in $Reads) { $lines.Add((@{ type = 'assistant'; message = @{ content = @(@{ type = 'tool_use'; name = 'Read'; input = @{ file_path = $read } }) } } | ConvertTo-Json -Compress -Depth 8)) | Out-Null }
+        $lines.Add((@{ type = 'assistant'; message = @{ content = @(@{ type = 'text'; text = $FinalText }) } } | ConvertTo-Json -Compress -Depth 8)) | Out-Null
+        [System.IO.File]::WriteAllText($path, (($lines.ToArray() -join "`n") + "`n"), (New-Object System.Text.UTF8Encoding $false))
+        return $path
+    }
+    $tUnread = New-ReadTranscript 'rc-unread' @() "Done.`nRules applied: global-test-rules.md (tests), project-rule.md (naming)"
+    $r = Fire -Cwd $closeProj -HookPath $readHook -RawStdin (New-StopStdin -Cwd $closeProj -Transcript $tUnread -SessionId 'read-1')
+    Check 'a claimed on-demand rule never Read -> block naming it' ($r.Out -match '"decision"\s*:\s*"block"' -and $r.Out -match 'global-test-rules\.md' -and $r.Out -notmatch 'project-rule\.md') $r.Out
+    $tRead = New-ReadTranscript 'rc-read' @((Join-Path $sourceDir 'global-test-rules.md')) "Done.`nRules applied: global-test-rules.md (tests), project-rule.md (naming)"
+    $r = Fire -Cwd $closeProj -HookPath $readHook -RawStdin (New-StopStdin -Cwd $closeProj -Transcript $tRead -SessionId 'read-2')
+    Check 'the same claim with a recorded Read passes silently' ($r.Exit -eq 0 -and $r.Out -eq '') $r.Out
+    $tLoaded = New-ReadTranscript 'rc-loaded' @() "Done.`nRules applied: project-rule.md (naming)"
+    $r = Fire -Cwd $closeProj -HookPath $readHook -RawStdin (New-StopStdin -Cwd $closeProj -Transcript $tLoaded -SessionId 'read-3')
+    Check 'a claim naming only auto-loaded rule files needs no read' ($r.Exit -eq 0 -and $r.Out -eq '') $r.Out
+    $tNone = New-ReadTranscript 'rc-none' @() "Done.`nRules applied: none - only a typo was fixed"
+    $r = Fire -Cwd $closeProj -HookPath $readHook -RawStdin (New-StopStdin -Cwd $closeProj -Transcript $tNone -SessionId 'read-4')
+    Check '"none - <reason>" demands no read evidence' ($r.Exit -eq 0 -and $r.Out -eq '') $r.Out
+    $r = Fire -Cwd $closeProj -HookPath $readHook -RawStdin (New-StopStdin -Cwd $closeProj -Transcript $tUnread -SessionId 'read-1')
+    Check 'the unread-rules refusal is not repeated for the same state' ($r.Out -notmatch '"decision"') $r.Out
 
     # The requirement is stated BEFORE the work, so the gate is never the first
     # the agent hears of it.

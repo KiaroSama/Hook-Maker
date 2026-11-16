@@ -192,7 +192,49 @@ try {
     $r = Invoke-SpeckitHook @{ hook_event_name = 'UserPromptSubmit'; cwd = (Join-Path $Work 'no-such-dir'); session_id = 'q2'; prompt = 'add a feature' }
     Check 'a cwd that is not a directory is silent' ($r.Out.Trim() -eq '') $r.Out
     $r = Invoke-SpeckitHook @{ hook_event_name = 'Stop'; cwd = $open; session_id = 'q3' }
-    Check 'it ignores events it does not own - it has nothing to say at Stop' ($r.Out.Trim() -eq '') $r.Out
+    Check 'Stop without a transcript is silent (no evidence is not a violation)' ($r.Out.Trim() -eq '') $r.Out
+    $r = Invoke-SpeckitHook @{ hook_event_name = 'SubagentStop'; cwd = $open; session_id = 'q3b' }
+    Check 'SubagentStop is not owned - a subagent works under its parent chain' ($r.Out.Trim() -eq '') $r.Out
+
+    # =====================================================================
+    Write-Host '--- Stop gate: multi-file change without the chain (spec 036) ---' -ForegroundColor Cyan
+    function New-GateTranscript {
+        param([string]$Name, [string]$Root, [string]$Prompt, [string[]]$Writes, [string[]]$Skills = @())
+        $entries = New-Object System.Collections.Generic.List[string]
+        [void]$entries.Add((@{ type = 'user'; message = @{ role = 'user'; content = $Prompt } } | ConvertTo-Json -Depth 8 -Compress))
+        foreach ($s in $Skills) { [void]$entries.Add((@{ type = 'assistant'; message = @{ role = 'assistant'; content = @(@{ type = 'tool_use'; name = 'Skill'; input = @{ skill = $s } }) } } | ConvertTo-Json -Depth 8 -Compress)) }
+        foreach ($w in $Writes) { [void]$entries.Add((@{ type = 'assistant'; message = @{ role = 'assistant'; content = @(@{ type = 'tool_use'; name = 'Edit'; input = @{ file_path = (Join-Path $Root $w) } }) } } | ConvertTo-Json -Depth 8 -Compress)) }
+        $path = Join-Path $Work ($Name + '.jsonl')
+        [System.IO.File]::WriteAllText($path, (($entries.ToArray() -join "`n") + "`n"))
+        return $path
+    }
+    $gateRoot = New-SpeckitProject -Name 'StopGate' -WithInfrastructure -WithConstitution
+    $three = @('src\a.ps1', 'src\b.ps1', 'docs\c.md')
+    $t = New-GateTranscript 'gate-3' $gateRoot 'add an export feature to the app' $three
+    $r = Invoke-SpeckitHook @{ hook_event_name = 'Stop'; cwd = $gateRoot; session_id = 'g1'; transcript_path = $t }
+    Check 'a change request + 3 edited files + no chain -> blocked once' ($r.Out -match '"decision"\s*:\s*"block"' -and $r.Out -match 'SPECKIT CHECK' -and $r.Out -match 'edited 3 files') $r.Out
+    $r = Invoke-SpeckitHook @{ hook_event_name = 'Stop'; cwd = $gateRoot; session_id = 'g1'; transcript_path = $t }
+    Check 'the same unchanged request set is not refused twice' ($r.Out -notmatch '"decision"\s*:\s*"block"') $r.Out
+    $t = New-GateTranscript 'gate-2' $gateRoot 'add an export feature to the app' @('src\a.ps1', 'src\b.ps1')
+    $r = Invoke-SpeckitHook @{ hook_event_name = 'Stop'; cwd = $gateRoot; session_id = 'g2'; transcript_path = $t }
+    Check '1-2 edited files is a small task - silent' ($r.Out.Trim() -eq '') $r.Out
+    $t = New-GateTranscript 'gate-q' $gateRoot 'what does this project do?' $three
+    $r = Invoke-SpeckitHook @{ hook_event_name = 'Stop'; cwd = $gateRoot; session_id = 'g3'; transcript_path = $t }
+    Check 'a question-only session is silent regardless of edits' ($r.Out.Trim() -eq '') $r.Out
+    $t = New-GateTranscript 'gate-skill' $gateRoot 'add an export feature to the app' $three @('spec-kit:speckit-specify')
+    $r = Invoke-SpeckitHook @{ hook_event_name = 'Stop'; cwd = $gateRoot; session_id = 'g4'; transcript_path = $t }
+    Check 'a speckit-* Skill call clears the gate' ($r.Out.Trim() -eq '') $r.Out
+    $t = New-GateTranscript 'gate-specs' $gateRoot 'add an export feature to the app' ($three + @('specs\001-x\tasks.md'))
+    $r = Invoke-SpeckitHook @{ hook_event_name = 'Stop'; cwd = $gateRoot; session_id = 'g5'; transcript_path = $t }
+    Check 'a write under specs/ clears the gate' ($r.Out.Trim() -eq '') $r.Out
+    $t = New-GateTranscript 'gate-private' $gateRoot 'add an export feature to the app' @('src\a.ps1', '.ai\memory.md', '.claude\x.md', 'plans\p.md')
+    $r = Invoke-SpeckitHook @{ hook_event_name = 'Stop'; cwd = $gateRoot; session_id = 'g6'; transcript_path = $t }
+    Check '.ai/.claude/plans writes are not counted as edited files' ($r.Out.Trim() -eq '') $r.Out
+    $r = Invoke-SpeckitHook @{ hook_event_name = 'Stop'; cwd = $gateRoot; session_id = 'g7'; transcript_path = (Join-Path $Work 'missing.jsonl') }
+    Check 'an unreadable transcript is silent' ($r.Out.Trim() -eq '') $r.Out
+    $t = New-GateTranscript 'gate-own' $gateRoot 'SPECKIT CHECK: request "add an export feature" edited 3 files' $three
+    $r = Invoke-SpeckitHook @{ hook_event_name = 'Stop'; cwd = $gateRoot; session_id = 'g8'; transcript_path = $t }
+    Check 'its own banner never arms the gate' ($r.Out.Trim() -eq '') $r.Out
     $r = Invoke-SpeckitHook @{ hook_event_name = 'SessionStart'; cwd = $open; session_id = 'q4' }
     Check 'SessionStart needs no prompt and still routes' ($r.Out -match 'Speckit-Check: advisory') $r.Out
 

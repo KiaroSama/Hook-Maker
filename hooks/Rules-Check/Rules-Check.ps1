@@ -72,7 +72,8 @@
 # Optional .env next to this script (copy .env.example):
 #   GLOBAL_RULES_DIR  overrides the global rules directory (default:
 #                     <home>\.claude\rules or <home>\.codex\rules by client)
-#   RULES_CONFIRMATION_ENFORCEMENT  advisory (default) | block | off
+#   RULES_CONFIRMATION_ENFORCEMENT  block (default, spec 036) | advisory | off
+#   RULES_SOURCE_DIR  on-demand rule folder; default: the router's RULES = line
 
 param(
     # 'claude', 'codex', or '' for auto-detection via CLAUDE_PROJECT_DIR.
@@ -179,7 +180,9 @@ if ($closing) {
     $projectKey = Get-ShortHash $cwd.ToLowerInvariant()
     $gatePath = Join-Path $stateDir ('RulesCheck-close-' + $Client + '-' + $projectKey + '.txt')
 
-    $enforcement = 'advisory'
+    # Block by default since spec 036 (user decision 2026-11-16); advisory and
+    # off stay explicit choices, an invalid value falls back to the default.
+    $enforcement = 'block'
     if ($config.ContainsKey('RULES_CONFIRMATION_ENFORCEMENT')) {
         $raw = ([string]$config['RULES_CONFIRMATION_ENFORCEMENT']).Trim().ToLowerInvariant()
         if ($raw -eq 'block' -or $raw -eq 'advisory' -or $raw -eq 'off') { $enforcement = $raw }
@@ -230,6 +233,43 @@ function Get-EvidenceTranscriptFallbackPath {
 }
 
 
+    # READ EVIDENCE (spec 036 FR-036-05). A claimed *.md that exists only in
+    # the on-demand rule source (the router's RULES = line, or RULES_SOURCE_DIR)
+    # and is neither auto-loaded nor Read in this transcript is a claim without
+    # a read. Claude transcripts only: another client's record carries no Read
+    # calls this parser knows, and no evidence is never a refusal. Unknown
+    # (no source, partial/unreadable transcript) returns nothing.
+    function Get-UnreadClaimedRules {
+        param([string]$Value)
+        if ($Client -ne 'claude' -or $Value -match '^(?i)none\b') { return @() }
+        $claimed = @([regex]::Matches($Value, '[A-Za-z0-9_.\-]+\.md\b') | ForEach-Object { $_.Value } | Sort-Object -Unique)
+        if ($claimed.Count -eq 0) { return @() }
+        $sourceDir = ''
+        if ($config.ContainsKey('RULES_SOURCE_DIR')) { $sourceDir = ([string]$config['RULES_SOURCE_DIR']).Trim() }
+        if ($sourceDir -eq '' -and -not [string]::IsNullOrWhiteSpace($homeDir)) {
+            try {
+                $router = Join-Path $homeDir '.claude\CLAUDE.md'
+                if ([IO.File]::Exists($router)) {
+                    $hit = [regex]::Match([IO.File]::ReadAllText($router, [Text.Encoding]::UTF8), '(?m)RULES[ \t]*=[ \t]*([A-Za-z]:\\[^`\r\n]+)')
+                    if ($hit.Success) { $sourceDir = $hit.Groups[1].Value.Trim() }
+                }
+            }
+            catch { $sourceDir = '' }
+        }
+        if ($sourceDir -eq '' -or -not [IO.Directory]::Exists($sourceDir)) { return @() }
+        $loaded = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
+        foreach ($key in $currentEntries.Keys) { [void]$loaded.Add([IO.Path]::GetFileName($key)) }
+        $source = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
+        try { foreach ($file in @(Get-ChildItem -LiteralPath $sourceDir -Recurse -Filter '*.md' -File -ErrorAction Stop)) { [void]$source.Add($file.Name) } } catch { return @() }
+        $wanted = @($claimed | Where-Object { $source.Contains($_) -and -not $loaded.Contains($_) })
+        if ($wanted.Count -eq 0 -or -not (Get-Command Get-TranscriptToolEvidence -ErrorAction SilentlyContinue)) { return @() }
+        $record = Get-TranscriptToolEvidence -Path (Get-EvidenceTranscriptFallbackPath $hookInput)
+        if (-not $record.Ok -or $record.Partial) { return @() }
+        $read = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
+        foreach ($item in @($record.Events)) { if ($item.Kind -eq 'read') { [void]$read.Add([IO.Path]::GetFileName([string]$item.Value)) } }
+        return @($wanted | Where-Object { -not $read.Contains($_) })
+    }
+
     # Once per session per STATE token: an unchanged answer stays silent on the
     # next Stop of the same session; a changed one reports immediately.
     function Test-ShouldReportClosing {
@@ -273,7 +313,17 @@ function Get-EvidenceTranscriptFallbackPath {
     # used to clear this gate, as did one inside a fenced example.
     if ($script:EvidenceLibReady) {
         $rulesDeclaration = Test-ClosingDeclaration -Text $tail -LabelPattern 'Rules[ 	]+(?:applied|followed|read)'
-        if ($rulesDeclaration.Substantive) { exit 0 }
+        if ($rulesDeclaration.Substantive) {
+            $unread = @(Get-UnreadClaimedRules -Value ([string]$rulesDeclaration.Value))
+            if ($unread.Count -eq 0 -or -not (Test-ShouldReportClosing ('unread|' + ($unread -join ',')))) { exit 0 }
+            $reason = @(
+                ('RULES CHECK (' + $Client + '): "Rules applied" names on-demand rule files never read in this session: ' + ($unread -join ', ') + '.'),
+                'Read each FULL with a file tool, or drop it from the line and say it was not read.'
+            ) -join "`n"
+            if ($enforcement -eq 'advisory') { $emit = Write-HookResult -EventName $eventName -Kind 'advisory' -Message $reason; exit $emit.ExitCode }
+            $emit = Write-StopBlockResult -HookInput $hookInput -HookName 'Rules-Check' -EventName $eventName -Reason $reason -Condition 'required-workflow'
+            exit $emit.ExitCode
+        }
     }
     elseif ($tail -match $confirmPattern) { exit 0 }
 
@@ -306,7 +356,7 @@ function Get-EvidenceTranscriptFallbackPath {
         }
         # Record the block so THIS hook's own re-entry is recognised; another
         # gate's block must not mute it, and its own must not repeat.
-        $emit = Write-StopBlockResult -HookInput $hookInput -HookName 'Rules-Check' -EventName $eventName -Reason $reason
+        $emit = Write-StopBlockResult -HookInput $hookInput -HookName 'Rules-Check' -EventName $eventName -Reason $reason -Condition 'required-workflow'
         exit $emit.ExitCode
     }
 
@@ -445,7 +495,7 @@ if ($rulesMoved) {
     if ($suffixedNames.Count -gt 0) {
         [void]$lines.Add('WARNING: version-suffixed copies, NOT canonical; use installed canonical names:' + ($suffixedNames -join ', '))
     }
-    [void]$lines.Add('Rules already loaded in context only need a confirmation, not a re-read. This check stays silent until a rules file changes again.')
+    [void]$lines.Add('Routed owner files: read FULL with a file tool before governed work; "Rules applied" names only files actually read.')
     # Stated up front so the closing gate is never a surprise at Stop.
     [void]$lines.Add($script:RulesRequirement)
 }

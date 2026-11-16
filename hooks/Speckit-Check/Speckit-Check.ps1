@@ -1,15 +1,14 @@
 # Speckit-Check - route the task through Spec Kit before writing code.
 #
-# ROLE: ADVISORY and DETECTOR (global-hook-rules.md SS Hook Roles). It never
-# blocks. That is a deliberate choice, not a weaker first version: the route
-# depends on project state AND on answers only the user can give, so a Stop
-# gate here would refuse work it has no way to adjudicate. Feature-Request-Check
-# stays the only shipped hook that gates on a skill chain, and it gates on the
-# INTERVIEW - the one step whose evidence is visible in a transcript.
-#
-# EVENTS: SessionStart (orientation once) and UserPromptSubmit (relevance
-# gated). Not Stop: routing is a before-the-work decision, and by Stop the
-# choice has already been made or missed.
+# ROLE: ADVISORY on SessionStart/UserPromptSubmit, GATE (blocks once) on Stop
+# (global-hook-rules.md SS Hook Roles; spec 036). The pre-task note names the
+# route. The Stop gate only judges what a transcript CAN prove: a change request,
+# 3+ distinct edited files outside specs/ .specify/ .ai/ .claude/ plans/, and
+# neither a speckit-* Skill call nor a write under specs/ or .specify/. One or
+# two files is a small task and never refused (user decision, 2026-11-16).
+# Unknown evidence (no, partial or unreadable transcript) is never a refusal,
+# and "this work was exempt" with a reason clears it. Not SubagentStop: a
+# subagent works under its parent's chain.
 #
 # WHAT IT READS, and nothing else: the presence of .specify\, the presence of
 # its constitution, the ACTIVE-FEATURE POINTER .specify\feature.json, the
@@ -36,11 +35,72 @@ $hookInput = Read-HookInput
 if ($null -eq $hookInput) { exit 0 }
 $eventName = [string](Get-Field $hookInput 'hook_event_name')
 if ([string]::IsNullOrWhiteSpace($eventName)) { $eventName = 'SessionStart' }
-if ($eventName -ne 'SessionStart' -and $eventName -ne 'UserPromptSubmit') { exit 0 }
+if ($eventName -notin @('SessionStart', 'UserPromptSubmit', 'Stop')) { exit 0 }
 
 $cwd = [string](Get-Field $hookInput 'cwd')
 if ([string]::IsNullOrWhiteSpace($cwd)) { exit 0 }
 try { if (-not (Test-Path -LiteralPath $cwd -PathType Container)) { exit 0 } } catch { exit 0 }
+
+# ---- Stop: did a multi-file change run the chain? (spec 036) -----------------
+if ($eventName -eq 'Stop') {
+    $gateReceipt = if (Get-Command Start-StopGateReceipt -ErrorAction SilentlyContinue) { Start-StopGateReceipt -HookInput $hookInput -HookName 'Speckit-Check' } else { $null }
+    try {
+        if (Test-StopStandDown -HookInput $hookInput -HookName 'Speckit-Check') { exit 0 }
+        $transcriptPath = [string](Get-Field $hookInput 'transcript_path')
+        if ([string]::IsNullOrWhiteSpace($transcriptPath)) { exit 0 }
+        $config = Read-HookEnv (Join-Path $PSScriptRoot '.env')
+        $maxBytes = 20000000
+        if ($config.ContainsKey('MAX_TRANSCRIPT_BYTES')) {
+            $parsed = 0
+            if ([int]::TryParse([string]$config['MAX_TRANSCRIPT_BYTES'], [ref]$parsed) -and $parsed -ge 100000) { $maxBytes = $parsed }
+        }
+        $evidence = Get-TranscriptToolEvidence -Path $transcriptPath -MaxBytes $maxBytes
+        # Partial means the request or the chain may sit in the unread part.
+        if (-not $evidence.Ok -or $evidence.Partial) { exit 0 }
+        $root = [IO.Path]::GetFullPath($cwd).TrimEnd('\', '/') + '\'
+        $changePrompts = New-Object System.Collections.Generic.List[string]
+        $edited = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
+        $chainRan = $false
+        foreach ($item in @($evidence.Events)) {
+            if ($item.Kind -eq 'prompt') {
+                # Never count this hook's own words as a request.
+                if ($item.Value -notmatch '(?im)^[ \t-]*(?:SPECKIT CHECK|Speckit-Check:)' -and (Test-ProjectChangingPrompt -Prompt $item.Value)) { [void]$changePrompts.Add($item.Value) }
+            }
+            elseif ($item.Kind -eq 'skill') { if ($item.Value -match '(?i)(^|:)speckit-') { $chainRan = $true } }
+            elseif ($item.Kind -eq 'write') {
+                $full = ''
+                try { $full = [IO.Path]::GetFullPath($(if ([IO.Path]::IsPathRooted($item.Value)) { $item.Value } else { Join-Path $cwd $item.Value })) } catch { continue }
+                # Files outside the project (memory, other repos) are not this task's edits.
+                if (-not $full.StartsWith($root, [StringComparison]::OrdinalIgnoreCase)) { continue }
+                $relative = $full.Substring($root.Length)
+                if ($relative -match '^(?i)(specs|\.specify)[\\/]') { $chainRan = $true }
+                elseif ($relative -notmatch '^(?i)(\.ai|\.claude|plans)[\\/]') { [void]$edited.Add($full) }
+            }
+        }
+        if ($changePrompts.Count -eq 0 -or $chainRan -or $edited.Count -lt 3) { exit 0 }
+
+        # Once per (session, set of change prompts); a new request re-arms it.
+        $sessionId = [string](Get-Field $hookInput 'session_id')
+        $joined = (@($changePrompts | ForEach-Object { Get-ShortHash $_ } | Sort-Object) -join ',')
+        $fingerprint = Get-ShortHash ($sessionId + '|' + $joined)
+        $gateDir = Join-Path $env:LOCALAPPDATA 'HookMaker\state'
+        $gatePath = Join-Path $gateDir ('SpeckitCheck-gate-' + (Get-ShortHash $cwd.ToLowerInvariant()) + '.txt')
+        if (Test-Path -LiteralPath $gatePath -PathType Leaf) {
+            try { if (([IO.File]::ReadAllText($gatePath).Trim()) -eq $fingerprint) { exit 0 } } catch { }
+        }
+        try { New-Item -ItemType Directory -Path $gateDir -Force | Out-Null; [IO.File]::WriteAllText($gatePath, $fingerprint) } catch { }
+        $firstPrompt = ([string]$changePrompts[0]) -replace '\s+', ' '
+        if ($firstPrompt.Length -gt 120) { $firstPrompt = $firstPrompt.Substring(0, 120) + '...' }
+        $blockMessage = @(
+            ('SPECKIT CHECK: request "' + $firstPrompt + '" edited ' + [string]$edited.Count + ' files; no speckit-* step or specs/ write in the complete transcript.'),
+            'Run the Spec Kit chain (global-spec-kit-rules.md FULL) or state why this work is exempt.'
+        ) -join "`n"
+        $emit = Write-StopBlockResult -HookInput $hookInput -HookName 'Speckit-Check' -FindingFingerprint $fingerprint -EventName $eventName -Message $blockMessage -Condition 'required-workflow'
+        exit $emit.ExitCode
+    }
+    catch { if ($null -ne $gateReceipt) { $gateReceipt.Crashed = $true }; throw }
+    finally { if ($null -ne $gateReceipt) { Complete-StopGateReceipt $gateReceipt } }
+}
 
 # A prompt that is plainly a question, or chat, is not work on the project.
 # The definition is shared with Feature-Request-Check so the two can never

@@ -117,6 +117,66 @@ function Get-TaskClosingEvidence {
     return $evidence
 }
 
+# THE SESSION'S TOOL EVIDENCE, in order (spec 036). Read-ClaudeTranscript keeps
+# only Skill calls, but the Spec Kit gate must count WRITTEN files and the rules
+# gate must see which files were READ. One ordered list of
+# @{ Kind = prompt|skill|read|write; Value } instead of a second private parser.
+#
+# CHEAP ON PURPOSE: only lines that can carry evidence are parsed. A tool result
+# (the bulk of a transcript) carries "tool_use_id" and is skipped unparsed; so
+# is client-injected text (isMeta skill bodies, the compaction summary), which
+# routinely quotes request-shaped words the user never typed.
+#
+# Same honesty as Read-ClaudeTranscript: over $MaxBytes is Partial with nothing
+# read, unreadable is Ok = $false. Neither may become a block or an all-clear.
+function Get-TranscriptToolEvidence {
+    param([AllowEmptyString()][string]$Path, [int]$MaxBytes = 20000000)
+    $none = [pscustomobject]@{ Ok = $false; Partial = $false; Events = @() }
+    if ([string]::IsNullOrWhiteSpace($Path) -or -not [IO.File]::Exists($Path)) { return $none }
+    try { if ((New-Object IO.FileInfo($Path)).Length -gt $MaxBytes) { return [pscustomobject]@{ Ok = $true; Partial = $true; Events = @() } } } catch { return $none }
+    $events = New-Object System.Collections.Generic.List[object]
+    try {
+        $stream = [IO.File]::Open($Path, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::ReadWrite)
+        try {
+            $reader = New-Object IO.StreamReader($stream, (New-Object Text.UTF8Encoding $false))
+            while ($null -ne ($line = $reader.ReadLine())) {
+                $isTool = $line.Contains('"tool_use"')
+                $isPrompt = (-not $isTool) -and $line.Contains('"type":"user"') -and -not $line.Contains('"tool_use_id"') -and
+                    -not $line.Contains('"isMeta":true') -and -not $line.Contains('"isCompactSummary":true')
+                if (-not $isTool -and -not $isPrompt) { continue }
+                $doc = $null
+                try { $doc = $line | ConvertFrom-Json } catch { continue }
+                $message = Get-Field $doc 'message'
+                if ($null -eq $message) { continue }
+                $content = Get-Field $message 'content'
+                if ($isPrompt) {
+                    $text = ''
+                    if ($content -is [string]) { $text = $content }
+                    else { foreach ($part in @($content)) { if ([string](Get-Field $part 'type') -eq 'text') { $text += "`n" + [string](Get-Field $part 'text') } } }
+                    $text = [regex]::Replace($text, '(?is)<system-reminder>.*?</system-reminder>|<command-[a-z-]+>.*?</command-[a-z-]+>', ' ').Trim()
+                    if ($text -ne '') { [void]$events.Add([pscustomobject]@{ Kind = 'prompt'; Value = $text }) }
+                    continue
+                }
+                foreach ($part in @($content)) {
+                    if ([string](Get-Field $part 'type') -ne 'tool_use') { continue }
+                    $name = [string](Get-Field $part 'name'); $toolInput = Get-Field $part 'input'
+                    if ($name -eq 'Skill') { $kind = 'skill'; $value = [string](Get-Field $toolInput 'skill') }
+                    elseif ($name -eq 'Read') { $kind = 'read'; $value = [string](Get-Field $toolInput 'file_path') }
+                    elseif ($name -in @('Edit', 'Write', 'MultiEdit', 'NotebookEdit')) {
+                        $kind = 'write'; $value = [string](Get-Field $toolInput 'file_path')
+                        if ($value -eq '') { $value = [string](Get-Field $toolInput 'notebook_path') }
+                    }
+                    else { continue }
+                    if ($value -ne '') { [void]$events.Add([pscustomobject]@{ Kind = $kind; Value = $value }) }
+                }
+            }
+        }
+        finally { $stream.Dispose() }
+    }
+    catch { return $none }
+    return [pscustomobject]@{ Ok = $true; Partial = $false; Events = @($events.ToArray()) }
+}
+
 # Explicit repository-state provenance for test observation and completion.
 $repoStatePath = Join-Path $PSScriptRoot '_repostate.ps1'
 if (Test-Path -LiteralPath $repoStatePath -PathType Leaf) { . $repoStatePath }
