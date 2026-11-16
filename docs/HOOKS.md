@@ -46,12 +46,13 @@ never successful CI evidence. Process cleanup retains the existing 5-second rese
 | [`Ai-Memory-Load`](#ai-memory-load) | pre-task (SessionStart, UserPromptSubmit) | Advisory | supplies the context router and file index |
 | [`Ai-Memory-Check`](#ai-memory-check) | post-task (Stop) | Detector / Advisory | reports stale context files |
 | [`Graph-Read-Check`](#graph-read-check) | pre-task (SessionStart, UserPromptSubmit) | Advisory | suggests relevant graph queries |
-| [`Graph-Update-Check`](#graph-update-check) | post-task (Stop) | Detector / Advisory | reports stale graph evidence |
+| [`Graph-Update-Check`](#graph-update-check) | post-task (Stop) | Gate (blocks once) + Advisory | requires `graphify update .` after a 3+ file change; reports stale graph evidence |
 | [`Cbm-Read-Check`](#cbm-read-check) | pre-task (SessionStart, UserPromptSubmit) | Advisory | suggests querying the Codebase Memory index |
-| [`Cbm-Update-Check`](#cbm-update-check) | post-task (Stop, SubagentStop) | Detector / Advisory | reports index lag |
+| [`Cbm-Update-Check`](#cbm-update-check) | post-task (Stop, SubagentStop) | Gate (blocks once) + Advisory | requires `index_repository` after a 3+ file change; reports index lag |
 | [`Synapse-Rules-Check`](#synapse-rules-check) | pre-task (SessionStart, UserPromptSubmit) + post-task (Stop/SubagentStop) | Gate (blocks once) | Stop refuses project edits without a Synapse read or write-back; makes no MCP call |
 | [`Session-Summary-Check`](#session-summary-check) | pre-task instructions (SessionStart, UserPromptSubmit); silent observation (Stop, SubagentStop) | Advisory / Coordinator | requests one DONE / REMAINING summary |
 | [`Install-Location-Check`](#install-location-check) | pre-task (PreToolUse) | Advisory | prefers approved install roots |
+| [`Writing-Voice-Check`](#writing-voice-check) | pre-task (SessionStart, UserPromptSubmit) + post-task (Stop/SubagentStop) | Gate (blocks once) | Stop refuses a reply whose language-matched voice skill was never loaded |
 | [`Cloudflare-Deploy`](#cloudflare-deploy) | post-task (Stop) | Advisory / Coordinator | reports release readiness; never deploys automatically |
 | [`Skills-Check`](#skills-check) | pre-task (SessionStart, UserPromptSubmit) + post-task (Stop, SubagentStop) | Detector / Advisory | discovers skill surfaces and checks usage reporting |
 | [`Mcp-Usage-Check`](#mcp-usage-check) | pre-task (SessionStart, UserPromptSubmit) + post-task (Stop, SubagentStop) | Detector / Advisory | reminds about research and MCP usage reporting |
@@ -181,6 +182,8 @@ That third step matters: the variable is normally set only inside that server re
 
 **Runs:** post-task (Stop).
 
+**Strict refresh gate (spec 038).** Modelled on `Speckit-Check`: at Stop, when the requests of this task asked for a change and the session edited 3 or more distinct project files (local-only `.ai/`, `.claude/`, `plans/`, `specs/` and `.specify/` do not count), a shell call running `graphify update .`, `graphify extract` or `graphify .` must come after the last of those edits. Otherwise the hook refuses once (`decision: block`) and asks for `graphify update .` (local AST, no model) or a closing line `Graph: not refreshed - <reason>` with a reason of 6 or more characters. The gate runs before the cooldown, needs a complete transcript, never refuses SubagentStop, and refuses the same finding only once; `HOOK_ENFORCEMENT=advisory|off` lowers it. Everything below is the older advisory path, which still runs when the gate has nothing to say.
+
 If `graphify-out/graph.json` is stale, asks the AI to decide whether `graphify update .` is warranted based on **structural impact** (added/removed/renamed symbols, changed exports/imports/call/inheritance relationships, new entry points, changed cross-file dependencies) — never on how many files changed: a one-file change can still be graph-relevant while a multi-file change (docs/comments/formatting-only, literal/config values, generated output) can be graph-irrelevant.  **Runs alongside Codebase Memory:** every project carries both graphs, so a CBM index no longer silences this hook — `Cbm-Read-Check`/`Cbm-Update-Check` speak for code structure while this one keeps graphify's own ground (docs, specs, papers, images, video and whole-project query/path/explain views).
 
 Markdown counts (`graphify-markdown.md`): the newest `.md` write time in `.ai/`, `specs/`, `.specify/`, `plans/` and any top-level folder of 10+ `.md` files (git-ignored or not; dependency, build, log and agent-config folders skipped; at most 4 levels, 5,000 files, 2 s) also makes the graph stale, and the advisory then says so and asks for `graphify update .` plus the agent's own semantic pass for changed `.ai/` files.
@@ -207,7 +210,9 @@ Matches one Claude JSON/Codex TOML CMM record, preserves cache/runtime/TEMP/TMP 
 
 **Runs:** post-task (Stop, SubagentStop).
 
-**Advisory only** — never blocks, never runs the CBM binary, never writes outside its own state file. It mirrors `Graph-Update-Check` step for step with the artifact swapped: `stop_hook_active` guard → the index exists → per-project cooldown → newest real work versus the index's last write. “Newest work” comes from **git**, not file mtimes, so a checkout, a formatter or an editor save does not count as a change. **Expect this hook to be silent almost always, and read that as correct behaviour:** Codebase Memory runs a background watcher that rewrites the project database incrementally, so a gap only opens when the watcher is stopped, wedged, or was never given this project.
+**Strict refresh gate (spec 038).** Same rule as `Graph-Update-Check`, with the Codebase Memory call as the refresh: when CBM is installed and this project is indexed, a 3+ file change requested in this task needs an `index_repository` call after the last edit (`index_status` alone does not count). The refusal names the exact `index_repository(repo_path=..., mode="moderate", persistence=true)` call; the exemption line is `CBM: not refreshed - <reason>`. Silent when CBM is absent, on SubagentStop and on incomplete transcripts. The advisory path below is unchanged.
+
+**Advisory path.** Never runs the CBM binary and never writes outside its own state files. It mirrors `Graph-Update-Check` step for step with the artifact swapped: `stop_hook_active` guard → the index exists → per-project cooldown → newest real work versus the index's last write. “Newest work” comes from **git**, not file mtimes, so a checkout, a formatter or an editor save does not count as a change. **Expect this hook to be silent almost always, and read that as correct behaviour:** Codebase Memory runs a background watcher that rewrites the project database incrementally, so a gap only opens when the watcher is stopped, wedged, or was never given this project.
 
 When it does report, it names both timestamps, says to call `index_status` and re-run `index_repository` if the change is not reflected, and leaves the judgement where it belongs — **structure** (a changed symbol, export, import, call/inheritance edge or entry point) matters; docs, formatting and generated output do not, and skipping it is then the right answer. A project with **no** index at all is `Cbm-Read-Check`'s message at the start of a session where it is actionable, not this hook's at the end.
 
@@ -240,6 +245,16 @@ Unknown evidence does not borrow a parent or older answer. Closing observation e
 Terminal records cannot reopen, late verdicts cannot resurrect retired identities, and capacity cannot evict replay protection. These are store guarantees, not final-display control. The original last-visible-summary requirement needs an output-owning integration with affirmative gate completion. See the generation observation audit document. Readiness is now affirmative: at Stop, when a summary is observed, it waits (at most 8 s, inside its 10 s hook timeout) for a `pass` receipt (`hooks/_gatereceipts.ps1`) from every blocking gate the client registered for that event, written in the same Stop round.
 
 All pass -> the summary is recorded READY and the generation finalizes and becomes collectable; a gate that blocked, crashed or never finished is named once (`<gate>:block`, `<gate>:error`, `<gate>:no-receipt`) and readiness is not claimed. An unreadable registration makes readiness unknown, never assumed.
+
+## `Writing-Voice-Check`
+
+**Runs:** pre-task (SessionStart, UserPromptSubmit) + post-task (Stop/SubagentStop).
+
+Enforces `global-writing-voice-rules.md`: every human-readable reply uses the voice skill of its language, `persian` for Persian, `great-russian` for Russian and `humanizer:humanizer` for English. A hook cannot load a skill, so the rule is carried in three steps. SessionStart states the language-to-skill map; on `source=compact` or `resume` it adds that earlier loads are gone and the skill must be loaded again. UserPromptSubmit names the skill for the language the user typed, once per session and language (`PROMPT_REMINDER=0` turns this off). Stop reads the complete transcript and refuses once when the newest typed prompt is in a mapped language and no load of that skill happened since the session start or the last compaction.
+
+The language is the majority script of the newest typed prompt: Arabic script means Persian, Cyrillic means Russian, and Latin with neither of the other two means English. Injected client text (compaction summaries, hook output, command wrappers) is not a typed prompt. A load is a `Skill` call whose key matches (the bare key or a `plugin:` prefix also counts) or a `Read` of that skill's `SKILL.md`, which is the Codex and Hermes route. A load from before the last compaction does not count.
+
+The refusal is `decision: block`, once per finding (session, language and compaction count); `HOOK_ENFORCEMENT=advisory|off` lowers it. An unmapped language, SubagentStop, a missing or partial transcript and a stand-down all stay silent. It writes only its per-session seen list and one gate fingerprint under `%LOCALAPPDATA%\HookMaker\state`. `.env`: `PROMPT_REMINDER` (default `1`), `MAX_TRANSCRIPT_BYTES` (default `20000000`).
 
 ## `Install-Location-Check`
 

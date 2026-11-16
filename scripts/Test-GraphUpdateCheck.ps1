@@ -42,9 +42,10 @@ function Add-Commit {
 }
 
 function Fire {
-    param([string]$Cwd, [switch]$StopHookActive, [string]$Exe = 'pwsh')
-    $obj = @{ session_id = 't'; cwd = $Cwd; hook_event_name = 'Stop' }
+    param([string]$Cwd, [switch]$StopHookActive, [string]$Exe = 'pwsh', [string]$TranscriptPath = '', [string]$SessionId = 't', [string]$EventName = 'Stop')
+    $obj = @{ session_id = $SessionId; cwd = $Cwd; hook_event_name = $EventName }
     if ($StopHookActive) { $obj['stop_hook_active'] = $true }
+    if ($TranscriptPath -ne '') { $obj['transcript_path'] = $TranscriptPath }
     $payload = $obj | ConvertTo-Json
     $token = [guid]::NewGuid().ToString('N').Substring(0, 8)
     $inFile = Join-Path $Work ('in-' + $token + '.json')
@@ -78,6 +79,30 @@ function New-StaleGraph {
     Write-Utf8 $graphPath '{}'
     (Get-Item -LiteralPath $graphPath).LastWriteTimeUtc = [DateTime]::UtcNow.AddDays(-1)
     return $graphPath
+}
+
+# A project with a FRESH graph, so only the strict transcript path can speak.
+function New-StrictProj {
+    param([string]$Name)
+    $p = New-Proj $Name
+    New-Item -ItemType Directory -Path (Join-Path $p 'graphify-out') -Force | Out-Null
+    Write-Utf8 (Join-Path $p 'graphify-out\graph.json') '{}'
+    return $p
+}
+# Steps: 'edit:<relative>' or 'shell:<command>'; a change request opens it.
+function New-RefreshTranscript {
+    param([string]$Name, [string]$Root, [string[]]$Steps, [string]$FinalText = 'Done.')
+    $entries = New-Object System.Collections.Generic.List[string]
+    [void]$entries.Add((@{ type = 'user'; message = @{ role = 'user'; content = 'add a parser feature' } } | ConvertTo-Json -Depth 8 -Compress))
+    foreach ($s in @($Steps)) {
+        if ($s -like 'edit:*') { $part = @{ type = 'tool_use'; name = 'Edit'; input = @{ file_path = (Join-Path $Root $s.Substring(5)) } } }
+        else { $part = @{ type = 'tool_use'; name = 'Bash'; input = @{ command = $s.Substring(6) } } }
+        [void]$entries.Add((@{ type = 'assistant'; message = @{ role = 'assistant'; content = @($part) } } | ConvertTo-Json -Depth 8 -Compress))
+    }
+    [void]$entries.Add((@{ type = 'assistant'; message = @{ role = 'assistant'; content = @(@{ type = 'text'; text = $FinalText }) } } | ConvertTo-Json -Depth 8 -Compress))
+    $path = Join-Path $Work ($Name + '.jsonl')
+    [System.IO.File]::WriteAllText($path, (($entries.ToArray() -join "`n") + "`n"))
+    return $path
 }
 
 try {
@@ -233,6 +258,40 @@ try {
     New-StaleGraph $plainRepo | Out-Null
     $out = Invoke-ReadCheck -Cwd $plainRepo -Session 'md-read-3'
     Check 'read-check: a project without Markdown folders never gets the line' ($out -match 'Graph-Read-Check:.*graphify-out/graph\.json' -and $out -notmatch 'Missing ignored Markdown') $out
+
+    Write-Host '--- strict path (spec 038): change request + 3 edits needs a refresh after the last edit ---' -ForegroundColor Cyan
+    $blockPattern = '"decision"\s*:\s*"block"'
+    $sp = New-StrictProj 'Strict'
+    $r = Fire -Cwd $sp -SessionId 'st-1' -TranscriptPath (New-RefreshTranscript 'st-1' $sp @('edit:a.ps1', 'edit:b.ps1', 'edit:c.ps1'))
+    Check 'strict: 3 edits, no refresh -> blocked with the request and count' ($r.Out -match $blockPattern -and $r.Out -match 'GRAPH UPDATE CHECK: request "add a parser feature" edited 3 project files; no graphify update after the last edit') ($r.Out + $r.Err)
+    Check 'strict: the block names the clearing actions' ($r.Out -match 'graphify update \.' -and $r.Out -match 'Graph: not refreshed - <reason>') $r.Out
+    $r = Fire -Cwd $sp -SessionId 'st-1' -TranscriptPath (New-RefreshTranscript 'st-1b' $sp @('edit:a.ps1', 'edit:b.ps1', 'edit:c.ps1'))
+    Check 'strict: the unchanged finding is not refused twice' ($r.Out -notmatch $blockPattern) $r.Out
+    $r = Fire -Cwd (New-StrictProj 'StrictAfter') -SessionId 'st-2' -TranscriptPath (New-RefreshTranscript 'st-2' (Join-Path $Work 'StrictAfter') @('edit:a.ps1', 'edit:b.ps1', 'edit:c.ps1', 'shell:graphify update .'))
+    Check 'strict: graphify update after the last edit -> no block' ($r.Out -notmatch $blockPattern) $r.Out
+    $p3 = New-StrictProj 'StrictBefore'
+    $r = Fire -Cwd $p3 -SessionId 'st-3' -TranscriptPath (New-RefreshTranscript 'st-3' $p3 @('edit:a.ps1', 'shell:graphify update .', 'edit:b.ps1', 'edit:c.ps1'))
+    Check 'strict: a refresh before the last edit does not count' ($r.Out -match $blockPattern) $r.Out
+    $p4 = New-StrictProj 'StrictTwo'
+    $r = Fire -Cwd $p4 -SessionId 'st-4' -TranscriptPath (New-RefreshTranscript 'st-4' $p4 @('edit:a.ps1', 'edit:b.ps1'))
+    Check 'strict: 2 edits are a small task -> no strict block' ($r.Out -notmatch 'edited 2 project files') $r.Out
+    $p5 = New-StrictProj 'StrictExempt'
+    $r = Fire -Cwd $p5 -SessionId 'st-5' -TranscriptPath (New-RefreshTranscript 'st-5' $p5 @('edit:a.ps1', 'edit:b.ps1', 'edit:c.ps1') "Done.`nGraph: not refreshed - docs-only wording change")
+    Check 'strict: a reasoned exemption line clears it' ($r.Out -notmatch 'GRAPH UPDATE CHECK: request') $r.Out
+    $p6 = New-StrictProj 'StrictLocal'
+    $r = Fire -Cwd $p6 -SessionId 'st-6' -TranscriptPath (New-RefreshTranscript 'st-6' $p6 @('edit:.ai\a.md', 'edit:specs\b.md', 'edit:plans\c.md', 'edit:d.ps1'))
+    Check 'strict: local-only folders are not project edits' ($r.Out -notmatch 'GRAPH UPDATE CHECK: request') $r.Out
+    $p7 = New-StrictProj 'StrictSub'
+    $r = Fire -Cwd $p7 -SessionId 'st-7' -EventName 'SubagentStop' -TranscriptPath (New-RefreshTranscript 'st-7' $p7 @('edit:a.ps1', 'edit:b.ps1', 'edit:c.ps1'))
+    Check 'strict: SubagentStop never takes the strict path' ($r.Out -notmatch 'GRAPH UPDATE CHECK: request') $r.Out
+    # FR-009: the cross-session cooldown no longer hides a proven missing refresh.
+    $p8 = New-GitRepo 'StrictCooldown'
+    Write-Utf8 (Join-Path $p8 'a.ps1') 'function A {}'; Add-Commit $p8 'init'
+    New-StaleGraph $p8 | Out-Null
+    $first = Fire -Cwd $p8 -SessionId 'st-8a'
+    Check 'strict: the cooldown fixture really started a cooldown' ($first.Out -match 'Graphed/structural impact') $first.Out
+    $r = Fire -Cwd $p8 -SessionId 'st-8b' -TranscriptPath (New-RefreshTranscript 'st-8' $p8 @('edit:a.ps1', 'edit:b.ps1', 'edit:c.ps1'))
+    Check 'strict: an active cooldown does not suppress the strict refusal' ($r.Out -match $blockPattern) $r.Out
 
     Write-Host '--- Windows PowerShell 5.1 ---' -ForegroundColor Cyan
     $ps5 = New-GitRepo 'Ps5'

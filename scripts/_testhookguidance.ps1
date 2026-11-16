@@ -11,7 +11,7 @@ $guidanceBudgets=@{
     'Ai-Memory-Check'=853
     'Ai-Memory-Load'=723
     'Cbm-Read-Check'=1482
-    'Cbm-Update-Check'=295
+    'Cbm-Update-Check'=545    # spec 038: + strict refresh gate block text
     'Ci-Status-Check'=3912
     'Cloudflare-Deploy'=1475
     'Cross-Project-.ai-Knowledge-Sync'=1165
@@ -38,6 +38,7 @@ $guidanceBudgets=@{
     'Test-Run-Guard'=4222
     'Test-Temp-Cleanup'=1499
     'Utf8-Encoding-Check'=2563
+    'Writing-Voice-Check'=760    # spec 038
 }
 $guidanceInventory=@(Get-HookGuidanceInventory $guidanceRoot)
 $authoredCharacters=($guidanceInventory|Measure-Object Characters -Sum).Sum

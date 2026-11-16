@@ -15,9 +15,9 @@ function Get-UninstallStateLeaves {
         'Ai-Memory-Load'=@("AiMemoryLoad-$key.txt","AiMemoryLoad-dd-$key.txt")
         'Ai-Memory-Check'=@("AiMemoryCheck-$key.txt")
         'Cbm-Read-Check'=@("CbmReadCheck-$key.txt")
-        'Cbm-Update-Check'=@("CbmUpdateCheck-$key.txt")
+        'Cbm-Update-Check'=@("CbmUpdateCheck-$key.txt","CbmUpdateCheck-gate-$key.txt")
         'Graph-Read-Check'=@("GraphReadCheck-prompt-$key.txt")
-        'Graph-Update-Check'=@("GraphUpdateCheck-$key.txt")
+        'Graph-Update-Check'=@("GraphUpdateCheck-$key.txt","GraphUpdateCheck-gate-$key.txt")
         'Dependency-Version-Check'=@("DependencyVersionCheck-$key.txt","DependencyVersionCheck-close-$key.txt")
         'Speckit-Check'=@("SpeckitCheck-$key.txt","SpeckitCheck-refresh-$key.txt","SpeckitCheck-gate-$key.txt")
         'Ignore-Rules-Check'=@("IgnoreRulesCheck-rules-$key.txt")
@@ -37,6 +37,8 @@ function Get-UninstallStateLeaves {
         'Skills-Check'=@("SkillsCheck-index-$key.txt","SkillsCheck-close-$key.txt","SkillsCheck-deepdebug-$key.txt","SkillsCheck-prompt-$key.txt","SkillsCheck-drift-$key.txt.claims.json")
         'Github-Baseline-Check'=@("GithubBaselineCheck-badges-$key.txt","GithubBaselineCheck-selfhosted-$key.txt")
         'Test-Run-Guard'=@("TestRunGuard-report-$key.txt","TestRunGuard-config-$key.txt")
+        # Per-session seen lists are session state, not project-owned.
+        'Writing-Voice-Check'=@("WritingVoiceCheck-gate-$key.txt")
     }
     if($CheckSupport){return ($map.ContainsKey($Name)-or$Name-ceq'Rules-Check')}
     $leaves=New-Object 'Collections.Generic.List[string]'

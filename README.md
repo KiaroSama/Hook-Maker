@@ -68,7 +68,7 @@ The shipped set remains 30 packages. No hook/client/event/menu number/installer 
 | `scripts/Setup-SyncGroup.ps1` | Interactive wizard: sync groups, hook creation/installs, profile listing, validation. |
 | `scripts/Setup-SyncGroupBuilder.ps1` + `Setup-SyncGroupModel.ps1` | Sync-group builder dot-sourced by the wizard: the builder runs the interactive flow (collecting project paths, confirming, applying a new or updated group, resetting), and dot-sources the model file beside it, which holds the same thing as data — the full-mesh route profile, a profile's members and display name, and the transitive-closure merge that `Test-SyncGroupMerge.ps1` pins with the console machinery stubbed out. |
 | `scripts/Setup-SyncGroupCreateHook.ps1` | Hook authoring dot-sourced by the wizard: the guided templates and the "Create a new hook" flow that generates a new hook from them. |
-| `scripts/Setup-SyncGroupInstalledHooks.ps1` | Installed-hook management dot-sourced by the wizard: the installed-hook snapshot/list model behind menu items `32`/`33`, the uninstall screen, and the one canonical numeric list/range selection parser shared with the hook menu. |
+| `scripts/Setup-SyncGroupInstalledHooks.ps1` | Installed-hook management dot-sourced by the wizard: the installed-hook snapshot/list model behind menu items `33`/`34`, the uninstall screen, and the one canonical numeric list/range selection parser shared with the hook menu. |
 | `scripts/Setup-SyncGroupInstallFlows.ps1` + `Setup-SyncGroupUpdateFlow.ps1` | The create-or-install sub-menu's flows dot-sourced by the wizard: the main hook list with its management rows, event/client/target selection, installing every hook a profile config names, and the sub-menu that dispatches all four. The update flow sits in its own file beside it, dot-sourced from there, because refreshing an installation reuses each registry record's saved parameters and asks no configuration question at all - a different job from installing one. |
 | `scripts/_installinvoke.ps1` | The **one** way the wizard invokes `Install-Hook.ps1` and decides what actually happened: it owns the temporary `-ResultPath`, reads the installer's structured result, and returns a verdict. Success comes from a VALID structured result and nothing else - missing, unreadable or unrecognised output is `unknown`, and unknown is never success. Valid is checked, not assumed: the schema must be one this build understands (a NEWER one is `unknown`, never read as green), `overall` must be a known outcome, the components must exist, be named, carry known statuses, and AGREE with `overall` - a document claiming `ok` while reporting a failed component is a broken document, not a good install - and any client the invocation explicitly asked for must appear among them. Properties are read defensively, so a malformed shape (an array, a bare scalar) reports `unknown` instead of throwing. Trust used to stop at the `overall` field, which made `{"overall":"ok"}` a green install. It exists because the fresh and config-driven flows used to capture console output and then print "+ installed" unconditionally, so an install whose runtime and settings landed but whose registry tracking FAILED was reported to the user as clean (the installer signals that in its result document and returns normally, so "no exception" was never evidence). Also holds `Get-PartialInstallVerdict`, shared with the relocate flow, and the per-target batch helper the install flows share. |
 | `scripts/Setup-SyncGroupPresentation.ps1` | Console presentation dot-sourced by the wizard before every other module: the colour table, the painted-line helpers (phase headers, fields, menu and hook-menu rows, numbered/nested question prompts), and the canonical per-hook menu metadata (`$script:HookMeta` — order, label, timing, description, and the optional recommended events/timeout). |
@@ -127,7 +127,7 @@ Skip-marked prose-only CI carryover uses bounded document-input evidence, not a 
 
 ## Shipped hooks
 
-29 hooks ship with Hook Maker. The **full per-hook reference** — exact events, behaviour
+30 hooks ship with Hook Maker. The **full per-hook reference** — exact events, behaviour
 contract, protections and config for every hook — lives in [docs/HOOKS.md](docs/HOOKS.md)
 (moved there verbatim; the front page could no longer carry it). The fixed menu list below
 enumerates every hook with a one-line summary, and each hook's own `.env.example` documents
@@ -168,7 +168,7 @@ each hook's recommended events with a shared client/projects answer. You do **no
 type `2` — `1` alone always includes the sync group. The individual-hook set is derived dynamically
 from the hooks actually shipped (never a hard-coded count), so adding or removing a hook folder
 changes it automatically; the sync group always runs exactly once even if `2` is also listed
-explicitly (e.g. `1,2`), and it never runs the management actions (`32`–`36`). List item `2` is
+explicitly (e.g. `1,2`), and it never runs the management actions (`33`–`37`). List item `2` is
 the **sync group** on its own. Individual hooks start at `3`, each showing a colored timing tag and
 a one-line description, with `Cloudflare-Deploy` fixed as the **last** individual entry. The menu
 uses five distinct tag colors so they never blur together: `[pre-task]` (mint), `[post-task]`
@@ -256,36 +256,37 @@ you add or create hooks:
 
 | Item | What it is |
 | --- | --- |
-| `1` | Select all hooks — the sync group **and** every hook below (shipped + your own). Never runs `32`–`36`. |
+| `1` | Select all hooks — the sync group **and** every hook below (shipped + your own). Never runs `33`–`37`. |
 | `2` | Create or update a sync group |
 | `3`–`27` | The first 25 shipped hooks, in a pinned order (`9`–`10` are `Feature-Request-Check` and `Speckit-Check`; `11`–`12` are `Cbm-Read-Check` and `Cbm-Update-Check`; `13` is `Docs-Freshness-Check`; `24`–`26` are the three test-health hooks; `27` is `Utf8-Encoding-Check`) |
 | `28` | `Synapse-Rules-Check` |
 | `29` | `Session-Summary-Check` |
 | `30` | `Install-Location-Check` |
-| `31` | `Cloudflare-Deploy` |
-| `32` | **Update installed hooks** |
-| `33` | **Get hook status** |
-| `34` | **Uninstall installed hooks** |
-| `35` | **Reset sync groups** |
-| `36` | **Fix a renamed or moved project** |
-| `37`+ | Your own created/custom hooks under `hooks\`, in deterministic name order |
+| `31` | `Writing-Voice-Check` |
+| `32` | `Cloudflare-Deploy` |
+| `33` | **Update installed hooks** |
+| `34` | **Get hook status** |
+| `35` | **Uninstall installed hooks** |
+| `36` | **Reset sync groups** |
+| `37` | **Fix a renamed or moved project** |
+| `38`+ | Your own created/custom hooks under `hooks\`, in deterministic name order |
 
-Discovering or creating a custom hook adds rows from `37` onward and **never shifts `32`–`36`**.
+Discovering or creating a custom hook adds rows from `38` onward and **never shifts `33`–`37`**.
 The management rows are derived from the shipped-hook count, never from a hand-edited constant:
 adding a shipped hook renumbers them (the one inserted at `10` moved every later row down
 by one), and adding a custom one never does.
 
 Selections accept a single number, a comma list, and inclusive ascending ranges — `1`, `1,2`,
-`1,2,3-6`. `32`–`36` are management actions, not hook selections: each must be chosen on
-its own, and combining any of them with hook numbers (`3,32`, `31-33`, `1,33`, `32,34`) is rejected
+`1,2,3-6`. `33`–`37` are management actions, not hook selections: each must be chosen on
+its own, and combining any of them with hook numbers (`3,33`, `32-34`, `1,34`, `33,35`) is rejected
 rather than half-executed.
 
-## Updating installed hooks (`32`)
+## Updating installed hooks (`33`)
 
 Because installs are self-contained copies, editing a hook's source under `hooks/` (or updating
 Hook Maker itself) does **not** change any copy you already installed — the copies are frozen at
 install time. Rather than re-selecting and reconfiguring every hook you've installed one by one,
-use item **`32` Update installed hooks** (also reachable as `4` in the "Create or install a hook"
+use item **`33` Update installed hooks** (also reachable as `4` in the "Create or install a hook"
 submenu, which is a compatibility alias for the *same* implementation).
 
 This reads a local install registry, shows a plan, asks **one** confirmation, then repairs
@@ -302,7 +303,7 @@ session transcripts for a project and prints each Stop hook's median, p95 and ma
 how often it reached its registered timeout. It is read-only; the durations come from an
 undocumented client field, so a missing value is counted rather than guessed.
 
-For a whole fleet without prompts, `scripts\Update-Fleet.ps1` is the non-interactive form of `32`:
+For a whole fleet without prompts, `scripts\Update-Fleet.ps1` is the non-interactive form of `33`:
 the same evaluation and the same installer call, one record/client pair at a time with its own
 recorded events, scope and (for the sync engine) profile/config. With no switch it is a dry run that
 prints counts (current / stale / pending-migration / unreachable / skipped) and changes nothing;
@@ -320,13 +321,13 @@ routes, then names the Codex step (open the project, trust it if asked, and trus
 in `/hooks` - Codex ties trust to the exact command). None found, or two folders carrying the same
 ids (a copy), is reported and nothing is touched; the record stays unreachable. `-ConfigPath`
 names the sync config whose routes follow a move (default `sync-hooks.json` in the tool root).
-The wizard's `32` runs the same repair first.
+The wizard's `33` runs the same repair first.
 
-## Getting hook status (`33`)
+## Getting hook status (`34`)
 
-Item **`33` Get hook status** scans a path you choose, reports every installed hook it can find —
+Item **`34` Get hook status** scans a path you choose, reports every installed hook it can find —
 **Hook Maker's own and third-party alike** — and records the verified results. It is an explicit,
-on-demand action: nothing scans on startup, and item `32` still only looks at its own registry.
+on-demand action: nothing scans on startup, and item `33` still only looks at its own registry.
 
 It asks two questions:
 
@@ -367,10 +368,10 @@ earlier scan had discovered left a duplicate row in the uninstall list that coul
 Findings are reported as either **status-only** or **safely removable**. Anything ambiguous, shared
 between hooks, or outside a recognised hook root is shown but never auto-deleted.
 
-## Uninstalling installed hooks (`34`)
+## Uninstalling installed hooks (`35`)
 
-Item **`34` Uninstall installed hooks** removes tracked installations — Hook Maker's own plus
-anything item `33` discovered. It accepts the same `1` / `1,2` / `1,2,3-6` syntax, and shows each
+Item **`35` Uninstall installed hooks** removes tracked installations — Hook Maker's own plus
+anything item `34` discovered. It accepts the same `1` / `1,2` / `1,2,3-6` syntax, and shows each
 row's record type and whether removal is possible.
 
 It asks **which set** before it lists anything, because a machine that has been used for a while
@@ -596,7 +597,7 @@ path, wrapper path, expected stages, owned companions and the preserved-user-hoo
 **What it never stores:** secret values, `.env` contents, prompt or tool-input text, stdin, or the
 contents of any copied file. Paths and hashes only.
 
-**Menu `32` and `33` depend on it.** Filesystem discovery under `hooks\` is only the catalog of
+**Menu `33` and `34` depend on it.** Filesystem discovery under `hooks\` is only the catalog of
 hooks *available* to install — it is never proof that something *is* installed. Consequently:
 
 - Update refreshes from each record's **persisted `sourceScript`**, never a path rebuilt from the
@@ -694,7 +695,7 @@ statuses and reason codes only: never file contents, `.env` values, prompt text 
 - Runtime replacement is staged, hash-verified and swapped, with the previous runtime restored if
   the swap fails. That is compensating rollback, not crash-atomicity: a machine or process that
   dies mid-swap can still need one reinstall. The same applies to removing a discovered hook.
-- A hook status scan (`33`) reports what it could actually reach. Directories it could not read, and
+- A hook status scan (`34`) reports what it could actually reach. Directories it could not read, and
   reparse points it deliberately did not follow, are listed and the run is reported as **partial** —
   it does not claim that every unreadable, system or reparse directory was scanned.
 - A discovered registration whose command cannot be parsed to a single target is still reported as
@@ -769,9 +770,9 @@ already referenced by your sync config's profiles — the only scopes a durable 
 A Hook-Maker-managed installation in some other, unreferenced project can't be discovered this way;
 reinstall it there once (any method) and it enters the registry going forward.
 
-## Resetting sync groups (`35`)
+## Resetting sync groups (`36`)
 
-Item **`36` Fix a renamed or moved project** repairs the installs of a project whose folder was
+Item **`37` Fix a renamed or moved project** repairs the installs of a project whose folder was
 renamed or moved. It lists only project roots that are no longer on disk — both the ones the
 registry names and the ones only an **enabled** sync route names (shown as `sync routes only`,
 since those carry no records to reinstall) — asks where each one went, and then reinstalls every
@@ -789,7 +790,7 @@ installs and tracking failures retain the original record and its client/event c
 Sync routes still move to the selected destination; a partial repair does not roll back that
 configuration change.
 
-Item **`35` Reset sync groups** removes every sync group from `sync-hooks.json` in one confirmed
+Item **`36` Reset sync groups** removes every sync group from `sync-hooks.json` in one confirmed
 step — for when the config has accumulated stale groups and you want a clean start. It lists each
 group (id, name, route count) first, then asks one `y/n` question defaulting to **no** (Enter
 cancels; nothing is changed on decline). A timestamped backup
@@ -797,7 +798,7 @@ cancels; nothing is changed on decline). A timestamped backup
 legacy `example-sync-profile` is kept if an older version seeded one, and the result is
 re-validated. This changes
 routing **configuration only**: no hook is uninstalled and no file in any project is touched — use
-item `34` for that.
+item `35` for that.
 
 ## Codebase Memory configuration
 
@@ -879,7 +880,7 @@ A route requires `id` (unique within its profile) and both endpoints, each with 
 
 `directory` is optional and defaults to `.ai`. `enabled` is optional too, on both profiles and
 routes: it is on unless you write an explicit `false`, and a disabled profile or route neither
-syncs nor is offered by `36` when its folder goes missing. Settings resolve **route ->
+syncs nor is offered by `37` when its folder goes missing. Settings resolve **route ->
 profile -> defaults**, so a route can override its profile and a profile can override the file.
 
 A route is one-directional. For two-way sync add a second route with `source` and

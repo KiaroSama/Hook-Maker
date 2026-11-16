@@ -7,7 +7,8 @@
 # export, a changed call relationship) while a multi-file change can be
 # graph-irrelevant (docs-only, formatting-only, generated output).
 #
-# ROLE: GATE on Stop/SubagentStop (global-hook-rules.md SS Hook Roles). The
+# ROLE: GATE on Stop (spec 038 strict path, below) plus the older file-time
+# reminder on Stop/SubagentStop (global-hook-rules.md SS Hook Roles). The
 # integration matrix files it under "freshness" for WHAT IT ASKS ABOUT; the
 # mechanism is a real decision:block, and the source says so here so the two
 # descriptions cannot drift apart again. It blocks only on the documented,
@@ -32,6 +33,8 @@ Set-StrictMode -Version 2.0
 $ErrorActionPreference = 'Stop'
 
 . (Join-Path $PSScriptRoot '..\_hooklib.ps1')
+# Change-request detection for the strict path (spec 038), shared with Speckit-Check.
+. (Join-Path $PSScriptRoot '..\_scope.ps1')
 # Optional sibling (a runtime installed before it existed keeps the git-only check).
 $markdownWorkPath = Join-Path $PSScriptRoot '_markdownwork.ps1'
 if (Test-Path -LiteralPath $markdownWorkPath -PathType Leaf) { . $markdownWorkPath }
@@ -77,6 +80,33 @@ if (-not (Test-Path -LiteralPath $graphPath -PathType Leaf)) {
 # ---- optional .env ----
 $config = Read-HookEnv (Join-Path $PSScriptRoot '.env')
 $lifecycleNote = ' BEFORE update/cleanup: graphify.md/graphify-markdown.md FULL. Loss: restore; retain active/evidence/unknown. Hook deletes nothing.'
+
+# ---- strict path (spec 038): the same duty and threshold as Speckit-Check ----
+# A change request that edited 3+ project files needs `graphify update .` AFTER
+# the last edit, or a closing `Graph: not refreshed - <reason>` line. Refused
+# once per (session, request set); HOOK_ENFORCEMENT=advisory|off lowers it.
+# It runs before the cooldown on purpose: a cross-session timer must not hide a
+# missing refresh the transcript proves (FR-009). Unknown/partial evidence and
+# SubagentStop fall through to the file-time advisory below.
+if ($eventName -eq 'Stop' -and $script:EvidenceLibReady -and (Get-Command Get-StructuralRefreshFinding -ErrorAction SilentlyContinue)) {
+    $maxBytes = 20000000
+    if ($config.ContainsKey('MAX_TRANSCRIPT_BYTES')) {
+        $parsed = 0; if ([int]::TryParse([string]$config['MAX_TRANSCRIPT_BYTES'], [ref]$parsed) -and $parsed -ge 100000) { $maxBytes = $parsed }
+    }
+    $evidence = Get-TranscriptToolEvidence -Path ([string](Get-Field $hookInput 'transcript_path')) -MaxBytes $maxBytes
+    if ($evidence.Ok -and -not $evidence.Partial) {
+        $finding = Get-StructuralRefreshFinding -HookInput $hookInput -Events @($evidence.Events) -RefreshKind 'shell' -RefreshPattern '(?i)\bgraphify(?:\.exe)?["'']?\s+(?:update|extract)\b|\bgraphify(?:\.exe)?["'']?\s+\.(?:\s|$|[;&|])' -ExemptLabel 'Graph' -OwnMessagePattern '(?im)^[ \t-]*GRAPH UPDATE CHECK'
+        if ($null -ne $finding) {
+            if (-not (Test-NewGateFingerprint -Name 'GraphUpdateCheck' -Cwd $cwd -Fingerprint $finding.Fingerprint)) { exit 0 }
+            $blockMessage = @(
+                ('GRAPH UPDATE CHECK: request "' + $finding.FirstPrompt + '" edited ' + [string]$finding.EditCount + ' project files; no graphify update after the last edit.'),
+                ('Run `graphify update .` now (local AST, no model), or end the reply with `Graph: not refreshed - <reason>`.' + $lifecycleNote)
+            ) -join "`n"
+            $emit = Write-StopBlockResult -HookInput $hookInput -HookName 'Graph-Update-Check' -FindingFingerprint $finding.Fingerprint -EventName $eventName -Message $blockMessage -Condition 'required-workflow'
+            exit $emit.ExitCode
+        }
+    }
+}
 $cooldownMinutes = 60
 if ($config.ContainsKey('COOLDOWN_MINUTES')) {
     $parsedSetting = 0; if ([int]::TryParse([string]$config['COOLDOWN_MINUTES'], [ref]$parsedSetting) -and $parsedSetting -ge 0 -and $parsedSetting -le 10080) { $cooldownMinutes = $parsedSetting }

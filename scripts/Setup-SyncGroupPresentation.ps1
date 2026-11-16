@@ -232,12 +232,12 @@ $script:HookMeta = @{
     'Feature-Request-Check'            = @{ Order = 8;  When = 'both'; Text = 'a feature request runs the grilling chain, not straight to code'; Events = @('UserPromptSubmit', 'Stop', 'SubagentStop'); Timeout = 45 }
     'Speckit-Check'                    = @{ Order = 9;  When = 'both'; Text = 'route the task through Spec Kit before writing code'; Events = @('SessionStart', 'UserPromptSubmit', 'Stop'); Timeout = 45 }
     'Cbm-Read-Check'                   = @{ Order = 10; When = 'pre';  Text = 'query the Codebase Memory index before browsing files'; Events = @('SessionStart', 'UserPromptSubmit'); Timeout = 30 }
-    'Cbm-Update-Check'                 = @{ Order = 11; When = 'post'; Text = 'reports a Codebase Memory index lagging behind the code'; Events = @('Stop', 'SubagentStop'); Timeout = 45 }
+    'Cbm-Update-Check'                 = @{ Order = 11; When = 'post'; Text = 'requires index_repository after 3+ edited files'; Events = @('Stop', 'SubagentStop'); Timeout = 45 }
     # PreToolUse holds a `git push` once for the review, so the docs land in
     # that one push; the migration table's v10 moves the old SessionStart+Stop.
     'Docs-Freshness-Check'             = @{ Order = 12;  When = 'both'; Text = 'checks tracked docs after changes; requires ack'; Events = @('SessionStart', 'PreToolUse', 'Stop') }
     'Graph-Read-Check'                 = @{ Order = 13;  When = 'pre';  Text = 'suggests graphify queries when a graph exists and the task needs it' }
-    'Graph-Update-Check'               = @{ Order = 14; When = 'post'; Text = 'suggests graphify update when the graph is stale' }
+    'Graph-Update-Check'               = @{ Order = 14; When = 'post'; Text = 'requires graphify update after 3+ edited files' }
     'Large-File-Check'                 = @{ Order = 15; When = 'both'; Text = 'small-files policy + oversized-file scan' }
     # 'both', not 'pre': these three now VERIFY at Stop as well as remind at
     # the start. Closing findings default to advisory; explicit block settings remain.
@@ -294,11 +294,16 @@ $script:HookMeta = @{
     # Cloudflare-Deploy is deliberately kept LAST among individual hook
     # entries (Order = highest value) per an explicit user requirement, not
     # filesystem/alphabetical order - see Test-Wizard.ps1 for the pinned order.
-    # Install-Location-Check: last before Cloudflare-Deploy per an explicit user
-    # requirement. PreToolUse only - it reads the install command before it runs
+    # Install-Location-Check: before Writing-Voice-Check and Cloudflare-Deploy
+    # per an explicit user requirement. PreToolUse only - it reads the install command before it runs
     # and adds context; it never blocks or approves.
     'Install-Location-Check'           = @{ Order = 29; When = 'pre'; Text = 'install path off the system drive; shell calls only'; Events = @('PreToolUse'); Timeout = 30 }
-    'Cloudflare-Deploy'                = @{ Order = 30; When = 'post'; Text = 'suggests deploying in Cloudflare Workers projects, gated on release readiness' }
+    # Writing-Voice-Check: directly before Cloudflare-Deploy per an explicit
+    # user requirement (spec 038). SessionStart states the language-to-skill
+    # map, UserPromptSubmit names the skill for the typed language, Stop refuses
+    # a reply language whose voice skill was never loaded.
+    'Writing-Voice-Check'              = @{ Order = 30; When = 'both'; Text = 'requires the voice skill of the reply language'; Events = @('SessionStart', 'UserPromptSubmit', 'Stop', 'SubagentStop'); Timeout = 30 }
+    'Cloudflare-Deploy'                = @{ Order = 31; When = 'post'; Text = 'suggests deploying in Cloudflare Workers projects, gated on release readiness' }
 }
 # The registration timeout an UPDATE must pass (spec 037 FR-037-08). Updates
 # reuse the recorded value, so a raised metadata timeout never reached a single

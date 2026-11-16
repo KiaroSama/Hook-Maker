@@ -140,6 +140,9 @@ function Get-TranscriptToolEvidence {
         try {
             $reader = New-Object IO.StreamReader($stream, (New-Object Text.UTF8Encoding $false))
             while ($null -ne ($line = $reader.ReadLine())) {
+                # A compaction boundary (spec 038): skills loaded before it are
+                # gone from the model's context, so the voice gate counts after it.
+                if ($line.Contains('"isCompactSummary":true')) { [void]$events.Add([pscustomobject]@{ Kind = 'compact'; Value = 'compact' }); continue }
                 $isTool = $line.Contains('"tool_use"')
                 $isPrompt = (-not $isTool) -and $line.Contains('"type":"user"') -and -not $line.Contains('"tool_use_id"') -and
                     -not $line.Contains('"isMeta":true') -and -not $line.Contains('"isCompactSummary":true')
@@ -168,6 +171,9 @@ function Get-TranscriptToolEvidence {
                     }
                     # Synapse memory calls (spec 037): Value is digest|retrieve|write.
                     elseif ($name -match '(?i)^mcp__[A-Za-z0-9_.\-]*synapse[A-Za-z0-9_.\-]*__memory_(digest|retrieve|write)$') { $kind = 'synapse'; $value = $Matches[1].ToLowerInvariant() }
+                    # Spec 038: shell commands (graphify update) and Codebase Memory calls (index_repository).
+                    elseif ($name -in @('Bash', 'PowerShell')) { $kind = 'shell'; $value = [string](Get-Field $toolInput 'command') }
+                    elseif ($name -match '(?i)^mcp__[A-Za-z0-9_.\-]*codebase[-_]?memory[A-Za-z0-9_.\-]*__([A-Za-z0-9_]+)$') { $kind = 'cbm'; $value = $Matches[1].ToLowerInvariant() }
                     else { continue }
                     if ($value -ne '') { [void]$events.Add([pscustomobject]@{ Kind = $kind; Value = $value }) }
                 }
@@ -177,6 +183,61 @@ function Get-TranscriptToolEvidence {
     }
     catch { return $none }
     return [pscustomobject]@{ Ok = $true; Partial = $false; Events = @($events.ToArray()) }
+}
+
+# STRUCTURAL INDEX REFRESH DUTY (spec 038): the graph and CBM gates refuse what
+# Speckit-Check refuses - a change request that edited 3+ project files - when
+# no refresh ran AFTER the last of those edits. A refresh before the last edit
+# leaves the index describing an older tree, so it does not count. Returns $null
+# (no duty, satisfied, or reasoned `<Label>: not refreshed - <reason>` closing
+# line) or @{ EditCount; FirstPrompt; Fingerprint }. Callers need _scope.ps1.
+function Get-StructuralRefreshFinding {
+    param(
+        [Parameter(Mandatory = $true)]$HookInput, [object[]]$Events,
+        [Parameter(Mandatory = $true)][string]$RefreshKind, [Parameter(Mandatory = $true)][string]$RefreshPattern,
+        [Parameter(Mandatory = $true)][string]$ExemptLabel, [string]$OwnMessagePattern = '^$'
+    )
+    $cwd = [string](Get-Field $HookInput 'cwd')
+    if ([string]::IsNullOrWhiteSpace($cwd) -or -not (Get-Command Test-ProjectChangingPrompt -ErrorAction SilentlyContinue)) { return $null }
+    $root = [IO.Path]::GetFullPath($cwd).TrimEnd('\', '/') + '\'
+    $prompts = New-Object System.Collections.Generic.List[string]
+    $edited = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
+    $index = 0; $lastEdit = -1; $lastRefresh = -1
+    foreach ($item in @($Events)) {
+        $index++
+        if ($item.Kind -eq 'prompt') {
+            # The gate's own refusal comes back as a prompt; it is not a request.
+            if ($item.Value -notmatch $OwnMessagePattern -and (Test-ProjectChangingPrompt -Prompt $item.Value)) { [void]$prompts.Add($item.Value) }
+        }
+        elseif ($item.Kind -eq $RefreshKind -and $item.Value -match $RefreshPattern) { $lastRefresh = $index }
+        elseif ($item.Kind -eq 'write') {
+            $full = ''
+            try { $full = [IO.Path]::GetFullPath($(if ([IO.Path]::IsPathRooted($item.Value)) { $item.Value } else { Join-Path $cwd $item.Value })) } catch { continue }
+            if (-not $full.StartsWith($root, [StringComparison]::OrdinalIgnoreCase)) { continue }
+            if ($full.Substring($root.Length) -match '^(?i)(\.ai|\.claude|plans|specs|\.specify)[\\/]') { continue }
+            [void]$edited.Add($full); $lastEdit = $index
+        }
+    }
+    if ($prompts.Count -eq 0 -or $edited.Count -lt 3 -or $lastRefresh -gt $lastEdit) { return $null }
+    $closing = Get-TaskClosingEvidence -HookInput $HookInput
+    if ($null -ne $closing -and $closing.Known) {
+        $declaration = Test-ClosingDeclaration -Text ([string]$closing.Text) -LabelPattern $ExemptLabel
+        if ($declaration.Present -and ([string]$declaration.Value).Trim() -match '^(?i)not[ \t]+refreshed[ \t]*[-:][ \t]*(?<reason>.*\S.*)$' -and $Matches['reason'].Trim().Length -ge 6) { return $null }
+    }
+    $first = ([string]$prompts[0]) -replace '\s+', ' '
+    if ($first.Length -gt 120) { $first = $first.Substring(0, 120) + '...' }
+    $joined = (@($prompts | ForEach-Object { Get-ShortHash $_ } | Sort-Object) -join ',')
+    return [pscustomobject]@{ EditCount = $edited.Count; FirstPrompt = $first; Fingerprint = (Get-ShortHash ([string](Get-Field $HookInput 'session_id') + '|' + $joined)) }
+}
+
+# Once per fingerprint: $true the first time (and records it), $false on repeat.
+function Test-NewGateFingerprint {
+    param([Parameter(Mandatory = $true)][string]$Name, [Parameter(Mandatory = $true)][string]$Cwd, [Parameter(Mandatory = $true)][string]$Fingerprint)
+    $dir = Join-Path $env:LOCALAPPDATA 'HookMaker\state'
+    $path = Join-Path $dir ($Name + '-gate-' + (Get-ShortHash $Cwd.ToLowerInvariant()) + '.txt')
+    try { if ([IO.File]::Exists($path) -and ([IO.File]::ReadAllText($path).Trim()) -eq $Fingerprint) { return $false } } catch { }
+    try { [void][IO.Directory]::CreateDirectory($dir); [IO.File]::WriteAllText($path, $Fingerprint) } catch { }
+    return $true
 }
 
 # Explicit repository-state provenance for test observation and completion.

@@ -1,7 +1,15 @@
 # Cbm-Update-Check - the Codebase Memory index is lagging behind the code.
 #
-# ROLE: ADVISORY (global-hook-rules.md SS Hook Roles). Never blocks, never
-# runs the CBM binary, never writes outside its own state file.
+# ROLE: GATE on Stop (spec 038 strict path, below), ADVISORY otherwise
+# (global-hook-rules.md SS Hook Roles). Never runs the CBM binary, never writes
+# outside its own state files.
+#
+# STRICT PATH (spec 038, same duty and threshold as Speckit-Check): a change
+# request that edited 3+ project files needs an index_repository call AFTER the
+# last edit, or a closing `CBM: not refreshed - <reason>` line. index_status
+# alone does not clear it - it reports, it does not refresh. Refused once per
+# (session, request set); HOOK_ENFORCEMENT=advisory|off lowers it. Unknown or
+# partial transcripts and SubagentStop keep the advisory below.
 #
 # EXPECT THIS HOOK TO BE SILENT ALMOST ALWAYS, and read that as correct
 # behaviour rather than a broken hook: CBM runs a background watcher that
@@ -18,6 +26,7 @@ Set-StrictMode -Version 2.0
 $ErrorActionPreference = 'Stop'
 
 . (Join-Path $PSScriptRoot '..\_hooklib.ps1')
+. (Join-Path $PSScriptRoot '..\_scope.ps1')
 
 $hookInput = Read-HookInput
 if ($null -eq $hookInput) { exit 0 }
@@ -25,9 +34,11 @@ $eventName = [string](Get-Field $hookInput 'hook_event_name')
 if ([string]::IsNullOrWhiteSpace($eventName)) { $eventName = 'Stop' }
 if ($eventName -ne 'Stop' -and $eventName -ne 'SubagentStop') { exit 0 }
 
-# A Stop hook that re-fires on its own output is the classic hook loop.
-$stopActive = Get-Field $hookInput 'stop_hook_active'
-if ($null -ne $stopActive -and [bool]$stopActive) { exit 0 }
+$gateReceipt = if ($eventName -eq 'Stop' -and (Get-Command Start-StopGateReceipt -ErrorAction SilentlyContinue)) { Start-StopGateReceipt -HookInput $hookInput -HookName 'Cbm-Update-Check' } else { $null }
+try {
+# Stand down only on THIS hook's own re-entry; the advisory path below keeps the
+# older any-gate guard, since a reminder after another gate's block is noise.
+if ($eventName -eq 'Stop' -and (Get-Command Test-StopStandDown -ErrorAction SilentlyContinue) -and (Test-StopStandDown -HookInput $hookInput -HookName 'Cbm-Update-Check')) { exit 0 }
 
 $cwd = [string](Get-Field $hookInput 'cwd')
 if ([string]::IsNullOrWhiteSpace($cwd)) { exit 0 }
@@ -43,6 +54,30 @@ $dbPath = Get-CbmProjectDbPath -ProjectRoot $cwd -CacheDir $cacheDir
 $dbItem = $null
 try { if (Test-Path -LiteralPath $dbPath -PathType Leaf) { $dbItem = Get-Item -LiteralPath $dbPath -Force } } catch { $dbItem = $null }
 if ($null -eq $dbItem) { exit 0 }
+
+if ($eventName -eq 'Stop' -and $script:EvidenceLibReady -and (Get-Command Get-StructuralRefreshFinding -ErrorAction SilentlyContinue)) {
+    $maxBytes = 20000000
+    if ($config.ContainsKey('MAX_TRANSCRIPT_BYTES')) {
+        $parsed = 0; if ([int]::TryParse([string]$config['MAX_TRANSCRIPT_BYTES'], [ref]$parsed) -and $parsed -ge 100000) { $maxBytes = $parsed }
+    }
+    $evidence = Get-TranscriptToolEvidence -Path ([string](Get-Field $hookInput 'transcript_path')) -MaxBytes $maxBytes
+    if ($evidence.Ok -and -not $evidence.Partial) {
+        $finding = Get-StructuralRefreshFinding -HookInput $hookInput -Events @($evidence.Events) -RefreshKind 'cbm' -RefreshPattern '^index_repository$' -ExemptLabel 'CBM' -OwnMessagePattern '(?im)^[ 	-]*CBM UPDATE CHECK'
+        if ($null -ne $finding) {
+            if (-not (Test-NewGateFingerprint -Name 'CbmUpdateCheck' -Cwd $cwd -Fingerprint $finding.Fingerprint)) { exit 0 }
+            $blockMessage = @(
+                ('CBM UPDATE CHECK: request "' + $finding.FirstPrompt + '" edited ' + [string]$finding.EditCount + ' project files; no index_repository after the last edit.'),
+                ('Run index_repository(repo_path=' + ($cwd | ConvertTo-Json -Compress) + ', mode="moderate", persistence=true) now, or end the reply with `CBM: not refreshed - <reason>`.')
+            ) -join "`n"
+            $emit = Write-StopBlockResult -HookInput $hookInput -HookName 'Cbm-Update-Check' -FindingFingerprint $finding.Fingerprint -EventName $eventName -Message $blockMessage -Condition 'required-workflow'
+            exit $emit.ExitCode
+        }
+    }
+}
+
+# A Stop hook that re-fires on its own output is the classic hook loop.
+$stopActive = Get-Field $hookInput 'stop_hook_active'
+if ($null -ne $stopActive -and [bool]$stopActive) { exit 0 }
 
 function Get-IntSetting {
     param([string]$Key, [int]$Default, [int]$Minimum, [int]$Maximum)
@@ -96,3 +131,6 @@ $message = @(
 
 $emit = Write-HookResult -EventName $eventName -Kind 'context' -Message $message
 exit $emit.ExitCode
+}
+catch { if ($null -ne $gateReceipt) { $gateReceipt.Crashed = $true }; throw }
+finally { if ($null -ne $gateReceipt) { Complete-StopGateReceipt $gateReceipt } }

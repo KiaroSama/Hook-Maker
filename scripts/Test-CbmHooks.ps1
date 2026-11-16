@@ -229,6 +229,45 @@ try {
     # nothing this hook can honestly say.
     $r = Invoke-CbmHook 'Cbm-Update-Check\Cbm-Update-Check.ps1' @{ hook_event_name = 'Stop'; cwd = $proj; session_id = 'u5' } $cache
     Check 'update: silent outside a git repository (no work time to compare)' ($r.Out.Trim() -eq '') $r.Out
+
+    # =====================================================================
+    Write-Host '--- Cbm-Update-Check strict path (spec 038) ---' -ForegroundColor Cyan
+    # Steps: 'edit:<relative>' or 'cbm:<tool>'; a change request opens it.
+    function New-CbmTranscript {
+        param([string]$Name, [string[]]$Steps, [string]$FinalText = 'Done.')
+        $entries = New-Object System.Collections.Generic.List[string]
+        [void]$entries.Add((@{ type = 'user'; message = @{ role = 'user'; content = 'add a parser feature' } } | ConvertTo-Json -Depth 8 -Compress))
+        foreach ($s in @($Steps)) {
+            if ($s -like 'edit:*') { $part = @{ type = 'tool_use'; name = 'Edit'; input = @{ file_path = (Join-Path $proj $s.Substring(5)) } } }
+            else { $part = @{ type = 'tool_use'; name = ('mcp__codebase-memory-mcp__' + $s.Substring(4)); input = @{} } }
+            [void]$entries.Add((@{ type = 'assistant'; message = @{ role = 'assistant'; content = @($part) } } | ConvertTo-Json -Depth 8 -Compress))
+        }
+        [void]$entries.Add((@{ type = 'assistant'; message = @{ role = 'assistant'; content = @(@{ type = 'text'; text = $FinalText }) } } | ConvertTo-Json -Depth 8 -Compress))
+        $path = Join-Path $Work ($Name + '.jsonl')
+        [System.IO.File]::WriteAllText($path, (($entries.ToArray() -join "`n") + "`n"))
+        return $path
+    }
+    $three = @('edit:a.ps1', 'edit:b.ps1', 'edit:c.ps1')
+    $blockPattern = '"decision"\s*:\s*"block"'
+    $r = Invoke-CbmHook 'Cbm-Update-Check\Cbm-Update-Check.ps1' @{ hook_event_name = 'Stop'; cwd = $proj; session_id = 's1'; transcript_path = (New-CbmTranscript 's1' $three) } $cache
+    Check 'strict: 3 edits, no index_repository -> blocked' ($r.Out -match $blockPattern -and $r.Out -match 'CBM UPDATE CHECK: request "add a parser feature" edited 3 project files; no index_repository after the last edit') $r.Out
+    Check 'strict: the block names index_repository and the exemption line' ($r.Out -match 'index_repository\(repo_path=' -and $r.Out -match 'CBM: not refreshed - <reason>') $r.Out
+    $r = Invoke-CbmHook 'Cbm-Update-Check\Cbm-Update-Check.ps1' @{ hook_event_name = 'Stop'; cwd = $proj; session_id = 's1'; transcript_path = (New-CbmTranscript 's1b' $three) } $cache
+    Check 'strict: the unchanged finding is not refused twice' ($r.Out -notmatch $blockPattern) $r.Out
+    $r = Invoke-CbmHook 'Cbm-Update-Check\Cbm-Update-Check.ps1' @{ hook_event_name = 'Stop'; cwd = $proj; session_id = 's2'; transcript_path = (New-CbmTranscript 's2' ($three + 'cbm:index_repository')) } $cache
+    Check 'strict: index_repository after the last edit -> silent' ($r.Out.Trim() -eq '') $r.Out
+    $r = Invoke-CbmHook 'Cbm-Update-Check\Cbm-Update-Check.ps1' @{ hook_event_name = 'Stop'; cwd = $proj; session_id = 's3'; transcript_path = (New-CbmTranscript 's3' ($three + 'cbm:index_status')) } $cache
+    Check 'strict: index_status alone does not clear it' ($r.Out -match $blockPattern) $r.Out
+    $r = Invoke-CbmHook 'Cbm-Update-Check\Cbm-Update-Check.ps1' @{ hook_event_name = 'Stop'; cwd = $proj; session_id = 's4'; transcript_path = (New-CbmTranscript 's4' @('edit:a.ps1', 'cbm:index_repository', 'edit:b.ps1', 'edit:c.ps1')) } $cache
+    Check 'strict: a refresh before the last edit does not count' ($r.Out -match $blockPattern) $r.Out
+    $r = Invoke-CbmHook 'Cbm-Update-Check\Cbm-Update-Check.ps1' @{ hook_event_name = 'Stop'; cwd = $proj; session_id = 's5'; transcript_path = (New-CbmTranscript 's5' @('edit:a.ps1', 'edit:b.ps1')) } $cache
+    Check 'strict: 2 edits are a small task -> silent' ($r.Out.Trim() -eq '') $r.Out
+    $r = Invoke-CbmHook 'Cbm-Update-Check\Cbm-Update-Check.ps1' @{ hook_event_name = 'Stop'; cwd = $proj; session_id = 's6'; transcript_path = (New-CbmTranscript 's6' $three "Done.`nCBM: not refreshed - watcher verified current") } $cache
+    Check 'strict: a reasoned exemption line clears it' ($r.Out.Trim() -eq '') $r.Out
+    $r = Invoke-CbmHook 'Cbm-Update-Check\Cbm-Update-Check.ps1' @{ hook_event_name = 'SubagentStop'; cwd = $proj; session_id = 's7'; transcript_path = (New-CbmTranscript 's7' $three) } $cache
+    Check 'strict: SubagentStop is never refused' ($r.Out -notmatch $blockPattern) $r.Out
+    $r = Invoke-CbmHook 'Cbm-Update-Check\Cbm-Update-Check.ps1' @{ hook_event_name = 'Stop'; cwd = $proj; session_id = 's8'; transcript_path = (New-CbmTranscript 's8' $three) } $emptyCache
+    Check 'strict: no CBM installed -> silent' ($r.Out.Trim() -eq '') $r.Out
 }
 finally {
     foreach ($key in $savedSuiteEnvironment.Keys) { [Environment]::SetEnvironmentVariable($key, $savedSuiteEnvironment[$key]) }
