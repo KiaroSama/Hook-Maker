@@ -38,7 +38,7 @@ function Get-ReadmeBadgeState {
         $candidate = Join-Path $ProjectRoot $name
         if (Test-Path -LiteralPath $candidate -PathType Leaf) { $readme = $candidate; break }
     }
-    if ($null -eq $readme) { return [pscustomobject]@{ Found = $false; Count = 0; Readable = $true; DonateBadge = $false; DonateSection = $false; Centred = $true } }
+    if ($null -eq $readme) { return [pscustomobject]@{ Found = $false; Count = 0; Readable = $true; DonateBadge = $false; DonateSection = $false; Centred = $true; Format = @() } }
     # An explicit reader, disposed here: an enumerator abandoned by
     # Select-Object -First can keep the README open on Windows PowerShell 5.1.
     $lines = New-Object System.Collections.Generic.List[string]
@@ -55,7 +55,7 @@ function Get-ReadmeBadgeState {
             $read++
         }
     }
-    catch { return [pscustomobject]@{ Found = $true; Count = 0; Readable = $false; DonateBadge = $false; DonateSection = $false; Centred = $true } }
+    catch { return [pscustomobject]@{ Found = $true; Count = 0; Readable = $false; DonateBadge = $false; DonateSection = $false; Centred = $true; Format = @() } }
     finally { if ($null -ne $reader) { $reader.Dispose() } }
     $urls = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::OrdinalIgnoreCase)
     $donateBadge = $false

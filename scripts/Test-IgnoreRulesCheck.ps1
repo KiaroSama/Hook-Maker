@@ -545,10 +545,10 @@ try {
     $rustW = New-Repo 'eco-rust-write'
     [System.IO.File]::WriteAllText((Join-Path $rustW 'Cargo.toml'), "[package]`nname = `"x`"`n", $utf8)
     [System.IO.File]::WriteAllText((Join-Path $rustW 'Cargo.lock'), "# lock`n", $utf8)
-    $null = Fire -Cwd $rustW -EventName 'SessionStart' -HookPath $ecoWriteHook
-    Add-Content -LiteralPath (Join-Path $rustW '.gitignore') -Value 'target/'
-    $wBefore = [System.IO.File]::ReadAllText((Join-Path $rustW '.gitignore')).TrimEnd()
-    $r = Fire -Cwd $rustW -HookPath $ecoWriteHook
+    # The user's own spelling exists BEFORE the first event, which is the one that writes.
+    [System.IO.File]::WriteAllText((Join-Path $rustW '.gitignore'), "target/`n", $utf8)
+    $wBefore = 'target/'
+    $r = Fire -Cwd $rustW -EventName 'SessionStart' -HookPath $ecoWriteHook
     $wAfter = [System.IO.File]::ReadAllText((Join-Path $rustW '.gitignore'))
     Check 'ECOSYSTEM_PATTERNS=write appends the missing Rust lines under one header' ($r.Out -match 'Appended ecosystem ignores' -and $wAfter -match '(?m)^# Hook Maker: ecosystem ignores' -and $wAfter -match '(?m)^\*\.profraw$') ($r.Out + ' || ' + $wAfter)
     Check 'write mode keeps every earlier line in place (append only)' ($wAfter.StartsWith($wBefore)) $wAfter
