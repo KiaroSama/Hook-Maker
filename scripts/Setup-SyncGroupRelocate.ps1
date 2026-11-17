@@ -24,6 +24,7 @@
 
 # The search for a moved folder and the non-interactive repair live beside this
 # flow so Update-Fleet and the wizard update run exactly the same steps.
+. (Join-Path $PSScriptRoot '_pathcanonical.ps1')
 . (Join-Path $PSScriptRoot '_relocatecore.ps1')
 
 # The set of project roots the registry believes in that are not on disk. That
@@ -38,13 +39,21 @@ function Get-RelocationCandidate {
 
     $registry = Read-InstallRegistry -ToolRoot $ToolRoot
     $byRoot = @{}
+    # A root that EXISTS but resolves through a symlink/junction to another
+    # folder is an alias (spec 039): the same physical project under a second
+    # registry root. Its destination is proven by the file system itself, so it
+    # is listed with RealRoot set; a missing root keeps RealRoot ''.
+    $realOf = @{}
     foreach ($record in @($registry.installs)) {
         if ($null -eq $record) { continue }
         if ($null -eq $record.PSObject.Properties['scope'] -or [string]$record.scope -ne 'project') { continue }
         $root = ''
         if ($null -ne $record.PSObject.Properties['targetProjectRoot']) { $root = [string]$record.targetProjectRoot }
         if ([string]::IsNullOrWhiteSpace($root)) { continue }
-        if (Test-Path -LiteralPath $root -PathType Container) { continue }
+        if (Test-Path -LiteralPath $root -PathType Container) {
+            if (-not $realOf.ContainsKey($root)) { $realOf[$root] = Get-AliasRealRoot $root }
+            if ($realOf[$root] -eq '') { continue }
+        }
         if (-not $byRoot.ContainsKey($root)) { $byRoot[$root] = New-Object System.Collections.Generic.List[object] }
         [void]$byRoot[$root].Add($record)
     }
@@ -54,7 +63,10 @@ function Get-RelocationCandidate {
     # still pointing at a folder renamed two renames ago while the registry was
     # clean, so a registry-only list could never offer it.
     foreach ($root in @(Get-SyncConfigRoot -ConfigPath $ConfigPath)) {
-        if (Test-Path -LiteralPath $root -PathType Container) { continue }
+        if (Test-Path -LiteralPath $root -PathType Container) {
+            if (-not $realOf.ContainsKey($root)) { $realOf[$root] = Get-AliasRealRoot $root }
+            if ($realOf[$root] -eq '') { continue }
+        }
         if ($byRoot.ContainsKey($root)) { continue }
         $known = @($byRoot.Keys | Where-Object { [string]::Equals($_, $root, [System.StringComparison]::OrdinalIgnoreCase) })
         if ($known.Count -gt 0) { continue }
@@ -62,12 +74,25 @@ function Get-RelocationCandidate {
     }
     $candidates = New-Object System.Collections.Generic.List[object]
     foreach ($root in @($byRoot.Keys | Sort-Object)) {
+        $real = ''
+        if ($realOf.ContainsKey($root)) { $real = [string]$realOf[$root] }
         [void]$candidates.Add([pscustomobject]@{
-                Root    = $root
-                Records = @($byRoot[$root].ToArray())
+                Root     = $root
+                Records  = @($byRoot[$root].ToArray())
+                RealRoot = $real
             })
     }
     return $candidates.ToArray()
+}
+
+# The real folder an EXISTING root resolves to when it differs from the root
+# itself (a link or a link in a parent), else ''.
+function Get-AliasRealRoot {
+    param([Parameter(Mandatory = $true)][string]$Root)
+    $real = Resolve-RealDirectoryPath $Root
+    if (-not (Test-PathIsAliasOf -Path $Root -RealPath $real)) { return '' }
+    if (-not (Test-Path -LiteralPath $real -PathType Container)) { return '' }
+    return $real
 }
 
 # Every project root either end of an ENABLED sync route names, deduplicated.
@@ -144,7 +169,11 @@ function Update-SyncConfigRoot {
     param(
         [Parameter(Mandatory = $true)][string]$ConfigPath,
         [Parameter(Mandatory = $true)][string]$OldRoot,
-        [Parameter(Mandatory = $true)][string]$NewRoot
+        [Parameter(Mandatory = $true)][string]$NewRoot,
+        # An alias merge (spec 039) keeps the link path in the endpoint's
+        # `aliases`: sessions opened through the link still match the route,
+        # and the folder name does not change, so names are left alone.
+        [switch]$KeepOldAsAlias
     )
     $changed = [pscustomobject]@{ Roots = 0; Names = 0; Profiles = 0 }
     if (-not (Test-Path -LiteralPath $ConfigPath -PathType Leaf)) { return $changed }
@@ -167,14 +196,21 @@ function Update-SyncConfigRoot {
                     [string]::Equals([string]$node.root, $OldRoot, [System.StringComparison]::OrdinalIgnoreCase)) {
                     Set-ObjectProperty -Object $node -Name 'root' -Value $NewRoot
                     $changed.Roots++
+                    if ($KeepOldAsAlias) {
+                        $aliases = @()
+                        if ($null -ne $node.PSObject.Properties['aliases']) { $aliases = @($node.aliases | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) }) }
+                        if (@($aliases | Where-Object { [string]::Equals([string]$_, $OldRoot, [System.StringComparison]::OrdinalIgnoreCase) }).Count -eq 0) { $aliases += $OldRoot }
+                        Set-ObjectProperty -Object $node -Name 'aliases' -Value @($aliases)
+                    }
                 }
+                if ($KeepOldAsAlias) { continue }
                 if ($null -ne $node.PSObject.Properties['name'] -and [string]$node.name -eq $oldLeaf) {
                     Set-ObjectProperty -Object $node -Name 'name' -Value $newLeaf
                     $changed.Names++
                 }
             }
         }
-        if ($null -ne $profile.PSObject.Properties['name'] -and [string]$profile.name -like ('*' + $oldLeaf + '*')) {
+        if (-not $KeepOldAsAlias -and $null -ne $profile.PSObject.Properties['name'] -and [string]$profile.name -like ('*' + $oldLeaf + '*')) {
             Set-ObjectProperty -Object $profile -Name 'name' -Value ([string]$profile.name).Replace($oldLeaf, $newLeaf)
             $changed.Profiles++
         }
@@ -198,21 +234,23 @@ function Invoke-FixRelocatedProject {
     $candidates = @(Get-RelocationCandidate -ToolRoot $ToolRoot -ConfigPath $ConfigPath)
     if ($candidates.Count -eq 0) {
         Write-NoteLine '  Every tracked project folder still exists - nothing looks moved.'
-        Write-NoteLine '  This action only offers project roots the registry or a sync route names that are NOT on disk.'
+        Write-NoteLine '  This action only offers project roots the registry or a sync route names that are NOT on disk, or that are links to another folder.'
         Write-Log 'INFO' 'RELOCATE' 'No missing project roots.'
         return 'back'
     }
 
-    Write-MenuTitle 'Tracked project folders that no longer exist:'
+    Write-MenuTitle 'Tracked project folders that no longer exist or are links:'
     for ($i = 0; $i -lt $candidates.Count; $i++) {
         $entry = $candidates[$i]
         $what = [string]@($entry.Records).Count + ' hook(s)'
         if (@($entry.Records).Count -eq 0) { $what = 'sync routes only' }
+        if ([string]$entry.RealRoot -ne '') { $what += ' (link to ' + [string]$entry.RealRoot + ')' }
         Write-Host ('  ' + (Get-Painted ([string]($i + 1) + '.') $C.LightBlue) + ' ' +
             (Get-Painted $entry.Root $C.Bold) + $script:MenuSep +
             (Get-Painted $what $C.HintYellow))
     }
-    Write-NoteLine '  A folder listed here was renamed, moved, or deleted. Only you know which.'
+    Write-NoteLine '  A missing folder was renamed, moved, or deleted. Only you know which.'
+    Write-NoteLine '  A link is merged into the folder it points at; the link itself is left alone.'
     $answer = Read-Answer (New-QuestionPrompt 'Which one moved? (number, 0 to cancel)' $null '0') 'relocate pick'
     if ([string]::IsNullOrWhiteSpace($answer) -or $answer -eq '0') { return 'back' }
     $pick = 0
@@ -226,8 +264,13 @@ function Invoke-FixRelocatedProject {
     # A folder that carries one of this root's record ids IS the moved project;
     # offer it, but the user still confirms (or names another).
     $suggestion = ''
-    $search = Find-RelocatedProjectRoot -OldRoot $oldRoot -RecordIds @(@($chosen.Records) | ForEach-Object { [string]$_.id })
-    if (@($search.Candidates).Count -eq 1) {
+    $isAlias = ([string]$chosen.RealRoot -ne '')
+    if ($isAlias) {
+        $suggestion = [string]$chosen.RealRoot
+        Write-NoteLine ('  The link points at: ' + $suggestion)
+    }
+    else { $search = Find-RelocatedProjectRoot -OldRoot $oldRoot -RecordIds @(@($chosen.Records) | ForEach-Object { [string]$_.id }) }
+    if (-not $isAlias -and @($search.Candidates).Count -eq 1) {
         $suggestion = [string]$search.Candidates[0]
         Write-NoteLine ('  Found by its hooks'' record ids: ' + $suggestion)
     }
@@ -263,8 +306,10 @@ function Invoke-FixRelocatedProject {
         return 'back'
     }
 
+    # Alias mode only when the user kept the folder the link really points at.
+    $aliasMerge = $isAlias -and [string]::Equals($newRoot, [string]$chosen.RealRoot, [System.StringComparison]::OrdinalIgnoreCase)
     $relocation = Invoke-ProjectRelocation -OldRoot $oldRoot -NewRoot $newRoot -Records $records -ConfigPath $ConfigPath `
-        -InstallScript $InstallScript -UninstallScript $UninstallScript -Log { param($Level, $Message) Write-Log $Level 'RELOCATE' $Message }
+        -InstallScript $InstallScript -UninstallScript $UninstallScript -AliasMerge:$aliasMerge -Log { param($Level, $Message) Write-Log $Level 'RELOCATE' $Message }
     $installed = $relocation.Installed; $installFailed = $relocation.InstallFailed
     $dropped = $relocation.Dropped; $dropFailed = $relocation.DropFailed
     $failures = @($relocation.Failures); $configChange = $relocation.ConfigChange

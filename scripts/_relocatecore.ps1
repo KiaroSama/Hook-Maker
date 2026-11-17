@@ -113,6 +113,11 @@ function Invoke-ProjectRelocation {
         # A script path, or a scriptblock with the same parameters (tests).
         [Parameter(Mandatory = $true)]$InstallScript,
         [Parameter(Mandatory = $true)]$UninstallScript,
+        # OldRoot is a link to NewRoot (spec 039): the same physical folder, so
+        # the old record's runtime IS the new record's runtime. The old record
+        # is dropped from the registry only (-ForgetAliasRecord, which re-proves
+        # it), never uninstalled, and the link stays a route alias.
+        [switch]$AliasMerge,
         [scriptblock]$Log = { param($Level, $Message) }
     )
     $installed = 0; $installFailed = 0; $codex = $false
@@ -186,7 +191,8 @@ function Invoke-ProjectRelocation {
     foreach ($record in $replacedRecords) {
         $resultPath = Join-Path ([IO.Path]::GetTempPath()) ('hookmaker-relocate-un-' + [guid]::NewGuid().ToString('N').Substring(0, 10) + '.json')
         try {
-            & $UninstallScript -RecordId ([string]$record.id) -ResultPath $resultPath *> $null
+            if ($AliasMerge) { & $UninstallScript -RecordId ([string]$record.id) -ResultPath $resultPath -ForgetAliasRecord *> $null }
+            else { & $UninstallScript -RecordId ([string]$record.id) -ResultPath $resultPath *> $null }
             $result = $null
             if (Test-Path -LiteralPath $resultPath -PathType Leaf) { $result = Get-Content -LiteralPath $resultPath -Raw | ConvertFrom-Json }
             if ($null -ne $result -and [string]$result.overall -eq 'ok') { $dropped++ }
@@ -200,7 +206,7 @@ function Invoke-ProjectRelocation {
         catch { $dropFailed++; [void]$failures.Add('record ' + [string]$record.id + ': ' + $_.Exception.Message) }
         finally { Remove-Item -LiteralPath $resultPath -Force -ErrorAction SilentlyContinue }
     }
-    $configChange = Update-SyncConfigRoot -ConfigPath $ConfigPath -OldRoot $OldRoot -NewRoot $NewRoot
+    $configChange = Update-SyncConfigRoot -ConfigPath $ConfigPath -OldRoot $OldRoot -NewRoot $NewRoot -KeepOldAsAlias:$AliasMerge
     return [pscustomobject]@{
         Installed = $installed; InstallFailed = $installFailed; Replaced = $replacedRecords.Count
         Dropped = $dropped; DropFailed = $dropFailed; Failures = @($failures.ToArray())
@@ -229,6 +235,21 @@ function Invoke-FleetRelocations {
         $records = @($candidate.Records)
         if ($records.Count -eq 0) { continue }
         $oldRoot = [string]$candidate.Root
+        $realRoot = ''
+        if ($null -ne $candidate.PSObject.Properties['RealRoot']) { $realRoot = [string]$candidate.RealRoot }
+        if ($realRoot -ne '') {
+            # An alias root is proven by the file system, not by a search.
+            $row = [pscustomobject]@{ OldRoot = $oldRoot; NewRoot = $realRoot; State = 'alias'; Records = $records.Count; Result = $null; Partial = $false }
+            if ($OnlyProject -ne '' -and -not (Test-RelocationRowSelected -Roots @($oldRoot, $realRoot) -OnlyProject $OnlyProject)) { continue }
+            if ($Apply) {
+                & $Log 'INFO' ('Merging link ' + $oldRoot + ' -> ' + $realRoot + ' (' + $records.Count + ' record(s))')
+                $row.Result = Invoke-ProjectRelocation -OldRoot $oldRoot -NewRoot $realRoot -Records $records -ConfigPath $ConfigPath `
+                    -InstallScript $InstallScript -UninstallScript $UninstallScript -AliasMerge -Log $Log
+                $row.State = if (@($row.Result.Failures).Count -eq 0) { 'alias-merged' } else { 'alias-merged-with-problems' }
+            }
+            [void]$rows.Add($row)
+            continue
+        }
         $left = $script:RelocateTotalMs - $budget.ElapsedMilliseconds
         if ($left -le 0) {
             [void]$rows.Add([pscustomobject]@{ OldRoot = $oldRoot; NewRoot = ''; State = 'not-found'; Records = $records.Count; Result = $null; Partial = $true })
@@ -239,14 +260,7 @@ function Invoke-FleetRelocations {
         $row = [pscustomobject]@{ OldRoot = $oldRoot; NewRoot = ''; State = 'not-found'; Records = $records.Count; Result = $null; Partial = $search.Partial }
         if (@($search.Candidates).Count -gt 1) { $row.State = 'ambiguous' }
         elseif (@($search.Candidates).Count -eq 1) { $row.NewRoot = [string]$search.Candidates[0]; $row.State = 'proven' }
-        if ($OnlyProject -ne '') {
-            $selected = $false
-            foreach ($root in @($oldRoot, $row.NewRoot)) {
-                if ($root -ne '' -and ([string]::Equals($root, $OnlyProject, [StringComparison]::OrdinalIgnoreCase) -or
-                        [string]::Equals((Split-Path -Leaf $root), $OnlyProject, [StringComparison]::OrdinalIgnoreCase))) { $selected = $true }
-            }
-            if (-not $selected) { continue }
-        }
+        if ($OnlyProject -ne '' -and -not (Test-RelocationRowSelected -Roots @($oldRoot, $row.NewRoot) -OnlyProject $OnlyProject)) { continue }
         if ($row.State -eq 'proven' -and $Apply) {
             & $Log 'INFO' ('Relocating ' + $oldRoot + ' -> ' + $row.NewRoot + ' (' + $records.Count + ' record(s), proven by record id)')
             $row.Result = Invoke-ProjectRelocation -OldRoot $oldRoot -NewRoot $row.NewRoot -Records $records -ConfigPath $ConfigPath `
@@ -256,6 +270,16 @@ function Invoke-FleetRelocations {
         [void]$rows.Add($row)
     }
     return @($rows.ToArray())
+}
+
+# -OnlyProject names a project by full path or by folder name.
+function Test-RelocationRowSelected {
+    param([string[]]$Roots, [string]$OnlyProject)
+    foreach ($root in @($Roots)) {
+        if ($root -ne '' -and ([string]::Equals($root, $OnlyProject, [StringComparison]::OrdinalIgnoreCase) -or
+                [string]::Equals((Split-Path -Leaf $root), $OnlyProject, [StringComparison]::OrdinalIgnoreCase))) { return $true }
+    }
+    return $false
 }
 
 # One line per row, shared by Update-Fleet and the wizard so both say the same
@@ -271,13 +295,19 @@ function Format-FleetRelocationLines {
                 [void]$lines.Add('RELOCATED WITH PROBLEMS: ' + $row.OldRoot + ' -> ' + $row.NewRoot)
                 foreach ($failure in @($row.Result.Failures)) { [void]$lines.Add('  ' + $failure) }
             }
+            'alias' { [void]$lines.Add('ALIAS would merge ' + $row.Records + ' record(s): ' + $row.OldRoot + ' -> ' + $row.NewRoot) }
+            'alias-merged' { [void]$lines.Add('ALIAS merged ' + $row.Records + ' record(s): ' + $row.OldRoot + ' -> ' + $row.NewRoot) }
+            'alias-merged-with-problems' {
+                [void]$lines.Add('ALIAS merged WITH PROBLEMS: ' + $row.OldRoot + ' -> ' + $row.NewRoot)
+                foreach ($failure in @($row.Result.Failures)) { [void]$lines.Add('  ' + $failure) }
+            }
             'ambiguous' { [void]$lines.Add('RELOCATE skipped: ' + $row.OldRoot + ' - more than one folder carries its hooks (a copy?); fix it in the wizard, naming the right one') }
             default {
                 $why = if ($row.Partial) { ' (search bound reached; fix it in the wizard if it was moved)' } else { ' (renamed outside the search area, or deleted)' }
                 [void]$lines.Add('RELOCATE not found: ' + $row.OldRoot + $why)
             }
         }
-        if ($row.State -like 'relocated*' -and $null -ne $row.Result -and $row.Result.Codex) {
+        if (($row.State -like 'relocated*' -or $row.State -like 'alias-merged*') -and $null -ne $row.Result -and $row.Result.Codex) {
             [void]$lines.Add('  Codex: open ' + $row.NewRoot + ' in Codex, trust the project if asked, then /hooks -> review and trust the Hook Maker hooks (their commands now name the new path).')
         }
     }

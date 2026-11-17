@@ -127,6 +127,11 @@ jobs:
       - name: Stop ledger, anti-loop admission (Windows PowerShell 5.1)
         shell: powershell
         run: .\scripts\Test-StopLedger.ps1
+      # The link resolver runs inside Claude hooks, which use 5.1; its walk uses
+      # Get-Item LinkType/Target because ResolveLinkTarget is .NET 6+ only.
+      - name: Link-aware project roots, resolver (Windows PowerShell 5.1)
+        shell: powershell
+        run: .\scripts\Test-AliasRoots.ps1 -ResolverOnly
 
   # The suites run as PARALLEL BUCKETS rather than one long serial job.
   #
@@ -157,7 +162,7 @@ jobs:
           - name: registry
             suites: Test-CiInputEvidence,Test-ManagementAudit,Test-InstallRegistry,Test-CiStatusCheck,Test-CiDocsCarryover,Test-DiscoveredUninstall,Test-InstallRegistrySchema,Test-InstallInvoke,Test-InstalledRuntimeMigration,Test-LegacyDiscovery,Test-StatePersistence,Test-InstalledHooksMenu,Test-HookStatusDiscovery,Test-TestPlanCheck,Test-TestPlanScanner,Test-ReportHookCost,Test-HookBudgetLib,Test-HookDocsParity
           - name: uninstall
-            suites: Test-UninstallHook,Test-UpdateFleet,Test-NativePrePushInstall,Test-RulesCheck,Test-HookStatusScan,Test-TestCompletionCheck,Test-CbmHooks
+            suites: Test-UninstallHook,Test-UpdateFleet,Test-AliasRoots,Test-NativePrePushInstall,Test-RulesCheck,Test-HookStatusScan,Test-TestCompletionCheck,Test-CbmHooks
           - name: wizard
             suites: Test-Wizard,Test-GraphUpdateCheck,Test-TestRunGuard,Test-RunTests,Test-TimingHistory,Test-SyncGroupMerge,Test-CleanupFreshness
           - name: secrets

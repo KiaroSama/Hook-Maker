@@ -44,6 +44,7 @@ Set-StrictMode -Version 2.0
 $ErrorActionPreference = 'Stop'
 
 . (Join-Path $PSScriptRoot '_installresults.ps1')
+. (Join-Path $PSScriptRoot '_pathcanonical.ps1')
 
 $Utf8NoBom = [System.Text.UTF8Encoding]::new($false)
 $ToolRoot = Split-Path -Parent $PSScriptRoot
@@ -184,7 +185,7 @@ if ($null -ne $Timeout) {
 }
 
 if (-not [string]::IsNullOrWhiteSpace($TargetProject)) {
-    $resolvedTarget = [System.IO.Path]::GetFullPath([Environment]::ExpandEnvironmentVariables($TargetProject))
+    $resolvedTarget = Resolve-RealDirectoryPath $TargetProject
     if (-not (Test-Path -LiteralPath $resolvedTarget -PathType Container)) {
         throw ("Target project directory does not exist: " + $resolvedTarget)
     }
@@ -263,7 +264,9 @@ $SourceName = $SourceInfo.Name
 $FriendlyName = Get-HookFriendlyName $SourceName
 
 if (-not [string]::IsNullOrWhiteSpace($TargetProject)) {
-    $projectRoot = [System.IO.Path]::GetFullPath([Environment]::ExpandEnvironmentVariables($TargetProject))
+    # The REAL folder, through any symlink/junction in the path: a project
+    # reached through a link must not become a second registry root (spec 039).
+    $projectRoot = Resolve-RealDirectoryPath $TargetProject
     # settings.local.json (not settings.json) BY DEFAULT: the command holds a
     # machine-specific absolute path, so a fresh install must not put it into a
     # tracked file.

@@ -51,6 +51,10 @@ param(
     # else. Refused outright for a record that validates - a valid record has a
     # real removal path and must use it. See Remove-UninterpretableRecord.
     [switch]$ForgetUnreadableRecord,
+    # Drop a record whose project root is a link to a folder another record
+    # already covers (spec 039), and nothing else: both records name the same
+    # physical runtime and settings files. Refused unless the proof holds.
+    [switch]$ForgetAliasRecord,
     # Retire selected project operational state and sync membership as well.
     [switch]$Complete
 )
@@ -185,12 +189,24 @@ if ($recordValidity.Ok) { Write-ManagementAudit -Event 'uninstall-target' -Data 
 # rediscover it as a `discovered` record, which does have a removal path. The
 # refusal for a VALID record is what stops this becoming a way around the
 # ownership proofs.
-if ($ForgetUnreadableRecord) {
-    if ($Complete) {
+if ($ForgetUnreadableRecord -or $ForgetAliasRecord) {
+    if ($Complete -or ($ForgetUnreadableRecord -and $ForgetAliasRecord)) {
         Set-ComponentResult -Component 'registry' -Status 'manualRepair' -ReasonCode 'incompatibleRemovalMode' -Message 'Registry-only forgetting cannot prove complete removal.'
         Write-UninstallResult -Overall 'manualRepair'; return
     }
-    if ($recordValidity.Ok) {
+    $forgetReason = [string]$recordValidity.Reason
+    if ($ForgetAliasRecord) {
+        . (Join-Path $PSScriptRoot '_pathcanonical.ps1')
+        $aliasProof = Test-AliasRecordSuperseded -Record $record -Installs @($registry.installs)
+        if (-not $aliasProof.Ok) {
+            Set-ComponentResult -Component 'registry' -Status 'manualRepair' -ReasonCode 'aliasNotProven' -Message ([string]$aliasProof.Reason)
+            Write-UninstallResult -Overall 'manualRepair'
+            Write-Host ("WARNING: record '" + $RecordId + "' is not a proven link duplicate (" + [string]$aliasProof.Reason + "). Nothing was changed.")
+            return
+        }
+        $forgetReason = 'link to ' + [string]$aliasProof.RealRoot + ', covered by record ' + [string]$aliasProof.SupersededBy
+    }
+    elseif ($recordValidity.Ok) {
         Set-ComponentResult -Component 'registry' -Status 'manualRepair' -ReasonCode 'recordIsReadable' `
             -Message 'this record can be interpreted; use the normal uninstall so its files and registrations are removed too'
         Write-UninstallResult -Overall 'manualRepair'
@@ -198,9 +214,9 @@ if ($ForgetUnreadableRecord) {
         return
     }
     if ($WhatIf) {
-        Set-ComponentResult -Component 'registry' -Status 'ok' -ReasonCode 'wouldForget' -Message ([string]$recordValidity.Reason)
+        Set-ComponentResult -Component 'registry' -Status 'ok' -ReasonCode 'wouldForget' -Message $forgetReason
         Write-UninstallResult -Overall 'ok'
-        Write-Host ("WhatIf: record '" + $RecordId + "' would be dropped from the registry (" + [string]$recordValidity.Reason + "). Nothing on disk would be touched.")
+        Write-Host ("WhatIf: record '" + $RecordId + "' would be dropped from the registry (" + $forgetReason + "). Nothing on disk would be touched.")
         return
     }
     # The lock helper hands back whatever the action returns: '' on success, a
@@ -213,6 +229,13 @@ if ($ForgetUnreadableRecord) {
                 if ($state.State -ne 'ok') { return 'the registry could not be re-read under the lock' }
                 $live = ConvertTo-InstallRegistryCurrent -Registry $state.Registry
                 $before = @($live.installs)
+                if ($ForgetAliasRecord) {
+                    # Re-prove under the lock: the covering record may have gone.
+                    $mine = @($before | Where-Object { $null -ne $_ -and $null -ne $_.PSObject.Properties['id'] -and [string]$_.id -eq $RecordId }) | Select-Object -First 1
+                    if ($null -eq $mine) { return 'the record was already gone' }
+                    $proof = Test-AliasRecordSuperseded -Record $mine -Installs $before
+                    if (-not $proof.Ok) { return ('the link proof no longer holds: ' + [string]$proof.Reason) }
+                }
                 # Read `id` directly: Get-RecordString lives in the DISCOVERED
                 # remover's module, which this script does not load.
                 $kept = @($before | Where-Object {
@@ -231,10 +254,11 @@ if ($ForgetUnreadableRecord) {
         Write-Host ("ERROR: record '" + $RecordId + "' could not be dropped: " + $forgetError)
         return
     }
-    Set-ComponentResult -Component 'registry' -Status 'ok' -ReasonCode 'forgotten' `
-        -Message ('dropped an uninterpretable record; nothing on disk was touched (' + [string]$recordValidity.Reason + ')')
+    $forgetCode = if ($ForgetAliasRecord) { 'aliasForgotten' } else { 'forgotten' }
+    Set-ComponentResult -Component 'registry' -Status 'ok' -ReasonCode $forgetCode `
+        -Message ('dropped the registry row only; nothing on disk was touched (' + $forgetReason + ')')
     Write-UninstallResult -Overall 'ok'
-    Write-Host ("Dropped record '" + $RecordId + "' from the registry (" + [string]$recordValidity.Reason + ").")
+    Write-Host ("Dropped record '" + $RecordId + "' from the registry (" + $forgetReason + ").")
     Write-Host '  Nothing on disk was touched. Anything still installed stays installed - run a status scan to find it again.'
     return
 }
@@ -261,6 +285,7 @@ $script:KnownToolRoots = @(Get-KnownToolRoots -ToolRoot $ToolRoot)
 # machinery below. Dot-sourced HERE, deliberately: those functions read the
 # record identity variables assigned just above from this scope, so this line
 # must stay after them and before the first proof is called.
+. (Join-Path $PSScriptRoot '_pathcanonical.ps1')
 . (Join-Path $PSScriptRoot '_uninstallownership.ps1')
 
 function Read-OrCreateJsonObject {

@@ -202,7 +202,7 @@ if ($evaluate) {
             -InstallScript $InstallScript -UninstallScript (Join-Path $ScriptRoot 'Uninstall-Hook.ps1') -Apply:$Apply -OnlyProject $OnlyProject `
             -Log { param($Level, $Message) Write-FleetLog $Level 'RELOCATE' $Message })
     foreach ($line in @(Format-FleetRelocationLines -Rows $relocationRows)) { Write-Host $line; Write-FleetLog 'INFO' 'RELOCATE' $line }
-    $relocationProblems = @($relocationRows | Where-Object { $_.State -eq 'relocated-with-problems' }).Count
+    $relocationProblems = @($relocationRows | Where-Object { $_.State -eq 'relocated-with-problems' -or $_.State -eq 'alias-merged-with-problems' }).Count
 }
 $records = @(@((Read-InstallRegistry -ToolRoot $ToolRoot).installs) | Where-Object {
         $null -ne $_ -and (Test-IsManagedRecord $_) -and (Test-FleetProjectSelected -Record $_ -OnlyProject $OnlyProject) })

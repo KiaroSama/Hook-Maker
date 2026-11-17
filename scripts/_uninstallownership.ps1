@@ -503,6 +503,12 @@ function Get-RuntimeSharerRecordId {
         [Parameter(Mandatory = $true)][string]$Client,
         [Parameter(Mandatory = $true)][string]$CanonicalHookDir
     )
+    # Spec 039: a record under a linked project root names the same physical
+    # directory through another spelling, so both sides compare as real paths
+    # when the link resolver is loaded.
+    $canResolve = $null -ne (Get-Command Resolve-RealDirectoryPath -ErrorAction SilentlyContinue)
+    $mineDir = $CanonicalHookDir
+    if ($canResolve) { $mineDir = Resolve-RealDirectoryPath $CanonicalHookDir }
     foreach ($other in @($Installs)) {
         if ($null -eq $other -or $null -eq $other.PSObject.Properties['id'] -or [string]$other.id -ceq $RecordId) { continue }
         $otherSub = Get-ClientSubrecord -Record $other -Client $Client
@@ -510,7 +516,9 @@ function Get-RuntimeSharerRecordId {
         $otherScript = [string]$otherSub.runtimeScript
         if ([string]::IsNullOrWhiteSpace($otherScript)) { continue }
         $otherDir = Get-CanonicalPathOrNull (Split-Path -Parent $otherScript)
-        if ($null -ne $otherDir -and [string]::Equals($otherDir, $CanonicalHookDir, [System.StringComparison]::OrdinalIgnoreCase)) {
+        if ($null -ne $otherDir -and $canResolve) { $otherDir = Resolve-RealDirectoryPath $otherDir }
+        if ($null -ne $otherDir -and ([string]::Equals($otherDir, $CanonicalHookDir, [System.StringComparison]::OrdinalIgnoreCase) -or
+                [string]::Equals($otherDir, $mineDir, [System.StringComparison]::OrdinalIgnoreCase))) {
             return [string]$other.id
         }
     }
