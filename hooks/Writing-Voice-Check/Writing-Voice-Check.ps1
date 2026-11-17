@@ -55,7 +55,7 @@ function Get-VoiceLanguage {
 
 # ---- SessionStart: the mapping, and a reload duty after compact/resume -------
 if ($eventName -eq 'SessionStart') {
-    $note = 'WRITING VOICE: every human-readable text uses the voice skill of its OUTPUT language, from the first sentence to the last: Persian -> Skill `persian`, Russian -> Skill `great-russian`, English -> Skill `humanizer:humanizer` (global-writing-voice-rules.md FULL). Load it before the first sentence; clients without skill keys read its SKILL.md. Stop refuses a reply language with no load.'
+    $note = 'WRITING VOICE: every human-readable text uses the voice skill of its OUTPUT language, start to end: Persian -> Skill `persian`, Russian -> Skill `great-russian`, English -> Skill `humanizer:humanizer` (global-writing-voice-rules.md FULL). Load it before the first sentence; skill-less clients read its SKILL.md. Stop refuses a reply language with no load.'
     $source = [string](Get-Field $hookInput 'source')
     if ($source -in @('compact', 'resume')) { $note += ' This session was ' + $(if ($source -eq 'compact') { 'compacted' } else { 'resumed' }) + ': earlier loads are gone, reload the skill now.' }
     $emit = Write-HookResult -EventName $eventName -Kind 'context' -Message $note
