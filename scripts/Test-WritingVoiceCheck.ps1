@@ -72,6 +72,8 @@ function New-VoiceTranscript {
         if ($s -like 'prompt:*') { $doc = @{ type = 'user'; message = @{ role = 'user'; content = $s.Substring(7) } } }
         elseif ($s -eq 'compact') { $doc = @{ type = 'user'; isCompactSummary = $true; message = @{ role = 'user'; content = 'This session is being continued from a previous conversation.' } } }
         elseif ($s -like 'skill:*') { $doc = @{ type = 'assistant'; message = @{ role = 'assistant'; content = @(@{ type = 'tool_use'; name = 'Skill'; input = @{ skill = $s.Substring(6) } }) } } }
+        elseif ($s -like 'write:*') { $doc = @{ type = 'assistant'; message = @{ role = 'assistant'; content = @(@{ type = 'tool_use'; name = 'Write'; input = @{ file_path = $s.Substring(6) } }) } } }
+        elseif ($s -like 'bash:*') { $doc = @{ type = 'assistant'; message = @{ role = 'assistant'; content = @(@{ type = 'tool_use'; name = 'Bash'; input = @{ command = $s.Substring(5) } }) } } }
         else { $doc = @{ type = 'assistant'; message = @{ role = 'assistant'; content = @(@{ type = 'tool_use'; name = 'Read'; input = @{ file_path = $s.Substring(5) } }) } } }
         [void]$entries.Add(($doc | ConvertTo-Json -Depth 8 -Compress))
     }
@@ -149,6 +151,26 @@ try {
     Check 'gate: no transcript is unknown evidence - silent' ($rNone.Exit -eq 0 -and $rNone.Out -eq '') $rNone.Out
     $rOwn = Fire -Cwd (New-Proj 'GateOwn') -SessionId 'g-own' -TranscriptPath (New-VoiceTranscript 'g-own' @("prompt:$PersianPrompt", 'skill:persian', "prompt:WRITING VOICE CHECK: replies are English; no load"))
     Check 'gate: the hook''s own refusal is not a typed English prompt' ($rOwn.Out -eq '') $rOwn.Out
+
+    Write-Host ''
+    Write-Host '--- written text: files and commit/PR prose in another language (spec 041) ---' -ForegroundColor Cyan
+    $wf = New-Proj 'WrittenEn'
+    $readme = Join-Path $wf 'README.md'
+    [System.IO.File]::WriteAllText($readme, "# Tool`n`nThis tool converts files and writes a report for the user.`n", (New-Object System.Text.UTF8Encoding($false)))
+    $rW = Fire -Cwd $wf -SessionId 'w-en' -TranscriptPath (New-VoiceTranscript 'w-en' @("prompt:$PersianPrompt", 'skill:persian', "write:$readme"))
+    Check 'written: an English README in a Persian session without humanizer -> advisory' ($rW.Out -match 'VOICE \(written text\): English -> Skill `humanizer:humanizer`' -and $rW.Out -notmatch $blockPattern) ($rW.Out + $rW.Err)
+    $rW2 = Fire -Cwd $wf -SessionId 'w-en' -TranscriptPath (New-VoiceTranscript 'w-en2' @("prompt:$PersianPrompt", 'skill:persian', "write:$readme"))
+    Check 'written: the same finding is said once' ($rW2.Out -eq '') $rW2.Out
+    $rWOk = Fire -Cwd $wf -SessionId 'w-ok' -TranscriptPath (New-VoiceTranscript 'w-ok' @("prompt:$PersianPrompt", 'skill:persian', 'skill:humanizer:humanizer', "write:$readme"))
+    Check 'written: humanizer loaded -> silent' ($rWOk.Out -eq '') $rWOk.Out
+    $rWC = Fire -Cwd $wf -SessionId 'w-commit' -TranscriptPath (New-VoiceTranscript 'w-commit' @("prompt:$PersianPrompt", 'skill:persian', 'bash:git commit -m "fix: repair the parser for empty input"'))
+    Check 'written: English commit prose without humanizer -> advisory' ($rWC.Out -match 'VOICE \(written text\): English') $rWC.Out
+    $code = Join-Path $wf 'tool.ps1'
+    [System.IO.File]::WriteAllText($code, "Write-Host 'converts files'`n", (New-Object System.Text.UTF8Encoding($false)))
+    $rWCode = Fire -Cwd $wf -SessionId 'w-code' -TranscriptPath (New-VoiceTranscript 'w-code' @("prompt:$PersianPrompt", 'skill:persian', "write:$code"))
+    Check 'written: code files are never judged' ($rWCode.Out -eq '') $rWCode.Out
+    $rWCompact = Fire -Cwd $wf -SessionId 'w-cmp' -TranscriptPath (New-VoiceTranscript 'w-cmp' @("prompt:$PersianPrompt", "write:$readme", 'compact', "prompt:$PersianPrompt", 'skill:persian'))
+    Check 'written: text written before the last compaction is not re-judged' ($rWCompact.Out -eq '') $rWCompact.Out
 
     Write-Host ''
     Write-Host '--- the shipped .env.example documents only what the hook reads ---' -ForegroundColor Cyan

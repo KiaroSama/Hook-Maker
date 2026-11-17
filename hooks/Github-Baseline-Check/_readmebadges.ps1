@@ -73,7 +73,36 @@ function Get-ReadmeBadgeState {
         }
         if ([string]$line -match $script:DivClosePattern) { $inCentre = $false }
     }
-    return [pscustomobject]@{ Found = $true; Count = $urls.Count; Readable = $true; DonateBadge = $donateBadge; DonateSection = $donateSection; Centred = ($outsideCentre -eq 0) }
+    return [pscustomobject]@{ Found = $true; Count = $urls.Count; Readable = $true; DonateBadge = $donateBadge; DonateSection = $donateSection; Centred = ($outsideCentre -eq 0); Format = @(Get-ReadmeBadgeFormatIssue -Lines $lines) }
+}
+
+# Steering V92-V93: the mandatory four by their RESERVED colours, donations last,
+# the plain flat-square URL shape, one colour per badge, and a link target that
+# is not the image itself. Textual only; a badge's TRUTH stays the agent's job.
+$script:ReservedBadgeColour = [ordered]@{ 'language-version' = '8b5cf6'; 'platform' = '0891b2'; 'repo-size' = 'ca8a04' }
+function Get-ReadmeBadgeFormatIssue {
+    param([AllowEmptyCollection()][System.Collections.Generic.List[string]]$Lines)
+    $badges = New-Object System.Collections.Generic.List[object]
+    foreach ($line in $Lines) {
+        foreach ($m in [regex]::Matches([string]$line, '(?i)\[!\[[^\]]*\]\(\s*(https?://img\.shields\.io/[^)\s]+)\s*\)\]\(\s*([^)\s]*)\s*\)')) {
+            $url = $m.Groups[1].Value
+            $hex = if ($url -match '(?i)/badge/[^?#]*-([0-9a-f]{6})(?:[?#]|$)') { $Matches[1].ToLowerInvariant() } else { '' }
+            [void]$badges.Add([pscustomobject]@{ Url = $url; Target = $m.Groups[2].Value; Hex = $hex })
+        }
+    }
+    $issues = New-Object System.Collections.Generic.List[string]
+    if ($badges.Count -eq 0) { return @() }
+    $hexes = @($badges | ForEach-Object { $_.Hex } | Where-Object { $_ })
+    $absent = @($script:ReservedBadgeColour.Keys | Where-Object { $hexes -notcontains $script:ReservedBadgeColour[$_] } | ForEach-Object { $_ + ' #' + $script:ReservedBadgeColour[$_] })
+    if ($absent.Count -gt 0) { [void]$issues.Add('mandatory missing: ' + ($absent -join ', ')) }
+    if ($badges[$badges.Count - 1].Url -notmatch $script:DonateBadgePattern -and @($badges | Where-Object { $_.Url -match $script:DonateBadgePattern }).Count -gt 0) { [void]$issues.Add('donations badge not last') }
+    $shape = @($badges | Where-Object { $_.Url -match '(?i)/style/|/endpoint|\?' -or $_.Hex -eq '' })
+    if ($shape.Count -gt 0) { [void]$issues.Add([string]$shape.Count + ' not plain flat-square /badge/<label>-<value>-<hex>') }
+    $dupes = @($hexes | Group-Object | Where-Object { $_.Count -gt 1 } | ForEach-Object { $_.Name })
+    if ($dupes.Count -gt 0) { [void]$issues.Add('shared colour(s) ' + ($dupes -join ', ')) }
+    $selfLinks = @($badges | Where-Object { $_.Target -eq '' -or $_.Target -match '(?i)img\.shields\.io' })
+    if ($selfLinks.Count -gt 0) { [void]$issues.Add([string]$selfLinks.Count + ' linking to the image, not a repo path/anchor') }
+    return @($issues)
 }
 
 function Get-ReadmeBadgeNote {
@@ -98,6 +127,10 @@ function Get-ReadmeBadgeNote {
         }
         if (-not $State.DonateBadge) {
             [void]$lines.Add('- Title lacks Support-donations badge.')
+        }
+        $format = @(if ($null -ne $State.PSObject.Properties['Format']) { $State.Format | Where-Object { $_ } })
+        if ($format.Count -gt 0) {
+            [void]$lines.Add('- Badge format: ' + ($format -join '; ') + '.')
         }
         if (-not $State.DonateSection) {
             [void]$lines.Add('- Missing ## Donate/#donate: verbatim authorized public text; never invent/alter wallets.')

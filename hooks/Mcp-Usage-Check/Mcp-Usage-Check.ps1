@@ -50,6 +50,8 @@ $ErrorActionPreference = 'Stop'
 # The shared "is this work" classifier, so the research reminder and the
 # Spec Kit hooks can never disagree about whether a prompt described work.
 . (Join-Path $PSScriptRoot '..\_scope.ps1')
+# Desktop control order advisory (spec 041).
+. (Join-Path $PSScriptRoot '_desktoproute.ps1')
 
 # RESEARCH BEFORE EVERY TASK (global-research-rules.md, order 55 step 5). The
 # text is fixed by the order; the hook browses nothing, writes no note and can
@@ -285,10 +287,23 @@ if ($script:EvidenceLibReady) {
     $hasSummaryLine = [bool]$mcpDeclaration.Substantive
 }
 
-# The requirement is met. Nothing to say - and nothing to repeat. Checked
-# BEFORE the transcript is scanned below, so a compliant session does no
-# extra IO at all.
-if ($hasSummaryLine) { exit 0 }
+# Desktop control order (spec 041): advisory, once per session, independent of
+# the MCP line. Reads the raw tail only when computer-use could matter.
+$desktopNote = ''
+$rawTailCache = $null
+if (Get-Command Get-DesktopRouteNote -ErrorAction SilentlyContinue) {
+    $rawTailCache = [string](Get-TranscriptTailText (Get-EvidenceTranscriptFallbackPath $hookInput))
+    $desktopNote = Get-DesktopRouteNote -RawText $rawTailCache
+    if ($desktopNote -ne '' -and -not (Test-ShouldReport 'desktop-route')) { $desktopNote = '' }
+}
+
+# The requirement is met. Nothing to say - and nothing to repeat.
+# Every quiet exit below still owes a pending desktop-route note.
+function Exit-WithDesktopNote {
+    if ($desktopNote -ne '') { exit (Write-HookResult -EventName $eventName -Kind 'advisory' -Message $desktopNote).ExitCode }
+    exit 0
+}
+if ($hasSummaryLine) { Exit-WithDesktopNote }
 
 # Server ids actually seen. Matched as a tool CALL - the client's own
 # "name": "<tool>" record - not as a bare token anywhere in the text. A prompt
@@ -303,7 +318,7 @@ if ($hasSummaryLine) { exit 0 }
 # RAW transcript, not $tail: a tool CALL is a JSONL record and the closing
 # assistant response $tail holds carries none, so scanning $tail here saw no
 # servers at all and silently disarmed this gate.
-$rawTail = [string](Get-TranscriptTailText (Get-EvidenceTranscriptFallbackPath $hookInput))
+$rawTail = if ($null -ne $rawTailCache) { $rawTailCache } else { [string](Get-TranscriptTailText (Get-EvidenceTranscriptFallbackPath $hookInput)) }
 $servers = New-Object System.Collections.Generic.List[string]
 foreach ($m in [regex]::Matches($rawTail, '"(?:name|tool_name)"[ \t]*:[ \t]*"mcp__([A-Za-z0-9_.\-]+?)__')) {
     $id = $m.Groups[1].Value
@@ -314,7 +329,7 @@ $usedMcp = ($servers.Count -gt 0)
 
 if ($usedMcp) {
     $names = (@($servers) | Sort-Object) -join ', '
-    if (-not (Test-ShouldReport ('missing|' + $names))) { exit 0 }
+    if (-not (Test-ShouldReport ('missing|' + $names))) { Exit-WithDesktopNote }
     $reason = @(
         'MCP calls; final server names missing.',
         ('Servers observed in this session: ' + $names + '.'),
@@ -325,6 +340,7 @@ if ($usedMcp) {
         ('Final standalone actual servers: "MCP used: ' + $names + '".'),
         'Only material actual calls, not availability.'
     ) -join "`n"
+    if ($desktopNote -ne '') { $reason += "`n" + $desktopNote }
     if ($enforcement -eq 'advisory') {
         $emit = Write-HookResult -EventName $eventName -Kind 'advisory' -Message $reason
         exit $emit.ExitCode
@@ -338,13 +354,14 @@ if ($usedMcp) {
 # No MCP tool was called. The hook cannot prove one was needed, so this is an
 # advisory even in block mode - and it is raised only for a session the pre-task
 # half already recorded as MCP-relevant.
-if (-not $sessionRelevant) { exit 0 }
-if (-not (Test-ShouldReport 'none-used')) { exit 0 }
+if (-not $sessionRelevant) { Exit-WithDesktopNote }
+if (-not (Test-ShouldReport 'none-used')) { Exit-WithDesktopNote }
 $note = @(
     'MCP task; no connected tool called.',
     'BEFORE answering: global-mcp-rules.md/global-research-rules.md FULL; check omissions.',
     ('Final: ' + $requiredLine)
 ) -join "`n"
+if ($desktopNote -ne '') { $note += "`n" + $desktopNote }
 $emit = Write-HookResult -EventName $eventName -Kind 'advisory' -Message $note
 exit $emit.ExitCode
 }

@@ -14,6 +14,7 @@ $ErrorActionPreference = 'Stop'
 
 . (Join-Path $PSScriptRoot '..\_hooklib.ps1')
 . (Join-Path $PSScriptRoot '..\_scope.ps1')
+. (Join-Path $PSScriptRoot '_ecosystemignore.ps1')
 
 $hookInput = if ($GitPrePush) {
     [pscustomobject]@{ cwd = (Get-Location).Path; hook_event_name = 'GitPrePush' }
@@ -249,6 +250,14 @@ if ($tracked.Count -gt 0) {
     foreach ($file in $tracked) { if ($stagedFiles -contains $file) { [void]$staged.Add($file) } }
 }
 
+# Ecosystem blocks and lockfiles (spec 041): report-only unless ECOSYSTEM_PATTERNS=write;
+# never part of the block, never on a push.
+$ecoLine = ''
+if (-not $GitPrePush -and (Get-Command Get-EcosystemIgnoreFinding -ErrorAction SilentlyContinue)) {
+    $ecoMode = if ($config.ContainsKey('ECOSYSTEM_PATTERNS') -and ([string]$config['ECOSYSTEM_PATTERNS']).Trim().ToLowerInvariant() -eq 'write') { 'write' } else { 'report' }
+    $ecoLines = if (Test-Path -LiteralPath $ignorePath -PathType Leaf) { @([IO.File]::ReadAllLines($ignorePath)) } else { @() }
+    $ecoLine = Get-EcosystemIgnoreLine -Cwd $cwd -Finding (Get-EcosystemIgnoreFinding -Cwd $cwd -ExistingLines $ecoLines -TrackedFiles $trackedFiles -Mode $ecoMode)
+}
 # Rule-file patterns in advisory mode: said once per set, never written, never a block.
 $adviceLine = ''
 $ruleAdvice = @($harvestedOnly | Where-Object { $ruleFileMode -eq 'advisory' -and $existingLines -notcontains $_ })
@@ -261,6 +270,7 @@ if ($ruleAdvice.Count -gt 0 -and -not $GitPrePush) {
         try { New-Item -ItemType Directory -Path (Split-Path -Parent $adviceState) -Force | Out-Null; [System.IO.File]::WriteAllText($adviceState, $adviceFp) } catch { }
     }
 }
+if ($ecoLine -ne '') { $adviceLine = if ($adviceLine -eq '') { $ecoLine } else { $adviceLine + "`n" + $ecoLine } }
 if ($missing.Count -eq 0 -and $tracked.Count -eq 0 -and $staged.Count -eq 0) {
     if ($adviceLine -eq '') { exit 0 }
     $emit = Write-HookResult -EventName $eventName -Kind $(if ($isStopEvent) { 'advisory' } else { 'context' }) -Message ('Ignore (' + $cwd + '):' + "`n" + $adviceLine)

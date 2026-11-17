@@ -7,7 +7,10 @@
 # neither a speckit-* Skill call nor a write under specs/ or .specify/. One or
 # two files is a small task and never refused (user decision, 2026-11-16).
 # Unknown evidence (no, partial or unreadable transcript) is never a refusal,
-# and "this work was exempt" with a reason clears it. Not SubagentStop: a
+# and "this work was exempt" with a reason clears it. Before that, the
+# classification gate (_speckitclass.ps1, spec 041) refuses once per turn when
+# edits have no `Spec Kit:` line, EXEMPT is contradicted (2+ files, CI, manifest,
+# lockfile, rule file) or CHAIN has no speckit evidence. Not SubagentStop: a
 # subagent works under its parent's chain.
 #
 # WHAT IT READS, and nothing else: the presence of .specify\, the presence of
@@ -30,6 +33,7 @@ $ErrorActionPreference = 'Stop'
 
 . (Join-Path $PSScriptRoot '..\_hooklib.ps1')
 . (Join-Path $PSScriptRoot '..\_scope.ps1')
+. (Join-Path $PSScriptRoot '_speckitclass.ps1')
 
 $hookInput = Read-HookInput
 if ($null -eq $hookInput) { exit 0 }
@@ -57,7 +61,18 @@ if ($eventName -eq 'Stop') {
         $evidence = Get-TranscriptToolEvidence -Path $transcriptPath -MaxBytes $maxBytes
         # Partial means the request or the chain may sit in the unread part.
         if (-not $evidence.Ok -or $evidence.Partial) { exit 0 }
-        $root = [IO.Path]::GetFullPath($cwd).TrimEnd('\', '/') + '\'
+        # Classification first (spec 041): every edited turn names its class, and an EXEMPT line has to be true.
+        $classFinding = if (Get-Command Get-SpecKitClassFinding -ErrorAction SilentlyContinue) { Get-SpecKitClassFinding -HookInput $hookInput -Events @($evidence.Events) -Cwd $cwd } else { $null }
+        if ($null -ne $classFinding -and (Test-NewGateFingerprint -Name 'SpeckitClass' -Cwd $cwd -Fingerprint $classFinding.Fingerprint)) {
+            $classMessage = switch ($classFinding.Kind) {
+                'missing' { 'SPECKIT CHECK: this turn edited ' + [string]$classFinding.EditCount + ' project file(s) and the closing has no Spec Kit line. Add "Spec Kit: CHAIN (<route>)" or "Spec Kit: EXEMPT (question | review | small)".' }
+                'exempt' { 'SPECKIT CHECK: "Spec Kit: EXEMPT" but ' + $classFinding.Detail + '. Reclassify as CHAIN and run the chain, or correct the line.' }
+                default { 'SPECKIT CHECK: "Spec Kit: CHAIN" but no speckit-* step or specs/ write is in the transcript. Run the chain or correct the line.' }
+            }
+            $emit = Write-StopBlockResult -HookInput $hookInput -HookName 'Speckit-Check' -FindingFingerprint $classFinding.Fingerprint -EventName $eventName -Message $classMessage -Condition 'required-workflow'
+            exit $emit.ExitCode
+        }
+        $root =[IO.Path]::GetFullPath($cwd).TrimEnd('\', '/') + '\'
         $changePrompts = New-Object System.Collections.Generic.List[string]
         $edited = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
         $chainRan = $false

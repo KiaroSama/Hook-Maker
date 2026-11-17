@@ -212,13 +212,29 @@ function Invoke-McpGatewayRegression {
     Check 'a relevant session that called no MCP tool gets an advisory, not a block' (
         $r.Out -match 'no connected tool called' -and $r.Out -notmatch '"decision"') $r.Out
 
+    # Desktop control order (spec 041): computer-use with no earlier agent-desktop
+    # attempt is named once; agent-desktop first, or no computer-use, is silent.
+    $tCu = New-ToolTranscript 'mcp-cu' 'mcp__computer-use__screenshot' "Done.`nMCP used: computer-use"
+    $r = Fire -HookPath $McpHook -Cwd $mcpStop -RawStdin (New-StopStdin -Cwd $mcpStop -Transcript $tCu -SessionId 'mcp-cu1')
+    Check 'desktop route: computer-use without agent-desktop is named, advisory only' ($r.Out -match 'DESKTOP ROUTE' -and $r.Out -match 'agent-desktop MCP \+ skill FIRST' -and $r.Out -notmatch '"decision"') $r.Out
+    $r = Fire -HookPath $McpHook -Cwd $mcpStop -RawStdin (New-StopStdin -Cwd $mcpStop -Transcript $tCu -SessionId 'mcp-cu1')
+    Check 'desktop route: said once per session' ($r.Out -notmatch 'DESKTOP ROUTE') $r.Out
+    $tAdFirst = Join-Path $Work 'mcp-adfirst.jsonl'
+    $adLines = @('mcp__agent-desktop__snapshot', 'mcp__computer-use__screenshot' | ForEach-Object { @{ type = 'assistant'; message = @{ content = @(@{ type = 'tool_use'; name = $_; input = @{ a = 1 } }) } } | ConvertTo-Json -Compress -Depth 8 })
+    $adLines += (@{ type = 'assistant'; message = @{ content = @(@{ type = 'text'; text = "Done.`nMCP used: agent-desktop, computer-use" }) } } | ConvertTo-Json -Compress -Depth 8)
+    Write-Utf8 $tAdFirst (($adLines -join "`n") + "`n")
+    $r = Fire -HookPath $McpHook -Cwd $mcpStop -RawStdin (New-StopStdin -Cwd $mcpStop -Transcript $tAdFirst -SessionId 'mcp-cu2')
+    Check 'desktop route: an agent-desktop attempt before computer-use -> silent' ($r.Out -notmatch 'DESKTOP ROUTE') $r.Out
+    $r = Fire -HookPath $McpHook -Cwd $mcpStop -RawStdin (New-StopStdin -Cwd $mcpStop -Transcript $tMcpSum -SessionId 'mcp-cu3')
+    Check 'desktop route: no computer-use call -> no desktop note' ($r.Out -notmatch 'DESKTOP ROUTE') $r.Out
+
     # =====================================================================
     Write-Host '--- Mcp-Usage-Check: MCP_SUMMARY_ENFORCEMENT downgrades and disables the gate ---' -ForegroundColor Cyan
     function New-ConfiguredMcpHookCopy {
         param([string]$Enforcement)
         $dir = Join-Path $Work ('mcpcopy-' + [guid]::NewGuid().ToString('N').Substring(0, 6))
         New-Item -ItemType Directory -Path $dir -Force | Out-Null
-        Copy-Item $McpHook (Join-Path $dir 'Mcp-Usage-Check.ps1')
+        Copy-Item (Join-Path (Split-Path -Parent $McpHook) '*.ps1') $dir
         Copy-TestRuntimeLibraries -SourceHookLib (Join-Path (Split-Path -Parent $McpHook) '..\_hooklib.ps1') -Destination (Join-Path $Work '_hooklib.ps1')
         Write-Utf8 (Join-Path $dir '.env') ("MCP_SUMMARY_ENFORCEMENT=" + $Enforcement + "`r`n")
         return (Join-Path $dir 'Mcp-Usage-Check.ps1')

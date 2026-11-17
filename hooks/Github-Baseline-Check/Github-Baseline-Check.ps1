@@ -84,7 +84,7 @@ try {
     $badgeState = Get-ReadmeBadgeState -ProjectRoot $cwd
     $badgeStateDir = Join-Path $env:LOCALAPPDATA 'HookMaker\state'
     $badgeStatePath = Join-Path $badgeStateDir ('GithubBaselineCheck-badges-' + (Get-ShortHash $cwd.ToLowerInvariant()) + '.txt')
-    $badgeKey = Get-ShortHash ([string](Get-Field $hookInput 'session_id') + '|' + [string]$badgeState.Found + '|' + [string]$badgeState.Readable + '|' + [string]$badgeState.Count + '|' + [string]$badgeState.DonateBadge + '|' + [string]$badgeState.DonateSection + '|' + [string]$badgeState.Centred)
+    $badgeKey = Get-ShortHash ([string](Get-Field $hookInput 'session_id') + '|' + [string]$badgeState.Found + '|' + [string]$badgeState.Readable + '|' + [string]$badgeState.Count + '|' + [string]$badgeState.DonateBadge + '|' + [string]$badgeState.DonateSection + '|' + [string]$badgeState.Centred + '|' + (@($badgeState.Format) -join ','))
     $badgeSeen = ''
     if (Test-Path -LiteralPath $badgeStatePath -PathType Leaf) { $badgeSeen = ([System.IO.File]::ReadAllText($badgeStatePath)).Trim() }
     if ($badgeSeen -ne $badgeKey) {
@@ -94,6 +94,13 @@ try {
     }
 }
 catch { $badgeNote = '' }
+# Release build matrix (spec 041): advisory, once per finding set per project.
+. (Join-Path $PSScriptRoot '_releasematrix.ps1')
+try {
+    $matrixNote = Get-ReleaseMatrixNote -ProjectRoot $cwd
+    if ($matrixNote -ne '') { $badgeNote = if ([string]::IsNullOrWhiteSpace($badgeNote)) { $matrixNote } else { $badgeNote + "`n`n" + $matrixNote } }
+}
+catch { }
 # Ordinary validation stays manual; positively supported security-only scans do not
 # cause an automatic-CI warning. Unknown structures still require source review.
 $manualState = Get-ManualWorkflowState $cwd

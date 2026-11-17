@@ -31,14 +31,14 @@ $guidanceBudgets=@{
     'Secrets-Check'=1111
     'Session-Summary-Check'=1646
     'Skills-Check'=6662
-    'Speckit-Check'=1560    # spec 036: + Stop gate block text
+    'Speckit-Check'=1690    # spec 036: + Stop gate block text; spec 041: + classification gate
     'Synapse-Rules-Check'=1546
     'Test-Completion-Check'=7691
     'Test-Plan-Check'=3168
     'Test-Run-Guard'=4222
     'Test-Temp-Cleanup'=1499
     'Utf8-Encoding-Check'=2563
-    'Writing-Voice-Check'=760    # spec 038
+    'Writing-Voice-Check'=775    # spec 038; spec 041: + written-text advisory
 }
 $guidanceInventory=@(Get-HookGuidanceInventory $guidanceRoot)
 $authoredCharacters=($guidanceInventory|Measure-Object Characters -Sum).Sum

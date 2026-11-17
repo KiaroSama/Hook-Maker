@@ -235,6 +235,57 @@ try {
     $t = New-GateTranscript 'gate-own' $gateRoot 'SPECKIT CHECK: request "add an export feature" edited 3 files' $three
     $r = Invoke-SpeckitHook @{ hook_event_name = 'Stop'; cwd = $gateRoot; session_id = 'g8'; transcript_path = $t }
     Check 'its own banner never arms the gate' ($r.Out.Trim() -eq '') $r.Out
+    # =====================================================================
+    Write-Host '--- Stop gate: Spec Kit CHAIN/EXEMPT classification (spec 041) ---' -ForegroundColor Cyan
+    $classRoot = New-SpeckitProject -Name 'ClassGate' -WithInfrastructure -WithConstitution
+    $closingOk = "Done.`nSpec Kit: EXEMPT (small) - one wording fix"
+    function Invoke-Class { param([string]$Sid, [string]$Transcript, [string]$Closing, [string]$HookPath = $Hook)
+        $saved = $script:Hook; $script:Hook = $HookPath
+        try { return (Invoke-SpeckitHook @{ hook_event_name = 'Stop'; cwd = $classRoot; session_id = $Sid; transcript_path = $Transcript; last_assistant_message = $Closing }) }
+        finally { $script:Hook = $saved } }
+    $t = New-GateTranscript 'class-one' $classRoot 'fix the typo in the readme' @('README.md')
+    $r = Invoke-Class 'c1' $t 'Fixed the typo.'
+    Check 'an edited turn with no Spec Kit line -> blocked once' ($r.Out -match '"decision"\s*:\s*"block"' -and $r.Out -match 'no Spec Kit line') $r.Out
+    $r = Invoke-Class 'c1' $t 'Fixed the typo.'
+    Check 'the same missing line is not refused twice in one turn' ($r.Out -notmatch '"decision"\s*:\s*"block"') $r.Out
+    $r = Invoke-Class 'c2' $t $closingOk
+    Check 'EXEMPT (small) with one ordinary file passes' ($r.Out.Trim() -eq '') $r.Out
+    $t = New-GateTranscript 'class-two' $classRoot 'fix the typo in the readme' @('README.md', 'docs\x.md')
+    $r = Invoke-Class 'c3' $t $closingOk
+    Check 'EXEMPT small with 2 edited files -> reclassify' ($r.Out -match '"decision"\s*:\s*"block"' -and $r.Out -match 'Reclassify as CHAIN' -and $r.Out -match '2 project files') $r.Out
+    $t = New-GateTranscript 'class-ci' $classRoot 'fix the typo in the readme' @('.github\workflows\ci.yml')
+    $r = Invoke-Class 'c4' $t $closingOk
+    Check 'EXEMPT small touching a CI workflow -> reclassify' ($r.Out -match '"decision"\s*:\s*"block"' -and $r.Out -match 'ci\.yml') $r.Out
+    $t = New-GateTranscript 'class-lock' $classRoot 'fix the typo in the readme' @('Cargo.lock')
+    $r = Invoke-Class 'c5' $t $closingOk
+    Check 'EXEMPT small touching a lockfile -> reclassify' ($r.Out -match '"decision"\s*:\s*"block"' -and $r.Out -match 'Cargo\.lock') $r.Out
+    $t = New-GateTranscript 'class-q' $classRoot 'what does this do?' @('src\a.ps1')
+    $r = Invoke-Class 'c6' $t "Spec Kit: EXEMPT (question)"
+    Check 'EXEMPT (question) after a project edit -> reclassify' ($r.Out -match '"decision"\s*:\s*"block"' -and $r.Out -match 'a question turn') $r.Out
+    $t = New-GateTranscript 'class-chain' $classRoot 'add an export feature' @('src\a.ps1')
+    $r = Invoke-Class 'c7' $t "Spec Kit: CHAIN (specify -> implement)"
+    Check 'CHAIN without speckit evidence -> blocked' ($r.Out -match '"decision"\s*:\s*"block"' -and $r.Out -match 'no speckit-\* step') $r.Out
+    $t = New-GateTranscript 'class-chain-ok' $classRoot 'add an export feature' @('src\a.ps1') @('speckit-implement')
+    $r = Invoke-Class 'c8' $t "Spec Kit: CHAIN (implement)"
+    Check 'CHAIN with a speckit-* Skill call passes' ($r.Out.Trim() -eq '') $r.Out
+    $t = New-GateTranscript 'class-none' $classRoot 'what does this do?' @()
+    $r = Invoke-Class 'c9' $t 'It routes hooks.'
+    Check 'a turn without project edits has no classification duty' ($r.Out.Trim() -eq '') $r.Out
+    $t = New-GateTranscript 'class-sub' $classRoot 'fix the typo' @('README.md')
+    $r = Invoke-SpeckitHook @{ hook_event_name = 'SubagentStop'; cwd = $classRoot; session_id = 'c10'; transcript_path = $t; last_assistant_message = 'x' }
+    Check 'SubagentStop is never refused by the classification gate' ($r.Out.Trim() -eq '') $r.Out
+    foreach ($mode in @('advisory', 'off')) {
+        $dir = Join-Path $Work ('speckit-' + $mode)
+        New-Item -ItemType Directory -Path (Join-Path $dir 'Speckit-Check') -Force | Out-Null
+        Copy-Item (Join-Path (Split-Path -Parent $Hook) '*.ps1') (Join-Path $dir 'Speckit-Check')
+        Copy-TestRuntimeLibraries -SourceHookLib (Join-Path $HooksRoot '_hooklib.ps1') -Destination (Join-Path $dir '_hooklib.ps1')
+        [IO.File]::WriteAllText((Join-Path $dir 'Speckit-Check\.env'), "HOOK_ENFORCEMENT=$mode`r`n")
+        $t = New-GateTranscript ('class-' + $mode) $classRoot 'fix the typo in the readme' @('README.md')
+        $r = Invoke-Class ('c-' + $mode) $t 'Fixed.' (Join-Path $dir 'Speckit-Check\Speckit-Check.ps1')
+        if ($mode -eq 'advisory') { Check 'HOOK_ENFORCEMENT=advisory reports without a block' ($r.Out -match 'Spec Kit line' -and $r.Out -notmatch '"decision"') $r.Out }
+        else { Check 'HOOK_ENFORCEMENT=off is silent' ($r.Out.Trim() -eq '') $r.Out }
+    }
+
     $r = Invoke-SpeckitHook @{ hook_event_name = 'SessionStart'; cwd = $open; session_id = 'q4' }
     Check 'SessionStart needs no prompt and still routes' ($r.Out -match 'Speckit-Check: advisory') $r.Out
 

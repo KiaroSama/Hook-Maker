@@ -276,6 +276,10 @@ try {
     Check 'badges: Claude gets hookSpecificOutput.additionalContext with the guidance' (
         $r.Out -match '"hookSpecificOutput"' -and $r.Out -match 'additionalContext' -and $r.Out -match 'README missing') $r.Out
 
+    . (Join-Path $PSScriptRoot '_testbadgematrix.ps1')
+    Invoke-BadgeFormatRegression
+    Invoke-ReleaseMatrixRegression
+
     Write-Host '--- self-hosted runners stay manual (plan 012 step 6b) ---' -ForegroundColor Cyan
     $shRepo = New-GitRepo 'selfhostedpush' -GithubRemote:$false
     New-Item -ItemType Directory -Path (Join-Path $shRepo '.github\workflows') -Force | Out-Null

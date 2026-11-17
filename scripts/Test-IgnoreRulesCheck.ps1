@@ -52,7 +52,8 @@ function New-ConfiguredIgnoreHookCopy {
     param([hashtable]$EnvOverrides)
     $dir = Join-Path $Work ('ignorehookcopy-' + [guid]::NewGuid().ToString('N').Substring(0, 6))
     New-Item -ItemType Directory -Path $dir -Force | Out-Null
-    Copy-Item $Hook (Join-Path $dir 'Ignore-Rules-Check.ps1')
+    # Every sibling script: the hook dot-sources _ecosystemignore.ps1 (spec 041).
+    Copy-Item (Join-Path (Split-Path -Parent $Hook) '*.ps1') $dir
     # EVERY shared library, not a hand-picked one: the hook now also dot-sources
     # ..\_scope.ps1, and a copy that brought only _hooklib.ps1 would fail to load.
     Copy-TestRuntimeLibraries -SourceHookLib (Join-Path (Split-Path -Parent $Hook) '..\_hooklib.ps1') -Destination (Join-Path $Work '_hooklib.ps1')
@@ -522,6 +523,41 @@ try {
     $rs = Fire -Cwd $sorted -EventName 'SessionStart'
     Check 'sorted: a negation hoisted above its ignore rule IS re-added' (
         $rs.Out -match 'Added [0-9]+ \.gitignore patterns:' -and $rs.Out -match '!/\.env\.example') $rs.Out
+
+    # =====================================================================
+    Write-Host '--- ecosystem blocks and lockfiles (spec 041): report-only by default ---' -ForegroundColor Cyan
+    $utf8 = New-Object System.Text.UTF8Encoding $false
+    $rust = New-Repo 'eco-rust'
+    [System.IO.File]::WriteAllText((Join-Path $rust 'Cargo.toml'), "[package]`nname = `"x`"`n", $utf8)
+    [System.IO.File]::WriteAllText((Join-Path $rust 'Cargo.lock'), "# lock`n", $utf8)
+    $null = Fire -Cwd $rust -EventName 'SessionStart'
+    Add-Content -LiteralPath (Join-Path $rust '.gitignore') -Value 'Cargo.lock'
+    $rustBefore = [System.IO.File]::ReadAllText((Join-Path $rust '.gitignore'))
+    $r = Fire -Cwd $rust
+    Check 'ecosystem: a Rust project lacking the Rust block is reported, not blocked' ($r.Exit -eq 0 -and $r.Out -match 'Ecosystem ignores missing' -and $r.Out -match 'Rust: /target/' -and $r.Out -notmatch '"decision"\s*:\s*"block"') $r.Out
+    Check 'ecosystem: an ignored Cargo.lock is warned about' ($r.Out -match 'Lockfiles must stay tracked: Cargo\.lock ignored') $r.Out
+    Check 'ecosystem: report mode leaves .gitignore byte-for-byte unchanged' ([System.IO.File]::ReadAllText((Join-Path $rust '.gitignore')) -ceq $rustBefore) ''
+    $r = Fire -Cwd $rust
+    Check 'ecosystem: the same finding set is said once' ($r.Out -notmatch 'Ecosystem ignores') $r.Out
+    Check 'ecosystem: no Python/Node block without their manifests' ($rustBefore -ne '' -and $r.Out -notmatch 'Python:|Node:') $r.Out
+
+    $ecoWriteHook = New-ConfiguredIgnoreHookCopy -EnvOverrides @{ ECOSYSTEM_PATTERNS = 'write' }
+    $rustW = New-Repo 'eco-rust-write'
+    [System.IO.File]::WriteAllText((Join-Path $rustW 'Cargo.toml'), "[package]`nname = `"x`"`n", $utf8)
+    [System.IO.File]::WriteAllText((Join-Path $rustW 'Cargo.lock'), "# lock`n", $utf8)
+    $null = Fire -Cwd $rustW -EventName 'SessionStart' -HookPath $ecoWriteHook
+    Add-Content -LiteralPath (Join-Path $rustW '.gitignore') -Value 'target/'
+    $wBefore = [System.IO.File]::ReadAllText((Join-Path $rustW '.gitignore')).TrimEnd()
+    $r = Fire -Cwd $rustW -HookPath $ecoWriteHook
+    $wAfter = [System.IO.File]::ReadAllText((Join-Path $rustW '.gitignore'))
+    Check 'ECOSYSTEM_PATTERNS=write appends the missing Rust lines under one header' ($r.Out -match 'Appended ecosystem ignores' -and $wAfter -match '(?m)^# Hook Maker: ecosystem ignores' -and $wAfter -match '(?m)^\*\.profraw$') ($r.Out + ' || ' + $wAfter)
+    Check 'write mode keeps every earlier line in place (append only)' ($wAfter.StartsWith($wBefore)) $wAfter
+    Check 'write mode treats target/ as already present (/target/ not appended)' ($wAfter -notmatch '(?m)^/target/$') $wAfter
+    Check 'an untracked Cargo.lock is reported' ($r.Out -match 'Cargo\.lock untracked') $r.Out
+    & git -C $rustW add Cargo.lock .gitignore Cargo.toml 2>&1 | Out-Null
+    & git -C $rustW commit -q -m init 2>&1 | Out-Null
+    $r = Fire -Cwd $rustW -HookPath $ecoWriteHook
+    Check 'a tracked lockfile and a complete Rust block -> silent' ($r.Exit -eq 0 -and $r.Out -eq '') $r.Out
 
     # =====================================================================
     # A session whose cwd drifted into a SUBFOLDER (2026-09-26, two projects):

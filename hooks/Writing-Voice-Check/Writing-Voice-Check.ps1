@@ -20,6 +20,8 @@ Set-StrictMode -Version 2.0
 $ErrorActionPreference = 'Stop'
 
 . (Join-Path $PSScriptRoot '..\_hooklib.ps1')
+# Written prose and commit/PR text (spec 041): advisory.
+. (Join-Path $PSScriptRoot '_voicefiles.ps1')
 
 $hookInput = Read-HookInput
 if ($null -eq $hookInput) { exit 0 }
@@ -96,9 +98,11 @@ try {
 
     $language = ''; $compactions = 0
     $loaded = @{ persian = $false; russian = $false; english = $false }
+    $artifacts = New-Object System.Collections.Generic.List[object]
     foreach ($item in @($evidence.Events)) {
         if ($item.Kind -eq 'prompt') { $detected = Get-VoiceLanguage ([string]$item.Value); if ($detected -ne '') { $language = $detected } }
-        elseif ($item.Kind -eq 'compact') { $compactions++; foreach ($k in @($loaded.Keys)) { $loaded[$k] = $false } }
+        elseif ($item.Kind -eq 'compact') { $compactions++; foreach ($k in @($loaded.Keys)) { $loaded[$k] = $false }; $artifacts.Clear() }
+        elseif ($item.Kind -eq 'write' -or ($item.Kind -eq 'shell' -and [string]$item.Value -match $script:VoiceCommitPattern)) { [void]$artifacts.Add($item) }
         elseif ($item.Kind -eq 'skill' -or $item.Kind -eq 'read') {
             foreach ($k in $voiceMap.Keys) {
                 $entry = $voiceMap[$k]; $value = [string]$item.Value
@@ -111,17 +115,36 @@ try {
             }
         }
     }
-    if ($language -eq '' -or $loaded[$language]) { exit 0 }
+
+    # Written-text languages: agent-private folders are not judged; the reply
+    # language is the gate's, so it is not repeated here.
+    $artifactNote = ''
+    $cwdText = [string](Get-Field $hookInput 'cwd')
+    if (Get-Command Get-VoiceArtifactLanguages -ErrorAction SilentlyContinue) {
+        $public = @($artifacts | Where-Object { $_.Kind -ne 'write' -or [string]$_.Value -notmatch '(?i)(^|[\\/])(\.ai|\.claude|\.codex|\.agents|plans)[\\/]' })
+        $missingLangs = @(Get-VoiceArtifactLanguages -Artifacts $public -Loaded $loaded -Detect ${function:Get-VoiceLanguage} -Cwd $cwdText | Where-Object { $_ -ne $language })
+        if ($missingLangs.Count -gt 0 -and (Test-NewGateFingerprint -Name 'WritingVoiceFiles' -Cwd $cwdText -Fingerprint (Get-ShortHash ($sessionId + '|' + ($missingLangs -join ',') + '|' + [string]$compactions)))) {
+            $artifactNote = 'VOICE (written text): ' + (@($missingLangs | ForEach-Object { $voiceMap[$_].Name + ' -> Skill `' + $voiceMap[$_].Key + '`' }) -join '; ') + ' not loaded since ' + $(if ($compactions -gt 0) { 'the last compaction' } else { 'start' }) + ', but files/commit/PR text in that language were written. Load it and re-check that text.'
+        }
+    }
+    if ($language -eq '' -or $loaded[$language]) {
+        if ($artifactNote -ne '') { exit (Write-HookResult -EventName $eventName -Kind 'advisory' -Message $artifactNote).ExitCode }
+        exit 0
+    }
 
     # Once per (session, language, compaction count): a new compaction re-arms it.
     $fingerprint = Get-ShortHash ($sessionId + '|' + $language + '|' + [string]$compactions)
-    if (-not (Test-NewGateFingerprint -Name 'WritingVoiceCheck' -Cwd ([string](Get-Field $hookInput 'cwd')) -Fingerprint $fingerprint)) { exit 0 }
+    if (-not (Test-NewGateFingerprint -Name 'WritingVoiceCheck' -Cwd ([string](Get-Field $hookInput 'cwd')) -Fingerprint $fingerprint)) {
+        if ($artifactNote -ne '') { exit (Write-HookResult -EventName $eventName -Kind 'advisory' -Message $artifactNote).ExitCode }
+        exit 0
+    }
     $entry = $voiceMap[$language]
     $since = if ($compactions -gt 0) { 'the last compaction' } else { 'start' }
     $blockMessage = @(
         ('WRITING VOICE CHECK: replies are ' + $entry.Name + '; no `' + $entry.Key + '` load since ' + $since + '.'),
         ('Load Skill `' + $entry.Key + '` (or read its SKILL.md), then re-check the reply against it (global-writing-voice-rules.md).')
     ) -join "`n"
+    if ($artifactNote -ne '') { $blockMessage += "`n" + $artifactNote }
     $emit = Write-StopBlockResult -HookInput $hookInput -HookName 'Writing-Voice-Check' -FindingFingerprint $fingerprint -EventName $eventName -Message $blockMessage -Condition 'required-workflow'
     exit $emit.ExitCode
 }
