@@ -282,14 +282,10 @@ function Get-EvidenceTranscriptFallbackPath {
         return $claim.Admitted
     }
 
-    # The candidate menu the confirmation must be drawn from: rule FILE NAMES,
-    # capped, so the message stays one screen even with a large rules directory.
-    $ruleNames = @($currentEntries.Keys | ForEach-Object { [System.IO.Path]::GetFileName($_) } | Sort-Object -Unique)
-    $shownRules = @($ruleNames | Select-Object -First 14)
-    $ruleMenu = ($shownRules -join ', ')
-    if ($ruleNames.Count -gt $shownRules.Count) {
-        $ruleMenu += ', +' + ($ruleNames.Count - $shownRules.Count) + ' more'
-    }
+    # No rule-file menu here (spec 040): a list of every governing file read as
+    # "you should have read all of these" and pushed agents to claim or read
+    # rules the task never needed. The line names only files actually read.
+    $minimalNote = 'Auto-loaded files, or none - <reason>, are enough; never pre-read extra rules to fill it.'
 
     # EVIDENCE SOURCE (F03). The raw session tail is not this task's answer: a user
     # example, a previous task's line, or this hook's own injected text all live in
@@ -342,7 +338,7 @@ function Get-EvidenceTranscriptFallbackPath {
         if (-not (Test-ShouldReportClosing 'missing-after-edit')) { exit 0 }
         $reason = @(
             ('RULES CHECK (' + $Client + '): files edited; final governing rules missing.'),
-            ('Governing rule files: ' + $ruleMenu + '.'),
+            $minimalNote,
             # The example is deliberately kept INLINE and quoted rather than on a
             # line of its own: this message lands in the same transcript the next
             # Stop reads, and an example at the start of a line would satisfy the
@@ -365,7 +361,7 @@ function Get-EvidenceTranscriptFallbackPath {
     if (-not (Test-ShouldReportClosing 'missing-no-edit')) { exit 0 }
     $note = @(
         ('RULES CHECK (' + $Client + ') - no rule-compliance confirmation found in this session.'),
-        ('Governing rule files: ' + $ruleMenu + '.'),
+        $minimalNote,
         $script:RulesRequirement
     ) -join "`n"
     $emit = Write-HookResult -EventName $eventName -Kind 'advisory' -Message $note
@@ -462,7 +458,7 @@ if ($languageNote -ne '') { [void]$lines.Add($languageNote) }
 if ($researchNote -ne '') { [void]$lines.Add($researchNote) }
 if ($rulesMoved) {
     if ($firstRun) {
-        [void]$lines.Add('RULES CHECK (' + $Client + '): first check; registry -> task owners IN FULL before work. Deferred != optional:')
+        [void]$lines.Add('RULES CHECK (' + $Client + '): first check; read FULL only the owners the router routes for THIS task; do not pre-read others:')
     }
     else {
         [void]$lines.Add('RULES CHECK (' + $Client + '): rules changed; read new/changed files BEFORE work:')
@@ -483,10 +479,10 @@ if ($rulesMoved) {
             [void]$lines.Add('- ' + $set.Label + ' (' + $set.Dir + '): ' + ($names -join ', '))
         }
     }
-    # Canonical routing (E-01): canonical installed names, exactly one skill
-    # policy for the detected client, and the strict-UTF-8 text default. These
-    # ride the same fingerprint gate, so they never repeat on an unchanged set.
-    [void]$lines.Add('Canonical registry: custom-instructions.md, not version-suffixed uploads; task owners FULL before work. Scope/queue/release/storage/cleanup: global-project-lifecycle-rules.md, stable IDs/order, earliest unfinished item; other-project writes need exact consent or English owner handoff. New rule Markdown: direct registry entry + global-instruction-maintenance-rules.md completeness. Secrets: actual-value custody/private full export/isolated restore, never expose values. Final apps: approved embedded identity, verified signing and approved packaged logo; missing prerequisites stay unverified, no unsigned fallback/key/service/logo creation. UI: global-ui-rules.md, design skill + library research, product-specific accessible primitives. Advisory verifies/executes none of these.')
+    # Canonical routing (E-01): exactly one skill policy for the detected client
+    # and the strict-UTF-8 text default. Owner lists are the router's job (spec
+    # 040): naming owners here made agents pre-read rules the task never needed.
+    # These ride the same fingerprint gate, so they never repeat on an unchanged set.
     [void]$lines.Add('Skill policy routing: active client = ' + $Client + ' -> load ONLY ' + $policyName + ' as the skill policy; never load the other agent''s skill policy and never both together.')
     [void]$lines.Add('UTF-8: explicit strict I/O, BOM separate; never trust host defaults. Exceptions name path/scope/encoding/reason/forcing system and compatibility proof.')
     # A " (N).md" filename is the browser-download shape of an uploaded copy -

@@ -300,13 +300,12 @@ try {
     # Agent/capability/lifecycle/custody/signing/logo/UI details are routed by
     # the installed client router, never an assumed custom-instructions.md file.
     # Missing routed owners are an explicit dependent-work blocker, not a waiver.
-    Check 'first-run note requires every task owner through actual client registry' (
-        $r.Out -match 'RULES CHECK \(claude\): first check; registry -> task owners IN FULL before work' -and
-        $r.Out -match 'Deferred != optional') $r.Out
-    Check 'registry routing remains mandatory and does not claim execution' (
-        $r.Out -match 'Canonical registry: custom-instructions\.md' -and
-        $r.Out -match 'task owners FULL before work' -and
-        $r.Out -match 'Advisory verifies/executes none of these') $r.Out
+    # Spec 040: only the owners the router routes for THIS task, nothing pre-read.
+    Check 'first-run note asks for this task''s routed owners only' (
+        $r.Out -match 'RULES CHECK \(claude\): first check; read FULL only the owners the router routes for THIS task; do not pre-read others') $r.Out
+    Check 'first-run note no longer names owners to read up front' (
+        $r.Out -notmatch 'Canonical registry:' -and $r.Out -notmatch 'task owners (IN )?FULL before work' -and
+        $r.Out -notmatch 'global-project-lifecycle-rules\.md') $r.Out
     Check 'claude selects only its own skill policy' (
         $r.Out -match 'active client = claude -> load ONLY skill-policy\.md as the skill policy' -and $r.Out -notmatch 'skill-policy-codex-optimized\.md') $r.Out
     Check 'first run does not invent a version-suffixed file warning' ($r.Out -notmatch 'WARNING: version-suffixed') $r.Out
@@ -419,7 +418,8 @@ try {
     $Hook = New-ConfiguredRulesHookCopy 'block'
     $r = Fire -Cwd $closeProj -RawStdin (New-StopStdin -Cwd $closeProj -Transcript $tEdit -SessionId 'close-b1')
     Check 'edits + no confirmation -> a real block decision' ($r.Out -match '"decision"\s*:\s*"block"') $r.Out
-    Check 'the block lists the governing rule files it checked' ($r.Out -match 'Governing rule files:' -and $r.Out -match 'project-rule\.md') $r.Out
+    Check 'the block carries no rule-file menu (spec 040)' ($r.Out -notmatch 'Governing rule files:' -and $r.Out -notmatch 'project-rule\.md') $r.Out
+    Check 'the block says auto-loaded files or none suffice' ($r.Out -match 'Auto-loaded files, or none - <reason>, are enough') $r.Out
     $closingReason = [string](($r.Out | ConvertFrom-Json).reason)
     Check 'the block names the exact single action that clears it' (
         $closingReason.Contains('Final standalone "Rules applied: <actual files + purpose>"') -and
