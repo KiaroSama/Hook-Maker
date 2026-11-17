@@ -224,15 +224,18 @@
     $cleanupProjects = [ordered]@{}
     foreach ($caseName in @('Red', 'Keep', 'Green', 'Spelled')) {
         $proj = New-Proj ('CleanupState' + $caseName)
-        # 'Spelled' installs with a TRAILING SEPARATOR: targetProjectRoot is only
-        # GetFullPath'd at install time and GetFullPath keeps it, so the record
-        # persists a spelling that hashes to a different key than the one the
-        # hook - which canonicalizes with Normalize-Path - actually writes. An
-        # uninstaller that skipped that canonicalization deleted nothing here
-        # while reporting a clean success.
-        $installTarget = if ($caseName -eq 'Spelled') { $proj + '\' } else { $proj }
-        & $InstallScript -CustomHook $cleanupSource -Events @('Stop') -TargetProject $installTarget -ClaudeOnly *> $null
-        $rec = @(Get-RecordsFor 'Test-Temp-Cleanup' | Where-Object { [string]$_.targetProjectRoot -eq $installTarget })[0]
+        # 'Spelled' persists a TRAILING SEPARATOR, which hashes to a different
+        # key than the one the hook - which canonicalizes with Normalize-Path -
+        # actually writes. An uninstaller that skipped that canonicalization
+        # deleted nothing here while reporting a clean success. The installer
+        # trims the separator since spec 039, but registries written before it
+        # still hold such records, so the spelling is put back on the record.
+        & $InstallScript -CustomHook $cleanupSource -Events @('Stop') -TargetProject $proj -ClaudeOnly *> $null
+        $rec = @(Get-RecordsFor 'Test-Temp-Cleanup' | Where-Object { [string]$_.targetProjectRoot -eq $proj })[0]
+        if ($caseName -eq 'Spelled' -and $null -ne $rec) {
+            $rec.targetProjectRoot = $proj + '\'
+            Save-MutatedRecord -Record $rec
+        }
         Check ('setup: ' + $caseName + ' got its own Test-Temp-Cleanup record') ($null -ne $rec)
         # cwd is the canonical spelling a client really sends, whatever spelling
         # the install was targeted with.

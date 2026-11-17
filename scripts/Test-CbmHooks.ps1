@@ -250,7 +250,7 @@ try {
     $three = @('edit:a.ps1', 'edit:b.ps1', 'edit:c.ps1')
     $blockPattern = '"decision"\s*:\s*"block"'
     $r = Invoke-CbmHook 'Cbm-Update-Check\Cbm-Update-Check.ps1' @{ hook_event_name = 'Stop'; cwd = $proj; session_id = 's1'; transcript_path = (New-CbmTranscript 's1' $three) } $cache
-    Check 'strict: 3 edits, no index_repository -> blocked' ($r.Out -match $blockPattern -and $r.Out -match 'CBM UPDATE CHECK: request "add a parser feature" edited 3 project files; no index_repository after the last edit') $r.Out
+    Check 'strict: 3 edits, no index_repository -> blocked' ($r.Out -match $blockPattern -and $r.Out -match 'CBM UPDATE CHECK: request \\?"add a parser feature\\?" edited 3 project files; no index_repository after the last edit') $r.Out
     Check 'strict: the block names index_repository and the exemption line' ($r.Out -match 'index_repository\(repo_path=' -and $r.Out -match 'CBM: not refreshed - <reason>') $r.Out
     $r = Invoke-CbmHook 'Cbm-Update-Check\Cbm-Update-Check.ps1' @{ hook_event_name = 'Stop'; cwd = $proj; session_id = 's1'; transcript_path = (New-CbmTranscript 's1b' $three) } $cache
     Check 'strict: the unchanged finding is not refused twice' ($r.Out -notmatch $blockPattern) $r.Out

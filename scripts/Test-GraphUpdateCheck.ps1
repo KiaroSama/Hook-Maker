@@ -263,7 +263,7 @@ try {
     $blockPattern = '"decision"\s*:\s*"block"'
     $sp = New-StrictProj 'Strict'
     $r = Fire -Cwd $sp -SessionId 'st-1' -TranscriptPath (New-RefreshTranscript 'st-1' $sp @('edit:a.ps1', 'edit:b.ps1', 'edit:c.ps1'))
-    Check 'strict: 3 edits, no refresh -> blocked with the request and count' ($r.Out -match $blockPattern -and $r.Out -match 'GRAPH UPDATE CHECK: request "add a parser feature" edited 3 project files; no graphify update after the last edit') ($r.Out + $r.Err)
+    Check 'strict: 3 edits, no refresh -> blocked with the request and count' ($r.Out -match $blockPattern -and $r.Out -match 'GRAPH UPDATE CHECK: request \\?"add a parser feature\\?" edited 3 project files; no graphify update after the last edit') ($r.Out + $r.Err)
     Check 'strict: the block names the clearing actions' ($r.Out -match 'graphify update \.' -and $r.Out -match 'Graph: not refreshed - <reason>') $r.Out
     $r = Fire -Cwd $sp -SessionId 'st-1' -TranscriptPath (New-RefreshTranscript 'st-1b' $sp @('edit:a.ps1', 'edit:b.ps1', 'edit:c.ps1'))
     Check 'strict: the unchanged finding is not refused twice' ($r.Out -notmatch $blockPattern) $r.Out

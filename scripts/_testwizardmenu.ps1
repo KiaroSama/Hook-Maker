@@ -472,16 +472,16 @@
     Write-Host '--- multi-select install (range + list, recommended events) ---' -ForegroundColor Cyan
     $cfg4 = Join-Path $Work 'cfg4.json'; New-Config $cfg4
     $m = New-Proj 'Multi'
-    # main 1 -> sub 1 -> "3-8,20,31" (eight advisory hooks incl. Cloudflare-Deploy,
+    # main 1 -> sub 1 -> "3-8,20,32" (eight advisory hooks incl. Cloudflare-Deploy,
     #        still the LAST individual entry). The two picked by number move
     #        whenever the shipped set changes - Secrets-Check is at 20 and
-    #        Cloudflare-Deploy at 30 after Speckit-Check was inserted at 10.
+    #        Cloudflare-Deploy at 32 after Writing-Voice-Check took 31.
     #        The engine is excluded from this list entirely, see the guard
     #        test below.
     #        -> mode 1 (recommended events per hook) -> client 3 = All clients
     #        (reaches Claude + Codex in one pass)
     #        -> target -> done -> start -> exit
-    $r = Invoke-Wizard -Config $cfg4 -Answers @('1', '1', '3-8,20,31', '1', '3', $m, 'done', '', '0')
+    $r = Invoke-Wizard -Config $cfg4 -Answers @('1', '1', '3-8,20,32', '1', '3', $m, 'done', '', '0')
     Check 'exit 0' ($r.Exit -eq 0)
     Check 'no stderr' ($r.Err -eq '')
     Check 'selection accepts a range combined with a single item' ($r.Out -notmatch 'Enter number\(s\)')
