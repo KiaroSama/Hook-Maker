@@ -85,6 +85,14 @@ function Invoke-SkillProviderRegression {
     Check 'bare Skill call does not satisfy qualified provider usage' ($unused.Total -eq 1)
     $unused=Get-UnusedShortlistedSkills -Shortlist @('new-provider:shared-name') -Accounted @() -RawTranscript '{"name":"Skill","input":{"skill":"new-provider:shared-name"}}' -UsedLine ''
     Check 'exact qualified Skill call accounts for that provider' ($unused.Total -eq 0)
+    # Order 105 step 3: a library SKILL.md read by path counts for a bare key only.
+    $libRead='{"name":"Read","input":{"file_path":"G:\\Program Files\\Portable\\Scripts\\.SKILLS\\security\\security-audit\\SKILL.md"}}'
+    $unused=Get-UnusedShortlistedSkills -Shortlist @('security-audit') -Accounted @() -RawTranscript $libRead -UsedLine ''
+    Check '105 3: a Read of the security-audit library SKILL.md accounts for security-audit' ($unused.Total -eq 0)
+    $unused=Get-UnusedShortlistedSkills -Shortlist @('security-audit') -Accounted @() -RawTranscript 'see .SKILLS\\security\\security-audit\\SKILL.md' -UsedLine ''
+    Check '105 3: prose naming the library path is not a read' ($unused.Total -eq 1)
+    $unused=Get-UnusedShortlistedSkills -Shortlist @('new-provider:security-audit') -Accounted @() -RawTranscript $libRead -UsedLine ''
+    Check '105 3: a library read never credits a qualified plugin key' ($unused.Total -eq 1)
     $row.provider='new-provider@market';$row.sources[0].package='new-provider@market';$row.sources[0].invocation='new-provider:shared-name';$row.sources[0].version='1'
     $skill.Version='2'
     Write-Utf8 (Join-Path $rules 'catalogue/skills-001.jsonl') ($row | ConvertTo-Json -Depth 6 -Compress)

@@ -339,6 +339,9 @@ function Write-HookResult {
             elseif ($EventName -in @('Stop', 'SubagentStop')) {
                 $payload = @{ systemMessage = $text }
                 $shape = $clientId + 'SystemMessage'
+                # systemMessage is user-visible only; the model never reads it
+                # and the turn has ended. Queue it for the next prompt's context.
+                if ($EventName -eq 'Stop') { Add-CarryoverNote -HookInput $HookInput -Text $text }
             }
             elseif ($clientId -eq 'claude') {
                 $payload = @{ hookSpecificOutput = @{ hookEventName = $EventName; additionalContext = $text } }
@@ -376,6 +379,45 @@ function Write-HookResult {
         Degraded       = ($degradedParts.Count -gt 0)
         DegradedReason = ($degradedParts -join '; ')
     }
+}
+# ---- Stop advisory carry-over (order 105 item 2) ---------------------------
+# A Stop/SubagentStop advisory leaves as systemMessage: shown to the user, never
+# read by the model, and the turn is already over - so it was lost. Each one is
+# also appended to a per-session queue; Mcp-Usage-Check (registered on
+# UserPromptSubmit in every package) drains it on the next prompt with an
+# atomic rename-claim, so exactly one delivery reaches the model as context.
+function Get-CarryoverPath {
+    param($HookInput)
+    $session = [string](Get-Field $HookInput 'session_id'); $cwd = [string](Get-Field $HookInput 'cwd')
+    if ($session -eq '' -or $cwd -eq '' -or [string]::IsNullOrEmpty($env:LOCALAPPDATA)) { return '' }
+    return (Join-Path (Join-Path $env:LOCALAPPDATA 'HookMaker\state') ('Carryover-' + (Get-ShortHash ((Normalize-Path $cwd).ToLowerInvariant() + '|' + $session)) + '.txt'))
+}
+function Add-CarryoverNote {
+    param($HookInput, [string]$Text)
+    try {
+        if ($null -eq $HookInput -or [string]::IsNullOrWhiteSpace($Text)) { return }
+        $path = Get-CarryoverPath $HookInput
+        if ($path -eq '') { return }
+        New-Item -ItemType Directory -Path (Split-Path -Parent $path) -Force | Out-Null
+        $one = ($Text -replace '\r?\n', ' | ')
+        if ($one.Length -gt 600) { $one = $one.Substring(0, 597) + '...' }
+        if ((Test-Path -LiteralPath $path) -and (Get-Item -LiteralPath $path).Length -gt 8000) { return }
+        [IO.File]::AppendAllText($path, $one + "`n", (New-Object Text.UTF8Encoding($false)))
+    } catch { }
+}
+# Claims the queue and returns its lines ('' when empty). Never throws.
+function Get-CarryoverText {
+    param($HookInput)
+    try {
+        $path = Get-CarryoverPath $HookInput
+        if ($path -eq '' -or -not [IO.File]::Exists($path)) { return '' }
+        $claimed = $path + '.' + [guid]::NewGuid().ToString('N') + '.claim'
+        [IO.File]::Move($path, $claimed)
+        try { $lines = @([IO.File]::ReadAllLines($claimed, (New-Object Text.UTF8Encoding($false))) | Where-Object { $_.Trim() -ne '' } | Select-Object -Unique) }
+        finally { [IO.File]::Delete($claimed) }
+        if ($lines.Count -eq 0) { return '' }
+        return ("STOP NOTICES from the previous turn (shown to the user only; act on them now if still relevant):`n- " + ($lines -join "`n- "))
+    } catch { return '' }
 }
 # Parses a KEY=VALUE .env file ('#' comments allowed). Returns a hashtable;
 # empty when the file is absent or blank.

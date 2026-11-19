@@ -52,6 +52,7 @@ $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot '..\_scope.ps1')
 # Desktop control order advisory (spec 041).
 . (Join-Path $PSScriptRoot '_desktoproute.ps1')
+. (Join-Path $PSScriptRoot '_connectortriggers.ps1')
 
 # RESEARCH BEFORE EVERY TASK (global-research-rules.md, order 55 step 5). The
 # text is fixed by the order; the hook browses nothing, writes no note and can
@@ -98,6 +99,7 @@ $stateDir = Join-Path $env:LOCALAPPDATA 'HookMaker\state'
 $projectKey = Get-ShortHash ([string]$cwd).ToLowerInvariant()
 $sessionPath = Join-Path $stateDir ('McpUsageCheck-session-' + $projectKey + '.json')
 $gatePath = Join-Path $stateDir ('McpUsageCheck-gate-' + $projectKey + '.txt')
+$triggerPath = Join-Path $stateDir ('McpUsageCheck-trigger-' + $projectKey + '.json')
 
 # The exact wording the closing summary must carry. Kept in one place so the
 # instruction, the block message and the detector can never drift apart.
@@ -181,7 +183,17 @@ if ($eventName -eq 'SessionStart') {
 if ($eventName -eq 'UserPromptSubmit') {
     $prompt = [string](Get-Field $hookInput 'prompt')
     $operationNote = Get-OperationMcpReminder -HookInput $hookInput -Client (Get-HookClientId) -ProjectRoot $cwd -StateDir $stateDir
-    $relevant = $operationNote -ne '' -or $prompt -match '(?i)\b(library|framework|sdk\b|api\b|package|dependency|dependencies|browser|screenshot|website|webpage|\burl\b|database|\bdb\b|\bsql\b|github|pull request|\bpr\b|issue\b|deploy|endpoint|documentation|\bdocs?\b|integrat|webhook|scrape|crawl)\b'
+    # V94 connector triggers: one line naming the fitting first routes, and a
+    # per-session record the Stop half gates on (trigger matched, no call, no
+    # "none - reason" line). Rewritten on every prompt so a stale class never gates.
+    $triggerPrompt = $(if ($prompt -match $script:TextOnlyPromptPattern) { '' } else { $prompt })
+    $triggerLine = Get-ConnectorTriggerLine -Prompt $triggerPrompt
+    try {
+        New-Item -ItemType Directory -Path $stateDir -Force | Out-Null
+        Write-JsonFileAtomic -Path $triggerPath -Value ([pscustomobject]@{ schema = 1; sessionId = $sessionId; triggers = (Get-ConnectorTriggerKeys -Prompt $triggerPrompt) })
+    }
+    catch { }
+    $relevant = $operationNote -ne '' -or $triggerLine -ne '' -or $prompt -match '(?i)\b(library|framework|sdk\b|api\b|package|dependency|dependencies|browser|screenshot|website|webpage|\burl\b|database|\bdb\b|\bsql\b|github|pull request|\bpr\b|issue\b|deploy|endpoint|documentation|\bdocs?\b|integrat|webhook|scrape|crawl)\b'
 
     # Research is due on every SUBSTANTIVE prompt - work on the project, or a
     # technical question - not only on dependency words. Keyed by the request:
@@ -202,7 +214,15 @@ if ($eventName -eq 'UserPromptSubmit') {
             catch { }
         }
     }
+    # Stop advisories of the previous turn reached only the user (systemMessage);
+    # this hook runs on every prompt in every package, so it re-delivers them
+    # to the model here, ahead of anything else it says (order 105 item 2).
+    $carry = Get-CarryoverText $hookInput
     if (-not $relevant) {
+        if ($carry -ne '') {
+            $msg = $(if ($researchDue) { $carry + "`n" + $script:ResearchReminder } else { $carry })
+            exit (Write-HookResult -EventName $eventName -Kind 'context' -Message ('Mcp-Usage-Check: ' + $msg)).ExitCode
+        }
         if ($researchDue) {
             $emit = Write-HookResult -EventName $eventName -Kind 'context' -Message $script:ResearchReminder -HookInput $hookInput -HookName 'Mcp-Usage-Check' -FindingFingerprint $researchKey
             exit $emit.ExitCode
@@ -228,6 +248,8 @@ if ($eventName -eq 'UserPromptSubmit') {
     catch { }
     if ($alreadyReminded) {
         $notes = @()
+        if ($carry -ne '') { $notes += $carry }
+        if ($triggerLine -ne '') { $notes += $triggerLine }
         if ($researchDue) { $notes += $script:ResearchReminder }
         if ($operationNote -ne '') { $notes += $operationNote }
         if ($notes.Count -gt 0) {
@@ -243,8 +265,10 @@ if ($eventName -eq 'UserPromptSubmit') {
         '- Smallest complete verifying tool.',
         $requirement
     )
+    if ($triggerLine -ne '') { $noteLines += $triggerLine }
     if ($researchDue) { $noteLines += $script:ResearchReminder }
     if ($operationNote -ne '') { $noteLines += $operationNote }
+    if ($carry -ne '') { $noteLines = @($noteLines[0], $carry) + @($noteLines | Select-Object -Skip 1) }
     $note = $noteLines -join "`n"
     $emit = Write-HookResult -EventName $eventName -Kind 'context' -Message $note
     exit $emit.ExitCode
@@ -296,6 +320,22 @@ if (Get-Command Get-DesktopRouteNote -ErrorAction SilentlyContinue) {
     $desktopNote = Get-DesktopRouteNote -RawText $rawTailCache
     if ($desktopNote -ne '' -and -not (Test-ShouldReport 'desktop-route')) { $desktopNote = '' }
 }
+# V94 pairing/order advisories (Scrapling skill, chrome-devtools before
+# Playwright, rea-video encoding): never a block, once per session per kind.
+if (Get-Command Get-ConnectorPairingNotes -ErrorAction SilentlyContinue) {
+    if ($null -eq $rawTailCache) { $rawTailCache = [string](Get-TranscriptTailText (Get-EvidenceTranscriptFallbackPath $hookInput)) }
+    foreach ($pn in @(Get-ConnectorPairingNotes -RawText $rawTailCache)) {
+        if (-not (Test-ShouldReport ('pairing|' + $pn.Split(':')[0]))) { continue }
+        $desktopNote = $(if ($desktopNote -ne '') { $desktopNote + "`n" + $pn } else { $pn })
+    }
+}
+# Connector classes the newest prompt of THIS session matched (UserPromptSubmit).
+$triggerKeys = ''
+try {
+    $tr = Read-JsonFile $triggerPath
+    if ($null -ne $tr -and $sessionId -ne '' -and [string](Get-Field $tr 'sessionId') -eq $sessionId) { $triggerKeys = [string](Get-Field $tr 'triggers') }
+}
+catch { $triggerKeys = '' }
 
 # The requirement is met. Nothing to say - and nothing to repeat.
 # Every quiet exit below still owes a pending desktop-route note.
@@ -354,6 +394,20 @@ if ($usedMcp) {
 # No MCP tool was called. The hook cannot prove one was needed, so this is an
 # advisory even in block mode - and it is raised only for a session the pre-task
 # half already recorded as MCP-relevant.
+# V94: a connector trigger matched this prompt, no MCP tool was called and the
+# closing carries no "MCP used: none - <reason>". That is an observed fact pair
+# (prompt class + absent call + absent line), so it is a once-per-finding gate
+# under 'required-workflow'; MCP_SUMMARY_ENFORCEMENT=advisory|off still downgrades.
+if ($triggerKeys -ne '') {
+    $fp = Get-ShortHash ('trigger-none|' + $sessionId + '|' + $triggerKeys)
+    $reason = @(
+        ('Connector trigger matched (' + $triggerKeys + '); no MCP call or line.'),
+        'Use it, or close "MCP used: none - <reason>".'
+    ) -join "`n"
+    if ($desktopNote -ne '') { $reason += "`n" + $desktopNote }
+    $emit = Write-StopBlockResult -HookInput $hookInput -HookName 'Mcp-Usage-Check' -EventName $eventName -Reason $reason -FindingFingerprint $fp -Condition 'required-workflow'
+    exit $emit.ExitCode
+}
 if (-not $sessionRelevant) { Exit-WithDesktopNote }
 if (-not (Test-ShouldReport 'none-used')) { Exit-WithDesktopNote }
 $note = @(

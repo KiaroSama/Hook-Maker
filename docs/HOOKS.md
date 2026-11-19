@@ -23,6 +23,13 @@ and `Rules-Check` judge a later correction turn of that same task together with 
 wrap-up, so a gate that blocks afterwards never makes the agent repeat those lines; a new task never
 inherits them.
 
+**Stop notices reach the model on the next prompt (order 105).** A `systemMessage` on `Stop` is shown
+to the user only, after the turn has ended, so the model never read it. Every `Stop` advisory is now
+also appended to a small per-session queue under `%LOCALAPPDATA%\HookMaker\state\Carryover-*.txt`.
+On the next `UserPromptSubmit`, `Mcp-Usage-Check` claims the queue with an atomic rename and puts it
+first in its `additionalContext`, headed `STOP NOTICES from the previous turn`. Each notice is
+delivered once, capped at 600 characters, and the queue stops growing at 8 KB.
+
 
 **Concise-message standard.** Authored hook text states the observed condition, affected identity/scope and exact clearing action once; use precise task-triggered policy pointers for detail. Preserve commands, dynamic findings, safety constraints and UNKNOWN/error distinctions. Never truncate facts, encode prose or claim tokenizer savings from character counts. Existing ContextHooks checks bound all hook packages' literal text plus representative output semantics; a new message or budget increase requires the same semantic review. Raw user memory and configured review instructions remain verbatim.
 
@@ -42,7 +49,7 @@ never successful CI evidence. Process cleanup retains the existing 5-second rese
 | [`Cross-Project-.ai-Knowledge-Sync`](#cross-project-ai-knowledge-sync) | pre-task (SessionStart, UserPromptSubmit) | Coordinator / Executor; advisory | stages cross-project knowledge for review (sync groups, menu 2) |
 | [`Git-Sync-Check`](#git-sync-check) | pre-task (SessionStart) + PreToolUse + post-task (Stop, SubagentStop) | Detector / Advisory | reports remote synchronization, branch disposition and commit identity |
 | [`Feature-Request-Check`](#feature-request-check) | pre-task (UserPromptSubmit) + post-task (Stop, SubagentStop) | Detector / Advisory | reminds about the interview and Spec Kit chain |
-| [`Speckit-Check`](#speckit-check) | pre-task (SessionStart, UserPromptSubmit) + post-task (Stop) | Detector / Advisory + Gate | routes the task through Spec Kit; blocks a 3+ file change that skipped it |
+| [`Speckit-Check`](#speckit-check) | pre-task (SessionStart, UserPromptSubmit) + post-task (Stop) | Detector / Advisory + Gate | routes the task through Spec Kit; blocks once on a 3+ file change that skipped it, a missing `Spec Kit:` line, a contradicted EXEMPT, or a CHAIN claim with no speckit evidence |
 | [`Ai-Memory-Load`](#ai-memory-load) | pre-task (SessionStart, UserPromptSubmit) | Advisory | supplies the context router and file index |
 | [`Ai-Memory-Check`](#ai-memory-check) | post-task (Stop) | Detector / Advisory | reports stale context files |
 | [`Graph-Read-Check`](#graph-read-check) | pre-task (SessionStart, UserPromptSubmit) | Advisory | suggests relevant graph queries |
@@ -55,7 +62,7 @@ never successful CI evidence. Process cleanup retains the existing 5-second rese
 | [`Writing-Voice-Check`](#writing-voice-check) | pre-task (SessionStart, UserPromptSubmit) + post-task (Stop/SubagentStop) | Gate (blocks once) | Stop refuses a reply whose language-matched voice skill was never loaded |
 | [`Cloudflare-Deploy`](#cloudflare-deploy) | post-task (Stop) | Advisory / Coordinator | reports release readiness; never deploys automatically |
 | [`Skills-Check`](#skills-check) | pre-task (SessionStart, UserPromptSubmit) + post-task (Stop, SubagentStop) | Detector / Advisory | discovers skill surfaces and checks usage reporting |
-| [`Mcp-Usage-Check`](#mcp-usage-check) | pre-task (SessionStart, UserPromptSubmit) + post-task (Stop, SubagentStop) | Detector / Advisory | reminds about research and MCP usage reporting |
+| [`Mcp-Usage-Check`](#mcp-usage-check) | pre-task (SessionStart, UserPromptSubmit) + post-task (Stop, SubagentStop) | Detector / Advisory + Gate | names the fitting connector; blocks once when a triggered prompt got no MCP call and no `MCP used: none - <reason>` |
 | [`Large-File-Check`](#large-file-check) | pre-task (SessionStart, UserPromptSubmit) + post-task (Stop) | Detector / Advisory | reports oversized files, including task-caused growth |
 | [`Dependabot-Check`](#dependabot-check) | pre-task (SessionStart) | Detector / Advisory | reports pending Dependabot PRs; never merges |
 | [`Ci-Status-Check`](#ci-status-check) | post-task (Stop) | Detector / Advisory; Gate only for a verified live runner | reports exact pushed-SHA evidence, never seeds success |
@@ -347,6 +354,8 @@ The detector is anchored to the start of a transcript line, and the hook never p
 Relevant unquoted Scrapling/scraping, Agensi and Upwork requests additionally receive operation-specific lifecycle/consent guidance, fingerprinted separately per request/client/project/session so a later operation is not suppressed by the generic session reminder. These are advisories only: no server/account call, terms acceptance, permission grant or source upload. Upwork `create_draft` is explicitly identified as a persistent draft write; provenance/exposure and execution success stay distinct. See [research and operation reminders](research-operation-reminders.md).
 
 **Desktop route (spec 041).** At Stop, a computer-use tool call with no earlier agent-desktop attempt (MCP call or skill load) gets one advisory per session naming the order: agent-desktop MCP + skill first, browser tools for web, computer-use only as a reported fallback. It rides any Mcp-Usage-Check output and never blocks.
+
+**Connector use triggers (steering V94, order 105).** `UserPromptSubmit` classifies the prompt and adds one line, `CONNECTORS first: ...`, naming at most two fitting routes: URL or web page to Scrapling-Server with the `anthropic-skills:scrapling-official` skill; page debugging, performance or accessibility to chrome-devtools before Playwright; a dependency change to Snyk; security code to Semgrep; a library or API to Context7; "did we / what do I prefer" to Synapse `memory_retrieve`; Windows app control to Agent-Desktop; a code-structure question to Codebase-Memory-mcp; a video file to the `rea-video:rea-video` skill and then `rea-video decompose`, not ffmpeg first. Text-only prompts (typo, wording) name nothing. At Stop, when that prompt matched a trigger, no MCP tool was called and the reply has no `MCP used:` line, the hook blocks once per finding (`required-workflow`). `MCP used: none - <reason>` clears it, and `MCP_SUMMARY_ENFORCEMENT=advisory|off` still downgrades it. Three advisories ride the Stop output and never block: a Scrapling-Server call with no earlier `scrapling-official` Skill call or `SKILL.md` Read; a Playwright call with no chrome-devtools call; and a `rea-video` shell command run from a hook process without `PYTHONIOENCODING=utf-8` (a shell started before that user variable was set).
 
 ## `Large-File-Check`
 

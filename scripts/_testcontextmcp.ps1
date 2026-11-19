@@ -203,7 +203,8 @@ function Invoke-McpGatewayRegression {
     # all-clear and never a block - it is reported as unverified, and only for a
     # session the prompt half recorded as MCP-relevant.
     $mcpUnk = New-Proj 'McpUnknown'
-    $r = Fire -HookPath $McpHook -Cwd $mcpUnk -RawStdin (New-PromptStdin -Cwd $mcpUnk -EventName 'UserPromptSubmit' -Prompt 'read the payments API docs' -SessionId 'mcp-u1')
+    # A relevant prompt with NO connector trigger (order 105 triggers gate instead).
+    $r = Fire -HookPath $McpHook -Cwd $mcpUnk -RawStdin (New-PromptStdin -Cwd $mcpUnk -EventName 'UserPromptSubmit' -Prompt 'check the database schema' -SessionId 'mcp-u1')
     Check 'a relevant prompt records the session as MCP-relevant (reminder emitted)' ($r.Out -match 'Mcp-Usage-Check: advisory') $r.Out
     $r = Fire -HookPath $McpHook -Cwd $mcpUnk -RawStdin (New-StopStdin -Cwd $mcpUnk -Transcript (Join-Path $Work 'no-such-transcript.jsonl') -SessionId 'mcp-u1')
     Check 'a missing transcript stays silent without claiming an all-clear' (
@@ -211,6 +212,39 @@ function Invoke-McpGatewayRegression {
     $r = Fire -HookPath $McpHook -Cwd $mcpUnk -RawStdin (New-StopStdin -Cwd $mcpUnk -Transcript $tNoMcp -SessionId 'mcp-u1')
     Check 'a relevant session that called no MCP tool gets an advisory, not a block' (
         $r.Out -match 'no connected tool called' -and $r.Out -notmatch '"decision"') $r.Out
+
+    # Order 105 (steering V94): connector triggers, Stop gate, pairing notes, carry-over.
+    $mcpTrig = New-Proj 'McpTrigger'
+    $r = Fire -HookPath $McpHook -Cwd $mcpTrig -RawStdin (New-PromptStdin -Cwd $mcpTrig -EventName 'UserPromptSubmit' -Prompt 'scrape https://example.com and summarise it' -SessionId 'mcp-t1')
+    Check '105 1a: a URL prompt names Scrapling + scrapling-official in one CONNECTORS line' (
+        $r.Out -match 'CONNECTORS first: URL/web page -> Scrapling-Server \+ skill anthropic-skills:scrapling-official') $r.Out
+    $r = Fire -HookPath $McpHook -Cwd $mcpTrig -RawStdin (New-PromptStdin -Cwd $mcpTrig -EventName 'UserPromptSubmit' -Prompt 'what happens in clip.mp4 at the end' -SessionId 'mcp-t2')
+    Check '105 4c: a video prompt names rea-video skill then rea-video decompose' ($r.Out -match 'rea-video:rea-video skill, then rea-video decompose') $r.Out
+    $r = Fire -HookPath $McpHook -Cwd $mcpTrig -RawStdin (New-PromptStdin -Cwd $mcpTrig -EventName 'UserPromptSubmit' -Prompt 'fix a typo in the readme' -SessionId 'mcp-t3')
+    Check '105 1a: a text-only prompt names no connector' ($r.Out -notmatch 'CONNECTORS first') $r.Out
+    $r = Fire -HookPath $McpHook -Cwd $mcpTrig -RawStdin (New-StopStdin -Cwd $mcpTrig -Transcript $tNoMcp -SessionId 'mcp-t1')
+    Check '105 1b: trigger matched, no MCP call, no line -> blocks once (required-workflow)' (
+        $r.Out -match '"decision"\s*:\s*"block"' -and $r.Out -match 'Connector trigger matched \(web\)') $r.Out
+    $r = Fire -HookPath $McpHook -Cwd $mcpTrig -RawStdin (New-StopStdin -Cwd $mcpTrig -Transcript $tNoMcp -SessionId 'mcp-t1')
+    Check '105 1b: the same finding does not block twice' ($r.Out -notmatch '"decision"') $r.Out
+    $tNoneReason = New-ToolTranscript 'mcp-none-reason' 'Read' "Done.`nMCP used: none - the page is a local fixture"
+    $r = Fire -HookPath $McpHook -Cwd $mcpTrig -RawStdin (New-PromptStdin -Cwd $mcpTrig -EventName 'UserPromptSubmit' -Prompt 'scrape https://example.org' -SessionId 'mcp-t4')
+    $r = Fire -HookPath $McpHook -Cwd $mcpTrig -RawStdin (New-StopStdin -Cwd $mcpTrig -Transcript $tNoneReason -SessionId 'mcp-t4')
+    Check '105 1b: "MCP used: none - <reason>" passes the trigger gate' ($r.Out -notmatch '"decision"') $r.Out
+    $tPair = Join-Path $Work 'mcp-pair.jsonl'
+    Write-Utf8 $tPair ((@(
+        (@{ type = 'assistant'; message = @{ content = @(@{ type = 'tool_use'; name = 'mcp__Scrapling-Server__get'; input = @{ a = 1 } }) } } | ConvertTo-Json -Compress -Depth 8),
+        (@{ type = 'assistant'; message = @{ content = @(@{ type = 'tool_use'; name = 'mcp__plugin_playwright_playwright__browser_navigate'; input = @{ a = 1 } }) } } | ConvertTo-Json -Compress -Depth 8),
+        (@{ type = 'assistant'; message = @{ content = @(@{ type = 'text'; text = "Done.`nMCP used: Scrapling-Server, playwright" }) } } | ConvertTo-Json -Compress -Depth 8)
+    ) -join "`n") + "`n")
+    $r = Fire -HookPath $McpHook -Cwd $mcpTrig -RawStdin (New-StopStdin -Cwd $mcpTrig -Transcript $tPair -SessionId 'mcp-t5')
+    Check '105 1c: Scrapling call without scrapling-official -> one advisory' ($r.Out -match 'SCRAPLING:' -and $r.Out -notmatch '"decision"') $r.Out
+    Check '105 1d: Playwright with no chrome-devtools call -> one advisory' ($r.Out -match 'PLAYWRIGHT:') $r.Out
+    $r = Fire -HookPath $McpHook -Cwd $mcpTrig -RawStdin (New-PromptStdin -Cwd $mcpTrig -EventName 'UserPromptSubmit' -Prompt 'thanks' -SessionId 'mcp-t5')
+    Check '105 item 2: the Stop advisory reaches the model on the next prompt as context' (
+        $r.Out -match 'additionalContext' -and $r.Out -match 'STOP NOTICES from the previous turn' -and $r.Out -match 'SCRAPLING:') $r.Out
+    $r = Fire -HookPath $McpHook -Cwd $mcpTrig -RawStdin (New-PromptStdin -Cwd $mcpTrig -EventName 'UserPromptSubmit' -Prompt 'thanks again' -SessionId 'mcp-t5')
+    Check '105 item 2: the carry-over queue is delivered exactly once' ($r.Out -notmatch 'STOP NOTICES') $r.Out
 
     # Desktop control order (spec 041): computer-use with no earlier agent-desktop
     # attempt is named once; agent-desktop first, or no computer-use, is silent.

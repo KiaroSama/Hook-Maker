@@ -21,6 +21,13 @@
 و `Rules-Check` نوبتِ اصلاحیِ بعدیِ همان تسک را همراه با خلاصهٔ منتشرشده می‌سنجند، پس گیتی که بعد از آن
 بلاک کند هرگز عامل را وادار به تکرار این خط‌ها نمی‌کند؛ تسکِ تازه آن‌ها را به ارث نمی‌برد.
 
+**اعلان‌های Stop در prompt بعدی به مدل می‌رسند (دستور ۱۰۵).** `systemMessage` در `Stop` فقط به کاربر
+نشان داده می‌شود، آن هم بعد از پایانِ نوبت، پس مدل هرگز آن را نمی‌خواند. حالا هر هشدارِ `Stop` در یک صفِ
+کوچکِ مخصوصِ همان سشن هم نوشته می‌شود (`%LOCALAPPDATA%\HookMaker\state\Carryover-*.txt`). در
+`UserPromptSubmit` بعدی، `Mcp-Usage-Check` صف را با یک rename اتمی برمی‌دارد و آن را با عنوانِ
+`STOP NOTICES from the previous turn` اولِ `additionalContext` خود می‌گذارد. هر اعلان فقط یک بار تحویل
+می‌شود، حداکثر ۶۰۰ نویسه دارد و صف از ۸ کیلوبایت بزرگ‌تر نمی‌شود.
+
 
 **مهلت هوک.** هوک‌هایی که کتابخانه‌ی مشترک `_budgetlib.ps1` را به کار می‌گیرند (اول Dependency-Version-Check؛
 بودجه‌ی GitHub در Ci-Status-Check هم در آن ادغام می‌شود) از timeoutی که نصب‌کننده ثبت کرده یک مهلت
@@ -33,7 +40,7 @@
 | [`Cross-Project-.ai-Knowledge-Sync`](#cross-project-ai-knowledge-sync) | قبل از تسک (SessionStart, UserPromptSubmit) | هماهنگ‌کننده / اجراکننده؛ مشورتی | دانش بین‌پروژه‌ای را برای بازبینی آماده می‌کند (گروه سینک، منوی ۲) |
 | [`Git-Sync-Check`](#git-sync-check) | قبل از تسک (SessionStart) + PreToolUse + بعد از تسک (Stop, SubagentStop) | تشخیص‌دهنده / مشورتی | وضعیت ریموت، تعیین تکلیف شاخه و هویت کامیت را گزارش می‌کند |
 | [`Feature-Request-Check`](#feature-request-check) | قبل از تسک (UserPromptSubmit) + بعد از تسک (Stop, SubagentStop) | تشخیص‌دهنده / مشورتی | زنجیرهٔ مصاحبه و Spec Kit را یادآوری می‌کند |
-| [`Speckit-Check`](#speckit-check) | قبل از تسک (SessionStart, UserPromptSubmit) + بعد از تسک (Stop) | تشخیص‌دهنده / مشورتی + گیت | مسیر Spec Kit را نشان می‌دهد؛ تغییرِ ۳+ فایلی بدون آن را بلاک می‌کند |
+| [`Speckit-Check`](#speckit-check) | قبل از تسک (SessionStart, UserPromptSubmit) + بعد از تسک (Stop) | تشخیص‌دهنده / مشورتی + گیت | مسیر Spec Kit را نشان می‌دهد؛ یک بار بلاک می‌کند برای تغییرِ ۳+ فایلی بدون آن، نبودِ خطِ `Spec Kit:`، EXEMPTِ نقض‌شده یا ادعای CHAIN بدونِ شاهدِ speckit |
 | [`Ai-Memory-Load`](#ai-memory-load) | قبل از تسک (SessionStart, UserPromptSubmit) | مشورتی | مسیریاب حافظه و نمایهٔ فایل‌ها را می‌دهد |
 | [`Ai-Memory-Check`](#ai-memory-check) | بعد از تسک (Stop) | تشخیص‌دهنده / مشورتی | فایل‌های حافظهٔ کهنه را گزارش می‌کند |
 | [`Graph-Read-Check`](#graph-read-check) | قبل از تسک (SessionStart, UserPromptSubmit) | مشورتی | پرس‌وجوی مرتبط گراف را پیشنهاد می‌کند |
@@ -46,7 +53,7 @@
 | [`Writing-Voice-Check`](#writing-voice-check) | قبل از تسک (SessionStart, UserPromptSubmit) + بعد از تسک (Stop/SubagentStop) | گیت (یک بار مسدود می‌کند) | پاسخی را که اسکیلِ لحنِ زبانش بارگذاری نشده در Stop رد می‌کند |
 | [`Cloudflare-Deploy`](#cloudflare-deploy) | بعد از تسک (Stop) | مشورتی / هماهنگ‌کننده | آمادگی انتشار را گزارش می‌کند؛ خودکار مستقر نمی‌کند |
 | [`Skills-Check`](#skills-check) | قبل از تسک (SessionStart, UserPromptSubmit) + بعد از تسک (Stop, SubagentStop) | تشخیص‌دهنده / مشورتی | مهارت‌ها را کشف و گزارش استفاده را بررسی می‌کند |
-| [`Mcp-Usage-Check`](#mcp-usage-check) | قبل از تسک (SessionStart, UserPromptSubmit) + بعد از تسک (Stop, SubagentStop) | تشخیص‌دهنده / مشورتی | تحقیق و گزارش استفاده از MCP را یادآوری می‌کند |
+| [`Mcp-Usage-Check`](#mcp-usage-check) | قبل از تسک (SessionStart, UserPromptSubmit) + بعد از تسک (Stop, SubagentStop) | تشخیص‌دهنده / مشورتی + گیت | کانکتورِ مناسب را نام می‌برد؛ promptِ تریگرخورده بدونِ فراخوانیِ MCP و بدونِ `MCP used: none - <reason>` را یک بار بلاک می‌کند |
 | [`Large-File-Check`](#large-file-check) | قبل از تسک (SessionStart, UserPromptSubmit) + بعد از تسک (Stop) | تشخیص‌دهنده / مشورتی | فایل بزرگ، حتی رشد همین تسک، را گزارش می‌کند |
 | [`Dependabot-Check`](#dependabot-check) | قبل از تسک (SessionStart) | تشخیص‌دهنده / مشورتی | PR باز Dependabot را گزارش می‌کند؛ merge نمی‌کند |
 | [`Ci-Status-Check`](#ci-status-check) | بعد از تسک (Stop) | تشخیص‌دهنده / مشورتی؛ گیت فقط برای رانر زندهٔ تأییدشده | شاهد همان SHA پوش‌شده را گزارش می‌کند؛ موفقیت نمی‌سازد |
@@ -325,6 +332,8 @@ An actual leading `::deep-research` receives bounded phase-specific routing thro
 Relevant Scrapling/scraping, Agensi and Upwork operations receive separate request-scoped lifecycle/consent guidance, even later in the same session. Upwork create_draft saves a real draft; publication and repeated unknown outcomes are separate actions. The hook invokes no server, grants no permission and never changes accounts/routes. [Details](research-operation-reminders.md).
 
 **ترتیبِ کنترلِ دسکتاپ (spec 041).** در Stop اگر ابزارِ computer-use فراخوانده شده باشد و پیش از آن هیچ تلاشی با agent-desktop (فراخوانیِ MCP یا بارگذاریِ اسکیل) دیده نشود، هوک یک توصیه در هر جلسه می‌دهد و ترتیب را یادآوری می‌کند: اول MCP و اسکیلِ agent-desktop، برای وب ابزارهای مرورگر، و computer-use فقط وقتی که راهِ دیگری نمانده و دلیلش گزارش شود. این توصیه همراهِ هر خروجیِ Mcp-Usage-Check می‌آید و هرگز بلاک نمی‌کند.
+
+**تریگرهای کانکتور (steering V94، دستور ۱۰۵).** `UserPromptSubmit` نوعِ prompt را تشخیص می‌دهد و یک خط با عنوانِ `CONNECTORS first: ...` اضافه می‌کند که حداکثر دو مسیرِ مناسب را نام می‌برد: آدرس یا صفحهٔ وب ← Scrapling-Server همراهِ اسکیلِ `anthropic-skills:scrapling-official`؛ دیباگ، کارایی یا دسترس‌پذیریِ صفحه ← اول chrome-devtools و بعد Playwright؛ تغییرِ وابستگی ← Snyk؛ کدِ امنیتی ← Semgrep؛ کتابخانه یا API ← Context7؛ «قبلاً چه کردیم / چه ترجیح می‌دهم» ← `memory_retrieve` در Synapse؛ کنترلِ برنامهٔ ویندوزی ← Agent-Desktop؛ سؤالِ ساختارِ کد ← Codebase-Memory-mcp؛ فایلِ ویدیو ← اسکیلِ `rea-video:rea-video` و بعد `rea-video decompose`، نه اول ffmpeg. promptهای صرفاً متنی (غلطِ تایپی، جمله‌بندی) چیزی نام نمی‌برند. در Stop، اگر همان prompt به تریگر خورده باشد، هیچ ابزارِ MCPای صدا زده نشده باشد و پاسخ خطِ `MCP used:` نداشته باشد، هوک برای هر یافته یک بار بلاک می‌کند (`required-workflow`). خطِ `MCP used: none - <reason>` آن را رفع می‌کند و `MCP_SUMMARY_ENFORCEMENT=advisory|off` همچنان شدتش را پایین می‌آورد. سه توصیه هم همراهِ خروجیِ Stop می‌آیند و هرگز بلاک نمی‌کنند: فراخوانیِ Scrapling-Server بدونِ فراخوانی یا خواندنِ قبلیِ اسکیلِ `scrapling-official`؛ فراخوانیِ Playwright بدونِ هیچ فراخوانیِ chrome-devtools؛ و اجرای `rea-video` از پروسه‌ای که `PYTHONIOENCODING=utf-8` ندارد (شِلی که پیش از تنظیمِ آن متغیر باز شده).
 
 ## `Large-File-Check`
 
