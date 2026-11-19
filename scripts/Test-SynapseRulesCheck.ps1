@@ -164,7 +164,7 @@ try {
     $rNoRead = Fire -Cwd $g -EventName 'Stop' -SessionId 'g-noread' -TranscriptPath (New-GateTranscript 'g-noread' $g @('edit:src\a.ps1'))
     Check 'gate: edits with no Synapse call -> blocked' ($rNoRead.Out -match $blockPattern -and $rNoRead.Out -match 'SYNAPSE RULES CHECK') ($rNoRead.Out + $rNoRead.Err)
     Check 'gate: the block names the read duty and memory_digest' ($rNoRead.Out -match 'Read duty' -and $rNoRead.Out -match 'memory_digest') $rNoRead.Out
-    Check 'gate: the block also names the write duty and the opt-out line' ($rNoRead.Out -match 'Write duty' -and $rNoRead.Out -match 'Synapse: no durable learning - <reason>') $rNoRead.Out
+    Check 'gate: the block also names the write duty and the opt-out line' ($rNoRead.Out -match 'Write duty' -and $rNoRead.Out -match 'Synapse: none - <reason>') $rNoRead.Out
     $rAgain = Fire -Cwd $g -EventName 'Stop' -SessionId 'g-noread' -TranscriptPath (New-GateTranscript 'g-noread2' $g @('edit:src\a.ps1'))
     Check 'gate: an unchanged outcome is not refused twice' ($rAgain.Out -notmatch $blockPattern) $rAgain.Out
 
@@ -180,6 +180,11 @@ try {
     $g = New-Proj 'GateOptOut'
     $rOpt = Fire -Cwd $g -EventName 'Stop' -SessionId 'g-opt' -TranscriptPath (New-GateTranscript 'g-opt' $g @('digest', 'edit:src\a.ps1') "Fixed it.`nSynapse: no durable learning - a one-line typo fix")
     Check 'gate: a reasoned opt-out line clears the write duty' ($rOpt.Exit -eq 0 -and $rOpt.Out -eq '') ($rOpt.Out + $rOpt.Err)
+    # Order 106 step 5c: the short form 'Synapse: none - <reason>' clears the write duty too.
+    $rNone = Fire -Cwd $g -EventName 'Stop' -SessionId 'g-none' -TranscriptPath (New-GateTranscript 'g-none' $g @('digest', 'edit:src\a.ps1') "Fixed it.`nSynapse: none - a one-line typo fix with nothing durable")
+    Check '106 5c: Synapse: none - <reason> clears the write duty' ($rNone.Out -notmatch '"decision"\s*:\s*"block"') $rNone.Out
+    $rNoWrite = Fire -Cwd $g -EventName 'Stop' -SessionId 'g-nowrite' -TranscriptPath (New-GateTranscript 'g-nowrite' $g @('digest', 'edit:src\a.ps1') "Fixed it.")
+    Check '106 5c: edits with a read but no write and no none-line -> blocks once' ($rNoWrite.Out -match '"decision"\s*:\s*"block"' -and $rNoWrite.Out -match 'Write duty') $rNoWrite.Out
     $g = New-Proj 'GateOptEmpty'
     $rOptEmpty = Fire -Cwd $g -EventName 'Stop' -SessionId 'g-optempty' -TranscriptPath (New-GateTranscript 'g-optempty' $g @('digest', 'edit:src\a.ps1') "Fixed it.`nSynapse: no durable learning -")
     Check 'gate: an opt-out with an empty reason is still refused' ($rOptEmpty.Out -match $blockPattern) $rOptEmpty.Out

@@ -30,6 +30,8 @@ On the next `UserPromptSubmit`, `Mcp-Usage-Check` claims the queue with an atomi
 first in its `additionalContext`, headed `STOP NOTICES from the previous turn`. Each notice is
 delivered once, capped at 600 characters, and the queue stops growing at 8 KB.
 
+**Hook output is binding (router standing order 1).** An advisory is an instruction to act on in the same task, not a message to display and move past. A gate that blocks once still expects the fix it names; the carry-over queue above exists so the model actually receives Stop advisories.
+
 
 **Concise-message standard.** Authored hook text states the observed condition, affected identity/scope and exact clearing action once; use precise task-triggered policy pointers for detail. Preserve commands, dynamic findings, safety constraints and UNKNOWN/error distinctions. Never truncate facts, encode prose or claim tokenizer savings from character counts. Existing ContextHooks checks bound all hook packages' literal text plus representative output semantics; a new message or budget increase requires the same semantic review. Raw user memory and configured review instructions remain verbatim.
 
@@ -236,7 +238,7 @@ Keeps the agent's own operating rules current from the **Synapse** memory store,
 **Stop is a gate** (spec 037). It reads the COMPLETE transcript (up to `MAX_TRANSCRIPT_BYTES`, default 20 MB) and judges only client-recorded tool calls, never prose - the hook's own note names every tool and must never count:
 
 - **Read duty:** project edits (`Write`/`Edit`/`MultiEdit`/`NotebookEdit` inside the project root, outside `.ai/`, `.claude/`, `plans/`, `specs/`, `.specify/`) and no `memory_digest`/`memory_retrieve`/`memory_write` call -> refused once.
-- **Write duty:** project edits and no `memory_write` call -> refused once, unless the closing reply carries `Synapse: no durable learning - <reason>` with a real reason (an empty or placeholder reason does not clear it). The opt-out keeps one-line fixes from forcing junk notes.
+- **Write duty:** project edits and no `memory_write` call -> refused once, unless the closing reply carries `Synapse: none - <reason>` (the older `Synapse: no durable learning - <reason>` still counts) with a real reason (an empty or placeholder reason does not clear it). The opt-out keeps one-line fixes from forcing junk notes.
 - A read that came only AFTER the first edit is a single advisory, not a block.
 
 One refusal per session and outcome: an unchanged answer is silent on the next Stop. Never refused: no project edit, `SubagentStop` (the subagent works under its parent's duties), a missing/oversized/unreadable transcript, `stop_hook_active`, or a machine without Synapse (`%USERPROFILE%\.synapse\synapse.db`, or `SYNAPSE_HOME`). `HOOK_ENFORCEMENT=advisory|off` in the hook's `.env` softens or disables the gate.
@@ -258,6 +260,8 @@ All pass -> the summary is recorded READY and the generation finalizes and becom
 ## `Writing-Voice-Check`
 
 **Runs:** pre-task (SessionStart, UserPromptSubmit) + post-task (Stop/SubagentStop).
+
+**Router standing orders (order 106).** The voice keys are `anthropic-skills:persian`, `anthropic-skills:great-russian` and `humanizer:humanizer`; the bare `persian` and `great-russian` still count as loads. Code comments, docstrings and PowerShell help text that an Edit or Write adds to a code file are prose too: when their language has no voice skill loaded since the last compaction, Stop blocks once and asks for the skill and its `Skills used:` entry. Code itself is never judged.
 
 Enforces `global-writing-voice-rules.md`: every human-readable reply uses the voice skill of its language, `persian` for Persian, `great-russian` for Russian and `humanizer:humanizer` for English. A hook cannot load a skill, so the rule is carried in three steps. SessionStart states the language-to-skill map; on `source=compact` or `resume` it adds that earlier loads are gone and the skill must be loaded again. UserPromptSubmit names the skill for the language the user typed, once per session and language (`PROMPT_REMINDER=0` turns this off). Stop reads the complete transcript and refuses once when the newest typed prompt is in a mapped language and no load of that skill happened since the session start or the last compaction.
 
@@ -378,6 +382,8 @@ In a GitHub repo, reports pending pull requests from the verified `app/dependabo
 ## `Ci-Status-Check`
 
 **Runs:** post-task (Stop).
+
+**Billing block (order 106).** When GitHub did not start the jobs because of account payments or a spending limit, the closing reply must carry `CI did not run; local run passed` or `CI did not run; local run failed`, after a local run of the same tool. Without that line, Stop blocks once per SHA (owner: `global-github-bot-remediation-rules.md` "CI blocked by billing"). It still never reports CI as green.
 
 After a push, reports checks for the **exact** pushed commit. Pending, unproven, failed and workload-review findings are advisory, exit 0, once per session/event/fingerprint; they never certify completion or successful CI. GitHub queries remain throttled, exact-SHA and bound to the same resolved remote used for repository selection and pushed-state verification (never a mismatched `@{upstream}`). Undeterminable state exits 0 silently and is never reported as verified. Only a verified live/leaked runner safety finding retains default block authority. When CI is blocked only by a confirmed **external** condition (GitHub outage, no hosted runner, an org/repo permission failure, an externally-controlled secret being unavailable, a manual approval/environment gate, ...), the agent can record an explicit, evidenced, local-only exception bound to the exact repository + pushed SHA: `-ReportExternalBlocker -Classification <category> -Reason "<evidence>"`.
 

@@ -342,6 +342,20 @@ try {
     Check 'billing block -> recorded exception persists on the next stop (no re-block)' ($r.Out -notmatch '"decision":"block"') $r.Out
     Check 'billing block -> the SAME session is not told twice (a Stop advisory re-invokes the model - bounded like a block)' ($r.Out -eq '') $r.Out
 
+    # Order 106 step 5b: a billing-blocked push needs a local run and the line
+    # "CI did not run; local run passed|failed" in the closing reply.
+    function New-BillTranscript([string]$Name, [string]$Text) {
+        $p = Join-Path $Work ($Name + '.jsonl')
+        [System.IO.File]::WriteAllText($p, ((@{ type = 'assistant'; message = @{ role = 'assistant'; content = @(@{ type = 'text'; text = $Text }) } } | ConvertTo-Json -Depth 8 -Compress) + "`n"), (New-Object System.Text.UTF8Encoding $false))
+        return $p
+    }
+    $r = Fire -HookPath $CiHook -Cwd $ciBill -EventName 'Stop' -Extra @{ session_id = 'bill-nolocal'; transcript_path = (New-BillTranscript 'bill-nolocal' "Pushed.`nCI is fine.") }
+    Check '106 5b: billing block without "CI did not run; local run ..." -> blocks once' ($r.Out -match '"decision":"block"' -and $r.Out -match 'CI did not run') $r.Out
+    $r = Fire -HookPath $CiHook -Cwd $ciBill -EventName 'Stop' -Extra @{ session_id = 'bill-nolocal'; transcript_path = (New-BillTranscript 'bill-nolocal2' "Pushed.`nCI is fine.") }
+    Check '106 5b: the same billing finding is not refused twice' ($r.Out -notmatch '"decision":"block"') $r.Out
+    $r = Fire -HookPath $CiHook -Cwd $ciBill -EventName 'Stop' -Extra @{ session_id = 'bill-local'; transcript_path = (New-BillTranscript 'bill-local' "Pushed.`nCI did not run; local run passed (pwsh scripts/Test-Engine.ps1).") }
+    Check '106 5b: billing block with the local-run line -> no block' ($r.Out -notmatch '"decision":"block"') $r.Out
+
     # GitHub's REAL shape on a multi-job workflow: it annotates ONE check-run
     # and the rest fail carrying NO annotations at all. The original rule -
     # every failing check-run must carry the annotation - could therefore never

@@ -73,6 +73,7 @@ function New-VoiceTranscript {
         elseif ($s -eq 'compact') { $doc = @{ type = 'user'; isCompactSummary = $true; message = @{ role = 'user'; content = 'This session is being continued from a previous conversation.' } } }
         elseif ($s -like 'skill:*') { $doc = @{ type = 'assistant'; message = @{ role = 'assistant'; content = @(@{ type = 'tool_use'; name = 'Skill'; input = @{ skill = $s.Substring(6) } }) } } }
         elseif ($s -like 'write:*') { $doc = @{ type = 'assistant'; message = @{ role = 'assistant'; content = @(@{ type = 'tool_use'; name = 'Write'; input = @{ file_path = $s.Substring(6) } }) } } }
+        elseif ($s -like 'writec:*') { $pair = $s.Substring(7).Split('|', 2); $doc = @{ type = 'assistant'; message = @{ role = 'assistant'; content = @(@{ type = 'tool_use'; name = 'Edit'; input = @{ file_path = $pair[0]; old_string = 'x'; new_string = $pair[1] } }) } } }
         elseif ($s -like 'bash:*') { $doc = @{ type = 'assistant'; message = @{ role = 'assistant'; content = @(@{ type = 'tool_use'; name = 'Bash'; input = @{ command = $s.Substring(5) } }) } } }
         else { $doc = @{ type = 'assistant'; message = @{ role = 'assistant'; content = @(@{ type = 'tool_use'; name = 'Read'; input = @{ file_path = $s.Substring(5) } }) } } }
         [void]$entries.Add(($doc | ConvertTo-Json -Depth 8 -Compress))
@@ -89,7 +90,7 @@ try {
     Write-Host '--- SessionStart: the mapping, and a reload duty after compaction/resume ---' -ForegroundColor Cyan
     $p = New-Proj 'Start'
     $rStart = Fire -Cwd $p -EventName 'SessionStart' -SessionId 's1' -Source 'startup'
-    Check 'start: names all three skills' ($rStart.Exit -eq 0 -and $rStart.Out -match 'WRITING VOICE' -and $rStart.Out -match '`persian`' -and $rStart.Out -match '`great-russian`' -and $rStart.Out -match '`humanizer:humanizer`') ($rStart.Out + $rStart.Err)
+    Check 'start: names all three skills' ($rStart.Exit -eq 0 -and $rStart.Out -match 'WRITING VOICE' -and $rStart.Out -match '`anthropic-skills:persian`' -and $rStart.Out -match '`anthropic-skills:great-russian`' -and $rStart.Out -match '`humanizer:humanizer`') ($rStart.Out + $rStart.Err)
     Check 'start: a fresh session carries no reload line' ($rStart.Out -notmatch 'reload the skill now') $rStart.Out
     $rCompact = Fire -Cwd $p -EventName 'SessionStart' -SessionId 's1' -Source 'compact'
     Check 'start: source=compact adds the reload duty' ($rCompact.Out -match 'compacted: earlier loads are gone, reload the skill now') $rCompact.Out
@@ -99,11 +100,11 @@ try {
     Write-Host ''
     Write-Host '--- UserPromptSubmit: once per session and language ---' -ForegroundColor Cyan
     $rFa = Fire -Cwd $p -EventName 'UserPromptSubmit' -SessionId 'u1' -Prompt $PersianPrompt
-    Check 'prompt: Persian -> Skill persian' ($rFa.Out -match 'VOICE: reply in Persian -> Skill `persian`') ($rFa.Out + $rFa.Err)
+    Check 'prompt: Persian -> Skill persian' ($rFa.Out -match 'VOICE: reply in Persian -> Skill `anthropic-skills:persian`') ($rFa.Out + $rFa.Err)
     $rFa2 = Fire -Cwd $p -EventName 'UserPromptSubmit' -SessionId 'u1' -Prompt $PersianPrompt
     Check 'prompt: the same language is not repeated in a session' ($rFa2.Exit -eq 0 -and $rFa2.Out -eq '') $rFa2.Out
     $rRu = Fire -Cwd $p -EventName 'UserPromptSubmit' -SessionId 'u1' -Prompt $RussianPrompt
-    Check 'prompt: a new language in the same session is named once' ($rRu.Out -match 'Russian -> Skill `great-russian`') $rRu.Out
+    Check 'prompt: a new language in the same session is named once' ($rRu.Out -match 'Russian -> Skill `anthropic-skills:great-russian`') $rRu.Out
     $rEn = Fire -Cwd $p -EventName 'UserPromptSubmit' -SessionId 'u2' -Prompt $EnglishPrompt
     Check 'prompt: English -> humanizer' ($rEn.Out -match 'English -> Skill `humanizer:humanizer`') $rEn.Out
     $rOther = Fire -Cwd $p -EventName 'UserPromptSubmit' -SessionId 'u3' -Prompt $OtherPrompt
@@ -113,15 +114,15 @@ try {
     Write-Host '--- Stop gate over the complete transcript ---' -ForegroundColor Cyan
     $g = New-Proj 'GateFa'
     $rNo = Fire -Cwd $g -SessionId 'g-fa' -TranscriptPath (New-VoiceTranscript 'g-fa' @("prompt:$PersianPrompt"))
-    Check 'gate: Persian replies, no persian load -> blocked' ($rNo.Out -match $blockPattern -and $rNo.Out -match 'WRITING VOICE CHECK: replies are Persian; no `persian` load since start') ($rNo.Out + $rNo.Err)
+    Check 'gate: Persian replies, no persian load -> blocked' ($rNo.Out -match $blockPattern -and $rNo.Out -match 'WRITING VOICE CHECK: replies are Persian; no `anthropic-skills:persian` load since start') ($rNo.Out + $rNo.Err)
     $rNoAgain = Fire -Cwd $g -SessionId 'g-fa' -TranscriptPath (New-VoiceTranscript 'g-fa2' @("prompt:$PersianPrompt"))
     Check 'gate: the unchanged finding is not refused twice' ($rNoAgain.Out -notmatch $blockPattern) $rNoAgain.Out
     $rOk = Fire -Cwd (New-Proj 'GateFaOk') -SessionId 'g-fa-ok' -TranscriptPath (New-VoiceTranscript 'g-fa-ok' @("prompt:$PersianPrompt", 'skill:persian'))
     Check 'gate: Persian with Skill persian -> silent' ($rOk.Exit -eq 0 -and $rOk.Out -eq '') ($rOk.Out + $rOk.Err)
     $rWrong = Fire -Cwd (New-Proj 'GateWrong') -SessionId 'g-wrong' -TranscriptPath (New-VoiceTranscript 'g-wrong' @("prompt:$PersianPrompt", 'skill:humanizer:humanizer'))
-    Check 'gate: the wrong language''s skill does not clear it' ($rWrong.Out -match 'no `persian` load') $rWrong.Out
+    Check 'gate: the wrong language''s skill does not clear it' ($rWrong.Out -match 'no `anthropic-skills:persian` load') $rWrong.Out
     $rRuNo = Fire -Cwd (New-Proj 'GateRu') -SessionId 'g-ru' -TranscriptPath (New-VoiceTranscript 'g-ru' @("prompt:$RussianPrompt"))
-    Check 'gate: Russian without great-russian -> blocked' ($rRuNo.Out -match 'replies are Russian; no `great-russian` load') $rRuNo.Out
+    Check 'gate: Russian without great-russian -> blocked' ($rRuNo.Out -match 'replies are Russian; no `anthropic-skills:great-russian` load') $rRuNo.Out
     $rEnOk = Fire -Cwd (New-Proj 'GateEn') -SessionId 'g-en' -TranscriptPath (New-VoiceTranscript 'g-en' @("prompt:$EnglishPrompt", 'skill:humanizer:humanizer'))
     Check 'gate: English with humanizer:humanizer -> silent' ($rEnOk.Out -eq '') $rEnOk.Out
     $rEnNo = Fire -Cwd (New-Proj 'GateEnNo') -SessionId 'g-en-no' -TranscriptPath (New-VoiceTranscript 'g-en-no' @("prompt:$EnglishPrompt"))
@@ -158,19 +159,29 @@ try {
     $readme = Join-Path $wf 'README.md'
     [System.IO.File]::WriteAllText($readme, "# Tool`n`nThis tool converts files and writes a report for the user.`n", (New-Object System.Text.UTF8Encoding($false)))
     $rW = Fire -Cwd $wf -SessionId 'w-en' -TranscriptPath (New-VoiceTranscript 'w-en' @("prompt:$PersianPrompt", 'skill:persian', "write:$readme"))
-    Check 'written: an English README in a Persian session without humanizer -> advisory' ($rW.Out -match 'VOICE \(written text\): English -> Skill `humanizer:humanizer`' -and $rW.Out -notmatch $blockPattern) ($rW.Out + $rW.Err)
+    Check 'written: an English README in a Persian session without humanizer -> advisory' ($rW.Out -match 'VOICE \(written text, incl\. code comments/docstrings/help\): English -> Skill `humanizer:humanizer`' -and $rW.Out -notmatch $blockPattern) ($rW.Out + $rW.Err)
     $rW2 = Fire -Cwd $wf -SessionId 'w-en' -TranscriptPath (New-VoiceTranscript 'w-en2' @("prompt:$PersianPrompt", 'skill:persian', "write:$readme"))
     Check 'written: the same finding is said once' ($rW2.Out -eq '') $rW2.Out
     $rWOk = Fire -Cwd $wf -SessionId 'w-ok' -TranscriptPath (New-VoiceTranscript 'w-ok' @("prompt:$PersianPrompt", 'skill:persian', 'skill:humanizer:humanizer', "write:$readme"))
     Check 'written: humanizer loaded -> silent' ($rWOk.Out -eq '') $rWOk.Out
     $rWC = Fire -Cwd $wf -SessionId 'w-commit' -TranscriptPath (New-VoiceTranscript 'w-commit' @("prompt:$PersianPrompt", 'skill:persian', 'bash:git commit -m "fix: repair the parser for empty input"'))
-    Check 'written: English commit prose without humanizer -> advisory' ($rWC.Out -match 'VOICE \(written text\): English') $rWC.Out
+    Check 'written: English commit prose without humanizer -> advisory' ($rWC.Out -match 'VOICE \(written text, incl\. code comments/docstrings/help\): English') $rWC.Out
     $code = Join-Path $wf 'tool.ps1'
     [System.IO.File]::WriteAllText($code, "Write-Host 'converts files'`n", (New-Object System.Text.UTF8Encoding($false)))
     $rWCode = Fire -Cwd $wf -SessionId 'w-code' -TranscriptPath (New-VoiceTranscript 'w-code' @("prompt:$PersianPrompt", 'skill:persian', "write:$code"))
     Check 'written: code files are never judged' ($rWCode.Out -eq '') $rWCode.Out
     $rWCompact = Fire -Cwd $wf -SessionId 'w-cmp' -TranscriptPath (New-VoiceTranscript 'w-cmp' @("prompt:$PersianPrompt", "write:$readme", 'compact', "prompt:$PersianPrompt", 'skill:persian'))
     Check 'written: text written before the last compaction is not re-judged' ($rWCompact.Out -eq '') $rWCompact.Out
+    # Order 106 step 5a: comment/doc prose in code is voice-gated (blocks once); the bare key still counts.
+    $commentAdd = "# Converts every input file and writes one report for the user to read.`nWrite-Host 'x'"
+    $rCm = Fire -Cwd $wf -SessionId 'w-cm' -TranscriptPath (New-VoiceTranscript 'w-cm' @("prompt:$PersianPrompt", 'skill:persian', "writec:$code|$commentAdd"))
+    Check '106 5a: English code comment without humanizer -> blocks once' ($rCm.Out -match $blockPattern -and $rCm.Out -match 'code comments/docstrings/help text were added in English') ($rCm.Out + $rCm.Err)
+    $rCm2 = Fire -Cwd $wf -SessionId 'w-cm' -TranscriptPath (New-VoiceTranscript 'w-cm2' @("prompt:$PersianPrompt", 'skill:persian', "writec:$code|$commentAdd"))
+    Check '106 5a: the comment finding is not refused twice' ($rCm2.Out -notmatch $blockPattern) $rCm2.Out
+    $rCmOk = Fire -Cwd $wf -SessionId 'w-cm-ok' -TranscriptPath (New-VoiceTranscript 'w-cm-ok' @("prompt:$PersianPrompt", 'skill:anthropic-skills:persian', 'skill:humanizer:humanizer', "writec:$code|$commentAdd"))
+    Check '106 5a: comment with humanizer loaded and qualified persian key -> silent' ($rCmOk.Out -eq '') ($rCmOk.Out + $rCmOk.Err)
+    $rCmCode = Fire -Cwd $wf -SessionId 'w-cm-code' -TranscriptPath (New-VoiceTranscript 'w-cm-code' @("prompt:$PersianPrompt", 'skill:persian', "writec:$code|Write-Host 'converts files for the user'"))
+    Check '106 5a: code without comments is not judged' ($rCmCode.Out -eq '') $rCmCode.Out
 
     Write-Host ''
     Write-Host '--- the shipped .env.example documents only what the hook reads ---' -ForegroundColor Cyan

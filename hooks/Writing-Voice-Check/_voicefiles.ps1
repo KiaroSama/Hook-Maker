@@ -45,6 +45,19 @@ function Get-VoiceFileProse {
     return [regex]::Replace($text, '(?s)```.*?(```|$)|`[^`\r\n]*`|\]\([^)]*\)|https?://\S+|<[^>]+>', ' ')
 }
 
+# Router standing order (V94): code comments, docstrings and help text are prose
+# too. Returns the comment/doc text an Edit/Write ADDED to a code file: line and
+# block comments, Python docstrings, PowerShell comment-based help. Code is not.
+$script:VoiceCodeFile = '(?i)\.(ps1|psm1|py|js|mjs|cjs|ts|tsx|jsx|rs|go|cs|java|kt|swift|c|h|cpp|hpp|rb|php|sh|bash|dart|sql)$'
+function Get-VoiceCommentProse {
+    param([AllowEmptyString()][string]$Path, [AllowEmptyString()][string]$Added)
+    if ([string]::IsNullOrWhiteSpace($Added) -or $Path -notmatch $script:VoiceCodeFile) { return '' }
+    $parts = New-Object System.Collections.Generic.List[string]
+    foreach ($m in [regex]::Matches($Added, '(?s)<#(.*?)#>|/\*(.*?)\*/|"""(.*?)"""')) { [void]$parts.Add($m.Value.Trim('<','#','>','/','*','"')) }
+    foreach ($m in [regex]::Matches($Added, '(?m)^[ \t]*(?:#(?!!)|//|--)[ \t]?(.*)$')) { [void]$parts.Add($m.Groups[1].Value) }
+    return (@($parts) -join "`n")
+}
+
 # @(languages) whose skill is not in $Loaded, from $Artifacts (@{ Kind; Value }).
 # $Detect is the hook's own language detector, so both halves agree.
 function Get-VoiceArtifactLanguages {
@@ -56,8 +69,12 @@ function Get-VoiceArtifactLanguages {
         if ($item.Kind -eq 'write') {
             $path = [string]$item.Value
             if ($Cwd -ne '' -and -not [IO.Path]::IsPathRooted($path)) { $path = Join-Path $Cwd $path }
-            if (-not $seen.Add($path)) { continue }
-            $prose = Get-VoiceFileProse -Path $path
+            $added = [string](Get-Field $item 'Added')
+            if ($path -match $script:VoiceCodeFile) { $prose = Get-VoiceCommentProse -Path $path -Added $added }
+            else {
+                if (-not $seen.Add($path)) { continue }
+                $prose = Get-VoiceFileProse -Path $path
+            }
         }
         else { $prose = Get-VoiceCommandProse -Command ([string]$item.Value) }
         if ([string]::IsNullOrWhiteSpace($prose)) { continue }

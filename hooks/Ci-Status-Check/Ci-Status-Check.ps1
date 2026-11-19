@@ -452,6 +452,21 @@ function Write-Block {
 # told again.
 function Write-ExternalBlockerContext {
     param([string]$Classification, [string]$Reason, [string]$Sha7, [string]$RepoSlug, [string]$EventName)
+    # Router standing order (V94, owner global-github-bot-remediation-rules.md
+    # "CI blocked by billing"): a billing-blocked push must close with a local run
+    # of the same tool and "CI did not run; local run passed|failed". Missing ->
+    # blocks once per SHA. The line is read from the closing reply only.
+    if ($Classification -eq 'account-billing' -and $EventName -eq 'Stop') {
+        $closingText = $null
+        if (Get-Command Get-ClosingAssistantText -ErrorAction SilentlyContinue) {
+            $ev = Get-ClosingAssistantText -HookInput $hookInput
+            if ($null -ne $ev -and $ev.Known) { $closingText = [string]$ev.Text }
+        }
+        if ($null -ne $closingText -and $closingText -notmatch '(?i)CI did not run;[ \t]*local run (passed|failed)') {
+            $emit = Write-StopBlockResult -HookInput $hookInput -HookName 'Ci-Status-Check' -EventName $EventName -FindingFingerprint (Get-ShortHash ('billing-local|' + $RepoSlug + '|' + $Sha7)) -Condition 'required-workflow' -Reason ('CI did not run on ' + $Sha7 + ' (GitHub billing/spending limit). Run the same tool locally, then report "CI did not run; local run passed" or "... failed".')
+            exit $emit.ExitCode
+        }
+    }
     $noticeStamp = ([string](Get-Field $hookInput 'session_id')) + '|' +
         (Get-ShortHash ($RepoSlug.ToLowerInvariant() + '|' + $Sha7 + '|' + $Classification))
     $noticePath = Join-Path $stateDir ('CiStatusCheck-Notice-' + (Get-ShortHash ($cwd.ToLowerInvariant() + '|' + $RepoSlug.ToLowerInvariant())) + '.txt')

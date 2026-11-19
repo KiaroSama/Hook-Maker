@@ -9,7 +9,7 @@
 #   - project edits and no memory_digest/memory_retrieve/memory_write call
 #     -> refused once (read duty, FR-037-01);
 #   - project edits, no memory_write call and no closing line
-#     `Synapse: no durable learning - <reason>` -> refused once (write duty,
+#     `Synapse: none - <reason>` (or the older `no durable learning`) -> refused once (write duty,
 #     FR-037-02). The reasoned opt-out keeps trivial edits from forcing junk
 #     notes; an empty reason does not clear it;
 #   - a read that came only after the first edit -> one advisory (FR-037-03).
@@ -142,7 +142,7 @@ try {
         if ($null -ne $closing -and $closing.Known) {
             $declaration = Test-ClosingDeclaration -Text ([string]$closing.Text) -LabelPattern 'Synapse'
             # The reason must be real words after the dash, not "-" or "n/a".
-            if ($declaration.Present -and ([string]$declaration.Value).Trim() -match '^(?i)no[ \t]+durable[ \t]+learning[ \t]*[-:][ \t]*(?<reason>.*\S.*)$' -and $Matches['reason'].Trim().Length -ge 6) { $optOut = $true }
+            if ($declaration.Present -and ([string]$declaration.Value).Trim() -match '^(?i)(?:none|no[ \t]+durable[ \t]+learning)[ \t]*[-:][ \t]*(?<reason>.*\S.*)$' -and $Matches['reason'].Trim().Length -ge 6) { $optOut = $true }
         }
     }
 
@@ -164,7 +164,7 @@ try {
     $lines = New-Object System.Collections.Generic.List[string]
     [void]$lines.Add('SYNAPSE RULES CHECK: ' + [string]$editCount + ' project edits in the complete transcript.')
     if ($missingRead) { [void]$lines.Add('Read duty: no memory_digest/memory_retrieve call. Run `memory_digest` once with `tokenBudget`, read task matches, re-check the edits against them.') }
-    if ($missingWrite) { [void]$lines.Add('Write duty: no memory_write call. Write durable facts/decisions/verified commands (entityKey + project tag; no secrets), or end the reply with `Synapse: no durable learning - <reason>`.') }
+    if ($missingWrite) { [void]$lines.Add('Write duty: no memory_write call. Write durable facts/decisions/verified commands (entityKey + project tag; no secrets), or end the reply with `Synapse: none - <reason>`.') }
     $emit = Write-StopBlockResult -HookInput $hookInput -HookName 'Synapse-Rules-Check' -FindingFingerprint $fingerprint -EventName $eventName -Message ($lines.ToArray() -join "`n") -Condition 'required-workflow'
     exit $emit.ExitCode
 }

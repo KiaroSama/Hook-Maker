@@ -175,7 +175,13 @@ function Get-TranscriptToolEvidence {
                     elseif ($name -in @('Bash', 'PowerShell')) { $kind = 'shell'; $value = [string](Get-Field $toolInput 'command') }
                     elseif ($name -match '(?i)^mcp__[A-Za-z0-9_.\-]*codebase[-_]?memory[A-Za-z0-9_.\-]*__([A-Za-z0-9_]+)$') { $kind = 'cbm'; $value = $Matches[1].ToLowerInvariant() }
                     else { continue }
-                    if ($value -ne '') { [void]$events.Add([pscustomobject]@{ Kind = $kind; Value = $value }) }
+                    # Added: the text a write put in (new_string/content), capped; '' otherwise.
+                    $added = ''
+                    if ($kind -eq 'write') {
+                        $added = [string](Get-Field $toolInput 'new_string'); if ($added -eq '') { $added = [string](Get-Field $toolInput 'content') }
+                        if ($added.Length -gt 16000) { $added = $added.Substring(0, 16000) }
+                    }
+                    if ($value -ne '') { [void]$events.Add([pscustomobject]@{ Kind = $kind; Value = $value; Added = $added }) }
                 }
             }
         }
