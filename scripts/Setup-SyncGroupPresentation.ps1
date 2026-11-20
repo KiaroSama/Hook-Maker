@@ -241,7 +241,7 @@ $script:HookMeta = @{
     'Large-File-Check'                 = @{ Order = 15; When = 'both'; Text = 'small-files policy + oversized-file scan' }
     # 'both', not 'pre': these three now VERIFY at Stop as well as remind at
     # the start. Closing findings default to advisory; explicit block settings remain.
-    'Mcp-Usage-Check'                  = @{ Order = 16; When = 'both'; Text = 'MCP and research-first reminders, and an "MCP used:" line at the end'; Events = @('SessionStart', 'UserPromptSubmit', 'Stop', 'SubagentStop'); Timeout = 30 }
+    'Mcp-Usage-Check'                  = @{ Order = 16; When = 'both'; Text = 'MCP and research-first reminders, and an "MCP used:" line at the end'; Events = @('SessionStart', 'UserPromptSubmit', 'PreToolUse', 'Stop', 'SubagentStop'); Timeout = 30 }
     'Rules-Check'                      = @{ Order = 17; When = 'both'; Text = 'routes rules and language choices; confirms rules at the end'; Events = @('SessionStart', 'UserPromptSubmit', 'Stop', 'SubagentStop'); Timeout = 45 }
     # Skills-Check's real recommended EVENTS are SessionStart,UserPromptSubmit,Stop
     # (the Stop event carries the "Skills used:" summary requirement) - When must

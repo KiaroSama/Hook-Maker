@@ -1,4 +1,4 @@
-# Mcp-Usage-Check - connector use triggers (steering V94, order 105).
+# Mcp-Usage-Check - connector use triggers (steering V94-V95, orders 105 & 107).
 # Dot-sourced; definitions only, no exit.
 #
 # global-mcp-server-contracts.md "Connector use triggers": every installed
@@ -9,7 +9,18 @@
 # Matching is on the user's prompt text only; tool calls are matched later as
 # JSONL tool-call records, never as prose mentions.
 
+$script:FaRustPortPattern = '(?:' +
+    (-join [char[]]@(0x0628,0x0627,0x0632,0x0646,0x0648,0x06CC,0x0633,0x06CC)) + '|' +
+    (-join [char[]]@(0x067E,0x0648,0x0631,0x062A)) + '|' +
+    (-join [char[]]@(0x062A,0x0628,0x062F,0x06CC,0x0644)) + '|' +
+    (-join [char[]]@(0x0645,0x0647,0x0627,0x062C,0x0631,0x062A)) + '|' +
+    (-join [char[]]@(0x0634,0x062A,0x0627,0x0628)) +
+    ')[^\r\n]{0,80}' + (-join [char[]]@(0x0628,0x0647)) + '[ \t]+(?:' +
+    (-join [char[]]@(0x0631,0x0627,0x0633,0x062A)) + '|rust\b)'
+
 $script:ConnectorTriggers = @(
+    @{ Key = 'rust-anything'; Route = 'Rust port/rewrite -> rust-anything MCP + skill rust-anything:rust-anything (whole-app.md for full apps)'
+       Pattern = ('(?i)(\brust-anything\b|\b(?:port\w*|rewrit\w*|migrat\w*|convert\w*|translat\w*|accelerat\w*|speed[ \t]+up)\b[^\r\n]{0,80}\b(?:to|in|into)[ \t]+rust\b|\brust[ \t]+(?:port|rewrite|migration)\b|' + $script:FaRustPortPattern + ')') }
     @{ Key = 'video';    Route = 'video file -> rea-video:rea-video skill, then rea-video decompose (not ffmpeg first)'
        Pattern = '(?i)(\.(mp4|mkv|mov|avi|webm|m4v)\b|\bvideos?\b|\bclip\b|\u0648\u06cc\u062f\u06cc\u0648|\u0648\u06cc\u062f\u0626\u0648|\u0641\u06cc\u0644\u0645)' }
     @{ Key = 'page';     Route = 'page debugging/perf/a11y -> chrome-devtools before Playwright'
@@ -56,9 +67,17 @@ $script:ScraplingCallPattern = '(?i)"(?:name|tool_name)"[ \t]*:[ \t]*"mcp__Scrap
 $script:ScraplingSkillPattern = '(?i)("skill"[ \t]*:[ \t]*"[A-Za-z0-9_.\-]*:?scrapling-official"|"file_path"[ \t]*:[ \t]*"[^"]*scrapling-official[^"]*SKILL\.md")'
 $script:PlaywrightCallPattern = '(?i)"(?:name|tool_name)"[ \t]*:[ \t]*"mcp__(?:plugin_[A-Za-z0-9_.\-]*_)?playwright__'
 $script:DevtoolsCallPattern = '(?i)"(?:name|tool_name)"[ \t]*:[ \t]*"mcp__[A-Za-z0-9_.\-]*chrome[-_]?devtools[A-Za-z0-9_.\-]*__'
-$script:ReaVideoCallPattern = '(?i)"command"[ \t]*:[ \t]*"[^"]*\brea-video(?:\.exe)?\b[^"]*"'
+$script:ReaVideoCallPattern = '(?i)"command"[ \t]*:[ \t]*"(?:\\.|[^"\\])*\brea-video(?:\.exe)?\b(?:\\.|[^"\\])*"'
+$script:RustAnythingCallPattern = '(?i)"(?:name|tool_name)"[ \t]*:[ \t]*"mcp__(?:plugin_[A-Za-z0-9_.\-]*_)?rust[-_]?anything__'
+$script:RustAnythingSkillPattern = '(?i)("skill"[ \t]*:[ \t]*"[A-Za-z0-9_.\-]*:?rust-anything"|"file_path"[ \t]*:[ \t]*"(?:\\.|[^"\\])*rust-anything(?:\\.|[^"\\])*(?:SKILL|whole-app)\.md")'
+$script:RustAnythingCliPattern = '(?i)"command"[ \t]*:[ \t]*"(?:\\.|[^"\\])*\brust-anything(?:\.exe)?\b(?!(?:\\.|[^"\\])*\b(?:setup|--help|-h)\b)(?:\\.|[^"\\])*"'
 
-# Pairing / ordering advisories (order 105 steps 1c, 1d, 4b). '' or lines.
+$script:NoteScrapling = 'SCRAPLING: called before skill anthropic-skills:scrapling-official; load it first.'
+$script:NotePlaywright = 'PLAYWRIGHT: no chrome-devtools call; devtools first, else state why.'
+$script:NoteReaVideo = 'REA-VIDEO: shell lacks PYTHONIOENCODING=utf-8; set it or restart.'
+$script:NoteRustAnything = 'RUST-ANYTHING: called before skill rust-anything:rust-anything; load it (whole-app.md for full apps) first.'
+
+# Pairing / ordering advisories (orders 105 & 107). '' or lines.
 function Get-ConnectorPairingNotes {
     param([AllowEmptyString()][string]$RawText)
     $notes = New-Object System.Collections.Generic.List[string]
@@ -66,16 +85,46 @@ function Get-ConnectorPairingNotes {
     $scr = [regex]::Match($RawText, $script:ScraplingCallPattern)
     if ($scr.Success) {
         $skill = [regex]::Match($RawText, $script:ScraplingSkillPattern)
-        if (-not ($skill.Success -and $skill.Index -lt $scr.Index)) {
-            [void]$notes.Add('SCRAPLING: called before skill anthropic-skills:scrapling-official; load it first.')
-        }
+        if (-not ($skill.Success -and $skill.Index -lt $scr.Index)) { [void]$notes.Add($script:NoteScrapling) }
     }
     $pw = [regex]::Match($RawText, $script:PlaywrightCallPattern)
-    if ($pw.Success -and -not [regex]::IsMatch($RawText, $script:DevtoolsCallPattern)) {
-        [void]$notes.Add('PLAYWRIGHT: no chrome-devtools call; devtools first, else state why.')
+    if ($pw.Success -and -not [regex]::IsMatch($RawText, $script:DevtoolsCallPattern)) { [void]$notes.Add($script:NotePlaywright) }
+    $ra = [regex]::Match($RawText, $script:RustAnythingCallPattern)
+    if ($ra.Success) {
+        $raSkill = [regex]::Match($RawText, $script:RustAnythingSkillPattern)
+        if (-not ($raSkill.Success -and $raSkill.Index -lt $ra.Index)) { [void]$notes.Add($script:NoteRustAnything) }
     }
     if ([regex]::IsMatch($RawText, $script:ReaVideoCallPattern) -and $env:PYTHONIOENCODING -notmatch '(?i)^utf-?8') {
-        [void]$notes.Add('REA-VIDEO: shell lacks PYTHONIOENCODING=utf-8; set it or restart.')
+        [void]$notes.Add($script:NoteReaVideo)
+    }
+    return @($notes)
+}
+
+# Mid-turn PreToolUse advisories so the model receives guidance before Stop.
+function Get-ConnectorPreToolNotes {
+    param([string]$ToolName, $ToolInput, [AllowEmptyString()][string]$RawText)
+    $notes = New-Object System.Collections.Generic.List[string]
+    if ([string]::IsNullOrWhiteSpace($ToolName)) { return @() }
+    if ($ToolName -match '(?i)^mcp__Scrapling[-_]?Server__' -and $RawText -notmatch $script:ScraplingSkillPattern) {
+        [void]$notes.Add($script:NoteScrapling)
+    }
+    elseif ($ToolName -match '(?i)^mcp__(?:plugin_[A-Za-z0-9_.\-]*_)?playwright__' -and $RawText -notmatch $script:DevtoolsCallPattern) {
+        [void]$notes.Add($script:NotePlaywright)
+    }
+    elseif ($ToolName -match '(?i)^mcp__(?:plugin_[A-Za-z0-9_.\-]*_)?rust[-_]?anything__' -and $RawText -notmatch $script:RustAnythingSkillPattern) {
+        [void]$notes.Add($script:NoteRustAnything)
+    }
+    elseif ($ToolName -match '(?i)^(?:mcp__[A-Za-z0-9_.\-]*computer[-_]?use[A-Za-z0-9_.\-]*__[A-Za-z0-9_.\-]+|computer)$' -and
+            $RawText -notmatch $script:AgentDesktopPattern -and -not [string]::IsNullOrEmpty($script:DesktopRouteMessage)) {
+        [void]$notes.Add($script:DesktopRouteMessage)
+    }
+    elseif ($ToolName -match '^(Edit|Write|MultiEdit)$') {
+        $fp = [string](Get-Field $ToolInput 'file_path')
+        if ($fp -ne '' -and $fp -notmatch '(?i)(?:^|[\\/])(?:\.ai|specs|\.specify|\.claude|\.codex|plans|\.ignoreme)(?:[\\/]|$)') {
+            if ($fp -match '(?i)\.(md|mdx|txt|rst|html)$' -and $RawText -notmatch '(?i)"skill"[ \t]*:[ \t]*"[A-Za-z0-9_.\-]*:?(?:humanizer|persian|great-russian)"') {
+                [void]$notes.Add('VOICE: prose edit before voice skill; load humanizer:humanizer, anthropic-skills:persian, or anthropic-skills:great-russian.')
+            }
+        }
     }
     return @($notes)
 }

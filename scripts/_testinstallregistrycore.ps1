@@ -373,6 +373,12 @@
         $settingsObj = Get-Content -LiteralPath $claudeSettingsPath -Raw | ConvertFrom-Json
         $settingsObj | Add-Member -MemberType NoteProperty -Name 'unrelatedTopLevelKey' -Value 'keep-me' -Force
         $settingsObj.hooks | Add-Member -MemberType NoteProperty -Name 'PreCompact' -Value @(@{ hooks = @(@{ type = 'command'; command = 'echo unrelated-handler' }) }) -Force
+        $settingsObj.hooks.SessionStart = @($settingsObj.hooks.SessionStart) + @(
+            @{ hooks = @(
+                @{ type = 'command'; command = 'node "C:\Users\dev\.claude\hooks\context-mode-cache-heal.mjs"' },
+                @{ type = 'command'; command = 'node "C:\Users\dev\.claude\hooks\ecc-disable-hooks.mjs"' }
+            ) }
+        )
         ($settingsObj | ConvertTo-Json -Depth 20) | Set-Content -LiteralPath $claudeSettingsPath -Encoding utf8
 
         Write-Utf8 $fixtureUnrelated "exit 0 # changed`n"
@@ -382,6 +388,8 @@
         $afterJson = [System.IO.File]::ReadAllText($claudeSettingsPath)
         Check 'an unrelated top-level settings key survives the update' ($afterJson -match 'unrelatedTopLevelKey')
         Check 'an unrelated event handler (PreCompact) survives the update' ($afterJson -match 'unrelated-handler')
+        Check 'V95 Step 3: SessionStart maintenance scripts (context-mode-cache-heal.mjs, ecc-disable-hooks.mjs) survive hook sync' (
+            $afterJson -match 'context-mode-cache-heal\.mjs' -and $afterJson -match 'ecc-disable-hooks\.mjs') $afterJson
     }
     finally { Remove-FixtureHook 'ZZZ-Regtest-Unrelatedpreserve' }
 

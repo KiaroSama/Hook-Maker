@@ -459,7 +459,7 @@
         $r.Out -match 'brainstorming: real design ambiguity' -and
         $r.Out -match 'writing-plans: complex repair lacking plan' -and
         $r.Out -match 'Bug: systematic-debugging/test-driven-development/verification-before-completion' -and
-        $r.Out -match 'runtime question: debugging-code DAP OR trusted debug-live DebugMCP/VS Code') $r.Out
+        $r.Out -match 'runtime question: local DAP/debugger OR trusted debug-live DebugMCP/VS Code') $r.Out
     Check 'plan routing remains subset-only, not blanket activation' (
         $r.Out -match 'Real plan: executing-plans, test-driven-development, requesting-code-review, verification-before-completion' -and $r.Out -match 'Subset/client syntax only') $r.Out
     Check 'security work retains phase owners, a job subset and explicit authority' (

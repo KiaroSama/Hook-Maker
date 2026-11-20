@@ -52,6 +52,9 @@ function Get-ExpectedMatcher {
     param([Parameter(Mandatory = $true)][string]$EventName, [string]$Client = 'claude', [string]$HookName = '')
     if ($EventName -eq 'SessionStart') { return 'startup|resume|clear|compact' }
     if ($Client -eq 'claude' -and $EventName -in @('PreToolUse', 'PostToolUse') -and $HookName -in $script:ShellOnlyToolHooks) { return 'Bash' }
+    if ($Client -eq 'claude' -and $EventName -eq 'PreToolUse' -and $HookName -eq 'Mcp-Usage-Check') {
+        return '^(mcp__(Scrapling[-_]?Server|(plugin_[A-Za-z0-9_.\-]*_)?([Pp]laywright|rust[-_]?anything)|[A-Za-z0-9_.\-]*computer[-_]?use)|computer$|Edit$|Write$|MultiEdit$)'
+    }
     return ''
 }
 

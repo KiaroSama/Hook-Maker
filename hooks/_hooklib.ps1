@@ -385,12 +385,11 @@ function Write-HookResult {
 # read by the model, and the turn is already over - so it was lost. Each one is
 # also appended to a per-session queue; Mcp-Usage-Check (registered on
 # UserPromptSubmit in every package) drains it on the next prompt with an
-# atomic rename-claim, so exactly one delivery reaches the model as context.
+# Project-keyed 24h carryover queue so SessionStart/UserPromptSubmit/PreToolUse delivers Stop notices once.
 function Get-CarryoverPath {
     param($HookInput)
-    $session = [string](Get-Field $HookInput 'session_id'); $cwd = [string](Get-Field $HookInput 'cwd')
-    if ($session -eq '' -or $cwd -eq '' -or [string]::IsNullOrEmpty($env:LOCALAPPDATA)) { return '' }
-    return (Join-Path (Join-Path $env:LOCALAPPDATA 'HookMaker\state') ('Carryover-' + (Get-ShortHash ((Normalize-Path $cwd).ToLowerInvariant() + '|' + $session)) + '.txt'))
+    $cwd = [string](Get-Field $HookInput 'cwd'); if ($cwd -eq '' -or [string]::IsNullOrEmpty($env:LOCALAPPDATA)) { return '' }
+    return (Join-Path (Join-Path $env:LOCALAPPDATA 'HookMaker\state') ('Carryover-' + (Get-ShortHash (Normalize-Path $cwd).ToLowerInvariant()) + '.txt'))
 }
 function Add-CarryoverNote {
     param($HookInput, [string]$Text)
@@ -405,7 +404,6 @@ function Add-CarryoverNote {
         [IO.File]::AppendAllText($path, $one + "`n", (New-Object Text.UTF8Encoding($false)))
     } catch { }
 }
-# Claims the queue and returns its lines ('' when empty). Never throws.
 function Get-CarryoverText {
     param($HookInput)
     try {
@@ -413,8 +411,10 @@ function Get-CarryoverText {
         if ($path -eq '' -or -not [IO.File]::Exists($path)) { return '' }
         $claimed = $path + '.' + [guid]::NewGuid().ToString('N') + '.claim'
         [IO.File]::Move($path, $claimed)
-        try { $lines = @([IO.File]::ReadAllLines($claimed, (New-Object Text.UTF8Encoding($false))) | Where-Object { $_.Trim() -ne '' } | Select-Object -Unique) }
-        finally { [IO.File]::Delete($claimed) }
+        try {
+            if ((([DateTime]::UtcNow) - ([IO.File]::GetLastWriteTimeUtc($claimed))).TotalHours -ge 24) { return '' }
+            $lines = @([IO.File]::ReadAllLines($claimed, (New-Object Text.UTF8Encoding($false))) | Where-Object { $_.Trim() -ne '' } | Select-Object -Unique)
+        } finally { [IO.File]::Delete($claimed) }
         if ($lines.Count -eq 0) { return '' }
         return ("STOP NOTICES from the previous turn (shown to the user only; act on them now if still relevant):`n- " + ($lines -join "`n- "))
     } catch { return '' }

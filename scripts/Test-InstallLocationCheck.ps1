@@ -285,6 +285,16 @@ try {
     Check 'malformed input: silent, exit 0' ($LASTEXITCODE -eq 0 -and $garbage.Trim() -eq '') $garbage
     $r51 = Invoke-LocationHook -Exe 'powershell.exe' -Client 'claude' -Payload @{ hook_event_name = 'PreToolUse'; cwd = $Project; session_id = 'proc-51'; tool_input = @{ command = 'ollama pull phi3' } }
     Check 'Windows PowerShell 5.1 emits the same advisory' ($r51.Exit -eq 0 -and $r51.Out -match 'ollama would install phi3') $r51.Out
+    $raSetupClaude = Invoke-LocationHook -Client 'claude' -Payload @{ hook_event_name = 'PreToolUse'; cwd = $Project; session_id = 'ra-setup-1'; tool_name = 'Bash'; tool_input = @{ command = 'rust-anything setup --agent claude' } }
+    Check 'V95 1c: rust-anything setup --agent claude emits DUPLICATE REGISTRATION advisory' (
+        $raSetupClaude.Exit -eq 0 -and $raSetupClaude.Out -match 'DUPLICATE REGISTRATION: Plugin rust-anything@rust-anything') $raSetupClaude.Out
+    $raSetupDefault = Invoke-LocationHook -Client 'claude' -Payload @{ hook_event_name = 'PreToolUse'; cwd = $Project; session_id = 'ra-setup-2'; tool_name = 'Bash'; tool_input = @{ command = '"G:\Program Files\Rust\cargo\bin\rust-anything.exe" setup' } }
+    Check 'V95 1c: bare rust-anything setup (defaults to all agents incl. claude) warns regardless of binary drive' (
+        $raSetupDefault.Exit -eq 0 -and $raSetupDefault.Out -match 'DUPLICATE REGISTRATION:') $raSetupDefault.Out
+    $raDoctor = Invoke-LocationHook -Client 'claude' -Payload @{ hook_event_name = 'PreToolUse'; cwd = $Project; session_id = 'ra-doc'; tool_name = 'Bash'; tool_input = @{ command = 'rust-anything doctor' } }
+    Check 'V95 1c: rust-anything doctor stays silent and allowed' ($raDoctor.Exit -eq 0 -and $raDoctor.Out.Trim() -eq '') $raDoctor.Out
+    $raCodexOnly = Invoke-LocationHook -Client 'claude' -Payload @{ hook_event_name = 'PreToolUse'; cwd = $Project; session_id = 'ra-codex'; tool_name = 'Bash'; tool_input = @{ command = 'rust-anything setup --agent codex' } }
+    Check 'V95 1c: rust-anything setup --agent codex stays silent' ($raCodexOnly.Exit -eq 0 -and $raCodexOnly.Out.Trim() -eq '') $raCodexOnly.Out
     foreach ($file in @(Get-ChildItem -LiteralPath (Split-Path -Parent $Hook) -Filter '*.ps1') + @(Get-Item (Join-Path $HooksRoot '_commandtokens.ps1'))) {
         $bytes = [IO.File]::ReadAllBytes($file.FullName)
         Check ('shipped source is pure ASCII: ' + $file.Name) (@($bytes | Where-Object { $_ -gt 127 }).Count -eq 0)

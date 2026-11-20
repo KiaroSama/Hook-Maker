@@ -186,9 +186,9 @@ function Get-UnusedShortlistedSkills {
         # own shortlist message lands in the same transcript and names every
         # candidate, so a bare substring search would clear the gate itself.
         if ($RawTranscript -cmatch ('"skill"[ \t]*:[ \t]*"' + $full + '"')) { [void]$answered.Add($n); continue }
-        # Library bodies (V94: security-audit) are read by path, never invoked:
-        # a Read tool call whose file_path ends <leaf>\SKILL.md counts as use.
-        if ($n -eq $leaf -and (Test-LibrarySkillRead -RawTranscript $RawTranscript -Leaf $leaf)) { [void]$answered.Add($n); continue }
+        # Library bodies (V94: security-audit) and non-Claude by-path plugin reads
+        # (V95: rust-anything) count when Read file_path ends <leaf>\SKILL.md.
+        if (($n -eq $leaf -or ($leaf -ceq 'rust-anything' -and (Get-HookClientId) -ne 'claude')) -and (Test-LibrarySkillRead -RawTranscript $RawTranscript -Leaf $leaf)) { [void]$answered.Add($n); continue }
         if (-not [string]::IsNullOrWhiteSpace($UsedLine)) {
             $edge = '[\p{L}\p{N}_.:/-]'
             $exact = $UsedLine -cmatch ('(?<!' + $edge + ')' + $full + '(?![\p{L}\p{N}_./-]|:\S)')

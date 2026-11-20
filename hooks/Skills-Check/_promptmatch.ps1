@@ -94,12 +94,32 @@ function Get-SkillMatchScore {
     return $score
 }
 
+$faRustPortSkill = '(?:' +
+    (-join [char[]]@(0x0628,0x0627,0x0632,0x0646,0x0648,0x06CC,0x0633,0x06CC)) + '|' +
+    (-join [char[]]@(0x067E,0x0648,0x0631,0x062A)) + '|' +
+    (-join [char[]]@(0x062A,0x0628,0x062F,0x06CC,0x0644)) + '|' +
+    (-join [char[]]@(0x0645,0x0647,0x0627,0x062C,0x0631,0x062A)) + '|' +
+    (-join [char[]]@(0x0634,0x062A,0x0627,0x0628)) +
+    ')[^\r\n]{0,80}' + (-join [char[]]@(0x0628,0x0647)) + '[ \t]+(?:' +
+    (-join [char[]]@(0x0631,0x0627,0x0633,0x062A)) + '|rust\b)'
+$isRustTargetPort = ($promptForMatching -match ('(?i)(\brust-anything\b|\b(?:port\w*|rewrit\w*|migrat\w*|convert\w*|translat\w*|accelerat\w*|speed[ \t]+up)\b[^\r\n]{0,80}\b(?:to|in|into)[ \t]+rust\b|\brust[ \t]+(?:port|rewrite|migration)\b|' + $faRustPortSkill + ')'))
+$isNonRustCodePort = (-not $isRustTargetPort) -and ($promptForMatching -match '(?i)(\btranslate-programming-language\b|\b(?:port\w*|rewrit\w*|migrat\w*|convert\w*|translat\w*)\b[^\r\n]{0,80}\b(?:to|into)[ \t]+(?:python|typescript|javascript|node(?:\.js)?|go|golang|java|kotlin|swift|c#|csharp|dotnet|c\+\+|cpp|ruby|php|dart)\b)')
+
 $installedMatches = New-Object System.Collections.Generic.List[object]
 $libraryMatches = New-Object System.Collections.Generic.List[object]
-if ($tokens.Count -gt 0) {
+if ($tokens.Count -gt 0 -or $isRustTargetPort -or $isNonRustCodePort) {
     foreach ($key in $byName.Keys) {
-        $s = Get-PromptMatchScore $byName[$key].Name
-        if ($s -gt 0) { [void]$installedMatches.Add([pscustomobject]@{ Name = $byName[$key].Name; Score = $s; Where = ((@($byName[$key].Sources) | Sort-Object) -join '+') }) }
+        $entryName = [string]$byName[$key].Name
+        if ($entryName -ieq 'rust-anything') {
+            if (-not $isRustTargetPort) { continue }
+            $s = 12
+        }
+        elseif ($entryName -ieq 'translate-programming-language') {
+            if ($isRustTargetPort -or (-not $isNonRustCodePort -and $promptForMatching -notmatch '(?i)\bprogramming[- ]language\b')) { continue }
+            $s = [math]::Max(10, (Get-PromptMatchScore $entryName))
+        }
+        else { $s = Get-PromptMatchScore $entryName }
+        if ($s -gt 0) { [void]$installedMatches.Add([pscustomobject]@{ Name = $entryName; Score = $s; Where = ((@($byName[$key].Sources) | Sort-Object) -join '+') }) }
     }
     # A description-only hit does NOT qualify an INSTALLED skill. One incidental
     # word in a long description used to admit one, which is how a statistics
@@ -118,16 +138,29 @@ if ($tokens.Count -gt 0) {
         # chosen by the model; shortlisting either would make the Stop gate
         # demand an invocation the client does not allow.
         if (-not (Test-SkillCandidate $p)) { continue }
-        $identitySignal = [math]::Max((Get-PromptMatchScore $p.Leaf), (Get-PromptMatchScore $p.Name))
-        if ($identitySignal -le 0) { continue }
-        $s = Get-SkillMatchScore -Leaf $p.Leaf -Name $p.Name -Description $p.Description
+        $pLeaf = [string]$p.Leaf
+        if ($pLeaf -ieq 'rust-anything' -or [string]$p.Name -ieq 'rust-anything') {
+            if (-not $isRustTargetPort) { continue }
+            $s = 12
+        }
+        elseif ($pLeaf -ieq 'translate-programming-language' -or [string]$p.Name -ieq 'translate-programming-language') {
+            if ($isRustTargetPort -or (-not $isNonRustCodePort -and $promptForMatching -notmatch '(?i)\bprogramming[- ]language\b')) { continue }
+            $s = [math]::Max(10, (Get-SkillMatchScore -Leaf $p.Leaf -Name $p.Name -Description $p.Description))
+        }
+        else {
+            $identitySignal = [math]::Max((Get-PromptMatchScore $p.Leaf), (Get-PromptMatchScore $p.Name))
+            if ($identitySignal -le 0) { continue }
+            $s = Get-SkillMatchScore -Leaf $p.Leaf -Name $p.Name -Description $p.Description
+        }
         if ($s -gt 0) { [void]$installedMatches.Add([pscustomobject]@{ Name = [string]$p.Invocation; Score = $s; Where = [string]$p.Source; Path = $p.Path; InstallationKey = [string](Get-Field $p 'InstallationKey'); Version = [string]$p.Version }) }
     }
     foreach ($l in $index.Library) {
         # Already available somewhere: importing it again is noise, and
         # suggesting an install the policy would have to authorize is worse.
         if ($installedNames.ContainsKey(([string]$l.Leaf).ToLowerInvariant())) { continue }
-        $s = Get-SkillMatchScore -Leaf $l.Leaf -Name $l.Name -Description $l.Description
+        if ([string]$l.Leaf -ieq 'translate-programming-language' -and $isRustTargetPort) { continue }
+        if ([string]$l.Leaf -ieq 'rust-anything' -and -not $isRustTargetPort) { continue }
+        $s = $(if ([string]$l.Leaf -ieq 'rust-anything' -and $isRustTargetPort) { 12 } else { Get-SkillMatchScore -Leaf $l.Leaf -Name $l.Name -Description $l.Description })
         if ($s -gt 0) { [void]$libraryMatches.Add([pscustomobject]@{ Name = $l.Leaf; Score = $s; Path = $l.Path }) }
     }
 }

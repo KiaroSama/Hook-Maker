@@ -502,7 +502,7 @@ if ($eventName -eq 'UserPromptSubmit') {
         [void]$dd.Add('- EVERY bug/phase: WORKFLOWS.md Deep Debug/skill-policy-deep-debug.md FULL.')
         [void]$dd.Add('- Ledger bugs/phases first; ::multi-agent codeword. dispatching-parallel-agents: independent discovery; subagent-driven-development: prepared tasks. Flatten/dedup/cycle-check once, no nested/recursive agents.')
         [void]$dd.Add('- audit-context-building: substantial/unfamiliar/architecture/security; Graphify policy. brainstorming: real design ambiguity; writing-plans: complex repair lacking plan.')
-        [void]$dd.Add('- Bug: systematic-debugging/test-driven-development/verification-before-completion; runtime question: debugging-code DAP OR trusted debug-live DebugMCP/VS Code.')
+        [void]$dd.Add('- Bug: systematic-debugging/test-driven-development/verification-before-completion; runtime question: local DAP/debugger OR trusted debug-live DebugMCP/VS Code.')
         [void]$dd.Add('- Real plan: executing-plans, test-driven-development, requesting-code-review, verification-before-completion.')
         [void]$dd.Add('- Security subset by job: differential-review/insecure-defaults/review/verification; semgrep/codeql, SARIF parser if output exists; fp-check before confirmation, variant-analysis after proven cause, supply-chain auditor for deps, c-review C/C++, rust-review Rust. static-analysis is label unless exact installed name:. Active testing needs ownership/consent/scope.')
         [void]$dd.Add('- property-based-testing: real round-trip/validator/state/path/idempotency/boundary invariant only, never usage padding.')

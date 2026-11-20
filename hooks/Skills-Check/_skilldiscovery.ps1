@@ -159,6 +159,7 @@ function Read-DiscoveryJson {
 # every call operator on a variable, so nothing here can execute data.
 function Add-UniqueFolder {
     param($List, [string]$Path)
+    if ($Path -match '(?i)(?:^|[\\/])\.disabled-by-policy(?:[\\/]|$)') { return }
     if (-not $List.Contains($Path)) { [void]$List.Add($Path) }
 }
 
@@ -170,11 +171,13 @@ function Add-UniqueFolder {
 function Get-PluginSkillFolders {
     param([string]$Root, $Declared, $Partial, [string]$Label, [switch]$Exclusive, [string[]]$RelevantNames = @())
     $found = New-Object System.Collections.Generic.List[string]
+    if ($Root -match '(?i)(?:^|[\\/])\.disabled-by-policy(?:[\\/]|$)') { return @() }
     if (-not $Exclusive -and (Test-Path -LiteralPath (Join-Path $Root 'SKILL.md') -PathType Leaf)) { Add-UniqueFolder $found $Root }
     $dirs = New-Object System.Collections.Generic.List[string]
     if (-not $Exclusive) { [void]$dirs.Add((Join-Path $Root 'skills')) }
     foreach ($entry in @($Declared)) {
         if ($entry -isnot [string] -or [string]::IsNullOrWhiteSpace($entry)) { continue }
+        if ($entry -match '(?i)(?:^|[\\/])\.disabled-by-policy(?:[\\/]|$)') { continue }
         $full = [IO.Path]::GetFullPath((Join-Path $Root $entry))
         # A declared path may not leave the plugin: the documented loader
         # rejects it, so counting it would invent a skill the client never loads.
@@ -182,16 +185,23 @@ function Get-PluginSkillFolders {
         [void]$dirs.Add($full)
     }
     foreach ($dir in $dirs) {
-        if (-not (Test-Path -LiteralPath $dir -PathType Container)) { [void]$Partial.Add($Label + ' skill directory missing'); continue }
+        if ($dir -match '(?i)(?:^|[\\/])\.disabled-by-policy(?:[\\/]|$)') { continue }
+        if (-not (Test-Path -LiteralPath $dir -PathType Container)) {
+            $relFromRoot = $dir.Substring([Math]::Min($Root.Length, $dir.Length)).TrimStart('\', '/')
+            if ($relFromRoot -ne '' -and (Test-Path -LiteralPath (Join-Path (Join-Path $Root '.disabled-by-policy') $relFromRoot) -PathType Container)) { continue }
+            [void]$Partial.Add($Label + ' skill directory missing'); continue
+        }
         if (-not (Test-DiscoveryContainedPath -Path $dir -Root $Root)) { [void]$Partial.Add($Label + ' reparse skill directory skipped'); continue }
         if (Test-Path -LiteralPath (Join-Path $dir 'SKILL.md') -PathType Leaf) { Add-UniqueFolder $found ((Get-Item -LiteralPath $dir).FullName); continue }
         foreach ($name in $RelevantNames) {
+            if ($name -eq '.disabled-by-policy') { continue }
             $candidate = Join-Path $dir $name
             if ((Test-Path -LiteralPath (Join-Path $candidate 'SKILL.md') -PathType Leaf) -and (Test-DiscoveryContainedPath $candidate $Root)) { Add-UniqueFolder $found $candidate }
         }
         $children = @(Get-ChildItem -LiteralPath $dir -Directory -ErrorAction SilentlyContinue | Select-Object -First 1201)
         if ($children.Count -gt 1200) { [void]$Partial.Add($Label + ' directory ceiling reached') }
         foreach ($child in @($children | Select-Object -First 1200)) {
+            if ($child.Name -eq '.disabled-by-policy') { continue }
             if ($child.Attributes -band [IO.FileAttributes]::ReparsePoint) { continue }
             if (Test-Path -LiteralPath (Join-Path $child.FullName 'SKILL.md') -PathType Leaf) { Add-UniqueFolder $found $child.FullName }
         }

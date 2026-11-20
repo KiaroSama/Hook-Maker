@@ -22,9 +22,8 @@
 #   library l|<folder>|<name>|<description>|<full path>
 #   partial x|<reason>            install key k|<name@market>        install known m|1
 #
-# T004 cache-only evidence regression: version 5 invalidates invented enabled keys;
-# old index rows are rebuilt, never promoted to installed/exposed evidence.
-$script:SkillIndexVersion = '5'
+# Version 6 invalidates cached rows from .disabled-by-policy plugin folders.
+$script:SkillIndexVersion = '6'
 
 # '|' is the field separator and a description may contain anything, so every
 # stored field is flattened first. Lossy on purpose - these values are only ever
@@ -146,12 +145,14 @@ function Build-SkillIndex {
     if ($hasPluginRoot) {
         try {
             foreach ($skillsDir in @(Get-ChildItem -Path (Join-Path $pluginRoot '*\*\*\skills') -Directory -ErrorAction SilentlyContinue)) {
+                if ($skillsDir.FullName -match '(?i)(?:^|[\\/])\.disabled-by-policy(?:[\\/]|$)') { continue }
                 # <root>\<marketplace>\<plugin>\<version>\skills -> the plugin
                 # name is three levels up, which is the id the client prefixes.
                 $pluginName = ''
                 try { $pluginName = (Get-Item -LiteralPath (Split-Path -Parent (Split-Path -Parent $skillsDir.FullName))).Name } catch { $pluginName = '' }
                 if ($pluginName -eq '') { continue }
                 foreach ($d in @(Get-ChildItem -LiteralPath $skillsDir.FullName -Directory -ErrorAction SilentlyContinue)) {
+                    if ($d.Name -eq '.disabled-by-policy') { continue }
                     if (($d.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -eq [System.IO.FileAttributes]::ReparsePoint) { continue }
                     $identity = Get-SkillIdentity (Join-Path $d.FullName 'SKILL.md')
                     [void]$plugin.Add([pscustomobject]@{ Plugin = $pluginName; Leaf = $d.Name; Name = $identity.Name; Description = $identity.Description; Path = $d.FullName

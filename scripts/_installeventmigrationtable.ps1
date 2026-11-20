@@ -92,4 +92,12 @@ $script:InstalledEventMigrations = @(
         From    = @('SessionStart', 'UserPromptSubmit')
         Reason  = 'the prior shipped default had no Stop, so a multi-file change that skipped the Spec Kit chain was never caught'
     }
+    # v12 (spec 042): mid-turn PreToolUse delivery so MCP pairing, desktop-route,
+    # voice-edit, and carryover notices reach the model before the turn ends.
+    [pscustomobject]@{
+        Version = 12
+        Hook    = 'Mcp-Usage-Check'
+        From    = @('SessionStart', 'UserPromptSubmit', 'Stop', 'SubagentStop')
+        Reason  = 'the prior shipped default had no PreToolUse, so mid-turn MCP pairing and carryover notices arrived only at Stop after the turn ended'
+    }
 )

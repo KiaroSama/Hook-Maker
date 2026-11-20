@@ -73,6 +73,13 @@ function Get-InstallAdvisories {
     }
     $Tokens = $split.ToArray()
     foreach ($segment in @(Split-CommandSegments -Tokens $Tokens)) {
+        foreach ($warn in @(Get-SegmentPolicyWarnings -Tokens @($segment))) {
+            $wfp = Get-ShortHash (($SessionId + '|policy|' + $warn.Key).ToLowerInvariant())
+            if ($seen.Contains($wfp)) { continue }
+            [void]$seen.Add($wfp)
+            [void]$newFingerprints.Add($wfp)
+            [void]$lines.Add($warn.Message)
+        }
         $script:InstallStaleEnv.Clear()
         $findings = @(Get-InstallFindings -Tokens @($segment) -AllTokens $Tokens -ProjectRoot $ProjectRoot)
         $stale = @($script:InstallStaleEnv)

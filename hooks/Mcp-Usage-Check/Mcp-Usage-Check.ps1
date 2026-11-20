@@ -75,7 +75,11 @@ $gateReceipt = if (Get-Command Start-StopGateReceipt -ErrorAction SilentlyContin
 try {
 $eventName = [string](Get-Field $hookInput 'hook_event_name')
 if ([string]::IsNullOrWhiteSpace($eventName)) { $eventName = 'SessionStart' }
-if ($eventName -notin @('SessionStart', 'UserPromptSubmit', 'Stop', 'SubagentStop')) { exit 0 }
+if ($eventName -notin @('SessionStart', 'UserPromptSubmit', 'PreToolUse', 'Stop', 'SubagentStop')) { exit 0 }
+if ($eventName -eq 'PreToolUse') {
+    $preToolName = [string](Get-Field $hookInput 'tool_name')
+    if ($preToolName -notmatch '(?i)^(?:mcp__(?:Scrapling[-_]?Server|(?:plugin_[A-Za-z0-9_.\-]*_)?(?:playwright|rust[-_]?anything)|[A-Za-z0-9_.\-]*computer[-_]?use)|computer$|Edit$|Write$|MultiEdit$)') { exit 0 }
+}
 
 # A Stop hook that re-fires on its own block is the classic hook loop; the
 # client sets this flag on the re-entry and every Stop handler must honour it.
@@ -158,7 +162,8 @@ $summaryLinePattern = '(?im)(?:^|\\n)[ \t]{0,8}(?:[-*>#]+[ \t]{0,4})?(?:\*\*)?MC
 # the next Stop of the same session, a changed one is reported immediately.
 function Test-ShouldReport {
     param([string]$StateToken)
-    $fingerprint = (Get-HookSuppressionIdentity -HookInput $hookInput) + '|' + $eventName + '|' + $StateToken
+    $scopeEvent = $(if ($StateToken -match '^(pairing\||desktop-route$)') { 'session' } else { $eventName })
+    $fingerprint = (Get-HookSuppressionIdentity -HookInput $hookInput) + '|' + $scopeEvent + '|' + $StateToken
     $claim = Invoke-DeliveryClaim -Path ($gatePath + '.claims.json') -Identity (Get-DeliveryIdentity $hookInput) -Fingerprint $fingerprint
     if (-not $claim.Ok) {
             $null=$claim.Reason # R035 unknown reservation: silent.
@@ -168,6 +173,7 @@ function Test-ShouldReport {
 
 # ---- SessionStart: the policy AND the closing requirement -------------------
 if ($eventName -eq 'SessionStart') {
+    $carry = Get-CarryoverText $hookInput
     $note = @(
         'Mcp-Usage-Check: advisory connector review:',
         '- BEFORE selection: global-mcp-rules.md/global-mcp-server-contracts.md FULL; research owner FULL, live docs/GitHub -> .ai/RESEARCH/.',
@@ -175,7 +181,26 @@ if ($eventName -eq 'SessionStart') {
         '- Smallest verifying tool; no fit: proceed/explain none.',
         $requirement
     ) -join "`n"
+    if ($carry -ne '') { $note += "`n" + $carry }
     $emit = Write-HookResult -EventName $eventName -Kind 'context' -Message $note
+    exit $emit.ExitCode
+}
+
+# ---- PreToolUse: mid-turn pairing, desktop-route, and carryover notices -----
+if ($eventName -eq 'PreToolUse') {
+    if ($enforcement -eq 'off') { exit 0 }
+    $preNotes = New-Object System.Collections.Generic.List[string]
+    $carry = Get-CarryoverText $hookInput
+    if ($carry -ne '') { [void]$preNotes.Add($carry) }
+    if (Get-Command Get-ConnectorPreToolNotes -ErrorAction SilentlyContinue) {
+        $preTail = [string](Get-TranscriptTailText (Get-EvidenceTranscriptFallbackPath $hookInput))
+        foreach ($pn in @(Get-ConnectorPreToolNotes -ToolName $preToolName -ToolInput (Get-Field $hookInput 'tool_input') -RawText $preTail)) {
+            $tok = $(if ($pn.StartsWith('DESKTOP ROUTE:')) { 'desktop-route' } else { 'pairing|' + $pn.Split(':')[0] })
+            if (Test-ShouldReport $tok) { [void]$preNotes.Add($pn) }
+        }
+    }
+    if ($preNotes.Count -eq 0) { exit 0 }
+    $emit = Write-HookResult -EventName $eventName -Kind 'advisory' -Message ($preNotes -join "`n")
     exit $emit.ExitCode
 }
 
@@ -183,17 +208,33 @@ if ($eventName -eq 'SessionStart') {
 if ($eventName -eq 'UserPromptSubmit') {
     $prompt = [string](Get-Field $hookInput 'prompt')
     $operationNote = Get-OperationMcpReminder -HookInput $hookInput -Client (Get-HookClientId) -ProjectRoot $cwd -StateDir $stateDir
-    # V94 connector triggers: one line naming the fitting first routes, and a
-    # per-session record the Stop half gates on (trigger matched, no call, no
-    # "none - reason" line). Rewritten on every prompt so a stale class never gates.
+    # V94-V95 connector triggers: per-session map (bounded to 16 sessions) so
+    # concurrent sessions retain their triggers for Stop while an unchanged
+    # (sessionId, prompt) repeat stays quiet.
     $triggerPrompt = $(if ($prompt -match $script:TextOnlyPromptPattern) { '' } else { $prompt })
-    $triggerLine = Get-ConnectorTriggerLine -Prompt $triggerPrompt
+    $rawTriggerLine = Get-ConnectorTriggerLine -Prompt $triggerPrompt
+    $curTriggers = Get-ConnectorTriggerKeys -Prompt $triggerPrompt
+    $promptHash = Get-ShortHash ($sessionId + '|' + $prompt)
+    $sameTriggerPrompt = $false
     try {
+        $sessMap = [ordered]@{}
+        $oldTr = Read-JsonFile $triggerPath
+        if ($null -ne $oldTr -and $null -ne $oldTr.PSObject.Properties['sessions'] -and $null -ne $oldTr.sessions) {
+            foreach ($p in @($oldTr.sessions.PSObject.Properties)) {
+                if ($p.Name -ne $sessionId) { $sessMap[$p.Name] = $p.Value }
+                elseif ([string](Get-Field $p.Value 'promptHash') -eq $promptHash) { $sameTriggerPrompt = $true }
+            }
+        }
+        if ($sessionId -ne '') {
+            while ($sessMap.Count -ge 16) { $sessMap.RemoveAt(0) }
+            $sessMap[$sessionId] = [pscustomobject]@{ triggers = $curTriggers; promptHash = $promptHash }
+        }
         New-Item -ItemType Directory -Path $stateDir -Force | Out-Null
-        Write-JsonFileAtomic -Path $triggerPath -Value ([pscustomobject]@{ schema = 1; sessionId = $sessionId; triggers = (Get-ConnectorTriggerKeys -Prompt $triggerPrompt) })
+        Write-JsonFileAtomic -Path $triggerPath -Value ([pscustomobject]@{ schema = 2; sessionId = $sessionId; triggers = $curTriggers; sessions = [pscustomobject]$sessMap })
     }
     catch { }
-    $relevant = $operationNote -ne '' -or $triggerLine -ne '' -or $prompt -match '(?i)\b(library|framework|sdk\b|api\b|package|dependency|dependencies|browser|screenshot|website|webpage|\burl\b|database|\bdb\b|\bsql\b|github|pull request|\bpr\b|issue\b|deploy|endpoint|documentation|\bdocs?\b|integrat|webhook|scrape|crawl)\b'
+    $triggerLine = $(if ($sameTriggerPrompt) { '' } else { $rawTriggerLine })
+    $relevant = $operationNote -ne '' -or $rawTriggerLine -ne '' -or $prompt -match '(?i)\b(library|framework|sdk\b|api\b|package|dependency|dependencies|browser|screenshot|website|webpage|\burl\b|database|\bdb\b|\bsql\b|github|pull request|\bpr\b|issue\b|deploy|endpoint|documentation|\bdocs?\b|integrat|webhook|scrape|crawl)\b'
 
     # Research is due on every SUBSTANTIVE prompt - work on the project, or a
     # technical question - not only on dependency words. Keyed by the request:
@@ -333,7 +374,12 @@ if (Get-Command Get-ConnectorPairingNotes -ErrorAction SilentlyContinue) {
 $triggerKeys = ''
 try {
     $tr = Read-JsonFile $triggerPath
-    if ($null -ne $tr -and $sessionId -ne '' -and [string](Get-Field $tr 'sessionId') -eq $sessionId) { $triggerKeys = [string](Get-Field $tr 'triggers') }
+    if ($null -ne $tr -and $sessionId -ne '') {
+        $sessObj = Get-Field $tr 'sessions'
+        $sessEntry = if ($null -ne $sessObj) { Get-Field $sessObj $sessionId } else { $null }
+        if ($null -ne $sessEntry) { $triggerKeys = [string](Get-Field $sessEntry 'triggers') }
+        elseif ([string](Get-Field $tr 'sessionId') -eq $sessionId) { $triggerKeys = [string](Get-Field $tr 'triggers') }
+    }
 }
 catch { $triggerKeys = '' }
 
@@ -342,6 +388,29 @@ catch { $triggerKeys = '' }
 function Exit-WithDesktopNote {
     if ($desktopNote -ne '') { exit (Write-HookResult -EventName $eventName -Kind 'advisory' -Message $desktopNote).ExitCode }
     exit 0
+}
+
+# V95 Standing Order 7: a Rust-port prompt must call rust-anything MCP (or CLI
+# before MCP attaches) or state "MCP used: none - <reason>"; an unrelated MCP
+# call + summary line cannot bypass it, while a CLI run satisfies it.
+$rawTail = if ($null -ne $rawTailCache) { $rawTailCache } else { [string](Get-TranscriptTailText (Get-EvidenceTranscriptFallbackPath $hookInput)) }
+$triggerList = @($triggerKeys -split ',' | Where-Object { $_ -ne '' })
+if ($triggerList -contains 'rust-anything') {
+    $declVal = if ($script:EvidenceLibReady -and $null -ne $mcpDeclaration) { [string]$mcpDeclaration.Value } else { [string]$tail }
+    $raOk = ([regex]::IsMatch([string]$rawTail, $script:RustAnythingCallPattern) -or
+             [regex]::IsMatch([string]$rawTail, $script:RustAnythingCliPattern) -or
+             ($hasSummaryLine -and $declVal -match '(?i)(?:^none\b|\brust-anything\b[^.\n]*\bnone[ \t]*[-:][ \t]*\S)'))
+    if (-not $raOk) {
+        $fp = Get-ShortHash ('trigger-rust-anything|' + $sessionId)
+        $reason = @(
+            'Connector trigger matched (rust-anything); no rust-anything MCP/CLI call or opt-out.',
+            'Load rust-anything:rust-anything and call rust-anything MCP (or CLI), or close "MCP used: none - <reason>".'
+        ) -join "`n"
+        if ($desktopNote -ne '') { $reason += "`n" + $desktopNote }
+        $emit = Write-StopBlockResult -HookInput $hookInput -HookName 'Mcp-Usage-Check' -EventName $eventName -Reason $reason -FindingFingerprint $fp -Condition 'required-workflow'
+        exit $emit.ExitCode
+    }
+    $triggerKeys = (@($triggerList | Where-Object { $_ -ne 'rust-anything' }) -join ',')
 }
 if ($hasSummaryLine) { Exit-WithDesktopNote }
 
@@ -358,7 +427,6 @@ if ($hasSummaryLine) { Exit-WithDesktopNote }
 # RAW transcript, not $tail: a tool CALL is a JSONL record and the closing
 # assistant response $tail holds carries none, so scanning $tail here saw no
 # servers at all and silently disarmed this gate.
-$rawTail = if ($null -ne $rawTailCache) { $rawTailCache } else { [string](Get-TranscriptTailText (Get-EvidenceTranscriptFallbackPath $hookInput)) }
 $servers = New-Object System.Collections.Generic.List[string]
 foreach ($m in [regex]::Matches($rawTail, '"(?:name|tool_name)"[ \t]*:[ \t]*"mcp__([A-Za-z0-9_.\-]+?)__')) {
     $id = $m.Groups[1].Value

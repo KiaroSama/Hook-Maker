@@ -75,7 +75,7 @@ $script:CurrentDefaults = @{
     'Git-Sync-Check'        = @('SessionStart', 'PreToolUse', 'Stop', 'SubagentStop')
     'Skills-Check'          = @('SessionStart', 'UserPromptSubmit', 'Stop', 'SubagentStop')
     'Rules-Check'           = @('SessionStart', 'UserPromptSubmit', 'Stop', 'SubagentStop')
-    'Mcp-Usage-Check'       = @('SessionStart', 'UserPromptSubmit', 'Stop', 'SubagentStop')
+    'Mcp-Usage-Check'       = @('SessionStart', 'UserPromptSubmit', 'PreToolUse', 'Stop', 'SubagentStop')
     'Dependency-Version-Check' = @('SessionStart', 'UserPromptSubmit', 'Stop', 'SubagentStop')
     'Utf8-Encoding-Check'   = @('SessionStart', 'Stop', 'SubagentStop')
     'Synapse-Rules-Check'   = @('SessionStart', 'UserPromptSubmit', 'Stop', 'SubagentStop')
@@ -256,20 +256,21 @@ Check 'Git-Sync-Check: the retired default without PreToolUse migrates by v3 to 
 foreach ($retiredCase in @(
         @{ Hook = 'Skills-Check'; Version = 4; From = @('SessionStart', 'UserPromptSubmit', 'Stop') },
         @{ Hook = 'Rules-Check'; Version = 5; From = @('SessionStart', 'UserPromptSubmit') },
-        @{ Hook = 'Mcp-Usage-Check'; Version = 6; From = @('SessionStart', 'UserPromptSubmit') },
+        @{ Hook = 'Mcp-Usage-Check'; Version = 6; From = @('SessionStart', 'UserPromptSubmit'); Extra = 'PostToolUse' },
         @{ Hook = 'Dependency-Version-Check'; Version = 7; From = @('SessionStart', 'UserPromptSubmit') },
         @{ Hook = 'Utf8-Encoding-Check'; Version = 8; From = @('SessionStart', 'Stop') },
         @{ Hook = 'Synapse-Rules-Check'; Version = 9; From = @('SessionStart', 'Stop', 'SubagentStop') },
         # Its one-more-event case adds UserPromptSubmit: PreToolUse would BE the new set.
         @{ Hook = 'Docs-Freshness-Check'; Version = 10; From = @('SessionStart', 'Stop'); Extra = 'UserPromptSubmit' },
-        @{ Hook = 'Speckit-Check'; Version = 11; From = @('SessionStart', 'UserPromptSubmit') })) {
+        @{ Hook = 'Speckit-Check'; Version = 11; From = @('SessionStart', 'UserPromptSubmit') },
+        @{ Hook = 'Mcp-Usage-Check'; Version = 12; From = @('SessionStart', 'UserPromptSubmit', 'Stop', 'SubagentStop'); Extra = 'PostToolUse' })) {
     $caseHook = [string]$retiredCase.Hook
-    $caseFixture = New-InstalledFixture -Hook $caseHook -ProjectName ('retired-' + $caseHook.ToLowerInvariant()) -RecordedEvents @($retiredCase.From)
+    $caseFixture = New-InstalledFixture -Hook $caseHook -ProjectName ('retired-' + $caseHook.ToLowerInvariant() + '-v' + $retiredCase.Version) -RecordedEvents @($retiredCase.From)
     $caseVerdict = Get-VerdictFor $caseFixture
     Check ($caseHook + ': the retired default migrates by v' + $retiredCase.Version + ' to the current set') (
         $caseVerdict.Status -eq 'migrate' -and $caseVerdict.Version -eq $retiredCase.Version -and
         (Test-EventSetEqual $caseVerdict.Events $script:CurrentDefaults[$caseHook])) ($caseVerdict.Status + ' / ' + $caseVerdict.Detail)
-    $caseCustom = New-InstalledFixture -Hook $caseHook -ProjectName ('custom-' + $caseHook.ToLowerInvariant()) -RecordedEvents (@($retiredCase.From) + @($(if ($retiredCase.ContainsKey('Extra')) { $retiredCase.Extra } else { 'PreToolUse' })))
+    $caseCustom = New-InstalledFixture -Hook $caseHook -ProjectName ('custom-' + $caseHook.ToLowerInvariant() + '-v' + $retiredCase.Version) -RecordedEvents (@($retiredCase.From) + @($(if ($retiredCase.ContainsKey('Extra')) { $retiredCase.Extra } else { 'PreToolUse' })))
     $caseCustomVerdict = Get-VerdictFor $caseCustom
     Check ($caseHook + ': the old set plus one event is custom, never migrated') ($caseCustomVerdict.Status -ne 'migrate') ($caseCustomVerdict.Status + ' / ' + $caseCustomVerdict.Detail)
 }

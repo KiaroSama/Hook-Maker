@@ -262,6 +262,42 @@ function Invoke-McpGatewayRegression {
     $r = Fire -HookPath $McpHook -Cwd $mcpStop -RawStdin (New-StopStdin -Cwd $mcpStop -Transcript $tMcpSum -SessionId 'mcp-cu3')
     Check 'desktop route: no computer-use call -> no desktop note' ($r.Out -notmatch 'DESKTOP ROUTE') $r.Out
 
+    # Order 107 (steering V95): rust-anything trigger, Stop gate, CLI fallback,
+    # mid-turn PreToolUse pairing advisory, and cross-session SessionStart carryover.
+    $mcpV95 = New-Proj 'McpV95Rust'
+    $faPortToRust = (-join [char[]]@(0x067E,0x0648,0x0631,0x062A)) + ' ' + (-join [char[]]@(0x0628,0x0647)) + ' ' + (-join [char[]]@(0x0631,0x0627,0x0633,0x062A))
+    $r = Fire -HookPath $McpHook -Cwd $mcpV95 -RawStdin (New-PromptStdin -Cwd $mcpV95 -EventName 'UserPromptSubmit' -Prompt 'port src/parser.py to Rust' -SessionId 'ra-1')
+    Check 'V95 1a: English Rust-port prompt names rust-anything MCP + skill' (
+        $r.Out -match 'CONNECTORS first: Rust port/rewrite -> rust-anything MCP \+ skill rust-anything:rust-anything') $r.Out
+    $r = Fire -HookPath $McpHook -Cwd $mcpV95 -RawStdin (New-PromptStdin -Cwd $mcpV95 -EventName 'UserPromptSubmit' -Prompt $faPortToRust -SessionId 'ra-fa')
+    Check 'V95 1a: Persian Rust-port prompt names rust-anything MCP + skill' (
+        $r.Out -match 'CONNECTORS first: Rust port/rewrite -> rust-anything MCP \+ skill rust-anything:rust-anything') $r.Out
+    $tRaHandPort = New-ToolTranscript 'mcp-ra-hand' 'mcp__Context7__query-docs' "Done.`nMCP used: Context7"
+    $r = Fire -HookPath $McpHook -Cwd $mcpV95 -RawStdin (New-StopStdin -Cwd $mcpV95 -Transcript $tRaHandPort -SessionId 'ra-1')
+    Check 'V95 1a: Rust-port prompt without rust-anything MCP/CLI or opt-out blocks once even if another MCP ran' (
+        $r.Out -match '"decision"\s*:\s*"block"' -and $r.Out -match 'Connector trigger matched \(rust-anything\)') $r.Out
+    $tRaMcpNoSkill = New-ToolTranscript 'mcp-ra-noskill' 'mcp__plugin_rust-anything_rust-anything__analyze' "Done.`nMCP used: rust-anything"
+    $preRaStdin = @{ session_id = 'ra-mid'; cwd = $mcpV95; hook_event_name = 'PreToolUse'; tool_name = 'mcp__plugin_rust-anything_rust-anything__analyze'; tool_input = @{ path = 'src/parser.py' }; transcript_path = $tNoMcp } | ConvertTo-Json -Compress -Depth 6
+    $r = Fire -HookPath $McpHook -Cwd $mcpV95 -RawStdin $preRaStdin
+    Check 'V95 mid-turn PreToolUse: rust-anything call before skill emits additionalContext immediately' (
+        $r.Out -match 'additionalContext' -and $r.Out -match 'RUST-ANYTHING: called before skill rust-anything:rust-anything') $r.Out
+    $r = Fire -HookPath $McpHook -Cwd $mcpV95 -RawStdin (New-StopStdin -Cwd $mcpV95 -Transcript $tRaMcpNoSkill -SessionId 'ra-mid')
+    Check 'V95 mid-turn PreToolUse suppresses duplicate Stop pairing notice in same session' ($r.Out -notmatch 'RUST-ANYTHING:') $r.Out
+    $r = Fire -HookPath $McpHook -Cwd $mcpV95 -RawStdin (New-StopStdin -Cwd $mcpV95 -Transcript $tRaMcpNoSkill -SessionId 'ra-stoppair')
+    Check 'V95 1a: rust-anything MCP satisfies trigger gate and emits pairing advisory once if PreToolUse did not run' (
+        $r.Out -match 'RUST-ANYTHING:' -and $r.Out -notmatch '"decision"') $r.Out
+    $r = Fire -HookPath $McpHook -Cwd $mcpV95 -RawStdin (New-PromptStdin $mcpV95 'SessionStart' '' 'ra-fresh-session-after-end')
+    Check 'V95 carryover survives session end and delivers on next SessionStart' (
+        $r.Out -match 'STOP NOTICES from the previous turn' -and $r.Out -match 'RUST-ANYTHING:') $r.Out
+    $tRaCli = Join-Path $Work 'mcp-ra-cli.jsonl'
+    Write-Utf8 $tRaCli ((@(
+        (@{ type = 'assistant'; message = @{ content = @(@{ type = 'tool_use'; name = 'Bash'; input = @{ command = '"G:\Program Files\Rust\cargo\bin\rust-anything.exe" analyze src/parser.py' } }) } } | ConvertTo-Json -Compress -Depth 8),
+        (@{ type = 'assistant'; message = @{ content = @(@{ type = 'text'; text = 'Done.' }) } } | ConvertTo-Json -Compress -Depth 8)
+    ) -join "`n") + "`n")
+    $r = Fire -HookPath $McpHook -Cwd $mcpV95 -RawStdin (New-PromptStdin -Cwd $mcpV95 -EventName 'UserPromptSubmit' -Prompt 'rewrite src/parser.py in Rust' -SessionId 'ra-cli')
+    $r = Fire -HookPath $McpHook -Cwd $mcpV95 -RawStdin (New-StopStdin -Cwd $mcpV95 -Transcript $tRaCli -SessionId 'ra-cli')
+    Check 'V95 1a: verified rust-anything CLI invocation satisfies the Rust-port trigger gate' ($r.Out -notmatch '"decision"') $r.Out
+
     # =====================================================================
     Write-Host '--- Mcp-Usage-Check: MCP_SUMMARY_ENFORCEMENT downgrades and disables the gate ---' -ForegroundColor Cyan
     function New-ConfiguredMcpHookCopy {

@@ -373,3 +373,42 @@ function Get-InstallFindings {
     }
     return @()
 }
+
+# Drive-independent PreToolUse shell warnings (V95 duplicate registration + mid-turn encoding).
+function Get-SegmentPolicyWarnings {
+    param([string[]]$Tokens)
+    $raw = @($Tokens)
+    if ($raw.Count -eq 0) { return @() }
+    $inlineUtf8 = (@($raw | Where-Object { $_ -match '(?i)^PYTHONIOENCODING=[''"]?utf-?8[''"]?$' }).Count -gt 0)
+    $clean = @($raw | Where-Object { $_ -ne '&' -and $_ -notmatch '^[A-Za-z_][A-Za-z0-9_]*=' })
+    if ($clean.Count -eq 0) { return @() }
+    $program = Get-ProgramName $clean[0]
+    if ($program -eq 'sudo' -or $program -eq 'call') {
+        $clean = @($clean | Select-Object -Skip 1)
+        if ($clean.Count -eq 0) { return @() }
+        $program = Get-ProgramName $clean[0]
+    }
+    $args1 = @($clean | Select-Object -Skip 1)
+    $sub = $(if ($args1.Count -gt 0) { $args1[0].ToLowerInvariant() } else { '' })
+    $rest = @($args1 | Select-Object -Skip 1)
+    if ($program -eq 'rust-anything' -and $sub -eq 'setup') {
+        if (Test-InstallFlag -Tokens $rest -Names @('--remove', '-h', '--help')) { return @() }
+        $agents = New-Object System.Collections.Generic.List[string]
+        for ($i = 0; $i -lt $rest.Count; $i++) {
+            $tok = $rest[$i]
+            if (($tok -ieq '--agent' -or $tok -ieq '-a') -and ($i + 1) -lt $rest.Count) {
+                foreach ($a in $rest[$i + 1].Split(',')) { if ($a.Trim() -ne '') { [void]$agents.Add($a.Trim()) } }
+            }
+            elseif ($tok -match '(?i)^(?:--agent|-a)=(.+)$') {
+                foreach ($a in $Matches[1].Split(',')) { if ($a.Trim() -ne '') { [void]$agents.Add($a.Trim()) } }
+            }
+        }
+        if ($agents.Count -eq 0 -or @($agents | Where-Object { $_ -ieq 'claude' }).Count -gt 0) {
+            return @([pscustomobject]@{ Key = 'rust-anything-setup-claude'; Message = 'DUPLICATE REGISTRATION: Plugin rust-anything@rust-anything already registers .mcp.json and skill; do NOT run rust-anything setup for Claude (rust-anything doctor is allowed).' })
+        }
+    }
+    if ($program -eq 'rea-video' -and -not $inlineUtf8 -and $env:PYTHONIOENCODING -notmatch '(?i)^utf-?8') {
+        return @([pscustomobject]@{ Key = 'rea-video-utf8'; Message = 'REA-VIDEO: shell lacks PYTHONIOENCODING=utf-8; set it or restart.' })
+    }
+    return @()
+}
