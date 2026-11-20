@@ -78,7 +78,7 @@ if ([string]::IsNullOrWhiteSpace($eventName)) { $eventName = 'SessionStart' }
 if ($eventName -notin @('SessionStart', 'UserPromptSubmit', 'PreToolUse', 'Stop', 'SubagentStop')) { exit 0 }
 if ($eventName -eq 'PreToolUse') {
     $preToolName = [string](Get-Field $hookInput 'tool_name')
-    if ($preToolName -notmatch '(?i)^(?:mcp__(?:Scrapling[-_]?Server|(?:plugin_[A-Za-z0-9_.\-]*_)?(?:playwright|rust[-_]?anything)|[A-Za-z0-9_.\-]*computer[-_]?use)|computer$|Edit$|Write$|MultiEdit$)') { exit 0 }
+    if ($preToolName -notmatch '(?i)^(?:mcp__(?:Scrapling[-_]?Server|(?:plugin_[A-Za-z0-9_.\-]*_)?(?:playwright|rust[-_]?anything|cloudflare)|[A-Za-z0-9_.\-]*computer[-_]?use)|computer$|Edit$|Write$|MultiEdit$)') { exit 0 }
 }
 
 # A Stop hook that re-fires on its own block is the classic hook loop; the
@@ -176,9 +176,8 @@ if ($eventName -eq 'SessionStart') {
     $carry = Get-CarryoverText $hookInput
     $note = @(
         'Mcp-Usage-Check: advisory connector review:',
-        '- BEFORE selection: global-mcp-rules.md/global-mcp-server-contracts.md FULL; research owner FULL, live docs/GitHub -> .ai/RESEARCH/.',
-        '- Material browser/DB/GitHub/memory connectors only.',
-        '- Smallest verifying tool; no fit: proceed/explain none.',
+        '- BEFORE selection: global-mcp-rules.md/global-mcp-server-contracts.md FULL; live docs/GitHub -> .ai/RESEARCH/.',
+        '- Smallest verifying connector; no fit: proceed/explain none.',
         $requirement
     ) -join "`n"
     if ($carry -ne '') { $note += "`n" + $carry }
@@ -211,9 +210,11 @@ if ($eventName -eq 'UserPromptSubmit') {
     # V94-V95 connector triggers: per-session map (bounded to 16 sessions) so
     # concurrent sessions retain their triggers for Stop while an unchanged
     # (sessionId, prompt) repeat stays quiet.
+    $disabledMcp = if (Get-Command Get-ProjectDisabledMcpServers -ErrorAction SilentlyContinue) { Get-ProjectDisabledMcpServers -ProjectRoot $cwd } else { $null }
     $triggerPrompt = $(if ($prompt -match $script:TextOnlyPromptPattern) { '' } else { $prompt })
-    $rawTriggerLine = Get-ConnectorTriggerLine -Prompt $triggerPrompt
-    $curTriggers = Get-ConnectorTriggerKeys -Prompt $triggerPrompt
+    $rawTriggerLine = Get-ConnectorTriggerLine -Prompt $triggerPrompt -DisabledServers $disabledMcp
+    $curTriggers = Get-ConnectorTriggerKeys -Prompt $triggerPrompt -DisabledServers $disabledMcp
+    $rawDisabledNote = if (Get-Command Get-DisabledConnectorPromptAdvisory -ErrorAction SilentlyContinue) { Get-DisabledConnectorPromptAdvisory -Prompt $triggerPrompt -DisabledServers $disabledMcp } else { '' }
     $promptHash = Get-ShortHash ($sessionId + '|' + $prompt)
     $sameTriggerPrompt = $false
     try {
@@ -234,6 +235,7 @@ if ($eventName -eq 'UserPromptSubmit') {
     }
     catch { }
     $triggerLine = $(if ($sameTriggerPrompt) { '' } else { $rawTriggerLine })
+    $disabledPromptNote = $(if ($sameTriggerPrompt) { '' } else { $rawDisabledNote })
     $relevant = $operationNote -ne '' -or $rawTriggerLine -ne '' -or $prompt -match '(?i)\b(library|framework|sdk\b|api\b|package|dependency|dependencies|browser|screenshot|website|webpage|\burl\b|database|\bdb\b|\bsql\b|github|pull request|\bpr\b|issue\b|deploy|endpoint|documentation|\bdocs?\b|integrat|webhook|scrape|crawl)\b'
 
     # Research is due on every SUBSTANTIVE prompt - work on the project, or a
@@ -260,13 +262,18 @@ if ($eventName -eq 'UserPromptSubmit') {
     # to the model here, ahead of anything else it says (order 105 item 2).
     $carry = Get-CarryoverText $hookInput
     if (-not $relevant) {
-        if ($carry -ne '') {
-            $msg = $(if ($researchDue) { $carry + "`n" + $script:ResearchReminder } else { $carry })
-            exit (Write-HookResult -EventName $eventName -Kind 'context' -Message ('Mcp-Usage-Check: ' + $msg)).ExitCode
-        }
-        if ($researchDue) {
-            $emit = Write-HookResult -EventName $eventName -Kind 'context' -Message $script:ResearchReminder -HookInput $hookInput -HookName 'Mcp-Usage-Check' -FindingFingerprint $researchKey
-            exit $emit.ExitCode
+        $extra = @()
+        if ($carry -ne '') { $extra += $carry }
+        if ($disabledPromptNote -ne '') { $extra += $disabledPromptNote }
+        if ($researchDue) { $extra += $script:ResearchReminder }
+        if ($extra.Count -gt 0) {
+            $prefix = $(if ($carry -ne '' -or $disabledPromptNote -ne '') { 'Mcp-Usage-Check: ' } else { '' })
+            $msg = $prefix + ($extra -join "`n")
+            if ($carry -eq '' -and $disabledPromptNote -eq '' -and $researchDue) {
+                $emit = Write-HookResult -EventName $eventName -Kind 'context' -Message $script:ResearchReminder -HookInput $hookInput -HookName 'Mcp-Usage-Check' -FindingFingerprint $researchKey
+                exit $emit.ExitCode
+            }
+            exit (Write-HookResult -EventName $eventName -Kind 'context' -Message $msg).ExitCode
         }
         exit 0
     }
@@ -291,6 +298,7 @@ if ($eventName -eq 'UserPromptSubmit') {
         $notes = @()
         if ($carry -ne '') { $notes += $carry }
         if ($triggerLine -ne '') { $notes += $triggerLine }
+        if ($disabledPromptNote -ne '') { $notes += $disabledPromptNote }
         if ($researchDue) { $notes += $script:ResearchReminder }
         if ($operationNote -ne '') { $notes += $operationNote }
         if ($notes.Count -gt 0) {
@@ -307,6 +315,7 @@ if ($eventName -eq 'UserPromptSubmit') {
         $requirement
     )
     if ($triggerLine -ne '') { $noteLines += $triggerLine }
+    if ($disabledPromptNote -ne '') { $noteLines += $disabledPromptNote }
     if ($researchDue) { $noteLines += $script:ResearchReminder }
     if ($operationNote -ne '') { $noteLines += $operationNote }
     if ($carry -ne '') { $noteLines = @($noteLines[0], $carry) + @($noteLines | Select-Object -Skip 1) }
@@ -394,7 +403,15 @@ function Exit-WithDesktopNote {
 # before MCP attaches) or state "MCP used: none - <reason>"; an unrelated MCP
 # call + summary line cannot bypass it, while a CLI run satisfies it.
 $rawTail = if ($null -ne $rawTailCache) { $rawTailCache } else { [string](Get-TranscriptTailText (Get-EvidenceTranscriptFallbackPath $hookInput)) }
+$disabledStopMcp = if (Get-Command Get-ProjectDisabledMcpServers -ErrorAction SilentlyContinue) { Get-ProjectDisabledMcpServers -ProjectRoot $cwd } else { $null }
 $triggerList = @($triggerKeys -split ',' | Where-Object { $_ -ne '' })
+if ($null -ne $disabledStopMcp -and $disabledStopMcp.Count -gt 0) {
+    $triggerList = @($triggerList | Where-Object {
+        $conn = if ($script:TriggerConnectorMap.ContainsKey($_)) { [string]$script:TriggerConnectorMap[$_] } else { '' }
+        $conn -eq '' -or -not (Test-McpServerDisabled -DisabledSet $disabledStopMcp -Name $conn)
+    })
+    $triggerKeys = ($triggerList -join ',')
+}
 if ($triggerList -contains 'rust-anything') {
     $declVal = if ($script:EvidenceLibReady -and $null -ne $mcpDeclaration) { [string]$mcpDeclaration.Value } else { [string]$tail }
     $raOk = ([regex]::IsMatch([string]$rawTail, $script:RustAnythingCallPattern) -or

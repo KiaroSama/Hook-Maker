@@ -115,29 +115,29 @@ try {
     Write-Host '--- the requirement itself ---' -ForegroundColor Cyan
     Check 'summary: asks for a DONE section' ($r.Out -match 'DONE') $r.Out
     Check 'summary: asks for a REMAINING section' ($r.Out -match 'REMAINING') $r.Out
-    Check 'summary: closing section is last and only when handing back work' ($r.Out -match 'last after MCP/Skills/Rules lines' -and $r.Out -match 'at task completion') $r.Out
-    Check 'summary: exactly one wrap-up per task, not during waits' ($r.Out -match 'one short DONE / REMAINING' -and $r.Out -match 'at task completion') $r.Out
+    Check 'summary: closing section is last and only when handing back work' ($r.Out -match 'after MCP/Skills/Rules lines' -and $r.Out -match 'at task end') $r.Out
+    Check 'summary: exactly one wrap-up per task, not during waits' ($r.Out -match 'one short DONE / REMAINING' -and $r.Out -match 'at task end') $r.Out
     Check 'summary: authored guidance stays under 1300 characters' (([string](($r.Out|ConvertFrom-Json).hookSpecificOutput.additionalContext)).Length -lt 1300) $r.Out
     # L01: wording alone was tried and did not hold - the rule now has to say
     # that a correction turn adds NOTHING, because that is the turn that used to
     # produce the second and third wrap-up.
     Check 'summary: a gate that blocks afterwards is a CORRECTION turn, not a reason to restate' (
-        $r.Out -match 'correct changed claims once, no second wrap-up') $r.Out
+        $r.Out -match 'fix changed claims once, no second wrap-up') $r.Out
     Check 'summary: it is once per TASK, not once per message or per gate' (
         $r.Out -match 'one short DONE / REMAINING') $r.Out
     Check 'summary: names the preconditions that make the carrying message the last one' (
-        $r.Out -match 'applicable memory/Git/exact-SHA CI/docs/tests/process cleanup/secrets/local-only state' -and $r.Out -match 'or disclose the gap') $r.Out
+        $r.Out -match 'memory/Git/exact-SHA CI/docs/tests/cleanup/secrets' -and $r.Out -match 'or state gap') $r.Out
     Check 'summary: names the sibling requirements it must follow' (
         ($r.Out -match 'MCP/Skills/Rules lines') -and ($r.Out -match 'MCP/Skills/Rules lines')) $r.Out
     Check 'summary: demands failures and untested paths be included' ($r.Out -match 'untested') $r.Out
-    Check 'summary: demands current-state checks for every gate' ($r.Out -match 'current blockers') $r.Out
+    Check 'summary: demands current-state checks for every gate' ($r.Out -match 'blockers') $r.Out
     $summaryMessage = [string](($r.Out | ConvertFrom-Json).hookSpecificOutput.additionalContext)
     Check 'summary: successful checks and resolved blockers belong in DONE' (
-        $summaryMessage -match '(?m)^DONE: completed work/checks/resolved gates with observed proof') $summaryMessage
+        $summaryMessage -match '(?m)^DONE: verified work/checks/gates') $summaryMessage
     Check 'summary: REMAINING contains only unresolved required work' (
-        $summaryMessage -match 'REMAINING: unfinished required items, current blockers, deferred scope or untested required paths with reasons') $summaryMessage
+        $summaryMessage -match 'REMAINING: open required items/blockers/untested paths with reasons') $summaryMessage
     Check 'summary: completed items must not be relisted as remaining' (
-        $summaryMessage -match 'DONE: completed work/checks/resolved gates with observed proof' -and $summaryMessage -match 'REMAINING: unfinished required items, current blockers, deferred scope or untested required paths with reasons') $summaryMessage
+        $summaryMessage -match 'DONE: verified work/checks/gates' -and $summaryMessage -match 'REMAINING: open required items/blockers/untested paths with reasons') $summaryMessage
 
     # =====================================================================
     Write-Host '--- with no markers there is no gate list at all ---' -ForegroundColor Cyan

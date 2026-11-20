@@ -300,13 +300,46 @@ foreach ($fe in $skillFolders) {
     if (-not $entry.Hashes.Contains($hash)) { [void]$entry.Hashes.Add($hash) }
 }
 
+$skillOverrideState = if ($client -ne 'codex' -and (Get-Command Get-ClaudeSkillOverrideSettings -ErrorAction SilentlyContinue)) {
+    Get-ClaudeSkillOverrideSettings -Discovery $skillDiscovery -Partial $index.Partial
+} else {
+    [pscustomobject]@{ SkillOverrides = (New-Object 'System.Collections.Generic.Dictionary[string,string]' ([System.StringComparer]::OrdinalIgnoreCase)); DisableBundledSkills = $false; LocalPluginOverrideKeys = @() }
+}
+$pluginOverrideAdvisory = ''
+if ($skillOverrideState.LocalPluginOverrideKeys.Count -gt 0) {
+    $pluginOverrideAdvisory = 'skillOverrides advisory: Claude Code 2.1.x ignores plugin:skill keys (' + ($skillOverrideState.LocalPluginOverrideKeys -join ', ') + '); use enabledPlugins or Claude Desktop Settings -> Capabilities / Skills instead.'
+}
+
 $skillLines = New-Object System.Collections.Generic.List[string]
 $conflictLines = New-Object System.Collections.Generic.List[string]
 foreach ($key in @($byName.Keys | Sort-Object)) {
     $e = $byName[$key]
-    [void]$skillLines.Add('- ' + $e.Name + ' [' + ((@($e.Sources) | Sort-Object) -join '+') + ']')
+    $eStatus = 'enabled'
+    $eExplicit = '0'
+    $isUserOrBuiltin = ($e.Sources.Contains('global') -or $e.Sources.Contains('builtin'))
+    if ($isUserOrBuiltin) {
+        if ($skillOverrideState.DisableBundledSkills -and $e.Sources.Contains('builtin')) {
+            $eStatus = 'disabled'
+        }
+        $ov = ''
+        if ($skillOverrideState.SkillOverrides.ContainsKey($e.Name)) { $ov = [string]$skillOverrideState.SkillOverrides[$e.Name] }
+        elseif ($skillOverrideState.SkillOverrides.ContainsKey($key)) { $ov = [string]$skillOverrideState.SkillOverrides[$key] }
+        if ($ov -eq 'off') { $eStatus = 'disabled' }
+        elseif ($ov -eq 'user-invocable-only') { $eExplicit = '1' }
+        elseif ($ov -eq 'name-only') { $eStatus = 'enabled' }
+    }
+    $e | Add-Member -NotePropertyName 'Status' -NotePropertyValue $eStatus -Force
+    $e | Add-Member -NotePropertyName 'Explicit' -NotePropertyValue $eExplicit -Force
+    if ($eStatus -ne 'disabled') {
+        [void]$skillLines.Add('- ' + $e.Name + ' [' + ((@($e.Sources) | Sort-Object) -join '+') + ']')
+    }
     if ($e.Hashes.Count -gt 1) {
         [void]$conflictLines.Add('CONFLICT: "' + $e.Name + '" differs: ' + ((@($e.Sources) | Sort-Object) -join ' and ') + '. Before use: diff/reconcile -> .ai/SKILLS.md; no silent overwrite.')
+    }
+}
+if ($skillOverrideState.DisableBundledSkills -and $index.Plugin.Count -gt 0) {
+    foreach ($p in $index.Plugin) {
+        if ($p.Source -eq 'claude-builtin' -or $p.Source -eq 'builtin') { $p.Status = 'disabled' }
     }
 }
 
@@ -498,18 +531,16 @@ if ($eventName -eq 'UserPromptSubmit') {
         }
 
         $dd = New-Object System.Collections.Generic.List[string]
-        [void]$dd.Add('SKILL POLICY CHECK (' + $client + '): ::deep-debug; exact loadable SKILL.md key/exposure, no mutation.')
-        [void]$dd.Add('- EVERY bug/phase: WORKFLOWS.md Deep Debug/skill-policy-deep-debug.md FULL.')
-        [void]$dd.Add('- Ledger bugs/phases first; ::multi-agent codeword. dispatching-parallel-agents: independent discovery; subagent-driven-development: prepared tasks. Flatten/dedup/cycle-check once, no nested/recursive agents.')
-        [void]$dd.Add('- audit-context-building: substantial/unfamiliar/architecture/security; Graphify policy. brainstorming: real design ambiguity; writing-plans: complex repair lacking plan.')
-        [void]$dd.Add('- Bug: systematic-debugging/test-driven-development/verification-before-completion; runtime question: local DAP/debugger OR trusted debug-live DebugMCP/VS Code.')
-        [void]$dd.Add('- Real plan: executing-plans, test-driven-development, requesting-code-review, verification-before-completion.')
-        [void]$dd.Add('- Security subset by job: differential-review/insecure-defaults/review/verification; semgrep/codeql, SARIF parser if output exists; fp-check before confirmation, variant-analysis after proven cause, supply-chain auditor for deps, c-review C/C++, rust-review Rust. static-analysis is label unless exact installed name:. Active testing needs ownership/consent/scope.')
-        [void]$dd.Add('- property-based-testing: real round-trip/validator/state/path/idempotency/boundary invariant only, never usage padding.')
-        [void]$dd.Add('- ' + $ponytailRef + ' ONCE; then safe cuts/targeted tests/final proof only.')
+        [void]$dd.Add('SKILL POLICY CHECK (' + $client + '): ::deep-debug; exact loadable SKILL.md key, no mutation.')
+        [void]$dd.Add('- WORKFLOWS.md Deep Debug/skill-policy-deep-debug.md FULL; ledger bugs/phases first.')
+        [void]$dd.Add('- ::multi-agent: dispatching-parallel-agents (discovery) or subagent-driven-development (prepared); no nested agents.')
+        [void]$dd.Add('- audit-context-building: architecture/security; brainstorming: ambiguity; writing-plans: unplanned repair.')
+        [void]$dd.Add('- Bug: systematic-debugging/test-driven-development/verification-before-completion; runtime: DAP or debug-live.')
+        [void]$dd.Add('- Plan: executing-plans, test-driven-development, requesting-code-review, verification-before-completion.')
+        [void]$dd.Add('- Security: differential-review/insecure-defaults/semgrep/codeql/sarif/fp-check/variant-analysis/supply-chain/c-review/rust-review; active needs consent/scope.')
+        [void]$dd.Add('- property-based-testing: real invariants only. ' + $ponytailRef + ' ONCE; safe cuts/proof only.')
         if ($notVisible.Count -gt 0) {
-            [void]$dd.Add('- NOT VISIBLE (project/global/plugin): ' + ($notVisible.ToArray() -join ', ') + '. Verify elsewhere; required gap=BLOCKED/PARTIAL.')
-
+            [void]$dd.Add('- NOT VISIBLE: ' + ($notVisible.ToArray() -join ', ') + '. Verify elsewhere; gap=BLOCKED/PARTIAL.')
         }
         [void]$dd.Add('- Subset/client syntax only; hook invokes nothing.')
         [void]$dd.Add($script:SkillsRequirement)
@@ -534,7 +565,7 @@ if ($eventName -eq 'UserPromptSubmit') {
     # Fingerprint = session + client + everything the message would say. An
     # unchanged answer shows once; a new prompt with different matches, or a
     # changed skill set, re-reports immediately.
-    $matchSig = ($index.Partial -join ';') + '#' + (@($topInstalled | ForEach-Object { $_.Name + '@' + $_.Score }) -join ',') + '#' +
+    $matchSig = ($index.Partial -join ';') + '#' + $pluginOverrideAdvisory + '#' + (@($topInstalled | ForEach-Object { $_.Name + '@' + $_.Score }) -join ',') + '#' +
                 (@($topLibrary | ForEach-Object { $_.Name + '@' + $_.Score }) -join ',')
     $fingerprint = Get-ShortHash ($sessionId + '|' + $client + '|' + $hasLibrary + '|' + $libraryDir + '|' + $hasRecord + '|' + $sig + '|' + $matchSig)
     $statePath = Join-Path $stateDir ('SkillsCheck-prompt-' + $projectKey + '.txt')
@@ -547,6 +578,7 @@ if ($eventName -eq 'UserPromptSubmit') {
     $lines = New-Object System.Collections.Generic.List[string]
     # Partial discovery retains known matches and exposes uncertainty, never a completeness claim.
     if ($index.Partial.Count -gt 0) { [void]$lines.Add('Skill discovery was PARTIAL: ' + (($index.Partial | Select-Object -Unique -First 6) -join '; ')) }
+    if ($pluginOverrideAdvisory -ne '') { [void]$lines.Add($pluginOverrideAdvisory) }
     [void]$lines.Add('SKILL POLICY CHECK (' + $client + '): advisory skill routing at task/job change; covered steps through exact skill. Matched authorized library copy -> project/.ai/SKILLS.md; feature: grilling/domain-modeling then Spec Kit. Sources: project/global/plugin/library.')
     if ($topInstalled.Count -gt 0) {
         [void]$lines.Add('INSTALLED matches only: verify source/exposure/exact SKILL.md key:')
@@ -611,6 +643,7 @@ elseif ($hasPluginRoot) {
 }
 # Partial discovery retains known matches and exposes uncertainty, never a completeness claim.
     if ($index.Partial.Count -gt 0) { [void]$lines.Add('Skill discovery was PARTIAL: ' + (($index.Partial | Select-Object -Unique -First 6) -join '; ')) }
+    if ($pluginOverrideAdvisory -ne '') { [void]$lines.Add($pluginOverrideAdvisory) }
 [void]$lines.Add('- Exact SKILL.md name:, not folder/plugin/market/category.')
 if ($hasRecord) {
     [void]$lines.Add('- Skill changes: read/update .ai/SKILLS.md; local, secret-free.')

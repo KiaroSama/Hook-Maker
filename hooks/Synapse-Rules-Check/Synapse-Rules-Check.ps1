@@ -158,13 +158,13 @@ try {
     try { New-Item -ItemType Directory -Path $stateDir -Force | Out-Null; [IO.File]::WriteAllText($gatePath, $fingerprint) } catch { }
 
     if (-not $missingRead -and -not $missingWrite) {
-        $emit = Write-HookResult -EventName $eventName -Kind 'advisory' -Message ('Synapse-Rules-Check: store read only AFTER the first of ' + [string]$editCount + ' project edits. Next session: memory_digest before editing.')
+        $emit = Write-HookResult -EventName $eventName -Kind 'advisory' -Message ('Synapse-Rules-Check: read after first of ' + [string]$editCount + ' edits. Next session: memory_digest first.')
         exit $emit.ExitCode
     }
     $lines = New-Object System.Collections.Generic.List[string]
-    [void]$lines.Add('SYNAPSE RULES CHECK: ' + [string]$editCount + ' project edits in the complete transcript.')
-    if ($missingRead) { [void]$lines.Add('Read duty: no memory_digest/memory_retrieve call. Run `memory_digest` once with `tokenBudget`, read task matches, re-check the edits against them.') }
-    if ($missingWrite) { [void]$lines.Add('Write duty: no memory_write call. Write durable facts/decisions/verified commands (entityKey + project tag; no secrets), or end the reply with `Synapse: none - <reason>`.') }
+    [void]$lines.Add('SYNAPSE RULES CHECK: ' + [string]$editCount + ' project edits.')
+    if ($missingRead) { [void]$lines.Add('Read duty: no memory_digest/memory_retrieve. Run `memory_digest` with `tokenBudget`, check matches.') }
+    if ($missingWrite) { [void]$lines.Add('Write duty: no memory_write. Save durable facts/decisions (entityKey + project tag; no secrets), or end with `Synapse: none - <reason>`.') }
     $emit = Write-StopBlockResult -HookInput $hookInput -HookName 'Synapse-Rules-Check' -FindingFingerprint $fingerprint -EventName $eventName -Message ($lines.ToArray() -join "`n") -Condition 'required-workflow'
     exit $emit.ExitCode
 }

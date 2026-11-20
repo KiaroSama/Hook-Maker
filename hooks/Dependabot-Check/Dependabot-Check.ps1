@@ -240,6 +240,6 @@ else {
 }
 $message = 'DEPENDABOT CHECK (' + $repoSlug + '): ' + $prs.Count + ' pending Dependabot PR(s) from the verified app/dependabot author:' + "`n" +
     (($prLines -join "`n") + $moreNote) + "`n" +
-    $priorityNote + ' BEFORE action global-github-automation-rules.md Dependabot FULL. Unrelated incl.SECURITY: defer; interrupt only requested/directly relevant/reliably confirmed unsafe. No label-only action/auto MAJOR/PRERELEASE.'
+    $priorityNote + ' BEFORE action: global-github-automation-rules.md Dependabot FULL. Defer unrelated (incl. SECURITY); act only if requested/relevant/confirmed unsafe. No auto MAJOR/PRERELEASE.'
 
 Write-ContextIfNew -Fingerprint (($fingerprintParts | Sort-Object) -join '|') -Message $message

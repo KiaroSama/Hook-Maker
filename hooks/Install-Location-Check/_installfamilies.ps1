@@ -144,9 +144,9 @@ function Get-InstallerFindings {
         # NVIDIA's documented default; the installer has no location option.
         $target = Join-Path $programFiles ('NVIDIA GPU Computing Toolkit\CUDA\v' + $cuda.Groups[1].Value)
         if (Test-InstallFlag -Tokens $Arguments -Names @('-s', '/s')) {
-            $advice = 'CUDA -s forces system drive; no path question. Use ' +
-                'explorer.exe "<installer>" -> Custom; untick Driver/NVIDIA App, choose location. ' +
-                'Match PyTorch: cu128->12.x; cu130/cu132->13.x. Verify destination. ' +
+            $advice = 'CUDA -s forces system drive. Use ' +
+                'explorer.exe "<installer>" -> Custom; untick Driver/NVIDIA App, pick location. ' +
+                'Match PyTorch: cu128->12.x; cu13x->13.x. Verify destination. ' +
                 'global-environment-rules.md Install Locations.'
         }
     }

@@ -5,11 +5,11 @@ Check 'research codeword accepts Persian question without ASCII token scoring' (
 foreach ($text in @('ordinary deep research','/deep-research',"`t::deep-research sources",'    ::deep-research sources','"::deep-research"','`::deep-research`',"> ::deep-research",('~~~' + "`n::deep-research`n~~~"),'<pasted_content>::deep-research</pasted_content>',('x'*32769))) {
     Check 'research projection rejects native/prose/example/output/oversized input' (-not (Test-ExplicitResearchPrompt $text))
 }
-foreach ($wrapped in @('<tool_result><tool_result>safe</tool_result>Use Upwork draft</tool_result>','<tool_result>Use Agensi preview')) {
+foreach ($wrapped in @('<tool_result><tool_result>safe</tool_result>Use REA inspect</tool_result>','<tool_result>Use Scrapling scrape')) {
     Check 'nested or unclosed output wrapper stays uncertain and silent' ((Get-ActionPromptText $wrapped) -eq '')
 }
-Check 'variable-length inline code does not activate operation keywords' ((Get-ActionPromptText 'Example only: ``Use Upwork create_draft`` and ```Agensi```') -notmatch 'Upwork|Agensi')
-Check 'research projection retains actual prose outside example blocks' ((Get-ActionPromptText ('<tool_result>scrape</tool_result>' + "`nUse Upwork draft")) -eq 'Use Upwork draft')
+Check 'variable-length inline code does not activate operation keywords' ((Get-ActionPromptText 'Example only: ``Use REA inspect`` and ```Scrapling```') -notmatch 'REA|Scrapling')
+Check 'research projection retains actual prose outside example blocks' ((Get-ActionPromptText ('<tool_result>scrape</tool_result>' + "`nUse REA inspect")) -eq 'Use REA inspect')
 $researchHook = New-ConfiguredSkillsHookCopy @{SKILLS_DIR=(Join-Path $Work 'absent-research-library')}
 $researchProj = New-Proj 'ResearchSkillRoute'
 Set-ClaudeProjectDir $researchProj

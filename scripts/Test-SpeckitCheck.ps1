@@ -162,10 +162,10 @@ try {
         $r.Out -match 'Speckit-Check: advisory') $r.Out
     # Dated IDs/acceptance/order/artifacts/phases/gates live behind full owner.
     Check 'intake requires full Spec Kit owner before project-change/delta dependents' (
-        $r.Out -match 'Read global-spec-kit-rules.md/global-project-lifecycle-rules.md') $r.Out
-    Check 'only dependent work waits' ($r.Out -match 'ask unknowns, only dependents wait') $r.Out
+        $r.Out -match 'global-spec-kit-rules.md/global-project-lifecycle-rules.md') $r.Out
+    Check 'only dependent work waits' ($r.Out -match 'ask unknowns') $r.Out
     Check 'intake retains ownership without implicit cross-project repair' (
-        $r.Out -match 'Newest folder != owner' -and $r.Out -match 'other-project exact consent or English handoff') $r.Out
+        $r.Out -match 'Newest folder != owner' -and $r.Out -match 'other-project needs consent/handoff') $r.Out
     Check 'the old "finish existing tasks before starting anything else" is gone' (
         $r.Out -notmatch 'before starting something else') $r.Out
 

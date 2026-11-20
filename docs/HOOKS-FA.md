@@ -328,7 +328,7 @@ An actual leading `::deep-research` receives bounded phase-specific routing thro
 
 `MCP used: none - <one-line reason>` جواب معتبری است. `.env`: `MCP_SUMMARY_ENFORCEMENT` (`advisory` پیش‌فرض \| `block` \| `off`). یادآور ثابت تحقیق (مستندات رسمی، سه گذر GitHub، یادداشت در `.ai/RESEARCH/`) را هم برای هر prompt فنی یا تغییردهنده‌ی پروژه، با کلید جدا برای هر درخواست، می‌فرستد؛ prompt غلط‌تایپی یا فقط‌متنی معاف است
 
-Relevant Scrapling/scraping, Agensi and Upwork operations receive separate request-scoped lifecycle/consent guidance, even later in the same session. Upwork create_draft saves a real draft; publication and repeated unknown outcomes are separate actions. The hook invokes no server, grants no permission and never changes accounts/routes. [Details](research-operation-reminders.md).
+درخواست‌های مرتبط و بدون نقل‌قول برای Scrapling، REA، Telegram، Context-mode و Omniroute راهنمای اختصاصی چرخهٔ حیات و رضایت را به‌صورت جداگانه برای هر درخواست دریافت می‌کنند، حتی در ادامهٔ همان نشست. هوک هیچ سروری را فراخوانی نمی‌کند، مجوزی نمی‌دهد و حساب یا مسیری را تغییر نمی‌دهد. [جزئیات](research-operation-reminders.md).
 
 **ترتیبِ کنترلِ دسکتاپ (spec 041).** در Stop اگر ابزارِ computer-use فراخوانده شده باشد و پیش از آن هیچ تلاشی با agent-desktop (فراخوانیِ MCP یا بارگذاریِ اسکیل) دیده نشود، هوک یک توصیه در هر جلسه می‌دهد و ترتیب را یادآوری می‌کند: اول MCP و اسکیلِ agent-desktop، برای وب ابزارهای مرورگر، و computer-use فقط وقتی که راهِ دیگری نمانده و دلیلش گزارش شود. این توصیه همراهِ هر خروجیِ Mcp-Usage-Check می‌آید و هرگز بلاک نمی‌کند.
 

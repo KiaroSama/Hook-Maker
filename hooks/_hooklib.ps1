@@ -743,6 +743,8 @@ try {
     if (Test-Path -LiteralPath $taskIdentityPath -PathType Leaf) { . $taskIdentityPath; $script:TaskIdentityReady = $true }
 }
 catch { $script:TaskIdentityReady = $false }
+$mcpDisablePath = Join-Path $PSScriptRoot '_mcpdisable.ps1'
+if (Test-Path -LiteralPath $mcpDisablePath -PathType Leaf) { try { . $mcpDisablePath } catch { } }
 
 function Test-StopStandDown {
     param([Parameter(Mandatory = $true)]$HookInput, [Parameter(Mandatory = $true)][string]$HookName)
@@ -983,6 +985,15 @@ function ConvertFrom-CbmTomlServer {
 function Get-CbmServerConfig {
     param([string[]]$ConfigPaths, [string]$ProjectRoot = '', [string]$Client = '')
     if ([string]::IsNullOrWhiteSpace($ProjectRoot)) { $ProjectRoot = (Get-Location).Path }
+    if ((Get-Command Get-ProjectDisabledMcpServers -ErrorAction SilentlyContinue)) {
+        $claudeOverride = if ($null -ne $ConfigPaths -and @($ConfigPaths).Count -gt 0) {
+            [string](@($ConfigPaths | Where-Object { $_ -and [IO.Path]::GetExtension($_) -ieq '.json' } | Select-Object -First 1))
+        } else { '' }
+        $disabledSet = Get-ProjectDisabledMcpServers -ProjectRoot $ProjectRoot -UserClaudeJsonPath $claudeOverride
+        if (Test-McpServerDisabled -DisabledSet $disabledSet -Name 'Codebase-Memory-mcp') {
+            return [pscustomobject]@{ Command = ''; Arguments = @(); Environment = @{}; ConfigPath = $claudeOverride; Disabled = $true }
+        }
+    }
     if ($null -eq $ConfigPaths -or @($ConfigPaths).Count -eq 0) {
         $codexRoot = [string]$env:CODEX_HOME
         if ([string]::IsNullOrWhiteSpace($codexRoot)) { $codexRoot = Join-Path $env:USERPROFILE '.codex' }
@@ -1030,9 +1041,18 @@ function Get-CbmServerConfig {
                             $project = $doc['projects'][$key]
                             if ($project -is [System.Collections.IDictionary] -and $project.ContainsKey('mcpServers')) {
                                 $servers = $project['mcpServers']
-                                if ($servers -is [System.Collections.IDictionary] -and $servers.ContainsKey('codebase-memory-mcp')) { $entry = $servers['codebase-memory-mcp'] }
+                                if ($servers -is [System.Collections.IDictionary]) {
+                                    foreach ($sk in $servers.Keys) {
+                                        if ([string]::Equals([string]$sk, 'codebase-memory-mcp', [System.StringComparison]::OrdinalIgnoreCase)) {
+                                            $cand = $servers[$sk]
+                                            if ($cand -is [System.Collections.IDictionary] -and $cand.ContainsKey('enabled') -and ($cand['enabled'] -is [bool]) -and (-not $cand['enabled'])) {
+                                                return [pscustomobject]@{ Command = ''; Arguments = @(); Environment = @{}; ConfigPath = $candidate; Disabled = $true }
+                                            }
+                                            $entry = $cand
+                                        }
+                                    }
+                                }
                             }
-                            break
                         }
                     }
                     if ($null -eq $entry -and $source.Scope -ne 'local' -and $doc.ContainsKey('mcpServers')) {

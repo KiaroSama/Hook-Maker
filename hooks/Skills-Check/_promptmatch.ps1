@@ -109,7 +109,13 @@ $installedMatches = New-Object System.Collections.Generic.List[object]
 $libraryMatches = New-Object System.Collections.Generic.List[object]
 if ($tokens.Count -gt 0 -or $isRustTargetPort -or $isNonRustCodePort) {
     foreach ($key in $byName.Keys) {
-        $entryName = [string]$byName[$key].Name
+        $entryObj = $byName[$key]
+        if ($null -ne $entryObj.PSObject.Properties['Status'] -and $entryObj.Status -eq 'disabled') { continue }
+        $entryName = [string]$entryObj.Name
+        if ($null -ne $entryObj.PSObject.Properties['Explicit'] -and $entryObj.Explicit -eq '1') {
+            $explicitPat = '(?i)(?:^|\s)/' + [regex]::Escape($entryName) + '(?:\b|$)'
+            if ($promptForMatching -notmatch $explicitPat) { continue }
+        }
         if ($entryName -ieq 'rust-anything') {
             if (-not $isRustTargetPort) { continue }
             $s = 12

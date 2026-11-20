@@ -382,12 +382,12 @@ try {
     Add-Commit $proj7 'seed'
     $forcedScanHook = New-ConfiguredHookCopy @{ UNUSED_SCAN_COOLDOWN_MINUTES = '0' }
     $r = Fire -Cwd $proj7 -HookPath $forcedScanHook
-    Check 'flags the truly unused key' ($r.Out -like '*Registry-only, user decision:*ORPHAN_KEY*') $r.Out
-    Check 'does NOT flag the key that is referenced elsewhere' ($r.Out -notlike '*Registry-only, user decision:*REFERENCED_KEY*') $r.Out
+    Check 'flags the truly unused key' ($r.Out -like '*Registry-only:*ORPHAN_KEY*') $r.Out
+    Check 'does NOT flag the key that is referenced elsewhere' ($r.Out -notlike '*Registry-only:*REFERENCED_KEY*') $r.Out
     # Immediately re-checking with the REAL hook's default (long) cooldown must
     # skip the scan - satisfies "not every time, only very infrequently".
     $r2 = Fire -Cwd $proj7
-    Check 'default long cooldown skips the unused scan on the very next run' ($r2.Out -notlike '*Registry-only, user decision:*') $r2.Out
+    Check 'default long cooldown skips the unused scan on the very next run' ($r2.Out -notlike '*Registry-only:*') $r2.Out
 
     # =====================================================================
     Write-Host '--- Stop event: only a CRITICAL finding produces decision:block ---' -ForegroundColor Cyan

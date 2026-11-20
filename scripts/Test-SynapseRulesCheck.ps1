@@ -193,7 +193,7 @@ try {
     $g = New-Proj 'GateLate'
     $rLate = Fire -Cwd $g -EventName 'Stop' -SessionId 'g-late' -TranscriptPath (New-GateTranscript 'g-late' $g @('edit:src\a.ps1', 'digest', 'write'))
     Check 'gate: a read only after the first edit is an advisory, not a block' (
-        $rLate.Out -match 'only AFTER the first' -and $rLate.Out -notmatch $blockPattern) $rLate.Out
+        $rLate.Out -match 'read after first of' -and $rLate.Out -notmatch $blockPattern) $rLate.Out
 
     $g = New-Proj 'GateQuestion'
     $rQuestion = Fire -Cwd $g -EventName 'Stop' -SessionId 'g-q' -TranscriptPath (New-GateTranscript 'g-q' $g @())

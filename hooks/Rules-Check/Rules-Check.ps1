@@ -313,8 +313,8 @@ function Get-EvidenceTranscriptFallbackPath {
             $unread = @(Get-UnreadClaimedRules -Value ([string]$rulesDeclaration.Value))
             if ($unread.Count -eq 0 -or -not (Test-ShouldReportClosing ('unread|' + ($unread -join ',')))) { exit 0 }
             $reason = @(
-                ('RULES CHECK (' + $Client + '): "Rules applied" names on-demand rule files never read in this session: ' + ($unread -join ', ') + '.'),
-                'Read each FULL with a file tool, or drop it from the line and say it was not read.'
+                ('RULES CHECK (' + $Client + '): "Rules applied" names rule files never read: ' + ($unread -join ', ') + '.'),
+                'Read each FULL or drop it as unread.'
             ) -join "`n"
             if ($enforcement -eq 'advisory') { $emit = Write-HookResult -EventName $eventName -Kind 'advisory' -Message $reason; exit $emit.ExitCode }
             $emit = Write-StopBlockResult -HookInput $hookInput -HookName 'Rules-Check' -EventName $eventName -Reason $reason -Condition 'required-workflow'
@@ -337,14 +337,14 @@ function Get-EvidenceTranscriptFallbackPath {
     if ($editEvidence) {
         if (-not (Test-ShouldReportClosing 'missing-after-edit')) { exit 0 }
         $reason = @(
-            ('RULES CHECK (' + $Client + '): files edited; final governing rules missing.'),
+            ('RULES CHECK (' + $Client + '): files edited; governing rules missing.'),
             $minimalNote,
             # The example is deliberately kept INLINE and quoted rather than on a
             # line of its own: this message lands in the same transcript the next
             # Stop reads, and an example at the start of a line would satisfy the
             # detector - the hook would then clear its own block.
             'Final standalone "Rules applied: <actual files + purpose>"; disclose unread rules, or "Rules applied: none - <reason>".',
-            'Unread != applied; give the reason.'
+            'Unread != applied.'
         ) -join "`n"
         if ($enforcement -eq 'advisory') {
             $emit = Write-HookResult -EventName $eventName -Kind 'advisory' -Message $reason
@@ -360,7 +360,7 @@ function Get-EvidenceTranscriptFallbackPath {
     # here, so it advises and never blocks.
     if (-not (Test-ShouldReportClosing 'missing-no-edit')) { exit 0 }
     $note = @(
-        ('RULES CHECK (' + $Client + ') - no rule-compliance confirmation found in this session.'),
+        ('RULES CHECK (' + $Client + ') - no rule-compliance confirmation found.'),
         $minimalNote,
         $script:RulesRequirement
     ) -join "`n"
@@ -461,12 +461,12 @@ if ($rulesMoved) {
         [void]$lines.Add('RULES CHECK (' + $Client + '): first check; read FULL only the owners the router routes for THIS task; do not pre-read others:')
     }
     else {
-        [void]$lines.Add('RULES CHECK (' + $Client + '): rules changed; read new/changed files BEFORE work:')
+        [void]$lines.Add('RULES CHECK (' + $Client + '): rules changed; read new/changed files first:')
         foreach ($path in $newFiles) { [void]$lines.Add('- NEW: ' + $path) }
         foreach ($path in $changedFiles) { [void]$lines.Add('- CHANGED: ' + $path) }
-        foreach ($path in $removedFiles) { [void]$lines.Add('- REMOVED: ' + $path + ' (no longer applies)') }
+        foreach ($path in $removedFiles) { [void]$lines.Add('- REMOVED: ' + $path + ' (gone)') }
         if ($currentEntries.Count -gt 0) {
-            [void]$lines.Add('Route complete registry by task; filenames != read proof:')
+            [void]$lines.Add('Route complete registry by task; names != read proof:')
         }
     }
     foreach ($set in $ruleSets) {
@@ -483,25 +483,25 @@ if ($rulesMoved) {
     # and the strict-UTF-8 text default. Owner lists are the router's job (spec
     # 040): naming owners here made agents pre-read rules the task never needed.
     # These ride the same fingerprint gate, so they never repeat on an unchanged set.
-    [void]$lines.Add('Skill policy routing: active client = ' + $Client + ' -> load ONLY ' + $policyName + ' as the skill policy; never load the other agent''s skill policy and never both together.')
-    [void]$lines.Add('UTF-8: explicit strict I/O, BOM separate; never trust host defaults. Exceptions name path/scope/encoding/reason/forcing system and compatibility proof.')
+    [void]$lines.Add('Skill policy routing: active client = ' + $Client + ' -> load ONLY ' + $policyName + ' as the skill policy, never both.')
+    [void]$lines.Add('UTF-8: explicit strict I/O, BOM separate. Exceptions: path/scope/encoding/reason/forcing system and compatibility proof.')
     # A " (N).md" filename is the browser-download shape of an uploaded copy -
     # canonical rule files never carry it, so flag it instead of trusting it.
     $suffixedNames = @($currentEntries.Keys | ForEach-Object { [System.IO.Path]::GetFileName($_) } | Where-Object { $_ -match '\s\(\d+\)\.md$' } | Sort-Object -Unique)
     if ($suffixedNames.Count -gt 0) {
         [void]$lines.Add('WARNING: version-suffixed copies, NOT canonical; use installed canonical names:' + ($suffixedNames -join ', '))
     }
-    [void]$lines.Add('Routed owner files: read FULL with a file tool before governed work; "Rules applied" names only files actually read.')
+    [void]$lines.Add('Read routed owners FULL before governed work; "Rules applied" names only files read.')
     # Stated up front so the closing gate is never a surprise at Stop.
     [void]$lines.Add($script:RulesRequirement)
 }
 if ($deepDebug) {
     [void]$lines.Add('RULES CHECK (' + $Client + '): BEFORE ::deep-debug read WORKFLOWS.md Deep Debug/skill-policy-deep-debug.md/CODEWORDS.md FULL, EVERY bug/phase.')
-    [void]$lines.Add('- ::deep-debug is a BOUNDED composite workflow: end as DEEP DEBUG: COMPLETE or DEEP DEBUG: BLOCKED - never an endless audit/refactor/fix loop.')
-    [void]$lines.Add('- ::deep-debug ledger first: each bug/finding/phase verified, evidence-rejected, user-deferred or exact blocker; goal command human-only.')
-    [void]$lines.Add('- ::multi-agent: independent owned streams, one integration/final unified proof; no recursion/nested agents.')
+    [void]$lines.Add('- ::deep-debug is BOUNDED, never an endless loop.')
+    [void]$lines.Add('- ::deep-debug ledger first: each bug/phase verified, rejected, deferred or blocked; goal command human-only.')
+    [void]$lines.Add('- ::multi-agent: independent streams, one integration/final proof.')
     [void]$lines.Add('After proof: ' + $ponytailRef + ' ONCE, safe cuts/targeted checks/final proof only. End DEEP DEBUG: COMPLETE or DEEP DEBUG: BLOCKED.')
-    [void]$lines.Add('- After Ponytail: accepted safe cuts, targeted repairs/final proof only; no new audit cycle.')
+    [void]$lines.Add('- After Ponytail: accepted cuts, repairs, final proof only.')
 }
 
 # ---- persist state, then report ----

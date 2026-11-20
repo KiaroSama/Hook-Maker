@@ -79,7 +79,7 @@ if (-not (Test-Path -LiteralPath $graphPath -PathType Leaf)) {
 
 # ---- optional .env ----
 $config = Read-HookEnv (Join-Path $PSScriptRoot '.env')
-$lifecycleNote = ' BEFORE update/cleanup: graphify.md/graphify-markdown.md FULL. Loss: restore; retain active/evidence/unknown. Hook deletes nothing.'
+$lifecycleNote = ' BEFORE update/cleanup: graphify.md/graphify-markdown.md FULL; retain active/unknown. Hook deletes nothing.'
 
 # ---- strict path (spec 038): the same duty and threshold as Speckit-Check ----
 # A change request that edited 3+ project files needs `graphify update .` AFTER
@@ -139,9 +139,9 @@ New-Item -ItemType Directory -Path $stateDir -Force | Out-Null
 
 $markdownNote = ''
 if ($markdownStale -and (-not $codeStale -or $markdown.TimeUtc -gt $workTime)) {
-    $markdownNote = 'Covered Markdown changed beyond Git: graphify update . (local); .ai/: host-agent semantic only, no external model. '
+    $markdownNote = 'Markdown changed: graphify update . (local); .ai/ host-agent semantic only. '
 }
-$reason = 'GRAPH UPDATE CHECK: graphify-out/graph.json predates changes. ' + $markdownNote + 'Graphed/structural impact: graphify update . (local AST); else explain. Advisory/cooldown.'
+$reason = 'GRAPH UPDATE CHECK: graph.json stale. ' + $markdownNote + 'Run graphify update . (local AST) or explain. Advisory/cooldown.'
 $reason += $lifecycleNote
 # Record the block so THIS hook's own re-entry is recognised; another
 # gate's block must not mute it, and its own must not repeat.

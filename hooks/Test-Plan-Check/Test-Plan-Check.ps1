@@ -485,18 +485,18 @@ catch { }
 
 # ---- the advisory ------------------------------------------------------------
 $lines = New-Object System.Collections.Generic.List[string]
-[void]$lines.Add('Test-Plan-Check: advisory test health; read global-test-rules.md FULL. Hook runs/edits nothing.')
+[void]$lines.Add('Test-Plan-Check: advisory; global-test-rules.md FULL. Hook runs/edits nothing.')
 [void]$lines.Add('- Bound wall + idle/no-progress; unbounded != slow.')
-[void]$lines.Add('- No long blind sleeps. Wait on a deterministic signal, a readiness check, or bounded polling - never a fixed multi-second delay.')
-[void]$lines.Add('- Resource-aware max(2,min(8,cores-2)) workers; no nesting or needless serialization.')
-[void]$lines.Add('- Finally reap owned tree/temp/state; leaked worker/port/lock/temp = failed run.')
-[void]$lines.Add('- Discover suites instead of hardcoding a list, and keep every suite on disk mapped to a CI bucket.')
-[void]$lines.Add('- CPU alone != hang; kill only on bound or sustained resource use + no progress.')
-[void]$lines.Add('- When optimising a suite, record before/after timing - "feels faster" is not evidence.')
-[void]$lines.Add('- During edits: light types/lint/import/one seam smoke only. One final heavy suite/matrix/integration pass after all edits; collect failures/fix together/rerun once, not per file.')
-[void]$lines.Add('- Every evidence run is a test: optimize new/changed/unoptimized suites first, cheapest valid tier, parameterized/shared setup, light imports, no blind sleeps, correct CI bucket. Preserve validity; record date/comparable timings in .ai/TESTING_NOTES.md, reuse unchanged optimization.')
-[void]$lines.Add('- Detached &, nohup, Start-Job/Start-Process/background requires PID+start and bounded reaping owner. Guard owns wall/idle/tree expiry. Interrupted wait != result; reap before finish and after workers, verify/report owned survivors by PID+start, exclude own shell/others.')
-[void]$lines.Add('- CI-capable heavy/nondependent proof: one pushed-SHA CI, read exact result; missing coverage needs workflow repair, not local duplicate. Local light loop only unless current gh billing/quota/runner/workflow/no-remote block is recorded with UTC in .ai/TESTING_NOTES.md.')
+[void]$lines.Add('- No blind sleeps; wait on deterministic signal, readiness, or bounded poll.')
+[void]$lines.Add('- Workers max(2,min(8,cores-2)); no nesting or needless serialization.')
+[void]$lines.Add('- Finally reap owned tree/temp/state; leaked worker/port/lock/temp = fail.')
+[void]$lines.Add('- Discover suites dynamically; map every suite on disk to a CI bucket.')
+[void]$lines.Add('- CPU alone != hang; kill on bound or sustained load + no progress.')
+[void]$lines.Add('- Suite optimization needs before/after timing evidence.')
+[void]$lines.Add('- Edits: light checks/one seam smoke. Final: one heavy pass, fix together, rerun once.')
+[void]$lines.Add('- Optimize new/changed suites first (cheapest tier, shared setup, light imports, no blind sleeps, CI bucket); log timings in .ai/TESTING_NOTES.md.')
+[void]$lines.Add('- Detached background needs PID+start and bounded reaper; guard owns wall/idle/tree expiry; reap and report owned survivors.')
+[void]$lines.Add('- Heavy proof: one pushed-SHA CI, read exact result; repair missing CI coverage, no local duplicate unless gh/CI block logged with UTC in .ai/TESTING_NOTES.md.')
 if ($deepDebug) {
     # E-03: the standalone ::deep-debug codeword was detected in the prompt.
     # These are PLAN requirements the workflow's test plan must cover - reject
@@ -504,7 +504,7 @@ if ($deepDebug) {
     # stays with Utf8-Encoding-Check: this hook checks the plan and visible test
     # commands, it never runs a second repository encoding scanner.
     [void]$lines.Add('')
-    [void]$lines.Add('::deep-debug: persistent regression/real fixture for confirmed defects; rerun original/important failures; documented native per-test/suite/command/CI wall+idle bounds, one worker cap, no blind sleeps/joins/retries, cleanup; real-invariant property tests and confirmed security findings only. Ponytail targeted proof, no second audit; UTF-8 fixture/config exceptions documented; every Test-*.ps1 -> CI.')
+    [void]$lines.Add('::deep-debug: regression/real fixture per defect; rerun failures; native+CI wall/idle bounds, worker cap, no blind sleeps/retries, cleanup; real invariants/security only; Ponytail once; UTF-8 exceptions logged; every Test-*.ps1 -> CI.')
 }
 if ($findings.Count -gt 0) {
     [void]$lines.Add('')

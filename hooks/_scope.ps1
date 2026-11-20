@@ -142,12 +142,6 @@ function Get-OperationMcpReminder {
     if ($text -match '(?i)\b(scrapling|scraplingserver|scrap[eiy]\w*|crawl\w*)\b') {
         [void]$notes.Add('SCRAPLING: BEFORE use global-research-workflows.md Scrapling FULL + skill/schema.')
     }
-    if ($text -match '(?i)\bagensi\b') {
-        [void]$notes.Add('AGENSI: BEFORE use global-connected-skill-contracts.md Agensi FULL. Preview may mutate/spend.')
-    }
-    if ($text -match '(?i)\bupwork(?:-agent-mcp|-local)?\b') {
-        [void]$notes.Add('UPWORK: global-connected-skill-contracts.md Upwork FULL; official/local distinct. Draft persists; exact action approval, preview-confirm/Connects gates; schema conflict: reconcile, no guessed fields/retry. Publication separate; no auto login/apply/message/upload/spend/permissions.')
-    }
     # Retain provider-specific context/approval routes lost by the historical restore.
     if ($text -match '(?i)\bcontext-mode\b') {
         [void]$notes.Add('CONTEXT-MODE: BEFORE use global-mcp-server-contracts.md FULL/schema. Not a sandbox.')
@@ -155,14 +149,8 @@ function Get-OperationMcpReminder {
     if ($text -match '(?i)\bomniroute(?:-ccr)?\b') {
         [void]$notes.Add('OMNIROUTE: global-mcp-server-contracts.md FULL; exposed!=authorized. Missing scope/401/403: blocked, not broken; report; no retry/grant/token/endpoint/config/install/restart/probe/provider repair.')
     }
-    if ($text -match '(?i)\bnumera[- ]cha(?:[- ]solver(?:[- ]mcp)?)?\b') {
-        [void]$notes.Add('NUMERA CHA: BEFORE use global-mcp-server-contracts.md FULL. Human!=server_verified; no self-approval.')
-    }
-    if ($text -match '(?i)\bfiverr(?:-agent-mcp)?\b') {
-        [void]$notes.Add('FIVERR: BEFORE use global-rea-fiverr-contracts.md FULL/schema. Local!=live; fresh human approval, no self-approval.')
-    }
     if ($text -match '(?i)\bREA\b|mcp__REA__') {
-        [void]$notes.Add('REA: BEFORE use global-rea-fiverr-contracts.md FULL. Missing controls BLOCK; reconcile timeout.')
+        [void]$notes.Add('REA: BEFORE use global-rea-summary.md -> global-rea-rules.md FULL. Missing controls BLOCK; reconcile timeout.')
     }
     if ($text -match '(?i)\btelegram(?:-mcp|-operator)?\b') {
         [void]$notes.Add('TELEGRAM: BEFORE use global-connected-skill-contracts.md Telegram Operator FULL/job/schema. No deletion.')

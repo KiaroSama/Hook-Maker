@@ -93,9 +93,9 @@ try {
     Check 'start: names all three skills' ($rStart.Exit -eq 0 -and $rStart.Out -match 'WRITING VOICE' -and $rStart.Out -match '`anthropic-skills:persian`' -and $rStart.Out -match '`anthropic-skills:great-russian`' -and $rStart.Out -match '`humanizer:humanizer`') ($rStart.Out + $rStart.Err)
     Check 'start: a fresh session carries no reload line' ($rStart.Out -notmatch 'reload the skill now') $rStart.Out
     $rCompact = Fire -Cwd $p -EventName 'SessionStart' -SessionId 's1' -Source 'compact'
-    Check 'start: source=compact adds the reload duty' ($rCompact.Out -match 'compacted: earlier loads are gone, reload the skill now') $rCompact.Out
+    Check 'start: source=compact adds the reload duty' ($rCompact.Out -match 'compacted: reload voice skill now') $rCompact.Out
     $rResume = Fire -Cwd $p -EventName 'SessionStart' -SessionId 's1' -Source 'resume'
-    Check 'start: source=resume adds the reload duty' ($rResume.Out -match 'resumed: earlier loads are gone') $rResume.Out
+    Check 'start: source=resume adds the reload duty' ($rResume.Out -match 'resumed: reload voice skill now') $rResume.Out
 
     Write-Host ''
     Write-Host '--- UserPromptSubmit: once per session and language ---' -ForegroundColor Cyan

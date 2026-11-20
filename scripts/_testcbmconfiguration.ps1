@@ -187,6 +187,41 @@ TMP = __TEMP__
         $parseErrors.Count -eq 0 -and @($adviceAst.FindAll({param($n) $n -is [System.Management.Automation.Language.SubExpressionAst]}, $true)).Count -eq 0)
     $resolvedService.Arguments = @('--token', 'synthetic-sensitive-fixture')
     Check 'credential-like configured arguments are withheld from CLI advice' ((Get-CbmCliAdvice -Service $resolvedService -Arguments @('allow-root', '--list')) -eq '')
+
+    # ---- Standing Order 8: dual-key ~/.claude.json + settings.local.json CBM disable ----
+    $dualProj = Join-Path $Work 'dual-key-cbm'
+    New-Item -ItemType Directory -Path (Join-Path $dualProj '.claude') -Force | Out-Null
+    $dualBackslash = $dualProj
+    $dualForward = $dualProj.Replace('\', '/')
+    $dualClaudeJson = Join-Path $Work 'dual-claude.json'
+    $dualDoc = [ordered]@{
+        mcpServers = [ordered]@{
+            'codebase-memory-mcp' = [ordered]@{ command = $commandValue; args = @(); env = [ordered]@{ CBM_CACHE_DIR = $cacheValue } }
+        }
+        projects = [ordered]@{
+            $dualBackslash = [ordered]@{ allowedTools = @() }
+            $dualForward   = [ordered]@{ disabledMcpServers = @('Codebase-Memory-mcp') }
+        }
+    }
+    Write-Utf8 $dualClaudeJson ($dualDoc | ConvertTo-Json -Depth 10)
+    $dualCfg = Get-CbmServerConfig -ConfigPaths @($dualClaudeJson) -ProjectRoot $dualProj -Client 'claude'
+    Check 'dual-key Windows ~/.claude.json merges forward-slash disabledMcpServers without early break' ($null -ne $dualCfg -and $dualCfg.Disabled)
+
+    $origUserJson = $env:CLAUDE_USER_JSON_PATH
+    try {
+        $env:CLAUDE_USER_JSON_PATH = $dualClaudeJson
+        $rRead = Invoke-CbmHook 'Cbm-Read-Check\Cbm-Read-Check.ps1' @{hook_event_name='SessionStart';cwd=$dualProj;session_id='cbm-disabled-read'} ''
+        Check 'Cbm-Read-Check exits silently when CBM is locally disabled in dual-key ~/.claude.json' ($rRead.Exit -eq 0 -and $rRead.Out -eq '') $rRead.Out
+        $rUpd = Invoke-CbmHook 'Cbm-Update-Check\Cbm-Update-Check.ps1' @{hook_event_name='Stop';cwd=$dualProj;session_id='cbm-disabled-upd';stop_hook_active=$false} ''
+        Check 'Cbm-Update-Check exits silently when CBM is locally disabled in dual-key ~/.claude.json' ($rUpd.Exit -eq 0 -and $rUpd.Out -eq '') $rUpd.Out
+    }
+    finally { $env:CLAUDE_USER_JSON_PATH = $origUserJson }
+
+    $localDenyProj = Join-Path $Work 'local-deny-cbm'
+    New-Item -ItemType Directory -Path (Join-Path $localDenyProj '.claude') -Force | Out-Null
+    Write-Utf8 (Join-Path $localDenyProj '.claude\settings.local.json') '{"deniedMcpServers":[{"serverName":"Codebase-Memory-mcp"}],"permissions":{"deny":["mcp__Codebase-Memory-mcp__*"]}}'
+    $denyCfg = Get-CbmServerConfig -ConfigPaths @($jsonPath) -ProjectRoot $localDenyProj -Client 'claude'
+    Check 'settings.local.json deniedMcpServers/permissions.deny disables CBM cleanly' ($null -ne $denyCfg -and $denyCfg.Disabled)
     $resolvedService.Arguments = @('server-script')
     foreach ($unknownProgram in @('python.exe', 'node.exe', 'custom-cmm.exe')) {
         $resolvedService.Command = $unknownProgram

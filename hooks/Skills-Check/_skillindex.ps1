@@ -22,8 +22,8 @@
 #   library l|<folder>|<name>|<description>|<full path>
 #   partial x|<reason>            install key k|<name@market>        install known m|1
 #
-# Version 6 invalidates cached rows from .disabled-by-policy plugin folders.
-$script:SkillIndexVersion = '6'
+# Version 7 invalidates pre-V98 cached rows (including removed Desktop -local skills) and honors skillOverrides / disableBundledSkills.
+$script:SkillIndexVersion = '7'
 
 # '|' is the field separator and a description may contain anything, so every
 # stored field is flattened first. Lossy on purpose - these values are only ever

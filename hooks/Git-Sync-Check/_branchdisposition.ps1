@@ -76,7 +76,7 @@ function Get-BranchDisposition {
 function Get-BranchDispositionInstruction {
     param([Parameter(Mandatory = $true)]$Disposition)
     $lines = New-Object System.Collections.Generic.List[string]
-    [void]$lines.Add('Branches: ONLY proven carried/worthless -> merge/delete or close/delete; else survivor+reason. Preserve unique/protected/unknown/others'' work; unverifiable -> report, NEVER delete.')
+    [void]$lines.Add('Branches: merge/delete ONLY proven carried/worthless; else name survivor+reason. Keep unique/protected/unknown/others'' work; unverifiable -> report, NEVER delete.')
     if ($Disposition.Base -ne '') {
         if (@($Disposition.Merged).Count -gt 0) { [void]$lines.Add('- merged into ' + $Disposition.Base + ' (safe to delete once confirmed): ' + (@($Disposition.Merged) -join ', ')) }
         if (@($Disposition.Unique).Count -gt 0) { [void]$lines.Add('- commits absent from ' + $Disposition.Base + ' (merge/carried elsewhere/survivor reason):' + (@($Disposition.Unique) -join ', ')) }

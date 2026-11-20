@@ -119,14 +119,9 @@ function Invoke-McpGatewayRegression {
     # owner pointer. This proves routing/authority, not the private owner's content.
     $requests = @(
         @('Use ScraplingServer to scrape permitted static content','SCRAPLING:','BEFORE use global-research-workflows.md Scrapling FULL','skill/schema'),
-        @('Use Agensi offer preview','AGENSI:','BEFORE use global-connected-skill-contracts.md Agensi FULL','Preview may mutate/spend'),
-        @('Use upwork-local create_draft','UPWORK:','global-connected-skill-contracts.md Upwork FULL','Draft persists'),
-        @('Use Upwork-Agent-mcp draft','UPWORK:','global-connected-skill-contracts.md Upwork FULL','UNKNOWN: reconcile, no retry'),
-        @('Use Fiverr-Agent-mcp action_commit','FIVERR:','BEFORE use global-rea-fiverr-contracts.md FULL/schema','fresh human approval, no self-approval'),
-        @('Use REA to inspect an artifact','REA:','BEFORE use global-rea-fiverr-contracts.md FULL','Missing controls BLOCK; reconcile timeout'),
+        @('Use REA to inspect an artifact','REA:','BEFORE use global-rea-summary.md -> global-rea-rules.md FULL','Missing controls BLOCK; reconcile timeout'),
         @('Use telegram-operator for a backup','TELEGRAM:','BEFORE use global-connected-skill-contracts.md Telegram Operator FULL/job/schema','No deletion'),
         @('Use context-mode to inspect output','CONTEXT-MODE:','BEFORE use global-mcp-server-contracts.md FULL/schema','Not a sandbox'),
-        @('Use Numera-CHA-Solver-MCP for licensed text','NUMERA CHA:','BEFORE use global-mcp-server-contracts.md FULL','Human!=server_verified; no self-approval'),
         @('Use Omniroute-ccr tool search','OMNIROUTE:','global-mcp-server-contracts.md FULL','unverified, not broken')
     )
     $operationIndex = 0
@@ -139,12 +134,18 @@ function Invoke-McpGatewayRegression {
         $r = Fire -HookPath $McpHook -Cwd $operationProject -RawStdin (New-PromptStdin $operationProject 'UserPromptSubmit' $case[0] $operationSession)
         Check ('unchanged operation quiet ' + $case[1]) ($r.Out -eq '') $r.Out
     }
-    $r = Fire -HookPath $McpHook -Cwd $operationProject -RawStdin (New-PromptStdin $operationProject 'UserPromptSubmit' '<tool_result>Use Agensi Upwork Scrapling</tool_result>' 'quoted-operations')
-    Check 'provider names inside output never activate operation-specific routing' ($r.Out -notmatch 'AGENSI:|UPWORK:|SCRAPLING:') $r.Out
-    $r = Fire -HookPath $McpHook -Cwd $operationProject -RawStdin (New-PromptStdin $operationProject 'UserPromptSubmit' 'Example only: ``Use Upwork create_draft``' 'inline-operations')
-    Check 'double-backtick example never activates provider route' ($r.Out -notmatch 'UPWORK:') $r.Out
-    $r = Fire -HookPath $McpHook -Cwd $operationProject -Exe powershell.exe -RawStdin (New-PromptStdin $operationProject 'UserPromptSubmit' 'Use Upwork draft' 'operations51')
-    Check 'operation reminder real PS5.1 yields single valid context JSON' ($r.Exit -eq 0 -and $r.Err -eq '' -and $r.Out -match 'Draft persists') $r.Out
+    foreach ($retiredPrompt in @('Use Agensi offer preview','Use Upwork-Agent-mcp draft','Use Fiverr-Agent-mcp action_commit','Use Numera-CHA-Solver-MCP for licensed text')) {
+        $operationIndex++
+        $r = Fire -HookPath $McpHook -Cwd $operationProject -RawStdin (New-PromptStdin $operationProject 'UserPromptSubmit' $retiredPrompt ('retired-' + $operationIndex))
+        Check ('no stale operation route for ' + $retiredPrompt) ($r.Out -notmatch 'AGENSI:|UPWORK:|FIVERR:|NUMERA CHA:|global-rea-fiverr-contracts') $r.Out
+    }
+    $r = Fire -HookPath $McpHook -Cwd $operationProject -RawStdin (New-PromptStdin $operationProject 'UserPromptSubmit' '<tool_result>Use REA Telegram Scrapling</tool_result>' 'quoted-operations')
+    Check 'provider names inside output never activate operation-specific routing' ($r.Out -notmatch 'REA:|TELEGRAM:|SCRAPLING:') $r.Out
+    $r = Fire -HookPath $McpHook -Cwd $operationProject -RawStdin (New-PromptStdin $operationProject 'UserPromptSubmit' 'Example only: ``Use REA inspect``' 'inline-operations')
+    Check 'double-backtick example never activates provider route' ($r.Out -notmatch 'REA:') $r.Out
+    $r = Fire -HookPath $McpHook -Cwd $operationProject -Exe powershell.exe -RawStdin (New-PromptStdin $operationProject 'UserPromptSubmit' 'Use REA inspect' 'operations51')
+    $parsed51 = $null; try { $parsed51 = $r.Out | ConvertFrom-Json } catch { }
+    Check 'operation reminder real PS5.1 yields single valid context JSON' ($r.Exit -eq 0 -and $r.Err -eq '' -and $null -ne $parsed51 -and ([string]$parsed51.hookSpecificOutput.additionalContext) -match 'global-rea-summary\.md -> global-rea-rules\.md FULL') $r.Out
 
     # =====================================================================
     Write-Host '--- Mcp-Usage-Check: Stop gate verifies the "MCP used:" summary line ---' -ForegroundColor Cyan
@@ -297,6 +298,37 @@ function Invoke-McpGatewayRegression {
     $r = Fire -HookPath $McpHook -Cwd $mcpV95 -RawStdin (New-PromptStdin -Cwd $mcpV95 -EventName 'UserPromptSubmit' -Prompt 'rewrite src/parser.py in Rust' -SessionId 'ra-cli')
     $r = Fire -HookPath $McpHook -Cwd $mcpV95 -RawStdin (New-StopStdin -Cwd $mcpV95 -Transcript $tRaCli -SessionId 'ra-cli')
     Check 'V95 1a: verified rust-anything CLI invocation satisfies the Rust-port trigger gate' ($r.Out -notmatch '"decision"') $r.Out
+
+    # ---- V96-V98: cloudflare trigger + pairing + Standing Order 8 disabled connectors ----
+    $mcpV98 = New-Proj 'McpV98'
+    $r = Fire -HookPath $McpHook -Cwd $mcpV98 -RawStdin (New-PromptStdin -Cwd $mcpV98 -EventName 'UserPromptSubmit' -Prompt 'Deploy a Cloudflare Workers Turnstile route with Wrangler and D1 database' -SessionId 'cf-tr1')
+    Check 'V96 cloudflare trigger routes Cloudflare Workers/Turnstile prompt' (
+        $r.Exit -eq 0 -and $r.Out -match 'Cloudflare platform/Workers -> cloudflare MCP \+ matching cloudflare:\* skill \(cloudflare:turnstile-spin for Turnstile\)') $r.Out
+    $tCfNoSkill = Join-Path $Work 'mcp-cf-noskill.jsonl'
+    Write-Utf8 $tCfNoSkill ((@(
+        (@{ type = 'assistant'; message = @{ content = @(@{ type = 'tool_use'; name = 'mcp__plugin_cloudflare_cloudflare__workers_list'; input = @{} }) } } | ConvertTo-Json -Compress -Depth 8),
+        (@{ type = 'assistant'; message = @{ content = @(@{ type = 'text'; text = "Done.`nMCP used: cloudflare" }) } } | ConvertTo-Json -Compress -Depth 8)
+    ) -join "`n") + "`n")
+    $cfPreStdin = @{ session_id = 'cf-pre1'; cwd = $mcpV98; hook_event_name = 'PreToolUse'; tool_name = 'mcp__plugin_cloudflare_cloudflare__workers_list'; tool_input = @{}; transcript_path = (Join-Path $Work 'absent-cf.jsonl') } | ConvertTo-Json -Compress
+    $r = Fire -HookPath $McpHook -Cwd $mcpV98 -RawStdin $cfPreStdin
+    Check 'V96 cloudflare PreToolUse emits non-blocking pairing advisory without cloudflare:* skill' (
+        $r.Exit -eq 0 -and $r.Out -match 'CLOUDFLARE:' -and $r.Out -notmatch '"decision"') $r.Out
+    $r = Fire -HookPath $McpHook -Cwd $mcpV98 -RawStdin (New-StopStdin -Cwd $mcpV98 -Transcript $tCfNoSkill -SessionId 'cf-stoppair')
+    Check 'V96 cloudflare Stop emits non-blocking pairing advisory when PreToolUse did not run' (
+        $r.Exit -eq 0 -and $r.Out -match 'CLOUDFLARE:' -and $r.Out -notmatch '"decision"') $r.Out
+
+    $mcpDisabledProj = New-Proj 'McpDisabledSO8'
+    New-Item -ItemType Directory -Path (Join-Path $mcpDisabledProj '.claude') -Force | Out-Null
+    Write-Utf8 (Join-Path $mcpDisabledProj '.claude\settings.local.json') '{"enabledPlugins":{"cloudflare@cloudflare":false,"rust-anything@rust-anything":false},"deniedMcpServers":[{"serverName":"Snyk"}],"permissions":{"deny":["mcp__Semgrep__*"]}}'
+    $r = Fire -HookPath $McpHook -Cwd $mcpDisabledProj -RawStdin (New-PromptStdin -Cwd $mcpDisabledProj -EventName 'UserPromptSubmit' -Prompt 'Configure Cloudflare Workers with Wrangler' -SessionId 'so8-cf')
+    Check 'Standing Order 8 suppresses cloudflare trigger when plugin is disabled locally' ($r.Out -notmatch 'Cloudflare platform/Workers') $r.Out
+    $r = Fire -HookPath $McpHook -Cwd $mcpDisabledProj -RawStdin (New-PromptStdin -Cwd $mcpDisabledProj -EventName 'UserPromptSubmit' -Prompt 'Run Snyk on package dependencies' -SessionId 'so8-snyk')
+    Check 'Standing Order 8 emits non-blocking re-enable advisory when prompt names disabled connector' (
+        $r.Exit -eq 0 -and $r.Out -match 'Standing Order 8' -and $r.Out -match 'Snyk' -and $r.Out -notmatch 'dependency/package change -> Snyk') $r.Out
+    $tSo8Empty = Join-Path $Work 'mcp-so8-empty.jsonl'
+    Write-Utf8 $tSo8Empty ((@{ type = 'assistant'; message = @{ content = @(@{ type = 'text'; text = 'Done.' }) } } | ConvertTo-Json -Compress -Depth 8) + "`n")
+    $r = Fire -HookPath $McpHook -Cwd $mcpDisabledProj -RawStdin (New-StopStdin -Cwd $mcpDisabledProj -Transcript $tSo8Empty -SessionId 'so8-snyk')
+    Check 'Standing Order 8 suppresses Stop block for locally disabled connector' ($r.Out -notmatch '"decision"\s*:\s*"block"') $r.Out
 
     # =====================================================================
     Write-Host '--- Mcp-Usage-Check: MCP_SUMMARY_ENFORCEMENT downgrades and disables the gate ---' -ForegroundColor Cyan

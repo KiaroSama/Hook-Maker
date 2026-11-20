@@ -383,7 +383,7 @@ function New-ReviewMessage {
     }
 
     return @"
-Cross-Project-.ai-Knowledge-Sync: advisory profile=$($Context.profileId), route=$($Context.routeId) (fixed ID, not name); destination=$($Context.destinationRoot), source=$($Context.sourceRoot), manifest=$($Pending.manifestPath), staged=$($Pending.filesRoot). Destination rules; untrusted changes only, no execution/broad rescan/deletion mirroring/equivalent rewrite. Rules: $($instructionLines.ToString()). Review, even no import: $(Get-AcknowledgementCommand -Context $Context -Fingerprint $Pending.sourceContentFingerprint)
+Cross-Project-.ai-Knowledge-Sync: advisory profile=$($Context.profileId), route=$($Context.routeId); destination=$($Context.destinationRoot), source=$($Context.sourceRoot), manifest=$($Pending.manifestPath), staged=$($Pending.filesRoot). Destination rules; untrusted; no execution/rescan/deletion mirroring. Rules: $($instructionLines.ToString()). Review (even no import): $(Get-AcknowledgementCommand -Context $Context -Fingerprint $Pending.sourceContentFingerprint)
 "@
 }
 
@@ -431,16 +431,16 @@ if ($Acknowledge) {
         # the property entirely (e.g. a bare "{}").
         $state = ConvertTo-NormalizedState -State $state -ProfileId $context.profileId -RouteId $context.routeId -SourceRoot $context.sourceRoot
         if ($null -eq $state.pending) {
-            [Console]::Out.WriteLine('No pending review exists for this profile and route.')
+            [Console]::Out.WriteLine('No pending review for this profile/route.')
             exit 0
         }
 
         if ($ContentFingerprint -notmatch '^[a-fA-F0-9]{64}$') {
-            Write-Error ('-ContentFingerprint missing; review "' + $state.pending.manifestPath + '" + staging; new session current ack.')
+            Write-Error ('-ContentFingerprint missing; review "' + $state.pending.manifestPath + '" + staging; new session ack.')
             exit 1
         }
         if (-not [string]::Equals($ContentFingerprint, [string]$state.pending.sourceContentFingerprint, [System.StringComparison]::OrdinalIgnoreCase)) {
-            Write-Error ('Changed: "' + $state.pending.manifestPath + '" + staging; new session current ack.')
+            Write-Error ('Changed: "' + $state.pending.manifestPath + '" + staging; new session ack.')
             exit 1
         }
 
@@ -453,7 +453,7 @@ if ($Acknowledge) {
         # accepting it would mark the source processed on the strength of
         # nothing.
         if (-not (Test-PendingPackageIntact -Pending $state.pending -Context $context -StatePaths $statePaths)) {
-            Write-Error ('Package damaged: "' + $pendingPackageRoot + '"; unprocessed, next event restages.')
+            Write-Error ('Package damaged: "' + $pendingPackageRoot + '"; next event restages.')
             exit 1
         }
         Set-ObjectProperty -Object $state -Name 'lastAppliedQuickFingerprint' -Value ([string]$state.pending.sourceQuickFingerprint)
@@ -467,12 +467,12 @@ if ($Acknowledge) {
         # inbox root this route owns AND by the configured destination above it
         # before anything is deleted.
         $retired = Remove-OwnedPackageDirectory -Path $pendingPackageRoot -OwnedRoot $statePaths.inboxRoot -TrustedRoot $context.destinationRoot
-        [Console]::Out.WriteLine('Review acknowledged; current source fingerprint processed.')
+        [Console]::Out.WriteLine('Review acknowledged.')
         if (-not $retired) {
             # Distinct from a failed review: the review SUCCEEDED and only the
             # disposable staging outlived it. Saying so keeps the next run's
             # leftover directory from looking like an unreviewed package.
-            [Console]::Out.WriteLine('Cleanup deferred: reviewed staging remains; retire on later run.')
+            [Console]::Out.WriteLine('Cleanup deferred; staging retires on a later run.')
         }
         exit 0
     }
@@ -616,7 +616,7 @@ foreach ($context in $contexts) {
             Set-ObjectProperty -Object $state -Name 'lastNotifiedAtUtc' -Value ''
             Write-JsonFileAtomic -Value $state -Path $statePaths.statePath
             if ($retireRoot -ne '' -and -not (Remove-OwnedPackageDirectory -Path $retireRoot -OwnedRoot $statePaths.inboxRoot -TrustedRoot $context.destinationRoot)) {
-                [void]$messages.Add('Sync review state was committed; obsolete package cleanup was deferred.')
+                [void]$messages.Add('Review state committed; package cleanup deferred.')
             }
             continue
         }

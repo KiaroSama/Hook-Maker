@@ -229,7 +229,7 @@ else {
 }
 
 # Keep the detected feature/init route; a generic workflow cannot replace project evidence.
-$note = $lead + "`n" + 'Speckit-Check: advisory, behavior: specify -> clarify -> plan -> tasks -> analyze -> implement; bug unchanged specified intent: diagnose -> converge append -> implement, changed/no spec: full chain. Delta: dated IDs/AC, amend affected spec/plan/tasks, refresh skills/gates before dependent edits; independent scope linked feature, stable IDs/order/earliest actionable + explained dependencies. Follow actual preflight/scripts/extensions/gates/report; ask unknowns, only dependents wait. Newest folder != owner, other-project exact consent or English handoff. Read global-spec-kit-rules.md/global-project-lifecycle-rules.md; read-only/trivial typo/value exempt.'
+$note = $lead + "`n" + 'Speckit-Check: advisory, behavior: specify -> clarify -> plan -> tasks -> analyze -> implement; unchanged-intent bug: diagnose -> converge -> implement. Delta: dated IDs/AC, amend spec/plan/tasks, refresh gates before dependents. Follow preflight/scripts/gates; ask unknowns. Newest folder != owner; other-project needs consent/handoff. global-spec-kit-rules.md/global-project-lifecycle-rules.md FULL; read-only/typo exempt.'
 
 # One message per (session, project, state, text, REQUEST). Initialising the
 # project mid-session CHANGES the state, so the follow-up route is not

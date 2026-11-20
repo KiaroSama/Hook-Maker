@@ -252,6 +252,42 @@ function ConvertTo-DiscoveryTicks {
     return 0L
 }
 
+function Get-ClaudeSkillOverrideSettings {
+    param($Discovery, $Partial)
+    $overrides = New-Object 'System.Collections.Generic.Dictionary[string,string]' ([System.StringComparer]::OrdinalIgnoreCase)
+    $disableBundled = $false
+    $localPluginKeys = New-Object 'System.Collections.Generic.List[string]'
+    if ($null -eq $Discovery -or $Discovery.Client -eq 'codex') {
+        return [pscustomobject]@{ SkillOverrides = $overrides; DisableBundledSkills = $false; LocalPluginOverrideKeys = @() }
+    }
+    foreach ($settingsFile in @($Discovery.SettingsFiles)) {
+        if ([string]::IsNullOrWhiteSpace([string]$settingsFile)) { continue }
+        $s = Read-DiscoveryJson -Path $settingsFile -Partial $Partial -Label 'settings file'
+        if ($null -eq $s) { continue }
+        $isLocalSettings = ([string]::Equals([System.IO.Path]::GetFileName([string]$settingsFile), 'settings.local.json', [System.StringComparison]::OrdinalIgnoreCase))
+        if ($null -ne $s.PSObject.Properties['disableBundledSkills'] -and $s.disableBundledSkills -is [bool]) {
+            $disableBundled = [bool]$s.disableBundledSkills
+        }
+        if ($null -ne $s.PSObject.Properties['skillOverrides'] -and $null -ne $s.skillOverrides) {
+            foreach ($p in $s.skillOverrides.PSObject.Properties) {
+                $k = [string]$p.Name
+                $v = [string]$p.Value
+                if ([string]::IsNullOrWhiteSpace($k)) { continue }
+                if ($k.Contains(':')) {
+                    if ($isLocalSettings -and -not $localPluginKeys.Contains($k)) { [void]$localPluginKeys.Add($k) }
+                    continue
+                }
+                if (-not [string]::IsNullOrWhiteSpace($v)) { $overrides[$k.Trim()] = $v.Trim().ToLowerInvariant() }
+            }
+        }
+    }
+    return [pscustomobject]@{
+        SkillOverrides          = $overrides
+        DisableBundledSkills    = $disableBundled
+        LocalPluginOverrideKeys = @($localPluginKeys.ToArray())
+    }
+}
+
 function Get-ClaudeDiscovery {
     param($Discovery, $Result)
     Get-DesktopDiscovery -Discovery $Discovery -Result $Result

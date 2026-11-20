@@ -281,4 +281,35 @@ function Invoke-SkillSurfaceRegression {
     $r = Fire -HookPath $sdCodexHook -Cwd $sdCodexProj -RawStdin (New-StopStdin -Cwd $sdCodexProj -Transcript (New-ToolTranscript 'codex-read-shape' 'Read' 'Done.') -SessionId 'sd-x3')
     Check 'Codex Stop keeps its established systemMessage shape' ($r.Out -match '"systemMessage"' -and $r.Out -notmatch '"hookSpecificOutput"') $r.Out
 
+    # ---- V97-V98: skillOverrides, disableBundledSkills, plugin:skill advisory, schema v7 ----
+    $ovProj = New-Proj 'SkillOverridesV98'
+    New-Item -ItemType Directory -Path (Join-Path $ovProj '.claude') -Force | Out-Null
+    $ovGlobalSkills = Join-Path $Work 'ov-global-skills'
+    New-SdSkill (Join-Path $ovGlobalSkills 'ov-off') 'ov-off'
+    New-SdSkill (Join-Path $ovGlobalSkills 'ov-manual') 'ov-manual'
+    New-SdSkill (Join-Path $ovGlobalSkills 'ov-nameonly') 'ov-nameonly'
+    $ovLocalSettings = Join-Path $ovProj '.claude\settings.local.json'
+    Write-Utf8 $ovLocalSettings '{"skillOverrides":{"ov-off":"off","ov-manual":"user-invocable-only","ov-nameonly":"name-only","alpha:alpha-one":"off"},"disableBundledSkills":true}'
+    $ovHook = New-ConfiguredSkillsHookCopy -EnvOverrides @{
+        SKILLS_DIR = (Join-Path $Work 'absent-ov-lib')
+        GLOBAL_SKILLS_DIR = $ovGlobalSkills
+        CLAUDE_PLUGINS_FILE = $sdPluginsFile
+        CLAUDE_SETTINGS_FILES = ($sdSettings + ';' + $ovLocalSettings)
+        CLAUDE_DESKTOP_SKILLS_ROOT = (Join-Path $Work 'absent-ov-desktop')
+    }
+    Set-ClaudeProjectDir $ovProj
+    $r = Fire -HookPath $ovHook -Cwd $ovProj -RawStdin (New-PromptStdin -Cwd $ovProj -EventName 'UserPromptSubmit' -Prompt 'ov-off ov-manual ov-nameonly alpha-one' -SessionId 'ov-1')
+    $ctx = Get-Context $r.Out
+    Check 'skillOverrides off hides user skill from shortlist' ($ctx -notmatch '- ov-off \[') $ctx
+    Check 'skillOverrides user-invocable-only hides user skill unless /name invoked' ($ctx -notmatch '- ov-manual \[') $ctx
+    Check 'skillOverrides name-only keeps user skill enabled in shortlist' ($ctx -match '- ov-nameonly \[') $ctx
+    Check 'skillOverrides never disables plugin skills (alpha:alpha-one stays enabled)' ($ctx -match '- alpha:alpha-one \[claude-plugin\]') $ctx
+    Check 'skillOverrides emits non-blocking advisory for plugin:skill key in settings.local.json' (
+        $ctx -match 'skillOverrides advisory' -and $ctx -match 'alpha:alpha-one' -and $r.Out -notmatch '"decision"') $ctx
+    $r = Fire -HookPath $ovHook -Cwd $ovProj -RawStdin (New-PromptStdin -Cwd $ovProj -EventName 'UserPromptSubmit' -Prompt 'please run /ov-manual now' -SessionId 'ov-2')
+    $ctx = Get-Context $r.Out
+    Check 'skillOverrides user-invocable-only allows explicit /name invocation' ($ctx -match '- ov-manual \[') $ctx
+    $indexFileText = [System.IO.File]::ReadAllText((Join-Path (Split-Path -Parent $ovHook) '_skillindex.ps1'))
+    Check 'Skills-Check cache schema version is bumped to 7' ($indexFileText -match "\`$script:SkillIndexVersion\s*=\s*'7'")
+
     Set-ClaudeProjectDir $sdSavedClaudeDir

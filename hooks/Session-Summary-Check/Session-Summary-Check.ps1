@@ -169,9 +169,9 @@ $blocked = @(Get-BlockedGateNames -ProjectKey $projectKey -SessionId $sessionId)
 $lines = New-Object System.Collections.ArrayList
 if (-not [string]::IsNullOrEmpty($languageLine)) { [void]$lines.Add($languageLine); [void]$lines.Add('') }
 # One advisory replaces repeated policy paragraphs without dropping closure facts.
-[void]$lines.Add('Session-Summary-Check: advisory, one short DONE / REMAINING at task completion, last after MCP/Skills/Rules lines, in the user''s language; never mid-work/background wait/correction.')
-[void]$lines.Add('Already published: correct changed claims once, no second wrap-up. Before closing verify applicable memory/Git/exact-SHA CI/docs/tests/process cleanup/secrets/local-only state, or disclose the gap.')
-[void]$lines.Add('DONE: completed work/checks/resolved gates with observed proof, including recovered failures; REMAINING: unfinished required items, current blockers, deferred scope or untested required paths with reasons. History alone proves no open gate; no invented follow-ups, concise none if clear.')
+[void]$lines.Add('Session-Summary-Check: advisory, one short DONE / REMAINING at task end (after MCP/Skills/Rules lines), user language; never mid-work/wait/correction.')
+[void]$lines.Add('Published: fix changed claims once, no second wrap-up. Verify memory/Git/exact-SHA CI/docs/tests/cleanup/secrets or state gap.')
+[void]$lines.Add('DONE: verified work/checks/gates; REMAINING: open required items/blockers/untested paths with reasons. History != open gate; no invented follow-ups.')
 
 # A summary that went out while a gate was still open. Stated ONCE, as a fact
 # about what already happened, and never turned into a demand for a correction
